@@ -9,17 +9,18 @@ use crate::{
     GovernedAccess, SeedDocument, SeedState, StatePeer, TransportOrigin,
     join::{
         self, JoinBootstrap, JoinChallenge, JoinChallengeResponse, JoinInspection,
-        JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
+        JoinTransportRequest, JoinTransportResponse, Role, TransportHint,
     },
     seed_workspace,
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::{NeighbourMsg, Retention};
 use std::{collections::BTreeMap, time::SystemTime};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::DeviceCert;
 
 use super::{APP, certificate};
+use collab_types::WorkspaceId;
 
 /// Longest a join challenge stays open.
 const CHALLENGE_NS: u64 = 60_000_000_000;
@@ -31,8 +32,7 @@ pub struct TestGovernor {
     host: DeviceCert,
     host_key: SigningKey,
     /// The host is a dedicated certified host, not the governor itself.
-    certified_host: bool,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     generation: u64,
     outgoing: Vec<Vec<u8>>,
     /// What the last commit published: the whole checkpoint after
@@ -74,13 +74,10 @@ impl TestGovernor {
         let governor_key = SigningKey::from_bytes(&random());
         let governor = certificate(&person, &governor_key, "Governor");
         let host_key = SigningKey::from_bytes(&random());
-        let mut host = certificate(&person, &host_key, "Certified host");
-        host.capabilities.can_act_as_host = true;
-        tilo_user_identity::sign_device_cert(&mut host, &person).unwrap();
-        let workspace = uuid::Builder::from_random_bytes(random())
-            .into_uuid()
-            .to_string();
-        let workspace_id = tilo_relay_protocol::room_workspace_id(&workspace).unwrap();
+        let host = certificate(&person, &host_key, "Certified host");
+        let workspace = uuid::Builder::from_random_bytes(random()).into_uuid();
+        let workspace_id = WorkspaceId::from(workspace);
+        let workspace = workspace.to_string();
         let mut peer = StatePeer::new(
             &workspace,
             governor.clone(),
@@ -126,7 +123,6 @@ impl TestGovernor {
             governor_key,
             host,
             host_key,
-            certified_host: true,
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
@@ -156,8 +152,8 @@ impl TestGovernor {
             return Err("interactive fixture custody cannot govern this workspace".into());
         }
         let now = tilo_clock::wall();
-        let workspace_id =
-            tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| error.to_string())?;
+        let workspace_id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| "the fixture's workspace is not a workspace id".to_string())?;
         let mut peer = StatePeer::new(
             workspace,
             governor.clone(),
@@ -185,7 +181,6 @@ impl TestGovernor {
             host: governor,
             host_key: governor_key.clone(),
             governor_key,
-            certified_host: false,
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
@@ -209,7 +204,7 @@ impl TestGovernor {
         self.peer.workspace_id()
     }
     #[must_use]
-    pub fn workspace_id(&self) -> u64 {
+    pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
     #[must_use]
@@ -243,18 +238,14 @@ impl TestGovernor {
     /// The host's signed hint that it serves the workspace at `endpoint_addr`.
     #[must_use]
     pub fn hint(&self, endpoint_addr: iroh_base::EndpointAddr) -> TransportHint {
-        IrohWorkspaceHostHintV1 {
+        WorkspaceDeviceHintV1 {
             version: 1,
-            mode: if self.certified_host {
-                WorkspaceHostMode::CertifiedHost
-            } else {
-                WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-            },
-            room: self.workspace().into(),
+            holds_keys: true,
+            runs_work: false,
             workspace_id: self.workspace_id,
             endpoint_addr,
-            host_user_public_key: self.host.user_public_key,
-            host_device_certificate: self.host.clone(),
+            user_public_key: self.host.user_public_key,
+            device_certificate: self.host.clone(),
             packet_relay_url: "https://relay.invalid".into(),
         }
         .transport_hint(&self.host_key)
@@ -266,7 +257,7 @@ impl TestGovernor {
     pub fn issue(
         &mut self,
         transport: Vec<TransportHint>,
-        role: MemberRole,
+        role: Role,
         recipient_user_public_key: Option<[u8; 32]>,
         invitee_name: Option<String>,
         expires_at_ns: u64,
@@ -274,7 +265,6 @@ impl TestGovernor {
         let signed = join::issue_invitation(
             join::InviteGrant {
                 workspace_id: self.workspace_id,
-                room: self.workspace().into(),
                 issuer: self.host.clone(),
                 role,
                 nonce: random(),
@@ -578,7 +568,6 @@ impl TestGovernor {
             invite_id: redemption.join().invite_id(),
             device_cert: cert,
             role: redemption.join().grant().role,
-            room: self.workspace().into(),
             workspace_id: self.workspace_id,
             host: self.host.clone(),
             certified_roster: self.peer.certificates(),
@@ -601,7 +590,7 @@ impl TestGovernor {
 mod empty_interactive_tests {
     use super::{TestGovernor, certificate};
     use ed25519_dalek::SigningKey;
-    use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 
     #[test]
     fn checkpoint_refresh_follows_admitted_native_receipts() {
@@ -640,7 +629,6 @@ mod empty_interactive_tests {
         let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
         let governor = TestGovernor::empty_interactive(cert.clone(), key, &workspace).unwrap();
         assert_eq!(governor.workspace_host(), &cert);
-        assert!(!governor.workspace_host().capabilities.can_act_as_host);
         assert!(governor.peer().rows().is_empty());
         let endpoint = iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(
@@ -649,12 +637,9 @@ mod empty_interactive_tests {
             .unwrap(),
         );
         let hint = governor.hint(endpoint);
-        let (payload, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).unwrap();
-        assert_eq!(
-            payload.mode,
-            WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-        );
-        assert_eq!(payload.host_device_certificate, cert);
+        let (payload, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).unwrap();
+        assert!(payload.holds_keys);
+        assert_eq!(payload.device_certificate, cert);
         assert!(
             TestGovernor::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &workspace)
                 .is_err()
@@ -665,7 +650,7 @@ mod empty_interactive_tests {
     fn empty_interactive_governor_redeems_its_actual_session_custody_without_app_seed() {
         use crate::join::{
             self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
-            JoinTransportResponse, MemberRole,
+            JoinTransportResponse, Role,
         };
         let key = SigningKey::from_bytes(&[92; 32]);
         let cert = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
@@ -683,7 +668,7 @@ mod empty_interactive_tests {
             .unwrap();
         let invitation = governor.issue(
             vec![governor.hint(endpoint)],
-            MemberRole::Editor,
+            Role::Editor,
             Some(cert.user_public_key),
             Some("Fixture session".into()),
             expiry,
@@ -710,6 +695,5 @@ mod empty_interactive_tests {
         assert_eq!(bootstrap.host, cert);
         assert_eq!(bootstrap.device_cert, cert);
         assert!(bootstrap.records.is_empty());
-        assert!(!bootstrap.host.capabilities.can_act_as_host);
     }
 }

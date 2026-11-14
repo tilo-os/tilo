@@ -345,105 +345,109 @@ mod tests {
         i64::try_from(wait.as_millis().saturating_add(500) / 1000).ok()
     }
 
-    #[test]
-    fn minutes_ago_change_at_the_next_minute_and_not_before() {
-        let at = local_secs(30, (10, 0, 0));
-        let mut time = with_wall(wall(at + 150), || widget_at(at));
-        assert_eq!(time.label(), "2 min ago");
-        // 2 min 30 s ago: it reads `3 min ago` 30 s on, and wakes for nothing sooner.
-        let waits = with_wall(wall(at + 150), || wait(&time));
-        assert_eq!(waits, Some(30));
-        assert_eq!(next_change(at, at + 150), Some(at + 180));
-        let early = with_wall(wall(at + 179), || time.follow_clock());
-        assert!(!early, "nothing changes before the minute turns");
-        assert_eq!(time.label(), "2 min ago");
-        let due = with_wall(wall(at + 180), || time.follow_clock());
-        assert!(due);
-        assert_eq!(time.label(), "3 min ago");
-        assert_eq!(with_wall(wall(at + 180), || wait(&time)), Some(60));
-    }
+    tilo_test_env::scenario! {
+        fn a_relative_time_reads_and_wakes_at_the_right_moment;
 
-    #[test]
-    fn a_clock_time_is_the_time_of_day_and_never_moves() {
-        // A message's line says when it was sent, by the clock: "5:16 PM", whatever the day, and
-        // it never changes while the window is open, so nothing wakes for it.
-        let at = local_secs(26, (17, 16, 0));
-        let mut time = with_wall(wall(at + 3 * 3600), || {
-            RelativeTime::from_props(
-                "t",
-                TimeProps {
-                    at: Moment(at),
-                    clock: true,
-                    ..TimeProps::default()
-                },
-            )
-        });
-        assert_eq!(time.label(), clock_text(at));
-        assert_eq!(time.label(), "5:16 PM");
-        assert_eq!(
-            Widget::next_wake_deadline(&time),
-            None,
-            "a clock time never changes, so nothing wakes for it"
-        );
-        assert!(!with_wall(wall(at + 9 * 3600), || time.follow_clock()));
-        assert_eq!(time.label(), "5:16 PM");
-    }
+        phase minutes_ago_change_at_the_next_minute_and_not_before;
+        {
+            let at = local_secs(30, (10, 0, 0));
+            let mut time = with_wall(wall(at + 150), || widget_at(at));
+            assert_eq!(time.label(), "2 min ago");
+            // 2 min 30 s ago: it reads `3 min ago` 30 s on, and wakes for nothing sooner.
+            let waits = with_wall(wall(at + 150), || wait(&time));
+            assert_eq!(waits, Some(30));
+            assert_eq!(next_change(at, at + 150), Some(at + 180));
+            let early = with_wall(wall(at + 179), || time.follow_clock());
+            assert!(!early, "nothing changes before the minute turns");
+            assert_eq!(time.label(), "2 min ago");
+            let due = with_wall(wall(at + 180), || time.follow_clock());
+            assert!(due);
+            assert_eq!(time.label(), "3 min ago");
+            assert_eq!(with_wall(wall(at + 180), || wait(&time)), Some(60));
+        }
 
-    #[test]
-    fn just_now_lasts_until_its_threshold() {
-        let at = local_secs(30, (10, 0, 0));
-        assert_eq!(relative_text(at, at + 10), "just now");
-        assert_eq!(next_change(at, at + 10), Some(at + 45));
-        assert_eq!(relative_text(at, at + 45), "1 min ago");
-        // `1 min ago` reads the same from 45 s to two minutes.
-        assert_eq!(next_change(at, at + 45), Some(at + 120));
-    }
+        phase a_clock_time_is_the_time_of_day_and_never_moves;
+        {
+            // A message's line says when it was sent, by the clock: "5:16 PM", whatever the day, and
+            // it never changes while the window is open, so nothing wakes for it.
+            let at = local_secs(26, (17, 16, 0));
+            let mut time = with_wall(wall(at + 3 * 3600), || {
+                RelativeTime::from_props(
+                    "t",
+                    TimeProps {
+                        at: Moment(at),
+                        clock: true,
+                        ..TimeProps::default()
+                    },
+                )
+            });
+            assert_eq!(time.label(), clock_text(at));
+            assert_eq!(time.label(), "5:16 PM");
+            assert_eq!(
+                Widget::next_wake_deadline(&time),
+                None,
+                "a clock time never changes, so nothing wakes for it"
+            );
+            assert!(!with_wall(wall(at + 9 * 3600), || time.follow_clock()));
+            assert_eq!(time.label(), "5:16 PM");
+        }
 
-    #[test]
-    fn yesterday_is_the_previous_local_day_and_turns_at_midnight() {
-        // 21:00 yesterday, read at 09:00: twelve hours, but the previous calendar day.
-        let at = local_secs(29, (21, 0, 0));
-        let now = local_secs(30, (9, 0, 0));
-        assert_eq!(relative_text(at, now), "Yesterday");
-        // It stays until the next local midnight, then reads as a weekday.
-        let midnight = local_secs(30, (23, 59, 59)) + 1;
-        assert_eq!(next_change(at, now), Some(midnight));
-        assert_ne!(relative_text(at, midnight), "Yesterday");
-        let evening = local_secs(29, (23, 30, 0));
-        assert_eq!(relative_text(at, evening), "2 hr ago");
-        assert_eq!(
-            next_change(at, evening),
-            Some(local_secs(29, (23, 59, 59)) + 1)
-        );
-    }
+        phase just_now_lasts_until_its_threshold;
+        {
+            let at = local_secs(30, (10, 0, 0));
+            assert_eq!(relative_text(at, at + 10), "just now");
+            assert_eq!(next_change(at, at + 10), Some(at + 45));
+            assert_eq!(relative_text(at, at + 45), "1 min ago");
+            // `1 min ago` reads the same from 45 s to two minutes.
+            assert_eq!(next_change(at, at + 45), Some(at + 120));
+        }
 
-    #[test]
-    fn a_moment_ahead_counts_down_and_then_is_past() {
-        let at = local_secs(30, (10, 0, 0));
-        assert_eq!(relative_text(at, at - 180), "in 3 min");
-        assert_eq!(next_change(at, at - 180), Some(at - 120));
-        assert_eq!(relative_text(at, at), "just now");
-    }
+        phase yesterday_is_the_previous_local_day_and_turns_at_midnight;
+        {
+            // 21:00 yesterday, read at 09:00: twelve hours, but the previous calendar day.
+            let at = local_secs(29, (21, 0, 0));
+            let now = local_secs(30, (9, 0, 0));
+            assert_eq!(relative_text(at, now), "Yesterday");
+            // It stays until the next local midnight, then reads as a weekday.
+            let midnight = local_secs(30, (23, 59, 59)) + 1;
+            assert_eq!(next_change(at, now), Some(midnight));
+            assert_ne!(relative_text(at, midnight), "Yesterday");
+            let evening = local_secs(29, (23, 30, 0));
+            assert_eq!(relative_text(at, evening), "2 hr ago");
+            assert_eq!(
+                next_change(at, evening),
+                Some(local_secs(29, (23, 59, 59)) + 1)
+            );
+        }
 
-    #[test]
-    fn a_moment_that_has_happened_never_reads_ahead_of_the_reader() {
-        let at = local_secs(30, (10, 0, 0));
-        let mut time = with_wall(wall(at), || widget_past(at + 300));
-        assert_eq!(time.label(), "just now");
-        // It still wakes when `just now` ends, and keeps saying it until the reader's clock
-        // reaches the moment, which then reads as the time it happened.
-        assert_eq!(with_wall(wall(at), || wait(&time)), Some(45));
-        let reached = with_wall(wall(at + 400), || {
-            time.follow_clock();
-            time.label()
-        });
-        assert_eq!(reached, "1 min ago");
-    }
+        phase a_moment_ahead_counts_down_and_then_is_past;
+        {
+            let at = local_secs(30, (10, 0, 0));
+            assert_eq!(relative_text(at, at - 180), "in 3 min");
+            assert_eq!(next_change(at, at - 180), Some(at - 120));
+            assert_eq!(relative_text(at, at), "just now");
+        }
 
-    #[test]
-    fn a_date_long_past_never_wakes_the_window_within_its_year() {
-        let at = local_secs(1, (10, 0, 0));
-        let now = local_secs(30, (10, 0, 0));
-        assert_eq!(next_change(at, now), next_new_year(now));
+        phase a_moment_that_has_happened_never_reads_ahead_of_the_reader;
+        {
+            let at = local_secs(30, (10, 0, 0));
+            let mut time = with_wall(wall(at), || widget_past(at + 300));
+            assert_eq!(time.label(), "just now");
+            // It still wakes when `just now` ends, and keeps saying it until the reader's clock
+            // reaches the moment, which then reads as the time it happened.
+            assert_eq!(with_wall(wall(at), || wait(&time)), Some(45));
+            let reached = with_wall(wall(at + 400), || {
+                time.follow_clock();
+                time.label()
+            });
+            assert_eq!(reached, "1 min ago");
+        }
+
+        phase a_date_long_past_never_wakes_the_window_within_its_year;
+        {
+            let at = local_secs(1, (10, 0, 0));
+            let now = local_secs(30, (10, 0, 0));
+            assert_eq!(next_change(at, now), next_new_year(now));
+        }
     }
 }

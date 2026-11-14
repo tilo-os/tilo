@@ -69,7 +69,7 @@ mod durable_local_matrix {
             );
             // Someone the workspace grants everything until 50 seconds after the
             // start, and nothing after.
-            let principal = principal_id_for_root(cert.user_public_key);
+            let principal = person_id_for_root(cert.user_public_key);
             let changes = tilo_action_policy::Grant::new(
                 "changes-for-a-while",
                 tilo_action_policy::Grantee::person(principal.clone()),
@@ -222,7 +222,7 @@ mod durable_local_matrix {
                     let Some(state) = bridge_state.upgrade() else {
                         break;
                     };
-                    state.drain_action_directory_bridge(&bridge_directories);
+                    state.take_turn(&bridge_directories);
                 }
             });
             Self {
@@ -320,6 +320,7 @@ mod durable_local_matrix {
                 invocation: id,
                 address: tilo_actions::ActionAddress {
                     resource: delivered.resource,
+                    item: None,
                     action: delivered.action,
                 },
                 argument: delivered.argument,

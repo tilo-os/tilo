@@ -35,6 +35,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_session_core::door::Published;
 use ui::host_operation::ResourceOperationStart;
 
+use crate::i18n::t;
+
 /// The resource the person's style packages are made, checked and installed on.
 pub const RESOURCE: &str = "session-authoring";
 
@@ -174,7 +176,7 @@ pub(crate) fn resource() -> ResourceSpec {
             payload: b"install".to_vec(),
         },
     );
-    let mut spec = ResourceSpec::new(RESOURCE, KIND, "Desk styles");
+    let mut spec = ResourceSpec::new(RESOURCE, KIND, t("session-desk-styles"));
     for mut action in [make, check, install] {
         // Installing code is the person's decision: the broker holds an agent's step that
         // installs or copies a package for the person's answer on the system's sheet

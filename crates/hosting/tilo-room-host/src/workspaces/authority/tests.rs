@@ -7,15 +7,14 @@
     reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
+use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_protocol::AuthenticatedPeer;
 use tilo_relay_protocol::operator::WaitListStanding;
 use tilo_relay_protocol::voice::{CallOperation, CallState};
-use tilo_relay_protocol::workspaces::{
-    JoinReply, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
-};
-use tilo_user_identity::{DeviceCert, sign_device_cert};
+use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{
@@ -86,7 +85,7 @@ async fn set_role(
     workspace: &str,
     by: &DeviceCert,
     person: &DeviceCert,
-    role: MemberRole,
+    role: Role,
 ) {
     workspaces
         .set_member_role(workspace, by, role_request(person, role, rand::random()))
@@ -94,11 +93,7 @@ async fn set_role(
         .unwrap();
 }
 
-fn role_request(
-    person: &DeviceCert,
-    role: MemberRole,
-    request_id: [u8; 32],
-) -> SetMemberRoleRequest {
+fn role_request(person: &DeviceCert, role: Role, request_id: [u8; 32]) -> SetMemberRoleRequest {
     SetMemberRoleRequest {
         request_id,
         user_public_key: person.user_public_key,
@@ -106,7 +101,7 @@ fn role_request(
     }
 }
 
-fn invitation(request_id: u8, role: MemberRole) -> IssueInvitationRequest {
+fn invitation(request_id: u8, role: Role) -> IssueInvitationRequest {
     IssueInvitationRequest {
         request_id: [request_id; 32],
         role,
@@ -237,7 +232,7 @@ fn list_entry(workspace: &str, entry: [u8; 32]) -> WorkspacesRequest {
     WorkspacesRequest::Invite {
         workspace: workspace.to_owned(),
         request_id: [41; 32],
-        role: WorkspaceRole::Editor,
+        role: Role::Editor,
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
         wait_list_entry: Some(entry),
@@ -412,7 +407,7 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
     let invite = |wait_list_entry| WorkspacesRequest::Invite {
         workspace: workspace.clone(),
         request_id: rand::random(),
-        role: WorkspaceRole::Editor,
+        role: Role::Editor,
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
         wait_list_entry: Some(wait_list_entry),
@@ -509,7 +504,7 @@ async fn assert_uncertain_invitation_mail(
                 WorkspacesRequest::Invite {
                     workspace: workspace.clone(),
                     request_id: rand::random(),
-                    role: WorkspaceRole::Editor,
+                    role: Role::Editor,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                     inviter_name: None,
                     wait_list_entry: Some(cy),
@@ -649,6 +644,178 @@ const fn listed_at_once(removal: u8) -> WaitListSecrets {
     }
 }
 
+/// An invitation says who it is from: one asked without a name (from an API
+/// key or the command line) carries the name the workspace shows for the
+/// person who asked, and one that names its inviter keeps that name.
+#[tokio::test]
+async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_shows_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    let inviter = |issued: crate::workspaces::IssuedInvitation| {
+        tilo_peer_state::join::decode_and_verify_invitation(
+            &issued.signed_invitation,
+            None,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap()
+        .inviter()
+        .cloned()
+    };
+
+    let unnamed = workspaces
+        .issue(&workspace, &ada, invitation(20, Role::Viewer))
+        .await
+        .unwrap();
+    let from = inviter(unnamed).expect("the invitation names who it is from");
+    assert_eq!(from.name, "Person 1");
+    assert_eq!(from.user_public_key, ada.user_public_key);
+
+    let named = workspaces
+        .issue(
+            &workspace,
+            &ada,
+            IssueInvitationRequest {
+                inviter_name: Some("Ada".into()),
+                ..invitation(21, Role::Viewer)
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(inviter(named).unwrap().name, "Ada");
+    relay.shutdown().await;
+}
+
+/// A device of `person`'s root, labelled `label`: one they hold themselves,
+/// or a key made to act for them.
+fn device_of(person: &SigningKey, label: &str, capabilities: DeviceCapabilities) -> DeviceCert {
+    let mut cert = DeviceCert {
+        user_public_key: person.verifying_key().to_bytes(),
+        device_public_key: SigningKey::from_bytes(&rand::random())
+            .verifying_key()
+            .to_bytes(),
+        device_label: label.into(),
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, person).unwrap();
+    cert
+}
+
+/// Someone a deployment's operator declares an owner of a workspace nobody is
+/// in yet, with the name they go by: the workspace lists them by it before a
+/// device of theirs has arrived, a key of theirs renames them without one, and
+/// the invitation their first device makes says who asked them in.
+#[tokio::test]
+async fn a_declared_owner_carries_the_name_they_were_declared_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+
+    // All the operator has of them is their root and the name they go by: no
+    // device of theirs has ever reached this workspace.
+    let person = SigningKey::from_bytes(&rand::random());
+    let root = person.verifying_key().to_bytes();
+    workspaces
+        .set_member_administrator(&workspace, &owner, rand::random(), root, Some("Quinten"))
+        .await
+        .unwrap();
+    let named = |members: &[tilo_peer_state::GovernedMember]| {
+        members
+            .iter()
+            .find(|member| member.user_public_key == root && !member.removed)
+            .unwrap_or_else(|| panic!("the declared owner is a member: {members:?}"))
+            .display_name
+            .clone()
+    };
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert_eq!(named(&members).as_deref(), Some("Quinten"));
+    assert!(
+        members
+            .iter()
+            .find(|member| member.user_public_key == root)
+            .is_some_and(|member| member.active_device_keys.is_empty()),
+        "no device of theirs has arrived yet: {members:?}"
+    );
+
+    // A key of theirs names them without one, as their Tilo on the web would,
+    // and the name it sets is what the workspace shows from then on.
+    let theirs = device_of(
+        &person,
+        "a key of Quinten's",
+        DeviceCapabilities::server_key_grant(),
+    );
+    workspaces
+        .name_self(
+            &workspace,
+            &theirs,
+            "Quinten Wolff",
+            tilo_clock::unix_now_ns(),
+        )
+        .await
+        .unwrap();
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert_eq!(named(&members).as_deref(), Some("Quinten Wolff"));
+
+    // Their first device joins, admitted through the owner's pre-admission
+    // under another name: the name they chose is the one the workspace keeps.
+    let token = [7u8; 8];
+    let issued = workspaces
+        .pre_admit(
+            &owner,
+            PreAdmitRequest {
+                request_id: [7; 32],
+                grant: signed_pre_admission(&workspace, &token),
+                recipient_user_public_key: Some(root),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let device = device_of(&person, "Quinten's laptop", DeviceCapabilities::member());
+    let reply = workspaces
+        .admit_proven(
+            issued.signed_invitation,
+            device.clone(),
+            rand::random(),
+            "Quin's laptop",
+            Some(token.as_slice()),
+        )
+        .await;
+    assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert_eq!(named(&members).as_deref(), Some("Quinten Wolff"));
+
+    // The invitation their device makes says who asked them in.
+    let issued = workspaces
+        .issue(&workspace, &device, invitation(30, Role::Viewer))
+        .await
+        .unwrap();
+    let from = tilo_peer_state::join::decode_and_verify_invitation(
+        &issued.signed_invitation,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap()
+    .inviter()
+    .cloned()
+    .expect("the invitation names who it is from");
+    assert_eq!(from.name, "Quinten Wolff");
+    assert_eq!(from.user_public_key, root);
+    relay.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     let dir = tempfile::tempdir().unwrap();
@@ -661,7 +828,7 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     // An Editor by role alone governs nothing.
     assert!(
         workspaces
-            .issue(&workspace, &ada, invitation(10, MemberRole::Viewer))
+            .issue(&workspace, &ada, invitation(10, Role::Viewer))
             .await
             .is_err()
     );
@@ -681,7 +848,7 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     // The workspace grants Ada its invite action: she invites, up to her role.
     grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
     let issued = workspaces
-        .issue(&workspace, &ada, invitation(11, MemberRole::Editor))
+        .issue(&workspace, &ada, invitation(11, Role::Editor))
         .await
         .unwrap();
     assert!(
@@ -693,7 +860,7 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
             .any(|pending| pending.invite_id == issued.invite_id)
     );
     let above = workspaces
-        .issue(&workspace, &ada, invitation(12, MemberRole::Moderator))
+        .issue(&workspace, &ada, invitation(12, Role::Moderator))
         .await
         .unwrap_err();
     assert!(above.to_string().contains("Moderator"), "{above}");
@@ -754,14 +921,10 @@ async fn roles_and_removals_follow_the_rooms_policy() {
     let dee = admit(workspaces, &workspace, &owner, 4).await;
 
     // A Moderator removes an Editor, but sets no roles.
-    set_role(workspaces, &workspace, &owner, &bo, MemberRole::Moderator).await;
+    set_role(workspaces, &workspace, &owner, &bo, Role::Moderator).await;
     assert!(
         workspaces
-            .set_member_role(
-                &workspace,
-                &bo,
-                role_request(&cy, MemberRole::Viewer, [20; 32])
-            )
+            .set_member_role(&workspace, &bo, role_request(&cy, Role::Viewer, [20; 32]))
             .await
             .is_err()
     );
@@ -781,36 +944,28 @@ async fn roles_and_removals_follow_the_rooms_policy() {
     // changes an administrator's: only the owner makes or unmakes those.
     assert!(
         workspaces
-            .set_member_role(
-                &workspace,
-                &ada,
-                role_request(&cy, MemberRole::Viewer, [22; 32])
-            )
+            .set_member_role(&workspace, &ada, role_request(&cy, Role::Viewer, [22; 32]))
             .await
             .is_err()
     );
     grant(workspaces, &workspace, &owner, &ada, governance::SET_ROLE).await;
-    set_role(workspaces, &workspace, &ada, &cy, MemberRole::Viewer).await;
+    set_role(workspaces, &workspace, &ada, &cy, Role::Viewer).await;
     assert!(
         workspaces
             .set_member_role(
                 &workspace,
                 &ada,
-                role_request(&cy, MemberRole::Moderator, [23; 32])
+                role_request(&cy, Role::Moderator, [23; 32])
             )
             .await
             .is_err()
     );
     workspaces
-        .set_member_administrator(&workspace, &owner, [24; 32], cy.user_public_key)
+        .set_member_administrator(&workspace, &owner, [24; 32], cy.user_public_key, None)
         .await
         .unwrap();
     let administrator = workspaces
-        .set_member_role(
-            &workspace,
-            &ada,
-            role_request(&cy, MemberRole::Viewer, [25; 32]),
-        )
+        .set_member_role(&workspace, &ada, role_request(&cy, Role::Viewer, [25; 32]))
         .await
         .unwrap_err();
     assert!(
@@ -818,7 +973,7 @@ async fn roles_and_removals_follow_the_rooms_policy() {
         "{administrator}"
     );
     // The owner's devices still change anyone's role.
-    set_role(workspaces, &workspace, &owner, &cy, MemberRole::Editor).await;
+    set_role(workspaces, &workspace, &owner, &cy, Role::Editor).await;
 
     // Nobody removes the owner, the owner's devices included.
     for by in [&owner, &bo] {
@@ -849,10 +1004,10 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let cy = admit(workspaces, &workspace, &owner, 3).await;
-    set_role(workspaces, &workspace, &owner, &cy, MemberRole::Viewer).await;
+    set_role(workspaces, &workspace, &owner, &cy, Role::Viewer).await;
 
     workspaces
-        .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key)
+        .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key, None)
         .await
         .unwrap();
     an_administrator_invites_within_their_role(workspaces, &workspace, &ada).await;
@@ -871,7 +1026,7 @@ async fn an_administrator_invites_within_their_role(
     ada: &DeviceCert,
 ) {
     let issued = workspaces
-        .issue(workspace, ada, invitation(51, MemberRole::Editor))
+        .issue(workspace, ada, invitation(51, Role::Editor))
         .await
         .unwrap();
     assert!(
@@ -883,7 +1038,7 @@ async fn an_administrator_invites_within_their_role(
             .any(|pending| pending.invite_id == issued.invite_id)
     );
     let above = workspaces
-        .issue(workspace, ada, invitation(52, MemberRole::Moderator))
+        .issue(workspace, ada, invitation(52, Role::Moderator))
         .await
         .unwrap_err();
     assert!(above.to_string().contains("Moderator"), "{above}");
@@ -909,14 +1064,10 @@ async fn an_administrator_rules_those_ranked_below(
     bo: &DeviceCert,
     cy: &DeviceCert,
 ) {
-    set_role(workspaces, workspace, ada, cy, MemberRole::Commenter).await;
+    set_role(workspaces, workspace, ada, cy, Role::Commenter).await;
     assert!(
         workspaces
-            .set_member_role(
-                workspace,
-                ada,
-                role_request(bo, MemberRole::Moderator, [53; 32])
-            )
+            .set_member_role(workspace, ada, role_request(bo, Role::Moderator, [53; 32]))
             .await
             .is_err()
     );
@@ -977,14 +1128,14 @@ async fn unmaking_the_administrator_takes_it_all_back(
 ) {
     assert!(
         workspaces
-            .issue(workspace, bo, invitation(56, MemberRole::Viewer))
+            .issue(workspace, bo, invitation(56, Role::Viewer))
             .await
             .is_err()
     );
-    set_role(workspaces, workspace, owner, ada, MemberRole::Editor).await;
+    set_role(workspaces, workspace, owner, ada, Role::Editor).await;
     assert!(
         workspaces
-            .issue(workspace, ada, invitation(57, MemberRole::Viewer))
+            .issue(workspace, ada, invitation(57, Role::Viewer))
             .await
             .is_err()
     );
@@ -1014,7 +1165,7 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
         .await
         .unwrap();
     workspaces
-        .issue(&workspace, &ada, invitation(61, MemberRole::Editor))
+        .issue(&workspace, &ada, invitation(61, Role::Editor))
         .await
         .unwrap();
     relay.shutdown().await;
@@ -1034,7 +1185,7 @@ async fn what_no_room_decides_stays_the_relay_persons() {
         grant(workspaces, &workspace, &owner, &ada, action).await;
     }
     workspaces
-        .issue(&workspace, &ada, invitation(30, MemberRole::Viewer))
+        .issue(&workspace, &ada, invitation(30, Role::Viewer))
         .await
         .unwrap();
 
@@ -1059,7 +1210,7 @@ async fn what_no_room_decides_stays_the_relay_persons() {
     }
     assert!(
         workspaces
-            .set_member_administrator(&workspace, &ada, [31; 32], bo.user_public_key)
+            .set_member_administrator(&workspace, &ada, [31; 32], bo.user_public_key, None)
             .await
             .is_err()
     );
@@ -1096,7 +1247,7 @@ async fn calls_are_run_by_the_owner_and_by_members_granted_call() {
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    set_role(workspaces, &workspace, &owner, &bo, MemberRole::Moderator).await;
+    set_role(workspaces, &workspace, &owner, &bo, Role::Moderator).await;
     // Ending a call the workspace never had: past the gate, the call itself
     // answers that it is unknown.
     let end = CallOperation::End {
@@ -1137,7 +1288,7 @@ async fn an_expired_certificate_administers_nothing_even_the_owners() {
     .unwrap();
     assert!(
         workspaces
-            .issue(&workspace, &expired, invitation(40, MemberRole::Viewer))
+            .issue(&workspace, &expired, invitation(40, Role::Viewer))
             .await
             .is_err()
     );

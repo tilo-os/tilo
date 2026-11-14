@@ -114,142 +114,214 @@ fn enabled(app: &mut HeadlessApp<InviteApp>, name: &str) -> bool {
         .is_some_and(|(_, node)| !node.is_disabled())
 }
 
-#[test]
-fn the_sheet_lists_the_part_the_link_brings_someone_in_at_and_who_it_is_for() {
-    let mut app = HeadlessApp::<InviteApp>::capture_at(Some("ready"), VIEWPORT).expect("the sheet");
-    for text in [
-        "Invite people",
-        "They join as",
-        "Editor",
-        "This link is for",
-        "Anyone with the link",
-        "Ada Lovelace-Byron",
-        "Links that still work",
-        "For anyone with the link",
-    ] {
-        assert!(says(&mut app, text), "{text:?} is shown");
+tilo_test_env::scenario! {
+    /// What the invite sheet shows: the parts on offer, the link made, and who may make one.
+    fn the_invite_sheet_shows_the_link_and_who_may_make_one;
+
+    phase the_sheet_lists_the_part_the_link_brings_someone_in_at_and_who_it_is_for;
+    {
+        let mut app = HeadlessApp::<InviteApp>::capture_at(Some("ready"), VIEWPORT).expect("the sheet");
+        for text in [
+            "Invite people",
+            "They join as",
+            "Editor",
+            "This link is for",
+            "Anyone with the link",
+            "Ada Lovelace-Byron",
+            "Links that still work",
+            "For anyone with the link",
+        ] {
+            assert!(says(&mut app, text), "{text:?} is shown");
+        }
+        assert!(enabled(&mut app, "Create link"));
     }
-    assert!(enabled(&mut app, "Create link"));
-}
 
-/// The person picks the part and whose device may redeem the link, and the
-/// create button asks for the link they picked at: the sheet's own choices
-/// reach the shell.
-#[test]
-fn the_choices_reach_the_link_the_sheet_asks_for() {
-    let (mut app, seat) = seated(with_link());
-    press(&mut app, "invite-role:segment:0");
-    press(&mut app, "invite-create");
-    let asked = seat.take_asked();
-    assert!(
-        asked.contains(&InviteEffect::Create {
-            role: "viewer".to_owned(),
-            recipient: String::new(),
-        }),
-        "the part picked is the one asked for: {asked:?}"
-    );
-}
-
-#[test]
-fn the_create_button_asks_for_an_editor_for_the_person_chipped() {
-    let (mut app, seat) = seated(with_link());
-    // The first chip is anyone holding the link, the next the person listed.
-    press(&mut app, "invite-for:segment:1");
-    press(&mut app, "invite-create");
-    assert_eq!(
-        seat.take_asked(),
-        vec![InviteEffect::Create {
-            role: "editor".to_owned(),
-            recipient: "9a1f".to_owned(),
-        }],
-        "the sheet opens on the part a newcomer usually joins at, for the person chipped"
-    );
-}
-
-/// The link made is shown as text and as a code, with what it brings and how
-/// long it works, and its button hands it to the clipboard.
-#[test]
-fn the_link_made_shows_its_code_and_its_copy_button_hands_it_over() {
-    let (mut app, seat) = seated(with_link());
-    for text in [
-        LINK,
-        "Ada Lovelace-Byron joins as an editor.",
-        "The link stops working in 1 hr.",
-        "The link is on the clipboard.",
-    ] {
-        assert!(says(&mut app, text), "{text:?} is shown");
+    phase the_link_made_shows_its_code_and_its_copy_button_hands_it_over;
+    // The link made is shown as text and as a code, with what it brings and how
+    // long it works, and its button hands it to the clipboard.
+    {
+        let (mut app, seat) = seated(with_link());
+        for text in [
+            LINK,
+            "Ada Lovelace-Byron joins as an editor.",
+            "The link stops working in 1 hr.",
+            "The link is on the clipboard.",
+        ] {
+            assert!(says(&mut app, text), "{text:?} is shown");
+        }
+        press(&mut app, "invite-copy-link");
+        assert_eq!(
+            seat.take_asked(),
+            vec![InviteEffect::Copy {
+                link: LINK.to_owned(),
+            }],
+            "the copy button hands over the link shown"
+        );
     }
-    press(&mut app, "invite-copy-link");
-    assert_eq!(
-        seat.take_asked(),
-        vec![InviteEffect::Copy {
-            link: LINK.to_owned(),
-        }],
-        "the copy button hands over the link shown"
-    );
+
+    phase a_person_who_may_not_invite_here_is_told_why_and_cannot_make_a_link;
+    {
+        let mut app =
+            HeadlessApp::<InviteApp>::capture_at(Some("unable"), VIEWPORT).expect("the sheet");
+        assert!(
+            says(
+                &mut app,
+                "Only a member whose part here allows inviting can make a link."
+            ),
+            "the sheet says why not"
+        );
+        assert!(
+            app.harness()
+                .a11y_nodes()
+                .into_iter()
+                .all(|(_, node)| node.label() != Some("Create link")),
+            "no button offers a link they may not make"
+        );
+    }
+
+    phase the_part_on_offer_says_in_a_line_what_it_brings;
+    // What the part picked brings whoever joins with it, in a line under the
+    // choice, and it follows the pick.
+    {
+        let (mut app, _seat) = seated(with_link());
+        assert!(
+            says(&mut app, "Can view, comment on, and edit shared work."),
+            "the part the sheet opens on says what it brings"
+        );
+        press(&mut app, "invite-role:segment:0");
+        assert!(
+            says(&mut app, "Can view shared work."),
+            "picking another part says what that one brings"
+        );
+    }
+
+    phase on_a_phone_the_link_made_comes_first_and_making_another_after_it;
+    // On a phone, a sheet with a link made reads in the order the person goes: the link with the
+    // button that copies it and what that press did, the code to scan small, and only then the part
+    // another link would bring someone in at and the button that makes it. Nothing of it is wider
+    // than the screen.
+    {
+        const PHONE: (u32, u32) = (390, 844);
+        let (mut app, _seat) = seated(with_link());
+        app.harness().resize(PHONE).unwrap();
+        app.settle();
+        let order = [
+            "invite-link",
+            "invite-copy-link",
+            "invite-note",
+            "invite-code",
+            "invite-role",
+            "invite-create",
+        ];
+        let rects: Vec<[f64; 4]> = order.iter().map(|id| rect_of(&mut app, id)).collect();
+        for (pair, ids) in rects.windows(2).zip(order.windows(2)) {
+            assert!(
+                pair[0][1] + pair[0][3] <= pair[1][1] + 0.5,
+                "{} stands above {}: {:?} then {:?}",
+                ids[0],
+                ids[1],
+                pair[0],
+                pair[1]
+            );
+        }
+        let width = f64::from(PHONE.0);
+        for (id, rect) in order.iter().zip(&rects) {
+            assert!(
+                rect[0] >= 0.0 && rect[0] + rect[2] <= width,
+                "{id} fits the phone's width: {rect:?}"
+            );
+        }
+        let code = rect_of(&mut app, "invite-code");
+        let field = rect_of(&mut app, "invite-link");
+        assert!(
+            code[2] <= 160.0,
+            "the code is a small second way, not the sheet's subject: {code:?}"
+        );
+        assert!(
+            code[2] < field[2],
+            "the link, not the code, is the widest thing handed over"
+        );
+    }
+
+    phase with_a_link_made_the_button_makes_another;
+    // With a link made, making another is the secondary press, and says so.
+    {
+        let (mut app, _seat) = seated(with_link());
+        assert!(enabled(&mut app, "Create another link"));
+        assert!(
+            app.harness()
+                .a11y_nodes()
+                .into_iter()
+                .all(|(_, node)| node.label() != Some("Create link")),
+            "the first link's button is not offered beside one already made"
+        );
+    }
 }
 
-#[test]
-fn taking_a_link_back_asks_for_that_invitation() {
-    let (mut app, seat) = seated(with_link());
-    press(&mut app, "invite-revoke-3b9d");
-    assert_eq!(
-        seat.take_asked(),
-        vec![InviteEffect::Revoke {
-            invite: "3b9d".to_owned(),
-        }],
-        "the button takes back the link of its own row"
-    );
-}
+tilo_test_env::scenario! {
+    /// What making a link and taking one back ask the shell.
+    fn the_invite_sheets_buttons_ask_for_the_link_they_name;
 
-#[test]
-fn a_person_who_may_not_invite_here_is_told_why_and_cannot_make_a_link() {
-    let mut app =
-        HeadlessApp::<InviteApp>::capture_at(Some("unable"), VIEWPORT).expect("the sheet");
-    assert!(
-        says(
-            &mut app,
-            "Only a member whose part here allows inviting can make a link."
-        ),
-        "the sheet says why not"
-    );
-    assert!(
-        app.harness()
-            .a11y_nodes()
-            .into_iter()
-            .all(|(_, node)| node.label() != Some("Create link")),
-        "no button offers a link they may not make"
-    );
-}
+    phase the_choices_reach_the_link_the_sheet_asks_for;
+    // The person picks the part and whose device may redeem the link, and the
+    // create button asks for the link they picked at: the sheet's own choices
+    // reach the shell.
+    {
+        let (mut app, seat) = seated(with_link());
+        press(&mut app, "invite-role:segment:0");
+        press(&mut app, "invite-create");
+        let asked = seat.take_asked();
+        assert!(
+            asked.contains(&InviteEffect::Create {
+                role: "viewer".to_owned(),
+                recipient: String::new(),
+            }),
+            "the part picked is the one asked for: {asked:?}"
+        );
+    }
 
-/// What the part picked brings whoever joins with it, in a line under the
-/// choice, and it follows the pick.
-#[test]
-fn the_part_on_offer_says_in_a_line_what_it_brings() {
-    let (mut app, _seat) = seated(with_link());
-    assert!(
-        says(&mut app, "Can view, comment on, and edit shared work."),
-        "the part the sheet opens on says what it brings"
-    );
-    press(&mut app, "invite-role:segment:0");
-    assert!(
-        says(&mut app, "Can view shared work."),
-        "picking another part says what that one brings"
-    );
-}
+    phase the_create_button_asks_for_an_editor_for_the_person_chipped;
+    {
+        let (mut app, seat) = seated(with_link());
+        // The first chip is anyone holding the link, the next the person listed.
+        press(&mut app, "invite-for:segment:1");
+        press(&mut app, "invite-create");
+        assert_eq!(
+            seat.take_asked(),
+            vec![InviteEffect::Create {
+                role: "editor".to_owned(),
+                recipient: "9a1f".to_owned(),
+            }],
+            "the sheet opens on the part a newcomer usually joins at, for the person chipped"
+        );
+    }
 
-/// The link made is taken back beside the button that copies it.
-#[test]
-fn taking_back_the_link_just_made_asks_for_that_invitation() {
-    let (mut app, seat) = seated(with_link());
-    press(&mut app, "invite-revoke-made");
-    assert_eq!(
-        seat.take_asked(),
-        vec![InviteEffect::Revoke {
-            invite: "8f2c".to_owned(),
-        }],
-        "taking back the link shown takes back the invitation it names"
-    );
+    phase taking_a_link_back_asks_for_that_invitation;
+    {
+        let (mut app, seat) = seated(with_link());
+        press(&mut app, "invite-revoke-3b9d");
+        assert_eq!(
+            seat.take_asked(),
+            vec![InviteEffect::Revoke {
+                invite: "3b9d".to_owned(),
+            }],
+            "the button takes back the link of its own row"
+        );
+    }
+
+    phase taking_back_the_link_just_made_asks_for_that_invitation;
+    // The link made is taken back beside the button that copies it.
+    {
+        let (mut app, seat) = seated(with_link());
+        press(&mut app, "invite-revoke-made");
+        assert_eq!(
+            seat.take_asked(),
+            vec![InviteEffect::Revoke {
+                invite: "8f2c".to_owned(),
+            }],
+            "taking back the link shown takes back the invitation it names"
+        );
+    }
 }
 
 /// Where the widget with test id `id` stands, in logical window coordinates.
@@ -261,66 +333,4 @@ fn rect_of(app: &mut HeadlessApp<InviteApp>, id: &str) -> [f64; 4] {
         node.children.iter().find_map(|child| find(child, id))
     }
     find(&app.harness().inspection().root, id).unwrap_or_else(|| panic!("{id} is drawn"))
-}
-
-/// On a phone, a sheet with a link made reads in the order the person goes: the link with the
-/// button that copies it and what that press did, the code to scan small, and only then the part
-/// another link would bring someone in at and the button that makes it. Nothing of it is wider
-/// than the screen.
-#[test]
-fn on_a_phone_the_link_made_comes_first_and_making_another_after_it() {
-    const PHONE: (u32, u32) = (390, 844);
-    let (mut app, _seat) = seated(with_link());
-    app.harness().resize(PHONE).unwrap();
-    app.settle();
-    let order = [
-        "invite-link",
-        "invite-copy-link",
-        "invite-note",
-        "invite-code",
-        "invite-role",
-        "invite-create",
-    ];
-    let rects: Vec<[f64; 4]> = order.iter().map(|id| rect_of(&mut app, id)).collect();
-    for (pair, ids) in rects.windows(2).zip(order.windows(2)) {
-        assert!(
-            pair[0][1] + pair[0][3] <= pair[1][1] + 0.5,
-            "{} stands above {}: {:?} then {:?}",
-            ids[0],
-            ids[1],
-            pair[0],
-            pair[1]
-        );
-    }
-    let width = f64::from(PHONE.0);
-    for (id, rect) in order.iter().zip(&rects) {
-        assert!(
-            rect[0] >= 0.0 && rect[0] + rect[2] <= width,
-            "{id} fits the phone's width: {rect:?}"
-        );
-    }
-    let code = rect_of(&mut app, "invite-code");
-    let field = rect_of(&mut app, "invite-link");
-    assert!(
-        code[2] <= 160.0,
-        "the code is a small second way, not the sheet's subject: {code:?}"
-    );
-    assert!(
-        code[2] < field[2],
-        "the link, not the code, is the widest thing handed over"
-    );
-}
-
-/// With a link made, making another is the secondary press, and says so.
-#[test]
-fn with_a_link_made_the_button_makes_another() {
-    let (mut app, _seat) = seated(with_link());
-    assert!(enabled(&mut app, "Create another link"));
-    assert!(
-        app.harness()
-            .a11y_nodes()
-            .into_iter()
-            .all(|(_, node)| node.label() != Some("Create link")),
-        "the first link's button is not offered beside one already made"
-    );
 }

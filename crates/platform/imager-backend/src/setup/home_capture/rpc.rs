@@ -759,33 +759,137 @@ fn read_reply(
 mod tests {
     use super::*;
     use crate::setup::portable_transfer::ArchivePhase;
-    #[test]
-    fn mounted_input_codec_refuses_unbounded_traversal_duplicate_and_unknown_claims() {
-        let entry = |path: &str| MountedInput {
-            placement: NativePath::encode(Path::new(path)),
-            kind: super::super::super::migration_handoff::EntryKind::Directory,
-        };
-        let generation = uuid::Uuid::new_v4();
-        MountedInput::validate_all(
-            &[entry("mounted-directory"), entry("mounted-file")],
-            generation,
-        )
-        .unwrap();
-        for entries in [
-            vec![],
-            vec![entry("../escape")],
-            vec![entry("/absolute")],
-            vec![entry("a"), entry("a")],
-            vec![entry("a"), entry("a/b")],
-            vec![entry("z"), entry("a")],
-            vec![entry("a//b")],
-        ] {
-            assert!(MountedInput::validate_all(&entries, generation).is_err());
+    tilo_test_env::scenario! {
+        /// The capture RPC: its mounted-input codec and its stream of progress and one final reply.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_capture_rpc_wire_is_bounded_ordered_and_closed;
+
+        phase mounted_input_codec_refuses_unbounded_traversal_duplicate_and_unknown_claims;
+        {
+            let entry = |path: &str| MountedInput {
+                placement: NativePath::encode(Path::new(path)),
+                kind: super::super::super::migration_handoff::EntryKind::Directory,
+            };
+            let generation = uuid::Uuid::new_v4();
+            MountedInput::validate_all(
+                &[entry("mounted-directory"), entry("mounted-file")],
+                generation,
+            )
+            .unwrap();
+            for entries in [
+                vec![],
+                vec![entry("../escape")],
+                vec![entry("/absolute")],
+                vec![entry("a"), entry("a")],
+                vec![entry("a"), entry("a/b")],
+                vec![entry("z"), entry("a")],
+                vec![entry("a//b")],
+            ] {
+                assert!(MountedInput::validate_all(&entries, generation).is_err());
+            }
+            assert!(MountedInput::validate_all(&[entry("a")], uuid::Uuid::nil()).is_err());
+            let mut raw = serde_json::to_value(entry("a")).unwrap();
+            raw["groups"] = serde_json::json!([0]);
+            assert!(serde_json::from_value::<MountedInput>(raw).is_err());
         }
-        assert!(MountedInput::validate_all(&[entry("a")], uuid::Uuid::nil()).is_err());
-        let mut raw = serde_json::to_value(entry("a")).unwrap();
-        raw["groups"] = serde_json::json!([0]);
-        assert!(serde_json::from_value::<MountedInput>(raw).is_err());
+
+        phase rpc_stream_forwards_bounded_progress_then_one_distinct_final_reply;
+        {
+            let frames = (0..1000).map(progress_frame).chain([Frame {
+                schema: RPC_PROTOCOL,
+                operation: "capture".into(),
+                sequence: 7,
+                message: Message::Reply {
+                    reply: Reply::Validated,
+                },
+            }]);
+            let bytes = framed(frames);
+            let mut latest = None;
+            assert!(matches!(
+                read_reply(&mut bytes.as_slice(), &call(), &mut |value| {
+                    latest = Some(value);
+                    Ok(())
+                })
+                .unwrap(),
+                Reply::Validated
+            ));
+            assert_eq!(latest.unwrap().completed, 999);
+        }
+
+        phase rpc_refuses_wrong_call_sequence_capture_and_regression_before_final;
+        {
+            {
+                let mut wrong = progress_frame(0);
+                wrong.sequence = 8;
+                let bytes = framed([wrong]);
+                let mut observed = false;
+                assert!(
+                    read_reply(&mut bytes.as_slice(), &call(), &mut |_| {
+                        observed = true;
+                        Ok(())
+                    })
+                    .is_err()
+                );
+                assert!(!observed);
+            }
+            let mut wrong = progress_frame(0);
+            wrong.operation = "other-capture".into();
+            assert!(read_reply(&mut framed([wrong]).as_slice(), &call(), &mut |_| Ok(())).is_err());
+            assert!(
+                read_reply(
+                    &mut framed([progress_frame(3), progress_frame(2)]).as_slice(),
+                    &call(),
+                    &mut |_| Ok(())
+                )
+                .is_err()
+            );
+            assert!(
+                read_reply(
+                    &mut framed([progress_frame(3)]).as_slice(),
+                    &call(),
+                    &mut |_| Err(io::ErrorKind::Interrupted.into())
+                )
+                .is_err()
+            );
+        }
+
+        phase rpc_rejects_unknown_progress_fields_and_truncated_final_reply;
+        {
+            let frame = br#"{"schema":2,"operation":"capture","sequence":7,"message":{"event":"progress","progress":{"phase":"archiving","completed":0,"total":null,"path":"/private/home"}}}"#;
+            let mut bytes = Vec::new();
+            worker::write_frame(&mut bytes, frame, 16 * 1024).unwrap();
+            assert!(read_reply(&mut bytes.as_slice(), &call(), &mut |_| Ok(())).is_err());
+            let mut bytes = framed([Frame {
+                schema: RPC_PROTOCOL,
+                operation: "capture".into(),
+                sequence: 7,
+                message: Message::Reply {
+                    reply: Reply::Validated,
+                },
+            }]);
+            bytes.pop();
+            assert!(read_reply(&mut bytes.as_slice(), &call(), &mut |_| Ok(())).is_err());
+        }
+
+        phase rpc_rejects_old_protocol_before_delivering_progress_or_reply;
+        {
+            assert_eq!(
+                validate_protocol(1).unwrap_err().kind(),
+                io::ErrorKind::Unsupported
+            );
+            validate_protocol(RPC_PROTOCOL).unwrap();
+            let mut frame = progress_frame(0);
+            frame.schema = 1;
+            let mut observed = false;
+            let error = read_reply(&mut framed([frame]).as_slice(), &call(), &mut |_| {
+                observed = true;
+                Ok(())
+            })
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert!(!observed);
+        }
     }
     fn call() -> Call {
         Call {
@@ -823,100 +927,6 @@ mod tests {
                 .unwrap();
         }
         bytes
-    }
-    #[test]
-    fn rpc_stream_forwards_bounded_progress_then_one_distinct_final_reply() {
-        let frames = (0..1000).map(progress_frame).chain([Frame {
-            schema: RPC_PROTOCOL,
-            operation: "capture".into(),
-            sequence: 7,
-            message: Message::Reply {
-                reply: Reply::Validated,
-            },
-        }]);
-        let bytes = framed(frames);
-        let mut latest = None;
-        assert!(matches!(
-            read_reply(&mut bytes.as_slice(), &call(), &mut |value| {
-                latest = Some(value);
-                Ok(())
-            })
-            .unwrap(),
-            Reply::Validated
-        ));
-        assert_eq!(latest.unwrap().completed, 999);
-    }
-    #[test]
-    fn rpc_refuses_wrong_call_sequence_capture_and_regression_before_final() {
-        {
-            let mut wrong = progress_frame(0);
-            wrong.sequence = 8;
-            let bytes = framed([wrong]);
-            let mut observed = false;
-            assert!(
-                read_reply(&mut bytes.as_slice(), &call(), &mut |_| {
-                    observed = true;
-                    Ok(())
-                })
-                .is_err()
-            );
-            assert!(!observed);
-        }
-        let mut wrong = progress_frame(0);
-        wrong.operation = "other-capture".into();
-        assert!(read_reply(&mut framed([wrong]).as_slice(), &call(), &mut |_| Ok(())).is_err());
-        assert!(
-            read_reply(
-                &mut framed([progress_frame(3), progress_frame(2)]).as_slice(),
-                &call(),
-                &mut |_| Ok(())
-            )
-            .is_err()
-        );
-        assert!(
-            read_reply(
-                &mut framed([progress_frame(3)]).as_slice(),
-                &call(),
-                &mut |_| Err(io::ErrorKind::Interrupted.into())
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn rpc_rejects_unknown_progress_fields_and_truncated_final_reply() {
-        let frame = br#"{"schema":2,"operation":"capture","sequence":7,"message":{"event":"progress","progress":{"phase":"archiving","completed":0,"total":null,"path":"/private/home"}}}"#;
-        let mut bytes = Vec::new();
-        worker::write_frame(&mut bytes, frame, 16 * 1024).unwrap();
-        assert!(read_reply(&mut bytes.as_slice(), &call(), &mut |_| Ok(())).is_err());
-        let mut bytes = framed([Frame {
-            schema: RPC_PROTOCOL,
-            operation: "capture".into(),
-            sequence: 7,
-            message: Message::Reply {
-                reply: Reply::Validated,
-            },
-        }]);
-        bytes.pop();
-        assert!(read_reply(&mut bytes.as_slice(), &call(), &mut |_| Ok(())).is_err());
-    }
-    #[test]
-    fn rpc_rejects_old_protocol_before_delivering_progress_or_reply() {
-        assert_eq!(
-            validate_protocol(1).unwrap_err().kind(),
-            io::ErrorKind::Unsupported
-        );
-        validate_protocol(RPC_PROTOCOL).unwrap();
-        let mut frame = progress_frame(0);
-        frame.schema = 1;
-        let mut observed = false;
-        let error = read_reply(&mut framed([frame]).as_slice(), &call(), &mut |_| {
-            observed = true;
-            Ok(())
-        })
-        .err()
-        .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-        assert!(!observed);
     }
 }
 
@@ -1388,50 +1398,31 @@ fn finish_original_status(
 mod media_purpose_tests {
     use super::super::super::read_media::ReadMediaPurpose;
     use super::*;
-    #[test]
-    fn paired_cancel_is_consumed_before_final_status_and_ack() {
-        use std::io::{Read, Write};
-        let (mut root, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
-        let cancel = AtomicBool::new(false);
-        let mut cancelled = false;
-        client.write_all(&[ORIGINAL_CANCEL]).unwrap();
-        assert_eq!(
-            poll_original_cancel(&mut root, &mut cancelled, &cancel)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
-        assert!(cancelled && cancel.load(Ordering::Acquire));
-        assert_eq!(
-            poll_original_cancel(&mut root, &mut cancelled, &cancel)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
-        let caller = std::thread::spawn(move || {
-            client
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            let mut status = [0; 2];
-            client.read_exact(&mut status).unwrap();
-            assert_eq!(status, [ORIGINAL_STATUS, 2]);
-            client.write_all(&[ORIGINAL_STATUS_ACK]).unwrap();
-        });
-        finish_original_status(&mut root, &mut cancelled, 2).unwrap();
-        caller.join().unwrap();
-    }
-    #[test]
-    fn paired_late_cancel_drains_once_before_ack_and_refuses_other_traffic() {
-        use std::io::{Read, Write};
-        for (traffic, accepted) in [
-            (vec![ORIGINAL_CANCEL, ORIGINAL_STATUS_ACK], true),
-            (
-                vec![ORIGINAL_CANCEL, ORIGINAL_CANCEL, ORIGINAL_STATUS_ACK],
-                false,
-            ),
-            (vec![ORIGINAL_COMPLETE, ORIGINAL_STATUS_ACK], false),
-        ] {
+    tilo_test_env::scenario! {
+        /// The media-purpose exchange: the paired cancel and the production codec.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_media_purpose_exchange_pairs_its_cancel_and_bounds_its_secret;
+
+        phase paired_cancel_is_consumed_before_final_status_and_ack;
+        {
+            use std::io::{Read, Write};
             let (mut root, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+            let cancel = AtomicBool::new(false);
+            let mut cancelled = false;
+            client.write_all(&[ORIGINAL_CANCEL]).unwrap();
+            assert_eq!(
+                poll_original_cancel(&mut root, &mut cancelled, &cancel)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Interrupted
+            );
+            assert!(cancelled && cancel.load(Ordering::Acquire));
+            assert_eq!(
+                poll_original_cancel(&mut root, &mut cancelled, &cancel)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Interrupted
+            );
             let caller = std::thread::spawn(move || {
                 client
                     .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -1439,131 +1430,161 @@ mod media_purpose_tests {
                 let mut status = [0; 2];
                 client.read_exact(&mut status).unwrap();
                 assert_eq!(status, [ORIGINAL_STATUS, 2]);
-                client.write_all(&traffic).unwrap();
+                client.write_all(&[ORIGINAL_STATUS_ACK]).unwrap();
             });
-            let mut cancelled = false;
-            let result = finish_original_status(&mut root, &mut cancelled, 2);
-            if accepted {
-                result.unwrap();
-                assert!(cancelled);
-            } else {
-                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
-            }
+            finish_original_status(&mut root, &mut cancelled, 2).unwrap();
             caller.join().unwrap();
         }
-    }
-    #[test]
-    fn paired_cancel_poll_refuses_duplicates_foreign_commands_and_eof() {
-        use std::io::Write;
-        for tag in [ORIGINAL_CANCEL, ORIGINAL_COMPLETE] {
+
+        phase paired_late_cancel_drains_once_before_ack_and_refuses_other_traffic;
+        {
+            use std::io::{Read, Write};
+            for (traffic, accepted) in [
+                (vec![ORIGINAL_CANCEL, ORIGINAL_STATUS_ACK], true),
+                (
+                    vec![ORIGINAL_CANCEL, ORIGINAL_CANCEL, ORIGINAL_STATUS_ACK],
+                    false,
+                ),
+                (vec![ORIGINAL_COMPLETE, ORIGINAL_STATUS_ACK], false),
+            ] {
+                let (mut root, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+                let caller = std::thread::spawn(move || {
+                    client
+                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                        .unwrap();
+                    let mut status = [0; 2];
+                    client.read_exact(&mut status).unwrap();
+                    assert_eq!(status, [ORIGINAL_STATUS, 2]);
+                    client.write_all(&traffic).unwrap();
+                });
+                let mut cancelled = false;
+                let result = finish_original_status(&mut root, &mut cancelled, 2);
+                if accepted {
+                    result.unwrap();
+                    assert!(cancelled);
+                } else {
+                    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+                }
+                caller.join().unwrap();
+            }
+        }
+
+        phase paired_cancel_poll_refuses_duplicates_foreign_commands_and_eof;
+        {
+            use std::io::Write;
+            for tag in [ORIGINAL_CANCEL, ORIGINAL_COMPLETE] {
+                let (mut root, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+                client.write_all(&[tag]).unwrap();
+                let cancel = AtomicBool::new(true);
+                let mut cancelled = tag == ORIGINAL_CANCEL;
+                assert_eq!(
+                    poll_original_cancel(&mut root, &mut cancelled, &cancel)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::PermissionDenied
+                );
+            }
+            let (mut root, client) = std::os::unix::net::UnixStream::pair().unwrap();
+            drop(client);
+            let cancel = AtomicBool::new(false);
+            assert_eq!(
+                poll_original_cancel(&mut root, &mut false, &cancel)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::BrokenPipe
+            );
+            assert!(cancel.load(Ordering::Acquire));
+            // Local cancellation must not leave a first wire cancellation queued.
             let (mut root, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
-            client.write_all(&[tag]).unwrap();
-            let cancel = AtomicBool::new(true);
-            let mut cancelled = tag == ORIGINAL_CANCEL;
+            client.write_all(&[ORIGINAL_CANCEL]).unwrap();
+            let mut cancelled = false;
             assert_eq!(
                 poll_original_cancel(&mut root, &mut cancelled, &cancel)
                     .unwrap_err()
                     .kind(),
-                io::ErrorKind::PermissionDenied
+                io::ErrorKind::Interrupted
             );
+            assert!(cancelled);
         }
-        let (mut root, client) = std::os::unix::net::UnixStream::pair().unwrap();
-        drop(client);
-        let cancel = AtomicBool::new(false);
-        assert_eq!(
-            poll_original_cancel(&mut root, &mut false, &cancel)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::BrokenPipe
-        );
-        assert!(cancel.load(Ordering::Acquire));
-        // Local cancellation must not leave a first wire cancellation queued.
-        let (mut root, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
-        client.write_all(&[ORIGINAL_CANCEL]).unwrap();
-        let mut cancelled = false;
-        assert_eq!(
-            poll_original_cancel(&mut root, &mut cancelled, &cancel)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
-        assert!(cancelled);
-    }
-    #[test]
-    fn completed_extraction_is_secret_bounded_and_boot_purpose_only() {
-        use super::super::super::read_media::BootMediaOperation;
-        let mut encoded = vec![ORIGINAL_EXTRACT_COMPLETED];
-        worker::write_frame(&mut encoded, b"synthetic-extraction", ORIGINAL_SECRET_BOUND).unwrap();
-        let Some(MediaReadCommand::Boot(operation, secret)) =
-            read_media_command(&mut encoded.as_slice(), ReadMediaPurpose::BootPending).unwrap()
-        else {
-            panic!("extraction command absent");
-        };
-        assert!(operation == BootMediaOperation::ExtractCompleted);
-        assert_eq!(secret.as_slice(), b"synthetic-extraction");
-        let mut refused = encoded.as_slice();
-        assert_eq!(
-            read_media_command(&mut refused, ReadMediaPurpose::OriginalRegistration)
-                .err()
-                .unwrap()
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert_eq!(refused.len(), encoded.len() - 1);
-        for length in [0u32, ORIGINAL_SECRET_BOUND as u32 + 1] {
-            let mut invalid = vec![ORIGINAL_EXTRACT_COMPLETED];
-            invalid.extend_from_slice(&length.to_be_bytes());
+
+        phase completed_extraction_is_secret_bounded_and_boot_purpose_only;
+        {
+            use super::super::super::read_media::BootMediaOperation;
+            let mut encoded = vec![ORIGINAL_EXTRACT_COMPLETED];
+            worker::write_frame(&mut encoded, b"synthetic-extraction", ORIGINAL_SECRET_BOUND).unwrap();
+            let Some(MediaReadCommand::Boot(operation, secret)) =
+                read_media_command(&mut encoded.as_slice(), ReadMediaPurpose::BootPending).unwrap()
+            else {
+                panic!("extraction command absent");
+            };
+            assert!(operation == BootMediaOperation::ExtractCompleted);
+            assert_eq!(secret.as_slice(), b"synthetic-extraction");
+            let mut refused = encoded.as_slice();
             assert_eq!(
-                read_media_command(&mut invalid.as_slice(), ReadMediaPurpose::BootPending)
+                read_media_command(&mut refused, ReadMediaPurpose::OriginalRegistration)
                     .err()
                     .unwrap()
                     .kind(),
-                io::ErrorKind::InvalidData
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(refused.len(), encoded.len() - 1);
+            for length in [0u32, ORIGINAL_SECRET_BOUND as u32 + 1] {
+                let mut invalid = vec![ORIGINAL_EXTRACT_COMPLETED];
+                invalid.extend_from_slice(&length.to_be_bytes());
+                assert_eq!(
+                    read_media_command(&mut invalid.as_slice(), ReadMediaPurpose::BootPending)
+                        .err()
+                        .unwrap()
+                        .kind(),
+                    io::ErrorKind::InvalidData
+                );
+            }
+            encoded.pop();
+            assert_eq!(
+                read_media_command(&mut encoded.as_slice(), ReadMediaPurpose::BootPending)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::UnexpectedEof
             );
         }
-        encoded.pop();
-        assert_eq!(
-            read_media_command(&mut encoded.as_slice(), ReadMediaPurpose::BootPending)
-                .err()
-                .unwrap()
-                .kind(),
-            io::ErrorKind::UnexpectedEof
-        );
-    }
-    #[test]
-    fn production_codec_refuses_wrong_purpose_before_reading_secret_or_layout() {
-        let mut secret = &[ORIGINAL_COMPLETE, 0xff, 0xff, 0xff, 0xff][..];
-        assert!(read_media_command(&mut secret, ReadMediaPurpose::OriginalRegistration).is_err());
-        assert_eq!(secret.len(), 4);
-        let mut inbox = &[83, 0xff, 0xff, 0xff, 0xff][..];
-        assert!(read_media_command(&mut inbox, ReadMediaPurpose::BootPending).is_err());
-        assert_eq!(inbox.len(), 4);
-    }
-    #[test]
-    fn production_secret_codec_is_bounded_exact_and_cancel_has_no_payload() {
-        let mut bytes = vec![ORIGINAL_COMPLETE];
-        worker::write_frame(&mut bytes, b"synthetic-only", ORIGINAL_SECRET_BOUND).unwrap();
-        let Some(MediaReadCommand::Boot(
-            crate::setup::read_media::BootMediaOperation::CompleteOriginal,
-            secret,
-        )) = read_media_command(&mut bytes.as_slice(), ReadMediaPurpose::BootPending).unwrap()
-        else {
-            panic!("secret command absent");
-        };
-        assert_eq!(&*secret, b"synthetic-only");
-        assert!(matches!(
-            read_media_command(&mut &[ORIGINAL_CANCEL][..], ReadMediaPurpose::BootPending).unwrap(),
-            Some(MediaReadCommand::Cancel)
-        ));
-        for length in [0u32, (ORIGINAL_SECRET_BOUND + 1) as u32] {
-            let mut invalid = vec![ORIGINAL_COMPLETE];
-            invalid.extend_from_slice(&length.to_be_bytes());
-            assert!(
-                read_media_command(&mut invalid.as_slice(), ReadMediaPurpose::BootPending).is_err()
-            );
+
+        phase production_codec_refuses_wrong_purpose_before_reading_secret_or_layout;
+        {
+            let mut secret = &[ORIGINAL_COMPLETE, 0xff, 0xff, 0xff, 0xff][..];
+            assert!(read_media_command(&mut secret, ReadMediaPurpose::OriginalRegistration).is_err());
+            assert_eq!(secret.len(), 4);
+            let mut inbox = &[83, 0xff, 0xff, 0xff, 0xff][..];
+            assert!(read_media_command(&mut inbox, ReadMediaPurpose::BootPending).is_err());
+            assert_eq!(inbox.len(), 4);
         }
-        bytes.pop();
-        assert!(read_media_command(&mut bytes.as_slice(), ReadMediaPurpose::BootPending).is_err());
+
+        phase production_secret_codec_is_bounded_exact_and_cancel_has_no_payload;
+        {
+            let mut bytes = vec![ORIGINAL_COMPLETE];
+            worker::write_frame(&mut bytes, b"synthetic-only", ORIGINAL_SECRET_BOUND).unwrap();
+            let Some(MediaReadCommand::Boot(
+                crate::setup::read_media::BootMediaOperation::CompleteOriginal,
+                secret,
+            )) = read_media_command(&mut bytes.as_slice(), ReadMediaPurpose::BootPending).unwrap()
+            else {
+                panic!("secret command absent");
+            };
+            assert_eq!(&*secret, b"synthetic-only");
+            assert!(matches!(
+                read_media_command(&mut &[ORIGINAL_CANCEL][..], ReadMediaPurpose::BootPending).unwrap(),
+                Some(MediaReadCommand::Cancel)
+            ));
+            for length in [0u32, (ORIGINAL_SECRET_BOUND + 1) as u32] {
+                let mut invalid = vec![ORIGINAL_COMPLETE];
+                invalid.extend_from_slice(&length.to_be_bytes());
+                assert!(
+                    read_media_command(&mut invalid.as_slice(), ReadMediaPurpose::BootPending).is_err()
+                );
+            }
+            bytes.pop();
+            assert!(read_media_command(&mut bytes.as_slice(), ReadMediaPurpose::BootPending).is_err());
+        }
     }
 }
 

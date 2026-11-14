@@ -349,6 +349,7 @@ name = "containerfile-sources"
 inputs = [
   "os/", ".containerignore", ".cargo/", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
   "apps", "crates", "dist", "examples", "vendor", "vendor/zlink-macros/", "keys/release/",
+  "sdk/python/native", "sdk/typescript/native",
   "docs/developers/tasks/", "tools/perf/tapp-size-budget/",
   "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules",
   "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service",
@@ -1178,9 +1179,17 @@ readers = ["crates/runtime/egress/src/policy.rs"]
 
 [[cargo]]
 package = "tilo-vm"
-# Its build plan comes from the image's component manifest.
-inputs = ["apps/*/tilo-app.toml", "os/components.toml"]
-readers = ["crates/dev/tilo-vm/src/build.rs"]
+# Its build plan comes from the image's component manifest; the host network's tests read the
+# dev image's files that address the VM's NIC there.
+inputs = [
+  "apps/*/tilo-app.toml",
+  "os/components.toml",
+  "os/dev-image/usr/libexec/tilo/tilo-vm-lan",
+  "os/dev-image/usr/lib/udev/rules.d/70-tilo-vm-lan.rules",
+  "os/dev-image/usr/lib/systemd/system/tilo-vm-lan.service",
+  "os/dev-image/usr/lib/NetworkManager/conf.d/40-tilo-vm-lan.conf",
+]
+readers = ["crates/dev/tilo-vm/src/build.rs", "crates/dev/tilo-vm/src/app/branch_tests.rs"]
 
 [[cargo]]
 package = "tilo-vm-protocol"

@@ -1130,149 +1130,536 @@ mod tests {
         n.apply_layout(&tree, node, Point::new(24.0, 12.0));
     }
 
-    #[test]
-    fn number_footprint_fits_large_text_and_widest_value_unless_manual() {
+    tilo_test_env::scenario! {
+        fn a_number_input_parses_steps_commits_and_announces_its_value;
+
+        phase number_footprint_fits_large_text_and_widest_value_unless_manual;
         {
-            for scale in [1.0, 2.0] {
-                let theme = Theme::dark().with_text_scale(scale);
-                let mut text = TextRenderer::new();
-                text.set_text_scale(scale);
-                let mut number = NumberInput::new(15.0).with_suffix("min");
-                layout_with_theme(&mut number, &theme);
-                assert!(number.rect.width() >= DEFAULT_WIDTH * f64::from(scale));
-                assert_eq!(
-                    number.rect.height(),
-                    crate::widget::ControlSize::Regular.height(&theme)
+            {
+                for scale in [1.0, 2.0] {
+                    let theme = Theme::dark().with_text_scale(scale);
+                    let mut text = TextRenderer::new();
+                    text.set_text_scale(scale);
+                    let mut number = NumberInput::new(15.0).with_suffix("min");
+                    layout_with_theme(&mut number, &theme);
+                    assert!(number.rect.width() >= DEFAULT_WIDTH * f64::from(scale));
+                    assert_eq!(
+                        number.rect.height(),
+                        crate::widget::ControlSize::Regular.height(&theme)
+                    );
+                    assert!(number.rect.width() <= 292.0, "starter narrow control width");
+                    let (value_width, value_height) = text.measure_style(
+                        number.field.value(),
+                        None,
+                        &theme.text(crate::tokens::TextRole::Body),
+                    );
+                    assert!(
+                        f64::from(value_width) + 2.0 * number.field.text_padding_x(&theme)
+                            <= number.field_rect.width(),
+                        "value width {value_width}, field {:?}",
+                        number.field_rect
+                    );
+                    assert!(f64::from(value_height) <= number.field_rect.height());
+                    number.draw(
+                        &mut Scene::new(),
+                        Affine::IDENTITY,
+                        &mut text,
+                        &theme,
+                        &crate::PresenceCtx::default(),
+                    );
+                    assert_eq!(number.field.get_rect(), number.field_rect);
+                    number.field.set_text("25 min");
+                    number.commit_local();
+                    assert_eq!(number.value(), 25.0);
+                    assert_eq!(number.field.value(), "25 min");
+                    let mut compact = NumberInput::new(100.0)
+                        .with_range(10.0, 400.0)
+                        .with_suffix("%")
+                        .compact()
+                        .control_size(crate::widget::ControlSize::Small);
+                    layout_with_theme(&mut compact, &theme);
+                    assert!(
+                        compact.rect.width() < number.rect.width(),
+                        "a compact stepper hugs its value: {:?}",
+                        compact.rect
+                    );
+                    assert_eq!(
+                        compact.rect.height(),
+                        crate::widget::ControlSize::Small.height(&theme)
+                    );
+                    let (widest, _) = text.measure_style("400%", None, &compact.value_style);
+                    assert!(f64::from(widest) <= compact.field_rect.width());
+                }
+            }
+
+            {
+                let manual = crate::widget::Manual::new(|ctx| {
+                    ctx.place(0, Rect::new(10.25, 20.75, 130.75, 61.0))?;
+                    Ok(Size {
+                        width: ctx.available().width,
+                        height: 100.0,
+                    })
+                })
+                .child(Box::new(NumberInput::new(15.0).with_suffix("min")));
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(manual),
+                    (340, 300),
+                    Theme::dark().with_text_scale(2.0),
                 );
-                assert!(number.rect.width() <= 292.0, "starter narrow control width");
-                let (value_width, value_height) = text.measure_style(
-                    number.field.value(),
+                assert_eq!(
+                    harness.inspection().root.children[0].rect,
+                    [10.0, 21.0, 121.0, 40.0]
+                );
+            }
+
+            {
+                let theme = Theme::dark();
+                for compact in [false, true] {
+                    let mut number =
+                        NumberInput::new(15.0).control_size(crate::widget::ControlSize::Small);
+                    if compact {
+                        number = number.compact();
+                    }
+                    layout_with_theme(&mut number, &theme);
+                    for stepper in [number.minus_rect, number.plus_rect] {
+                        assert_eq!(stepper.width(), stepper.height(), "{stepper:?}");
+                        let hit = number.stepper_hit(stepper);
+                        assert!(hit.width() >= 32.0 && hit.height() >= 32.0, "{hit:?}");
+                    }
+                    let mut scene = Scene::new();
+                    number.draw(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut TextRenderer::new(),
+                        &theme,
+                        &crate::PresenceCtx::default(),
+                    );
+                    assert_eq!(
+                        scene.encoding().resources.glyph_runs.len(),
+                        1,
+                        "the steppers are icons; only the value is text"
+                    );
+                }
+            }
+
+            // Case `preferred_width_fits_the_widest_value_in_range`.
+            {
+                let theme = Theme::dark();
+                let mut text = TextRenderer::new();
+                let input = NumberInput::new(1.0)
+                    .with_range(0.0, 1000.0)
+                    .with_precision(2)
+                    .with_suffix("px");
+                let preferred = input.preferred_width(&theme, &mut text);
+
+                let (widest, _) = text.measure_style(
+                    "1000.00 px",
                     None,
                     &theme.text(crate::tokens::TextRole::Body),
                 );
+                let padding = f32_of_f64(input.field.text_padding_x(&theme));
+                let height = f32_of_f64(crate::widget::ControlSize::Regular.height(&theme));
+                let required = f64::from(widest + padding * 2.0 + height * 2.0 + f32_of_f64(GAP * 2.0));
                 assert!(
-                    f64::from(value_width) + 2.0 * number.field.text_padding_x(&theme)
-                        <= number.field_rect.width(),
-                    "value width {value_width}, field {:?}",
-                    number.field_rect
+                    preferred + 1e-6 >= required,
+                    "preferred {preferred} must hold the widest value ({required})"
                 );
-                assert!(f64::from(value_height) <= number.field_rect.height());
-                number.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &crate::PresenceCtx::default(),
-                );
-                assert_eq!(number.field.get_rect(), number.field_rect);
-                number.field.set_text("25 min");
-                number.commit_local();
-                assert_eq!(number.value(), 25.0);
-                assert_eq!(number.field.value(), "25 min");
-                let mut compact = NumberInput::new(100.0)
-                    .with_range(10.0, 400.0)
-                    .with_suffix("%")
-                    .compact()
-                    .control_size(crate::widget::ControlSize::Small);
-                layout_with_theme(&mut compact, &theme);
                 assert!(
-                    compact.rect.width() < number.rect.width(),
-                    "a compact stepper hugs its value: {:?}",
-                    compact.rect
+                    preferred >= DEFAULT_WIDTH,
+                    "never below the configured width"
                 );
-                assert_eq!(
-                    compact.rect.height(),
-                    crate::widget::ControlSize::Small.height(&theme)
+                assert!(
+                    preferred < required + 1.0,
+                    "preferred {preferred} should be the widest value's need rounded up, not more (required {required})"
                 );
-                let (widest, _) = text.measure_style("400%", None, &compact.value_style);
-                assert!(f64::from(widest) <= compact.field_rect.width());
+
+                let compact = NumberInput::new(3.0).with_range(0.0, 9.0);
+                assert_eq!(compact.preferred_width(&theme, &mut text), DEFAULT_WIDTH);
             }
         }
 
+        phase number_text_parses_and_formats_with_units_signs_and_precision;
         {
-            let manual = crate::widget::Manual::new(|ctx| {
-                ctx.place(0, Rect::new(10.25, 20.75, 130.75, 61.0))?;
-                Ok(Size {
-                    width: ctx.available().width,
-                    height: 100.0,
-                })
-            })
-            .child(Box::new(NumberInput::new(15.0).with_suffix("min")));
-            let harness = crate::headless::FrameHarness::new_with_theme(
-                crate::State::new(),
-                Box::new(manual),
-                (340, 300),
-                Theme::dark().with_text_scale(2.0),
-            );
+            {
+                assert_eq!(parse_leading_number("16"), Some(16.0));
+                assert_eq!(parse_leading_number("16 px"), Some(16.0));
+                assert_eq!(parse_leading_number("16px"), Some(16.0));
+                assert_eq!(parse_leading_number("  -3.5% "), Some(-3.5));
+                assert_eq!(parse_leading_number("1.15"), Some(1.15));
+                assert_eq!(parse_leading_number("px"), None);
+                assert_eq!(parse_leading_number(""), None);
+                assert_eq!(parse_leading_number("."), None);
+            }
+
+            {
+                let n = NumberInput::new(16.0).with_suffix("px");
+                assert_eq!(n.format_value(), "16 px");
+                let n = NumberInput::new(1.153).with_precision(2);
+                assert_eq!(n.format_value(), "1.15");
+                let n = NumberInput::new(42.0);
+                assert_eq!(n.format_value(), "42");
+            }
+
+            {
+                let n = NumberInput::new(500.0).with_range(8.0, 72.0);
+                assert_eq!(n.value(), 72.0, "over-max initial value clamps to max");
+                let n = NumberInput::new(1.0).with_range(8.0, 72.0);
+                assert_eq!(n.value(), 8.0, "under-min initial value clamps to min");
+            }
+        }
+
+        phase small_numeric_edits_and_steps_are_not_discarded;
+        {
+            let state = crate::LocalState::new(0.0);
+            let mut number = NumberInput::from_state(&state)
+                .with_precision(18)
+                .with_step(1e-18);
+            number.set_focus(true);
+            number.field.set_text("0.000000000000000001");
+            dispatch(&mut number, &named_key(NamedKey::Enter));
+            assert_eq!(state.get(), 1e-18);
+            assert_eq!(number.take_changed(), Some(1e-18));
+            dispatch(&mut number, &named_key(NamedKey::ArrowUp));
+            assert_eq!(state.get(), 2e-18);
+            assert_eq!(number.take_changed(), Some(2e-18));
+            number.set_focus(false);
+            state.set(3e-18);
+            number.sync(&AutoCommit::new(), &automerge::ROOT);
+            assert_eq!(number.value(), 3e-18);
+            assert_eq!(number.field.value(), "0.000000000000000003");
+        }
+
+        phase decimal_steps_land_on_the_value_shown_and_reach_the_ends;
+        {
+            let mut n = NumberInput::new(0.0)
+                .with_range(0.0, 1.0)
+                .with_step(0.1)
+                .with_precision(1);
+            layout_at(&mut n, 0.0, 0.0);
+            n.field.set_focus(true);
+            for _ in 0..3 {
+                dispatch(&mut n, &named_key(NamedKey::ArrowUp));
+            }
+            assert_eq!(n.value(), 0.3, "three tenths up is 0.3");
+            assert_eq!(n.take_changed(), Some(0.3));
+            for _ in 0..3 {
+                dispatch(&mut n, &named_key(NamedKey::ArrowDown));
+            }
+            assert_eq!(n.value(), 0.0, "three tenths back down is the minimum");
+            assert_eq!(n.take_changed(), Some(0.0));
+            dispatch(&mut n, &named_key(NamedKey::ArrowDown));
             assert_eq!(
-                harness.inspection().root.children[0].rect,
-                [10.0, 21.0, 121.0, 40.0]
+                n.take_changed(),
+                None,
+                "a step past the minimum moves nothing"
             );
+            for _ in 0..10 {
+                dispatch(&mut n, &named_key(NamedKey::ArrowUp));
+            }
+            assert_eq!(n.value(), 1.0, "ten tenths reach the maximum");
+            assert_eq!(n.field.value(), "1.0");
         }
 
+        phase typed_values_commit_clamped_or_revert;
         {
-            let theme = Theme::dark();
-            for compact in [false, true] {
-                let mut number =
-                    NumberInput::new(15.0).control_size(crate::widget::ControlSize::Small);
-                if compact {
-                    number = number.compact();
-                }
-                layout_with_theme(&mut number, &theme);
-                for stepper in [number.minus_rect, number.plus_rect] {
-                    assert_eq!(stepper.width(), stepper.height(), "{stepper:?}");
-                    let hit = number.stepper_hit(stepper);
-                    assert!(hit.width() >= 32.0 && hit.height() >= 32.0, "{hit:?}");
-                }
-                let mut scene = Scene::new();
-                number.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut TextRenderer::new(),
-                    &theme,
-                    &crate::PresenceCtx::default(),
-                );
+            // Case `type_then_enter_parses_clamps_and_commits`.
+            // Typing a value and committing with Enter parses, clamps and reports
+            // the change through the production `handle_event` path.
+            {
+                let mut n = NumberInput::new(16.0)
+                    .with_range(8.0, 72.0)
+                    .with_suffix("px");
+                layout_at(&mut n, 0.0, 0.0);
+
+                n.field.set_focus(true);
+                n.field.set_text("999");
+                dispatch(&mut n, &named_key(NamedKey::Enter));
+
+                assert_eq!(n.value(), 72.0, "typed 999 clamps to max 72");
                 assert_eq!(
-                    scene.encoding().resources.glyph_runs.len(),
-                    1,
-                    "the steppers are icons; only the value is text"
+                    n.take_changed(),
+                    Some(72.0),
+                    "commit reports the clamped change"
+                );
+                assert_eq!(n.take_changed(), None, "take_changed drains");
+                assert_eq!(n.field.value(), "72 px");
+            }
+
+            // Case `type_with_unit_suffix_commits_number`.
+            // A valid in-range value commits verbatim; a unit suffix in the typed
+            // text is tolerated by the parser.
+            {
+                let mut n = NumberInput::new(16.0)
+                    .with_range(1.0, 100.0)
+                    .with_suffix("px");
+                layout_at(&mut n, 0.0, 0.0);
+                n.field.set_focus(true);
+                n.field.set_text("24 px");
+                dispatch(&mut n, &named_key(NamedKey::Enter));
+                assert_eq!(n.value(), 24.0);
+                assert_eq!(n.take_changed(), Some(24.0));
+            }
+
+            {
+                let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
+                layout_at(&mut n, 0.0, 0.0);
+                n.field.set_focus(true);
+                n.field.set_text("abc");
+                dispatch(&mut n, &named_key(NamedKey::Enter));
+                assert_eq!(n.value(), 16.0, "unparseable text keeps the old value");
+                assert_eq!(n.field.value(), "16", "display snapped back to the value");
+                assert_eq!(n.take_changed(), None, "no change to report");
+            }
+
+            {
+                let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
+                layout_at(&mut n, 0.0, 0.0);
+                n.field.set_focus(true);
+                n.field.set_text("40");
+
+                Widget::set_focus(&mut n, false);
+                assert_eq!(n.value(), 40.0, "blur committed the typed value");
+                assert_eq!(n.take_changed(), Some(40.0));
+            }
+        }
+
+        phase steppers_and_arrow_keys_step_and_clamp;
+        {
+            // Case `steppers_increment_and_clamp`.
+            // Clicking the + / − steppers moves by `step`, clamped, and reports it.
+            {
+                let mut n = NumberInput::new(70.0).with_range(8.0, 72.0).with_step(2.0);
+                layout_at(&mut n, 0.0, 0.0);
+                let plus_c = (
+                    n.plus_rect.x0.midpoint(n.plus_rect.x1),
+                    n.plus_rect.y0.midpoint(n.plus_rect.y1),
+                );
+                let minus_c = (
+                    n.minus_rect.x0.midpoint(n.minus_rect.x1),
+                    n.minus_rect.y0.midpoint(n.minus_rect.y1),
+                );
+
+                // Click + once: 70 → 72.
+                dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
+                dispatch(&mut n, &mouse_press());
+                assert_eq!(n.value(), 72.0);
+                assert_eq!(n.take_changed(), Some(72.0));
+
+                dispatch(&mut n, &mouse_press());
+                assert_eq!(n.value(), 72.0, "clamped at max");
+                assert_eq!(n.take_changed(), None, "no change when already clamped");
+
+                // Click − : 72 → 70.
+                dispatch(&mut n, &cursor_moved(minus_c.0, minus_c.1));
+                dispatch(&mut n, &mouse_press());
+                assert_eq!(n.value(), 70.0);
+                assert_eq!(n.take_changed(), Some(70.0));
+            }
+
+            {
+                let mut n = NumberInput::new(16.0).with_range(1.0, 100.0).with_step(1.0);
+                layout_at(&mut n, 0.0, 0.0);
+                n.field.set_focus(true);
+                dispatch(&mut n, &named_key(NamedKey::ArrowUp));
+                assert_eq!(n.value(), 17.0);
+                dispatch(&mut n, &named_key(NamedKey::ArrowDown));
+                dispatch(&mut n, &named_key(NamedKey::ArrowDown));
+                assert_eq!(n.value(), 15.0);
+            }
+
+            // Case `keyboard_focus_makes_field_editable`.
+            // Keyboard (Tab) focus routes into the editable field so it's typeable
+            // without a mouse — arrows then step it.
+            {
+                let mut n = NumberInput::new(16.0).with_range(1.0, 100.0).with_step(1.0);
+                layout_at(&mut n, 0.0, 0.0);
+                Widget::set_focus(&mut n, true);
+                assert!(
+                    n.is_editing(),
+                    "keyboard focus routes into the editable field"
+                );
+                dispatch(&mut n, &named_key(NamedKey::ArrowUp));
+                assert_eq!(n.value(), 17.0, "arrows step a keyboard-focused field");
+            }
+
+            {
+                let mut n = NumberInput::new(16.0)
+                    .with_range(8.0, 72.0)
+                    .with_enabled(false);
+                layout_at(&mut n, 0.0, 0.0);
+                let before = n.value();
+                let plus_c = (
+                    n.plus_rect.x0.midpoint(n.plus_rect.x1),
+                    n.plus_rect.y0.midpoint(n.plus_rect.y1),
+                );
+                dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
+                dispatch(&mut n, &mouse_press());
+                assert_eq!(n.value(), before, "disabled field ignores stepper clicks");
+                assert!(!Widget::is_focusable(&n));
+            }
+        }
+
+        phase value_bindings_sync_silently_from_models;
+        {
+            // Case `set_value_is_silent`.
+            // `set_value` is programmatic: it clamps + updates the display but does
+            // NOT report a user change.
+            {
+                let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
+                n.set_value(200.0);
+                assert_eq!(n.value(), 72.0, "clamped");
+                assert_eq!(
+                    n.take_changed(),
+                    None,
+                    "programmatic set is not a user change"
+                );
+                assert_eq!(n.field.value(), "72");
+            }
+
+            {
+                use crate::a11y::Action;
+
+                let state = crate::LocalState::new(16.0);
+                let mut first = NumberInput::from_state(&state)
+                    .with_range(8.0, 72.0)
+                    .with_step(1.0);
+                let mut second = NumberInput::from_state(&state).with_range(8.0, 72.0);
+                let mut document = AutoCommit::new();
+
+                state.set(24.0);
+                Widget::sync(&mut first, &document, &automerge::ROOT);
+                Widget::sync(&mut second, &document, &automerge::ROOT);
+                assert_eq!(first.value(), 24.0);
+                assert_eq!(second.value(), 24.0);
+                assert_eq!(first.take_changed(), None, "model sync is not user intent");
+
+                assert!(Widget::perform_action(
+                    &mut first,
+                    &Action::Increment,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut document),
+                    &automerge::ROOT,
+                ));
+                assert_eq!(state.get(), 25.0);
+                assert_eq!(first.take_changed(), Some(25.0));
+                Widget::sync(&mut second, &document, &automerge::ROOT);
+                assert_eq!(second.value(), 25.0);
+
+                second.set_value(30.0);
+                assert_eq!(state.get(), 30.0);
+                assert_eq!(second.take_changed(), None);
+                Widget::sync(&mut first, &document, &automerge::ROOT);
+                assert_eq!(first.value(), 30.0);
+            }
+        }
+
+        phase accessibility_reports_spinbutton_and_routes_value_actions;
+        {
+            {
+                use crate::a11y::Role;
+                let n = NumberInput::new(16.0).with_suffix("px");
+                let node = Widget::accessibility(&n).unwrap();
+                assert_eq!(node.role, Role::SpinButton);
+                assert_eq!(node.value.as_deref(), Some("16 px"));
+                assert!(node.state.focusable);
+            }
+
+            {
+                use crate::a11y::Action;
+                let mut doc = AutoCommit::new();
+                let root = automerge::ROOT;
+                let mut n = NumberInput::new(16.0).with_range(8.0, 72.0).with_step(4.0);
+                assert!(Widget::perform_action(
+                    &mut n,
+                    &Action::Increment,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &root
+                ));
+                assert_eq!(n.value(), 20.0);
+                assert!(Widget::perform_action(
+                    &mut n,
+                    &Action::SetValue("100".into()),
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &root
+                ));
+                assert_eq!(n.value(), 72.0, "SetValue clamps");
+            }
+
+            {
+                let mut number =
+                    NumberInput::new(10.0).on_action(crate::widget::test_number_action_binding());
+                let mut doc = AutoCommit::new();
+                crate::widget::controls::refresh_control_action_availability(
+                    &mut number,
+                    &std::collections::HashSet::new(),
+                );
+                assert!(!Widget::is_enabled(&number));
+                crate::widget::controls::refresh_control_action_availability(
+                    &mut number,
+                    &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                        "test:control",
+                        "set",
+                    )]),
+                );
+                assert!(Widget::is_enabled(&number));
+                assert!(Widget::perform_action(
+                    &mut number,
+                    &crate::a11y::Action::SetValue("42".into()),
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT
+                ));
+                assert!(doc.get_heads().is_empty(), "the field writes nothing");
+                assert_eq!(number.take_changed(), None);
+                assert_eq!(
+                    crate::widget::controls::take_control_invocation(&mut number)
+                        .unwrap()
+                        .arguments["value"],
+                    42.0
                 );
             }
         }
 
-        // Case `preferred_width_fits_the_widest_value_in_range`.
+        phase values_read_in_the_apps_words_and_units_sit_where_the_locale_puts_them;
         {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let input = NumberInput::new(1.0)
-                .with_range(0.0, 1000.0)
-                .with_precision(2)
-                .with_suffix("px");
-            let preferred = input.preferred_width(&theme, &mut text);
+            assert_eq!(unit_joiner("en-US", "%"), "");
+            assert_eq!(unit_joiner("de-DE", "%"), "\u{a0}");
+            assert_eq!(unit_joiner("fr", "%"), "\u{a0}");
+            assert_eq!(unit_joiner("de-DE", "°"), "");
+            assert_eq!(unit_joiner("en-US", "px"), " ");
+            let percent = NumberInput::new(50.0).with_suffix("%");
+            assert_eq!(percent.field.value(), "50%");
 
-            let (widest, _) = text.measure_style(
-                "1000.00 px",
-                None,
-                &theme.text(crate::tokens::TextRole::Body),
-            );
-            let padding = f32_of_f64(input.field.text_padding_x(&theme));
-            let height = f32_of_f64(crate::widget::ControlSize::Regular.height(&theme));
-            let required = f64::from(widest + padding * 2.0 + height * 2.0 + f32_of_f64(GAP * 2.0));
-            assert!(
-                preferred + 1e-6 >= required,
-                "preferred {preferred} must hold the widest value ({required})"
-            );
-            assert!(
-                preferred >= DEFAULT_WIDTH,
-                "never below the configured width"
-            );
-            assert!(
-                preferred < required + 1.0,
-                "preferred {preferred} should be the widest value's need rounded up, not more (required {required})"
-            );
-
-            let compact = NumberInput::new(3.0).with_range(0.0, 9.0);
-            assert_eq!(compact.preferred_width(&theme, &mut text), DEFAULT_WIDTH);
+            let mut time = NumberInput::new(0.0)
+                .with_range(0.0, 1440.0)
+                .with_step(1.0)
+                .with_value_format(
+                    |minutes| {
+                        if minutes == 0.0 {
+                            "Now".to_owned()
+                        } else {
+                            let minutes = round_to_i64(minutes);
+                            format!("{}:{:02}", minutes / 60, minutes % 60)
+                        }
+                    },
+                    |text| {
+                        if text.trim().eq_ignore_ascii_case("now") {
+                            return Some(0.0);
+                        }
+                        let (hours, minutes) = text.trim().split_once(':')?;
+                        Some(hours.parse::<f64>().ok()? * 60.0 + minutes.parse::<f64>().ok()?)
+                    },
+                );
+            assert_eq!(time.field.value(), "Now");
+            time.set_value(657.0);
+            assert_eq!(time.field.value(), "10:57");
+            time.field.set_text("11:05");
+            time.commit_local();
+            assert_eq!(time.value(), 665.0);
+            assert_eq!(time.field.value(), "11:05");
         }
     }
 
@@ -1285,387 +1672,4 @@ mod tests {
     use crate::synthetic_input::cursor_moved;
     use crate::synthetic_input::mouse_press;
     use crate::synthetic_input::named_key;
-
-    #[test]
-    fn number_text_parses_and_formats_with_units_signs_and_precision() {
-        {
-            assert_eq!(parse_leading_number("16"), Some(16.0));
-            assert_eq!(parse_leading_number("16 px"), Some(16.0));
-            assert_eq!(parse_leading_number("16px"), Some(16.0));
-            assert_eq!(parse_leading_number("  -3.5% "), Some(-3.5));
-            assert_eq!(parse_leading_number("1.15"), Some(1.15));
-            assert_eq!(parse_leading_number("px"), None);
-            assert_eq!(parse_leading_number(""), None);
-            assert_eq!(parse_leading_number("."), None);
-        }
-
-        {
-            let n = NumberInput::new(16.0).with_suffix("px");
-            assert_eq!(n.format_value(), "16 px");
-            let n = NumberInput::new(1.153).with_precision(2);
-            assert_eq!(n.format_value(), "1.15");
-            let n = NumberInput::new(42.0);
-            assert_eq!(n.format_value(), "42");
-        }
-
-        {
-            let n = NumberInput::new(500.0).with_range(8.0, 72.0);
-            assert_eq!(n.value(), 72.0, "over-max initial value clamps to max");
-            let n = NumberInput::new(1.0).with_range(8.0, 72.0);
-            assert_eq!(n.value(), 8.0, "under-min initial value clamps to min");
-        }
-    }
-
-    #[test]
-    fn small_numeric_edits_and_steps_are_not_discarded() {
-        let state = crate::LocalState::new(0.0);
-        let mut number = NumberInput::from_state(&state)
-            .with_precision(18)
-            .with_step(1e-18);
-        number.set_focus(true);
-        number.field.set_text("0.000000000000000001");
-        dispatch(&mut number, &named_key(NamedKey::Enter));
-        assert_eq!(state.get(), 1e-18);
-        assert_eq!(number.take_changed(), Some(1e-18));
-        dispatch(&mut number, &named_key(NamedKey::ArrowUp));
-        assert_eq!(state.get(), 2e-18);
-        assert_eq!(number.take_changed(), Some(2e-18));
-        number.set_focus(false);
-        state.set(3e-18);
-        number.sync(&AutoCommit::new(), &automerge::ROOT);
-        assert_eq!(number.value(), 3e-18);
-        assert_eq!(number.field.value(), "0.000000000000000003");
-    }
-
-    #[test]
-    fn decimal_steps_land_on_the_value_shown_and_reach_the_ends() {
-        let mut n = NumberInput::new(0.0)
-            .with_range(0.0, 1.0)
-            .with_step(0.1)
-            .with_precision(1);
-        layout_at(&mut n, 0.0, 0.0);
-        n.field.set_focus(true);
-        for _ in 0..3 {
-            dispatch(&mut n, &named_key(NamedKey::ArrowUp));
-        }
-        assert_eq!(n.value(), 0.3, "three tenths up is 0.3");
-        assert_eq!(n.take_changed(), Some(0.3));
-        for _ in 0..3 {
-            dispatch(&mut n, &named_key(NamedKey::ArrowDown));
-        }
-        assert_eq!(n.value(), 0.0, "three tenths back down is the minimum");
-        assert_eq!(n.take_changed(), Some(0.0));
-        dispatch(&mut n, &named_key(NamedKey::ArrowDown));
-        assert_eq!(
-            n.take_changed(),
-            None,
-            "a step past the minimum moves nothing"
-        );
-        for _ in 0..10 {
-            dispatch(&mut n, &named_key(NamedKey::ArrowUp));
-        }
-        assert_eq!(n.value(), 1.0, "ten tenths reach the maximum");
-        assert_eq!(n.field.value(), "1.0");
-    }
-
-    #[test]
-    fn typed_values_commit_clamped_or_revert() {
-        // Case `type_then_enter_parses_clamps_and_commits`.
-        // Typing a value and committing with Enter parses, clamps and reports
-        // the change through the production `handle_event` path.
-        {
-            let mut n = NumberInput::new(16.0)
-                .with_range(8.0, 72.0)
-                .with_suffix("px");
-            layout_at(&mut n, 0.0, 0.0);
-
-            n.field.set_focus(true);
-            n.field.set_text("999");
-            dispatch(&mut n, &named_key(NamedKey::Enter));
-
-            assert_eq!(n.value(), 72.0, "typed 999 clamps to max 72");
-            assert_eq!(
-                n.take_changed(),
-                Some(72.0),
-                "commit reports the clamped change"
-            );
-            assert_eq!(n.take_changed(), None, "take_changed drains");
-            assert_eq!(n.field.value(), "72 px");
-        }
-
-        // Case `type_with_unit_suffix_commits_number`.
-        // A valid in-range value commits verbatim; a unit suffix in the typed
-        // text is tolerated by the parser.
-        {
-            let mut n = NumberInput::new(16.0)
-                .with_range(1.0, 100.0)
-                .with_suffix("px");
-            layout_at(&mut n, 0.0, 0.0);
-            n.field.set_focus(true);
-            n.field.set_text("24 px");
-            dispatch(&mut n, &named_key(NamedKey::Enter));
-            assert_eq!(n.value(), 24.0);
-            assert_eq!(n.take_changed(), Some(24.0));
-        }
-
-        {
-            let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
-            layout_at(&mut n, 0.0, 0.0);
-            n.field.set_focus(true);
-            n.field.set_text("abc");
-            dispatch(&mut n, &named_key(NamedKey::Enter));
-            assert_eq!(n.value(), 16.0, "unparseable text keeps the old value");
-            assert_eq!(n.field.value(), "16", "display snapped back to the value");
-            assert_eq!(n.take_changed(), None, "no change to report");
-        }
-
-        {
-            let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
-            layout_at(&mut n, 0.0, 0.0);
-            n.field.set_focus(true);
-            n.field.set_text("40");
-
-            Widget::set_focus(&mut n, false);
-            assert_eq!(n.value(), 40.0, "blur committed the typed value");
-            assert_eq!(n.take_changed(), Some(40.0));
-        }
-    }
-
-    #[test]
-    fn steppers_and_arrow_keys_step_and_clamp() {
-        // Case `steppers_increment_and_clamp`.
-        // Clicking the + / − steppers moves by `step`, clamped, and reports it.
-        {
-            let mut n = NumberInput::new(70.0).with_range(8.0, 72.0).with_step(2.0);
-            layout_at(&mut n, 0.0, 0.0);
-            let plus_c = (
-                n.plus_rect.x0.midpoint(n.plus_rect.x1),
-                n.plus_rect.y0.midpoint(n.plus_rect.y1),
-            );
-            let minus_c = (
-                n.minus_rect.x0.midpoint(n.minus_rect.x1),
-                n.minus_rect.y0.midpoint(n.minus_rect.y1),
-            );
-
-            // Click + once: 70 → 72.
-            dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
-            dispatch(&mut n, &mouse_press());
-            assert_eq!(n.value(), 72.0);
-            assert_eq!(n.take_changed(), Some(72.0));
-
-            dispatch(&mut n, &mouse_press());
-            assert_eq!(n.value(), 72.0, "clamped at max");
-            assert_eq!(n.take_changed(), None, "no change when already clamped");
-
-            // Click − : 72 → 70.
-            dispatch(&mut n, &cursor_moved(minus_c.0, minus_c.1));
-            dispatch(&mut n, &mouse_press());
-            assert_eq!(n.value(), 70.0);
-            assert_eq!(n.take_changed(), Some(70.0));
-        }
-
-        {
-            let mut n = NumberInput::new(16.0).with_range(1.0, 100.0).with_step(1.0);
-            layout_at(&mut n, 0.0, 0.0);
-            n.field.set_focus(true);
-            dispatch(&mut n, &named_key(NamedKey::ArrowUp));
-            assert_eq!(n.value(), 17.0);
-            dispatch(&mut n, &named_key(NamedKey::ArrowDown));
-            dispatch(&mut n, &named_key(NamedKey::ArrowDown));
-            assert_eq!(n.value(), 15.0);
-        }
-
-        // Case `keyboard_focus_makes_field_editable`.
-        // Keyboard (Tab) focus routes into the editable field so it's typeable
-        // without a mouse — arrows then step it.
-        {
-            let mut n = NumberInput::new(16.0).with_range(1.0, 100.0).with_step(1.0);
-            layout_at(&mut n, 0.0, 0.0);
-            Widget::set_focus(&mut n, true);
-            assert!(
-                n.is_editing(),
-                "keyboard focus routes into the editable field"
-            );
-            dispatch(&mut n, &named_key(NamedKey::ArrowUp));
-            assert_eq!(n.value(), 17.0, "arrows step a keyboard-focused field");
-        }
-
-        {
-            let mut n = NumberInput::new(16.0)
-                .with_range(8.0, 72.0)
-                .with_enabled(false);
-            layout_at(&mut n, 0.0, 0.0);
-            let before = n.value();
-            let plus_c = (
-                n.plus_rect.x0.midpoint(n.plus_rect.x1),
-                n.plus_rect.y0.midpoint(n.plus_rect.y1),
-            );
-            dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
-            dispatch(&mut n, &mouse_press());
-            assert_eq!(n.value(), before, "disabled field ignores stepper clicks");
-            assert!(!Widget::is_focusable(&n));
-        }
-    }
-
-    #[test]
-    fn value_bindings_sync_silently_from_models() {
-        // Case `set_value_is_silent`.
-        // `set_value` is programmatic: it clamps + updates the display but does
-        // NOT report a user change.
-        {
-            let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
-            n.set_value(200.0);
-            assert_eq!(n.value(), 72.0, "clamped");
-            assert_eq!(
-                n.take_changed(),
-                None,
-                "programmatic set is not a user change"
-            );
-            assert_eq!(n.field.value(), "72");
-        }
-
-        {
-            use crate::a11y::Action;
-
-            let state = crate::LocalState::new(16.0);
-            let mut first = NumberInput::from_state(&state)
-                .with_range(8.0, 72.0)
-                .with_step(1.0);
-            let mut second = NumberInput::from_state(&state).with_range(8.0, 72.0);
-            let mut document = AutoCommit::new();
-
-            state.set(24.0);
-            Widget::sync(&mut first, &document, &automerge::ROOT);
-            Widget::sync(&mut second, &document, &automerge::ROOT);
-            assert_eq!(first.value(), 24.0);
-            assert_eq!(second.value(), 24.0);
-            assert_eq!(first.take_changed(), None, "model sync is not user intent");
-
-            assert!(Widget::perform_action(
-                &mut first,
-                &Action::Increment,
-                &[],
-                &mut crate::widget::Edits::lend(&mut document),
-                &automerge::ROOT,
-            ));
-            assert_eq!(state.get(), 25.0);
-            assert_eq!(first.take_changed(), Some(25.0));
-            Widget::sync(&mut second, &document, &automerge::ROOT);
-            assert_eq!(second.value(), 25.0);
-
-            second.set_value(30.0);
-            assert_eq!(state.get(), 30.0);
-            assert_eq!(second.take_changed(), None);
-            Widget::sync(&mut first, &document, &automerge::ROOT);
-            assert_eq!(first.value(), 30.0);
-        }
-    }
-
-    #[test]
-    fn accessibility_reports_spinbutton_and_routes_value_actions() {
-        {
-            use crate::a11y::Role;
-            let n = NumberInput::new(16.0).with_suffix("px");
-            let node = Widget::accessibility(&n).unwrap();
-            assert_eq!(node.role, Role::SpinButton);
-            assert_eq!(node.value.as_deref(), Some("16 px"));
-            assert!(node.state.focusable);
-        }
-
-        {
-            use crate::a11y::Action;
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut n = NumberInput::new(16.0).with_range(8.0, 72.0).with_step(4.0);
-            assert!(Widget::perform_action(
-                &mut n,
-                &Action::Increment,
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &root
-            ));
-            assert_eq!(n.value(), 20.0);
-            assert!(Widget::perform_action(
-                &mut n,
-                &Action::SetValue("100".into()),
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &root
-            ));
-            assert_eq!(n.value(), 72.0, "SetValue clamps");
-        }
-
-        {
-            let mut number =
-                NumberInput::new(10.0).on_action(crate::widget::test_number_action_binding());
-            let mut doc = AutoCommit::new();
-            crate::widget::controls::refresh_control_action_availability(
-                &mut number,
-                &std::collections::HashSet::new(),
-            );
-            assert!(!Widget::is_enabled(&number));
-            crate::widget::controls::refresh_control_action_availability(
-                &mut number,
-                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
-                    "test:control",
-                    "set",
-                )]),
-            );
-            assert!(Widget::is_enabled(&number));
-            assert!(Widget::perform_action(
-                &mut number,
-                &crate::a11y::Action::SetValue("42".into()),
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT
-            ));
-            assert!(doc.get_heads().is_empty(), "the field writes nothing");
-            assert_eq!(number.take_changed(), None);
-            assert_eq!(
-                crate::widget::controls::take_control_invocation(&mut number)
-                    .unwrap()
-                    .arguments["value"],
-                42.0
-            );
-        }
-    }
-
-    #[test]
-    fn values_read_in_the_apps_words_and_units_sit_where_the_locale_puts_them() {
-        assert_eq!(unit_joiner("en-US", "%"), "");
-        assert_eq!(unit_joiner("de-DE", "%"), "\u{a0}");
-        assert_eq!(unit_joiner("fr", "%"), "\u{a0}");
-        assert_eq!(unit_joiner("de-DE", "°"), "");
-        assert_eq!(unit_joiner("en-US", "px"), " ");
-        let percent = NumberInput::new(50.0).with_suffix("%");
-        assert_eq!(percent.field.value(), "50%");
-
-        let mut time = NumberInput::new(0.0)
-            .with_range(0.0, 1440.0)
-            .with_step(1.0)
-            .with_value_format(
-                |minutes| {
-                    if minutes == 0.0 {
-                        "Now".to_owned()
-                    } else {
-                        let minutes = round_to_i64(minutes);
-                        format!("{}:{:02}", minutes / 60, minutes % 60)
-                    }
-                },
-                |text| {
-                    if text.trim().eq_ignore_ascii_case("now") {
-                        return Some(0.0);
-                    }
-                    let (hours, minutes) = text.trim().split_once(':')?;
-                    Some(hours.parse::<f64>().ok()? * 60.0 + minutes.parse::<f64>().ok()?)
-                },
-            );
-        assert_eq!(time.field.value(), "Now");
-        time.set_value(657.0);
-        assert_eq!(time.field.value(), "10:57");
-        time.field.set_text("11:05");
-        time.commit_local();
-        assert_eq!(time.value(), 665.0);
-        assert_eq!(time.field.value(), "11:05");
-    }
 }

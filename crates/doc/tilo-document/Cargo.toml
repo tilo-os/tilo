@@ -23,6 +23,10 @@ chrono = { workspace = true, features = ["alloc"] }
 # Hyperlink targets a rich-text action may carry.
 url.workspace = true
 
+[dev-dependencies]
+# A test edits in a window's wake scope, as an app's code does.
+tilo-wake = { path = "../../platform/tilo-wake" }
+
 [lints]
 workspace = true
 

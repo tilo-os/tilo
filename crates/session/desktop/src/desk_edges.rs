@@ -262,91 +262,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn widgets_wait_at_their_edges_and_never_at_the_top() {
-        let slots = place(
-            AREA,
-            &[
-                item(WidgetId::Music, DockEdge::BottomRight),
-                item(WidgetId::Team, DockEdge::Right),
-            ],
-            &[],
-            false,
-        );
-        let music = slots.iter().find(|s| s.id == WidgetId::Music).unwrap();
-        let team = slots.iter().find(|s| s.id == WidgetId::Team).unwrap();
-        assert_eq!(music.glance.x1, AREA.x1 - MARGIN);
-        assert_eq!(music.glance.y1, AREA.y1 - MARGIN);
-        assert_eq!(
-            music.open.x1, music.glance.x1,
-            "open grows from the same corner"
-        );
-        assert_eq!(music.open.y1, music.glance.y1);
-        assert!((team.glance.center().y - AREA.center().y).abs() < 1.0);
-        for slot in &slots {
-            assert!(
-                slot.glance.y0 > AREA.y0 + 100.0,
-                "{slot:?} keeps off the top edge"
+    tilo_test_env::scenario! {
+        fn widgets_wait_stack_and_snap_at_the_desks_edges;
+
+        phase widgets_wait_at_their_edges_and_never_at_the_top;
+        {
+            let slots = place(
+                AREA,
+                &[
+                    item(WidgetId::Music, DockEdge::BottomRight),
+                    item(WidgetId::Team, DockEdge::Right),
+                ],
+                &[],
+                false,
             );
-            assert!(slot.reach.contains(slot.glance.center()));
-            assert!(AREA.contains(slot.open.origin()));
+            let music = slots.iter().find(|s| s.id == WidgetId::Music).unwrap();
+            let team = slots.iter().find(|s| s.id == WidgetId::Team).unwrap();
+            assert_eq!(music.glance.x1, AREA.x1 - MARGIN);
+            assert_eq!(music.glance.y1, AREA.y1 - MARGIN);
+            assert_eq!(
+                music.open.x1, music.glance.x1,
+                "open grows from the same corner"
+            );
+            assert_eq!(music.open.y1, music.glance.y1);
+            assert!((team.glance.center().y - AREA.center().y).abs() < 1.0);
+            for slot in &slots {
+                assert!(
+                    slot.glance.y0 > AREA.y0 + 100.0,
+                    "{slot:?} keeps off the top edge"
+                );
+                assert!(slot.reach.contains(slot.glance.center()));
+                assert!(AREA.contains(slot.open.origin()));
+            }
+            assert_eq!(
+                music.reach.x1, AREA.x1,
+                "reach runs to the edge behind the form"
+            );
+            assert_eq!(music.reach.y1, AREA.y1);
         }
-        assert_eq!(
-            music.reach.x1, AREA.x1,
-            "reach runs to the edge behind the form"
-        );
-        assert_eq!(music.reach.y1, AREA.y1);
-    }
 
-    #[test]
-    fn widgets_sharing_an_edge_stack_and_step_past_a_floating_call() {
-        let items = [
-            item(WidgetId::Music, DockEdge::BottomRight),
-            item(WidgetId::Team, DockEdge::BottomRight),
-        ];
-        let plain = place(AREA, &items, &[], false);
-        assert!(plain[1].glance.y1 <= plain[0].glance.y0 - MARGIN + 0.5);
-        let call = Rect::new(1300.0, 700.0, 1590.0, 890.0);
-        let around = place(AREA, &items, &[call], false);
-        for slot in &around {
-            assert!(!slot.glance.overlaps(call), "{slot:?} under the call card");
+        phase widgets_sharing_an_edge_stack_and_step_past_a_floating_call;
+        {
+            let items = [
+                item(WidgetId::Music, DockEdge::BottomRight),
+                item(WidgetId::Team, DockEdge::BottomRight),
+            ];
+            let plain = place(AREA, &items, &[], false);
+            assert!(plain[1].glance.y1 <= plain[0].glance.y0 - MARGIN + 0.5);
+            let call = Rect::new(1300.0, 700.0, 1590.0, 890.0);
+            let around = place(AREA, &items, &[call], false);
+            for slot in &around {
+                assert!(!slot.glance.overlaps(call), "{slot:?} under the call card");
+            }
+            assert!(around[0].glance.y1 <= call.y0);
         }
-        assert!(around[0].glance.y1 <= call.y0);
-    }
 
-    #[test]
-    fn a_drop_snaps_to_the_nearest_edge() {
-        assert_eq!(
-            nearest_edge(AREA, Point::new(1550.0, 880.0)),
-            DockEdge::BottomRight
-        );
-        assert_eq!(
-            nearest_edge(AREA, Point::new(40.0, 880.0)),
-            DockEdge::BottomLeft
-        );
-        assert_eq!(
-            nearest_edge(AREA, Point::new(800.0, 880.0)),
-            DockEdge::Bottom
-        );
-        assert_eq!(
-            nearest_edge(AREA, Point::new(1500.0, 300.0)),
-            DockEdge::Right
-        );
-        assert_eq!(nearest_edge(AREA, Point::new(100.0, 60.0)), DockEdge::Left);
-    }
+        phase a_drop_snaps_to_the_nearest_edge;
+        {
+            assert_eq!(
+                nearest_edge(AREA, Point::new(1550.0, 880.0)),
+                DockEdge::BottomRight
+            );
+            assert_eq!(
+                nearest_edge(AREA, Point::new(40.0, 880.0)),
+                DockEdge::BottomLeft
+            );
+            assert_eq!(
+                nearest_edge(AREA, Point::new(800.0, 880.0)),
+                DockEdge::Bottom
+            );
+            assert_eq!(
+                nearest_edge(AREA, Point::new(1500.0, 300.0)),
+                DockEdge::Right
+            );
+            assert_eq!(nearest_edge(AREA, Point::new(100.0, 60.0)), DockEdge::Left);
+        }
 
-    #[test]
-    fn a_press_drags_only_past_the_slop_and_a_click_moves_nothing() {
-        let start = Point::new(1500.0, 400.0);
-        let mut click = EdgeDrag::new(WidgetId::Team, start);
-        assert!(!click.moved(start + Vec2::new(DRAG_SLOP * 0.5, 0.0)));
-        assert_eq!(click.shift(start), None);
-        assert_eq!(click.release(AREA, start), None, "a click keeps its edge");
+        phase a_press_drags_only_past_the_slop_and_a_click_moves_nothing;
+        {
+            let start = Point::new(1500.0, 400.0);
+            let mut click = EdgeDrag::new(WidgetId::Team, start);
+            assert!(!click.moved(start + Vec2::new(DRAG_SLOP * 0.5, 0.0)));
+            assert_eq!(click.shift(start), None);
+            assert_eq!(click.release(AREA, start), None, "a click keeps its edge");
 
-        let mut drag = EdgeDrag::new(WidgetId::Team, start);
-        let drop = Point::new(60.0, 880.0);
-        assert!(drag.moved(drop));
-        assert_eq!(drag.shift(drop), Some(drop - start));
-        assert_eq!(drag.release(AREA, drop), Some(DockEdge::BottomLeft));
+            let mut drag = EdgeDrag::new(WidgetId::Team, start);
+            let drop = Point::new(60.0, 880.0);
+            assert!(drag.moved(drop));
+            assert_eq!(drag.shift(drop), Some(drop - start));
+            assert_eq!(drag.release(AREA, drop), Some(DockEdge::BottomLeft));
+        }
     }
 }

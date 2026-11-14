@@ -1,21 +1,26 @@
 //! The workspace's people, as the path `workspace/members` of every workspace
-//! a key acts in: who is in it, and bringing someone else in.
+//! a key acts in: who is in it, bringing someone else in, and the name the
+//! key's own person goes by.
 //!
 //! - `workspace/members#list` (or `tilo_read workspace/members`) answers the
 //!   members, each with their role, and the invitations still open;
 //! - `workspace/members#invite {role, email?}` answers a link that brings one
-//!   person in as `role`.
+//!   person in as `role`;
+//! - `workspace/members#name {name}` names the key's own person in the
+//!   workspace: what its member list and the invitations they make say for
+//!   them.
 //!
-//! Both are the workspace's own governance actions (`tilo.workspace`'s
-//! `invite`, `member.list` and `invitation.list`), asked of its host over the
-//! key's session, and the host decides who may: a person's server key
-//! invites into the workspaces its person administers, as an Editor at most;
-//! an agent's grant and a key for one workspace do not. The link is the one a
-//! person's desk hands over: the invitation sealed onto the site's shelf
-//! (`https://<site>/i/<handle>#<key>`), or, where the site keeps nothing, the
-//! invitation's own text after the workspace's route. Following it opens the
-//! site's sign-in, with a passkey or by approving an agent, and lands the
-//! person in the workspace with the role.
+//! All are the workspace's own governance actions (`tilo.workspace`'s
+//! `invite`, `member.list`, `invitation.list` and `member.name`), asked of its
+//! host over the key's session, and the host decides who may: a person's
+//! server key invites into the workspaces its person administers, as an
+//! Editor at most; an agent's grant and a key for one workspace do not. A
+//! person names themself, from any key of theirs, in a workspace they are a
+//! member of. The link is the one a person's desk hands over: the invitation
+//! sealed onto the site's shelf (`https://<site>/i/<handle>#<key>`), or, where
+//! the site keeps nothing, the invitation's own text after the workspace's
+//! route. Following it opens the site's sign-in, with a passkey or by
+//! approving an agent, and lands the person in the workspace with the role.
 //!
 //! The server sends no mail: with `email`, the invitation names that address
 //! and the answer says `sent: false`, with the link to hand over.
@@ -35,6 +40,7 @@ const ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 const INVITE: &str = "invite";
 const MEMBERS: &str = "member.list";
 const INVITATIONS: &str = "invitation.list";
+const NAME: &str = "member.name";
 
 /// Whether `tool` with `arguments` is about the workspace's people.
 pub(crate) fn addresses(tool: &str, arguments: &Value) -> bool {
@@ -62,13 +68,15 @@ impl Session {
         let args = arguments.get("args").cloned().unwrap_or_else(|| json!({}));
         let outcome = match (tool, path) {
             ("tilo_do", "workspace/members#invite") => self.invite(workspace, &args).await,
+            ("tilo_do", "workspace/members#name") => self.name(workspace, &args).await,
             ("tilo_do", "workspace/members#list") | ("tilo_read", ROOT) => {
                 self.list(workspace).await
             }
             (_, other) => failed(
                 "not_found",
                 format!("the workspace has no action {other}"),
-                "workspace/members#list and workspace/members#invite {role, email?} are its actions",
+                "workspace/members#list, workspace/members#invite {role, email?} and \
+                 workspace/members#name {name} are its actions",
             ),
         };
         answer(structured, path, outcome)
@@ -190,6 +198,32 @@ impl Session {
             fields.insert("sent".into(), json!(false));
         }
         Outcome::Ok(answered)
+    }
+
+    /// How the key's person is named in `workspace` from now on, whatever
+    /// device or key of theirs said it: the name the workspace's member list
+    /// and the invitations they make show for them.
+    async fn name(&self, workspace: &str, args: &Value) -> Outcome {
+        let name = args
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if tilo_user_identity::display_name(name).is_err() {
+            return failed(
+                "invalid_arguments",
+                "`name` is the name the workspace shows for you: at most 128 bytes, no control characters",
+                "pass args {name: \"Ada Lovelace\"}",
+            );
+        }
+        let mut asked = Map::new();
+        asked.insert("name".into(), json!(name));
+        match self.govern(workspace, NAME, asked).await {
+            // The people as the workspace names them now, which is how a
+            // caller sees the name it just set take.
+            Ok(_) => self.list(workspace).await,
+            Err(outcome) => outcome,
+        }
     }
 }
 

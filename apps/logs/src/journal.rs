@@ -729,113 +729,117 @@ mod tests {
         assert_eq!(without_terminal_escapes("plain\ttext"), "plain text");
     }
 
-    #[test]
-    fn sample_has_mixed_severities_and_two_boots() {
-        let e = sample_entries();
-        assert!(e.len() > 20, "sample journal should be substantial");
-        assert!(e.iter().any(|x| x.priority == Priority::Err));
-        assert!(e.iter().any(|x| x.priority == Priority::Warning));
-        assert!(e.iter().any(|x| x.priority == Priority::Crit));
-        let boots: std::collections::HashSet<_> = e.iter().map(|x| x.boot_id.clone()).collect();
-        assert_eq!(boots.len(), 2, "should span exactly two boots");
-        assert!(e.windows(2).all(|w| w[0].realtime_us <= w[1].realtime_us));
-    }
+    tilo_test_env::scenario! {
+        fn the_journal_reads_pages_samples_and_exports;
 
-    #[test]
-    fn parse_json_stream_reads_journalctl_shape_byte_messages_and_skips_malformed() {
-        let line = r#"{"__REALTIME_TIMESTAMP":"1609459200000000","_SYSTEMD_UNIT":"x.service","PRIORITY":"3","MESSAGE":"boom","_PID":"42","_HOSTNAME":"h","_BOOT_ID":"b","_TRANSPORT":"stdout","CUSTOM":"keep"}"#;
-        let parsed = parse_json_stream(line);
-        assert_eq!(parsed.len(), 1);
-        let e = &parsed[0];
-        assert_eq!(e.unit, "x.service");
-        assert_eq!(e.priority, Priority::Err);
-        assert_eq!(e.message, "boom");
-        assert_eq!(e.pid, Some(42));
-        assert!(e.extra.iter().any(|(k, v)| k == "CUSTOM" && v == "keep"));
-
-        // journald encodes non-UTF8 MESSAGE as a byte array.
-        let line = r#"{"__REALTIME_TIMESTAMP":"1","MESSAGE":[104,105],"PRIORITY":"6"}"#;
-        let parsed = parse_json_stream(line);
-        assert_eq!(parsed[0].message, "hi");
-
-        let stream = "not json\n{\"MESSAGE\":\"ok\",\"__REALTIME_TIMESTAMP\":\"5\"}\n";
-        let parsed = parse_json_stream(stream);
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].message, "ok");
-    }
-
-    /// A tail read starts after the newest record's cursor, which a page takes from the
-    /// last record journalctl wrote.
-    #[test]
-    fn a_page_keeps_the_last_cursor_and_a_tail_read_starts_after_it() {
-        let stream = concat!(
-            r#"{"__CURSOR":"s=a;i=1","__REALTIME_TIMESTAMP":"20","MESSAGE":"one"}"#,
-            "\n",
-            r#"{"__CURSOR":"s=a;i=2","__REALTIME_TIMESTAMP":"10","MESSAGE":"two"}"#,
-            "\n",
-        );
-        let page = parse_page(stream);
-        assert_eq!(page.cursor.as_deref(), Some("s=a;i=2"), "journal order");
-        assert_eq!(page.entries[0].message, "two", "entries by time");
-        assert!(
-            page.entries
-                .iter()
-                .all(|entry| { entry.extra.iter().all(|(key, _)| key != "__CURSOR") })
-        );
-        assert_eq!(parse_page("").cursor, None);
-
-        assert_eq!(
-            read_args(None, 2000),
-            ["-o", "json", "--no-pager", "-n", "2000"]
-        );
-        assert_eq!(
-            read_args(Some("s=a;i=2"), 2000),
-            [
-                "-o",
-                "json",
-                "--no-pager",
-                "-n",
-                "2000",
-                "--after-cursor=s=a;i=2"
-            ]
-        );
-    }
-
-    #[test]
-    fn export_writes_json_lines_only_to_absolute_portal_targets() {
-        let entries = sample_entries();
-
-        assert_eq!(
-            export_json_lines(&[&entries[0]], Path::new("logs.jsonl")).unwrap_err(),
-            "export path must be absolute"
-        );
-
-        let path = std::env::temp_dir().join(format!(
-            "tilo-logs-export-{}-{}.jsonl",
-            std::process::id(),
-            entries[0].realtime_us
-        ));
-        let _ = std::fs::remove_file(&path);
-        export_json_lines(&[&entries[0], &entries[1]], &path).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(text.lines().count(), 2);
-        assert!(text.contains("Journal stopped"));
-        export_json_lines(&[&entries[0]], &path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
-        std::fs::remove_file(path).unwrap();
-
-        // Export preserves a non-UTF-8 portal path.
-        #[cfg(unix)]
+        phase sample_has_mixed_severities_and_two_boots;
         {
-            use std::os::unix::ffi::OsStringExt;
+            let e = sample_entries();
+            assert!(e.len() > 20, "sample journal should be substantial");
+            assert!(e.iter().any(|x| x.priority == Priority::Err));
+            assert!(e.iter().any(|x| x.priority == Priority::Warning));
+            assert!(e.iter().any(|x| x.priority == Priority::Crit));
+            let boots: std::collections::HashSet<_> = e.iter().map(|x| x.boot_id.clone()).collect();
+            assert_eq!(boots.len(), 2, "should span exactly two boots");
+            assert!(e.windows(2).all(|w| w[0].realtime_us <= w[1].realtime_us));
+        }
 
-            let path = std::env::temp_dir().join(std::ffi::OsString::from_vec(vec![
-                b'q', b'o', b's', b'-', 0xff, b'.', b'j', b's', b'o', b'n', b'l',
-            ]));
+        phase parse_json_stream_reads_journalctl_shape_byte_messages_and_skips_malformed;
+        {
+            let line = r#"{"__REALTIME_TIMESTAMP":"1609459200000000","_SYSTEMD_UNIT":"x.service","PRIORITY":"3","MESSAGE":"boom","_PID":"42","_HOSTNAME":"h","_BOOT_ID":"b","_TRANSPORT":"stdout","CUSTOM":"keep"}"#;
+            let parsed = parse_json_stream(line);
+            assert_eq!(parsed.len(), 1);
+            let e = &parsed[0];
+            assert_eq!(e.unit, "x.service");
+            assert_eq!(e.priority, Priority::Err);
+            assert_eq!(e.message, "boom");
+            assert_eq!(e.pid, Some(42));
+            assert!(e.extra.iter().any(|(k, v)| k == "CUSTOM" && v == "keep"));
+
+            // journald encodes non-UTF8 MESSAGE as a byte array.
+            let line = r#"{"__REALTIME_TIMESTAMP":"1","MESSAGE":[104,105],"PRIORITY":"6"}"#;
+            let parsed = parse_json_stream(line);
+            assert_eq!(parsed[0].message, "hi");
+
+            let stream = "not json\n{\"MESSAGE\":\"ok\",\"__REALTIME_TIMESTAMP\":\"5\"}\n";
+            let parsed = parse_json_stream(stream);
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(parsed[0].message, "ok");
+        }
+
+        phase a_page_keeps_the_last_cursor_and_a_tail_read_starts_after_it;
+        // A tail read starts after the newest record's cursor, which a page takes from the
+        // last record journalctl wrote.
+        {
+            let stream = concat!(
+                r#"{"__CURSOR":"s=a;i=1","__REALTIME_TIMESTAMP":"20","MESSAGE":"one"}"#,
+                "\n",
+                r#"{"__CURSOR":"s=a;i=2","__REALTIME_TIMESTAMP":"10","MESSAGE":"two"}"#,
+                "\n",
+            );
+            let page = parse_page(stream);
+            assert_eq!(page.cursor.as_deref(), Some("s=a;i=2"), "journal order");
+            assert_eq!(page.entries[0].message, "two", "entries by time");
+            assert!(
+                page.entries
+                    .iter()
+                    .all(|entry| { entry.extra.iter().all(|(key, _)| key != "__CURSOR") })
+            );
+            assert_eq!(parse_page("").cursor, None);
+
+            assert_eq!(
+                read_args(None, 2000),
+                ["-o", "json", "--no-pager", "-n", "2000"]
+            );
+            assert_eq!(
+                read_args(Some("s=a;i=2"), 2000),
+                [
+                    "-o",
+                    "json",
+                    "--no-pager",
+                    "-n",
+                    "2000",
+                    "--after-cursor=s=a;i=2"
+                ]
+            );
+        }
+
+        phase export_writes_json_lines_only_to_absolute_portal_targets;
+        {
+            let entries = sample_entries();
+
+            assert_eq!(
+                export_json_lines(&[&entries[0]], Path::new("logs.jsonl")).unwrap_err(),
+                "export path must be absolute"
+            );
+
+            let path = std::env::temp_dir().join(format!(
+                "tilo-logs-export-{}-{}.jsonl",
+                std::process::id(),
+                entries[0].realtime_us
+            ));
             let _ = std::fs::remove_file(&path);
+            export_json_lines(&[&entries[0], &entries[1]], &path).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(text.lines().count(), 2);
+            assert!(text.contains("Journal stopped"));
             export_json_lines(&[&entries[0]], &path).unwrap();
-            assert!(path.is_file());
+            assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
             std::fs::remove_file(path).unwrap();
+
+            // Export preserves a non-UTF-8 portal path.
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+
+                let path = std::env::temp_dir().join(std::ffi::OsString::from_vec(vec![
+                    b'q', b'o', b's', b'-', 0xff, b'.', b'j', b's', b'o', b'n', b'l',
+                ]));
+                let _ = std::fs::remove_file(&path);
+                export_json_lines(&[&entries[0]], &path).unwrap();
+                assert!(path.is_file());
+                std::fs::remove_file(path).unwrap();
+            }
         }
     }
 }

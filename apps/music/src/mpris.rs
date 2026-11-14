@@ -43,49 +43,54 @@ pub(crate) fn command_for(action: media::NowPlayingAction) -> MprisCommand {
 mod tests {
     use super::*;
 
-    #[test]
-    fn shared_media_control_retains_music_identity() {
-        let config = config();
-        assert!(config.bus_name.starts_with("org.mpris.MediaPlayer2."));
-        assert_eq!(config.identity, "Tilo Music");
-        assert_eq!(config.desktop_entry, "music");
-        assert_eq!(config.supported_uri_schemes, ["http", "https"]);
-        assert_eq!(
-            config.supported_mime_types,
-            ["audio/mpeg", "audio/mp4", "audio/ogg"]
-        );
-    }
+    tilo_test_env::scenario! {
+        /// What Music hands the platform's media control, and what it asks back.
+        fn the_shared_media_control_carries_musics_identity_track_and_commands;
 
-    #[test]
-    fn the_platform_players_controls_hear_the_track_and_ask_as_mpris_does() {
-        let snap = PlayerSnapshot {
-            title: "Harbour".into(),
-            artist: "Ada".into(),
-            album: "Quays".into(),
-            ..PlayerSnapshot::default()
-        };
-        assert_eq!(
-            now_playing_of(&snap),
-            media::NowPlaying {
+        phase shared_media_control_retains_music_identity;
+        {
+            let config = config();
+            assert!(config.bus_name.starts_with("org.mpris.MediaPlayer2."));
+            assert_eq!(config.identity, "Tilo Music");
+            assert_eq!(config.desktop_entry, "music");
+            assert_eq!(config.supported_uri_schemes, ["http", "https"]);
+            assert_eq!(
+                config.supported_mime_types,
+                ["audio/mpeg", "audio/mp4", "audio/ogg"]
+            );
+        }
+
+        phase the_platform_players_controls_hear_the_track_and_ask_as_mpris_does;
+        {
+            let snap = PlayerSnapshot {
                 title: "Harbour".into(),
                 artist: "Ada".into(),
                 album: "Quays".into(),
-                artwork_url: None,
-            }
-        );
-        assert_eq!(
-            command_for(media::NowPlayingAction::Next),
-            MprisCommand::Next
-        );
-        assert_eq!(
-            command_for(media::NowPlayingAction::Previous),
-            MprisCommand::Previous
-        );
-        assert_eq!(
-            command_for(media::NowPlayingAction::SeekTo(
-                std::time::Duration::from_secs(2)
-            )),
-            MprisCommand::SetPosition(2_000_000)
-        );
+                ..PlayerSnapshot::default()
+            };
+            assert_eq!(
+                now_playing_of(&snap),
+                media::NowPlaying {
+                    title: "Harbour".into(),
+                    artist: "Ada".into(),
+                    album: "Quays".into(),
+                    artwork_url: None,
+                }
+            );
+            assert_eq!(
+                command_for(media::NowPlayingAction::Next),
+                MprisCommand::Next
+            );
+            assert_eq!(
+                command_for(media::NowPlayingAction::Previous),
+                MprisCommand::Previous
+            );
+            assert_eq!(
+                command_for(media::NowPlayingAction::SeekTo(
+                    std::time::Duration::from_secs(2)
+                )),
+                MprisCommand::SetPosition(2_000_000)
+            );
+        }
     }
 }

@@ -495,111 +495,57 @@ mod tests {
         })
     }
 
-    #[test]
-    fn a_calculation_reads_as_itself_opens_and_copies_its_result() {
-        let face = CalculatorEntries::default()
-            .face(&entry(
-                verb(
-                    "commit-history",
-                    &[("expr", "sqrt(2)/2"), ("result", "0.7071")],
-                ),
-                None,
-            ))
-            .expect("a calculation has a face");
-        assert_eq!(face.spoken, "sqrt(2)/2 = 0.7071");
-        assert_eq!(face.copy.as_deref(), Some("0.7071"));
-        assert!(face.opens, "choosing it puts it back into the calculator");
-        assert!(face.body.is_some(), "it is typeset, not a sentence");
-    }
+    tilo_test_env::scenario! {
+        fn history_entries_show_their_face_and_bands_count_them;
 
-    #[test]
-    fn a_graph_change_shows_the_function_it_plotted() {
-        let curve = CalculatorEntries::default()
-            .face(&entry(
-                formula_edit("funcs", EditOp::Replace, Some("x^2-1")),
-                Some("x^2"),
-            ))
-            .expect("a typed formula has a face");
-        assert_eq!(curve.spoken, "y = x^2-1", "the formula after the change");
-        assert!(!curve.opens && curve.copy.is_none());
-
-        let surface = CalculatorEntries::default()
-            .face(&entry(verb("add-surface", &[("formula", "x*y")]), None))
-            .expect("an added surface has a face");
-        assert_eq!(surface.spoken, "z = x*y");
-
-        let body = GraphBody::new(GraphKind::Curve2d, "x^2-1", None);
-        assert!(
-            body.thumbnail(Rect::new(0.0, 0.0, 60.0, 30.0)).is_some(),
-            "a curve plots"
-        );
-        assert!(
-            GraphBody::new(GraphKind::Surface3d, "x*y", None)
-                .samples
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_blank_function_row_is_not_read_as_its_id() {
-        let added = Did::Edit(FieldEdit {
-            ty: "plot-fn".into(),
-            field: "funcs".into(),
-            path: vec![
-                PathStep::Field("funcs".into()),
-                PathStep::Item("row".into()),
-            ],
-            op: EditOp::Insert,
-            old: None,
-            new: None,
-            args: std::collections::BTreeMap::new(),
-        });
-        assert!(
-            CalculatorEntries::default()
-                .face(&entry(added.clone(), Some("row")))
-                .is_none(),
-            "a blank row has no formula to show"
-        );
-        let face = CalculatorEntries::default()
-            .face(&entry(added, Some("x^2")))
-            .expect("a row added with its formula shows it");
-        assert_eq!(face.spoken, "y = x^2");
-        assert!(
-            CalculatorEntries::default()
+        phase a_calculation_reads_as_itself_opens_and_copies_its_result;
+        {
+            let face = CalculatorEntries::default()
                 .face(&entry(
-                    formula_edit("funcs", EditOp::Replace, None),
-                    Some("row")
+                    verb(
+                        "commit-history",
+                        &[("expr", "sqrt(2)/2"), ("result", "0.7071")],
+                    ),
+                    None,
                 ))
-                .is_none(),
-            "a formula cleared to nothing is not read as the row's id"
-        );
-    }
+                .expect("a calculation has a face");
+            assert_eq!(face.spoken, "sqrt(2)/2 = 0.7071");
+            assert_eq!(face.copy.as_deref(), Some("0.7071"));
+            assert!(face.opens, "choosing it puts it back into the calculator");
+            assert!(face.body.is_some(), "it is typeset, not a sentence");
+        }
 
-    #[test]
-    fn a_band_counts_its_functions_and_calculations() {
-        let calculation = || {
-            entry(
-                verb("commit-history", &[("expr", "1+2"), ("result", "3")]),
-                None,
-            )
-        };
-        let curve = entry(verb("add-function", &[("formula", "x")]), None);
-        let other = entry(verb("clear-history", &[]), None);
-        let entries = [calculation(), calculation(), curve, other];
-        assert_eq!(
-            CalculatorEntries::default()
-                .group_summary(&entries)
-                .as_deref(),
-            Some("1 function, 2 calculations, 1 other change")
-        );
-        let none = [entry(verb("clear-history", &[]), None)];
-        assert_eq!(CalculatorEntries::default().group_summary(&none), None);
-    }
+        phase a_graph_change_shows_the_function_it_plotted;
+        {
+            let curve = CalculatorEntries::default()
+                .face(&entry(
+                    formula_edit("funcs", EditOp::Replace, Some("x^2-1")),
+                    Some("x^2"),
+                ))
+                .expect("a typed formula has a face");
+            assert_eq!(curve.spoken, "y = x^2-1", "the formula after the change");
+            assert!(!curve.opens && curve.copy.is_none());
 
-    #[test]
-    fn a_band_counts_a_function_once_however_it_was_typed() {
-        let added = entry(
-            Did::Edit(FieldEdit {
+            let surface = CalculatorEntries::default()
+                .face(&entry(verb("add-surface", &[("formula", "x*y")]), None))
+                .expect("an added surface has a face");
+            assert_eq!(surface.spoken, "z = x*y");
+
+            let body = GraphBody::new(GraphKind::Curve2d, "x^2-1", None);
+            assert!(
+                body.thumbnail(Rect::new(0.0, 0.0, 60.0, 30.0)).is_some(),
+                "a curve plots"
+            );
+            assert!(
+                GraphBody::new(GraphKind::Surface3d, "x*y", None)
+                    .samples
+                    .is_empty()
+            );
+        }
+
+        phase a_blank_function_row_is_not_read_as_its_id;
+        {
+            let added = Did::Edit(FieldEdit {
                 ty: "plot-fn".into(),
                 field: "funcs".into(),
                 path: vec![
@@ -610,39 +556,97 @@ mod tests {
                 old: None,
                 new: None,
                 args: std::collections::BTreeMap::new(),
-            }),
-            Some("row"),
-        );
-        let typed = |text: &str| entry(formula_edit("funcs", EditOp::Replace, Some(text)), None);
-        let entries = [added, typed("x"), typed("x^"), typed("x^2")];
-        assert_eq!(
-            CalculatorEntries::default()
-                .group_summary(&entries)
-                .as_deref(),
-            Some("1 function")
-        );
-    }
-
-    #[test]
-    fn other_changes_read_as_their_sentence() {
-        for what in [
-            verb("clear-history", &[]),
-            verb("delete-function", &[("function", "row")]),
-            Did::Edit(FieldEdit {
-                ty: "plot-fn".into(),
-                field: "visible".into(),
-                path: vec![PathStep::Field("funcs".into())],
-                op: EditOp::Set,
-                old: None,
-                new: Some(Scalar::of(&false).unwrap()),
-                args: std::collections::BTreeMap::new(),
-            }),
-        ] {
+            });
             assert!(
                 CalculatorEntries::default()
-                    .face(&entry(what, Some("x")))
-                    .is_none()
+                    .face(&entry(added.clone(), Some("row")))
+                    .is_none(),
+                "a blank row has no formula to show"
             );
+            let face = CalculatorEntries::default()
+                .face(&entry(added, Some("x^2")))
+                .expect("a row added with its formula shows it");
+            assert_eq!(face.spoken, "y = x^2");
+            assert!(
+                CalculatorEntries::default()
+                    .face(&entry(
+                        formula_edit("funcs", EditOp::Replace, None),
+                        Some("row")
+                    ))
+                    .is_none(),
+                "a formula cleared to nothing is not read as the row's id"
+            );
+        }
+
+        phase a_band_counts_its_functions_and_calculations;
+        {
+            let calculation = || {
+                entry(
+                    verb("commit-history", &[("expr", "1+2"), ("result", "3")]),
+                    None,
+                )
+            };
+            let curve = entry(verb("add-function", &[("formula", "x")]), None);
+            let other = entry(verb("clear-history", &[]), None);
+            let entries = [calculation(), calculation(), curve, other];
+            assert_eq!(
+                CalculatorEntries::default()
+                    .group_summary(&entries)
+                    .as_deref(),
+                Some("1 function, 2 calculations, 1 other change")
+            );
+            let none = [entry(verb("clear-history", &[]), None)];
+            assert_eq!(CalculatorEntries::default().group_summary(&none), None);
+        }
+
+        phase a_band_counts_a_function_once_however_it_was_typed;
+        {
+            let added = entry(
+                Did::Edit(FieldEdit {
+                    ty: "plot-fn".into(),
+                    field: "funcs".into(),
+                    path: vec![
+                        PathStep::Field("funcs".into()),
+                        PathStep::Item("row".into()),
+                    ],
+                    op: EditOp::Insert,
+                    old: None,
+                    new: None,
+                    args: std::collections::BTreeMap::new(),
+                }),
+                Some("row"),
+            );
+            let typed = |text: &str| entry(formula_edit("funcs", EditOp::Replace, Some(text)), None);
+            let entries = [added, typed("x"), typed("x^"), typed("x^2")];
+            assert_eq!(
+                CalculatorEntries::default()
+                    .group_summary(&entries)
+                    .as_deref(),
+                Some("1 function")
+            );
+        }
+
+        phase other_changes_read_as_their_sentence;
+        {
+            for what in [
+                verb("clear-history", &[]),
+                verb("delete-function", &[("function", "row")]),
+                Did::Edit(FieldEdit {
+                    ty: "plot-fn".into(),
+                    field: "visible".into(),
+                    path: vec![PathStep::Field("funcs".into())],
+                    op: EditOp::Set,
+                    old: None,
+                    new: Some(Scalar::of(&false).unwrap()),
+                    args: std::collections::BTreeMap::new(),
+                }),
+            ] {
+                assert!(
+                    CalculatorEntries::default()
+                        .face(&entry(what, Some("x")))
+                        .is_none()
+                );
+            }
         }
     }
 }

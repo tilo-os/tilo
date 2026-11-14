@@ -443,23 +443,116 @@ fn restart_after_flatpak_mutation_revalidates_real_output_before_promotion() {
     );
 }
 
-#[test]
-fn restart_metadata_fifo_and_symlink_are_refused_without_blocking() {
-    use std::os::unix::{ffi::OsStrExt as _, fs::symlink};
-    let (_temp, request, runner) = fixture(false);
-    let fifo = request.private_journals.join("user-transfer-intent.json");
-    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
-    // SAFETY: terminated fixture path; creates no object outside temporary tree.
-    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-    assert!(review(request.clone(), runner.applications()).is_err());
-    std::fs::remove_file(&fifo).unwrap();
-    symlink(request.source_home.join("personal"), &fifo).unwrap();
-    assert!(review(request.clone(), runner.applications()).is_err());
-    assert!(!request.target_home.exists());
-    assert_eq!(
-        std::fs::read(request.source_home.join("personal")).unwrap(),
-        b"personal"
-    );
+tilo_test_env::scenario! {
+    /// Restarting a user transfer, or retrying its application phase.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_restarted_or_interrupted_transfer_revalidates_before_it_continues;
+
+    phase restart_metadata_fifo_and_symlink_are_refused_without_blocking;
+    {
+        use std::os::unix::{ffi::OsStrExt as _, fs::symlink};
+        let (_temp, request, runner) = fixture(false);
+        let fifo = request.private_journals.join("user-transfer-intent.json");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: terminated fixture path; creates no object outside temporary tree.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(review(request.clone(), runner.applications()).is_err());
+        std::fs::remove_file(&fifo).unwrap();
+        symlink(request.source_home.join("personal"), &fifo).unwrap();
+        assert!(review(request.clone(), runner.applications()).is_err());
+        assert!(!request.target_home.exists());
+        assert_eq!(
+            std::fs::read(request.source_home.join("personal")).unwrap(),
+            b"personal"
+        );
+    }
+
+    phase interrupted_app_phase_refuses_changed_userdata_before_any_retry_command;
+    {
+        let (_temp, request, runner) = fixture(true);
+        *runner.replies.borrow_mut().back_mut().unwrap() = Err("interrupted transaction".into());
+        let reviewed = review(request.clone(), runner.applications()).unwrap();
+        assert!(
+            !reviewed
+                .execute(&runner, &AtomicBool::new(false), false, |_| {})
+                .unwrap()
+                .complete()
+        );
+        std::fs::write(
+            request
+                .target_home
+                .join(".var/app/org.example.App/data/session"),
+            b"lost userdata",
+        )
+        .unwrap();
+        let (_fresh_temp, _fresh_request, fresh) = fixture(true);
+        runner
+            .replies
+            .borrow_mut()
+            .extend(fresh.replies.borrow_mut().drain(..));
+        let before = runner
+            .calls
+            .borrow()
+            .iter()
+            .filter(|args| args.first().map(String::as_str) == Some("install"))
+            .count();
+        assert!(recover(&runner, request.clone(), runner.applications()).is_err());
+        assert_eq!(
+            runner
+                .calls
+                .borrow()
+                .iter()
+                .filter(|args| args.first().map(String::as_str) == Some("install"))
+                .count(),
+            before
+        );
+        assert_eq!(
+            std::fs::read(
+                request
+                    .source_home
+                    .join(".var/app/org.example.App/data/session")
+            )
+            .unwrap(),
+            b"session"
+        );
+    }
+
+    phase application_retry_preserves_target_user_edits_and_refuses_unverified_adoption;
+    {
+        let (_temp, request, runner) = fixture(true);
+        *runner.replies.borrow_mut().back_mut().unwrap() = Err("repository offline".into());
+        let reviewed = review(request.clone(), runner.applications()).unwrap();
+        assert!(
+            !reviewed
+                .execute(&runner, &AtomicBool::new(false), false, |_| {})
+                .unwrap()
+                .complete()
+        );
+        std::fs::write(request.target_home.join("personal"), b"target-user-edit").unwrap();
+        let before = runner.calls.borrow().len();
+        assert!(
+            reviewed
+                .execute(&runner, &AtomicBool::new(false), true, |_| {})
+                .is_err()
+        );
+        assert_eq!(runner.calls.borrow().len(), before);
+        assert_eq!(
+            std::fs::read(request.target_home.join("personal")).unwrap(),
+            b"target-user-edit"
+        );
+        assert_eq!(
+            std::fs::read(request.source_home.join("personal")).unwrap(),
+            b"personal"
+        );
+        assert!(
+            reviewed
+                .review_promotion(
+                    &request.target_home.parent().unwrap().join("active-home"),
+                    &request.private_journals.join("adoption")
+                )
+                .is_err()
+        );
+    }
 }
 
 #[test]
@@ -517,55 +610,6 @@ fn interrupted_sealed_app_phase_redeploys_only_the_unit_and_preserves_user_data(
         b"personal"
     );
 }
-#[test]
-fn interrupted_app_phase_refuses_changed_userdata_before_any_retry_command() {
-    let (_temp, request, runner) = fixture(true);
-    *runner.replies.borrow_mut().back_mut().unwrap() = Err("interrupted transaction".into());
-    let reviewed = review(request.clone(), runner.applications()).unwrap();
-    assert!(
-        !reviewed
-            .execute(&runner, &AtomicBool::new(false), false, |_| {})
-            .unwrap()
-            .complete()
-    );
-    std::fs::write(
-        request
-            .target_home
-            .join(".var/app/org.example.App/data/session"),
-        b"lost userdata",
-    )
-    .unwrap();
-    let (_fresh_temp, _fresh_request, fresh) = fixture(true);
-    runner
-        .replies
-        .borrow_mut()
-        .extend(fresh.replies.borrow_mut().drain(..));
-    let before = runner
-        .calls
-        .borrow()
-        .iter()
-        .filter(|args| args.first().map(String::as_str) == Some("install"))
-        .count();
-    assert!(recover(&runner, request.clone(), runner.applications()).is_err());
-    assert_eq!(
-        runner
-            .calls
-            .borrow()
-            .iter()
-            .filter(|args| args.first().map(String::as_str) == Some("install"))
-            .count(),
-        before
-    );
-    assert_eq!(
-        std::fs::read(
-            request
-                .source_home
-                .join(".var/app/org.example.App/data/session")
-        )
-        .unwrap(),
-        b"session"
-    );
-}
 
 #[test]
 fn headless_worker_join_releases_source_leases_only_after_terminal_event() {
@@ -594,43 +638,6 @@ fn headless_worker_join_releases_source_leases_only_after_terminal_event() {
     worker.join_finished().unwrap();
     assert!(released.load(Ordering::SeqCst));
     worker.join_finished().unwrap();
-}
-
-#[test]
-fn application_retry_preserves_target_user_edits_and_refuses_unverified_adoption() {
-    let (_temp, request, runner) = fixture(true);
-    *runner.replies.borrow_mut().back_mut().unwrap() = Err("repository offline".into());
-    let reviewed = review(request.clone(), runner.applications()).unwrap();
-    assert!(
-        !reviewed
-            .execute(&runner, &AtomicBool::new(false), false, |_| {})
-            .unwrap()
-            .complete()
-    );
-    std::fs::write(request.target_home.join("personal"), b"target-user-edit").unwrap();
-    let before = runner.calls.borrow().len();
-    assert!(
-        reviewed
-            .execute(&runner, &AtomicBool::new(false), true, |_| {})
-            .is_err()
-    );
-    assert_eq!(runner.calls.borrow().len(), before);
-    assert_eq!(
-        std::fs::read(request.target_home.join("personal")).unwrap(),
-        b"target-user-edit"
-    );
-    assert_eq!(
-        std::fs::read(request.source_home.join("personal")).unwrap(),
-        b"personal"
-    );
-    assert!(
-        reviewed
-            .review_promotion(
-                &request.target_home.parent().unwrap().join("active-home"),
-                &request.private_journals.join("adoption")
-            )
-            .is_err()
-    );
 }
 
 #[test]

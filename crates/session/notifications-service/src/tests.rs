@@ -41,146 +41,259 @@ fn shown(id: u32, actions: &[(&str, &str)]) -> Notification {
     }
 }
 
-#[test]
-fn alloc_id_is_monotonic_and_never_zero() {
-    let notifications = Notifications::new();
-    let a = notifications.alloc_id();
-    let c = notifications.alloc_id();
-    assert_ne!(a, 0);
-    assert!(c > a, "ids must be monotonic: {a} then {c}");
-}
+tilo_test_env::scenario! {
+    fn the_session_takes_arrivals_and_closes_through_the_handle;
 
-#[test]
-fn arrivals_drain_once_in_order_and_wake_the_session() {
-    let notifications = Notifications::new();
-    let woken = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&woken);
-    notifications.on_change(move || {
-        counter.fetch_add(1, Ordering::SeqCst);
-    });
-    notifications.push(shown(1, &[]));
-    assert!(notifications.request_close(1));
-    assert_eq!(woken.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        notifications.drain(),
-        vec![Arrival::Notify(shown(1, &[])), Arrival::Close(1)]
-    );
-    assert!(notifications.drain().is_empty());
-    assert!(
-        !notifications.request_close(1),
-        "a closed notification closes once"
-    );
-}
+    phase alloc_id_is_monotonic_and_never_zero;
+    {
+        let notifications = Notifications::new();
+        let a = notifications.alloc_id();
+        let c = notifications.alloc_id();
+        assert_ne!(a, 0);
+        assert!(c > a, "ids must be monotonic: {a} then {c}");
+    }
 
-#[test]
-fn a_notification_is_live_until_it_closes() {
-    let notifications = Notifications::new();
-    notifications.push(shown(4, &[]));
-    assert_eq!(notifications.live().len(), 1);
-    assert!(notifications.closed(4, CloseReason::Expired));
-    assert!(notifications.live().is_empty());
-    assert!(!notifications.closed(4, CloseReason::Dismissed));
-    assert!(
-        notifications
-            .drain()
-            .iter()
-            .all(|arrival| matches!(arrival, Arrival::Notify(_))),
-        "a close the session made is not handed back to it"
-    );
-}
-
-#[test]
-fn close_reasons_use_the_spec_codes() {
-    assert_eq!(CloseReason::Expired.code(), 1);
-    assert_eq!(CloseReason::Dismissed.code(), 2);
-    assert_eq!(CloseReason::Closed.code(), 3);
-}
-
-#[test]
-fn each_live_notification_is_a_resource_with_its_banners_actions() {
-    let notifications = Notifications::new();
-    notifications.push(shown(3, &[("default", "Open"), (INLINE_REPLY, "Reply")]));
-    notifications.push(Notification {
-        summary: String::new(),
-        ..shown(5, &[])
-    });
-
-    let published = notifications.resources();
-    let root = published.first().expect("the notifications resource");
-    assert_eq!(root.id.as_str(), NOTIFICATIONS_RESOURCE);
-    assert_eq!(root.kind, NOTIFICATIONS_KIND);
-    let [replying, plain] = root.children.as_slice() else {
-        panic!(
-            "one resource per live notification, not {}",
-            root.children.len()
+    phase arrivals_drain_once_in_order_and_wake_the_session;
+    {
+        let notifications = Notifications::new();
+        let woken = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&woken);
+        notifications.on_change(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        notifications.push(shown(1, &[]));
+        assert!(notifications.request_close(1));
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            notifications.drain(),
+            vec![Arrival::Notify(shown(1, &[])), Arrival::Close(1)]
         );
-    };
-    assert_eq!(replying.id.as_str(), notification_resource(3));
-    assert_eq!(replying.kind, NOTIFICATION_KIND);
-    assert_eq!(replying.label, "Invoice");
-    assert_eq!(
-        replying
-            .presentation
-            .as_ref()
-            .and_then(|p| p.preview.as_deref()),
-        Some("Due Friday")
-    );
-    let ids = |resource: &tilo_actions::ResourceSpec| {
-        resource
+        assert!(notifications.drain().is_empty());
+        assert!(
+            !notifications.request_close(1),
+            "a closed notification closes once"
+        );
+    }
+
+    phase a_notification_is_live_until_it_closes;
+    {
+        let notifications = Notifications::new();
+        notifications.push(shown(4, &[]));
+        assert_eq!(notifications.live().len(), 1);
+        assert!(notifications.closed(4, CloseReason::Expired));
+        assert!(notifications.live().is_empty());
+        assert!(!notifications.closed(4, CloseReason::Dismissed));
+        assert!(
+            notifications
+                .drain()
+                .iter()
+                .all(|arrival| matches!(arrival, Arrival::Notify(_))),
+            "a close the session made is not handed back to it"
+        );
+    }
+
+    phase close_reasons_use_the_spec_codes;
+    {
+        assert_eq!(CloseReason::Expired.code(), 1);
+        assert_eq!(CloseReason::Dismissed.code(), 2);
+        assert_eq!(CloseReason::Closed.code(), 3);
+    }
+}
+
+tilo_test_env::scenario! {
+    fn notifications_schedules_and_priority_contacts_are_resources;
+
+    phase each_live_notification_is_a_resource_with_its_banners_actions;
+    {
+        let notifications = Notifications::new();
+        notifications.push(shown(3, &[("default", "Open"), (INLINE_REPLY, "Reply")]));
+        notifications.push(Notification {
+            summary: String::new(),
+            ..shown(5, &[])
+        });
+
+        let published = notifications.resources();
+        let root = published.first().expect("the notifications resource");
+        assert_eq!(root.id.as_str(), NOTIFICATIONS_RESOURCE);
+        assert_eq!(root.kind, NOTIFICATIONS_KIND);
+        let [replying, plain] = root.children.as_slice() else {
+            panic!(
+                "one resource per live notification, not {}",
+                root.children.len()
+            );
+        };
+        assert_eq!(replying.id.as_str(), notification_resource(3));
+        assert_eq!(replying.kind, NOTIFICATION_KIND);
+        assert_eq!(replying.label, "Invoice");
+        assert_eq!(
+            replying
+                .presentation
+                .as_ref()
+                .and_then(|p| p.preview.as_deref()),
+            Some("Due Friday")
+        );
+        let ids = |resource: &tilo_actions::ResourceSpec| {
+            resource
+                .actions
+                .iter()
+                .map(|action| action.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(replying), ["close", "invoke", "reply"]);
+        assert_eq!(plain.label, "Mail", "no summary: listed by its app");
+        assert_eq!(ids(plain), ["close"], "nothing to invoke or answer");
+    }
+
+    phase each_notification_reads_as_its_data_and_poll_sees_changes;
+    {
+        let mut notifications = Notifications::new();
+        assert!(!notifications.poll());
+        notifications.push(Notification {
+            image_data: Some(ImageData {
+                width: 1,
+                height: 1,
+                rgba: vec![0, 0, 0, 255],
+            }),
+            ..shown(3, &[("default", "Open")])
+        });
+        assert!(notifications.poll());
+        assert!(!notifications.poll(), "nothing changed since");
+
+        let read = notifications
+            .read(&notification_resource(3))
+            .expect("a live notification reads");
+        let back: Notification = serde_json::from_value(read).expect("its data");
+        assert_eq!(back, shown(3, &[("default", "Open")]), "without its pixels");
+        let all = notifications
+            .read(NOTIFICATIONS_RESOURCE)
+            .expect("the root reads");
+        assert_eq!(all.as_array().map(Vec::len), Some(1));
+        assert_eq!(notifications.read(&notification_resource(9)), None);
+
+        assert!(notifications.closed(3, CloseReason::Expired));
+        assert!(notifications.poll());
+        assert_eq!(notifications.read(&notification_resource(3)), None);
+    }
+
+    phase invoking_a_key_the_notification_does_not_offer_is_refused;
+    {
+        let notifications = Notifications::new();
+        notifications.push(shown(3, &[("default", "Open")]));
+        let refused = services(&notifications)
+            .invoke(
+                &notification_resource(3),
+                "invoke",
+                &arguments(json!({ "action": "delete-everything" })),
+            )
+            .expect("published");
+        assert!(refused.is_err());
+        assert_eq!(notifications.live().len(), 1, "still shown");
+    }
+
+    phase deadlines_are_scheduled_delivered_snoozed_and_cancelled_through_their_resources;
+    {
+        let notifications = Notifications::new();
+        let mut services = services(&notifications);
+        let due = chrono::DateTime::parse_from_rfc3339("2026-04-14T12:00:00+00:00").expect("instant");
+        let done = services
+            .invoke(
+                SCHEDULES_RESOURCE,
+                "schedule",
+                &arguments(json!({
+                    "app_id": "so.tilo.clocks",
+                    "tag": "wake",
+                    "title": "Wake up",
+                    "activation": "tilo-clocks:alarm/1",
+                    "at_ms": due.timestamp_millis(),
+                    "alarm_hour": 12,
+                })),
+            )
+            .expect("published");
+        assert!(done.is_ok(), "{done:?}");
+        assert!(services.poll(), "the deadline is news");
+        let [deadline] = notifications
+            .schedules()
+            .deadlines()
+            .try_into()
+            .expect("one");
+        let resource = schedule_resource(&deadline.token);
+        assert!(
+            services
+                .read(&resource)
+                .is_some_and(|reading| reading["tag"] == "wake"),
+            "each deadline reads as itself"
+        );
+
+        notifications.deliver_due(&due);
+        let [rung] = arrived(&notifications).try_into().expect("it rings");
+        let occurrence = rung.scheduled.clone().expect("its deadline");
+        assert!(occurrence.calendar_alarm);
+        assert_eq!(occurrence.uri, "tilo-clocks:alarm/1");
+        let snoozed = services
+            .invoke(
+                &notification_resource(rung.id),
+                "invoke",
+                &arguments(json!({ "action": scheduled::SNOOZE })),
+            )
+            .expect("published");
+        assert!(snoozed.is_ok(), "{snoozed:?}");
+        let reading = services.read(&resource).expect("still scheduled");
+        assert!(reading["snoozed_until"].is_i64(), "{reading}");
+        let actions: Vec<String> = notifications.resources()[1].children[0]
             .actions
             .iter()
             .map(|action| action.id.clone())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(ids(replying), ["close", "invoke", "reply"]);
-    assert_eq!(plain.label, "Mail", "no summary: listed by its app");
-    assert_eq!(ids(plain), ["close"], "nothing to invoke or answer");
-}
+            .collect();
+        assert_eq!(actions, ["cancel", "dismiss-snooze"]);
+        let cancelled = services
+            .invoke(&resource, "cancel", &serde_json::Map::new())
+            .expect("published");
+        assert!(cancelled.is_ok(), "{cancelled:?}");
+        assert!(services.read(&resource).is_none());
+    }
 
-#[test]
-fn each_notification_reads_as_its_data_and_poll_sees_changes() {
-    let mut notifications = Notifications::new();
-    assert!(!notifications.poll());
-    notifications.push(Notification {
-        image_data: Some(ImageData {
-            width: 1,
-            height: 1,
-            rgba: vec![0, 0, 0, 255],
-        }),
-        ..shown(3, &[("default", "Open")])
-    });
-    assert!(notifications.poll());
-    assert!(!notifications.poll(), "nothing changed since");
-
-    let read = notifications
-        .read(&notification_resource(3))
-        .expect("a live notification reads");
-    let back: Notification = serde_json::from_value(read).expect("its data");
-    assert_eq!(back, shown(3, &[("default", "Open")]), "without its pixels");
-    let all = notifications
-        .read(NOTIFICATIONS_RESOURCE)
-        .expect("the root reads");
-    assert_eq!(all.as_array().map(Vec::len), Some(1));
-    assert_eq!(notifications.read(&notification_resource(9)), None);
-
-    assert!(notifications.closed(3, CloseReason::Expired));
-    assert!(notifications.poll());
-    assert_eq!(notifications.read(&notification_resource(3)), None);
-}
-
-#[test]
-fn invoking_a_key_the_notification_does_not_offer_is_refused() {
-    let notifications = Notifications::new();
-    notifications.push(shown(3, &[("default", "Open")]));
-    let refused = services(&notifications)
-        .invoke(
-            &notification_resource(3),
-            "invoke",
-            &arguments(json!({ "action": "delete-everything" })),
-        )
-        .expect("published");
-    assert!(refused.is_err());
-    assert_eq!(notifications.live().len(), 1, "still shown");
+    phase priority_contacts_are_marked_and_unmarked_through_their_resources;
+    {
+        let notifications = Notifications::new();
+        let mut services = services(&notifications);
+        let marked = services
+            .invoke(
+                PRIORITY_CONTACTS_RESOURCE,
+                "mark",
+                &arguments(json!({
+                    "id": "ada",
+                    "name": "Ada Lovelace",
+                    "endpoints": ["ada@example.com"],
+                })),
+            )
+            .expect("published");
+        assert!(marked.is_ok(), "{marked:?}");
+        assert!(notifications.priority_contacts().matches("ada@example.com"));
+        let reading = services.read(PRIORITY_CONTACTS_RESOURCE).expect("read");
+        assert_eq!(reading, json!([{ "id": "ada", "name": "Ada Lovelace" }]));
+        assert!(
+            !reading.to_string().contains("example.com"),
+            "an endpoint is never published"
+        );
+        let resource = priority_contact_resource("ada");
+        assert_eq!(
+            notifications.resources()[2].children[0].id.as_str(),
+            resource
+        );
+        let unmarked = services
+            .invoke(&resource, "unmark", &serde_json::Map::new())
+            .expect("published");
+        assert!(unmarked.is_ok(), "{unmarked:?}");
+        assert!(!notifications.priority_contacts().matches("ada@example.com"));
+        let refused = services
+            .invoke(
+                PRIORITY_CONTACTS_RESOURCE,
+                "mark",
+                &arguments(json!({ "id": "x", "name": "X", "endpoints": ["nope"] })),
+            )
+            .expect("published");
+        assert!(refused.is_err(), "no endpoint to match");
+    }
 }
 
 /// A server and a client over a peer-to-peer link, the daemon served on
@@ -894,111 +1007,6 @@ async fn an_app_schedules_reads_and_cancels_its_own_deadlines() {
         refused.is_err(),
         "an unknown sender keeps no deadlines here"
     );
-}
-
-#[test]
-fn deadlines_are_scheduled_delivered_snoozed_and_cancelled_through_their_resources() {
-    let notifications = Notifications::new();
-    let mut services = services(&notifications);
-    let due = chrono::DateTime::parse_from_rfc3339("2026-04-14T12:00:00+00:00").expect("instant");
-    let done = services
-        .invoke(
-            SCHEDULES_RESOURCE,
-            "schedule",
-            &arguments(json!({
-                "app_id": "so.tilo.clocks",
-                "tag": "wake",
-                "title": "Wake up",
-                "activation": "tilo-clocks:alarm/1",
-                "at_ms": due.timestamp_millis(),
-                "alarm_hour": 12,
-            })),
-        )
-        .expect("published");
-    assert!(done.is_ok(), "{done:?}");
-    assert!(services.poll(), "the deadline is news");
-    let [deadline] = notifications
-        .schedules()
-        .deadlines()
-        .try_into()
-        .expect("one");
-    let resource = schedule_resource(&deadline.token);
-    assert!(
-        services
-            .read(&resource)
-            .is_some_and(|reading| reading["tag"] == "wake"),
-        "each deadline reads as itself"
-    );
-
-    notifications.deliver_due(&due);
-    let [rung] = arrived(&notifications).try_into().expect("it rings");
-    let occurrence = rung.scheduled.clone().expect("its deadline");
-    assert!(occurrence.calendar_alarm);
-    assert_eq!(occurrence.uri, "tilo-clocks:alarm/1");
-    let snoozed = services
-        .invoke(
-            &notification_resource(rung.id),
-            "invoke",
-            &arguments(json!({ "action": scheduled::SNOOZE })),
-        )
-        .expect("published");
-    assert!(snoozed.is_ok(), "{snoozed:?}");
-    let reading = services.read(&resource).expect("still scheduled");
-    assert!(reading["snoozed_until"].is_i64(), "{reading}");
-    let actions: Vec<String> = notifications.resources()[1].children[0]
-        .actions
-        .iter()
-        .map(|action| action.id.clone())
-        .collect();
-    assert_eq!(actions, ["cancel", "dismiss-snooze"]);
-    let cancelled = services
-        .invoke(&resource, "cancel", &serde_json::Map::new())
-        .expect("published");
-    assert!(cancelled.is_ok(), "{cancelled:?}");
-    assert!(services.read(&resource).is_none());
-}
-
-#[test]
-fn priority_contacts_are_marked_and_unmarked_through_their_resources() {
-    let notifications = Notifications::new();
-    let mut services = services(&notifications);
-    let marked = services
-        .invoke(
-            PRIORITY_CONTACTS_RESOURCE,
-            "mark",
-            &arguments(json!({
-                "id": "ada",
-                "name": "Ada Lovelace",
-                "endpoints": ["ada@example.com"],
-            })),
-        )
-        .expect("published");
-    assert!(marked.is_ok(), "{marked:?}");
-    assert!(notifications.priority_contacts().matches("ada@example.com"));
-    let reading = services.read(PRIORITY_CONTACTS_RESOURCE).expect("read");
-    assert_eq!(reading, json!([{ "id": "ada", "name": "Ada Lovelace" }]));
-    assert!(
-        !reading.to_string().contains("example.com"),
-        "an endpoint is never published"
-    );
-    let resource = priority_contact_resource("ada");
-    assert_eq!(
-        notifications.resources()[2].children[0].id.as_str(),
-        resource
-    );
-    let unmarked = services
-        .invoke(&resource, "unmark", &serde_json::Map::new())
-        .expect("published");
-    assert!(unmarked.is_ok(), "{unmarked:?}");
-    assert!(!notifications.priority_contacts().matches("ada@example.com"));
-    let refused = services
-        .invoke(
-            PRIORITY_CONTACTS_RESOURCE,
-            "mark",
-            &arguments(json!({ "id": "x", "name": "X", "endpoints": ["nope"] })),
-        )
-        .expect("published");
-    assert!(refused.is_err(), "no endpoint to match");
 }
 
 #[tokio::test]

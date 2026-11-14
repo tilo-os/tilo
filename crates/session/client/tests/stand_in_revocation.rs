@@ -36,7 +36,7 @@ use crate::support::{enrol, place, ready, start_host, start_peer, wait_for};
 )]
 async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "Browser in a tab", DeviceCapabilities::member());
     let stand_in_key = SigningKey::from_bytes(&[0x5a; 32]);
     let day = 24 * 60 * 60 * 1_000_000_000;

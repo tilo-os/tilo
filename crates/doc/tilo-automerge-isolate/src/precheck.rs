@@ -129,59 +129,148 @@ mod tests {
         saved_with_end().0
     }
 
-    #[test]
-    fn real_storage_passes_and_every_truncation_is_refused_or_still_framed() {
-        let limits = Limits::default();
-        let (bytes, first_chunk_end) = saved_with_end();
-        check(&bytes, &limits).unwrap();
-        check(&[], &limits).unwrap();
-        for cut in 1..bytes.len() {
-            let outcome = check(bytes.get(..cut).unwrap(), &limits);
-            if cut == first_chunk_end {
-                assert!(outcome.is_ok(), "a whole chunk is well framed");
-            } else {
-                assert!(outcome.is_err(), "cut at {cut} passed");
+    /// Framing faults, and the framing nearest to each that is sound: what
+    /// the input is, its bytes, and what the check says of it.
+    fn framing_cases() -> Vec<(&'static str, Vec<u8>, Result<(), Rejected>)> {
+        // A change chunk's header, to which a case adds its length and body.
+        let header = |length: &[u8]| {
+            let mut bytes = MAGIC.to_vec();
+            bytes.extend([0; 4]);
+            bytes.push(1);
+            bytes.extend(length);
+            bytes
+        };
+        // Real storage whose first chunk says it is of another type.
+        let of_type = |kind: u8| {
+            let mut bytes = saved();
+            *bytes.get_mut(8).unwrap() = kind;
+            bytes
+        };
+        let mut trailing = saved();
+        trailing.push(0);
+        let mut overlong = vec![0xff; 9];
+        overlong.push(0x02);
+        let mut all_bits = vec![0xff; 9];
+        all_bits.push(0x01);
+        vec![
+            (
+                "a trailing byte",
+                trailing,
+                Err(Rejected::Malformed("truncated chunk header")),
+            ),
+            (
+                "an unknown chunk type",
+                of_type(9),
+                Err(Rejected::Malformed("unknown chunk type")),
+            ),
+            (
+                "the lowest unknown chunk type",
+                of_type(4),
+                Err(Rejected::Malformed("unknown chunk type")),
+            ),
+            ("the highest known chunk type", of_type(3), Ok(())),
+            (
+                "bytes that are no chunk",
+                vec![0; 16],
+                Err(Rejected::Malformed("not an automerge chunk")),
+            ),
+            (
+                "a length that does not fit in 64 bits",
+                header(&overlong),
+                Err(Rejected::Malformed("chunk length overflows")),
+            ),
+            (
+                "a length of all 64 bits",
+                header(&all_bits),
+                Err(Rejected::Malformed("chunk longer than input")),
+            ),
+            (
+                "a length that never ends",
+                header(&[0x80; 10]),
+                Err(Rejected::Malformed("truncated chunk length")),
+            ),
+            (
+                "a body one byte short",
+                header(&[1]),
+                Err(Rejected::Malformed("chunk longer than input")),
+            ),
+            ("an empty body", header(&[0]), Ok(())),
+        ]
+    }
+
+    tilo_test_env::scenario! {
+        fn check_passes_sound_framing_and_refuses_what_is_malformed_or_past_a_ceiling;
+
+        phase real_storage_passes_and_every_truncation_is_refused_or_still_framed;
+        {
+            let limits = Limits::default();
+            let (bytes, first_chunk_end) = saved_with_end();
+            check(&bytes, &limits).unwrap();
+            check(&[], &limits).unwrap();
+            for cut in 1..bytes.len() {
+                let outcome = check(bytes.get(..cut).unwrap(), &limits);
+                if cut == first_chunk_end {
+                    assert!(outcome.is_ok(), "a whole chunk is well framed");
+                } else {
+                    assert!(outcome.is_err(), "cut at {cut} passed");
+                }
             }
         }
-    }
 
-    #[test]
-    fn refuses_trailing_bytes_unknown_types_and_oversize() {
-        let limits = Limits::default();
-        let mut bytes = saved();
-        bytes.push(0);
-        assert!(matches!(
-            check(&bytes, &limits),
-            Err(Rejected::Malformed(_))
-        ));
-        let mut unknown = saved();
-        *unknown.get_mut(8).unwrap() = 9;
-        assert!(matches!(
-            check(&unknown, &limits),
-            Err(Rejected::Malformed(_))
-        ));
-        let small = Limits {
-            max_input_bytes: 4,
-            ..Limits::default()
-        };
-        assert_eq!(check(&saved(), &small), Err(Rejected::TooLarge));
-        let one = Limits {
-            max_chunks: 1,
-            ..Limits::default()
-        };
-        assert_eq!(check(&saved(), &one), Err(Rejected::TooLarge));
-    }
+        phase refuses_malformed_framing_and_input_past_a_ceiling_but_not_at_it;
+        {
+            let limits = Limits::default();
+            for (case, bytes, expected) in framing_cases() {
+                assert_eq!(check(&bytes, &limits), expected, "{case}");
+            }
 
-    #[test]
-    fn refuses_a_length_that_does_not_fit_in_64_bits() {
-        let mut bytes = MAGIC.to_vec();
-        bytes.extend([0; 4]);
-        bytes.push(1);
-        bytes.extend([0xff; 9]);
-        bytes.push(0x02);
-        assert!(matches!(
-            check(&bytes, &Limits::default()),
-            Err(Rejected::Malformed(_))
-        ));
+            // Two chunks: the ceilings refuse one byte or one chunk past them and
+            // admit input that is exactly at them.
+            let bytes = saved();
+            for (case, max_input_bytes, max_chunks, expected) in [
+                ("a 4 byte ceiling", 4, usize::MAX, Err(Rejected::TooLarge)),
+                (
+                    "one byte past the byte ceiling",
+                    bytes.len().saturating_sub(1),
+                    usize::MAX,
+                    Err(Rejected::TooLarge),
+                ),
+                ("exactly the byte ceiling", bytes.len(), usize::MAX, Ok(())),
+                (
+                    "one chunk past the chunk ceiling",
+                    usize::MAX,
+                    1,
+                    Err(Rejected::TooLarge),
+                ),
+                ("exactly the chunk ceiling", usize::MAX, 2, Ok(())),
+                (
+                    "a chunk ceiling of none",
+                    usize::MAX,
+                    0,
+                    Err(Rejected::TooLarge),
+                ),
+            ] {
+                let limits = Limits {
+                    max_input_bytes,
+                    max_chunks,
+                    ..Limits::default()
+                };
+                assert_eq!(check(&bytes, &limits), expected, "{case}");
+            }
+
+            // Ceilings of nothing admit the empty input, which holds no byte and
+            // no chunk, and refuse one byte.
+            let nothing = Limits {
+                max_input_bytes: 0,
+                max_chunks: 0,
+                ..Limits::default()
+            };
+            assert_eq!(check(&[], &nothing), Ok(()), "nothing, under no ceiling");
+            assert_eq!(
+                check(&[0], &nothing),
+                Err(Rejected::TooLarge),
+                "one byte, under no ceiling"
+            );
+        }
     }
 }

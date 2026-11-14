@@ -29,12 +29,10 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
-use tilo_agent_participant::workspace_actions::{
-    ShellRan, Watching, WorkspaceMember, WorkspaceShell,
-};
+use tilo_agent_participant::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
 use tilo_agent_participant::{
     AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
     FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness,
@@ -47,6 +45,7 @@ use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
 };
 
+use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
 use crate::daemon::{Relay, RelayError, RelayIdentity};
 use crate::peer::AgentRegistry;
@@ -164,7 +163,7 @@ impl AgentHostLink for RelayAgentLink {
         });
     }
 
-    fn workspace_name(&self, workspace: u64) -> Option<String> {
+    fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
         self.runtime
             .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
     }
@@ -201,7 +200,7 @@ impl RelayWitness {
             .delegate
             .agent_id()
             .ok_or(ActionHostError::NotPermitted)?;
-        let its_own = caller.principal() == &CallerPrincipal::Agent(agent_id.to_owned())
+        let its_own = caller.acting().agent_id() == Some(agent_id)
             && caller.user_public_key() == Some(&agent.user_public_key)
             && caller.device_public_key() == Some(&agent.device_public_key);
         if !its_own {
@@ -209,7 +208,9 @@ impl RelayWitness {
         }
         let workspace = caller
             .workspace()
-            .filter(|workspace| agent.scope.rooms.iter().any(|granted| granted == workspace))
+            .filter(|workspace| {
+                WorkspaceId::parse(workspace).is_some_and(|id| agent.scope.workspaces.contains(&id))
+            })
             .ok_or(ActionHostError::NotPermitted)?;
         let mut id = [0_u8; 32];
         getrandom::fill(&mut id).map_err(|error| ActionHostError::Unavailable {
@@ -432,7 +433,7 @@ struct WorkspaceRecordsPlane {
 impl crate::AppServingPlane for WorkspaceRecordsPlane {
     fn serve(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
@@ -459,7 +460,7 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
 
     fn route(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
@@ -468,7 +469,7 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
 
     fn route_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &tilo_user_identity::DeviceCert,
         message: &tilo_actions::remote::RemoteActionMessage,
@@ -480,14 +481,14 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
 
     fn relayed(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::RemoteActionMessage> {
         self.browsers.as_ref()?.relayed(workspace_id, from, message)
     }
 
-    fn tracks(&self, workspace_id: u64) -> bool {
+    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
         self.browsers
             .as_ref()
             .is_some_and(|browsers| browsers.tracks(workspace_id))
@@ -497,11 +498,11 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         Some(Arc::clone(&self.stores))
     }
 
-    fn forget_workspace(&self, workspace_id: u64) {
+    fn forget_workspace(&self, workspace_id: WorkspaceId) {
         self.actions.forget_workspace(workspace_id);
     }
 
-    fn run_arrived(&self, workspace_id: u64, caller: &tilo_actions::remote::Caller) {
+    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
         self.actions.run_arrived(workspace_id, caller);
     }
 }
@@ -509,7 +510,7 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
 impl crate::AppServingPlane for HostActionsPlane {
     fn serve(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
@@ -524,7 +525,7 @@ impl crate::AppServingPlane for HostActionsPlane {
 
     fn route(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
@@ -533,7 +534,7 @@ impl crate::AppServingPlane for HostActionsPlane {
 
     fn route_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &tilo_user_identity::DeviceCert,
         message: &tilo_actions::remote::RemoteActionMessage,
@@ -545,14 +546,14 @@ impl crate::AppServingPlane for HostActionsPlane {
 
     fn relayed(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::RemoteActionMessage> {
         self.browsers.as_ref()?.relayed(workspace_id, from, message)
     }
 
-    fn tracks(&self, workspace_id: u64) -> bool {
+    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
         self.browsers
             .as_ref()
             .is_some_and(|browsers| browsers.tracks(workspace_id))
@@ -562,11 +563,11 @@ impl crate::AppServingPlane for HostActionsPlane {
         Some(Arc::clone(&self.stores))
     }
 
-    fn forget_workspace(&self, workspace_id: u64) {
+    fn forget_workspace(&self, workspace_id: WorkspaceId) {
         self.host.actions.forget_workspace(workspace_id);
     }
 
-    fn run_arrived(&self, workspace_id: u64, caller: &tilo_actions::remote::Caller) {
+    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
         self.host.actions.run_arrived(workspace_id, caller);
     }
 }
@@ -577,7 +578,7 @@ impl crate::AppServingPlane for HostActionsPlane {
 /// than as an app it does not know.
 fn serve_with_browser(
     browsers: Option<&Arc<crate::hosted_browser::HostedBrowsers>>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     _caller: &tilo_actions::remote::Caller,
     message: tilo_actions::remote::RemoteActionMessage,
     serve: impl FnOnce(
@@ -641,7 +642,7 @@ fn serve_with_browser(
 /// The relay's own device, as the workspace actions service joins its workspaces.
 struct RelayRecordsLink {
     user_public_key: [u8; 32],
-    member: WorkspaceMember,
+    host_device: HostDevice,
     workspaces: Option<crate::workspaces::Workspaces>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
@@ -658,15 +659,12 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
     /// are answered.
     fn ask_person(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         caller: &Caller,
         question: tilo_actions::remote::ConfirmationQuestion,
     ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionHostError>>> {
         let person = *caller.user_public_key()?;
-        let agent_id = match caller.principal() {
-            CallerPrincipal::Agent(agent) => agent.clone(),
-            _ => String::new(),
-        };
+        let agent_id = caller.acting().agent_id().unwrap_or_default().to_owned();
         let pending = PendingConfirmation {
             id: question.id,
             agent_id,
@@ -685,7 +683,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         let (completer, answer) = tilo_actions::remote::pending();
         let certification = self.certification.clone();
         let workspaces = self.workspaces.clone();
-        self.member.runtime.spawn(async move {
+        self.host_device.runtime.spawn(async move {
             let mut pending = pending;
             // The person reads the workspace by its name, not its id.
             if let Some(workspaces) = workspaces
@@ -704,9 +702,9 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         Some(answer)
     }
 
-    fn workspace_content(&self, workspace: u64) -> Option<tilo_content::ContentStore> {
+    fn workspace_content(&self, workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         let identity = self
-            .member
+            .host_device
             .runtime
             .block_on(self.workspaces.as_ref()?.workspace_identity(workspace))?;
         self.stores.get(&identity).ok()
@@ -724,19 +722,19 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         self.user_public_key
     }
 
-    fn member(&self) -> WorkspaceMember {
-        self.member.clone()
+    fn host_device(&self) -> HostDevice {
+        self.host_device.clone()
     }
 
-    fn workspace_name(&self, workspace: u64) -> Option<String> {
-        self.member
+    fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
+        self.host_device
             .runtime
             .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
     }
 
-    fn admits(&self, workspace: u64, caller: &tilo_actions::remote::Caller) -> bool {
+    fn admits(&self, workspace: WorkspaceId, caller: &tilo_actions::remote::Caller) -> bool {
         self.workspaces.as_ref().is_some_and(|workspaces| {
-            self.member
+            self.host_device
                 .runtime
                 .block_on(workspaces.admits(workspace, caller))
         })
@@ -744,12 +742,12 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
 
     fn view_read_policy(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         app: &str,
         record: &str,
     ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
-        self.member.runtime.block_on(
+        self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()?
                 .resource_view_policy(workspace, caller, app, record),
@@ -758,10 +756,10 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
 
     fn workspace_policy(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
     ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
-        self.member.runtime.block_on(
+        self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()?
                 .workspace_policy(workspace, caller),
@@ -770,11 +768,11 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
 
     fn view_document(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         source: &tilo_peer_state::document_frame::DocumentRoute,
     ) -> Result<tilo_agent_participant::workspace_actions::ViewDocument, String> {
-        self.member.runtime.block_on(
+        self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()
                 .ok_or("governed workspaces unavailable")?
@@ -787,14 +785,16 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
     ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
-        self.member
+        self.host_device
             .runtime
             .block_on(self.workspaces.as_ref()?.own_route_keys(route, create))
     }
 
     fn records(&self, channel: &str) -> Option<Vec<(String, String)>> {
         let workspaces = self.workspaces.as_ref()?;
-        self.member.runtime.block_on(workspaces.records(channel))
+        self.host_device
+            .runtime
+            .block_on(workspaces.records(channel))
     }
 
     fn view_locator(
@@ -806,15 +806,15 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: (*origin).clone(),
             workspace: workspace.to_owned(),
-            host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
+            host_device: hex::encode(self.host_device.endpoint.host_cert.device_public_key),
             provider: provider.to_owned(),
             web_entry: self.web_entry.clone(),
         })
     }
 
-    fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+    fn bot_personas(&self, workspace: WorkspaceId, installation: &str) -> bool {
         self.workspaces.as_ref().is_some_and(|workspaces| {
-            self.member
+            self.host_device
                 .runtime
                 .block_on(workspaces.bot_personas(workspace, installation))
         })
@@ -824,9 +824,9 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
     /// a bridged person's avatar its bots fetched, a file or a feedback
     /// report's picture a member posted. A relay keeping no content for the
     /// workspace answers none, which refuses an appearance naming an avatar.
-    fn content_blob(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
+    fn content_blob(&self, workspace: WorkspaceId, hash: &str) -> Option<Vec<u8>> {
         let workspaces = self.workspaces.as_ref()?;
-        self.member
+        self.host_device
             .runtime
             .block_on(workspaces.kept_content(workspace, hash))
     }
@@ -939,7 +939,7 @@ fn attach_records(
             feedback_reviewer,
             stores: relay.content(),
             certification: relay.web_context().certification.clone(),
-            member: WorkspaceMember {
+            host_device: HostDevice {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.workspace_records().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),

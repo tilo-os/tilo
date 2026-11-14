@@ -557,178 +557,182 @@ impl RefToken {
 mod tests {
     use super::*;
 
-    #[test]
-    fn references_report_spans_targets_and_colours() {
+    tilo_test_env::scenario! {
+        fn references_parse_move_and_remap;
+
+        phase references_report_spans_targets_and_colours;
         {
-            let spans = references("B9-B7");
-            assert_eq!(spans.len(), 2);
-            assert_eq!(spans[0].tl, a1_to_addr("B9").unwrap());
-            assert_eq!(spans[0].br, a1_to_addr("B9").unwrap());
-            assert_eq!(spans[1].tl, a1_to_addr("B7").unwrap());
-            assert_eq!(&"B9-B7"[spans[0].start..spans[0].end], "B9");
-            assert_eq!(&"B9-B7"[spans[1].start..spans[1].end], "B7");
-            let slots = ref_color_slots(&spans);
-            assert_eq!(slots, vec![0, 1], "two different refs → two colours");
+            {
+                let spans = references("B9-B7");
+                assert_eq!(spans.len(), 2);
+                assert_eq!(spans[0].tl, a1_to_addr("B9").unwrap());
+                assert_eq!(spans[0].br, a1_to_addr("B9").unwrap());
+                assert_eq!(spans[1].tl, a1_to_addr("B7").unwrap());
+                assert_eq!(&"B9-B7"[spans[0].start..spans[0].end], "B9");
+                assert_eq!(&"B9-B7"[spans[1].start..spans[1].end], "B7");
+                let slots = ref_color_slots(&spans);
+                assert_eq!(slots, vec![0, 1], "two different refs → two colours");
+            }
+
+            {
+                let spans = references("SUM(B2:D2)+B2");
+                assert_eq!(spans.len(), 2, "SUM is a call, not a ref");
+                assert_eq!(spans[0].key, "B2:D2");
+                assert_eq!(spans[0].tl, a1_to_addr("B2").unwrap());
+                assert_eq!(spans[0].br, a1_to_addr("D2").unwrap());
+                assert_eq!(spans[1].key, "B2");
+
+                let dup = references("A1+A1");
+                let slots = ref_color_slots(&dup);
+                assert_eq!(slots, vec![0, 0]);
+            }
+
+            {
+                let spans = references("IF(B7>B9,\"A1\",\"B2\")");
+                let keys: Vec<&str> = spans.iter().map(|s| s.key.as_str()).collect();
+                assert_eq!(keys, vec!["B7", "B9"]);
+            }
         }
 
+        phase reference_offsets_and_structural_remaps;
         {
-            let spans = references("SUM(B2:D2)+B2");
-            assert_eq!(spans.len(), 2, "SUM is a call, not a ref");
-            assert_eq!(spans[0].key, "B2:D2");
-            assert_eq!(spans[0].tl, a1_to_addr("B2").unwrap());
-            assert_eq!(spans[0].br, a1_to_addr("D2").unwrap());
-            assert_eq!(spans[1].key, "B2");
+            {
+                assert_eq!(offset_refs("=A1", 0, 1), "=A2");
+                assert_eq!(offset_refs("=A1", 1, 0), "=B1");
+                assert_eq!(offset_refs("=A1", 1, 1), "=B2");
 
-            let dup = references("A1+A1");
-            let slots = ref_color_slots(&dup);
-            assert_eq!(slots, vec![0, 0]);
+                // `$A$1` is fully anchored and never moves anywhere.
+                assert_eq!(offset_refs("=$A$1", 3, 4), "=$A$1");
+                assert_eq!(offset_refs("=$A1", 5, 2), "=$A3");
+                assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
+
+                assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
+                assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
+            }
+
+            {
+                // Function names and quoted string literals are never references.
+                assert_eq!(
+                    offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
+                    "=IF(A2>0,\"A1\",B3)"
+                );
+                assert_eq!(offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
+                assert_eq!(offset_refs("1200", 3, 3), "1200");
+                assert_eq!(offset_refs("=A1+B2", 0, 0), "=A1+B2");
+                // A relative component never underflows past the grid origin.
+                assert_eq!(offset_refs("=A1", -5, -5), "=A1");
+            }
+
+            {
+                let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", GridEdit::InsertRow(0));
+                assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
+
+                let deleted = remap_refs("=SUM(A1:A3)+B2", GridEdit::DeleteRow(1));
+                assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
+            }
+
+            {
+                let row = |raw| remap_refs(raw, GridEdit::DeleteRow(1));
+                assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B2)");
+                assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B1)");
+                assert_eq!(row("=SUM(B1:B3)"), "=SUM(B1:B2)");
+                assert_eq!(row("=SUM(B3:B4)"), "=SUM(B2:B3)");
+                assert_eq!(row("=SUM(B1:C1)"), "=SUM(B1:C1)");
+                assert_eq!(row("=SUM(B2:D2)"), "=SUM(#REF!)");
+                assert_eq!(row("=SUM($B$2:$B$3)"), "=SUM($B$2:$B$2)");
+                assert_eq!(row("=SUM(B$2:$B3)"), "=SUM(B$2:$B2)");
+                assert_eq!(row("=SUM(B3:B2)"), "=SUM(B2:B2)");
+                assert_eq!(row("=SUM(B4 : B2)"), "=SUM(B3 : B2)");
+                assert_eq!(row("=B2+SUM(B2:B3)"), "=#REF!+SUM(B2:B2)");
+
+                let col = |raw| remap_refs(raw, GridEdit::DeleteColumn(1));
+                assert_eq!(col("=SUM(B1:C1)"), "=SUM(B1:B1)");
+                assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:A1)");
+                assert_eq!(col("=SUM($A$1:$C$9)"), "=SUM($A$1:$B$9)");
+                assert_eq!(col("=SUM(C1:D1)"), "=SUM(B1:C1)");
+                assert_eq!(col("=SUM(B1:B9)"), "=SUM(#REF!)");
+                assert_eq!(col("=SUM(C1:B1)"), "=SUM(B1:B1)");
+            }
+
+            {
+                let row = |raw| remap_refs(raw, GridEdit::InsertRow(2));
+                assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B4)");
+                assert_eq!(row("=SUM(B3:B4)"), "=SUM(B4:B5)");
+                assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B2)");
+                let col = |raw| remap_refs(raw, GridEdit::InsertColumn(1));
+                assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:C1)");
+                assert_eq!(col("=SUM($A$1:$A$3)"), "=SUM($A$1:$A$3)");
+            }
         }
 
+        phase whole_rows_and_columns_move_like_ranges;
         {
-            let spans = references("IF(B7>B9,\"A1\",\"B2\")");
-            let keys: Vec<&str> = spans.iter().map(|s| s.key.as_str()).collect();
-            assert_eq!(keys, vec!["B7", "B9"]);
-        }
-    }
+            assert_eq!(offset_refs("=SUM(1:1)", 3, 1), "=SUM(2:2)");
+            assert_eq!(offset_refs("=SUM(A:A)", 1, 3), "=SUM(B:B)");
+            assert_eq!(offset_refs("=SUM($1:3)", 0, 2), "=SUM($1:5)");
+            assert_eq!(offset_refs("=SUM(A:$C)", 2, 0), "=SUM(C:$C)");
+            assert_eq!(offset_refs("=SUM(2 : 4)", 0, -5), "=SUM(1 : 1)");
+            assert_eq!(offset_refs("=SUM(Rates!B:C)", 1, 0), "=SUM(Rates!C:D)");
+            assert_eq!(offset_refs("=1+2*A1", 0, 1), "=1+2*A2");
+            assert_eq!(offset_refs("=A1:B2", 0, 1), "=A2:B3");
+            assert_eq!(offset_refs("=\"1:1\"&A1", 0, 1), "=\"1:1\"&A2");
 
-    #[test]
-    fn reference_offsets_and_structural_remaps() {
-        {
-            assert_eq!(offset_refs("=A1", 0, 1), "=A2");
-            assert_eq!(offset_refs("=A1", 1, 0), "=B1");
-            assert_eq!(offset_refs("=A1", 1, 1), "=B2");
-
-            // `$A$1` is fully anchored and never moves anywhere.
-            assert_eq!(offset_refs("=$A$1", 3, 4), "=$A$1");
-            assert_eq!(offset_refs("=$A1", 5, 2), "=$A3");
-            assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
-
-            assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
-            assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
-        }
-
-        {
-            // Function names and quoted string literals are never references.
+            assert_eq!(remap_refs("=SUM(2:3)", GridEdit::InsertRow(0)), "=SUM(3:4)");
             assert_eq!(
-                offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
-                "=IF(A2>0,\"A1\",B3)"
+                remap_refs("=SUM($2:$3)", GridEdit::InsertRow(2)),
+                "=SUM($2:$4)"
             );
-            assert_eq!(offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
-            assert_eq!(offset_refs("1200", 3, 3), "1200");
-            assert_eq!(offset_refs("=A1+B2", 0, 0), "=A1+B2");
-            // A relative component never underflows past the grid origin.
-            assert_eq!(offset_refs("=A1", -5, -5), "=A1");
+            assert_eq!(remap_refs("=SUM(2:3)", GridEdit::DeleteRow(1)), "=SUM(2:2)");
+            assert_eq!(
+                remap_refs("=SUM(2:2)", GridEdit::DeleteRow(1)),
+                "=SUM(#REF!)"
+            );
+            assert_eq!(
+                remap_refs("=SUM(2:3)", GridEdit::InsertColumn(0)),
+                "=SUM(2:3)"
+            );
+            assert_eq!(
+                remap_refs("=SUM(B:C)", GridEdit::InsertColumn(0)),
+                "=SUM(C:D)"
+            );
+            assert_eq!(
+                remap_refs("=SUM(B:C)", GridEdit::DeleteColumn(2)),
+                "=SUM(B:B)"
+            );
+            assert_eq!(
+                remap_refs("=SUM(A:A)", GridEdit::DeleteColumn(0)),
+                "=SUM(#REF!)"
+            );
+            assert_eq!(remap_refs("=SUM(B:C)", GridEdit::DeleteRow(0)), "=SUM(B:C)");
+            assert_eq!(
+                remap_refs("=SUM(Rates!2:3)", GridEdit::InsertRow(0)),
+                "=SUM(Rates!2:3)"
+            );
         }
 
+        phase references_to_other_sheets;
         {
-            let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", GridEdit::InsertRow(0));
-            assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
-
-            let deleted = remap_refs("=SUM(A1:A3)+B2", GridEdit::DeleteRow(1));
-            assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
+            assert_eq!(
+                remap_refs("=A2+Rates!A2+'Q 3'!B2:B4", GridEdit::InsertRow(0)),
+                "=A3+Rates!A2+'Q 3'!B2:B4",
+                "rows inserted on this sheet do not move them"
+            );
+            assert_eq!(
+                offset_refs("=Rates!A2", 0, 1),
+                "=Rates!A3",
+                "a copy shifts them as any other"
+            );
+            assert_eq!(references("Rates!A2+B1").len(), 1);
+            let renamed = |raw: &str| {
+                rename_sheets(raw, |written| {
+                    (fold_sheet(written) == "rates").then(|| "Q3 rates".to_owned())
+                })
+            };
+            assert_eq!(
+                renamed("=rates!A1+'Rates'!B2:B3+\"Rates!A1\"+Other!A1+A1"),
+                "='Q3 rates'!A1+'Q3 rates'!B2:B3+\"Rates!A1\"+Other!A1+A1"
+            );
+            assert_eq!(renamed("Rates!A1"), "Rates!A1", "no formula");
         }
-
-        {
-            let row = |raw| remap_refs(raw, GridEdit::DeleteRow(1));
-            assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B2)");
-            assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B1)");
-            assert_eq!(row("=SUM(B1:B3)"), "=SUM(B1:B2)");
-            assert_eq!(row("=SUM(B3:B4)"), "=SUM(B2:B3)");
-            assert_eq!(row("=SUM(B1:C1)"), "=SUM(B1:C1)");
-            assert_eq!(row("=SUM(B2:D2)"), "=SUM(#REF!)");
-            assert_eq!(row("=SUM($B$2:$B$3)"), "=SUM($B$2:$B$2)");
-            assert_eq!(row("=SUM(B$2:$B3)"), "=SUM(B$2:$B2)");
-            assert_eq!(row("=SUM(B3:B2)"), "=SUM(B2:B2)");
-            assert_eq!(row("=SUM(B4 : B2)"), "=SUM(B3 : B2)");
-            assert_eq!(row("=B2+SUM(B2:B3)"), "=#REF!+SUM(B2:B2)");
-
-            let col = |raw| remap_refs(raw, GridEdit::DeleteColumn(1));
-            assert_eq!(col("=SUM(B1:C1)"), "=SUM(B1:B1)");
-            assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:A1)");
-            assert_eq!(col("=SUM($A$1:$C$9)"), "=SUM($A$1:$B$9)");
-            assert_eq!(col("=SUM(C1:D1)"), "=SUM(B1:C1)");
-            assert_eq!(col("=SUM(B1:B9)"), "=SUM(#REF!)");
-            assert_eq!(col("=SUM(C1:B1)"), "=SUM(B1:B1)");
-        }
-
-        {
-            let row = |raw| remap_refs(raw, GridEdit::InsertRow(2));
-            assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B4)");
-            assert_eq!(row("=SUM(B3:B4)"), "=SUM(B4:B5)");
-            assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B2)");
-            let col = |raw| remap_refs(raw, GridEdit::InsertColumn(1));
-            assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:C1)");
-            assert_eq!(col("=SUM($A$1:$A$3)"), "=SUM($A$1:$A$3)");
-        }
-    }
-
-    #[test]
-    fn whole_rows_and_columns_move_like_ranges() {
-        assert_eq!(offset_refs("=SUM(1:1)", 3, 1), "=SUM(2:2)");
-        assert_eq!(offset_refs("=SUM(A:A)", 1, 3), "=SUM(B:B)");
-        assert_eq!(offset_refs("=SUM($1:3)", 0, 2), "=SUM($1:5)");
-        assert_eq!(offset_refs("=SUM(A:$C)", 2, 0), "=SUM(C:$C)");
-        assert_eq!(offset_refs("=SUM(2 : 4)", 0, -5), "=SUM(1 : 1)");
-        assert_eq!(offset_refs("=SUM(Rates!B:C)", 1, 0), "=SUM(Rates!C:D)");
-        assert_eq!(offset_refs("=1+2*A1", 0, 1), "=1+2*A2");
-        assert_eq!(offset_refs("=A1:B2", 0, 1), "=A2:B3");
-        assert_eq!(offset_refs("=\"1:1\"&A1", 0, 1), "=\"1:1\"&A2");
-
-        assert_eq!(remap_refs("=SUM(2:3)", GridEdit::InsertRow(0)), "=SUM(3:4)");
-        assert_eq!(
-            remap_refs("=SUM($2:$3)", GridEdit::InsertRow(2)),
-            "=SUM($2:$4)"
-        );
-        assert_eq!(remap_refs("=SUM(2:3)", GridEdit::DeleteRow(1)), "=SUM(2:2)");
-        assert_eq!(
-            remap_refs("=SUM(2:2)", GridEdit::DeleteRow(1)),
-            "=SUM(#REF!)"
-        );
-        assert_eq!(
-            remap_refs("=SUM(2:3)", GridEdit::InsertColumn(0)),
-            "=SUM(2:3)"
-        );
-        assert_eq!(
-            remap_refs("=SUM(B:C)", GridEdit::InsertColumn(0)),
-            "=SUM(C:D)"
-        );
-        assert_eq!(
-            remap_refs("=SUM(B:C)", GridEdit::DeleteColumn(2)),
-            "=SUM(B:B)"
-        );
-        assert_eq!(
-            remap_refs("=SUM(A:A)", GridEdit::DeleteColumn(0)),
-            "=SUM(#REF!)"
-        );
-        assert_eq!(remap_refs("=SUM(B:C)", GridEdit::DeleteRow(0)), "=SUM(B:C)");
-        assert_eq!(
-            remap_refs("=SUM(Rates!2:3)", GridEdit::InsertRow(0)),
-            "=SUM(Rates!2:3)"
-        );
-    }
-
-    #[test]
-    fn references_to_other_sheets() {
-        assert_eq!(
-            remap_refs("=A2+Rates!A2+'Q 3'!B2:B4", GridEdit::InsertRow(0)),
-            "=A3+Rates!A2+'Q 3'!B2:B4",
-            "rows inserted on this sheet do not move them"
-        );
-        assert_eq!(
-            offset_refs("=Rates!A2", 0, 1),
-            "=Rates!A3",
-            "a copy shifts them as any other"
-        );
-        assert_eq!(references("Rates!A2+B1").len(), 1);
-        let renamed = |raw: &str| {
-            rename_sheets(raw, |written| {
-                (fold_sheet(written) == "rates").then(|| "Q3 rates".to_owned())
-            })
-        };
-        assert_eq!(
-            renamed("=rates!A1+'Rates'!B2:B3+\"Rates!A1\"+Other!A1+A1"),
-            "='Q3 rates'!A1+'Q3 rates'!B2:B3+\"Rates!A1\"+Other!A1+A1"
-        );
-        assert_eq!(renamed("Rates!A1"), "Rates!A1", "no formula");
     }
 }

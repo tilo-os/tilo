@@ -36,6 +36,28 @@ pub(super) fn partition(rect: Rect, n: usize) -> Vec<Rect> {
         .collect()
 }
 
+/// `rect` shared equally among the segments of `naturals` (full label, short label), each showing
+/// its short form where its full label does not fit its share; nothing at all where no sharing
+/// fits every choice: a strip given the whole row of a settings sheet keeps one segment per
+/// choice at the same width, and no segment narrower than what it says.
+pub(super) fn shared(rect: Rect, naturals: &[(f64, f64)]) -> Option<(Vec<Rect>, Vec<bool>)> {
+    let n = naturals.len();
+    if n == 0 {
+        return None;
+    }
+    let share = rect.width() / f64_of_usize(n);
+    let fits = naturals
+        .iter()
+        .all(|(full, short)| full.min(*short) <= share + 0.5);
+    fits.then(|| {
+        let use_short = naturals
+            .iter()
+            .map(|(full, _)| *full > share + 0.5)
+            .collect();
+        (partition(rect, n), use_short)
+    })
+}
+
 pub(super) fn tab_fit(room: f64, naturals: &[(f64, f64)]) -> (Vec<(f64, f64)>, Vec<bool>) {
     let content: f64 = naturals.iter().map(|(full, _)| full).sum();
     let shorten = content > room + 0.5;

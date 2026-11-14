@@ -23,8 +23,22 @@ pub(crate) fn new_doc() -> AutoCommit {
     ui::tilo_resource::Replica::<Workbook>::new().doc().clone()
 }
 
+/// The sample workbook, as a document of the caller's own. Its recorded edits take a quarter of
+/// a second to build and apply in a test build, and most tests here start several cases from
+/// it: the thread builds it once and each call copies it. Nothing writes to the kept document.
+///
+/// Each copy writes as an actor of its own, as each sample built for one case did. Copies that
+/// all wrote as the kept document's actor would be one writer in several places, which no
+/// document is: the record the thread keeps from the last action (`tilo_resource`'s apply cache)
+/// knows that action's change by its actor, the version it stands on and its size, so a later
+/// case's first change could pass for an earlier case's.
 pub(crate) fn sample_doc() -> AutoCommit {
-    crate::sample::replica().doc().clone()
+    thread_local! {
+        static SAMPLE: AutoCommit = crate::sample::replica().doc().clone();
+    }
+    SAMPLE
+        .with(AutoCommit::clone)
+        .with_actor(automerge::ActorId::random())
 }
 
 pub(crate) fn doc_workbook(doc: &AutoCommit) -> Workbook {
@@ -2116,16 +2130,75 @@ fn a_relative_path_is_refused_for_every_path_action() {
         "export-xlsx",
         "export-ods",
     ] {
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("path".into(), "Budget.csv".into());
-        let error = SheetsEffect::decode(id, &arguments).expect_err(id);
-        assert!(
-            matches!(
-                &error,
-                ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                    if name == "path" && source.to_string().contains("absolute")
-            ),
-            "{id}: {error}"
-        );
+        // A bare name, one relative to where the app runs or to its parent, no path at all, and
+        // two spellings nothing here expands: the shell's home and a file URL.
+        for path in [
+            "Budget.csv",
+            "./Budget.csv",
+            "../Budget.csv",
+            "",
+            "~/Budget.csv",
+            "file:///home/you/Budget.csv",
+        ] {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("path".into(), path.into());
+            let Err(error) = SheetsEffect::decode(id, &arguments) else {
+                panic!("{id} takes `{path}`");
+            };
+            assert!(
+                matches!(
+                    &error,
+                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                        if name == "path" && source.to_string().contains("absolute")
+                ),
+                "{id} `{path}`: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_path_action_takes_an_absolute_path_or_none_and_nothing_else() {
+    use ui::tilo_resource::{AbsolutePath, Effect as _, EffectDecodeError};
+    type WithPath = fn(Option<AbsolutePath>) -> SheetsEffect;
+    let rows: [(&str, WithPath); 7] = [
+        ("import-csv", |path| SheetsEffect::ImportCsv { path }),
+        ("import-xlsx", |path| SheetsEffect::ImportXlsx { path }),
+        ("import-notion", |path| SheetsEffect::ImportNotion { path }),
+        ("import-ods", |path| SheetsEffect::ImportOds { path }),
+        ("export-csv", |path| SheetsEffect::ExportCsv { path }),
+        ("export-xlsx", |path| SheetsEffect::ExportXlsx { path }),
+        ("export-ods", |path| SheetsEffect::ExportOds { path }),
+    ];
+    let absolute = "/home/you/Budget.csv";
+    for (id, effect) in rows {
+        // What the caller gives as `path` and the path the effect then carries: an absolute one
+        // as given, and none (the app asks for one) when it is null or left out.
+        for (given, carried) in [
+            (Some(serde_json::Value::from(absolute)), Some(absolute)),
+            (Some(serde_json::Value::Null), None),
+            (None, None),
+        ] {
+            let mut arguments = serde_json::Map::new();
+            if let Some(given) = &given {
+                arguments.insert("path".into(), given.clone());
+            }
+            let decoded = SheetsEffect::decode(id, &arguments)
+                .unwrap_or_else(|error| panic!("{id} {given:?}: {error}"));
+            let carried = carried.map(|path| AbsolutePath::try_from(path).unwrap());
+            assert_eq!(decoded, effect(carried), "{id} {given:?}");
+        }
+        // What is no path at all is refused as the `path` argument, not taken as none.
+        for given in [serde_json::json!(7), serde_json::json!([absolute])] {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("path".into(), given.clone());
+            let Err(error) = SheetsEffect::decode(id, &arguments) else {
+                panic!("{id} takes {given}");
+            };
+            assert!(
+                matches!(&error, EffectDecodeError::Argument { name, .. } if name == "path"),
+                "{id} {given}: {error}"
+            );
+        }
     }
 }

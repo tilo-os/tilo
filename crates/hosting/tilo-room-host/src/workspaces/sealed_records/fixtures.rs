@@ -161,30 +161,6 @@ impl SealingMember {
         }
     }
 
-    /// The same device taking part in a channel of its own founding for
-    /// `record` of the same app: keys it made and nobody else was given, as a
-    /// record read by one person alone is sealed (a member's own).
-    pub async fn apart(&self, workspaces: &Workspaces, workspace: &str, record: &str) -> Self {
-        let named = collab_types::ChannelRoute::new(&self.route.0, record);
-        let keys = channel_crypto::ChannelGroup::create(
-            named.channel(workspace),
-            channel_crypto::MemberKey::generate("a member's own record").unwrap(),
-        )
-        .unwrap()
-        .content_keys()
-        .unwrap();
-        let member = Self {
-            key: self.key.clone(),
-            keys,
-            route: (self.route.0.clone(), record.into()),
-            surface: self.surface,
-            seq: std::sync::atomic::AtomicU64::new(0),
-            document: std::sync::Mutex::new(automerge::AutoCommit::new()),
-        };
-        member.catch_up(workspaces, workspace).await;
-        member
-    }
-
     /// Take in the record as the workspace reads it now.
     pub async fn catch_up(&self, workspaces: &Workspaces, workspace: &str) {
         let bytes = workspaces

@@ -146,44 +146,48 @@ pub fn snap_decimal(value: f64, operands: &[f64]) -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn numeric_conversions_saturate_at_boundaries_and_keep_ordinary_values() {
+    tilo_test_env::scenario! {
+        fn numbers_convert_saturating_and_step_onto_decimals;
+
+        phase numeric_conversions_saturate_at_boundaries_and_keep_ordinary_values;
         {
-            assert_eq!(u8_of_i64(-1), 0);
-            assert_eq!(u8_of_i64(999), u8::MAX);
-            assert_eq!(u8_of_f64(-1.0), 0);
-            assert_eq!(u8_of_f64(999.0), u8::MAX);
-            assert_eq!(u32_of_i64(-1), 0);
-            assert_eq!(i32_of_usize(usize::MAX), i32::MAX);
-            assert_eq!(usize_of_i64(-1), 0);
+            {
+                assert_eq!(u8_of_i64(-1), 0);
+                assert_eq!(u8_of_i64(999), u8::MAX);
+                assert_eq!(u8_of_f64(-1.0), 0);
+                assert_eq!(u8_of_f64(999.0), u8::MAX);
+                assert_eq!(u32_of_i64(-1), 0);
+                assert_eq!(i32_of_usize(usize::MAX), i32::MAX);
+                assert_eq!(usize_of_i64(-1), 0);
+            }
+
+            {
+                assert_eq!(f32_of_f64(12.5), 12.5);
+                assert_eq!(i64_of_f32(42.0), 42);
+                assert_eq!(usize_of_i32(7), 7);
+            }
         }
 
+        phase decimal_steps_land_on_the_decimal_they_make;
         {
-            assert_eq!(f32_of_f64(12.5), 12.5);
-            assert_eq!(i64_of_f32(42.0), 42);
-            assert_eq!(usize_of_i32(7), 7);
+            assert_eq!(snap_decimal(0.1 + 0.2, &[0.1, 0.2]), 0.3);
+            assert_eq!(snap_decimal(7.0 * 0.1, &[0.1]), 0.7);
+            assert_eq!(snap_decimal(1.234 + 0.1, &[1.234, 0.1]), 1.334);
+            assert_eq!(snap_decimal(1e-18 + 1e-18, &[1e-18]), 2e-18);
+            assert_eq!(snap_decimal(10.5 + 1.0, &[10.5, 1.0]), 11.5);
+            let back_to_zero = snap_decimal(0.1 - 0.1, &[0.1]);
+            assert_eq!(back_to_zero.to_bits(), 0.0_f64.to_bits(), "zero, unsigned");
+            assert_eq!(
+                snap_decimal(-0.1 + 0.05, &[-0.1, 0.05]).to_bits(),
+                (-0.05_f64).to_bits()
+            );
+            let third = 1.0 / 3.0;
+            assert_eq!(snap_decimal(third + 1.0, &[third]), third + 1.0);
+            assert_eq!(snap_decimal(1e300 + 0.1, &[1e300, 0.1]), 1e300 + 0.1);
+            assert!(snap_decimal(f64::NAN, &[0.1]).is_nan());
+            assert_eq!(decimal_places(0.25), Some(2));
+            assert_eq!(decimal_places(-3.0), Some(0));
+            assert_eq!(decimal_places(f64::INFINITY), None);
         }
-    }
-
-    #[test]
-    fn decimal_steps_land_on_the_decimal_they_make() {
-        assert_eq!(snap_decimal(0.1 + 0.2, &[0.1, 0.2]), 0.3);
-        assert_eq!(snap_decimal(7.0 * 0.1, &[0.1]), 0.7);
-        assert_eq!(snap_decimal(1.234 + 0.1, &[1.234, 0.1]), 1.334);
-        assert_eq!(snap_decimal(1e-18 + 1e-18, &[1e-18]), 2e-18);
-        assert_eq!(snap_decimal(10.5 + 1.0, &[10.5, 1.0]), 11.5);
-        let back_to_zero = snap_decimal(0.1 - 0.1, &[0.1]);
-        assert_eq!(back_to_zero.to_bits(), 0.0_f64.to_bits(), "zero, unsigned");
-        assert_eq!(
-            snap_decimal(-0.1 + 0.05, &[-0.1, 0.05]).to_bits(),
-            (-0.05_f64).to_bits()
-        );
-        let third = 1.0 / 3.0;
-        assert_eq!(snap_decimal(third + 1.0, &[third]), third + 1.0);
-        assert_eq!(snap_decimal(1e300 + 0.1, &[1e300, 0.1]), 1e300 + 0.1);
-        assert!(snap_decimal(f64::NAN, &[0.1]).is_nan());
-        assert_eq!(decimal_places(0.25), Some(2));
-        assert_eq!(decimal_places(-3.0), Some(0));
-        assert_eq!(decimal_places(f64::INFINITY), None);
     }
 }

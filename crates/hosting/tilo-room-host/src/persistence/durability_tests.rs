@@ -17,7 +17,9 @@ use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tokio::sync::Semaphore;
 
-const WORKSPACE: u64 = 7;
+fn workspace() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::from_u128(7)
+}
 const CHANNEL: [u8; 32] = [9; 32];
 /// Set by `a_killed_writer_loses_no_acknowledged_edit` for its child.
 const KILLED_WRITER_ROOT: &str = "TILO_RELAY_TEST_KILLED_WRITER_ROOT";
@@ -26,7 +28,7 @@ const ACKED: &str = "acked ";
 
 fn open(root: &Path) -> State {
     State {
-        store: WorkspaceStore::open(root, WORKSPACE, false).unwrap(),
+        store: WorkspaceStore::open(root, workspace(), false).unwrap(),
         doc: None,
         sequence: None,
         reserved: 0,
@@ -43,7 +45,7 @@ fn open(root: &Path) -> State {
 /// One edit's retained frame; its body is `index`.
 fn edit(index: u32) -> Vec<u8> {
     crate::transport::encode(&Envelope::Delta {
-        workspace_id: WORKSPACE,
+        workspace_id: workspace(),
         author_device_public_key: [1; 32],
         authored_at_ns: u64::from(index),
         delta: CoeditPayload::RetainedDelta {
@@ -95,7 +97,7 @@ fn retained_edits(store: &WorkspaceStore) -> Vec<u32> {
         .unwrap()
         .iter()
         .map(|frame| {
-            let body = crate::store::retained::body_of(frame, WORKSPACE).unwrap();
+            let body = crate::store::retained::body_of(frame, workspace()).unwrap();
             u32::from_le_bytes(body.try_into().unwrap())
         })
         .collect()
@@ -646,7 +648,7 @@ async fn grouped_owner(
                     !records.pending(),
                     "edit {index} completed before its barrier"
                 );
-                let store = WorkspaceStore::open(&store_root, WORKSPACE, false).unwrap();
+                let store = WorkspaceStore::open(&store_root, workspace(), false).unwrap();
                 assert!(
                     retained_edits(&store).contains(&index),
                     "edit {index} completed before it was retained"
@@ -701,7 +703,7 @@ async fn a_failed_group_barrier_fails_every_commit_it_covers() {
         );
     }
     running.await.unwrap();
-    let store = WorkspaceStore::open(dir.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(dir.path(), workspace(), false).unwrap();
     assert_eq!(
         retained_edits(&store),
         [0],

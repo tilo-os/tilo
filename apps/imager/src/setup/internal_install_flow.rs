@@ -1741,227 +1741,224 @@ pub(super) mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn internal_install_gate_readiness_and_remedies_follow_blockers() {
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
+        fn the_internal_install_gate_follows_blockers_and_replans_within_bounds;
+
+        phase internal_install_gate_readiness_and_remedies_follow_blockers;
         {
-            assert!(!gate_open(None, None));
-            assert!(!gate_open(Some("0"), Some("true")));
-            assert!(gate_open(Some("1"), None));
-            assert!(gate_open(None, Some("1")));
+            {
+                assert!(!gate_open(None, None));
+                assert!(!gate_open(Some("0"), Some("true")));
+                assert!(gate_open(Some("1"), None));
+                assert!(gate_open(None, Some("1")));
 
-            let fakes = Fakes::new(Vec::new());
-            let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Windows);
-            assert!(gated.probe_task().is_none());
-            assert_eq!(gated.readiness(), &Readiness::Gated);
-            gated.accept_probe(facts(Vec::new()), Vec::new(), true);
-            assert!(!gated.offers_full_os());
-            assert_eq!(fakes.probes.load(Ordering::SeqCst), 0);
-        }
-
-        {
-            let fakes = Fakes::new(Vec::new());
-            let mut install = InternalInstall::new(fakes.runtime(), true, HostOs::Windows);
-            assert_eq!(install.readiness(), &Readiness::Checking);
-            assert!(!install.offers_full_os());
-
-            assert_eq!(probed(&fakes, false).readiness(), &Readiness::NoRelease);
-            let ready = probed(&fakes, true);
-            assert!(ready.offers_full_os());
-            assert!(ready.install_blocker(true).is_ok());
-            assert!(ready.install_blocker(false).is_err());
-
-            let remediable = probed(&Fakes::new(vec![Blocker::SecureBootOn]), true);
-            assert!(remediable.offers_full_os());
-            assert!(remediable.install_blocker(true).is_err());
-            assert!(remediable.firmware_command().is_some());
-
-            let unsupported = probed(&Fakes::new(vec![Blocker::NotGpt, Blocker::OnBattery]), true);
-            assert_eq!(
-                unsupported.readiness(),
-                &Readiness::Unsupported(vec![Blocker::NotGpt])
-            );
-            assert!(!unsupported.offers_full_os());
-            let blind = HostFacts {
-                basis: None,
-                bitlocker_protected: false,
-                blockers: Vec::new(),
-            };
-            install.accept_probe(blind, Vec::new(), true);
-            assert!(!install.offers_full_os());
-        }
-
-        {
-            let mut fakes = Fakes::new(vec![Blocker::SecureBootOn, Blocker::Hibernation]);
-            fakes.facts.bitlocker_protected = true;
-            let windows = probed(&fakes, true);
-            assert_eq!(
-                windows.firmware_command(),
-                Some(HostCommand::FirmwareSettings {
-                    suspend_bitlocker: true
-                })
-            );
-            assert!(windows.command_available(HostCommand::DisableFastStartup));
-            assert!(!windows.command_available(HostCommand::Restart));
-
-            let mut linux = InternalInstall::new(fakes.runtime(), true, HostOs::Linux);
-            let (facts, records) = linux.probe_task().unwrap()();
-            linux.accept_probe(facts, records, true);
-            assert_eq!(
-                linux.firmware_command(),
-                Some(HostCommand::FirmwareSettings {
-                    suspend_bitlocker: false
-                })
-            );
-            assert!(!linux.command_available(HostCommand::DisableFastStartup));
-            assert!(
-                probed(&Fakes::new(Vec::new()), true)
-                    .firmware_command()
-                    .is_none()
-            );
-        }
-
-        {
-            for blocker in [
-                Blocker::NotUefi,
-                Blocker::SecureBootOn,
-                Blocker::BitlockerLocked,
-                Blocker::NotGpt,
-                Blocker::DiskUnsupported,
-                Blocker::Hibernation,
-                Blocker::InsufficientSpace,
-                Blocker::OnBattery,
-                Blocker::PendingOperation,
-                Blocker::ArchMismatch,
-            ] {
-                assert_eq!(
-                    serde_json::to_value(blocker).unwrap(),
-                    serde_json::json!(blocker_key(blocker))
-                );
-                let text = blocker_text(blocker, HostOs::Windows);
-                assert!(!text.starts_with("imager-setup"), "{text}");
+                let fakes = Fakes::new(Vec::new());
+                let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Windows);
+                assert!(gated.probe_task().is_none());
+                assert_eq!(gated.readiness(), &Readiness::Gated);
+                gated.accept_probe(facts(Vec::new()), Vec::new(), true);
+                assert!(!gated.offers_full_os());
+                assert_eq!(fakes.probes.load(Ordering::SeqCst), 0);
             }
-            for step in [
-                Step::Shrink,
-                Step::CreateEsp,
-                Step::CreateRoot,
-                Step::WriteEsp,
-                Step::WriteRoot,
-                Step::Verify,
-                Step::Handoff,
-                Step::BootEntry,
-                Step::BootNext,
-                Step::RemoveBootNext,
-                Step::RemoveBootEntry,
-                Step::RemoveRoot,
-                Step::RemoveEsp,
-                Step::RestoreShrink,
-            ] {
+
+            {
+                let fakes = Fakes::new(Vec::new());
+                let mut install = InternalInstall::new(fakes.runtime(), true, HostOs::Windows);
+                assert_eq!(install.readiness(), &Readiness::Checking);
+                assert!(!install.offers_full_os());
+
+                assert_eq!(probed(&fakes, false).readiness(), &Readiness::NoRelease);
+                let ready = probed(&fakes, true);
+                assert!(ready.offers_full_os());
+                assert!(ready.install_blocker(true).is_ok());
+                assert!(ready.install_blocker(false).is_err());
+
+                let remediable = probed(&Fakes::new(vec![Blocker::SecureBootOn]), true);
+                assert!(remediable.offers_full_os());
+                assert!(remediable.install_blocker(true).is_err());
+                assert!(remediable.firmware_command().is_some());
+
+                let unsupported = probed(&Fakes::new(vec![Blocker::NotGpt, Blocker::OnBattery]), true);
                 assert_eq!(
-                    serde_json::to_value(step).unwrap(),
-                    serde_json::json!(step_key(step))
+                    unsupported.readiness(),
+                    &Readiness::Unsupported(vec![Blocker::NotGpt])
                 );
-                let text = super::super::strings::t(&format!(
-                    "imager-setup-internal-step-{}",
-                    step_key(step)
-                ));
-                assert!(!text.starts_with("imager-setup"), "{text}");
+                assert!(!unsupported.offers_full_os());
+                let blind = HostFacts {
+                    basis: None,
+                    bitlocker_protected: false,
+                    blockers: Vec::new(),
+                };
+                install.accept_probe(blind, Vec::new(), true);
+                assert!(!install.offers_full_os());
+            }
+
+            {
+                let mut fakes = Fakes::new(vec![Blocker::SecureBootOn, Blocker::Hibernation]);
+                fakes.facts.bitlocker_protected = true;
+                let windows = probed(&fakes, true);
+                assert_eq!(
+                    windows.firmware_command(),
+                    Some(HostCommand::FirmwareSettings {
+                        suspend_bitlocker: true
+                    })
+                );
+                assert!(windows.command_available(HostCommand::DisableFastStartup));
+                assert!(!windows.command_available(HostCommand::Restart));
+
+                let mut linux = InternalInstall::new(fakes.runtime(), true, HostOs::Linux);
+                let (facts, records) = linux.probe_task().unwrap()();
+                linux.accept_probe(facts, records, true);
+                assert_eq!(
+                    linux.firmware_command(),
+                    Some(HostCommand::FirmwareSettings {
+                        suspend_bitlocker: false
+                    })
+                );
+                assert!(!linux.command_available(HostCommand::DisableFastStartup));
+                assert!(
+                    probed(&Fakes::new(Vec::new()), true)
+                        .firmware_command()
+                        .is_none()
+                );
+            }
+
+            {
+                for blocker in [
+                    Blocker::NotUefi,
+                    Blocker::SecureBootOn,
+                    Blocker::BitlockerLocked,
+                    Blocker::NotGpt,
+                    Blocker::DiskUnsupported,
+                    Blocker::Hibernation,
+                    Blocker::InsufficientSpace,
+                    Blocker::OnBattery,
+                    Blocker::PendingOperation,
+                    Blocker::ArchMismatch,
+                ] {
+                    assert_eq!(
+                        serde_json::to_value(blocker).unwrap(),
+                        serde_json::json!(blocker_key(blocker))
+                    );
+                    let text = blocker_text(blocker, HostOs::Windows);
+                    assert!(!text.starts_with("imager-setup"), "{text}");
+                }
+                for step in [
+                    Step::Shrink,
+                    Step::CreateEsp,
+                    Step::CreateRoot,
+                    Step::WriteEsp,
+                    Step::WriteRoot,
+                    Step::Verify,
+                    Step::Handoff,
+                    Step::BootEntry,
+                    Step::BootNext,
+                    Step::RemoveBootNext,
+                    Step::RemoveBootEntry,
+                    Step::RemoveRoot,
+                    Step::RemoveEsp,
+                    Step::RestoreShrink,
+                ] {
+                    assert_eq!(
+                        serde_json::to_value(step).unwrap(),
+                        serde_json::json!(step_key(step))
+                    );
+                    let text = super::super::strings::t(&format!(
+                        "imager-setup-internal-step-{}",
+                        step_key(step)
+                    ));
+                    assert!(!text.starts_with("imager-setup"), "{text}");
+                }
             }
         }
-    }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn internal_install_target_size_replans_within_bounds() {
+        phase internal_install_target_size_replans_within_bounds;
         {
-            let fakes = Fakes::new(Vec::new());
-            let mut install = probed(&fakes, true);
-            let (min, max) = install.bounds_gib().unwrap();
-            assert_eq!(min, 35);
-            assert_eq!(max, 400 - 120 - 42);
-            let first = install.reviewed_digest().unwrap().unwrap();
-            assert!(install.set_target_gib(min - 1).is_err());
-            assert!(install.set_target_gib(max + 1).is_err());
-            install.set_target_gib(100).unwrap();
-            assert_eq!(install.target_bytes(), 100 * GIB);
-            let Some(Ok(plan)) = install.plan() else {
-                panic!("plan")
-            };
-            assert_eq!(target_extent_bytes(plan), 100 * GIB);
-            assert_ne!(install.reviewed_digest().unwrap().unwrap(), first);
+            {
+                let fakes = Fakes::new(Vec::new());
+                let mut install = probed(&fakes, true);
+                let (min, max) = install.bounds_gib().unwrap();
+                assert_eq!(min, 35);
+                assert_eq!(max, 400 - 120 - 42);
+                let first = install.reviewed_digest().unwrap().unwrap();
+                assert!(install.set_target_gib(min - 1).is_err());
+                assert!(install.set_target_gib(max + 1).is_err());
+                install.set_target_gib(100).unwrap();
+                assert_eq!(install.target_bytes(), 100 * GIB);
+                let Some(Ok(plan)) = install.plan() else {
+                    panic!("plan")
+                };
+                assert_eq!(target_extent_bytes(plan), 100 * GIB);
+                assert_ne!(install.reviewed_digest().unwrap().unwrap(), first);
 
-            install.target_state().set(1000.0);
-            assert!(install.poll());
-            assert_eq!(install.target_bytes(), max * GIB);
-        }
+                install.target_state().set(1000.0);
+                assert!(install.poll());
+                assert_eq!(install.target_bytes(), max * GIB);
+            }
 
-        {
-            let fakes = Fakes::new(Vec::new());
-            let mut install = probed(&fakes, true);
-            let digest = install.reviewed_digest().unwrap().unwrap();
-            install.begin_stage(&digest, true).unwrap();
-            let intent = install.link.lock().intent.clone().unwrap();
-            let reviewed = intent.plan.clone();
-            let dir = tempfile::tempdir().unwrap();
-            let manifest = selected_sizes(64 << 20, 40 * GIB);
-            let request = stage_request(
-                &install.link,
-                &manifest,
-                intent,
-                dir.path(),
-                &std::sync::atomic::AtomicBool::new(false),
-            )
-            .unwrap();
-            assert_ne!(request.plan_sha256, digest);
-            assert_eq!(request.plan_sha256, request.plan.digest().unwrap());
-            let s = request.plan.basis.disk.sector_bytes;
-            assert_eq!(request.plan.staging_esp.extent().lbas() * s, 64 << 20);
-            assert_eq!(
-                request.plan.target_extent.lbas(),
-                reviewed.target_extent.lbas()
-            );
-            let kept = |p: &Plan| p.shrink.as_ref().map_or(u64::MAX, |x| x.to_bytes);
-            assert!(kept(&request.plan) >= kept(&reviewed));
-        }
+            {
+                let fakes = Fakes::new(Vec::new());
+                let mut install = probed(&fakes, true);
+                let digest = install.reviewed_digest().unwrap().unwrap();
+                install.begin_stage(&digest, true).unwrap();
+                let intent = install.link.lock().intent.clone().unwrap();
+                let reviewed = intent.plan.clone();
+                let dir = tempfile::tempdir().unwrap();
+                let manifest = selected_sizes(64 << 20, 40 * GIB);
+                let request = stage_request(
+                    &install.link,
+                    &manifest,
+                    intent,
+                    dir.path(),
+                    &std::sync::atomic::AtomicBool::new(false),
+                )
+                .unwrap();
+                assert_ne!(request.plan_sha256, digest);
+                assert_eq!(request.plan_sha256, request.plan.digest().unwrap());
+                let s = request.plan.basis.disk.sector_bytes;
+                assert_eq!(request.plan.staging_esp.extent().lbas() * s, 64 << 20);
+                assert_eq!(
+                    request.plan.target_extent.lbas(),
+                    reviewed.target_extent.lbas()
+                );
+                let kept = |p: &Plan| p.shrink.as_ref().map_or(u64::MAX, |x| x.to_bytes);
+                assert!(kept(&request.plan) >= kept(&reviewed));
+            }
 
-        {
-            let fakes = Fakes::new(Vec::new());
-            let mut install = probed(&fakes, true);
-            let digest = install.reviewed_digest().unwrap().unwrap();
-            install.begin_stage(&digest, true).unwrap();
-            let intent = install.link.lock().intent.take().unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            let outcome = stage_request(
-                &install.link,
-                &selected(48 * GIB),
-                intent,
-                dir.path(),
-                &std::sync::atomic::AtomicBool::new(false),
-            )
-            .unwrap_err();
-            assert_eq!(outcome.code.as_deref(), Some("plan-stale"));
-            install.link.finish(Action::Stage, &outcome);
-            install.poll();
-            assert!(install.take_reprobe());
-            let (facts, records) = install.probe_task().unwrap()();
-            install.accept_probe(facts, records, true);
-            let Some(Ok(plan)) = install.plan() else {
-                panic!("replanned")
-            };
-            assert!(
-                partition_bytes(
-                    plan,
-                    plan.staging_root.first_lba,
-                    plan.staging_root.last_lba
-                ) >= 48 * GIB
-            );
-            assert_ne!(install.reviewed_digest().unwrap().unwrap(), digest);
+            {
+                let fakes = Fakes::new(Vec::new());
+                let mut install = probed(&fakes, true);
+                let digest = install.reviewed_digest().unwrap().unwrap();
+                install.begin_stage(&digest, true).unwrap();
+                let intent = install.link.lock().intent.take().unwrap();
+                let dir = tempfile::tempdir().unwrap();
+                let outcome = stage_request(
+                    &install.link,
+                    &selected(48 * GIB),
+                    intent,
+                    dir.path(),
+                    &std::sync::atomic::AtomicBool::new(false),
+                )
+                .unwrap_err();
+                assert_eq!(outcome.code.as_deref(), Some("plan-stale"));
+                install.link.finish(Action::Stage, &outcome);
+                install.poll();
+                assert!(install.take_reprobe());
+                let (facts, records) = install.probe_task().unwrap()();
+                install.accept_probe(facts, records, true);
+                let Some(Ok(plan)) = install.plan() else {
+                    panic!("replanned")
+                };
+                assert!(
+                    partition_bytes(
+                        plan,
+                        plan.staging_root.first_lba,
+                        plan.staging_root.last_lba
+                    ) >= 48 * GIB
+                );
+                assert_ne!(install.reviewed_digest().unwrap().unwrap(), digest);
+            }
         }
     }
 

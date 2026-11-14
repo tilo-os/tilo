@@ -40,7 +40,7 @@ impl NativeWorkspaceOwner {
             .with_current(workspace, |view| Ok(view.transport_hint()?.clone()))
             .ok()?;
         let (payload, _) =
-            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
                 &hint,
             )
             .ok()?;
@@ -319,7 +319,6 @@ pub fn app_write(
         .with_current(workspace, |view| {
             view.peer()
                 .permissions(author, tilo_clock::wall())
-                .map(crate::MemberAuthority::standing)
                 .map_err(|error| error.to_string())
         })
         .ok()?;
@@ -469,7 +468,6 @@ impl Input {
             .with_current(self.workspace(), |view| {
                 view.peer()
                     .permissions(self.heard.author, tilo_clock::wall())
-                    .map(crate::MemberAuthority::standing)
                     .map_err(|error| error.to_string())
             })
     }

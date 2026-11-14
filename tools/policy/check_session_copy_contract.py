@@ -20,7 +20,7 @@ from rust_source import line_number, production_source  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 
 PUBLIC_COPY_FILES = (
-    "crates/session/desktop/src/collaborators.rs",
+    "crates/session/desktop/src/people.rs",
     "crates/session/desktop/src/workspace_settings.rs",
     "crates/session/desktop/src/workspace_settings/people.rs",
     "crates/session/desktop/src/topbar/sharing.rs",

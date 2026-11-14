@@ -236,41 +236,45 @@ mod tests {
             .expect("test instants stay in range")
     }
 
-    #[test]
-    fn a_window_that_filled_the_display_says_the_way_out_once_then_goes() {
-        let t0 = Instant::now();
-        let mut hint = FullscreenHint::default();
-        assert!(
-            !hint.is_up(t0),
-            "nothing is said before a window fills a display"
-        );
-        hint.follow(Some((DISPLAY, t0)));
-        assert!(hint.is_up(t0), "entering full screen says it at once");
-        assert_eq!(
-            hint.next_wake_deadline(t0),
-            Some(ms(t0, 3_000)),
-            "a frame is owed when it goes"
-        );
-        assert!(hint.is_up(ms(t0, 2_900)), "it stays up long enough to read");
-        assert!(
-            !hint.is_up(ms(t0, 3_000)),
-            "and is gone after three seconds"
-        );
-        // Following the same full screen again does not say it a second time.
-        hint.follow(Some((DISPLAY, t0)));
-        assert!(!hint.is_up(ms(t0, 3_500)));
-    }
+    tilo_test_env::scenario! {
+        fn the_fullscreen_hint_says_the_way_out_once;
 
-    #[test]
-    fn leaving_full_screen_takes_the_words_away() {
-        let t0 = Instant::now();
-        let later = ms(t0, 500);
-        let mut hint = FullscreenHint::default();
-        hint.follow(Some((DISPLAY, later)));
-        assert!(hint.is_up(later));
-        hint.follow(None);
-        assert!(!hint.is_up(later), "leaving takes the words with it");
-        assert_eq!(hint.next_wake_deadline(later), None);
-        assert!(!hint.needs_redraw(later), "and nothing is owed a frame");
+        phase a_window_that_filled_the_display_says_the_way_out_once_then_goes;
+        {
+            let t0 = Instant::now();
+            let mut hint = FullscreenHint::default();
+            assert!(
+                !hint.is_up(t0),
+                "nothing is said before a window fills a display"
+            );
+            hint.follow(Some((DISPLAY, t0)));
+            assert!(hint.is_up(t0), "entering full screen says it at once");
+            assert_eq!(
+                hint.next_wake_deadline(t0),
+                Some(ms(t0, 3_000)),
+                "a frame is owed when it goes"
+            );
+            assert!(hint.is_up(ms(t0, 2_900)), "it stays up long enough to read");
+            assert!(
+                !hint.is_up(ms(t0, 3_000)),
+                "and is gone after three seconds"
+            );
+            // Following the same full screen again does not say it a second time.
+            hint.follow(Some((DISPLAY, t0)));
+            assert!(!hint.is_up(ms(t0, 3_500)));
+        }
+
+        phase leaving_full_screen_takes_the_words_away;
+        {
+            let t0 = Instant::now();
+            let later = ms(t0, 500);
+            let mut hint = FullscreenHint::default();
+            hint.follow(Some((DISPLAY, later)));
+            assert!(hint.is_up(later));
+            hint.follow(None);
+            assert!(!hint.is_up(later), "leaving takes the words with it");
+            assert_eq!(hint.next_wake_deadline(later), None);
+            assert!(!hint.needs_redraw(later), "and nothing is owed a frame");
+        }
     }
 }

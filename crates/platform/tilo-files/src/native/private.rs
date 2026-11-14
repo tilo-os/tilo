@@ -508,65 +508,67 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"must survive");
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn public_read_access_is_rejected_before_truncation() {
-        use std::os::unix::fs::PermissionsExt;
-        let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("secret");
-        create_new(&path)
-            .unwrap()
-            .write_all(b"must survive")
-            .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(read(&path).is_err());
-        assert!(rewrite(&path).is_err());
-        assert!(write_atomic(&path, b"replacement").is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"must survive");
-    }
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn private_files_sockets_and_directories_stay_owner_only;
 
-    #[cfg(unix)]
-    #[test]
-    fn socket_binds_owner_only_and_replaces_only_a_socket() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("service.sock");
+        phase public_read_access_is_rejected_before_truncation;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let temporary = tempfile::tempdir().unwrap();
+            let path = temporary.path().join("secret");
+            create_new(&path)
+                .unwrap()
+                .write_all(b"must survive")
+                .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(read(&path).is_err());
+            assert!(rewrite(&path).is_err());
+            assert!(write_atomic(&path, b"replacement").is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"must survive");
+        }
 
-        let previous = bind_socket(&path).unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-        drop(previous);
-        let _replacement = bind_socket(&path).unwrap();
+        phase socket_binds_owner_only_and_replaces_only_a_socket;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("service.sock");
 
-        let file = root.path().join("not-a-socket");
-        std::fs::write(&file, b"keep").unwrap();
-        assert_eq!(
-            bind_socket(&file).unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert_eq!(std::fs::read(&file).unwrap(), b"keep");
-    }
+            let previous = bind_socket(&path).unwrap();
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+            drop(previous);
+            let _replacement = bind_socket(&path).unwrap();
 
-    #[cfg(unix)]
-    #[test]
-    fn restricting_a_restricted_directory_leaves_its_attributes_alone() {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("identity");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        restrict_directory(&dir).unwrap();
-        let restricted = std::fs::metadata(&dir).unwrap();
-        assert_eq!(restricted.permissions().mode() & 0o7777, 0o700);
-        // A chmod, even to the mode it has, moves the change time and wakes every watcher of the
-        // directory.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        restrict_directory(&dir).unwrap();
-        directory(&dir).unwrap();
-        let again = std::fs::metadata(&dir).unwrap();
-        assert_eq!(
-            (again.ctime(), again.ctime_nsec()),
-            (restricted.ctime(), restricted.ctime_nsec())
-        );
+            let file = root.path().join("not-a-socket");
+            std::fs::write(&file, b"keep").unwrap();
+            assert_eq!(
+                bind_socket(&file).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+        }
+
+        phase restricting_a_restricted_directory_leaves_its_attributes_alone;
+        {
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+            let root = tempfile::tempdir().unwrap();
+            let dir = root.path().join("identity");
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            restrict_directory(&dir).unwrap();
+            let restricted = std::fs::metadata(&dir).unwrap();
+            assert_eq!(restricted.permissions().mode() & 0o7777, 0o700);
+            // A chmod, even to the mode it has, moves the change time and wakes every watcher of the
+            // directory.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            restrict_directory(&dir).unwrap();
+            directory(&dir).unwrap();
+            let again = std::fs::metadata(&dir).unwrap();
+            assert_eq!(
+                (again.ctime(), again.ctime_nsec()),
+                (restricted.ctime(), restricted.ctime_nsec())
+            );
+        }
     }
 }

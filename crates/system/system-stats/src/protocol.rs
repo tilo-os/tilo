@@ -707,124 +707,128 @@ pub fn read_message<R: std::io::Read + ?Sized, T: serde::de::DeserializeOwned>(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_handoff_round_trips_and_a_foreign_one_is_refused() {
-        let handoff = Handoff {
-            protocol: PROTOCOL,
-            app_id: "so.tilo.monitor".into(),
-            workspace_id: Some("room".into()),
-            grants: Grants::IMAGE_DEFAULT,
-            ceiling: Grants::ALL,
-        };
-        let mut wire = Vec::new();
-        write_handoff(&mut wire, &handoff).unwrap();
-        assert_eq!(read_handoff(&mut wire.as_slice()).unwrap(), handoff);
+    tilo_test_env::scenario! {
+        fn the_wire_forms_round_trip_and_grants_bound_each_other;
 
-        let mut other = wire.clone();
-        other[0] = b'X';
-        assert!(read_handoff(&mut other.as_slice()).is_err());
-
-        let future = Handoff {
-            protocol: PROTOCOL + 1,
-            ..handoff
-        };
-        let mut wire = Vec::new();
-        write_handoff(&mut wire, &future).unwrap();
-        assert!(read_handoff(&mut wire.as_slice()).is_err());
-    }
-
-    /// Every reply reads back as it was written, in the internally tagged
-    /// form it always had on the wire, and a reply without a field its `op`
-    /// needs is refused.
-    #[test]
-    fn every_reply_reads_back_from_its_tagged_wire_form() {
-        let replies = [
-            Reply::Snapshot {
-                subscription: 7,
-                snapshot: Box::default(),
-            },
-            Reply::SubscriptionRefused {
-                subscription: 7,
-                refusal: Refusal::NotGranted {
-                    grant: Grant::Processes,
-                },
-            },
-            Reply::Grants {
-                request: 3,
+        phase a_handoff_round_trips_and_a_foreign_one_is_refused;
+        {
+            let handoff = Handoff {
+                protocol: PROTOCOL,
+                app_id: "so.tilo.monitor".into(),
+                workspace_id: Some("room".into()),
                 grants: Grants::IMAGE_DEFAULT,
-            },
-            Reply::Ended {
-                request: 4,
-                ended: 2,
-            },
-            Reply::Refused {
-                request: 5,
-                refusal: Refusal::Invalid {
-                    detail: "no such process".into(),
+                ceiling: Grants::ALL,
+            };
+            let mut wire = Vec::new();
+            write_handoff(&mut wire, &handoff).unwrap();
+            assert_eq!(read_handoff(&mut wire.as_slice()).unwrap(), handoff);
+
+            let mut other = wire.clone();
+            other[0] = b'X';
+            assert!(read_handoff(&mut other.as_slice()).is_err());
+
+            let future = Handoff {
+                protocol: PROTOCOL + 1,
+                ..handoff
+            };
+            let mut wire = Vec::new();
+            write_handoff(&mut wire, &future).unwrap();
+            assert!(read_handoff(&mut wire.as_slice()).is_err());
+        }
+
+        phase every_reply_reads_back_from_its_tagged_wire_form;
+        // Every reply reads back as it was written, in the internally tagged
+        // form it always had on the wire, and a reply without a field its `op`
+        // needs is refused.
+        {
+            let replies = [
+                Reply::Snapshot {
+                    subscription: 7,
+                    snapshot: Box::default(),
                 },
-            },
-            Reply::Storage {
-                request: 6,
-                storage: Box::new(Storage {
-                    devices: vec![StorageDevice {
-                        name: "nvme0n1".into(),
-                        kind: "disk".into(),
-                        size: 1_024_209_543_168,
-                        children: vec![StorageDevice {
-                            name: "nvme0n1p4".into(),
-                            kind: "part".into(),
-                            fstype: Some("crypto_LUKS".into()),
-                            fs_version: Some("2".into()),
+                Reply::SubscriptionRefused {
+                    subscription: 7,
+                    refusal: Refusal::NotGranted {
+                        grant: Grant::Processes,
+                    },
+                },
+                Reply::Grants {
+                    request: 3,
+                    grants: Grants::IMAGE_DEFAULT,
+                },
+                Reply::Ended {
+                    request: 4,
+                    ended: 2,
+                },
+                Reply::Refused {
+                    request: 5,
+                    refusal: Refusal::Invalid {
+                        detail: "no such process".into(),
+                    },
+                },
+                Reply::Storage {
+                    request: 6,
+                    storage: Box::new(Storage {
+                        devices: vec![StorageDevice {
+                            name: "nvme0n1".into(),
+                            kind: "disk".into(),
+                            size: 1_024_209_543_168,
+                            children: vec![StorageDevice {
+                                name: "nvme0n1p4".into(),
+                                kind: "part".into(),
+                                fstype: Some("crypto_LUKS".into()),
+                                fs_version: Some("2".into()),
+                                ..StorageDevice::default()
+                            }],
+                            health: Some(DriveHealth {
+                                supported: true,
+                                power_on_hours: Some(2294),
+                                ..DriveHealth::default()
+                            }),
                             ..StorageDevice::default()
                         }],
-                        health: Some(DriveHealth {
-                            supported: true,
-                            power_on_hours: Some(2294),
-                            ..DriveHealth::default()
-                        }),
-                        ..StorageDevice::default()
-                    }],
-                }),
-            },
-        ];
-        for reply in replies {
-            let wire = serde_json::to_value(&reply).unwrap();
-            assert!(wire.get("op").is_some_and(serde_json::Value::is_string));
-            let text = serde_json::to_string(&reply).unwrap();
-            assert_eq!(serde_json::from_str::<Reply>(&text).unwrap(), reply);
-            assert_eq!(
-                serde_json::from_slice::<Reply>(text.as_bytes()).unwrap(),
-                reply
-            );
-        }
-        let tag_last = r#"{"request":4,"ended":2,"op":"ended"}"#;
-        assert_eq!(
-            serde_json::from_str::<Reply>(tag_last).unwrap(),
-            Reply::Ended {
-                request: 4,
-                ended: 2
+                    }),
+                },
+            ];
+            for reply in replies {
+                let wire = serde_json::to_value(&reply).unwrap();
+                assert!(wire.get("op").is_some_and(serde_json::Value::is_string));
+                let text = serde_json::to_string(&reply).unwrap();
+                assert_eq!(serde_json::from_str::<Reply>(&text).unwrap(), reply);
+                assert_eq!(
+                    serde_json::from_slice::<Reply>(text.as_bytes()).unwrap(),
+                    reply
+                );
             }
-        );
-        assert!(serde_json::from_str::<Reply>(r#"{"op":"ended","request":4}"#).is_err());
-        assert!(serde_json::from_str::<Reply>(r#"{"op":"restarted","request":4}"#).is_err());
-    }
+            let tag_last = r#"{"request":4,"ended":2,"op":"ended"}"#;
+            assert_eq!(
+                serde_json::from_str::<Reply>(tag_last).unwrap(),
+                Reply::Ended {
+                    request: 4,
+                    ended: 2
+                }
+            );
+            assert!(serde_json::from_str::<Reply>(r#"{"op":"ended","request":4}"#).is_err());
+            assert!(serde_json::from_str::<Reply>(r#"{"op":"restarted","request":4}"#).is_err());
+        }
 
-    #[test]
-    fn a_command_line_needs_the_process_list_too() {
-        let only_commands = Grants {
-            command_lines: true,
-            ..Grants::default()
-        };
-        assert!(!only_commands.holds(Grant::CommandLines));
-        assert!(!only_commands.any());
-        assert!(
-            Grants::IMAGE_DEFAULT
-                .with(Grant::CommandLines)
-                .holds(Grant::CommandLines)
-        );
-        assert!(!Grants::IMAGE_DEFAULT.holds(Grant::CommandLines));
-        for grant in Grant::ALL {
-            assert_eq!(Grant::from_device_scope(grant.device_scope()), Some(grant));
+        phase a_command_line_needs_the_process_list_too;
+        {
+            let only_commands = Grants {
+                command_lines: true,
+                ..Grants::default()
+            };
+            assert!(!only_commands.holds(Grant::CommandLines));
+            assert!(!only_commands.any());
+            assert!(
+                Grants::IMAGE_DEFAULT
+                    .with(Grant::CommandLines)
+                    .holds(Grant::CommandLines)
+            );
+            assert!(!Grants::IMAGE_DEFAULT.holds(Grant::CommandLines));
+            for grant in Grant::ALL {
+                assert_eq!(Grant::from_device_scope(grant.device_scope()), Some(grant));
+            }
         }
     }
 }

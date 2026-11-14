@@ -1275,182 +1275,190 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    #[test]
-    fn runtime_install_takes_an_optional_configured_repository() {
-        let cli = Cli::try_parse_from([
-            "app",
-            "runtime",
-            "install",
-            "tilo-runtime/2026.10.4-chromium",
-            "--repo",
-            "Tilo main",
-        ])
-        .unwrap();
-        assert!(
-            matches!(cli.cmd, Cmd::Runtime { cmd: RuntimeCmd::Install { runtime, repo } }
-            if runtime == "tilo-runtime/2026.10.4-chromium"
-                && repo.as_deref() == Some("Tilo main"))
-        );
-        let cli = Cli::try_parse_from([
-            "app",
-            "runtime",
-            "install",
-            "tilo-runtime/2026.10.4-chromium",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.cmd,
-            Cmd::Runtime {
-                cmd: RuntimeCmd::Install { repo: None, .. }
-            }
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn the_command_line_parses;
 
-    #[test]
-    fn progress_lines_follow_the_bytes_without_flooding() {
-        let downloading = |received, total| DownloadProgress {
-            received,
-            total,
-            phase: InstallPhase::Downloading,
-        };
-        let mut last = None;
-        let mut lines = Vec::new();
-        for received in (0..=1_000_000).step_by(1000) {
-            lines.extend(progress_line(
-                downloading(received, Some(1_000_000)),
-                &mut last,
-            ));
-        }
-        assert_eq!(lines.first().unwrap(), "progress downloading 0 1000000");
-        assert_eq!(
-            lines.last().unwrap(),
-            "progress downloading 1000000 1000000"
-        );
-        assert_eq!(lines.len(), 101, "a line per percent: {lines:?}");
-        let installing = DownloadProgress {
-            received: 1_000_000,
-            total: Some(1_000_000),
-            phase: InstallPhase::Installing {
-                elapsed: Duration::from_secs(1),
-            },
-        };
-        assert_eq!(
-            progress_line(installing, &mut last).as_deref(),
-            Some("progress installing")
-        );
-        assert_eq!(progress_line(installing, &mut last), None, "said once");
-        assert_eq!(
-            progress_line(downloading(0, None), &mut last).as_deref(),
-            Some("progress downloading 0 -"),
-            "a later download starts again"
-        );
-    }
-
-    #[test]
-    fn the_cli_surface_parses_and_names_both_public_commands() {
-        {
-            Cli::command().debug_assert();
-        }
-        {
-            let help = Cli::command().bin_name("store").render_help().to_string();
-            assert!(help.contains("Usage: store"), "{help}");
-            let help = Cli::command()
-                .bin_name("tilo app")
-                .render_help()
-                .to_string();
-            assert!(help.contains("Usage: tilo app"), "{help}");
-        }
-        {
-            let mut output = Vec::new();
-            clap_complete::generate(Shell::Bash, &mut Cli::command(), "app", &mut output);
-            clap_complete::generate(Shell::Bash, &mut Cli::command(), "store", &mut output);
-            let script = String::from_utf8(output).expect("completion is UTF-8");
-            assert!(script.contains("_app()"), "{script}");
-            assert!(script.contains("default app"), "{script}");
-            assert!(script.contains("_store()"), "{script}");
-            assert!(script.contains("default store"), "{script}");
-        }
+        phase runtime_install_takes_an_optional_configured_repository;
         {
             let cli = Cli::try_parse_from([
                 "app",
                 "runtime",
                 "install",
-                "tilo-runtime/2026.10.9-chromium",
+                "tilo-runtime/2026.10.4-chromium",
+                "--repo",
+                "Tilo main",
             ])
-            .expect("runtime install parses");
+            .unwrap();
+            assert!(
+                matches!(cli.cmd, Cmd::Runtime { cmd: RuntimeCmd::Install { runtime, repo } }
+                if runtime == "tilo-runtime/2026.10.4-chromium"
+                    && repo.as_deref() == Some("Tilo main"))
+            );
+            let cli = Cli::try_parse_from([
+                "app",
+                "runtime",
+                "install",
+                "tilo-runtime/2026.10.4-chromium",
+            ])
+            .unwrap();
             assert!(matches!(
                 cli.cmd,
-                Cmd::Runtime { cmd: RuntimeCmd::Install { ref runtime, repo: None } }
-                    if runtime == "tilo-runtime/2026.10.9-chromium"
+                Cmd::Runtime {
+                    cmd: RuntimeCmd::Install { repo: None, .. }
+                }
             ));
         }
+
+        phase the_cli_surface_parses_and_names_both_public_commands;
         {
-            let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
-            assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app), .. } if app == "browser"));
+            {
+                Cli::command().debug_assert();
+            }
+            {
+                let help = Cli::command().bin_name("store").render_help().to_string();
+                assert!(help.contains("Usage: store"), "{help}");
+                let help = Cli::command()
+                    .bin_name("tilo app")
+                    .render_help()
+                    .to_string();
+                assert!(help.contains("Usage: tilo app"), "{help}");
+            }
+            {
+                let mut output = Vec::new();
+                clap_complete::generate(Shell::Bash, &mut Cli::command(), "app", &mut output);
+                clap_complete::generate(Shell::Bash, &mut Cli::command(), "store", &mut output);
+                let script = String::from_utf8(output).expect("completion is UTF-8");
+                assert!(script.contains("_app()"), "{script}");
+                assert!(script.contains("default app"), "{script}");
+                assert!(script.contains("_store()"), "{script}");
+                assert!(script.contains("default store"), "{script}");
+            }
+            {
+                let cli = Cli::try_parse_from([
+                    "app",
+                    "runtime",
+                    "install",
+                    "tilo-runtime/2026.10.9-chromium",
+                ])
+                .expect("runtime install parses");
+                assert!(matches!(
+                    cli.cmd,
+                    Cmd::Runtime { cmd: RuntimeCmd::Install { ref runtime, repo: None } }
+                        if runtime == "tilo-runtime/2026.10.9-chromium"
+                ));
+            }
+            {
+                let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
+                assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app), .. } if app == "browser"));
+            }
         }
     }
 
-    #[test]
-    fn updates_and_installs_report_what_they_checked_or_refused() {
+    tilo_test_env::scenario! {
+        fn progress_and_outcomes_are_reported;
+
+        phase progress_lines_follow_the_bytes_without_flooding;
         {
-            assert_eq!(human_bytes(999), "999 B");
-            assert_eq!(human_bytes(1536), "1.5 KiB");
-            assert_eq!(human_duration(Duration::from_secs(65)), "1m 05s");
-        }
-        {
-            assert_eq!(bulk_update_summary(0, 0, 0), "no apps are installed yet");
+            let downloading = |received, total| DownloadProgress {
+                received,
+                total,
+                phase: InstallPhase::Downloading,
+            };
+            let mut last = None;
+            let mut lines = Vec::new();
+            for received in (0..=1_000_000).step_by(1000) {
+                lines.extend(progress_line(
+                    downloading(received, Some(1_000_000)),
+                    &mut last,
+                ));
+            }
+            assert_eq!(lines.first().unwrap(), "progress downloading 0 1000000");
             assert_eq!(
-                bulk_update_summary(1, 0, 0),
-                "could not find update metadata for 1 installed app"
+                lines.last().unwrap(),
+                "progress downloading 1000000 1000000"
             );
-            assert_eq!(
-                bulk_update_summary(3, 0, 0),
-                "could not find update metadata for 3 installed apps"
-            );
-            assert_eq!(
-                bulk_update_summary(2, 2, 0),
-                "checked 2 of 2 installed apps; all up to date"
-            );
-            assert_eq!(
-                bulk_update_summary(3, 2, 1),
-                "checked 2 of 3 installed apps; updated 1"
-            );
-        }
-        {
-            let listing = app_cli::CatalogueListing {
-                apps: Vec::new(),
-                unreachable: vec![app_cli::UnreachableRegistry {
-                    name: "main".into(),
-                    detail: "connection refused".into(),
-                }],
+            assert_eq!(lines.len(), 101, "a line per percent: {lines:?}");
+            let installing = DownloadProgress {
+                received: 1_000_000,
+                total: Some(1_000_000),
+                phase: InstallPhase::Installing {
+                    elapsed: Duration::from_secs(1),
+                },
             };
             assert_eq!(
-                update_from_listing(&listing, &std::collections::HashMap::new()),
-                ExitCode::FAILURE
+                progress_line(installing, &mut last).as_deref(),
+                Some("progress installing")
+            );
+            assert_eq!(progress_line(installing, &mut last), None, "said once");
+            assert_eq!(
+                progress_line(downloading(0, None), &mut last).as_deref(),
+                Some("progress downloading 0 -"),
+                "a later download starts again"
             );
         }
+
+        phase updates_and_installs_report_what_they_checked_or_refused;
         {
-            let offer = CatalogueApp {
-                package_id: "so.tilo.browser".into(),
-                display_name: "Browser".into(),
-                description: String::new(),
-                tagline: String::new(),
-                images: Vec::new(),
-                supported_languages: vec!["en".into()],
-                category: None,
-                version: "1.0.0".into(),
-                registry: "main".into(),
-                download_url: "https://apps.tilo.so/browser.tapp".into(),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                architecture: std::env::consts::ARCH.into(),
-                isa: std::env::consts::ARCH.into(),
-                runtime: None,
-                publisher_pubkey_hex: "ef".repeat(32),
-                trust: "verified".into(),
-            };
-            assert_eq!(change_app(&offer, false, Some("2.0.0")), ExitCode::FAILURE);
+            {
+                assert_eq!(human_bytes(999), "999 B");
+                assert_eq!(human_bytes(1536), "1.5 KiB");
+                assert_eq!(human_duration(Duration::from_secs(65)), "1m 05s");
+            }
+            {
+                assert_eq!(bulk_update_summary(0, 0, 0), "no apps are installed yet");
+                assert_eq!(
+                    bulk_update_summary(1, 0, 0),
+                    "could not find update metadata for 1 installed app"
+                );
+                assert_eq!(
+                    bulk_update_summary(3, 0, 0),
+                    "could not find update metadata for 3 installed apps"
+                );
+                assert_eq!(
+                    bulk_update_summary(2, 2, 0),
+                    "checked 2 of 2 installed apps; all up to date"
+                );
+                assert_eq!(
+                    bulk_update_summary(3, 2, 1),
+                    "checked 2 of 3 installed apps; updated 1"
+                );
+            }
+            {
+                let listing = app_cli::CatalogueListing {
+                    apps: Vec::new(),
+                    unreachable: vec![app_cli::UnreachableRegistry {
+                        name: "main".into(),
+                        detail: "connection refused".into(),
+                    }],
+                };
+                assert_eq!(
+                    update_from_listing(&listing, &std::collections::HashMap::new()),
+                    ExitCode::FAILURE
+                );
+            }
+            {
+                let offer = CatalogueApp {
+                    package_id: "so.tilo.browser".into(),
+                    display_name: "Browser".into(),
+                    description: String::new(),
+                    tagline: String::new(),
+                    images: Vec::new(),
+                    supported_languages: vec!["en".into()],
+                    category: None,
+                    version: "1.0.0".into(),
+                    registry: "main".into(),
+                    download_url: "https://apps.tilo.so/browser.tapp".into(),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 1,
+                    tapp_blake3_hex: "cd".repeat(32),
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: std::env::consts::ARCH.into(),
+                    runtime: None,
+                    publisher_pubkey_hex: "ef".repeat(32),
+                    trust: "verified".into(),
+                };
+                assert_eq!(change_app(&offer, false, Some("2.0.0")), ExitCode::FAILURE);
+            }
         }
     }
 }

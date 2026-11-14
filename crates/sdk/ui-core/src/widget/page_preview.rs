@@ -194,37 +194,41 @@ impl Widget for PagePreview {
 mod tests {
     use super::*;
 
-    #[test]
-    fn page_position_is_always_valid() {
-        let preview = PagePreview::new("Document", 99, 3);
-        assert_eq!((preview.page(), preview.page_count()), (3, 3));
-        let empty = PagePreview::new("Document", 0, 0);
-        assert_eq!((empty.page(), empty.page_count()), (1, 1));
-    }
+    tilo_test_env::scenario! {
+        fn a_page_preview_is_flat_and_keeps_a_valid_position;
 
-    #[test]
-    fn the_preview_is_flat_and_sized_by_the_theme() {
-        let small = Geometry::of(&Theme::dark());
-        let large = Geometry::of(&Theme::dark().with_text_scale(2.0));
-        assert!(large.sheet_w > small.sheet_w, "grows with the text");
-        assert!((small.sheet_h / small.sheet_w - SHEET_ASPECT).abs() < 0.02);
-        let mut preview = PagePreview::new("Report", 2, 5);
-        preview.rect = Rect::new(0.0, 0.0, small.sheet_w, small.height());
-        let mut scene = Scene::new();
-        preview.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert_eq!(
-            Widget::accessibility(&preview)
-                .unwrap()
-                .description
-                .as_deref(),
-            Some("Page 2 of 5")
-        );
+        phase page_position_is_always_valid;
+        {
+            let preview = PagePreview::new("Document", 99, 3);
+            assert_eq!((preview.page(), preview.page_count()), (3, 3));
+            let empty = PagePreview::new("Document", 0, 0);
+            assert_eq!((empty.page(), empty.page_count()), (1, 1));
+        }
+
+        phase the_preview_is_flat_and_sized_by_the_theme;
+        {
+            let small = Geometry::of(&Theme::dark());
+            let large = Geometry::of(&Theme::dark().with_text_scale(2.0));
+            assert!(large.sheet_w > small.sheet_w, "grows with the text");
+            assert!((small.sheet_h / small.sheet_w - SHEET_ASPECT).abs() < 0.02);
+            let mut preview = PagePreview::new("Report", 2, 5);
+            preview.rect = Rect::new(0.0, 0.0, small.sheet_w, small.height());
+            let mut scene = Scene::new();
+            preview.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert_eq!(
+                Widget::accessibility(&preview)
+                    .unwrap()
+                    .description
+                    .as_deref(),
+                Some("Page 2 of 5")
+            );
+        }
     }
 }
 

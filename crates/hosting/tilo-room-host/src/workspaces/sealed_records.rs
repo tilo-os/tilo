@@ -164,22 +164,18 @@ impl RecordKeys {
 }
 
 impl GovernedWorkspace {
-    /// The content keys of `route`'s channel as the device this host runs on
-    /// holds them, without opening a channel it has none of: `None` when
-    /// this host runs on a device that takes part in no channel of the workspace.
-    pub(super) async fn route_keys(
-        &self,
-        route: &collab_types::ChannelRoute,
-    ) -> Option<Result<ChannelContentKeys, String>> {
+    /// The workspace's content keys as the device this host runs on holds
+    /// them, without opening a group it has none of: `None` when this host
+    /// runs on a device that takes part in no group of the workspace.
+    pub(super) async fn route_keys(&self) -> Option<Result<ChannelContentKeys, String>> {
         let device = self.device.as_ref()?;
-        device.channel_keys(self.workspace(), route, false).await
+        device.channel_keys(self.workspace(), false).await
     }
 
-    /// Whether this host takes part in the channel of `record` of `app` and
-    /// holds its keys: it can then read the record's sealed writes.
-    pub(super) async fn takes_part_in_channel(&self, app: &str, record: &str) -> bool {
-        let route = collab_types::ChannelRoute::new(app, record);
-        matches!(self.route_keys(&route).await, Some(Ok(_)))
+    /// Whether this host holds the workspace's keys: it can then read sealed
+    /// writes.
+    pub(super) async fn holds_keys(&self) -> bool {
+        matches!(self.route_keys().await, Some(Ok(_)))
     }
 
     /// The keys of `record` of `app`'s channel when the record is sealed:
@@ -198,9 +194,8 @@ impl GovernedWorkspace {
             return Ok(None);
         }
         let workspace = self.workspace();
-        let route = collab_types::ChannelRoute::new(app, record);
         let keys = self
-            .route_keys(&route)
+            .route_keys()
             .await
             .ok_or("the record is sealed and this host takes part in no channel")??;
         Ok(Some(RecordKeys {
@@ -223,8 +218,7 @@ impl GovernedWorkspace {
         op: &SignedOp,
     ) -> Result<Option<Vec<u8>>, String> {
         let workspace = self.workspace();
-        let route = collab_types::ChannelRoute::new(app, record);
-        let Some(Ok(keys)) = self.route_keys(&route).await else {
+        let Some(Ok(keys)) = self.route_keys().await else {
             return Ok(None);
         };
         let keys = RecordKeys {
@@ -297,8 +291,7 @@ pub(super) async fn whole_document(
             .ok_or_else(|| "the host holds no copy of it".to_owned());
     }
     let device = device.ok_or("it is sealed and this host has no channel keys")?;
-    let route = collab_types::ChannelRoute::new(app, record);
-    let keys = match device.channel_keys(workspace, &route, false).await {
+    let keys = match device.channel_keys(workspace, false).await {
         None => return Err("it is sealed for a channel this host holds no keys of".to_owned()),
         Some(Err(error)) => return Err(format!("its channel's keys did not open: {error}")),
         Some(Ok(keys)) => keys,
@@ -349,8 +342,7 @@ pub(crate) async fn unsent_writes(
     let Some(device) = device else {
         return Vec::new();
     };
-    let route = collab_types::ChannelRoute::new(app, record);
-    let Some(Ok(keys)) = device.channel_keys(workspace, &route, false).await else {
+    let Some(Ok(keys)) = device.channel_keys(workspace, false).await else {
         return Vec::new();
     };
     let keys = RecordKeys {
@@ -542,11 +534,7 @@ impl crate::compaction::ParticipantKeys for Workspaces {
     {
         Box::pin(async move {
             let device = self.device_keys()?;
-            let named = collab_types::ChannelRoute::new(&route.app_id, &route.record_id);
-            device
-                .channel_keys(&route.cluster_id, &named, false)
-                .await?
-                .ok()
+            device.channel_keys(&route.cluster_id, false).await?.ok()
         })
     }
 
@@ -574,20 +562,15 @@ impl crate::compaction::ParticipantKeys for Workspaces {
 }
 
 impl Workspaces {
-    /// Take part in the channel of `record` of `app` in `workspace`: this host's
-    /// device asks the channel's participants for access and holds its keys once
-    /// one admits it. `false` when it takes part in no channel of the workspace,
-    /// or is no reader of this one. Asked before the workspace is locked, since
-    /// the ask waits on the channel's service for the group to admit this device.
-    pub(crate) async fn join_channel(&self, workspace: &str, app: &str, record: &str) -> bool {
+    /// Take part in `workspace`'s group: this host's device asks its key holders
+    /// for access and holds its keys once one admits it. `false` when it takes
+    /// part in no group of the workspace. Asked before the workspace is locked,
+    /// since the ask waits on the key service for the group to admit this device.
+    pub(crate) async fn join_keys(&self, workspace: &str) -> bool {
         let Some(device) = self.device_keys() else {
             return false;
         };
-        let route = collab_types::ChannelRoute::new(app, record);
-        matches!(
-            device.channel_keys(workspace, &route, true).await,
-            Some(Ok(_))
-        )
+        matches!(device.channel_keys(workspace, true).await, Some(Ok(_)))
     }
 
     /// Everything the governor's copy holds of `record` of `app` in
@@ -869,14 +852,13 @@ impl Workspaces {
             return workspace.record_keys(app, record).await;
         }
         let name = workspace.workspace();
-        let route = collab_types::ChannelRoute::new(app, record);
         // The device's channel service opens the record's channel when it has
         // none yet, as the workspace's writes ask it to.
         let Some(device) = &workspace.device else {
             return workspace.record_keys(app, record).await;
         };
         let keys = device
-            .channel_keys(name, &route, true)
+            .channel_keys(name, true)
             .await
             .ok_or("the record is sealed and this host takes part in no channel")??;
         Ok(Some(RecordKeys {

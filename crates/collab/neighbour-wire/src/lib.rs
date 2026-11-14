@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 41;
+pub const PEER_PROTOCOL_VERSION: u32 = 46;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -691,21 +691,6 @@ pub enum NeighbourMsg {
         offset: u64,
         bytes: Vec<u8>,
     },
-    /// [`Self::MlsAccessRequest`] with the route of the record the channel
-    /// carries, so a participant can decide Read on that record, a Deny over
-    /// its app or any pattern covering it included. The route proves itself:
-    /// a participant refuses it unless, with the workspace id `room` gives, it
-    /// hashes to the request's channel ([`collab_types::ChannelRoute::proves`]).
-    /// A device that knows the route sends this form only. Appended to preserve
-    /// every existing Postcard discriminant.
-    MlsRoutedAccessRequest {
-        room: String,
-        request: Box<collab_types::MlsAccessRequestV1>,
-        route: Box<collab_types::ChannelRoute>,
-        /// Chosen by the sender for each delivery attempt, as for
-        /// [`Self::MlsAccessRequest`]; receivers ignore it.
-        delivery: u64,
-    },
     /// Viewer `peer` cannot continue decoding `surface`: a unit before
     /// [`Self::SurfaceFrame::seq`] `seq` never reached it, or its decoder
     /// rejected one, and the deltas after reference what it lacks. The owner
@@ -770,18 +755,6 @@ pub enum NeighbourMsg {
         user_public_key: [u8; 32],
         hosts: Vec<PersonalHost>,
     },
-    /// A workspace's host answering `device`'s access request for `channel`
-    /// when it carries no genesis of it: no group exists yet, so `device`
-    /// creates it now rather than waiting to hear of one. A host carrying a
-    /// genesis answers with it instead. Live only, never retained, and
-    /// unsigned: a false one makes a second genesis, which the channel's
-    /// members resolve to one. Appended to preserve every existing Postcard
-    /// discriminant.
-    MlsChannelUnfounded {
-        workspace: String,
-        channel: collab_types::ChannelId,
-        device: collab_types::Ed25519PublicKey,
-    },
 }
 
 /// Where one of the person's workspaces is hosted, as their other devices
@@ -819,8 +792,6 @@ impl NeighbourMsg {
     pub const MLS_GOVERNANCE_TAG: u8 = 20;
     /// Postcard variant index of [`NeighbourMsg::MlsAccessRequest`].
     pub const MLS_ACCESS_REQUEST_TAG: u8 = 21;
-    /// Postcard variant index of [`NeighbourMsg::MlsRoutedAccessRequest`].
-    pub const MLS_ROUTED_ACCESS_REQUEST_TAG: u8 = 25;
 
     /// Whether `bytes` encode a frame of channel governance
     /// ([`NeighbourMsg::MlsGovernance`]), reading only the variant tag as
@@ -831,14 +802,11 @@ impl NeighbourMsg {
     }
 
     /// Whether `bytes` encode a device's request to be admitted to a
-    /// channel's group, plain or routed, reading only the variant tag as
+    /// workspace's group, reading only the variant tag as
     /// [`Self::is_app_document`] does.
     pub fn is_access_request(bytes: &[u8]) -> bool {
-        const _: () = assert!(NeighbourMsg::MLS_ROUTED_ACCESS_REQUEST_TAG < 0x80);
-        matches!(
-            bytes.first(),
-            Some(&(Self::MLS_ACCESS_REQUEST_TAG | Self::MLS_ROUTED_ACCESS_REQUEST_TAG))
-        )
+        const _: () = assert!(NeighbourMsg::MLS_ACCESS_REQUEST_TAG < 0x80);
+        matches!(bytes.first(), Some(&Self::MLS_ACCESS_REQUEST_TAG))
     }
 
     /// Whether this is a retired wire generation that no current build
@@ -874,7 +842,6 @@ impl NeighbourMsg {
             | Self::MediaCapabilities { .. }
             | Self::MlsGovernance { .. }
             | Self::MlsAccessRequest { .. }
-            | Self::MlsRoutedAccessRequest { .. }
             | Self::PersonalWorkspaces { .. }
             | Self::RecordContentWant { .. }
             | Self::RecordContentPiece { .. }
@@ -883,8 +850,7 @@ impl NeighbourMsg {
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
             | Self::WriteRefusals { .. }
-            | Self::PersonalHosts { .. }
-            | Self::MlsChannelUnfounded { .. } => false,
+            | Self::PersonalHosts { .. } => false,
         }
     }
 
@@ -894,12 +860,9 @@ impl NeighbourMsg {
     #[must_use]
     pub fn channel_workspace(&self) -> Option<&str> {
         match self {
-            Self::MlsGovernance { workspace, .. }
-            | Self::MlsAccessRequest { workspace, .. }
-            | Self::MlsRoutedAccessRequest {
-                room: workspace, ..
+            Self::MlsGovernance { workspace, .. } | Self::MlsAccessRequest { workspace, .. } => {
+                Some(workspace)
             }
-            | Self::MlsChannelUnfounded { workspace, .. } => Some(workspace),
             _ => None,
         }
     }
@@ -933,14 +896,12 @@ impl NeighbourMsg {
             Self::PersonalWorkspaces { .. } => "PersonalWorkspaces",
             Self::RecordContentWant { .. } => "RecordContentWant",
             Self::RecordContentPiece { .. } => "RecordContentPiece",
-            Self::MlsRoutedAccessRequest { .. } => "MlsRoutedAccessRequest",
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
             Self::LivePresence { .. } => "LivePresence",
             Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
             Self::RecordContentLacks { .. } => "RecordContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
             Self::PersonalHosts { .. } => "PersonalHosts",
-            Self::MlsChannelUnfounded { .. } => "MlsChannelUnfounded",
         }
     }
 }
@@ -1122,10 +1083,10 @@ mod tests {
     /// bytes stay reproducible (these fixtures are not verified).
     fn fixtures_channel_governance() -> Vec<(&'static str, NeighbourMsg)> {
         use collab_types::{
-            ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction,
-            MlsGovernanceFrame, Signature,
+            Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame,
+            Signature, WorkspaceId,
         };
-        let channel = ChannelId(uuid::Uuid::from_bytes([0x55; 16]));
+        let workspace = WorkspaceId::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555);
         vec![
             (
                 "channel governance frame",
@@ -1133,7 +1094,7 @@ mod tests {
                     workspace: WORKSPACE.into(),
                     frame: Box::new(MlsGovernanceFrame {
                         version: 2,
-                        channel,
+                        workspace,
                         previous_frame_digest: [7; 32],
                         epoch: 3,
                         action: MlsGovernanceAction::Commit {
@@ -1155,37 +1116,13 @@ mod tests {
                     workspace: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
-                        channel,
+                        workspace,
                         device: Ed25519PublicKey::from_bytes([2; 32]),
                         key_package: vec![0x4B, 0x50],
                         issued_at: 1_700_000_000,
                         signature: Signature::from_bytes([0xCD; 64]),
                     }),
                     delivery: 8,
-                },
-            ),
-            (
-                "channel routed access request",
-                NeighbourMsg::MlsRoutedAccessRequest {
-                    room: WORKSPACE.into(),
-                    request: Box::new(MlsAccessRequestV1 {
-                        version: 1,
-                        channel,
-                        device: Ed25519PublicKey::from_bytes([2; 32]),
-                        key_package: vec![0x4B, 0x50],
-                        issued_at: 1_700_000_000,
-                        signature: Signature::from_bytes([0xCD; 64]),
-                    }),
-                    route: Box::new(collab_types::ChannelRoute::new("so.tilo.sheets", "payroll")),
-                    delivery: 10,
-                },
-            ),
-            (
-                "channel unfounded",
-                NeighbourMsg::MlsChannelUnfounded {
-                    workspace: WORKSPACE.into(),
-                    channel,
-                    device: Ed25519PublicKey::from_bytes([2; 32]),
                 },
             ),
         ]
@@ -1499,10 +1436,7 @@ mod tests {
         for (case, message) in fixtures() {
             let bytes = postcard::to_allocvec(&message).unwrap();
             let is_governance = matches!(message, NeighbourMsg::MlsGovernance { .. });
-            let is_request = matches!(
-                message,
-                NeighbourMsg::MlsAccessRequest { .. } | NeighbourMsg::MlsRoutedAccessRequest { .. }
-            );
+            let is_request = matches!(message, NeighbourMsg::MlsAccessRequest { .. });
             assert_eq!(
                 NeighbourMsg::is_channel_governance(&bytes),
                 is_governance,
@@ -1517,7 +1451,7 @@ mod tests {
             requests += usize::from(is_request);
         }
         assert!(
-            governance > 0 && requests > 1,
+            governance > 0 && requests > 0,
             "no channel governance fixture"
         );
         assert!(!NeighbourMsg::is_channel_governance(&[]));
@@ -1554,7 +1488,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 32;
+    const VARIANT_COUNT: usize = 30;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1599,11 +1533,11 @@ mod tests {
             ),
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
-        ("surface keyframe request", "1a0307ac02"),
+        ("surface keyframe request", "190307ac02"),
         (
             "surface view request",
             concat!(
-                "1c032430373834386666652d313839382d346637322d383431392d3062353463",
+                "1b032430373834386666652d313839382d346637322d383431392d3062353463",
                 "3933653664616401878080808080c0f65e800ad00501046832363401800fb808",
             ),
         ),
@@ -1615,7 +1549,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b29",
+                "0b2e",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1740,33 +1674,14 @@ mod tests {
                 "cd08",
             ),
         ),
-        (
-            "channel routed access request",
-            concat!(
-                "192436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030630110555555555555555555555555555555550202020202020202",
-                "020202020202020202020202020202020202020202020202024b5080e2cfaa06",
-                "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-                "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-                "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
-            ),
-        ),
-        (
-            "channel unfounded",
-            concat!(
-                "202436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030631055555555555555555555555555555555020202020202020202",
-                "0202020202020202020202020202020202020202020202",
-            ),
-        ),
-        ("live presence", "1b0303010203"),
+        ("live presence", "1a0303010203"),
         (
             "record content lacks",
-            "1d03040e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
+            "1c03040e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
         ),
         (
             "write refusals",
-            "1e0109776f726b73706163650d736f2e74696c6f2e6e6f746573056461696c79111111111111111111111111111111111111111111111111111111111111111107046f702d37012222222222222222222222222222222222222222222222222222222222222222030d6e6f207065726d697373696f6e3333333333333333333333333333333333333333333333333333333333333333090444444444",
+            "1d0109776f726b73706163650d736f2e74696c6f2e6e6f746573056461696c79111111111111111111111111111111111111111111111111111111111111111107046f702d37012222222222222222222222222222222222222222222222222222222222222222030d6e6f207065726d697373696f6e3333333333333333333333333333333333333333333333333333333333333333090444444444",
         ),
     ];
 

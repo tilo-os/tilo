@@ -71,7 +71,7 @@ fn bot_device(
         "Bridge",
         [1, 2, 3],
         DelegateScope {
-            rooms: vec![workspace.into()],
+            workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
             apps: vec![],
         },
         now_ns.saturating_sub(1_000_000_000),
@@ -181,7 +181,11 @@ async fn only_a_live_bot_installed_with_personas_shows_other_names() {
             .await,
         "the governed copy has no such installation"
     );
-    assert!(!workspaces.bot_personas(0, personas).await);
+    assert!(
+        !workspaces
+            .bot_personas(WorkspaceId::from_u128(0), personas)
+            .await
+    );
     drop(workspaces);
     drop(relay);
 }

@@ -552,207 +552,239 @@ mod tests {
         }
     }
 
-    #[test]
-    fn paths_are_resolved_because_seatbelt_matches_real_paths() {
-        let l = layout();
-        let link = l.root.join("payload-link");
-        std::os::unix::fs::symlink(&l.payload, &link).unwrap();
-        let plan = CapabilityPlan::empty();
-        let egress = EgressDecision::Blocked;
-        let mut i = inputs(&l, &plan, &egress);
-        i.payload_dir = &link;
-        let policy = SeatbeltPolicy::resolve(&i).unwrap();
-        assert_eq!(policy.payload, std::fs::canonicalize(&l.payload).unwrap());
-        assert!(policy.payload.is_absolute());
-        assert_eq!(policy.network, SeatbeltNetwork::Denied);
-        assert!(policy.not_enforced.is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn inputs_resolve_into_the_policy;
 
-    #[test]
-    fn a_container_overlapping_the_payload_is_refused() {
-        let l = layout();
-        let inner = l.payload.join("data");
-        std::fs::create_dir_all(&inner).unwrap();
-        let plan = CapabilityPlan::empty();
-        let egress = EgressDecision::Blocked;
-        let mut i = inputs(&l, &plan, &egress);
-        i.container_dir = &inner;
-        assert!(matches!(
-            SeatbeltPolicy::resolve(&i),
-            Err(PolicyError::Overlap {
-                role: "payload",
-                ..
-            })
-        ));
-        i.container_dir = &l.root;
-        assert!(matches!(
-            SeatbeltPolicy::resolve(&i),
-            Err(PolicyError::Overlap { .. })
-        ));
-    }
-
-    #[test]
-    fn missing_or_root_inputs_are_refused_or_dropped() {
-        let l = layout();
-        let plan = CapabilityPlan::empty();
-        let egress = EgressDecision::Blocked;
-        let missing = l.root.join("nope");
-        let mut i = inputs(&l, &plan, &egress);
-        i.payload_dir = &missing;
-        assert!(matches!(
-            SeatbeltPolicy::resolve(&i),
-            Err(PolicyError::Resolve {
-                role: "payload",
-                ..
-            })
-        ));
-        i.payload_dir = Path::new("/");
-        assert!(matches!(
-            SeatbeltPolicy::resolve(&i),
-            Err(PolicyError::Root { .. })
-        ));
-
-        let to_root = l.root.join("to-root");
-        std::os::unix::fs::symlink("/", &to_root).unwrap();
-        let plan = CapabilityPlan {
-            ro_paths: vec![to_root, l.root.join("missing")],
-            ..CapabilityPlan::empty()
-        };
-        let policy = SeatbeltPolicy::resolve(&inputs(&l, &plan, &egress)).unwrap();
-        assert!(policy.read_only.is_empty(), "{policy:?}");
-        assert_eq!(policy.not_enforced.len(), 1, "{policy:?}");
-    }
-
-    #[test]
-    fn user_grants_map_onto_read_only_and_read_write() {
-        let l = layout();
-        let docs = l.root.join("docs");
-        let music = l.root.join("music");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::create_dir_all(&music).unwrap();
-        let plan = CapabilityPlan {
-            ro_paths: vec![music.clone(), docs.clone()],
-            rw_paths: vec![docs.clone()],
-            devices: vec!["camera".to_string()],
-            ..CapabilityPlan::empty()
-        };
-        let egress = EgressDecision::Blocked;
-        let policy = SeatbeltPolicy::resolve(&inputs(&l, &plan, &egress)).unwrap();
-        let real = |p: &Path| std::fs::canonicalize(p).unwrap();
-        assert_eq!(policy.read_write, vec![real(&docs)]);
-        assert_eq!(policy.read_only, vec![real(&music)]);
-        assert_eq!(policy.not_enforced.len(), 1);
-        assert!(policy.not_enforced[0].contains("camera"));
-    }
-
-    #[test]
-    fn egress_maps_without_ever_widening() {
-        let l = layout();
-        let plan = CapabilityPlan::empty();
-        let unrestricted = EgressDecision::Unrestricted;
-        let policy = SeatbeltPolicy::resolve(&inputs(&l, &plan, &unrestricted)).unwrap();
-        assert_eq!(policy.network, SeatbeltNetwork::Unrestricted);
-
-        let filtered = EgressDecision::Filtered(EgressPolicy::from_grants(["example.com"]));
-        let offline = SeatbeltPolicy::resolve(&inputs(&l, &plan, &filtered)).unwrap();
-        assert_eq!(offline.network, SeatbeltNetwork::Denied);
-        assert_eq!(offline.not_enforced.len(), 1);
-
-        let mut i = inputs(&l, &plan, &filtered);
-        i.gate_port = Some(9050);
-        let gated = SeatbeltPolicy::resolve(&i).unwrap();
-        assert_eq!(gated.network, SeatbeltNetwork::Gate(9050));
-        assert!(gated.not_enforced.is_empty());
-    }
-
-    #[test]
-    fn the_environment_is_the_linux_contract_pointed_at_the_container() {
-        let container = Path::new("/Users/u/Library/Application Support/Tilo/tilo-workspaces/r/p");
-        let env = app_environment(container);
-        let linux: Vec<String> = appdir::sandbox_env().into_iter().map(|(k, _)| k).collect();
-        for key in &linux {
-            assert!(env.iter().any(|(k, _)| k == key), "{key} missing");
+        phase paths_are_resolved_because_seatbelt_matches_real_paths;
+        {
+            let l = layout();
+            let link = l.root.join("payload-link");
+            std::os::unix::fs::symlink(&l.payload, &link).unwrap();
+            let plan = CapabilityPlan::empty();
+            let egress = EgressDecision::Blocked;
+            let mut i = inputs(&l, &plan, &egress);
+            i.payload_dir = &link;
+            let policy = SeatbeltPolicy::resolve(&i).unwrap();
+            assert_eq!(policy.payload, std::fs::canonicalize(&l.payload).unwrap());
+            assert!(policy.payload.is_absolute());
+            assert_eq!(policy.network, SeatbeltNetwork::Denied);
+            assert!(policy.not_enforced.is_empty());
         }
-        for (key, value) in &env {
+
+        phase a_container_overlapping_the_payload_is_refused;
+        {
+            let l = layout();
+            let inner = l.payload.join("data");
+            std::fs::create_dir_all(&inner).unwrap();
+            let plan = CapabilityPlan::empty();
+            let egress = EgressDecision::Blocked;
+            let mut i = inputs(&l, &plan, &egress);
+            i.container_dir = &inner;
+            assert!(matches!(
+                SeatbeltPolicy::resolve(&i),
+                Err(PolicyError::Overlap {
+                    role: "payload",
+                    ..
+                })
+            ));
+            i.container_dir = &l.root;
+            assert!(matches!(
+                SeatbeltPolicy::resolve(&i),
+                Err(PolicyError::Overlap { .. })
+            ));
+        }
+
+        phase missing_or_root_inputs_are_refused_or_dropped;
+        {
+            let l = layout();
+            let plan = CapabilityPlan::empty();
+            let egress = EgressDecision::Blocked;
+            let missing = l.root.join("nope");
+            let mut i = inputs(&l, &plan, &egress);
+            i.payload_dir = &missing;
+            assert!(matches!(
+                SeatbeltPolicy::resolve(&i),
+                Err(PolicyError::Resolve {
+                    role: "payload",
+                    ..
+                })
+            ));
+            i.payload_dir = Path::new("/");
+            assert!(matches!(
+                SeatbeltPolicy::resolve(&i),
+                Err(PolicyError::Root { .. })
+            ));
+
+            let to_root = l.root.join("to-root");
+            std::os::unix::fs::symlink("/", &to_root).unwrap();
+            let plan = CapabilityPlan {
+                ro_paths: vec![to_root, l.root.join("missing")],
+                ..CapabilityPlan::empty()
+            };
+            let policy = SeatbeltPolicy::resolve(&inputs(&l, &plan, &egress)).unwrap();
+            assert!(policy.read_only.is_empty(), "{policy:?}");
+            assert_eq!(policy.not_enforced.len(), 1, "{policy:?}");
+        }
+
+        phase user_grants_map_onto_read_only_and_read_write;
+        {
+            let l = layout();
+            let docs = l.root.join("docs");
+            let music = l.root.join("music");
+            std::fs::create_dir_all(&docs).unwrap();
+            std::fs::create_dir_all(&music).unwrap();
+            let plan = CapabilityPlan {
+                ro_paths: vec![music.clone(), docs.clone()],
+                rw_paths: vec![docs.clone()],
+                devices: vec!["camera".to_string()],
+                ..CapabilityPlan::empty()
+            };
+            let egress = EgressDecision::Blocked;
+            let policy = SeatbeltPolicy::resolve(&inputs(&l, &plan, &egress)).unwrap();
+            let real = |p: &Path| std::fs::canonicalize(p).unwrap();
+            assert_eq!(policy.read_write, vec![real(&docs)]);
+            assert_eq!(policy.read_only, vec![real(&music)]);
+            assert_eq!(policy.not_enforced.len(), 1);
+            assert!(policy.not_enforced[0].contains("camera"));
+        }
+
+        phase egress_maps_without_ever_widening;
+        {
+            let l = layout();
+            let plan = CapabilityPlan::empty();
+            let unrestricted = EgressDecision::Unrestricted;
+            let policy = SeatbeltPolicy::resolve(&inputs(&l, &plan, &unrestricted)).unwrap();
+            assert_eq!(policy.network, SeatbeltNetwork::Unrestricted);
+
+            let filtered = EgressDecision::Filtered(EgressPolicy::from_grants(["example.com"]));
+            let offline = SeatbeltPolicy::resolve(&inputs(&l, &plan, &filtered)).unwrap();
+            assert_eq!(offline.network, SeatbeltNetwork::Denied);
+            assert_eq!(offline.not_enforced.len(), 1);
+
+            let mut i = inputs(&l, &plan, &filtered);
+            i.gate_port = Some(9050);
+            let gated = SeatbeltPolicy::resolve(&i).unwrap();
+            assert_eq!(gated.network, SeatbeltNetwork::Gate(9050));
+            assert!(gated.not_enforced.is_empty());
+        }
+
+        phase the_environment_is_the_linux_contract_pointed_at_the_container;
+        {
+            let container = Path::new("/Users/u/Library/Application Support/Tilo/tilo-workspaces/r/p");
+            let env = app_environment(container);
+            let linux: Vec<String> = appdir::sandbox_env().into_iter().map(|(k, _)| k).collect();
+            for key in &linux {
+                assert!(env.iter().any(|(k, _)| k == key), "{key} missing");
+            }
+            for (key, value) in &env {
+                assert!(
+                    Path::new(value).starts_with(container),
+                    "{key}={value} leaves the container"
+                );
+            }
+            let get = |k: &str| env.iter().find(|(key, _)| key == k).unwrap().1.clone();
+            assert_eq!(get("HOME"), container.display().to_string());
+            assert_eq!(
+                get("XDG_DATA_HOME"),
+                container.join(".local/share").display().to_string()
+            );
+            assert_eq!(get("TMPDIR"), container.join("tmp").display().to_string());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn containers_and_their_caches;
+
+        phase each_container_gets_its_own_cache_directory;
+        {
+            let data = Path::new("/Users/u/Library/Application Support/Tilo");
+            let suffix = |workspace: &str, package: &str| {
+                darwin_dir_suffix(&container_dir(data, Some(workspace), package)).unwrap()
+            };
+            assert_eq!(suffix("r", "so.tilo.notes"), "so.tilo+r+so.tilo.notes");
+            assert_ne!(suffix("a.b", "c"), suffix("a", "b.c"));
+            assert_ne!(suffix("a", "so.tilo.notes"), suffix("b", "so.tilo.notes"));
+            assert!(!suffix("../x", "a/b").contains('/'));
+
+            let tmp = tempfile::tempdir().unwrap();
+            let user_cache = tmp.path().join("C");
+            std::fs::create_dir_all(&user_cache).unwrap();
+            let container = container_dir(tmp.path(), Some("r"), "so.tilo.notes");
+            let cache = prepare_darwin_cache(&user_cache, &container).unwrap();
+            assert_eq!(cache.suffix, "so.tilo+r+so.tilo.notes");
+            assert_eq!(
+                cache.dir,
+                std::fs::canonicalize(&user_cache)
+                    .unwrap()
+                    .join(&cache.suffix)
+            );
+            assert_eq!(
+                prepare_darwin_cache(&user_cache, &container).unwrap(),
+                cache
+            );
+
+            let other = container_dir(tmp.path(), Some("r"), "so.tilo.other");
+            std::os::unix::fs::symlink(
+                &cache.dir,
+                user_cache.join(darwin_dir_suffix(&other).unwrap()),
+            )
+            .unwrap();
             assert!(
-                Path::new(value).starts_with(container),
-                "{key}={value} leaves the container"
+                prepare_darwin_cache(&user_cache, &other).is_err(),
+                "a link to another app's cache was accepted"
             );
         }
-        let get = |k: &str| env.iter().find(|(key, _)| key == k).unwrap().1.clone();
-        assert_eq!(get("HOME"), container.display().to_string());
-        assert_eq!(
-            get("XDG_DATA_HOME"),
-            container.join(".local/share").display().to_string()
-        );
-        assert_eq!(get("TMPDIR"), container.join("tmp").display().to_string());
-    }
 
-    #[test]
-    fn each_container_gets_its_own_cache_directory() {
-        let data = Path::new("/Users/u/Library/Application Support/Tilo");
-        let suffix = |workspace: &str, package: &str| {
-            darwin_dir_suffix(&container_dir(data, Some(workspace), package)).unwrap()
-        };
-        assert_eq!(suffix("r", "so.tilo.notes"), "so.tilo+r+so.tilo.notes");
-        assert_ne!(suffix("a.b", "c"), suffix("a", "b.c"));
-        assert_ne!(suffix("a", "so.tilo.notes"), suffix("b", "so.tilo.notes"));
-        assert!(!suffix("../x", "a/b").contains('/'));
+        phase the_cache_directory_is_writable_and_never_executable;
+        {
+            let l = layout();
+            let plan = CapabilityPlan::empty();
+            let egress = EgressDecision::Blocked;
+            let cache = l.root.join("cache");
+            std::fs::create_dir_all(&cache).unwrap();
+            let mut i = inputs(&l, &plan, &egress);
+            i.darwin_cache = Some(&cache);
+            let policy = SeatbeltPolicy::resolve(&i).unwrap();
+            assert_eq!(
+                policy.darwin_cache,
+                Some(std::fs::canonicalize(&cache).unwrap())
+            );
 
-        let tmp = tempfile::tempdir().unwrap();
-        let user_cache = tmp.path().join("C");
-        std::fs::create_dir_all(&user_cache).unwrap();
-        let container = container_dir(tmp.path(), Some("r"), "so.tilo.notes");
-        let cache = prepare_darwin_cache(&user_cache, &container).unwrap();
-        assert_eq!(cache.suffix, "so.tilo+r+so.tilo.notes");
-        assert_eq!(
-            cache.dir,
-            std::fs::canonicalize(&user_cache)
-                .unwrap()
-                .join(&cache.suffix)
-        );
-        assert_eq!(
-            prepare_darwin_cache(&user_cache, &container).unwrap(),
-            cache
-        );
+            let inside = l.payload.join("cache");
+            std::fs::create_dir_all(&inside).unwrap();
+            i.darwin_cache = Some(&inside);
+            assert!(matches!(
+                SeatbeltPolicy::resolve(&i),
+                Err(PolicyError::Overlap {
+                    role: "payload",
+                    ..
+                })
+            ));
+        }
 
-        let other = container_dir(tmp.path(), Some("r"), "so.tilo.other");
-        std::os::unix::fs::symlink(
-            &cache.dir,
-            user_cache.join(darwin_dir_suffix(&other).unwrap()),
-        )
-        .unwrap();
-        assert!(
-            prepare_darwin_cache(&user_cache, &other).is_err(),
-            "a link to another app's cache was accepted"
-        );
-    }
+        phase containers_live_beside_the_runtime_profile_per_workspace_and_package;
+        {
+            let home = Path::new("/Users/u");
+            let data = data_home(home);
+            assert_eq!(data, Path::new("/Users/u/Library/Application Support/Tilo"));
+            assert_eq!(
+                container_dir(&data, None, "so.tilo.notes"),
+                data.join("tilo-workspaces/personal/so.tilo.notes")
+            );
+            assert_ne!(
+                container_dir(&data, Some("a"), "so.tilo.notes"),
+                container_dir(&data, Some("b"), "so.tilo.notes")
+            );
+            assert!(
+                container_dir(&data, Some("../../x"), "../..")
+                    .starts_with(data.join("tilo-workspaces"))
+            );
 
-    #[test]
-    fn the_cache_directory_is_writable_and_never_executable() {
-        let l = layout();
-        let plan = CapabilityPlan::empty();
-        let egress = EgressDecision::Blocked;
-        let cache = l.root.join("cache");
-        std::fs::create_dir_all(&cache).unwrap();
-        let mut i = inputs(&l, &plan, &egress);
-        i.darwin_cache = Some(&cache);
-        let policy = SeatbeltPolicy::resolve(&i).unwrap();
-        assert_eq!(
-            policy.darwin_cache,
-            Some(std::fs::canonicalize(&cache).unwrap())
-        );
-
-        let inside = l.payload.join("cache");
-        std::fs::create_dir_all(&inside).unwrap();
-        i.darwin_cache = Some(&inside);
-        assert!(matches!(
-            SeatbeltPolicy::resolve(&i),
-            Err(PolicyError::Overlap {
-                role: "payload",
-                ..
-            })
-        ));
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = prepare_container(tmp.path(), None, "so.tilo.notes").unwrap();
+            assert!(dir.join(CONTAINER_TMP).is_dir());
+            assert!(dir.join(".config").is_dir());
+        }
     }
 
     /// `layout()` plus a home holding Tilo's private store.
@@ -768,97 +800,101 @@ mod tests {
         std::fs::canonicalize(path).unwrap()
     }
 
-    #[test]
-    fn a_home_grant_hides_the_store_and_pins_every_directory_on_its_way() {
-        let l = layout();
-        let (home, store) = home_with_store(&l);
-        let plan = CapabilityPlan {
-            rw_paths: vec![home.clone(), store.join("identity")],
-            ..CapabilityPlan::empty()
-        };
-        let egress = EgressDecision::Blocked;
-        let stores = [store.clone()];
-        let mut i = inputs(&l, &plan, &egress);
-        i.private_stores = &stores;
-        let policy = SeatbeltPolicy::resolve(&i).unwrap();
+    tilo_test_env::scenario! {
+        fn private_stores_are_hidden_and_pinned;
 
-        // The grant inside the store is dropped; the one containing it stays.
-        assert_eq!(policy.read_write, vec![real(&home)]);
-        assert_eq!(policy.hidden, vec![real(&store)]);
-        let config = real(&home.join(".config"));
-        for dir in config.ancestors().filter(|dir| dir.parent().is_some()) {
-            assert!(policy.pinned.contains(&dir.to_path_buf()), "{policy:?}");
+        phase a_home_grant_hides_the_store_and_pins_every_directory_on_its_way;
+        {
+            let l = layout();
+            let (home, store) = home_with_store(&l);
+            let plan = CapabilityPlan {
+                rw_paths: vec![home.clone(), store.join("identity")],
+                ..CapabilityPlan::empty()
+            };
+            let egress = EgressDecision::Blocked;
+            let stores = [store.clone()];
+            let mut i = inputs(&l, &plan, &egress);
+            i.private_stores = &stores;
+            let policy = SeatbeltPolicy::resolve(&i).unwrap();
+
+            // The grant inside the store is dropped; the one containing it stays.
+            assert_eq!(policy.read_write, vec![real(&home)]);
+            assert_eq!(policy.hidden, vec![real(&store)]);
+            let config = real(&home.join(".config"));
+            for dir in config.ancestors().filter(|dir| dir.parent().is_some()) {
+                assert!(policy.pinned.contains(&dir.to_path_buf()), "{policy:?}");
+            }
+            assert!(!policy.pinned.contains(&PathBuf::from("/")), "{policy:?}");
+            assert!(
+                !policy.pinned.iter().any(|p| p.starts_with(real(&store))),
+                "{policy:?}"
+            );
         }
-        assert!(!policy.pinned.contains(&PathBuf::from("/")), "{policy:?}");
-        assert!(
-            !policy.pinned.iter().any(|p| p.starts_with(real(&store))),
-            "{policy:?}"
-        );
-    }
 
-    #[test]
-    fn a_store_is_hidden_without_any_grant_and_created_only_when_one_reaches_it() {
-        let l = layout();
-        let home = l.root.join("home");
-        std::fs::create_dir_all(home.join("Documents")).unwrap();
-        let store = home.join(".config/tilo");
-        let stores = [store.clone()];
-        let egress = EgressDecision::Blocked;
+        phase a_store_is_hidden_without_any_grant_and_created_only_when_one_reaches_it;
+        {
+            let l = layout();
+            let home = l.root.join("home");
+            std::fs::create_dir_all(home.join("Documents")).unwrap();
+            let store = home.join(".config/tilo");
+            let stores = [store.clone()];
+            let egress = EgressDecision::Blocked;
 
-        // A picked path could still name it, so it is hidden at the path it
-        // would be created at, and nothing is created.
-        let none = CapabilityPlan::empty();
-        let mut i = inputs(&l, &none, &egress);
-        i.private_stores = &stores;
-        let policy = SeatbeltPolicy::resolve(&i).unwrap();
-        assert_eq!(policy.hidden, vec![real(&home).join(".config/tilo")]);
-        assert!(policy.pinned.contains(&real(&home)), "{policy:?}");
-        assert!(!home.join(".config").exists());
+            // A picked path could still name it, so it is hidden at the path it
+            // would be created at, and nothing is created.
+            let none = CapabilityPlan::empty();
+            let mut i = inputs(&l, &none, &egress);
+            i.private_stores = &stores;
+            let policy = SeatbeltPolicy::resolve(&i).unwrap();
+            assert_eq!(policy.hidden, vec![real(&home).join(".config/tilo")]);
+            assert!(policy.pinned.contains(&real(&home)), "{policy:?}");
+            assert!(!home.join(".config").exists());
 
-        // A writable home would let the app create it first.
-        let plan = CapabilityPlan {
-            rw_paths: vec![home.clone()],
-            ..CapabilityPlan::empty()
-        };
-        let mut i = inputs(&l, &plan, &egress);
-        i.private_stores = &stores;
-        let policy = SeatbeltPolicy::resolve(&i).unwrap();
-        assert!(store.is_dir(), "the store was not created before launch");
-        assert_eq!(policy.hidden, vec![real(&store)]);
-        assert!(policy.pinned.contains(&real(&home.join(".config"))));
-    }
+            // A writable home would let the app create it first.
+            let plan = CapabilityPlan {
+                rw_paths: vec![home.clone()],
+                ..CapabilityPlan::empty()
+            };
+            let mut i = inputs(&l, &plan, &egress);
+            i.private_stores = &stores;
+            let policy = SeatbeltPolicy::resolve(&i).unwrap();
+            assert!(store.is_dir(), "the store was not created before launch");
+            assert_eq!(policy.hidden, vec![real(&store)]);
+            assert!(policy.pinned.contains(&real(&home.join(".config"))));
+        }
 
-    #[test]
-    fn a_symlink_on_the_way_is_pinned_where_it_lives() {
-        let l = layout();
-        let home = l.root.join("home");
-        let elsewhere = l.root.join("elsewhere/tilo");
-        std::fs::create_dir_all(&elsewhere).unwrap();
-        std::fs::create_dir_all(home.join(".config")).unwrap();
-        let link = home.join(".config/tilo");
-        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-        let none = CapabilityPlan::empty();
-        let egress = EgressDecision::Blocked;
-        let stores = [link];
-        let mut i = inputs(&l, &none, &egress);
-        i.private_stores = &stores;
-        let policy = SeatbeltPolicy::resolve(&i).unwrap();
-        assert_eq!(policy.hidden, vec![real(&elsewhere)]);
-        let link_on_disk = real(&home.join(".config")).join("tilo");
-        assert!(policy.pinned.contains(&link_on_disk), "{policy:?}");
-        assert!(
-            policy.pinned.contains(&real(&l.root.join("elsewhere"))),
-            "{policy:?}"
-        );
+        phase a_symlink_on_the_way_is_pinned_where_it_lives;
+        {
+            let l = layout();
+            let home = l.root.join("home");
+            let elsewhere = l.root.join("elsewhere/tilo");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::fs::create_dir_all(home.join(".config")).unwrap();
+            let link = home.join(".config/tilo");
+            std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+            let none = CapabilityPlan::empty();
+            let egress = EgressDecision::Blocked;
+            let stores = [link];
+            let mut i = inputs(&l, &none, &egress);
+            i.private_stores = &stores;
+            let policy = SeatbeltPolicy::resolve(&i).unwrap();
+            assert_eq!(policy.hidden, vec![real(&elsewhere)]);
+            let link_on_disk = real(&home.join(".config")).join("tilo");
+            assert!(policy.pinned.contains(&link_on_disk), "{policy:?}");
+            assert!(
+                policy.pinned.contains(&real(&l.root.join("elsewhere"))),
+                "{policy:?}"
+            );
 
-        let looped = l.root.join("loop");
-        std::os::unix::fs::symlink(&looped, &looped).unwrap();
-        let stores = [looped.join("tilo")];
-        i.private_stores = &stores;
-        assert!(matches!(
-            SeatbeltPolicy::resolve(&i),
-            Err(PolicyError::PrivateStore { .. })
-        ));
+            let looped = l.root.join("loop");
+            std::os::unix::fs::symlink(&looped, &looped).unwrap();
+            let stores = [looped.join("tilo")];
+            i.private_stores = &stores;
+            assert!(matches!(
+                SeatbeltPolicy::resolve(&i),
+                Err(PolicyError::PrivateStore { .. })
+            ));
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -879,29 +915,5 @@ mod tests {
         let policy = SeatbeltPolicy::resolve(&i).unwrap();
         assert_eq!(policy.hidden, vec![real(&store)]);
         assert!(policy.pinned.contains(&real(&home.join(".config"))));
-    }
-
-    #[test]
-    fn containers_live_beside_the_runtime_profile_per_workspace_and_package() {
-        let home = Path::new("/Users/u");
-        let data = data_home(home);
-        assert_eq!(data, Path::new("/Users/u/Library/Application Support/Tilo"));
-        assert_eq!(
-            container_dir(&data, None, "so.tilo.notes"),
-            data.join("tilo-workspaces/personal/so.tilo.notes")
-        );
-        assert_ne!(
-            container_dir(&data, Some("a"), "so.tilo.notes"),
-            container_dir(&data, Some("b"), "so.tilo.notes")
-        );
-        assert!(
-            container_dir(&data, Some("../../x"), "../..")
-                .starts_with(data.join("tilo-workspaces"))
-        );
-
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = prepare_container(tmp.path(), None, "so.tilo.notes").unwrap();
-        assert!(dir.join(CONTAINER_TMP).is_dir());
-        assert!(dir.join(".config").is_dir());
     }
 }

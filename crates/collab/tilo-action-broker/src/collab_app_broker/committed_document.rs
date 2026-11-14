@@ -491,7 +491,6 @@ impl JoinedChannel {
             .lease
             .as_ref()
             .and_then(|lease| lease.local_media.clone());
-        let peer = self.peer_id;
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
         let read_only = self.route_access == RouteAccess::ReadOnly;
@@ -500,11 +499,7 @@ impl JoinedChannel {
             if !state.is_accepting() {
                 return Err("committed read broker stopped".into());
             }
-            if let Some(scope) = &admitted.host_scope {
-                if !state.is_current_host_worker(peer, &checked_route, &scope.certificate)? {
-                    return Err("committed read worker ended".into());
-                }
-            } else if let Some(local) = local.as_ref() {
+            if let Some(local) = local.as_ref() {
                 // The launch's own routes, a record every app of its workspace
                 // opens, or another app's record it joined to read: the owner's
                 // grants decide the rest, below and in the owner's own

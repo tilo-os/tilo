@@ -172,72 +172,80 @@ pub fn nv_index_name(index: u32, attributes: u32, auth_policy: &[u8], data_size:
 mod tests {
     use super::*;
 
-    #[test]
-    fn policy_digests_bind_every_operation_operand_and_index() {
-        {
-            assert_eq!(Operation::Eq as u16, 0x0000);
-            assert_eq!(Operation::UnsignedLe as u16, 0x0009);
-            assert_eq!(Operation::UnsignedLe.tool_name(), "ule");
-            assert_eq!(Operation::Eq.tool_name(), "eq");
-        }
-        {
-            let a = command_code(ZERO, CC_NV_INCREMENT);
-            assert_ne!(a, ZERO);
-            let b = nv_counter(a, &[0u8; 34], 7, Operation::Eq);
-            assert_ne!(b, a);
-            let c = auth_value(b);
-            assert_ne!(c, b);
-        }
-        {
-            let name = [1u8; 34];
-            let a = nv_counter(ZERO, &name, 7, Operation::Eq);
-            let b = nv_counter(ZERO, &name, 8, Operation::Eq);
-            let c = nv_counter(ZERO, &name, 7, Operation::UnsignedLe);
-            assert_ne!(a, b, "a different target must give a different policy");
-            assert_ne!(a, c, "a different comparison must give a different policy");
-        }
-        {
-            assert_ne!(
-                nv_counter(ZERO, &[1u8; 34], 7, Operation::Eq),
-                nv_counter(ZERO, &[2u8; 34], 7, Operation::Eq)
-            );
-        }
-        {
-            let k1 = [1u8; 34];
-            let k2 = [2u8; 34];
-            assert_ne!(authorize(&k1, b""), authorize(&k2, b""));
-            assert_ne!(authorize(&k1, b"a"), authorize(&k1, b"b"));
-            assert_eq!(authorize(&k1, b"x"), authorize(&k1, b"x"));
-        }
-        {
-            let a = [1u8; DIGEST_LEN];
-            let b = [2u8; DIGEST_LEN];
-            assert_ne!(or(&[a, b]), or(&[b, a]));
-        }
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn policy_digests_names_and_signed_messages_match_the_tpm;
 
-    #[test]
-    fn nv_names_and_signed_messages_match_tpm2_tools() {
+        phase policy_digests_bind_every_operation_operand_and_index;
         {
-            use nv_attr::*;
-            assert_eq!(AUTHREAD | AUTHWRITE | NT_COUNTER, 0x0004_0014);
-            assert_eq!(AUTHREAD | POLICYWRITE | NT_COUNTER, 0x0004_0018);
+            {
+                assert_eq!(Operation::Eq as u16, 0x0000);
+                assert_eq!(Operation::UnsignedLe as u16, 0x0009);
+                assert_eq!(Operation::UnsignedLe.tool_name(), "ule");
+                assert_eq!(Operation::Eq.tool_name(), "eq");
+            }
+            {
+                let a = command_code(ZERO, CC_NV_INCREMENT);
+                assert_ne!(a, ZERO);
+                let b = nv_counter(a, &[0u8; 34], 7, Operation::Eq);
+                assert_ne!(b, a);
+                let c = auth_value(b);
+                assert_ne!(c, b);
+            }
+            {
+                let name = [1u8; 34];
+                let a = nv_counter(ZERO, &name, 7, Operation::Eq);
+                let b = nv_counter(ZERO, &name, 8, Operation::Eq);
+                let c = nv_counter(ZERO, &name, 7, Operation::UnsignedLe);
+                assert_ne!(a, b, "a different target must give a different policy");
+                assert_ne!(a, c, "a different comparison must give a different policy");
+            }
+            {
+                assert_ne!(
+                    nv_counter(ZERO, &[1u8; 34], 7, Operation::Eq),
+                    nv_counter(ZERO, &[2u8; 34], 7, Operation::Eq)
+                );
+            }
+            {
+                let k1 = [1u8; 34];
+                let k2 = [2u8; 34];
+                assert_ne!(authorize(&k1, b""), authorize(&k2, b""));
+                assert_ne!(authorize(&k1, b"a"), authorize(&k1, b"b"));
+                assert_eq!(authorize(&k1, b"x"), authorize(&k1, b"x"));
+            }
+            {
+                let a = [1u8; DIGEST_LEN];
+                let b = [2u8; DIGEST_LEN];
+                assert_ne!(or(&[a, b]), or(&[b, a]));
+            }
         }
+
+        phase nv_names_and_signed_messages_match_tpm2_tools;
         {
-            use nv_attr::*;
-            let attrs = AUTHREAD | POLICYWRITE | NT_COUNTER;
-            let unwritten = nv_index_name(0x01D9_1100, attrs, &[0u8; 32], 8);
-            let written = nv_index_name(0x01D9_1100, attrs | WRITTEN, &[0u8; 32], 8);
-            assert_ne!(unwritten, written);
-            assert_eq!(unwritten.len(), 34);
-            assert_eq!(&written[..2], &ALG_SHA256.to_be_bytes());
-        }
-        {
-            let p = [7u8; DIGEST_LEN];
-            let m = authorize_signed_message(&p, b"ref");
-            assert_eq!(m.len(), DIGEST_LEN + 3);
-            assert_eq!(&m[..DIGEST_LEN], &p);
-            assert_eq!(&m[DIGEST_LEN..], b"ref");
+            {
+                use nv_attr::*;
+                assert_eq!(AUTHREAD | AUTHWRITE | NT_COUNTER, 0x0004_0014);
+                assert_eq!(AUTHREAD | POLICYWRITE | NT_COUNTER, 0x0004_0018);
+            }
+            {
+                use nv_attr::*;
+                let attrs = AUTHREAD | POLICYWRITE | NT_COUNTER;
+                let unwritten = nv_index_name(0x01D9_1100, attrs, &[0u8; 32], 8);
+                let written = nv_index_name(0x01D9_1100, attrs | WRITTEN, &[0u8; 32], 8);
+                assert_ne!(unwritten, written);
+                assert_eq!(unwritten.len(), 34);
+                assert_eq!(&written[..2], &ALG_SHA256.to_be_bytes());
+            }
+            {
+                let p = [7u8; DIGEST_LEN];
+                let m = authorize_signed_message(&p, b"ref");
+                assert_eq!(m.len(), DIGEST_LEN + 3);
+                assert_eq!(&m[..DIGEST_LEN], &p);
+                assert_eq!(&m[DIGEST_LEN..], b"ref");
+            }
         }
     }
 }

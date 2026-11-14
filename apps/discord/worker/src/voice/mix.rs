@@ -166,6 +166,13 @@ mod tests {
             Some(&frames[3]),
             "the oldest dropped"
         );
+        assert_eq!(mixer.tick().as_ref(), Some(&frames[4]));
+        assert_eq!(
+            mixer.tick().as_ref(),
+            Some(&frames[5]),
+            "the three newest play"
+        );
+        assert_eq!(mixer.tick(), None, "and nothing older");
     }
 
     #[test]
@@ -181,5 +188,27 @@ mod tests {
         let mut decoder = Decoder::new(48_000, Channels::Stereo).unwrap();
         let mut pcm = vec![0_i16; SAMPLES * STEREO];
         assert_eq!(decoder.decode(&frame, &mut pcm, false).unwrap(), SAMPLES);
+    }
+
+    /// Nobody speaking is no frame, one frame alone never starts, and a
+    /// speaker silent for [`FORGET_AFTER`] ticks is forgotten with the frame
+    /// they left, not a tick sooner.
+    #[test]
+    fn a_lone_frame_waits_until_its_speaker_is_forgotten() {
+        assert_eq!(Mixer::default().tick(), None, "nobody");
+        for (ticks, played) in [(FORGET_AFTER - 1, true), (FORGET_AFTER, false)] {
+            let mut mixer = Mixer::default();
+            let (first, second) = (tone(440.0, 0), tone(440.0, 1));
+            mixer.push("ada", first.clone());
+            for tick in 0..ticks {
+                assert_eq!(mixer.tick(), None, "tick {tick}: one frame is no start");
+            }
+            mixer.push("ada", second);
+            assert_eq!(
+                mixer.tick(),
+                played.then_some(first),
+                "after {ticks} silent ticks"
+            );
+        }
     }
 }

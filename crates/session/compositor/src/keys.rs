@@ -292,61 +292,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_held_key_repeats_after_the_delay_at_the_rate_until_released() {
-        let mut keys = HostKeys {
-            repeat: KeyRepeat {
-                delay: Duration::from_millis(100),
-                rate: 10,
-            },
-            ..HostKeys::default()
-        };
-        let start = Instant::now();
-        keys.press(2, &key(30), true, start);
-        assert!(keys.due(start + Duration::from_millis(99)).is_empty());
-        let first = keys.due(start + Duration::from_millis(100));
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].0, 2);
-        assert!(first[0].1.repeat && first[0].1.pressed);
-        // One interval on, the key repeats again; the next one is due a beat after it, not at the
-        // beat the first repeat kept.
-        assert_eq!(keys.due(start + Duration::from_millis(200)).len(), 1);
-        assert_eq!(keys.due(start + Duration::from_millis(300)).len(), 1);
-        assert_eq!(keys.release(30), Some(2));
-        assert!(keys.next_due().is_none());
-        assert!(keys.due(start + Duration::from_secs(1)).is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// Key repeat.
+        fn a_held_key_repeats_until_released_or_another_is_pressed;
 
-    #[test]
-    fn another_press_stops_the_repeat_and_keys_that_do_not_repeat_never_start() {
-        let mut keys = HostKeys::default();
-        let now = Instant::now();
-        keys.press(0, &key(30), true, now);
-        keys.press(0, &key(42), false, now);
-        assert!(keys.next_due().is_none());
-        assert_eq!(keys.release(42), Some(0));
-        assert_eq!(keys.release(30), Some(0));
-        assert_eq!(keys.release(30), None);
-    }
+        phase a_held_key_repeats_after_the_delay_at_the_rate_until_released;
+        {
+            let mut keys = HostKeys {
+                repeat: KeyRepeat {
+                    delay: Duration::from_millis(100),
+                    rate: 10,
+                },
+                ..HostKeys::default()
+            };
+            let start = Instant::now();
+            keys.press(2, &key(30), true, start);
+            assert!(keys.due(start + Duration::from_millis(99)).is_empty());
+            let first = keys.due(start + Duration::from_millis(100));
+            assert_eq!(first.len(), 1);
+            assert_eq!(first[0].0, 2);
+            assert!(first[0].1.repeat && first[0].1.pressed);
+            // One interval on, the key repeats again; the next one is due a beat after it, not at the
+            // beat the first repeat kept.
+            assert_eq!(keys.due(start + Duration::from_millis(200)).len(), 1);
+            assert_eq!(keys.due(start + Duration::from_millis(300)).len(), 1);
+            assert_eq!(keys.release(30), Some(2));
+            assert!(keys.next_due().is_none());
+            assert!(keys.due(start + Duration::from_secs(1)).is_empty());
+        }
 
-    #[test]
-    fn a_stalled_loop_does_not_type_the_key_again() {
-        let mut keys = HostKeys::default();
-        let now = Instant::now();
-        keys.press(0, &key(30), true, now);
-        // The press and the release are both behind the stall: nothing of the beat the loop missed
-        // is typed, and the key is not left owing a burst of repeats when the loop keeps time
-        // again.
-        assert!(keys.due(now + Duration::from_secs(1)).is_empty());
-        assert!(
-            keys.next_due()
-                .is_some_and(|due| due > now + Duration::from_secs(1))
-        );
-        // Keeping time again, a key still held repeats on the beat.
-        assert_eq!(
-            keys.due(now + Duration::from_secs(1) + Duration::from_millis(34))
-                .len(),
-            1
-        );
+        phase another_press_stops_the_repeat_and_keys_that_do_not_repeat_never_start;
+        {
+            let mut keys = HostKeys::default();
+            let now = Instant::now();
+            keys.press(0, &key(30), true, now);
+            keys.press(0, &key(42), false, now);
+            assert!(keys.next_due().is_none());
+            assert_eq!(keys.release(42), Some(0));
+            assert_eq!(keys.release(30), Some(0));
+            assert_eq!(keys.release(30), None);
+        }
+
+        phase a_stalled_loop_does_not_type_the_key_again;
+        {
+            let mut keys = HostKeys::default();
+            let now = Instant::now();
+            keys.press(0, &key(30), true, now);
+            // The press and the release are both behind the stall: nothing of the beat the loop missed
+            // is typed, and the key is not left owing a burst of repeats when the loop keeps time
+            // again.
+            assert!(keys.due(now + Duration::from_secs(1)).is_empty());
+            assert!(
+                keys.next_due()
+                    .is_some_and(|due| due > now + Duration::from_secs(1))
+            );
+            // Keeping time again, a key still held repeats on the beat.
+            assert_eq!(
+                keys.due(now + Duration::from_secs(1) + Duration::from_millis(34))
+                    .len(),
+                1
+            );
+        }
     }
 }

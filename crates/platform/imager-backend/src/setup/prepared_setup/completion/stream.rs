@@ -212,26 +212,43 @@ mod tests {
         let parent = File::open(directory.path()).unwrap();
         (directory, parent, member)
     }
-    #[test]
-    fn completed_payload_stream_checks_real_file_digest_identity_and_cancellation() {
-        let (_dir, parent, mut member) = source();
-        let mut bytes = Vec::new();
-        stream(&parent, &member, &mut bytes, &AtomicBool::new(false)).unwrap();
-        assert_eq!(bytes, b"TILOMIG1 synthetic bounded ciphertext");
-        if let Payload::Home(e) = &mut member.payload {
-            e.ciphertext_sha256[0] ^= 1;
+    tilo_test_env::scenario! {
+        /// Streaming a completed setup's payload.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_completed_payload_stream_checks_the_real_file_and_its_name;
+
+        phase completed_payload_stream_checks_real_file_digest_identity_and_cancellation;
+        {
+            let (_dir, parent, mut member) = source();
+            let mut bytes = Vec::new();
+            stream(&parent, &member, &mut bytes, &AtomicBool::new(false)).unwrap();
+            assert_eq!(bytes, b"TILOMIG1 synthetic bounded ciphertext");
+            if let Payload::Home(e) = &mut member.payload {
+                e.ciphertext_sha256[0] ^= 1;
+            }
+            assert!(stream(&parent, &member, &mut Vec::new(), &AtomicBool::new(false)).is_err());
+            assert_eq!(
+                stream(&parent, &member, &mut Vec::new(), &AtomicBool::new(true))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Interrupted
+            );
+            member.snapshot[1] = member.snapshot[1].checked_add(1).unwrap();
+            let mut output = Vec::new();
+            assert!(stream(&parent, &member, &mut output, &AtomicBool::new(false)).is_err());
+            assert!(output.is_empty());
         }
-        assert!(stream(&parent, &member, &mut Vec::new(), &AtomicBool::new(false)).is_err());
-        assert_eq!(
-            stream(&parent, &member, &mut Vec::new(), &AtomicBool::new(true))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
-        member.snapshot[1] = member.snapshot[1].checked_add(1).unwrap();
-        let mut output = Vec::new();
-        assert!(stream(&parent, &member, &mut output, &AtomicBool::new(false)).is_err());
-        assert!(output.is_empty());
+
+        phase completed_payload_stream_refuses_named_source_replacement_even_when_original_fd_bytes_match;
+        {
+            let (directory, parent, member) = source();
+            let mut writer = ReplaceOnWrite {
+                path: directory.path().join(member.payload.filename()),
+                replaced: false,
+            };
+            assert!(stream(&parent, &member, &mut writer, &AtomicBool::new(false)).is_err());
+            assert!(writer.replaced);
+        }
     }
     struct ReplaceOnWrite {
         path: PathBuf,
@@ -250,16 +267,5 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
-    }
-    #[test]
-    fn completed_payload_stream_refuses_named_source_replacement_even_when_original_fd_bytes_match()
-    {
-        let (directory, parent, member) = source();
-        let mut writer = ReplaceOnWrite {
-            path: directory.path().join(member.payload.filename()),
-            replaced: false,
-        };
-        assert!(stream(&parent, &member, &mut writer, &AtomicBool::new(false)).is_err());
-        assert!(writer.replaced);
     }
 }

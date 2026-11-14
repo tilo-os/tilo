@@ -19,6 +19,7 @@ use tilo_relay_protocol::transport::Envelope;
 use tilo_relay_session::RelayClient;
 
 use super::Task;
+use tilo_relay_protocol::WorkspaceId;
 
 impl Task {
     /// Say `words` for a run this host executes, in `workspace_id`, signed
@@ -30,7 +31,7 @@ impl Task {
     )]
     pub(super) async fn say_for_run(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         words: HostWords,
         client: Option<&RelayClient>,
     ) {

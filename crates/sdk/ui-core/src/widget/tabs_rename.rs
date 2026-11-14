@@ -36,6 +36,9 @@ impl TabBar {
         let mut label = EditableLabel::new(&tab.title)
             .with_text_role(TextRole::Body)
             .clears_on_blank()
+            // The pill is the field's chrome: its text starts exactly where the title's did, and
+            // the pill is sized by the name rather than a field standing inside it.
+            .with_plain_field()
             .with_accessible_name(name)
             .with_id("tab-rename");
         label.begin_edit();
@@ -192,6 +195,29 @@ impl TabBar {
         }
     }
 
+    /// Size the pill by the field the name is typed into, so the field shows all of it: the text at
+    /// the bar's role, measured, plus the room the field's own chrome keeps beside it, is the tab's
+    /// own width until the person commits. A name longer than the row has room for is a pill the
+    /// row's own fit squeezes, and the field scrolls to its caret inside it.
+    pub(super) fn measure_rename(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        self.touch();
+        let Some(rename) = self.rename.as_ref() else {
+            return;
+        };
+        let style = theme.text(rename.label.text_role());
+        let text = rename.label.current_text().to_owned();
+        let (width, _) = text_renderer.measure_style(&text, None, &style);
+        // The field's insets and the carets at its ends: a name that fits shows whole, from its
+        // first letter, rather than scrolled to its caret.
+        let measured = f64::from(width) + rename.label.field_room(theme);
+        let previous = self
+            .title_advance
+            .insert(rename.tab, (text, style, measured));
+        if previous.is_none_or(|(_, _, w)| (w - measured).abs() > 0.5) {
+            self.advance_changed = true;
+        }
+    }
+
     pub(super) fn draw_rename(
         &mut self,
         scene: &mut Scene,
@@ -201,6 +227,7 @@ impl TabBar {
         presence: &PresenceCtx,
     ) {
         self.touch();
+        self.measure_rename(text_renderer, theme);
         self.lay_out_rename();
         if let Some(rename) = self.rename.as_mut() {
             rename
@@ -245,96 +272,157 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_field_stands_in_the_tabs_pill_holding_its_title() {
-        let mut bar = bar();
-        assert!(bar.begin_rename(1, "Tab name"));
-        assert_eq!(bar.renaming(), Some(1));
-        assert_eq!(bar.rename_text(), Some("~/src"));
-        assert!(!bar.begin_rename(9, "Tab name"), "no such tab");
-    }
+    tilo_test_env::scenario! {
+        /// Renaming a tab in place.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_tab_is_renamed_in_its_pill;
 
-    #[test]
-    fn enter_commits_the_name_and_the_tab_shows_it() {
-        let mut bar = bar();
-        bar.begin_rename(1, "Tab name");
-        type_text(&mut bar, "Build");
-        assert!(dispatch(&mut bar, &named_key(NamedKey::Enter)));
-        assert_eq!(bar.renaming(), None);
-        assert_eq!(bar.take_rename(), Some((1, "Build".into())));
-        assert_eq!(bar.take_rename(), None, "once");
-        assert_eq!(bar.tabs()[0].title, "Build");
-    }
+        phase the_field_stands_in_the_tabs_pill_holding_its_title;
+        {
+            let mut bar = bar();
+            assert!(bar.begin_rename(1, "Tab name"));
+            assert_eq!(bar.renaming(), Some(1));
+            assert_eq!(bar.rename_text(), Some("~/src"));
+            assert!(!bar.begin_rename(9, "Tab name"), "no such tab");
+        }
 
-    #[test]
-    fn escape_puts_the_title_back() {
-        let mut bar = bar();
-        bar.begin_rename(1, "Tab name");
-        type_text(&mut bar, "Nope");
-        assert!(dispatch(&mut bar, &named_key(NamedKey::Escape)));
-        assert_eq!(bar.renaming(), None);
-        assert_eq!(bar.take_rename(), None);
-        assert_eq!(bar.tabs()[0].title, "~/src");
-    }
+        phase the_pill_is_as_wide_as_the_name_being_typed;
+        // The pill is as wide as the name being typed, not as wide as the title it started from: the
+        // field's own measure sizes it, so the whole name shows while the person types it. Only a name
+        // the bar has no room for makes the field scroll.
+        {
+            let mut bar = bar();
+            let theme = Theme::dark();
+            let mut text = crate::TextRenderer::new();
+            assert!(bar.begin_rename(1, "Tab name"));
+            bar.measure_rename(&mut text, &theme);
+            let (_, _, at_first) = bar.title_advance[&1].clone();
+            type_text(&mut bar, "Meeting notes");
+            bar.measure_rename(&mut text, &theme);
+            let (measured_title, _, at_last) = bar.title_advance[&1].clone();
+            assert_eq!(measured_title, "Meeting notes", "measured as it is typed");
+            assert!(
+                at_last > at_first,
+                "the pill grows with the name: {at_first} then {at_last}"
+            );
+            assert_eq!(
+                bar.shaped_title_width(0),
+                at_last,
+                "and the tab is laid out by that measure, not by the title it had"
+            );
+        }
 
-    #[test]
-    fn an_emptied_field_clears_the_name() {
-        let mut bar = bar();
-        bar.begin_rename(1, "Tab name");
-        assert!(dispatch(&mut bar, &named_key(NamedKey::Backspace)));
-        assert_eq!(bar.rename_text(), Some(""));
-        assert!(dispatch(&mut bar, &named_key(NamedKey::Enter)));
-        assert_eq!(bar.take_rename(), Some((1, String::new())));
-    }
+        phase the_pill_is_the_field_and_leaves_it_its_own_room;
+        // The pill is the field: it takes no inset of its own, so the title's glyphs do not move when
+        // it turns into a field, and the room it needs past the text is the carets at its ends. Sizing
+        // the pill by the text alone scrolled the field and cut the name's first letter off.
+        {
+            let mut bar = bar();
+            let theme = Theme::dark();
+            let mut text = crate::TextRenderer::new();
+            assert!(bar.begin_rename(1, "Tab name"));
+            type_text(&mut bar, "Meeting notes");
+            bar.measure_rename(&mut text, &theme);
+            let (name, _, advance) = bar.title_advance[&1].clone();
+            let (glyphs, _) = text.measure_style(&name, None, &theme.text(TextRole::Body));
+            let room = bar
+                .rename
+                .as_ref()
+                .expect("still naming")
+                .label
+                .field_room(&theme);
+            assert!(
+                (room - theme.caret_width * 2.0).abs() < 0.5,
+                "the pill is the field's chrome, so it keeps only the carets at its ends: {room}"
+            );
+            assert!(
+                (advance - f64::from(glyphs) - room).abs() < 0.5,
+                "{advance} is the name's {glyphs} and the field's own {room}"
+            );
+        }
 
-    #[test]
-    fn an_unchanged_title_names_nothing() {
-        let mut bar = bar();
-        bar.begin_rename(1, "Tab name");
-        assert!(dispatch(&mut bar, &named_key(NamedKey::Enter)));
-        assert_eq!(bar.renaming(), None);
-        assert_eq!(bar.take_rename(), None);
-    }
+        phase enter_commits_the_name_and_the_tab_shows_it;
+        {
+            let mut bar = bar();
+            bar.begin_rename(1, "Tab name");
+            type_text(&mut bar, "Build");
+            assert!(dispatch(&mut bar, &named_key(NamedKey::Enter)));
+            assert_eq!(bar.renaming(), None);
+            assert_eq!(bar.take_rename(), Some((1, "Build".into())));
+            assert_eq!(bar.take_rename(), None, "once");
+            assert_eq!(bar.tabs()[0].title, "Build");
+        }
 
-    #[test]
-    fn a_double_click_on_a_tab_asks_to_name_it() {
-        let mut bar = bar();
-        let first = bar.tab_rects[0].center();
-        let second = bar.tab_rects[1].center();
-        let click = |bar: &mut TabBar, at: vello::kurbo::Point| {
-            dispatch(bar, &cursor_moved(at.x, at.y));
-            dispatch(bar, &mouse_press());
-            dispatch(bar, &mouse_release());
-        };
-        click(&mut bar, first);
-        assert_eq!(bar.take_rename_ask(), None, "one click selects");
-        click(&mut bar, second);
-        assert_eq!(
-            bar.take_rename_ask(),
-            None,
-            "a click on another tab is no double click"
-        );
-        click(&mut bar, second);
-        assert_eq!(
-            bar.take_rename_ask(),
-            Some(2),
-            "the second click asks to name it"
-        );
-        assert_eq!(bar.take_rename_ask(), None, "once");
-        click(&mut bar, second);
-        assert_eq!(bar.take_rename_ask(), None, "a third click starts over");
-    }
+        phase escape_puts_the_title_back;
+        {
+            let mut bar = bar();
+            bar.begin_rename(1, "Tab name");
+            type_text(&mut bar, "Nope");
+            assert!(dispatch(&mut bar, &named_key(NamedKey::Escape)));
+            assert_eq!(bar.renaming(), None);
+            assert_eq!(bar.take_rename(), None);
+            assert_eq!(bar.tabs()[0].title, "~/src");
+        }
 
-    #[test]
-    fn a_press_elsewhere_commits_and_goes_on() {
-        let mut bar = bar();
-        bar.begin_rename(1, "Tab name");
-        type_text(&mut bar, "Q");
-        let other = bar.tab_rects[1].center();
-        dispatch(&mut bar, &cursor_moved(other.x, other.y));
-        assert_eq!(bar.renaming(), Some(1), "moving the pointer ends nothing");
-        dispatch(&mut bar, &mouse_press());
-        assert_eq!(bar.renaming(), None);
-        assert_eq!(bar.take_rename(), Some((1, "Q".into())));
+        phase an_emptied_field_clears_the_name;
+        {
+            let mut bar = bar();
+            bar.begin_rename(1, "Tab name");
+            assert!(dispatch(&mut bar, &named_key(NamedKey::Backspace)));
+            assert_eq!(bar.rename_text(), Some(""));
+            assert!(dispatch(&mut bar, &named_key(NamedKey::Enter)));
+            assert_eq!(bar.take_rename(), Some((1, String::new())));
+        }
+
+        phase an_unchanged_title_names_nothing;
+        {
+            let mut bar = bar();
+            bar.begin_rename(1, "Tab name");
+            assert!(dispatch(&mut bar, &named_key(NamedKey::Enter)));
+            assert_eq!(bar.renaming(), None);
+            assert_eq!(bar.take_rename(), None);
+        }
+
+        phase a_double_click_on_a_tab_asks_to_name_it;
+        {
+            let mut bar = bar();
+            let first = bar.tab_rects[0].center();
+            let second = bar.tab_rects[1].center();
+            let click = |bar: &mut TabBar, at: vello::kurbo::Point| {
+                dispatch(bar, &cursor_moved(at.x, at.y));
+                dispatch(bar, &mouse_press());
+                dispatch(bar, &mouse_release());
+            };
+            click(&mut bar, first);
+            assert_eq!(bar.take_rename_ask(), None, "one click selects");
+            click(&mut bar, second);
+            assert_eq!(
+                bar.take_rename_ask(),
+                None,
+                "a click on another tab is no double click"
+            );
+            click(&mut bar, second);
+            assert_eq!(
+                bar.take_rename_ask(),
+                Some(2),
+                "the second click asks to name it"
+            );
+            assert_eq!(bar.take_rename_ask(), None, "once");
+            click(&mut bar, second);
+            assert_eq!(bar.take_rename_ask(), None, "a third click starts over");
+        }
+
+        phase a_press_elsewhere_commits_and_goes_on;
+        {
+            let mut bar = bar();
+            bar.begin_rename(1, "Tab name");
+            type_text(&mut bar, "Q");
+            let other = bar.tab_rects[1].center();
+            dispatch(&mut bar, &cursor_moved(other.x, other.y));
+            assert_eq!(bar.renaming(), Some(1), "moving the pointer ends nothing");
+            dispatch(&mut bar, &mouse_press());
+            assert_eq!(bar.renaming(), None);
+            assert_eq!(bar.take_rename(), Some((1, "Q".into())));
+        }
     }
 }

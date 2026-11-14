@@ -29,6 +29,9 @@ use tilo_relay::Envelope;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
+use tilo_relay::WorkspaceId;
+
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(5);
 
 /// `.delta` files queued in `pending_dir`; none while it does not exist yet.
 fn queued_deltas(pending_dir: &std::path::Path) -> usize {
@@ -60,7 +63,9 @@ async fn a_publishes_two_offline_deltas(
     .await
     .unwrap();
     a_client
-        .send(Envelope::Subscribe { workspace_id: 5 })
+        .send(Envelope::Subscribe {
+            workspace_id: WORKSPACE,
+        })
         .unwrap();
     let _ = a_client.recv().await.expect("A Ready channel closed");
 
@@ -68,7 +73,7 @@ async fn a_publishes_two_offline_deltas(
     for (seq, payload) in [(1u64, "first-delta"), (2u64, "second-delta")] {
         a_client
             .send(Envelope::Delta {
-                workspace_id: 5,
+                workspace_id: WORKSPACE,
                 author_device_public_key: a.device_pubkey(),
                 authored_at_ns: seq,
                 delta: payload.as_bytes().to_vec(),
@@ -105,7 +110,9 @@ async fn b_connects_and_drains_queue(
     .await
     .unwrap();
     b_client
-        .send(Envelope::Subscribe { workspace_id: 5 })
+        .send(Envelope::Subscribe {
+            workspace_id: WORKSPACE,
+        })
         .unwrap();
 
     // The next N messages B receives are the two queued deltas
@@ -122,7 +129,7 @@ async fn b_connects_and_drains_queue(
                 delta,
                 ..
             } => {
-                assert_eq!(workspace_id, 5);
+                assert_eq!(workspace_id, WORKSPACE);
                 got_payloads.push(delta);
             }
             Envelope::Ready {
@@ -130,7 +137,7 @@ async fn b_connects_and_drains_queue(
                 pending_deltas,
                 records_when_opened: false,
             } => {
-                assert_eq!(workspace_id, 5);
+                assert_eq!(workspace_id, WORKSPACE);
                 assert_eq!(pending_deltas, 2);
                 got_ready = true;
             }
@@ -148,14 +155,14 @@ async fn b_connects_and_drains_queue(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_peer_gets_queued_deltas_on_reconnect() {
     let user = TestUser::fresh("Alice");
-    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
 
     let relay = Box::pin(spawn_relay(
         &user,
         relay_dev,
-        &[5],
+        &[WORKSPACE],
         &[a.device_pubkey(), b.device_pubkey()],
     ))
     .await;

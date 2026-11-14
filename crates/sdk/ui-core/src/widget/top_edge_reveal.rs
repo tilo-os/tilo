@@ -362,267 +362,271 @@ mod tests {
         at
     }
 
-    #[test]
-    fn hidden_at_rest_anywhere_in_the_app() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        for (i, y) in [400.0, 120.0, 60.0, 43.0].into_iter().enumerate() {
-            let at = ms(t0, 1000 * u64::try_from(i).unwrap());
-            r.on_motion(Point::new(600.0, y), &geo(), at);
-            r.settle(ms(at, 900));
-            assert!(!r.shown(), "resting at y={y} points at the app");
-        }
-        assert_eq!(r.deadline(), None, "nothing to wake for");
-    }
+    tilo_test_env::scenario! {
+        fn the_top_edge_shows_the_bar_only_when_it_is_meant;
 
-    #[test]
-    fn a_rest_in_the_band_shows_the_bar_after_the_dwell() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        let t = path(
-            &mut r,
-            Point::new(600.0, 60.0),
-            Point::new(600.0, 43.0),
-            8,
-            400,
-            t0,
-        );
-        let t = ms(t, 50);
-        r.on_motion(Point::new(600.0, 38.0), &geo(), t);
-        assert!(!r.shown());
-        assert_eq!(r.deadline(), Some(t + DWELL));
-        r.on_motion(Point::new(640.0, 37.0), &geo(), ms(t, 100));
-        assert_eq!(r.deadline(), Some(t + DWELL));
-        assert!(!r.settle(ms(t, 149)));
-        assert!(r.settle(t + DWELL));
-        assert!(r.shown());
-    }
-
-    #[test]
-    fn pushing_up_to_the_edge_shows_the_bar_at_once() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        let t = path(
-            &mut r,
-            Point::new(900.0, 400.0),
-            Point::new(990.0, 40.0),
-            6,
-            120,
-            t0,
-        );
-        assert!(
-            !r.shown(),
-            "still flying: it may be bound for the desktop's bar"
-        );
-        r.on_motion(Point::new(992.0, 38.0), &geo(), ms(t, 12));
-        assert!(r.shown(), "a fast climb that brakes in the band is a push");
-    }
-
-    #[test]
-    fn a_fast_move_that_stops_dead_in_the_band_still_rests_there() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        let t = path(
-            &mut r,
-            Point::new(600.0, 400.0),
-            Point::new(600.0, 39.0),
-            6,
-            120,
-            t0,
-        );
-        assert!(!r.shown());
-        assert_eq!(
-            r.deadline(),
-            Some(t + DWELL),
-            "counted from the last sample"
-        );
-        assert!(r.settle(t + DWELL));
-    }
-
-    #[test]
-    fn a_fast_pass_through_the_band_is_transit() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        let t = path(
-            &mut r,
-            Point::new(600.0, 400.0),
-            Point::new(600.0, 39.0),
-            6,
-            120,
-            t0,
-        );
-        assert!(!r.shown(), "no push credit while still flying");
-        // It flies on into the desktop's bar: the dwell never matures.
-        r.on_motion(Point::new(600.0, 0.0), &geo(), ms(t, 13));
-        assert_eq!(r.deadline(), None);
-        r.settle(ms(t, 1000));
-        assert!(!r.shown());
-    }
-
-    #[test]
-    fn crossing_a_shown_control_in_transit_does_not_hold_the_bar() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        r.force_shown(true);
-        let x = RESTORE.center().x;
-        r.on_motion(Point::new(x, 37.0), &geo(), t0);
-        for i in 1..=8u32 {
-            let p = Point::new(x, 37.0 + 8.0 * f64::from(i));
-            r.on_motion(p, &geo(), ms(t0, 4 * u64::from(i)));
-            if p.y > RESTORE.y1 + 4.0 {
-                assert!(!r.shown(), "crossing Restore did not hold the bar at {p:?}");
-            }
-        }
-        assert!(!r.shown());
-        r.settle(ms(t0, 1000));
-        assert!(!r.shown());
-
-        r.force_shown(true);
-        for (i, dx) in [-6.0, -4.0, -2.0, 0.0].into_iter().enumerate() {
-            let at = ms(t0, 980 + 5 * u64::try_from(i).unwrap());
-            r.on_motion(TITLE.center() + (dx, 0.0), &geo(), at);
-        }
-        for (i, px) in [400.0, 800.0, 1050.0, 1110.0, 1125.0]
-            .into_iter()
-            .enumerate()
+        phase hidden_at_rest_anywhere_in_the_app;
         {
-            let at = ms(t0, 1010 + 10 * u64::try_from(i).unwrap());
-            r.on_motion(Point::new(px, 53.0), &geo(), at);
-            assert!(r.shown(), "on its way to Restore at x={px}");
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            for (i, y) in [400.0, 120.0, 60.0, 43.0].into_iter().enumerate() {
+                let at = ms(t0, 1000 * u64::try_from(i).unwrap());
+                r.on_motion(Point::new(600.0, y), &geo(), at);
+                r.settle(ms(at, 900));
+                assert!(!r.shown(), "resting at y={y} points at the app");
+            }
+            assert_eq!(r.deadline(), None, "nothing to wake for");
         }
-        r.settle(ms(t0, 5000));
-        assert!(r.shown(), "settled on Restore");
-    }
 
-    #[test]
-    fn aiming_at_the_apps_top_content_never_shows_the_bar() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        let t = path(
-            &mut r,
-            Point::new(300.0, 400.0),
-            Point::new(300.0, 52.0),
-            6,
-            120,
-            t0,
-        );
-        assert!(!r.shown());
-        r.settle(ms(t, 2000));
-        assert!(!r.shown(), "resting on the app's top content");
-        path(
-            &mut r,
-            Point::new(300.0, 52.0),
-            Point::new(1100.0, 50.0),
-            10,
-            300,
-            ms(t, 2000),
-        );
-        assert!(!r.shown());
-    }
+        phase a_rest_in_the_band_shows_the_bar_after_the_dwell;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            let t = path(
+                &mut r,
+                Point::new(600.0, 60.0),
+                Point::new(600.0, 43.0),
+                8,
+                400,
+                t0,
+            );
+            let t = ms(t, 50);
+            r.on_motion(Point::new(600.0, 38.0), &geo(), t);
+            assert!(!r.shown());
+            assert_eq!(r.deadline(), Some(t + DWELL));
+            r.on_motion(Point::new(640.0, 37.0), &geo(), ms(t, 100));
+            assert_eq!(r.deadline(), Some(t + DWELL));
+            assert!(!r.settle(ms(t, 149)));
+            assert!(r.settle(t + DWELL));
+            assert!(r.shown());
+        }
 
-    #[test]
-    fn coming_down_from_the_desktop_bar_is_not_a_push() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        r.on_motion(Point::new(600.0, 10.0), &geo(), t0);
-        r.on_motion(Point::new(600.0, 30.0), &geo(), ms(t0, 10));
-        r.on_motion(Point::new(600.0, 38.0), &geo(), ms(t0, 20));
-        assert!(!r.shown(), "only the dwell can show it");
-        assert!(r.deadline().is_some());
-        r.on_motion(Point::new(600.0, 90.0), &geo(), ms(t0, 40));
-        assert_eq!(r.deadline(), None);
-        r.settle(ms(t0, 500));
-        assert!(!r.shown());
-    }
+        phase pushing_up_to_the_edge_shows_the_bar_at_once;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            let t = path(
+                &mut r,
+                Point::new(900.0, 400.0),
+                Point::new(990.0, 40.0),
+                6,
+                120,
+                t0,
+            );
+            assert!(
+                !r.shown(),
+                "still flying: it may be bound for the desktop's bar"
+            );
+            r.on_motion(Point::new(992.0, 38.0), &geo(), ms(t, 12));
+            assert!(r.shown(), "a fast climb that brakes in the band is a push");
+        }
 
-    #[test]
-    fn a_click_in_the_band_goes_to_the_app_and_cancels_the_reveal() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        let p = Point::new(200.0, 38.0);
-        r.on_motion(p, &geo(), t0);
-        r.on_press(p, &geo());
-        assert_eq!(r.deadline(), None);
-        r.on_motion(Point::new(201.0, 38.0), &geo(), ms(t0, 50));
-        r.settle(ms(t0, 1000));
-        assert!(!r.shown(), "still in the band after the click");
-        r.on_motion(Point::new(201.0, 80.0), &geo(), ms(t0, 1100));
-        r.on_motion(Point::new(201.0, 38.0), &geo(), ms(t0, 1600));
-        assert!(r.elapse());
-    }
+        phase a_fast_move_that_stops_dead_in_the_band_still_rests_there;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            let t = path(
+                &mut r,
+                Point::new(600.0, 400.0),
+                Point::new(600.0, 39.0),
+                6,
+                120,
+                t0,
+            );
+            assert!(!r.shown());
+            assert_eq!(
+                r.deadline(),
+                Some(t + DWELL),
+                "counted from the last sample"
+            );
+            assert!(r.settle(t + DWELL));
+        }
 
-    #[test]
-    fn the_shown_bar_holds_under_menu_aim_and_hides_otherwise() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        r.force_shown(true);
-        r.on_motion(TITLE.center(), &geo(), t0);
-        let t = path(
-            &mut r,
-            TITLE.center(),
-            Point::new(1060.0, 54.0),
-            12,
-            360,
-            t0,
-        );
-        assert!(r.shown(), "heading for Restore");
-        assert!(r.deadline().is_some());
-        r.settle(t + AIM_HOLD);
-        assert!(!r.shown());
+        phase a_fast_pass_through_the_band_is_transit;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            let t = path(
+                &mut r,
+                Point::new(600.0, 400.0),
+                Point::new(600.0, 39.0),
+                6,
+                120,
+                t0,
+            );
+            assert!(!r.shown(), "no push credit while still flying");
+            // It flies on into the desktop's bar: the dwell never matures.
+            r.on_motion(Point::new(600.0, 0.0), &geo(), ms(t, 13));
+            assert_eq!(r.deadline(), None);
+            r.settle(ms(t, 1000));
+            assert!(!r.shown());
+        }
 
-        r.force_shown(true);
-        r.on_motion(Point::new(600.0, 38.0), &geo(), ms(t, 1000));
-        r.on_motion(Point::new(600.0, 46.0), &geo(), ms(t, 1020));
-        r.on_motion(Point::new(600.0, 56.0), &geo(), ms(t, 1040));
-        assert!(!r.shown(), "the pointer went for the app under the bar");
-    }
+        phase crossing_a_shown_control_in_transit_does_not_hold_the_bar;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            r.force_shown(true);
+            let x = RESTORE.center().x;
+            r.on_motion(Point::new(x, 37.0), &geo(), t0);
+            for i in 1..=8u32 {
+                let p = Point::new(x, 37.0 + 8.0 * f64::from(i));
+                r.on_motion(p, &geo(), ms(t0, 4 * u64::from(i)));
+                if p.y > RESTORE.y1 + 4.0 {
+                    assert!(!r.shown(), "crossing Restore did not hold the bar at {p:?}");
+                }
+            }
+            assert!(!r.shown());
+            r.settle(ms(t0, 1000));
+            assert!(!r.shown());
 
-    #[test]
-    fn it_never_hides_under_a_pointer_on_a_control_or_on_the_bar() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        r.force_shown(true);
-        r.on_motion(CLOSE.center(), &geo(), t0);
-        r.settle(ms(t0, 10_000));
-        assert!(r.shown());
-        r.on_motion(TITLE.center(), &geo(), ms(t0, 10_100));
-        r.settle(ms(t0, 20_000));
-        assert!(r.shown(), "on the title chip");
-    }
+            r.force_shown(true);
+            for (i, dx) in [-6.0, -4.0, -2.0, 0.0].into_iter().enumerate() {
+                let at = ms(t0, 980 + 5 * u64::try_from(i).unwrap());
+                r.on_motion(TITLE.center() + (dx, 0.0), &geo(), at);
+            }
+            for (i, px) in [400.0, 800.0, 1050.0, 1110.0, 1125.0]
+                .into_iter()
+                .enumerate()
+            {
+                let at = ms(t0, 1010 + 10 * u64::try_from(i).unwrap());
+                r.on_motion(Point::new(px, 53.0), &geo(), at);
+                assert!(r.shown(), "on its way to Restore at x={px}");
+            }
+            r.settle(ms(t0, 5000));
+            assert!(r.shown(), "settled on Restore");
+        }
 
-    #[test]
-    fn an_overshoot_into_the_desktop_bar_gets_a_grace_to_return() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        r.force_shown(true);
-        r.on_motion(Point::new(1100.0, 40.0), &geo(), t0);
-        r.on_motion(Point::new(1100.0, 20.0), &geo(), ms(t0, 20));
-        assert!(r.shown());
-        r.on_motion(RESTORE.center(), &geo(), ms(t0, 200));
-        r.settle(ms(t0, 2000));
-        assert!(r.shown(), "came back onto Restore");
-        r.on_motion(Point::new(1120.0, 10.0), &geo(), ms(t0, 2100));
-        r.settle(ms(t0, 2100) + OVERSHOOT_GRACE);
-        assert!(!r.shown(), "stayed up there: done with the window");
-    }
+        phase aiming_at_the_apps_top_content_never_shows_the_bar;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            let t = path(
+                &mut r,
+                Point::new(300.0, 400.0),
+                Point::new(300.0, 52.0),
+                6,
+                120,
+                t0,
+            );
+            assert!(!r.shown());
+            r.settle(ms(t, 2000));
+            assert!(!r.shown(), "resting on the app's top content");
+            path(
+                &mut r,
+                Point::new(300.0, 52.0),
+                Point::new(1100.0, 50.0),
+                10,
+                300,
+                ms(t, 2000),
+            );
+            assert!(!r.shown());
+        }
 
-    #[test]
-    fn keyboard_and_touch_reach_the_bar() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        assert!(r.pin());
-        r.on_motion(Point::new(600.0, 500.0), &geo(), ms(t0, 10));
-        assert!(r.shown(), "pinned for the keyboard");
-        r.unpin();
-        r.on_motion(Point::new(600.0, 520.0), &geo(), ms(t0, 20));
-        assert!(!r.shown());
+        phase coming_down_from_the_desktop_bar_is_not_a_push;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            r.on_motion(Point::new(600.0, 10.0), &geo(), t0);
+            r.on_motion(Point::new(600.0, 30.0), &geo(), ms(t0, 10));
+            r.on_motion(Point::new(600.0, 38.0), &geo(), ms(t0, 20));
+            assert!(!r.shown(), "only the dwell can show it");
+            assert!(r.deadline().is_some());
+            r.on_motion(Point::new(600.0, 90.0), &geo(), ms(t0, 40));
+            assert_eq!(r.deadline(), None);
+            r.settle(ms(t0, 500));
+            assert!(!r.shown());
+        }
 
-        r.on_touch_start(Point::new(300.0, 37.0), &geo());
-        assert!(!r.on_touch_move(Point::new(300.0, 50.0)));
-        assert!(r.on_touch_move(Point::new(300.0, 70.0)));
-        r.on_touch_start(Point::new(300.0, 300.0), &geo());
-        r.hide();
-        assert!(!r.on_touch_move(Point::new(300.0, 400.0)));
+        phase a_click_in_the_band_goes_to_the_app_and_cancels_the_reveal;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            let p = Point::new(200.0, 38.0);
+            r.on_motion(p, &geo(), t0);
+            r.on_press(p, &geo());
+            assert_eq!(r.deadline(), None);
+            r.on_motion(Point::new(201.0, 38.0), &geo(), ms(t0, 50));
+            r.settle(ms(t0, 1000));
+            assert!(!r.shown(), "still in the band after the click");
+            r.on_motion(Point::new(201.0, 80.0), &geo(), ms(t0, 1100));
+            r.on_motion(Point::new(201.0, 38.0), &geo(), ms(t0, 1600));
+            assert!(r.elapse());
+        }
+
+        phase the_shown_bar_holds_under_menu_aim_and_hides_otherwise;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            r.force_shown(true);
+            r.on_motion(TITLE.center(), &geo(), t0);
+            let t = path(
+                &mut r,
+                TITLE.center(),
+                Point::new(1060.0, 54.0),
+                12,
+                360,
+                t0,
+            );
+            assert!(r.shown(), "heading for Restore");
+            assert!(r.deadline().is_some());
+            r.settle(t + AIM_HOLD);
+            assert!(!r.shown());
+
+            r.force_shown(true);
+            r.on_motion(Point::new(600.0, 38.0), &geo(), ms(t, 1000));
+            r.on_motion(Point::new(600.0, 46.0), &geo(), ms(t, 1020));
+            r.on_motion(Point::new(600.0, 56.0), &geo(), ms(t, 1040));
+            assert!(!r.shown(), "the pointer went for the app under the bar");
+        }
+
+        phase it_never_hides_under_a_pointer_on_a_control_or_on_the_bar;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            r.force_shown(true);
+            r.on_motion(CLOSE.center(), &geo(), t0);
+            r.settle(ms(t0, 10_000));
+            assert!(r.shown());
+            r.on_motion(TITLE.center(), &geo(), ms(t0, 10_100));
+            r.settle(ms(t0, 20_000));
+            assert!(r.shown(), "on the title chip");
+        }
+
+        phase an_overshoot_into_the_desktop_bar_gets_a_grace_to_return;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            r.force_shown(true);
+            r.on_motion(Point::new(1100.0, 40.0), &geo(), t0);
+            r.on_motion(Point::new(1100.0, 20.0), &geo(), ms(t0, 20));
+            assert!(r.shown());
+            r.on_motion(RESTORE.center(), &geo(), ms(t0, 200));
+            r.settle(ms(t0, 2000));
+            assert!(r.shown(), "came back onto Restore");
+            r.on_motion(Point::new(1120.0, 10.0), &geo(), ms(t0, 2100));
+            r.settle(ms(t0, 2100) + OVERSHOOT_GRACE);
+            assert!(!r.shown(), "stayed up there: done with the window");
+        }
+
+        phase keyboard_and_touch_reach_the_bar;
+        {
+            let t0 = crate::motion::frame_now();
+            let mut r = TopEdgeReveal::default();
+            assert!(r.pin());
+            r.on_motion(Point::new(600.0, 500.0), &geo(), ms(t0, 10));
+            assert!(r.shown(), "pinned for the keyboard");
+            r.unpin();
+            r.on_motion(Point::new(600.0, 520.0), &geo(), ms(t0, 20));
+            assert!(!r.shown());
+
+            r.on_touch_start(Point::new(300.0, 37.0), &geo());
+            assert!(!r.on_touch_move(Point::new(300.0, 50.0)));
+            assert!(r.on_touch_move(Point::new(300.0, 70.0)));
+            r.on_touch_start(Point::new(300.0, 300.0), &geo());
+            r.hide();
+            assert!(!r.on_touch_move(Point::new(300.0, 400.0)));
+        }
     }
 
     #[test]

@@ -307,50 +307,123 @@ mod tests {
         files
     }
 
-    #[test]
-    fn a_recorded_database_reads_back_face_for_face() {
-        let dir = tempfile::tempdir().unwrap();
-        let fonts = dir.path().join("fonts");
-        std::fs::create_dir_all(&fonts).unwrap();
-        let mut db = fontdb::Database::new();
-        for (name, bytes) in fixture_files() {
-            let path = fonts.join(name);
-            std::fs::write(&path, bytes).unwrap();
-            db.load_font_file(&path).unwrap();
+    tilo_test_env::scenario! {
+        /// The recorded font index: what it reads back and when it no longer holds.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_recorded_font_index_holds_only_for_what_it_was_built_from;
+
+        phase a_recorded_database_reads_back_face_for_face;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let fonts = dir.path().join("fonts");
+            std::fs::create_dir_all(&fonts).unwrap();
+            let mut db = fontdb::Database::new();
+            for (name, bytes) in fixture_files() {
+                let path = fonts.join(name);
+                std::fs::write(&path, bytes).unwrap();
+                db.load_font_file(&path).unwrap();
+            }
+            assert!(db.faces().count() > 0, "the fixture holds faces");
+            db.set_sans_serif_family("Inter");
+            let index_path = dir.path().join("index.json");
+            let roots = vec![fonts.clone()];
+            let root = fonts.canonicalize().unwrap();
+            store(&index_path, &roots, &root, &db);
+            let read = load(&index_path, &roots).expect("the index holds");
+            let describe = |db: &fontdb::Database| {
+                db.faces()
+                    .map(|face| {
+                        (
+                            face.families
+                                .iter()
+                                .map(|(name, _)| name.clone())
+                                .collect::<Vec<_>>(),
+                            face.post_script_name.clone(),
+                            face.index,
+                            face.style,
+                            face.weight,
+                            face.stretch,
+                            face.monospaced,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(describe(&read), describe(&db));
+            assert_eq!(
+                read.family_name(&fontdb::Family::SansSerif),
+                db.family_name(&fontdb::Family::SansSerif)
+            );
+            let id = read.faces().next().unwrap().id;
+            let bytes = read.with_face_data(id, |data, _| data.len()).unwrap();
+            assert!(bytes > 0, "a face's file is read when it is used");
         }
-        assert!(db.faces().count() > 0, "the fixture holds faces");
-        db.set_sans_serif_family("Inter");
-        let index_path = dir.path().join("index.json");
-        let roots = vec![fonts.clone()];
-        let root = fonts.canonicalize().unwrap();
-        store(&index_path, &roots, &root, &db);
-        let read = load(&index_path, &roots).expect("the index holds");
-        let describe = |db: &fontdb::Database| {
-            db.faces()
-                .map(|face| {
-                    (
-                        face.families
-                            .iter()
-                            .map(|(name, _)| name.clone())
-                            .collect::<Vec<_>>(),
-                        face.post_script_name.clone(),
-                        face.index,
-                        face.style,
-                        face.weight,
-                        face.stretch,
-                        face.monospaced,
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(describe(&read), describe(&db));
-        assert_eq!(
-            read.family_name(&fontdb::Family::SansSerif),
-            db.family_name(&fontdb::Family::SansSerif)
-        );
-        let id = read.faces().next().unwrap().id;
-        let bytes = read.with_face_data(id, |data, _| data.len()).unwrap();
-        assert!(bytes > 0, "a face's file is read when it is used");
+
+        phase an_index_does_not_hold_once_what_it_was_built_from_changes;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let fonts = dir.path().join("fonts");
+            std::fs::create_dir_all(&fonts).unwrap();
+            let mut db = fontdb::Database::new();
+            let mut first = None;
+            for (name, bytes) in fixture_files() {
+                let path = fonts.join(name);
+                std::fs::write(&path, bytes).unwrap();
+                db.load_font_file(&path).unwrap();
+                first.get_or_insert(path);
+            }
+            let first = first.expect("a fixture font");
+            let index_path = dir.path().join("index.json");
+            let roots = vec![fonts.clone()];
+            let root = fonts.canonicalize().unwrap();
+            store(&index_path, &roots, &root, &db);
+            assert!(load(&index_path, &roots).is_some());
+
+            let bytes = std::fs::read(&first).unwrap();
+            std::fs::write(&first, &bytes).unwrap();
+            a_second_later(&first);
+            assert!(load(&index_path, &roots).is_none(), "a rewritten font");
+            store(&index_path, &roots, &root, &db);
+            assert!(load(&index_path, &roots).is_some());
+
+            std::fs::write(fonts.join("added.ttf"), &bytes).unwrap();
+            a_second_later(&fonts);
+            assert!(load(&index_path, &roots).is_none(), "an added font");
+            store(&index_path, &roots, &root, &db);
+
+            let front = dir.path().join("front");
+            std::fs::create_dir_all(&front).unwrap();
+            let in_front = vec![front, fonts.clone()];
+            assert!(load(&index_path, &in_front).is_none(), "a root in front");
+
+            let mut other: Index =
+                serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+            other.build = "another".into();
+            std::fs::write(&index_path, serde_json::to_vec(&other).unwrap()).unwrap();
+            assert!(load(&index_path, &roots).is_none(), "another build");
+        }
+
+        phase a_catalog_reached_through_another_spelling_is_the_same_catalog;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let fonts = dir.path().join("fonts");
+            std::fs::create_dir_all(&fonts).unwrap();
+            let mut db = fontdb::Database::new();
+            for (name, bytes) in fixture_files() {
+                let path = fonts.join(name);
+                std::fs::write(&path, bytes).unwrap();
+                db.load_font_file(&path).unwrap();
+            }
+            let link = dir.path().join("fonts-link");
+            std::os::unix::fs::symlink(&fonts, &link).unwrap();
+            let index_path = dir.path().join("index.json");
+            store(&index_path, std::slice::from_ref(&link), &link, &db);
+            let recorded: Index = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+            assert_eq!(recorded.roots, vec![fonts.canonicalize().unwrap()]);
+            assert!(
+                load(&index_path, std::slice::from_ref(&fonts)).is_some(),
+                "the same directory by another spelling"
+            );
+        }
     }
 
     /// Move `path`'s mtime a second on, as time passing between two writes
@@ -362,72 +435,5 @@ mod tests {
         let modified = file.metadata().unwrap().modified().unwrap();
         file.set_modified(modified + std::time::Duration::from_secs(1))
             .unwrap();
-    }
-
-    #[test]
-    fn an_index_does_not_hold_once_what_it_was_built_from_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let fonts = dir.path().join("fonts");
-        std::fs::create_dir_all(&fonts).unwrap();
-        let mut db = fontdb::Database::new();
-        let mut first = None;
-        for (name, bytes) in fixture_files() {
-            let path = fonts.join(name);
-            std::fs::write(&path, bytes).unwrap();
-            db.load_font_file(&path).unwrap();
-            first.get_or_insert(path);
-        }
-        let first = first.expect("a fixture font");
-        let index_path = dir.path().join("index.json");
-        let roots = vec![fonts.clone()];
-        let root = fonts.canonicalize().unwrap();
-        store(&index_path, &roots, &root, &db);
-        assert!(load(&index_path, &roots).is_some());
-
-        let bytes = std::fs::read(&first).unwrap();
-        std::fs::write(&first, &bytes).unwrap();
-        a_second_later(&first);
-        assert!(load(&index_path, &roots).is_none(), "a rewritten font");
-        store(&index_path, &roots, &root, &db);
-        assert!(load(&index_path, &roots).is_some());
-
-        std::fs::write(fonts.join("added.ttf"), &bytes).unwrap();
-        a_second_later(&fonts);
-        assert!(load(&index_path, &roots).is_none(), "an added font");
-        store(&index_path, &roots, &root, &db);
-
-        let front = dir.path().join("front");
-        std::fs::create_dir_all(&front).unwrap();
-        let in_front = vec![front, fonts.clone()];
-        assert!(load(&index_path, &in_front).is_none(), "a root in front");
-
-        let mut other: Index =
-            serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
-        other.build = "another".into();
-        std::fs::write(&index_path, serde_json::to_vec(&other).unwrap()).unwrap();
-        assert!(load(&index_path, &roots).is_none(), "another build");
-    }
-
-    #[test]
-    fn a_catalog_reached_through_another_spelling_is_the_same_catalog() {
-        let dir = tempfile::tempdir().unwrap();
-        let fonts = dir.path().join("fonts");
-        std::fs::create_dir_all(&fonts).unwrap();
-        let mut db = fontdb::Database::new();
-        for (name, bytes) in fixture_files() {
-            let path = fonts.join(name);
-            std::fs::write(&path, bytes).unwrap();
-            db.load_font_file(&path).unwrap();
-        }
-        let link = dir.path().join("fonts-link");
-        std::os::unix::fs::symlink(&fonts, &link).unwrap();
-        let index_path = dir.path().join("index.json");
-        store(&index_path, std::slice::from_ref(&link), &link, &db);
-        let recorded: Index = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
-        assert_eq!(recorded.roots, vec![fonts.canonicalize().unwrap()]);
-        assert!(
-            load(&index_path, std::slice::from_ref(&fonts)).is_some(),
-            "the same directory by another spelling"
-        );
     }
 }

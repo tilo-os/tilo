@@ -27,7 +27,7 @@ mod owner_commit_tests {
             let directory = canonical_tempdir();
             let root = SigningKey::from_bytes(&[24; 32]);
             let device = SigningKey::from_bytes(&[25; 32]);
-            let principal = principal_id_for_root(root.verifying_key().to_bytes());
+            let principal = person_id_for_root(root.verifying_key().to_bytes());
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceSlot(5), "Durability boundary");
             workspace.set_owner(&principal);
@@ -101,7 +101,7 @@ mod owner_commit_tests {
                 let directory = canonical_tempdir();
                 let root = SigningKey::from_bytes(&[24; 32]);
                 let device = SigningKey::from_bytes(&[25; 32]);
-                let principal = principal_id_for_root(root.verifying_key().to_bytes());
+                let principal = person_id_for_root(root.verifying_key().to_bytes());
                 let mut workspace = crate::test_support::Workspace::new(
                     crate::test_support::WorkspaceSlot(5),
                     "read mode",
@@ -314,7 +314,7 @@ mod owner_commit_tests {
         )
         .unwrap();
         events.borrow_mut().push(CollabEvent::Context {
-            collaborators: vec![],
+            members: vec![],
             permissions: vec![],
             apps: Vec::new(),
         });
@@ -406,7 +406,7 @@ mod owner_commit_tests {
                 .into(),
             "Actual owner barrier",
         );
-        workspace.set_owner(principal_id_for_root(owner.peer().owner()));
+        workspace.set_owner(person_id_for_root(owner.peer().owner()));
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         tree.shared()
@@ -769,7 +769,7 @@ mod owner_commit_tests {
                 device: f.owner.device().device_public_key,
             },
         };
-        let actor = principal_id_for_root(f.owner.peer().owner());
+        let actor = person_id_for_root(f.owner.peer().owner());
         let context =
             tilo_actions::ActionContext::for_resource("record:bounded", "document", "Receipt test");
         f.state
@@ -1154,7 +1154,7 @@ mod owner_commit_tests {
             checkout,
             reveal: None,
         };
-        let principal = principal_id_for_root(cert.user_public_key);
+        let principal = person_id_for_root(cert.user_public_key);
         let context = HostContext::prepare(
             definition,
             HostContextInputs {
@@ -1357,301 +1357,6 @@ mod owner_commit_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn local_host_worker_private_rpc_requires_descriptor_and_current_authority() {
-        use super::signed_worker::{
-            CurrentHost, empty_directories, presentation, rpc_pair, signed_device,
-        };
-        async fn scenario() {
-            let root = SigningKey::from_bytes(&[81; 32]);
-            let key = SigningKey::from_bytes(&[82; 32]);
-            let cert = signed_device(
-                &root,
-                &key,
-                "local host",
-                tilo_user_identity::DeviceCapabilities::host(),
-                None,
-            );
-            let mut workspace = crate::test_support::Workspace::new(
-                crate::test_support::WorkspaceSlot(81),
-                "Host worker workspace",
-            );
-            workspace.set_owner(principal_id_for_root(cert.user_public_key));
-            let route = CrdtRoute::record(
-                "so.tilo.word-processor",
-                workspace.id().to_string(),
-                "document-1",
-            );
-            let mut tree = WorkspaceTree::default();
-            tree.workspaces.push(workspace);
-            let membership = tree.shared();
-            let fanout = Arc::new(FanoutState::new());
-            let (owner_handle, _owner_mailbox) =
-                crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
-            let publisher =
-                PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-            let (state, _) = AppBrokerState::new(
-                &fanout,
-                Arc::new(Mutex::new(BrokerChannels::default())),
-                publisher,
-                Some(membership.clone()),
-                None,
-            );
-            assert!(
-                crate::certificate_authority::CertificateAuthority::authorize_host_worker(
-                    &ExplicitAuthority,
-                    &route,
-                    &cert
-                )
-                .is_err(),
-                "host worker authority defaults to deny"
-            );
-            let authority = CurrentHost::new(&route, &cert, None);
-            assert!(state.certificate_authority.set(authority.clone()).is_ok());
-            let bytes = presentation(&route.cluster_id, &cert, &key);
-            let client = state
-                .connect_local_worker(route.clone(), &cert)
-                .expect("genuine host gets only a private worker descriptor");
-            let pending = state.workers.lock().unwrap().pop().unwrap();
-            let (rpc, server_task, client_task) = rpc_pair(
-                state.clone(),
-                901,
-                pending.stream,
-                client,
-                Some(pending.binding),
-                empty_directories(),
-            );
-            let handle = rpc
-                .join_channel(&route.channel_key(), &bytes)
-                .await
-                .expect("actual descriptor signed host join");
-            assert!(handle.subscribe_action_catalogue().await.is_ok());
-            assert!(
-                state.is_current_host_worker(901, &route, &cert).unwrap(),
-                "signed actual host worker establishes live provenance"
-            );
-            assert!(
-                !state.durable_owner_required,
-                "host checks must not depend on durable mode"
-            );
-            let descriptor = TestActionDirectory {
-                revision: "directory-r1".into(),
-                resolve_mode: DirectoryResolveMode::Found,
-                result: tilo_actions::ResultSpec::None,
-                operation: tilo_actions::OperationKind::View,
-                confirmation_required: false,
-                params: Vec::new(),
-                query_count: 0,
-                resolve_count: 0,
-            }
-            .row()
-            .descriptor
-            .unwrap();
-            handle.publish_actions(&[descriptor]).await.unwrap();
-            let invocations = handle.subscribe_stable_invocations().await.unwrap();
-            for revoked in [false, true] {
-                let mut rejected = vec![];
-                for method in ["complete", "update", "cancel"] {
-                    let job = state
-                        .start_invocation(
-                            901,
-                            "workspace:atlas",
-                            "open",
-                            None,
-                            &principal_id_for_root(cert.user_public_key),
-                        )
-                        .unwrap();
-                    let delivered = invocations.read().await.unwrap();
-                    assert_eq!(delivered.id, job.id);
-                    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_bytes(
-                        delivered.invocation_uuid,
-                    ));
-                    if revoked {
-                        *authority.certificate.lock().unwrap() = None;
-                    }
-                    let result = match method {
-                        "complete" => handle.complete_invocation(job.id, "", "").await,
-                        "update" => {
-                            handle
-                                .update_invocation(
-                                    job.id,
-                                    &serde_json::to_string(
-                                        &tilo_actions::InvocationUpdate::Succeeded {
-                                            invocation,
-                                            output: tilo_actions::ActionOutput::default(),
-                                        },
-                                    )
-                                    .unwrap(),
-                                )
-                                .await
-                        }
-                        _ => handle
-                            .invocation_cancellation(job.id)
-                            .await
-                            .map(|cancelled| assert!(!cancelled)),
-                    };
-                    rejected.push((method, result.is_err()));
-                    *authority.certificate.lock().unwrap() = Some(cert.clone());
-                    if result.is_err() || method == "cancel" {
-                        handle.complete_invocation(job.id, "", "").await.unwrap();
-                    }
-                }
-                assert!(
-                    rejected.iter().all(|(_, denied)| *denied == revoked),
-                    "actual host completion/update/cancellation current checks: revoked={revoked}, rejected={rejected:?}"
-                );
-            }
-            let retained_catalogue = handle.subscribe_action_catalogue().await.unwrap();
-            let waiting_catalogue = handle.subscribe_action_catalogue().await.unwrap();
-            assert!(waiting_catalogue.read().await.is_ok());
-            let catalogue_follower = state
-                .action_catalogue_subscribers
-                .lock()
-                .unwrap()
-                .get(&901)
-                .unwrap()
-                .2
-                .upgrade()
-                .unwrap();
-            let pending_read =
-                tokio::task::spawn_local(async move { waiting_catalogue.read().await });
-            for _ in 0..32 {
-                tokio::task::yield_now().await;
-            }
-            assert!(
-                !pending_read.is_finished(),
-                "read waits for the next actual catalogue publication"
-            );
-            for wrong in [
-                CrdtRoute::record("so.tilo.chat", &route.cluster_id, &route.record_id),
-                route.clone().on_record("other-record"),
-                CrdtRoute::record(
-                    &route.app_id,
-                    uuid::Uuid::new_v4().to_string(),
-                    &route.record_id,
-                ),
-            ] {
-                assert!(
-                    rpc.join_channel(&wrong.channel_key(), &bytes)
-                        .await
-                        .is_err()
-                );
-                assert!(!state.is_current_host_worker(901, &wrong, &cert).unwrap());
-                assert!(state.connect_local_worker(wrong, &cert).is_err());
-            }
-            assert!(
-                rpc.join_channel_as_kind(&route.channel_key(), &bytes, "agent-a", "agent", "")
-                    .await
-                    .is_err()
-            );
-            let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
-            let (ordinary, ordinary_server, ordinary_client) = rpc_pair(
-                state.clone(),
-                902,
-                server,
-                client,
-                None,
-                empty_directories(),
-            );
-            assert!(
-                ordinary
-                    .join_channel(&route.channel_key(), &bytes)
-                    .await
-                    .is_err(),
-                "the exact same host certificate is not ordinary join authority"
-            );
-            assert!(
-                verify_join_identity(
-                    &route,
-                    &bytes,
-                    state.membership.as_ref(),
-                    Some(&[cert.device_public_key]),
-                    None
-                )
-                .is_err(),
-                "trusted-device fallback cannot admit a host certificate"
-            );
-            state.surfaces.lock().unwrap().insert(
-                902,
-                PublishedSurface {
-                    peer_id: 902,
-                    app_id: route.app_id.clone(),
-                    route: route.clone(),
-                    actions: vec![],
-                    live: true,
-                },
-            );
-            assert!(
-                !state.is_current_host_worker(902, &route, &cert).unwrap(),
-                "same-route ordinary publication is not host-worker provenance"
-            );
-            let mut changed = cert.clone();
-            changed.device_label = "changed pinned cert".into();
-            tilo_user_identity::sign_device_cert(&mut changed, &root).unwrap();
-            *authority.certificate.lock().unwrap() = Some(changed.clone());
-            assert!(!state.is_current_host_worker(901, &route, &cert).unwrap());
-            assert!(handle.subscribe_action_catalogue().await.is_err());
-            assert!(
-                rpc.join_channel(
-                    &route.channel_key(),
-                    &presentation(&route.cluster_id, &changed, &key)
-                )
-                .await
-                .is_err(),
-                "full certificate must match descriptor despite same keys"
-            );
-            *authority.certificate.lock().unwrap() = None;
-            catalogue_follower.following.lock().unwrap().pending =
-                Some(runtime_collab::CatalogueChange {
-                    reset: true,
-                    ..runtime_collab::CatalogueChange::default()
-                });
-            catalogue_follower.changed.notify_one();
-            assert!(
-                pending_read.await.unwrap().is_err(),
-                "a stream must recheck authority after its read wakes"
-            );
-            assert!(handle.subscribe_action_catalogue().await.is_err());
-            // The catalogue as it stood was disclosed while the worker was
-            // current; nothing after it is.
-            assert!(retained_catalogue.read().await.is_ok());
-            assert!(
-                retained_catalogue.read().await.is_err(),
-                "a retained stream must recheck host authority before disclosing the next snapshot"
-            );
-            assert!(state.connect_local_worker(route.clone(), &cert).is_err());
-            let mut expired = cert.clone();
-            expired.expires_at_ns = Some(2);
-            tilo_user_identity::sign_device_cert(&mut expired, &root).unwrap();
-            *authority.certificate.lock().unwrap() = Some(expired.clone());
-            assert!(state.connect_local_worker(route.clone(), &expired).is_err());
-            *authority.certificate.lock().unwrap() = Some(cert.clone());
-            let current_workspaces = membership.read().workspaces.clone();
-            membership.write().workspaces.clear();
-            assert!(
-                handle.subscribe_action_catalogue().await.is_err(),
-                "live membership remains required"
-            );
-            membership.write().workspaces = current_workspaces;
-            assert!(state.is_current_host_worker(901, &route, &cert).unwrap());
-            server_task.abort();
-            let _ = server_task.await;
-            client_task.abort();
-            assert!(
-                !state.is_current_host_worker(901, &route, &cert).unwrap(),
-                "disconnect removes host provenance"
-            );
-            ordinary_server.abort();
-            ordinary_client.abort();
-        }
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                tilo_test_env::within("bounded actual host worker RPC regression", scenario())
-                    .await;
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn native_enrolled_document_config_none_crosses_actual_owner_barrier() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -1802,7 +1507,7 @@ mod owner_commit_tests {
                     update: tilo_actions::InvocationUpdate::Accepted { invocation },
                     prepared_effect: Arc::default(),
                     last_sequence: 0,
-                    actor: principal_id_for_root(f.owner.peer().owner()),
+                    actor: person_id_for_root(f.owner.peer().owner()),
                     cancellable: false,
                     retryable_on_disconnect: false,
                     execution: tilo_actions::ExecutionMode::Immediate,
@@ -1855,7 +1560,7 @@ mod owner_commit_tests {
             root: f.owner.peer().owner(),
             device: f.owner.device().device_public_key,
         };
-        pending.actor = principal_id_for_root(f.owner.peer().owner());
+        pending.actor = person_id_for_root(f.owner.peer().owner());
         pending.prepared_effect = Arc::default();
         let state = f.state.clone();
         let retry_pending = pending.clone();
@@ -2105,7 +1810,7 @@ mod owner_commit_tests {
             let caller = delegated_owner_caller(&f, "mcp-7");
             // The person themselves, another agent, or a nameless agent: none
             // of them acted, so none may be named.
-            let person = principal_id_for_root(f.owner.peer().owner());
+            let person = person_id_for_root(f.owner.peer().owner());
             let actor = mistaken.unwrap_or(&person);
             let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
                 .expect_err("a mismatched actor is still refused");

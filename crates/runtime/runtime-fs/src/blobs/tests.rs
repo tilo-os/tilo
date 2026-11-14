@@ -194,13 +194,14 @@ impl Harness {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn blob_reads_are_confined_to_one_principal_and_scope() {
-    // phase: a_second_connection_of_the_same_scope_reads_what_the_first_put
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn blob_reads_are_confined_to_one_principal_and_scope;
+
+    phase a_second_connection_of_the_same_scope_reads_what_the_first_put;
     {
         let harness = Harness::start();
         let writer = harness.app("room-1", "so.tilo.photos");
@@ -226,7 +227,8 @@ fn blob_reads_are_confined_to_one_principal_and_scope() {
             }
         );
     }
-    // phase: another_room_holding_the_hash_reads_nothing
+
+    phase another_room_holding_the_hash_reads_nothing;
     {
         let harness = Harness::start();
         let stored = harness
@@ -243,7 +245,8 @@ fn blob_reads_are_confined_to_one_principal_and_scope() {
         assert!(!stranger.has(&stored.hash).unwrap());
         assert_eq!(stranger.size(&stored.hash).unwrap(), None);
     }
-    // phase: the_session_reads_only_through_an_app_scope
+
+    phase the_session_reads_only_through_an_app_scope;
     {
         let harness = Harness::start();
         let stored = harness
@@ -271,7 +274,8 @@ fn blob_reads_are_confined_to_one_principal_and_scope() {
             BlobError::InvalidScope
         );
     }
-    // phase: handoff_frames_fix_exactly_one_valid_principal
+
+    phase handoff_frames_fix_exactly_one_valid_principal;
     {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -319,9 +323,14 @@ fn blob_reads_are_confined_to_one_principal_and_scope() {
     }
 }
 
-#[test]
-fn blob_content_streams_verifies_and_refuses_bad_input_early() {
-    // phase: content_larger_than_one_message_streams_and_verifies
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn blob_content_streams_verifies_and_refuses_bad_input_early;
+
+    phase content_larger_than_one_message_streams_and_verifies;
     {
         let harness = Harness::start();
         let client = harness.app("room-1", "so.tilo.photos");
@@ -338,7 +347,8 @@ fn blob_content_streams_verifies_and_refuses_bad_input_early() {
             }
         );
     }
-    // phase: pending_content_is_reported_not_waited_for
+
+    phase pending_content_is_reported_not_waited_for;
     {
         let harness = Harness::start();
         let client = harness.app("room-1", "so.tilo.photos");
@@ -346,7 +356,8 @@ fn blob_content_streams_verifies_and_refuses_bad_input_early() {
         harness.backend.pending.lock().unwrap().insert(hash.clone());
         assert_eq!(client.read_all(&hash).unwrap(), ReadOutcome::Pending);
     }
-    // phase: malformed_hashes_and_oversized_puts_are_refused_before_the_wire
+
+    phase malformed_hashes_and_oversized_puts_are_refused_before_the_wire;
     {
         let harness = Harness::start();
         let client = harness.app("room-1", "so.tilo.photos");
@@ -578,9 +589,14 @@ impl io::Read for Watched {
     }
 }
 
-#[test]
-fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
-    // phase: content_larger_than_a_piece_reaches_the_store_piece_by_piece
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference;
+
+    phase content_larger_than_a_piece_reaches_the_store_piece_by_piece;
     {
         let Recorded { client, writes, .. } = recording_client();
         let len = UPLOAD_PIECE * 3 + 5;
@@ -609,7 +625,8 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
             }
         );
     }
-    // phase: content_shorter_than_a_piece_is_one_put
+
+    phase content_shorter_than_a_piece_is_one_put;
     {
         let Recorded {
             client,
@@ -629,7 +646,8 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
         assert_eq!(*writes.lock().unwrap(), [UPLOAD_PIECE]);
         assert_eq!(exact.len, UPLOAD_PIECE as u64);
     }
-    // phase: oversized_content_is_refused_one_byte_past_the_limit
+
+    phase oversized_content_is_refused_one_byte_past_the_limit;
     {
         let Recorded {
             client,
@@ -650,7 +668,8 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
         assert!(reader.most_held <= MAX_PUT_CHUNK);
         assert!(store.lock().unwrap().is_empty(), "nothing was stored");
     }
-    // phase: a_failing_source_stores_nothing
+
+    phase a_failing_source_stores_nothing;
     {
         let Recorded {
             client,
@@ -721,9 +740,14 @@ fn await_abandoned(backend: &MemoryBackend, count: usize) {
     }
 }
 
-#[test]
-fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
-    // phase: an_upload_reaches_the_backend_in_bounded_pieces
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn the_upload_server_streams_pieces_and_stores_nothing_unfinished;
+
+    phase an_upload_reaches_the_backend_in_bounded_pieces;
     {
         let harness = Harness::start();
         let client = harness.app("room-1", "so.tilo.photos");
@@ -744,7 +768,8 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
             }
         );
     }
-    // phase: an_upload_dropped_before_finishing_stores_nothing
+
+    phase an_upload_dropped_before_finishing_stores_nothing;
     {
         let harness = Harness::start();
         raw_app(&harness, |blobs| async move {
@@ -758,7 +783,8 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
         await_abandoned(&harness.backend, 1);
         assert!(harness.backend.bytes.lock().unwrap().is_empty());
     }
-    // phase: the_server_refuses_more_than_the_limit_while_streaming
+
+    phase the_server_refuses_more_than_the_limit_while_streaming;
     {
         let harness = Harness::start();
         raw_app(&harness, |blobs| async move {
@@ -773,7 +799,8 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
         await_abandoned(&harness.backend, 1);
         assert!(harness.backend.bytes.lock().unwrap().is_empty());
     }
-    // phase: a_write_pipelined_behind_another_is_refused
+
+    phase a_write_pipelined_behind_another_is_refused;
     {
         let harness = Harness::start();
         let stall = harness.backend.stall.blocking_lock();

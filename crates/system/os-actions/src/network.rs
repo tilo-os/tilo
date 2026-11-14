@@ -1920,372 +1920,380 @@ mod tests {
         }
     }
 
-    #[test]
-    fn access_points_become_one_network_per_name_with_its_security() {
-        let nets = networks_of(&[
-            point("Home_Network", 80, 0x100, true),
-            point("Cafe_Guest", 55, 0, false),
-            point("Neighbour_5G", 30, 0x100, false),
-            point("", 90, 0x100, false),
-        ]);
-        let seen: Vec<_> = nets
-            .iter()
-            .map(|n| (n.ssid.as_str(), n.signal, n.secure, n.connected))
-            .collect();
-        assert_eq!(
-            seen,
-            [
-                ("Home_Network", 4, true, true),
-                ("Cafe_Guest", 3, false, false),
-                ("Neighbour_5G", 2, true, false),
-            ],
-            "a hidden network has no name to list"
-        );
-        assert_eq!(nets[0].security, WifiSecurity::Wpa2);
-        assert_eq!(nets[1].security, WifiSecurity::Open);
+    tilo_test_env::scenario! {
+        fn wifi_networks_are_listed_joined_and_saved_by_their_security;
 
-        // A transition network: the access point in use names it.
-        let nets = networks_of(&[
-            point("Transition", 90, 0x100, false),
-            point("Transition", 40, 0x400, true),
-        ]);
-        assert_eq!(nets.len(), 1);
-        assert_eq!(nets[0].security, WifiSecurity::Wpa3);
-        assert!(nets[0].connected);
-        assert_eq!(nets[0].signal, 4);
-
-        for (flags, wpa, rsn, expected) in [
-            (0, 0, 0, WifiSecurity::Open),
-            (1, 0, 0x100, WifiSecurity::Wpa2),
-            (1, 0, 0x500, WifiSecurity::Wpa3),
-            (1, 0, 0x800, WifiSecurity::Owe),
-            (1, 0, 0x300, WifiSecurity::Enterprise),
-            (1, 0x100, 0, WifiSecurity::Unknown),
-            (1, 0, 0, WifiSecurity::Unknown),
-        ] {
-            let ap = AccessPoint {
-                flags,
-                wpa_flags: wpa,
-                rsn_flags: rsn,
-                ..point("x", 50, 0, false)
-            };
+        phase access_points_become_one_network_per_name_with_its_security;
+        {
+            let nets = networks_of(&[
+                point("Home_Network", 80, 0x100, true),
+                point("Cafe_Guest", 55, 0, false),
+                point("Neighbour_5G", 30, 0x100, false),
+                point("", 90, 0x100, false),
+            ]);
+            let seen: Vec<_> = nets
+                .iter()
+                .map(|n| (n.ssid.as_str(), n.signal, n.secure, n.connected))
+                .collect();
             assert_eq!(
-                WifiSecurity::of_access_point(&ap),
-                expected,
-                "{flags} {wpa:#x} {rsn:#x}"
+                seen,
+                [
+                    ("Home_Network", 4, true, true),
+                    ("Cafe_Guest", 3, false, false),
+                    ("Neighbour_5G", 2, true, false),
+                ],
+                "a hidden network has no name to list"
             );
+            assert_eq!(nets[0].security, WifiSecurity::Wpa2);
+            assert_eq!(nets[1].security, WifiSecurity::Open);
+
+            // A transition network: the access point in use names it.
+            let nets = networks_of(&[
+                point("Transition", 90, 0x100, false),
+                point("Transition", 40, 0x400, true),
+            ]);
+            assert_eq!(nets.len(), 1);
+            assert_eq!(nets[0].security, WifiSecurity::Wpa3);
+            assert!(nets[0].connected);
+            assert_eq!(nets[0].signal, 4);
+
+            for (flags, wpa, rsn, expected) in [
+                (0, 0, 0, WifiSecurity::Open),
+                (1, 0, 0x100, WifiSecurity::Wpa2),
+                (1, 0, 0x500, WifiSecurity::Wpa3),
+                (1, 0, 0x800, WifiSecurity::Owe),
+                (1, 0, 0x300, WifiSecurity::Enterprise),
+                (1, 0x100, 0, WifiSecurity::Unknown),
+                (1, 0, 0, WifiSecurity::Unknown),
+            ] {
+                let ap = AccessPoint {
+                    flags,
+                    wpa_flags: wpa,
+                    rsn_flags: rsn,
+                    ..point("x", 50, 0, false)
+                };
+                assert_eq!(
+                    WifiSecurity::of_access_point(&ap),
+                    expected,
+                    "{flags} {wpa:#x} {rsn:#x}"
+                );
+            }
+            assert!(WifiSecurity::Wpa2.supports_portable_passphrase());
+            assert!(WifiSecurity::Wpa3.supports_portable_passphrase());
+            assert!(!WifiSecurity::Enterprise.supports_portable_passphrase());
+            assert!(!WifiSecurity::Owe.supports_portable_passphrase());
         }
-        assert!(WifiSecurity::Wpa2.supports_portable_passphrase());
-        assert!(WifiSecurity::Wpa3.supports_portable_passphrase());
-        assert!(!WifiSecurity::Enterprise.supports_portable_passphrase());
-        assert!(!WifiSecurity::Owe.supports_portable_passphrase());
-    }
 
-    #[test]
-    fn signal_buckets_and_wifi_availability() {
-        assert_eq!(signal_pct_to_bucket(0), 1);
-        assert_eq!(signal_pct_to_bucket(20), 1);
-        assert_eq!(signal_pct_to_bucket(35), 2);
-        assert_eq!(signal_pct_to_bucket(60), 3);
-        assert_eq!(signal_pct_to_bucket(95), 4);
-        let radios = RadioState::default();
-        assert_eq!(
-            wifi_from_radios(&radios).unwrap_err(),
-            "no Wi-Fi adapter on this machine"
-        );
-        let on = RadioState {
-            wifi_available: true,
-            wifi_enabled: true,
-            ..RadioState::default()
-        };
-        assert!(wifi_from_radios(&on).unwrap());
-    }
+        phase signal_buckets_and_wifi_availability;
+        {
+            assert_eq!(signal_pct_to_bucket(0), 1);
+            assert_eq!(signal_pct_to_bucket(20), 1);
+            assert_eq!(signal_pct_to_bucket(35), 2);
+            assert_eq!(signal_pct_to_bucket(60), 3);
+            assert_eq!(signal_pct_to_bucket(95), 4);
+            let radios = RadioState::default();
+            assert_eq!(
+                wifi_from_radios(&radios).unwrap_err(),
+                "no Wi-Fi adapter on this machine"
+            );
+            let on = RadioState {
+                wifi_available: true,
+                wifi_enabled: true,
+                ..RadioState::default()
+            };
+            assert!(wifi_from_radios(&on).unwrap());
+        }
 
-    #[test]
-    fn a_password_is_put_in_as_the_key_its_network_takes() {
-        let mut settings = Settings::default();
-        wifi_secret(&mut settings, Some(WifiSecurity::Wpa3), "hunter22").unwrap();
-        assert_eq!(
-            settings
-                .string("802-11-wireless-security", "key-mgmt")
-                .as_deref(),
-            Some("sae")
-        );
-        assert_eq!(
-            settings
-                .string("802-11-wireless-security", "psk")
-                .as_deref(),
-            Some("hunter22")
-        );
-        // A saved profile keeps the key management it was joined with.
-        wifi_secret(&mut settings, Some(WifiSecurity::Wpa2), "new-pass").unwrap();
-        assert_eq!(
-            settings
-                .string("802-11-wireless-security", "key-mgmt")
-                .as_deref(),
-            Some("sae")
-        );
-        let mut hidden = Settings::default();
-        wifi_secret(&mut hidden, None, "hunter22").unwrap();
-        assert_eq!(
-            hidden
-                .string("802-11-wireless-security", "key-mgmt")
-                .as_deref(),
-            Some("wpa-psk")
-        );
-        for refused in [
-            WifiSecurity::Open,
-            WifiSecurity::Enterprise,
-            WifiSecurity::Unknown,
-        ] {
-            assert!(wifi_secret(&mut Settings::default(), Some(refused), "x").is_err());
+        phase a_password_is_put_in_as_the_key_its_network_takes;
+        {
+            let mut settings = Settings::default();
+            wifi_secret(&mut settings, Some(WifiSecurity::Wpa3), "hunter22").unwrap();
+            assert_eq!(
+                settings
+                    .string("802-11-wireless-security", "key-mgmt")
+                    .as_deref(),
+                Some("sae")
+            );
+            assert_eq!(
+                settings
+                    .string("802-11-wireless-security", "psk")
+                    .as_deref(),
+                Some("hunter22")
+            );
+            // A saved profile keeps the key management it was joined with.
+            wifi_secret(&mut settings, Some(WifiSecurity::Wpa2), "new-pass").unwrap();
+            assert_eq!(
+                settings
+                    .string("802-11-wireless-security", "key-mgmt")
+                    .as_deref(),
+                Some("sae")
+            );
+            let mut hidden = Settings::default();
+            wifi_secret(&mut hidden, None, "hunter22").unwrap();
+            assert_eq!(
+                hidden
+                    .string("802-11-wireless-security", "key-mgmt")
+                    .as_deref(),
+                Some("wpa-psk")
+            );
+            for refused in [
+                WifiSecurity::Open,
+                WifiSecurity::Enterprise,
+                WifiSecurity::Unknown,
+            ] {
+                assert!(wifi_secret(&mut Settings::default(), Some(refused), "x").is_err());
+            }
+        }
+
+        phase portable_profiles_keep_only_personal_wifi_secrets;
+        {
+            let profile = portable_profile(
+                "802-11-wireless",
+                "Home network",
+                "wpa-psk",
+                "correct horse battery staple",
+            )
+            .unwrap();
+            assert_eq!(profile.ssid, "Home network");
+            assert_eq!(profile.security, WifiSecurity::Wpa2);
+            assert_eq!(profile.password.as_str(), "correct horse battery staple");
+            assert!(portable_profile("802-11-wireless", "Work", "wpa-eap", "secret").is_err());
+            assert!(portable_profile("802-3-ethernet", "LAN", "wpa-psk", "secret").is_err());
+            assert!(portable_profile("802-11-wireless", "Cafe", "none", "secret").is_err());
+            assert!(portable_profile("802-11-wireless", "Home", "sae", "").is_err());
+        }
+
+        phase saved_networks_are_wifi_ethernet_and_mobile_profiles;
+        {
+            let profile = |kind: &str| {
+                let mut settings = Settings::default();
+                settings.set("connection", "id", "Office: Lab");
+                settings.set("connection", "uuid", "12345678-1234-1234-1234-123456789abc");
+                settings.set("connection", "type", kind);
+                settings
+            };
+            let saved = saved_profile(&profile("802-11-wireless")).unwrap();
+            assert_eq!(saved.name, "Office: Lab");
+            assert!(saved.autoconnect, "the default");
+            assert_eq!(saved.last_used, None);
+            assert!(saved_profile(&profile("wireguard")).is_none());
+            assert!(saved_profile(&profile("gsm")).is_some());
+        }
+
+        phase enterprise_settings_keep_their_secrets_unsaved;
+        {
+            let mut settings = Settings::default();
+            enterprise_settings(
+                &mut settings,
+                &EnterpriseWifiConfiguration {
+                    profile_name: "Campus".into(),
+                    ssid: "eduroam".into(),
+                    identity: "ada@example.org".into(),
+                    anonymous_identity: None,
+                    ca_certificate: "/etc/pki/campus.pem".into(),
+                    method: EnterpriseEapMethod::Peap,
+                    phase2_auth: None,
+                    client_certificate: None,
+                    private_key: None,
+                },
+            );
+            assert_eq!(settings.strings("802-1x", "eap"), ["peap"]);
+            assert_eq!(
+                settings.string("802-1x", "phase2-auth").as_deref(),
+                Some("mschapv2")
+            );
+            assert_eq!(
+                settings.path("802-1x", "ca-cert").as_deref(),
+                Some("/etc/pki/campus.pem")
+            );
+            assert_eq!(settings.uint("802-1x", "password-flags"), Some(2));
+            assert_eq!(settings.string("802-1x", "password"), None);
+            assert_eq!(settings.get("802-1x", "client-cert"), None);
         }
     }
 
-    #[test]
-    fn portable_profiles_keep_only_personal_wifi_secrets() {
-        let profile = portable_profile(
-            "802-11-wireless",
-            "Home network",
-            "wpa-psk",
-            "correct horse battery staple",
-        )
-        .unwrap();
-        assert_eq!(profile.ssid, "Home network");
-        assert_eq!(profile.security, WifiSecurity::Wpa2);
-        assert_eq!(profile.password.as_str(), "correct horse battery staple");
-        assert!(portable_profile("802-11-wireless", "Work", "wpa-eap", "secret").is_err());
-        assert!(portable_profile("802-3-ethernet", "LAN", "wpa-psk", "secret").is_err());
-        assert!(portable_profile("802-11-wireless", "Cafe", "none", "secret").is_err());
-        assert!(portable_profile("802-11-wireless", "Home", "sae", "").is_err());
-    }
+    tilo_test_env::scenario! {
+        fn connection_settings_and_policies_are_read_validated_and_written_back;
 
-    #[test]
-    fn a_policy_written_into_a_profile_reads_back_the_same() {
-        let mut settings = Settings::default();
-        settings.set("connection", "type", "802-11-wireless");
-        settings.set(
-            "802-11-wireless",
-            "cloned-mac-address",
-            vec![2_u8, 0, 0, 0, 0, 1],
-        );
-        apply_policy(
-            &mut settings,
-            &ConnectionPolicyPatch {
-                metered: Some(MeteredPolicy::Metered),
-                mac: Some(MacPolicy::Stable),
-                proxy: Some(ProxyConfiguration {
+        phase a_policy_written_into_a_profile_reads_back_the_same;
+        {
+            let mut settings = Settings::default();
+            settings.set("connection", "type", "802-11-wireless");
+            settings.set(
+                "802-11-wireless",
+                "cloned-mac-address",
+                vec![2_u8, 0, 0, 0, 0, 1],
+            );
+            apply_policy(
+                &mut settings,
+                &ConnectionPolicyPatch {
+                    metered: Some(MeteredPolicy::Metered),
+                    mac: Some(MacPolicy::Stable),
+                    proxy: Some(ProxyConfiguration {
+                        automatic_url: None,
+                        manual: Some("proxy.example:8080".into()),
+                        browser_only: true,
+                    }),
+                    priority: Some(5_000),
+                    hidden: Some(true),
+                },
+            );
+            assert_eq!(settings.get("802-11-wireless", "cloned-mac-address"), None);
+            let read = profile_settings_of(&settings);
+            assert_eq!(read.metered, Some(MeteredPolicy::Metered));
+            assert_eq!(read.mac, Some(MacPolicy::Stable));
+            assert_eq!(
+                read.proxy,
+                Some(ProxyConfiguration {
                     automatic_url: None,
                     manual: Some("proxy.example:8080".into()),
                     browser_only: true,
-                }),
-                priority: Some(5_000),
-                hidden: Some(true),
-            },
-        );
-        assert_eq!(settings.get("802-11-wireless", "cloned-mac-address"), None);
-        let read = profile_settings_of(&settings);
-        assert_eq!(read.metered, Some(MeteredPolicy::Metered));
-        assert_eq!(read.mac, Some(MacPolicy::Stable));
-        assert_eq!(
-            read.proxy,
-            Some(ProxyConfiguration {
-                automatic_url: None,
-                manual: Some("proxy.example:8080".into()),
-                browser_only: true,
-            })
-        );
-        assert_eq!(read.priority, Some(999), "clamped");
-        assert_eq!(read.hidden, Some(true));
+                })
+            );
+            assert_eq!(read.priority, Some(999), "clamped");
+            assert_eq!(read.hidden, Some(true));
 
-        apply_policy(
-            &mut settings,
-            &ConnectionPolicyPatch {
-                proxy: Some(ProxyConfiguration {
-                    automatic_url: Some("https://proxy.example/pac".into()),
-                    manual: None,
-                    browser_only: false,
-                }),
-                ..ConnectionPolicyPatch::default()
-            },
-        );
-        assert_eq!(
-            profile_settings_of(&settings)
-                .proxy
-                .and_then(|proxy| proxy.automatic_url)
-                .as_deref(),
-            Some("https://proxy.example/pac")
-        );
-    }
+            apply_policy(
+                &mut settings,
+                &ConnectionPolicyPatch {
+                    proxy: Some(ProxyConfiguration {
+                        automatic_url: Some("https://proxy.example/pac".into()),
+                        manual: None,
+                        browser_only: false,
+                    }),
+                    ..ConnectionPolicyPatch::default()
+                },
+            );
+            assert_eq!(
+                profile_settings_of(&settings)
+                    .proxy
+                    .and_then(|proxy| proxy.automatic_url)
+                    .as_deref(),
+                Some("https://proxy.example/pac")
+            );
+        }
 
-    #[test]
-    fn values_this_ui_does_not_understand_read_as_none() {
-        let mut settings = Settings::default();
-        settings.set("connection", "metered", 3_i32);
-        settings.set(
-            "802-11-wireless",
-            "assigned-mac-address",
-            "02:00:00:00:00:01",
-        );
-        settings.set("proxy", "method", 2_i32);
-        settings.set("ipv4", "method", "shared");
-        let read = profile_settings_of(&settings);
-        assert_eq!(
-            (read.metered, read.mac, read.proxy, read.ipv4),
-            (None, None, None, None)
-        );
-
-        let wired = profile_settings_of(&Settings::default());
-        assert_eq!(wired.metered, Some(MeteredPolicy::Automatic), "the default");
-        assert_eq!(wired.hidden, None, "a wired profile has no hiding");
-        assert_eq!(
-            wired.proxy,
-            Some(ProxyConfiguration::default()),
-            "no proxy by default"
-        );
-    }
-
-    #[test]
-    fn saved_networks_are_wifi_ethernet_and_mobile_profiles() {
-        let profile = |kind: &str| {
-            let mut settings = Settings::default();
-            settings.set("connection", "id", "Office: Lab");
-            settings.set("connection", "uuid", "12345678-1234-1234-1234-123456789abc");
-            settings.set("connection", "type", kind);
-            settings
-        };
-        let saved = saved_profile(&profile("802-11-wireless")).unwrap();
-        assert_eq!(saved.name, "Office: Lab");
-        assert!(saved.autoconnect, "the default");
-        assert_eq!(saved.last_used, None);
-        assert!(saved_profile(&profile("wireguard")).is_none());
-        assert!(saved_profile(&profile("gsm")).is_some());
-    }
-
-    #[test]
-    fn connectivity_hotspots_and_their_clients() {
+        phase values_this_ui_does_not_understand_read_as_none;
         {
-            use tilo_nm::NmConnectivity;
-            for (raw, want) in [
-                (NmConnectivity::Unknown, ConnectivityState::Unknown),
-                (NmConnectivity::None, ConnectivityState::Offline),
-                (NmConnectivity::Portal, ConnectivityState::Portal),
-                (NmConnectivity::Limited, ConnectivityState::Limited),
-                (NmConnectivity::Full, ConnectivityState::Full),
-            ] {
-                assert_eq!(ConnectivityState::from(raw), want, "{raw:?}");
+            let mut settings = Settings::default();
+            settings.set("connection", "metered", 3_i32);
+            settings.set(
+                "802-11-wireless",
+                "assigned-mac-address",
+                "02:00:00:00:00:01",
+            );
+            settings.set("proxy", "method", 2_i32);
+            settings.set("ipv4", "method", "shared");
+            let read = profile_settings_of(&settings);
+            assert_eq!(
+                (read.metered, read.mac, read.proxy, read.ipv4),
+                (None, None, None, None)
+            );
+
+            let wired = profile_settings_of(&Settings::default());
+            assert_eq!(wired.metered, Some(MeteredPolicy::Automatic), "the default");
+            assert_eq!(wired.hidden, None, "a wired profile has no hiding");
+            assert_eq!(
+                wired.proxy,
+                Some(ProxyConfiguration::default()),
+                "no proxy by default"
+            );
+        }
+
+        phase connectivity_hotspots_and_their_clients;
+        {
+            {
+                use tilo_nm::NmConnectivity;
+                for (raw, want) in [
+                    (NmConnectivity::Unknown, ConnectivityState::Unknown),
+                    (NmConnectivity::None, ConnectivityState::Offline),
+                    (NmConnectivity::Portal, ConnectivityState::Portal),
+                    (NmConnectivity::Limited, ConnectivityState::Limited),
+                    (NmConnectivity::Full, ConnectivityState::Full),
+                ] {
+                    assert_eq!(ConnectivityState::from(raw), want, "{raw:?}");
+                }
+            }
+            {
+                let refused = || {
+                    Err::<ConnectivityState, String>("Not authorized to recheck connectivity.".into())
+                };
+                assert_eq!(
+                    connectivity_from(refused(), || Ok(ConnectivityState::Full)),
+                    Ok(ConnectivityState::Full)
+                );
+                assert_eq!(
+                    connectivity_from(Ok(ConnectivityState::Portal), || unreachable!()),
+                    Ok(ConnectivityState::Portal)
+                );
+                assert_eq!(
+                    connectivity_from(refused(), || Err("NetworkManager not running".into())),
+                    Err("Not authorized to recheck connectivity.".into())
+                );
+            }
+            {
+                let config = HotspotConfiguration {
+                    ssid: "Tilo; Guest".into(),
+                    password: "hello:world".into(),
+                    band: HotspotBand::Automatic,
+                };
+                assert_eq!(
+                    config.qr_payload().unwrap(),
+                    "WIFI:T:WPA;S:Tilo\\; Guest;P:hello\\:world;;"
+                );
+                let mut settings = Settings::default();
+                hotspot_settings(
+                    &mut settings,
+                    &config.ssid,
+                    &config.password,
+                    HotspotBand::FiveGhz,
+                );
+                assert_eq!(settings.bytes("802-11-wireless", "ssid"), b"Tilo; Guest");
+                assert_eq!(
+                    settings.string("802-11-wireless", "band").as_deref(),
+                    Some("a")
+                );
+                hotspot_settings(
+                    &mut settings,
+                    &config.ssid,
+                    &config.password,
+                    HotspotBand::Automatic,
+                );
+                assert_eq!(settings.string("802-11-wireless", "band"), None);
+                let passphrase = random_passphrase().unwrap();
+                assert_eq!(passphrase.len(), 12);
+                assert!(passphrase.chars().all(|c| c.is_ascii_alphanumeric()));
+            }
+            {
+                let clients =
+                    parse_hotspot_clients("Station aa:bb:cc:dd:ee:ff (on wlan0)\n\tsignal: -51 dBm\n");
+                assert_eq!(clients[0].mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(clients[0].signal_dbm, Some(-51));
             }
         }
-        {
-            let refused = || {
-                Err::<ConnectivityState, String>("Not authorized to recheck connectivity.".into())
-            };
-            assert_eq!(
-                connectivity_from(refused(), || Ok(ConnectivityState::Full)),
-                Ok(ConnectivityState::Full)
-            );
-            assert_eq!(
-                connectivity_from(Ok(ConnectivityState::Portal), || unreachable!()),
-                Ok(ConnectivityState::Portal)
-            );
-            assert_eq!(
-                connectivity_from(refused(), || Err("NetworkManager not running".into())),
-                Err("Not authorized to recheck connectivity.".into())
-            );
-        }
-        {
-            let config = HotspotConfiguration {
-                ssid: "Tilo; Guest".into(),
-                password: "hello:world".into(),
-                band: HotspotBand::Automatic,
-            };
-            assert_eq!(
-                config.qr_payload().unwrap(),
-                "WIFI:T:WPA;S:Tilo\\; Guest;P:hello\\:world;;"
-            );
-            let mut settings = Settings::default();
-            hotspot_settings(
-                &mut settings,
-                &config.ssid,
-                &config.password,
-                HotspotBand::FiveGhz,
-            );
-            assert_eq!(settings.bytes("802-11-wireless", "ssid"), b"Tilo; Guest");
-            assert_eq!(
-                settings.string("802-11-wireless", "band").as_deref(),
-                Some("a")
-            );
-            hotspot_settings(
-                &mut settings,
-                &config.ssid,
-                &config.password,
-                HotspotBand::Automatic,
-            );
-            assert_eq!(settings.string("802-11-wireless", "band"), None);
-            let passphrase = random_passphrase().unwrap();
-            assert_eq!(passphrase.len(), 12);
-            assert!(passphrase.chars().all(|c| c.is_ascii_alphanumeric()));
-        }
-        {
-            let clients =
-                parse_hotspot_clients("Station aa:bb:cc:dd:ee:ff (on wlan0)\n\tsignal: -51 dBm\n");
-            assert_eq!(clients[0].mac, "AA:BB:CC:DD:EE:FF");
-            assert_eq!(clients[0].signal_dbm, Some(-51));
-        }
-    }
 
-    #[test]
-    fn connection_settings_are_validated_before_asking_networkmanager() {
-        assert!(!valid_ip_token("1.2.3.4;reboot"));
-        let config = IpConfiguration {
-            automatic: false,
-            ..Default::default()
-        };
-        // A syntactically valid id fails on the missing address before any bus is touched.
-        let err = configure_ipv4("12345678-1234-1234-1234-123456789abc", &config).unwrap_err();
-        assert!(err.contains("at least one address"));
-        let policy = ConnectionPolicy {
-            proxy: ProxyConfiguration {
-                automatic_url: Some("file:///tmp/proxy.pac".into()),
-                manual: None,
-                browser_only: false,
-            },
-            ..Default::default()
-        };
-        let err = configure_connection_policy("12345678-1234-1234-1234-123456789abc", &policy)
-            .unwrap_err();
-        assert!(err.contains("HTTP or HTTPS"));
-    }
-
-    #[test]
-    fn enterprise_settings_keep_their_secrets_unsaved() {
-        let mut settings = Settings::default();
-        enterprise_settings(
-            &mut settings,
-            &EnterpriseWifiConfiguration {
-                profile_name: "Campus".into(),
-                ssid: "eduroam".into(),
-                identity: "ada@example.org".into(),
-                anonymous_identity: None,
-                ca_certificate: "/etc/pki/campus.pem".into(),
-                method: EnterpriseEapMethod::Peap,
-                phase2_auth: None,
-                client_certificate: None,
-                private_key: None,
-            },
-        );
-        assert_eq!(settings.strings("802-1x", "eap"), ["peap"]);
-        assert_eq!(
-            settings.string("802-1x", "phase2-auth").as_deref(),
-            Some("mschapv2")
-        );
-        assert_eq!(
-            settings.path("802-1x", "ca-cert").as_deref(),
-            Some("/etc/pki/campus.pem")
-        );
-        assert_eq!(settings.uint("802-1x", "password-flags"), Some(2));
-        assert_eq!(settings.string("802-1x", "password"), None);
-        assert_eq!(settings.get("802-1x", "client-cert"), None);
+        phase connection_settings_are_validated_before_asking_networkmanager;
+        {
+            assert!(!valid_ip_token("1.2.3.4;reboot"));
+            let config = IpConfiguration {
+                automatic: false,
+                ..Default::default()
+            };
+            // A syntactically valid id fails on the missing address before any bus is touched.
+            let err = configure_ipv4("12345678-1234-1234-1234-123456789abc", &config).unwrap_err();
+            assert!(err.contains("at least one address"));
+            let policy = ConnectionPolicy {
+                proxy: ProxyConfiguration {
+                    automatic_url: Some("file:///tmp/proxy.pac".into()),
+                    manual: None,
+                    browser_only: false,
+                },
+                ..Default::default()
+            };
+            let err = configure_connection_policy("12345678-1234-1234-1234-123456789abc", &policy)
+                .unwrap_err();
+            assert!(err.contains("HTTP or HTTPS"));
+        }
     }
 }
 
@@ -2306,43 +2314,76 @@ mod link_status_tests {
         }
     }
 
-    #[test]
-    fn link_status_follows_the_primary_connection() {
+    tilo_test_env::scenario! {
+        fn link_status_is_the_primary_connection_and_its_signal;
+
+        phase link_status_follows_the_primary_connection;
         {
-            let s = link_status_from_state(
-                &primary(tilo_nm::LinkKind::Wired, "Wired connection 1"),
-                Some(90),
-            );
-            assert_eq!(s.kind, LinkKind::Wired);
-            assert_eq!(s.name.as_deref(), Some("Wired connection 1"));
-            assert_eq!(s.signal, 0, "a cable has no signal strength to report");
+            {
+                let s = link_status_from_state(
+                    &primary(tilo_nm::LinkKind::Wired, "Wired connection 1"),
+                    Some(90),
+                );
+                assert_eq!(s.kind, LinkKind::Wired);
+                assert_eq!(s.name.as_deref(), Some("Wired connection 1"));
+                assert_eq!(s.signal, 0, "a cable has no signal strength to report");
+            }
+            {
+                let s =
+                    link_status_from_state(&primary(tilo_nm::LinkKind::Wifi, "Cafe WiFi"), Some(70));
+                assert_eq!(s.kind, LinkKind::Wifi);
+                assert_eq!(s.name.as_deref(), Some("Cafe WiFi"));
+                assert_eq!(s.signal, 3, "70% is bucket 3 on the shared signal scale");
+            }
+            {
+                let s = link_status_from_state(&primary(tilo_nm::LinkKind::Wifi, "Cafe WiFi"), None);
+                assert!(s.signal > 0, "a connected radio never reads as no-signal");
+            }
+            {
+                let s = link_status_from_state(&primary(tilo_nm::LinkKind::Mobile, "Carrier"), None);
+                assert!(s.is_online());
+                assert_eq!(s.name.as_deref(), Some("Carrier"));
+            }
+            {
+                let connecting = tilo_nm::NetworkState {
+                    state: tilo_nm::NmState::Connecting,
+                    ..tilo_nm::NetworkState::unknown()
+                };
+                assert_eq!(
+                    link_status_from_state(&connecting, Some(80)),
+                    LinkStatus::offline()
+                );
+                assert!(!link_status_from_state(&tilo_nm::NetworkState::unknown(), None).is_online());
+            }
         }
+
+        phase proc_net_wireless_quality_is_scaled_to_a_percentage;
         {
-            let s =
-                link_status_from_state(&primary(tilo_nm::LinkKind::Wifi, "Cafe WiFi"), Some(70));
-            assert_eq!(s.kind, LinkKind::Wifi);
-            assert_eq!(s.name.as_deref(), Some("Cafe WiFi"));
-            assert_eq!(s.signal, 3, "70% is bucket 3 on the shared signal scale");
-        }
-        {
-            let s = link_status_from_state(&primary(tilo_nm::LinkKind::Wifi, "Cafe WiFi"), None);
-            assert!(s.signal > 0, "a connected radio never reads as no-signal");
-        }
-        {
-            let s = link_status_from_state(&primary(tilo_nm::LinkKind::Mobile, "Carrier"), None);
-            assert!(s.is_online());
-            assert_eq!(s.name.as_deref(), Some("Carrier"));
-        }
-        {
-            let connecting = tilo_nm::NetworkState {
-                state: tilo_nm::NmState::Connecting,
-                ..tilo_nm::NetworkState::unknown()
-            };
-            assert_eq!(
-                link_status_from_state(&connecting, Some(80)),
-                LinkStatus::offline()
-            );
-            assert!(!link_status_from_state(&tilo_nm::NetworkState::unknown(), None).is_online());
+            // A driver reporting past the wext ceiling is already a percentage.
+            let driver_percent =
+                "hdr\nhdr\nwlan0: 0000   88.  -40.  -256        0      0      0      0\n";
+            for (case, raw, want) in [
+                // 49/70 = 70%.
+                (
+                    "link_quality_is_scaled_off_the_wext_ceiling",
+                    PROC_WIRELESS,
+                    Some(70),
+                ),
+                (
+                    "a_driver_reporting_percent_directly_is_not_rescaled",
+                    driver_percent,
+                    Some(88),
+                ),
+                (
+                    "no_wireless_interfaces_yields_no_reading",
+                    "Inter-| sta-|   Quality\n face | tus | link\n",
+                    None,
+                ),
+            ] {
+                assert_eq!(parse_proc_net_wireless(raw), want, "case {case}");
+            }
+            // 70% is bucket 3 on the shared signal scale.
+            assert_eq!(signal_pct_to_bucket(70), 3);
         }
     }
 
@@ -2350,35 +2391,6 @@ mod link_status_tests {
     const PROC_WIRELESS: &str = "Inter-| sta-|   Quality        |   Discarded packets\n\
  face | tus | link level noise |  nwid  crypt   frag  retry   misc\n\
 wlp2s0: 0000   49.  -61.  -256        0      0      0     55      0\n";
-
-    #[test]
-    fn proc_net_wireless_quality_is_scaled_to_a_percentage() {
-        // A driver reporting past the wext ceiling is already a percentage.
-        let driver_percent =
-            "hdr\nhdr\nwlan0: 0000   88.  -40.  -256        0      0      0      0\n";
-        for (case, raw, want) in [
-            // 49/70 = 70%.
-            (
-                "link_quality_is_scaled_off_the_wext_ceiling",
-                PROC_WIRELESS,
-                Some(70),
-            ),
-            (
-                "a_driver_reporting_percent_directly_is_not_rescaled",
-                driver_percent,
-                Some(88),
-            ),
-            (
-                "no_wireless_interfaces_yields_no_reading",
-                "Inter-| sta-|   Quality\n face | tus | link\n",
-                None,
-            ),
-        ] {
-            assert_eq!(parse_proc_net_wireless(raw), want, "case {case}");
-        }
-        // 70% is bucket 3 on the shared signal scale.
-        assert_eq!(signal_pct_to_bucket(70), 3);
-    }
 }
 
 #[cfg(test)]
@@ -2405,80 +2417,84 @@ mod radio_presence_tests {
         }
     }
 
-    /// `NetworkManager` reports its WWAN switch as enabled on a machine with no modem at all, so only a
-    /// modem device it manages counts.
-    #[test]
-    fn an_enabled_wwan_switch_without_a_modem_device_is_no_modem() {
-        let wifi_only = [device(DeviceKind::Wifi), device(DeviceKind::Other)];
-        let on = radio_state_of(switches(true, true), &wifi_only, &[]);
-        assert!(on.wifi_available);
-        assert!(!on.wwan_available, "no modem device is listed");
-        assert!(!on.airplane_mode);
-        let off = radio_state_of(switches(false, true), &wifi_only, &[]);
-        assert!(
-            off.airplane_mode,
-            "the WWAN switch of a missing modem keeps no radio on"
-        );
-        let modem = radio_state_of(
-            switches(true, false),
-            &[device(DeviceKind::Wifi), device(DeviceKind::Modem)],
-            &[],
-        );
-        assert!(modem.wwan_available && !modem.wwan_enabled);
-        let hotspot = ActiveConnection {
-            path: String::new(),
-            id: HOTSPOT_PROFILE.into(),
-            uuid: String::new(),
-            kind: "802-11-wireless".into(),
-            state: tilo_nm::ActiveState::Activated,
-            devices: Vec::new(),
-            profile: String::new(),
-        };
-        assert!(radio_state_of(switches(true, false), &wifi_only, &[hotspot]).hotspot_active);
-    }
+    tilo_test_env::scenario! {
+        fn a_radio_is_present_only_with_its_device;
 
-    /// A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or interface is a modem; a
-    /// wired interface and an empty class are neither.
-    #[test]
-    fn radios_are_read_from_the_kernels_device_classes() {
-        use std::fs;
-        let class = tempfile::tempdir().unwrap();
-        let class = class.path();
-        assert!(!has_wifi_radio_in(class) && !has_wwan_modem_in(class));
+        phase an_enabled_wwan_switch_without_a_modem_device_is_no_modem;
+        // `NetworkManager` reports its WWAN switch as enabled on a machine with no modem at all, so only a
+        // modem device it manages counts.
+        {
+            let wifi_only = [device(DeviceKind::Wifi), device(DeviceKind::Other)];
+            let on = radio_state_of(switches(true, true), &wifi_only, &[]);
+            assert!(on.wifi_available);
+            assert!(!on.wwan_available, "no modem device is listed");
+            assert!(!on.airplane_mode);
+            let off = radio_state_of(switches(false, true), &wifi_only, &[]);
+            assert!(
+                off.airplane_mode,
+                "the WWAN switch of a missing modem keeps no radio on"
+            );
+            let modem = radio_state_of(
+                switches(true, false),
+                &[device(DeviceKind::Wifi), device(DeviceKind::Modem)],
+                &[],
+            );
+            assert!(modem.wwan_available && !modem.wwan_enabled);
+            let hotspot = ActiveConnection {
+                path: String::new(),
+                id: HOTSPOT_PROFILE.into(),
+                uuid: String::new(),
+                kind: "802-11-wireless".into(),
+                state: tilo_nm::ActiveState::Activated,
+                devices: Vec::new(),
+                profile: String::new(),
+            };
+            assert!(radio_state_of(switches(true, false), &wifi_only, &[hotspot]).hotspot_active);
+        }
 
-        let wired = class.join("net/enp1s0");
-        fs::create_dir_all(&wired).unwrap();
-        fs::write(wired.join("uevent"), "INTERFACE=enp1s0\nIFINDEX=2\n").unwrap();
-        fs::create_dir_all(class.join("ieee80211")).unwrap();
-        fs::create_dir_all(class.join("wwan")).unwrap();
-        assert!(
-            !has_wifi_radio_in(class),
-            "a wired interface is no Wi-Fi radio"
-        );
-        assert!(!has_wwan_modem_in(class), "a wired interface is no modem");
+        phase radios_are_read_from_the_kernels_device_classes;
+        // A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or interface is a modem; a
+        // wired interface and an empty class are neither.
+        {
+            use std::fs;
+            let class = tempfile::tempdir().unwrap();
+            let class = class.path();
+            assert!(!has_wifi_radio_in(class) && !has_wwan_modem_in(class));
 
-        let wlan = class.join("net/wlp2s0");
-        fs::create_dir_all(&wlan).unwrap();
-        fs::write(wlan.join("uevent"), "DEVTYPE=wlan\nINTERFACE=wlp2s0\n").unwrap();
-        assert!(has_wifi_radio_in(class));
-        assert!(!has_wwan_modem_in(class));
+            let wired = class.join("net/enp1s0");
+            fs::create_dir_all(&wired).unwrap();
+            fs::write(wired.join("uevent"), "INTERFACE=enp1s0\nIFINDEX=2\n").unwrap();
+            fs::create_dir_all(class.join("ieee80211")).unwrap();
+            fs::create_dir_all(class.join("wwan")).unwrap();
+            assert!(
+                !has_wifi_radio_in(class),
+                "a wired interface is no Wi-Fi radio"
+            );
+            assert!(!has_wwan_modem_in(class), "a wired interface is no modem");
 
-        let modem = class.join("net/wwan0");
-        fs::create_dir_all(&modem).unwrap();
-        fs::write(modem.join("uevent"), "DEVTYPE=wwan\nINTERFACE=wwan0\n").unwrap();
-        assert!(has_wwan_modem_in(class));
+            let wlan = class.join("net/wlp2s0");
+            fs::create_dir_all(&wlan).unwrap();
+            fs::write(wlan.join("uevent"), "DEVTYPE=wlan\nINTERFACE=wlp2s0\n").unwrap();
+            assert!(has_wifi_radio_in(class));
+            assert!(!has_wwan_modem_in(class));
 
-        let bare = tempfile::tempdir().unwrap();
-        fs::create_dir_all(bare.path().join("ieee80211/phy0")).unwrap();
-        fs::create_dir_all(bare.path().join("wwan/wwan0")).unwrap();
-        assert!(
-            has_wifi_radio_in(bare.path()),
-            "a PHY with no interface yet"
-        );
-        assert!(
-            has_wwan_modem_in(bare.path()),
-            "a WWAN device with no interface yet"
-        );
+            let modem = class.join("net/wwan0");
+            fs::create_dir_all(&modem).unwrap();
+            fs::write(modem.join("uevent"), "DEVTYPE=wwan\nINTERFACE=wwan0\n").unwrap();
+            assert!(has_wwan_modem_in(class));
+
+            let bare = tempfile::tempdir().unwrap();
+            fs::create_dir_all(bare.path().join("ieee80211/phy0")).unwrap();
+            fs::create_dir_all(bare.path().join("wwan/wwan0")).unwrap();
+            assert!(
+                has_wifi_radio_in(bare.path()),
+                "a PHY with no interface yet"
+            );
+            assert!(
+                has_wwan_modem_in(bare.path()),
+                "a WWAN device with no interface yet"
+            );
+        }
     }
 }
 
@@ -2550,107 +2566,111 @@ mod wifi_radio_tests {
         }
     }
 
-    #[test]
-    fn off_on_off_on_each_lands_in_the_state_asked_for() {
-        let nm = FakeNm::on();
-        for enabled in [false, true, false, true] {
-            let radios = set_wifi_radio_with(&nm, enabled).unwrap();
-            assert_eq!(radios.wifi_enabled, enabled, "after asking for {enabled}");
-            assert_eq!(wifi_change_outcome(enabled, &radios), Ok(()));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_wifi_switch_lands_in_the_state_asked_for_or_says_why_not;
 
-    #[test]
-    fn turning_on_lifts_a_block_another_program_left_under_an_enabled_flag() {
-        // `rfkill block wlan`, a platform key or a restored boot state: NetworkManager's flag is still
-        // on, so setting it again changes nothing, and the radio stayed off.
-        let nm = FakeNm::on();
-        nm.soft.set(true);
-        assert!(!nm.radio_state().unwrap().wifi_enabled, "read as off");
-        let radios = set_wifi_radio_with(&nm, true).unwrap();
-        assert!(radios.wifi_enabled);
-        assert_eq!(
-            nm.calls.borrow().as_slice(),
-            ["rfkill unblock wlan", "NetworkManager wifi on"]
-        );
-    }
-
-    #[test]
-    fn a_radio_that_stays_off_is_reported_off_with_the_reason() {
-        let nm = FakeNm {
-            may_unblock: false,
-            ..FakeNm::on()
-        };
-        nm.soft.set(true);
-        let radios = set_wifi_radio_with(&nm, true).unwrap();
-        assert!(!radios.wifi_enabled, "the read-back, not the request");
-        assert_eq!(
-            wifi_change_outcome(true, &radios),
-            Err("Wi-Fi stayed off".into())
-        );
-
-        let nm = FakeNm::on();
-        set_wifi_radio_with(&nm, false).unwrap();
-        nm.hard.set(true);
-        let radios = set_wifi_radio_with(&nm, true).unwrap();
-        assert!(!radios.wifi_enabled && radios.wifi_hardware_blocked);
-        assert_eq!(
-            wifi_change_outcome(true, &radios),
-            Err("Wi-Fi is switched off with the hardware switch".into())
-        );
-        nm.hard.set(false);
-        let radios = set_wifi_radio_with(&nm, true).unwrap();
-        assert!(radios.wifi_enabled && !radios.wifi_hardware_blocked);
-    }
-
-    #[test]
-    fn a_network_with_a_saved_wifi_profile_is_known() {
-        let network = |ssid: &str, connected: bool| WifiNetworkInfo {
-            ssid: ssid.into(),
-            signal: 3,
-            secure: true,
-            security: WifiSecurity::Wpa2,
-            connected,
-            known: false,
-        };
-        let mut networks = [
-            network("Home", true),
-            network("Cafe", false),
-            network("Office", false),
-        ];
-        let profile = |name: &str, kind: &str| {
-            let mut settings = Settings::default();
-            settings.set("connection", "id", name);
-            settings.set("connection", "type", kind);
-            settings.set("802-11-wireless", "ssid", name.as_bytes().to_vec());
-            Profile {
-                path: String::new(),
-                settings,
-                filename: String::new(),
+        phase off_on_off_on_each_lands_in_the_state_asked_for;
+        {
+            let nm = FakeNm::on();
+            for enabled in [false, true, false, true] {
+                let radios = set_wifi_radio_with(&nm, enabled).unwrap();
+                assert_eq!(radios.wifi_enabled, enabled, "after asking for {enabled}");
+                assert_eq!(wifi_change_outcome(enabled, &radios), Ok(()));
             }
-        };
-        mark_known(
-            &mut networks,
-            &[
-                profile("Office", "802-11-wireless"),
-                profile("Cafe", "802-3-ethernet"),
-            ],
-        );
-        let known: Vec<_> = networks
-            .iter()
-            .map(|n| (n.ssid.as_str(), n.known))
-            .collect();
-        assert_eq!(known, [("Home", true), ("Cafe", false), ("Office", true)]);
-    }
+        }
 
-    #[test]
-    fn without_a_kill_switch_networkmanagers_flag_is_the_state() {
-        let nm = RadioState {
-            wifi_available: true,
-            wifi_enabled: true,
-            ..RadioState::default()
-        };
-        assert_eq!(with_kill_switches(nm.clone(), RfkillState::default()), nm);
+        phase turning_on_lifts_a_block_another_program_left_under_an_enabled_flag;
+        {
+            // `rfkill block wlan`, a platform key or a restored boot state: NetworkManager's flag is still
+            // on, so setting it again changes nothing, and the radio stayed off.
+            let nm = FakeNm::on();
+            nm.soft.set(true);
+            assert!(!nm.radio_state().unwrap().wifi_enabled, "read as off");
+            let radios = set_wifi_radio_with(&nm, true).unwrap();
+            assert!(radios.wifi_enabled);
+            assert_eq!(
+                nm.calls.borrow().as_slice(),
+                ["rfkill unblock wlan", "NetworkManager wifi on"]
+            );
+        }
+
+        phase a_radio_that_stays_off_is_reported_off_with_the_reason;
+        {
+            let nm = FakeNm {
+                may_unblock: false,
+                ..FakeNm::on()
+            };
+            nm.soft.set(true);
+            let radios = set_wifi_radio_with(&nm, true).unwrap();
+            assert!(!radios.wifi_enabled, "the read-back, not the request");
+            assert_eq!(
+                wifi_change_outcome(true, &radios),
+                Err("Wi-Fi stayed off".into())
+            );
+
+            let nm = FakeNm::on();
+            set_wifi_radio_with(&nm, false).unwrap();
+            nm.hard.set(true);
+            let radios = set_wifi_radio_with(&nm, true).unwrap();
+            assert!(!radios.wifi_enabled && radios.wifi_hardware_blocked);
+            assert_eq!(
+                wifi_change_outcome(true, &radios),
+                Err("Wi-Fi is switched off with the hardware switch".into())
+            );
+            nm.hard.set(false);
+            let radios = set_wifi_radio_with(&nm, true).unwrap();
+            assert!(radios.wifi_enabled && !radios.wifi_hardware_blocked);
+        }
+
+        phase a_network_with_a_saved_wifi_profile_is_known;
+        {
+            let network = |ssid: &str, connected: bool| WifiNetworkInfo {
+                ssid: ssid.into(),
+                signal: 3,
+                secure: true,
+                security: WifiSecurity::Wpa2,
+                connected,
+                known: false,
+            };
+            let mut networks = [
+                network("Home", true),
+                network("Cafe", false),
+                network("Office", false),
+            ];
+            let profile = |name: &str, kind: &str| {
+                let mut settings = Settings::default();
+                settings.set("connection", "id", name);
+                settings.set("connection", "type", kind);
+                settings.set("802-11-wireless", "ssid", name.as_bytes().to_vec());
+                Profile {
+                    path: String::new(),
+                    settings,
+                    filename: String::new(),
+                }
+            };
+            mark_known(
+                &mut networks,
+                &[
+                    profile("Office", "802-11-wireless"),
+                    profile("Cafe", "802-3-ethernet"),
+                ],
+            );
+            let known: Vec<_> = networks
+                .iter()
+                .map(|n| (n.ssid.as_str(), n.known))
+                .collect();
+            assert_eq!(known, [("Home", true), ("Cafe", false), ("Office", true)]);
+        }
+
+        phase without_a_kill_switch_networkmanagers_flag_is_the_state;
+        {
+            let nm = RadioState {
+                wifi_available: true,
+                wifi_enabled: true,
+                ..RadioState::default()
+            };
+            assert_eq!(with_kill_switches(nm.clone(), RfkillState::default()), nm);
+        }
     }
 }
 

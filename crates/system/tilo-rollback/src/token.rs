@@ -248,6 +248,9 @@ impl RollbackToken {
 mod tests {
     use super::*;
 
+    /// One way of rewriting a token in the header.
+    type Rewrite = fn(&mut RollbackToken);
+
     fn sample() -> RollbackToken {
         RollbackToken::new(
             2,
@@ -317,6 +320,57 @@ mod tests {
             let mut t = sample();
             t.version = TOKEN_VERSION + 1;
             assert!(t.validate().is_err());
+        }
+        {
+            // The header is plaintext. Each remaining way a rewritten token can be unusable is
+            // refused by what is wrong with it, by `validate` and by `from_json` (what a token
+            // listing reads through) alike.
+            let refusals: [(&str, Rewrite, &str); 7] = [
+                (
+                    "another token type",
+                    |t| t.token_type = "systemd-tpm2".into(),
+                    "is not tilo-rollback",
+                ),
+                (
+                    "no authorized PCRs",
+                    |t| t.pcrs.clear(),
+                    "must include authorized and platform PCRs",
+                ),
+                (
+                    "no platform PCRs",
+                    |t| t.platform_pcrs.clear(),
+                    "must include authorized and platform PCRs",
+                ),
+                (
+                    "a PCR in both selections",
+                    |t| t.platform_pcrs.push(11),
+                    "must not overlap",
+                ),
+                (
+                    "a base below the numbering",
+                    |t| t.nv_base = -8,
+                    "not a usable NV counter value",
+                ),
+                (
+                    "no keyslot",
+                    |t| t.keyslots.clear(),
+                    "token has no keyslot binding",
+                ),
+                (
+                    "a keyslot that is no number",
+                    |t| t.keyslots = vec!["two".into()],
+                    "is not a number",
+                ),
+            ];
+            for (case, rewrite, expected) in refusals {
+                let mut t = sample();
+                rewrite(&mut t);
+                let e = format!("{:#}", t.validate().unwrap_err());
+                assert!(e.contains(expected), "{case}: {e}");
+                let json = t.to_json().unwrap();
+                let e = format!("{:#}", RollbackToken::from_json(&json).unwrap_err());
+                assert!(e.contains(expected), "{case}, read back from JSON: {e}");
+            }
         }
     }
 }

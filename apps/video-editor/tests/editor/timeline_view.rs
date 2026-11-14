@@ -147,6 +147,23 @@ fn clip_of(project: &Project, name: &str) -> uuid::Uuid {
     project.clips.iter().find(|c| c.media == media).unwrap().id
 }
 
+/// Shift+wheel by `dy` until the view has stopped moving, or 400 times, and where the view
+/// then starts. The wheels go ten at a time and the view is read after each ten: a notch
+/// moves a slice of the visible span, so ten wheels that leave the view where it was have all
+/// met an end of the content, and no wheel is spent on a view that already stopped.
+fn pan_until_the_view_stops(app: &mut HeadlessApp<VideoEditor>, dy: f64) -> String {
+    let mut at = view_start(app);
+    for _ in 0..40 {
+        wheel(app, &["shift"], 0.0, dy, 10);
+        let now = view_start(app);
+        if now == at {
+            break;
+        }
+        at = now;
+    }
+    at
+}
+
 #[test]
 fn shift_wheel_pans_a_zoomed_timeline_and_stops_at_both_ends() {
     let mut app = editor();
@@ -156,12 +173,14 @@ fn shift_wheel_pans_a_zoomed_timeline_and_stops_at_both_ends() {
     wheel(&mut app, &["shift"], 0.0, -3.0, 1);
     let panned = view_start(&mut app);
     assert_ne!(panned, "00:00:00", "shift+wheel panned right");
-    wheel(&mut app, &["shift"], 0.0, -3.0, 400);
-    let end = view_start(&mut app);
+    let end = pan_until_the_view_stops(&mut app, -3.0);
+    assert_ne!(end, panned, "and went on panning to the content's end");
     wheel(&mut app, &["shift"], 0.0, -3.0, 5);
     assert_eq!(view_start(&mut app), end, "it stops at the content's end");
-    wheel(&mut app, &["shift"], 0.0, 3.0, 400);
-    assert_eq!(view_start(&mut app), "00:00:00", "and at its start");
+    let start = pan_until_the_view_stops(&mut app, 3.0);
+    assert_eq!(start, "00:00:00", "and at its start");
+    wheel(&mut app, &["shift"], 0.0, 3.0, 5);
+    assert_eq!(view_start(&mut app), "00:00:00", "where it stays");
 }
 
 #[test]

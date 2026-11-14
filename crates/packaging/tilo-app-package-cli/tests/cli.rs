@@ -63,13 +63,14 @@ ext  = []
     )
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn cli_pack_inspect_unpack_and_verify_round_trip() {
-    // phase: cli_pack_then_verify
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn cli_pack_inspect_unpack_and_verify_round_trip;
+
+    phase cli_pack_then_verify;
     {
         let workdir = tempfile::tempdir().unwrap();
         let payload_dir = workdir.path().join("payload");
@@ -100,7 +101,8 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
             "verify output: {stdout}"
         );
     }
-    // phase: cli_pack_rejects_oversized_app_atomically
+
+    phase cli_pack_rejects_oversized_app_atomically;
     {
         let workdir = tempfile::tempdir().unwrap();
         let payload_dir = workdir.path().join("payload");
@@ -135,7 +137,8 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
             "a rejected build must not replace the prior release artifact"
         );
     }
-    // phase: cli_inspect_lists_payload
+
+    phase cli_inspect_lists_payload;
     {
         let workdir = tempfile::tempdir().unwrap();
         let payload_dir = workdir.path().join("payload");
@@ -166,7 +169,8 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
         assert!(stdout.contains("package-overhead:"), "inspect: {stdout}");
         assert!(stdout.contains("bin/hello"), "inspect: {stdout}");
     }
-    // phase: cli_unpack_round_trips
+
+    phase cli_unpack_round_trips;
     {
         let workdir = tempfile::tempdir().unwrap();
         let payload_dir = workdir.path().join("payload");
@@ -695,111 +699,115 @@ fn decoded(
     (package, blobs)
 }
 
-#[test]
-fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_trust() {
-    use tilo_app_package::trust::{AttestorScope, RevocationList, TrustedAttestor};
-    let fixture = AttestFixture::new();
-    let destination = fixture.dir.path().join("attested.tapp");
-    let before = std::fs::read(&fixture.original).unwrap();
-    fixture.attest_ok(&fixture.original, &destination, "prefix:so.tilo.example");
-    let (original, original_blobs) = decoded(&fixture.original);
-    let (attested, attested_blobs) = decoded(&destination);
-    assert_eq!(std::fs::read(&fixture.original).unwrap(), before);
-    assert_eq!(original_blobs, attested_blobs);
-    assert_eq!(
-        original.meta.collection_bytes,
-        attested.meta.collection_bytes
-    );
-    assert_eq!(
-        original.meta.root.payload_root_hash,
-        attested.meta.root.payload_root_hash
-    );
-    assert_eq!(
-        original.meta.root.publisher_identity,
-        attested.meta.root.publisher_identity
-    );
-    assert_ne!(original.meta.id, attested.meta.id);
-    assert!(attested.is_complete());
-    let trust = TrustedAttestor {
-        id: "owned-fixture".into(),
-        pubkey_hex: fixture.attestor_public,
-        scope: AttestorScope::parse("prefix:so.tilo.example").unwrap(),
-    };
-    assert!(matches!(
-        tilo_app_package::verify_with_trust(
-            &attested.meta,
-            &[],
-            std::slice::from_ref(&trust),
-            &RevocationList::default()
-        ),
-        tilo_app_package::Verification::AttestedBy { .. }
-    ));
-    let revoked = tilo_app_package::trust::RevocationList {
-        revoked: vec![tilo_app_package::trust::RevokedKey {
-            pubkey_hex: hex::encode(attested.meta.root.publisher_identity),
-            reason: "withdrawn publisher".into(),
-        }],
-    };
-    assert!(matches!(
-        tilo_app_package::verify_with_trust(
-            &attested.meta,
-            &[],
-            std::slice::from_ref(&trust),
-            &revoked
-        ),
-        tilo_app_package::Verification::Revoked { .. }
-    ));
-    let mut unknown = trust.clone();
-    unknown.pubkey_hex = hex::encode(original.meta.root.publisher_identity);
-    assert!(matches!(
-        tilo_app_package::verify_with_trust(
-            &attested.meta,
-            &[],
-            &[unknown],
-            &RevocationList::default()
-        ),
-        tilo_app_package::Verification::UntrustedPublisher { .. }
-    ));
-    let foreign = TrustedAttestor {
-        scope: AttestorScope::parse("prefix:foreign.").unwrap(),
-        ..trust
-    };
-    assert!(matches!(
-        tilo_app_package::verify_with_trust(
-            &attested.meta,
-            &[],
-            &[foreign],
-            &RevocationList::default()
-        ),
-        tilo_app_package::Verification::UntrustedPublisher { .. }
-    ));
-}
+tilo_test_env::scenario! {
+    fn cli_attest_binds_a_scoped_attestation_and_refuses_what_it_cannot_vouch_for;
 
-#[test]
-fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
-    let mut fixture = AttestFixture::new();
-    let destination = fixture.dir.path().join("attested.tapp");
-    assert!(fixture.refuses(&fixture.original, &destination, "prefix:foreign."));
-    assert!(!destination.exists());
-    let publisher = fixture.publisher.clone();
-    fixture.publisher = fixture.attestor.clone();
-    assert!(fixture.refuses(&fixture.original, &destination, "all"));
-    assert!(!destination.exists());
-    fixture.publisher = publisher;
-    let thin = fixture.dir.path().join("thin.tapp");
-    run(&[
-        "thin",
-        fixture.original.to_str().unwrap(),
-        "--output",
-        thin.to_str().unwrap(),
-    ]);
-    assert!(fixture.refuses(&thin, &destination, "all"));
-    assert!(!destination.exists());
-    std::fs::write(&destination, b"preserved").unwrap();
-    assert!(fixture.refuses(&fixture.original, &destination, "all"));
-    assert_eq!(std::fs::read(&destination).unwrap(), b"preserved");
-    assert!(fixture.refuses(&fixture.original, &fixture.original, "all"));
-    assert!(decoded(&fixture.original).0.is_complete());
+    phase cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_trust;
+    {
+        use tilo_app_package::trust::{AttestorScope, RevocationList, TrustedAttestor};
+        let fixture = AttestFixture::new();
+        let destination = fixture.dir.path().join("attested.tapp");
+        let before = std::fs::read(&fixture.original).unwrap();
+        fixture.attest_ok(&fixture.original, &destination, "prefix:so.tilo.example");
+        let (original, original_blobs) = decoded(&fixture.original);
+        let (attested, attested_blobs) = decoded(&destination);
+        assert_eq!(std::fs::read(&fixture.original).unwrap(), before);
+        assert_eq!(original_blobs, attested_blobs);
+        assert_eq!(
+            original.meta.collection_bytes,
+            attested.meta.collection_bytes
+        );
+        assert_eq!(
+            original.meta.root.payload_root_hash,
+            attested.meta.root.payload_root_hash
+        );
+        assert_eq!(
+            original.meta.root.publisher_identity,
+            attested.meta.root.publisher_identity
+        );
+        assert_ne!(original.meta.id, attested.meta.id);
+        assert!(attested.is_complete());
+        let trust = TrustedAttestor {
+            id: "owned-fixture".into(),
+            pubkey_hex: fixture.attestor_public,
+            scope: AttestorScope::parse("prefix:so.tilo.example").unwrap(),
+        };
+        assert!(matches!(
+            tilo_app_package::verify_with_trust(
+                &attested.meta,
+                &[],
+                std::slice::from_ref(&trust),
+                &RevocationList::default()
+            ),
+            tilo_app_package::Verification::AttestedBy { .. }
+        ));
+        let revoked = tilo_app_package::trust::RevocationList {
+            revoked: vec![tilo_app_package::trust::RevokedKey {
+                pubkey_hex: hex::encode(attested.meta.root.publisher_identity),
+                reason: "withdrawn publisher".into(),
+            }],
+        };
+        assert!(matches!(
+            tilo_app_package::verify_with_trust(
+                &attested.meta,
+                &[],
+                std::slice::from_ref(&trust),
+                &revoked
+            ),
+            tilo_app_package::Verification::Revoked { .. }
+        ));
+        let mut unknown = trust.clone();
+        unknown.pubkey_hex = hex::encode(original.meta.root.publisher_identity);
+        assert!(matches!(
+            tilo_app_package::verify_with_trust(
+                &attested.meta,
+                &[],
+                &[unknown],
+                &RevocationList::default()
+            ),
+            tilo_app_package::Verification::UntrustedPublisher { .. }
+        ));
+        let foreign = TrustedAttestor {
+            scope: AttestorScope::parse("prefix:foreign.").unwrap(),
+            ..trust
+        };
+        assert!(matches!(
+            tilo_app_package::verify_with_trust(
+                &attested.meta,
+                &[],
+                &[foreign],
+                &RevocationList::default()
+            ),
+            tilo_app_package::Verification::UntrustedPublisher { .. }
+        ));
+    }
+
+    phase cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output;
+    {
+        let mut fixture = AttestFixture::new();
+        let destination = fixture.dir.path().join("attested.tapp");
+        assert!(fixture.refuses(&fixture.original, &destination, "prefix:foreign."));
+        assert!(!destination.exists());
+        let publisher = fixture.publisher.clone();
+        fixture.publisher = fixture.attestor.clone();
+        assert!(fixture.refuses(&fixture.original, &destination, "all"));
+        assert!(!destination.exists());
+        fixture.publisher = publisher;
+        let thin = fixture.dir.path().join("thin.tapp");
+        run(&[
+            "thin",
+            fixture.original.to_str().unwrap(),
+            "--output",
+            thin.to_str().unwrap(),
+        ]);
+        assert!(fixture.refuses(&thin, &destination, "all"));
+        assert!(!destination.exists());
+        std::fs::write(&destination, b"preserved").unwrap();
+        assert!(fixture.refuses(&fixture.original, &destination, "all"));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"preserved");
+        assert!(fixture.refuses(&fixture.original, &fixture.original, "all"));
+        assert!(decoded(&fixture.original).0.is_complete());
+    }
 }
 
 #[test]

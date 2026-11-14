@@ -474,223 +474,228 @@ mod tests {
         (mnt, etc, var)
     }
 
-    #[test]
-    fn the_login_account_is_the_one_regular_user() {
-        let (_mnt, etc, _var) = disk();
-        let account = login_account(&etc).unwrap();
-        assert_eq!(account.name, "alice");
-        assert_eq!(account.home, "/var/home/alice");
+    tilo_test_env::scenario! {
+        /// Customizing an installed root: its login account, owner keys, home files and labels.
+        fn root_customization_stays_inside_the_image_it_was_given;
 
-        let mut passwd = fs::read_to_string(etc.join("passwd")).unwrap();
-        passwd.push_str("bob:x:59999:59999::/var/home/bob:/bin/bash\n");
-        fs::write(etc.join("passwd"), passwd).unwrap();
-        let error = login_account(&etc).unwrap_err();
-        assert!(error.to_string().contains("2 login accounts"), "{error}");
-    }
-
-    #[test]
-    fn owner_keys_become_key_only_login_for_the_disk_account() {
-        let (_mnt, etc, var) = disk();
-        let staged = tempfile::tempdir().unwrap();
-        fs::create_dir_all(staged.path().join("etc/tilo")).unwrap();
-        fs::write(
-            staged.path().join(BRINGUP_SSH_KEY),
-            format!("{KEY_A}\n{KEY_B}\n"),
-        )
-        .unwrap();
-        fs::create_dir_all(etc.join("tilo")).unwrap();
-        fs::copy(
-            staged.path().join(BRINGUP_SSH_KEY),
-            etc.join("tilo/bringup-ssh.pub"),
-        )
-        .unwrap();
-        finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(etc.join("ssh/authorized_keys/alice")).unwrap(),
-            format!("{KEY_A}\n{KEY_B}\n")
-        );
-        let config =
-            fs::read_to_string(etc.join("ssh/sshd_config.d/00-tilo-bringup.conf")).unwrap();
-        for directive in [
-            "AllowUsers alice",
-            "PasswordAuthentication no",
-            "AuthorizedKeysFile /etc/ssh/authorized_keys/%u",
-        ] {
-            assert!(config.contains(directive), "{config}");
-        }
-        assert_eq!(
-            fs::read_link(etc.join("systemd/system/multi-user.target.wants/sshd.service")).unwrap(),
-            Path::new(SSHD_UNIT)
-        );
-        assert!(
-            !etc.join("tilo/bringup-ssh.pub").exists(),
-            "the request is consumed"
-        );
-
-        // Customizing again replaces the keys instead of failing.
-        fs::write(etc.join("tilo/bringup-ssh.pub"), format!("{KEY_B}\n")).unwrap();
-        finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
-        assert_eq!(
-            fs::read_to_string(etc.join("ssh/authorized_keys/alice")).unwrap(),
-            format!("{KEY_B}\n")
-        );
-    }
-
-    #[test]
-    fn owner_keys_need_an_openssh_server_and_no_planted_links() {
-        let (_mnt, etc, var) = disk();
-        fs::create_dir_all(etc.join("tilo")).unwrap();
-        fs::write(etc.join("tilo/bringup-ssh.pub"), format!("{KEY_A}\n")).unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), etc.join("ssh/authorized_keys")).unwrap();
-        let staged = tempfile::tempdir().unwrap();
-        let error = finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap_err();
-        assert!(error.to_string().contains("not a directory"), "{error}");
-        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
-
-        fs::remove_file(etc.join("ssh/authorized_keys")).unwrap();
-        fs::remove_file(etc.join("ssh/sshd_config")).unwrap();
-        let error = finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap_err();
-        assert!(error.to_string().contains("no OpenSSH server"), "{error}");
-    }
-
-    #[test]
-    fn home_files_land_in_the_account_home() {
-        use std::os::unix::fs::MetadataExt;
-        let (_mnt, etc, var) = disk();
-        // The files are handed to the login account: a no-op when the test
-        // runs as that account, and root's to do otherwise.
-        let account = login_account(&etc).unwrap();
-        if account.uid != fs::metadata(&var).unwrap().uid() {
-            tilo_test_env::require_capability!(
-                Chown,
-                tilo_test_env::chown_to(account.uid),
-                "the login account owns its home files"
-            );
-        }
-        let staged = tempfile::tempdir().unwrap();
-        fs::create_dir_all(staged.path().join("account-home")).unwrap();
-        fs::write(staged.path().join("account-home/SETUP.md"), b"# Setup\n").unwrap();
-        finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
-        let placed = var.join("home/alice/SETUP.md");
-        assert_eq!(fs::read(&placed).unwrap(), b"# Setup\n");
+        phase the_login_account_is_the_one_regular_user;
         {
-            use std::os::unix::fs::PermissionsExt;
+            let (_mnt, etc, _var) = disk();
+            let account = login_account(&etc).unwrap();
+            assert_eq!(account.name, "alice");
+            assert_eq!(account.home, "/var/home/alice");
+
+            let mut passwd = fs::read_to_string(etc.join("passwd")).unwrap();
+            passwd.push_str("bob:x:59999:59999::/var/home/bob:/bin/bash\n");
+            fs::write(etc.join("passwd"), passwd).unwrap();
+            let error = login_account(&etc).unwrap_err();
+            assert!(error.to_string().contains("2 login accounts"), "{error}");
+        }
+
+        phase owner_keys_become_key_only_login_for_the_disk_account;
+        {
+            let (_mnt, etc, var) = disk();
+            let staged = tempfile::tempdir().unwrap();
+            fs::create_dir_all(staged.path().join("etc/tilo")).unwrap();
+            fs::write(
+                staged.path().join(BRINGUP_SSH_KEY),
+                format!("{KEY_A}\n{KEY_B}\n"),
+            )
+            .unwrap();
+            fs::create_dir_all(etc.join("tilo")).unwrap();
+            fs::copy(
+                staged.path().join(BRINGUP_SSH_KEY),
+                etc.join("tilo/bringup-ssh.pub"),
+            )
+            .unwrap();
+            finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
+
             assert_eq!(
-                fs::metadata(&placed).unwrap().permissions().mode() & 0o777,
-                0o644
+                fs::read_to_string(etc.join("ssh/authorized_keys/alice")).unwrap(),
+                format!("{KEY_A}\n{KEY_B}\n")
+            );
+            let config =
+                fs::read_to_string(etc.join("ssh/sshd_config.d/00-tilo-bringup.conf")).unwrap();
+            for directive in [
+                "AllowUsers alice",
+                "PasswordAuthentication no",
+                "AuthorizedKeysFile /etc/ssh/authorized_keys/%u",
+            ] {
+                assert!(config.contains(directive), "{config}");
+            }
+            assert_eq!(
+                fs::read_link(etc.join("systemd/system/multi-user.target.wants/sshd.service")).unwrap(),
+                Path::new(SSHD_UNIT)
+            );
+            assert!(
+                !etc.join("tilo/bringup-ssh.pub").exists(),
+                "the request is consumed"
+            );
+
+            // Customizing again replaces the keys instead of failing.
+            fs::write(etc.join("tilo/bringup-ssh.pub"), format!("{KEY_B}\n")).unwrap();
+            finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
+            assert_eq!(
+                fs::read_to_string(etc.join("ssh/authorized_keys/alice")).unwrap(),
+                format!("{KEY_B}\n")
             );
         }
-        assert!(
-            !etc.join("ssh/authorized_keys").exists(),
-            "no keys were asked for"
-        );
-    }
 
-    #[test]
-    fn a_home_outside_var_home_is_refused() {
-        let (_mnt, etc, var) = disk();
-        let account = Account {
-            name: "alice".into(),
-            uid: 1000,
-            gid: 1000,
-            home: "/root/../var/home/alice".into(),
-        };
-        assert!(installed_home(&var, &account).is_err());
-        let account = Account {
-            home: "/home/alice".into(),
-            ..account
-        };
-        assert_eq!(
-            installed_home(&var, &account).unwrap(),
-            var.join("home/alice")
-        );
-        let _ = etc;
-    }
+        phase owner_keys_need_an_openssh_server_and_no_planted_links;
+        {
+            let (_mnt, etc, var) = disk();
+            fs::create_dir_all(etc.join("tilo")).unwrap();
+            fs::write(etc.join("tilo/bringup-ssh.pub"), format!("{KEY_A}\n")).unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), etc.join("ssh/authorized_keys")).unwrap();
+            let staged = tempfile::tempdir().unwrap();
+            let error = finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap_err();
+            assert!(error.to_string().contains("not a directory"), "{error}");
+            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
 
-    #[test]
-    fn account_names_and_home_parent_links_cannot_escape_the_image() {
-        let (_mnt, etc, var) = disk();
-        fs::write(
-            etc.join("passwd"),
-            "../outside:x:1000:1000::/var/home/alice:/bin/bash\n",
-        )
-        .unwrap();
-        let error =
-            login_account(&etc).expect_err("an account name cannot be used as an outside path");
-        assert!(error.to_string().contains("plain SSH user name"), "{error}");
-        fs::write(
-            etc.join("passwd"),
-            "alice:x:1000:1000::/var/home/alice:/bin/bash\n",
-        )
-        .unwrap();
-        fs::remove_dir_all(var.join("home")).unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::create_dir(outside.path().join("alice")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), var.join("home")).unwrap();
-        let staged = tempfile::tempdir().unwrap();
-        fs::create_dir(staged.path().join("account-home")).unwrap();
-        fs::write(
-            staged.path().join("account-home/SETUP.md"),
-            b"private setup",
-        )
-        .unwrap();
-        let error = finish(&etc, &var, staged.path(), Placed::default(), requests())
-            .expect_err("a home parent link cannot escape the image");
-        assert!(
-            error.to_string().contains("not a real directory"),
-            "{error}"
-        );
-        assert!(!outside.path().join("alice/SETUP.md").exists());
-    }
+            fs::remove_file(etc.join("ssh/authorized_keys")).unwrap();
+            fs::remove_file(etc.join("ssh/sshd_config")).unwrap();
+            let error = finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap_err();
+            assert!(error.to_string().contains("no OpenSSH server"), "{error}");
+        }
 
-    #[test]
-    fn labels_follow_each_tree_mounted_at_root() {
-        let (_mnt, etc, var) = disk();
-        let staged = tempfile::tempdir().unwrap();
-        fs::create_dir_all(staged.path().join("etc/NetworkManager/system-connections")).unwrap();
-        fs::write(
-            staged
-                .path()
-                .join("etc/NetworkManager/system-connections/tilo-setup.nmconnection"),
-            "x",
-        )
-        .unwrap();
-        fs::write(staged.path().join("etc/hostname"), "board\n").unwrap();
-        fs::create_dir_all(etc.join("NetworkManager")).unwrap();
-        fs::create_dir_all(etc.join("selinux/targeted/policy")).unwrap();
-        fs::write(etc.join("selinux/targeted/policy/policy.33"), "").unwrap();
-        fs::write(etc.join("selinux/targeted/policy/policy.34"), "").unwrap();
-        let placed = Placed::before_copy(staged.path(), &etc, &var).unwrap();
-        let mut etc_paths = placed.etc.clone();
-        etc_paths.sort();
-        assert_eq!(
-            etc_paths,
-            vec![
-                etc.join("NetworkManager/system-connections"),
-                etc.join("hostname")
-            ],
-            "a new directory is labelled whole, an existing one is not"
-        );
-        let commands = setfiles_commands(&etc, &var, &placed);
-        assert_eq!(commands.len(), 1, "nothing was placed under /var");
-        let args = commands[0]
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        let deploy = etc.parent().unwrap().to_string_lossy().into_owned();
-        assert_eq!(
-            args[..5],
-            [
-                "-F".to_string(),
-                "-c".into(),
-                etc.join("selinux/targeted/policy/policy.34")
-                    .to_string_lossy()
-                    .into_owned(),
-                "-r".into(),
-                deploy
-            ]
-        );
+        phase home_files_land_in_the_account_home;
+        {
+            use std::os::unix::fs::MetadataExt;
+            let (_mnt, etc, var) = disk();
+            // The files are handed to the login account: a no-op when the test
+            // runs as that account, and root's to do otherwise.
+            let account = login_account(&etc).unwrap();
+            if account.uid != fs::metadata(&var).unwrap().uid() {
+                tilo_test_env::require_capability!(
+                    Chown,
+                    tilo_test_env::chown_to(account.uid),
+                    "the login account owns its home files"
+                );
+            }
+            let staged = tempfile::tempdir().unwrap();
+            fs::create_dir_all(staged.path().join("account-home")).unwrap();
+            fs::write(staged.path().join("account-home/SETUP.md"), b"# Setup\n").unwrap();
+            finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
+            let placed = var.join("home/alice/SETUP.md");
+            assert_eq!(fs::read(&placed).unwrap(), b"# Setup\n");
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&placed).unwrap().permissions().mode() & 0o777,
+                    0o644
+                );
+            }
+            assert!(
+                !etc.join("ssh/authorized_keys").exists(),
+                "no keys were asked for"
+            );
+        }
+
+        phase a_home_outside_var_home_is_refused;
+        {
+            let (_mnt, etc, var) = disk();
+            let account = Account {
+                name: "alice".into(),
+                uid: 1000,
+                gid: 1000,
+                home: "/root/../var/home/alice".into(),
+            };
+            assert!(installed_home(&var, &account).is_err());
+            let account = Account {
+                home: "/home/alice".into(),
+                ..account
+            };
+            assert_eq!(
+                installed_home(&var, &account).unwrap(),
+                var.join("home/alice")
+            );
+            let _ = etc;
+        }
+
+        phase account_names_and_home_parent_links_cannot_escape_the_image;
+        {
+            let (_mnt, etc, var) = disk();
+            fs::write(
+                etc.join("passwd"),
+                "../outside:x:1000:1000::/var/home/alice:/bin/bash\n",
+            )
+            .unwrap();
+            let error =
+                login_account(&etc).expect_err("an account name cannot be used as an outside path");
+            assert!(error.to_string().contains("plain SSH user name"), "{error}");
+            fs::write(
+                etc.join("passwd"),
+                "alice:x:1000:1000::/var/home/alice:/bin/bash\n",
+            )
+            .unwrap();
+            fs::remove_dir_all(var.join("home")).unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            fs::create_dir(outside.path().join("alice")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), var.join("home")).unwrap();
+            let staged = tempfile::tempdir().unwrap();
+            fs::create_dir(staged.path().join("account-home")).unwrap();
+            fs::write(
+                staged.path().join("account-home/SETUP.md"),
+                b"private setup",
+            )
+            .unwrap();
+            let error = finish(&etc, &var, staged.path(), Placed::default(), requests())
+                .expect_err("a home parent link cannot escape the image");
+            assert!(
+                error.to_string().contains("not a real directory"),
+                "{error}"
+            );
+            assert!(!outside.path().join("alice/SETUP.md").exists());
+        }
+
+        phase labels_follow_each_tree_mounted_at_root;
+        {
+            let (_mnt, etc, var) = disk();
+            let staged = tempfile::tempdir().unwrap();
+            fs::create_dir_all(staged.path().join("etc/NetworkManager/system-connections")).unwrap();
+            fs::write(
+                staged
+                    .path()
+                    .join("etc/NetworkManager/system-connections/tilo-setup.nmconnection"),
+                "x",
+            )
+            .unwrap();
+            fs::write(staged.path().join("etc/hostname"), "board\n").unwrap();
+            fs::create_dir_all(etc.join("NetworkManager")).unwrap();
+            fs::create_dir_all(etc.join("selinux/targeted/policy")).unwrap();
+            fs::write(etc.join("selinux/targeted/policy/policy.33"), "").unwrap();
+            fs::write(etc.join("selinux/targeted/policy/policy.34"), "").unwrap();
+            let placed = Placed::before_copy(staged.path(), &etc, &var).unwrap();
+            let mut etc_paths = placed.etc.clone();
+            etc_paths.sort();
+            assert_eq!(
+                etc_paths,
+                vec![
+                    etc.join("NetworkManager/system-connections"),
+                    etc.join("hostname")
+                ],
+                "a new directory is labelled whole, an existing one is not"
+            );
+            let commands = setfiles_commands(&etc, &var, &placed);
+            assert_eq!(commands.len(), 1, "nothing was placed under /var");
+            let args = commands[0]
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let deploy = etc.parent().unwrap().to_string_lossy().into_owned();
+            assert_eq!(
+                args[..5],
+                [
+                    "-F".to_string(),
+                    "-c".into(),
+                    etc.join("selinux/targeted/policy/policy.34")
+                        .to_string_lossy()
+                        .into_owned(),
+                    "-r".into(),
+                    deploy
+                ]
+            );
+        }
     }
 }

@@ -1013,178 +1013,182 @@ mod tests {
         }
     }
 
-    #[test]
-    fn alongside_discovery_accepts_only_safe_unambiguous_partitions() {
-        {
-            let fixture = format!(
-                r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"TILO-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}},{{"name":"/dev/nvme0n1p5","size":1073741824,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000005"}}]}}]}}"#
-            );
-            let disks = parse_lsblk(&fixture);
-            assert_eq!(disks.len(), 1);
-            assert!(disks[0].identity_ready());
-            assert_eq!(disks[0].major_minor, "259:0");
-            assert_eq!(disks[0].wwn, "eui.0011223344556677");
-            assert_eq!(disks[0].serial, "TILO-NVME");
-            assert!(disks[0].can_install_alongside());
-            assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/nvme0n1p3");
-            assert_eq!(
-                disks[0].alongside_root().unwrap().part_uuid,
-                "00000000-0000-0000-0000-000000000003"
-            );
-            assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/nvme0n1p4");
-        }
-        {
-            let mut p = DiskPartition {
-                name: "/dev/sda1".into(),
-                start_bytes: 1_048_576,
-                size_bytes: MIN_ALONGSIDE_ESP_BYTES - 1,
-                part_uuid: "00000000-0000-0000-0000-000000000001".into(),
-                filesystem: "vfat".into(),
-                label: "EFI".into(),
-                mountpoint: String::new(),
-                part_type: EFI_SYSTEM_GUID.into(),
-            };
-            assert!(p.is_efi());
-            assert!(!p.is_alongside_efi_candidate());
+    tilo_test_env::scenario! {
+        fn alongside_installs_accept_only_safe_partitions_and_explain_refusals;
 
-            p.size_bytes = MIN_ALONGSIDE_ESP_BYTES;
-            assert!(p.is_alongside_efi_candidate());
-            p.mountpoint = "/boot/efi".into();
-            assert!(!p.is_alongside_efi_candidate());
-        }
+        phase alongside_discovery_accepts_only_safe_unambiguous_partitions;
         {
-            let fixture = format!(
-                r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"serial":"TILO-SATA","maj:min":"8:0","children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/sda4","size":1073741824,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
-            );
-            let disks = parse_lsblk(&fixture);
-            assert!(disks[0].can_install_alongside());
-            assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/sda3");
-            assert_eq!(disks[0].alongside_boot().unwrap().name, "/dev/sda4");
-            assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/sda1");
-            assert_eq!(disks[0].partitions[1].filesystem, "ext4");
-        }
-        {
-            let p = DiskPartition {
-                name: "/dev/sda3".into(),
-                start_bytes: 1_048_576,
-                size_bytes: MIN_ALONGSIDE_BYTES,
-                part_uuid: "00000000-0000-0000-0000-000000000003".into(),
-                filesystem: "ext4".into(),
-                label: String::new(),
-                mountpoint: String::new(),
-                part_type: LINUX_FILESYSTEM_GUID.into(),
-            };
-            assert!(!p.is_alongside_candidate());
-        }
-        {
-            let fixture = format!(
-                r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI A","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI B","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
-            );
-            let disks = parse_lsblk(&fixture);
-            assert_eq!(disks.len(), 1);
-            assert!(disks[0].alongside_root().is_none());
-            assert!(disks[0].efi_partition().is_none());
-            assert!(!disks[0].can_install_alongside());
-        }
-        {
-            let mut root = DiskPartition {
-                name: "/dev/vda3".into(),
-                start_bytes: 1_048_576,
-                size_bytes: MIN_ALONGSIDE_BYTES,
-                part_uuid: String::new(),
-                filesystem: String::new(),
-                label: String::new(),
-                mountpoint: String::new(),
-                part_type: LINUX_FILESYSTEM_GUID.into(),
-            };
-            assert!(!root.is_alongside_candidate());
-            root.part_uuid = "00000000-0000-0000-0000-000000000003".into();
-            assert!(root.is_alongside_candidate());
-            root.part_type = TILO_ROOT_GUID.into();
-            assert!(root.is_alongside_candidate());
-        }
-    }
-
-    #[test]
-    fn alongside_hints_explain_efi_failures_and_windows_preparation() {
-        {
-            let mut disk = Disk {
-                name: "/dev/sda".into(),
-                size: "100 GiB".into(),
-                model: String::new(),
-                size_bytes: 100 * 1024 * 1024 * 1024,
-                partition_table: "gpt".into(),
-                partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
-                logical_sector_size: 512,
-                major_minor: "8:0".into(),
-                wwn: String::new(),
-                serial: "efi-diagnostic".into(),
-                removable: false,
-                read_only: false,
-                is_system: false,
-                live_system_nodes: Vec::new(),
-                internal_plan: None,
-                partitions: vec![DiskPartition {
+            {
+                let fixture = format!(
+                    r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"TILO-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}},{{"name":"/dev/nvme0n1p5","size":1073741824,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000005"}}]}}]}}"#
+                );
+                let disks = parse_lsblk(&fixture);
+                assert_eq!(disks.len(), 1);
+                assert!(disks[0].identity_ready());
+                assert_eq!(disks[0].major_minor, "259:0");
+                assert_eq!(disks[0].wwn, "eui.0011223344556677");
+                assert_eq!(disks[0].serial, "TILO-NVME");
+                assert!(disks[0].can_install_alongside());
+                assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/nvme0n1p3");
+                assert_eq!(
+                    disks[0].alongside_root().unwrap().part_uuid,
+                    "00000000-0000-0000-0000-000000000003"
+                );
+                assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/nvme0n1p4");
+            }
+            {
+                let mut p = DiskPartition {
                     name: "/dev/sda1".into(),
-                    start_bytes: 1024 * 1024,
+                    start_bytes: 1_048_576,
                     size_bytes: MIN_ALONGSIDE_ESP_BYTES - 1,
                     part_uuid: "00000000-0000-0000-0000-000000000001".into(),
                     filesystem: "vfat".into(),
                     label: "EFI".into(),
                     mountpoint: String::new(),
                     part_type: EFI_SYSTEM_GUID.into(),
-                }],
-            };
-            assert!(disk.prepared_efi_issue().unwrap().contains("too small"));
+                };
+                assert!(p.is_efi());
+                assert!(!p.is_alongside_efi_candidate());
 
-            disk.partitions[0].size_bytes = MIN_ALONGSIDE_ESP_BYTES;
-            disk.partitions[0].mountpoint = "/mnt/efi".into();
-            assert!(disk.prepared_efi_issue().unwrap().contains("mounted"));
-            disk.partitions[0].mountpoint.clear();
-            disk.partitions[0].filesystem = "ext4".into();
-            assert!(disk.prepared_efi_issue().unwrap().contains("not FAT32"));
-            disk.partitions[0].filesystem = "vfat".into();
-            disk.partitions[0].part_uuid.clear();
-            assert!(
-                disk.prepared_efi_issue()
-                    .unwrap()
-                    .contains("no stable GPT partition identity")
-            );
-        }
-        {
-            let mut disk = Disk {
-                name: "/dev/sda".into(),
-                size: "100 GiB".into(),
-                model: String::new(),
-                size_bytes: 100 * 1024 * 1024 * 1024,
-                partition_table: "gpt".into(),
-                partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
-                logical_sector_size: 512,
-                major_minor: "8:0".into(),
-                wwn: String::new(),
-                serial: "windows-hint".into(),
-                removable: false,
-                read_only: false,
-                is_system: false,
-                live_system_nodes: Vec::new(),
-                internal_plan: None,
-                partitions: vec![DiskPartition {
-                    name: "/dev/sda1".into(),
-                    start_bytes: 1024 * 1024,
-                    size_bytes: 50 * 1024 * 1024 * 1024,
-                    part_uuid: "00000000-0000-0000-0000-000000000001".into(),
-                    filesystem: "ntfs3".into(),
+                p.size_bytes = MIN_ALONGSIDE_ESP_BYTES;
+                assert!(p.is_alongside_efi_candidate());
+                p.mountpoint = "/boot/efi".into();
+                assert!(!p.is_alongside_efi_candidate());
+            }
+            {
+                let fixture = format!(
+                    r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"serial":"TILO-SATA","maj:min":"8:0","children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/sda4","size":1073741824,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
+                );
+                let disks = parse_lsblk(&fixture);
+                assert!(disks[0].can_install_alongside());
+                assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/sda3");
+                assert_eq!(disks[0].alongside_boot().unwrap().name, "/dev/sda4");
+                assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/sda1");
+                assert_eq!(disks[0].partitions[1].filesystem, "ext4");
+            }
+            {
+                let p = DiskPartition {
+                    name: "/dev/sda3".into(),
+                    start_bytes: 1_048_576,
+                    size_bytes: MIN_ALONGSIDE_BYTES,
+                    part_uuid: "00000000-0000-0000-0000-000000000003".into(),
+                    filesystem: "ext4".into(),
                     label: String::new(),
                     mountpoint: String::new(),
-                    part_type: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".into(),
-                }],
-            };
-            assert!(disk.has_windows_storage());
+                    part_type: LINUX_FILESYSTEM_GUID.into(),
+                };
+                assert!(!p.is_alongside_candidate());
+            }
+            {
+                let fixture = format!(
+                    r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI A","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI B","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
+                );
+                let disks = parse_lsblk(&fixture);
+                assert_eq!(disks.len(), 1);
+                assert!(disks[0].alongside_root().is_none());
+                assert!(disks[0].efi_partition().is_none());
+                assert!(!disks[0].can_install_alongside());
+            }
+            {
+                let mut root = DiskPartition {
+                    name: "/dev/vda3".into(),
+                    start_bytes: 1_048_576,
+                    size_bytes: MIN_ALONGSIDE_BYTES,
+                    part_uuid: String::new(),
+                    filesystem: String::new(),
+                    label: String::new(),
+                    mountpoint: String::new(),
+                    part_type: LINUX_FILESYSTEM_GUID.into(),
+                };
+                assert!(!root.is_alongside_candidate());
+                root.part_uuid = "00000000-0000-0000-0000-000000000003".into();
+                assert!(root.is_alongside_candidate());
+                root.part_type = TILO_ROOT_GUID.into();
+                assert!(root.is_alongside_candidate());
+            }
+        }
 
-            disk.partitions[0].filesystem = "BitLocker".into();
-            assert!(disk.has_windows_storage());
-            disk.partitions[0].filesystem = "ext4".into();
-            assert!(!disk.has_windows_storage());
+        phase alongside_hints_explain_efi_failures_and_windows_preparation;
+        {
+            {
+                let mut disk = Disk {
+                    name: "/dev/sda".into(),
+                    size: "100 GiB".into(),
+                    model: String::new(),
+                    size_bytes: 100 * 1024 * 1024 * 1024,
+                    partition_table: "gpt".into(),
+                    partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+                    logical_sector_size: 512,
+                    major_minor: "8:0".into(),
+                    wwn: String::new(),
+                    serial: "efi-diagnostic".into(),
+                    removable: false,
+                    read_only: false,
+                    is_system: false,
+                    live_system_nodes: Vec::new(),
+                    internal_plan: None,
+                    partitions: vec![DiskPartition {
+                        name: "/dev/sda1".into(),
+                        start_bytes: 1024 * 1024,
+                        size_bytes: MIN_ALONGSIDE_ESP_BYTES - 1,
+                        part_uuid: "00000000-0000-0000-0000-000000000001".into(),
+                        filesystem: "vfat".into(),
+                        label: "EFI".into(),
+                        mountpoint: String::new(),
+                        part_type: EFI_SYSTEM_GUID.into(),
+                    }],
+                };
+                assert!(disk.prepared_efi_issue().unwrap().contains("too small"));
+
+                disk.partitions[0].size_bytes = MIN_ALONGSIDE_ESP_BYTES;
+                disk.partitions[0].mountpoint = "/mnt/efi".into();
+                assert!(disk.prepared_efi_issue().unwrap().contains("mounted"));
+                disk.partitions[0].mountpoint.clear();
+                disk.partitions[0].filesystem = "ext4".into();
+                assert!(disk.prepared_efi_issue().unwrap().contains("not FAT32"));
+                disk.partitions[0].filesystem = "vfat".into();
+                disk.partitions[0].part_uuid.clear();
+                assert!(
+                    disk.prepared_efi_issue()
+                        .unwrap()
+                        .contains("no stable GPT partition identity")
+                );
+            }
+            {
+                let mut disk = Disk {
+                    name: "/dev/sda".into(),
+                    size: "100 GiB".into(),
+                    model: String::new(),
+                    size_bytes: 100 * 1024 * 1024 * 1024,
+                    partition_table: "gpt".into(),
+                    partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+                    logical_sector_size: 512,
+                    major_minor: "8:0".into(),
+                    wwn: String::new(),
+                    serial: "windows-hint".into(),
+                    removable: false,
+                    read_only: false,
+                    is_system: false,
+                    live_system_nodes: Vec::new(),
+                    internal_plan: None,
+                    partitions: vec![DiskPartition {
+                        name: "/dev/sda1".into(),
+                        start_bytes: 1024 * 1024,
+                        size_bytes: 50 * 1024 * 1024 * 1024,
+                        part_uuid: "00000000-0000-0000-0000-000000000001".into(),
+                        filesystem: "ntfs3".into(),
+                        label: String::new(),
+                        mountpoint: String::new(),
+                        part_type: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".into(),
+                    }],
+                };
+                assert!(disk.has_windows_storage());
+
+                disk.partitions[0].filesystem = "BitLocker".into();
+                assert!(disk.has_windows_storage());
+                disk.partitions[0].filesystem = "ext4".into();
+                assert!(!disk.has_windows_storage());
+            }
         }
     }
 

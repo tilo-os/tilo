@@ -1,6 +1,7 @@
 //! One workspace's replica: the one copy every part of the engine decides on.
 
 use crate::StatePeer;
+use crate::join::WorkspaceId;
 use parking_lot::{Mutex, MutexGuard};
 use std::sync::Arc;
 
@@ -52,21 +53,20 @@ impl Replica {
 
     /// The workspace this replica is, as its id.
     #[must_use]
+    /// The workspace this replica is, as text.
     pub fn workspace(&self) -> String {
         self.read(|peer| peer.workspace_id().to_owned())
     }
 
-    /// The workspace this replica is, as the number a store names it by.
+    /// The workspace this replica is.
     ///
     /// # Errors
     ///
     /// The replica's workspace id is not a workspace id.
-    pub fn number(&self) -> Result<u64, String> {
-        self.read(|peer| workspace_number(peer.workspace_id()))
+    pub fn id(&self) -> Result<WorkspaceId, String> {
+        self.read(|peer| {
+            WorkspaceId::parse(peer.workspace_id())
+                .ok_or_else(|| format!("{} is not a workspace id", peer.workspace_id()))
+        })
     }
-}
-
-fn workspace_number(workspace: &str) -> Result<u64, String> {
-    tilo_relay_protocol::room_workspace_id(workspace)
-        .map_err(|_| format!("{workspace} is not a workspace id"))
 }

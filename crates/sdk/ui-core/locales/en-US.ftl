@@ -383,6 +383,9 @@ widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
 tree-rename-field = Rename
+# A tree row's disclosure: what pressing the chevron does to the rows under it.
+tree-branch-expand = Expand
+tree-branch-collapse = Collapse
 
 # The show/hide control inside every password field.
 text-input-show-password = Show password
@@ -689,6 +692,9 @@ widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = People to mention
 rich-text-reference-unreadable = Not shared with you
+rich-text-edit-not-kept = Your last edit wasn't kept
+rich-text-too-long = This paste is too long to keep (limit { $limit }). Paste it in smaller parts.
+rich-text-changed-while-typing = This paragraph changed while you were typing. Your edit wasn't kept.
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
@@ -753,9 +759,6 @@ display-arrangement-item = Display { $number }: { $name }
 display-arrangement-item-primary = Display { $number }: { $name }, main display
 display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }
 
-device-display-session-unavailable = The Tilo session is unavailable.
-device-display-request-pending = A display placement request is already pending.
-device-display-session-disconnected = The Tilo session disconnected.
 
 app-activate-window = Show this window
 app-activate-window-description = Bring this app's window to the front.
@@ -785,8 +788,8 @@ widget-documents-in-workspace = In this workspace
 record-unavailable-title = Can't open this document
 record-unavailable-hint = It isn't available on this device right now. It may still be on its way, or it was moved or deleted.
 display-arrangement-offline = Offline
-display-arrangement-excluded = Not in layout
-display-arrangement-offline-excluded = Offline, not in the layout
+display-arrangement-apart = Apart
+display-arrangement-offline-apart = Offline, apart
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status }: { $name }
 
@@ -840,6 +843,9 @@ menu-ask-typed = Send: { $text }
 send-to-name = Send to
 # The same box opened to the one place reports go.
 send-to-report-name = Report a problem
+# The line over a window asked to point at what a report is about.
+send-to-point-hint = Click what is not working
+send-to-point-escape = Escape leaves
 send-to-new-agent = New agent
 send-to-recipients-name = Add someone
 send-to-search-placeholder = Add someone…
@@ -1069,6 +1075,10 @@ change-window-changed-more = { $who } changed at least { $count ->
    *[other] { $count } { $noun }
 }
 
+# What a window's mark opens: the panel of everything changed since the person last looked,
+# read out as a surface of its own.
+change-catch-up = Changes since you looked
+
 # One step of an agent's task: the program it ran, what it answered, what it
 # changed and what it proposes.
 program-step-program = Program the agent ran
@@ -1152,8 +1162,8 @@ conversation-delivery-uncertain = Status uncertain
 conversation-new-messages = New messages
 conversation-day-new = { $day }: New messages
 conversation-read-by = Read to here by { $names }
-conversation-jump-unread = Jump to first unread
-conversation-jump-present = Jump to present
+conversation-jump-unread = Jump to unread
+conversation-jump-present = Jump to latest
 conversation-earlier-unavailable = Earlier messages aren't on this device
 conversation-attachment-open = Open
 conversation-attachment-open-full-size = Open full size

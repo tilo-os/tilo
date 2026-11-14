@@ -675,44 +675,49 @@ mod tests {
         .collect()
     }
 
-    #[test]
-    fn firefox_current_wal_expiry_unset_and_source_bytes_are_preserved() {
-        let (directory, connection, grant) = firefox_fixture(17);
-        firefox_row(&connection, "token", 2_000_000_123_000, 256);
-        connection
-            .execute_batch(
-                "INSERT INTO moz_cookies(host,name,value) VALUES('unrelated.example','bad','');",
-            )
-            .expect("unrelated incomplete row");
-        let before = unchanged_files(directory.path(), "cookies.sqlite");
-        let captured = read_selected(&grant, Service::Slack).expect("selected WAL source");
-        assert_eq!(captured.cookies.len(), 1);
-        let cookie = &captured.cookies[0];
-        assert_eq!(cookie.domain, "slack.com");
-        assert!(!cookie.host_only);
-        assert_eq!(cookie.expires_unix_seconds, Some(2_000_000_123));
-        assert_eq!(cookie.same_site, SameSite::Unspecified);
-        assert_eq!(unchanged_files(directory.path(), "cookies.sqlite"), before);
-        assert!(!format!("{captured:?}").contains("synthetic-cookie-secret"));
-        assert_eq!(
-            read_selected(&grant, Service::Slack)
-                .expect("same snapshot")
-                .source_snapshot_digest,
-            captured.source_snapshot_digest
-        );
-        assert_eq!(
-            read_selected(&grant, Service::Discord).expect_err("no Discord session"),
-            SourceError::Unavailable
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Reading a service session from a Firefox profile.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_firefox_session_source_is_read_without_guessing_or_truncating;
 
-    #[test]
-    fn selected_service_counts_are_value_free_and_source_preserving() {
-        let (directory, connection, grant) = firefox_fixture(17);
-        firefox_row(&connection, "token", 2_000_000_123_000, 256);
-        connection
-            .execute_batch(
-                "INSERT INTO moz_cookies(host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,
+        phase firefox_current_wal_expiry_unset_and_source_bytes_are_preserved;
+        {
+            let (directory, connection, grant) = firefox_fixture(17);
+            firefox_row(&connection, "token", 2_000_000_123_000, 256);
+            connection
+                .execute_batch(
+                    "INSERT INTO moz_cookies(host,name,value) VALUES('unrelated.example','bad','');",
+                )
+                .expect("unrelated incomplete row");
+            let before = unchanged_files(directory.path(), "cookies.sqlite");
+            let captured = read_selected(&grant, Service::Slack).expect("selected WAL source");
+            assert_eq!(captured.cookies.len(), 1);
+            let cookie = &captured.cookies[0];
+            assert_eq!(cookie.domain, "slack.com");
+            assert!(!cookie.host_only);
+            assert_eq!(cookie.expires_unix_seconds, Some(2_000_000_123));
+            assert_eq!(cookie.same_site, SameSite::Unspecified);
+            assert_eq!(unchanged_files(directory.path(), "cookies.sqlite"), before);
+            assert!(!format!("{captured:?}").contains("synthetic-cookie-secret"));
+            assert_eq!(
+                read_selected(&grant, Service::Slack)
+                    .expect("same snapshot")
+                    .source_snapshot_digest,
+                captured.source_snapshot_digest
+            );
+            assert_eq!(
+                read_selected(&grant, Service::Discord).expect_err("no Discord session"),
+                SourceError::Unavailable
+            );
+        }
+
+        phase selected_service_counts_are_value_free_and_source_preserving;
+        {
+            let (directory, connection, grant) = firefox_fixture(17);
+            firefox_row(&connection, "token", 2_000_000_123_000, 256);
+            connection
+                .execute_batch(
+                    "INSERT INTO moz_cookies(host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,
                  originAttributes,isPartitionedAttributeSet,inBrowserElement)
                  VALUES('app.slack.com','session','synthetic-cookie-secret','/',2000000000000,1,1,256,'',0,0);
                  INSERT INTO moz_cookies(host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,
@@ -721,45 +726,46 @@ mod tests {
                  INSERT INTO moz_cookies(host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,
                  originAttributes,isPartitionedAttributeSet,inBrowserElement)
                  VALUES('.example.com','cookie','synthetic-other-secret','/',2000000000000,1,1,256,'',0,0);",
-            )
-            .expect("synthetic service rows");
-        let before = unchanged_files(directory.path(), "cookies.sqlite");
-        let slack = count_selected(&grant, Service::Slack).expect("value-free Slack count");
-        assert_eq!(slack.cookies, 2);
-        assert_eq!(slack.origins, 2);
-        let discord = count_selected(&grant, Service::Discord).expect("value-free Discord count");
-        assert_eq!(discord.cookies, 1);
-        assert_eq!(discord.origins, 1);
-        assert_eq!(unchanged_files(directory.path(), "cookies.sqlite"), before);
-        assert!(!format!("{slack:?}").contains("synthetic-cookie-secret"));
-        assert!(!format!("{discord:?}").contains("synthetic-discord-secret"));
-    }
+                )
+                .expect("synthetic service rows");
+            let before = unchanged_files(directory.path(), "cookies.sqlite");
+            let slack = count_selected(&grant, Service::Slack).expect("value-free Slack count");
+            assert_eq!(slack.cookies, 2);
+            assert_eq!(slack.origins, 2);
+            let discord = count_selected(&grant, Service::Discord).expect("value-free Discord count");
+            assert_eq!(discord.cookies, 1);
+            assert_eq!(discord.origins, 1);
+            assert_eq!(unchanged_files(directory.path(), "cookies.sqlite"), before);
+            assert!(!format!("{slack:?}").contains("synthetic-cookie-secret"));
+            assert!(!format!("{discord:?}").contains("synthetic-discord-secret"));
+        }
 
-    #[test]
-    fn firefox_version_and_persistent_expiry_are_not_guessed() {
-        let (_directory, connection, grant) = firefox_fixture(15);
-        firefox_row(&connection, "token", 2_000_000_123, 1);
-        assert_eq!(
-            read_selected(&grant, Service::Slack)
-                .expect("seconds schema")
-                .cookies[0]
-                .expires_unix_seconds,
-            Some(2_000_000_123)
-        );
-        connection
-            .execute_batch("UPDATE moz_cookies SET expiry=0;")
-            .expect("expired persistent");
-        assert_eq!(
-            read_selected(&grant, Service::Slack).expect_err("not session cookie"),
-            SourceError::InvalidCookies
-        );
-        connection
-            .pragma_update(None, "user_version", 18)
-            .expect("unknown schema");
-        assert_eq!(
-            read_selected(&grant, Service::Slack).expect_err("future schema"),
-            SourceError::UnsupportedSchema
-        );
+        phase firefox_version_and_persistent_expiry_are_not_guessed;
+        {
+            let (_directory, connection, grant) = firefox_fixture(15);
+            firefox_row(&connection, "token", 2_000_000_123, 1);
+            assert_eq!(
+                read_selected(&grant, Service::Slack)
+                    .expect("seconds schema")
+                    .cookies[0]
+                    .expires_unix_seconds,
+                Some(2_000_000_123)
+            );
+            connection
+                .execute_batch("UPDATE moz_cookies SET expiry=0;")
+                .expect("expired persistent");
+            assert_eq!(
+                read_selected(&grant, Service::Slack).expect_err("not session cookie"),
+                SourceError::InvalidCookies
+            );
+            connection
+                .pragma_update(None, "user_version", 18)
+                .expect("unknown schema");
+            assert_eq!(
+                read_selected(&grant, Service::Slack).expect_err("future schema"),
+                SourceError::UnsupportedSchema
+            );
+        }
     }
 
     #[test]
@@ -814,36 +820,60 @@ mod tests {
         (directory, connection, grant)
     }
 
-    #[test]
-    fn chromium_session_persistent_encryption_and_partition_selection() {
-        let (directory, connection, grant) = chromium_fixture();
-        let before = unchanged_files(&directory.path().join("Network"), "Cookies");
-        let captured = read_selected(&grant, Service::Discord).expect("selected plaintext cookies");
-        assert_eq!(captured.cookies.len(), 2);
-        assert!(captured.cookies[0].host_only);
-        assert_eq!(captured.cookies[0].expires_unix_seconds, None);
-        assert_eq!(captured.cookies[0].same_site, SameSite::Unspecified);
-        assert!(!captured.cookies[1].host_only);
-        assert_eq!(
-            captured.cookies[1].expires_unix_seconds,
-            Some(2_000_000_000)
-        );
-        assert_eq!(
-            unchanged_files(&directory.path().join("Network"), "Cookies"),
-            before
-        );
-        connection
-            .execute_batch("UPDATE cookies SET encrypted_value=X'0102' WHERE name='token';")
-            .expect("encrypted selected credential");
-        assert_eq!(
-            read_selected(&grant, Service::Discord).expect_err("encrypted adapter absent"),
-            SourceError::UnsupportedEncryption
-        );
-        connection.execute_batch("UPDATE cookies SET encrypted_value=X'',top_frame_site_key='https://other.example' WHERE name='token';").expect("partitioned selected credential");
-        assert_eq!(
-            read_selected(&grant, Service::Discord).expect_err("partition unsupported"),
-            SourceError::UnsupportedPartition
-        );
+    tilo_test_env::scenario! {
+        /// Reading a service session from a Chromium profile.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_chromium_session_source_refuses_what_it_cannot_read_exactly;
+
+        phase chromium_session_persistent_encryption_and_partition_selection;
+        {
+            let (directory, connection, grant) = chromium_fixture();
+            let before = unchanged_files(&directory.path().join("Network"), "Cookies");
+            let captured = read_selected(&grant, Service::Discord).expect("selected plaintext cookies");
+            assert_eq!(captured.cookies.len(), 2);
+            assert!(captured.cookies[0].host_only);
+            assert_eq!(captured.cookies[0].expires_unix_seconds, None);
+            assert_eq!(captured.cookies[0].same_site, SameSite::Unspecified);
+            assert!(!captured.cookies[1].host_only);
+            assert_eq!(
+                captured.cookies[1].expires_unix_seconds,
+                Some(2_000_000_000)
+            );
+            assert_eq!(
+                unchanged_files(&directory.path().join("Network"), "Cookies"),
+                before
+            );
+            connection
+                .execute_batch("UPDATE cookies SET encrypted_value=X'0102' WHERE name='token';")
+                .expect("encrypted selected credential");
+            assert_eq!(
+                read_selected(&grant, Service::Discord).expect_err("encrypted adapter absent"),
+                SourceError::UnsupportedEncryption
+            );
+            connection.execute_batch("UPDATE cookies SET encrypted_value=X'',top_frame_site_key='https://other.example' WHERE name='token';").expect("partitioned selected credential");
+            assert_eq!(
+                read_selected(&grant, Service::Discord).expect_err("partition unsupported"),
+                SourceError::UnsupportedPartition
+            );
+        }
+
+        phase chromium_symlinked_network_never_falls_back_to_root_cookie_store;
+        {
+            let directory = tempfile::tempdir().expect("private source fixture");
+            let elsewhere = tempfile::tempdir().expect("ungranted fixture");
+            symlink(elsewhere.path(), directory.path().join("Network")).expect("malicious source link");
+            std::fs::write(directory.path().join("Cookies"), b"not a fallback grant")
+                .expect("root candidate");
+            let grant = SourceGrant::new(
+                File::open(directory.path()).expect("held profile"),
+                Provider::Chromium,
+            )
+            .expect("explicit fixture grant");
+            assert_eq!(
+                read_selected(&grant, Service::Discord).expect_err("nofollow must fail"),
+                SourceError::Unavailable
+            );
+        }
     }
 
     #[test]
@@ -877,24 +907,6 @@ mod tests {
         assert_eq!(
             unchanged_files(&directory.path().join("Network"), "Cookies"),
             before
-        );
-    }
-
-    #[test]
-    fn chromium_symlinked_network_never_falls_back_to_root_cookie_store() {
-        let directory = tempfile::tempdir().expect("private source fixture");
-        let elsewhere = tempfile::tempdir().expect("ungranted fixture");
-        symlink(elsewhere.path(), directory.path().join("Network")).expect("malicious source link");
-        std::fs::write(directory.path().join("Cookies"), b"not a fallback grant")
-            .expect("root candidate");
-        let grant = SourceGrant::new(
-            File::open(directory.path()).expect("held profile"),
-            Provider::Chromium,
-        )
-        .expect("explicit fixture grant");
-        assert_eq!(
-            read_selected(&grant, Service::Discord).expect_err("nofollow must fail"),
-            SourceError::Unavailable
         );
     }
 }

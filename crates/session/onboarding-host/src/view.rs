@@ -3211,220 +3211,224 @@ mod tests {
         }
     }
 
-    #[test]
-    fn nearby_pairing_news_asks_the_compositor_to_present() {
-        // The helper reports through its status file with no input behind
-        // it. The compositor paints only what `update` reports, so every
-        // change the poll makes must be reported there, or a failure on the
-        // same screen stays hidden behind the code.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let identity_dir = dir.path().join("identity");
-        std::fs::create_dir(&identity_dir).expect("identity dir");
-        let status = identity_dir.join(".nearby-enrollment-status.json");
-        let report_code = dir.path().join("report-code");
-        let report_failure = dir.path().join("report-failure");
-        let mut helper = Command::new("sh");
-        helper
-            .args([
-                "-c",
-                r#"while [ ! -e "$2" ]; do sleep 0.02; done
+    tilo_test_env::scenario! {
+        fn a_nearby_pairing_presents_its_news_and_ends_first_use_on_the_ready_screen;
+
+        phase nearby_pairing_news_asks_the_compositor_to_present;
+        {
+            // The helper reports through its status file with no input behind
+            // it. The compositor paints only what `update` reports, so every
+            // change the poll makes must be reported there, or a failure on the
+            // same screen stays hidden behind the code.
+            let dir = tempfile::tempdir().expect("tempdir");
+            let identity_dir = dir.path().join("identity");
+            std::fs::create_dir(&identity_dir).expect("identity dir");
+            let status = identity_dir.join(".nearby-enrollment-status.json");
+            let report_code = dir.path().join("report-code");
+            let report_failure = dir.path().join("report-failure");
+            let mut helper = Command::new("sh");
+            helper
+                .args([
+                    "-c",
+                    r#"while [ ! -e "$2" ]; do sleep 0.02; done
                    printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"
                    while [ ! -e "$3" ]; do sleep 0.02; done
                    printf '%s' '{"state":"failed","error":"Permission denied (os error 13)"}' > "$1"
                    exit 1"#,
-                "helper",
-            ])
-            .arg(&status)
-            .arg(&report_code)
-            .arg(&report_failure);
-        let (mut view, _) = view();
-        view.flow.begin_existing();
-        view.flow.choose_nearby();
-        assert_eq!(view.flow.screen(), Screen::Nearby);
-        view.nearby = Some(
-            crate::nearby::NearbyPairing::spawn(
-                helper,
-                &identity_dir,
-                &status,
-                Duration::from_secs(600),
-            )
-            .expect("spawn helper"),
-        );
-        view.nearby_status_path = Some(status);
-        let doc = AutoCommit::new();
-        // The page as it was laid out when pairing started.
-        view.sync(&doc, &automerge::ROOT);
-        let _ = view.take_structure_dirty();
-        assert!(!view.update(&doc, &automerge::ROOT), "nothing new yet");
-
-        std::fs::write(&report_code, b"").expect("let the helper show its code");
-        let deadline = tilo_test_env::hang_deadline();
-        while view.nearby_code.is_none() {
-            assert!(Instant::now() < deadline, "the code never arrived");
-            std::thread::sleep(Duration::from_millis(20));
+                    "helper",
+                ])
+                .arg(&status)
+                .arg(&report_code)
+                .arg(&report_failure);
+            let (mut view, _) = view();
+            view.flow.begin_existing();
+            view.flow.choose_nearby();
+            assert_eq!(view.flow.screen(), Screen::Nearby);
+            view.nearby = Some(
+                crate::nearby::NearbyPairing::spawn(
+                    helper,
+                    &identity_dir,
+                    &status,
+                    Duration::from_secs(600),
+                )
+                .expect("spawn helper"),
+            );
+            view.nearby_status_path = Some(status);
+            let doc = AutoCommit::new();
+            // The page as it was laid out when pairing started.
             view.sync(&doc, &automerge::ROOT);
-        }
-        assert!(
-            view.update(&doc, &automerge::ROOT),
-            "the verification code is presented"
-        );
-        assert!(view.take_structure_dirty());
-        assert!(
-            !view.update(&doc, &automerge::ROOT),
-            "a laid-out page is not presented again"
-        );
+            let _ = view.take_structure_dirty();
+            assert!(!view.update(&doc, &automerge::ROOT), "nothing new yet");
 
-        std::fs::write(&report_failure, b"").expect("let the helper fail");
-        while view.nearby.is_some() {
-            assert!(Instant::now() < deadline, "the failure never arrived");
-            std::thread::sleep(Duration::from_millis(20));
-            view.sync(&doc, &automerge::ROOT);
-        }
-        assert!(
-            view.error()
-                .is_some_and(|error| error.contains("Permission denied")),
-            "{:?}",
-            view.error()
-        );
-        assert!(
-            view.update(&doc, &automerge::ROOT),
-            "the failure and its Try again are presented"
-        );
-        let composition = laid_out(&mut view);
-        assert!(
-            accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
-            "a failed pairing offers Try again"
-        );
-        assert!(
-            accessibility_for_id(composition, "onboarding.nearby.code").is_none(),
-            "the stale code is gone"
-        );
-        // What went wrong is the error's accessible name, not only its
-        // description: a screen reader speaks it first, and the generic
-        // outcome alone would hide that the commit was refused.
-        let mut names = Vec::new();
-        accessible_names(composition, &mut names);
-        assert!(
-            names.iter().any(|name| name.contains("Permission denied")),
-            "the cause is named: {names:?}"
-        );
-        assert!(
-            !names.contains(&tilo_onboarding::t("onboarding-connect-failed")),
-            "a refused commit is not reported generically: {names:?}"
-        );
-    }
-
-    #[test]
-    fn a_joined_identity_ends_first_use_on_the_ready_screen() {
-        // A device that joined from a nearby one holds a public record and a
-        // member certificate; the root key never leaves the approving device.
-        // Its first use ends where the person can enter the desktop, not on a
-        // backup step warning that losing this device loses the identity.
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let identity_dir = dir.path().join("identity");
-        std::fs::create_dir(&identity_dir).expect("identity dir");
-        std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700))
-            .expect("private identity dir");
-        let record = identity_dir.join("identity-joined.json");
-        std::fs::write(
-            &record,
-            runtime_identity::public_member_record("Member", [1, 2, 3], [7; 32]).expect("record"),
-        )
-        .expect("write record");
-        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
-            .expect("private record");
-        let status = identity_dir.join(".nearby-enrollment-status.json");
-        let complete = serde_json::json!({
-            "state": "complete",
-            "verification_code": "123456",
-            "identity": hex::encode([7; 32]),
-            "record_path": record,
-        });
-        let mut helper = Command::new("sh");
-        helper
-            .args(["-c", r#"printf '%s' "$2" > "$1"; exec sleep 30"#, "helper"])
-            .arg(&status)
-            .arg(complete.to_string());
-        let (mut view, _) = view();
-        view.identity_dir = Some(identity_dir.clone());
-        view.flow.begin_existing();
-        view.flow.choose_nearby();
-        view.nearby = Some(
-            crate::nearby::NearbyPairing::spawn(
-                helper,
-                &identity_dir,
-                &status,
-                Duration::from_secs(600),
-            )
-            .expect("spawn helper"),
-        );
-        view.nearby_status_path = Some(status);
-        // Hold the journal write that records the join, so the assertion
-        // below sees the hand-off waiting for it rather than racing it.
-        let (release_journal, journal_gate) = std::sync::mpsc::channel::<()>();
-        view.journal_writer = writer_held_until(journal_gate);
-        let doc = AutoCommit::new();
-        let deadline = tilo_test_env::hang_deadline();
-        while view.nearby.is_some() {
-            assert!(Instant::now() < deadline, "the join never arrived");
-            std::thread::sleep(Duration::from_millis(20));
-            view.sync(&doc, &automerge::ROOT);
-        }
-        assert!(
-            !view.identity_ready_page,
-            "the hand-off waits for the journal that records it"
-        );
-        release_journal
-            .send(())
-            .expect("the writer waits for its release");
-        sync_journaled(&mut view, &doc);
-
-        assert_eq!(view.flow.screen(), Screen::Done);
-        assert_eq!(view.error(), None);
-        assert!(view.identity_ready_page);
-        assert_eq!(
-            load_progress(&identity_dir).expect("load progress"),
-            Some(PersistedStage::ReadyToEnter),
-            "a restart resumes at the ready screen"
-        );
-        let composition = laid_out(&mut view);
-        let mut names = Vec::new();
-        accessible_names(composition, &mut names);
-        assert!(
-            names.contains(&tilo_onboarding::t("onboarding-done-title")),
-            "the joined device ends on the ready screen: {names:?}"
-        );
-        assert!(
-            accessibility_for_id(composition, "onboarding.backup.skip-acknowledged.box").is_none(),
-            "a joined device is not asked to back up an identity it does not hold"
-        );
-        let joined_guidance = |names: &[String]| {
+            std::fs::write(&report_code, b"").expect("let the helper show its code");
+            let deadline = tilo_test_env::hang_deadline();
+            while view.nearby_code.is_none() {
+                assert!(Instant::now() < deadline, "the code never arrived");
+                std::thread::sleep(Duration::from_millis(20));
+                view.sync(&doc, &automerge::ROOT);
+            }
             assert!(
-                names.contains(&tilo_onboarding::t("onboarding-done-joined-key-elsewhere"))
-                    && names.contains(&tilo_onboarding::t(
-                        "onboarding-done-joined-key-elsewhere-body"
-                    )),
-                "the ready screen says the key stays on the approving device: {names:?}"
+                view.update(&doc, &automerge::ROOT),
+                "the verification code is presented"
+            );
+            assert!(view.take_structure_dirty());
+            assert!(
+                !view.update(&doc, &automerge::ROOT),
+                "a laid-out page is not presented again"
+            );
+
+            std::fs::write(&report_failure, b"").expect("let the helper fail");
+            while view.nearby.is_some() {
+                assert!(Instant::now() < deadline, "the failure never arrived");
+                std::thread::sleep(Duration::from_millis(20));
+                view.sync(&doc, &automerge::ROOT);
+            }
+            assert!(
+                view.error()
+                    .is_some_and(|error| error.contains("Permission denied")),
+                "{:?}",
+                view.error()
             );
             assert!(
-                !names.contains(&tilo_onboarding::t("onboarding-done-backup-recommended")),
-                "a joined device is not told a backup is still recommended: {names:?}"
+                view.update(&doc, &automerge::ROOT),
+                "the failure and its Try again are presented"
             );
-        };
-        joined_guidance(&names);
+            let composition = laid_out(&mut view);
+            assert!(
+                accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
+                "a failed pairing offers Try again"
+            );
+            assert!(
+                accessibility_for_id(composition, "onboarding.nearby.code").is_none(),
+                "the stale code is gone"
+            );
+            // What went wrong is the error's accessible name, not only its
+            // description: a screen reader speaks it first, and the generic
+            // outcome alone would hide that the commit was refused.
+            let mut names = Vec::new();
+            accessible_names(composition, &mut names);
+            assert!(
+                names.iter().any(|name| name.contains("Permission denied")),
+                "the cause is named: {names:?}"
+            );
+            assert!(
+                !names.contains(&tilo_onboarding::t("onboarding-connect-failed")),
+                "a refused commit is not reported generically: {names:?}"
+            );
+        }
 
-        // A restart resumes on the same ready screen, knowing the device
-        // joined from its identity record alone.
-        runtime_identity::set_active_identity(&identity_dir, "identity-joined")
-            .expect("select the joined identity");
-        let (mut resumed, _) = self::view();
-        resumed.identity_dir = Some(identity_dir);
-        resumed.restore_pending_progress_from_disk();
-        assert_eq!(resumed.flow.screen(), Screen::Done);
-        let mut names = Vec::new();
-        accessible_names(laid_out(&mut resumed), &mut names);
-        joined_guidance(&names);
+        phase a_joined_identity_ends_first_use_on_the_ready_screen;
+        {
+            // A device that joined from a nearby one holds a public record and a
+            // member certificate; the root key never leaves the approving device.
+            // Its first use ends where the person can enter the desktop, not on a
+            // backup step warning that losing this device loses the identity.
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = tempfile::tempdir().expect("tempdir");
+            let identity_dir = dir.path().join("identity");
+            std::fs::create_dir(&identity_dir).expect("identity dir");
+            std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700))
+                .expect("private identity dir");
+            let record = identity_dir.join("identity-joined.json");
+            std::fs::write(
+                &record,
+                runtime_identity::public_member_record("Member", [1, 2, 3], [7; 32]).expect("record"),
+            )
+            .expect("write record");
+            std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
+                .expect("private record");
+            let status = identity_dir.join(".nearby-enrollment-status.json");
+            let complete = serde_json::json!({
+                "state": "complete",
+                "verification_code": "123456",
+                "identity": hex::encode([7; 32]),
+                "record_path": record,
+            });
+            let mut helper = Command::new("sh");
+            helper
+                .args(["-c", r#"printf '%s' "$2" > "$1"; exec sleep 30"#, "helper"])
+                .arg(&status)
+                .arg(complete.to_string());
+            let (mut view, _) = view();
+            view.identity_dir = Some(identity_dir.clone());
+            view.flow.begin_existing();
+            view.flow.choose_nearby();
+            view.nearby = Some(
+                crate::nearby::NearbyPairing::spawn(
+                    helper,
+                    &identity_dir,
+                    &status,
+                    Duration::from_secs(600),
+                )
+                .expect("spawn helper"),
+            );
+            view.nearby_status_path = Some(status);
+            // Hold the journal write that records the join, so the assertion
+            // below sees the hand-off waiting for it rather than racing it.
+            let (release_journal, journal_gate) = std::sync::mpsc::channel::<()>();
+            view.journal_writer = writer_held_until(journal_gate);
+            let doc = AutoCommit::new();
+            let deadline = tilo_test_env::hang_deadline();
+            while view.nearby.is_some() {
+                assert!(Instant::now() < deadline, "the join never arrived");
+                std::thread::sleep(Duration::from_millis(20));
+                view.sync(&doc, &automerge::ROOT);
+            }
+            assert!(
+                !view.identity_ready_page,
+                "the hand-off waits for the journal that records it"
+            );
+            release_journal
+                .send(())
+                .expect("the writer waits for its release");
+            sync_journaled(&mut view, &doc);
+
+            assert_eq!(view.flow.screen(), Screen::Done);
+            assert_eq!(view.error(), None);
+            assert!(view.identity_ready_page);
+            assert_eq!(
+                load_progress(&identity_dir).expect("load progress"),
+                Some(PersistedStage::ReadyToEnter),
+                "a restart resumes at the ready screen"
+            );
+            let composition = laid_out(&mut view);
+            let mut names = Vec::new();
+            accessible_names(composition, &mut names);
+            assert!(
+                names.contains(&tilo_onboarding::t("onboarding-done-title")),
+                "the joined device ends on the ready screen: {names:?}"
+            );
+            assert!(
+                accessibility_for_id(composition, "onboarding.backup.skip-acknowledged.box").is_none(),
+                "a joined device is not asked to back up an identity it does not hold"
+            );
+            let joined_guidance = |names: &[String]| {
+                assert!(
+                    names.contains(&tilo_onboarding::t("onboarding-done-joined-key-elsewhere"))
+                        && names.contains(&tilo_onboarding::t(
+                            "onboarding-done-joined-key-elsewhere-body"
+                        )),
+                    "the ready screen says the key stays on the approving device: {names:?}"
+                );
+                assert!(
+                    !names.contains(&tilo_onboarding::t("onboarding-done-backup-recommended")),
+                    "a joined device is not told a backup is still recommended: {names:?}"
+                );
+            };
+            joined_guidance(&names);
+
+            // A restart resumes on the same ready screen, knowing the device
+            // joined from its identity record alone.
+            runtime_identity::set_active_identity(&identity_dir, "identity-joined")
+                .expect("select the joined identity");
+            let (mut resumed, _) = self::view();
+            resumed.identity_dir = Some(identity_dir);
+            resumed.restore_pending_progress_from_disk();
+            assert_eq!(resumed.flow.screen(), Screen::Done);
+            let mut names = Vec::new();
+            accessible_names(laid_out(&mut resumed), &mut names);
+            joined_guidance(&names);
+        }
     }
 
     fn process_group_has_live_member(pgid: i32) -> bool {
@@ -3579,166 +3583,170 @@ mod tests {
         (wait, release, ran_on)
     }
 
-    /// Minting, importing and exporting the identity wait for the disk, the
-    /// secret store and a passphrase stretch. They are taken from a frame on
-    /// the compositor's loop, so they must never run there: with a handler
-    /// that never finishes, every frame still returns and the step waits.
-    #[test]
-    fn minting_never_runs_on_the_frame_thread() {
-        {
-            let directory = TempDir::new().expect("identity directory");
-            let identity_dir = directory.path().join("identity");
-            let (wait, release, ran_on) = blocking_handler();
-            let record = identity_dir.join("primary.json");
-            let mut view = OnboardingView::with_minter(Box::new(move || {
-                wait();
-                Ok(MintedIdentity {
-                    fingerprint: "ab".repeat(32),
-                    path: record.clone(),
-                })
-            }));
-            view.identity_dir = Some(identity_dir.clone());
-            let mut document = AutoCommit::new();
-            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-                press(&view, &mut document, key);
-                view.sync(&document, &automerge::ROOT);
-            }
-            // The journal reaches the disk; the next frame starts the mint.
-            view.journal_writer.flush();
-            view.sync(&document, &automerge::ROOT);
-            assert!(!view.identity_idle(), "the mint is running");
-            let deadline = Instant::now()
-                .checked_add(tilo_test_env::hang_bound())
-                .expect("deadline");
-            while ran_on.lock().unwrap().is_none() {
-                assert!(Instant::now() < deadline, "the minter never started");
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert_ne!(
-                *ran_on.lock().unwrap(),
-                Some(std::thread::current().id()),
-                "the minter runs off the frame thread"
-            );
-            // Frames keep coming while it runs; the step it belongs to holds.
-            press(&view, &mut document, KEY_BACK);
-            for _ in 0..3 {
-                view.sync(&document, &automerge::ROOT);
-            }
-            assert_eq!(view.flow().screen(), Screen::NoRecovery);
-            assert!(view.next_wake_deadline().is_some(), "the loop looks again");
-            assert_eq!(
-                load_progress(&identity_dir).expect("load progress"),
-                Some(PersistedStage::AcquiringIdentity)
-            );
+    tilo_test_env::scenario! {
+        fn identity_work_never_runs_on_the_frame_thread;
 
-            release.send(()).unwrap();
-            sync_journaled(&mut view, &document);
-            assert_eq!(
-                view.flow().screen(),
-                Screen::Done,
-                "Back waited out the mint"
-            );
-            assert_eq!(
-                load_progress(&identity_dir).expect("load progress"),
-                Some(PersistedStage::IdentityReady),
-                "the journal records the identity after the mint reports"
-            );
-        }
-    }
-
-    /// See [`minting_never_runs_on_the_frame_thread`].
-    #[test]
-    fn importing_never_runs_on_the_frame_thread() {
+        phase minting_never_runs_on_the_frame_thread;
+        // Minting, importing and exporting the identity wait for the disk, the
+        // secret store and a passphrase stretch. They are taken from a frame on
+        // the compositor's loop, so they must never run there: with a handler
+        // that never finishes, every frame still returns and the step waits.
         {
-            let directory = TempDir::new().expect("identity directory");
-            let identity_dir = directory.path().join("identity");
-            let (wait, release, ran_on) = blocking_handler();
-            let record = identity_dir.join("primary.json");
-            let mut view = OnboardingView::with_handlers(
-                Box::new(|| Err("create should not run".to_string())),
-                Box::new(move |_, passphrase| {
-                    assert_eq!(passphrase, b"restore passphrase");
+            {
+                let directory = TempDir::new().expect("identity directory");
+                let identity_dir = directory.path().join("identity");
+                let (wait, release, ran_on) = blocking_handler();
+                let record = identity_dir.join("primary.json");
+                let mut view = OnboardingView::with_minter(Box::new(move || {
                     wait();
                     Ok(MintedIdentity {
-                        fingerprint: "cd".repeat(32),
+                        fingerprint: "ab".repeat(32),
                         path: record.clone(),
                     })
-                }),
-            );
-            view.identity_dir = Some(identity_dir);
-            let mut document = AutoCommit::new();
-            press(&view, &mut document, KEY_EXISTING);
-            press(&view, &mut document, KEY_CHOOSE_RESTORE);
-            view.connect_path.set("/media/backup/primary.json".into());
-            *view.connect_passphrase.lock().unwrap() = "restore passphrase".into();
-            sync_journaled(&mut view, &document);
-            press(&view, &mut document, KEY_IMPORT);
-            view.sync(&document, &automerge::ROOT);
-            view.journal_writer.flush();
-            view.sync(&document, &automerge::ROOT);
-            assert!(!view.identity_idle(), "the import is running");
-            for _ in 0..3 {
+                }));
+                view.identity_dir = Some(identity_dir.clone());
+                let mut document = AutoCommit::new();
+                for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+                    press(&view, &mut document, key);
+                    view.sync(&document, &automerge::ROOT);
+                }
+                // The journal reaches the disk; the next frame starts the mint.
+                view.journal_writer.flush();
                 view.sync(&document, &automerge::ROOT);
-            }
-            assert_eq!(view.flow().screen(), Screen::Restore);
+                assert!(!view.identity_idle(), "the mint is running");
+                let deadline = Instant::now()
+                    .checked_add(tilo_test_env::hang_bound())
+                    .expect("deadline");
+                while ran_on.lock().unwrap().is_none() {
+                    assert!(Instant::now() < deadline, "the minter never started");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert_ne!(
+                    *ran_on.lock().unwrap(),
+                    Some(std::thread::current().id()),
+                    "the minter runs off the frame thread"
+                );
+                // Frames keep coming while it runs; the step it belongs to holds.
+                press(&view, &mut document, KEY_BACK);
+                for _ in 0..3 {
+                    view.sync(&document, &automerge::ROOT);
+                }
+                assert_eq!(view.flow().screen(), Screen::NoRecovery);
+                assert!(view.next_wake_deadline().is_some(), "the loop looks again");
+                assert_eq!(
+                    load_progress(&identity_dir).expect("load progress"),
+                    Some(PersistedStage::AcquiringIdentity)
+                );
 
-            release.send(()).unwrap();
-            sync_journaled(&mut view, &document);
-            assert_ne!(*ran_on.lock().unwrap(), Some(std::thread::current().id()));
-            assert_eq!(view.flow().screen(), Screen::Done);
-            assert!(
-                view.connect_passphrase.lock().unwrap().is_empty(),
-                "the passphrase is cleared once the import reports"
-            );
+                release.send(()).unwrap();
+                sync_journaled(&mut view, &document);
+                assert_eq!(
+                    view.flow().screen(),
+                    Screen::Done,
+                    "Back waited out the mint"
+                );
+                assert_eq!(
+                    load_progress(&identity_dir).expect("load progress"),
+                    Some(PersistedStage::IdentityReady),
+                    "the journal records the identity after the mint reports"
+                );
+            }
         }
-    }
 
-    /// See [`minting_never_runs_on_the_frame_thread`].
-    #[test]
-    fn exporting_never_runs_on_the_frame_thread() {
+        phase importing_never_runs_on_the_frame_thread;
+        // See [`minting_never_runs_on_the_frame_thread`].
         {
-            let progress = TempDir::new().expect("progress directory");
-            let (wait, release, ran_on) = blocking_handler();
-            let mut view = OnboardingView::with_all_handlers(
-                Box::new(|| Err("unused".to_string())),
-                Box::new(|_, _| Err("unused".to_string())),
-                Box::new(move |_, _, _| {
-                    wait();
-                    Ok(())
-                }),
-            );
-            view.flow.begin();
-            view.flow.set_acknowledged(true);
-            assert!(view.flow.complete(MintedIdentity {
-                fingerprint: "ef".repeat(32),
-                path: PathBuf::from("/identity/primary.json"),
-            }));
-            view.identity_dir = Some(progress.path().to_path_buf());
-            let mut document = AutoCommit::new();
-            *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
-            *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
-            press(&view, &mut document, KEY_BACKUP_BROWSE);
-            sync_journaled(&mut view, &document);
-            assert_eq!(view.chooser, Some(PickerPurpose::BackupIdentity));
-            // The person picks where the backup goes in the app's chooser;
-            // the frame hands the export to its own worker.
-            view.picked = Some(progress.path().join("tilo-identity-backup.tilo-identity"));
-            view.sync(&document, &automerge::ROOT);
-            assert!(view.chooser.is_none());
-            assert!(!view.identity_idle(), "the export is running");
-            for _ in 0..3 {
+            {
+                let directory = TempDir::new().expect("identity directory");
+                let identity_dir = directory.path().join("identity");
+                let (wait, release, ran_on) = blocking_handler();
+                let record = identity_dir.join("primary.json");
+                let mut view = OnboardingView::with_handlers(
+                    Box::new(|| Err("create should not run".to_string())),
+                    Box::new(move |_, passphrase| {
+                        assert_eq!(passphrase, b"restore passphrase");
+                        wait();
+                        Ok(MintedIdentity {
+                            fingerprint: "cd".repeat(32),
+                            path: record.clone(),
+                        })
+                    }),
+                );
+                view.identity_dir = Some(identity_dir);
+                let mut document = AutoCommit::new();
+                press(&view, &mut document, KEY_EXISTING);
+                press(&view, &mut document, KEY_CHOOSE_RESTORE);
+                view.connect_path.set("/media/backup/primary.json".into());
+                *view.connect_passphrase.lock().unwrap() = "restore passphrase".into();
+                sync_journaled(&mut view, &document);
+                press(&view, &mut document, KEY_IMPORT);
                 view.sync(&document, &automerge::ROOT);
-            }
-            assert!(view.backup_saved.is_none());
+                view.journal_writer.flush();
+                view.sync(&document, &automerge::ROOT);
+                assert!(!view.identity_idle(), "the import is running");
+                for _ in 0..3 {
+                    view.sync(&document, &automerge::ROOT);
+                }
+                assert_eq!(view.flow().screen(), Screen::Restore);
 
-            release.send(()).unwrap();
-            sync_journaled(&mut view, &document);
-            assert_ne!(*ran_on.lock().unwrap(), Some(std::thread::current().id()));
-            assert!(view.backup_saved.is_some());
-            assert_eq!(
-                load_progress(progress.path()).expect("backed-up progress"),
-                Some(PersistedStage::IdentityReadyBackedUp)
-            );
+                release.send(()).unwrap();
+                sync_journaled(&mut view, &document);
+                assert_ne!(*ran_on.lock().unwrap(), Some(std::thread::current().id()));
+                assert_eq!(view.flow().screen(), Screen::Done);
+                assert!(
+                    view.connect_passphrase.lock().unwrap().is_empty(),
+                    "the passphrase is cleared once the import reports"
+                );
+            }
+        }
+
+        phase exporting_never_runs_on_the_frame_thread;
+        // See [`minting_never_runs_on_the_frame_thread`].
+        {
+            {
+                let progress = TempDir::new().expect("progress directory");
+                let (wait, release, ran_on) = blocking_handler();
+                let mut view = OnboardingView::with_all_handlers(
+                    Box::new(|| Err("unused".to_string())),
+                    Box::new(|_, _| Err("unused".to_string())),
+                    Box::new(move |_, _, _| {
+                        wait();
+                        Ok(())
+                    }),
+                );
+                view.flow.begin();
+                view.flow.set_acknowledged(true);
+                assert!(view.flow.complete(MintedIdentity {
+                    fingerprint: "ef".repeat(32),
+                    path: PathBuf::from("/identity/primary.json"),
+                }));
+                view.identity_dir = Some(progress.path().to_path_buf());
+                let mut document = AutoCommit::new();
+                *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
+                *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
+                press(&view, &mut document, KEY_BACKUP_BROWSE);
+                sync_journaled(&mut view, &document);
+                assert_eq!(view.chooser, Some(PickerPurpose::BackupIdentity));
+                // The person picks where the backup goes in the app's chooser;
+                // the frame hands the export to its own worker.
+                view.picked = Some(progress.path().join("tilo-identity-backup.tilo-identity"));
+                view.sync(&document, &automerge::ROOT);
+                assert!(view.chooser.is_none());
+                assert!(!view.identity_idle(), "the export is running");
+                for _ in 0..3 {
+                    view.sync(&document, &automerge::ROOT);
+                }
+                assert!(view.backup_saved.is_none());
+
+                release.send(()).unwrap();
+                sync_journaled(&mut view, &document);
+                assert_ne!(*ran_on.lock().unwrap(), Some(std::thread::current().id()));
+                assert!(view.backup_saved.is_some());
+                assert_eq!(
+                    load_progress(progress.path()).expect("backed-up progress"),
+                    Some(PersistedStage::IdentityReadyBackedUp)
+                );
+            }
         }
     }
 
@@ -3750,13 +3758,14 @@ mod tests {
         assert_eq!(view.flow().screen(), Screen::Done);
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn setup_journal_is_durable_resumable_and_fails_closed() {
-        // Phase `journal_is_durable_before_identity_action_and_removed_only_after_finish`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn setup_journal_is_durable_resumable_and_fails_closed;
+
+        phase journal_is_durable_before_identity_action_and_removed_only_after_finish;
         {
             let directory = TempDir::new().expect("progress directory");
             let identity_dir = directory.path().join("fresh").join("identity");
@@ -3836,7 +3845,8 @@ mod tests {
             assert!(view.finished());
             assert!(!has_pending_progress(&identity_dir));
         }
-        // Phase `verified_pre_acquisition_journal_is_cleared_without_discarding_later_progress`.
+
+        phase verified_pre_acquisition_journal_is_cleared_without_discarding_later_progress;
         {
             let directory = TempDir::new().expect("progress directory");
             let identity_dir = directory.path().join("identity");
@@ -3861,7 +3871,8 @@ mod tests {
                 "successful verification must not skip backup or tour completion"
             );
         }
-        // Phase `restart_resumes_backup_ready_and_exact_tour_page_without_recreating_identity`.
+
+        phase restart_resumes_backup_ready_and_exact_tour_page_without_recreating_identity;
         {
             let directory = TempDir::new().expect("progress directory");
             write_fixture_identity(directory.path());
@@ -3915,7 +3926,8 @@ mod tests {
                 "without a pending journal startup leaves an established user alone"
             );
         }
-        // Phase `unsupported_or_unsafe_journal_stays_pending_instead_of_bypassing_setup`.
+
+        phase unsupported_or_unsafe_journal_stays_pending_instead_of_bypassing_setup;
         {
             let directory = TempDir::new().expect("progress directory");
             tilo_files::native::atomic::write_with_mode(
@@ -3940,7 +3952,8 @@ mod tests {
                 assert!(load_progress(directory.path()).is_err());
             }
         }
-        // Phase `a_journal_write_failure_prevents_identity_creation`.
+
+        phase a_journal_write_failure_prevents_identity_creation;
         {
             let calls = Arc::new(AtomicUsize::new(0));
             let called = Arc::clone(&calls);
@@ -4113,9 +4126,10 @@ mod tests {
         assert!(!has_pending_progress(&identity_dir));
     }
 
-    #[test]
-    fn identity_creation_is_gated_on_acknowledgement_and_mints_once() {
-        // Phase `structure_and_focus_invalidations_are_consumed_independently`.
+    tilo_test_env::scenario! {
+        fn identity_creation_is_gated_on_acknowledgement_and_mints_once;
+
+        phase structure_and_focus_invalidations_are_consumed_independently;
         {
             let mut invalidation = Invalidation::default();
             invalidation.both();
@@ -4129,7 +4143,8 @@ mod tests {
             assert!(invalidation.take_focus());
             assert!(invalidation.take_structure());
         }
-        // Phase `pressing_create_without_acknowledging_mints_nothing`.
+
+        phase pressing_create_without_acknowledging_mints_nothing;
         // The whole point: clicking through without ticking the box must not produce a key.
         {
             let (mut v, calls) = view();
@@ -4143,7 +4158,8 @@ mod tests {
             assert_eq!(calls.load(Ordering::SeqCst), 0, "no key was minted");
             assert_eq!(v.flow().screen(), Screen::NoRecovery, "still on the gate");
         }
-        // Phase `acknowledging_then_creating_mints_exactly_once`.
+
+        phase acknowledging_then_creating_mints_exactly_once;
         {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
@@ -4160,7 +4176,8 @@ mod tests {
             assert_eq!(v.flow().screen(), Screen::Done);
             assert!(v.flow().is_done());
         }
-        // Phase `unticking_the_box_closes_the_gate_again`.
+
+        phase unticking_the_box_closes_the_gate_again;
         {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
@@ -4179,7 +4196,8 @@ mod tests {
             v.sync(&doc, &automerge::ROOT);
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         }
-        // Phase `a_failed_mint_is_surfaced_rather_than_hidden`.
+
+        phase a_failed_mint_is_surfaced_rather_than_hidden;
         // A minting failure must be shown, not swallowed into a desktop that silently has no identity.
         {
             let mut v = OnboardingView::with_minter(Box::new(|| Err("disk full".to_string())));
@@ -4201,7 +4219,8 @@ mod tests {
             v.sync(&doc, &automerge::ROOT);
             assert!(!v.finished(), "failure must not release the desktop");
         }
-        // Phase `finishing_releases_the_desktop`.
+
+        phase finishing_releases_the_desktop;
         {
             let (mut v, _) = view();
             let mut doc = AutoCommit::new();
@@ -4222,13 +4241,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn desktop_tour_is_navigable_skippable_and_dismissable() {
-        // Phase `desktop_tour_is_complete_backtrackable_and_finishes_only_at_the_end`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn desktop_tour_is_navigable_skippable_and_dismissable;
+
+        phase desktop_tour_is_complete_backtrackable_and_finishes_only_at_the_end;
         {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
@@ -4275,7 +4295,8 @@ mod tests {
             view.sync(&doc, &automerge::ROOT);
             assert!(view.finished());
         }
-        // Phase `every_tour_page_exposes_an_explicit_skip_action`.
+
+        phase every_tour_page_exposes_an_explicit_skip_action;
         {
             let mut view = OnboardingView::new_tour();
             let mut doc = AutoCommit::new();
@@ -4300,7 +4321,8 @@ mod tests {
             view.sync(&doc, &automerge::ROOT);
             assert!(view.finished(), "Skip tour dismisses a reopened tour");
         }
-        // Phase `first_use_skip_works_on_every_tour_page_and_clears_progress`.
+
+        phase first_use_skip_works_on_every_tour_page_and_clears_progress;
         {
             for (stage, page) in [
                 (PersistedStage::TourNavigate, TourPage::Navigate),
@@ -4325,7 +4347,8 @@ mod tests {
                 );
             }
         }
-        // Phase `escape_dismisses_a_reopened_tour_from_every_page`.
+
+        phase escape_dismisses_a_reopened_tour_from_every_page;
         {
             for next_presses in 0..=3 {
                 let mut view = OnboardingView::new_tour();
@@ -4343,7 +4366,8 @@ mod tests {
                 );
             }
         }
-        // Phase `reopened_tour_has_no_identity_gate_and_can_be_dismissed`.
+
+        phase reopened_tour_has_no_identity_gate_and_can_be_dismissed;
         {
             let mut view = OnboardingView::new_tour();
             let mut doc = AutoCommit::new();
@@ -4373,13 +4397,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn onboarding_copy_and_live_regions_speak_the_real_contract() {
-        // Phase `nearby_pairing_updates_share_one_polite_live_region`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn onboarding_copy_and_live_regions_speak_the_real_contract;
+
+        phase nearby_pairing_updates_share_one_polite_live_region;
         {
             let (mut view, _) = view();
             view.flow.begin_existing();
@@ -4409,7 +4434,8 @@ mod tests {
                     .expect("the verification code is shown on its own");
             assert_eq!(code.name.as_deref(), Some("123 456"));
         }
-        // Phase `nearby_steps_say_this_device_waits_for_the_other_one`.
+
+        phase nearby_steps_say_this_device_waits_for_the_other_one;
         {
             let waiting = tilo_onboarding::t("onboarding-nearby-waiting").to_lowercase();
             assert!(waiting.contains("other device"), "{waiting}");
@@ -4433,7 +4459,8 @@ mod tests {
                 );
             }
         }
-        // Phase `onboarding_copy_uses_no_typed_glyphs_as_layout`.
+
+        phase onboarding_copy_uses_no_typed_glyphs_as_layout;
         {
             let copy = [
                 "onboarding-intro-point-collaboration",
@@ -4457,7 +4484,8 @@ mod tests {
                 assert!(!copy.contains(glyph), "{glyph:?} used as layout in {copy}");
             }
         }
-        // Phase `host_desktop_copy_does_not_claim_to_replace_the_linux_login`.
+
+        phase host_desktop_copy_does_not_claim_to_replace_the_linux_login;
         {
             let copy = host_desktop_intro_body().to_ascii_lowercase();
             assert!(copy.contains("already signed in"));
@@ -4467,9 +4495,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn screen_navigation_follows_context_direction_escape_and_motion_preferences() {
-        // Phase `host_desktop_context_keeps_the_identity_creation_gate`.
+    tilo_test_env::scenario! {
+        fn screen_navigation_follows_context_direction_escape_and_motion_preferences;
+
+        phase host_desktop_context_keeps_the_identity_creation_gate;
         {
             let mut view = OnboardingView::with_all_handlers_in_context(
                 Box::new(|| {
@@ -4489,7 +4518,8 @@ mod tests {
             view.flow.set_acknowledged(true);
             assert!(view.flow.can_create());
         }
-        // Phase `escape_follows_back_on_reversible_identity_steps_only`.
+
+        phase escape_follows_back_on_reversible_identity_steps_only;
         {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
@@ -4522,7 +4552,8 @@ mod tests {
             view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Intro);
         }
-        // Phase `recovery_mode_starts_on_restore_and_never_offers_creation`.
+
+        phase recovery_mode_starts_on_restore_and_never_offers_creation;
         {
             let identity = tempfile::tempdir().expect("identity directory");
             let mut recovery = OnboardingView::isolated(identity.path().to_path_buf(), true);
@@ -4550,13 +4581,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn connecting_an_existing_identity_journals_and_imports_without_minting() {
-        // Phase `connect_existing_imports_without_minting`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn connecting_an_existing_identity_journals_and_imports_without_minting;
+
+        phase connect_existing_imports_without_minting;
         {
             let imported = Arc::new(AtomicUsize::new(0));
             let imported_for_handler = imported.clone();
@@ -4583,7 +4615,8 @@ mod tests {
             assert_eq!(view.flow().screen(), Screen::Done);
             assert!(view.flow().is_done());
         }
-        // Phase `connect_journals_before_import_and_keeps_setup_pending_afterward`.
+
+        phase connect_journals_before_import_and_keeps_setup_pending_afterward;
         {
             let directory = TempDir::new().expect("progress directory");
             let identity_dir = directory.path().join("identity");
@@ -4626,7 +4659,8 @@ mod tests {
             );
             assert_eq!(view.flow().screen(), Screen::Done);
         }
-        // Phase `failed_connect_stays_on_connect_screen_and_shows_error`.
+
+        phase failed_connect_stays_on_connect_screen_and_shows_error;
         {
             let mut view = OnboardingView::with_handlers(
                 Box::new(|| Err("create should not run".to_string())),
@@ -4643,7 +4677,8 @@ mod tests {
             assert_eq!(view.flow().screen(), Screen::Restore);
             assert_eq!(view.error(), Some("not a Tilo identity"));
         }
-        // Phase `connect_requires_a_selected_file_before_importing`.
+
+        phase connect_requires_a_selected_file_before_importing;
         {
             let mut view = OnboardingView::with_handlers(
                 Box::new(|| Err("create should not run".to_string())),
@@ -4684,7 +4719,8 @@ mod tests {
                 "selecting a source must enable the restore action"
             );
         }
-        // Phase `connect_browse_opens_a_shell_owned_modal_picker`.
+
+        phase connect_browse_opens_a_shell_owned_modal_picker;
         {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
@@ -5211,97 +5247,102 @@ mod tests {
         );
     }
 
-    #[test]
-    fn keyring_retry_public_member_uses_actual_acquisition_reducer_and_skips_backup() {
-        let root = TempDir::new().unwrap();
-        let directory = root.path().join("identity");
-        let public = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-            .verifying_key()
-            .to_bytes();
-        let record =
-            runtime_identity::public_member_record("Existing person", [128; 3], public).unwrap();
-        let path = directory.join("primary.json");
-        write_private_member_fixture(&directory, &record);
-        let mut view = OnboardingView::with_all_handlers(
-            Box::new(move || crate::identity::existing_identity_at(&path)),
-            Box::new(|_, _| Err("unused importer".into())),
-            Box::new(|_, _, _| panic!("a public member must never export a personal backup")),
-        );
-        view.identity_dir = Some(directory.clone());
-        view.backup_capability = Box::new(canonical_backup_capability);
-        view.recovery_only = true;
-        view.flow.begin_existing();
-        view.press(KEY_CONNECT_RETRY);
-        let doc = AutoCommit::new();
-        sync_journaled(&mut view, &doc);
-        assert!(view.flow.is_done());
-        assert!(view.identity_ready_page);
-        assert!(!view.backup_export_available);
-        assert!(!view.backup_was_verified);
-        assert!(view.error.is_none());
-        assert_eq!(
-            load_progress(&directory).unwrap(),
-            Some(PersistedStage::ReadyToEnter)
-        );
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            record
-        );
+    tilo_test_env::scenario! {
+        fn a_public_member_identity_skips_the_backup_step_and_keeps_its_record;
+
+        phase keyring_retry_public_member_uses_actual_acquisition_reducer_and_skips_backup;
+        {
+            let root = TempDir::new().unwrap();
+            let directory = root.path().join("identity");
+            let public = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                .verifying_key()
+                .to_bytes();
+            let record =
+                runtime_identity::public_member_record("Existing person", [128; 3], public).unwrap();
+            let path = directory.join("primary.json");
+            write_private_member_fixture(&directory, &record);
+            let mut view = OnboardingView::with_all_handlers(
+                Box::new(move || crate::identity::existing_identity_at(&path)),
+                Box::new(|_, _| Err("unused importer".into())),
+                Box::new(|_, _, _| panic!("a public member must never export a personal backup")),
+            );
+            view.identity_dir = Some(directory.clone());
+            view.backup_capability = Box::new(canonical_backup_capability);
+            view.recovery_only = true;
+            view.flow.begin_existing();
+            view.press(KEY_CONNECT_RETRY);
+            let doc = AutoCommit::new();
+            sync_journaled(&mut view, &doc);
+            assert!(view.flow.is_done());
+            assert!(view.identity_ready_page);
+            assert!(!view.backup_export_available);
+            assert!(!view.backup_was_verified);
+            assert!(view.error.is_none());
+            assert_eq!(
+                load_progress(&directory).unwrap(),
+                Some(PersistedStage::ReadyToEnter)
+            );
+            assert_eq!(
+                std::fs::read(directory.join("primary.json")).unwrap(),
+                record
+            );
+        }
+
+        phase first_login_public_member_skips_backup_without_reminting_or_losing_progress;
+        {
+            let root = TempDir::new().unwrap();
+            let directory = root.path().join("identity");
+            let public = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .to_bytes();
+            let record =
+                runtime_identity::public_member_record("Paired person", [128; 3], public).unwrap();
+            write_private_member_fixture(&directory, &record);
+            let mut view = real_backup_view(&directory);
+            assert!(!view.backup_export_available);
+            assert!(
+                view.identity_ready_page,
+                "actual connected acquisition skips the irrelevant backup step"
+            );
+            assert!(!view.backup_was_verified);
+            assert!(first_use(&view));
+            assert!(view.backup_status().is_none());
+            let theme = Theme::dark();
+            let composition = laid_out_themed(&mut view, &theme);
+            assert!(accessibility_for_id(composition, "onboarding.backup.passphrase").is_none());
+            assert!(accessibility_for_id(composition, "onboarding.backup.button").is_none());
+            assert_eq!(
+                load_progress(&directory).unwrap(),
+                Some(PersistedStage::ReadyToEnter)
+            );
+            assert_eq!(
+                std::fs::read(directory.join("primary.json")).unwrap(),
+                record
+            );
+            let mut reopened = real_backup_view(&directory);
+            reopened.restore_pending_progress_from_disk();
+            reopened.refresh_backup_capability().unwrap();
+            assert!(reopened.identity_ready_page);
+            assert!(!reopened.backup_was_verified);
+            // Existing tutorial progress survives the same canonical capability refresh.
+            reopened.tour_page = Some(TourPage::Organise);
+            reopened.refresh_backup_capability().unwrap();
+            assert_eq!(reopened.tour_page, Some(TourPage::Organise));
+            assert_eq!(
+                std::fs::read(directory.join("primary.json")).unwrap(),
+                record
+            );
+        }
     }
 
-    #[test]
-    fn first_login_public_member_skips_backup_without_reminting_or_losing_progress() {
-        let root = TempDir::new().unwrap();
-        let directory = root.path().join("identity");
-        let public = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
-            .verifying_key()
-            .to_bytes();
-        let record =
-            runtime_identity::public_member_record("Paired person", [128; 3], public).unwrap();
-        write_private_member_fixture(&directory, &record);
-        let mut view = real_backup_view(&directory);
-        assert!(!view.backup_export_available);
-        assert!(
-            view.identity_ready_page,
-            "actual connected acquisition skips the irrelevant backup step"
-        );
-        assert!(!view.backup_was_verified);
-        assert!(first_use(&view));
-        assert!(view.backup_status().is_none());
-        let theme = Theme::dark();
-        let composition = laid_out_themed(&mut view, &theme);
-        assert!(accessibility_for_id(composition, "onboarding.backup.passphrase").is_none());
-        assert!(accessibility_for_id(composition, "onboarding.backup.button").is_none());
-        assert_eq!(
-            load_progress(&directory).unwrap(),
-            Some(PersistedStage::ReadyToEnter)
-        );
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            record
-        );
-        let mut reopened = real_backup_view(&directory);
-        reopened.restore_pending_progress_from_disk();
-        reopened.refresh_backup_capability().unwrap();
-        assert!(reopened.identity_ready_page);
-        assert!(!reopened.backup_was_verified);
-        // Existing tutorial progress survives the same canonical capability refresh.
-        reopened.tour_page = Some(TourPage::Organise);
-        reopened.refresh_backup_capability().unwrap();
-        assert_eq!(reopened.tour_page, Some(TourPage::Organise));
-        assert_eq!(
-            std::fs::read(directory.join("primary.json")).unwrap(),
-            record
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn portable_backup_verifies_passphrases_and_returns_to_the_desktop;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn portable_backup_verifies_passphrases_and_returns_to_the_desktop() {
-        // Phase `portable_backup_requires_matching_strong_passphrases_and_reports_success`.
+        phase portable_backup_requires_matching_strong_passphrases_and_reports_success;
         {
             let progress = TempDir::new().expect("backup progress directory");
             let exports = Arc::new(AtomicUsize::new(0));
@@ -5383,7 +5424,8 @@ mod tests {
                 Some(PersistedStage::ReadyToEnterBackedUp)
             );
         }
-        // Phase `existing_identity_backup_entry_reuses_the_verified_backup_screen`.
+
+        phase existing_identity_backup_entry_reuses_the_verified_backup_screen;
         {
             let mut view = OnboardingView::with_all_handlers(
                 Box::new(|| Err("unused".to_string())),
@@ -5407,7 +5449,8 @@ mod tests {
                 "the existing identity route must expose the same shell-owned export control"
             );
         }
-        // Phase `verified_existing_identity_backup_returns_directly_to_desktop`.
+
+        phase verified_existing_identity_backup_returns_directly_to_desktop;
         {
             let progress = TempDir::new().expect("backup progress directory");
             let mut view = OnboardingView::with_all_handlers(
@@ -5436,7 +5479,8 @@ mod tests {
                 "leaving Settings after verification must not resurrect first-login setup"
             );
         }
-        // Phase `verified_backup_reveals_copy_form_only_after_the_optional_action`.
+
+        phase verified_backup_reveals_copy_form_only_after_the_optional_action;
         {
             let (mut view, _) = view();
             view.set_visual_state_for_snapshot(OnboardingVisualState::BackupVerified);
@@ -5610,221 +5654,229 @@ mod tests {
         accessibility_for_id(ceremony(view), "onboarding.progress.stage").and_then(|node| node.name)
     }
 
-    #[test]
-    fn the_codecs_step_is_one_install_button_with_nothing_chosen() {
-        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
-        let (view, _) = view();
-        let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
-        let mut doc = AutoCommit::new();
-        walk_to_codecs(&mut view, &mut doc);
-        assert!(view.codec_page_visible());
-        layout(&mut view);
-        assert_eq!(stage_label(&mut view).as_deref(), Some("Step 4 of 5"));
-        let lines = view.codec_page_lines();
-        let note = accessibility_for_id(ceremony(&mut view), "onboarding.codecs.note")
-            .expect("the formats source explanation must be accessible");
-        assert_eq!(note.name.as_deref(), Some(codecs_note().as_str()));
-        assert_eq!(
-            lines,
-            [
-                "Play more video and audio formats",
-                "Downloaded to this device from the formats' publishers. You can turn it off in Settings.",
-                "Install",
-                "Not now",
-            ],
-            "a title, one short line, the Install button and a way past it; no essay"
-        );
-        assert_eq!(
-            default_focus_label(&mut view).as_deref(),
-            Some("Install"),
-            "Enter is the same deliberate press as clicking Install"
-        );
-        assert!(fake.runs().is_empty(), "reaching the step installs nothing");
-        // The step blocks neither the tour nor finishing only by accident:
-        // both wait until the person chose.
-        press(&view, &mut doc, KEY_FINISH);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(!view.finished());
-        assert!(view.codec_page_visible());
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn the_codecs_step_installs_skips_and_reports_what_the_person_chose;
 
-    #[test]
-    fn installing_from_setup_records_the_choice_and_shows_the_result() {
-        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
-        let (view, _) = view();
-        let mut view = view.with_codec_setup(fake.setup(
-            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
-            Ok(()),
-        ));
-        let mut doc = AutoCommit::new();
-        walk_to_codecs(&mut view, &mut doc);
-        press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&doc, &automerge::ROOT);
-        view.wait_for_codec_install();
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(fake.runs(), vec![CodecAction::Install]);
-        assert!(
-            view.codec_page_visible(),
-            "Install never moves past the page by itself"
-        );
-        assert_eq!(view.codec_status().state, PackState::Installed);
-        layout(&mut view);
-        let lines = view.codec_page_lines();
-        assert!(lines.contains(&"More video and audio formats are on".to_string()));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("Sign out and back in")),
-            "{lines:?}"
-        );
-        assert_eq!(lines.last().map(String::as_str), Some("Continue"));
-        press(&view, &mut doc, KEY_CODECS_CONTINUE);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(!view.codec_page_visible());
-        layout(&mut view);
-        assert_eq!(stage_label(&mut view).as_deref(), Some("Step 5 of 5"));
-        press(&view, &mut doc, KEY_FINISH);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(view.finished());
-    }
+        phase the_codecs_step_is_one_install_button_with_nothing_chosen;
+        {
+            let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+            let (view, _) = view();
+            let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
+            let mut doc = AutoCommit::new();
+            walk_to_codecs(&mut view, &mut doc);
+            assert!(view.codec_page_visible());
+            layout(&mut view);
+            assert_eq!(stage_label(&mut view).as_deref(), Some("Step 4 of 5"));
+            let lines = view.codec_page_lines();
+            let note = accessibility_for_id(ceremony(&mut view), "onboarding.codecs.note")
+                .expect("the formats source explanation must be accessible");
+            assert_eq!(note.name.as_deref(), Some(codecs_note().as_str()));
+            assert_eq!(
+                lines,
+                [
+                    "Play more video and audio formats",
+                    "Downloaded to this device from the formats' publishers. You can turn it off in Settings.",
+                    "Install",
+                    "Not now",
+                ],
+                "a title, one short line, the Install button and a way past it; no essay"
+            );
+            assert_eq!(
+                default_focus_label(&mut view).as_deref(),
+                Some("Install"),
+                "Enter is the same deliberate press as clicking Install"
+            );
+            assert!(fake.runs().is_empty(), "reaching the step installs nothing");
+            // The step blocks neither the tour nor finishing only by accident:
+            // both wait until the person chose.
+            press(&view, &mut doc, KEY_FINISH);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(!view.finished());
+            assert!(view.codec_page_visible());
+        }
 
-    #[test]
-    fn not_now_installs_nothing_and_continues() {
-        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
-        let (view, _) = view();
-        let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
-        let mut doc = AutoCommit::new();
-        walk_to_codecs(&mut view, &mut doc);
-        press(&view, &mut doc, KEY_CODECS_SKIP);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(!view.codec_page_visible());
-        assert!(fake.runs().is_empty());
-        press(&view, &mut doc, KEY_FINISH);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(view.finished());
-    }
+        phase installing_from_setup_records_the_choice_and_shows_the_result;
+        {
+            let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+            let (view, _) = view();
+            let mut view = view.with_codec_setup(fake.setup(
+                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
+                Ok(()),
+            ));
+            let mut doc = AutoCommit::new();
+            walk_to_codecs(&mut view, &mut doc);
+            press(&view, &mut doc, KEY_CODECS_INSTALL);
+            view.sync(&doc, &automerge::ROOT);
+            view.wait_for_codec_install();
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(fake.runs(), vec![CodecAction::Install]);
+            assert!(
+                view.codec_page_visible(),
+                "Install never moves past the page by itself"
+            );
+            assert_eq!(view.codec_status().state, PackState::Installed);
+            layout(&mut view);
+            let lines = view.codec_page_lines();
+            assert!(lines.contains(&"More video and audio formats are on".to_string()));
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("Sign out and back in")),
+                "{lines:?}"
+            );
+            assert_eq!(lines.last().map(String::as_str), Some("Continue"));
+            press(&view, &mut doc, KEY_CODECS_CONTINUE);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(!view.codec_page_visible());
+            layout(&mut view);
+            assert_eq!(stage_label(&mut view).as_deref(), Some("Step 5 of 5"));
+            press(&view, &mut doc, KEY_FINISH);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(view.finished());
+        }
 
-    #[test]
-    fn setup_continues_while_the_download_runs() {
-        let (release, gate) = std::sync::mpsc::channel::<()>();
-        let gate = Mutex::new(gate);
-        let (started_tx, started) = std::sync::mpsc::channel::<()>();
-        let started_tx = Mutex::new(started_tx);
-        let status = Arc::new(Mutex::new(r#"{"state":"not-installed"}"#.to_string()));
-        let reader = Arc::clone(&status);
-        let writer = Arc::clone(&status);
-        let (view, _) = view();
-        let mut view = view.with_codec_setup(CodecSetup::with(
-            Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
-            Arc::new(move |_| {
-                *writer.lock().unwrap() = r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#.to_string();
-                let _ = started_tx.lock().unwrap().send(());
-                let _ = gate.lock().unwrap().recv();
-                Ok(())
-            }),
-        ));
-        let mut doc = AutoCommit::new();
-        walk_to_codecs(&mut view, &mut doc);
-        press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&doc, &automerge::ROOT);
-        // Nothing wakes the compositor for the worker, so the view does.
-        let limit = Instant::now().checked_add(BACKGROUND_POLL).unwrap();
-        assert!(
-            view.next_wake_deadline()
-                .is_some_and(|deadline| deadline <= limit),
-            "a running install keeps looking for its result"
-        );
-        // The helper reports progress through its status file.
-        started.recv().unwrap();
-        view.codec_changed.store(true, Ordering::Release);
-        assert!(
-            view.needs_animation_frame(),
-            "a status change asks for a frame"
-        );
-        view.sync(&doc, &automerge::ROOT);
-        let lines = view.codec_page_lines();
-        assert_eq!(view.codec_status().state, PackState::Installing);
-        assert!(lines.contains(&"Installing more formats".to_string()));
-        assert!(lines.contains(&"29%".to_string()), "{lines:?}");
-        assert!(
-            lines.iter().any(|line| line.contains("Setup can continue")),
-            "{lines:?}"
-        );
-        assert_eq!(lines.last().map(String::as_str), Some("Continue"));
-        press(&view, &mut doc, KEY_CODECS_CONTINUE);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(
-            !view.codec_page_visible(),
-            "the download does not hold setup"
-        );
-        press(&view, &mut doc, KEY_FINISH);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(view.finished());
-        release.send(()).unwrap();
-    }
+        phase not_now_installs_nothing_and_continues;
+        {
+            let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+            let (view, _) = view();
+            let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
+            let mut doc = AutoCommit::new();
+            walk_to_codecs(&mut view, &mut doc);
+            press(&view, &mut doc, KEY_CODECS_SKIP);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(!view.codec_page_visible());
+            assert!(fake.runs().is_empty());
+            press(&view, &mut doc, KEY_FINISH);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(view.finished());
+        }
 
-    #[test]
-    fn an_offline_choice_is_kept_and_installs_later() {
-        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
-        let (view, _) = view();
-        let mut view = view.with_codec_setup(
-            fake.setup(r#"{"state":"waiting-for-network","desired":true}"#, Ok(())),
-        );
-        let mut doc = AutoCommit::new();
-        walk_to_codecs(&mut view, &mut doc);
-        press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&doc, &automerge::ROOT);
-        view.wait_for_codec_install();
-        view.sync(&doc, &automerge::ROOT);
-        let lines = view.codec_page_lines();
-        assert!(lines.contains(&"Installs once you are online".to_string()));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("Your choice is saved"))
-        );
-        assert_eq!(lines.last().map(String::as_str), Some("Continue"));
-        layout(&mut view);
-    }
+        phase setup_continues_while_the_download_runs;
+        {
+            let (release, gate) = std::sync::mpsc::channel::<()>();
+            let gate = Mutex::new(gate);
+            let (started_tx, started) = std::sync::mpsc::channel::<()>();
+            let started_tx = Mutex::new(started_tx);
+            let status = Arc::new(Mutex::new(r#"{"state":"not-installed"}"#.to_string()));
+            let reader = Arc::clone(&status);
+            let writer = Arc::clone(&status);
+            let (view, _) = view();
+            let mut view = view.with_codec_setup(CodecSetup::with(
+                Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
+                Arc::new(move |_| {
+                    *writer.lock().unwrap() = r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#.to_string();
+                    let _ = started_tx.lock().unwrap().send(());
+                    let _ = gate.lock().unwrap().recv();
+                    Ok(())
+                }),
+            ));
+            let mut doc = AutoCommit::new();
+            walk_to_codecs(&mut view, &mut doc);
+            press(&view, &mut doc, KEY_CODECS_INSTALL);
+            view.sync(&doc, &automerge::ROOT);
+            // Nothing wakes the compositor for the worker, so the view does.
+            let limit = Instant::now().checked_add(BACKGROUND_POLL).unwrap();
+            assert!(
+                view.next_wake_deadline()
+                    .is_some_and(|deadline| deadline <= limit),
+                "a running install keeps looking for its result"
+            );
+            // The helper reports progress through its status file.
+            started.recv().unwrap();
+            view.codec_changed.store(true, Ordering::Release);
+            assert!(
+                view.needs_animation_frame(),
+                "a status change asks for a frame"
+            );
+            view.sync(&doc, &automerge::ROOT);
+            let lines = view.codec_page_lines();
+            assert_eq!(view.codec_status().state, PackState::Installing);
+            assert!(lines.contains(&"Installing more formats".to_string()));
+            assert!(lines.contains(&"29%".to_string()), "{lines:?}");
+            assert!(
+                lines.iter().any(|line| line.contains("Setup can continue")),
+                "{lines:?}"
+            );
+            assert_eq!(lines.last().map(String::as_str), Some("Continue"));
+            press(&view, &mut doc, KEY_CODECS_CONTINUE);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(
+                !view.codec_page_visible(),
+                "the download does not hold setup"
+            );
+            press(&view, &mut doc, KEY_FINISH);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(view.finished());
+            release.send(()).unwrap();
+        }
 
-    #[test]
-    fn a_refused_install_is_shown_inline_with_retry_and_skip() {
-        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
-        let (view, _) = view();
-        let mut view = view.with_codec_setup(fake.setup(
-            r#"{"state":"not-installed"}"#,
-            Err("Access denied: not an administrator".into()),
-        ));
-        let mut doc = AutoCommit::new();
-        walk_to_codecs(&mut view, &mut doc);
-        press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&doc, &automerge::ROOT);
-        view.wait_for_codec_install();
-        view.sync(&doc, &automerge::ROOT);
-        let lines = view.codec_page_lines();
-        assert!(lines.contains(&"Could not install more formats".to_string()));
-        assert!(lines.contains(&"Access denied: not an administrator".to_string()));
-        assert_eq!(&lines[lines.len() - 2..], ["Try again", "Skip"]);
-        layout(&mut view);
-        press(&view, &mut doc, KEY_CODECS_INSTALL);
-        view.sync(&doc, &automerge::ROOT);
-        view.wait_for_codec_install();
-        assert_eq!(
-            fake.runs(),
-            vec![CodecAction::Install, CodecAction::Install]
-        );
-    }
+        phase an_offline_choice_is_kept_and_installs_later;
+        {
+            let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+            let (view, _) = view();
+            let mut view = view.with_codec_setup(
+                fake.setup(r#"{"state":"waiting-for-network","desired":true}"#, Ok(())),
+            );
+            let mut doc = AutoCommit::new();
+            walk_to_codecs(&mut view, &mut doc);
+            press(&view, &mut doc, KEY_CODECS_INSTALL);
+            view.sync(&doc, &automerge::ROOT);
+            view.wait_for_codec_install();
+            view.sync(&doc, &automerge::ROOT);
+            let lines = view.codec_page_lines();
+            assert!(lines.contains(&"Installs once you are online".to_string()));
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("Your choice is saved"))
+            );
+            assert_eq!(lines.last().map(String::as_str), Some("Continue"));
+            layout(&mut view);
+        }
 
-    #[test]
-    fn a_choice_made_in_the_installer_is_not_asked_again() {
-        let fake = FakeCodecs::new(r#"{"state":"waiting-for-network","desired":true}"#);
-        let (view, _) = view();
-        let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
-        let mut doc = AutoCommit::new();
-        walk_to_codecs(&mut view, &mut doc);
-        assert!(!view.codec_page_visible());
-        layout(&mut view);
-        assert_eq!(stage_label(&mut view).as_deref(), Some("Step 4 of 4"));
+        phase a_refused_install_is_shown_inline_with_retry_and_skip;
+        {
+            let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+            let (view, _) = view();
+            let mut view = view.with_codec_setup(fake.setup(
+                r#"{"state":"not-installed"}"#,
+                Err("Access denied: not an administrator".into()),
+            ));
+            let mut doc = AutoCommit::new();
+            walk_to_codecs(&mut view, &mut doc);
+            press(&view, &mut doc, KEY_CODECS_INSTALL);
+            view.sync(&doc, &automerge::ROOT);
+            view.wait_for_codec_install();
+            view.sync(&doc, &automerge::ROOT);
+            let lines = view.codec_page_lines();
+            assert!(lines.contains(&"Could not install more formats".to_string()));
+            assert!(lines.contains(&"Access denied: not an administrator".to_string()));
+            assert_eq!(&lines[lines.len() - 2..], ["Try again", "Skip"]);
+            layout(&mut view);
+            press(&view, &mut doc, KEY_CODECS_INSTALL);
+            view.sync(&doc, &automerge::ROOT);
+            view.wait_for_codec_install();
+            assert_eq!(
+                fake.runs(),
+                vec![CodecAction::Install, CodecAction::Install]
+            );
+        }
+
+        phase a_choice_made_in_the_installer_is_not_asked_again;
+        {
+            let fake = FakeCodecs::new(r#"{"state":"waiting-for-network","desired":true}"#);
+            let (view, _) = view();
+            let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
+            let mut doc = AutoCommit::new();
+            walk_to_codecs(&mut view, &mut doc);
+            assert!(!view.codec_page_visible());
+            layout(&mut view);
+            assert_eq!(stage_label(&mut view).as_deref(), Some("Step 4 of 4"));
+        }
     }
 
     #[test]
@@ -5843,13 +5895,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn every_screen_lays_out_inside_the_viewport() {
-        // Phase `every_screen_builds_a_layout`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn every_screen_lays_out_inside_the_viewport;
+
+        phase every_screen_builds_a_layout;
         // Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.
         {
             let (mut v, _) = view();
@@ -5889,7 +5942,8 @@ mod tests {
                 let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
             }
         }
-        // Phase `narrow_layout_keeps_the_setup_surface_inside_the_viewport`.
+
+        phase narrow_layout_keeps_the_setup_surface_inside_the_viewport;
         {
             let (mut view, _) = view();
             let theme = Theme::dark();
@@ -5898,7 +5952,8 @@ mod tests {
             assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
             assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
         }
-        // Phase `introduction_uses_a_compact_panel_on_a_large_display`.
+
+        phase introduction_uses_a_compact_panel_on_a_large_display;
         {
             let (mut view, _) = view();
             let theme = Theme::dark();
@@ -6203,162 +6258,167 @@ mod tests {
         }
     }
 
-    #[test]
-    fn each_choice_screen_offers_cards_that_stay_in_view() {
-        for (keys, cards) in [
-            (
-                &[][..],
-                &["onboarding.existing.card", "onboarding.begin.card"][..],
-            ),
-            (
-                &[KEY_EXISTING][..],
-                &[
-                    "onboarding.existing.nearby.card",
-                    "onboarding.existing.recovery-key.card",
-                    "onboarding.existing.restore.card",
-                ][..],
-            ),
-        ] {
-            for (width, height, theme) in [
-                (1366.0, 768.0, Theme::dark()),
-                (800.0, 600.0, Theme::dark()),
-                (1280.0, 720.0, Theme::dark().with_text_scale(1.3)),
-                (1280.0, 720.0, Theme::high_contrast().with_ui_scale(1.25)),
+    tilo_test_env::scenario! {
+        fn the_existing_identity_choices_are_cards_in_view_that_open_their_own_screens;
+
+        phase each_choice_screen_offers_cards_that_stay_in_view;
+        {
+            for (keys, cards) in [
+                (
+                    &[][..],
+                    &["onboarding.existing.card", "onboarding.begin.card"][..],
+                ),
+                (
+                    &[KEY_EXISTING][..],
+                    &[
+                        "onboarding.existing.nearby.card",
+                        "onboarding.existing.recovery-key.card",
+                        "onboarding.existing.restore.card",
+                    ][..],
+                ),
             ] {
-                let (mut view, _) = view();
-                let mut document = AutoCommit::new();
-                for key in keys {
-                    press(&view, &mut document, key);
-                    view.sync(&document, &automerge::ROOT);
-                }
-                let LaidOut {
-                    nodes: node_map, ..
-                } = lay_out_as_root(&mut view, width, height, &theme);
-                let panel = panel_rect(&mut view);
-                let scroll = node_map
-                    .values()
-                    .find_map(|&pointer| unsafe {
-                        ((*pointer).name() == "Scrollable").then(|| (*pointer).get_rect())
-                    })
-                    .expect("choice page scroll viewport");
-                let mut previous: Option<Rect> = None;
-                for id in cards {
-                    let (rect, focusable) = node_map
+                for (width, height, theme) in [
+                    (1366.0, 768.0, Theme::dark()),
+                    (800.0, 600.0, Theme::dark()),
+                    (1280.0, 720.0, Theme::dark().with_text_scale(1.3)),
+                    (1280.0, 720.0, Theme::high_contrast().with_ui_scale(1.25)),
+                ] {
+                    let (mut view, _) = view();
+                    let mut document = AutoCommit::new();
+                    for key in keys {
+                        press(&view, &mut document, key);
+                        view.sync(&document, &automerge::ROOT);
+                    }
+                    let LaidOut {
+                        nodes: node_map, ..
+                    } = lay_out_as_root(&mut view, width, height, &theme);
+                    let panel = panel_rect(&mut view);
+                    let scroll = node_map
                         .values()
                         .find_map(|&pointer| unsafe {
-                            ((*pointer).test_id() == Some(id))
-                                .then(|| ((*pointer).get_rect(), (*pointer).is_focusable()))
+                            ((*pointer).name() == "Scrollable").then(|| (*pointer).get_rect())
                         })
-                        .unwrap_or_else(|| panic!("choice screen exposes {id}"));
-                    assert!(focusable, "{id} must be a keyboard focus stop");
-                    assert!(
-                        rect.height() >= f64::from(theme.tokens.metrics.min_pointer_target)
-                            && rect.x0 >= panel.x0 + 8.0
-                            && rect.x1 <= panel.x1 - 8.0
-                            && rect.y0 >= scroll.y1
-                            && rect.y1 <= panel.y1 - 8.0,
-                        "{id} must stay wholly visible below the explanation at {width}x{height}: card={rect:?}, scroll={scroll:?}, panel={panel:?}, theme={}",
-                        theme.name,
-                    );
-                    if let Some(previous) = previous {
+                        .expect("choice page scroll viewport");
+                    let mut previous: Option<Rect> = None;
+                    for id in cards {
+                        let (rect, focusable) = node_map
+                            .values()
+                            .find_map(|&pointer| unsafe {
+                                ((*pointer).test_id() == Some(id))
+                                    .then(|| ((*pointer).get_rect(), (*pointer).is_focusable()))
+                            })
+                            .unwrap_or_else(|| panic!("choice screen exposes {id}"));
+                        assert!(focusable, "{id} must be a keyboard focus stop");
                         assert!(
-                            (rect.y0 - previous.y1).abs() < 0.5,
-                            "the choices are one list, edge to edge"
+                            rect.height() >= f64::from(theme.tokens.metrics.min_pointer_target)
+                                && rect.x0 >= panel.x0 + 8.0
+                                && rect.x1 <= panel.x1 - 8.0
+                                && rect.y0 >= scroll.y1
+                                && rect.y1 <= panel.y1 - 8.0,
+                            "{id} must stay wholly visible below the explanation at {width}x{height}: card={rect:?}, scroll={scroll:?}, panel={panel:?}, theme={}",
+                            theme.name,
                         );
-                        assert!((rect.x0 - previous.x0).abs() < 0.5, "rows share an edge");
+                        if let Some(previous) = previous {
+                            assert!(
+                                (rect.y0 - previous.y1).abs() < 0.5,
+                                "the choices are one list, edge to edge"
+                            );
+                            assert!((rect.x0 - previous.x0).abs() < 0.5, "rows share an edge");
+                        }
+                        previous = Some(rect);
+                        let node =
+                            accessibility_for_id(ceremony(&mut view), id).expect("row semantics");
+                        assert_eq!(node.role, ui::a11y::Role::ListItem);
+                        assert!(
+                            node.value.as_deref().is_some_and(|value| !value.is_empty()),
+                            "{id} announces its description"
+                        );
                     }
-                    previous = Some(rect);
-                    let node =
-                        accessibility_for_id(ceremony(&mut view), id).expect("row semantics");
-                    assert_eq!(node.role, ui::a11y::Role::ListItem);
-                    assert!(
-                        node.value.as_deref().is_some_and(|value| !value.is_empty()),
-                        "{id} announces its description"
-                    );
                 }
             }
         }
+
+        phase use_existing_opens_a_choice_and_each_choice_its_own_screen;
+        {
+            let (mut view, _) = view();
+            let mut document = AutoCommit::new();
+            press(&view, &mut document, KEY_EXISTING);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Existing);
+            let theme = Theme::dark();
+            let composition = laid_out_themed(&mut view, &theme);
+            assert!(
+                accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
+                "the choice screen is not the restore form"
+            );
+
+            press(&view, &mut document, KEY_CHOOSE_RESTORE);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Restore);
+            let composition = laid_out_themed(&mut view, &theme);
+            assert!(accessibility_for_id(composition, "onboarding.connect.path.field").is_some());
+            assert!(
+                accessibility_for_id(composition, "onboarding.nearby.status").is_none(),
+                "restore does not carry the nearby flow"
+            );
+            press(&view, &mut document, KEY_BACK);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Existing);
+
+            // Without an identity directory the helper cannot start; the
+            // nearby screen still opens and reports why, with a retry.
+            press(&view, &mut document, KEY_CHOOSE_NEARBY);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Nearby);
+            assert_eq!(
+                view.error(),
+                Some(tilo_onboarding::t("onboarding-nearby-unavailable").as_str()),
+                "choosing nearby is the request to pair"
+            );
+            let composition = laid_out_themed(&mut view, &theme);
+            assert!(
+                accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
+                "nearby does not carry the restore form"
+            );
+            assert!(
+                accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
+                "a failed start offers Try again"
+            );
+            press(&view, &mut document, KEY_BACK);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Existing);
+            assert!(
+                view.error().is_none(),
+                "back leaves the flow's error behind"
+            );
+            press(&view, &mut document, KEY_BACK);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Intro);
+        }
+
+        phase nearby_shows_cancel_while_pairing_runs;
+        {
+            let (mut view, _) = view();
+            view.set_visual_state_for_snapshot(OnboardingVisualState::NearbyCode);
+            let theme = Theme::dark();
+            let composition = laid_out_themed(&mut view, &theme);
+            assert!(accessibility_for_id(composition, "onboarding.connect.cancel.button").is_some());
+            assert!(accessibility_for_id(composition, "onboarding.connect.nearby.button").is_none());
+            assert_eq!(
+                accessibility_for_id(composition, "onboarding.nearby.code").and_then(|node| node.name),
+                Some("482 913".to_string())
+            );
+        }
     }
 
-    #[test]
-    fn use_existing_opens_a_choice_and_each_choice_its_own_screen() {
-        let (mut view, _) = view();
-        let mut document = AutoCommit::new();
-        press(&view, &mut document, KEY_EXISTING);
-        view.sync(&document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Existing);
-        let theme = Theme::dark();
-        let composition = laid_out_themed(&mut view, &theme);
-        assert!(
-            accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
-            "the choice screen is not the restore form"
-        );
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn pointer_targets_hit_the_acknowledgement_and_continue_actions;
 
-        press(&view, &mut document, KEY_CHOOSE_RESTORE);
-        view.sync(&document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Restore);
-        let composition = laid_out_themed(&mut view, &theme);
-        assert!(accessibility_for_id(composition, "onboarding.connect.path.field").is_some());
-        assert!(
-            accessibility_for_id(composition, "onboarding.nearby.status").is_none(),
-            "restore does not carry the nearby flow"
-        );
-        press(&view, &mut document, KEY_BACK);
-        view.sync(&document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Existing);
-
-        // Without an identity directory the helper cannot start; the
-        // nearby screen still opens and reports why, with a retry.
-        press(&view, &mut document, KEY_CHOOSE_NEARBY);
-        view.sync(&document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Nearby);
-        assert_eq!(
-            view.error(),
-            Some(tilo_onboarding::t("onboarding-nearby-unavailable").as_str()),
-            "choosing nearby is the request to pair"
-        );
-        let composition = laid_out_themed(&mut view, &theme);
-        assert!(
-            accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
-            "nearby does not carry the restore form"
-        );
-        assert!(
-            accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
-            "a failed start offers Try again"
-        );
-        press(&view, &mut document, KEY_BACK);
-        view.sync(&document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Existing);
-        assert!(
-            view.error().is_none(),
-            "back leaves the flow's error behind"
-        );
-        press(&view, &mut document, KEY_BACK);
-        view.sync(&document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Intro);
-    }
-
-    #[test]
-    fn nearby_shows_cancel_while_pairing_runs() {
-        let (mut view, _) = view();
-        view.set_visual_state_for_snapshot(OnboardingVisualState::NearbyCode);
-        let theme = Theme::dark();
-        let composition = laid_out_themed(&mut view, &theme);
-        assert!(accessibility_for_id(composition, "onboarding.connect.cancel.button").is_some());
-        assert!(accessibility_for_id(composition, "onboarding.connect.nearby.button").is_none());
-        assert_eq!(
-            accessibility_for_id(composition, "onboarding.nearby.code").and_then(|node| node.name),
-            Some("482 913".to_string())
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn pointer_targets_hit_the_acknowledgement_and_continue_actions() {
-        // Phase `acknowledgement_label_is_the_checkbox_click_target`.
+        phase acknowledgement_label_is_the_checkbox_click_target;
         {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
@@ -6422,7 +6482,8 @@ mod tests {
             );
             assert!(read_bool(&document, &automerge::ROOT, KEY_UNDERSTOOD));
         }
-        // Phase `continue_without_backup_pointer_target_advances_to_ready_page`.
+
+        phase continue_without_backup_pointer_target_advances_to_ready_page;
         {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
@@ -6498,13 +6559,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn backup_and_recovery_tasks_share_a_reachable_scroll_body_at_review_sizes() {
-        // Phase `first_frames_do_not_hide_backup_recovery_or_final_tour_tasks`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn backup_and_recovery_tasks_share_a_reachable_scroll_body_at_review_sizes;
+
+        phase first_frames_do_not_hide_backup_recovery_or_final_tour_tasks;
         {
             fn initial_scroll_offset(view: &mut OnboardingView) -> f32 {
                 let theme = Theme::dark();
@@ -6545,7 +6607,8 @@ mod tests {
                 "every first-five-minutes task must be visible before a person discovers scrolling; only the content gutter may extend below the viewport (overflow={final_tour_overflow})"
             );
         }
-        // Phase `backup_recovery_controls_share_a_reachable_body_at_review_sizes`.
+
+        phase backup_recovery_controls_share_a_reachable_body_at_review_sizes;
         {
             for (width, height, theme) in [
                 (1280.0, 800.0, Theme::dark()),
@@ -6677,7 +6740,8 @@ mod tests {
                 );
             }
         }
-        // Phase `verified_backup_status_and_completion_are_visible_at_review_sizes`.
+
+        phase verified_backup_status_and_completion_are_visible_at_review_sizes;
         {
             for (width, height) in [(1280.0, 800.0), (800.0, 600.0)] {
                 let (mut view, _) = view();
@@ -6740,13 +6804,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn large_text_keeps_every_primary_action_visible() {
-        // Phase `done_exit_action_stays_visible_at_laptop_height_with_large_text`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn large_text_keeps_every_primary_action_visible;
+
+        phase done_exit_action_stays_visible_at_laptop_height_with_large_text;
         {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
@@ -6797,7 +6862,8 @@ mod tests {
                 "the ready screen hands off to the desktop without offering a tour"
             );
         }
-        // Phase `large_text_backup_action_keeps_a_clear_gap_below_confirmation`.
+
+        phase large_text_backup_action_keeps_a_clear_gap_below_confirmation;
         {
             let (mut view, _) = view();
             let mut document = AutoCommit::new();
@@ -6826,7 +6892,8 @@ mod tests {
                 "backup action must not visually merge with confirmation input: confirmation={confirmation:?}, action={action:?}"
             );
         }
-        // Phase `tour_navigation_stays_visible_on_every_page_at_narrow_large_text_size`.
+
+        phase tour_navigation_stays_visible_on_every_page_at_narrow_large_text_size;
         {
             const WIDTH: f32 = 420.0;
             const HEIGHT: f32 = 640.0;

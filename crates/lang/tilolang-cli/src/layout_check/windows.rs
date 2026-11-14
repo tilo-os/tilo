@@ -123,7 +123,7 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
     nodes(content, "row", &mut rows);
     let steps: Vec<&tilo_ui_host::UiNode> = rows
         .into_iter()
-        .filter(|row| row.key.contains("~step"))
+        .filter(|row| row.key.ends_with("~step"))
         .collect();
     assert!(
         !steps.is_empty(),
@@ -226,6 +226,31 @@ fn dividers_of(staged: &stage::Staged) -> Vec<(String, Rect)> {
     let mut out = Vec::new();
     all(&staged.harness().inspection().root, &mut out);
     out
+}
+
+/// The shell layout of the window `staged` shows, as the shell says it held its header rows.
+fn shell_at(staged: &stage::Staged) -> Option<ui::widget::ShellLayout> {
+    fn find(node: &ui::headless::InspectionNode) -> Option<ui::widget::ShellLayout> {
+        if let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout {
+            return Some(*shell);
+        }
+        node.children.iter().find_map(find)
+    }
+    find(&staged.harness().inspection().root)
+}
+
+/// What the shown floating surface the widget `name` draws is called, as a reader hears it.
+fn shown_floating_name(staged: &stage::Staged, name: &str) -> Option<String> {
+    fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
+        if node.widget == name && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
+            return node
+                .semantics
+                .as_ref()
+                .and_then(|access| access.name.clone());
+        }
+        node.children.iter().find_map(|child| find(child, name))
+    }
+    find(&staged.harness().inspection().root, name)
 }
 
 /// Where the floating surface the widget `name` draws, a popover or a sheet, stands.
@@ -541,6 +566,54 @@ fn window_mark(tree: &tilo_ui_host::UiNode) -> Option<tilo_ui_host::UiNode> {
         .cloned()
 }
 
+/// What a window's mark opens, one line of text per catch-up row: each row's item, its sentence,
+/// its posts counted in that sentence where the app's words say how many, and the count of changes
+/// it folds beside it where they do not.
+fn catch_up_rows(tree: &tilo_ui_host::UiNode) -> Vec<String> {
+    let window = window_mark(tree).expect("the window says what changed since the person looked");
+    let content = window
+        .children
+        .iter()
+        .find(|child| {
+            child.kind == "slot"
+                && child.props.get("name")
+                    == Some(&tilo_render_protocol::patch::Value::text("content"))
+        })
+        .and_then(|slot| slot.children.first())
+        .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
+    let said = |node: &tilo_ui_host::UiNode| match node.props.get("value") {
+        Some(tilo_render_protocol::patch::Value::Text(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let mut found = Vec::new();
+    nodes(content, "stack", &mut found);
+    let mut rows: Vec<&tilo_ui_host::UiNode> = found
+        .into_iter()
+        .filter(|stack| {
+            stack
+                .key
+                .rsplit_once("~since-")
+                .is_some_and(|(_, row)| row.chars().all(|c| c.is_ascii_digit()))
+        })
+        .collect();
+    rows.sort_by_key(|stack| stack.key.clone());
+    rows.into_iter()
+        .map(|stack| {
+            let mut words = Vec::new();
+            let mut inside = Vec::new();
+            nodes(stack, "ui.Text", &mut inside);
+            for node in inside {
+                if node.kind == "ui.Text"
+                    && (node.key.contains("~step") || node.key.ends_with("~changes"))
+                {
+                    words.extend(said(node));
+                }
+            }
+            words.join(" ")
+        })
+        .collect()
+}
+
 /// The window's own tabs under `root`: the strip a `TabStrip` draws (it draws as the toolkit's
 /// bar), never a tab bar an app puts in its own content.
 fn tab_strips(root: &dyn Widget) -> Vec<&dyn Widget> {
@@ -565,20 +638,58 @@ fn tabs_of(bar: &dyn Widget) -> usize {
         .map_or(0, |strip| strip.bar().tabs().len())
 }
 
-#[test]
-fn its_windows_show_their_apps_content_under_one_bar_each() {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let staged = stage::Staged::over(
-        &app,
-        &packages,
+/// The shell's traditional desktop staged at `size` under `theme`, as each part below reads it.
+fn the_traditional_desktop(
+    app: &str,
+    packages: &Rc<stage::Packages>,
+    size: (u32, u32),
+    theme: ui::Theme,
+) -> stage::Staged {
+    stage::Staged::over(
+        app,
+        packages,
         "the traditional desktop",
-        (1280, 800),
-        ui::Theme::light(),
+        size,
+        theme,
         None,
         &[],
     )
-    .expect("the scenario stages");
+    .expect("the scenario stages")
+}
+
+/// The traditional desktop as a person meets it, from one build of the shell: its windows at a
+/// desk's size and what they read out, its top bar and its counts at three sizes, and the window
+/// in front on a phone. Every part reads a window staged at its own size and theme; the one
+/// window two parts share is only read by the first, and laid out again by the second, last.
+#[test]
+fn the_traditional_desktop_stands_as_a_person_reads_it() {
+    tilo_ui_host::i18n::ensure();
+    let (app, packages) = packages();
+    {
+        // Gone before the next window is staged: one window stands at a time, as when each part
+        // was a test of its own.
+        let mut desk = the_traditional_desktop(&app, &packages, (1280, 800), ui::Theme::light());
+        its_windows_show_their_apps_content_under_one_bar_each(&desk);
+        its_people_are_called_by_their_names_never_their_ids(&mut desk);
+    }
+    for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
+        let staged = the_traditional_desktop(
+            &app,
+            &packages,
+            (width, height),
+            ui::Theme::light().with_text_scale(text),
+        );
+        let mut controls = Vec::new();
+        shell_controls(staged.harness().root_widget(), &mut controls);
+        let at = format!("{width}×{height} text {text}");
+        its_top_bar_is_one_row_whose_parts_never_press_into_each_other(&controls, width, &at);
+        a_count_stands_on_its_icons_corner_and_over_no_other_control(&controls, width, &at);
+    }
+    let phone = the_traditional_desktop(&app, &packages, (320, 568), ui::Theme::light());
+    on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock(&phone);
+}
+
+fn its_windows_show_their_apps_content_under_one_bar_each(staged: &stage::Staged) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
     assert_eq!(frames.len(), 3, "two notes and a channel stand on the desk");
@@ -629,11 +740,15 @@ fn its_windows_show_their_apps_content_under_one_bar_each() {
     }
 }
 
+/// A desk of places as a person meets it, from one build of the shell and one window of the desk
+/// at 1280×800: each window's bar keeps one door, each place shows its app, and its strips stand
+/// as windows. No part changes the window: each reads its widgets, and the second the places the
+/// desk's own record holds.
 #[test]
-fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
+fn a_desk_of_places_stands_as_windows_that_show_their_apps() {
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();
-    let staged = stage::Staged::over(
+    let desk = stage::Staged::over(
         &app,
         &packages,
         "a desk of places",
@@ -643,6 +758,19 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
         &[],
     )
     .expect("the scenario stages");
+    // The two parts that read the desk alone come first. The last stages a second window from
+    // the same build, as it did in a test of its own, and nothing reads the desk after that.
+    a_window_bar_keeps_one_overflow_menu(&desk);
+    a_place_the_desk_has_shows_its_app(&desk, &packages);
+    the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(&desk, &app, &packages);
+}
+
+/// `staged` is the desk of places; the window of several places beside it is staged here.
+fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(
+    staged: &stage::Staged,
+    app: &str,
+    packages: &Rc<stage::Packages>,
+) {
     let frames = named(staged.harness().root_widget(), "WindowFrame");
     assert!(
         frames.len() >= 6,
@@ -654,8 +782,8 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
     // A strip of several places is one window whose bar is its tabs, the place in front filling it
     // under them; a strip of one has no tab bar above its app.
     let grouped = stage::Staged::over(
-        &app,
-        &packages,
+        app,
+        packages,
         "a window of several places",
         (1280, 800),
         ui::Theme::light(),
@@ -714,24 +842,10 @@ fn a_window_alone_on_the_desk_takes_the_desk() {
     bar_and_content_in(frames[0], window);
 }
 
-#[test]
-fn a_place_the_desk_has_shows_its_app() {
-    // A place is made from the resource it shows (`session.Arrangement`'s
-    // `record`), so a place whose app the desk has draws that app's views,
-    // that app's header row and, with nothing in it yet, that app's empty
-    // state.
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let staged = stage::Staged::over(
-        &app,
-        &packages,
-        "a desk of places",
-        (1280, 800),
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
+/// A place is made from the resource it shows (`session.Arrangement`'s `record`), so a place
+/// whose app the desk has draws that app's views, that app's header row and, with nothing in it
+/// yet, that app's empty state. `staged` is the desk of places.
+fn a_place_the_desk_has_shows_its_app(staged: &stage::Staged, packages: &Rc<stage::Packages>) {
     let desk = staged.places();
     assert!(!desk.is_empty(), "the staged desk holds its places");
     // The apps the desk's own build has: a place that shows one of them is drawn by it.
@@ -769,22 +883,10 @@ fn a_place_the_desk_has_shows_its_app() {
     }
 }
 
-#[test]
-fn a_window_bar_keeps_one_overflow_menu() {
-    // One bar, one "…": the window's decorations in their floating pill, the app's own controls in
-    // its header row, and one door between them for what does not fit.
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let staged = stage::Staged::over(
-        &app,
-        &packages,
-        "a desk of places",
-        (1280, 800),
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
+/// One bar, one "…": the window's decorations in their floating pill, the app's own controls in
+/// its header row, and one door between them for what does not fit. `staged` is the desk of
+/// places.
+fn a_window_bar_keeps_one_overflow_menu(staged: &stage::Staged) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
     assert!(!frames.is_empty(), "the desk draws windows");
@@ -954,149 +1056,118 @@ fn shell_controls(root: &dyn Widget, out: &mut Vec<(String, Rect)>) {
     }
 }
 
-#[test]
-fn its_top_bar_is_one_row_whose_parts_never_press_into_each_other() {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
-        let staged = stage::Staged::over(
-            &app,
-            &packages,
-            "the traditional desktop",
-            (width, height),
-            ui::Theme::light().with_text_scale(text),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        let mut controls = Vec::new();
-        shell_controls(staged.harness().root_widget(), &mut controls);
-        let at = format!("{width}×{height} text {text}");
-        // The bar is the band the system menu stands in; the dock's are lower down.
-        let menu = controls
-            .iter()
-            .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
-            .map(|(_, r)| *r)
-            .min_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)))
-            .expect("the system menu");
-        let bar: Vec<&(String, Rect)> = controls
-            .iter()
-            .filter(|(_, r)| r.y0 < menu.y1 && r.y1 > menu.y0)
-            .collect();
-        let pressed: Vec<Rect> = bar
-            .iter()
-            .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
-            .map(|(_, r)| *r)
-            .collect();
-        for r in &pressed {
-            assert!(
-                r.x0 >= 0.0 && r.x1 <= f64::from(width),
-                "{r:?} stays on the output at {at}"
-            );
-            assert!(
-                (r.center().y - menu.center().y).abs() < 2.0,
-                "{r:?} stands in the one row at {at}: {bar:?}"
-            );
-            for other in &pressed {
-                assert!(
-                    r == other || r.intersect(*other).area() <= 0.0,
-                    "{r:?} presses into {other:?} at {at}"
-                );
-            }
-        }
-        assert_eq!(
-            bar.iter().filter(|(n, _)| n == "Button count").count(),
-            1,
-            "the bell's count, the bar's one, at {at}: {bar:?}"
+/// One size of the traditional desktop: `controls` are the shell's own controls at it, `width`
+/// its output's, and `at` names it in every failure.
+fn its_top_bar_is_one_row_whose_parts_never_press_into_each_other(
+    controls: &[(String, Rect)],
+    width: u32,
+    at: &str,
+) {
+    // The bar is the band the system menu stands in; the dock's are lower down.
+    let menu = controls
+        .iter()
+        .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
+        .map(|(_, r)| *r)
+        .min_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)))
+        .expect("the system menu");
+    let bar: Vec<&(String, Rect)> = controls
+        .iter()
+        .filter(|(_, r)| r.y0 < menu.y1 && r.y1 > menu.y0)
+        .collect();
+    let pressed: Vec<Rect> = bar
+        .iter()
+        .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
+        .map(|(_, r)| *r)
+        .collect();
+    for r in &pressed {
+        assert!(
+            r.x0 >= 0.0 && r.x1 <= f64::from(width),
+            "{r:?} stays on the output at {at}"
         );
+        assert!(
+            (r.center().y - menu.center().y).abs() < 2.0,
+            "{r:?} stands in the one row at {at}: {bar:?}"
+        );
+        for other in &pressed {
+            assert!(
+                r == other || r.intersect(*other).area() <= 0.0,
+                "{r:?} presses into {other:?} at {at}"
+            );
+        }
     }
+    assert_eq!(
+        bar.iter().filter(|(n, _)| n == "Button count").count(),
+        1,
+        "the bell's count, the bar's one, at {at}: {bar:?}"
+    );
 }
 
-#[test]
-fn a_count_stands_on_its_icons_corner_and_over_no_other_control() {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
-        let staged = stage::Staged::over(
-            &app,
-            &packages,
-            "the traditional desktop",
-            (width, height),
-            ui::Theme::light().with_text_scale(text),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        let mut controls = Vec::new();
-        shell_controls(staged.harness().root_widget(), &mut controls);
-        let at = format!("{width}×{height} text {text}");
-        let pressed: Vec<Rect> = controls
-            .iter()
-            .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
-            .map(|(_, r)| *r)
-            .collect();
-        let counts: Vec<(Rect, Rect)> = controls
-            .windows(2)
-            .filter_map(|pair| match pair {
-                [(count, c), (icon, i)] if count.ends_with(" count") && icon.ends_with(" icon") => {
-                    Some((*c, *i))
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            counts.len(),
-            2,
-            "the bell's count and the dock's at {at}: {controls:?}"
-        );
-        for (count, icon) in counts {
-            let own = pressed
-                .iter()
-                .find(|r| r.contains(icon.center()))
-                .expect("the control the icon is on");
-            // Centred on the icon's top trailing corner, as an app icon's count stands, and held
-            // inside its own face where that corner would take it past the face's edge.
-            let corner = ui::kurbo::Point::new(icon.x1, icon.y0);
-            let wanted = Rect::from_center_size(corner, count.size());
-            let left = wanted
-                .x0
-                .clamp(own.x0, (own.x1 - wanted.width()).max(own.x0));
-            let top = wanted
-                .y0
-                .clamp(own.y0, (own.y1 - wanted.height()).max(own.y0));
-            let expected = Rect::new(left, top, left + wanted.width(), top + wanted.height());
-            assert!(
-                (count.center() - expected.center()).hypot() < 1.0,
-                "the count {count:?} stands on the corner of its icon {icon:?} inside its face {own:?} at {at}"
-            );
-            assert!(
-                count.x0 >= 0.0 && count.x1 <= f64::from(width) && count.y0 >= 0.0,
-                "the count {count:?} stays on the output at {at}"
-            );
-            for other in pressed.iter().filter(|r| *r != own) {
-                assert!(
-                    other.intersect(count).area() <= 0.0,
-                    "the count {count:?} stands over {other:?} at {at}"
-                );
+/// One size of the traditional desktop: its controls, its width and its name, as the top bar's
+/// part above takes them.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "how far a count's centre stands from where it belongs, between two laid out points"
+)]
+fn a_count_stands_on_its_icons_corner_and_over_no_other_control(
+    controls: &[(String, Rect)],
+    width: u32,
+    at: &str,
+) {
+    let pressed: Vec<Rect> = controls
+        .iter()
+        .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
+        .map(|(_, r)| *r)
+        .collect();
+    let counts: Vec<(Rect, Rect)> = controls
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [(count, c), (icon, i)] if count.ends_with(" count") && icon.ends_with(" icon") => {
+                Some((*c, *i))
             }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        counts.len(),
+        2,
+        "the bell's count and the dock's at {at}: {controls:?}"
+    );
+    for (count, icon) in counts {
+        let own = pressed
+            .iter()
+            .find(|r| r.contains(icon.center()))
+            .expect("the control the icon is on");
+        // Centred on the icon's top trailing corner, as an app icon's count stands, and held
+        // inside its own face where that corner would take it past the face's edge.
+        let corner = ui::kurbo::Point::new(icon.x1, icon.y0);
+        let wanted = Rect::from_center_size(corner, count.size());
+        let left = wanted
+            .x0
+            .clamp(own.x0, (own.x1 - wanted.width()).max(own.x0));
+        let top = wanted
+            .y0
+            .clamp(own.y0, (own.y1 - wanted.height()).max(own.y0));
+        let expected = Rect::new(left, top, left + wanted.width(), top + wanted.height());
+        assert!(
+            (count.center() - expected.center()).hypot() < 1.0,
+            "the count {count:?} stands on the corner of its icon {icon:?} inside its face {own:?} at {at}"
+        );
+        assert!(
+            count.x0 >= 0.0 && count.x1 <= f64::from(width) && count.y0 >= 0.0,
+            "the count {count:?} stays on the output at {at}"
+        );
+        for other in pressed.iter().filter(|r| *r != own) {
+            assert!(
+                other.intersect(count).area() <= 0.0,
+                "the count {count:?} stands over {other:?} at {at}"
+            );
         }
     }
 }
 
-#[test]
-fn on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock() {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let staged = stage::Staged::over(
-        &app,
-        &packages,
-        "the traditional desktop",
-        (320, 568),
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
+fn on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock(
+    staged: &stage::Staged,
+) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
     let [frame] = frames[..] else {
@@ -1155,21 +1226,9 @@ fn read_out(node: &ui::headless::InspectionNode, in_window: bool, out: &mut Vec<
     }
 }
 
-/// What the traditional desktop reads out at `size`, laid out for a finger on a phone's width (its
-/// controls a finger's target), as the layout check lays a phone out.
-fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let mut staged = stage::Staged::over(
-        &app,
-        &packages,
-        "the traditional desktop",
-        size,
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
+/// What the traditional desktop `staged` at `size` reads out, laid out for a finger on a phone's
+/// width (its controls a finger's target), as the layout check lays a phone out.
+fn desktop_read_out(staged: &mut stage::Staged, size: (u32, u32)) -> Vec<(bool, String)> {
     let input = if size.0 < 600 {
         ui::interaction::InteractionEnvironment::TOUCH
     } else {
@@ -1187,9 +1246,9 @@ fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
 fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     // A window draws its main actions as buttons and keeps the rest behind one menu: never every
     // action as a button of its own, and one door to what does not fit in one row.
+    tilo_ui_host::i18n::ensure();
+    let packages = tasks_packages();
     for size in [(1280, 800), (390, 844)] {
-        tilo_ui_host::i18n::ensure();
-        let packages = tasks_packages();
         let mut staged = stage::Staged::over(
             "so.tilo.lang.tasks",
             &packages,
@@ -1397,9 +1456,9 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     );
 }
 
-#[test]
-fn its_people_are_called_by_their_names_never_their_ids() {
-    let said = desktop_read_out((1280, 800));
+/// `desk` is the traditional desktop staged at 1280×800 in the light theme, which this lays out.
+fn its_people_are_called_by_their_names_never_their_ids(desk: &mut stage::Staged) {
+    let said = desktop_read_out(desk, (1280, 800));
     let ids: Vec<&String> = said
         .iter()
         .map(|(_, name)| name)
@@ -1466,183 +1525,190 @@ fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
     }
 }
 
+/// The tasks app's "while you were away", from one build of the app and one window at 1280×800:
+/// a capture of it shows what changed, and the catch-up its mark opens hangs inside the window.
+/// The first part only reads the window; the second presses it, after, and stages the narrow
+/// window it reads beside it.
 #[test]
+fn a_capture_shows_what_changed_and_its_catch_up_hangs_inside_the_window() {
+    on_a_windows_stack(|| {
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = tasks_packages();
+        let mut away = away_at(&packages, (1280, 800));
+        a_capture_writes_the_scenarios_steps_down_so_what_changed_shows(&mut away);
+        a_catch_up_hangs_inside_the_window_it_belongs_to(&packages, away);
+    });
+}
+
+/// The marks a row and a window carry are read from the record's steps, which are the store's
+/// versions and the person's seen marks: a scenario staged for a capture is written down as a
+/// session writes it, or the capture shows nothing of what it staged. `away` is the window at
+/// 1280×800, which this reads and leaves as it stood.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     reason = "frame and mark sizes are small counts, far inside usize and f64"
 )]
-fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
-    on_a_windows_stack(|| {
-        // The marks a row and a window carry are read from the record's steps, which are the
-        // store's versions and the person's seen marks: a scenario staged for a capture is written
-        // down as a session writes it, or the capture shows nothing of what it staged.
-        tilo_ui_host::i18n::ensure();
-        ui::clock::freeze_for_capture();
-        let packages = tasks_packages();
-        let mut away = away_at(&packages, (1280, 800));
-        // The two tasks someone else changed while she was away: Bo took the mail and her agent
-        // moved the survey to today, each row setting down who changed it and what they did.
-        let changed = staged_changes(&mut away);
-        assert_eq!(
-            changed.len(),
-            2,
-            "the two rows of the tasks Bo and her agent changed are marked: {changed:?}"
-        );
-        for (_, identity, said) in &changed {
-            a_change_names_its_maker(identity, said);
-        }
-        assert!(
-            changed
-                .iter()
-                .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
-            "the mail Bo gave her says it was given to her: {changed:?}"
-        );
-        // The task that is still a row of the list says so
-        // under the row's title, where a person reads it.
-        let rows = row_changes(&away);
-        assert_eq!(
-            rows.len(),
-            1,
-            "the row of the task Bo took says so under its title: {rows:?}"
-        );
-        for (identity, name, said) in &rows {
-            a_change_names_its_maker(identity, said);
-            assert!(!name.is_empty(), "a marked row names the changer: {name}");
-            assert!(
-                said.contains("assigned") && said.contains("you"),
-                "the mail Bo gave her says it was given to her: {said}"
-            );
-        }
-        // The task she opened stands as its own page, its title written once, so what her agent
-        // changed is marked on the page the row became: the face of who changed it, on it.
-        let opened = changed
+fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows(away: &mut stage::Staged) {
+    // The two tasks someone else changed while she was away: Bo took the mail and her agent
+    // moved the survey to today, each row setting down who changed it and what they did.
+    let changed = staged_changes(away);
+    assert_eq!(
+        changed.len(),
+        2,
+        "the two rows of the tasks Bo and her agent changed are marked: {changed:?}"
+    );
+    for (_, identity, said) in &changed {
+        a_change_names_its_maker(identity, said);
+    }
+    assert!(
+        changed
             .iter()
-            .find(|(_, _, said)| said.contains("Today"))
-            .map(|(key, _, _)| key.clone())
-            .expect("her agent moved the survey to today");
-        let face = {
-            let wanted = format!("{opened}~change");
-            let root = away.harness().root_widget();
-            named(root, "Chip")
-                .into_iter()
-                .find(|chip| chip.test_id().is_some_and(|id| id == wanted))
-                .map_or_else(
-                    || panic!("the item she opened carries the face of who changed it: {wanted}"),
-                    Widget::get_rect,
-                )
-        };
+            .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
+        "the mail Bo gave her says it was given to her: {changed:?}"
+    );
+    // The task that is still a row of the list says so
+    // under the row's title, where a person reads it.
+    let rows = row_changes(away);
+    assert_eq!(
+        rows.len(),
+        1,
+        "the row of the task Bo took says so under its title: {rows:?}"
+    );
+    for (identity, name, said) in &rows {
+        a_change_names_its_maker(identity, said);
+        assert!(!name.is_empty(), "a marked row names the changer: {name}");
         assert!(
-            face.width() > 8.0 && face.height() > 8.0,
-            "the face stands on the page it marks, at a size a person reads: {face:?}"
+            said.contains("assigned") && said.contains("you"),
+            "the mail Bo gave her says it was given to her: {said}"
         );
-        // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
-        the_windows_header_mark(&mut away, 3);
-        // A node in the tree is not a pixel: the mark stands in the window's own header row, over
-        // the rows it counts, and the frame has its ink there.
-        let mark = floating_rect(&away, "ChangeMark").expect("the window's mark is laid out");
-        assert!(
-            mark.width() > 40.0 && mark.height() > 20.0,
-            "the mark has room to stand in the header: {mark:?}"
-        );
-        // The rows the window lays out stand under the mark that counts them, inside it.
-        let listed: Vec<Rect> = list_rows(&away)
+    }
+    // The task she opened stands as its own page, its title written once, so what her agent
+    // changed is marked on the page the row became: the face of who changed it, on it.
+    let opened = changed
+        .iter()
+        .find(|(_, _, said)| said.contains("Today"))
+        .map(|(key, _, _)| key.clone())
+        .expect("her agent moved the survey to today");
+    let face = {
+        let wanted = format!("{opened}~change");
+        let root = away.harness().root_widget();
+        named(root, "Chip")
             .into_iter()
-            .map(ui::widget::Widget::get_rect)
-            .collect();
-        assert!(!listed.is_empty(), "the window lists the tasks it marks");
+            .find(|chip| chip.test_id().is_some_and(|id| id == wanted))
+            .map_or_else(
+                || panic!("the item she opened carries the face of who changed it: {wanted}"),
+                Widget::get_rect,
+            )
+    };
+    assert!(
+        face.width() > 8.0 && face.height() > 8.0,
+        "the face stands on the page it marks, at a size a person reads: {face:?}"
+    );
+    // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
+    the_windows_header_mark(away, 3);
+    // A node in the tree is not a pixel: the mark stands in the window's own header row, over
+    // the rows it counts, and the frame has its ink there.
+    let mark = floating_rect(away, "ChangeMark").expect("the window's mark is laid out");
+    assert!(
+        mark.width() > 40.0 && mark.height() > 20.0,
+        "the mark has room to stand in the header: {mark:?}"
+    );
+    // The rows the window lays out stand under the mark that counts them, inside it.
+    let listed: Vec<Rect> = list_rows(away)
+        .into_iter()
+        .map(ui::widget::Widget::get_rect)
+        .collect();
+    assert!(!listed.is_empty(), "the window lists the tasks it marks");
 
-        assert!(
-            listed.iter().all(|row| mark.y1 <= row.y0),
-            "the mark stands over the rows it counts, not among them: mark {mark:?}, rows {listed:?}"
-        );
-        assert!(
-            mark.x0 >= 0.0 && mark.x1 <= 1280.0,
-            "the mark stands inside the window it counts: {mark:?}"
-        );
-        assert!(
-            mark.y1 <= face.y0 && face.x0 >= 0.0 && face.x1 <= 1280.0,
-            "the face of the change stands under the mark, on the page in the window: \
-             face {face:?}, mark {mark:?}"
-        );
-        let ink = |rect: Rect| painted(&away, rect, (1280, 800));
-        assert!(
-            ink(mark) > 500,
-            "the mark is painted in the header, not only built: {} px in {mark:?}",
-            ink(mark)
-        );
-        assert!(
-            ink(face) > 100,
-            "the face on the page the row became is painted, not only built: {} px in {face:?}",
-            ink(face)
-        );
-    });
+    assert!(
+        listed.iter().all(|row| mark.y1 <= row.y0),
+        "the mark stands over the rows it counts, not among them: mark {mark:?}, rows {listed:?}"
+    );
+    assert!(
+        mark.x0 >= 0.0 && mark.x1 <= 1280.0,
+        "the mark stands inside the window it counts: {mark:?}"
+    );
+    assert!(
+        mark.y1 <= face.y0 && face.x0 >= 0.0 && face.x1 <= 1280.0,
+        "the face of the change stands under the mark, on the page in the window: \
+         face {face:?}, mark {mark:?}"
+    );
+    let ink = |rect: Rect| painted(away, rect, (1280, 800));
+    assert!(
+        ink(mark) > 500,
+        "the mark is painted in the header, not only built: {} px in {mark:?}",
+        ink(mark)
+    );
+    assert!(
+        ink(face) > 100,
+        "the face on the page the row became is painted, not only built: {} px in {face:?}",
+        ink(face)
+    );
 }
 
-#[test]
-fn a_catch_up_hangs_inside_the_window_it_belongs_to() {
-    on_a_windows_stack(|| {
-        // A mark's catch-up is a panel under the mark where the window is wide, a sheet at its foot
-        // where it is narrow, and neither reaches past the window it belongs to.
-        tilo_ui_host::i18n::ensure();
-        ui::clock::freeze_for_capture();
-        let packages = tasks_packages();
-        let mut away = away_at(&packages, (1280, 800));
-        let window = window_mark(&away.composed().expect("the window composed its view"))
-            .expect("the window's header says what changed in it");
-        away.press(&window.key, false)
-            .expect("the window's mark opens its catch-up");
-        away.lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
-            .expect("the app lays out with its catch-up open");
-        let wide = floating_rect(&away, "Popover").unwrap_or_else(|| {
-            fn all(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
-                out.push(format!("{} {:?}", node.widget, node.test_id));
-                for child in &node.children {
-                    all(child, out);
-                }
+/// A mark's catch-up is a panel under the mark where the window is wide, a sheet at its foot where
+/// it is narrow, and neither reaches past the window it belongs to. `away` is the window at
+/// 1280×800 as it was staged and laid out; the narrow one is staged here, from `packages`.
+fn a_catch_up_hangs_inside_the_window_it_belongs_to(
+    packages: &Rc<stage::Packages>,
+    mut away: stage::Staged,
+) {
+    let window = window_mark(&away.composed().expect("the window composed its view"))
+        .expect("the window's header says what changed in it");
+    away.press(&window.key, false)
+        .expect("the window's mark opens its catch-up");
+    away.lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+        .expect("the app lays out with its catch-up open");
+    let wide = floating_rect(&away, "Popover").unwrap_or_else(|| {
+        fn all(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+            out.push(format!("{} {:?}", node.widget, node.test_id));
+            for child in &node.children {
+                all(child, out);
             }
-            let mut names = Vec::new();
-            all(&away.harness().inspection().root, &mut names);
-            panic!("the catch-up hangs over the window: {}", names.join(" "));
-        });
-        assert!(
-            wide.x0 >= 0.0 && wide.x1 <= 1280.0 && wide.width() <= 400.0,
-            "the catch-up stays inside a window 1280 wide, and no wider than a list panel: {wide:?}"
-        );
-        let wrong = wrong_in(&away, (1280, 800));
-        assert!(
-            wrong.is_empty(),
-            "nothing reaches past the window: {wrong:?}"
-        );
-
-        // A window held in the hand is staged at its own size, as a capture stages it.
-        let mut narrow = away_at(&packages, (390, 844));
-        let mark = shown_floating_rect(&narrow, "ChangeMark")
-            .expect("the narrow window's header shows its mark");
-        narrow
-            .press_at(mark.center().x, mark.center().y)
-            .expect("the narrow window's mark opens its catch-up");
-        narrow
-            .freshen()
-            .expect("the app lays out narrow with its catch-up open");
-        let sheet =
-            shown_floating_rect(&narrow, "Popover").expect("the catch-up hangs over the window");
-        let (_, frame) = narrow.harness().frame_extent((390, 844));
-        assert!(
-            sheet.x0 >= 0.0
-                && sheet.x1 <= 390.0
-                && sheet.y1 <= frame
-                && sheet.y1 >= frame - 24.0
-                && sheet.width() >= 300.0,
-            "a narrow window holds the catch-up as a sheet across its foot: {sheet:?} of {frame}"
-        );
-        let wrong = wrong_in(&narrow, (390, 844));
-        assert!(
-            wrong.is_empty(),
-            "the sheet reaches nothing past the window: {wrong:?}"
-        );
+        }
+        let mut names = Vec::new();
+        all(&away.harness().inspection().root, &mut names);
+        panic!("the catch-up hangs over the window: {}", names.join(" "));
     });
+    assert!(
+        wide.x0 >= 0.0 && wide.x1 <= 1280.0 && wide.width() <= 400.0,
+        "the catch-up stays inside a window 1280 wide, and no wider than a list panel: {wide:?}"
+    );
+    let wrong = wrong_in(&away, (1280, 800));
+    assert!(
+        wrong.is_empty(),
+        "nothing reaches past the window: {wrong:?}"
+    );
+
+    // A window held in the hand is staged at its own size, as a capture stages it.
+    let mut narrow = away_at(packages, (390, 844));
+    let mark = shown_floating_rect(&narrow, "ChangeMark")
+        .expect("the narrow window's header shows its mark");
+    narrow
+        .press_at(mark.center().x, mark.center().y)
+        .expect("the narrow window's mark opens its catch-up");
+    narrow
+        .freshen()
+        .expect("the app lays out narrow with its catch-up open");
+    let sheet =
+        shown_floating_rect(&narrow, "Popover").expect("the catch-up hangs over the window");
+    let (_, frame) = narrow.harness().frame_extent((390, 844));
+    assert!(
+        sheet.x0 >= 0.0
+            && sheet.x1 <= 390.0
+            && sheet.y1 <= frame
+            && sheet.y1 >= frame - 24.0
+            && sheet.width() >= 300.0,
+        "a narrow window holds the catch-up as a sheet across its foot: {sheet:?} of {frame}"
+    );
+    let wrong = wrong_in(&narrow, (390, 844));
+    assert!(
+        wrong.is_empty(),
+        "the sheet reaches nothing past the window: {wrong:?}"
+    );
 }
 
 #[test]
@@ -1700,9 +1766,12 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
     );
 }
 
+/// What a channel says of the messages the person has not seen, from one build of chat and one
+/// window of "a team's channels" at 1280×800: its header counts them, and no message carries a
+/// mark of its own. Both parts read the tree the window composed once it was laid out; the first
+/// reads nothing else, and the second only reads the window.
 #[test]
-fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
-    // Marks are every resource's, for every type: a channel declares nothing about them.
+fn a_channel_counts_what_is_unseen_in_its_header_and_marks_no_message() {
     tilo_ui_host::i18n::ensure();
     ui::clock::freeze_for_capture();
     let packages = app_packages("chat");
@@ -1725,9 +1794,19 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
         )
         .expect("the app lays out");
     let tree = channels.composed().expect("the window composes");
+    a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom(&tree);
+    a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own(&mut channels, &tree);
+}
+
+/// Marks are every resource's, for every type: a channel declares nothing about them. `tree` is
+/// what the window `channels` composed.
+fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own(
+    channels: &mut stage::Staged,
+    tree: &tilo_ui_host::UiNode,
+) {
     // The transcript is told where the part the person has not read starts.
     let mut lists = Vec::new();
-    nodes(&tree, "ui.VirtualList", &mut lists);
+    nodes(tree, "ui.VirtualList", &mut lists);
     let unseen = lists
         .iter()
         .find(|list| list.props.contains_key("unseen_from"));
@@ -1738,7 +1817,7 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
     // The toolkit draws the conversation's one band there, over the row where that part begins:
     // where that row also opens a day, the day and the place reading starts again are one band
     // saying both, in the accent, never a day's band stacked over the unread one.
-    let dividers = dividers_of(&channels);
+    let dividers = dividers_of(channels);
     let merged = ui::widget::conversation::band::day_with_unread("");
     let unseen: Vec<&(String, Rect)> = dividers
         .iter()
@@ -1771,7 +1850,7 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
     }
     // Nothing marks a message of its own: a face over each line under the divider would read as who
     // read it, and the divider already says those rows are new.
-    let marks = rects(&channels, "ChangeMark");
+    let marks = rects(channels, "ChangeMark");
     assert_eq!(
         marks.len(),
         1,
@@ -1789,42 +1868,18 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
     );
     // And every band of the conversation stands in the frame as a band: a rule on each side of its
     // words, painted in ink the ground it lands on shows.
-    let wrong = wrong_in(&channels, (1280, 800));
+    let wrong = wrong_in(channels, (1280, 800));
     assert!(
         wrong.is_empty(),
         "the conversation's bands read as bands: {wrong:?}"
     );
 }
 
-#[test]
-fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom() {
-    // A catch-up says what happened while the person was away, in the
-    // terms of what the window shows: a channel of items Mia, Leo and Ada
-    // put in says how many are new, never that three people changed one
-    // message.
-    tilo_ui_host::i18n::ensure();
-    ui::clock::freeze_for_capture();
-    let packages = app_packages("chat");
-    let mut channels = stage::Staged::over(
-        "so.tilo.lang.chat",
-        &packages,
-        "a team's channels",
-        (1280, 800),
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
-    channels
-        .lay_out(
-            (1280, 800),
-            ui::Theme::light(),
-            ui::interaction::InteractionEnvironment::POINTER,
-            1.0,
-        )
-        .expect("the app lays out");
-    let tree = channels.composed().expect("the window composes");
-    let mark = window_mark(&tree).expect("the channel's header says what is new");
+/// A catch-up says what happened while the person was away, in the terms of what the window
+/// shows: a channel of items Mia, Leo and Ada put in says how many are new, never that three
+/// people changed one message. `tree` is what the window of "a team's channels" composed.
+fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom(tree: &tilo_ui_host::UiNode) {
+    let mark = window_mark(tree).expect("the channel's header says what is new");
     assert_eq!(
         mark.props.get("count"),
         Some(&tilo_render_protocol::patch::Value::Int(6)),
@@ -1838,7 +1893,7 @@ fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom() {
     );
     // And the channel's row in the sidebar says the same number: one count of what is new in a
     // conversation, never two numbers a person has to tell apart.
-    let place = nodes_of(&tree, "ui.NavItem")
+    let place = nodes_of(tree, "ui.NavItem")
         .into_iter()
         .find(|place| {
             matches!(
@@ -2140,5 +2195,218 @@ fn a_list_opens_the_page_of_its_first_row_in_every_run() {
     assert!(
         opened.windows(2).all(|pair| pair[0] == pair[1]),
         "every run opens the same task: {opened:?}"
+    );
+}
+
+#[test]
+fn a_narrow_channels_mark_opens_its_catch_up() {
+    // The channel opens scrolled to its newest message, so rows stand above the list's viewport,
+    // under the window's header: the mark the header holds is where the person's finger lands,
+    // and it opens the catch-up as a sheet across the window's foot.
+    on_a_windows_stack(|| {
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("chat");
+        let mut channels = stage::Staged::over(
+            "so.tilo.lang.chat",
+            &packages,
+            "a team's channels",
+            (320, 568),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        channels
+            .lay_out_moving((320, 568), ui::Theme::light(), input_at((320, 568)))
+            .expect("the app lays out");
+        // The header names the channel it shows: the row gives the title the room the word
+        // needs, and the mark beside it gives up its names for one face instead of cutting it
+        // short.
+        let title = shell_at(&channels)
+            .and_then(|shell| {
+                shell
+                    .rows
+                    .rows
+                    .into_iter()
+                    .flatten()
+                    .find(|row| row.column == "content")
+            })
+            .expect("the window's shell says how it held its header");
+        assert!(
+            title.title_opens && title.title_needs <= title.title_has + 0.5,
+            "the header's title reads whole: {title:?}"
+        );
+        let mark = shown_floating_rect(&channels, "ChangeMark").expect("the header shows its mark");
+        assert!(
+            mark.y0 >= 0.0 && mark.y1 <= 56.0,
+            "the mark stands in the window's header: {mark:?}"
+        );
+        assert!(
+            mark.width() <= mark.height() + 1.0,
+            "the mark stands as one face beside the title, not as a run of names: {mark:?}"
+        );
+        channels
+            .press_at(mark.center().x, mark.center().y)
+            .expect("the mark presses");
+        channels
+            .freshen()
+            .expect("the app lays out with its catch-up open");
+        let sheet =
+            shown_floating_rect(&channels, "Popover").expect("the narrow mark opens its catch-up");
+        // A surface of its own, read out as what it holds rather than as the words of the
+        // control it hangs from.
+        assert_eq!(
+            shown_floating_name(&channels, "Popover").as_deref(),
+            Some("Changes since you looked"),
+            "the catch-up names itself"
+        );
+        let (_, frame) = channels.harness().frame_extent((320, 568));
+        assert!(
+            sheet.x0 >= 0.0
+                && sheet.x1 <= 320.0
+                && sheet.width() >= 300.0
+                && sheet.y1 <= frame
+                && sheet.y1 >= frame - 24.0,
+            "the catch-up stands as a sheet across the window's foot: {sheet:?} of {frame}"
+        );
+        // What it says: history's words for a post, never the action's own label, and how many
+        // changes the step folds beside them, since the channel's posts are not all it holds.
+        let composed = channels.composed().expect("the page composes");
+        let rows = catch_up_rows(&composed);
+        assert!(
+            rows.iter().any(|row| row.contains("wrote a message")),
+            "the row says what was done in history's words: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|row| !row.contains("Send")),
+            "never the action's own label: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("7 changes")),
+            "the step of posts and a thread says how many changes it folds: {rows:?}"
+        );
+    });
+}
+
+/// A catch-up row says what a person did in the app's own words, and how many messages a step of
+/// posts holds, once: the count stands in the sentence, not as a count beside it.
+#[test]
+fn a_catch_up_row_counts_the_messages_a_step_holds_in_its_sentence() {
+    tilo_ui_host::i18n::ensure();
+    ui::clock::freeze_for_capture();
+    let packages = app_packages("chat");
+    // A thread two people wrote in: two posts, by two people, and nothing else since.
+    let mut thread = stage::Staged::over(
+        "so.tilo.lang.chat",
+        &packages,
+        "a thread",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    thread
+        .lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+        .expect("the app lays out");
+    let mark = shown_floating_rect(&thread, "ChangeMark").expect("the header shows its mark");
+    thread
+        .press_at(mark.center().x, mark.center().y)
+        .expect("the mark presses");
+    thread
+        .freshen()
+        .expect("the app lays out with its catch-up open");
+    let composed = thread.composed().expect("the page composes");
+    let rows = catch_up_rows(&composed);
+    assert_eq!(rows.len(), 1, "the thread stands as one row: {rows:?}");
+    assert!(
+        rows[0].contains("wrote 2 messages"),
+        "the row counts its posts in its own words: {rows:?}"
+    );
+    assert!(
+        !rows[0].contains("changes"),
+        "and says it once, never as a count beside the sentence: {rows:?}"
+    );
+}
+
+#[test]
+fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
+    // One row for the task however many changed it: everyone who did is named on the line, with a
+    // face each, and what it says is the newest change's words.
+    tilo_ui_host::i18n::ensure();
+    ui::clock::freeze_for_capture();
+    let packages = tasks_packages();
+    let mut page = stage::Staged::over(
+        "so.tilo.lang.tasks",
+        &packages,
+        "a task two people changed",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    page.lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+        .expect("the app lays out");
+    let window = {
+        let composed = page.composed().expect("the page composes");
+        window_mark(&composed).expect("the page says what changed since the person looked")
+    };
+    assert_eq!(
+        window.props.get("count"),
+        Some(&tilo_render_protocol::patch::Value::Int(1)),
+        "the task changed, once: {window:?}"
+    );
+    let content = window
+        .children
+        .iter()
+        .find(|child| {
+            child.kind == "slot"
+                && child.props.get("name")
+                    == Some(&tilo_render_protocol::patch::Value::text("content"))
+        })
+        .and_then(|slot| slot.children.first())
+        .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
+    let mut rows = Vec::new();
+    nodes(content, "row", &mut rows);
+    let steps: Vec<&tilo_ui_host::UiNode> = rows
+        .into_iter()
+        .filter(|row| row.key.ends_with("~step"))
+        .collect();
+    assert_eq!(
+        steps.len(),
+        1,
+        "the task stands as one row, not one per change: {content:?}"
+    );
+    let step = steps[0];
+    let faces = nodes_of(step, "ui.Avatar")
+        .into_iter()
+        .filter(|face| {
+            matches!(
+                face.props.get("who"),
+                Some(tilo_render_protocol::patch::Value::Principal(_))
+            )
+        })
+        .count();
+    assert_eq!(
+        faces, 2,
+        "a face for each of the two who changed it: {step:?}"
+    );
+    let words: Vec<String> = nodes_of(step, "ui.Text")
+        .into_iter()
+        .filter_map(|text| match text.props.get("value") {
+            Some(tilo_render_protocol::patch::Value::Text(value)) => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        words.first().map(String::as_str),
+        Some("Bo and Scout"),
+        "the line names both who changed the task, in the order they changed it: {words:?}"
+    );
+    assert!(
+        words.get(1).is_some_and(|said| said == "marked it done"),
+        "and goes on with the newest change's words: {words:?}"
     );
 }

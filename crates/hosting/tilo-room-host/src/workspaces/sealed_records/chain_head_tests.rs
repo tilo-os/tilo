@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use super::fixtures::{SealingMember, member_device};
 use super::tests::{Lounge, lounge_with_client, seal_and_send_title, title};
 use crate::CoeditPayload;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The chain the members write, of the lounge's app.
 const CHAIN: &str = "messages";
@@ -91,7 +92,7 @@ async fn replay(guest: &crate::RelayClient) -> (BTreeSet<[u8; 32]>, bool) {
 /// sent before it answered, and the frames it says it sent.
 async fn open_head(
     guest: &crate::RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     head: [u8; 32],
 ) -> (BTreeSet<[u8; 32]>, u32) {
     guest
@@ -145,7 +146,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
             &lounge.governor,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

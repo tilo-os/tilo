@@ -1103,120 +1103,225 @@ mod tests {
         pad
     }
 
-    #[test]
-    fn the_sharing_copy_follows_the_workspace_scope() {
-        let mut pad = every_card();
-        pad.set_scope(WorkspaceScope::Private);
-        assert_eq!(pad.subtitle(), t("launchpad-subtitle-private"));
-        assert_ne!(
-            pad.subtitle(),
-            t("launchpad-subtitle"),
-            "a private workspace is never said to be shared with everyone"
-        );
-        assert_eq!(
-            LaunchpadAction::Notes.detail(WorkspaceScope::Private),
-            t("launchpad-notes-detail-private")
-        );
-        assert_eq!(
-            pad.title(),
-            t("launchpad-title"),
-            "starting is the same act whether or not anyone else is here yet"
-        );
-        pad.set_scope(WorkspaceScope::Shared);
-        assert_eq!(pad.subtitle(), t("launchpad-subtitle"));
-        assert_eq!(pad.title(), t("launchpad-title"));
-        pad.set_scope(WorkspaceScope::Public);
-        assert_eq!(pad.subtitle(), t("launchpad-subtitle-public"));
-        let copy = LaunchpadCopy {
-            subtitle: Some("Welcome".into()),
-            ..LaunchpadCopy::default()
-        };
-        let hosted = every_card().with_copy(copy);
-        assert_eq!(hosted.subtitle(), "Welcome", "a host's own words still win");
-    }
+    tilo_test_env::scenario! {
+        fn launchpad_cards_publish_and_route_their_actions;
 
-    /// The cards, the host actions search lists and the verbs agents read are
-    /// one declaration: every card publishes a row of its own, with the name,
-    /// the picture and the flags the card shows.
-    #[test]
-    fn every_card_publishes_one_host_action_of_its_own() {
-        let published: Vec<_> = LaunchpadAction::ALL
-            .into_iter()
-            .map(|card| card.host_action(WorkspaceScope::Shared))
-            .collect();
-        assert_eq!(published.len(), LaunchpadAction::ALL.len());
-        for (action, card) in published.iter().zip(LaunchpadAction::ALL) {
-            assert_eq!(action.id, card.host_id());
-            assert_eq!(action.title, card.label());
-            assert_eq!(action.subtitle, Some(card.detail(WorkspaceScope::Shared)));
-            assert_eq!(action.icon, Some(card.icon().name().to_owned()));
-            assert!(!action.destructive, "no card takes anything away");
-            assert_eq!(action.unasked, card.unasked());
-            assert_eq!(action.source, None, "a card is no menu's row");
-            assert_eq!(LaunchpadAction::from_host_id(&action.id), Some(card));
+        phase the_sharing_copy_follows_the_workspace_scope;
+        {
+            let mut pad = every_card();
+            pad.set_scope(WorkspaceScope::Private);
+            assert_eq!(pad.subtitle(), t("launchpad-subtitle-private"));
+            assert_ne!(
+                pad.subtitle(),
+                t("launchpad-subtitle"),
+                "a private workspace is never said to be shared with everyone"
+            );
+            assert_eq!(
+                LaunchpadAction::Notes.detail(WorkspaceScope::Private),
+                t("launchpad-notes-detail-private")
+            );
+            assert_eq!(
+                pad.title(),
+                t("launchpad-title"),
+                "starting is the same act whether or not anyone else is here yet"
+            );
+            pad.set_scope(WorkspaceScope::Shared);
+            assert_eq!(pad.subtitle(), t("launchpad-subtitle"));
+            assert_eq!(pad.title(), t("launchpad-title"));
+            pad.set_scope(WorkspaceScope::Public);
+            assert_eq!(pad.subtitle(), t("launchpad-subtitle-public"));
+            let copy = LaunchpadCopy {
+                subtitle: Some("Welcome".into()),
+                ..LaunchpadCopy::default()
+            };
+            let hosted = every_card().with_copy(copy);
+            assert_eq!(hosted.subtitle(), "Welcome", "a host's own words still win");
         }
-        assert_eq!(
-            LaunchpadAction::from_host_id("launchpad-open-app"),
-            None,
-            "opening an app is no card's verb"
-        );
-    }
 
-    /// A card that opens an app stands only where the host has it, and a card of the desk's own
-    /// stands everywhere: the desk offers what a person can open, never a window of an app that is
-    /// not here.
-    #[test]
-    fn a_card_stands_only_where_its_app_is_installed() {
-        let only = ["so.tilo.lang.tasks"];
-        let installed = |app: &str| only.contains(&app);
-        assert_eq!(
-            LaunchpadAction::ALL
+        phase every_card_publishes_one_host_action_of_its_own;
+        // The cards, the host actions search lists and the verbs agents read are
+        // one declaration: every card publishes a row of its own, with the name,
+        // the picture and the flags the card shows.
+        {
+            let published: Vec<_> = LaunchpadAction::ALL
                 .into_iter()
-                .filter(|card| card.offered(installed))
-                .collect::<Vec<_>>(),
-            [LaunchpadAction::Invite, LaunchpadAction::Activity],
-            "no card of an app this device has not got, and the desk's own always"
-        );
-        assert!(
-            !LaunchpadAction::Tasks.offered(installed),
-            "this device has no Tasks app"
-        );
-        let all = |_: &str| true;
-        assert!(
-            LaunchpadAction::ALL
-                .into_iter()
-                .all(|card| card.offered(all))
-        );
+                .map(|card| card.host_action(WorkspaceScope::Shared))
+                .collect();
+            assert_eq!(published.len(), LaunchpadAction::ALL.len());
+            for (action, card) in published.iter().zip(LaunchpadAction::ALL) {
+                assert_eq!(action.id, card.host_id());
+                assert_eq!(action.title, card.label());
+                assert_eq!(action.subtitle, Some(card.detail(WorkspaceScope::Shared)));
+                assert_eq!(action.icon, Some(card.icon().name().to_owned()));
+                assert!(!action.destructive, "no card takes anything away");
+                assert_eq!(action.unasked, card.unasked());
+                assert_eq!(action.source, None, "a card is no menu's row");
+                assert_eq!(LaunchpadAction::from_host_id(&action.id), Some(card));
+            }
+            assert_eq!(
+                LaunchpadAction::from_host_id("launchpad-open-app"),
+                None,
+                "opening an app is no card's verb"
+            );
+        }
 
-        // What a host narrows them to is what the desk draws, lays out and announces: two cards
-        // take two places, and nothing of the others is left to press.
-        let mut pad = every_card();
-        pad.set_cards(
-            LaunchpadAction::ALL
+        phase a_card_stands_only_where_its_app_is_installed;
+        // A card that opens an app stands only where the host has it, and a card of the desk's own
+        // stands everywhere: the desk offers what a person can open, never a window of an app that is
+        // not here.
+        {
+            let only = ["so.tilo.lang.tasks"];
+            let installed = |app: &str| only.contains(&app);
+            assert_eq!(
+                LaunchpadAction::ALL
+                    .into_iter()
+                    .filter(|card| card.offered(installed))
+                    .collect::<Vec<_>>(),
+                [LaunchpadAction::Invite, LaunchpadAction::Activity],
+                "no card of an app this device has not got, and the desk's own always"
+            );
+            assert!(
+                !LaunchpadAction::Tasks.offered(installed),
+                "this device has no Tasks app"
+            );
+            let all = |_: &str| true;
+            assert!(
+                LaunchpadAction::ALL
+                    .into_iter()
+                    .all(|card| card.offered(all))
+            );
+
+            // What a host narrows them to is what the desk draws, lays out and announces: two cards
+            // take two places, and nothing of the others is left to press.
+            let mut pad = every_card();
+            pad.set_cards(
+                LaunchpadAction::ALL
+                    .into_iter()
+                    .filter(|card| card.offered(installed))
+                    .collect(),
+            );
+            pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            pad.card_rects = pad.laid_out_cards();
+            assert_eq!(pad.targets().len(), 3, "two cards and the app opener");
+            assert_eq!(pad.cards().len(), 2);
+            let announced: Vec<String> = pad
+                .accessibility()
+                .expect("the launchpad")
+                .children
                 .into_iter()
-                .filter(|card| card.offered(installed))
-                .collect(),
-        );
-        pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        pad.card_rects = pad.laid_out_cards();
-        assert_eq!(pad.targets().len(), 3, "two cards and the app opener");
-        assert_eq!(pad.cards().len(), 2);
-        let announced: Vec<String> = pad
-            .accessibility()
-            .expect("the launchpad")
-            .children
-            .into_iter()
-            .filter_map(|node| node.name)
-            .collect();
-        assert_eq!(
-            announced,
-            [
-                LaunchpadAction::Invite.label(),
-                LaunchpadAction::Activity.label(),
-                t("launchpad-open-app"),
-            ],
-            "a reader hears the cards the person can press"
-        );
+                .filter_map(|node| node.name)
+                .collect();
+            assert_eq!(
+                announced,
+                [
+                    LaunchpadAction::Invite.label(),
+                    LaunchpadAction::Activity.label(),
+                    t("launchpad-open-app"),
+                ],
+                "a reader hears the cards the person can press"
+            );
+        }
+
+        phase a_persons_card_asks_chat_for_the_conversation_between_them;
+        {
+            let root = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
+            let ask = LaunchpadAppAction::message_person(root);
+            assert_eq!(ask.app_id, "so.tilo.chat");
+            assert_eq!(ask.display_name, "Chat");
+            assert_eq!(ask.action, "open-direct-conversation");
+            assert_eq!(
+                ask.resource,
+                format!("chat.conversation:{root}"),
+                "Chat publishes the action on its conversation with them"
+            );
+        }
+
+        phase launchpad_cards_route_to_their_owning_apps_by_click_or_assistive_action;
+        {
+            fn desktop_launchpad_exposes_an_app_opener() {
+                let pad = every_card();
+                assert!(
+                    pad.accessibility()
+                        .unwrap()
+                        .children
+                        .iter()
+                        .any(|node| node.name.as_deref() == Some("Open an app"))
+                );
+            }
+
+            fn every_card_has_a_unique_semantic_route() {
+                let routes = LaunchpadAction::ALL.map(LaunchpadAction::target);
+                let unique = routes.iter().collect::<std::collections::HashSet<_>>();
+                assert_eq!(unique.len(), LaunchpadAction::ALL.len());
+                assert!(routes.iter().all(|route| route.starts_with("launchpad:")));
+            }
+
+            fn collaboration_cards_target_the_apps_that_own_those_features() {
+                assert_eq!(
+                    LaunchpadAction::Chat.app_target(),
+                    Some(("so.tilo.chat", "Chat"))
+                );
+                assert_eq!(
+                    LaunchpadAction::Meet.app_target(),
+                    Some(("so.tilo.chat", "Chat")),
+                    "calls are a Chat feature, not a fabricated Meet package"
+                );
+                assert_eq!(
+                    LaunchpadAction::Tasks.app_target(),
+                    Some(("so.tilo.tasks", "Tasks")),
+                    "Tasks is the workspace's own tracker, not Calendar's to-do list"
+                );
+            }
+
+            fn the_call_card_names_the_action_it_performs() {
+                let call = LaunchpadAction::Meet.app_action().expect("call action");
+                assert_eq!(
+                    (
+                        call.app_id.as_str(),
+                        call.resource.as_str(),
+                        call.action.as_str()
+                    ),
+                    ("so.tilo.chat", "chat.workspace", "start-call")
+                );
+                assert_eq!(
+                    LaunchpadAction::Tasks.app_action(),
+                    None,
+                    "Tasks opens on the list its card names: no action has to steer it there"
+                );
+                for card in LaunchpadAction::ALL {
+                    if let Some(action) = card.app_action() {
+                        assert_eq!(
+                            card.app_target(),
+                            Some((action.app_id.as_str(), action.display_name.as_str())),
+                            "{card:?} acts in the app it opens"
+                        );
+                    }
+                }
+            }
+
+            fn assistive_activation_takes_the_same_choice_as_a_card_click() {
+                let mut launchpad = every_card();
+                let mut doc = AutoCommit::new();
+                let root = automerge::ROOT;
+
+                assert!(launchpad.perform_semantic_action(
+                    &LaunchpadAction::Activity.target(),
+                    &Action::Activate,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                ));
+                assert_eq!(
+                    launchpad.take_press(),
+                    Some(LaunchpadPress::Card(LaunchpadAction::Activity))
+                );
+            }
+
+            desktop_launchpad_exposes_an_app_opener();
+            every_card_has_a_unique_semantic_route();
+            collaboration_cards_target_the_apps_that_own_those_features();
+            the_call_card_names_the_action_it_performs();
+            assistive_activation_takes_the_same_choice_as_a_card_click();
+        }
     }
 
     #[test]
@@ -1248,65 +1353,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn interrupted_app_opener_gestures_consume_release_and_can_be_retried() {
-        for interruption in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {
+    tilo_test_env::scenario! {
+        fn the_app_opener_takes_one_gesture_at_a_time;
+
+        phase interrupted_app_opener_gestures_consume_release_and_can_be_retried;
+        {
+            for interruption in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {
+                let mut pad = every_card();
+                pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+                pad.card_rects = pad.laid_out_cards();
+                pad.set_focus(true);
+                let mut doc = AutoCommit::new();
+                let button = pad.app_button_rect().center();
+                deliver(&mut pad, &mut doc, &pointer_at(button));
+                deliver(&mut pad, &mut doc, &mouse_press());
+                assert!(pad.wants_pointer_capture());
+                deliver(&mut pad, &mut doc, &interruption);
+                assert!(deliver(&mut pad, &mut doc, &mouse_release()));
+                assert!(!pad.wants_pointer_capture());
+                assert!(pad.take_press().is_none());
+                deliver(&mut pad, &mut doc, &mouse_press());
+                assert!(deliver(&mut pad, &mut doc, &mouse_release()));
+                assert_eq!(pad.take_press(), Some(LaunchpadPress::OpenApp));
+            }
+        }
+
+        phase moving_the_launchpad_cancels_the_old_press_before_new_geometry_is_clicked;
+        {
             let mut pad = every_card();
             pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             pad.card_rects = pad.laid_out_cards();
-            pad.set_focus(true);
             let mut doc = AutoCommit::new();
             let button = pad.app_button_rect().center();
             deliver(&mut pad, &mut doc, &pointer_at(button));
             deliver(&mut pad, &mut doc, &mouse_press());
-            assert!(pad.wants_pointer_capture());
-            deliver(&mut pad, &mut doc, &interruption);
+            pad.set_presentation_area(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)));
+            let moved_button = pad.app_button_rect().center();
+            deliver(&mut pad, &mut doc, &pointer_at(moved_button));
             assert!(deliver(&mut pad, &mut doc, &mouse_release()));
-            assert!(!pad.wants_pointer_capture());
             assert!(pad.take_press().is_none());
             deliver(&mut pad, &mut doc, &mouse_press());
             assert!(deliver(&mut pad, &mut doc, &mouse_release()));
             assert_eq!(pad.take_press(), Some(LaunchpadPress::OpenApp));
         }
-    }
 
-    #[test]
-    fn moving_the_launchpad_cancels_the_old_press_before_new_geometry_is_clicked() {
-        let mut pad = every_card();
-        pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        pad.card_rects = pad.laid_out_cards();
-        let mut doc = AutoCommit::new();
-        let button = pad.app_button_rect().center();
-        deliver(&mut pad, &mut doc, &pointer_at(button));
-        deliver(&mut pad, &mut doc, &mouse_press());
-        pad.set_presentation_area(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)));
-        let moved_button = pad.app_button_rect().center();
-        deliver(&mut pad, &mut doc, &pointer_at(moved_button));
-        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
-        assert!(pad.take_press().is_none());
-        deliver(&mut pad, &mut doc, &mouse_press());
-        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
-        assert_eq!(pad.take_press(), Some(LaunchpadPress::OpenApp));
-    }
-
-    #[test]
-    fn app_opener_keyboard_repeat_is_consumed_without_a_second_request() {
-        let mut pad = every_card();
-        pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        pad.card_rects = pad.laid_out_cards();
-        pad.focus_synthetic_accessibility(&[6]);
-        let mut doc = AutoCommit::new();
-        assert!(deliver(&mut pad, &mut doc, &named_key(NamedKey::Enter)));
-        assert_eq!(pad.take_press(), Some(LaunchpadPress::OpenApp));
-        let mut repeated = named_key(NamedKey::Enter);
-        assert!(matches!(repeated, WindowEvent::KeyboardInput { .. }));
-        if let WindowEvent::KeyboardInput { event, .. } = &mut repeated {
-            event.repeat = true;
+        phase app_opener_keyboard_repeat_is_consumed_without_a_second_request;
+        {
+            let mut pad = every_card();
+            pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            pad.card_rects = pad.laid_out_cards();
+            pad.focus_synthetic_accessibility(&[6]);
+            let mut doc = AutoCommit::new();
+            assert!(deliver(&mut pad, &mut doc, &named_key(NamedKey::Enter)));
+            assert_eq!(pad.take_press(), Some(LaunchpadPress::OpenApp));
+            let mut repeated = named_key(NamedKey::Enter);
+            assert!(matches!(repeated, WindowEvent::KeyboardInput { .. }));
+            if let WindowEvent::KeyboardInput { event, .. } = &mut repeated {
+                event.repeat = true;
+            }
+            assert!(deliver(&mut pad, &mut doc, &repeated));
+            assert!(pad.take_press().is_none());
+            assert!(deliver(&mut pad, &mut doc, &named_key(NamedKey::Space)));
+            assert_eq!(pad.take_press(), Some(LaunchpadPress::OpenApp));
         }
-        assert!(deliver(&mut pad, &mut doc, &repeated));
-        assert!(pad.take_press().is_none());
-        assert!(deliver(&mut pad, &mut doc, &named_key(NamedKey::Space)));
-        assert_eq!(pad.take_press(), Some(LaunchpadPress::OpenApp));
     }
 
     fn pointer_at(point: Point) -> WindowEvent {
@@ -1317,252 +1426,155 @@ mod tests {
 
     use ui::synthetic_input::named_key;
 
-    /// The tiles are actions: a secondary action's face, the raised level with no edge that lifts
-    /// under the pointer, with neutral icons, never the accent at rest.
-    #[test]
-    fn launchpad_tiles_are_raised_actions_with_neutral_icons() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let face = |hovered| {
-                ui::widget::face_colors(
-                    &theme,
-                    ui::widget::ButtonRole::Secondary,
-                    ui::widget::Interaction {
-                        hovered,
-                        ..ui::widget::Interaction::default()
-                    },
-                )
-            };
-            let (rest, edge, _) = face(false);
-            assert_eq!(rest, theme.tokens.colors.surfaces.raised, "{}", theme.name);
-            assert!(edge.is_none(), "{}: a raised tile has no edge", theme.name);
-            assert_ne!(face(true).0, rest, "{}: a hovered tile lifts", theme.name);
-            // Icons are the text inks, never the accent. High contrast's accent is inverted, its
-            // primary ink itself, so there the colours cannot tell the two apart; elsewhere they
-            // must differ.
-            let intent = &theme.tokens.colors.intent;
-            let neutral = [theme.text_dim, theme.text_primary];
-            for active in [false, true] {
-                let ink = icon_ink(&theme, active);
-                for accent in [intent.accent, intent.accent_ink] {
-                    assert!(
-                        neutral.contains(&accent) || ink != accent,
-                        "{}: icons are neutral ink",
-                        theme.name
-                    );
-                }
-            }
-            assert_eq!(icon_ink(&theme, false), theme.text_dim);
-            assert_eq!(icon_ink(&theme, true), theme.text_primary);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_launchpad_lays_out_inside_the_display;
 
-    #[test]
-    fn launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size() {
-        fn compact_large_text_heading_stays_below_top_chrome() {
-            let mut pad = every_card();
-            pad.rect = Rect::new(0.0, 48.0, 800.0, 700.0);
-            let theme = Theme::dark().with_text_scale(2.0);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(2.0);
-            pad.draw_child(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::default(),
-            );
-            assert!(
-                pad.card_rects[0].y0 - 90.0 >= pad.rect.y0 + 12.0,
-                "heading must clear chrome: {:?}",
-                pad.card_rects[0]
-            );
-        }
-
-        fn desktop_app_button_has_visible_bounds_in_compact_layouts() {
-            for (width, height) in [(1280.0, 752.0), (960.0, 492.0), (460.0, 712.0)] {
-                let mut pad = every_card();
-                pad.rect = Rect::new(0.0, 48.0, width, height + 48.0);
-                for scale in [1.0, 1.5, 2.0] {
-                    let theme = Theme::dark().with_text_scale(scale);
-                    let mut text = TextRenderer::new();
-                    text.set_text_scale(scale);
-                    pad.draw_child(
-                        &mut Scene::new(),
-                        Affine::IDENTITY,
-                        &mut text,
+        phase launchpad_tiles_are_raised_actions_with_neutral_icons;
+        // The tiles are actions: a secondary action's face, the raised level with no edge that lifts
+        // under the pointer, with neutral icons, never the accent at rest.
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let face = |hovered| {
+                    ui::widget::face_colors(
                         &theme,
-                        &PresenceCtx::default(),
-                    );
-                    let button = pad.app_button_rect();
-                    let (label_w, label_h) = text.measure(
-                        "Open an app",
-                        theme.tokens.typography.size(TextRole::Body) / scale,
-                        None,
-                    );
-                    assert!(
-                        f64::from(label_w) + 32.0 <= button.width()
-                            && f64::from(label_h) + 16.0 <= button.height()
-                    );
-                    assert!(button.width() >= 24.0 && button.height() >= 24.0);
-                    assert!(
-                        pad.rect.contains(button.origin())
-                            && button.x1 <= pad.rect.x1
-                            && button.y1 <= pad.rect.y1,
-                        "{button:?} outside {:?}",
-                        pad.rect
-                    );
+                        ui::widget::ButtonRole::Secondary,
+                        ui::widget::Interaction {
+                            hovered,
+                            ..ui::widget::Interaction::default()
+                        },
+                    )
+                };
+                let (rest, edge, _) = face(false);
+                assert_eq!(rest, theme.tokens.colors.surfaces.raised, "{}", theme.name);
+                assert!(edge.is_none(), "{}: a raised tile has no edge", theme.name);
+                assert_ne!(face(true).0, rest, "{}: a hovered tile lifts", theme.name);
+                // Icons are the text inks, never the accent. High contrast's accent is inverted, its
+                // primary ink itself, so there the colours cannot tell the two apart; elsewhere they
+                // must differ.
+                let intent = &theme.tokens.colors.intent;
+                let neutral = [theme.text_dim, theme.text_primary];
+                for active in [false, true] {
+                    let ink = icon_ink(&theme, active);
+                    for accent in [intent.accent, intent.accent_ink] {
+                        assert!(
+                            neutral.contains(&accent) || ink != accent,
+                            "{}: icons are neutral ink",
+                            theme.name
+                        );
+                    }
                 }
+                assert_eq!(icon_ink(&theme, false), theme.text_dim);
+                assert_eq!(icon_ink(&theme, true), theme.text_primary);
             }
         }
 
-        fn wide_and_narrow_layouts_keep_all_cards_actionable() {
-            for rect in [
-                Rect::new(0.0, 0.0, 1200.0, 720.0),
-                Rect::new(0.0, 0.0, 460.0, 760.0),
-            ] {
-                let (cards, _) =
-                    CollaborationLaunchpad::card_geometry(rect, LaunchpadAction::ALL.len());
-                assert!(
-                    cards
-                        .iter()
-                        .all(|card| card.width() >= 280.0 && card.height() >= 64.0)
+        phase launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size;
+        {
+            fn compact_large_text_heading_stays_below_top_chrome() {
+                let mut pad = every_card();
+                pad.rect = Rect::new(0.0, 48.0, 800.0, 700.0);
+                let theme = Theme::dark().with_text_scale(2.0);
+                let mut text = TextRenderer::new();
+                text.set_text_scale(2.0);
+                pad.draw_child(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::default(),
                 );
-                assert!(cards.windows(2).all(|pair| pair[0] != pair[1]));
+                assert!(
+                    pad.card_rects[0].y0 - 90.0 >= pad.rect.y0 + 12.0,
+                    "heading must clear chrome: {:?}",
+                    pad.card_rects[0]
+                );
             }
-        }
 
-        compact_large_text_heading_stays_below_top_chrome();
-        desktop_app_button_has_visible_bounds_in_compact_layouts();
-        wide_and_narrow_layouts_keep_all_cards_actionable();
-    }
-
-    #[test]
-    fn a_canvas_across_two_displays_centres_on_the_presenting_one() {
-        let mut pad = every_card();
-        pad.rect = Rect::new(0.0, 48.0, 2048.0, 768.0);
-        let right = Rect::new(1024.0, 0.0, 2048.0, 768.0);
-        pad.set_presentation_area(Some(right));
-        let cards = pad.laid_out_cards();
-        let x0 = cards.iter().map(|c| c.x0).fold(f64::INFINITY, f64::min);
-        let x1 = cards.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
-        assert!(
-            x0 >= right.x0 && x1 <= right.x1,
-            "no card may straddle the seam: {cards:?}"
-        );
-        assert!(
-            (f64::midpoint(x0, x1) - right.center().x).abs() < 1.0,
-            "the grid centres on its display: {x0}..{x1}"
-        );
-        let left = Rect::new(0.0, 0.0, 1024.0, 768.0);
-        pad.set_presentation_area(Some(left));
-        assert!(
-            pad.laid_out_cards()
-                .iter()
-                .all(|c| c.x0 >= left.x0 && c.x1 <= left.x1),
-            "moving to the other display moves the grid there: {:?}",
-            pad.laid_out_cards()
-        );
-    }
-
-    #[test]
-    fn a_persons_card_asks_chat_for_the_conversation_between_them() {
-        let root = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
-        let ask = LaunchpadAppAction::message_person(root);
-        assert_eq!(ask.app_id, "so.tilo.chat");
-        assert_eq!(ask.display_name, "Chat");
-        assert_eq!(ask.action, "open-direct-conversation");
-        assert_eq!(
-            ask.resource,
-            format!("chat.conversation:{root}"),
-            "Chat publishes the action on its conversation with them"
-        );
-    }
-
-    #[test]
-    fn launchpad_cards_route_to_their_owning_apps_by_click_or_assistive_action() {
-        fn desktop_launchpad_exposes_an_app_opener() {
-            let pad = every_card();
-            assert!(
-                pad.accessibility()
-                    .unwrap()
-                    .children
-                    .iter()
-                    .any(|node| node.name.as_deref() == Some("Open an app"))
-            );
-        }
-
-        fn every_card_has_a_unique_semantic_route() {
-            let routes = LaunchpadAction::ALL.map(LaunchpadAction::target);
-            let unique = routes.iter().collect::<std::collections::HashSet<_>>();
-            assert_eq!(unique.len(), LaunchpadAction::ALL.len());
-            assert!(routes.iter().all(|route| route.starts_with("launchpad:")));
-        }
-
-        fn collaboration_cards_target_the_apps_that_own_those_features() {
-            assert_eq!(
-                LaunchpadAction::Chat.app_target(),
-                Some(("so.tilo.chat", "Chat"))
-            );
-            assert_eq!(
-                LaunchpadAction::Meet.app_target(),
-                Some(("so.tilo.chat", "Chat")),
-                "calls are a Chat feature, not a fabricated Meet package"
-            );
-            assert_eq!(
-                LaunchpadAction::Tasks.app_target(),
-                Some(("so.tilo.tasks", "Tasks")),
-                "Tasks is the workspace's own tracker, not Calendar's to-do list"
-            );
-        }
-
-        fn the_call_card_names_the_action_it_performs() {
-            let call = LaunchpadAction::Meet.app_action().expect("call action");
-            assert_eq!(
-                (
-                    call.app_id.as_str(),
-                    call.resource.as_str(),
-                    call.action.as_str()
-                ),
-                ("so.tilo.chat", "chat.workspace", "start-call")
-            );
-            assert_eq!(
-                LaunchpadAction::Tasks.app_action(),
-                None,
-                "Tasks opens on the list its card names: no action has to steer it there"
-            );
-            for card in LaunchpadAction::ALL {
-                if let Some(action) = card.app_action() {
-                    assert_eq!(
-                        card.app_target(),
-                        Some((action.app_id.as_str(), action.display_name.as_str())),
-                        "{card:?} acts in the app it opens"
-                    );
+            fn desktop_app_button_has_visible_bounds_in_compact_layouts() {
+                for (width, height) in [(1280.0, 752.0), (960.0, 492.0), (460.0, 712.0)] {
+                    let mut pad = every_card();
+                    pad.rect = Rect::new(0.0, 48.0, width, height + 48.0);
+                    for scale in [1.0, 1.5, 2.0] {
+                        let theme = Theme::dark().with_text_scale(scale);
+                        let mut text = TextRenderer::new();
+                        text.set_text_scale(scale);
+                        pad.draw_child(
+                            &mut Scene::new(),
+                            Affine::IDENTITY,
+                            &mut text,
+                            &theme,
+                            &PresenceCtx::default(),
+                        );
+                        let button = pad.app_button_rect();
+                        let (label_w, label_h) = text.measure(
+                            "Open an app",
+                            theme.tokens.typography.size(TextRole::Body) / scale,
+                            None,
+                        );
+                        assert!(
+                            f64::from(label_w) + 32.0 <= button.width()
+                                && f64::from(label_h) + 16.0 <= button.height()
+                        );
+                        assert!(button.width() >= 24.0 && button.height() >= 24.0);
+                        assert!(
+                            pad.rect.contains(button.origin())
+                                && button.x1 <= pad.rect.x1
+                                && button.y1 <= pad.rect.y1,
+                            "{button:?} outside {:?}",
+                            pad.rect
+                        );
+                    }
                 }
             }
+
+            fn wide_and_narrow_layouts_keep_all_cards_actionable() {
+                for rect in [
+                    Rect::new(0.0, 0.0, 1200.0, 720.0),
+                    Rect::new(0.0, 0.0, 460.0, 760.0),
+                ] {
+                    let (cards, _) =
+                        CollaborationLaunchpad::card_geometry(rect, LaunchpadAction::ALL.len());
+                    assert!(
+                        cards
+                            .iter()
+                            .all(|card| card.width() >= 280.0 && card.height() >= 64.0)
+                    );
+                    assert!(cards.windows(2).all(|pair| pair[0] != pair[1]));
+                }
+            }
+
+            compact_large_text_heading_stays_below_top_chrome();
+            desktop_app_button_has_visible_bounds_in_compact_layouts();
+            wide_and_narrow_layouts_keep_all_cards_actionable();
         }
 
-        fn assistive_activation_takes_the_same_choice_as_a_card_click() {
-            let mut launchpad = every_card();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-
-            assert!(launchpad.perform_semantic_action(
-                &LaunchpadAction::Activity.target(),
-                &Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &root,
-            ));
-            assert_eq!(
-                launchpad.take_press(),
-                Some(LaunchpadPress::Card(LaunchpadAction::Activity))
+        phase a_canvas_across_two_displays_centres_on_the_presenting_one;
+        {
+            let mut pad = every_card();
+            pad.rect = Rect::new(0.0, 48.0, 2048.0, 768.0);
+            let right = Rect::new(1024.0, 0.0, 2048.0, 768.0);
+            pad.set_presentation_area(Some(right));
+            let cards = pad.laid_out_cards();
+            let x0 = cards.iter().map(|c| c.x0).fold(f64::INFINITY, f64::min);
+            let x1 = cards.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
+            assert!(
+                x0 >= right.x0 && x1 <= right.x1,
+                "no card may straddle the seam: {cards:?}"
+            );
+            assert!(
+                (f64::midpoint(x0, x1) - right.center().x).abs() < 1.0,
+                "the grid centres on its display: {x0}..{x1}"
+            );
+            let left = Rect::new(0.0, 0.0, 1024.0, 768.0);
+            pad.set_presentation_area(Some(left));
+            assert!(
+                pad.laid_out_cards()
+                    .iter()
+                    .all(|c| c.x0 >= left.x0 && c.x1 <= left.x1),
+                "moving to the other display moves the grid there: {:?}",
+                pad.laid_out_cards()
             );
         }
-
-        desktop_launchpad_exposes_an_app_opener();
-        every_card_has_a_unique_semantic_route();
-        collaboration_cards_target_the_apps_that_own_those_features();
-        the_call_card_names_the_action_it_performs();
-        assistive_activation_takes_the_same_choice_as_a_card_click();
     }
 
     #[test]

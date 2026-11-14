@@ -161,6 +161,7 @@ qs-clipboard-unpin = Eintrag lösen
 qs-devices-fabric-unavailable = Das persönliche Gerätenetz ist nicht verfügbar
 qs-devices-offline = Offline
 qs-devices-online = Online
+qs-devices-nearby = In der Nähe
 qs-devices-play-here = { $media } hier abspielen
 qs-devices-wake = Aufwecken
 qs-devices-action-dismiss = Verwerfen

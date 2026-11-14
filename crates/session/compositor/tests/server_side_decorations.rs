@@ -392,189 +392,194 @@ impl WindowPolicy for Columns {
     }
 }
 
-#[test]
-fn both_decoration_managers_are_advertised() {
-    let mut compositor = headless(Box::<Columns>::default());
-    let client = connected(&mut compositor);
+tilo_test_env::scenario! {
+    /// Server-side decorations.
+    fn the_desktop_draws_the_frame_of_every_window;
 
-    let names: Vec<&str> = client
-        .seen
-        .globals
-        .iter()
-        .map(|(_, interface, _)| interface.as_str())
-        .collect();
-    assert!(
-        !names.is_empty(),
-        "the client saw no globals at all — the harness failed to talk to \
-         the compositor, so this test proved nothing."
-    );
-    for interface in [
-        "zxdg_decoration_manager_v1",
-        "org_kde_kwin_server_decoration_manager",
-    ] {
+    phase both_decoration_managers_are_advertised;
+    {
+        let mut compositor = headless(Box::<Columns>::default());
+        let client = connected(&mut compositor);
+
+        let names: Vec<&str> = client
+            .seen
+            .globals
+            .iter()
+            .map(|(_, interface, _)| interface.as_str())
+            .collect();
         assert!(
-            names.contains(&interface),
-            "{interface} is not advertised, so a toolkit that decorates \
+            !names.is_empty(),
+            "the client saw no globals at all — the harness failed to talk to \
+         the compositor, so this test proved nothing."
+        );
+        for interface in [
+            "zxdg_decoration_manager_v1",
+            "org_kde_kwin_server_decoration_manager",
+        ] {
+            assert!(
+                names.contains(&interface),
+                "{interface} is not advertised, so a toolkit that decorates \
              itself when it cannot see the manager draws its own title bar \
              and keeps it out of the size this compositor gave it. \
              Advertised: {names:?}"
-        );
+            );
+        }
     }
-}
 
-#[test]
-fn a_client_that_asks_to_draw_its_own_frame_is_told_the_desktop_does() {
-    let mut compositor = headless(Box::<Columns>::default());
-    let mut client = connected(&mut compositor);
+    phase a_client_that_asks_to_draw_its_own_frame_is_told_the_desktop_does;
+    {
+        let mut compositor = headless(Box::<Columns>::default());
+        let mut client = connected(&mut compositor);
 
-    // The order toolkits use: create the decoration, state a preference,
-    // then commit, so the answer rides on the first configure.
-    client.open_window("own-frame");
-    client.ask_for_client_side();
-    client.commit();
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        !clients[0].seen.xdg_modes.is_empty()
-    });
+        // The order toolkits use: create the decoration, state a preference,
+        // then commit, so the answer rides on the first configure.
+        client.open_window("own-frame");
+        client.ask_for_client_side();
+        client.commit();
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            !clients[0].seen.xdg_modes.is_empty()
+        });
 
-    assert!(
-        client
-            .seen
-            .xdg_modes
-            .iter()
-            .all(|mode| *mode == XdgMode::ServerSide),
-        "expected every configure to say ServerSide; got {:?}. A client \
+        assert!(
+            client
+                .seen
+                .xdg_modes
+                .iter()
+                .all(|mode| *mode == XdgMode::ServerSide),
+            "expected every configure to say ServerSide; got {:?}. A client \
          told ClientSide draws its own title bar inside the frame the \
          desktop already drew for it.",
-        client.seen.xdg_modes
-    );
-}
-
-#[test]
-fn a_kde_client_that_asks_to_draw_its_own_frame_is_told_server() {
-    let mut compositor = headless(Box::<Columns>::default());
-    let mut client = connected(&mut compositor);
-
-    client.open_window("kde-frame");
-    client.ask_for_client_frame_kde();
-    client.commit();
-    // Each pump lets several requests and their replies cross: an exchange that feeds itself shows
-    // up as one more mode per round.
-    for _ in 0..4 {
-        pump(&mut compositor, &mut [&mut client], |_, _| true);
+            client.seen.xdg_modes
+        );
     }
 
-    assert_eq!(
-        client.seen.kde_modes,
-        vec![KdeMode::Server],
-        "a KDE-protocol client is told Server once, when its decoration is \
+    phase a_kde_client_that_asks_to_draw_its_own_frame_is_told_server;
+    {
+        let mut compositor = headless(Box::<Columns>::default());
+        let mut client = connected(&mut compositor);
+
+        client.open_window("kde-frame");
+        client.ask_for_client_frame_kde();
+        client.commit();
+        // Each pump lets several requests and their replies cross: an exchange that feeds itself shows
+        // up as one more mode per round.
+        for _ in 0..4 {
+            pump(&mut compositor, &mut [&mut client], |_, _| true);
+        }
+
+        assert_eq!(
+            client.seen.kde_modes,
+            vec![KdeMode::Server],
+            "a KDE-protocol client is told Server once, when its decoration is \
          created; answering its request again would loop forever with a \
          client that acknowledges with the mode it wants"
-    );
-}
+        );
+    }
 
-#[test]
-fn a_client_that_asks_for_no_frame_of_its_own_is_told_server() {
-    let mut compositor = headless(Box::<Columns>::default());
-    let mut client = connected(&mut compositor);
+    phase a_client_that_asks_for_no_frame_of_its_own_is_told_server;
+    {
+        let mut compositor = headless(Box::<Columns>::default());
+        let mut client = connected(&mut compositor);
 
-    // Binding the manager is what asks for the default, so it is one exchange after the registry
-    // has been read.
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.kde_default.is_some()
-    });
-    assert_eq!(
-        client.seen.kde_default,
-        Some(KdeDefaultMode::Server),
-        "a client that never states a preference must be told the desktop \
+        // Binding the manager is what asks for the default, so it is one exchange after the registry
+        // has been read.
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            clients[0].seen.kde_default.is_some()
+        });
+        assert_eq!(
+            client.seen.kde_default,
+            Some(KdeDefaultMode::Server),
+            "a client that never states a preference must be told the desktop \
          draws the frame"
-    );
+        );
 
-    client.open_window("default-frame");
-    client.decorate_kde();
-    client.commit();
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        !clients[0].seen.kde_modes.is_empty()
-    });
-    assert_eq!(
-        client.seen.kde_modes,
-        vec![KdeMode::Server],
-        "the frame of a window that states no preference is the desktop's"
-    );
-}
+        client.open_window("default-frame");
+        client.decorate_kde();
+        client.commit();
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            !clients[0].seen.kde_modes.is_empty()
+        });
+        assert_eq!(
+            client.seen.kde_modes,
+            vec![KdeMode::Server],
+            "the frame of a window that states no preference is the desktop's"
+        );
+    }
 
-#[test]
-fn the_frame_does_not_change_when_another_window_takes_focus() {
-    let mut compositor = headless(Box::<Columns>::default());
-    let mut left = connected(&mut compositor);
-    left.open_window("left");
-    left.ask_for_client_side();
-    left.commit();
-    pump(&mut compositor, &mut [&mut left], |_, clients| {
-        clients[0].seen.configured && !clients[0].seen.xdg_modes.is_empty()
-    });
-    left.show(250, 200, [255, 0, 0, 255]);
-    pump(&mut compositor, &mut [&mut left], |compositor, _| {
-        compositor.windows().len() == 1
-    });
+    phase the_frame_does_not_change_when_another_window_takes_focus;
+    {
+        let mut compositor = headless(Box::<Columns>::default());
+        let mut left = connected(&mut compositor);
+        left.open_window("left");
+        left.ask_for_client_side();
+        left.commit();
+        pump(&mut compositor, &mut [&mut left], |_, clients| {
+            clients[0].seen.configured && !clients[0].seen.xdg_modes.is_empty()
+        });
+        left.show(250, 200, [255, 0, 0, 255]);
+        pump(&mut compositor, &mut [&mut left], |compositor, _| {
+            compositor.windows().len() == 1
+        });
 
-    let answer = left.seen.xdg_modes.clone();
-    assert_eq!(answer, vec![XdgMode::ServerSide]);
+        let answer = left.seen.xdg_modes.clone();
+        assert_eq!(answer, vec![XdgMode::ServerSide]);
 
-    let mut right = connected(&mut compositor);
-    right.open_window("right");
-    right.ask_for_client_side();
-    right.commit();
-    pump(&mut compositor, &mut [&mut right], |_, clients| {
-        clients[0].seen.configured && !clients[0].seen.xdg_modes.is_empty()
-    });
-    right.show(250, 200, [0, 0, 255, 255]);
-    pump(
-        &mut compositor,
-        &mut [&mut left, &mut right],
-        |compositor, _| compositor.windows().len() == 2,
-    );
+        let mut right = connected(&mut compositor);
+        right.open_window("right");
+        right.ask_for_client_side();
+        right.commit();
+        pump(&mut compositor, &mut [&mut right], |_, clients| {
+            clients[0].seen.configured && !clients[0].seen.xdg_modes.is_empty()
+        });
+        right.show(250, 200, [0, 0, 255, 255]);
+        pump(
+            &mut compositor,
+            &mut [&mut left, &mut right],
+            |compositor, _| compositor.windows().len() == 2,
+        );
 
-    // The right window stands at (300, 0) and has the focus; a press on the left one moves it
-    // there.
-    assert_eq!(
-        compositor
-            .focused_window()
-            .and_then(|info| info.app_id)
-            .as_deref(),
-        Some("right")
-    );
-    compositor
-        .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
-        .unwrap();
-    compositor
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: true,
-        })
-        .unwrap();
-    compositor
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: false,
-        })
-        .unwrap();
-    pump(
-        &mut compositor,
-        &mut [&mut left, &mut right],
-        |compositor, _| {
+        // The right window stands at (300, 0) and has the focus; a press on the left one moves it
+        // there.
+        assert_eq!(
             compositor
                 .focused_window()
                 .and_then(|info| info.app_id)
-                .as_deref()
-                == Some("left")
-        },
-    );
+                .as_deref(),
+            Some("right")
+        );
+        compositor
+            .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
+            .unwrap();
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true,
+            })
+            .unwrap();
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
+            })
+            .unwrap();
+        pump(
+            &mut compositor,
+            &mut [&mut left, &mut right],
+            |compositor, _| {
+                compositor
+                    .focused_window()
+                    .and_then(|info| info.app_id)
+                    .as_deref()
+                    == Some("left")
+            },
+        );
 
-    // Focus moved, and the frame stayed where it was: the desktop's in every case, so there is
-    // nothing for the focus to change.
-    assert_eq!(
-        left.seen.xdg_modes, answer,
-        "the decoration mode changed when another window took focus; the \
+        // Focus moved, and the frame stayed where it was: the desktop's in every case, so there is
+        // nothing for the focus to change.
+        assert_eq!(
+            left.seen.xdg_modes, answer,
+            "the decoration mode changed when another window took focus; the \
          frame is the tab the desktop draws, not a state of the window"
-    );
+        );
+    }
 }

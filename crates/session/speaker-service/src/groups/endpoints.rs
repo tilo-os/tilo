@@ -145,133 +145,137 @@ pub fn follow<W>(
 mod tests {
     use super::*;
 
-    /// The graph is read when the watch reports a change and at no other
-    /// time, however often the snapshot asks; the list the snapshot
-    /// publishes is the one last read.
-    #[test]
-    fn the_graph_is_read_on_each_change_not_on_each_sample() {
-        let cache = Mutex::new(GraphCache::default());
-        let (report, reports) = mpsc::channel::<Notify>();
-        let reads = std::sync::atomic::AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            let follower = scope.spawn(|| {
-                follow(
-                    &cache,
-                    |notify| {
-                        report.send(notify).map_err(|error| error.to_string())?;
-                        Ok(())
-                    },
-                    || {
-                        reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        Ok(AudioGraph::default())
-                    },
-                    RETRY,
-                );
-            });
-            let notify = tilo_test_env::recv("the watch to start", &reports);
-            notify(GraphWatchEvent::Changed);
-            tilo_test_env::wait_for("the first read", || {
-                cache.lock_recover().graph.is_some().then_some(())
-            });
-            assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
-            notify(GraphWatchEvent::Changed);
-            notify(GraphWatchEvent::Lost);
-            follower.join().expect("the follower ends with the watch");
-        });
-        assert_eq!(
-            reads.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "one read per reported change"
-        );
-        let state = cache
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(
-            state.graph.is_none(),
-            "a lost watch leaves no graph to trust"
-        );
-        assert!(!state.following);
-    }
+    tilo_test_env::scenario! {
+        fn the_endpoint_follower_reads_the_graph_on_changes_and_retries_what_failed;
 
-    /// A read that fails while the watch stays up is tried again on its
-    /// own: no device change may come to prompt it, and the list must not
-    /// stay empty until one does.
-    #[test]
-    fn a_failed_read_is_tried_again_without_a_change() {
-        let cache = Mutex::new(GraphCache::default());
-        let (report, reports) = mpsc::channel::<Notify>();
-        let reads = std::sync::atomic::AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            let follower = scope.spawn(|| {
-                follow(
-                    &cache,
-                    |notify| {
-                        report.send(notify).map_err(|error| error.to_string())?;
-                        Ok(())
-                    },
-                    || {
-                        if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
-                            Err("pw-dump timed out".to_owned())
-                        } else {
+        phase the_graph_is_read_on_each_change_not_on_each_sample;
+        // The graph is read when the watch reports a change and at no other
+        // time, however often the snapshot asks; the list the snapshot
+        // publishes is the one last read.
+        {
+            let cache = Mutex::new(GraphCache::default());
+            let (report, reports) = mpsc::channel::<Notify>();
+            let reads = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                let follower = scope.spawn(|| {
+                    follow(
+                        &cache,
+                        |notify| {
+                            report.send(notify).map_err(|error| error.to_string())?;
+                            Ok(())
+                        },
+                        || {
+                            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             Ok(AudioGraph::default())
-                        }
-                    },
-                    Duration::from_millis(1),
-                );
+                        },
+                        RETRY,
+                    );
+                });
+                let notify = tilo_test_env::recv("the watch to start", &reports);
+                notify(GraphWatchEvent::Changed);
+                tilo_test_env::wait_for("the first read", || {
+                    cache.lock_recover().graph.is_some().then_some(())
+                });
+                assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+                notify(GraphWatchEvent::Changed);
+                notify(GraphWatchEvent::Lost);
+                follower.join().expect("the follower ends with the watch");
             });
-            let notify = tilo_test_env::recv("the watch to start", &reports);
-            notify(GraphWatchEvent::Changed);
-            tilo_test_env::wait_for("a read that succeeds", || {
-                cache.lock_recover().graph.is_some().then_some(())
+            assert_eq!(
+                reads.load(std::sync::atomic::Ordering::SeqCst),
+                2,
+                "one read per reported change"
+            );
+            let state = cache
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                state.graph.is_none(),
+                "a lost watch leaves no graph to trust"
+            );
+            assert!(!state.following);
+        }
+
+        phase a_failed_read_is_tried_again_without_a_change;
+        // A read that fails while the watch stays up is tried again on its
+        // own: no device change may come to prompt it, and the list must not
+        // stay empty until one does.
+        {
+            let cache = Mutex::new(GraphCache::default());
+            let (report, reports) = mpsc::channel::<Notify>();
+            let reads = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                let follower = scope.spawn(|| {
+                    follow(
+                        &cache,
+                        |notify| {
+                            report.send(notify).map_err(|error| error.to_string())?;
+                            Ok(())
+                        },
+                        || {
+                            if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                                Err("pw-dump timed out".to_owned())
+                            } else {
+                                Ok(AudioGraph::default())
+                            }
+                        },
+                        Duration::from_millis(1),
+                    );
+                });
+                let notify = tilo_test_env::recv("the watch to start", &reports);
+                notify(GraphWatchEvent::Changed);
+                tilo_test_env::wait_for("a read that succeeds", || {
+                    cache.lock_recover().graph.is_some().then_some(())
+                });
+                assert_eq!(
+                    reads.load(std::sync::atomic::Ordering::SeqCst),
+                    3,
+                    "two failed reads and the one that succeeded, from one change"
+                );
+                notify(GraphWatchEvent::Lost);
+                follower.join().expect("the follower ends with the watch");
             });
             assert_eq!(
                 reads.load(std::sync::atomic::Ordering::SeqCst),
                 3,
-                "two failed reads and the one that succeeded, from one change"
+                "nothing is read again once a read succeeded"
             );
-            notify(GraphWatchEvent::Lost);
-            follower.join().expect("the follower ends with the watch");
-        });
-        assert_eq!(
-            reads.load(std::sync::atomic::Ordering::SeqCst),
-            3,
-            "nothing is read again once a read succeeded"
-        );
-    }
+        }
 
-    /// Without `PipeWire` nothing is read, and the watch is tried again only
-    /// after [`RETRY`].
-    #[test]
-    fn an_unreachable_pipewire_is_not_read_and_retried_later() {
-        let cache = Mutex::new(GraphCache {
-            following: true,
-            ..GraphCache::default()
-        });
-        let mut reads = 0_u32;
-        follow(
-            &cache,
-            |_notify| Err::<(), _>("PipeWire cannot be reached".to_owned()),
-            || {
-                reads = reads.saturating_add(1);
-                Ok(AudioGraph::default())
-            },
-            RETRY,
-        );
-        assert_eq!(reads, 0, "pw-dump cannot reach PipeWire either");
-        let state = cache
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let gave_up = state.gave_up.expect("the failure is remembered");
-        let later = gave_up.checked_add(RETRY).expect("a retry time in range");
-        assert!(!state.should_follow(gave_up));
-        assert!(state.should_follow(later));
-        assert!(
-            !GraphCache {
+        phase an_unreachable_pipewire_is_not_read_and_retried_later;
+        // Without `PipeWire` nothing is read, and the watch is tried again only
+        // after [`RETRY`].
+        {
+            let cache = Mutex::new(GraphCache {
                 following: true,
                 ..GraphCache::default()
-            }
-            .should_follow(later),
-            "one follower at a time"
-        );
+            });
+            let mut reads = 0_u32;
+            follow(
+                &cache,
+                |_notify| Err::<(), _>("PipeWire cannot be reached".to_owned()),
+                || {
+                    reads = reads.saturating_add(1);
+                    Ok(AudioGraph::default())
+                },
+                RETRY,
+            );
+            assert_eq!(reads, 0, "pw-dump cannot reach PipeWire either");
+            let state = cache
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let gave_up = state.gave_up.expect("the failure is remembered");
+            let later = gave_up.checked_add(RETRY).expect("a retry time in range");
+            assert!(!state.should_follow(gave_up));
+            assert!(state.should_follow(later));
+            assert!(
+                !GraphCache {
+                    following: true,
+                    ..GraphCache::default()
+                }
+                .should_follow(later),
+                "one follower at a time"
+            );
+        }
     }
 }

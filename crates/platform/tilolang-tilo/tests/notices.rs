@@ -292,25 +292,14 @@ fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
         .kind(meta.kind_of("Note"))
         .action(&tell.id);
     let owner = Grantee::person("sol");
-    policy.grants.extend([
-        Grant::new(
-            "tells",
-            Grantee::person(who),
-            node.clone(),
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            owner.clone(),
-        ),
-        // The app's own code bounds it too, and its code asks before reaching outside.
-        Grant::new(
-            "app-tells",
-            Grantee::app(TELLER_APP),
-            node,
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            owner,
-        ),
-    ]);
+    policy.grants.extend([Grant::new(
+        "tells",
+        Grantee::person(who),
+        node,
+        KindSet::OUTSIDE,
+        Answer::Allow,
+        owner,
+    )]);
     Standing::person(policy, who)
 }
 
@@ -359,78 +348,82 @@ fn teller_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     (ada, grace, invocation)
 }
 
-#[test]
-fn a_notice_a_run_writes_before_it_asks_is_one_when_both_replicas_run_it() {
-    let (mut ada, mut grace, invocation) = teller_workspace();
-    // Ada answers: the run goes on from its journal, and the notice the prefix wrote stays one.
-    assert_eq!(
-        ada.host
-            .runtime()
-            .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
-            .unwrap(),
-        "done"
-    );
-    ada.commit();
-    assert_eq!(notices(&ada.host).len(), 1, "told once");
+tilo_test_env::scenario! {
+    fn a_notice_two_replicas_write_is_told_once;
 
-    // Grace holds no journal of the run: answering runs the whole action again, telling the
-    // person once more before it reaches the ask — under the record ada wrote, so it is one
-    // notice — and then answering that seals the note.
-    let answer = |grace: &Replica| {
-        grace.host.runtime().resolve_invocation(
-            &invocation,
-            &Principal::new("grace"),
-            Resolution::Approve,
-        )
-    };
-    assert_eq!(
-        answer(&grace).unwrap(),
-        "suggested",
-        "it runs the prefix again"
-    );
-    grace.commit();
-    assert_eq!(answer(&grace).unwrap(), "done");
-    grace.commit();
-    assert_eq!(
-        notices(&grace.host).len(),
-        1,
-        "one notice on her device too"
-    );
+    phase a_notice_a_run_writes_before_it_asks_is_one_when_both_replicas_run_it;
+    {
+        let (mut ada, mut grace, invocation) = teller_workspace();
+        // Ada answers: the run goes on from its journal, and the notice the prefix wrote stays one.
+        assert_eq!(
+            ada.host
+                .runtime()
+                .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+                .unwrap(),
+            "done"
+        );
+        ada.commit();
+        assert_eq!(notices(&ada.host).len(), 1, "told once");
 
-    ada.sync_with(&mut grace);
-    for replica in [&ada, &grace] {
-        assert_eq!(notices(&replica.host).len(), 1, "one notice between them");
+        // Grace holds no journal of the run: answering runs the whole action again, telling the
+        // person once more before it reaches the ask — under the record ada wrote, so it is one
+        // notice — and then answering that seals the note.
+        let answer = |grace: &Replica| {
+            grace.host.runtime().resolve_invocation(
+                &invocation,
+                &Principal::new("grace"),
+                Resolution::Approve,
+            )
+        };
+        assert_eq!(
+            answer(&grace).unwrap(),
+            "suggested",
+            "it runs the prefix again"
+        );
+        grace.commit();
+        assert_eq!(answer(&grace).unwrap(), "done");
+        grace.commit();
+        assert_eq!(
+            notices(&grace.host).len(),
+            1,
+            "one notice on her device too"
+        );
+
+        ada.sync_with(&mut grace);
+        for replica in [&ada, &grace] {
+            assert_eq!(notices(&replica.host).len(), 1, "one notice between them");
+        }
     }
-}
 
-#[test]
-fn a_reminder_its_trigger_runs_on_two_devices_is_told_once() {
-    let (mut ada, _, clock) = reminded_workspace();
-    let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
+    phase a_reminder_its_trigger_runs_on_two_devices_is_told_once;
+    {
+        let (mut ada, _, clock) = reminded_workspace();
+        let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
 
-    // Another device of the workspace, which has not heard from ada's yet: both come to run the
-    // reminder at its moment, as they do when the origin moves between them.
-    let mut bo = ada.fork("bo", &[DISCUSSION, TASKS]);
-    bo.host.set_clock({
-        let clock = std::rc::Rc::clone(&clock);
-        move || clock.borrow().clone()
-    });
-    bo.host.root_of(TASKS_APP).unwrap();
+        // Another device of the workspace, which has not heard from ada's yet: both come to run the
+        // reminder at its moment, as they do when the origin moves between them.
+        let mut bo = ada.fork("bo", &[DISCUSSION, TASKS]);
+        bo.host.set_clock({
+            let clock = std::rc::Rc::clone(&clock);
+            move || clock.borrow().clone()
+        });
+        bo.host.root_of(TASKS_APP).unwrap();
 
-    assert_eq!(ada.host.run_triggers(ten), 1, "the reminder comes due");
-    ada.commit();
-    assert_eq!(
-        bo.host.run_triggers(ten),
-        1,
-        "and on the other, before it heard"
-    );
-    bo.commit();
+        assert_eq!(ada.host.run_triggers(ten), 1, "the reminder comes due");
+        ada.commit();
+        assert_eq!(
+            bo.host.run_triggers(ten),
+            1,
+            "and on the other, before it heard"
+        );
+        bo.commit();
 
-    ada.sync_with(&mut bo);
-    for replica in [&ada, &bo] {
-        let told = notices(&replica.host);
-        assert_eq!(told.len(), 1, "one notice between them: {told:#?}");
-        assert_eq!(told[0].0, "bo", "for the task's assignee");
+        ada.sync_with(&mut bo);
+        for replica in [&ada, &bo] {
+            let told = notices(&replica.host);
+            assert_eq!(told.len(), 1, "one notice between them: {told:#?}");
+            assert_eq!(told[0].0, "bo", "for the task's assignee");
+        }
     }
 }
 

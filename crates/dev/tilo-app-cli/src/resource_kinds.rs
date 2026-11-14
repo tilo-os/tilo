@@ -394,56 +394,6 @@ impl VisitMut for Kinds {
 mod tests {
     use std::path::Path;
 
-    #[test]
-    fn manual_resource_implementations_declare_kinds_without_attributes() {
-        let app = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(app.path().join("src")).unwrap();
-        std::fs::write(
-            app.path().join("src/lib.rs"),
-            r#"
-            impl Resource for Music { const KIND: &'static str = "music.library"; }
-            impl ui::tilo_resource::Resource for Book { const KIND: &'static str = "books.library"; }
-            impl Unrelated { const KIND: &'static str = "unrelated.kind"; }
-            #[cfg(test)]
-            impl Resource for Fixture { const KIND: &'static str = "test.fixture"; }
-            #[cfg(test)]
-            mod tests {
-                impl Resource for Page { const KIND: &'static str = "test.page"; }
-            }
-            #[cfg(test)]
-            #[cfg(not(target_arch = "wasm32"))]
-            mod native_tests {
-                impl Resource for Fixture { const KIND: &'static str = "test.native"; }
-            }
-            #[cfg(any(test, feature = "live"))]
-            impl Resource for Live { const KIND: &'static str = "live.library"; }
-            "#,
-        ).unwrap();
-        std::fs::write(
-            app.path().join("src/uppercase.rs"),
-            r#"impl Resource for Uppercase { const KIND: &'static str = "uppercase.library"; }"#,
-        )
-        .unwrap();
-        // A test module in a file of its own, as `mod shelf_tests;` declares it.
-        std::fs::write(
-            app.path().join("src/shelf_tests.rs"),
-            r#"
-            #![cfg(all(test, not(target_arch = "wasm32")))]
-            impl Resource for Shelf { const KIND: &'static str = "test.shelf"; }
-            "#,
-        )
-        .unwrap();
-        assert_eq!(
-            super::declared_in(app.path()).unwrap(),
-            [
-                "books.library",
-                "live.library",
-                "music.library",
-                "uppercase.library"
-            ]
-        );
-    }
-
     /// The directories of the path crates `app_dir/Cargo.toml` lists as
     /// normal dependencies, the SDK's own crates excepted.
     fn direct_local_dependencies(app_dir: &Path) -> Vec<std::path::PathBuf> {
@@ -551,14 +501,67 @@ mod tests {
         );
     }
 
-    #[test]
-    fn kinds_are_read_from_every_resource_attribute_in_the_sources() {
-        let app = tempfile::tempdir().unwrap();
-        let src = app.path().join("src");
-        std::fs::create_dir_all(src.join("model")).unwrap();
-        std::fs::write(
-            src.join("main.rs"),
-            r#"
+    tilo_test_env::scenario! {
+        fn kinds_are_declared_by_production_sources_only;
+
+        phase manual_resource_implementations_declare_kinds_without_attributes;
+        {
+            let app = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(app.path().join("src")).unwrap();
+            std::fs::write(
+                app.path().join("src/lib.rs"),
+                r#"
+            impl Resource for Music { const KIND: &'static str = "music.library"; }
+            impl ui::tilo_resource::Resource for Book { const KIND: &'static str = "books.library"; }
+            impl Unrelated { const KIND: &'static str = "unrelated.kind"; }
+            #[cfg(test)]
+            impl Resource for Fixture { const KIND: &'static str = "test.fixture"; }
+            #[cfg(test)]
+            mod tests {
+                impl Resource for Page { const KIND: &'static str = "test.page"; }
+            }
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
+            mod native_tests {
+                impl Resource for Fixture { const KIND: &'static str = "test.native"; }
+            }
+            #[cfg(any(test, feature = "live"))]
+            impl Resource for Live { const KIND: &'static str = "live.library"; }
+            "#,
+            ).unwrap();
+            std::fs::write(
+                app.path().join("src/uppercase.rs"),
+                r#"impl Resource for Uppercase { const KIND: &'static str = "uppercase.library"; }"#,
+            )
+            .unwrap();
+            // A test module in a file of its own, as `mod shelf_tests;` declares it.
+            std::fs::write(
+                app.path().join("src/shelf_tests.rs"),
+                r#"
+            #![cfg(all(test, not(target_arch = "wasm32")))]
+            impl Resource for Shelf { const KIND: &'static str = "test.shelf"; }
+            "#,
+            )
+            .unwrap();
+            assert_eq!(
+                super::declared_in(app.path()).unwrap(),
+                [
+                    "books.library",
+                    "live.library",
+                    "music.library",
+                    "uppercase.library"
+                ]
+            );
+        }
+
+        phase kinds_are_read_from_every_resource_attribute_in_the_sources;
+        {
+            let app = tempfile::tempdir().unwrap();
+            let src = app.path().join("src");
+            std::fs::create_dir_all(src.join("model")).unwrap();
+            std::fs::write(
+                src.join("main.rs"),
+                r#"
             #[resource(kind = "example.todo", label = "Todo list")]
             impl Todo {}
             #[tilo_app::resource(label = "Note", kind = "example.note", search = notes::search)]
@@ -574,57 +577,116 @@ mod tests {
             #[resource(kind = "test.shelf")]
             impl Shelf {}
             "#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("model/mod.rs"),
-            r#"#[resource(kind = "example.note")] impl Again {}
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("model/mod.rs"),
+                r#"#[resource(kind = "example.note")] impl Again {}
             #[cfg(test)]
             mod tests;"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("model/tests.rs"),
-            r#"#[resource(kind = "test.model")] impl Fixture {}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("main.rs"),
-            std::fs::read_to_string(src.join("main.rs")).unwrap() + "\n#[cfg(test)]\nmod board;\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(src.join("board")).unwrap();
-        std::fs::write(
-            src.join("board.rs"),
-            r#"#[resource(kind = "test.board")] impl Board {}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("board/cells.rs"),
-            r#"#[resource(kind = "test.cell")] impl Cell {}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("model/view.rs"),
-            r#"#[cfg(test)]
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("model/tests.rs"),
+                r#"#[resource(kind = "test.model")] impl Fixture {}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("main.rs"),
+                std::fs::read_to_string(src.join("main.rs")).unwrap() + "\n#[cfg(test)]\nmod board;\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(src.join("board")).unwrap();
+            std::fs::write(
+                src.join("board.rs"),
+                r#"#[resource(kind = "test.board")] impl Board {}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("board/cells.rs"),
+                r#"#[resource(kind = "test.cell")] impl Cell {}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("model/view.rs"),
+                r#"#[cfg(test)]
             #[path = "view_tests.rs"]
             mod tests;"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("model/view_tests.rs"),
-            r#"#[resource(kind = "test.view")] impl Fixture {}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            super::declared_in(app.path()).unwrap(),
-            ["example.note", "example.todo"]
-        );
-        assert!(
-            super::declared_in(tempfile::tempdir().unwrap().path())
-                .unwrap()
-                .is_empty()
-        );
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("model/view_tests.rs"),
+                r#"#[resource(kind = "test.view")] impl Fixture {}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                super::declared_in(app.path()).unwrap(),
+                ["example.note", "example.todo"]
+            );
+            assert!(
+                super::declared_in(tempfile::tempdir().unwrap().path())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        phase a_kind_is_left_out_only_under_a_cfg_no_production_build_satisfies;
+        // One `impl Resource for` under `#[cfg(<predicate>)]`: its kind is left out only where no
+        // production build can satisfy the predicate.
+        {
+            for (predicate, declared) in [
+                ("test", false),
+                ("not(test)", true),
+                ("all(test, unix)", false),
+                ("all(unix, test)", false),
+                ("all(unix, feature = \"live\")", true),
+                ("any(test, unix)", true),
+                ("any(test, all(test, unix))", false),
+                ("feature = \"test\"", true),
+                // No arm requires `test`, so neither is taken for test-only: an empty `all` is
+                // always compiled, and an empty `any` is kept rather than guessed away.
+                ("all()", true),
+                ("any()", true),
+            ] {
+                let app = tempfile::tempdir().unwrap();
+                std::fs::create_dir_all(app.path().join("src")).unwrap();
+                std::fs::write(
+                    app.path().join("src/lib.rs"),
+                    format!(
+                        "#[cfg({predicate})]\nimpl Resource for Row {{ const KIND: &'static str = \"row.kind\"; }}\n"
+                    ),
+                )
+                .unwrap();
+                let expected: &[&str] = if declared { &["row.kind"] } else { &[] };
+                assert_eq!(
+                    super::declared_in(app.path()).unwrap(),
+                    expected,
+                    "cfg({predicate})"
+                );
+            }
+        }
+
+        phase a_source_that_does_not_parse_fails_the_scan_where_it_may_declare_a_kind;
+        {
+            let app = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(app.path().join("src")).unwrap();
+            let source = app.path().join("src/lib.rs");
+            std::fs::write(
+                &source,
+                "impl Resource for Broken { const KIND: &'static str = \"broken.kind\";\n",
+            )
+            .unwrap();
+            let error = super::declared_in(app.path()).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("parsing {}", source.display()),
+                "{error:#}"
+            );
+
+            // A file that names no kind and no module file is not parsed at all.
+            std::fs::write(&source, "pub fn unfinished( {\n").unwrap();
+            assert!(super::declared_in(app.path()).unwrap().is_empty());
+        }
     }
 
     fn write_crate(dir: &Path, manifest: &str, source: &str) {
@@ -633,50 +695,145 @@ mod tests {
         std::fs::write(dir.join("src/lib.rs"), source).unwrap();
     }
 
-    #[test]
-    fn kinds_declared_in_local_normal_dependencies_belong_to_the_app() {
-        let workspace = tempfile::tempdir().unwrap();
-        let root = workspace.path();
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[workspace]\nresolver = \"3\"\nmembers = [\"app\", \"model\", \"shared\", \"fixtures\"]\n",
-        )
-        .unwrap();
-        let package = |name: &str, deps: &str| {
-            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n{deps}")
-        };
-        write_crate(
-            &root.join("app"),
-            &package(
-                "app",
-                "[dependencies]\nmodel = { path = \"../model\" }\n\
-                 [dev-dependencies]\nfixtures = { path = \"../fixtures\" }\n",
-            ),
-            r#"#[resource(kind = "example.app")] impl App {}"#,
-        );
-        write_crate(
-            &root.join("model"),
-            &package(
-                "model",
-                "[dependencies]\nshared = { path = \"../shared\" }\n",
-            ),
-            r#"#[resource(kind = "example.notebook")] impl Notebook {}"#,
-        );
-        write_crate(
-            &root.join("shared"),
-            &package("shared", ""),
-            r#"#[resource(kind = "example.tag")] impl Tag {}"#,
-        );
-        write_crate(
-            &root.join("fixtures"),
-            &package("fixtures", ""),
-            r#"#[resource(kind = "example.fixture")] impl Fixture {}"#,
-        );
+    tilo_test_env::scenario! {
+        fn an_app_carries_the_kinds_of_its_local_normal_dependencies;
 
-        assert_eq!(
-            super::declared_by_app(&root.join("app")).unwrap(),
-            ["example.app", "example.notebook", "example.tag"],
-            "a model crate's kinds, transitively, and not a dev-dependency's"
-        );
+        phase metadata_without_a_resolved_root_its_packages_or_its_graph_is_refused;
+        {
+            let app = tempfile::tempdir().unwrap();
+            for (metadata, expected) in [
+                (
+                    serde_json::json!({}),
+                    "cargo metadata names no root package",
+                ),
+                // What `cargo metadata` prints for a workspace manifest without a package.
+                (
+                    serde_json::json!({"resolve": {"root": null}, "packages": []}),
+                    "cargo metadata names no root package",
+                ),
+                (
+                    serde_json::json!({"resolve": {"root": "app"}}),
+                    "cargo metadata lists no packages",
+                ),
+                (
+                    serde_json::json!({"resolve": {"root": "app"}, "packages": []}),
+                    "cargo metadata has no resolve graph",
+                ),
+            ] {
+                let error = super::declared_with_metadata(app.path(), &metadata).unwrap_err();
+                assert_eq!(error.to_string(), expected, "{metadata}");
+            }
+        }
+
+        phase only_local_packages_reached_through_normal_dependencies_are_scanned;
+        // Metadata written by hand, for the dependency shapes the workspace of real crates below
+        // does not hold: a build-dependency and what it depends on, a dependency that is both a
+        // normal and a dev-dependency, one that two crates share, and a registry package.
+        {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path();
+            let registry = serde_json::json!("registry+https://github.com/rust-lang/crates.io-index");
+            let mut packages = Vec::new();
+            for (name, source) in [
+                ("app", serde_json::Value::Null),
+                ("model", serde_json::Value::Null),
+                ("both", serde_json::Value::Null),
+                ("shared", serde_json::Value::Null),
+                ("codegen", serde_json::Value::Null),
+                ("generated", serde_json::Value::Null),
+                ("fixtures", serde_json::Value::Null),
+                ("vendored", registry),
+            ] {
+                write_crate(
+                    &root.join(name),
+                    "",
+                    &format!(r#"#[resource(kind = "example.{name}")] impl Record {{}}"#),
+                );
+                packages.push(serde_json::json!({
+                    "id": name,
+                    "source": source,
+                    "manifest_path": root.join(name).join("Cargo.toml"),
+                }));
+            }
+            let dep = |name: &str, kinds: &[Option<&str>]| {
+                let kinds: Vec<_> = kinds
+                    .iter()
+                    .map(|kind| serde_json::json!({"kind": kind, "target": null}))
+                    .collect();
+                serde_json::json!({"pkg": name, "dep_kinds": kinds})
+            };
+            let metadata = serde_json::json!({
+                "packages": packages,
+                "resolve": {"root": "app", "nodes": [
+                    {"id": "app", "deps": [
+                        dep("model", &[None]),
+                        dep("both", &[Some("dev"), None]),
+                        dep("codegen", &[Some("build")]),
+                        dep("fixtures", &[Some("dev")]),
+                        dep("vendored", &[None]),
+                    ]},
+                    {"id": "model", "deps": [dep("shared", &[None])]},
+                    {"id": "both", "deps": [dep("shared", &[None])]},
+                    {"id": "codegen", "deps": [dep("generated", &[None])]},
+                ]},
+            });
+            assert_eq!(
+                super::declared_with_metadata(&root.join("app"), &metadata).unwrap(),
+                [
+                    "example.app",
+                    "example.both",
+                    "example.model",
+                    "example.shared"
+                ],
+                "not the build- or dev-dependency, what only they reach, or the registry package"
+            );
+        }
+
+        phase kinds_declared_in_local_normal_dependencies_belong_to_the_app;
+        {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path();
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[workspace]\nresolver = \"3\"\nmembers = [\"app\", \"model\", \"shared\", \"fixtures\"]\n",
+            )
+            .unwrap();
+            let package = |name: &str, deps: &str| {
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n{deps}")
+            };
+            write_crate(
+                &root.join("app"),
+                &package(
+                    "app",
+                    "[dependencies]\nmodel = { path = \"../model\" }\n\
+                 [dev-dependencies]\nfixtures = { path = \"../fixtures\" }\n",
+                ),
+                r#"#[resource(kind = "example.app")] impl App {}"#,
+            );
+            write_crate(
+                &root.join("model"),
+                &package(
+                    "model",
+                    "[dependencies]\nshared = { path = \"../shared\" }\n",
+                ),
+                r#"#[resource(kind = "example.notebook")] impl Notebook {}"#,
+            );
+            write_crate(
+                &root.join("shared"),
+                &package("shared", ""),
+                r#"#[resource(kind = "example.tag")] impl Tag {}"#,
+            );
+            write_crate(
+                &root.join("fixtures"),
+                &package("fixtures", ""),
+                r#"#[resource(kind = "example.fixture")] impl Fixture {}"#,
+            );
+
+            assert_eq!(
+                super::declared_by_app(&root.join("app")).unwrap(),
+                ["example.app", "example.notebook", "example.tag"],
+                "a model crate's kinds, transitively, and not a dev-dependency's"
+            );
+        }
     }
 }

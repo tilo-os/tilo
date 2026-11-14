@@ -383,6 +383,63 @@ Assert on the record, not the widget: the body the store holds, the history entr
 
 `Driver::invoke_action` is the same call from Rust, and `Driver::deliver_external` delivers a `UserEvent::External` payload the way the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs the whole installer wizard this way against a recording install backend.
 
+## Layout checks on the build servers
+
+`tilolang layout-check` lays every view of the tilolang apps (`apps/tl`) out headlessly at window
+sizes from 320x568 to 3440x1440, at display and text scales, and reports overflow, clipped text,
+overlaps, hit targets below the minimum, pages that scroll sideways and the rest of
+`docs/designs/app-language/layout.md`, each at the view's node in the source. It takes the
+machine for the run, so it is a t check and never runs on a workstation:
+
+```bash
+t test layout-check                    # every standard size, every app
+t test layout-check/390x844            # one size, one run
+```
+
+The sizes are 320x568 and 390x844 (a phone's) and 1280x800 (a laptop's). What the run finds is
+the check's verdict: a finding the allow-list
+(`crates/lang/tilolang-cli/tests/layout_check/allowed`) does not name fails it, as does an
+allow-list line whose finding no longer shows or a view no scenario reaches. The job's log
+(`t log layout-check/390x844`) lists every finding with its app, view, node and source line.
+
+A run takes inputs, which are part of its key and show in its result
+(`layout-check/390x844 [app=apps/tl/chat]`): `app` lays out one package of `apps/tl` instead of
+every one, `press` presses a control by the words it carries before each window is read, and
+`dump=true` prints every frame the size lays out rather than only the frames a finding came from.
+
+```bash
+t test layout-check/390x844 --input app=apps/tl/tasks
+t test layout-check/390x844 --input app=apps/tl/tasks --input press="Mark Buy oat milk and eggs done"
+t test layout-check/390x844 --input app=apps/tl/tasks \
+    --input press="Mark Buy oat milk and eggs done" --input dump=true
+```
+
+A narrowed run still fails on a finding the allow-list does not name, but it does not judge
+allow-list lines or views it never laid out: strict's whole-tree verdict is the run that names no
+app and no press. A key or a staged view state has no input yet: use the CLI's `--key` and `--state` flags over the
+apps you are looking at.
+
+Each size's run keeps its outputs, which `t outputs` fetches:
+
+```bash
+t outputs layout-check/390x844 --to ~/layout-shots
+```
+
+That writes `~/layout-shots/target/layout-check/390x844/`, which holds `report.txt` (the report the
+job's log prints: every finding with its app, view, node and source line, the allow-list lines
+that no longer show and the views no layout reached, then the counts), `dump.txt` (the toolkit's
+inspection of the layouts at that size a finding was read from: each widget's box, clip and
+semantics; `dump=true` writes every frame instead) and one PNG per window per theme
+(`<app>-<view>-<theme>.png`, light and dark; about nine hundred for the tl apps), as each scenario
+leaves the window. `t outputs` starts the run for this state if none ran, so the shot is always of
+the code as it stands here; a run with inputs is fetched by its id, which `t test --detach`
+prints:
+
+```bash
+t test layout-check/390x844 --input app=apps/tl/tasks --detach
+t outputs layout-check/390x844 --run <run> --to ~/layout-shots
+```
+
 ## Screenshots of every app
 
 `tools/screenshots/run.py` photographs every app of the default collection in realistic situations, set up only through each app's actions. A plan per app, `tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line title and the steps that reach it (`invoke`, `wait_for_named`, `expect`, `perform`; no clicks or keys):

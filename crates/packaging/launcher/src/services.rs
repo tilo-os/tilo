@@ -964,63 +964,67 @@ mod tests {
         path
     }
 
-    #[test]
-    fn identity_handshake_uses_only_current_canonical_bound_subjects() {
-        let (mut writer, mut reader) = UnixStream::pair().unwrap();
-        write_identity_handshake(&mut writer, "so.tilo.notes", "room-7").unwrap();
-        drop(writer);
-        let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
-            .read(&mut reader)
-            .unwrap()
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "workspace_id": "room-7", "app_id": "so.tilo.notes"
-            })
-        );
-        let actual: runtime_identity::wire::Handshake = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(actual.workspace_id, "room-7");
-        assert_eq!(actual.app_id, "so.tilo.notes");
-    }
+    tilo_test_env::scenario! {
+        fn the_identity_handshake_is_canonical_and_versioned;
 
-    #[test]
-    fn identity_presentation_negotiation_preserves_legacy_default_bytes() {
-        for enabled in [false, true] {
+        phase identity_handshake_uses_only_current_canonical_bound_subjects;
+        {
             let (mut writer, mut reader) = UnixStream::pair().unwrap();
-            write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "room-7", enabled)
-                .unwrap();
+            write_identity_handshake(&mut writer, "so.tilo.notes", "room-7").unwrap();
             drop(writer);
             let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
                 .read(&mut reader)
                 .unwrap()
                 .unwrap();
             let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            if enabled {
-                assert_eq!(
-                    value["presentation_version"],
-                    runtime_identity::wire::PRESENTATION_VERSION
-                );
-                assert_eq!(value.as_object().unwrap().len(), 3);
-            } else {
-                assert_eq!(
-                    bytes,
-                    serde_json::to_vec(&runtime_identity::wire::Handshake {
-                        workspace_id: "room-7".into(),
-                        app_id: "so.tilo.notes".into(),
-                        surface: None,
-                    })
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "workspace_id": "room-7", "app_id": "so.tilo.notes"
+                })
+            );
+            let actual: runtime_identity::wire::Handshake = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(actual.workspace_id, "room-7");
+            assert_eq!(actual.app_id, "so.tilo.notes");
+        }
+
+        phase identity_presentation_negotiation_preserves_legacy_default_bytes;
+        {
+            for enabled in [false, true] {
+                let (mut writer, mut reader) = UnixStream::pair().unwrap();
+                write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "room-7", enabled)
+                    .unwrap();
+                drop(writer);
+                let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
+                    .read(&mut reader)
                     .unwrap()
-                );
-                assert_eq!(value.as_object().unwrap().len(), 2);
+                    .unwrap();
+                let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                if enabled {
+                    assert_eq!(
+                        value["presentation_version"],
+                        runtime_identity::wire::PRESENTATION_VERSION
+                    );
+                    assert_eq!(value.as_object().unwrap().len(), 3);
+                } else {
+                    assert_eq!(
+                        bytes,
+                        serde_json::to_vec(&runtime_identity::wire::Handshake {
+                            workspace_id: "room-7".into(),
+                            app_id: "so.tilo.notes".into(),
+                            surface: None,
+                        })
+                        .unwrap()
+                    );
+                    assert_eq!(value.as_object().unwrap().len(), 2);
+                }
             }
         }
-    }
 
-    #[test]
-    fn malformed_identity_contract_is_rejected_before_service_resolution() {
-        assert!(ServiceReq::parse(IDENTITY_SERVICE, "required@not-a-version").is_err());
+        phase malformed_identity_contract_is_rejected_before_service_resolution;
+        {
+            assert!(ServiceReq::parse(IDENTITY_SERVICE, "required@not-a-version").is_err());
+        }
     }
 
     /// Services are found under `$XDG_RUNTIME_DIR`; point it at `dir` for as long as the returned scope
@@ -1031,296 +1035,6 @@ mod tests {
         env
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn service_handoffs_bind_the_launch_context() {
-        {
-            use std::io::Read;
-
-            let dir = tempfile::tempdir().expect("runtime");
-            let _env = runtime_dir_env(dir.path());
-            let root = ensure_services_root().expect("services root");
-            let path = root.join("identity.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
-            let reader = std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut bytes = Vec::new();
-                stream.read_to_end(&mut bytes).expect("handshake");
-                // Little-endian length of the 50-byte JSON handshake.
-                assert_eq!(bytes[..4], [50, 0, 0, 0]);
-                serde_json::from_slice::<serde_json::Value>(&bytes[4..]).expect("json")
-            });
-            let bind = resolve_identity_bind("so.tilo.notes", Some("room-7"), false)
-                .expect("resolve")
-                .expect("identity bind");
-            assert_eq!(bind.name, IDENTITY_SERVICE);
-            assert_eq!(bind.child_fd, 31);
-            drop(bind);
-            let handshake = reader.join().expect("reader");
-            assert_eq!(handshake["app_id"], "so.tilo.notes");
-            assert_eq!(handshake["workspace_id"], "room-7");
-        }
-        {
-            let fields = serde_json::json!({
-                "protocol": 1,
-                "app_id": "so.tilo.notes",
-                "workspace_id": "room-7",
-            });
-            let bytes = written(|stream| write_collab_handoff(stream, "so.tilo.notes", "room-7"));
-            assert_eq!(bytes[..8], *b"QCL1\x3f\0\0\0");
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-                fields
-            );
-
-            let bytes = written(|stream| write_compat_handoff(stream, "so.tilo.notes", "room-7"));
-            assert_eq!(bytes[..4], [63, 0, 0, 0]);
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
-                fields
-            );
-
-            let app_only = serde_json::json!({"protocol": 1, "app_id": "so.tilo.notes"});
-            let bytes = written(|stream| write_model_gateway_handoff(stream, "so.tilo.notes"));
-            assert_eq!(bytes[..4], [39, 0, 0, 0]);
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
-                app_only
-            );
-
-            let bytes = written(|stream| write_ush_handoff(stream, "so.tilo.notes", None));
-            assert_eq!(bytes[..8], *b"QUS1\x27\0\0\0");
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-                app_only
-            );
-            // An empty workspace is no workspace: the old bytes, exactly.
-            let empty = written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("")));
-            assert_eq!(empty, bytes);
-
-            let bytes =
-                written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("room-7")));
-            assert_eq!(bytes[..8], *b"QUS1\x3c\0\0\0");
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-                serde_json::json!({
-                    "protocol": 1,
-                    "app_id": "so.tilo.notes",
-                    "workspace": "room-7",
-                })
-            );
-
-            let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));
-            assert_eq!(bytes[..8], *b"QAH1\0\0\0\x27");
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-                app_only
-            );
-        }
-        {
-            use std::io::Read;
-
-            let dir = tempfile::tempdir().expect("socket dir");
-            let path = dir.path().join("fs-blobs.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
-            let reader = std::thread::spawn(move || {
-                let mut frames = Vec::new();
-                for _ in 0..2 {
-                    let (mut stream, _) = listener.accept().expect("accept");
-                    let mut magic = [0_u8; 4];
-                    stream.read_exact(&mut magic).expect("magic");
-                    let mut len = [0_u8; 4];
-                    stream.read_exact(&mut len).expect("length");
-                    let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
-                    stream.read_exact(&mut bytes).expect("payload");
-                    frames.push((
-                        magic,
-                        serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
-                    ));
-                }
-                frames
-            });
-            let workspace = resolve_blob_bind_at(&path, "so.tilo.notes", Some("room-7"), false)
-                .expect("resolve")
-                .expect("blob bind");
-            assert_eq!(workspace.name, BLOB_SERVICE);
-            assert_eq!(workspace.child_fd, BLOB_CHILD_FD);
-            let personal = resolve_blob_bind_at(&path, "so.tilo.notes", None, false)
-                .expect("resolve")
-                .expect("personal blob bind");
-            let frames = reader.join().expect("reader");
-            drop((workspace, personal));
-            assert_eq!(frames[0].0, BLOB_HANDOFF_MAGIC);
-            assert_eq!(
-                frames[0].1,
-                serde_json::json!({
-                    "protocol": 1,
-                    "principal": "app",
-                    "workspace": "room-7",
-                    "app_id": "so.tilo.notes",
-                })
-            );
-            assert_eq!(frames[1].1["workspace"], crate::appdir::PERSONAL_WORKSPACE);
-
-            assert!(
-                resolve_blob_bind_at(
-                    &dir.path().join("absent.sock"),
-                    "so.tilo.notes",
-                    None,
-                    false
-                )
-                .expect("absent daemon degrades")
-                .is_none()
-            );
-            assert!(
-                resolve_blob_bind_at(&path, "so.tilo.notes", None, true)
-                    .expect("no services")
-                    .is_none()
-            );
-            assert!(
-                resolve_blob_bind_at(&path, "../escape", None, false)
-                    .expect("invalid app id degrades")
-                    .is_none()
-            );
-        }
-        {
-            use std::io::BufRead;
-
-            let dir = tempfile::tempdir().expect("socket dir");
-            let path = dir.path().join("chooser.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
-            let reader = std::thread::spawn(move || {
-                let (stream, _) = listener.accept().expect("accept");
-                let mut line = String::new();
-                std::io::BufReader::new(stream)
-                    .read_line(&mut line)
-                    .expect("handshake");
-                line
-            });
-            let bind = resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), false)
-                .expect("resolve")
-                .expect("chooser bind");
-            assert_eq!(bind.name, CHOOSER_SERVICE);
-            assert_eq!(bind.child_fd, CHOOSER_CHILD_FD);
-            assert_eq!(
-                crate::sandbox::svc_env_var(&bind.name),
-                "TILO_SVC_CHOOSER_FD"
-            );
-            let line = reader.join().expect("reader");
-            assert!(line.ends_with('\n'));
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&line).expect("json"),
-                serde_json::json!({
-                    "protocol": 1,
-                    "app_id": "so.tilo.sheets",
-                    "workspace_id": "room-7",
-                })
-            );
-
-            assert!(
-                resolve_chooser_bind_at(&path, "so.tilo.sheets", None, false)
-                    .expect("no workspace")
-                    .is_none(),
-                "the shell cannot scope a launch outside a workspace"
-            );
-            assert!(
-                resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), true)
-                    .expect("no services")
-                    .is_none()
-            );
-            assert!(
-                resolve_chooser_bind_at(
-                    &dir.path().join("absent.sock"),
-                    "so.tilo.sheets",
-                    Some("room-7"),
-                    false
-                )
-                .expect("an absent chooser service gives no connection")
-                .is_none()
-            );
-        }
-        {
-            use std::io::Read;
-
-            let dir = tempfile::tempdir().expect("runtime");
-            let _env = runtime_dir_env(dir.path());
-            let root = ensure_services_root().expect("services root");
-            let listener =
-                std::os::unix::net::UnixListener::bind(root.join("collab.sock")).expect("listen");
-            let reader = std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut magic = [0_u8; COLLAB_LAUNCH_MAGIC.len()];
-                stream.read_exact(&mut magic).expect("magic");
-                let bytes = COLLAB_LAUNCH_FRAMING
-                    .read(&mut stream)
-                    .expect("handoff")
-                    .expect("frame");
-                (
-                    magic,
-                    serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
-                )
-            });
-            let mut services = BTreeMap::new();
-            services.insert(
-                COLLAB_SERVICE.to_string(),
-                crate::manifest::service_req("required@1"),
-            );
-            let resolved = resolve_service_binds_for_launch(
-                &services,
-                false,
-                ServiceLaunchContext {
-                    app_id: "so.tilo.notes",
-                    workspace_id: Some("room-7"),
-                },
-            )
-            .expect("resolve");
-            drop(resolved);
-            let (magic, handoff) = reader.join().expect("reader");
-            assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
-            assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
-            assert_eq!(handoff["app_id"], "so.tilo.notes");
-            assert_eq!(handoff["workspace_id"], "room-7");
-        }
-        {
-            use std::io::{BufRead, BufReader};
-
-            let dir = tempfile::tempdir().unwrap();
-            let _env = runtime_dir_env(dir.path());
-            let root = ensure_services_root().unwrap();
-            let listener =
-                std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
-            let mut services = BTreeMap::new();
-            services.insert(
-                SHELL_UI_SERVICE.to_string(),
-                crate::manifest::service_req("optional@1"),
-            );
-            for (mode, hosts, allowed) in [
-                ("off", Vec::new(), false),
-                ("host", Vec::new(), true),
-                ("allowlist", vec!["example.com".to_owned()], true),
-                ("allowlist", Vec::new(), false),
-            ] {
-                let egress = crate::netgate::EgressDecision::resolve(mode, &hosts, &[]);
-                let resolved = resolve_service_binds(&services, false).unwrap();
-                authenticate_shell_ui_bind(&resolved, "so.tilo.chat", &egress).unwrap();
-
-                let (stream, _) = listener.accept().unwrap();
-                let mut line = String::new();
-                BufReader::new(stream).read_line(&mut line).unwrap();
-                let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-                assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
-                assert_eq!(handshake["app_id"], "so.tilo.chat");
-                assert_eq!(
-                    handshake["network_status_allowed"], allowed,
-                    "{mode}: {hosts:?}"
-                );
-            }
-        }
-    }
-
     fn written(write: impl FnOnce(&mut UnixStream) -> std::io::Result<()>) -> Vec<u8> {
         use std::io::Read;
         let (mut launcher, mut service) = UnixStream::pair().expect("pair");
@@ -1329,145 +1043,6 @@ mod tests {
         let mut bytes = Vec::new();
         service.read_to_end(&mut bytes).expect("read");
         bytes
-    }
-
-    #[test]
-    fn declared_services_cannot_replace_a_reserved_view_descriptor() {
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().unwrap();
-        let mut services = BTreeMap::new();
-        let mut listeners = Vec::new();
-        for index in 0..48 {
-            let name = format!("reserved-view-{index:02}");
-            listeners.push(
-                std::os::unix::net::UnixListener::bind(root.join(format!("{name}.sock"))).unwrap(),
-            );
-            let requirement = ServiceReq::parse(&name, "required@1").unwrap();
-            services.insert(name, requirement);
-        }
-        let resolved = resolve_service_binds(&services, false).unwrap();
-        assert_eq!(resolved.len(), listeners.len());
-        for &reserved in RESERVED_CHILD_FDS {
-            assert!(resolved.iter().any(|service| service.child_fd > reserved));
-            assert!(resolved.iter().all(|service| service.child_fd != reserved));
-        }
-        // Assert the Linux view slots directly as well, so accidentally omitting one from the
-        // reservation table cannot make the test pass.
-        #[cfg(target_os = "linux")]
-        {
-            for reserved in [
-                crate::retained_view::ALIAS_VIEW_FD,
-                crate::retained_view::ALIAS_ARGS_FD,
-            ] {
-                assert!(resolved.iter().any(|service| service.child_fd > reserved));
-                assert!(resolved.iter().all(|service| service.child_fd != reserved));
-            }
-        }
-    }
-
-    #[test]
-    fn service_requirements_resolve_or_fail_as_declared() {
-        {
-            let mut services = BTreeMap::new();
-            services.insert(
-                APP_HOST_SERVICE.to_string(),
-                crate::manifest::service_req("required@1"),
-            );
-            let error = resolve_service_binds_for_launch(
-                &services,
-                false,
-                ServiceLaunchContext {
-                    app_id: "org.example.untrusted",
-                    workspace_id: None,
-                },
-            )
-            .expect_err("third-party manifest must not grant package-manager authority");
-            assert!(matches!(error, ServiceError::AppHostUnauthorized));
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let _env = runtime_dir_env(dir.path());
-            let root = ensure_services_root().unwrap();
-            dead_socket(&root, "collab");
-
-            let mut svcs = BTreeMap::new();
-            svcs.insert(
-                "collab".to_string(),
-                crate::manifest::service_req("optional@1"),
-            );
-            let out = resolve_service_binds(&svcs, false)
-                .expect("a stale optional socket must degrade, not fail the launch");
-            assert!(
-                out.is_empty(),
-                "nothing can be handed to the app for a service that does not answer"
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let _env = runtime_dir_env(dir.path());
-            let root = ensure_services_root().unwrap();
-            dead_socket(&root, "collab");
-
-            let mut svcs = BTreeMap::new();
-            svcs.insert(
-                "collab".to_string(),
-                crate::manifest::service_req("required@1"),
-            );
-            let err = resolve_service_binds(&svcs, false)
-                .expect_err("a required service that does not answer must fail the launch");
-            assert!(
-                matches!(err, ServiceError::OpenFailed { .. }),
-                "got {err:?}"
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let _env = runtime_dir_env(dir.path());
-            let root = ensure_services_root().unwrap();
-            // Kept alive for the duration of the call, so `connect` succeeds.
-            let _listener =
-                std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
-
-            let mut svcs = BTreeMap::new();
-            svcs.insert(
-                "test-lifecycle".to_string(),
-                crate::manifest::service_req("optional@1"),
-            );
-            let out = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-            assert_eq!(out.len(), 1, "the one live service must be handed over");
-            assert_eq!(out[0].name, "test-lifecycle");
-            assert_eq!(
-                out[0].child_fd, 17,
-                "the app is told to read fd 17, so that is where it must land"
-            );
-        }
-        {
-            let mut svcs = BTreeMap::new();
-            svcs.insert(
-                "collab".to_string(),
-                crate::manifest::service_req("required@1"),
-            );
-            let out = resolve_service_binds(&svcs, true).expect("no-services path is infallible");
-            assert!(out.is_empty(), "required service must be skipped");
-        }
-        {
-            let mut svcs = BTreeMap::new();
-            svcs.insert(
-                "collab".to_string(),
-                crate::manifest::service_req("required@1"),
-            );
-            let dir = tempfile::tempdir().unwrap();
-            let _env = runtime_dir_env(dir.path());
-            let err = resolve_service_binds(&svcs, false).unwrap_err();
-            match err {
-                ServiceError::RequiredMissing { name, version, .. } => {
-                    assert_eq!(name, "collab");
-                    assert_eq!(version, 1);
-                }
-                other => panic!("expected RequiredMissing, got {other:?}"),
-            }
-        }
     }
 
     /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]` for a connected
@@ -1544,143 +1119,568 @@ mod tests {
         );
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn handed_over_descriptors_have_the_right_owners_and_lifetimes() {
+    tilo_test_env::scenario! {
+        fn declared_services_are_handed_over_bound_to_the_launch;
+
+        phase service_handoffs_bind_the_launch_context;
         {
-            use std::io::Read;
+            {
+                use std::io::Read;
 
-            let dir = tempfile::tempdir().unwrap();
-            let _env = runtime_dir_env(dir.path());
-            let root = ensure_services_root().unwrap();
-            let listener =
-                std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+                let dir = tempfile::tempdir().expect("runtime");
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().expect("services root");
+                let path = root.join("identity.sock");
+                let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+                let reader = std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().expect("accept");
+                    let mut bytes = Vec::new();
+                    stream.read_to_end(&mut bytes).expect("handshake");
+                    // Little-endian length of the 50-byte JSON handshake.
+                    assert_eq!(bytes[..4], [50, 0, 0, 0]);
+                    serde_json::from_slice::<serde_json::Value>(&bytes[4..]).expect("json")
+                });
+                let bind = resolve_identity_bind("so.tilo.notes", Some("room-7"), false)
+                    .expect("resolve")
+                    .expect("identity bind");
+                assert_eq!(bind.name, IDENTITY_SERVICE);
+                assert_eq!(bind.child_fd, 31);
+                drop(bind);
+                let handshake = reader.join().expect("reader");
+                assert_eq!(handshake["app_id"], "so.tilo.notes");
+                assert_eq!(handshake["workspace_id"], "room-7");
+            }
+            {
+                let fields = serde_json::json!({
+                    "protocol": 1,
+                    "app_id": "so.tilo.notes",
+                    "workspace_id": "room-7",
+                });
+                let bytes = written(|stream| write_collab_handoff(stream, "so.tilo.notes", "room-7"));
+                assert_eq!(bytes[..8], *b"QCL1\x3f\0\0\0");
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+                    fields
+                );
 
-            let mut svcs = BTreeMap::new();
-            svcs.insert(
-                "test-lifecycle".to_string(),
-                crate::manifest::service_req("optional@1"),
-            );
-            let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-            assert_eq!(
-                resolved.len(),
-                1,
-                "the one live service must be handed over"
-            );
+                let bytes = written(|stream| write_compat_handoff(stream, "so.tilo.notes", "room-7"));
+                assert_eq!(bytes[..4], [63, 0, 0, 0]);
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
+                    fields
+                );
 
-            let (mut served, _) = listener
-                .accept()
-                .expect("the launcher's connection has to arrive");
-            served
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .expect("a bounded wait, so a leak fails the test instead of hanging it");
+                let app_only = serde_json::json!({"protocol": 1, "app_id": "so.tilo.notes"});
+                let bytes = written(|stream| write_model_gateway_handoff(stream, "so.tilo.notes"));
+                assert_eq!(bytes[..4], [39, 0, 0, 0]);
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
+                    app_only
+                );
 
-            // The launch is over: either bwrap was spawned and holds the `dup2` copy, or the spawn
-            // failed and there is no child at all.
-            drop(resolved);
+                let bytes = written(|stream| write_ush_handoff(stream, "so.tilo.notes", None));
+                assert_eq!(bytes[..8], *b"QUS1\x27\0\0\0");
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+                    app_only
+                );
+                // An empty workspace is no workspace: the old bytes, exactly.
+                let empty = written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("")));
+                assert_eq!(empty, bytes);
 
-            let mut buf = [0u8; 1];
-            let n = served.read(&mut buf).unwrap_or_else(|e| {
-                panic!(
-                    "the service never saw the launcher's end close ({e}), so it is \
-                     still holding a connection nothing will ever release"
+                let bytes =
+                    written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("room-7")));
+                assert_eq!(bytes[..8], *b"QUS1\x3c\0\0\0");
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+                    serde_json::json!({
+                        "protocol": 1,
+                        "app_id": "so.tilo.notes",
+                        "workspace": "room-7",
+                    })
+                );
+
+                let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));
+                assert_eq!(bytes[..8], *b"QAH1\0\0\0\x27");
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+                    app_only
+                );
+            }
+            {
+                use std::io::Read;
+
+                let dir = tempfile::tempdir().expect("socket dir");
+                let path = dir.path().join("fs-blobs.sock");
+                let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+                let reader = std::thread::spawn(move || {
+                    let mut frames = Vec::new();
+                    for _ in 0..2 {
+                        let (mut stream, _) = listener.accept().expect("accept");
+                        let mut magic = [0_u8; 4];
+                        stream.read_exact(&mut magic).expect("magic");
+                        let mut len = [0_u8; 4];
+                        stream.read_exact(&mut len).expect("length");
+                        let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
+                        stream.read_exact(&mut bytes).expect("payload");
+                        frames.push((
+                            magic,
+                            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
+                        ));
+                    }
+                    frames
+                });
+                let workspace = resolve_blob_bind_at(&path, "so.tilo.notes", Some("room-7"), false)
+                    .expect("resolve")
+                    .expect("blob bind");
+                assert_eq!(workspace.name, BLOB_SERVICE);
+                assert_eq!(workspace.child_fd, BLOB_CHILD_FD);
+                let personal = resolve_blob_bind_at(&path, "so.tilo.notes", None, false)
+                    .expect("resolve")
+                    .expect("personal blob bind");
+                let frames = reader.join().expect("reader");
+                drop((workspace, personal));
+                assert_eq!(frames[0].0, BLOB_HANDOFF_MAGIC);
+                assert_eq!(
+                    frames[0].1,
+                    serde_json::json!({
+                        "protocol": 1,
+                        "principal": "app",
+                        "workspace": "room-7",
+                        "app_id": "so.tilo.notes",
+                    })
+                );
+                assert_eq!(frames[1].1["workspace"], crate::appdir::PERSONAL_WORKSPACE);
+
+                assert!(
+                    resolve_blob_bind_at(
+                        &dir.path().join("absent.sock"),
+                        "so.tilo.notes",
+                        None,
+                        false
+                    )
+                    .expect("absent daemon degrades")
+                    .is_none()
+                );
+                assert!(
+                    resolve_blob_bind_at(&path, "so.tilo.notes", None, true)
+                        .expect("no services")
+                        .is_none()
+                );
+                assert!(
+                    resolve_blob_bind_at(&path, "../escape", None, false)
+                        .expect("invalid app id degrades")
+                        .is_none()
+                );
+            }
+            {
+                use std::io::BufRead;
+
+                let dir = tempfile::tempdir().expect("socket dir");
+                let path = dir.path().join("chooser.sock");
+                let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+                let reader = std::thread::spawn(move || {
+                    let (stream, _) = listener.accept().expect("accept");
+                    let mut line = String::new();
+                    std::io::BufReader::new(stream)
+                        .read_line(&mut line)
+                        .expect("handshake");
+                    line
+                });
+                let bind = resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), false)
+                    .expect("resolve")
+                    .expect("chooser bind");
+                assert_eq!(bind.name, CHOOSER_SERVICE);
+                assert_eq!(bind.child_fd, CHOOSER_CHILD_FD);
+                assert_eq!(
+                    crate::sandbox::svc_env_var(&bind.name),
+                    "TILO_SVC_CHOOSER_FD"
+                );
+                let line = reader.join().expect("reader");
+                assert!(line.ends_with('\n'));
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&line).expect("json"),
+                    serde_json::json!({
+                        "protocol": 1,
+                        "app_id": "so.tilo.sheets",
+                        "workspace_id": "room-7",
+                    })
+                );
+
+                assert!(
+                    resolve_chooser_bind_at(&path, "so.tilo.sheets", None, false)
+                        .expect("no workspace")
+                        .is_none(),
+                    "the shell cannot scope a launch outside a workspace"
+                );
+                assert!(
+                    resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), true)
+                        .expect("no services")
+                        .is_none()
+                );
+                assert!(
+                    resolve_chooser_bind_at(
+                        &dir.path().join("absent.sock"),
+                        "so.tilo.sheets",
+                        Some("room-7"),
+                        false
+                    )
+                    .expect("an absent chooser service gives no connection")
+                    .is_none()
+                );
+            }
+            {
+                use std::io::Read;
+
+                let dir = tempfile::tempdir().expect("runtime");
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().expect("services root");
+                let listener =
+                    std::os::unix::net::UnixListener::bind(root.join("collab.sock")).expect("listen");
+                let reader = std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().expect("accept");
+                    let mut magic = [0_u8; COLLAB_LAUNCH_MAGIC.len()];
+                    stream.read_exact(&mut magic).expect("magic");
+                    let bytes = COLLAB_LAUNCH_FRAMING
+                        .read(&mut stream)
+                        .expect("handoff")
+                        .expect("frame");
+                    (
+                        magic,
+                        serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
+                    )
+                });
+                let mut services = BTreeMap::new();
+                services.insert(
+                    COLLAB_SERVICE.to_string(),
+                    crate::manifest::service_req("required@1"),
+                );
+                let resolved = resolve_service_binds_for_launch(
+                    &services,
+                    false,
+                    ServiceLaunchContext {
+                        app_id: "so.tilo.notes",
+                        workspace_id: Some("room-7"),
+                    },
                 )
-            });
-            assert_eq!(
-                n, 0,
-                "the read returned data on a connection nobody is on the other end of",
-            );
-        }
-        {
-            use std::io::Read;
-            use std::os::fd::FromRawFd;
+                .expect("resolve");
+                drop(resolved);
+                let (magic, handoff) = reader.join().expect("reader");
+                assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
+                assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
+                assert_eq!(handoff["app_id"], "so.tilo.notes");
+                assert_eq!(handoff["workspace_id"], "room-7");
+            }
+            {
+                use std::io::{BufRead, BufReader};
 
+                let dir = tempfile::tempdir().unwrap();
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().unwrap();
+                let listener =
+                    std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
+                let mut services = BTreeMap::new();
+                services.insert(
+                    SHELL_UI_SERVICE.to_string(),
+                    crate::manifest::service_req("optional@1"),
+                );
+                for (mode, hosts, allowed) in [
+                    ("off", Vec::new(), false),
+                    ("host", Vec::new(), true),
+                    ("allowlist", vec!["example.com".to_owned()], true),
+                    ("allowlist", Vec::new(), false),
+                ] {
+                    let egress = crate::netgate::EgressDecision::resolve(mode, &hosts, &[]);
+                    let resolved = resolve_service_binds(&services, false).unwrap();
+                    authenticate_shell_ui_bind(&resolved, "so.tilo.chat", &egress).unwrap();
+
+                    let (stream, _) = listener.accept().unwrap();
+                    let mut line = String::new();
+                    BufReader::new(stream).read_line(&mut line).unwrap();
+                    let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                    assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
+                    assert_eq!(handshake["app_id"], "so.tilo.chat");
+                    assert_eq!(
+                        handshake["network_status_allowed"], allowed,
+                        "{mode}: {hosts:?}"
+                    );
+                }
+            }
+        }
+
+        phase declared_services_cannot_replace_a_reserved_view_descriptor;
+        {
             let dir = tempfile::tempdir().unwrap();
             let _env = runtime_dir_env(dir.path());
             let root = ensure_services_root().unwrap();
-            let listener =
-                std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+            let mut services = BTreeMap::new();
+            let mut listeners = Vec::new();
+            for index in 0..48 {
+                let name = format!("reserved-view-{index:02}");
+                listeners.push(
+                    std::os::unix::net::UnixListener::bind(root.join(format!("{name}.sock"))).unwrap(),
+                );
+                let requirement = ServiceReq::parse(&name, "required@1").unwrap();
+                services.insert(name, requirement);
+            }
+            let resolved = resolve_service_binds(&services, false).unwrap();
+            assert_eq!(resolved.len(), listeners.len());
+            for &reserved in RESERVED_CHILD_FDS {
+                assert!(resolved.iter().any(|service| service.child_fd > reserved));
+                assert!(resolved.iter().all(|service| service.child_fd != reserved));
+            }
+            // Assert the Linux view slots directly as well, so accidentally omitting one from the
+            // reservation table cannot make the test pass.
+            #[cfg(target_os = "linux")]
+            {
+                for reserved in [
+                    crate::retained_view::ALIAS_VIEW_FD,
+                    crate::retained_view::ALIAS_ARGS_FD,
+                ] {
+                    assert!(resolved.iter().any(|service| service.child_fd > reserved));
+                    assert!(resolved.iter().all(|service| service.child_fd != reserved));
+                }
+            }
+        }
 
-            let mut svcs = BTreeMap::new();
-            svcs.insert(
-                "test-lifecycle".to_string(),
-                crate::manifest::service_req("optional@1"),
-            );
-            let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-            let (mut served, _) = listener.accept().expect("the connection has to arrive");
+        phase service_requirements_resolve_or_fail_as_declared;
+        {
+            {
+                let mut services = BTreeMap::new();
+                services.insert(
+                    APP_HOST_SERVICE.to_string(),
+                    crate::manifest::service_req("required@1"),
+                );
+                let error = resolve_service_binds_for_launch(
+                    &services,
+                    false,
+                    ServiceLaunchContext {
+                        app_id: "org.example.untrusted",
+                        workspace_id: None,
+                    },
+                )
+                .expect_err("third-party manifest must not grant package-manager authority");
+                assert!(matches!(error, ServiceError::AppHostUnauthorized));
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().unwrap();
+                dead_socket(&root, "collab");
 
-            // What `place_child_fds` makes on the other side of the fork: another descriptor on the
-            // same socket.
-            let app_copy = unsafe {
-                let raw = libc::dup(resolved[0].host_fd());
-                assert!(raw >= 0, "dup of the handed-over descriptor failed");
-                OwnedFd::from_raw_fd(raw)
-            };
-            drop(resolved);
+                let mut svcs = BTreeMap::new();
+                svcs.insert(
+                    "collab".to_string(),
+                    crate::manifest::service_req("optional@1"),
+                );
+                let out = resolve_service_binds(&svcs, false)
+                    .expect("a stale optional socket must degrade, not fail the launch");
+                assert!(
+                    out.is_empty(),
+                    "nothing can be handed to the app for a service that does not answer"
+                );
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().unwrap();
+                dead_socket(&root, "collab");
 
-            // A closed connection reads its end at once; an open one with nothing to read would block.
-            served.set_nonblocking(true).unwrap();
-            let mut buf = [0u8; 1];
-            match served.read(&mut buf) {
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Ok(0) => panic!(
-                    "the app's connection was closed the moment the launcher let go \
+                let mut svcs = BTreeMap::new();
+                svcs.insert(
+                    "collab".to_string(),
+                    crate::manifest::service_req("required@1"),
+                );
+                let err = resolve_service_binds(&svcs, false)
+                    .expect_err("a required service that does not answer must fail the launch");
+                assert!(
+                    matches!(err, ServiceError::OpenFailed { .. }),
+                    "got {err:?}"
+                );
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().unwrap();
+                // Kept alive for the duration of the call, so `connect` succeeds.
+                let _listener =
+                    std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+
+                let mut svcs = BTreeMap::new();
+                svcs.insert(
+                    "test-lifecycle".to_string(),
+                    crate::manifest::service_req("optional@1"),
+                );
+                let out = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+                assert_eq!(out.len(), 1, "the one live service must be handed over");
+                assert_eq!(out[0].name, "test-lifecycle");
+                assert_eq!(
+                    out[0].child_fd, 17,
+                    "the app is told to read fd 17, so that is where it must land"
+                );
+            }
+            {
+                let mut svcs = BTreeMap::new();
+                svcs.insert(
+                    "collab".to_string(),
+                    crate::manifest::service_req("required@1"),
+                );
+                let out = resolve_service_binds(&svcs, true).expect("no-services path is infallible");
+                assert!(out.is_empty(), "required service must be skipped");
+            }
+            {
+                let mut svcs = BTreeMap::new();
+                svcs.insert(
+                    "collab".to_string(),
+                    crate::manifest::service_req("required@1"),
+                );
+                let dir = tempfile::tempdir().unwrap();
+                let _env = runtime_dir_env(dir.path());
+                let err = resolve_service_binds(&svcs, false).unwrap_err();
+                match err {
+                    ServiceError::RequiredMissing { name, version, .. } => {
+                        assert_eq!(name, "collab");
+                        assert_eq!(version, 1);
+                    }
+                    other => panic!("expected RequiredMissing, got {other:?}"),
+                }
+            }
+        }
+
+        phase handed_over_descriptors_have_the_right_owners_and_lifetimes;
+        {
+            {
+                use std::io::Read;
+
+                let dir = tempfile::tempdir().unwrap();
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().unwrap();
+                let listener =
+                    std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+
+                let mut svcs = BTreeMap::new();
+                svcs.insert(
+                    "test-lifecycle".to_string(),
+                    crate::manifest::service_req("optional@1"),
+                );
+                let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+                assert_eq!(
+                    resolved.len(),
+                    1,
+                    "the one live service must be handed over"
+                );
+
+                let (mut served, _) = listener
+                    .accept()
+                    .expect("the launcher's connection has to arrive");
+                served
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .expect("a bounded wait, so a leak fails the test instead of hanging it");
+
+                // The launch is over: either bwrap was spawned and holds the `dup2` copy, or the spawn
+                // failed and there is no child at all.
+                drop(resolved);
+
+                let mut buf = [0u8; 1];
+                let n = served.read(&mut buf).unwrap_or_else(|e| {
+                    panic!(
+                        "the service never saw the launcher's end close ({e}), so it is \
+                     still holding a connection nothing will ever release"
+                    )
+                });
+                assert_eq!(
+                    n, 0,
+                    "the read returned data on a connection nobody is on the other end of",
+                );
+            }
+            {
+                use std::io::Read;
+                use std::os::fd::FromRawFd;
+
+                let dir = tempfile::tempdir().unwrap();
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().unwrap();
+                let listener =
+                    std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+
+                let mut svcs = BTreeMap::new();
+                svcs.insert(
+                    "test-lifecycle".to_string(),
+                    crate::manifest::service_req("optional@1"),
+                );
+                let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+                let (mut served, _) = listener.accept().expect("the connection has to arrive");
+
+                // What `place_child_fds` makes on the other side of the fork: another descriptor on the
+                // same socket.
+                let app_copy = unsafe {
+                    let raw = libc::dup(resolved[0].host_fd());
+                    assert!(raw >= 0, "dup of the handed-over descriptor failed");
+                    OwnedFd::from_raw_fd(raw)
+                };
+                drop(resolved);
+
+                // A closed connection reads its end at once; an open one with nothing to read would block.
+                served.set_nonblocking(true).unwrap();
+                let mut buf = [0u8; 1];
+                match served.read(&mut buf) {
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Ok(0) => panic!(
+                        "the app's connection was closed the moment the launcher let go \
                      of its own copy, so the app is handed a descriptor to a socket \
                      nobody is serving"
-                ),
-                other => panic!("unexpected read from a live connection: {other:?}"),
+                    ),
+                    other => panic!("unexpected read from a live connection: {other:?}"),
+                }
+
+                // Darwin refuses timeout changes after peer disconnect.
+                served.set_nonblocking(false).unwrap();
+                served
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                drop(app_copy);
+                assert_eq!(
+                    served.read(&mut buf).expect("the service must see the end"),
+                    0,
+                    "every copy is gone and the service still sees a live connection",
+                );
             }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let _env = runtime_dir_env(dir.path());
+                let root = ensure_services_root().unwrap();
+                let _listener =
+                    std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
-            // Darwin refuses timeout changes after peer disconnect.
-            served.set_nonblocking(false).unwrap();
-            served
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            drop(app_copy);
-            assert_eq!(
-                served.read(&mut buf).expect("the service must see the end"),
-                0,
-                "every copy is gone and the service still sees a live connection",
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let _env = runtime_dir_env(dir.path());
-            let root = ensure_services_root().unwrap();
-            let _listener =
-                std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+                let mut svcs = BTreeMap::new();
+                svcs.insert(
+                    "test-lifecycle".to_string(),
+                    crate::manifest::service_req("optional@1"),
+                );
+                let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+                let raw = resolved[0].host_fd();
 
-            let mut svcs = BTreeMap::new();
-            svcs.insert(
-                "test-lifecycle".to_string(),
-                crate::manifest::service_req("optional@1"),
-            );
-            let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-            let raw = resolved[0].host_fd();
-
-            let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
-            assert!(flags != -1, "the handed-over descriptor is not open");
-            assert!(
-                flags & libc::FD_CLOEXEC != 0,
-                "the launcher's end is inheritable, so every process started after \
+                let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+                assert!(flags != -1, "the handed-over descriptor is not open");
+                assert!(
+                    flags & libc::FD_CLOEXEC != 0,
+                    "the launcher's end is inheritable, so every process started after \
                  it gets a live copy of it",
-            );
+                );
 
-            // The property itself rather than the flag that decides it.
-            let seen = std::process::Command::new("/bin/sh")
-                .arg("-c")
-                .arg(format!("readlink /proc/self/fd/{raw} 2>/dev/null || true"))
-                .output_locked()
-                .expect("spawning an unrelated child");
-            let seen = String::from_utf8_lossy(&seen.stdout);
-            assert!(
-                !seen.trim_start().starts_with("socket:"),
-                "an unrelated child inherited the service socket at fd {raw}: {seen:?}",
-            );
-            drop(resolved);
+                // The property itself rather than the flag that decides it.
+                let seen = std::process::Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg(format!("readlink /proc/self/fd/{raw} 2>/dev/null || true"))
+                    .output_locked()
+                    .expect("spawning an unrelated child");
+                let seen = String::from_utf8_lossy(&seen.stdout);
+                assert!(
+                    !seen.trim_start().starts_with("socket:"),
+                    "an unrelated child inherited the service socket at fd {raw}: {seen:?}",
+                );
+                drop(resolved);
+            }
         }
     }
 }

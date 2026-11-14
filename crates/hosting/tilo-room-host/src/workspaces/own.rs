@@ -33,6 +33,7 @@ use tilo_actions::remote::host_account::{
 use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The file beside the workspaces' records that says whose each own
 /// workspace is.
@@ -336,7 +337,7 @@ fn beside_bytes(dir: &Path, wanted: &HashSet<&str>) -> HashMap<String, u64> {
 /// What `workspace` keeps in the host's retained state and sealed history,
 /// under its `state` directory.
 fn stored_state(state: &Path, workspace: &str) -> u64 {
-    let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
+    let Some(workspace_id) = WorkspaceId::parse(workspace) else {
         return 0;
     };
     [
@@ -344,7 +345,7 @@ fn stored_state(state: &Path, workspace: &str) -> u64 {
         state
             .join("store")
             .join("workspaces")
-            .join(format!("{workspace_id:016x}")),
+            .join(workspace_id.to_string()),
     ]
     .iter()
     .map(|path| tree_bytes(path))
@@ -532,6 +533,17 @@ impl Workspaces {
         self.own().map(|own| own.of(person)).unwrap_or_default()
     }
 
+    /// Whether this host keeps anything of `person`: their own workspaces, a
+    /// membership of theirs, or the host's own person. A host that keeps
+    /// nothing of them forgot them (its state was reset, or it pruned them),
+    /// and a session of theirs is turned away as not admitted.
+    #[must_use]
+    pub fn knows(&self, person: &[u8; 32]) -> bool {
+        *person == self.inner.host.cert.user_public_key
+            || self.inner.memberships.holds_any(person)
+            || self.own().is_some_and(|own| !own.of(person).is_empty())
+    }
+
     /// Why a write to `workspace` is not kept: it is someone's own and their
     /// workspaces of their own keep as much as they may between them. `None`
     /// for any other workspace, and ones with room.
@@ -685,7 +697,7 @@ mod tests {
         std::fs::write(dir.join(format!("{MINE}.room")), [0; 10]).unwrap();
         std::fs::write(dir.join(format!("{MINE}.admissions")), [0; 5]).unwrap();
         std::fs::write(dir.join("other.room"), [0; 1000]).unwrap();
-        let workspace_id = tilo_relay_protocol::room_workspace_id(MINE).unwrap();
+        let workspace_id = WorkspaceId::parse(MINE).unwrap();
         let retained = state
             .path()
             .join("workspaces")
@@ -695,7 +707,7 @@ mod tests {
         let history = state
             .path()
             .join("store/workspaces")
-            .join(format!("{workspace_id:016x}"));
+            .join(workspace_id.to_string());
         std::fs::create_dir_all(&history).unwrap();
         std::fs::write(history.join("x"), [0; 1000]).unwrap();
         let own = OwnWorkspaces::open(&dir, OwnWorkspaceOffer::free("tilo.test")).unwrap();

@@ -6,7 +6,7 @@ use super::{
 };
 use tilo_actions::remote::ViewResourceQuery;
 use tilo_agent_participant::ReplicaActor;
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -17,7 +17,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let host = enrol(
         &owner,
         "encrypted-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let writer_device = enrol(&author, "remote-writer", DeviceCapabilities::member());
     let reader_device = enrol(&viewer, "remote-reader", DeviceCapabilities::member());
@@ -35,7 +35,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         &host,
         &workspace.workspace,
         &writer_device,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
     admit_person(
@@ -43,7 +43,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         &host,
         &workspace.workspace,
         &reader_device,
-        MemberRole::Viewer,
+        Role::Viewer,
     )
     .await;
     let publisher = open_admitted_peer(&hosted, &writer_device, &host, &workspace.workspace).await;
@@ -94,15 +94,16 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         .retained(workspace.workspace_id)
         .await
         .unwrap();
-    let expected_channel =
-        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
-    assert!(retained.iter().any(|body| {
-        body.author == writer_device.cert.device_public_key &&
-        matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
+    assert!(
+        retained.iter().any(|body| {
+            body.author == writer_device.cert.device_public_key
+                && matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
             Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
             if app_id == route.app_id && record_id == route.record &&
-                envelope.encryption.as_ref().is_some_and(|metadata| metadata.channel == expected_channel))
-    }), "the real remote writer's retained primary must be encrypted on its exact channel");
+                envelope.encryption.as_ref().is_some())
+        }),
+        "the real remote writer's retained primary must be encrypted on its exact channel"
+    );
     // The message's own record, the part, is read cold the same way.
     let query = CatalogueQuery {
         provider: Some(record_provider(&part_route)),

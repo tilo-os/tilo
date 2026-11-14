@@ -111,6 +111,7 @@ use crate::workspace::{SharedWorkspace, Subscriber};
 use crate::workspace_access::{self, Decision, RelayTrust, WorkspaceOperation};
 use tilo_delivery_protocol::refusal::UnavailableReason;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
 /// queueing; saturation disconnects the recipient for replay on reconnect.
@@ -141,7 +142,7 @@ pub enum PeerError {
 }
 
 /// Handle to the set of workspaces the daemon owns.
-pub type WorkspaceRegistry = Arc<AsyncMutex<HashMap<u64, SharedWorkspace>>>;
+pub type WorkspaceRegistry = Arc<AsyncMutex<HashMap<WorkspaceId, SharedWorkspace>>>;
 pub(crate) const MAX_AUTOBOUND_WORKSPACES: usize = 4096;
 
 #[cfg(test)]
@@ -180,7 +181,7 @@ pub struct PeerContext {
     pub autobind: Option<WorkspaceAutobind>,
     /// Live revocation list, refreshed independently of this session.
     pub revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
-    /// Live signed-workspace-derived collaborator admission policy.
+    /// Live signed-workspace-derived member admission policy.
     pub trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// The user pubkey this relay itself chains to.
     pub own_user_public_key: [u8; 32],
@@ -242,9 +243,6 @@ struct SessionCtx<'a> {
     state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
     connection_live: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     own_user_public_key: &'a [u8; 32],
-    /// The certificate of the device running this relay, so a session can
-    /// recognise its own host's local self-connection.
-    own_device_cert: &'a tilo_user_identity::DeviceCert,
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
@@ -260,7 +258,7 @@ struct SessionCtx<'a> {
     compactor: Option<&'a crate::compaction::Compactor>,
     member_limits: Option<&'a crate::member_limits::MemberLimits>,
     /// This connection's resume log per resumed workspace.
-    resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
+    resumes: &'a std::sync::Mutex<HashMap<WorkspaceId, ResumeLog>>,
     /// The agent this connection is a run of, once its device said so
     /// ([`Envelope::AgentRun`]): every request the
     /// connection makes from then on is that agent's, acting for the device's

@@ -235,178 +235,6 @@ fn next(rx: &mpsc::Receiver<crate::protocol::Snapshot>) -> crate::protocol::Snap
     tilo_test_env::recv("the hub's snapshot of the interval", rx)
 }
 
-#[test]
-fn the_monitor_is_served_the_machines_processes_and_stats() {
-    let root = tempfile::tempdir().unwrap();
-    machine(root.path(), 100);
-    standard_processes(root.path());
-    let hub = fake_hub(root.path());
-    let (subscription, rx) = snapshots(&hub, Grants::IMAGE_DEFAULT);
-
-    let first = next(&rx);
-    let system = first.system.as_ref().expect("system-info is granted");
-    assert_eq!(system.host.hostname, "ada-laptop");
-    assert_eq!(system.host.kernel, "7.0.9");
-    assert_eq!(system.host.cpu_model.as_deref(), Some("Test CPU 9000"));
-    assert_eq!(system.host.logical_cpus, 2);
-    assert!(system.cpu.is_none(), "load needs two readings");
-    assert_eq!(system.memory.total, 16_000_000 * 1024);
-    assert_eq!(system.memory.used(), 12_000_000 * 1024);
-    assert_eq!(system.memory.swap_used(), 500_000 * 1024);
-    let pressure = system.pressure.expect("pressure is read");
-    assert_eq!(pressure.memory.some_avg10, 2.5);
-    assert_eq!(pressure.io.full_avg10, Some(1.25));
-    assert_eq!(system.load_average, [1.5, 1.0, 0.5]);
-    assert_eq!(system.disks.len(), 1, "partitions count under their disk");
-    assert_eq!(system.disks[0].device, "nvme0n1");
-    assert_eq!(system.disks[0].mount.as_deref(), Some("/"));
-    assert!(
-        system.disks[0].total_bytes > 0,
-        "the mounted file system's size"
-    );
-    assert_eq!(system.gpus[0].driver, "amdgpu");
-    assert_eq!(system.gpus[0].busy_percent, Some(37.0));
-    assert_eq!(system.batteries[0].percent, Some(81.0));
-    assert_eq!(system.batteries[0].power_watts, Some(7.5));
-    assert_eq!(system.thermal[0].celsius, 47.25);
-    assert!(
-        system.network.interfaces.iter().all(|i| i.name != "lo"),
-        "loopback is not network traffic"
-    );
-
-    assert!(first.processes_included);
-    let notes = first.processes.iter().find(|p| p.pid == 4242).unwrap();
-    assert_eq!(notes.name, "notes");
-    assert_eq!(notes.app.as_deref(), Some("so.tilo.notes"));
-    assert_eq!(notes.user, "ada");
-    assert_eq!(notes.memory_bytes, 20480 * 1024);
-    assert_eq!(notes.threads, 3);
-    assert_eq!(notes.state, ProcessState::Sleeping);
-    assert_eq!(notes.started_at, 5000);
-    assert!(notes.endable, "the person's own app");
-    let sshd = first.processes.iter().find(|p| p.pid == 700).unwrap();
-    assert_eq!(sshd.user, "root");
-    assert_eq!(sshd.app, None, "a system service is not an app");
-    assert!(!sshd.endable);
-    assert_eq!(first.apps.len(), 1, "one app, its two processes together");
-    assert_eq!(first.apps[0].app, "so.tilo.notes");
-    assert_eq!(first.apps[0].processes, 2);
-    assert_eq!(first.apps[0].memory_bytes, 2 * 20480 * 1024);
-
-    drop(subscription);
-
-    // The machine works for a while: the next reading has rates. Read
-    // through the collector at chosen times, so the interval is exact.
-    let mut collector = crate::collect::Collector::new(
-        Box::new(KernelProbe::at(root.path())),
-        EndPolicy::for_user(UID, std::process::id()),
-    );
-    let want = crate::probe::Want {
-        system: true,
-        processes: true,
-        command_lines: false,
-    };
-    collector.read(want, 1_000_000);
-    machine(root.path(), 400);
-    add_process(
-        root.path(),
-        &FakeProcess {
-            pid: 4242,
-            ppid: 1,
-            name: "notes",
-            uid: UID,
-            started_at: 5000,
-            cgroup: &format!("{APP_ROOT}/app-tilo-so.tilo.notes-4242.scope"),
-            cpu_ticks: 150,
-        },
-    );
-    let second = collector.read(want, 1_001_000);
-    assert_eq!(second.window_ms, 1000);
-    let system = second.system.as_ref().unwrap();
-    let cpu = system.cpu.as_ref().expect("two readings make a load");
-    assert_eq!(cpu.total, 50.0);
-    assert_eq!(cpu.per_core, vec![50.0, 0.0]);
-    assert_eq!(system.disks[0].read_bytes_per_sec, 300.0 * 512.0);
-    assert_eq!(system.network.rx_bytes_per_sec, 3000.0);
-    assert_eq!(system.network.tx_bytes_per_sec, 1500.0);
-    let processes = second.processes.as_ref().unwrap();
-    let notes = processes.iter().find(|p| p.pid == 4242).unwrap();
-    // 50 ticks of 100 a second over one second on two cores.
-    assert_eq!(notes.cpu, 25.0);
-    assert_eq!(second.apps[0].cpu, 25.0);
-}
-
-#[test]
-fn no_environment_ever_and_command_lines_only_with_their_own_grant() {
-    let root = tempfile::tempdir().unwrap();
-    machine(root.path(), 100);
-    standard_processes(root.path());
-    let hub = fake_hub(root.path());
-
-    let (without, rx) = snapshots(&hub, Grants::IMAGE_DEFAULT);
-    let wire = serde_json::to_string(&next(&rx)).unwrap();
-    drop(without);
-    assert!(wire.contains("notes"), "the list is there");
-    assert!(!wire.contains("environ-secret"), "no environment: {wire}");
-    assert!(!wire.contains("API_KEY"));
-    assert!(
-        !wire.contains("cmdline-secret"),
-        "no command line without the grant"
-    );
-
-    let (with, rx) = snapshots(&hub, Grants::IMAGE_DEFAULT.with(Grant::CommandLines));
-    let snapshot = next(&rx);
-    drop(with);
-    let notes = snapshot.processes.iter().find(|p| p.pid == 4242).unwrap();
-    assert_eq!(
-        notes.command.as_deref(),
-        Some("/usr/bin/notes --token=cmdline-secret-4242")
-    );
-    let wire = serde_json::to_string(&snapshot).unwrap();
-    assert!(
-        !wire.contains("environ-secret"),
-        "never the environment: {wire}"
-    );
-
-    let system_only = Grants {
-        system_info: true,
-        ..Grants::default()
-    };
-    let (only, rx) = snapshots(&hub, system_only);
-    let snapshot = next(&rx);
-    drop(only);
-    assert!(snapshot.system.is_some());
-    assert!(snapshot.processes.is_empty() && snapshot.apps.is_empty());
-    assert!(!snapshot.processes_included);
-    let wire = serde_json::to_string(&snapshot).unwrap();
-    assert!(!wire.contains("notes"), "{wire}");
-}
-
-#[test]
-fn nobody_subscribed_means_no_thread_and_no_reading() {
-    let root = tempfile::tempdir().unwrap();
-    machine(root.path(), 100);
-    let hub = fake_hub(root.path());
-    assert!(!hub.is_reading(), "nothing runs before anyone subscribes");
-    let (subscription, rx) = snapshots(&hub, Grants::IMAGE_DEFAULT);
-    next(&rx);
-    assert!(hub.is_reading());
-    drop(subscription);
-    hub.wait_until_idle();
-    assert!(
-        !hub.is_reading(),
-        "the last subscriber leaving stops the thread"
-    );
-    // The subscriber's callback went with it: whatever was read before is
-    // all there will be.
-    let _read_before: Vec<_> = rx.try_iter().collect();
-    assert_eq!(
-        rx.try_recv().unwrap_err(),
-        mpsc::TryRecvError::Disconnected,
-        "and nothing more is read"
-    );
-}
-
 fn connect(hub: &Hub, grants: Grants, prompter: std::sync::Arc<dyn Prompter>) -> UnixStream {
     connect_within(hub, grants, Grants::ALL, prompter)
 }
@@ -456,218 +284,369 @@ impl Prompter for Yes {
     }
 }
 
-#[test]
-fn an_app_sees_and_does_only_what_it_was_granted() {
-    let root = tempfile::tempdir().unwrap();
-    machine(root.path(), 100);
-    standard_processes(root.path());
-    let hub = fake_hub(root.path());
+tilo_test_env::scenario! {
+    fn a_subscriber_is_served_only_what_its_grants_cover;
 
-    // A user-installed app nobody granted anything: refused outright.
-    let mut app = connect(&hub, Grants::default(), std::sync::Arc::new(NoPrompter));
-    assert_eq!(
-        ask(
+    phase the_monitor_is_served_the_machines_processes_and_stats;
+    {
+        let root = tempfile::tempdir().unwrap();
+        machine(root.path(), 100);
+        standard_processes(root.path());
+        let hub = fake_hub(root.path());
+        let (subscription, rx) = snapshots(&hub, Grants::IMAGE_DEFAULT);
+
+        let first = next(&rx);
+        let system = first.system.as_ref().expect("system-info is granted");
+        assert_eq!(system.host.hostname, "ada-laptop");
+        assert_eq!(system.host.kernel, "7.0.9");
+        assert_eq!(system.host.cpu_model.as_deref(), Some("Test CPU 9000"));
+        assert_eq!(system.host.logical_cpus, 2);
+        assert!(system.cpu.is_none(), "load needs two readings");
+        assert_eq!(system.memory.total, 16_000_000 * 1024);
+        assert_eq!(system.memory.used(), 12_000_000 * 1024);
+        assert_eq!(system.memory.swap_used(), 500_000 * 1024);
+        let pressure = system.pressure.expect("pressure is read");
+        assert_eq!(pressure.memory.some_avg10, 2.5);
+        assert_eq!(pressure.io.full_avg10, Some(1.25));
+        assert_eq!(system.load_average, [1.5, 1.0, 0.5]);
+        assert_eq!(system.disks.len(), 1, "partitions count under their disk");
+        assert_eq!(system.disks[0].device, "nvme0n1");
+        assert_eq!(system.disks[0].mount.as_deref(), Some("/"));
+        assert!(
+            system.disks[0].total_bytes > 0,
+            "the mounted file system's size"
+        );
+        assert_eq!(system.gpus[0].driver, "amdgpu");
+        assert_eq!(system.gpus[0].busy_percent, Some(37.0));
+        assert_eq!(system.batteries[0].percent, Some(81.0));
+        assert_eq!(system.batteries[0].power_watts, Some(7.5));
+        assert_eq!(system.thermal[0].celsius, 47.25);
+        assert!(
+            system.network.interfaces.iter().all(|i| i.name != "lo"),
+            "loopback is not network traffic"
+        );
+
+        assert!(first.processes_included);
+        let notes = first.processes.iter().find(|p| p.pid == 4242).unwrap();
+        assert_eq!(notes.name, "notes");
+        assert_eq!(notes.app.as_deref(), Some("so.tilo.notes"));
+        assert_eq!(notes.user, "ada");
+        assert_eq!(notes.memory_bytes, 20480 * 1024);
+        assert_eq!(notes.threads, 3);
+        assert_eq!(notes.state, ProcessState::Sleeping);
+        assert_eq!(notes.started_at, 5000);
+        assert!(notes.endable, "the person's own app");
+        let sshd = first.processes.iter().find(|p| p.pid == 700).unwrap();
+        assert_eq!(sshd.user, "root");
+        assert_eq!(sshd.app, None, "a system service is not an app");
+        assert!(!sshd.endable);
+        assert_eq!(first.apps.len(), 1, "one app, its two processes together");
+        assert_eq!(first.apps[0].app, "so.tilo.notes");
+        assert_eq!(first.apps[0].processes, 2);
+        assert_eq!(first.apps[0].memory_bytes, 2 * 20480 * 1024);
+
+        drop(subscription);
+
+        // The machine works for a while: the next reading has rates. Read
+        // through the collector at chosen times, so the interval is exact.
+        let mut collector = crate::collect::Collector::new(
+            Box::new(KernelProbe::at(root.path())),
+            EndPolicy::for_user(UID, std::process::id()),
+        );
+        let want = crate::probe::Want {
+            system: true,
+            processes: true,
+            command_lines: false,
+        };
+        collector.read(want, 1_000_000);
+        machine(root.path(), 400);
+        add_process(
+            root.path(),
+            &FakeProcess {
+                pid: 4242,
+                ppid: 1,
+                name: "notes",
+                uid: UID,
+                started_at: 5000,
+                cgroup: &format!("{APP_ROOT}/app-tilo-so.tilo.notes-4242.scope"),
+                cpu_ticks: 150,
+            },
+        );
+        let second = collector.read(want, 1_001_000);
+        assert_eq!(second.window_ms, 1000);
+        let system = second.system.as_ref().unwrap();
+        let cpu = system.cpu.as_ref().expect("two readings make a load");
+        assert_eq!(cpu.total, 50.0);
+        assert_eq!(cpu.per_core, vec![50.0, 0.0]);
+        assert_eq!(system.disks[0].read_bytes_per_sec, 300.0 * 512.0);
+        assert_eq!(system.network.rx_bytes_per_sec, 3000.0);
+        assert_eq!(system.network.tx_bytes_per_sec, 1500.0);
+        let processes = second.processes.as_ref().unwrap();
+        let notes = processes.iter().find(|p| p.pid == 4242).unwrap();
+        // 50 ticks of 100 a second over one second on two cores.
+        assert_eq!(notes.cpu, 25.0);
+        assert_eq!(second.apps[0].cpu, 25.0);
+    }
+
+    phase no_environment_ever_and_command_lines_only_with_their_own_grant;
+    {
+        let root = tempfile::tempdir().unwrap();
+        machine(root.path(), 100);
+        standard_processes(root.path());
+        let hub = fake_hub(root.path());
+
+        let (without, rx) = snapshots(&hub, Grants::IMAGE_DEFAULT);
+        let wire = serde_json::to_string(&next(&rx)).unwrap();
+        drop(without);
+        assert!(wire.contains("notes"), "the list is there");
+        assert!(!wire.contains("environ-secret"), "no environment: {wire}");
+        assert!(!wire.contains("API_KEY"));
+        assert!(
+            !wire.contains("cmdline-secret"),
+            "no command line without the grant"
+        );
+
+        let (with, rx) = snapshots(&hub, Grants::IMAGE_DEFAULT.with(Grant::CommandLines));
+        let snapshot = next(&rx);
+        drop(with);
+        let notes = snapshot.processes.iter().find(|p| p.pid == 4242).unwrap();
+        assert_eq!(
+            notes.command.as_deref(),
+            Some("/usr/bin/notes --token=cmdline-secret-4242")
+        );
+        let wire = serde_json::to_string(&snapshot).unwrap();
+        assert!(
+            !wire.contains("environ-secret"),
+            "never the environment: {wire}"
+        );
+
+        let system_only = Grants {
+            system_info: true,
+            ..Grants::default()
+        };
+        let (only, rx) = snapshots(&hub, system_only);
+        let snapshot = next(&rx);
+        drop(only);
+        assert!(snapshot.system.is_some());
+        assert!(snapshot.processes.is_empty() && snapshot.apps.is_empty());
+        assert!(!snapshot.processes_included);
+        let wire = serde_json::to_string(&snapshot).unwrap();
+        assert!(!wire.contains("notes"), "{wire}");
+    }
+
+    phase an_app_sees_and_does_only_what_it_was_granted;
+    {
+        let root = tempfile::tempdir().unwrap();
+        machine(root.path(), 100);
+        standard_processes(root.path());
+        let hub = fake_hub(root.path());
+
+        // A user-installed app nobody granted anything: refused outright.
+        let mut app = connect(&hub, Grants::default(), std::sync::Arc::new(NoPrompter));
+        assert_eq!(
+            ask(
+                &mut app,
+                &Request::Subscribe {
+                    subscription: 1,
+                    interval_ms: 250,
+                    processes: true,
+                }
+            ),
+            Reply::SubscriptionRefused {
+                subscription: 1,
+                refusal: Refusal::NotGranted {
+                    grant: Grant::SystemInfo
+                },
+            }
+        );
+        assert_eq!(
+            ask(
+                &mut app,
+                &Request::EndApp {
+                    request: 2,
+                    app: "so.tilo.notes".into(),
+                    force: false,
+                }
+            ),
+            Reply::Refused {
+                request: 2,
+                refusal: Refusal::NotGranted {
+                    grant: Grant::Processes
+                },
+            }
+        );
+        assert_eq!(
+            ask(
+                &mut app,
+                &Request::AskGrant {
+                    request: 3,
+                    grant: Grant::Processes,
+                }
+            ),
+            Reply::Refused {
+                request: 3,
+                refusal: Refusal::Declined,
+            },
+            "nobody to ask is a no"
+        );
+
+        // The same app, asking the person, who says yes: the list arrives on the
+        // subscription it already holds.
+        let mut app = connect(
+            &hub,
+            Grants {
+                system_info: true,
+                ..Grants::default()
+            },
+            std::sync::Arc::new(Yes),
+        );
+        write_message(
             &mut app,
             &Request::Subscribe {
-                subscription: 1,
+                subscription: 9,
                 interval_ms: 250,
                 processes: true,
-            }
-        ),
-        Reply::SubscriptionRefused {
-            subscription: 1,
-            refusal: Refusal::NotGranted {
-                grant: Grant::SystemInfo
             },
-        }
-    );
-    assert_eq!(
-        ask(
-            &mut app,
-            &Request::EndApp {
-                request: 2,
-                app: "so.tilo.notes".into(),
-                force: false,
-            }
-        ),
-        Reply::Refused {
-            request: 2,
-            refusal: Refusal::NotGranted {
-                grant: Grant::Processes
-            },
-        }
-    );
-    assert_eq!(
-        ask(
+        )
+        .unwrap();
+        let Reply::Snapshot { snapshot, .. } = read_message(&mut app).unwrap().unwrap() else {
+            panic!("a snapshot first");
+        };
+        assert!(snapshot.system.is_some() && snapshot.processes.is_empty());
+        let Reply::Grants { grants, .. } = ask(
             &mut app,
             &Request::AskGrant {
-                request: 3,
+                request: 4,
                 grant: Grant::Processes,
+            },
+        ) else {
+            panic!("granted");
+        };
+        assert!(grants.processes);
+        let listed = loop {
+            let Reply::Snapshot { snapshot, .. } = read_message(&mut app).unwrap().unwrap() else {
+                continue;
+            };
+            if snapshot.processes_included {
+                break snapshot;
             }
-        ),
-        Reply::Refused {
-            request: 3,
-            refusal: Refusal::Declined,
-        },
-        "nobody to ask is a no"
-    );
+        };
+        assert!(listed.processes.iter().any(|p| p.name == "notes"));
+        assert!(listed.processes.iter().all(|p| p.command.is_none()));
 
-    // The same app, asking the person, who says yes: the list arrives on the
-    // subscription it already holds.
-    let mut app = connect(
-        &hub,
-        Grants {
+        // An app whose manifest declares only system information is never
+        // asked about, nor given, the process list.
+        let system_only = Grants {
             system_info: true,
             ..Grants::default()
-        },
-        std::sync::Arc::new(Yes),
-    );
-    write_message(
-        &mut app,
-        &Request::Subscribe {
-            subscription: 9,
-            interval_ms: 250,
-            processes: true,
-        },
-    )
-    .unwrap();
-    let Reply::Snapshot { snapshot, .. } = read_message(&mut app).unwrap().unwrap() else {
-        panic!("a snapshot first");
-    };
-    assert!(snapshot.system.is_some() && snapshot.processes.is_empty());
-    let Reply::Grants { grants, .. } = ask(
-        &mut app,
-        &Request::AskGrant {
-            request: 4,
-            grant: Grant::Processes,
-        },
-    ) else {
-        panic!("granted");
-    };
-    assert!(grants.processes);
-    let listed = loop {
-        let Reply::Snapshot { snapshot, .. } = read_message(&mut app).unwrap().unwrap() else {
-            continue;
         };
-        if snapshot.processes_included {
-            break snapshot;
-        }
-    };
-    assert!(listed.processes.iter().any(|p| p.name == "notes"));
-    assert!(listed.processes.iter().all(|p| p.command.is_none()));
-
-    // An app whose manifest declares only system information is never
-    // asked about, nor given, the process list.
-    let system_only = Grants {
-        system_info: true,
-        ..Grants::default()
-    };
-    let mut app = connect_within(
-        &hub,
-        Grants::IMAGE_DEFAULT,
-        system_only,
-        std::sync::Arc::new(Yes),
-    );
-    assert_eq!(
-        ask(
-            &mut app,
-            &Request::AskGrant {
+        let mut app = connect_within(
+            &hub,
+            Grants::IMAGE_DEFAULT,
+            system_only,
+            std::sync::Arc::new(Yes),
+        );
+        assert_eq!(
+            ask(
+                &mut app,
+                &Request::AskGrant {
+                    request: 5,
+                    grant: Grant::Processes,
+                }
+            ),
+            Reply::Refused {
                 request: 5,
-                grant: Grant::Processes,
+                refusal: Refusal::Declined,
             }
-        ),
-        Reply::Refused {
-            request: 5,
-            refusal: Refusal::Declined,
-        }
-    );
-    assert_eq!(
-        ask(
-            &mut app,
-            &Request::EndProcess {
+        );
+        assert_eq!(
+            ask(
+                &mut app,
+                &Request::EndProcess {
+                    request: 6,
+                    pid: 4242,
+                    started_at: 5000,
+                    force: false,
+                }
+            ),
+            Reply::Refused {
                 request: 6,
-                pid: 4242,
-                started_at: 5000,
-                force: false,
-            }
-        ),
-        Reply::Refused {
-            request: 6,
-            refusal: Refusal::NotGranted {
-                grant: Grant::Processes
+                refusal: Refusal::NotGranted {
+                    grant: Grant::Processes
+                },
             },
-        },
-        "a grant past the manifest is not held"
-    );
-}
+            "a grant past the manifest is not held"
+        );
+    }
 
-/// An app holding `system-info` is told the machine's storage, as the hub's
-/// source describes it; one without it is refused, and no prompt is shown
-/// for a read the launcher already decided.
-#[test]
-fn storage_is_answered_to_system_info_and_refused_without_it() {
-    use crate::protocol::{DriveHealth, Storage, StorageDevice};
-    let root = tempfile::tempdir().unwrap();
-    machine(root.path(), 100);
-    let storage = Storage {
-        devices: vec![StorageDevice {
-            name: "nvme0n1".into(),
-            kind: "disk".into(),
-            size: 1_024_209_543_168,
-            children: vec![StorageDevice {
-                name: "nvme0n1p7".into(),
-                kind: "part".into(),
-                fstype: Some("crypto_LUKS".into()),
+    phase storage_is_answered_to_system_info_and_refused_without_it;
+    // An app holding `system-info` is told the machine's storage, as the hub's
+    // source describes it; one without it is refused, and no prompt is shown
+    // for a read the launcher already decided.
+    {
+        use crate::protocol::{DriveHealth, Storage, StorageDevice};
+        let root = tempfile::tempdir().unwrap();
+        machine(root.path(), 100);
+        let storage = Storage {
+            devices: vec![StorageDevice {
+                name: "nvme0n1".into(),
+                kind: "disk".into(),
+                size: 1_024_209_543_168,
                 children: vec![StorageDevice {
-                    name: "root".into(),
-                    kernel_name: Some("dm-0".into()),
-                    kind: "crypt".into(),
-                    fstype: Some("ext4".into()),
-                    mountpoint: Some("/sysroot".into()),
+                    name: "nvme0n1p7".into(),
+                    kind: "part".into(),
+                    fstype: Some("crypto_LUKS".into()),
+                    children: vec![StorageDevice {
+                        name: "root".into(),
+                        kernel_name: Some("dm-0".into()),
+                        kind: "crypt".into(),
+                        fstype: Some("ext4".into()),
+                        mountpoint: Some("/sysroot".into()),
+                        ..StorageDevice::default()
+                    }],
                     ..StorageDevice::default()
                 }],
+                health: Some(DriveHealth {
+                    supported: true,
+                    ..DriveHealth::default()
+                }),
                 ..StorageDevice::default()
             }],
-            health: Some(DriveHealth {
-                supported: true,
-                ..DriveHealth::default()
-            }),
-            ..StorageDevice::default()
-        }],
-    };
-    let hub = Hub::with_storage(
-        Box::new(KernelProbe::at(root.path())),
-        EndPolicy::for_user(UID, std::process::id()),
-        Box::new(PidfdSignaller),
-        Box::new(crate::storage::FixedStorage(storage.clone())),
-    );
+        };
+        let hub = Hub::with_storage(
+            Box::new(KernelProbe::at(root.path())),
+            EndPolicy::for_user(UID, std::process::id()),
+            Box::new(PidfdSignaller),
+            Box::new(crate::storage::FixedStorage(storage.clone())),
+        );
 
-    let mut granted = connect(
-        &hub,
-        Grants {
-            system_info: true,
-            ..Grants::default()
-        },
-        std::sync::Arc::new(NoPrompter),
-    );
-    assert_eq!(
-        ask(&mut granted, &Request::Storage { request: 1 }),
-        Reply::Storage {
-            request: 1,
-            storage: Box::new(storage),
-        }
-    );
-
-    let mut ungranted = connect(&hub, Grants::default(), std::sync::Arc::new(NoPrompter));
-    assert_eq!(
-        ask(&mut ungranted, &Request::Storage { request: 2 }),
-        Reply::Refused {
-            request: 2,
-            refusal: Refusal::NotGranted {
-                grant: Grant::SystemInfo
+        let mut granted = connect(
+            &hub,
+            Grants {
+                system_info: true,
+                ..Grants::default()
             },
-        }
-    );
+            std::sync::Arc::new(NoPrompter),
+        );
+        assert_eq!(
+            ask(&mut granted, &Request::Storage { request: 1 }),
+            Reply::Storage {
+                request: 1,
+                storage: Box::new(storage),
+            }
+        );
+
+        let mut ungranted = connect(&hub, Grants::default(), std::sync::Arc::new(NoPrompter));
+        assert_eq!(
+            ask(&mut ungranted, &Request::Storage { request: 2 }),
+            Reply::Refused {
+                request: 2,
+                refusal: Refusal::NotGranted {
+                    grant: Grant::SystemInfo
+                },
+            }
+        );
+    }
 }
 
 /// Storage that waits for the test to let it answer, and notes which
@@ -695,144 +674,173 @@ impl crate::storage::StorageSource for HeldStorage {
     }
 }
 
-/// A slow storage read (a busy udisks2, a drive waking up) holds up nothing
-/// but its own answer. It is never taken on the thread that started the
-/// service, which in the session is the compositor's main loop, nor on the
-/// asking connection's: the hub's storage thread reads, and the connection
-/// answers the app's other requests meanwhile.
-/// A server whose socket another server took over still stops: what it
-/// wakes is its own acceptor, never whatever the path holds by then, and
-/// the socket now at the path is the other server's to keep and to unlink.
-#[test]
-fn a_server_stops_after_another_server_took_its_socket() {
-    let root = tempfile::tempdir().unwrap();
-    let socket = root.path().join("system-stats.sock");
-    let first = crate::server::Server::bind(
-        &socket,
-        Hub::shared().clone(),
-        std::sync::Arc::new(NoPrompter),
-    )
-    .unwrap();
-    let second = crate::server::Server::bind(
-        &socket,
-        Hub::shared().clone(),
-        std::sync::Arc::new(NoPrompter),
-    )
-    .unwrap();
-    let (stopped, did_stop) = mpsc::channel();
-    let dropping = std::thread::spawn(move || {
-        drop(first);
-        let _ = stopped.send(());
-    });
-    did_stop
-        .recv_timeout(tilo_test_env::hang_bound())
-        .expect("the first server stops although its socket is taken");
-    dropping.join().unwrap();
-    assert!(
-        socket.exists(),
-        "the first server leaves the socket at the path to the server that took it"
-    );
-    drop(second);
-    assert!(!socket.exists(), "the second server unlinks its own socket");
-}
+tilo_test_env::scenario! {
+    fn the_service_runs_no_thread_it_does_not_need_and_none_holds_another_up;
 
-#[test]
-fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
-    struct Shared(std::sync::Arc<HeldStorage>);
-    impl crate::storage::StorageSource for Shared {
-        fn read(&self) -> Result<crate::protocol::Storage, Refusal> {
-            self.0.read()
-        }
-    }
-    let root = tempfile::tempdir().unwrap();
-    machine(root.path(), 100);
-    let (release, released) = mpsc::channel();
-    let (start, started) = mpsc::channel();
-    let storage = std::sync::Arc::new(HeldStorage {
-        started: std::sync::Mutex::new(start),
-        release: std::sync::Mutex::new(released),
-        readers: std::sync::Mutex::new(Vec::new()),
-    });
-    let hub = Hub::with_storage(
-        Box::new(KernelProbe::at(root.path())),
-        EndPolicy::for_user(UID, std::process::id()),
-        Box::new(PidfdSignaller),
-        Box::new(Shared(std::sync::Arc::clone(&storage))),
-    );
-    let socket = root.path().join("system-stats.sock");
-    let _server =
-        crate::server::Server::bind(&socket, hub, std::sync::Arc::new(NoPrompter)).unwrap();
-    let mut app = UnixStream::connect(&socket).unwrap();
-    app.set_read_timeout(Some(tilo_test_env::hang_bound()))
-        .unwrap();
-    crate::protocol::write_handoff(
-        &mut app,
-        &Handoff {
-            protocol: PROTOCOL,
-            app_id: "so.tilo.disks".into(),
-            workspace_id: Some("room".into()),
-            grants: Grants {
-                system_info: true,
-                ..Grants::default()
-            },
-            ceiling: Grants::ALL,
-        },
-    )
-    .unwrap();
-
-    let reading_started = || {
-        started
-            .recv_timeout(tilo_test_env::hang_bound())
-            .expect("the storage thread starts reading");
-    };
-    write_message(&mut app, &Request::Storage { request: 1 }).unwrap();
-    reading_started();
-    assert_eq!(
-        ask(
-            &mut app,
-            &Request::EndProcess {
-                request: 2,
-                pid: 4242,
-                started_at: 5000,
-                force: false,
-            }
-        ),
-        Reply::Refused {
-            request: 2,
-            refusal: Refusal::NotGranted {
-                grant: Grant::Processes
-            },
-        },
-        "the connection answered while the storage read was held"
-    );
-    release.send(()).unwrap();
-    assert_eq!(
-        read_message::<_, Reply>(&mut app).unwrap(),
-        Some(Reply::Storage {
-            request: 1,
-            storage: Box::default(),
-        })
-    );
-    write_message(&mut app, &Request::Storage { request: 3 }).unwrap();
-    reading_started();
-    release.send(()).unwrap();
-    assert_eq!(
-        read_message::<_, Reply>(&mut app).unwrap(),
-        Some(Reply::Storage {
-            request: 3,
-            storage: Box::default(),
-        })
-    );
-
-    let readers = storage.readers.lock().unwrap().clone();
-    assert_eq!(readers.len(), 2);
-    for (thread, name) in readers {
-        assert_ne!(
-            thread,
-            std::thread::current().id(),
-            "never on the thread that started the service"
+    phase nobody_subscribed_means_no_thread_and_no_reading;
+    {
+        let root = tempfile::tempdir().unwrap();
+        machine(root.path(), 100);
+        let hub = fake_hub(root.path());
+        assert!(!hub.is_reading(), "nothing runs before anyone subscribes");
+        let (subscription, rx) = snapshots(&hub, Grants::IMAGE_DEFAULT);
+        next(&rx);
+        assert!(hub.is_reading());
+        drop(subscription);
+        hub.wait_until_idle();
+        assert!(
+            !hub.is_reading(),
+            "the last subscriber leaving stops the thread"
         );
-        assert_eq!(name.as_deref(), Some(crate::hub::STORAGE_THREAD));
+        // The subscriber's callback went with it: whatever was read before is
+        // all there will be.
+        let _read_before: Vec<_> = rx.try_iter().collect();
+        assert_eq!(
+            rx.try_recv().unwrap_err(),
+            mpsc::TryRecvError::Disconnected,
+            "and nothing more is read"
+        );
+    }
+
+    phase a_server_stops_after_another_server_took_its_socket;
+    // A slow storage read (a busy udisks2, a drive waking up) holds up nothing
+    // but its own answer. It is never taken on the thread that started the
+    // service, which in the session is the compositor's main loop, nor on the
+    // asking connection's: the hub's storage thread reads, and the connection
+    // answers the app's other requests meanwhile.
+    // A server whose socket another server took over still stops: what it
+    // wakes is its own acceptor, never whatever the path holds by then, and
+    // the socket now at the path is the other server's to keep and to unlink.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("system-stats.sock");
+        let first = crate::server::Server::bind(
+            &socket,
+            Hub::shared().clone(),
+            std::sync::Arc::new(NoPrompter),
+        )
+        .unwrap();
+        let second = crate::server::Server::bind(
+            &socket,
+            Hub::shared().clone(),
+            std::sync::Arc::new(NoPrompter),
+        )
+        .unwrap();
+        let (stopped, did_stop) = mpsc::channel();
+        let dropping = std::thread::spawn(move || {
+            drop(first);
+            let _ = stopped.send(());
+        });
+        did_stop
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the first server stops although its socket is taken");
+        dropping.join().unwrap();
+        assert!(
+            socket.exists(),
+            "the first server leaves the socket at the path to the server that took it"
+        );
+        drop(second);
+        assert!(!socket.exists(), "the second server unlinks its own socket");
+    }
+
+    phase a_slow_storage_read_holds_up_neither_the_service_nor_the_connection;
+    {
+        struct Shared(std::sync::Arc<HeldStorage>);
+        impl crate::storage::StorageSource for Shared {
+            fn read(&self) -> Result<crate::protocol::Storage, Refusal> {
+                self.0.read()
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        machine(root.path(), 100);
+        let (release, released) = mpsc::channel();
+        let (start, started) = mpsc::channel();
+        let storage = std::sync::Arc::new(HeldStorage {
+            started: std::sync::Mutex::new(start),
+            release: std::sync::Mutex::new(released),
+            readers: std::sync::Mutex::new(Vec::new()),
+        });
+        let hub = Hub::with_storage(
+            Box::new(KernelProbe::at(root.path())),
+            EndPolicy::for_user(UID, std::process::id()),
+            Box::new(PidfdSignaller),
+            Box::new(Shared(std::sync::Arc::clone(&storage))),
+        );
+        let socket = root.path().join("system-stats.sock");
+        let _server =
+            crate::server::Server::bind(&socket, hub, std::sync::Arc::new(NoPrompter)).unwrap();
+        let mut app = UnixStream::connect(&socket).unwrap();
+        app.set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        crate::protocol::write_handoff(
+            &mut app,
+            &Handoff {
+                protocol: PROTOCOL,
+                app_id: "so.tilo.disks".into(),
+                workspace_id: Some("room".into()),
+                grants: Grants {
+                    system_info: true,
+                    ..Grants::default()
+                },
+                ceiling: Grants::ALL,
+            },
+        )
+        .unwrap();
+
+        let reading_started = || {
+            started
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect("the storage thread starts reading");
+        };
+        write_message(&mut app, &Request::Storage { request: 1 }).unwrap();
+        reading_started();
+        assert_eq!(
+            ask(
+                &mut app,
+                &Request::EndProcess {
+                    request: 2,
+                    pid: 4242,
+                    started_at: 5000,
+                    force: false,
+                }
+            ),
+            Reply::Refused {
+                request: 2,
+                refusal: Refusal::NotGranted {
+                    grant: Grant::Processes
+                },
+            },
+            "the connection answered while the storage read was held"
+        );
+        release.send(()).unwrap();
+        assert_eq!(
+            read_message::<_, Reply>(&mut app).unwrap(),
+            Some(Reply::Storage {
+                request: 1,
+                storage: Box::default(),
+            })
+        );
+        write_message(&mut app, &Request::Storage { request: 3 }).unwrap();
+        reading_started();
+        release.send(()).unwrap();
+        assert_eq!(
+            read_message::<_, Reply>(&mut app).unwrap(),
+            Some(Reply::Storage {
+                request: 3,
+                storage: Box::default(),
+            })
+        );
+
+        let readers = storage.readers.lock().unwrap().clone();
+        assert_eq!(readers.len(), 2);
+        for (thread, name) in readers {
+            assert_ne!(
+                thread,
+                std::thread::current().id(),
+                "never on the thread that started the service"
+            );
+            assert_eq!(name.as_deref(), Some(crate::hub::STORAGE_THREAD));
+        }
     }
 }
 

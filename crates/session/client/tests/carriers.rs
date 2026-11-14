@@ -19,7 +19,7 @@
 )]
 
 use std::sync::Arc;
-use tilo_session_client::{Cmd, Event, Link, Outbox, TransportPhase, VoiceEvent};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox, TransportPhase, VoiceEvent};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::presence::Presence;
@@ -92,7 +92,7 @@ struct Ada {
 impl Ada {
     async fn start() -> Self {
         let (root, _) = UserIdentity::generate("Ada", 1);
-        let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+        let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
         let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
         let state = crate::support::scratch_dir();
         let host = start_host_serving(
@@ -101,7 +101,7 @@ impl Ada {
             state.path(),
             "127.0.0.1:0".parse().unwrap(),
             HostSettings {
-                packet_relay: true,
+                relayed: true,
                 ..HostSettings::default()
             },
         )
@@ -254,7 +254,6 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
 
 async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) {
     let ada = Ada::start().await;
-    let _channels = crate::participant::Participant::start(&ada.host.relay, &ada.root).await;
     let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
     let page = page(&ada.host, carrier, key, &cert, &host_cert);
     page.join_placed(WORKSPACE, "Workspace").unwrap();
@@ -316,7 +315,7 @@ fn plane_route() -> DocumentRoute {
 /// The scope's keys, as the workspace's members derive them.
 fn plane_keys() -> ChannelContentKeys {
     ChannelGroup::create(
-        collab_types::ChannelId::new(),
+        collab_types::WorkspaceId::new(),
         MemberKey::generate("ada").unwrap(),
     )
     .unwrap()
@@ -379,13 +378,13 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
 
 /// The next call event of `peer` that `pick` accepts.
 async fn voice<T>(
-    peer: &Link,
+    events: &Events,
     pending: &mut Vec<Event>,
     what: &str,
     mut pick: impl FnMut(&VoiceEvent) -> Option<T>,
 ) -> T {
     wait_for(what, || {
-        pending.extend(peer.drain());
+        pending.extend(events.drain());
         let found = pending
             .iter()
             .enumerate()
@@ -415,15 +414,21 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
         page.key.clone(),
         Arc::new(MemoryPeerStore::default()),
     );
+    let events = peer.events();
     peer.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&peer]).await;
     let mut pending = Vec::new();
 
     peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
-    let calls = voice(&peer, &mut pending, "the call list", |event| match event {
-        VoiceEvent::Calls { result, .. } => Some(result.clone()),
-        _ => None,
-    })
+    let calls = voice(
+        &events,
+        &mut pending,
+        "the call list",
+        |event| match event {
+            VoiceEvent::Calls { result, .. } => Some(result.clone()),
+            _ => None,
+        },
+    )
     .await
     .unwrap();
     let [listed] = calls.as_slice() else {
@@ -441,7 +446,7 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
         .unwrap();
     peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
         .unwrap();
-    let bob: VoiceGrant = voice(&peer, &mut pending, "Bob's grant", |event| match event {
+    let bob: VoiceGrant = voice(&events, &mut pending, "Bob's grant", |event| match event {
         VoiceEvent::Granted { grant, .. } if grant.participants.len() == 2 => {
             Some((**grant).clone())
         }

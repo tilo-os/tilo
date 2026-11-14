@@ -150,9 +150,10 @@ mod tests {
         b: String,
     }
 
-    #[test]
-    fn canonical_bytes_round_trip_exactly_and_digests_are_domain_separated() {
-        // Phase: round_trip_via_canonical_bytes.
+    tilo_test_env::scenario! {
+        fn canonical_bytes_round_trip_exactly_and_digests_are_domain_separated;
+
+        phase round_trip_via_canonical_bytes;
         {
             let f = Fixture {
                 a: 42,
@@ -163,7 +164,7 @@ mod tests {
             assert_eq!(f, back);
         }
 
-        // Phase: rejects_trailing_bytes.
+        phase rejects_trailing_bytes;
         {
             let f = Fixture {
                 a: 1,
@@ -174,7 +175,7 @@ mod tests {
             assert!(from_canonical_bytes::<Fixture>(&bytes).is_err());
         }
 
-        // Phase: domain_tag_changes_digest.
+        phase domain_tag_changes_digest;
         // Different domain tags produce different digests even for
         // the same body — pinning the domain-separation property.
         {
@@ -187,7 +188,7 @@ mod tests {
             assert_ne!(d1, d2);
         }
 
-        // Phase: digest_is_deterministic.
+        phase digest_is_deterministic;
         // Digest is deterministic across independent runs.
         {
             let f = Fixture {

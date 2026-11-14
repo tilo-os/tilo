@@ -363,6 +363,37 @@ impl App {
             }
         }
 
+        // A window asked for the thing a report is about takes the pointer and
+        // the keys until the person points at it or leaves.
+        if !handled && let Some(pointing) = app.report_pointing.as_mut() {
+            let focused = crate::shared_selection::subtree_selection(app.root_widget.as_ref());
+            match pointing.event(
+                &event,
+                app.root_widget.as_ref(),
+                f64::from(window.scale_factor()),
+                focused,
+            ) {
+                report_point::Taken::Ignored => {}
+                report_point::Taken::Redraw => {
+                    // What is lit follows the pointer, which asks for a frame of
+                    // its own: a pointer move alone asks for none.
+                    handled = true;
+                    window.request_redraw();
+                }
+                report_point::Taken::Left => {
+                    app.report_pointing = None;
+                    handled = true;
+                }
+                report_point::Taken::Picked(about, bounds) => {
+                    let to = pointing.to().to_vec();
+                    app.report_pointing = None;
+                    crate::shared_selection::open_send_box(Some(about), bounds, None, &to);
+                    handled = true;
+                    window.request_redraw();
+                }
+            }
+        }
+
         // Runs FIRST so it wins over Tab/arrow handling.
         if app.handle_screen_reader_key(&event) {
             handled = true;

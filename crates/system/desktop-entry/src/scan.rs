@@ -327,260 +327,264 @@ mod tests {
         vec![CURRENT_DESKTOP.to_string()]
     }
 
-    #[test]
-    fn scanned_ids_come_from_the_first_directory_and_tombstones_remove_them() {
+    tilo_test_env::scenario! {
+        fn a_scan_names_merges_filters_and_localises_its_entries;
+
+        phase scanned_ids_come_from_the_first_directory_and_tombstones_remove_them;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            write(tmp.path(), "kde4/konsole.desktop", &app("Konsole"));
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            assert_eq!(scan.entries.len(), 1);
-            assert_eq!(scan.entries[0].id, "kde4-konsole");
-        }
-        {
-            let user = tempfile::tempdir().unwrap();
-            let system = tempfile::tempdir().unwrap();
-            write(user.path(), "x.desktop", &app("Mine"));
-            write(system.path(), "x.desktop", &app("Theirs"));
-            let scan = scan_dirs(
-                &[user.path().to_path_buf(), system.path().to_path_buf()],
-                &tilo(),
-                &[],
-            );
-            assert_eq!(
-                scan.entries.len(),
-                1,
-                "one id, one entry: {:?}",
-                scan.entries
-            );
-            assert_eq!(scan.entries[0].name, "Mine");
-            assert_eq!(scan.stats.shadowed, 1);
-        }
-        {
-            let user = tempfile::tempdir().unwrap();
-            let system = tempfile::tempdir().unwrap();
-            write(
-                user.path(),
-                "x.desktop",
-                "[Desktop Entry]\nType=Application\nName=X\nExec=/bin/true\nHidden=true\n",
-            );
-            write(
-                user.path(),
-                "so.tilo.notes.desktop",
-                "[Desktop Entry]\nType=Application\nName=Notes\nHidden=true\n",
-            );
-            write(system.path(), "x.desktop", &app("X"));
-            let scan = scan_dirs(
-                &[user.path().to_path_buf(), system.path().to_path_buf()],
-                &tilo(),
-                &[],
-            );
-            assert!(scan.entries.is_empty(), "{:?}", scan.entries);
-            assert_eq!(scan.stats.tombstoned, 2);
-            assert_eq!(scan.hidden, ["so.tilo.notes", "x"]);
-        }
-        {
-            let scan = scan_dirs(
-                &[PathBuf::from("/nonexistent/tilo/applications")],
-                &tilo(),
-                &[],
-            );
-            assert!(scan.entries.is_empty());
-            assert_eq!(scan.stats.files_seen, 0);
-        }
-        {
-            let dirs = application_dirs();
-            assert!(
-                dirs.iter()
-                    .any(|d| d.ends_with("var/lib/flatpak/exports/share/applications")),
-                "system Flatpak exports must be searched even when \
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                write(tmp.path(), "kde4/konsole.desktop", &app("Konsole"));
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                assert_eq!(scan.entries.len(), 1);
+                assert_eq!(scan.entries[0].id, "kde4-konsole");
+            }
+            {
+                let user = tempfile::tempdir().unwrap();
+                let system = tempfile::tempdir().unwrap();
+                write(user.path(), "x.desktop", &app("Mine"));
+                write(system.path(), "x.desktop", &app("Theirs"));
+                let scan = scan_dirs(
+                    &[user.path().to_path_buf(), system.path().to_path_buf()],
+                    &tilo(),
+                    &[],
+                );
+                assert_eq!(
+                    scan.entries.len(),
+                    1,
+                    "one id, one entry: {:?}",
+                    scan.entries
+                );
+                assert_eq!(scan.entries[0].name, "Mine");
+                assert_eq!(scan.stats.shadowed, 1);
+            }
+            {
+                let user = tempfile::tempdir().unwrap();
+                let system = tempfile::tempdir().unwrap();
+                write(
+                    user.path(),
+                    "x.desktop",
+                    "[Desktop Entry]\nType=Application\nName=X\nExec=/bin/true\nHidden=true\n",
+                );
+                write(
+                    user.path(),
+                    "so.tilo.notes.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Notes\nHidden=true\n",
+                );
+                write(system.path(), "x.desktop", &app("X"));
+                let scan = scan_dirs(
+                    &[user.path().to_path_buf(), system.path().to_path_buf()],
+                    &tilo(),
+                    &[],
+                );
+                assert!(scan.entries.is_empty(), "{:?}", scan.entries);
+                assert_eq!(scan.stats.tombstoned, 2);
+                assert_eq!(scan.hidden, ["so.tilo.notes", "x"]);
+            }
+            {
+                let scan = scan_dirs(
+                    &[PathBuf::from("/nonexistent/tilo/applications")],
+                    &tilo(),
+                    &[],
+                );
+                assert!(scan.entries.is_empty());
+                assert_eq!(scan.stats.files_seen, 0);
+            }
+            {
+                let dirs = application_dirs();
+                assert!(
+                    dirs.iter()
+                        .any(|d| d.ends_with("var/lib/flatpak/exports/share/applications")),
+                    "system Flatpak exports must be searched even when \
                  XDG_DATA_DIRS does not name them: {dirs:?}"
-            );
+                );
+            }
         }
-    }
 
-    #[test]
-    fn scanned_rows_merge_by_stable_identity_but_keep_distinct_programs() {
+        phase scanned_rows_merge_by_stable_identity_but_keep_distinct_programs;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            let body = "[Desktop Entry]\nType=Application\nName=Chat\n\
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let body = "[Desktop Entry]\nType=Application\nName=Chat\n\
                         Exec=/usr/bin/chat %U\nStartupWMClass=Chat\n";
-            write(tmp.path(), "vendor-chat.desktop", body);
-            write(tmp.path(), "chat.desktop", body);
+                write(tmp.path(), "vendor-chat.desktop", body);
+                write(tmp.path(), "chat.desktop", body);
 
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            assert_eq!(scan.entries.len(), 1, "aliases must not become two apps");
-            assert_eq!(scan.stats.duplicate_aliases, 1);
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            write(
-                tmp.path(),
-                "chat-system.desktop",
-                "[Desktop Entry]\nType=Application\nName=Chat\n\
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                assert_eq!(scan.entries.len(), 1, "aliases must not become two apps");
+                assert_eq!(scan.stats.duplicate_aliases, 1);
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                write(
+                    tmp.path(),
+                    "chat-system.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Chat\n\
                  Exec=/usr/bin/chat\nStartupWMClass=org.example.Chat\n",
-            );
-            write(
-                tmp.path(),
-                "org.example.Chat.desktop",
-                "[Desktop Entry]\nType=Application\nName=Chat\n\
+                );
+                write(
+                    tmp.path(),
+                    "org.example.Chat.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Chat\n\
                  Exec=/usr/bin/flatpak run org.example.Chat\n\
                  X-Flatpak=org.example.Chat\nStartupWMClass=org.example.Chat\n",
-            );
+                );
 
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            assert_eq!(scan.entries.len(), 1, "one application must have one row");
-            assert_eq!(scan.stats.duplicate_aliases, 1);
-            assert!(matches!(
-                scan.entries[0].source,
-                EntrySource::Flatpak { .. }
-            ));
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            write(
-                tmp.path(),
-                "chat-system.desktop",
-                "[Desktop Entry]\nType=Application\nName=Chat\n\
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                assert_eq!(scan.entries.len(), 1, "one application must have one row");
+                assert_eq!(scan.stats.duplicate_aliases, 1);
+                assert!(matches!(
+                    scan.entries[0].source,
+                    EntrySource::Flatpak { .. }
+                ));
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                write(
+                    tmp.path(),
+                    "chat-system.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Chat\n\
                  Exec=/usr/bin/chat\nStartupWMClass=chat-system\n",
-            );
-            write(
-                tmp.path(),
-                "org.example.Chat.desktop",
-                "[Desktop Entry]\nType=Application\nName=Chat\n\
+                );
+                write(
+                    tmp.path(),
+                    "org.example.Chat.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Chat\n\
                  Exec=/usr/bin/flatpak run org.example.Chat\n\
                  X-Flatpak=org.example.Chat\nStartupWMClass=org.example.Chat\n",
-            );
+                );
 
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            assert_eq!(scan.entries.len(), 2, "names alone must never merge apps");
-            assert_eq!(scan.stats.duplicate_aliases, 0);
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            write(tmp.path(), "editor.desktop", &app("Editor"));
-            write(
-                tmp.path(),
-                "editor-safe.desktop",
-                "[Desktop Entry]\nType=Application\nName=Editor\nExec=/bin/true --safe\n",
-            );
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                assert_eq!(scan.entries.len(), 2, "names alone must never merge apps");
+                assert_eq!(scan.stats.duplicate_aliases, 0);
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                write(tmp.path(), "editor.desktop", &app("Editor"));
+                write(
+                    tmp.path(),
+                    "editor-safe.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Editor\nExec=/bin/true --safe\n",
+                );
 
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            assert_eq!(scan.entries.len(), 2);
-            assert_eq!(scan.stats.duplicate_aliases, 0);
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                assert_eq!(scan.entries.len(), 2);
+                assert_eq!(scan.stats.duplicate_aliases, 0);
+            }
         }
-    }
 
-    #[test]
-    fn scanned_entries_are_filtered_counted_sorted_and_labelled() {
+        phase scanned_entries_are_filtered_counted_sorted_and_labelled;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            write(
-                tmp.path(),
-                "a.desktop",
-                "[Desktop Entry]\nType=Application\nName=A\nExec=/bin/true\nNoDisplay=true\n",
-            );
-            write(
-                tmp.path(),
-                "b.desktop",
-                "[Desktop Entry]\nType=Link\nName=B\nURL=https://x\n",
-            );
-            write(
-                tmp.path(),
-                "c.desktop",
-                "[Desktop Entry]\nType=Application\nName=C\n",
-            );
-            write(tmp.path(), "d.desktop", &app("D"));
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            assert_eq!(scan.entries.len(), 1);
-            assert_eq!(scan.entries[0].name, "D");
-            assert_eq!(scan.stats.no_display, 1);
-            assert_eq!(scan.stats.not_an_application, 1);
-            assert_eq!(scan.stats.no_exec, 1);
-            assert_eq!(scan.stats.files_seen, 4);
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            write(tmp.path(), "z.desktop", &app("alpha"));
-            write(tmp.path(), "a.desktop", &app("Zulu"));
-            write(tmp.path(), "m.desktop", &app("Mike"));
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            let names: Vec<&str> = scan.entries.iter().map(|e| e.name.as_str()).collect();
-            assert_eq!(names, vec!["alpha", "Mike", "Zulu"]);
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            write(
-                tmp.path(),
-                "com.x.App.desktop",
-                "[Desktop Entry]\nType=Application\nName=App\n\
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                write(
+                    tmp.path(),
+                    "a.desktop",
+                    "[Desktop Entry]\nType=Application\nName=A\nExec=/bin/true\nNoDisplay=true\n",
+                );
+                write(
+                    tmp.path(),
+                    "b.desktop",
+                    "[Desktop Entry]\nType=Link\nName=B\nURL=https://x\n",
+                );
+                write(
+                    tmp.path(),
+                    "c.desktop",
+                    "[Desktop Entry]\nType=Application\nName=C\n",
+                );
+                write(tmp.path(), "d.desktop", &app("D"));
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                assert_eq!(scan.entries.len(), 1);
+                assert_eq!(scan.entries[0].name, "D");
+                assert_eq!(scan.stats.no_display, 1);
+                assert_eq!(scan.stats.not_an_application, 1);
+                assert_eq!(scan.stats.no_exec, 1);
+                assert_eq!(scan.stats.files_seen, 4);
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                write(tmp.path(), "z.desktop", &app("alpha"));
+                write(tmp.path(), "a.desktop", &app("Zulu"));
+                write(tmp.path(), "m.desktop", &app("Mike"));
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                let names: Vec<&str> = scan.entries.iter().map(|e| e.name.as_str()).collect();
+                assert_eq!(names, vec!["alpha", "Mike", "Zulu"]);
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                write(
+                    tmp.path(),
+                    "com.x.App.desktop",
+                    "[Desktop Entry]\nType=Application\nName=App\n\
                  Exec=/usr/bin/flatpak run com.x.App\nX-Flatpak=com.x.App\n",
-            );
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            assert_eq!(
-                scan.entries[0].source,
-                EntrySource::Flatpak {
-                    app_id: "com.x.App".into()
-                }
-            );
+                );
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                assert_eq!(
+                    scan.entries[0].source,
+                    EntrySource::Flatpak {
+                        app_id: "com.x.App".into()
+                    }
+                );
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                write(
+                    tmp.path(),
+                    "gone.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Gone\nExec=/bin/true\n\
+                 TryExec=/nonexistent/definitely-not-here\n",
+                );
+                write(
+                    tmp.path(),
+                    "here.desktop",
+                    "[Desktop Entry]\nType=Application\nName=Here\nExec=/bin/true\nTryExec=/bin/true\n",
+                );
+                let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
+                assert_eq!(scan.entries.len(), 1);
+                assert_eq!(scan.entries[0].name, "Here");
+                assert_eq!(scan.stats.try_exec_missing, 1);
+            }
         }
+
+        phase the_entries_are_named_in_the_language_the_caller_names;
+        // What an entry is called is the caller's language, never the machine's: the
+        // same directory reads as `Files` in an English session and `Dateien` in a
+        // German one, whichever locale this test process runs in.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(
                 tmp.path(),
-                "gone.desktop",
-                "[Desktop Entry]\nType=Application\nName=Gone\nExec=/bin/true\n\
-                 TryExec=/nonexistent/definitely-not-here\n",
-            );
-            write(
-                tmp.path(),
-                "here.desktop",
-                "[Desktop Entry]\nType=Application\nName=Here\nExec=/bin/true\nTryExec=/bin/true\n",
-            );
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
-            assert_eq!(scan.entries.len(), 1);
-            assert_eq!(scan.entries[0].name, "Here");
-            assert_eq!(scan.stats.try_exec_missing, 1);
-        }
-    }
-
-    /// What an entry is called is the caller's language, never the machine's: the
-    /// same directory reads as `Files` in an English session and `Dateien` in a
-    /// German one, whichever locale this test process runs in.
-    #[test]
-    fn the_entries_are_named_in_the_language_the_caller_names() {
-        let tmp = tempfile::tempdir().unwrap();
-        write(
-            tmp.path(),
-            "org.example.Files.desktop",
-            "[Desktop Entry]\nType=Application\nName=Files\nName[de]=Dateien\n\
+                "org.example.Files.desktop",
+                "[Desktop Entry]\nType=Application\nName=Files\nName[de]=Dateien\n\
              Name[de_DE]=Dateien\nComment=Browse your files\nComment[de]=Dateien durchsuchen\n\
              Exec=/bin/true\n",
-        );
-        let named = |preferred: Option<&str>| {
-            let scan = scan_dirs(
-                &[tmp.path().to_path_buf()],
-                &tilo(),
-                &crate::locale::language_candidates(preferred),
             );
-            assert_eq!(scan.entries.len(), 1, "one entry either way");
-            (
-                scan.entries[0].name.clone(),
-                scan.entries[0].comment.clone(),
-            )
-        };
-        assert_eq!(
-            named(Some("en-US")),
-            ("Files".to_owned(), Some("Browse your files".to_owned())),
-            "an English session on a German machine reads English"
-        );
-        assert_eq!(
-            named(Some("de-DE")),
-            ("Dateien".to_owned(), Some("Dateien durchsuchen".to_owned())),
-        );
-        assert_eq!(
-            named(None),
-            ("Files".to_owned(), Some("Browse your files".to_owned())),
-            "no language named reads the unlocalised keys"
-        );
+            let named = |preferred: Option<&str>| {
+                let scan = scan_dirs(
+                    &[tmp.path().to_path_buf()],
+                    &tilo(),
+                    &crate::locale::language_candidates(preferred),
+                );
+                assert_eq!(scan.entries.len(), 1, "one entry either way");
+                (
+                    scan.entries[0].name.clone(),
+                    scan.entries[0].comment.clone(),
+                )
+            };
+            assert_eq!(
+                named(Some("en-US")),
+                ("Files".to_owned(), Some("Browse your files".to_owned())),
+                "an English session on a German machine reads English"
+            );
+            assert_eq!(
+                named(Some("de-DE")),
+                ("Dateien".to_owned(), Some("Dateien durchsuchen".to_owned())),
+            );
+            assert_eq!(
+                named(None),
+                ("Files".to_owned(), Some("Browse your files".to_owned())),
+                "no language named reads the unlocalised keys"
+            );
+        }
     }
 }

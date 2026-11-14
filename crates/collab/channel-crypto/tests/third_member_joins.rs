@@ -12,22 +12,22 @@
 )]
 
 use channel_crypto::{ChannelGroup, MemberKey};
-use collab_types::ChannelId;
+use collab_types::WorkspaceId;
 
 /// Build a fully-wired (alice, bob) two-member group + a fresh
 /// `carol` `MemberKey` ready to join.
-fn two_member_group_plus_carol() -> (ChannelId, ChannelGroup, ChannelGroup, MemberKey) {
-    let cid = ChannelId::new();
+fn two_member_group_plus_carol() -> (WorkspaceId, ChannelGroup, ChannelGroup, MemberKey) {
+    let workspace = WorkspaceId::new();
     let alice = MemberKey::generate("alice").unwrap();
     let bob = MemberKey::generate("bob").unwrap();
     let bob_kp = bob.fresh_key_package().unwrap();
 
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let welcome = alice_g.add_member(bob_kp).unwrap();
-    let bob_g = ChannelGroup::process_welcome(cid, &welcome, bob).unwrap();
+    let bob_g = ChannelGroup::process_welcome(workspace, &welcome, bob).unwrap();
     let carol = MemberKey::generate("carol").unwrap();
 
-    (cid, alice_g, bob_g, carol)
+    (workspace, alice_g, bob_g, carol)
 }
 
 /// Carol joins via welcome after a two-member setup, can encrypt for Alice and Bob, Alice can
@@ -43,12 +43,12 @@ fn a_third_member_joins_and_everyone_can_talk() {
 }
 
 fn carol_joins_via_welcome_after_two_member_setup() {
-    let (cid, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
+    let (workspace, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
     let carol_kp = carol.fresh_key_package().unwrap();
 
     let (welcome, commit) = alice_g.add_member_with_commit(carol_kp).unwrap();
     bob_g.process_commit(&commit).unwrap();
-    let carol_g = ChannelGroup::process_welcome(cid, &welcome, carol).unwrap();
+    let carol_g = ChannelGroup::process_welcome(workspace, &welcome, carol).unwrap();
 
     assert_eq!(alice_g.member_count(), 3);
     assert_eq!(bob_g.member_count(), 3);
@@ -59,11 +59,11 @@ fn carol_joins_via_welcome_after_two_member_setup() {
 }
 
 fn carol_can_encrypt_for_alice_and_bob() {
-    let (cid, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
+    let (workspace, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
     let carol_kp = carol.fresh_key_package().unwrap();
     let (welcome, commit) = alice_g.add_member_with_commit(carol_kp).unwrap();
     bob_g.process_commit(&commit).unwrap();
-    let mut carol_g = ChannelGroup::process_welcome(cid, &welcome, carol).unwrap();
+    let mut carol_g = ChannelGroup::process_welcome(workspace, &welcome, carol).unwrap();
 
     let ct = carol_g.encrypt(b"hi from carol").unwrap();
     let pt_a = alice_g.decrypt(&ct).unwrap();
@@ -79,11 +79,11 @@ fn carol_can_encrypt_for_alice_and_bob() {
 fn alice_can_encrypt_after_third_member_joins() {
     // Verifies the key schedule advances cleanly: alice keeps her
     // group state usable after the commit-merge.
-    let (cid, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
+    let (workspace, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
     let carol_kp = carol.fresh_key_package().unwrap();
     let (welcome, commit) = alice_g.add_member_with_commit(carol_kp).unwrap();
     bob_g.process_commit(&commit).unwrap();
-    let mut carol_g = ChannelGroup::process_welcome(cid, &welcome, carol).unwrap();
+    let mut carol_g = ChannelGroup::process_welcome(workspace, &welcome, carol).unwrap();
 
     let ct = alice_g.encrypt(b"alice still works").unwrap();
     let pt_b = bob_g.decrypt(&ct).unwrap();
@@ -146,12 +146,12 @@ fn multi_party_add_cannot_drop_the_commit() {
 }
 
 fn removal_commit_advances_survivors_and_excludes_removed_member() {
-    let (cid, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
+    let (workspace, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
     let (welcome, add_commit) = alice_g
         .add_member_with_commit(carol.fresh_key_package().unwrap())
         .unwrap();
     bob_g.process_commit(&add_commit).unwrap();
-    let mut carol_g = ChannelGroup::process_welcome(cid, &welcome, carol).unwrap();
+    let mut carol_g = ChannelGroup::process_welcome(workspace, &welcome, carol).unwrap();
 
     // Alice is leaf 0 and Bob is the first admitted member at leaf 1.
     let remove_commit = alice_g.remove_member(1).unwrap();

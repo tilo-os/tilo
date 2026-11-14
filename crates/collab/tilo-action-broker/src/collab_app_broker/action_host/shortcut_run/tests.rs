@@ -32,8 +32,7 @@ struct Person {
 
 impl LocalPersonServices for Person {
     fn certificate(&self, _: &str, person: &str) -> Result<tilo_user_identity::DeviceCert, String> {
-        if person
-            != crate::collab_app_broker::principal_id_for_root(self.certificate.user_public_key)
+        if person != crate::collab_app_broker::person_id_for_root(self.certificate.user_public_key)
         {
             return Err("different person".into());
         }
@@ -109,8 +108,7 @@ impl Fixture {
             certificate: certificate.clone(),
             time: time.clone(),
         });
-        let principal =
-            crate::collab_app_broker::principal_id_for_root(certificate.user_public_key);
+        let principal = crate::collab_app_broker::person_id_for_root(certificate.user_public_key);
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Shortcuts");
         workspace.set_owner(principal.clone());
         let workspace_id = workspace.id().to_string();

@@ -674,248 +674,252 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_window_record_stands_for_every_window_of_its_roles() {
-        assert_eq!(record_slot("tab:002a"), "tab:*");
-        assert_eq!(
-            record_slot("derived:default@tab:002a"),
-            "derived:default@tab:*"
-        );
-        assert_eq!(record_slot("tab:0"), "tab:0");
-        assert_eq!(record_slot("notes:7f3e"), "notes:7f3e");
-        assert_eq!(
-            SlotKey::new("so.tilo.notes", WORKSPACE, "tab:0001"),
-            SlotKey::new("so.tilo.notes", WORKSPACE, "tab:00ff")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_content_index_keeps_what_apps_publish_and_their_secrets_locked;
 
-    #[test]
-    fn a_resource_is_named_by_the_title_its_app_published_in_its_workspace() {
-        let index = AppContentIndex::in_memory();
-        index.apply(
-            &SlotKey::new("so.tilo.tasks", WORKSPACE, ""),
-            IndexDelta {
-                reset: true,
-                upsert: vec![entry("tasks.tracker/issues/1", "Prepare release notes")],
-                ..IndexDelta::default()
-            },
-        );
-        assert_eq!(
-            index.title(WORKSPACE, "tasks.tracker/issues/1").as_deref(),
-            Some("Prepare release notes")
-        );
-        assert_eq!(
-            index.title("another-workspace", "tasks.tracker/issues/1"),
-            None
-        );
-        assert_eq!(index.title(WORKSPACE, "tasks.tracker/issues/2"), None);
-    }
-
-    #[test]
-    fn each_resource_is_listed_once_by_its_title_in_its_workspace() {
-        let index = AppContentIndex::in_memory();
-        index.apply(
-            &SlotKey::new("so.tilo.notes", WORKSPACE, ""),
-            IndexDelta {
-                reset: true,
-                upsert: vec![
-                    entry("notes.notebook/pages/a", "Plan"),
-                    IndexEntry {
-                        action: Some(IndexAction {
-                            resource: "notes.notebook/pages/a".into(),
-                            action: "delete".into(),
-                        }),
-                        key: "notes.notebook/pages/a\u{1f}delete".into(),
-                        ..entry("notes.notebook/pages/a", "Delete Plan")
-                    },
-                ],
-                ..IndexDelta::default()
-            },
-        );
-        index.apply(
-            &SlotKey::new("so.tilo.notes", "another-workspace", ""),
-            IndexDelta {
-                reset: true,
-                upsert: vec![entry("notes.notebook/pages/b", "Elsewhere")],
-                ..IndexDelta::default()
-            },
-        );
-        assert_eq!(
-            index.titled(WORKSPACE),
-            [(
-                "so.tilo.notes".to_owned(),
-                "notes.notebook/pages/a".to_owned(),
-                "Plan".to_owned()
-            )]
-        );
-    }
-
-    #[test]
-    fn publications_update_and_remove_entries_by_key() {
-        let index = AppContentIndex::in_memory();
-        let key = SlotKey::new("so.tilo.notes", WORKSPACE, "tab:0001");
-        index.apply(
-            &key,
-            IndexDelta {
-                reset: true,
-                upsert: vec![entry("n1", "Groceries"), entry("n2", "Trip plan")],
-                ..IndexDelta::default()
-            },
-        );
-        assert_eq!(
-            titles(&index.contents().visible),
-            ["Groceries", "Trip plan"]
-        );
-
-        let before = index.generation();
-        index.apply(
-            &key,
-            IndexDelta {
-                upsert: vec![entry("n1", "Groceries for Sunday")],
-                remove: vec!["n2".into()],
-                ..IndexDelta::default()
-            },
-        );
-        assert!(index.generation() > before, "a change moves the generation");
-        assert_eq!(titles(&index.contents().visible), ["Groceries for Sunday"]);
-
-        index.apply(
-            &key,
-            IndexDelta {
-                reset: true,
-                ..IndexDelta::default()
-            },
-        );
-        assert!(
-            index.contents().visible.is_empty(),
-            "a reset to nothing empties the slot"
-        );
-    }
-
-    #[test]
-    fn secrets_are_found_only_while_unlocked_and_a_locked_publication_keeps_them() {
-        let index = AppContentIndex::in_memory();
-        let key = SlotKey::new("so.tilo.passwords", WORKSPACE, "tab:0001");
-        let login = IndexEntry {
-            secret: true,
-            fields: vec![("github.com".into(), IndexWeight::Identity)],
-            ..entry("passwords.item:gh", "Work account")
-        };
-        index.apply(
-            &key,
-            IndexDelta {
-                reset: true,
-                upsert: vec![login],
-                secrets_unlocked: Some(true),
-                ..IndexDelta::default()
-            },
-        );
-        assert_eq!(titles(&index.contents().visible), ["Work account"]);
-        assert!(index.contents().locked.is_empty());
-
-        // Locked, the vault lists nothing: the entry is hidden, not gone.
-        index.apply(
-            &key,
-            IndexDelta {
-                reset: true,
-                secrets_unlocked: Some(false),
-                ..IndexDelta::default()
-            },
-        );
-        assert!(index.contents().visible.is_empty());
-        assert_eq!(titles(&index.contents().locked), ["Work account"]);
-
-        index.apply(
-            &key,
-            IndexDelta {
-                secrets_unlocked: Some(true),
-                ..IndexDelta::default()
-            },
-        );
-        assert_eq!(titles(&index.contents().visible), ["Work account"]);
-    }
-
-    #[test]
-    fn an_app_that_never_said_unlocked_keeps_its_secrets_hidden() {
-        let index = AppContentIndex::in_memory();
-        index.apply(
-            &SlotKey::new("so.tilo.passwords", WORKSPACE, "tab:0001"),
-            IndexDelta {
-                reset: true,
-                upsert: vec![IndexEntry {
-                    secret: true,
-                    ..entry("passwords.item:gh", "GitHub")
-                }],
-                ..IndexDelta::default()
-            },
-        );
-        assert!(index.contents().visible.is_empty());
-        assert_eq!(titles(&index.contents().locked), ["GitHub"]);
-    }
-
-    #[test]
-    fn the_index_survives_a_restart_from_its_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let key = SlotKey::new("so.tilo.notes", WORKSPACE, "notes:main");
+        phase a_window_record_stands_for_every_window_of_its_roles;
         {
-            let index = AppContentIndex::persistent(dir.path().to_path_buf());
+            assert_eq!(record_slot("tab:002a"), "tab:*");
+            assert_eq!(
+                record_slot("derived:default@tab:002a"),
+                "derived:default@tab:*"
+            );
+            assert_eq!(record_slot("tab:0"), "tab:0");
+            assert_eq!(record_slot("notes:7f3e"), "notes:7f3e");
+            assert_eq!(
+                SlotKey::new("so.tilo.notes", WORKSPACE, "tab:0001"),
+                SlotKey::new("so.tilo.notes", WORKSPACE, "tab:00ff")
+            );
+        }
+
+        phase a_resource_is_named_by_the_title_its_app_published_in_its_workspace;
+        {
+            let index = AppContentIndex::in_memory();
+            index.apply(
+                &SlotKey::new("so.tilo.tasks", WORKSPACE, ""),
+                IndexDelta {
+                    reset: true,
+                    upsert: vec![entry("tasks.tracker/issues/1", "Prepare release notes")],
+                    ..IndexDelta::default()
+                },
+            );
+            assert_eq!(
+                index.title(WORKSPACE, "tasks.tracker/issues/1").as_deref(),
+                Some("Prepare release notes")
+            );
+            assert_eq!(
+                index.title("another-workspace", "tasks.tracker/issues/1"),
+                None
+            );
+            assert_eq!(index.title(WORKSPACE, "tasks.tracker/issues/2"), None);
+        }
+
+        phase each_resource_is_listed_once_by_its_title_in_its_workspace;
+        {
+            let index = AppContentIndex::in_memory();
+            index.apply(
+                &SlotKey::new("so.tilo.notes", WORKSPACE, ""),
+                IndexDelta {
+                    reset: true,
+                    upsert: vec![
+                        entry("notes.notebook/pages/a", "Plan"),
+                        IndexEntry {
+                            action: Some(IndexAction {
+                                resource: "notes.notebook/pages/a".into(),
+                                action: "delete".into(),
+                            }),
+                            key: "notes.notebook/pages/a\u{1f}delete".into(),
+                            ..entry("notes.notebook/pages/a", "Delete Plan")
+                        },
+                    ],
+                    ..IndexDelta::default()
+                },
+            );
+            index.apply(
+                &SlotKey::new("so.tilo.notes", "another-workspace", ""),
+                IndexDelta {
+                    reset: true,
+                    upsert: vec![entry("notes.notebook/pages/b", "Elsewhere")],
+                    ..IndexDelta::default()
+                },
+            );
+            assert_eq!(
+                index.titled(WORKSPACE),
+                [(
+                    "so.tilo.notes".to_owned(),
+                    "notes.notebook/pages/a".to_owned(),
+                    "Plan".to_owned()
+                )]
+            );
+        }
+
+        phase publications_update_and_remove_entries_by_key;
+        {
+            let index = AppContentIndex::in_memory();
+            let key = SlotKey::new("so.tilo.notes", WORKSPACE, "tab:0001");
             index.apply(
                 &key,
                 IndexDelta {
                     reset: true,
+                    upsert: vec![entry("n1", "Groceries"), entry("n2", "Trip plan")],
+                    ..IndexDelta::default()
+                },
+            );
+            assert_eq!(
+                titles(&index.contents().visible),
+                ["Groceries", "Trip plan"]
+            );
+
+            let before = index.generation();
+            index.apply(
+                &key,
+                IndexDelta {
+                    upsert: vec![entry("n1", "Groceries for Sunday")],
+                    remove: vec!["n2".into()],
+                    ..IndexDelta::default()
+                },
+            );
+            assert!(index.generation() > before, "a change moves the generation");
+            assert_eq!(titles(&index.contents().visible), ["Groceries for Sunday"]);
+
+            index.apply(
+                &key,
+                IndexDelta {
+                    reset: true,
+                    ..IndexDelta::default()
+                },
+            );
+            assert!(
+                index.contents().visible.is_empty(),
+                "a reset to nothing empties the slot"
+            );
+        }
+
+        phase secrets_are_found_only_while_unlocked_and_a_locked_publication_keeps_them;
+        {
+            let index = AppContentIndex::in_memory();
+            let key = SlotKey::new("so.tilo.passwords", WORKSPACE, "tab:0001");
+            let login = IndexEntry {
+                secret: true,
+                fields: vec![("github.com".into(), IndexWeight::Identity)],
+                ..entry("passwords.item:gh", "Work account")
+            };
+            index.apply(
+                &key,
+                IndexDelta {
+                    reset: true,
+                    upsert: vec![login],
+                    secrets_unlocked: Some(true),
+                    ..IndexDelta::default()
+                },
+            );
+            assert_eq!(titles(&index.contents().visible), ["Work account"]);
+            assert!(index.contents().locked.is_empty());
+
+            // Locked, the vault lists nothing: the entry is hidden, not gone.
+            index.apply(
+                &key,
+                IndexDelta {
+                    reset: true,
+                    secrets_unlocked: Some(false),
+                    ..IndexDelta::default()
+                },
+            );
+            assert!(index.contents().visible.is_empty());
+            assert_eq!(titles(&index.contents().locked), ["Work account"]);
+
+            index.apply(
+                &key,
+                IndexDelta {
+                    secrets_unlocked: Some(true),
+                    ..IndexDelta::default()
+                },
+            );
+            assert_eq!(titles(&index.contents().visible), ["Work account"]);
+        }
+
+        phase an_app_that_never_said_unlocked_keeps_its_secrets_hidden;
+        {
+            let index = AppContentIndex::in_memory();
+            index.apply(
+                &SlotKey::new("so.tilo.passwords", WORKSPACE, "tab:0001"),
+                IndexDelta {
+                    reset: true,
                     upsert: vec![IndexEntry {
-                        action: Some(IndexAction {
-                            resource: "n1".into(),
-                            action: "open".into(),
-                        }),
-                        ..entry("n1", "Groceries")
+                        secret: true,
+                        ..entry("passwords.item:gh", "GitHub")
                     }],
                     ..IndexDelta::default()
                 },
             );
+            assert!(index.contents().visible.is_empty());
+            assert_eq!(titles(&index.contents().locked), ["GitHub"]);
         }
-        // The writer thread keeps the file; wait for it the way a restart
-        // would find it.
-        let file = dir.path().join(format!("{:016x}.json", fnv1a(&key)));
-        tilo_test_env::wait_until("the slot to be kept", || file.exists());
-        let reopened = AppContentIndex::in_memory();
-        reopened.load(dir.path());
-        assert_eq!(titles(&reopened.contents().visible), ["Groceries"]);
-    }
 
-    #[test]
-    fn slots_kept_before_text_was_read_per_person_wait_for_their_app() {
-        // An entry an app published before it read references for each person may hold the
-        // title a reference was written with, which this person may not be allowed to read.
-        let dir = tempfile::tempdir().unwrap();
-        let key = SlotKey::new("so.tilo.tilolang", WORKSPACE, "");
-        let old = serde_json::json!({
-            "key": key,
-            "entries": [entry("tl:so.tilo.lang.board:p1", "The notes are in Acquisition plan")],
-        });
-        std::fs::write(
-            dir.path().join(format!("{:016x}.json", fnv1a(&key))),
-            serde_json::to_vec(&old).unwrap(),
-        )
-        .unwrap();
-        let reopened = AppContentIndex::in_memory();
-        reopened.load(dir.path());
-        assert!(reopened.contents().visible.is_empty());
-        // What the app publishes now is kept and found again.
-        reopened.apply(
-            &key,
-            IndexDelta {
-                reset: true,
-                upsert: vec![entry(
-                    "tl:so.tilo.lang.board:p1",
-                    "The notes are in Not shared with you",
-                )],
-                ..IndexDelta::default()
-            },
-        );
-        assert_eq!(
-            titles(&reopened.contents().visible),
-            ["The notes are in Not shared with you"]
-        );
+        phase the_index_survives_a_restart_from_its_files;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let key = SlotKey::new("so.tilo.notes", WORKSPACE, "notes:main");
+            {
+                let index = AppContentIndex::persistent(dir.path().to_path_buf());
+                index.apply(
+                    &key,
+                    IndexDelta {
+                        reset: true,
+                        upsert: vec![IndexEntry {
+                            action: Some(IndexAction {
+                                resource: "n1".into(),
+                                action: "open".into(),
+                            }),
+                            ..entry("n1", "Groceries")
+                        }],
+                        ..IndexDelta::default()
+                    },
+                );
+            }
+            // The writer thread keeps the file; wait for it the way a restart
+            // would find it.
+            let file = dir.path().join(format!("{:016x}.json", fnv1a(&key)));
+            tilo_test_env::wait_until("the slot to be kept", || file.exists());
+            let reopened = AppContentIndex::in_memory();
+            reopened.load(dir.path());
+            assert_eq!(titles(&reopened.contents().visible), ["Groceries"]);
+        }
+
+        phase slots_kept_before_text_was_read_per_person_wait_for_their_app;
+        {
+            // An entry an app published before it read references for each person may hold the
+            // title a reference was written with, which this person may not be allowed to read.
+            let dir = tempfile::tempdir().unwrap();
+            let key = SlotKey::new("so.tilo.tilolang", WORKSPACE, "");
+            let old = serde_json::json!({
+                "key": key,
+                "entries": [entry("tl:so.tilo.lang.board:p1", "The notes are in Acquisition plan")],
+            });
+            std::fs::write(
+                dir.path().join(format!("{:016x}.json", fnv1a(&key))),
+                serde_json::to_vec(&old).unwrap(),
+            )
+            .unwrap();
+            let reopened = AppContentIndex::in_memory();
+            reopened.load(dir.path());
+            assert!(reopened.contents().visible.is_empty());
+            // What the app publishes now is kept and found again.
+            reopened.apply(
+                &key,
+                IndexDelta {
+                    reset: true,
+                    upsert: vec![entry(
+                        "tl:so.tilo.lang.board:p1",
+                        "The notes are in Not shared with you",
+                    )],
+                    ..IndexDelta::default()
+                },
+            );
+            assert_eq!(
+                titles(&reopened.contents().visible),
+                ["The notes are in Not shared with you"]
+            );
+        }
     }
 }

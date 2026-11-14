@@ -1,8 +1,9 @@
 use super::*;
 
-#[test]
-fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
-    // Phase: start_call_creates_a_voice_channel_when_the_workspace_has_none.
+tilo_test_env::scenario! {
+    fn calls_start_join_leave_and_mute_through_shared_voice_membership;
+
+    phase start_call_creates_a_voice_channel_when_the_workspace_has_none;
     {
         let (mut app, mut doc) = text_only_workspace();
         assert!(
@@ -25,7 +26,7 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
         );
     }
 
-    // Phase: header_call_button_joins_an_existing_voice_channel.
+    phase header_call_button_joins_an_existing_voice_channel;
     {
         let (mut app, mut doc) = app_with_doc();
         assert!(!app.call.active);
@@ -52,7 +53,7 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
         );
     }
 
-    // Phase: no_mute_or_deafen_controls_outside_a_call.
+    phase no_mute_or_deafen_controls_outside_a_call;
     {
         let (mut app, mut doc) = app_with_doc();
         assert!(!app.call.active);
@@ -80,7 +81,7 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
         );
     }
 
-    // Phase: follow_host_control_no_longer_exists.
+    phase follow_host_control_no_longer_exists;
     {
         let (app, _doc) = app_with_doc();
         let (_, buttons) = app.overlay_controls_layout();
@@ -143,112 +144,6 @@ fn voice_joins(app: &mut ChatApp) -> Vec<ui::native_media::Command> {
         .collect()
 }
 
-#[test]
-fn start_call_joins_the_workspaces_voice_channel_creating_one_when_text_only() {
-    use crate::effects::ChatEffect;
-    // A text-only workspace gains a voice channel, and the call starts in
-    // it once the channel is in the document.
-    let (mut app, mut doc) = text_only_workspace();
-    assert_eq!(voice_channels(&app), 0);
-    app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(voice_channels(&app), 1);
-    assert!(app.call.active);
-    let channel = app.channel(&app.call.channel).expect("call channel");
-    assert_eq!(
-        (channel.kind, channel.name.as_str()),
-        (ChannelKind::Voice, "Voice")
-    );
-    assert_eq!(
-        app.native_voice.snapshot.state,
-        ui::native_media::State::Preparing
-    );
-
-    // A workspace with a voice channel joins it without making another,
-    // through the published effect.
-    let (mut app, _doc) = app_with_doc();
-    let before = voice_channels(&app);
-    assert!(before > 0);
-    app.answer_effect(ChatEffect::StartCall)
-        .expect("start-call runs");
-    assert!(app.call.active);
-    assert_eq!(voice_channels(&app), before);
-    assert_eq!(
-        voice_joins(&mut app),
-        vec![ui::native_media::Command::Join {
-            channel_id: app.call.channel.clone()
-        }]
-    );
-
-    // Invoking it again reveals the running call; it never closes it.
-    app.call.expanded = false;
-    for _ in 0..2 {
-        app.answer_effect(ChatEffect::StartCall)
-            .expect("start-call runs");
-        assert!(app.call.active && app.call.expanded);
-    }
-    assert!(voice_joins(&mut app).is_empty(), "no second join");
-
-    // The header button keeps its own collapse toggle.
-    let (mut app, mut doc) = app_with_doc();
-    app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
-    app.call.expanded = true;
-    app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
-    assert!(app.call.active && !app.call.expanded);
-    app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
-    assert!(app.call.active && app.call.expanded);
-}
-
-#[test]
-fn a_video_call_turns_the_camera_on_once_the_call_is_live() {
-    let (mut app, mut doc) = app_with_doc();
-    let before = doc.save();
-    app.answer_effect(crate::effects::ChatEffect::StartVideoCall)
-        .expect("a video call starts");
-    assert!(app.call.active);
-    let joins: Vec<u64> = {
-        use ui::widget::Collaborative as _;
-        app.take_collab_requests()
-            .into_iter()
-            .filter_map(|request| match request {
-                ui::collaboration::CollabRequest::NativeMediaCommand {
-                    request_id,
-                    command,
-                } if matches!(command.command, ui::native_media::Command::Join { .. }) => {
-                    Some(request_id)
-                }
-                _ => None,
-            })
-            .collect()
-    };
-    assert_eq!(joins.len(), 1, "it joins the voice channel");
-    assert!(app.camera_on_live, "the camera waits for the call");
-    let mut live = ui::native_media::Snapshot::unavailable();
-    live.state = ui::native_media::State::Live;
-    live.issue = None;
-    app.native_voice.complete(joins[0], &Ok(live));
-    app.project_native_voice();
-    assert!(!app.camera_on_live);
-    let requests = app.native_voice.take_requests(ui::time::now());
-    assert!(
-        requests.iter().any(|request| matches!(
-            request,
-            ui::collaboration::CollabRequest::NativeMediaCommand {
-                command: ui::native_media::Request {
-                    command: ui::native_media::Command::SetCamera { on: true },
-                    ..
-                },
-                ..
-            }
-        )),
-        "the camera is asked for once the call is live"
-    );
-    assert_eq!(
-        doc.save(),
-        before,
-        "a call writes nothing into the workspace"
-    );
-}
-
 /// Answer every voice request with the broker's reply when this app has
 /// no native media lane; returns how many there were.
 fn refuse_voice(app: &mut ChatApp) -> usize {
@@ -264,71 +159,6 @@ fn refuse_voice(app: &mut ChatApp) -> usize {
         }
     }
     sent
-}
-
-#[test]
-fn a_refused_voice_service_is_not_asked_again_on_every_frame() {
-    // Phase: not_in_a_call.
-    {
-        let (mut app, _doc) = app_with_doc();
-        let sent: usize = (0..20).map(|_| refuse_voice(&mut app)).sum();
-        assert_eq!(
-            sent, 1,
-            "one watch, left alone a while once refused, not one request per frame"
-        );
-    }
-    // Phase: a_refused_join_says_why_and_asks_nothing_more.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit(
-            Hit::Channel("c_standup".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.land(&mut doc);
-        app.reload(&doc);
-        assert!(
-            app.native_voice.channel.is_some(),
-            "opening a voice channel joins it"
-        );
-        let sent: usize = (0..20).map(|_| refuse_voice(&mut app)).sum();
-        assert_eq!(sent, 1, "a refused join is not asked again, nor left");
-        assert!(app.call.active, "the voice card stays and says why");
-        assert_eq!(
-            app.media_error.as_deref(),
-            Some(crate::i18n::t("chat-call-issue-unavailable").as_str())
-        );
-    }
-}
-
-#[test]
-fn microphone_intent_waits_for_local_service_and_never_writes_membership() {
-    let (mut app, mut doc) = app_with_doc();
-    app.on_hit(
-        Hit::Channel("c_standup".into()),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    app.land(&mut doc);
-    app.reload(&doc);
-    service_streams(&mut app, "c_standup", 0);
-    let before = doc.save();
-    assert!(app.call.muted);
-    app.on_hit(Hit::CallMute, &mut ui::widget::Edits::lend(&mut doc));
-    assert!(
-        app.call.muted,
-        "a microphone request is not local consent or active capture"
-    );
-    let requests = app.native_voice.take_requests(ui::time::now());
-    assert!(requests.iter().any(|request| matches!(
-        request,
-        ui::collaboration::CollabRequest::NativeMediaCommand {
-            command: ui::native_media::Request {
-                command: ui::native_media::Command::SetMuted { muted: false },
-                ..
-            },
-            ..
-        }
-    )));
-    assert_eq!(doc.save(), before);
 }
 
 #[test]
@@ -482,13 +312,14 @@ fn exchange(a: &mut AutoCommit, b: &mut AutoCommit) {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one labelled phase per original scenario, each with its own fresh fixture"
-)]
-fn two_participants_converge_on_messages_and_edits() {
-    // Phase: messages_channels_and_reactions_converge_across_two_participants.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn two_participants_converge_on_messages_and_edits;
+
+    phase messages_channels_and_reactions_converge_across_two_participants;
     {
         // Alice opens the workspace's chat; Bob adopts her document (as a
         // late-joining peer does) and announces himself.
@@ -612,7 +443,7 @@ fn two_participants_converge_on_messages_and_edits() {
         assert_eq!(ids(&a), ids(&b), "both peers converge on the same timeline");
     }
 
-    // Phase: an_edit_and_its_history_converge_across_two_participants.
+    phase an_edit_and_its_history_converge_across_two_participants;
     {
         // The author edits a message; the *new* body AND the archived prior
         // version both reach the other peer. Drives the real inline-editor path
@@ -768,38 +599,6 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
 }
 
 #[test]
-fn two_peers_join_through_native_service_without_publishing_legacy_tickets() {
-    let mut doc_a = AutoCommit::new();
-    crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
-    let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
-    let mut a = peer("u_alice", "Alice", "AL", 0);
-    let mut b = peer("u_bob", "Bob", "BO", 1);
-    a.reload(&doc_a);
-    b.reload(&doc_b);
-    let before_a = doc_a.save();
-    let before_b = doc_b.save();
-    a.on_hit(
-        Hit::Channel("c_voice".into()),
-        &mut ui::widget::Edits::lend(&mut doc_a),
-    );
-    b.on_hit(
-        Hit::Channel("c_voice".into()),
-        &mut ui::widget::Edits::lend(&mut doc_b),
-    );
-    for app in [&mut a, &mut b] {
-        assert!(app.call.muted);
-        assert_eq!(
-            app.native_voice.snapshot.state,
-            ui::native_media::State::Preparing
-        );
-        assert_eq!(app.native_voice.take_requests(ui::time::now()).len(), 1);
-        assert!(app.voice_in("c_voice").is_empty());
-    }
-    assert_eq!(doc_a.save(), before_a);
-    assert_eq!(doc_b.save(), before_b);
-}
-
-#[test]
 fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
     let (mut app, _doc) = app_with_doc();
     render_frame(&mut app, 1280.0, 800.0);
@@ -834,37 +633,6 @@ fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
     };
     assert!(destructive(Hit::CallLeave), "leaving ends the call: danger");
     assert!(!destructive(Hit::CallMute), "muting is undone with a press");
-}
-
-#[test]
-fn everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once() {
-    let (mut app, _doc) = app_with_doc();
-    app.call.join("c_huddle");
-    service_streams(&mut app, "c_huddle", 2);
-    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
-    let me = app.me.id.clone();
-    let roster = &mut app.native_voice.snapshot.rosters[0];
-    roster.people.push(me.clone());
-    roster.people.sort();
-    roster.muted = vec![second.clone()];
-    app.refresh_native_streams();
-    let muted = |app: &ChatApp, person: &str| {
-        app.voice_in("c_huddle")
-            .iter()
-            .find(|member| member.user == person)
-            .expect("in the call")
-            .muted
-    };
-    assert!(muted(&app, &second), "the workspace says they are muted");
-    assert!(!muted(&app, &first));
-    // The workspace has not heard this person's mute yet: their own word holds.
-    app.call.muted = true;
-    app.refresh_native_streams();
-    assert!(muted(&app, &me));
-    app.call.muted = false;
-    app.refresh_native_streams();
-    assert!(!muted(&app, &me));
-    render_frame(&mut app, 1280.0, 800.0);
 }
 
 #[test]
@@ -903,50 +671,6 @@ fn deafen_is_in_the_bar_and_asks_the_service() {
     let sent = answer_voice(&mut app, &live);
     assert!(sent.contains(&ui::native_media::Command::SetDeafened { deafened: false }));
     assert!(!app.call.deafened);
-}
-
-#[test]
-fn everyone_sees_who_is_deafened() {
-    let (mut app, _doc) = app_with_doc();
-    app.call.join("c_huddle");
-    service_streams(&mut app, "c_huddle", 2);
-    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
-    let roster = &mut app.native_voice.snapshot.rosters[0];
-    roster.muted = vec![first.clone(), second.clone()];
-    roster.deafened = vec![second.clone()];
-    app.refresh_native_streams();
-    let member = |app: &ChatApp, person: &str| {
-        let member = app
-            .voice_in("c_huddle")
-            .iter()
-            .find(|member| member.user == person)
-            .expect("in the call");
-        (member.muted, member.deafened)
-    };
-    assert_eq!(
-        member(&app, &second),
-        (true, true),
-        "the workspace says they hear nothing"
-    );
-    assert_eq!(member(&app, &first), (true, false));
-    render_frame(&mut app, 1280.0, 800.0);
-}
-
-#[test]
-fn whoever_the_call_hears_rings_and_a_quiet_face_settles() {
-    let (mut app, _doc) = app_with_doc();
-    service_streams(&mut app, "c_huddle", 2);
-    let talker = format!("{:064x}", 1);
-    app.native_voice.snapshot.speaking = vec![talker.clone()];
-    app.refresh_native_streams();
-    render_frame(&mut app, 1280.0, 800.0);
-    let now = ui::time::now();
-    assert_eq!(app.speaking.level(&talker, now), 1.0, "heard: ringed");
-    assert_eq!(app.speaking.level(&format!("{:064x}", 2), now), 0.0);
-    app.native_voice.snapshot.speaking.clear();
-    app.refresh_native_streams();
-    render_frame(&mut app, 1280.0, 800.0);
-    assert!(app.speaking.animating, "a pause eases the ring out");
 }
 
 /// Answer every voice request this app sent with `snapshot`, as its voice
@@ -999,28 +723,6 @@ fn connected_call() -> (
         ui::native_media::State::Live
     );
     (app, doc, live)
-}
-
-#[test]
-fn opening_the_voice_channel_of_the_call_one_is_in_shows_it_without_joining_again() {
-    let (mut app, mut doc, live) = connected_call();
-    app.on_hit(
-        Hit::Channel("c_standup".into()),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    assert_eq!(
-        app.native_voice.snapshot.state,
-        ui::native_media::State::Live,
-        "the call stays connected: no Joining"
-    );
-    let sent = answer_voice(&mut app, &live);
-    assert!(
-        !sent
-            .iter()
-            .any(|command| matches!(command, ui::native_media::Command::Join { .. })),
-        "no second join: {sent:?}"
-    );
-    assert!(app.call.active && app.call.channel == "c_standup");
 }
 
 #[test]
@@ -1110,229 +812,519 @@ fn a_browser_that_cannot_join_calls_says_so_plainly() {
     );
 }
 
-#[test]
-fn the_docked_call_shows_the_other_person_large_and_follows_who_speaks() {
-    let (mut app, _doc) = app_with_doc();
-    app.call.join("c_huddle");
-    render_frame(&mut app, 1280.0, 800.0);
-    let me = app.me.id.clone();
-    assert_eq!(app.huddle_people(), vec![me.clone()], "alone: yourself");
-    assert!(app.huddle_features_me());
+tilo_test_env::scenario! {
+    /// Who the call's card and panel name, and how they show mute, deafen and speech.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn the_call_names_who_is_in_it_and_what_their_microphones_do;
 
-    service_streams(&mut app, "c_huddle", 2);
-    render_frame(&mut app, 1280.0, 800.0);
-    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
-    let people = app.huddle_people();
-    assert_eq!(people[0], first, "with company: someone else is large");
-    assert!(people[1..].contains(&me), "yourself goes small");
-    assert!(!app.huddle_features_me());
+    phase everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once;
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        service_streams(&mut app, "c_huddle", 2);
+        let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+        let me = app.me.id.clone();
+        let roster = &mut app.native_voice.snapshot.rosters[0];
+        roster.people.push(me.clone());
+        roster.people.sort();
+        roster.muted = vec![second.clone()];
+        app.refresh_native_streams();
+        let muted = |app: &ChatApp, person: &str| {
+            app.voice_in("c_huddle")
+                .iter()
+                .find(|member| member.user == person)
+                .expect("in the call")
+                .muted
+        };
+        assert!(muted(&app, &second), "the workspace says they are muted");
+        assert!(!muted(&app, &first));
+        // The workspace has not heard this person's mute yet: their own word holds.
+        app.call.muted = true;
+        app.refresh_native_streams();
+        assert!(muted(&app, &me));
+        app.call.muted = false;
+        app.refresh_native_streams();
+        assert!(!muted(&app, &me));
+        render_frame(&mut app, 1280.0, 800.0);
+    }
 
-    app.native_voice.snapshot.speaking = vec![second.clone()];
-    app.refresh_native_streams();
-    render_frame(&mut app, 1280.0, 800.0);
-    assert_eq!(app.huddle_people()[0], second, "who speaks is large");
+    phase everyone_sees_who_is_deafened;
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        service_streams(&mut app, "c_huddle", 2);
+        let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+        let roster = &mut app.native_voice.snapshot.rosters[0];
+        roster.muted = vec![first.clone(), second.clone()];
+        roster.deafened = vec![second.clone()];
+        app.refresh_native_streams();
+        let member = |app: &ChatApp, person: &str| {
+            let member = app
+                .voice_in("c_huddle")
+                .iter()
+                .find(|member| member.user == person)
+                .expect("in the call");
+            (member.muted, member.deafened)
+        };
+        assert_eq!(
+            member(&app, &second),
+            (true, true),
+            "the workspace says they hear nothing"
+        );
+        assert_eq!(member(&app, &first), (true, false));
+        render_frame(&mut app, 1280.0, 800.0);
+    }
 
-    app.native_voice.snapshot.speaking.clear();
-    app.refresh_native_streams();
-    render_frame(&mut app, 1280.0, 800.0);
-    assert_eq!(app.huddle_people()[0], second, "a pause keeps them large");
+    phase whoever_the_call_hears_rings_and_a_quiet_face_settles;
+    {
+        let (mut app, _doc) = app_with_doc();
+        service_streams(&mut app, "c_huddle", 2);
+        let talker = format!("{:064x}", 1);
+        app.native_voice.snapshot.speaking = vec![talker.clone()];
+        app.refresh_native_streams();
+        render_frame(&mut app, 1280.0, 800.0);
+        let now = ui::time::now();
+        assert_eq!(app.speaking.level(&talker, now), 1.0, "heard: ringed");
+        assert_eq!(app.speaking.level(&format!("{:064x}", 2), now), 0.0);
+        app.native_voice.snapshot.speaking.clear();
+        app.refresh_native_streams();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(app.speaking.animating, "a pause eases the ring out");
+    }
 
-    app.native_voice.snapshot.speaking = vec![me];
-    app.refresh_native_streams();
-    render_frame(&mut app, 1280.0, 800.0);
-    assert_eq!(
-        app.huddle_people()[0],
-        second,
-        "speaking yourself changes nothing"
-    );
+    phase the_docked_call_shows_the_other_person_large_and_follows_who_speaks;
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        render_frame(&mut app, 1280.0, 800.0);
+        let me = app.me.id.clone();
+        assert_eq!(app.huddle_people(), vec![me.clone()], "alone: yourself");
+        assert!(app.huddle_features_me());
+
+        service_streams(&mut app, "c_huddle", 2);
+        render_frame(&mut app, 1280.0, 800.0);
+        let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+        let people = app.huddle_people();
+        assert_eq!(people[0], first, "with company: someone else is large");
+        assert!(people[1..].contains(&me), "yourself goes small");
+        assert!(!app.huddle_features_me());
+
+        app.native_voice.snapshot.speaking = vec![second.clone()];
+        app.refresh_native_streams();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert_eq!(app.huddle_people()[0], second, "who speaks is large");
+
+        app.native_voice.snapshot.speaking.clear();
+        app.refresh_native_streams();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert_eq!(app.huddle_people()[0], second, "a pause keeps them large");
+
+        app.native_voice.snapshot.speaking = vec![me];
+        app.refresh_native_streams();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert_eq!(
+            app.huddle_people()[0],
+            second,
+            "speaking yourself changes nothing"
+        );
+    }
+
+    phase the_call_panel_says_who_is_in_the_call_where_it_paints_it;
+    {
+        let (mut app, _doc) = app_with_doc();
+        service_streams(&mut app, "c_huddle", 1);
+        render_frame(&mut app, 1280.0, 800.0);
+        let people = app.call_people_label();
+        assert_eq!(
+            people,
+            app.user_name(&format!("{:064x}", 1)),
+            "the people, not a count and not this person alone"
+        );
+        let root = app.accessibility().expect("chat semantics");
+        let reading = root
+            .children
+            .iter()
+            .find(|node| {
+                matches!(node.role, ui::a11y::Role::StaticText)
+                    && node.name.as_deref() == Some(people.as_str())
+            })
+            .expect("the call's reading is in the semantics tree");
+        let bounds = reading.bounds.expect("the reading has bounds").to_rect();
+        let panel = app.huddle_panel();
+        assert!(
+            bounds.width() > 0.0 && panel.contains(bounds.center()),
+            "read where the panel paints it: {bounds:?} in {panel:?}"
+        );
+        // The run time the title bar counts is the reading's value, as the
+        // shell's call card carries its own.
+        let run = reading
+            .value
+            .as_deref()
+            .expect("the call's reading carries its run time");
+        let (minutes, seconds) = run.split_once(':').expect("a timecode, m:ss");
+        assert!(
+            minutes.parse::<u64>().is_ok() && seconds.len() == 2 && seconds.parse::<u64>().is_ok(),
+            "the run time reads as a clock: {run}"
+        );
+    }
+
+    phase a_call_with_several_people_names_two_and_counts_the_rest;
+    {
+        let (mut app, _doc) = app_with_doc();
+        service_streams(&mut app, "c_huddle", 4);
+        render_frame(&mut app, 1280.0, 800.0);
+        let me = app.me.id.clone();
+        let names: Vec<String> = app
+            .voice_people("c_huddle")
+            .iter()
+            .filter(|user| **user != me)
+            .map(|user| app.user_name(user))
+            .collect();
+        assert_eq!(names.len(), 4);
+        let label = app.call_people_label();
+        let listed: Vec<&String> = names
+            .iter()
+            .filter(|name| label.contains(name.as_str()))
+            .collect();
+        assert_eq!(listed.len(), 2, "two of them are named: {label}");
+        let named_two = |first: &str, second: &str| {
+            crate::i18n::t_args(
+                "chat-call-people-many",
+                &[
+                    ("first", first.into()),
+                    ("second", second.into()),
+                    ("count", 2.into()),
+                ],
+            )
+        };
+        assert!(
+            label == named_two(listed[0], listed[1]) || label == named_two(listed[1], listed[0]),
+            "two names and the people left, so the card's hero stays one line: {label}"
+        );
+    }
+
+    phase the_card_names_people_briefly_and_the_reading_keeps_their_full_names;
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        service_streams(&mut app, "c_huddle", 4);
+        let me = app.me.id.clone();
+        let roster = &mut app.native_voice.snapshot.rosters[0];
+        roster.people = vec![
+            me,
+            "u_aria".into(),
+            "u_milo".into(),
+            "u_sora".into(),
+            "u_devon".into(),
+        ];
+        app.refresh_native_streams();
+        assert_eq!(app.given_name("u_aria"), "Aria");
+        let short = app.call_people_short_label();
+        let full = app.call_people_label();
+        assert!(
+            short.contains("Aria") && short.contains("Milo"),
+            "the card names the two who lead the crowd: {short}"
+        );
+        assert!(
+            !short.contains("Aria Chen"),
+            "a card that also counts the crowd has room for given names, not surnames: {short}"
+        );
+        assert!(
+            full.contains("Aria Chen") && full.contains("Milo Park"),
+            "the call's accessible reading names people in full: {full}"
+        );
+        assert!(
+            short.len() < full.len(),
+            "the card's line is briefer than the reading: {short} / {full}"
+        );
+    }
+
+    phase a_muted_or_deafened_call_shows_it_on_its_microphone;
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        app.call.muted = false;
+        assert!(
+            !app.call_control_engaged(&Hit::CallMute),
+            "a call you can speak in shows a resting microphone"
+        );
+        app.call.muted = true;
+        assert!(
+            app.call_control_engaged(&Hit::CallMute),
+            "muted: the control shows its state"
+        );
+        assert!(!app.call_control_engaged(&Hit::CallCamera));
+        app.call.muted = false;
+        app.call.deafened = true;
+        assert!(
+            app.call_control_engaged(&Hit::CallMute) && app.call_control_engaged(&Hit::CallDeafen),
+            "hearing nothing also means speaking nothing"
+        );
+        app.call.deafened = false;
+        app.call.sharing = true;
+        assert!(app.call_control_engaged(&Hit::CallScreen));
+    }
 }
 
-#[test]
-fn the_call_panel_says_who_is_in_the_call_where_it_paints_it() {
-    let (mut app, _doc) = app_with_doc();
-    service_streams(&mut app, "c_huddle", 1);
-    render_frame(&mut app, 1280.0, 800.0);
-    let people = app.call_people_label();
-    assert_eq!(
-        people,
-        app.user_name(&format!("{:064x}", 1)),
-        "the people, not a count and not this person alone"
-    );
-    let root = app.accessibility().expect("chat semantics");
-    let reading = root
-        .children
-        .iter()
-        .find(|node| {
-            matches!(node.role, ui::a11y::Role::StaticText)
-                && node.name.as_deref() == Some(people.as_str())
-        })
-        .expect("the call's reading is in the semantics tree");
-    let bounds = reading.bounds.expect("the reading has bounds").to_rect();
-    let panel = app.huddle_panel();
-    assert!(
-        bounds.width() > 0.0 && panel.contains(bounds.center()),
-        "read where the panel paints it: {bounds:?} in {panel:?}"
-    );
-    // The run time the title bar counts is the reading's value, as the
-    // shell's call card carries its own.
-    let run = reading
-        .value
-        .as_deref()
-        .expect("the call's reading carries its run time");
-    let (minutes, seconds) = run.split_once(':').expect("a timecode, m:ss");
-    assert!(
-        minutes.parse::<u64>().is_ok() && seconds.len() == 2 && seconds.parse::<u64>().is_ok(),
-        "the run time reads as a clock: {run}"
-    );
-}
+tilo_test_env::scenario! {
+    /// What the window asks the voice service for, and what it does with the answer.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn the_voice_service_is_asked_once_and_its_answer_decides_the_call;
 
-#[test]
-fn a_call_with_several_people_names_two_and_counts_the_rest() {
-    let (mut app, _doc) = app_with_doc();
-    service_streams(&mut app, "c_huddle", 4);
-    render_frame(&mut app, 1280.0, 800.0);
-    let me = app.me.id.clone();
-    let names: Vec<String> = app
-        .voice_people("c_huddle")
-        .iter()
-        .filter(|user| **user != me)
-        .map(|user| app.user_name(user))
-        .collect();
-    assert_eq!(names.len(), 4);
-    let label = app.call_people_label();
-    let listed: Vec<&String> = names
-        .iter()
-        .filter(|name| label.contains(name.as_str()))
-        .collect();
-    assert_eq!(listed.len(), 2, "two of them are named: {label}");
-    let named_two = |first: &str, second: &str| {
-        crate::i18n::t_args(
-            "chat-call-people-many",
-            &[
-                ("first", first.into()),
-                ("second", second.into()),
-                ("count", 2.into()),
-            ],
-        )
-    };
-    assert!(
-        label == named_two(listed[0], listed[1]) || label == named_two(listed[1], listed[0]),
-        "two names and the people left, so the card's hero stays one line: {label}"
-    );
-}
+    phase start_call_joins_the_workspaces_voice_channel_creating_one_when_text_only;
+    {
+        use crate::effects::ChatEffect;
+        // A text-only workspace gains a voice channel, and the call starts in
+        // it once the channel is in the document.
+        let (mut app, mut doc) = text_only_workspace();
+        assert_eq!(voice_channels(&app), 0);
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(voice_channels(&app), 1);
+        assert!(app.call.active);
+        let channel = app.channel(&app.call.channel).expect("call channel");
+        assert_eq!(
+            (channel.kind, channel.name.as_str()),
+            (ChannelKind::Voice, "Voice")
+        );
+        assert_eq!(
+            app.native_voice.snapshot.state,
+            ui::native_media::State::Preparing
+        );
 
-#[test]
-fn the_card_names_people_briefly_and_the_reading_keeps_their_full_names() {
-    let (mut app, _doc) = app_with_doc();
-    app.call.join("c_huddle");
-    service_streams(&mut app, "c_huddle", 4);
-    let me = app.me.id.clone();
-    let roster = &mut app.native_voice.snapshot.rosters[0];
-    roster.people = vec![
-        me,
-        "u_aria".into(),
-        "u_milo".into(),
-        "u_sora".into(),
-        "u_devon".into(),
-    ];
-    app.refresh_native_streams();
-    assert_eq!(app.given_name("u_aria"), "Aria");
-    let short = app.call_people_short_label();
-    let full = app.call_people_label();
-    assert!(
-        short.contains("Aria") && short.contains("Milo"),
-        "the card names the two who lead the crowd: {short}"
-    );
-    assert!(
-        !short.contains("Aria Chen"),
-        "a card that also counts the crowd has room for given names, not surnames: {short}"
-    );
-    assert!(
-        full.contains("Aria Chen") && full.contains("Milo Park"),
-        "the call's accessible reading names people in full: {full}"
-    );
-    assert!(
-        short.len() < full.len(),
-        "the card's line is briefer than the reading: {short} / {full}"
-    );
-}
+        // A workspace with a voice channel joins it without making another,
+        // through the published effect.
+        let (mut app, _doc) = app_with_doc();
+        let before = voice_channels(&app);
+        assert!(before > 0);
+        app.answer_effect(ChatEffect::StartCall)
+            .expect("start-call runs");
+        assert!(app.call.active);
+        assert_eq!(voice_channels(&app), before);
+        assert_eq!(
+            voice_joins(&mut app),
+            vec![ui::native_media::Command::Join {
+                channel_id: app.call.channel.clone()
+            }]
+        );
 
-#[test]
-fn a_muted_or_deafened_call_shows_it_on_its_microphone() {
-    let (mut app, _doc) = app_with_doc();
-    app.call.join("c_huddle");
-    app.call.muted = false;
-    assert!(
-        !app.call_control_engaged(&Hit::CallMute),
-        "a call you can speak in shows a resting microphone"
-    );
-    app.call.muted = true;
-    assert!(
-        app.call_control_engaged(&Hit::CallMute),
-        "muted: the control shows its state"
-    );
-    assert!(!app.call_control_engaged(&Hit::CallCamera));
-    app.call.muted = false;
-    app.call.deafened = true;
-    assert!(
-        app.call_control_engaged(&Hit::CallMute) && app.call_control_engaged(&Hit::CallDeafen),
-        "hearing nothing also means speaking nothing"
-    );
-    app.call.deafened = false;
-    app.call.sharing = true;
-    assert!(app.call_control_engaged(&Hit::CallScreen));
-}
+        // Invoking it again reveals the running call; it never closes it.
+        app.call.expanded = false;
+        for _ in 0..2 {
+            app.answer_effect(ChatEffect::StartCall)
+                .expect("start-call runs");
+            assert!(app.call.active && app.call.expanded);
+        }
+        assert!(voice_joins(&mut app).is_empty(), "no second join");
 
-#[test]
-fn a_call_that_ended_for_a_reason_no_longer_counts_you_in_it() {
-    use ui::presence::capability::PublishesPresence;
-    let (mut app, _doc) = app_with_doc();
-    service_streams(&mut app, "c_huddle", 1);
-    let me = app.me.id.clone();
-    assert!(app.in_call());
-    assert!(app.voice_people("c_huddle").contains(&me));
-    assert!(app.presence_payload().is_some(), "the others see you in it");
+        // The header button keeps its own collapse toggle.
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
+        app.call.expanded = true;
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(app.call.active && !app.call.expanded);
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(app.call.active && app.call.expanded);
+    }
 
-    // The workspace ended this device's part (a page that stood still past the
-    // participation's lifetime): the panel stays to say why.
-    app.native_voice.snapshot.state = ui::native_media::State::Ended;
-    app.native_voice.snapshot.issue = Some(ui::native_media::Issue::SessionEnded);
-    app.project_native_voice();
-    assert!(app.call.active, "the panel says why the call ended");
-    assert!(!app.in_call());
-    assert_eq!(
-        app.voice_people("c_huddle"),
-        vec![format!("{:064x}", 1)],
-        "only who is still in the call"
-    );
-    assert!(
-        app.presence_payload().is_none(),
-        "the others no longer see you in it"
-    );
-}
+    phase a_video_call_turns_the_camera_on_once_the_call_is_live;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        let before = doc.save();
+        app.answer_effect(crate::effects::ChatEffect::StartVideoCall)
+            .expect("a video call starts");
+        assert!(app.call.active);
+        let joins: Vec<u64> = {
+            use ui::widget::Collaborative as _;
+            app.take_collab_requests()
+                .into_iter()
+                .filter_map(|request| match request {
+                    ui::collaboration::CollabRequest::NativeMediaCommand {
+                        request_id,
+                        command,
+                    } if matches!(command.command, ui::native_media::Command::Join { .. }) => {
+                        Some(request_id)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(joins.len(), 1, "it joins the voice channel");
+        assert!(app.camera_on_live, "the camera waits for the call");
+        let mut live = ui::native_media::Snapshot::unavailable();
+        live.state = ui::native_media::State::Live;
+        live.issue = None;
+        app.native_voice.complete(joins[0], &Ok(live));
+        app.project_native_voice();
+        assert!(!app.camera_on_live);
+        let requests = app.native_voice.take_requests(ui::time::now());
+        assert!(
+            requests.iter().any(|request| matches!(
+                request,
+                ui::collaboration::CollabRequest::NativeMediaCommand {
+                    command: ui::native_media::Request {
+                        command: ui::native_media::Command::SetCamera { on: true },
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "the camera is asked for once the call is live"
+        );
+        assert_eq!(
+            doc.save(),
+            before,
+            "a call writes nothing into the workspace"
+        );
+    }
 
-#[test]
-fn the_sidebar_chooses_the_call_while_its_stage_fills_the_window() {
-    let (mut app, mut doc) = app_with_doc();
-    let chosen = |app: &ChatApp| app.places.shown().and_then(|(_, selected)| selected);
-    app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
-    app.call.expanded = true;
-    app.show_sidebar();
-    let call = crate::sidebar::channel_place(&app.call.channel);
-    assert_eq!(chosen(&app), Some(call));
-    let text = app
-        .channels
-        .iter()
-        .find(|c| c.kind == ChannelKind::Text)
-        .map(|c| c.id.clone())
-        .expect("a text channel");
-    app.on_hit(
-        Hit::Channel(text.clone()),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    app.show_sidebar();
-    assert!(app.call.active && !app.call.expanded, "the call floats on");
-    assert_eq!(chosen(&app), Some(crate::sidebar::channel_place(&text)));
+    phase a_refused_voice_service_is_not_asked_again_on_every_frame;
+    {
+        // Phase: not_in_a_call.
+        {
+            let (mut app, _doc) = app_with_doc();
+            let sent: usize = (0..20).map(|_| refuse_voice(&mut app)).sum();
+            assert_eq!(
+                sent, 1,
+                "one watch, left alone a while once refused, not one request per frame"
+            );
+        }
+        // Phase: a_refused_join_says_why_and_asks_nothing_more.
+        {
+            let (mut app, mut doc) = app_with_doc();
+            app.on_hit(
+                Hit::Channel("c_standup".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            app.land(&mut doc);
+            app.reload(&doc);
+            assert!(
+                app.native_voice.channel.is_some(),
+                "opening a voice channel joins it"
+            );
+            let sent: usize = (0..20).map(|_| refuse_voice(&mut app)).sum();
+            assert_eq!(sent, 1, "a refused join is not asked again, nor left");
+            assert!(app.call.active, "the voice card stays and says why");
+            assert_eq!(
+                app.media_error.as_deref(),
+                Some(crate::i18n::t("chat-call-issue-unavailable").as_str())
+            );
+        }
+    }
+
+    phase microphone_intent_waits_for_local_service_and_never_writes_membership;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(
+            Hit::Channel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.land(&mut doc);
+        app.reload(&doc);
+        service_streams(&mut app, "c_standup", 0);
+        let before = doc.save();
+        assert!(app.call.muted);
+        app.on_hit(Hit::CallMute, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(
+            app.call.muted,
+            "a microphone request is not local consent or active capture"
+        );
+        let requests = app.native_voice.take_requests(ui::time::now());
+        assert!(requests.iter().any(|request| matches!(
+            request,
+            ui::collaboration::CollabRequest::NativeMediaCommand {
+                command: ui::native_media::Request {
+                    command: ui::native_media::Command::SetMuted { muted: false },
+                    ..
+                },
+                ..
+            }
+        )));
+        assert_eq!(doc.save(), before);
+    }
+
+    phase a_call_that_ended_for_a_reason_no_longer_counts_you_in_it;
+    {
+        use ui::presence::capability::PublishesPresence;
+        let (mut app, _doc) = app_with_doc();
+        service_streams(&mut app, "c_huddle", 1);
+        let me = app.me.id.clone();
+        assert!(app.in_call());
+        assert!(app.voice_people("c_huddle").contains(&me));
+        assert!(app.presence_payload().is_some(), "the others see you in it");
+
+        // The workspace ended this device's part (a page that stood still past the
+        // participation's lifetime): the panel stays to say why.
+        app.native_voice.snapshot.state = ui::native_media::State::Ended;
+        app.native_voice.snapshot.issue = Some(ui::native_media::Issue::SessionEnded);
+        app.project_native_voice();
+        assert!(app.call.active, "the panel says why the call ended");
+        assert!(!app.in_call());
+        assert_eq!(
+            app.voice_people("c_huddle"),
+            vec![format!("{:064x}", 1)],
+            "only who is still in the call"
+        );
+        assert!(
+            app.presence_payload().is_none(),
+            "the others no longer see you in it"
+        );
+    }
+
+    phase two_peers_join_through_native_service_without_publishing_legacy_tickets;
+    {
+        let mut doc_a = AutoCommit::new();
+        crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
+        let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
+        let mut a = peer("u_alice", "Alice", "AL", 0);
+        let mut b = peer("u_bob", "Bob", "BO", 1);
+        a.reload(&doc_a);
+        b.reload(&doc_b);
+        let before_a = doc_a.save();
+        let before_b = doc_b.save();
+        a.on_hit(
+            Hit::Channel("c_voice".into()),
+            &mut ui::widget::Edits::lend(&mut doc_a),
+        );
+        b.on_hit(
+            Hit::Channel("c_voice".into()),
+            &mut ui::widget::Edits::lend(&mut doc_b),
+        );
+        for app in [&mut a, &mut b] {
+            assert!(app.call.muted);
+            assert_eq!(
+                app.native_voice.snapshot.state,
+                ui::native_media::State::Preparing
+            );
+            assert_eq!(app.native_voice.take_requests(ui::time::now()).len(), 1);
+            assert!(app.voice_in("c_voice").is_empty());
+        }
+        assert_eq!(doc_a.save(), before_a);
+        assert_eq!(doc_b.save(), before_b);
+    }
+
+    phase opening_the_voice_channel_of_the_call_one_is_in_shows_it_without_joining_again;
+    {
+        let (mut app, mut doc, live) = connected_call();
+        app.on_hit(
+            Hit::Channel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(
+            app.native_voice.snapshot.state,
+            ui::native_media::State::Live,
+            "the call stays connected: no Joining"
+        );
+        let sent = answer_voice(&mut app, &live);
+        assert!(
+            !sent
+                .iter()
+                .any(|command| matches!(command, ui::native_media::Command::Join { .. })),
+            "no second join: {sent:?}"
+        );
+        assert!(app.call.active && app.call.channel == "c_standup");
+    }
 }
 
 #[test]
@@ -1470,95 +1462,126 @@ fn the_call_cards_own_frame_answers_its_presses() {
     );
 }
 
-#[test]
-fn a_live_calls_reading_serves_the_next_second_it_draws() {
-    let (mut app, _doc) = app_with_doc();
-    app.call.join("c_huddle");
-    service_streams(&mut app, "c_huddle", 1);
-    let first = app
-        .next_wake_deadline()
-        .expect("a live call's card counts its seconds");
-    assert!(
-        app.serve_deadline(first),
-        "the second the card drew is the one it served"
-    );
-    let second = app
-        .next_wake_deadline()
-        .expect("the wake steps the reading on");
-    assert!(
-        second > first,
-        "the same instant cannot be due twice: {first:?} was followed by {second:?}"
-    );
-    let early = first + (second - first) / 2;
-    assert!(
-        !app.serve_deadline(early),
-        "half a second later the card still shows the second it drew"
-    );
-}
+tilo_test_env::scenario! {
+    /// The call card under the pointer, across a second, and beside the sidebar.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn the_call_card_follows_the_pointer_the_clock_and_the_sidebar;
 
-#[test]
-fn the_pointer_leaving_the_card_leaves_no_control_hovered() {
-    let (mut app, mut doc) = app_with_doc();
-    app.call.join("c_huddle");
-    service_streams(&mut app, "c_huddle", 1);
-    render_frame(&mut app, 1280.0, 800.0);
-    let control = app
-        .hits
-        .iter()
-        .find_map(|(rect, hit)| matches!(hit, Hit::CallParticipantsToggle).then_some(*rect))
-        .expect("the docked call shows its controls");
-    feed(
-        &mut app,
-        &mut doc,
-        &cursor_moved(control.center().x, control.center().y),
-    );
-    assert_eq!(app.call_hovered, Some(Hit::CallParticipantsToggle));
-    // Over the desk the pointer leaves the app's surface altogether.
-    feed(
-        &mut app,
-        &mut doc,
-        &winit::event::WindowEvent::CursorLeft {
-            device_id: winit::event::DeviceId::dummy(),
-        },
-    );
-    assert!(
-        app.call_hovered.is_none(),
-        "a control the pointer left is no longer hovered"
-    );
-}
+    phase the_sidebar_chooses_the_call_while_its_stage_fills_the_window;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        let chosen = |app: &ChatApp| app.places.shown().and_then(|(_, selected)| selected);
+        app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
+        app.call.expanded = true;
+        app.show_sidebar();
+        let call = crate::sidebar::channel_place(&app.call.channel);
+        assert_eq!(chosen(&app), Some(call));
+        let text = app
+            .channels
+            .iter()
+            .find(|c| c.kind == ChannelKind::Text)
+            .map(|c| c.id.clone())
+            .expect("a text channel");
+        app.on_hit(
+            Hit::Channel(text.clone()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.show_sidebar();
+        assert!(app.call.active && !app.call.expanded, "the call floats on");
+        assert_eq!(chosen(&app), Some(crate::sidebar::channel_place(&text)));
+    }
 
-#[test]
-fn the_card_names_each_control_on_hover_and_the_microphone_says_its_state() {
-    let (mut app, _doc) = app_with_doc();
-    app.call.join("c_huddle");
-    // The card's row of controls, as the footer pushes it: a pointer over any
-    // of them reads its name, and the microphone's name is its state.
-    let face = |x: f64| Rect::new(x, 0.0, x + 86.0, 28.0);
-    let (mute, camera, leave) = (face(0.0), face(92.0), face(184.0));
-    app.hits = vec![
-        (mute, Hit::CallMute),
-        (camera, Hit::CallCamera),
-        (leave, Hit::CallLeave),
-    ];
-    let tip = |app: &ChatApp, rect: Rect| {
-        app.hover_tooltip_target(rect.center())
-            .map(|(_, label)| label)
-            .expect("a control the card draws names itself on hover")
-    };
-    app.call.muted = false;
-    let resting = tip(&app, mute);
-    app.call.muted = true;
-    let muted = tip(&app, mute);
-    if app.microphone_missing() {
-        assert_eq!(resting, crate::i18n::t("chat-call-no-microphone"));
-    } else {
-        assert_eq!(resting, crate::i18n::t("chat-call-mute"));
-        assert_eq!(muted, crate::i18n::t("chat-call-unmute"));
-        assert_ne!(
-            resting, muted,
-            "the microphone's hover names the state it is in"
+    phase a_live_calls_reading_serves_the_next_second_it_draws;
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        service_streams(&mut app, "c_huddle", 1);
+        let first = app
+            .next_wake_deadline()
+            .expect("a live call's card counts its seconds");
+        assert!(
+            app.serve_deadline(first),
+            "the second the card drew is the one it served"
+        );
+        let second = app
+            .next_wake_deadline()
+            .expect("the wake steps the reading on");
+        assert!(
+            second > first,
+            "the same instant cannot be due twice: {first:?} was followed by {second:?}"
+        );
+        let early = first + (second - first) / 2;
+        assert!(
+            !app.serve_deadline(early),
+            "half a second later the card still shows the second it drew"
         );
     }
-    assert_eq!(tip(&app, camera), crate::i18n::t("chat-call-camera-on"));
-    assert_eq!(tip(&app, leave), crate::i18n::t("chat-call-leave-action"));
+
+    phase the_pointer_leaving_the_card_leaves_no_control_hovered;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.call.join("c_huddle");
+        service_streams(&mut app, "c_huddle", 1);
+        render_frame(&mut app, 1280.0, 800.0);
+        let control = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::CallParticipantsToggle).then_some(*rect))
+            .expect("the docked call shows its controls");
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor_moved(control.center().x, control.center().y),
+        );
+        assert_eq!(app.call_hovered, Some(Hit::CallParticipantsToggle));
+        // Over the desk the pointer leaves the app's surface altogether.
+        feed(
+            &mut app,
+            &mut doc,
+            &winit::event::WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            },
+        );
+        assert!(
+            app.call_hovered.is_none(),
+            "a control the pointer left is no longer hovered"
+        );
+    }
+
+    phase the_card_names_each_control_on_hover_and_the_microphone_says_its_state;
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        // The card's row of controls, as the footer pushes it: a pointer over any
+        // of them reads its name, and the microphone's name is its state.
+        let face = |x: f64| Rect::new(x, 0.0, x + 86.0, 28.0);
+        let (mute, camera, leave) = (face(0.0), face(92.0), face(184.0));
+        app.hits = vec![
+            (mute, Hit::CallMute),
+            (camera, Hit::CallCamera),
+            (leave, Hit::CallLeave),
+        ];
+        let tip = |app: &ChatApp, rect: Rect| {
+            app.hover_tooltip_target(rect.center())
+                .map(|(_, label)| label)
+                .expect("a control the card draws names itself on hover")
+        };
+        app.call.muted = false;
+        let resting = tip(&app, mute);
+        app.call.muted = true;
+        let muted = tip(&app, mute);
+        if app.microphone_missing() {
+            assert_eq!(resting, crate::i18n::t("chat-call-no-microphone"));
+        } else {
+            assert_eq!(resting, crate::i18n::t("chat-call-mute"));
+            assert_eq!(muted, crate::i18n::t("chat-call-unmute"));
+            assert_ne!(
+                resting, muted,
+                "the microphone's hover names the state it is in"
+            );
+        }
+        assert_eq!(tip(&app, camera), crate::i18n::t("chat-call-camera-on"));
+        assert_eq!(tip(&app, leave), crate::i18n::t("chat-call-leave-action"));
+    }
 }

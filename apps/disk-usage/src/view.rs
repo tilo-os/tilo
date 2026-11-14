@@ -943,76 +943,81 @@ impl ui::widget::Decorator for SliceChart {
 mod tests {
     use super::*;
 
-    /// Counts read with thousands separators and the chart names at most a handful of
-    /// folders.
-    #[test]
-    fn counts_are_grouped_and_the_chart_groups_small_folders() {
-        assert_eq!(files_text(1), "1 file");
-        assert_eq!(files_text(84_200), "84,200 files");
-        assert_eq!(unreadable_text(1), "1 item couldn’t be read");
-        assert_eq!(unreadable_text(1_204), "1,204 items couldn’t be read");
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn the_view_words_counts_titles_and_recent_places;
 
-        let entries: Vec<Entry> = (0..12)
-            .map(|i| Entry {
-                path: PathBuf::from(format!("/data/folder-{i}")),
-                name: format!("folder-{i}"),
-                bytes: 1_000 - i,
-                files: 10,
-            })
-            .collect();
-        let rows = slice_rows(&entries);
-        assert_eq!(rows.len(), NAMED_SLICES + 1);
-        let rest = rows.last().expect("grouped remainder");
-        assert_eq!(rest.label, "Other folders");
-        assert!(!rest.interactive);
-        assert_eq!(
-            rest.bytes,
-            (NAMED_SLICES as u64..12).map(|i| 1_000 - i).sum::<u64>()
-        );
-    }
+        phase counts_are_grouped_and_the_chart_groups_small_folders;
+        // Counts read with thousands separators and the chart names at most a handful of
+        // folders.
+        {
+            assert_eq!(files_text(1), "1 file");
+            assert_eq!(files_text(84_200), "84,200 files");
+            assert_eq!(unreadable_text(1), "1 item couldn’t be read");
+            assert_eq!(unreadable_text(1_204), "1,204 items couldn’t be read");
 
-    /// The header names a place as the home view does and any other folder by its name,
-    /// never by the path to it.
-    #[test]
-    fn the_header_names_places_and_folders_not_paths() {
-        let places = [
-            Place {
-                label: "Home".into(),
-                path: PathBuf::from("/var/home/you"),
-            },
-            Place {
-                label: "File system".into(),
-                path: PathBuf::from("/"),
-            },
-        ];
-        assert_eq!(folder_title(&places, Path::new("/var/home/you")), "Home");
-        assert_eq!(folder_title(&places, Path::new("/")), "File system");
-        assert_eq!(
-            folder_title(&places, Path::new("/var/home/you/Projects")),
-            "Projects"
-        );
-        assert_eq!(folder_title(&[], Path::new("/")), "/");
-    }
+            let entries: Vec<Entry> = (0..12)
+                .map(|i| Entry {
+                    path: PathBuf::from(format!("/data/folder-{i}")),
+                    name: format!("folder-{i}"),
+                    bytes: 1_000 - i,
+                    files: 10,
+                })
+                .collect();
+            let rows = slice_rows(&entries);
+            assert_eq!(rows.len(), NAMED_SLICES + 1);
+            let rest = rows.last().expect("grouped remainder");
+            assert_eq!(rest.label, "Other folders");
+            assert!(!rest.interactive);
+            assert_eq!(
+                rest.bytes,
+                (NAMED_SLICES as u64..12).map(|i| 1_000 - i).sum::<u64>()
+            );
+        }
 
-    /// Home lists the common places and at most five recent folders, a recent folder that
-    /// is a place only once.
-    #[test]
-    fn home_keeps_common_places_and_five_recent_folders() {
-        let places = sample_places();
-        let mut recent = vec![
-            PathBuf::from("/home/you/Projects/tilo"),
-            PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
-            PathBuf::from("/one"),
-            PathBuf::from("/two"),
-            PathBuf::from("/three"),
-            PathBuf::from("/four"),
-        ];
-        let listed = recent_places(&places, &recent);
-        assert_eq!(listed.len(), 5);
-        assert_eq!(listed[0].label, "tilo");
-        recent.insert(0, PathBuf::from("/"));
-        let listed = recent_places(&places, &recent);
-        assert!(listed.iter().all(|place| place.path.as_os_str() != "/"));
+        phase the_header_names_places_and_folders_not_paths;
+        // The header names a place as the home view does and any other folder by its name,
+        // never by the path to it.
+        {
+            let places = [
+                Place {
+                    label: "Home".into(),
+                    path: PathBuf::from("/var/home/you"),
+                },
+                Place {
+                    label: "File system".into(),
+                    path: PathBuf::from("/"),
+                },
+            ];
+            assert_eq!(folder_title(&places, Path::new("/var/home/you")), "Home");
+            assert_eq!(folder_title(&places, Path::new("/")), "File system");
+            assert_eq!(
+                folder_title(&places, Path::new("/var/home/you/Projects")),
+                "Projects"
+            );
+            assert_eq!(folder_title(&[], Path::new("/")), "/");
+        }
+
+        phase home_keeps_common_places_and_five_recent_folders;
+        // Home lists the common places and at most five recent folders, a recent folder that
+        // is a place only once.
+        {
+            let places = sample_places();
+            let mut recent = vec![
+                PathBuf::from("/home/you/Projects/tilo"),
+                PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
+                PathBuf::from("/one"),
+                PathBuf::from("/two"),
+                PathBuf::from("/three"),
+                PathBuf::from("/four"),
+            ];
+            let listed = recent_places(&places, &recent);
+            assert_eq!(listed.len(), 5);
+            assert_eq!(listed[0].label, "tilo");
+            recent.insert(0, PathBuf::from("/"));
+            let listed = recent_places(&places, &recent);
+            assert!(listed.iter().all(|place| place.path.as_os_str() != "/"));
+        }
     }
 
     #[test]

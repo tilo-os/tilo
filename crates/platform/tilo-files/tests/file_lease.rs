@@ -45,79 +45,6 @@ fn open(path: &Path) -> File {
         .unwrap()
 }
 
-#[test]
-fn exclusive_lease_excludes_a_second_open_until_drop() {
-    let _serial = serialize_native_lock_tests();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lease");
-
-    let first = FileLease::try_acquire(open(&path), LeaseMode::Exclusive).unwrap();
-    assert!(matches!(
-        FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
-        Err(AcquireError::Busy)
-    ));
-    drop(first);
-
-    let _second = FileLease::try_acquire(open(&path), LeaseMode::Exclusive).unwrap();
-}
-
-#[test]
-fn two_shared_leases_can_coexist() {
-    let _serial = serialize_native_lock_tests();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lease");
-
-    let _first = FileLease::try_acquire(open(&path), LeaseMode::Shared).unwrap();
-    let _second = FileLease::try_acquire(open(&path), LeaseMode::Shared).unwrap();
-}
-
-#[test]
-fn a_shared_lease_rejects_an_exclusive_lease() {
-    let _serial = serialize_native_lock_tests();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lease");
-
-    let _shared = FileLease::try_acquire(open(&path), LeaseMode::Shared).unwrap();
-    assert!(matches!(
-        FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
-        Err(AcquireError::Busy)
-    ));
-}
-
-#[test]
-fn an_exclusive_lease_rejects_a_shared_lease() {
-    let _serial = serialize_native_lock_tests();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lease");
-
-    let _exclusive = FileLease::try_acquire(open(&path), LeaseMode::Exclusive).unwrap();
-    assert!(matches!(
-        FileLease::try_acquire(open(&path), LeaseMode::Shared),
-        Err(AcquireError::Busy)
-    ));
-}
-
-#[test]
-fn metadata_comes_from_the_held_file() {
-    let _serial = serialize_native_lock_tests();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lease");
-    fs::write(&path, b"guard").unwrap();
-
-    let lease = FileLease::try_acquire(open(&path), LeaseMode::Exclusive).unwrap();
-
-    assert_eq!(lease.metadata().unwrap().len(), 5);
-
-    #[cfg(unix)]
-    {
-        let replacement = directory.path().join("replacement");
-        fs::write(&replacement, b"replacement").unwrap();
-        fs::rename(replacement, &path).unwrap();
-        assert_eq!(lease.metadata().unwrap().len(), 5);
-        assert_eq!(fs::metadata(path).unwrap().len(), 11);
-    }
-}
-
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn assert_native_io_failure(result: Result<FileLease, AcquireError>) {
     match result.unwrap_err() {
@@ -168,89 +95,166 @@ fn native_io_failure_is_distinguishable_from_contention() {
     assert_native_io_failure(FileLease::try_acquire(file, LeaseMode::Exclusive));
 }
 
-#[test]
-fn normal_child_release_releases_the_lease() {
-    let _serial = serialize_native_lock_tests();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lease");
-    let mut child = LeaseChild::spawn(&path);
+tilo_test_env::scenario! {
+    fn a_file_lease_excludes_shares_and_ends_with_its_holder;
 
-    assert!(matches!(
-        FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
-        Err(AcquireError::Busy)
-    ));
-    child.release_and_wait();
+    phase exclusive_lease_excludes_a_second_open_until_drop;
+    {
+        let _serial = serialize_native_lock_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
 
-    let acquired = FileLease::try_acquire(open(&path), LeaseMode::Exclusive);
-    assert!(
-        acquired.is_ok(),
-        "lock remained after normal child exit: {acquired:?}"
-    );
-}
+        let first = FileLease::try_acquire(open(&path), LeaseMode::Exclusive).unwrap();
+        assert!(matches!(
+            FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
+            Err(AcquireError::Busy)
+        ));
+        drop(first);
 
-#[test]
-fn abrupt_child_death_releases_the_lease() {
-    let _serial = serialize_native_lock_tests();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lease");
-    let mut child = LeaseChild::spawn(&path);
-
-    assert!(matches!(
-        FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
-        Err(AcquireError::Busy)
-    ));
-    child.kill_and_wait();
-
-    let acquired = FileLease::try_acquire(open(&path), LeaseMode::Exclusive);
-    assert!(
-        acquired.is_ok(),
-        "lock remained after abrupt child exit: {acquired:?}"
-    );
-}
-
-#[test]
-fn blocking_acquisition_completes_after_another_process_releases() {
-    let _serial = serialize_native_lock_tests();
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lease");
-    let mut child = LeaseChild::spawn(&path);
-
-    assert!(matches!(
-        FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
-        Err(AcquireError::Busy)
-    ));
-
-    let (attempting_tx, attempting_rx) = mpsc::channel();
-    let (acquired_tx, acquired_rx) = mpsc::channel();
-    let waiter_path = path;
-    let waiter = std::thread::spawn(move || {
-        let waiter_file = open(&waiter_path);
-        let tid = tilo_test_env::idle::current_thread_id().ok();
-        attempting_tx.send(tid).unwrap();
-        acquired_tx
-            .send(FileLease::acquire(waiter_file, LeaseMode::Exclusive))
-            .unwrap();
-    });
-    let waiter_tid = tilo_test_env::recv("the waiter to start acquiring", &attempting_rx);
-    // Blocked in the kernel on the child's lease, not granted.
-    if let Some(tid) = waiter_tid.map(|tid| tid.to_string()) {
-        tilo_test_env::wait_until("the waiter to block on the held lease", || {
-            tilo_test_env::idle::blocked(&tid)
-        });
+        let _second = FileLease::try_acquire(open(&path), LeaseMode::Exclusive).unwrap();
     }
-    assert!(matches!(
-        acquired_rx.try_recv(),
-        Err(mpsc::TryRecvError::Empty)
-    ));
 
-    child.release_and_wait();
-    let acquired = tilo_test_env::recv("the blocked acquisition", &acquired_rx);
-    assert!(
-        acquired.is_ok(),
-        "blocking acquisition failed: {acquired:?}"
-    );
-    drop(acquired);
-    waiter.join().unwrap();
+    phase two_shared_leases_can_coexist;
+    {
+        let _serial = serialize_native_lock_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
+
+        let _first = FileLease::try_acquire(open(&path), LeaseMode::Shared).unwrap();
+        let _second = FileLease::try_acquire(open(&path), LeaseMode::Shared).unwrap();
+    }
+
+    phase a_shared_lease_rejects_an_exclusive_lease;
+    {
+        let _serial = serialize_native_lock_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
+
+        let _shared = FileLease::try_acquire(open(&path), LeaseMode::Shared).unwrap();
+        assert!(matches!(
+            FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
+            Err(AcquireError::Busy)
+        ));
+    }
+
+    phase an_exclusive_lease_rejects_a_shared_lease;
+    {
+        let _serial = serialize_native_lock_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
+
+        let _exclusive = FileLease::try_acquire(open(&path), LeaseMode::Exclusive).unwrap();
+        assert!(matches!(
+            FileLease::try_acquire(open(&path), LeaseMode::Shared),
+            Err(AcquireError::Busy)
+        ));
+    }
+
+    phase metadata_comes_from_the_held_file;
+    {
+        let _serial = serialize_native_lock_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
+        fs::write(&path, b"guard").unwrap();
+
+        let lease = FileLease::try_acquire(open(&path), LeaseMode::Exclusive).unwrap();
+
+        assert_eq!(lease.metadata().unwrap().len(), 5);
+
+        #[cfg(unix)]
+        {
+            let replacement = directory.path().join("replacement");
+            fs::write(&replacement, b"replacement").unwrap();
+            fs::rename(replacement, &path).unwrap();
+            assert_eq!(lease.metadata().unwrap().len(), 5);
+            assert_eq!(fs::metadata(path).unwrap().len(), 11);
+        }
+    }
+
+    phase normal_child_release_releases_the_lease;
+    {
+        let _serial = serialize_native_lock_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
+        let mut child = LeaseChild::spawn(&path);
+
+        assert!(matches!(
+            FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
+            Err(AcquireError::Busy)
+        ));
+        child.release_and_wait();
+
+        let acquired = FileLease::try_acquire(open(&path), LeaseMode::Exclusive);
+        assert!(
+            acquired.is_ok(),
+            "lock remained after normal child exit: {acquired:?}"
+        );
+    }
+
+    phase abrupt_child_death_releases_the_lease;
+    {
+        let _serial = serialize_native_lock_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
+        let mut child = LeaseChild::spawn(&path);
+
+        assert!(matches!(
+            FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
+            Err(AcquireError::Busy)
+        ));
+        child.kill_and_wait();
+
+        let acquired = FileLease::try_acquire(open(&path), LeaseMode::Exclusive);
+        assert!(
+            acquired.is_ok(),
+            "lock remained after abrupt child exit: {acquired:?}"
+        );
+    }
+
+    phase blocking_acquisition_completes_after_another_process_releases;
+    {
+        let _serial = serialize_native_lock_tests();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
+        let mut child = LeaseChild::spawn(&path);
+
+        assert!(matches!(
+            FileLease::try_acquire(open(&path), LeaseMode::Exclusive),
+            Err(AcquireError::Busy)
+        ));
+
+        let (attempting_tx, attempting_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let waiter_path = path;
+        let waiter = std::thread::spawn(move || {
+            let waiter_file = open(&waiter_path);
+            let tid = tilo_test_env::idle::current_thread_id().ok();
+            attempting_tx.send(tid).unwrap();
+            acquired_tx
+                .send(FileLease::acquire(waiter_file, LeaseMode::Exclusive))
+                .unwrap();
+        });
+        let waiter_tid = tilo_test_env::recv("the waiter to start acquiring", &attempting_rx);
+        // Blocked in the kernel on the child's lease, not granted.
+        if let Some(tid) = waiter_tid.map(|tid| tid.to_string()) {
+            tilo_test_env::wait_until("the waiter to block on the held lease", || {
+                tilo_test_env::idle::blocked(&tid)
+            });
+        }
+        assert!(matches!(
+            acquired_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        child.release_and_wait();
+        let acquired = tilo_test_env::recv("the blocked acquisition", &acquired_rx);
+        assert!(
+            acquired.is_ok(),
+            "blocking acquisition failed: {acquired:?}"
+        );
+        drop(acquired);
+        waiter.join().unwrap();
+    }
 }
 
 #[test]

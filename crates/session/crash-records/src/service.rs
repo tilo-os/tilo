@@ -140,85 +140,89 @@ mod tests {
         service.read(resource).unwrap()
     }
 
-    #[test]
-    fn the_root_lists_the_records_and_each_one_reads_as_its_text() {
-        let dir = dir_with(&[
-            (
-                "2026-10-24-225201-9-freeze.log",
-                "tilo session freeze\n===================\nversion:   0.1.0\nthread:    412\n",
-            ),
-            (
-                "2026-10-23-080000-5.log",
-                "tilo session panic\n==================\nversion:   0.1.0\n",
-            ),
-        ]);
-        let service = CrashRecords::in_dir(dir.path());
-        let resources = service.resources();
-        assert_eq!(resources.len(), 1);
-        let children = &resources[0].children;
-        assert_eq!(children.len(), 2);
-        assert_eq!(
-            children[0].id.as_str(),
-            "crash-record:2026-10-24-225201-9-freeze.log"
-        );
-        assert_eq!(children[0].label, "Desktop stopped responding");
-        assert_eq!(children[1].label, "Desktop stopped unexpectedly");
+    tilo_test_env::scenario! {
+        fn the_crash_records_service_publishes_the_records_to_read;
 
-        let listed = read_json(&service, wire::RESOURCE);
-        assert_eq!(listed.as_array().unwrap().len(), 2);
-        assert_eq!(listed[0]["kind"], "froze");
+        phase the_root_lists_the_records_and_each_one_reads_as_its_text;
+        {
+            let dir = dir_with(&[
+                (
+                    "2026-10-24-225201-9-freeze.log",
+                    "tilo session freeze\n===================\nversion:   0.1.0\nthread:    412\n",
+                ),
+                (
+                    "2026-10-23-080000-5.log",
+                    "tilo session panic\n==================\nversion:   0.1.0\n",
+                ),
+            ]);
+            let service = CrashRecords::in_dir(dir.path());
+            let resources = service.resources();
+            assert_eq!(resources.len(), 1);
+            let children = &resources[0].children;
+            assert_eq!(children.len(), 2);
+            assert_eq!(
+                children[0].id.as_str(),
+                "crash-record:2026-10-24-225201-9-freeze.log"
+            );
+            assert_eq!(children[0].label, "Desktop stopped responding");
+            assert_eq!(children[1].label, "Desktop stopped unexpectedly");
 
-        let text = read_json(&service, "crash-record:2026-10-24-225201-9-freeze.log");
-        assert_eq!(text["record"]["id"], "2026-10-24-225201-9-freeze.log");
-        assert!(text["text"].as_str().unwrap().contains("thread:    412"));
-        assert_eq!(text["truncated"], false);
-        assert_eq!(service.read("crash-record:no-such.log"), None);
-        assert_eq!(service.read("crash-record:../escape.log"), None);
-    }
+            let listed = read_json(&service, wire::RESOURCE);
+            assert_eq!(listed.as_array().unwrap().len(), 2);
+            assert_eq!(listed[0]["kind"], "froze");
 
-    #[test]
-    fn a_computer_that_stopped_reads_as_one() {
-        let dir = dir_with(&[(
-            "2026-10-24-225201-4f00-stopped.log",
-            "tilo computer stopped\n=====================\nreason:    emergency\n",
-        )]);
-        let service = CrashRecords::in_dir(dir.path());
-        let children = service.resources().remove(0).children;
-        assert_eq!(children[0].label, "Computer stopped");
-        let presentation = children[0]
-            .presentation
-            .clone()
-            .expect("a record says when it happened and what stopped it");
-        let at =
-            ui::format::NaiveDateTime::parse_from_str("2026-10-24 22:52:01", "%Y-%m-%d %H:%M:%S")
-                .expect("the record's time");
-        let when = ui::format::timestamp(&at);
-        assert_eq!(presentation.detail.as_deref(), Some(when.as_str()));
-        assert_eq!(presentation.badge.as_deref(), Some("emergency restart"));
-    }
+            let text = read_json(&service, "crash-record:2026-10-24-225201-9-freeze.log");
+            assert_eq!(text["record"]["id"], "2026-10-24-225201-9-freeze.log");
+            assert!(text["text"].as_str().unwrap().contains("thread:    412"));
+            assert_eq!(text["truncated"], false);
+            assert_eq!(service.read("crash-record:no-such.log"), None);
+            assert_eq!(service.read("crash-record:../escape.log"), None);
+        }
 
-    #[test]
-    fn a_reader_with_no_crash_directory_publishes_an_empty_list() {
-        let service = CrashRecords::in_dir(Path::new("/nonexistent/tilo/crashes"));
-        assert!(service.resources().remove(0).children.is_empty());
-        assert_eq!(
-            read_json(&service, wire::RESOURCE),
-            Value::Array(Vec::new())
-        );
-    }
+        phase a_computer_that_stopped_reads_as_one;
+        {
+            let dir = dir_with(&[(
+                "2026-10-24-225201-4f00-stopped.log",
+                "tilo computer stopped\n=====================\nreason:    emergency\n",
+            )]);
+            let service = CrashRecords::in_dir(dir.path());
+            let children = service.resources().remove(0).children;
+            assert_eq!(children[0].label, "Computer stopped");
+            let presentation = children[0]
+                .presentation
+                .clone()
+                .expect("a record says when it happened and what stopped it");
+            let at =
+                ui::format::NaiveDateTime::parse_from_str("2026-10-24 22:52:01", "%Y-%m-%d %H:%M:%S")
+                    .expect("the record's time");
+            let when = ui::format::timestamp(&at);
+            assert_eq!(presentation.detail.as_deref(), Some(when.as_str()));
+            assert_eq!(presentation.badge.as_deref(), Some("emergency restart"));
+        }
 
-    #[test]
-    fn a_record_is_read_and_never_changed() {
-        let dir = dir_with(&[("2026-10-24-225201-9-freeze.log", "text\n")]);
-        let mut service = CrashRecords::in_dir(dir.path());
-        assert!(
-            service
-                .invoke(
-                    "crash-record:2026-10-24-225201-9-freeze.log",
-                    "delete",
-                    &serde_json::Map::new()
-                )
-                .is_err()
-        );
+        phase a_reader_with_no_crash_directory_publishes_an_empty_list;
+        {
+            let service = CrashRecords::in_dir(Path::new("/nonexistent/tilo/crashes"));
+            assert!(service.resources().remove(0).children.is_empty());
+            assert_eq!(
+                read_json(&service, wire::RESOURCE),
+                Value::Array(Vec::new())
+            );
+        }
+
+        phase a_record_is_read_and_never_changed;
+        {
+            let dir = dir_with(&[("2026-10-24-225201-9-freeze.log", "text\n")]);
+            let mut service = CrashRecords::in_dir(dir.path());
+            assert!(
+                service
+                    .invoke(
+                        "crash-record:2026-10-24-225201-9-freeze.log",
+                        "delete",
+                        &serde_json::Map::new()
+                    )
+                    .is_err()
+            );
+        }
     }
 }

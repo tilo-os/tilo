@@ -14,6 +14,7 @@
 use anyhow::{Context as _, Result, anyhow, bail};
 use http_body_util::BodyExt as _;
 use serde_json::Value;
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -33,12 +34,25 @@ const ANSWER_DEADLINE: Duration = Duration::from_secs(300);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long a call waits before asking about a pending run again.
 const ANSWER_PAUSE: Duration = Duration::from_secs(1);
+/// The most one piece of an upload carries: a file larger than this goes up
+/// in as many pieces as it takes, each a request the server reads as it
+/// arrives.
+const UPLOAD_PIECE: usize = 8 * 1024 * 1024;
+/// The most one request fetches of a file: a download of a large file reads
+/// it a piece at a time, so the whole of it is never held at once.
+const DOWNLOAD_PIECE: usize = 32 * 1024 * 1024;
+/// How many pieces in a row may fail in transport before an upload or a
+/// download gives up.
+/// Each failure is resumed from wherever the server says the upload stands,
+/// so the bytes already sent are never sent again.
+const PIECE_TRIES: usize = 5;
 
 /// A request's method, as the routes of the API take them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
     Get,
     Post,
+    Put,
     Delete,
 }
 
@@ -47,6 +61,7 @@ impl Method {
         match self {
             Self::Get => "GET",
             Self::Post => "POST",
+            Self::Put => "PUT",
             Self::Delete => "DELETE",
         }
     }
@@ -286,19 +301,185 @@ impl Client {
         Ok(answer.json())
     }
 
-    /// The bytes behind the `tilo.content:` reference `content` in `workspace`.
-    pub async fn content(&self, workspace: &str, content: &str) -> Result<Vec<u8>> {
-        let path = format!(
-            "/v1/workspaces/{workspace}/content/{}",
-            encode_path(content)
-        );
+    /// Put the file at `path` into `workspace`, one request when it fits in
+    /// one and in pieces when it does not, telling `told` how many of its
+    /// bytes are there after each: the `tilo.content:` reference actions take
+    /// a file by.
+    ///
+    /// A piece that fails in transport is sent again from wherever the
+    /// workspace says the upload stands, so a broken connection resumes
+    /// instead of starting the file again.
+    pub async fn upload_file(
+        &self,
+        workspace: &str,
+        path: &Path,
+        told: &mut impl FnMut(u64, u64),
+    ) -> Result<Value> {
+        let size = std::fs::metadata(path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .len();
+        told(0, size);
+        if size <= UPLOAD_PIECE as u64 {
+            let bytes =
+                std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            let answer = self.upload(workspace, bytes).await?;
+            told(size, size);
+            return Ok(answer);
+        }
+        // The id is this side's, so an upload this command opened can be
+        // asked about—and finished—after a connection it lost.
+        let id = format!("up_{}", hex::encode(rand::random::<[u8; 16]>()));
+        let upload = format!("/v1/workspaces/{workspace}/uploads/{id}");
+        let opened = self
+            .post(&upload, &serde_json::json!({"size": size}))
+            .await?;
+        let mut offset = opened.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        let mut file =
+            std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut piece = vec![0_u8; UPLOAD_PIECE];
+        let mut failed = 0_usize;
+        told(offset, size);
+        while offset < size {
+            let left = usize::try_from(size.saturating_sub(offset).min(UPLOAD_PIECE as u64))
+                .unwrap_or(UPLOAD_PIECE);
+            let Some(wanting) = piece.get_mut(..left) else {
+                bail!("{} cannot be read in pieces", path.display());
+            };
+            file.read_exact(wanting)
+                .with_context(|| format!("reading {}", path.display()))?;
+            match self.upload_piece(&upload, offset, wanting).await {
+                Ok(answer) => {
+                    failed = 0;
+                    if answer.get("content").is_some() {
+                        told(size, size);
+                        return Ok(answer);
+                    }
+                    offset = answer
+                        .get("offset")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(offset);
+                    told(offset, size);
+                }
+                Err(why) if failed < PIECE_TRIES => {
+                    failed = failed.saturating_add(1);
+                    // Where does it stand now? The server keeps an upload a
+                    // lost connection cut, so the rest continues it.
+                    let standing = self.upload_status(&upload).await?;
+                    offset = standing
+                        .get("offset")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(offset);
+                    told(offset, size);
+                    if failed == PIECE_TRIES {
+                        return Err(why.context(format!(
+                            "{} stopped {failed} times, the last at {offset} of {size} bytes",
+                            path.display()
+                        )));
+                    }
+                }
+                Err(why) => return Err(why),
+            }
+            file.seek(SeekFrom::Start(offset))?;
+        }
+        bail!(
+            "the upload of {} finished without naming its content",
+            path.display()
+        )
+    }
+
+    /// Send `piece`, the next bytes of `upload`, which this side believes
+    /// stands at `offset`: a piece the host already has is refused rather
+    /// than stored twice.
+    async fn upload_piece(&self, upload: &str, offset: u64, piece: &[u8]) -> Result<Value> {
+        let headers = [("content-type", "application/octet-stream".to_owned())];
+        let path = format!("{upload}?offset={offset}");
         let answer = self
-            .call(Method::Get, &path, &[], &[], Waiting::Busy)
+            .call(Method::Put, &path, piece, &headers, Waiting::Busy)
             .await?;
         if !answer.ok() {
             return Err(answer.refused());
         }
-        Ok(answer.body)
+        Ok(answer.json())
+    }
+
+    /// Where `upload` stands: how many of its bytes the workspace has.
+    pub async fn upload_status(&self, upload: &str) -> Result<Value> {
+        let answer = self
+            .call(Method::Get, upload, &[], &[], Waiting::Busy)
+            .await?;
+        if !answer.ok() {
+            return Err(answer.refused());
+        }
+        Ok(answer.json())
+    }
+
+    /// The bytes behind the `tilo.content:` reference `content` in
+    /// `workspace`, written to `output` as they come: a file of any size goes
+    /// through, a piece at a time, telling `told` how many bytes are written
+    /// and how many the file is when the answer says.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the writer is this command's own, used on its one thread"
+    )]
+    pub async fn download(
+        &self,
+        workspace: &str,
+        content: &str,
+        output: &mut dyn std::io::Write,
+        told: &mut impl FnMut(u64, Option<u64>),
+    ) -> Result<u64> {
+        let path = format!(
+            "/v1/workspaces/{workspace}/content/{}",
+            encode_path(content)
+        );
+        let mut written = 0_u64;
+        let mut failed = 0_usize;
+        loop {
+            // The same range asked again answers the same bytes: a piece the
+            // host was too busy to answer is asked for again, and a file of
+            // hundreds of megabytes is not lost to one slow answer.
+            let end = written
+                .saturating_add(DOWNLOAD_PIECE as u64)
+                .saturating_sub(1);
+            let headers = [("range", format!("bytes={written}-{end}"))];
+            let answer = match self
+                .call(Method::Get, &path, &[], &headers, Waiting::Busy)
+                .await
+            {
+                Ok(answer) => {
+                    failed = 0;
+                    answer
+                }
+                Err(why) if failed < PIECE_TRIES => {
+                    failed = failed.saturating_add(1);
+                    tokio::time::sleep(Duration::from_millis(
+                        250_u64.saturating_mul(u64::try_from(failed).unwrap_or(1)),
+                    ))
+                    .await;
+                    if failed == PIECE_TRIES {
+                        return Err(why.context(format!("the download stopped at {written} bytes")));
+                    }
+                    continue;
+                }
+                Err(why) => return Err(why),
+            };
+            if !answer.ok() {
+                return Err(answer.refused());
+            }
+            if answer.body.is_empty() {
+                break;
+            }
+            let got = answer.body.len() as u64;
+            output.write_all(&answer.body).context("writing the file")?;
+            written = written.saturating_add(got);
+            told(written, None);
+            // A piece shorter than asked for is the end of the file.
+            if got < DOWNLOAD_PIECE as u64 {
+                break;
+            }
+        }
+        Ok(written)
     }
 
     /// `method` on `path` with `body`, asking again as `waiting` says while
@@ -368,6 +549,7 @@ impl Client {
                 let mut request = match method {
                     Method::Get => http.get(&url),
                     Method::Post => http.post(&url),
+                    Method::Put => http.put(&url),
                     Method::Delete => http.delete(&url),
                 }
                 .bearer_auth(key)
@@ -499,55 +681,59 @@ pub fn encode_path(path: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_path_is_encoded_a_segment_at_a_time() {
-        assert_eq!(encode_path("pdf-viewer"), "pdf-viewer");
-        assert_eq!(encode_path("notes/Q3 4 plan"), "notes/Q3%204%20plan");
-        assert_eq!(encode_path("a b/c#d"), "a%20b/c%23d");
-        assert_eq!(encode_path("/notes/"), "notes");
-    }
+    tilo_test_env::scenario! {
+        fn an_api_call_encodes_its_path_and_reads_its_refusals;
 
-    #[test]
-    fn a_refusal_names_what_went_wrong_and_what_to_do() {
-        let answer = Answer {
-            status: 403,
-            body: serde_json::json!({"error": {"code": "beyond_scope",
-                "message": "this key does not reach that workspace",
-                "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}})
-            .to_string()
-            .into_bytes(),
-        };
-        assert_eq!(
-            answer.refused().to_string(),
-            "this key does not reach that workspace (beyond_scope)\n  \
+        phase a_path_is_encoded_a_segment_at_a_time;
+        {
+            assert_eq!(encode_path("pdf-viewer"), "pdf-viewer");
+            assert_eq!(encode_path("notes/Q3 4 plan"), "notes/Q3%204%20plan");
+            assert_eq!(encode_path("a b/c#d"), "a%20b/c%23d");
+            assert_eq!(encode_path("/notes/"), "notes");
+        }
+
+        phase a_refusal_names_what_went_wrong_and_what_to_do;
+        {
+            let answer = Answer {
+                status: 403,
+                body: serde_json::json!({"error": {"code": "beyond_scope",
+                    "message": "this key does not reach that workspace",
+                    "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}})
+                .to_string()
+                .into_bytes(),
+            };
+            assert_eq!(
+                answer.refused().to_string(),
+                "this key does not reach that workspace (beyond_scope)\n  \
              GET /v1/workspaces names the workspaces it reaches"
-        );
-        let bare = Answer {
-            status: 500,
-            body: Vec::new(),
-        };
-        assert_eq!(
-            bare.refused().to_string(),
-            "the API refused the call (HTTP 500)"
-        );
-    }
+            );
+            let bare = Answer {
+                status: 500,
+                body: Vec::new(),
+            };
+            assert_eq!(
+                bare.refused().to_string(),
+                "the API refused the call (HTTP 500)"
+            );
+        }
 
-    #[test]
-    fn only_a_busy_host_says_how_long_to_wait() {
-        let busy = Answer {
-            status: 429,
-            body: serde_json::json!({"error": {"code": "rate_limited", "retry_after_ms": 480}})
-                .to_string()
-                .into_bytes(),
-        };
-        assert_eq!(busy.busy_for(), Some(Duration::from_millis(480)));
-        let refused = Answer {
-            status: 422,
-            body: serde_json::json!({"error": {"code": "refused"}})
-                .to_string()
-                .into_bytes(),
-        };
-        assert_eq!(refused.busy_for(), None);
+        phase only_a_busy_host_says_how_long_to_wait;
+        {
+            let busy = Answer {
+                status: 429,
+                body: serde_json::json!({"error": {"code": "rate_limited", "retry_after_ms": 480}})
+                    .to_string()
+                    .into_bytes(),
+            };
+            assert_eq!(busy.busy_for(), Some(Duration::from_millis(480)));
+            let refused = Answer {
+                status: 422,
+                body: serde_json::json!({"error": {"code": "refused"}})
+                    .to_string()
+                    .into_bytes(),
+            };
+            assert_eq!(refused.busy_for(), None);
+        }
     }
 
     /// This computer's own key, as `tilo login` kept it, is a key file the API

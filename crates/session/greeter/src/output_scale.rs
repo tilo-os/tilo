@@ -736,113 +736,117 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn each_head_gets_its_own_scale_and_the_layout_stays_contiguous() {
-        let heads = laptop_and_monitor();
-        let targets = plan(&heads).unwrap();
-        let panel = targets[0].unwrap();
-        let monitor = targets[1].unwrap();
-        assert_eq!(
-            panel.scale.to_bits(),
-            quantized(settings_store::display_scale::derive_scale(
-                (2944, 1840),
-                Some((310, 200))
-            ))
-            .to_bits()
-        );
-        assert!(panel.scale > 1.0, "the high-DPI panel is scaled");
-        assert_eq!(
-            monitor.scale.to_bits(),
-            quantized(settings_store::display_scale::derive_scale(
-                (1920, 1080),
-                Some((530, 300))
-            ))
-            .to_bits()
-        );
-        // The monitor starts where the scaled panel now ends: keeping the
-        // kiosk's 1x position (2944) left a gap the centred card fell into.
-        let (panel_width, _) = heads[0].logical_size(panel.scale).unwrap();
-        assert_eq!(panel.position, (0, 0));
-        assert_eq!(monitor.position, (panel_width, 0));
-        assert!(differs(&heads, &targets));
+    tilo_test_env::scenario! {
+        fn heads_are_planned_and_arranged_from_what_the_compositor_describes;
 
-        // Once applied, the same description needs nothing more.
-        let mut applied = heads;
-        for (head, target) in applied.iter_mut().zip(&targets) {
-            let target = target.unwrap();
-            head.position = Some(target.position);
-            head.scale = Some(target.scale);
+        phase each_head_gets_its_own_scale_and_the_layout_stays_contiguous;
+        {
+            let heads = laptop_and_monitor();
+            let targets = plan(&heads).unwrap();
+            let panel = targets[0].unwrap();
+            let monitor = targets[1].unwrap();
+            assert_eq!(
+                panel.scale.to_bits(),
+                quantized(settings_store::display_scale::derive_scale(
+                    (2944, 1840),
+                    Some((310, 200))
+                ))
+                .to_bits()
+            );
+            assert!(panel.scale > 1.0, "the high-DPI panel is scaled");
+            assert_eq!(
+                monitor.scale.to_bits(),
+                quantized(settings_store::display_scale::derive_scale(
+                    (1920, 1080),
+                    Some((530, 300))
+                ))
+                .to_bits()
+            );
+            // The monitor starts where the scaled panel now ends: keeping the
+            // kiosk's 1x position (2944) left a gap the centred card fell into.
+            let (panel_width, _) = heads[0].logical_size(panel.scale).unwrap();
+            assert_eq!(panel.position, (0, 0));
+            assert_eq!(monitor.position, (panel_width, 0));
+            assert!(differs(&heads, &targets));
+
+            // Once applied, the same description needs nothing more.
+            let mut applied = heads;
+            for (head, target) in applied.iter_mut().zip(&targets) {
+                let target = target.unwrap();
+                head.position = Some(target.position);
+                head.scale = Some(target.scale);
+            }
+            assert!(!differs(&applied, &plan(&applied).unwrap()));
         }
-        assert!(!differs(&applied, &plan(&applied).unwrap()));
-    }
 
-    #[test]
-    fn a_hotplugged_display_joins_on_the_right_and_disabled_heads_stay_off() {
-        let panel_scale = quantized(settings_store::display_scale::derive_scale(
-            (2944, 1840),
-            Some((310, 200)),
-        ));
-        let panel = head("eDP-1", (2944, 1840), Some((310, 200)), 0, panel_scale);
-        let (panel_width, _) = panel.logical_size(panel_scale).unwrap();
-        let mut off = head("DP-1", (1920, 1080), None, 0, 1.0);
-        off.enabled = Some(false);
-        off.position = None;
-        // `cage` adds the new head to the right of the current layout.
-        let plugged = head("DP-2", (3840, 2160), Some((600, 340)), panel_width, 1.0);
-        let heads = vec![panel, off, plugged];
-        let targets = plan(&heads).unwrap();
-        assert_eq!(targets[1], None);
-        let plugged = targets[2].unwrap();
-        assert_eq!(plugged.position, (panel_width, 0));
-        assert_eq!(
-            plugged.scale.to_bits(),
-            quantized(settings_store::display_scale::derive_scale(
-                (3840, 2160),
-                Some((600, 340))
-            ))
-            .to_bits()
-        );
-    }
+        phase a_hotplugged_display_joins_on_the_right_and_disabled_heads_stay_off;
+        {
+            let panel_scale = quantized(settings_store::display_scale::derive_scale(
+                (2944, 1840),
+                Some((310, 200)),
+            ));
+            let panel = head("eDP-1", (2944, 1840), Some((310, 200)), 0, panel_scale);
+            let (panel_width, _) = panel.logical_size(panel_scale).unwrap();
+            let mut off = head("DP-1", (1920, 1080), None, 0, 1.0);
+            off.enabled = Some(false);
+            off.position = None;
+            // `cage` adds the new head to the right of the current layout.
+            let plugged = head("DP-2", (3840, 2160), Some((600, 340)), panel_width, 1.0);
+            let heads = vec![panel, off, plugged];
+            let targets = plan(&heads).unwrap();
+            assert_eq!(targets[1], None);
+            let plugged = targets[2].unwrap();
+            assert_eq!(plugged.position, (panel_width, 0));
+            assert_eq!(
+                plugged.scale.to_bits(),
+                quantized(settings_store::display_scale::derive_scale(
+                    (3840, 2160),
+                    Some((600, 340))
+                ))
+                .to_bits()
+            );
+        }
 
-    #[test]
-    fn an_incomplete_description_configures_nothing() {
-        let mut heads = laptop_and_monitor();
-        heads[1].enabled = None;
-        assert!(plan(&heads).is_err());
-        let mut heads = laptop_and_monitor();
-        heads[1].adaptive_sync_invalid = true;
-        assert!(plan(&heads).is_err());
-    }
+        phase an_incomplete_description_configures_nothing;
+        {
+            let mut heads = laptop_and_monitor();
+            heads[1].enabled = None;
+            assert!(plan(&heads).is_err());
+            let mut heads = laptop_and_monitor();
+            heads[1].adaptive_sync_invalid = true;
+            assert!(plan(&heads).is_err());
+        }
 
-    #[test]
-    fn the_card_goes_on_the_built_in_panel_and_rotated_heads_swap_sides() {
-        let mut heads = laptop_and_monitor();
-        heads[1].position = Some((-1920, 0));
-        heads[0].scale = Some(2.0);
-        let arranged = arrangement(&heads);
-        assert_eq!(
-            arranged.extent(),
-            Some(Rect::new(-1920.0, 0.0, 1472.0, 1080.0))
-        );
-        assert_eq!(
-            arranged.in_window(),
-            vec![
-                Rect::new(0.0, 0.0, 1920.0, 1080.0),
-                Rect::new(1920.0, 0.0, 3392.0, 920.0)
-            ]
-        );
-        assert_eq!(
-            arranged.primary_in_window(),
-            Some(Rect::new(1920.0, 0.0, 3392.0, 920.0))
-        );
+        phase the_card_goes_on_the_built_in_panel_and_rotated_heads_swap_sides;
+        {
+            let mut heads = laptop_and_monitor();
+            heads[1].position = Some((-1920, 0));
+            heads[0].scale = Some(2.0);
+            let arranged = arrangement(&heads);
+            assert_eq!(
+                arranged.extent(),
+                Some(Rect::new(-1920.0, 0.0, 1472.0, 1080.0))
+            );
+            assert_eq!(
+                arranged.in_window(),
+                vec![
+                    Rect::new(0.0, 0.0, 1920.0, 1080.0),
+                    Rect::new(1920.0, 0.0, 3392.0, 920.0)
+                ]
+            );
+            assert_eq!(
+                arranged.primary_in_window(),
+                Some(Rect::new(1920.0, 0.0, 3392.0, 920.0))
+            );
 
-        heads[0].name = Some("HDMI-A-1".into());
-        assert_eq!(
-            arrangement(&heads).primary_in_window(),
-            Some(Rect::new(0.0, 0.0, 1920.0, 1080.0))
-        );
+            heads[0].name = Some("HDMI-A-1".into());
+            assert_eq!(
+                arrangement(&heads).primary_in_window(),
+                Some(Rect::new(0.0, 0.0, 1920.0, 1080.0))
+            );
 
-        heads[1].transform = Some(wl_output::Transform::_90);
-        assert_eq!(heads[1].logical_size(1.0), Some((1080, 1920)));
+            heads[1].transform = Some(wl_output::Transform::_90);
+            assert_eq!(heads[1].logical_size(1.0), Some((1080, 1920)));
+        }
     }
 }

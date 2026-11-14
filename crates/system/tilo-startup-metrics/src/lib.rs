@@ -932,16 +932,6 @@ mod tests {
         assert!(launch_table().is_empty());
     }
 
-    #[test]
-    fn native_admission_checkpoint_preserves_startup_and_stays_quiet() {
-        admission_checkpoints(false);
-    }
-
-    #[test]
-    fn native_admission_checkpoints_through_async_writer() {
-        admission_checkpoints(true);
-    }
-
     fn admission_checkpoints(background: bool) {
         let nonce = tilo_clock::unix_now_ns();
         let directory =
@@ -1020,127 +1010,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_metrics_are_opt_in_transparent_and_bind_launches_once() {
-        {
-            // Without TILO_STARTUP_METRICS_PATH, mark is a no-op — nothing to assert beyond "no panic".
-            mark("nothing");
-        }
-        {
-            assert_eq!(span("computation", || 40 + 2), 42);
-        }
-        {
-            let events = [
-                ("app-launch-start".to_owned(), 3_000),
-                ("app-construct".to_owned(), 7_500_000),
-                ("app-construct-end".to_owned(), 8_700_000_000),
-                ("primary-window-created".to_owned(), 8_700_400_000),
-                ("first-frame-presented".to_owned(), 8_842_000_000),
-            ];
-            assert_eq!(
-                format_summary("so.tilo.notes", &events),
-                "APP-STARTUP app=so.tilo.notes total_ms=8842 \
-                 phases=app-construct:7,app-construct-end:8692,first-frame-presented:141"
-            );
-        }
-        {
-            launch_table().clear();
-            let first = launch_requested("dev.tilo.test");
-            let second = launch_requested("dev.tilo.test");
-            launch_spawned(first, 10);
-            launch_spawned(second, 11);
-            launch_mapped("dev.tilo.test", 100);
-            launch_mapped("dev.tilo.test", 101);
-            let surfaces: Vec<_> = launch_table()
-                .iter()
-                .map(|launch| launch.surface_id)
-                .collect();
-            assert_eq!(surfaces, [Some(100), Some(101)]);
-            assert_eq!(launches_awaiting_first_present(), [100, 101]);
-            launch_first_present(100, 1);
-            assert_eq!(launches_awaiting_first_present(), [101]);
-            assert_eq!(launch_table().len(), 1);
-            launch_first_present(100, 2);
-            assert_eq!(launch_table().len(), 1);
-            launch_failed(second);
-            assert!(launches_awaiting_first_present().is_empty());
-        }
-        {
-            // A window that never comes is retired by the launches after it,
-            // not kept for the session's life.
-            launch_table().clear();
-            let lost = launch_requested("dev.tilo.never-maps");
-            for _ in 0..PENDING_LAUNCHES_MAX {
-                launch_requested("dev.tilo.never-maps");
-            }
-            assert_eq!(launch_table().len(), PENDING_LAUNCHES_MAX);
-            assert!(launch_table().iter().all(|launch| launch.id != lost));
-            launch_table().clear();
-        }
-        lifecycle_events_correlate_same_app_attempts_and_retire_once();
-        {
-            launch_table().clear();
-            let id = launch_requested("dev.tilo.phases");
-            launch_phase("dev.tilo.phases", "preflight");
-            launch_phase("dev.tilo.other", "preflight");
-            assert_eq!(
-                launch_table()
-                    .iter()
-                    .map(|launch| launch.phases.len())
-                    .collect::<Vec<_>>(),
-                [1]
-            );
-            // The spawn reports and drops them; a later phase times nothing.
-            launch_spawned(id, 7);
-            launch_phase("dev.tilo.phases", "late");
-            assert!(launch_table().iter().all(|launch| launch.phases.is_empty()));
-            launch_failed(id);
-        }
-    }
-
-    #[test]
-    fn launcher_marks_cross_into_the_app_file_and_reject_garbage() {
-        let marks = [
-            HandoffEvent {
-                name: "launcher-start".into(),
-                epoch_us: 1_783_250_000_000_000,
-            },
-            HandoffEvent {
-                name: "sandbox-argv-ready".into(),
-                epoch_us: 1_783_250_000_070_000,
-            },
-        ];
-        let value = encode_handoff(&marks);
-        assert_eq!(
-            value,
-            "launcher-start@1783250000000000,sandbox-argv-ready@1783250000070000"
-        );
-        assert_eq!(parse_handoff(&value), marks);
-        // An app must never be able to smuggle structure into its own file.
-        let parsed = parse_handoff("ok@1,Upper@2,bad name@3,no-time@,quote\"@4,,@5,x@-1,y@7");
-        let names: Vec<_> = parsed.iter().map(|mark| mark.name.as_str()).collect();
-        assert_eq!(names, ["ok", "y"]);
-        let many = (0..100)
-            .map(|i| format!("m@{i}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        assert_eq!(parse_handoff(&many).len(), HANDOFF_MAX_MARKS);
-
-        // Starting capture writes nothing yet; the path is never touched.
-        let metrics = Metrics::start(std::env::temp_dir().join("unused.json"), Some(&value));
-        let payload = metrics.payload(&[]);
-        assert_eq!(payload["launcher"][1]["name"], "sandbox-argv-ready");
-        assert_eq!(
-            payload["launcher"][1]["epoch_us"].as_u64(),
-            Some(1_783_250_000_070_000)
-        );
-        let origin_us = payload["origin_epoch_us"].as_u64().unwrap();
-        assert_eq!(
-            payload["origin_epoch_ms"].as_u64().unwrap(),
-            origin_us / 1_000
-        );
-    }
-
-    #[test]
     fn launch_latency_lines_survive_the_default_session_filter() {
         assert_eq!(
             log_directives(None),
@@ -1164,20 +1033,67 @@ mod tests {
         );
     }
 
-    /// The shim's exec mark, appended to the launcher's value, precedes the
-    /// app's own origin, so origin minus it is the loader's time.
-    #[test]
-    fn exec_origin_precedes_init() {
-        let launcher = encode_handoff(&[HandoffEvent {
-            name: "sandbox-argv-ready".into(),
-            epoch_us: 1,
-        }]);
-        let value = format!("{launcher},{}", handoff_entry("sandbox-exec").unwrap());
-        let metrics = Metrics::start(std::env::temp_dir().join("unused.json"), Some(&value));
-        let exec = metrics.launcher.last().unwrap();
-        assert_eq!(exec.name, "sandbox-exec");
-        assert!(exec.epoch_us <= metrics.origin_epoch_us);
-        assert_eq!(handoff_entry("Not A Mark"), None);
+    tilo_test_env::scenario! {
+        fn launcher_marks_precede_the_apps_own_origin;
+
+        phase launcher_marks_cross_into_the_app_file_and_reject_garbage;
+        {
+            let marks = [
+                HandoffEvent {
+                    name: "launcher-start".into(),
+                    epoch_us: 1_783_250_000_000_000,
+                },
+                HandoffEvent {
+                    name: "sandbox-argv-ready".into(),
+                    epoch_us: 1_783_250_000_070_000,
+                },
+            ];
+            let value = encode_handoff(&marks);
+            assert_eq!(
+                value,
+                "launcher-start@1783250000000000,sandbox-argv-ready@1783250000070000"
+            );
+            assert_eq!(parse_handoff(&value), marks);
+            // An app must never be able to smuggle structure into its own file.
+            let parsed = parse_handoff("ok@1,Upper@2,bad name@3,no-time@,quote\"@4,,@5,x@-1,y@7");
+            let names: Vec<_> = parsed.iter().map(|mark| mark.name.as_str()).collect();
+            assert_eq!(names, ["ok", "y"]);
+            let many = (0..100)
+                .map(|i| format!("m@{i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            assert_eq!(parse_handoff(&many).len(), HANDOFF_MAX_MARKS);
+
+            // Starting capture writes nothing yet; the path is never touched.
+            let metrics = Metrics::start(std::env::temp_dir().join("unused.json"), Some(&value));
+            let payload = metrics.payload(&[]);
+            assert_eq!(payload["launcher"][1]["name"], "sandbox-argv-ready");
+            assert_eq!(
+                payload["launcher"][1]["epoch_us"].as_u64(),
+                Some(1_783_250_000_070_000)
+            );
+            let origin_us = payload["origin_epoch_us"].as_u64().unwrap();
+            assert_eq!(
+                payload["origin_epoch_ms"].as_u64().unwrap(),
+                origin_us / 1_000
+            );
+        }
+
+        phase exec_origin_precedes_init;
+        // The shim's exec mark, appended to the launcher's value, precedes the
+        // app's own origin, so origin minus it is the loader's time.
+        {
+            let launcher = encode_handoff(&[HandoffEvent {
+                name: "sandbox-argv-ready".into(),
+                epoch_us: 1,
+            }]);
+            let value = format!("{launcher},{}", handoff_entry("sandbox-exec").unwrap());
+            let metrics = Metrics::start(std::env::temp_dir().join("unused.json"), Some(&value));
+            let exec = metrics.launcher.last().unwrap();
+            assert_eq!(exec.name, "sandbox-exec");
+            assert!(exec.epoch_us <= metrics.origin_epoch_us);
+            assert_eq!(handoff_entry("Not A Mark"), None);
+        }
     }
 
     fn marks_in(path: &std::path::Path) -> Vec<String> {
@@ -1193,74 +1109,174 @@ mod tests {
             .collect()
     }
 
-    /// Before the writer runs, the marking thread writes each mark; once it
-    /// runs, marks reach the file with no dump and no write on the marking
-    /// thread's account; a dump holds every mark; a write with nothing new
-    /// leaves the file alone.
-    #[test]
-    fn marks_reach_the_file_through_the_writer_thread() {
-        let directory = std::env::temp_dir().join(format!(
-            "tilo-startup-metrics-writer-{}-{}",
-            std::process::id(),
-            tilo_clock::unix_now_ns()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("startup.json");
-        let metrics: &'static Metrics = Box::leak(Box::new(Metrics::start(path.clone(), None)));
+    tilo_test_env::scenario! {
+        fn a_metrics_file_is_written_as_marks_and_checkpoints_come;
 
-        metrics.record("main-start");
-        assert_eq!(
-            marks_in(&path),
-            ["main-start"],
-            "written by the marking thread"
-        );
+        phase native_admission_checkpoint_preserves_startup_and_stays_quiet;
+        {
+            admission_checkpoints(false);
+        }
 
-        metrics.start_writer();
-        assert!(metrics.writer.get().is_some_and(Option::is_some));
-        metrics.record("first-window");
-        metrics.record("first-frame");
-        tilo_test_env::wait_until("the writer thread to write", || marks_in(&path).len() >= 3);
-        assert_eq!(
-            marks_in(&path),
-            ["main-start", "first-window", "first-frame"]
-        );
+        phase native_admission_checkpoints_through_async_writer;
+        {
+            admission_checkpoints(true);
+        }
 
-        // Nothing new: the file is not rewritten.
-        std::fs::write(&path, br#"{"events":[{"name":"untouched"}]}"#).unwrap();
-        metrics.write_snapshot();
-        assert_eq!(marks_in(&path), ["untouched"]);
-        // Something new: the whole history, in order.
-        metrics.events.lock().unwrap().push(Event {
-            name: "exit".into(),
-            ns: 1,
-        });
-        metrics.write_snapshot();
-        assert_eq!(
-            marks_in(&path),
-            ["main-start", "first-window", "first-frame", "exit"]
-        );
-        let _ = std::fs::remove_dir_all(&directory);
+        phase marks_reach_the_file_through_the_writer_thread;
+        // Before the writer runs, the marking thread writes each mark; once it
+        // runs, marks reach the file with no dump and no write on the marking
+        // thread's account; a dump holds every mark; a write with nothing new
+        // leaves the file alone.
+        {
+            let directory = std::env::temp_dir().join(format!(
+                "tilo-startup-metrics-writer-{}-{}",
+                std::process::id(),
+                tilo_clock::unix_now_ns()
+            ));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("startup.json");
+            let metrics: &'static Metrics = Box::leak(Box::new(Metrics::start(path.clone(), None)));
+
+            metrics.record("main-start");
+            assert_eq!(
+                marks_in(&path),
+                ["main-start"],
+                "written by the marking thread"
+            );
+
+            metrics.start_writer();
+            assert!(metrics.writer.get().is_some_and(Option::is_some));
+            metrics.record("first-window");
+            metrics.record("first-frame");
+            tilo_test_env::wait_until("the writer thread to write", || marks_in(&path).len() >= 3);
+            assert_eq!(
+                marks_in(&path),
+                ["main-start", "first-window", "first-frame"]
+            );
+
+            // Nothing new: the file is not rewritten.
+            std::fs::write(&path, br#"{"events":[{"name":"untouched"}]}"#).unwrap();
+            metrics.write_snapshot();
+            assert_eq!(marks_in(&path), ["untouched"]);
+            // Something new: the whole history, in order.
+            metrics.events.lock().unwrap().push(Event {
+                name: "exit".into(),
+                ns: 1,
+            });
+            metrics.write_snapshot();
+            assert_eq!(
+                marks_in(&path),
+                ["main-start", "first-window", "first-frame", "exit"]
+            );
+            let _ = std::fs::remove_dir_all(&directory);
+        }
     }
 
-    #[test]
-    fn dispatch_phases_name_each_interval_up_to_the_spawn() {
-        let requested = Instant::now();
-        let at = |ms| requested + std::time::Duration::from_micros(ms);
-        assert_eq!(
-            format_launch_phases(
-                requested,
-                &[
-                    ("preflight", at(400)),
-                    ("command", at(12_450)),
-                    ("spawned", at(13_000))
-                ],
-                at(20_000),
-            ),
-            "preflight:0.4,command:12.0,spawned:0.5,registered:7.0"
-        );
-        assert_eq!(
-            format_launch_phases(requested, &[], at(1_500)),
-            "registered:1.5"
-        );
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn launches_are_timed_from_request_to_first_present;
+
+        phase startup_metrics_are_opt_in_transparent_and_bind_launches_once;
+        {
+            {
+                // Without TILO_STARTUP_METRICS_PATH, mark is a no-op — nothing to assert beyond "no panic".
+                mark("nothing");
+            }
+            {
+                assert_eq!(span("computation", || 40 + 2), 42);
+            }
+            {
+                let events = [
+                    ("app-launch-start".to_owned(), 3_000),
+                    ("app-construct".to_owned(), 7_500_000),
+                    ("app-construct-end".to_owned(), 8_700_000_000),
+                    ("primary-window-created".to_owned(), 8_700_400_000),
+                    ("first-frame-presented".to_owned(), 8_842_000_000),
+                ];
+                assert_eq!(
+                    format_summary("so.tilo.notes", &events),
+                    "APP-STARTUP app=so.tilo.notes total_ms=8842 \
+                 phases=app-construct:7,app-construct-end:8692,first-frame-presented:141"
+                );
+            }
+            {
+                launch_table().clear();
+                let first = launch_requested("dev.tilo.test");
+                let second = launch_requested("dev.tilo.test");
+                launch_spawned(first, 10);
+                launch_spawned(second, 11);
+                launch_mapped("dev.tilo.test", 100);
+                launch_mapped("dev.tilo.test", 101);
+                let surfaces: Vec<_> = launch_table()
+                    .iter()
+                    .map(|launch| launch.surface_id)
+                    .collect();
+                assert_eq!(surfaces, [Some(100), Some(101)]);
+                assert_eq!(launches_awaiting_first_present(), [100, 101]);
+                launch_first_present(100, 1);
+                assert_eq!(launches_awaiting_first_present(), [101]);
+                assert_eq!(launch_table().len(), 1);
+                launch_first_present(100, 2);
+                assert_eq!(launch_table().len(), 1);
+                launch_failed(second);
+                assert!(launches_awaiting_first_present().is_empty());
+            }
+            {
+                // A window that never comes is retired by the launches after it,
+                // not kept for the session's life.
+                launch_table().clear();
+                let lost = launch_requested("dev.tilo.never-maps");
+                for _ in 0..PENDING_LAUNCHES_MAX {
+                    launch_requested("dev.tilo.never-maps");
+                }
+                assert_eq!(launch_table().len(), PENDING_LAUNCHES_MAX);
+                assert!(launch_table().iter().all(|launch| launch.id != lost));
+                launch_table().clear();
+            }
+            lifecycle_events_correlate_same_app_attempts_and_retire_once();
+            {
+                launch_table().clear();
+                let id = launch_requested("dev.tilo.phases");
+                launch_phase("dev.tilo.phases", "preflight");
+                launch_phase("dev.tilo.other", "preflight");
+                assert_eq!(
+                    launch_table()
+                        .iter()
+                        .map(|launch| launch.phases.len())
+                        .collect::<Vec<_>>(),
+                    [1]
+                );
+                // The spawn reports and drops them; a later phase times nothing.
+                launch_spawned(id, 7);
+                launch_phase("dev.tilo.phases", "late");
+                assert!(launch_table().iter().all(|launch| launch.phases.is_empty()));
+                launch_failed(id);
+            }
+        }
+
+        phase dispatch_phases_name_each_interval_up_to_the_spawn;
+        {
+            let requested = Instant::now();
+            let at = |ms| requested + std::time::Duration::from_micros(ms);
+            assert_eq!(
+                format_launch_phases(
+                    requested,
+                    &[
+                        ("preflight", at(400)),
+                        ("command", at(12_450)),
+                        ("spawned", at(13_000))
+                    ],
+                    at(20_000),
+                ),
+                "preflight:0.4,command:12.0,spawned:0.5,registered:7.0"
+            );
+            assert_eq!(
+                format_launch_phases(requested, &[], at(1_500)),
+                "registered:1.5"
+            );
+        }
     }
 }

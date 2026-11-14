@@ -451,29 +451,33 @@ impl YtBackend for RustyPipeBackend {
 mod tests {
     use super::*;
 
-    #[test]
-    fn caption_urls_ask_for_webvtt_once() {
-        assert_eq!(
-            as_vtt("https://www.youtube.com/api/timedtext?v=x&lang=en&fmt=srv3"),
-            "https://www.youtube.com/api/timedtext?v=x&lang=en&fmt=vtt"
-        );
-        assert_eq!(
-            as_vtt("https://www.youtube.com/api/timedtext?v=x"),
-            "https://www.youtube.com/api/timedtext?v=x&fmt=vtt"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn live_urls_ask_for_webvtt_and_are_made_absolute;
 
-    #[test]
-    fn absolute_url_promotes_protocol_relative_avatars() {
-        assert_eq!(
-            absolute_url("//yt3.ggpht.com/abc=s176"),
-            "https://yt3.ggpht.com/abc=s176",
-        );
-        assert_eq!(
-            absolute_url("https://yt3.ggpht.com/x"),
-            "https://yt3.ggpht.com/x"
-        );
-        assert_eq!(absolute_url("http://example.com/y"), "http://example.com/y");
-        assert_eq!(absolute_url(""), "");
+        phase caption_urls_ask_for_webvtt_once;
+        {
+            assert_eq!(
+                as_vtt("https://www.youtube.com/api/timedtext?v=x&lang=en&fmt=srv3"),
+                "https://www.youtube.com/api/timedtext?v=x&lang=en&fmt=vtt"
+            );
+            assert_eq!(
+                as_vtt("https://www.youtube.com/api/timedtext?v=x"),
+                "https://www.youtube.com/api/timedtext?v=x&fmt=vtt"
+            );
+        }
+
+        phase absolute_url_promotes_protocol_relative_avatars;
+        {
+            assert_eq!(
+                absolute_url("//yt3.ggpht.com/abc=s176"),
+                "https://yt3.ggpht.com/abc=s176",
+            );
+            assert_eq!(
+                absolute_url("https://yt3.ggpht.com/x"),
+                "https://yt3.ggpht.com/x"
+            );
+            assert_eq!(absolute_url("http://example.com/y"), "http://example.com/y");
+            assert_eq!(absolute_url(""), "");
+        }
     }
 }

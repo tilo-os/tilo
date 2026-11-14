@@ -176,27 +176,86 @@ mod tests {
         }
     }
 
-    #[test]
-    fn inline_marks_read_as_markdown_around_their_text() {
-        let mut marked = block(
-            "p1",
-            "paragraph",
-            "Deadline: October 15, see docs\nrun cargo",
-            Shape::default(),
-        );
-        marked.marks = vec![
-            mark("strong", 0, 20, MarkValue::Bool(true)),
-            mark("em", 10, 20, MarkValue::Bool(true)),
-            mark("link", 26, 30, MarkValue::Str("https://tilo.so".into())),
-            mark("underline", 26, 30, MarkValue::Bool(true)),
-            mark("font", 35, 40, MarkValue::Str("mono".into())),
-            mark("strike", 31, 34, MarkValue::Bool(false)),
-        ];
-        marked.complete = false;
-        assert_eq!(
-            render(&[marked]),
-            "**Deadline: *October 15***, see [docs](https://tilo.so)↵run `cargo`… {#p1}\n"
-        );
+    tilo_test_env::scenario! {
+        /// `render`: inline marks, and headings, lists and tables with their ids.
+        fn blocks_read_as_markdown;
+
+        phase inline_marks_read_as_markdown_around_their_text;
+        {
+            let mut marked = block(
+                "p1",
+                "paragraph",
+                "Deadline: October 15, see docs\nrun cargo",
+                Shape::default(),
+            );
+            marked.marks = vec![
+                mark("strong", 0, 20, MarkValue::Bool(true)),
+                mark("em", 10, 20, MarkValue::Bool(true)),
+                mark("link", 26, 30, MarkValue::Str("https://tilo.so".into())),
+                mark("underline", 26, 30, MarkValue::Bool(true)),
+                mark("font", 35, 40, MarkValue::Str("mono".into())),
+                mark("strike", 31, 34, MarkValue::Bool(false)),
+            ];
+            marked.complete = false;
+            assert_eq!(
+                render(&[marked]),
+                "**Deadline: *October 15***, see [docs](https://tilo.so)↵run `cargo`… {#p1}\n"
+            );
+        }
+
+        phase headings_lists_and_tables_read_as_markdown_with_their_ids;
+        {
+            let mut cut = block("p2", "paragraph", "first\nsecond", Shape::default());
+            cut.complete = false;
+            let page = [
+                block(
+                    "h1",
+                    "heading",
+                    "Standup",
+                    Shape {
+                        level: Some(2),
+                        ..Shape::default()
+                    },
+                ),
+                block("l1", "list_item", "review", Shape::default()),
+                block(
+                    "l2",
+                    "list_item",
+                    "ship",
+                    Shape {
+                        ordered: Some(true),
+                        level: Some(1),
+                        ..Shape::default()
+                    },
+                ),
+                block(
+                    "l3",
+                    "list_item",
+                    "tag",
+                    Shape {
+                        nesting: Some(2),
+                        ..Shape::default()
+                    },
+                ),
+                cell("c1", "Person", 0, 0),
+                cell("c2", "Blocked", 0, 1),
+                cell("c4", "no | maybe", 1, 1),
+                cell("c3", "Maya", 1, 0),
+                cell("c5", "", 2, 0),
+                cell("c6", "", 2, 1),
+                block("p1", "paragraph", "", Shape::default()),
+                cut,
+            ];
+            assert_eq!(
+                render(&page),
+                "## Standup {#h1}\n\
+             - review {#l1}\n  1. ship {#l2}\n    - tag {#l3}\n\
+             | Person {#c1} | Blocked {#c2} | {#table t7}\n| --- | --- |\n\
+             | Maya {#c3} | no \\| maybe {#c4} |\n| {#c5} | {#c6} |\n\
+             {#p1}\n\
+             first↵second… {#p2}\n"
+            );
+        }
     }
 
     fn cell(id: &str, text: &str, row: i64, col: i64) -> Segment {
@@ -211,59 +270,5 @@ mod tests {
                 ..Shape::default()
             },
         )
-    }
-
-    #[test]
-    fn headings_lists_and_tables_read_as_markdown_with_their_ids() {
-        let mut cut = block("p2", "paragraph", "first\nsecond", Shape::default());
-        cut.complete = false;
-        let page = [
-            block(
-                "h1",
-                "heading",
-                "Standup",
-                Shape {
-                    level: Some(2),
-                    ..Shape::default()
-                },
-            ),
-            block("l1", "list_item", "review", Shape::default()),
-            block(
-                "l2",
-                "list_item",
-                "ship",
-                Shape {
-                    ordered: Some(true),
-                    level: Some(1),
-                    ..Shape::default()
-                },
-            ),
-            block(
-                "l3",
-                "list_item",
-                "tag",
-                Shape {
-                    nesting: Some(2),
-                    ..Shape::default()
-                },
-            ),
-            cell("c1", "Person", 0, 0),
-            cell("c2", "Blocked", 0, 1),
-            cell("c4", "no | maybe", 1, 1),
-            cell("c3", "Maya", 1, 0),
-            cell("c5", "", 2, 0),
-            cell("c6", "", 2, 1),
-            block("p1", "paragraph", "", Shape::default()),
-            cut,
-        ];
-        assert_eq!(
-            render(&page),
-            "## Standup {#h1}\n\
-             - review {#l1}\n  1. ship {#l2}\n    - tag {#l3}\n\
-             | Person {#c1} | Blocked {#c2} | {#table t7}\n| --- | --- |\n\
-             | Maya {#c3} | no \\| maybe {#c4} |\n| {#c5} | {#c6} |\n\
-             {#p1}\n\
-             first↵second… {#p2}\n"
-        );
     }
 }

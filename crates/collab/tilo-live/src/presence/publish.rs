@@ -174,69 +174,73 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_burst_says_each_part_once_and_the_last_word_wins() {
-        let mut schedule = Schedule::default();
-        schedule.push(said("one"));
-        schedule.push(said("two"));
-        schedule.push(said("three"));
-        let burst = schedule.due(0.0).expect("due at once");
-        assert_eq!(burst.len(), 1, "one part, said once");
-        assert_eq!(
-            burst[0].1.payload,
-            Payload::Status {
-                text: "three".to_owned(),
-                automatic: false
-            }
-        );
-        assert_eq!(burst[0].0, 1, "the track numbers its objects");
-    }
+    tilo_test_env::scenario! {
+        fn a_schedule_says_each_change_once_and_again_for_a_lossy_link;
 
-    #[test]
-    fn nothing_leaves_twice_within_the_ceiling() {
-        let mut schedule = Schedule::default();
-        schedule.push(said("one"));
-        assert!(schedule.due(0.0).is_some());
-        schedule.push(said("two"));
-        assert!(schedule.due(1.0).is_none(), "inside the ceiling");
-        let burst = schedule.due(MIN_INTERVAL_MS).expect("due at the ceiling");
-        assert_eq!(burst[0].0, 2, "one object per burst");
-    }
+        phase a_burst_says_each_part_once_and_the_last_word_wins;
+        {
+            let mut schedule = Schedule::default();
+            schedule.push(said("one"));
+            schedule.push(said("two"));
+            schedule.push(said("three"));
+            let burst = schedule.due(0.0).expect("due at once");
+            assert_eq!(burst.len(), 1, "one part, said once");
+            assert_eq!(
+                burst[0].1.payload,
+                Payload::Status {
+                    text: "three".to_owned(),
+                    automatic: false
+                }
+            );
+            assert_eq!(burst[0].0, 1, "the track numbers its objects");
+        }
 
-    #[test]
-    fn a_change_is_said_again_for_a_link_that_lost_it() {
-        let mut schedule = Schedule::default();
-        schedule.push(said("one"));
-        assert!(schedule.due(0.0).is_some());
-        let first = schedule.due(REPEATS_MS[0]).expect("the first repeat");
-        assert_eq!(first[0].1, said("one"));
-        assert!(schedule.due(REPEATS_MS[0] + 1.0).is_none(), "not yet");
-        assert!(schedule.due(REPEATS_MS[1]).is_some(), "the second repeat");
-        assert!(
-            schedule.due(KEEPALIVE_MS).is_none(),
-            "then rest until the next change"
-        );
-        assert!(schedule.next_due(KEEPALIVE_MS).is_none(), "nothing is due");
-    }
+        phase nothing_leaves_twice_within_the_ceiling;
+        {
+            let mut schedule = Schedule::default();
+            schedule.push(said("one"));
+            assert!(schedule.due(0.0).is_some());
+            schedule.push(said("two"));
+            assert!(schedule.due(1.0).is_none(), "inside the ceiling");
+            let burst = schedule.due(MIN_INTERVAL_MS).expect("due at the ceiling");
+            assert_eq!(burst[0].0, 2, "one object per burst");
+        }
 
-    #[test]
-    fn a_wave_is_a_new_wave_each_time() {
-        let mut schedule = Schedule::default();
-        schedule.push(Presence::desktop(
-            "w1",
-            Payload::Wave {
-                seq: 1,
-                target: "ada".into(),
-            },
-        ));
-        schedule.push(Presence::desktop(
-            "w1",
-            Payload::Wave {
-                seq: 2,
-                target: "ada".into(),
-            },
-        ));
-        let burst = schedule.due(0.0).expect("due at once");
-        assert_eq!(burst.len(), 2, "each wave is its own wave");
+        phase a_change_is_said_again_for_a_link_that_lost_it;
+        {
+            let mut schedule = Schedule::default();
+            schedule.push(said("one"));
+            assert!(schedule.due(0.0).is_some());
+            let first = schedule.due(REPEATS_MS[0]).expect("the first repeat");
+            assert_eq!(first[0].1, said("one"));
+            assert!(schedule.due(REPEATS_MS[0] + 1.0).is_none(), "not yet");
+            assert!(schedule.due(REPEATS_MS[1]).is_some(), "the second repeat");
+            assert!(
+                schedule.due(KEEPALIVE_MS).is_none(),
+                "then rest until the next change"
+            );
+            assert!(schedule.next_due(KEEPALIVE_MS).is_none(), "nothing is due");
+        }
+
+        phase a_wave_is_a_new_wave_each_time;
+        {
+            let mut schedule = Schedule::default();
+            schedule.push(Presence::desktop(
+                "w1",
+                Payload::Wave {
+                    seq: 1,
+                    target: "ada".into(),
+                },
+            ));
+            schedule.push(Presence::desktop(
+                "w1",
+                Payload::Wave {
+                    seq: 2,
+                    target: "ada".into(),
+                },
+            ));
+            let burst = schedule.due(0.0).expect("due at once");
+            assert_eq!(burst.len(), 2, "each wave is its own wave");
+        }
     }
 }

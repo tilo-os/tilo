@@ -75,51 +75,55 @@ mod native_tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, symlink};
 
-    #[test]
-    fn public_selected_factory_never_accepts_path_link_or_directory() {
-        let tree = tempfile::tempdir().unwrap();
-        let directory = File::open(tree.path()).unwrap();
-        File::create(tree.path().join("selected")).unwrap();
-        symlink("selected", tree.path().join("alias")).unwrap();
-        std::fs::create_dir(tree.path().join("directory")).unwrap();
-        for name in ["", ".", "..", "../selected", "alias", "directory", "nul\0"] {
-            assert!(SourceProjection::selected(&directory, OsStr::new(name), "context").is_err());
-        }
-        std::fs::hard_link(tree.path().join("selected"), tree.path().join("hardlink")).unwrap();
-        assert!(SourceProjection::selected(&directory, OsStr::new("selected"), "context").is_err());
-        let file = File::open(tree.path().join("selected")).unwrap();
-        assert!(SourceProjection::home(&file, "context").is_err());
-    }
+    tilo_test_env::scenario! {
+        fn public_projection_factory_takes_only_exact_held_objects;
 
-    #[test]
-    fn public_factory_retains_exact_object_or_refuses_unprivileged_caller() {
-        let tree = tempfile::tempdir().unwrap();
-        let directory = File::open(tree.path()).unwrap();
-        File::create(tree.path().join("selected")).unwrap();
-        let selected = SourceProjection::selected(&directory, OsStr::new("selected"), "context");
-        let home = SourceProjection::home(&directory, "context");
-        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
-            for result in [selected, home] {
-                assert_eq!(
-                    result.err().unwrap().kind(),
-                    io::ErrorKind::PermissionDenied
-                );
+        phase public_selected_factory_never_accepts_path_link_or_directory;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            let directory = File::open(tree.path()).unwrap();
+            File::create(tree.path().join("selected")).unwrap();
+            symlink("selected", tree.path().join("alias")).unwrap();
+            std::fs::create_dir(tree.path().join("directory")).unwrap();
+            for name in ["", ".", "..", "../selected", "alias", "directory", "nul\0"] {
+                assert!(SourceProjection::selected(&directory, OsStr::new(name), "context").is_err());
             }
-            return;
+            std::fs::hard_link(tree.path().join("selected"), tree.path().join("hardlink")).unwrap();
+            assert!(SourceProjection::selected(&directory, OsStr::new("selected"), "context").is_err());
+            let file = File::open(tree.path().join("selected")).unwrap();
+            assert!(SourceProjection::home(&file, "context").is_err());
         }
-        let selected = selected.unwrap();
-        let home = home.unwrap();
-        let expected = selected.duplicate_file().unwrap().metadata().unwrap();
-        std::fs::rename(tree.path().join("selected"), tree.path().join("retained")).unwrap();
-        File::create(tree.path().join("selected")).unwrap();
-        let held = selected.duplicate_file().unwrap().metadata().unwrap();
-        let replacement =
-            SourceProjection::selected(&directory, OsStr::new("selected"), "context").unwrap();
-        let other_context = SourceProjection::home(&directory, "other-context").unwrap();
-        assert_eq!((held.dev(), held.ino()), (expected.dev(), expected.ino()));
-        assert_ne!(selected.context_sha256(), replacement.context_sha256());
-        assert_ne!(selected.context_sha256(), home.context_sha256());
-        assert_ne!(home.context_sha256(), other_context.context_sha256());
+
+        phase public_factory_retains_exact_object_or_refuses_unprivileged_caller;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            let directory = File::open(tree.path()).unwrap();
+            File::create(tree.path().join("selected")).unwrap();
+            let selected = SourceProjection::selected(&directory, OsStr::new("selected"), "context");
+            let home = SourceProjection::home(&directory, "context");
+            if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
+                for result in [selected, home] {
+                    assert_eq!(
+                        result.err().unwrap().kind(),
+                        io::ErrorKind::PermissionDenied
+                    );
+                }
+                return;
+            }
+            let selected = selected.unwrap();
+            let home = home.unwrap();
+            let expected = selected.duplicate_file().unwrap().metadata().unwrap();
+            std::fs::rename(tree.path().join("selected"), tree.path().join("retained")).unwrap();
+            File::create(tree.path().join("selected")).unwrap();
+            let held = selected.duplicate_file().unwrap().metadata().unwrap();
+            let replacement =
+                SourceProjection::selected(&directory, OsStr::new("selected"), "context").unwrap();
+            let other_context = SourceProjection::home(&directory, "other-context").unwrap();
+            assert_eq!((held.dev(), held.ino()), (expected.dev(), expected.ino()));
+            assert_ne!(selected.context_sha256(), replacement.context_sha256());
+            assert_ne!(selected.context_sha256(), home.context_sha256());
+            assert_ne!(home.context_sha256(), other_context.context_sha256());
+        }
     }
 }
 

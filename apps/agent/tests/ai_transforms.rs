@@ -313,118 +313,6 @@ fn a_summary_step_succeeds_against_the_published_descriptor() {
     assert_eq!(host.model.asked().len(), 1);
 }
 
-#[test]
-fn an_extraction_is_repaired_once_when_it_misses_the_schema() {
-    let schema = json!({
-        "type": "object",
-        "properties": {"due": {"type": "string"}, "owner": {"type": "string"}},
-        "required": ["due", "owner"],
-        "additionalProperties": false
-    });
-    let host = AgentHost::new(&[
-        r#"{"result": {"due": "Friday"}}"#,
-        r#"{"result": {"due": "Friday", "owner": "Ada"}}"#,
-    ]);
-    let extract = ai_shortcut(
-        "Pull out the due date and owner",
-        Some(schema),
-        Some(Binding::Literal(json!("Ada ships it by Friday."))),
-    );
-    assert_eq!(check(&extract, &host.catalog(), &NoShortcuts), Ok(()));
-
-    let report = run_shortcut(&host, &extract, Map::new());
-    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
-    assert_eq!(
-        report.output,
-        Some(json!({"due": "Friday", "owner": "Ada"}))
-    );
-    let asked = host.model.asked();
-    assert_eq!(asked.len(), 2);
-    assert!(asked[1].contains("owner"), "the repair names the reason");
-}
-
-#[test]
-fn an_answer_that_misses_the_schema_twice_fails_the_step() {
-    let host = AgentHost::new(&[r#"{"result": {"due": 5}}"#, "Sure! The owner is Ada."]);
-    let extract = ai_shortcut(
-        "Pull out the due date",
-        Some(json!({
-            "type": "object",
-            "properties": {"due": {"type": "string"}},
-            "required": ["due"]
-        })),
-        Some(Binding::Literal(json!("Ada ships it by Friday."))),
-    );
-    let report = run_shortcut(&host, &extract, Map::new());
-    match failure(&report) {
-        Some(StepFailure::Action { error }) => {
-            assert_eq!(error.code, transform::code::INVALID_OUTPUT);
-            assert!(!error.retryable);
-        }
-        other => panic!("expected a typed agent failure, got {other:?}"),
-    }
-    assert_eq!(host.model.asked().len(), 2, "one attempt and one repair");
-}
-
-#[test]
-fn the_published_result_spec_fails_a_step_whose_answer_skipped_the_check() {
-    // A publisher returning the model's value without checking it is caught
-    // by the result spec the agent declares.
-    let host = AgentHost::unchecked(&[r#"{"result": 42}"#]);
-    let digest = ai_shortcut(
-        "Summarise this",
-        None,
-        Some(Binding::Literal(json!("text"))),
-    );
-    let report = run_shortcut(&host, &digest, Map::new());
-    assert!(
-        matches!(failure(&report), Some(StepFailure::Contract { .. })),
-        "{report:?}"
-    );
-}
-
-#[test]
-fn a_classification_is_one_of_the_labels() {
-    let host = AgentHost::new(&[r#"{"result": "maybe"}"#, r#"{"result": "urgent"}"#]);
-    let triage = ai_shortcut(
-        "Label this urgent or later",
-        Some(json!({"type": "string", "enum": ["urgent", "later"]})),
-        Some(Binding::Literal(json!("The server is down."))),
-    );
-    assert_eq!(check(&triage, &host.catalog(), &NoShortcuts), Ok(()));
-    let report = run_shortcut(&host, &triage, Map::new());
-    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
-    assert_eq!(report.output, Some(json!("urgent")));
-}
-
-#[test]
-fn a_secret_never_reaches_the_agent() {
-    let host = AgentHost::new(&[r#"{"result": "leaked"}"#]);
-    let mut leak = ai_shortcut("Summarise this", None, Some(Binding::Input("token".into())));
-    leak.inputs = vec![ActionParam::required(
-        "token",
-        ParamType::Secret,
-        "An API token",
-    )];
-    let errors = check(&leak, &host.catalog(), &NoShortcuts).unwrap_err();
-    assert!(
-        errors.iter().any(|error| matches!(
-            &error.kind,
-            CheckErrorKind::Incompatible(reason) if reason.contains("secret")
-        )),
-        "{errors:?}"
-    );
-
-    let mut inputs = Map::new();
-    inputs.insert("token".into(), json!("s3cret"));
-    let report = run_shortcut(&host, &leak, inputs);
-    assert!(
-        matches!(failure(&report), Some(StepFailure::Binding { reason }) if reason.contains("secret")),
-        "{report:?}"
-    );
-    assert!(host.model.asked().is_empty());
-}
-
 /// A shortcut whose only step starts a task.
 fn task_shortcut(instruction: &str, output: Option<Value>) -> Shortcut {
     let mut shortcut = ai_shortcut(instruction, None, None);
@@ -459,31 +347,147 @@ fn a_task_step_runs_against_the_published_task_descriptor() {
     assert_eq!(host.model.asked().len(), 1);
 }
 
-#[test]
-fn a_task_says_what_it_may_not_do_when_it_has_no_authority() {
-    let host = AgentHost::new(&[r#"{"result": "I cannot reach the mailbox."}"#]);
-    let tidy = task_shortcut("Tidy the inbox", None);
-    let report = run_shortcut(&host, &tidy, Map::new());
-    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
-    assert_eq!(report.output, Some(json!("I cannot reach the mailbox.")));
-    let asked = host.model.asked();
-    assert_eq!(
-        asked.len(),
-        1,
-        "a task reads no caller input, so it is asked once"
-    );
-    assert!(
-        !asked[0].contains("Input:"),
-        "a task is handed no input: {asked:?}"
-    );
-    let published = transform::descriptors()
-        .into_iter()
-        .find(|descriptor| descriptor.address.action == AGENT_TASK_ACTION)
-        .expect("the agent publishes the task action");
-    assert!(
-        published
-            .params
-            .iter()
-            .any(|param| param.name == "instruction")
-    );
+tilo_test_env::scenario! {
+    fn an_ai_step_is_held_to_what_the_agent_publishes;
+
+    phase an_extraction_is_repaired_once_when_it_misses_the_schema;
+    {
+        let schema = json!({
+            "type": "object",
+            "properties": {"due": {"type": "string"}, "owner": {"type": "string"}},
+            "required": ["due", "owner"],
+            "additionalProperties": false
+        });
+        let host = AgentHost::new(&[
+            r#"{"result": {"due": "Friday"}}"#,
+            r#"{"result": {"due": "Friday", "owner": "Ada"}}"#,
+        ]);
+        let extract = ai_shortcut(
+            "Pull out the due date and owner",
+            Some(schema),
+            Some(Binding::Literal(json!("Ada ships it by Friday."))),
+        );
+        assert_eq!(check(&extract, &host.catalog(), &NoShortcuts), Ok(()));
+
+        let report = run_shortcut(&host, &extract, Map::new());
+        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(
+            report.output,
+            Some(json!({"due": "Friday", "owner": "Ada"}))
+        );
+        let asked = host.model.asked();
+        assert_eq!(asked.len(), 2);
+        assert!(asked[1].contains("owner"), "the repair names the reason");
+    }
+
+    phase an_answer_that_misses_the_schema_twice_fails_the_step;
+    {
+        let host = AgentHost::new(&[r#"{"result": {"due": 5}}"#, "Sure! The owner is Ada."]);
+        let extract = ai_shortcut(
+            "Pull out the due date",
+            Some(json!({
+                "type": "object",
+                "properties": {"due": {"type": "string"}},
+                "required": ["due"]
+            })),
+            Some(Binding::Literal(json!("Ada ships it by Friday."))),
+        );
+        let report = run_shortcut(&host, &extract, Map::new());
+        match failure(&report) {
+            Some(StepFailure::Action { error }) => {
+                assert_eq!(error.code, transform::code::INVALID_OUTPUT);
+                assert!(!error.retryable);
+            }
+            other => panic!("expected a typed agent failure, got {other:?}"),
+        }
+        assert_eq!(host.model.asked().len(), 2, "one attempt and one repair");
+    }
+
+    phase the_published_result_spec_fails_a_step_whose_answer_skipped_the_check;
+    {
+        // A publisher returning the model's value without checking it is caught
+        // by the result spec the agent declares.
+        let host = AgentHost::unchecked(&[r#"{"result": 42}"#]);
+        let digest = ai_shortcut(
+            "Summarise this",
+            None,
+            Some(Binding::Literal(json!("text"))),
+        );
+        let report = run_shortcut(&host, &digest, Map::new());
+        assert!(
+            matches!(failure(&report), Some(StepFailure::Contract { .. })),
+            "{report:?}"
+        );
+    }
+
+    phase a_classification_is_one_of_the_labels;
+    {
+        let host = AgentHost::new(&[r#"{"result": "maybe"}"#, r#"{"result": "urgent"}"#]);
+        let triage = ai_shortcut(
+            "Label this urgent or later",
+            Some(json!({"type": "string", "enum": ["urgent", "later"]})),
+            Some(Binding::Literal(json!("The server is down."))),
+        );
+        assert_eq!(check(&triage, &host.catalog(), &NoShortcuts), Ok(()));
+        let report = run_shortcut(&host, &triage, Map::new());
+        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.output, Some(json!("urgent")));
+    }
+
+    phase a_secret_never_reaches_the_agent;
+    {
+        let host = AgentHost::new(&[r#"{"result": "leaked"}"#]);
+        let mut leak = ai_shortcut("Summarise this", None, Some(Binding::Input("token".into())));
+        leak.inputs = vec![ActionParam::required(
+            "token",
+            ParamType::Secret,
+            "An API token",
+        )];
+        let errors = check(&leak, &host.catalog(), &NoShortcuts).unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                &error.kind,
+                CheckErrorKind::Incompatible(reason) if reason.contains("secret")
+            )),
+            "{errors:?}"
+        );
+
+        let mut inputs = Map::new();
+        inputs.insert("token".into(), json!("s3cret"));
+        let report = run_shortcut(&host, &leak, inputs);
+        assert!(
+            matches!(failure(&report), Some(StepFailure::Binding { reason }) if reason.contains("secret")),
+            "{report:?}"
+        );
+        assert!(host.model.asked().is_empty());
+    }
+
+    phase a_task_says_what_it_may_not_do_when_it_has_no_authority;
+    {
+        let host = AgentHost::new(&[r#"{"result": "I cannot reach the mailbox."}"#]);
+        let tidy = task_shortcut("Tidy the inbox", None);
+        let report = run_shortcut(&host, &tidy, Map::new());
+        assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+        assert_eq!(report.output, Some(json!("I cannot reach the mailbox.")));
+        let asked = host.model.asked();
+        assert_eq!(
+            asked.len(),
+            1,
+            "a task reads no caller input, so it is asked once"
+        );
+        assert!(
+            !asked[0].contains("Input:"),
+            "a task is handed no input: {asked:?}"
+        );
+        let published = transform::descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.address.action == AGENT_TASK_ACTION)
+            .expect("the agent publishes the task action");
+        assert!(
+            published
+                .params
+                .iter()
+                .any(|param| param.name == "instruction")
+        );
+    }
 }

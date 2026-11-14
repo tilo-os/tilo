@@ -442,70 +442,74 @@ mod tests {
         })
     }
 
-    #[test]
-    fn portable_receipt_preserves_types_closed_fields_and_character_bound() {
-        let value = home();
-        assert!(expectation(&value, "home").is_ok());
-        for (key, replacement) in [
-            ("schema", json!(true)),
-            ("sealed_bytes", json!(48.0)),
-            ("entries", json!(-1)),
-            ("runtime_sockets", json!(2)),
-            ("ciphertext_sha256", json!(vec![256; 32])),
-            ("setup_binding", json!("é".repeat(257))),
-        ] {
-            let mut bad = value.clone();
-            bad[key] = replacement;
-            assert!(expectation(&bad, "home").is_err(), "{key}");
+    tilo_test_env::scenario! {
+        fn receipts_and_envelopes_are_closed_and_bounded;
+
+        phase portable_receipt_preserves_types_closed_fields_and_character_bound;
+        {
+            let value = home();
+            assert!(expectation(&value, "home").is_ok());
+            for (key, replacement) in [
+                ("schema", json!(true)),
+                ("sealed_bytes", json!(48.0)),
+                ("entries", json!(-1)),
+                ("runtime_sockets", json!(2)),
+                ("ciphertext_sha256", json!(vec![256; 32])),
+                ("setup_binding", json!("é".repeat(257))),
+            ] {
+                let mut bad = value.clone();
+                bad[key] = replacement;
+                assert!(expectation(&bad, "home").is_err(), "{key}");
+            }
+            let mut extra = value.clone();
+            extra["extra"] = Value::Null;
+            assert!(expectation(&extra, "home").is_err());
+            assert!(expectation(&value, "unsupported").is_err());
         }
-        let mut extra = value.clone();
-        extra["extra"] = Value::Null;
-        assert!(expectation(&extra, "home").is_err());
-        assert!(expectation(&value, "unsupported").is_err());
-    }
 
-    #[test]
-    fn origin_and_receipt_have_distinct_identity_and_length_rules() {
-        let digest = "a".repeat(64);
-        let sealed = json!({"schema": 1, "sealed_bytes": 48, "ciphertext_sha256": digest});
-        assert!(receipt(&sealed, 48, &digest).is_ok());
-        assert!(receipt(&sealed, 49, &digest).is_err());
-        assert!(receipt(&sealed, 48, &"A".repeat(64)).is_err());
-        let mut record = sealed;
-        record["identity_public_key"] = json!(vec![1; 32]);
-        record["setup_binding"] = json!("é".repeat(128));
-        assert!(origin(&record).is_ok());
-        record["setup_binding"] = json!("é".repeat(129));
-        assert!(origin(&record).is_err());
-        record["setup_binding"] = json!("binding");
-        record["identity_public_key"] = json!(vec![0; 32]);
-        assert!(origin(&record).is_err());
-    }
+        phase origin_and_receipt_have_distinct_identity_and_length_rules;
+        {
+            let digest = "a".repeat(64);
+            let sealed = json!({"schema": 1, "sealed_bytes": 48, "ciphertext_sha256": digest});
+            assert!(receipt(&sealed, 48, &digest).is_ok());
+            assert!(receipt(&sealed, 49, &digest).is_err());
+            assert!(receipt(&sealed, 48, &"A".repeat(64)).is_err());
+            let mut record = sealed;
+            record["identity_public_key"] = json!(vec![1; 32]);
+            record["setup_binding"] = json!("é".repeat(128));
+            assert!(origin(&record).is_ok());
+            record["setup_binding"] = json!("é".repeat(129));
+            assert!(origin(&record).is_err());
+            record["setup_binding"] = json!("binding");
+            record["identity_public_key"] = json!(vec![0; 32]);
+            assert!(origin(&record).is_err());
+        }
 
-    #[test]
-    fn envelope_checks_only_metadata_but_rejects_wrong_types_and_missing_scope() {
-        assert!(
-            authenticated_metadata(&json!({"schema": 1, "completed_home": "not checked here"}))
-                .is_ok()
-        );
-        assert!(
-            authenticated_metadata(&json!({"schema": 1, "completed_applications_only": null}))
+        phase envelope_checks_only_metadata_but_rejects_wrong_types_and_missing_scope;
+        {
+            assert!(
+                authenticated_metadata(&json!({"schema": 1, "completed_home": "not checked here"}))
+                    .is_ok()
+            );
+            assert!(
+                authenticated_metadata(&json!({"schema": 1, "completed_applications_only": null}))
+                    .is_err()
+            );
+            assert!(authenticated_metadata(&json!({"schema": true})).is_err());
+            assert!(
+                authenticated_metadata(&json!({"schema": 1, "extra": "x".repeat(80 * 1024)})).is_err()
+            );
+            assert!(
+                shared_apps(&json!({"retained_home": {}, "completed_applications_only": true}))
+                    .is_err()
+            );
+            assert!(authenticated_metadata(&json!({"schema": 1, "planned_btrfs_resize": {}})).is_err());
+            assert!(
+                authenticated_metadata(
+                    &json!({"schema": 1, "pending_computer_applications_scope": {}})
+                )
                 .is_err()
-        );
-        assert!(authenticated_metadata(&json!({"schema": true})).is_err());
-        assert!(
-            authenticated_metadata(&json!({"schema": 1, "extra": "x".repeat(80 * 1024)})).is_err()
-        );
-        assert!(
-            shared_apps(&json!({"retained_home": {}, "completed_applications_only": true}))
-                .is_err()
-        );
-        assert!(authenticated_metadata(&json!({"schema": 1, "planned_btrfs_resize": {}})).is_err());
-        assert!(
-            authenticated_metadata(
-                &json!({"schema": 1, "pending_computer_applications_scope": {}})
-            )
-            .is_err()
-        );
+            );
+        }
     }
 }

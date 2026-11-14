@@ -263,83 +263,88 @@ mod tests {
         WorkspaceId::parse(Some(id)).unwrap()
     }
 
-    #[test]
-    fn a_workspace_id_is_one_component_and_none_is_the_primary_workspace() {
-        for primary in [None, Some(""), Some(" "), Some("personal")] {
+    tilo_test_env::scenario! {
+        /// A workspace: its id, the apps launched in it and the tree it is granted.
+        fn a_workspace_is_one_id_one_tree_and_holds_its_apps;
+
+        phase a_workspace_id_is_one_component_and_none_is_the_primary_workspace;
+        {
+            for primary in [None, Some(""), Some(" "), Some("personal")] {
+                assert!(
+                    WorkspaceId::parse(primary).unwrap().is_primary(),
+                    "{primary:?}"
+                );
+            }
+            assert_eq!(ws(W1).as_str(), W1);
+            for bad in ["..", ".", "a/b", "../personal", "a b", "x.y"] {
+                assert!(WorkspaceId::parse(Some(bad)).is_err(), "{bad:?}");
+            }
+            let id = EnvironmentId::parse(&format!("{W1}/default")).unwrap();
+            assert_eq!((id.workspace(), id.record()), (&ws(W1), "default"));
+            assert_eq!(id.to_string(), format!("{W1}/default"));
             assert!(
-                WorkspaceId::parse(primary).unwrap().is_primary(),
-                "{primary:?}"
+                EnvironmentId::parse("personal/env-1")
+                    .unwrap()
+                    .workspace()
+                    .is_primary()
             );
+            for bad in [
+                "default",
+                "/default",
+                "w1/../x",
+                &format!("{W1}/a/b"),
+                "a.b/default",
+            ] {
+                assert!(EnvironmentId::parse(bad).is_err(), "{bad:?}");
+            }
         }
-        assert_eq!(ws(W1).as_str(), W1);
-        for bad in ["..", ".", "a/b", "../personal", "a b", "x.y"] {
-            assert!(WorkspaceId::parse(Some(bad)).is_err(), "{bad:?}");
+
+        phase an_app_is_held_to_the_workspace_it_was_launched_in;
+        {
+            let app = Caller::App("so.tilo.terminal".into());
+            assert_eq!(scope_of(&app, Some(W1), None).unwrap(), ws(W1));
+            assert_eq!(scope_of(&app, Some(W1), Some(W1)).unwrap(), ws(W1));
+            assert_eq!(scope_of(&app, Some(W1), Some("")).unwrap(), ws(W1));
+            let refused = scope_of(&app, Some(W1), Some(W2)).unwrap_err();
+            assert!(refused.contains(W2), "{refused}");
+            assert!(
+                scope_of(&app, None, Some(W2)).is_err(),
+                "an app launched in no workspace cannot name one"
+            );
+            assert!(scope_of(&app, None, None).unwrap().is_primary());
+            assert!(scope_of(&app, Some("../x"), None).is_err());
+
+            assert_eq!(scope_of(&Caller::Session, None, Some(W2)).unwrap(), ws(W2));
+            assert!(scope_of(&Caller::Session, None, None).unwrap().is_primary());
+            assert!(scope_of(&Caller::Session, None, Some("a/b")).is_err());
         }
-        let id = EnvironmentId::parse(&format!("{W1}/default")).unwrap();
-        assert_eq!((id.workspace(), id.record()), (&ws(W1), "default"));
-        assert_eq!(id.to_string(), format!("{W1}/default"));
-        assert!(
-            EnvironmentId::parse("personal/env-1")
-                .unwrap()
-                .workspace()
-                .is_primary()
-        );
-        for bad in [
-            "default",
-            "/default",
-            "w1/../x",
-            &format!("{W1}/a/b"),
-            "a.b/default",
-        ] {
-            assert!(EnvironmentId::parse(bad).is_err(), "{bad:?}");
+
+        phase a_workspace_is_granted_its_own_tree_and_nothing_else_of_the_files;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let files = dir.path().join("files");
+            std::fs::create_dir_all(&files).unwrap();
+            assert!(Confinement::new(&files, &WorkspaceId::primary()).is_none());
+            let confined = Confinement::new(&files, &ws(W1)).unwrap();
+            let tree = |id: &str| files.join(".workspaces").join(id);
+
+            assert!(confined.admits_path(&tree(W1)));
+            assert!(confined.admits_path(&tree(W1).join("src")));
+            assert!(!confined.admits_path(&tree(W2)));
+            assert!(!confined.admits_path(&tree(W2).join("src")));
+            assert!(!confined.admits_path(&tree(W1).join("../").join(W2)));
+            assert!(!confined.admits_path(&files), "the folder holds every tree");
+            assert!(!confined.admits_path(&files.join(".workspaces")));
+            assert!(!confined.admits_path(&files.join("Documents")));
+            assert!(!confined.admits_path(dir.path()), "above the files folder");
+            assert!(!confined.admits_path(Path::new("/")));
+            assert!(confined.admits_path(&dir.path().join("elsewhere")));
+
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&files, &link).unwrap();
+            let through = Confinement::new(&link, &ws(W1)).unwrap();
+            assert!(!through.admits_path(&files.join(".workspaces").join(W2)));
+            assert!(through.admits_path(&files.join(".workspaces").join(W1)));
         }
-    }
-
-    #[test]
-    fn an_app_is_held_to_the_workspace_it_was_launched_in() {
-        let app = Caller::App("so.tilo.terminal".into());
-        assert_eq!(scope_of(&app, Some(W1), None).unwrap(), ws(W1));
-        assert_eq!(scope_of(&app, Some(W1), Some(W1)).unwrap(), ws(W1));
-        assert_eq!(scope_of(&app, Some(W1), Some("")).unwrap(), ws(W1));
-        let refused = scope_of(&app, Some(W1), Some(W2)).unwrap_err();
-        assert!(refused.contains(W2), "{refused}");
-        assert!(
-            scope_of(&app, None, Some(W2)).is_err(),
-            "an app launched in no workspace cannot name one"
-        );
-        assert!(scope_of(&app, None, None).unwrap().is_primary());
-        assert!(scope_of(&app, Some("../x"), None).is_err());
-
-        assert_eq!(scope_of(&Caller::Session, None, Some(W2)).unwrap(), ws(W2));
-        assert!(scope_of(&Caller::Session, None, None).unwrap().is_primary());
-        assert!(scope_of(&Caller::Session, None, Some("a/b")).is_err());
-    }
-
-    #[test]
-    fn a_workspace_is_granted_its_own_tree_and_nothing_else_of_the_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let files = dir.path().join("files");
-        std::fs::create_dir_all(&files).unwrap();
-        assert!(Confinement::new(&files, &WorkspaceId::primary()).is_none());
-        let confined = Confinement::new(&files, &ws(W1)).unwrap();
-        let tree = |id: &str| files.join(".workspaces").join(id);
-
-        assert!(confined.admits_path(&tree(W1)));
-        assert!(confined.admits_path(&tree(W1).join("src")));
-        assert!(!confined.admits_path(&tree(W2)));
-        assert!(!confined.admits_path(&tree(W2).join("src")));
-        assert!(!confined.admits_path(&tree(W1).join("../").join(W2)));
-        assert!(!confined.admits_path(&files), "the folder holds every tree");
-        assert!(!confined.admits_path(&files.join(".workspaces")));
-        assert!(!confined.admits_path(&files.join("Documents")));
-        assert!(!confined.admits_path(dir.path()), "above the files folder");
-        assert!(!confined.admits_path(Path::new("/")));
-        assert!(confined.admits_path(&dir.path().join("elsewhere")));
-
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(&files, &link).unwrap();
-        let through = Confinement::new(&link, &ws(W1)).unwrap();
-        assert!(!through.admits_path(&files.join(".workspaces").join(W2)));
-        assert!(through.admits_path(&files.join(".workspaces").join(W1)));
     }
 }

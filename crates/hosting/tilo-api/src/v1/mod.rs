@@ -28,6 +28,7 @@ use crate::store::Grant;
 use crate::{Body, Reply, Server, now_ms};
 use answers::typed;
 use errors::ApiError;
+use hyper::body::{Bytes, Frame};
 use hyper::{HeaderMap, Method, StatusCode, header};
 use idempotency::{Begun, Stored};
 use operations::Operation;
@@ -98,9 +99,19 @@ enum Answer {
         location: Option<String>,
     },
     Stream(Body),
-    Bytes {
+    /// A file's bytes as they come: a piece fetched is a piece sent, so a
+    /// file of hundreds of megabytes costs the server no more memory than
+    /// one of its pieces.
+    File {
         content_type: String,
-        body: Vec<u8>,
+        body: Body,
+    },
+    /// Part of a file's bytes, from `range.0` to `range.1`, answered `206`.
+    Partial {
+        content_type: String,
+        range: (u64, Option<u64>),
+        size: u64,
+        body: Body,
     },
 }
 
@@ -518,6 +529,10 @@ impl<'a> Caller<'a> {
     }
 
     /// The workspace's people, programs, files and events.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match over the workspace's operations, each a few lines"
+    )]
     async fn workspace_operation(&self, id: &str) -> Result<Answer, ApiError> {
         let ws = self.workspace();
         match id {
@@ -534,6 +549,13 @@ impl<'a> Caller<'a> {
                 let invited = self.call("tilo_do", invite).await?;
                 shaped::<answers::Invitation>(invited.get("result").cloned().unwrap_or_default())
                     .map(Answer::created)
+            }
+            "namePerson" => {
+                let new: answers::NewName = self.json_body()?;
+                let named = json!({"path": "workspace/members#name", "args": new});
+                let listed = self.call("tilo_do", named).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
             }
             "runProgram" => {
                 let program: answers::Program = self.json_body()?;
@@ -557,6 +579,59 @@ impl<'a> Caller<'a> {
                 Ok(Answer::created(
                     json!({"content": content, "size": self.body.len()}),
                 ))
+            }
+            "openUpload" => {
+                let id = self.params.get("upload").to_owned();
+                if !crate::content::valid_id(&id) {
+                    return Err(ApiError::new(
+                        "invalid_request",
+                        "an upload's id is 8 to 128 letters, digits, `-` or `_`",
+                    )
+                    .next(
+                        "name it after something only this upload's caller knows, such as a UUID",
+                    ));
+                }
+                let new: answers::NewUpload = self.json_body()?;
+                let (placement, opened) = self
+                    .server
+                    .uploads
+                    .open(&self.session, &self.grant.id, &ws, &id, new.size)
+                    .await?;
+                Ok(if opened {
+                    Answer::created(placement)
+                } else {
+                    Answer::ok(placement)
+                })
+            }
+            "uploadStatus" => {
+                let id = self.params.get("upload").to_owned();
+                Ok(Answer::ok(self.server.uploads.status(
+                    &self.grant.id,
+                    &ws,
+                    &id,
+                )?))
+            }
+            "uploadPiece" => {
+                let id = self.params.get("upload").to_owned();
+                let at = self.query("offset").and_then(|at| at.trim().parse().ok());
+                let body = self.body;
+                match self
+                    .server
+                    .uploads
+                    .append(&self.session, &self.grant.id, &ws, &id, at, body)
+                    .await?
+                {
+                    crate::content::Sent::More(placement) => Ok(Answer::ok(placement)),
+                    crate::content::Sent::Done(done) => Ok(Answer::created(done)),
+                }
+            }
+            "abandonUpload" => {
+                let id = self.params.get("upload").to_owned();
+                Ok(Answer::ok(self.server.uploads.abandon(
+                    &self.grant.id,
+                    &ws,
+                    &id,
+                )?))
             }
             "getContent" => self.content().await,
             "events" => {
@@ -726,37 +801,78 @@ impl<'a> Caller<'a> {
         )))
     }
 
+    /// The bytes of `content`, sent as each piece of them arrives: a file of
+    /// any size streams through without being held whole. `Range:
+    /// bytes=<from>-<to?>` asks for part of it, which a caller downloading a
+    /// large file does a piece at a time.
     async fn content(&self) -> Result<Answer, ApiError> {
-        use base64::Engine as _;
-        let content = self.params.get("content");
-        let mut bytes = Vec::new();
-        loop {
-            let piece = self
-                .call(
-                    "tilo_get",
-                    json!({"content": content, "offset": bytes.len()}),
-                )
-                .await?;
-            let decoded = piece
-                .get("bytes")
-                .and_then(Value::as_str)
-                .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
-                .ok_or_else(|| ApiError::malformed("a file", "no bytes"))?;
-            let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
-            if decoded.is_empty() && (bytes.len() as u64) < size {
-                return Err(ApiError::malformed(
-                    "a file",
-                    "an empty piece before its end",
-                ));
-            }
-            bytes.extend(decoded);
-            if bytes.len() as u64 >= size || bytes.len() >= crate::content::MAX_CONTENT_BYTES {
-                return Ok(Answer::Bytes {
-                    content_type: "application/octet-stream".to_owned(),
-                    body: bytes,
-                });
-            }
+        let content = self.params.get("content").to_owned();
+        if content.trim().is_empty() {
+            return Err(ApiError::new("not_found", "no content is named"));
         }
+        let asked = self
+            .headers
+            .get(hyper::header::RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(range_of);
+        let from = asked.map_or(0, |(from, _)| from);
+        // The first piece is asked for now: content the workspace no longer
+        // holds is refused as every other route refuses it, never answered
+        // as a file of no bytes.
+        let (size, first) = self.first_piece(&content, from).await?;
+        let sent = first.len() as u64;
+        let (sender, pieces) = tokio::sync::mpsc::channel::<Bytes>(4);
+        if !first.is_empty() {
+            let _ = sender.try_send(Bytes::from(first));
+        }
+        if from.saturating_add(sent) < size {
+            let session = Arc::clone(&self.session);
+            let workspace = self.workspace();
+            tokio::spawn(stream_content(
+                session,
+                workspace,
+                content.clone(),
+                from.saturating_add(sent),
+                asked.and_then(|(_, until)| until),
+                sender,
+            ));
+        }
+        let stream = futures_util::stream::unfold(pieces, |mut pieces| async move {
+            let piece = pieces.recv().await?;
+            Some((
+                Ok::<_, std::convert::Infallible>(Frame::data(piece)),
+                pieces,
+            ))
+        });
+        let body = http_body_util::BodyExt::boxed(http_body_util::StreamBody::new(stream));
+        match asked {
+            None => Ok(Answer::File {
+                content_type: "application/octet-stream".to_owned(),
+                body,
+            }),
+            Some((_, until)) => Ok(Answer::Partial {
+                content_type: "application/octet-stream".to_owned(),
+                range: (from, Some(until.unwrap_or_else(|| size.saturating_sub(1)))),
+                size,
+                body,
+            }),
+        }
+    }
+
+    /// The length of `content` and its bytes from `offset`: the first piece
+    /// of a download, asked before any of it is answered.
+    async fn first_piece(&self, content: &str, offset: u64) -> Result<(u64, Vec<u8>), ApiError> {
+        use base64::Engine as _;
+        let piece = self
+            .call("tilo_get", json!({"content": content, "offset": offset}))
+            .await?;
+        let bytes = piece
+            .get("bytes")
+            .and_then(Value::as_str)
+            .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
+            .ok_or_else(|| ApiError::malformed("a file", "no bytes"))?;
+        let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
+        Ok((size, bytes))
     }
 
     fn create_webhook(&self) -> Result<Answer, ApiError> {
@@ -835,14 +951,107 @@ fn typed_answer(answer: &Value) -> Result<Value, ApiError> {
 }
 
 /// `value` as `T`, or the refusal that it was not.
+///
+/// A tool that had nothing of the kind to answer says why in words
+/// (`{"status": .., "text": ..}`, such as a listing of an app the workspace
+/// does not hold open): that is what the caller is told, not the shape.
 fn shaped<T: serde::de::DeserializeOwned + serde::Serialize>(
     value: Value,
 ) -> Result<Value, ApiError> {
-    typed::<T>(value).map_err(|why| ApiError::malformed(std::any::type_name::<T>(), &why))
+    let said = said_instead(&value);
+    typed::<T>(value).map_err(|why| match said {
+        Some((failed, text)) => ApiError::new(if failed { "failed" } else { "not_found" }, text),
+        None => ApiError::malformed(std::any::type_name::<T>(), &why),
+    })
+}
+
+/// What a tool said in words in place of a typed answer, and whether it said
+/// it as a failure.
+fn said_instead(value: &Value) -> Option<(bool, String)> {
+    let fields = value.as_object()?;
+    if fields.len() != 2 {
+        return None;
+    }
+    let status = fields.get("status")?.as_str()?;
+    let text = fields.get("text")?.as_str()?;
+    Some((status == "failed", text.to_owned()))
 }
 
 /// An action's answer as the API names it: `200` done, `202` pending with
 /// where to follow it, a refusal when it failed.
+/// Send `content`'s bytes into `pieces` as the workspace answers them, one
+/// piece after another, until every byte is sent. A refusal ends the stream
+/// with what is left unsent: a download that stops early is one the caller
+/// sees, never a short file answered as a whole one.
+async fn stream_content(
+    session: Arc<Session>,
+    workspace: String,
+    content: String,
+    from: u64,
+    until: Option<u64>,
+    pieces: tokio::sync::mpsc::Sender<Bytes>,
+) {
+    use base64::Engine as _;
+    let mut offset = from;
+    loop {
+        let answer = session
+            .call(Call {
+                workspace: Some(workspace.clone()).filter(|workspace| !workspace.is_empty()),
+                tool: "tilo_get",
+                arguments: json!({"content": content, "offset": offset}),
+                run: None,
+            })
+            .await;
+        let piece = match answer {
+            Ok(answer) => match typed_answer(&answer) {
+                Ok(piece) => piece,
+                Err(error) => {
+                    tracing::warn!(why = %error.body.message, code = %error.body.code, %content, offset, "a file answered nothing typed");
+                    return;
+                }
+            },
+            Err(error) => {
+                tracing::warn!(why = %error.message, code = error.code, %content, offset, "a file stopped part way");
+                return;
+            }
+        };
+        let decoded = piece
+            .get("bytes")
+            .and_then(Value::as_str)
+            .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
+            .unwrap_or_default();
+        let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
+        if decoded.is_empty() {
+            if offset < size {
+                tracing::warn!(%content, offset, size, "the workspace answered no bytes before its end");
+            }
+            return;
+        }
+        offset = offset.saturating_add(decoded.len() as u64);
+        if pieces.send(Bytes::from(decoded)).await.is_err() {
+            // The caller stopped reading.
+            return;
+        }
+        if offset >= size || until.is_some_and(|end| offset >= end) {
+            return;
+        }
+    }
+}
+
+/// `Range: bytes=<from>-<to>` as the two ends a reader wants, the second one
+/// inclusive like HTTP's; `None` for a range this server does not answer.
+fn range_of(value: &str) -> Option<(u64, Option<u64>)> {
+    let range = value.trim().strip_prefix("bytes=")?;
+    let (from, to) = range.split_once('-')?;
+    let from: u64 = from.trim().parse().ok()?;
+    let to = to.trim();
+    if to.is_empty() {
+        return Some((from, None));
+    }
+    let to: u64 = to.parse().ok()?;
+    (to >= from).then_some((from, Some(to)))
+}
+
 fn action_answer(mut answer: Value, workspace: &str) -> Result<Answer, ApiError> {
     if let Some(fields) = answer.as_object_mut()
         && let Some(run) = fields.remove("invocation_id")
@@ -882,10 +1091,31 @@ fn reply(answered: Result<Answer, ApiError>) -> Reply {
             );
             reply
         }
-        Ok(Answer::Bytes { content_type, body }) => {
-            let mut reply = hyper::Response::new(crate::body(body));
+        Ok(Answer::File { content_type, body }) => {
+            let mut reply = hyper::Response::new(body);
             if let Ok(value) = header::HeaderValue::from_str(&content_type) {
                 reply.headers_mut().insert(header::CONTENT_TYPE, value);
+            }
+            reply
+        }
+        Ok(Answer::Partial {
+            content_type,
+            range,
+            size,
+            body,
+        }) => {
+            let mut reply = hyper::Response::new(body);
+            *reply.status_mut() = StatusCode::PARTIAL_CONTENT;
+            let headers = reply.headers_mut();
+            if let Ok(value) = header::HeaderValue::from_str(&content_type) {
+                headers.insert(header::CONTENT_TYPE, value);
+            }
+            if let Ok(value) = header::HeaderValue::from_str(&format!(
+                "bytes {}-{}/{size}",
+                range.0,
+                range.1.unwrap_or(range.0),
+            )) {
+                headers.insert(header::CONTENT_RANGE, value);
             }
             reply
         }
@@ -903,7 +1133,7 @@ fn json_reply(status: StatusCode, body: &Value, location: Option<&str>) -> Reply
     reply
 }
 
-fn refusal(refused: &ApiError) -> Reply {
+pub(crate) fn refusal(refused: &ApiError) -> Reply {
     let mut reply = crate::json_reply(refused.status, &refused.json());
     if let Some(wait) = refused.body.retry_after_ms
         && let Ok(value) = header::HeaderValue::from_str(&wait.div_ceil(1000).to_string())
@@ -911,4 +1141,26 @@ fn refusal(refused: &ApiError) -> Reply {
         reply.headers_mut().insert(header::RETRY_AFTER, value);
     }
     reply
+}
+
+#[cfg(test)]
+mod shaped_tests {
+    use super::*;
+
+    /// A listing of something the workspace does not hold open is told as
+    /// what the host said of it, not as an answer of the wrong shape.
+    #[test]
+    fn a_tool_that_said_why_in_words_is_told_in_its_words() {
+        let note = json!({"status": "ok", "text": "browser is not open in this workspace"});
+        let error = shaped::<answers::Listing>(note).expect_err("a note is no listing");
+        let said = serde_json::to_value(&*error.body).expect("an error body");
+        assert_eq!(said["code"], "not_found", "{said}");
+        assert_eq!(
+            said["message"], "browser is not open in this workspace",
+            "{said}"
+        );
+        let wrong = shaped::<answers::Listing>(json!({"rows": 3})).expect_err("not a listing");
+        let said = serde_json::to_value(&*wrong.body).expect("an error body");
+        assert_eq!(said["code"], "unavailable", "{said}");
+    }
 }

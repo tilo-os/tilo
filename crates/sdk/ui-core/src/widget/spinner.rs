@@ -257,200 +257,206 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
 
-    #[test]
-    fn spinner_contract_size_semantics_and_dots() {
-        {
-            let s = Spinner::new();
-            assert_eq!(s.size(), 24.0, "Spinner::new() must default to 24 px");
+    tilo_test_env::scenario! {
+        /// A spinner.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_spinner_sizes_steps_and_turns_only_with_motion;
 
+        phase spinner_contract_size_semantics_and_dots;
+        {
+            {
+                let s = Spinner::new();
+                assert_eq!(s.size(), 24.0, "Spinner::new() must default to 24 px");
+
+                let mut s = Spinner::new();
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+                let root = taffy.parent_node(Style::default(), &[node]);
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                s.apply_layout(&taffy, node, Point::ZERO);
+
+                assert_eq!(s.get_rect().width(), 24.0);
+                assert_eq!(s.get_rect().height(), 24.0);
+            }
+
+            for text_scale in [1.0, 2.0] {
+                let theme = Theme::dark().with_text_scale(text_scale);
+                let line = theme
+                    .tokens
+                    .typography
+                    .style(crate::tokens::TextRole::Caption)
+                    .line_height_px();
+                let mut s = Spinner::for_text(crate::tokens::TextRole::Caption);
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = s.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy.parent_node(Style::default(), &[node]);
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                s.apply_layout(&taffy, node, Point::ZERO);
+                assert!((s.get_rect().height() - f64::from(line)).abs() <= 0.5);
+                assert!(
+                    text_scale > 1.0 || line < DEFAULT_SIZE_PX,
+                    "a caption line ({line}px) must be smaller than the standalone spinner"
+                );
+            }
+
+            {
+                use crate::a11y::Role;
+                let s = Spinner::new();
+                let node = Widget::accessibility(&s).expect("spinner is not presentational");
+                assert_eq!(node.role, Role::Spinner);
+                assert!(node.state.busy, "a spinner is always busy");
+                assert_eq!(node.name, None, "a spinner has no text label");
+            }
+
+            {
+                let mut s = Spinner::new();
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+                let root = taffy.parent_node(Style::default(), &[node]);
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                s.apply_layout(&taffy, node, Point::ZERO);
+
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                s.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+                let colour_fills = scene
+                    .encoding()
+                    .draw_tags
+                    .iter()
+                    .filter(|t| **t == DrawTag::COLOR)
+                    .count();
+
+                assert_eq!(
+                    colour_fills, DOT_COUNT,
+                    "Spinner must emit exactly {DOT_COUNT} colour fills — one per orbiting dot (got {colour_fills})"
+                );
+            }
+        }
+
+        phase spinner_repaints_only_when_its_step_changes;
+        // A spinner repaints once per indicator step, not at every refresh:
+        // frames between steps damage nothing and so do not present.
+        {
             let mut s = Spinner::new();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            s.apply_layout(&taffy, node, Point::ZERO);
-
-            assert_eq!(s.get_rect().width(), 24.0);
-            assert_eq!(s.get_rect().height(), 24.0);
-        }
-
-        for text_scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(text_scale);
-            let line = theme
-                .tokens
-                .typography
-                .style(crate::tokens::TextRole::Caption)
-                .line_height_px();
-            let mut s = Spinner::for_text(crate::tokens::TextRole::Caption);
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = s.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            s.apply_layout(&taffy, node, Point::ZERO);
-            assert!((s.get_rect().height() - f64::from(line)).abs() <= 0.5);
-            assert!(
-                text_scale > 1.0 || line < DEFAULT_SIZE_PX,
-                "a caption line ({line}px) must be smaller than the standalone spinner"
+            let start = crate::time::now();
+            s.set_started_for_test(start);
+            let at = |offset: crate::time::Duration| start + offset;
+            crate::time::testing::with_monotonic_time(at(crate::time::Duration::ZERO), || {
+                draw_path_data(&mut s, false);
+            });
+            assert!(s.needs_redraw(), "a fresh pose is damage until presented");
+            s.mark_drawn();
+            crate::time::testing::with_monotonic_time(
+                at(crate::time::Duration::from_millis(10)),
+                || assert!(!s.needs_redraw(), "same step, nothing to repaint"),
             );
+            crate::time::testing::with_monotonic_time(at(crate::animation::INDICATOR_STEP), || {
+                assert!(s.needs_redraw(), "the next step repaints")
+            });
         }
 
+        phase spinner_animates_only_when_motion_is_enabled;
         {
-            use crate::a11y::Role;
-            let s = Spinner::new();
-            let node = Widget::accessibility(&s).expect("spinner is not presentational");
-            assert_eq!(node.role, Role::Spinner);
-            assert!(node.state.busy, "a spinner is always busy");
-            assert_eq!(node.name, None, "a spinner has no text label");
+            {
+                let s = Spinner::new();
+                assert!(
+                    Widget::needs_animation_frame(&s),
+                    "Spinner must request animation frames before its first motion-on draw"
+                );
+
+                let s = Spinner::with_size(48.0);
+                assert!(
+                    Widget::needs_animation_frame(&s),
+                    "Spinner::with_size must also request animation frames before drawing"
+                );
+            }
+
+            // Case `reduce_motion_freezes_the_orbit_at_phase_zero`.
+            {
+                use crate::time::Duration;
+                let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
+                // `half_period` is ~750ms, so this can only underflow on a machine
+                // whose monotonic clock started under a second ago; fall back to
+                // "now" (untested edge case) instead of panicking the test.
+                let backdate = crate::time::now()
+                    .checked_sub(half_period)
+                    .unwrap_or_else(crate::time::now);
+
+                let mut fresh = Spinner::new();
+                let fresh_geo = draw_path_data(&mut fresh, true);
+
+                let mut aged = Spinner::new();
+                aged.set_started_for_test(backdate);
+                let aged_reduced = draw_path_data(&mut aged, true);
+
+                assert_eq!(
+                    fresh_geo, aged_reduced,
+                    "reduced motion must paint the resting orbit regardless of elapsed time",
+                );
+
+                let mut aged2 = Spinner::new();
+                aged2.set_started_for_test(backdate);
+                let aged_moving = draw_path_data(&mut aged2, false);
+                assert_ne!(
+                    fresh_geo, aged_moving,
+                    "with motion on, a backdated spinner is at a different phase",
+                );
+            }
+
+            {
+                let mut spinner = Spinner::new();
+                let _ = draw_path_data(&mut spinner, true);
+                assert!(
+                    !Widget::needs_animation_frame(&spinner),
+                    "a frozen reduced-motion spinner must not keep the compositor awake"
+                );
+
+                let _ = draw_path_data(&mut spinner, false);
+                assert!(
+                    Widget::needs_animation_frame(&spinner),
+                    "switching back to normal motion must restore spinner animation"
+                );
+            }
         }
 
+        phase a_still_spinner_asks_for_no_frames;
         {
-            let mut s = Spinner::new();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            s.apply_layout(&taffy, node, Point::ZERO);
+            // A window laid out without a paint — a layout check staging a screen —
+            // asks whether a widget moves before it draws any: the framework's
+            // policy answers for a spinner that was never painted.
+            let mut reduced = Spinner::new();
+            reduced.set_motion_reduced(true);
+            assert!(
+                !Widget::needs_animation_frame(&reduced),
+                "reduced motion holds the orbit still"
+            );
 
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            s.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let at = crate::clock::capture_wall().expect("the capture time exists in this zone");
+            crate::time::testing::with_wall(at, || {
+                assert!(crate::time::wall_frozen());
+                assert!(
+                    !Widget::needs_animation_frame(&Spinner::new()),
+                    "a capture's clock holds the orbit still"
+                );
+            });
 
-            let colour_fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-
-            assert_eq!(
-                colour_fills, DOT_COUNT,
-                "Spinner must emit exactly {DOT_COUNT} colour fills — one per orbiting dot (got {colour_fills})"
+            assert!(
+                Widget::needs_animation_frame(&Spinner::new()),
+                "a live spinner's orbit moves"
             );
         }
-    }
-
-    /// A spinner repaints once per indicator step, not at every refresh:
-    /// frames between steps damage nothing and so do not present.
-    #[test]
-    fn spinner_repaints_only_when_its_step_changes() {
-        let mut s = Spinner::new();
-        let start = crate::time::now();
-        s.set_started_for_test(start);
-        let at = |offset: crate::time::Duration| start + offset;
-        crate::time::testing::with_monotonic_time(at(crate::time::Duration::ZERO), || {
-            draw_path_data(&mut s, false);
-        });
-        assert!(s.needs_redraw(), "a fresh pose is damage until presented");
-        s.mark_drawn();
-        crate::time::testing::with_monotonic_time(
-            at(crate::time::Duration::from_millis(10)),
-            || assert!(!s.needs_redraw(), "same step, nothing to repaint"),
-        );
-        crate::time::testing::with_monotonic_time(at(crate::animation::INDICATOR_STEP), || {
-            assert!(s.needs_redraw(), "the next step repaints")
-        });
-    }
-
-    #[test]
-    fn spinner_animates_only_when_motion_is_enabled() {
-        {
-            let s = Spinner::new();
-            assert!(
-                Widget::needs_animation_frame(&s),
-                "Spinner must request animation frames before its first motion-on draw"
-            );
-
-            let s = Spinner::with_size(48.0);
-            assert!(
-                Widget::needs_animation_frame(&s),
-                "Spinner::with_size must also request animation frames before drawing"
-            );
-        }
-
-        // Case `reduce_motion_freezes_the_orbit_at_phase_zero`.
-        {
-            use crate::time::Duration;
-            let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
-            // `half_period` is ~750ms, so this can only underflow on a machine
-            // whose monotonic clock started under a second ago; fall back to
-            // "now" (untested edge case) instead of panicking the test.
-            let backdate = crate::time::now()
-                .checked_sub(half_period)
-                .unwrap_or_else(crate::time::now);
-
-            let mut fresh = Spinner::new();
-            let fresh_geo = draw_path_data(&mut fresh, true);
-
-            let mut aged = Spinner::new();
-            aged.set_started_for_test(backdate);
-            let aged_reduced = draw_path_data(&mut aged, true);
-
-            assert_eq!(
-                fresh_geo, aged_reduced,
-                "reduced motion must paint the resting orbit regardless of elapsed time",
-            );
-
-            let mut aged2 = Spinner::new();
-            aged2.set_started_for_test(backdate);
-            let aged_moving = draw_path_data(&mut aged2, false);
-            assert_ne!(
-                fresh_geo, aged_moving,
-                "with motion on, a backdated spinner is at a different phase",
-            );
-        }
-
-        {
-            let mut spinner = Spinner::new();
-            let _ = draw_path_data(&mut spinner, true);
-            assert!(
-                !Widget::needs_animation_frame(&spinner),
-                "a frozen reduced-motion spinner must not keep the compositor awake"
-            );
-
-            let _ = draw_path_data(&mut spinner, false);
-            assert!(
-                Widget::needs_animation_frame(&spinner),
-                "switching back to normal motion must restore spinner animation"
-            );
-        }
-    }
-
-    #[test]
-    fn a_still_spinner_asks_for_no_frames() {
-        // A window laid out without a paint — a layout check staging a screen —
-        // asks whether a widget moves before it draws any: the framework's
-        // policy answers for a spinner that was never painted.
-        let mut reduced = Spinner::new();
-        reduced.set_motion_reduced(true);
-        assert!(
-            !Widget::needs_animation_frame(&reduced),
-            "reduced motion holds the orbit still"
-        );
-
-        let at = crate::clock::capture_wall().expect("the capture time exists in this zone");
-        crate::time::testing::with_wall(at, || {
-            assert!(crate::time::wall_frozen());
-            assert!(
-                !Widget::needs_animation_frame(&Spinner::new()),
-                "a capture's clock holds the orbit still"
-            );
-        });
-
-        assert!(
-            Widget::needs_animation_frame(&Spinner::new()),
-            "a live spinner's orbit moves"
-        );
     }
 
     fn draw_path_data(s: &mut Spinner, reduce_motion: bool) -> Vec<u32> {

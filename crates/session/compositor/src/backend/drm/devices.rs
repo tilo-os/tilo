@@ -236,216 +236,221 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn kms_node_detection_accepts_only_primary_cards() {
-        // Phase `card0_is_kms_node` .
-        assert!(is_kms_node(Path::new("/dev/dri/card0")));
-        // Phase `renderd128_is_not_kms_node` .
-        assert!(!is_kms_node(Path::new("/dev/dri/renderD128")));
-        assert!(!is_kms_node(Path::new("/tmp/cardN")));
-        assert!(!is_kms_node(Path::new("/dev/dri/card")));
-        assert!(!is_kms_node(Path::new("/dev/dri/cardX")));
-        {
-            let paths: Vec<PathBuf> = vec![
-                "/dev/dri/card0".into(),
-                "/dev/dri/renderD128".into(),
-                "/dev/dri/card1".into(),
-            ];
-            let kept = filter_kms_nodes(paths);
-            assert_eq!(
-                kept,
-                vec![
-                    PathBuf::from("/dev/dri/card0"),
-                    PathBuf::from("/dev/dri/card1")
-                ]
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        /// Which card drives the session, and which of a connector's modes is preferred.
+        fn cards_and_their_modes_are_ranked_as_the_kernel_lists_them;
 
-    #[test]
-    fn a_card_node_without_connectors_cannot_scan_out() {
-        let sysfs = tempfile::tempdir().expect("temporary sysfs");
-        for connector in ["card1-HDMI-A-1", "card1-Writeback-1"] {
-            std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
-        }
-        // The Raspberry Pi's V3D exposes card0 for rendering only; the display controller's card1
-        // carries the connectors.
-        assert_eq!(
-            has_connectors(Path::new("/dev/dri/card0"), sysfs.path()),
-            Some(false)
-        );
-        assert_eq!(
-            has_connectors(Path::new("/dev/dri/card1"), sysfs.path()),
-            Some(true)
-        );
-        assert_eq!(
-            has_connectors(
-                Path::new("/dev/dri/card1"),
-                Path::new("/definitely/missing")
-            ),
-            None,
-            "an unreadable sysfs tree says nothing about the node"
-        );
-    }
-
-    #[test]
-    fn gpu_ranking_prefers_connected_outputs_then_the_internal_panel() {
+        phase kms_node_detection_accepts_only_primary_cards;
         {
-            let sysfs = tempfile::tempdir().expect("temporary sysfs");
-            std::fs::create_dir(sysfs.path().join("card0-DP-1")).expect("card0 connector");
-            std::fs::write(sysfs.path().join("card0-DP-1/status"), "disconnected\n")
-                .expect("card0 status");
-            std::fs::create_dir(sysfs.path().join("card1-eDP-1")).expect("card1 connector");
-            std::fs::write(sysfs.path().join("card1-eDP-1/status"), "connected\n")
-                .expect("card1 status");
-
-            let ordered = order_by_connected_connectors(
-                [
-                    PathBuf::from("/dev/dri/card0"),
-                    PathBuf::from("/dev/dri/card1"),
-                ],
-                sysfs.path(),
-            );
-            assert_eq!(
-                ordered,
-                [
-                    PathBuf::from("/dev/dri/card1"),
-                    PathBuf::from("/dev/dri/card0")
-                ]
-            );
-        }
-        {
-            let sysfs = tempfile::tempdir().expect("temporary sysfs");
-            for connector in ["card0-DP-1", "card0-HDMI-A-1", "card1-eDP-1"] {
-                std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
-                std::fs::write(sysfs.path().join(connector).join("status"), "connected\n")
-                    .expect("status");
+            // Phase `card0_is_kms_node` .
+            assert!(is_kms_node(Path::new("/dev/dri/card0")));
+            // Phase `renderd128_is_not_kms_node` .
+            assert!(!is_kms_node(Path::new("/dev/dri/renderD128")));
+            assert!(!is_kms_node(Path::new("/tmp/cardN")));
+            assert!(!is_kms_node(Path::new("/dev/dri/card")));
+            assert!(!is_kms_node(Path::new("/dev/dri/cardX")));
+            {
+                let paths: Vec<PathBuf> = vec![
+                    "/dev/dri/card0".into(),
+                    "/dev/dri/renderD128".into(),
+                    "/dev/dri/card1".into(),
+                ];
+                let kept = filter_kms_nodes(paths);
+                assert_eq!(
+                    kept,
+                    vec![
+                        PathBuf::from("/dev/dri/card0"),
+                        PathBuf::from("/dev/dri/card1")
+                    ]
+                );
             }
-
-            let ordered = order_by_connected_connectors(
-                [
-                    PathBuf::from("/dev/dri/card0"),
-                    PathBuf::from("/dev/dri/card1"),
-                ],
-                sysfs.path(),
-            );
-            assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card0")));
         }
+
+        phase a_card_node_without_connectors_cannot_scan_out;
         {
             let sysfs = tempfile::tempdir().expect("temporary sysfs");
-            for connector in ["card0-DP-1", "card1-eDP-1"] {
+            for connector in ["card1-HDMI-A-1", "card1-Writeback-1"] {
                 std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
-                std::fs::write(sysfs.path().join(connector).join("status"), "connected\n")
-                    .expect("status");
             }
-
-            let ordered = order_by_connected_connectors(
-                [
-                    PathBuf::from("/dev/dri/card0"),
-                    PathBuf::from("/dev/dri/card1"),
-                ],
-                sysfs.path(),
-            );
-            assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card1")));
-        }
-        {
-            let original = [
-                PathBuf::from("/dev/dri/card2"),
-                PathBuf::from("/dev/dri/card0"),
-            ];
-            let ordered =
-                order_by_connected_connectors(&original, Path::new("/definitely/missing"));
-            assert_eq!(ordered, original);
-        }
-    }
-
-    #[test]
-    fn preferred_mode_ranks_preferred_flag_then_resolution_then_refresh() {
-        assert!(preferred_mode(&[]).is_none());
-        {
-            let m = ModeInfo {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-                preferred: false,
-                interlaced: false,
-            };
-            assert_eq!(preferred_mode(&[m]), Some(m));
-        }
-        {
-            let small = ModeInfo {
-                width: 800,
-                height: 600,
-                refresh_mhz: 60_000,
-                preferred: false,
-                interlaced: false,
-            };
-            let big = ModeInfo {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-                preferred: false,
-                interlaced: false,
-            };
-            assert_eq!(preferred_mode(&[small, big]), Some(big));
-            // Order should not matter.
-            assert_eq!(preferred_mode(&[big, small]), Some(big));
-        }
-        {
-            let sixty = ModeInfo {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-                preferred: false,
-                interlaced: false,
-            };
-            let one_twenty = ModeInfo {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 120_000,
-                preferred: false,
-                interlaced: false,
-            };
-            assert_eq!(preferred_mode(&[sixty, one_twenty]), Some(one_twenty));
-        }
-        {
-            // 1080p is preferred even though 4K exists — honor the connector's hint.
-            let four_k = ModeInfo {
-                width: 3840,
-                height: 2160,
-                refresh_mhz: 60_000,
-                preferred: false,
-                interlaced: false,
-            };
-            let preferred_1080p = ModeInfo {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-                preferred: true,
-                interlaced: false,
-            };
+            // The Raspberry Pi's V3D exposes card0 for rendering only; the display controller's card1
+            // carries the connectors.
             assert_eq!(
-                preferred_mode(&[four_k, preferred_1080p]),
-                Some(preferred_1080p)
+                has_connectors(Path::new("/dev/dri/card0"), sysfs.path()),
+                Some(false)
+            );
+            assert_eq!(
+                has_connectors(Path::new("/dev/dri/card1"), sysfs.path()),
+                Some(true)
+            );
+            assert_eq!(
+                has_connectors(
+                    Path::new("/dev/dri/card1"),
+                    Path::new("/definitely/missing")
+                ),
+                None,
+                "an unreadable sysfs tree says nothing about the node"
             );
         }
+
+        phase gpu_ranking_prefers_connected_outputs_then_the_internal_panel;
         {
-            // Two preferred modes: pick the higher-resolution one (rare, but allowed by spec).
-            let a = ModeInfo {
-                width: 1280,
-                height: 720,
-                refresh_mhz: 60_000,
-                preferred: true,
-                interlaced: false,
-            };
-            let b = ModeInfo {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-                preferred: true,
-                interlaced: false,
-            };
-            assert_eq!(preferred_mode(&[a, b]), Some(b));
+            {
+                let sysfs = tempfile::tempdir().expect("temporary sysfs");
+                std::fs::create_dir(sysfs.path().join("card0-DP-1")).expect("card0 connector");
+                std::fs::write(sysfs.path().join("card0-DP-1/status"), "disconnected\n")
+                    .expect("card0 status");
+                std::fs::create_dir(sysfs.path().join("card1-eDP-1")).expect("card1 connector");
+                std::fs::write(sysfs.path().join("card1-eDP-1/status"), "connected\n")
+                    .expect("card1 status");
+
+                let ordered = order_by_connected_connectors(
+                    [
+                        PathBuf::from("/dev/dri/card0"),
+                        PathBuf::from("/dev/dri/card1"),
+                    ],
+                    sysfs.path(),
+                );
+                assert_eq!(
+                    ordered,
+                    [
+                        PathBuf::from("/dev/dri/card1"),
+                        PathBuf::from("/dev/dri/card0")
+                    ]
+                );
+            }
+            {
+                let sysfs = tempfile::tempdir().expect("temporary sysfs");
+                for connector in ["card0-DP-1", "card0-HDMI-A-1", "card1-eDP-1"] {
+                    std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
+                    std::fs::write(sysfs.path().join(connector).join("status"), "connected\n")
+                        .expect("status");
+                }
+
+                let ordered = order_by_connected_connectors(
+                    [
+                        PathBuf::from("/dev/dri/card0"),
+                        PathBuf::from("/dev/dri/card1"),
+                    ],
+                    sysfs.path(),
+                );
+                assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card0")));
+            }
+            {
+                let sysfs = tempfile::tempdir().expect("temporary sysfs");
+                for connector in ["card0-DP-1", "card1-eDP-1"] {
+                    std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
+                    std::fs::write(sysfs.path().join(connector).join("status"), "connected\n")
+                        .expect("status");
+                }
+
+                let ordered = order_by_connected_connectors(
+                    [
+                        PathBuf::from("/dev/dri/card0"),
+                        PathBuf::from("/dev/dri/card1"),
+                    ],
+                    sysfs.path(),
+                );
+                assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card1")));
+            }
+            {
+                let original = [
+                    PathBuf::from("/dev/dri/card2"),
+                    PathBuf::from("/dev/dri/card0"),
+                ];
+                let ordered =
+                    order_by_connected_connectors(&original, Path::new("/definitely/missing"));
+                assert_eq!(ordered, original);
+            }
+        }
+
+        phase preferred_mode_ranks_preferred_flag_then_resolution_then_refresh;
+        {
+            assert!(preferred_mode(&[]).is_none());
+            {
+                let m = ModeInfo {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                    preferred: false,
+                    interlaced: false,
+                };
+                assert_eq!(preferred_mode(&[m]), Some(m));
+            }
+            {
+                let small = ModeInfo {
+                    width: 800,
+                    height: 600,
+                    refresh_mhz: 60_000,
+                    preferred: false,
+                    interlaced: false,
+                };
+                let big = ModeInfo {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                    preferred: false,
+                    interlaced: false,
+                };
+                assert_eq!(preferred_mode(&[small, big]), Some(big));
+                // Order should not matter.
+                assert_eq!(preferred_mode(&[big, small]), Some(big));
+            }
+            {
+                let sixty = ModeInfo {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                    preferred: false,
+                    interlaced: false,
+                };
+                let one_twenty = ModeInfo {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 120_000,
+                    preferred: false,
+                    interlaced: false,
+                };
+                assert_eq!(preferred_mode(&[sixty, one_twenty]), Some(one_twenty));
+            }
+            {
+                // 1080p is preferred even though 4K exists — honor the connector's hint.
+                let four_k = ModeInfo {
+                    width: 3840,
+                    height: 2160,
+                    refresh_mhz: 60_000,
+                    preferred: false,
+                    interlaced: false,
+                };
+                let preferred_1080p = ModeInfo {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                    preferred: true,
+                    interlaced: false,
+                };
+                assert_eq!(
+                    preferred_mode(&[four_k, preferred_1080p]),
+                    Some(preferred_1080p)
+                );
+            }
+            {
+                // Two preferred modes: pick the higher-resolution one (rare, but allowed by spec).
+                let a = ModeInfo {
+                    width: 1280,
+                    height: 720,
+                    refresh_mhz: 60_000,
+                    preferred: true,
+                    interlaced: false,
+                };
+                let b = ModeInfo {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                    preferred: true,
+                    interlaced: false,
+                };
+                assert_eq!(preferred_mode(&[a, b]), Some(b));
+            }
         }
     }
 }
@@ -453,9 +458,11 @@ mod tests {
 #[cfg(test)]
 mod runtime_mode_policy_tests {
     use super::ModeInfo;
-    #[test]
-    fn preferred_mode_selection_picks_first_preferred_or_falls_back_to_highest() {
-        // Phase `preferred_mode_selection_picks_first_preferred` . The `preferred` flag is honored:
+    tilo_test_env::scenario! {
+        fn preferred_mode_selection_picks_first_preferred_or_falls_back_to_highest;
+
+        phase preferred_mode_selection_picks_first_preferred;
+        // The `preferred` flag is honored:
         // a preferred mode in the list is the one picked.
         {
             use super::preferred_mode;
@@ -490,7 +497,9 @@ mod runtime_mode_policy_tests {
             assert_eq!(picked.width, 1920);
             assert_eq!(picked.height, 1080);
         }
-        // Phase `preferred_mode_selection_falls_back_to_highest_when_no_preferred` . And when none
+
+        phase preferred_mode_selection_falls_back_to_highest_when_no_preferred;
+        // And when none
         // of the modes are flagged preferred, the policy falls back to the highest resolution ×
         // refresh.
         {
@@ -544,82 +553,87 @@ mod refresh_selection_tests {
         ]
     }
 
-    #[test]
-    fn a_ninety_hertz_panel_runs_at_ninety_hertz_at_its_native_resolution() {
-        let modes = fast_panel();
-        assert_eq!(select_mode(&modes, None), Some(1));
-        let picked = preferred_mode(&modes).expect("modes");
-        assert_eq!((picked.width, picked.height), (2880, 1800));
-        assert_eq!(
-            picked.refresh_mhz, 90_000,
-            "a faster rate at another resolution must not win"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The refresh rate chosen for a panel.
+        fn a_panel_runs_at_the_fastest_rate_of_the_size_it_prefers;
 
-    #[test]
-    fn interlaced_rates_count_fields_and_lose_to_progressive_modes() {
-        let mut interlaced = mode(1920, 1080, 120_000, false);
-        interlaced.interlaced = true;
-        let modes = [mode(1920, 1080, 60_000, true), interlaced];
-        assert_eq!(select_mode(&modes, None), Some(0));
-        // A connector offering only interlaced modes still lights up.
-        assert_eq!(select_mode(&[interlaced], None), Some(0));
-    }
+        phase a_ninety_hertz_panel_runs_at_ninety_hertz_at_its_native_resolution;
+        {
+            let modes = fast_panel();
+            assert_eq!(select_mode(&modes, None), Some(1));
+            let picked = preferred_mode(&modes).expect("modes");
+            assert_eq!((picked.width, picked.height), (2880, 1800));
+            assert_eq!(
+                picked.refresh_mhz, 90_000,
+                "a faster rate at another resolution must not win"
+            );
+        }
 
-    #[test]
-    fn exact_rates_break_near_ties_and_equal_modes_keep_kernel_order() {
-        let modes = [
-            mode(1920, 1080, 59_940, true),
-            mode(1920, 1080, 60_000, false),
-            mode(1920, 1080, 60_000, false),
-        ];
-        assert_eq!(select_mode(&modes, None), Some(1));
-    }
+        phase interlaced_rates_count_fields_and_lose_to_progressive_modes;
+        {
+            let mut interlaced = mode(1920, 1080, 120_000, false);
+            interlaced.interlaced = true;
+            let modes = [mode(1920, 1080, 60_000, true), interlaced];
+            assert_eq!(select_mode(&modes, None), Some(0));
+            // A connector offering only interlaced modes still lights up.
+            assert_eq!(select_mode(&[interlaced], None), Some(0));
+        }
 
-    #[test]
-    fn a_virtual_gpu_placeholder_preference_falls_back_to_a_window_sized_mode() {
-        let modes = [
-            mode(640, 480, 60_000, true),
-            mode(5120, 2160, 60_000, false),
-            mode(1920, 1080, 60_000, false),
-            mode(1920, 1080, 75_000, false),
-        ];
-        assert_eq!(select_mode(&modes, None), Some(3));
-        assert_eq!(select_mode(&[mode(640, 480, 60_000, true)], None), Some(0));
-    }
+        phase exact_rates_break_near_ties_and_equal_modes_keep_kernel_order;
+        {
+            let modes = [
+                mode(1920, 1080, 59_940, true),
+                mode(1920, 1080, 60_000, false),
+                mode(1920, 1080, 60_000, false),
+            ];
+            assert_eq!(select_mode(&modes, None), Some(1));
+        }
 
-    #[test]
-    fn unflagged_lists_use_the_largest_resolution_at_its_fastest_rate() {
-        let modes = [
-            mode(1920, 1080, 144_000, false),
-            mode(2560, 1440, 60_000, false),
-            mode(2560, 1440, 120_000, false),
-        ];
-        assert_eq!(select_mode(&modes, None), Some(2));
-        assert_eq!(select_mode(&[], None), None);
-    }
+        phase a_virtual_gpu_placeholder_preference_falls_back_to_a_window_sized_mode;
+        {
+            let modes = [
+                mode(640, 480, 60_000, true),
+                mode(5120, 2160, 60_000, false),
+                mode(1920, 1080, 60_000, false),
+                mode(1920, 1080, 75_000, false),
+            ];
+            assert_eq!(select_mode(&modes, None), Some(3));
+            assert_eq!(select_mode(&[mode(640, 480, 60_000, true)], None), Some(0));
+        }
 
-    #[test]
-    fn a_configured_refresh_rate_is_honoured_over_the_fastest_default() {
-        let modes = fast_panel();
-        let sixty = OutputMode {
-            width: 2880,
-            height: 1800,
-            refresh_mhz: 60_000,
-        };
-        assert_eq!(select_mode(&modes, Some(sixty)), Some(0));
-        let any_rate = OutputMode {
-            width: 1920,
-            height: 1200,
-            refresh_mhz: 0,
-        };
-        assert_eq!(select_mode(&modes, Some(any_rate)), Some(3));
-        // A configured mode the connector no longer offers falls back to the default.
-        let gone = OutputMode {
-            width: 2880,
-            height: 1800,
-            refresh_mhz: 165_000,
-        };
-        assert_eq!(select_mode(&modes, Some(gone)), Some(1));
+        phase unflagged_lists_use_the_largest_resolution_at_its_fastest_rate;
+        {
+            let modes = [
+                mode(1920, 1080, 144_000, false),
+                mode(2560, 1440, 60_000, false),
+                mode(2560, 1440, 120_000, false),
+            ];
+            assert_eq!(select_mode(&modes, None), Some(2));
+            assert_eq!(select_mode(&[], None), None);
+        }
+
+        phase a_configured_refresh_rate_is_honoured_over_the_fastest_default;
+        {
+            let modes = fast_panel();
+            let sixty = OutputMode {
+                width: 2880,
+                height: 1800,
+                refresh_mhz: 60_000,
+            };
+            assert_eq!(select_mode(&modes, Some(sixty)), Some(0));
+            let any_rate = OutputMode {
+                width: 1920,
+                height: 1200,
+                refresh_mhz: 0,
+            };
+            assert_eq!(select_mode(&modes, Some(any_rate)), Some(3));
+            // A configured mode the connector no longer offers falls back to the default.
+            let gone = OutputMode {
+                width: 2880,
+                height: 1800,
+                refresh_mhz: 165_000,
+            };
+            assert_eq!(select_mode(&modes, Some(gone)), Some(1));
+        }
     }
 }

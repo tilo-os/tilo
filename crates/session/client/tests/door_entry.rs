@@ -32,6 +32,7 @@ use tilo_session_client::device::{Entering, Held, door_entry, entered};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
+use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -50,7 +51,7 @@ fn entering<'a>(held: Option<&'a Held>, root: &'a SigningKey) -> Entering<'a> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_says_why() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspaces = host.relay.workspaces().unwrap();
@@ -61,7 +62,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_say
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -202,7 +203,7 @@ async fn says_nothing_more(recv: &mut iroh::endpoint::RecvStream) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspaces = host.relay.workspaces().unwrap();
@@ -213,7 +214,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -247,7 +248,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         )
     };
     let frame = |hello: &Hello| postcard::to_allocvec(hello).unwrap();
-    let records = |workspace_id: u64| {
+    let records = |workspace_id: WorkspaceId| {
         [Envelope::Subscribe { workspace_id }, Envelope::Ping].map(|asked| {
             tilo_delivery_protocol::transport_v2::encode(
                 &tilo_delivery_protocol::transport_v2::EnvelopeV2::State(asked),
@@ -299,7 +300,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     // served, the request goes nowhere, and it is admitted nowhere.
     let (_endpoint, _connection, mut send, mut recv) = dial(&host).await;
     let access = collab_types::MlsAccessRequestV1::signed(
-        collab_types::workspace_scope(&lounge.workspace),
+        collab_types::WorkspaceId::parse(&lounge.workspace).unwrap(),
         vec![7; 512],
         tilo_clock::unix_now(),
         &device,
@@ -388,14 +389,14 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     assert_eq!(workspace, lounge.workspace);
     let hint: tilo_peer_state::join::TransportHint = postcard::from_bytes(&address).unwrap();
     let (address, _) =
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
             &hint,
         )
         .expect("the host signed its address");
-    assert_eq!(address.room, lounge.workspace);
+    assert_eq!(address.workspace_id.to_string(), lounge.workspace);
     assert_eq!(address.workspace_id, lounge.workspace_id);
     assert_eq!(
-        address.host_device_certificate.device_public_key, host_device.cert.device_public_key,
+        address.device_certificate.device_public_key, host_device.cert.device_public_key,
         "the address is the admitting host's own"
     );
 

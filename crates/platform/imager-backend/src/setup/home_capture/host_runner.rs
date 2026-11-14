@@ -503,84 +503,90 @@ pub(super) fn write_event(channel: &mut UnixStream, event: &Event) -> io::Result
 mod tests {
     use super::*;
 
-    #[test]
-    fn authenticated_failure_frame_contains_only_fixed_phase_and_class() {
-        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
-        let operation = uuid::Uuid::new_v4().to_string();
-        let secret = "private password and /private/source/path";
-        let result: io::Result<()> = admitted(
-            &mut sender,
-            &operation,
-            FailurePhase::RuntimeAdmission,
-            Err(io::Error::new(io::ErrorKind::PermissionDenied, secret)),
-        );
-        assert!(result.is_err());
-        let frame = worker::read_frame(&mut receiver, 16 * 1024).unwrap();
-        assert!(!String::from_utf8_lossy(&frame).contains(secret));
-        assert!(matches!(
-            serde_json::from_slice::<Event>(&frame).unwrap(),
-            Event::Refused {
-                operation: actual,
-                phase: FailurePhase::RuntimeAdmission,
-                class: FailureClass::PermissionDenied,
-            } if actual == operation
-        ));
-    }
+    tilo_test_env::scenario! {
+        /// What a failed host runner tells its caller.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_host_runner_failure_reports_only_its_phase_and_class;
 
-    #[test]
-    fn startup_failure_preserves_nested_io_class_without_error_text() {
-        let error = RunError::AppDir {
-            package: "private package".into(),
-            path: "/private/path".into(),
-            source: io::Error::new(io::ErrorKind::PermissionDenied, "secret detail"),
-        };
-        assert_eq!(launcher_error_kind(&error), io::ErrorKind::PermissionDenied);
-    }
+        phase authenticated_failure_frame_contains_only_fixed_phase_and_class;
+        {
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let operation = uuid::Uuid::new_v4().to_string();
+            let secret = "private password and /private/source/path";
+            let result: io::Result<()> = admitted(
+                &mut sender,
+                &operation,
+                FailurePhase::RuntimeAdmission,
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, secret)),
+            );
+            assert!(result.is_err());
+            let frame = worker::read_frame(&mut receiver, 16 * 1024).unwrap();
+            assert!(!String::from_utf8_lossy(&frame).contains(secret));
+            assert!(matches!(
+                serde_json::from_slice::<Event>(&frame).unwrap(),
+                Event::Refused {
+                    operation: actual,
+                    phase: FailurePhase::RuntimeAdmission,
+                    class: FailureClass::PermissionDenied,
+                } if actual == operation
+            ));
+        }
 
-    #[test]
-    fn startup_boundary_distinguishes_namespace_info_without_private_error_text() {
-        let empty = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
-        let error = RunError::Spawn(io::Error::other(empty));
-        assert!(matches!(
-            launcher_failure_phase(&error),
-            FailurePhase::LauncherNamespaceInfoEof
-        ));
-        let invalid =
-            serde_json::from_slice::<serde_json::Value>(b"private-secret-path").unwrap_err();
-        let error = RunError::Spawn(io::Error::other(invalid));
-        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
-        let operation = uuid::Uuid::new_v4().to_string();
-        let result: io::Result<()> = admitted(
-            &mut sender,
-            &operation,
-            launcher_failure_phase(&error),
-            Err(io::Error::from(launcher_error_kind(&error))),
-        );
-        assert!(result.is_err());
-        let frame = worker::read_frame(&mut receiver, 16 * 1024).unwrap();
-        assert!(!String::from_utf8_lossy(&frame).contains("private-secret-path"));
-        assert!(matches!(
-            serde_json::from_slice::<Event>(&frame).unwrap(),
-            Event::Refused {
-                operation: actual,
-                phase: FailurePhase::LauncherNamespaceInfoMalformed,
-                class: FailureClass::Other,
-            } if actual == operation
-        ));
-        let private = RunError::AppDir {
-            package: "private package".into(),
-            path: "/private/path".into(),
-            source: io::Error::new(io::ErrorKind::PermissionDenied, "private password"),
-        };
-        assert!(matches!(
-            launcher_failure_phase(&private),
-            FailurePhase::LauncherWorkingDirectory
-        ));
-        assert!(matches!(
-            launcher_failure_phase(&RunError::Spawn(io::Error::from(
-                io::ErrorKind::PermissionDenied
-            ))),
-            FailurePhase::LauncherNamespaceExec
-        ));
+        phase startup_failure_preserves_nested_io_class_without_error_text;
+        {
+            let error = RunError::AppDir {
+                package: "private package".into(),
+                path: "/private/path".into(),
+                source: io::Error::new(io::ErrorKind::PermissionDenied, "secret detail"),
+            };
+            assert_eq!(launcher_error_kind(&error), io::ErrorKind::PermissionDenied);
+        }
+
+        phase startup_boundary_distinguishes_namespace_info_without_private_error_text;
+        {
+            let empty = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
+            let error = RunError::Spawn(io::Error::other(empty));
+            assert!(matches!(
+                launcher_failure_phase(&error),
+                FailurePhase::LauncherNamespaceInfoEof
+            ));
+            let invalid =
+                serde_json::from_slice::<serde_json::Value>(b"private-secret-path").unwrap_err();
+            let error = RunError::Spawn(io::Error::other(invalid));
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let operation = uuid::Uuid::new_v4().to_string();
+            let result: io::Result<()> = admitted(
+                &mut sender,
+                &operation,
+                launcher_failure_phase(&error),
+                Err(io::Error::from(launcher_error_kind(&error))),
+            );
+            assert!(result.is_err());
+            let frame = worker::read_frame(&mut receiver, 16 * 1024).unwrap();
+            assert!(!String::from_utf8_lossy(&frame).contains("private-secret-path"));
+            assert!(matches!(
+                serde_json::from_slice::<Event>(&frame).unwrap(),
+                Event::Refused {
+                    operation: actual,
+                    phase: FailurePhase::LauncherNamespaceInfoMalformed,
+                    class: FailureClass::Other,
+                } if actual == operation
+            ));
+            let private = RunError::AppDir {
+                package: "private package".into(),
+                path: "/private/path".into(),
+                source: io::Error::new(io::ErrorKind::PermissionDenied, "private password"),
+            };
+            assert!(matches!(
+                launcher_failure_phase(&private),
+                FailurePhase::LauncherWorkingDirectory
+            ));
+            assert!(matches!(
+                launcher_failure_phase(&RunError::Spawn(io::Error::from(
+                    io::ErrorKind::PermissionDenied
+                ))),
+                FailurePhase::LauncherNamespaceExec
+            ));
+        }
     }
 }

@@ -5597,88 +5597,94 @@ mod tier_tests {
         116.0 * f - 16.0
     }
 
-    /// A selected row reads past a striped one on every ground of every shipped material: the selection
-    /// step is more than three stripe steps, and the selected row stands clearly off a striped
-    /// neighbour.
-    #[test]
-    fn selection_stands_well_past_the_zebra_stripe_on_every_ground() {
-        for name in Theme::ALL {
-            let theme = Theme::named(name).expect("shipped preset resolves");
-            let s = &theme.tokens.colors.surfaces;
-            for (ground_name, ground) in [
-                ("content", s.content),
-                ("sidebar", s.sidebar),
-                ("inspector", s.inspector),
-                ("raised", s.raised),
-            ] {
-                let zebra = zebra_on(&theme, ground);
-                let selected = crate::chrome::selection_tier_on(
-                    &theme,
-                    crate::chrome::SelectionState::active(true),
-                    ground,
-                )
-                .fill;
-                let stripe = (lightness(zebra) - lightness(ground)).abs();
-                let lift = (lightness(selected) - lightness(ground)).abs();
-                assert!(
-                    lift >= 3.0 * stripe,
-                    "{name}/{ground_name}: selection ΔL* {lift:.1} vs stripe ΔL* {stripe:.1}"
-                );
-                assert!(
-                    stripe >= 1.5,
-                    "{name}/{ground_name}: the stripe still registers (ΔL* {stripe:.1})"
-                );
-                let apart = (lightness(selected) - lightness(zebra)).abs();
-                assert!(
-                    apart >= 6.0,
-                    "{name}/{ground_name}: a selected row stands only ΔL* {apart:.1} off a striped one"
+    tilo_test_env::scenario! {
+        /// The contrast of a table's selection and tiers.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn selection_and_tiers_register_on_every_ground;
+
+        // A selected row reads past a striped one on every ground of every shipped material: the selection
+        // step is more than three stripe steps, and the selected row stands clearly off a striped
+        // neighbour.
+        phase selection_stands_well_past_the_zebra_stripe_on_every_ground;
+        {
+            for name in Theme::ALL {
+                let theme = Theme::named(name).expect("shipped preset resolves");
+                let s = &theme.tokens.colors.surfaces;
+                for (ground_name, ground) in [
+                    ("content", s.content),
+                    ("sidebar", s.sidebar),
+                    ("inspector", s.inspector),
+                    ("raised", s.raised),
+                ] {
+                    let zebra = zebra_on(&theme, ground);
+                    let selected = crate::chrome::selection_tier_on(
+                        &theme,
+                        crate::chrome::SelectionState::active(true),
+                        ground,
+                    )
+                    .fill;
+                    let stripe = (lightness(zebra) - lightness(ground)).abs();
+                    let lift = (lightness(selected) - lightness(ground)).abs();
+                    assert!(
+                        lift >= 3.0 * stripe,
+                        "{name}/{ground_name}: selection ΔL* {lift:.1} vs stripe ΔL* {stripe:.1}"
+                    );
+                    assert!(
+                        stripe >= 1.5,
+                        "{name}/{ground_name}: the stripe still registers (ΔL* {stripe:.1})"
+                    );
+                    let apart = (lightness(selected) - lightness(zebra)).abs();
+                    assert!(
+                        apart >= 6.0,
+                        "{name}/{ground_name}: a selected row stands only ΔL* {apart:.1} off a striped one"
+                    );
+                }
+            }
+        }
+
+        phase selected_rows_and_tier_hairlines_register_on_every_ground;
+        {
+            /// Pins the dark and light screenshots: on the two grounds this module's callers paint tiers on,
+            /// the gain never engages.
+            fn tier_on_is_plain_hairline_on_ordinary_grounds() {
+                for theme in [Theme::dark(), Theme::light()] {
+                    let s = &theme.tokens.colors.surfaces;
+                    for ground in [s.content, s.raised] {
+                        for alpha in [ZEBRA_ALPHA, crate::chrome::HAIRLINE_ALPHA, 40, 72] {
+                            assert_eq!(tier_on(ground, alpha), Colors::hairline_on(ground, alpha));
+                        }
+                    }
+                }
+            }
+
+            /// The stripe stays fainter than the band on every preset, and on black both still register (the
+            /// high-contrast preset's own floor).
+            fn tiers_keep_their_order_and_register_on_black() {
+                for theme in presets() {
+                    let raised = theme.tokens.colors.surfaces.raised;
+                    let zebra = edge_delta(tier_on(raised, ZEBRA_ALPHA), raised);
+                    let band = edge_delta(tier_on(raised, crate::chrome::HAIRLINE_ALPHA), raised);
+                    assert!(
+                        zebra < band,
+                        "{}: zebra {zebra:.4} vs band {band:.4}",
+                        theme.name
+                    );
+                }
+                let black = Theme::high_contrast().tokens.colors.surfaces.raised;
+                assert!(edge_delta(tier_on(black, ZEBRA_ALPHA), black) >= HAIRLINE_MIN_DELTA);
+                assert_eq!(
+                    tier_on(black, ZEBRA_ALPHA),
+                    Colors::hairline_on(black, NEAR_BLACK_TIER_FLOOR)
                 );
             }
+
+            tier_on_is_plain_hairline_on_ordinary_grounds();
+            tiers_keep_their_order_and_register_on_black();
         }
     }
 
     fn presets() -> [Theme; 3] {
         [Theme::dark(), Theme::light(), Theme::high_contrast()]
-    }
-
-    #[test]
-    fn selected_rows_and_tier_hairlines_register_on_every_ground() {
-        /// Pins the dark and light screenshots: on the two grounds this module's callers paint tiers on,
-        /// the gain never engages.
-        fn tier_on_is_plain_hairline_on_ordinary_grounds() {
-            for theme in [Theme::dark(), Theme::light()] {
-                let s = &theme.tokens.colors.surfaces;
-                for ground in [s.content, s.raised] {
-                    for alpha in [ZEBRA_ALPHA, crate::chrome::HAIRLINE_ALPHA, 40, 72] {
-                        assert_eq!(tier_on(ground, alpha), Colors::hairline_on(ground, alpha));
-                    }
-                }
-            }
-        }
-
-        /// The stripe stays fainter than the band on every preset, and on black both still register (the
-        /// high-contrast preset's own floor).
-        fn tiers_keep_their_order_and_register_on_black() {
-            for theme in presets() {
-                let raised = theme.tokens.colors.surfaces.raised;
-                let zebra = edge_delta(tier_on(raised, ZEBRA_ALPHA), raised);
-                let band = edge_delta(tier_on(raised, crate::chrome::HAIRLINE_ALPHA), raised);
-                assert!(
-                    zebra < band,
-                    "{}: zebra {zebra:.4} vs band {band:.4}",
-                    theme.name
-                );
-            }
-            let black = Theme::high_contrast().tokens.colors.surfaces.raised;
-            assert!(edge_delta(tier_on(black, ZEBRA_ALPHA), black) >= HAIRLINE_MIN_DELTA);
-            assert_eq!(
-                tier_on(black, ZEBRA_ALPHA),
-                Colors::hairline_on(black, NEAR_BLACK_TIER_FLOOR)
-            );
-        }
-
-        tier_on_is_plain_hairline_on_ordinary_grounds();
-        tiers_keep_their_order_and_register_on_black();
     }
 }
 

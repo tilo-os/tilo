@@ -32,10 +32,10 @@ pub const MAX_SUGGESTIONS: usize = 8;
 pub const MAX_CHOICES: usize = 32;
 
 /// Largest encoded location picture, in bytes.
-pub const MAX_IMAGE_BYTES: usize = 64 * 1024;
+pub const MAX_IMAGE_BYTES: usize = crate::icons::MAX_PNG_BYTES;
 
 /// Largest location picture, in pixels (edge squared).
-pub const MAX_IMAGE_PIXELS: u32 = 128 * 128;
+pub const MAX_IMAGE_PIXELS: u32 = crate::icons::MAX_PNG_PIXELS;
 
 /// Longest label, value or name the bar takes, in bytes. Longer text is cut at a
 /// character boundary: the bar elides far sooner, and the wire never carries a page's
@@ -327,34 +327,13 @@ impl ToolbarImage {
     /// The picture as the bar paints it: decoded once, at most [`MAX_IMAGE_PIXELS`].
     #[must_use]
     pub fn app_image(&self) -> Option<crate::icons::AppImage> {
-        if self.png.is_empty() || self.png.len() > MAX_IMAGE_BYTES {
-            return None;
-        }
-        let decoded =
-            crate::png::decode_rgba8_within(&self.png, u64::from(MAX_IMAGE_PIXELS)).ok()?;
-        let pixels = crate::raster::rgba8(decoded.rgba, decoded.width, decoded.height);
         let key = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             self.png.hash(&mut hasher);
             format!("window-toolbar-image:{:016x}", hasher.finish())
         };
-        Some(crate::icons::AppImage::new(DecodedImage { key, pixels }))
-    }
-}
-
-struct DecodedImage {
-    key: String,
-    pixels: vello::peniko::ImageData,
-}
-
-impl crate::icons::AppImageSource for DecodedImage {
-    fn key(&self) -> &str {
-        &self.key
-    }
-
-    fn pixels(&self, _device_px: u32) -> Option<vello::peniko::ImageData> {
-        Some(self.pixels.clone())
+        crate::icons::AppImage::from_png(key, &self.png)
     }
 }
 

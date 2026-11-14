@@ -7,13 +7,14 @@ use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 use super::{
     ActionHostError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
     DEFAULT_ROWS_RECORDS, DocumentRoute, Worker, WorkspaceState, catalogue_keys,
-    provider_workspace, record_of, record_provider, room_workspace_id,
+    provider_workspace, record_of, record_provider,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 impl Worker {
     pub(super) fn catalogue_page(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         query: &CatalogueQuery,
     ) -> Result<CataloguePage, ActionHostError> {
@@ -45,7 +46,7 @@ impl Worker {
             .clone()
             .or_else(|| {
                 asked
-                    .filter(|named| room_workspace_id(named).ok() == Some(workspace_id))
+                    .filter(|named| WorkspaceId::parse(named) == Some(workspace_id))
                     .map(str::to_owned)
             })
             .or_else(|| {
@@ -126,7 +127,7 @@ impl Worker {
     /// record and not only that one failed.
     fn listed_rows(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         bounded: Option<&super::bounded::Bounded>,
         wanted: &[DocumentRoute],
         state: &WorkspaceState,

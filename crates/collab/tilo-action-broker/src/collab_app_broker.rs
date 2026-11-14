@@ -68,7 +68,6 @@ mod policy_turn_tests;
 mod process_binding;
 mod published;
 mod published_invocation;
-mod readings;
 mod resolved_invocation;
 mod route_holds;
 mod tracker_runs;
@@ -149,7 +148,6 @@ use tilo_desktop_model::DesktopTree;
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AuthorizedDocumentRoute {
     artifact: ArtifactId,
-    channel: collab_types::ChannelId,
     payload: collab_types::RoutedDocumentPayload,
 }
 
@@ -249,8 +247,6 @@ fn cert_capped_in(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AdmittedJoinIdentity {
-    /// Only an actual broker-allocated private descriptor can carry this scope.
-    host_scope: Option<LocalHostWorkerScope>,
     worker_registration: Option<PrivateWorkerRegistration>,
     certificate: Option<tilo_user_identity::DeviceCert>,
     verified: VerifiedJoinIdentity,
@@ -516,7 +512,7 @@ fn admit_verified_join_at(
     verified: VerifiedJoinIdentity,
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
-    let principal_id = principal_id_for_root(verified.user_public_key);
+    let principal_id = person_id_for_root(verified.user_public_key);
     // The personal cluster has no roster to consult: its members are, by the
     // workspace id's derivation, exactly the devices this root certified, each
     // acting as the workspace's owner — a foreign device with the foreign-device
@@ -524,7 +520,6 @@ fn admit_verified_join_at(
     if verified.owns_personal_cluster(&route.cluster_id) {
         let role = CapRole::Owner;
         return Ok(AdmittedJoinIdentity {
-            host_scope: None,
             worker_registration: None,
             certificate: None,
             verified,
@@ -545,7 +540,6 @@ fn admit_verified_join_at(
     }
     let role = workspace.role_of(&principal_id).unwrap_or(CapRole::Viewer);
     Ok(AdmittedJoinIdentity {
-        host_scope: None,
         worker_registration: None,
         certificate: None,
         verified,
@@ -632,30 +626,9 @@ fn verify_join_identity(
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
-    verify_join_identity_with_host_scope(
-        route,
-        identity_bytes,
-        membership,
-        trusted_devices,
-        authority,
-        None,
-    )
-}
-
-fn verify_join_identity_with_host_scope(
-    route: &CrdtRoute,
-    identity_bytes: &[u8],
-    membership: Option<&WorkspaceTreeHandle>,
-    trusted_devices: Option<&[[u8; 32]]>,
-    authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
-    host_scope: Option<&LocalHostWorkerScope>,
-) -> Result<AdmittedJoinIdentity, String> {
     if let Some(presentation) = runtime_collab::TaskAgentJoinIdentity::decode(identity_bytes)
         .map_err(|error| format!("task agent join presentation is malformed: {error}"))?
     {
-        if host_scope.is_some() {
-            return Err("a host worker never joins as a task agent".into());
-        }
         return verify_task_agent_join(
             route,
             &presentation,
@@ -670,7 +643,6 @@ fn verify_join_identity_with_host_scope(
         membership,
         trusted_devices,
         authority,
-        host_scope,
     )
 }
 
@@ -689,13 +661,12 @@ fn admit_join_presentation(
     membership: Option<&WorkspaceTreeHandle>,
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
-    host_scope: Option<&LocalHostWorkerScope>,
 ) -> Result<AdmittedJoinIdentity, String> {
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
     let (expected_root, revoked, enrolled) =
-        authorize_join_certificate(route, &cert, trusted_devices, authority, host_scope)?;
+        authorize_join_certificate(route, &cert, trusted_devices, authority)?;
     let registered = authority.map_or(
         Ok(None),
         super::certificate_authority::CertificateAuthority::policy_time,
@@ -718,32 +689,19 @@ fn admit_join_presentation(
         admit_verified_join_at(workspace, route, verified, now_ns / 1_000_000_000)
     })??;
     admitted.certificate = Some(cert);
-    admitted.host_scope = host_scope.cloned();
     Ok(admitted)
 }
 
-/// Whether `cert` may join `route`: the host worker scope, else the workspace's
-/// certificate authority (device list, revocations), else the trusted keys.
+/// Whether `cert` may join `route`: the workspace's certificate authority
+/// (device list, revocations), else the trusted keys.
 /// Answers the root expected to certify it, and whether it is revoked or enrolled.
 fn authorize_join_certificate(
     route: &CrdtRoute,
     cert: &tilo_user_identity::DeviceCert,
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
-    host_scope: Option<&LocalHostWorkerScope>,
 ) -> Result<([u8; 32], bool, bool), String> {
-    Ok(if let Some(scope) = host_scope {
-        if !cert.capabilities.can_act_as_host || route != &scope.route || *cert != scope.certificate
-        {
-            return Err("host worker descriptor route or certificate mismatch".into());
-        }
-        authority
-            .ok_or("current host worker authority unavailable")?
-            .authorize_host_worker(route, cert)?;
-        (cert.user_public_key, false, true)
-    } else if cert.capabilities.can_act_as_host {
-        return Err("host certificate requires a private host worker descriptor".into());
-    } else if let Some(authority) = authority {
+    Ok(if let Some(authority) = authority {
         let workspace =
             uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact workspace")?;
         authority.authorize_join(workspace, cert)?;
@@ -781,7 +739,7 @@ struct PresenceEnvelope {
 /// One inert operation published by a live application connection: the one
 /// exported-action shape `runtime-collab` decodes off the wire, typed.
 /// The broker's actor, its published actions and their admission: every host's.
-pub use tilo_broker_core::actor::{BrokerActor, RunFacts, principal_id_for_root};
+pub use tilo_broker_core::actor::{BrokerActor, RunFacts, person_id_for_root};
 pub use tilo_broker_core::published::{PublishedAction, PublishedInput, PublishedSurface};
 pub(crate) use tilo_broker_core::published::{
     validate_published_surface, validate_resource_view_descriptors,
@@ -1165,7 +1123,7 @@ impl ContinuingCaller {
                 workspace: workspace.clone(),
                 certificate: Box::new(certificate.clone()),
                 time: time.clone(),
-                direct: tilo_actions::remote::Caller::local_person(principal_id_for_root(
+                direct: tilo_actions::remote::Caller::local_person(person_id_for_root(
                     certificate.user_public_key,
                 ))
                 .in_workspace(workspace.clone()),
@@ -1414,12 +1372,12 @@ impl AppBrokerState {
             caller.is_foreign_device(),
             caller.device_public_key(),
         ));
-        match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::App(app) => match self.app_resource_kinds(app) {
+        match caller.acting().app() {
+            Some(app) => match self.app_resource_kinds(app.as_str()) {
                 Some(kinds) => actor.in_app(app.clone(), kinds),
                 None => actor.through_app(app.clone()),
             },
-            _ => actor,
+            None => actor,
         }
     }
 
@@ -1439,7 +1397,7 @@ impl AppBrokerState {
         workspace: &str,
         cert: &tilo_user_identity::DeviceCert,
     ) -> BrokerActor {
-        BrokerActor::person(principal_id_for_root(cert.user_public_key))
+        BrokerActor::person(person_id_for_root(cert.user_public_key))
             .capped(self.capped_in(workspace, cert))
     }
 
@@ -2447,6 +2405,28 @@ mod directory_query_input_tests {
     }
 }
 
+/// A directory target names a resource of the app, never one of its rows (only the app's own door
+/// resolves a row), and a revision.
+fn check_directory_target(
+    target: &DirectoryActionTarget,
+    argument: Option<&str>,
+    confirmation: Option<&DirectoryActionConfirmation>,
+) -> Result<(), ActionDirectoryBridgeError> {
+    let address = &target.address;
+    if address.item.is_some() || target.revision.is_empty() {
+        return Err(ActionDirectoryBridgeError::InvalidRequest);
+    }
+    validate_directory_target_input(
+        &target.cluster_id,
+        &target.revision,
+        &address.resource,
+        &address.action,
+        argument,
+        confirmation,
+    )
+    .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)
+}
+
 fn validate_directory_target_input(
     cluster_id: &str,
     revision: &str,
@@ -2570,7 +2550,7 @@ struct ContextSub {
 #[derive(Clone)]
 struct NativeContext {
     admitted: AdmittedJoinIdentity,
-    roster: Vec<ui::collaboration::Collaborator>,
+    roster: Vec<ui::collaboration::Member>,
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -2664,14 +2644,6 @@ impl CatalogueFollower {
     }
 }
 
-/// Exact pinned host and route, minted only alongside a broker-allocated Unix pair.
-/// This scope is never accepted from the wire or exposed as a public constructor.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct LocalHostWorkerScope {
-    route: CrdtRoute,
-    certificate: tilo_user_identity::DeviceCert,
-}
-
 /// A unique actual private connection, independent of device role. A native
 /// primary device and a delegated Cloud host retain their existing admission paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2683,7 +2655,6 @@ struct PrivateWorkerRegistration {
 /// Host-owned admission for one private SDK descriptor. Never serialized on the wire.
 #[derive(Clone)]
 struct WorkerBinding {
-    host_scope: Option<LocalHostWorkerScope>,
     registration: Option<PrivateWorkerRegistration>,
     route: CrdtRoute,
     root: [u8; 32],
@@ -2822,8 +2793,8 @@ pub struct AppBrokerState {
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
     app_resource_kinds: RwLock<Option<crate::app_actions::AppResourceKindsResolver>>,
     /// Who is asked before an application uses another application's
-    /// action it holds no grant for. Nobody, until the host installs its
-    /// sheet: such a request is then refused.
+    /// action the person has not let it take. Nobody, until the host
+    /// installs its sheet: such a request is then refused.
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
     /// The notices of runs' questions given, by handle, with their workspace.
     run_question_notices: Mutex<HashMap<String, String>>,
@@ -2835,6 +2806,9 @@ pub struct AppBrokerState {
     /// in sheets, while the two apps one action of it changes are asked about
     /// in turn.
     app_action_consent_pending: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
+    /// The app actions the person let an app take for this session alone,
+    /// which their settings do not keep.
+    app_consent_session: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -2902,8 +2876,31 @@ pub struct AppBrokerState {
     service_peers: Mutex<Vec<u64>>,
     /// How often the broker thread unwound and started again.
     thread_restarts: AtomicU64,
-    #[cfg(test)]
-    thread_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+    /// Work another thread hands the broker's turn (see [`TurnWork`]).
+    turn_work: std::sync::Arc<TurnWork>,
+}
+
+/// Work another thread handed the broker's turn, run with the state.
+type TurnTask = Box<dyn FnOnce(&AppBrokerState) + Send>;
+
+/// Work a thread hands the broker's turn instead of doing it there.
+///
+/// The journal resolves a write on a thread of its own; a callback that took
+/// the broker there would drop the journal on it, and a writer cannot wait for
+/// itself, so the store's lock would outlive the journal. Work that needs the
+/// broker is handed here, with the state the turn owns and gives it.
+pub(super) struct TurnWork {
+    handed: Mutex<Vec<TurnTask>>,
+    /// The turn that runs what is handed: the broker loop parks on it.
+    turn: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl TurnWork {
+    /// Queue `work` for the turn, which runs it with the state.
+    pub(super) fn hand(&self, work: TurnTask) {
+        self.handed.lock_recover().push(work);
+        self.turn.notify_one();
+    }
 }
 
 impl AppBrokerState {
@@ -3003,8 +3000,8 @@ impl AppBrokerState {
         clear!(self.workers);
         // A launch waiting for an app to publish learns the broker stopped.
         self.invocation_streams_changed();
-        #[cfg(test)]
-        clear!(self.thread_callbacks);
+        // The broker that would run what is handed over is gone.
+        std::mem::take(&mut *self.turn_work.handed.lock_recover());
         self.refresh_action_directory_root_snapshot();
 
         let journal = {
@@ -3015,23 +3012,6 @@ impl AppBrokerState {
             std::mem::replace(&mut *slot, Ok(None))
         };
         drop(journal);
-    }
-
-    #[cfg(test)]
-    fn enqueue_thread_callback(&self, callback: Box<dyn FnOnce() + Send>) {
-        match self.thread_callbacks.lock() {
-            Ok(mut callbacks) => callbacks.push(callback),
-            Err(poisoned) => poisoned.into_inner().push(callback),
-        }
-        self.local_turn.notify_one();
-    }
-
-    #[cfg(test)]
-    fn callbacks_pending(&self) -> usize {
-        match self.thread_callbacks.lock() {
-            Ok(callbacks) => callbacks.len(),
-            Err(poisoned) => poisoned.into_inner().len(),
-        }
     }
 
     /// Allocate a private connected descriptor for an actual host-mounted worker.
@@ -3059,16 +3039,7 @@ impl AppBrokerState {
             .ok_or("current certificate authority unavailable")?;
         let workspace =
             uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid worker workspace")?;
-        let host_scope = if certificate.capabilities.can_act_as_host {
-            authority.authorize_host_worker(&route, certificate)?;
-            Some(LocalHostWorkerScope {
-                route: route.clone(),
-                certificate: certificate.clone(),
-            })
-        } else {
-            authority.authorize_join(workspace, certificate)?;
-            None
-        };
+        authority.authorize_join(workspace, certificate)?;
         let now = self.policy_now_ns()?;
         tilo_user_identity::verify_device_cert_at(certificate, now)
             .map_err(|_| "worker certificate rejected")?;
@@ -3092,7 +3063,6 @@ impl AppBrokerState {
         workers.push(PendingWorker {
             stream: server,
             binding: WorkerBinding {
-                host_scope,
                 registration: registration.map(|identity| PrivateWorkerRegistration {
                     identity,
                     route: route.clone(),
@@ -3477,7 +3447,7 @@ impl AppBrokerState {
         }
     }
 
-    /// So tests can register channel state before pushing signed
+    /// So tests can register inbound state before pushing signed
     /// envelopes through the wire.
     pub fn broker_channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.broker_channels)
@@ -3603,6 +3573,7 @@ impl AppBrokerState {
                     conversation_ask::ConversationAsks::default(),
                 ),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
+                app_consent_session: Mutex::new(std::collections::HashSet::new()),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
@@ -3626,15 +3597,17 @@ impl AppBrokerState {
                 services,
                 workers: Mutex::new(Vec::new()),
                 worker_admitted: tokio::sync::Notify::new(),
-                local_turn,
+                local_turn: std::sync::Arc::clone(&local_turn),
                 offloads: Mutex::default(),
                 offloaded_here: Mutex::default(),
                 host_workers: Mutex::default(),
                 route_holders: Mutex::default(),
                 service_peers: Mutex::new(Vec::new()),
                 thread_restarts: AtomicU64::new(0),
-                #[cfg(test)]
-                thread_callbacks: Mutex::new(Vec::new()),
+                turn_work: std::sync::Arc::new(TurnWork {
+                    handed: Mutex::new(Vec::new()),
+                    turn: std::sync::Arc::clone(&local_turn),
+                }),
             }),
             bridge_rx,
         )
@@ -4014,18 +3987,21 @@ impl AppBrokerState {
             .roots
     }
 
-    /// Drain a bounded batch on the broker `LocalSet`.  This function must only
-    /// be called by the accept-loop `LocalSet`: it starts the Rc-backed RPCs
-    /// there, while the request sender is safe for compositor threads.
+    /// Take the broker's turn once: run what other threads handed over, then
+    /// drain a bounded batch on the broker `LocalSet`. The loop takes the turn
+    /// each time it wakes, and a test that drives the broker takes it here.
+    /// This function must only be called by the accept-loop `LocalSet`: it
+    /// starts the Rc-backed RPCs there, while the request sender is safe for
+    /// compositor threads.
     #[allow(
         clippy::too_many_lines,
         reason = "the bounded bridge deliberately keeps request validation, LocalSet dispatch, and reply delivery in one ordered drain turn"
     )]
-    fn drain_action_directory_bridge(
-        self: &Arc<Self>,
-        directories: &Rc<LocalActionDirectoryRegistry>,
-    ) {
+    fn take_turn(self: &Arc<Self>, directories: &Rc<LocalActionDirectoryRegistry>) {
         const MAX_DRAIN_PER_TICK: usize = ActionDirectoryRequestQueue::CAPACITY;
+        for work in std::mem::take(&mut *self.turn_work.handed.lock_recover()) {
+            work(self);
+        }
         for _ in 0..MAX_DRAIN_PER_TICK {
             let request = match directories.bridge_rx.borrow().try_recv() {
                 Ok(request) => request,
@@ -4378,26 +4354,19 @@ impl AppBrokerState {
         argument: Option<&str>,
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
-        let unavailable = |_: String| ActionDirectoryBridgeError::Unavailable;
         let DirectoryActionTarget {
             cluster_id,
             peer_id,
             revision,
-            address: tilo_actions::ActionAddress { resource, action },
+            address:
+                tilo_actions::ActionAddress {
+                    resource,
+                    item: _,
+                    action,
+                },
         } = target;
+        check_directory_target(target, argument, confirmation.as_ref())?;
         let peer_id = *peer_id;
-        if revision.is_empty() {
-            return Err(ActionDirectoryBridgeError::InvalidRequest);
-        }
-        validate_directory_target_input(
-            cluster_id,
-            revision,
-            resource,
-            action,
-            argument,
-            confirmation.as_ref(),
-        )
-        .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)?;
         let registered = directories
             .registered(peer_id, cluster_id)
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
@@ -4447,6 +4416,31 @@ impl AppBrokerState {
             &published.contract,
             confirmation,
         )?;
+        self.start_directory_invocation(
+            peer_id,
+            registered,
+            (published, revision.as_str()),
+            (argument, actor),
+            confirmation_token.as_deref(),
+        )
+        .await
+    }
+
+    /// Start the invocation `published` names on `peer_id`'s route, under the
+    /// caller's confirmation token.
+    #[allow(
+        clippy::future_not_send,
+        reason = "Admission needs the complete authenticated route and runs on the broker LocalSet with non-Send broker state."
+    )]
+    async fn start_directory_invocation(
+        &self,
+        peer_id: u64,
+        registered: RegisteredActionDirectory,
+        (published, revision): (PublishedAction, &str),
+        (argument, actor): (Option<&str>, &BrokerActor),
+        confirmation_token: Option<&str>,
+    ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
+        let unavailable = |_: String| ActionDirectoryBridgeError::Unavailable;
         let surface = PublishedSurface {
             peer_id,
             app_id: registered.app_id,
@@ -4465,10 +4459,10 @@ impl AppBrokerState {
                     execution: None,
                     argument,
                     actor,
-                    confirmation_token: confirmation_token.as_deref(),
+                    confirmation_token,
                     context: None,
                 },
-                Some(revision.as_str()),
+                Some(revision),
             )
             .map_err(unavailable)?;
         let job = job.start(self).await.map_err(unavailable)?;
@@ -5215,7 +5209,7 @@ impl AppBrokerState {
             self.current_native_person(workspace, certificate)?;
             if workspace != &offered.0.route.cluster_id
                 || actor.is_agent
-                || actor.id != principal_id_for_root(certificate.user_public_key)
+                || actor.id != person_id_for_root(certificate.user_public_key)
             {
                 return Err(
                     "original native person does not match the invocation route or actor".into(),
@@ -5614,6 +5608,7 @@ impl AppBrokerState {
                     invocation,
                     address: tilo_actions::ActionAddress {
                         resource: offered.1.resource.clone(),
+                        item: None,
                         action: offered.1.action.clone(),
                     },
                     argument: argument.map(str::to_string),
@@ -6592,11 +6587,15 @@ impl AppBrokerState {
 
     /// Stable authenticated actor id for native presence and interactions.
     /// Display handles remain presentation only.
-    fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
+    fn member_id(admitted: &AdmittedJoinIdentity) -> collab_types::MemberId {
         admitted.agent_id.as_ref().map_or_else(
-            || admitted.principal_id.clone(),
-            |agent| format!("agent:{agent}"),
+            || collab_types::MemberId::person(admitted.principal_id.clone()),
+            |agent| collab_types::MemberId::agent(agent.clone()),
         )
+    }
+
+    fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
+        Self::member_id(admitted).key()
     }
 
     fn revalidate_admission(
@@ -6608,42 +6607,13 @@ impl AppBrokerState {
         if let Some(cert) = &admitted.certificate {
             tilo_user_identity::verify_device_cert_at(cert, now)
                 .map_err(|_| BrokerError::failed("certificate no longer valid".into()))?;
-            if let Some(scope) = &admitted.host_scope {
-                if !self.is_accepting()
-                    || !cert.capabilities.can_act_as_host
-                    || route != &scope.route
-                    || cert != &scope.certificate
-                    || admitted.agent_id.is_some()
-                {
-                    return Err(BrokerError::failed(
-                        "host worker scope no longer valid".into(),
-                    ));
-                }
-                self.certificate_authority
-                    .get()
-                    .ok_or_else(|| {
-                        BrokerError::failed("current host worker authority unavailable".into())
-                    })?
-                    .authorize_host_worker(route, cert)
+            if let Some(authority) = self.certificate_authority.get() {
+                let workspace = uuid::Uuid::parse_str(&route.cluster_id)
+                    .map_err(|_| BrokerError::failed("invalid exact workspace".into()))?;
+                authority
+                    .authorize_join(workspace, cert)
                     .map_err(BrokerError::failed)?;
-            } else {
-                if cert.capabilities.can_act_as_host {
-                    return Err(BrokerError::failed(
-                        "host certificate requires a private host worker descriptor".into(),
-                    ));
-                }
-                if let Some(authority) = self.certificate_authority.get() {
-                    let workspace = uuid::Uuid::parse_str(&route.cluster_id)
-                        .map_err(|_| BrokerError::failed("invalid exact workspace".into()))?;
-                    authority
-                        .authorize_join(workspace, cert)
-                        .map_err(BrokerError::failed)?;
-                }
             }
-        } else if admitted.host_scope.is_some() {
-            return Err(BrokerError::failed(
-                "host worker certificate missing".into(),
-            ));
         }
         let membership = self.membership.as_ref().ok_or_else(|| {
             BrokerError::failed("certified session lost its membership authority".into())
@@ -6666,7 +6636,6 @@ impl AppBrokerState {
                             )
                         })?;
                 current.certificate.clone_from(&admitted.certificate);
-                current.host_scope.clone_from(&admitted.host_scope);
                 current
                     .worker_registration
                     .clone_from(&admitted.worker_registration);
@@ -6678,7 +6647,13 @@ impl AppBrokerState {
                         .certificate
                         .as_ref()
                         .ok_or("task agent session lost its device certificate")?;
-                    verify_task_delegation(task, cert, &route.cluster_id, now)?;
+                    verify_task_delegation(
+                        task,
+                        cert,
+                        collab_types::WorkspaceId::parse(&route.cluster_id)
+                            .ok_or("the task's workspace is not a workspace id")?,
+                        now,
+                    )?;
                     admit_task_delegation(&mut current, (**task).clone());
                 } else if let Some(agent_id) = &admitted.agent_id {
                     let roster = agents.ok_or("this host reads no workspace's agents")?;
@@ -6728,17 +6703,6 @@ impl AppBrokerState {
                 "certified document operation has an invalid routed payload: {error}"
             ))
         })?;
-        let channel = match &payload {
-            collab_types::RoutedDocumentPayload::Cleartext(_)
-            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
-                collab_types::document_channel_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record_id,
-                )
-            }
-            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
-        };
         // A workspace that seals its records takes every write encrypted under
         // the record channel's keys. An unencrypted one is refused here, on
         // the device that wrote it, and never reaches the workspace.
@@ -6761,11 +6725,9 @@ impl AppBrokerState {
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             BrokerError::failed("collaboration governance state is unavailable".into())
         })?;
-        if !broker_channels.document_encryption_allowed(
-            &route.cluster_id,
-            channel,
-            envelope.encryption.as_ref(),
-        ) {
+        if !broker_channels
+            .document_encryption_allowed(&route.cluster_id, envelope.encryption.as_ref())
+        {
             return Err(BrokerError::failed(
                 "plaintext document operation rejected after MLS migration".into(),
             ));
@@ -6774,7 +6736,7 @@ impl AppBrokerState {
         // The change the op makes must be allowed outright: a signed op
         // carries no answer to a grant that would ask first.
         let record = collab_types::Record {
-            room: &route.cluster_id,
+            workspace: &route.cluster_id,
             app: &route.app_id,
             record: &route.record_id,
         };
@@ -6804,7 +6766,6 @@ impl AppBrokerState {
         }
         Ok(AuthorizedDocumentRoute {
             artifact: envelope.artifact,
-            channel,
             payload,
         })
     }
@@ -6892,9 +6853,7 @@ impl AppBrokerState {
         if route.cluster_id.is_empty() {
             return;
         }
-        let Some(admission) = self.admission_of(event, route) else {
-            return;
-        };
+        let admission = Self::admission_of(event);
         let Ok(mut all_channels) = self.channels.lock() else {
             return;
         };
@@ -6926,10 +6885,10 @@ impl AppBrokerState {
                 payload,
             } => Self::fanout_presence_update(channels, except, user_id, key, payload),
             CollabEvent::Context {
-                collaborators,
+                members,
                 permissions,
                 apps,
-            } => Self::fanout_context(channels, except, collaborators, permissions, apps),
+            } => Self::fanout_context(channels, except, members, permissions, apps),
             CollabEvent::FollowChanged { peer_id } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref());
             }
@@ -7070,17 +7029,17 @@ impl AppBrokerState {
         }
     }
 
-    /// One arm of [`Self::fanout_to_route`]: the workspace's collaborator +
+    /// One arm of [`Self::fanout_to_route`]: the workspace's member +
     /// permission context.
     fn fanout_context<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        collaborators: &[ui::collaboration::Collaborator],
+        members: &[ui::collaboration::Member],
         permissions: &[String],
         apps: &[collab_types::history::NamedApp],
     ) {
         let env = ContextUpdate::Snapshot {
-            collaborators: collaborators.to_vec(),
+            members: members.to_vec(),
             permissions: permissions.to_vec(),
             apps: apps.to_vec(),
         };
@@ -7176,7 +7135,7 @@ impl AppBrokerState {
         let apps = self.installed_apps();
         if let Some(native) = native.as_ref() {
             let _ = tx.send(ContextUpdate::Snapshot {
-                collaborators: native.roster.clone(),
+                members: native.roster.clone(),
                 permissions: Vec::new(),
                 apps: apps.clone(),
             });
@@ -7265,11 +7224,12 @@ impl AppBrokerState {
                     .map(|(person, _)| person)
                     .filter(|person| !workspace.is_blocked(person))
                     .map(|person| {
+                        let wanted = collab_types::MemberId::person(person.clone());
                         let name = workspace
-                            .collaborators
+                            .members
                             .iter()
-                            .find(|row| row.id == person)
-                            .map_or_else(|| person.clone(), |row| row.name.clone());
+                            .find(|member| member.id == wanted)
+                            .map_or_else(|| person.clone(), |member| member.name.clone());
                         (person, name)
                     })
                     .collect();
@@ -7303,7 +7263,7 @@ impl AppBrokerState {
         &self,
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
-    ) -> Result<Vec<ui::collaboration::Collaborator>, String> {
+    ) -> Result<Vec<ui::collaboration::Member>, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let (agents, people) = self
             .membership
@@ -7320,93 +7280,83 @@ impl AppBrokerState {
                     })
                     .collect();
                 agents.sort_by(|left, right| left.0.cmp(&right.0));
-                let mut people: Vec<String> = workspace
+                let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
                     .roster()
                     .into_iter()
-                    .map(|(person, _)| person)
-                    .filter(|person| !workspace.is_blocked(person))
+                    .filter(|(person, _)| !workspace.is_blocked(person))
                     .collect();
-                people.sort();
+                people.sort_by(|left, right| left.0.cmp(&right.0));
                 // Presence may supply a label, but only owner-backed
                 // membership supplies the identity. An offline member
                 // remains a member.
                 let people = people
                     .into_iter()
-                    .map(|person| {
-                        let row = workspace.collaborators.iter().find(|row| row.id == person);
+                    .map(|(person, role)| {
+                        let row = workspace.members.iter().find(|member| {
+                            member.id == collab_types::MemberId::person(person.clone())
+                        });
                         // Someone presence has not named is unnamed here, never named by their
                         // key: an app calls them as it calls anyone it has no name for.
                         let name = row.map_or_else(String::new, |row| row.name.clone());
-                        // The colour presence draws them in: the one they
-                        // chose, or the one their identity derives, so an app
-                        // paints a person as their desk and everyone else's
-                        // does. No word of them yet, and they are painted in
-                        // what their id derives, as everywhere.
-                        let colour = row
-                            .and_then(|row| row.cursor_color.as_deref())
-                            .and_then(ui::presence::parse_hex_color)
-                            .and_then(|(red, green, blue)| {
-                                ui::tokens::PresenceHue::nearest_to_srgb(red, green, blue)
-                            });
-                        let joined = workspace.policy.joined_at(&person);
-                        (person, name, colour, joined)
+                        // The colour their member row stores: the one they chose, else the one
+                        // their identity derives.
+                        let colour = row.map_or_else(
+                            || ui::tokens::PresenceHue::of_identity(&person),
+                            |row| row.colour,
+                        );
+                        let mut member = collab_types::Member::of_person(
+                            &collab_types::Person::new(person.clone(), name).wearing(colour),
+                            Some(role),
+                        );
+                        member.joined_at = workspace.policy.joined_at(&person);
+                        member
                     })
                     .collect::<Vec<_>>();
                 Ok::<_, &str>((agents, people))
             })??;
-        let mut collaborators =
+        let self_id = Self::member_id(admitted);
+        let self_name = admitted
+            .display_handle
+            .clone()
+            .unwrap_or_else(|| admitted.principal_id.clone());
+        let mut mine: Option<collab_types::Member> = None;
+        let mut members =
             Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
-        if admitted.agent_id.is_none() {
-            collaborators.push(ui::collaboration::Collaborator {
-                id: Self::participant_id(admitted),
-                name: admitted
-                    .display_handle
-                    .clone()
-                    .unwrap_or_else(|| admitted.principal_id.clone()),
-                colour: None,
-                is_agent: false,
-                is_self: true,
-                joined_at: people
-                    .iter()
-                    .find(|(person, _, _, _)| *person == admitted.principal_id)
-                    .and_then(|(_, _, _, joined)| *joined),
-            });
-        }
-        for (person, name, colour, joined_at) in people {
-            if admitted.agent_id.is_none() && person == admitted.principal_id {
-                continue;
+        for row in people {
+            if row.id == self_id {
+                mine = Some(row);
+            } else {
+                members.push(row);
             }
-            collaborators.push(ui::collaboration::Collaborator {
-                id: person,
-                name,
-                colour,
-                is_agent: false,
-                is_self: false,
-                joined_at,
-            });
         }
         for (agent, keeper) in agents {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
-            let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
-            // The colour its face wears everywhere ([`participant_color`] of an agent, clear of
-            // the person who admitted it): an app draws it as the bar does, one rule and one key
-            // for every surface.
-            let colour = ui::presence::participant_hue(&agent, true, keeper.as_deref());
-            collaborators.push(ui::collaboration::Collaborator {
-                id: format!("agent:{agent}"),
-                name: agent,
-                colour: Some(colour),
-                is_agent: true,
-                is_self,
-                joined_at: None,
-            });
+            let keeper = keeper.map(collab_types::PersonId::new);
+            let row = collab_types::Member::of_software(
+                collab_types::MemberId::agent(agent.clone()),
+                agent,
+                keeper.as_ref(),
+            );
+            if row.id == self_id {
+                mine = Some(row);
+            } else {
+                members.push(row);
+            }
         }
-        collaborators.extend(task_agents::self_row(admitted));
-        if collaborators.iter().filter(|row| row.is_self).count() != 1 {
+        let mut me = mine.unwrap_or_else(|| {
+            collab_types::Member::of_person(
+                &collab_types::Person::new(admitted.principal_id.clone(), self_name.clone()),
+                None,
+            )
+        });
+        me.name = self_name;
+        members.push(me.claiming_self());
+        members.extend(task_agents::self_row(admitted));
+        if members.iter().filter(|row| row.is_self).count() != 1 {
             return Err("native context has no exact authenticated self member".into());
         }
-        Ok(collaborators)
+        Ok(members)
     }
 
     /// Complete certified membership currently backing native Context
@@ -7422,13 +7372,13 @@ impl AppBrokerState {
         if !self
             .certified_people_in_workspace(workspace)
             .iter()
-            .any(|row| row.id == actor && row.is_agent)
+            .any(|row| row.id.key() == actor && !row.id.is_person())
         {
             return None;
         }
         // A task agent's row comes only from its own verified, revalidated
         // task delegation ([`Self::native_membership_roster`]): that is its
-        // certification, beside a collaborator's membership.
+        // certification, beside a member's membership.
         if let Some(agent) = actor
             .strip_prefix("agent:")
             .filter(|agent| tilo_peer_state::join::task_delegation::is_task_agent(agent))
@@ -7462,12 +7412,11 @@ impl AppBrokerState {
     pub(crate) fn certified_people_in_workspace(
         &self,
         workspace: &str,
-    ) -> Vec<ui::collaboration::Collaborator> {
+    ) -> Vec<ui::collaboration::Member> {
         let Ok(channels) = self.channels.lock() else {
             return Vec::new();
         };
-        let mut people =
-            std::collections::BTreeMap::<String, ui::collaboration::Collaborator>::new();
+        let mut people = std::collections::BTreeMap::<String, ui::collaboration::Member>::new();
         for (channel, subscribers) in channels.iter() {
             let route = CrdtRoute::from_channel_key(channel);
             if route.cluster_id != workspace {
@@ -7481,15 +7430,15 @@ impl AppBrokerState {
                 for participant in &native.roster {
                     let mut participant = participant.clone();
                     participant.is_self = false;
-                    if let Some(held) = people.get(&participant.id) {
+                    if let Some(held) = people.get(&participant.id.key()) {
                         if held.name != participant.name
                             || held.packed_colour() != participant.packed_colour()
-                            || held.is_agent != participant.is_agent
+                            || held.id.is_person() != participant.id.is_person()
                         {
                             return Vec::new();
                         }
                     } else {
-                        people.insert(participant.id.clone(), participant);
+                        people.insert(participant.id.key(), participant);
                     }
                 }
             }
@@ -7661,15 +7610,14 @@ impl AppBrokerState {
         current: &AdmittedJoinIdentity,
     ) -> Result<bool, String> {
         fn same_roster(
-            left: &[ui::collaboration::Collaborator],
-            right: &[ui::collaboration::Collaborator],
+            left: &[ui::collaboration::Member],
+            right: &[ui::collaboration::Member],
         ) -> bool {
             left.len() == right.len()
                 && left.iter().zip(right).all(|(left, right)| {
                     left.id == right.id
                         && left.name == right.name
                         && left.packed_colour() == right.packed_colour()
-                        && left.is_agent == right.is_agent
                         && left.is_self == right.is_self
                 })
         }
@@ -7696,7 +7644,7 @@ impl AppBrokerState {
                 if subscriber
                     .tx
                     .send(ContextUpdate::Snapshot {
-                        collaborators: roster.clone(),
+                        members: roster.clone(),
                         permissions: Vec::new(),
                         apps: apps.clone(),
                     })
@@ -8071,17 +8019,6 @@ fn app_settings_capability(
     };
     let app_id = route.app_id.clone();
     let display = private_display_control(state, &route, &identity);
-    // Personal vocabulary stays on this device. Admission to a workspace is
-    // insufficient: only the host's private local worker descriptor of the
-    // authenticated person receives the read/edit projection.
-    let dictionary_owner = (identity.host_scope.is_some()
-        && identity.agent_id.is_none()
-        && !identity.verified.capped
-        && !identity
-            .certificate
-            .as_ref()
-            .is_some_and(|cert| cert.capabilities.foreign))
-    .then_some(identity.verified.user_public_key);
     let reach = settings_reach(state, &route, &identity);
     let state = Arc::clone(state);
     let revalidate: runtime_collab::settings::host::Revalidate = Arc::new(move || {
@@ -8093,7 +8030,6 @@ fn app_settings_capability(
     Ok(
         runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
             .with_reach(reach)
-            .with_dictionary_owner(dictionary_owner)
             .with_display(display),
     )
 }
@@ -8845,7 +8781,7 @@ fn validate_signed_op(
                 return None;
             };
             let ch_state = ch.state_for(artifact);
-            ch_state.room.clone_from(&route.cluster_id);
+            ch_state.workspace.clone_from(&route.cluster_id);
             ch_state.artifacts.insert(artifact, ArtifactKind::Note);
             ch_state
                 .artifact_apps
@@ -9042,20 +8978,6 @@ fn handle_authorized_signed_op_send(
     envelope: SignedOp,
 ) {
     debug_assert_eq!(authorized.artifact, envelope.artifact);
-    debug_assert_eq!(
-        authorized.channel,
-        match &authorized.payload {
-            collab_types::RoutedDocumentPayload::Cleartext(_)
-            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
-                collab_types::document_channel_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record_id,
-                )
-            }
-            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
-        }
-    );
     handle_signed_op_send_for_artifact(
         state,
         peer_id,
@@ -9092,44 +9014,6 @@ fn read_scrollback(
 }
 
 // Presence handle + streams
-
-/// A returned stream retains the local descriptor's host identity, not a past
-/// permission decision. Both sides of every await recheck current authority.
-struct HostWorkerReadGuard {
-    state: Arc<AppBrokerState>,
-    peer_id: u64,
-    identity: AdmittedJoinIdentity,
-}
-impl HostWorkerReadGuard {
-    fn for_channel(
-        state: &Arc<AppBrokerState>,
-        peer_id: u64,
-        identity: &AdmittedJoinIdentity,
-    ) -> Option<Self> {
-        identity.host_scope.as_ref().map(|_| Self {
-            state: state.clone(),
-            peer_id,
-            identity: identity.clone(),
-        })
-    }
-    fn check(guard: Option<&Self>) -> Result<(), BrokerError> {
-        if let Some(guard) = guard {
-            let scope = guard
-                .identity
-                .host_scope
-                .as_ref()
-                .ok_or_else(|| BrokerError::failed("host worker scope missing".into()))?;
-            if !guard
-                .state
-                .is_current_host_worker(guard.peer_id, &scope.route, &scope.certificate)
-                .map_err(BrokerError::failed)?
-            {
-                return Err(BrokerError::failed("host worker no longer current".into()));
-            }
-        }
-        Ok(())
-    }
-}
 
 // Stream servers
 
@@ -9188,7 +9072,6 @@ pub(crate) fn unread_invocations(peer: u64) -> usize {
 }
 
 struct InvocationStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
     rx: InvocationQueue,
     /// Told each time an invocation is handed to the app.
     delivered: Option<Box<dyn Fn()>>,
@@ -9218,7 +9101,6 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
 }
 
 struct ActionCatalogueStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
     follower: Arc<CatalogueFollower>,
 }
 
@@ -9229,13 +9111,11 @@ impl ActionCatalogueStreamServer {
         reason = "the stream is served on the connection's single-threaded local set"
     )]
     async fn next(&self) -> Result<String, BrokerError> {
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         let change = self
             .follower
             .next()
             .await
             .map_err(|()| BrokerError::disconnected("action catalogue stream closed".into()))?;
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         let json = serde_json::to_string(&change)
             .map_err(|error| BrokerError::failed(error.to_string()))?;
         if change.reset {
@@ -9258,13 +9138,11 @@ impl InvocationStreamServer {
         reason = "the stream is served on the connection's single-threaded local set"
     )]
     async fn next(&self) -> Result<InvocationEnvelope, BrokerError> {
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         let mut guard = self.rx.lock().await;
         let invocation = guard.recv().await.ok_or_else(|| {
             BrokerError::disconnected("application invocation stream closed".into())
         })?;
         drop(guard);
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         if let Some(delivered) = &self.delivered {
             delivered();
         }
@@ -9960,10 +9838,6 @@ async fn sleep_until(deadline: Option<std::time::Instant>) {
 /// One run of the broker thread: start the broker's own services, then
 /// accept and drive connections until asked to quit.
 #[expect(
-    clippy::too_many_lines,
-    reason = "the broker's turn: service start, worker admission, accept and expiry in one loop"
-)]
-#[expect(
     clippy::future_not_send,
     reason = "the broker state and its Rc-backed action-directory registry run only on the broker LocalSet"
 )]
@@ -10009,16 +9883,6 @@ async fn serve_broker_thread(
             state.refresh_native_task_delivery();
             delivered = Some(epoch);
         }
-        #[cfg(test)]
-        {
-            let callbacks = match state.thread_callbacks.lock() {
-                Ok(mut callbacks) => std::mem::take(&mut *callbacks),
-                Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
-            };
-            for callback in callbacks {
-                callback();
-            }
-        }
         let workers = state
             .workers
             .lock()
@@ -10046,7 +9910,7 @@ async fn serve_broker_thread(
                 }
             });
         }
-        state.drain_action_directory_bridge(&directories);
+        state.take_turn(&directories);
         state.drain_offloads();
         if quit.load(Ordering::Relaxed) {
             break;
@@ -11089,7 +10953,7 @@ pub mod tests {
                 }),
             );
         let fanout_for_callback = Arc::clone(&fanout);
-        state.enqueue_thread_callback(Box::new(move || {
+        state.turn_work.hand(Box::new(move |_| {
             fanout_for_callback.fanout_to_route(
                 &CollabEvent::FollowChanged { peer_id: None },
                 u64::MAX,
@@ -11388,12 +11252,14 @@ pub mod tests {
 
         // A failing broker thread is started again on the same socket, and
         // the session's handles to it stay live.
-        state.enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+        state
+            .turn_work
+            .hand(Box::new(|_| panic!("broker-thread unwind fixture")));
         tilo_test_env::wait_until("the broker thread to start again", || {
             state.thread_restarts() == 1
         });
         let (reached, answered) = std::sync::mpsc::channel();
-        state.enqueue_thread_callback(Box::new(move || {
+        state.turn_work.hand(Box::new(move |_| {
             let _ = reached.send(tilo_rt::panic_boundary::is_isolated());
         }));
         assert!(
@@ -11417,9 +11283,11 @@ pub mod tests {
 
         // One that keeps failing stays down and releases what it held.
         for _ in 0..BROKER_THREAD_RESTARTS {
-            state.enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+            state
+                .turn_work
+                .hand(Box::new(|_| panic!("broker-thread unwind fixture")));
             tilo_test_env::wait_until("the broker thread to fail", || {
-                !socket.exists() || state.callbacks_pending() == 0
+                !socket.exists() || state.turn_work.handed.lock_recover().is_empty()
             });
         }
         drop(state);
@@ -11749,7 +11617,7 @@ pub mod tests {
                         source
                             .certificate
                             .as_ref()
-                            .map(|certificate| principal_id_for_root(certificate.user_public_key))
+                            .map(|certificate| person_id_for_root(certificate.user_public_key))
                     }),
                     app_id: self.route.app_id.clone(),
                     route: self.route.clone(),
@@ -11781,7 +11649,6 @@ pub mod tests {
                 connection_id: peer_id,
                 verified_identity: self.source_identity.clone().unwrap_or_else(|| {
                     AdmittedJoinIdentity {
-                        host_scope: None,
                         worker_registration: None,
                         certificate: None,
                         verified: VerifiedJoinIdentity {
@@ -11823,6 +11690,22 @@ pub mod tests {
                 .try_recv()
                 .ok()
                 .map(|invocation| (invocation.id, invocation.invocation))
+        }
+
+        /// Drive `pending` until the broker answers it, taking the broker's
+        /// turn each pass: a journal write resolves on its own writer thread
+        /// and hands its answer to the turn, which nothing else takes here.
+        pub async fn drive<T>(&self, mut pending: tilo_actions::remote::Pending<T>) -> T {
+            tilo_test_env::within("the broker answers", async {
+                loop {
+                    drain_directory_bridge(self).await;
+                    if let tilo_actions::remote::PendingPoll::Ready(value) = pending.poll_ready() {
+                        break value;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
         }
 
         pub fn resolve_count(&self) -> usize {
@@ -11976,7 +11859,7 @@ pub mod tests {
             .run_until(async {
                 for directory in [false, true] {
                     let fixture = local_directory_fixture();
-                    let person = principal_id_for_root([0; 32]);
+                    let person = person_id_for_root([0; 32]);
                     let mut other_workspace = crate::test_support::Workspace::new(
                         crate::test_support::WorkspaceSlot(72),
                         "Other publication workspace",
@@ -12181,9 +12064,7 @@ pub mod tests {
         reason = "the directory bridge is deliberately driven on the LocalSet because its state contains Rc values"
     )]
     pub async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
-        fixture
-            .state
-            .drain_action_directory_bridge(&fixture.directories);
+        fixture.state.take_turn(&fixture.directories);
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
     }
@@ -12368,7 +12249,7 @@ pub mod tests {
     /// listed without its gate, and nothing on that page is listed past it.
     #[tokio::test(flavor = "current_thread")]
     async fn a_row_whose_visibility_cannot_be_decoded_is_not_listed() {
-        use tilo_actions::remote::{Caller, CatalogueQuery, PendingPoll};
+        use tilo_actions::remote::{Caller, CatalogueQuery};
         tokio::task::LocalSet::new()
             .run_until(async {
                 let fixture = local_directory_fixture();
@@ -12381,17 +12262,9 @@ pub mod tests {
                     ..CatalogueQuery::default()
                 };
                 let list = || async {
-                    let mut pending = fixture.state.action_query(&caller, &query);
-                    tilo_test_env::within("bounded directory query", async {
-                        loop {
-                            drain_directory_bridge(&fixture).await;
-                            if let PendingPoll::Ready(result) = pending.poll_ready() {
-                                break result;
-                            }
-                            tokio::task::yield_now().await;
-                        }
-                    })
-                    .await
+                    fixture
+                        .drive(fixture.state.action_query(&caller, &query))
+                        .await
                 };
                 let listed = list().await.expect("a well-formed directory lists");
                 assert_eq!(
@@ -12490,9 +12363,7 @@ pub mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
-        use tilo_actions::remote::{
-            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
-        };
+        use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut fixture = local_directory_fixture();
@@ -12513,17 +12384,8 @@ pub mod tests {
                     wait_ms: None,
                     appearance: None,
                 };
-                let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
-                let admitted = tilo_test_env::within("bounded actual directory admission", async {
-                    loop {
-                        drain_directory_bridge(&fixture).await;
-                        if let PendingPoll::Ready(result) = pending.poll_ready() {
-                            break result;
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await;
+                let pending = fixture.state.action_invoke(&caller, None, None, &request);
+                let admitted = fixture.drive(pending).await;
                 admitted.expect("full-envelope consumer supports scoped invocation UUIDs");
                 let (job, delivered) = fixture.take_invocation_identity().expect("actual delivery");
                 assert_eq!(delivered, request.invocation);
@@ -12624,11 +12486,10 @@ pub mod tests {
                 wait_ms: None,
                 appearance: None,
             };
+            let pending = fixture.state.action_invoke(&caller, None, None, &request);
             let receipt = fixture
-                .state
-                .action_invoke(&caller, None, None, &request)
+                .drive(pending)
                 .await
-                .expect("the host answers")
                 .expect("published ordinary action must be admitted");
             assert_eq!(receipt.invocation, request.invocation);
             let (job, delivered) = fixture.take_invocation_identity().unwrap();
@@ -12820,7 +12681,7 @@ pub mod tests {
     #[test]
     fn certified_join_admission_uses_workspace_membership_and_role() {
         let root = SigningKey::from_bytes(&[20; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(1),
             "Member workspace",
@@ -12866,7 +12727,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[24; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(4), "Actions");
-        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         let workspace_id = workspace.id().to_string();
         let route = CrdtRoute::cluster(&workspace_id);
         let mut tree = WorkspaceTree::default();
@@ -12932,7 +12793,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[25; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(5), "Own");
-        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -12989,7 +12850,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[23; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(3), "Foreign");
-        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
         let mut tree = WorkspaceTree::default();
@@ -13003,7 +12864,7 @@ pub mod tests {
         let kept = crate::test_support::KeptAgents::default().keeping(
             &workspace_id,
             "scribe",
-            &principal_id_for_root(root.verifying_key().to_bytes()),
+            &person_id_for_root(root.verifying_key().to_bytes()),
         );
 
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
@@ -13041,13 +12902,13 @@ pub mod tests {
     #[test]
     fn a_delegated_agent_acts_with_its_persons_authority_and_ends_with_them() {
         let root = SigningKey::from_bytes(&[44; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(44),
             "Agent workspace",
         );
         let owner =
-            principal_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
+            person_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
         workspace.set_owner(owner.clone());
         workspace.admit(principal.clone(), Role::Moderator);
         workspace.grant(tilo_action_policy::Grant::new(
@@ -13070,7 +12931,7 @@ pub mod tests {
         let kept = crate::test_support::KeptAgents::default().keeping(
             &workspace_id,
             "scribe",
-            &principal_id_for_root(root.verifying_key().to_bytes()),
+            &person_id_for_root(root.verifying_key().to_bytes()),
         );
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
             .expect("the keeper is admitted before their agent is");
@@ -13135,9 +12996,9 @@ pub mod tests {
     fn a_hosted_agent_takes_its_persons_role_capped_and_ends_with_them() {
         use tilo_action_policy::roles::governance;
         let owner_root = SigningKey::from_bytes(&[45; 32]);
-        let owner = principal_id_for_root(owner_root.verifying_key().to_bytes());
+        let owner = person_id_for_root(owner_root.verifying_key().to_bytes());
         let bob_root = SigningKey::from_bytes(&[46; 32]);
-        let bob = principal_id_for_root(bob_root.verifying_key().to_bytes());
+        let bob = person_id_for_root(bob_root.verifying_key().to_bytes());
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(45), "Hosted");
         workspace.set_owner(owner.clone());
@@ -13172,17 +13033,17 @@ pub mod tests {
             .keeping(
                 &workspace_id,
                 "scribe",
-                &principal_id_for_root(owner_root.verifying_key().to_bytes()),
+                &person_id_for_root(owner_root.verifying_key().to_bytes()),
             )
             .keeping(
                 &workspace_id,
                 "reader",
-                &principal_id_for_root(bob_root.verifying_key().to_bytes()),
+                &person_id_for_root(bob_root.verifying_key().to_bytes()),
             )
             .keeping(
                 &workspace_id,
                 "bobs-scribe",
-                &principal_id_for_root(bob_root.verifying_key().to_bytes()),
+                &person_id_for_root(bob_root.verifying_key().to_bytes()),
             );
         let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
             let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
@@ -13288,7 +13149,7 @@ pub mod tests {
         }
 
         let root = SigningKey::from_bytes(&[46; 32]);
-        let person = principal_id_for_root(root.verifying_key().to_bytes());
+        let person = person_id_for_root(root.verifying_key().to_bytes());
         let tide = "tide";
         let reed = "reed";
         let mut workspace =
@@ -13343,38 +13204,48 @@ pub mod tests {
             "a workspace the native owner did not select keeps ordinary app context"
         );
         assert_eq!(roster.iter().filter(|row| row.is_self).count(), 1);
-        assert!(roster.iter().any(|row| row.id == person && !row.is_agent));
         assert!(
             roster
                 .iter()
-                .all(|row| row.id != "person-in-other-workspace")
+                .any(|row| row.id == collab_types::MemberId::person(person.clone()))
         );
         assert!(
             roster
                 .iter()
-                .any(|row| { row.id == other_person && !row.is_agent && !row.is_self })
+                .all(|row| row.id != collab_types::MemberId::person("person-in-other-workspace"))
+        );
+        assert!(
+            roster.iter().any(|row| {
+                row.id == collab_types::MemberId::person(other_person) && !row.is_self
+            })
         );
         // When each person joined travels with their row, so every replica
         // numbers namesakes alike; the owner holds the workspace from its start.
-        let joined = |id: &str| roster.iter().find(|row| row.id == id).unwrap().joined_at;
-        assert_eq!(joined(other_person), Some(7_000));
+        let joined =
+            |id: collab_types::MemberId| roster.iter().find(|row| row.id == id).unwrap().joined_at;
+        assert_eq!(
+            joined(collab_types::MemberId::person(other_person)),
+            Some(7_000)
+        );
         assert_eq!(
             roster.iter().find(|row| row.is_self).unwrap().joined_at,
             Some(0)
         );
-        assert_eq!(joined(&format!("agent:{tide}")), None);
+        assert_eq!(joined(collab_types::MemberId::agent(tide)), None);
         assert!(
             roster
                 .iter()
-                .any(|row| { row.id == format!("agent:{person}") && row.is_agent && !row.is_self })
+                .any(|row| row.id == collab_types::MemberId::agent(person.clone()) && !row.is_self)
         );
         assert!(
             roster
                 .iter()
-                .any(|row| row.id == format!("agent:{tide}") && row.is_agent)
+                .any(|row| row.id == collab_types::MemberId::agent(tide))
         );
         assert!(
-            roster.iter().all(|row| row.id != "agent:wrong-workspace"),
+            roster
+                .iter()
+                .all(|row| row.id != collab_types::MemberId::agent("wrong-workspace")),
             "a grant for another workspace is not native membership here"
         );
         assert!(
@@ -13388,15 +13259,12 @@ pub mod tests {
         // An agent wears the colour its face wears everywhere, clear of the
         // person who admitted it, so the card it shows in a window is drawn as
         // the bar draws it.
-        for agent in roster.iter().filter(|row| row.is_agent) {
-            let key = agent
-                .id
-                .strip_prefix("agent:")
-                .expect("an agent's id names its key");
+        for agent in roster.iter().filter(|row| !row.id.is_person()) {
             assert_eq!(
                 agent.colour,
-                Some(ui::presence::participant_hue(key, true, Some(&person))),
-                "{key}"
+                ui::presence::participant_hue(&agent.id.key(), true, Some(&person)),
+                "{}",
+                agent.id.key()
             );
         }
 
@@ -13429,14 +13297,11 @@ pub mod tests {
                 .certified_agent_identity(&workspace_id, &person)
                 .is_none()
         );
-        let forged = ui::collaboration::Collaborator {
-            id: "agent:forged".into(),
-            name: "forged".into(),
-            colour: None,
-            is_agent: true,
-            is_self: false,
-            joined_at: None,
-        };
+        let forged = collab_types::Member::of_software(
+            collab_types::MemberId::agent("forged"),
+            "forged",
+            None,
+        );
         {
             let mut channels = state.channels.lock().unwrap();
             AppBrokerState::fanout_context(
@@ -13455,56 +13320,57 @@ pub mod tests {
             parallel.try_recv().is_err(),
             "app context must not replace a parallel authenticated native roster"
         );
-        let ContextUpdate::Snapshot { collaborators, .. } = ordinary.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = ordinary.try_recv().unwrap() else {
             panic!("ordinary context subscribers still receive app context");
         };
-        assert_eq!(collaborators.len(), 1);
-        assert_eq!(collaborators[0].id, forged.id);
-        assert_eq!(collaborators[0].name, forged.name);
-        assert!(collaborators[0].is_agent);
-        assert!(!collaborators[0].is_self);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0], forged);
         assert!(membership.write().workspaces[0].revoke_grant(&collision));
         assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
-        let ContextUpdate::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = stream.try_recv().unwrap() else {
             panic!("membership refresh must be a complete snapshot");
         };
         assert!(
-            collaborators
+            members
                 .iter()
-                .all(|row| row.id != format!("agent:{person}"))
+                .all(|row| row.id != collab_types::MemberId::agent(person.clone()))
         );
-        assert!(collaborators.iter().all(|row| row.id != other_person));
         assert!(
-            collaborators
+            members
                 .iter()
-                .any(|row| row.id == person && row.is_self)
+                .all(|row| row.id != collab_types::MemberId::person(other_person))
         );
-        let ContextUpdate::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+        assert!(
+            members
+                .iter()
+                .any(|row| row.id == collab_types::MemberId::person(person.clone()) && row.is_self)
+        );
+        let ContextUpdate::Snapshot { members, .. } = parallel.try_recv().unwrap() else {
             panic!("every mounted root must receive membership removal");
         };
         assert!(
-            collaborators
+            members
                 .iter()
-                .all(|row| row.id != format!("agent:{person}"))
+                .all(|row| row.id != collab_types::MemberId::agent(person.clone()))
         );
         membership.write().workspaces[0].allow_agent(reed, crate::test_support::KindSet::READ);
         state.refresh_workspace_context_services().unwrap();
-        let ContextUpdate::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = stream.try_recv().unwrap() else {
             panic!("membership addition must be a complete snapshot");
         };
         assert!(
-            collaborators
+            members
                 .iter()
-                .any(|row| row.id == format!("agent:{reed}") && row.is_agent)
+                .any(|row| row.id == collab_types::MemberId::agent(reed))
         );
-        let ContextUpdate::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = parallel.try_recv().unwrap() else {
             panic!("every mounted root must receive membership addition");
         };
         assert!(
-            collaborators
+            members
                 .iter()
-                .any(|row| row.id == "agent:reed" && row.is_agent)
+                .any(|row| row.id == collab_types::MemberId::agent("reed"))
         );
 
         let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
@@ -13512,14 +13378,14 @@ pub mod tests {
             queued.try_recv(),
             Ok(ContextUpdate::Snapshot { .. })
         ));
-        let queued = Rc::new(AsyncMutex::new(
-            wire::Feed::new(None, queued).with_native_guard(Some(NativeContextReadGuard {
+        let queued = Rc::new(AsyncMutex::new(wire::Feed::new(queued).with_native_guard(
+            Some(NativeContextReadGuard {
                 state: state.clone(),
                 route: route.clone(),
                 identity: native.admitted,
                 document: None,
-            })),
-        ));
+            }),
+        )));
         let reading = Rc::clone(&queued);
         let mut pending = Box::pin(async move { reading.lock().await.next().await });
         // The actual stream read must be waiting before revocation: it holds
@@ -13553,7 +13419,7 @@ pub mod tests {
     #[test]
     fn non_owner_cannot_claim_an_agent_principal() {
         let member = SigningKey::from_bytes(&[45; 32]);
-        let member_id = principal_id_for_root(member.verifying_key().to_bytes());
+        let member_id = person_id_for_root(member.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(45),
             "Delegation workspace",
@@ -13582,7 +13448,7 @@ pub mod tests {
     fn certified_join_admission_rejects_wrong_or_removed_root() {
         let member = SigningKey::from_bytes(&[21; 32]);
         let stranger = SigningKey::from_bytes(&[22; 32]);
-        let member_id = principal_id_for_root(member.verifying_key().to_bytes());
+        let member_id = person_id_for_root(member.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(2),
             "Revocation workspace",
@@ -13614,7 +13480,7 @@ pub mod tests {
     #[test]
     fn certified_join_admission_rejects_cross_workspace_replay() {
         let root = SigningKey::from_bytes(&[23; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut member_workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(3),
             "Member workspace",
@@ -13715,7 +13581,7 @@ pub mod tests {
     fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
         let root = SigningKey::from_bytes(&[24; 32]);
         let device = SigningKey::from_bytes(&[25; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(5),
             "Typed document workspace",
@@ -13787,8 +13653,6 @@ pub mod tests {
         );
         assert_published_snapshot(&sink, &route);
 
-        let expected_channel =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
         let mut encrypted = SignedOp::new_unsigned_with_encryption(
             b"opaque MLS application frame".to_vec(),
             artifact,
@@ -13797,7 +13661,7 @@ pub mod tests {
             collab_types::OpKind::Change,
             tilo_clock::wall(),
             2,
-            collab_types::EncryptionMetadata::mls_application(7, expected_channel),
+            collab_types::EncryptionMetadata::mls_application(7),
         );
         sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
         let authorized = state
@@ -13805,8 +13669,7 @@ pub mod tests {
             .expect("broker authorizes signed clear metadata without decrypting");
         assert!(matches!(
             authorized.payload,
-            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
-                if channel == expected_channel
+            collab_types::RoutedDocumentPayload::Encrypted { epoch: 7 }
         ));
         handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
         let delivered = received.try_recv().expect("opaque MLS fanout");
@@ -13814,17 +13677,6 @@ pub mod tests {
             postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("opaque envelope"),
             encrypted,
             "broker must relay ciphertext byte-for-byte"
-        );
-
-        let mut wrong_channel = encrypted.clone();
-        wrong_channel.encryption.as_mut().expect("metadata").channel =
-            collab_types::ChannelId::new();
-        sign_op(&mut wrong_channel, &device).expect("re-sign adversarial envelope");
-        assert!(
-            state
-                .authorize_certified_document(&route, &admitted, &wrong_channel)
-                .is_err(),
-            "validly signed ciphertext for another MLS channel must not be routed"
         );
 
         assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);
@@ -13873,7 +13725,7 @@ pub mod tests {
         assert_eq!(admitted.role, CapRole::Owner);
         assert_eq!(
             admitted.principal_id,
-            principal_id_for_root(root.verifying_key().to_bytes())
+            person_id_for_root(root.verifying_key().to_bytes())
         );
         assert!(
             admit_verified_join(&membership.read(), &route, verified_device(&stranger)).is_err(),
@@ -15090,9 +14942,6 @@ impl AppBrokerState {
         identity: Option<(CrdtRoute, AdmittedJoinIdentity)>,
     ) -> Result<(), BrokerError> {
         let state = self;
-        let host_guard = identity
-            .as_ref()
-            .and_then(|(_, identity)| HostWorkerReadGuard::for_channel(state, peer_id, identity));
         // Copy only the local routing key before awaiting; never hold the registry lock across the owner turn.
         let owner_workspace = state
             .pending_invocations
@@ -15109,7 +14958,6 @@ impl AppBrokerState {
         } else {
             None
         };
-        HostWorkerReadGuard::check(host_guard.as_ref())?;
         if requires_owner && let Some((route, identity)) = &identity {
             state.revalidate_admission(route, identity)?;
         }
@@ -15128,7 +14976,6 @@ impl AppBrokerState {
         state
             .commit_effect_before_terminal(&staged, &update)
             .await?;
-        HostWorkerReadGuard::check(host_guard.as_ref())?;
         if requires_owner && let Some((route, identity)) = &identity {
             state.revalidate_admission(route, identity)?;
         }
@@ -15312,14 +15159,14 @@ mod host_worker_capacity_tests {
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
         AdmittedJoinIdentity {
-            host_scope: Some(LocalHostWorkerScope {
+            worker_registration: Some(PrivateWorkerRegistration {
+                identity: uuid::Uuid::from_u128(record as u128),
                 route: CrdtRoute::from_channel_key(&format!(
                     "{}#app:so.tilo.notes#record:tab:{record:016x}",
                     uuid::Uuid::from_u128(7)
                 )),
                 certificate: certificate.clone(),
             }),
-            worker_registration: None,
             certificate: Some(certificate),
             verified: VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
@@ -15339,7 +15186,7 @@ mod host_worker_capacity_tests {
     }
     fn retain(state: &AppBrokerState, peer: u64, record: usize) -> Result<(), BrokerError> {
         let worker = host_worker(record);
-        let route = worker.host_scope.clone().unwrap().route;
+        let route = worker.worker_registration.clone().unwrap().route;
         state.retain_host_worker(peer, &route, &worker)
     }
 

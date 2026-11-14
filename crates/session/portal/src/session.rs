@@ -377,43 +377,47 @@ impl SessionObject {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_session_ends_once_for_its_owner_and_every_interface_hears_it() {
-        let sessions = Sessions::default();
-        let ended = Arc::new(Mutex::new(Vec::new()));
-        let heard = Arc::clone(&ended);
-        sessions.on_end(move |path| heard.lock_recover().push(path.to_owned()));
-        let path = "/org/freedesktop/portal/desktop/session/1_2/s";
-        sessions.inner.live.lock_recover().insert(
-            path.into(),
-            LiveSession {
-                owner: ":1.7".into(),
-                caller: PortalCaller::new("org.example.Share"),
-                kind: SessionKind::ScreenCast,
-            },
-        );
-        assert_eq!(
-            sessions.owned(path, ":1.7", &PortalCaller::new("org.example.Share")),
-            Some(SessionKind::ScreenCast)
-        );
-        assert_eq!(
-            sessions.owned(path, ":1.7", &PortalCaller::new("org.example.Other")),
-            None
-        );
-        assert!(!sessions.close(path, ":1.8"));
-        assert!(sessions.close(path, ":1.7"));
-        assert!(!sessions.end(path));
-        assert_eq!(*ended.lock_recover(), [path.to_owned()]);
-        assert!(sessions.take_changed());
-    }
+    tilo_test_env::scenario! {
+        fn a_portal_session_belongs_to_its_frontend_by_path_and_ends_once;
 
-    #[test]
-    fn session_paths_stay_under_the_frontends_session_tree() {
-        assert!(valid_session_path(
-            "/org/freedesktop/portal/desktop/session/1_42/t1"
-        ));
-        assert!(!valid_session_path(
-            "/org/freedesktop/portal/desktop/request/1_42/t1"
-        ));
+        phase a_session_ends_once_for_its_owner_and_every_interface_hears_it;
+        {
+            let sessions = Sessions::default();
+            let ended = Arc::new(Mutex::new(Vec::new()));
+            let heard = Arc::clone(&ended);
+            sessions.on_end(move |path| heard.lock_recover().push(path.to_owned()));
+            let path = "/org/freedesktop/portal/desktop/session/1_2/s";
+            sessions.inner.live.lock_recover().insert(
+                path.into(),
+                LiveSession {
+                    owner: ":1.7".into(),
+                    caller: PortalCaller::new("org.example.Share"),
+                    kind: SessionKind::ScreenCast,
+                },
+            );
+            assert_eq!(
+                sessions.owned(path, ":1.7", &PortalCaller::new("org.example.Share")),
+                Some(SessionKind::ScreenCast)
+            );
+            assert_eq!(
+                sessions.owned(path, ":1.7", &PortalCaller::new("org.example.Other")),
+                None
+            );
+            assert!(!sessions.close(path, ":1.8"));
+            assert!(sessions.close(path, ":1.7"));
+            assert!(!sessions.end(path));
+            assert_eq!(*ended.lock_recover(), [path.to_owned()]);
+            assert!(sessions.take_changed());
+        }
+
+        phase session_paths_stay_under_the_frontends_session_tree;
+        {
+            assert!(valid_session_path(
+                "/org/freedesktop/portal/desktop/session/1_42/t1"
+            ));
+            assert!(!valid_session_path(
+                "/org/freedesktop/portal/desktop/request/1_42/t1"
+            ));
+        }
     }
 }

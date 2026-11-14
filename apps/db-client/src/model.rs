@@ -422,79 +422,80 @@ impl QueryResult {
 mod tests {
     use super::*;
 
-    /// A result the app cut says so in words, and names what to do about it;
-    /// a complete one says what it returned and nothing more.
-    #[test]
-    fn a_cut_result_says_what_was_cut_and_what_to_do() {
-        let mut result = QueryResult {
-            columns: vec!["id".into(), "name".into()],
-            rows: vec![vec![Cell::Integer(1), Cell::Text("one".into())]],
-            elapsed_ms: 12.4,
-            is_select: true,
-            ..QueryResult::default()
-        };
-        assert_eq!(result.message(), "1 row in 12.4 ms");
-        assert_eq!(result.cut_note(), None, "a whole result needs no note");
+    tilo_test_env::scenario! {
+        /// Reals display without trailing zeros, hostile text is refused, and profiles report local or network engines.
+        fn cell_and_profile_classification;
 
-        result.truncation = Some(Truncation::RowLimit);
-        assert!(
-            result.message().starts_with("The first 1 row in"),
-            "{}",
-            result.message()
-        );
-        let note = result.cut_note().expect("a cut result says why");
-        assert!(note.contains("1000"), "{note}");
-        assert!(note.to_lowercase().contains("narrow"), "{note}");
+        phase a_cut_result_says_what_was_cut_and_what_to_do;
+        // A result the app cut says so in words, and names what to do about it;
+        // a complete one says what it returned and nothing more.
+        {
+            let mut result = QueryResult {
+                columns: vec!["id".into(), "name".into()],
+                rows: vec![vec![Cell::Integer(1), Cell::Text("one".into())]],
+                elapsed_ms: 12.4,
+                is_select: true,
+                ..QueryResult::default()
+            };
+            assert_eq!(result.message(), "1 row in 12.4 ms");
+            assert_eq!(result.cut_note(), None, "a whole result needs no note");
 
-        result.truncation = Some(Truncation::Payload);
-        let note = result.cut_note().expect("a cut result says why");
-        assert!(note.contains("8 MB"), "{note}");
-        assert!(note.to_lowercase().contains("narrow"), "{note}");
-    }
+            result.truncation = Some(Truncation::RowLimit);
+            assert!(
+                result.message().starts_with("The first 1 row in"),
+                "{}",
+                result.message()
+            );
+            let note = result.cut_note().expect("a cut result says why");
+            assert!(note.contains("1000"), "{note}");
+            assert!(note.to_lowercase().contains("narrow"), "{note}");
 
-    /// A row copies as one tab-separated line: NULL is empty, and a tab or a
-    /// newline inside a cell becomes a space so the row stays a row.
-    #[test]
-    fn a_row_copies_as_one_line_of_text() {
-        let result = QueryResult {
-            columns: vec!["id".into(), "note".into(), "missing".into()],
-            rows: vec![
-                vec![
-                    Cell::Integer(7),
-                    Cell::Text("two\twords\nand a line".into()),
-                    Cell::Null,
+            result.truncation = Some(Truncation::Payload);
+            let note = result.cut_note().expect("a cut result says why");
+            assert!(note.contains("8 MB"), "{note}");
+            assert!(note.to_lowercase().contains("narrow"), "{note}");
+        }
+
+        phase a_row_copies_as_one_line_of_text;
+        // A row copies as one tab-separated line: NULL is empty, and a tab or a
+        // newline inside a cell becomes a space so the row stays a row.
+        {
+            let result = QueryResult {
+                columns: vec!["id".into(), "note".into(), "missing".into()],
+                rows: vec![
+                    vec![
+                        Cell::Integer(7),
+                        Cell::Text("two\twords\nand a line".into()),
+                        Cell::Null,
+                    ],
+                    vec![
+                        Cell::Text("a".into()),
+                        Cell::Text("b".into()),
+                        Cell::Real(1.5),
+                    ],
                 ],
-                vec![
-                    Cell::Text("a".into()),
-                    Cell::Text("b".into()),
-                    Cell::Real(1.5),
-                ],
-            ],
-            is_select: true,
-            ..QueryResult::default()
-        };
-        assert_eq!(
-            result.row_text(0).as_deref(),
-            Some("7\ttwo words and a line\t")
-        );
-        assert_eq!(result.row_text(9), None, "there is no such row");
-        assert_eq!(
-            result.text(),
-            "id\tnote\tmissing\n7\ttwo words and a line\t\na\tb\t1.5\n"
-        );
-    }
+                is_select: true,
+                ..QueryResult::default()
+            };
+            assert_eq!(
+                result.row_text(0).as_deref(),
+                Some("7\ttwo words and a line\t")
+            );
+            assert_eq!(result.row_text(9), None, "there is no such row");
+            assert_eq!(
+                result.text(),
+                "id\tnote\tmissing\n7\ttwo words and a line\t\na\tb\t1.5\n"
+            );
+        }
 
-    /// Reals display without trailing zeros, hostile text is refused, and profiles report local or network engines.
-    #[test]
-    fn cell_and_profile_classification() {
-        // --- phase: cell_display_formats_reals_without_trailing_zeros ---
+        phase cell_display_formats_reals_without_trailing_zeros;
         {
             assert_eq!(Cell::Real(3.0).display(), "3.0");
             assert_eq!(Cell::Real(3.50).display(), "3.5");
             assert_eq!(Cell::Null.display(), "NULL");
         }
 
-        // --- phase: bounded_text_refuses_hostile_cells ---
+        phase bounded_text_refuses_hostile_cells;
         {
             let Cell::Text(value) =
                 Cell::bounded_text("x".repeat(Cell::MAX_RETAINED_TEXT_BYTES + 99))
@@ -505,7 +506,7 @@ mod tests {
             assert!(value.ends_with("… [truncated]"));
         }
 
-        // --- phase: sample_profile_is_connected_and_local ---
+        phase sample_profile_is_connected_and_local;
         {
             let p = ConnectionProfile::sqlite_sample();
             assert!(p.connected);
@@ -513,7 +514,7 @@ mod tests {
             assert!(p.is_sample);
         }
 
-        // --- phase: remote_profile_flags_network_engines ---
+        phase remote_profile_flags_network_engines;
         {
             assert!(ConnectionProfile::new("x", Engine::Postgres).is_remote());
             assert!(ConnectionProfile::new("x", Engine::MySql).is_remote());

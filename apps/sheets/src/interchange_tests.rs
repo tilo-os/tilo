@@ -130,104 +130,158 @@ fn excel_like_xlsx() -> Vec<u8> {
     ])
 }
 
-#[test]
-fn foreign_workbooks_import_and_exports_round_trip() {
+tilo_test_env::scenario! {
+    fn workbooks_interchange_with_other_formats;
+
+    phase foreign_workbooks_import_and_exports_round_trip;
     {
-        let file = TempFile::with("excel.xlsx", &excel_like_xlsx());
-        let tables = crate::xlsx::read_xlsx(&file.0).unwrap();
-        let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["Budget", "Notes & Data"]);
-        let budget = &tables[0];
+        {
+            let file = TempFile::with("excel.xlsx", &excel_like_xlsx());
+            let tables = crate::xlsx::read_xlsx(&file.0).unwrap();
+            let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, ["Budget", "Notes & Data"]);
+            let budget = &tables[0];
 
-        assert_eq!(raw(budget, "A1"), "Item");
-        assert_eq!(format(budget, "A1"), CellFormat::Text);
-        assert_eq!(raw(budget, "B1"), "Amount");
-        assert_eq!(raw(budget, "C1"), "Total");
-        assert_eq!(raw(budget, "A2"), "Rent");
+            assert_eq!(raw(budget, "A1"), "Item");
+            assert_eq!(format(budget, "A1"), CellFormat::Text);
+            assert_eq!(raw(budget, "B1"), "Amount");
+            assert_eq!(raw(budget, "C1"), "Total");
+            assert_eq!(raw(budget, "A2"), "Rent");
 
-        assert_eq!(raw(budget, "B2"), "1200");
-        assert_eq!(
-            format(budget, "B2"),
-            CellFormat::Currency(tilo_locale::Currency::USD)
-        );
-        assert_eq!(raw(budget, "B4"), "0.25");
-        assert_eq!(format(budget, "B4"), CellFormat::Percent);
-        assert_eq!(raw(budget, "A3"), "45000");
-        assert_eq!(format(budget, "A3"), CellFormat::Date(DateStyle::Iso));
-        assert_eq!(raw(budget, "B3"), "45001.5");
-        assert_eq!(format(budget, "B3"), CellFormat::Date(DateStyle::Iso));
-        assert_eq!(format(budget, "A6"), CellFormat::Date(DateStyle::Iso));
+            assert_eq!(raw(budget, "B2"), "1200");
+            assert_eq!(
+                format(budget, "B2"),
+                CellFormat::Currency(tilo_locale::Currency::USD)
+            );
+            assert_eq!(raw(budget, "B4"), "0.25");
+            assert_eq!(format(budget, "B4"), CellFormat::Percent);
+            assert_eq!(raw(budget, "A3"), "45000");
+            assert_eq!(format(budget, "A3"), CellFormat::Date(DateStyle::Iso));
+            assert_eq!(raw(budget, "B3"), "45001.5");
+            assert_eq!(format(budget, "B3"), CellFormat::Date(DateStyle::Iso));
+            assert_eq!(format(budget, "A6"), CellFormat::Date(DateStyle::Iso));
 
-        assert_eq!(raw(budget, "A4"), "TRUE");
-        assert_eq!(format(budget, "A4"), CellFormat::Boolean);
+            assert_eq!(raw(budget, "A4"), "TRUE");
+            assert_eq!(format(budget, "A4"), CellFormat::Boolean);
 
-        assert_eq!(formula(budget, "A5"), Some("=SUM(B2:B4)"));
-        assert_eq!(raw(budget, "A5"), "46201.75");
-        assert_eq!(formula(budget, "E2"), Some("=IF(B2>100,\"big\",\"small\")"));
-        assert_eq!(raw(budget, "E2"), "big");
-        assert_eq!(formula(budget, "D2"), Some("=B2/0"));
-        assert_eq!(format(budget, "D2"), CellFormat::Text);
-        assert_eq!(raw(budget, "D2"), "#DIV/0!");
+            assert_eq!(formula(budget, "A5"), Some("=SUM(B2:B4)"));
+            assert_eq!(raw(budget, "A5"), "46201.75");
+            assert_eq!(formula(budget, "E2"), Some("=IF(B2>100,\"big\",\"small\")"));
+            assert_eq!(raw(budget, "E2"), "big");
+            assert_eq!(formula(budget, "D2"), Some("=B2/0"));
+            assert_eq!(format(budget, "D2"), CellFormat::Text);
+            assert_eq!(raw(budget, "D2"), "#DIV/0!");
 
-        assert_eq!(formula(budget, "C2"), Some("=B2*2"));
-        assert_eq!(formula(budget, "C3"), Some("=B3*2"));
-        assert_eq!(formula(budget, "C4"), Some("=B4*2"));
-        assert_eq!(raw(budget, "C3"), "90003");
+            assert_eq!(formula(budget, "C2"), Some("=B2*2"));
+            assert_eq!(formula(budget, "C3"), Some("=B3*2"));
+            assert_eq!(formula(budget, "C4"), Some("=B4*2"));
+            assert_eq!(raw(budget, "C3"), "90003");
 
-        assert!(at(budget, "B5").is_none());
-        let notes = &tables[1];
-        assert_eq!(raw(notes, "A1"), "note <1>");
-        assert!(at(notes, "B2").is_none());
-        assert_eq!(raw(notes, "C3"), "7");
-    }
-
-    {
-        let file = TempFile::with("calc.ods", &calc_like_ods());
-        let tables = crate::ods::read_ods(&file.0).unwrap();
-        let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["Budget", "Other"]);
-        let budget = &tables[0];
-
-        assert_eq!(raw(budget, "A1"), "Item");
-        assert_eq!(format(budget, "A1"), CellFormat::Text);
-        assert_eq!(raw(budget, "B1"), "1200");
-        assert_eq!(format(budget, "B1"), CellFormat::General);
-        assert_eq!(raw(budget, "A2"), "2024-01-15");
-        assert_eq!(format(budget, "A2"), CellFormat::Text);
-        assert_eq!(raw(budget, "B2"), "TRUE");
-        assert_eq!(format(budget, "B2"), CellFormat::Boolean);
-        assert_eq!(raw(budget, "C2"), "0.21");
-
-        assert_eq!(formula(budget, "A3"), Some("=SUM(B1;C2)"));
-        assert_eq!(raw(budget, "A3"), "1200.21");
-        assert_eq!(raw(budget, "B3"), "line one\nline two");
-
-        for a1 in ["A4", "B4", "C4"] {
-            assert_eq!(raw(budget, a1), "0", "{a1}");
+            assert!(at(budget, "B5").is_none());
+            let notes = &tables[1];
+            assert_eq!(raw(notes, "A1"), "note <1>");
+            assert!(at(notes, "B2").is_none());
+            assert_eq!(raw(notes, "C3"), "7");
         }
-        assert_eq!(raw(budget, "A5"), "x");
-        assert_eq!(raw(budget, "A6"), "x");
-        assert!(at(budget, "B5").is_none());
-        assert!(budget.rows.len() <= 6, "{} rows", budget.rows.len());
 
-        assert_eq!(raw(&tables[1], "A1"), "3.5");
+        {
+            let file = TempFile::with("calc.ods", &calc_like_ods());
+            let tables = crate::ods::read_ods(&file.0).unwrap();
+            let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, ["Budget", "Other"]);
+            let budget = &tables[0];
+
+            assert_eq!(raw(budget, "A1"), "Item");
+            assert_eq!(format(budget, "A1"), CellFormat::Text);
+            assert_eq!(raw(budget, "B1"), "1200");
+            assert_eq!(format(budget, "B1"), CellFormat::General);
+            assert_eq!(raw(budget, "A2"), "2024-01-15");
+            assert_eq!(format(budget, "A2"), CellFormat::Text);
+            assert_eq!(raw(budget, "B2"), "TRUE");
+            assert_eq!(format(budget, "B2"), CellFormat::Boolean);
+            assert_eq!(raw(budget, "C2"), "0.21");
+
+            assert_eq!(formula(budget, "A3"), Some("=SUM(B1;C2)"));
+            assert_eq!(raw(budget, "A3"), "1200.21");
+            assert_eq!(raw(budget, "B3"), "line one\nline two");
+
+            for a1 in ["A4", "B4", "C4"] {
+                assert_eq!(raw(budget, a1), "0", "{a1}");
+            }
+            assert_eq!(raw(budget, "A5"), "x");
+            assert_eq!(raw(budget, "A6"), "x");
+            assert!(at(budget, "B5").is_none());
+            assert!(budget.rows.len() <= 6, "{} rows", budget.rows.len());
+
+            assert_eq!(raw(&tables[1], "A1"), "3.5");
+        }
+
+        {
+            let tables = sheets_workbook();
+            let file = TempFile::empty("roundtrip.xlsx");
+            crate::xlsx::write_xlsx(&file.0, &tables).unwrap();
+            let back = crate::xlsx::read_xlsx(&file.0).unwrap();
+            assert_sheets_round_trip(&back);
+            assert_eq!(format(&back[0], "B4"), CellFormat::Date(DateStyle::Iso));
+        }
+
+        {
+            let tables = sheets_workbook();
+            let file = TempFile::empty("roundtrip.ods");
+            crate::ods::write_ods(&file.0, &tables).unwrap();
+            let back = crate::ods::read_ods(&file.0).unwrap();
+            assert_sheets_round_trip(&back);
+        }
     }
 
+    phase offset_sparse_and_dtd_packages_are_handled_safely;
     {
-        let tables = sheets_workbook();
-        let file = TempFile::empty("roundtrip.xlsx");
-        crate::xlsx::write_xlsx(&file.0, &tables).unwrap();
-        let back = crate::xlsx::read_xlsx(&file.0).unwrap();
-        assert_sheets_round_trip(&back);
-        assert_eq!(format(&back[0], "B4"), CellFormat::Date(DateStyle::Iso));
-    }
+        {
+            let file = TempFile::with(
+                "offset.xlsx",
+                &xlsx_sheet(
+                    r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="3"><c r="C3"><v>1</v></c><c r="D3"><f>C3*2</f><v>2</v></c></row></sheetData></worksheet>"#,
+                ),
+            );
+            let tables = crate::xlsx::read_xlsx(&file.0).unwrap();
+            assert!(at(&tables[0], "A1").is_none());
+            assert_eq!(raw(&tables[0], "C3"), "1");
+            assert_eq!(formula(&tables[0], "D3"), Some("=C3*2"));
+        }
 
-    {
-        let tables = sheets_workbook();
-        let file = TempFile::empty("roundtrip.ods");
-        crate::ods::write_ods(&file.0, &tables).unwrap();
-        let back = crate::ods::read_ods(&file.0).unwrap();
-        assert_sheets_round_trip(&back);
+        {
+            let file = TempFile::with(
+                "far.xlsx",
+                &xlsx_sheet(
+                    r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="1048576"><c r="XFD1048576"><v>2</v></c></row></sheetData></worksheet>"#,
+                ),
+            );
+            let error = crate::xlsx::read_xlsx(&file.0).unwrap_err();
+            assert!(error.to_string().contains("import limit"), "{error:#}");
+        }
+
+        {
+            let xxe = r#"<?xml version="1.0"?><!DOCTYPE w [<!ENTITY x SYSTEM "file:///etc/passwd">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>&x;</t></is></c></row></sheetData></worksheet>"#;
+            let file = TempFile::with("xxe.xlsx", &xlsx_sheet(xxe));
+            let error = crate::xlsx::read_xlsx(&file.0).unwrap_err();
+            assert!(error.to_string().contains("DTD"), "{error:#}");
+
+            let content = ODS_CONTENT.replacen(
+                "<office:document-content",
+                r#"<!DOCTYPE d [<!ENTITY x "boom">]><office:document-content"#,
+                1,
+            );
+            let file = TempFile::with(
+                "xxe.ods",
+                &zip_of(&[
+                    ("mimetype", "application/vnd.oasis.opendocument.spreadsheet"),
+                    ("META-INF/manifest.xml", ODS_MANIFEST),
+                    ("content.xml", &content),
+                ]),
+            );
+            let error = crate::ods::read_ods(&file.0).unwrap_err();
+            assert!(error.to_string().contains("DTD"), "{error:#}");
+        }
     }
 }
 
@@ -339,54 +393,4 @@ fn xlsx_sheet(sheet_xml: &str) -> Vec<u8> {
         ("xl/_rels/workbook.xml.rels", rels),
         ("xl/worksheets/sheet1.xml", sheet_xml),
     ])
-}
-
-#[test]
-fn offset_sparse_and_dtd_packages_are_handled_safely() {
-    {
-        let file = TempFile::with(
-            "offset.xlsx",
-            &xlsx_sheet(
-                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="3"><c r="C3"><v>1</v></c><c r="D3"><f>C3*2</f><v>2</v></c></row></sheetData></worksheet>"#,
-            ),
-        );
-        let tables = crate::xlsx::read_xlsx(&file.0).unwrap();
-        assert!(at(&tables[0], "A1").is_none());
-        assert_eq!(raw(&tables[0], "C3"), "1");
-        assert_eq!(formula(&tables[0], "D3"), Some("=C3*2"));
-    }
-
-    {
-        let file = TempFile::with(
-            "far.xlsx",
-            &xlsx_sheet(
-                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="1048576"><c r="XFD1048576"><v>2</v></c></row></sheetData></worksheet>"#,
-            ),
-        );
-        let error = crate::xlsx::read_xlsx(&file.0).unwrap_err();
-        assert!(error.to_string().contains("import limit"), "{error:#}");
-    }
-
-    {
-        let xxe = r#"<?xml version="1.0"?><!DOCTYPE w [<!ENTITY x SYSTEM "file:///etc/passwd">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>&x;</t></is></c></row></sheetData></worksheet>"#;
-        let file = TempFile::with("xxe.xlsx", &xlsx_sheet(xxe));
-        let error = crate::xlsx::read_xlsx(&file.0).unwrap_err();
-        assert!(error.to_string().contains("DTD"), "{error:#}");
-
-        let content = ODS_CONTENT.replacen(
-            "<office:document-content",
-            r#"<!DOCTYPE d [<!ENTITY x "boom">]><office:document-content"#,
-            1,
-        );
-        let file = TempFile::with(
-            "xxe.ods",
-            &zip_of(&[
-                ("mimetype", "application/vnd.oasis.opendocument.spreadsheet"),
-                ("META-INF/manifest.xml", ODS_MANIFEST),
-                ("content.xml", &content),
-            ]),
-        );
-        let error = crate::ods::read_ods(&file.0).unwrap_err();
-        assert!(error.to_string().contains("DTD"), "{error:#}");
-    }
 }

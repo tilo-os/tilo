@@ -92,6 +92,10 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
     );
 }
 
+/// What the panel offers is what the session's services publish, and nothing
+/// they do not: a session that dims nothing publishes no brightness, and the
+/// panel offers none, rather than a slider standing at a level nothing
+/// measured.
 #[test]
 fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
@@ -109,6 +113,15 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
         "Wi-Fi",
         "the network's radio is the panel's Wi-Fi control"
     );
+    // The panel has followed the session's readings once its network tile
+    // is one the network makes: its displays came with them.
+    if let Some(brightness) = offered(session, "set-brightness") {
+        assert!(
+            !brightness.contract.availability.is_available(),
+            "the panel offers brightness this machine has not read: {:?}",
+            brightness.contract.availability
+        );
+    }
     assert_eq!(
         until_ready(session, "set-volume"),
         "Volume",
@@ -123,26 +136,6 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     let at_84 = changed(session, &at_42);
     save(&at_84, "session-quick-settings-battery-84");
 
-    session.stop_surface("quick-settings");
-}
-
-/// A session that dims nothing publishes no brightness: the panel offers
-/// none, rather than a slider standing at a level nothing measured.
-#[test]
-fn the_panel_offers_no_brightness_the_session_did_not_publish() {
-    let mut laptop = session_of_device(&[panel()], Machine::Owned);
-    let session = &mut laptop.session;
-    open_the_panel(session);
-    // The panel has followed the session's readings once its network tile
-    // is one the network makes: its displays came with them.
-    until_ready(session, "toggle-wifi");
-    if let Some(brightness) = offered(session, "set-brightness") {
-        assert!(
-            !brightness.contract.availability.is_available(),
-            "the panel offers brightness this machine has not read: {:?}",
-            brightness.contract.availability
-        );
-    }
     session.stop_surface("quick-settings");
 }
 
@@ -232,7 +225,7 @@ fn the_panel_on_a_laptops_output_stays_inside_it_over_the_desk() {
     let mut laptop = session_of_device_at(&[panel()], Machine::Owned, OUTPUT);
     let session = &mut laptop.session;
     let desk = at_rest(session);
-    open_the_panel(session);
+    open_the_panel_over(session, &desk);
     until_ready(session, "toggle-wifi");
     let frame = at_rest(session);
     save(&frame, "session-quick-settings-1280x800");
@@ -345,16 +338,27 @@ fn the_panel_opens_each_radios_details_in_place() {
 
 /// How many pixels of `after` differ from `before` by more than a shade.
 fn differing(before: &Screenshot, after: &Screenshot) -> usize {
+    // A whole number of pixels, compared as bytes first: most of a frame is
+    // the desk around the panel, the same in both, and a run of equal bytes
+    // holds no pixel to count. Only the runs that differ are read a pixel at
+    // a time, which an unoptimised build does slowly.
+    const RUN: usize = 4096;
     before
         .rgba
-        .chunks_exact(4)
-        .zip(after.rgba.chunks_exact(4))
-        .filter(|(a, b)| {
-            a.iter()
-                .zip(b.iter())
-                .any(|(a, b)| u8::abs_diff(*a, *b) > 8)
+        .chunks(RUN)
+        .zip(after.rgba.chunks(RUN))
+        .filter(|(was, is)| was != is)
+        .map(|(was, is)| {
+            was.chunks_exact(4)
+                .zip(is.chunks_exact(4))
+                .filter(|(a, b)| {
+                    a.iter()
+                        .zip(b.iter())
+                        .any(|(a, b)| u8::abs_diff(*a, *b) > 8)
+                })
+                .count()
         })
-        .count()
+        .sum()
 }
 
 #[test]
@@ -577,10 +581,14 @@ fn the_panel_draws_at_scale_2() {
     // The laptop's own panel: 2944x1840 physical, 1472x920 logical at 2x.
     const PIXELS: (i32, i32) = (2944, 1840);
     const SCALE: f64 = 2.0;
+    // The bar's clock stands still between the desk's frame and the panel's:
+    // a minute that turns over in between repaints the clock, and the columns
+    // it changes read as the panel painting from the middle of the bar.
+    let _clock = tilo_test_env::held_wall_clock();
     let mut laptop = session_of_device_at_scale(&[panel()], Machine::Owned, PIXELS, SCALE);
     let session = &mut laptop.session;
     let desk = at_rest(session);
-    open_the_panel(session);
+    open_the_panel_over(session, &desk);
     until_ready(session, "toggle-wifi");
     let frame = drawn_on(session, &desk, PIXELS.0);
     save(&frame, "session-quick-settings-scale-2");
@@ -737,6 +745,12 @@ fn open_the_panel(session: &mut Session) {
     // The desk as it stands before the panel, at rest: what changes after it
     // opens is the panel coming up, never the desk still settling.
     let desk = at_rest(session);
+    open_the_panel_over(session, &desk);
+}
+
+/// [`open_the_panel`] over `desk`, the desk at rest as the test just read it:
+/// a test that keeps that frame to compare the panel with reads it once.
+fn open_the_panel_over(session: &mut Session, desk: &Screenshot) {
     session
         .invoke(
             OVERLAYS,
@@ -1277,13 +1291,23 @@ fn save(frame: &Screenshot, name: &str) {
     else {
         panic!("the frame's pixels do not fill it");
     };
+    // A frame with no pixels is one no picture can be made of, whether or
+    // not this run keeps it.
+    assert!(
+        frame.width > 0 && frame.height > 0,
+        "the frame has no pixels to keep: {}x{}",
+        frame.width,
+        frame.height
+    );
+    // The picture is encoded for a run that keeps it, and only then: no run
+    // reads one it did not ask for.
+    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(PathBuf::from) else {
+        return;
+    };
     let mut png = Vec::new();
     pixels
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .expect("the shot");
-    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(PathBuf::from) else {
-        return;
-    };
     std::fs::create_dir_all(&directory).expect("the directory for shots");
     std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
 }

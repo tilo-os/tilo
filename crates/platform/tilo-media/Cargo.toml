@@ -1,5 +1,7 @@
 
 [package]
+# tests/*.rs are modules of tests/it.rs or declared below, not found by name
+autotests = false
 name = "tilo-media"
 version = "0.1.0"
 edition = "2024"
@@ -13,6 +15,37 @@ homepage.workspace = true
 [lib]
 name = "tilo_media"
 path = "src/lib.rs"
+
+# The decode tests that can share a process: one binary, its files included as
+# modules by `tests/it.rs`, encodes the clip they read once where a binary per
+# file encoded it once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+# Confines itself to a few CPUs and loads every one of them.
+[[test]]
+name = "early_seek"
+path = "tests/early_seek.rs"
+
+# The next three set what GStreamer, or the audio sink it starts, reads from the
+# environment once per process.
+[[test]]
+name = "extension_registry"
+path = "tests/extension_registry.rs"
+
+[[test]]
+name = "no_audio_device"
+path = "tests/no_audio_device.rs"
+
+[[test]]
+name = "no_plugins"
+path = "tests/no_plugins.rs"
+
+# `weekly-latency` (t.toml) runs this binary's latency measurement by name.
+[[test]]
+name = "realtime"
+path = "tests/realtime.rs"
 
 # The GStreamer and PipeWire features select native backends. On the web
 # they compile to nothing (see build.rs): an app can keep `decode` in its

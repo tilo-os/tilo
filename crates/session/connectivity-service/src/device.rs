@@ -180,12 +180,15 @@ fn tethering(available: bool, hotspot: bool) -> Tethering {
 
 /// The Bluetooth devices in reach that are not paired, strongest first.
 fn nearby() -> Vec<Nearby> {
-    read_or_log("bluetooth devices in reach", os_actions::nearby_bluetooth())
-        .unwrap_or_default()
-        .iter()
-        .filter(|device| !device.paired)
-        .map(Nearby::from)
-        .collect()
+    let mut devices: Vec<Nearby> =
+        read_or_log("bluetooth devices in reach", os_actions::bluez::devices())
+            .unwrap_or_default()
+            .iter()
+            .filter(|device| !device.paired)
+            .map(Nearby::from)
+            .collect();
+    devices.sort_by(|a, b| b.signal.cmp(&a.signal).then_with(|| a.name.cmp(&b.name)));
+    devices
 }
 
 impl Device for OsDevice {
@@ -224,7 +227,7 @@ impl Device for OsDevice {
             Vec::new()
         };
         let discovering = bluetooth_on
-            && read_or_log("bluetooth discovery", os_actions::scanning_bluetooth())
+            && read_or_log("bluetooth discovery", os_actions::bluez::is_scanning())
                 .unwrap_or(false);
         Readings {
             network: Network {
@@ -323,9 +326,9 @@ impl Device for OsDevice {
             Change::Bluetooth(on) => RealDispatcher.set_bluetooth(*on),
             Change::Connect { address } => os_actions::bluez::connect_address(address),
             Change::Disconnect { address } => os_actions::bluez::disconnect_address(address),
-            Change::ScanBluetooth(on) => os_actions::scan_bluetooth(*on),
-            Change::Pair { address } => os_actions::pair_bluetooth_handoff(address),
-            Change::ForgetBluetooth { address } => os_actions::forget_bluetooth(address),
+            Change::ScanBluetooth(on) => RealDispatcher.scan_bluetooth(*on),
+            Change::Pair { address } => os_actions::bluez::pair_handoff(address),
+            Change::ForgetBluetooth { address } => os_actions::bluez::forget_address(address),
             Change::Vpn { profile, on } => os_actions::set_vpn_connection_uuid(profile, *on),
             Change::ImportVpn { kind, name, text } => {
                 os_actions::network_settings::import_vpn_text(kind, name, text).map(|_| ())

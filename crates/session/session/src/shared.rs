@@ -9,6 +9,37 @@ use tilo_sheets::Seat as _;
 use crate::{Shared, arrangement, workspace_settings};
 
 impl Shared {
+    /// Keep what this device shows: the workspace in front and the displays' partition, so the next
+    /// session starts where this one was. The desk itself is the workspaces' layouts, written as the
+    /// windows change.
+    pub(crate) fn keep_desk(&self) {
+        if crate::termination::asked() {
+            return;
+        }
+        self.activity.keep_shown(Some(self.handle.revision()), || {
+            self.handle.read(Clone::clone)
+        });
+    }
+
+    /// [`Self::keep_desk`], and wait for what was written: what ends the session.
+    pub(crate) fn keep_desk_now(&self) {
+        if crate::termination::asked() {
+            tilo_durable_writer::global().flush();
+            return;
+        }
+        self.activity
+            .keep_shown(None, || self.handle.read(Clone::clone));
+        // What this device changed of its workspaces' layouts reaches them before the session ends.
+        if let Some(engine) = &self.engine {
+            self.desktops.finish_writes(
+                engine,
+                &self.handle.read(Clone::clone),
+                std::time::Duration::from_secs(5),
+            );
+        }
+        tilo_durable_writer::global().flush();
+    }
+
     /// Show each workspace's shared desktop as the workspace holds it, and write back what this
     /// device changed there: what every device in a workspace sees of its strips and windows
     /// ([`shared_desktop::SharedDesktops`]).
@@ -16,6 +47,7 @@ impl Shared {
         let Some(engine) = &self.engine else {
             return;
         };
+        self.desktops.attach_engine(engine);
         // The apps a login's end takes with it leave the workspaces' desks as they were.
         if crate::termination::asked() {
             return;
@@ -32,8 +64,13 @@ impl Shared {
         // What the records hold, folded into a copy of the desk: what this device opened or moved
         // since was written first, so the fold comes back with this device's own change in it and
         // nothing is undone.
+        // A step of a layout the person asked for while a write of it was under way is taken now
+        // that the write is done, before this look starts another.
+        if let Some((room, redo)) = self.desktops.take_pending_step() {
+            self.desktops.step(room, &self.person, redo, &self.handle);
+        }
         let mut tree = self.handle.read(Clone::clone);
-        self.desktops.capture(engine, self.sync.as_deref(), &tree);
+        self.desktops.capture(engine, &tree);
         // What the workspace did not take of this desk is on the desk the person used: they hear it
         // once, naming the workspace and why.
         if let Some(refusal) = self.desktops.take_refusal() {
@@ -46,24 +83,33 @@ impl Shared {
         #[cfg(target_os = "linux")]
         let before = tree.clone();
         if self.desktops.follow(engine, &device, &mut tree) {
-            // The tree this device drew is the tree it shows: what the record holds is already
+            // The tree this device drew is the tree it shows: what the layout holds is already
             // placed, and swapping it in whole keeps the windows this device shows where its own
             // view left them.
+            #[cfg(target_os = "linux")]
+            {
+                let mut restore = self.restore.borrow_mut();
+                // The first layout this session lays out is the desk it reopens: a place no window
+                // came for is not a window. After that, a window someone else opened in the
+                // workspace is one this device shows through its own instance of the app, on the
+                // same record, and its app is asked for it as a window this device left open is.
+                if !restore.start(&before, &mut tree) {
+                    restore.arrived(&before, &tree);
+                }
+            }
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
-            // A window someone else opened in the workspace is one this device shows through its
-            // own instance of the app, on the same record: the app is asked for it as a window
-            // this device left open is.
-            #[cfg(target_os = "linux")]
-            self.restore.borrow_mut().arrived(&before, &tree);
         }
     }
 
     /// Run what waited for the person to finish their gesture or their typing: an arranging action
-    /// that arrived then, in the order it came. The arrangement is the desk, so what the desk did
-    /// meanwhile needs no taking in.
+    /// that arrived then, in the order it came, after the windows the person floated or put back on
+    /// the desk, which are their own and never wait.
     pub(crate) fn follow_arrangement(&self, underway: arrangement::Busy) {
         let mut arrangement = self.arrangement.borrow_mut();
+        if let Err(why) = arrangement.take_asked_floats() {
+            tracing::warn!(why, "a window could not be floated or put back");
+        }
         if !underway.holds()
             && arrangement.waiting() > 0
             && let Err(why) = arrangement.release()
@@ -200,7 +246,7 @@ impl Shared {
         self.activity.serve(&self.notifications.borrow());
         // What the history says its changes were, and the names over the runs of them, are written
         // into the desk's document as models answer; the desk draws a frame to read them.
-        let described = self.activity.describe();
+        let described = self.activity.describe(&self.handle.read(Clone::clone));
         if self.activity.take_woken() || described {
             // A window asked the activity model something, or what the history reads moved: the
             // desk draws a frame, which serves it.
@@ -390,6 +436,7 @@ impl Shared {
             &self.workspace_settings_feed(),
         );
         self.follow_invite();
+        self.follow_pair_device();
         self.follow_delete_workspace();
         self.follow_owner_deletions();
         self.follow_boot_join();

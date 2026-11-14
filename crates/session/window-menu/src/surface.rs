@@ -29,6 +29,13 @@ use crate::resource::WindowMenu;
 /// The session's resource this view draws.
 pub const WINDOW_MENU: &str = "desktop:window-menu";
 
+/// The resource every sender runs a send through: the session's one send action, the same an
+/// app's box, the canvas and an agent run.
+const SEND_TO: &str = "session:send-to";
+
+/// What that resource calls sending.
+const SEND: &str = "send";
+
 /// How long to wait before asking the session again for a reading it did
 /// not answer: the menu is up for a moment, so a view that gives up is a
 /// menu nobody sees.
@@ -214,6 +221,7 @@ impl WindowMenuSurface {
         let opened = Arc::clone(&self.opened);
         let asking = Arc::clone(&self.asking);
         std::thread::spawn(move || {
+            ui::rt::off_ui_thread();
             if let Ok(reached) = SessionResource::open(WINDOW_MENU) {
                 reached.attach(wake.clone());
                 if let Ok(mut slot) = opened.lock() {
@@ -304,10 +312,13 @@ impl WindowMenuSurface {
         // says what it is on: typing narrows the rows here, and a sentence
         // is about that window when something can answer it.
         self.menu.set_takes_typing(true);
+        // What the box sends leaves through the session's own send action (`deliver`), so the menu
+        // ends in the shared row every other menu has.
+        self.menu.set_owner_sends(true);
         self.menu
             .set_about(self.reading.subject.as_ref().map(|subject| {
                 let named = match &subject.app {
-                    Some(app) => format!("{} ({app})", subject.title),
+                    Some(app) => ui::window_name::named(app, &subject.title),
                     None => subject.title.clone(),
                 };
                 ui::shared_selection::SharedSelection::of_text(&named)
@@ -349,6 +360,26 @@ impl WindowMenuSurface {
                 tracing::warn!(%error, verb, "the window menu's verb was not taken");
             }
         });
+    }
+
+    /// Hand what the menu's send row opened to the session: each send goes as the one send action
+    /// every sender runs (`session:send-to#send`), carrying the window or tab the menu stands on.
+    /// A box's search is its host's to answer, and this host knows no people or agents: a name the
+    /// person types is the agent the box makes of it, as it does of a name the search never found.
+    fn deliver() {
+        for request in ui::shared_selection::take_send_to() {
+            let arguments = send_arguments(request);
+            std::thread::spawn(move || {
+                if let Err(error) =
+                    SessionResource::invoke_without_watching(SEND_TO, SEND, &arguments)
+                {
+                    tracing::warn!(%error, "the window menu's send was not taken");
+                }
+            });
+        }
+        for (request, _query) in ui::shared_selection::take_recipient_searches() {
+            ui::shared_selection::answer_recipients(request, Vec::new());
+        }
     }
 
     /// The row the open menu was just asked for, if the person chose one: a
@@ -424,9 +455,28 @@ fn item_of(row: &Row) -> (MenuItem, Option<String>) {
     (item, choice)
 }
 
+/// The arguments of the session's one send action for what the box held: whom it goes to, what it
+/// carries — the window or tab the menu stands on, as words — and the message.
+fn send_arguments(request: ui::shared_selection::SendToRequest) -> serde_json::Map<String, Value> {
+    let attached: Vec<Value> = request
+        .about
+        .iter()
+        .filter_map(|about| about.to_attached(None, None))
+        .filter_map(|attached| serde_json::to_value(attached).ok())
+        .collect();
+    let to = serde_json::to_value(&request.to).unwrap_or_else(|_| Value::Array(Vec::new()));
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("to".to_owned(), to);
+    arguments.insert("attached".to_owned(), Value::Array(attached));
+    arguments.insert("text".to_owned(), Value::String(request.text));
+    arguments
+}
+
 impl Widget for WindowMenuSurface {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        self.follow()
+        let followed = self.follow();
+        Self::deliver();
+        followed
     }
 
     fn build_layout(
@@ -489,6 +539,7 @@ impl Widget for WindowMenuSurface {
             // view says so, and the desk stops holding the keyboard.
             self.dismiss();
         }
+        Self::deliver();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -550,8 +601,8 @@ mod tests {
         assert!(surface.is_open());
         assert_eq!(
             surface.labels(),
-            ["Normal", "Move to workspace"],
-            "in the order the session lists them"
+            ["Normal", "Move to workspace", "Send to…"],
+            "in the order the session lists them, then the row the menu adds itself"
         );
         assert_eq!(
             surface.ids,
@@ -627,8 +678,9 @@ mod tests {
         let items = surface.menu.items();
         assert_eq!(
             items.len(),
-            4,
-            "a rule is an item of the menu, so the rows stay where the session put them"
+            6,
+            "a rule is an item of the menu, so the rows stay where the session put them; \
+             the last two are the rule and the row the menu adds itself"
         );
         assert!(
             !items[0].is_separator(),
@@ -647,6 +699,11 @@ mod tests {
             "the submenu's own row chooses nothing"
         );
         assert_eq!(surface.ids[1], None, "and a rule chooses nothing");
+        assert_eq!(
+            surface.ids.len(),
+            4,
+            "the menu's own rows are no choice of the session's"
+        );
 
         let icon = |item: &MenuItem| match item {
             MenuItem::Action { icon, .. } => *icon,
@@ -720,13 +777,18 @@ mod tests {
         let expected = ui::platform::Shortcut::from("Super+F").label(conventions);
         assert_eq!(
             chords,
-            [Some(expected), None],
-            "the chord the session sends stands at the row's end"
+            [Some(expected), None, None, None],
+            "the chord the session sends stands at the row's end, the rule and the send row having none"
         );
     }
 
     /// A menu the length the desk publishes, naming its window.
     fn menu_of(rows: usize) -> String {
+        menu_of_named(rows, "Notes", "Notes")
+    }
+
+    /// A menu whose window calls itself `title` and shows the app named `app`.
+    fn menu_of_named(rows: usize, title: &str, app: &str) -> String {
         let rows: Vec<Value> = (0..rows)
             .map(|i| {
                 serde_json::json!({
@@ -739,10 +801,40 @@ mod tests {
         serde_json::json!({
             "tab": "20",
             "anchor": { "x": 40, "y": 50 },
-            "subject": { "title": "Notes", "app": "so.tilo.notes" },
+            "subject": { "title": title, "app": app },
             "rows": rows,
         })
         .to_string()
+    }
+
+    /// What the box the send row opens is about.
+    fn box_chip(reading: &str) -> Option<String> {
+        let mut surface = WindowMenuSurface::showing(reading);
+        let send = surface.menu.items().len().saturating_sub(1);
+        surface.menu.click_item(send);
+        assert!(surface.menu.send_to().is_open(), "the row opens the box");
+        surface
+            .menu
+            .send_to()
+            .subjects()
+            .first()
+            .and_then(|about| about.anchor.excerpt.clone())
+    }
+
+    /// The box is about the window as a person names it: its title and the app's own name, never
+    /// the id the app installs under.
+    #[test]
+    fn the_box_is_about_the_window_the_way_a_person_names_it() {
+        assert_eq!(
+            box_chip(&menu_of_named(2, "Notes", "Notes")).as_deref(),
+            Some("Notes"),
+            "a window named for its app is the app alone"
+        );
+        assert_eq!(
+            box_chip(&menu_of_named(2, "Meeting notes", "Notes")).as_deref(),
+            Some("Meeting notes — Notes"),
+            "otherwise its title, and the app it shows"
+        );
     }
 
     #[test]
@@ -766,7 +858,7 @@ mod tests {
             surface.reading.subject,
             Some(Subject {
                 title: "Notes".into(),
-                app: Some("so.tilo.notes".into()),
+                app: Some("Notes".into()),
             })
         );
     }
@@ -863,17 +955,65 @@ mod tests {
         );
     }
 
+    /// Readings that put no menu up, one row each: a failure names its row.
     #[test]
-    fn a_reading_with_no_menu_up_draws_nothing() {
-        let surface = WindowMenuSurface::showing(r#"{"tab":null,"anchor":null,"rows":[]}"#);
-        assert!(!surface.is_open());
-        assert!(surface.labels().is_empty());
+    fn a_reading_without_a_menu_draws_nothing() {
+        for (row, reading) in [
+            (
+                "a_reading_with_no_menu_up_draws_nothing",
+                r#"{"tab":null,"anchor":null,"rows":[]}"#,
+            ),
+            (
+                "a_reading_the_session_never_sent_draws_nothing",
+                "not a reading",
+            ),
+        ] {
+            let surface = WindowMenuSurface::showing(reading);
+            assert!(!surface.is_open(), "{row}");
+            assert!(surface.labels().is_empty(), "{row}");
+        }
     }
 
+    /// The menu ends in the shared row every other menu has: the one the context menu adds itself,
+    /// set off by its rule, before anything is typed. It is about the window the menu names, so
+    /// what it sends is that window.
     #[test]
-    fn a_reading_the_session_never_sent_draws_nothing() {
-        let surface = WindowMenuSurface::showing("not a reading");
-        assert!(!surface.is_open());
-        assert!(surface.labels().is_empty());
+    fn the_menu_ends_in_the_shared_send_row() {
+        let surface = WindowMenuSurface::showing(&menu_of(3));
+        let labels = surface.labels();
+        assert_eq!(labels.len(), 4, "the window's three rows, then sending it");
+        assert!(
+            labels
+                .last()
+                .is_some_and(|last| last.starts_with("Send to")),
+            "the send row stands last: {labels:?}"
+        );
+        assert!(
+            surface
+                .menu
+                .items()
+                .get(surface.menu.items().len() - 2)
+                .is_some_and(MenuItem::is_separator),
+            "set off from the window's own rows by its rule"
+        );
+    }
+
+    /// Sending is the session's own send: the recipients, the window the menu stands on as what the
+    /// message carries, and its words.
+    #[test]
+    fn sending_carries_the_window_and_the_words_to_the_sessions_send() {
+        let arguments = send_arguments(ui::shared_selection::SendToRequest {
+            to: vec![ui::floating_surface::Recipient::new_agent("Ada")],
+            about: vec![ui::shared_selection::SharedSelection::of_text("Notes")],
+            text: "have a look".into(),
+        });
+        assert_eq!(arguments["text"], "have a look");
+        assert_eq!(arguments["to"][0]["name"], "Ada");
+        assert_eq!(arguments["to"][0]["kind"], "new-agent");
+        assert_eq!(
+            arguments["attached"][0]["kind"], "text",
+            "the window is carried as words"
+        );
+        assert_eq!(arguments["attached"][0]["text"], "Notes");
     }
 }

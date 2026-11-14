@@ -729,9 +729,10 @@ fn pop_token(expr: &mut String) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn key_entry_and_equals_update_expression_memory_and_history() {
-        // phase equals_pushes_history_and_sets_ans
+    tilo_test_env::scenario! {
+        fn key_entry_and_equals_update_expression_memory_and_history;
+
+        phase equals_pushes_history_and_sets_ans;
         {
             let mut m = CalcModel {
                 expr: "2+3".into(),
@@ -751,7 +752,7 @@ mod tests {
             assert_eq!(m.history[0].result, "0");
         }
 
-        // phase digit_after_equals_starts_fresh
+        phase digit_after_equals_starts_fresh;
         {
             let mut m = CalcModel {
                 expr: "5".into(),
@@ -762,7 +763,7 @@ mod tests {
             assert_eq!(m.expr, "7");
         }
 
-        // phase operator_after_equals_continues
+        phase operator_after_equals_continues;
         {
             let mut m = CalcModel {
                 expr: "5".into(),
@@ -773,7 +774,7 @@ mod tests {
             assert_eq!(m.expr, "5+");
         }
 
-        // phase error_demo_is_calc_only_and_guarantees_a_renderable_parse_error
+        phase error_demo_is_calc_only_and_guarantees_a_renderable_parse_error;
         {
             let mut m = CalcModel::seeded();
             m.after_equals = true;
@@ -785,7 +786,7 @@ mod tests {
             assert!(engine::evaluate(&m.expr, &m.ctx()).is_err());
         }
 
-        // phase backspace_drops_function_name
+        phase backspace_drops_function_name;
         {
             let mut m = CalcModel {
                 expr: "2+sin(".into(),
@@ -795,7 +796,7 @@ mod tests {
             assert_eq!(m.expr, "2+");
         }
 
-        // phase memory_add_accumulates
+        phase memory_add_accumulates;
         {
             let mut m = CalcModel {
                 expr: "10".into(),
@@ -807,9 +808,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn keypad_layouts_are_dense_grids_chosen_by_width_with_essentials() {
-        // phase every_keypad_layout_is_a_dense_grid
+    tilo_test_env::scenario! {
+        fn keypad_layouts_are_dense_grids_chosen_by_width_with_essentials;
+
+        phase every_keypad_layout_is_a_dense_grid;
         {
             for layout in [
                 KeypadLayout::Compact,
@@ -824,7 +826,7 @@ mod tests {
             }
         }
 
-        // phase keypad_breakpoints_pick_expected_layout
+        phase keypad_breakpoints_pick_expected_layout;
         {
             assert_eq!(KeypadLayout::for_width(380.0), KeypadLayout::Compact);
             assert_eq!(KeypadLayout::for_width(560.0), KeypadLayout::Standard);
@@ -833,7 +835,7 @@ mod tests {
             assert!(KeypadLayout::Standard.cols() < KeypadLayout::Scientific.cols());
         }
 
-        // phase every_layout_keeps_the_quick_calc_essentials
+        phase every_layout_keeps_the_quick_calc_essentials;
         {
             for layout in [
                 KeypadLayout::Compact,
@@ -867,21 +869,22 @@ mod tests {
                 );
             }
         }
-    }
-    /// The two pages together hold every key the wide pad shows.
-    #[test]
-    fn compact_pages_together_hold_every_scientific_key() {
-        let mut reachable = std::collections::HashSet::new();
-        for page in [KeypadPage::Primary, KeypadPage::Functions] {
-            let keys = KeypadLayout::Compact.keys_on(page);
-            assert_eq!(keys.len() % KeypadLayout::Compact.cols(), 0);
-            reachable.extend(keys.iter().map(|key| format!("{key:?}")));
-        }
-        for key in KeypadLayout::Scientific.keys() {
-            assert!(
-                reachable.contains(&format!("{key:?}")),
-                "the narrow pages cannot reach {key:?}"
-            );
+
+        phase compact_pages_together_hold_every_scientific_key;
+        // The two pages together hold every key the wide pad shows.
+        {
+            let mut reachable = std::collections::HashSet::new();
+            for page in [KeypadPage::Primary, KeypadPage::Functions] {
+                let keys = KeypadLayout::Compact.keys_on(page);
+                assert_eq!(keys.len() % KeypadLayout::Compact.cols(), 0);
+                reachable.extend(keys.iter().map(|key| format!("{key:?}")));
+            }
+            for key in KeypadLayout::Scientific.keys() {
+                assert!(
+                    reachable.contains(&format!("{key:?}")),
+                    "the narrow pages cannot reach {key:?}"
+                );
+            }
         }
     }
 }

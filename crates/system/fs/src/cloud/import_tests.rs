@@ -107,171 +107,263 @@ impl CloudSource for Source {
     }
 }
 
-#[test]
-fn generated_large_body_is_streamed_and_eof_is_revision_checked() {
-    for change_at_eof in [false, true] {
+tilo_test_env::scenario! {
+    fn import_reads_are_streamed_bounded_and_leased;
+
+    phase generated_large_body_is_streamed_and_eof_is_revision_checked;
+    {
+        for change_at_eof in [false, true] {
+            let source = Arc::new(Source {
+                changed: Arc::new(AtomicBool::new(false)),
+                change_at_eof,
+                unknown: false,
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let staging = Staging::new(dir.path().to_path_buf());
+            let mut transfer = Transfer::prepare(
+                source,
+                &ItemId::new("video"),
+                Some(&Revision::new("old")),
+                &|| false,
+                &staging,
+            )
+            .unwrap();
+            assert_eq!(transfer.size, SIZE);
+            loop {
+                let offset = transfer.offset;
+                let result = transfer.chunk(offset, IMPORT_CHUNK_LIMIT, &|| false);
+                if change_at_eof && SIZE.saturating_sub(offset) <= u64::from(IMPORT_CHUNK_LIMIT) {
+                    assert!(matches!(result, Err(Error::Conflict { .. })));
+                    break;
+                }
+                let ImportReply::Chunk { bytes, eof } = result.unwrap() else {
+                    panic!("expected chunk")
+                };
+                assert!(bytes.len() <= IMPORT_CHUNK_LIMIT as usize);
+                assert!(bytes.iter().all(|byte| *byte == 42));
+                if eof {
+                    assert_eq!(transfer.offset, SIZE);
+                    break;
+                }
+            }
+        }
+    }
+
+    phase cancellation_does_not_release_body_or_final_chunk;
+    {
         let source = Arc::new(Source {
             changed: Arc::new(AtomicBool::new(false)),
-            change_at_eof,
+            change_at_eof: false,
             unknown: false,
         });
         let dir = tempfile::tempdir().unwrap();
         let staging = Staging::new(dir.path().to_path_buf());
         let mut transfer = Transfer::prepare(
-            source,
+            source.clone(),
             &ItemId::new("video"),
-            Some(&Revision::new("old")),
+            None,
             &|| false,
             &staging,
         )
         .unwrap();
-        assert_eq!(transfer.size, SIZE);
-        loop {
-            let offset = transfer.offset;
-            let result = transfer.chunk(offset, IMPORT_CHUNK_LIMIT, &|| false);
-            if change_at_eof && SIZE.saturating_sub(offset) <= u64::from(IMPORT_CHUNK_LIMIT) {
-                assert!(matches!(result, Err(Error::Conflict { .. })));
-                break;
-            }
-            let ImportReply::Chunk { bytes, eof } = result.unwrap() else {
-                panic!("expected chunk")
-            };
-            assert!(bytes.len() <= IMPORT_CHUNK_LIMIT as usize);
-            assert!(bytes.iter().all(|byte| *byte == 42));
-            if eof {
-                assert_eq!(transfer.offset, SIZE);
-                break;
-            }
+        assert!(matches!(
+            transfer.chunk(0, IMPORT_CHUNK_LIMIT, &|| true),
+            Err(Error::SessionExpired)
+        ));
+        assert_eq!(transfer.offset, 0);
+        while SIZE.saturating_sub(transfer.offset) > u64::from(IMPORT_CHUNK_LIMIT) {
+            transfer
+                .chunk(transfer.offset, IMPORT_CHUNK_LIMIT, &|| false)
+                .unwrap();
         }
+        let offset = transfer.offset;
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        assert!(matches!(
+            transfer.chunk(offset, IMPORT_CHUNK_LIMIT, &|| checks
+                .fetch_add(1, Ordering::AcqRel)
+                >= 2),
+            Err(Error::SessionExpired)
+        ));
+        assert_eq!(transfer.offset, offset);
+        assert!(matches!(
+            Transfer::prepare(source, &ItemId::new("video"), None, &|| true, &staging),
+            Err(Error::SessionExpired)
+        ));
     }
-}
 
-#[test]
-fn cancellation_does_not_release_body_or_final_chunk() {
-    let source = Arc::new(Source {
-        changed: Arc::new(AtomicBool::new(false)),
-        change_at_eof: false,
-        unknown: false,
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let staging = Staging::new(dir.path().to_path_buf());
-    let mut transfer = Transfer::prepare(
-        source.clone(),
-        &ItemId::new("video"),
-        None,
-        &|| false,
-        &staging,
-    )
-    .unwrap();
-    assert!(matches!(
-        transfer.chunk(0, IMPORT_CHUNK_LIMIT, &|| true),
-        Err(Error::SessionExpired)
-    ));
-    assert_eq!(transfer.offset, 0);
-    while SIZE.saturating_sub(transfer.offset) > u64::from(IMPORT_CHUNK_LIMIT) {
-        transfer
-            .chunk(transfer.offset, IMPORT_CHUNK_LIMIT, &|| false)
-            .unwrap();
-    }
-    let offset = transfer.offset;
-    let checks = std::sync::atomic::AtomicUsize::new(0);
-    assert!(matches!(
-        transfer.chunk(offset, IMPORT_CHUNK_LIMIT, &|| checks
-            .fetch_add(1, Ordering::AcqRel)
-            >= 2),
-        Err(Error::SessionExpired)
-    ));
-    assert_eq!(transfer.offset, offset);
-    assert!(matches!(
-        Transfer::prepare(source, &ItemId::new("video"), None, &|| true, &staging),
-        Err(Error::SessionExpired)
-    ));
-}
+    phase unknown_length_staging_has_per_file_and_aggregate_limits_and_releases_quota;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Arc::new(Source {
+            changed: Arc::new(AtomicBool::new(false)),
+            change_at_eof: false,
+            unknown: true,
+        });
+        let mut staging = Staging::new(dir.path().join("state-staging"));
+        staging.per_file = SIZE - 1;
+        assert!(matches!(
+            Transfer::prepare(
+                source.clone(),
+                &ItemId::new("video"),
+                None,
+                &|| false,
+                &staging
+            ),
+            Err(Error::TooLarge)
+        ));
+        assert_eq!(staging.used.load(Ordering::Acquire), 0);
+        assert_eq!(std::fs::read_dir(&staging.directory).unwrap().count(), 0);
 
-#[test]
-fn unknown_length_staging_has_per_file_and_aggregate_limits_and_releases_quota() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Arc::new(Source {
-        changed: Arc::new(AtomicBool::new(false)),
-        change_at_eof: false,
-        unknown: true,
-    });
-    let mut staging = Staging::new(dir.path().join("state-staging"));
-    staging.per_file = SIZE - 1;
-    assert!(matches!(
-        Transfer::prepare(
+        staging.per_file = SIZE;
+        staging.aggregate = SIZE * 2;
+        let first = Transfer::prepare(
             source.clone(),
             &ItemId::new("video"),
             None,
             &|| false,
-            &staging
-        ),
-        Err(Error::TooLarge)
-    ));
-    assert_eq!(staging.used.load(Ordering::Acquire), 0);
-    assert_eq!(std::fs::read_dir(&staging.directory).unwrap().count(), 0);
-
-    staging.per_file = SIZE;
-    staging.aggregate = SIZE * 2;
-    let first = Transfer::prepare(
-        source.clone(),
-        &ItemId::new("video"),
-        None,
-        &|| false,
-        &staging,
-    )
-    .unwrap();
-    let second = Transfer::prepare(
-        source.clone(),
-        &ItemId::new("video"),
-        None,
-        &|| false,
-        &staging,
-    )
-    .unwrap();
-    assert_eq!(staging.used.load(Ordering::Acquire), SIZE * 2);
-    assert!(matches!(
-        Transfer::prepare(
+            &staging,
+        )
+        .unwrap();
+        let second = Transfer::prepare(
             source.clone(),
             &ItemId::new("video"),
             None,
             &|| false,
-            &staging
-        ),
-        Err(Error::TooLarge)
-    ));
-    assert_eq!(staging.used.load(Ordering::Acquire), SIZE * 2);
-    drop(first);
-    drop(second);
-    assert_eq!(staging.used.load(Ordering::Acquire), 0);
-    let checks = AtomicUsize::new(0);
-    assert!(matches!(
-        Transfer::prepare(
+            &staging,
+        )
+        .unwrap();
+        assert_eq!(staging.used.load(Ordering::Acquire), SIZE * 2);
+        assert!(matches!(
+            Transfer::prepare(
+                source.clone(),
+                &ItemId::new("video"),
+                None,
+                &|| false,
+                &staging
+            ),
+            Err(Error::TooLarge)
+        ));
+        assert_eq!(staging.used.load(Ordering::Acquire), SIZE * 2);
+        drop(first);
+        drop(second);
+        assert_eq!(staging.used.load(Ordering::Acquire), 0);
+        let checks = AtomicUsize::new(0);
+        assert!(matches!(
+            Transfer::prepare(
+                source,
+                &ItemId::new("video"),
+                None,
+                &|| checks.fetch_add(1, Ordering::AcqRel) >= 5,
+                &staging
+            ),
+            Err(Error::SessionExpired)
+        ));
+        assert_eq!(staging.used.load(Ordering::Acquire), 0);
+        assert_eq!(std::fs::read_dir(&staging.directory).unwrap().count(), 0);
+
+        staging.per_file = 1;
+        staging.aggregate = 1;
+        let known = Arc::new(Source {
+            changed: Arc::new(AtomicBool::new(false)),
+            change_at_eof: false,
+            unknown: false,
+        });
+        let mut transfer =
+            Transfer::prepare(known, &ItemId::new("video"), None, &|| false, &staging).unwrap();
+        assert_eq!(staging.used.load(Ordering::Acquire), 0);
+        assert!(matches!(
+            transfer.chunk(0, IMPORT_CHUNK_LIMIT, &|| false),
+            Ok(ImportReply::Chunk { eof: false, .. })
+        ));
+    }
+
+    phase production_requests_renew_idle_leases_but_invalid_or_foreign_requests_do_not;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (imports, seconds, cancelled) = leased_imports(dir.path());
+        for now in [240, 480] {
+            seconds.store(now, Ordering::Release);
+            assert_eq!(
+                import_request(
+                    &imports,
+                    "owner",
+                    ImportRequest::ReadStatus {
+                        session: "read".into()
+                    }
+                ),
+                ImportReply::ReadState(ImportReadState::Preparing)
+            );
+        }
+        let source = Arc::new(Source {
+            changed: Arc::new(AtomicBool::new(false)),
+            change_at_eof: false,
+            unknown: false,
+        });
+        let mut transfer = Transfer::prepare(
             source,
             &ItemId::new("video"),
             None,
-            &|| checks.fetch_add(1, Ordering::AcqRel) >= 5,
-            &staging
-        ),
-        Err(Error::SessionExpired)
-    ));
-    assert_eq!(staging.used.load(Ordering::Acquire), 0);
-    assert_eq!(std::fs::read_dir(&staging.directory).unwrap().count(), 0);
-
-    staging.per_file = 1;
-    staging.aggregate = 1;
-    let known = Arc::new(Source {
-        changed: Arc::new(AtomicBool::new(false)),
-        change_at_eof: false,
-        unknown: false,
-    });
-    let mut transfer =
-        Transfer::prepare(known, &ItemId::new("video"), None, &|| false, &staging).unwrap();
-    assert_eq!(staging.used.load(Ordering::Acquire), 0);
-    assert!(matches!(
-        transfer.chunk(0, IMPORT_CHUNK_LIMIT, &|| false),
-        Ok(ImportReply::Chunk { eof: false, .. })
-    ));
+            &|| false,
+            &imports.staging,
+        )
+        .unwrap();
+        let (requests, incoming) = mpsc::sync_channel(1);
+        imports
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut("read")
+            .unwrap()
+            .content = Content::Ready {
+            size: SIZE,
+            requests,
+        };
+        let sessions = imports.sessions.clone();
+        let clock = imports.clock.clone();
+        let revoked = cancelled.clone();
+        let worker = std::thread::spawn(move || {
+            run_chunks(
+                &mut transfer,
+                &incoming,
+                &sessions,
+                "read",
+                &|| revoked.load(Ordering::Acquire),
+                &clock,
+            );
+        });
+        seconds.store(720, Ordering::Release);
+        assert!(matches!(
+            import_request(
+                &imports,
+                "owner",
+                ImportRequest::ReadChunk {
+                    session: "read".into(),
+                    offset: 0,
+                    length: 10,
+                }
+            ),
+            ImportReply::Chunk { eof: false, .. }
+        ));
+        seconds.store(960, Ordering::Release);
+        assert!(
+            matches!(import_request(&imports, "other", ImportRequest::ReadStatus { session: "read".into() }),
+            ImportReply::Error(e) if e.kind == ImportErrorKind::Cancelled)
+        );
+        for (offset, length) in [(0, 10), (10, 0), (10, IMPORT_CHUNK_LIMIT + 1)] {
+            assert!(
+                matches!(import_request(&imports, "owner", ImportRequest::ReadChunk {
+                session: "read".into(), offset, length,
+            }), ImportReply::Error(e) if e.kind == ImportErrorKind::InvalidRequest)
+            );
+        }
+        seconds.store(1080, Ordering::Release);
+        assert!(
+            matches!(import_request(&imports, "owner", ImportRequest::ReadStatus { session: "read".into() }),
+            ImportReply::Error(e) if e.kind == ImportErrorKind::Cancelled)
+        );
+        assert!(cancelled.load(Ordering::Acquire));
+        worker.join().unwrap();
+    }
 }
 
 fn import_request(imports: &Imports, account: &str, request: ImportRequest) -> ImportReply {
@@ -321,92 +413,4 @@ fn leased_imports(state_root: &Path) -> (Imports, Arc<AtomicU64>, Arc<AtomicBool
         },
     );
     (imports, seconds, cancelled)
-}
-
-#[test]
-fn production_requests_renew_idle_leases_but_invalid_or_foreign_requests_do_not() {
-    let dir = tempfile::tempdir().unwrap();
-    let (imports, seconds, cancelled) = leased_imports(dir.path());
-    for now in [240, 480] {
-        seconds.store(now, Ordering::Release);
-        assert_eq!(
-            import_request(
-                &imports,
-                "owner",
-                ImportRequest::ReadStatus {
-                    session: "read".into()
-                }
-            ),
-            ImportReply::ReadState(ImportReadState::Preparing)
-        );
-    }
-    let source = Arc::new(Source {
-        changed: Arc::new(AtomicBool::new(false)),
-        change_at_eof: false,
-        unknown: false,
-    });
-    let mut transfer = Transfer::prepare(
-        source,
-        &ItemId::new("video"),
-        None,
-        &|| false,
-        &imports.staging,
-    )
-    .unwrap();
-    let (requests, incoming) = mpsc::sync_channel(1);
-    imports
-        .sessions
-        .lock()
-        .unwrap()
-        .get_mut("read")
-        .unwrap()
-        .content = Content::Ready {
-        size: SIZE,
-        requests,
-    };
-    let sessions = imports.sessions.clone();
-    let clock = imports.clock.clone();
-    let revoked = cancelled.clone();
-    let worker = std::thread::spawn(move || {
-        run_chunks(
-            &mut transfer,
-            &incoming,
-            &sessions,
-            "read",
-            &|| revoked.load(Ordering::Acquire),
-            &clock,
-        );
-    });
-    seconds.store(720, Ordering::Release);
-    assert!(matches!(
-        import_request(
-            &imports,
-            "owner",
-            ImportRequest::ReadChunk {
-                session: "read".into(),
-                offset: 0,
-                length: 10,
-            }
-        ),
-        ImportReply::Chunk { eof: false, .. }
-    ));
-    seconds.store(960, Ordering::Release);
-    assert!(
-        matches!(import_request(&imports, "other", ImportRequest::ReadStatus { session: "read".into() }),
-        ImportReply::Error(e) if e.kind == ImportErrorKind::Cancelled)
-    );
-    for (offset, length) in [(0, 10), (10, 0), (10, IMPORT_CHUNK_LIMIT + 1)] {
-        assert!(
-            matches!(import_request(&imports, "owner", ImportRequest::ReadChunk {
-            session: "read".into(), offset, length,
-        }), ImportReply::Error(e) if e.kind == ImportErrorKind::InvalidRequest)
-        );
-    }
-    seconds.store(1080, Ordering::Release);
-    assert!(
-        matches!(import_request(&imports, "owner", ImportRequest::ReadStatus { session: "read".into() }),
-        ImportReply::Error(e) if e.kind == ImportErrorKind::Cancelled)
-    );
-    assert!(cancelled.load(Ordering::Acquire));
-    worker.join().unwrap();
 }

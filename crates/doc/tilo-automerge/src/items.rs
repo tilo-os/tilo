@@ -133,7 +133,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
     fn an_item_reads_as_json_before_and_after_a_change() {
         let mut doc = AutoCommit::new();
         let messages = doc.put_object(ROOT, "messages", ObjType::Map).unwrap();
@@ -172,7 +171,6 @@ mod tests {
         assert!(collection_item_json(&doc, &heads, "runs", "r2").is_none());
     }
 
-    #[test]
     fn a_collection_item_reads_as_its_value() {
         let mut doc = AutoCommit::new();
         let messages = doc.put_object(ROOT, "messages", ObjType::Map).unwrap();
@@ -188,7 +186,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn text_objects_and_lists_read_as_strings_and_arrays() {
         let mut doc = AutoCommit::new();
         let items = doc.put_object(ROOT, "items", ObjType::Map).unwrap();
@@ -205,7 +202,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn an_item_created_by_a_change_is_absent_before_it() {
         let mut doc = AutoCommit::new();
         let messages = doc.put_object(ROOT, "messages", ObjType::Map).unwrap();
@@ -217,6 +213,32 @@ mod tests {
         assert!(item_json(&doc, &before, "m2").is_none());
         let after = doc.get_heads();
         assert_eq!(item_json(&doc, &after, "m2").unwrap()["text"], "new");
+    }
+
+    #[test]
+    fn an_item_reads_as_json_as_of_the_heads_asked_for() {
+        let cases: [(&str, fn()); 4] = [
+            (
+                "an item reads as json before and after a change",
+                an_item_reads_as_json_before_and_after_a_change,
+            ),
+            (
+                "a collection item reads as its value",
+                a_collection_item_reads_as_its_value,
+            ),
+            (
+                "text objects and lists read as strings and arrays",
+                text_objects_and_lists_read_as_strings_and_arrays,
+            ),
+            (
+                "an item created by a change is absent before it",
+                an_item_created_by_a_change_is_absent_before_it,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 
     #[test]

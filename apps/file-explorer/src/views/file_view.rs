@@ -1441,13 +1441,100 @@ mod tests {
         v
     }
 
-    #[test]
-    fn scroll_measurement_culling_and_drop_targets_bound_the_work() {
-        scroll_layout_reuses_real_file_view_measurement();
-        rows_outside_the_scroll_viewport_are_culled();
-        visible_range_avoids_scanning_a_large_directory();
-        grid_drop_targets_are_limited_to_visible_folders();
-        grid_leaves_a_reserved_bottom_lane_clear();
+    tilo_test_env::scenario! {
+        fn the_file_view_measures_lays_out_and_hit_tests_its_items;
+
+        phase scroll_measurement_culling_and_drop_targets_bound_the_work;
+        {
+            scroll_layout_reuses_real_file_view_measurement();
+            rows_outside_the_scroll_viewport_are_culled();
+            visible_range_avoids_scanning_a_large_directory();
+            grid_drop_targets_are_limited_to_visible_folders();
+            grid_leaves_a_reserved_bottom_lane_clear();
+        }
+
+        phase list_geometry_follows_width_zoom_and_text_scale;
+        {
+            nested_navigation_layout_preserves_large_text_file_row_geometry();
+            truncated_file_names_preserve_distinguishing_suffix();
+            neighbouring_faces_keep_a_token_gap();
+            grid_zoom_grows_the_cell();
+        }
+
+        phase accessibility_and_badges_describe_each_file_state;
+        {
+            accessibility_list_bounds_describe_the_scroll_viewport();
+            accessibility_exposes_each_file_selection_and_collaboration_state();
+            sync_badge_maps_each_state_to_a_distinct_emblem();
+            rich_availability_badges_are_honest_and_actionable();
+        }
+
+        phase grid_flows_wraps_and_navigates_by_visual_rows;
+        {
+            grid_flows_left_to_right_and_wraps_to_fill_width();
+            grid_columns_scale_with_width_and_never_zero();
+            grid_arrow_targets_follow_the_measured_visual_row();
+            phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom();
+            grid_labels_share_one_baseline_and_fit_two_lines_inside_the_cell();
+            grid_names_wrap_instead_of_being_cut();
+        }
+
+        phase thumbnails_use_the_shared_service_or_host_without_hydrating;
+        {
+            image_cells_request_previews_through_the_shared_service();
+            workspace_thumbnail_keys_follow_content_across_renames();
+            a_workspace_photo_the_host_never_previewed_is_still_shown();
+            #[cfg(unix)]
+            a_host_preview_is_adopted_rather_than_the_file_re_decoded();
+            a_projected_file_is_never_hydrated_just_to_preview_it();
+            badge_types_never_schedule_a_decode();
+        }
+
+        phase pointer_presses_emit_context_select_and_drag_commands;
+        {
+            right_press_selects_the_row_under_the_cursor_for_the_menu();
+            right_press_on_empty_space_clears_the_selection_for_the_menu();
+            dragging_a_directory_row_begins_a_pin_drag();
+            a_file_row_press_begins_a_move_drag();
+        }
+
+        phase apply_layout_publishes_folder_rows_as_drop_targets;
+        {
+            let mut entries = items(5); // f0..f4 are files
+            entries[1] = ent("docs", true);
+            entries[3] = ent("music", true);
+            let targets: DropTargets = Rc::new(RefCell::new(Vec::new()));
+            let laid = Laid::new(&entries, (900, 600), |view| {
+                view.with_drop_targets(targets.clone())
+            });
+            let published = targets.borrow();
+            let names: Vec<String> = published
+                .iter()
+                .map(|t| t.path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, ["docs", "music"], "only folders, in row order");
+            assert_eq!(published[0].rect, laid.view.item_rect(1).unwrap());
+            assert!(published[0].rect.y0 < published[1].rect.y0);
+        }
+
+        phase list_item_at_maps_rows_below_the_header;
+        {
+            let laid = Laid::new(&items(4), (900, 600), |view| view);
+            let table = laid.view.list.rect();
+            let header = laid.view.list.header_height();
+            assert_eq!(
+                laid.view
+                    .item_at(Point::new(table.x0 + 50.0, table.y0 + header - 2.0)),
+                None
+            );
+            let rows = laid.view.list.row_rects();
+            assert_eq!(rows.len(), 4);
+            for (index, rect) in rows {
+                assert_eq!(laid.view.item_at(rect.center()), Some(index));
+            }
+            let below = laid.view.item_rect(3).unwrap().y1 + 40.0;
+            assert_eq!(laid.view.item_at(Point::new(table.x0 + 50.0, below)), None);
+        }
     }
 
     fn scroll_layout_reuses_real_file_view_measurement() {
@@ -1525,14 +1612,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn list_geometry_follows_width_zoom_and_text_scale() {
-        nested_navigation_layout_preserves_large_text_file_row_geometry();
-        truncated_file_names_preserve_distinguishing_suffix();
-        neighbouring_faces_keep_a_token_gap();
-        grid_zoom_grows_the_cell();
-    }
-
     fn nested_navigation_layout_preserves_large_text_file_row_geometry() {
         let sink = new_sink();
         let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
@@ -1577,14 +1656,6 @@ mod tests {
         assert!(next.ends_with("060.txt"), "{next}");
     }
 
-    #[test]
-    fn accessibility_and_badges_describe_each_file_state() {
-        accessibility_list_bounds_describe_the_scroll_viewport();
-        accessibility_exposes_each_file_selection_and_collaboration_state();
-        sync_badge_maps_each_state_to_a_distinct_emblem();
-        rich_availability_badges_are_honest_and_actionable();
-    }
-
     fn accessibility_list_bounds_describe_the_scroll_viewport() {
         let sink = new_sink();
         let entries = vec![ent("a.txt", false), ent("b.txt", false)];
@@ -1620,16 +1691,6 @@ mod tests {
         assert_eq!(node.children[1].pos_in_set, Some(2));
         assert_eq!(node.children[1].set_size, Some(2));
         assert_description_has_every_fact(node.children[1].description.as_deref());
-    }
-
-    #[test]
-    fn grid_flows_wraps_and_navigates_by_visual_rows() {
-        grid_flows_left_to_right_and_wraps_to_fill_width();
-        grid_columns_scale_with_width_and_never_zero();
-        grid_arrow_targets_follow_the_measured_visual_row();
-        phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom();
-        grid_labels_share_one_baseline_and_fit_two_lines_inside_the_cell();
-        grid_names_wrap_instead_of_being_cut();
     }
 
     fn grid_flows_left_to_right_and_wraps_to_fill_width() {
@@ -1720,17 +1781,6 @@ mod tests {
                 "all compact targets remain reachable through assistive technology"
             );
         }
-    }
-
-    #[test]
-    fn thumbnails_use_the_shared_service_or_host_without_hydrating() {
-        image_cells_request_previews_through_the_shared_service();
-        workspace_thumbnail_keys_follow_content_across_renames();
-        a_workspace_photo_the_host_never_previewed_is_still_shown();
-        #[cfg(unix)]
-        a_host_preview_is_adopted_rather_than_the_file_re_decoded();
-        a_projected_file_is_never_hydrated_just_to_preview_it();
-        badge_types_never_schedule_a_decode();
     }
 
     fn image_cells_request_previews_through_the_shared_service() {
@@ -2066,14 +2116,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pointer_presses_emit_context_select_and_drag_commands() {
-        right_press_selects_the_row_under_the_cursor_for_the_menu();
-        right_press_on_empty_space_clears_the_selection_for_the_menu();
-        dragging_a_directory_row_begins_a_pin_drag();
-        a_file_row_press_begins_a_move_drag();
-    }
-
     fn right_press_selects_the_row_under_the_cursor_for_the_menu() {
         // The dangerous bug this guards: a right-click must target the row it
         // lands on, not whatever was selected before. The FileView emits a
@@ -2264,44 +2306,6 @@ mod tests {
             cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag { path, is_dir: false } if path.ends_with("f0"))),
             "a file row that travels begins a drag: {cmds:?}",
         );
-    }
-
-    #[test]
-    fn apply_layout_publishes_folder_rows_as_drop_targets() {
-        let mut entries = items(5); // f0..f4 are files
-        entries[1] = ent("docs", true);
-        entries[3] = ent("music", true);
-        let targets: DropTargets = Rc::new(RefCell::new(Vec::new()));
-        let laid = Laid::new(&entries, (900, 600), |view| {
-            view.with_drop_targets(targets.clone())
-        });
-        let published = targets.borrow();
-        let names: Vec<String> = published
-            .iter()
-            .map(|t| t.path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, ["docs", "music"], "only folders, in row order");
-        assert_eq!(published[0].rect, laid.view.item_rect(1).unwrap());
-        assert!(published[0].rect.y0 < published[1].rect.y0);
-    }
-
-    #[test]
-    fn list_item_at_maps_rows_below_the_header() {
-        let laid = Laid::new(&items(4), (900, 600), |view| view);
-        let table = laid.view.list.rect();
-        let header = laid.view.list.header_height();
-        assert_eq!(
-            laid.view
-                .item_at(Point::new(table.x0 + 50.0, table.y0 + header - 2.0)),
-            None
-        );
-        let rows = laid.view.list.row_rects();
-        assert_eq!(rows.len(), 4);
-        for (index, rect) in rows {
-            assert_eq!(laid.view.item_at(rect.center()), Some(index));
-        }
-        let below = laid.view.item_rect(3).unwrap().y1 + 40.0;
-        assert_eq!(laid.view.item_at(Point::new(table.x0 + 50.0, below)), None);
     }
 
     fn grid_labels_share_one_baseline_and_fit_two_lines_inside_the_cell() {
@@ -2528,254 +2532,258 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_list_is_a_table_with_a_sorted_column_and_a_row_per_entry() {
-        let laid = Laid::new(&items(4), (900, 600), |view| view);
-        let node = Widget::accessibility(&laid.view).expect("list semantics");
-        assert_eq!(node.role, ui::a11y::Role::Table);
-        assert_eq!(node.name.as_deref(), Some("Files"));
-        assert_eq!(
-            node.description.as_deref(),
-            Some("sorted by Name ascending")
-        );
-        assert_eq!(node.children.len(), 4);
-        let headers: Vec<_> = node.children[0]
-            .children
-            .iter()
-            .filter_map(|cell| cell.name.clone())
-            .filter(|name| !name.is_empty())
-            .collect();
-        assert_eq!(headers, ["Name", "Size", "Modified"]);
-        assert_eq!(node.children[2].name.as_deref(), Some("f2"));
-        assert_eq!(node.children[2].pos_in_set, Some(3));
-    }
+    tilo_test_env::scenario! {
+        fn the_list_is_a_table_that_scrolls_sorts_selects_and_narrows;
 
-    #[test]
-    fn list_rows_follow_item_zoom_and_the_header_band_is_the_tables() {
-        let base = Laid::new(&items(3), (900, 600), |view| view);
-        let zoomed = Laid::new(&items(3), (900, 600), |view| view.with_scale(1.6));
-        let height = |laid: &Laid| laid.view.item_rect(0).unwrap().height();
-        assert!(
-            height(&zoomed) > height(&base),
-            "zoom grows list row height"
-        );
-        let table = base.view.list.rect();
-        let first = base.view.item_rect(0).unwrap();
-        assert!(
-            (first.y0 - (table.y0 + base.view.list.header_height())).abs() < 0.01,
-            "the first row starts where the header band the view reserves ends"
-        );
-        let scaled = Theme::dark().with_text_scale(2.0);
-        let large = Laid::with_theme(&items(3), (900, 600), scaled.clone(), |view| {
-            view.with_theme(&scaled)
-        });
-        assert!(
-            large.view.item_rect(0).unwrap().height()
-                >= f64::from(scaled.text(TextRole::Body).line_height_px()),
-            "large type needs room in its rows"
-        );
-        let table = large.view.list.rect();
-        assert!(
-            (large.view.item_rect(0).unwrap().y0 - (table.y0 + large.view.list.header_height()))
-                .abs()
-                < 0.01,
-            "the header band follows the type"
-        );
-    }
+        phase the_list_is_a_table_with_a_sorted_column_and_a_row_per_entry;
+        {
+            let laid = Laid::new(&items(4), (900, 600), |view| view);
+            let node = Widget::accessibility(&laid.view).expect("list semantics");
+            assert_eq!(node.role, ui::a11y::Role::Table);
+            assert_eq!(node.name.as_deref(), Some("Files"));
+            assert_eq!(
+                node.description.as_deref(),
+                Some("sorted by Name ascending")
+            );
+            assert_eq!(node.children.len(), 4);
+            let headers: Vec<_> = node.children[0]
+                .children
+                .iter()
+                .filter_map(|cell| cell.name.clone())
+                .filter(|name| !name.is_empty())
+                .collect();
+            assert_eq!(headers, ["Name", "Size", "Modified"]);
+            assert_eq!(node.children[2].name.as_deref(), Some("f2"));
+            assert_eq!(node.children[2].pos_in_set, Some(3));
+        }
 
-    #[test]
-    fn a_large_directory_mounts_only_the_visible_rows() {
-        let mut laid = Laid::new(&items(100_000), (900, 600), |view| view);
-        let first = laid.view.list.row_rects();
-        assert!(first.len() < 40, "{} rows mounted", first.len());
-        assert_eq!(first[0].0, 0);
-        laid.view.list.set_scroll_y(34_000.0);
-        laid.relayout();
-        let later = laid.view.list.row_rects();
-        assert!(later.len() < 40);
-        assert!(later[0].0 > 900, "the window moved to row {}", later[0].0);
-    }
-
-    #[test]
-    fn the_list_scrolls_by_wheel_and_keeps_its_place_across_rebuilds() {
-        let mut laid = Laid::new(&items(300), (900, 600), |view| view);
-        let slot = laid.view.list.clone();
-        let centre = laid.view.list.rect().center();
-        laid.move_to(centre);
-        laid.send(&ui::synthetic_input::mouse_wheel(0.0, -5.0));
-        let scrolled = slot.scroll_y();
-        assert!(scrolled > 0.0, "a wheel-down scrolls the list");
-        assert!(slot.max_scroll_y() >= scrolled);
-
-        let sink = new_sink();
-        let mut rebuilt =
-            FileView::new(&items(300), &SelectionModel::new(), &sink).with_list(slot.clone());
-        let mut frame = ui::launch::ShotFrame::new((900, 600), Theme::dark());
-        frame.layout(&mut rebuilt).unwrap();
-        assert_eq!(
-            slot.scroll_y(),
-            scrolled,
-            "the scroll position survives a rebuild"
-        );
-
-        slot.reset_scroll();
-        assert_eq!(slot.scroll_y(), 0.0);
-    }
-
-    #[test]
-    fn narrow_panes_drop_detail_columns_and_ask_for_a_rebuild() {
-        let mut wide = Laid::new(&items(4), (1000, 600), |view| view);
-        assert!(
-            !Widget::take_structure_dirty(&mut wide.view),
-            "wide keeps every column"
-        );
-
-        let mut laid = Laid::new(&items(4), (900, 600), |view| view);
-        assert!(!Widget::take_structure_dirty(&mut laid.view));
-        let mut medium = Laid::new(&items(4), (560, 600), |view| view);
-        assert!(
-            Widget::take_structure_dirty(&mut medium.view),
-            "a pane narrower than the columns it was built with asks for a rebuild"
-        );
-
-        let slot = medium.view.list.clone();
-        let sink = new_sink();
-        let mut rebuilt = FileView::new(&items(4), &SelectionModel::new(), &sink).with_list(slot);
-        let mut frame = ui::launch::ShotFrame::new((560, 600), Theme::dark());
-        frame.layout(&mut rebuilt).unwrap();
-        assert!(!Widget::take_structure_dirty(&mut rebuilt));
-        let node = Widget::accessibility(&rebuilt).unwrap();
-        let headers: Vec<_> = node.children[0]
-            .children
-            .iter()
-            .filter_map(|cell| cell.name.clone())
-            .filter(|name| !name.is_empty())
-            .collect();
-        assert_eq!(
-            headers,
-            ["Name", "Size", "Modified"],
-            "the date column stays at 560"
-        );
-
-        let geo = Geo::of(&Theme::dark());
-        assert_eq!(shape_columns(1000.0, &geo, 1.0, 1.0), (true, 2));
-        assert_eq!(shape_columns(500.0, &geo, 1.0, 1.0), (true, 1));
-        assert_eq!(shape_columns(250.0, &geo, 1.0, 1.0), (false, 0));
-        assert_eq!(shape_columns(360.0, &geo, 1.6, 1.0), (false, 0));
-        assert_eq!(shape_columns(900.0, &geo, 1.0, 2.0), (true, 1));
-    }
-
-    #[test]
-    fn header_clicks_sort_by_the_column() {
-        let mut laid = Laid::new(&items(4), (900, 600), |view| view);
-        let node = Widget::accessibility(&laid.view).unwrap();
-        let cell = |column: usize| node.children[0].children[column].bounds.unwrap().to_rect();
-        let header_y = laid.view.list.rect().y0 + laid.view.list.header_height() / 2.0;
-        for (column, command) in [(0, 1), (1, 2), (2, 3)] {
-            laid.sink.borrow_mut().clear();
-            let x = cell(column).center().x;
-            laid.move_to(Point::new(x, header_y));
-            laid.press(MouseButton::Left);
+        phase list_rows_follow_item_zoom_and_the_header_band_is_the_tables;
+        {
+            let base = Laid::new(&items(3), (900, 600), |view| view);
+            let zoomed = Laid::new(&items(3), (900, 600), |view| view.with_scale(1.6));
+            let height = |laid: &Laid| laid.view.item_rect(0).unwrap().height();
             assert!(
-                laid.commands()
-                    .iter()
-                    .any(|c| matches!(c, FileCommand::SortColumn(i) if *i == command)),
-                "column {column} sorts as column {command}: {:?}",
-                laid.commands()
+                height(&zoomed) > height(&base),
+                "zoom grows list row height"
+            );
+            let table = base.view.list.rect();
+            let first = base.view.item_rect(0).unwrap();
+            assert!(
+                (first.y0 - (table.y0 + base.view.list.header_height())).abs() < 0.01,
+                "the first row starts where the header band the view reserves ends"
+            );
+            let scaled = Theme::dark().with_text_scale(2.0);
+            let large = Laid::with_theme(&items(3), (900, 600), scaled.clone(), |view| {
+                view.with_theme(&scaled)
+            });
+            assert!(
+                large.view.item_rect(0).unwrap().height()
+                    >= f64::from(scaled.text(TextRole::Body).line_height_px()),
+                "large type needs room in its rows"
+            );
+            let table = large.view.list.rect();
+            assert!(
+                (large.view.item_rect(0).unwrap().y0 - (table.y0 + large.view.list.header_height()))
+                    .abs()
+                    < 0.01,
+                "the header band follows the type"
             );
         }
-        laid.sink.borrow_mut().clear();
-        let row = laid.row_center(1);
-        laid.move_to(row);
-        laid.press(MouseButton::Left);
-        assert!(
-            !laid
-                .commands()
-                .iter()
-                .any(|c| matches!(c, FileCommand::SortColumn(_)))
-        );
-    }
 
-    #[test]
-    fn a_press_on_a_list_row_selects_it_and_arms_a_drag() {
-        let mut laid = Laid::new(&items(5), (900, 600), |view| view);
-        let row = laid.row_center(2);
-        laid.move_to(row);
-        laid.press(MouseButton::Left);
-        let commands = laid.commands();
-        assert!(
-            commands.iter().any(|c| matches!(
-                c,
-                FileCommand::Click {
-                    index: 2,
-                    ctrl: false,
-                    shift: false
-                }
-            )),
-            "{commands:?}"
-        );
-        assert!(
-            commands
-                .iter()
-                .any(|c| matches!(c, FileCommand::ArmDrag { path, .. } if path.ends_with("f2"))),
-            "{commands:?}"
-        );
-        assert!(
-            Widget::accessibility(&laid.view).unwrap().children[2]
-                .state
-                .selected,
-            "the table shows the row selected at once"
-        );
-    }
-
-    #[test]
-    fn list_rows_and_drop_targets_stay_above_the_status_lane() {
-        let mut entries = items(60);
-        for entry in &mut entries {
-            entry.is_dir = true;
+        phase a_large_directory_mounts_only_the_visible_rows;
+        {
+            let mut laid = Laid::new(&items(100_000), (900, 600), |view| view);
+            let first = laid.view.list.row_rects();
+            assert!(first.len() < 40, "{} rows mounted", first.len());
+            assert_eq!(first[0].0, 0);
+            laid.view.list.set_scroll_y(34_000.0);
+            laid.relayout();
+            let later = laid.view.list.row_rects();
+            assert!(later.len() < 40);
+            assert!(later[0].0 > 900, "the window moved to row {}", later[0].0);
         }
-        let targets: DropTargets = Rc::new(RefCell::new(Vec::new()));
-        let laid = Laid::new(&entries, (900, 600), |view| {
-            view.with_bottom_inset(64.0)
-                .with_drop_targets(targets.clone())
-        });
-        let table = laid.view.list.rect();
-        assert!(
-            table.y1 <= 600.0 - 64.0 + 0.5,
-            "the table ends above the status lane: {table:?}"
-        );
-        let published = targets.borrow();
-        assert!(
-            !published.is_empty() && published.len() < 32,
-            "{}",
-            published.len()
-        );
-        assert!(
-            published
-                .iter()
-                .all(|target| target.rect.y1 <= table.y1 + 0.5 && target.rect.y0 >= table.y0),
-            "no drop target lies in the status lane"
-        );
-    }
 
-    #[test]
-    fn the_list_exposes_each_file_selection_and_collaboration_state() {
-        let mut selection = SelectionModel::new();
-        selection.select_only(1);
-        let entries = accessible_entries();
-        let sink = new_sink();
-        let mut view = FileView::new(&entries, &selection, &sink);
-        let mut frame = ui::launch::ShotFrame::new((900, 600), Theme::dark());
-        frame.layout(&mut view).unwrap();
-        let node = Widget::accessibility(&view).expect("file view has semantics");
-        assert_eq!(node.name.as_deref(), Some("Files"));
-        assert_eq!(node.children.len(), 2);
-        assert_eq!(node.children[0].name.as_deref(), Some("folder"));
-        assert!(!node.children[0].state.selected);
-        assert_eq!(node.children[1].name.as_deref(), Some("report.pdf"));
-        assert!(node.children[1].state.selected);
-        assert_eq!(node.children[1].pos_in_set, Some(2));
-        assert_eq!(node.children[1].set_size, Some(2));
-        assert_description_has_every_fact(node.children[1].description.as_deref());
+        phase the_list_scrolls_by_wheel_and_keeps_its_place_across_rebuilds;
+        {
+            let mut laid = Laid::new(&items(300), (900, 600), |view| view);
+            let slot = laid.view.list.clone();
+            let centre = laid.view.list.rect().center();
+            laid.move_to(centre);
+            laid.send(&ui::synthetic_input::mouse_wheel(0.0, -5.0));
+            let scrolled = slot.scroll_y();
+            assert!(scrolled > 0.0, "a wheel-down scrolls the list");
+            assert!(slot.max_scroll_y() >= scrolled);
+
+            let sink = new_sink();
+            let mut rebuilt =
+                FileView::new(&items(300), &SelectionModel::new(), &sink).with_list(slot.clone());
+            let mut frame = ui::launch::ShotFrame::new((900, 600), Theme::dark());
+            frame.layout(&mut rebuilt).unwrap();
+            assert_eq!(
+                slot.scroll_y(),
+                scrolled,
+                "the scroll position survives a rebuild"
+            );
+
+            slot.reset_scroll();
+            assert_eq!(slot.scroll_y(), 0.0);
+        }
+
+        phase narrow_panes_drop_detail_columns_and_ask_for_a_rebuild;
+        {
+            let mut wide = Laid::new(&items(4), (1000, 600), |view| view);
+            assert!(
+                !Widget::take_structure_dirty(&mut wide.view),
+                "wide keeps every column"
+            );
+
+            let mut laid = Laid::new(&items(4), (900, 600), |view| view);
+            assert!(!Widget::take_structure_dirty(&mut laid.view));
+            let mut medium = Laid::new(&items(4), (560, 600), |view| view);
+            assert!(
+                Widget::take_structure_dirty(&mut medium.view),
+                "a pane narrower than the columns it was built with asks for a rebuild"
+            );
+
+            let slot = medium.view.list.clone();
+            let sink = new_sink();
+            let mut rebuilt = FileView::new(&items(4), &SelectionModel::new(), &sink).with_list(slot);
+            let mut frame = ui::launch::ShotFrame::new((560, 600), Theme::dark());
+            frame.layout(&mut rebuilt).unwrap();
+            assert!(!Widget::take_structure_dirty(&mut rebuilt));
+            let node = Widget::accessibility(&rebuilt).unwrap();
+            let headers: Vec<_> = node.children[0]
+                .children
+                .iter()
+                .filter_map(|cell| cell.name.clone())
+                .filter(|name| !name.is_empty())
+                .collect();
+            assert_eq!(
+                headers,
+                ["Name", "Size", "Modified"],
+                "the date column stays at 560"
+            );
+
+            let geo = Geo::of(&Theme::dark());
+            assert_eq!(shape_columns(1000.0, &geo, 1.0, 1.0), (true, 2));
+            assert_eq!(shape_columns(500.0, &geo, 1.0, 1.0), (true, 1));
+            assert_eq!(shape_columns(250.0, &geo, 1.0, 1.0), (false, 0));
+            assert_eq!(shape_columns(360.0, &geo, 1.6, 1.0), (false, 0));
+            assert_eq!(shape_columns(900.0, &geo, 1.0, 2.0), (true, 1));
+        }
+
+        phase header_clicks_sort_by_the_column;
+        {
+            let mut laid = Laid::new(&items(4), (900, 600), |view| view);
+            let node = Widget::accessibility(&laid.view).unwrap();
+            let cell = |column: usize| node.children[0].children[column].bounds.unwrap().to_rect();
+            let header_y = laid.view.list.rect().y0 + laid.view.list.header_height() / 2.0;
+            for (column, command) in [(0, 1), (1, 2), (2, 3)] {
+                laid.sink.borrow_mut().clear();
+                let x = cell(column).center().x;
+                laid.move_to(Point::new(x, header_y));
+                laid.press(MouseButton::Left);
+                assert!(
+                    laid.commands()
+                        .iter()
+                        .any(|c| matches!(c, FileCommand::SortColumn(i) if *i == command)),
+                    "column {column} sorts as column {command}: {:?}",
+                    laid.commands()
+                );
+            }
+            laid.sink.borrow_mut().clear();
+            let row = laid.row_center(1);
+            laid.move_to(row);
+            laid.press(MouseButton::Left);
+            assert!(
+                !laid
+                    .commands()
+                    .iter()
+                    .any(|c| matches!(c, FileCommand::SortColumn(_)))
+            );
+        }
+
+        phase a_press_on_a_list_row_selects_it_and_arms_a_drag;
+        {
+            let mut laid = Laid::new(&items(5), (900, 600), |view| view);
+            let row = laid.row_center(2);
+            laid.move_to(row);
+            laid.press(MouseButton::Left);
+            let commands = laid.commands();
+            assert!(
+                commands.iter().any(|c| matches!(
+                    c,
+                    FileCommand::Click {
+                        index: 2,
+                        ctrl: false,
+                        shift: false
+                    }
+                )),
+                "{commands:?}"
+            );
+            assert!(
+                commands
+                    .iter()
+                    .any(|c| matches!(c, FileCommand::ArmDrag { path, .. } if path.ends_with("f2"))),
+                "{commands:?}"
+            );
+            assert!(
+                Widget::accessibility(&laid.view).unwrap().children[2]
+                    .state
+                    .selected,
+                "the table shows the row selected at once"
+            );
+        }
+
+        phase list_rows_and_drop_targets_stay_above_the_status_lane;
+        {
+            let mut entries = items(60);
+            for entry in &mut entries {
+                entry.is_dir = true;
+            }
+            let targets: DropTargets = Rc::new(RefCell::new(Vec::new()));
+            let laid = Laid::new(&entries, (900, 600), |view| {
+                view.with_bottom_inset(64.0)
+                    .with_drop_targets(targets.clone())
+            });
+            let table = laid.view.list.rect();
+            assert!(
+                table.y1 <= 600.0 - 64.0 + 0.5,
+                "the table ends above the status lane: {table:?}"
+            );
+            let published = targets.borrow();
+            assert!(
+                !published.is_empty() && published.len() < 32,
+                "{}",
+                published.len()
+            );
+            assert!(
+                published
+                    .iter()
+                    .all(|target| target.rect.y1 <= table.y1 + 0.5 && target.rect.y0 >= table.y0),
+                "no drop target lies in the status lane"
+            );
+        }
+
+        phase the_list_exposes_each_file_selection_and_collaboration_state;
+        {
+            let mut selection = SelectionModel::new();
+            selection.select_only(1);
+            let entries = accessible_entries();
+            let sink = new_sink();
+            let mut view = FileView::new(&entries, &selection, &sink);
+            let mut frame = ui::launch::ShotFrame::new((900, 600), Theme::dark());
+            frame.layout(&mut view).unwrap();
+            let node = Widget::accessibility(&view).expect("file view has semantics");
+            assert_eq!(node.name.as_deref(), Some("Files"));
+            assert_eq!(node.children.len(), 2);
+            assert_eq!(node.children[0].name.as_deref(), Some("folder"));
+            assert!(!node.children[0].state.selected);
+            assert_eq!(node.children[1].name.as_deref(), Some("report.pdf"));
+            assert!(node.children[1].state.selected);
+            assert_eq!(node.children[1].pos_in_set, Some(2));
+            assert_eq!(node.children[1].set_size, Some(2));
+            assert_description_has_every_fact(node.children[1].description.as_deref());
+        }
     }
 }

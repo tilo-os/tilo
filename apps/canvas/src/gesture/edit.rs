@@ -425,165 +425,171 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_click_picks_the_whole_group_unless_inside_it() {
-        let art = art();
-        assert_eq!(pick(&art, Point::new(5.0, 5.0), false), ["a", "b"]);
-        assert_eq!(pick(&art, Point::new(5.0, 5.0), true), ["a"]);
-        assert_eq!(marquee(&art, Rect::new(35.0, -5.0, 60.0, 5.0)), ["c"]);
-        assert_eq!(
-            marquee(&art, Rect::new(15.0, -5.0, 60.0, 5.0)),
-            ["a", "b", "c"]
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The edits the select tool makes of the marks it picked.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn picked_marks_move_copy_group_and_frame;
 
-    #[test]
-    fn a_pure_move_reads_as_a_move() {
-        let Some(edit) =
-            (transform(vec!["a".into()], Affine::translate((3.0, 4.0)))).and_then(|invoke| {
-                crate::actions::read_as::<crate::actions::EditMarks>(
-                    &invoke,
-                    Artwork::EDIT_MARKS.id,
-                )
-            })
-        else {
-            panic!("an edit")
-        };
-        assert_eq!(edit.move_by, Some([3.0, 4.0]));
-        assert!(edit.transform.is_none());
-        assert!(transform(vec!["a".into()], Affine::IDENTITY).is_none());
-        let Some(edit) = (transform(vec!["a".into()], Affine::scale_non_uniform(2.0, 1.0)))
-            .and_then(|invoke| {
-                crate::actions::read_as::<crate::actions::EditMarks>(
-                    &invoke,
-                    Artwork::EDIT_MARKS.id,
-                )
-            })
-        else {
-            panic!("an edit")
-        };
-        assert!(edit.transform.is_some());
-    }
-
-    #[test]
-    fn copied_gradients_travel_with_their_geometry() {
-        use ui::prelude::Replica;
-
-        for (transformed, clipboard, focal) in [false, true]
-            .into_iter()
-            .flat_map(|transformed| [false, true].map(|clipboard| (transformed, clipboard)))
-            .flat_map(|(transformed, clipboard)| {
-                [None, Some([2.0, 3.0])].map(|focal| (transformed, clipboard, focal))
-            })
+        phase a_click_picks_the_whole_group_unless_inside_it;
         {
-            let mut art = Replica::<Artwork>::new();
-            art.apply(Artwork::DRAW.with(Draw {
-                layer: None,
-                marks: vec![NewMark {
-                    id: Some("card".into()),
-                    gradient: Some(crate::model::Gradient {
-                        kind: if focal.is_some() { "radial" } else { "linear" }.into(),
-                        from: [0.0, 0.0],
-                        to: [10.0, 10.0],
-                        stops: vec![(0.0, "#112233".into()), (1.0, "#aabbcc".into())],
-                        focal,
-                    }),
-                    transform: transformed.then(|| Affine::scale(2.0).as_coeffs()),
-                    ..NewMark::new(Shape::Rect {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 10.0,
-                        height: 10.0,
-                        radius: 0.0,
-                    })
-                }],
-            }))
-            .unwrap();
-            let before = art.state().unwrap();
-            let original = before.mark("card").unwrap();
-            let offset = Vec2::new(30.0, -15.0);
-            let selected = vec!["card".into()];
-            let (actions, ids) = if clipboard {
-                paste(&before, &copy(&before, &selected).unwrap(), offset, None).unwrap()
-            } else {
-                duplicate(&before, &selected, offset)
-            };
-            for action in actions {
-                art.apply(action).unwrap();
-            }
-            let after = art.state().unwrap();
-            let copied = after.mark(&ids[0]).unwrap();
-            let expected = original.moved(offset.x, offset.y);
-            assert_eq!(copied.shape, expected.shape);
-            assert_eq!(copied.transform, expected.transform);
-            let mut expected_gradient = original.style.gradient.clone().unwrap();
-            if !transformed {
-                expected_gradient.from = [30.0, -15.0];
-                expected_gradient.to = [40.0, -5.0];
-                expected_gradient.focal = focal.map(|_| [32.0, -12.0]);
-            }
-            assert_eq!(copied.style.gradient, Some(expected_gradient));
-            assert_eq!(after.mark("card"), Some(original));
+            let art = art();
+            assert_eq!(pick(&art, Point::new(5.0, 5.0), false), ["a", "b"]);
+            assert_eq!(pick(&art, Point::new(5.0, 5.0), true), ["a"]);
+            assert_eq!(marquee(&art, Rect::new(35.0, -5.0, 60.0, 5.0)), ["c"]);
+            assert_eq!(
+                marquee(&art, Rect::new(15.0, -5.0, 60.0, 5.0)),
+                ["a", "b", "c"]
+            );
         }
-    }
 
-    #[test]
-    fn copies_get_fresh_ids_and_their_own_group() {
-        let art = art();
-        let text = copy(&art, &["a".into(), "b".into()]).unwrap();
-        let (actions, ids) = paste(&art, &text, Vec2::new(10.0, 10.0), None).unwrap();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.iter().all(|id| art.mark(id).is_none()));
-        let [invoke] = actions.as_slice() else {
-            panic!("one draw: {actions:?}")
-        };
-        let draw: crate::actions::Draw =
-            crate::actions::read_as(invoke, Artwork::DRAW.id).expect("a draw");
-        assert_eq!(draw.layer.as_deref(), Some("ink"));
-        let group = draw.marks[0].group.clone().unwrap();
-        assert_ne!(group, "pair");
-        assert_eq!(draw.marks[1].group.as_deref(), Some(group.as_str()));
-        assert_eq!(
-            draw.marks[0].shape,
-            Shape::Rect {
-                x: 10.0,
-                y: 10.0,
-                width: 10.0,
-                height: 10.0,
-                radius: 0.0
+        phase a_pure_move_reads_as_a_move;
+        {
+            let Some(edit) =
+                (transform(vec!["a".into()], Affine::translate((3.0, 4.0)))).and_then(|invoke| {
+                    crate::actions::read_as::<crate::actions::EditMarks>(
+                        &invoke,
+                        Artwork::EDIT_MARKS.id,
+                    )
+                })
+            else {
+                panic!("an edit")
+            };
+            assert_eq!(edit.move_by, Some([3.0, 4.0]));
+            assert!(edit.transform.is_none());
+            assert!(transform(vec!["a".into()], Affine::IDENTITY).is_none());
+            let Some(edit) = (transform(vec!["a".into()], Affine::scale_non_uniform(2.0, 1.0)))
+                .and_then(|invoke| {
+                    crate::actions::read_as::<crate::actions::EditMarks>(
+                        &invoke,
+                        Artwork::EDIT_MARKS.id,
+                    )
+                })
+            else {
+                panic!("an edit")
+            };
+            assert!(edit.transform.is_some());
+        }
+
+        phase copied_gradients_travel_with_their_geometry;
+        {
+            use ui::prelude::Replica;
+
+            for (transformed, clipboard, focal) in [false, true]
+                .into_iter()
+                .flat_map(|transformed| [false, true].map(|clipboard| (transformed, clipboard)))
+                .flat_map(|(transformed, clipboard)| {
+                    [None, Some([2.0, 3.0])].map(|focal| (transformed, clipboard, focal))
+                })
+            {
+                let mut art = Replica::<Artwork>::new();
+                art.apply(Artwork::DRAW.with(Draw {
+                    layer: None,
+                    marks: vec![NewMark {
+                        id: Some("card".into()),
+                        gradient: Some(crate::model::Gradient {
+                            kind: if focal.is_some() { "radial" } else { "linear" }.into(),
+                            from: [0.0, 0.0],
+                            to: [10.0, 10.0],
+                            stops: vec![(0.0, "#112233".into()), (1.0, "#aabbcc".into())],
+                            focal,
+                        }),
+                        transform: transformed.then(|| Affine::scale(2.0).as_coeffs()),
+                        ..NewMark::new(Shape::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 10.0,
+                            height: 10.0,
+                            radius: 0.0,
+                        })
+                    }],
+                }))
+                .unwrap();
+                let before = art.state().unwrap();
+                let original = before.mark("card").unwrap();
+                let offset = Vec2::new(30.0, -15.0);
+                let selected = vec!["card".into()];
+                let (actions, ids) = if clipboard {
+                    paste(&before, &copy(&before, &selected).unwrap(), offset, None).unwrap()
+                } else {
+                    duplicate(&before, &selected, offset)
+                };
+                for action in actions {
+                    art.apply(action).unwrap();
+                }
+                let after = art.state().unwrap();
+                let copied = after.mark(&ids[0]).unwrap();
+                let expected = original.moved(offset.x, offset.y);
+                assert_eq!(copied.shape, expected.shape);
+                assert_eq!(copied.transform, expected.transform);
+                let mut expected_gradient = original.style.gradient.clone().unwrap();
+                if !transformed {
+                    expected_gradient.from = [30.0, -15.0];
+                    expected_gradient.to = [40.0, -5.0];
+                    expected_gradient.focal = focal.map(|_| [32.0, -12.0]);
+                }
+                assert_eq!(copied.style.gradient, Some(expected_gradient));
+                assert_eq!(after.mark("card"), Some(original));
             }
-        );
-        assert!(paste(&art, "hello", Vec2::ZERO, None).is_none());
-    }
+        }
 
-    #[test]
-    fn grouping_names_a_free_group() {
-        let art = art();
-        let Some(edit) = (group(&art, &["c".into(), "a".into()])).and_then(|invoke| {
-            crate::actions::read_as::<crate::actions::EditMarks>(&invoke, Artwork::EDIT_MARKS.id)
-        }) else {
-            panic!("a group edit")
-        };
-        assert_eq!(edit.group.as_deref(), Some("group-1"));
-        let Some(edit) = (ungroup(&art, &["a".into(), "c".into()])).and_then(|invoke| {
-            crate::actions::read_as::<crate::actions::EditMarks>(&invoke, Artwork::EDIT_MARKS.id)
-        }) else {
-            panic!("an ungroup edit")
-        };
-        assert_eq!(edit.ids, ["a"]);
-        assert_eq!(edit.group.as_deref(), Some(""));
-    }
+        phase copies_get_fresh_ids_and_their_own_group;
+        {
+            let art = art();
+            let text = copy(&art, &["a".into(), "b".into()]).unwrap();
+            let (actions, ids) = paste(&art, &text, Vec2::new(10.0, 10.0), None).unwrap();
+            assert_eq!(ids.len(), 2);
+            assert!(ids.iter().all(|id| art.mark(id).is_none()));
+            let [invoke] = actions.as_slice() else {
+                panic!("one draw: {actions:?}")
+            };
+            let draw: crate::actions::Draw =
+                crate::actions::read_as(invoke, Artwork::DRAW.id).expect("a draw");
+            assert_eq!(draw.layer.as_deref(), Some("ink"));
+            let group = draw.marks[0].group.clone().unwrap();
+            assert_ne!(group, "pair");
+            assert_eq!(draw.marks[1].group.as_deref(), Some(group.as_str()));
+            assert_eq!(
+                draw.marks[0].shape,
+                Shape::Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 10.0,
+                    height: 10.0,
+                    radius: 0.0
+                }
+            );
+            assert!(paste(&art, "hello", Vec2::ZERO, None).is_none());
+        }
 
-    #[test]
-    fn a_turned_mark_is_framed_along_its_sides() {
-        let mut art = art();
-        art.marks[2].transform = Some(Affine::rotate_about(0.5, Point::new(45.0, 5.0)).as_coeffs());
-        let (bounds, angle) = frame(&art, &["c".into()]).unwrap();
-        assert!((angle - 0.5).abs() < 1e-9);
-        assert!((bounds.width() - 10.0).abs() < 1e-6, "{bounds:?}");
-        assert!(
-            bounds.center().distance(Point::new(45.0, 5.0)) < 1e-6,
-            "{bounds:?}"
-        );
+        phase grouping_names_a_free_group;
+        {
+            let art = art();
+            let Some(edit) = (group(&art, &["c".into(), "a".into()])).and_then(|invoke| {
+                crate::actions::read_as::<crate::actions::EditMarks>(&invoke, Artwork::EDIT_MARKS.id)
+            }) else {
+                panic!("a group edit")
+            };
+            assert_eq!(edit.group.as_deref(), Some("group-1"));
+            let Some(edit) = (ungroup(&art, &["a".into(), "c".into()])).and_then(|invoke| {
+                crate::actions::read_as::<crate::actions::EditMarks>(&invoke, Artwork::EDIT_MARKS.id)
+            }) else {
+                panic!("an ungroup edit")
+            };
+            assert_eq!(edit.ids, ["a"]);
+            assert_eq!(edit.group.as_deref(), Some(""));
+        }
+
+        phase a_turned_mark_is_framed_along_its_sides;
+        {
+            let mut art = art();
+            art.marks[2].transform = Some(Affine::rotate_about(0.5, Point::new(45.0, 5.0)).as_coeffs());
+            let (bounds, angle) = frame(&art, &["c".into()]).unwrap();
+            assert!((angle - 0.5).abs() < 1e-9);
+            assert!((bounds.width() - 10.0).abs() < 1e-6, "{bounds:?}");
+            assert!(
+                bounds.center().distance(Point::new(45.0, 5.0)) < 1e-6,
+                "{bounds:?}"
+            );
+        }
     }
 }

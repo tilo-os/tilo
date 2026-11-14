@@ -48,7 +48,7 @@ use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_relay_protocol::directory::{DoorJoin, Listing, door_path};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
@@ -205,7 +205,7 @@ impl Site {
 
     /// The workspace `workspace` as the site's host carries it, by its id here: what a machine an
     /// environment runs in is handed, and what a page action names.
-    pub fn workspace_id(&self, workspace: &str) -> Option<u64> {
+    pub fn workspace_id(&self, workspace: &str) -> Option<tilo_desktop_model::WorkspaceId> {
         self.runtime
             .block_on(self.workspaces.summary(workspace))
             .ok()
@@ -214,7 +214,7 @@ impl Site {
 
     /// Make the workspace public with `role` for everyone who joins at the door, as its owner does:
     /// from now on the door admits people.
-    pub fn publish(&self, role: WorkspaceRole) {
+    pub fn publish(&self, role: Role) {
         self.runtime
             .block_on(self.workspaces.publish(
                 &self.workspace,
@@ -264,7 +264,7 @@ impl Site {
 
     /// Make `person` one of the workspace's `role` , as its owner does: a moderator invites and
     /// removes, an editor writes.
-    pub fn set_role(&self, person: [u8; 32], role: WorkspaceRole) {
+    pub fn set_role(&self, person: [u8; 32], role: Role) {
         self.runtime
             .block_on(self.workspaces.set_member_role(
                 &self.workspace,
@@ -272,7 +272,7 @@ impl Site {
                 tilo_relay::workspaces::SetMemberRoleRequest {
                     request_id: fresh_id(),
                     user_public_key: person,
-                    role: member_role(role),
+                    role,
                 },
             ))
             .expect("the workspace's owner sets a member's role");
@@ -280,7 +280,7 @@ impl Site {
 
     /// The invitation the site's owner issues for `person` , as a person invites someone into their
     /// workspace: it binds the person's root, so only their devices redeem it.
-    pub fn invite(&self, person: [u8; 32], role: WorkspaceRole) -> Invitation {
+    pub fn invite(&self, person: [u8; 32], role: Role) -> Invitation {
         let issued = self
             .runtime
             .block_on(self.workspaces.issue(
@@ -288,7 +288,7 @@ impl Site {
                 &self.host,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
                     request_id: fresh_id(),
-                    role: member_role(role),
+                    role,
                     recipient_user_public_key: Some(person),
                     invitee_name: None,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
@@ -343,13 +343,6 @@ impl Site {
         });
     }
 
-    /// The apps the workspace's governance lets author its records, as its host records them now.
-    pub fn authors(&self) -> std::collections::BTreeSet<String> {
-        self.runtime
-            .block_on(self.workspaces.app_authors(&self.workspace))
-            .expect("the workspace's app authors")
-    }
-
     /// The records of the workspace this site holds, by the app and record they belong to: what its
     /// people wrote there, as their host keeps it.
     pub fn records(&self) -> Vec<(String, String)> {
@@ -385,34 +378,6 @@ impl Site {
                 .iter()
                 .any(|(recorded, _)| recorded.as_str() == app)
         });
-    }
-
-    /// Wait until the workspace's governance lets `app` author its records: what the owner's device
-    /// granting it there leaves the host holding, and what a member's device joins with.
-    pub fn wait_for_author(&self, app: &str) {
-        tilo_test_env::wait_until(format!("the workspace lets {app} author"), || {
-            self.authors().contains(app)
-        });
-    }
-
-    /// Let the apps `apps` author the workspace's records, as the host of a workspace does before
-    /// its people open them there ([`tilo_relay::workspaces::Workspaces::settle_app_authorship`]):
-    /// a member whose role lets them write writes through an app the workspace lets author, and a
-    /// member may not grant that themselves — the workspace's own devices do.
-    pub fn author_apps(&self, apps: &[&str]) {
-        let apps: std::collections::BTreeSet<String> =
-            apps.iter().map(|app| (*app).to_owned()).collect();
-        self.runtime
-            .block_on(self.workspaces.settle_app_authorship(
-                &self.workspace,
-                &self.host,
-                &apps,
-                &std::collections::BTreeSet::new(),
-            ))
-            .expect("the workspace lets its people's apps author");
-        for app in apps {
-            self.wait_for_author(&app);
-        }
     }
 
     /// The workspace's shared desktop as the site keeps it now: its strips and windows, or nothing
@@ -635,15 +600,11 @@ pub fn a_site_with_files_for_one_laptop() -> (Site, Person, Person, Device) {
 }
 
 /// The site the two people share and the first person's laptop in it, carrying what `install`
-/// puts in its store, with the workspace letting `authored` author its records.
-fn site_carrying(authored: &[&str], install: &impl Fn(&Device)) -> (Site, Person, Person, Device) {
+/// puts in its store.
+fn site_carrying(_apps: &[&str], install: &impl Fn(&Device)) -> (Site, Person, Person, Device) {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
     let site = Site::start(&ada, "Studio");
-    let authored: Vec<&str> = std::iter::once(tilo_desktop_model::ownership::DESKTOP_APP)
-        .chain(authored.iter().copied())
-        .collect();
-    site.author_apps(&authored);
     let ada_laptop = joined_carrying(&site, &ada, "Ada's laptop", install);
     (site, ada, bob, ada_laptop)
 }
@@ -705,7 +666,7 @@ pub fn joined_carrying(
 ) -> Device {
     let mut device = person.device(label);
     install(&device);
-    let invitation = site.invite(person.public, WorkspaceRole::Editor);
+    let invitation = site.invite(person.public, Role::Editor);
     device.join(&invitation);
     device.wait_holding(&site.workspace);
     device
@@ -717,19 +678,23 @@ pub fn two_devices_of_one_person_with_files() -> (Site, Person, Device, Device) 
     two_devices_of_one_person_carrying(Device::install_files)
 }
 
+/// [`two_devices_of_one_person`] for two devices that carry Chat.
+pub fn two_devices_of_one_person_with_chat() -> (Site, Person, Device, Device) {
+    two_devices_of_one_person_carrying(Device::install_chat)
+}
+
 /// The person's laptop and phone, each carrying what `install` puts in its store: both are made
 /// first, then told of the person's fleet, then started — a session reads the apps and the devices
 /// of the person it has when it starts.
 fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Person, Device, Device) {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
     share_the_fleet(&ada, &[&laptop, &phone]);
     for device in [&mut laptop, &mut phone] {
         install(device);
-        let invitation = site.invite(ada.public, WorkspaceRole::Editor);
+        let invitation = site.invite(ada.public, Role::Editor);
         device.join(&invitation);
         device.wait_holding(&site.workspace);
     }
@@ -901,7 +866,7 @@ impl Person {
         self.certify_with(
             paths,
             label,
-            Some(tilo_user_identity::DeviceCapabilities::host()),
+            Some(tilo_user_identity::DeviceCapabilities::member()),
         )
     }
 
@@ -2133,23 +2098,19 @@ impl HeldChat {
     /// messages `peer` wrote lie past this person's read mark (a part, and how many of the
     /// conversation's messages in it they saw).
     fn conversation(&self, peer: &str) -> Result<Conversation, String> {
-        use chat::record::{Chat, Participant};
+        use chat::record::Chat;
         let people = self.chat["people"]
             .as_object()
             .filter(|people| !people.is_empty());
         let Some(people) = people else {
             return Err("the workspace's people are not in Chat's record yet".into());
         };
-        if peer == self.me
-            || people
-                .get(peer)
-                .is_none_or(|person| person["agent"] == true)
-        {
+        if peer == self.me || people.get(peer).is_none() {
             return Err(format!("Chat knows no person {peer}"));
         }
         let channel = Chat::direct_id([
-            Participant::person(self.me.clone()),
-            Participant::person(peer),
+            tilo_actions::policy::MemberId::person(self.me.clone()),
+            tilo_actions::policy::MemberId::person(peer),
         ])
         .to_string();
         let mark = &self.chat["read"][&self.me][&channel];
@@ -2350,17 +2311,6 @@ fn manifest_of(app: &str) -> String {
         kept.push('\n');
     }
     kept
-}
-
-/// The role a member holds in a workspace, as [`WorkspaceRole`] names the workspace's listing of
-/// it.
-fn member_role(role: WorkspaceRole) -> tilo_workspace_join::MemberRole {
-    match role {
-        WorkspaceRole::Viewer => tilo_workspace_join::MemberRole::Viewer,
-        WorkspaceRole::Commenter => tilo_workspace_join::MemberRole::Commenter,
-        WorkspaceRole::Editor => tilo_workspace_join::MemberRole::Editor,
-        WorkspaceRole::Moderator => tilo_workspace_join::MemberRole::Moderator,
-    }
 }
 
 /// An id of this test's own, distinct from every other it makes: what a request is remembered by.

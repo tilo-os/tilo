@@ -131,86 +131,91 @@ fn an_idle_connected_window_asks_for_no_pass() {
     drop(imap);
 }
 
-#[test]
-fn a_connected_window_asks_for_the_pages_its_server_still_holds() {
-    let (mut app, imap, _kept) = connected_window();
-    let account = app
-        .with_surface(|mail: &mut super::MailApp| {
-            mail.shared.borrow().accounts.active_config().email
-        })
-        .unwrap();
-    // What the server says once the window knows of pages behind the one
-    // it holds. Asking that same pass what it owes consumes the want, so
-    // the answer and the questions it was made of are read together.
-    let asked = app
-        .with_surface(|mail: &mut super::MailApp| {
-            mail.older_pending.clear();
-            mail.has_older
-                .insert((account.clone(), crate::model::Folder::Inbox), true);
-            mail.shared.borrow().wants_older.set(true);
-            let wanted = mail.older_pages_wanted().len();
-            (
-                wanted,
-                mail.needs_idle_sync(),
-                mail.state().engine.is_some(),
-            )
-        })
-        .unwrap();
-    assert_eq!(
-        asked,
-        (1, true, true),
-        "the page before is still to be asked for"
-    );
-    drop(imap);
-}
+tilo_test_env::scenario! {
+    /// What a connected window asks its server for, each case against a server of its own.
+    fn a_connected_window_pages_what_is_left_and_goes_idle_after_a_refusal;
 
-#[test]
-fn a_refused_account_save_is_said_once_and_the_window_goes_idle() {
-    let (mut app, imap, kept) = connected_window();
-    std::fs::write(
-        accounts::vault_dir_in(kept.path()).join("vault.enc"),
-        b"damaged fixture vault",
-    )
-    .unwrap();
-    app.with_surface(|mail: &mut super::MailApp| {
-        mail.nav.dismiss_toast();
-        mail.persisted_active_account = None;
-    })
-    .unwrap();
-    app.settle();
-    let said = app
-        .with_surface(|mail: &mut super::MailApp| mail.nav.toast_text().map(str::to_owned))
-        .unwrap();
-    assert!(
-        said.as_deref()
-            .is_some_and(|text| text.contains("could not save that preference")),
-        "the refusal is said: {said:?}"
-    );
-    app.with_surface(|mail: &mut super::MailApp| mail.nav.dismiss_toast())
-        .unwrap();
-    let deadline = ui::testing::hang_deadline();
-    let mut quiet = 0;
-    while quiet < 50 {
-        assert!(
-            ui::time::now() < deadline,
-            "the window stops asking for frames once the refusal is said"
+    phase a_connected_window_asks_for_the_pages_its_server_still_holds;
+    {
+        let (mut app, imap, _kept) = connected_window();
+        let account = app
+            .with_surface(|mail: &mut super::MailApp| {
+                mail.shared.borrow().accounts.active_config().email
+            })
+            .unwrap();
+        // What the server says once the window knows of pages behind the one
+        // it holds. Asking that same pass what it owes consumes the want, so
+        // the answer and the questions it was made of are read together.
+        let asked = app
+            .with_surface(|mail: &mut super::MailApp| {
+                mail.older_pending.clear();
+                mail.has_older
+                    .insert((account.clone(), crate::model::Folder::Inbox), true);
+                mail.shared.borrow().wants_older.set(true);
+                let wanted = mail.older_pages_wanted().len();
+                (
+                    wanted,
+                    mail.needs_idle_sync(),
+                    mail.state().engine.is_some(),
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            asked,
+            (1, true, true),
+            "the page before is still to be asked for"
         );
-        if app.frame() {
-            quiet = 0;
-        } else {
-            quiet += 1;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        drop(imap);
     }
-    let (pass, notice) = app
-        .with_surface(|mail: &mut super::MailApp| {
-            (
-                mail.needs_idle_sync(),
-                mail.nav.toast_text().map(str::to_owned),
-            )
+
+    phase a_refused_account_save_is_said_once_and_the_window_goes_idle;
+    {
+        let (mut app, imap, kept) = connected_window();
+        std::fs::write(
+            accounts::vault_dir_in(kept.path()).join("vault.enc"),
+            b"damaged fixture vault",
+        )
+        .unwrap();
+        app.with_surface(|mail: &mut super::MailApp| {
+            mail.nav.dismiss_toast();
+            mail.persisted_active_account = None;
         })
         .unwrap();
-    assert!(!pass, "a said refusal asks for no pass");
-    assert_eq!(notice, None, "and is not put back up");
-    drop(imap);
+        app.settle();
+        let said = app
+            .with_surface(|mail: &mut super::MailApp| mail.nav.toast_text().map(str::to_owned))
+            .unwrap();
+        assert!(
+            said.as_deref()
+                .is_some_and(|text| text.contains("could not save that preference")),
+            "the refusal is said: {said:?}"
+        );
+        app.with_surface(|mail: &mut super::MailApp| mail.nav.dismiss_toast())
+            .unwrap();
+        let deadline = ui::testing::hang_deadline();
+        let mut quiet = 0;
+        while quiet < 50 {
+            assert!(
+                ui::time::now() < deadline,
+                "the window stops asking for frames once the refusal is said"
+            );
+            if app.frame() {
+                quiet = 0;
+            } else {
+                quiet += 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let (pass, notice) = app
+            .with_surface(|mail: &mut super::MailApp| {
+                (
+                    mail.needs_idle_sync(),
+                    mail.nav.toast_text().map(str::to_owned),
+                )
+            })
+            .unwrap();
+        assert!(!pass, "a said refusal asks for no pass");
+        assert_eq!(notice, None, "and is not put back up");
+        drop(imap);
+    }
 }

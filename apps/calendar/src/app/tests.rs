@@ -52,7 +52,39 @@ fn place_row(harness: &ui::headless::FrameHarness, place: &str) -> Rect {
     })
 }
 
-pub(crate) fn document_of(calendar: &Calendar) -> AutoCommit {
+/// The demo calendar of one day and, once a fixture asks for it, the document that holds it.
+struct Demo {
+    today: NaiveDate,
+    calendar: Calendar,
+    document: std::cell::OnceCell<AutoCommit>,
+}
+
+thread_local! {
+    /// What the first demo app on this test's thread was seeded with. It is written once and
+    /// never changed: every app takes its own copy of the calendar and every fixture its own copy
+    /// of the document, so no phase of a test sees what another did to its own.
+    static DEMO: std::cell::OnceCell<Demo> = const { std::cell::OnceCell::new() };
+}
+
+/// The demo calendar [`CalendarApp::new_demo`] starts from. Replaying it into a document is most
+/// of what a demo fixture costs, so a test that mounts several demo apps seeds one calendar and
+/// replays it once ([`document_of`]). A day other than the first one asked for is seeded afresh.
+pub(crate) fn demo_calendar(today: NaiveDate) -> Calendar {
+    DEMO.with(|demo| {
+        let demo = demo.get_or_init(|| Demo {
+            today,
+            calendar: crate::model::seed_demo(today),
+            document: std::cell::OnceCell::new(),
+        });
+        if demo.today == today {
+            demo.calendar.clone()
+        } else {
+            crate::model::seed_demo(today)
+        }
+    })
+}
+
+fn replayed(calendar: &Calendar) -> AutoCommit {
     let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
     for invoke in crate::resource::sample_invocations(calendar) {
         replica.apply(invoke).expect("the sample applies");
@@ -60,8 +92,69 @@ pub(crate) fn document_of(calendar: &Calendar) -> AutoCommit {
     replica.doc().clone()
 }
 
+/// The document that holds `calendar`, as replaying its sample invocations writes it: a copy of
+/// the one replay of the demo calendar while `calendar` is still exactly that, and a replay of
+/// its own for any other calendar.
+pub(crate) fn document_of(calendar: &Calendar) -> AutoCommit {
+    DEMO.with(|demo| {
+        demo.get()
+            .filter(|demo| demo.calendar == *calendar)
+            .map(|demo| demo.document.get_or_init(|| replayed(calendar)).clone())
+    })
+    .unwrap_or_else(|| replayed(calendar))
+}
+
 pub(crate) fn demo_document(app: &CalendarApp) -> AutoCommit {
     document_of(&app.model)
+}
+
+/// The demo fixtures of one test start from one seed and share nothing they do afterwards.
+#[test]
+fn demo_fixtures_are_separate_copies_of_one_seed() {
+    let mut first = CalendarApp::new_demo();
+    let mut first_doc = demo_document(&first);
+    present(&mut first, &mut first_doc, &automerge::ROOT);
+    let id = first.model.events[0].id;
+    first.select_event(id);
+    first.apply_action(Action::DeleteEvent(id), &mut Edits::lend(&mut first_doc));
+    assert!(first.model.event(id).is_none(), "the first app deleted it");
+    assert!(crate::resource::read_doc(&first_doc).event(id).is_none());
+
+    let second = CalendarApp::new_demo();
+    let second_doc = demo_document(&second);
+    assert!(
+        second.model.event(id).is_some(),
+        "a later app starts from the whole seed"
+    );
+    assert!(
+        crate::resource::read_doc(&second_doc).event(id).is_some(),
+        "and its document holds what the first app deleted from its own"
+    );
+    assert!(
+        crate::resource::read_doc(&document_of(&first.model))
+            .event(id)
+            .is_none(),
+        "a calendar that is no longer the seed is replayed as it is"
+    );
+    let tomorrow = second.today + Duration::days(1);
+    assert_ne!(
+        demo_calendar(tomorrow),
+        demo_calendar(second.today),
+        "another day is seeded on its own"
+    );
+    let standup = |calendar: &Calendar| {
+        calendar
+            .events
+            .iter()
+            .find(|event| event.title == "Team standup")
+            .map(|event| event.start.date())
+    };
+    assert_eq!(standup(&second.model), Some(second.today));
+    assert_eq!(
+        standup(&demo_calendar(tomorrow)),
+        Some(tomorrow),
+        "and its events are that day's, not the first day's"
+    );
 }
 
 fn waits_for_upload(doc: &AutoCommit, id: Id) -> bool {
@@ -97,218 +190,340 @@ fn present(app: &mut CalendarApp, doc: &mut AutoCommit, path: &ObjId) {
     app.sync(doc, path);
 }
 
-#[test]
-fn recurring_fold_import_materializes_next_wall_interval_on_the_timeline() {
-    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:timeline-fold@example.com\r\nSUMMARY:Weekly fold\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
-    replica
-        .apply(crate::resource::import(source).unwrap())
-        .unwrap();
-    let mut app = CalendarApp::new();
-    app.model = replica.state().unwrap();
-    let next = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-    let spans = app.timeline_spans(&[next]);
-    assert_eq!(spans.len(), 1);
-    assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
-    let days = [next];
-    let rendered = app.timeline_render_events(&days);
-    assert_eq!(rendered.len(), 1);
-    assert_eq!((rendered[0].start_min, rendered[0].end_min), (165, 230));
-}
+tilo_test_env::scenario! {
+    /// Events whose hours fall in the repeated hour of the autumn clock change.
+    fn events_through_the_autumn_fold_keep_their_wall_times_and_conflicts;
 
-#[test]
-fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
-    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:drag-fold@example.com\r\nSUMMARY:Fold drag\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
-    replica
-        .apply(crate::resource::import(source).unwrap())
-        .unwrap();
-    let mut app = CalendarApp::new_detached();
-    app.model = replica.state().unwrap();
-    let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
-    let id = app.model.events[0].id;
-    app.show_calendar();
-    app.view = View::Day;
-    app.anchor = day;
-    let mut h = Harness::mount(app, 1200, 1900);
-    h.relayout();
-    let spans = h.app.timeline_spans(&[day]);
-    assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
-    let days = [day];
-    let rendered = h.app.timeline_render_events(&days);
-    assert_eq!((rendered[0].start_min, rendered[0].end_min), (165, 230));
-    assert_eq!(
-        rendered[0].clock_end_min, 170,
-        "label retains 02:50, not 03:50"
-    );
-    let area = h.app.view_rect();
-    let g = h.app.timeline.test_layout_geometry(area);
-    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 230);
-    let from = Point::new(block.center().x, block.y0 + 3.0);
-    h.drag(from, Point::new(from.x, from.y - 0.25 * g.hour_h));
-    assert!(h.app.repeat_scope_menu.is_open());
-    h.press_named(NamedKey::Enter);
-    h.relayout();
-    let occurrence = |doc: &AutoCommit| {
-        let saved = crate::resource::read_doc(doc);
-        let event = saved.event(id).unwrap().clone();
-        let edit = event
-            .occurrence_overrides
-            .iter()
-            .find(|edit| edit.original_date == day)
-            .cloned()
-            .expect("the dragged occurrence is moved on its own");
-        (event, edit)
-    };
-    let (event, edit) = occurrence(h.doc());
-    assert_eq!(
-        edit.start,
-        Some(day.and_hms_opt(2, 30, 0).unwrap()),
-        "status={:?}, selection={:?}, dispatched={:?}",
-        h.app.status.text(),
-        h.app.selection,
-        h.app.last_dispatched()
-    );
-    assert_eq!(edit.end, Some(day.and_hms_opt(2, 35, 0).unwrap()));
-    assert!(edit.end_later_fold);
-    let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
-    assert_eq!(to_at - from_at, Duration::minutes(65));
-    assert_eq!(
-        event.start,
-        day.and_hms_opt(2, 45, 0).unwrap(),
-        "the series stays"
-    );
-    assert_eq!(event.timezone, "Europe/Berlin");
-    assert_eq!(event.recurrence, Recurrence::Weekly);
-    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 150, 215);
-    let from = Point::new(block.center().x, block.y0 + 3.0);
-    h.drag(from, Point::new(from.x, from.y + 2.0 * g.hour_h));
-    h.press_named(NamedKey::Enter);
-    h.relayout();
-    let (event, edit) = occurrence(h.doc());
-    assert_eq!(
-        edit.start,
-        Some(day.and_hms_opt(4, 30, 0).unwrap()),
-        "status={:?}, selection={:?}, dispatched={:?}, spans={:?}",
-        h.app.status.text(),
-        h.app.selection,
-        h.app.last_dispatched(),
-        h.app.timeline_spans(&[day])
-    );
-    assert_eq!(edit.end, Some(day.and_hms_opt(5, 35, 0).unwrap()));
-    assert!(!edit.end_later_fold);
-    let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
-    assert_eq!(to_at - from_at, Duration::minutes(65));
-    assert_eq!(event.timezone, "Europe/Berlin");
-    assert!(h.app.last_dispatched().is_some());
-}
-
-#[test]
-fn fold_conflicts_are_presented_after_opening_the_event() {
-    let source = concat!(
-        "BEGIN:VCALENDAR\r\n",
-        "BEGIN:VEVENT\r\nUID:fold-a@example.com\r\nSUMMARY:First fold meeting\r\n",
-        "DTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
-        "BEGIN:VEVENT\r\nUID:fold-b@example.com\r\nSUMMARY:Overlapping fold meeting\r\n",
-        "DTSTART;TZID=Europe/Berlin:20261018T025000\r\nDURATION:PT30M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n",
-        "BEGIN:VEVENT\r\nUID:fold-b@example.com\r\nSUMMARY:Overlapping fold meeting\r\n",
-        "RECURRENCE-ID;TZID=Europe/Berlin:20261025T025000\r\n",
-        "DTSTART;TZID=Europe/Berlin:20261025T025000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
-        "BEGIN:VEVENT\r\nUID:fold-c@example.com\r\nSUMMARY:Touching endpoint\r\n",
-        "DTSTART:20261025T011500Z\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
-        "BEGIN:VEVENT\r\nUID:fold-d@example.com\r\nSUMMARY:Other timezone overlap\r\n",
-        "DTSTART:20261025T005500Z\r\nDURATION:PT10M\r\nEND:VEVENT\r\n",
-        "BEGIN:VEVENT\r\nUID:fold-e@example.com\r\nSUMMARY:Floating overlap\r\n",
-        "DTSTART:20261025T025000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
-        "BEGIN:VEVENT\r\nUID:fold-f@example.com\r\nSUMMARY:All day overlap\r\n",
-        "DTSTART;VALUE=DATE:20261025\r\nDTEND;VALUE=DATE:20261026\r\nEND:VEVENT\r\n",
-        "END:VCALENDAR\r\n",
-    );
-    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
-    replica
-        .apply(crate::resource::import(source).unwrap())
-        .unwrap();
-    let mut app = CalendarApp::new();
-    app.model = replica.state().unwrap();
-    let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
-    let id = app
-        .model
-        .events
-        .iter()
-        .find(|e| e.title == "First fold meeting")
-        .unwrap()
-        .id;
-    app.show_calendar();
-    app.view = View::Day;
-    app.anchor = day;
-    let mut h = Harness::mount(app, 1200, 1900);
-    h.relayout();
-    let area = h.app.view_rect();
-    let g = h.app.timeline.test_layout_geometry(area);
-    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 195);
-    let lane = h
-        .app
-        .timeline_spans(&[day])
-        .into_iter()
-        .find(|span| span.id == id)
-        .unwrap()
-        .lane;
-    let lane_w = block.width() / lane.of as f64;
-    let x = block.x0 + lane_w * (lane.index as f64 + 0.5);
-    h.click(Point::new(x, block.y0 + 1.0));
-    h.mouse_button(ElementState::Released);
-    h.relayout();
-    assert_eq!(h.app.selection, Some(Sel::Event(id)));
-    assert!(h.app.detail_open);
-    assert!(h.app.form.conflict.area() > 0.0);
-    let semantics = h.app.accessibility().unwrap();
-    let warning = semantics
-        .children
-        .iter()
-        .filter_map(|node| node.name.as_deref())
-        .find(|name| name.starts_with("Schedule conflict:"))
-        .unwrap();
-    for title in [
-        "Overlapping fold meeting",
-        "Other timezone overlap",
-        "All day overlap",
-    ] {
-        assert!(warning.contains(title), "missing {title}: {warning}");
+    phase recurring_fold_import_materializes_next_wall_interval_on_the_timeline;
+    {
+        let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:timeline-fold@example.com\r\nSUMMARY:Weekly fold\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+        replica
+            .apply(crate::resource::import(source).unwrap())
+            .unwrap();
+        let mut app = CalendarApp::new();
+        app.model = replica.state().unwrap();
+        let next = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let spans = app.timeline_spans(&[next]);
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
+        let days = [next];
+        let rendered = app.timeline_render_events(&days);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!((rendered[0].start_min, rendered[0].end_min), (165, 230));
     }
-    assert!(!warning.contains("Floating overlap"));
-    assert!(!warning.contains("Touching endpoint"));
+
+    phase fold_timeline_drag_preserves_elapsed_duration_and_authored_zone;
+    {
+        let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:drag-fold@example.com\r\nSUMMARY:Fold drag\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+        replica
+            .apply(crate::resource::import(source).unwrap())
+            .unwrap();
+        let mut app = CalendarApp::new_detached();
+        app.model = replica.state().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let id = app.model.events[0].id;
+        app.show_calendar();
+        app.view = View::Day;
+        app.anchor = day;
+        let mut h = Harness::mount(app, 1200, 1900);
+        h.relayout();
+        let spans = h.app.timeline_spans(&[day]);
+        assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
+        let days = [day];
+        let rendered = h.app.timeline_render_events(&days);
+        assert_eq!((rendered[0].start_min, rendered[0].end_min), (165, 230));
+        assert_eq!(
+            rendered[0].clock_end_min, 170,
+            "label retains 02:50, not 03:50"
+        );
+        let area = h.app.view_rect();
+        let g = h.app.timeline.test_layout_geometry(area);
+        let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 230);
+        let from = Point::new(block.center().x, block.y0 + 3.0);
+        h.drag(from, Point::new(from.x, from.y - 0.25 * g.hour_h));
+        assert!(h.app.repeat_scope_menu.is_open());
+        h.press_named(NamedKey::Enter);
+        h.relayout();
+        let occurrence = |doc: &AutoCommit| {
+            let saved = crate::resource::read_doc(doc);
+            let event = saved.event(id).unwrap().clone();
+            let edit = event
+                .occurrence_overrides
+                .iter()
+                .find(|edit| edit.original_date == day)
+                .cloned()
+                .expect("the dragged occurrence is moved on its own");
+            (event, edit)
+        };
+        let (event, edit) = occurrence(h.doc());
+        assert_eq!(
+            edit.start,
+            Some(day.and_hms_opt(2, 30, 0).unwrap()),
+            "status={:?}, selection={:?}, dispatched={:?}",
+            h.app.status.text(),
+            h.app.selection,
+            h.app.last_dispatched()
+        );
+        assert_eq!(edit.end, Some(day.and_hms_opt(2, 35, 0).unwrap()));
+        assert!(edit.end_later_fold);
+        let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
+        assert_eq!(to_at - from_at, Duration::minutes(65));
+        assert_eq!(
+            event.start,
+            day.and_hms_opt(2, 45, 0).unwrap(),
+            "the series stays"
+        );
+        assert_eq!(event.timezone, "Europe/Berlin");
+        assert_eq!(event.recurrence, Recurrence::Weekly);
+        let block = h.app.timeline.test_block_rect(area, 1, g, 0, 150, 215);
+        let from = Point::new(block.center().x, block.y0 + 3.0);
+        h.drag(from, Point::new(from.x, from.y + 2.0 * g.hour_h));
+        h.press_named(NamedKey::Enter);
+        h.relayout();
+        let (event, edit) = occurrence(h.doc());
+        assert_eq!(
+            edit.start,
+            Some(day.and_hms_opt(4, 30, 0).unwrap()),
+            "status={:?}, selection={:?}, dispatched={:?}, spans={:?}",
+            h.app.status.text(),
+            h.app.selection,
+            h.app.last_dispatched(),
+            h.app.timeline_spans(&[day])
+        );
+        assert_eq!(edit.end, Some(day.and_hms_opt(5, 35, 0).unwrap()));
+        assert!(!edit.end_later_fold);
+        let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
+        assert_eq!(to_at - from_at, Duration::minutes(65));
+        assert_eq!(event.timezone, "Europe/Berlin");
+        assert!(h.app.last_dispatched().is_some());
+    }
+
+    phase fold_conflicts_are_presented_after_opening_the_event;
+    {
+        let source = concat!(
+            "BEGIN:VCALENDAR\r\n",
+            "BEGIN:VEVENT\r\nUID:fold-a@example.com\r\nSUMMARY:First fold meeting\r\n",
+            "DTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+            "BEGIN:VEVENT\r\nUID:fold-b@example.com\r\nSUMMARY:Overlapping fold meeting\r\n",
+            "DTSTART;TZID=Europe/Berlin:20261018T025000\r\nDURATION:PT30M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n",
+            "BEGIN:VEVENT\r\nUID:fold-b@example.com\r\nSUMMARY:Overlapping fold meeting\r\n",
+            "RECURRENCE-ID;TZID=Europe/Berlin:20261025T025000\r\n",
+            "DTSTART;TZID=Europe/Berlin:20261025T025000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+            "BEGIN:VEVENT\r\nUID:fold-c@example.com\r\nSUMMARY:Touching endpoint\r\n",
+            "DTSTART:20261025T011500Z\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+            "BEGIN:VEVENT\r\nUID:fold-d@example.com\r\nSUMMARY:Other timezone overlap\r\n",
+            "DTSTART:20261025T005500Z\r\nDURATION:PT10M\r\nEND:VEVENT\r\n",
+            "BEGIN:VEVENT\r\nUID:fold-e@example.com\r\nSUMMARY:Floating overlap\r\n",
+            "DTSTART:20261025T025000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+            "BEGIN:VEVENT\r\nUID:fold-f@example.com\r\nSUMMARY:All day overlap\r\n",
+            "DTSTART;VALUE=DATE:20261025\r\nDTEND;VALUE=DATE:20261026\r\nEND:VEVENT\r\n",
+            "END:VCALENDAR\r\n",
+        );
+        let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+        replica
+            .apply(crate::resource::import(source).unwrap())
+            .unwrap();
+        let mut app = CalendarApp::new();
+        app.model = replica.state().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let id = app
+            .model
+            .events
+            .iter()
+            .find(|e| e.title == "First fold meeting")
+            .unwrap()
+            .id;
+        app.show_calendar();
+        app.view = View::Day;
+        app.anchor = day;
+        let mut h = Harness::mount(app, 1200, 1900);
+        h.relayout();
+        let area = h.app.view_rect();
+        let g = h.app.timeline.test_layout_geometry(area);
+        let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 195);
+        let lane = h
+            .app
+            .timeline_spans(&[day])
+            .into_iter()
+            .find(|span| span.id == id)
+            .unwrap()
+            .lane;
+        let lane_w = block.width() / lane.of as f64;
+        let x = block.x0 + lane_w * (lane.index as f64 + 0.5);
+        h.click(Point::new(x, block.y0 + 1.0));
+        h.mouse_button(ElementState::Released);
+        h.relayout();
+        assert_eq!(h.app.selection, Some(Sel::Event(id)));
+        assert!(h.app.detail_open);
+        assert!(h.app.form.conflict.area() > 0.0);
+        let semantics = h.app.accessibility().unwrap();
+        let warning = semantics
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .find(|name| name.starts_with("Schedule conflict:"))
+            .unwrap();
+        for title in [
+            "Overlapping fold meeting",
+            "Other timezone overlap",
+            "All day overlap",
+        ] {
+            assert!(warning.contains(title), "missing {title}: {warning}");
+        }
+        assert!(!warning.contains("Floating overlap"));
+        assert!(!warning.contains("Touching endpoint"));
+    }
 }
 
-#[test]
-fn readonly_sync_observes_pending_actions_without_committing_document() {
-    let mut app = CalendarApp::new_demo();
-    let mut doc = demo_document(&app);
-    doc.commit();
-    app.sync(&doc, &ROOT);
-    let id = app.model.tasks.iter().find(|task| !task.done).unwrap().id;
-    apply_to(
-        &mut doc,
-        Calendar::paths()
-            .tasks
-            .item(&crate::model::key(id))
-            .done
-            .set(true),
-    );
-    let before = (doc.base_heads(), doc.pending_ops());
-    assert!(before.1 > 0, "the incoming action is still uncommitted");
-    assert!(!app.model.task(id).unwrap().done);
+tilo_test_env::scenario! {
+    /// Where the app takes its state from: the document, the restart and the account store.
+    fn the_calendar_starts_persists_and_syncs_from_its_document_and_accounts;
 
-    app.sync(&doc, &ROOT);
+    phase readonly_sync_observes_pending_actions_without_committing_document;
+    {
+        let mut app = CalendarApp::new_demo();
+        let mut doc = demo_document(&app);
+        doc.commit();
+        app.sync(&doc, &ROOT);
+        let id = app.model.tasks.iter().find(|task| !task.done).unwrap().id;
+        apply_to(
+            &mut doc,
+            Calendar::paths()
+                .tasks
+                .item(&crate::model::key(id))
+                .done
+                .set(true),
+        );
+        let before = (doc.base_heads(), doc.pending_ops());
+        assert!(before.1 > 0, "the incoming action is still uncommitted");
+        assert!(!app.model.task(id).unwrap().done);
 
-    assert!(
-        app.model.task(id).unwrap().done,
-        "the pending task edit is visible"
-    );
-    assert_eq!(
-        (doc.base_heads(), doc.pending_ops()),
-        before,
-        "reading a frame preserves the document's pending edit"
-    );
+        app.sync(&doc, &ROOT);
+
+        assert!(
+            app.model.task(id).unwrap().done,
+            "the pending task edit is visible"
+        );
+        assert_eq!(
+            (doc.base_heads(), doc.pending_ops()),
+            before,
+            "reading a frame preserves the document's pending edit"
+        );
+    }
+
+    phase startup_is_empty_live_with_onboarding_and_seeded_only_for_demo;
+    {
+        {
+            let app = CalendarApp::new_demo();
+            assert!(!app.model.events.is_empty());
+            assert!(!app.model.tasks.is_empty());
+            assert!(app.selection.is_some());
+            assert!(app.detail_open);
+        }
+        {
+            let mut app = CalendarApp::new_detached();
+            let mut state = AutoCommit::new();
+            present(&mut app, &mut state, &automerge::ROOT);
+            assert!(app.model.events.is_empty(), "no fabricated events");
+            assert!(app.model.tasks.is_empty(), "no fabricated tasks");
+            assert!(app.accounts.is_empty(), "no fabricated accounts");
+            assert!(app.selection.is_none());
+            assert!(!app.detail_open);
+        }
+        {
+            let mut app = CalendarApp::new_detached();
+            let mut state = AutoCommit::new();
+            present(&mut app, &mut state, &automerge::ROOT);
+            assert!(app.model.events.is_empty(), "precondition: no events");
+            let (title, hint) = app
+                .empty_onboarding_prompt()
+                .expect("empty calendar shows the onboarding prompt");
+            assert_eq!(title, EMPTY_ONBOARDING_TITLE);
+            assert!(
+                !hint.trim().is_empty(),
+                "hint guides the user to add an event"
+            );
+
+            let demo = CalendarApp::new_demo();
+            assert!(!demo.model.events.is_empty());
+            assert!(
+                demo.empty_onboarding_prompt().is_none(),
+                "a populated calendar hides the onboarding prompt",
+            );
+        }
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            let root = automerge::ROOT;
+            present(&mut app, &mut state, &root);
+            assert!(app.seeded);
+            assert!(app.bound.is_some());
+            assert!(!crate::resource::read_doc(&state).events.is_empty());
+        }
+        {
+            let app = CalendarApp::new_demo();
+            assert!(!app.accounts.is_empty());
+            assert!(app.accounts.all_calendars().count() > 0);
+        }
+    }
+
+    phase user_edits_and_source_identity_persist_across_restart;
+    {
+        {
+            let mut app =
+                ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+            app.harness().key("n");
+            let id = app.state().events.first().expect("n creates an event").id;
+            app.harness().type_text("Roadmap");
+            let app = app.reopen().unwrap();
+            assert_eq!(
+                app.state().event(id).expect("the event survived").title,
+                "Roadmap"
+            );
+        }
+        {
+            let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
+            let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
+                .unwrap()
+                .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+            let ev = Event {
+                id: Uuid::new_v4(),
+                title: "Tagged".into(),
+                start,
+                end: start + Duration::hours(1),
+                color: Palette::Red,
+                calendar_id: Some("work/oncall".into()),
+                ..Event::default()
+            };
+            apply_to(
+                &mut doc,
+                Calendar::NEW_EVENT.with(crate::resource::calendar::NewEvent {
+                    event: crate::actions::EventData::from_event(&ev),
+                }),
+            );
+            let back = crate::resource::read_doc(&doc);
+            assert_eq!(back.events[0].calendar_id.as_deref(), Some("work/oncall"));
+        }
+    }
+
+    phase calendar_options_come_from_the_shared_account_store;
+    {
+        {
+            let h = Harness::new(1280, 800);
+            let opts = h.app.calendar_options();
+            assert!(matches!(opts.first(), Some((CalTarget::Local, _))));
+            for (_, cal) in h.app.accounts.all_calendars() {
+                assert!(
+                    opts.iter()
+                        .any(|(t, _)| matches!(t, CalTarget::Remote(id) if id == &cal.id)),
+                    "configured calendar {} is offered",
+                    cal.id
+                );
+            }
+        }
+    }
 }
 
 impl CalendarApp {
@@ -348,101 +563,127 @@ fn published_resource(
     Calendar::child(&crate::resource::read_doc(doc), id)
 }
 
-#[test]
-fn task_completion_toggles_by_checkbox_and_label() {
+tilo_test_env::scenario! {
+    /// A task row: its checkbox, its label and the row on the Tasks screen.
+    fn tasks_toggle_and_open_from_their_rows;
+
+    phase task_completion_toggles_by_checkbox_and_label;
     {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        present(&mut app, &mut state, &automerge::ROOT);
-        let id = app.model.tasks.iter().find(|t| !t.done).unwrap().id;
-        let before = app.model.task(id).unwrap().done;
-        app.apply_action(Action::ToggleTask(id), &mut Edits::lend(&mut state));
-        assert_ne!(app.model.task(id).unwrap().done, before);
-    }
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        present(&mut app, &mut state, &automerge::ROOT);
-        app.list_sel = Some(ListSel::Today);
-        app.show_shell();
-        let (sections, _) = app.places.shown().expect("the places are shown");
-        let tasks = sections
-            .iter()
-            .find(|section| section.id == "tasks")
-            .expect("the chosen list's tasks are a section");
-        assert!(!tasks.items.is_empty(), "today has tasks");
-        assert!(
-            tasks
-                .items
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            present(&mut app, &mut state, &automerge::ROOT);
+            let id = app.model.tasks.iter().find(|t| !t.done).unwrap().id;
+            let before = app.model.task(id).unwrap().done;
+            app.apply_action(Action::ToggleTask(id), &mut Edits::lend(&mut state));
+            assert_ne!(app.model.task(id).unwrap().done, before);
+        }
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            present(&mut app, &mut state, &automerge::ROOT);
+            app.list_sel = Some(ListSel::Today);
+            app.show_shell();
+            let (sections, _) = app.places.shown().expect("the places are shown");
+            let tasks = sections
                 .iter()
-                .all(|item| item.checked.is_some() && item.actions),
-            "each task row completes its task and offers Open"
-        );
+                .find(|section| section.id == "tasks")
+                .expect("the chosen list's tasks are a section");
+            assert!(!tasks.items.is_empty(), "today has tasks");
+            assert!(
+                tasks
+                    .items
+                    .iter()
+                    .all(|item| item.checked.is_some() && item.actions),
+                "each task row completes its task and offers Open"
+            );
+        }
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            present(&mut app, &mut state, &automerge::ROOT);
+            let id = app.model.tasks.iter().find(|t| !t.done).unwrap().id;
+            let before = app.model.task(id).unwrap().done;
+            app.apply_action(Action::ToggleTask(id), &mut Edits::lend(&mut state));
+            assert_ne!(app.model.task(id).unwrap().done, before);
+        }
     }
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        present(&mut app, &mut state, &automerge::ROOT);
-        let id = app.model.tasks.iter().find(|t| !t.done).unwrap().id;
-        let before = app.model.task(id).unwrap().done;
-        app.apply_action(Action::ToggleTask(id), &mut Edits::lend(&mut state));
-        assert_ne!(app.model.task(id).unwrap().done, before);
-    }
-}
 
-#[test]
-fn startup_is_empty_live_with_onboarding_and_seeded_only_for_demo() {
+    phase tasks_screen_rows_toggle_like_the_rail_and_open_like_the_agenda;
     {
-        let app = CalendarApp::new_demo();
-        assert!(!app.model.events.is_empty());
-        assert!(!app.model.tasks.is_empty());
-        assert!(app.selection.is_some());
-        assert!(app.detail_open);
-    }
-    {
-        let mut app = CalendarApp::new_detached();
-        let mut state = AutoCommit::new();
-        present(&mut app, &mut state, &automerge::ROOT);
-        assert!(app.model.events.is_empty(), "no fabricated events");
-        assert!(app.model.tasks.is_empty(), "no fabricated tasks");
-        assert!(app.accounts.is_empty(), "no fabricated accounts");
-        assert!(app.selection.is_none());
-        assert!(!app.detail_open);
-    }
-    {
-        let mut app = CalendarApp::new_detached();
-        let mut state = AutoCommit::new();
-        present(&mut app, &mut state, &automerge::ROOT);
-        assert!(app.model.events.is_empty(), "precondition: no events");
-        let (title, hint) = app
-            .empty_onboarding_prompt()
-            .expect("empty calendar shows the onboarding prompt");
-        assert_eq!(title, EMPTY_ONBOARDING_TITLE);
+        let mut h = Harness::new(1280, 800);
+        h.app.show_calendar();
+        let personal = h
+            .app
+            .model
+            .projects
+            .iter()
+            .find(|project| project.name == "Personal")
+            .expect("sample project")
+            .id;
+        h.app.list_sel = Some(ListSel::Project(personal));
+        h.app.view = View::Tasks;
+        h.relayout();
+
+        let flights = h
+            .app
+            .model
+            .tasks
+            .iter()
+            .find(|task| task.title == "Book flights for offsite")
+            .expect("sample task with subtasks")
+            .clone();
+        let toggle_of = |app: &CalendarApp, id: Id| {
+            app.hits
+                .iter()
+                .find(|(_, action)| matches!(action, Action::ToggleTask(t) if *t == id))
+                .map(|(rect, _)| *rect)
+        };
+        let open_of = |app: &CalendarApp, id: Id| {
+            app.hits
+                .iter()
+                .find(|(_, action)| matches!(action, Action::OpenTask(t) if *t == id))
+                .map(|(rect, _)| *rect)
+        };
+        let parent_toggle = toggle_of(&h.app, flights.id).expect("the row's checkbox");
+        let parent_open = open_of(&h.app, flights.id).expect("the row opens its task");
         assert!(
-            !hint.trim().is_empty(),
-            "hint guides the user to add an event"
+            h.app.tasks.list_rect().contains_rect(parent_open),
+            "the row sits in the Tasks screen, not the sidebar rail"
+        );
+        let sub = h.app.model.subtasks_of(flights.id)[0].id;
+        let sub_toggle = toggle_of(&h.app, sub).expect("the subtask's checkbox");
+        assert!(sub_toggle.x0 > parent_toggle.x0, "subtasks are indented");
+
+        let done = Calendar::paths()
+            .tasks
+            .item(&crate::model::key(flights.id))
+            .done;
+        let published = {
+            let doc = h.doc().clone();
+            published_root(&doc)
+        };
+        assert!(
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == ui::tilo_resource::FIELD_EDIT),
+            "the calendar publishes its field edits"
+        );
+        h.click(parent_toggle.center());
+        assert_eq!(h.app.model.task(flights.id).map(|t| t.done), Some(true));
+        let dispatched = h.app.last_dispatched().expect("the checkbox dispatched");
+        let edit = ui::tilo_resource::Invoke::from(done.set(true));
+        assert_eq!(
+            (dispatched.id, dispatched.arguments),
+            (edit.id, edit.arguments),
+            "the checkbox makes the published field edit the rail's ToggleTask makes"
         );
 
-        let demo = CalendarApp::new_demo();
-        assert!(!demo.model.events.is_empty());
-        assert!(
-            demo.empty_onboarding_prompt().is_none(),
-            "a populated calendar hides the onboarding prompt",
-        );
-    }
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        let root = automerge::ROOT;
-        present(&mut app, &mut state, &root);
-        assert!(app.seeded);
-        assert!(app.bound.is_some());
-        assert!(!crate::resource::read_doc(&state).events.is_empty());
-    }
-    {
-        let app = CalendarApp::new_demo();
-        assert!(!app.accounts.is_empty());
-        assert!(app.accounts.all_calendars().count() > 0);
+        h.relayout();
+        let open = open_of(&h.app, flights.id).expect("the row opens its task");
+        h.click(Point::new(open.x1 - 4.0, open.center().y));
+        assert_eq!(h.app.selected_task(), Some(flights.id));
     }
 }
 
@@ -542,280 +783,483 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
     }
 }
 
-#[test]
-fn titles_elide_to_fit_and_week_ranges_keep_both_endpoints() {
-    {
-        let s = crate::date::week_range_short(
-            NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
-            NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
-        );
-        assert!(s.contains("Jun 29"), "start kept: {s}");
-        assert!(s.contains("Jul 5"), "end kept: {s}");
-    }
-    {
-        let mut tr = TextRenderer::new();
-        let full = "Team standup with the whole design org";
-        let roomy = f64::from(tr.measure(full, 11.0, None).0) + 10.0;
-        assert_eq!(
-            tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(roomy)),
-            full
-        );
-        let tight = 60.0;
-        let cut = tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(tight));
-        assert!(cut.ends_with('…'), "ellipsized: {cut:?}");
-        assert!(cut.chars().count() < full.chars().count());
-        assert!(
-            f64::from(tr.measure(&cut, 11.0, None).0) <= tight,
-            "the ellipsized line fits the budget: {cut:?}"
-        );
-    }
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        present(&mut app, &mut state, &automerge::ROOT);
-        app.view = View::Week;
-        app.detail_open = false;
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.relayout();
+tilo_test_env::scenario! {
+    /// Titles, ranges and the event form at the widths and text sizes a person has.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn text_fits_its_place_at_every_size;
 
-        let _theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let area = app.view_rect();
-        let days = crate::date::week_days(app.anchor);
-        let col_w = (area.width() - 56.0) / days.len() as f64;
-        let block_text_w = col_w - 6.0 - 20.0; // 3px block inset each side, 10+... pad
-        let long = app
-            .model
-            .events
-            .iter()
-            .filter(|e| !e.all_day)
-            .map(|e| e.title.clone())
-            .find(|tit| f64::from(tr.measure(tit, 11.0, None).0) > block_text_w)
-            .expect("demo has a title too long for a narrow week column");
-        let drawn = tr.elide_to_width(&long, 11.0, ui::num::f32_of_f64(block_text_w));
-        assert!(
-            drawn.ends_with('…'),
-            "narrow week title ellipsized: {drawn:?}"
-        );
-        assert_ne!(drawn, long);
-    }
-}
-
-#[test]
-fn user_edits_and_source_identity_persist_across_restart() {
+    phase titles_elide_to_fit_and_week_ranges_keep_both_endpoints;
     {
-        let mut app =
-            ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
-        app.harness().key("n");
-        let id = app.state().events.first().expect("n creates an event").id;
-        app.harness().type_text("Roadmap");
-        let app = app.reopen().unwrap();
-        assert_eq!(
-            app.state().event(id).expect("the event survived").title,
-            "Roadmap"
-        );
-    }
-    {
-        let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
-        let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
-            .unwrap()
-            .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
-        let ev = Event {
-            id: Uuid::new_v4(),
-            title: "Tagged".into(),
-            start,
-            end: start + Duration::hours(1),
-            color: Palette::Red,
-            calendar_id: Some("work/oncall".into()),
-            ..Event::default()
-        };
-        apply_to(
-            &mut doc,
-            Calendar::NEW_EVENT.with(crate::resource::calendar::NewEvent {
-                event: crate::actions::EventData::from_event(&ev),
-            }),
-        );
-        let back = crate::resource::read_doc(&doc);
-        assert_eq!(back.events[0].calendar_id.as_deref(), Some("work/oncall"));
-    }
-}
-
-#[test]
-fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
-    {
-        let id = Uuid::new_v4();
-        let payload = format!(
-            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:{id}@tilo\r\nSUMMARY:Durable imported task\r\nDUE;VALUE=DATE:20260916\r\nPRIORITY:1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
-        );
-        let mut app = CalendarApp::new_detached();
-        let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
-        present(&mut app, &mut doc, &automerge::ROOT);
-
-        let (_, tasks) =
-            crate::actions::import_payload(&payload).expect("the task is new on the first import");
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].id, id.to_string(), "the VTODO UID is retained");
-
-        let first = crate::resource::import(&payload).expect("an import");
-        app.submit(&mut Edits::lend(&mut doc), first);
-        app.model = crate::resource::read_doc(&doc);
-        assert!(
-            app.model.task(id).is_some(),
-            "the exact UID became the task id"
-        );
-        let again = crate::resource::import(&payload).expect("the file still holds it");
-        app.submit(&mut Edits::lend(&mut doc), again);
-        assert_eq!(
-            crate::resource::read_doc(&doc).tasks.len(),
-            1,
-            "re-importing the same VTODO does not duplicate it"
-        );
-    }
-    {
-        let payload = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:batch-event\r\nSUMMARY:Valid batch event\r\nDTSTART:20260919T090000\r\nDTEND:20260919T100000\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:batch-task\r\nSUMMARY:Valid batch task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        for invalid in ["event", "task", "project"] {
-            let mut app = CalendarApp::new_detached();
-            let mut state = ui::State::new();
-            state.doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
-            present(&mut app, &mut state.doc, &state.root);
-            let (mut events, mut tasks) =
-                crate::actions::import_payload(payload).expect("mixed import fixture");
-            assert_eq!(events.len(), 1);
-            assert_eq!(tasks.len(), 1);
-            match invalid {
-                "event" => events[0].end = "not-a-date".into(),
-                "task" => tasks[0].due = "not-a-date".into(),
-                "project" => tasks[0].project = Uuid::new_v4().to_string(),
-                _ => unreachable!(),
-            }
-            let batch = Calendar::IMPORT_ITEMS
-                .with(crate::resource::calendar::ImportItems { events, tasks });
-            state.doc.commit();
-            let before = state.doc.get_heads();
-            let mut replica = ui::tilo_resource::Replica::<Calendar>::from_doc(state.doc.clone());
-            assert!(replica.apply(batch.clone()).is_err());
-            assert_eq!(replica.heads(), before);
-
-            assert!(
-                app.try_submit(&mut Edits::lend(&mut state.doc), batch)
-                    .is_err()
+        {
+            let s = crate::date::week_range_short(
+                NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
             );
-            assert_eq!(state.doc.get_heads(), before);
-            assert!(crate::resource::read_doc(&state.doc).events.is_empty());
-            assert!(crate::resource::read_doc(&state.doc).tasks.is_empty());
+            assert!(s.contains("Jun 29"), "start kept: {s}");
+            assert!(s.contains("Jul 5"), "end kept: {s}");
+        }
+        {
+            let mut tr = TextRenderer::new();
+            let full = "Team standup with the whole design org";
+            let roomy = f64::from(tr.measure(full, 11.0, None).0) + 10.0;
+            assert_eq!(
+                tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(roomy)),
+                full
+            );
+            let tight = 60.0;
+            let cut = tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(tight));
+            assert!(cut.ends_with('…'), "ellipsized: {cut:?}");
+            assert!(cut.chars().count() < full.chars().count());
+            assert!(
+                f64::from(tr.measure(&cut, 11.0, None).0) <= tight,
+                "the ellipsized line fits the budget: {cut:?}"
+            );
+        }
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            present(&mut app, &mut state, &automerge::ROOT);
+            app.view = View::Week;
+            app.detail_open = false;
+            app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+            app.relayout();
+
+            let _theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let area = app.view_rect();
+            let days = crate::date::week_days(app.anchor);
+            let col_w = (area.width() - 56.0) / days.len() as f64;
+            let block_text_w = col_w - 6.0 - 20.0; // 3px block inset each side, 10+... pad
+            let long = app
+                .model
+                .events
+                .iter()
+                .filter(|e| !e.all_day)
+                .map(|e| e.title.clone())
+                .find(|tit| f64::from(tr.measure(tit, 11.0, None).0) > block_text_w)
+                .expect("demo has a title too long for a narrow week column");
+            let drawn = tr.elide_to_width(&long, 11.0, ui::num::f32_of_f64(block_text_w));
+            assert!(
+                drawn.ends_with('…'),
+                "narrow week title ellipsized: {drawn:?}"
+            );
+            assert_ne!(drawn, long);
+        }
+    }
+
+    phase large_text_layouts_stay_in_bounds;
+    {
+        {
+            for (width, text_scale) in [(880.0, 1.0), (880.0, 2.0), (390.0, 2.0)] {
+                let mut app = CalendarApp::new_demo();
+                let Some(Sel::Event(selected)) = app.selection else {
+                    panic!("demo opens an event editor");
+                };
+                let edited = app.model.event(selected).expect("selected event").clone();
+                let mut overlapping = edited.clone();
+                overlapping.id = Id::new_v4();
+                overlapping.title = "Design review follow-up".into();
+                overlapping.start = edited.start + chrono::Duration::minutes(15);
+                overlapping.end = edited.end + chrono::Duration::minutes(30);
+                overlapping.recurrence = Recurrence::Weekly;
+                app.model.events.push(overlapping);
+                laid_out(&mut app, width, 844.0, text_scale);
+
+                assert!(
+                    app.form.conflict.area() > 0.0,
+                    "{width}px / {text_scale}× retains warning"
+                );
+                assert!(
+                    app.form.conflict.y1 <= app.form.location.y0,
+                    "warning reserves its own lane before location at {width}px / {text_scale}×"
+                );
+                for control in event_controls(&app.form) {
+                    assert!(
+                        app.form.conflict.intersect(control).area() <= 0.0,
+                        "conflict warning overlaps form target {control:?} at {width}px / {text_scale}×"
+                    );
+                }
+
+                let semantics = app.accessibility().expect("calendar semantic tree");
+                let warning = semantics
+                    .children
+                    .iter()
+                    .filter_map(|node| node.name.as_deref())
+                    .find(|name| name.starts_with("Schedule conflict:"))
+                    .expect("full conflict names reach assistive technology");
+                assert!(warning.contains("Design review follow-up"));
+            }
+        }
+        {
+            for (width, height) in [(1200.0, 900.0), (390.0, 844.0)] {
+                let mut app = CalendarApp::new_demo();
+                app.detail_open = true;
+                laid_out(&mut app, width, height, 2.0);
+                let modal = app.modal.clone().expect("the editor sheet is laid out");
+                assert!(
+                    app.rect.contains_rect(modal.card),
+                    "the sheet fits the window"
+                );
+                let controls = event_controls(&app.form);
+                for (index, rect) in controls.iter().enumerate() {
+                    assert!(
+                        rect.x0 >= modal.body.x0 - 0.5 && rect.x1 <= modal.body.x1 + 0.5,
+                        "form control {index} escaped the sheet's body at {width}px: {rect:?}"
+                    );
+                    for other in controls.iter().skip(index + 1) {
+                        assert!(
+                            rect.intersect(*other).area() <= 0.0,
+                            "form controls overlap: {rect:?} and {other:?}"
+                        );
+                    }
+                }
+                assert!(
+                    app.form.notes_label.y0 >= app.form.invite.y1,
+                    "the notes start below the last form row"
+                );
+                assert!(
+                    app.detail_scroll_max > 0.0,
+                    "a 2× form taller than the window scrolls inside the sheet"
+                );
+            }
+        }
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            app.stage_scenario(Some("new_event"));
+            present(&mut app, &mut state, &ROOT);
+            laid_out(&mut app, 1200.0, 900.0, 2.0);
+
+            assert!(app.detail_open);
+            assert!(app.rect.contains_rect(app.detail_rect));
+            assert!(
+                !app.status.is_shown(),
+                "creating an event does not raise a toast"
+            );
+        }
+        {
+            let mut app = CalendarApp::new_demo();
+            app.shots_show_calendar();
+            let theme = Theme::dark().with_text_scale(2.0);
+            laid_out(&mut app, 1280.0, 800.0, 2.0);
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            let area = app.view_rect();
+            let hits = app.draw_month(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                area,
+            );
+            let cells: Vec<Rect> = hits
+                .iter()
+                .filter(|(_, a)| matches!(a, Action::PickDate(_)))
+                .map(|(r, _)| *r)
+                .collect();
+            let strips: Vec<Rect> = hits
+                .iter()
+                .filter(|(r, a)| matches!(a, Action::OpenDay(_)) && cells.iter().any(|c| c.y0 == r.y0))
+                .map(|(r, _)| *r)
+                .collect();
+            let chips: Vec<Rect> = hits
+                .iter()
+                .filter(|(_, a)| matches!(a, Action::OpenEvent(_)))
+                .map(|(r, _)| *r)
+                .collect();
+            assert!(!chips.is_empty());
+            for chip in chips {
+                let cell = cells
+                    .iter()
+                    .find(|cell| cell.contains(chip.center()))
+                    .expect("every chip sits in a cell");
+                assert!(
+                    chip.x0 >= cell.x0 && chip.x1 <= cell.x1,
+                    "{chip:?} in {cell:?}"
+                );
+                let strip = strips
+                    .iter()
+                    .find(|strip| strip.x0 == cell.x0 && strip.y0 == cell.y0)
+                    .expect("each cell has its day-number strip");
+                assert!(
+                    chip.y0 >= strip.y1 - 0.5,
+                    "the chip starts below the day number at 2×"
+                );
+            }
+        }
+        {
+            for text_scale in [1.0, 2.0] {
+                let mut app = CalendarApp::new_demo();
+                let Some(Sel::Event(selected)) = app.selection else {
+                    panic!("demo opens an event editor");
+                };
+                let event = app.model.event(selected).expect("selected event").clone();
+                laid_out(&mut app, 1280.0, 800.0, text_scale);
+                let theme = app.layout_theme.clone();
+                let mut text = TextRenderer::new();
+                for (rect, label) in [
+                    (app.form.start_time, crate::date::fmt_time(&event.start)),
+                    (app.form.end_time, crate::date::fmt_time(&event.end)),
+                ] {
+                    let needed = ui::widget::ButtonFace::new(Rect::ZERO, &label)
+                        .intrinsic_width(&mut text, &theme);
+                    assert!(
+                        rect.width() + 0.5 >= needed,
+                        "{label:?} at {text_scale}x needs {needed} but its button is {}",
+                        rect.width()
+                    );
+                }
+            }
         }
     }
 }
 
-#[test]
-fn a_chosen_ics_file_imports_as_one_undo_step_and_exports_again() {
-    let dir = tempfile::tempdir().expect("temporary directory");
-    let invite = dir.path().join("invite.ics");
-    let today = chrono::Local::now().date_naive();
-    std::fs::write(&invite, crate::ics::sample_ics(today)).expect("write fixture");
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
+tilo_test_env::scenario! {
+    /// An iCalendar file through the app: in as one step, out as a file.
+    fn ics_files_import_as_one_batch_and_export_again;
 
-    let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
-    let imported = |app: &ui::framework::testing::TestApp<crate::resource::CalendarShell>| {
-        app.state()
-            .events
-            .iter()
-            .filter(|event| event.title == "Quarterly all-hands")
-            .count()
-    };
-    assert_eq!(imported(&app), 0, "nothing is read before the import");
-    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(invite));
-    app.effect(&crate::resource::CalendarEffect::ImportIcs)
-        .expect("the import runs");
-    app.settle();
-    assert_eq!(imported(&app), 1, "the chosen file's events were imported");
+    phase ics_imports_are_idempotent_atomic_and_commit_one_batch;
+    {
+        {
+            let id = Uuid::new_v4();
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:{id}@tilo\r\nSUMMARY:Durable imported task\r\nDUE;VALUE=DATE:20260916\r\nPRIORITY:1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+            );
+            let mut app = CalendarApp::new_detached();
+            let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
+            present(&mut app, &mut doc, &automerge::ROOT);
 
-    let exported = dir.path().join("exported.ics");
-    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(exported.clone()));
-    app.effect(&crate::resource::CalendarEffect::ExportIcs)
-        .expect("the export runs");
-    let body = std::fs::read_to_string(&exported).expect("export wrote the chosen file");
-    assert!(body.starts_with("BEGIN:VCALENDAR"), "a real iCalendar file");
-    assert!(body.contains("Quarterly all-hands"), "carrying the events");
-    assert_eq!(
-        recorder
-            .pick_requests()
-            .iter()
-            .map(|request| request.title().to_owned())
-            .collect::<Vec<_>>(),
-        ["Import a calendar", "Export calendar"]
-    );
+            let (_, tasks) =
+                crate::actions::import_payload(&payload).expect("the task is new on the first import");
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0].id, id.to_string(), "the VTODO UID is retained");
 
-    assert!(app.undo(), "the import is one undo step");
-    assert_eq!(imported(&app), 0);
+            let first = crate::resource::import(&payload).expect("an import");
+            app.submit(&mut Edits::lend(&mut doc), first);
+            app.model = crate::resource::read_doc(&doc);
+            assert!(
+                app.model.task(id).is_some(),
+                "the exact UID became the task id"
+            );
+            let again = crate::resource::import(&payload).expect("the file still holds it");
+            app.submit(&mut Edits::lend(&mut doc), again);
+            assert_eq!(
+                crate::resource::read_doc(&doc).tasks.len(),
+                1,
+                "re-importing the same VTODO does not duplicate it"
+            );
+        }
+        {
+            let payload = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:batch-event\r\nSUMMARY:Valid batch event\r\nDTSTART:20260919T090000\r\nDTEND:20260919T100000\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:batch-task\r\nSUMMARY:Valid batch task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+            for invalid in ["event", "task", "project"] {
+                let mut app = CalendarApp::new_detached();
+                let mut state = ui::State::new();
+                state.doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
+                present(&mut app, &mut state.doc, &state.root);
+                let (mut events, mut tasks) =
+                    crate::actions::import_payload(payload).expect("mixed import fixture");
+                assert_eq!(events.len(), 1);
+                assert_eq!(tasks.len(), 1);
+                match invalid {
+                    "event" => events[0].end = "not-a-date".into(),
+                    "task" => tasks[0].due = "not-a-date".into(),
+                    "project" => tasks[0].project = Uuid::new_v4().to_string(),
+                    _ => unreachable!(),
+                }
+                let batch = Calendar::IMPORT_ITEMS
+                    .with(crate::resource::calendar::ImportItems { events, tasks });
+                state.doc.commit();
+                let before = state.doc.get_heads();
+                let mut replica = ui::tilo_resource::Replica::<Calendar>::from_doc(state.doc.clone());
+                assert!(replica.apply(batch.clone()).is_err());
+                assert_eq!(replica.heads(), before);
+
+                assert!(
+                    app.try_submit(&mut Edits::lend(&mut state.doc), batch)
+                        .is_err()
+                );
+                assert_eq!(state.doc.get_heads(), before);
+                assert!(crate::resource::read_doc(&state.doc).events.is_empty());
+                assert!(crate::resource::read_doc(&state.doc).tasks.is_empty());
+            }
+        }
+    }
+
+    phase a_chosen_ics_file_imports_as_one_undo_step_and_exports_again;
+    {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let invite = dir.path().join("invite.ics");
+        let today = chrono::Local::now().date_naive();
+        std::fs::write(&invite, crate::ics::sample_ics(today)).expect("write fixture");
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+
+        let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+        let imported = |app: &ui::framework::testing::TestApp<crate::resource::CalendarShell>| {
+            app.state()
+                .events
+                .iter()
+                .filter(|event| event.title == "Quarterly all-hands")
+                .count()
+        };
+        assert_eq!(imported(&app), 0, "nothing is read before the import");
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(invite));
+        app.effect(&crate::resource::CalendarEffect::ImportIcs)
+            .expect("the import runs");
+        app.settle();
+        assert_eq!(imported(&app), 1, "the chosen file's events were imported");
+
+        let exported = dir.path().join("exported.ics");
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(exported.clone()));
+        app.effect(&crate::resource::CalendarEffect::ExportIcs)
+            .expect("the export runs");
+        let body = std::fs::read_to_string(&exported).expect("export wrote the chosen file");
+        assert!(body.starts_with("BEGIN:VCALENDAR"), "a real iCalendar file");
+        assert!(body.contains("Quarterly all-hands"), "carrying the events");
+        assert_eq!(
+            recorder
+                .pick_requests()
+                .iter()
+                .map(|request| request.title().to_owned())
+                .collect::<Vec<_>>(),
+            ["Import a calendar", "Export calendar"]
+        );
+
+        assert!(app.undo(), "the import is one undo step");
+        assert_eq!(imported(&app), 0);
+    }
 }
 
-#[test]
-fn view_and_anchor_navigation_update_shared_state() {
+tilo_test_env::scenario! {
+    /// Navigation: the view, the period and the place, from where the window offers them.
+    fn views_periods_and_places_are_chosen_from_the_bar_the_sidebar_and_the_drawer;
+
+    phase view_and_anchor_navigation_update_shared_state;
     {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        app.apply_action(Action::View(View::Week), &mut Edits::lend(&mut state));
-        assert_eq!(app.view, View::Week);
-        app.apply_action(Action::View(View::Agenda), &mut Edits::lend(&mut state));
-        assert_eq!(app.view, View::Agenda);
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            app.apply_action(Action::View(View::Week), &mut Edits::lend(&mut state));
+            assert_eq!(app.view, View::Week);
+            app.apply_action(Action::View(View::Agenda), &mut Edits::lend(&mut state));
+            assert_eq!(app.view, View::Agenda);
+        }
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            let m0 = app.anchor.month();
+            app.apply_action(Action::Next, &mut Edits::lend(&mut state));
+            assert_ne!(app.anchor.month(), m0);
+        }
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut state = demo_document(&app);
+            present(&mut app, &mut state, &automerge::ROOT);
+            let mut harness = sidebar_harness(&app, (1280, 1200));
+            let before = app.anchor;
+            let (day, rect) = find::<DatePicker>(harness.root_widget())
+                .expect("the month stands at the sidebar's foot")
+                .hit_regions_external()
+                .into_iter()
+                .find_map(|(hit, rect)| match hit {
+                    ExternalDatePickerHit::Date(day) if day != before => Some((day, rect)),
+                    _ => None,
+                })
+                .expect("another day in the month");
+            harness.click_at(rect.center().x, rect.center().y);
+            app.take_shell_events(&mut Edits::lend(&mut state));
+            assert_eq!(app.anchor, day, "the chosen day is the calendar's anchor");
+            assert_eq!(
+                app.month.shown().map(|shown| shown.selected),
+                Some(day),
+                "and the month shows it chosen"
+            );
+        }
+        {
+            let mut h = Harness::new(1280, 800);
+            h.app.show_calendar();
+            h.relayout();
+            assert_eq!(h.app.view, View::Month);
+            h.press_bar_action(&View::Week.display_label());
+            assert_eq!(
+                h.app.view,
+                View::Week,
+                "choosing Week in the bar switched the view"
+            );
+            let views = ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.views)
+                .expect("the bar's switcher");
+            let chosen = views
+                .choices
+                .iter()
+                .find(|choice| choice.id == views.chosen)
+                .map(|choice| choice.label.clone());
+            assert_eq!(
+                chosen,
+                Some(View::Week.display_label()),
+                "the bar's switcher shows Week chosen"
+            );
+        }
     }
+
+    phase the_drawer_goes_away_by_a_press_beside_it_escape_or_a_chosen_place;
     {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        let m0 = app.anchor.month();
-        app.apply_action(Action::Next, &mut Edits::lend(&mut state));
-        assert_ne!(app.anchor.month(), m0);
+        let mut window = shell_window((480, 800));
+        {
+            let drawer = open_drawer(&mut window);
+            window.harness().click_at(drawer.x1 + 40.0, 400.0);
+            window.settle();
+            assert!(
+                !shell_layout(&mut window).1,
+                "a press beside it puts it away"
+            );
+        }
+        {
+            open_drawer(&mut window);
+            window.harness().key("Escape");
+            window.settle();
+            assert!(!shell_layout(&mut window).1, "Escape puts it away");
+        }
+        {
+            open_drawer(&mut window);
+            let row = place_row(window.harness(), "list:today");
+            window.harness().click_at(row.center().x, row.center().y);
+            window.settle();
+            assert!(
+                window.surface_mut::<CalendarApp>().list_sel.is_some(),
+                "the chosen place is shown"
+            );
+            assert!(
+                !shell_layout(&mut window).1,
+                "choosing a place puts it away"
+            );
+        }
     }
+
+    phase the_view_switcher_and_period_controls_are_the_window_bars_alone;
     {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        present(&mut app, &mut state, &automerge::ROOT);
-        let mut harness = sidebar_harness(&app, (1280, 1200));
-        let before = app.anchor;
-        let (day, rect) = find::<DatePicker>(harness.root_widget())
-            .expect("the month stands at the sidebar's foot")
-            .hit_regions_external()
-            .into_iter()
-            .find_map(|(hit, rect)| match hit {
-                ExternalDatePickerHit::Date(day) if day != before => Some((day, rect)),
-                _ => None,
-            })
-            .expect("another day in the month");
-        harness.click_at(rect.center().x, rect.center().y);
-        app.take_shell_events(&mut Edits::lend(&mut state));
-        assert_eq!(app.anchor, day, "the chosen day is the calendar's anchor");
-        assert_eq!(
-            app.month.shown().map(|shown| shown.selected),
-            Some(day),
-            "and the month shows it chosen"
-        );
-    }
-    {
-        let mut h = Harness::new(1280, 800);
-        h.app.show_calendar();
-        h.relayout();
-        assert_eq!(h.app.view, View::Month);
-        h.press_bar_action(&View::Week.display_label());
-        assert_eq!(
-            h.app.view,
-            View::Week,
-            "choosing Week in the bar switched the view"
-        );
-        let views = ui::window_toolbar::declared()
-            .and_then(|toolbar| toolbar.views)
-            .expect("the bar's switcher");
-        let chosen = views
-            .choices
-            .iter()
-            .find(|choice| choice.id == views.chosen)
-            .map(|choice| choice.label.clone());
-        assert_eq!(
-            chosen,
-            Some(View::Week.display_label()),
-            "the bar's switcher shows Week chosen"
-        );
+        for (width, height) in [(1280, 800), (460, 720)] {
+            let mut h = Harness::new(width, height);
+            h.app.shots_show_calendar();
+            h.relayout();
+            assert!(
+                !h.app.hits.iter().any(|(_, a)| matches!(
+                    a,
+                    Action::View(_) | Action::Prev | Action::Next | Action::Today | Action::NewEvent
+                )),
+                "no toolbar of the calendar's own at {width}x{height}"
+            );
+            assert!(
+                (h.app.view_rect().y0 - h.app.rect.y0).abs() < 0.5,
+                "the view starts at the top at {width}x{height}"
+            );
+            h.press_bar_action("Week");
+            assert_eq!(
+                h.app.view,
+                View::Week,
+                "the bar chooses the view at {width}x{height}"
+            );
+        }
     }
 }
 
@@ -1030,31 +1474,127 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
     }
 }
 
-#[test]
-fn the_palettes_new_event_starts_what_the_button_does() {
-    let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
-    let before = app.state().events.len();
-    app.effect(&crate::resource::CalendarEffect::StartEvent)
-        .expect("the palette's New event runs");
-    app.settle();
-    let events = app.state().events;
-    assert_eq!(events.len(), before + 1, "one more event");
-    let started = events.last().expect("the event it started");
-    assert!(
-        started.title.is_empty(),
-        "a fresh event's title is the form's placeholder: {:?}",
-        started.title
-    );
-    assert_eq!(
-        started.end - started.start,
-        chrono::Duration::hours(1),
-        "it takes an hour, as the button's does"
-    );
-    assert_eq!(
-        started.start.minute() % 15,
-        0,
-        "it starts at a quarter hour, as the button's does"
-    );
+tilo_test_env::scenario! {
+    /// New events from the palette and the one-line card, and the card that lists the keys.
+    fn the_one_line_add_and_the_keys_card_write_an_event_or_nothing;
+
+    phase the_palettes_new_event_starts_what_the_button_does;
+    {
+        let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+        let before = app.state().events.len();
+        app.effect(&crate::resource::CalendarEffect::StartEvent)
+            .expect("the palette's New event runs");
+        app.settle();
+        let events = app.state().events;
+        assert_eq!(events.len(), before + 1, "one more event");
+        let started = events.last().expect("the event it started");
+        assert!(
+            started.title.is_empty(),
+            "a fresh event's title is the form's placeholder: {:?}",
+            started.title
+        );
+        assert_eq!(
+            started.end - started.start,
+            chrono::Duration::hours(1),
+            "it takes an hour, as the button's does"
+        );
+        assert_eq!(
+            started.start.minute() % 15,
+            0,
+            "it starts at a quarter hour, as the button's does"
+        );
+    }
+
+    phase one_line_becomes_the_event_it_names;
+    {
+        let mut h = pinned_afternoon();
+        h.type_char("N");
+        h.relayout();
+        assert!(h.app.quick_add.is_open(), "Shift+N opens the one-line add");
+        let card = h.app.quick_add.card();
+        assert!(
+            card.width() > 0.0 && card.height() > 0.0 && h.app.rect.contains(card.center()),
+            "the card is drawn inside the window: {card:?}"
+        );
+        type_words(&mut h, "Review the deck friday 1pm");
+        h.relayout();
+        let before = h.app.model.events.len();
+
+        h.press_named(winit::keyboard::NamedKey::Enter);
+        h.relayout();
+        assert!(!h.app.quick_add.is_open(), "the card goes once it is added");
+        assert_eq!(h.app.model.events.len(), before + 1, "one event is added");
+        let added = h
+            .app
+            .model
+            .events
+            .iter()
+            .find(|event| event.title == "Review the deck")
+            .expect("the words left after the day and time are the title");
+        assert_eq!(
+            added.start,
+            NaiveDate::from_ymd_opt(2026, 10, 30)
+                .unwrap_or_default()
+                .and_hms_opt(13, 0, 0)
+                .unwrap_or_default(),
+            "Friday at one in the afternoon"
+        );
+        assert_eq!(added.end - added.start, Duration::hours(1));
+    }
+
+    phase the_card_puts_away_without_writing_when_it_is_told_to;
+    {
+        let mut h = pinned_afternoon();
+        h.type_char("N");
+        type_words(&mut h, "Review the deck");
+        let before = h.app.model.events.len();
+        h.press_named(winit::keyboard::NamedKey::Escape);
+        h.relayout();
+        assert!(!h.app.quick_add.is_open());
+        assert_eq!(h.app.model.events.len(), before, "nothing is written");
+        h.type_char("m");
+        h.relayout();
+        assert_eq!(
+            h.app.view,
+            View::Month,
+            "the card swallowed nothing it did not own"
+        );
+    }
+
+    phase the_keys_this_window_answers_to_are_listed_and_put_away;
+    {
+        let mut h = pinned_afternoon();
+        h.type_char("?");
+        h.relayout();
+        assert!(h.app.shortcuts.is_open(), "? shows the keys");
+        let card = h.app.shortcuts.card();
+        assert!(
+            card.width() > 0.0 && card.height() > 0.0 && h.app.rect.contains(card.center()),
+            "the card is drawn inside the window: {card:?}"
+        );
+        assert!(
+            ui::spell_shortcut("N") == "N" && ui::spell_shortcut("{shift:N}").contains('N'),
+            "the sheet lists real chords"
+        );
+        h.press_named(winit::keyboard::NamedKey::Escape);
+        h.relayout();
+        assert!(!h.app.shortcuts.is_open(), "Escape puts the sheet away");
+        assert_eq!(h.app.view, View::Month, "and it did not act on the view");
+    }
+
+    phase a_new_event_starts_at_the_next_quarter_hour_not_at_noon;
+    {
+        let mut h = pinned_afternoon();
+        h.type_char("n");
+        h.relayout();
+        let draft = h.app.fresh_draft.clone().expect("a new event is opened");
+        assert_eq!(
+            draft.start.time(),
+            chrono::NaiveTime::from_hms_opt(14, 15, 0).unwrap_or_default(),
+            "the next quarter hour after 14:07"
+        );
+        assert_eq!(draft.end - draft.start, Duration::hours(1));
+    }
 }
 
 fn laid_out(app: &mut CalendarApp, width: f64, height: f64, scale: f32) {
@@ -1084,173 +1624,6 @@ fn event_controls(form: &FormRects) -> Vec<Rect> {
     .into_iter()
     .filter(|rect| rect.area() > 0.0)
     .collect()
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn large_text_layouts_stay_in_bounds() {
-    {
-        for (width, text_scale) in [(880.0, 1.0), (880.0, 2.0), (390.0, 2.0)] {
-            let mut app = CalendarApp::new_demo();
-            let Some(Sel::Event(selected)) = app.selection else {
-                panic!("demo opens an event editor");
-            };
-            let edited = app.model.event(selected).expect("selected event").clone();
-            let mut overlapping = edited.clone();
-            overlapping.id = Id::new_v4();
-            overlapping.title = "Design review follow-up".into();
-            overlapping.start = edited.start + chrono::Duration::minutes(15);
-            overlapping.end = edited.end + chrono::Duration::minutes(30);
-            overlapping.recurrence = Recurrence::Weekly;
-            app.model.events.push(overlapping);
-            laid_out(&mut app, width, 844.0, text_scale);
-
-            assert!(
-                app.form.conflict.area() > 0.0,
-                "{width}px / {text_scale}× retains warning"
-            );
-            assert!(
-                app.form.conflict.y1 <= app.form.location.y0,
-                "warning reserves its own lane before location at {width}px / {text_scale}×"
-            );
-            for control in event_controls(&app.form) {
-                assert!(
-                    app.form.conflict.intersect(control).area() <= 0.0,
-                    "conflict warning overlaps form target {control:?} at {width}px / {text_scale}×"
-                );
-            }
-
-            let semantics = app.accessibility().expect("calendar semantic tree");
-            let warning = semantics
-                .children
-                .iter()
-                .filter_map(|node| node.name.as_deref())
-                .find(|name| name.starts_with("Schedule conflict:"))
-                .expect("full conflict names reach assistive technology");
-            assert!(warning.contains("Design review follow-up"));
-        }
-    }
-    {
-        for (width, height) in [(1200.0, 900.0), (390.0, 844.0)] {
-            let mut app = CalendarApp::new_demo();
-            app.detail_open = true;
-            laid_out(&mut app, width, height, 2.0);
-            let modal = app.modal.clone().expect("the editor sheet is laid out");
-            assert!(
-                app.rect.contains_rect(modal.card),
-                "the sheet fits the window"
-            );
-            let controls = event_controls(&app.form);
-            for (index, rect) in controls.iter().enumerate() {
-                assert!(
-                    rect.x0 >= modal.body.x0 - 0.5 && rect.x1 <= modal.body.x1 + 0.5,
-                    "form control {index} escaped the sheet's body at {width}px: {rect:?}"
-                );
-                for other in controls.iter().skip(index + 1) {
-                    assert!(
-                        rect.intersect(*other).area() <= 0.0,
-                        "form controls overlap: {rect:?} and {other:?}"
-                    );
-                }
-            }
-            assert!(
-                app.form.notes_label.y0 >= app.form.invite.y1,
-                "the notes start below the last form row"
-            );
-            assert!(
-                app.detail_scroll_max > 0.0,
-                "a 2× form taller than the window scrolls inside the sheet"
-            );
-        }
-    }
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        app.stage_scenario(Some("new_event"));
-        present(&mut app, &mut state, &ROOT);
-        laid_out(&mut app, 1200.0, 900.0, 2.0);
-
-        assert!(app.detail_open);
-        assert!(app.rect.contains_rect(app.detail_rect));
-        assert!(
-            !app.status.is_shown(),
-            "creating an event does not raise a toast"
-        );
-    }
-    {
-        let mut app = CalendarApp::new_demo();
-        app.shots_show_calendar();
-        let theme = Theme::dark().with_text_scale(2.0);
-        laid_out(&mut app, 1280.0, 800.0, 2.0);
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        let area = app.view_rect();
-        let hits = app.draw_month(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            area,
-        );
-        let cells: Vec<Rect> = hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::PickDate(_)))
-            .map(|(r, _)| *r)
-            .collect();
-        let strips: Vec<Rect> = hits
-            .iter()
-            .filter(|(r, a)| matches!(a, Action::OpenDay(_)) && cells.iter().any(|c| c.y0 == r.y0))
-            .map(|(r, _)| *r)
-            .collect();
-        let chips: Vec<Rect> = hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::OpenEvent(_)))
-            .map(|(r, _)| *r)
-            .collect();
-        assert!(!chips.is_empty());
-        for chip in chips {
-            let cell = cells
-                .iter()
-                .find(|cell| cell.contains(chip.center()))
-                .expect("every chip sits in a cell");
-            assert!(
-                chip.x0 >= cell.x0 && chip.x1 <= cell.x1,
-                "{chip:?} in {cell:?}"
-            );
-            let strip = strips
-                .iter()
-                .find(|strip| strip.x0 == cell.x0 && strip.y0 == cell.y0)
-                .expect("each cell has its day-number strip");
-            assert!(
-                chip.y0 >= strip.y1 - 0.5,
-                "the chip starts below the day number at 2×"
-            );
-        }
-    }
-    {
-        for text_scale in [1.0, 2.0] {
-            let mut app = CalendarApp::new_demo();
-            let Some(Sel::Event(selected)) = app.selection else {
-                panic!("demo opens an event editor");
-            };
-            let event = app.model.event(selected).expect("selected event").clone();
-            laid_out(&mut app, 1280.0, 800.0, text_scale);
-            let theme = app.layout_theme.clone();
-            let mut text = TextRenderer::new();
-            for (rect, label) in [
-                (app.form.start_time, crate::date::fmt_time(&event.start)),
-                (app.form.end_time, crate::date::fmt_time(&event.end)),
-            ] {
-                let needed = ui::widget::ButtonFace::new(Rect::ZERO, &label)
-                    .intrinsic_width(&mut text, &theme);
-                assert!(
-                    rect.width() + 0.5 >= needed,
-                    "{label:?} at {text_scale}x needs {needed} but its button is {}",
-                    rect.width()
-                );
-            }
-        }
-    }
 }
 
 #[test]
@@ -1492,95 +1865,144 @@ fn open_drawer(
     sidebar
 }
 
-#[test]
-fn the_drawer_goes_away_by_a_press_beside_it_escape_or_a_chosen_place() {
-    let mut window = shell_window((480, 800));
-    {
-        let drawer = open_drawer(&mut window);
-        window.harness().click_at(drawer.x1 + 40.0, 400.0);
-        window.settle();
-        assert!(
-            !shell_layout(&mut window).1,
-            "a press beside it puts it away"
-        );
-    }
-    {
-        open_drawer(&mut window);
-        window.harness().key("Escape");
-        window.settle();
-        assert!(!shell_layout(&mut window).1, "Escape puts it away");
-    }
-    {
-        open_drawer(&mut window);
-        let row = place_row(window.harness(), "list:today");
-        window.harness().click_at(row.center().x, row.center().y);
-        window.settle();
-        assert!(
-            window.surface_mut::<CalendarApp>().list_sel.is_some(),
-            "the chosen place is shown"
-        );
-        assert!(
-            !shell_layout(&mut window).1,
-            "choosing a place puts it away"
-        );
-    }
-}
+tilo_test_env::scenario! {
+    /// The event sheet: where it stands, how it goes away and what its alert menu writes.
+    fn the_event_sheet_floats_dismisses_and_offers_its_alerts;
 
-#[test]
-fn the_editor_sheet_floats_over_the_calendar_at_every_width() {
+    phase the_editor_sheet_floats_over_the_calendar_at_every_width;
+    {
+        {
+            let mut app = CalendarApp::new_demo();
+            app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+            app.detail_open = true;
+            app.relayout();
+            assert!(app.detail_rect.area() > 0.0);
+            assert!(app.rect.contains_rect(app.detail_rect));
+            assert!(app.content_rect.area() > 0.0, "the calendar stays laid out");
+
+            let mut state = demo_document(&app);
+            app.apply_action(Action::CloseDetail, &mut Edits::lend(&mut state));
+            app.relayout();
+            assert_eq!(app.detail_rect.area(), 0.0);
+            assert!(app.modal.is_none());
+        }
+        {
+            let mut h = Harness::new(1280, 800);
+            h.app.show_calendar();
+            h.relayout();
+            let (rect, id) = h
+                .app
+                .hits
+                .iter()
+                .find_map(|(r, a)| match a {
+                    Action::OpenEvent(id) => Some((*r, *id)),
+                    _ => None,
+                })
+                .expect("at least one event chip");
+            h.click(rect.center());
+            h.mouse_button(ElementState::Released);
+            h.relayout();
+            assert_eq!(h.app.selection, Some(Sel::Event(id)));
+            assert!(h.app.detail_open);
+        }
+        {
+            let h = Harness::new(1280, 800);
+            assert!(h.app.detail_open, "the demo opens an event");
+            let closes: Vec<Rect> = h
+                .app
+                .hits
+                .iter()
+                .filter(|(_, a)| matches!(a, Action::CloseDetail))
+                .map(|(r, _)| *r)
+                .collect();
+            assert!(
+                closes
+                    .iter()
+                    .any(|r| r.area() < 8000.0 && h.app.detail_rect.contains_rect(*r)),
+                "a Done button in the sheet's footer"
+            );
+            assert!(
+                closes.iter().any(|r| *r == h.app.rect),
+                "a scrim over the whole window behind the sheet"
+            );
+        }
+    }
+
+    phase done_dismisses_the_mobile_editor_of_an_event_with_a_conflict;
+    {
+        for (width, height) in [(360, 800), (800, 360)] {
+            let mut app = CalendarApp::new_demo();
+            let open = app.selected_event().expect("the sample event is open");
+            let start = app.model.event(open).unwrap().start + Duration::minutes(30);
+            app.model
+                .events
+                .push(crate::resource::event_at("Overlapping", start));
+            let mut h = Harness::mount(app, width, height);
+            h.resize(width, height);
+            assert!(h.app.form.conflict.area() > 0.0, "the conflict is shown");
+            let done = h
+                .app
+                .modal
+                .clone()
+                .and_then(|modal| modal.actions.first().copied())
+                .expect("Done is retained");
+            h.click(done.center());
+            assert!(
+                !h.app.detail_open,
+                "Done dismisses the editor at {width}x{height}"
+            );
+        }
+    }
+
+    phase every_offered_alert_reaches_the_document;
     {
         let mut app = CalendarApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
-        app.detail_open = true;
-        app.relayout();
-        assert!(app.detail_rect.area() > 0.0);
-        assert!(app.rect.contains_rect(app.detail_rect));
-        assert!(app.content_rect.area() > 0.0, "the calendar stays laid out");
-
         let mut state = demo_document(&app);
-        app.apply_action(Action::CloseDetail, &mut Edits::lend(&mut state));
-        app.relayout();
-        assert_eq!(app.detail_rect.area(), 0.0);
-        assert!(app.modal.is_none());
+        present(&mut app, &mut state, &automerge::ROOT);
+        let Some(Sel::Event(id)) = app.selection else {
+            panic!("event selected");
+        };
+        for minutes in crate::model::REMINDERS {
+            pick(
+                &mut app,
+                &mut state,
+                |choices| &mut choices.alert,
+                &minutes.to_string(),
+            );
+            assert_eq!(
+                crate::resource::read_doc(&state)
+                    .event(id)
+                    .unwrap()
+                    .reminder_min,
+                Some(minutes),
+                "the {minutes}-minute alert is kept"
+            );
+        }
     }
+
+    phase escape_dismisses_the_event_sheet_even_with_a_field_focused;
     {
         let mut h = Harness::new(1280, 800);
-        h.app.show_calendar();
+        let (app, doc) = h.parts();
+        app.apply_action(Action::CloseDetail, &mut Edits::lend(doc));
+        app.apply_action(Action::NewEvent, &mut Edits::lend(doc));
         h.relayout();
-        let (rect, id) = h
-            .app
-            .hits
-            .iter()
-            .find_map(|(r, a)| match a {
-                Action::OpenEvent(id) => Some((*r, *id)),
-                _ => None,
-            })
-            .expect("at least one event chip");
-        h.click(rect.center());
-        h.mouse_button(ElementState::Released);
-        h.relayout();
-        assert_eq!(h.app.selection, Some(Sel::Event(id)));
-        assert!(h.app.detail_open);
-    }
-    {
-        let h = Harness::new(1280, 800);
-        assert!(h.app.detail_open, "the demo opens an event");
-        let closes: Vec<Rect> = h
-            .app
-            .hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::CloseDetail))
-            .map(|(r, _)| *r)
-            .collect();
+        assert!(h.app.detail_open, "a new event opens its sheet");
         assert!(
-            closes
-                .iter()
-                .any(|r| r.area() < 8000.0 && h.app.detail_rect.contains_rect(*r)),
-            "a Done button in the sheet's footer"
+            h.app.title_input.is_focused(),
+            "the sheet starts in its title"
         );
+        let before = h.app.model.events.len();
+
+        h.press_named(winit::keyboard::NamedKey::Escape);
         assert!(
-            closes.iter().any(|r| *r == h.app.rect),
-            "a scrim over the whole window behind the sheet"
+            !h.app.detail_open,
+            "Escape closes the sheet rather than only leaving the field"
+        );
+        assert_eq!(
+            h.app.model.events.len(),
+            before - 1,
+            "the untouched draft went with the sheet"
         );
     }
 }
@@ -1619,58 +2041,6 @@ fn mobile_event_editor_is_a_full_window_page_with_a_reachable_done_action() {
                 "the actual footer action dismisses the mobile editor"
             );
         }
-    }
-}
-
-#[test]
-fn done_dismisses_the_mobile_editor_of_an_event_with_a_conflict() {
-    for (width, height) in [(360, 800), (800, 360)] {
-        let mut app = CalendarApp::new_demo();
-        let open = app.selected_event().expect("the sample event is open");
-        let start = app.model.event(open).unwrap().start + Duration::minutes(30);
-        app.model
-            .events
-            .push(crate::resource::event_at("Overlapping", start));
-        let mut h = Harness::mount(app, width, height);
-        h.resize(width, height);
-        assert!(h.app.form.conflict.area() > 0.0, "the conflict is shown");
-        let done = h
-            .app
-            .modal
-            .clone()
-            .and_then(|modal| modal.actions.first().copied())
-            .expect("Done is retained");
-        h.click(done.center());
-        assert!(
-            !h.app.detail_open,
-            "Done dismisses the editor at {width}x{height}"
-        );
-    }
-}
-
-#[test]
-fn the_view_switcher_and_period_controls_are_the_window_bars_alone() {
-    for (width, height) in [(1280, 800), (460, 720)] {
-        let mut h = Harness::new(width, height);
-        h.app.shots_show_calendar();
-        h.relayout();
-        assert!(
-            !h.app.hits.iter().any(|(_, a)| matches!(
-                a,
-                Action::View(_) | Action::Prev | Action::Next | Action::Today | Action::NewEvent
-            )),
-            "no toolbar of the calendar's own at {width}x{height}"
-        );
-        assert!(
-            (h.app.view_rect().y0 - h.app.rect.y0).abs() < 0.5,
-            "the view starts at the top at {width}x{height}"
-        );
-        h.press_bar_action("Week");
-        assert_eq!(
-            h.app.view,
-            View::Week,
-            "the bar chooses the view at {width}x{height}"
-        );
     }
 }
 
@@ -1744,23 +2114,6 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
         app.set_event_calendar(&CalTarget::Local, &mut Edits::lend(doc));
         assert!(h.app.model.event(id).unwrap().calendar_id.is_none());
         assert!(!waits_for_upload(h.doc(), id));
-    }
-}
-
-#[test]
-fn calendar_options_come_from_the_shared_account_store() {
-    {
-        let h = Harness::new(1280, 800);
-        let opts = h.app.calendar_options();
-        assert!(matches!(opts.first(), Some((CalTarget::Local, _))));
-        for (_, cal) in h.app.accounts.all_calendars() {
-            assert!(
-                opts.iter()
-                    .any(|(t, _)| matches!(t, CalTarget::Remote(id) if id == &cal.id)),
-                "configured calendar {} is offered",
-                cal.id
-            );
-        }
     }
 }
 
@@ -2168,187 +2521,384 @@ impl Harness {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
+tilo_test_env::scenario! {
+    /// Pointer gestures on the calendar itself.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn drags_and_swipes_on_the_calendar_move_events_and_periods;
+
+    phase week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule;
     {
-        let sidebar = Theme::dark().tokens.metrics.sidebar_width;
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a sidebar width in whole logical pixels"
-        )]
-        let width = 1000 - sidebar as u32;
-        let mut h = Harness::new(width, 560);
-        h.app.show_calendar();
-        h.app.view = View::Week;
-        h.relayout();
+        {
+            let sidebar = Theme::dark().tokens.metrics.sidebar_width;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a sidebar width in whole logical pixels"
+            )]
+            let width = 1000 - sidebar as u32;
+            let mut h = Harness::new(width, 560);
+            h.app.show_calendar();
+            h.app.view = View::Week;
+            h.relayout();
 
-        let g = h.app.timeline.test_layout_geometry(h.app.view_rect());
-        let theme = &h.app.layout_theme;
-        let minimum = ui::text_render::with_layout_renderer(theme, |text| {
-            let title = theme.text(ui::tokens::TextRole::Caption).strong();
-            ui::widget::TimelineDensity::Narrow
-                .min_hour_height(theme, f64::from(text.measure_style("Ag", None, &title).1))
-        });
-        assert!(
-            (g.hour_h - minimum).abs() < 0.001,
-            "a short window pins the hour height to the legible minimum, got {}",
-            g.hour_h
-        );
-        assert!(
-            (g.content_h - 24.0 * minimum).abs() < 0.001,
-            "the grid content spans the full 24 hours, got {}",
-            g.content_h
-        );
-        assert!(
-            h.app.timeline.vertical_overflows(),
-            "the full day is taller than the viewport, so it scrolls"
-        );
-        let vp = (g.body_bottom - g.body_top) as f32;
-        assert!(
-            g.content_h as f32 - vp > 0.0,
-            "there is real scroll range (00:00 … 24:00 both reachable)"
-        );
+            let g = h.app.timeline.test_layout_geometry(h.app.view_rect());
+            let theme = &h.app.layout_theme;
+            let minimum = ui::text_render::with_layout_renderer(theme, |text| {
+                let title = theme.text(ui::tokens::TextRole::Caption).strong();
+                ui::widget::TimelineDensity::Narrow
+                    .min_hour_height(theme, f64::from(text.measure_style("Ag", None, &title).1))
+            });
+            assert!(
+                (g.hour_h - minimum).abs() < 0.001,
+                "a short window pins the hour height to the legible minimum, got {}",
+                g.hour_h
+            );
+            assert!(
+                (g.content_h - 24.0 * minimum).abs() < 0.001,
+                "the grid content spans the full 24 hours, got {}",
+                g.content_h
+            );
+            assert!(
+                h.app.timeline.vertical_overflows(),
+                "the full day is taller than the viewport, so it scrolls"
+            );
+            let vp = (g.body_bottom - g.body_top) as f32;
+            assert!(
+                g.content_h as f32 - vp > 0.0,
+                "there is real scroll range (00:00 … 24:00 both reachable)"
+            );
 
-        let mut tall = Harness::new(1000, 2000);
-        tall.app.show_calendar();
-        tall.app.view = View::Week;
-        tall.relayout();
-        let gt = tall.app.timeline.test_layout_geometry(tall.app.view_rect());
-        assert!(
-            gt.hour_h > TIMELINE_MIN_HOUR_H,
-            "a tall window grows the hours to fill the space, got {}",
-            gt.hour_h
-        );
-        assert!(
-            !tall.app.timeline.vertical_overflows(),
-            "the whole day fits, so nothing scrolls"
-        );
+            let mut tall = Harness::new(1000, 2000);
+            tall.app.show_calendar();
+            tall.app.view = View::Week;
+            tall.relayout();
+            let gt = tall.app.timeline.test_layout_geometry(tall.app.view_rect());
+            assert!(
+                gt.hour_h > TIMELINE_MIN_HOUR_H,
+                "a tall window grows the hours to fill the space, got {}",
+                gt.hour_h
+            );
+            assert!(
+                !tall.app.timeline.vertical_overflows(),
+                "the whole day fits, so nothing scrolls"
+            );
+        }
+        {
+            let mut h = Harness::new(1000, 640);
+            h.app.show_calendar();
+            h.app.view = View::Week;
+            h.relayout();
+            h.app.timeline.test_set_offset_y(0.0);
+            h.relayout();
+
+            let area = h.app.view_rect();
+            let g = h.app.timeline.test_layout_geometry(area);
+            let days = h.app.timeline_days();
+            let col = 0usize;
+            let grid_x0 = area.x0 + g.gutter;
+            let col_w = TimelineInteraction::test_column_width(area, days.len(), g);
+            let x = grid_x0 + col_w * col as f64 + col_w * 0.5;
+            let offset = f64::from(h.app.timeline.test_offset_y());
+            let y_at = |hour: f64| g.body_top + hour * g.hour_h - offset;
+
+            let ids_before: HashSet<Id> = h.app.model.events.iter().map(|e| e.id).collect();
+            h.drag(Point::new(x, y_at(3.0)), Point::new(x, y_at(5.0)));
+
+            let new_ev = h
+                .app
+                .model
+                .events
+                .iter()
+                .find(|e| !ids_before.contains(&e.id))
+                .expect("a drag across empty grid creates one event");
+            assert_eq!(
+                new_ev.start.date(),
+                days[col],
+                "created on the dragged column's day"
+            );
+            assert_eq!(
+                new_ev.start.time(),
+                min_to_time(3 * 60),
+                "starts at the drag origin (03:00)"
+            );
+            assert_eq!(
+                (new_ev.end - new_ev.start).num_minutes(),
+                120,
+                "spans the dragged range (03:00–05:00)"
+            );
+            assert_eq!(
+                h.app.selection,
+                Some(Sel::Event(new_ev.id)),
+                "the new event is selected"
+            );
+            assert!(
+                h.app.detail_open,
+                "the event editor opened for the new event"
+            );
+        }
+        {
+            let mut h = Harness::new(1200, 1900);
+            h.app.show_calendar();
+            h.app.view = View::Week;
+            h.relayout();
+
+            let today = h.app.today;
+            let (id, start0, dur0) = {
+                let ev = h
+                    .app
+                    .model
+                    .events
+                    .iter()
+                    .find(|e| e.title == "Design review")
+                    .expect("seeded 11:00 event present");
+                (ev.id, ev.start, (ev.end - ev.start).num_minutes())
+            };
+            assert_eq!(start0.time(), min_to_time(11 * 60));
+
+            let area = h.app.view_rect();
+            let g = h.app.timeline.test_layout_geometry(area);
+            let days = h.app.timeline_days();
+            let col = days
+                .iter()
+                .position(|d| *d == today)
+                .expect("today is in the week");
+            let block = h
+                .app
+                .timeline
+                .test_block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
+            let x = block.center().x;
+            let from = Point::new(x, block.y0 + 3.0);
+            let to = Point::new(x, block.y0 + 3.0 + 2.0 * g.hour_h);
+            h.drag(from, to);
+            assert!(h.app.repeat_scope_menu.is_open());
+            assert_eq!(
+                h.app.repeat_scope_menu.items(),
+                ["Only this event", "All future events"]
+            );
+            h.press_named(NamedKey::Enter);
+
+            let event = h
+                .app
+                .model
+                .event(id)
+                .expect("event still present after the move");
+            assert_eq!(event.start, start0, "the series keeps its time");
+            let moved = event
+                .occurrence_overrides
+                .iter()
+                .find(|edit| edit.original_date == today)
+                .expect("the dragged occurrence is moved on its own");
+            let (start, end) = (moved.start.unwrap(), moved.end.unwrap());
+            assert_eq!(start.date(), today, "stayed in the same day column");
+            assert_eq!(
+                start.time(),
+                min_to_time(13 * 60),
+                "rescheduled two hours later (was {start0})"
+            );
+            assert_eq!(
+                (end - start).num_minutes(),
+                dur0,
+                "duration preserved across the move"
+            );
+            assert!(
+                h.app.last_dispatched().is_some(),
+                "the reschedule went through the action model"
+            );
+        }
     }
-    {
-        let mut h = Harness::new(1000, 640);
-        h.app.show_calendar();
-        h.app.view = View::Week;
-        h.relayout();
-        h.app.timeline.test_set_offset_y(0.0);
-        h.relayout();
 
-        let area = h.app.view_rect();
-        let g = h.app.timeline.test_layout_geometry(area);
-        let days = h.app.timeline_days();
-        let col = 0usize;
-        let grid_x0 = area.x0 + g.gutter;
-        let col_w = TimelineInteraction::test_column_width(area, days.len(), g);
-        let x = grid_x0 + col_w * col as f64 + col_w * 0.5;
-        let offset = f64::from(h.app.timeline.test_offset_y());
-        let y_at = |hour: f64| g.body_top + hour * g.hour_h - offset;
-
-        let ids_before: HashSet<Id> = h.app.model.events.iter().map(|e| e.id).collect();
-        h.drag(Point::new(x, y_at(3.0)), Point::new(x, y_at(5.0)));
-
-        let new_ev = h
-            .app
-            .model
-            .events
-            .iter()
-            .find(|e| !ids_before.contains(&e.id))
-            .expect("a drag across empty grid creates one event");
-        assert_eq!(
-            new_ev.start.date(),
-            days[col],
-            "created on the dragged column's day"
-        );
-        assert_eq!(
-            new_ev.start.time(),
-            min_to_time(3 * 60),
-            "starts at the drag origin (03:00)"
-        );
-        assert_eq!(
-            (new_ev.end - new_ev.start).num_minutes(),
-            120,
-            "spans the dragged range (03:00–05:00)"
-        );
-        assert_eq!(
-            h.app.selection,
-            Some(Sel::Event(new_ev.id)),
-            "the new event is selected"
-        );
-        assert!(
-            h.app.detail_open,
-            "the event editor opened for the new event"
-        );
-    }
+    phase dragging_a_repeating_event_asks_only_this_or_all_future;
     {
         let mut h = Harness::new(1200, 1900);
         h.app.show_calendar();
         h.app.view = View::Week;
         h.relayout();
-
         let today = h.app.today;
-        let (id, start0, dur0) = {
-            let ev = h
-                .app
-                .model
-                .events
-                .iter()
-                .find(|e| e.title == "Design review")
-                .expect("seeded 11:00 event present");
-            (ev.id, ev.start, (ev.end - ev.start).num_minutes())
-        };
-        assert_eq!(start0.time(), min_to_time(11 * 60));
-
+        let before = h
+            .app
+            .model
+            .events
+            .iter()
+            .find(|e| e.title == "Design review")
+            .expect("seeded 11:00 event present")
+            .clone();
+        assert_eq!(before.start.date(), today, "the series starts today");
         let area = h.app.view_rect();
         let g = h.app.timeline.test_layout_geometry(area);
         let days = h.app.timeline_days();
-        let col = days
-            .iter()
-            .position(|d| *d == today)
-            .expect("today is in the week");
+        let col = days.iter().position(|d| *d == today).unwrap();
         let block = h
             .app
             .timeline
             .test_block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
-        let x = block.center().x;
-        let from = Point::new(x, block.y0 + 3.0);
-        let to = Point::new(x, block.y0 + 3.0 + 2.0 * g.hour_h);
+        let from = Point::new(block.center().x, block.y0 + 3.0);
+        let to = Point::new(from.x, from.y + 2.0 * g.hour_h);
+
         h.drag(from, to);
         assert!(h.app.repeat_scope_menu.is_open());
-        assert_eq!(
-            h.app.repeat_scope_menu.items(),
-            ["Only this event", "All future events"]
-        );
-        h.press_named(NamedKey::Enter);
+        h.press_named(NamedKey::Escape);
+        assert!(!h.app.repeat_scope_menu.is_open());
+        assert!(h.app.pending_repeat.is_none());
+        assert_eq!(h.app.model.event(before.id), Some(&before));
 
-        let event = h
+        h.drag(from, to);
+        assert!(h.app.repeat_scope_menu.is_open());
+        h.press_named(NamedKey::ArrowDown);
+        h.press_named(NamedKey::Enter);
+        h.relayout();
+        let saved = crate::resource::read_doc(h.doc());
+        let series = saved.event(before.id).expect("the series stays itself");
+        assert_eq!(series.start, before.start + Duration::hours(2));
+        assert_eq!(series.end, before.end + Duration::hours(2));
+        assert_eq!(series.recurrence, before.recurrence);
+        assert_eq!(series.recurrence_until, before.recurrence_until);
+        assert!(
+            series
+                .occurrence_overrides
+                .iter()
+                .all(|edit| edit.original_date != today),
+            "no exception for the occurrence dragged"
+        );
+        assert_eq!(
+            saved
+                .events
+                .iter()
+                .filter(|e| e.title == "Design review")
+                .count(),
+            1,
+            "no second series"
+        );
+    }
+
+    phase a_sideways_swipe_on_the_calendar_steps_its_period;
+    {
+        let mut h = Harness::new(420, 800);
+        let (app, doc) = h.parts();
+        app.apply_action(Action::CloseDetail, &mut Edits::lend(doc));
+        app.apply_action(Action::View(View::Week), &mut Edits::lend(doc));
+        h.relayout();
+        let week = h.app.anchor;
+        let area = h.app.content_rect;
+        let (left, right) = (area.x0 + area.width() * 0.2, area.x0 + area.width() * 0.8);
+        let y = area.center().y;
+
+        Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
+        assert_eq!(
+            h.app.anchor,
+            week + Duration::days(7),
+            "a leftward swipe shows the next week"
+        );
+        Framed::harness_mut(&mut h.app).swipe_at((left, y), (right, y));
+        assert_eq!(
+            h.app.anchor, week,
+            "a rightward swipe shows the previous week again"
+        );
+
+        Framed::harness_mut(&mut h.app).swipe_at(
+            (area.center().x, area.y0 + 40.0),
+            (area.center().x, area.y1 - 40.0),
+        );
+        assert_eq!(
+            h.app.anchor, week,
+            "a downward drag scrolls; it does not step the week"
+        );
+
+        let (app, doc) = h.parts();
+        app.apply_action(Action::View(View::Month), &mut Edits::lend(doc));
+        h.relayout();
+        let month = h.app.anchor.month();
+        Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
+        assert_ne!(
+            h.app.anchor.month(),
+            month,
+            "a leftward swipe shows the next month"
+        );
+    }
+
+    phase dragging_an_event_chip_to_another_day_moves_it;
+    {
+        let mut h = Harness::new(1280, 900);
+        h.app.detail_open = false;
+        h.app.view = View::Month;
+        h.relayout();
+
+        let before = h
             .app
             .model
-            .event(id)
-            .expect("event still present after the move");
-        assert_eq!(event.start, start0, "the series keeps its time");
-        let moved = event
-            .occurrence_overrides
+            .events
             .iter()
-            .find(|edit| edit.original_date == today)
-            .expect("the dragged occurrence is moved on its own");
-        let (start, end) = (moved.start.unwrap(), moved.end.unwrap());
-        assert_eq!(start.date(), today, "stayed in the same day column");
-        assert_eq!(
-            start.time(),
-            min_to_time(13 * 60),
-            "rescheduled two hours later (was {start0})"
+            .find(|event| !event.all_day)
+            .expect("the sample holds a timed event")
+            .clone();
+        let from = h
+            .app
+            .hits
+            .iter()
+            .rev()
+            .find_map(|(rect, action)| {
+                matches!(action, Action::OpenEvent(id) if *id == before.id).then_some(rect.center())
+            })
+            .expect("the event's chip is drawn in the month grid");
+        let day = before.start.date();
+        let target = day + Duration::days(2);
+        let to = h
+            .app
+            .hits
+            .iter()
+            .rev()
+            .find_map(|(rect, action)| {
+                matches!(action, Action::PickDate(d) if *d == target).then_some(rect.center())
+            })
+            .expect("the grid shows the day two days on");
+
+        h.mouse_move(from);
+        assert!(
+            h.mouse_button(ElementState::Pressed),
+            "the event's chip takes the press"
         );
-        assert_eq!(
-            (end - start).num_minutes(),
-            dur0,
-            "duration preserved across the move"
+        for step in 1..=4 {
+            let point = Point::new(
+                from.x + (to.x - from.x) * f64::from(step) / 4.0,
+                from.y + (to.y - from.y) * f64::from(step) / 4.0,
+            );
+            h.mouse_move(point);
+        }
+        h.relayout();
+        assert!(
+            !h.app.detail_open,
+            "a drag does not open the event behind it"
         );
         assert!(
-            h.app.last_dispatched().is_some(),
-            "the reschedule went through the action model"
+            h.mouse_button(ElementState::Released),
+            "the chip takes the release"
+        );
+        h.relayout();
+
+        let saved = crate::resource::read_doc(h.doc());
+        let moved = saved.event(before.id).expect("the event stays itself");
+        assert_eq!(
+            moved.start.date(),
+            target,
+            "the event moved to the day it was dropped on"
+        );
+        assert_eq!(
+            moved.start.time(),
+            before.start.time(),
+            "the time of day it was made for stays"
+        );
+        assert_eq!(
+            moved.end - moved.start,
+            before.end - before.start,
+            "and so does its length"
+        );
+        let submitted = h.app.last_dispatched().expect("the move was submitted");
+        assert_eq!(
+            submitted.id,
+            Calendar::RESCHEDULE.id(),
+            "the drag writes the published reschedule, so History undoes it"
         );
     }
 }
@@ -2445,32 +2995,6 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
         assert!(
             ics.contains("TRIGGER:-PT30M"),
             "the alert reaches the exported alarm"
-        );
-    }
-}
-
-#[test]
-fn every_offered_alert_reaches_the_document() {
-    let mut app = CalendarApp::new_demo();
-    let mut state = demo_document(&app);
-    present(&mut app, &mut state, &automerge::ROOT);
-    let Some(Sel::Event(id)) = app.selection else {
-        panic!("event selected");
-    };
-    for minutes in crate::model::REMINDERS {
-        pick(
-            &mut app,
-            &mut state,
-            |choices| &mut choices.alert,
-            &minutes.to_string(),
-        );
-        assert_eq!(
-            crate::resource::read_doc(&state)
-                .event(id)
-                .unwrap()
-                .reminder_min,
-            Some(minutes),
-            "the {minutes}-minute alert is kept"
         );
     }
 }
@@ -2745,191 +3269,6 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
     }
 }
 
-#[test]
-fn tasks_screen_rows_toggle_like_the_rail_and_open_like_the_agenda() {
-    let mut h = Harness::new(1280, 800);
-    h.app.show_calendar();
-    let personal = h
-        .app
-        .model
-        .projects
-        .iter()
-        .find(|project| project.name == "Personal")
-        .expect("sample project")
-        .id;
-    h.app.list_sel = Some(ListSel::Project(personal));
-    h.app.view = View::Tasks;
-    h.relayout();
-
-    let flights = h
-        .app
-        .model
-        .tasks
-        .iter()
-        .find(|task| task.title == "Book flights for offsite")
-        .expect("sample task with subtasks")
-        .clone();
-    let toggle_of = |app: &CalendarApp, id: Id| {
-        app.hits
-            .iter()
-            .find(|(_, action)| matches!(action, Action::ToggleTask(t) if *t == id))
-            .map(|(rect, _)| *rect)
-    };
-    let open_of = |app: &CalendarApp, id: Id| {
-        app.hits
-            .iter()
-            .find(|(_, action)| matches!(action, Action::OpenTask(t) if *t == id))
-            .map(|(rect, _)| *rect)
-    };
-    let parent_toggle = toggle_of(&h.app, flights.id).expect("the row's checkbox");
-    let parent_open = open_of(&h.app, flights.id).expect("the row opens its task");
-    assert!(
-        h.app.tasks.list_rect().contains_rect(parent_open),
-        "the row sits in the Tasks screen, not the sidebar rail"
-    );
-    let sub = h.app.model.subtasks_of(flights.id)[0].id;
-    let sub_toggle = toggle_of(&h.app, sub).expect("the subtask's checkbox");
-    assert!(sub_toggle.x0 > parent_toggle.x0, "subtasks are indented");
-
-    let done = Calendar::paths()
-        .tasks
-        .item(&crate::model::key(flights.id))
-        .done;
-    let published = {
-        let doc = h.doc().clone();
-        published_root(&doc)
-    };
-    assert!(
-        published
-            .actions
-            .iter()
-            .any(|action| action.id == ui::tilo_resource::FIELD_EDIT),
-        "the calendar publishes its field edits"
-    );
-    h.click(parent_toggle.center());
-    assert_eq!(h.app.model.task(flights.id).map(|t| t.done), Some(true));
-    let dispatched = h.app.last_dispatched().expect("the checkbox dispatched");
-    let edit = ui::tilo_resource::Invoke::from(done.set(true));
-    assert_eq!(
-        (dispatched.id, dispatched.arguments),
-        (edit.id, edit.arguments),
-        "the checkbox makes the published field edit the rail's ToggleTask makes"
-    );
-
-    h.relayout();
-    let open = open_of(&h.app, flights.id).expect("the row opens its task");
-    h.click(Point::new(open.x1 - 4.0, open.center().y));
-    assert_eq!(h.app.selected_task(), Some(flights.id));
-}
-
-#[test]
-fn dragging_a_repeating_event_asks_only_this_or_all_future() {
-    let mut h = Harness::new(1200, 1900);
-    h.app.show_calendar();
-    h.app.view = View::Week;
-    h.relayout();
-    let today = h.app.today;
-    let before = h
-        .app
-        .model
-        .events
-        .iter()
-        .find(|e| e.title == "Design review")
-        .expect("seeded 11:00 event present")
-        .clone();
-    assert_eq!(before.start.date(), today, "the series starts today");
-    let area = h.app.view_rect();
-    let g = h.app.timeline.test_layout_geometry(area);
-    let days = h.app.timeline_days();
-    let col = days.iter().position(|d| *d == today).unwrap();
-    let block = h
-        .app
-        .timeline
-        .test_block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
-    let from = Point::new(block.center().x, block.y0 + 3.0);
-    let to = Point::new(from.x, from.y + 2.0 * g.hour_h);
-
-    h.drag(from, to);
-    assert!(h.app.repeat_scope_menu.is_open());
-    h.press_named(NamedKey::Escape);
-    assert!(!h.app.repeat_scope_menu.is_open());
-    assert!(h.app.pending_repeat.is_none());
-    assert_eq!(h.app.model.event(before.id), Some(&before));
-
-    h.drag(from, to);
-    assert!(h.app.repeat_scope_menu.is_open());
-    h.press_named(NamedKey::ArrowDown);
-    h.press_named(NamedKey::Enter);
-    h.relayout();
-    let saved = crate::resource::read_doc(h.doc());
-    let series = saved.event(before.id).expect("the series stays itself");
-    assert_eq!(series.start, before.start + Duration::hours(2));
-    assert_eq!(series.end, before.end + Duration::hours(2));
-    assert_eq!(series.recurrence, before.recurrence);
-    assert_eq!(series.recurrence_until, before.recurrence_until);
-    assert!(
-        series
-            .occurrence_overrides
-            .iter()
-            .all(|edit| edit.original_date != today),
-        "no exception for the occurrence dragged"
-    );
-    assert_eq!(
-        saved
-            .events
-            .iter()
-            .filter(|e| e.title == "Design review")
-            .count(),
-        1,
-        "no second series"
-    );
-}
-
-#[test]
-fn a_sideways_swipe_on_the_calendar_steps_its_period() {
-    let mut h = Harness::new(420, 800);
-    let (app, doc) = h.parts();
-    app.apply_action(Action::CloseDetail, &mut Edits::lend(doc));
-    app.apply_action(Action::View(View::Week), &mut Edits::lend(doc));
-    h.relayout();
-    let week = h.app.anchor;
-    let area = h.app.content_rect;
-    let (left, right) = (area.x0 + area.width() * 0.2, area.x0 + area.width() * 0.8);
-    let y = area.center().y;
-
-    Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
-    assert_eq!(
-        h.app.anchor,
-        week + Duration::days(7),
-        "a leftward swipe shows the next week"
-    );
-    Framed::harness_mut(&mut h.app).swipe_at((left, y), (right, y));
-    assert_eq!(
-        h.app.anchor, week,
-        "a rightward swipe shows the previous week again"
-    );
-
-    Framed::harness_mut(&mut h.app).swipe_at(
-        (area.center().x, area.y0 + 40.0),
-        (area.center().x, area.y1 - 40.0),
-    );
-    assert_eq!(
-        h.app.anchor, week,
-        "a downward drag scrolls; it does not step the week"
-    );
-
-    let (app, doc) = h.parts();
-    app.apply_action(Action::View(View::Month), &mut Edits::lend(doc));
-    h.relayout();
-    let month = h.app.anchor.month();
-    Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
-    assert_ne!(
-        h.app.anchor.month(),
-        month,
-        "a leftward swipe shows the next month"
-    );
-}
-
 fn pinned_afternoon() -> Harness {
     let mut app = CalendarApp::new_demo();
     app.pin_now(
@@ -2945,205 +3284,4 @@ fn type_words(h: &mut Harness, text: &str) {
     for ch in text.chars() {
         h.type_char(&ch.to_string());
     }
-}
-
-#[test]
-fn one_line_becomes_the_event_it_names() {
-    let mut h = pinned_afternoon();
-    h.type_char("N");
-    h.relayout();
-    assert!(h.app.quick_add.is_open(), "Shift+N opens the one-line add");
-    let card = h.app.quick_add.card();
-    assert!(
-        card.width() > 0.0 && card.height() > 0.0 && h.app.rect.contains(card.center()),
-        "the card is drawn inside the window: {card:?}"
-    );
-    type_words(&mut h, "Review the deck friday 1pm");
-    h.relayout();
-    let before = h.app.model.events.len();
-
-    h.press_named(winit::keyboard::NamedKey::Enter);
-    h.relayout();
-    assert!(!h.app.quick_add.is_open(), "the card goes once it is added");
-    assert_eq!(h.app.model.events.len(), before + 1, "one event is added");
-    let added = h
-        .app
-        .model
-        .events
-        .iter()
-        .find(|event| event.title == "Review the deck")
-        .expect("the words left after the day and time are the title");
-    assert_eq!(
-        added.start,
-        NaiveDate::from_ymd_opt(2026, 10, 30)
-            .unwrap_or_default()
-            .and_hms_opt(13, 0, 0)
-            .unwrap_or_default(),
-        "Friday at one in the afternoon"
-    );
-    assert_eq!(added.end - added.start, Duration::hours(1));
-}
-
-#[test]
-fn the_card_puts_away_without_writing_when_it_is_told_to() {
-    let mut h = pinned_afternoon();
-    h.type_char("N");
-    type_words(&mut h, "Review the deck");
-    let before = h.app.model.events.len();
-    h.press_named(winit::keyboard::NamedKey::Escape);
-    h.relayout();
-    assert!(!h.app.quick_add.is_open());
-    assert_eq!(h.app.model.events.len(), before, "nothing is written");
-    h.type_char("m");
-    h.relayout();
-    assert_eq!(
-        h.app.view,
-        View::Month,
-        "the card swallowed nothing it did not own"
-    );
-}
-
-#[test]
-fn the_keys_this_window_answers_to_are_listed_and_put_away() {
-    let mut h = pinned_afternoon();
-    h.type_char("?");
-    h.relayout();
-    assert!(h.app.shortcuts.is_open(), "? shows the keys");
-    let card = h.app.shortcuts.card();
-    assert!(
-        card.width() > 0.0 && card.height() > 0.0 && h.app.rect.contains(card.center()),
-        "the card is drawn inside the window: {card:?}"
-    );
-    assert!(
-        ui::spell_shortcut("N") == "N" && ui::spell_shortcut("{shift:N}").contains('N'),
-        "the sheet lists real chords"
-    );
-    h.press_named(winit::keyboard::NamedKey::Escape);
-    h.relayout();
-    assert!(!h.app.shortcuts.is_open(), "Escape puts the sheet away");
-    assert_eq!(h.app.view, View::Month, "and it did not act on the view");
-}
-
-#[test]
-fn a_new_event_starts_at_the_next_quarter_hour_not_at_noon() {
-    let mut h = pinned_afternoon();
-    h.type_char("n");
-    h.relayout();
-    let draft = h.app.fresh_draft.clone().expect("a new event is opened");
-    assert_eq!(
-        draft.start.time(),
-        chrono::NaiveTime::from_hms_opt(14, 15, 0).unwrap_or_default(),
-        "the next quarter hour after 14:07"
-    );
-    assert_eq!(draft.end - draft.start, Duration::hours(1));
-}
-
-#[test]
-fn escape_dismisses_the_event_sheet_even_with_a_field_focused() {
-    let mut h = Harness::new(1280, 800);
-    let (app, doc) = h.parts();
-    app.apply_action(Action::CloseDetail, &mut Edits::lend(doc));
-    app.apply_action(Action::NewEvent, &mut Edits::lend(doc));
-    h.relayout();
-    assert!(h.app.detail_open, "a new event opens its sheet");
-    assert!(
-        h.app.title_input.is_focused(),
-        "the sheet starts in its title"
-    );
-    let before = h.app.model.events.len();
-
-    h.press_named(winit::keyboard::NamedKey::Escape);
-    assert!(
-        !h.app.detail_open,
-        "Escape closes the sheet rather than only leaving the field"
-    );
-    assert_eq!(
-        h.app.model.events.len(),
-        before - 1,
-        "the untouched draft went with the sheet"
-    );
-}
-
-#[test]
-fn dragging_an_event_chip_to_another_day_moves_it() {
-    let mut h = Harness::new(1280, 900);
-    h.app.detail_open = false;
-    h.app.view = View::Month;
-    h.relayout();
-
-    let before = h
-        .app
-        .model
-        .events
-        .iter()
-        .find(|event| !event.all_day)
-        .expect("the sample holds a timed event")
-        .clone();
-    let from = h
-        .app
-        .hits
-        .iter()
-        .rev()
-        .find_map(|(rect, action)| {
-            matches!(action, Action::OpenEvent(id) if *id == before.id).then_some(rect.center())
-        })
-        .expect("the event's chip is drawn in the month grid");
-    let day = before.start.date();
-    let target = day + Duration::days(2);
-    let to = h
-        .app
-        .hits
-        .iter()
-        .rev()
-        .find_map(|(rect, action)| {
-            matches!(action, Action::PickDate(d) if *d == target).then_some(rect.center())
-        })
-        .expect("the grid shows the day two days on");
-
-    h.mouse_move(from);
-    assert!(
-        h.mouse_button(ElementState::Pressed),
-        "the event's chip takes the press"
-    );
-    for step in 1..=4 {
-        let point = Point::new(
-            from.x + (to.x - from.x) * f64::from(step) / 4.0,
-            from.y + (to.y - from.y) * f64::from(step) / 4.0,
-        );
-        h.mouse_move(point);
-    }
-    h.relayout();
-    assert!(
-        !h.app.detail_open,
-        "a drag does not open the event behind it"
-    );
-    assert!(
-        h.mouse_button(ElementState::Released),
-        "the chip takes the release"
-    );
-    h.relayout();
-
-    let saved = crate::resource::read_doc(h.doc());
-    let moved = saved.event(before.id).expect("the event stays itself");
-    assert_eq!(
-        moved.start.date(),
-        target,
-        "the event moved to the day it was dropped on"
-    );
-    assert_eq!(
-        moved.start.time(),
-        before.start.time(),
-        "the time of day it was made for stays"
-    );
-    assert_eq!(
-        moved.end - moved.start,
-        before.end - before.start,
-        "and so does its length"
-    );
-    let submitted = h.app.last_dispatched().expect("the move was submitted");
-    assert_eq!(
-        submitted.id,
-        Calendar::RESCHEDULE.id(),
-        "the drag writes the published reschedule, so History undoes it"
-    );
 }

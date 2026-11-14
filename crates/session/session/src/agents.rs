@@ -13,10 +13,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use tilo_action_policy::{Standing, WorkspacePolicy};
+use tilo_action_policy::{Standing, WorkspacePolicy, same_person};
 use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_agent::{
-    KIND, OWNER, WorkspaceAgents as Record, same_person, workspace_agents as actions,
+    KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
 use tilo_resource::Id;
 use ui::permissions::{LivePermissions, PermissionContext};
@@ -235,10 +235,10 @@ impl Agents {
             if !held {
                 return None;
             }
-            let permissions = PermissionContext::from_standing(
-                workspace,
-                Standing::person(policy.clone(), person.to_owned()),
-            )
+            let permissions = PermissionContext::from_standing(Standing::person(
+                policy.clone(),
+                person.to_owned(),
+            ))
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
             opened.record = WorkspaceRecord::<Record>::open(
                 &opened.records,

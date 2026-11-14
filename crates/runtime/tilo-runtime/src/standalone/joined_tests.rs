@@ -13,9 +13,9 @@ use ed25519_dalek::SigningKey;
 use iroh::protocol::DynProtocolHandler;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::{
-    IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceJoinService,
+    WORKSPACE_JOIN_ALPN, WorkspaceDeviceHintV1, WorkspaceJoinService,
 };
-use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole};
+use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, Role};
 use tilo_peer_state::owner::testing::governor::TestGovernor;
 use tilo_peer_state::owner_commit::CommitOperation;
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
@@ -160,7 +160,7 @@ impl Joined {
         let host = tilo_room_host::host::WorkspaceHost::open(
             tilo_room_host::host::HostConfig::new(
                 directory.path().join("room-host"),
-                tilo_room_host::host::HostMode::Device,
+                tilo_relay_protocol::WorkSetting::none(),
             ),
             tilo_room_host::host::HostIdentity {
                 user_public_key: joined.custody.device_cert.user_public_key,
@@ -219,7 +219,7 @@ impl HostedWorkspace {
             .await
             .unwrap();
         let workspace = WorkspaceId::parse(governing.workspace()).unwrap();
-        let topic = workspace_topic(workspace).unwrap();
+        let topic = workspace;
         let hint = governing.hint(server.addr());
         let relay_root = dir.join("relay");
         let baseline = governing
@@ -287,7 +287,7 @@ impl HostedWorkspace {
         let now = ns(SystemTime::now());
         let signed = self.authority.lock().unwrap().issue(
             vec![self.hint.clone()],
-            MemberRole::Editor,
+            Role::Editor,
             Some(recipient),
             Some("Runtime".into()),
             now.saturating_add(60_000_000_000),
@@ -304,14 +304,13 @@ impl HostedWorkspace {
             self.authority.lock().unwrap().peer().clone(),
             self.governor_key.clone(),
         );
-        let (payload, _) =
-            IrohWorkspaceHostHintV1::authenticate_transport_hint(&self.hint).unwrap();
+        let (payload, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&self.hint).unwrap();
         let endpoint = local_endpoint(&self.governor_key).await;
         let dialed = link
             .dial(
                 &endpoint,
                 payload.endpoint_addr,
-                payload.host_device_certificate.device_public_key,
+                payload.device_certificate.device_public_key,
             )
             .await
             .unwrap();
@@ -334,7 +333,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
     sign_device_cert(&mut custody.device_cert, &default_root).unwrap();
-    let default_actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
+    let default_actor = tilo_action_broker::collab_app_broker::person_id_for_root(
         custody.device_cert.user_public_key,
     );
     custody = HostIdentity::held(
@@ -345,11 +344,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
                 custody.device_cert.clone(),
                 std::sync::Arc::clone(&custody.signer),
             )
-            .in_workspace(
-                workspace_topic(workspace).unwrap(),
-                workspace_cert,
-                Vec::new(),
-            ),
+            .in_workspace(workspace, workspace_cert, Vec::new()),
         ),
     );
     let mut probe = Joined {
@@ -395,7 +390,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
         probe.custody.device_cert.clone(),
         std::sync::Arc::clone(&probe.custody.signer),
     )
-    .in_workspace(workspace_topic(workspace).unwrap(), renewed, Vec::new());
+    .in_workspace(workspace, renewed, Vec::new());
     probe.custody = HostIdentity::held(
         probe.custody.device_cert.clone(),
         std::sync::Arc::clone(&probe.custody.signer),
@@ -596,8 +591,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         ),
     )
     .unwrap();
-    let actor =
-        tilo_action_broker::collab_app_broker::principal_id_for_root(device.user_public_key);
+    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(device.user_public_key);
     assert!(
         joined
             .action_workspace(&actor, &workspace.to_string())
@@ -691,9 +685,8 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         .with_current(workspace, |view| {
             let role = view
                 .peer()
-                .permissions(device.device_public_key, SystemTime::now())
-                .map_err(|error| error.to_string())?
-                .role;
+                .role(&device.device_public_key, SystemTime::now())
+                .map_err(|error| error.to_string())?;
             assert_eq!(
                 role,
                 collab_types::Role::Editor,
@@ -782,7 +775,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     // A sealed write, as an SDK app seals it under a key only the workspace's
     // key holders have: this member's owner and the host keep only its
     // ciphertext, and the governor receives it sealed.
-    let channel = collab_types::document_channel_id("so.tilo.chat", &workspace.to_string(), "");
+    let channel = collab_types::WorkspaceId::parse(&workspace.to_string()).unwrap();
     let content = channel_crypto::ChannelGroup::create(
         channel,
         channel_crypto::MemberKey::generate("governor").unwrap(),
@@ -1437,7 +1430,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
     assert!(joined.workspace(workspace).is_some());
     joined.place(workspace, "Home").await.unwrap();
     assert_eq!(joined.owner.workspaces(), vec![workspace]);
-    let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
+    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
         joined.test_certificate().user_public_key,
     );
     assert_eq!(

@@ -1,5 +1,5 @@
-//! Current authenticated host's shared local vocabulary. No filesystem or app-local fallback;
-//! missing/revoked channels clear personal hints.
+//! The person's shared vocabulary, read through the app's settings channel. There is no
+//! app-local fallback: a missing or revoked channel clears the hints.
 pub use settings_store::personal_dictionary::{Edit, Snapshot, Vocabulary, Word};
 use std::io;
 use std::sync::Arc;
@@ -140,12 +140,11 @@ mod tests {
     }
 }
 
-/// Production settings-channel client paired with a real host source for headless app tests.
+/// The app's settings channel served from a real settings source, for headless app tests.
 #[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
 pub struct TestHost {
     source: Arc<dyn settings_store::SettingsSource>,
     app: String,
-    owner: [u8; 32],
     revision: u64,
     channel: Arc<crate::collaboration::channel_settings::ChannelSettings>,
     previous: Option<Arc<crate::collaboration::channel_settings::ChannelSettings>>,
@@ -153,18 +152,8 @@ pub struct TestHost {
 
 #[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
 impl TestHost {
-    /// Attach an authenticated client to the host's existing dictionary.
-    pub fn new(
-        source: Arc<dyn settings_store::SettingsSource>,
-        app: &str,
-        owner: [u8; 32],
-    ) -> io::Result<Self> {
-        if crate::local_identity::bound().map(|identity| identity.group_public_key) != Some(owner) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "test dictionary owner is not bound",
-            ));
-        }
+    /// Serve the app's settings channel from `source`, as the session does.
+    pub fn new(source: Arc<dyn settings_store::SettingsSource>, app: &str) -> Self {
         let channel = Arc::new(crate::collaboration::channel_settings::ChannelSettings::new(app));
         channel.linked();
         let previous =
@@ -172,34 +161,28 @@ impl TestHost {
         let host = Self {
             source,
             app: app.to_owned(),
-            owner,
             revision: 1,
             channel,
             previous,
         };
-        host.channel.received(1, host.view());
-        Ok(host)
+        let view = host.view();
+        host.channel.received(1, view);
+        host
     }
 
     fn view(&self) -> serde_json::Map<String, serde_json::Value> {
-        let mut view = settings_store::app_scope::app_view(&self.source.load(), &self.app);
-        settings_store::personal_dictionary::host::project(
-            self.source.as_ref(),
-            &self.app,
-            Some(self.owner),
-            &mut view,
-        );
+        let document = self.source.load();
+        let mut view = settings_store::app_scope::app_view(&document, &self.app);
+        settings_store::personal_dictionary::delivery::project(&document, &self.app, &mut view);
         view
     }
 
-    /// Run queued typed edits through production host permission and persistence checks and deliver the
-    /// authoritative answer back to the mounted app.
+    /// Run queued edits through the session's checks and answer the mounted app with what it holds.
     pub fn flush(&mut self) -> io::Result<()> {
         for (section, values, action) in self.channel.take_outbox() {
-            let result = settings_store::personal_dictionary::host::command(
+            let result = settings_store::personal_dictionary::delivery::command(
                 self.source.as_ref(),
                 &self.app,
-                Some(self.owner),
                 &section,
                 &values,
             )

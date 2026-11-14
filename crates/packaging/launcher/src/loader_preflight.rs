@@ -724,20 +724,6 @@ mod tests {
         PathBuf::from("/var/tilo-apps/app/bin/app")
     }
 
-    #[test]
-    fn reads_needed_and_runpath_from_a_fixture_object() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obj");
-        write(
-            &path,
-            &elf_fixture(&["libstd-abc.so", "libc.so.6"], Some("$ORIGIN/../lib:/opt")),
-        );
-        let dynamic = read_dynamic_section(&path).unwrap().unwrap();
-        assert_eq!(dynamic.needed, ["libstd-abc.so", "libc.so.6"]);
-        assert_eq!(dynamic.runpath, ["$ORIGIN/../lib", "/opt"]);
-        assert!(dynamic.rpath.is_empty());
-    }
-
     // Reads an ELF executable and compares it with the Linux sandbox loaders.
     #[cfg(target_os = "linux")]
     #[test]
@@ -767,169 +753,199 @@ mod tests {
         view.check(&exe).unwrap();
     }
 
-    #[test]
-    fn interpreter_rejects_truncated_objects_and_distinguishes_absence() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("obj");
-        write(&path, &elf_fixture(&[], None));
-        assert_eq!(read_interpreter(&path).unwrap(), None);
-        assert_eq!(
-            read_dynamic_section(&path).unwrap(),
-            Some(DynamicSection::default())
-        );
-        write(&path, b"\x7fELF\x02\x01");
-        assert!(read_interpreter(&path).is_err());
+    tilo_test_env::scenario! {
+        fn what_an_object_needs_is_read_or_unknown;
+
+        phase reads_needed_and_runpath_from_a_fixture_object;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obj");
+            write(
+                &path,
+                &elf_fixture(&["libstd-abc.so", "libc.so.6"], Some("$ORIGIN/../lib:/opt")),
+            );
+            let dynamic = read_dynamic_section(&path).unwrap().unwrap();
+            assert_eq!(dynamic.needed, ["libstd-abc.so", "libc.so.6"]);
+            assert_eq!(dynamic.runpath, ["$ORIGIN/../lib", "/opt"]);
+            assert!(dynamic.rpath.is_empty());
+        }
+
+        phase interpreter_rejects_truncated_objects_and_distinguishes_absence;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obj");
+            write(&path, &elf_fixture(&[], None));
+            assert_eq!(read_interpreter(&path).unwrap(), None);
+            assert_eq!(
+                read_dynamic_section(&path).unwrap(),
+                Some(DynamicSection::default())
+            );
+            write(&path, b"\x7fELF\x02\x01");
+            assert!(read_interpreter(&path).is_err());
+        }
+
+        phase non_elf_and_truncated_files_are_unknown_not_dependency_free;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let script = dir.path().join("script");
+            write(&script, b"#!/bin/sh\nexit 0\n");
+            assert_eq!(read_dynamic_section(&script).unwrap(), None);
+            let truncated = dir.path().join("truncated");
+            let mut bytes = elf_fixture(&["libfoo.so"], None);
+            bytes.truncate(100);
+            write(&truncated, &bytes);
+            assert_eq!(read_dynamic_section(&truncated).unwrap(), None);
+        }
     }
 
-    #[test]
-    fn non_elf_and_truncated_files_are_unknown_not_dependency_free() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("script");
-        write(&script, b"#!/bin/sh\nexit 0\n");
-        assert_eq!(read_dynamic_section(&script).unwrap(), None);
-        let truncated = dir.path().join("truncated");
-        let mut bytes = elf_fixture(&["libfoo.so"], None);
-        bytes.truncate(100);
-        write(&truncated, &bytes);
-        assert_eq!(read_dynamic_section(&truncated).unwrap(), None);
+    tilo_test_env::scenario! {
+        fn needed_libraries_resolve_where_the_loader_would_look;
+
+        phase a_library_missing_from_the_runtime_is_named_with_where_it_was_looked_for;
+        {
+            let fx = Fixture::new();
+            write(
+                &fx.payload.join("bin/app"),
+                &elf_fixture(&["libstd-55999f89fc36b51f.so"], None),
+            );
+            write(
+                &fx.runtime.join("lib/libstd-0123456789abcdef.so"),
+                &elf_fixture(&[], None),
+            );
+            let missing = fx.view(LdCache::Absent).check(&entry()).unwrap_err();
+            assert_eq!(missing.library, "libstd-55999f89fc36b51f.so");
+            assert_eq!(missing.needed_by, entry());
+            assert_eq!(
+                missing.searched,
+                [fx.runtime.join("lib"), fx.system.join("lib")]
+            );
+        }
+
+        phase libraries_resolve_through_the_runtime_runpath_cache_and_system_dirs;
+        {
+            let fx = Fixture::new();
+            write(
+                &fx.payload.join("bin/app"),
+                &elf_fixture(
+                    &[
+                        "libruntime_dylib.so",
+                        "libbundled.so",
+                        "libcached.so.1",
+                        "libsystem.so.2",
+                        "ld-linux-x86-64.so.2",
+                    ],
+                    Some("$ORIGIN/../lib"),
+                ),
+            );
+            write(
+                &fx.runtime.join("lib/libruntime_dylib.so"),
+                &elf_fixture(&[], None),
+            );
+            write(
+                &fx.payload.join("lib/libbundled.so"),
+                &elf_fixture(&[], None),
+            );
+            write(&fx.system.join("lib/libsystem.so.2"), b"");
+            let mut cached = HashSet::new();
+            cached.insert("libcached.so.1".to_string());
+            fx.view(LdCache::Names(cached)).check(&entry()).unwrap();
+        }
+
+        phase a_shipped_library_is_checked_for_its_own_dependencies;
+        {
+            let fx = Fixture::new();
+            write(
+                &fx.payload.join("bin/app"),
+                &elf_fixture(&["libruntime_dylib.so"], None),
+            );
+            write(
+                &fx.runtime.join("lib/libruntime_dylib.so"),
+                &elf_fixture(&["libstd-55999f89fc36b51f.so"], None),
+            );
+            let missing = fx.view(LdCache::Absent).check(&entry()).unwrap_err();
+            assert_eq!(missing.library, "libstd-55999f89fc36b51f.so");
+            assert_eq!(
+                missing.needed_by,
+                Path::new("/run/tilo-runtime/1/lib/libruntime_dylib.so")
+            );
+        }
+
+        phase hwcaps_subdirectories_count;
+        {
+            let fx = Fixture::new();
+            write(
+                &fx.payload.join("bin/app"),
+                &elf_fixture(&["libfast.so"], None),
+            );
+            write(
+                &fx.runtime.join("lib/glibc-hwcaps/x86-64-v3/libfast.so"),
+                b"",
+            );
+            fx.view(LdCache::Absent).check(&entry()).unwrap();
+        }
+
+        phase undecidable_search_paths_and_unreadable_entries_never_refuse;
+        {
+            let fx = Fixture::new();
+            // `$PLATFORM` is the loader's to expand.
+            write(
+                &fx.payload.join("bin/app"),
+                &elf_fixture(&["libgone.so"], Some("$ORIGIN/$PLATFORM")),
+            );
+            fx.view(LdCache::Absent).check(&entry()).unwrap();
+            // A RUNPATH into a sandbox-private tree the launcher did not mount.
+            write(
+                &fx.payload.join("bin/app"),
+                &elf_fixture(&["libgone.so"], Some("/run/elsewhere")),
+            );
+            fx.view(LdCache::Absent).check(&entry()).unwrap();
+            // An entrypoint that does not exist or is a script.
+            fx.view(LdCache::Absent)
+                .check(Path::new("/var/tilo-apps/app/bin/missing"))
+                .unwrap();
+        }
     }
 
-    #[test]
-    fn a_library_missing_from_the_runtime_is_named_with_where_it_was_looked_for() {
-        let fx = Fixture::new();
-        write(
-            &fx.payload.join("bin/app"),
-            &elf_fixture(&["libstd-55999f89fc36b51f.so"], None),
-        );
-        write(
-            &fx.runtime.join("lib/libstd-0123456789abcdef.so"),
-            &elf_fixture(&[], None),
-        );
-        let missing = fx.view(LdCache::Absent).check(&entry()).unwrap_err();
-        assert_eq!(missing.library, "libstd-55999f89fc36b51f.so");
-        assert_eq!(missing.needed_by, entry());
-        assert_eq!(
-            missing.searched,
-            [fx.runtime.join("lib"), fx.system.join("lib")]
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_ld_cache_is_parsed_or_searched;
 
-    #[test]
-    fn libraries_resolve_through_the_runtime_runpath_cache_and_system_dirs() {
-        let fx = Fixture::new();
-        write(
-            &fx.payload.join("bin/app"),
-            &elf_fixture(
-                &[
-                    "libruntime_dylib.so",
-                    "libbundled.so",
-                    "libcached.so.1",
-                    "libsystem.so.2",
-                    "ld-linux-x86-64.so.2",
-                ],
-                Some("$ORIGIN/../lib"),
-            ),
-        );
-        write(
-            &fx.runtime.join("lib/libruntime_dylib.so"),
-            &elf_fixture(&[], None),
-        );
-        write(
-            &fx.payload.join("lib/libbundled.so"),
-            &elf_fixture(&[], None),
-        );
-        write(&fx.system.join("lib/libsystem.so.2"), b"");
-        let mut cached = HashSet::new();
-        cached.insert("libcached.so.1".to_string());
-        fx.view(LdCache::Names(cached)).check(&entry()).unwrap();
-    }
+        phase ld_cache_names_are_parsed_and_unknown_formats_fall_back_to_a_byte_search;
+        {
+            // A one-entry new-format cache: header, entry, string table.
+            let mut bytes = b"glibc-ld.so.cache1.1".to_vec();
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // nlibs
+            bytes.extend_from_slice(&0u32.to_le_bytes()); // len_strings
+            bytes.resize(48, 0);
+            let strings = 48 + 24;
+            let key = strings;
+            let value = key + "libz.so.1\0".len();
+            bytes.extend_from_slice(&1i32.to_le_bytes());
+            bytes.extend_from_slice(&u32::try_from(key).unwrap().to_le_bytes());
+            bytes.extend_from_slice(&u32::try_from(value).unwrap().to_le_bytes());
+            bytes.extend_from_slice(&[0u8; 12]);
+            bytes.extend_from_slice(b"libz.so.1\0/usr/lib64/libz.so.1\0");
+            let cache = LdCache::from_bytes(bytes);
+            assert!(matches!(cache, LdCache::Names(_)), "{cache:?}");
+            assert!(cache.contains("libz.so.1"));
+            assert!(!cache.contains("libstd-55999f89fc36b51f.so"));
 
-    #[test]
-    fn a_shipped_library_is_checked_for_its_own_dependencies() {
-        let fx = Fixture::new();
-        write(
-            &fx.payload.join("bin/app"),
-            &elf_fixture(&["libruntime_dylib.so"], None),
-        );
-        write(
-            &fx.runtime.join("lib/libruntime_dylib.so"),
-            &elf_fixture(&["libstd-55999f89fc36b51f.so"], None),
-        );
-        let missing = fx.view(LdCache::Absent).check(&entry()).unwrap_err();
-        assert_eq!(missing.library, "libstd-55999f89fc36b51f.so");
-        assert_eq!(
-            missing.needed_by,
-            Path::new("/run/tilo-runtime/1/lib/libruntime_dylib.so")
-        );
-    }
+            let opaque = LdCache::from_bytes(b"something else\0libq.so.3\0".to_vec());
+            assert!(matches!(opaque, LdCache::Opaque(_)));
+            assert!(opaque.contains("libq.so.3"));
+            assert!(!opaque.contains("libq.so"));
+        }
 
-    #[test]
-    fn hwcaps_subdirectories_count() {
-        let fx = Fixture::new();
-        write(
-            &fx.payload.join("bin/app"),
-            &elf_fixture(&["libfast.so"], None),
-        );
-        write(
-            &fx.runtime.join("lib/glibc-hwcaps/x86-64-v3/libfast.so"),
-            b"",
-        );
-        fx.view(LdCache::Absent).check(&entry()).unwrap();
-    }
-
-    #[test]
-    fn undecidable_search_paths_and_unreadable_entries_never_refuse() {
-        let fx = Fixture::new();
-        // `$PLATFORM` is the loader's to expand.
-        write(
-            &fx.payload.join("bin/app"),
-            &elf_fixture(&["libgone.so"], Some("$ORIGIN/$PLATFORM")),
-        );
-        fx.view(LdCache::Absent).check(&entry()).unwrap();
-        // A RUNPATH into a sandbox-private tree the launcher did not mount.
-        write(
-            &fx.payload.join("bin/app"),
-            &elf_fixture(&["libgone.so"], Some("/run/elsewhere")),
-        );
-        fx.view(LdCache::Absent).check(&entry()).unwrap();
-        // An entrypoint that does not exist or is a script.
-        fx.view(LdCache::Absent)
-            .check(Path::new("/var/tilo-apps/app/bin/missing"))
-            .unwrap();
-    }
-
-    #[test]
-    fn ld_cache_names_are_parsed_and_unknown_formats_fall_back_to_a_byte_search() {
-        // A one-entry new-format cache: header, entry, string table.
-        let mut bytes = b"glibc-ld.so.cache1.1".to_vec();
-        bytes.extend_from_slice(&1u32.to_le_bytes()); // nlibs
-        bytes.extend_from_slice(&0u32.to_le_bytes()); // len_strings
-        bytes.resize(48, 0);
-        let strings = 48 + 24;
-        let key = strings;
-        let value = key + "libz.so.1\0".len();
-        bytes.extend_from_slice(&1i32.to_le_bytes());
-        bytes.extend_from_slice(&u32::try_from(key).unwrap().to_le_bytes());
-        bytes.extend_from_slice(&u32::try_from(value).unwrap().to_le_bytes());
-        bytes.extend_from_slice(&[0u8; 12]);
-        bytes.extend_from_slice(b"libz.so.1\0/usr/lib64/libz.so.1\0");
-        let cache = LdCache::from_bytes(bytes);
-        assert!(matches!(cache, LdCache::Names(_)), "{cache:?}");
-        assert!(cache.contains("libz.so.1"));
-        assert!(!cache.contains("libstd-55999f89fc36b51f.so"));
-
-        let opaque = LdCache::from_bytes(b"something else\0libq.so.3\0".to_vec());
-        assert!(matches!(opaque, LdCache::Opaque(_)));
-        assert!(opaque.contains("libq.so.3"));
-        assert!(!opaque.contains("libq.so"));
-    }
-
-    #[test]
-    fn the_host_ld_cache_parses_when_present() {
-        match LdCache::load(Path::new(LD_SO_CACHE)) {
-            LdCache::Absent => {}
-            LdCache::Names(names) => assert!(!names.is_empty()),
-            LdCache::Opaque(_) => panic!("the host cache is not in glibc's current format"),
+        phase the_host_ld_cache_parses_when_present;
+        {
+            match LdCache::load(Path::new(LD_SO_CACHE)) {
+                LdCache::Absent => {}
+                LdCache::Names(names) => assert!(!names.is_empty()),
+                LdCache::Opaque(_) => panic!("the host cache is not in glibc's current format"),
+            }
         }
     }
 }

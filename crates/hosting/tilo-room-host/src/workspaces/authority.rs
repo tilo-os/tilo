@@ -244,7 +244,10 @@ fn decide_by_governance(
         })?;
     // The workspace decides for the person it certified this device to; a
     // certificate naming anyone else speaks for nobody here.
-    if member.person != hex::encode(device.user_public_key) {
+    let person = member
+        .person_id()
+        .ok_or_else(|| CollaborationError::new("the device acts for no person"))?;
+    if person != hex::encode(device.user_public_key) {
         return Err(CollaborationError::new(
             "the device's certificate names another person than the room admitted",
         ));
@@ -256,19 +259,13 @@ fn decide_by_governance(
     let decided = match op {
         WorkspaceOp::Host(_) => return Err(CollaborationError::new(HOST_PERSON_ONLY)),
         WorkspaceOp::Govern(action) => member.policy.check_action(&authority, action, &cx, false),
-        WorkspaceOp::Invite(role) => {
-            member
-                .policy
-                .check_invite(&member.person, &authority, role, &cx, false)
-        }
-        WorkspaceOp::Change(change) => {
-            member
-                .policy
-                .check(&member.person, &authority, change, &cx, false)
-        }
+        WorkspaceOp::Invite(role) => member
+            .policy
+            .check_invite(person, &authority, role, &cx, false),
+        WorkspaceOp::Change(change) => member.policy.check(person, &authority, change, &cx, false),
     };
     decided.map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
-    Ok(member.person)
+    Ok(person.to_owned())
 }
 
 impl Workspaces {
@@ -290,7 +287,7 @@ impl Workspaces {
     ) -> Result<String, CollaborationError> {
         let change = Change::SetRole {
             person: hex::encode(request.user_public_key),
-            role: request.role.into(),
+            role: request.role,
         };
         let by = self.authorize(device, Some(workspace), WorkspaceOp::Change(&change), now)?;
         if device.user_public_key != self.inner.host.cert.user_public_key

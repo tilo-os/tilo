@@ -13,7 +13,7 @@ use super::{
 };
 use crate::collab_app_broker::Arc;
 use tilo_actions::remote::{APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX};
-use tilo_actions::remote::{ActionHostError, Caller, CallerPrincipal, InvokeRequest};
+use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
 use tilo_desktop_model::Workspace;
 
 /// How long an action waits for the desk to say who the workspace it names is whose, when the desk
@@ -108,19 +108,14 @@ impl AppBrokerState {
                 "launch content requires an application the launcher authenticated".into(),
             ));
         }
-        let author = match caller.principal() {
-            CallerPrincipal::Person(person)
-                if policy.may_in(
-                    &workspace,
-                    &workspace.node(),
-                    tilo_action_policy::ActionKind::Undoable,
-                    now,
-                ) =>
-            {
-                Some(person.as_str())
-            }
-            _ => None,
-        };
+        let author = caller.acting().person_id().filter(|_| {
+            policy.may_in(
+                &workspace,
+                &workspace.node(),
+                tilo_action_policy::ActionKind::Undoable,
+                now,
+            )
+        });
         let app = self
             .services
             .launcher

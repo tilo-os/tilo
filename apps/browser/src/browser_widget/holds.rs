@@ -9,7 +9,7 @@
 //! action twice. A departure nothing called for is published on `browser.page` and
 //! answered there. A hold nobody answers is dropped after [`HELD_WAIT`].
 //!
-//! The window asks the person about [`MAX_HELD`] at once: one beyond them is turned away at
+//! The window holds [`MAX_HELD`] for the person at once: one beyond them is turned away at
 //! once and the action whose run reached it is told why. Turning it away, and not making it
 //! wait its turn, keeps what is paused bounded for a page that posts in a loop and tells the
 //! caller the truth while it can still act on it. The engine ends a hold no app answers at a
@@ -21,7 +21,10 @@
 //! and the action is not run a second time on whatever page the tab shows by then.
 //!
 //! What the page publishes is what waits: a hold somebody answered is offered for an answer
-//! no longer, though the window keeps it until the engine says the request is over.
+//! no longer, though the window keeps it until the engine says the request is over. Of the
+//! holds that wait, the page publishes the oldest alone, and the next once that one is
+//! answered or over: an answer's address is the page's and its own name, which two holds
+//! cannot share, and a window publishing two at one address would publish none of its actions.
 //!
 //! The engine counts the requests it holds and the downloads its pages offer apart, so a
 //! request and a download may carry one number. A hold is named here by which of the two it

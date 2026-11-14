@@ -14,25 +14,20 @@
     reason = "in a test these are the assertion, not a hazard; one test is one transcript between a native participant and a page"
 )]
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tilo_session_client::{Link, Outbox};
 
 use automerge::transaction::Transactable as _;
-use channel_crypto::{ChannelPeer, VaultKey};
 use collab_types::{
-    ContentRetention, DocumentMutation, Ed25519PublicKey, MlsGovernanceFrame, OpKind, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id,
+    DocumentMutation, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
+    document_attestation_id,
 };
-use neighbour_wire::NeighbourMsg;
 use tilo_relay::workspaces::WorkspaceContent;
-use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
-use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
+use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{
-    Device, WORKSPACE, enrol, ready, route, start_host, start_peer, wait_for, workspace,
-};
+use crate::native::NativeDevice;
+use crate::support::{WORKSPACE, enrol, ready, route, start_host, start_peer, wait_for, workspace};
 
 /// The surface the laptop's write names: the notes app's own `surface.toml`,
 /// a version of it this page does not run.
@@ -74,28 +69,6 @@ impl WorkspaceContent for Keeps {
     }
 }
 
-/// Publish `message` through the host the way a shell does.
-fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
-    let (channel, retention) = neighbour_wire::retention(message, false).unwrap();
-    let body = postcard::to_allocvec(message).unwrap();
-    match retention {
-        neighbour_wire::Retention::Checkpoint => session.publish_checkpoint(channel, body),
-        neighbour_wire::Retention::Delta => session.publish_retained_delta(channel, body),
-    }
-    .unwrap();
-}
-
-/// What `peer` queued to publish, taken.
-fn take(peer: &mut ChannelPeer) -> Vec<MlsGovernanceFrame> {
-    let frames = peer.outbox().to_vec();
-    peer.published();
-    frames
-}
-
-fn vault() -> VaultKey {
-    VaultKey::new([7; 32])
-}
-
 /// Whether the page says it holds something for the note, and why.
 fn held(peer: &Link) -> Option<String> {
     let note = crate::support::route();
@@ -114,7 +87,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     tilo_peer_state::decide_with_surfaces(tilo_session_client::surfaces::surfaces(), |_| None);
 
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -135,43 +108,22 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         .unwrap()
         .serve_content(keeps.clone());
 
-    // The laptop creates the workspace's key scope, announces itself and
+    // The laptop joins the group the host founded, announces itself and
     // writes the record's history, sealed and naming the other version's
     // surface.
     let note = route();
-    let scope = collab_types::workspace_scope(WORKSPACE);
-    let channel = document_channel_id(&note.app_id, &note.cluster_id, &note.record);
     let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
-    let laptop_dir = tempfile::tempdir().unwrap();
-    let mut laptop_peer = ChannelPeer::create_now(
-        Some(std::sync::Arc::new(channel_crypto::Files::new(
-            laptop_dir.path(),
-        ))),
-        scope,
-        Box::new(laptop.key.clone()),
-        &vault(),
-    )
-    .unwrap();
     let laptop_device = laptop.key.verifying_key().to_bytes();
-    let session = connect(&host.relay, &root, &laptop).await;
-    publish(
-        &session,
-        &NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(laptop.cert.clone()),
-            revocations: Vec::new(),
-        },
-    );
-    for frame in take(&mut laptop_peer) {
-        publish(
-            &session,
-            &NeighbourMsg::MlsGovernance {
-                workspace: WORKSPACE.into(),
-                frame: Box::new(frame),
-                delivery: 1,
-            },
-        );
-    }
+    crate::support::place(&host.relay, &laptop.cert).await;
+    let mut laptop = NativeDevice::start(
+        &host.relay,
+        root.verifying_key().to_bytes(),
+        laptop,
+        workspace(),
+    )
+    .await;
+    laptop.join().await;
+
     // The record's history: the record started empty, as an app starts one,
     // then three page edits, each naming a field of the notes app as its
     // executor does, so every edit carries the claim the receiver decides
@@ -192,13 +144,8 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     for (seq, (mutation, named)) in (1..).zip(writes) {
         let claims = collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap();
         let frame = mutation.encode().unwrap();
-        let (metadata, sealed) = laptop_peer
-            .content_keys()
-            .unwrap()
-            .for_unit(channel)
-            .seal_content(artifact, ContentRetention::of_frame(&frame), &frame)
-            .unwrap();
-        let mut op = SignedOp::new_unsigned_with_encryption(
+        let (metadata, sealed) = laptop.seal(&note, &frame);
+        let op = SignedOp::new_unsigned_with_encryption(
             sealed,
             artifact,
             Ed25519PublicKey::from_bytes(laptop_device),
@@ -210,21 +157,11 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         )
         .with_claims(claims)
         .with_surface(named);
-        collab_types::sign_op(&mut op, &laptop.key).unwrap();
-        publish(
-            &session,
-            &NeighbourMsg::AppDocument {
-                peer: neighbour_wire::peer_handle(&laptop_device),
-                app_id: note.app_id.clone(),
-                cluster_id: note.cluster_id.clone(),
-                record_id: note.record.clone(),
-                envelope: Box::new(op),
-            },
-        );
+        laptop.write(&note, op);
     }
 
-    // The page joins: it asks for the note's channel though it holds the
-    // note's first write, undecided, and the laptop admits it.
+    // The page joins: it asks for the workspace's keys though it holds the
+    // note's first write, undecided, and the host admits it.
     let page = start_peer(
         host.iroh(),
         browser.cert.clone(),
@@ -233,43 +170,6 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     );
     page.join_placed(WORKSPACE, "Workspace").unwrap();
     ready(&[&page]).await;
-    let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
-    let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
-    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
-    loop {
-        let inbound = tokio::time::timeout_at(deadline, session.recv())
-            .await
-            .expect("the page to take part in the record's channels")
-            .expect("host session open");
-        let Inbound::Delta { author, data } = inbound else {
-            continue;
-        };
-        if crate::support::is_host(&author) {
-            continue;
-        }
-        match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
-                assert_eq!(author, *browser_device.as_bytes());
-                request
-                    .verify()
-                    .expect("signed by the browser's device key");
-                laptop_peer.learn_request(*request).unwrap();
-                laptop_peer.reconcile_now(&allowed, &vault()).unwrap();
-                for frame in take(&mut laptop_peer) {
-                    publish(
-                        &session,
-                        &NeighbourMsg::MlsGovernance {
-                            workspace: WORKSPACE.into(),
-                            frame: Box::new(frame),
-                            delivery: 2,
-                        },
-                    );
-                }
-                break;
-            }
-            _ => {}
-        }
-    }
     crate::support::admitted(&page).await;
 
     // The page holds the write for the surface it does not run, and says so:
@@ -301,28 +201,4 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         Some(surface),
         "the page keeps the surface it fetched, by its hash"
     );
-}
-
-/// A laptop's session with `host`, placed in the workspace as `device`.
-async fn connect(
-    host: &tilo_relay::daemon::Relay,
-    root: &ed25519_dalek::SigningKey,
-    device: &Device,
-) -> RelayCoeditSession {
-    crate::support::place(host, &device.cert).await;
-    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .bind()
-        .await
-        .unwrap();
-    let client = RelayClient::connect(
-        endpoint,
-        host.node_addr(),
-        root.verifying_key().to_bytes(),
-        device.cert.clone(),
-        device.key.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    RelayCoeditSession::join(client, workspace(), device.key.verifying_key().to_bytes()).unwrap()
 }

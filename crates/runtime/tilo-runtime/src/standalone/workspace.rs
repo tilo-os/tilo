@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 use tilo_action_broker::services::{
-    AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
+    LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
 };
 use tilo_desktop_model::{
     DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId, WorkspaceSlot,
@@ -184,8 +184,8 @@ pub(super) struct ProfileGrants {
     pub(super) apps: Arc<apps::Apps>,
 }
 
-impl AppActionGrants for ProfileGrants {
-    fn may_grant(&self, workspace: &str, person: &str) -> bool {
+impl WorkspaceGrants for ProfileGrants {
+    fn may_record(&self, workspace: &str, person: &str) -> bool {
         self.workspace.governs()
             && self.workspace.tree.read().is_ok_and(|tree| {
                 tree.workspaces

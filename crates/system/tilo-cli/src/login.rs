@@ -817,56 +817,60 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_device_is_kept_for_this_account_only_and_read_back() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let place = dir.path().join("device");
-        let key = SigningKey::from_bytes(&[7; 32]);
-        store(&place, &key, &device()).unwrap();
-        assert_eq!(
-            std::fs::metadata(place.join("key"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(&place).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        let (read, kept) = load(&place).unwrap().unwrap();
-        assert_eq!(read.to_bytes(), key.to_bytes());
-        assert_eq!(kept, device());
-        // A key others can read is not used.
-        std::fs::set_permissions(place.join("key"), std::fs::Permissions::from_mode(0o644))
-            .unwrap();
-        assert!(load(&place).is_err());
-        assert!(load(&dir.path().join("none")).unwrap().is_none());
-    }
+    tilo_test_env::scenario! {
+        fn a_login_keeps_its_device_and_the_tab_it_came_from;
 
-    #[test]
-    fn a_login_leaves_the_tab_for_the_agent_to_confirm() {
-        let dir = tempfile::tempdir().unwrap();
-        let pending = Pending {
-            report: "aa".into(),
-            host_origin: "https://eu1.tilo.sh".into(),
-            tools_added: true,
-            entered: false,
-        };
-        store_pending(dir.path(), &pending).unwrap();
-        assert_eq!(load_pending(dir.path()), Some(pending));
-        assert_eq!(load_pending(&dir.path().join("none")), None);
-    }
+        phase the_device_is_kept_for_this_account_only_and_read_back;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = tempfile::tempdir().unwrap();
+            let place = dir.path().join("device");
+            let key = SigningKey::from_bytes(&[7; 32]);
+            store(&place, &key, &device()).unwrap();
+            assert_eq!(
+                std::fs::metadata(place.join("key"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(&place).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let (read, kept) = load(&place).unwrap().unwrap();
+            assert_eq!(read.to_bytes(), key.to_bytes());
+            assert_eq!(kept, device());
+            // A key others can read is not used.
+            std::fs::set_permissions(place.join("key"), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+            assert!(load(&place).is_err());
+            assert!(load(&dir.path().join("none")).unwrap().is_none());
+        }
 
-    #[test]
-    fn a_label_names_the_agent_and_the_computer_within_bounds() {
-        assert_eq!(
-            label("Claude Code", "build-box"),
-            "Claude Code on build-box"
-        );
-        assert_eq!(label(&"a".repeat(100), "x").chars().count(), 64);
+        phase a_login_leaves_the_tab_for_the_agent_to_confirm;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let pending = Pending {
+                report: "aa".into(),
+                host_origin: "https://eu1.tilo.sh".into(),
+                tools_added: true,
+                entered: false,
+            };
+            store_pending(dir.path(), &pending).unwrap();
+            assert_eq!(load_pending(dir.path()), Some(pending));
+            assert_eq!(load_pending(&dir.path().join("none")), None);
+        }
+
+        phase a_label_names_the_agent_and_the_computer_within_bounds;
+        {
+            assert_eq!(
+                label("Claude Code", "build-box"),
+                "Claude Code on build-box"
+            );
+            assert_eq!(label(&"a".repeat(100), "x").chars().count(), 64);
+        }
     }
 
     /// How a test's host answers a route and its body.
@@ -995,7 +999,7 @@ mod tests {
             (
                 200,
                 json!({"workspaces": [{"room": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "Lounge",
-                    "defaultRole": "Editor", "door": "lounge/"}]}),
+                    "defaultRole": "editor", "door": "lounge/"}]}),
             )
         });
         assert_eq!(
@@ -1007,101 +1011,109 @@ mod tests {
         assert_eq!(workspace_name(&host, "other").await, None);
     }
 
-    /// A tool's own servers load only as it starts: the agent asks the person
-    /// to restart it, and says what it does after.
-    #[test]
-    fn the_agent_is_told_what_to_do_next_in_its_own_terms() {
-        let tilo = Path::new("/home/me/.local/bin/tilo");
-        let claude = agent::named("claude");
-        let next = next_steps(&claude, &Tools::Added(Tool::Claude), tilo);
-        let steps: Vec<&str> = next.lines().collect();
-        assert_eq!(steps[0], "Next, in order:");
-        assert_eq!(
-            steps[1],
-            "1. Ask the person to restart Claude Code with this conversation kept (/exit, then \
+    tilo_test_env::scenario! {
+        fn the_agent_is_told_its_next_steps;
+
+        phase the_agent_is_told_what_to_do_next_in_its_own_terms;
+        // A tool's own servers load only as it starts: the agent asks the person
+        // to restart it, and says what it does after.
+        {
+            let tilo = Path::new("/home/me/.local/bin/tilo");
+            let claude = agent::named("claude");
+            let next = next_steps(&claude, &Tools::Added(Tool::Claude), tilo);
+            let steps: Vec<&str> = next.lines().collect();
+            assert_eq!(steps[0], "Next, in order:");
+            assert_eq!(
+                steps[1],
+                "1. Ask the person to restart Claude Code with this conversation kept (/exit, then \
              `claude --continue`): your Tilo tools load when it starts, and this conversation is \
              still here after."
-        );
-        assert_eq!(
-            steps[2],
-            "2. Run `/home/me/.local/bin/tilo agent check`: it says whether Tilo's server is in \
+            );
+            assert_eq!(
+                steps[2],
+                "2. Run `/home/me/.local/bin/tilo agent check`: it says whether Tilo's server is in \
              you, and answers."
-        );
-        assert!(steps[3].starts_with("3. Call the tilo_ls tool"), "{next}");
-        assert!(
-            steps[4].contains("\"path\": \"notes#open\"")
-                && steps[4].contains("\"title\": \"Hello from Claude Code\""),
-            "the agent does one thing the person sees: {next}"
-        );
-    }
+            );
+            assert!(steps[3].starts_with("3. Call the tilo_ls tool"), "{next}");
+            assert!(
+                steps[4].contains("\"path\": \"notes#open\"")
+                    && steps[4].contains("\"title\": \"Hello from Claude Code\""),
+                "the agent does one thing the person sees: {next}"
+            );
+        }
 
-    /// A tool whose servers are there as it runs is not asked to restart; one
-    /// Tilo could not write for is told to add the server itself.
-    #[test]
-    fn an_agent_that_reads_its_servers_while_it_runs_is_not_told_to_restart() {
-        let tilo = Path::new("/home/me/.local/bin/tilo");
-        let cursor = agent::named("cursor");
-        let next = next_steps(&cursor, &Tools::Added(Tool::Cursor), tilo);
-        assert!(!next.contains("restart"), "{next}");
-        // Cursor holds a server's tools back until it is told to let it run.
-        assert!(next.contains("run `agent mcp enable tilo`"), "{next}");
-        // An editor's terminal runs other agents too: this one is told how to
-        // add the server itself if the prompt reached it instead.
-        assert!(
-            next.contains("another agent may be the one the person's prompt reached"),
-            "{next}"
-        );
-        assert!(next.contains("https://mcp.tilo.sh"), "{next}");
-        // Claude Code is not such an editor: nothing hedges its steps.
-        assert!(
-            !next_steps(&agent::named("claude"), &Tools::Added(Tool::Claude), tilo)
-                .contains("another agent may be the one"),
-            "only an editor's steps say another agent may be reading them"
-        );
-        assert!(
-            next.contains("1. Run `/home/me/.local/bin/tilo agent check`"),
-            "{next}"
-        );
-        let other = agent::named("Your agent");
-        let next = next_steps(&other, &Tools::Yours, tilo);
-        assert!(
-            next.contains(
-                "1. Add Tilo's MCP server to yourself, as the server tilo: the stdio server \
+        phase an_agent_that_reads_its_servers_while_it_runs_is_not_told_to_restart;
+        // A tool whose servers are there as it runs is not asked to restart; one
+        // Tilo could not write for is told to add the server itself.
+        {
+            let tilo = Path::new("/home/me/.local/bin/tilo");
+            let cursor = agent::named("cursor");
+            let next = next_steps(&cursor, &Tools::Added(Tool::Cursor), tilo);
+            assert!(!next.contains("restart"), "{next}");
+            // Cursor holds a server's tools back until it is told to let it run.
+            assert!(next.contains("run `agent mcp enable tilo`"), "{next}");
+            // An editor's terminal runs other agents too: this one is told how to
+            // add the server itself if the prompt reached it instead.
+            assert!(
+                next.contains("another agent may be the one the person's prompt reached"),
+                "{next}"
+            );
+            assert!(next.contains("https://mcp.tilo.sh"), "{next}");
+            // Claude Code is not such an editor: nothing hedges its steps.
+            assert!(
+                !next_steps(&agent::named("claude"), &Tools::Added(Tool::Claude), tilo)
+                    .contains("another agent may be the one"),
+                "only an editor's steps say another agent may be reading them"
+            );
+            assert!(
+                next.contains("1. Run `/home/me/.local/bin/tilo agent check`"),
+                "{next}"
+            );
+            let other = agent::named("Your agent");
+            let next = next_steps(&other, &Tools::Yours, tilo);
+            assert!(
+                next.contains(
+                    "1. Add Tilo's MCP server to yourself, as the server tilo: the stdio server \
                  /home/me/.local/bin/tilo with the argument mcp, or the streamable HTTP server \
                  https://mcp.tilo.sh"
-            ),
-            "{next}"
-        );
-        assert!(next.contains("agent check --config"), "{next}");
-        assert!(next.contains("Call the tilo_ls tool"), "{next}");
+                ),
+                "{next}"
+            );
+            assert!(next.contains("agent check --config"), "{next}");
+            assert!(next.contains("Call the tilo_ls tool"), "{next}");
+        }
+
+        phase the_check_tells_the_agent_what_it_does_first;
+        // What the agent's own check says once the server is in: the one visible
+        // thing it does for the person.
+        {
+            let said = first_act(&agent::named("codex"));
+            assert!(said.starts_with("Call the tilo_ls tool"), "{said}");
+            assert!(said.contains("notes#new-note"), "{said}");
+            assert!(said.contains("Hello from Codex"), "{said}");
+        }
     }
 
-    /// What the agent's own check says once the server is in: the one visible
-    /// thing it does for the person.
-    #[test]
-    fn the_check_tells_the_agent_what_it_does_first() {
-        let said = first_act(&agent::named("codex"));
-        assert!(said.starts_with("Call the tilo_ls tool"), "{said}");
-        assert!(said.contains("notes#new-note"), "{said}");
-        assert!(said.contains("Hello from Codex"), "{said}");
-    }
+    tilo_test_env::scenario! {
+        fn a_login_code_is_read_and_resolved_at_its_site;
 
-    #[test]
-    fn codes_resolve_at_tilo_sh_unless_another_https_site_is_named() {
-        assert_eq!(
-            site_origin(Some("https://lounge.example/x")).unwrap(),
-            "https://lounge.example"
-        );
-        assert!(site_origin(Some("http://lounge.example")).is_err());
-        assert_eq!(DEFAULT_SITE, "https://tilo.sh");
-    }
+        phase codes_resolve_at_tilo_sh_unless_another_https_site_is_named;
+        {
+            assert_eq!(
+                site_origin(Some("https://lounge.example/x")).unwrap(),
+                "https://lounge.example"
+            );
+            assert!(site_origin(Some("http://lounge.example")).is_err());
+            assert_eq!(DEFAULT_SITE, "https://tilo.sh");
+        }
 
-    #[test]
-    fn a_login_code_reads_however_it_is_typed() {
-        assert_eq!(
-            protocol::normalize_code("k7q mx2p").as_deref(),
-            Some("K7Q-MX2P")
-        );
-        assert!(login("https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", None, None).is_err());
+        phase a_login_code_reads_however_it_is_typed;
+        {
+            assert_eq!(
+                protocol::normalize_code("k7q mx2p").as_deref(),
+                Some("K7Q-MX2P")
+            );
+            assert!(login("https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", None, None).is_err());
+        }
     }
 }

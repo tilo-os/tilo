@@ -502,79 +502,83 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_replay_buffer_keeps_its_bounds_and_starts_at_a_keyframe() {
-        let mut replay = Replay::new(4, usize::MAX, 0);
-        replay.push(&unit(true, 10));
-        replay.push(&unit(false, 10));
-        replay.push(&unit(false, 10));
-        replay.push(&unit(true, 10));
-        replay.push(&unit(false, 10));
-        // Bounded, and what it keeps starts where a decoder could: the
-        // oldest keyframe still inside the bounds.
-        assert_eq!(
-            replay.frames.len(),
-            2,
-            "only the last keyframe and after it"
-        );
-        assert!(replay.frames.front().is_some_and(|front| front.keyframe));
-        assert!(replay.is_clip());
+    tilo_test_env::scenario! {
+        fn the_replay_buffer_keeps_frames_and_sound_within_its_bounds;
 
-        // Bytes are a bound of their own.
-        let mut replay = Replay::new(100, 25, 0);
-        for keyframe in [true, false, false, false, false] {
-            replay.push(&unit(keyframe, 10));
+        phase the_replay_buffer_keeps_its_bounds_and_starts_at_a_keyframe;
+        {
+            let mut replay = Replay::new(4, usize::MAX, 0);
+            replay.push(&unit(true, 10));
+            replay.push(&unit(false, 10));
+            replay.push(&unit(false, 10));
+            replay.push(&unit(true, 10));
+            replay.push(&unit(false, 10));
+            // Bounded, and what it keeps starts where a decoder could: the
+            // oldest keyframe still inside the bounds.
+            assert_eq!(
+                replay.frames.len(),
+                2,
+                "only the last keyframe and after it"
+            );
+            assert!(replay.frames.front().is_some_and(|front| front.keyframe));
+            assert!(replay.is_clip());
+
+            // Bytes are a bound of their own.
+            let mut replay = Replay::new(100, 25, 0);
+            for keyframe in [true, false, false, false, false] {
+                replay.push(&unit(keyframe, 10));
+            }
+            assert!(replay.bytes <= 25, "{} bytes kept", replay.bytes);
+            assert_eq!(
+                replay.bytes,
+                replay
+                    .frames
+                    .iter()
+                    .map(|frame| frame.data.len())
+                    .sum::<usize>()
+            );
+            assert!(
+                !replay.is_clip(),
+                "the keyframe it started at went with the older frames: no clip until the next one"
+            );
+            replay.push(&unit(true, 10));
+            assert!(replay.is_clip());
+
+            // A buffer that has seen only half a picture is no clip yet.
+            let mut replay = Replay::new(4, usize::MAX, 0);
+            replay.push(&unit(false, 10));
+            assert!(!replay.is_clip());
         }
-        assert!(replay.bytes <= 25, "{} bytes kept", replay.bytes);
-        assert_eq!(
-            replay.bytes,
-            replay
-                .frames
-                .iter()
-                .map(|frame| frame.data.len())
-                .sum::<usize>()
-        );
-        assert!(
-            !replay.is_clip(),
-            "the keyframe it started at went with the older frames: no clip until the next one"
-        );
-        replay.push(&unit(true, 10));
-        assert!(replay.is_clip());
 
-        // A buffer that has seen only half a picture is no clip yet.
-        let mut replay = Replay::new(4, usize::MAX, 0);
-        replay.push(&unit(false, 10));
-        assert!(!replay.is_clip());
-    }
+        phase a_clips_sound_is_aligned_with_its_frames;
+        // The sound of the replay buffer follows the frames kept: the newest
+        // sound ends with the newest frame, and what the buffer never heard is
+        // silence rather than a shifted track.
+        {
+            let mut replay = Replay::new(4, usize::MAX, 1);
+            let per_frame = AUDIO_BYTES_PER_VIDEO_FRAME;
+            replay.push(&unit(true, 10));
+            replay.push(&unit(false, 10));
+            replay.push_audio(0, &vec![1; per_frame / 2]);
+            replay.push_audio(0, &vec![2; per_frame / 2]);
+            let tail = replay.audio_tail(0, 2);
+            assert_eq!(tail.len(), per_frame.saturating_mul(2));
+            let (young, heard) = tail.split_at(per_frame);
+            assert!(
+                young.iter().all(|sample| *sample == 0),
+                "sound the buffer never heard is silence, not a shifted track"
+            );
+            assert_eq!(&heard[..per_frame / 2], &vec![1; per_frame / 2][..]);
+            assert_eq!(&heard[per_frame / 2..], &vec![2; per_frame / 2][..]);
 
-    /// The sound of the replay buffer follows the frames kept: the newest
-    /// sound ends with the newest frame, and what the buffer never heard is
-    /// silence rather than a shifted track.
-    #[test]
-    fn a_clips_sound_is_aligned_with_its_frames() {
-        let mut replay = Replay::new(4, usize::MAX, 1);
-        let per_frame = AUDIO_BYTES_PER_VIDEO_FRAME;
-        replay.push(&unit(true, 10));
-        replay.push(&unit(false, 10));
-        replay.push_audio(0, &vec![1; per_frame / 2]);
-        replay.push_audio(0, &vec![2; per_frame / 2]);
-        let tail = replay.audio_tail(0, 2);
-        assert_eq!(tail.len(), per_frame.saturating_mul(2));
-        let (young, heard) = tail.split_at(per_frame);
-        assert!(
-            young.iter().all(|sample| *sample == 0),
-            "sound the buffer never heard is silence, not a shifted track"
-        );
-        assert_eq!(&heard[..per_frame / 2], &vec![1; per_frame / 2][..]);
-        assert_eq!(&heard[per_frame / 2..], &vec![2; per_frame / 2][..]);
-
-        // The newest half minute at most: older sound goes with older frames.
-        let mut replay = Replay::new(4, usize::MAX, 1);
-        replay.push_audio(0, &vec![9; AUDIO_KEPT_BYTES.saturating_add(per_frame)]);
-        assert_eq!(replay.audio[0].len(), AUDIO_KEPT_BYTES);
-        assert!(replay.audio[0].iter().all(|sample| *sample == 9));
-        // A track the recorder has none of is silence, never a shifted one.
-        assert_eq!(replay.audio_tail(1, 1), vec![0; per_frame]);
+            // The newest half minute at most: older sound goes with older frames.
+            let mut replay = Replay::new(4, usize::MAX, 1);
+            replay.push_audio(0, &vec![9; AUDIO_KEPT_BYTES.saturating_add(per_frame)]);
+            assert_eq!(replay.audio[0].len(), AUDIO_KEPT_BYTES);
+            assert!(replay.audio[0].iter().all(|sample| *sample == 9));
+            // A track the recorder has none of is silence, never a shifted one.
+            assert_eq!(replay.audio_tail(1, 1), vec![0; per_frame]);
+        }
     }
 
     /// A 64x48 picture of one shade.

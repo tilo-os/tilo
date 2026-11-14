@@ -51,6 +51,7 @@ pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata, retention
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
+use collab_types::WorkspaceId;
 
 /// A co-edit session bound to one workspace on one host connection.
 ///
@@ -59,7 +60,7 @@ use crate::transport::Envelope;
 /// and drain inbound events with [`RelayCoeditSession::recv`].
 pub struct RelayCoeditSession {
     client: RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     /// When the host was last heard from, as [`tilo_clock::unix_now_ns`].
     last_heard_ns: std::sync::atomic::AtomicU64,
@@ -85,7 +86,7 @@ impl RelayCoeditSession {
     /// channel is already closed.
     pub fn join(
         client: RelayClient,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author: [u8; 32],
     ) -> Result<Self, CoeditError> {
         client
@@ -233,7 +234,7 @@ impl RelayCoeditSession {
     }
 
     /// The workspace this session is bound to.
-    pub fn workspace_id(&self) -> u64 {
+    pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
 
@@ -570,7 +571,7 @@ impl RelayCoeditSession {
                     reason,
                 } if workspace_id == self.workspace_id => {
                     tracing::warn!(
-                        workspace_id,
+                        workspace_id = %workspace_id,
                         to = %hex::encode(to_device_public_key),
                         %reason,
                         "the host could not deliver a remote action sent on this session"
@@ -664,79 +665,83 @@ impl RelayCoeditSession {
 mod tests {
     use super::*;
 
-    #[test]
-    fn coedit_wrappers_round_trip_and_reject_foreign_bytes() {
-        use automerge::transaction::Transactable;
+    tilo_test_env::scenario! {
+        fn coedit_payloads_round_trip_and_name_their_retention;
 
-        // Every payload variant round-trips.
-        let checkpoint = CoeditPayload::Checkpoint {
-            channel: [3; 32],
-            body: vec![6, 5],
-        };
-        let retained = CoeditPayload::RetainedDelta {
-            channel: [4; 32],
-            body: vec![2, 1],
-        };
-        for payload in [checkpoint, retained] {
-            assert_eq!(
-                CoeditPayload::decode(&payload.encode().unwrap()),
-                Some(payload)
+        phase coedit_wrappers_round_trip_and_reject_foreign_bytes;
+        {
+            use automerge::transaction::Transactable;
+
+            // Every payload variant round-trips.
+            let checkpoint = CoeditPayload::Checkpoint {
+                channel: [3; 32],
+                body: vec![6, 5],
+            };
+            let retained = CoeditPayload::RetainedDelta {
+                channel: [4; 32],
+                body: vec![2, 1],
+            };
+            for payload in [checkpoint, retained] {
+                assert_eq!(
+                    CoeditPayload::decode(&payload.encode().unwrap()),
+                    Some(payload)
+                );
+            }
+
+            // The author key must survive the presence wrapper so a remote cursor
+            // is drawn against the right collaborator — the host envelope carries
+            // no author of its own.
+            let wrapped = AttributedPresence {
+                author: [7u8; 32],
+                body: vec![10, 20, 30],
+            };
+            let decoded = AttributedPresence::decode(&wrapped.encode().unwrap()).unwrap();
+            assert_eq!(decoded.author, [7u8; 32]);
+            assert_eq!(decoded.body, vec![10, 20, 30]);
+
+            // Bodies that are not a CoeditPayload must not decode into a bogus
+            // variant — `recv` skips such frames rather than mis-apply them.
+            // Empty, an out-of-range enum tag, and a genuine Automerge
+            // incremental delta all fail to decode.
+            assert!(CoeditPayload::decode(&[]).is_none());
+            assert!(CoeditPayload::decode(&[5, 0, 0]).is_none());
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "k", "v").unwrap();
+            let raw_delta = doc.save_incremental();
+            assert!(!raw_delta.is_empty());
+            assert!(
+                CoeditPayload::decode(&raw_delta).is_none(),
+                "a raw Automerge delta must not be mistaken for a CoeditPayload"
             );
         }
 
-        // The author key must survive the presence wrapper so a remote cursor
-        // is drawn against the right collaborator — the host envelope carries
-        // no author of its own.
-        let wrapped = AttributedPresence {
-            author: [7u8; 32],
-            body: vec![10, 20, 30],
-        };
-        let decoded = AttributedPresence::decode(&wrapped.encode().unwrap()).unwrap();
-        assert_eq!(decoded.author, [7u8; 32]);
-        assert_eq!(decoded.body, vec![10, 20, 30]);
-
-        // Bodies that are not a CoeditPayload must not decode into a bogus
-        // variant — `recv` skips such frames rather than mis-apply them.
-        // Empty, an out-of-range enum tag, and a genuine Automerge
-        // incremental delta all fail to decode.
-        assert!(CoeditPayload::decode(&[]).is_none());
-        assert!(CoeditPayload::decode(&[5, 0, 0]).is_none());
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "k", "v").unwrap();
-        let raw_delta = doc.save_incremental();
-        assert!(!raw_delta.is_empty());
-        assert!(
-            CoeditPayload::decode(&raw_delta).is_none(),
-            "a raw Automerge delta must not be mistaken for a CoeditPayload"
-        );
-    }
-
-    #[test]
-    fn retention_metadata_reports_only_kind_and_channel() {
-        for (payload, expected) in [
-            (
-                CoeditPayload::Checkpoint {
-                    channel: [3; 32],
-                    body: vec![8; 1024],
-                },
-                ([3; 32], RetentionKind::Checkpoint),
-            ),
-            (
-                CoeditPayload::RetainedDelta {
-                    channel: [4; 32],
-                    body: vec![7; 1024],
-                },
-                ([4; 32], RetentionKind::Delta),
-            ),
-        ] {
-            let encoded = payload.encode().unwrap();
-            assert_eq!(retention_metadata(&encoded), Some(expected));
-            let mut trailing = encoded;
-            trailing.push(0);
-            assert_eq!(retention_metadata(&trailing), Some(expected));
-            assert!(CoeditPayload::decode(&trailing).is_some());
+        phase retention_metadata_reports_only_kind_and_channel;
+        {
+            for (payload, expected) in [
+                (
+                    CoeditPayload::Checkpoint {
+                        channel: [3; 32],
+                        body: vec![8; 1024],
+                    },
+                    ([3; 32], RetentionKind::Checkpoint),
+                ),
+                (
+                    CoeditPayload::RetainedDelta {
+                        channel: [4; 32],
+                        body: vec![7; 1024],
+                    },
+                    ([4; 32], RetentionKind::Delta),
+                ),
+            ] {
+                let encoded = payload.encode().unwrap();
+                assert_eq!(retention_metadata(&encoded), Some(expected));
+                let mut trailing = encoded;
+                trailing.push(0);
+                assert_eq!(retention_metadata(&trailing), Some(expected));
+                assert!(CoeditPayload::decode(&trailing).is_some());
+            }
+            assert_eq!(retention_metadata(&[]), None);
         }
-        assert_eq!(retention_metadata(&[]), None);
     }
 
     #[tokio::test]
@@ -762,7 +767,7 @@ mod tests {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: host.verifying_key().to_bytes(),
             device_label: "coedit scoped receive".into(),
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
@@ -780,7 +785,7 @@ mod tests {
         .unwrap();
         let bad = [
             Envelope::Delta {
-                workspace_id: 42,
+                workspace_id: WorkspaceId::from_u128(42),
                 author_device_public_key: [3; 32],
                 authored_at_ns: 1,
                 signature: [0; 64],
@@ -792,7 +797,7 @@ mod tests {
                 .unwrap(),
             },
             Envelope::RetiredPresence {
-                workspace_id: 42,
+                workspace_id: WorkspaceId::from_u128(42),
                 payload: AttributedPresence {
                     author: [3; 32],
                     body: vec![5],
@@ -801,7 +806,7 @@ mod tests {
                 .unwrap(),
             },
             Envelope::Ready {
-                workspace_id: 42,
+                workspace_id: WorkspaceId::from_u128(42),
                 pending_deltas: 0,
                 records_when_opened: false,
             },
@@ -814,7 +819,12 @@ mod tests {
                 SessionChannels { outbound, inbound },
                 Box::new(Carrier),
             );
-            let session = RelayCoeditSession::join(client, 41, [9; 32]).unwrap();
+            let session = RelayCoeditSession::join(
+                client,
+                tilo_relay_protocol::WorkspaceId::from_u128(41),
+                [9; 32],
+            )
+            .unwrap();
             incoming.send(frame).await.unwrap();
             drop(incoming);
             assert!(

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "A failure dropped on purpose, with the reason it may be: the reason is code, so tidying the comments around it never takes it away."

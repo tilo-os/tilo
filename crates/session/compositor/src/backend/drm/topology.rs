@@ -118,63 +118,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_connector_attempt_names_its_card_connector_and_outcome() {
-        let card = Path::new("/dev/dri/card1");
-        assert_eq!(
-            connector_attempt_line(card, "eDP-1", (2880, 1800), ConnectorAttempt::Lit),
-            "tilo compositor: DRM connector attempt card=/dev/dri/card1 connector=eDP-1 mode=2880x1800 result=lit"
-        );
-        assert_eq!(
-            connector_attempt_line(card, "HDMI-A-1", (1920, 1080), ConnectorAttempt::Disabled),
-            "tilo compositor: DRM connector attempt card=/dev/dri/card1 connector=HDMI-A-1 mode=1920x1080 result=disabled"
-        );
-        assert_eq!(
-            connector_attempt_line(
-                card,
-                "DP-2",
-                (3840, 2160),
-                ConnectorAttempt::Failed("no free crtc can drive this connector")
-            ),
-            "tilo compositor: DRM connector attempt card=/dev/dri/card1 connector=DP-2 mode=3840x2160 result=failed reason=\"no free crtc can drive this connector\""
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The record of which card drives which output.
+        fn the_topology_lists_cards_outputs_and_connector_attempts;
 
-    #[test]
-    fn the_topology_lists_every_held_card_and_each_output_with_its_card() {
-        let cards = BTreeMap::from([
-            (226, PathBuf::from("/dev/dri/card0")),
-            (227, PathBuf::from("/dev/dri/card1")),
-        ]);
-        let mut panel = driven(227, (2880, 1800), "eDP-1");
-        panel.scale = 2.0;
-        let mut hdmi = driven(226, (1920, 1080), "HDMI-A-1");
-        hdmi.logical_position = (1440, 0);
-        assert_eq!(
-            topology_line(&cards, &[panel, hdmi]),
-            "tilo compositor: DRM topology cards=2 driven_cards=2 outputs=2\
+        phase a_connector_attempt_names_its_card_connector_and_outcome;
+        {
+            let card = Path::new("/dev/dri/card1");
+            assert_eq!(
+                connector_attempt_line(card, "eDP-1", (2880, 1800), ConnectorAttempt::Lit),
+                "tilo compositor: DRM connector attempt card=/dev/dri/card1 connector=eDP-1 mode=2880x1800 result=lit"
+            );
+            assert_eq!(
+                connector_attempt_line(card, "HDMI-A-1", (1920, 1080), ConnectorAttempt::Disabled),
+                "tilo compositor: DRM connector attempt card=/dev/dri/card1 connector=HDMI-A-1 mode=1920x1080 result=disabled"
+            );
+            assert_eq!(
+                connector_attempt_line(
+                    card,
+                    "DP-2",
+                    (3840, 2160),
+                    ConnectorAttempt::Failed("no free crtc can drive this connector")
+                ),
+                "tilo compositor: DRM connector attempt card=/dev/dri/card1 connector=DP-2 mode=3840x2160 result=failed reason=\"no free crtc can drive this connector\""
+            );
+        }
+
+        phase the_topology_lists_every_held_card_and_each_output_with_its_card;
+        {
+            let cards = BTreeMap::from([
+                (226, PathBuf::from("/dev/dri/card0")),
+                (227, PathBuf::from("/dev/dri/card1")),
+            ]);
+            let mut panel = driven(227, (2880, 1800), "eDP-1");
+            panel.scale = 2.0;
+            let mut hdmi = driven(226, (1920, 1080), "HDMI-A-1");
+            hdmi.logical_position = (1440, 0);
+            assert_eq!(
+                topology_line(&cards, &[panel, hdmi]),
+                "tilo compositor: DRM topology cards=2 driven_cards=2 outputs=2\
              ; card /dev/dri/card0 outputs=1; card /dev/dri/card1 outputs=1\
              ; output eDP-1 on /dev/dri/card1 2880x1800@60.000Hz at 0,0 scale 2\
              ; output HDMI-A-1 on /dev/dri/card0 1920x1080@60.000Hz at 1440,0 scale 1"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn a_held_card_without_outputs_is_listed_as_driving_none() {
-        let cards = BTreeMap::from([
-            (226, PathBuf::from("/dev/dri/card0")),
-            (227, PathBuf::from("/dev/dri/card1")),
-        ]);
-        let panel = driven(227, (1920, 1200), "eDP-1");
-        let line = topology_line(&cards, &[panel]);
-        assert!(
-            line.starts_with("tilo compositor: DRM topology cards=2 driven_cards=1 outputs=1; card /dev/dri/card0 outputs=0; card /dev/dri/card1 outputs=1;"),
-            "{line}"
-        );
-        assert_eq!(
-            topology_line(&cards, &[]),
-            "tilo compositor: DRM topology cards=2 driven_cards=0 outputs=0\
+        phase a_held_card_without_outputs_is_listed_as_driving_none;
+        {
+            let cards = BTreeMap::from([
+                (226, PathBuf::from("/dev/dri/card0")),
+                (227, PathBuf::from("/dev/dri/card1")),
+            ]);
+            let panel = driven(227, (1920, 1200), "eDP-1");
+            let line = topology_line(&cards, &[panel]);
+            assert!(
+                line.starts_with("tilo compositor: DRM topology cards=2 driven_cards=1 outputs=1; card /dev/dri/card0 outputs=0; card /dev/dri/card1 outputs=1;"),
+                "{line}"
+            );
+            assert_eq!(
+                topology_line(&cards, &[]),
+                "tilo compositor: DRM topology cards=2 driven_cards=0 outputs=0\
              ; card /dev/dri/card0 outputs=0; card /dev/dri/card1 outputs=0"
-        );
+            );
+        }
     }
 }

@@ -160,73 +160,77 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn package_state_is_found_per_workspace_measured_and_removed_in_isolation() {
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
-            seed(
-                tmp.path(),
-                "e3f1-workspace-uuid",
-                "so.tilo.notes",
-                b"bbbbbbbb",
-            );
-            // Another package in the same workspace must not be swept in.
-            seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
+    tilo_test_env::scenario! {
+        fn package_state_is_found_and_measured;
 
-            let found = find(tmp.path(), "so.tilo.notes");
-            let workspaces: Vec<&str> = found.iter().map(|s| s.workspace.as_str()).collect();
-            assert_eq!(workspaces, vec!["e3f1-workspace-uuid", "personal"]);
-            assert_eq!(total_bytes(&found), 12);
-            assert!(found.iter().all(|s| s.files == 1));
-        }
+        phase package_state_is_found_per_workspace_measured_and_removed_in_isolation;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            assert!(find(tmp.path(), "so.tilo.never-run").is_empty());
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
-            let other = seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
-            let found = find(tmp.path(), "so.tilo.notes");
-            let (removed, failures) = remove(&found);
-            assert_eq!(removed, 1);
-            assert!(failures.is_empty());
-            assert!(find(tmp.path(), "so.tilo.notes").is_empty());
-            assert!(other.exists(), "another package's state must survive");
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let dir = seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
-            let elsewhere = tmp.path().join("big");
-            std::fs::create_dir_all(&elsewhere).unwrap();
-            std::fs::write(elsewhere.join("huge.bin"), vec![0u8; 100_000]).unwrap();
-            std::os::unix::fs::symlink(&elsewhere, dir.join("link")).unwrap();
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
+                seed(
+                    tmp.path(),
+                    "e3f1-workspace-uuid",
+                    "so.tilo.notes",
+                    b"bbbbbbbb",
+                );
+                // Another package in the same workspace must not be swept in.
+                seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
 
-            let found = find(tmp.path(), "so.tilo.notes");
-            assert_eq!(found.len(), 1);
-            assert!(
-                found[0].bytes < 1000,
-                "a symlink must not drag an unrelated tree into the total: {}",
-                found[0].bytes
-            );
-        }
-    }
+                let found = find(tmp.path(), "so.tilo.notes");
+                let workspaces: Vec<&str> = found.iter().map(|s| s.workspace.as_str()).collect();
+                assert_eq!(workspaces, vec!["e3f1-workspace-uuid", "personal"]);
+                assert_eq!(total_bytes(&found), 12);
+                assert!(found.iter().all(|s| s.files == 1));
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                assert!(find(tmp.path(), "so.tilo.never-run").is_empty());
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
+                let other = seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
+                let found = find(tmp.path(), "so.tilo.notes");
+                let (removed, failures) = remove(&found);
+                assert_eq!(removed, 1);
+                assert!(failures.is_empty());
+                assert!(find(tmp.path(), "so.tilo.notes").is_empty());
+                assert!(other.exists(), "another package's state must survive");
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let dir = seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
+                let elsewhere = tmp.path().join("big");
+                std::fs::create_dir_all(&elsewhere).unwrap();
+                std::fs::write(elsewhere.join("huge.bin"), vec![0u8; 100_000]).unwrap();
+                std::os::unix::fs::symlink(&elsewhere, dir.join("link")).unwrap();
 
-    #[test]
-    fn state_paths_and_sizes_read_like_the_launchers() {
-        // The installer and the launcher have to agree on the directory name, or "remove this app's
-        // data" would silently miss it.
-        {
-            assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
-            assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
-            assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
+                let found = find(tmp.path(), "so.tilo.notes");
+                assert_eq!(found.len(), 1);
+                assert!(
+                    found[0].bytes < 1000,
+                    "a symlink must not drag an unrelated tree into the total: {}",
+                    found[0].bytes
+                );
+            }
         }
+
+        phase state_paths_and_sizes_read_like_the_launchers;
         {
-            assert_eq!(human_bytes(0), "0 B");
-            assert_eq!(human_bytes(512), "512 B");
-            assert_eq!(human_bytes(1_500), "1.5 kB");
-            assert_eq!(human_bytes(2_400_000), "2.4 MB");
+            // The installer and the launcher have to agree on the directory name, or "remove this app's
+            // data" would silently miss it.
+            {
+                assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
+                assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
+                assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
+            }
+            {
+                assert_eq!(human_bytes(0), "0 B");
+                assert_eq!(human_bytes(512), "512 B");
+                assert_eq!(human_bytes(1_500), "1.5 kB");
+                assert_eq!(human_bytes(2_400_000), "2.4 MB");
+            }
         }
     }
 }

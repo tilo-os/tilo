@@ -209,7 +209,6 @@ mod tests {
     /// The phrase is found where it was typed, both in a document built here
     /// and in the reply a running app gave; the controls — the same shapes
     /// without the phrase — must not report it.
-    #[test]
     fn typed_text_is_found_by_path_and_absent_text_is_not() {
         let found = strings(&saved_document(TYPED));
         let hit = found
@@ -329,7 +328,6 @@ mod tests {
     /// Text in a table cell is text, and is found: cells are ordinary blocks, so
     /// the walk does not stop at body text. The control: a table does not
     /// report cells it never held.
-    #[test]
     fn table_cells_are_found_and_only_the_ones_written() {
         let saved = table_document();
         let found = strings(&saved);
@@ -367,7 +365,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn the_walk_reaches_nested_values_and_skips_empty_ones() {
         let mut doc = AutoCommit::new();
         let a = doc.put_object(&automerge::ROOT, "a", ObjType::Map).unwrap();
@@ -395,5 +392,27 @@ mod tests {
             strings(&doc.save()).is_empty(),
             "an empty value is not content and listing it would only be noise",
         );
+    }
+
+    #[test]
+    fn text_is_found_by_path_in_cells_and_nested_values_and_absent_text_is_not() {
+        let cases: [(&str, fn()); 3] = [
+            (
+                "typed text is found by path and absent text is not",
+                typed_text_is_found_by_path_and_absent_text_is_not,
+            ),
+            (
+                "table cells are found and only the ones written",
+                table_cells_are_found_and_only_the_ones_written,
+            ),
+            (
+                "the walk reaches nested values and skips empty ones",
+                the_walk_reaches_nested_values_and_skips_empty_ones,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

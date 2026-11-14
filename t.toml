@@ -502,12 +502,22 @@ fix = "python3 -I tools/docs/codemap.py"
 name = "docs-reference"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/docs-reference.sh"
+needs = ["docs-reference-bins"]
 outputs = [
   "/target/docs/generated/rest-api.md",
   "/target/docs/generated/python-sdk.md",
   "/target/docs/generated/cli.md",
   "/target/docs/generated/mcp-tools.md",
 ]
+
+# The two commands the reference pages run: built once here, so the pages
+# check reads what they print instead of building them again.
+[[check]]
+name = "docs-reference-bins"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "cargo build --locked -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime-mcp\n"
+outputs = ["/target/debug/tilo", "/target/debug/tilo-runtime-mcp"]
+default = false
 
 # The same for the TypeScript SDK, whose page is read with the TypeScript
 # compiler API: it needs bun and the SDK's locked packages, which the ci-sdk
@@ -2277,8 +2287,15 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "image-ci-sdk"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: every byte it fetches is named by what it read. The base is the ci-fast image by digest,
+# uv and bun are release assets named by version and checked against the SHA-256 the Containerfile
+# holds, and the two SDK environments come from sdk/python/uv.lock and sdk/typescript/bun.lock,
+# each naming its packages with their hashes. Nothing floats: the one input that did (an `unzip`
+# from whichever build Fedora's repositories held) is gone, unpacked by the base's python3 instead
+# (os/Containerfile.ci-sdk). The hosts are the ones those reads name — the registry for the base
+# and the object storage its blobs redirect to, the release assets behind github.com's redirect,
+# PyPI, and npm.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "github.com:443", "objects.githubusercontent.com:443", "release-assets.githubusercontent.com:443", "pypi.org:443", "files.pythonhosted.org:443", "registry.npmjs.org:443"], pinned = true }
 run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-sdk)\nexport SOURCE_DATE_EPOCH\n# The SDKs' manifests and locks are the image's context: the pins and the dependencies they\n# name are baked in, so this context is the only thing the build reads.\ncontext=$TMPDIR/ci-sdk-context\nrm -rf \"$context\"\nmkdir -p \"$context/sdk/python\" \"$context/sdk/typescript\"\ncp sdk/python/pyproject.toml sdk/python/uv.lock \"$context/sdk/python/\"\ncp sdk/typescript/package.json sdk/typescript/bun.lock \"$context/sdk/typescript/\"\nbash tools/ci/publish/oci-build.sh \"$context\" os/Containerfile.ci-sdk /target/publish/ci-sdk\n"
 needs = ["source-date-ci-sdk"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -2807,6 +2824,31 @@ env = { npm_config_cache = "/tmp/npm-cache" }
 requires = ["arch=x86_64"]
 timeout_secs = 1800
 on = ["idle"]
+
+# The tilolang apps laid out headlessly at the standard window sizes: 320x568 and 390x844, a
+# phone's, and 1280x800, a laptop's. What `tilolang layout-check` finds is the check's verdict (a
+# finding the allow-list does not name, a line it names that no longer shows, a view no scenario
+# reaches), and each size's report, the layout of the frames its findings came from and its PNG
+# captures are its outputs: `t outputs layout-check/390x844 --to DIR`. `t test layout-check` runs
+# every size, one size by name. The renders are the toolkit's own, so they run in the test
+# environment (the product's fonts, lavapipe) on x86_64, where the visual goldens are recorded.
+# A run narrows with its inputs, which are part of its key: `app` lays out one package of `apps/tl`
+# (`--input app=apps/tl/tasks`), `press` presses a control by its words before each window is read
+# (`--input press="Mark Buy oat milk and eggs done"`), and `dump=true` prints every frame laid out
+# rather than only those a finding came from. Strict's whole-tree verdict (an allow-list line that
+# no longer shows, a view no scenario reaches) is the run that names no app and no press; a
+# narrowed run still fails on a finding the allow-list does not name.
+[[check]]
+name = "layout-check/{size}"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/test-env.sh bash tools/ci/layout-check.sh {size}"
+env = { TILO_TEST_NTFS_FIXTURES = "0" }
+requires = ["arch=x86_64"]
+outputs = ["/target/layout-check/{size}/**"]
+timeout_secs = 1800
+dispatch_inputs = { app = "", press = "", dump = "false" }
+[check.matrix]
+size = ["320x568", "390x844", "1280x800"]
 
 [[check]]
 name = "app-screenshots"
@@ -4660,9 +4702,11 @@ default = false
 
 [[check]]
 name = "os-base-x86_64"
-# The mirror answers a blob read with a redirect into object storage, whose host is no fixed
-# name: the open network, as the layers built on this image have.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the digest it pulls is os/base-snapshot.env's BASE_REF, which this check's run reads
+# (os/image/build-layer.sh base), and skopeo copies that digest and nothing else — so the answer is
+# the commit's, and asking the registry for a moving tag is not part of it. The mirror answers a
+# blob read with a redirect into its object storage, named here as `pins` names it.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh base x86_64 /target/os/x86_64/base"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/os/x86_64/base/**"]
@@ -4882,9 +4926,11 @@ default = false
 
 [[check]]
 name = "os-base-aarch64"
-# The mirror answers a blob read with a redirect into object storage, whose host is no fixed
-# name: the open network, as the layers built on this image have.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the digest it pulls is os/base-snapshot.env's BASE_REF, which this check's run reads
+# (os/image/build-layer.sh base), and skopeo copies that digest and nothing else — so the answer is
+# the commit's, and asking the registry for a moving tag is not part of it. The mirror answers a
+# blob read with a redirect into its object storage, named here as `pins` names it.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh base aarch64 /target/os/aarch64/base"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/os/aarch64/base/**"]
@@ -5563,6 +5609,30 @@ outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/sig
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1200
 
+# A fresh tilo.sh stack admits a page: the site's own page, in a headless Chromium, reaches the
+# host over the browser's WebTransport and is let into the Lounge through its door, on a stack
+# brought up fresh from what the checks beside it built (so it compiles nothing). One flow of
+# test-e2e.sh's, not the whole gate, so a page the stack turns away fails here by name in about a
+# minute, where the entry-speed flows would show it only as a slower number.
+#
+# Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
+# of its own.
+[[check]]
+name = "tilo-sh-admits-a-page"
+# No egress: as e2e, the page and the stack meet on loopback alone.
+run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/entry entry"
+needs = ["lounge-gate-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/entry/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_SH_ENTRY_VISITS = "1" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+# What it found, not what it ran: the visitor's page and console, and the stack's own logs.
+outputs = ["/target/entry/*.log", "/target/entry/entry/**", "/target/entry/state/logs/*.log"]
+evidence = ["/target/entry/state/logs/**"]
+timeout_secs = 600
+
 # One returning person reloading their workspace page twenty times in one browser, on the e2e
 # stack: per reload, how long the old page held the navigation and what its pagehide listeners
 # took, and the count of reloads that crashed the tab or never came back; then a second tab
@@ -5938,6 +6008,16 @@ needs = ["image-api", "test-image-api", "signing-tools"]
 outputs = ["/target/publish/api/payload.json", "/target/publish/api/signature", "/target/publish/api/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[check]]
+name = "release-tilo-sh"
+# tilo.sh in one dispatch: the Lounge relay, the web entry and the API published from this one
+# commit, once the live relay's state comes through an upgrade, every browser flow passes and a
+# fresh stack admits a page. It prints the three digests; pinning them in the infra repo rolls it out.
+run = "python3 -I -c 'import json,sys\nfor name,path in [(\"lounge\",\"/target/publish/lounge/release/receipt.json\"),(\"web-entry\",\"/target/publish/web-entry/receipt.json\"),(\"api\",\"/target/publish/api/receipt.json\")]:\n    print(name, json.load(open(path))[\"image\"])'"
+needs = ["publish-lounge", "publish-web-entry", "publish-api", "relay-upgrade", "e2e", "tilo-sh-admits-a-page"]
 requires = ["arch=any"]
 on = ["dispatch"]
 

@@ -349,75 +349,280 @@ fn read_entry_bytes(archive: &mut Archive<'_>, name: &str, limit: usize) -> Resu
 mod tests {
     use super::*;
 
-    /// EPUB identity is the content hash; the sample parses; zip member limits and oversized covers are handled before decoding.
-    #[test]
-    fn epub_parsing_is_content_addressed_and_bounded() {
+    const CONTAINER_PATH: &str = "META-INF/container.xml";
+    const CONTAINER: &str = r#"<?xml version="1.0" encoding="utf-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+    const PACKAGE_PATH: &str = "OEBPS/content.opf";
+    /// The one chapter a package lists, as `c`.
+    const ITEM: &str = r#"<item id="c" href="text/c.xhtml" media-type="application/xhtml+xml"/>"#;
+
+    /// A stored archive of `files`, each a name and its text.
+    fn archive(files: &[(&str, &str)]) -> Vec<u8> {
+        let files: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(name, text)| ((*name).to_owned(), text.as_bytes().to_vec()))
+            .collect();
+        crate::test_epub::stored_zip(&files)
+    }
+
+    /// A package document of `metadata`, `manifest` and `spine`.
+    fn package(metadata: &str, manifest: &str, spine: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{metadata}</metadata><manifest>{manifest}</manifest>{spine}</package>"#
+        )
+    }
+
+    /// A chapter document whose body is `body`.
+    fn chapter(body: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>"#
+        )
+    }
+
+    tilo_test_env::scenario! {
+        fn an_epub_parses_or_says_why_it_does_not;
+
+        phase epub_parsing_is_content_addressed_and_bounded;
+        // EPUB identity is the content hash; the sample parses; zip member limits and oversized covers are handled before decoding.
         {
-            // The same bytes always produce the same id — that is what lets a book's
-            // highlights and reading progress follow it across folders, devices and
-            // peers. Two different files produce two different ids.
-            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
-            let a = parse_epub(bytes, 0, "Fable").unwrap();
-            let b = parse_epub(bytes, 3, "Something else").unwrap();
+            {
+                // The same bytes always produce the same id — that is what lets a book's
+                // highlights and reading progress follow it across folders, devices and
+                // peers. Two different files produce two different ids.
+                let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
+                let a = parse_epub(bytes, 0, "Fable").unwrap();
+                let b = parse_epub(bytes, 3, "Something else").unwrap();
+                assert_eq!(
+                    a.id, b.id,
+                    "identical bytes → identical id, regardless of caller hints"
+                );
+                assert!(a.id.starts_with("book:"), "ids are namespaced");
+                assert_eq!(
+                    a.id,
+                    content_id(bytes),
+                    "the book id is exactly the content hash"
+                );
+
+                let mut tweaked = bytes.to_vec();
+                *tweaked.last_mut().unwrap() ^= 0xFF; // one flipped byte = a different file
+                assert_ne!(
+                    content_id(&tweaked),
+                    a.id,
+                    "different bytes → a different book"
+                );
+            }
+
+            {
+                let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
+                let book = parse_epub(bytes, 0, "Fable").expect("sample.epub parses");
+                assert_eq!(book.title, "The Lantern-Keeper's Almanac");
+                assert_eq!(book.author, "Wren Halloway");
+                assert_eq!(book.chapters.len(), 4);
+                assert!(book.chapters[0].title.contains("Tide-House"));
+                // First chapter has a heading + several paragraphs + a blockquote.
+                assert!(
+                    book.chapters[0]
+                        .blocks
+                        .iter()
+                        .any(|b| matches!(b, crate::model::Block::Quote { .. }))
+                );
+                assert!(book.chapters[0].blocks.len() >= 5);
+            }
+
+            {
+                let mut archive =
+                    BoundedArchive::from_bytes(crate::content::SAMPLE_EPUB, ZipLimits::default())
+                        .unwrap();
+                let error = read_entry(&mut archive, "META-INF/container.xml", 1)
+                    .expect_err("the container is larger than one byte");
+                assert!(
+                    error.to_string().contains("per-part limit"),
+                    "the limit is reported instead of allocating the member: {error:#}"
+                );
+            }
+
+            {
+                // This PNG is tiny on disk but declares a source image wider than a
+                // shelf cover can ever need. The preflight dimensions pass rejects it
+                // before `DynamicImage` can allocate its full RGBA buffer.
+                let image = image::RgbImage::new(MAX_COVER_DIMENSION + 1, 1);
+                let mut png = Cursor::new(Vec::new());
+                image
+                    .write_to(&mut png, image::ImageFormat::Png)
+                    .expect("a small generated PNG encodes");
+                assert!(decode_cover(&png.into_inner()).is_none());
+            }
+        }
+
+        phase a_file_that_is_no_book_says_why;
+        // Each file that is no book at all, and the sentence the reader is told:
+        // the outermost context of the error, so its `Display`.
+        {
+            let rows = [
+                ("no bytes at all", Vec::new(), OpenProblem::Damaged),
+                (
+                    "bytes that are no archive",
+                    b"PK, and then no archive".to_vec(),
+                    OpenProblem::Damaged,
+                ),
+                (
+                    "a byte more than a book may weigh",
+                    vec![0; MAX_EPUB_BYTES + 1],
+                    OpenProblem::TooLarge,
+                ),
+                ("an archive of nothing", archive(&[]), OpenProblem::Damaged),
+                (
+                    "an archive without a container",
+                    archive(&[("mimetype", "application/epub+zip")]),
+                    OpenProblem::Damaged,
+                ),
+                (
+                    "a container that is no XML",
+                    archive(&[(CONTAINER_PATH, "not xml")]),
+                    OpenProblem::Damaged,
+                ),
+                (
+                    "a container naming no package",
+                    archive(&[(CONTAINER_PATH, "<container><rootfiles/></container>")]),
+                    OpenProblem::Damaged,
+                ),
+                (
+                    "a package the archive does not hold",
+                    archive(&[(CONTAINER_PATH, CONTAINER)]),
+                    OpenProblem::Damaged,
+                ),
+                (
+                    "a package that is no XML",
+                    archive(&[(CONTAINER_PATH, CONTAINER), (PACKAGE_PATH, "not xml")]),
+                    OpenProblem::Damaged,
+                ),
+            ];
+            for (what, bytes, problem) in rows {
+                let Err(error) = parse_epub(&bytes, 0, "") else {
+                    panic!("{what} opened as a book");
+                };
+                assert_eq!(error.to_string(), problem.to_string(), "{what}: {error:#}");
+            }
+        }
+
+        phase a_book_without_all_its_chapters_says_why;
+        // Each book whose chapters are not all there to read, and the sentence
+        // the reader is told; a book of as many chapters as one may have opens.
+        {
+            let text = chapter("<p>Sing, goddess, the anger of Achilles.</p>");
+            let spine = |chapters: usize| {
+                format!(
+                    "<spine>{}</spine>",
+                    r#"<itemref idref="c"/>"#.repeat(chapters)
+                )
+            };
+            let book = |manifest: &str, spine: &str| {
+                archive(&[
+                    (CONTAINER_PATH, CONTAINER),
+                    (PACKAGE_PATH, &package("", manifest, spine)),
+                    ("OEBPS/text/c.xhtml", &text),
+                ])
+            };
+            let rows = [
+                ("no spine", book(ITEM, ""), OpenProblem::NoChapters),
+                (
+                    "an empty spine",
+                    book(ITEM, &spine(0)),
+                    OpenProblem::NoChapters,
+                ),
+                (
+                    "a spine of chapters the package does not list",
+                    book("", &spine(1)),
+                    OpenProblem::NoChapters,
+                ),
+                (
+                    "a chapter the archive does not hold",
+                    book(&ITEM.replace("c.xhtml", "gone.xhtml"), &spine(1)),
+                    OpenProblem::MissingChapter,
+                ),
+                (
+                    "a chapter named outside the archive",
+                    book(
+                        &ITEM.replace("text/c.xhtml", "../../../etc/passwd"),
+                        &spine(1),
+                    ),
+                    OpenProblem::MissingChapter,
+                ),
+                (
+                    "a chapter more than a book may have",
+                    book(ITEM, &spine(MAX_SPINE_ITEMS + 1)),
+                    OpenProblem::TooLong,
+                ),
+            ];
+            for (what, bytes, problem) in rows {
+                let Err(error) = parse_epub(&bytes, 0, "") else {
+                    panic!("{what} opened as a book");
+                };
+                assert_eq!(error.to_string(), problem.to_string(), "{what}: {error:#}");
+            }
+            let most = parse_epub(&book(ITEM, &spine(MAX_SPINE_ITEMS)), 0, "").unwrap();
             assert_eq!(
-                a.id, b.id,
-                "identical bytes → identical id, regardless of caller hints"
+                most.chapters.len(),
+                MAX_SPINE_ITEMS,
+                "as many chapters as a book may have"
             );
-            assert!(a.id.starts_with("book:"), "ids are namespaced");
+        }
+
+        phase what_a_book_does_not_say_is_filled_in;
+        // A chapter is named by the book's table of contents (here the NCX of
+        // an older book), else by its first heading, else by its number; and a
+        // book that names no title, language or subject gets the reader's.
+        {
+            const NCX: &str = r#"<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap><navPoint id="a" playOrder="1"><navLabel><text> From the contents </text></navLabel><content src="text/a.xhtml#start"/></navPoint></navMap></ncx>"#;
+            const MANIFEST: &str = r#"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="a" href="text/a.xhtml" media-type="application/xhtml+xml"/><item id="b" href="text/b.xhtml" media-type="application/xhtml+xml"/><item id="c" href="text/c.xhtml" media-type="application/xhtml+xml"/>"#;
+            const SPINE: &str = r#"<spine toc="ncx"><itemref idref="a"/><itemref idref="b"/><itemref idref="c"/></spine>"#;
+            let book = |metadata: &str| {
+                archive(&[
+                    (CONTAINER_PATH, CONTAINER),
+                    (PACKAGE_PATH, &package(metadata, MANIFEST, SPINE)),
+                    ("OEBPS/toc.ncx", NCX),
+                    (
+                        "OEBPS/text/a.xhtml",
+                        &chapter("<h2>Its own heading</h2><p>One.</p>"),
+                    ),
+                    (
+                        "OEBPS/text/b.xhtml",
+                        &chapter("<p>Two.</p><h2> The second </h2>"),
+                    ),
+                    ("OEBPS/text/c.xhtml", &chapter("<p>Three.</p>")),
+                ])
+            };
+            let said = |read: &Book| {
+                [
+                    read.title.clone(),
+                    read.author.clone(),
+                    read.language.clone(),
+                    read.subject.clone(),
+                ]
+            };
+
+            let silent = parse_epub(&book(""), 0, "Fable").unwrap();
+            let titles: Vec<&str> = silent
+                .chapters
+                .iter()
+                .map(|read| read.title.as_str())
+                .collect();
+            assert_eq!(titles, ["From the contents", "The second", "Chapter 3"]);
+            assert_eq!(said(&silent), ["Untitled", "", "en", "Fable"]);
+
+            let told = parse_epub(
+                &book(
+                    "<dc:title>Iliad</dc:title><dc:creator>Homer</dc:creator>\
+                 <dc:language>grc</dc:language><dc:subject>Epic</dc:subject>",
+                ),
+                0,
+                "Fable",
+            )
+            .unwrap();
             assert_eq!(
-                a.id,
-                content_id(bytes),
-                "the book id is exactly the content hash"
+                said(&told),
+                ["Iliad", "Homer", "grc", "Epic"],
+                "what the book says of itself comes before the reader's hint"
             );
-
-            let mut tweaked = bytes.to_vec();
-            *tweaked.last_mut().unwrap() ^= 0xFF; // one flipped byte = a different file
-            assert_ne!(
-                content_id(&tweaked),
-                a.id,
-                "different bytes → a different book"
-            );
-        }
-
-        {
-            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
-            let book = parse_epub(bytes, 0, "Fable").expect("sample.epub parses");
-            assert_eq!(book.title, "The Lantern-Keeper's Almanac");
-            assert_eq!(book.author, "Wren Halloway");
-            assert_eq!(book.chapters.len(), 4);
-            assert!(book.chapters[0].title.contains("Tide-House"));
-            // First chapter has a heading + several paragraphs + a blockquote.
-            assert!(
-                book.chapters[0]
-                    .blocks
-                    .iter()
-                    .any(|b| matches!(b, crate::model::Block::Quote { .. }))
-            );
-            assert!(book.chapters[0].blocks.len() >= 5);
-        }
-
-        {
-            let mut archive =
-                BoundedArchive::from_bytes(crate::content::SAMPLE_EPUB, ZipLimits::default())
-                    .unwrap();
-            let error = read_entry(&mut archive, "META-INF/container.xml", 1)
-                .expect_err("the container is larger than one byte");
-            assert!(
-                error.to_string().contains("per-part limit"),
-                "the limit is reported instead of allocating the member: {error:#}"
-            );
-        }
-
-        {
-            // This PNG is tiny on disk but declares a source image wider than a
-            // shelf cover can ever need. The preflight dimensions pass rejects it
-            // before `DynamicImage` can allocate its full RGBA buffer.
-            let image = image::RgbImage::new(MAX_COVER_DIMENSION + 1, 1);
-            let mut png = Cursor::new(Vec::new());
-            image
-                .write_to(&mut png, image::ImageFormat::Png)
-                .expect("a small generated PNG encodes");
-            assert!(decode_cover(&png.into_inner()).is_none());
         }
     }
 }

@@ -541,80 +541,138 @@ mod tests {
         }
     }
 
-    #[test]
-    fn may_learn_refuses_every_secret_field() {
-        use content_hint as h;
-        let cases = [
-            (InputPurpose::Text, h::NONE, true),
-            (
-                InputPurpose::Text,
-                h::SPELLCHECK | h::AUTO_CAPITALIZATION,
-                true,
-            ),
-            (InputPurpose::Email, h::NONE, true),
-            (InputPurpose::Url, h::COMPLETION, true),
-            (InputPurpose::Number, h::NONE, true),
-            (InputPurpose::Password, h::NONE, false),
-            (InputPurpose::Pin, h::NONE, false),
-            (InputPurpose::Text, h::SENSITIVE_DATA, false),
-            (InputPurpose::Text, h::HIDDEN_TEXT, false),
-            (InputPurpose::Email, h::SENSITIVE_DATA | h::LOWERCASE, false),
-        ];
-        for (purpose, hints, want) in cases {
-            assert_eq!(may_learn(purpose, hints), want, "{purpose:?} {hints:#x}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_reducer_follows_purpose_hints_and_secrecy;
 
-    #[test]
-    fn hints_apply_on_done_and_reset_on_activate() {
-        let mut s = ImState::new();
-        s.reduce(ImEvent::Activate);
-        let t = s.reduce(ImEvent::ContentType {
-            hint: content_hint::SENSITIVE_DATA,
-            purpose: content_purpose::NORMAL,
-        });
-        assert_eq!(t.hints_changed, None);
-        let t = s.reduce(ImEvent::Done);
-        assert_eq!(t.hints_changed, Some(content_hint::SENSITIVE_DATA));
-        assert_eq!(s.hints(), content_hint::SENSITIVE_DATA);
-        let t = s.reduce(ImEvent::Activate);
-        assert_eq!(t.hints_changed, Some(content_hint::NONE));
-    }
-
-    #[test]
-    fn purpose_from_wire_maps_known_values_and_reducer_starts_hidden_text() {
-        eprintln!("phase purpose_from_wire_maps_every_known_value");
+        phase may_learn_refuses_every_secret_field;
         {
-            use content_purpose as cp;
-            assert_eq!(purpose_from_wire(cp::NORMAL), InputPurpose::Text);
-            assert_eq!(purpose_from_wire(cp::ALPHA), InputPurpose::Text);
-            assert_eq!(purpose_from_wire(cp::DIGITS), InputPurpose::Pin);
-            assert_eq!(purpose_from_wire(cp::NUMBER), InputPurpose::Number);
-            assert_eq!(purpose_from_wire(cp::PHONE), InputPurpose::Telephone);
-            assert_eq!(purpose_from_wire(cp::URL), InputPurpose::Url);
-            assert_eq!(purpose_from_wire(cp::EMAIL), InputPurpose::Email);
-            assert_eq!(purpose_from_wire(cp::NAME), InputPurpose::Text);
-            assert_eq!(purpose_from_wire(cp::PASSWORD), InputPurpose::Password);
-            assert_eq!(purpose_from_wire(cp::PIN), InputPurpose::Pin);
-            assert_eq!(purpose_from_wire(cp::DATE), InputPurpose::Date);
-            assert_eq!(purpose_from_wire(cp::TIME), InputPurpose::Time);
-            assert_eq!(purpose_from_wire(cp::DATETIME), InputPurpose::Date);
-            assert_eq!(purpose_from_wire(cp::TERMINAL), InputPurpose::Terminal);
+            use content_hint as h;
+            let cases = [
+                (InputPurpose::Text, h::NONE, true),
+                (
+                    InputPurpose::Text,
+                    h::SPELLCHECK | h::AUTO_CAPITALIZATION,
+                    true,
+                ),
+                (InputPurpose::Email, h::NONE, true),
+                (InputPurpose::Url, h::COMPLETION, true),
+                (InputPurpose::Number, h::NONE, true),
+                (InputPurpose::Password, h::NONE, false),
+                (InputPurpose::Pin, h::NONE, false),
+                (InputPurpose::Text, h::SENSITIVE_DATA, false),
+                (InputPurpose::Text, h::HIDDEN_TEXT, false),
+                (InputPurpose::Email, h::SENSITIVE_DATA | h::LOWERCASE, false),
+            ];
+            for (purpose, hints, want) in cases {
+                assert_eq!(may_learn(purpose, hints), want, "{purpose:?} {hints:#x}");
+            }
         }
 
-        eprintln!("phase purpose_from_wire_unknown_falls_back_to_text");
+        phase hints_apply_on_done_and_reset_on_activate;
         {
-            // A value the protocol doesn't define (or a future addition) must not
-            // panic and must degrade to the safe free-text layout.
-            assert_eq!(purpose_from_wire(99), InputPurpose::Text);
-            assert_eq!(purpose_from_wire(u32::MAX), InputPurpose::Text);
+            let mut s = ImState::new();
+            s.reduce(ImEvent::Activate);
+            let t = s.reduce(ImEvent::ContentType {
+                hint: content_hint::SENSITIVE_DATA,
+                purpose: content_purpose::NORMAL,
+            });
+            assert_eq!(t.hints_changed, None);
+            let t = s.reduce(ImEvent::Done);
+            assert_eq!(t.hints_changed, Some(content_hint::SENSITIVE_DATA));
+            assert_eq!(s.hints(), content_hint::SENSITIVE_DATA);
+            let t = s.reduce(ImEvent::Activate);
+            assert_eq!(t.hints_changed, Some(content_hint::NONE));
         }
 
-        eprintln!("phase reducer_starts_hidden_and_text");
+        phase purpose_from_wire_maps_known_values_and_reducer_starts_hidden_text;
         {
-            let s = ImState::new();
-            assert!(!s.visible());
-            assert_eq!(s.purpose(), InputPurpose::Text);
+            eprintln!("phase purpose_from_wire_maps_every_known_value");
+            {
+                use content_purpose as cp;
+                assert_eq!(purpose_from_wire(cp::NORMAL), InputPurpose::Text);
+                assert_eq!(purpose_from_wire(cp::ALPHA), InputPurpose::Text);
+                assert_eq!(purpose_from_wire(cp::DIGITS), InputPurpose::Pin);
+                assert_eq!(purpose_from_wire(cp::NUMBER), InputPurpose::Number);
+                assert_eq!(purpose_from_wire(cp::PHONE), InputPurpose::Telephone);
+                assert_eq!(purpose_from_wire(cp::URL), InputPurpose::Url);
+                assert_eq!(purpose_from_wire(cp::EMAIL), InputPurpose::Email);
+                assert_eq!(purpose_from_wire(cp::NAME), InputPurpose::Text);
+                assert_eq!(purpose_from_wire(cp::PASSWORD), InputPurpose::Password);
+                assert_eq!(purpose_from_wire(cp::PIN), InputPurpose::Pin);
+                assert_eq!(purpose_from_wire(cp::DATE), InputPurpose::Date);
+                assert_eq!(purpose_from_wire(cp::TIME), InputPurpose::Time);
+                assert_eq!(purpose_from_wire(cp::DATETIME), InputPurpose::Date);
+                assert_eq!(purpose_from_wire(cp::TERMINAL), InputPurpose::Terminal);
+            }
+
+            eprintln!("phase purpose_from_wire_unknown_falls_back_to_text");
+            {
+                // A value the protocol doesn't define (or a future addition) must not
+                // panic and must degrade to the safe free-text layout.
+                assert_eq!(purpose_from_wire(99), InputPurpose::Text);
+                assert_eq!(purpose_from_wire(u32::MAX), InputPurpose::Text);
+            }
+
+            eprintln!("phase reducer_starts_hidden_and_text");
+            {
+                let s = ImState::new();
+                assert!(!s.visible());
+                assert_eq!(s.purpose(), InputPurpose::Text);
+            }
+        }
+
+        phase reducer_applies_content_type_purpose_only_on_done;
+        {
+            eprintln!("phase content_type_is_pending_until_done");
+            {
+                let mut s = ImState::new();
+                s.reduce(ImEvent::Activate);
+                // content_type alone does NOT change the applied purpose...
+                let t = s.reduce(purpose_only(content_purpose::NUMBER));
+                assert_eq!(s.purpose(), InputPurpose::Text);
+                assert_eq!(t.purpose_changed, None);
+                let t = s.reduce(ImEvent::Done);
+                assert_eq!(s.purpose(), InputPurpose::Number);
+                assert_eq!(t.purpose_changed, Some(InputPurpose::Number));
+            }
+
+            eprintln!("phase done_without_pending_purpose_is_a_noop");
+            {
+                let mut s = ImState::new();
+                s.reduce(ImEvent::Activate);
+                let t = s.reduce(ImEvent::Done);
+                assert_eq!(t.purpose_changed, None);
+                assert_eq!(s.purpose(), InputPurpose::Text);
+            }
+
+            eprintln!("phase activate_clears_a_stale_purpose_between_fields");
+            {
+                // Focus an email field, then move to a plain text field. Re-activation
+                // must reset to text so the email layout doesn't linger before the new
+                // field's content_type (if any) arrives.
+                let mut s = ImState::new();
+                s.reduce(ImEvent::Activate);
+                s.reduce(purpose_only(content_purpose::EMAIL));
+                s.reduce(ImEvent::Done);
+                assert_eq!(s.purpose(), InputPurpose::Email);
+
+                let t = s.reduce(ImEvent::Activate);
+                assert_eq!(s.purpose(), InputPurpose::Text);
+                assert_eq!(t.purpose_changed, Some(InputPurpose::Text));
+            }
+
+            eprintln!("phase switching_purpose_while_visible_reports_only_purpose");
+            {
+                let mut s = ImState::new();
+                s.reduce(ImEvent::Activate);
+                s.reduce(purpose_only(content_purpose::NUMBER));
+                s.reduce(ImEvent::Done);
+
+                s.reduce(purpose_only(content_purpose::EMAIL));
+                let t = s.reduce(ImEvent::Done);
+                assert_eq!(t.visibility_changed, None);
+                assert_eq!(t.purpose_changed, Some(InputPurpose::Email));
+            }
         }
     }
 
@@ -666,60 +724,6 @@ mod tests {
             let t = s.reduce(ImEvent::Deactivate);
             assert!(!s.visible());
             assert_eq!(t.visibility_changed, Some(false));
-        }
-    }
-
-    #[test]
-    fn reducer_applies_content_type_purpose_only_on_done() {
-        eprintln!("phase content_type_is_pending_until_done");
-        {
-            let mut s = ImState::new();
-            s.reduce(ImEvent::Activate);
-            // content_type alone does NOT change the applied purpose...
-            let t = s.reduce(purpose_only(content_purpose::NUMBER));
-            assert_eq!(s.purpose(), InputPurpose::Text);
-            assert_eq!(t.purpose_changed, None);
-            let t = s.reduce(ImEvent::Done);
-            assert_eq!(s.purpose(), InputPurpose::Number);
-            assert_eq!(t.purpose_changed, Some(InputPurpose::Number));
-        }
-
-        eprintln!("phase done_without_pending_purpose_is_a_noop");
-        {
-            let mut s = ImState::new();
-            s.reduce(ImEvent::Activate);
-            let t = s.reduce(ImEvent::Done);
-            assert_eq!(t.purpose_changed, None);
-            assert_eq!(s.purpose(), InputPurpose::Text);
-        }
-
-        eprintln!("phase activate_clears_a_stale_purpose_between_fields");
-        {
-            // Focus an email field, then move to a plain text field. Re-activation
-            // must reset to text so the email layout doesn't linger before the new
-            // field's content_type (if any) arrives.
-            let mut s = ImState::new();
-            s.reduce(ImEvent::Activate);
-            s.reduce(purpose_only(content_purpose::EMAIL));
-            s.reduce(ImEvent::Done);
-            assert_eq!(s.purpose(), InputPurpose::Email);
-
-            let t = s.reduce(ImEvent::Activate);
-            assert_eq!(s.purpose(), InputPurpose::Text);
-            assert_eq!(t.purpose_changed, Some(InputPurpose::Text));
-        }
-
-        eprintln!("phase switching_purpose_while_visible_reports_only_purpose");
-        {
-            let mut s = ImState::new();
-            s.reduce(ImEvent::Activate);
-            s.reduce(purpose_only(content_purpose::NUMBER));
-            s.reduce(ImEvent::Done);
-
-            s.reduce(purpose_only(content_purpose::EMAIL));
-            let t = s.reduce(ImEvent::Done);
-            assert_eq!(t.visibility_changed, None);
-            assert_eq!(t.purpose_changed, Some(InputPurpose::Email));
         }
     }
 }

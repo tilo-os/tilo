@@ -57,98 +57,56 @@ fn click(app: &mut Window, target: Category) {
     click_category(app, target);
 }
 
-fn click_navigates_to(target: Category) {
-    let mut app = window(VIEWPORT);
-    assert_eq!(
-        selected(&mut app),
-        Category::DEFAULT,
-        "starts on the default category"
-    );
-    if target == Category::DEFAULT {
-        // The default is already selected; navigating to it is a no-op, so
-        // this case is covered by every *other* category proving the switch.
-        return;
-    }
-
-    click(&mut app, target);
-    assert_eq!(
-        selected(&mut app),
-        target,
-        "after the click the selection must be {target:?} (read back from the app)"
-    );
-
-    // The sidebar highlights the clicked category and ONLY it.
-    assert!(
-        row_is_active(&mut app, &target.label()),
-        "the {target:?} row must be active after navigating to it"
-    );
-    assert!(
-        !row_is_active(&mut app, &Category::DEFAULT.label()),
-        "the previously-active default row must no longer be highlighted after navigating to {target:?}"
-    );
-    assert_eq!(
-        active_row_count(&mut app),
-        1,
-        "exactly one sidebar row may be active after navigating to {target:?}"
-    );
-
-    assert!(
-        renders_something(&mut app),
-        "the {target:?} content pane must render after navigating to it"
-    );
-}
-
+/// Every category, each in a window of its own: the window opens on the
+/// default category, a click on the category's row selects it and only it,
+/// its pane draws, and the frames an idle window runs afterwards change
+/// nothing in the record. The default category's row is clicked too: the
+/// row already selected stays the one selected.
 #[test]
-fn clicking_network_bluetooth_or_sound_navigates_to_its_pane() {
-    for category in [Category::Network, Category::Bluetooth, Category::Sound] {
-        click_navigates_to(category);
-    }
-}
+fn clicking_a_category_navigates_to_its_pane_and_leaves_the_record_alone() {
+    for &target in Category::ALL {
+        let mut app = window(VIEWPORT);
+        assert_eq!(
+            selected(&mut app),
+            Category::DEFAULT,
+            "{target:?}: starts on the default category"
+        );
+        click(&mut app, target);
+        let heads = app.read_document(ui::tilo_resource::heads_of);
+        assert_eq!(
+            selected(&mut app),
+            target,
+            "after the click the selection must be {target:?} (read back from the app)"
+        );
 
-#[test]
-fn clicking_displays_input_or_appearance_navigates_to_its_pane() {
-    for category in [Category::Displays, Category::Keyboard, Category::Appearance] {
-        click_navigates_to(category);
-    }
-}
+        // The sidebar highlights the clicked category and ONLY it.
+        assert!(
+            row_is_active(&mut app, &target.label()),
+            "the {target:?} row must be active after navigating to it"
+        );
+        if target != Category::DEFAULT {
+            assert!(
+                !row_is_active(&mut app, &Category::DEFAULT.label()),
+                "the previously-active default row must no longer be highlighted after navigating to {target:?}"
+            );
+        }
+        assert_eq!(
+            active_row_count(&mut app),
+            1,
+            "exactly one sidebar row may be active after navigating to {target:?}"
+        );
 
-#[test]
-fn clicking_accessibility_notifications_or_power_navigates_to_its_pane() {
-    for category in [
-        Category::Accessibility,
-        Category::Notifications,
-        Category::Power,
-    ] {
-        click_navigates_to(category);
-    }
-}
+        assert!(
+            renders_something(&mut app),
+            "the {target:?} content pane must render after navigating to it"
+        );
 
-#[test]
-fn clicking_shortcuts_time_or_users_navigates_to_its_pane() {
-    for category in [
-        Category::KeyboardShortcuts,
-        Category::TimeDate,
-        Category::Users,
-    ] {
-        click_navigates_to(category);
-    }
-}
-
-#[test]
-fn clicking_printers_accounts_or_region_navigates_to_its_pane() {
-    for category in [
-        Category::Printers,
-        Category::ExternalAccounts,
-        Category::RegionFormats,
-    ] {
-        click_navigates_to(category);
-    }
-}
-
-#[test]
-fn clicking_permissions_updates_or_about_navigates_to_its_pane() {
-    for category in [Category::Permissions, Category::Updates, Category::About] {
-        click_navigates_to(category);
+        app.settle();
+        assert_eq!(
+            app.read_document(ui::tilo_resource::heads_of),
+            heads,
+            "{target:?} idle frames must leave the record unchanged"
+        );
     }
 }
 

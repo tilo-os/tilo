@@ -11,197 +11,274 @@ fn limits() -> Limits {
         metadata_bytes: 1024 * 1024,
     }
 }
-#[test]
-fn sealed_frames_authenticate_complete_stream_and_purpose() {
-    let cancel = AtomicBool::new(false);
-    let plain = vec![71; codec::CHUNK + 5];
-    let mut sealer = codec::Sealer::new(
-        Vec::new(),
-        PASSWORD,
-        Purpose::PreparedSetup,
-        8 * 1024 * 1024,
-        &cancel,
-    )
-    .unwrap();
-    sealer.write_all(&plain).unwrap();
-    let (sealed, _) = sealer.finish(0).unwrap();
-    let mut reader =
-        codec::Opener::new(sealed.as_slice(), PASSWORD, 8 * 1024 * 1024, &cancel).unwrap();
-    assert_eq!(reader.purpose, Purpose::PreparedSetup);
-    let mut actual = Vec::new();
-    reader.read_to_end(&mut actual).unwrap();
-    assert_eq!(actual, plain);
-    assert!(reader.footer.is_some());
-    for broken in [
-        sealed[..sealed.len() - 1].to_vec(),
-        {
-            let mut bytes = sealed.clone();
-            bytes.push(0);
-            bytes
-        },
-        {
-            let mut bytes = sealed.clone();
-            let last = bytes.len() - 20;
-            bytes[last] ^= 1;
-            bytes
-        },
-    ] {
-        let mut reader =
-            codec::Opener::new(broken.as_slice(), PASSWORD, 8 * 1024 * 1024, &cancel).unwrap();
-        assert!(reader.read_to_end(&mut Vec::new()).is_err());
-    }
-    assert!(
-        codec::Opener::new(
-            sealed.as_slice(),
-            b"wrong password",
-            8 * 1024 * 1024,
-            &cancel
-        )
-        .is_err()
-    );
-}
-#[test]
-fn portable_home_roundtrip_preserves_data_and_never_stages_plaintext() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = fs::canonicalize(temp.path()).unwrap();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let source = root.join("source");
-    fs::create_dir(&source).unwrap();
-    fs::create_dir(source.join(".var")).unwrap();
-    fs::create_dir(source.join(".var/app")).unwrap();
-    fs::write(
-        source.join(".var/app/account"),
-        b"a very private credential sentinel",
-    )
-    .unwrap();
-    fs::write(source.join("script"), b"#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(source.join("script"), fs::Permissions::from_mode(0o750)).unwrap();
-    use std::os::{fd::AsRawFd, unix::ffi::OsStringExt};
-    let source_file = fs::File::open(source.join("script")).unwrap();
-    let xattr_name = std::ffi::CString::new("user.tilo-fixture").unwrap();
-    let xattr_value = b"preserved";
-    // SAFETY: valid descriptor/name and a readable immutable byte slice.
-    assert_eq!(
-        unsafe {
-            libc::fsetxattr(
-                source_file.as_raw_fd(),
-                xattr_name.as_ptr(),
-                xattr_value.as_ptr().cast(),
-                xattr_value.len(),
-                0,
-            )
-        },
-        0
-    );
-    crate::portable_transfer::acl::fixture::modify(
-        &source.join("script"),
-        "u::rwx,g::r-x,m::r-x,o::---",
-    );
-    crate::portable_transfer::acl::fixture::modify(
-        &source.join(".var/app"),
-        "d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
-    );
-    let native_name = std::ffi::OsString::from_vec(vec![b'n', 0xff]);
-    fs::write(source.join(&native_name), b"native filename").unwrap();
-    fs::hard_link(source.join("script"), source.join("hard-script")).unwrap();
-    std::os::unix::fs::symlink("../../outside", source.join("literal-link")).unwrap();
-    let _runtime_socket =
-        std::os::unix::net::UnixListener::bind(source.join("agent.sock")).unwrap();
-    crate::portable_transfer::acl::fixture::modify(
-        &source,
-        "u::rwx,g::r-x,m::r-x,o::r-x,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
-    );
-    let package = root.join("migration.sealed");
-    let cancel = AtomicBool::new(false);
-    let review = ExportReview::review(&source, &package, Purpose::Home, limits()).unwrap();
-    assert!(review.summary().unwrap().bytes > 0);
-    assert_eq!(review.summary().unwrap().runtime_sockets, 1);
-    let info = review
-        .export(Zeroizing::new(PASSWORD.to_vec()), &cancel)
-        .unwrap();
-    assert!(info.sealed_bytes > 0);
-    assert_eq!(info.runtime_sockets, 1);
-    assert!(
-        !fs::read(&package)
-            .unwrap()
-            .windows(b"a very private credential sentinel".len())
-            .any(|v| v == b"a very private credential sentinel")
-    );
-    assert!(
-        ImportReview::review(
-            &package,
+tilo_test_env::scenario! {
+    /// The portable transfer package: its sealed frames, its round trip and what a refusal leaves.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_portable_package_is_sealed_authenticated_and_never_published_incomplete;
+
+    phase sealed_frames_authenticate_complete_stream_and_purpose;
+    {
+        let cancel = AtomicBool::new(false);
+        let plain = vec![71; codec::CHUNK + 5];
+        let mut sealer = codec::Sealer::new(
+            Vec::new(),
             PASSWORD,
             Purpose::PreparedSetup,
-            limits(),
-            &cancel
-        )
-        .is_err()
-    );
-    let imported =
-        ImportReview::review(&package, PASSWORD, Purpose::Home, limits(), &cancel).unwrap();
-    assert_eq!(imported.info().purpose, Purpose::Home);
-    assert_eq!(imported.info().runtime_sockets, 1);
-    let tree = imported
-        .extract(
-            Zeroizing::new(PASSWORD.to_vec()),
-            &root.join("quarantine"),
+            8 * 1024 * 1024,
             &cancel,
         )
         .unwrap();
-    for relative in ["script", ".var/app", ".var/app/account"] {
-        assert_eq!(
-            crate::portable_transfer::acl::fixture::state(&source.join(relative)),
-            crate::portable_transfer::acl::fixture::state(&tree.root.join(relative))
+        sealer.write_all(&plain).unwrap();
+        let (sealed, _) = sealer.finish(0).unwrap();
+        let mut reader =
+            codec::Opener::new(sealed.as_slice(), PASSWORD, 8 * 1024 * 1024, &cancel).unwrap();
+        assert_eq!(reader.purpose, Purpose::PreparedSetup);
+        let mut actual = Vec::new();
+        reader.read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, plain);
+        assert!(reader.footer.is_some());
+        for broken in [
+            sealed[..sealed.len() - 1].to_vec(),
+            {
+                let mut bytes = sealed.clone();
+                bytes.push(0);
+                bytes
+            },
+            {
+                let mut bytes = sealed.clone();
+                let last = bytes.len() - 20;
+                bytes[last] ^= 1;
+                bytes
+            },
+        ] {
+            let mut reader =
+                codec::Opener::new(broken.as_slice(), PASSWORD, 8 * 1024 * 1024, &cancel).unwrap();
+            assert!(reader.read_to_end(&mut Vec::new()).is_err());
+        }
+        assert!(
+            codec::Opener::new(
+                sealed.as_slice(),
+                b"wrong password",
+                8 * 1024 * 1024,
+                &cancel
+            )
+            .is_err()
         );
     }
-    assert_eq!(
-        fs::metadata(&tree.root).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-    let default_acl = |path: &Path| crate::portable_transfer::acl::fixture::state(path).2;
-    assert_eq!(default_acl(&source), default_acl(&tree.root));
-    assert_eq!(tree.purpose, Purpose::Home);
-    assert!(tree.info.entries >= 6);
-    assert_eq!(tree.info.runtime_sockets, 1);
-    assert!(!tree.root.join("agent.sock").exists());
-    assert!(source.join("agent.sock").exists());
-    assert_eq!(
-        fs::read(tree.root.join(".var/app/account")).unwrap(),
-        b"a very private credential sentinel"
-    );
-    assert_eq!(
-        fs::read_link(tree.root.join("literal-link")).unwrap(),
-        Path::new("../../outside")
-    );
-    assert_eq!(
-        fs::metadata(tree.root.join("script"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o750
-    );
-    assert_eq!(
-        fs::read(tree.root.join(&native_name)).unwrap(),
-        b"native filename"
-    );
-    let target_file = fs::File::open(tree.root.join("script")).unwrap();
-    let mut actual_xattr = [0; 32];
-    // SAFETY: valid descriptor/name and a writable bounded array.
-    let length = unsafe {
-        libc::fgetxattr(
-            target_file.as_raw_fd(),
-            xattr_name.as_ptr(),
-            actual_xattr.as_mut_ptr().cast(),
-            actual_xattr.len(),
+
+    phase portable_home_roundtrip_preserves_data_and_never_stages_plaintext;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let source = root.join("source");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(source.join(".var")).unwrap();
+        fs::create_dir(source.join(".var/app")).unwrap();
+        fs::write(
+            source.join(".var/app/account"),
+            b"a very private credential sentinel",
         )
-    };
-    assert_eq!(length, xattr_value.len() as isize);
-    assert_eq!(&actual_xattr[..length as usize], xattr_value);
-    assert_eq!(
-        fs::read(source.join(".var/app/account")).unwrap(),
-        b"a very private credential sentinel"
-    );
+        .unwrap();
+        fs::write(source.join("script"), b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(source.join("script"), fs::Permissions::from_mode(0o750)).unwrap();
+        use std::os::{fd::AsRawFd, unix::ffi::OsStringExt};
+        let source_file = fs::File::open(source.join("script")).unwrap();
+        let xattr_name = std::ffi::CString::new("user.tilo-fixture").unwrap();
+        let xattr_value = b"preserved";
+        // SAFETY: valid descriptor/name and a readable immutable byte slice.
+        assert_eq!(
+            unsafe {
+                libc::fsetxattr(
+                    source_file.as_raw_fd(),
+                    xattr_name.as_ptr(),
+                    xattr_value.as_ptr().cast(),
+                    xattr_value.len(),
+                    0,
+                )
+            },
+            0
+        );
+        crate::portable_transfer::acl::fixture::modify(
+            &source.join("script"),
+            "u::rwx,g::r-x,m::r-x,o::---",
+        );
+        crate::portable_transfer::acl::fixture::modify(
+            &source.join(".var/app"),
+            "d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
+        );
+        let native_name = std::ffi::OsString::from_vec(vec![b'n', 0xff]);
+        fs::write(source.join(&native_name), b"native filename").unwrap();
+        fs::hard_link(source.join("script"), source.join("hard-script")).unwrap();
+        std::os::unix::fs::symlink("../../outside", source.join("literal-link")).unwrap();
+        let _runtime_socket =
+            std::os::unix::net::UnixListener::bind(source.join("agent.sock")).unwrap();
+        crate::portable_transfer::acl::fixture::modify(
+            &source,
+            "u::rwx,g::r-x,m::r-x,o::r-x,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
+        );
+        let package = root.join("migration.sealed");
+        let cancel = AtomicBool::new(false);
+        let review = ExportReview::review(&source, &package, Purpose::Home, limits()).unwrap();
+        assert!(review.summary().unwrap().bytes > 0);
+        assert_eq!(review.summary().unwrap().runtime_sockets, 1);
+        let info = review
+            .export(Zeroizing::new(PASSWORD.to_vec()), &cancel)
+            .unwrap();
+        assert!(info.sealed_bytes > 0);
+        assert_eq!(info.runtime_sockets, 1);
+        assert!(
+            !fs::read(&package)
+                .unwrap()
+                .windows(b"a very private credential sentinel".len())
+                .any(|v| v == b"a very private credential sentinel")
+        );
+        assert!(
+            ImportReview::review(
+                &package,
+                PASSWORD,
+                Purpose::PreparedSetup,
+                limits(),
+                &cancel
+            )
+            .is_err()
+        );
+        let imported =
+            ImportReview::review(&package, PASSWORD, Purpose::Home, limits(), &cancel).unwrap();
+        assert_eq!(imported.info().purpose, Purpose::Home);
+        assert_eq!(imported.info().runtime_sockets, 1);
+        let tree = imported
+            .extract(
+                Zeroizing::new(PASSWORD.to_vec()),
+                &root.join("quarantine"),
+                &cancel,
+            )
+            .unwrap();
+        for relative in ["script", ".var/app", ".var/app/account"] {
+            assert_eq!(
+                crate::portable_transfer::acl::fixture::state(&source.join(relative)),
+                crate::portable_transfer::acl::fixture::state(&tree.root.join(relative))
+            );
+        }
+        assert_eq!(
+            fs::metadata(&tree.root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let default_acl = |path: &Path| crate::portable_transfer::acl::fixture::state(path).2;
+        assert_eq!(default_acl(&source), default_acl(&tree.root));
+        assert_eq!(tree.purpose, Purpose::Home);
+        assert!(tree.info.entries >= 6);
+        assert_eq!(tree.info.runtime_sockets, 1);
+        assert!(!tree.root.join("agent.sock").exists());
+        assert!(source.join("agent.sock").exists());
+        assert_eq!(
+            fs::read(tree.root.join(".var/app/account")).unwrap(),
+            b"a very private credential sentinel"
+        );
+        assert_eq!(
+            fs::read_link(tree.root.join("literal-link")).unwrap(),
+            Path::new("../../outside")
+        );
+        assert_eq!(
+            fs::metadata(tree.root.join("script"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o750
+        );
+        assert_eq!(
+            fs::read(tree.root.join(&native_name)).unwrap(),
+            b"native filename"
+        );
+        let target_file = fs::File::open(tree.root.join("script")).unwrap();
+        let mut actual_xattr = [0; 32];
+        // SAFETY: valid descriptor/name and a writable bounded array.
+        let length = unsafe {
+            libc::fgetxattr(
+                target_file.as_raw_fd(),
+                xattr_name.as_ptr(),
+                actual_xattr.as_mut_ptr().cast(),
+                actual_xattr.len(),
+            )
+        };
+        assert_eq!(length, xattr_value.len() as isize);
+        assert_eq!(&actual_xattr[..length as usize], xattr_value);
+        assert_eq!(
+            fs::read(source.join(".var/app/account")).unwrap(),
+            b"a very private credential sentinel"
+        );
+    }
+
+    phase authenticated_archive_cannot_write_through_a_literal_link_or_repeat_an_entry;
+    {
+        for duplicate in [false, true] {
+            let mut tar = tar::Builder::new(Vec::new());
+            tar.append_data(&mut header(tar::EntryType::Directory, 0), ".", io::empty())
+                .unwrap();
+            if duplicate {
+                tar.append_data(
+                    &mut header(tar::EntryType::Regular, 1),
+                    "file",
+                    b"a".as_slice(),
+                )
+                .unwrap();
+                tar.append_data(
+                    &mut header(tar::EntryType::Regular, 1),
+                    "file",
+                    b"b".as_slice(),
+                )
+                .unwrap();
+            } else {
+                let mut link = header(tar::EntryType::Symlink, 0);
+                link.set_link_name("../../outside").unwrap();
+                link.set_cksum();
+                tar.append_data(&mut link, "link", io::empty()).unwrap();
+                tar.append_data(
+                    &mut header(tar::EntryType::Regular, 1),
+                    "link/file",
+                    b"a".as_slice(),
+                )
+                .unwrap();
+            }
+            let bytes = package_of_archive(&tar.into_inner().unwrap());
+            let cancel = AtomicBool::new(false);
+            let reader = codec::Opener::new(
+                bytes.as_slice(),
+                PASSWORD,
+                limits().plaintext_bytes,
+                &cancel,
+            )
+            .unwrap();
+            assert!(archive::scan(reader, limits()).is_err());
+        }
+    }
+
+    phase cancelled_or_changed_source_does_not_publish_a_complete_package;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let source = root.join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), b"reviewed").unwrap();
+        let package = root.join("package");
+        let review = ExportReview::review(&source, &package, Purpose::Home, limits()).unwrap();
+        fs::write(source.join("file"), b"changed").unwrap();
+        assert!(
+            review
+                .export(Zeroizing::new(PASSWORD.to_vec()), &AtomicBool::new(false))
+                .is_err()
+        );
+        assert!(!package.exists());
+        let review = ExportReview::review(&source, &package, Purpose::Home, limits()).unwrap();
+        assert!(
+            review
+                .export(Zeroizing::new(PASSWORD.to_vec()), &AtomicBool::new(true))
+                .is_err()
+        );
+        assert!(!package.exists());
+    }
 }
 
 fn package_of_archive(archive: &[u8]) -> Vec<u8> {
@@ -225,74 +302,6 @@ fn header(kind: tar::EntryType, size: u64) -> tar::Header {
     header.set_mtime(0);
     header.set_cksum();
     header
-}
-#[test]
-fn authenticated_archive_cannot_write_through_a_literal_link_or_repeat_an_entry() {
-    for duplicate in [false, true] {
-        let mut tar = tar::Builder::new(Vec::new());
-        tar.append_data(&mut header(tar::EntryType::Directory, 0), ".", io::empty())
-            .unwrap();
-        if duplicate {
-            tar.append_data(
-                &mut header(tar::EntryType::Regular, 1),
-                "file",
-                b"a".as_slice(),
-            )
-            .unwrap();
-            tar.append_data(
-                &mut header(tar::EntryType::Regular, 1),
-                "file",
-                b"b".as_slice(),
-            )
-            .unwrap();
-        } else {
-            let mut link = header(tar::EntryType::Symlink, 0);
-            link.set_link_name("../../outside").unwrap();
-            link.set_cksum();
-            tar.append_data(&mut link, "link", io::empty()).unwrap();
-            tar.append_data(
-                &mut header(tar::EntryType::Regular, 1),
-                "link/file",
-                b"a".as_slice(),
-            )
-            .unwrap();
-        }
-        let bytes = package_of_archive(&tar.into_inner().unwrap());
-        let cancel = AtomicBool::new(false);
-        let reader = codec::Opener::new(
-            bytes.as_slice(),
-            PASSWORD,
-            limits().plaintext_bytes,
-            &cancel,
-        )
-        .unwrap();
-        assert!(archive::scan(reader, limits()).is_err());
-    }
-}
-#[test]
-fn cancelled_or_changed_source_does_not_publish_a_complete_package() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = fs::canonicalize(temp.path()).unwrap();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let source = root.join("source");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("file"), b"reviewed").unwrap();
-    let package = root.join("package");
-    let review = ExportReview::review(&source, &package, Purpose::Home, limits()).unwrap();
-    fs::write(source.join("file"), b"changed").unwrap();
-    assert!(
-        review
-            .export(Zeroizing::new(PASSWORD.to_vec()), &AtomicBool::new(false))
-            .is_err()
-    );
-    assert!(!package.exists());
-    let review = ExportReview::review(&source, &package, Purpose::Home, limits()).unwrap();
-    assert!(
-        review
-            .export(Zeroizing::new(PASSWORD.to_vec()), &AtomicBool::new(true))
-            .is_err()
-    );
-    assert!(!package.exists());
 }
 #[test]
 fn mid_export_cancellation_reaps_actual_tar_removes_ciphertext_and_retries() {
@@ -698,94 +707,100 @@ fn large_sparse_home_roundtrip_uses_stored_capacity_and_preserves_logical_data()
     assert!(fs::metadata(&image).unwrap().blocks() * 512 < 1024 * 1024);
 }
 
-#[test]
-fn sparse_archive_requires_exact_authenticated_logical_source_bound() {
-    let root = tempfile::Builder::new()
-        .permissions(fs::Permissions::from_mode(0o700))
-        .tempdir()
-        .unwrap();
-    let mut archive = tar::Builder::new(Vec::new());
-    archive
-        .append_data(&mut header(tar::EntryType::Directory, 0), ".", io::empty())
-        .unwrap();
-    archive
-        .append_pax_extensions([
-            ("GNU.sparse.size", b"8192".as_slice()),
-            ("GNU.sparse.numblocks", b"2".as_slice()),
-            ("GNU.sparse.map", b"0,4,8192,0".as_slice()),
-            ("GNU.sparse.name", b"file".as_slice()),
-        ])
-        .unwrap();
-    archive
-        .append_data(
-            &mut header(tar::EntryType::Regular, 4),
-            "GNUSparseFile.fixture/file",
-            b"data".as_slice(),
-        )
-        .unwrap();
-    let archive = archive.into_inner().unwrap();
-    let cancel = AtomicBool::new(false);
-    for (index, logical) in [None, Some(4096), Some(8192)].into_iter().enumerate() {
-        let mut seal = codec::Sealer::new(
-            Vec::new(),
-            PASSWORD,
-            Purpose::Home,
-            limits().plaintext_bytes,
-            &cancel,
-        )
-        .unwrap();
-        seal.write_all(&archive).unwrap();
-        let (bytes, _) = seal.finish_bound(0, None, logical).unwrap();
-        let package = root.path().join(format!("package-{index}"));
-        fs::write(&package, bytes).unwrap();
-        let result = ImportReview::review(&package, PASSWORD, Purpose::Home, limits(), &cancel);
-        if logical == Some(8192) {
-            assert_eq!(result.unwrap().info().logical_bytes, 8192);
-        } else {
-            assert!(
-                result.is_err(),
-                "Missing or mismatched logical bound must refuse before extraction"
-            );
-        }
-    }
-    assert_eq!(
-        root.path().read_dir().unwrap().count(),
-        3,
-        "Review must not create any target tree"
-    );
-}
+tilo_test_env::scenario! {
+    /// Sparse files in a portable package.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_sparse_archive_is_bound_to_its_authenticated_logical_size_and_encoding;
 
-#[test]
-fn non_home_setup_encoding_keeps_regular_legacy_footer_even_for_sparse_source() {
-    let root = tempfile::Builder::new()
-        .permissions(fs::Permissions::from_mode(0o700))
-        .tempdir()
-        .unwrap();
-    let source = root.path().join("source");
-    fs::create_dir(&source).unwrap();
-    let file = File::create(source.join("payload")).unwrap();
-    file.set_len(65536).unwrap();
-    let package = root.path().join("setup.sealed");
-    let cancel = AtomicBool::new(false);
-    let exported = ExportReview::review(&source, &package, Purpose::PreparedSetup, limits())
-        .unwrap()
-        .export(Zeroizing::new(PASSWORD.to_vec()), &cancel)
-        .unwrap();
-    assert_eq!(exported.logical_bytes, 65536);
-    assert!(exported.plaintext_bytes >= 65536);
-    let mut file = File::open(package).unwrap();
-    let (_, footer) = archive::scan(
-        codec::Opener::new(&mut file, PASSWORD, limits().plaintext_bytes, &cancel).unwrap(),
-        limits(),
-    )
-    .unwrap();
-    assert!(footer.logical_bytes.is_none());
-    assert!(
-        serde_json::to_value(&footer)
+    phase sparse_archive_requires_exact_authenticated_logical_source_bound;
+    {
+        let root = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let mut archive = tar::Builder::new(Vec::new());
+        archive
+            .append_data(&mut header(tar::EntryType::Directory, 0), ".", io::empty())
+            .unwrap();
+        archive
+            .append_pax_extensions([
+                ("GNU.sparse.size", b"8192".as_slice()),
+                ("GNU.sparse.numblocks", b"2".as_slice()),
+                ("GNU.sparse.map", b"0,4,8192,0".as_slice()),
+                ("GNU.sparse.name", b"file".as_slice()),
+            ])
+            .unwrap();
+        archive
+            .append_data(
+                &mut header(tar::EntryType::Regular, 4),
+                "GNUSparseFile.fixture/file",
+                b"data".as_slice(),
+            )
+            .unwrap();
+        let archive = archive.into_inner().unwrap();
+        let cancel = AtomicBool::new(false);
+        for (index, logical) in [None, Some(4096), Some(8192)].into_iter().enumerate() {
+            let mut seal = codec::Sealer::new(
+                Vec::new(),
+                PASSWORD,
+                Purpose::Home,
+                limits().plaintext_bytes,
+                &cancel,
+            )
+            .unwrap();
+            seal.write_all(&archive).unwrap();
+            let (bytes, _) = seal.finish_bound(0, None, logical).unwrap();
+            let package = root.path().join(format!("package-{index}"));
+            fs::write(&package, bytes).unwrap();
+            let result = ImportReview::review(&package, PASSWORD, Purpose::Home, limits(), &cancel);
+            if logical == Some(8192) {
+                assert_eq!(result.unwrap().info().logical_bytes, 8192);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "Missing or mismatched logical bound must refuse before extraction"
+                );
+            }
+        }
+        assert_eq!(
+            root.path().read_dir().unwrap().count(),
+            3,
+            "Review must not create any target tree"
+        );
+    }
+
+    phase non_home_setup_encoding_keeps_regular_legacy_footer_even_for_sparse_source;
+    {
+        let root = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let file = File::create(source.join("payload")).unwrap();
+        file.set_len(65536).unwrap();
+        let package = root.path().join("setup.sealed");
+        let cancel = AtomicBool::new(false);
+        let exported = ExportReview::review(&source, &package, Purpose::PreparedSetup, limits())
             .unwrap()
-            .get("logical_bytes")
-            .is_none()
-    );
+            .export(Zeroizing::new(PASSWORD.to_vec()), &cancel)
+            .unwrap();
+        assert_eq!(exported.logical_bytes, 65536);
+        assert!(exported.plaintext_bytes >= 65536);
+        let mut file = File::open(package).unwrap();
+        let (_, footer) = archive::scan(
+            codec::Opener::new(&mut file, PASSWORD, limits().plaintext_bytes, &cancel).unwrap(),
+            limits(),
+        )
+        .unwrap();
+        assert!(footer.logical_bytes.is_none());
+        assert!(
+            serde_json::to_value(&footer)
+                .unwrap()
+                .get("logical_bytes")
+                .is_none()
+        );
+    }
 }
 
 #[test]

@@ -448,222 +448,226 @@ mod tests {
         );
     }
 
-    #[test]
-    fn startup_collection_preserves_real_consumer_wire_and_refuses_before_overflow() {
-        let source = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        prepare(source.path());
-        prepare(target.path());
-        let relative = Path::new(".config/autostart/import.desktop");
-        std::fs::write(
-            source.path().join(relative),
-            b"[Desktop Entry]\nExec=imported\n",
-        )
-        .unwrap();
-        let entry = Entry::capture(&home_file(source.path()).unwrap(), relative)
-            .unwrap()
-            .unwrap();
-        let mut builder = RecordBuilder::new(OPERATION.into()).unwrap();
-        builder.push(entry.clone()).unwrap();
-        assert!(builder.push(entry.clone()).is_err());
-        let record = builder.finish().unwrap();
-        assert_eq!(record.entries, vec![entry.clone()]);
-        publish(target.path(), &record);
-        std::fs::rename(source.path().join(relative), target.path().join(relative)).unwrap();
-        assert_eq!(read(target.path()).unwrap().unwrap().entries, vec![entry]);
-        assert!(
-            filter(target.path(), &[target.path().join(relative)])
-                .unwrap()
-                .is_empty()
-        );
-        let mut builder = RecordBuilder::new(OPERATION.into()).unwrap();
-        // Distinct actual captured paths exceed the existing 4096-entry policy;
-        // refusal leaves the accepted record intact and independently valid.
-        for number in 0..=MAX_ENTRIES {
-            let relative = PathBuf::from(format!(".config/autostart/item-{number}.desktop"));
+    tilo_test_env::scenario! {
+        fn a_migrated_startup_record_blocks_what_it_names_and_refuses_what_it_cannot_trust;
+
+        phase startup_collection_preserves_real_consumer_wire_and_refuses_before_overflow;
+        {
+            let source = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir().unwrap();
+            prepare(source.path());
+            prepare(target.path());
+            let relative = Path::new(".config/autostart/import.desktop");
             std::fs::write(
-                source.path().join(&relative),
+                source.path().join(relative),
                 b"[Desktop Entry]\nExec=imported\n",
             )
             .unwrap();
-            let entry = Entry::capture(&home_file(source.path()).unwrap(), &relative)
+            let entry = Entry::capture(&home_file(source.path()).unwrap(), relative)
                 .unwrap()
                 .unwrap();
-            if number < MAX_ENTRIES {
-                builder.push(entry).unwrap();
-            } else {
-                assert!(builder.push(entry).is_err());
+            let mut builder = RecordBuilder::new(OPERATION.into()).unwrap();
+            builder.push(entry.clone()).unwrap();
+            assert!(builder.push(entry.clone()).is_err());
+            let record = builder.finish().unwrap();
+            assert_eq!(record.entries, vec![entry.clone()]);
+            publish(target.path(), &record);
+            std::fs::rename(source.path().join(relative), target.path().join(relative)).unwrap();
+            assert_eq!(read(target.path()).unwrap().unwrap().entries, vec![entry]);
+            assert!(
+                filter(target.path(), &[target.path().join(relative)])
+                    .unwrap()
+                    .is_empty()
+            );
+            let mut builder = RecordBuilder::new(OPERATION.into()).unwrap();
+            // Distinct actual captured paths exceed the existing 4096-entry policy;
+            // refusal leaves the accepted record intact and independently valid.
+            for number in 0..=MAX_ENTRIES {
+                let relative = PathBuf::from(format!(".config/autostart/item-{number}.desktop"));
+                std::fs::write(
+                    source.path().join(&relative),
+                    b"[Desktop Entry]\nExec=imported\n",
+                )
+                .unwrap();
+                let entry = Entry::capture(&home_file(source.path()).unwrap(), &relative)
+                    .unwrap()
+                    .unwrap();
+                if number < MAX_ENTRIES {
+                    builder.push(entry).unwrap();
+                } else {
+                    assert!(builder.push(entry).is_err());
+                }
             }
+            assert_eq!(builder.finish().unwrap().entries.len(), MAX_ENTRIES);
         }
-        assert_eq!(builder.finish().unwrap().entries.len(), MAX_ENTRIES);
-    }
 
-    #[test]
-    fn renamed_import_is_blocked_and_unrelated_entries_survive() {
-        let source = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        prepare(source.path());
-        prepare(target.path());
-        let name = Path::new(".config/autostart/import.desktop");
-        std::fs::write(
-            source.path().join(name),
-            b"[Desktop Entry]\nExec=imported\n",
-        )
-        .unwrap();
-        let entry = Entry::capture(&home_file(source.path()).unwrap(), name)
-            .unwrap()
-            .unwrap();
-        let record = Record {
-            schema: 1,
-            operation: OPERATION.into(),
-            entries: vec![entry],
-        };
-        publish(target.path(), &record);
-        std::fs::rename(source.path().join(name), target.path().join(name)).unwrap();
-        let unrelated = target.path().join(".config/autostart/existing.desktop");
-        std::fs::write(&unrelated, b"existing").unwrap();
-        let imported = target.path().join(name);
-        let system = PathBuf::from("/etc/xdg/autostart/system.desktop");
-        assert_eq!(
-            filter(
-                target.path(),
-                &[imported.clone(), unrelated.clone(), system.clone()]
+        phase renamed_import_is_blocked_and_unrelated_entries_survive;
+        {
+            let source = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir().unwrap();
+            prepare(source.path());
+            prepare(target.path());
+            let name = Path::new(".config/autostart/import.desktop");
+            std::fs::write(
+                source.path().join(name),
+                b"[Desktop Entry]\nExec=imported\n",
             )
-            .unwrap(),
-            BTreeSet::from([unrelated, system])
-        );
-        assert!(
-            read(target.path())
-                .unwrap()
-                .unwrap()
-                .blocks(&home_file(target.path()).unwrap(), name)
-                .unwrap()
-        );
-        std::fs::write(imported, b"changed").unwrap();
-        assert!(filter(target.path(), &[name.to_path_buf()]).is_err());
-        assert!(filter(target.path(), &[]).is_err());
-    }
-
-    #[test]
-    fn caller_home_namespace_alias_remains_protected() {
-        let directory = tempfile::tempdir().unwrap();
-        let physical = directory.path().join("physical/home");
-        std::fs::create_dir_all(&physical).unwrap();
-        prepare(&physical);
-        symlink(
-            directory.path().join("physical"),
-            directory.path().join("alias"),
-        )
-        .unwrap();
-        let logical = directory.path().join("alias/home");
-        let name = Path::new(".config/autostart/import.desktop");
-        std::fs::write(physical.join(name), b"imported").unwrap();
-        let entry = Entry::capture(&home_file(&physical).unwrap(), name)
-            .unwrap()
             .unwrap();
-        publish(
-            &physical,
-            &Record {
+            let entry = Entry::capture(&home_file(source.path()).unwrap(), name)
+                .unwrap()
+                .unwrap();
+            let record = Record {
                 schema: 1,
                 operation: OPERATION.into(),
                 entries: vec![entry],
-            },
-        );
-        assert!(filter(&logical, &[logical.join(name)]).unwrap().is_empty());
-    }
+            };
+            publish(target.path(), &record);
+            std::fs::rename(source.path().join(name), target.path().join(name)).unwrap();
+            let unrelated = target.path().join(".config/autostart/existing.desktop");
+            std::fs::write(&unrelated, b"existing").unwrap();
+            let imported = target.path().join(name);
+            let system = PathBuf::from("/etc/xdg/autostart/system.desktop");
+            assert_eq!(
+                filter(
+                    target.path(),
+                    &[imported.clone(), unrelated.clone(), system.clone()]
+                )
+                .unwrap(),
+                BTreeSet::from([unrelated, system])
+            );
+            assert!(
+                read(target.path())
+                    .unwrap()
+                    .unwrap()
+                    .blocks(&home_file(target.path()).unwrap(), name)
+                    .unwrap()
+            );
+            std::fs::write(imported, b"changed").unwrap();
+            assert!(filter(target.path(), &[name.to_path_buf()]).is_err());
+            assert!(filter(target.path(), &[]).is_err());
+        }
 
-    #[test]
-    fn required_policy_missing_malformed_public_and_foreign_operation_refuse() {
-        let home = tempfile::tempdir().unwrap();
-        prepare(home.path());
-        assert!(read(home.path()).unwrap().is_none());
-        let record = Record {
-            schema: 1,
-            operation: OPERATION.into(),
-            entries: vec![],
-        };
-        publish(home.path(), &record);
-        std::fs::remove_file(home.path().join(REQUIRED_PATH)).unwrap();
-        assert!(read(home.path()).is_err());
-        assert!(filter(home.path(), &[]).is_err());
-        publish(home.path(), &record);
-        std::fs::remove_file(home.path().join(RECORD_PATH)).unwrap();
-        assert!(filter(home.path(), &[]).is_err());
-        write_private(&home.path().join(RECORD_PATH), b"{");
-        assert!(read(home.path()).is_err());
-        publish(home.path(), &record);
-        std::fs::set_permissions(
-            home.path().join(RECORD_PATH),
-            std::fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
-        assert!(read(home.path()).is_err());
-        publish(
-            home.path(),
-            &Record {
-                operation: "different".into(),
-                ..record
-            },
-        );
-        assert!(read(home.path()).is_err());
-    }
+        phase caller_home_namespace_alias_remains_protected;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let physical = directory.path().join("physical/home");
+            std::fs::create_dir_all(&physical).unwrap();
+            prepare(&physical);
+            symlink(
+                directory.path().join("physical"),
+                directory.path().join("alias"),
+            )
+            .unwrap();
+            let logical = directory.path().join("alias/home");
+            let name = Path::new(".config/autostart/import.desktop");
+            std::fs::write(physical.join(name), b"imported").unwrap();
+            let entry = Entry::capture(&home_file(&physical).unwrap(), name)
+                .unwrap()
+                .unwrap();
+            publish(
+                &physical,
+                &Record {
+                    schema: 1,
+                    operation: OPERATION.into(),
+                    entries: vec![entry],
+                },
+            );
+            assert!(filter(&logical, &[logical.join(name)]).unwrap().is_empty());
+        }
 
-    #[test]
-    fn literal_links_and_imported_boundary_are_blocked_without_following() {
-        let source = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        prepare(source.path());
-        prepare(target.path());
-        let name = Path::new(".config/autostart/link.desktop");
-        symlink("/missing/entry.desktop", source.path().join(name)).unwrap();
-        let entry = Entry::capture(&home_file(source.path()).unwrap(), name)
+        phase required_policy_missing_malformed_public_and_foreign_operation_refuse;
+        {
+            let home = tempfile::tempdir().unwrap();
+            prepare(home.path());
+            assert!(read(home.path()).unwrap().is_none());
+            let record = Record {
+                schema: 1,
+                operation: OPERATION.into(),
+                entries: vec![],
+            };
+            publish(home.path(), &record);
+            std::fs::remove_file(home.path().join(REQUIRED_PATH)).unwrap();
+            assert!(read(home.path()).is_err());
+            assert!(filter(home.path(), &[]).is_err());
+            publish(home.path(), &record);
+            std::fs::remove_file(home.path().join(RECORD_PATH)).unwrap();
+            assert!(filter(home.path(), &[]).is_err());
+            write_private(&home.path().join(RECORD_PATH), b"{");
+            assert!(read(home.path()).is_err());
+            publish(home.path(), &record);
+            std::fs::set_permissions(
+                home.path().join(RECORD_PATH),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+            assert!(read(home.path()).is_err());
+            publish(
+                home.path(),
+                &Record {
+                    operation: "different".into(),
+                    ..record
+                },
+            );
+            assert!(read(home.path()).is_err());
+        }
+
+        phase literal_links_and_imported_boundary_are_blocked_without_following;
+        {
+            let source = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir().unwrap();
+            prepare(source.path());
+            prepare(target.path());
+            let name = Path::new(".config/autostart/link.desktop");
+            symlink("/missing/entry.desktop", source.path().join(name)).unwrap();
+            let entry = Entry::capture(&home_file(source.path()).unwrap(), name)
+                .unwrap()
+                .unwrap();
+            publish(
+                target.path(),
+                &Record {
+                    schema: 1,
+                    operation: OPERATION.into(),
+                    entries: vec![entry],
+                },
+            );
+            std::fs::rename(source.path().join(name), target.path().join(name)).unwrap();
+            assert!(
+                filter(target.path(), &[name.to_path_buf()])
+                    .unwrap()
+                    .is_empty()
+            );
+            std::fs::remove_file(target.path().join(name)).unwrap();
+            symlink("/changed", target.path().join(name)).unwrap();
+            assert!(filter(target.path(), &[name.to_path_buf()]).is_err());
+
+            std::fs::remove_dir(source.path().join(".config/autostart")).unwrap();
+            symlink("/outside", source.path().join(".config/autostart")).unwrap();
+            let boundary = Entry::capture(
+                &home_file(source.path()).unwrap(),
+                Path::new(".config/autostart"),
+            )
             .unwrap()
             .unwrap();
-        publish(
-            target.path(),
-            &Record {
-                schema: 1,
-                operation: OPERATION.into(),
-                entries: vec![entry],
-            },
-        );
-        std::fs::rename(source.path().join(name), target.path().join(name)).unwrap();
-        assert!(
-            filter(target.path(), &[name.to_path_buf()])
-                .unwrap()
-                .is_empty()
-        );
-        std::fs::remove_file(target.path().join(name)).unwrap();
-        symlink("/changed", target.path().join(name)).unwrap();
-        assert!(filter(target.path(), &[name.to_path_buf()]).is_err());
-
-        std::fs::remove_dir(source.path().join(".config/autostart")).unwrap();
-        symlink("/outside", source.path().join(".config/autostart")).unwrap();
-        let boundary = Entry::capture(
-            &home_file(source.path()).unwrap(),
-            Path::new(".config/autostart"),
-        )
-        .unwrap()
-        .unwrap();
-        publish(
-            target.path(),
-            &Record {
-                schema: 1,
-                operation: OPERATION.into(),
-                entries: vec![boundary],
-            },
-        );
-        std::fs::remove_file(target.path().join(name)).unwrap();
-        std::fs::remove_dir(target.path().join(".config/autostart")).unwrap();
-        std::fs::rename(
-            source.path().join(".config/autostart"),
-            target.path().join(".config/autostart"),
-        )
-        .unwrap();
-        assert!(
-            filter(target.path(), &[name.to_path_buf()])
-                .unwrap()
-                .is_empty()
-        );
+            publish(
+                target.path(),
+                &Record {
+                    schema: 1,
+                    operation: OPERATION.into(),
+                    entries: vec![boundary],
+                },
+            );
+            std::fs::remove_file(target.path().join(name)).unwrap();
+            std::fs::remove_dir(target.path().join(".config/autostart")).unwrap();
+            std::fs::rename(
+                source.path().join(".config/autostart"),
+                target.path().join(".config/autostart"),
+            )
+            .unwrap();
+            assert!(
+                filter(target.path(), &[name.to_path_buf()])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 }

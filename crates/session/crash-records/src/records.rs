@@ -180,94 +180,107 @@ mod tests {
         crate::write_record(dir, name, body).unwrap()
     }
 
-    #[test]
-    fn a_freeze_and_a_panic_are_told_apart_by_their_facts() {
-        let build = crate::BuildInfo {
-            version: "0.1.0",
-            executable: None,
-            build_id: Some("abc123".to_owned()),
-        };
-        let freeze = render_freeze(
-            &build,
-            &crate::Freeze {
-                timestamp: "2026-10-24-225201",
-                tid: 412,
-                blocked_for: std::time::Duration::from_secs(26),
-                report: "main loop hung",
-            },
-        );
-        let name = "2026-10-24-225201-412-freeze.log";
-        let summarized = summarize(name, &freeze).unwrap();
-        assert_eq!(summarized.id, name);
-        assert_eq!(summarized.kind, CrashKind::Froze);
-        assert_eq!(summarized.version.as_deref(), Some("0.1.0"));
-        assert_eq!(summarized.build.as_deref(), Some("abc123"));
+    tilo_test_env::scenario! {
+        fn a_record_is_summarized_by_its_name_and_its_head;
 
-        let panic = "tilo session panic\n==================\nversion:   0.1.0\ncontained: no: the session ends\n";
-        assert_eq!(
-            summarize("2026-10-24-210000-5.log", panic).unwrap().kind,
-            CrashKind::Crashed
-        );
-        let contained = panic.replace("no: the session ends", "yes: the part restarts");
-        assert_eq!(
-            summarize("2026-10-24-210000-5.log", &contained)
-                .unwrap()
-                .kind,
-            CrashKind::PartRestarted
-        );
-        assert_eq!(summarize("notes.log", panic), None);
-        assert_eq!(summarize(".noticed", panic), None);
-        assert_eq!(summarize("../2026-10-24-210000-5.log", panic), None);
+        phase a_freeze_and_a_panic_are_told_apart_by_their_facts;
+        {
+            let build = crate::BuildInfo {
+                version: "0.1.0",
+                executable: None,
+                build_id: Some("abc123".to_owned()),
+            };
+            let freeze = render_freeze(
+                &build,
+                &crate::Freeze {
+                    timestamp: "2026-10-24-225201",
+                    tid: 412,
+                    blocked_for: std::time::Duration::from_secs(26),
+                    report: "main loop hung",
+                },
+            );
+            let name = "2026-10-24-225201-412-freeze.log";
+            let summarized = summarize(name, &freeze).unwrap();
+            assert_eq!(summarized.id, name);
+            assert_eq!(summarized.kind, CrashKind::Froze);
+            assert_eq!(summarized.version.as_deref(), Some("0.1.0"));
+            assert_eq!(summarized.build.as_deref(), Some("abc123"));
+
+            let panic = "tilo session panic\n==================\nversion:   0.1.0\ncontained: no: the session ends\n";
+            assert_eq!(
+                summarize("2026-10-24-210000-5.log", panic).unwrap().kind,
+                CrashKind::Crashed
+            );
+            let contained = panic.replace("no: the session ends", "yes: the part restarts");
+            assert_eq!(
+                summarize("2026-10-24-210000-5.log", &contained)
+                    .unwrap()
+                    .kind,
+                CrashKind::PartRestarted
+            );
+            assert_eq!(summarize("notes.log", panic), None);
+            assert_eq!(summarize(".noticed", panic), None);
+            assert_eq!(summarize("../2026-10-24-210000-5.log", panic), None);
+        }
+
+        phase the_computer_stopping_is_its_own_kind_and_a_fault_is_not_a_stop;
+        {
+            let head =
+                "tilo computer stopped\n=====================\nversion:   0.1.0\nreason:    panic\n";
+            let stopped = summarize("2026-10-24-225201-4f00-stopped.log", head).unwrap();
+            assert_eq!(stopped.kind, CrashKind::ComputerStopped);
+            assert_eq!(stopped.reason, Some(StopReason::Panic));
+            let fault = head.replace("panic", "oops");
+            let fault = summarize("2026-10-24-225201-4f00-stopped.log", &fault).unwrap();
+            assert_eq!(fault.kind, CrashKind::SystemFault);
+            assert_eq!(fault.reason, Some(StopReason::Oops));
+        }
+
+        phase a_placeholder_fact_is_no_fact;
+        {
+            let head = "tilo session panic\n==================\nversion:   0.1.0\nbuild-id:  <none>\n";
+            let summarized = summarize("2026-10-24-210000-5.log", head).unwrap();
+            assert_eq!(summarized.build, None);
+            assert_eq!(summarized.version.as_deref(), Some("0.1.0"));
+        }
     }
 
-    #[test]
-    fn the_computer_stopping_is_its_own_kind_and_a_fault_is_not_a_stop() {
-        let head =
-            "tilo computer stopped\n=====================\nversion:   0.1.0\nreason:    panic\n";
-        let stopped = summarize("2026-10-24-225201-4f00-stopped.log", head).unwrap();
-        assert_eq!(stopped.kind, CrashKind::ComputerStopped);
-        assert_eq!(stopped.reason, Some(StopReason::Panic));
-        let fault = head.replace("panic", "oops");
-        let fault = summarize("2026-10-24-225201-4f00-stopped.log", &fault).unwrap();
-        assert_eq!(fault.kind, CrashKind::SystemFault);
-        assert_eq!(fault.reason, Some(StopReason::Oops));
-    }
+    tilo_test_env::scenario! {
+        fn records_are_listed_and_read_from_their_directory;
 
-    #[test]
-    fn a_placeholder_fact_is_no_fact() {
-        let head = "tilo session panic\n==================\nversion:   0.1.0\nbuild-id:  <none>\n";
-        let summarized = summarize("2026-10-24-210000-5.log", head).unwrap();
-        assert_eq!(summarized.build, None);
-        assert_eq!(summarized.version.as_deref(), Some("0.1.0"));
-    }
+        phase records_are_listed_newest_first_without_their_stacks;
+        {
+            let dir = private_dir();
+            record(dir.path(), "2026-10-20-080000-7-freeze.log", "older\nstack");
+            record(
+                dir.path(),
+                "2026-10-24-225201-9-freeze.log",
+                &format!("newer\n{}", "f".repeat(8192)),
+            );
+            record(dir.path(), ".noticed", "2026-10-24-225201-9-freeze.log");
+            let listed = list(dir.path());
+            assert_eq!(listed.len(), 2);
+            assert_eq!(listed[0].id, "2026-10-24-225201-9-freeze.log");
+            assert_eq!(listed[1].id, "2026-10-20-080000-7-freeze.log");
+        }
 
-    #[test]
-    fn records_are_listed_newest_first_without_their_stacks() {
-        let dir = private_dir();
-        record(dir.path(), "2026-10-20-080000-7-freeze.log", "older\nstack");
-        record(
-            dir.path(),
-            "2026-10-24-225201-9-freeze.log",
-            &format!("newer\n{}", "f".repeat(8192)),
-        );
-        record(dir.path(), ".noticed", "2026-10-24-225201-9-freeze.log");
-        let listed = list(dir.path());
-        assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].id, "2026-10-24-225201-9-freeze.log");
-        assert_eq!(listed[1].id, "2026-10-20-080000-7-freeze.log");
-    }
+        phase one_record_is_read_by_the_name_the_list_gave;
+        {
+            let dir = private_dir();
+            let path = record(dir.path(), "2026-10-24-225201-9-freeze.log", "the text");
+            assert_eq!(path.file_name().unwrap(), "2026-10-24-225201-9-freeze.log");
+            let record = read(dir.path(), "2026-10-24-225201-9-freeze.log").unwrap();
+            assert_eq!(record.text, "the text");
+            assert!(!record.truncated);
+            assert_eq!(record.record.kind, CrashKind::Froze);
+            assert!(read(dir.path(), "2026-10-25-000000-1-freeze.log").is_err());
+            assert!(read(dir.path(), "../escape.log").is_err());
+        }
 
-    #[test]
-    fn one_record_is_read_by_the_name_the_list_gave() {
-        let dir = private_dir();
-        let path = record(dir.path(), "2026-10-24-225201-9-freeze.log", "the text");
-        assert_eq!(path.file_name().unwrap(), "2026-10-24-225201-9-freeze.log");
-        let record = read(dir.path(), "2026-10-24-225201-9-freeze.log").unwrap();
-        assert_eq!(record.text, "the text");
-        assert!(!record.truncated);
-        assert_eq!(record.record.kind, CrashKind::Froze);
-        assert!(read(dir.path(), "2026-10-25-000000-1-freeze.log").is_err());
-        assert!(read(dir.path(), "../escape.log").is_err());
+        phase an_missing_directory_lists_nothing;
+        {
+            assert!(list(Path::new("/nonexistent/tilo/crashes")).is_empty());
+        }
     }
 
     #[test]
@@ -278,10 +291,5 @@ mod tests {
         let record = read(dir.path(), "2026-10-24-225201-9-freeze.log").unwrap();
         assert!(record.truncated);
         assert_eq!(u64::try_from(record.text.len()).unwrap(), MAX_TEXT);
-    }
-
-    #[test]
-    fn an_missing_directory_lists_nothing() {
-        assert!(list(Path::new("/nonexistent/tilo/crashes")).is_empty());
     }
 }

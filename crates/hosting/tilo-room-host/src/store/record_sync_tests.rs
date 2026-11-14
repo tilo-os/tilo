@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::payloads::Route;
+use tilo_relay_protocol::WorkspaceId;
 
 const APP: &str = "so.tilo.chat";
 const BASE: &str = "derived:messages@derived:default@tab:0000000000000000";
@@ -34,7 +35,7 @@ fn retained(store: &WorkspaceStore, key: &ed25519_dalek::SigningKey, record: &st
     let frames = crate::compaction::document_frames(
         &*store.payloads,
         key,
-        7,
+        WorkspaceId::from_u128(7),
         &route(record),
         record.as_bytes(),
     )
@@ -83,7 +84,8 @@ fn hold_the_time(store: &WorkspaceStore, at: std::time::SystemTime) {
 fn a_part_the_store_has_not_read_is_still_found_as_the_chain_head() {
     use ed25519_dalek::SigningKey;
     let tmp = tempfile::tempdir().expect("a store of its own");
-    let store = WorkspaceStore::open(tmp.path(), 7, false).expect("a store");
+    let store =
+        WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).expect("a store");
     let key = SigningKey::from_bytes(&[4; 32]);
 
     retained(&store, &key, &part(0));

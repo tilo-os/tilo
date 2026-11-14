@@ -68,12 +68,6 @@ workspaces-unreadable-body = The list of your own workspaces that this computer 
 
 ## The desk this device saved could not be opened: the person's own desk is
 ## still on disk and this session starts empty, so it is never written over.
-desk-not-opened-app-name = Desktop
-desk-not-opened-nothing-written = It is unchanged. This session starts on an empty desk and will not save over it.
-desk-not-opened-newer-title = Your desk was not opened
-desk-not-opened-newer-detail = { $path } was saved by a newer version of Tilo (layout { $found }; this one understands { $understood }). It has not been changed: this session starts on an empty desk and keeps nothing, so it cannot be written over.
-desk-not-opened-unreadable-title = Your desk could not be read
-desk-not-opened-unreadable-detail = { $path } is there but could not be read ({ $error }). It has not been changed: this session starts on an empty desk and keeps nothing, so it cannot be written over.
 
 ## The desk from the version before this one, which was not brought over: it
 ## is still on disk, untouched, and this session has its own desk instead.
@@ -190,6 +184,7 @@ session-display-builtin = Built-in display
 session-display-external = External display
 session-clipboard = Clipboard
 session-quick-settings = Quick Settings
+session-desk-styles = Desk styles
 session-devices = Devices
 session-devices-press = Press one of your devices
 session-bluetooth-app = Bluetooth
@@ -425,6 +420,7 @@ so-tilo-session-desk-invitations = List invitations
 so-tilo-session-desk-issue-invitation = Make an invitation link
 so-tilo-session-desk-show-invite = Invite people
 so-tilo-session-desk-show-connect = Connect an agent or computer
+so-tilo-session-desk-show-pair-device = Add a device
 so-tilo-session-desk-notify = Post a notification
 so-tilo-session-desk-cancel-invitation = Cancel invitation
 so-tilo-session-desk-show-surface = Show or hide a panel

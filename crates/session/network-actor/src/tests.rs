@@ -12,8 +12,19 @@ fn only_a_remote_party_needs_this_device_reachable() {
         .is_some()
     );
     let (on_event, _events) = mpsc::channel(1);
-    assert!(remote_party_command(&NetCmd::JoinWorkspace { ws: 7, on_event }).is_none());
-    assert!(remote_party_command(&NetCmd::LeaveWorkspace { ws: 7 }).is_none());
+    assert!(
+        remote_party_command(&NetCmd::JoinWorkspace {
+            ws: WorkspaceId::from_u128(7),
+            on_event
+        })
+        .is_none()
+    );
+    assert!(
+        remote_party_command(&NetCmd::LeaveWorkspace {
+            ws: WorkspaceId::from_u128(7)
+        })
+        .is_none()
+    );
 }
 
 #[test]
@@ -50,10 +61,16 @@ fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
     let host = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
     let other = iroh::SecretKey::from_bytes(&[0xA2; 32]).public();
     let start = Instant::now();
-    assert!(mark_new_input(1, host, [7; 32], start, &mut recent));
+    assert!(mark_new_input(
+        WorkspaceId::from_u128(1),
+        host,
+        [7; 32],
+        start,
+        &mut recent
+    ));
     assert!(
         !mark_new_input(
-            1,
+            WorkspaceId::from_u128(1),
             other,
             [7; 32],
             start + Duration::from_millis(1),
@@ -63,7 +80,7 @@ fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
     );
     assert!(
         mark_new_input(
-            1,
+            WorkspaceId::from_u128(1),
             host,
             [7; 32],
             start + Duration::from_millis(200),
@@ -72,7 +89,7 @@ fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
         "a second, byte-identical click"
     );
     assert!(mark_new_input(
-        2,
+        WorkspaceId::from_u128(2),
         host,
         [7; 32],
         start + Duration::from_millis(200),
@@ -82,7 +99,7 @@ fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
     for _ in 0..2 {
         assert!(
             mark_new_input(
-                1,
+                WorkspaceId::from_u128(1),
                 host,
                 [9; 32],
                 start + Duration::from_millis(300),
@@ -318,7 +335,7 @@ fn fabric_action_from(event: &NetEvent, from: EndpointId, action: &[u8]) -> bool
 /// dropped it left a device copied from another without its hosts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_hears_where_the_persons_workspaces_are_hosted() {
-    let [a, mut b] = two(linked(46, 2).await);
+    let [a, mut b] = two(linked(WorkspaceId::from_u128(46), 2).await);
     let (a_id, root) = (a.id, a.root);
     let hosts = |hint: u8| NeighbourMsg::PersonalHosts {
         user_public_key: root,
@@ -372,7 +389,7 @@ fn open_connections(endpoint: &Endpoint) -> u64 {
 /// idle connection costs both devices its keep-alives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_devices_keep_one_connection_for_their_session_both_ways() {
-    let [mut a, mut b] = two(linked(45, 2).await);
+    let [mut a, mut b] = two(linked(WorkspaceId::from_u128(45), 2).await);
     let (a_id, b_id, root) = (a.id, b.id, a.root);
     let update = |author: EndpointId| NeighbourMsg::PersonalWorkspaces {
         user_public_key: root,
@@ -436,8 +453,14 @@ async fn two_devices_keep_one_connection_for_their_session_both_ways() {
 async fn a_device_of_another_person_is_no_sibling() {
     let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     let (mine, theirs) = (key(), key());
-    let mut a = device_of(&mine, key(), 48, HEARTBEAT_INTERVAL).await;
-    let b = device_of(&theirs, key(), 48, HEARTBEAT_INTERVAL).await;
+    let mut a = device_of(&mine, key(), WorkspaceId::from_u128(48), HEARTBEAT_INTERVAL).await;
+    let b = device_of(
+        &theirs,
+        key(),
+        WorkspaceId::from_u128(48),
+        HEARTBEAT_INTERVAL,
+    )
+    .await;
     link(&[&a, &b]).await;
     while let Ok(Some(event)) = timeout(Duration::from_secs(1), a.rx.recv()).await {
         assert!(
@@ -504,13 +527,21 @@ impl Drop for Sleeper {
 async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-    let mut a = device_of(&root, key(), 47, HEARTBEAT_INTERVAL).await;
+    let mut a = device_of(&root, key(), WorkspaceId::from_u128(47), HEARTBEAT_INTERVAL).await;
     let sleeper = Sleeper::new();
     let b_root = root.clone();
     let b_key = key();
     let mut b = sleeper
         .runtime
-        .spawn(async move { device_of(&b_root, b_key, 47, HEARTBEAT_INTERVAL).await })
+        .spawn(async move {
+            device_of(
+                &b_root,
+                b_key,
+                WorkspaceId::from_u128(47),
+                HEARTBEAT_INTERVAL,
+            )
+            .await
+        })
         .await
         .unwrap();
     let (a_id, b_id) = (a.id, b.id);
@@ -565,8 +596,14 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
     let b_key = ed25519_dalek::SigningKey::from_bytes(&[0x5B; 32]);
     let a_key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     let mut pair = vec![
-        device_of(&root, a_key, 46, HEARTBEAT_INTERVAL).await,
-        device_of(&root, b_key.clone(), 46, HEARTBEAT_INTERVAL).await,
+        device_of(&root, a_key, WorkspaceId::from_u128(46), HEARTBEAT_INTERVAL).await,
+        device_of(
+            &root,
+            b_key.clone(),
+            WorkspaceId::from_u128(46),
+            HEARTBEAT_INTERVAL,
+        )
+        .await,
     ];
     link(&[&pair[0], &pair[1]]).await;
     let (a_id, b_id) = (pair[0].id, pair[1].id);
@@ -582,7 +619,8 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
     b.task.await.unwrap();
     let mut a = pair.pop().unwrap();
 
-    let mut restarted = device_of(&root, b_key, 46, HEARTBEAT_INTERVAL).await;
+    let mut restarted =
+        device_of(&root, b_key, WorkspaceId::from_u128(46), HEARTBEAT_INTERVAL).await;
     link(&[&a, &restarted]).await;
     wait_for_event(
         "the restarted device links",
@@ -680,7 +718,7 @@ async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
         &media_tx,
         &input_tx,
         InternalEvent::SurfaceFrame {
-            ws: 7,
+            ws: WorkspaceId::from_u128(7),
             peer,
             connection_incarnation: 1,
             fingerprint: [0; 32],
@@ -716,7 +754,7 @@ async fn two_devices_exchange_and_announce_identity_over_iroh() {
     let mut pair = Vec::new();
     for _ in 0..2 {
         let key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        pair.push(device_of(&root, key, 42, HEARTBEAT_INTERVAL).await);
+        pair.push(device_of(&root, key, WorkspaceId::from_u128(42), HEARTBEAT_INTERVAL).await);
     }
     link(&[&pair[0], &pair[1]]).await;
     let ids = [pair[0].id, pair[1].id];
@@ -773,8 +811,8 @@ async fn linked_devices_keep_liveness_on_the_transport_and_say_nothing_while_idl
     const TICK: Duration = Duration::from_millis(50);
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-    let mut a = device_of(&root, key(), 42, TICK).await;
-    let mut b = device_of(&root, key(), 42, TICK).await;
+    let mut a = device_of(&root, key(), WorkspaceId::from_u128(42), TICK).await;
+    let mut b = device_of(&root, key(), WorkspaceId::from_u128(42), TICK).await;
     link(&[&a, &b]).await;
 
     // Phase `a_new_device_hears_identity_and_codecs_once_per_session`.
@@ -836,7 +874,7 @@ async fn linked_devices_keep_liveness_on_the_transport_and_say_nothing_while_idl
 async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
     // Phase `personal_fabric_action_reaches_only_the_exact_target`.
     {
-        let [a, mut b, mut c] = three(linked(44, 3).await);
+        let [a, mut b, mut c] = three(linked(WorkspaceId::from_u128(44), 3).await);
         let (cmd_a, b_id) = (&a.cmd, b.id);
         let (rx_b, rx_c) = (&mut b.rx, &mut c.rx);
 
@@ -877,14 +915,14 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
     }
     // Phase `direct_workspace_control_input_reaches_only_the_exact_target`.
     {
-        let [a, mut b, mut c] = three(linked(43, 3).await);
+        let [a, mut b, mut c] = three(linked(WorkspaceId::from_u128(43), 3).await);
         let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
         let (rx_b, rx_c) = (&mut b.rx, &mut c.rx);
 
         for _ in 0..2 {
             cmd_a
                 .send(NetCmd::PublishWorkspaceControl {
-                    ws: 43,
+                    ws: WorkspaceId::from_u128(43),
                     msg: NeighbourMsg::RemoteInput {
                         peer: crate::behaviour::peer_liveness_handle(&a_id),
                         surface: 7,
@@ -926,7 +964,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
     }
     // Phase `a_view_said_again_reaches_the_windows_device_each_time`.
     {
-        let [a, mut b] = two(linked(47, 2).await);
+        let [a, mut b] = two(linked(WorkspaceId::from_u128(47), 2).await);
         let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
         // A viewer says which windows it views every few seconds, in the same bytes each time,
         // and the device hosting them stops naming a viewer it no longer hears: every saying
@@ -934,7 +972,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
         for _ in 0..3 {
             cmd_a
                 .send(NetCmd::PublishWorkspaceControl {
-                    ws: 47,
+                    ws: WorkspaceId::from_u128(47),
                     msg: NeighbourMsg::SurfaceViewRequest {
                         peer: crate::behaviour::peer_liveness_handle(&a_id),
                         room: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
@@ -976,7 +1014,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
 async fn personal_fabric_reaches_members_and_streams_verified_media() {
     // Phase `personal_fabric_reaches_the_persons_device`.
     {
-        let [a, mut b] = two(linked(43, 2).await);
+        let [a, mut b] = two(linked(WorkspaceId::from_u128(43), 2).await);
         let (cmd_a, rx_b, root) = (&a.cmd, &mut b.rx, a.root);
 
         cmd_a
@@ -1006,7 +1044,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
     {
         // Progress is best-effort; each device's events leave room for every
         // chunk's report while the receiver side is drained first.
-        let [mut a, mut b] = two(linked(45, 2).await);
+        let [mut a, mut b] = two(linked(WorkspaceId::from_u128(45), 2).await);
         let (cmd_a, a_id, b_id, root) = (&a.cmd, a.id, b.id, a.root);
         let (rx_a, rx_b) = (&mut a.rx, &mut b.rx);
 

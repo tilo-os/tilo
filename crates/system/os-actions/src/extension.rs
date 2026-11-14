@@ -382,131 +382,135 @@ mod tests {
         ExtensionId::new(raw).unwrap()
     }
 
-    #[test]
-    fn ids_are_strict() {
-        for good in ["media-codecs", "a", "0", "x1-2-3", &"a".repeat(63)] {
-            assert!(ExtensionId::new(good).is_some(), "{good}");
-        }
-        for bad in [
-            "",
-            "-codecs",
-            "Media",
-            "media_codecs",
-            "media.codecs",
-            "../etc",
-            "a/b",
-            "media codecs",
-            "medía",
-            "a:b",
-            "a@b",
-            &"a".repeat(64),
-        ] {
-            assert!(ExtensionId::new(bad).is_none(), "{bad}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn an_extension_is_named_installed_and_reported_by_its_id_and_status;
 
-    #[test]
-    fn units_and_paths_follow_the_id() {
-        let codecs = id("media-codecs");
-        assert_eq!(
-            ExtensionAction::Install.unit(&codecs),
-            "tilo-extension@install:media-codecs.service"
-        );
-        assert_eq!(
-            ExtensionAction::Remove.unit(&codecs),
-            "tilo-extension@remove:media-codecs.service"
-        );
-        assert_eq!(
-            ExtensionAction::Refresh.unit(&codecs),
-            "tilo-extension@refresh:media-codecs.service"
-        );
-        assert_eq!(
-            codecs.status_path(),
-            Path::new("/var/lib/tilo/extensions/media-codecs.json")
-        );
-        assert_eq!(
-            codecs.catalogue_path(),
-            Path::new("/usr/share/tilo/system-extensions/sysext.d/media-codecs.json")
-        );
-    }
+        phase ids_are_strict;
+        {
+            for good in ["media-codecs", "a", "0", "x1-2-3", &"a".repeat(63)] {
+                assert!(ExtensionId::new(good).is_some(), "{good}");
+            }
+            for bad in [
+                "",
+                "-codecs",
+                "Media",
+                "media_codecs",
+                "media.codecs",
+                "../etc",
+                "a/b",
+                "media codecs",
+                "medía",
+                "a:b",
+                "a@b",
+                &"a".repeat(64),
+            ] {
+                assert!(ExtensionId::new(bad).is_none(), "{bad}");
+            }
+        }
 
-    #[test]
-    fn the_full_status_parses() {
-        let status = ExtensionStatus::parse(
-            r#"{"schema":1,"id":"media-codecs","state":"installed","desired":true,
+        phase units_and_paths_follow_the_id;
+        {
+            let codecs = id("media-codecs");
+            assert_eq!(
+                ExtensionAction::Install.unit(&codecs),
+                "tilo-extension@install:media-codecs.service"
+            );
+            assert_eq!(
+                ExtensionAction::Remove.unit(&codecs),
+                "tilo-extension@remove:media-codecs.service"
+            );
+            assert_eq!(
+                ExtensionAction::Refresh.unit(&codecs),
+                "tilo-extension@refresh:media-codecs.service"
+            );
+            assert_eq!(
+                codecs.status_path(),
+                Path::new("/var/lib/tilo/extensions/media-codecs.json")
+            );
+            assert_eq!(
+                codecs.catalogue_path(),
+                Path::new("/usr/share/tilo/system-extensions/sysext.d/media-codecs.json")
+            );
+        }
+
+        phase the_full_status_parses;
+        {
+            let status = ExtensionStatus::parse(
+                r#"{"schema":1,"id":"media-codecs","state":"installed","desired":true,
                 "parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting","Bad Name":"enabled"},
                 "message":"Hardware video is waiting","last_error":"","revision":20261003120000,
                 "base":{"os_id":"fedora"},"packages":{"tilo-codecs":["x"]},"generation":7,
                 "updated":"2026-10-03T12:00:00Z"}"#,
-        );
-        assert_eq!(status.state, ExtensionState::Installed);
-        assert!(status.desired);
-        assert_eq!(status.part("tilo-codecs"), PartState::Enabled);
-        assert_eq!(status.part("tilo-codecs-mesa"), PartState::Waiting);
-        assert_eq!(status.part("unknown"), PartState::Off);
-        assert_eq!(status.parts.len(), 2, "malformed part names are dropped");
-        assert_eq!(status.message, "Hardware video is waiting");
-        assert_eq!(status.revision, 20_261_003_120_000);
-        assert_eq!(status.generation, 7);
-    }
+            );
+            assert_eq!(status.state, ExtensionState::Installed);
+            assert!(status.desired);
+            assert_eq!(status.part("tilo-codecs"), PartState::Enabled);
+            assert_eq!(status.part("tilo-codecs-mesa"), PartState::Waiting);
+            assert_eq!(status.part("unknown"), PartState::Off);
+            assert_eq!(status.parts.len(), 2, "malformed part names are dropped");
+            assert_eq!(status.message, "Hardware video is waiting");
+            assert_eq!(status.revision, 20_261_003_120_000);
+            assert_eq!(status.generation, 7);
+        }
 
-    #[test]
-    fn missing_or_garbled_status_is_not_installed() {
-        assert_eq!(ExtensionStatus::parse(""), ExtensionStatus::default());
-        assert_eq!(
-            ExtensionStatus::parse("[1,2]").state,
-            ExtensionState::NotInstalled
-        );
-        assert_eq!(
-            ExtensionStatus::parse(r#"{"state":"exploded","parts":[1]}"#),
-            ExtensionStatus::default()
-        );
-    }
+        phase missing_or_garbled_status_is_not_installed;
+        {
+            assert_eq!(ExtensionStatus::parse(""), ExtensionStatus::default());
+            assert_eq!(
+                ExtensionStatus::parse("[1,2]").state,
+                ExtensionState::NotInstalled
+            );
+            assert_eq!(
+                ExtensionStatus::parse(r#"{"state":"exploded","parts":[1]}"#),
+                ExtensionStatus::default()
+            );
+        }
 
-    #[test]
-    fn progress_is_reported_while_installing_only() {
-        let installing = ExtensionStatus::parse(
-            r#"{"state":"installing","progress":{"step":3,"steps":6,"label":"Downloading"}}"#,
-        );
-        let progress = installing.progress.unwrap();
-        assert_eq!(progress.step, 3);
-        assert!((progress.fraction() - 2.0 / 6.0).abs() < f32::EPSILON);
-        assert_eq!(progress.megabytes(), None);
-        let downloading = ExtensionStatus::parse(
-            r#"{"state":"installing","progress":{"step":3,"steps":5,"label":"Downloading","bytes":12500000,"total":40000000}}"#,
-        )
-        .progress
-        .unwrap();
-        assert_eq!(downloading.bytes, Some((12_500_000, 40_000_000)));
-        assert_eq!(downloading.megabytes(), Some((12, 40)));
-        assert!((downloading.fraction() - (2.0 + 0.3125) / 5.0).abs() < 1e-6);
-        let stale = ExtensionStatus::parse(
-            r#"{"state":"installed","progress":{"step":3,"steps":6,"label":"x"}}"#,
-        );
-        assert_eq!(stale.progress, None);
-        let hostile = ExtensionStatus::parse(
-            r#"{"state":"installing","progress":{"step":90,"steps":0,"label":"x"}}"#,
-        );
-        assert_eq!(hostile.progress, None);
-    }
+        phase progress_is_reported_while_installing_only;
+        {
+            let installing = ExtensionStatus::parse(
+                r#"{"state":"installing","progress":{"step":3,"steps":6,"label":"Downloading"}}"#,
+            );
+            let progress = installing.progress.unwrap();
+            assert_eq!(progress.step, 3);
+            assert!((progress.fraction() - 2.0 / 6.0).abs() < f32::EPSILON);
+            assert_eq!(progress.megabytes(), None);
+            let downloading = ExtensionStatus::parse(
+                r#"{"state":"installing","progress":{"step":3,"steps":5,"label":"Downloading","bytes":12500000,"total":40000000}}"#,
+            )
+            .progress
+            .unwrap();
+            assert_eq!(downloading.bytes, Some((12_500_000, 40_000_000)));
+            assert_eq!(downloading.megabytes(), Some((12, 40)));
+            assert!((downloading.fraction() - (2.0 + 0.3125) / 5.0).abs() < 1e-6);
+            let stale = ExtensionStatus::parse(
+                r#"{"state":"installed","progress":{"step":3,"steps":6,"label":"x"}}"#,
+            );
+            assert_eq!(stale.progress, None);
+            let hostile = ExtensionStatus::parse(
+                r#"{"state":"installing","progress":{"step":90,"steps":0,"label":"x"}}"#,
+            );
+            assert_eq!(hostile.progress, None);
+        }
 
-    #[test]
-    fn opting_in_is_remembered_across_failures_and_offline_periods() {
-        assert!(!ExtensionStatus::parse(r#"{"state":"not-installed"}"#).opted_in());
-        assert!(ExtensionStatus::parse(r#"{"state":"waiting-for-network"}"#).opted_in());
-        assert!(ExtensionStatus::parse(r#"{"state":"failed","desired":true}"#).opted_in());
-        assert!(!ExtensionStatus::parse(r#"{"state":"failed","desired":false}"#).opted_in());
-    }
+        phase opting_in_is_remembered_across_failures_and_offline_periods;
+        {
+            assert!(!ExtensionStatus::parse(r#"{"state":"not-installed"}"#).opted_in());
+            assert!(ExtensionStatus::parse(r#"{"state":"waiting-for-network"}"#).opted_in());
+            assert!(ExtensionStatus::parse(r#"{"state":"failed","desired":true}"#).opted_in());
+            assert!(!ExtensionStatus::parse(r#"{"state":"failed","desired":false}"#).opted_in());
+        }
 
-    #[test]
-    fn text_is_bounded_and_printable() {
-        let long = "x".repeat(1000);
-        let status = ExtensionStatus::parse(&format!(
-            r#"{{"state":"failed","last_error":"a\u001b[31m{long}","message":"{long}"}}"#
-        ));
-        assert!(status.last_error.len() <= MAX_TEXT);
-        assert!(status.message.len() <= MAX_TEXT);
-        assert!(!status.last_error.contains('\u{1b}'));
+        phase text_is_bounded_and_printable;
+        {
+            let long = "x".repeat(1000);
+            let status = ExtensionStatus::parse(&format!(
+                r#"{{"state":"failed","last_error":"a\u001b[31m{long}","message":"{long}"}}"#
+            ));
+            assert!(status.last_error.len() <= MAX_TEXT);
+            assert!(status.message.len() <= MAX_TEXT);
+            assert!(!status.last_error.contains('\u{1b}'));
+        }
     }
 
     #[cfg(target_os = "linux")]

@@ -25,6 +25,7 @@ fn create(title: &str, parent: Option<Id>, assignee: Option<&str>) -> tracker::C
         body: None,
         status: None,
         assignee: assignee.map(str::to_owned),
+        url: None,
     }
 }
 
@@ -771,5 +772,22 @@ fn the_project_is_published_with_its_verbs_and_a_resource_of_its_own() {
     assert!(
         children.contains(&address.as_str()),
         "the project is a resource of its own: {children:?}"
+    );
+}
+
+#[test]
+fn an_issue_keeps_the_page_it_was_written_from() {
+    let mut replica = ada();
+    replica
+        .apply(Tracker::CREATE.with(tracker::Create {
+            url: Some("  https://issues.example/ENG-1 ".to_owned()),
+            ..create("Close the books", None, None)
+        }))
+        .unwrap();
+    let id = id_of(&replica, "Close the books");
+    let state = replica.state().unwrap();
+    assert_eq!(
+        state.issues.get(&id).unwrap().url.as_deref(),
+        Some("https://issues.example/ENG-1")
     );
 }

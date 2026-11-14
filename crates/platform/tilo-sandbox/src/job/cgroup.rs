@@ -624,38 +624,42 @@ impl CgroupProvider for Direct {
 mod tests {
     use super::{Limits, ProviderError, apply_limits};
 
-    #[test]
-    fn a_limit_without_its_controller_refuses_the_job() {
-        // Refused before anything is written, so no cgroup is needed.
-        let nowhere = std::path::Path::new("/nonexistent");
-        let memory = Limits {
-            memory_max: Some(1 << 26),
-            pids_max: None,
-            ..Limits::default()
-        };
-        assert!(matches!(
-            apply_limits(nowhere, &memory, &["pids".into()]),
-            Err(ProviderError::Undelegated("memory"))
-        ));
-        assert!(matches!(
-            apply_limits(nowhere, &Limits::default(), &["memory".into()]),
-            Err(ProviderError::Undelegated("pids"))
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn limits_need_their_controllers_and_count_what_they_reserve;
 
-    #[test]
-    fn admission_counts_the_reservation_not_the_limit_above_it() {
-        let gib = 1_u64 << 30;
-        let reserved = Limits {
-            memory_max: Some(6 * gib),
-            memory_reserved: Some(2 * gib),
-            ..Limits::default()
-        };
-        assert_eq!(reserved.counted(), Some(2 * gib));
-        let unreserved = Limits {
-            memory_max: Some(3 * gib),
-            ..Limits::default()
-        };
-        assert_eq!(unreserved.counted(), Some(3 * gib));
+        phase a_limit_without_its_controller_refuses_the_job;
+        {
+            // Refused before anything is written, so no cgroup is needed.
+            let nowhere = std::path::Path::new("/nonexistent");
+            let memory = Limits {
+                memory_max: Some(1 << 26),
+                pids_max: None,
+                ..Limits::default()
+            };
+            assert!(matches!(
+                apply_limits(nowhere, &memory, &["pids".into()]),
+                Err(ProviderError::Undelegated("memory"))
+            ));
+            assert!(matches!(
+                apply_limits(nowhere, &Limits::default(), &["memory".into()]),
+                Err(ProviderError::Undelegated("pids"))
+            ));
+        }
+
+        phase admission_counts_the_reservation_not_the_limit_above_it;
+        {
+            let gib = 1_u64 << 30;
+            let reserved = Limits {
+                memory_max: Some(6 * gib),
+                memory_reserved: Some(2 * gib),
+                ..Limits::default()
+            };
+            assert_eq!(reserved.counted(), Some(2 * gib));
+            let unreserved = Limits {
+                memory_max: Some(3 * gib),
+                ..Limits::default()
+            };
+            assert_eq!(unreserved.counted(), Some(3 * gib));
+        }
     }
 }

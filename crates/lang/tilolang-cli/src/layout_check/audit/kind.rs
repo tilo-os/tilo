@@ -70,6 +70,9 @@ pub enum Kind {
     /// A surface with nothing in it: a filled block standing where a person reads it as a card, a
     /// page or a band, and holding no words and nothing laid out of its own.
     EmptySurface,
+    /// A panel that says what it is for and shows nothing under it: its title standing over an empty
+    /// body, so the name of a thing stands where the thing cannot be used.
+    HeaderOnly,
     /// A column's header naming the page while the page shows the same words as its own heading, or
     /// in the field it edits its title in: one title on screen, and the page's.
     RepeatedPageTitle,
@@ -192,6 +195,9 @@ pub enum Kind {
     /// first row where the list leaves that heading out — standing against the box over the list,
     /// with less than a column's content gutter above it: where a page's first block stands.
     HuggingRow,
+    /// A pill a list floats over its rows cutting the words it offers: the way back reads as half a
+    /// sentence, where a pill floats over what it covers and takes the width its words need.
+    ClippedPill,
 }
 
 impl Kind {
@@ -222,6 +228,7 @@ impl Kind {
             Self::MixedLanguage => "mixed-language",
             Self::OpenOutsideList => "open-outside-list",
             Self::EmptySurface => "empty-surface",
+            Self::HeaderOnly => "header-only",
             Self::RepeatedPageTitle => "repeated-page-title",
             Self::DoubleNavigation => "double-navigation",
             Self::FirstLevelIndent => "first-level-indent",
@@ -254,6 +261,7 @@ impl Kind {
             Self::RepeatedGroupTitle => "repeated-group-title",
             Self::RepeatedDayFact => "repeated-day-fact",
             Self::HuggingRow => "hugging-row",
+            Self::ClippedPill => "clipped-pill",
         }
     }
 }

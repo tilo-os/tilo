@@ -22,83 +22,179 @@ fn span_width(row: &GroupRow, index: usize) -> f64 {
     x1 - x0
 }
 
-#[test]
-fn a_lone_window_takes_the_strip_until_another_opens_beside_it() {
-    // Phase `the_browser_desktop`: 1440 px, 1376 px between the gutters.
+tilo_test_env::scenario! {
+    fn windows_share_the_strip_as_they_open_and_float;
+
+    phase a_lone_window_takes_the_strip_until_another_opens_beside_it;
     {
-        let mut row = lone_window_on(1440.0);
-        assert!(
-            (span_width(&row, 0) - 1376.0).abs() < 0.5,
-            "alone, the window takes the strip: {:?}",
-            row.group_canvas_spans()
-        );
-        assert!((row.groups[0].resolved_width_px() - 1376.0).abs() < 0.5);
-        let mut opened = make_group(200, &[2]);
-        opened.start_spawn_animation();
-        row.insert_group(opened, 1);
-        assert!(row.share_with_neighbour(200), "the two share the strip");
-        relayout_strip(&mut row, 1440.0);
-        relayout_strip(&mut row, 1440.0);
-        assert!(
-            (span_width(&row, 0) - (1376.0 - 8.0) / 2.0).abs() < 1.0,
-            "beside another, it takes half the strip: {:?}",
-            row.group_canvas_spans()
-        );
-        let spans = row.group_canvas_spans();
-        assert!(
-            (spans[1].2 - spans[0].1 - 1376.0).abs() < 1.0,
-            "the two tile the strip's usable width: {spans:?}"
-        );
-        assert!(
-            spans[0].1 >= STRIP_EDGE_GUTTER_PX - 0.5
-                && spans[1].2 <= 1440.0 - STRIP_EDGE_GUTTER_PX + 0.5,
-            "the leading gutter and the strip's own stay: {spans:?}"
-        );
-        assert!(row.remove_group_by_id(200));
-        relayout_strip(&mut row, 1440.0);
-        relayout_strip(&mut row, 1440.0);
-        assert!(
-            (span_width(&row, 0) - 1376.0).abs() < 0.5,
-            "alone again, it takes the strip again: {:?}",
-            row.group_canvas_spans()
-        );
+        // Phase `the_browser_desktop`: 1440 px, 1376 px between the gutters.
+        {
+            let mut row = lone_window_on(1440.0);
+            assert!(
+                (span_width(&row, 0) - 1376.0).abs() < 0.5,
+                "alone, the window takes the strip: {:?}",
+                row.group_canvas_spans()
+            );
+            assert!((row.groups[0].resolved_width_px() - 1376.0).abs() < 0.5);
+            let mut opened = make_group(200, &[2]);
+            opened.start_spawn_animation();
+            row.insert_group(opened, 1);
+            assert!(row.share_with_neighbour(200), "the two share the strip");
+            relayout_strip(&mut row, 1440.0);
+            relayout_strip(&mut row, 1440.0);
+            assert!(
+                (span_width(&row, 0) - (1376.0 - 8.0) / 2.0).abs() < 1.0,
+                "beside another, it takes half the strip: {:?}",
+                row.group_canvas_spans()
+            );
+            let spans = row.group_canvas_spans();
+            assert!(
+                (spans[1].2 - spans[0].1 - 1376.0).abs() < 1.0,
+                "the two tile the strip's usable width: {spans:?}"
+            );
+            assert!(
+                spans[0].1 >= STRIP_EDGE_GUTTER_PX - 0.5
+                    && spans[1].2 <= 1440.0 - STRIP_EDGE_GUTTER_PX + 0.5,
+                "the leading gutter and the strip's own stay: {spans:?}"
+            );
+            assert!(row.remove_group_by_id(200));
+            relayout_strip(&mut row, 1440.0);
+            relayout_strip(&mut row, 1440.0);
+            assert!(
+                (span_width(&row, 0) - 1376.0).abs() < 0.5,
+                "alone again, it takes the strip again: {:?}",
+                row.group_canvas_spans()
+            );
+        }
+        {
+            let mut row = lone_window_on(1280.0);
+            let mut opened = make_group(200, &[2]);
+            opened.start_spawn_animation();
+            row.insert_group(opened, 1);
+            assert!(row.share_with_neighbour(200));
+            assert!(
+                matches!(row.groups[0].width(), WindowWidth::Fraction(_)),
+                "fixture: two thirds and the newcomer do not fit, so both take half"
+            );
+            let _ = row.groups[0].take_pending_width_change();
+            relayout_strip(&mut row, 1280.0);
+            assert!(row.remove_group_by_id(200));
+            relayout_strip(&mut row, 1280.0);
+            relayout_strip(&mut row, 1280.0);
+            assert_eq!(
+                row.groups[0].width(),
+                WindowWidth::Normal,
+                "the half it took to share comes back to the default"
+            );
+            assert_eq!(
+                row.groups[0].take_pending_width_change(),
+                Some(WindowWidth::Normal),
+                "and the host saves the default, not the fraction it resolves to"
+            );
+            assert!(
+                (span_width(&row, 0) - 1216.0).abs() < 0.5,
+                "alone, it takes the strip: {:?}",
+                row.group_canvas_spans()
+            );
+        }
+        {
+            let mut row = lone_window_on(1440.0);
+            row.groups[0].set_width(WindowWidth::Fraction(500));
+            relayout_strip(&mut row, 1440.0);
+            assert!((span_width(&row, 0) - 688.0).abs() < 0.5);
+        }
     }
+
+    phase a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it;
     {
-        let mut row = lone_window_on(1280.0);
-        let mut opened = make_group(200, &[2]);
-        opened.start_spawn_animation();
-        row.insert_group(opened, 1);
-        assert!(row.share_with_neighbour(200));
+        {
+            let mut row = opened_beside(1280.0, 251.0);
+            assert!(
+                row.share_with_neighbour(200),
+                "two two-thirds windows overflow 1280 px"
+            );
+            relayout_strip(&mut row, 1280.0);
+            relayout_strip(&mut row, 1280.0);
+            let spans = row.group_canvas_spans();
+            let (first, last) = (spans[0], spans[1]);
+            assert!(
+                last.2 - first.1 <= 1280.0,
+                "both windows fit on the screen together: {spans:?}"
+            );
+            for (id, x0, x1) in &spans {
+                assert!(
+                    x1 - x0 >= tilo_desktop_model::width::SIDE_BY_SIDE_MIN_PX,
+                    "window {id} opens at a usable width: {spans:?}"
+                );
+            }
+            assert!(
+                row.groups[1].take_pending_width_change().is_some(),
+                "the new width is handed to the host to persist"
+            );
+
+            row.scroll_groups_into_view_animated(100, 200, crate::time::now(), MotionSource::default());
+            let to = row
+                .pan
+                .motion
+                .map_or(row.scroll_x(), |motion| motion.target());
+            assert!(
+                first.1 >= to - 0.5 && last.2 <= to + 1280.0 + 0.5,
+                "the pan shows both whole: spans {spans:?}, scroll {to}"
+            );
+        }
+        {
+            let mut row = opened_beside(800.0, 0.0);
+            assert!(
+                !row.share_with_neighbour(200),
+                "two windows under the side-by-side minimum would both be unusable"
+            );
+            assert_eq!(
+                row.groups[0].width().permille(),
+                WindowWidth::Normal.permille()
+            );
+            assert_eq!(row.groups[1].width(), WindowWidth::Normal);
+        }
+        {
+            let mut row = strip_at(2, 800.0, 0.0, 1000);
+            row.scroll_groups_into_view_animated(100, 200, crate::time::now(), MotionSource::default());
+            let to = row
+                .pan
+                .motion
+                .map_or(row.scroll_x(), |motion| motion.target());
+            assert!(
+                to.abs() < 0.5,
+                "the window the person is in stays framed, not the new one: {to}"
+            );
+        }
+    }
+
+    phase a_window_floated_from_beside_a_lone_one_leaves_it_clear_of_the_card;
+    {
+        let display = 1280.0;
+        let mut row = lone_window_on(display);
+        let mut beside = make_group(200, &[2]);
+        beside.set_width(WindowWidth::Fraction(300));
+        row.insert_group(beside, 1);
+        relayout_strip(&mut row, display);
+        relayout_strip(&mut row, display);
+        assert_eq!(row.groups[0].width(), WindowWidth::Normal);
+
+        let card = 320.0 + 2.0 * crate::widget::FLOAT_CARD_ROOM;
+        assert!(row.share_with_floating_neighbour(200, card));
+        let mut floats = HashMap::new();
+        floats.insert(
+            200,
+            vello::kurbo::Rect::new(display - card, 300.0, display, 776.0),
+        );
+        row.set_floats(floats);
+        relayout_strip(&mut row, display);
+        relayout_strip(&mut row, display);
+        let (_, _, right) = row.group_canvas_spans()[0];
         assert!(
-            matches!(row.groups[0].width(), WindowWidth::Fraction(_)),
-            "fixture: two thirds and the newcomer do not fit, so both take half"
-        );
-        let _ = row.groups[0].take_pending_width_change();
-        relayout_strip(&mut row, 1280.0);
-        assert!(row.remove_group_by_id(200));
-        relayout_strip(&mut row, 1280.0);
-        relayout_strip(&mut row, 1280.0);
-        assert_eq!(
-            row.groups[0].width(),
-            WindowWidth::Normal,
-            "the half it took to share comes back to the default"
-        );
-        assert_eq!(
-            row.groups[0].take_pending_width_change(),
-            Some(WindowWidth::Normal),
-            "and the host saves the default, not the fraction it resolves to"
-        );
-        assert!(
-            (span_width(&row, 0) - 1216.0).abs() < 0.5,
-            "alone, it takes the strip: {:?}",
+            right <= display - card + 0.5,
+            "the window stands clear of the card ({card} px at the edge): {:?}",
             row.group_canvas_spans()
         );
-    }
-    {
-        let mut row = lone_window_on(1440.0);
-        row.groups[0].set_width(WindowWidth::Fraction(500));
-        relayout_strip(&mut row, 1440.0);
-        assert!((span_width(&row, 0) - 688.0).abs() < 0.5);
     }
 }
 
@@ -110,69 +206,6 @@ fn opened_beside(viewport_w: f64, inset: f64) -> GroupRow {
     opened.start_spawn_animation();
     row.insert_group(opened, 1);
     row
-}
-
-#[test]
-fn a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it() {
-    {
-        let mut row = opened_beside(1280.0, 251.0);
-        assert!(
-            row.share_with_neighbour(200),
-            "two two-thirds windows overflow 1280 px"
-        );
-        relayout_strip(&mut row, 1280.0);
-        relayout_strip(&mut row, 1280.0);
-        let spans = row.group_canvas_spans();
-        let (first, last) = (spans[0], spans[1]);
-        assert!(
-            last.2 - first.1 <= 1280.0,
-            "both windows fit on the screen together: {spans:?}"
-        );
-        for (id, x0, x1) in &spans {
-            assert!(
-                x1 - x0 >= tilo_desktop_model::width::SIDE_BY_SIDE_MIN_PX,
-                "window {id} opens at a usable width: {spans:?}"
-            );
-        }
-        assert!(
-            row.groups[1].take_pending_width_change().is_some(),
-            "the new width is handed to the host to persist"
-        );
-
-        row.scroll_groups_into_view_animated(100, 200, crate::time::now(), MotionSource::default());
-        let to = row
-            .pan
-            .motion
-            .map_or(row.scroll_x(), |motion| motion.target());
-        assert!(
-            first.1 >= to - 0.5 && last.2 <= to + 1280.0 + 0.5,
-            "the pan shows both whole: spans {spans:?}, scroll {to}"
-        );
-    }
-    {
-        let mut row = opened_beside(800.0, 0.0);
-        assert!(
-            !row.share_with_neighbour(200),
-            "two windows under the side-by-side minimum would both be unusable"
-        );
-        assert_eq!(
-            row.groups[0].width().permille(),
-            WindowWidth::Normal.permille()
-        );
-        assert_eq!(row.groups[1].width(), WindowWidth::Normal);
-    }
-    {
-        let mut row = strip_at(2, 800.0, 0.0, 1000);
-        row.scroll_groups_into_view_animated(100, 200, crate::time::now(), MotionSource::default());
-        let to = row
-            .pan
-            .motion
-            .map_or(row.scroll_x(), |motion| motion.target());
-        assert!(
-            to.abs() < 0.5,
-            "the window the person is in stays framed, not the new one: {to}"
-        );
-    }
 }
 
 /// A window opened beside a lone one on a 1440 px display: the window in
@@ -214,33 +247,4 @@ fn a_window_revealed_while_its_neighbour_narrows_keeps_the_strips_gutter() {
             row.scroll_x()
         );
     }
-}
-
-#[test]
-fn a_window_floated_from_beside_a_lone_one_leaves_it_clear_of_the_card() {
-    let display = 1280.0;
-    let mut row = lone_window_on(display);
-    let mut beside = make_group(200, &[2]);
-    beside.set_width(WindowWidth::Fraction(300));
-    row.insert_group(beside, 1);
-    relayout_strip(&mut row, display);
-    relayout_strip(&mut row, display);
-    assert_eq!(row.groups[0].width(), WindowWidth::Normal);
-
-    let card = 320.0 + 2.0 * crate::widget::FLOAT_CARD_ROOM;
-    assert!(row.share_with_floating_neighbour(200, card));
-    let mut floats = HashMap::new();
-    floats.insert(
-        200,
-        vello::kurbo::Rect::new(display - card, 300.0, display, 776.0),
-    );
-    row.set_floats(floats);
-    relayout_strip(&mut row, display);
-    relayout_strip(&mut row, display);
-    let (_, _, right) = row.group_canvas_spans()[0];
-    assert!(
-        right <= display - card + 0.5,
-        "the window stands clear of the card ({card} px at the edge): {:?}",
-        row.group_canvas_spans()
-    );
 }

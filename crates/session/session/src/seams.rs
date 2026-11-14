@@ -18,10 +18,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tilo_action_broker::services::{
-    AppActionGrants, ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
+    AppConsents, ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
     DisplayControlServices, DriveServices, FileClipboardServices, HostServices, LauncherServices,
     NearbyTransferServices, PublishedResources, RealtimeServices, ShortcutLibraryServices,
-    SpeakerServices, WifiContinuityServices, WorkspaceControlServices, WorkspaceMemberships,
+    SpeakerServices, WifiContinuityServices, WorkspaceControlServices, WorkspaceGrants,
+    WorkspaceMemberships,
 };
 use tilo_broker_core::services::{
     ContentStoreServices, KeyboardShortcutServices, LegacyWorkspaceProjection, LocalPersonServices,
@@ -142,7 +143,8 @@ seams! {
     file_clipboard: Arc<dyn FileClipboardServices>,
     app_action_access: tilo_broker_core::access::AppActionAccessResolver,
     app_resource_kinds: tilo_broker_core::access::AppResourceKindsResolver,
-    app_action_grants: Arc<dyn AppActionGrants>,
+    workspace_grants: Arc<dyn WorkspaceGrants>,
+    app_consents: Arc<dyn AppConsents>,
     launchable_catalogue: PathBuf,
     record_content: Arc<tilo_action_broker::record_content::RouteContent>,
     channel_keys: ChannelKeyProvider,

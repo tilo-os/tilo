@@ -165,109 +165,114 @@ mod tests {
             .body(r#"{"sub":"1","preferred_username":"ada","name":"Ada Lovelace"}"#)
     }
 
-    #[test]
-    fn a_browser_sign_in_knows_who_signed_in_and_round_trips_through_the_vault() {
-        let server = FakeAuthorizationServer::start();
-        let people = Responder::start(vec![person()]);
-        let authorization =
-            Authorization::begin(&server.provider(), &Registration::public("hf"), None).unwrap();
-        let url = authorization.url().to_owned();
-        let browser = std::thread::spawn(move || browse(&url));
-        let sign_in = finish_browser(authorization, &userinfo(&people)).unwrap();
-        browser.join().unwrap().unwrap();
-        assert_eq!(sign_in.username, "ada");
-        assert_eq!(sign_in.name.as_deref(), Some("Ada Lovelace"));
-        let asked = people.next_request();
-        assert_eq!(
-            asked.header("authorization"),
-            Some(format!("Bearer {}", sign_in.tokens.access_token).as_str())
-        );
+    tilo_test_env::scenario! {
+        /// Signing in to Hugging Face, in the browser and by device code.
+        fn a_hugging_face_sign_in_knows_its_person_scopes_and_renewal;
 
-        let stored = HubCredential::encode(&sign_in);
-        let HubCredential::SignedIn(read) = HubCredential::parse(&stored) else {
-            panic!("a sign-in reads back as one");
-        };
-        assert_eq!(read, sign_in);
-        let HubCredential::Token(pasted) = HubCredential::parse(" hf_pasted \n") else {
-            panic!("a pasted token stays a token");
-        };
-        assert_eq!(pasted.as_str(), "hf_pasted");
-    }
+        phase a_browser_sign_in_knows_who_signed_in_and_round_trips_through_the_vault;
+        {
+            let server = FakeAuthorizationServer::start();
+            let people = Responder::start(vec![person()]);
+            let authorization =
+                Authorization::begin(&server.provider(), &Registration::public("hf"), None).unwrap();
+            let url = authorization.url().to_owned();
+            let browser = std::thread::spawn(move || browse(&url));
+            let sign_in = finish_browser(authorization, &userinfo(&people)).unwrap();
+            browser.join().unwrap().unwrap();
+            assert_eq!(sign_in.username, "ada");
+            assert_eq!(sign_in.name.as_deref(), Some("Ada Lovelace"));
+            let asked = people.next_request();
+            assert_eq!(
+                asked.header("authorization"),
+                Some(format!("Bearer {}", sign_in.tokens.access_token).as_str())
+            );
 
-    #[test]
-    fn a_due_sign_in_renews_and_one_without_a_refresh_token_must_sign_in_again() {
-        let server = FakeAuthorizationServer::start();
-        server.accept_refresh_token("refresh-old");
-        let config = (server.provider(), Registration::public("hf"));
-        let http = OAuthClient::new().unwrap();
-        let mut sign_in = HubSignIn {
-            tokens: TokenSet {
-                access_token: "old".into(),
-                refresh_token: "refresh-old".into(),
-                expires_in: 60,
-                obtained_at: 1,
-                scope: None,
-            },
-            username: "ada".into(),
-            name: None,
-        };
-        assert!(sign_in.due());
-        let renewed = sign_in.renewed(&http, &config).unwrap();
-        assert_ne!(renewed.tokens.access_token, "old");
-        assert_eq!(renewed.tokens.refresh_token, "refresh-old");
-        assert_eq!(renewed.username, "ada");
-        assert!(!renewed.due());
+            let stored = HubCredential::encode(&sign_in);
+            let HubCredential::SignedIn(read) = HubCredential::parse(&stored) else {
+                panic!("a sign-in reads back as one");
+            };
+            assert_eq!(read, sign_in);
+            let HubCredential::Token(pasted) = HubCredential::parse(" hf_pasted \n") else {
+                panic!("a pasted token stays a token");
+            };
+            assert_eq!(pasted.as_str(), "hf_pasted");
+        }
 
-        sign_in.tokens.refresh_token.clear();
-        assert_eq!(
-            sign_in.renewed(&http, &config).unwrap_err(),
-            OAuthError::InvalidGrant
-        );
-        // Without a reported lifetime the token is used until refused.
-        sign_in.tokens.expires_in = 0;
-        assert!(!sign_in.due());
-    }
+        phase a_due_sign_in_renews_and_one_without_a_refresh_token_must_sign_in_again;
+        {
+            let server = FakeAuthorizationServer::start();
+            server.accept_refresh_token("refresh-old");
+            let config = (server.provider(), Registration::public("hf"));
+            let http = OAuthClient::new().unwrap();
+            let mut sign_in = HubSignIn {
+                tokens: TokenSet {
+                    access_token: "old".into(),
+                    refresh_token: "refresh-old".into(),
+                    expires_in: 60,
+                    obtained_at: 1,
+                    scope: None,
+                },
+                username: "ada".into(),
+                name: None,
+            };
+            assert!(sign_in.due());
+            let renewed = sign_in.renewed(&http, &config).unwrap();
+            assert_ne!(renewed.tokens.access_token, "old");
+            assert_eq!(renewed.tokens.refresh_token, "refresh-old");
+            assert_eq!(renewed.username, "ada");
+            assert!(!renewed.due());
 
-    #[test]
-    fn a_device_sign_in_asks_for_the_downloads_scopes() {
-        let json = |body: &str| {
-            Reply::status(200)
-                .header("Content-Type", "application/json")
-                .body(body.to_owned())
-        };
-        let issuer = Responder::start(vec![
-            json(
-                r#"{"device_code":"D","user_code":"HF-CODE","verification_uri":"https://huggingface.co/oauth/device","interval":0}"#,
-            ),
-            json(r#"{"access_token":"hf_oauth_x","expires_in":28800,"refresh_token":"r"}"#),
-        ]);
-        let people = Responder::start(vec![person()]);
-        let (mut provider, client) = config().expect("Hugging Face is configured");
-        provider.device_authorization_endpoint = Some(format!("{}/oauth/device", issuer.url()));
-        provider.token_endpoint = format!("{}/oauth/token", issuer.url());
-        let device =
-            DeviceAuthorization::begin(&OAuthClient::new().unwrap(), &provider, &client).unwrap();
-        assert_eq!(device.user_code(), "HF-CODE");
-        let sign_in = finish_device(device, &userinfo(&people)).unwrap();
-        assert_eq!(sign_in.tokens.access_token, "hf_oauth_x");
-        let asked = issuer.next_request().body_text();
-        assert!(
-            asked.contains("scope=openid+profile+gated-repos"),
-            "{asked}"
-        );
-        assert!(asked.contains("client_id=3c6f0f73-"), "{asked}");
-    }
+            sign_in.tokens.refresh_token.clear();
+            assert_eq!(
+                sign_in.renewed(&http, &config).unwrap_err(),
+                OAuthError::InvalidGrant
+            );
+            // Without a reported lifetime the token is used until refused.
+            sign_in.tokens.expires_in = 0;
+            assert!(!sign_in.due());
+        }
 
-    #[test]
-    fn a_userinfo_answer_without_a_username_is_refused() {
-        let people = Responder::start(vec![Reply::status(200).body(r#"{"sub":"1"}"#)]);
-        let tokens = TokenSet {
-            access_token: "a".into(),
-            ..TokenSet::default()
-        };
-        assert!(matches!(
-            HubSignIn::of(&OAuthClient::new().unwrap(), &userinfo(&people), tokens),
-            Err(OAuthError::Protocol(_))
-        ));
+        phase a_device_sign_in_asks_for_the_downloads_scopes;
+        {
+            let json = |body: &str| {
+                Reply::status(200)
+                    .header("Content-Type", "application/json")
+                    .body(body.to_owned())
+            };
+            let issuer = Responder::start(vec![
+                json(
+                    r#"{"device_code":"D","user_code":"HF-CODE","verification_uri":"https://huggingface.co/oauth/device","interval":0}"#,
+                ),
+                json(r#"{"access_token":"hf_oauth_x","expires_in":28800,"refresh_token":"r"}"#),
+            ]);
+            let people = Responder::start(vec![person()]);
+            let (mut provider, client) = config().expect("Hugging Face is configured");
+            provider.device_authorization_endpoint = Some(format!("{}/oauth/device", issuer.url()));
+            provider.token_endpoint = format!("{}/oauth/token", issuer.url());
+            let device =
+                DeviceAuthorization::begin(&OAuthClient::new().unwrap(), &provider, &client).unwrap();
+            assert_eq!(device.user_code(), "HF-CODE");
+            let sign_in = finish_device(device, &userinfo(&people)).unwrap();
+            assert_eq!(sign_in.tokens.access_token, "hf_oauth_x");
+            let asked = issuer.next_request().body_text();
+            assert!(
+                asked.contains("scope=openid+profile+gated-repos"),
+                "{asked}"
+            );
+            assert!(asked.contains("client_id=3c6f0f73-"), "{asked}");
+        }
+
+        phase a_userinfo_answer_without_a_username_is_refused;
+        {
+            let people = Responder::start(vec![Reply::status(200).body(r#"{"sub":"1"}"#)]);
+            let tokens = TokenSet {
+                access_token: "a".into(),
+                ..TokenSet::default()
+            };
+            assert!(matches!(
+                HubSignIn::of(&OAuthClient::new().unwrap(), &userinfo(&people), tokens),
+                Err(OAuthError::Protocol(_))
+            ));
+        }
     }
 }

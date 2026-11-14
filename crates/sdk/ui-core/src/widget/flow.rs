@@ -165,8 +165,11 @@ impl Flow {
             return None;
         }
         let shifts = self.follower_shifts()?;
-        Some(super::Disclosing::Grows(
-            shifts.last().copied().unwrap_or(0.0),
+        let gap = self.laid_gap;
+        Some(super::Disclosing::of_column(
+            &shifts,
+            self.children.iter().map(|child| &**child),
+            |_| gap,
         ))
     }
 

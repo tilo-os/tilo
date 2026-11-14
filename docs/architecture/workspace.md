@@ -291,51 +291,29 @@ second record of who belongs.
   reads the whole history locally. It grows with membership changes, never
   with content.
 
-**One group per reader set.** A group belongs to a key scope, not to a
-record: `workspace_scope(workspace)` is one MLS group and one content keyring
-for every storage unit whose readers are the workspace's participants. A unit
-— one record's channel — seals under its scope's keys while its payload still
-names the unit, so content stays bound to the record and artifact it was
-written for and every stored and wire format is unchanged. Membership is
-still decided per record: a Read Deny on a record, on its app or on a pattern
-over it narrows that unit's readers, and the unit is then carried by a group
-of its own whose key no denied device ever gets.
+**One group per workspace.** Every record of a workspace seals under the
+workspace's one MLS group and its content keys. A payload still names its
+record, so content stays bound to the record and artifact it was written for.
+A membership or device change costs one commit, however many records the
+workspace holds.
 
-**One genesis per channel, created once.** A group starts from one genesis,
-and whoever holds its state and sees none creates it; everyone else waits,
-asks, and joins by the Welcome that admits it — a page included, which never
-creates a group it was not admitted to. The page learns which group carries a
-unit from its replica of the workspace's governance, the same decision a
-device makes: the workspace's scope, read by the workspace's participants, or
-the unit's own group when a Read Deny narrows it. A scope's request names no
-record — every participant may read it — while a narrowed unit's request names
-the record, so its participants can decide Read on it. Two geneses made at
-once reconcile like two commits: every device keeps the group whose genesis
-has the lower digest, and a device in the other starts over and joins the
-winner by Welcome, whose bundle brings the keys its writes were sealed under.
-Learning it needs the scope's frame only: a page that held a per-record group
-for the unit leaves it unused, for no participant seals under it any more, and
-the scope's Welcome carries that group's older content keys along. A record's
-cleartext writes stay the base its sealed writes are changes over: a device
-joining after the seal takes that base in from the host's replay, while a live
-cleartext write is refused.
+**Read permission is not a key boundary.** Every device that holds the
+workspace's keys can decrypt every record in it. A grant that denies Read on a
+record, an app or a pattern hides the resource in the UI and keeps a device
+from asking for it through the action API, but it is not a security boundary:
+data that must stay away from some members belongs in another workspace, or in
+a person's personal resources.
 
-What a scope buys is that membership costs what the *reader set* costs, not
-what the workspace holds: one admission, one removal and one commit per scope,
-however many units it carries. Before scopes, every record had a group, so a
-workspace of a thousand records paid about two seconds and 3 MiB of
-governance frames to admit one device, and repeated it on every change, on
-every device.
-
-Units sealed before scopes keep their groups. A device that holds one reads
-its history as before, merging that group's keys with the scope's; new
-content for those units seals under the scope, so a device has to hold both.
-The holder of an old group hands its content keys to the scope — the scope's
-next commit carries them to every member, and every admission after that
-passes them on in the joiner's key history — so a device that never held the
-old group reads the unit's whole history as soon as the scope has them, with
-no holder of the old group online. A unit a Read Deny narrows keeps a group
-of its own and is never handed to the broader scope.
+**One genesis, made by the founder.** The workspace's governance names the
+device that created it (`founder`). That device makes the group's genesis;
+every other device waits, asks, and joins by the Welcome that admits it, and
+no answer from a host makes it found a group of its own. If two geneses ever
+meet, they reconcile like two commits: every device keeps the group whose
+genesis has the lower digest, and a device in the other starts over and joins
+the winner by Welcome, whose bundle brings the keys its writes were sealed
+under. A record's cleartext writes stay the base its sealed writes are
+changes over: a device joining after the seal takes that base in from the
+host's replay, while a live cleartext write is refused.
 
 A store never enters the group and never holds a key. It keeps and forwards
 sealed ops, and refuses ones that are not signed by a member's device. To
@@ -582,18 +560,18 @@ holds an earlier part when a reader scrolls back to it. Headless readers
 (bots, moderation, the Discord bridge, agents) read and page the chain through
 that resource instead of enumerating parts themselves.
 
-## What a unit and a key scope cost
+## What a unit and a workspace's keys cost
 
-Measured, not estimated: `channel-crypto`'s `per_channel` bench for a key
-scope, `tilo-app-state`'s `record_cost` for a unit and its document, and
+Measured, not estimated: `channel-crypto`'s `per_channel` bench for a
+workspace's group, `tilo-app-state`'s `record_cost` for a unit and its document, and
 `tilolang-tilo`'s `index_units` for the index. Numbers are medians on a
 x86_64 development container, three samples; instruction counts repeat on any
 machine, times are that container's.
 
-**One group per channel** (one MLS group per record route, three devices in
-each channel), per channel — the cost a workspace paid before key scopes:
+**One group per record** (one MLS group per record, three devices in each),
+per record — what a group per record would cost:
 
-| channels | join | per channel | join bytes | removal | removal bytes | device state |
+| records | join | per record | join bytes | removal | removal bytes | device state |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 1.99 ms | 1.99 ms | 3.1 KiB | 0.84 ms | 700 B | 757 B |
 | 10 | 22.0 ms | 2.20 ms | 3.1 KiB | 0.77 ms | 700 B | 763 B |
@@ -601,14 +579,14 @@ each channel), per channel — the cost a workspace paid before key scopes:
 | 1000 | 1989 ms | 1.99 ms | 3.1 KiB | 0.77 ms | 700 B | 760 B |
 
 The cost is flat per group and does not shrink as a workspace grows: 2.0 ms
-and 3.1 KiB of governance frames per channel to admit one device, 0.8 ms and
-700 B per channel for one removal, and 760 B of sealed peer state per channel
-on the device. A user joining a workspace of 1000 records paid about two
+and 3.1 KiB of governance frames per group to admit one device, 0.8 ms and
+700 B per group for one removal, and 760 B of sealed peer state per group on
+the device. A user joining a workspace of 1000 records would pay about two
 seconds and 3 MiB before reading anything, and every membership change after
-that repeated it — once per channel, on every device.
+that would repeat it, on every device.
 
-**One key scope per reader set** (one MLS group carrying every unit whose
-readers are the same devices, three devices), by the units it carries:
+**One group per workspace** (one MLS group carrying every unit of the
+workspace, three devices), by the units it carries:
 
 | units | join | per unit | join bytes | removal | removal bytes |
 | --- | --- | --- | --- | --- | --- |
@@ -619,9 +597,9 @@ readers are the same devices, three devices), by the units it carries:
 
 Flat in the units carried: a workspace of 1000 records costs 1.9 ms and 3.1
 KiB to admit a device and 0.76 ms and 700 B to remove one, instead of 1.99 s
-and 3.1 MiB and 0.77 s and 700 KiB. Each unit's content still seals and opens
-under the scope's keys, named for the unit: 4.8 us per unit at one unit, 2.4 us
-at 1000 (`unit_content`), which is what it was per channel before.
+and 3.1 MiB and 0.77 s and 700 KiB. Each unit's content seals and opens under
+the workspace's keys, bound to the unit's artifact: 4.8 us per unit at one
+unit, 2.4 us at 1000 (`unit_content`).
 
 **One storage unit** (one record: its own Automerge file, route and index
 row), per unit:
@@ -691,11 +669,11 @@ chunk the views do not read in full is what brings either down.
 
 What that implies for the layers above:
 
-- **Key scope, not channel.** Per-channel keys are what make a membership
-  change linear in the workspace: the 1.96 ms above is one commit and one
-  delivered frame set per channel, on every member. Keys per reader set make
-  the same change one commit for the whole workspace, and a device's sealed
-  state one file per reader set instead of 760 B per record.
+- **Keys per workspace, not per record.** Per-record keys would make a
+  membership change linear in the workspace: the 1.96 ms above is one commit
+  and one delivered frame set per group, on every member. One group per
+  workspace makes the same change one commit, and a device's sealed state one
+  file per workspace instead of 760 B per record.
 - **A chunk is a few thousand items, not a record per app.** A 10k-item chunk
   loads in 31 ms and holds 3 MiB; a 1k-item chunk in 3.6 ms and 276 KiB. A
   chunk that holds a whole collection of a few thousand small resources keeps
@@ -721,14 +699,10 @@ the model but instead of it:
   the separate governance document with its receipts, custody and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
-- **Per-person spaces.** The person's relay workspace
-  (`personal_continuity_workspace_id`), derived from the root key under its
-  own domain string. It is left only to the person's hosts: they keep the
-  person's records on it for devices that are away, and ush environment
-  sessions run on it. The person's devices already meet without it, on the
-  session between two of them (`tilo-relay-sibling/1`), and learn the
-  person's workspaces from the hosts holding them (`room.list`). The person's
-  own records in particular are in no workspace: their store is
+- **Per-person spaces.** The person's devices meet on the session between two
+  of them (`tilo-relay-sibling/1`) and learn the person's workspaces from the
+  hosts holding them. The person's own records are in no workspace: their
+  store is
   one cluster per person, derived from the root key, and the readers of its
   channels are the identity's certified devices that are not revoked — the
   identity decides, and no governor or workspace takes part. Any of those
@@ -741,9 +715,6 @@ the model but instead of it:
   admission caller, the separately written browser peer with its own layout
   schema, and the device-replica wrappers in the shell and the standalone
   runtime.
-- **Hosts as a certificate class.** `can_act_as_host` and the other host
-  flags, a host's second identity, and the parallel ideas of where work runs.
-  Role and appetite are per device and per workspace.
 - **A second platform in the shell.** Its own widget host, frame pipeline,
   persistence, collaboration, history, undo and action authority. The shell
   uses the app stack.

@@ -249,144 +249,148 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_shipped_catalogue_entry_carries_the_disclosure() {
-        let shipped = SizeDisclosure::parse(CATALOGUE).expect("size disclosure in the catalogue");
-        assert_eq!(shipped, disclosure());
-        assert!(shipped.sentence().contains("about 1.9 GB"));
-        assert!(shipped.sentence().contains("about 3.1 GB"));
-    }
+    tilo_test_env::scenario! {
+        fn windows_compatibility_discloses_its_size_and_offers_what_each_state_needs;
 
-    #[test]
-    fn a_catalogue_without_sizes_discloses_nothing() {
-        assert_eq!(SizeDisclosure::parse(r#"{"id":"windows-compat"}"#), None);
-        assert_eq!(
-            SizeDisclosure::parse(r#"{"size":{"download_bytes":0,"installed_bytes":5}}"#),
-            None
-        );
-        assert_eq!(SizeDisclosure::parse("not json"), None);
-    }
+        phase the_shipped_catalogue_entry_carries_the_disclosure;
+        {
+            let shipped = SizeDisclosure::parse(CATALOGUE).expect("size disclosure in the catalogue");
+            assert_eq!(shipped, disclosure());
+            assert!(shipped.sentence().contains("about 1.9 GB"));
+            assert!(shipped.sentence().contains("about 3.1 GB"));
+        }
 
-    #[test]
-    fn sizes_round_up_never_down() {
-        assert_eq!(SizeDisclosure::gigabytes(1_900_000_001), "2.0");
-        assert_eq!(SizeDisclosure::gigabytes(3_100_000_000), "3.1");
-    }
+        phase a_catalogue_without_sizes_discloses_nothing;
+        {
+            assert_eq!(SizeDisclosure::parse(r#"{"id":"windows-compat"}"#), None);
+            assert_eq!(
+                SizeDisclosure::parse(r#"{"size":{"download_bytes":0,"installed_bytes":5}}"#),
+                None
+            );
+            assert_eq!(SizeDisclosure::parse("not json"), None);
+        }
 
-    #[test]
-    fn the_payload_is_present_only_when_every_marker_is() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(!payload_present_under(root.path()));
-        std::fs::create_dir_all(root.path().join("usr/lib/tilo/windows-runners/proton")).unwrap();
-        assert!(
-            !payload_present_under(root.path()),
-            "virtio media is missing"
-        );
-        std::fs::create_dir_all(root.path().join("usr/share/virtio-win")).unwrap();
-        std::fs::write(root.path().join("usr/share/virtio-win/virtio-win.iso"), b"").unwrap();
-        assert!(payload_present_under(root.path()));
-    }
+        phase sizes_round_up_never_down;
+        {
+            assert_eq!(SizeDisclosure::gigabytes(1_900_000_001), "2.0");
+            assert_eq!(SizeDisclosure::gigabytes(3_100_000_000), "3.1");
+        }
 
-    #[test]
-    fn readiness_covers_every_state_and_names_the_action() {
-        let offered = Some(disclosure());
-        let status = |json: &str| ExtensionStatus::parse(json);
-        assert_eq!(
-            Readiness::from_facts(true, None, &ExtensionStatus::default()),
-            Readiness::Ready,
-            "the files decide, whatever the status says"
-        );
-        let needs = Readiness::from_facts(false, offered, &status(r#"{"state":"not-installed"}"#));
-        assert_eq!(needs, Readiness::NeedsInstall(disclosure()));
-        assert!(needs.can_install());
-        assert!(needs.message().contains("not installed"));
-        assert!(needs.message().contains("about 3.1 GB"));
-        assert!(matches!(
-            Readiness::from_facts(false, offered, &status(r#"{"state":"installing"}"#)),
-            Readiness::Installing(None)
-        ));
-        assert_eq!(
-            Readiness::from_facts(
+        phase the_payload_is_present_only_when_every_marker_is;
+        {
+            let root = tempfile::tempdir().unwrap();
+            assert!(!payload_present_under(root.path()));
+            std::fs::create_dir_all(root.path().join("usr/lib/tilo/windows-runners/proton")).unwrap();
+            assert!(
+                !payload_present_under(root.path()),
+                "virtio media is missing"
+            );
+            std::fs::create_dir_all(root.path().join("usr/share/virtio-win")).unwrap();
+            std::fs::write(root.path().join("usr/share/virtio-win/virtio-win.iso"), b"").unwrap();
+            assert!(payload_present_under(root.path()));
+        }
+
+        phase readiness_covers_every_state_and_names_the_action;
+        {
+            let offered = Some(disclosure());
+            let status = |json: &str| ExtensionStatus::parse(json);
+            assert_eq!(
+                Readiness::from_facts(true, None, &ExtensionStatus::default()),
+                Readiness::Ready,
+                "the files decide, whatever the status says"
+            );
+            let needs = Readiness::from_facts(false, offered, &status(r#"{"state":"not-installed"}"#));
+            assert_eq!(needs, Readiness::NeedsInstall(disclosure()));
+            assert!(needs.can_install());
+            assert!(needs.message().contains("not installed"));
+            assert!(needs.message().contains("about 3.1 GB"));
+            assert!(matches!(
+                Readiness::from_facts(false, offered, &status(r#"{"state":"installing"}"#)),
+                Readiness::Installing(None)
+            ));
+            assert_eq!(
+                Readiness::from_facts(
+                    false,
+                    offered,
+                    &status(r#"{"state":"waiting-for-network"}"#)
+                ),
+                Readiness::WaitingForNetwork
+            );
+            let failed = Readiness::from_facts(
                 false,
                 offered,
-                &status(r#"{"state":"waiting-for-network"}"#)
-            ),
-            Readiness::WaitingForNetwork
-        );
-        let failed = Readiness::from_facts(
-            false,
-            offered,
-            &status(r#"{"state":"failed","last_error":"offline"}"#),
-        );
-        assert!(failed.can_install(), "a failure offers installing again");
-        assert!(failed.message().contains("offline"));
-        assert_eq!(
-            Readiness::from_facts(false, None, &status(r#"{"state":"not-installed"}"#)),
-            Readiness::NotOffered
-        );
-        assert!(!Readiness::NotOffered.can_install());
-    }
+                &status(r#"{"state":"failed","last_error":"offline"}"#),
+            );
+            assert!(failed.can_install(), "a failure offers installing again");
+            assert!(failed.message().contains("offline"));
+            assert_eq!(
+                Readiness::from_facts(false, None, &status(r#"{"state":"not-installed"}"#)),
+                Readiness::NotOffered
+            );
+            assert!(!Readiness::NotOffered.can_install());
+        }
 
-    #[test]
-    fn every_readiness_state_offers_only_the_actions_that_help() {
-        let offered = Some(disclosure());
-        let status = |json: &str| ExtensionStatus::parse(json);
-        let needs = Readiness::from_facts(false, offered, &status(r#"{"state":"not-installed"}"#));
-        assert_eq!(needs.offered_actions(), vec![WindowsSupportAction::Install]);
-        let failed = Readiness::from_facts(
-            false,
-            offered,
-            &status(r#"{"state":"failed","last_error":"offline"}"#),
-        );
-        assert_eq!(
-            failed.offered_actions(),
-            vec![WindowsSupportAction::Install, WindowsSupportAction::Remove]
-        );
-        assert_eq!(
-            Readiness::from_facts(
+        phase every_readiness_state_offers_only_the_actions_that_help;
+        {
+            let offered = Some(disclosure());
+            let status = |json: &str| ExtensionStatus::parse(json);
+            let needs = Readiness::from_facts(false, offered, &status(r#"{"state":"not-installed"}"#));
+            assert_eq!(needs.offered_actions(), vec![WindowsSupportAction::Install]);
+            let failed = Readiness::from_facts(
                 false,
                 offered,
-                &status(r#"{"state":"waiting-for-network"}"#)
-            )
-            .offered_actions(),
-            vec![WindowsSupportAction::Remove]
-        );
-        assert_eq!(
-            Readiness::Ready.offered_actions(),
-            vec![WindowsSupportAction::Remove]
-        );
-        let working = Readiness::from_facts(
-            false,
-            offered,
-            &status(
-                r#"{"state":"installing","desired":true,"progress":{"step":2,"steps":5,"label":"Downloading","bytes":20000000,"total":40000000}}"#,
-            ),
-        );
-        assert!(
-            working.offered_actions().is_empty(),
-            "nothing to press mid-install"
-        );
-        // Step 2 of 5, half of its download done: one step done plus half.
-        assert_eq!(working.progress_fraction(), Some(0.3));
-        assert_eq!(
-            working.progress_label(),
-            Some(("Downloading".to_string(), 2, 5))
-        );
-        assert_eq!(working.progress_megabytes(), Some((20, 40)));
-        assert!(needs.progress_fraction().is_none());
-        assert!(Readiness::NotOffered.offered_actions().is_empty());
-        assert!(!Readiness::NotOffered.can_install());
-    }
+                &status(r#"{"state":"failed","last_error":"offline"}"#),
+            );
+            assert_eq!(
+                failed.offered_actions(),
+                vec![WindowsSupportAction::Install, WindowsSupportAction::Remove]
+            );
+            assert_eq!(
+                Readiness::from_facts(
+                    false,
+                    offered,
+                    &status(r#"{"state":"waiting-for-network"}"#)
+                )
+                .offered_actions(),
+                vec![WindowsSupportAction::Remove]
+            );
+            assert_eq!(
+                Readiness::Ready.offered_actions(),
+                vec![WindowsSupportAction::Remove]
+            );
+            let working = Readiness::from_facts(
+                false,
+                offered,
+                &status(
+                    r#"{"state":"installing","desired":true,"progress":{"step":2,"steps":5,"label":"Downloading","bytes":20000000,"total":40000000}}"#,
+                ),
+            );
+            assert!(
+                working.offered_actions().is_empty(),
+                "nothing to press mid-install"
+            );
+            // Step 2 of 5, half of its download done: one step done plus half.
+            assert_eq!(working.progress_fraction(), Some(0.3));
+            assert_eq!(
+                working.progress_label(),
+                Some(("Downloading".to_string(), 2, 5))
+            );
+            assert_eq!(working.progress_megabytes(), Some((20, 40)));
+            assert!(needs.progress_fraction().is_none());
+            assert!(Readiness::NotOffered.offered_actions().is_empty());
+            assert!(!Readiness::NotOffered.can_install());
+        }
 
-    #[test]
-    fn it_uses_the_generic_extension_units_and_status() {
-        assert_eq!(
-            ExtensionAction::Install.unit(&id()),
-            "tilo-extension@install:windows-compat.service"
-        );
-        assert_eq!(
-            id().status_path(),
-            Path::new("/var/lib/tilo/extensions/windows-compat.json")
-        );
+        phase it_uses_the_generic_extension_units_and_status;
+        {
+            assert_eq!(
+                ExtensionAction::Install.unit(&id()),
+                "tilo-extension@install:windows-compat.service"
+            );
+            assert_eq!(
+                id().status_path(),
+                Path::new("/var/lib/tilo/extensions/windows-compat.json")
+            );
+        }
     }
 }

@@ -12,6 +12,7 @@ use super::{
     record_provider,
 };
 use tilo_actions::remote::{Caller, CataloguePage};
+use tilo_relay_protocol::WorkspaceId;
 
 impl Worker {
     /// The page `query` asks of the records at `routes`, and after them the
@@ -22,7 +23,7 @@ impl Worker {
     /// item a record holds. A record that does not mount lists nothing.
     pub(super) fn records_page(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         (caller, bounded): (&Caller, Option<&bounded::Bounded>),
         (routes, own): (&[DocumentRoute], Vec<CatalogueRow>),
         state: &WorkspaceState,
@@ -98,7 +99,7 @@ impl Worker {
     /// how many), each row where it stands.
     fn listed_page(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         bounded: Option<&bounded::Bounded>,
         route: &DocumentRoute,
         state: &WorkspaceState,

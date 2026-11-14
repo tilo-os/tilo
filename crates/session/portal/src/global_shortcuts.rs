@@ -776,142 +776,146 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn requested_shortcuts_are_bounded_and_unique() {
-        let good = vec![("toggle".into(), HashMap::new())];
-        assert_eq!(requested(good).expect("valid").len(), 1);
-        let duplicate = vec![
-            ("toggle".into(), HashMap::new()),
-            ("toggle".into(), HashMap::new()),
-        ];
-        assert!(requested(duplicate).is_none());
-        assert!(requested(vec![("bad space".into(), HashMap::new())]).is_none());
-    }
+    tilo_test_env::scenario! {
+        fn global_shortcuts_are_bounded_bound_once_and_pressed_by_their_chord;
 
-    #[test]
-    fn an_answer_binds_free_chords_once_and_never_the_desktops() {
-        let shortcuts = Shortcuts::default();
-        let rows = shortcuts.rows("/s/a", &requests());
-        assert_eq!(rows[1].status.as_deref(), Some("reserved"));
-        assert_eq!(rows[2].trigger, None);
-        let as_proposed = Answer {
-            choice: Some(BIND_AS_PROPOSED),
-            ..Answer::default()
-        };
-        let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
-        assert_eq!(
-            bound
-                .iter()
-                .map(|bound| bound.id.as_str())
-                .collect::<Vec<_>>(),
-            ["talk"],
-            "the reserved and the chordless are left out"
-        );
-        let chosen = Answer {
-            uris: vec![
-                "mute=Ctrl+Alt+M".into(),
-                "search=Ctrl+Alt+M".into(),
-                "unknown=Ctrl+Alt+U".into(),
-            ],
-            ..Answer::default()
-        };
-        let bound = shortcuts.bindings("/s/a", &requests(), &chosen);
-        assert_eq!(bound.len(), 1, "a chord is given once");
-        assert_eq!(
-            (bound[0].id.as_str(), bound[0].trigger.canonical.as_str()),
-            ("mute", "CTRL+ALT+KEYM")
-        );
-    }
-
-    #[test]
-    fn a_chord_bound_by_one_session_is_taken_for_another() {
-        let shortcuts = Shortcuts::default();
-        assert!(shortcuts.begin("/s/a"));
-        let as_proposed = Answer {
-            choice: Some(BIND_AS_PROPOSED),
-            ..Answer::default()
-        };
-        let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
-        assert!(shortcuts.finish("/s/a", Some(bound)));
-        let rows = shortcuts.rows("/s/b", &requests());
-        assert_eq!(rows[0].status.as_deref(), Some("taken"));
-        assert!(
-            shortcuts
-                .bindings("/s/b", &requests(), &as_proposed)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_bound_shortcut_is_published_with_its_trigger_and_presses_once() {
-        let shortcuts = Shortcuts::default();
-        assert!(shortcuts.begin("/s/a"));
-        let as_proposed = Answer {
-            choice: Some(BIND_AS_PROPOSED),
-            ..Answer::default()
-        };
-        let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
-        assert!(shortcuts.finish("/s/a", Some(bound)));
-        let published = shortcuts.resources();
-        assert_eq!(published.len(), 1);
-        let resource = published[0].id.as_str().to_owned();
-        let reading = shortcuts.read(&resource).expect("read");
-        assert_eq!(reading["trigger"]["keycode"], 25);
-        assert_eq!(reading["trigger"]["ctrl"], true);
-        for _ in 0..2 {
-            let pressed = shortcuts.invoke(&published, &resource, "activate", &Map::new());
-            assert!(matches!(pressed, Some(Ok(_))), "{pressed:?}");
+        phase requested_shortcuts_are_bounded_and_unique;
+        {
+            let good = vec![("toggle".into(), HashMap::new())];
+            assert_eq!(requested(good).expect("valid").len(), 1);
+            let duplicate = vec![
+                ("toggle".into(), HashMap::new()),
+                ("toggle".into(), HashMap::new()),
+            ];
+            assert!(requested(duplicate).is_none());
+            assert!(requested(vec![("bad space".into(), HashMap::new())]).is_none());
         }
-        assert_eq!(shortcuts.state.lock_recover().held.len(), 1);
-        let released = shortcuts.invoke(&published, &resource, "deactivate", &Map::new());
-        assert!(matches!(released, Some(Ok(_))));
-        assert!(shortcuts.state.lock_recover().held.is_empty());
-        let unbound = shortcuts.invoke(&published, &resource, "unbind", &Map::new());
-        assert!(matches!(unbound, Some(Ok(_))));
-        assert!(shortcuts.resources().is_empty());
-    }
 
-    #[test]
-    fn a_press_goes_to_the_shortcut_bound_to_its_chord() {
-        let shortcuts = Shortcuts::default();
-        assert!(shortcuts.begin("/s/a"));
-        let as_proposed = Answer {
-            choice: Some(BIND_AS_PROPOSED),
-            ..Answer::default()
-        };
-        let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
-        assert!(shortcuts.finish("/s/a", Some(bound)));
-        // `talk` was bound to Ctrl+Shift+P, which is keycode 25.
-        let chord = Modifiers {
-            ctrl: true,
-            shift: true,
-            ..Modifiers::default()
-        };
-        assert_eq!(
-            shortcuts.triggered(25, chord),
-            Some(resource_of("/s/a", "talk"))
-        );
-        // The same key with other modifiers, or another key, is the app's
-        // own to type.
-        assert_eq!(
-            shortcuts.triggered(
-                25,
-                Modifiers {
-                    ctrl: true,
-                    ..Modifiers::default()
-                }
-            ),
-            None
-        );
-        assert_eq!(shortcuts.triggered(24, chord), None);
-        // The desktop's own chords win: a binding that collides is let go.
-        shortcuts.set_shortcut_table(ShortcutConfig {
-            bindings: BTreeMap::from([(
-                ShortcutAction::WorkspaceOverview,
-                KeyChord::parse("Ctrl+Shift+P").expect("a chord"),
-            )]),
-            ..ShortcutConfig::default()
-        });
-        assert_eq!(shortcuts.triggered(25, chord), None);
+        phase an_answer_binds_free_chords_once_and_never_the_desktops;
+        {
+            let shortcuts = Shortcuts::default();
+            let rows = shortcuts.rows("/s/a", &requests());
+            assert_eq!(rows[1].status.as_deref(), Some("reserved"));
+            assert_eq!(rows[2].trigger, None);
+            let as_proposed = Answer {
+                choice: Some(BIND_AS_PROPOSED),
+                ..Answer::default()
+            };
+            let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
+            assert_eq!(
+                bound
+                    .iter()
+                    .map(|bound| bound.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["talk"],
+                "the reserved and the chordless are left out"
+            );
+            let chosen = Answer {
+                uris: vec![
+                    "mute=Ctrl+Alt+M".into(),
+                    "search=Ctrl+Alt+M".into(),
+                    "unknown=Ctrl+Alt+U".into(),
+                ],
+                ..Answer::default()
+            };
+            let bound = shortcuts.bindings("/s/a", &requests(), &chosen);
+            assert_eq!(bound.len(), 1, "a chord is given once");
+            assert_eq!(
+                (bound[0].id.as_str(), bound[0].trigger.canonical.as_str()),
+                ("mute", "CTRL+ALT+KEYM")
+            );
+        }
+
+        phase a_chord_bound_by_one_session_is_taken_for_another;
+        {
+            let shortcuts = Shortcuts::default();
+            assert!(shortcuts.begin("/s/a"));
+            let as_proposed = Answer {
+                choice: Some(BIND_AS_PROPOSED),
+                ..Answer::default()
+            };
+            let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
+            assert!(shortcuts.finish("/s/a", Some(bound)));
+            let rows = shortcuts.rows("/s/b", &requests());
+            assert_eq!(rows[0].status.as_deref(), Some("taken"));
+            assert!(
+                shortcuts
+                    .bindings("/s/b", &requests(), &as_proposed)
+                    .is_empty()
+            );
+        }
+
+        phase a_bound_shortcut_is_published_with_its_trigger_and_presses_once;
+        {
+            let shortcuts = Shortcuts::default();
+            assert!(shortcuts.begin("/s/a"));
+            let as_proposed = Answer {
+                choice: Some(BIND_AS_PROPOSED),
+                ..Answer::default()
+            };
+            let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
+            assert!(shortcuts.finish("/s/a", Some(bound)));
+            let published = shortcuts.resources();
+            assert_eq!(published.len(), 1);
+            let resource = published[0].id.as_str().to_owned();
+            let reading = shortcuts.read(&resource).expect("read");
+            assert_eq!(reading["trigger"]["keycode"], 25);
+            assert_eq!(reading["trigger"]["ctrl"], true);
+            for _ in 0..2 {
+                let pressed = shortcuts.invoke(&published, &resource, "activate", &Map::new());
+                assert!(matches!(pressed, Some(Ok(_))), "{pressed:?}");
+            }
+            assert_eq!(shortcuts.state.lock_recover().held.len(), 1);
+            let released = shortcuts.invoke(&published, &resource, "deactivate", &Map::new());
+            assert!(matches!(released, Some(Ok(_))));
+            assert!(shortcuts.state.lock_recover().held.is_empty());
+            let unbound = shortcuts.invoke(&published, &resource, "unbind", &Map::new());
+            assert!(matches!(unbound, Some(Ok(_))));
+            assert!(shortcuts.resources().is_empty());
+        }
+
+        phase a_press_goes_to_the_shortcut_bound_to_its_chord;
+        {
+            let shortcuts = Shortcuts::default();
+            assert!(shortcuts.begin("/s/a"));
+            let as_proposed = Answer {
+                choice: Some(BIND_AS_PROPOSED),
+                ..Answer::default()
+            };
+            let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
+            assert!(shortcuts.finish("/s/a", Some(bound)));
+            // `talk` was bound to Ctrl+Shift+P, which is keycode 25.
+            let chord = Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            };
+            assert_eq!(
+                shortcuts.triggered(25, chord),
+                Some(resource_of("/s/a", "talk"))
+            );
+            // The same key with other modifiers, or another key, is the app's
+            // own to type.
+            assert_eq!(
+                shortcuts.triggered(
+                    25,
+                    Modifiers {
+                        ctrl: true,
+                        ..Modifiers::default()
+                    }
+                ),
+                None
+            );
+            assert_eq!(shortcuts.triggered(24, chord), None);
+            // The desktop's own chords win: a binding that collides is let go.
+            shortcuts.set_shortcut_table(ShortcutConfig {
+                bindings: BTreeMap::from([(
+                    ShortcutAction::WorkspaceOverview,
+                    KeyChord::parse("Ctrl+Shift+P").expect("a chord"),
+                )]),
+                ..ShortcutConfig::default()
+            });
+            assert_eq!(shortcuts.triggered(25, chord), None);
+        }
     }
 }

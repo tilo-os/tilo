@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Coarse global metrics for the daemon.
 #[derive(Default, Debug)]
@@ -56,7 +57,7 @@ pub struct Metrics {
     /// Bytes of live fan-out frames written to peer sessions.
     bytes_sent_live: AtomicU64,
     /// Egress per relay workspace.
-    workspaces: RwLock<HashMap<u64, WorkspaceCounters>>,
+    workspaces: RwLock<HashMap<WorkspaceId, WorkspaceCounters>>,
     /// Egress per connected session, keyed by a serial number.
     sessions: Mutex<HashMap<u64, Arc<SessionCounters>>>,
     /// Serial number of the next session.
@@ -146,7 +147,7 @@ impl Metrics {
     /// egress; `live` marks live fan-out (a delta or presence forwarded as it
     /// arrived), as opposed to replay, replies and positions. The session's
     /// [`EgressWrite`] counts the same bytes into the total.
-    pub fn add_room_egress(&self, workspace: u64, bytes: u64, live: bool) {
+    pub fn add_room_egress(&self, workspace: WorkspaceId, bytes: u64, live: bool) {
         if live {
             self.bytes_sent_live.fetch_add(bytes, Ordering::Relaxed);
         }
@@ -165,7 +166,7 @@ impl Metrics {
     }
 
     /// Egress per relay workspace since start, for workspaces that were sent anything.
-    pub fn room_egress(&self) -> BTreeMap<u64, WorkspaceEgress> {
+    pub fn room_egress(&self) -> BTreeMap<WorkspaceId, WorkspaceEgress> {
         self.workspaces
             .read_recover()
             .iter()
@@ -364,23 +365,23 @@ mod tests {
     #[test]
     fn room_egress_splits_live_fan_out_from_the_rest() {
         let m = Metrics::default();
-        m.add_room_egress(7, 100, true);
-        m.add_room_egress(7, 30, false);
-        m.add_room_egress(8, 5, true);
+        m.add_room_egress(WorkspaceId::from_u128(7), 100, true);
+        m.add_room_egress(WorkspaceId::from_u128(7), 30, false);
+        m.add_room_egress(WorkspaceId::from_u128(8), 5, true);
         let snap = m.snapshot();
         assert_eq!(snap.bytes_sent_live, 105);
         assert_eq!(
             snap.workspaces,
             BTreeMap::from([
                 (
-                    7,
+                    WorkspaceId::from_u128(7),
                     WorkspaceEgress {
                         bytes_sent: 130,
                         bytes_sent_live: 100,
                     }
                 ),
                 (
-                    8,
+                    WorkspaceId::from_u128(8),
                     WorkspaceEgress {
                         bytes_sent: 5,
                         bytes_sent_live: 5,

@@ -16,8 +16,8 @@ use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-use tilo_peer_state::join::{MemberRole, TransportHint};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_peer_state::join::{Role, TransportHint};
 use tilo_relay_session::client::RelayClient;
 use tilo_relay_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedWorkspace, UNHOST_ROOM, ask_host,
@@ -30,6 +30,7 @@ use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::host_authority::HostOperation;
 use tilo_lock::RwLockRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// This host's answer to the session a host serving one of its workspaces opened
 /// here ([`Workspaces::answer_host`]).
@@ -224,7 +225,7 @@ impl Workspaces {
             let governed = governed.lock().await;
             let mut bootstrap = governed
                 .governed()
-                .bootstrap([0; 32], member.clone(), MemberRole::Editor)
+                .bootstrap([0; 32], member.clone(), Role::Editor)
                 .map_err(|error| error.to_string())?;
             // The host follows governance alone: records reach it over the
             // attach session, and leaving them here keeps the hand-over
@@ -237,7 +238,10 @@ impl Workspaces {
         };
         let mut arguments = Map::new();
         arguments.insert("room".into(), Value::String(workspace.to_owned()));
-        arguments.insert("workspace_id".into(), Value::from(workspace_id));
+        arguments.insert(
+            "workspace_id".into(),
+            Value::String(workspace_id.to_string()),
+        );
         arguments.insert(
             "governor_hint".into(),
             Value::String(hex_postcard(&governor_hint)?),
@@ -247,14 +251,12 @@ impl Workspaces {
         let hosted: HostedWorkspace =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
         let hint: TransportHint = crate::hosted::decode_hex(&hosted.host_hint)?;
-        let address = IrohWorkspaceHostHintV1::from_transport_hint(&hint)
-            .map_err(|error| error.to_string())?;
-        if hint.host != member
-            || address.mode != WorkspaceHostMode::CertifiedHost
-            || address.room != workspace
-            || address.workspace_id != workspace_id
-        {
-            return Err("the host answered an address that is not its own for the room".into());
+        let address =
+            WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())?;
+        if hint.host != member || !address.holds_keys || address.workspace_id != workspace_id {
+            return Err(
+                "the device answered an address that is not its own for the workspace".into(),
+            );
         }
         self.name_host(workspace, |governance, key, now| {
             governance.author_workspace_host(&hint, key, now)
@@ -309,7 +311,7 @@ impl Workspaces {
                 .iter()
                 .find(|known| host_device(known) == device)
                 .map(|known| {
-                    IrohWorkspaceHostHintV1::from_transport_hint(known)
+                    WorkspaceDeviceHintV1::from_transport_hint(known)
                         .map(|address| address.endpoint_addr)
                 })
                 .and_then(Result::ok);
@@ -368,7 +370,7 @@ impl Workspaces {
             .workspace_hosts()
             .iter()
             .find(|known| host_device(known) == device)
-            .and_then(|known| IrohWorkspaceHostHintV1::from_transport_hint(known).ok())
+            .and_then(|known| WorkspaceDeviceHintV1::from_transport_hint(known).ok())
             .map(|address| address.endpoint_addr)
         else {
             return;
@@ -412,7 +414,7 @@ impl Workspaces {
     /// here, while it lasts.
     async fn attach_session(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
     ) -> Option<tokio::sync::mpsc::Sender<()>> {
         let workspace = self
@@ -529,14 +531,14 @@ impl Workspaces {
             .relay_urls()
             .next()
             .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
             version: 1,
-            mode: host.mode,
-            room: workspace.workspace().to_owned(),
+            holds_keys: true,
+            runs_work: !host.work.takes_nothing(),
             workspace_id: workspace.workspace_id(),
             endpoint_addr,
-            host_user_public_key: host.cert.user_public_key,
-            host_device_certificate: host.cert.clone(),
+            user_public_key: host.cert.user_public_key,
+            device_certificate: host.cert.clone(),
             packet_relay_url,
         }
         .transport_hint(&host.key)

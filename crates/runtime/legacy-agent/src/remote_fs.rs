@@ -566,46 +566,50 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn requests_and_errors_travel_over_the_share_connection() {
-        let (host, guest) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || {
-            let mut host = host;
-            let Some(FsRequest::Hello { path }) = recv(&mut host).unwrap() else {
-                panic!("hello first");
-            };
-            assert_eq!(path, "/srv/ws/files");
-            send(&mut host, &FsReply::Ok).unwrap();
-            let Some(FsRequest::Lookup { name, .. }) = recv(&mut host).unwrap() else {
-                panic!("lookup");
-            };
-            assert_eq!(name, b"missing");
-            send(&mut host, &FsReply::Error(libc::ENOENT)).unwrap();
-        });
-        let remote = Remote::open(guest, "/srv/ws/files").unwrap();
-        let answer = remote.ask(&FsRequest::Lookup {
-            parent: 1,
-            name: b"missing".to_vec(),
-        });
-        assert_eq!(answer, Err(Errno::from_i32(libc::ENOENT)));
-        server.join().unwrap();
-        assert_eq!(
-            remote.ask(&FsRequest::StatFs),
-            Err(Errno::EIO),
-            "a host that went away is an I/O error"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_share_connection;
 
-    #[test]
-    fn a_share_the_host_does_not_serve_is_not_mounted() {
-        let (host, guest) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || {
-            let mut host = host;
-            let _: Option<FsRequest> = recv(&mut host).unwrap();
-            send(&mut host, &FsReply::Error(libc::EACCES)).unwrap();
-        });
-        let error = Remote::open(guest, "/srv/other").err().unwrap();
-        assert_eq!(error.raw_os_error(), Some(libc::EACCES));
-        server.join().unwrap();
+        phase requests_and_errors_travel_over_the_share_connection;
+        {
+            let (host, guest) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let mut host = host;
+                let Some(FsRequest::Hello { path }) = recv(&mut host).unwrap() else {
+                    panic!("hello first");
+                };
+                assert_eq!(path, "/srv/ws/files");
+                send(&mut host, &FsReply::Ok).unwrap();
+                let Some(FsRequest::Lookup { name, .. }) = recv(&mut host).unwrap() else {
+                    panic!("lookup");
+                };
+                assert_eq!(name, b"missing");
+                send(&mut host, &FsReply::Error(libc::ENOENT)).unwrap();
+            });
+            let remote = Remote::open(guest, "/srv/ws/files").unwrap();
+            let answer = remote.ask(&FsRequest::Lookup {
+                parent: 1,
+                name: b"missing".to_vec(),
+            });
+            assert_eq!(answer, Err(Errno::from_i32(libc::ENOENT)));
+            server.join().unwrap();
+            assert_eq!(
+                remote.ask(&FsRequest::StatFs),
+                Err(Errno::EIO),
+                "a host that went away is an I/O error"
+            );
+        }
+
+        phase a_share_the_host_does_not_serve_is_not_mounted;
+        {
+            let (host, guest) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let mut host = host;
+                let _: Option<FsRequest> = recv(&mut host).unwrap();
+                send(&mut host, &FsReply::Error(libc::EACCES)).unwrap();
+            });
+            let error = Remote::open(guest, "/srv/other").err().unwrap();
+            assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+            server.join().unwrap();
+        }
     }
 }

@@ -1499,202 +1499,216 @@ mod tests {
         peer
     }
 
-    #[test]
-    fn canonical_pre_view_role_refusal_returns_the_actual_live_lease() {
-        // Genuine kernel task and actual socket; this unqualified test image must never gain installed
-        // root-helper authority or export any view.
-        let peer = Arc::new(actual_current_peer());
-        let (stream, mut remote) = UnixStream::pair().unwrap();
-        let original = stream.as_raw_fd();
-        let channel = RootConsumerChannel { stream, peer };
-        let declaration = ConsumerLaunchBinding {
-            operation_id: String::new(),
-            shell_context_sha256: String::new(),
-            app_id: String::new(),
-            package_sha256: String::new(),
-            publisher_hex: String::new(),
-            command: ConsumerCommand {
-                program: String::new(),
-                args: vec![],
-                env: vec![],
-            },
-            manifest_path: String::new(),
-            payload_root: String::new(),
-            workspace: String::new(),
-            resource_record: String::new(),
-            intent_sha256: String::new(),
-            policy_sha256: String::new(),
-            launcher_pid: 0,
-            launcher_start: 0,
-            uid: 0,
-            gid: 0,
-        };
-        let candidate = File::open("/dev/null").unwrap();
-        let alias_source = File::open("/").unwrap();
-        let alias = OriginalHomeAlias::capture(Path::new("/home/fixture"), &alias_source).unwrap();
-        let failure = channel
-            .issue(
-                ReviewedViewIssue {
-                    exposure: None,
-                    original_home_alias: &alias,
-                    expected_source_view_sha256: [0; 32],
-                    observation: None,
-                    view: &candidate,
-                    uid: 0,
-                    gid: 0,
-                    mode: RetainedViewMode::Home,
-                    context_sha256: String::new(),
-                },
-                &declaration,
-                &ServiceCancellation::default(),
-            )
-            .err()
-            .expect("unqualified root-helper image must be refused");
-        assert!(!failure.view_may_have_been_delivered());
-        let (_error, mut retained) = failure.into_parts();
-        assert_eq!(retained.as_raw_fd(), original);
-        retained
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        remote.write_all(&[37]).unwrap();
-        let mut byte = [0];
-        retained.read_exact(&mut byte).unwrap();
-        assert_eq!(byte, [37]);
-    }
+    tilo_test_env::scenario! {
+        fn a_view_counts_as_delivered_only_when_it_may_have_been;
 
-    #[test]
-    fn actual_receipt_fd_transport_does_not_mark_the_view_exported() {
-        let (mut sender, receiver) = UnixStream::pair().unwrap();
-        let held = File::open("/dev/null").unwrap();
-        let cancellation = ServiceCancellation::default();
-        let mut progress = IssueProgress::NoView;
-        let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
-        send_issue_fd(&mut io, 0, held.as_fd(), &mut progress).unwrap();
-        let (tag, descriptor) =
-            runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
-        assert_eq!(tag, [0]);
-        let descriptor = File::from(descriptor.unwrap());
-        assert_eq!(
-            (
-                descriptor.metadata().unwrap().dev(),
-                descriptor.metadata().unwrap().ino()
-            ),
-            (
-                held.metadata().unwrap().dev(),
-                held.metadata().unwrap().ino()
-            )
-        );
-        assert_eq!(progress, IssueProgress::NoView);
-        send_issue_fd(&mut io, 1, held.as_fd(), &mut progress).unwrap();
-        let (tag, descriptor) =
-            runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
-        assert_eq!(tag, [1]);
-        assert!(descriptor.is_some());
-        assert_eq!(progress, IssueProgress::PossibleView);
-    }
-    #[test]
-    fn failed_actual_view_fd_attempt_preserves_possible_delivery_evidence() {
-        let held = File::open("/dev/null").unwrap();
-        for (index, expected) in [(0, IssueProgress::NoView), (1, IssueProgress::PossibleView)] {
+        phase actual_receipt_fd_transport_does_not_mark_the_view_exported;
+        {
             let (mut sender, receiver) = UnixStream::pair().unwrap();
-            drop(receiver);
+            let held = File::open("/dev/null").unwrap();
             let cancellation = ServiceCancellation::default();
             let mut progress = IssueProgress::NoView;
             let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
-            assert!(send_issue_fd(&mut io, index, held.as_fd(), &mut progress).is_err());
-            assert_eq!(progress, expected);
+            send_issue_fd(&mut io, 0, held.as_fd(), &mut progress).unwrap();
+            let (tag, descriptor) =
+                runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
+            assert_eq!(tag, [0]);
+            let descriptor = File::from(descriptor.unwrap());
+            assert_eq!(
+                (
+                    descriptor.metadata().unwrap().dev(),
+                    descriptor.metadata().unwrap().ino()
+                ),
+                (
+                    held.metadata().unwrap().dev(),
+                    held.metadata().unwrap().ino()
+                )
+            );
+            assert_eq!(progress, IssueProgress::NoView);
+            send_issue_fd(&mut io, 1, held.as_fd(), &mut progress).unwrap();
+            let (tag, descriptor) =
+                runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
+            assert_eq!(tag, [1]);
+            assert!(descriptor.is_some());
+            assert_eq!(progress, IssueProgress::PossibleView);
+        }
+
+        phase failed_actual_view_fd_attempt_preserves_possible_delivery_evidence;
+        {
+            let held = File::open("/dev/null").unwrap();
+            for (index, expected) in [(0, IssueProgress::NoView), (1, IssueProgress::PossibleView)] {
+                let (mut sender, receiver) = UnixStream::pair().unwrap();
+                drop(receiver);
+                let cancellation = ServiceCancellation::default();
+                let mut progress = IssueProgress::NoView;
+                let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
+                assert!(send_issue_fd(&mut io, index, held.as_fd(), &mut progress).is_err());
+                assert_eq!(progress, expected);
+            }
+        }
+
+        phase cancelled_before_view_send_never_marks_delivery_possible;
+        {
+            let (mut sender, _receiver) = UnixStream::pair().unwrap();
+            let held = File::open("/dev/null").unwrap();
+            let cancellation = ServiceCancellation::default();
+            cancellation.cancel();
+            let mut progress = IssueProgress::NoView;
+            let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
+            assert_eq!(
+                send_issue_fd(&mut io, 1, held.as_fd(), &mut progress)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Interrupted
+            );
+            assert_eq!(progress, IssueProgress::NoView);
         }
     }
-    #[test]
-    fn cancelled_before_view_send_never_marks_delivery_possible() {
-        let (mut sender, _receiver) = UnixStream::pair().unwrap();
-        let held = File::open("/dev/null").unwrap();
-        let cancellation = ServiceCancellation::default();
-        cancellation.cancel();
-        let mut progress = IssueProgress::NoView;
-        let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
-        assert_eq!(
-            send_issue_fd(&mut io, 1, held.as_fd(), &mut progress)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
-        assert_eq!(progress, IssueProgress::NoView);
-    }
+    tilo_test_env::scenario! {
+        fn a_stalled_first_exchange_is_bounded_and_cancellable;
 
-    #[test]
-    fn stalled_initial_qpe_is_cancelled_on_the_exact_connection() {
-        let (mut stream, _stalled) = UnixStream::pair().unwrap();
-        let cancellation = ServiceCancellation::default();
-        let trigger = cancellation.clone();
-        let worker = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            trigger.cancel();
-        });
-        // The peer stays silent and the deadline is the hang bound: only the cancel can end the
-        // exchange.
-        let error = qpe_exchange(
-            &mut stream,
-            &cancellation,
-            tilo_test_env::hang_bound(),
-            process_binding::complete,
-        )
-        .unwrap_err();
-        worker.join().unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(
-            stream.read(&mut [0]).unwrap(),
-            0,
-            "cancelled exact socket must be closed"
-        );
-    }
-    #[test]
-    fn stalled_initial_qpe_uses_one_total_deadline() {
-        let (mut stream, _stalled) = UnixStream::pair().unwrap();
-        // The peer never answers: only the deadline ends the exchange.
-        let (done, ended) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let kind = qpe_exchange(
+        phase stalled_initial_qpe_is_cancelled_on_the_exact_connection;
+        {
+            let (mut stream, _stalled) = UnixStream::pair().unwrap();
+            let cancellation = ServiceCancellation::default();
+            let trigger = cancellation.clone();
+            let worker = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                trigger.cancel();
+            });
+            // The peer stays silent and the deadline is the hang bound: only the cancel can end the
+            // exchange.
+            let error = qpe_exchange(
                 &mut stream,
-                &ServiceCancellation::default(),
-                Duration::from_millis(60),
+                &cancellation,
+                tilo_test_env::hang_bound(),
                 process_binding::complete,
             )
-            .unwrap_err()
-            .kind();
-            let _ = done.send((kind, stream));
-        });
-        let (kind, mut stream) = tilo_test_env::recv("the stalled exchange to time out", &ended);
-        assert_eq!(kind, io::ErrorKind::TimedOut);
-        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+            .unwrap_err();
+            worker.join().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert_eq!(
+                stream.read(&mut [0]).unwrap(),
+                0,
+                "cancelled exact socket must be closed"
+            );
+        }
+
+        phase stalled_initial_qpe_uses_one_total_deadline;
+        {
+            let (mut stream, _stalled) = UnixStream::pair().unwrap();
+            // The peer never answers: only the deadline ends the exchange.
+            let (done, ended) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let kind = qpe_exchange(
+                    &mut stream,
+                    &ServiceCancellation::default(),
+                    Duration::from_millis(60),
+                    process_binding::complete,
+                )
+                .unwrap_err()
+                .kind();
+                let _ = done.send((kind, stream));
+            });
+            let (kind, mut stream) = tilo_test_env::recv("the stalled exchange to time out", &ended);
+            assert_eq!(kind, io::ErrorKind::TimedOut);
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        }
     }
 
-    #[test]
-    fn only_an_executable_root_owns_and_no_one_else_may_write_is_protected() {
-        assert!(protected_owner(0, 0o755));
-        assert!(protected_owner(0, 0o555));
-        assert!(!protected_owner(0, 0o775), "group-writable");
-        assert!(!protected_owner(0, 0o757), "other-writable");
-        assert!(!protected_owner(1, 0o755), "an account that is not root");
-    }
+    tilo_test_env::scenario! {
+        fn only_the_protected_running_executable_holds_a_role;
 
-    #[test]
-    fn actual_authenticated_task_cannot_claim_an_executable_it_is_not_running() {
-        // Identity decides, not the claimed path's protection: the image this task actually runs is
-        // the only one it may claim, so any other file is refused.
-        let peer = actual_current_peer();
-        let claimed = tilo_test_env::runtime_tempdir().unwrap();
-        let path = claimed.path().join("claimed");
-        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(
-            &path,
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
-        )
-        .unwrap();
-        let expected = File::open(&path).unwrap();
-        let error = check_executing_image(&peer, &expected).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(peer.current(), "refusal must not signal an unadmitted task");
+        phase canonical_pre_view_role_refusal_returns_the_actual_live_lease;
+        {
+            // Genuine kernel task and actual socket; this unqualified test image must never gain installed
+            // root-helper authority or export any view.
+            let peer = Arc::new(actual_current_peer());
+            let (stream, mut remote) = UnixStream::pair().unwrap();
+            let original = stream.as_raw_fd();
+            let channel = RootConsumerChannel { stream, peer };
+            let declaration = ConsumerLaunchBinding {
+                operation_id: String::new(),
+                shell_context_sha256: String::new(),
+                app_id: String::new(),
+                package_sha256: String::new(),
+                publisher_hex: String::new(),
+                command: ConsumerCommand {
+                    program: String::new(),
+                    args: vec![],
+                    env: vec![],
+                },
+                manifest_path: String::new(),
+                payload_root: String::new(),
+                workspace: String::new(),
+                resource_record: String::new(),
+                intent_sha256: String::new(),
+                policy_sha256: String::new(),
+                launcher_pid: 0,
+                launcher_start: 0,
+                uid: 0,
+                gid: 0,
+            };
+            let candidate = File::open("/dev/null").unwrap();
+            let alias_source = File::open("/").unwrap();
+            let alias = OriginalHomeAlias::capture(Path::new("/home/fixture"), &alias_source).unwrap();
+            let failure = channel
+                .issue(
+                    ReviewedViewIssue {
+                        exposure: None,
+                        original_home_alias: &alias,
+                        expected_source_view_sha256: [0; 32],
+                        observation: None,
+                        view: &candidate,
+                        uid: 0,
+                        gid: 0,
+                        mode: RetainedViewMode::Home,
+                        context_sha256: String::new(),
+                    },
+                    &declaration,
+                    &ServiceCancellation::default(),
+                )
+                .err()
+                .expect("unqualified root-helper image must be refused");
+            assert!(!failure.view_may_have_been_delivered());
+            let (_error, mut retained) = failure.into_parts();
+            assert_eq!(retained.as_raw_fd(), original);
+            retained
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            remote.write_all(&[37]).unwrap();
+            let mut byte = [0];
+            retained.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [37]);
+        }
+
+        phase only_an_executable_root_owns_and_no_one_else_may_write_is_protected;
+        {
+            assert!(protected_owner(0, 0o755));
+            assert!(protected_owner(0, 0o555));
+            assert!(!protected_owner(0, 0o775), "group-writable");
+            assert!(!protected_owner(0, 0o757), "other-writable");
+            assert!(!protected_owner(1, 0o755), "an account that is not root");
+        }
+
+        phase actual_authenticated_task_cannot_claim_an_executable_it_is_not_running;
+        {
+            // Identity decides, not the claimed path's protection: the image this task actually runs is
+            // the only one it may claim, so any other file is refused.
+            let peer = actual_current_peer();
+            let claimed = tilo_test_env::runtime_tempdir().unwrap();
+            let path = claimed.path().join("claimed");
+            std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(
+                &path,
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+            )
+            .unwrap();
+            let expected = File::open(&path).unwrap();
+            let error = check_executing_image(&peer, &expected).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(peer.current(), "refusal must not signal an unadmitted task");
+        }
     }
 
     struct ContextFixtureChild(Option<std::process::Child>);
@@ -1825,61 +1839,66 @@ mod tests {
 mod original_home_alias_tests {
     use super::*;
     use std::os::unix::ffi::OsStringExt;
-    #[test]
-    fn approved_native_alias_preserves_bytes_in_sealed_production_bwrap_args() {
-        let source = tempfile::tempdir().unwrap();
-        let held = File::open(source.path()).unwrap();
-        let raw = b"/home/original-\xff";
-        let path = PathBuf::from(std::ffi::OsString::from_vec(raw.to_vec()));
-        let alias = OriginalHomeAlias::capture(&path, &held).unwrap();
-        let roundtrip: OriginalHomeAlias =
-            serde_json::from_slice(&serde_json::to_vec(&alias).unwrap()).unwrap();
-        assert_eq!(roundtrip, alias);
-        assert_eq!(alias.source_ino(), held.metadata().unwrap().ino());
-        let file = alias
-            .args(&["--ro-bind".into(), "/usr".into(), "/usr".into()])
-            .unwrap();
-        let mut bytes = Vec::new();
-        (&file).read_to_end(&mut bytes).unwrap();
-        let mut expected = b"--dir\0/home\0--ro-bind-fd\x0058\0".to_vec();
-        expected.extend(raw);
-        expected.push(0);
-        assert_eq!(bytes, expected);
-        assert_eq!(
-            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & SEALS,
-            SEALS
-        );
-        assert!(file.write_at(b"changed", 0).is_err());
-    }
-    #[test]
-    fn alias_refuses_host_parents_system_roots_and_existing_mount_collisions() {
-        let source = tempfile::tempdir().unwrap();
-        let held = File::open(source.path()).unwrap();
-        for path in ["/", "/home/../other", "/home//other", "/home/other/"] {
-            assert!(OriginalHomeAlias::capture(Path::new(path), &held).is_err());
+    tilo_test_env::scenario! {
+        fn a_native_home_alias_is_sealed_or_refused;
+
+        phase approved_native_alias_preserves_bytes_in_sealed_production_bwrap_args;
+        {
+            let source = tempfile::tempdir().unwrap();
+            let held = File::open(source.path()).unwrap();
+            let raw = b"/home/original-\xff";
+            let path = PathBuf::from(std::ffi::OsString::from_vec(raw.to_vec()));
+            let alias = OriginalHomeAlias::capture(&path, &held).unwrap();
+            let roundtrip: OriginalHomeAlias =
+                serde_json::from_slice(&serde_json::to_vec(&alias).unwrap()).unwrap();
+            assert_eq!(roundtrip, alias);
+            assert_eq!(alias.source_ino(), held.metadata().unwrap().ino());
+            let file = alias
+                .args(&["--ro-bind".into(), "/usr".into(), "/usr".into()])
+                .unwrap();
+            let mut bytes = Vec::new();
+            (&file).read_to_end(&mut bytes).unwrap();
+            let mut expected = b"--dir\0/home\0--ro-bind-fd\x0058\0".to_vec();
+            expected.extend(raw);
+            expected.push(0);
+            assert_eq!(bytes, expected);
+            assert_eq!(
+                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & SEALS,
+                SEALS
+            );
+            assert!(file.write_at(b"changed", 0).is_err());
         }
-        let alias = OriginalHomeAlias::capture(Path::new("/home/original"), &held).unwrap();
-        for argv in [
-            vec!["--bind".into(), "/host/home".into(), "/home".into()],
-            vec![
-                "--ro-bind".into(),
-                "/host/file".into(),
-                "/home/original/file".into(),
-            ],
-            vec!["--symlink".into(), "/outside".into(), "/home".into()],
-        ] {
-            assert!(alias.args(&argv).is_err());
-        }
-        for path in [
-            "/run/tilo/app",
-            "/usr/home",
-            "/etc/home",
-            "/proc/home",
-            "/sys/home",
-            "/dev/home",
-        ] {
-            let alias = OriginalHomeAlias::capture(Path::new(path), &held).unwrap();
-            assert!(alias.args(&[]).is_err());
+
+        phase alias_refuses_host_parents_system_roots_and_existing_mount_collisions;
+        {
+            let source = tempfile::tempdir().unwrap();
+            let held = File::open(source.path()).unwrap();
+            for path in ["/", "/home/../other", "/home//other", "/home/other/"] {
+                assert!(OriginalHomeAlias::capture(Path::new(path), &held).is_err());
+            }
+            let alias = OriginalHomeAlias::capture(Path::new("/home/original"), &held).unwrap();
+            for argv in [
+                vec!["--bind".into(), "/host/home".into(), "/home".into()],
+                vec![
+                    "--ro-bind".into(),
+                    "/host/file".into(),
+                    "/home/original/file".into(),
+                ],
+                vec!["--symlink".into(), "/outside".into(), "/home".into()],
+            ] {
+                assert!(alias.args(&argv).is_err());
+            }
+            for path in [
+                "/run/tilo/app",
+                "/usr/home",
+                "/etc/home",
+                "/proc/home",
+                "/sys/home",
+                "/dev/home",
+            ] {
+                let alias = OriginalHomeAlias::capture(Path::new(path), &held).unwrap();
+                assert!(alias.args(&[]).is_err());
+            }
         }
     }
 }
@@ -1910,32 +1929,37 @@ impl RetainedLaunchGate {
 #[cfg(test)]
 mod selected_edit_gate_guards {
     use super::*;
-    #[test]
-    fn cancelled_registration_performs_no_initial_socket_io() {
-        let (gate, mut peer) = UnixStream::pair().unwrap();
-        peer.set_nonblocking(true).unwrap();
-        let cancel = ServiceCancellation::default();
-        cancel.cancel();
-        assert!(
-            matches!(RetainedLaunchGate::receive_registration(gate,&cancel),Err(error) if error.kind()==io::ErrorKind::Interrupted)
-        );
-        let mut byte = [0];
-        assert_eq!(peer.read(&mut byte).unwrap(), 0);
-    }
-    #[test]
-    fn actual_stalled_socket_preserves_possible_directory_delivery() {
-        let (mut stream, _peer) = UnixStream::pair().unwrap();
-        let held = tempfile::tempdir().unwrap();
-        let directory = File::open(held.path()).unwrap();
-        let cancel = ServiceCancellation::default();
-        let mut handoff = Handoff::new(&mut stream, &cancel, Duration::from_millis(20)).unwrap();
-        let mut progress = IssueProgress::NoView;
-        send_issue_fd(&mut handoff, 1, directory.as_fd(), &mut progress).unwrap();
-        let mut ack = [0];
-        assert_eq!(
-            handoff.read_exact(&mut ack).unwrap_err().kind(),
-            io::ErrorKind::TimedOut
-        );
-        assert_eq!(progress, IssueProgress::PossibleView);
+    tilo_test_env::scenario! {
+        fn a_registration_is_cancellable_and_keeps_delivery_evidence;
+
+        phase cancelled_registration_performs_no_initial_socket_io;
+        {
+            let (gate, mut peer) = UnixStream::pair().unwrap();
+            peer.set_nonblocking(true).unwrap();
+            let cancel = ServiceCancellation::default();
+            cancel.cancel();
+            assert!(
+                matches!(RetainedLaunchGate::receive_registration(gate,&cancel),Err(error) if error.kind()==io::ErrorKind::Interrupted)
+            );
+            let mut byte = [0];
+            assert_eq!(peer.read(&mut byte).unwrap(), 0);
+        }
+
+        phase actual_stalled_socket_preserves_possible_directory_delivery;
+        {
+            let (mut stream, _peer) = UnixStream::pair().unwrap();
+            let held = tempfile::tempdir().unwrap();
+            let directory = File::open(held.path()).unwrap();
+            let cancel = ServiceCancellation::default();
+            let mut handoff = Handoff::new(&mut stream, &cancel, Duration::from_millis(20)).unwrap();
+            let mut progress = IssueProgress::NoView;
+            send_issue_fd(&mut handoff, 1, directory.as_fd(), &mut progress).unwrap();
+            let mut ack = [0];
+            assert_eq!(
+                handoff.read_exact(&mut ack).unwrap_err().kind(),
+                io::ErrorKind::TimedOut
+            );
+            assert_eq!(progress, IssueProgress::PossibleView);
+        }
     }
 }

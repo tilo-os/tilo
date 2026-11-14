@@ -439,98 +439,131 @@ mod tests {
         );
     }
 
-    #[test]
-    fn forget_removes_only_selected_canonical_credentials_and_binds_retries() {
-        let (root, custodian, id) = custody_fixture();
-        let unrelated = AccountId::from("unrelated");
-        let before = accounts::AccountStore::load_in(root.path())
-            .get(&unrelated)
-            .unwrap()
-            .clone();
-        for (key, binding, target) in [
-            ([8; 32], "setup-operation", id.clone()),
-            ([7; 32], "foreign-operation", id.clone()),
-            ([7; 32], "setup-operation", unrelated.clone()),
-        ] {
+    tilo_test_env::scenario! {
+        /// `forget`: what it removes, and what it refuses to touch.
+        fn forgetting_a_service_session_removes_only_what_was_selected;
+
+        phase forget_removes_only_selected_canonical_credentials_and_binds_retries;
+        {
+            let (root, custodian, id) = custody_fixture();
+            let unrelated = AccountId::from("unrelated");
+            let before = accounts::AccountStore::load_in(root.path())
+                .get(&unrelated)
+                .unwrap()
+                .clone();
+            for (key, binding, target) in [
+                ([8; 32], "setup-operation", id.clone()),
+                ([7; 32], "foreign-operation", id.clone()),
+                ([7; 32], "setup-operation", unrelated.clone()),
+            ] {
+                assert!(
+                    custodian
+                        .forget_service_session(&target, key, binding)
+                        .is_err()
+                );
+                assert_eq!(
+                    custodian
+                        .service_session(&id, [7; 32], "setup-operation")
+                        .unwrap(),
+                    selected()
+                );
+            }
+            custodian
+                .forget_service_session(&id, [7; 32], "setup-operation")
+                .unwrap();
+            assert!(
+                accounts::AccountStore::load_in(root.path())
+                    .get(&id)
+                    .is_none()
+            );
             assert!(
                 custodian
-                    .forget_service_session(&target, key, binding)
+                    .service_session(&id, [7; 32], "setup-operation")
+                    .is_err()
+            );
+            let vault = SecretVault::open_read_only_in(root.path());
+            let mut receipt = vault.get(&id).unwrap();
+            assert!(
+                !receipt
+                    .token
+                    .as_deref()
+                    .unwrap()
+                    .contains("private-cookie-marker")
+            );
+            assert!(crate::password_credential(&receipt).is_empty());
+            receipt.token.as_mut().unwrap().zeroize();
+            assert_eq!(
+                vault.get(&unrelated).unwrap().password,
+                "unrelated-password"
+            );
+            assert_eq!(
+                accounts::AccountStore::load_in(root.path()).get(&unrelated),
+                Some(&before)
+            );
+            let bytes = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
+            custodian
+                .forget_service_session(&id, [7; 32], "setup-operation")
+                .unwrap();
+            assert_eq!(
+                std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap(),
+                bytes
+            );
+            assert!(
+                custodian
+                    .forget_service_session(&id, [8; 32], "setup-operation")
+                    .is_err()
+            );
+            assert!(
+                custodian
+                    .forget_service_session(&id, [7; 32], "foreign-operation")
+                    .is_err()
+            );
+            // Reusing a removed id for another kind is never covered by the receipt.
+            let mut store = accounts::AccountStore::load_in(root.path());
+            store.upsert(accounts::Account::new(id.clone(), "imap"));
+            store.save_in(root.path()).unwrap();
+            assert!(
+                custodian
+                    .forget_service_session(&id, [7; 32], "setup-operation")
                     .is_err()
             );
             assert_eq!(
-                custodian
-                    .service_session(&id, [7; 32], "setup-operation")
-                    .unwrap(),
-                selected()
+                accounts::AccountStore::load_in(root.path())
+                    .get(&id)
+                    .unwrap()
+                    .type_id
+                    .as_str(),
+                "imap"
             );
         }
-        custodian
-            .forget_service_session(&id, [7; 32], "setup-operation")
-            .unwrap();
-        assert!(
-            accounts::AccountStore::load_in(root.path())
-                .get(&id)
-                .is_none()
-        );
-        assert!(
-            custodian
-                .service_session(&id, [7; 32], "setup-operation")
-                .is_err()
-        );
-        let vault = SecretVault::open_read_only_in(root.path());
-        let mut receipt = vault.get(&id).unwrap();
-        assert!(
-            !receipt
-                .token
-                .as_deref()
-                .unwrap()
-                .contains("private-cookie-marker")
-        );
-        assert!(crate::password_credential(&receipt).is_empty());
-        receipt.token.as_mut().unwrap().zeroize();
-        assert_eq!(
-            vault.get(&unrelated).unwrap().password,
-            "unrelated-password"
-        );
-        assert_eq!(
-            accounts::AccountStore::load_in(root.path()).get(&unrelated),
-            Some(&before)
-        );
-        let bytes = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
-        custodian
-            .forget_service_session(&id, [7; 32], "setup-operation")
-            .unwrap();
-        assert_eq!(
-            std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap(),
-            bytes
-        );
-        assert!(
-            custodian
-                .forget_service_session(&id, [8; 32], "setup-operation")
-                .is_err()
-        );
-        assert!(
-            custodian
-                .forget_service_session(&id, [7; 32], "foreign-operation")
-                .is_err()
-        );
-        // Reusing a removed id for another kind is never covered by the receipt.
-        let mut store = accounts::AccountStore::load_in(root.path());
-        store.upsert(accounts::Account::new(id.clone(), "imap"));
-        store.save_in(root.path()).unwrap();
-        assert!(
-            custodian
-                .forget_service_session(&id, [7; 32], "setup-operation")
-                .is_err()
-        );
-        assert_eq!(
-            accounts::AccountStore::load_in(root.path())
-                .get(&id)
-                .unwrap()
-                .type_id
-                .as_str(),
-            "imap"
-        );
+
+        phase forget_missing_key_or_corrupt_metadata_fails_without_adopting_custody;
+        {
+            let (root, custodian, id) = custody_fixture();
+            let before = std::fs::read(root.path().join("accounts/store.json")).unwrap();
+            std::fs::write(root.path().join("accounts/vault/vault.enc"), b"corrupt").unwrap();
+            assert!(
+                custodian
+                    .forget_service_session(&id, [7; 32], "setup-operation")
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read(root.path().join("accounts/store.json")).unwrap(),
+                before
+            );
+            let (root, custodian, id) = custody_fixture();
+            let before = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
+            std::fs::write(root.path().join("accounts/store.json"), b"corrupt").unwrap();
+            assert!(
+                custodian
+                    .forget_service_session(&id, [7; 32], "setup-operation")
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap(),
+                before
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -594,115 +627,94 @@ mod tests {
         );
     }
 
-    #[test]
-    fn forget_missing_key_or_corrupt_metadata_fails_without_adopting_custody() {
-        let (root, custodian, id) = custody_fixture();
-        let before = std::fs::read(root.path().join("accounts/store.json")).unwrap();
-        std::fs::write(root.path().join("accounts/vault/vault.enc"), b"corrupt").unwrap();
-        assert!(
-            custodian
-                .forget_service_session(&id, [7; 32], "setup-operation")
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::read(root.path().join("accounts/store.json")).unwrap(),
-            before
-        );
-        let (root, custodian, id) = custody_fixture();
-        let before = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
-        std::fs::write(root.path().join("accounts/store.json"), b"corrupt").unwrap();
-        assert!(
-            custodian
-                .forget_service_session(&id, [7; 32], "setup-operation")
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap(),
-            before
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The selected session and its codec.
+        fn a_selected_service_session_is_bound_private_and_strictly_decoded;
 
-    #[test]
-    fn selected_session_private_vault_binding_and_redacted_debug() {
-        let root = tempfile::tempdir().unwrap();
-        let session = selected();
-        let id = AccountId::from(session.session_id.clone());
-        let secret = service_session_secret(&session).unwrap();
-        assert!(!format!("{secret:?} {session:?}").contains("private-cookie-marker"));
-        let mut store = accounts::AccountStore::new();
-        let mut account = accounts::Account::new(id.clone(), SERVICE_SESSION_TYPE);
-        account.config = serde_json::json!({"service":"slack","setup_binding":"setup-operation"});
-        store.upsert(account);
-        store.save_in(root.path()).unwrap();
-        let mut vault = SecretVault::open_in(root.path());
-        vault.put(&id, &secret);
-        vault.try_save().unwrap();
-        let custodian = Custodian::for_root(Some(root.path().to_owned()));
-        assert_eq!(
-            custodian
-                .service_session(&id, [7; 32], "setup-operation")
-                .unwrap(),
-            session
-        );
-        assert!(
-            custodian
-                .service_session(&id, [8; 32], "setup-operation")
-                .is_err()
-        );
-        assert!(
-            custodian
-                .service_session(&id, [7; 32], "another-operation")
-                .is_err()
-        );
-        assert!(
-            crate::password_credential(&secret).is_empty(),
-            "Canonical password consumer must refuse session kind"
-        );
-        let bytes = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
-        assert!(
-            !bytes
-                .windows(b"private-cookie-marker".len())
-                .any(|v| v == b"private-cookie-marker")
-        );
-    }
-    #[test]
-    fn protected_origin_only_secret_preserves_raw_dom_and_exact_person_binding() {
-        let mut session = selected();
-        session.schema = 2;
-        session.service = Service::Discord;
-        session.cookies.clear();
-        session.origin_storage = vec![browser_continuity_core::sessions::OriginStorage {
-            origin: "https://discord.com".into(),
-            key: "token".into(),
-            value: "\"private-origin-marker\"".into(),
-            source_snapshot_digest: [8; 32],
-        }];
-        let id = AccountId::from(session.session_id.clone());
-        let secret = service_session_secret(&session).unwrap();
-        assert_eq!(
-            service_session_from_secret(&secret, &id, [7; 32], "setup-operation").unwrap(),
-            session
-        );
-        assert!(service_session_from_secret(&secret, &id, [8; 32], "setup-operation").is_err());
-        assert!(!format!("{secret:?}").contains("private-origin-marker"));
-        assert!(crate::password_credential(&secret).is_empty());
-    }
-    #[test]
-    fn codec_probe_checks_custody_contract_and_refuses_malformed_selection() {
-        let session = selected();
-        verify_service_session_codec(&session).unwrap();
-        let mut foreign = session;
-        foreign.cookies[0].host = "foreign.example".into();
-        assert!(verify_service_session_codec(&foreign).is_err());
-    }
+        phase selected_session_private_vault_binding_and_redacted_debug;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let session = selected();
+            let id = AccountId::from(session.session_id.clone());
+            let secret = service_session_secret(&session).unwrap();
+            assert!(!format!("{secret:?} {session:?}").contains("private-cookie-marker"));
+            let mut store = accounts::AccountStore::new();
+            let mut account = accounts::Account::new(id.clone(), SERVICE_SESSION_TYPE);
+            account.config = serde_json::json!({"service":"slack","setup_binding":"setup-operation"});
+            store.upsert(account);
+            store.save_in(root.path()).unwrap();
+            let mut vault = SecretVault::open_in(root.path());
+            vault.put(&id, &secret);
+            vault.try_save().unwrap();
+            let custodian = Custodian::for_root(Some(root.path().to_owned()));
+            assert_eq!(
+                custodian
+                    .service_session(&id, [7; 32], "setup-operation")
+                    .unwrap(),
+                session
+            );
+            assert!(
+                custodian
+                    .service_session(&id, [8; 32], "setup-operation")
+                    .is_err()
+            );
+            assert!(
+                custodian
+                    .service_session(&id, [7; 32], "another-operation")
+                    .is_err()
+            );
+            assert!(
+                crate::password_credential(&secret).is_empty(),
+                "Canonical password consumer must refuse session kind"
+            );
+            let bytes = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
+            assert!(
+                !bytes
+                    .windows(b"private-cookie-marker".len())
+                    .any(|v| v == b"private-cookie-marker")
+            );
+        }
 
-    #[test]
-    fn malformed_selected_session_refuses_before_secret_publication() {
-        let mut session = selected();
-        session.cookies[0].host = "foreign.example".into();
-        assert!(service_session_secret(&session).is_err());
-        let mut session = selected();
-        session.cookies[0].name = "__Host-session".into();
-        assert!(service_session_secret(&session).is_err());
+        phase protected_origin_only_secret_preserves_raw_dom_and_exact_person_binding;
+        {
+            let mut session = selected();
+            session.schema = 2;
+            session.service = Service::Discord;
+            session.cookies.clear();
+            session.origin_storage = vec![browser_continuity_core::sessions::OriginStorage {
+                origin: "https://discord.com".into(),
+                key: "token".into(),
+                value: "\"private-origin-marker\"".into(),
+                source_snapshot_digest: [8; 32],
+            }];
+            let id = AccountId::from(session.session_id.clone());
+            let secret = service_session_secret(&session).unwrap();
+            assert_eq!(
+                service_session_from_secret(&secret, &id, [7; 32], "setup-operation").unwrap(),
+                session
+            );
+            assert!(service_session_from_secret(&secret, &id, [8; 32], "setup-operation").is_err());
+            assert!(!format!("{secret:?}").contains("private-origin-marker"));
+            assert!(crate::password_credential(&secret).is_empty());
+        }
+
+        phase codec_probe_checks_custody_contract_and_refuses_malformed_selection;
+        {
+            let session = selected();
+            verify_service_session_codec(&session).unwrap();
+            let mut foreign = session;
+            foreign.cookies[0].host = "foreign.example".into();
+            assert!(verify_service_session_codec(&foreign).is_err());
+        }
+
+        phase malformed_selected_session_refuses_before_secret_publication;
+        {
+            let mut session = selected();
+            session.cookies[0].host = "foreign.example".into();
+            assert!(service_session_secret(&session).is_err());
+            let mut session = selected();
+            session.cookies[0].name = "__Host-session".into();
+            assert!(service_session_secret(&session).is_err());
+        }
     }
 }

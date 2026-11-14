@@ -939,198 +939,202 @@ mod tests {
         tp.apply_layout(&taffy, node, Point::ZERO);
     }
 
-    #[test]
-    fn time_values_clamp_and_are_announced() {
+    tilo_test_env::scenario! {
+        fn a_time_picker_clamps_takes_input_and_follows_its_binding;
+
+        phase time_values_clamp_and_are_announced;
         {
-            use crate::a11y::Role;
-            let tp = TimePicker::new(9, 5);
-            let node = Widget::accessibility(&tp).expect("time picker is a selector");
-            assert_eq!(node.role, Role::ComboBox);
-            assert_eq!(node.value.as_deref(), Some("09:05"));
-            assert!(node.state.focusable);
-            assert!(!node.state.focused);
-            assert_eq!(node.state.expanded, None, "spinners render inline");
+            {
+                use crate::a11y::Role;
+                let tp = TimePicker::new(9, 5);
+                let node = Widget::accessibility(&tp).expect("time picker is a selector");
+                assert_eq!(node.role, Role::ComboBox);
+                assert_eq!(node.value.as_deref(), Some("09:05"));
+                assert!(node.state.focusable);
+                assert!(!node.state.focused);
+                assert_eq!(node.state.expanded, None, "spinners render inline");
+            }
+
+            {
+                let mut tp = TimePicker::new(9, 5).with_seconds(7);
+                Widget::set_focus(&mut tp, true);
+                let node = Widget::accessibility(&tp).unwrap();
+                assert_eq!(node.value.as_deref(), Some("09:05:07"));
+                assert!(node.state.focused);
+            }
+
+            {
+                let tp = TimePicker::new(25, 30);
+                assert_eq!(tp.hours(), 23);
+                let mut tp = tp;
+                tp.set_hours(99);
+                assert_eq!(tp.hours(), 23);
+            }
+
+            {
+                let tp = TimePicker::new(12, 99);
+                assert_eq!(tp.minutes(), 59);
+            }
         }
 
+        phase time_cells_take_focus_digits_and_scroll;
         {
-            let mut tp = TimePicker::new(9, 5).with_seconds(7);
-            Widget::set_focus(&mut tp, true);
-            let node = Widget::accessibility(&tp).unwrap();
-            assert_eq!(node.value.as_deref(), Some("09:05:07"));
-            assert!(node.state.focused);
+            {
+                let mut tp = TimePicker::new(10, 30);
+                picker_with_layout(&mut tp);
+                assert!(
+                    tp.minute_rect.width() > 0.0,
+                    "minute_rect must be populated by apply_layout"
+                );
+
+                let centre = tp.minute_rect.center();
+                dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
+                dispatch(&mut tp, &wheel(1.0));
+
+                assert_eq!(
+                    tp.minutes(),
+                    31,
+                    "wheel up over minute cell must increment minutes"
+                );
+            }
+
+            // Case `time_picker_click_on_hour_value_cell_focuses_hours`.
+            // Clicking on the hour value cell must latch keyboard focus on
+            // hours so subsequent digit keys edit the hour value (winit's
+            // `KeyEvent` can't be constructed in tests, so we exercise the
+            // click path here and the digit-acceptance path below directly).
+            {
+                let mut tp = TimePicker::new(10, 30);
+                picker_with_layout(&mut tp);
+                Widget::set_focus(&mut tp, true);
+
+                let centre = tp.hour_rect.center();
+                dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
+                dispatch(&mut tp, &crate::synthetic_input::mouse_press());
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+            }
+
+            {
+                let mut tp = TimePicker::new(0, 0);
+                Widget::set_focus(&mut tp, true);
+                tp.focused_cell = Some(TimeCell::Hours);
+
+                tp.accept_digit(1);
+                assert_eq!(tp.hours(), 1);
+                assert_eq!(tp.digit_buffer(), "1");
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+
+                tp.accept_digit(4);
+                assert_eq!(tp.hours(), 14);
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
+            }
+
+            {
+                let mut tp = TimePicker::new(0, 0);
+                Widget::set_focus(&mut tp, true);
+                tp.focused_cell = Some(TimeCell::Hours);
+
+                tp.accept_digit(2);
+                assert_eq!(tp.hours(), 2);
+                tp.accept_digit(5);
+                assert_eq!(tp.hours(), 5);
+                assert_eq!(tp.digit_buffer(), "5");
+            }
+
+            {
+                let mut tp = TimePicker::new(12, 30).with_seconds(45);
+                Widget::set_focus(&mut tp, true);
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+
+                tp.advance_focus();
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
+                tp.advance_focus();
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Seconds));
+                tp.advance_focus();
+                assert_eq!(tp.focused_cell(), None);
+            }
+
+            {
+                let mut tp = TimePicker::new(12, 30).with_seconds(45);
+                Widget::set_focus(&mut tp, true);
+                tp.focused_cell = Some(TimeCell::Seconds);
+
+                tp.retreat_focus();
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
+                tp.retreat_focus();
+                assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+            }
         }
 
+        phase time_changes_sync_bound_state_and_callbacks;
         {
-            let tp = TimePicker::new(25, 30);
-            assert_eq!(tp.hours(), 23);
-            let mut tp = tp;
-            tp.set_hours(99);
-            assert_eq!(tp.hours(), 23);
-        }
+            {
+                let state = crate::LocalState::new(TimeValue::new(8, 30));
+                let mut left = TimePicker::from_state(&state);
+                let mut right = TimePicker::from_state(&state);
+                let expected = TimeValue::new(16, 45).with_seconds(12);
+                let doc = AutoCommit::new();
 
-        {
-            let tp = TimePicker::new(12, 99);
-            assert_eq!(tp.minutes(), 59);
-        }
-    }
+                left.set_value(expected);
+                assert_eq!(state.with(|value| *value), expected);
+                Widget::sync(&mut right, &doc, &automerge::ROOT);
+                assert_eq!(right.value(), expected);
+            }
 
-    #[test]
-    fn time_cells_take_focus_digits_and_scroll() {
-        {
-            let mut tp = TimePicker::new(10, 30);
-            picker_with_layout(&mut tp);
-            assert!(
-                tp.minute_rect.width() > 0.0,
-                "minute_rect must be populated by apply_layout"
-            );
+            {
+                use std::cell::RefCell;
+                use std::rc::Rc;
 
-            let centre = tp.minute_rect.center();
-            dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
-            dispatch(&mut tp, &wheel(1.0));
-
-            assert_eq!(
-                tp.minutes(),
-                31,
-                "wheel up over minute cell must increment minutes"
-            );
-        }
-
-        // Case `time_picker_click_on_hour_value_cell_focuses_hours`.
-        // Clicking on the hour value cell must latch keyboard focus on
-        // hours so subsequent digit keys edit the hour value (winit's
-        // `KeyEvent` can't be constructed in tests, so we exercise the
-        // click path here and the digit-acceptance path below directly).
-        {
-            let mut tp = TimePicker::new(10, 30);
-            picker_with_layout(&mut tp);
-            Widget::set_focus(&mut tp, true);
-
-            let centre = tp.hour_rect.center();
-            dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
-            dispatch(&mut tp, &crate::synthetic_input::mouse_press());
-            assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
-        }
-
-        {
-            let mut tp = TimePicker::new(0, 0);
-            Widget::set_focus(&mut tp, true);
-            tp.focused_cell = Some(TimeCell::Hours);
-
-            tp.accept_digit(1);
-            assert_eq!(tp.hours(), 1);
-            assert_eq!(tp.digit_buffer(), "1");
-            assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
-
-            tp.accept_digit(4);
-            assert_eq!(tp.hours(), 14);
-            assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
-        }
-
-        {
-            let mut tp = TimePicker::new(0, 0);
-            Widget::set_focus(&mut tp, true);
-            tp.focused_cell = Some(TimeCell::Hours);
-
-            tp.accept_digit(2);
-            assert_eq!(tp.hours(), 2);
-            tp.accept_digit(5);
-            assert_eq!(tp.hours(), 5);
-            assert_eq!(tp.digit_buffer(), "5");
-        }
-
-        {
-            let mut tp = TimePicker::new(12, 30).with_seconds(45);
-            Widget::set_focus(&mut tp, true);
-            assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
-
-            tp.advance_focus();
-            assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
-            tp.advance_focus();
-            assert_eq!(tp.focused_cell(), Some(TimeCell::Seconds));
-            tp.advance_focus();
-            assert_eq!(tp.focused_cell(), None);
-        }
-
-        {
-            let mut tp = TimePicker::new(12, 30).with_seconds(45);
-            Widget::set_focus(&mut tp, true);
-            tp.focused_cell = Some(TimeCell::Seconds);
-
-            tp.retreat_focus();
-            assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
-            tp.retreat_focus();
-            assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
-        }
-    }
-
-    #[test]
-    fn time_changes_sync_bound_state_and_callbacks() {
-        {
-            let state = crate::LocalState::new(TimeValue::new(8, 30));
-            let mut left = TimePicker::from_state(&state);
-            let mut right = TimePicker::from_state(&state);
-            let expected = TimeValue::new(16, 45).with_seconds(12);
-            let doc = AutoCommit::new();
-
-            left.set_value(expected);
-            assert_eq!(state.with(|value| *value), expected);
-            Widget::sync(&mut right, &doc, &automerge::ROOT);
-            assert_eq!(right.value(), expected);
-        }
-
-        {
-            use std::cell::RefCell;
-            use std::rc::Rc;
-
-            let state = crate::LocalState::new(TimeValue::new(8, 30));
-            let captured = Rc::new(RefCell::new(None));
-            let callback = Rc::clone(&captured);
-            let mut picker = TimePicker::from_state(&state).on_change(move |h, m, s| {
-                *callback.borrow_mut() = Some(TimeValue {
-                    hours: h,
-                    minutes: m,
-                    seconds: s,
+                let state = crate::LocalState::new(TimeValue::new(8, 30));
+                let captured = Rc::new(RefCell::new(None));
+                let callback = Rc::clone(&captured);
+                let mut picker = TimePicker::from_state(&state).on_change(move |h, m, s| {
+                    *callback.borrow_mut() = Some(TimeValue {
+                        hours: h,
+                        minutes: m,
+                        seconds: s,
+                    });
                 });
-            });
-            let mut doc = AutoCommit::new();
-            let expected = TimeValue::new(21, 7).with_seconds(9);
+                let mut doc = AutoCommit::new();
+                let expected = TimeValue::new(21, 7).with_seconds(9);
 
-            assert!(Widget::perform_action(
-                &mut picker,
-                &crate::a11y::Action::SetValue("21:07:09".into()),
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            assert_eq!(state.with(|value| *value), expected);
-            assert_eq!(*captured.borrow(), Some(expected));
+                assert!(Widget::perform_action(
+                    &mut picker,
+                    &crate::a11y::Action::SetValue("21:07:09".into()),
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ));
+                assert_eq!(state.with(|value| *value), expected);
+                assert_eq!(*captured.borrow(), Some(expected));
 
-            assert!(!Widget::perform_action(
-                &mut picker,
-                &crate::a11y::Action::SetValue("24:00".into()),
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            assert_eq!(state.with(|value| *value), expected);
+                assert!(!Widget::perform_action(
+                    &mut picker,
+                    &crate::a11y::Action::SetValue("24:00".into()),
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ));
+                assert_eq!(state.with(|value| *value), expected);
+            }
         }
-    }
 
-    #[test]
-    fn a_bound_text_time_is_shown_and_followed() {
-        let state = crate::LocalState::new("2026-06-30T09:30:00Z".to_owned());
-        let mut picker = TimePicker::from_text_state(&state);
-        assert_eq!(
-            (picker.value().hours, picker.value().minutes),
-            (9, 30),
-            "the time is shown"
-        );
-        state.set("2026-06-30T17:45:00Z".to_owned());
-        picker.sync(&(), &());
-        assert_eq!(
-            (picker.value().hours, picker.value().minutes),
-            (17, 45),
-            "a time set elsewhere shows in place"
-        );
+        phase a_bound_text_time_is_shown_and_followed;
+        {
+            let state = crate::LocalState::new("2026-06-30T09:30:00Z".to_owned());
+            let mut picker = TimePicker::from_text_state(&state);
+            assert_eq!(
+                (picker.value().hours, picker.value().minutes),
+                (9, 30),
+                "the time is shown"
+            );
+            state.set("2026-06-30T17:45:00Z".to_owned());
+            picker.sync(&(), &());
+            assert_eq!(
+                (picker.value().hours, picker.value().minutes),
+                (17, 45),
+                "a time set elsewhere shows in place"
+            );
+        }
     }
 }

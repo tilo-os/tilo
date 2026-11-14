@@ -42,9 +42,10 @@ fn fill_pages(path: &std::path::Path) {
     }
 }
 
-#[test]
-fn revocation_invalidates_every_derived_handle_and_binding() {
-    // phase: revoked_root_rejects_existing_descendant_handle
+tilo_test_env::scenario! {
+    fn revocation_invalidates_every_derived_handle_and_binding;
+
+    phase revoked_root_rejects_existing_descendant_handle;
     {
         let (temp, authority, session, root) = granted_root();
         std::fs::write(temp.path().join("draft"), b"before").unwrap();
@@ -75,7 +76,8 @@ fn revocation_invalidates_every_derived_handle_and_binding() {
         ));
         assert_eq!(std::fs::read(temp.path().join("draft")).unwrap(), b"before");
     }
-    // phase: revoked_subdirectory_invalidates_descendants_but_not_siblings
+
+    phase revoked_subdirectory_invalidates_descendants_but_not_siblings;
     {
         let (temp, authority, session, root) = granted_root();
         std::fs::create_dir(temp.path().join("child")).unwrap();
@@ -102,7 +104,8 @@ fn revocation_invalidates_every_derived_handle_and_binding() {
             b"sibling"
         );
     }
-    // phase: foreign_authority_and_revoked_grants_cannot_bind
+
+    phase foreign_authority_and_revoked_grants_cannot_bind;
     {
         let (temp, authority, _session, root) = granted_root();
         let foreign = NativeGrantAuthority::new();
@@ -138,9 +141,10 @@ fn revocation_invalidates_every_derived_handle_and_binding() {
     }
 }
 
-#[test]
-fn grants_confine_each_owner_session_and_right() {
-    // phase: wrong_owner_cannot_list
+tilo_test_env::scenario! {
+    fn grants_confine_each_owner_session_and_right;
+
+    phase wrong_owner_cannot_list;
     {
         let (_temp, authority, _session, root) = granted_root();
         let mut wrong_workspace = files_owner();
@@ -154,7 +158,8 @@ fn grants_confine_each_owner_session_and_right() {
             ));
         }
     }
-    // phase: same_owner_disjoint_sessions_cannot_use_each_others_roots
+
+    phase same_owner_disjoint_sessions_cannot_use_each_others_roots;
     {
         let temp = tempfile::tempdir().unwrap();
         for child in ["left", "right"] {
@@ -173,7 +178,8 @@ fn grants_confine_each_owner_session_and_right() {
         let left_file = file(a.lookup(&left, &name("left.txt")).unwrap());
         assert!(matches!(b.read_at(&left_file, 0, 4), Err(FsError::Denied)));
     }
-    // phase: isolated_file_cannot_enumerate_parent
+
+    phase isolated_file_cannot_enumerate_parent;
     {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("only.txt"), b"only").unwrap();
@@ -196,7 +202,8 @@ fn grants_confine_each_owner_session_and_right() {
         );
         assert!(matches!(session.list(&parent, None), Err(FsError::Denied)));
     }
-    // phase: enumerate_only_cannot_read
+
+    phase enumerate_only_cannot_read;
     {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("alpha.txt"), b"alpha").unwrap();
@@ -258,9 +265,10 @@ fn symlink_lab() -> (
     (temp, authority, session, root)
 }
 
-#[test]
-fn symlinks_resolve_only_inside_the_session_root() {
-    // phase: symlink_escape_is_denied
+tilo_test_env::scenario! {
+    fn symlinks_resolve_only_inside_the_session_root;
+
+    phase symlink_escape_is_denied;
     {
         let (_temp, _authority, session, root) = symlink_lab();
         let listing = session.list(&root, None).unwrap();
@@ -285,7 +293,8 @@ fn symlinks_resolve_only_inside_the_session_root() {
             ));
         }
     }
-    // phase: in_root_relative_symlink_reads_target
+
+    phase in_root_relative_symlink_reads_target;
     {
         let (_temp, _authority, session, root) = symlink_lab();
         let grant = file(session.lookup(&root, &name("inside-link")).unwrap());
@@ -298,7 +307,8 @@ fn symlinks_resolve_only_inside_the_session_root() {
         );
         assert_eq!(session.read_at(&grant, 0, 100).unwrap(), b"inside");
     }
-    // phase: dangling_symlink_is_listable_but_not_readable
+
+    phase dangling_symlink_is_listable_but_not_readable;
     {
         let (_temp, _authority, session, root) = symlink_lab();
         assert!(
@@ -316,7 +326,8 @@ fn symlinks_resolve_only_inside_the_session_root() {
             Err(FsError::NotFound)
         ));
     }
-    // phase: nested_symlink_obeys_session_root_and_retains_target
+
+    phase nested_symlink_obeys_session_root_and_retains_target;
     {
         let (temp, authority, session, root) = granted_root();
         std::fs::create_dir(temp.path().join("child")).unwrap();
@@ -358,9 +369,10 @@ fn symlinks_resolve_only_inside_the_session_root() {
     }
 }
 
-#[test]
-fn grants_keep_their_descriptor_when_a_path_is_replaced() {
-    // phase: renamed_root_does_not_switch_to_replacement
+tilo_test_env::scenario! {
+    fn grants_keep_their_descriptor_when_a_path_is_replaced;
+
+    phase renamed_root_does_not_switch_to_replacement;
     {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("selected")).unwrap();
@@ -382,7 +394,8 @@ fn grants_keep_their_descriptor_when_a_path_is_replaced() {
         ));
         session.check_directory(&root).unwrap();
     }
-    // phase: listed_grant_does_not_switch_to_replacement
+
+    phase listed_grant_does_not_switch_to_replacement;
     {
         let (temp, _authority, session, root) = granted_root();
         std::fs::write(temp.path().join("draft"), b"old").unwrap();
@@ -399,7 +412,8 @@ fn grants_keep_their_descriptor_when_a_path_is_replaced() {
         std::fs::remove_file(temp.path().join("held")).unwrap();
         assert_eq!(session.read_at(&grant, 0, 10).unwrap(), b"old");
     }
-    // phase: swapped_parent_uses_derived_descriptor
+
+    phase swapped_parent_uses_derived_descriptor;
     {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp.path().join("root/parent")).unwrap();
@@ -488,9 +502,10 @@ fn non_utf8_names_remain_distinct() {
     println!("NON_UTF8_STORAGE=VERIFIED");
 }
 
-#[test]
-fn directory_pages_are_complete_and_cursors_are_scoped() {
-    // phase: missing_is_not_empty
+tilo_test_env::scenario! {
+    fn directory_pages_are_complete_and_cursors_are_scoped;
+
+    phase missing_is_not_empty;
     {
         let (temp, _authority, session, root) = granted_root();
         std::fs::create_dir(temp.path().join("empty")).unwrap();
@@ -501,7 +516,8 @@ fn directory_pages_are_complete_and_cursors_are_scoped() {
             Err(FsError::NotFound)
         ));
     }
-    // phase: directory_pages_are_complete_bounded_and_stable
+
+    phase directory_pages_are_complete_bounded_and_stable;
     {
         let (temp, _authority, session, root) = granted_root();
         fill_pages(temp.path());
@@ -526,7 +542,8 @@ fn directory_pages_are_complete_and_cursors_are_scoped() {
             (0..257).map(|i| name(&format!("page-{i:03}"))).collect()
         );
     }
-    // phase: page_cursor_is_session_scoped
+
+    phase page_cursor_is_session_scoped;
     {
         let (temp, authority, session, root) = granted_root();
         fill_pages(temp.path());
@@ -553,7 +570,8 @@ fn directory_pages_are_complete_and_cursors_are_scoped() {
             Err(FsError::Closed)
         ));
     }
-    // phase: page_cursor_cannot_cross_authorities
+
+    phase page_cursor_cannot_cross_authorities;
     {
         let (left_temp, _left_authority, left_session, left_root) = granted_root();
         let (right_temp, _right_authority, right_session, right_root) = granted_root();
@@ -576,9 +594,10 @@ fn directory_pages_are_complete_and_cursors_are_scoped() {
     }
 }
 
-#[test]
-fn closed_sessions_and_lifetimes_are_terminal() {
-    // phase: session_close_is_terminal_and_fresh_mount_is_independent
+tilo_test_env::scenario! {
+    fn closed_sessions_and_lifetimes_are_terminal;
+
+    phase session_close_is_terminal_and_fresh_mount_is_independent;
     {
         let (temp, authority, session, root) = granted_root();
         std::fs::write(temp.path().join("alpha.txt"), b"alpha").unwrap();
@@ -611,7 +630,8 @@ fn closed_sessions_and_lifetimes_are_terminal() {
         assert_eq!(fresh.owner(), &files_owner());
         assert_eq!(fresh.list(&root, None).unwrap().entries.len(), 1);
     }
-    // phase: attached_lifetime_closes_before_syscall
+
+    phase attached_lifetime_closes_before_syscall;
     {
         let (_temp, _authority, session, root) = granted_root();
         let alive = Arc::new(AtomicBool::new(true));
@@ -630,9 +650,14 @@ fn closed_sessions_and_lifetimes_are_terminal() {
     }
 }
 
-#[test]
-fn reads_and_entry_names_are_bounded_and_validated() {
-    // phase: read_at_caps_chunks_and_handles_boundaries
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn reads_and_entry_names_are_bounded_and_validated;
+
+    phase read_at_caps_chunks_and_handles_boundaries;
     {
         let (temp, _authority, session, root) = granted_root();
         let bytes = vec![0x5a; MAX_READ_CHUNK as usize + 17];
@@ -656,7 +681,8 @@ fn reads_and_entry_names_are_bounded_and_validated() {
             assert!(session.read_at(&grant, offset, len).unwrap().is_empty());
         }
     }
-    // phase: special_entry_read_is_unsupported
+
+    phase special_entry_read_is_unsupported;
     {
         let (temp, _authority, session, root) = granted_root();
         let _listener =
@@ -668,7 +694,8 @@ fn reads_and_entry_names_are_bounded_and_validated() {
             Err(FsError::Unsupported(_))
         ));
     }
-    // phase: invalid_entry_names_are_rejected_before_syscall
+
+    phase invalid_entry_names_are_rejected_before_syscall;
     {
         for value in ["", ".", "..", "/", "a/b", "a\0b", "a/"] {
             assert!(matches!(
@@ -754,346 +781,358 @@ fn selected_write_file(
     (temp, authority, session, grant)
 }
 
-#[test]
-fn selected_regular_file_write_changes_original_bytes_on_same_inode() {
-    use std::os::unix::fs::MetadataExt as _;
-    let (temp, _authority, session, grant) =
-        selected_write_file(vec![FsRight::Read, FsRight::Write]);
-    let selected = temp.path().join("selected");
-    let before = std::fs::metadata(&selected).unwrap();
-    assert_eq!(session.write_at(&grant, 0, b"after!").unwrap(), 6);
-    let after = std::fs::metadata(&selected).unwrap();
-    assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
-    assert_eq!(std::fs::read(&selected).unwrap(), b"after! bytes");
-    assert_eq!(session.read_at(&grant, 0, 32).unwrap(), b"after! bytes");
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn held_file_effects_need_the_selected_descriptor_and_its_rights;
 
-#[test]
-fn short_selected_file_rewrite_truncates_old_suffix_and_syncs_same_inode() {
-    use std::os::unix::fs::MetadataExt as _;
-    let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
-    let selected = temp.path().join("selected");
-    let before = std::fs::metadata(&selected).unwrap();
-    session.truncate(&grant, 0).unwrap();
-    assert_eq!(session.write_at(&grant, 0, b"short").unwrap(), 5);
-    session.sync_file(&grant).unwrap();
-    let after = std::fs::metadata(&selected).unwrap();
-    assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
-    assert_eq!(after.len(), 5);
-    assert_eq!(std::fs::read(&selected).unwrap(), b"short");
-}
-
-#[test]
-fn missing_write_right_refuses_write_truncate_and_sync_without_changing_bytes() {
-    let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Read]);
-    assert!(matches!(
-        session.write_at(&grant, 0, b"changed"),
-        Err(FsError::Denied)
-    ));
-    assert!(matches!(session.truncate(&grant, 0), Err(FsError::Denied)));
-    assert!(matches!(session.sync_file(&grant), Err(FsError::Denied)));
-    assert_eq!(
-        std::fs::read(temp.path().join("selected")).unwrap(),
-        b"before bytes"
-    );
-}
-
-#[test]
-fn write_right_never_reopens_read_only_descriptor_to_gain_write_access() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("selected");
-    std::fs::write(&path, b"before bytes").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let grant = authority
-        .admit_file(
-            std::fs::File::open(&path).unwrap(),
-            files_owner(),
-            vec![FsRight::Write],
-        )
-        .unwrap();
-    let session = authority
-        .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&grant))
-        .unwrap();
-    assert!(matches!(
-        session.write_at(&grant, 0, b"changed"),
-        Err(FsError::Denied)
-    ));
-    assert!(matches!(session.truncate(&grant, 0), Err(FsError::Denied)));
-    assert!(matches!(session.sync_file(&grant), Err(FsError::Denied)));
-    assert_eq!(std::fs::read(&path).unwrap(), b"before bytes");
-}
-
-#[test]
-fn revoked_closed_and_lost_lifetime_refuse_every_held_file_effect() {
+    phase selected_regular_file_write_changes_original_bytes_on_same_inode;
     {
-        let (temp, authority, session, grant) = selected_write_file(vec![FsRight::Write]);
-        authority.revoke_file(&grant).unwrap();
-        assert!(matches!(
-            session.write_at(&grant, 0, b"changed"),
-            Err(FsError::Revoked)
-        ));
-        assert!(matches!(session.truncate(&grant, 0), Err(FsError::Revoked)));
-        assert!(matches!(session.sync_file(&grant), Err(FsError::Revoked)));
-        assert_eq!(
-            std::fs::read(temp.path().join("selected")).unwrap(),
-            b"before bytes"
-        );
+        use std::os::unix::fs::MetadataExt as _;
+        let (temp, _authority, session, grant) =
+            selected_write_file(vec![FsRight::Read, FsRight::Write]);
+        let selected = temp.path().join("selected");
+        let before = std::fs::metadata(&selected).unwrap();
+        assert_eq!(session.write_at(&grant, 0, b"after!").unwrap(), 6);
+        let after = std::fs::metadata(&selected).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(std::fs::read(&selected).unwrap(), b"after! bytes");
+        assert_eq!(session.read_at(&grant, 0, 32).unwrap(), b"after! bytes");
     }
+
+    phase short_selected_file_rewrite_truncates_old_suffix_and_syncs_same_inode;
     {
+        use std::os::unix::fs::MetadataExt as _;
         let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
-        session.close();
-        assert!(matches!(
-            session.write_at(&grant, 0, b"changed"),
-            Err(FsError::Closed)
-        ));
-        assert!(matches!(session.truncate(&grant, 0), Err(FsError::Closed)));
-        assert!(matches!(session.sync_file(&grant), Err(FsError::Closed)));
-        assert_eq!(
-            std::fs::read(temp.path().join("selected")).unwrap(),
-            b"before bytes"
-        );
+        let selected = temp.path().join("selected");
+        let before = std::fs::metadata(&selected).unwrap();
+        session.truncate(&grant, 0).unwrap();
+        assert_eq!(session.write_at(&grant, 0, b"short").unwrap(), 5);
+        session.sync_file(&grant).unwrap();
+        let after = std::fs::metadata(&selected).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(after.len(), 5);
+        assert_eq!(std::fs::read(&selected).unwrap(), b"short");
     }
+
+    phase missing_write_right_refuses_write_truncate_and_sync_without_changing_bytes;
     {
-        let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
-        let alive = Arc::new(AtomicBool::new(true));
-        let predicate = Arc::clone(&alive);
-        session
-            .attach_lifetime(Arc::new(move || predicate.load(Ordering::Acquire)))
-            .unwrap();
-        alive.store(false, Ordering::Release);
-        assert!(matches!(
-            session.write_at(&grant, 0, b"changed"),
-            Err(FsError::Closed)
-        ));
-        assert!(matches!(session.truncate(&grant, 0), Err(FsError::Closed)));
-        assert!(matches!(session.sync_file(&grant), Err(FsError::Closed)));
-        // Terminal: restoring the external predicate cannot revive this session.
-        alive.store(true, Ordering::Release);
-        assert!(matches!(
-            session.write_at(&grant, 0, b"changed"),
-            Err(FsError::Closed)
-        ));
-        assert_eq!(
-            std::fs::read(temp.path().join("selected")).unwrap(),
-            b"before bytes"
-        );
-    }
-}
-
-#[test]
-fn selected_name_replacement_cannot_retarget_write_truncate_or_sync() {
-    use std::os::unix::fs::MetadataExt as _;
-    let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
-    let selected = temp.path().join("selected");
-    let retained = temp.path().join("retained-original");
-    let before = std::fs::metadata(&selected).unwrap();
-    std::fs::rename(&selected, &retained).unwrap();
-    std::fs::write(&selected, b"replacement untouched").unwrap();
-    session.truncate(&grant, 0).unwrap();
-    assert_eq!(
-        session.write_at(&grant, 0, b"original changed").unwrap(),
-        16
-    );
-    session.sync_file(&grant).unwrap();
-    let after = std::fs::metadata(&retained).unwrap();
-    assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
-    assert_eq!(std::fs::read(&retained).unwrap(), b"original changed");
-    assert_eq!(std::fs::read(&selected).unwrap(), b"replacement untouched");
-}
-
-#[test]
-fn foreign_owner_authority_and_unbound_session_refuse_held_file_effects() {
-    let (temp, authority, _session, grant) = selected_write_file(vec![FsRight::Write]);
-    let mut wrong = files_owner();
-    wrong.workspace = "foreign-room".into();
-    assert!(matches!(
-        authority.bind(wrong.clone(), MOUNT_B, &[], std::slice::from_ref(&grant)),
-        Err(FsError::Denied)
-    ));
-    let foreign_owner = authority.bind(wrong, MOUNT_B, &[], &[]).unwrap();
-    let foreign = NativeGrantAuthority::new();
-    let foreign_authority = foreign.bind(files_owner(), MOUNT_B, &[], &[]).unwrap();
-    let unbound = authority.bind(files_owner(), MOUNT_B, &[], &[]).unwrap();
-    for session in [foreign_owner, foreign_authority, unbound] {
+        let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Read]);
         assert!(matches!(
             session.write_at(&grant, 0, b"changed"),
             Err(FsError::Denied)
         ));
         assert!(matches!(session.truncate(&grant, 0), Err(FsError::Denied)));
         assert!(matches!(session.sync_file(&grant), Err(FsError::Denied)));
+        assert_eq!(
+            std::fs::read(temp.path().join("selected")).unwrap(),
+            b"before bytes"
+        );
     }
-    assert_eq!(
-        std::fs::read(temp.path().join("selected")).unwrap(),
-        b"before bytes"
-    );
-}
 
-#[test]
-fn write_chunks_and_lengths_are_bounded_before_any_file_effect() {
-    let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
-    let oversized = vec![b'x'; runtime_fs::MAX_WRITE_CHUNK as usize + 1];
-    assert!(matches!(
-        session.write_at(&grant, 0, &oversized),
-        Err(FsError::LimitExceeded)
-    ));
-    assert!(matches!(
-        session.write_at(&grant, u64::MAX, b"x"),
-        Err(FsError::LimitExceeded)
-    ));
-    assert!(matches!(
-        session.truncate(&grant, u64::MAX),
-        Err(FsError::LimitExceeded)
-    ));
-    assert_eq!(
-        std::fs::read(temp.path().join("selected")).unwrap(),
-        b"before bytes"
-    );
-}
-
-#[test]
-fn append_descriptor_cannot_redirect_offset_write_to_eof() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("selected");
-    std::fs::write(&path, b"before bytes").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let grant = authority
-        .admit_file(
-            std::fs::File::options()
-                .read(true)
-                .append(true)
-                .open(&path)
-                .unwrap(),
-            files_owner(),
-            vec![FsRight::Write],
-        )
-        .unwrap();
-    let session = authority
-        .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&grant))
-        .unwrap();
-    assert!(matches!(
-        session.write_at(&grant, 0, b"changed"),
-        Err(FsError::Unsupported(_))
-    ));
-    assert_eq!(std::fs::read(&path).unwrap(), b"before bytes");
-}
-
-#[test]
-fn special_file_descriptor_never_acquires_regular_file_effects() {
-    let authority = NativeGrantAuthority::new();
-    let grant = authority
-        .admit_file(
-            std::fs::File::options()
-                .read(true)
-                .write(true)
-                .open("/dev/null")
-                .unwrap(),
-            files_owner(),
-            vec![FsRight::Write],
-        )
-        .unwrap();
-    let session = authority
-        .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&grant))
-        .unwrap();
-    assert!(matches!(
-        session.write_at(&grant, 0, b"changed"),
-        Err(FsError::Unsupported(_))
-    ));
-    assert!(matches!(
-        session.truncate(&grant, 0),
-        Err(FsError::Unsupported(_))
-    ));
-    assert!(matches!(
-        session.sync_file(&grant),
-        Err(FsError::Unsupported(_))
-    ));
-}
-
-#[test]
-fn explicit_child_access_preserves_raw_names_lineage_and_readonly_lookup() {
-    use runtime_fs::NativeFileAccess;
-    let disk = tempfile::tempdir().unwrap();
-    let raw = OsString::from_vec(vec![b'f', 0xff]);
-    let path = disk.path().join(&raw);
-    std::fs::write(&path, b"original").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let owner = files_owner();
-    let root = authority
-        .admit_directory(
-            std::fs::File::open(disk.path()).unwrap(),
-            owner.clone(),
-            vec![FsRight::Enumerate, FsRight::Read, FsRight::Write],
-        )
-        .unwrap();
-    let session = authority
-        .bind(owner, MOUNT_A, std::slice::from_ref(&root), &[])
-        .unwrap();
-    let name = EntryName::new(raw).unwrap();
-    let readonly = file(session.lookup(&root, &name).unwrap());
-    assert!(matches!(
-        session.write_at(&readonly, 0, b"bad"),
-        Err(FsError::Denied)
-    ));
-    let editable = session
-        .lookup_file_for(&root, &name, NativeFileAccess::ReadWrite)
-        .unwrap();
-    session.validate_read_write(&editable).unwrap();
-    assert_eq!(session.read_at(&editable, 0, 8).unwrap(), b"original");
-    assert_eq!(session.write_at(&editable, 0, b"edited!!").unwrap(), 8);
-    symlink(name.as_os_str(), disk.path().join("link")).unwrap();
-    assert!(
-        session
-            .lookup_file_for(
-                &root,
-                &EntryName::new("link".into()).unwrap(),
-                NativeFileAccess::ReadWrite
+    phase write_right_never_reopens_read_only_descriptor_to_gain_write_access;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("selected");
+        std::fs::write(&path, b"before bytes").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let grant = authority
+            .admit_file(
+                std::fs::File::open(&path).unwrap(),
+                files_owner(),
+                vec![FsRight::Write],
             )
-            .is_err()
-    );
-    let writeonly = session
-        .lookup_file_for(&root, &name, NativeFileAccess::Write)
-        .unwrap();
-    assert!(session.validate_read_write(&writeonly).is_err());
-    assert_eq!(session.write_at(&writeonly, 0, b"W").unwrap(), 1);
-    authority.revoke_directory(&root).unwrap();
-    assert!(session.write_at(&editable, 0, b"bad").is_err());
-    assert!(
-        session
-            .lookup_file_for(&root, &name, NativeFileAccess::ReadWrite)
-            .is_err()
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), b"Wdited!!");
+            .unwrap();
+        let session = authority
+            .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&grant))
+            .unwrap();
+        assert!(matches!(
+            session.write_at(&grant, 0, b"changed"),
+            Err(FsError::Denied)
+        ));
+        assert!(matches!(session.truncate(&grant, 0), Err(FsError::Denied)));
+        assert!(matches!(session.sync_file(&grant), Err(FsError::Denied)));
+        assert_eq!(std::fs::read(&path).unwrap(), b"before bytes");
+    }
+
+    phase revoked_closed_and_lost_lifetime_refuse_every_held_file_effect;
+    {
+        {
+            let (temp, authority, session, grant) = selected_write_file(vec![FsRight::Write]);
+            authority.revoke_file(&grant).unwrap();
+            assert!(matches!(
+                session.write_at(&grant, 0, b"changed"),
+                Err(FsError::Revoked)
+            ));
+            assert!(matches!(session.truncate(&grant, 0), Err(FsError::Revoked)));
+            assert!(matches!(session.sync_file(&grant), Err(FsError::Revoked)));
+            assert_eq!(
+                std::fs::read(temp.path().join("selected")).unwrap(),
+                b"before bytes"
+            );
+        }
+        {
+            let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
+            session.close();
+            assert!(matches!(
+                session.write_at(&grant, 0, b"changed"),
+                Err(FsError::Closed)
+            ));
+            assert!(matches!(session.truncate(&grant, 0), Err(FsError::Closed)));
+            assert!(matches!(session.sync_file(&grant), Err(FsError::Closed)));
+            assert_eq!(
+                std::fs::read(temp.path().join("selected")).unwrap(),
+                b"before bytes"
+            );
+        }
+        {
+            let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
+            let alive = Arc::new(AtomicBool::new(true));
+            let predicate = Arc::clone(&alive);
+            session
+                .attach_lifetime(Arc::new(move || predicate.load(Ordering::Acquire)))
+                .unwrap();
+            alive.store(false, Ordering::Release);
+            assert!(matches!(
+                session.write_at(&grant, 0, b"changed"),
+                Err(FsError::Closed)
+            ));
+            assert!(matches!(session.truncate(&grant, 0), Err(FsError::Closed)));
+            assert!(matches!(session.sync_file(&grant), Err(FsError::Closed)));
+            // Terminal: restoring the external predicate cannot revive this session.
+            alive.store(true, Ordering::Release);
+            assert!(matches!(
+                session.write_at(&grant, 0, b"changed"),
+                Err(FsError::Closed)
+            ));
+            assert_eq!(
+                std::fs::read(temp.path().join("selected")).unwrap(),
+                b"before bytes"
+            );
+        }
+    }
+
+    phase selected_name_replacement_cannot_retarget_write_truncate_or_sync;
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
+        let selected = temp.path().join("selected");
+        let retained = temp.path().join("retained-original");
+        let before = std::fs::metadata(&selected).unwrap();
+        std::fs::rename(&selected, &retained).unwrap();
+        std::fs::write(&selected, b"replacement untouched").unwrap();
+        session.truncate(&grant, 0).unwrap();
+        assert_eq!(
+            session.write_at(&grant, 0, b"original changed").unwrap(),
+            16
+        );
+        session.sync_file(&grant).unwrap();
+        let after = std::fs::metadata(&retained).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(std::fs::read(&retained).unwrap(), b"original changed");
+        assert_eq!(std::fs::read(&selected).unwrap(), b"replacement untouched");
+    }
+
+    phase foreign_owner_authority_and_unbound_session_refuse_held_file_effects;
+    {
+        let (temp, authority, _session, grant) = selected_write_file(vec![FsRight::Write]);
+        let mut wrong = files_owner();
+        wrong.workspace = "foreign-room".into();
+        assert!(matches!(
+            authority.bind(wrong.clone(), MOUNT_B, &[], std::slice::from_ref(&grant)),
+            Err(FsError::Denied)
+        ));
+        let foreign_owner = authority.bind(wrong, MOUNT_B, &[], &[]).unwrap();
+        let foreign = NativeGrantAuthority::new();
+        let foreign_authority = foreign.bind(files_owner(), MOUNT_B, &[], &[]).unwrap();
+        let unbound = authority.bind(files_owner(), MOUNT_B, &[], &[]).unwrap();
+        for session in [foreign_owner, foreign_authority, unbound] {
+            assert!(matches!(
+                session.write_at(&grant, 0, b"changed"),
+                Err(FsError::Denied)
+            ));
+            assert!(matches!(session.truncate(&grant, 0), Err(FsError::Denied)));
+            assert!(matches!(session.sync_file(&grant), Err(FsError::Denied)));
+        }
+        assert_eq!(
+            std::fs::read(temp.path().join("selected")).unwrap(),
+            b"before bytes"
+        );
+    }
+
+    phase write_chunks_and_lengths_are_bounded_before_any_file_effect;
+    {
+        let (temp, _authority, session, grant) = selected_write_file(vec![FsRight::Write]);
+        let oversized = vec![b'x'; runtime_fs::MAX_WRITE_CHUNK as usize + 1];
+        assert!(matches!(
+            session.write_at(&grant, 0, &oversized),
+            Err(FsError::LimitExceeded)
+        ));
+        assert!(matches!(
+            session.write_at(&grant, u64::MAX, b"x"),
+            Err(FsError::LimitExceeded)
+        ));
+        assert!(matches!(
+            session.truncate(&grant, u64::MAX),
+            Err(FsError::LimitExceeded)
+        ));
+        assert_eq!(
+            std::fs::read(temp.path().join("selected")).unwrap(),
+            b"before bytes"
+        );
+    }
+
+    phase append_descriptor_cannot_redirect_offset_write_to_eof;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("selected");
+        std::fs::write(&path, b"before bytes").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let grant = authority
+            .admit_file(
+                std::fs::File::options()
+                    .read(true)
+                    .append(true)
+                    .open(&path)
+                    .unwrap(),
+                files_owner(),
+                vec![FsRight::Write],
+            )
+            .unwrap();
+        let session = authority
+            .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&grant))
+            .unwrap();
+        assert!(matches!(
+            session.write_at(&grant, 0, b"changed"),
+            Err(FsError::Unsupported(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"before bytes");
+    }
+
+    phase special_file_descriptor_never_acquires_regular_file_effects;
+    {
+        let authority = NativeGrantAuthority::new();
+        let grant = authority
+            .admit_file(
+                std::fs::File::options()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/null")
+                    .unwrap(),
+                files_owner(),
+                vec![FsRight::Write],
+            )
+            .unwrap();
+        let session = authority
+            .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&grant))
+            .unwrap();
+        assert!(matches!(
+            session.write_at(&grant, 0, b"changed"),
+            Err(FsError::Unsupported(_))
+        ));
+        assert!(matches!(
+            session.truncate(&grant, 0),
+            Err(FsError::Unsupported(_))
+        ));
+        assert!(matches!(
+            session.sync_file(&grant),
+            Err(FsError::Unsupported(_))
+        ));
+    }
 }
 
-#[test]
-fn explicit_child_access_does_not_upgrade_readonly_parent_rights() {
-    use runtime_fs::NativeFileAccess;
-    let disk = tempfile::tempdir().unwrap();
-    std::fs::write(disk.path().join("chosen"), b"original").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let owner = files_owner();
-    let root = authority
-        .admit_directory(
-            std::fs::File::open(disk.path()).unwrap(),
-            owner.clone(),
-            vec![FsRight::Enumerate, FsRight::Read],
-        )
-        .unwrap();
-    let session = authority
-        .bind(owner, MOUNT_A, std::slice::from_ref(&root), &[])
-        .unwrap();
-    let name = EntryName::new("chosen".into()).unwrap();
-    assert!(matches!(
-        session.lookup_file_for(&root, &name, NativeFileAccess::Write),
-        Err(FsError::Denied)
-    ));
-    assert!(matches!(
-        session.lookup_file_for(&root, &name, NativeFileAccess::ReadWrite),
-        Err(FsError::Denied)
-    ));
-    let selected = session
-        .lookup_file_for(&root, &name, NativeFileAccess::Read)
-        .unwrap();
-    assert_eq!(session.read_at(&selected, 0, 8).unwrap(), b"original");
+tilo_test_env::scenario! {
+    fn explicit_child_access;
+
+    phase explicit_child_access_preserves_raw_names_lineage_and_readonly_lookup;
+    {
+        use runtime_fs::NativeFileAccess;
+        let disk = tempfile::tempdir().unwrap();
+        let raw = OsString::from_vec(vec![b'f', 0xff]);
+        let path = disk.path().join(&raw);
+        std::fs::write(&path, b"original").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let owner = files_owner();
+        let root = authority
+            .admit_directory(
+                std::fs::File::open(disk.path()).unwrap(),
+                owner.clone(),
+                vec![FsRight::Enumerate, FsRight::Read, FsRight::Write],
+            )
+            .unwrap();
+        let session = authority
+            .bind(owner, MOUNT_A, std::slice::from_ref(&root), &[])
+            .unwrap();
+        let name = EntryName::new(raw).unwrap();
+        let readonly = file(session.lookup(&root, &name).unwrap());
+        assert!(matches!(
+            session.write_at(&readonly, 0, b"bad"),
+            Err(FsError::Denied)
+        ));
+        let editable = session
+            .lookup_file_for(&root, &name, NativeFileAccess::ReadWrite)
+            .unwrap();
+        session.validate_read_write(&editable).unwrap();
+        assert_eq!(session.read_at(&editable, 0, 8).unwrap(), b"original");
+        assert_eq!(session.write_at(&editable, 0, b"edited!!").unwrap(), 8);
+        symlink(name.as_os_str(), disk.path().join("link")).unwrap();
+        assert!(
+            session
+                .lookup_file_for(
+                    &root,
+                    &EntryName::new("link".into()).unwrap(),
+                    NativeFileAccess::ReadWrite
+                )
+                .is_err()
+        );
+        let writeonly = session
+            .lookup_file_for(&root, &name, NativeFileAccess::Write)
+            .unwrap();
+        assert!(session.validate_read_write(&writeonly).is_err());
+        assert_eq!(session.write_at(&writeonly, 0, b"W").unwrap(), 1);
+        authority.revoke_directory(&root).unwrap();
+        assert!(session.write_at(&editable, 0, b"bad").is_err());
+        assert!(
+            session
+                .lookup_file_for(&root, &name, NativeFileAccess::ReadWrite)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"Wdited!!");
+    }
+
+    phase explicit_child_access_does_not_upgrade_readonly_parent_rights;
+    {
+        use runtime_fs::NativeFileAccess;
+        let disk = tempfile::tempdir().unwrap();
+        std::fs::write(disk.path().join("chosen"), b"original").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let owner = files_owner();
+        let root = authority
+            .admit_directory(
+                std::fs::File::open(disk.path()).unwrap(),
+                owner.clone(),
+                vec![FsRight::Enumerate, FsRight::Read],
+            )
+            .unwrap();
+        let session = authority
+            .bind(owner, MOUNT_A, std::slice::from_ref(&root), &[])
+            .unwrap();
+        let name = EntryName::new("chosen".into()).unwrap();
+        assert!(matches!(
+            session.lookup_file_for(&root, &name, NativeFileAccess::Write),
+            Err(FsError::Denied)
+        ));
+        assert!(matches!(
+            session.lookup_file_for(&root, &name, NativeFileAccess::ReadWrite),
+            Err(FsError::Denied)
+        ));
+        let selected = session
+            .lookup_file_for(&root, &name, NativeFileAccess::Read)
+            .unwrap();
+        assert_eq!(session.read_at(&selected, 0, 8).unwrap(), b"original");
+    }
 }
 
 #[test]

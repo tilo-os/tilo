@@ -265,6 +265,20 @@ pub enum FrameDemand {
     Deadline,
 }
 
+/// The pace a capture presents frames at, and so the length of one frame of a
+/// capture's bound ([`capture_frames`]): a live window's 60 Hz, so a bound
+/// reads as the motion a person would have seen by then.
+pub const CAPTURE_FRAME_INTERVAL: crate::time::Duration = crate::time::Duration::from_millis(16);
+
+/// The frames a capture bound of `bound` allows: the bound is counted in
+/// frames at [`CAPTURE_FRAME_INTERVAL`], never in the time the machine takes
+/// to draw them, so a loaded machine gets the frames an idle one does.
+#[must_use]
+pub fn capture_frames(bound: crate::time::Duration) -> u32 {
+    let interval = CAPTURE_FRAME_INTERVAL.as_micros().max(1);
+    u32::try_from(bound.as_micros() / interval).unwrap_or(u32::MAX)
+}
+
 /// Borrowed paint input without constructing an accessibility snapshot.
 pub struct FrameRenderInput<'a> {
     pub scene: &'a Scene,
@@ -974,6 +988,7 @@ impl FrameHarness {
     }
 
     /// Scheduling progress from the actual taken snapshot, including a returned partial failure.
+    /// Quiet: invalidates when it took work up.
     pub fn service_pending_owner_models_report(
         &mut self,
     ) -> crate::owner_wake::OwnerModelServiceReport {
@@ -1708,6 +1723,7 @@ impl FrameHarness {
 
     /// What the widget tree asked of the transport since the last call, as a live window's host takes
     /// it: the other half of [`Self::handle_collaboration_event`].
+    /// Quiet: drains what the widgets asked of the transport; nothing a frame reads.
     pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
         crate::widget::take_collab_requests(self.root.as_mut())
     }
@@ -1938,6 +1954,8 @@ impl FrameHarness {
 
     /// Draw the last frame again if it replayed windows at rest, so what their widgets note while
     /// drawing describes where they are now; input does this before reaching a widget.
+    /// Quiet: draws again a frame that only moved laid-out content, through `try_relayout`, which
+    /// invalidates when it lays one out.
     pub fn settle_replayed_draws(&mut self) {
         if !self.replayed_draws {
             return;
@@ -1960,8 +1978,9 @@ impl FrameHarness {
         }
     }
 
-    /// The report of the last frame the harness skipped on its, when one was due: a host whose log
-    /// is not `tracing`'s prints it.
+    /// The report of the last frame the harness skipped on its own, when one was due, for a host whose
+    /// log is not `tracing`'s.
+    /// Quiet: hands over a log line; nothing a frame reads.
     pub fn take_skip_report(&mut self) -> Option<String> {
         self.skip_report.take()
     }
@@ -1976,6 +1995,7 @@ impl FrameHarness {
     /// Let following frames replay windows at rest when they only move laid-out content (the default),
     /// or draw every window; a host about to read a frame's semantics forbids it for that frame, which
     /// then needs no [`Self::settle_replayed_draws`].
+    /// Quiet: chooses how later frames draw; nothing a frame reads.
     pub fn set_pan_replay(&mut self, allowed: bool) {
         self.pan_replay_allowed = allowed;
     }
@@ -2636,30 +2656,62 @@ impl FrameHarness {
         })
     }
 
+    /// The widgets waiting on work whose completion will replace a placeholder
+    /// ([`Widget::has_pending_visual_work`]) that none of their children explains, each as its path
+    /// of names from its root: what a capture waits for that asks for no frame of its own, which
+    /// names a read that never answers where an empty frame schedule alone would not.
+    pub fn pending_visual_work(&self) -> Vec<String> {
+        self.explained_by(
+            |widget| widget.has_pending_visual_work(),
+            |widget| widget.name().to_owned(),
+        )
+    }
+
     /// The widgets that make a retained frame re-solve sizes rather than only re-apply positions: each
     /// widget reporting `layout_needs_measure` that none of its children explains, as its path from the
     /// root with a test id in brackets.
     pub fn layout_measure_requesters(&self) -> Vec<String> {
-        fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
+        self.explained_by(
+            |widget| widget.layout_needs_measure(),
+            |widget| {
+                widget.test_id().map_or_else(
+                    || widget.name().to_owned(),
+                    |id| format!("{}[{id}]", widget.name()),
+                )
+            },
+        )
+    }
+
+    /// Each widget of the tree `found` holds of that none of its children explains, as its path from
+    /// the root, each named by `name`.
+    fn explained_by(
+        &self,
+        found: fn(&dyn Widget) -> bool,
+        name: fn(&dyn Widget) -> String,
+    ) -> Vec<String> {
+        fn visit(
+            widget: &dyn Widget,
+            path: &mut Vec<String>,
+            out: &mut Vec<String>,
+            found: fn(&dyn Widget) -> bool,
+            name: fn(&dyn Widget) -> String,
+        ) {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
                 return;
             };
-            if !widget.layout_needs_measure() {
+            if !found(widget) {
                 return;
             }
-            path.push(match widget.test_id() {
-                Some(id) => format!("{}[{id}]", widget.name()),
-                None => widget.name().to_owned(),
-            });
+            path.push(name(widget));
             let before = out.len();
-            widget.for_each_child(&mut |child| visit(child, path, out));
+            widget.for_each_child(&mut |child| visit(child, path, out, found, name));
             if out.len() == before {
                 out.push(path.join("/"));
             }
             path.pop();
         }
         let mut out = Vec::new();
-        visit(self.root.as_ref(), &mut Vec::new(), &mut out);
+        visit(self.root.as_ref(), &mut Vec::new(), &mut out, found, name);
         out
     }
 
@@ -2670,6 +2722,7 @@ impl FrameHarness {
     }
 
     /// Drain optional canonical font assets demanded by the most recent authoritative shaping pass.
+    /// Quiet: drains the text renderer's fetch list; nothing a frame reads.
     pub fn take_browser_font_demands(&mut self) -> Vec<String> {
         self.text.take_browser_font_demands()
     }
@@ -2722,6 +2775,7 @@ impl FrameHarness {
 
     /// Record the damage parts of every scene the draw pass produces from now on
     /// ([`crate::scene_parts`]), for a host that compares each frame with the one it presented before.
+    /// Quiet: chooses whether later draws record their damage parts; nothing a frame reads.
     pub fn track_scene_parts(&mut self, track: bool) {
         self.track_scene_parts = track;
     }
@@ -2795,6 +2849,7 @@ impl FrameHarness {
     }
 
     /// Pump component wakes and animate using the production update/layout/draw passes.
+    /// Quiet: runs the frame itself, invalidating first when its deadline came due.
     pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
         let frame = self.frame_schedule();
         if !frame.needs_redraw && !frame.needs_animation_frame {
@@ -2984,6 +3039,7 @@ impl FrameHarness {
     /// What the live window does once input stops: the frame the input asked for if it has not run yet,
     /// control invocations dispatched, edits offered to the record's writer, and the frame that asks
     /// for.
+    /// Quiet: invalidates when its control tick or save offer moved the document.
     pub fn idle(&mut self) {
         self.polls_frames = true;
         self.pump_component_wakes();
@@ -4173,22 +4229,23 @@ impl FrameHarness {
     /// Run production frames until the window has settled, as a person sees
     /// it a moment after it opened: no animation running (a tab's entrance, a
     /// panel sliding in) and no image load the frame asked for still in
-    /// flight. Waits at most `bound` and returns whether it settled. A
-    /// capture calls this before it writes, so shots match the live window.
+    /// flight. Presents at most `bound`'s frames ([`capture_frames`]) and
+    /// returns whether it settled. A capture calls this before it writes, so
+    /// shots match the live window.
     ///
     /// The frame runs only when something asks for one, exactly as a live
     /// window draws none between two interactions; a window already at rest
     /// costs an idle pass, never a frame.
     ///
-    /// Animations run on the toolkit's clock ([`crate::time::now`]), so the
-    /// bound is measured on it too: an executor with a virtual clock (a
-    /// pumped test) cannot run the bound out before an entrance has ended.
+    /// The bound counts frames, not the time they take: the capture presents
+    /// them at the pace a live window does ([`CAPTURE_FRAME_INTERVAL`]), so a
+    /// loaded machine gets the frames an idle one does. A window whose motions
+    /// are all done at frame N has settled however long its frames took, and a
+    /// window still asking for a frame after the bound's frames is the
+    /// finding.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
         self.invalidate_local();
-        const CAPTURE_IDLE_SLICE: crate::time::Duration = crate::time::Duration::from_millis(16);
-        let Some(deadline) = crate::time::now().checked_add(bound) else {
-            return false;
-        };
+        let mut frames = capture_frames(bound);
         loop {
             if self.frame_schedule_demands_frame() {
                 self.relayout();
@@ -4198,33 +4255,16 @@ impl FrameHarness {
             if self.frame_schedule_demands_frame() {
                 self.relayout();
             }
-            if crate::time::now() > deadline {
-                return false;
-            }
-            let slice = crate::time::now()
-                .checked_add(CAPTURE_IDLE_SLICE)
-                .map_or(deadline, |slice| slice.min(deadline));
-            if !self.capture_is_ready()
-                && !self.wait_until_deadline(slice, crate::time::now, |driver| {
-                    crate::time::now() <= deadline && driver.capture_is_ready()
-                })
-            {
-                if crate::time::now() >= deadline {
-                    return false;
-                }
-                continue;
-            }
-            if self.frame_schedule_demands_frame()
-                && (self.try_relayout().is_err() || crate::time::now() > deadline)
-            {
-                return false;
-            }
             if self.capture_is_ready() {
                 return true;
             }
-            if crate::time::now() >= deadline {
+            if frames == 0 {
                 return false;
             }
+            frames = frames.saturating_sub(1);
+            let background = crate::background::Background::current();
+            let now = background.now();
+            background.park(now.checked_add(CAPTURE_FRAME_INTERVAL).unwrap_or(now));
         }
     }
 
@@ -5876,6 +5916,7 @@ impl FrameHarness {
     }
 
     /// Deliver platform input including host keyboard policy.
+    /// Quiet: a wheel coalesced into the next frame counts once dispatched.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
         let _wake = self.enter_wake();
         crate::motion::note_input(event);
@@ -5989,6 +6030,8 @@ impl FrameHarness {
     }
 
     /// Deliver one event through the production dispatch path.
+    /// Quiet: judged once dispatched, as the live App judges input: all but a wheel that only
+    /// panned and inert input that moved nothing.
     pub fn send(&mut self, event: &WindowEvent) {
         let _motions = crate::motion::owning(self.motions.0);
         crate::motion::note_input(event);
@@ -7490,6 +7533,7 @@ impl FrameHarness {
 
     /// Move the pointer to `(x, y)` and press+release the left button — the three events a click
     /// produces, in order.
+    /// Quiet: a move, a press and a release through `send`, which judges each.
     pub fn click_at(&mut self, x: f64, y: f64) {
         self.pump_component_wakes();
         self.send(&crate::synthetic_input::cursor_moved(
@@ -7764,6 +7808,8 @@ impl FrameHarness {
 
     /// The placed pointers as the last frame drew them: without the name of one whose tag would meet
     /// the caret tag of the same person.
+    /// Quiet: reads the last frame's pointers; measures name tags through the text renderer's
+    /// shaping cache.
     pub fn drawn_placed_pointers(&mut self) -> Vec<crate::presence::PeerCursor> {
         self.pointers_beside_caret_tags(self.capture_draw_transform())
     }
@@ -7831,6 +7877,7 @@ impl FrameHarness {
     }
 
     /// Send wheel line-deltas at the last pointer position.
+    /// Quiet: a wheel through `send`, which judges it.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
         self.pump_component_wakes();
         // Deltas are line counts chosen by the driver caller (test
@@ -8363,8 +8410,6 @@ fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), Stri
     Ok(())
 }
 
-const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::from_secs(3);
-
 /// Take one [`Capture`]: switch theme and size when it names them, let the window settle as a person
 /// would see it, and write the frame as a PNG.
 fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), String> {
@@ -8378,7 +8423,7 @@ fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), Str
             .resize(driver.content_viewport(viewport))
             .map_err(|error| format!("capture {}: layout failed: {error}", capture.path))?;
     }
-    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
+    driver.settle_for_capture(crate::launch::CAPTURE_SETTLE_BOUND);
     let path = std::path::Path::new(&capture.path);
     if let Some(parent) = path
         .parent()
@@ -8913,23 +8958,148 @@ mod tests {
         let _ = frame.poll_frame().unwrap();
     }
 
-    #[test]
-    fn a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_and_a_space_alone() {
-        for (spec, pressed, expected) in [
-            ("Shift+F10", "F10", &["Shift"][..]),
-            ("ctrl+shift+k", "k", &["ctrl", "shift"][..]),
-            ("Tab", "Tab", &[][..]),
-            ("+", "+", &[][..]),
-            (" ", " ", &[][..]),
-            ("Ctrl+ ", " ", &["Ctrl"][..]),
-        ] {
-            let (key, modifiers) = chord(spec);
-            let held: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-            assert_eq!(
-                (key, held.as_slice()),
-                (pressed, expected),
-                "{spec} is {pressed} with {expected:?} held"
-            );
+    tilo_test_env::scenario! {
+        /// Parsing alone, with no frame built: a key spec's modifiers and every shape of a headless
+        /// spec.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_headless_spec_reads_its_keys_and_its_shapes_from_text;
+
+        phase a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_and_a_space_alone;
+        {
+            for (spec, pressed, expected) in [
+                ("Shift+F10", "F10", &["Shift"][..]),
+                ("ctrl+shift+k", "k", &["ctrl", "shift"][..]),
+                ("Tab", "Tab", &[][..]),
+                ("+", "+", &[][..]),
+                (" ", " ", &[][..]),
+                ("Ctrl+ ", " ", &["Ctrl"][..]),
+            ] {
+                let (key, modifiers) = chord(spec);
+                let held: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+                assert_eq!(
+                    (key, held.as_slice()),
+                    (pressed, expected),
+                    "{spec} is {pressed} with {expected:?} held"
+                );
+            }
+        }
+
+        phase headless_spec_parses_every_shape_and_rejects_malformed_input;
+        {
+            {
+                let spec = parse_spec(
+                r#"{"viewport":[800,600],"audit":true,"audit_report":"/tmp/a.json","dump":"/tmp/d.json","targets":"/tmp/t.json",
+                "inspect":"/tmp/i.json",
+                "actions":[{"click_named":"save"},{"click_at":[10,20]},
+                           {"tap_named":"save"},{"tap_at":[30,40]},
+                           {"swipe_at":[100,200,100,20]},
+                           {"key":"Enter"},{"type":"hi"},{"modifiers":["ctrl"]},
+                           {"wait_for_named":{"target":"result","timeout_ms":750}},
+                           {"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},
+                           {"perform":{"target":"name","action":"set_value","value":"Ada"}},
+                           {"perform":{"target":"name","action":"set_selection","anchor":0,"focus":3}},
+                           {"perform":{"target":"workspace-tree","semantic_target":"key:node:2","action":"expand"}}]}"#,
+            )
+            .expect("spec parses");
+                assert_eq!(spec.viewport, Some((800, 600)));
+                assert!(spec.audit);
+                assert_eq!(spec.audit_report.as_deref(), Some("/tmp/a.json"));
+                assert_eq!(spec.dump.as_deref(), Some("/tmp/d.json"));
+                assert_eq!(spec.inspect.as_deref(), Some("/tmp/i.json"));
+                assert_eq!(spec.actions.len(), 13);
+                assert!(matches!(&spec.actions[0], Action::ClickNamed(n) if n == "save"));
+                assert!(matches!(&spec.actions[2], Action::TapNamed(n) if n == "save"));
+                assert!(matches!(
+                    &spec.actions[4],
+                    Action::SwipeAt(100.0, 200.0, 100.0, 20.0)
+                ));
+                assert!(matches!(&spec.actions[6], Action::Type(t) if t == "hi"));
+                assert!(matches!(
+                    &spec.actions[8],
+                    Action::WaitForNamed { target, timeout_ms: 750 } if target == "result"
+                ));
+                assert!(matches!(
+                    &spec.actions[9],
+                    Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout_ms: Some(1000), .. })
+                        if target == "result" && role == "static_text"
+                ));
+                assert!(matches!(
+                    &spec.actions[10],
+                    Action::Perform { target, action: tilo_headless_schema::SemanticAction::SetValue(value), .. }
+                        if target == "name" && value == "Ada"
+                ));
+                assert!(matches!(
+                    &spec.actions[11],
+                    Action::Perform {
+                        action: tilo_headless_schema::SemanticAction::SetSelection {
+                            anchor: 0,
+                            focus: 3
+                        },
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    &spec.actions[12],
+                    Action::Perform {
+                        target,
+                        semantic_target: Some(semantic_target),
+                        action: tilo_headless_schema::SemanticAction::Expand,
+                    } if target == "workspace-tree" && semantic_target == "key:node:2"
+                ));
+            }
+
+            {
+                let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
+                assert!(err.contains("teleport"), "{err}");
+            }
+
+            {
+                let typed = action_description(&Action::Type("private value".into()));
+                assert_eq!(typed, "type 13 character(s)");
+                assert!(!typed.contains("private"));
+
+                let set = action_description(&Action::Perform {
+                    target: "password".into(),
+                    semantic_target: None,
+                    action: tilo_headless_schema::SemanticAction::SetValue("hunter2".into()),
+                });
+                assert_eq!(set, "perform set_value on \"password\"");
+                assert!(!set.contains("hunter2"));
+
+                let expected = action_description(&Action::Expect(
+                    SemanticExpectation::named("items").semantic_target("row:42"),
+                ));
+                assert_eq!(expected, "expect \"items\" / \"row:42\"");
+            }
+
+            {
+                for raw in [
+                    r#"{"viewport":[0,600]}"#,
+                    r#"{"viewport":[800]}"#,
+                    r#"{"viewport":"800x600"}"#,
+                    r#"{"actions":[{"key":"Enter","type":"oops"}]}"#,
+                    r#"{"actions":[{"perform":{"target":"name","action":"set_value"}}]}"#,
+                    r#"{"actions":[{"perform":{"target":"name","action":"focus","value":"extra"}}]}"#,
+                    r#"{"actions":[{"perform":{"target":"name","action":"set_selection","anchor":-1,"focus":0}}]}"#,
+                    r#"{"actions":[{"wait_for_named":{"target":"result","timeout_ms":0}}]}"#,
+                    "[]",
+                ] {
+                    assert!(parse_spec(raw).is_err(), "accepted {raw}");
+                }
+            }
+
+            {
+                let error = parse_spec(r#"{"steps":[]}"#).unwrap_err();
+                assert!(error.contains("unknown field \"steps\""), "{error}");
+                assert!(error.contains("actions"), "{error}");
+            }
+
+            {
+                let temp = tempfile::tempdir().expect("temporary output root");
+                let output = temp.path().join("artifacts/audit/inspect.json");
+                write_headless_output(&output, b"{}\n").expect("write nested output");
+                assert_eq!(std::fs::read_to_string(output).unwrap(), "{}\n");
+            }
         }
     }
 
@@ -9148,37 +9318,44 @@ mod tests {
     }
 
     #[test]
-    fn frame_requesters_name_the_widgets_that_ask_for_frames() {
-        let now = crate::time::now();
-        let mut spinner = DemandProbe::leaf("Spinner");
-        spinner.animating = true;
-        let mut clock = DemandProbe::leaf("Clock");
-        clock.deadline = Some(now);
-        let mut later = DemandProbe::leaf("Later");
-        later.deadline = now.checked_add(std::time::Duration::from_secs(60));
-        let mut panel = DemandProbe::leaf("Panel");
-        panel.children = vec![spinner, DemandProbe::leaf("Idle")];
-        let mut root = DemandProbe::leaf("Root");
-        root.children = vec![panel, clock, later];
-        let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
-        let mut requesters = harness.frame_requesters();
-        requesters.compact_sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(
-            requesters,
-            vec![
-                ("Root/Clock".to_owned(), FrameDemand::Deadline),
-                ("Root/Panel/Spinner".to_owned(), FrameDemand::Animation),
-            ]
-        );
-    }
-
-    #[test]
-    fn an_idle_tree_has_no_frame_requesters() {
-        let mut root = DemandProbe::leaf("Root");
-        root.children = vec![DemandProbe::leaf("Idle")];
-        let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
-        assert!(harness.frame_requesters().is_empty());
-        assert!(!harness.frame_schedule().needs_animation_frame);
+    fn frame_requesters_name_the_widgets_that_ask_for_frames_and_an_idle_tree_has_none() {
+        {
+            let now = crate::time::now();
+            let mut spinner = DemandProbe::leaf("Spinner");
+            spinner.animating = true;
+            let mut clock = DemandProbe::leaf("Clock");
+            clock.deadline = Some(now);
+            let mut later = DemandProbe::leaf("Later");
+            later.deadline = now.checked_add(std::time::Duration::from_secs(60));
+            let mut panel = DemandProbe::leaf("Panel");
+            panel.children = vec![spinner, DemandProbe::leaf("Idle")];
+            let mut root = DemandProbe::leaf("Root");
+            root.children = vec![panel, clock, later];
+            let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
+            let mut requesters = harness.frame_requesters();
+            requesters.compact_sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(
+                requesters,
+                vec![
+                    ("Root/Clock".to_owned(), FrameDemand::Deadline),
+                    ("Root/Panel/Spinner".to_owned(), FrameDemand::Animation),
+                ],
+                "a tree with an animation, a due deadline and a later one"
+            );
+        }
+        {
+            let mut root = DemandProbe::leaf("Root");
+            root.children = vec![DemandProbe::leaf("Idle")];
+            let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
+            assert!(
+                harness.frame_requesters().is_empty(),
+                "an idle tree has no frame requesters"
+            );
+            assert!(
+                !harness.frame_schedule().needs_animation_frame,
+                "an idle tree asks for no animation frame"
+            );
+        }
     }
 
     #[test]
@@ -10668,124 +10845,6 @@ mod tests {
                 (400, 200),
             );
             assert!(driver.accessibility_audit().is_clean());
-        }
-    }
-
-    #[test]
-    fn headless_spec_parses_every_shape_and_rejects_malformed_input() {
-        {
-            let spec = parse_spec(
-            r#"{"viewport":[800,600],"audit":true,"audit_report":"/tmp/a.json","dump":"/tmp/d.json","targets":"/tmp/t.json",
-                "inspect":"/tmp/i.json",
-                "actions":[{"click_named":"save"},{"click_at":[10,20]},
-                           {"tap_named":"save"},{"tap_at":[30,40]},
-                           {"swipe_at":[100,200,100,20]},
-                           {"key":"Enter"},{"type":"hi"},{"modifiers":["ctrl"]},
-                           {"wait_for_named":{"target":"result","timeout_ms":750}},
-                           {"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},
-                           {"perform":{"target":"name","action":"set_value","value":"Ada"}},
-                           {"perform":{"target":"name","action":"set_selection","anchor":0,"focus":3}},
-                           {"perform":{"target":"workspace-tree","semantic_target":"key:node:2","action":"expand"}}]}"#,
-        )
-        .expect("spec parses");
-            assert_eq!(spec.viewport, Some((800, 600)));
-            assert!(spec.audit);
-            assert_eq!(spec.audit_report.as_deref(), Some("/tmp/a.json"));
-            assert_eq!(spec.dump.as_deref(), Some("/tmp/d.json"));
-            assert_eq!(spec.inspect.as_deref(), Some("/tmp/i.json"));
-            assert_eq!(spec.actions.len(), 13);
-            assert!(matches!(&spec.actions[0], Action::ClickNamed(n) if n == "save"));
-            assert!(matches!(&spec.actions[2], Action::TapNamed(n) if n == "save"));
-            assert!(matches!(
-                &spec.actions[4],
-                Action::SwipeAt(100.0, 200.0, 100.0, 20.0)
-            ));
-            assert!(matches!(&spec.actions[6], Action::Type(t) if t == "hi"));
-            assert!(matches!(
-                &spec.actions[8],
-                Action::WaitForNamed { target, timeout_ms: 750 } if target == "result"
-            ));
-            assert!(matches!(
-                &spec.actions[9],
-                Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout_ms: Some(1000), .. })
-                    if target == "result" && role == "static_text"
-            ));
-            assert!(matches!(
-                &spec.actions[10],
-                Action::Perform { target, action: tilo_headless_schema::SemanticAction::SetValue(value), .. }
-                    if target == "name" && value == "Ada"
-            ));
-            assert!(matches!(
-                &spec.actions[11],
-                Action::Perform {
-                    action: tilo_headless_schema::SemanticAction::SetSelection {
-                        anchor: 0,
-                        focus: 3
-                    },
-                    ..
-                }
-            ));
-            assert!(matches!(
-                &spec.actions[12],
-                Action::Perform {
-                    target,
-                    semantic_target: Some(semantic_target),
-                    action: tilo_headless_schema::SemanticAction::Expand,
-                } if target == "workspace-tree" && semantic_target == "key:node:2"
-            ));
-        }
-
-        {
-            let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
-            assert!(err.contains("teleport"), "{err}");
-        }
-
-        {
-            let typed = action_description(&Action::Type("private value".into()));
-            assert_eq!(typed, "type 13 character(s)");
-            assert!(!typed.contains("private"));
-
-            let set = action_description(&Action::Perform {
-                target: "password".into(),
-                semantic_target: None,
-                action: tilo_headless_schema::SemanticAction::SetValue("hunter2".into()),
-            });
-            assert_eq!(set, "perform set_value on \"password\"");
-            assert!(!set.contains("hunter2"));
-
-            let expected = action_description(&Action::Expect(
-                SemanticExpectation::named("items").semantic_target("row:42"),
-            ));
-            assert_eq!(expected, "expect \"items\" / \"row:42\"");
-        }
-
-        {
-            for raw in [
-                r#"{"viewport":[0,600]}"#,
-                r#"{"viewport":[800]}"#,
-                r#"{"viewport":"800x600"}"#,
-                r#"{"actions":[{"key":"Enter","type":"oops"}]}"#,
-                r#"{"actions":[{"perform":{"target":"name","action":"set_value"}}]}"#,
-                r#"{"actions":[{"perform":{"target":"name","action":"focus","value":"extra"}}]}"#,
-                r#"{"actions":[{"perform":{"target":"name","action":"set_selection","anchor":-1,"focus":0}}]}"#,
-                r#"{"actions":[{"wait_for_named":{"target":"result","timeout_ms":0}}]}"#,
-                "[]",
-            ] {
-                assert!(parse_spec(raw).is_err(), "accepted {raw}");
-            }
-        }
-
-        {
-            let error = parse_spec(r#"{"steps":[]}"#).unwrap_err();
-            assert!(error.contains("unknown field \"steps\""), "{error}");
-            assert!(error.contains("actions"), "{error}");
-        }
-
-        {
-            let temp = tempfile::tempdir().expect("temporary output root");
-            let output = temp.path().join("artifacts/audit/inspect.json");
-            write_headless_output(&output, b"{}\n").expect("write nested output");
-            assert_eq!(std::fs::read_to_string(output).unwrap(), "{}\n");
         }
     }
 

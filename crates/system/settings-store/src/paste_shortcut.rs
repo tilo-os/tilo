@@ -142,67 +142,71 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn terminals_paste_with_ctrl_shift_v_unless_the_person_says_otherwise() {
-        for id in [
-            "so.tilo.terminal",
-            "kitty",
-            "org.gnome.Ptyxis",
-            "foot",
-            "Alacritty",
-        ] {
-            assert_eq!(default_for(id), PasteShortcut::CtrlShiftV, "{id}");
-        }
-        for id in ["so.tilo.notes", "org.mozilla.firefox"] {
-            assert_eq!(default_for(id), PasteShortcut::CtrlV, "{id}");
-        }
-        let section: Map<String, Value> = serde_json::from_str(
-            r#"{ "paste_shortcuts": {
+    tilo_test_env::scenario! {
+        fn the_paste_shortcut_follows_the_app_and_its_overrides;
+
+        phase terminals_paste_with_ctrl_shift_v_unless_the_person_says_otherwise;
+        {
+            for id in [
+                "so.tilo.terminal",
+                "kitty",
+                "org.gnome.Ptyxis",
+                "foot",
+                "Alacritty",
+            ] {
+                assert_eq!(default_for(id), PasteShortcut::CtrlShiftV, "{id}");
+            }
+            for id in ["so.tilo.notes", "org.mozilla.firefox"] {
+                assert_eq!(default_for(id), PasteShortcut::CtrlV, "{id}");
+            }
+            let section: Map<String, Value> = serde_json::from_str(
+                r#"{ "paste_shortcuts": {
                 "org.example.Shell": "ctrl_shift_v",
                 "so.tilo.terminal": "ctrl_v",
                 "bad\u0007id": "ctrl_v",
                 "org.example.Typo": "ctrl+v"
             } }"#,
-        )
-        .unwrap();
-        let overrides = overrides_from_section(&section);
-        assert_eq!(
-            overrides.len(),
-            2,
-            "malformed entries are skipped: {overrides:?}"
-        );
-        assert_eq!(
-            resolve("org.example.shell", &overrides),
-            PasteShortcut::CtrlShiftV,
-            "an unusual terminal is fixed by its override"
-        );
-        assert_eq!(
-            resolve("so.tilo.terminal", &overrides),
-            PasteShortcut::CtrlV
-        );
-        assert_eq!(
-            resolve("org.example.Typo", &overrides),
-            PasteShortcut::CtrlV
-        );
-        assert_eq!(resolve("kitty", &overrides), PasteShortcut::CtrlShiftV);
-    }
+            )
+            .unwrap();
+            let overrides = overrides_from_section(&section);
+            assert_eq!(
+                overrides.len(),
+                2,
+                "malformed entries are skipped: {overrides:?}"
+            );
+            assert_eq!(
+                resolve("org.example.shell", &overrides),
+                PasteShortcut::CtrlShiftV,
+                "an unusual terminal is fixed by its override"
+            );
+            assert_eq!(
+                resolve("so.tilo.terminal", &overrides),
+                PasteShortcut::CtrlV
+            );
+            assert_eq!(
+                resolve("org.example.Typo", &overrides),
+                PasteShortcut::CtrlV
+            );
+            assert_eq!(resolve("kitty", &overrides), PasteShortcut::CtrlShiftV);
+        }
 
-    #[test]
-    fn an_app_chosen_by_its_installed_id_pastes_as_set_whatever_its_window_says() {
-        let mut overrides = BTreeMap::new();
-        overrides.insert("org.example.MyTerm".to_owned(), "ctrl_shift_v".to_owned());
-        assert_eq!(
-            resolve_ids(&["myterm-window", "org.example.MyTerm"], &overrides),
-            PasteShortcut::CtrlShiftV
-        );
-        assert_eq!(
-            resolve_ids(&["org.example.Notes"], &overrides),
-            PasteShortcut::CtrlV
-        );
-        assert_eq!(
-            resolve_ids(&["kitty"], &overrides),
-            PasteShortcut::CtrlShiftV
-        );
-        assert_eq!(resolve_ids(&[], &overrides), PasteShortcut::CtrlV);
+        phase an_app_chosen_by_its_installed_id_pastes_as_set_whatever_its_window_says;
+        {
+            let mut overrides = BTreeMap::new();
+            overrides.insert("org.example.MyTerm".to_owned(), "ctrl_shift_v".to_owned());
+            assert_eq!(
+                resolve_ids(&["myterm-window", "org.example.MyTerm"], &overrides),
+                PasteShortcut::CtrlShiftV
+            );
+            assert_eq!(
+                resolve_ids(&["org.example.Notes"], &overrides),
+                PasteShortcut::CtrlV
+            );
+            assert_eq!(
+                resolve_ids(&["kitty"], &overrides),
+                PasteShortcut::CtrlShiftV
+            );
+            assert_eq!(resolve_ids(&[], &overrides), PasteShortcut::CtrlV);
+        }
     }
 }

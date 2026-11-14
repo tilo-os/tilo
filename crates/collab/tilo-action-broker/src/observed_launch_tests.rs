@@ -55,7 +55,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             let mut request = local_host_request(true);
             request.invocation = original;
             let admitted = host.invoke(&person, request);
-            rig.state.drain_action_directory_bridge(&rig.directories);
+            rig.state.take_turn(&rig.directories);
             local_host_answer(admitted).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.invocation_uuid, *original.0.as_bytes());
@@ -127,7 +127,6 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 custody.certificate().is_err(),
                 "cancelled original cannot be reused"
             );
-            assert!(custody.delegate_authorship().is_err());
             adopt.send(Ok(())).unwrap();
             let (_, json) = pending.await.unwrap().unwrap();
             assert!(matches!(
@@ -274,7 +273,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                         "so.tilo.word-processor".into(),
                         Some(root),
                         env.route.cluster_id.clone(),
-                        Some(principal_id_for_root(env.cert.user_public_key))
+                        Some(person_id_for_root(env.cert.user_public_key))
                     )]
                 );
                 if scenario == "revoked" {
@@ -488,7 +487,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                     },
                 )
                 .await;
-                let person = principal_id_for_root(env.cert.user_public_key);
+                let person = person_id_for_root(env.cert.user_public_key);
                 let caller = tilo_actions::remote::Caller::local_person(&person)
                     .in_workspace(env.route.cluster_id.clone());
                 let original = tilo_actions::InvocationId::new();
@@ -509,7 +508,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                         appearance: None,
                     },
                 );
-                rig.state.drain_action_directory_bridge(&rig.directories);
+                rig.state.take_turn(&rig.directories);
                 let admitted = local_host_answer(pending_admission).await.unwrap();
                 assert_eq!(
                     admitted.status,

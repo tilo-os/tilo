@@ -138,108 +138,113 @@ fn frames_until(search: &mut DesktopSearch, title: &str) {
     }
 }
 
-#[test]
-fn a_content_source_that_takes_seconds_does_not_keep_the_ready_rows_searching() {
-    let (mut search, released, _asked) = with_slow_content();
-    search.set_query("cal");
-    // The rows the desktop's own sources bring (the app, the window):
-    // they answer on workers, so a few frames let them in. The app's
-    // content does not answer at all until it is released.
-    frames_until(&mut search, "Calendar");
-    let ready = titles(&search);
-    assert!(
-        ready.iter().any(|title| title == "Calendar"),
-        "the app's row is ready: {ready:?}"
-    );
-    assert!(
-        !ready.iter().any(|title| title.contains("this week")),
-        "the content has not come yet: {ready:?}"
-    );
-    // What the person sees is not drawn as still searching: the rows
-    // that are ready are shown, and the one that is not yet does not
-    // hold them behind "Searching…".
-    // THE BUG: the desk publishes `searching` until every source has
-    // answered, so a window whose content is still coming kept the
-    // apps, actions and places that were ready marked "still
-    // searching" — for 14 s on api-tester, 57 s on calendar, measured on
-    // the page desk. The rows that are ready are the search's answer.
-    assert!(
-        search.settled(),
-        "the rows that are ready are not held behind a source still out"
-    );
-    assert!(
-        !search.palette().is_searching(),
-        "the rows that are ready are not drawn as 'Searching…': {ready:?}"
-    );
-    // Frames while it is still out change none of that.
-    for _ in 0..5 {
-        frame(&mut search);
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
+    fn ready_rows_show_while_a_slow_source_is_out_and_answer_only_their_query;
+
+    phase a_content_source_that_takes_seconds_does_not_keep_the_ready_rows_searching;
+    {
+        let (mut search, released, _asked) = with_slow_content();
+        search.set_query("cal");
+        // The rows the desktop's own sources bring (the app, the window):
+        // they answer on workers, so a few frames let them in. The app's
+        // content does not answer at all until it is released.
+        frames_until(&mut search, "Calendar");
+        let ready = titles(&search);
+        assert!(
+            ready.iter().any(|title| title == "Calendar"),
+            "the app's row is ready: {ready:?}"
+        );
+        assert!(
+            !ready.iter().any(|title| title.contains("this week")),
+            "the content has not come yet: {ready:?}"
+        );
+        // What the person sees is not drawn as still searching: the rows
+        // that are ready are shown, and the one that is not yet does not
+        // hold them behind "Searching…".
+        // THE BUG: the desk publishes `searching` until every source has
+        // answered, so a window whose content is still coming kept the
+        // apps, actions and places that were ready marked "still
+        // searching" — for 14 s on api-tester, 57 s on calendar, measured on
+        // the page desk. The rows that are ready are the search's answer.
+        assert!(
+            search.settled(),
+            "the rows that are ready are not held behind a source still out"
+        );
         assert!(
             !search.palette().is_searching(),
-            "still not searching while the content is out"
+            "the rows that are ready are not drawn as 'Searching…': {ready:?}"
         );
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    // When it answers, its row joins.
-    released.store(true, Ordering::SeqCst);
-    let deadline = ui::time::now() + Duration::from_secs(10);
-    while !titles(&search)
-        .iter()
-        .any(|title| title.contains("this week"))
-        && ui::time::now() < deadline
-    {
-        frame(&mut search);
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(
-        titles(&search)
+        // Frames while it is still out change none of that.
+        for _ in 0..5 {
+            frame(&mut search);
+            assert!(
+                !search.palette().is_searching(),
+                "still not searching while the content is out"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // When it answers, its row joins.
+        released.store(true, Ordering::SeqCst);
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        while !titles(&search)
             .iter()
-            .any(|title| title.contains("this week")),
-        "the content's row joined when it answered: {:?}",
-        titles(&search)
-    );
-    // Every source that owed a row has answered: the search is over.
-    let deadline = ui::time::now() + Duration::from_secs(10);
-    while search.answering() && ui::time::now() < deadline {
-        frame(&mut search);
-        std::thread::sleep(Duration::from_millis(1));
+            .any(|title| title.contains("this week"))
+            && ui::time::now() < deadline
+        {
+            frame(&mut search);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            titles(&search)
+                .iter()
+                .any(|title| title.contains("this week")),
+            "the content's row joined when it answered: {:?}",
+            titles(&search)
+        );
+        // Every source that owed a row has answered: the search is over.
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        while search.answering() && ui::time::now() < deadline {
+            frame(&mut search);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!search.answering(), "every source answered");
+        assert!(search.settled(), "the search is over");
+        assert!(
+            !search.palette().is_searching(),
+            "the card is not searching"
+        );
     }
-    assert!(!search.answering(), "every source answered");
-    assert!(search.settled(), "the search is over");
-    assert!(
-        !search.palette().is_searching(),
-        "the card is not searching"
-    );
-}
 
-/// Rows that answer an earlier query are not the search's answer to what is typed now: the
-/// search says it is still searching until the field's own text is answered. A page that waits
-/// for the search to settle before Enter otherwise pressed it on the earlier rows, and the
-/// palette rightly held the key for the typed query's answer, a frame later.
-#[test]
-fn rows_of_an_earlier_query_are_not_the_answer_to_the_one_typed() {
-    let (mut search, released, _asked) = with_slow_content();
-    released.store(true, Ordering::SeqCst);
-    search.set_query("cal");
-    frames_until(&mut search, "Calendar");
-    let deadline = ui::time::now() + Duration::from_secs(10);
-    while !search.settled() && ui::time::now() < deadline {
-        frame(&mut search);
-        std::thread::sleep(Duration::from_millis(1));
+    phase rows_of_an_earlier_query_are_not_the_answer_to_the_one_typed;
+    // Rows that answer an earlier query are not the search's answer to what is typed now: the
+    // search says it is still searching until the field's own text is answered. A page that waits
+    // for the search to settle before Enter otherwise pressed it on the earlier rows, and the
+    // palette rightly held the key for the typed query's answer, a frame later.
+    {
+        let (mut search, released, _asked) = with_slow_content();
+        released.store(true, Ordering::SeqCst);
+        search.set_query("cal");
+        frames_until(&mut search, "Calendar");
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        while !search.settled() && ui::time::now() < deadline {
+            frame(&mut search);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(search.settled(), "\"cal\" is answered");
+        // A key more, typed into the field as a key event types it: the rows follow in the desk's
+        // next pass, and until then the rows on screen are still "cal"'s.
+        search.palette_mut().set_query("cale");
+        assert!(
+            !search.settled(),
+            "the rows shown answer \"cal\", not \"cale\": {:?}",
+            titles(&search)
+        );
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        while !search.settled() && ui::time::now() < deadline {
+            frame(&mut search);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(search.settled(), "\"cale\" is answered in its turn");
     }
-    assert!(search.settled(), "\"cal\" is answered");
-    // A key more, typed into the field as a key event types it: the rows follow in the desk's
-    // next pass, and until then the rows on screen are still "cal"'s.
-    search.palette_mut().set_query("cale");
-    assert!(
-        !search.settled(),
-        "the rows shown answer \"cal\", not \"cale\": {:?}",
-        titles(&search)
-    );
-    let deadline = ui::time::now() + Duration::from_secs(10);
-    while !search.settled() && ui::time::now() < deadline {
-        frame(&mut search);
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(search.settled(), "\"cale\" is answered in its turn");
 }

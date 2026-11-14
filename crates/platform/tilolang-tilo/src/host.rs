@@ -179,14 +179,20 @@ pub(crate) struct HostInner {
     /// The resource the last action planned returned, whoever invoked it, with the action:
     /// what its invocation answers.
     returned: RefCell<Option<(String, ResourceRef)>>,
-    /// The chunks of the workspace record this replica holds, as the host was last given them,
-    /// shared with the store's chunk loader: a chunk the store was not sent is read from here
-    /// when a read or a write reaches it.
+    /// The chunks of the workspace record this replica holds that the store does not, shared
+    /// with the store's chunk loader: a chunk the store was not sent is read from here when a
+    /// read or a write reaches it. A chunk the store holds is left out: a second holder of the
+    /// record's document would make the record's next write copy the whole of it.
     chunks: Rc<RefCell<crate::chunk::Chunks>>,
+    /// The heads of the record's chunks as the host was last given them.
+    synced: RefCell<crate::chunk::Stamps>,
     /// Whether the store's chunk loader reads [`Self::chunks`].
     chunk_loader: Cell<bool>,
     /// When the packages' triggers next have something to run.
     triggers: crate::triggers::Schedule,
+    /// Whether the next plan is the run of an invocation the record applies next
+    /// ([`Host::carrying_out`]): what it writes stays, as the change the record commits.
+    carried: Cell<bool>,
 }
 
 thread_local! {
@@ -222,6 +228,9 @@ pub struct Opening<'a> {
     pub index_dir: Option<std::path::PathBuf>,
     /// The device that carries out the outside effects this host queues.
     pub device: Option<&'a str>,
+    /// How a frame is woken when an index read off it is ready to be taken in. `None` for a host
+    /// without frames (a capture, an origin applying a change), which derives in its own time.
+    pub wake: Option<crate::background::Waker>,
 }
 
 /// What the door's closures hold in place of the host: see the module docs.
@@ -307,19 +316,31 @@ pub(crate) fn value_of(
 fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Value, String> {
     match (ty, json) {
         (Ty::Record(key), _) => {
-            // A parameter may be a type of another app of the workspace.
-            let owner = if key.app == meta.app {
-                meta.clone()
+            // A parameter may be a type of another app of the workspace: one this host runs, or one
+            // it reads a record of (Today's cleanup over the Tasks list it shows). A record of an
+            // app this host does not run is read through its own description, and its type is the
+            // `<app>#<Type>` a reading is kept under.
+            let (kind, type_id) = if key.app == meta.app {
+                let declared = meta
+                    .type_named(&key.name)
+                    .ok_or_else(|| format!("unknown type `{}`", key.name))?;
+                (meta.kind_of(&declared.name), declared.id.clone())
+            } else if let Some(declared) = host.package_of(&key.app).ok().and_then(|owner| {
+                owner
+                    .meta
+                    .type_named(&key.name)
+                    .map(|named| named.id.clone())
+            }) {
+                (format!("tl.{}.{}", key.app, key.name), declared)
             } else {
-                host.package_of(&key.app)?.meta.clone()
+                (
+                    format!("tl.{}.{}", key.app, key.name),
+                    format!("{}#{}", key.app, key.name),
+                )
             };
-            let declared = owner
-                .type_named(&key.name)
-                .ok_or_else(|| format!("unknown type `{}`", key.name))?;
             let text = match json {
                 Json::String(text) => text.as_str(),
                 Json::Object(reference) => {
-                    let kind = owner.kind_of(&declared.name);
                     if reference.get("kind").and_then(Json::as_str) != Some(kind.as_str()) {
                         return Err(format!("a {} is a resource of kind `{kind}`", key.name));
                     }
@@ -334,7 +355,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             let id = text
                 .strip_prefix(&crate::publish::resource_id(&key.app, ""))
                 .unwrap_or(text);
-            let target = ResourceRef::parse_id(id, declared.id.clone())
+            let target = ResourceRef::parse_id(id, type_id)
                 .ok_or_else(|| format!("`{text}` is not a resource id"))?;
             Ok(Value::resource(&target))
         }
@@ -582,11 +603,18 @@ impl HostInner {
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         // Planning is a trial run: whatever it wrote into the mirror is taken back, so asking
         // for an action (to describe it, to offer it) never changes the workspace. It runs the
-        // action, so it is counted: a frame that shows controls plans none.
+        // action, so it is counted: a frame that shows controls plans none. The run of an
+        // invocation the record applies next keeps what it wrote: those writes are the change
+        // the record commits, and the action runs once.
         let _phase = tilo_resource::profiling::Phase::start("tl.plan");
+        let carried = self.carried.replace(false);
         let checkpoint = self.store.checkpoint();
         let planned = self.plan_in_mirror(request);
-        self.store.rewind(checkpoint);
+        if carried && planned.is_ok() {
+            self.store.keep(checkpoint);
+        } else {
+            self.store.rewind(checkpoint);
+        }
         planned
     }
 
@@ -926,6 +954,7 @@ impl Host {
                 chunks: None,
                 index_dir: None,
                 device,
+                wake: None,
             },
             viewer,
             standing,
@@ -951,16 +980,24 @@ impl Host {
                 }
                 store
             }
-            (None, Some(dir)) => TiloStore::detached(dir),
-            (None, None) => TiloStore::new(&tilo_resource::Doc::new()),
+            // Without the record: the indexes kept in the directory, or the chunks the caller
+            // hands over next ([`Self::adopt`]), are what it opens over.
+            (None, dir) => TiloStore::detached(dir),
         };
         if let Some(device) = opening.device {
             store.set_device(device);
         }
+        // The waker is the store's before anything of the record is derived: no derivation runs
+        // in the frame that opens the host, and the one that lands it wakes a frame.
+        if let Some(wake) = opening.wake {
+            store.set_waker(wake);
+        }
         // The chunks of the record the caller holds: the store reads them as it reaches into
         // them, and an index over a record whose manifest names chunks it does not hold yet
         // waits for them rather than build over the record's own chunk alone.
-        let chunks = Rc::new(RefCell::new(opening.chunks.cloned().unwrap_or_default()));
+        let chunks = opening.chunks.cloned().unwrap_or_default();
+        let synced = RefCell::new(chunks.heads());
+        let chunks = Rc::new(RefCell::new(chunks));
         if opening.chunks.is_some() {
             let source = Rc::clone(&chunks);
             store.set_chunk_loader(Box::new(move |chunk| {
@@ -991,9 +1028,11 @@ impl Host {
             suspended: RefCell::default(),
             produced: RefCell::default(),
             returned: RefCell::default(),
+            synced,
             chunks,
             chunk_loader: Cell::new(can_load_chunks),
             triggers,
+            carried: Cell::new(false),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -1032,11 +1071,6 @@ impl Host {
     /// Wait for the indexes being built and take them in: for a host without frames.
     pub fn wait_index(&self) -> bool {
         self.inner.store.wait_index()
-    }
-
-    /// Have `wake` called when an index built off the frame is ready to be taken in.
-    pub fn set_index_waker(&self, wake: crate::background::Waker) {
-        self.inner.store.set_waker(wake);
     }
 
     /// Wait for what the indexes hold to reach the disk: when the window closes.
@@ -1207,6 +1241,17 @@ impl Host {
                 .then(|| package.meta.action_published_as(action).cloned())
                 .flatten()
         })
+    }
+
+    /// Run `encode`, the door building an invocation the record applies as soon as it is built:
+    /// the action it plans keeps what it wrote, so the store's writes are the change the record
+    /// commits ([`crate::store::TiloStore::written_as`]) and the action does not run a second
+    /// time. Every other plan is a trial and is taken back.
+    pub fn carrying_out<R>(&self, encode: impl FnOnce() -> R) -> R {
+        self.inner.carried.set(true);
+        let out = encode();
+        self.inner.carried.set(false);
+        out
     }
 
     /// The resource `action` returned when it was last planned here, for whoever invoked it,
@@ -1413,12 +1458,11 @@ impl Host {
         // arrives later is read with the changes it has then. A frame that brings no change
         // keeps the cell as it stands: taking the record in is a copy of its manifest, which
         // every frame of a large workspace would pay.
-        let moved = {
-            let held = self.inner.chunks.borrow();
-            held.heads() != record.heads()
-        };
+        let heads = record.heads();
+        let moved = *self.inner.synced.borrow() != heads;
         if moved {
             *self.inner.chunks.borrow_mut() = record.clone();
+            *self.inner.synced.borrow_mut() = heads;
         }
         if !self.inner.chunk_loader.replace(true) {
             let chunks = Rc::clone(&self.inner.chunks);
@@ -1428,7 +1472,17 @@ impl Host {
         }
         // The lists a window opens over must hold every row the workspace does, and an index
         // that reflects fewer chunks than the manifest names cannot say the rows it lacks.
-        (moved && self.inner.store.sync_held(record)) | self.inner.store.load_short()
+        let synced = (moved && self.inner.store.sync_held(record)) | self.inner.store.load_short();
+        self.inner
+            .chunks
+            .borrow_mut()
+            .retain(|chunk| !self.inner.store.holds_chunk(chunk));
+        synced
+    }
+
+    /// Hold the record's chunks from here on, the one copy of each; see [`TiloStore::adopt`].
+    pub fn adopt(&self, chunks: crate::chunk::Chunks) {
+        self.inner.store.adopt(chunks);
     }
 
     /// Bring the runtime's view of a record kept as one document up to date; see

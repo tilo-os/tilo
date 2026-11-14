@@ -464,9 +464,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn timeline_rows_have_exact_bounded_geometry() {
-        eprintln!("phase date_markers_use_exact_variable_height_day_offsets");
+    tilo_test_env::scenario! {
+        fn timeline_rows_have_exact_bounded_geometry;
+
+        phase date_markers_use_exact_variable_height_day_offsets;
         {
             let mut projection = TimelineProjection::default();
             projection.set_geometry(geometry(600.0));
@@ -485,7 +486,7 @@ mod tests {
             assert!((old_marker.1 * projection.max_scroll(viewport) - old_top).abs() < 0.001);
         }
 
-        eprintln!("phase virtual_window_is_bounded_and_keeps_canonical_row_geometry");
+        phase virtual_window_is_bounded_and_keeps_canonical_row_geometry;
         {
             let mut projection = TimelineProjection::default();
             projection.set_geometry(geometry(900.0));
@@ -507,9 +508,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn timeline_updates_repack_and_restore_the_anchor_photo() {
-        eprintln!("phase density_change_restores_the_same_photo_at_the_same_screen_y");
+    tilo_test_env::scenario! {
+        fn timeline_updates_repack_and_restore_the_anchor_photo;
+
+        phase density_change_restores_the_same_photo_at_the_same_screen_y;
         {
             let mut projection = TimelineProjection::default();
             projection.set_geometry(geometry(720.0));
@@ -536,7 +538,7 @@ mod tests {
             assert!((after.screen_y - anchor.screen_y).abs() < 0.001);
         }
 
-        eprintln!("phase sparse_updates_repack_only_the_affected_day_semantically");
+        phase sparse_updates_repack_only_the_affected_day_semantically;
         {
             let mut projection = TimelineProjection::default();
             projection.set_geometry(geometry(600.0));

@@ -379,72 +379,76 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_placement_reads_back() {
-        let moved = Placement::At {
-            place: at(Some("c1"), "cards", "m"),
-            was: Some(at(None, "cards", "a")),
-        };
-        assert_eq!(Placement::decode(&moved.encode()), Some(moved));
-        assert_eq!(
-            Placement::decode(&Placement::Removed.encode()),
-            Some(Placement::Removed)
-        );
-        assert_eq!(Placement::decode("not json"), None);
-    }
+    tilo_test_env::scenario! {
+        fn placed_items_keep_their_order_under_the_item_they_stand_in;
 
-    #[test]
-    fn items_of_a_removed_item_go_with_it() {
-        let items = BTreeMap::from([
-            (
-                "col".to_owned(),
-                Held {
-                    placement: Placement::Removed,
-                    written: (5, Vec::new()),
-                },
-            ),
-            (
-                "card".to_owned(),
-                held(at(Some("col"), "cards", "a"), None, 1),
-            ),
-            ("out".to_owned(), held(at(None, "cards", "a"), None, 1)),
-        ]);
-        let resolved = resolve(&items, &|_, _, _| true);
-        assert_eq!(resolved.items(None, "cards"), ["out"]);
-        assert!(!resolved.places.contains_key("card"));
-    }
+        phase a_placement_reads_back;
+        {
+            let moved = Placement::At {
+                place: at(Some("c1"), "cards", "m"),
+                was: Some(at(None, "cards", "a")),
+            };
+            assert_eq!(Placement::decode(&moved.encode()), Some(moved));
+            assert_eq!(
+                Placement::decode(&Placement::Removed.encode()),
+                Some(Placement::Removed)
+            );
+            assert_eq!(Placement::decode("not json"), None);
+        }
 
-    #[test]
-    fn the_last_move_of_a_cycle_stays_where_it_was() {
-        // a moved into b, and b into a, at the same time; b's move is the later one.
-        let items = BTreeMap::from([
-            (
-                "a".to_owned(),
-                held(at(Some("b"), "kids", "m"), Some(at(None, "kids", "a")), 3),
-            ),
-            (
-                "b".to_owned(),
-                held(at(Some("a"), "kids", "m"), Some(at(None, "kids", "b")), 4),
-            ),
-        ]);
-        let resolved = resolve(&items, &|_, _, _| true);
-        assert_eq!(resolved.items(None, "kids"), ["b"]);
-        assert_eq!(resolved.items(Some("b"), "kids"), ["a"]);
-        assert_eq!(resolved.held_back, ["b"]);
-    }
+        phase items_of_a_removed_item_go_with_it;
+        {
+            let items = BTreeMap::from([
+                (
+                    "col".to_owned(),
+                    Held {
+                        placement: Placement::Removed,
+                        written: (5, Vec::new()),
+                    },
+                ),
+                (
+                    "card".to_owned(),
+                    held(at(Some("col"), "cards", "a"), None, 1),
+                ),
+                ("out".to_owned(), held(at(None, "cards", "a"), None, 1)),
+            ]);
+            let resolved = resolve(&items, &|_, _, _| true);
+            assert_eq!(resolved.items(None, "cards"), ["out"]);
+            assert!(!resolved.places.contains_key("card"));
+        }
 
-    #[test]
-    fn keys_place_before_the_item_named_else_at_the_end() {
-        let others = vec![
-            ("b".to_owned(), "x".to_owned()),
-            ("d".to_owned(), "y".to_owned()),
-        ];
-        let first = key_at(&others, 0);
-        assert!(first.as_str() < "b");
-        let middle = key_at(&others, 1);
-        assert!("b" < middle.as_str() && middle.as_str() < "d");
-        assert!(key_at(&others, 2).as_str() > "d");
-        assert!(key_at(&others, 9).as_str() > "d");
-        assert!(!key_at(&[], 0).is_empty());
+        phase the_last_move_of_a_cycle_stays_where_it_was;
+        {
+            // a moved into b, and b into a, at the same time; b's move is the later one.
+            let items = BTreeMap::from([
+                (
+                    "a".to_owned(),
+                    held(at(Some("b"), "kids", "m"), Some(at(None, "kids", "a")), 3),
+                ),
+                (
+                    "b".to_owned(),
+                    held(at(Some("a"), "kids", "m"), Some(at(None, "kids", "b")), 4),
+                ),
+            ]);
+            let resolved = resolve(&items, &|_, _, _| true);
+            assert_eq!(resolved.items(None, "kids"), ["b"]);
+            assert_eq!(resolved.items(Some("b"), "kids"), ["a"]);
+            assert_eq!(resolved.held_back, ["b"]);
+        }
+
+        phase keys_place_before_the_item_named_else_at_the_end;
+        {
+            let others = vec![
+                ("b".to_owned(), "x".to_owned()),
+                ("d".to_owned(), "y".to_owned()),
+            ];
+            let first = key_at(&others, 0);
+            assert!(first.as_str() < "b");
+            let middle = key_at(&others, 1);
+            assert!("b" < middle.as_str() && middle.as_str() < "d");
+            assert!(key_at(&others, 2).as_str() > "d");
+            assert!(key_at(&others, 9).as_str() > "d");
+            assert!(!key_at(&[], 0).is_empty());
+        }
     }
 }

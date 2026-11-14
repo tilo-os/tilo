@@ -314,7 +314,6 @@ chat-message-pinned-marker = Angeheftet
 chat-message-sending = Wird gesendet…
 chat-empty-title = Noch keine Nachrichten
 chat-empty-title-read-only = Hier ist noch nichts gesagt
-chat-jump-latest = Zum Neuesten springen
 chat-jump-latest-message = Zur neuesten Nachricht springen
 chat-right-flap = Menschen oder Thread zeigen
 chat-typing-one = { $name } schreibt …

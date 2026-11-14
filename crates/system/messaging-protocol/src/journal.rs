@@ -392,22 +392,233 @@ fn read_ledger(path: &Path, key: &VaultKey) -> Result<Option<Ledger>, JournalErr
 mod tests {
     use super::*;
 
-    #[test]
-    fn failed_receipt_persistence_never_exposes_optimistic_delivery() {
-        let root = tempfile::tempdir().unwrap();
-        let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        journal.begin("op", &route(), b"private").unwrap();
-        std::fs::remove_file(&journal.path).unwrap();
-        std::fs::create_dir(&journal.path).unwrap();
-        assert_eq!(
-            journal.observe_recipient("op", &route(), RecipientEvidence::Delivered),
-            Err(JournalError::Unavailable)
-        );
-        assert_eq!(journal.recipient_evidence("op"), None);
-        assert_eq!(
-            journal.check_observation("op", &route()),
-            Err(JournalError::Unavailable)
-        );
+    tilo_test_env::scenario! {
+        /// `EncryptedJournal`, each case on a journal in its own directory.
+        fn encrypted_journal;
+
+        phase failed_receipt_persistence_never_exposes_optimistic_delivery;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            journal.begin("op", &route(), b"private").unwrap();
+            std::fs::remove_file(&journal.path).unwrap();
+            std::fs::create_dir(&journal.path).unwrap();
+            assert_eq!(
+                journal.observe_recipient("op", &route(), RecipientEvidence::Delivered),
+                Err(JournalError::Unavailable)
+            );
+            assert_eq!(journal.recipient_evidence("op"), None);
+            assert_eq!(
+                journal.check_observation("op", &route()),
+                Err(JournalError::Unavailable)
+            );
+        }
+
+        phase reservations_survive_restart_encrypted_and_cannot_be_retried;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            journal
+                .begin("op", &route(), b"private-message-body")
+                .unwrap();
+            assert_eq!(journal.status("op"), Some(Status::Started));
+            assert!(EncryptedJournal::open(root.path(), &owner(), key()).is_err());
+            drop(journal);
+            let raw = std::fs::read(root.path().join(secret_vault::VAULT_FILE)).unwrap();
+            assert!(
+                !raw.windows(b"private-message-body".len())
+                    .any(|window| window == b"private-message-body")
+            );
+            let mut reopened = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            assert_eq!(reopened.status("op"), Some(Status::Uncertain));
+            assert_eq!(
+                reopened.payload("op").unwrap().as_slice(),
+                b"private-message-body"
+            );
+            assert_eq!(
+                reopened.begin("op", &route(), b"different"),
+                Err(JournalError::AlreadyReserved)
+            );
+        }
+
+        phase wrong_keys_and_authority_cannot_reset_existing_operations;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            journal.begin("op", &route(), b"private").unwrap();
+            drop(journal);
+            assert!(
+                EncryptedJournal::open(
+                    root.path(),
+                    &owner(),
+                    VaultKey::from_slice(&[8; 32]).unwrap()
+                )
+                .is_err()
+            );
+            for altered in [
+                Owner {
+                    principal: "22".repeat(32),
+                    ..owner()
+                },
+                Owner {
+                    device: "device-b".into(),
+                    ..owner()
+                },
+                Owner {
+                    account: "account-b".into(),
+                    ..owner()
+                },
+                Owner {
+                    linking_generation: 2,
+                    ..owner()
+                },
+            ] {
+                assert!(EncryptedJournal::open(root.path(), &altered, key()).is_err());
+            }
+            let journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            assert_eq!(journal.status("op"), Some(Status::Uncertain));
+        }
+
+        phase journals_without_a_certified_person_root_are_refused_without_reset;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            journal.begin("op", &route(), b"private").unwrap();
+            let mut legacy = serde_json::to_value(&journal.ledger).unwrap();
+            legacy["owner"].as_object_mut().unwrap().remove("principal");
+            drop(journal);
+            let encoded = Zeroizing::new(serde_json::to_vec(&legacy).unwrap());
+            let sealed = FORMAT.seal(&key(), &encoded).unwrap();
+            let path = root.path().join(secret_vault::VAULT_FILE);
+            std::fs::write(&path, &sealed).unwrap();
+            assert!(EncryptedJournal::open(root.path(), &owner(), key()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), sealed);
+        }
+
+        phase malformed_principal_is_refused_before_creating_state;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut invalid = owner();
+            for principal in [String::new(), "Ada".to_owned(), "AA".repeat(32)] {
+                invalid.principal = principal;
+                assert!(EncryptedJournal::open(root.path(), &invalid, key()).is_err());
+                assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+            }
+        }
+
+        phase acknowledgment_is_durable_and_cannot_be_overwritten_by_stale_callbacks;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            journal.begin("op", &route(), b"private").unwrap();
+            journal
+                .complete(
+                    "op",
+                    Completion::Acknowledged(crate::ProtocolReference::Signal { timestamp: 42 }),
+                )
+                .unwrap();
+            assert_eq!(
+                journal.complete("op", Completion::Uncertain),
+                Err(JournalError::AlreadyReserved)
+            );
+            drop(journal);
+            let journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            assert_eq!(
+                journal.status("op"),
+                Some(Status::Acknowledged(crate::ProtocolReference::Signal {
+                    timestamp: 42
+                }))
+            );
+        }
+
+        phase corrupt_ciphertext_never_resets_the_send_ledger;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            journal.begin("op", &route(), b"private").unwrap();
+            drop(journal);
+            let path = root.path().join(secret_vault::VAULT_FILE);
+            let mut corrupt = std::fs::read(&path).unwrap();
+            *corrupt.last_mut().unwrap() ^= 1;
+            std::fs::write(&path, &corrupt).unwrap();
+            assert!(EncryptedJournal::open(root.path(), &owner(), key()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        }
+
+        phase an_acknowledgment_from_another_protocol_cannot_finish_this_send;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
+            journal.begin("op", &route(), b"private").unwrap();
+            assert_eq!(
+                journal.complete(
+                    "op",
+                    Completion::Acknowledged(crate::ProtocolReference::Whatsapp {
+                        message_id: "op".into()
+                    })
+                ),
+                Err(JournalError::Unavailable)
+            );
+            assert_eq!(journal.status("op"), Some(Status::Started));
+        }
+
+        phase existing_custody_is_lookup_only_and_missing_keys_do_not_reset_journals;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = tilo_secrets::SecretStore::memory("so.tilo.messaging-broker");
+            assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &store).is_err());
+            assert!(store.get_blocking("send-journal").unwrap().is_none());
+            assert!(!root.path().join(secret_vault::VAULT_FILE).exists());
+            // Explicit fixture provisioning uses the real secret-vault API and
+            // an isolated memory backend; production lookup never provisions.
+            FORMAT.load_or_create_system_key_in(false, &store).unwrap();
+            let mut journal =
+                EncryptedJournal::open_existing_in(root.path(), &owner(), &store).unwrap();
+            journal.begin("op", &route(), b"private").unwrap();
+            drop(journal);
+            let path = root.path().join(secret_vault::VAULT_FILE);
+            let original = std::fs::read(&path).unwrap();
+            store.delete_blocking("send-journal").unwrap();
+            assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &store).is_err());
+            assert!(store.get_blocking("send-journal").unwrap().is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert!(!root.path().join(secret_vault::KEY_FILE).exists());
+        }
+
+        phase system_runtime_refuses_local_or_memory_custody_and_wrong_store_scope;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let _scope = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
+            assert!(EncryptedJournal::open_system(root.path(), &owner()).is_err());
+            let other = tilo_secrets::SecretStore::memory("another-app");
+            assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &other).is_err());
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        }
+
+        phase submitted_sdk_write_is_durable_without_inventing_server_acknowledgment;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let owner = Owner {
+                service: Service::Whatsapp,
+                ..owner()
+            };
+            let route = Route::new(Service::Whatsapp, "account-a".into(), "123@lid".into()).unwrap();
+            let reference = crate::ProtocolReference::Whatsapp {
+                message_id: "op".into(),
+            };
+            let mut journal = EncryptedJournal::open(root.path(), &owner, key()).unwrap();
+            journal.begin("op", &route, b"exact SDK inputs").unwrap();
+            journal
+                .complete("op", Completion::Submitted(reference.clone()))
+                .unwrap();
+            drop(journal);
+            let mut reopened = EncryptedJournal::open(root.path(), &owner, key()).unwrap();
+            assert_eq!(reopened.status("op"), Some(Status::Submitted(reference)));
+            assert_eq!(
+                reopened.begin("op", &route, b"exact SDK inputs"),
+                Err(JournalError::AlreadyReserved)
+            );
+        }
     }
 
     fn owner() -> Owner {
@@ -424,33 +635,6 @@ mod tests {
     }
     fn route() -> Route {
         Route::new(Service::Signal, "account-a".into(), "recipient".into()).unwrap()
-    }
-
-    #[test]
-    fn reservations_survive_restart_encrypted_and_cannot_be_retried() {
-        let root = tempfile::tempdir().unwrap();
-        let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        journal
-            .begin("op", &route(), b"private-message-body")
-            .unwrap();
-        assert_eq!(journal.status("op"), Some(Status::Started));
-        assert!(EncryptedJournal::open(root.path(), &owner(), key()).is_err());
-        drop(journal);
-        let raw = std::fs::read(root.path().join(secret_vault::VAULT_FILE)).unwrap();
-        assert!(
-            !raw.windows(b"private-message-body".len())
-                .any(|window| window == b"private-message-body")
-        );
-        let mut reopened = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        assert_eq!(reopened.status("op"), Some(Status::Uncertain));
-        assert_eq!(
-            reopened.payload("op").unwrap().as_slice(),
-            b"private-message-body"
-        );
-        assert_eq!(
-            reopened.begin("op", &route(), b"different"),
-            Err(JournalError::AlreadyReserved)
-        );
     }
 
     #[cfg(all(unix, feature = "signal-broker"))]
@@ -490,184 +674,5 @@ mod tests {
         );
         assert_eq!(journal.recipient_evidence("first"), None);
         assert_eq!(journal.recipient_evidence("second"), None);
-    }
-
-    #[test]
-    fn wrong_keys_and_authority_cannot_reset_existing_operations() {
-        let root = tempfile::tempdir().unwrap();
-        let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        journal.begin("op", &route(), b"private").unwrap();
-        drop(journal);
-        assert!(
-            EncryptedJournal::open(
-                root.path(),
-                &owner(),
-                VaultKey::from_slice(&[8; 32]).unwrap()
-            )
-            .is_err()
-        );
-        for altered in [
-            Owner {
-                principal: "22".repeat(32),
-                ..owner()
-            },
-            Owner {
-                device: "device-b".into(),
-                ..owner()
-            },
-            Owner {
-                account: "account-b".into(),
-                ..owner()
-            },
-            Owner {
-                linking_generation: 2,
-                ..owner()
-            },
-        ] {
-            assert!(EncryptedJournal::open(root.path(), &altered, key()).is_err());
-        }
-        let journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        assert_eq!(journal.status("op"), Some(Status::Uncertain));
-    }
-
-    #[test]
-    fn journals_without_a_certified_person_root_are_refused_without_reset() {
-        let root = tempfile::tempdir().unwrap();
-        let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        journal.begin("op", &route(), b"private").unwrap();
-        let mut legacy = serde_json::to_value(&journal.ledger).unwrap();
-        legacy["owner"].as_object_mut().unwrap().remove("principal");
-        drop(journal);
-        let encoded = Zeroizing::new(serde_json::to_vec(&legacy).unwrap());
-        let sealed = FORMAT.seal(&key(), &encoded).unwrap();
-        let path = root.path().join(secret_vault::VAULT_FILE);
-        std::fs::write(&path, &sealed).unwrap();
-        assert!(EncryptedJournal::open(root.path(), &owner(), key()).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), sealed);
-    }
-
-    #[test]
-    fn malformed_principal_is_refused_before_creating_state() {
-        let root = tempfile::tempdir().unwrap();
-        let mut invalid = owner();
-        for principal in [String::new(), "Ada".to_owned(), "AA".repeat(32)] {
-            invalid.principal = principal;
-            assert!(EncryptedJournal::open(root.path(), &invalid, key()).is_err());
-            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-        }
-    }
-
-    #[test]
-    fn acknowledgment_is_durable_and_cannot_be_overwritten_by_stale_callbacks() {
-        let root = tempfile::tempdir().unwrap();
-        let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        journal.begin("op", &route(), b"private").unwrap();
-        journal
-            .complete(
-                "op",
-                Completion::Acknowledged(crate::ProtocolReference::Signal { timestamp: 42 }),
-            )
-            .unwrap();
-        assert_eq!(
-            journal.complete("op", Completion::Uncertain),
-            Err(JournalError::AlreadyReserved)
-        );
-        drop(journal);
-        let journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        assert_eq!(
-            journal.status("op"),
-            Some(Status::Acknowledged(crate::ProtocolReference::Signal {
-                timestamp: 42
-            }))
-        );
-    }
-
-    #[test]
-    fn corrupt_ciphertext_never_resets_the_send_ledger() {
-        let root = tempfile::tempdir().unwrap();
-        let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        journal.begin("op", &route(), b"private").unwrap();
-        drop(journal);
-        let path = root.path().join(secret_vault::VAULT_FILE);
-        let mut corrupt = std::fs::read(&path).unwrap();
-        *corrupt.last_mut().unwrap() ^= 1;
-        std::fs::write(&path, &corrupt).unwrap();
-        assert!(EncryptedJournal::open(root.path(), &owner(), key()).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
-    }
-
-    #[test]
-    fn an_acknowledgment_from_another_protocol_cannot_finish_this_send() {
-        let root = tempfile::tempdir().unwrap();
-        let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
-        journal.begin("op", &route(), b"private").unwrap();
-        assert_eq!(
-            journal.complete(
-                "op",
-                Completion::Acknowledged(crate::ProtocolReference::Whatsapp {
-                    message_id: "op".into()
-                })
-            ),
-            Err(JournalError::Unavailable)
-        );
-        assert_eq!(journal.status("op"), Some(Status::Started));
-    }
-
-    #[test]
-    fn existing_custody_is_lookup_only_and_missing_keys_do_not_reset_journals() {
-        let root = tempfile::tempdir().unwrap();
-        let store = tilo_secrets::SecretStore::memory("so.tilo.messaging-broker");
-        assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &store).is_err());
-        assert!(store.get_blocking("send-journal").unwrap().is_none());
-        assert!(!root.path().join(secret_vault::VAULT_FILE).exists());
-        // Explicit fixture provisioning uses the real secret-vault API and
-        // an isolated memory backend; production lookup never provisions.
-        FORMAT.load_or_create_system_key_in(false, &store).unwrap();
-        let mut journal =
-            EncryptedJournal::open_existing_in(root.path(), &owner(), &store).unwrap();
-        journal.begin("op", &route(), b"private").unwrap();
-        drop(journal);
-        let path = root.path().join(secret_vault::VAULT_FILE);
-        let original = std::fs::read(&path).unwrap();
-        store.delete_blocking("send-journal").unwrap();
-        assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &store).is_err());
-        assert!(store.get_blocking("send-journal").unwrap().is_none());
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert!(!root.path().join(secret_vault::KEY_FILE).exists());
-    }
-
-    #[test]
-    fn system_runtime_refuses_local_or_memory_custody_and_wrong_store_scope() {
-        let root = tempfile::tempdir().unwrap();
-        let _scope = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
-        assert!(EncryptedJournal::open_system(root.path(), &owner()).is_err());
-        let other = tilo_secrets::SecretStore::memory("another-app");
-        assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &other).is_err());
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn submitted_sdk_write_is_durable_without_inventing_server_acknowledgment() {
-        let root = tempfile::tempdir().unwrap();
-        let owner = Owner {
-            service: Service::Whatsapp,
-            ..owner()
-        };
-        let route = Route::new(Service::Whatsapp, "account-a".into(), "123@lid".into()).unwrap();
-        let reference = crate::ProtocolReference::Whatsapp {
-            message_id: "op".into(),
-        };
-        let mut journal = EncryptedJournal::open(root.path(), &owner, key()).unwrap();
-        journal.begin("op", &route, b"exact SDK inputs").unwrap();
-        journal
-            .complete("op", Completion::Submitted(reference.clone()))
-            .unwrap();
-        drop(journal);
-        let mut reopened = EncryptedJournal::open(root.path(), &owner, key()).unwrap();
-        assert_eq!(reopened.status("op"), Some(Status::Submitted(reference)));
-        assert_eq!(
-            reopened.begin("op", &route, b"exact SDK inputs"),
-            Err(JournalError::AlreadyReserved)
-        );
     }
 }

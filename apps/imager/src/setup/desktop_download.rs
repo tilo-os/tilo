@@ -482,81 +482,190 @@ mod tests {
         (root, result, observed)
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn desktop_download_resumes_or_restarts_ranges_without_duplicate_bytes() {
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
+        fn a_desktop_download_keeps_only_verified_private_bytes;
+
+        phase desktop_download_resumes_or_restarts_ranges_without_duplicate_bytes;
         {
-            let split = 8;
-            let (_root, result, requests) = run(vec![
-                response(
-                    "200 OK",
-                    &format!("Content-Length: {}\r\n", BYTES.len()),
-                    &BYTES[..split],
-                ),
-                response(
-                    "206 Partial Content",
-                    &format!(
-                        "Content-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n",
-                        BYTES.len() - split,
-                        split,
-                        BYTES.len() - 1,
-                        BYTES.len()
+            {
+                let split = 8;
+                let (_root, result, requests) = run(vec![
+                    response(
+                        "200 OK",
+                        &format!("Content-Length: {}\r\n", BYTES.len()),
+                        &BYTES[..split],
                     ),
-                    &BYTES[split..],
-                ),
-            ]);
-            assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
-            assert!(requests[1].contains("range: bytes=8-"));
+                    response(
+                        "206 Partial Content",
+                        &format!(
+                            "Content-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n",
+                            BYTES.len() - split,
+                            split,
+                            BYTES.len() - 1,
+                            BYTES.len()
+                        ),
+                        &BYTES[split..],
+                    ),
+                ]);
+                assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
+                assert!(requests[1].contains("range: bytes=8-"));
+            }
+
+            {
+                let (_root, result, requests) = run(vec![
+                    response(
+                        "200 OK",
+                        &format!("Content-Length: {}\r\n", BYTES.len()),
+                        &BYTES[..8],
+                    ),
+                    full(BYTES),
+                ]);
+                assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
+                assert!(requests[1].contains("range: bytes=8-"));
+            }
+
+            {
+                let (_root, result, requests) = run(vec![
+                    response(
+                        "200 OK",
+                        &format!("Content-Length: {}\r\n", BYTES.len()),
+                        &BYTES[..8],
+                    ),
+                    response(
+                        "206 Partial Content",
+                        "Content-Range: bytes 7-23/24\r\nContent-Length: 17\r\n",
+                        &BYTES[7..],
+                    ),
+                    full(BYTES),
+                ]);
+                assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
+                assert!(!requests[2].contains("range:"));
+            }
         }
 
+        phase desktop_download_rejects_bad_objects_redirects_and_transports;
         {
-            let (_root, result, requests) = run(vec![
-                response(
-                    "200 OK",
-                    &format!("Content-Length: {}\r\n", BYTES.len()),
-                    &BYTES[..8],
-                ),
-                full(BYTES),
-            ]);
-            assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
-            assert!(requests[1].contains("range: bytes=8-"));
-        }
+            {
+                for reply in [
+                    full(b"an oversized package that must fail"),
+                    full(&vec![b'x'; BYTES.len()]),
+                    response("200 OK", "", b"an oversized package that must fail"),
+                ] {
+                    let (root, result, _) = run(vec![reply]);
+                    assert!(result.is_err());
+                    assert_eq!(
+                        std::fs::read_dir(root.path().join("cache"))
+                            .unwrap()
+                            .count(),
+                        0
+                    );
+                }
+            }
 
-        {
-            let (_root, result, requests) = run(vec![
-                response(
-                    "200 OK",
-                    &format!("Content-Length: {}\r\n", BYTES.len()),
-                    &BYTES[..8],
-                ),
-                response(
-                    "206 Partial Content",
-                    "Content-Range: bytes 7-23/24\r\nContent-Length: 17\r\n",
-                    &BYTES[7..],
-                ),
-                full(BYTES),
-            ]);
-            assert_eq!(std::fs::read(result.unwrap()).unwrap(), BYTES);
-            assert!(!requests[2].contains("range:"));
-        }
-    }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn desktop_download_rejects_bad_objects_redirects_and_transports() {
-        {
-            for reply in [
-                full(b"an oversized package that must fail"),
-                full(&vec![b'x'; BYTES.len()]),
-                response("200 OK", "", b"an oversized package that must fail"),
-            ] {
-                let (root, result, _) = run(vec![reply]);
+            {
+                let root = tempfile::tempdir().unwrap();
+                let (url, _, handle) = server(vec![full(BYTES)], Arc::default());
+                let metadata = release(url);
+                let cache = root.path().join("cache");
+                let path = download_for_test(&metadata, &cache, &AtomicBool::new(false)).unwrap();
+                handle.join().unwrap();
+                assert_eq!(
+                    path.file_name().unwrap().to_str().unwrap(),
+                    format!("{}.rpm", metadata.sha256)
+                );
+                assert_eq!(
+                    download_for_test(&metadata, &cache, &AtomicBool::new(false)).unwrap(),
+                    path
+                );
+                std::fs::write(&path, b"tampered").unwrap();
+                assert!(download_for_test(&metadata, &cache, &AtomicBool::new(false)).is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), b"tampered");
+            }
+
+            {
+                let (_root, result, requests) = run(vec![
+                    response(
+                        "302 Found",
+                        "Location: /renamed\r\nContent-Length: 0\r\n",
+                        b"",
+                    ),
+                    full(BYTES),
+                ]);
+                assert!(result.is_ok());
+                assert!(requests[1].starts_with("get /renamed"));
+                let (_root, result, _) = run(vec![response(
+                    "302 Found",
+                    "Location: http://localhost:1/escape\r\nContent-Length: 0\r\n",
+                    b"",
+                )]);
                 assert!(result.is_err());
+            }
+
+            {
+                let root = tempfile::tempdir().unwrap();
+                assert!(
+                    download_package(
+                        &release("http://127.0.0.1:1/package".into()),
+                        root.path(),
+                        &AtomicBool::new(false)
+                    )
+                    .is_err()
+                );
+            }
+        }
+
+        phase desktop_download_cancellation_and_interruption_discard_staging;
+        {
+            {
+                let root = tempfile::tempdir().unwrap();
+                assert!(
+                    download_for_test(
+                        &release("http://127.0.0.1:1/package".into()),
+                        root.path(),
+                        &AtomicBool::new(true)
+                    )
+                    .is_err()
+                );
+                assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+            }
+
+            {
+                let root = tempfile::tempdir().unwrap();
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let url = format!("http://{}/package", listener.local_addr().unwrap());
+                let cancel = Arc::new(AtomicBool::new(false));
+                let signal = cancel.clone();
+                let handle = thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request).unwrap();
+                    signal.store(true, Ordering::Release);
+                    let _ = stream.write_all(&full(BYTES));
+                });
+                let cache = root.path().join("cache");
+                assert!(
+                    download_for_test(&release(url), &cache, &cancel)
+                        .unwrap_err()
+                        .contains("cancelled")
+                );
+                handle.join().unwrap();
+                assert_eq!(std::fs::read_dir(cache).unwrap().count(), 0);
+            }
+
+            {
+                let replies = (0..3)
+                    .map(|_| {
+                        response(
+                            "200 OK",
+                            &format!("Content-Length: {}\r\n", BYTES.len()),
+                            &BYTES[..8],
+                        )
+                    })
+                    .collect();
+                let (root, result, requests) = run(replies);
+                assert!(result.is_err());
+                assert_eq!(requests.len(), 3);
                 assert_eq!(
                     std::fs::read_dir(root.path().join("cache"))
                         .unwrap()
@@ -566,174 +675,57 @@ mod tests {
             }
         }
 
+        phase desktop_download_cache_is_private_and_rejects_links_and_swaps;
         {
-            let root = tempfile::tempdir().unwrap();
-            let (url, _, handle) = server(vec![full(BYTES)], Arc::default());
-            let metadata = release(url);
-            let cache = root.path().join("cache");
-            let path = download_for_test(&metadata, &cache, &AtomicBool::new(false)).unwrap();
-            handle.join().unwrap();
-            assert_eq!(
-                path.file_name().unwrap().to_str().unwrap(),
-                format!("{}.rpm", metadata.sha256)
-            );
-            assert_eq!(
-                download_for_test(&metadata, &cache, &AtomicBool::new(false)).unwrap(),
-                path
-            );
-            std::fs::write(&path, b"tampered").unwrap();
-            assert!(download_for_test(&metadata, &cache, &AtomicBool::new(false)).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), b"tampered");
-        }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{PermissionsExt, symlink};
+                let root = tempfile::tempdir().unwrap();
+                let (url, _, handle) = server(vec![full(BYTES)], Arc::default());
+                let metadata = release(url);
+                let cache = root.path().join("cache");
+                let path = download_for_test(&metadata, &cache, &AtomicBool::new(false)).unwrap();
+                handle.join().unwrap();
+                assert_eq!(
+                    std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+                std::fs::remove_file(&path).unwrap();
+                let external = root.path().join("external");
+                std::fs::write(&external, BYTES).unwrap();
+                symlink(&external, &path).unwrap();
+                assert!(download_for_test(&metadata, &cache, &AtomicBool::new(false)).is_err());
+                let linked = root.path().join("linked");
+                symlink(&cache, &linked).unwrap();
+                assert!(download_for_test(&metadata, &linked, &AtomicBool::new(false)).is_err());
+            }
 
-        {
-            let (_root, result, requests) = run(vec![
-                response(
-                    "302 Found",
-                    "Location: /renamed\r\nContent-Length: 0\r\n",
-                    b"",
-                ),
-                full(BYTES),
-            ]);
-            assert!(result.is_ok());
-            assert!(requests[1].starts_with("get /renamed"));
-            let (_root, result, _) = run(vec![response(
-                "302 Found",
-                "Location: http://localhost:1/escape\r\nContent-Length: 0\r\n",
-                b"",
-            )]);
-            assert!(result.is_err());
-        }
-
-        {
-            let root = tempfile::tempdir().unwrap();
-            assert!(
-                download_package(
-                    &release("http://127.0.0.1:1/package".into()),
-                    root.path(),
-                    &AtomicBool::new(false)
-                )
-                .is_err()
-            );
-        }
-    }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn desktop_download_cancellation_and_interruption_discard_staging() {
-        {
-            let root = tempfile::tempdir().unwrap();
-            assert!(
-                download_for_test(
-                    &release("http://127.0.0.1:1/package".into()),
-                    root.path(),
-                    &AtomicBool::new(true)
-                )
-                .is_err()
-            );
-            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-        }
-
-        {
-            let root = tempfile::tempdir().unwrap();
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let url = format!("http://{}/package", listener.local_addr().unwrap());
-            let cancel = Arc::new(AtomicBool::new(false));
-            let signal = cancel.clone();
-            let handle = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut request = [0; 4096];
-                let _ = stream.read(&mut request).unwrap();
-                signal.store(true, Ordering::Release);
-                let _ = stream.write_all(&full(BYTES));
-            });
-            let cache = root.path().join("cache");
-            assert!(
-                download_for_test(&release(url), &cache, &cancel)
-                    .unwrap_err()
-                    .contains("cancelled")
-            );
-            handle.join().unwrap();
-            assert_eq!(std::fs::read_dir(cache).unwrap().count(), 0);
-        }
-
-        {
-            let replies = (0..3)
-                .map(|_| {
-                    response(
-                        "200 OK",
-                        &format!("Content-Length: {}\r\n", BYTES.len()),
-                        &BYTES[..8],
-                    )
-                })
-                .collect();
-            let (root, result, requests) = run(replies);
-            assert!(result.is_err());
-            assert_eq!(requests.len(), 3);
-            assert_eq!(
-                std::fs::read_dir(root.path().join("cache"))
-                    .unwrap()
-                    .count(),
-                0
-            );
-        }
-    }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn desktop_download_cache_is_private_and_rejects_links_and_swaps() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{PermissionsExt, symlink};
-            let root = tempfile::tempdir().unwrap();
-            let (url, _, handle) = server(vec![full(BYTES)], Arc::default());
-            let metadata = release(url);
-            let cache = root.path().join("cache");
-            let path = download_for_test(&metadata, &cache, &AtomicBool::new(false)).unwrap();
-            handle.join().unwrap();
-            assert_eq!(
-                std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-            std::fs::remove_file(&path).unwrap();
-            let external = root.path().join("external");
-            std::fs::write(&external, BYTES).unwrap();
-            symlink(&external, &path).unwrap();
-            assert!(download_for_test(&metadata, &cache, &AtomicBool::new(false)).is_err());
-            let linked = root.path().join("linked");
-            symlink(&cache, &linked).unwrap();
-            assert!(download_for_test(&metadata, &linked, &AtomicBool::new(false)).is_err());
-        }
-
-        {
-            let root = tempfile::tempdir().unwrap();
-            let cache = root.path().join("cache");
-            let moved = root.path().join("moved");
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let url = format!("http://{}/package", listener.local_addr().unwrap());
-            let old = cache.clone();
-            let handle = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut request = [0; 4096];
-                let _ = stream.read(&mut request).unwrap();
-                std::fs::rename(&old, &moved).unwrap();
-                std::fs::create_dir(&old).unwrap();
-                let _ = stream.write_all(&full(BYTES));
-            });
-            let result = download_for_test(&release(url), &cache, &AtomicBool::new(false));
-            handle.join().unwrap();
-            assert!(
-                result.is_err(),
-                "must not return a pathname in a substituted cache directory"
-            );
+            {
+                let root = tempfile::tempdir().unwrap();
+                let cache = root.path().join("cache");
+                let moved = root.path().join("moved");
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let url = format!("http://{}/package", listener.local_addr().unwrap());
+                let old = cache.clone();
+                let handle = thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request).unwrap();
+                    std::fs::rename(&old, &moved).unwrap();
+                    std::fs::create_dir(&old).unwrap();
+                    let _ = stream.write_all(&full(BYTES));
+                });
+                let result = download_for_test(&release(url), &cache, &AtomicBool::new(false));
+                handle.join().unwrap();
+                assert!(
+                    result.is_err(),
+                    "must not return a pathname in a substituted cache directory"
+                );
+            }
         }
     }
 }

@@ -71,98 +71,135 @@ mod tests {
         assert_demo_notice(app);
     }
 
-    #[test]
-    fn ordinary_capture_has_no_demo_notice() {
-        let mut app =
-            TestApp::<ImagerShell>::capture_at(Some("installer-destination"), (1280, 720)).unwrap();
-        app.settle();
-        app.with_widget::<super::super::InstallerPreview, _>(|preview| {
-            assert!(!preview.demo);
-            assert!(
-                super::super::visual_tests::control(preview, "installer.demo-notice").is_none()
-            );
-        })
-        .unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn the_demo_walks_every_route_and_touches_nothing;
 
-    /// A choice card chooses and moves on in one published action: a
-    /// person's press and an agent's invocation take the same step.
-    #[test]
-    fn a_choice_card_chooses_and_continues_in_one_action() {
-        let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
-        assert_eq!(state(&mut app)["page"], "destination");
-        app.harness()
-            .perform_named("installer.choice.computer", &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
-        let pressed = state(&mut app);
-        assert_eq!(pressed["destination"], "computer");
-        assert_ne!(pressed["page"], "destination", "{pressed}");
-        app.effect(&InstallerPreviewEffect::ChooseAndContinuePreview {
-            choice: "migrate".into(),
-        })
-        .unwrap();
-        let invoked = state(&mut app);
-        assert_ne!(invoked["page"], pressed["page"], "{invoked}");
-    }
-
-    #[test]
-    fn launched_demo_finishes_through_production_actions_without_native_controllers() {
-        let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
-        assert_eq!(state(&mut app)["page"], "destination");
-        assert_demo_notice(&mut app);
-        for choice in ["computer", "migrate", "new"] {
-            app.effect(&InstallerPreviewEffect::ChoosePreview {
-                choice: choice.into(),
+        phase ordinary_capture_has_no_demo_notice;
+        {
+            let mut app =
+                TestApp::<ImagerShell>::capture_at(Some("installer-destination"), (1280, 720)).unwrap();
+            app.settle();
+            app.with_widget::<super::super::InstallerPreview, _>(|preview| {
+                assert!(!preview.demo);
+                assert!(
+                    super::super::visual_tests::control(preview, "installer.demo-notice").is_none()
+                );
             })
             .unwrap();
-            advance(&mut app);
         }
-        assert_eq!(state(&mut app)["page"], "profile");
-        advance(&mut app);
-        assert_eq!(state(&mut app)["page"], "devices");
-        advance(&mut app);
-        for page in ["belongings", "accounts", "storage", "review"] {
-            assert_eq!(state(&mut app)["page"], page);
-            if page == "review" {
-                for effect in [
-                    InstallerPreviewEffect::PrepareUsb,
-                    InstallerPreviewEffect::PrepareDirectInstallation,
-                    InstallerPreviewEffect::PrepareDesktopInstallation,
-                ] {
-                    assert!(app.effect(&effect).is_err());
+
+        phase a_choice_card_chooses_and_continues_in_one_action;
+        // A choice card chooses and moves on in one published action: a
+        // person's press and an agent's invocation take the same step.
+        {
+            let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
+            assert_eq!(state(&mut app)["page"], "destination");
+            app.harness()
+                .perform_named("installer.choice.computer", &ui::a11y::Action::Activate)
+                .unwrap();
+            app.settle();
+            let pressed = state(&mut app);
+            assert_eq!(pressed["destination"], "computer");
+            assert_ne!(pressed["page"], "destination", "{pressed}");
+            app.effect(&InstallerPreviewEffect::ChooseAndContinuePreview {
+                choice: "migrate".into(),
+            })
+            .unwrap();
+            let invoked = state(&mut app);
+            assert_ne!(invoked["page"], pressed["page"], "{invoked}");
+        }
+
+        phase launched_demo_finishes_through_production_actions_without_native_controllers;
+        {
+            let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
+            assert_eq!(state(&mut app)["page"], "destination");
+            assert_demo_notice(&mut app);
+            for choice in ["computer", "migrate", "new"] {
+                app.effect(&InstallerPreviewEffect::ChoosePreview {
+                    choice: choice.into(),
+                })
+                .unwrap();
+                advance(&mut app);
+            }
+            assert_eq!(state(&mut app)["page"], "profile");
+            advance(&mut app);
+            assert_eq!(state(&mut app)["page"], "devices");
+            advance(&mut app);
+            for page in ["belongings", "accounts", "storage", "review"] {
+                assert_eq!(state(&mut app)["page"], page);
+                if page == "review" {
+                    for effect in [
+                        InstallerPreviewEffect::PrepareUsb,
+                        InstallerPreviewEffect::PrepareDirectInstallation,
+                        InstallerPreviewEffect::PrepareDesktopInstallation,
+                    ] {
+                        assert!(app.effect(&effect).is_err());
+                    }
+                    assert!(
+                        app.effect(&crate::resource::ImagerEffect::Write {
+                            device: "/dev/sda".into(),
+                            confirmation: "sda".into(),
+                        })
+                        .is_err()
+                    );
                 }
+                advance(&mut app);
+            }
+            assert_eq!(state(&mut app)["page"], "ready");
+            app.with_widget::<super::super::InstallerPreview, _>(|preview| {
+                assert!(preview.demo);
+                assert!(!preview.live);
+                assert!(preview.capture);
+                assert!(preview.dispatcher.is_none());
+                assert!(preview.direct.context.is_none());
+                assert!(preview.belongings_worker.is_none());
+                assert!(preview.personal.prepared_handle().is_none());
+                assert!(!preview.direct.active);
+                assert!(preview.media.as_ref().is_none_or(|media| !media.get()));
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::RestartPreview).unwrap();
+            assert_eq!(state(&mut app)["page"], "destination");
+            assert_demo_notice(&mut app);
+            app.with_widget::<super::super::InstallerPreview, _>(|preview| {
+                assert!(preview.demo);
+                assert!(!preview.live);
+            })
+            .unwrap();
+        }
+
+        phase demo_refuses_external_effects_at_the_semantic_door;
+        {
+            let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
+            for effect in [
+                InstallerPreviewEffect::PrepareUsb,
+                InstallerPreviewEffect::PrepareDirectInstallation,
+                InstallerPreviewEffect::PrepareDesktopInstallation,
+                InstallerPreviewEffect::PrepareBelongings,
+                InstallerPreviewEffect::CheckBelongings,
+                InstallerPreviewEffect::CheckStorage,
+                InstallerPreviewEffect::FindWindowsRoots,
+                InstallerPreviewEffect::StartExistingDevicePairing,
+                InstallerPreviewEffect::ChoosePreviewAvatar,
+                InstallerPreviewEffect::SelectPreviewAvatar {
+                    source_file: AbsolutePath::new("/etc/passwd").unwrap(),
+                },
+                InstallerPreviewEffect::SelectMigrationHome {
+                    source: AbsolutePath::new("/home").unwrap(),
+                },
+                InstallerPreviewEffect::ExportPreparedIdentity {
+                    destination: AbsolutePath::new("/dev/sda").unwrap(),
+                },
+            ] {
+                assert!(!admits(&effect));
                 assert!(
-                    app.effect(&crate::resource::ImagerEffect::Write {
-                        device: "/dev/sda".into(),
-                        confirmation: "sda".into(),
-                    })
-                    .is_err()
+                    app.effect(&effect).is_err(),
+                    "{} must be refused",
+                    effect.id()
                 );
             }
-            advance(&mut app);
+            assert_eq!(state(&mut app)["page"], "destination");
         }
-        assert_eq!(state(&mut app)["page"], "ready");
-        app.with_widget::<super::super::InstallerPreview, _>(|preview| {
-            assert!(preview.demo);
-            assert!(!preview.live);
-            assert!(preview.capture);
-            assert!(preview.dispatcher.is_none());
-            assert!(preview.direct.context.is_none());
-            assert!(preview.belongings_worker.is_none());
-            assert!(preview.personal.prepared_handle().is_none());
-            assert!(!preview.direct.active);
-            assert!(preview.media.as_ref().is_none_or(|media| !media.get()));
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::RestartPreview).unwrap();
-        assert_eq!(state(&mut app)["page"], "destination");
-        assert_demo_notice(&mut app);
-        app.with_widget::<super::super::InstallerPreview, _>(|preview| {
-            assert!(preview.demo);
-            assert!(!preview.live);
-        })
-        .unwrap();
     }
 
     #[test]
@@ -212,38 +249,5 @@ mod tests {
                 assert_eq!(state(&mut app)["page"], "ready");
             }
         }
-    }
-
-    #[test]
-    fn demo_refuses_external_effects_at_the_semantic_door() {
-        let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
-        for effect in [
-            InstallerPreviewEffect::PrepareUsb,
-            InstallerPreviewEffect::PrepareDirectInstallation,
-            InstallerPreviewEffect::PrepareDesktopInstallation,
-            InstallerPreviewEffect::PrepareBelongings,
-            InstallerPreviewEffect::CheckBelongings,
-            InstallerPreviewEffect::CheckStorage,
-            InstallerPreviewEffect::FindWindowsRoots,
-            InstallerPreviewEffect::StartExistingDevicePairing,
-            InstallerPreviewEffect::ChoosePreviewAvatar,
-            InstallerPreviewEffect::SelectPreviewAvatar {
-                source_file: AbsolutePath::new("/etc/passwd").unwrap(),
-            },
-            InstallerPreviewEffect::SelectMigrationHome {
-                source: AbsolutePath::new("/home").unwrap(),
-            },
-            InstallerPreviewEffect::ExportPreparedIdentity {
-                destination: AbsolutePath::new("/dev/sda").unwrap(),
-            },
-        ] {
-            assert!(!admits(&effect));
-            assert!(
-                app.effect(&effect).is_err(),
-                "{} must be refused",
-                effect.id()
-            );
-        }
-        assert_eq!(state(&mut app)["page"], "destination");
     }
 }

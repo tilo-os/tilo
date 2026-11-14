@@ -45,41 +45,95 @@ fn action_button() -> Button {
         .on_action(tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap())
 }
 
-#[test]
-fn presence_does_not_materialize_semantic_only_accessibility() {
-    let calls = Rc::new(Cell::new(0));
-    let root = semantic(Rc::clone(&calls));
-    assert!(!has_action_control_bindings(&root));
-    assert_eq!(
-        calls.get(),
-        0,
-        "availability presence must not build semantic-only prose"
-    );
-    let bindings = control_action_bindings(&root);
-    assert_eq!(
-        calls.get(),
-        1,
-        "the full semantic inventory remains available"
-    );
-    assert_eq!(
-        bindings,
-        vec![ControlBindingMetadata::semantic("semantic-editor")]
-    );
-    calls.set(0);
-    let root = Column::new()
-        .push(Box::new(root))
-        .push(Box::new(action_button()));
-    assert!(has_action_control_bindings(&root));
-    assert_eq!(
-        calls.get(),
-        0,
-        "finding an emitter must not allocate unrelated semantic nodes"
-    );
-    assert!(
-        control_action_bindings(&root)
-            .iter()
-            .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
-    );
+tilo_test_env::scenario! {
+    /// A tree's presence and control inventory.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn presence_and_inventory_follow_what_children_expose;
+
+    phase presence_does_not_materialize_semantic_only_accessibility;
+    {
+        let calls = Rc::new(Cell::new(0));
+        let root = semantic(Rc::clone(&calls));
+        assert!(!has_action_control_bindings(&root));
+        assert_eq!(
+            calls.get(),
+            0,
+            "availability presence must not build semantic-only prose"
+        );
+        let bindings = control_action_bindings(&root);
+        assert_eq!(
+            calls.get(),
+            1,
+            "the full semantic inventory remains available"
+        );
+        assert_eq!(
+            bindings,
+            vec![ControlBindingMetadata::semantic("semantic-editor")]
+        );
+        calls.set(0);
+        let root = Column::new()
+            .push(Box::new(root))
+            .push(Box::new(action_button()));
+        assert!(has_action_control_bindings(&root));
+        assert_eq!(
+            calls.get(),
+            0,
+            "finding an emitter must not allocate unrelated semantic nodes"
+        );
+        assert!(
+            control_action_bindings(&root)
+                .iter()
+                .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+        );
+    }
+
+    phase presence_follows_current_child_exposure_without_a_cached_boolean;
+    {
+        let mut root = Exposure {
+            inner: action_button(),
+            exposed: false,
+        };
+        for exposed in [false, true, false, true] {
+            root.exposed = exposed;
+            assert_eq!(has_action_control_bindings(&root), exposed);
+            assert_eq!(
+                has_action_control_bindings(&root),
+                control_action_bindings(&root)
+                    .iter()
+                    .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+            );
+        }
+    }
+
+    phase presence_preserves_custom_capability_inventory_fallback;
+    {
+        let mut root = PrivateProducer {
+            inner: Text::new("Private control owner"),
+            active: false,
+        };
+        for active in [false, true, false] {
+            root.active = active;
+            assert_eq!(
+                has_action_control_bindings(&root),
+                active,
+                "custom producers are authoritative even without exposed child widgets"
+            );
+        }
+    }
+
+    phase a_surface_root_that_keeps_its_inventory_counts_each_control_once;
+    {
+        let surface = SurfaceRoot {
+            view: Column::new().push(Box::new(action_button())),
+        };
+        let inventory = control_action_bindings(&surface);
+        assert_eq!(
+            inventory.len(),
+            1,
+            "the control below the root is counted once, not again as the view it stands for: {inventory:?}"
+        );
+        assert_eq!(action_control_bindings(&surface), inventory);
+    }
 }
 
 struct Exposure {
@@ -110,24 +164,6 @@ impl crate::widget::Decorator for Exposure {
     }
 }
 
-#[test]
-fn presence_follows_current_child_exposure_without_a_cached_boolean() {
-    let mut root = Exposure {
-        inner: action_button(),
-        exposed: false,
-    };
-    for exposed in [false, true, false, true] {
-        root.exposed = exposed;
-        assert_eq!(has_action_control_bindings(&root), exposed);
-        assert_eq!(
-            has_action_control_bindings(&root),
-            control_action_bindings(&root)
-                .iter()
-                .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
-        );
-    }
-}
-
 struct PrivateProducer {
     inner: Text,
     active: bool,
@@ -152,22 +188,6 @@ impl ActionControls for PrivateProducer {
         } else {
             Vec::new()
         }
-    }
-}
-
-#[test]
-fn presence_preserves_custom_capability_inventory_fallback() {
-    let mut root = PrivateProducer {
-        inner: Text::new("Private control owner"),
-        active: false,
-    };
-    for active in [false, true, false] {
-        root.active = active;
-        assert_eq!(
-            has_action_control_bindings(&root),
-            active,
-            "custom producers are authoritative even without exposed child widgets"
-        );
     }
 }
 
@@ -201,20 +221,6 @@ impl crate::widget::decorator::Decorated for SurfaceRoot {
     }
 }
 impl ActionControls for SurfaceRoot {}
-
-#[test]
-fn a_surface_root_that_keeps_its_inventory_counts_each_control_once() {
-    let surface = SurfaceRoot {
-        view: Column::new().push(Box::new(action_button())),
-    };
-    let inventory = control_action_bindings(&surface);
-    assert_eq!(
-        inventory.len(),
-        1,
-        "the control below the root is counted once, not again as the view it stands for: {inventory:?}"
-    );
-    assert_eq!(action_control_bindings(&surface), inventory);
-}
 
 #[test]
 fn action_inventory_matches_full_inventory_without_semantic_allocations() {

@@ -6,15 +6,14 @@
 //! configuration, but applying it re-ranks the process-wide registry, so every test
 //! here holds `common::registry_policy_lock` while its engine autoplugs.
 
-mod common;
-
 #[cfg(feature = "decode")]
 mod real {
-    use super::common::*;
+    use crate::common::*;
     use tilo_media::{DecoderKind, EngineConfig, FramePayload, MediaEngine};
 
     #[test]
     fn software_only_decodes_the_same_clip_through_a_cpu_decoder() {
+        shared_gst_registry();
         let _registry = registry_policy_lock();
         let mut e = MediaEngine::with_config(EngineConfig::default().software_only().frames_only());
         assert!(e.is_real_decode(), "this test needs the real pipeline");
@@ -57,6 +56,7 @@ mod real {
 
     #[test]
     fn the_software_path_seeks_just_as_exactly() {
+        shared_gst_registry();
         let _registry = registry_policy_lock();
         // Accurate seeking is a property of the seek flags, not of the
         // decoder, and must hold on the fallback too.
@@ -79,6 +79,7 @@ mod real {
 
     #[test]
     fn an_rgba_only_consumer_is_never_handed_a_gpu_buffer_it_cannot_paint() {
+        shared_gst_registry();
         let _registry = registry_policy_lock();
         let mut e = MediaEngine::new();
         assert_eq!(e.config().acceptance, tilo_media::FrameAcceptance::Rgba);

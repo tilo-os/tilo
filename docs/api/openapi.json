@@ -1175,6 +1175,67 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/members/name": {
+      "post": {
+        "operationId": "namePerson",
+        "summary": "The name the key's own person goes by in the workspace",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The name the key's own person goes by in the workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Members"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewName"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}/programs": {
       "post": {
         "operationId": "runProgram",
@@ -1292,6 +1353,255 @@
               "schema": {
                 "type": "string",
                 "contentMediaType": "application/octet-stream"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/uploads/{upload}": {
+      "post": {
+        "operationId": "openUpload",
+        "summary": "Open an upload of a size under an id of the caller's choosing, for a file too large for one request",
+        "tags": [
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "upload",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The upload's id, chosen by the caller when it opened the upload"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Open an upload of a size under an id of the caller's choosing, for a file too large for one request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewUpload"
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "uploadPiece",
+        "summary": "Send the next bytes of an open upload, at the offset it stands at",
+        "tags": [
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "upload",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The upload's id, chosen by the caller when it opened the upload"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Send the next bytes of an open upload, at the offset it stands at",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "*/*": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "uploadStatus",
+        "summary": "Where an open upload stands, to continue it",
+        "tags": [
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "upload",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The upload's id, chosen by the caller when it opened the upload"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where an open upload stands, to continue it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "abandonUpload",
+        "summary": "Drop an open upload; nothing of it is stored",
+        "tags": [
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "upload",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The upload's id, chosen by the caller when it opened the upload"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Drop an open upload; nothing of it is stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedUpload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
               }
             }
           }
@@ -2323,6 +2633,19 @@
         "additionalProperties": true,
         "description": "A link that signs the person in and lands them in the workspace."
       },
+      "NewName": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name the workspace's member list and the invitations they make\nshow for them."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "How the key's person goes by in the workspace from now on."
+      },
       "Program": {
         "type": "object",
         "properties": {
@@ -2393,6 +2716,54 @@
           "content",
           "size"
         ]
+      },
+      "NewUpload": {
+        "type": "object",
+        "properties": {
+          "size": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "How many bytes the whole file is."
+          }
+        },
+        "required": [
+          "size"
+        ]
+      },
+      "Upload": {
+        "type": "object",
+        "properties": {
+          "upload": {
+            "type": "string",
+            "description": "The id the caller named it by."
+          },
+          "size": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "How many bytes the whole file is."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "How many of them are there: the next piece goes at this offset."
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`tilo.content:<hash>`, in the answer of the piece that completed it."
+          }
+        },
+        "required": [
+          "upload",
+          "size",
+          "offset"
+        ],
+        "description": "One upload in pieces: where it stands, and what every byte of it is once\nthe last piece answered."
       },
       "Event": {
         "type": "object",
@@ -2506,6 +2877,18 @@
         "required": [
           "deleted"
         ]
+      },
+      "DeletedUpload": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "description": "An upload dropped before every byte of it was sent."
       },
       "activity.filter.clear-filters.Arguments": {
         "type": "object",
@@ -22337,6 +22720,12 @@
             ]
           },
           "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
             "type": [
               "string",
               "null"

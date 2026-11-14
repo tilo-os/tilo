@@ -13,8 +13,9 @@ use tilo_relay::Envelope;
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{TestUser, connect, next, spawn_relay};
+use tilo_relay::WorkspaceId;
 
-const WS: u64 = 41;
+const WS: WorkspaceId = WorkspaceId::from_u128(41);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -23,7 +24,7 @@ const WS: u64 = 41;
 )]
 async fn commits_are_acknowledged_and_live_joins_are_announced() {
     let user = TestUser::fresh("Ada");
-    let host = user.enrol("home-server", DeviceCapabilities::host());
+    let host = user.enrol("home-server", DeviceCapabilities::member());
     let a = user.enrol("browser", DeviceCapabilities::member());
     let b = user.enrol("laptop", DeviceCapabilities::primary());
     let c = user.enrol("phone", DeviceCapabilities::member());

@@ -1475,150 +1475,9 @@ mod tests {
     use crate::entry::{EditOp, FieldEdit, PathStep, Scalar};
     use crate::key::ActionKey;
 
-    #[test]
-    fn an_appearance_round_trips_through_the_change_message() {
-        let appearance = crate::Appearance::new(
-            "alice",
-            None,
-            Some(crate::Persona {
-                service: "discord".into(),
-                account: "80351110224678912".into(),
-                linked: None,
-            }),
-        )
-        .unwrap();
-        let entry = ActionContext::default().with_invoker(
-            ActionInvoker::actor("bot:7f1c")
-                .with_kind(ActorKind::Bot)
-                .acting_for("person:ada")
-                .with_appearance(Some(appearance.clone())),
-        );
-        let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
-        assert_eq!(read, entry);
-        assert_eq!(read.invoker.unwrap().appearance, Some(appearance));
-        let plain = ActionContext::default().with_invoker(ActionInvoker::actor("person:ada"));
-        let json = serde_json::to_string(&plain.invoker).unwrap();
-        assert!(!json.contains("appearance"), "{json}");
-    }
-
-    #[test]
-    fn the_host_rewriting_the_invoker_drops_an_appearance_the_caller_put_there() {
-        let smuggled = ActionContext::default().with_invoker(
-            ActionInvoker::actor("person:mallory")
-                .with_appearance(Some(crate::Appearance::new("Ada", None, None).unwrap())),
-        );
-        let hosted = smuggled.with_host_invoker("person:mallory", None);
-        assert_eq!(hosted.invoker.unwrap().appearance, None);
-    }
-
-    #[test]
-    fn a_delivered_invoker_keeps_the_appearance_only_for_the_named_actor() {
-        let appearance = crate::Appearance::new("alice", None, None).unwrap();
-        let context = ActionContext::default().with_invoker(
-            ActionInvoker::actor("bot:7f1c").with_appearance(Some(appearance.clone())),
-        );
-        assert_eq!(
-            ActionInvoker::delivered("bot:7f1c", Some(&context)).appearance,
-            Some(appearance)
-        );
-        assert_eq!(
-            ActionInvoker::delivered("person:b", Some(&context)).appearance,
-            None
-        );
-    }
-
     fn laptop() -> InvokerDevice {
         InvokerDevice::certified([0x5c; 32], "  Studio\u{7} laptop ")
     }
-
-    #[test]
-    fn a_device_is_named_by_its_certificate_or_the_start_of_its_key() {
-        let laptop = laptop();
-        assert_eq!(laptop.id, "5c".repeat(32));
-        assert_eq!(
-            laptop.name, "Studio laptop",
-            "trimmed, no control characters"
-        );
-        assert_eq!(laptop.short_id(), "5c5c5c5c");
-        assert_eq!(laptop.label(), "Studio laptop");
-        let unnamed = InvokerDevice::certified([0x40; 32], " ");
-        assert_eq!(unnamed.label(), "40404040");
-        let long = InvokerDevice::certified([1; 32], &"x".repeat(200));
-        assert_eq!(long.name.chars().count(), MAX_DEVICE_NAME_CHARS);
-    }
-
-    #[test]
-    fn the_device_an_agent_works_from_round_trips_through_the_change_message() {
-        let entry = ActionContext::default().with_invoker(
-            ActionInvoker::actor("agent:task-7")
-                .with_kind(ActorKind::Agent)
-                .acting_for("person:ada")
-                .from_device(Some(laptop())),
-        );
-        let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
-        assert_eq!(read, entry);
-        assert_eq!(read.invoker.unwrap().device, Some(laptop()));
-        // An actor on the host's own device says nothing of a device.
-        let local = ActionContext::default().with_invoker(ActionInvoker::actor("agent:task-8"));
-        let json = serde_json::to_string(&local.invoker).unwrap();
-        assert!(!json.contains("device"), "{json}");
-    }
-
-    #[test]
-    fn the_host_rewriting_the_invoker_drops_a_device_the_caller_put_there() {
-        let smuggled = ActionContext::default().with_invoker(
-            ActionInvoker::actor("agent:mallory")
-                .with_kind(ActorKind::Agent)
-                .from_device(Some(laptop())),
-        );
-        let hosted = smuggled.with_host_actor(
-            &crate::InteractionActor::new("agent:mallory", ActorKind::Agent),
-            None,
-        );
-        assert_eq!(hosted.invoker.unwrap().device, None);
-    }
-
-    #[test]
-    fn a_delivered_invoker_keeps_the_device_only_for_the_named_actor() {
-        let context = ActionContext::default().with_invoker(
-            ActionInvoker::actor("agent:task-7")
-                .with_kind(ActorKind::Agent)
-                .from_device(Some(laptop())),
-        );
-        assert_eq!(
-            ActionInvoker::delivered("agent:task-7", Some(&context)).device,
-            Some(laptop())
-        );
-        assert_eq!(
-            ActionInvoker::delivered("agent:task-8", Some(&context)).device,
-            None,
-            "another actor is not on that device because a context names it"
-        );
-        assert_eq!(ActionInvoker::delivered("agent:task-7", None).device, None);
-    }
-
-    #[test]
-    fn a_cause_survives_the_change_message() {
-        let context = ActionContext::for_app("so.tilo.chat", "Chat").with_caused_by(Some(Cause {
-            installation: "4a6c0c49-8a0d-4c3e-9d55-0a1b2c3d4e5f".into(),
-            event: "ab".repeat(32),
-            depth: 3,
-        }));
-        let message = context.change_message().unwrap();
-        let read = ActionContext::from_change_message(&message).unwrap();
-        assert_eq!(read.caused_by, context.caused_by);
-        // A context without a cause writes no key for it.
-        let plain = ActionContext::for_app("so.tilo.chat", "Chat")
-            .change_message()
-            .unwrap();
-        assert!(
-            ActionContext::from_change_message(&plain)
-                .unwrap()
-                .caused_by
-                .is_none()
-        );
-    }
-
     fn starred() -> Described {
         Described::new(Did::Edit(FieldEdit {
             ty: "snippet".into(),
@@ -1636,375 +1495,531 @@ mod tests {
         .on("s1", "Deploy script")
     }
 
-    #[test]
-    fn entries_round_trip_through_the_change_message() {
-        let entry = ActionContext::for_resource("lib", "snippets.library", "Snippets")
-            .with_app("org.tilo.Snippets", "Snippets")
-            .with_described(starred())
-            .with_group("run:7", "Tidy snippets", "agent-run")
-            .with_invoker(
-                ActionInvoker::actor("agent:claude")
-                    .with_kind(ActorKind::Agent)
-                    .acting_for("person:ada"),
-            )
-            .with_source_invocation(Some(InvocationId(uuid::Uuid::from_u128(42))));
-        let message = entry.change_message().unwrap();
-        let read = ActionContext::from_change_message(&message).unwrap();
-        assert_eq!(read, entry);
-        assert_eq!(read.actor_kind(), ActorKind::Agent);
-        assert_eq!(
-            read.invoker.as_ref().unwrap().on_behalf_of.as_deref(),
-            Some("person:ada")
-        );
-        assert_eq!(read.described(), Some(starred()));
-
-        let verb = ActionContext::default().with_described(Described::new(Did::verb(
-            ActionKey::new("snippets", "snippets.library", "new-snippet"),
-            [("title".to_string(), Scalar::from("Deploy"))],
-        )));
-        let read = ActionContext::from_change_message(&verb.change_message().unwrap()).unwrap();
-        assert_eq!(read, verb);
-    }
-
-    #[test]
-    fn an_entry_leaves_out_what_its_reader_derives_and_reads_back_the_same() {
-        let action = crate::EncodedAction {
-            type_id: "word-processor.edit".into(),
-            payload: br#"{"op":"type","text":"a"}"#.to_vec(),
-        };
-        let entry = ActionContext {
-            what: Some(Did::Edit(crate::FieldEdit {
-                ty: "document".into(),
-                field: "body".into(),
-                path: vec![PathStep::Field("body".into())],
-                op: crate::EditOp::Splice,
-                old: None,
-                new: None,
-                args: std::collections::BTreeMap::new(),
-            })),
-            kind: Some(ActionKind::Undoable),
-            action: Some(action),
-            gesture: Some(crate::ActionId::new()),
-            ..ActionContext::for_resource("doc:1", "word-processor.document", "Plan")
-                .with_inferred_app("word-processor.edit")
-        };
-        let message = entry.change_message().unwrap();
-        // The app the action's type names, an undoable kind and a path that
-        // is just the field are left out; the payload is inline JSON.
-        for derived in ["org.tilo.WordProcessor", "undoable", "path", "[123,"] {
-            assert!(!message.contains(derived), "{derived} in {message}");
-        }
-        assert!(message.len() < 230, "{} B: {message}", message.len());
-        let read = ActionContext::from_change_message(&message).unwrap();
-        assert_eq!(read, entry);
-        assert_eq!(
-            read.change_message().unwrap(),
-            message,
-            "written again the same"
-        );
-        // No app at all stays no app.
-        let bare = ActionContext { app: None, ..entry };
-        let read = ActionContext::from_change_message(&bare.change_message().unwrap()).unwrap();
-        assert_eq!(read, bare);
-    }
-
     /// The entry `message` carries, as JSON text.
     fn written(message: &str) -> String {
         let entry = message.strip_prefix(CHANGE_MESSAGE_PREFIX).unwrap();
         crate::compact::decode(entry).unwrap()
     }
 
-    #[test]
-    fn a_group_writes_what_its_members_share_once() {
-        let path = vec![
-            PathStep::Field("sheets".into()),
-            PathStep::Item("s1".into()),
-            PathStep::Field("cells".into()),
-        ];
-        let edit = |op| {
-            Did::Edit(FieldEdit {
-                ty: "sheet".into(),
-                field: "cells".into(),
-                path: path.clone(),
-                op,
+    tilo_test_env::scenario! {
+        fn the_host_states_the_invoker;
+
+        phase the_host_rewriting_the_invoker_drops_an_appearance_the_caller_put_there;
+        {
+            let smuggled = ActionContext::default().with_invoker(
+                ActionInvoker::actor("person:mallory")
+                    .with_appearance(Some(crate::Appearance::new("Ada", None, None).unwrap())),
+            );
+            let hosted = smuggled.with_host_invoker("person:mallory", None);
+            assert_eq!(hosted.invoker.unwrap().appearance, None);
+        }
+
+        phase a_delivered_invoker_keeps_the_appearance_only_for_the_named_actor;
+        {
+            let appearance = crate::Appearance::new("alice", None, None).unwrap();
+            let context = ActionContext::default().with_invoker(
+                ActionInvoker::actor("bot:7f1c").with_appearance(Some(appearance.clone())),
+            );
+            assert_eq!(
+                ActionInvoker::delivered("bot:7f1c", Some(&context)).appearance,
+                Some(appearance)
+            );
+            assert_eq!(
+                ActionInvoker::delivered("person:b", Some(&context)).appearance,
+                None
+            );
+        }
+
+        phase a_device_is_named_by_its_certificate_or_the_start_of_its_key;
+        {
+                let laptop = laptop();
+                assert_eq!(laptop.id, "5c".repeat(32));
+                assert_eq!(
+                    laptop.name, "Studio laptop",
+                    "trimmed, no control characters"
+                );
+                assert_eq!(laptop.short_id(), "5c5c5c5c");
+                assert_eq!(laptop.label(), "Studio laptop");
+                let unnamed = InvokerDevice::certified([0x40; 32], " ");
+                assert_eq!(unnamed.label(), "40404040");
+                let long = InvokerDevice::certified([1; 32], &"x".repeat(200));
+                assert_eq!(long.name.chars().count(), MAX_DEVICE_NAME_CHARS);
+        }
+
+        phase the_host_rewriting_the_invoker_drops_a_device_the_caller_put_there;
+        {
+                let smuggled = ActionContext::default().with_invoker(
+                    ActionInvoker::actor("agent:mallory")
+                        .with_kind(ActorKind::Agent)
+                        .from_device(Some(laptop())),
+                );
+                let hosted = smuggled.with_host_actor(
+                    &crate::InteractionActor::new("agent:mallory", ActorKind::Agent),
+                    None,
+                );
+                assert_eq!(hosted.invoker.unwrap().device, None);
+        }
+
+        phase a_delivered_invoker_keeps_the_device_only_for_the_named_actor;
+        {
+                let context = ActionContext::default().with_invoker(
+                    ActionInvoker::actor("agent:task-7")
+                        .with_kind(ActorKind::Agent)
+                        .from_device(Some(laptop())),
+                );
+                assert_eq!(
+                    ActionInvoker::delivered("agent:task-7", Some(&context)).device,
+                    Some(laptop())
+                );
+                assert_eq!(
+                    ActionInvoker::delivered("agent:task-8", Some(&context)).device,
+                    None,
+                    "another actor is not on that device because a context names it"
+                );
+                assert_eq!(ActionInvoker::delivered("agent:task-7", None).device, None);
+        }
+
+        phase invoker_round_trips_and_is_enriched_from_ambient;
+        {
+            let invoker = ActionInvoker::actor("agent:alpha")
+                .with_participant(ParticipantId::new("task-7").unwrap());
+            let context = ActionContext::for_resource("r", "k", "l").with_invoker(invoker.clone());
+            let message = context.change_message().unwrap();
+            assert_eq!(
+                ActionContext::from_change_message(&message),
+                Some(context.clone())
+            );
+            let enriched = ActionContext::default().enriched_by(&context);
+            assert_eq!(enriched.invoker, Some(invoker));
+        }
+
+        phase a_person_acting_for_themselves_records_nobody;
+        {
+            assert_eq!(
+                ActionInvoker::actor("ada").acting_for("ada").on_behalf_of,
+                None
+            );
+            let agent = ActionInvoker::admitted(
+                &crate::InteractionActor::new("agent:claude", ActorKind::Agent).acting_for("ada"),
+            );
+            assert_eq!(agent.kind, ActorKind::Agent);
+            assert_eq!(agent.on_behalf_of.as_deref(), Some("ada"));
+        }
+
+        phase host_invoker_overwrites_a_forged_envelope_invoker;
+        {
+            let forged = ActionContext::for_resource("r", "k", "l").with_invoker(
+                ActionInvoker::actor("person:owner")
+                    .acting_for("person:other")
+                    .with_participant(ParticipantId::new("owner-window").unwrap()),
+            );
+            let task = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
+            let rewritten = forged
+                .clone()
+                .with_host_invoker("agent:alpha", Some(task.clone()));
+            assert_eq!(
+                rewritten.invoker,
+                Some(ActionInvoker::actor("agent:alpha").with_participant(task.clone()))
+            );
+            assert_eq!(
+                task.agent_task(),
+                Some("11111111-1111-4111-8111-111111111111")
+            );
+            assert_eq!(
+                ParticipantId::new("owner-window").unwrap().agent_task(),
+                None
+            );
+            let delegated = forged.with_host_actor(
+                &crate::InteractionActor::new("agent:alpha", ActorKind::Agent)
+                    .acting_for("person:owner"),
+                None,
+            );
+            let invoker = delegated.invoker.unwrap();
+            assert_eq!(invoker.kind, ActorKind::Agent);
+            assert_eq!(
+                invoker.on_behalf_of.as_deref(),
+                Some("person:owner"),
+                "the host records whom the admitted actor acts for"
+            );
+        }
+
+        phase delivered_invoker_keeps_the_participant_only_for_the_delivered_actor;
+        {
+            let participant = ParticipantId::for_agent_task("t").unwrap();
+            let context =
+                ActionContext::default().with_host_invoker("agent:a", Some(participant.clone()));
+            assert_eq!(
+                ActionInvoker::delivered("agent:a", Some(&context)),
+                ActionInvoker::actor("agent:a").with_participant(participant)
+            );
+            // A context naming another actor never routes to a view, and the
+            // actor always comes from the delivery.
+            assert_eq!(
+                ActionInvoker::delivered("person:b", Some(&context)),
+                ActionInvoker::actor("person:b")
+            );
+            assert_eq!(
+                ActionInvoker::delivered("person:b", None),
+                ActionInvoker::actor("person:b")
+            );
+            // A Shortcut step is delivered as its person; the Shortcut acting for
+            // exactly that person is kept, for anybody else it is not.
+            let shortcut = ActionInvoker::admitted(
+                &crate::InteractionActor::new("shortcut:morning", ActorKind::Shortcut)
+                    .acting_for("person:b"),
+            );
+            let run = ActionContext::default().with_invoker(shortcut.clone());
+            assert_eq!(ActionInvoker::delivered("person:b", Some(&run)), shortcut);
+            assert_eq!(
+                ActionInvoker::delivered("person:c", Some(&run)),
+                ActionInvoker::actor("person:c")
+            );
+        }
+
+        phase participant_ids_are_bounded;
+        {
+            assert!(ParticipantId::new("").is_err());
+            assert!(ParticipantId::new("has space").is_err());
+            assert!(ParticipantId::new("x".repeat(MAX_PARTICIPANT_ID_BYTES + 1)).is_err());
+            assert!(ParticipantId::new("x".repeat(MAX_PARTICIPANT_ID_BYTES)).is_ok());
+            assert!(serde_json::from_str::<ParticipantId>("\"\"").is_err());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: clippy exempts a test function's body, not a phase's closure"
+        )]
+        fn a_context_reads_back_from_its_change_message;
+
+        phase an_appearance_round_trips_through_the_change_message;
+        {
+            let appearance = crate::Appearance::new(
+                "alice",
+                None,
+                Some(crate::Persona {
+                    service: "discord".into(),
+                    account: "80351110224678912".into(),
+                    linked: None,
+                }),
+            )
+            .unwrap();
+            let entry = ActionContext::default().with_invoker(
+                ActionInvoker::actor("bot:7f1c")
+                    .with_kind(ActorKind::Bot)
+                    .acting_for("person:ada")
+                    .with_appearance(Some(appearance.clone())),
+            );
+            let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
+            assert_eq!(read, entry);
+            assert_eq!(read.invoker.unwrap().appearance, Some(appearance));
+            let plain = ActionContext::default().with_invoker(ActionInvoker::actor("person:ada"));
+            let json = serde_json::to_string(&plain.invoker).unwrap();
+            assert!(!json.contains("appearance"), "{json}");
+        }
+
+        phase the_device_an_agent_works_from_round_trips_through_the_change_message;
+        {
+                let entry = ActionContext::default().with_invoker(
+                    ActionInvoker::actor("agent:task-7")
+                        .with_kind(ActorKind::Agent)
+                        .acting_for("person:ada")
+                        .from_device(Some(laptop())),
+                );
+                let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
+                assert_eq!(read, entry);
+                assert_eq!(read.invoker.unwrap().device, Some(laptop()));
+                // An actor on the host's own device says nothing of a device.
+                let local = ActionContext::default().with_invoker(ActionInvoker::actor("agent:task-8"));
+                let json = serde_json::to_string(&local.invoker).unwrap();
+                assert!(!json.contains("device"), "{json}");
+        }
+
+        phase a_cause_survives_the_change_message;
+        {
+            let context = ActionContext::for_app("so.tilo.chat", "Chat").with_caused_by(Some(Cause {
+                installation: "4a6c0c49-8a0d-4c3e-9d55-0a1b2c3d4e5f".into(),
+                event: "ab".repeat(32),
+                depth: 3,
+            }));
+            let message = context.change_message().unwrap();
+            let read = ActionContext::from_change_message(&message).unwrap();
+            assert_eq!(read.caused_by, context.caused_by);
+            // A context without a cause writes no key for it.
+            let plain = ActionContext::for_app("so.tilo.chat", "Chat")
+                .change_message()
+                .unwrap();
+            assert!(
+                ActionContext::from_change_message(&plain)
+                    .unwrap()
+                    .caused_by
+                    .is_none()
+            );
+        }
+
+        phase entries_round_trip_through_the_change_message;
+        {
+            let entry = ActionContext::for_resource("lib", "snippets.library", "Snippets")
+                .with_app("org.tilo.Snippets", "Snippets")
+                .with_described(starred())
+                .with_group("run:7", "Tidy snippets", "agent-run")
+                .with_invoker(
+                    ActionInvoker::actor("agent:claude")
+                        .with_kind(ActorKind::Agent)
+                        .acting_for("person:ada"),
+                )
+                .with_source_invocation(Some(InvocationId(uuid::Uuid::from_u128(42))));
+            let message = entry.change_message().unwrap();
+            let read = ActionContext::from_change_message(&message).unwrap();
+            assert_eq!(read, entry);
+            assert_eq!(read.actor_kind(), ActorKind::Agent);
+            assert_eq!(
+                read.invoker.as_ref().unwrap().on_behalf_of.as_deref(),
+                Some("person:ada")
+            );
+            assert_eq!(read.described(), Some(starred()));
+
+            let verb = ActionContext::default().with_described(Described::new(Did::verb(
+                ActionKey::new("snippets", "snippets.library", "new-snippet"),
+                [("title".to_string(), Scalar::from("Deploy"))],
+            )));
+            let read = ActionContext::from_change_message(&verb.change_message().unwrap()).unwrap();
+            assert_eq!(read, verb);
+        }
+
+        phase an_entry_leaves_out_what_its_reader_derives_and_reads_back_the_same;
+        {
+            let action = crate::EncodedAction {
+                type_id: "word-processor.edit".into(),
+                payload: br#"{"op":"type","text":"a"}"#.to_vec(),
+            };
+            let entry = ActionContext {
+                what: Some(Did::Edit(crate::FieldEdit {
+                    ty: "document".into(),
+                    field: "body".into(),
+                    path: vec![PathStep::Field("body".into())],
+                    op: crate::EditOp::Splice,
+                    old: None,
+                    new: None,
+                    args: std::collections::BTreeMap::new(),
+                })),
+                kind: Some(ActionKind::Undoable),
+                action: Some(action),
+                gesture: Some(crate::ActionId::new()),
+                ..ActionContext::for_resource("doc:1", "word-processor.document", "Plan")
+                    .with_inferred_app("word-processor.edit")
+            };
+            let message = entry.change_message().unwrap();
+            // The app the action's type names, an undoable kind and a path that
+            // is just the field are left out; the payload is inline JSON.
+            for derived in ["org.tilo.WordProcessor", "undoable", "path", "[123,"] {
+                assert!(!message.contains(derived), "{derived} in {message}");
+            }
+            assert!(message.len() < 230, "{} B: {message}", message.len());
+            let read = ActionContext::from_change_message(&message).unwrap();
+            assert_eq!(read, entry);
+            assert_eq!(
+                read.change_message().unwrap(),
+                message,
+                "written again the same"
+            );
+            // No app at all stays no app.
+            let bare = ActionContext { app: None, ..entry };
+            let read = ActionContext::from_change_message(&bare.change_message().unwrap()).unwrap();
+            assert_eq!(read, bare);
+        }
+
+        phase a_group_writes_what_its_members_share_once;
+        {
+            let path = vec![
+                PathStep::Field("sheets".into()),
+                PathStep::Item("s1".into()),
+                PathStep::Field("cells".into()),
+            ];
+            let edit = |op| {
+                Did::Edit(FieldEdit {
+                    ty: "sheet".into(),
+                    field: "cells".into(),
+                    path: path.clone(),
+                    op,
+                    old: None,
+                    new: None,
+                    args: std::collections::BTreeMap::new(),
+                })
+            };
+            let mut entry =
+                ActionContext::for_resource("sheets.workbook", "sheets.workbook", "Workbook");
+            entry.what = Some(Did::group([edit(EditOp::InsertRow), edit(EditOp::SetCell)]));
+            let message = entry.change_message().unwrap();
+            assert!(!message.contains("distinct"), "{message}");
+            assert_eq!(
+                written(&message).matches("\"cells\"").count(),
+                3,
+                "the path once: {message}"
+            );
+            let read = ActionContext::from_change_message(&message).unwrap();
+            assert_eq!(read, entry);
+            assert_eq!(
+                read.change_message().unwrap(),
+                message,
+                "written again the same"
+            );
+        }
+
+        phase an_edit_takes_its_path_from_the_action_it_carries;
+        {
+            let path = vec![
+                PathStep::Field("pages".into()),
+                PathStep::Item("p1".into()),
+                PathStep::Field("body".into()),
+            ];
+            let mut entry = ActionContext::for_resource("notes.notebook", "notes.notebook", "Notebook");
+            entry.what = Some(Did::Edit(FieldEdit {
+                ty: "page".into(),
+                field: "body".into(),
+                path,
+                op: EditOp::Splice,
                 old: None,
                 new: None,
                 args: std::collections::BTreeMap::new(),
-            })
-        };
-        let mut entry =
-            ActionContext::for_resource("sheets.workbook", "sheets.workbook", "Workbook");
-        entry.what = Some(Did::group([edit(EditOp::InsertRow), edit(EditOp::SetCell)]));
-        let message = entry.change_message().unwrap();
-        assert!(!message.contains("distinct"), "{message}");
-        assert_eq!(
-            written(&message).matches("\"cells\"").count(),
-            3,
-            "the path once: {message}"
-        );
-        let read = ActionContext::from_change_message(&message).unwrap();
-        assert_eq!(read, entry);
-        assert_eq!(
-            read.change_message().unwrap(),
-            message,
-            "written again the same"
-        );
-    }
+            }));
+            entry.action = Some(crate::EncodedAction {
+                type_id: "notes.notebook".into(),
+                payload: br#"{"op":{"action":"field-edit","args":{"op":"rich","path":[{"field":"pages"},{"item":"p1"},{"field":"body"}]}},"at":0}"#.to_vec(),
+            });
+            entry.kind = Some(ActionKind::Undoable);
+            let message = entry.change_message().unwrap();
+            assert_eq!(
+                written(&message).matches("\"pages\"").count(),
+                1,
+                "the path once: {message}"
+            );
+            assert!(
+                message.len() * 10 < written(&message).len() * 7,
+                "the compact form is well under the JSON one: {message}"
+            );
+            let read = ActionContext::from_change_message(&message).unwrap();
+            assert_eq!(read, entry);
+            assert_eq!(
+                read.change_message().unwrap(),
+                message,
+                "written again the same"
+            );
+        }
 
-    #[test]
-    fn an_edit_takes_its_path_from_the_action_it_carries() {
-        let path = vec![
-            PathStep::Field("pages".into()),
-            PathStep::Item("p1".into()),
-            PathStep::Field("body".into()),
-        ];
-        let mut entry = ActionContext::for_resource("notes.notebook", "notes.notebook", "Notebook");
-        entry.what = Some(Did::Edit(FieldEdit {
-            ty: "page".into(),
-            field: "body".into(),
-            path,
-            op: EditOp::Splice,
-            old: None,
-            new: None,
-            args: std::collections::BTreeMap::new(),
-        }));
-        entry.action = Some(crate::EncodedAction {
-            type_id: "notes.notebook".into(),
-            payload: br#"{"op":{"action":"field-edit","args":{"op":"rich","path":[{"field":"pages"},{"item":"p1"},{"field":"body"}]}},"at":0}"#.to_vec(),
-        });
-        entry.kind = Some(ActionKind::Undoable);
-        let message = entry.change_message().unwrap();
-        assert_eq!(
-            written(&message).matches("\"pages\"").count(),
-            1,
-            "the path once: {message}"
-        );
-        assert!(
-            message.len() * 10 < written(&message).len() * 7,
-            "the compact form is well under the JSON one: {message}"
-        );
-        let read = ActionContext::from_change_message(&message).unwrap();
-        assert_eq!(read, entry);
-        assert_eq!(
-            read.change_message().unwrap(),
-            message,
-            "written again the same"
-        );
-    }
+        phase an_item_named_by_its_resource_writes_its_id_once;
+        {
+            let mut entry =
+                ActionContext::for_resource("notes.notebook/pages/p1", "tilo.rich-text", "Document");
+            entry.item = Some(ActionItem {
+                id: "p1".into(),
+                label: "Plans".into(),
+            });
+            let message = entry.change_message().unwrap();
+            assert_eq!(message.matches("p1").count(), 1, "the id once: {message}");
+            let read = ActionContext::from_change_message(&message).unwrap();
+            assert_eq!(read, entry);
+            assert_eq!(
+                read.change_message().unwrap(),
+                message,
+                "written again the same"
+            );
+            // An item the resource does not name keeps its id.
+            entry.item = Some(ActionItem {
+                id: "p2".into(),
+                label: "Other".into(),
+            });
+            let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
+            assert_eq!(read, entry);
+        }
 
-    #[test]
-    fn an_item_named_by_its_resource_writes_its_id_once() {
-        let mut entry =
-            ActionContext::for_resource("notes.notebook/pages/p1", "tilo.rich-text", "Document");
-        entry.item = Some(ActionItem {
-            id: "p1".into(),
-            label: "Plans".into(),
-        });
-        let message = entry.change_message().unwrap();
-        assert_eq!(message.matches("p1").count(), 1, "the id once: {message}");
-        let read = ActionContext::from_change_message(&message).unwrap();
-        assert_eq!(read, entry);
-        assert_eq!(
-            read.change_message().unwrap(),
-            message,
-            "written again the same"
-        );
-        // An item the resource does not name keeps its id.
-        entry.item = Some(ActionItem {
-            id: "p2".into(),
-            label: "Other".into(),
-        });
-        let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
-        assert_eq!(read, entry);
-    }
-
-    #[test]
-    fn defaults_are_not_written() {
-        let context = ActionContext::for_resource("r", "k", "l");
-        let message = context.change_message().unwrap();
-        let json: serde_json::Value = serde_json::from_str(&written(&message)).unwrap();
-        let written: Vec<&str> = json
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(written, ["r"], "{message}");
-        assert_eq!(ActionContext::from_change_message(&message), Some(context));
-        let outside = ActionContext::default().with_change(ChangeKind::External);
-        let mut outside = outside;
-        outside.kind = Some(ActionKind::Outside);
-        let read = ActionContext::from_change_message(&outside.change_message().unwrap()).unwrap();
-        assert_eq!(read.kind, Some(ActionKind::Outside));
-        assert!(
-            !read.is_activity(),
-            "what came from outside is not activity"
-        );
-    }
-
-    #[test]
-    fn invoker_round_trips_and_is_enriched_from_ambient() {
-        let invoker = ActionInvoker::actor("agent:alpha")
-            .with_participant(ParticipantId::new("task-7").unwrap());
-        let context = ActionContext::for_resource("r", "k", "l").with_invoker(invoker.clone());
-        let message = context.change_message().unwrap();
-        assert_eq!(
-            ActionContext::from_change_message(&message),
-            Some(context.clone())
-        );
-        let enriched = ActionContext::default().enriched_by(&context);
-        assert_eq!(enriched.invoker, Some(invoker));
-    }
-
-    #[test]
-    fn a_person_acting_for_themselves_records_nobody() {
-        assert_eq!(
-            ActionInvoker::actor("ada").acting_for("ada").on_behalf_of,
-            None
-        );
-        let agent = ActionInvoker::admitted(
-            &crate::InteractionActor::new("agent:claude", ActorKind::Agent).acting_for("ada"),
-        );
-        assert_eq!(agent.kind, ActorKind::Agent);
-        assert_eq!(agent.on_behalf_of.as_deref(), Some("ada"));
-    }
-
-    #[test]
-    fn host_invoker_overwrites_a_forged_envelope_invoker() {
-        let forged = ActionContext::for_resource("r", "k", "l").with_invoker(
-            ActionInvoker::actor("person:owner")
-                .acting_for("person:other")
-                .with_participant(ParticipantId::new("owner-window").unwrap()),
-        );
-        let task = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
-        let rewritten = forged
-            .clone()
-            .with_host_invoker("agent:alpha", Some(task.clone()));
-        assert_eq!(
-            rewritten.invoker,
-            Some(ActionInvoker::actor("agent:alpha").with_participant(task.clone()))
-        );
-        assert_eq!(
-            task.agent_task(),
-            Some("11111111-1111-4111-8111-111111111111")
-        );
-        assert_eq!(
-            ParticipantId::new("owner-window").unwrap().agent_task(),
-            None
-        );
-        let delegated = forged.with_host_actor(
-            &crate::InteractionActor::new("agent:alpha", ActorKind::Agent)
-                .acting_for("person:owner"),
-            None,
-        );
-        let invoker = delegated.invoker.unwrap();
-        assert_eq!(invoker.kind, ActorKind::Agent);
-        assert_eq!(
-            invoker.on_behalf_of.as_deref(),
-            Some("person:owner"),
-            "the host records whom the admitted actor acts for"
-        );
-    }
-
-    #[test]
-    fn delivered_invoker_keeps_the_participant_only_for_the_delivered_actor() {
-        let participant = ParticipantId::for_agent_task("t").unwrap();
-        let context =
-            ActionContext::default().with_host_invoker("agent:a", Some(participant.clone()));
-        assert_eq!(
-            ActionInvoker::delivered("agent:a", Some(&context)),
-            ActionInvoker::actor("agent:a").with_participant(participant)
-        );
-        // A context naming another actor never routes to a view, and the
-        // actor always comes from the delivery.
-        assert_eq!(
-            ActionInvoker::delivered("person:b", Some(&context)),
-            ActionInvoker::actor("person:b")
-        );
-        assert_eq!(
-            ActionInvoker::delivered("person:b", None),
-            ActionInvoker::actor("person:b")
-        );
-        // A Shortcut step is delivered as its person; the Shortcut acting for
-        // exactly that person is kept, for anybody else it is not.
-        let shortcut = ActionInvoker::admitted(
-            &crate::InteractionActor::new("shortcut:morning", ActorKind::Shortcut)
-                .acting_for("person:b"),
-        );
-        let run = ActionContext::default().with_invoker(shortcut.clone());
-        assert_eq!(ActionInvoker::delivered("person:b", Some(&run)), shortcut);
-        assert_eq!(
-            ActionInvoker::delivered("person:c", Some(&run)),
-            ActionInvoker::actor("person:c")
-        );
-    }
-
-    #[test]
-    fn participant_ids_are_bounded() {
-        assert!(ParticipantId::new("").is_err());
-        assert!(ParticipantId::new("has space").is_err());
-        assert!(ParticipantId::new("x".repeat(MAX_PARTICIPANT_ID_BYTES + 1)).is_err());
-        assert!(ParticipantId::new("x".repeat(MAX_PARTICIPANT_ID_BYTES)).is_ok());
-        assert!(serde_json::from_str::<ParticipantId>("\"\"").is_err());
-    }
-
-    #[test]
-    fn housekeeping_is_carried() {
-        let content = ActionContext::for_resource("r", "k", "l");
-        let marker = content.clone().with_change(ChangeKind::Housekeeping);
-        let message = marker.change_message().unwrap();
-        let read = ActionContext::from_change_message(&message).unwrap();
-        assert!(read.is_housekeeping());
-        assert_eq!(read, marker);
-        let bare = ActionContext::default().with_change(ChangeKind::Housekeeping);
-        assert!(
-            bare.change_message().is_some(),
-            "housekeeping alone is still written"
-        );
-        assert!(
-            !ActionContext::from_change_message(&content.change_message().unwrap())
+        phase defaults_are_not_written;
+        {
+            let context = ActionContext::for_resource("r", "k", "l");
+            let message = context.change_message().unwrap();
+            let json: serde_json::Value = serde_json::from_str(&written(&message)).unwrap();
+            let written: Vec<&str> = json
+                .as_object()
                 .unwrap()
-                .is_housekeeping()
-        );
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(written, ["r"], "{message}");
+            assert_eq!(ActionContext::from_change_message(&message), Some(context));
+            let outside = ActionContext::default().with_change(ChangeKind::External);
+            let mut outside = outside;
+            outside.kind = Some(ActionKind::Outside);
+            let read = ActionContext::from_change_message(&outside.change_message().unwrap()).unwrap();
+            assert_eq!(read.kind, Some(ActionKind::Outside));
+            assert!(
+                !read.is_activity(),
+                "what came from outside is not activity"
+            );
+        }
+
+        phase housekeeping_is_carried;
+        {
+            let content = ActionContext::for_resource("r", "k", "l");
+            let marker = content.clone().with_change(ChangeKind::Housekeeping);
+            let message = marker.change_message().unwrap();
+            let read = ActionContext::from_change_message(&message).unwrap();
+            assert!(read.is_housekeeping());
+            assert_eq!(read, marker);
+            let bare = ActionContext::default().with_change(ChangeKind::Housekeeping);
+            assert!(
+                bare.change_message().is_some(),
+                "housekeeping alone is still written"
+            );
+            assert!(
+                !ActionContext::from_change_message(&content.change_message().unwrap())
+                    .unwrap()
+                    .is_housekeeping()
+            );
+        }
+
+        phase unrelated_or_malformed_messages_are_not_entries;
+        {
+            assert!(ActionContext::from_change_message("saved draft").is_none());
+            assert!(ActionContext::from_change_message("tilo.entry/1 {").is_none());
+            assert!(ActionContext::default().change_message().is_none());
+        }
     }
 
-    #[test]
-    fn unrelated_or_malformed_messages_are_not_entries() {
-        assert!(ActionContext::from_change_message("saved draft").is_none());
-        assert!(ActionContext::from_change_message("tilo.entry/1 {").is_none());
-        assert!(ActionContext::default().change_message().is_none());
-    }
+    tilo_test_env::scenario! {
+        fn ambient_context_fills_what_the_action_leaves_open;
 
-    #[test]
-    fn generic_palette_context_infers_stable_app_ownership() {
-        let context = ActionContext::for_resource("doc:1", "document", "Brief")
-            .with_inferred_app("word-processor.action");
-        assert_eq!(
-            context.app,
-            Some(ActionApp {
-                id: "org.tilo.WordProcessor".into(),
-                label: "Word Processor".into(),
-            })
-        );
-    }
+        phase generic_palette_context_infers_stable_app_ownership;
+        {
+            let context = ActionContext::for_resource("doc:1", "document", "Brief")
+                .with_inferred_app("word-processor.action");
+            assert_eq!(
+                context.app,
+                Some(ActionApp {
+                    id: "org.tilo.WordProcessor".into(),
+                    label: "Word Processor".into(),
+                })
+            );
+        }
 
-    #[test]
-    fn ambient_context_fills_intent_without_overwriting_the_action() {
-        let action = ActionContext::for_resource("file:1", "file", "brief.md")
-            .with_app("org.tilo.Code", "Code");
-        let ambient = ActionContext::default()
-            .with_purpose("Prepare launch")
-            .with_group("issue:42", "Launch", "issue")
-            .with_app("wrong", "Wrong");
-        let merged = action.enriched_by(&ambient);
-        assert_eq!(
-            merged.app.as_ref().map(|app| app.id.as_str()),
-            Some("org.tilo.Code")
-        );
-        assert_eq!(merged.purpose.as_deref(), Some("Prepare launch"));
-        assert_eq!(
-            merged.group.as_ref().map(|group| group.id.as_str()),
-            Some("issue:42")
-        );
+        phase ambient_context_fills_intent_without_overwriting_the_action;
+        {
+            let action = ActionContext::for_resource("file:1", "file", "brief.md")
+                .with_app("org.tilo.Code", "Code");
+            let ambient = ActionContext::default()
+                .with_purpose("Prepare launch")
+                .with_group("issue:42", "Launch", "issue")
+                .with_app("wrong", "Wrong");
+            let merged = action.enriched_by(&ambient);
+            assert_eq!(
+                merged.app.as_ref().map(|app| app.id.as_str()),
+                Some("org.tilo.Code")
+            );
+            assert_eq!(merged.purpose.as_deref(), Some("Prepare launch"));
+            assert_eq!(
+                merged.group.as_ref().map(|group| group.id.as_str()),
+                Some("issue:42")
+            );
+        }
     }
 }

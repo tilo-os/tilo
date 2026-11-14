@@ -139,33 +139,64 @@ pub struct ReadMark {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parts_are_numbered_records_of_one_chain() {
-        let first = part(0);
-        assert_eq!(part_index(&first), Some(0));
-        assert_eq!(part_index(&part(41)), Some(41));
-        assert_eq!(part_index(&chain()), None);
-        assert_eq!(part_index(&RecordId::workspace_default().part(3)), None);
-        assert_eq!(
-            neighbour_wire::record_sync(first.as_str()),
-            neighbour_wire::RecordSync::Part {
-                base: chain().as_str(),
-                index: 0
-            }
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Part ids, the part a post goes to, and the order of read marks.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn parts_number_one_chain_and_posts_and_read_marks_move_along_it;
 
-    #[test]
-    fn a_post_goes_to_the_next_part_once_the_head_is_full() {
-        assert_eq!(post_part(4, PART_MESSAGES - 1, 0), 4);
-        assert_eq!(post_part(4, PART_MESSAGES, 0), 5);
-        assert_eq!(post_part(4, 10, PART_TEXT_BYTES), 5);
-    }
+        phase parts_are_numbered_records_of_one_chain;
+        {
+            let first = part(0);
+            assert_eq!(part_index(&first), Some(0));
+            assert_eq!(part_index(&part(41)), Some(41));
+            assert_eq!(part_index(&chain()), None);
+            assert_eq!(part_index(&RecordId::workspace_default().part(3)), None);
+            assert_eq!(
+                neighbour_wire::record_sync(first.as_str()),
+                neighbour_wire::RecordSync::Part {
+                    base: chain().as_str(),
+                    index: 0
+                }
+            );
+        }
 
-    #[test]
-    fn a_later_read_mark_is_further() {
-        let early = ReadMark { part: 2, seen: 900 };
-        let later = ReadMark { part: 3, seen: 1 };
-        assert!(later > early);
+        phase a_post_goes_to_the_next_part_once_the_head_is_full;
+        {
+            assert_eq!(post_part(4, PART_MESSAGES - 1, 0), 4);
+            assert_eq!(post_part(4, PART_MESSAGES, 0), 5);
+            assert_eq!(post_part(4, 10, PART_TEXT_BYTES), 5);
+            assert_eq!(post_part(4, 0, 0), 4, "an empty head takes the post");
+            assert_eq!(
+                post_part(4, 10, PART_TEXT_BYTES - 1),
+                4,
+                "one byte short of full"
+            );
+            assert_eq!(
+                post_part(u64::MAX, PART_MESSAGES, 0),
+                u64::MAX,
+                "the last part there can be has no next"
+            );
+        }
+
+        phase a_later_read_mark_is_further;
+        {
+            let early = ReadMark { part: 2, seen: 900 };
+            let later = ReadMark { part: 3, seen: 1 };
+            assert!(later > early);
+            assert!(
+                ReadMark { part: 2, seen: 901 } > early,
+                "one message further in the same part"
+            );
+            assert_eq!(
+                ReadMark { part: 2, seen: 900 },
+                early,
+                "the same place is no further"
+            );
+            assert!(
+                ReadMark { part: 0, seen: 1 } > ReadMark::default(),
+                "any reading is past none"
+            );
+        }
     }
 }

@@ -212,234 +212,242 @@ fn retype(grace: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, item: 
     });
 }
 
-#[test]
-fn a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field() {
-    let (mut ada, mut grace, meta, root) = workspace();
-    let ids = item_ids(&ada, &meta, &root);
-    let heard = listen(&ada, &root);
-    retype(&mut grace, &meta, &root, &ids[1], "oat milk");
-    ada.sync_with(&mut grace);
-    let heard = heard.borrow();
-    assert_eq!(heard.len(), 1, "{heard:?}");
-    // The item's text, the version the edit made of it, and the marks and the change of that
-    // field a view reads of it, which the edit moved.
-    let mut fields = heard[0].fields.clone();
-    fields.sort_by(|left, right| left.field.cmp(&right.field));
-    let mut expected = vec![
-        FieldKey {
-            resource: format!("{root}/{}", ids[1]),
-            field: field_id(&meta, "Item", "text"),
-        },
-        FieldKey {
-            resource: format!("{root}/{}", ids[1]),
-            field: tilolang_runtime::DOC_VERSIONS.to_owned(),
-        },
-        FieldKey {
-            resource: format!("{root}/{}", ids[1]),
-            field: tilolang_runtime::store::Reflected::CREATED.to_owned(),
-        },
-        FieldKey {
-            resource: format!("{root}/{}", ids[1]),
-            field: tilolang_runtime::store::Reflected::UPDATED.to_owned(),
-        },
-        FieldKey {
-            resource: format!("{root}/{}", ids[1]),
-            field: tilolang_runtime::store::changed_field(&field_id(&meta, "Item", "text")),
-        },
-    ];
-    expected.sort_by(|left, right| left.field.cmp(&right.field));
-    assert_eq!(
-        fields, expected,
-        "only the retyped item, not the whole record"
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn the_runtimes_mirror_follows_a_peers_changes;
 
-#[test]
-fn an_item_added_by_a_peer_changes_the_collection_only() {
-    let (mut ada, mut grace, meta, root) = workspace();
-    let heard = listen(&ada, &root);
-    add(&mut grace, &meta, &root, "tea");
-    ada.sync_with(&mut grace);
-    let heard = heard.borrow();
-    let items = field_id(&meta, "TodoList", "items");
-    assert!(
-        heard.iter().all(|summary| !summary.fields.is_empty()),
-        "never the whole document: {heard:?}"
-    );
-    assert!(
-        heard
-            .iter()
-            .flat_map(|summary| &summary.fields)
-            .any(|key| key.resource == root && key.field == items),
-        "{heard:?}"
-    );
-    assert_eq!(item_ids(&ada, &meta, &root).len(), 4);
-}
+    phase a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field;
+    {
+        let (mut ada, mut grace, meta, root) = workspace();
+        let ids = item_ids(&ada, &meta, &root);
+        let heard = listen(&ada, &root);
+        retype(&mut grace, &meta, &root, &ids[1], "oat milk");
+        ada.sync_with(&mut grace);
+        let heard = heard.borrow();
+        assert_eq!(heard.len(), 1, "{heard:?}");
+        // The item's text, the version the edit made of it, and the marks and the change of that
+        // field a view reads of it, which the edit moved.
+        let mut fields = heard[0].fields.clone();
+        fields.sort_by(|left, right| left.field.cmp(&right.field));
+        let mut expected = vec![
+            FieldKey {
+                resource: format!("{root}/{}", ids[1]),
+                field: field_id(&meta, "Item", "text"),
+            },
+            FieldKey {
+                resource: format!("{root}/{}", ids[1]),
+                field: tilolang_runtime::DOC_VERSIONS.to_owned(),
+            },
+            FieldKey {
+                resource: format!("{root}/{}", ids[1]),
+                field: tilolang_runtime::store::Reflected::CREATED.to_owned(),
+            },
+            FieldKey {
+                resource: format!("{root}/{}", ids[1]),
+                field: tilolang_runtime::store::Reflected::UPDATED.to_owned(),
+            },
+            FieldKey {
+                resource: format!("{root}/{}", ids[1]),
+                field: tilolang_runtime::store::changed_field(&field_id(&meta, "Item", "text")),
+            },
+        ];
+        expected.sort_by(|left, right| left.field.cmp(&right.field));
+        assert_eq!(
+            fields, expected,
+            "only the retyped item, not the whole record"
+        );
+    }
 
-#[test]
-fn the_mirror_follows_the_record_without_copying_it() {
-    let (mut ada, mut grace, meta, root) = workspace();
-    let ids = item_ids(&ada, &meta, &root);
-    retype(&mut grace, &meta, &root, &ids[0], "almond milk");
-    ada.sync_with(&mut grace);
-    add(&mut ada, &meta, &root, "jam");
-    let stats = ada.host.store().stats();
-    assert_eq!(stats.full_syncs, 0, "{stats:?}");
-    assert!(stats.incremental_syncs >= 2, "{stats:?}");
-    // The runtime reads what the record holds.
-    let items = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
-    let first = items.item(&ids[0], type_id(&meta, "Item"));
-    assert_eq!(
-        ada.host.runtime().read(&first, "text").unwrap(),
-        Value::text("almond milk")
-    );
-    assert_eq!(item_ids(&ada, &meta, &root).len(), 4);
-}
+    phase an_item_added_by_a_peer_changes_the_collection_only;
+    {
+        let (mut ada, mut grace, meta, root) = workspace();
+        let heard = listen(&ada, &root);
+        add(&mut grace, &meta, &root, "tea");
+        ada.sync_with(&mut grace);
+        let heard = heard.borrow();
+        let items = field_id(&meta, "TodoList", "items");
+        assert!(
+            heard.iter().all(|summary| !summary.fields.is_empty()),
+            "never the whole document: {heard:?}"
+        );
+        assert!(
+            heard
+                .iter()
+                .flat_map(|summary| &summary.fields)
+                .any(|key| key.resource == root && key.field == items),
+            "{heard:?}"
+        );
+        assert_eq!(item_ids(&ada, &meta, &root).len(), 4);
+    }
 
-#[test]
-fn a_trial_run_takes_back_only_its_own_writes() {
-    let (mut ada, _grace, meta, root) = workspace();
-    // A press the executor has not committed yet: the runtime sees it, the record does not.
-    let view = ada.view(APP);
-    let title = crate::fixtures::field_id(&meta, "TodoList", "title");
-    let input = find_bound(view.tree(), &title).unwrap();
-    view.edit(&input, &Value::text("Groceries")).unwrap();
-    // Planning another action for the door writes into the mirror and takes it back.
-    let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
-    let args = json!({ "text": "tea" }).as_object().cloned().unwrap();
-    ada.host
-        .plan(&PlanRequest {
-            app: APP,
-            kind: "tl.so.tilo.todo.TodoList",
-            action_id: &action.id,
-            resource: Some(&root),
-            args: &args,
-            caller: None,
-            from: None,
-        })
-        .unwrap();
-    assert_eq!(item_ids(&ada, &meta, &root).len(), 3, "the trial is gone");
-    let list = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
-    assert_eq!(
-        ada.host.runtime().read(&list, "title").unwrap(),
-        Value::text("Groceries"),
-        "the press is still there"
-    );
-    ada.commit();
-    assert_eq!(
-        ada.host.runtime().read(&list, "title").unwrap(),
-        Value::text("Groceries")
-    );
-    assert_eq!(ada.host.store().stats().full_syncs, 0);
-}
+    phase the_mirror_follows_the_record_without_copying_it;
+    {
+        let (mut ada, mut grace, meta, root) = workspace();
+        let ids = item_ids(&ada, &meta, &root);
+        retype(&mut grace, &meta, &root, &ids[0], "almond milk");
+        ada.sync_with(&mut grace);
+        add(&mut ada, &meta, &root, "jam");
+        let stats = ada.host.store().stats();
+        assert_eq!(stats.full_syncs, 0, "{stats:?}");
+        assert!(stats.incremental_syncs >= 2, "{stats:?}");
+        // The runtime reads what the record holds.
+        let items = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
+        let first = items.item(&ids[0], type_id(&meta, "Item"));
+        assert_eq!(
+            ada.host.runtime().read(&first, "text").unwrap(),
+            Value::text("almond milk")
+        );
+        assert_eq!(item_ids(&ada, &meta, &root).len(), 4);
+    }
 
-#[test]
-fn what_the_runtime_read_follows_every_change_after() {
-    let (mut ada, mut grace, meta, root) = workspace();
-    let ids = item_ids(&ada, &meta, &root);
-    let list = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
-    let first = list.item(&ids[0], type_id(&meta, "Item"));
-    let count = |ada: &Replica| match ada.host.runtime().read(&list, "items").unwrap() {
-        Value::List(items) => items.len(),
-        other => panic!("{other:?}"),
-    };
-    let text = |ada: &Replica| ada.host.runtime().read(&first, "text").unwrap();
-    // Read once, so that the store keeps what it read.
-    assert_eq!(text(&ada), Value::text("milk"));
-    assert_eq!(count(&ada), 3);
+    phase a_trial_run_takes_back_only_its_own_writes;
+    {
+        let (mut ada, _grace, meta, root) = workspace();
+        // A press the executor has not committed yet: the runtime sees it, the record does not.
+        let view = ada.view(APP);
+        let title = crate::fixtures::field_id(&meta, "TodoList", "title");
+        let input = find_bound(view.tree(), &title).unwrap();
+        view.edit(&input, &Value::text("Groceries")).unwrap();
+        // Planning another action for the door writes into the mirror and takes it back.
+        let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+        let args = json!({ "text": "tea" }).as_object().cloned().unwrap();
+        ada.host
+            .plan(&PlanRequest {
+                app: APP,
+                kind: "tl.so.tilo.todo.TodoList",
+                action_id: &action.id,
+                resource: Some(&root),
+                args: &args,
+                caller: None,
+                from: None,
+            })
+            .unwrap();
+        assert_eq!(item_ids(&ada, &meta, &root).len(), 3, "the trial is gone");
+        let list = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
+        assert_eq!(
+            ada.host.runtime().read(&list, "title").unwrap(),
+            Value::text("Groceries"),
+            "the press is still there"
+        );
+        ada.commit();
+        assert_eq!(
+            ada.host.runtime().read(&list, "title").unwrap(),
+            Value::text("Groceries")
+        );
+        assert_eq!(ada.host.store().stats().full_syncs, 0);
+    }
 
-    // A peer retypes the item and adds one.
-    retype(&mut grace, &meta, &root, &ids[0], "oat milk");
-    add(&mut grace, &meta, &root, "tea");
-    ada.sync_with(&mut grace);
-    assert_eq!(text(&ada), Value::text("oat milk"));
-    assert_eq!(count(&ada), 4);
+    phase what_the_runtime_read_follows_every_change_after;
+    {
+        let (mut ada, mut grace, meta, root) = workspace();
+        let ids = item_ids(&ada, &meta, &root);
+        let list = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
+        let first = list.item(&ids[0], type_id(&meta, "Item"));
+        let count = |ada: &Replica| match ada.host.runtime().read(&list, "items").unwrap() {
+            Value::List(items) => items.len(),
+            other => panic!("{other:?}"),
+        };
+        let text = |ada: &Replica| ada.host.runtime().read(&first, "text").unwrap();
+        // Read once, so that the store keeps what it read.
+        assert_eq!(text(&ada), Value::text("milk"));
+        assert_eq!(count(&ada), 3);
 
-    // A trial run adds one and takes it back.
-    let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
-    let args = json!({ "text": "jam" }).as_object().cloned().unwrap();
-    ada.host
-        .plan(&PlanRequest {
-            app: APP,
-            kind: "tl.so.tilo.todo.TodoList",
-            action_id: &action.id,
-            resource: Some(&root),
-            args: &args,
-            caller: None,
-            from: None,
-        })
-        .unwrap();
-    assert_eq!(count(&ada), 4);
+        // A peer retypes the item and adds one.
+        retype(&mut grace, &meta, &root, &ids[0], "oat milk");
+        add(&mut grace, &meta, &root, "tea");
+        ada.sync_with(&mut grace);
+        assert_eq!(text(&ada), Value::text("oat milk"));
+        assert_eq!(count(&ada), 4);
 
-    // An addition of its own.
-    add(&mut ada, &meta, &root, "jam");
-    assert_eq!(count(&ada), 5);
-    assert_eq!(text(&ada), Value::text("oat milk"));
-}
+        // A trial run adds one and takes it back.
+        let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+        let args = json!({ "text": "jam" }).as_object().cloned().unwrap();
+        ada.host
+            .plan(&PlanRequest {
+                app: APP,
+                kind: "tl.so.tilo.todo.TodoList",
+                action_id: &action.id,
+                resource: Some(&root),
+                args: &args,
+                caller: None,
+                from: None,
+            })
+            .unwrap();
+        assert_eq!(count(&ada), 4);
 
-#[test]
-fn a_peers_change_keeps_every_edit_a_person_has_not_committed_yet() {
-    let (mut ada, mut grace, meta, root, ids_lock) = workspace_of(3);
-    let ids = item_ids(&ada, &meta, &root);
-    let committed = ada.log.len();
+        // An addition of its own.
+        add(&mut ada, &meta, &root, "jam");
+        assert_eq!(count(&ada), 5);
+        assert_eq!(text(&ada), Value::text("oat milk"));
+    }
 
-    // Ada types into two items and the list's title. The record has none of it: the host has
-    // not taken what the store queued.
-    typed(&ada, &meta, &root, &ids[0], "oat milk");
-    typed(&ada, &meta, &root, &ids[2], "rye");
-    let view = ada.view(APP);
-    let title = field_id(&meta, "TodoList", "title");
-    let input = find_bound(view.tree(), &title).unwrap();
-    view.edit(&input, &Value::text("Groceries")).unwrap();
-    assert_eq!(
-        ada.log.len(),
-        committed,
-        "nothing of it is the record's yet"
-    );
+    phase a_peers_change_keeps_every_edit_a_person_has_not_committed_yet;
+    {
+        let (mut ada, mut grace, meta, root, ids_lock) = workspace_of(3);
+        let ids = item_ids(&ada, &meta, &root);
+        let committed = ada.log.len();
 
-    // Grace's change arrives first: she adds an item and retypes another.
-    add(&mut grace, &meta, &root, "tea");
-    retype(&mut grace, &meta, &root, &ids[1], "eggs, large");
-    ada.sync_with(&mut grace);
-    assert_eq!(ada.log.len(), committed, "still none of it is the record's");
+        // Ada types into two items and the list's title. The record has none of it: the host has
+        // not taken what the store queued.
+        typed(&ada, &meta, &root, &ids[0], "oat milk");
+        typed(&ada, &meta, &root, &ids[2], "rye");
+        let view = ada.view(APP);
+        let title = field_id(&meta, "TodoList", "title");
+        let input = find_bound(view.tree(), &title).unwrap();
+        view.edit(&input, &Value::text("Groceries")).unwrap();
+        assert_eq!(
+            ada.log.len(),
+            committed,
+            "nothing of it is the record's yet"
+        );
 
-    // Every edit is still what the store answers, and Grace's change is there too.
-    let (held_title, texts) = listed(&ada, &meta, &root);
-    assert_eq!(
-        held_title, "Groceries",
-        "the person's title survived the sync"
-    );
-    assert_eq!(
-        texts,
-        ["oat milk", "eggs, large", "rye", "tea"],
-        "every edit a person made survived the sync, beside the peer's change"
-    );
-    let view = ada.view(APP);
-    assert_eq!(
-        shown(view.tree()),
-        ["oat milk", "eggs, large", "rye", "tea"],
-        "the window shows every edit, and the peer's change"
-    );
+        // Grace's change arrives first: she adds an item and retypes another.
+        add(&mut grace, &meta, &root, "tea");
+        retype(&mut grace, &meta, &root, &ids[1], "eggs, large");
+        ada.sync_with(&mut grace);
+        assert_eq!(ada.log.len(), committed, "still none of it is the record's");
 
-    // The host takes what the store queued: the record holds every edit, and a start from it
-    // reads the same.
-    ada.commit();
-    assert_eq!(
-        ada.log.len(),
-        committed + 3,
-        "one change an edit: {}",
-        ada.log.len()
-    );
-    let restarted = Replica::new("ada", ada.doc.fork(), &[(TODO, &ids_lock)]).0;
-    for replica in [&ada, &restarted] {
-        let (held_title, texts) = listed(replica, &meta, &root);
-        assert_eq!(held_title, "Groceries");
-        assert_eq!(texts, ["oat milk", "eggs, large", "rye", "tea"]);
-        let view = replica.view(APP);
+        // Every edit is still what the store answers, and Grace's change is there too.
+        let (held_title, texts) = listed(&ada, &meta, &root);
+        assert_eq!(
+            held_title, "Groceries",
+            "the person's title survived the sync"
+        );
+        assert_eq!(
+            texts,
+            ["oat milk", "eggs, large", "rye", "tea"],
+            "every edit a person made survived the sync, beside the peer's change"
+        );
+        let view = ada.view(APP);
         assert_eq!(
             shown(view.tree()),
-            ["oat milk", "eggs, large", "rye", "tea"]
+            ["oat milk", "eggs, large", "rye", "tea"],
+            "the window shows every edit, and the peer's change"
         );
+
+        // The host takes what the store queued: the record holds every edit, and a start from it
+        // reads the same.
+        ada.commit();
+        assert_eq!(
+            ada.log.len(),
+            committed + 3,
+            "one change an edit: {}",
+            ada.log.len()
+        );
+        let restarted = Replica::new("ada", ada.doc.fork(), &[(TODO, &ids_lock)]).0;
+        for replica in [&ada, &restarted] {
+            let (held_title, texts) = listed(replica, &meta, &root);
+            assert_eq!(held_title, "Groceries");
+            assert_eq!(texts, ["oat milk", "eggs, large", "rye", "tea"]);
+            let view = replica.view(APP);
+            assert_eq!(
+                shown(view.tree()),
+                ["oat milk", "eggs, large", "rye", "tea"]
+            );
+        }
     }
 }
 

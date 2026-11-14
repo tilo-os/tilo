@@ -193,13 +193,21 @@ pub enum SettingsDocument {
 pub struct SettingsRevision(Option<u64>);
 
 impl SettingsDocument {
+    /// The version of the document this process reads: the source's own revision, and for the
+    /// session document also how many documents this process has installed, so a document put in
+    /// place of another is a new version even where the two number alike — a page that opens
+    /// another workspace installs that workspace's document over the one before it.
+    fn version(&self) -> Option<u64> {
+        self.located().map(|source| match self {
+            Self::Session => settings_store::installed_version(&*source),
+            Self::Profile(_) => source.revision(),
+        })
+    }
+
     fn source(&self) -> Option<std::sync::Arc<dyn settings_store::SettingsSource>> {
         let source = self.located();
-        let document = self.clone();
-        crate::component_inputs::read_versioned(
-            self,
-            Box::new(move || document.located().map(|source| source.revision())),
-        );
+        let versioned = self.clone();
+        crate::component_inputs::read_versioned(self, Box::new(move || versioned.version()));
         source
     }
 
@@ -263,7 +271,7 @@ impl SettingsDocument {
     /// The document's current version.
     #[must_use]
     pub fn revision(&self) -> SettingsRevision {
-        SettingsRevision(self.source().map(|source| source.revision()))
+        SettingsRevision(self.version())
     }
 
     /// Change the document holding section `name` itself through `edit`, as one change
@@ -793,6 +801,42 @@ pub fn secrets(app_id: &str) -> crate::secrets::SecretStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page that opens another workspace installs that workspace's settings document over
+    /// the one before it. The two number their revisions from one, so a reader that cached
+    /// what it read by revision alone went on reading the document it replaced: an app showed
+    /// a theme the person had already chosen away from while the desk drew the chosen one.
+    #[test]
+    fn a_document_installed_in_place_of_another_is_a_new_version() {
+        #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct Appearance {
+            mode: Option<String>,
+        }
+
+        impl SettingsSchema for Appearance {
+            const SCOPE: Scope = Scope::Shared("appearance");
+        }
+
+        let first = settings_store::HostDocument::new(Map::new(), |_| Ok(()));
+        let _page = settings_store::scoped_source(Some(std::sync::Arc::new(first)));
+        let settings = Settings::<Appearance>::shared();
+        let mut cached = SettingsCache::new(settings);
+        assert_eq!(cached.get().mode, None, "a page with nothing chosen");
+
+        let chosen = serde_json::json!({"appearance": {"mode": "dark"}});
+        let chosen = chosen.as_object().cloned().unwrap_or_default();
+        let second = settings_store::HostDocument::new(chosen, |_| Ok(()));
+        let _other = settings_store::scoped_source(Some(std::sync::Arc::new(second)));
+        assert!(
+            cached.refresh(),
+            "the document installed in the other's place is a version of its own"
+        );
+        assert_eq!(
+            cached.get().mode.as_deref(),
+            Some("dark"),
+            "so what the person chose is what is read"
+        );
+    }
 
     #[test]
     fn a_section_update_keeps_other_sections_and_keys() {

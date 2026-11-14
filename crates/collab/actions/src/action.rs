@@ -125,6 +125,57 @@ pub enum ActionError {
     /// asked correctly and the answer is no".
     #[error("{0}")]
     Refused(String),
+    /// The app declined for one of the reasons a window tells the person in
+    /// their own language ([`Declined`]): a caller can say what happened
+    /// instead of showing them the plumbing.
+    #[error("{0}")]
+    Declined(Declined),
+}
+
+/// The most bytes one text may hold: what one action carries, and what one
+/// window carries in one string. One number for both, so a text an edit keeps
+/// is always a text the window can show.
+pub const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Why an app declined an action, for the reasons a person is told rather than
+/// logged: the window says what happened and what to do, from the toolkit's
+/// catalogue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Declined {
+    /// What the action would change is not as it read it: a newer edit reached
+    /// the text first.
+    Changed,
+    /// The text the action carries is longer than one text may hold
+    /// ([`MAX_TEXT_BYTES`]).
+    TooLong,
+}
+
+impl Declined {
+    /// The catalogue message that says it, and the message's arguments: the toolkit's catalogue
+    /// holds the words, in every language it ships, so every window tells the same reason.
+    #[must_use]
+    pub fn words(self) -> (String, Vec<(String, String)>) {
+        match self {
+            Self::Changed => ("rich-text-changed-while-typing".to_owned(), Vec::new()),
+            Self::TooLong => (
+                "rich-text-too-long".to_owned(),
+                // A limit of a mebibyte and more reads as its megabytes.
+                vec![(
+                    "limit".to_owned(),
+                    format!("{} MB", MAX_TEXT_BYTES / (1024 * 1024)),
+                )],
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for Declined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Changed => "the text changed since it was read",
+            Self::TooLong => "the text is longer than one text may hold",
+        })
+    }
 }
 
 /// A value that deterministically mutates a CRDT [`Doc`].

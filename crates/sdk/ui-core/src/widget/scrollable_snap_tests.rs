@@ -97,165 +97,171 @@ fn run_out(view: &mut Framed<Scrollable>, from: Instant) -> f32 {
     view.offset_x()
 }
 
-/// The detents a phone-width board offers the view showing it: one per lane,
-/// a lane and its gap apart, the first at the start of the content.
-#[test]
-fn a_compact_board_offers_a_detent_per_lane() {
-    let view = board_on_a_pane(lanes(3), 390);
-    let detents = &view.snap_x;
-    assert_eq!(detents.len(), 3, "one per lane: {detents:?}");
-    assert!(
-        detents[0].abs() < 0.5,
-        "the first lane is the start of the content: {detents:?}"
-    );
-    let pitch = lane_pitch();
-    assert!(
-        (detents[1] - detents[0] - pitch).abs() < 0.5,
-        "the second lane stands a lane and a gap on: {detents:?}"
-    );
-    assert!(
-        detents[2] > detents[1] && detents[2] <= detents[1] + pitch + 0.5,
-        "the last lane's detent comes after the second: {detents:?}"
-    );
-}
+tilo_test_env::scenario! {
+    /// Lane snapping of a board that scrolls sideways.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_board_snaps_to_its_lanes;
 
-/// A fling that is still moving settles a lane on, not halfway between two:
-/// the view carries the gesture's speed into the settle.
-#[test]
-fn a_fling_settles_on_the_next_lane() {
-    let mut view = board_on_a_pane(lanes(3), 390);
-    let at = crate::time::now();
-    let released = drag(&mut view, at, 90.0, 4);
-    let_go(&mut view, released);
-    let rest = run_out(&mut view, released);
-    let next = view.snap_x[1];
-    assert!(
-        (f64::from(rest) - f64::from(next)).abs() < 0.5,
-        "the fling settled on the next lane's edge {next}: {rest}"
-    );
-}
-
-/// A drag that comes to rest before it is let go returns to the lane it was
-/// thrown from: it never left that lane far enough to cross into the next.
-#[test]
-fn a_drag_that_comes_to_rest_returns_to_its_lane() {
-    let mut view = board_on_a_pane(lanes(3), 390);
-    let at = crate::time::now();
-    let lane = view.snap_x[1];
-    with_monotonic_time(at, || {
-        view.move_by(lane, 0.0);
-    });
-    let settled = at + Duration::from_millis(500);
-    let released = drag(&mut view, settled, 90.0, 4);
-    let_go(&mut view, released + Duration::from_millis(300));
-    let rest = run_out(&mut view, released + Duration::from_millis(300));
-    assert!(
-        (f64::from(rest) - f64::from(lane)).abs() < 0.5,
-        "the drag came back to the lane it was in {lane}: {rest}"
-    );
-}
-
-/// The same drag let go while still moving settles on the lane ahead: the
-/// detents behind the way the hand went are never where it comes to rest.
-#[test]
-fn a_release_still_moving_settles_ahead_never_back() {
-    let mut view = board_on_a_pane(lanes(3), 390);
-    let at = crate::time::now();
-    let lane = view.snap_x[1];
-    with_monotonic_time(at, || {
-        view.move_by(lane, 0.0);
-    });
-    let released = drag(&mut view, at + Duration::from_millis(500), 90.0, 4);
-    let_go(&mut view, released);
-    let rest = run_out(&mut view, released);
-    let ahead = *view.snap_x.last().expect("the last lane");
-    assert!(
-        (f64::from(rest) - f64::from(ahead)).abs() < 0.5,
-        "the release settled ahead on {ahead}, not back: {rest}"
-    );
-    assert!(
-        rest > lane,
-        "the content went on, never back: {rest} from {lane}"
-    );
-}
-
-/// A key walks the lanes one at a time: it moves the view a line, and the
-/// view lands on the next lane rather than a line further on.
-#[test]
-fn a_key_walks_the_lanes_one_at_a_time() {
-    let mut view = board_on_a_pane(lanes(3), 390);
-    let at = crate::time::now();
-    view.set_focus(true);
-    let next = view.snap_x[1];
-    with_monotonic_time(at, || {
+    phase a_compact_board_offers_a_detent_per_lane;
+    // The detents a phone-width board offers the view showing it: one per lane,
+    // a lane and its gap apart, the first at the start of the content.
+    {
+        let view = board_on_a_pane(lanes(3), 390);
+        let detents = &view.snap_x;
+        assert_eq!(detents.len(), 3, "one per lane: {detents:?}");
         assert!(
-            dispatch(
-                &mut *view,
-                &crate::synthetic_input::named_key(NamedKey::ArrowRight)
-            ),
-            "the view takes the key"
+            detents[0].abs() < 0.5,
+            "the first lane is the start of the content: {detents:?}"
         );
-    });
-    let rest = run_out(&mut view, at);
-    assert!(
-        (f64::from(rest) - f64::from(next)).abs() < 0.5,
-        "the key landed on the next lane's edge {next}: {rest}"
-    );
-}
+        let pitch = lane_pitch();
+        assert!(
+            (detents[1] - detents[0] - pitch).abs() < 0.5,
+            "the second lane stands a lane and a gap on: {detents:?}"
+        );
+        assert!(
+            detents[2] > detents[1] && detents[2] <= detents[1] + pitch + 0.5,
+            "the last lane's detent comes after the second: {detents:?}"
+        );
+    }
 
-/// Under reduced motion a release lands on the lane at once: no animation
-/// runs, and the view asks for no frame to run one.
-#[test]
-fn under_reduced_motion_a_release_lands_on_the_lane_at_once() {
-    let mut view = board_on_a_pane(lanes(3), 390);
-    view.motion = EffectiveMotion::new(Motion::default(), true);
-    let at = crate::time::now();
-    let released = drag(&mut view, at, 90.0, 4);
-    let_go(&mut view, released);
-    let next = view.snap_x[1];
-    assert!(
-        (view.offset_x() - next).abs() < 0.5,
-        "the release landed on the next lane's edge {next}: {}",
-        view.offset_x()
-    );
-    assert!(
-        !view.needs_animation_frame(),
-        "reduced motion animates nothing"
-    );
-}
+    phase a_fling_settles_on_the_next_lane;
+    // A fling that is still moving settles a lane on, not halfway between two:
+    // the view carries the gesture's speed into the settle.
+    {
+        let mut view = board_on_a_pane(lanes(3), 390);
+        let at = crate::time::now();
+        let released = drag(&mut view, at, 90.0, 4);
+        let_go(&mut view, released);
+        let rest = run_out(&mut view, released);
+        let next = view.snap_x[1];
+        assert!(
+            (f64::from(rest) - f64::from(next)).abs() < 0.5,
+            "the fling settled on the next lane's edge {next}: {rest}"
+        );
+    }
 
-/// A board wide enough to show its lanes side by side offers no detents: the content stays
-/// where the hand left it, and a fling coasts on from there, as a free scroll does.
-#[test]
-fn a_board_wide_enough_for_its_lanes_scrolls_freely() {
-    let mut view = board_on_a_pane(lanes(6), 1280);
-    assert!(
-        view.snap_x.is_empty(),
-        "a pane showing its lanes side by side offers none: {:?}",
-        view.snap_x
-    );
-    assert!(!view.snaps(), "and so it does not snap");
-    let at = crate::time::now();
-    let released = drag(&mut view, at, 90.0, 4);
-    let paused = released + Duration::from_millis(300);
-    let_go(&mut view, paused);
-    let rest = run_out(&mut view, paused);
-    assert!(
-        (rest - 90.0).abs() < 0.5,
-        "the content stays where the hand left it: {rest}"
-    );
-    let pitch = f64::from(lane_pitch());
-    assert!(
-        [1.0, 2.0, 3.0]
-            .iter()
-            .all(|lanes| (f64::from(rest) - pitch * lanes).abs() > 2.0),
-        "no lane edge pulled it: {rest}"
-    );
-    let released = drag(&mut view, paused + Duration::from_millis(500), 90.0, 4);
-    let_go(&mut view, released);
-    let flung = run_out(&mut view, released);
-    assert!(
-        flung > 180.0,
-        "the fling coasts on past the hand: {flung} from 90"
-    );
+    phase a_drag_that_comes_to_rest_returns_to_its_lane;
+    // A drag that comes to rest before it is let go returns to the lane it was
+    // thrown from: it never left that lane far enough to cross into the next.
+    {
+        let mut view = board_on_a_pane(lanes(3), 390);
+        let at = crate::time::now();
+        let lane = view.snap_x[1];
+        with_monotonic_time(at, || {
+            view.move_by(lane, 0.0);
+        });
+        let settled = at + Duration::from_millis(500);
+        let released = drag(&mut view, settled, 90.0, 4);
+        let_go(&mut view, released + Duration::from_millis(300));
+        let rest = run_out(&mut view, released + Duration::from_millis(300));
+        assert!(
+            (f64::from(rest) - f64::from(lane)).abs() < 0.5,
+            "the drag came back to the lane it was in {lane}: {rest}"
+        );
+    }
+
+    phase a_release_still_moving_settles_ahead_never_back;
+    // The same drag let go while still moving settles on the lane ahead: the
+    // detents behind the way the hand went are never where it comes to rest.
+    {
+        let mut view = board_on_a_pane(lanes(3), 390);
+        let at = crate::time::now();
+        let lane = view.snap_x[1];
+        with_monotonic_time(at, || {
+            view.move_by(lane, 0.0);
+        });
+        let released = drag(&mut view, at + Duration::from_millis(500), 90.0, 4);
+        let_go(&mut view, released);
+        let rest = run_out(&mut view, released);
+        let ahead = *view.snap_x.last().expect("the last lane");
+        assert!(
+            (f64::from(rest) - f64::from(ahead)).abs() < 0.5,
+            "the release settled ahead on {ahead}, not back: {rest}"
+        );
+        assert!(
+            rest > lane,
+            "the content went on, never back: {rest} from {lane}"
+        );
+    }
+
+    phase a_key_walks_the_lanes_one_at_a_time;
+    // A key walks the lanes one at a time: it moves the view a line, and the
+    // view lands on the next lane rather than a line further on.
+    {
+        let mut view = board_on_a_pane(lanes(3), 390);
+        let at = crate::time::now();
+        view.set_focus(true);
+        let next = view.snap_x[1];
+        with_monotonic_time(at, || {
+            assert!(
+                dispatch(
+                    &mut *view,
+                    &crate::synthetic_input::named_key(NamedKey::ArrowRight)
+                ),
+                "the view takes the key"
+            );
+        });
+        let rest = run_out(&mut view, at);
+        assert!(
+            (f64::from(rest) - f64::from(next)).abs() < 0.5,
+            "the key landed on the next lane's edge {next}: {rest}"
+        );
+    }
+
+    phase under_reduced_motion_a_release_lands_on_the_lane_at_once;
+    // Under reduced motion a release lands on the lane at once: no animation
+    // runs, and the view asks for no frame to run one.
+    {
+        let mut view = board_on_a_pane(lanes(3), 390);
+        view.motion = EffectiveMotion::new(Motion::default(), true);
+        let at = crate::time::now();
+        let released = drag(&mut view, at, 90.0, 4);
+        let_go(&mut view, released);
+        let next = view.snap_x[1];
+        assert!(
+            (view.offset_x() - next).abs() < 0.5,
+            "the release landed on the next lane's edge {next}: {}",
+            view.offset_x()
+        );
+        assert!(
+            !view.needs_animation_frame(),
+            "reduced motion animates nothing"
+        );
+    }
+
+    phase a_board_wide_enough_for_its_lanes_scrolls_freely;
+    // A board wide enough to show its lanes side by side offers no detents: the content stays
+    // where the hand left it, and a fling coasts on from there, as a free scroll does.
+    {
+        let mut view = board_on_a_pane(lanes(6), 1280);
+        assert!(
+            view.snap_x.is_empty(),
+            "a pane showing its lanes side by side offers none: {:?}",
+            view.snap_x
+        );
+        assert!(!view.snaps(), "and so it does not snap");
+        let at = crate::time::now();
+        let released = drag(&mut view, at, 90.0, 4);
+        let paused = released + Duration::from_millis(300);
+        let_go(&mut view, paused);
+        let rest = run_out(&mut view, paused);
+        assert!(
+            (rest - 90.0).abs() < 0.5,
+            "the content stays where the hand left it: {rest}"
+        );
+        let pitch = f64::from(lane_pitch());
+        assert!(
+            [1.0, 2.0, 3.0]
+                .iter()
+                .all(|lanes| (f64::from(rest) - pitch * lanes).abs() > 2.0),
+            "no lane edge pulled it: {rest}"
+        );
+        let released = drag(&mut view, paused + Duration::from_millis(500), 90.0, 4);
+        let_go(&mut view, released);
+        let flung = run_out(&mut view, released);
+        assert!(
+            flung > 180.0,
+            "the fling coasts on past the hand: {flung} from 90"
+        );
+    }
 }

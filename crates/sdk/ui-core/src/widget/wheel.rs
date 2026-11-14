@@ -107,54 +107,58 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_browsers_trackpad_swipe_begins_runs_and_ends_after_its_pause() {
-        let mut wheel = PhaselessWheel::default();
-        let start = crate::time::now();
-        let mut first = pixels(-40.0);
-        wheel.observe(&mut first, start);
-        assert_eq!(phase(&first), TouchPhase::Started);
-        let mut next = pixels(-40.0);
-        let later = start + crate::time::Duration::from_millis(16);
-        wheel.observe(&mut next, later);
-        assert_eq!(phase(&next), TouchPhase::Moved);
-        assert!(
-            wheel
-                .end_if_due(later + crate::time::Duration::from_millis(100))
-                .is_none()
-        );
-        let due = wheel.deadline().expect("a gesture runs");
-        let end = wheel.end_if_due(due).expect("the pause ends it");
-        assert_eq!(phase(&end), TouchPhase::Ended);
-        assert!(wheel.end_if_due(due).is_none(), "ended once");
-        assert!(wheel.deadline().is_none());
-        let mut again = pixels(40.0);
-        wheel.observe(&mut again, due);
-        assert_eq!(
-            phase(&again),
-            TouchPhase::Started,
-            "the next swipe begins anew"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_phaseless_wheel_is_given_the_phases_it_lacks;
 
-    #[test]
-    fn a_notch_or_a_phased_trackpad_is_left_as_it_is() {
-        let mut wheel = PhaselessWheel::default();
-        let now = crate::time::now();
-        let mut notch = WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-            phase: TouchPhase::Moved,
-        };
-        wheel.observe(&mut notch, now);
-        assert_eq!(phase(&notch), TouchPhase::Moved);
-        let mut lift = WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 0.0)),
-            phase: TouchPhase::Ended,
-        };
-        wheel.observe(&mut lift, now);
-        assert_eq!(phase(&lift), TouchPhase::Ended);
-        assert!(wheel.deadline().is_none());
+        phase a_browsers_trackpad_swipe_begins_runs_and_ends_after_its_pause;
+        {
+            let mut wheel = PhaselessWheel::default();
+            let start = crate::time::now();
+            let mut first = pixels(-40.0);
+            wheel.observe(&mut first, start);
+            assert_eq!(phase(&first), TouchPhase::Started);
+            let mut next = pixels(-40.0);
+            let later = start + crate::time::Duration::from_millis(16);
+            wheel.observe(&mut next, later);
+            assert_eq!(phase(&next), TouchPhase::Moved);
+            assert!(
+                wheel
+                    .end_if_due(later + crate::time::Duration::from_millis(100))
+                    .is_none()
+            );
+            let due = wheel.deadline().expect("a gesture runs");
+            let end = wheel.end_if_due(due).expect("the pause ends it");
+            assert_eq!(phase(&end), TouchPhase::Ended);
+            assert!(wheel.end_if_due(due).is_none(), "ended once");
+            assert!(wheel.deadline().is_none());
+            let mut again = pixels(40.0);
+            wheel.observe(&mut again, due);
+            assert_eq!(
+                phase(&again),
+                TouchPhase::Started,
+                "the next swipe begins anew"
+            );
+        }
+
+        phase a_notch_or_a_phased_trackpad_is_left_as_it_is;
+        {
+            let mut wheel = PhaselessWheel::default();
+            let now = crate::time::now();
+            let mut notch = WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: TouchPhase::Moved,
+            };
+            wheel.observe(&mut notch, now);
+            assert_eq!(phase(&notch), TouchPhase::Moved);
+            let mut lift = WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 0.0)),
+                phase: TouchPhase::Ended,
+            };
+            wheel.observe(&mut lift, now);
+            assert_eq!(phase(&lift), TouchPhase::Ended);
+            assert!(wheel.deadline().is_none());
+        }
     }
 }

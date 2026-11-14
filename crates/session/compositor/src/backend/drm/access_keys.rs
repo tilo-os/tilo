@@ -563,7 +563,7 @@ mod tests {
         expect: BounceVerdict,
     }
 
-    fn run(window: Duration, steps: &[Step]) {
+    fn run(name: &str, window: Duration, steps: &[Step]) {
         let t0 = Instant::now();
         let mut filter = BounceKeys::default();
         for (index, step) in steps.iter().enumerate() {
@@ -576,7 +576,7 @@ mod tests {
             assert_eq!(
                 verdict,
                 step.expect,
-                "step {index}: key {} {} at {} ms",
+                "{name}, step {index}: key {} {} at {} ms",
                 step.key,
                 if step.pressed { "down" } else { "up" },
                 step.at
@@ -606,72 +606,98 @@ mod tests {
     const B: u32 = 48;
     use BounceVerdict::{Accept as OK, Reject as NO};
 
-    #[test]
-    fn bounce_keys_timing_table() {
-        run(
-            ms(300),
-            &[
-                // A clean keystroke.
-                down(0, A, OK),
-                up(80, A, OK),
-                // The same key 100 ms after release: a bounce, and its release goes with it.
-                down(180, A, NO),
-                up(200, A, NO),
-                // Still inside the window, which restarted at 200 ms.
-                down(450, A, NO),
-                up(470, A, NO),
-                // 300 ms after the last release: a real keystroke again.
-                down(770, A, OK),
-                up(850, A, OK),
-                // A different key right away is never a bounce.
-                down(860, B, OK),
-                up(900, B, OK),
-                // A again: B was the last release, so A is not a repeat.
-                down(910, A, OK),
-                up(990, A, OK),
-            ],
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Bounce keys.
+        fn bounce_keys_drop_a_repeat_inside_the_window;
 
-    #[test]
-    fn the_window_boundary_is_exclusive() {
-        run(
-            ms(300),
-            &[
-                down(0, A, OK),
-                up(10, A, OK),
-                down(309, A, NO),
-                up(309, A, NO),
-                down(609, A, OK),
-            ],
-        );
-    }
+        phase bounce_keys_timing_table;
+        {
+            let rows: [(&str, Duration, &[Step]); 8] = [
+                (
+                    "a keystroke, its bounces and other keys",
+                    ms(300),
+                    &[
+                        // A clean keystroke.
+                        down(0, A, OK),
+                        up(80, A, OK),
+                        // The same key 100 ms after release: a bounce, and its release goes with it.
+                        down(180, A, NO),
+                        up(200, A, NO),
+                        // Still inside the window, which restarted at 200 ms.
+                        down(450, A, NO),
+                        up(470, A, NO),
+                        // 300 ms after the last release: a real keystroke again.
+                        down(770, A, OK),
+                        up(850, A, OK),
+                        // A different key right away is never a bounce.
+                        down(860, B, OK),
+                        up(900, B, OK),
+                        // A again: B was the last release, so A is not a repeat.
+                        down(910, A, OK),
+                        up(990, A, OK),
+                    ],
+                ),
+                (
+                    "the window's boundary is exclusive",
+                    ms(300),
+                    &[
+                        down(0, A, OK),
+                        up(10, A, OK),
+                        down(309, A, NO),
+                        up(309, A, NO),
+                        down(609, A, OK),
+                    ],
+                ),
+                (
+                    "a zero window accepts everything",
+                    Duration::ZERO,
+                    &[down(0, A, OK), up(1, A, OK), down(2, A, OK), up(3, A, OK)],
+                ),
+                (
+                    // Bounce keys measures from the release; holding never counts.
+                    "a held key is one keystroke however long it is held",
+                    ms(300),
+                    &[down(0, A, OK), up(5_000, A, OK), down(5_400, A, OK)],
+                ),
+                ("no key at all", ms(300), &[]),
+                ("one press and nothing after it", ms(300), &[down(0, A, OK)]),
+                (
+                    // Each key's rejected press is remembered until its own release, whichever key
+                    // lets go first.
+                    "two keys chattering at once are each swallowed until their own release",
+                    ms(300),
+                    &[
+                        down(0, A, OK),
+                        up(10, A, OK),
+                        down(20, A, NO),
+                        down(30, B, OK),
+                        up(40, B, OK),
+                        down(50, B, NO),
+                        up(60, A, NO),
+                        up(70, B, NO),
+                    ],
+                ),
+                (
+                    // After a boundary that lost the press, the release still starts the window.
+                    "a release whose press was never seen starts the window",
+                    ms(300),
+                    &[up(0, A, OK), down(100, A, NO), up(110, A, NO)],
+                ),
+            ];
+            for (name, window, steps) in rows {
+                run(name, window, steps);
+            }
+        }
 
-    #[test]
-    fn a_zero_window_accepts_everything() {
-        run(
-            Duration::ZERO,
-            &[down(0, A, OK), up(1, A, OK), down(2, A, OK), up(3, A, OK)],
-        );
-    }
-
-    #[test]
-    fn a_held_key_is_one_keystroke_however_long_it_is_held() {
-        // Bounce keys measures from the release; holding never counts.
-        run(
-            ms(300),
-            &[down(0, A, OK), up(5_000, A, OK), down(5_400, A, OK)],
-        );
-    }
-
-    #[test]
-    fn reset_forgets_the_last_release() {
-        let t0 = Instant::now();
-        let mut filter = BounceKeys::default();
-        assert_eq!(filter.press(A, t0, ms(300)), BounceVerdict::Accept);
-        assert_eq!(filter.release(A, t0 + ms(10)), BounceVerdict::Accept);
-        filter.reset();
-        assert_eq!(filter.press(A, t0 + ms(20), ms(300)), BounceVerdict::Accept);
+        phase reset_forgets_the_last_release;
+        {
+            let t0 = Instant::now();
+            let mut filter = BounceKeys::default();
+            assert_eq!(filter.press(A, t0, ms(300)), BounceVerdict::Accept);
+            assert_eq!(filter.release(A, t0 + ms(10)), BounceVerdict::Accept);
+            filter.reset();
+            assert_eq!(filter.press(A, t0 + ms(20), ms(300)), BounceVerdict::Accept);
+        }
     }
 
     // mouse keys
@@ -695,177 +721,182 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn the_keypad_layout_matches_the_documented_map() {
-        assert_eq!(keypad_key(KP_8), Some(KeypadKey::Move(0, -1)));
-        assert_eq!(keypad_key(KP_2), Some(KeypadKey::Move(0, 1)));
-        assert_eq!(keypad_key(KP_4), Some(KeypadKey::Move(-1, 0)));
-        assert_eq!(keypad_key(KP_6), Some(KeypadKey::Move(1, 0)));
-        assert_eq!(keypad_key(KP_1), Some(KeypadKey::Move(-1, 1)));
-        assert_eq!(keypad_key(KP_5), Some(KeypadKey::Click));
-        assert_eq!(keypad_key(KP_0), Some(KeypadKey::Hold));
-        assert_eq!(keypad_key(KP_DOT), Some(KeypadKey::Release));
-        assert_eq!(
-            keypad_key(KP_MINUS),
-            Some(KeypadKey::Select(PointerButton::Right))
-        );
-        // Num Lock, keypad Enter and the main row stay ordinary keys.
-        assert_eq!(keypad_key(69), None);
-        assert_eq!(keypad_key(96), None);
-        assert_eq!(keypad_key(30), None);
-    }
+    tilo_test_env::scenario! {
+        /// Mouse keys.
+        fn mouse_keys_move_and_click_the_pointer_from_the_keypad;
 
-    #[test]
-    fn a_tap_nudges_one_pixel_and_does_not_glide() {
-        let t0 = Instant::now();
-        let mut keys = MouseKeys::default();
-        let out = keys.key(KP_6, true, t0).expect("keypad 6 is mouse keys'");
-        assert_eq!(out.motion, (NUDGE_PX, 0.0));
-        assert_eq!(keys.motion(t0 + ms(100)), (0.0, 0.0), "inside the delay");
-        assert!(keys.key(KP_6, false, t0 + ms(120)).is_some());
-        assert_eq!(keys.motion(t0 + ms(2_000)), (0.0, 0.0));
-        assert_eq!(keys.next_deadline(), None);
-    }
-
-    #[test]
-    fn glide_distance_accelerates_then_holds_max_speed() {
-        assert_eq!(glide_distance(ms(0)), 0.0);
-        assert_eq!(glide_distance(GLIDE_DELAY), 0.0);
-        // Half a second into the glide: v0·t + (vmax−v0)·t²/(2·T).
-        let half = glide_distance(GLIDE_DELAY + ms(500));
-        let expected = START_SPEED * 0.5 + (MAX_SPEED - START_SPEED) * 0.25 / (2.0 * 1.2);
-        assert!((half - expected).abs() < 1e-9, "{half} vs {expected}");
-        // Once accelerated, each further second adds MAX_SPEED.
-        let a = glide_distance(GLIDE_DELAY + ACCEL_TIME + ms(1_000));
-        let b = glide_distance(GLIDE_DELAY + ACCEL_TIME + ms(2_000));
-        assert!((b - a - MAX_SPEED).abs() < 1e-9);
-        // Speed never decreases: equal slices cover ever more ground.
-        let mut last = 0.0;
-        for i in 1..40 {
-            let slice = glide_distance(ms(50 * i)) - glide_distance(ms(50 * (i - 1)));
-            assert!(slice >= last - 1e-9, "slice {i} slowed down");
-            last = slice;
+        phase the_keypad_layout_matches_the_documented_map;
+        {
+            assert_eq!(keypad_key(KP_8), Some(KeypadKey::Move(0, -1)));
+            assert_eq!(keypad_key(KP_2), Some(KeypadKey::Move(0, 1)));
+            assert_eq!(keypad_key(KP_4), Some(KeypadKey::Move(-1, 0)));
+            assert_eq!(keypad_key(KP_6), Some(KeypadKey::Move(1, 0)));
+            assert_eq!(keypad_key(KP_1), Some(KeypadKey::Move(-1, 1)));
+            assert_eq!(keypad_key(KP_5), Some(KeypadKey::Click));
+            assert_eq!(keypad_key(KP_0), Some(KeypadKey::Hold));
+            assert_eq!(keypad_key(KP_DOT), Some(KeypadKey::Release));
+            assert_eq!(
+                keypad_key(KP_MINUS),
+                Some(KeypadKey::Select(PointerButton::Right))
+            );
+            // Num Lock, keypad Enter and the main row stay ordinary keys.
+            assert_eq!(keypad_key(69), None);
+            assert_eq!(keypad_key(96), None);
+            assert_eq!(keypad_key(30), None);
         }
-    }
 
-    #[test]
-    fn holding_a_direction_glides_the_same_path_at_any_tick_rate() {
-        let t0 = Instant::now();
-        let mut coarse = MouseKeys::default();
-        let mut fine = MouseKeys::default();
-        let _ = coarse.key(KP_2, true, t0);
-        let _ = fine.key(KP_2, true, t0);
-        let mut coarse_y = 0.0;
-        let mut fine_y = 0.0;
-        for step in 1..=10 {
-            coarse_y += coarse.motion(t0 + ms(200 * step)).1;
+        phase a_tap_nudges_one_pixel_and_does_not_glide;
+        {
+            let t0 = Instant::now();
+            let mut keys = MouseKeys::default();
+            let out = keys.key(KP_6, true, t0).expect("keypad 6 is mouse keys'");
+            assert_eq!(out.motion, (NUDGE_PX, 0.0));
+            assert_eq!(keys.motion(t0 + ms(100)), (0.0, 0.0), "inside the delay");
+            assert!(keys.key(KP_6, false, t0 + ms(120)).is_some());
+            assert_eq!(keys.motion(t0 + ms(2_000)), (0.0, 0.0));
+            assert_eq!(keys.next_deadline(), None);
         }
-        for step in 1..=250 {
-            fine_y += fine.motion(t0 + ms(8 * step)).1;
+
+        phase glide_distance_accelerates_then_holds_max_speed;
+        {
+            assert_eq!(glide_distance(ms(0)), 0.0);
+            assert_eq!(glide_distance(GLIDE_DELAY), 0.0);
+            // Half a second into the glide: v0·t + (vmax−v0)·t²/(2·T).
+            let half = glide_distance(GLIDE_DELAY + ms(500));
+            let expected = START_SPEED * 0.5 + (MAX_SPEED - START_SPEED) * 0.25 / (2.0 * 1.2);
+            assert!((half - expected).abs() < 1e-9, "{half} vs {expected}");
+            // Once accelerated, each further second adds MAX_SPEED.
+            let a = glide_distance(GLIDE_DELAY + ACCEL_TIME + ms(1_000));
+            let b = glide_distance(GLIDE_DELAY + ACCEL_TIME + ms(2_000));
+            assert!((b - a - MAX_SPEED).abs() < 1e-9);
+            // Speed never decreases: equal slices cover ever more ground.
+            let mut last = 0.0;
+            for i in 1..40 {
+                let slice = glide_distance(ms(50 * i)) - glide_distance(ms(50 * (i - 1)));
+                assert!(slice >= last - 1e-9, "slice {i} slowed down");
+                last = slice;
+            }
         }
-        let expected = glide_distance(ms(2_000));
-        assert!((coarse_y - expected).abs() < 1e-6);
-        assert!((fine_y - expected).abs() < 1e-6);
-    }
 
-    #[test]
-    fn diagonals_and_opposites_combine_held_directions() {
-        let t0 = Instant::now();
-        let mut keys = MouseKeys::default();
-        let _ = keys.key(KP_1, true, t0);
-        let (x, y) = keys.motion(t0 + ms(1_000));
-        assert!(x < 0.0 && y > 0.0);
-        assert!((x.hypot(y) - glide_distance(ms(1_000))).abs() < 1e-9);
+        phase holding_a_direction_glides_the_same_path_at_any_tick_rate;
+        {
+            let t0 = Instant::now();
+            let mut coarse = MouseKeys::default();
+            let mut fine = MouseKeys::default();
+            let _ = coarse.key(KP_2, true, t0);
+            let _ = fine.key(KP_2, true, t0);
+            let mut coarse_y = 0.0;
+            let mut fine_y = 0.0;
+            for step in 1..=10 {
+                coarse_y += coarse.motion(t0 + ms(200 * step)).1;
+            }
+            for step in 1..=250 {
+                fine_y += fine.motion(t0 + ms(8 * step)).1;
+            }
+            let expected = glide_distance(ms(2_000));
+            assert!((coarse_y - expected).abs() < 1e-6);
+            assert!((fine_y - expected).abs() < 1e-6);
+        }
 
-        let mut keys = MouseKeys::default();
-        let _ = keys.key(KP_4, true, t0);
-        let _ = keys.key(KP_6, true, t0);
-        assert_eq!(keys.motion(t0 + ms(1_000)), (0.0, 0.0));
-        assert_eq!(keys.next_deadline(), None, "cancelled directions sleep");
-    }
+        phase diagonals_and_opposites_combine_held_directions;
+        {
+            let t0 = Instant::now();
+            let mut keys = MouseKeys::default();
+            let _ = keys.key(KP_1, true, t0);
+            let (x, y) = keys.motion(t0 + ms(1_000));
+            assert!(x < 0.0 && y > 0.0);
+            assert!((x.hypot(y) - glide_distance(ms(1_000))).abs() < 1e-9);
 
-    #[test]
-    fn adding_a_direction_keeps_the_acceleration() {
-        let t0 = Instant::now();
-        let mut keys = MouseKeys::default();
-        let _ = keys.key(KP_6, true, t0);
-        let _ = keys.motion(t0 + ms(1_000));
-        let _ = keys.key(KP_2, true, t0 + ms(1_000));
-        let (x, y) = keys.motion(t0 + ms(1_100));
-        let slice = glide_distance(ms(1_100)) - glide_distance(ms(1_000));
-        assert!((x.hypot(y) - slice).abs() < 1e-9);
-    }
+            let mut keys = MouseKeys::default();
+            let _ = keys.key(KP_4, true, t0);
+            let _ = keys.key(KP_6, true, t0);
+            assert_eq!(keys.motion(t0 + ms(1_000)), (0.0, 0.0));
+            assert_eq!(keys.next_deadline(), None, "cancelled directions sleep");
+        }
 
-    #[test]
-    fn deadlines_skip_the_delay_then_tick() {
-        let t0 = Instant::now();
-        let mut keys = MouseKeys::default();
-        let _ = keys.key(KP_8, true, t0);
-        assert_eq!(keys.next_deadline(), Some(t0 + GLIDE_DELAY + TICK));
-        let _ = keys.motion(t0 + ms(500));
-        assert_eq!(keys.next_deadline(), Some(t0 + ms(500) + TICK));
-    }
+        phase adding_a_direction_keeps_the_acceleration;
+        {
+            let t0 = Instant::now();
+            let mut keys = MouseKeys::default();
+            let _ = keys.key(KP_6, true, t0);
+            let _ = keys.motion(t0 + ms(1_000));
+            let _ = keys.key(KP_2, true, t0 + ms(1_000));
+            let (x, y) = keys.motion(t0 + ms(1_100));
+            let slice = glide_distance(ms(1_100)) - glide_distance(ms(1_000));
+            assert!((x.hypot(y) - slice).abs() < 1e-9);
+        }
 
-    #[test]
-    fn click_double_click_hold_and_release_use_the_selected_button() {
-        use PointerButton::{Left, Middle, Right};
-        let t = Instant::now();
-        let mut keys = MouseKeys::default();
-        let click = keys.key(KP_5, true, t).unwrap();
-        assert_eq!(click.buttons, edges(&[(Left, true), (Left, false)]));
-        let _ = keys.key(KP_5, false, t);
+        phase deadlines_skip_the_delay_then_tick;
+        {
+            let t0 = Instant::now();
+            let mut keys = MouseKeys::default();
+            let _ = keys.key(KP_8, true, t0);
+            assert_eq!(keys.next_deadline(), Some(t0 + GLIDE_DELAY + TICK));
+            let _ = keys.motion(t0 + ms(500));
+            assert_eq!(keys.next_deadline(), Some(t0 + ms(500) + TICK));
+        }
 
-        let _ = keys.key(KP_MINUS, true, t);
-        let _ = keys.key(KP_MINUS, false, t);
-        assert_eq!(keys.selected(), Right);
-        let double = keys.key(KP_PLUS, true, t).unwrap();
-        assert_eq!(
-            double.buttons,
-            edges(&[(Right, true), (Right, false), (Right, true), (Right, false)])
-        );
-        let _ = keys.key(KP_PLUS, false, t);
+        phase click_double_click_hold_and_release_use_the_selected_button;
+        {
+            use PointerButton::{Left, Middle, Right};
+            let t = Instant::now();
+            let mut keys = MouseKeys::default();
+            let click = keys.key(KP_5, true, t).unwrap();
+            assert_eq!(click.buttons, edges(&[(Left, true), (Left, false)]));
+            let _ = keys.key(KP_5, false, t);
 
-        let _ = keys.key(KP_STAR, true, t);
-        let _ = keys.key(KP_STAR, false, t);
-        let hold = keys.key(KP_0, true, t).unwrap();
-        assert_eq!(hold.buttons, edges(&[(Middle, true)]));
-        let _ = keys.key(KP_0, false, t);
-        let again = keys.key(KP_0, true, t).unwrap();
-        assert!(
-            again.buttons.is_empty(),
-            "a held button is not pressed twice"
-        );
-        let _ = keys.key(KP_0, false, t);
+            let _ = keys.key(KP_MINUS, true, t);
+            let _ = keys.key(KP_MINUS, false, t);
+            assert_eq!(keys.selected(), Right);
+            let double = keys.key(KP_PLUS, true, t).unwrap();
+            assert_eq!(
+                double.buttons,
+                edges(&[(Right, true), (Right, false), (Right, true), (Right, false)])
+            );
+            let _ = keys.key(KP_PLUS, false, t);
 
-        let _ = keys.key(KP_SLASH, true, t);
-        let _ = keys.key(KP_SLASH, false, t);
-        assert_eq!(keys.selected(), Left);
-        let release = keys.key(KP_DOT, true, t).unwrap();
-        assert_eq!(release.buttons, edges(&[(Middle, false)]));
-    }
+            let _ = keys.key(KP_STAR, true, t);
+            let _ = keys.key(KP_STAR, false, t);
+            let hold = keys.key(KP_0, true, t).unwrap();
+            assert_eq!(hold.buttons, edges(&[(Middle, true)]));
+            let _ = keys.key(KP_0, false, t);
+            let again = keys.key(KP_0, true, t).unwrap();
+            assert!(
+                again.buttons.is_empty(),
+                "a held button is not pressed twice"
+            );
+            let _ = keys.key(KP_0, false, t);
 
-    #[test]
-    fn only_releases_of_consumed_presses_are_taken() {
-        let t = Instant::now();
-        let mut keys = MouseKeys::default();
-        // Pressed before mouse keys came on: its release belongs to the seat.
-        assert_eq!(keys.key(KP_5, false, t), None);
-        // Ordinary keys are never taken.
-        assert_eq!(keys.key(30, true, t), None);
-        // Hardware repeat of a held keypad key is swallowed without effect.
-        assert!(keys.key(KP_5, true, t).is_some());
-        assert_eq!(keys.key(KP_5, true, t), Some(MouseKeysOutput::default()));
-    }
+            let _ = keys.key(KP_SLASH, true, t);
+            let _ = keys.key(KP_SLASH, false, t);
+            assert_eq!(keys.selected(), Left);
+            let release = keys.key(KP_DOT, true, t).unwrap();
+            assert_eq!(release.buttons, edges(&[(Middle, false)]));
+        }
 
-    #[test]
-    fn reset_releases_held_buttons_and_stops_gliding() {
-        let t = Instant::now();
-        let mut keys = MouseKeys::default();
-        let _ = keys.key(KP_0, true, t);
-        let _ = keys.key(KP_6, true, t);
-        assert_eq!(keys.reset(), edges(&[(PointerButton::Left, false)]));
-        assert_eq!(keys.next_deadline(), None);
-        assert_eq!(keys.key(KP_6, false, t), None, "released after reset");
+        phase only_releases_of_consumed_presses_are_taken;
+        {
+            let t = Instant::now();
+            let mut keys = MouseKeys::default();
+            // Pressed before mouse keys came on: its release belongs to the seat.
+            assert_eq!(keys.key(KP_5, false, t), None);
+            // Ordinary keys are never taken.
+            assert_eq!(keys.key(30, true, t), None);
+            // Hardware repeat of a held keypad key is swallowed without effect.
+            assert!(keys.key(KP_5, true, t).is_some());
+            assert_eq!(keys.key(KP_5, true, t), Some(MouseKeysOutput::default()));
+        }
+
+        phase reset_releases_held_buttons_and_stops_gliding;
+        {
+            let t = Instant::now();
+            let mut keys = MouseKeys::default();
+            let _ = keys.key(KP_0, true, t);
+            let _ = keys.key(KP_6, true, t);
+            assert_eq!(keys.reset(), edges(&[(PointerButton::Left, false)]));
+            assert_eq!(keys.next_deadline(), None);
+            assert_eq!(keys.key(KP_6, false, t), None, "released after reset");
+        }
     }
 
     const SHIFT: u32 = 42;
@@ -876,223 +907,229 @@ mod tests {
         InputEvent::Key { keycode, pressed }
     }
 
-    #[test]
-    fn the_filter_drops_bounces_and_turns_the_keypad_into_a_mouse() {
-        let t0 = Instant::now();
-        let mut filter = AccessKeys::default();
-        assert_eq!(
-            filter.filter(key(A, true), t0),
-            [key(A, true)],
-            "off: untouched"
-        );
-        let assists = Assists {
-            bounce_keys: Some(ms(100)),
-            mouse_keys: true,
-            ..Assists::default()
-        };
-        assert!(filter.configure(&assists, t0).is_empty());
-        assert_eq!(filter.filter(key(A, false), t0), [key(A, false)]);
-        assert!(
-            filter.filter(key(A, true), t0 + ms(20)).is_empty(),
-            "a bounce is dropped"
-        );
-        assert!(filter.filter(key(A, false), t0 + ms(30)).is_empty());
-        assert_eq!(
-            filter.filter(key(KP_6, true), t0 + ms(500)),
-            [InputEvent::PointerMotionRelative { dx: 1.0, dy: 0.0 }]
-        );
-        assert!(filter.next_deadline().is_some(), "a held direction glides");
-        assert!(!filter.tick(t0 + ms(1_500)).is_empty());
-        assert!(filter.filter(key(KP_6, false), t0 + ms(1_600)).is_empty());
-        assert_eq!(filter.next_deadline(), None);
-        assert_eq!(
-            filter.filter(key(76, true), t0 + ms(2_000)),
-            [
-                InputEvent::PointerButton {
+    tilo_test_env::scenario! {
+        /// The filter every key goes through: bounce, slow, sticky and mouse keys and switch
+        /// scanning together.
+        fn the_key_filter_runs_every_assist_in_turn;
+
+        phase the_filter_drops_bounces_and_turns_the_keypad_into_a_mouse;
+        {
+            let t0 = Instant::now();
+            let mut filter = AccessKeys::default();
+            assert_eq!(
+                filter.filter(key(A, true), t0),
+                [key(A, true)],
+                "off: untouched"
+            );
+            let assists = Assists {
+                bounce_keys: Some(ms(100)),
+                mouse_keys: true,
+                ..Assists::default()
+            };
+            assert!(filter.configure(&assists, t0).is_empty());
+            assert_eq!(filter.filter(key(A, false), t0), [key(A, false)]);
+            assert!(
+                filter.filter(key(A, true), t0 + ms(20)).is_empty(),
+                "a bounce is dropped"
+            );
+            assert!(filter.filter(key(A, false), t0 + ms(30)).is_empty());
+            assert_eq!(
+                filter.filter(key(KP_6, true), t0 + ms(500)),
+                [InputEvent::PointerMotionRelative { dx: 1.0, dy: 0.0 }]
+            );
+            assert!(filter.next_deadline().is_some(), "a held direction glides");
+            assert!(!filter.tick(t0 + ms(1_500)).is_empty());
+            assert!(filter.filter(key(KP_6, false), t0 + ms(1_600)).is_empty());
+            assert_eq!(filter.next_deadline(), None);
+            assert_eq!(
+                filter.filter(key(76, true), t0 + ms(2_000)),
+                [
+                    InputEvent::PointerButton {
+                        button: 0x110,
+                        pressed: true
+                    },
+                    InputEvent::PointerButton {
+                        button: 0x110,
+                        pressed: false
+                    },
+                ],
+                "keypad 5 clicks"
+            );
+            assert_eq!(
+                filter.filter(key(82, true), t0 + ms(2_100)),
+                [InputEvent::PointerButton {
                     button: 0x110,
                     pressed: true
-                },
-                InputEvent::PointerButton {
+                }],
+                "keypad 0 holds"
+            );
+            assert_eq!(
+                filter.configure(&Assists::default(), t0),
+                [InputEvent::PointerButton {
                     button: 0x110,
                     pressed: false
-                },
-            ],
-            "keypad 5 clicks"
-        );
-        assert_eq!(
-            filter.filter(key(82, true), t0 + ms(2_100)),
-            [InputEvent::PointerButton {
-                button: 0x110,
-                pressed: true
-            }],
-            "keypad 0 holds"
-        );
-        assert_eq!(
-            filter.configure(&Assists::default(), t0),
-            [InputEvent::PointerButton {
-                button: 0x110,
-                pressed: false
-            }],
-            "switching mouse keys off lets go of what it held"
-        );
-        assert_eq!(filter.filter(key(KP_6, true), t0), [key(KP_6, true)]);
-    }
+                }],
+                "switching mouse keys off lets go of what it held"
+            );
+            assert_eq!(filter.filter(key(KP_6, true), t0), [key(KP_6, true)]);
+        }
 
-    #[test]
-    fn slow_keys_hold_a_press_until_it_has_been_held_long_enough() {
-        let t0 = Instant::now();
-        let mut filter = AccessKeys::default();
-        let assists = Assists {
-            slow_keys: Some(ms(200)),
-            ..Assists::default()
-        };
-        assert!(filter.configure(&assists, t0).is_empty());
-        assert!(
-            filter.filter(key(A, true), t0).is_empty(),
-            "the press waits"
-        );
-        assert_eq!(filter.next_deadline(), Some(t0 + ms(200)));
-        assert_eq!(filter.tick(t0 + ms(100)), Vec::<InputEvent>::new());
-        assert!(
-            filter.filter(key(A, false), t0 + ms(150)).is_empty(),
-            "a brush types nothing"
-        );
-        assert_eq!(filter.next_deadline(), None, "and leaves nothing due");
+        phase slow_keys_hold_a_press_until_it_has_been_held_long_enough;
+        {
+            let t0 = Instant::now();
+            let mut filter = AccessKeys::default();
+            let assists = Assists {
+                slow_keys: Some(ms(200)),
+                ..Assists::default()
+            };
+            assert!(filter.configure(&assists, t0).is_empty());
+            assert!(
+                filter.filter(key(A, true), t0).is_empty(),
+                "the press waits"
+            );
+            assert_eq!(filter.next_deadline(), Some(t0 + ms(200)));
+            assert_eq!(filter.tick(t0 + ms(100)), Vec::<InputEvent>::new());
+            assert!(
+                filter.filter(key(A, false), t0 + ms(150)).is_empty(),
+                "a brush types nothing"
+            );
+            assert_eq!(filter.next_deadline(), None, "and leaves nothing due");
 
-        assert!(filter.filter(key(A, true), t0 + ms(300)).is_empty());
-        assert_eq!(filter.tick(t0 + ms(500)), [key(A, true)]);
-        assert!(filter.tick(t0 + ms(500)).is_empty());
-        assert_eq!(
-            filter.filter(key(A, false), t0 + ms(550)),
-            [key(A, false)],
-            "its release follows once it counted"
-        );
-    }
+            assert!(filter.filter(key(A, true), t0 + ms(300)).is_empty());
+            assert_eq!(filter.tick(t0 + ms(500)), [key(A, true)]);
+            assert!(filter.tick(t0 + ms(500)).is_empty());
+            assert_eq!(
+                filter.filter(key(A, false), t0 + ms(550)),
+                [key(A, false)],
+                "its release follows once it counted"
+            );
+        }
 
-    #[test]
-    fn a_waiting_press_goes_through_every_later_assist() {
-        let t0 = Instant::now();
-        let mut filter = AccessKeys::default();
-        let assists = Assists {
-            slow_keys: Some(ms(100)),
-            sticky_keys: true,
-            ..Assists::default()
-        };
-        assert!(filter.configure(&assists, t0).is_empty());
-        assert_eq!(
-            filter.filter(key(SHIFT, true), t0),
-            Vec::<InputEvent>::new(),
-            "a modifier waits its delay too"
-        );
-        assert_eq!(filter.tick(t0 + ms(100)), [key(SHIFT, true)]);
-        assert!(filter.filter(key(SHIFT, false), t0 + ms(150)).is_empty());
-        assert!(
-            filter.filter(key(A, true), t0 + ms(200)).is_empty(),
-            "the letter waits too"
-        );
-        assert_eq!(filter.tick(t0 + ms(300)), [key(A, true)]);
-        assert_eq!(
-            filter.filter(key(A, false), t0 + ms(350)),
-            [key(A, false), key(SHIFT, false)],
-            "the chord lets the modifier go"
-        );
-    }
+        phase a_waiting_press_goes_through_every_later_assist;
+        {
+            let t0 = Instant::now();
+            let mut filter = AccessKeys::default();
+            let assists = Assists {
+                slow_keys: Some(ms(100)),
+                sticky_keys: true,
+                ..Assists::default()
+            };
+            assert!(filter.configure(&assists, t0).is_empty());
+            assert_eq!(
+                filter.filter(key(SHIFT, true), t0),
+                Vec::<InputEvent>::new(),
+                "a modifier waits its delay too"
+            );
+            assert_eq!(filter.tick(t0 + ms(100)), [key(SHIFT, true)]);
+            assert!(filter.filter(key(SHIFT, false), t0 + ms(150)).is_empty());
+            assert!(
+                filter.filter(key(A, true), t0 + ms(200)).is_empty(),
+                "the letter waits too"
+            );
+            assert_eq!(filter.tick(t0 + ms(300)), [key(A, true)]);
+            assert_eq!(
+                filter.filter(key(A, false), t0 + ms(350)),
+                [key(A, false), key(SHIFT, false)],
+                "the chord lets the modifier go"
+            );
+        }
 
-    #[test]
-    fn sticky_keys_hold_a_modifier_for_one_chord() {
-        let t0 = Instant::now();
-        let mut filter = AccessKeys::default();
-        let assists = Assists {
-            sticky_keys: true,
-            ..Assists::default()
-        };
-        assert!(filter.configure(&assists, t0).is_empty());
-        assert_eq!(filter.filter(key(SHIFT, true), t0), [key(SHIFT, true)]);
-        assert!(filter.filter(key(SHIFT, false), t0 + ms(50)).is_empty());
-        assert_eq!(filter.filter(key(A, true), t0 + ms(100)), [key(A, true)]);
-        assert_eq!(
-            filter.filter(key(A, false), t0 + ms(200)),
-            [key(A, false), key(SHIFT, false)]
-        );
-        assert_eq!(filter.filter(key(B, true), t0 + ms(300)), [key(B, true)]);
-        assert_eq!(
-            filter.filter(key(B, false), t0 + ms(400)),
-            [key(B, false)],
-            "the next key is unmodified"
-        );
-        // Switching sticky keys off releases a held modifier.
-        assert_eq!(
-            filter.filter(key(SHIFT, true), t0 + ms(10_000)),
-            [key(SHIFT, true)]
-        );
-        assert_eq!(
-            filter.configure(&Assists::default(), t0 + ms(10_100)),
-            [key(SHIFT, false)]
-        );
-    }
+        phase sticky_keys_hold_a_modifier_for_one_chord;
+        {
+            let t0 = Instant::now();
+            let mut filter = AccessKeys::default();
+            let assists = Assists {
+                sticky_keys: true,
+                ..Assists::default()
+            };
+            assert!(filter.configure(&assists, t0).is_empty());
+            assert_eq!(filter.filter(key(SHIFT, true), t0), [key(SHIFT, true)]);
+            assert!(filter.filter(key(SHIFT, false), t0 + ms(50)).is_empty());
+            assert_eq!(filter.filter(key(A, true), t0 + ms(100)), [key(A, true)]);
+            assert_eq!(
+                filter.filter(key(A, false), t0 + ms(200)),
+                [key(A, false), key(SHIFT, false)]
+            );
+            assert_eq!(filter.filter(key(B, true), t0 + ms(300)), [key(B, true)]);
+            assert_eq!(
+                filter.filter(key(B, false), t0 + ms(400)),
+                [key(B, false)],
+                "the next key is unmodified"
+            );
+            // Switching sticky keys off releases a held modifier.
+            assert_eq!(
+                filter.filter(key(SHIFT, true), t0 + ms(10_000)),
+                [key(SHIFT, true)]
+            );
+            assert_eq!(
+                filter.configure(&Assists::default(), t0 + ms(10_100)),
+                [key(SHIFT, false)]
+            );
+        }
 
-    #[test]
-    fn switch_scanning_turns_the_switch_keys_into_tab_and_return() {
-        let t0 = Instant::now();
-        let mut filter = AccessKeys::default();
-        let assists = Assists {
-            switch: Some(SwitchConfig {
-                pair: crate::switch_scan::SwitchPair::F6F7,
-                period: None,
-            }),
-            ..Assists::default()
-        };
-        assert!(filter.configure(&assists, t0).is_empty());
-        assert_eq!(
-            filter.filter(key(F6, true), t0),
-            [key(15, true), key(15, false)],
-            "the first switch steps the focus on"
-        );
-        assert!(
-            filter.filter(key(F6, false), t0 + ms(50)).is_empty(),
-            "no client sees the switch key"
-        );
-        assert_eq!(
-            filter.filter(key(F7, true), t0 + ms(500)),
-            [key(28, true), key(28, false)],
-            "the second presses what has the focus"
-        );
-        assert!(filter.filter(key(F7, false), t0 + ms(550)).is_empty());
-        assert_eq!(
-            filter.filter(key(A, true), t0 + ms(600)),
-            [key(A, true)],
-            "every other key is typed as usual"
-        );
-        assert_eq!(filter.next_deadline(), None, "no automatic walking");
-    }
+        phase switch_scanning_turns_the_switch_keys_into_tab_and_return;
+        {
+            let t0 = Instant::now();
+            let mut filter = AccessKeys::default();
+            let assists = Assists {
+                switch: Some(SwitchConfig {
+                    pair: crate::switch_scan::SwitchPair::F6F7,
+                    period: None,
+                }),
+                ..Assists::default()
+            };
+            assert!(filter.configure(&assists, t0).is_empty());
+            assert_eq!(
+                filter.filter(key(F6, true), t0),
+                [key(15, true), key(15, false)],
+                "the first switch steps the focus on"
+            );
+            assert!(
+                filter.filter(key(F6, false), t0 + ms(50)).is_empty(),
+                "no client sees the switch key"
+            );
+            assert_eq!(
+                filter.filter(key(F7, true), t0 + ms(500)),
+                [key(28, true), key(28, false)],
+                "the second presses what has the focus"
+            );
+            assert!(filter.filter(key(F7, false), t0 + ms(550)).is_empty());
+            assert_eq!(
+                filter.filter(key(A, true), t0 + ms(600)),
+                [key(A, true)],
+                "every other key is typed as usual"
+            );
+            assert_eq!(filter.next_deadline(), None, "no automatic walking");
+        }
 
-    #[test]
-    fn automatic_scanning_walks_the_focus_by_itself() {
-        let t0 = Instant::now();
-        let mut filter = AccessKeys::default();
-        let assists = Assists {
-            switch: Some(SwitchConfig {
-                pair: crate::switch_scan::SwitchPair::F6F7,
-                period: Some(ms(1_000)),
-            }),
-            ..Assists::default()
-        };
-        assert!(filter.configure(&assists, t0).is_empty());
-        assert_eq!(filter.next_deadline(), Some(t0 + ms(1_000)));
-        assert_eq!(filter.tick(t0 + ms(999)), Vec::<InputEvent>::new());
-        assert_eq!(filter.tick(t0 + ms(1_000)), [key(15, true), key(15, false)]);
-        assert_eq!(filter.next_deadline(), Some(t0 + ms(2_000)));
-        // The person's own press restarts the period, so nothing moves twice in a row.
-        let _ = filter.filter(key(F7, true), t0 + ms(1_900));
-        let _ = filter.filter(key(F7, false), t0 + ms(1_950));
-        assert_eq!(filter.next_deadline(), Some(t0 + ms(2_900)));
-        // Switching scanning off stops it.
-        assert!(
-            filter
-                .configure(&Assists::default(), t0 + ms(2_000))
-                .is_empty()
-        );
-        assert_eq!(filter.next_deadline(), None);
-        assert_eq!(filter.tick(t0 + ms(3_000)), Vec::<InputEvent>::new());
+        phase automatic_scanning_walks_the_focus_by_itself;
+        {
+            let t0 = Instant::now();
+            let mut filter = AccessKeys::default();
+            let assists = Assists {
+                switch: Some(SwitchConfig {
+                    pair: crate::switch_scan::SwitchPair::F6F7,
+                    period: Some(ms(1_000)),
+                }),
+                ..Assists::default()
+            };
+            assert!(filter.configure(&assists, t0).is_empty());
+            assert_eq!(filter.next_deadline(), Some(t0 + ms(1_000)));
+            assert_eq!(filter.tick(t0 + ms(999)), Vec::<InputEvent>::new());
+            assert_eq!(filter.tick(t0 + ms(1_000)), [key(15, true), key(15, false)]);
+            assert_eq!(filter.next_deadline(), Some(t0 + ms(2_000)));
+            // The person's own press restarts the period, so nothing moves twice in a row.
+            let _ = filter.filter(key(F7, true), t0 + ms(1_900));
+            let _ = filter.filter(key(F7, false), t0 + ms(1_950));
+            assert_eq!(filter.next_deadline(), Some(t0 + ms(2_900)));
+            // Switching scanning off stops it.
+            assert!(
+                filter
+                    .configure(&Assists::default(), t0 + ms(2_000))
+                    .is_empty()
+            );
+            assert_eq!(filter.next_deadline(), None);
+            assert_eq!(filter.tick(t0 + ms(3_000)), Vec::<InputEvent>::new());
+        }
     }
 }

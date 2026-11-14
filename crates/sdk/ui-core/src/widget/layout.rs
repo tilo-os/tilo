@@ -1286,118 +1286,719 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_measure_under_a_min_content_constraint_leaves_no_height_for_a_width_asked_after() {
-        use taffy::geometry::Size;
-        use taffy::style::AvailableSpace;
-        use taffy::style_helpers::length;
-        let mut tree: TaffyTree<()> = TaffyTree::new();
-        let block = tree
-            .new_leaf(taffy::Style {
-                flex_grow: 1.0,
-                flex_basis: length(0.0_f32),
-                min_size: Size {
-                    width: length(0.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                ..taffy::Style::default()
-            })
-            .expect("a leaf");
-        let chip = tree
-            .new_leaf(taffy::Style {
-                size: Size {
-                    width: length(28.0_f32),
-                    height: length(28.0_f32),
-                },
-                ..taffy::Style::default()
-            })
-            .expect("a leaf");
-        let row = tree
-            .new_with_children(
-                taffy::Style {
-                    size: Size {
-                        width: taffy::style_helpers::percent(1.0_f32),
+    tilo_test_env::scenario! {
+        fn measures_and_authored_extents_resolve;
+
+        phase a_measure_under_a_min_content_constraint_leaves_no_height_for_a_width_asked_after;
+        {
+            use taffy::geometry::Size;
+            use taffy::style::AvailableSpace;
+            use taffy::style_helpers::length;
+            let mut tree: TaffyTree<()> = TaffyTree::new();
+            let block = tree
+                .new_leaf(taffy::Style {
+                    flex_grow: 1.0,
+                    flex_basis: length(0.0_f32),
+                    min_size: Size {
+                        width: length(0.0_f32),
                         height: taffy::Dimension::auto(),
                     },
-                    gap: Size {
-                        width: length(8.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    align_items: Some(taffy::AlignItems::Center),
                     ..taffy::Style::default()
+                })
+                .expect("a leaf");
+            let chip = tree
+                .new_leaf(taffy::Style {
+                    size: Size {
+                        width: length(28.0_f32),
+                        height: length(28.0_f32),
+                    },
+                    ..taffy::Style::default()
+                })
+                .expect("a leaf");
+            let row = tree
+                .new_with_children(
+                    taffy::Style {
+                        size: Size {
+                            width: taffy::style_helpers::percent(1.0_f32),
+                            height: taffy::Dimension::auto(),
+                        },
+                        gap: Size {
+                            width: length(8.0_f32),
+                            height: length(0.0_f32),
+                        },
+                        align_items: Some(taffy::AlignItems::Center),
+                        ..taffy::Style::default()
+                    },
+                    &[block, chip],
+                )
+                .expect("the row");
+            let mut measure = |known: Size<Option<f32>>,
+                               available: Size<AvailableSpace>,
+                               _: taffy::NodeId,
+                               _: Option<&mut ()>,
+                               _: &taffy::Style| {
+                let narrow = available.width == AvailableSpace::MinContent;
+                Size {
+                    width: known.width.unwrap_or(400.0),
+                    height: if narrow { 300.0 } else { 20.0 },
+                }
+            };
+            for available in [
+                Size {
+                    width: AvailableSpace::MinContent,
+                    height: AvailableSpace::MaxContent,
                 },
-                &[block, chip],
-            )
-            .expect("the row");
-        let mut measure = |known: Size<Option<f32>>,
-                           available: Size<AvailableSpace>,
-                           _: taffy::NodeId,
-                           _: Option<&mut ()>,
-                           _: &taffy::Style| {
-            let narrow = available.width == AvailableSpace::MinContent;
-            Size {
-                width: known.width.unwrap_or(400.0),
-                height: if narrow { 300.0 } else { 20.0 },
+                Size {
+                    width: AvailableSpace::Definite(436.0),
+                    height: AvailableSpace::MaxContent,
+                },
+            ] {
+                tree.compute_layout_with_measure(row, available, &mut measure)
+                    .expect("solves");
             }
-        };
-        for available in [
-            Size {
-                width: AvailableSpace::MinContent,
-                height: AvailableSpace::MaxContent,
-            },
-            Size {
-                width: AvailableSpace::Definite(436.0),
-                height: AvailableSpace::MaxContent,
-            },
-        ] {
-            tree.compute_layout_with_measure(row, available, &mut measure)
-                .expect("solves");
+            let laid_out = tree.layout(block).expect("laid out").size;
+            assert_eq!(
+                laid_out,
+                Size {
+                    width: 400.0,
+                    height: 20.0
+                },
+                "the block stands at the width it was given, at the height its text wraps to there"
+            );
         }
-        let laid_out = tree.layout(block).expect("laid out").size;
-        assert_eq!(
-            laid_out,
-            Size {
-                width: 400.0,
-                height: 20.0
-            },
-            "the block stands at the width it was given, at the height its text wraps to there"
-        );
+
+        phase authored_extents_and_rounding_resolve_by_sizing;
+        {
+            fn authored_extents_resolve_by_their_sizing() {
+                let text = AuthoredExtent::text(760.0);
+                let icon = AuthoredExtent::icon(86.0);
+                assert_eq!(
+                    (text.resolve(&Theme::dark()), icon.resolve(&Theme::dark())),
+                    (760.0, 86.0)
+                );
+                let two = Theme::dark().with_text_scale(2.0);
+                assert_eq!((text.resolve(&two), icon.resolve(&two)), (1520.0, 86.0));
+                let small = Theme::dark().with_text_scale(0.75);
+                assert_eq!(text.resolve(&small), 760.0, "text never shrinks an extent");
+                let dense = Theme::dark().with_ui_scale(1.5);
+                assert!((text.resolve(&dense) - 1140.0).abs() < 1e-9);
+                assert!((icon.resolve(&dense) - 129.0).abs() < 1e-9);
+                assert_eq!(text.with_px(300.0), AuthoredExtent::text(300.0));
+                assert_eq!(icon.with_px(56.0).sizing(), ExtentSizing::Icon);
+                assert_eq!(text.authored(), 760.0);
+            }
+
+            fn text_control_height_keeps_the_authored_height_until_the_line_outgrows_it() {
+                let stock = Theme::dark();
+                assert_eq!(text_control_height(34.0, &stock), 34.0);
+                assert_eq!(text_control_height(36.0, &stock), 36.0);
+
+                let line_1x = f64::from(stock.text(TextRole::Body).line_height_px());
+                let two = Theme::dark().with_text_scale(2.0);
+                let line_2x = f64::from(two.text(TextRole::Body).line_height_px());
+                assert!(
+                    (line_2x - 2.0 * line_1x).abs() < 1e-3,
+                    "the theme's body line doubles"
+                );
+                let grown = text_control_height(34.0, &two);
+                assert!(
+                    (grown - (line_2x + (34.0 - line_1x))).abs() < 1e-6,
+                    "34 px at 1× becomes the 2× line plus the same padding, got {grown}"
+                );
+                assert!(
+                    grown > 34.0 && grown < 68.0,
+                    "grows by the line, not by the whole scale"
+                );
+
+                let smaller = Theme::dark().with_text_scale(0.75);
+                assert_eq!(
+                    text_control_height(34.0, &smaller),
+                    34.0,
+                    "smaller text never shrinks a control below its authored height"
+                );
+
+                let dense = Theme::dark().with_ui_scale(1.5);
+                assert!(
+                    (text_control_height(34.0, &dense) - 51.0).abs() < 1e-6,
+                    "ui_scale scales the whole control"
+                );
+            }
+
+            fn manual_allocation_at(scale: f64) -> Rect {
+                use crate::widget::{Button, Manual};
+                let mut widget = Manual::new(|ctx| {
+                    ctx.place(0, Rect::new(10.25, 20.75, 130.75, 61.0))?;
+                    Ok(Size {
+                        width: ctx.available().width,
+                        height: 100.0,
+                    })
+                })
+                .child(Box::new(Button::new("action", "Action")));
+                let _grid = enter_device_scale(scale);
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                let mut bindings = BoundNodeMap::new();
+                unsafe {
+                    bindings.rebuild(&widget, &tree, root, &nodes);
+                }
+                let mut text = crate::font_catalog::fixture_renderer();
+                unsafe {
+                    compute_widget_layout(
+                        &mut tree,
+                        root,
+                        Size {
+                            width: AvailableSpace::Definite(400.0),
+                            height: AvailableSpace::Definite(300.0),
+                        },
+                        &nodes,
+                        &bindings,
+                        &mut text,
+                    )
+                    .unwrap();
+                }
+                widget.apply_layout(&tree, root, Point::ZERO);
+                assert!(
+                    widget
+                        .effective_layout()
+                        .is_some_and(|info| info.first_conflict.is_none()),
+                    "the allocation is the policy's, unrounded: no conflict"
+                );
+                widget.children()[0].get_rect()
+            }
+
+            fn manual_fractional_allocation_lands_on_device_pixels() {
+                assert_eq!(
+                    manual_allocation_at(4.0),
+                    Rect::new(10.25, 20.75, 130.75, 61.0),
+                    "quarter pixels are device pixels at 4x"
+                );
+                assert_eq!(
+                    manual_allocation_at(1.0),
+                    Rect::new(10.0, 21.0, 131.0, 61.0)
+                );
+                let third = manual_allocation_at(1.5);
+                for edge in [third.x0, third.y0, third.x1, third.y1] {
+                    assert!(
+                        ((edge * 1.5) - (edge * 1.5).round()).abs() < 1e-3,
+                        "{edge} is a device pixel at 1.5x: {third:?}"
+                    );
+                }
+            }
+
+            fn pixel_rounding_at(scale: f64) -> Rect {
+                let mut widget = crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_size(100.25, 40.25);
+                let _grid = enter_device_scale(scale);
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                let mut bindings = BoundNodeMap::new();
+                unsafe {
+                    bindings.rebuild(&widget, &tree, root, &nodes);
+                }
+                unsafe {
+                    compute_widget_layout(
+                        &mut tree,
+                        root,
+                        Size {
+                            width: AvailableSpace::Definite(300.0),
+                            height: AvailableSpace::Definite(200.0),
+                        },
+                        &nodes,
+                        &bindings,
+                        &mut crate::font_catalog::fixture_renderer(),
+                    )
+                    .unwrap();
+                }
+                widget.apply_layout(&tree, root, Point::ZERO);
+                widget.get_rect()
+            }
+
+            fn ordinary_hosts_round_to_the_display_pixels() {
+                assert_eq!(pixel_rounding_at(1.0), Rect::new(0.0, 0.0, 100.0, 40.0));
+                assert_eq!(pixel_rounding_at(2.0), Rect::new(0.0, 0.0, 100.5, 40.5));
+            }
+
+            authored_extents_resolve_by_their_sizing();
+            text_control_height_keeps_the_authored_height_until_the_line_outgrows_it();
+            manual_fractional_allocation_lands_on_device_pixels();
+            ordinary_hosts_round_to_the_display_pixels();
+        }
+
+        phase a_label_laid_out_and_never_drawn_answers_its_measure;
+        {
+            use crate::widget::{Column, Text};
+            let mut root = Column::new().push(Box::new(Text::new("Label").with_id("label")));
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let tree_root = root.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+            let mut bindings = BoundNodeMap::new();
+            // SAFETY: the tree, its widgets and both maps live to the end of the
+            // test, and nothing else lays them out beside it.
+            unsafe {
+                bindings.rebuild(&root, &tree, tree_root, &nodes);
+            }
+            let available = Size {
+                width: AvailableSpace::Definite(400.0),
+                height: AvailableSpace::Definite(300.0),
+            };
+            let lay_out = |root: &mut Column, tree: &mut TaffyTree<()>| {
+                let mut text = crate::font_catalog::fixture_renderer();
+                // SAFETY: as above.
+                unsafe {
+                    compute_widget_layout(tree, tree_root, available, &nodes, &bindings, &mut text)
+                        .expect("solves");
+                }
+                root.apply_layout(tree, tree_root, Point::ZERO);
+            };
+            lay_out(&mut root, &mut tree);
+            let with_label = |root: &mut Column, ask: &mut dyn FnMut(&mut Text)| {
+                let label = root
+                    .children_mut()
+                    .into_iter()
+                    .find_map(|child| child.as_any_mut()?.downcast_mut::<Text>())
+                    .expect("the label is the column's child");
+                ask(label);
+            };
+            with_label(&mut root, &mut |label| {
+                assert!(!label.layout_needs_measure(), "placed once, it rests");
+            });
+
+            // Its text takes more lines than the room it has: it asks to be
+            // measured again, and the frame that answers is one that lays it out
+            // and never draws it.
+            with_label(&mut root, &mut |label| {
+                label.set_lines(Some(2));
+                assert!(label.layout_needs_measure(), "the label asks for its size");
+            });
+            lay_out(&mut root, &mut tree);
+            with_label(&mut root, &mut |label| {
+                assert!(
+                    !label.layout_needs_measure(),
+                    "a label the solver measured asks for no second measure, drawn or not"
+                );
+                assert!(!label.is_layout_dirty(), "and its path stays clean");
+            });
+        }
     }
 
-    #[test]
-    fn focus_captured_across_a_rebuild_builds_only_the_focused_accessibility_node() {
-        use crate::widget::Column;
-        let built = std::rc::Rc::new(std::cell::Cell::new(0));
-        let list = |focused: Option<Option<&'static str>>| {
-            let mut column = Column::new();
-            for _ in 0..50 {
-                column = column.push(Box::new(AccessCount {
-                    built: built.clone(),
-                    focused: false,
-                    id: None,
-                }));
+    tilo_test_env::scenario! {
+        fn focus_follows_identity_across_rebuilds;
+
+        phase focus_captured_across_a_rebuild_builds_only_the_focused_accessibility_node;
+        {
+            use crate::widget::Column;
+            let built = std::rc::Rc::new(std::cell::Cell::new(0));
+            let list = |focused: Option<Option<&'static str>>| {
+                let mut column = Column::new();
+                for _ in 0..50 {
+                    column = column.push(Box::new(AccessCount {
+                        built: built.clone(),
+                        focused: false,
+                        id: None,
+                    }));
+                }
+                if let Some(id) = focused {
+                    column = column.push(Box::new(AccessCount {
+                        built: built.clone(),
+                        focused: true,
+                        id,
+                    }));
+                }
+                column
+            };
+            assert!(CompositionFocus::capture_live(&list(None)).is_none());
+            assert_eq!(built.get(), 0, "with nothing focused, no node is built");
+
+            let focus = CompositionFocus::capture_live(&list(Some(Some("target")))).unwrap();
+            assert_eq!(focus.key.as_deref(), Some("named:target"));
+            assert!(!focus.ambiguous, "no other control has its name");
+            assert_eq!(built.get(), 1, "a named target's own node only");
+
+            built.set(0);
+            let focus = CompositionFocus::capture_live(&list(Some(None))).unwrap();
+            assert_eq!(focus.key.as_deref(), Some("semantic:shared"));
+            assert!(focus.ambiguous, "the others answer to the same key");
+        }
+
+        phase focus_transfer_refuses_unnamed_ambiguous_or_unadmitted_targets;
+        {
+            fn unnamed_focus_has_no_transferable_snapshot_and_keeps_its_own_state() {
+                let mut old = AnonymousFocusProbe::new("old selection");
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                let mut bindings = BoundNodeMap::new();
+                unsafe {
+                    bindings.rebuild(&old, &tree, root, &nodes);
+                }
+                let focus = unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) };
+                assert!(
+                    focus.is_none(),
+                    "anonymous state must never be captured for transfer"
+                );
+                nodes.clear();
+                bindings.clear();
+                drop(old);
+                let mut replacement = AnonymousFocusProbe::new("replacement selection");
+                let root = replacement.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                unsafe {
+                    bindings.rebuild(&replacement, &tree, root, &nodes);
+                }
+                if let Some(focus) = focus {
+                    unsafe {
+                        focus.restore(&nodes, &bindings, None);
+                    }
+                }
+                assert_eq!(replacement.state, "replacement selection");
+                assert!(replacement.focused);
             }
-            if let Some(id) = focused {
-                column = column.push(Box::new(AccessCount {
-                    built: built.clone(),
-                    focused: true,
+
+            fn current_focus_refuses_unadmitted_disabled_excluded_and_unrelated_siblings() {
+                use crate::widget::Column;
+                let mut one = AnonymousFocusProbe::new("one");
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let root = one.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                let mut bindings = BoundNodeMap::new();
+                assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
+                unsafe {
+                    bindings.rebuild(&one, &tree, root, &nodes);
+                }
+                assert_eq!(
+                    unsafe { CompositionFocus::current(&nodes, &bindings, None) },
+                    Some(root)
+                );
+                assert!(unsafe { CompositionFocus::current(&nodes, &bindings, Some(&[])) }.is_none());
+                one.enabled = false;
+                assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
+                nodes.clear();
+                bindings.clear();
+                let mut siblings = Column::new()
+                    .push(Box::new(AnonymousFocusProbe::new("a")))
+                    .push(Box::new(AnonymousFocusProbe::new("b")));
+                let root = siblings.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                unsafe {
+                    bindings.rebuild(&siblings, &tree, root, &nodes);
+                }
+                assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
+            }
+
+            fn focus_never_uses_an_ordinal_or_an_ambiguous_semantic_key() {
+                use crate::widget::{Button, Column};
+                for target_keys in [
+                    ["other", "target"],
+                    ["target", "target"],
+                    ["other", "removed"],
+                ] {
+                    let mut old = Box::new(Button::new("target", "Target"));
+                    let mut tree = TaffyTree::new();
+                    let mut nodes = HashMap::new();
+                    let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                    let mut bindings = BoundNodeMap::new();
+                    // SAFETY: exact exclusively owned tree and maps.
+                    unsafe {
+                        bindings.rebuild(old.as_ref(), &tree, root, &nodes);
+                    }
+                    let focus =
+                        unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
+                    nodes.clear();
+                    bindings.clear();
+                    let mut rebuilt = Column::new()
+                        .push(Box::new(Button::new(target_keys[0], "First")))
+                        .push(Box::new(Button::new(target_keys[1], "Second")));
+                    let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                    // SAFETY: exact exclusively owned rebuilt tree and maps.
+                    unsafe {
+                        bindings.rebuild(&rebuilt, &tree, root, &nodes);
+                    }
+                    let restored = unsafe { focus.restore(&nodes, &bindings, None) };
+                    if target_keys == ["other", "target"] {
+                        assert!(restored.is_some());
+                        assert!(!rebuilt.children()[0].is_focused());
+                        assert!(rebuilt.children()[1].is_focused());
+                    } else {
+                        assert!(restored.is_none());
+                        assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
+                    }
+                }
+            }
+
+            fn duplicate_source_key_cannot_transfer_focus_to_the_surviving_other_control() {
+                use crate::widget::{Button, Column};
+                let mut old = Column::new()
+                    .push(Box::new(Button::new("duplicate", "Removed")))
+                    .push(Box::new(Button::new("duplicate", "Survivor")));
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                let selected = tree.children(root).unwrap()[0];
+                let mut bindings = BoundNodeMap::new();
+                // SAFETY: exact exclusively owned tree and maps.
+                unsafe {
+                    bindings.rebuild(&old, &tree, root, &nodes);
+                }
+                let focus =
+                    unsafe { CompositionFocus::capture(Some(selected), &nodes, &bindings) }.unwrap();
+                nodes.clear();
+                bindings.clear();
+                let mut survivor = Button::new("duplicate", "Survivor");
+                let root = survivor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                // SAFETY: exact exclusively owned replacement tree and maps.
+                unsafe {
+                    bindings.rebuild(&survivor, &tree, root, &nodes);
+                }
+                assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
+                assert!(!survivor.is_focused());
+            }
+
+            fn review_disabled_duplicate_target_does_not_transfer_focus_to_enabled_other() {
+                use crate::widget::{Button, Column};
+                let mut old = Button::new("target", "Original");
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                let mut bindings = BoundNodeMap::new();
+                unsafe {
+                    bindings.rebuild(&old, &tree, root, &nodes);
+                }
+                let focus =
+                    unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
+                nodes.clear();
+                bindings.clear();
+                let mut disabled = Button::new("target", "Original");
+                disabled.set_enabled(false);
+                let mut rebuilt = Column::new()
+                    .push(Box::new(disabled))
+                    .push(Box::new(Button::new("target", "Other")));
+                let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                unsafe {
+                    bindings.rebuild(&rebuilt, &tree, root, &nodes);
+                }
+                assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
+                assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
+            }
+
+            unnamed_focus_has_no_transferable_snapshot_and_keeps_its_own_state();
+            current_focus_refuses_unadmitted_disabled_excluded_and_unrelated_siblings();
+            focus_never_uses_an_ordinal_or_an_ambiguous_semantic_key();
+            duplicate_source_key_cannot_transfer_focus_to_the_surviving_other_control();
+            review_disabled_duplicate_target_does_not_transfer_focus_to_enabled_other();
+        }
+
+        phase compound_editor_focus_follows_named_identity_across_rebuilds;
+        {
+            fn compound_editor_focus_survives_rebuilt_or_split_focused_line() {
+                use crate::widget::BlockEditor;
+                for capture_leaf in [false, true] {
+                    let mut editor = BlockEditor::from_markdown("first");
+                    editor.set_focus(true);
+                    let mut tree = TaffyTree::new();
+                    let mut nodes = HashMap::new();
+                    let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                    let selected = if capture_leaf {
+                        tree.children(root).unwrap()[0]
+                    } else {
+                        root
+                    };
+                    let mut bindings = BoundNodeMap::new();
+                    unsafe {
+                        bindings.rebuild(&editor, &tree, root, &nodes);
+                    }
+                    let focus = unsafe { CompositionFocus::capture(Some(selected), &nodes, &bindings) }
+                        .unwrap();
+                    nodes.clear();
+                    bindings.clear();
+                    editor = BlockEditor::from_markdown("first\n\nsecond");
+                    editor.set_focus(true);
+                    let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                    unsafe {
+                        bindings.rebuild(&editor, &tree, root, &nodes);
+                    }
+                    assert_eq!(
+                        unsafe { focus.restore(&nodes, &bindings, None) },
+                        Some(root)
+                    );
+                    assert!(editor.is_focused());
+                    assert!(editor.blocks()[0].line.is_focused());
+                    assert_eq!(
+                        unsafe { CompositionFocus::current(&nodes, &bindings, None) },
+                        Some(root)
+                    );
+                }
+            }
+
+            fn title_focus_uses_named_identity_across_editing_delegate_replacement() {
+                use crate::widget::EditableLabel;
+                let mut old = EditableLabel::new("Title").with_id("note_title");
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                let mut bindings = BoundNodeMap::new();
+                unsafe {
+                    bindings.rebuild(&old, &tree, root, &nodes);
+                }
+                let focus =
+                    unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
+                nodes.clear();
+                bindings.clear();
+                let mut rebuilt = EditableLabel::new("Title").with_id("note_title");
+                rebuilt.begin_edit();
+                let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                unsafe {
+                    bindings.rebuild(&rebuilt, &tree, root, &nodes);
+                }
+                assert_eq!(
+                    unsafe { focus.restore(&nodes, &bindings, None) },
+                    Some(root)
+                );
+                assert!(rebuilt.is_editing());
+                assert_eq!(rebuilt.take_outcome(), crate::widget::EditOutcome::None);
+            }
+
+            fn duplicate_named_editor_or_removed_editor_cannot_receive_focus() {
+                use crate::widget::{BlockEditor, Column};
+                for duplicate in [false, true] {
+                    let mut old = BlockEditor::from_markdown("old");
+                    old.set_focus(true);
+                    let mut tree = TaffyTree::new();
+                    let mut nodes = HashMap::new();
+                    let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                    let mut bindings = BoundNodeMap::new();
+                    unsafe {
+                        bindings.rebuild(&old, &tree, root, &nodes);
+                    }
+                    let focus =
+                        unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
+                    nodes.clear();
+                    bindings.clear();
+                    let mut rebuilt = Column::new();
+                    if duplicate {
+                        rebuilt = rebuilt
+                            .push(Box::new(BlockEditor::from_markdown("one")))
+                            .push(Box::new(BlockEditor::from_markdown("two")));
+                    }
+                    let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                    unsafe {
+                        bindings.rebuild(&rebuilt, &tree, root, &nodes);
+                    }
+                    assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
+                    assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
+                }
+            }
+
+            fn compound_editor_restores_owner_and_inner_text_focus_after_rebuild() {
+                use crate::widget::BlockEditor;
+                let mut editor = Box::new(BlockEditor::new());
+                editor.set_focus(true);
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                let mut bindings = BoundNodeMap::new();
+                unsafe {
+                    bindings.rebuild(editor.as_ref(), &tree, root, &nodes);
+                }
+                assert!(editor.blocks()[0].line.is_focused());
+                assert_eq!(
+                    nodes
+                        .values()
+                        .filter(|&&pointer| unsafe { (*pointer).is_focused() })
+                        .count(),
+                    1
+                );
+                let focus =
+                    unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
+                for _ in 0..8 {
+                    nodes.clear();
+                    bindings.clear();
+                    tree = TaffyTree::new();
+                    let rebuilt = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                    unsafe {
+                        bindings.rebuild(editor.as_ref(), &tree, rebuilt, &nodes);
+                    }
+                    assert_eq!(
+                        unsafe { focus.restore(&nodes, &bindings, None) },
+                        Some(rebuilt)
+                    );
+                    assert!(editor.is_focused());
+                    assert!(editor.blocks()[0].line.is_focused());
+                }
+                // The stable named owner still cannot bypass a current focus trap.
+                assert!(unsafe { focus.restore(&nodes, &bindings, Some(&[])) }.is_none());
+                assert!(!editor.is_focused());
+                assert!(!editor.blocks()[0].line.is_focused());
+            }
+
+            compound_editor_focus_survives_rebuilt_or_split_focused_line();
+            title_focus_uses_named_identity_across_editing_delegate_replacement();
+            duplicate_named_editor_or_removed_editor_cannot_receive_focus();
+            compound_editor_restores_owner_and_inner_text_focus_after_rebuild();
+        }
+
+        phase canonical_tab_focus_survives_reorder_but_never_transfers_to_a_remaining_peer;
+        {
+            use crate::widget::{
+                Column,
+                tabs::{TabBar, TabDescriptor},
+            };
+            let bar = |id| {
+                Box::new(TabBar::new(
+                    &format!("g{id}"),
+                    vec![TabDescriptor::new(id, "Tab")],
                     id,
-                }));
+                )) as Box<dyn Widget>
+            };
+            let mut old = Column::new().push(bar(3)).push(bar(4));
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let mut bindings = BoundNodeMap::new();
+            let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+            unsafe {
+                bindings.rebuild(&old, &tree, root, &nodes);
             }
-            column
-        };
-        assert!(CompositionFocus::capture_live(&list(None)).is_none());
-        assert_eq!(built.get(), 0, "with nothing focused, no node is built");
-
-        let focus = CompositionFocus::capture_live(&list(Some(Some("target")))).unwrap();
-        assert_eq!(focus.key.as_deref(), Some("named:target"));
-        assert!(!focus.ambiguous, "no other control has its name");
-        assert_eq!(built.get(), 1, "a named target's own node only");
-
-        built.set(0);
-        let focus = CompositionFocus::capture_live(&list(Some(None))).unwrap();
-        assert_eq!(focus.key.as_deref(), Some("semantic:shared"));
-        assert!(focus.ambiguous, "the others answer to the same key");
+            let source = *nodes
+                .keys()
+                .find(|&&node| unsafe {
+                    crate::bound_dispatch::inspect_bound_node(&bindings, &nodes, node, |widget| {
+                        widget
+                            .accessibility()
+                            .and_then(|a| a.semantic_key)
+                            .as_deref()
+                            == Some("tabbar:g3")
+                    })
+                    .unwrap_or(false)
+                })
+                .unwrap();
+            let focus = unsafe { CompositionFocus::capture(Some(source), &nodes, &bindings) }.unwrap();
+            for ids in [vec![4, 3], vec![4]] {
+                nodes.clear();
+                bindings.clear();
+                let mut rebuilt = Column::new();
+                for id in &ids {
+                    rebuilt = rebuilt.push(bar(*id));
+                }
+                let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+                unsafe {
+                    bindings.rebuild(&rebuilt, &tree, root, &nodes);
+                }
+                let restored = unsafe { focus.restore(&nodes, &bindings, None) };
+                assert_eq!(restored.is_some(), ids.contains(&3));
+                if let Some(node) = restored {
+                    assert!(unsafe {
+                        crate::bound_dispatch::inspect_bound_node(&bindings, &nodes, node, |widget| {
+                            widget
+                                .accessibility()
+                                .and_then(|a| a.semantic_key)
+                                .as_deref()
+                                == Some("tabbar:g3")
+                        })
+                        .unwrap()
+                    });
+                }
+            }
+        }
     }
 
     #[derive(Default)]
@@ -1450,166 +2051,6 @@ mod tests {
         fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
             panic!("unsettled geometry must not be applied")
         }
-    }
-
-    #[test]
-    fn authored_extents_and_rounding_resolve_by_sizing() {
-        fn authored_extents_resolve_by_their_sizing() {
-            let text = AuthoredExtent::text(760.0);
-            let icon = AuthoredExtent::icon(86.0);
-            assert_eq!(
-                (text.resolve(&Theme::dark()), icon.resolve(&Theme::dark())),
-                (760.0, 86.0)
-            );
-            let two = Theme::dark().with_text_scale(2.0);
-            assert_eq!((text.resolve(&two), icon.resolve(&two)), (1520.0, 86.0));
-            let small = Theme::dark().with_text_scale(0.75);
-            assert_eq!(text.resolve(&small), 760.0, "text never shrinks an extent");
-            let dense = Theme::dark().with_ui_scale(1.5);
-            assert!((text.resolve(&dense) - 1140.0).abs() < 1e-9);
-            assert!((icon.resolve(&dense) - 129.0).abs() < 1e-9);
-            assert_eq!(text.with_px(300.0), AuthoredExtent::text(300.0));
-            assert_eq!(icon.with_px(56.0).sizing(), ExtentSizing::Icon);
-            assert_eq!(text.authored(), 760.0);
-        }
-
-        fn text_control_height_keeps_the_authored_height_until_the_line_outgrows_it() {
-            let stock = Theme::dark();
-            assert_eq!(text_control_height(34.0, &stock), 34.0);
-            assert_eq!(text_control_height(36.0, &stock), 36.0);
-
-            let line_1x = f64::from(stock.text(TextRole::Body).line_height_px());
-            let two = Theme::dark().with_text_scale(2.0);
-            let line_2x = f64::from(two.text(TextRole::Body).line_height_px());
-            assert!(
-                (line_2x - 2.0 * line_1x).abs() < 1e-3,
-                "the theme's body line doubles"
-            );
-            let grown = text_control_height(34.0, &two);
-            assert!(
-                (grown - (line_2x + (34.0 - line_1x))).abs() < 1e-6,
-                "34 px at 1× becomes the 2× line plus the same padding, got {grown}"
-            );
-            assert!(
-                grown > 34.0 && grown < 68.0,
-                "grows by the line, not by the whole scale"
-            );
-
-            let smaller = Theme::dark().with_text_scale(0.75);
-            assert_eq!(
-                text_control_height(34.0, &smaller),
-                34.0,
-                "smaller text never shrinks a control below its authored height"
-            );
-
-            let dense = Theme::dark().with_ui_scale(1.5);
-            assert!(
-                (text_control_height(34.0, &dense) - 51.0).abs() < 1e-6,
-                "ui_scale scales the whole control"
-            );
-        }
-
-        fn manual_allocation_at(scale: f64) -> Rect {
-            use crate::widget::{Button, Manual};
-            let mut widget = Manual::new(|ctx| {
-                ctx.place(0, Rect::new(10.25, 20.75, 130.75, 61.0))?;
-                Ok(Size {
-                    width: ctx.available().width,
-                    height: 100.0,
-                })
-            })
-            .child(Box::new(Button::new("action", "Action")));
-            let _grid = enter_device_scale(scale);
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let mut bindings = BoundNodeMap::new();
-            unsafe {
-                bindings.rebuild(&widget, &tree, root, &nodes);
-            }
-            let mut text = crate::font_catalog::fixture_renderer();
-            unsafe {
-                compute_widget_layout(
-                    &mut tree,
-                    root,
-                    Size {
-                        width: AvailableSpace::Definite(400.0),
-                        height: AvailableSpace::Definite(300.0),
-                    },
-                    &nodes,
-                    &bindings,
-                    &mut text,
-                )
-                .unwrap();
-            }
-            widget.apply_layout(&tree, root, Point::ZERO);
-            assert!(
-                widget
-                    .effective_layout()
-                    .is_some_and(|info| info.first_conflict.is_none()),
-                "the allocation is the policy's, unrounded: no conflict"
-            );
-            widget.children()[0].get_rect()
-        }
-
-        fn manual_fractional_allocation_lands_on_device_pixels() {
-            assert_eq!(
-                manual_allocation_at(4.0),
-                Rect::new(10.25, 20.75, 130.75, 61.0),
-                "quarter pixels are device pixels at 4x"
-            );
-            assert_eq!(
-                manual_allocation_at(1.0),
-                Rect::new(10.0, 21.0, 131.0, 61.0)
-            );
-            let third = manual_allocation_at(1.5);
-            for edge in [third.x0, third.y0, third.x1, third.y1] {
-                assert!(
-                    ((edge * 1.5) - (edge * 1.5).round()).abs() < 1e-3,
-                    "{edge} is a device pixel at 1.5x: {third:?}"
-                );
-            }
-        }
-
-        fn pixel_rounding_at(scale: f64) -> Rect {
-            let mut widget = crate::widget::Container::new()
-                .with_no_padding()
-                .with_size(100.25, 40.25);
-            let _grid = enter_device_scale(scale);
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let mut bindings = BoundNodeMap::new();
-            unsafe {
-                bindings.rebuild(&widget, &tree, root, &nodes);
-            }
-            unsafe {
-                compute_widget_layout(
-                    &mut tree,
-                    root,
-                    Size {
-                        width: AvailableSpace::Definite(300.0),
-                        height: AvailableSpace::Definite(200.0),
-                    },
-                    &nodes,
-                    &bindings,
-                    &mut crate::font_catalog::fixture_renderer(),
-                )
-                .unwrap();
-            }
-            widget.apply_layout(&tree, root, Point::ZERO);
-            widget.get_rect()
-        }
-
-        fn ordinary_hosts_round_to_the_display_pixels() {
-            assert_eq!(pixel_rounding_at(1.0), Rect::new(0.0, 0.0, 100.0, 40.0));
-            assert_eq!(pixel_rounding_at(2.0), Rect::new(0.0, 0.0, 100.5, 40.5));
-        }
-
-        authored_extents_resolve_by_their_sizing();
-        text_control_height_keeps_the_authored_height_until_the_line_outgrows_it();
-        manual_fractional_allocation_lands_on_device_pixels();
-        ordinary_hosts_round_to_the_display_pixels();
     }
 
     #[test]
@@ -1667,439 +2108,6 @@ mod tests {
 
         style_solver_bounds_adjustment_cycles_and_rejects_unadmitted_callbacks();
         explicit_structure_replacements_are_bounded_before_measurement();
-    }
-
-    #[test]
-    fn focus_transfer_refuses_unnamed_ambiguous_or_unadmitted_targets() {
-        fn unnamed_focus_has_no_transferable_snapshot_and_keeps_its_own_state() {
-            let mut old = AnonymousFocusProbe::new("old selection");
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let mut bindings = BoundNodeMap::new();
-            unsafe {
-                bindings.rebuild(&old, &tree, root, &nodes);
-            }
-            let focus = unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) };
-            assert!(
-                focus.is_none(),
-                "anonymous state must never be captured for transfer"
-            );
-            nodes.clear();
-            bindings.clear();
-            drop(old);
-            let mut replacement = AnonymousFocusProbe::new("replacement selection");
-            let root = replacement.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            unsafe {
-                bindings.rebuild(&replacement, &tree, root, &nodes);
-            }
-            if let Some(focus) = focus {
-                unsafe {
-                    focus.restore(&nodes, &bindings, None);
-                }
-            }
-            assert_eq!(replacement.state, "replacement selection");
-            assert!(replacement.focused);
-        }
-
-        fn current_focus_refuses_unadmitted_disabled_excluded_and_unrelated_siblings() {
-            use crate::widget::Column;
-            let mut one = AnonymousFocusProbe::new("one");
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let root = one.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let mut bindings = BoundNodeMap::new();
-            assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
-            unsafe {
-                bindings.rebuild(&one, &tree, root, &nodes);
-            }
-            assert_eq!(
-                unsafe { CompositionFocus::current(&nodes, &bindings, None) },
-                Some(root)
-            );
-            assert!(unsafe { CompositionFocus::current(&nodes, &bindings, Some(&[])) }.is_none());
-            one.enabled = false;
-            assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
-            nodes.clear();
-            bindings.clear();
-            let mut siblings = Column::new()
-                .push(Box::new(AnonymousFocusProbe::new("a")))
-                .push(Box::new(AnonymousFocusProbe::new("b")));
-            let root = siblings.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            unsafe {
-                bindings.rebuild(&siblings, &tree, root, &nodes);
-            }
-            assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
-        }
-
-        fn focus_never_uses_an_ordinal_or_an_ambiguous_semantic_key() {
-            use crate::widget::{Button, Column};
-            for target_keys in [
-                ["other", "target"],
-                ["target", "target"],
-                ["other", "removed"],
-            ] {
-                let mut old = Box::new(Button::new("target", "Target"));
-                let mut tree = TaffyTree::new();
-                let mut nodes = HashMap::new();
-                let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-                let mut bindings = BoundNodeMap::new();
-                // SAFETY: exact exclusively owned tree and maps.
-                unsafe {
-                    bindings.rebuild(old.as_ref(), &tree, root, &nodes);
-                }
-                let focus =
-                    unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
-                nodes.clear();
-                bindings.clear();
-                let mut rebuilt = Column::new()
-                    .push(Box::new(Button::new(target_keys[0], "First")))
-                    .push(Box::new(Button::new(target_keys[1], "Second")));
-                let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-                // SAFETY: exact exclusively owned rebuilt tree and maps.
-                unsafe {
-                    bindings.rebuild(&rebuilt, &tree, root, &nodes);
-                }
-                let restored = unsafe { focus.restore(&nodes, &bindings, None) };
-                if target_keys == ["other", "target"] {
-                    assert!(restored.is_some());
-                    assert!(!rebuilt.children()[0].is_focused());
-                    assert!(rebuilt.children()[1].is_focused());
-                } else {
-                    assert!(restored.is_none());
-                    assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
-                }
-            }
-        }
-
-        fn duplicate_source_key_cannot_transfer_focus_to_the_surviving_other_control() {
-            use crate::widget::{Button, Column};
-            let mut old = Column::new()
-                .push(Box::new(Button::new("duplicate", "Removed")))
-                .push(Box::new(Button::new("duplicate", "Survivor")));
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let selected = tree.children(root).unwrap()[0];
-            let mut bindings = BoundNodeMap::new();
-            // SAFETY: exact exclusively owned tree and maps.
-            unsafe {
-                bindings.rebuild(&old, &tree, root, &nodes);
-            }
-            let focus =
-                unsafe { CompositionFocus::capture(Some(selected), &nodes, &bindings) }.unwrap();
-            nodes.clear();
-            bindings.clear();
-            let mut survivor = Button::new("duplicate", "Survivor");
-            let root = survivor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            // SAFETY: exact exclusively owned replacement tree and maps.
-            unsafe {
-                bindings.rebuild(&survivor, &tree, root, &nodes);
-            }
-            assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
-            assert!(!survivor.is_focused());
-        }
-
-        fn review_disabled_duplicate_target_does_not_transfer_focus_to_enabled_other() {
-            use crate::widget::{Button, Column};
-            let mut old = Button::new("target", "Original");
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let mut bindings = BoundNodeMap::new();
-            unsafe {
-                bindings.rebuild(&old, &tree, root, &nodes);
-            }
-            let focus =
-                unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
-            nodes.clear();
-            bindings.clear();
-            let mut disabled = Button::new("target", "Original");
-            disabled.set_enabled(false);
-            let mut rebuilt = Column::new()
-                .push(Box::new(disabled))
-                .push(Box::new(Button::new("target", "Other")));
-            let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            unsafe {
-                bindings.rebuild(&rebuilt, &tree, root, &nodes);
-            }
-            assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
-            assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
-        }
-
-        unnamed_focus_has_no_transferable_snapshot_and_keeps_its_own_state();
-        current_focus_refuses_unadmitted_disabled_excluded_and_unrelated_siblings();
-        focus_never_uses_an_ordinal_or_an_ambiguous_semantic_key();
-        duplicate_source_key_cannot_transfer_focus_to_the_surviving_other_control();
-        review_disabled_duplicate_target_does_not_transfer_focus_to_enabled_other();
-    }
-
-    #[test]
-    fn compound_editor_focus_follows_named_identity_across_rebuilds() {
-        fn compound_editor_focus_survives_rebuilt_or_split_focused_line() {
-            use crate::widget::BlockEditor;
-            for capture_leaf in [false, true] {
-                let mut editor = BlockEditor::from_markdown("first");
-                editor.set_focus(true);
-                let mut tree = TaffyTree::new();
-                let mut nodes = HashMap::new();
-                let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-                let selected = if capture_leaf {
-                    tree.children(root).unwrap()[0]
-                } else {
-                    root
-                };
-                let mut bindings = BoundNodeMap::new();
-                unsafe {
-                    bindings.rebuild(&editor, &tree, root, &nodes);
-                }
-                let focus = unsafe { CompositionFocus::capture(Some(selected), &nodes, &bindings) }
-                    .unwrap();
-                nodes.clear();
-                bindings.clear();
-                editor = BlockEditor::from_markdown("first\n\nsecond");
-                editor.set_focus(true);
-                let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-                unsafe {
-                    bindings.rebuild(&editor, &tree, root, &nodes);
-                }
-                assert_eq!(
-                    unsafe { focus.restore(&nodes, &bindings, None) },
-                    Some(root)
-                );
-                assert!(editor.is_focused());
-                assert!(editor.blocks()[0].line.is_focused());
-                assert_eq!(
-                    unsafe { CompositionFocus::current(&nodes, &bindings, None) },
-                    Some(root)
-                );
-            }
-        }
-
-        fn title_focus_uses_named_identity_across_editing_delegate_replacement() {
-            use crate::widget::EditableLabel;
-            let mut old = EditableLabel::new("Title").with_id("note_title");
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let mut bindings = BoundNodeMap::new();
-            unsafe {
-                bindings.rebuild(&old, &tree, root, &nodes);
-            }
-            let focus =
-                unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
-            nodes.clear();
-            bindings.clear();
-            let mut rebuilt = EditableLabel::new("Title").with_id("note_title");
-            rebuilt.begin_edit();
-            let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            unsafe {
-                bindings.rebuild(&rebuilt, &tree, root, &nodes);
-            }
-            assert_eq!(
-                unsafe { focus.restore(&nodes, &bindings, None) },
-                Some(root)
-            );
-            assert!(rebuilt.is_editing());
-            assert_eq!(rebuilt.take_outcome(), crate::widget::EditOutcome::None);
-        }
-
-        fn duplicate_named_editor_or_removed_editor_cannot_receive_focus() {
-            use crate::widget::{BlockEditor, Column};
-            for duplicate in [false, true] {
-                let mut old = BlockEditor::from_markdown("old");
-                old.set_focus(true);
-                let mut tree = TaffyTree::new();
-                let mut nodes = HashMap::new();
-                let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-                let mut bindings = BoundNodeMap::new();
-                unsafe {
-                    bindings.rebuild(&old, &tree, root, &nodes);
-                }
-                let focus =
-                    unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
-                nodes.clear();
-                bindings.clear();
-                let mut rebuilt = Column::new();
-                if duplicate {
-                    rebuilt = rebuilt
-                        .push(Box::new(BlockEditor::from_markdown("one")))
-                        .push(Box::new(BlockEditor::from_markdown("two")));
-                }
-                let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-                unsafe {
-                    bindings.rebuild(&rebuilt, &tree, root, &nodes);
-                }
-                assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
-                assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
-            }
-        }
-
-        fn compound_editor_restores_owner_and_inner_text_focus_after_rebuild() {
-            use crate::widget::BlockEditor;
-            let mut editor = Box::new(BlockEditor::new());
-            editor.set_focus(true);
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let mut bindings = BoundNodeMap::new();
-            unsafe {
-                bindings.rebuild(editor.as_ref(), &tree, root, &nodes);
-            }
-            assert!(editor.blocks()[0].line.is_focused());
-            assert_eq!(
-                nodes
-                    .values()
-                    .filter(|&&pointer| unsafe { (*pointer).is_focused() })
-                    .count(),
-                1
-            );
-            let focus =
-                unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
-            for _ in 0..8 {
-                nodes.clear();
-                bindings.clear();
-                tree = TaffyTree::new();
-                let rebuilt = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-                unsafe {
-                    bindings.rebuild(editor.as_ref(), &tree, rebuilt, &nodes);
-                }
-                assert_eq!(
-                    unsafe { focus.restore(&nodes, &bindings, None) },
-                    Some(rebuilt)
-                );
-                assert!(editor.is_focused());
-                assert!(editor.blocks()[0].line.is_focused());
-            }
-            // The stable named owner still cannot bypass a current focus trap.
-            assert!(unsafe { focus.restore(&nodes, &bindings, Some(&[])) }.is_none());
-            assert!(!editor.is_focused());
-            assert!(!editor.blocks()[0].line.is_focused());
-        }
-
-        compound_editor_focus_survives_rebuilt_or_split_focused_line();
-        title_focus_uses_named_identity_across_editing_delegate_replacement();
-        duplicate_named_editor_or_removed_editor_cannot_receive_focus();
-        compound_editor_restores_owner_and_inner_text_focus_after_rebuild();
-    }
-
-    #[test]
-    fn canonical_tab_focus_survives_reorder_but_never_transfers_to_a_remaining_peer() {
-        use crate::widget::{
-            Column,
-            tabs::{TabBar, TabDescriptor},
-        };
-        let bar = |id| {
-            Box::new(TabBar::new(
-                &format!("g{id}"),
-                vec![TabDescriptor::new(id, "Tab")],
-                id,
-            )) as Box<dyn Widget>
-        };
-        let mut old = Column::new().push(bar(3)).push(bar(4));
-        let mut tree = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let mut bindings = BoundNodeMap::new();
-        let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-        unsafe {
-            bindings.rebuild(&old, &tree, root, &nodes);
-        }
-        let source = *nodes
-            .keys()
-            .find(|&&node| unsafe {
-                crate::bound_dispatch::inspect_bound_node(&bindings, &nodes, node, |widget| {
-                    widget
-                        .accessibility()
-                        .and_then(|a| a.semantic_key)
-                        .as_deref()
-                        == Some("tabbar:g3")
-                })
-                .unwrap_or(false)
-            })
-            .unwrap();
-        let focus = unsafe { CompositionFocus::capture(Some(source), &nodes, &bindings) }.unwrap();
-        for ids in [vec![4, 3], vec![4]] {
-            nodes.clear();
-            bindings.clear();
-            let mut rebuilt = Column::new();
-            for id in &ids {
-                rebuilt = rebuilt.push(bar(*id));
-            }
-            let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            unsafe {
-                bindings.rebuild(&rebuilt, &tree, root, &nodes);
-            }
-            let restored = unsafe { focus.restore(&nodes, &bindings, None) };
-            assert_eq!(restored.is_some(), ids.contains(&3));
-            if let Some(node) = restored {
-                assert!(unsafe {
-                    crate::bound_dispatch::inspect_bound_node(&bindings, &nodes, node, |widget| {
-                        widget
-                            .accessibility()
-                            .and_then(|a| a.semantic_key)
-                            .as_deref()
-                            == Some("tabbar:g3")
-                    })
-                    .unwrap()
-                });
-            }
-        }
-    }
-
-    #[test]
-    fn a_label_laid_out_and_never_drawn_answers_its_measure() {
-        use crate::widget::{Column, Text};
-        let mut root = Column::new().push(Box::new(Text::new("Label").with_id("label")));
-        let mut tree = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let tree_root = root.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-        let mut bindings = BoundNodeMap::new();
-        // SAFETY: the tree, its widgets and both maps live to the end of the
-        // test, and nothing else lays them out beside it.
-        unsafe {
-            bindings.rebuild(&root, &tree, tree_root, &nodes);
-        }
-        let available = Size {
-            width: AvailableSpace::Definite(400.0),
-            height: AvailableSpace::Definite(300.0),
-        };
-        let lay_out = |root: &mut Column, tree: &mut TaffyTree<()>| {
-            let mut text = crate::font_catalog::fixture_renderer();
-            // SAFETY: as above.
-            unsafe {
-                compute_widget_layout(tree, tree_root, available, &nodes, &bindings, &mut text)
-                    .expect("solves");
-            }
-            root.apply_layout(tree, tree_root, Point::ZERO);
-        };
-        lay_out(&mut root, &mut tree);
-        let with_label = |root: &mut Column, ask: &mut dyn FnMut(&mut Text)| {
-            let label = root
-                .children_mut()
-                .into_iter()
-                .find_map(|child| child.as_any_mut()?.downcast_mut::<Text>())
-                .expect("the label is the column's child");
-            ask(label);
-        };
-        with_label(&mut root, &mut |label| {
-            assert!(!label.layout_needs_measure(), "placed once, it rests");
-        });
-
-        // Its text takes more lines than the room it has: it asks to be
-        // measured again, and the frame that answers is one that lays it out
-        // and never draws it.
-        with_label(&mut root, &mut |label| {
-            label.set_lines(Some(2));
-            assert!(label.layout_needs_measure(), "the label asks for its size");
-        });
-        lay_out(&mut root, &mut tree);
-        with_label(&mut root, &mut |label| {
-            assert!(
-                !label.layout_needs_measure(),
-                "a label the solver measured asks for no second measure, drawn or not"
-            );
-            assert!(!label.is_layout_dirty(), "and its path stays clean");
-        });
     }
 }
 

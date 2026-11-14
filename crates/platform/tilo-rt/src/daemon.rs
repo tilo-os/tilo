@@ -150,105 +150,109 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    #[test]
-    fn daemon_threads_are_bounded_and_named() {
+    tilo_test_env::scenario! {
+        fn a_daemon_runtime_is_bounded_named_and_refuses_to_block_or_nest;
+
+        phase daemon_threads_are_bounded_and_named;
         {
-            let runtime = daemon("probe").workers(2).build().unwrap();
-            assert_eq!(runtime.metrics().num_workers(), 2);
-            let names = runtime.block_on(async {
-                let mut names = BTreeSet::new();
-                for _ in 0..16 {
-                    let name =
-                        tokio::spawn(async { std::thread::current().name().map(str::to_owned) })
-                            .await
-                            .unwrap();
-                    names.insert(name.unwrap());
-                }
-                names
-            });
-            assert!(
-                names.iter().all(|name| name.starts_with("probe-rt-")),
-                "{names:?}"
-            );
-        }
-        {
-            let runtime = daemon("capped").build().unwrap();
-            assert!(runtime.metrics().num_workers() <= Daemon::DEFAULT_MAX_WORKERS);
-        }
-        {
-            // The environment is read in `default_workers`, which takes its
-            // value as an argument: a test that set the variable would race
-            // every other test's runtime in this process.
-            assert_eq!(default_workers(Some("40"), 16), 40);
-            assert_eq!(default_workers(Some(" 3 "), 16), 3);
-        }
-        {
-            for asked in [None, Some(""), Some("0"), Some("four"), Some("-2")] {
-                assert_eq!(
-                    default_workers(asked, 16),
-                    Daemon::DEFAULT_MAX_WORKERS,
-                    "{asked:?}"
+            {
+                let runtime = daemon("probe").workers(2).build().unwrap();
+                assert_eq!(runtime.metrics().num_workers(), 2);
+                let names = runtime.block_on(async {
+                    let mut names = BTreeSet::new();
+                    for _ in 0..16 {
+                        let name =
+                            tokio::spawn(async { std::thread::current().name().map(str::to_owned) })
+                                .await
+                                .unwrap();
+                        names.insert(name.unwrap());
+                    }
+                    names
+                });
+                assert!(
+                    names.iter().all(|name| name.starts_with("probe-rt-")),
+                    "{names:?}"
                 );
-                assert_eq!(default_workers(asked, 1), 1, "{asked:?}");
+            }
+            {
+                let runtime = daemon("capped").build().unwrap();
+                assert!(runtime.metrics().num_workers() <= Daemon::DEFAULT_MAX_WORKERS);
+            }
+            {
+                // The environment is read in `default_workers`, which takes its
+                // value as an argument: a test that set the variable would race
+                // every other test's runtime in this process.
+                assert_eq!(default_workers(Some("40"), 16), 40);
+                assert_eq!(default_workers(Some(" 3 "), 16), 3);
+            }
+            {
+                for asked in [None, Some(""), Some("0"), Some("four"), Some("-2")] {
+                    assert_eq!(
+                        default_workers(asked, 16),
+                        Daemon::DEFAULT_MAX_WORKERS,
+                        "{asked:?}"
+                    );
+                    assert_eq!(default_workers(asked, 1), 1, "{asked:?}");
+                }
+            }
+            {
+                // `Daemon::workers` sets the count outright; the environment only
+                // reaches the default, so a caller's choice is never overridden.
+                let runtime = daemon("explicit").workers(2).build().unwrap();
+                assert_eq!(runtime.metrics().num_workers(), 2);
+            }
+            {
+                let runtime = daemon("svc").workers(1).max_blocking(2).build().unwrap();
+                let (name, driving) = runtime
+                    .block_on(async {
+                        tokio::task::spawn_blocking(|| {
+                            (
+                                std::thread::current().name().map(str::to_owned),
+                                crate::in_async_context(),
+                            )
+                        })
+                        .await
+                    })
+                    .unwrap();
+                let name = name.unwrap();
+                assert!(name.starts_with("svc-rt-"), "{name}");
+                assert!(!driving, "{name} is a blocking-pool thread");
             }
         }
-        {
-            // `Daemon::workers` sets the count outright; the environment only
-            // reaches the default, so a caller's choice is never overridden.
-            let runtime = daemon("explicit").workers(2).build().unwrap();
-            assert_eq!(runtime.metrics().num_workers(), 2);
-        }
-        {
-            let runtime = daemon("svc").workers(1).max_blocking(2).build().unwrap();
-            let (name, driving) = runtime
-                .block_on(async {
-                    tokio::task::spawn_blocking(|| {
-                        (
-                            std::thread::current().name().map(str::to_owned),
-                            crate::in_async_context(),
-                        )
-                    })
-                    .await
-                })
-                .unwrap();
-            let name = name.unwrap();
-            assert!(name.starts_with("svc-rt-"), "{name}");
-            assert!(!driving, "{name} is a blocking-pool thread");
-        }
-    }
 
-    #[test]
-    fn daemon_workers_refuse_to_block_or_nest() {
+        phase daemon_workers_refuse_to_block_or_nest;
         {
-            let runtime = daemon("guard").workers(1).build().unwrap();
-            let (on_worker, on_blocking) = runtime.block_on(async {
-                let on_worker = tokio::spawn(async { crate::block_on(async {}) })
-                    .await
+            {
+                let runtime = daemon("guard").workers(1).build().unwrap();
+                let (on_worker, on_blocking) = runtime.block_on(async {
+                    let on_worker = tokio::spawn(async { crate::block_on(async {}) })
+                        .await
+                        .unwrap();
+                    let on_blocking = tokio::task::spawn_blocking(|| crate::block_on(async { 1 }))
+                        .await
+                        .unwrap();
+                    (on_worker, on_blocking)
+                });
+                assert!(matches!(on_worker, Err(Error::InsideRuntime)));
+                assert!(
+                    matches!(on_blocking, Err(Error::InsideRuntime)),
+                    "a blocking-pool thread is already inside the runtime; it cannot start a second one"
+                );
+            }
+            {
+                let foreign = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
                     .unwrap();
-                let on_blocking = tokio::task::spawn_blocking(|| crate::block_on(async { 1 }))
-                    .await
-                    .unwrap();
-                (on_worker, on_blocking)
-            });
-            assert!(matches!(on_worker, Err(Error::InsideRuntime)));
-            assert!(
-                matches!(on_blocking, Err(Error::InsideRuntime)),
-                "a blocking-pool thread is already inside the runtime; it cannot start a second one"
-            );
-        }
-        {
-            let foreign = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let nested = foreign.block_on(async { daemon("nested").workers(1).run(async {}) });
-            assert!(matches!(nested, Err(Error::InsideRuntime)));
-        }
-        {
-            let outer = daemon("outer")
-                .workers(1)
-                .run(async { daemon("inner").workers(1).run(async {}) });
-            assert!(matches!(outer.unwrap(), Err(Error::InsideRuntime)));
+                let nested = foreign.block_on(async { daemon("nested").workers(1).run(async {}) });
+                assert!(matches!(nested, Err(Error::InsideRuntime)));
+            }
+            {
+                let outer = daemon("outer")
+                    .workers(1)
+                    .run(async { daemon("inner").workers(1).run(async {}) });
+                assert!(matches!(outer.unwrap(), Err(Error::InsideRuntime)));
+            }
         }
     }
 }

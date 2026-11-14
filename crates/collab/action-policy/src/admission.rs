@@ -124,103 +124,107 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_reach_covers_what_goes_no_further() {
-        let edit = Reach {
-            kind: ActionKind::Undoable,
-            privileged: false,
-        };
-        assert!(edit.covers(ActionKind::Read, false));
-        assert!(edit.covers(ActionKind::Undoable, false));
-        assert!(!edit.covers(ActionKind::Outside, false));
-        assert!(
-            !edit.covers(ActionKind::Undoable, true),
-            "privileged goes further"
-        );
-        let read = Reach {
-            kind: ActionKind::Read,
-            privileged: true,
-        };
-        assert_eq!(
-            edit.narrowed(read),
-            Reach {
+    tilo_test_env::scenario! {
+        fn an_admission_decides_what_asks_the_person;
+
+        phase a_reach_covers_what_goes_no_further;
+        {
+            let edit = Reach {
+                kind: ActionKind::Undoable,
+                privileged: false,
+            };
+            assert!(edit.covers(ActionKind::Read, false));
+            assert!(edit.covers(ActionKind::Undoable, false));
+            assert!(!edit.covers(ActionKind::Outside, false));
+            assert!(
+                !edit.covers(ActionKind::Undoable, true),
+                "privileged goes further"
+            );
+            let read = Reach {
                 kind: ActionKind::Read,
-                privileged: false
-            }
-        );
-    }
+                privileged: true,
+            };
+            assert_eq!(
+                edit.narrowed(read),
+                Reach {
+                    kind: ActionKind::Read,
+                    privileged: false
+                }
+            );
+        }
 
-    #[test]
-    fn an_ask_goes_to_the_person_only_where_they_can_be_reached() {
-        let person = Asker {
-            reachable: true,
-            delegated: false,
-        };
-        let unreachable = Asker {
-            reachable: false,
-            delegated: false,
-        };
-        assert_eq!(admit(invoked(Answer::Allow), person), Ok(Admission::Runs));
-        assert_eq!(
-            admit(invoked(Answer::Ask), person),
-            Ok(Admission::AsksFirst)
-        );
-        assert_eq!(admit(invoked(Answer::Deny), person), Err(Refused::Action));
-        assert_eq!(
-            admit(invoked(Answer::Allow), unreachable),
-            Ok(Admission::Runs)
-        );
-        assert_eq!(
-            admit(invoked(Answer::Ask), unreachable),
-            Err(Refused::Action)
-        );
-    }
+        phase an_ask_goes_to_the_person_only_where_they_can_be_reached;
+        {
+            let person = Asker {
+                reachable: true,
+                delegated: false,
+            };
+            let unreachable = Asker {
+                reachable: false,
+                delegated: false,
+            };
+            assert_eq!(admit(invoked(Answer::Allow), person), Ok(Admission::Runs));
+            assert_eq!(
+                admit(invoked(Answer::Ask), person),
+                Ok(Admission::AsksFirst)
+            );
+            assert_eq!(admit(invoked(Answer::Deny), person), Err(Refused::Action));
+            assert_eq!(
+                admit(invoked(Answer::Allow), unreachable),
+                Ok(Admission::Runs)
+            );
+            assert_eq!(
+                admit(invoked(Answer::Ask), unreachable),
+                Err(Refused::Action)
+            );
+        }
 
-    #[test]
-    fn whoever_acts_for_the_person_asks_before_an_attended_action() {
-        let delegate = Asker {
-            reachable: true,
-            delegated: true,
-        };
-        let attended = Invoked {
-            attended: true,
-            ..invoked(Answer::Allow)
-        };
-        assert_eq!(admit(attended, delegate), Ok(Admission::AsksFirst));
-        assert_eq!(admit(invoked(Answer::Allow), delegate), Ok(Admission::Runs));
-        let person = Asker {
-            delegated: false,
-            ..delegate
-        };
-        assert_eq!(admit(attended, person), Ok(Admission::Runs));
-    }
-
-    #[test]
-    fn a_record_answer_asks_or_refuses_on_top() {
-        let person = Asker {
-            reachable: true,
-            delegated: false,
-        };
-        for answer in ANSWERS {
-            let record = Invoked {
-                record: Some(answer),
+        phase whoever_acts_for_the_person_asks_before_an_attended_action;
+        {
+            let delegate = Asker {
+                reachable: true,
+                delegated: true,
+            };
+            let attended = Invoked {
+                attended: true,
                 ..invoked(Answer::Allow)
             };
-            let expected = match answer {
-                Answer::Allow => Ok(Admission::Runs),
-                Answer::Ask => Ok(Admission::AsksFirst),
-                Answer::Deny => Err(Refused::Record),
+            assert_eq!(admit(attended, delegate), Ok(Admission::AsksFirst));
+            assert_eq!(admit(invoked(Answer::Allow), delegate), Ok(Admission::Runs));
+            let person = Asker {
+                delegated: false,
+                ..delegate
             };
-            assert_eq!(admit(record, person), expected);
+            assert_eq!(admit(attended, person), Ok(Admission::Runs));
         }
-        let denied = Invoked {
-            record: Some(Answer::Deny),
-            ..invoked(Answer::Deny)
-        };
-        assert_eq!(
-            admit(denied, person),
-            Err(Refused::Action),
-            "the action's own answer first"
-        );
+
+        phase a_record_answer_asks_or_refuses_on_top;
+        {
+            let person = Asker {
+                reachable: true,
+                delegated: false,
+            };
+            for answer in ANSWERS {
+                let record = Invoked {
+                    record: Some(answer),
+                    ..invoked(Answer::Allow)
+                };
+                let expected = match answer {
+                    Answer::Allow => Ok(Admission::Runs),
+                    Answer::Ask => Ok(Admission::AsksFirst),
+                    Answer::Deny => Err(Refused::Record),
+                };
+                assert_eq!(admit(record, person), expected);
+            }
+            let denied = Invoked {
+                record: Some(Answer::Deny),
+                ..invoked(Answer::Deny)
+            };
+            assert_eq!(
+                admit(denied, person),
+                Err(Refused::Action),
+                "the action's own answer first"
+            );
+        }
     }
 }

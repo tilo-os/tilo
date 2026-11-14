@@ -161,41 +161,45 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn duplicates_are_refused_at_any_depth_with_the_key_named() {
-        assert_eq!(
-            parse(r#"{"a": {"b": 1, "b": 2}}"#).unwrap_err(),
-            "duplicate key 'b'; the effective rule is ambiguous"
-        );
-        assert_eq!(
-            parse(r#"{"it's": 1, "it's": 2}"#).unwrap_err(),
-            "duplicate key \"it's\"; the effective rule is ambiguous"
-        );
-        assert!(parse(r#"{"a": 1, "b": {"a": 2}}"#).is_ok());
-        assert!(
-            parse("{")
-                .unwrap_err()
-                .starts_with("policy is not valid JSON: ")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn policy_json_is_parsed_strictly_and_printed_as_python_prints_it;
 
-    #[test]
-    fn objects_keep_their_order() {
-        let Json::Object(fields) = parse(r#"{"z": 1, "a": 2, "m": 3}"#).unwrap() else {
-            panic!("not an object");
-        };
-        let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["z", "a", "m"]);
-    }
+        phase duplicates_are_refused_at_any_depth_with_the_key_named;
+        {
+            assert_eq!(
+                parse(r#"{"a": {"b": 1, "b": 2}}"#).unwrap_err(),
+                "duplicate key 'b'; the effective rule is ambiguous"
+            );
+            assert_eq!(
+                parse(r#"{"it's": 1, "it's": 2}"#).unwrap_err(),
+                "duplicate key \"it's\"; the effective rule is ambiguous"
+            );
+            assert!(parse(r#"{"a": 1, "b": {"a": 2}}"#).is_ok());
+            assert!(
+                parse("{")
+                    .unwrap_err()
+                    .starts_with("policy is not valid JSON: ")
+            );
+        }
 
-    #[test]
-    fn values_read_like_python_repr() {
-        let value =
-            parse(r#"[null, true, false, 1, 1.5, 1e16, "a'b", "x\ny", {"k": []}]"#).unwrap();
-        assert_eq!(
-            repr(Some(&value)),
-            r#"[None, True, False, 1, 1.5, 1e+16, "a'b", 'x\ny', {'k': []}]"#
-        );
-        assert_eq!(repr(None), "None");
+        phase objects_keep_their_order;
+        {
+            let Json::Object(fields) = parse(r#"{"z": 1, "a": 2, "m": 3}"#).unwrap() else {
+                panic!("not an object");
+            };
+            let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(keys, ["z", "a", "m"]);
+        }
+
+        phase values_read_like_python_repr;
+        {
+            let value =
+                parse(r#"[null, true, false, 1, 1.5, 1e16, "a'b", "x\ny", {"k": []}]"#).unwrap();
+            assert_eq!(
+                repr(Some(&value)),
+                r#"[None, True, False, 1, 1.5, 1e+16, "a'b", 'x\ny', {'k': []}]"#
+            );
+            assert_eq!(repr(None), "None");
+        }
     }
 }

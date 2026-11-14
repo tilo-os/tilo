@@ -1352,7 +1352,6 @@ mod tests {
     use crate::FormatProvider;
     use tilo_doc::{AttrVal, Document};
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1505,7 +1504,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1708,7 +1706,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn imports_and_roundtrips_document_and_run_language() {
         {
             use tilo_doc::document::MarkValue;
@@ -1801,7 +1798,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn keeps_unmodeled_paragraph_content_inline_through_export() {
         use crate::package::ZipPackage;
         let field = concat!(
@@ -1874,7 +1870,6 @@ mod tests {
         assert!(xml.contains(field), "the unedited field stays: {xml}");
     }
 
-    #[test]
     fn text_after_an_inline_picture_continues_after_it() {
         let body = concat!(
             r#"<w:p><w:r><w:t>before</w:t></w:r>"#,
@@ -1895,5 +1890,35 @@ mod tests {
             snap.blocks[0].text,
             format!("before{}after", tilo_doc::schema::FIELD_PLACEHOLDER)
         );
+    }
+
+    #[test]
+    fn docx_content_imports_as_blocks_formatting_language_and_kept_markup() {
+        let cases: [(&str, fn()); 5] = [
+            (
+                "imports block structure lists tables and fidelity atoms",
+                imports_block_structure_lists_tables_and_fidelity_atoms,
+            ),
+            (
+                "imports run and paragraph formatting and named styles",
+                imports_run_and_paragraph_formatting_and_named_styles,
+            ),
+            (
+                "imports and roundtrips document and run language",
+                imports_and_roundtrips_document_and_run_language,
+            ),
+            (
+                "keeps unmodeled paragraph content inline through export",
+                keeps_unmodeled_paragraph_content_inline_through_export,
+            ),
+            (
+                "text after an inline picture continues after it",
+                text_after_an_inline_picture_continues_after_it,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

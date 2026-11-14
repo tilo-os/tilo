@@ -44,8 +44,8 @@ type ArrangementQuery (origin: session.arrangement_query) {
     reason: Text merge register
 }
 
-/// A resource a query found: its address, the name it goes by, and its kind — the same three
-/// words a place's record is named by.
+/// A resource a query found: its address, the name it goes by, and its kind, the same three words a
+/// place's record is named by.
 type ArrangementRef (origin: session.arrangement_ref) {
     key: Text merge register
     /// The query it is of, by its key.

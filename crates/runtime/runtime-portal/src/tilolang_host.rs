@@ -653,177 +653,185 @@ mod tests {
         ours.into()
     }
 
-    #[test]
-    fn an_instance_crosses_the_door_with_its_four_connections() {
-        let (shell, host) = pair().unwrap();
-        let request = InstanceRequest {
-            app: "so.tilo.lang.notes".into(),
-            room: "7a110d00-0000-4000-8000-000000000001".into(),
-            instance: 7,
-            person: "ada".into(),
-            module_len: 12,
-            records_under: Some("so.tilo.lang.older-notes".into()),
-            applies_change: true,
-            formats: RegionFormats {
-                time: tilo_formats::TimeStyle::H12,
-                ..RegionFormats::default()
-            },
-            language: "de-DE".into(),
-            record: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
-            reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
-            installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
-        };
-        let fds = InstanceFds {
-            broker: connection(),
-            identity: connection(),
-            module: connection(),
-            window: connection(),
-            origin: None,
-        };
-        send_instance(&shell, &request, &fds).unwrap();
-        let (received, received_fds) = receive_instance(&host).unwrap().unwrap();
-        assert_eq!(received, request);
-        assert!(
-            received_fds.origin.is_none(),
-            "an app without an origin has no connection"
-        );
-        let fds = InstanceFds {
-            origin: Some(connection()),
-            ..fds
-        };
-        send_instance(&shell, &request, &fds).unwrap();
-        let (_, received_fds) = receive_instance(&host).unwrap().unwrap();
-        assert!(received_fds.origin.is_some());
-        drop(shell);
-        assert!(
-            receive_instance(&host).unwrap().is_none(),
-            "closed door ends"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn messages_across_the_tilolang_host_door;
 
-    #[test]
-    fn the_persons_formats_cross_the_door_between_instances() {
-        let (shell, host) = pair().unwrap();
-        let locale = Locale {
-            formats: RegionFormats {
-                date: tilo_formats::DateStyle::Iso,
-                time: tilo_formats::TimeStyle::H12,
-                ..RegionFormats::default()
-            },
-            language: "de-DE".into(),
-        };
-        send_locale(&shell, &locale).unwrap();
-        assert_eq!(
-            receive(&host).unwrap().map(|handed| match handed {
-                Handed::Locale(locale) => locale,
-                other => panic!("a locale message arrives as one: {other:?}"),
-            }),
-            Some(locale.clone()),
-            "the person's clock, date style and language reach the host as they set them"
-        );
-        // Said again while a host waits on an instance: it arrives as formats, never as one.
-        send_locale(&shell, &locale).unwrap();
-        assert!(
-            receive_instance(&host).is_err(),
-            "a host waiting on an instance does not take formats for one"
-        );
-    }
+        phase an_instance_crosses_the_door_with_its_four_connections;
+        {
+            let (shell, host) = pair().unwrap();
+            let request = InstanceRequest {
+                app: "so.tilo.lang.notes".into(),
+                room: "7a110d00-0000-4000-8000-000000000001".into(),
+                instance: 7,
+                person: "ada".into(),
+                module_len: 12,
+                records_under: Some("so.tilo.lang.older-notes".into()),
+                applies_change: true,
+                formats: RegionFormats {
+                    time: tilo_formats::TimeStyle::H12,
+                    ..RegionFormats::default()
+                },
+                language: "de-DE".into(),
+                record: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
+                reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
+                installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+            };
+            let fds = InstanceFds {
+                broker: connection(),
+                identity: connection(),
+                module: connection(),
+                window: connection(),
+                origin: None,
+            };
+            send_instance(&shell, &request, &fds).unwrap();
+            let (received, received_fds) = receive_instance(&host).unwrap().unwrap();
+            assert_eq!(received, request);
+            assert!(
+                received_fds.origin.is_none(),
+                "an app without an origin has no connection"
+            );
+            let fds = InstanceFds {
+                origin: Some(connection()),
+                ..fds
+            };
+            send_instance(&shell, &request, &fds).unwrap();
+            let (_, received_fds) = receive_instance(&host).unwrap().unwrap();
+            assert!(received_fds.origin.is_some());
+            drop(shell);
+            assert!(
+                receive_instance(&host).unwrap().is_none(),
+                "closed door ends"
+            );
+        }
 
-    #[test]
-    fn an_ended_instance_crosses_the_door_back() {
-        let (shell, host) = pair().unwrap();
-        send_ended(&host, 42).unwrap();
-        assert_eq!(
-            receive_from_host(&shell).unwrap(),
-            Some(FromHost::Ended(42))
-        );
-        send_exiting(&host, "the session closed its door and no instance runs").unwrap();
-        assert_eq!(
-            receive_from_host(&shell).unwrap(),
-            Some(FromHost::Exiting(
-                "the session closed its door and no instance runs".into()
-            ))
-        );
-        drop(host);
-        assert_eq!(receive_from_host(&shell).unwrap(), None, "the host is gone");
-    }
+        phase the_persons_formats_cross_the_door_between_instances;
+        {
+            let (shell, host) = pair().unwrap();
+            let locale = Locale {
+                formats: RegionFormats {
+                    date: tilo_formats::DateStyle::Iso,
+                    time: tilo_formats::TimeStyle::H12,
+                    ..RegionFormats::default()
+                },
+                language: "de-DE".into(),
+            };
+            send_locale(&shell, &locale).unwrap();
+            assert_eq!(
+                receive(&host).unwrap().map(|handed| match handed {
+                    Handed::Locale(locale) => locale,
+                    other => panic!("a locale message arrives as one: {other:?}"),
+                }),
+                Some(locale.clone()),
+                "the person's clock, date style and language reach the host as they set them"
+            );
+            // Said again while a host waits on an instance: it arrives as formats, never as one.
+            send_locale(&shell, &locale).unwrap();
+            assert!(
+                receive_instance(&host).is_err(),
+                "a host waiting on an instance does not take formats for one"
+            );
+        }
 
-    #[test]
-    fn a_message_without_its_connections_is_refused() {
-        use std::os::fd::AsFd as _;
-        let (shell, host) = pair().unwrap();
-        let request = br#"{"app":"a","room":"r","instance":1,"person":"p","module_len":1}"#;
-        let one = connection();
-        crate::door::send(shell.as_fd(), &[INSTANCE_VERB, request], &[one.as_fd()]).unwrap();
-        assert!(receive_instance(&host).is_err());
-        crate::door::send(shell.as_fd(), &[b"open", request], &[]).unwrap();
-        assert!(receive_instance(&host).is_err());
-    }
+        phase an_ended_instance_crosses_the_door_back;
+        {
+            let (shell, host) = pair().unwrap();
+            send_ended(&host, 42).unwrap();
+            assert_eq!(
+                receive_from_host(&shell).unwrap(),
+                Some(FromHost::Ended(42))
+            );
+            send_exiting(&host, "the session closed its door and no instance runs").unwrap();
+            assert_eq!(
+                receive_from_host(&shell).unwrap(),
+                Some(FromHost::Exiting(
+                    "the session closed its door and no instance runs".into()
+                ))
+            );
+            drop(host);
+            assert_eq!(receive_from_host(&shell).unwrap(), None, "the host is gone");
+        }
 
-    #[test]
-    fn a_task_crosses_the_door_with_its_program_connection_and_apps() {
-        let (shell, host) = pair().unwrap();
-        let request = TaskRequest {
-            task: "door:1".into(),
-            room: "7a110d00-0000-4000-8000-000000000001".into(),
-            person: Some("ada".into()),
-            apps_len: 3,
-            records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
-            changed_at_record: ["so.tilo.shell".into()].into(),
-        };
-        let fds = TaskFds {
-            program: connection(),
-            apps: connection(),
-        };
-        send_task(&shell, &request, &fds).unwrap();
-        let Some(Handed::Task(received, _fds)) = receive(&host).unwrap() else {
-            panic!("a task arrives as a task");
-        };
-        assert_eq!(received, request);
-    }
+        phase a_message_without_its_connections_is_refused;
+        {
+            use std::os::fd::AsFd as _;
+            let (shell, host) = pair().unwrap();
+            let request = br#"{"app":"a","room":"r","instance":1,"person":"p","module_len":1}"#;
+            let one = connection();
+            crate::door::send(shell.as_fd(), &[INSTANCE_VERB, request], &[one.as_fd()]).unwrap();
+            assert!(receive_instance(&host).is_err());
+            crate::door::send(shell.as_fd(), &[b"open", request], &[]).unwrap();
+            assert!(receive_instance(&host).is_err());
+        }
 
-    #[test]
-    fn apps_are_their_bytes_again() {
-        let apps = vec![
-            App::Module(Module {
+        phase a_task_crosses_the_door_with_its_program_connection_and_apps;
+        {
+            let (shell, host) = pair().unwrap();
+            let request = TaskRequest {
+                task: "door:1".into(),
+                room: "7a110d00-0000-4000-8000-000000000001".into(),
+                person: Some("ada".into()),
+                apps_len: 3,
+                records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+                changed_at_record: ["so.tilo.shell".into()].into(),
+            };
+            let fds = TaskFds {
+                program: connection(),
+                apps: connection(),
+            };
+            send_task(&shell, &request, &fds).unwrap();
+            let Some(Handed::Task(received, _fds)) = receive(&host).unwrap() else {
+                panic!("a task arrives as a task");
+            };
+            assert_eq!(received, request);
+        }
+
+        phase apps_are_their_bytes_again;
+        {
+            let apps = vec![
+                App::Module(Module {
+                    wasm: vec![0, 97, 115, 109, 1],
+                    ids: "Note = 1\n".into(),
+                    imports: Vec::new(),
+                }),
+                App::Module(Module {
+                    wasm: vec![0, 97, 115, 109, 2],
+                    ids: String::new(),
+                    imports: vec![vec![1, 2]],
+                }),
+                App::Surface {
+                    app: "so.tilo.chat".into(),
+                    title: "Chat".into(),
+                    surface: "[[resources]]\nkind = \"chat.workspace\"\n".into(),
+                },
+            ];
+            assert_eq!(decode_apps(&encode_apps(&apps)).unwrap(), apps);
+            assert!(decode_apps(b"garbage").is_err());
+            let mut empty = App::Surface {
+                app: String::new(),
+                title: String::new(),
+                surface: String::new(),
+            }
+            .encode();
+            empty.truncate(empty.len() - 1);
+            assert!(App::decode(&empty).is_err());
+        }
+
+        phase a_module_is_its_bytes_again;
+        {
+            let module = Module {
                 wasm: vec![0, 97, 115, 109, 1],
                 ids: "Note = 1\n".into(),
-                imports: Vec::new(),
-            }),
-            App::Module(Module {
-                wasm: vec![0, 97, 115, 109, 2],
-                ids: String::new(),
-                imports: vec![vec![1, 2]],
-            }),
-            App::Surface {
-                app: "so.tilo.chat".into(),
-                title: "Chat".into(),
-                surface: "[[resources]]\nkind = \"chat.workspace\"\n".into(),
-            },
-        ];
-        assert_eq!(decode_apps(&encode_apps(&apps)).unwrap(), apps);
-        assert!(decode_apps(b"garbage").is_err());
-        let mut empty = App::Surface {
-            app: String::new(),
-            title: String::new(),
-            surface: String::new(),
+                imports: vec![vec![0, 97, 115, 109, 1], vec![0, 97, 115, 109, 2]],
+            };
+            assert_eq!(Module::decode(&module.encode()).unwrap(), module);
+            assert!(Module::decode(b"garbage").is_err());
+            let mut cut = module.encode();
+            cut.truncate(cut.len() - 1);
+            assert!(Module::decode(&cut).is_err());
         }
-        .encode();
-        empty.truncate(empty.len() - 1);
-        assert!(App::decode(&empty).is_err());
-    }
-
-    #[test]
-    fn a_module_is_its_bytes_again() {
-        let module = Module {
-            wasm: vec![0, 97, 115, 109, 1],
-            ids: "Note = 1\n".into(),
-            imports: vec![vec![0, 97, 115, 109, 1], vec![0, 97, 115, 109, 2]],
-        };
-        assert_eq!(Module::decode(&module.encode()).unwrap(), module);
-        assert!(Module::decode(b"garbage").is_err());
-        let mut cut = module.encode();
-        cut.truncate(cut.len() - 1);
-        assert!(Module::decode(&cut).is_err());
     }
 }

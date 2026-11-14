@@ -16,9 +16,7 @@ use tilolang::ids::SeededEntropy;
 use tilolang::source::{compile_dirs, dependency_order_with};
 use tilolang_tilo::catalogue;
 
-mod support;
-
-use support::{copy_package, packages};
+use crate::support::{copy_package, packages};
 
 #[test]
 fn every_package_in_apps_tl_checks_clean() {

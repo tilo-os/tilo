@@ -15,9 +15,8 @@
 // usage: node tour.mjs SITE_URL RELAY_ORIGIN OUT_DIR [TILO_BIN SITE_CA]
 import {execFile, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
-import {connect} from 'node:tls';
 import {join} from 'node:path';
-import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../tools/web/chrome.mjs';
 import * as waits from './waits.mjs';
 import {clock} from './timing.mjs';
 
@@ -28,8 +27,12 @@ if (!site || !relay || !out) {
 }
 mkdirSync(out, {recursive: true});
 const mark = clock();
+// The site's and the relay's own certificates: the tour's browser loads these
+// and nothing else, as a person's browser loads what it trusts.
+const siteCertificate = await servedCertificate(site);
+const relayCertificate = await servedCertificate(relay);
 const browser = await launch({args: [
-  '--ignore-certificate-errors',
+  pinnedCertificates([siteCertificate, relayCertificate]),
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
@@ -63,15 +66,6 @@ const pageHas = name => !pageApps?.applications || pageApps.applications.some(ap
 // The computer the agent runs on, as agent-setup.mjs sets it up: its own home,
 // a `claude` that records how it was asked to add Tilo's tools, and the relay's
 // test certificate beside the site's.
-const relayPem = () => new Promise((resolve, reject) => {
-  const {hostname, port} = new URL(relay);
-  const socket = connect({host: hostname, port: Number(port || 443), servername: hostname, rejectUnauthorized: false}, () => {
-    const der = socket.getPeerCertificate(true).raw;
-    socket.end();
-    resolve(`-----BEGIN CERTIFICATE-----\n${der.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n`);
-  });
-  socket.on('error', reject);
-});
 let agentEnv = null;
 if (tiloBin) {
   const computer = join(out, '..', 'computer');
@@ -81,7 +75,7 @@ if (tiloBin) {
 printf '{"mcpServers":{"tilo":{"type":"stdio","command":"${tiloBin}","args":["mcp"],"env":{}}}}\\n' > "$HOME/.claude.json"
 `);
   chmodSync(join(computer, 'bin', 'claude'), 0o755);
-  writeFileSync(join(computer, 'relay.pem'), await relayPem());
+  writeFileSync(join(computer, 'relay.pem'), relayCertificate.certificate);
   agentEnv = {
     PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
     HOME: computer,

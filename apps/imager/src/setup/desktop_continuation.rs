@@ -677,33 +677,196 @@ mod tests {
         (temp, store, choices)
     }
 
-    #[test]
-    fn desktop_offer_shows_familiar_folders_at_first_login_and_keeps_an_open_review() {
-        let (_temp, store, choices) = fixture();
-        let documents = choices[0].scan.source.clone();
-        let missing = documents.with_file_name("Missing");
-        offer(&store, &[documents.clone(), missing]).unwrap();
-        let offered = Continuation::load(&store).unwrap().unwrap();
-        assert!(offered.show_on_login);
-        assert_eq!(
-            offered.folders.len(),
-            1,
-            "an unreadable folder is not offered"
-        );
-        assert_eq!(offered.folders[0].source().unwrap(), documents);
-        assert_eq!(offered.folders[0].mode, ChoiceMode::Copy);
-        assert!(offered.folders[0].destination().unwrap().is_none());
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
+        fn a_continuation_record_is_private_and_gates_unsafe_copies;
 
-        let mut decided = offered;
-        decided.set_mode(0, ChoiceMode::Later).unwrap();
-        decided.save(&store).unwrap();
-        offer(&store, &[documents]).unwrap();
-        let kept = Continuation::load(&store).unwrap().unwrap();
-        assert_eq!(
-            kept.folders[0].mode,
-            ChoiceMode::Later,
-            "the open review is kept"
-        );
+        phase desktop_offer_shows_familiar_folders_at_first_login_and_keeps_an_open_review;
+        {
+            let (_temp, store, choices) = fixture();
+            let documents = choices[0].scan.source.clone();
+            let missing = documents.with_file_name("Missing");
+            offer(&store, &[documents.clone(), missing]).unwrap();
+            let offered = Continuation::load(&store).unwrap().unwrap();
+            assert!(offered.show_on_login);
+            assert_eq!(
+                offered.folders.len(),
+                1,
+                "an unreadable folder is not offered"
+            );
+            assert_eq!(offered.folders[0].source().unwrap(), documents);
+            assert_eq!(offered.folders[0].mode, ChoiceMode::Copy);
+            assert!(offered.folders[0].destination().unwrap().is_none());
+
+            let mut decided = offered;
+            decided.set_mode(0, ChoiceMode::Later).unwrap();
+            decided.save(&store).unwrap();
+            offer(&store, &[documents]).unwrap();
+            let kept = Continuation::load(&store).unwrap().unwrap();
+            assert_eq!(
+                kept.folders[0].mode,
+                ChoiceMode::Later,
+                "the open review is kept"
+            );
+        }
+
+        phase private_continuation_record_round_trips_and_fails_closed;
+        {
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                let (_temp, store, mut choices) = fixture();
+                let path = choices[0]
+                    .scan
+                    .source
+                    .with_file_name(std::ffi::OsString::from_vec(vec![b'd', 255]));
+                fs::rename(&choices[0].scan.source, &path).unwrap();
+                choices[0].scan.source = path.clone();
+                Continuation::capture(&choices)
+                    .unwrap()
+                    .save(&store)
+                    .unwrap();
+                assert_eq!(
+                    Continuation::load(&store).unwrap().unwrap().folders[0]
+                        .source()
+                        .unwrap(),
+                    path
+                );
+            }
+
+            {
+                let (_temp, store, mut choices) = fixture();
+                choices[0].mode = FolderMode::Later;
+                choices[0].mode_overridden = true;
+                let c = Continuation::capture(&choices).unwrap();
+                c.save(&store).unwrap();
+                let reopened = Continuation::load(&store).unwrap().unwrap();
+                assert_eq!(c.revision, reopened.revision);
+                assert_eq!(
+                    reopened.folders[0].source().unwrap(),
+                    choices[0].scan.source
+                );
+                assert_eq!(reopened.folders[0].mode, ChoiceMode::Later);
+                assert!(reopened.folders[0].mode_overridden);
+                assert!(reopened.folders[0].resolved.is_none());
+                assert!(
+                    !String::from_utf8(store.load_continuation_bytes().unwrap().unwrap())
+                        .unwrap()
+                        .contains("secret")
+                );
+            }
+
+            {
+                let (_temp, store, choices) = fixture();
+                assert!(Continuation::decode(b"{}").is_err());
+                assert!(Continuation::decode(&vec![b' '; MAX_BYTES + 1]).is_err());
+                let c = Continuation::capture(&choices).unwrap();
+                let mut json = serde_json::to_value(&c).unwrap();
+                json["folders"][0]["source"] =
+                    serde_json::json!({"platform":"Windows","units":[67,58,92]});
+                #[cfg(unix)]
+                assert!(Continuation::decode(&serde_json::to_vec(&json).unwrap()).is_err());
+                json["folders"][0]["source"] =
+                    serde_json::to_value(NativePath::encode(std::path::Path::new("relative"))).unwrap();
+                assert!(Continuation::decode(&serde_json::to_vec(&json).unwrap()).is_err());
+                assert!(
+                    store
+                        .save_continuation_bytes(&vec![0; MAX_BYTES + 1])
+                        .is_err()
+                );
+            }
+
+            {
+                let (_temp, store, choices) = fixture();
+                let mut c = Continuation::capture(&choices).unwrap();
+                let source = &choices[0].scan.source;
+                fs::rename(source, source.with_extension("old")).unwrap();
+                let parent = store.root().parent().unwrap().join("target");
+                fs::create_dir(&parent).unwrap();
+                assert!(c.resolve(0, &parent, true).is_err());
+                fs::create_dir(source).unwrap();
+                assert!(c.resolve(0, &parent, true).is_err());
+            }
+        }
+
+        phase continuation_retries_and_identity_gates_prevent_unsafe_copies;
+        {
+            {
+                let (_temp, store, choices) = fixture();
+                let mut c = Continuation::capture(&choices).unwrap();
+                let parent = store.root().parent().unwrap().join("target");
+                fs::create_dir(&parent).unwrap();
+                c.resolve(0, &parent, true).unwrap();
+                let mut record = c.prepare(0, &store, &[], true).unwrap().unwrap();
+                record.approve();
+                record.mark_running().unwrap();
+                store.save(&[record]).unwrap();
+                let record = store.load().unwrap().remove(0);
+                fs::write(record.journal().unwrap(), b"existing journal must remain").unwrap();
+                assert!(c.unpublished_retry(0, &record).unwrap().is_none());
+                fs::remove_file(record.journal().unwrap()).unwrap();
+                fs::create_dir(record.destination().unwrap()).unwrap();
+                fs::write(record.destination().unwrap().join("user-edit"), b"keep").unwrap();
+                assert!(c.unpublished_retry(0, &record).unwrap().is_none());
+                fs::rename(&parent, parent.with_extension("unavailable")).unwrap();
+                assert!(c.unpublished_retry(0, &record).is_err());
+                assert_eq!(
+                    fs::read(
+                        parent
+                            .with_extension("unavailable")
+                            .join("Documents/user-edit")
+                    )
+                    .unwrap(),
+                    b"keep"
+                );
+            }
+
+            {
+                let (_temp, store, choices) = fixture();
+                let mut c = Continuation::capture(&choices).unwrap();
+                let parent = store.root().parent().unwrap().join("target");
+                fs::create_dir(&parent).unwrap();
+                assert!(c.resolve(0, &parent, false).is_err());
+                fs::create_dir(parent.join("Documents")).unwrap();
+                assert!(c.resolve(0, &parent, true).is_err());
+                fs::remove_dir(parent.join("Documents")).unwrap();
+                c.resolve(0, &parent, true).unwrap();
+                assert!(c.prepare(0, &store, &[], false).is_err());
+                fs::rename(&parent, parent.with_extension("old")).unwrap();
+                fs::create_dir(&parent).unwrap();
+                assert!(c.prepare(0, &store, &[], true).is_err());
+            }
+
+            {
+                let (_temp, store, choices) = fixture();
+                let mut c = Continuation::capture(&choices).unwrap();
+                let parent = store.root().parent().unwrap().join("target");
+                fs::create_dir(&parent).unwrap();
+                c.resolve(0, &parent, true).unwrap();
+                c.save(&store).unwrap();
+                let op = c.prepare(0, &store, &[], true).unwrap().unwrap();
+                store.save(&[op]).unwrap();
+                let mut replay = Continuation::load(&store).unwrap().unwrap();
+                assert!(
+                    replay
+                        .prepare(0, &store, &store.load().unwrap(), true)
+                        .unwrap()
+                        .is_none()
+                );
+                replay.set_mode(0, ChoiceMode::Later).unwrap();
+                assert!(
+                    replay
+                        .prepare(0, &store, &store.load().unwrap(), true)
+                        .is_err()
+                );
+                replay.save(&store).unwrap();
+                assert_eq!(
+                    Continuation::load(&store).unwrap().unwrap().folders[0].mode,
+                    ChoiceMode::Later
+                );
+                assert!(MigrationStore::open_at(store.root()).is_err());
+            }
+        }
     }
 
     #[test]
@@ -919,172 +1082,6 @@ mod tests {
             ));
             assert!(!op.journal().unwrap().exists());
             assert!(!parent.join("Documents").exists());
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn private_continuation_record_round_trips_and_fails_closed() {
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::ffi::OsStringExt;
-            let (_temp, store, mut choices) = fixture();
-            let path = choices[0]
-                .scan
-                .source
-                .with_file_name(std::ffi::OsString::from_vec(vec![b'd', 255]));
-            fs::rename(&choices[0].scan.source, &path).unwrap();
-            choices[0].scan.source = path.clone();
-            Continuation::capture(&choices)
-                .unwrap()
-                .save(&store)
-                .unwrap();
-            assert_eq!(
-                Continuation::load(&store).unwrap().unwrap().folders[0]
-                    .source()
-                    .unwrap(),
-                path
-            );
-        }
-
-        {
-            let (_temp, store, mut choices) = fixture();
-            choices[0].mode = FolderMode::Later;
-            choices[0].mode_overridden = true;
-            let c = Continuation::capture(&choices).unwrap();
-            c.save(&store).unwrap();
-            let reopened = Continuation::load(&store).unwrap().unwrap();
-            assert_eq!(c.revision, reopened.revision);
-            assert_eq!(
-                reopened.folders[0].source().unwrap(),
-                choices[0].scan.source
-            );
-            assert_eq!(reopened.folders[0].mode, ChoiceMode::Later);
-            assert!(reopened.folders[0].mode_overridden);
-            assert!(reopened.folders[0].resolved.is_none());
-            assert!(
-                !String::from_utf8(store.load_continuation_bytes().unwrap().unwrap())
-                    .unwrap()
-                    .contains("secret")
-            );
-        }
-
-        {
-            let (_temp, store, choices) = fixture();
-            assert!(Continuation::decode(b"{}").is_err());
-            assert!(Continuation::decode(&vec![b' '; MAX_BYTES + 1]).is_err());
-            let c = Continuation::capture(&choices).unwrap();
-            let mut json = serde_json::to_value(&c).unwrap();
-            json["folders"][0]["source"] =
-                serde_json::json!({"platform":"Windows","units":[67,58,92]});
-            #[cfg(unix)]
-            assert!(Continuation::decode(&serde_json::to_vec(&json).unwrap()).is_err());
-            json["folders"][0]["source"] =
-                serde_json::to_value(NativePath::encode(std::path::Path::new("relative"))).unwrap();
-            assert!(Continuation::decode(&serde_json::to_vec(&json).unwrap()).is_err());
-            assert!(
-                store
-                    .save_continuation_bytes(&vec![0; MAX_BYTES + 1])
-                    .is_err()
-            );
-        }
-
-        {
-            let (_temp, store, choices) = fixture();
-            let mut c = Continuation::capture(&choices).unwrap();
-            let source = &choices[0].scan.source;
-            fs::rename(source, source.with_extension("old")).unwrap();
-            let parent = store.root().parent().unwrap().join("target");
-            fs::create_dir(&parent).unwrap();
-            assert!(c.resolve(0, &parent, true).is_err());
-            fs::create_dir(source).unwrap();
-            assert!(c.resolve(0, &parent, true).is_err());
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn continuation_retries_and_identity_gates_prevent_unsafe_copies() {
-        {
-            let (_temp, store, choices) = fixture();
-            let mut c = Continuation::capture(&choices).unwrap();
-            let parent = store.root().parent().unwrap().join("target");
-            fs::create_dir(&parent).unwrap();
-            c.resolve(0, &parent, true).unwrap();
-            let mut record = c.prepare(0, &store, &[], true).unwrap().unwrap();
-            record.approve();
-            record.mark_running().unwrap();
-            store.save(&[record]).unwrap();
-            let record = store.load().unwrap().remove(0);
-            fs::write(record.journal().unwrap(), b"existing journal must remain").unwrap();
-            assert!(c.unpublished_retry(0, &record).unwrap().is_none());
-            fs::remove_file(record.journal().unwrap()).unwrap();
-            fs::create_dir(record.destination().unwrap()).unwrap();
-            fs::write(record.destination().unwrap().join("user-edit"), b"keep").unwrap();
-            assert!(c.unpublished_retry(0, &record).unwrap().is_none());
-            fs::rename(&parent, parent.with_extension("unavailable")).unwrap();
-            assert!(c.unpublished_retry(0, &record).is_err());
-            assert_eq!(
-                fs::read(
-                    parent
-                        .with_extension("unavailable")
-                        .join("Documents/user-edit")
-                )
-                .unwrap(),
-                b"keep"
-            );
-        }
-
-        {
-            let (_temp, store, choices) = fixture();
-            let mut c = Continuation::capture(&choices).unwrap();
-            let parent = store.root().parent().unwrap().join("target");
-            fs::create_dir(&parent).unwrap();
-            assert!(c.resolve(0, &parent, false).is_err());
-            fs::create_dir(parent.join("Documents")).unwrap();
-            assert!(c.resolve(0, &parent, true).is_err());
-            fs::remove_dir(parent.join("Documents")).unwrap();
-            c.resolve(0, &parent, true).unwrap();
-            assert!(c.prepare(0, &store, &[], false).is_err());
-            fs::rename(&parent, parent.with_extension("old")).unwrap();
-            fs::create_dir(&parent).unwrap();
-            assert!(c.prepare(0, &store, &[], true).is_err());
-        }
-
-        {
-            let (_temp, store, choices) = fixture();
-            let mut c = Continuation::capture(&choices).unwrap();
-            let parent = store.root().parent().unwrap().join("target");
-            fs::create_dir(&parent).unwrap();
-            c.resolve(0, &parent, true).unwrap();
-            c.save(&store).unwrap();
-            let op = c.prepare(0, &store, &[], true).unwrap().unwrap();
-            store.save(&[op]).unwrap();
-            let mut replay = Continuation::load(&store).unwrap().unwrap();
-            assert!(
-                replay
-                    .prepare(0, &store, &store.load().unwrap(), true)
-                    .unwrap()
-                    .is_none()
-            );
-            replay.set_mode(0, ChoiceMode::Later).unwrap();
-            assert!(
-                replay
-                    .prepare(0, &store, &store.load().unwrap(), true)
-                    .is_err()
-            );
-            replay.save(&store).unwrap();
-            assert_eq!(
-                Continuation::load(&store).unwrap().unwrap().folders[0].mode,
-                ChoiceMode::Later
-            );
-            assert!(MigrationStore::open_at(store.root()).is_err());
         }
     }
 }

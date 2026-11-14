@@ -266,98 +266,102 @@ mod tests {
         UserId("peer@1".into())
     }
 
-    /// Typed text shows live; a sent message lingers for five seconds from
-    /// when it was sent (a restatement does not restart it), then is gone.
-    #[test]
-    fn a_message_shows_while_typed_and_lingers_after_it_is_sent() {
-        let t0 = crate::time::now();
-        let mut chats = CursorChats::default();
-        assert!(chats.say(&ada(), Some(("hel", false)), t0));
-        let later = t0 + Duration::from_secs(1);
-        let typing = chats.bubble(&ada(), later, on()).unwrap();
-        assert_eq!((typing.text.as_str(), typing.typing), ("hel", true));
-        assert!((typing.opacity - 1.0).abs() < f32::EPSILON);
-        assert!(
-            chats.talking(&ada(), t0 + Duration::from_secs(60)),
-            "typing has no deadline"
-        );
+    tilo_test_env::scenario! {
+        fn a_cursor_chat_shows_lingers_reacts_and_goes;
 
-        let sent = t0 + Duration::from_secs(2);
-        assert!(chats.say(&ada(), Some(("hello", true)), sent));
-        assert!(!chats.say(&ada(), Some(("hello", true)), sent + Duration::from_secs(3)));
-        let shown = chats
-            .bubble(&ada(), sent + Duration::from_secs(4), on())
-            .unwrap();
-        assert!(!shown.typing);
-        let fading = chats
-            .bubble(
-                &ada(),
-                sent + CURSOR_CHAT_LINGER - Duration::from_millis(50),
-                on(),
-            )
-            .unwrap();
-        assert!(fading.opacity < 1.0, "it fades at the end of its linger");
-        assert!(
-            chats
-                .bubble(&ada(), sent + CURSOR_CHAT_LINGER, on())
-                .is_none()
-        );
-        assert!(chats.prune(sent + CURSOR_CHAT_LINGER));
-        assert!(!chats.talking(&ada(), sent + CURSOR_CHAT_LINGER));
-    }
+        phase a_message_shows_while_typed_and_lingers_after_it_is_sent;
+        // Typed text shows live; a sent message lingers for five seconds from
+        // when it was sent (a restatement does not restart it), then is gone.
+        {
+            let t0 = crate::time::now();
+            let mut chats = CursorChats::default();
+            assert!(chats.say(&ada(), Some(("hel", false)), t0));
+            let later = t0 + Duration::from_secs(1);
+            let typing = chats.bubble(&ada(), later, on()).unwrap();
+            assert_eq!((typing.text.as_str(), typing.typing), ("hel", true));
+            assert!((typing.opacity - 1.0).abs() < f32::EPSILON);
+            assert!(
+                chats.talking(&ada(), t0 + Duration::from_secs(60)),
+                "typing has no deadline"
+            );
 
-    /// Clearing or emptying the message takes the bubble away at once
-    /// (Esc on the sender's side); whitespace is nothing to show.
-    #[test]
-    fn a_cancelled_or_blank_message_is_not_shown() {
-        let t0 = crate::time::now();
-        let mut chats = CursorChats::default();
-        chats.say(&ada(), Some(("hi", false)), t0);
-        assert!(chats.say(&ada(), None, t0));
-        assert!(chats.bubble(&ada(), t0, on()).is_none());
-        assert!(!chats.say(&ada(), Some(("   ", false)), t0));
-        let long = "x".repeat(CURSOR_CHAT_MAX_CHARS + 10);
-        chats.say(&ada(), Some((&long, false)), t0);
-        assert_eq!(
-            chats
-                .bubble(&ada(), t0 + Duration::from_secs(1), on())
-                .unwrap()
-                .text
-                .chars()
-                .count(),
-            CURSOR_CHAT_MAX_CHARS
-        );
-    }
+            let sent = t0 + Duration::from_secs(2);
+            assert!(chats.say(&ada(), Some(("hello", true)), sent));
+            assert!(!chats.say(&ada(), Some(("hello", true)), sent + Duration::from_secs(3)));
+            let shown = chats
+                .bubble(&ada(), sent + Duration::from_secs(4), on())
+                .unwrap();
+            assert!(!shown.typing);
+            let fading = chats
+                .bubble(
+                    &ada(),
+                    sent + CURSOR_CHAT_LINGER - Duration::from_millis(50),
+                    on(),
+                )
+                .unwrap();
+            assert!(fading.opacity < 1.0, "it fades at the end of its linger");
+            assert!(
+                chats
+                    .bubble(&ada(), sent + CURSOR_CHAT_LINGER, on())
+                    .is_none()
+            );
+            assert!(chats.prune(sent + CURSOR_CHAT_LINGER));
+            assert!(!chats.talking(&ada(), sent + CURSOR_CHAT_LINGER));
+        }
 
-    /// A reaction rises and fades over its life, plays once per counter,
-    /// and does not rise under reduced motion.
-    #[test]
-    fn a_reaction_floats_up_once_and_is_gone_after_its_life() {
-        let t0 = crate::time::now();
-        let mut chats = CursorChats::default();
-        assert!(chats.react(&ada(), 3, "\u{1f389}", t0));
-        assert!(!chats.react(&ada(), 3, "\u{1f389}", t0 + Duration::from_millis(500)));
-        let start = chats.reaction(&ada(), t0, on()).unwrap();
-        let mid = chats.reaction(&ada(), t0 + Float::LIFE / 2, on()).unwrap();
-        assert!(mid.rise > start.rise, "it rises");
-        let late = chats
-            .reaction(&ada(), t0 + Float::LIFE * 9 / 10, on())
-            .unwrap();
-        assert!(late.opacity < mid.opacity, "and fades");
-        assert!(chats.reaction(&ada(), t0 + Float::LIFE, on()).is_none());
-        let still = EffectiveMotion::new(Motion::default(), true);
-        assert!(
-            chats
-                .reaction(&ada(), t0 + Float::LIFE / 2, still)
-                .is_some_and(|float| float.rise == 0.0),
-            "reduced motion: it fades in place"
-        );
-        assert!(chats.prune(t0 + Float::LIFE));
-        assert!(
-            !chats.react(&ada(), 3, "\u{1f389}", t0 + Float::LIFE),
-            "seen stays"
-        );
-        assert!(chats.react(&ada(), 4, "\u{1f44d}", t0 + Float::LIFE));
+        phase a_cancelled_or_blank_message_is_not_shown;
+        // Clearing or emptying the message takes the bubble away at once
+        // (Esc on the sender's side); whitespace is nothing to show.
+        {
+            let t0 = crate::time::now();
+            let mut chats = CursorChats::default();
+            chats.say(&ada(), Some(("hi", false)), t0);
+            assert!(chats.say(&ada(), None, t0));
+            assert!(chats.bubble(&ada(), t0, on()).is_none());
+            assert!(!chats.say(&ada(), Some(("   ", false)), t0));
+            let long = "x".repeat(CURSOR_CHAT_MAX_CHARS + 10);
+            chats.say(&ada(), Some((&long, false)), t0);
+            assert_eq!(
+                chats
+                    .bubble(&ada(), t0 + Duration::from_secs(1), on())
+                    .unwrap()
+                    .text
+                    .chars()
+                    .count(),
+                CURSOR_CHAT_MAX_CHARS
+            );
+        }
+
+        phase a_reaction_floats_up_once_and_is_gone_after_its_life;
+        // A reaction rises and fades over its life, plays once per counter,
+        // and does not rise under reduced motion.
+        {
+            let t0 = crate::time::now();
+            let mut chats = CursorChats::default();
+            assert!(chats.react(&ada(), 3, "\u{1f389}", t0));
+            assert!(!chats.react(&ada(), 3, "\u{1f389}", t0 + Duration::from_millis(500)));
+            let start = chats.reaction(&ada(), t0, on()).unwrap();
+            let mid = chats.reaction(&ada(), t0 + Float::LIFE / 2, on()).unwrap();
+            assert!(mid.rise > start.rise, "it rises");
+            let late = chats
+                .reaction(&ada(), t0 + Float::LIFE * 9 / 10, on())
+                .unwrap();
+            assert!(late.opacity < mid.opacity, "and fades");
+            assert!(chats.reaction(&ada(), t0 + Float::LIFE, on()).is_none());
+            let still = EffectiveMotion::new(Motion::default(), true);
+            assert!(
+                chats
+                    .reaction(&ada(), t0 + Float::LIFE / 2, still)
+                    .is_some_and(|float| float.rise == 0.0),
+                "reduced motion: it fades in place"
+            );
+            assert!(chats.prune(t0 + Float::LIFE));
+            assert!(
+                !chats.react(&ada(), 3, "\u{1f389}", t0 + Float::LIFE),
+                "seen stays"
+            );
+            assert!(chats.react(&ada(), 4, "\u{1f44d}", t0 + Float::LIFE));
+        }
     }
 
     /// Exactly one emoji is a reaction: a skin tone or a joined family is

@@ -527,96 +527,6 @@ mod tests {
         AppKey::new("5ba25f73-87c5-447f-a5a6-880dc4249a81", "so.tilo.totp").unwrap()
     }
 
-    #[test]
-    fn keys_carry_only_names_one_path_component_can_hold() {
-        assert!(AppKey::new("workspace-1", "so.tilo.files").is_some());
-        for (workspace, app) in [
-            ("", "so.tilo.files"),
-            ("../x", "so.tilo.files"),
-            ("workspace", ".."),
-            ("workspace", "a/b"),
-            ("workspace", ".hidden"),
-        ] {
-            assert!(
-                AppKey::new(workspace, app).is_none(),
-                "{workspace:?} {app:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_choice_answers_a_stable_path_in_the_apps_view() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("report.pdf");
-        std::fs::write(&file, b"pdf").unwrap();
-        let documents = Documents::new();
-        let path = documents.grant(&key(), &file, Kind::Read).unwrap();
-        assert_eq!(documents.grant(&key(), &file, Kind::Read).unwrap(), path);
-        let (token, inner) = split_sandbox_path(&path).unwrap();
-        assert_eq!(inner, Path::new("report.pdf"));
-        assert_eq!(
-            documents.document(&key(), &token).unwrap().host,
-            file.canonicalize().unwrap()
-        );
-        let other = AppKey::new("other-workspace", "so.tilo.totp").unwrap();
-        assert!(documents.document(&other, &token).is_none());
-        assert_ne!(documents.grant(&other, &file, Kind::Read).unwrap(), path);
-    }
-
-    #[test]
-    fn a_kept_table_reopens_a_chosen_file_where_it_was_and_forgets_what_is_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let record = dir.path().join("state/documents.json");
-        let kept = dir.path().join("kept.pdf");
-        let gone = dir.path().join("gone.pdf");
-        std::fs::write(&kept, b"kept").unwrap();
-        std::fs::write(&gone, b"gone").unwrap();
-        let documents = Documents::kept_in(record.clone());
-        let path = documents.grant(&key(), &kept, Kind::Read).unwrap();
-        documents.grant(&key(), &gone, Kind::Read).unwrap();
-        #[cfg(unix)]
-        assert_eq!(
-            std::os::unix::fs::PermissionsExt::mode(
-                &std::fs::metadata(&record).unwrap().permissions()
-            ) & 0o777,
-            0o600,
-            "the record is this user's only"
-        );
-        std::fs::remove_file(&gone).unwrap();
-
-        let next = Documents::kept_in(record);
-        let (token, _) = split_sandbox_path(&path).unwrap();
-        assert_eq!(
-            next.document(&key(), &token).unwrap().host,
-            kept.canonicalize().unwrap()
-        );
-        assert_eq!(next.tokens(&key()).len(), 1, "what is gone is forgotten");
-        assert_eq!(next.grant(&key(), &kept, Kind::Read).unwrap(), path);
-    }
-
-    #[test]
-    fn a_record_written_under_the_room_key_still_opens_its_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let record = dir.path().join("documents.json");
-        let kept = dir.path().join("kept.pdf");
-        std::fs::write(&kept, b"kept").unwrap();
-        let host = kept.canonicalize().unwrap();
-        std::fs::write(
-            &record,
-            serde_json::json!({
-                "documents": [{
-                    "room": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
-                    "app": "so.tilo.totp",
-                    "kind": "read",
-                    "host": &host,
-                }],
-            })
-            .to_string(),
-        )
-        .unwrap();
-        assert_eq!(Documents::kept_in(record).chosen(&key()), [host]);
-    }
-
     #[cfg(unix)]
     #[test]
     fn a_session_starts_before_its_kept_table_is_read() {
@@ -657,55 +567,149 @@ mod tests {
         );
     }
 
-    #[test]
-    fn recent_lists_choices_newest_first_and_keeps_the_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let record = dir.path().join("documents.json");
-        let [a, b, c] = ["a.txt", "b.txt", "c.txt"].map(|name| {
-            let path = dir.path().join(name);
-            std::fs::write(&path, name).unwrap();
-            path.canonicalize().unwrap()
-        });
-        let documents = Documents::kept_in(record.clone());
-        for path in [&a, &b, &c, &a] {
-            documents.grant(&key(), path, Kind::Read).unwrap();
-        }
-        assert_eq!(
-            documents.chosen(&key()),
-            [a.clone(), c.clone(), b.clone()],
-            "choosing again makes it the newest"
-        );
-        let other = AppKey::new("other-workspace", "so.tilo.totp").unwrap();
-        assert!(documents.chosen(&other).is_empty(), "each app has its own");
-        assert_eq!(
-            Documents::kept_in(record).chosen(&key()),
-            [a, c, b],
-            "the next session sees the same order"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn choices_are_kept_and_answered_under_stable_names;
 
-    #[test]
-    fn a_choice_must_be_what_the_chooser_asked_for() {
-        let dir = tempfile::tempdir().unwrap();
-        let documents = Documents::new();
-        assert!(matches!(
-            documents.grant(&key(), dir.path(), Kind::Read),
-            Err(GrantError::NotThatKind)
-        ));
-        let file = dir.path().join("a.txt");
-        std::fs::write(&file, b"a").unwrap();
-        assert!(matches!(
-            documents.grant(&key(), &file, Kind::Folder { write: false }),
-            Err(GrantError::NotThatKind)
-        ));
-        assert!(
-            documents
-                .grant(&key(), &dir.path().join("new.txt"), Kind::Save)
-                .is_ok()
-        );
-        assert!(matches!(
-            documents.grant(&key(), &dir.path().join("missing.txt"), Kind::Read),
-            Err(GrantError::Io(_))
-        ));
+        phase keys_carry_only_names_one_path_component_can_hold;
+        {
+            assert!(AppKey::new("workspace-1", "so.tilo.files").is_some());
+            for (workspace, app) in [
+                ("", "so.tilo.files"),
+                ("../x", "so.tilo.files"),
+                ("workspace", ".."),
+                ("workspace", "a/b"),
+                ("workspace", ".hidden"),
+            ] {
+                assert!(
+                    AppKey::new(workspace, app).is_none(),
+                    "{workspace:?} {app:?}"
+                );
+            }
+        }
+
+        phase a_choice_answers_a_stable_path_in_the_apps_view;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("report.pdf");
+            std::fs::write(&file, b"pdf").unwrap();
+            let documents = Documents::new();
+            let path = documents.grant(&key(), &file, Kind::Read).unwrap();
+            assert_eq!(documents.grant(&key(), &file, Kind::Read).unwrap(), path);
+            let (token, inner) = split_sandbox_path(&path).unwrap();
+            assert_eq!(inner, Path::new("report.pdf"));
+            assert_eq!(
+                documents.document(&key(), &token).unwrap().host,
+                file.canonicalize().unwrap()
+            );
+            let other = AppKey::new("other-workspace", "so.tilo.totp").unwrap();
+            assert!(documents.document(&other, &token).is_none());
+            assert_ne!(documents.grant(&other, &file, Kind::Read).unwrap(), path);
+        }
+
+        phase a_kept_table_reopens_a_chosen_file_where_it_was_and_forgets_what_is_gone;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let record = dir.path().join("state/documents.json");
+            let kept = dir.path().join("kept.pdf");
+            let gone = dir.path().join("gone.pdf");
+            std::fs::write(&kept, b"kept").unwrap();
+            std::fs::write(&gone, b"gone").unwrap();
+            let documents = Documents::kept_in(record.clone());
+            let path = documents.grant(&key(), &kept, Kind::Read).unwrap();
+            documents.grant(&key(), &gone, Kind::Read).unwrap();
+            #[cfg(unix)]
+            assert_eq!(
+                std::os::unix::fs::PermissionsExt::mode(
+                    &std::fs::metadata(&record).unwrap().permissions()
+                ) & 0o777,
+                0o600,
+                "the record is this user's only"
+            );
+            std::fs::remove_file(&gone).unwrap();
+
+            let next = Documents::kept_in(record);
+            let (token, _) = split_sandbox_path(&path).unwrap();
+            assert_eq!(
+                next.document(&key(), &token).unwrap().host,
+                kept.canonicalize().unwrap()
+            );
+            assert_eq!(next.tokens(&key()).len(), 1, "what is gone is forgotten");
+            assert_eq!(next.grant(&key(), &kept, Kind::Read).unwrap(), path);
+        }
+
+        phase a_record_written_under_the_room_key_still_opens_its_files;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let record = dir.path().join("documents.json");
+            let kept = dir.path().join("kept.pdf");
+            std::fs::write(&kept, b"kept").unwrap();
+            let host = kept.canonicalize().unwrap();
+            std::fs::write(
+                &record,
+                serde_json::json!({
+                    "documents": [{
+                        "room": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+                        "app": "so.tilo.totp",
+                        "kind": "read",
+                        "host": &host,
+                    }],
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert_eq!(Documents::kept_in(record).chosen(&key()), [host]);
+        }
+
+        phase recent_lists_choices_newest_first_and_keeps_the_order;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let record = dir.path().join("documents.json");
+            let [a, b, c] = ["a.txt", "b.txt", "c.txt"].map(|name| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, name).unwrap();
+                path.canonicalize().unwrap()
+            });
+            let documents = Documents::kept_in(record.clone());
+            for path in [&a, &b, &c, &a] {
+                documents.grant(&key(), path, Kind::Read).unwrap();
+            }
+            assert_eq!(
+                documents.chosen(&key()),
+                [a.clone(), c.clone(), b.clone()],
+                "choosing again makes it the newest"
+            );
+            let other = AppKey::new("other-workspace", "so.tilo.totp").unwrap();
+            assert!(documents.chosen(&other).is_empty(), "each app has its own");
+            assert_eq!(
+                Documents::kept_in(record).chosen(&key()),
+                [a, c, b],
+                "the next session sees the same order"
+            );
+        }
+
+        phase a_choice_must_be_what_the_chooser_asked_for;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let documents = Documents::new();
+            assert!(matches!(
+                documents.grant(&key(), dir.path(), Kind::Read),
+                Err(GrantError::NotThatKind)
+            ));
+            let file = dir.path().join("a.txt");
+            std::fs::write(&file, b"a").unwrap();
+            assert!(matches!(
+                documents.grant(&key(), &file, Kind::Folder { write: false }),
+                Err(GrantError::NotThatKind)
+            ));
+            assert!(
+                documents
+                    .grant(&key(), &dir.path().join("new.txt"), Kind::Save)
+                    .is_ok()
+            );
+            assert!(matches!(
+                documents.grant(&key(), &dir.path().join("missing.txt"), Kind::Read),
+                Err(GrantError::Io(_))
+            ));
+        }
     }
 }

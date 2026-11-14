@@ -11,56 +11,70 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
-#[test]
-fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
-    for expired in [false, true] {
-        let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
-            1960 + u64::from(expired),
-            "77777777-7777-4777-8777-777777777777",
-        );
-        let time = Arc::new(AtomicU64::new(99));
-        let sampled = time.clone();
-        let lease = PublishedInvocationLease::new(
-            PublishedInvocationRequest {
-                wire_id: 1960,
-                invocation: tilo_actions::InvocationId::new(),
-                address: tilo_actions::ActionAddress::new("fixture", "choose"),
-                argument: None,
-                actor: "original-caller".into(),
-                participant: None,
-            },
-            fixture.owner.broker_route().unwrap(),
-            Arc::new(move || {
-                (sampled.load(Ordering::Acquire) < 100)
-                    .then_some(())
-                    .ok_or_else(|| "original caller expired".into())
-            }),
-        )
-        .with_owner_token(Arc::new("retained fixture caller"))
-        .unwrap();
-        let scope = ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap();
-        let effect = scope.effect_scope().unwrap();
-        if expired {
-            time.store(100, Ordering::Release);
+tilo_test_env::scenario! {
+    fn scoped_host_effects_recheck_the_original_caller_on_the_worker;
+
+    phase writer_scoped_picker_rechecks_expired_admitted_job_on_worker;
+    {
+        for expired in [false, true] {
+            let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
+                1960 + u64::from(expired),
+                "77777777-7777-4777-8777-777777777777",
+            );
+            let time = Arc::new(AtomicU64::new(99));
+            let sampled = time.clone();
+            let lease = PublishedInvocationLease::new(
+                PublishedInvocationRequest {
+                    wire_id: 1960,
+                    invocation: tilo_actions::InvocationId::new(),
+                    address: tilo_actions::ActionAddress::new("fixture", "choose"),
+                    argument: None,
+                    actor: "original-caller".into(),
+                    participant: None,
+                },
+                fixture.owner.broker_route().unwrap(),
+                Arc::new(move || {
+                    (sampled.load(Ordering::Acquire) < 100)
+                        .then_some(())
+                        .ok_or_else(|| "original caller expired".into())
+                }),
+            )
+            .with_owner_token(Arc::new("retained fixture caller"))
+            .unwrap();
+            let scope = ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap();
+            let effect = scope.effect_scope().unwrap();
+            if expired {
+                time.store(100, Ordering::Release);
+            }
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let fixture = scoped_picker_fixture(Arc::new(move |_| {
+                observed.fetch_add(1, Ordering::AcqRel);
+                PortalOutcome::Cancelled
+            }))
+            .unwrap();
+            let receiver = PickRequest::open("Original caller", "Open")
+                .thread_name("writer-scope-test")
+                .send_scoped(effect);
+            drop(fixture);
+            let outcome = tilo_test_env::recv("the host effect outcome", &receiver);
+            assert_eq!(
+                calls.load(Ordering::Acquire),
+                usize::from(!expired),
+                "expired admitted job must not enter actual chooser effect"
+            );
+            assert_eq!(matches!(outcome, PortalOutcome::Failed(_)), expired);
         }
-        let calls = Arc::new(AtomicUsize::new(0));
-        let observed = calls.clone();
-        let fixture = scoped_picker_fixture(Arc::new(move |_| {
-            observed.fetch_add(1, Ordering::AcqRel);
-            PortalOutcome::Cancelled
-        }))
-        .unwrap();
-        let receiver = PickRequest::open("Original caller", "Open")
-            .thread_name("writer-scope-test")
-            .send_scoped(effect);
-        drop(fixture);
-        let outcome = tilo_test_env::recv("the host effect outcome", &receiver);
-        assert_eq!(
-            calls.load(Ordering::Acquire),
-            usize::from(!expired),
-            "expired admitted job must not enter actual chooser effect"
-        );
-        assert_eq!(matches!(outcome, PortalOutcome::Failed(_)), expired);
+    }
+
+    phase scoped_uri_live_original_caller_reaches_worker_backend;
+    {
+        worker_case(false);
+    }
+
+    phase scoped_uri_expired_admitted_caller_never_reaches_worker_backend;
+    {
+        worker_case(true);
     }
 }
 
@@ -113,12 +127,4 @@ fn worker_case(expired: bool) {
     } else {
         result.unwrap();
     }
-}
-#[test]
-fn scoped_uri_live_original_caller_reaches_worker_backend() {
-    worker_case(false);
-}
-#[test]
-fn scoped_uri_expired_admitted_caller_never_reaches_worker_backend() {
-    worker_case(true);
 }

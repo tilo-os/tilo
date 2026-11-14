@@ -399,16 +399,19 @@ mod tests {
     }
 
     #[test]
-    fn restores_the_selected_state_as_a_descendant_change() {
+    fn a_restore_reaches_the_selected_state_or_changes_nothing_and_refuses_non_documents() {
         let (v1, v2, _) = versions();
+
+        // Back to v1: the selected state, as a change that descends from v2.
         let restored = restore_serialized(&v2, &v1, Some("restore".into()))
             .unwrap()
             .expect("the restore changes the document");
         assert_eq!(
             Document::load(&restored).unwrap().materialize(),
-            Document::load(&v1).unwrap().materialize()
+            Document::load(&v1).unwrap().materialize(),
+            "back: the document reads as the selected version"
         );
-        assert_eq!(texts(&restored), vec!["alpha", "beta"]);
+        assert_eq!(texts(&restored), vec!["alpha", "beta"], "back");
         let mut doc = AutoCommit::load(&restored).unwrap();
         for head in heads_of(&v2) {
             assert!(
@@ -416,29 +419,50 @@ mod tests {
                 "the restore descends from the current version"
             );
         }
-        assert_ne!(doc.get_heads(), heads_of(&v2));
-    }
+        assert_ne!(
+            doc.get_heads(),
+            heads_of(&v2),
+            "back: the restore is a change of its own"
+        );
 
-    #[test]
-    fn restoring_the_current_version_changes_nothing() {
-        let (_, v2, _) = versions();
-        assert_eq!(restore_serialized(&v2, &v2, None).unwrap(), None);
-    }
+        // The current version: nothing to restore.
+        assert_eq!(
+            restore_serialized(&v2, &v2, None).unwrap(),
+            None,
+            "restoring the current version changes nothing"
+        );
 
-    #[test]
-    fn restoring_forward_after_a_restore_reaches_the_later_state() {
-        let (v1, v2, _) = versions();
+        // Forward again after a restore.
         let back = restore_serialized(&v2, &v1, None).unwrap().unwrap();
         let forward = restore_serialized(&back, &v2, None).unwrap().unwrap();
         assert_eq!(
             Document::load(&forward).unwrap().materialize(),
-            Document::load(&v2).unwrap().materialize()
+            Document::load(&v2).unwrap().materialize(),
+            "forward: restoring after a restore reaches the later state"
+        );
+
+        // Bytes that are no document, on either side, and another kind of document.
+        assert!(
+            restore_serialized(b"not a document", &v1, None).is_err(),
+            "refused: the current bytes are no document"
+        );
+        assert!(
+            restore_serialized(&v1, b"not a document", None).is_err(),
+            "refused: the selected bytes are no document"
+        );
+        let mut plain = AutoCommit::new();
+        plain.put(ROOT, "key", "value").unwrap();
+        assert!(
+            restore_serialized(&v1, &plain.save(), None).is_err(),
+            "refused: the selected bytes hold no rich text"
         );
     }
 
     #[test]
-    fn a_concurrent_edit_merges_with_the_restore() {
+    fn a_restore_merges_with_a_concurrent_edit_and_with_a_version_from_another_history() {
         let (v1, v2, alpha) = versions();
+
+        // A peer edits v2 while v1 is restored.
         let restored = restore_serialized(&v2, &v1, None).unwrap().unwrap();
         let mut peer = Document::load(&v2).unwrap();
         let end = peer.block_text(&alpha).unwrap().chars().count();
@@ -447,36 +471,26 @@ mod tests {
         let mut peer = AutoCommit::load(&peer.save()).unwrap();
         merged.merge_incoming(&mut peer).unwrap();
         let merged = texts(&merged.save());
-        assert_eq!(merged.len(), 2, "{merged:?}");
-        assert_eq!(merged[1], "beta");
+        assert_eq!(merged.len(), 2, "a concurrent edit: {merged:?}");
+        assert_eq!(merged[1], "beta", "a concurrent edit: {merged:?}");
         assert!(
             merged[0].starts_with("alpha") && merged[0].ends_with('!'),
             "the peer's edit survives the restore: {merged:?}"
         );
-    }
 
-    #[test]
-    fn a_version_from_another_history_is_merged_then_restored() {
-        let (_, v2, _) = versions();
+        // A version from another history is merged, then restored.
         let mut other = Document::new();
         let block = other.insert_block(None, "paragraph");
         other.splice_text(&block, 0, 0, "elsewhere");
         let other = other.save();
         let restored = restore_serialized(&v2, &other, None).unwrap().unwrap();
-        assert_eq!(texts(&restored), vec!["elsewhere"]);
+        assert_eq!(texts(&restored), vec!["elsewhere"], "another history");
         let doc = AutoCommit::load(&restored).unwrap();
         for head in heads_of(&v2).into_iter().chain(heads_of(&other)) {
-            assert!(doc.get_change_by_hash(&head).is_some());
+            assert!(
+                doc.get_change_by_hash(&head).is_some(),
+                "another history: both histories are kept"
+            );
         }
-    }
-
-    #[test]
-    fn non_documents_are_refused() {
-        let (v1, _, _) = versions();
-        assert!(restore_serialized(b"not a document", &v1, None).is_err());
-        assert!(restore_serialized(&v1, b"not a document", None).is_err());
-        let mut plain = AutoCommit::new();
-        plain.put(ROOT, "key", "value").unwrap();
-        assert!(restore_serialized(&v1, &plain.save(), None).is_err());
     }
 }

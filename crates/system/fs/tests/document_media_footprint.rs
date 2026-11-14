@@ -155,31 +155,6 @@ fn deterministic_bytes(len: usize) -> Vec<u8> {
     (0..len).map(|_| bytes.next()).collect()
 }
 
-struct Generated {
-    bytes: Xorshift,
-    left: usize,
-}
-
-impl Generated {
-    const fn new(len: usize) -> Self {
-        Self {
-            bytes: Xorshift::new(),
-            left: len,
-        }
-    }
-}
-
-impl std::io::Read for Generated {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = buf.len().min(self.left);
-        for byte in &mut buf[..n] {
-            *byte = self.bytes.next();
-        }
-        self.left -= n;
-        Ok(n)
-    }
-}
-
 fn ms(elapsed: Duration) -> f64 {
     elapsed.as_secs_f64() * 1_000.0
 }
@@ -294,14 +269,16 @@ fn serve(dir: &Path, name: &str, backend: Arc<dyn BlobBackend>) -> PathBuf {
     socket
 }
 
-async fn upload(socket: PathBuf, len: usize) -> (BlobRef, Duration, usize) {
+/// Uploads `attachment` as an app does, from a reader. The bytes were live before the
+/// measurement began, so the figure is what the upload itself held.
+async fn upload(socket: PathBuf, attachment: Arc<[u8]>) -> (BlobRef, Duration, usize) {
     let base = reset_peak();
     let started = Instant::now();
     let stored = tokio::task::spawn_blocking(move || {
         let mut stream = UnixStream::connect(&socket).unwrap();
         write_handoff(&mut stream, &BlobPrincipal::App(photos())).unwrap();
         let client = BlobClient::from_app_stream(stream).unwrap();
-        client.put_reader(&mut Generated::new(len), "video/mp4")
+        client.put_reader(&mut &*attachment, "video/mp4")
     })
     .await
     .unwrap()
@@ -311,17 +288,21 @@ async fn upload(socket: PathBuf, len: usize) -> (BlobRef, Duration, usize) {
 
 #[tokio::test]
 async fn document_media_and_blob_reads_hold_ranges_not_attachments() {
-    cold_reads_hold_one_range_of_the_largest_attachment().await;
-    storing_and_uploading_hold_no_whole_attachment().await;
+    // The largest attachment's bytes, generated once: unoptimised, each generation is a second.
+    let attachment: Arc<[u8]> =
+        deterministic_bytes(usize::try_from(MAX_BLOB_BYTES).unwrap()).into();
+    cold_reads_hold_one_range_of_the_largest_attachment(&attachment).await;
+    storing_and_uploading_hold_no_whole_attachment(&attachment).await;
+    drop(attachment);
     many_large_reads_leave_no_more_than_the_cache_budget().await;
 }
 
-async fn cold_reads_hold_one_range_of_the_largest_attachment() {
+async fn cold_reads_hold_one_range_of_the_largest_attachment(attachment: &[u8]) {
     let dir = tempfile::tempdir().unwrap();
     let photos = photos();
     let len = usize::try_from(MAX_BLOB_BYTES).unwrap();
     let chunk = MAX_READ_CHUNK as usize;
-    let data = deterministic_bytes(len);
+    let data = attachment.to_vec();
     let tail_offset = len - chunk - 12_345;
     let tail = data[tail_offset..tail_offset + chunk].to_vec();
     let hash = {
@@ -406,13 +387,13 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment() {
     store.store().shutdown().await.unwrap();
 }
 
-async fn storing_and_uploading_hold_no_whole_attachment() {
+async fn storing_and_uploading_hold_no_whole_attachment(attachment: &Arc<[u8]>) {
     let dir = tempfile::tempdir().unwrap();
     let len = usize::try_from(MAX_BLOB_BYTES).unwrap();
     let store = Arc::new(ContentStore::open(dir.path().join("store")).await.unwrap());
     let media = DocumentMedia::new(Arc::clone(&store));
 
-    let data = deterministic_bytes(len);
+    let data = attachment.to_vec();
     let expected = blake3::hash(&data);
     let base = reset_peak();
     let started = Instant::now();
@@ -427,7 +408,7 @@ async fn storing_and_uploading_hold_no_whole_attachment() {
         Arc::clone(&media) as Arc<dyn BlobBackend>,
     );
     let base = LIVE.load(Ordering::Relaxed);
-    let (uploaded, upload_time, upload_peak) = upload(socket, len).await;
+    let (uploaded, upload_time, upload_peak) = upload(socket, Arc::clone(attachment)).await;
     let upload_retained = live_above(base);
     assert_eq!(uploaded.len, MAX_BLOB_BYTES);
     assert_eq!(uploaded.hash, expected.to_hex().as_str());
@@ -446,7 +427,7 @@ async fn storing_and_uploading_hold_no_whole_attachment() {
         "gathering.sock",
         Arc::new(Gathering(Arc::clone(&media))),
     );
-    let (_, _, gathered_peak) = upload(gathering, len).await;
+    let (_, _, gathered_peak) = upload(gathering, Arc::clone(attachment)).await;
 
     eprintln!(
         "document media, {:.0} MiB attachment: store {:.3} ms, {:.1} KiB left behind; \

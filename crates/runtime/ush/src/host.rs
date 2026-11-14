@@ -17,10 +17,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject,
-    decide_capability,
-};
+use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, Scope, decide_app};
 
 pub const HOST_SHELL_DEVICE: &str = "host-shell";
 
@@ -109,11 +106,11 @@ impl HostPolicy {
     }
 
     /// Has the person allowed `app_id` to open the Host target? Asked of the
-    /// same `decide_capability` every other decision goes through, so a
+    /// same `decide_app` every other decision goes through, so a
     /// `Restrict` takes it away again.
     pub fn allows_host_shell(&self, app_id: &str, now: Option<u64>) -> bool {
-        decide_capability(
-            &Actor::app(app_id),
+        decide_app(
+            app_id,
             &ResourceRef::Device(HOST_SHELL_DEVICE.to_string()),
             Access::Write,
             &self.capabilities,
@@ -126,12 +123,13 @@ impl HostPolicy {
         self.capabilities.retain(|c| c.id != id);
         self.capabilities.push(
             CapOverride::grant(
-                Subject::Principal(Principal::App(app_id.to_string())),
+                tilo_action_policy::Grantee::person("local"),
                 Scope::Device(HOST_SHELL_DEVICE.to_string()),
                 Access::Write,
             )
+            .through(app_id)
             .with_id(id.clone())
-            .granted_by(Principal::Person("local".to_string())),
+            .granted_by(tilo_action_policy::MemberId::person("local")),
         );
         id
     }
@@ -289,16 +287,9 @@ impl SessionOwnership {
 }
 
 pub fn signed_in_person() -> String {
-    SessionOwnership::discover().signed_in().map_or_else(
-        || "local".to_owned(),
-        |key| {
-            collab_types::caps::Principal::person_from_key(
-                collab_types::Ed25519PublicKey::from_bytes(key),
-            )
-            .id()
-            .to_owned()
-        },
-    )
+    SessionOwnership::discover()
+        .signed_in()
+        .map_or_else(|| "local".to_owned(), hex::encode)
 }
 
 /// This device, as an environment's file actions name the device that
@@ -491,191 +482,200 @@ mod tests {
         policy
     }
 
-    #[test]
-    fn the_host_target_is_terminal_only_owner_only_person_only_and_allowed_once() {
-        let terminal = Caller::App(TERMINAL_APP_ID.into());
-        let now = Some(1_000);
-        assert_eq!(
-            decide_host(
-                &terminal,
-                RequestedBy::Person,
-                &Owner(true),
-                &allowed(),
-                now
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            decide_host(
-                &Caller::Session,
-                RequestedBy::Person,
-                &Owner(true),
-                &allowed(),
-                now
-            ),
-            Ok(()),
-            "the shell hosting Terminal in-process is the Terminal"
-        );
-        assert_eq!(
-            decide_host(
-                &Caller::App("so.tilo.notes".into()),
-                RequestedBy::Person,
-                &Owner(true),
-                &allowed(),
-                now
-            ),
-            Err(HostDenied::NotTerminal("so.tilo.notes".into()))
-        );
-        assert_eq!(
-            decide_host(&terminal, RequestedBy::Agent, &Owner(true), &allowed(), now),
-            Err(HostDenied::Agent)
-        );
-        assert_eq!(
-            decide_host(
-                &terminal,
-                RequestedBy::Person,
-                &Owner(false),
-                &allowed(),
-                now
-            ),
-            Err(HostDenied::NotOwner)
-        );
-        assert_eq!(
-            decide_host(
-                &terminal,
-                RequestedBy::Person,
-                &Owner(true),
-                &HostPolicy::default(),
-                now
-            ),
-            Err(HostDenied::NotAllowed)
-        );
+    tilo_test_env::scenario! {
+        /// The Host target: who may have a shell on the device itself, and what that shell is.
+        fn the_host_target_is_decided_by_caller_owner_and_allow;
 
-        // An allow for another app is not an allow for Terminal, and a
-        // restriction from the permissions panel takes Terminal's away.
-        let mut other = HostPolicy::default();
-        other.allow_host_shell("so.tilo.notes");
-        assert!(!other.allows_host_shell(TERMINAL_APP_ID, now));
-        let mut restricted = allowed();
-        restricted
-            .capabilities
-            .push(collab_types::caps::CapOverride::new(
-                collab_types::caps::Subject::Principal(collab_types::caps::Principal::App(
-                    TERMINAL_APP_ID.into(),
-                )),
-                collab_types::caps::Scope::Device(HOST_SHELL_DEVICE.into()),
-                collab_types::caps::Effect::Restrict,
-                collab_types::caps::Access::Read,
-            ));
-        assert!(!restricted.allows_host_shell(TERMINAL_APP_ID, now));
+        phase the_host_target_is_terminal_only_owner_only_person_only_and_allowed_once;
+        {
+            let terminal = Caller::App(TERMINAL_APP_ID.into());
+            let now = Some(1_000);
+            assert_eq!(
+                decide_host(
+                    &terminal,
+                    RequestedBy::Person,
+                    &Owner(true),
+                    &allowed(),
+                    now
+                ),
+                Ok(())
+            );
+            assert_eq!(
+                decide_host(
+                    &Caller::Session,
+                    RequestedBy::Person,
+                    &Owner(true),
+                    &allowed(),
+                    now
+                ),
+                Ok(()),
+                "the shell hosting Terminal in-process is the Terminal"
+            );
+            assert_eq!(
+                decide_host(
+                    &Caller::App("so.tilo.notes".into()),
+                    RequestedBy::Person,
+                    &Owner(true),
+                    &allowed(),
+                    now
+                ),
+                Err(HostDenied::NotTerminal("so.tilo.notes".into()))
+            );
+            assert_eq!(
+                decide_host(&terminal, RequestedBy::Agent, &Owner(true), &allowed(), now),
+                Err(HostDenied::Agent)
+            );
+            assert_eq!(
+                decide_host(
+                    &terminal,
+                    RequestedBy::Person,
+                    &Owner(false),
+                    &allowed(),
+                    now
+                ),
+                Err(HostDenied::NotOwner)
+            );
+            assert_eq!(
+                decide_host(
+                    &terminal,
+                    RequestedBy::Person,
+                    &Owner(true),
+                    &HostPolicy::default(),
+                    now
+                ),
+                Err(HostDenied::NotAllowed)
+            );
 
-        let mut twice = allowed();
-        twice.allow_host_shell(TERMINAL_APP_ID);
-        assert_eq!(twice.capabilities.len(), 1);
+            // An allow for another app is not an allow for Terminal, and a
+            // restriction from the permissions panel takes Terminal's away.
+            let mut other = HostPolicy::default();
+            other.allow_host_shell("so.tilo.notes");
+            assert!(!other.allows_host_shell(TERMINAL_APP_ID, now));
+            let mut restricted = allowed();
+            restricted.capabilities.push(
+                collab_types::caps::CapOverride::new(
+                    tilo_action_policy::Grantee::person("local"),
+                    collab_types::caps::Scope::Device(HOST_SHELL_DEVICE.into()),
+                    collab_types::caps::Effect::Restrict,
+                    collab_types::caps::Access::Read,
+                )
+                .through(TERMINAL_APP_ID),
+            );
+            assert!(!restricted.allows_host_shell(TERMINAL_APP_ID, now));
+
+            let mut twice = allowed();
+            twice.allow_host_shell(TERMINAL_APP_ID);
+            assert_eq!(twice.capabilities.len(), 1);
+        }
+
+        phase the_owner_check_compares_the_device_claim_with_the_signed_in_identity;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let ownership = SessionOwnership {
+                owner_key: dir.path().join("pubkey.bin"),
+                registry: Some(dir.path().join("registry.json")),
+            };
+            assert!(!ownership.signed_in_person_owns_device(), "nothing claimed");
+            std::fs::write(&ownership.owner_key, [7u8; 32]).unwrap();
+            assert!(
+                !ownership.signed_in_person_owns_device(),
+                "nobody signed in"
+            );
+            let registry = |key: u8| {
+                serde_json::json!({
+                    "schema_version": 1,
+                    "default_identity": "me",
+                    "identities": {"me": {"id": "me", "display_name": "Me",
+                        "record_path": "/x", "user_public_key": vec![key; 32]}},
+                    "workspace_identities": {}
+                })
+                .to_string()
+            };
+            std::fs::write(ownership.registry.as_ref().unwrap(), registry(7)).unwrap();
+            assert!(ownership.signed_in_person_owns_device());
+            std::fs::write(ownership.registry.as_ref().unwrap(), registry(8)).unwrap();
+            assert!(
+                !ownership.signed_in_person_owns_device(),
+                "another person signed in to the owner's device"
+            );
+        }
+
+        phase a_host_command_is_the_passwd_login_shell_in_the_home;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let account = LoginAccount {
+                user: "you".into(),
+                home: dir.path().to_path_buf(),
+                shell: PathBuf::from("/usr/bin/fish"),
+            };
+            let cmd = host_command(&account, "xterm-256color", &[], None, None);
+            assert_eq!(cmd.get_program(), "/usr/bin/fish");
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["-l"]);
+            assert_eq!(cmd.get_current_dir(), Some(dir.path()));
+            let home = (std::ffi::OsStr::new("HOME"), Some(dir.path().as_os_str()));
+            assert!(cmd.get_envs().any(|pair| pair == home));
+
+            let run = host_command(&account, "xterm", &["htop".into(), "-d".into()], None, None);
+            let args: Vec<_> = run.get_args().collect();
+            assert_eq!(args, ["-c", "exec 'htop' '-d'"]);
+        }
     }
 
-    #[test]
-    fn the_launcher_handoff_names_the_app_and_a_bare_request_is_the_session() {
-        let mut wire = encode_handoff("so.tilo.terminal").unwrap();
-        wire.extend_from_slice(b"{\"op\":\"open-session\"}\n");
-        let mut reader = std::io::Cursor::new(wire);
-        let (caller, carried) = read_caller(&mut reader).unwrap();
-        assert_eq!(caller, Caller::App("so.tilo.terminal".into()));
-        assert!(carried.is_empty());
-        let mut rest = String::new();
-        reader.read_to_string(&mut rest).unwrap();
-        assert!(rest.starts_with("{\"op\""));
+    tilo_test_env::scenario! {
+        /// The launcher's handoff: which app asks, and from which workspace.
+        fn the_launcher_handoff_names_the_app_and_its_workspace;
 
-        let mut bare = std::io::Cursor::new(b"{\"op\":\"open-session\"}\n".to_vec());
-        let (caller, carried) = read_caller(&mut bare).unwrap();
-        assert_eq!(caller, Caller::Session);
-        assert_eq!(carried, b"{");
+        phase the_launcher_handoff_names_the_app_and_a_bare_request_is_the_session;
+        {
+            let mut wire = encode_handoff("so.tilo.terminal").unwrap();
+            wire.extend_from_slice(b"{\"op\":\"open-session\"}\n");
+            let mut reader = std::io::Cursor::new(wire);
+            let (caller, carried) = read_caller(&mut reader).unwrap();
+            assert_eq!(caller, Caller::App("so.tilo.terminal".into()));
+            assert!(carried.is_empty());
+            let mut rest = String::new();
+            reader.read_to_string(&mut rest).unwrap();
+            assert!(rest.starts_with("{\"op\""));
 
-        let mut forged = LAUNCH_MAGIC.to_vec();
-        forged.extend_from_slice(&u32::MAX.to_le_bytes());
-        assert!(read_caller(&mut std::io::Cursor::new(forged)).is_err());
-    }
+            let mut bare = std::io::Cursor::new(b"{\"op\":\"open-session\"}\n".to_vec());
+            let (caller, carried) = read_caller(&mut bare).unwrap();
+            assert_eq!(caller, Caller::Session);
+            assert_eq!(carried, b"{");
 
-    #[test]
-    fn the_launcher_handoff_carries_the_workspace_the_app_was_launched_in() {
-        let workspace = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
-        let mut wire = encode_launch_handoff("so.tilo.terminal", Some(workspace)).unwrap();
-        wire.extend_from_slice(b"{\"op\":\"list-environments\"}\n");
-        let mut reader = std::io::Cursor::new(wire);
-        let (caller, launched, carried) = read_handoff(&mut reader).unwrap();
-        assert_eq!(caller, Caller::App("so.tilo.terminal".into()));
-        assert_eq!(launched.as_deref(), Some(workspace));
-        assert!(carried.is_empty());
-        let mut rest = String::new();
-        reader.read_to_string(&mut rest).unwrap();
-        assert_eq!(rest, "{\"op\":\"list-environments\"}\n");
+            let mut forged = LAUNCH_MAGIC.to_vec();
+            forged.extend_from_slice(&u32::MAX.to_le_bytes());
+            assert!(read_caller(&mut std::io::Cursor::new(forged)).is_err());
+        }
 
-        let (_, launched, _) = read_handoff(&mut std::io::Cursor::new(
-            encode_handoff("so.tilo.terminal").unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(launched, None);
-        let (_, launched, _) = read_handoff(&mut std::io::Cursor::new(
-            encode_launch_handoff("so.tilo.terminal", Some("")).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(launched, None, "an empty workspace is none");
-        let (caller, launched, _) = read_handoff(&mut std::io::Cursor::new(
-            b"{\"workspace\":\"w\"}\n".to_vec(),
-        ))
-        .unwrap();
-        assert_eq!((caller, launched), (Caller::Session, None));
-    }
+        phase the_launcher_handoff_carries_the_workspace_the_app_was_launched_in;
+        {
+            let workspace = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+            let mut wire = encode_launch_handoff("so.tilo.terminal", Some(workspace)).unwrap();
+            wire.extend_from_slice(b"{\"op\":\"list-environments\"}\n");
+            let mut reader = std::io::Cursor::new(wire);
+            let (caller, launched, carried) = read_handoff(&mut reader).unwrap();
+            assert_eq!(caller, Caller::App("so.tilo.terminal".into()));
+            assert_eq!(launched.as_deref(), Some(workspace));
+            assert!(carried.is_empty());
+            let mut rest = String::new();
+            reader.read_to_string(&mut rest).unwrap();
+            assert_eq!(rest, "{\"op\":\"list-environments\"}\n");
 
-    #[test]
-    fn the_owner_check_compares_the_device_claim_with_the_signed_in_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        let ownership = SessionOwnership {
-            owner_key: dir.path().join("pubkey.bin"),
-            registry: Some(dir.path().join("registry.json")),
-        };
-        assert!(!ownership.signed_in_person_owns_device(), "nothing claimed");
-        std::fs::write(&ownership.owner_key, [7u8; 32]).unwrap();
-        assert!(
-            !ownership.signed_in_person_owns_device(),
-            "nobody signed in"
-        );
-        let registry = |key: u8| {
-            serde_json::json!({
-                "schema_version": 1,
-                "default_identity": "me",
-                "identities": {"me": {"id": "me", "display_name": "Me",
-                    "record_path": "/x", "user_public_key": vec![key; 32]}},
-                "workspace_identities": {}
-            })
-            .to_string()
-        };
-        std::fs::write(ownership.registry.as_ref().unwrap(), registry(7)).unwrap();
-        assert!(ownership.signed_in_person_owns_device());
-        std::fs::write(ownership.registry.as_ref().unwrap(), registry(8)).unwrap();
-        assert!(
-            !ownership.signed_in_person_owns_device(),
-            "another person signed in to the owner's device"
-        );
-    }
-
-    #[test]
-    fn a_host_command_is_the_passwd_login_shell_in_the_home() {
-        let dir = tempfile::tempdir().unwrap();
-        let account = LoginAccount {
-            user: "you".into(),
-            home: dir.path().to_path_buf(),
-            shell: PathBuf::from("/usr/bin/fish"),
-        };
-        let cmd = host_command(&account, "xterm-256color", &[], None, None);
-        assert_eq!(cmd.get_program(), "/usr/bin/fish");
-        assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["-l"]);
-        assert_eq!(cmd.get_current_dir(), Some(dir.path()));
-        let home = (std::ffi::OsStr::new("HOME"), Some(dir.path().as_os_str()));
-        assert!(cmd.get_envs().any(|pair| pair == home));
-
-        let run = host_command(&account, "xterm", &["htop".into(), "-d".into()], None, None);
-        let args: Vec<_> = run.get_args().collect();
-        assert_eq!(args, ["-c", "exec 'htop' '-d'"]);
+            let (_, launched, _) = read_handoff(&mut std::io::Cursor::new(
+                encode_handoff("so.tilo.terminal").unwrap(),
+            ))
+            .unwrap();
+            assert_eq!(launched, None);
+            let (_, launched, _) = read_handoff(&mut std::io::Cursor::new(
+                encode_launch_handoff("so.tilo.terminal", Some("")).unwrap(),
+            ))
+            .unwrap();
+            assert_eq!(launched, None, "an empty workspace is none");
+            let (caller, launched, _) = read_handoff(&mut std::io::Cursor::new(
+                b"{\"workspace\":\"w\"}\n".to_vec(),
+            ))
+            .unwrap();
+            assert_eq!((caller, launched), (Caller::Session, None));
+        }
     }
 }

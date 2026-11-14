@@ -421,6 +421,7 @@ fn rewrite(
 mod tests {
     use super::*;
     use crate::coedit::CoeditPayload;
+    use tilo_relay_protocol::WorkspaceId;
 
     fn frame(author: u8, checkpoint: bool, body: &[u8]) -> Vec<u8> {
         let payload = if checkpoint {
@@ -435,7 +436,7 @@ mod tests {
             }
         };
         crate::transport::encode(&crate::transport::Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [author; 32],
             authored_at_ns: 1,
             delta: payload.encode().unwrap(),
@@ -447,7 +448,7 @@ mod tests {
     #[test]
     fn replacing_removes_only_named_content_and_keeps_what_arrived_after_the_read() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         for (seq, (author, body)) in [(1, b"a1"), (2, b"a2"), (1, b"a3")].into_iter().enumerate() {
             store
                 .retain_delta(&[9; 32], seq as u64, &frame(author, false, body))
@@ -501,7 +502,7 @@ mod tests {
             .map(|entry| entry.body)
             .collect();
         assert_eq!(bodies[..2], [b"late".to_vec(), b"next".to_vec()]);
-        let replayed = WorkspaceStore::open(tmp.path(), 7, false)
+        let replayed = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
             .unwrap()
             .load_retained()
             .unwrap();
@@ -512,7 +513,7 @@ mod tests {
     #[test]
     fn an_archived_channel_is_kept_and_no_longer_retained() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         store
             .retain_checkpoint(&[9; 32], &frame(5, true, b"before"))
             .unwrap();
@@ -523,7 +524,7 @@ mod tests {
         assert_eq!(store.archive_channel(&[9; 32]).unwrap(), 2);
         assert!(store.channel_entries(&[9; 32]).unwrap().is_empty());
         assert!(
-            WorkspaceStore::open(tmp.path(), 7, false)
+            WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
                 .unwrap()
                 .load_retained()
                 .unwrap()
@@ -557,7 +558,7 @@ mod tests {
     #[test]
     fn a_second_snapshot_replaces_the_first_only_when_named() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let first = frame(5, true, b"first");
         store
             .replace_channel(

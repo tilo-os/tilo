@@ -67,225 +67,230 @@ fn assert_shape(c: &Compiled) {
     assert_eq!(c.meta.module_hash.len(), 64);
 }
 
-#[test]
-fn the_counter_validates_and_has_the_module_shape() {
-    let c = compile_fixture("counter.tl", &[]);
-    assert_shape(&c);
-    let s = shape(&c.wasm);
-    assert!(s.data_segments >= 1, "string literals are data segments");
-    let names: Vec<&str> = s.imports.iter().map(|(_, n)| n.as_str()).collect();
-    for want in [
-        "str_lit",
-        "res_add_i",
-        "res_get_i",
-        "ui_node",
-        "int_to_str",
-        "ui_on",
-        "ui_anchor",
-        "ui_child",
-        "act_ref",
-        "list_new",
-        "list_push_h",
-    ] {
-        assert!(names.contains(&want), "{want} missing from {names:?}");
-    }
-    assert!(!names.contains(&"invoke"));
-}
+tilo_test_env::scenario! {
+    /// The emitted modules validate and have the shape `codegen` describes.
+    fn the_emitted_modules_validate_and_have_their_shape;
 
-#[test]
-fn the_todo_app_validates() {
-    let c = compile_fixture("todo.tl", &[]);
-    assert_shape(&c);
-    let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
-    for want in [
-        "coll_insert",
-        "coll_remove",
-        "coll_move",
-        "rec_new",
-        "rec_set_h",
-        "ui_bind",
-    ] {
-        assert!(names.contains(&want.to_string()), "{want} missing");
+    phase the_counter_validates_and_has_the_module_shape;
+    {
+        let c = compile_fixture("counter.tl", &[]);
+        assert_shape(&c);
+        let s = shape(&c.wasm);
+        assert!(s.data_segments >= 1, "string literals are data segments");
+        let names: Vec<&str> = s.imports.iter().map(|(_, n)| n.as_str()).collect();
+        for want in [
+            "str_lit",
+            "res_add_i",
+            "res_get_i",
+            "ui_node",
+            "int_to_str",
+            "ui_on",
+            "ui_anchor",
+            "ui_child",
+            "act_ref",
+            "list_new",
+            "list_push_h",
+        ] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        assert!(!names.contains(&"invoke"));
     }
-    // The Bool field default and the checkbox bind use the field ids as string literals.
-    let list = c
-        .meta
-        .types
-        .iter()
-        .find(|t| t.name == "TodoList")
-        .expect("type");
-    assert_eq!(
-        list.fields
+
+    phase the_todo_app_validates;
+    {
+        let c = compile_fixture("todo.tl", &[]);
+        assert_shape(&c);
+        let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
+        for want in [
+            "coll_insert",
+            "coll_remove",
+            "coll_move",
+            "rec_new",
+            "rec_set_h",
+            "ui_bind",
+        ] {
+            assert!(names.contains(&want.to_string()), "{want} missing");
+        }
+        // The Bool field default and the checkbox bind use the field ids as string literals.
+        let list = c
+            .meta
+            .types
             .iter()
-            .find(|f| f.name == "items")
-            .map(|f| f.merge),
-        Some(tilolang::types::MergeKind::Structural)
-    );
-    let todo = c
-        .meta
-        .types
-        .iter()
-        .find(|t| t.name == "Todo")
-        .expect("type");
-    assert_eq!(todo.fields[1].default, Some(serde_json::json!(false)));
-}
+            .find(|t| t.name == "TodoList")
+            .expect("type");
+        assert_eq!(
+            list.fields
+                .iter()
+                .find(|f| f.name == "items")
+                .map(|f| f.merge),
+            Some(tilolang::types::MergeKind::Structural)
+        );
+        let todo = c
+            .meta
+            .types
+            .iter()
+            .find(|t| t.name == "Todo")
+            .expect("type");
+        assert_eq!(todo.fields[1].default, Some(serde_json::json!(false)));
+    }
 
-#[test]
-fn an_action_that_invokes_a_foreign_action_validates() {
-    let c = compile_with(&fixture("cleanup.tl"), &[todo_meta()]).expect("compiles");
-    assert_shape(&c);
-    let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
-    assert!(names.contains(&"invoke".to_string()));
-    assert!(names.contains(&"act_ref".to_string()));
-}
+    phase an_action_that_invokes_a_foreign_action_validates;
+    {
+        let c = compile_with(&fixture("cleanup.tl"), &[todo_meta()]).expect("compiles");
+        assert_shape(&c);
+        let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
+        assert!(names.contains(&"invoke".to_string()));
+        assert!(names.contains(&"act_ref".to_string()));
+    }
 
-#[test]
-fn control_flow_and_scalars_validate() {
-    let src = "type T {\n    n: Int\n    f: Float\n    b: Bool\n    s: Text\n}\n\
+    phase control_flow_and_scalars_validate;
+    {
+        let src = "type T {\n    n: Int\n    f: Float\n    b: Bool\n    s: Text\n}\n\
         fn calc(a: Int, b: Float, ok: Bool) -> Float {\n    let x = a.to_float() * b\n    if ok and a > 2 or not ok {\n        x = x + 1.5\n    }\n    for i in [1, 2, 3] {\n        x += i.to_float()\n    }\n    return if x > 0.0 { -x } else { x / 2.0 }\n}\n\
         fn label(a: Int, s: Text) -> Text {\n    if s < \"m\" {\n        return \"{a}{s}\"\n    }\n    return s + \"!\"\n}\n\
         action put(t: T, v: Int) -> Int {\n    t.n = v\n    t.f = 1.5\n    t.b = true\n    t.s = \"x\"\n    return t.n\n}\n\
         fn opt(t: T) -> Int {\n    let o: Option<Int> = t.n\n    let base = match o {\n        .some(n) => n,\n        .none => 0,\n    }\n    return base + [1, 2].filter(x -> x > 1).count(y -> y > 0) + (1, \"a\").len()\n}";
-    let c = crate::common::compile_body(src.replace("+ (1, \"a\").len()", "").as_str());
-    assert_shape(&c);
-}
+        let c = crate::common::compile_body(src.replace("+ (1, \"a\").len()", "").as_str());
+        assert_shape(&c);
+    }
 
-#[test]
-fn enums_matches_and_block_values_validate() {
-    let src = "enum Shape {\n    dot\n    line\n    disc\n}\n\
+    phase enums_matches_and_block_values_validate;
+    {
+        let src = "enum Shape {\n    dot\n    line\n    disc\n}\n\
         type Dot {\n    on: Bool\n}\ntype Disc {\n    r: Float\n    label: Text\n}\ntype Mark = Dot | Disc\n\
         type P {\n    s: Shape\n    o: Option<Shape>\n    marks: Collection<Mark>\n    pick: Option<Mark>\n}\n\
         fn size(m: Mark) -> Float {\n    match m {\n        d: Dot => if d.on { 1.0 } else { 0.0 },\n        c: Disc => {\n            if c.label == \"\" {\n                return c.r\n            }\n            c.r * 2.0\n        }\n    }\n}\n\
         fn same(a: Shape, b: Shape) -> Bool {\n    a == b\n}\n\
         action swap(p: P) {\n    p.o = .some(p.s)\n    p.s = .disc\n    let m = p.marks.insert(Disc(r: 1.5, label: \"x\"))\n    p.pick = m\n    match p.o {\n        .some(_) => {\n            p.s = .dot\n        }\n        .none => {}\n    }\n}\n\
         view v(p: P) {\n    state shown: Shape = .dot\n    state n: Text\n    match p.s {\n        .dot => text(\"dot\"),\n        .line => text(n),\n        .disc => stack(gap: .tight) {\n            text(\"disc\")\n        }\n    }\n    for m in p.marks {\n        match m {\n            d: Dot => text(\"dot\"),\n            c: Disc => text(c.label),\n        }\n    }\n    button(\"Line\", on: set(shown, .line))\n    input(bind: n)\n}";
-    let c = crate::common::compile_body(src);
-    assert_shape(&c);
-    let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
-    for want in [
-        "enum_new",
-        "enum_is",
-        "ref_is",
-        "value_eq",
-        "state_get",
-        "act_set",
-        "ui_bind_state",
-    ] {
-        assert!(
-            names.contains(&want.to_string()),
-            "{want} is not imported: {names:?}"
+        let c = crate::common::compile_body(src);
+        assert_shape(&c);
+        let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
+        for want in [
+            "enum_new",
+            "enum_is",
+            "ref_is",
+            "value_eq",
+            "state_get",
+            "act_set",
+            "ui_bind_state",
+        ] {
+            assert!(
+                names.contains(&want.to_string()),
+                "{want} is not imported: {names:?}"
+            );
+        }
+    }
+
+    phase a_ui_loop_is_one_node_whose_rows_are_views_of_their_own;
+    {
+        // The todo list's rows are an inline `row { ... }`: its body becomes a view on the item.
+        let c = compile_fixture("todo.tl", &[]);
+        let row = c
+            .meta
+            .views
+            .iter()
+            .find(|v| v.id.ends_with("~row0"))
+            .expect("the loop body's view");
+        assert_eq!(row.params[0].name, "item");
+        assert_eq!(row.params.last().map(|p| p.name.as_str()), Some("$key"));
+        // The host keys the rows (by the item's id, or a plain value's place): the module builds
+        // no keys and walks no list for the loop.
+        let plain = compile(
+            "app t.y \"Y\"\nview v(l: List<Int>) {\n    for x in l {\n        text(\"{x}\")\n    }\n}\n",
         );
+        assert_shape(&plain);
+        let names: Vec<String> = shape(&plain.wasm)
+            .imports
+            .into_iter()
+            .map(|(_, n)| n)
+            .collect();
+        for unused in ["list_get_i", "ref_id"] {
+            assert!(!names.contains(&unused.to_owned()), "{unused} in {names:?}");
+        }
+        // A body that is one view call on the item calls that view per row: no view is made.
+        let direct = compile(
+            "app t.d \"D\"\nview one(n: Int) {\n    text(\"{n}\")\n}\nview v(l: List<Int>) {\n    stack {\n        for x in l {\n            one(x)\n        }\n    }\n}\n",
+        );
+        assert_eq!(direct.meta.views.len(), 2, "{:?}", direct.meta.views);
     }
-}
 
-#[test]
-fn a_ui_loop_is_one_node_whose_rows_are_views_of_their_own() {
-    // The todo list's rows are an inline `row { ... }`: its body becomes a view on the item.
-    let c = compile_fixture("todo.tl", &[]);
-    let row = c
-        .meta
-        .views
-        .iter()
-        .find(|v| v.id.ends_with("~row0"))
-        .expect("the loop body's view");
-    assert_eq!(row.params[0].name, "item");
-    assert_eq!(row.params.last().map(|p| p.name.as_str()), Some("$key"));
-    // The host keys the rows (by the item's id, or a plain value's place): the module builds
-    // no keys and walks no list for the loop.
-    let plain = compile(
-        "app t.y \"Y\"\nview v(l: List<Int>) {\n    for x in l {\n        text(\"{x}\")\n    }\n}\n",
-    );
-    assert_shape(&plain);
-    let names: Vec<String> = shape(&plain.wasm)
-        .imports
-        .into_iter()
-        .map(|(_, n)| n)
-        .collect();
-    for unused in ["list_get_i", "ref_id"] {
-        assert!(!names.contains(&unused.to_owned()), "{unused} in {names:?}");
+    phase views_call_views_and_apply_foreign_views;
+    {
+        let src = "app t.z \"Z\"\nview inner(n: Int) {\n    text(\"{n}\")\n}\nview outer() {\n    stack {\n        for i in [1, 2] {\n            inner(i)\n        }\n    }\n}\n";
+        let c = compile(src);
+        assert_shape(&c);
     }
-    // A body that is one view call on the item calls that view per row: no view is made.
-    let direct = compile(
-        "app t.d \"D\"\nview one(n: Int) {\n    text(\"{n}\")\n}\nview v(l: List<Int>) {\n    stack {\n        for x in l {\n            one(x)\n        }\n    }\n}\n",
-    );
-    assert_eq!(direct.meta.views.len(), 2, "{:?}", direct.meta.views);
-}
 
-#[test]
-fn views_call_views_and_apply_foreign_views() {
-    let src = "app t.z \"Z\"\nview inner(n: Int) {\n    text(\"{n}\")\n}\nview outer() {\n    stack {\n        for i in [1, 2] {\n            inner(i)\n        }\n    }\n}\n";
-    let c = compile(src);
-    assert_shape(&c);
-}
+    phase a_packages_catalogues_travel_in_its_module;
+    // A package's catalogues travel in its module (`tilolang.locales`, i18n.md): the module still
+    // validates, its hash is the module's without them, and they read back as they were written.
+    {
+        let source = tilolang::PackageSource::single(&fixture("counter.tl")).with_locales([
+            ("de-DE".to_owned(), "d-x = Zähler\n".to_owned()),
+            ("en-US".to_owned(), "d-x = Counter\n".to_owned()),
+        ]);
+        let with = tilolang::compile_package_source_with(
+            &source,
+            &tilolang::IdsLock::new(),
+            &[],
+            &mut tilolang::SeededEntropy(7),
+        )
+        .expect("compiles");
+        let without = compile_fixture("counter.tl", &[]);
+        validate(&with.wasm);
+        assert!(
+            shape(&with.wasm)
+                .custom
+                .contains(&"tilolang.locales".to_string())
+        );
+        assert_eq!(with.meta.module_hash, without.meta.module_hash);
+        // The module carries the source catalogue its sources write, not the copy on disk beside
+        // them; a translation travels as it stands.
+        let locales = tilolang::meta::locales_from_wasm(&with.wasm);
+        assert_eq!(locales.len(), 2);
+        assert_eq!(
+            locales[0],
+            ("de-DE".to_owned(), "d-x = Zähler\n".to_owned())
+        );
+        assert_eq!(locales[1].0, "en-US");
+        assert!(
+            locales[1]
+                .1
+                .contains(".doc = A counter that several people can bump at once."),
+            "{}",
+            locales[1].1
+        );
+        assert!(!locales[1].1.contains("d-x = Counter"), "{}", locales[1].1);
+        assert!(tilolang::meta::locales_from_wasm(&without.wasm).is_empty());
+    }
 
-/// A package's catalogues travel in its module (`tilolang.locales`, i18n.md): the module still
-/// validates, its hash is the module's without them, and they read back as they were written.
-#[test]
-fn a_packages_catalogues_travel_in_its_module() {
-    let source = tilolang::PackageSource::single(&fixture("counter.tl")).with_locales([
-        ("de-DE".to_owned(), "d-x = Zähler\n".to_owned()),
-        ("en-US".to_owned(), "d-x = Counter\n".to_owned()),
-    ]);
-    let with = tilolang::compile_package_source_with(
-        &source,
-        &tilolang::IdsLock::new(),
-        &[],
-        &mut tilolang::SeededEntropy(7),
-    )
-    .expect("compiles");
-    let without = compile_fixture("counter.tl", &[]);
-    validate(&with.wasm);
-    assert!(
-        shape(&with.wasm)
-            .custom
-            .contains(&"tilolang.locales".to_string())
-    );
-    assert_eq!(with.meta.module_hash, without.meta.module_hash);
-    // The module carries the source catalogue its sources write, not the copy on disk beside
-    // them; a translation travels as it stands.
-    let locales = tilolang::meta::locales_from_wasm(&with.wasm);
-    assert_eq!(locales.len(), 2);
-    assert_eq!(
-        locales[0],
-        ("de-DE".to_owned(), "d-x = Zähler\n".to_owned())
-    );
-    assert_eq!(locales[1].0, "en-US");
-    assert!(
-        locales[1]
-            .1
-            .contains(".doc = A counter that several people can bump at once."),
-        "{}",
-        locales[1].1
-    );
-    assert!(!locales[1].1.contains("d-x = Counter"), "{}", locales[1].1);
-    assert!(tilolang::meta::locales_from_wasm(&without.wasm).is_empty());
-}
-
-/// A `File` reaches the metadata as the type it is, so a host reads a field's and a
-/// parameter's type as the file it holds.
-#[test]
-fn a_file_is_a_field_and_a_parameters_type() {
-    let compiled = crate::common::compile_body(
-        "type N {\n    body: Text\n    picture: Option<File>\n}\n
+    phase a_file_is_a_field_and_a_parameters_type;
+    // A `File` reaches the metadata as the type it is, so a host reads a field's and a
+    // parameter's type as the file it holds.
+    {
+        let compiled = crate::common::compile_body(
+            "type N {\n    body: Text\n    picture: Option<File>\n}\n
          action put(n: N, picture: File) {\n    n.picture = picture\n}",
-    );
-    let note = compiled
-        .meta
-        .types
-        .iter()
-        .find(|t| t.name == "N")
-        .expect("the type");
-    let picture = note
-        .fields
-        .iter()
-        .find(|f| f.name == "picture")
-        .expect("the field");
-    assert_eq!(picture.ty, "Option<File>");
-    let put = compiled
-        .meta
-        .actions
-        .iter()
-        .find(|a| a.name == "put")
-        .expect("the action");
-    assert_eq!(put.params.get(1).map(|p| p.ty.as_str()), Some("File"));
+        );
+        let note = compiled
+            .meta
+            .types
+            .iter()
+            .find(|t| t.name == "N")
+            .expect("the type");
+        let picture = note
+            .fields
+            .iter()
+            .find(|f| f.name == "picture")
+            .expect("the field");
+        assert_eq!(picture.ty, "Option<File>");
+        let put = compiled
+            .meta
+            .actions
+            .iter()
+            .find(|a| a.name == "put")
+            .expect("the action");
+        assert_eq!(put.params.get(1).map(|p| p.ty.as_str()), Some("File"));
+    }
 }

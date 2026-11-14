@@ -31,6 +31,10 @@ pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
 
 pub fn ensure() {
     CATALOG.ensure();
+    // The toolkit's own words are shared with every window and choose no language of their own
+    // (`ui::i18n::WIDGET_CATALOG`): they are read here from the start, so what an app says through
+    // one of them reads as words, never as a message's name.
+    ui::i18n::I18nManager::register_widget_messages();
 }
 
 /// A package's catalogues join the person's words, so what it declares reads in their language.
@@ -126,6 +130,23 @@ mod tests {
             assert_ne!(text, key, "{key} has no entry in the catalogue");
             assert!(!text.trim().is_empty(), "{key} resolves to nothing");
         }
+    }
+
+    /// A notice an app sends names a message of the toolkit's catalogue: the window says it as
+    /// words, in the language it reads.
+    #[test]
+    fn a_notice_an_app_sends_reads_in_the_windows_words() {
+        ensure();
+        let limit = [("limit", ui::i18n::ArgValue::Text("8 MB".to_owned()))];
+        assert_eq!(
+            t_args("rich-text-too-long", &limit),
+            "This paste is too long to keep (limit 8 MB). Paste it in smaller parts."
+        );
+        let none: [(&str, ui::i18n::ArgValue); 0] = [];
+        assert_eq!(
+            t_args("rich-text-changed-while-typing", &none),
+            "This paragraph changed while you were typing. Your edit wasn't kept."
+        );
     }
 
     #[test]

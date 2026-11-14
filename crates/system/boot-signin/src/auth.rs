@@ -200,97 +200,132 @@ esac
         }
     }
 
-    #[test]
-    fn people_come_from_boot_people() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let mut auth = stub(dir.path());
-        assert_eq!(auth.people(), vec![anna()]);
-        assert_eq!(
-            fs::read_to_string(dir.path().join("calls")).unwrap(),
-            "boot-people --device /dev/vda3\n"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `CliAuth`: `tilo-auth boot-people` and `boot-unlock` as the sign-in runs them.
+        fn tilo_auth_is_asked_through_its_command_line;
 
-    #[test]
-    fn a_missing_tilo_auth_lists_nobody() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let mut auth = CliAuth {
-            program: dir.path().join("absent"),
-            device: PathBuf::from("/dev/vda3"),
-            volume: "root".into(),
-            runtime: dir.path().join("run"),
-        };
-        assert!(auth.people().is_empty());
-        assert!(matches!(
-            auth.unlock(&anna(), "123456"),
-            Unlock::CouldNotTry
-        ));
-    }
-
-    #[test]
-    fn the_entry_reaches_boot_unlock_privately_and_is_gone_after() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let mut auth = stub(dir.path());
-        assert!(matches!(auth.unlock(&anna(), "123456"), Unlock::Opened));
-        assert_eq!(
-            fs::read_to_string(dir.path().join("calls")).unwrap(),
-            "boot-unlock root 600 123456\n"
-        );
-        assert!(!dir.path().join("run/entry").exists());
-        assert_eq!(
-            fs::metadata(dir.path().join("run"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-    }
-
-    #[test]
-    fn exit_statuses_map_to_outcomes() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let mut auth = stub(dir.path());
-        match auth.unlock(&anna(), "654321") {
-            Unlock::Wrong(limit) => assert_eq!(
-                limit,
-                Limit {
-                    tries_left: Some(7),
-                    wait_seconds: None
-                }
-            ),
-            _ => panic!("a wrong PIN must read as wrong"),
+        phase people_come_from_boot_people;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let mut auth = stub(dir.path());
+            assert_eq!(auth.people(), vec![anna()]);
+            assert_eq!(
+                fs::read_to_string(dir.path().join("calls")).unwrap(),
+                "boot-people --device /dev/vda3\n"
+            );
         }
-        assert!(matches!(
-            auth.unlock(&anna(), "no-tpm"),
-            Unlock::CouldNotTry
-        ));
-        assert!(!dir.path().join("run/entry").exists());
-    }
 
-    #[test]
-    fn limits_parse_from_the_reported_line() {
-        assert_eq!(
-            limit(r#"{"error":"locked-out","tries_left":0,"retry_in_s":120}"#),
-            Some(Limit {
-                tries_left: Some(0),
-                wait_seconds: Some(120)
-            })
-        );
-        assert_eq!(
-            limit(r#"{"error":"wrong","tries_left":9,"retry_in_s":7200}"#),
-            Some(Limit {
-                tries_left: Some(9),
-                wait_seconds: None
-            })
-        );
-        assert_eq!(limit("{}"), Some(Limit::default()));
-        assert_eq!(limit("the TPM is in lockout"), None);
-        assert_eq!(limit("{not json"), None);
+        phase a_missing_tilo_auth_lists_nobody;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let mut auth = CliAuth {
+                program: dir.path().join("absent"),
+                device: PathBuf::from("/dev/vda3"),
+                volume: "root".into(),
+                runtime: dir.path().join("run"),
+            };
+            assert!(auth.people().is_empty());
+            assert!(matches!(
+                auth.unlock(&anna(), "123456"),
+                Unlock::CouldNotTry
+            ));
+        }
+
+        phase the_entry_reaches_boot_unlock_privately_and_is_gone_after;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let mut auth = stub(dir.path());
+            assert!(matches!(auth.unlock(&anna(), "123456"), Unlock::Opened));
+            assert_eq!(
+                fs::read_to_string(dir.path().join("calls")).unwrap(),
+                "boot-unlock root 600 123456\n"
+            );
+            assert!(!dir.path().join("run/entry").exists());
+            assert_eq!(
+                fs::metadata(dir.path().join("run"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+
+        phase exit_statuses_map_to_outcomes;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let mut auth = stub(dir.path());
+            match auth.unlock(&anna(), "654321") {
+                Unlock::Wrong(limit) => assert_eq!(
+                    limit,
+                    Limit {
+                        tries_left: Some(7),
+                        wait_seconds: None
+                    }
+                ),
+                _ => panic!("a wrong PIN must read as wrong"),
+            }
+            assert!(matches!(
+                auth.unlock(&anna(), "no-tpm"),
+                Unlock::CouldNotTry
+            ));
+            assert!(!dir.path().join("run/entry").exists());
+        }
+
+        phase limits_parse_from_the_reported_line;
+        {
+            assert_eq!(
+                limit(r#"{"error":"locked-out","tries_left":0,"retry_in_s":120}"#),
+                Some(Limit {
+                    tries_left: Some(0),
+                    wait_seconds: Some(120)
+                })
+            );
+            assert_eq!(
+                limit(r#"{"error":"wrong","tries_left":9,"retry_in_s":7200}"#),
+                Some(Limit {
+                    tries_left: Some(9),
+                    wait_seconds: None
+                })
+            );
+            assert_eq!(limit("{}"), Some(Limit::default()));
+            assert_eq!(limit("the TPM is in lockout"), None);
+            assert_eq!(limit("{not json"), None);
+        }
+
+        phase a_repeated_wrong_entry_does_not_reach_tilo_auth_again;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let mut auth = stub(dir.path());
+            let mut screen = Typist {
+                entries: vec!["654321", "654321", "123456"],
+                notes: Vec::new(),
+            };
+            assert_eq!(
+                crate::flow::run(&mut auth, &mut screen),
+                crate::flow::Exit::Unlocked
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join("calls")).unwrap(),
+                "boot-people --device /dev/vda3\n\
+             boot-unlock root 600 654321\n\
+             boot-unlock root 600 123456\n",
+                "the second 654321 cost no TPM try"
+            );
+            assert_eq!(
+                screen.notes,
+                [
+                    "",
+                    "Incorrect PIN. 7 tries left.",
+                    "You already tried that PIN. 7 tries left.",
+                ]
+            );
+        }
     }
 
     struct Typist {
@@ -312,35 +347,5 @@ esac
         }
         fn checking(&mut self, _person: &Person) {}
         fn finish(&mut self, _unlocked: bool) {}
-    }
-
-    #[test]
-    fn a_repeated_wrong_entry_does_not_reach_tilo_auth_again() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let mut auth = stub(dir.path());
-        let mut screen = Typist {
-            entries: vec!["654321", "654321", "123456"],
-            notes: Vec::new(),
-        };
-        assert_eq!(
-            crate::flow::run(&mut auth, &mut screen),
-            crate::flow::Exit::Unlocked
-        );
-        assert_eq!(
-            fs::read_to_string(dir.path().join("calls")).unwrap(),
-            "boot-people --device /dev/vda3\n\
-             boot-unlock root 600 654321\n\
-             boot-unlock root 600 123456\n",
-            "the second 654321 cost no TPM try"
-        );
-        assert_eq!(
-            screen.notes,
-            [
-                "",
-                "Incorrect PIN. 7 tries left.",
-                "You already tried that PIN. 7 tries left.",
-            ]
-        );
     }
 }

@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 22
+version = 24
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -19,7 +19,7 @@ sources = [
     "crates/runtime/runtime-collab/src/lib.rs",
     "crates/runtime/runtime-collab/src/action_directory.rs",
     "crates/runtime/runtime-collab/src/workspace_status.rs",
-    "crates/collab/collab-types/src/channel.rs",
+    "crates/collab/collab-types/src/artifact.rs",
     "crates/collab/collab-types/src/presence/payload.rs",
     "crates/collab/collab-types/src/inbound.rs",
     "crates/collab/collab-types/src/peer.rs",
@@ -29,6 +29,9 @@ sources = [
     "crates/collab/collab-types/src/claim.rs",
     "crates/collab/collab-types/src/crypto.rs",
     "crates/collab/collab-types/src/role.rs",
+    "crates/collab/collab-types/src/member.rs",
+    "crates/collab/action-policy/src/member.rs",
+    "crates/collab/action-policy/src/grant.rs",
     "crates/collab/collab-types/src/presence/hue.rs",
     "crates/collab/actions/src/key.rs",
     "crates/collab/actions/src/framework.rs",
@@ -42,6 +45,12 @@ sources = [
     "crates/runtime/tilo-fs-client/src/entry_name.rs",
 ]
 roots = ["Request", "Response", "ToolRequest", "ToolReply", "Call", "HostFrame", "FsRequest", "FsReply"]
+# Settings' language packs (`request.rs`) and the shell-owned tools (`tools.rs`) are
+# length-prefixed JSON on their own sockets; the rest of this interface is postcard.
+# Both share the interface's one version and are checked by the stricter rules, but a
+# field left out of a JSON message is only left out, so only the postcard roots pin
+# what a compact encoding carries.
+json_roots = ["Request", "Response", "ToolRequest", "ToolReply"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -99,6 +108,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "Ask::Resolve.resource" = "#2 String"
 "Ask::Resolve.revision" = "#1 String"
 "AttestationId" = "tuple(Uuid) transparent"
+"AvatarBytes" = "tuple(Vec<u8>) transparent"
 "BackupsRoute" = "enum external"
 "BackupsRoute::overview" = "#0 unit"
 "BackupsRoute::restore" = "#1 unit"
@@ -125,7 +135,6 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "ChannelAccess::Removed" = "#2 unit"
 "ChannelAccess::Unavailable" = "#3 unit"
 "ChannelAccess::Waiting" = "#1 unit"
-"ChannelId" = "tuple(Uuid) transparent"
 "CheckProgress" = "enum external"
 "CheckProgress::Failed" = "#2 tuple(String)"
 "CheckProgress::Receipt" = "#1 tuple(Vec<u8>)"
@@ -140,13 +149,6 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "ClaimedAction::Verb" = "#0 struct"
 "ClaimedAction::Verb.action" = "#0 ActionKey"
 "ClaimedAction::Verb.item" = "#1 Option<String>"
-"Collaborator" = "struct"
-"Collaborator.colour" = "#2 Option<PresenceHue>"
-"Collaborator.id" = "#0 String"
-"Collaborator.is_agent" = "#3 bool"
-"Collaborator.is_self" = "#4 bool"
-"Collaborator.joined_at" = "#5 Option<u64>"
-"Collaborator.name" = "#1 String"
 "ContainerEngine" = "enum external"
 "ContainerEngine::distrobox" = "#1 unit"
 "ContainerEngine::podman" = "#0 unit"
@@ -167,7 +169,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "ContextUpdate::RetiredPersonPairs" = "#6 unit"
 "ContextUpdate::Snapshot" = "#0 struct"
 "ContextUpdate::Snapshot.apps" = "#2 Vec<NamedApp>"
-"ContextUpdate::Snapshot.collaborators" = "#0 Vec<Collaborator>"
+"ContextUpdate::Snapshot.members" = "#0 Vec<Member>"
 "ContextUpdate::Snapshot.permissions" = "#1 Vec<String>"
 "ContextUpdate::SnapshotRequested" = "#2 unit"
 "DirEntry" = "struct"
@@ -208,6 +210,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "DisplayOrigin::LocalHost" = "#0 unit"
 "DisplayOrigin::Published" = "#1 tuple([u8; 16])"
 "DocumentApp" = "struct"
+"DocumentApp.artwork" = "#5 Option<Vec<u8>>"
 "DocumentApp.icon" = "#3 Option<String>"
 "DocumentApp.id" = "#0 String"
 "DocumentApp.is_default" = "#2 bool"
@@ -220,10 +223,9 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "DriveEntry.open_at" = "#4 Option<String>"
 "DriveEntry.size_bytes" = "#2 u64"
 "Ed25519PublicKey" = "tuple([u8; 32]) transparent"
-"EncryptionMetadata" = "struct"
-"EncryptionMetadata.channel" = "#1 ChannelId"
+"EncryptionMetadata" = "struct deny_unknown_fields"
 "EncryptionMetadata.epoch" = "#0 u64"
-"EncryptionMetadata.scheme" = "#2 EncryptionScheme"
+"EncryptionMetadata.scheme" = "#1 EncryptionScheme"
 "EncryptionScheme" = "enum external"
 "EncryptionScheme::ContentKey" = "#1 struct"
 "EncryptionScheme::ContentKey.retention" = "#0 ContentRetention"
@@ -487,13 +489,26 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "JobUpdate::Progress.sequence" = "#0 u64"
 "Join" = "struct"
 "Join.channel" = "#0 String"
+"Join.handle" = "#3 String"
 "Join.identity" = "#1 Vec<u8>"
-"Join.participant" = "#2 Participant"
-"Join.record_kind" = "#3 Option<String>"
+"Join.member" = "#2 Option<MemberId>"
+"Join.record_kind" = "#4 Option<String>"
 "LiveActivityCall" = "enum external"
 "LiveActivityCall::Controls" = "#1 struct"
 "LiveActivityCall::Controls.after" = "#0 u64"
 "LiveActivityCall::Show" = "#0 tuple(Vec<u8>)"
+"Member" = "struct"
+"Member.avatar" = "#3 Option<AvatarBytes>"
+"Member.colour" = "#4 PresenceHue"
+"Member.id" = "#0 MemberId"
+"Member.is_self" = "#6 bool"
+"Member.joined_at" = "#5 Option<u64>"
+"Member.name" = "#2 String"
+"Member.role" = "#1 Option<Role>"
+"MemberId" = "enum external"
+"MemberId::agent" = "#1 tuple(String)"
+"MemberId::bot" = "#2 tuple(String)"
+"MemberId::person" = "#0 tuple(String)"
 "Metadata" = "struct"
 "Metadata.kind" = "#0 EntryKind"
 "Metadata.modified_unix_seconds" = "#2 Option<i64>"
@@ -592,11 +607,6 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "Operation::Workspace" = "#1 struct"
 "Operation::Workspace.channel" = "#0 String"
 "Operation::Workspace.seen" = "#1 Option<WorkspaceStatus>"
-"Participant" = "enum external"
-"Participant::Agent" = "#1 struct"
-"Participant::Agent.id" = "#0 String"
-"Participant::Person" = "#0 struct"
-"Participant::Person.handle" = "#0 String"
 "PathStep" = "enum external"
 "PathStep::cell" = "#3 tuple(String, String)"
 "PathStep::field" = "#0 tuple(String)"
@@ -806,6 +816,12 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "Response::MetadataWithPresentation.threshold" = "#5 u16"
 "Response::MetadataWithPresentation.total_shares" = "#6 u16"
 "Response::Signature" = "#1 tuple(Vec<u8>)"
+"Role" = "enum external"
+"Role::commenter" = "#1 unit"
+"Role::editor" = "#2 unit"
+"Role::moderator" = "#3 unit"
+"Role::owner" = "#4 unit"
+"Role::viewer" = "#0 unit"
 "RosterAgent" = "struct"
 "RosterAgent.agent_id" = "#3 String"
 "RosterAgent.color" = "#5 [u8; 3]"
@@ -869,7 +885,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "SignedOp.attestation_id" = "#3 AttestationId"
 "SignedOp.author" = "#2 Ed25519PublicKey"
 "SignedOp.claims" = "#8 Vec<ChangeClaim>"
-"SignedOp.encryption" = "#7 Option<EncryptionMetadata> with=encryption_wire"
+"SignedOp.encryption" = "#7 Option<EncryptionMetadata>"
 "SignedOp.kind" = "#4 OpKind"
 "SignedOp.payload" = "#0 Vec<u8> with=serde_bytes"
 "SignedOp.seq" = "#6 u64"

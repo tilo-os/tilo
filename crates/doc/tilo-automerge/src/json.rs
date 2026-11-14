@@ -421,7 +421,6 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ROOT};
 
-    #[test]
     fn a_json_value_is_stored_as_maps_lists_and_scalars() {
         let value = serde_json::json!({
             "host": "imap.example",
@@ -452,7 +451,6 @@ mod tests {
         ));
     }
 
-    #[test]
     fn an_unchanged_write_makes_no_operation() {
         let value = serde_json::json!({"a": [1, 2, {"b": "c"}], "d": "e"});
         let mut doc = AutoCommit::new();
@@ -462,7 +460,6 @@ mod tests {
         assert_eq!(doc.pending_ops(), 0);
     }
 
-    #[test]
     fn removed_keys_and_elements_are_removed() {
         let mut doc = AutoCommit::new();
         write(
@@ -485,7 +482,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_write_changes_only_the_key_that_differs() {
         let mut base = AutoCommit::new();
         write(
@@ -523,7 +519,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_subtree_reads_as_it_was_at_given_heads() {
         let mut doc = AutoCommit::new();
         let messages = doc.put_object(ROOT, "messages", ObjType::Map).unwrap();
@@ -548,7 +543,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_read_stops_at_its_limit() {
         let mut doc = AutoCommit::new();
         let fields: serde_json::Map<String, serde_json::Value> = (0..50)
@@ -565,7 +559,6 @@ mod tests {
         assert_eq!(read.as_object().expect("an object").len(), 5);
     }
 
-    #[test]
     fn a_scalar_json_has_no_value_for_is_an_error_at_its_key() {
         let mut doc = AutoCommit::new();
         let map = doc.put_object(ROOT, "v", ObjType::Map).unwrap();
@@ -576,6 +569,24 @@ mod tests {
     }
 
     #[test]
+    fn a_read_is_as_of_its_heads_stops_at_its_limit_and_names_what_json_cannot_hold() {
+        let cases: [(&str, fn()); 3] = [
+            (
+                "a subtree reads as it was at given heads",
+                a_subtree_reads_as_it_was_at_given_heads,
+            ),
+            ("a read stops at its limit", a_read_stops_at_its_limit),
+            (
+                "a scalar json has no value for is an error at its key",
+                a_scalar_json_has_no_value_for_is_an_error_at_its_key,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
+    }
+
     fn an_index_one_past_the_end_adds_an_element() {
         let mut doc = AutoCommit::new();
         let list = doc.put_object(ROOT, "tags", ObjType::List).unwrap();
@@ -585,5 +596,35 @@ mod tests {
             read_value(&doc, &Value::Object(ObjType::List), &list).unwrap(),
             serde_json::json!(["a", {"b": 1}])
         );
+    }
+
+    #[test]
+    fn a_write_stores_json_as_maps_lists_and_scalars_and_changes_only_what_differs() {
+        let cases: [(&str, fn()); 5] = [
+            (
+                "a json value is stored as maps lists and scalars",
+                a_json_value_is_stored_as_maps_lists_and_scalars,
+            ),
+            (
+                "an unchanged write makes no operation",
+                an_unchanged_write_makes_no_operation,
+            ),
+            (
+                "removed keys and elements are removed",
+                removed_keys_and_elements_are_removed,
+            ),
+            (
+                "a write changes only the key that differs",
+                a_write_changes_only_the_key_that_differs,
+            ),
+            (
+                "an index one past the end adds an element",
+                an_index_one_past_the_end_adds_an_element,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

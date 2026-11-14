@@ -1064,133 +1064,6 @@ mod tests {
     use super::*;
     use vello::kurbo::Point;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn tile_addressing_decoding_and_label_free_styles() {
-        {
-            assert_eq!(TileLayer::tile_zoom(14.4), 14);
-            assert_eq!(TileLayer::tile_zoom(14.6), 15);
-            assert_eq!(TileLayer::tile_zoom(-3.0), 0);
-            assert_eq!(TileLayer::tile_zoom(99.0), 19);
-        }
-
-        {
-            let t = TileId::new(14, 8800, 5680);
-            let p = t.parent().unwrap();
-            assert_eq!(p, TileId::new(13, 4400, 2840));
-            assert!(TileId::new(0, 0, 0).parent().is_none());
-        }
-
-        {
-            let center = LatLon::new(48.1371, 11.5754);
-            let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let vc = Point::new(640.0, 400.0);
-            let tiles = TileLayer::visible_tiles(center, 14.0, vc, vp);
-            assert!(!tiles.is_empty());
-            assert!(tiles.len() >= 20, "got {}", tiles.len());
-            let n = 1u32 << 14;
-            for (id, rect) in &tiles {
-                assert_eq!(id.z, 14);
-                assert!(id.x < n && id.y < n);
-                assert!(rect.width() > 200.0 && rect.width() < 320.0);
-            }
-            let covers_center = tiles.iter().any(|(_, r)| r.contains(vc));
-            assert!(covers_center);
-        }
-
-        {
-            let b = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
-            let small = b.tiles_in_range(12, 12).len();
-            let big = b.tiles_in_range(12, 14).len();
-            assert!(big > small);
-            assert!(small >= 1);
-        }
-
-        {
-            let (rgba, w, h) =
-                decode_png(&INDEXED_PNG_2X2).expect("indexed PNG must decode, not error");
-            assert_eq!((w, h), (2, 2));
-            assert_eq!(rgba.len(), 2 * 2 * 4, "expanded to RGBA8");
-            assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
-            assert_eq!(&rgba[4..8], &[0, 255, 0, 255]);
-        }
-
-        {
-            let id = TileId::new(14, 8800, 5680);
-            assert_eq!(
-                id.url(TILE_SERVER),
-                "https://tile.openstreetmap.org/14/8800/5680.png"
-            );
-            assert!(
-                USER_AGENT.starts_with("Tilo-Maps/") && USER_AGENT.contains("(+https://"),
-                "the tile server blocks unidentified clients: {USER_AGENT}"
-            );
-            let net = include_str!("../tilo-app.toml")
-                .split("\n[")
-                .find(|table| table.starts_with("sandbox.net]"))
-                .expect("a [sandbox.net] allowlist");
-            let host = TILE_SERVER.trim_start_matches("https://");
-            assert!(
-                net.lines()
-                    .any(|line| line.trim() == format!("\"{host}\",")),
-                "the sandbox must allow the tile server {host}: {net}"
-            );
-        }
-
-        {
-            let osm = [
-                [242, 239, 233, 255], // land
-                [170, 211, 223, 255], // water
-                [200, 250, 204, 255], // park
-                [0, 0, 0, 255],       // label
-            ];
-            let mut light = osm.concat();
-            TileStyle::Light.retone(&mut light);
-            assert_eq!(
-                light,
-                osm.concat(),
-                "the light style is the raster as served"
-            );
-
-            let mut dark = osm.concat();
-            TileStyle::Dark.retone(&mut dark);
-            let px = |i: usize| {
-                [
-                    dark[i * 4],
-                    dark[i * 4 + 1],
-                    dark[i * 4 + 2],
-                    dark[i * 4 + 3],
-                ]
-            };
-            let luma = |c: [u8; 4]| {
-                0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2])
-            };
-            let [land, water, park, label] = [px(0), px(1), px(2), px(3)];
-            assert!(luma(land) < 48.0, "dark land is deep: {land:?}");
-            assert!(luma(label) > 200.0, "dark labels are light: {label:?}");
-            assert!(
-                water[2] > water[0] && water[2] > luma(land) as u8,
-                "water stays blue: {water:?}"
-            );
-            assert!(
-                park[1] > park[0] && park[1] > park[2],
-                "parks stay green: {park:?}"
-            );
-            assert!(
-                dark.chunks_exact(4).all(|c| c[3] == 255),
-                "alpha is untouched"
-            );
-        }
-
-        {
-            assert_eq!(TileStyle::from_theme(&Theme::dark()), TileStyle::Dark);
-            assert_eq!(TileStyle::from_theme(&Theme::light()), TileStyle::Light);
-        }
-    }
-
     fn solid_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
         ui::png::encode_rgba8(w, h, &rgba.repeat((w * h) as usize)).unwrap()
     }
@@ -1223,275 +1096,11 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn tile_requests_never_block_and_the_resident_set_is_bounded() {
-        {
-            let cache = temp_cache();
-            let id = TileId::new(14, 8800, 5680);
-            let server = HeldServer::png(solid_png(256, 256, [10, 20, 30, 255]));
-            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), server.base.clone());
-
-            layer.request(id);
-            assert!(layer.is_inflight(id));
-            assert!(layer.get(id).is_none());
-            server.release();
-
-            tilo_test_env::wait_until("the decoded tile to arrive via the channel", || {
-                layer.drain();
-                layer.get(id).is_some()
-            });
-            assert!(!layer.is_inflight(id));
-
-            let _ = std::fs::remove_dir_all(&cache);
-        }
-
-        {
-            let cache = temp_cache();
-            let id = TileId::new(12, 2200, 1420);
-            let path = cache.join(id.cache_rel());
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, solid_png(64, 64, [1, 2, 3, 255])).unwrap();
-
-            let mut layer = TileLayer::with_cache_dir(cache.clone());
-            layer.request(id);
-            assert!(layer.is_inflight(id));
-            layer.request(id);
-
-            tilo_test_env::wait_until("the tile to become resident", || {
-                layer.drain();
-                layer.get(id).is_some()
-            });
-            layer.request(id);
-            assert!(!layer.is_inflight(id));
-
-            let _ = std::fs::remove_dir_all(&cache);
-        }
-
-        {
-            let mut layer = TileLayer::offline();
-            let id = TileId::new(14, 100, 100);
-            layer.request(id);
-            layer.drain();
-            assert!(!layer.is_inflight(id));
-            assert!(layer.get(id).is_none());
-            assert!(!layer.has_inflight());
-        }
-
-        {
-            let mut layer = TileLayer::offline();
-            let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
-            for i in 0..(MEM_CACHE_CAP.get() as u32 + 50) {
-                layer.insert(TileId::new(14, i, 0), DecodedTile { image: img.clone() });
-            }
-            assert!(layer.mem_len() <= MEM_CACHE_CAP.get());
-            assert!(
-                layer
-                    .mem
-                    .contains(&TileId::new(14, MEM_CACHE_CAP.get() as u32 + 49, 0))
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn offline_region_download_persists_renders_and_deletes_tiles() {
-        {
-            let cache = temp_cache();
-            let bounds = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.15, 11.59));
-            let (z0, z1) = (13u8, 14u8);
-            for id in bounds.tiles_in_range(z0, z1) {
-                let p = cache.join(id.cache_rel());
-                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-                std::fs::write(&p, solid_png(32, 32, [9, 9, 9, 255])).unwrap();
-            }
-            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
-
-            let est = TileLayer::estimate_download(bounds, z0, z1);
-            let queued = layer.start_download(bounds, z0, z1);
-            assert_eq!(queued, est);
-            assert!(queued > 1);
-            assert!(layer.progress().is_active() || est == 0);
-
-            tilo_test_env::wait_until("the download to complete via the channel", || {
-                layer.drain();
-                !layer.progress().is_active() && layer.progress().done >= queued
-            });
-            let prog = layer.progress();
-            assert_eq!(prog.done, queued, "download did not complete via channel");
-            assert_eq!(prog.failed, 0, "cached tiles should not fail");
-
-            let _ = std::fs::remove_dir_all(&cache);
-        }
-
-        {
-            let cache = temp_cache();
-            let server = HeldServer::png(solid_png(256, 256, [30, 60, 90, 255]));
-            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), server.base.clone());
-
-            let bounds = GeoBounds::new(LatLon::new(48.13, 11.55), LatLon::new(48.16, 11.58));
-            let (z0, z1) = (13u8, 14u8);
-            let ids = bounds.tiles_in_range(z0, z1);
-            assert!(ids.len() >= 3, "expected several tiles, got {}", ids.len());
-            for id in &ids {
-                assert!(!cache.join(id.cache_rel()).exists());
-            }
-
-            let queued = layer.start_download(bounds, z0, z1);
-            assert_eq!(queued, ids.len() as u32);
-            layer.drain();
-            assert!(layer.progress().is_active());
-            assert_eq!(layer.progress().done, 0);
-            server.release();
-
-            tilo_test_env::wait_until("the download to complete", || {
-                layer.drain();
-                !layer.progress().is_active() && layer.progress().done >= queued
-            });
-            assert_eq!(layer.progress().done, queued, "download did not complete");
-            assert_eq!(
-                layer.progress().failed,
-                0,
-                "the mock server serves every tile"
-            );
-
-            for id in &ids {
-                let path = cache.join(id.cache_rel());
-                assert!(path.exists(), "tile {id:?} was not persisted to {path:?}");
-                let bytes = std::fs::read(&path).unwrap();
-                assert!(decode_png(&bytes).is_ok(), "persisted tile is a valid PNG");
-            }
-
-            let _ = std::fs::remove_dir_all(&cache);
-        }
-
-        {
-            let cache = temp_cache();
-            let id = TileId::new(16, 35210, 22696);
-            let path = cache.join(id.cache_rel());
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, solid_png(256, 256, [12, 34, 56, 255])).unwrap();
-
-            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
-            layer.request(id);
-
-            tilo_test_env::wait_until(
-                "the cached tile to load offline (disk-first), with no network",
-                || {
-                    layer.drain();
-                    layer.get(id).is_some()
-                },
-            );
-            assert!(
-                !layer.has_failures(),
-                "a disk cache hit must not be recorded as a fetch failure"
-            );
-
-            let _ = std::fs::remove_dir_all(&cache);
-        }
-
-        {
-            let cache = temp_cache();
-            let doomed = TileId::new(15, 17600, 11360);
-            let kept = TileId::new(15, 17601, 11360);
-            for id in [doomed, kept] {
-                let p = cache.join(id.cache_rel());
-                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-                std::fs::write(&p, solid_png(64, 64, [7, 7, 7, 255])).unwrap();
-            }
-            let mut layer = TileLayer::offline_with_cache_dir(cache.clone());
-
-            let freed = layer.delete_tiles(&[doomed]);
-            assert!(freed > 0, "deleting a real tile frees its bytes");
-            assert!(
-                !cache.join(doomed.cache_rel()).exists(),
-                "the tile is gone from disk"
-            );
-            assert!(
-                cache.join(kept.cache_rel()).exists(),
-                "an untouched tile is kept"
-            );
-
-            let _ = std::fs::remove_dir_all(&cache);
-        }
-    }
-
     fn closed_local_base() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener); // free the port so subsequent connects are refused
         format!("http://127.0.0.1:{port}")
-    }
-
-    #[test]
-    fn failed_tiles_are_negative_cached_with_capped_exponential_backoff() {
-        ui::time::testing::with_monotonic_time(ui::time::now(), || {
-            let cache = temp_cache();
-            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
-            let id = TileId::new(14, 8801, 5681);
-
-            layer.request(id);
-            assert!(layer.is_inflight(id), "first request should be in-flight");
-
-            tilo_test_env::wait_until("the failed fetch to clear in-flight", || {
-                layer.drain();
-                !layer.is_inflight(id)
-            });
-            assert!(layer.get(id).is_none(), "a failed tile is not resident");
-            assert!(
-                layer.is_backing_off(id),
-                "a failed tile must be negative-cached"
-            );
-            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
-            assert_eq!(
-                layer.failure(),
-                Some(TileFault::Unreachable),
-                "a refused connection is unreachable imagery, not a refusal"
-            );
-
-            layer.request(id);
-            assert!(
-                !layer.is_inflight(id),
-                "a backed-off tile must not be re-requested"
-            );
-            assert!(
-                !layer.has_inflight(),
-                "no work should be in flight after a suppressed request — the loop can idle"
-            );
-
-            let _ = std::fs::remove_dir_all(&cache);
-        });
-
-        {
-            let mut layer = TileLayer::offline();
-            let id = TileId::new(12, 1, 2);
-            layer.note_failure(id, TileFault::Unreachable);
-            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
-            layer.note_failure(id, TileFault::Unreachable);
-            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 2));
-            layer.note_failure(id, TileFault::Unreachable);
-            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 4));
-
-            layer.failed.remove(&id);
-            let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
-            layer.insert(id, DecodedTile { image: img });
-            assert!(
-                layer.failed_delay(id).is_none(),
-                "success clears the backoff"
-            );
-            assert!(!layer.is_backing_off(id));
-        }
-
-        {
-            let mut layer = TileLayer::offline();
-            let id = TileId::new(10, 3, 4);
-            for _ in 0..40 {
-                layer.note_failure(id, TileFault::Unreachable);
-            }
-            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MAX));
-        }
     }
 
     /// A local HTTP/1.1 server answering every request with `status`,
@@ -1571,91 +1180,482 @@ mod tests {
         });
     }
 
-    #[test]
-    fn refused_tiles_are_rejected_failures_not_imagery() {
-        let id = TileId::new(14, 8802, 5682);
-        for (status, content_type, body) in [
-            (
-                "403 Forbidden",
-                "image/png",
-                solid_png(256, 256, [200, 0, 0, 255]),
-            ),
-            (
-                "200 OK",
-                "text/html",
-                b"<html>API key required</html>".to_vec(),
-            ),
-            ("200 OK", "image/png", b"not a png".to_vec()),
-        ] {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+        )]
+        fn the_tile_layer_addresses_fetches_caches_and_refuses;
+
+        phase tile_addressing_decoding_and_label_free_styles;
+        {
+            {
+                assert_eq!(TileLayer::tile_zoom(14.4), 14);
+                assert_eq!(TileLayer::tile_zoom(14.6), 15);
+                assert_eq!(TileLayer::tile_zoom(-3.0), 0);
+                assert_eq!(TileLayer::tile_zoom(99.0), 19);
+            }
+
+            {
+                let t = TileId::new(14, 8800, 5680);
+                let p = t.parent().unwrap();
+                assert_eq!(p, TileId::new(13, 4400, 2840));
+                assert!(TileId::new(0, 0, 0).parent().is_none());
+            }
+
+            {
+                let center = LatLon::new(48.1371, 11.5754);
+                let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
+                let vc = Point::new(640.0, 400.0);
+                let tiles = TileLayer::visible_tiles(center, 14.0, vc, vp);
+                assert!(!tiles.is_empty());
+                assert!(tiles.len() >= 20, "got {}", tiles.len());
+                let n = 1u32 << 14;
+                for (id, rect) in &tiles {
+                    assert_eq!(id.z, 14);
+                    assert!(id.x < n && id.y < n);
+                    assert!(rect.width() > 200.0 && rect.width() < 320.0);
+                }
+                let covers_center = tiles.iter().any(|(_, r)| r.contains(vc));
+                assert!(covers_center);
+            }
+
+            {
+                let b = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
+                let small = b.tiles_in_range(12, 12).len();
+                let big = b.tiles_in_range(12, 14).len();
+                assert!(big > small);
+                assert!(small >= 1);
+            }
+
+            {
+                let (rgba, w, h) =
+                    decode_png(&INDEXED_PNG_2X2).expect("indexed PNG must decode, not error");
+                assert_eq!((w, h), (2, 2));
+                assert_eq!(rgba.len(), 2 * 2 * 4, "expanded to RGBA8");
+                assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
+                assert_eq!(&rgba[4..8], &[0, 255, 0, 255]);
+            }
+
+            {
+                let id = TileId::new(14, 8800, 5680);
+                assert_eq!(
+                    id.url(TILE_SERVER),
+                    "https://tile.openstreetmap.org/14/8800/5680.png"
+                );
+                assert!(
+                    USER_AGENT.starts_with("Tilo-Maps/") && USER_AGENT.contains("(+https://"),
+                    "the tile server blocks unidentified clients: {USER_AGENT}"
+                );
+                let net = include_str!("../tilo-app.toml")
+                    .split("\n[")
+                    .find(|table| table.starts_with("sandbox.net]"))
+                    .expect("a [sandbox.net] allowlist");
+                let host = TILE_SERVER.trim_start_matches("https://");
+                assert!(
+                    net.lines()
+                        .any(|line| line.trim() == format!("\"{host}\",")),
+                    "the sandbox must allow the tile server {host}: {net}"
+                );
+            }
+
+            {
+                let osm = [
+                    [242, 239, 233, 255], // land
+                    [170, 211, 223, 255], // water
+                    [200, 250, 204, 255], // park
+                    [0, 0, 0, 255],       // label
+                ];
+                let mut light = osm.concat();
+                TileStyle::Light.retone(&mut light);
+                assert_eq!(
+                    light,
+                    osm.concat(),
+                    "the light style is the raster as served"
+                );
+
+                let mut dark = osm.concat();
+                TileStyle::Dark.retone(&mut dark);
+                let px = |i: usize| {
+                    [
+                        dark[i * 4],
+                        dark[i * 4 + 1],
+                        dark[i * 4 + 2],
+                        dark[i * 4 + 3],
+                    ]
+                };
+                let luma = |c: [u8; 4]| {
+                    0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2])
+                };
+                let [land, water, park, label] = [px(0), px(1), px(2), px(3)];
+                assert!(luma(land) < 48.0, "dark land is deep: {land:?}");
+                assert!(luma(label) > 200.0, "dark labels are light: {label:?}");
+                assert!(
+                    water[2] > water[0] && water[2] > luma(land) as u8,
+                    "water stays blue: {water:?}"
+                );
+                assert!(
+                    park[1] > park[0] && park[1] > park[2],
+                    "parks stay green: {park:?}"
+                );
+                assert!(
+                    dark.chunks_exact(4).all(|c| c[3] == 255),
+                    "alpha is untouched"
+                );
+            }
+
+            {
+                assert_eq!(TileStyle::from_theme(&Theme::dark()), TileStyle::Dark);
+                assert_eq!(TileStyle::from_theme(&Theme::light()), TileStyle::Light);
+            }
+        }
+
+        phase tile_requests_never_block_and_the_resident_set_is_bounded;
+        {
+            {
+                let cache = temp_cache();
+                let id = TileId::new(14, 8800, 5680);
+                let server = HeldServer::png(solid_png(256, 256, [10, 20, 30, 255]));
+                let mut layer = TileLayer::with_cache_dir_url(cache.clone(), server.base.clone());
+
+                layer.request(id);
+                assert!(layer.is_inflight(id));
+                assert!(layer.get(id).is_none());
+                server.release();
+
+                tilo_test_env::wait_until("the decoded tile to arrive via the channel", || {
+                    layer.drain();
+                    layer.get(id).is_some()
+                });
+                assert!(!layer.is_inflight(id));
+
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+
+            {
+                let cache = temp_cache();
+                let id = TileId::new(12, 2200, 1420);
+                let path = cache.join(id.cache_rel());
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, solid_png(64, 64, [1, 2, 3, 255])).unwrap();
+
+                let mut layer = TileLayer::with_cache_dir(cache.clone());
+                layer.request(id);
+                assert!(layer.is_inflight(id));
+                layer.request(id);
+
+                tilo_test_env::wait_until("the tile to become resident", || {
+                    layer.drain();
+                    layer.get(id).is_some()
+                });
+                layer.request(id);
+                assert!(!layer.is_inflight(id));
+
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+
+            {
+                let mut layer = TileLayer::offline();
+                let id = TileId::new(14, 100, 100);
+                layer.request(id);
+                layer.drain();
+                assert!(!layer.is_inflight(id));
+                assert!(layer.get(id).is_none());
+                assert!(!layer.has_inflight());
+            }
+
+            {
+                let mut layer = TileLayer::offline();
+                let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
+                for i in 0..(MEM_CACHE_CAP.get() as u32 + 50) {
+                    layer.insert(TileId::new(14, i, 0), DecodedTile { image: img.clone() });
+                }
+                assert!(layer.mem_len() <= MEM_CACHE_CAP.get());
+                assert!(
+                    layer
+                        .mem
+                        .contains(&TileId::new(14, MEM_CACHE_CAP.get() as u32 + 49, 0))
+                );
+            }
+        }
+
+        phase offline_region_download_persists_renders_and_deletes_tiles;
+        {
+            {
+                let cache = temp_cache();
+                let bounds = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.15, 11.59));
+                let (z0, z1) = (13u8, 14u8);
+                for id in bounds.tiles_in_range(z0, z1) {
+                    let p = cache.join(id.cache_rel());
+                    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                    std::fs::write(&p, solid_png(32, 32, [9, 9, 9, 255])).unwrap();
+                }
+                let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+
+                let est = TileLayer::estimate_download(bounds, z0, z1);
+                let queued = layer.start_download(bounds, z0, z1);
+                assert_eq!(queued, est);
+                assert!(queued > 1);
+                assert!(layer.progress().is_active() || est == 0);
+
+                tilo_test_env::wait_until("the download to complete via the channel", || {
+                    layer.drain();
+                    !layer.progress().is_active() && layer.progress().done >= queued
+                });
+                let prog = layer.progress();
+                assert_eq!(prog.done, queued, "download did not complete via channel");
+                assert_eq!(prog.failed, 0, "cached tiles should not fail");
+
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+
+            {
+                let cache = temp_cache();
+                let server = HeldServer::png(solid_png(256, 256, [30, 60, 90, 255]));
+                let mut layer = TileLayer::with_cache_dir_url(cache.clone(), server.base.clone());
+
+                let bounds = GeoBounds::new(LatLon::new(48.13, 11.55), LatLon::new(48.16, 11.58));
+                let (z0, z1) = (13u8, 14u8);
+                let ids = bounds.tiles_in_range(z0, z1);
+                assert!(ids.len() >= 3, "expected several tiles, got {}", ids.len());
+                for id in &ids {
+                    assert!(!cache.join(id.cache_rel()).exists());
+                }
+
+                let queued = layer.start_download(bounds, z0, z1);
+                assert_eq!(queued, ids.len() as u32);
+                layer.drain();
+                assert!(layer.progress().is_active());
+                assert_eq!(layer.progress().done, 0);
+                server.release();
+
+                tilo_test_env::wait_until("the download to complete", || {
+                    layer.drain();
+                    !layer.progress().is_active() && layer.progress().done >= queued
+                });
+                assert_eq!(layer.progress().done, queued, "download did not complete");
+                assert_eq!(
+                    layer.progress().failed,
+                    0,
+                    "the mock server serves every tile"
+                );
+
+                for id in &ids {
+                    let path = cache.join(id.cache_rel());
+                    assert!(path.exists(), "tile {id:?} was not persisted to {path:?}");
+                    let bytes = std::fs::read(&path).unwrap();
+                    assert!(decode_png(&bytes).is_ok(), "persisted tile is a valid PNG");
+                }
+
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+
+            {
+                let cache = temp_cache();
+                let id = TileId::new(16, 35210, 22696);
+                let path = cache.join(id.cache_rel());
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, solid_png(256, 256, [12, 34, 56, 255])).unwrap();
+
+                let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+                layer.request(id);
+
+                tilo_test_env::wait_until(
+                    "the cached tile to load offline (disk-first), with no network",
+                    || {
+                        layer.drain();
+                        layer.get(id).is_some()
+                    },
+                );
+                assert!(
+                    !layer.has_failures(),
+                    "a disk cache hit must not be recorded as a fetch failure"
+                );
+
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+
+            {
+                let cache = temp_cache();
+                let doomed = TileId::new(15, 17600, 11360);
+                let kept = TileId::new(15, 17601, 11360);
+                for id in [doomed, kept] {
+                    let p = cache.join(id.cache_rel());
+                    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                    std::fs::write(&p, solid_png(64, 64, [7, 7, 7, 255])).unwrap();
+                }
+                let mut layer = TileLayer::offline_with_cache_dir(cache.clone());
+
+                let freed = layer.delete_tiles(&[doomed]);
+                assert!(freed > 0, "deleting a real tile frees its bytes");
+                assert!(
+                    !cache.join(doomed.cache_rel()).exists(),
+                    "the tile is gone from disk"
+                );
+                assert!(
+                    cache.join(kept.cache_rel()).exists(),
+                    "an untouched tile is kept"
+                );
+
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+        }
+
+        phase failed_tiles_are_negative_cached_with_capped_exponential_backoff;
+        {
+            ui::time::testing::with_monotonic_time(ui::time::now(), || {
+                let cache = temp_cache();
+                let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+                let id = TileId::new(14, 8801, 5681);
+
+                layer.request(id);
+                assert!(layer.is_inflight(id), "first request should be in-flight");
+
+                tilo_test_env::wait_until("the failed fetch to clear in-flight", || {
+                    layer.drain();
+                    !layer.is_inflight(id)
+                });
+                assert!(layer.get(id).is_none(), "a failed tile is not resident");
+                assert!(
+                    layer.is_backing_off(id),
+                    "a failed tile must be negative-cached"
+                );
+                assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+                assert_eq!(
+                    layer.failure(),
+                    Some(TileFault::Unreachable),
+                    "a refused connection is unreachable imagery, not a refusal"
+                );
+
+                layer.request(id);
+                assert!(
+                    !layer.is_inflight(id),
+                    "a backed-off tile must not be re-requested"
+                );
+                assert!(
+                    !layer.has_inflight(),
+                    "no work should be in flight after a suppressed request — the loop can idle"
+                );
+
+                let _ = std::fs::remove_dir_all(&cache);
+            });
+
+            {
+                let mut layer = TileLayer::offline();
+                let id = TileId::new(12, 1, 2);
+                layer.note_failure(id, TileFault::Unreachable);
+                assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+                layer.note_failure(id, TileFault::Unreachable);
+                assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 2));
+                layer.note_failure(id, TileFault::Unreachable);
+                assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 4));
+
+                layer.failed.remove(&id);
+                let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
+                layer.insert(id, DecodedTile { image: img });
+                assert!(
+                    layer.failed_delay(id).is_none(),
+                    "success clears the backoff"
+                );
+                assert!(!layer.is_backing_off(id));
+            }
+
+            {
+                let mut layer = TileLayer::offline();
+                let id = TileId::new(10, 3, 4);
+                for _ in 0..40 {
+                    layer.note_failure(id, TileFault::Unreachable);
+                }
+                assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MAX));
+            }
+        }
+
+        phase refused_tiles_are_rejected_failures_not_imagery;
+        {
+            let id = TileId::new(14, 8802, 5682);
+            for (status, content_type, body) in [
+                (
+                    "403 Forbidden",
+                    "image/png",
+                    solid_png(256, 256, [200, 0, 0, 255]),
+                ),
+                (
+                    "200 OK",
+                    "text/html",
+                    b"<html>API key required</html>".to_vec(),
+                ),
+                ("200 OK", "image/png", b"not a png".to_vec()),
+            ] {
+                let cache = temp_cache();
+                let base = serve(status, content_type, body);
+                let mut layer = TileLayer::with_cache_dir_url(cache.clone(), base);
+                settle(&mut layer, id);
+                assert!(
+                    layer.get(id).is_none(),
+                    "{status} {content_type}: not resident"
+                );
+                assert_eq!(
+                    layer.failure(),
+                    Some(TileFault::Rejected),
+                    "{status} {content_type}: the server refused the tile"
+                );
+                assert!(
+                    !layer.cache_path(id).exists(),
+                    "{status} {content_type}: a refused answer is never cached"
+                );
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+
+            let mut layer = TileLayer::offline();
+            layer.note_failure(TileId::new(3, 1, 1), TileFault::Unreachable);
+            assert_eq!(layer.failure(), Some(TileFault::Unreachable));
+            layer.note_failure(TileId::new(3, 2, 1), TileFault::Rejected);
+            layer.note_failure(TileId::new(3, 3, 1), TileFault::Unreachable);
+            assert_eq!(layer.failure(), Some(TileFault::Rejected));
+        }
+
+        phase the_osm_layer_refuses_offline_downloads;
+        {
             let cache = temp_cache();
-            let base = serve(status, content_type, body);
-            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), base);
+            let mut layer = TileLayer::with_cache_dir(cache.clone());
+            assert!(!layer.allows_prefetch());
+            let bounds = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.15, 11.59));
+            assert_eq!(layer.start_download(bounds, 13, 14), 0);
+            assert_eq!(layer.progress(), DownloadProgress::default());
+            assert!(!cache.exists(), "nothing was fetched into the cache");
+            assert!(!TileLayer::offline().allows_prefetch());
+        }
+
+        phase the_worker_decodes_in_the_active_style;
+        {
+            let cache = temp_cache();
+            let id = TileId::new(14, 8803, 5683);
+            let path = cache.join(id.cache_rel());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, solid_png(256, 256, [242, 239, 233, 255])).unwrap();
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+
+            let first_pixel = |layer: &mut TileLayer| {
+                let data = layer.get(id).expect("tile resident").data.data().to_vec();
+                [data[0], data[1], data[2], data[3]]
+            };
             settle(&mut layer, id);
+            assert_eq!(first_pixel(&mut layer), [242, 239, 233, 255]);
+
+            layer.set_style(TileStyle::Dark);
             assert!(
                 layer.get(id).is_none(),
-                "{status} {content_type}: not resident"
+                "the light tile is dropped on the switch"
             );
-            assert_eq!(
-                layer.failure(),
-                Some(TileFault::Rejected),
-                "{status} {content_type}: the server refused the tile"
-            );
+            settle(&mut layer, id);
+            let mut expected = vec![242, 239, 233, 255];
+            TileStyle::Dark.retone(&mut expected);
+            assert_eq!(first_pixel(&mut layer).to_vec(), expected);
             assert!(
-                !layer.cache_path(id).exists(),
-                "{status} {content_type}: a refused answer is never cached"
+                !layer.has_failures(),
+                "both styles read the one cached tile"
             );
             let _ = std::fs::remove_dir_all(&cache);
         }
-
-        let mut layer = TileLayer::offline();
-        layer.note_failure(TileId::new(3, 1, 1), TileFault::Unreachable);
-        assert_eq!(layer.failure(), Some(TileFault::Unreachable));
-        layer.note_failure(TileId::new(3, 2, 1), TileFault::Rejected);
-        layer.note_failure(TileId::new(3, 3, 1), TileFault::Unreachable);
-        assert_eq!(layer.failure(), Some(TileFault::Rejected));
-    }
-
-    #[test]
-    fn the_osm_layer_refuses_offline_downloads() {
-        let cache = temp_cache();
-        let mut layer = TileLayer::with_cache_dir(cache.clone());
-        assert!(!layer.allows_prefetch());
-        let bounds = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.15, 11.59));
-        assert_eq!(layer.start_download(bounds, 13, 14), 0);
-        assert_eq!(layer.progress(), DownloadProgress::default());
-        assert!(!cache.exists(), "nothing was fetched into the cache");
-        assert!(!TileLayer::offline().allows_prefetch());
-    }
-
-    #[test]
-    fn the_worker_decodes_in_the_active_style() {
-        let cache = temp_cache();
-        let id = TileId::new(14, 8803, 5683);
-        let path = cache.join(id.cache_rel());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, solid_png(256, 256, [242, 239, 233, 255])).unwrap();
-        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
-
-        let first_pixel = |layer: &mut TileLayer| {
-            let data = layer.get(id).expect("tile resident").data.data().to_vec();
-            [data[0], data[1], data[2], data[3]]
-        };
-        settle(&mut layer, id);
-        assert_eq!(first_pixel(&mut layer), [242, 239, 233, 255]);
-
-        layer.set_style(TileStyle::Dark);
-        assert!(
-            layer.get(id).is_none(),
-            "the light tile is dropped on the switch"
-        );
-        settle(&mut layer, id);
-        let mut expected = vec![242, 239, 233, 255];
-        TileStyle::Dark.retone(&mut expected);
-        assert_eq!(first_pixel(&mut layer).to_vec(), expected);
-        assert!(
-            !layer.has_failures(),
-            "both styles read the one cached tile"
-        );
-        let _ = std::fs::remove_dir_all(&cache);
     }
 }

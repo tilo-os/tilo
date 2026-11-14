@@ -50,6 +50,10 @@ const FAST: PasswordParams = PasswordParams {
     p_cost: 1,
 };
 
+/// Room for eight keyslots, of which these tests use three. luksFormat fills
+/// the whole area with random bytes, and the default is 16 MiB of them.
+const KEYSLOTS_AREA: [&str; 2] = ["--luks2-keyslots-size", "2M"];
+
 #[derive(Clone, Default)]
 struct OldPasswords {
     passwords: Arc<Mutex<HashMap<String, String>>>,
@@ -340,6 +344,7 @@ fn machine(with_tpm: bool, old: &[(&str, &str)], ada_uid: u32) -> Option<Machine
     assert!(
         Command::new("cryptsetup")
             .args(["luksFormat", "--type", "luks2", "--batch-mode"])
+            .args(KEYSLOTS_AREA)
             .args(pbkdf)
             .arg("--key-file")
             .arg(&pass)
@@ -401,6 +406,17 @@ fn verify(daemon: &Daemon, peer: Peer, user: &str, typed: &str) -> Reply {
     reply(daemon.handle(
         peer,
         Request::Verify {
+            user: user.into(),
+            secret: secret(typed),
+        },
+    ))
+}
+
+/// The explicit request to move `user` off their old password.
+fn enroll(daemon: &Daemon, peer: Peer, user: &str, typed: &str) -> Reply {
+    reply(daemon.handle(
+        peer,
+        Request::Enroll {
             user: user.into(),
             secret: secret(typed),
         },
@@ -568,6 +584,13 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
         m.old.locked().is_empty(),
         "a weak password stays in the old database"
     );
+    assert_eq!(enroll(&daemon, BOB, "bob", "1234"), Reply::success());
+    assert_eq!(
+        m.record(BOB.uid),
+        Some(record),
+        "asked for by name, it is as weak"
+    );
+    assert!(m.old.locked().is_empty());
 
     assert_eq!(
         verify(&daemon, ADA, "ada", "correct horse battery staple"),
@@ -578,6 +601,15 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
     assert_eq!(record.secret, Some(SecretKind::Password));
     assert_eq!(m.old.locked(), ["ada"]);
     assert_eq!(
+        enroll(&daemon, ADA, "ada", "correct horse battery staple"),
+        Reply::success()
+    );
+    assert_eq!(
+        m.record(ADA.uid),
+        Some(record),
+        "someone already moved stays as they are"
+    );
+    assert_eq!(
         verify(&daemon, ADA, "ada", "correct horse battery stable").error,
         Some(Refusal::Wrong)
     );
@@ -585,19 +617,74 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
         verify(&daemon, ADA, "ada", "correct horse battery staple"),
         Reply::success()
     );
+
+    // With no TPM to throttle guesses, a secret changes only to one that
+    // stands alone.
+    let change = |new: &str| {
+        reply(daemon.handle(
+            ADA,
+            Request::SetSecret {
+                user: "ada".into(),
+                current: Some(secret("correct horse battery staple")),
+                recovery: None,
+                new: secret(new),
+            },
+        ))
+    };
+    let record = m.record(ADA.uid);
+    assert_eq!(change("1234"), refused(Refusal::WeakSecret));
+    assert_eq!(
+        m.record(ADA.uid),
+        record,
+        "a refused change changes nothing"
+    );
+    assert_eq!(change("violet ladder orbit pancake"), Reply::success());
+    let record = m.record(ADA.uid).unwrap();
+    assert!(record.has(Kind::Passphrase));
+    assert_eq!(record.secret, Some(SecretKind::Password));
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "correct horse battery staple").error,
+        Some(Refusal::Wrong)
+    );
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "violet ladder orbit pancake"),
+        Reply::success()
+    );
 }
 
+/// The login screen's two questions about a person, over one machine and one
+/// first sign-in: whether their key is held, and whether their secret is a
+/// PIN. Neither question changes what the other is answered.
 #[test]
-fn a_key_is_held_for_the_sessions_its_sign_in_starts_and_no_longer() {
+fn a_key_is_held_for_its_sessions_and_the_login_screen_learns_whether_the_secret_is_a_pin() {
     let m = machine!(true, &[("ada", "123456")]);
     m.leave_proof();
     let daemon = m.daemon();
     let held =
         |peer: Peer, user: &str| reply(daemon.handle(peer, Request::KeyHeld { user: user.into() }));
+    let kind = |peer: Peer, user: &str| {
+        reply(daemon.handle(peer, Request::SecretKind { user: user.into() }))
+    };
     assert_eq!(held(ROOT, "ada").key_held, Some(false));
+    assert_eq!(kind(GREETER, "ada"), Reply::success());
 
     assert_eq!(verify(&daemon, ROOT, "ada", "123456"), Reply::success());
+    for peer in [ROOT, ADA, GREETER] {
+        assert_eq!(kind(peer, "ada").secret, Some(SecretKind::Pin));
+    }
+    assert_eq!(kind(BOB, "ada"), refused(Refusal::NotPermitted));
+    assert_eq!(kind(GREETER, "nobody"), refused(Refusal::NotEnrolled));
+    assert_eq!(kind(ROOT, "nobody"), refused(Refusal::NotEnrolled));
+    assert_eq!(kind(BOB, "nobody"), refused(Refusal::NotPermitted));
+    assert_eq!(
+        kind(BOB, "bob"),
+        Reply::success(),
+        "no secret yet, so no kind"
+    );
+
     assert_eq!(held(GREETER, "ada").key_held, Some(false));
+    assert_eq!(held(GREETER, "nobody"), refused(Refusal::NotEnrolled));
+    assert_eq!(held(BOB, "bob").key_held, Some(false));
 
     m.session(ADA.uid, true);
     assert_eq!(held(ADA, "ada").key_held, Some(true));
@@ -620,59 +707,182 @@ fn a_key_is_held_for_the_sessions_its_sign_in_starts_and_no_longer() {
     assert_eq!(held(ROOT, "ada").key_held, Some(true));
 }
 
-#[test]
-fn the_login_screen_learns_whether_a_secret_is_a_pin() {
-    let m = machine!(true, &[("ada", "123456")]);
-    m.leave_proof();
-    let daemon = m.daemon();
-    let kind = |peer: Peer, user: &str| {
-        reply(daemon.handle(peer, Request::SecretKind { user: user.into() }))
-    };
-    assert_eq!(kind(GREETER, "ada"), Reply::success());
+tilo_test_env::scenario! {
+    fn the_daemon_answers_each_peer_by_its_own_rights;
 
-    assert_eq!(verify(&daemon, ROOT, "ada", "123456"), Reply::success());
-    for peer in [ROOT, ADA, GREETER] {
-        assert_eq!(kind(peer, "ada").secret, Some(SecretKind::Pin));
+    phase people_may_only_ask_about_themselves;
+    {
+        let m = machine!(false, &[("ada", "correct horse battery staple")]);
+        let daemon = m.daemon();
+        assert_eq!(
+            verify(&daemon, BOB, "ada", "correct horse battery staple"),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(
+            verify(&daemon, BOB, "eve", "x"),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(
+            verify(&daemon, ROOT, "eve", "x"),
+            refused(Refusal::NotEnrolled)
+        );
+        assert_eq!(verify(&daemon, ADA, "ada", ""), refused(Refusal::Wrong));
+        let strong = "correct horse battery staple";
+        for (peer, user, typed, refusal) in [
+            (BOB, "ada", strong, Refusal::NotPermitted),
+            (BOB, "eve", "x", Refusal::NotPermitted),
+            (ROOT, "eve", "x", Refusal::NotEnrolled),
+            (ADA, "ada", "", Refusal::Wrong),
+            (ADA, "ada", "incorrect horse", Refusal::Wrong),
+        ] {
+            assert_eq!(
+                enroll(&daemon, peer, user, typed),
+                refused(refusal),
+                "{user} enrolled by uid {} with {typed:?}",
+                peer.uid
+            );
+        }
+        assert_eq!(
+            m.record(ADA.uid),
+            None,
+            "a refused request leaves no record"
+        );
+        assert_eq!(
+            reply(daemon.handle(
+                ADA,
+                Request::SetSecret {
+                    user: "ada".into(),
+                    current: Some(secret(strong)),
+                    recovery: None,
+                    new: secret("violet ladder orbit pancake"),
+                }
+            )),
+            refused(Refusal::NotEnrolled),
+            "there is no secret here to change yet"
+        );
+        assert_eq!(
+            reply(daemon.handle(
+                ROOT,
+                Request::AddRecovery {
+                    user: "ada".into(),
+                    secret: secret(strong),
+                    recovery: secret(&m.recovery.formatted()),
+                }
+            )),
+            refused(Refusal::NotEnrolled)
+        );
+        assert_eq!(
+            reply(daemon.handle(BOB, Request::ClaimBootSignIn { user: "bob".into() })),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(
+            reply(daemon.handle(
+                ADA,
+                Request::AddRecovery {
+                    user: "ada".into(),
+                    secret: secret("correct horse battery staple"),
+                    recovery: secret(&m.recovery.formatted()),
+                }
+            )),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(pending(&daemon, BOB), None);
+        let status = || reply(daemon.handle(ADA, Request::Status { user: "ada".into() }));
+        assert_eq!(status().enrolled, Some(false));
+        assert!(status().factors.is_empty());
+
+        // Asked for herself with her old password, the explicit request moves
+        // her as her first sign-in would.
+        assert_eq!(enroll(&daemon, ADA, "ada", strong), Reply::success());
+        assert_eq!(status().enrolled, Some(true));
+        assert_eq!(status().factors, ["password"]);
+        assert_eq!(m.old.locked(), ["ada"]);
     }
-    assert_eq!(kind(BOB, "ada"), refused(Refusal::NotPermitted));
-    assert_eq!(kind(GREETER, "nobody"), refused(Refusal::NotEnrolled));
-}
 
-#[test]
-fn people_may_only_ask_about_themselves() {
-    let m = machine!(false, &[("ada", "correct horse battery staple")]);
-    let daemon = m.daemon();
-    assert_eq!(
-        verify(&daemon, BOB, "ada", "correct horse battery staple"),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(
-        verify(&daemon, BOB, "eve", "x"),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(
-        verify(&daemon, ROOT, "eve", "x"),
-        refused(Refusal::NotEnrolled)
-    );
-    assert_eq!(verify(&daemon, ADA, "ada", ""), refused(Refusal::Wrong));
-    assert_eq!(
-        reply(daemon.handle(BOB, Request::ClaimBootSignIn { user: "bob".into() })),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(
-        reply(daemon.handle(
-            ADA,
-            Request::AddRecovery {
-                user: "ada".into(),
-                secret: secret("correct horse battery staple"),
-                recovery: secret(&m.recovery.formatted()),
-            }
-        )),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(pending(&daemon, BOB), None);
-    let status = reply(daemon.handle(ADA, Request::Status { user: "ada".into() }));
-    assert_eq!(status.enrolled, Some(false));
+    phase the_login_screen_gets_no_status_and_an_unmade_boot_sign_in_is_neither_seen_nor_claimed;
+    // Status is for root and the person themselves, not for the login screen,
+    // which has its own two questions; and a boot sign-in nobody made is neither
+    // shown to anyone nor claimed by anyone.
+    {
+        let m = machine!(false, &[("ada", "correct horse battery staple")]);
+        let daemon = m.daemon();
+        let status =
+            |peer: Peer, user: &str| reply(daemon.handle(peer, Request::Status { user: user.into() }));
+        for (peer, user, refusal) in [
+            (BOB, "ada", Refusal::NotPermitted),
+            (GREETER, "ada", Refusal::NotPermitted),
+            (GREETER, "eve", Refusal::NotPermitted),
+            (ROOT, "eve", Refusal::NotEnrolled),
+        ] {
+            assert_eq!(
+                status(peer, user),
+                refused(refusal),
+                "the status of {user} asked by uid {}",
+                peer.uid
+            );
+        }
+        let not_enrolled = Reply {
+            enrolled: Some(false),
+            ..Reply::success()
+        };
+        assert_eq!(status(ROOT, "ada"), not_enrolled);
+        assert_eq!(status(BOB, "bob"), not_enrolled);
+
+        let claim =
+            |peer: Peer| reply(daemon.handle(peer, Request::ClaimBootSignIn { user: "ada".into() }));
+        for peer in [ADA, GREETER] {
+            assert_eq!(
+                claim(peer),
+                refused(Refusal::NotPermitted),
+                "claimed by uid {}",
+                peer.uid
+            );
+        }
+        assert_eq!(claim(ROOT), refused(Refusal::NoBootSignIn));
+        for peer in [ROOT, GREETER, ADA] {
+            assert_eq!(pending(&daemon, peer), None, "asked by uid {}", peer.uid);
+        }
+        assert_eq!(m.record(ADA.uid), None, "asking leaves no record");
+    }
+
+    phase the_socket_answers_with_the_peers_own_rights;
+    {
+        let me = rustix::process::getuid().as_raw();
+        let m = machine!(false, &[("ada", "correct horse battery staple")], me);
+        let daemon = Arc::new(m.daemon_with(Config {
+            privileged_uid: u32::MAX,
+            ..m.config()
+        }));
+        let listener = server::bind(&daemon).unwrap();
+        {
+            let daemon = Arc::clone(&daemon);
+            std::thread::spawn(move || server::serve(&daemon, &listener));
+        }
+        let socket: &Path = &m.path("socket");
+        let mut client = Client::connect(socket).unwrap();
+        assert_eq!(
+            client
+                .call(&Request::Verify {
+                    user: "ada".into(),
+                    secret: secret("correct horse battery staple"),
+                })
+                .unwrap(),
+            Reply::success()
+        );
+        assert_eq!(
+            client
+                .call(&Request::Status { user: "bob".into() })
+                .unwrap(),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(client.pending_sign_in().unwrap(), None);
+        assert_eq!(
+            client
+                .call(&Request::ClaimBootSignIn { user: "ada".into() })
+                .unwrap(),
+            refused(Refusal::NotPermitted)
+        );
+    }
 }
 
 #[test]
@@ -742,24 +952,49 @@ fn a_secret_changes_with_the_current_one_or_with_the_recovery_key_as_root() {
     assert_eq!(verify(&daemon, ADA, "ada", "1357"), Reply::success());
 }
 
+/// A recovery key that is not the machine's is refused and leaves the record
+/// as it was, so the same machine then takes the right one and goes on to the
+/// login screen's use of it.
 #[test]
-fn the_login_screen_sets_a_new_secret_with_the_recovery_key() {
+fn the_admins_recovery_key_must_be_the_machines_and_the_login_screen_sets_a_new_secret_with_it() {
     let m = machine!(true, &[("ada", "123456")]);
     m.leave_proof();
     let daemon = m.daemon();
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     let recovery = m.recovery.formatted();
-    assert_eq!(
+    let other = RecoveryKey::from_bytes([6; 32]).formatted();
+    let add_recovery = |recovery: &str| {
         reply(daemon.handle(
             ROOT,
             Request::AddRecovery {
                 user: "ada".into(),
                 secret: secret("123456"),
-                recovery: secret(&recovery),
-            }
-        )),
-        Reply::success()
+                recovery: secret(recovery),
+            },
+        ))
+    };
+    let factors = || reply(daemon.handle(ADA, Request::Status { user: "ada".into() })).factors;
+    assert_eq!(factors(), ["password"]);
+    let (runner, _) = m.runner();
+    let kept = || {
+        let tokens = luks::tokens(&runner, &m.device).unwrap();
+        (m.record(ADA.uid).unwrap(), m.slots(), tokens)
+    };
+    let enrolled = kept();
+    assert_eq!(add_recovery(&other), refused(Refusal::Wrong));
+    assert!(!m.record(ADA.uid).unwrap().has(Kind::Recovery));
+    assert_eq!(
+        add_recovery("not a recovery key"),
+        refused(Refusal::BadRequest)
     );
+    assert_eq!(
+        kept(),
+        enrolled,
+        "a refused recovery key changes neither the record nor the header"
+    );
+
+    assert_eq!(add_recovery(&recovery), Reply::success());
+    assert_eq!(factors(), ["password", "recovery"]);
     let change = |current: Option<&str>, recovery: Option<&str>, new: &str| {
         reply(daemon.handle(
             GREETER,
@@ -776,7 +1011,24 @@ fn the_login_screen_sets_a_new_secret_with_the_recovery_key() {
         change(Some("123456"), None, "2468"),
         refused(Refusal::NotPermitted)
     );
-    let other = RecoveryKey::from_bytes([6; 32]).formatted();
+    assert_eq!(change(None, None, "2468"), refused(Refusal::BadRequest));
+    // Both proofs at once are a change by the current secret, which is not
+    // the login screen's to make; and the recovery key is no proof from
+    // anyone but root and the login screen.
+    assert_eq!(
+        change(Some("123456"), Some(&recovery), "2468"),
+        refused(Refusal::NotPermitted)
+    );
+    let by_bob = Request::SetSecret {
+        user: "ada".into(),
+        current: None,
+        recovery: Some(secret(&recovery)),
+        new: secret("2468"),
+    };
+    assert_eq!(
+        reply(daemon.handle(BOB, by_bob)),
+        refused(Refusal::NotPermitted)
+    );
     assert_eq!(change(None, Some(&other), "2468"), refused(Refusal::Wrong));
     assert_eq!(
         change(None, Some("not a recovery key"), "2468"),
@@ -790,27 +1042,6 @@ fn the_login_screen_sets_a_new_secret_with_the_recovery_key() {
         Some(Refusal::Wrong)
     );
     assert_eq!(verify(&daemon, ADA, "ada", "2468"), Reply::success());
-}
-
-#[test]
-fn the_admins_recovery_key_must_be_the_machines() {
-    let m = machine!(true, &[("ada", "123456")]);
-    m.leave_proof();
-    let daemon = m.daemon();
-    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
-    let other = RecoveryKey::from_bytes([6; 32]).formatted();
-    assert_eq!(
-        reply(daemon.handle(
-            ROOT,
-            Request::AddRecovery {
-                user: "ada".into(),
-                secret: secret("123456"),
-                recovery: secret(&other),
-            }
-        )),
-        refused(Refusal::Wrong)
-    );
-    assert!(!m.record(ADA.uid).unwrap().has(Kind::Recovery));
 }
 
 #[test]
@@ -845,9 +1076,12 @@ fn the_lockout_authorisation_moves_under_the_keys_and_recovery_ends_a_lockout() 
     for wrong in ["1", "2", "3", "4", "5"] {
         let _ = verify(&daemon, ADA, "ada", wrong);
     }
+    let locked = verify(&daemon, ADA, "ada", "123456");
+    assert_eq!(locked.error, Some(Refusal::LockedOut));
     assert_eq!(
-        verify(&daemon, ADA, "ada", "123456").error,
-        Some(Refusal::LockedOut)
+        (locked.tries_left, locked.retry_in_s),
+        (Some(0), Some(600)),
+        "the login screen is told there is no try left and how long to wait"
     );
 
     assert_eq!(
@@ -1010,45 +1244,6 @@ mod keyring {
         );
         assert_eq!(pending(&daemon, GREETER), None);
     }
-}
-
-#[test]
-fn the_socket_answers_with_the_peers_own_rights() {
-    let me = rustix::process::getuid().as_raw();
-    let m = machine!(false, &[("ada", "correct horse battery staple")], me);
-    let daemon = Arc::new(m.daemon_with(Config {
-        privileged_uid: u32::MAX,
-        ..m.config()
-    }));
-    let listener = server::bind(&daemon).unwrap();
-    {
-        let daemon = Arc::clone(&daemon);
-        std::thread::spawn(move || server::serve(&daemon, &listener));
-    }
-    let socket: &Path = &m.path("socket");
-    let mut client = Client::connect(socket).unwrap();
-    assert_eq!(
-        client
-            .call(&Request::Verify {
-                user: "ada".into(),
-                secret: secret("correct horse battery staple"),
-            })
-            .unwrap(),
-        Reply::success()
-    );
-    assert_eq!(
-        client
-            .call(&Request::Status { user: "bob".into() })
-            .unwrap(),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(client.pending_sign_in().unwrap(), None);
-    assert_eq!(
-        client
-            .call(&Request::ClaimBootSignIn { user: "ada".into() })
-            .unwrap(),
-        refused(Refusal::NotPermitted)
-    );
 }
 
 #[test]

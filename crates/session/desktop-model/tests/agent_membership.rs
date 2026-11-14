@@ -29,103 +29,108 @@ fn agent_grant(ws: &Workspace, id: &str, node: TreePath) -> Grant {
     )
 }
 
-#[test]
-fn only_a_live_workspace_grant_makes_an_agent_a_member() {
-    // The workspace has no grant yet.
-    // The floor, and the one that matters most: a workspace nobody has
-    // admitted an agent to has no agents in it.
+tilo_test_env::scenario! {
+    fn who_is_a_member_of_a_workspace;
+
+    phase only_a_live_workspace_grant_makes_an_agent_a_member;
     {
-        assert!(workspace().agent_members_at(NOW).is_empty());
+        // The workspace has no grant yet.
+        // The floor, and the one that matters most: a workspace nobody has
+        // admitted an agent to has no agents in it.
+        {
+            assert!(workspace().agent_members_at(NOW).is_empty());
+        }
+        // A grant admits the agent and a revoke removes it.
+        {
+            let mut ws = workspace();
+            let grant = agent_grant(&ws, "scribe-member", ws.node());
+            ws.govern_as_at("ada", Change::Grant(grant), NOW)
+                .expect("the owner may grant in the workspace");
+
+            assert_eq!(
+                ws.agent_members_at(NOW),
+                vec![("scribe".to_string(), KindSet::READ_UNDOABLE)],
+                "the kinds of the workspace grant are what the agent may do",
+            );
+
+            ws.govern_as_at("ada", Change::Revoke(GrantId::new("scribe-member")), NOW)
+                .expect("the owner may revoke");
+            assert!(
+                ws.agent_members_at(NOW).is_empty(),
+                "revoking the grant is the whole of taking the agent out",
+            );
+        }
+        // Phase `a_grant_on_one_app_is_not_membership`.
+        // An agent that holds a grant on one *app* and nothing else is not a
+        // member — the same rule that keeps a person who was shared one file out
+        // of the roster.
+        {
+            let mut ws = workspace();
+            let grant = agent_grant(&ws, "scribe-app", ws.node().app("so.tilo.word-processor"));
+            ws.govern_as_at("ada", Change::Grant(grant), NOW)
+                .expect("owner grants");
+            assert!(
+                ws.agent_members_at(NOW).is_empty(),
+                "a grant naming one app is a share, not membership",
+            );
+        }
+        // Phase `an_expired_grant_admits_nobody`.
+        // An expired grant is not a quieter membership, it is none.
+        {
+            let mut ws = workspace();
+            let grant =
+                agent_grant(&ws, "scribe-expired", ws.node()).with_lifetime(Lifetime::Until(1_000));
+            ws.govern_as_at("ada", Change::Grant(grant), NOW)
+                .expect("owner grants");
+            assert!(ws.agent_members_at(NOW).is_empty());
+        }
     }
-    // A grant admits the agent and a revoke removes it.
+
+    phase a_grant_on_another_workspace_is_not_membership_here;
     {
         let mut ws = workspace();
-        let grant = agent_grant(&ws, "scribe-member", ws.node());
-        ws.govern_as_at("ada", Change::Grant(grant), NOW)
-            .expect("the owner may grant in the workspace");
-
+        let here = agent_grant(&ws, "member", ws.node());
+        ws.grant(Grant {
+            grantee: Grantee::agent("member"),
+            ..here
+        });
+        ws.grant(Grant {
+            id: GrantId::new("other-workspace"),
+            grantee: Grantee::agent("other-workspace"),
+            node: TreePath::workspace("a-different-durable-workspace"),
+            ..agent_grant(&ws, "other-workspace", ws.node())
+        });
         assert_eq!(
             ws.agent_members_at(NOW),
-            vec![("scribe".to_string(), KindSet::READ_UNDOABLE)],
-            "the kinds of the workspace grant are what the agent may do",
-        );
-
-        ws.govern_as_at("ada", Change::Revoke(GrantId::new("scribe-member")), NOW)
-            .expect("the owner may revoke");
-        assert!(
-            ws.agent_members_at(NOW).is_empty(),
-            "revoking the grant is the whole of taking the agent out",
+            vec![("member".to_string(), KindSet::READ_UNDOABLE)]
         );
     }
-    // Phase `a_grant_on_one_app_is_not_membership`.
-    // An agent that holds a grant on one *app* and nothing else is not a
-    // member — the same rule that keeps a person who was shared one file out
-    // of the roster.
+
+    phase the_people_roster_is_the_owner_and_the_members;
     {
         let mut ws = workspace();
-        let grant = agent_grant(&ws, "scribe-app", ws.node().app("so.tilo.word-processor"));
-        ws.govern_as_at("ada", Change::Grant(grant), NOW)
-            .expect("owner grants");
-        assert!(
-            ws.agent_members_at(NOW).is_empty(),
-            "a grant naming one app is a share, not membership",
+        ws.admit("member", Role::Viewer);
+        ws.grant(Grant::new(
+            "elsewhere",
+            Grantee::person("not-a-member-here"),
+            TreePath::workspace("other-workspace"),
+            KindSet::ALL,
+            Answer::Allow,
+            Grantee::person("ada"),
+        ));
+        assert_eq!(
+            ws.roster(),
+            vec![("ada".into(), Role::Owner), ("member".into(), Role::Viewer),]
         );
-    }
-    // Phase `an_expired_grant_admits_nobody`.
-    // An expired grant is not a quieter membership, it is none.
-    {
-        let mut ws = workspace();
-        let grant =
-            agent_grant(&ws, "scribe-expired", ws.node()).with_lifetime(Lifetime::Until(1_000));
-        ws.govern_as_at("ada", Change::Grant(grant), NOW)
-            .expect("owner grants");
-        assert!(ws.agent_members_at(NOW).is_empty());
+        assert_eq!(ws.role_of("member"), Some(Role::Viewer));
+        assert_eq!(ws.role_of("not-a-member-here"), None);
     }
 }
 
-#[test]
-fn a_grant_on_another_workspace_is_not_membership_here() {
-    let mut ws = workspace();
-    let here = agent_grant(&ws, "member", ws.node());
-    ws.grant(Grant {
-        grantee: Grantee::agent("member"),
-        ..here
-    });
-    ws.grant(Grant {
-        id: GrantId::new("other-workspace"),
-        grantee: Grantee::agent("other-workspace"),
-        node: TreePath::workspace("a-different-durable-workspace"),
-        ..agent_grant(&ws, "other-workspace", ws.node())
-    });
-    assert_eq!(
-        ws.agent_members_at(NOW),
-        vec![("member".to_string(), KindSet::READ_UNDOABLE)]
-    );
-}
+tilo_test_env::scenario! {
+    fn membership_is_replicated_and_people_and_agents_stay_separate;
 
-#[test]
-fn the_people_roster_is_the_owner_and_the_members() {
-    let mut ws = workspace();
-    ws.admit("member", Role::Viewer);
-    ws.grant(Grant::new(
-        "elsewhere",
-        Grantee::person("not-a-member-here"),
-        TreePath::workspace("other-workspace"),
-        KindSet::ALL,
-        Answer::Allow,
-        Grantee::person("ada"),
-    ));
-    assert_eq!(
-        ws.roster(),
-        vec![("ada".into(), Role::Owner), ("member".into(), Role::Viewer),]
-    );
-    assert_eq!(ws.role_of("member"), Some(Role::Viewer));
-    assert_eq!(ws.role_of("not-a-member-here"), None);
-}
-
-#[test]
-fn membership_is_replicated_and_people_and_agents_stay_separate() {
-    // Phase `a_members_role_decides_what_they_may_do`.
+    phase a_members_role_decides_what_they_may_do;
     {
         let mut ws = workspace();
         ws.admit("remote-editor", Role::Editor);
@@ -149,7 +154,8 @@ fn membership_is_replicated_and_people_and_agents_stay_separate() {
             Answer::Ask
         );
     }
-    // Phase `people_and_agents_do_not_leak_into_each_others_lists`.
+
+    phase people_and_agents_do_not_leak_into_each_others_lists;
     // The two lists are disjoint. A person in the roster must never arrive
     // in the agent list, and an agent must never arrive in the roster —
     // that second one is the OS claiming a person is present when none is.

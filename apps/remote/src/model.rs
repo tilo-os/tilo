@@ -471,9 +471,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn addresses_format_per_transport() {
-        eprintln!("phase address_formats_user_host_port");
+    tilo_test_env::scenario! {
+        fn addresses_format_per_transport;
+
+        phase address_formats_user_host_port;
         {
             let mut c = sample("s", ConnectionKind::Ssh);
             c.host = Atom("10.0.0.1".into());
@@ -484,7 +485,7 @@ mod tests {
             assert_eq!(c.address(), "root@10.0.0.1", "the default port goes unsaid");
         }
 
-        eprintln!("phase tilo_address_drops_port");
+        phase tilo_address_drops_port;
         {
             let mut c = sample("q", ConnectionKind::Tilo);
             c.host = Atom("studio-node".into());
@@ -493,7 +494,7 @@ mod tests {
             assert_eq!(c.address(), "studio-node");
         }
 
-        eprintln!("phase tilo_address_compacts_a_long_endpoint_without_string_slicing");
+        phase tilo_address_compacts_a_long_endpoint_without_string_slicing;
         {
             let mut c = sample("q", ConnectionKind::Tilo);
             c.host = Atom("abcdefghijklmnopqrstuvwxyz".into());
@@ -501,9 +502,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn drafts_validate_only_backed_transports_and_live_auth_paths() {
-        eprintln!("phase only_backed_transports_are_available_to_create");
+    tilo_test_env::scenario! {
+        fn drafts_validate_only_backed_transports_and_live_auth_paths;
+
+        phase only_backed_transports_are_available_to_create;
         {
             assert_eq!(
                 ConnectionKind::available_to_create(),
@@ -524,7 +526,7 @@ mod tests {
             );
         }
 
-        eprintln!("phase draft_validation_catches_empty_and_bad_port");
+        phase draft_validation_catches_empty_and_bad_port;
         {
             let mut d = ConnectionDraft::default();
             assert!(!d.problems().is_empty());
@@ -536,7 +538,7 @@ mod tests {
             assert!(d.problems().is_empty());
         }
 
-        eprintln!("phase tilo_draft_ignores_port");
+        phase tilo_draft_ignores_port;
         {
             let d = ConnectionDraft {
                 kind: ConnectionKind::Tilo,
@@ -551,7 +553,7 @@ mod tests {
             assert_eq!(built.port, 0);
         }
 
-        eprintln!("phase q_os_profiles_require_an_exact_device_identity_and_endpoint");
+        phase q_os_profiles_require_an_exact_device_identity_and_endpoint;
         {
             let mut connection = sample("q", ConnectionKind::Tilo);
             connection.host = Atom("friendly-name".into());
@@ -577,7 +579,7 @@ mod tests {
             assert_eq!(connection.profile_issue(), None);
         }
 
-        eprintln!("phase protocol_specific_authentication_choices_never_offer_dead_paths");
+        phase protocol_specific_authentication_choices_never_offer_dead_paths;
         {
             assert_eq!(
                 AuthMethod::available_for(ConnectionKind::Ssh),
@@ -594,9 +596,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn roster_upserts_and_filters_favorites_first() {
-        eprintln!("phase upsert_replaces_same_id");
+    tilo_test_env::scenario! {
+        fn roster_upserts_and_filters_favorites_first;
+
+        phase upsert_replaces_same_id;
         {
             let mut w = Workspace::new();
             let mut c = sample("a", ConnectionKind::Ssh);
@@ -607,7 +610,7 @@ mod tests {
             assert_eq!(w.get(id).unwrap().name, "renamed");
         }
 
-        eprintln!("phase filtered_orders_favorites_first");
+        phase filtered_orders_favorites_first;
         {
             let mut w = Workspace::new();
             let mut a = sample("alpha", ConnectionKind::Ssh);
@@ -620,7 +623,7 @@ mod tests {
             assert_eq!(order, vec!["zeta", "alpha"]);
         }
 
-        eprintln!("phase filtered_matches_query");
+        phase filtered_matches_query;
         {
             let mut w = Workspace::new();
             w.upsert(sample("Build Box", ConnectionKind::Ssh));
@@ -629,7 +632,7 @@ mod tests {
             assert_eq!(hits, vec!["Build Box"]);
         }
 
-        eprintln!("phase reachability_is_observed_per_device");
+        phase reachability_is_observed_per_device;
         {
             let mut w = Workspace::new();
             let a = w.upsert(sample("a", ConnectionKind::Ssh));

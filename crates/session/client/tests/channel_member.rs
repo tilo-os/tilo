@@ -1,8 +1,7 @@
-//! The browser as a `channel-crypto` participant of a channel a native
-//! device created: it asks for access with its device key, joins from the
-//! Welcome of the participant that admitted it, and then opens the native
-//! device's sealed documents and seals its own, with the host carrying only
-//! ciphertext and governance.
+//! The browser as a `channel-crypto` member of the workspace's group: it asks
+//! for access with its device key, joins from the Welcome of the member that
+//! admitted it, and then opens a native device's sealed documents and seals
+//! its own. The workspace's host created the workspace, so it founds the group.
 
 #![allow(
     clippy::unwrap_used,
@@ -14,44 +13,25 @@
     reason = "in a test these are the assertion, not a hazard; each test is one transcript between a native participant and a browser"
 )]
 
-use std::collections::BTreeSet;
 use tilo_session_client::{Cmd, Outbox};
 
 use automerge::AutoCommit;
-use channel_crypto::{Access, ChannelPeer, VaultKey};
+use channel_crypto::{Access, ChannelPeer};
 use collab_types::{
-    ContentRetention, DocumentFrame, Ed25519PublicKey, MlsGovernanceFrame, OpKind, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id,
+    DocumentFrame, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
+    document_attestation_id,
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_relay::{Inbound, RelayCoeditSession};
 use tilo_session_client::PeerStore as _;
-use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
+use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
+use crate::native::{NativeDevice, connect, vault};
 use crate::support::{
-    Device, TestHost, WORKSPACE, enrol, hears, ready, route, said, say, start_host, start_peer,
+    Device, TestHost, enrol, hears, ready, restart_host, route, said, say, start_host, start_peer,
     start_peer_with_store, wait_for, workspace,
 };
-
-/// A native participant's side of the workspace, driven by hand: publish a
-/// message through the host the way a shell does.
-fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
-    let (channel, retention) = neighbour_wire::retention(message, false).unwrap();
-    let body = postcard::to_allocvec(message).unwrap();
-    match retention {
-        neighbour_wire::Retention::Checkpoint => session.publish_checkpoint(channel, body),
-        neighbour_wire::Retention::Delta => session.publish_retained_delta(channel, body),
-    }
-    .unwrap();
-}
-
-/// What `peer` queued to publish, taken.
-fn take(peer: &mut ChannelPeer) -> Vec<MlsGovernanceFrame> {
-    let frames = peer.outbox().to_vec();
-    peer.published();
-    frames
-}
 
 /// The epoch `peer` seals under.
 fn epoch(peer: &ChannelPeer) -> u64 {
@@ -61,104 +41,51 @@ fn epoch(peer: &ChannelPeer) -> u64 {
     }
 }
 
-/// `device`'s own session with the workspace on `host`, announced with its
-/// certificate as every device announces itself.
+/// `device`'s own session with the workspace on `host`.
 async fn session(host: &TestHost, root: &SigningKey, device: &Device) -> RelayCoeditSession {
-    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .bind()
-        .await
-        .unwrap();
     crate::support::place(&host.relay, &device.cert).await;
-    let client = RelayClient::connect(
-        endpoint,
-        host.relay.node_addr(),
+    connect(
+        &host.relay,
         root.verifying_key().to_bytes(),
-        device.cert.clone(),
-        device.key.clone(),
-        RevocationList::new(),
+        device,
+        workspace(),
     )
     .await
-    .unwrap();
-    let session =
-        RelayCoeditSession::join(client, workspace(), device.key.verifying_key().to_bytes())
-            .unwrap();
-    publish(
-        &session,
-        &NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(device.cert.clone()),
-            revocations: Vec::new(),
-        },
-    );
-    session
 }
 
-/// The laptop: the native device that created the workspace's key scope,
-/// writing the note sealed and admitting the browser by hand.
+/// The laptop: a native device that writes the note sealed and opens what
+/// the browser seals.
 struct Laptop {
-    device: Device,
-    peer: ChannelPeer,
-    session: RelayCoeditSession,
-    vault: VaultKey,
+    native: NativeDevice,
     note: AutoCommit,
     seq: u64,
-    delivery: u64,
-    _state: tempfile::TempDir,
 }
 
 impl Laptop {
     async fn start(host: &TestHost, root: &SigningKey, device: Device) -> Self {
-        let state = tempfile::tempdir().unwrap();
-        let vault = VaultKey::new([7; 32]);
-        let peer = ChannelPeer::create_now(
-            Some(std::sync::Arc::new(channel_crypto::Files::new(
-                state.path(),
-            ))),
-            collab_types::workspace_scope(WORKSPACE),
-            Box::new(device.key.clone()),
-            &vault,
-        )
-        .unwrap();
-        let session = session(host, root, &device).await;
-        Self {
+        crate::support::place(&host.relay, &device.cert).await;
+        let native = NativeDevice::start(
+            &host.relay,
+            root.verifying_key().to_bytes(),
             device,
-            peer,
-            session,
-            vault,
+            workspace(),
+        )
+        .await;
+        Self {
+            native,
             note: AutoCommit::new(),
             seq: 0,
-            delivery: 0,
-            _state: state,
         }
     }
 
-    fn key(&self) -> [u8; 32] {
-        self.device.key.verifying_key().to_bytes()
-    }
-
-    /// Publish what the key scope queued, as its next governance delivery.
-    fn govern(&mut self) {
-        self.delivery = self.delivery.saturating_add(1);
-        for frame in take(&mut self.peer) {
-            publish(
-                &self.session,
-                &NeighbourMsg::MlsGovernance {
-                    workspace: WORKSPACE.into(),
-                    frame: Box::new(frame),
-                    delivery: self.delivery,
-                },
-            );
-        }
-    }
-
-    /// Write `text` to the note, sealed under the scope's current epoch
+    /// Write `text` to the note, sealed under the group's current epoch
     /// unless `clear`.
     fn write(&mut self, text: &str, clear: bool) {
         let route = route();
         let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
         let attestation = document_attestation_id(&route.app_id, &route.cluster_id, &route.record);
         let mutation = say(&mut self.note, text);
-        // A cleartext change names its action; one in the clear is the whole note instead.
+        // A sealed change names its action; one in the clear is the whole note instead.
         let mutation = if clear {
             collab_types::DocumentMutation::Snapshot(self.note.save())
         } else {
@@ -166,9 +93,9 @@ impl Laptop {
         };
         let frame = mutation.encode().unwrap();
         self.seq = self.seq.saturating_add(1);
-        let author = Ed25519PublicKey::from_bytes(self.key());
+        let author = Ed25519PublicKey::from_bytes(self.native.key());
         let now = std::time::SystemTime::now();
-        let mut op = if clear {
+        let op = if clear {
             SignedOp::new_unsigned(
                 frame,
                 artifact,
@@ -179,17 +106,7 @@ impl Laptop {
                 self.seq,
             )
         } else {
-            let (metadata, sealed) = self
-                .peer
-                .content_keys()
-                .unwrap()
-                .for_unit(document_channel_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record,
-                ))
-                .seal_content(artifact, ContentRetention::of_frame(&frame), &frame)
-                .unwrap();
+            let (metadata, sealed) = self.native.seal(&route, &frame);
             SignedOp::new_unsigned_with_encryption(
                 sealed,
                 artifact,
@@ -201,89 +118,21 @@ impl Laptop {
                 metadata,
             )
         };
-        collab_types::sign_op(&mut op, &self.device.key).unwrap();
-        publish(
-            &self.session,
-            &NeighbourMsg::AppDocument {
-                peer: neighbour_wire::peer_handle(&self.key()),
-                app_id: route.app_id.clone(),
-                cluster_id: route.cluster_id.clone(),
-                record_id: route.record,
-                envelope: Box::new(op),
-            },
-        );
+        self.native.write(&route, op);
     }
 
-    /// Admit `browser` to the scope when its signed request arrives, until
-    /// its edit of the note does: answers the edit, opened. The browser never
-    /// writes the sealed note in the clear.
-    async fn admit_until_edit(&mut self, browser: &Device) -> DocumentFrame {
-        let browser = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
-        let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(self.key()), browser]);
-        let scope = collab_types::workspace_scope(WORKSPACE);
-        let route = route();
-        let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
-        loop {
-            let inbound = tokio::time::timeout_at(deadline, self.session.recv())
-                .await
-                .expect("the browser's sealed edit")
-                .expect("host session open");
-            let Inbound::Delta { author, data } = inbound else {
-                continue;
-            };
-            // The workspace's host takes part as well: its own writes are not
-            // the browser's.
-            if crate::support::is_host(&author) {
-                continue;
-            }
-            match postcard::from_bytes::<NeighbourMsg>(&data) {
-                // The page asks for the channels of the workspace's other
-                // records too.
-                Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
-                    assert_eq!(author, *browser.as_bytes());
-                    request
-                        .verify()
-                        .expect("signed by the browser's device key");
-                    self.peer.learn_request(*request).unwrap();
-                    self.peer.reconcile_now(&allowed, &self.vault).unwrap();
-                    self.govern();
-                }
-                Ok(NeighbourMsg::AppDocument {
-                    envelope,
-                    record_id,
-                    ..
-                }) if record_id == route.record => {
-                    assert_eq!(author, *browser.as_bytes());
-                    let metadata = envelope
-                        .encryption
-                        .expect("the browser never writes the sealed note in the clear");
-                    let clear = self
-                        .peer
-                        .content_keys()
-                        .unwrap()
-                        .for_unit(document_channel_id(
-                            &route.app_id,
-                            &route.cluster_id,
-                            &route.record,
-                        ))
-                        .open_content(
-                            document_artifact_id(&route.app_id, &route.cluster_id, &route.record),
-                            &metadata,
-                            &envelope.payload,
-                        )
-                        .unwrap();
-                    return DocumentFrame::decode(&clear).unwrap();
-                }
-                _ => {}
-            }
-        }
+    /// The browser's next edit of the note.
+    async fn browser_edit(&mut self, browser: &Device) -> DocumentFrame {
+        self.native
+            .written(browser.key.verifying_key().to_bytes(), &route())
+            .await
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -294,39 +143,36 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     )
     .await;
 
-    // The laptop creates the note's channel, announces itself and writes a
-    // sealed edit of the note before the browser arrives.
+    // The laptop joins the group the host founded, announces itself and
+    // writes a sealed edit of the note before the browser arrives.
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let mut laptop = Laptop::start(&host, &root, laptop).await;
-    laptop.govern();
+    laptop.native.join().await;
     laptop.write("from the laptop", false);
 
-    // Publishing only queues the frames for the host. Until it retains the
-    // genesis, the workspace's replay names no governor and reads as ungoverned,
-    // so let a fresh member's replay prove both are held first. The laptop's
+    // Publishing only queues the frames for the host, so let a fresh
+    // member's replay prove the sealed edit is held first. The laptop's
     // identity hello is not replayed: the workspace's governance carries its
     // certificate, and a newcomer takes it from there.
     let observer = enrol(&root, "observer", DeviceCapabilities::member());
     let observer_session = session(&host, &root, &observer).await;
-    let (mut genesis, mut sealed) = (false, false);
     let retained_by = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
-    while !(genesis && sealed) {
+    loop {
         let inbound = tokio::time::timeout_at(retained_by, observer_session.recv())
             .await
-            .expect("the host to retain the laptop's frames")
+            .expect("the host to retain the laptop's edit")
             .expect("observer session open");
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        if author != laptop.key() {
+        if author != laptop.native.key() {
             continue;
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
             Ok(NeighbourMsg::IdentityHello { .. }) => {
                 panic!("the laptop's hello was replayed beside the governance carrying it");
             }
-            Ok(NeighbourMsg::MlsGovernance { .. }) => genesis = true,
-            Ok(NeighbourMsg::AppDocument { .. }) => sealed = true,
+            Ok(NeighbourMsg::AppDocument { .. }) => break,
             _ => {}
         }
     }
@@ -354,10 +200,10 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     let edit = say(&mut AutoCommit::new(), "from the browser");
     peer.write(route(), &edit).unwrap();
 
-    // The laptop admits the browser when its signed request arrives, and
-    // opens what the browser sealed.
+    // The host admits the browser when its signed request arrives, and the
+    // laptop opens what the browser sealed.
     assert_eq!(
-        laptop.admit_until_edit(&browser).await,
+        laptop.browser_edit(&browser).await,
         DocumentFrame::Whole(edit)
     );
 
@@ -366,8 +212,8 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     laptop.write("after the welcome", false);
     hears(&peer, &route(), "after the welcome").await;
 
-    // Another device is admitted and the laptop writes under the new epoch
-    // at once. The edit reaches the browser before the commit that carries
+    // The laptop admits another device and writes under the new epoch at
+    // once. The edit reaches the browser before the commit that carries
     // that epoch's key: it waits for the key instead of being refused.
     let phone = enrol(&root, "phone", DeviceCapabilities::member());
     let phone_device = Ed25519PublicKey::from_bytes(phone.key.verifying_key().to_bytes());
@@ -377,26 +223,24 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     let phone_session = session(&host, &root, &phone).await;
     let mut phone_peer = ChannelPeer::waiting(
         None,
-        collab_types::workspace_scope(WORKSPACE),
+        collab_types::WorkspaceId::parse(crate::support::WORKSPACE).unwrap(),
         Box::new(phone.key.clone()),
-        &laptop.vault,
+        &vault(),
     )
     .unwrap();
     let phone_request = phone_peer
-        .access_request_now(1, false, &laptop.vault)
+        .access_request_now(1, false, &vault())
         .unwrap()
         .unwrap();
-    laptop.peer.learn_request(phone_request).unwrap();
-    let allowed = BTreeSet::from([
-        Ed25519PublicKey::from_bytes(laptop.key()),
-        Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes()),
-        phone_device,
-    ]);
-    let before = epoch(&laptop.peer);
-    laptop.peer.reconcile_now(&allowed, &laptop.vault).unwrap();
-    assert!(epoch(&laptop.peer) > before);
+    let native = &mut laptop.native;
+    native.peer.learn_request(phone_request).unwrap();
+    let mut allowed = native.peer.members();
+    allowed.insert(phone_device);
+    let before = epoch(&native.peer);
+    native.peer.reconcile_now(&allowed, &vault()).unwrap();
+    assert!(epoch(&native.peer) > before);
     laptop.write("under the new epoch", false);
-    laptop.govern();
+    laptop.native.govern();
     hears(&peer, &route(), "under the new epoch").await;
 
     // A write in the clear on the sealed channel is a downgrade: the host
@@ -421,13 +265,13 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     host.relay.shutdown().await;
 }
 
-/// An edit the browser wrote before a participant admitted it survives a
-/// page reload: the reloaded page keeps it with its channel state and seals
-/// and commits it once admitted.
+/// An edit the browser wrote before it was admitted survives a page reload:
+/// the reloaded page keeps it with its channel state and seals and commits it
+/// once admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_edit_held_for_the_keys_survives_a_reload() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -437,26 +281,26 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let mut laptop = Laptop::start(&host, &root, laptop).await;
-    laptop.govern();
+    // The host is down while the page writes, so nothing can admit it.
+    let iroh = host.iroh();
+    drop(host.web);
+    host.relay.shutdown().await;
 
     let store = std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default());
-    let start = || {
+    let start = |host: tilo_relay_client::Host| {
         start_peer_with_store(
-            host.iroh(),
+            host,
             browser.cert.clone(),
             host_device.cert.clone(),
             browser.key.clone(),
             store.clone(),
         )
     };
-    let first = start();
+    let first = start(iroh);
     first
         .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     first.send(Cmd::OpenRoute(route())).unwrap();
-    ready(&[&first]).await;
     let edit = say(&mut AutoCommit::new(), "before the reload");
     first.write(route(), &edit).unwrap();
     // The edit is kept with the channel state while it waits for its keys.
@@ -471,25 +315,29 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     .await;
     first.close();
 
-    let reloaded = start();
+    let host = restart_host(&root, &host_device, state.path()).await;
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let mut laptop = Laptop::start(&host, &root, laptop).await;
+    laptop.native.join().await;
+    let reloaded = start(host.iroh());
     reloaded
         .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     reloaded.send(Cmd::OpenRoute(route())).unwrap();
     assert_eq!(
-        laptop.admit_until_edit(&browser).await,
+        laptop.browser_edit(&browser).await,
         DocumentFrame::Whole(edit)
     );
     reloaded.close();
     host.relay.shutdown().await;
 }
 
-/// A page that joined before the workspace's key scope had its genesis holds
-/// its edit until the laptop's genesis and admission, then seals it.
+/// A page that joined before the workspace's group existed holds its edit
+/// until the host founds the group and admits it, then seals it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -515,9 +363,9 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     let edit = say(&mut AutoCommit::new(), "before the genesis");
     peer.write(route(), &edit).unwrap();
 
-    laptop.govern();
+    laptop.native.join().await;
     assert_eq!(
-        laptop.admit_until_edit(&browser).await,
+        laptop.browser_edit(&browser).await,
         DocumentFrame::Whole(edit),
         "the page's channels:\n{}",
         peer.status().channels

@@ -20,408 +20,576 @@ fn only(app: &TestApp<App>) -> Id {
     app.state().issues.ids().next().cloned().expect("an issue")
 }
 
-#[test]
-fn an_issue_made_through_its_action_is_listed_opened_and_kept() {
-    let mut app = open();
-    assert!(app.state().issues.is_empty(), "a tracker starts empty");
-    app.call("create", json!({ "title": "Write the launch notes" }))
+tilo_test_env::scenario! {
+    fn an_issue_and_a_project_are_made_read_and_changed_through_their_actions;
+
+    phase an_issue_made_through_its_action_is_listed_opened_and_kept;
+    {
+        let mut app = open();
+        assert!(app.state().issues.is_empty(), "a tracker starts empty");
+        app.call("create", json!({ "title": "Write the launch notes" }))
+            .expect("create");
+        let issue = only(&app);
+        assert_eq!(app.state().issues.get(&issue).unwrap().number, 1);
+        assert!(app.harness().targets().contains_key("tasks-list"));
+
+        // Opening it, as a search hit or an agent does, shows its page.
+        app.call_on(&issue_resource(&issue), "open", json!({}))
+            .expect("open the issue");
+        assert!(app.harness().targets().contains_key("tasks-issue-title"));
+
+        // Its description is a rich-text resource of its own beneath it.
+        let body = format!("{}/body", issue_resource(&issue));
+        app.call_on(&body, "append-paragraph", json!({ "text": "Say why" }))
+            .expect("write the description");
+        assert!(
+            app.state()
+                .issues
+                .get(&issue)
+                .unwrap()
+                .body
+                .text()
+                .contains("Say why")
+        );
+        assert!(app.undo());
+        assert!(
+            !app.state()
+                .issues
+                .get(&issue)
+                .unwrap()
+                .body
+                .text()
+                .contains("Say why")
+        );
+    }
+
+    phase placing_on_the_board_and_commenting_are_the_issues_actions;
+    {
+        let mut app = open();
+        app.call("create", json!({ "title": "Record the demo" }))
+            .expect("create");
+        let issue = only(&app);
+        app.call_on(
+            &issue_resource(&issue),
+            "place",
+            json!({ "status": "in-progress" }),
+        )
+        .expect("place");
+        assert_eq!(
+            app.state().issues.get(&issue).unwrap().status,
+            Status::InProgress
+        );
+        app.call_on(
+            &issue_resource(&issue),
+            "comment",
+            json!({ "text": "Two minutes at most" }),
+        )
+        .expect("comment");
+        let state: Tracker = app.state();
+        let thread = &state.issues.get(&issue).unwrap().comments;
+        assert_eq!(thread.values().next().unwrap().author, "ada");
+    }
+
+    phase a_viewer_reads_the_tracker_but_cannot_change_it;
+    {
+        let mut app = open();
+        app.call("create", json!({ "title": "Pick the venue" }))
+            .expect("create");
+        app.set_role(ui::Role::Viewer);
+        assert!(
+            app.call("create", json!({ "title": "Another" })).is_err(),
+            "a viewer creates nothing"
+        );
+        assert_eq!(app.state().issues.len(), 1);
+    }
+
+    phase a_project_is_made_listed_and_opened_by_its_address;
+    // A project is a resource of its own above the tasks: it is made,
+    // listed in the sidebar, opened by the address it is published under, and
+    // holds the tasks that work towards it and the people involved.
+    {
+        let mut app = open();
+        assert!(app.state().areas.is_empty(), "a tracker starts empty");
+
+        // The project page's own action makes one, with the kind it is given.
+        app.call("create-area", json!({ "name": "Launch", "kind": "area" }))
+            .expect("create the area");
+        let (area, made) = app
+            .state()
+            .areas
+            .iter()
+            .next()
+            .map(|(id, area)| (id.clone(), area.clone()))
+            .expect("the area just made");
+        assert_eq!(made.name, "Launch");
+        assert_eq!(made.kind, tasks::model::Kind::Area);
+
+        // Its address opens its page, as a row of the sidebar or a search hit
+        // does, and the page offers what it holds.
+        let address = tasks::model::area_resource(&area);
+        app.call_on(&address, "open", json!({}))
+            .expect("open the project");
+        assert!(app.harness().targets().contains_key("tasks-project-name"));
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key("tasks-project-involve")
+        );
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Launch"),
+            "the bar says which project the window shows"
+        );
+
+        // Someone involved is part of the project, in their own words.
+        app.call_on(
+            &address,
+            "involve",
+            json!({ "name": "Grace", "role": "Writes the launch notes" }),
+        )
+        .expect("involve Grace");
+        let people = app.state().area(&area).expect("the project").people.clone();
+        assert_eq!(people.len(), 1);
+        assert_eq!(people.iter().next().expect("Grace").1.name, "Grace");
+
+        // Undo takes the involvement back: it is an ordinary change, kept as
+        // any other, and the project stays.
+        assert!(app.undo());
+        assert!(
+            app.state()
+                .area(&area)
+                .expect("the project still stands")
+                .people
+                .is_empty()
+        );
+    }
+
+    phase an_agent_reads_an_issue_through_its_document_read;
+    // An issue is document state: an agent reads what it holds through the
+    // issue's own document read, as `tilo_read` on it does, and the issue is
+    // disclosed by that read rather than hidden behind its `open`.
+    {
+        let mut app = open();
+        app.call(
+            "create",
+            json!({ "title": "Review Ada's portfolio", "body": "Look at her GitHub." }),
+        )
         .expect("create");
-    let issue = only(&app);
-    assert_eq!(app.state().issues.get(&issue).unwrap().number, 1);
-    assert!(app.harness().targets().contains_key("tasks-list"));
+        app.settle();
+        let issue = issue_resource(&only(&app));
+        let content = app
+            .call_on(&issue, "read", json!({}))
+            .expect("the issue offers its document read")
+            .expect("the read answers");
+        assert_eq!(content["title"], "Review Ada's portfolio", "{content}");
+        assert_eq!(
+            ui::tilo_actions::hidden_from_agents(&app.harness().resources()),
+            [],
+            "nothing of the tracker is kept from an agent"
+        );
+    }
 
-    // Opening it, as a search hit or an agent does, shows its page.
-    app.call_on(&issue_resource(&issue), "open", json!({}))
-        .expect("open the issue");
-    assert!(app.harness().targets().contains_key("tasks-issue-title"));
-
-    // Its description is a rich-text resource of its own beneath it.
-    let body = format!("{}/body", issue_resource(&issue));
-    app.call_on(&body, "append-paragraph", json!({ "text": "Say why" }))
-        .expect("write the description");
-    assert!(
-        app.state()
-            .issues
-            .get(&issue)
-            .unwrap()
-            .body
-            .text()
-            .contains("Say why")
-    );
-    assert!(app.undo());
-    assert!(
-        !app.state()
-            .issues
-            .get(&issue)
-            .unwrap()
-            .body
-            .text()
-            .contains("Say why")
-    );
+    phase an_agents_create_is_shown_at_new_issue;
+    {
+        let mut app = open();
+        app.call("create", json!({ "title": "Write the launch notes" }))
+            .expect("create");
+        app.settle();
+        let targets = app.harness().targets();
+        let (_, button) = targets
+            .iter()
+            .find(|(name, _)| name.ends_with("-create"))
+            .expect("the list's New issue button");
+        let locus = app
+            .harness()
+            .semantic_locus(&ui::headless::agent_acting("tasks.tracker", "create"))
+            .expect("an agent's create finds New issue");
+        assert!(
+            button.contains(locus.center()),
+            "the agent acts at New issue: {locus:?} in {button:?}"
+        );
+    }
 }
 
-#[test]
-fn placing_on_the_board_and_commenting_are_the_issues_actions() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Record the demo" }))
-        .expect("create");
-    let issue = only(&app);
-    app.call_on(
-        &issue_resource(&issue),
-        "place",
-        json!({ "status": "in-progress" }),
-    )
-    .expect("place");
-    assert_eq!(
-        app.state().issues.get(&issue).unwrap().status,
-        Status::InProgress
-    );
-    app.call_on(
-        &issue_resource(&issue),
-        "comment",
-        json!({ "text": "Two minutes at most" }),
-    )
-    .expect("comment");
-    let state: Tracker = app.state();
-    let thread = &state.issues.get(&issue).unwrap().comments;
-    assert_eq!(thread.values().next().unwrap().author, "ada");
-}
+tilo_test_env::scenario! {
+    fn an_issues_links_read_as_what_they_open_and_open_where_it_lives;
 
-#[test]
-fn a_viewer_reads_the_tracker_but_cannot_change_it() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Pick the venue" }))
-        .expect("create");
-    app.set_role(ui::Role::Viewer);
-    assert!(
-        app.call("create", json!({ "title": "Another" })).is_err(),
-        "a viewer creates nothing"
-    );
-    assert_eq!(app.state().issues.len(), 1);
-}
+    phase a_reference_as_it_reads_opens_its_issue_whose_links_are_chips;
+    // `#2` is the tracker's to resolve: its `open` shows the issue that number
+    // names, a number no issue has is refused, and the page shows what the
+    // issue links to as chips that open it where it lives.
+    {
+        let mut app = open();
+        app.call("create", json!({ "title": "First" }))
+            .expect("create");
+        app.call("create", json!({ "title": "Second" }))
+            .expect("create");
+        let (second, _) = app
+            .state()
+            .by_number(2)
+            .map(|(id, issue)| (id.clone(), issue.clone()))
+            .expect("numbered 2");
+        app.call_on(
+            &issue_resource(&second),
+            "link",
+            json!({
+                "app": "so.tilo.notes",
+                "kind": "notes.page",
+                "resource": "notes.page:1",
+                "label": "Plan",
+            }),
+        )
+        .expect("link the issue to a page");
 
-/// `#2` is the tracker's to resolve: its `open` shows the issue that number
-/// names, a number no issue has is refused, and the page shows what the
-/// issue links to as chips that open it where it lives.
-#[test]
-fn a_reference_as_it_reads_opens_its_issue_whose_links_are_chips() {
-    let mut app = open();
-    app.call("create", json!({ "title": "First" }))
-        .expect("create");
-    app.call("create", json!({ "title": "Second" }))
-        .expect("create");
-    let (second, _) = app
-        .state()
-        .by_number(2)
-        .map(|(id, issue)| (id.clone(), issue.clone()))
-        .expect("numbered 2");
-    app.call_on(
-        &issue_resource(&second),
-        "link",
-        json!({
-            "app": "so.tilo.notes",
-            "kind": "notes.page",
-            "resource": "notes.page:1",
-            "label": "Plan",
-        }),
-    )
-    .expect("link the issue to a page");
+        app.call("open", json!({ "anchor": "#2" }))
+            .expect("open the issue numbered 2");
+        assert!(app.harness().targets().contains_key("tasks-issue-title"));
+        assert!(
+            app.harness().a11y_node_named("#2").is_some(),
+            "its page, not #1's"
+        );
+        assert!(app.harness().a11y_node_named("#1").is_none());
+        assert!(
+            app.harness().a11y_node_named("Open Plan").is_some(),
+            "the link reads as what it opens"
+        );
+        assert!(app.call("open", json!({ "anchor": "#9" })).is_err());
+    }
 
-    app.call("open", json!({ "anchor": "#2" }))
-        .expect("open the issue numbered 2");
-    assert!(app.harness().targets().contains_key("tasks-issue-title"));
-    assert!(
-        app.harness().a11y_node_named("#2").is_some(),
-        "its page, not #1's"
-    );
-    assert!(app.harness().a11y_node_named("#1").is_none());
-    assert!(
-        app.harness().a11y_node_named("Open Plan").is_some(),
-        "the link reads as what it opens"
-    );
-    assert!(app.call("open", json!({ "anchor": "#9" })).is_err());
-}
-
-/// "Link a note" takes a note already written as the reference the system
-/// palette picks by its title (and an agent passes): it publishes what it
-/// picks, so nobody types an id, and links the note it names, never
-/// something else.
-#[test]
-fn a_note_picked_by_its_title_is_linked_as_it_reads() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Plan the launch" }))
-        .expect("create");
-    let issue = only(&app);
-    app.call_on(&issue_resource(&issue), "open", json!({}))
-        .expect("open the issue");
-    let picked = app
-        .actions()
-        .expect("the actions")
-        .into_iter()
-        .find(|action| {
-            action.address.resource == issue_resource(&issue)
-                && action.address.action == "link-note"
-        })
-        .and_then(|action| action.params.into_iter().find(|p| p.name == "note"))
-        .and_then(|param| param.pick());
-    assert_eq!(
-        picked,
-        Some(ui::tilo_actions::Pick::Resource {
-            kind: "notes.notebook.pages".into()
-        }),
-        "the note is picked, never typed"
-    );
-    let note = json!({
-        "app": tasks::NOTES,
-        "kind": "notes.notebook.pages",
-        "id": "notes.notebook/pages/7",
-        "label": "Launch checklist",
-    });
-    app.call_on(
-        &issue_resource(&issue),
-        "link-note",
-        json!({ "note": note }),
-    )
-    .expect("link the note");
-    let links: Vec<_> = app
-        .state()
-        .issues
-        .get(&issue)
-        .unwrap()
-        .links
-        .values()
-        .cloned()
-        .collect();
-    assert_eq!(links.len(), 1);
-    assert_eq!(links[0].app, tasks::NOTES);
-    assert_eq!(links[0].kind, "notes.notebook.pages");
-    assert_eq!(links[0].resource, "notes.notebook/pages/7");
-    assert_eq!(links[0].label, "Launch checklist");
-    let issue_ref = json!({
-        "app": "so.tilo.tasks",
-        "kind": "tasks.tracker.issues",
-        "id": "tasks.tracker/issues/1",
-        "label": "Another issue",
-    });
-    assert!(
+    phase a_note_picked_by_its_title_is_linked_as_it_reads;
+    // "Link a note" takes a note already written as the reference the system
+    // palette picks by its title (and an agent passes): it publishes what it
+    // picks, so nobody types an id, and links the note it names, never
+    // something else.
+    {
+        let mut app = open();
+        app.call("create", json!({ "title": "Plan the launch" }))
+            .expect("create");
+        let issue = only(&app);
+        app.call_on(&issue_resource(&issue), "open", json!({}))
+            .expect("open the issue");
+        let picked = app
+            .actions()
+            .expect("the actions")
+            .into_iter()
+            .find(|action| {
+                action.address.resource == issue_resource(&issue)
+                    && action.address.action == "link-note"
+            })
+            .and_then(|action| action.params.into_iter().find(|p| p.name == "note"))
+            .and_then(|param| param.pick());
+        assert_eq!(
+            picked,
+            Some(ui::tilo_actions::Pick::Resource {
+                kind: "notes.notebook.pages".into()
+            }),
+            "the note is picked, never typed"
+        );
+        let note = json!({
+            "app": tasks::NOTES,
+            "kind": "notes.notebook.pages",
+            "id": "notes.notebook/pages/7",
+            "label": "Launch checklist",
+        });
         app.call_on(
             &issue_resource(&issue),
             "link-note",
-            json!({ "note": issue_ref })
+            json!({ "note": note }),
         )
-        .is_err(),
-        "only a note"
-    );
-}
-
-/// A link names the record of the app that keeps what it links to, and
-/// opens it there; a link made before links named a record opens the app's
-/// own record of the workspace.
-#[test]
-fn a_link_opens_in_the_record_it_names() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
-    env.set("TILO_WORKSPACE_ID", workspace);
-    let door = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
-    let _served = ui::RemoteActions::enter(
-        door.clone(),
-        ui::tilo_actions::remote::Caller::local_person("ada"),
-    );
-    let mut app = open();
-    app.call("create", json!({ "title": "Plan the launch" }))
-        .expect("create");
-    let issue = only(&app);
-    for (label, record) in [("Kept", Some("/launch")), ("Old", None)] {
-        let mut link = json!({
+        .expect("link the note");
+        let links: Vec<_> = app
+            .state()
+            .issues
+            .get(&issue)
+            .unwrap()
+            .links
+            .values()
+            .cloned()
+            .collect();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].app, tasks::NOTES);
+        assert_eq!(links[0].kind, "notes.notebook.pages");
+        assert_eq!(links[0].resource, "notes.notebook/pages/7");
+        assert_eq!(links[0].label, "Launch checklist");
+        let issue_ref = json!({
             "app": "so.tilo.tasks",
             "kind": "tasks.tracker.issues",
-            "resource": format!("tasks.tracker/issues/{label}"),
-            "label": label,
+            "id": "tasks.tracker/issues/1",
+            "label": "Another issue",
         });
-        if let Some(record) = record {
-            link["record"] = json!(record);
-        }
-        app.call_on(&issue_resource(&issue), "link", link)
-            .expect("link the issue");
+        assert!(
+            app.call_on(
+                &issue_resource(&issue),
+                "link-note",
+                json!({ "note": issue_ref })
+            )
+            .is_err(),
+            "only a note"
+        );
     }
-    let links: Vec<_> = app
-        .state()
-        .issues
-        .get(&issue)
-        .unwrap()
-        .links
-        .values()
-        .cloned()
-        .collect();
-    assert_eq!(links[0].record.as_deref(), Some("/launch"));
-    assert_eq!(links[1].record, None);
-    // What a link stored before it named a record reads as naming none.
-    let old = <tasks::model::Link as ui::tilo_resource::Model>::from_json(&json!({
-        "label": "Old", "app": "so.tilo.notes", "kind": "notes.page", "resource": "notes.page:1",
-    }))
-    .expect("an old link reads");
-    assert_eq!(old.record, None);
 
-    app.call_on(&issue_resource(&issue), "open", json!({}))
-        .expect("open the issue");
-    for (label, record) in [("Kept", Some("/launch")), ("Old", None)] {
-        let chip = app
-            .harness()
-            .a11y_node_named(&format!("Open {label}"))
-            .expect("the link's chip");
+    phase a_link_opens_in_the_record_it_names;
+    // A link names the record of the app that keeps what it links to, and
+    // opens it there; a link made before links named a record opens the app's
+    // own record of the workspace.
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
+        env.set("TILO_WORKSPACE_ID", workspace);
+        let door = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+        let _served = ui::RemoteActions::enter(
+            door.clone(),
+            ui::tilo_actions::remote::Caller::local_person("ada"),
+        );
+        let mut app = open();
+        app.call("create", json!({ "title": "Plan the launch" }))
+            .expect("create");
+        let issue = only(&app);
+        for (label, record) in [("Kept", Some("/launch")), ("Old", None)] {
+            let mut link = json!({
+                "app": "so.tilo.tasks",
+                "kind": "tasks.tracker.issues",
+                "resource": format!("tasks.tracker/issues/{label}"),
+                "label": label,
+            });
+            if let Some(record) = record {
+                link["record"] = json!(record);
+            }
+            app.call_on(&issue_resource(&issue), "link", link)
+                .expect("link the issue");
+        }
+        let links: Vec<_> = app
+            .state()
+            .issues
+            .get(&issue)
+            .unwrap()
+            .links
+            .values()
+            .cloned()
+            .collect();
+        assert_eq!(links[0].record.as_deref(), Some("/launch"));
+        assert_eq!(links[1].record, None);
+        // What a link stored before it named a record reads as naming none.
+        let old = <tasks::model::Link as ui::tilo_resource::Model>::from_json(&json!({
+            "label": "Old", "app": "so.tilo.notes", "kind": "notes.page", "resource": "notes.page:1",
+        }))
+        .expect("an old link reads");
+        assert_eq!(old.record, None);
+
+        app.call_on(&issue_resource(&issue), "open", json!({}))
+            .expect("open the issue");
+        for (label, record) in [("Kept", Some("/launch")), ("Old", None)] {
+            let chip = app
+                .harness()
+                .a11y_node_named(&format!("Open {label}"))
+                .expect("the link's chip");
+            app.harness()
+                .perform_a11y_action(chip, &ui::a11y::Action::Activate)
+                .unwrap();
+            app.settle();
+            let asked = door.take_asked().pop().expect("one open");
+            let reference = ui::tilo_reference::ResourceRef::whole(
+                "tasks.tracker.issues",
+                format!("tasks.tracker/issues/{label}"),
+                label,
+            );
+            assert_eq!(
+                asked.target,
+                reference.open_target(workspace, "so.tilo.tasks", record)
+            );
+        }
+    }
+}
+
+tilo_test_env::scenario! {
+    fn an_issues_page_picks_its_assignee_and_labels_and_is_the_page_every_view_opens;
+
+    phase an_issues_assignee_is_picked_among_the_rooms_people_and_agents;
+    // The assignee is picked among the workspace's people and agents by name,
+    // never typed as an id, and reads back as the person's name and face; the
+    // "Nobody" choice clears it.
+    {
+        let mut app = open();
+        app.call("create", json!({ "title": "Draft the agenda" }))
+            .expect("create");
+        let issue = only(&app);
+        app.call_on(&issue_resource(&issue), "open", json!({}))
+            .expect("open the issue");
+        {
+            let presence = app.harness().presence_mut();
+            presence.set_display_name(ui::permissions::UserId("bob".into()), "Bob");
+            presence.set_display_name(ui::permissions::UserId("agent:scribe".into()), "Scribe");
+            presence.set_participant_kind(
+                ui::permissions::UserId("agent:scribe".into()),
+                ui::presence::ParticipantKind::Agent,
+            );
+        }
+        app.settle();
+
+        let assignee = |app: &TestApp<App>| {
+            app.state()
+                .issues
+                .get(&issue)
+                .and_then(|issue| issue.assignee.clone())
+                .map(|assignee| assignee.0)
+        };
+        let pick = |app: &mut TestApp<App>, entry: &str| {
+            app.harness()
+                .perform_named("tasks-issue-assignee", &ui::a11y::Action::Activate)
+                .unwrap_or_else(|error| panic!("open the assignee: {error:?}"));
+            app.settle();
+            app.harness()
+                .perform_named(entry, &ui::a11y::Action::Activate)
+                .unwrap_or_else(|error| panic!("pick {entry}: {error:?}"));
+            app.settle();
+        };
+        pick(&mut app, "tasks-issue-assignee-bob");
+        assert_eq!(assignee(&app).as_deref(), Some("person:bob"));
+        assert!(
+            app.harness().a11y_node_named("Assignee: Bob").is_some(),
+            "the chip says the person's name, never the record's spelling"
+        );
+        pick(&mut app, "tasks-issue-assignee-agent:scribe");
+        assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
+        assert!(
+            app.harness()
+                .a11y_node_named("Assignee: Scribe · Agent")
+                .is_some(),
+            "an agent reads by name, and as an agent"
+        );
+        pick(&mut app, "tasks-issue-assignee-none");
+        assert_eq!(assignee(&app), None);
+        assert!(
+            app.harness().a11y_node_named("Assignee: Nobody").is_some(),
+            "clearing says nobody is doing it"
+        );
+    }
+
+    phase an_issues_labels_are_added_from_one_chip;
+    // An issue's labels are the chips it carries and one `+` that opens the
+    // labels the workspace already uses and the field that makes a new one.
+    {
+        let mut app = open();
+        app.call("create", json!({ "title": "Draft the agenda" }))
+            .expect("create");
+        let issue = only(&app);
+        // An issue already labelled makes that label one the picker offers.
+        app.call("create", json!({ "title": "Book the room" }))
+            .expect("create");
+        let other = app
+            .state()
+            .issues
+            .iter()
+            .find(|(_, shown)| shown.title == "Book the room")
+            .map(|(id, _)| id.clone())
+            .expect("the other issue");
+        app.call("add-label", json!({ "issue": other, "label": "launch" }))
+            .expect("label it");
+        app.call_on(&issue_resource(&issue), "open", json!({}))
+            .expect("open the issue");
+        app.settle();
+
+        // One control in the row, not three: the chips and the `+`; the field
+        // waits in what the `+` opens.
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key("tasks-issue-add-label"),
+            "the labels end in one chip"
+        );
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key("tasks-issue-label-new"),
+            "no field stands in the row"
+        );
+
+        let labels_of = |app: &TestApp<App>| -> Vec<String> {
+            app.state()
+                .issues
+                .get(&issue)
+                .map(|shown| shown.labels.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+
+        // The `+` offers the label the workspace already uses.
         app.harness()
-            .perform_a11y_action(chip, &ui::a11y::Action::Activate)
+            .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
+            .expect("open the labels");
+        app.settle();
+        app.harness()
+            .perform_named("tasks-issue-label-launch", &ui::a11y::Action::Activate)
+            .expect("pick launch");
+        app.settle();
+        assert_eq!(labels_of(&app), ["launch"], "the label lands on the issue");
+
+        // Typing a new one in its field makes that one too.
+        app.harness()
+            .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
+            .expect("open the labels");
+        app.settle();
+        app.harness()
+            .click_named("tasks-issue-label-new")
+            .expect("the field takes the click");
+        app.harness().type_text("venue");
+        app.settle();
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(
+            labels_of(&app),
+            ["launch", "venue"],
+            "a typed label is made on the issue"
+        );
+    }
+
+    phase a_task_with_a_conversation_reads_in_the_thread_and_opens_its_own_page;
+    // One task, read through every view the app has: the conversation it is
+    // is the thread, and the card on the board and the row in the list open the
+    // same page rather than a copy of it.
+    {
+        let mut app = open();
+        app.call("create", json!({ "title": "Which venue seats 120?" }))
+            .expect("create");
+        let issue = only(&app);
+        app.call_on(
+            &issue_resource(&issue),
+            "comment",
+            json!({ "text": "The old depot on Mill Street does." }),
+        )
+        .expect("say something on it");
+
+        // The thread reads it as a conversation, saying who last spoke.
+        press_view(&mut app, "Thread");
+        app.settle();
+        let row = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.label().is_some_and(|label| {
+                    label.contains("#1") && label.contains("Which venue seats 120?")
+                })
+            })
+            .map(|(id, _)| id)
+            .expect("the task reads in the thread");
+        app.harness()
+            .perform_a11y_action(row, &ui::a11y::Action::Activate)
             .unwrap();
         app.settle();
-        let asked = door.take_asked().pop().expect("one open");
-        let reference = ui::tilo_reference::ResourceRef::whole(
-            "tasks.tracker.issues",
-            format!("tasks.tracker/issues/{label}"),
-            label,
-        );
-        assert_eq!(
-            asked.target,
-            reference.open_target(workspace, "so.tilo.tasks", record)
-        );
-    }
-}
 
-/// The assignee is picked among the workspace's people and agents by name,
-/// never typed as an id, and reads back as the person's name and face; the
-/// "Nobody" choice clears it.
-#[test]
-fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Draft the agenda" }))
-        .expect("create");
-    let issue = only(&app);
-    app.call_on(&issue_resource(&issue), "open", json!({}))
-        .expect("open the issue");
-    {
-        let presence = app.harness().presence_mut();
-        presence.set_display_name(ui::permissions::UserId("bob".into()), "Bob");
-        presence.set_display_name(ui::permissions::UserId("agent:scribe".into()), "Scribe");
-        presence.set_participant_kind(
-            ui::permissions::UserId("agent:scribe".into()),
-            ui::presence::ParticipantKind::Agent,
+        // Its row opens the issue's page, the same one the other views open.
+        assert!(
+            app.harness().targets().contains_key("tasks-issue-title"),
+            "the thread's row opens the issue"
+        );
+        assert!(
+            app.harness()
+                .a11y_node_named("The old depot on Mill Street does.")
+                .is_some(),
+            "and the page it opens is the issue that was read in the thread"
         );
     }
-    app.settle();
-
-    let assignee = |app: &TestApp<App>| {
-        app.state()
-            .issues
-            .get(&issue)
-            .and_then(|issue| issue.assignee.clone())
-            .map(|assignee| assignee.0)
-    };
-    let pick = |app: &mut TestApp<App>, entry: &str| {
-        app.harness()
-            .perform_named("tasks-issue-assignee", &ui::a11y::Action::Activate)
-            .unwrap_or_else(|error| panic!("open the assignee: {error:?}"));
-        app.settle();
-        app.harness()
-            .perform_named(entry, &ui::a11y::Action::Activate)
-            .unwrap_or_else(|error| panic!("pick {entry}: {error:?}"));
-        app.settle();
-    };
-    pick(&mut app, "tasks-issue-assignee-bob");
-    assert_eq!(assignee(&app).as_deref(), Some("person:bob"));
-    assert!(
-        app.harness().a11y_node_named("Assignee: Bob").is_some(),
-        "the chip says the person's name, never the record's spelling"
-    );
-    pick(&mut app, "tasks-issue-assignee-agent:scribe");
-    assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
-    assert!(
-        app.harness()
-            .a11y_node_named("Assignee: Scribe · Agent")
-            .is_some(),
-        "an agent reads by name, and as an agent"
-    );
-    pick(&mut app, "tasks-issue-assignee-none");
-    assert_eq!(assignee(&app), None);
-    assert!(
-        app.harness().a11y_node_named("Assignee: Nobody").is_some(),
-        "clearing says nobody is doing it"
-    );
-}
-
-/// An issue's labels are the chips it carries and one `+` that opens the
-/// labels the workspace already uses and the field that makes a new one.
-#[test]
-fn an_issues_labels_are_added_from_one_chip() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Draft the agenda" }))
-        .expect("create");
-    let issue = only(&app);
-    // An issue already labelled makes that label one the picker offers.
-    app.call("create", json!({ "title": "Book the room" }))
-        .expect("create");
-    let other = app
-        .state()
-        .issues
-        .iter()
-        .find(|(_, shown)| shown.title == "Book the room")
-        .map(|(id, _)| id.clone())
-        .expect("the other issue");
-    app.call("add-label", json!({ "issue": other, "label": "launch" }))
-        .expect("label it");
-    app.call_on(&issue_resource(&issue), "open", json!({}))
-        .expect("open the issue");
-    app.settle();
-
-    // One control in the row, not three: the chips and the `+`; the field
-    // waits in what the `+` opens.
-    assert!(
-        app.harness()
-            .targets()
-            .contains_key("tasks-issue-add-label"),
-        "the labels end in one chip"
-    );
-    assert!(
-        !app.harness()
-            .targets()
-            .contains_key("tasks-issue-label-new"),
-        "no field stands in the row"
-    );
-
-    let labels_of = |app: &TestApp<App>| -> Vec<String> {
-        app.state()
-            .issues
-            .get(&issue)
-            .map(|shown| shown.labels.iter().cloned().collect())
-            .unwrap_or_default()
-    };
-
-    // The `+` offers the label the workspace already uses.
-    app.harness()
-        .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
-        .expect("open the labels");
-    app.settle();
-    app.harness()
-        .perform_named("tasks-issue-label-launch", &ui::a11y::Action::Activate)
-        .expect("pick launch");
-    app.settle();
-    assert_eq!(labels_of(&app), ["launch"], "the label lands on the issue");
-
-    // Typing a new one in its field makes that one too.
-    app.harness()
-        .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
-        .expect("open the labels");
-    app.settle();
-    app.harness()
-        .click_named("tasks-issue-label-new")
-        .expect("the field takes the click");
-    app.harness().type_text("venue");
-    app.settle();
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(
-        labels_of(&app),
-        ["launch", "venue"],
-        "a typed label is made on the issue"
-    );
 }
 
 /// The fields stay one row at any width: they wrap rather than leave the
@@ -608,195 +776,151 @@ fn the_sidebar_names_what_it_narrows_and_the_bar_names_the_place() {
     );
 }
 
-/// The sidebar narrows the list to what a person is looking for — their own
-/// issues, the ones nobody took, an agent's, and a label's — and the board
-/// follows the same choice.
-#[test]
-fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
-    let mut app = open();
-    for (title, assignee, label) in [
-        ("Write the launch notes", Some("person:ada"), Some("launch")),
-        ("Record the demo", None, None),
-        ("Tidy the onboarding docs", Some("agent:claude"), None),
-    ] {
-        app.call("create", json!({ "title": title, "assignee": assignee }))
-            .expect("create");
-        if let Some(label) = label {
-            let issue = app
-                .state()
-                .issues
-                .iter()
-                .find(|(_, issue)| issue.title == title)
-                .map(|(id, _)| id.clone())
-                .expect("the issue just made");
-            app.call("add-label", json!({ "issue": issue, "label": label }))
-                .expect("label it");
+tilo_test_env::scenario! {
+    fn the_list_and_the_board_follow_the_sidebars_filter_and_a_lane_adds_to_itself;
+
+    phase the_sidebar_narrows_the_list_and_the_board_to_a_filter;
+    // The sidebar narrows the list to what a person is looking for — their own
+    // issues, the ones nobody took, an agent's, and a label's — and the board
+    // follows the same choice.
+    {
+        let mut app = open();
+        for (title, assignee, label) in [
+            ("Write the launch notes", Some("person:ada"), Some("launch")),
+            ("Record the demo", None, None),
+            ("Tidy the onboarding docs", Some("agent:claude"), None),
+        ] {
+            app.call("create", json!({ "title": title, "assignee": assignee }))
+                .expect("create");
+            if let Some(label) = label {
+                let issue = app
+                    .state()
+                    .issues
+                    .iter()
+                    .find(|(_, issue)| issue.title == title)
+                    .map(|(id, _)| id.clone())
+                    .expect("the issue just made");
+                app.call("add-label", json!({ "issue": issue, "label": label }))
+                    .expect("label it");
+            }
         }
+        let rows = |app: &mut TestApp<App>| -> Vec<String> {
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&app.harness().inspection_json().expect("inspection"))
+                    .expect("json");
+            let nodes = semantic_nodes(&snapshot);
+            nodes
+                .iter()
+                .filter_map(|(node, _)| {
+                    // The list's rows read as references (`#2 Record the demo`);
+                    // the sidebar's rows are its filters, which have no number.
+                    // A row's box is a control of its own, named the same, so the
+                    // rows are what counts.
+                    let name = node["name"].as_str().unwrap_or_default();
+                    (name.starts_with('#') && node["role"] == "TreeItem").then(|| name.to_owned())
+                })
+                .collect()
+        };
+
+        // Everything, to begin with.
+        assert_eq!(rows(&mut app).len(), 3, "every issue shows");
+
+        // Mine: the person reading, whose issues are their own.
+        choose(&mut app, "Mine");
+        let shown = rows(&mut app);
+        assert_eq!(shown.len(), 1, "and nothing assigned to anyone else");
+        assert!(
+            shown
+                .iter()
+                .any(|row| row.contains("Write the launch notes")),
+            "my own issue shows: {shown:?}"
+        );
+
+        // Nobody's: the issue without an assignee.
+        choose(&mut app, "Nobody's");
+        let shown = rows(&mut app);
+        assert_eq!(shown.len(), 1, "one issue is unassigned: {shown:?}");
+        assert!(shown[0].contains("Record the demo"), "{shown:?}");
+
+        // Todos: the tasks nobody has started — all of them, as they were made.
+        choose(&mut app, "Todos");
+        let shown = rows(&mut app);
+        assert_eq!(shown.len(), 3, "nothing is under way: {shown:?}");
+
+        // An agent's: the one handed to the workspace's agent.
+        choose(&mut app, "An agent's");
+        let shown = rows(&mut app);
+        assert_eq!(shown.len(), 1, "one issue is an agent's: {shown:?}");
+        assert!(shown[0].contains("Tidy the onboarding docs"), "{shown:?}");
+
+        // A label: the issues carrying it.
+        choose(&mut app, "launch");
+        let shown = rows(&mut app);
+        assert_eq!(shown.len(), 1, "one issue carries the label: {shown:?}");
+
+        // The board follows the same choice: the agent's issue is the only card
+        // in a lane.
+        choose(&mut app, "An agent's");
+        press_view(&mut app, "Board");
+        let harness = app.harness();
+        assert!(
+            harness
+                .a11y_node_named("#3 Tidy the onboarding docs")
+                .is_some(),
+            "the agent's issue is a card on the board"
+        );
+        assert!(
+            harness.a11y_node_named("#2 Record the demo").is_none(),
+            "and nobody else's issue is drawn beside it"
+        );
+
+        // Back to the list and everything in it.
+        press_view(&mut app, "Issues");
+        choose(&mut app, "All issues");
+        assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
     }
-    let rows = |app: &mut TestApp<App>| -> Vec<String> {
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&app.harness().inspection_json().expect("inspection"))
-                .expect("json");
-        let nodes = semantic_nodes(&snapshot);
-        nodes
-            .iter()
-            .filter_map(|(node, _)| {
-                // The list's rows read as references (`#2 Record the demo`);
-                // the sidebar's rows are its filters, which have no number.
-                // A row's box is a control of its own, named the same, so the
-                // rows are what counts.
-                let name = node["name"].as_str().unwrap_or_default();
-                (name.starts_with('#') && node["role"] == "TreeItem").then(|| name.to_owned())
-            })
-            .collect()
-    };
 
-    // Everything, to begin with.
-    assert_eq!(rows(&mut app).len(), 3, "every issue shows");
-
-    // Mine: the person reading, whose issues are their own.
-    choose(&mut app, "Mine");
-    let shown = rows(&mut app);
-    assert_eq!(shown.len(), 1, "and nothing assigned to anyone else");
-    assert!(
-        shown
-            .iter()
-            .any(|row| row.contains("Write the launch notes")),
-        "my own issue shows: {shown:?}"
-    );
-
-    // Nobody's: the issue without an assignee.
-    choose(&mut app, "Nobody's");
-    let shown = rows(&mut app);
-    assert_eq!(shown.len(), 1, "one issue is unassigned: {shown:?}");
-    assert!(shown[0].contains("Record the demo"), "{shown:?}");
-
-    // Todos: the tasks nobody has started — all of them, as they were made.
-    choose(&mut app, "Todos");
-    let shown = rows(&mut app);
-    assert_eq!(shown.len(), 3, "nothing is under way: {shown:?}");
-
-    // An agent's: the one handed to the workspace's agent.
-    choose(&mut app, "An agent's");
-    let shown = rows(&mut app);
-    assert_eq!(shown.len(), 1, "one issue is an agent's: {shown:?}");
-    assert!(shown[0].contains("Tidy the onboarding docs"), "{shown:?}");
-
-    // A label: the issues carrying it.
-    choose(&mut app, "launch");
-    let shown = rows(&mut app);
-    assert_eq!(shown.len(), 1, "one issue carries the label: {shown:?}");
-
-    // The board follows the same choice: the agent's issue is the only card
-    // in a lane.
-    choose(&mut app, "An agent's");
-    press_view(&mut app, "Board");
-    let harness = app.harness();
-    assert!(
-        harness
-            .a11y_node_named("#3 Tidy the onboarding docs")
-            .is_some(),
-        "the agent's issue is a card on the board"
-    );
-    assert!(
-        harness.a11y_node_named("#2 Record the demo").is_none(),
-        "and nobody else's issue is drawn beside it"
-    );
-
-    // Back to the list and everything in it.
-    press_view(&mut app, "Issues");
-    choose(&mut app, "All issues");
-    assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
-}
-
-/// A lane of the board adds at its foot, in its own lane: what is typed
-/// there is made in that lane's status, and the board itself carries no
-/// entry of its own above the lanes.
-#[test]
-fn a_lanes_foot_adds_the_issue_to_that_lane() {
-    let mut app = open();
-    press_view(&mut app, "Board");
-    app.settle();
-    assert!(
-        !app.harness()
-            .targets()
-            .contains_key("tasks-board-new-title"),
-        "the board carries no entry of its own above the lanes"
-    );
-    let add = |app: &mut TestApp<App>, status: Status, title: &str| {
-        app.harness()
-            .click_named(&format!("tasks-board-new-{}-title", status.label_key()))
-            .unwrap_or_else(|error| panic!("the {status:?} lane is addable: {error}"));
-        app.harness().type_text(title);
-        app.harness().key("Enter");
+    phase a_lanes_foot_adds_the_issue_to_that_lane;
+    // A lane of the board adds at its foot, in its own lane: what is typed
+    // there is made in that lane's status, and the board itself carries no
+    // entry of its own above the lanes.
+    {
+        let mut app = open();
+        press_view(&mut app, "Board");
         app.settle();
-    };
-    add(&mut app, Status::Todo, "Ship the launch");
-    add(&mut app, Status::InProgress, "Archive the banner");
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key("tasks-board-new-title"),
+            "the board carries no entry of its own above the lanes"
+        );
+        let add = |app: &mut TestApp<App>, status: Status, title: &str| {
+            app.harness()
+                .click_named(&format!("tasks-board-new-{}-title", status.label_key()))
+                .unwrap_or_else(|error| panic!("the {status:?} lane is addable: {error}"));
+            app.harness().type_text(title);
+            app.harness().key("Enter");
+            app.settle();
+        };
+        add(&mut app, Status::Todo, "Ship the launch");
+        add(&mut app, Status::InProgress, "Archive the banner");
 
-    let state = app.state();
-    let statuses: Vec<(&str, Status)> = state
-        .issues
-        .values()
-        .map(|issue| (issue.title.as_str(), issue.status))
-        .collect();
-    assert!(
-        statuses.contains(&("Ship the launch", Status::Todo)),
-        "what the to-do lane's entry makes starts there: {statuses:?}"
-    );
-    assert!(
-        statuses.contains(&("Archive the banner", Status::InProgress)),
-        "and the working lane's entry starts a card that is being worked on: {statuses:?}"
-    );
-    assert_eq!(statuses.len(), 2, "one card per entry, nothing else");
-}
-
-/// One task, read through every view the app has: the conversation it is
-/// is the thread, and the card on the board and the row in the list open the
-/// same page rather than a copy of it.
-#[test]
-fn a_task_with_a_conversation_reads_in_the_thread_and_opens_its_own_page() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Which venue seats 120?" }))
-        .expect("create");
-    let issue = only(&app);
-    app.call_on(
-        &issue_resource(&issue),
-        "comment",
-        json!({ "text": "The old depot on Mill Street does." }),
-    )
-    .expect("say something on it");
-
-    // The thread reads it as a conversation, saying who last spoke.
-    press_view(&mut app, "Thread");
-    app.settle();
-    let row = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| {
-            node.label().is_some_and(|label| {
-                label.contains("#1") && label.contains("Which venue seats 120?")
-            })
-        })
-        .map(|(id, _)| id)
-        .expect("the task reads in the thread");
-    app.harness()
-        .perform_a11y_action(row, &ui::a11y::Action::Activate)
-        .unwrap();
-    app.settle();
-
-    // Its row opens the issue's page, the same one the other views open.
-    assert!(
-        app.harness().targets().contains_key("tasks-issue-title"),
-        "the thread's row opens the issue"
-    );
-    assert!(
-        app.harness()
-            .a11y_node_named("The old depot on Mill Street does.")
-            .is_some(),
-        "and the page it opens is the issue that was read in the thread"
-    );
+        let state = app.state();
+        let statuses: Vec<(&str, Status)> = state
+            .issues
+            .values()
+            .map(|issue| (issue.title.as_str(), issue.status))
+            .collect();
+        assert!(
+            statuses.contains(&("Ship the launch", Status::Todo)),
+            "what the to-do lane's entry makes starts there: {statuses:?}"
+        );
+        assert!(
+            statuses.contains(&("Archive the banner", Status::InProgress)),
+            "and the working lane's entry starts a card that is being worked on: {statuses:?}"
+        );
+        assert_eq!(statuses.len(), 2, "one card per entry, nothing else");
+    }
 }
 
 /// Press the window bar's view `name`, as a press on it does.
@@ -985,68 +1109,6 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     .unwrap_or_else(|error| panic!("{error}"));
 }
 
-/// A project is a resource of its own above the tasks: it is made,
-/// listed in the sidebar, opened by the address it is published under, and
-/// holds the tasks that work towards it and the people involved.
-#[test]
-fn a_project_is_made_listed_and_opened_by_its_address() {
-    let mut app = open();
-    assert!(app.state().areas.is_empty(), "a tracker starts empty");
-
-    // The project page's own action makes one, with the kind it is given.
-    app.call("create-area", json!({ "name": "Launch", "kind": "area" }))
-        .expect("create the area");
-    let (area, made) = app
-        .state()
-        .areas
-        .iter()
-        .next()
-        .map(|(id, area)| (id.clone(), area.clone()))
-        .expect("the area just made");
-    assert_eq!(made.name, "Launch");
-    assert_eq!(made.kind, tasks::model::Kind::Area);
-
-    // Its address opens its page, as a row of the sidebar or a search hit
-    // does, and the page offers what it holds.
-    let address = tasks::model::area_resource(&area);
-    app.call_on(&address, "open", json!({}))
-        .expect("open the project");
-    assert!(app.harness().targets().contains_key("tasks-project-name"));
-    assert!(
-        app.harness()
-            .targets()
-            .contains_key("tasks-project-involve")
-    );
-    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
-    assert_eq!(
-        bar.location.map(|location| location.label).as_deref(),
-        Some("Launch"),
-        "the bar says which project the window shows"
-    );
-
-    // Someone involved is part of the project, in their own words.
-    app.call_on(
-        &address,
-        "involve",
-        json!({ "name": "Grace", "role": "Writes the launch notes" }),
-    )
-    .expect("involve Grace");
-    let people = app.state().area(&area).expect("the project").people.clone();
-    assert_eq!(people.len(), 1);
-    assert_eq!(people.iter().next().expect("Grace").1.name, "Grace");
-
-    // Undo takes the involvement back: it is an ordinary change, kept as
-    // any other, and the project stays.
-    assert!(app.undo());
-    assert!(
-        app.state()
-            .area(&area)
-            .expect("the project still stands")
-            .people
-            .is_empty()
-    );
-}
-
 /// Whether the list's New issue button can be pressed now.
 fn new_issue_enabled(app: &mut TestApp<App>) -> bool {
     let harness = app.harness();
@@ -1118,31 +1180,6 @@ fn a_blank_new_issue_cannot_be_invoked() {
         .map(|issue| issue.title.clone())
         .collect();
     assert_eq!(titles, ["Ship it", "Write the notes"]);
-}
-
-/// An issue is document state: an agent reads what it holds through the
-/// issue's own document read, as `tilo_read` on it does, and the issue is
-/// disclosed by that read rather than hidden behind its `open`.
-#[test]
-fn an_agent_reads_an_issue_through_its_document_read() {
-    let mut app = open();
-    app.call(
-        "create",
-        json!({ "title": "Review Ada's portfolio", "body": "Look at her GitHub." }),
-    )
-    .expect("create");
-    app.settle();
-    let issue = issue_resource(&only(&app));
-    let content = app
-        .call_on(&issue, "read", json!({}))
-        .expect("the issue offers its document read")
-        .expect("the read answers");
-    assert_eq!(content["title"], "Review Ada's portfolio", "{content}");
-    assert_eq!(
-        ui::tilo_actions::hidden_from_agents(&app.harness().resources()),
-        [],
-        "nothing of the tracker is kept from an agent"
-    );
 }
 
 /// Its palette lists what a person looks for — the tracker's resources by
@@ -1226,25 +1263,4 @@ fn a_german_window_reads_the_tasks_catalogue() {
     assert_eq!(catalog.t("tasks-new-issue"), "Neue Aufgabe");
     catalog.set_locale("en-US");
     assert_eq!(catalog.t("tasks-title"), "Tasks");
-}
-
-#[test]
-fn an_agents_create_is_shown_at_new_issue() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Write the launch notes" }))
-        .expect("create");
-    app.settle();
-    let targets = app.harness().targets();
-    let (_, button) = targets
-        .iter()
-        .find(|(name, _)| name.ends_with("-create"))
-        .expect("the list's New issue button");
-    let locus = app
-        .harness()
-        .semantic_locus(&ui::headless::agent_acting("tasks.tracker", "create"))
-        .expect("an agent's create finds New issue");
-    assert!(
-        button.contains(locus.center()),
-        "the agent acts at New issue: {locus:?} in {button:?}"
-    );
 }

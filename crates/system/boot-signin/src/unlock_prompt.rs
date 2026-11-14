@@ -134,82 +134,87 @@ mod tests {
         )
     }
 
-    #[test]
-    fn the_header_comes_from_cryptsetup() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let program = dir.path().join("cryptsetup");
-        std::fs::write(
-            &program,
-            format!(
-                "#!/bin/sh\n[ \"$*\" = 'luksDump --dump-json-metadata /dev/vda3' ] || exit 1\n\
+    tilo_test_env::scenario! {
+        /// `ways`: which secrets a LUKS header lets a person type.
+        fn the_unlock_prompt_names_the_ways_the_header_offers;
+
+        phase the_header_comes_from_cryptsetup;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let program = dir.path().join("cryptsetup");
+            std::fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\n[ \"$*\" = 'luksDump --dump-json-metadata /dev/vda3' ] || exit 1\n\
                  printf '%s' '{}'\n",
-                metadata(&["1", "2"], &[("systemd-recovery", &["1"])])
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let header = read(&program, Path::new("/dev/vda3")).expect("the header");
-        assert_eq!(ways(&header).kind(), Some("passphrase-recovery"));
-        assert_eq!(read(&program, Path::new("/dev/other")), None);
-    }
+                    metadata(&["1", "2"], &[("systemd-recovery", &["1"])])
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let header = read(&program, Path::new("/dev/vda3")).expect("the header");
+            assert_eq!(ways(&header).kind(), Some("passphrase-recovery"));
+            assert_eq!(read(&program, Path::new("/dev/other")), None);
+        }
 
-    #[test]
-    fn the_installers_one_secret_reads_as_the_password() {
-        // As the installer leaves it: the recovery key, and the account
-        // password marked as the startup secret.
-        let ways = ways(&metadata(
-            &["1", "2"],
-            &[
-                ("systemd-recovery", &["1"]),
-                ("tilo-startup-secret", &["2"]),
-            ],
-        ));
-        assert_eq!(ways.kind(), Some("password-recovery"));
-    }
+        phase the_installers_one_secret_reads_as_the_password;
+        {
+            // As the installer leaves it: the recovery key, and the account
+            // password marked as the startup secret.
+            let ways = ways(&metadata(
+                &["1", "2"],
+                &[
+                    ("systemd-recovery", &["1"]),
+                    ("tilo-startup-secret", &["2"]),
+                ],
+            ));
+            assert_eq!(ways.kind(), Some("password-recovery"));
+        }
 
-    #[test]
-    fn a_separate_disk_secret_reads_as_the_disk_passphrase() {
-        let ways = ways(&metadata(&["1", "2"], &[("systemd-recovery", &["1"])]));
-        assert_eq!(ways.kind(), Some("passphrase-recovery"));
-    }
+        phase a_separate_disk_secret_reads_as_the_disk_passphrase;
+        {
+            let ways = ways(&metadata(&["1", "2"], &[("systemd-recovery", &["1"])]));
+            assert_eq!(ways.kind(), Some("passphrase-recovery"));
+        }
 
-    #[test]
-    fn the_recovery_key_is_offered_only_where_it_has_a_slot() {
-        assert_eq!(ways(&metadata(&["0"], &[])).kind(), Some("passphrase"));
-        let removed = ways(&metadata(&["2"], &[("systemd-recovery", &["1"])]));
-        assert_eq!(removed.kind(), Some("passphrase"));
-    }
+        phase the_recovery_key_is_offered_only_where_it_has_a_slot;
+        {
+            assert_eq!(ways(&metadata(&["0"], &[])).kind(), Some("passphrase"));
+            let removed = ways(&metadata(&["2"], &[("systemd-recovery", &["1"])]));
+            assert_eq!(removed.kind(), Some("passphrase"));
+        }
 
-    #[test]
-    fn slots_other_tokens_open_are_not_typed() {
-        // A person's sign-in slot and a security key: only the recovery key
-        // is typed at the volume's prompt.
-        let ways = ways(&metadata(
-            &["0", "1", "3"],
-            &[
-                ("tilo-signin", &["0"]),
-                ("systemd-recovery", &["1"]),
-                ("systemd-fido2", &["3"]),
-            ],
-        ));
-        assert_eq!(ways.kind(), Some("recovery"));
-        assert_eq!(super::ways("not json").kind(), None);
-    }
+        phase slots_other_tokens_open_are_not_typed;
+        {
+            // A person's sign-in slot and a security key: only the recovery key
+            // is typed at the volume's prompt.
+            let ways = ways(&metadata(
+                &["0", "1", "3"],
+                &[
+                    ("tilo-signin", &["0"]),
+                    ("systemd-recovery", &["1"]),
+                    ("systemd-fido2", &["3"]),
+                ],
+            ));
+            assert_eq!(ways.kind(), Some("recovery"));
+            assert_eq!(super::ways("not json").kind(), None);
+        }
 
-    #[test]
-    fn a_password_token_without_its_slot_offers_no_password() {
-        // The startup secret's slot was removed after migration; the token
-        // that named it no longer claims anything.
-        let ways = ways(&metadata(
-            &["0", "1"],
-            &[
-                ("tilo-signin", &["0"]),
-                ("systemd-recovery", &["1"]),
-                ("tilo-startup-secret", &[]),
-            ],
-        ));
-        assert_eq!(ways.kind(), Some("recovery"));
+        phase a_password_token_without_its_slot_offers_no_password;
+        {
+            // The startup secret's slot was removed after migration; the token
+            // that named it no longer claims anything.
+            let ways = ways(&metadata(
+                &["0", "1"],
+                &[
+                    ("tilo-signin", &["0"]),
+                    ("systemd-recovery", &["1"]),
+                    ("tilo-startup-secret", &[]),
+                ],
+            ));
+            assert_eq!(ways.kind(), Some("recovery"));
+        }
     }
 }

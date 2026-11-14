@@ -220,63 +220,68 @@ mod tests {
         list.iter().map(|name| ((*name).to_owned(), true)).collect()
     }
 
-    #[test]
-    fn blanking_switches_every_lit_panel_once_and_waking_lights_them_again() {
-        let outputs = names(&["eDP-1", "DP-1"]);
-        let mut power = OutputPower::default();
-        assert!(power.changes(&outputs).is_empty(), "panels start lit");
-        power.set_blanked(true);
-        let off = power.changes(&outputs);
-        assert_eq!(off, vec![("eDP-1".into(), false), ("DP-1".into(), false)]);
-        for (name, on) in off {
-            power.applied(&name, on);
+    tilo_test_env::scenario! {
+        /// Which panels are lit.
+        fn panels_are_switched_once_and_a_tools_choice_is_kept;
+
+        phase blanking_switches_every_lit_panel_once_and_waking_lights_them_again;
+        {
+            let outputs = names(&["eDP-1", "DP-1"]);
+            let mut power = OutputPower::default();
+            assert!(power.changes(&outputs).is_empty(), "panels start lit");
+            power.set_blanked(true);
+            let off = power.changes(&outputs);
+            assert_eq!(off, vec![("eDP-1".into(), false), ("DP-1".into(), false)]);
+            for (name, on) in off {
+                power.applied(&name, on);
+            }
+            assert!(
+                power.changes(&outputs).is_empty(),
+                "nothing is switched twice"
+            );
+            power.set_blanked(false);
+            assert_eq!(
+                power.changes(&outputs),
+                vec![("eDP-1".into(), true), ("DP-1".into(), true)]
+            );
         }
-        assert!(
-            power.changes(&outputs).is_empty(),
-            "nothing is switched twice"
-        );
-        power.set_blanked(false);
-        assert_eq!(
-            power.changes(&outputs),
-            vec![("eDP-1".into(), true), ("DP-1".into(), true)]
-        );
-    }
 
-    #[test]
-    fn a_panel_a_tool_turned_off_stays_off_when_input_wakes_the_others() {
-        let outputs = names(&["eDP-1", "DP-1"]);
-        let mut power = OutputPower::default();
-        power.off.insert("DP-1".into());
-        power.applied("DP-1", false);
-        power.set_blanked(true);
-        for (name, on) in power.changes(&outputs) {
-            power.applied(&name, on);
+        phase a_panel_a_tool_turned_off_stays_off_when_input_wakes_the_others;
+        {
+            let outputs = names(&["eDP-1", "DP-1"]);
+            let mut power = OutputPower::default();
+            power.off.insert("DP-1".into());
+            power.applied("DP-1", false);
+            power.set_blanked(true);
+            for (name, on) in power.changes(&outputs) {
+                power.applied(&name, on);
+            }
+            power.set_blanked(false);
+            assert_eq!(power.changes(&outputs), vec![("eDP-1".into(), true)]);
+            assert!(!power.wanted("DP-1"));
         }
-        power.set_blanked(false);
-        assert_eq!(power.changes(&outputs), vec![("eDP-1".into(), true)]);
-        assert!(!power.wanted("DP-1"));
-    }
 
-    #[test]
-    fn unplugged_outputs_are_forgotten() {
-        let mut power = OutputPower::default();
-        power.off.insert("DP-1".into());
-        power.applied("DP-1", false);
-        assert!(power.changes(&names(&["eDP-1"])).is_empty());
-        // Plugged back in, it lights like a new display.
-        assert!(power.changes(&names(&["eDP-1", "DP-1"])).is_empty());
-        assert!(power.lit("DP-1"));
-    }
+        phase unplugged_outputs_are_forgotten;
+        {
+            let mut power = OutputPower::default();
+            power.off.insert("DP-1".into());
+            power.applied("DP-1", false);
+            assert!(power.changes(&names(&["eDP-1"])).is_empty());
+            // Plugged back in, it lights like a new display.
+            assert!(power.changes(&names(&["eDP-1", "DP-1"])).is_empty());
+            assert!(power.lit("DP-1"));
+        }
 
-    #[test]
-    fn an_output_turned_off_by_a_configuration_goes_dark_and_comes_back_lit() {
-        let mut power = OutputPower::default();
-        let off = vec![("eDP-1".to_owned(), true), ("DP-1".to_owned(), false)];
-        assert_eq!(power.changes(&off), vec![("DP-1".into(), false)]);
-        power.applied("DP-1", false);
-        assert_eq!(
-            power.changes(&names(&["eDP-1", "DP-1"])),
-            vec![("DP-1".into(), true)]
-        );
+        phase an_output_turned_off_by_a_configuration_goes_dark_and_comes_back_lit;
+        {
+            let mut power = OutputPower::default();
+            let off = vec![("eDP-1".to_owned(), true), ("DP-1".to_owned(), false)];
+            assert_eq!(power.changes(&off), vec![("DP-1".into(), false)]);
+            power.applied("DP-1", false);
+            assert_eq!(
+                power.changes(&names(&["eDP-1", "DP-1"])),
+                vec![("DP-1".into(), true)]
+            );
+        }
     }
 }

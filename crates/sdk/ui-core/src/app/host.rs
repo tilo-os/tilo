@@ -227,6 +227,12 @@ fn draw_frame_content_owning(
             &app.theme,
             &app.presence_ctx,
         );
+        // The first menu drawn takes a box the window was asked for. One no
+        // menu of the window's took has nowhere to stand: it goes, rather
+        // than opening on whatever menu a later frame draws first.
+        if crate::shared_selection::take_open_send_box().is_some() {
+            tracing::debug!("no menu of this window carries the send-to box it was asked for");
+        }
     }
     painted(scene, "an overlay of the app's widgets", &mut drawn);
     if let Some(history) = &mut app.history {
@@ -249,6 +255,18 @@ fn draw_frame_content_owning(
         );
     }
     painted(scene, "the close dialog", &mut drawn);
+    // Pointing at what a report is about covers the whole window, over every
+    // layer: it is what the pointer and the keys reach until it is done.
+    if let Some(pointing) = app.report_pointing.as_ref() {
+        pointing.draw(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            window_rect,
+        );
+        painted(scene, "pointing at what a report is about", &mut drawn);
+    }
     app.presence_ctx.pop_viewport(prev_vp);
     if let Some(ap) = app.actions.action_palette.as_deref_mut() {
         ap.follow_presence(app.theme.motion());

@@ -19,8 +19,6 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
 use tilo_automerge_isolate::{Applied, Dependencies, Isolate, Limits, Rejected};
 
-tilo_automerge_isolate::test_worker!();
-
 /// An isolate whose deadline only a hang reaches.
 fn isolate() -> Isolate {
     Isolate::new(Limits {
@@ -134,8 +132,12 @@ const SEQUENCE_GAP_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)]) {
-    for (what, input) in cases {
+/// Every case is rejected or admitted while the caller lives on. The cases
+/// whose index is in `spinning` make a plain load spin the decoder forever:
+/// only the deadline stops those, and the isolate admits good input right
+/// after.
+fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)], spinning: &[usize]) {
+    for (index, (what, input)) in cases.iter().enumerate() {
         let input = hex::decode(input).unwrap();
         let mut doc = seeded_doc();
         let before = doc.save();
@@ -147,7 +149,15 @@ fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)]) {
                 "{what}: a rejection changed the document"
             );
         }
-        let _ = isolate.load(&input);
+        let loaded = isolate.load(&input);
+        if spinning.contains(&index) {
+            assert_eq!(
+                loaded.err(),
+                Some(Rejected::TimedOut),
+                "{what}: a spinning decoder is stopped by the deadline"
+            );
+            still_admits(isolate);
+        }
         eprintln!("{what}: {outcome:?}");
     }
     still_admits(isolate);
@@ -155,20 +165,8 @@ fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)]) {
 
 #[test]
 fn decoder_panics_and_hangs_cost_only_the_worker() {
-    reject_or_admit_every(&spin_stopping_isolate(), DECODER_CASES);
-}
-
-#[test]
-fn change_graph_sequence_gaps_cost_only_the_worker() {
-    reject_or_admit_every(&isolate(), SEQUENCE_GAP_CASES);
-}
-
-#[test]
-fn a_spinning_decoder_is_stopped_by_the_deadline() {
-    let isolate = spin_stopping_isolate();
-    let spinning = hex::decode(DECODER_CASES[0].1).unwrap();
-    assert_eq!(isolate.load(&spinning).err(), Some(Rejected::TimedOut));
-    still_admits(&isolate);
+    // The first case is the plain-load hang.
+    reject_or_admit_every(&spin_stopping_isolate(), DECODER_CASES, &[0]);
 }
 
 fn chunk(kind: u8, body: &[u8]) -> Vec<u8> {
@@ -194,222 +192,6 @@ fn chunk(kind: u8, body: &[u8]) -> Vec<u8> {
     out.extend(length);
     out.extend(body);
     out
-}
-
-#[test]
-fn a_compression_bomb_is_stopped_by_the_heap_ceiling() {
-    // A compressed change chunk whose body inflates to 1 GiB of zeros.
-    let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
-    let zeros = vec![0u8; 1024 * 1024];
-    for _ in 0..1024 {
-        deflate.write_all(&zeros).unwrap();
-    }
-    let bomb = chunk(2, &deflate.finish().unwrap());
-    let isolate = Isolate::new(Limits {
-        memory_bytes: 256 * 1024 * 1024,
-        timeout: tilo_test_env::hang_bound(),
-        ..Limits::default()
-    });
-    let mut doc = seeded_doc();
-    let outcome = isolate.apply(&mut doc, &bomb, Dependencies::RetainOrphans);
-    assert!(
-        matches!(outcome, Err(Rejected::Crashed | Rejected::Invalid(_))),
-        "{outcome:?}"
-    );
-    still_admits(&isolate);
-}
-
-#[test]
-fn admitted_input_leaves_the_same_document_as_a_direct_apply() {
-    use tilo_automerge::ApplyIncoming as _;
-    let isolate = isolate();
-    let mut doc = seeded_doc();
-    let mut direct = doc.clone();
-    for round in 0..20 {
-        let change = remote_change(&mut doc, &format!("k{round}"));
-        if round % 3 == 0 {
-            doc.put(ROOT, "local", round).unwrap();
-            doc.commit();
-            let heads = direct.get_heads();
-            direct.load_incoming(&doc.save_after(&heads)).unwrap();
-        }
-        assert_eq!(
-            isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
-            Ok(Applied::Changed(true))
-        );
-        direct.load_incoming(&change).unwrap();
-        assert_eq!(doc.get_heads(), direct.get_heads());
-    }
-    assert_eq!(doc.save(), direct.save());
-}
-
-#[test]
-fn missing_dependencies_are_refused_without_a_change_or_queued() {
-    let isolate = isolate();
-    let mut doc = seeded_doc();
-    let mut remote = doc.fork();
-    remote.put(ROOT, "first", 1).unwrap();
-    remote.commit();
-    let base = remote.get_heads();
-    remote.put(ROOT, "second", 2).unwrap();
-    remote.commit();
-    let orphan = remote.save_after(&base);
-    let before = doc.save();
-    assert_eq!(
-        isolate.apply(&mut doc, &orphan, Dependencies::RequireComplete),
-        Ok(Applied::MissingDependencies)
-    );
-    assert_eq!(doc.save(), before);
-    assert_eq!(
-        isolate.apply(&mut doc, &orphan, Dependencies::RetainOrphans),
-        Ok(Applied::Changed(false))
-    );
-    assert_eq!(doc.get_missing_deps(&[]), base);
-    still_admits(&isolate);
-}
-
-#[test]
-fn blank_document_retains_only_strictly_valid_orphans() {
-    let isolate = isolate();
-    let mut remote = seeded_doc();
-    let dependency = remote.get_heads();
-    let committed = remote.save();
-    remote.put(ROOT, "later", "pending").unwrap();
-    remote.commit();
-    let orphan = remote.save_after(&dependency);
-    let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x72; 16]));
-    let actor = doc.get_actor().clone();
-    let before = doc.save();
-    assert_eq!(
-        isolate.apply(&mut doc, &orphan, Dependencies::RequireComplete),
-        Ok(Applied::MissingDependencies)
-    );
-    assert_eq!(doc.save(), before);
-    let mut corrupt = orphan.clone();
-    let mut bad = orphan.clone();
-    let last = bad.len() - 1;
-    bad[last] ^= 0x55;
-    corrupt.extend(bad);
-    assert!(
-        isolate
-            .apply(&mut doc, &corrupt, Dependencies::RetainOrphans)
-            .is_err()
-    );
-    assert_eq!(
-        doc.save(),
-        before,
-        "a malformed tail cannot become an orphan"
-    );
-    assert_eq!(
-        isolate.apply(&mut doc, &orphan, Dependencies::RetainOrphans),
-        Ok(Applied::Changed(false))
-    );
-    assert_eq!(doc.get_missing_deps(&[]), dependency);
-    assert_eq!(doc.get_actor(), &actor);
-    assert_eq!(
-        isolate.apply(&mut doc, &committed, Dependencies::RequireComplete),
-        Ok(Applied::Changed(true))
-    );
-    assert_eq!(doc.get_heads(), remote.get_heads());
-    assert_eq!(doc.get_actor(), &actor);
-    still_admits(&isolate);
-}
-
-#[test]
-fn distinct_orphan_queues_rebuild_their_exact_state() {
-    let isolate = Isolate::new(Limits {
-        workers: 1,
-        timeout: tilo_test_env::hang_bound(),
-        ..Limits::default()
-    });
-    let mut seed = seeded_doc();
-    let dependency = seed.get_heads();
-    let committed = seed.save();
-    let mut a = seed.fork();
-    a.put(ROOT, "only-a", "first").unwrap();
-    a.commit();
-    let orphan_a = a.save_after(&dependency);
-    let a_heads = a.get_heads();
-    a.put(ROOT, "a-tail", "second").unwrap();
-    a.commit();
-    let tail_a = a.save_after(&a_heads);
-    let mut b = seed.fork();
-    b.put(ROOT, "only-b", "other queue").unwrap();
-    b.commit();
-    let orphan_b = b.save_after(&dependency);
-    let mut local_a = AutoCommit::new();
-    let mut local_b = AutoCommit::new();
-    for (doc, bytes) in [(&mut local_a, &orphan_a), (&mut local_b, &orphan_b)] {
-        assert_eq!(
-            isolate.apply(doc, bytes, Dependencies::RetainOrphans),
-            Ok(Applied::Changed(false))
-        );
-        assert_eq!(doc.get_missing_deps(&[]), dependency);
-    }
-    let mut finish_a = committed.clone();
-    finish_a.extend(tail_a);
-    assert_eq!(
-        isolate.apply(&mut local_a, &finish_a, Dependencies::RequireComplete),
-        Ok(Applied::Changed(true))
-    );
-    assert_eq!(local_a.get_heads(), a.get_heads());
-    assert!(local_a.get(ROOT, "only-b").unwrap().is_none());
-    assert_eq!(
-        isolate.apply(&mut local_b, &committed, Dependencies::RequireComplete),
-        Ok(Applied::Changed(true))
-    );
-    assert_eq!(local_b.get_heads(), b.get_heads());
-    assert!(local_b.get(ROOT, "only-a").unwrap().is_none());
-}
-
-#[test]
-fn a_malformed_tail_refuses_the_whole_input() {
-    let isolate = isolate();
-    let mut doc = seeded_doc();
-    let mut input = remote_change(&mut doc, "good");
-    let mut bad = remote_change(&mut doc, "bad");
-    let last = bad.len() - 1;
-    bad[last] ^= 0x55;
-    input.extend(bad);
-    let before = doc.save();
-    assert!(matches!(
-        isolate.apply(&mut doc, &input, Dependencies::RetainOrphans),
-        Err(Rejected::Invalid(_))
-    ));
-    assert_eq!(doc.save(), before);
-}
-
-#[test]
-fn a_bad_change_checksum_refuses_the_whole_input() {
-    let isolate = isolate();
-    let mut doc = seeded_doc();
-    let good = remote_change(&mut doc, "good");
-    let mut remote = doc.fork();
-    remote
-        .put(ROOT, "large", "compressible ".repeat(512))
-        .unwrap();
-    remote.commit();
-    let mut last = remote.get_last_local_change().unwrap();
-    let compressed = last.bytes().to_vec();
-    assert_eq!(compressed[8], 2, "fixture must be a compressed change");
-    let known = doc.get_last_local_change().unwrap().raw_bytes().to_vec();
-    for (what, prefix, mut bad) in [
-        ("new change", good.clone(), remote_change(&mut doc, "bad")),
-        ("known change", good.clone(), known),
-        ("compressed change", good, compressed),
-    ] {
-        bad[4] ^= 0x01;
-        let mut input = prefix;
-        input.extend(bad);
-        let before = doc.save();
-        let outcome = isolate.apply(&mut doc, &input, Dependencies::RetainOrphans);
-        assert!(
-            matches!(outcome, Err(Rejected::Invalid(_))),
-            "{what}: {outcome:?}"
-        );
-        assert_eq!(doc.save(), before, "{what}: a refusal changed the document");
-    }
-    still_admits(&isolate);
 }
 
 #[test]
@@ -466,20 +248,171 @@ fn a_long_history_into_a_blank_document_is_admitted() {
     assert_eq!(doc.get_actor(), &ActorId::from(vec![0x44; 16]));
 }
 
-#[test]
-fn copies_of_one_document_are_each_admitted() {
-    let isolate = isolate();
-    let base = seeded_doc();
-    let mut copies: Vec<AutoCommit> = (0..6).map(|_| base.clone()).collect();
-    for (n, doc) in copies.iter_mut().enumerate() {
-        let change = remote_change(doc, &format!("copy{n}"));
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn admitted_input_and_orphans_leave_the_document_a_direct_apply_would;
+
+    phase admitted_input_leaves_the_same_document_as_a_direct_apply;
+    {
+        use tilo_automerge::ApplyIncoming as _;
+        let isolate = isolate();
+        let mut doc = seeded_doc();
+        let mut direct = doc.clone();
+        for round in 0..20 {
+            let change = remote_change(&mut doc, &format!("k{round}"));
+            if round % 3 == 0 {
+                doc.put(ROOT, "local", round).unwrap();
+                doc.commit();
+                let heads = direct.get_heads();
+                direct.load_incoming(&doc.save_after(&heads)).unwrap();
+            }
+            assert_eq!(
+                isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
+                Ok(Applied::Changed(true))
+            );
+            direct.load_incoming(&change).unwrap();
+            assert_eq!(doc.get_heads(), direct.get_heads());
+        }
+        assert_eq!(doc.save(), direct.save());
+    }
+
+    phase missing_dependencies_are_refused_without_a_change_or_queued;
+    {
+        let isolate = isolate();
+        let mut doc = seeded_doc();
+        let mut remote = doc.fork();
+        remote.put(ROOT, "first", 1).unwrap();
+        remote.commit();
+        let base = remote.get_heads();
+        remote.put(ROOT, "second", 2).unwrap();
+        remote.commit();
+        let orphan = remote.save_after(&base);
+        let before = doc.save();
         assert_eq!(
-            isolate.apply(doc, &change, Dependencies::RequireComplete),
+            isolate.apply(&mut doc, &orphan, Dependencies::RequireComplete),
+            Ok(Applied::MissingDependencies)
+        );
+        assert_eq!(doc.save(), before);
+        assert_eq!(
+            isolate.apply(&mut doc, &orphan, Dependencies::RetainOrphans),
+            Ok(Applied::Changed(false))
+        );
+        assert_eq!(doc.get_missing_deps(&[]), base);
+        still_admits(&isolate);
+    }
+
+    phase blank_document_retains_only_strictly_valid_orphans;
+    {
+        let isolate = isolate();
+        let mut remote = seeded_doc();
+        let dependency = remote.get_heads();
+        let committed = remote.save();
+        remote.put(ROOT, "later", "pending").unwrap();
+        remote.commit();
+        let orphan = remote.save_after(&dependency);
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x72; 16]));
+        let actor = doc.get_actor().clone();
+        let before = doc.save();
+        assert_eq!(
+            isolate.apply(&mut doc, &orphan, Dependencies::RequireComplete),
+            Ok(Applied::MissingDependencies)
+        );
+        assert_eq!(doc.save(), before);
+        let mut corrupt = orphan.clone();
+        let mut bad = orphan.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0x55;
+        corrupt.extend(bad);
+        assert!(
+            isolate
+                .apply(&mut doc, &corrupt, Dependencies::RetainOrphans)
+                .is_err()
+        );
+        assert_eq!(
+            doc.save(),
+            before,
+            "a malformed tail cannot become an orphan"
+        );
+        assert_eq!(
+            isolate.apply(&mut doc, &orphan, Dependencies::RetainOrphans),
+            Ok(Applied::Changed(false))
+        );
+        assert_eq!(doc.get_missing_deps(&[]), dependency);
+        assert_eq!(doc.get_actor(), &actor);
+        assert_eq!(
+            isolate.apply(&mut doc, &committed, Dependencies::RequireComplete),
             Ok(Applied::Changed(true))
         );
-        assert!(doc.get(ROOT, format!("copy{n}")).unwrap().is_some());
+        assert_eq!(doc.get_heads(), remote.get_heads());
+        assert_eq!(doc.get_actor(), &actor);
+        still_admits(&isolate);
     }
-    still_admits(&isolate);
+
+    phase distinct_orphan_queues_rebuild_their_exact_state;
+    {
+        let isolate = Isolate::new(Limits {
+            workers: 1,
+            timeout: tilo_test_env::hang_bound(),
+            ..Limits::default()
+        });
+        let mut seed = seeded_doc();
+        let dependency = seed.get_heads();
+        let committed = seed.save();
+        let mut a = seed.fork();
+        a.put(ROOT, "only-a", "first").unwrap();
+        a.commit();
+        let orphan_a = a.save_after(&dependency);
+        let a_heads = a.get_heads();
+        a.put(ROOT, "a-tail", "second").unwrap();
+        a.commit();
+        let tail_a = a.save_after(&a_heads);
+        let mut b = seed.fork();
+        b.put(ROOT, "only-b", "other queue").unwrap();
+        b.commit();
+        let orphan_b = b.save_after(&dependency);
+        let mut local_a = AutoCommit::new();
+        let mut local_b = AutoCommit::new();
+        for (doc, bytes) in [(&mut local_a, &orphan_a), (&mut local_b, &orphan_b)] {
+            assert_eq!(
+                isolate.apply(doc, bytes, Dependencies::RetainOrphans),
+                Ok(Applied::Changed(false))
+            );
+            assert_eq!(doc.get_missing_deps(&[]), dependency);
+        }
+        let mut finish_a = committed.clone();
+        finish_a.extend(tail_a);
+        assert_eq!(
+            isolate.apply(&mut local_a, &finish_a, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+        assert_eq!(local_a.get_heads(), a.get_heads());
+        assert!(local_a.get(ROOT, "only-b").unwrap().is_none());
+        assert_eq!(
+            isolate.apply(&mut local_b, &committed, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+        assert_eq!(local_b.get_heads(), b.get_heads());
+        assert!(local_b.get(ROOT, "only-a").unwrap().is_none());
+    }
+
+    phase copies_of_one_document_are_each_admitted;
+    {
+        let isolate = isolate();
+        let base = seeded_doc();
+        let mut copies: Vec<AutoCommit> = (0..6).map(|_| base.clone()).collect();
+        for (n, doc) in copies.iter_mut().enumerate() {
+            let change = remote_change(doc, &format!("copy{n}"));
+            assert_eq!(
+                isolate.apply(doc, &change, Dependencies::RequireComplete),
+                Ok(Applied::Changed(true))
+            );
+            assert!(doc.get(ROOT, format!("copy{n}")).unwrap().is_some());
+        }
+        still_admits(&isolate);
+    }
 }
 
 #[test]
@@ -538,71 +471,157 @@ fn crafted(doc: &mut AutoCommit, start: u64, ops: Vec<automerge::legacy::Op>) ->
     automerge::Change::from(change).raw_bytes().to_vec()
 }
 
-#[test]
-fn crafted_sequence_changes_are_refused_without_a_crash() {
-    use automerge::legacy::{ElementId, Key, ObjectId, Op, OpId, OpType, SortedVec};
-    let isolate = isolate();
-    let aa = ActorId::from(&[0xaa][..]);
-    let list = ObjectId::Id(OpId(1, aa.clone()));
-    let put = |key: ElementId, pred: Vec<OpId>, insert: bool| Op {
-        action: OpType::Put(5.into()),
-        obj: list.clone(),
-        key: Key::Seq(key),
-        pred: SortedVec::from(pred),
-        insert,
-    };
-    let ghost = ElementId::Id(OpId(1, aa.clone()));
-    let item = ElementId::Id(OpId(2, aa.clone()));
-    let base = hex::decode(LIST_BASE).unwrap();
-    let mut doc = AutoCommit::load(&base).unwrap();
-    let cases = [
-        (
-            "an update of an unknown element",
-            vec![put(ghost.clone(), vec![], false)],
-        ),
-        (
-            "an insert after an unknown element",
-            vec![put(ghost.clone(), vec![], true)],
-        ),
-        (
-            "an update of an unknown element beside a valid one",
-            vec![
-                put(item, vec![OpId(2, aa.clone())], false),
-                put(ghost, vec![], false),
-            ],
-        ),
-    ];
-    for (what, ops) in cases {
-        let change = crafted(&mut doc, 3, ops);
-        let outcome = isolate.apply(&mut doc, &change, Dependencies::RetainOrphans);
-        assert!(
-            matches!(outcome, Err(Rejected::Invalid(_))),
-            "{what}: {outcome:?}"
-        );
-        assert_eq!(doc.save(), base, "{what}: a rejection changed the document");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn hostile_input_is_refused_and_costs_only_the_worker;
+
+    phase change_graph_sequence_gaps_cost_only_the_worker;
+    {
+        reject_or_admit_every(&isolate(), SEQUENCE_GAP_CASES, &[]);
     }
 
-    let mut doc = AutoCommit::load(&hex::decode(TEXT_BASE).unwrap()).unwrap();
-    let forged_value = Op {
-        action: OpType::Put("Q".into()),
-        obj: ObjectId::Id(OpId(1, aa.clone())),
-        key: Key::Seq(ElementId::Id(OpId(2, aa))),
-        pred: SortedVec::from(vec![]),
-        insert: false,
-    };
-    let forged = crafted(&mut doc, 4, vec![forged_value]);
-    let mut deleter = doc.fork().with_actor(ActorId::from(&[0xf0, 2][..]));
-    let heads = deleter.get_heads();
-    let (_, text) = deleter.get(ROOT, "t").unwrap().unwrap();
-    deleter.delete(&text, 0).unwrap();
-    deleter.commit();
-    let delete = deleter.save_after(&heads);
-    for change in [forged, delete] {
-        assert_eq!(
-            isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
-            Ok(Applied::Changed(true))
+    phase a_compression_bomb_is_stopped_by_the_heap_ceiling;
+    {
+        // A compressed change chunk whose body inflates to 1 GiB of zeros.
+        let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        let zeros = vec![0u8; 1024 * 1024];
+        for _ in 0..1024 {
+            deflate.write_all(&zeros).unwrap();
+        }
+        let bomb = chunk(2, &deflate.finish().unwrap());
+        let isolate = Isolate::new(Limits {
+            memory_bytes: 256 * 1024 * 1024,
+            timeout: tilo_test_env::hang_bound(),
+            ..Limits::default()
+        });
+        let mut doc = seeded_doc();
+        let outcome = isolate.apply(&mut doc, &bomb, Dependencies::RetainOrphans);
+        assert!(
+            matches!(outcome, Err(Rejected::Crashed | Rejected::Invalid(_))),
+            "{outcome:?}"
         );
+        still_admits(&isolate);
     }
-    assert_eq!(doc.text(&text).unwrap(), "Qb");
-    still_admits(&isolate);
+
+    phase a_bad_change_checksum_or_a_malformed_tail_refuses_the_whole_input;
+    {
+        let isolate = isolate();
+        let mut doc = seeded_doc();
+        let good = remote_change(&mut doc, "good");
+        let mut remote = doc.fork();
+        remote
+            .put(ROOT, "large", "compressible ".repeat(512))
+            .unwrap();
+        remote.commit();
+        let mut last = remote.get_last_local_change().unwrap();
+        let compressed = last.bytes().to_vec();
+        assert_eq!(compressed[8], 2, "fixture must be a compressed change");
+        let known = doc.get_last_local_change().unwrap().raw_bytes().to_vec();
+        let tail = remote_change(&mut doc, "bad");
+        let last = tail.len() - 1;
+        // Each row: the good change it follows, the change, and the byte of it
+        // that is flipped (byte 4 is in the checksum).
+        for (what, prefix, mut bad, at, mask) in [
+            (
+                "new change, checksum",
+                good.clone(),
+                remote_change(&mut doc, "bad"),
+                4,
+                0x01,
+            ),
+            ("known change, checksum", good.clone(), known, 4, 0x01),
+            (
+                "compressed change, checksum",
+                good.clone(),
+                compressed,
+                4,
+                0x01,
+            ),
+            ("new change, a malformed tail", good, tail, last, 0x55),
+        ] {
+            bad[at] ^= mask;
+            let mut input = prefix;
+            input.extend(bad);
+            let before = doc.save();
+            let outcome = isolate.apply(&mut doc, &input, Dependencies::RetainOrphans);
+            assert!(
+                matches!(outcome, Err(Rejected::Invalid(_))),
+                "{what}: {outcome:?}"
+            );
+            assert_eq!(doc.save(), before, "{what}: a refusal changed the document");
+        }
+        still_admits(&isolate);
+    }
+
+    phase crafted_sequence_changes_are_refused_without_a_crash;
+    {
+        use automerge::legacy::{ElementId, Key, ObjectId, Op, OpId, OpType, SortedVec};
+        let isolate = isolate();
+        let aa = ActorId::from(&[0xaa][..]);
+        let list = ObjectId::Id(OpId(1, aa.clone()));
+        let put = |key: ElementId, pred: Vec<OpId>, insert: bool| Op {
+            action: OpType::Put(5.into()),
+            obj: list.clone(),
+            key: Key::Seq(key),
+            pred: SortedVec::from(pred),
+            insert,
+        };
+        let ghost = ElementId::Id(OpId(1, aa.clone()));
+        let item = ElementId::Id(OpId(2, aa.clone()));
+        let base = hex::decode(LIST_BASE).unwrap();
+        let mut doc = AutoCommit::load(&base).unwrap();
+        let cases = [
+            (
+                "an update of an unknown element",
+                vec![put(ghost.clone(), vec![], false)],
+            ),
+            (
+                "an insert after an unknown element",
+                vec![put(ghost.clone(), vec![], true)],
+            ),
+            (
+                "an update of an unknown element beside a valid one",
+                vec![
+                    put(item, vec![OpId(2, aa.clone())], false),
+                    put(ghost, vec![], false),
+                ],
+            ),
+        ];
+        for (what, ops) in cases {
+            let change = crafted(&mut doc, 3, ops);
+            let outcome = isolate.apply(&mut doc, &change, Dependencies::RetainOrphans);
+            assert!(
+                matches!(outcome, Err(Rejected::Invalid(_))),
+                "{what}: {outcome:?}"
+            );
+            assert_eq!(doc.save(), base, "{what}: a rejection changed the document");
+        }
+
+        let mut doc = AutoCommit::load(&hex::decode(TEXT_BASE).unwrap()).unwrap();
+        let forged_value = Op {
+            action: OpType::Put("Q".into()),
+            obj: ObjectId::Id(OpId(1, aa.clone())),
+            key: Key::Seq(ElementId::Id(OpId(2, aa))),
+            pred: SortedVec::from(vec![]),
+            insert: false,
+        };
+        let forged = crafted(&mut doc, 4, vec![forged_value]);
+        let mut deleter = doc.fork().with_actor(ActorId::from(&[0xf0, 2][..]));
+        let heads = deleter.get_heads();
+        let (_, text) = deleter.get(ROOT, "t").unwrap().unwrap();
+        deleter.delete(&text, 0).unwrap();
+        deleter.commit();
+        let delete = deleter.save_after(&heads);
+        for change in [forged, delete] {
+            assert_eq!(
+                isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
+                Ok(Applied::Changed(true))
+            );
+        }
+        assert_eq!(doc.text(&text).unwrap(), "Qb");
+        still_admits(&isolate);
+    }
 }

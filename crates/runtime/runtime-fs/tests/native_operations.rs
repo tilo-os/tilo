@@ -184,13 +184,14 @@ fn first(updates: &[FsUpdate]) -> &runtime_fs::operations::ItemOutcome {
         .unwrap()
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn conflicts_preserve_both_bytes() {
-    // phase: rename_conflict_preserves_both_bytes
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn conflicts_preserve_both_bytes;
+
+    phase rename_conflict_preserves_both_bytes;
     {
         let f = Fixture::new(true);
         fs::write(f.src("original"), b"source").unwrap();
@@ -204,7 +205,8 @@ fn conflicts_preserve_both_bytes() {
         assert_eq!(fs::read(f.src("original")).unwrap(), b"source");
         assert_eq!(fs::read(f.src("taken")).unwrap(), b"destination");
     }
-    // phase: keep_both_uses_exclusive_native_candidates
+
+    phase keep_both_uses_exclusive_native_candidates;
     {
         let f = Fixture::new(true);
         for n in ["report.txt", "report 2.txt"] {
@@ -230,13 +232,14 @@ fn conflicts_preserve_both_bytes() {
         );
     }
 }
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn operations_publish_exact_bytes_and_durable_reports() {
-    // phase: missing_operation_store_prevents_effect
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn operations_publish_exact_bytes_and_durable_reports;
+
+    phase missing_operation_store_prevents_effect;
     {
         let f = Fixture::new(false);
         fs::write(f.src("a"), b"original").unwrap();
@@ -252,7 +255,8 @@ fn operations_publish_exact_bytes_and_durable_reports() {
         assert_eq!(fs::read(f.src("a")).unwrap(), b"original");
         assert_eq!(fs::read_dir(f.dst("")).unwrap().count(), 0);
     }
-    // phase: create_directory_and_file_publish_exact_bytes
+
+    phase create_directory_and_file_publish_exact_bytes;
     {
         let f = Fixture::new(true);
         let u = f.run(FsOperation::CreateDirectory {
@@ -272,7 +276,8 @@ fn operations_publish_exact_bytes_and_durable_reports() {
         assert_eq!(fs::read(f.dst("file")).unwrap(), bytes);
         assert!(f.dst("folder").is_dir());
     }
-    // phase: closed_widget_report_remains_queryable
+
+    phase closed_widget_report_remains_queryable;
     {
         let f = Fixture::new(true);
         fs::write(f.src("a"), vec![41; 2 * 1024 * 1024]).unwrap();
@@ -318,7 +323,8 @@ fn operations_publish_exact_bytes_and_durable_reports() {
         drop(disk);
         drop(metadata);
     }
-    // phase: distinct_owner_stores_are_selected_once
+
+    phase distinct_owner_stores_are_selected_once;
     {
         let f = Fixture::new(true);
         let other = FsOwner {
@@ -385,9 +391,10 @@ fn operations_publish_exact_bytes_and_durable_reports() {
     }
 }
 
-#[test]
-fn mutations_require_their_exact_rights() {
-    // phase: rename_requires_rename_without_create_or_read
+tilo_test_env::scenario! {
+    fn mutations_require_their_exact_rights;
+
+    phase rename_requires_rename_without_create_or_read;
     {
         let f = Fixture::with_rights(true, vec![FsRight::Enumerate, FsRight::Rename]);
         fs::write(f.src("original"), b"rename-only").unwrap();
@@ -400,7 +407,8 @@ fn mutations_require_their_exact_rights() {
         assert!(!f.src("original").exists());
         assert_eq!(fs::read(f.src("renamed")).unwrap(), b"rename-only");
     }
-    // phase: isolated_file_does_not_authorize_a_sibling_rename
+
+    phase isolated_file_does_not_authorize_a_sibling_rename;
     {
         let f = Fixture::with_rights(
             true,
@@ -440,28 +448,84 @@ fn mutations_require_their_exact_rights() {
     }
 }
 
-#[test]
-fn receipt_publication_rejects_public_directory_before_any_effect() {
-    use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::tempdir().unwrap();
-    let receipt = root.path().join("untouched.receipt");
-    fs::write(&receipt, b"invalid preexisting receipt must not be read").unwrap();
-    let before = fs::metadata(&receipt).unwrap().modified().unwrap();
-    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o770)).unwrap();
-    assert!(matches!(
-        OperationOwner::open(fs::File::open(root.path()).unwrap(), owner()),
-        Err(FsError::Denied)
-    ));
-    assert_eq!(
-        fs::read(&receipt).unwrap(),
-        b"invalid preexisting receipt must not be read"
-    );
-    assert_eq!(fs::metadata(&receipt).unwrap().modified().unwrap(), before);
-    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
-    assert_eq!(
-        fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
-        0o770
-    );
+tilo_test_env::scenario! {
+    fn receipt_publication_holds_its_directory;
+
+    phase receipt_publication_rejects_public_directory_before_any_effect;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let receipt = root.path().join("untouched.receipt");
+        fs::write(&receipt, b"invalid preexisting receipt must not be read").unwrap();
+        let before = fs::metadata(&receipt).unwrap().modified().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(matches!(
+            OperationOwner::open(fs::File::open(root.path()).unwrap(), owner()),
+            Err(FsError::Denied)
+        ));
+        assert_eq!(
+            fs::read(&receipt).unwrap(),
+            b"invalid preexisting receipt must not be read"
+        );
+        assert_eq!(fs::metadata(&receipt).unwrap().modified().unwrap(), before);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        assert_eq!(
+            fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
+            0o770
+        );
+    }
+
+    phase receipt_publication_retains_renamed_directory_and_writer_exclusion;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for rename_before_open in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("journal");
+            let moved = root.path().join("moved");
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            let handle = fs::File::open(&path).unwrap();
+            let rename = || {
+                fs::rename(&path, &moved).unwrap();
+                fs::create_dir(&path).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            };
+            if rename_before_open {
+                rename();
+            }
+            let store = OperationOwner::open(handle, owner()).unwrap();
+            if !rename_before_open {
+                rename();
+            }
+            assert!(matches!(
+                OperationOwner::open(fs::File::open(&moved).unwrap(), owner()),
+                Err(FsError::Busy)
+            ));
+            assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+            let f = Fixture::new(false);
+            f.authority.attach_operations(Arc::clone(&store)).unwrap();
+            fs::write(f.src("a"), b"held authority").unwrap();
+            let mut job = f
+                .session
+                .start(FsOperation::CreateFile {
+                    parent: f.destination.clone(),
+                    name: name("a"),
+                    bytes: fs::read(f.src("a")).unwrap(),
+                    conflict: ConflictPolicy::Fail,
+                })
+                .unwrap();
+            drain(&mut job);
+            assert!(fs::read_dir(&moved).unwrap().any(|e| {
+                e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".receipt")
+            }));
+            assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+            let _independent = OperationOwner::open(fs::File::open(&path).unwrap(), owner()).unwrap();
+            assert_eq!(fs::read_dir(&path).unwrap().count(), 1);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -499,56 +563,4 @@ fn receipt_publication_rejects_directory_acl_before_any_effect() {
             .unwrap(),
         before
     );
-}
-
-#[test]
-fn receipt_publication_retains_renamed_directory_and_writer_exclusion() {
-    use std::os::unix::fs::PermissionsExt;
-    for rename_before_open in [true, false] {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("journal");
-        let moved = root.path().join("moved");
-        fs::create_dir(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = fs::File::open(&path).unwrap();
-        let rename = || {
-            fs::rename(&path, &moved).unwrap();
-            fs::create_dir(&path).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        };
-        if rename_before_open {
-            rename();
-        }
-        let store = OperationOwner::open(handle, owner()).unwrap();
-        if !rename_before_open {
-            rename();
-        }
-        assert!(matches!(
-            OperationOwner::open(fs::File::open(&moved).unwrap(), owner()),
-            Err(FsError::Busy)
-        ));
-        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
-        let f = Fixture::new(false);
-        f.authority.attach_operations(Arc::clone(&store)).unwrap();
-        fs::write(f.src("a"), b"held authority").unwrap();
-        let mut job = f
-            .session
-            .start(FsOperation::CreateFile {
-                parent: f.destination.clone(),
-                name: name("a"),
-                bytes: fs::read(f.src("a")).unwrap(),
-                conflict: ConflictPolicy::Fail,
-            })
-            .unwrap();
-        drain(&mut job);
-        assert!(fs::read_dir(&moved).unwrap().any(|e| {
-            e.unwrap()
-                .file_name()
-                .to_string_lossy()
-                .ends_with(".receipt")
-        }));
-        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
-        let _independent = OperationOwner::open(fs::File::open(&path).unwrap(), owner()).unwrap();
-        assert_eq!(fs::read_dir(&path).unwrap().count(), 1);
-    }
 }

@@ -85,90 +85,249 @@ fn body(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str, post: &str
     }
 }
 
-#[test]
-fn two_writers_edits_with_references_merge_in_a_workspace() {
-    let Workspace {
-        mut ada,
-        mut grace,
-        meta,
-        root,
-    } = workspace();
-    plan(
-        &mut ada,
-        &meta,
-        "Board",
-        &root,
-        "add_task",
-        json!({"title": "Ship it"}),
-    );
-    plan(
-        &mut ada,
-        &meta,
-        "Board",
-        &root,
-        "say_text",
-        json!({"text": "Plan for today"}),
-    );
-    ada.sync_with(&mut grace);
-    let posts = items(&ada, &meta, &root, "posts");
-    let tasks = items(&ada, &meta, &root, "tasks");
-    let post = format!("{root}/{}:{}", field_id(&meta, "Board", "posts"), posts[0]);
-    let task = format!("{root}/{}:{}", field_id(&meta, "Board", "tasks"), tasks[0]);
+tilo_test_env::scenario! {
+    fn a_reference_in_rich_text_merges_and_reads_as_its_reader_holds_it;
 
-    plan(
-        &mut ada,
-        &meta,
-        "Post",
-        &post,
-        "append",
-        json!({"line": "Then lunch"}),
-    );
-    plan(
-        &mut grace,
-        &meta,
-        "Post",
-        &post,
-        "refer",
-        json!({"t": task}),
-    );
-    ada.sync_with(&mut grace);
+    phase two_writers_edits_with_references_merge_in_a_workspace;
+    {
+        let Workspace {
+            mut ada,
+            mut grace,
+            meta,
+            root,
+        } = workspace();
+        plan(
+            &mut ada,
+            &meta,
+            "Board",
+            &root,
+            "add_task",
+            json!({"title": "Ship it"}),
+        );
+        plan(
+            &mut ada,
+            &meta,
+            "Board",
+            &root,
+            "say_text",
+            json!({"text": "Plan for today"}),
+        );
+        ada.sync_with(&mut grace);
+        let posts = items(&ada, &meta, &root, "posts");
+        let tasks = items(&ada, &meta, &root, "tasks");
+        let post = format!("{root}/{}:{}", field_id(&meta, "Board", "posts"), posts[0]);
+        let task = format!("{root}/{}:{}", field_id(&meta, "Board", "tasks"), tasks[0]);
 
-    let said = body(&ada, &meta, &root, &posts[0]);
-    assert_eq!(said, body(&grace, &meta, &root, &posts[0]));
-    assert_eq!(said, "Plan for today see Ship it\nThen lunch");
-    assert_eq!(
-        ada.host.store().record(&root).unwrap(),
-        grace.host.store().record(&root).unwrap()
-    );
+        plan(
+            &mut ada,
+            &meta,
+            "Post",
+            &post,
+            "append",
+            json!({"line": "Then lunch"}),
+        );
+        plan(
+            &mut grace,
+            &meta,
+            "Post",
+            &post,
+            "refer",
+            json!({"t": task}),
+        );
+        ada.sync_with(&mut grace);
 
-    // Search finds the message by its text and by the title of the task it refers to.
-    let hits = tilolang_tilo::search::every_hit(&ada.host);
-    let found = |words: &str| {
-        hits.iter()
-            .filter(|hit| hit.texts.iter().any(|text| text.contains(words)))
-            .map(|hit| hit.type_name.clone())
-            .collect::<Vec<_>>()
-    };
-    assert!(
-        found("Then lunch").contains(&"Post".to_owned()),
-        "{hits:#?}"
-    );
-    let by_title = found("Ship it");
-    assert!(by_title.contains(&"Post".to_owned()), "{hits:#?}");
-    assert!(by_title.contains(&"Task".to_owned()), "{hits:#?}");
-    // The post's hit carries what it refers to, in the one form: the system's index finds it by
-    // what the task is called now, and keeps it as one of the task's backlinks.
-    let post = hits.iter().find(|hit| hit.type_name == "Post").unwrap();
-    let referred: Vec<Option<String>> = post
-        .references
-        .iter()
-        .map(|reference| {
-            let reference = tilolang_runtime::rich::Reference::of_mark(reference)?;
-            tilolang_runtime::rich::resource_id(&reference).map(str::to_owned)
-        })
-        .collect();
-    // The task was named by its older path; it is referred to by its id.
-    assert_eq!(referred, [Some(tilolang_runtime::value::flat_id(&task))]);
+        let said = body(&ada, &meta, &root, &posts[0]);
+        assert_eq!(said, body(&grace, &meta, &root, &posts[0]));
+        assert_eq!(said, "Plan for today see Ship it\nThen lunch");
+        assert_eq!(
+            ada.host.store().record(&root).unwrap(),
+            grace.host.store().record(&root).unwrap()
+        );
+
+        // Search finds the message by its text and by the title of the task it refers to.
+        let hits = tilolang_tilo::search::every_hit(&ada.host);
+        let found = |words: &str| {
+            hits.iter()
+                .filter(|hit| hit.texts.iter().any(|text| text.contains(words)))
+                .map(|hit| hit.type_name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            found("Then lunch").contains(&"Post".to_owned()),
+            "{hits:#?}"
+        );
+        let by_title = found("Ship it");
+        assert!(by_title.contains(&"Post".to_owned()), "{hits:#?}");
+        assert!(by_title.contains(&"Task".to_owned()), "{hits:#?}");
+        // The post's hit carries what it refers to, in the one form: the system's index finds it by
+        // what the task is called now, and keeps it as one of the task's backlinks.
+        let post = hits.iter().find(|hit| hit.type_name == "Post").unwrap();
+        let referred: Vec<Option<String>> = post
+            .references
+            .iter()
+            .map(|reference| {
+                let reference = tilolang_runtime::rich::Reference::of_mark(reference)?;
+                tilolang_runtime::rich::resource_id(&reference).map(str::to_owned)
+            })
+            .collect();
+        // The task was named by its older path; it is referred to by its id.
+        assert_eq!(referred, [Some(tilolang_runtime::value::flat_id(&task))]);
+    }
+
+    phase a_reference_reads_as_the_readers_inline_view_under_what_they_hold;
+    {
+        use tilo_render_protocol::patch::rich::InlineView;
+        use tilolang_runtime::rich::Reference;
+        use tilolang_tilo::instance::inline_view;
+        let Workspace {
+            mut ada,
+            meta,
+            root,
+            ..
+        } = workspace();
+        plan(
+            &mut ada,
+            &meta,
+            "Board",
+            &root,
+            "add_task",
+            json!({"title": "Fix the build"}),
+        );
+        let tasks = items(&ada, &meta, &root, "tasks");
+        let task = format!("{root}/{}:{}", field_id(&meta, "Board", "tasks"), tasks[0]);
+        let to_task = Reference::resource(APP, format!("tl.{APP}.Task"), format!("tl:{APP}:{task}"));
+
+        assert_eq!(
+            inline_view(&ada.host, &Names, &Reference::Person("grace".into())),
+            InlineView::Person {
+                identity: "grace".into(),
+                name: "Grace Hopper".into()
+            },
+            "a person by what the workspace calls them"
+        );
+        assert_eq!(
+            inline_view(&ada.host, &Names, &to_task),
+            InlineView::Resource {
+                title: "Fix the build".into(),
+                icon: None,
+                detail: None
+            }
+        );
+        // Its title is the task's now, never the one the text was written with.
+        plan(
+            &mut ada,
+            &meta,
+            "Task",
+            &task,
+            "rename",
+            json!({"title": "Fix the release build"}),
+        );
+        assert_eq!(
+            inline_view(&ada.host, &Names, &to_task),
+            InlineView::Resource {
+                title: "Fix the release build".into(),
+                icon: None,
+                detail: None
+            }
+        );
+        // A record this reader does not hold (it is sent only to its readers) is only there.
+        let elsewhere = Reference::resource(
+            APP,
+            format!("tl.{APP}.Task"),
+            format!("tl:{APP}:not-shared/f1:t9"),
+        );
+        assert_eq!(
+            inline_view(&ada.host, &Names, &elsewhere),
+            InlineView::Unreadable
+        );
+        // An older form reads the same.
+        let old = Reference::of_mark(&format!("tl:{APP}:{task}")).unwrap();
+        assert!(matches!(
+            inline_view(&ada.host, &Names, &old),
+            InlineView::Resource { .. }
+        ));
+        // Another app's resource reads as its run, where only that app can say how it reads.
+        let channel = Reference::resource("so.tilo.chat", "chat.channel", "chat.channel:general");
+        assert_eq!(
+            inline_view(&ada.host, &Names, &channel),
+            InlineView::Elsewhere
+        );
+    }
+
+    phase a_referenced_title_reaches_only_the_readers_who_hold_it_on_every_plain_text_path;
+    {
+        let (
+            Workspace {
+                mut ada,
+                grace,
+                meta,
+                ..
+            },
+            task,
+            post,
+        ) = a_post_about_a_task_only_ada_holds();
+        // The post as a list shows it: its row view, open on each person's machine.
+        let post_ty = meta.types.iter().find(|t| t.name == "Post").unwrap();
+        let post_at = tilolang_runtime::ResourceRef::parse_id(&post, post_ty.id.clone()).unwrap();
+        let row = meta.row_view(&post_ty.id).unwrap().to_owned();
+        let mut ada_view = ada.host.open_resource(&post_at, Some(&row)).unwrap();
+        let mut grace_view = grace.host.open_resource(&post_at, Some(&row)).unwrap();
+        for (path, text) in plain_paths(&ada, &meta, &post, &mut ada_view) {
+            assert!(text.contains("Acquisition plan"), "Ada's {path}: {text}");
+        }
+        for (path, text) in plain_paths(&grace, &meta, &post, &mut grace_view) {
+            assert!(!text.contains("Acquisition"), "Grace's {path}: {text}");
+            assert!(
+                text.contains("Not shared with you"),
+                "Grace's {path}: {text}"
+            );
+        }
+        assert_eq!(
+            excerpt(&grace, &meta, &post),
+            "@Grace the notes are in Not shared with you"
+        );
+        // Search never matches her query against the title she cannot read.
+        assert!(
+            tilolang_tilo::search::every_hit(&grace.host)
+                .iter()
+                .all(|hit| hit.texts.iter().all(|text| !text.contains("Acquisition"))),
+        );
+
+        // Ada renames the task: every path reads its title now for her, and still nothing of it for
+        // Grace, who is not sent the rename.
+        plan(
+            &mut ada,
+            &meta,
+            "Task",
+            &task,
+            "rename",
+            json!({"title": "Merger timeline"}),
+        );
+        for (path, text) in plain_paths(&ada, &meta, &post, &mut ada_view) {
+            assert!(text.contains("Merger timeline"), "Ada's {path}: {text}");
+            assert!(!text.contains("Acquisition"), "Ada's {path}: {text}");
+        }
+        for (path, text) in plain_paths(&grace, &meta, &post, &mut grace_view) {
+            assert!(
+                !text.contains("Acquisition") && !text.contains("Merger"),
+                "Grace's {path}: {text}"
+            );
+            assert!(
+                text.contains("Not shared with you"),
+                "Grace's {path}: {text}"
+            );
+        }
+        // The notice Grace is told says no title either.
+        let read = |reference: &tilolang_runtime::rich::Reference| {
+            tilolang_runtime::store::Store::reading(grace.host.store(), reference)
+        };
+        let told = ui::mentions::in_record_for(&grace.doc, &read);
+        assert_eq!(told.len(), 1, "{told:#?}");
+        assert_eq!(
+            told[0].excerpt,
+            "@Grace the notes are in Not shared with you"
+        );
+    }
 }
 
 #[test]
@@ -246,86 +405,6 @@ impl tilolang_tilo::runtime::NameHost for Names {
             other => other.to_owned(),
         }
     }
-}
-
-#[test]
-fn a_reference_reads_as_the_readers_inline_view_under_what_they_hold() {
-    use tilo_render_protocol::patch::rich::InlineView;
-    use tilolang_runtime::rich::Reference;
-    use tilolang_tilo::instance::inline_view;
-    let Workspace {
-        mut ada,
-        meta,
-        root,
-        ..
-    } = workspace();
-    plan(
-        &mut ada,
-        &meta,
-        "Board",
-        &root,
-        "add_task",
-        json!({"title": "Fix the build"}),
-    );
-    let tasks = items(&ada, &meta, &root, "tasks");
-    let task = format!("{root}/{}:{}", field_id(&meta, "Board", "tasks"), tasks[0]);
-    let to_task = Reference::resource(APP, format!("tl.{APP}.Task"), format!("tl:{APP}:{task}"));
-
-    assert_eq!(
-        inline_view(&ada.host, &Names, &Reference::Person("grace".into())),
-        InlineView::Person {
-            identity: "grace".into(),
-            name: "Grace Hopper".into()
-        },
-        "a person by what the workspace calls them"
-    );
-    assert_eq!(
-        inline_view(&ada.host, &Names, &to_task),
-        InlineView::Resource {
-            title: "Fix the build".into(),
-            icon: None,
-            detail: None
-        }
-    );
-    // Its title is the task's now, never the one the text was written with.
-    plan(
-        &mut ada,
-        &meta,
-        "Task",
-        &task,
-        "rename",
-        json!({"title": "Fix the release build"}),
-    );
-    assert_eq!(
-        inline_view(&ada.host, &Names, &to_task),
-        InlineView::Resource {
-            title: "Fix the release build".into(),
-            icon: None,
-            detail: None
-        }
-    );
-    // A record this reader does not hold (it is sent only to its readers) is only there.
-    let elsewhere = Reference::resource(
-        APP,
-        format!("tl.{APP}.Task"),
-        format!("tl:{APP}:not-shared/f1:t9"),
-    );
-    assert_eq!(
-        inline_view(&ada.host, &Names, &elsewhere),
-        InlineView::Unreadable
-    );
-    // An older form reads the same.
-    let old = Reference::of_mark(&format!("tl:{APP}:{task}")).unwrap();
-    assert!(matches!(
-        inline_view(&ada.host, &Names, &old),
-        InlineView::Resource { .. }
-    ));
-    // Another app's resource reads as its run, where only that app can say how it reads.
-    let channel = Reference::resource("so.tilo.chat", "chat.channel", "chat.channel:general");
-    assert_eq!(
-        inline_view(&ada.host, &Names, &channel),
-        InlineView::Elsewhere
-    );
 }
 
 /// Every text `node` and the nodes inside it show.
@@ -483,79 +562,4 @@ fn a_post_about_a_task_only_ada_holds() -> (Workspace, String, String) {
         task,
         post,
     )
-}
-
-#[test]
-fn a_referenced_title_reaches_only_the_readers_who_hold_it_on_every_plain_text_path() {
-    let (
-        Workspace {
-            mut ada,
-            grace,
-            meta,
-            ..
-        },
-        task,
-        post,
-    ) = a_post_about_a_task_only_ada_holds();
-    // The post as a list shows it: its row view, open on each person's machine.
-    let post_ty = meta.types.iter().find(|t| t.name == "Post").unwrap();
-    let post_at = tilolang_runtime::ResourceRef::parse_id(&post, post_ty.id.clone()).unwrap();
-    let row = meta.row_view(&post_ty.id).unwrap().to_owned();
-    let mut ada_view = ada.host.open_resource(&post_at, Some(&row)).unwrap();
-    let mut grace_view = grace.host.open_resource(&post_at, Some(&row)).unwrap();
-    for (path, text) in plain_paths(&ada, &meta, &post, &mut ada_view) {
-        assert!(text.contains("Acquisition plan"), "Ada's {path}: {text}");
-    }
-    for (path, text) in plain_paths(&grace, &meta, &post, &mut grace_view) {
-        assert!(!text.contains("Acquisition"), "Grace's {path}: {text}");
-        assert!(
-            text.contains("Not shared with you"),
-            "Grace's {path}: {text}"
-        );
-    }
-    assert_eq!(
-        excerpt(&grace, &meta, &post),
-        "@Grace the notes are in Not shared with you"
-    );
-    // Search never matches her query against the title she cannot read.
-    assert!(
-        tilolang_tilo::search::every_hit(&grace.host)
-            .iter()
-            .all(|hit| hit.texts.iter().all(|text| !text.contains("Acquisition"))),
-    );
-
-    // Ada renames the task: every path reads its title now for her, and still nothing of it for
-    // Grace, who is not sent the rename.
-    plan(
-        &mut ada,
-        &meta,
-        "Task",
-        &task,
-        "rename",
-        json!({"title": "Merger timeline"}),
-    );
-    for (path, text) in plain_paths(&ada, &meta, &post, &mut ada_view) {
-        assert!(text.contains("Merger timeline"), "Ada's {path}: {text}");
-        assert!(!text.contains("Acquisition"), "Ada's {path}: {text}");
-    }
-    for (path, text) in plain_paths(&grace, &meta, &post, &mut grace_view) {
-        assert!(
-            !text.contains("Acquisition") && !text.contains("Merger"),
-            "Grace's {path}: {text}"
-        );
-        assert!(
-            text.contains("Not shared with you"),
-            "Grace's {path}: {text}"
-        );
-    }
-    // The notice Grace is told says no title either.
-    let read = |reference: &tilolang_runtime::rich::Reference| {
-        tilolang_runtime::store::Store::reading(grace.host.store(), reference)
-    };
-    let told = ui::mentions::in_record_for(&grace.doc, &read);
-    assert_eq!(told.len(), 1, "{told:#?}");
-    assert_eq!(
-        told[0].excerpt,
-        "@Grace the notes are in Not shared with you"
-    );
 }

@@ -37,42 +37,106 @@ fn mailboxes() -> Vec<NavSection> {
     ]
 }
 
-#[test]
-fn sdk_boxing_preserves_navigation_identity_and_selection() {
-    let mut widget = NavList::new(mailboxes()).selected("work").into_widget();
-    let list = widget
-        .as_any_mut()
-        .unwrap()
-        .downcast_mut::<NavList>()
-        .unwrap();
-    assert_eq!(list.selected_id().as_deref(), Some("work"));
-    assert_eq!(widget.name(), "NavList");
-}
+tilo_test_env::scenario! {
+    fn the_selection_follows_choices_bindings_and_the_keyboard;
 
-/// The place of a resource stands chosen while a window shows that resource, whatever the app
-/// calls the place: a channel's place is named after its category and its name, and shows the
-/// channel all the same.
-#[test]
-fn the_place_of_the_resource_a_window_shows_stands_chosen() {
-    let list = NavList::new(vec![NavSection::untitled(
-        "channels",
-        vec![
-            NavItem::new("/general", "general").resource("doc/general"),
-            NavItem::new("Team/design", "design").resource("doc/design"),
-        ],
-    )]);
-    let mut widget = list.into_widget();
-    let list = widget
-        .as_any_mut()
-        .unwrap()
-        .downcast_mut::<NavList>()
-        .unwrap();
-    assert!(list.select_naming("doc/design"));
-    assert_eq!(list.selected_id().as_deref(), Some("Team/design"));
-    assert!(list.select_naming("/general"));
-    assert_eq!(list.selected_id().as_deref(), Some("/general"));
-    assert!(!list.select_naming("doc/weekend"));
-    assert_eq!(list.selected_id().as_deref(), Some("/general"));
+    phase sdk_boxing_preserves_navigation_identity_and_selection;
+    {
+        let mut widget = NavList::new(mailboxes()).selected("work").into_widget();
+        let list = widget
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut::<NavList>()
+            .unwrap();
+        assert_eq!(list.selected_id().as_deref(), Some("work"));
+        assert_eq!(widget.name(), "NavList");
+    }
+
+    // The place of a resource stands chosen while a window shows that resource, whatever the app
+    // calls the place: a channel's place is named after its category and its name, and shows the
+    // channel all the same.
+    phase the_place_of_the_resource_a_window_shows_stands_chosen;
+    {
+        let list = NavList::new(vec![NavSection::untitled(
+            "channels",
+            vec![
+                NavItem::new("/general", "general").resource("doc/general"),
+                NavItem::new("Team/design", "design").resource("doc/design"),
+            ],
+        )]);
+        let mut widget = list.into_widget();
+        let list = widget
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut::<NavList>()
+            .unwrap();
+        assert!(list.select_naming("doc/design"));
+        assert_eq!(list.selected_id().as_deref(), Some("Team/design"));
+        assert!(list.select_naming("/general"));
+        assert_eq!(list.selected_id().as_deref(), Some("/general"));
+        assert!(!list.select_naming("doc/weekend"));
+        assert_eq!(list.selected_id().as_deref(), Some("/general"));
+    }
+
+    phase a_followed_list_shows_the_state_it_follows;
+    {
+        let state = std::rc::Rc::new(Cell2::new((mailboxes(), Some("sent".to_owned()))));
+        let source = std::rc::Rc::clone(&state);
+        let mut h = harness(
+            NavList::new(Vec::new()).follow(move || source.try_borrow().ok().map(|s| s.clone())),
+            Theme::dark(),
+        );
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("sent"));
+        assert!(h.root::<NavList>().row_rect("travel").is_some());
+
+        {
+            let mut next = state.borrow_mut();
+            next.0[0].items.push(NavItem::new("drafts", "Drafts"));
+            next.1 = Some("drafts".to_owned());
+        }
+        h.relayout_at((280, 360)).expect("layout");
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("drafts"));
+
+        // A state that cannot be read leaves the list as it was.
+        let held = state.borrow_mut();
+        h.relayout_at((280, 360)).expect("layout");
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("drafts"));
+        drop(held);
+    }
+
+    phase choosing_a_row_brings_it_into_view;
+    {
+        let items: Vec<NavItem> = (0..40)
+            .map(|i| NavItem::new(format!("p{i}"), format!("Page {i}")))
+            .collect();
+        let list = NavList::new(vec![NavSection::untitled("pages", items)]).selected("p39");
+        let h = harness(list, Theme::dark());
+        let row = h
+            .root::<NavList>()
+            .row_rect("p39")
+            .expect("the chosen row is in view");
+        assert!(row.y1 <= 360.0 + 0.5);
+    }
+
+    phase the_keyboard_moves_the_selection_and_skips_headers;
+    {
+        let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
+        let seen = Rc::clone(&chosen);
+        let list = NavList::new(mailboxes())
+            .selected("sent")
+            .on_view("places", move |id| seen.borrow_mut().push(id));
+        let mut h = harness(list, Theme::dark());
+        focus(&mut h);
+        assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
+        // The header takes focus but is never chosen.
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("sent"));
+        assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("work"));
+        assert_eq!(chosen.borrow().as_slice(), ["work"]);
+        assert!(key(&mut h, Key::Named(NamedKey::ArrowLeft)));
+        h.relayout_at((280, 360)).expect("layout");
+        assert!(h.root::<NavList>().row_rect("design").is_none());
+    }
 }
 
 fn harness(list: NavList, theme: Theme) -> FrameHarness {
@@ -131,88 +195,683 @@ impl NavList {
     }
 }
 
-#[test]
-fn rows_follow_the_sections_and_headers_are_not_destinations() {
-    let h = harness(NavList::new(mailboxes()), Theme::dark());
-    let list = h.root::<NavList>();
-    let rows = shown_labels(list);
-    assert_eq!(
-        rows,
-        ["Inbox", "Sent", "Folders", "Work", "Design", "Travel"],
-        "untitled items stand at the top level; a titled section heads its items"
-    );
-    let theme = Theme::dark();
-    let row = crate::chrome::nav_row_height(&theme);
-    let inbox = list.row_rect("inbox").expect("inbox shown");
-    assert!((inbox.height() - row).abs() < 0.5);
-    let work = list.row_rect("work").expect("work shown");
-    let section = work.y0 - list.row_rect("sent").expect("sent").y1;
-    assert!(
-        (section - crate::chrome::nav_section_height(&theme, false)).abs() < 0.5,
-        "a section after the first leads with s3 of space ({section})"
-    );
+tilo_test_env::scenario! {
+    fn sections_fold_filter_expand_and_wait_for_their_rows;
+
+    phase rows_follow_the_sections_and_headers_are_not_destinations;
+    {
+        let h = harness(NavList::new(mailboxes()), Theme::dark());
+        let list = h.root::<NavList>();
+        let rows = shown_labels(list);
+        assert_eq!(
+            rows,
+            ["Inbox", "Sent", "Folders", "Work", "Design", "Travel"],
+            "untitled items stand at the top level; a titled section heads its items"
+        );
+        let theme = Theme::dark();
+        let row = crate::chrome::nav_row_height(&theme);
+        let inbox = list.row_rect("inbox").expect("inbox shown");
+        assert!((inbox.height() - row).abs() < 0.5);
+        let work = list.row_rect("work").expect("work shown");
+        let section = work.y0 - list.row_rect("sent").expect("sent").y1;
+        assert!(
+            (section - crate::chrome::nav_section_height(&theme, false)).abs() < 0.5,
+            "a section after the first leads with s3 of space ({section})"
+        );
+    }
+
+    phase a_bound_filter_flows_both_ways;
+    {
+        let sections = || {
+            vec![
+                NavSection::new(
+                    "places",
+                    "Places",
+                    vec![
+                        NavItem::new("users", "users"),
+                        NavItem::new("orders", "orders"),
+                    ],
+                )
+                .filterable(),
+            ]
+        };
+        let state = crate::LocalState::new("user".to_owned());
+        let mut h = harness(NavList::new(sections()).bind_filter(&state), Theme::dark());
+        assert_eq!(h.root::<NavList>().visible_item_ids(), ["users"]);
+        state.set("ord".to_owned());
+        h.relayout_at((280, 360)).expect("layout");
+        assert_eq!(
+            h.root::<NavList>().visible_item_ids(),
+            ["orders"],
+            "the list narrows to what the state holds"
+        );
+        Filterable::set_filter(&mut *h.root_mut::<NavList>(), "");
+        assert_eq!(
+            state.with(Clone::clone),
+            "",
+            "the window's search is written back"
+        );
+        h.relayout_at((280, 360)).expect("layout");
+        assert_eq!(h.root::<NavList>().visible_item_ids(), ["users", "orders"]);
+    }
+
+    phase sections_start_folded_say_when_empty_and_name_elided_titles;
+    {
+        let list = NavList::new(vec![
+            NavSection::new("drafts", "Drafts", Vec::new()).empty_caption("No drafts"),
+            NavSection::new("archive", "Archive", vec![NavItem::new("old", "Old mail")]).collapsed(),
+            NavSection::new(
+                "long",
+                "A section title far too long for any sidebar to show whole",
+                vec![NavItem::new("x", "X")],
+            ),
+        ]);
+        let h = harness(list, Theme::dark());
+        let list = h.root::<NavList>();
+        let rows = shown_labels(list);
+        assert!(rows.contains(&"No drafts".to_owned()), "{rows:?}");
+        assert!(list.row_rect("old").is_none(), "Archive starts folded");
+        assert!(!list.is_expanded("archive"));
+        let row = list.row_rect("long").expect("header");
+        let (_, tip) = list
+            .tooltip_target_at(row.center())
+            .expect("elided title tooltip");
+        assert_eq!(
+            tip,
+            "A section title far too long for any sidebar to show whole"
+        );
+    }
+
+    phase the_filter_narrows_only_the_sections_that_opt_in;
+    {
+        let mut list = NavList::new(vec![
+            NavSection::new(
+                "connections",
+                "Connections",
+                vec![
+                    NavItem::new("prod", "Production"),
+                    NavItem::new("dev", "Development"),
+                ],
+            ),
+            NavSection::new(
+                "tables",
+                "Tables",
+                vec![
+                    NavItem::new("users", "users"),
+                    NavItem::new("orders", "orders"),
+                    NavItem::new("schema", "public")
+                        .children(vec![NavItem::new("user_roles", "user_roles")]),
+                ],
+            )
+            .filterable(),
+        ]);
+        list.set_filter("user");
+        let mut h = harness(list, Theme::dark());
+        {
+            let list = h.root::<NavList>();
+            assert!(list.row_rect("prod").is_some() && list.row_rect("dev").is_some());
+            assert!(list.row_rect("users").is_some());
+            assert!(list.row_rect("orders").is_none());
+            assert!(
+                list.row_rect("user_roles").is_some(),
+                "a match inside a folded parent shows"
+            );
+            assert_eq!(
+                Filterable::filter_count(list),
+                Some(FilterCount::new(3, 4)),
+                "users, public and user_roles of four"
+            );
+        }
+        h.root_mut::<NavList>().set_filter("");
+        h.relayout_at((280, 360)).expect("layout");
+        let list = h.root::<NavList>();
+        assert!(list.row_rect("orders").is_some());
+        assert!(
+            list.row_rect("user_roles").is_none(),
+            "the parent folds again"
+        );
+    }
+
+    phase labelled_section_insets_items_without_inventing_tree_depth;
+    {
+        let h = harness(NavList::new(mailboxes()), Theme::dark());
+        let list = h.root::<NavList>();
+        for (id, grouped, depth) in [("inbox", false, 0), ("work", true, 0), ("design", true, 1)] {
+            let spec = spec_of(list, id);
+            assert_eq!(spec.under_section, grouped, "{id}");
+            assert_eq!(spec.depth, depth, "real tree depth for {id}");
+            let rect = list.row_rect(id).unwrap();
+            assert_eq!(rect.x0, 0.0);
+            assert_eq!(
+                rect.width(),
+                280.0,
+                "the full row remains the pointer target"
+            );
+        }
+    }
+
+    // A row that starts expanded but has nothing under it yet (Photos'
+    // Albums before the library loads) opens as asked when its first children
+    // arrive: the person never had a chance to fold it.
+    phase a_row_asked_open_opens_when_its_first_children_arrive;
+    {
+        let parent = |children: Vec<NavItem>| {
+            vec![NavSection::untitled(
+                "places",
+                vec![
+                    NavItem::new("albums", "Albums")
+                        .icon(Icon::Folder)
+                        .children(children)
+                        .expanded(),
+                ],
+            )]
+        };
+        let mut list = NavList::new(parent(Vec::new()));
+        assert!(!list.is_expanded("albums"), "nothing to open yet");
+        list.set_sections(parent(vec![NavItem::new("trip", "Trip")]));
+        assert!(list.is_expanded("albums"), "the albums show as they arrive");
+        list.set_expanded("albums", false);
+        list.set_sections(parent(vec![
+            NavItem::new("trip", "Trip"),
+            NavItem::new("home", "Home"),
+        ]));
+        assert!(
+            !list.is_expanded("albums"),
+            "what the person folded stays folded"
+        );
+    }
+
+    phase a_pending_section_holds_its_rows_place_until_the_items_arrive;
+    {
+        let list = NavList::new(vec![
+            NavSection::untitled("drives", Vec::new())
+                .pending(1)
+                .empty_caption("No drives"),
+        ]);
+        let h = harness(list, Theme::dark());
+        let list = h.root::<NavList>();
+        let rows = shown_labels(list);
+        assert_eq!(rows, ["Loading"], "one row stands in, and no caption");
+        let model = list.list().model();
+        let pending = model.key_at(0).expect("the pending row");
+        assert!(
+            !model.is_stop(&pending),
+            "a pending row is not a destination"
+        );
+        let stand_in = list.list().row_rect(&pending).expect("the pending row");
+
+        let arrived = NavList::new(vec![
+            NavSection::untitled("drives", vec![NavItem::new("disk", "Disk").meta("1 TB")]).pending(1),
+        ]);
+        let h = harness(arrived, Theme::dark());
+        let row = h.root::<NavList>().row_rect("disk").expect("the item");
+        assert_eq!(row, stand_in, "the item takes the pending row's place");
+    }
+
+    phase a_section_that_does_not_fold_stays_open;
+    {
+        let list = NavList::new(vec![NavSection::new(
+            "library",
+            "Library",
+            vec![NavItem::new("songs", "Songs")],
+        )]);
+        let mut h = harness(list, Theme::dark());
+        focus(&mut h);
+        key(&mut h, Key::Named(NamedKey::Home));
+        key(&mut h, Key::Named(NamedKey::ArrowLeft));
+        key(&mut h, Key::Named(NamedKey::Enter));
+        h.relayout_at((280, 360)).expect("layout");
+        assert!(h.root::<NavList>().row_rect("songs").is_some());
+    }
 }
 
-#[test]
-fn the_keyboard_moves_the_selection_and_skips_headers() {
-    let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
-    let seen = Rc::clone(&chosen);
-    let list = NavList::new(mailboxes())
-        .selected("sent")
-        .on_view("places", move |id| seen.borrow_mut().push(id));
-    let mut h = harness(list, Theme::dark());
-    focus(&mut h);
-    assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
-    // The header takes focus but is never chosen.
-    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("sent"));
-    assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
-    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("work"));
-    assert_eq!(chosen.borrow().as_slice(), ["work"]);
-    assert!(key(&mut h, Key::Named(NamedKey::ArrowLeft)));
-    h.relayout_at((280, 360)).expect("layout");
-    assert!(h.root::<NavList>().row_rect("design").is_none());
-}
+tilo_test_env::scenario! {
+    fn the_list_publishes_its_tree_and_builds_only_what_changed;
 
-#[test]
-fn a_section_that_does_not_fold_stays_open() {
-    let list = NavList::new(vec![NavSection::new(
-        "library",
-        "Library",
-        vec![NavItem::new("songs", "Songs")],
-    )]);
-    let mut h = harness(list, Theme::dark());
-    focus(&mut h);
-    key(&mut h, Key::Named(NamedKey::Home));
-    key(&mut h, Key::Named(NamedKey::ArrowLeft));
-    key(&mut h, Key::Named(NamedKey::Enter));
-    h.relayout_at((280, 360)).expect("layout");
-    assert!(h.root::<NavList>().row_rect("songs").is_some());
-}
+    phase the_list_publishes_a_tree_with_selection_state;
+    {
+        let h = harness(
+            NavList::new(mailboxes())
+                .with_semantic_key("mail.places")
+                .selected("inbox"),
+            Theme::dark(),
+        );
+        let node = h.root::<NavList>().accessibility().expect("semantics");
+        assert_eq!(node.role, crate::a11y::Role::Tree);
+        assert_eq!(node.semantic_key.as_deref(), Some("mail.places"));
+        let inbox = node
+            .children
+            .iter()
+            .find(|child| child.name.as_deref() == Some("Inbox"))
+            .expect("inbox row");
+        assert!(inbox.state.selected);
+        let folders = node
+            .children
+            .iter()
+            .find(|child| child.name.as_deref() == Some("Folders"))
+            .expect("section row");
+        assert!(!folders.state.selected);
+        assert_eq!(folders.state.expanded, Some(true));
+    }
 
-#[test]
-fn the_list_publishes_a_tree_with_selection_state() {
-    let h = harness(
-        NavList::new(mailboxes())
-            .with_semantic_key("mail.places")
-            .selected("inbox"),
-        Theme::dark(),
-    );
-    let node = h.root::<NavList>().accessibility().expect("semantics");
-    assert_eq!(node.role, crate::a11y::Role::Tree);
-    assert_eq!(node.semantic_key.as_deref(), Some("mail.places"));
-    let inbox = node
-        .children
-        .iter()
-        .find(|child| child.name.as_deref() == Some("Inbox"))
-        .expect("inbox row");
-    assert!(inbox.state.selected);
-    let folders = node
-        .children
-        .iter()
-        .find(|child| child.name.as_deref() == Some("Folders"))
-        .expect("section row");
-    assert!(!folders.state.selected);
-    assert_eq!(folders.state.expanded, Some(true));
+    phase bound_navigation_inventory_follows_the_visible_semantic_window;
+    {
+        fn targets(node: &crate::a11y::AccessNode, result: &mut HashSet<String>) {
+            if let Some(target) = &node.action_target {
+                result.insert(target.clone());
+            }
+            for child in &node.children {
+                targets(child, result);
+            }
+        }
+        let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
+            tilo_actions::ActionSpec::operation(
+                "open",
+                "Open destination",
+                tilo_actions::OperationKind::View,
+                "test.open",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").unwrap();
+        let items = (0..40)
+            .map(|index| NavItem::new(format!("item-{index}"), format!("Item {index}")))
+            .collect();
+        let list = NavList::new(vec![NavSection::new("items", "", items).filterable()])
+            .selection_actions((0..40).map(|index| (format!("item-{index}"), binding.clone())));
+        let mut frame = harness(list, Theme::dark());
+        for filtered in [false, true] {
+            if filtered {
+                frame.root_mut::<NavList>().set_filter("Item 39");
+                frame.relayout_at((280, 360)).unwrap();
+            }
+            let list = frame.root::<NavList>();
+            let mut exported = HashSet::new();
+            targets(&Widget::accessibility(list).unwrap(), &mut exported);
+            let bindings = crate::widget::controls::control_action_bindings(list);
+            assert!(!bindings.is_empty());
+            assert!(
+                bindings.len() < 40,
+                "the inventory must follow viewport/filter bounds"
+            );
+            for binding in &bindings {
+                assert!(
+                    exported.contains(&binding.control_id),
+                    "orphan: {binding:?}"
+                );
+            }
+            if filtered {
+                assert_eq!(
+                    bindings.len(),
+                    1,
+                    "the filtered destination alone is mounted"
+                );
+            }
+        }
+    }
+
+    phase a_row_is_found_by_its_search_terms_and_says_which;
+    {
+        let items = vec![
+            NavItem::new("pointing", "Mouse & touchpad").search_terms([
+                NavSearchTerm::named("Tap to click"),
+                NavSearchTerm::named("Natural scrolling").also(["reverse scrolling"]),
+                NavSearchTerm::words(["trackpad"]),
+            ]),
+            NavItem::new("network", "Network")
+                .search_terms([NavSearchTerm::named("Airplane mode").also(["flight mode"])]),
+            NavItem::new("displays", "Displays").search_terms([NavSearchTerm::named("Night light")]),
+        ];
+        let tap = super::model::narrow(&items, "tap");
+        assert_eq!(tap.len(), 1, "only the page holding it");
+        assert_eq!(tap[0].secondary.as_deref(), Some("Tap to click"));
+        let reverse = super::model::narrow(&items, "reverse");
+        assert_eq!(
+            reverse[0].secondary.as_deref(),
+            Some("Natural scrolling"),
+            "a word finds the thing and the row names it"
+        );
+        let trackpad = super::model::narrow(&items, "trackpad");
+        assert_eq!(trackpad[0].id, "pointing");
+        assert_eq!(
+            trackpad[0].secondary, None,
+            "words for the page itself add nothing"
+        );
+        let light = super::model::narrow(&items, "light");
+        assert_eq!(
+            light
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["displays"],
+            "a word start, not the middle of \"flight\""
+        );
+        assert!(super::model::narrow(&items, "zzz").is_empty());
+    }
+
+    // A walk that finds the list as it was (a keystroke in the pane beside it) builds none of its
+    // rows and hands each over as the very node of the last walk, however many destinations it
+    // lists, and publishes what a walk keeping nothing publishes.
+    phase an_unchanged_list_builds_no_row_and_hands_each_over_as_it_was;
+    {
+        for count in [3_usize, 60] {
+            let h = tall(NavList::new(destinations(count)));
+            let list = h.root::<NavList>();
+            let first = rows_of(list);
+            assert!(
+                first.len() > count,
+                "every destination and header is on screen: {} rows for {count}",
+                first.len()
+            );
+            let builds = list.list.access_row_builds_for_test();
+            let again = rows_of(list);
+            assert_eq!(
+                list.list.access_row_builds_for_test(),
+                builds,
+                "a walk of {count} unchanged destinations built a row"
+            );
+            assert_eq!(first.len(), again.len());
+            assert!(
+                first
+                    .iter()
+                    .zip(&again)
+                    .all(|(before, after)| std::sync::Arc::ptr_eq(before, after)),
+                "an unchanged row is handed over as the very node it was"
+            );
+            assert!(
+                !Widget::accessibility_hidden(list),
+                "a list is never hidden"
+            );
+            let root = Widget::accessibility_root(list);
+            assert_eq!(
+                list.list.access_row_builds_for_test(),
+                builds,
+                "the root and hidden state are read without building rows"
+            );
+            let mut published = Widget::accessibility(list).expect("the list's node");
+            assert_eq!(Some(&published), published_afresh(list).as_ref());
+            published.children.clear();
+            assert_eq!(
+                root,
+                Some(published),
+                "the root is the published node without its rows"
+            );
+        }
+    }
+
+    // A destination whose selection action is unavailable is published
+    // disabled on every walk, however its row is kept; the rows of other
+    // destinations are still handed over as they were.
+    phase an_unavailable_destination_is_published_disabled_and_the_rest_kept;
+    {
+        let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
+            tilo_actions::ActionSpec::operation(
+                "open",
+                "Open destination",
+                tilo_actions::OperationKind::View,
+                "test.open",
+                &(),
+            )
+            .expect("an action"),
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").expect("a binding");
+        let list = NavList::new(destinations(8))
+            .selection_actions((0..4).map(|index| (format!("item-{index}"), binding.clone())));
+        let mut h = tall(list);
+        crate::widget::controls::ActionControls::refresh_control_action_availability(
+            &mut *h.root_mut::<NavList>(),
+            &HashSet::new(),
+        );
+        let list = h.root::<NavList>();
+        let first = rows_of(list);
+        let again = rows_of(list);
+        for (before, after) in first.iter().zip(&again) {
+            let name = before.name.as_deref().unwrap_or_default();
+            let gated = (0..4).any(|index| name == format!("Folder {index}"));
+            assert_eq!(
+                after.state.disabled, gated,
+                "{name} is disabled exactly when its action is unavailable"
+            );
+            assert_eq!(
+                std::sync::Arc::ptr_eq(before, after),
+                !gated,
+                "{name}: only the rows the list disables are copied"
+            );
+        }
+        assert_eq!(Widget::accessibility(list), published_afresh(list));
+    }
+
+    // Whether a list holds an action binding, which the host asks on every
+    // frame, is what its full binding inventory says, answered without
+    // building a row: the visible destinations' selection actions, and nothing
+    // for a list without them.
+    phase whether_a_list_binds_actions_is_answered_without_building_rows;
+    {
+        use crate::widget::controls::ActionControls;
+        fn binds_an_action(list: &NavList) -> bool {
+            list.control_action_bindings()
+                .iter()
+                .any(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)))
+        }
+        let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
+            tilo_actions::ActionSpec::operation(
+                "open",
+                "Open destination",
+                tilo_actions::OperationKind::View,
+                "test.open",
+                &(),
+            )
+            .expect("an action"),
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").expect("a binding");
+        let lists = [
+            NavList::new(destinations(8)),
+            NavList::new(destinations(8)).selection_actions([("item-2".to_owned(), binding.clone())]),
+            NavList::new(destinations(8)).selection_actions([("elsewhere".to_owned(), binding)]),
+        ];
+        for (index, list) in lists.into_iter().enumerate() {
+            let h = tall(list);
+            let list = h.root::<NavList>();
+            let _ = rows_of(list);
+            let builds = list.list.access_row_builds_for_test();
+            assert_eq!(
+                list.has_action_control_bindings(),
+                index == 1,
+                "list {index}: only a visible destination's selection action is an action binding"
+            );
+            assert_eq!(
+                list.list.access_row_builds_for_test(),
+                builds,
+                "list {index}: answered without building rows"
+            );
+            assert_eq!(
+                list.has_action_control_bindings(),
+                binds_an_action(list),
+                "list {index}: the answer is the inventory's"
+            );
+        }
+    }
+
+    // Choosing a destination is the list's published view action: an agent
+    // choosing one through it sees the list show it and the app hear of it,
+    // as a person's click does; a destination the list does not have is
+    // refused.
+    phase an_agent_chooses_a_destination_through_the_published_view_action;
+    {
+        let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
+        let seen = Rc::clone(&chosen);
+        let list = NavList::new(mailboxes())
+            .selected("inbox")
+            .on_view("mail.places", move |id| seen.borrow_mut().push(id));
+        let mut h = harness(list, Theme::dark());
+        let resources = h.resources();
+        let control = resources
+            .iter()
+            .find(|resource| resource.id.0 == "tilo.control:mail.places")
+            .expect("the list publishes its selection");
+        // The resource a sheet names reads as the place the person is at
+        // ("Inbox"), never as the control's id: an agent's confirmation of a
+        // step reads a person's words, never an address.
+        assert_eq!(
+            control.label, "Inbox",
+            "the published choice is named by the place shown, not its id"
+        );
+        let select = control
+            .actions
+            .iter()
+            .find(|action| action.id == "select")
+            .expect("a select action");
+        assert_eq!(select.kind, tilo_actions::OperationKind::View);
+        let choices: Vec<&str> = select.params()[0]
+            .choices
+            .iter()
+            .map(AsRef::as_ref)
+            .collect();
+        assert_eq!(choices, ["inbox", "sent", "work", "design", "travel"]);
+
+        let destination =
+            |id: &str| serde_json::Map::from_iter([("entry".into(), serde_json::json!(id))]);
+        h.invoke_published("tilo.control:mail.places", "select", &destination("travel"))
+            .expect("an agent chooses a destination");
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("travel"));
+        assert_eq!(chosen.borrow().as_slice(), ["travel"]);
+        assert!(
+            h.invoke_published("tilo.control:mail.places", "select", &destination("spam"))
+                .is_err(),
+            "a destination the list does not have is refused"
+        );
+        assert_eq!(chosen.borrow().as_slice(), ["travel"]);
+    }
+
+    phase a_described_list_holds_places_and_sections_under_their_headings_in_order;
+    {
+        use crate::component::Described as _;
+        let place = |key: &str, label: &str| NavItemProps {
+            key: key.into(),
+            label: label.into(),
+            icon: Some(Icon::Hash),
+            ..NavItemProps::default()
+        };
+        let queue = crate::Intents::default();
+        let add = crate::component::OfferedAction {
+            label: "New channel".into(),
+            icon: Some(Icon::Plus),
+            run: crate::component::Event::View(crate::component::Intent::new(
+                &queue, "channels", "add",
+            )),
+            ..crate::component::OfferedAction::default()
+        };
+        let list = NavList::from_props(
+            "channels",
+            NavListProps {
+                items: vec![
+                    NavEntry::Item(NavItemProps {
+                        count: Some(3),
+                        ..place("/general", "general")
+                    }),
+                    NavEntry::Section(NavSectionProps {
+                        title: "Team".into(),
+                        collapsible: true,
+                        add: Some(add),
+                        items: vec![
+                            place("Team/design", "design"),
+                            place("Team/release", "release"),
+                        ],
+                    }),
+                    NavEntry::Item(place("/random", "random")),
+                ],
+                ..NavListProps::default()
+            },
+        );
+        let shown: Vec<(&str, bool, Vec<&str>)> = list
+            .sections
+            .iter()
+            .map(|s| {
+                (
+                    s.title.as_str(),
+                    s.collapsible,
+                    s.items.iter().map(|i| i.label.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("", false, vec!["general"]),
+                ("Team", true, vec!["design", "release"]),
+                ("", false, vec!["random"]),
+            ]
+        );
+        assert_eq!(
+            list.sections[0].items[0].count,
+            Some(crate::chrome::NavCount::Neutral(3)),
+            "a place shows what it holds"
+        );
+        let trailing = list.sections[1]
+            .trailing_action
+            .as_ref()
+            .expect("the section heads an add");
+        assert_eq!(trailing.label, "New channel");
+        assert_eq!(trailing.icon, Icon::Plus);
+    }
+
+    // What changes a row builds it again, and every walk publishes what a walk
+    // keeping nothing publishes: a selection moved, a check toggled before the
+    // app confirms it, a destination renamed, the theme changed.
+    phase a_change_builds_the_rows_it_changes_and_publishes_as_a_fresh_walk;
+    {
+        let mut h = tall(NavList::new(destinations(12)));
+        let rows = rows_of(h.root::<NavList>()).len();
+        let builds = h.root::<NavList>().list.access_row_builds_for_test();
+
+        h.root_mut::<NavList>().set_selected(Some("item-5"));
+        h.relayout_at(TALL).expect("layout");
+        let list = h.root::<NavList>();
+        let _ = rows_of(list);
+        let after_select = list.list.access_row_builds_for_test();
+        assert!(
+            after_select > builds && after_select <= builds + 2,
+            "choosing a destination builds the rows it selected and left: {builds} -> {after_select}"
+        );
+        assert_eq!(Widget::accessibility(list), published_afresh(list));
+
+        // A check shows at once, before the app's next sections confirm it.
+        let work = list.row_rect("work").expect("work");
+        point(&mut h, work.center().x, work.center().y);
+        h.relayout_at(TALL).expect("layout");
+        press(&mut h, winit::event::MouseButton::Left);
+        h.relayout_at(TALL).expect("layout");
+        let list = h.root::<NavList>();
+        let published = Widget::accessibility(list).expect("the list's node");
+        let work = published
+            .children
+            .iter()
+            .find(|row| row.name.as_deref() == Some("Work"))
+            .expect("the work calendar's row");
+        assert_eq!(work.state.checked, Some(true), "the toggled check");
+        assert_eq!(Some(published), published_afresh(list));
+
+        let mut renamed = destinations(12);
+        renamed[0].items[1].label = "Renamed".to_owned();
+        h.root_mut::<NavList>().set_sections(renamed);
+        h.relayout_at(TALL).expect("layout");
+        let list = h.root::<NavList>();
+        let published = Widget::accessibility(list).expect("the list's node");
+        assert!(
+            published
+                .children
+                .iter()
+                .any(|row| row.name.as_deref() == Some("Renamed")),
+            "the renamed destination is published by its new name"
+        );
+        assert_eq!(Some(published), published_afresh(list));
+
+        h.relayout_themed(TALL, Theme::light()).expect("layout");
+        let list = h.root::<NavList>();
+        assert_eq!(Widget::accessibility(list), published_afresh(list));
+        assert_eq!(rows_of(list).len(), rows);
+    }
 }
 
 #[test]
@@ -229,67 +888,6 @@ fn a_bound_selection_flows_both_ways() {
     focus(&mut h);
     key(&mut h, Key::Named(NamedKey::ArrowUp));
     assert_eq!(state.with(Clone::clone).as_deref(), Some("design"));
-}
-
-#[test]
-fn a_bound_filter_flows_both_ways() {
-    let sections = || {
-        vec![
-            NavSection::new(
-                "places",
-                "Places",
-                vec![
-                    NavItem::new("users", "users"),
-                    NavItem::new("orders", "orders"),
-                ],
-            )
-            .filterable(),
-        ]
-    };
-    let state = crate::LocalState::new("user".to_owned());
-    let mut h = harness(NavList::new(sections()).bind_filter(&state), Theme::dark());
-    assert_eq!(h.root::<NavList>().visible_item_ids(), ["users"]);
-    state.set("ord".to_owned());
-    h.relayout_at((280, 360)).expect("layout");
-    assert_eq!(
-        h.root::<NavList>().visible_item_ids(),
-        ["orders"],
-        "the list narrows to what the state holds"
-    );
-    Filterable::set_filter(&mut *h.root_mut::<NavList>(), "");
-    assert_eq!(
-        state.with(Clone::clone),
-        "",
-        "the window's search is written back"
-    );
-    h.relayout_at((280, 360)).expect("layout");
-    assert_eq!(h.root::<NavList>().visible_item_ids(), ["users", "orders"]);
-}
-
-#[test]
-fn a_followed_list_shows_the_state_it_follows() {
-    let state = std::rc::Rc::new(Cell2::new((mailboxes(), Some("sent".to_owned()))));
-    let source = std::rc::Rc::clone(&state);
-    let mut h = harness(
-        NavList::new(Vec::new()).follow(move || source.try_borrow().ok().map(|s| s.clone())),
-        Theme::dark(),
-    );
-    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("sent"));
-    assert!(h.root::<NavList>().row_rect("travel").is_some());
-
-    {
-        let mut next = state.borrow_mut();
-        next.0[0].items.push(NavItem::new("drafts", "Drafts"));
-        next.1 = Some("drafts".to_owned());
-    }
-    h.relayout_at((280, 360)).expect("layout");
-    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("drafts"));
-
-    // A state that cannot be read leaves the list as it was.
-    let held = state.borrow_mut();
-    h.relayout_at((280, 360)).expect("layout");
-    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("drafts"));
-    drop(held);
 }
 
 #[test]
@@ -389,86 +987,538 @@ fn paint_nav_row_paints_what_the_list_paints() {
     }
 }
 
-#[test]
-fn a_selected_row_lifts_visibly_on_every_ground() {
-    use crate::chrome::{SELECTION_MIN_STEP, lightness_step, selection_tier_on};
-    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let colors = &theme.tokens.colors;
-        for (name, ground) in [
-            ("content", colors.surfaces.content),
-            ("sidebar", colors.surfaces.sidebar),
-            ("raised", colors.surfaces.raised),
-        ] {
-            let local = theme.on_ground(ground);
-            let lift = selection_tier_on(&local, SelectionState::active(true), ground).fill;
+tilo_test_env::scenario! {
+    fn a_row_shows_its_parts_at_the_nav_metrics;
+
+    phase a_selected_row_lifts_visibly_on_every_ground;
+    {
+        use crate::chrome::{SELECTION_MIN_STEP, lightness_step, selection_tier_on};
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            for (name, ground) in [
+                ("content", colors.surfaces.content),
+                ("sidebar", colors.surfaces.sidebar),
+                ("raised", colors.surfaces.raised),
+            ] {
+                let local = theme.on_ground(ground);
+                let lift = selection_tier_on(&local, SelectionState::active(true), ground).fill;
+                assert!(
+                    lightness_step(lift, ground) >= SELECTION_MIN_STEP,
+                    "{} {name}",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    phase a_rail_stacks_icons_over_labels;
+    {
+        let list = NavList::new(mailboxes()).rail();
+        let h = harness(list, Theme::dark());
+        let inbox = h.root::<NavList>().row_rect("inbox").expect("inbox");
+        assert!(
+            (inbox.height() - crate::chrome::nav_rail_row_height(&Theme::dark())).abs() < 0.5,
+            "rail tiles hold an icon over a caption"
+        );
+    }
+
+    phase a_secondary_line_and_a_level_grow_the_row;
+    {
+        let list = NavList::new(vec![NavSection::new(
+            "connections",
+            "Connections",
+            vec![
+                NavItem::new("plain", "Plain"),
+                NavItem::new("db", "Orders").secondary("db.example.net:5432"),
+                NavItem::new("disk", "Backup disk")
+                    .secondary("Every night")
+                    .level(0.6)
+                    .meta("1.2 TB"),
+            ],
+        )]);
+        let h = harness(list, Theme::dark());
+        let theme = Theme::dark();
+        let list = h.root::<NavList>();
+        let plain = list.row_rect("plain").expect("plain");
+        let db = list.row_rect("db").expect("db");
+        let disk = list.row_rect("disk").expect("disk");
+        assert!((plain.height() - crate::chrome::nav_row_height(&theme)).abs() < 0.5);
+        assert!(
+            (db.height() - crate::chrome::nav_item_height(&theme, true, false)).abs() < 0.5,
+            "a secondary line adds a caption line ({})",
+            db.height()
+        );
+        assert!(db.height() > plain.height());
+        assert!(
+            disk.height() > db.height(),
+            "a level bar sits under the text"
+        );
+        let layout = layout_of(list, "disk");
+        let top = layout.secondary_top.expect("secondary line");
+        assert!(
+            top > layout.label_top,
+            "the secondary line is under the label"
+        );
+        let bar = layout.level.expect("level bar");
+        assert!(bar.y0 > top, "the bar is under the text");
+        assert!((bar.height() - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9);
+        let meta = layout.meta.expect("meta");
+        assert!(
+            layout.label_x1 < meta.x0,
+            "the label elides before the meta"
+        );
+    }
+
+    phase a_destination_says_it_is_a_tree_item_and_a_finger_s_target_is_its_height;
+    {
+        let list = NavList::new(vec![NavSection::new(
+            "places",
+            "Places",
+            vec![
+                NavItem::new("today", "Today"),
+                NavItem::new("later", "Later"),
+            ],
+        )])
+        .selected("later");
+        let mut h = FrameHarness::for_root(State::new(), list, (280, 360), Theme::dark());
+        h.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+        h.relayout_at((280, 360)).expect("layout");
+        let target = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+        for id in ["today", "later"] {
+            let height = h
+                .root::<NavList>()
+                .row_rect(id)
+                .expect("row in view")
+                .height();
             assert!(
-                lightness_step(lift, ground) >= SELECTION_MIN_STEP,
-                "{} {name}",
-                theme.name
+                (height - target).abs() < 0.5,
+                "a finger's destination is {height} tall where the input's target is {target}"
             );
         }
+        let snapshot = h.inspection();
+        let mut rows: Vec<(String, crate::a11y::Role, bool)> = Vec::new();
+        fn walk(
+            node: &crate::headless::InspectionNode,
+            rows: &mut Vec<(String, crate::a11y::Role, bool)>,
+        ) {
+            if node.widget == "NavRow"
+                && let Some(semantics) = &node.semantics
+            {
+                rows.push((
+                    semantics.name.clone().unwrap_or_default(),
+                    semantics.role,
+                    semantics.state.selected,
+                ));
+            }
+            for child in &node.children {
+                walk(child, rows);
+            }
+        }
+        walk(&snapshot.root, &mut rows);
+        let row = |name: &str| {
+            rows.iter()
+                .find(|(label, ..)| label == name)
+                .map(|(_, role, selected)| (*role, *selected))
+                .unwrap_or_else(|| panic!("{name}'s row is drawn: {rows:?}"))
+        };
+        assert_eq!(row("Today").0, crate::a11y::Role::TreeItem);
+        assert!(
+            !row("Today").1,
+            "the destination beside the chosen one is not chosen"
+        );
+        assert!(row("Later").1, "the chosen destination says so");
+    }
+
+    phase trailing_parts_line_up_and_give_way_to_actions;
+    {
+        let theme = Theme::dark();
+        let mut text = crate::text_render::TextRenderer::new();
+        let people = ["alice".to_owned(), "bob".to_owned()];
+        let face = NavRowFace::new(Rect::new(0.0, 0.0, 280.0, 40.0), "Firewall zone")
+            .status(RowStatus::Warning)
+            .status_label("Active", Tone::Success)
+            .meta("12")
+            .count(NavCount::Neutral(3))
+            .presence(&people);
+        let layout = crate::chrome::nav_row_layout(&theme, &mut text, &face);
+        let status = layout.status.expect("status dot");
+        let count = layout.count.expect("count");
+        let meta = layout.meta.expect("meta");
+        let label = layout.status_label.expect("status label");
+        assert_eq!(layout.presence.len(), 2);
+        let marks = layout.presence[1];
+        assert!(count.x1 <= status.x0);
+        assert!(meta.x1 <= count.x0);
+        assert!(label.x1 <= meta.x0);
+        assert!(marks.x1 <= label.x0);
+        assert!(layout.presence[0].x0 < marks.x0, "marks overlap in order");
+        assert!(layout.label_x1 <= layout.presence[0].x0);
+        let actions = [Icon::MoreHorizontal];
+        let hovered =
+            crate::chrome::nav_row_layout(&theme, &mut text, &face.clone().actions(&actions, None));
+        assert!(hovered.status.is_none() && hovered.meta.is_none());
+        assert!(hovered.status_label.is_none() && hovered.count.is_none());
+        assert!(hovered.presence.is_empty());
+        assert_eq!(hovered.actions.len(), 1);
+        let spoken = crate::chrome::nav_row_description(&face).expect("description");
+        assert!(
+            spoken.contains("Active") && spoken.contains("Needs attention"),
+            "{spoken}"
+        );
+    }
+
+    phase badges_share_a_column_so_labels_line_up;
+    {
+        let list = NavList::new(vec![NavSection::new(
+            "requests",
+            "Requests",
+            vec![
+                NavItem::new("get", "List users").badge("GET"),
+                NavItem::new("delete", "Remove user").badge("DELETE"),
+            ],
+        )]);
+        let h = harness(list, Theme::dark());
+        let list = h.root::<NavList>();
+        let get = layout_of(list, "get");
+        let delete = layout_of(list, "delete");
+        assert!((get.label_x0 - delete.label_x0).abs() < 1e-9);
+        let column = get.badge.expect("badge column");
+        assert!((column.width() - delete.badge.expect("badge").width()).abs() < 1e-9);
+        assert!(get.label_x0 > column.x1);
+    }
+
+    phase a_staged_drag_lifts_the_row_over_its_drop_line;
+    {
+        let mut list = NavList::new(mailboxes()).on_move(|_, _| {});
+        list.stage_drag("travel", "work");
+        let h = harness(list, Theme::dark());
+        let list = h.root::<NavList>();
+        assert!(list.list().is_dragging());
+        let line = list.list().reorder_preview().expect("drop line");
+        let work = list.row_rect("work").expect("work");
+        assert!(
+            (line.center().y - work.y0).abs() < 2.0,
+            "the line is the seam above Work"
+        );
+    }
+
+    // From the coordinator (2026-10-19): shared rails never hyphenate a single word
+    // ("Connec-tions"); a caption wraps only at spaces.
+    phase rail_captions_wrap_at_spaces_and_never_break_a_word;
+    {
+        let list = NavList::new(vec![NavSection::untitled(
+            "places",
+            vec![
+                NavItem::new("home", "Home").icon(Icon::Home),
+                NavItem::new("subs", "Subscriptions").icon(Icon::Rss),
+            ],
+        )])
+        .rail();
+        let theme = Theme::dark();
+        let mut h = FrameHarness::for_root(State::new(), list, (76, 360), theme.clone());
+        h.relayout_at((76, 360)).expect("layout");
+        let list = h.root::<NavList>();
+        let home = list.row_rect("home").expect("home");
+        let subs = list.row_rect("subs").expect("subs");
+        assert!((home.height() - crate::chrome::nav_rail_row_height(&theme)).abs() < 0.5);
+        assert!(
+            (subs.height() - home.height()).abs() < 0.5,
+            "one word too wide for the rail stays one line"
+        );
+        let mut text = crate::text_render::TextRenderer::new();
+        for (label, width) in [
+            ("Subscriptions", 60.0),
+            ("Connections", 52.0),
+            ("Connections", 60.0),
+            ("Connections", 68.0),
+        ] {
+            let lines = crate::chrome::rail_caption_lines(&theme, &mut text, label, width);
+            assert_eq!(lines.len(), 1, "{label} at {width}: {lines:?}");
+            assert!(
+                !lines[0].contains('-'),
+                "{label} at {width} is never hyphenated: {lines:?}"
+            );
+            assert!(
+                lines[0] == label || lines[0].ends_with('\u{2026}'),
+                "{label} at {width} shows whole or elided: {lines:?}"
+            );
+        }
+        let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Liked songs", 40.0);
+        assert_eq!(lines, ["Liked", "songs"], "two words wrap at the space");
+
+        use super::RailExtent as _;
+        let big = Theme::dark().with_text_scale(2.0);
+        let list = NavList::new(vec![NavSection::untitled(
+            "places",
+            vec![
+                NavItem::new("home", "Home").icon(Icon::Home),
+                NavItem::new("channels", "Channels").icon(Icon::Rss),
+            ],
+        )])
+        .rail();
+        let width = list.fitted_rail_width(&big).expect("a rail");
+        assert!(width > f64::from(big.tokens.metrics.rail_width), "{width}");
+        assert!(
+            width <= f64::from(big.tokens.metrics.rail_max_width),
+            "{width}"
+        );
+        let mut text = crate::text_render::TextRenderer::new();
+        text.set_text_scale(big.text_scale);
+        let caption = width - 4.0 * f64::from(big.tokens.spacing.s1);
+        assert_eq!(
+            crate::chrome::rail_caption_lines(&big, &mut text, "Channels", caption),
+            ["Channels"]
+        );
+        let plain = NavList::new(vec![NavSection::untitled(
+            "p",
+            vec![NavItem::new("a", "A")],
+        )]);
+        assert_eq!(plain.fitted_rail_width(&big), None);
+    }
+
+    // Sections handed over before the first layout stand at the navigation
+    // metrics once laid out, with nothing animating from the stock row
+    // height.
+    phase sections_set_before_layout_stand_at_the_nav_metrics;
+    {
+        let mut list = NavList::new(vec![NavSection::untitled(
+            "top",
+            vec![NavItem::new("inbox", "Inbox")],
+        )]);
+        list.set_sections(mailboxes());
+        assert!(!still_moving(&list), "nothing moves before layout");
+        let h = harness(list, Theme::dark());
+        let theme = Theme::dark();
+        let list = h.root::<NavList>();
+        assert!(!still_moving(list));
+        let row = crate::chrome::nav_row_height(&theme);
+        for id in ["inbox", "sent", "work", "design", "travel"] {
+            let rect = list.row_rect(id).expect("row");
+            assert!((rect.height() - row).abs() < 0.5, "{id}: {}", rect.height());
+        }
+        let work = list.row_rect("work").expect("work");
+        let gap = work.y0 - list.row_rect("sent").expect("sent").y1;
+        assert!((gap - crate::chrome::nav_section_height(&theme, false)).abs() < 0.5);
+    }
+
+    phase sections_changed_after_layout_immediately_share_paint_and_hit_geometry;
+    {
+        let mut h = harness(NavList::new(mailboxes()), Theme::dark());
+        let mut next = mailboxes();
+        next[0].items.insert(1, NavItem::new("drafts", "Drafts"));
+        h.root_mut::<NavList>().set_sections(next);
+        assert!(!still_moving(h.root::<NavList>()));
+        h.relayout_at((280, 360)).expect("layout");
+        let theme = Theme::dark();
+        let row = crate::chrome::nav_row_height(&theme);
+        let drafts = h.root::<NavList>().row_rect("drafts").expect("drafts");
+        assert!((drafts.height() - row).abs() < 0.5);
+    }
+
+    // The two widths a navigation sidebar needs follow its places: the rail's holds the longest
+    // word of a caption, the list's every label whole beside its icon, and a list is wider than
+    // its rail.
+    phase a_place_sets_the_widths_its_rail_and_its_list_need;
+    {
+        use super::AdaptiveNav as _;
+        let theme = Theme::dark();
+        let place = |id: &str, label: &str| NavItem::new(id, label).icon(Icon::Home);
+        let flat = |items: Vec<NavItem>| NavList::new(vec![NavSection::untitled("p", items)]);
+        let six: Vec<NavItem> = [
+            "Home",
+            "Trending",
+            "Subscriptions",
+            "Queue",
+            "History",
+            "Settings",
+        ]
+        .iter()
+        .map(|label| place(&label.to_lowercase(), label))
+        .collect();
+
+        let mut long = six.clone();
+        long[0] = place("long", "Keyboard shortcuts and input methods");
+        assert!(
+            flat(long).list_fit(&theme) > flat(six.clone()).list_fit(&theme),
+            "a longer label needs a wider list"
+        );
+
+        let mut list = flat(six).selected("queue");
+        assert!(list.list_fit(&theme) > list.rail_fit(&theme));
+        assert!(!list.is_rail());
+        assert!(list.set_rail(true));
+        assert!(list.is_rail() && !list.set_rail(true));
+        assert_eq!(list.selected_id().as_deref(), Some("queue"));
+        assert!(list.set_rail(false));
+        assert_eq!(list.selected_id().as_deref(), Some("queue"));
+    }
+
+    // An unread conversation's row stands out, and a person's row carries
+    // their avatar in their colour, ringed while they speak.
+    phase an_unread_row_stands_out_and_a_persons_row_shows_them;
+    {
+        let colour = Color::from_rgb8(0x40, 0x80, 0xc0);
+        let list = NavList::new(vec![NavSection::untitled(
+            "rows",
+            vec![
+                NavItem::new("talk", "talk").unread(true),
+                NavItem::new("dana", "Dana").person("u_dana", Some(colour), true),
+            ],
+        )]);
+        let h = harness(list, Theme::dark());
+        let list = h.root::<NavList>();
+        let face_of = |id: &str| spec_of(list, id);
+
+        let talk = face_of("talk");
+        let face = spec_face(&talk, Rect::new(0.0, 0.0, 200.0, 32.0), "talk");
+        assert!(face.unread);
+        assert!(face.avatar.is_none());
+        let dana = face_of("dana");
+        let face = spec_face(&dana, Rect::new(0.0, 0.0, 200.0, 32.0), "Dana");
+        assert!(!face.unread);
+        assert!(face.avatar.is_some(), "a person's row shows them");
+        assert_eq!(
+            dana.person
+                .as_ref()
+                .map(|person| (person.colour, person.speaking)),
+            Some((Some(colour), true))
+        );
+    }
+
+    // A person whose row says more than their name ("Dana (via Discord)")
+    // shows their own initials, or their picture.
+    phase a_persons_row_takes_their_face_from_their_name;
+    {
+        let colour = Color::from_rgb8(0x40, 0x80, 0xc0);
+        let list = NavList::new(vec![NavSection::untitled(
+            "rows",
+            vec![
+                NavItem::new("dana", "Dana Reyes (via Discord)")
+                    .person("discord:7", Some(colour), false)
+                    .person_face("Dana Reyes", None),
+            ],
+        )]);
+        let h = harness(list, Theme::dark());
+        let list = h.root::<NavList>();
+        let item = spec_of(list, "dana");
+
+        let face = spec_face(
+            &item,
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            "Dana Reyes (via Discord)",
+        );
+        assert_eq!(
+            face.avatar.map(|avatar| avatar.initials()),
+            Some("DR".into())
+        );
     }
 }
 
-#[test]
-fn row_actions_and_section_actions_report_their_ids() {
-    let actions = Rc::new(Cell2::new(Vec::<(String, String)>::new()));
-    let seen = Rc::clone(&actions);
-    let sections_seen = Rc::new(Cell2::new(Vec::<(String, String)>::new()));
-    let section_log = Rc::clone(&sections_seen);
-    let list = NavList::new(mailboxes())
-        .item_actions(
-            vec![NavAction::new("more", Icon::MoreHorizontal, "More")],
-            move |item, action| seen.borrow_mut().push((item.to_owned(), action.to_owned())),
-        )
-        .on_section_action(move |section, action| {
-            section_log
-                .borrow_mut()
-                .push((section.to_owned(), action.to_owned()));
-        });
-    let mut h = harness(list, Theme::dark());
-    let work = h.root::<NavList>().row_rect("work").expect("work");
-    let device = winit::event::DeviceId::dummy();
-    let click = |h: &mut FrameHarness, x: f64, y: f64| {
-        h.dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
-            device_id: device,
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        });
-        h.relayout_at((280, 360)).expect("layout");
-        h.dispatch_to_root(&winit::event::WindowEvent::MouseInput {
-            device_id: device,
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        });
-        h.dispatch_to_root(&winit::event::WindowEvent::MouseInput {
-            device_id: device,
-            state: ElementState::Released,
-            button: winit::event::MouseButton::Left,
-        });
-    };
-    let s2 = f64::from(Theme::dark().tokens.spacing.s2);
-    click(&mut h, work.x1 - s2 - 10.0, work.center().y);
-    assert_eq!(
-        actions.borrow().as_slice(),
-        [("work".to_owned(), "more".to_owned())]
-    );
-    let header_y = work.y0 - crate::chrome::nav_row_height(&Theme::dark()) / 2.0;
-    click(&mut h, work.x1 - s2 - 10.0, header_y);
-    assert_eq!(
-        sections_seen.borrow().as_slice(),
-        [("folders".to_owned(), "new-folder".to_owned())]
-    );
-}
+tilo_test_env::scenario! {
+    fn row_and_section_actions_run_where_they_are_pressed;
 
-#[test]
-fn a_rail_stacks_icons_over_labels() {
-    let list = NavList::new(mailboxes()).rail();
-    let h = harness(list, Theme::dark());
-    let inbox = h.root::<NavList>().row_rect("inbox").expect("inbox");
-    assert!(
-        (inbox.height() - crate::chrome::nav_rail_row_height(&Theme::dark())).abs() < 0.5,
-        "rail tiles hold an icon over a caption"
-    );
+    // Choosing a place the view bound to an action runs that action once, through the list's
+    // control door: the place is a part of the list, and its press is the action's own route.
+    phase a_place_bound_to_an_action_runs_it_once_as_the_person_presses_it;
+    {
+        let bound = published("res-inbox", "open");
+        let address = bound.address().clone();
+        let mut list = places(crate::component::Event::Action(bound), None);
+        list.shared.borrow_mut().choose("item:inbox");
+        let taken = crate::widget::controls::take_control_invocation(&mut list);
+        assert_eq!(
+            taken.as_ref().map(|taken| taken.address.clone()),
+            Some(address),
+            "one press runs the place's action once"
+        );
+        assert!(
+            crate::widget::controls::take_control_invocation(&mut list).is_none(),
+            "the press is taken once"
+        );
+    }
+
+    phase a_sections_add_bound_to_an_action_runs_it_once_as_the_person_presses_it;
+    {
+        let bound = published("res-project", "new_project");
+        let address = bound.address().clone();
+        let mut list = places(
+            crate::component::Event::None,
+            Some(crate::component::OfferedAction {
+                label: "New project".into(),
+                run: crate::component::Event::Action(bound),
+                ..crate::component::OfferedAction::default()
+            }),
+        );
+        let model = list.list.model();
+        let section = (0..model.len())
+            .filter_map(|index| model.key_at(index))
+            .find(|key| key.starts_with("section:"))
+            .expect("a section row");
+        assert!(
+            list.shared.borrow_mut().run_section_action(&section),
+            "the add answers a press"
+        );
+        let taken = crate::widget::controls::take_control_invocation(&mut list);
+        assert_eq!(
+            taken.as_ref().map(|taken| taken.address.clone()),
+            Some(address),
+            "one press runs the add once"
+        );
+        assert!(
+            crate::widget::controls::take_control_invocation(&mut list).is_none(),
+            "the add is taken once"
+        );
+    }
+
+    phase row_actions_and_section_actions_report_their_ids;
+    {
+        let actions = Rc::new(Cell2::new(Vec::<(String, String)>::new()));
+        let seen = Rc::clone(&actions);
+        let sections_seen = Rc::new(Cell2::new(Vec::<(String, String)>::new()));
+        let section_log = Rc::clone(&sections_seen);
+        let list = NavList::new(mailboxes())
+            .item_actions(
+                vec![NavAction::new("more", Icon::MoreHorizontal, "More")],
+                move |item, action| seen.borrow_mut().push((item.to_owned(), action.to_owned())),
+            )
+            .on_section_action(move |section, action| {
+                section_log
+                    .borrow_mut()
+                    .push((section.to_owned(), action.to_owned()));
+            });
+        let mut h = harness(list, Theme::dark());
+        let work = h.root::<NavList>().row_rect("work").expect("work");
+        let device = winit::event::DeviceId::dummy();
+        let click = |h: &mut FrameHarness, x: f64, y: f64| {
+            h.dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
+                device_id: device,
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            });
+            h.relayout_at((280, 360)).expect("layout");
+            h.dispatch_to_root(&winit::event::WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            });
+            h.dispatch_to_root(&winit::event::WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Left,
+            });
+        };
+        let s2 = f64::from(Theme::dark().tokens.spacing.s2);
+        click(&mut h, work.x1 - s2 - 10.0, work.center().y);
+        assert_eq!(
+            actions.borrow().as_slice(),
+            [("work".to_owned(), "more".to_owned())]
+        );
+        let header_y = work.y0 - crate::chrome::nav_row_height(&Theme::dark()) / 2.0;
+        click(&mut h, work.x1 - s2 - 10.0, header_y);
+        assert_eq!(
+            sections_seen.borrow().as_slice(),
+            [("folders".to_owned(), "new-folder".to_owned())]
+        );
+    }
 }
 
 /// A trailing action paints at its square and is pressed at the smallest
@@ -625,59 +1675,6 @@ fn places(
     )
 }
 
-/// Choosing a place the view bound to an action runs that action once, through the list's
-/// control door: the place is a part of the list, and its press is the action's own route.
-#[test]
-fn a_place_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
-    let bound = published("res-inbox", "open");
-    let address = bound.address().clone();
-    let mut list = places(crate::component::Event::Action(bound), None);
-    list.shared.borrow_mut().choose("item:inbox");
-    let taken = crate::widget::controls::take_control_invocation(&mut list);
-    assert_eq!(
-        taken.as_ref().map(|taken| taken.address.clone()),
-        Some(address),
-        "one press runs the place's action once"
-    );
-    assert!(
-        crate::widget::controls::take_control_invocation(&mut list).is_none(),
-        "the press is taken once"
-    );
-}
-
-#[test]
-fn a_sections_add_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
-    let bound = published("res-project", "new_project");
-    let address = bound.address().clone();
-    let mut list = places(
-        crate::component::Event::None,
-        Some(crate::component::OfferedAction {
-            label: "New project".into(),
-            run: crate::component::Event::Action(bound),
-            ..crate::component::OfferedAction::default()
-        }),
-    );
-    let model = list.list.model();
-    let section = (0..model.len())
-        .filter_map(|index| model.key_at(index))
-        .find(|key| key.starts_with("section:"))
-        .expect("a section row");
-    assert!(
-        list.shared.borrow_mut().run_section_action(&section),
-        "the add answers a press"
-    );
-    let taken = crate::widget::controls::take_control_invocation(&mut list);
-    assert_eq!(
-        taken.as_ref().map(|taken| taken.address.clone()),
-        Some(address),
-        "one press runs the add once"
-    );
-    assert!(
-        crate::widget::controls::take_control_invocation(&mut list).is_none(),
-        "the add is taken once"
-    );
-}
-
 /// The face item `id` paints with, laid out where it paints.
 fn layout_of(list: &NavList, id: &str) -> crate::chrome::NavRowLayout {
     let row = list.row_rect(id).expect("row in view");
@@ -686,171 +1683,6 @@ fn layout_of(list: &NavList, id: &str) -> crate::chrome::NavRowLayout {
     let face = spec_face(&item, row, id);
     let mut text = crate::text_render::TextRenderer::new();
     crate::chrome::nav_row_layout(&theme, &mut text, &face)
-}
-
-#[test]
-fn a_secondary_line_and_a_level_grow_the_row() {
-    let list = NavList::new(vec![NavSection::new(
-        "connections",
-        "Connections",
-        vec![
-            NavItem::new("plain", "Plain"),
-            NavItem::new("db", "Orders").secondary("db.example.net:5432"),
-            NavItem::new("disk", "Backup disk")
-                .secondary("Every night")
-                .level(0.6)
-                .meta("1.2 TB"),
-        ],
-    )]);
-    let h = harness(list, Theme::dark());
-    let theme = Theme::dark();
-    let list = h.root::<NavList>();
-    let plain = list.row_rect("plain").expect("plain");
-    let db = list.row_rect("db").expect("db");
-    let disk = list.row_rect("disk").expect("disk");
-    assert!((plain.height() - crate::chrome::nav_row_height(&theme)).abs() < 0.5);
-    assert!(
-        (db.height() - crate::chrome::nav_item_height(&theme, true, false)).abs() < 0.5,
-        "a secondary line adds a caption line ({})",
-        db.height()
-    );
-    assert!(db.height() > plain.height());
-    assert!(
-        disk.height() > db.height(),
-        "a level bar sits under the text"
-    );
-    let layout = layout_of(list, "disk");
-    let top = layout.secondary_top.expect("secondary line");
-    assert!(
-        top > layout.label_top,
-        "the secondary line is under the label"
-    );
-    let bar = layout.level.expect("level bar");
-    assert!(bar.y0 > top, "the bar is under the text");
-    assert!((bar.height() - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9);
-    let meta = layout.meta.expect("meta");
-    assert!(
-        layout.label_x1 < meta.x0,
-        "the label elides before the meta"
-    );
-}
-
-#[test]
-fn a_destination_says_it_is_a_tree_item_and_a_finger_s_target_is_its_height() {
-    let list = NavList::new(vec![NavSection::new(
-        "places",
-        "Places",
-        vec![
-            NavItem::new("today", "Today"),
-            NavItem::new("later", "Later"),
-        ],
-    )])
-    .selected("later");
-    let mut h = FrameHarness::for_root(State::new(), list, (280, 360), Theme::dark());
-    h.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
-    h.relayout_at((280, 360)).expect("layout");
-    let target = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
-    for id in ["today", "later"] {
-        let height = h
-            .root::<NavList>()
-            .row_rect(id)
-            .expect("row in view")
-            .height();
-        assert!(
-            (height - target).abs() < 0.5,
-            "a finger's destination is {height} tall where the input's target is {target}"
-        );
-    }
-    let snapshot = h.inspection();
-    let mut rows: Vec<(String, crate::a11y::Role, bool)> = Vec::new();
-    fn walk(
-        node: &crate::headless::InspectionNode,
-        rows: &mut Vec<(String, crate::a11y::Role, bool)>,
-    ) {
-        if node.widget == "NavRow"
-            && let Some(semantics) = &node.semantics
-        {
-            rows.push((
-                semantics.name.clone().unwrap_or_default(),
-                semantics.role,
-                semantics.state.selected,
-            ));
-        }
-        for child in &node.children {
-            walk(child, rows);
-        }
-    }
-    walk(&snapshot.root, &mut rows);
-    let row = |name: &str| {
-        rows.iter()
-            .find(|(label, ..)| label == name)
-            .map(|(_, role, selected)| (*role, *selected))
-            .unwrap_or_else(|| panic!("{name}'s row is drawn: {rows:?}"))
-    };
-    assert_eq!(row("Today").0, crate::a11y::Role::TreeItem);
-    assert!(
-        !row("Today").1,
-        "the destination beside the chosen one is not chosen"
-    );
-    assert!(row("Later").1, "the chosen destination says so");
-}
-
-#[test]
-fn trailing_parts_line_up_and_give_way_to_actions() {
-    let theme = Theme::dark();
-    let mut text = crate::text_render::TextRenderer::new();
-    let people = ["alice".to_owned(), "bob".to_owned()];
-    let face = NavRowFace::new(Rect::new(0.0, 0.0, 280.0, 40.0), "Firewall zone")
-        .status(RowStatus::Warning)
-        .status_label("Active", Tone::Success)
-        .meta("12")
-        .count(NavCount::Neutral(3))
-        .presence(&people);
-    let layout = crate::chrome::nav_row_layout(&theme, &mut text, &face);
-    let status = layout.status.expect("status dot");
-    let count = layout.count.expect("count");
-    let meta = layout.meta.expect("meta");
-    let label = layout.status_label.expect("status label");
-    assert_eq!(layout.presence.len(), 2);
-    let marks = layout.presence[1];
-    assert!(count.x1 <= status.x0);
-    assert!(meta.x1 <= count.x0);
-    assert!(label.x1 <= meta.x0);
-    assert!(marks.x1 <= label.x0);
-    assert!(layout.presence[0].x0 < marks.x0, "marks overlap in order");
-    assert!(layout.label_x1 <= layout.presence[0].x0);
-    let actions = [Icon::MoreHorizontal];
-    let hovered =
-        crate::chrome::nav_row_layout(&theme, &mut text, &face.clone().actions(&actions, None));
-    assert!(hovered.status.is_none() && hovered.meta.is_none());
-    assert!(hovered.status_label.is_none() && hovered.count.is_none());
-    assert!(hovered.presence.is_empty());
-    assert_eq!(hovered.actions.len(), 1);
-    let spoken = crate::chrome::nav_row_description(&face).expect("description");
-    assert!(
-        spoken.contains("Active") && spoken.contains("Needs attention"),
-        "{spoken}"
-    );
-}
-
-#[test]
-fn badges_share_a_column_so_labels_line_up() {
-    let list = NavList::new(vec![NavSection::new(
-        "requests",
-        "Requests",
-        vec![
-            NavItem::new("get", "List users").badge("GET"),
-            NavItem::new("delete", "Remove user").badge("DELETE"),
-        ],
-    )]);
-    let h = harness(list, Theme::dark());
-    let list = h.root::<NavList>();
-    let get = layout_of(list, "get");
-    let delete = layout_of(list, "delete");
-    assert!((get.label_x0 - delete.label_x0).abs() < 1e-9);
-    let column = get.badge.expect("badge column");
-    assert!((column.width() - delete.badge.expect("badge").width()).abs() < 1e-9);
-    assert!(get.label_x0 > column.x1);
 }
 
 #[test]
@@ -909,83 +1741,6 @@ fn a_checked_row_toggles_as_a_whole_and_is_never_chosen() {
         .find(|child| child.name.as_deref() == Some("Home"))
         .expect("home row");
     assert_eq!(home.state.checked, Some(true));
-}
-
-#[test]
-fn sections_start_folded_say_when_empty_and_name_elided_titles() {
-    let list = NavList::new(vec![
-        NavSection::new("drafts", "Drafts", Vec::new()).empty_caption("No drafts"),
-        NavSection::new("archive", "Archive", vec![NavItem::new("old", "Old mail")]).collapsed(),
-        NavSection::new(
-            "long",
-            "A section title far too long for any sidebar to show whole",
-            vec![NavItem::new("x", "X")],
-        ),
-    ]);
-    let h = harness(list, Theme::dark());
-    let list = h.root::<NavList>();
-    let rows = shown_labels(list);
-    assert!(rows.contains(&"No drafts".to_owned()), "{rows:?}");
-    assert!(list.row_rect("old").is_none(), "Archive starts folded");
-    assert!(!list.is_expanded("archive"));
-    let row = list.row_rect("long").expect("header");
-    let (_, tip) = list
-        .tooltip_target_at(row.center())
-        .expect("elided title tooltip");
-    assert_eq!(
-        tip,
-        "A section title far too long for any sidebar to show whole"
-    );
-}
-
-#[test]
-fn the_filter_narrows_only_the_sections_that_opt_in() {
-    let mut list = NavList::new(vec![
-        NavSection::new(
-            "connections",
-            "Connections",
-            vec![
-                NavItem::new("prod", "Production"),
-                NavItem::new("dev", "Development"),
-            ],
-        ),
-        NavSection::new(
-            "tables",
-            "Tables",
-            vec![
-                NavItem::new("users", "users"),
-                NavItem::new("orders", "orders"),
-                NavItem::new("schema", "public")
-                    .children(vec![NavItem::new("user_roles", "user_roles")]),
-            ],
-        )
-        .filterable(),
-    ]);
-    list.set_filter("user");
-    let mut h = harness(list, Theme::dark());
-    {
-        let list = h.root::<NavList>();
-        assert!(list.row_rect("prod").is_some() && list.row_rect("dev").is_some());
-        assert!(list.row_rect("users").is_some());
-        assert!(list.row_rect("orders").is_none());
-        assert!(
-            list.row_rect("user_roles").is_some(),
-            "a match inside a folded parent shows"
-        );
-        assert_eq!(
-            Filterable::filter_count(list),
-            Some(FilterCount::new(3, 4)),
-            "users, public and user_roles of four"
-        );
-    }
-    h.root_mut::<NavList>().set_filter("");
-    h.relayout_at((280, 360)).expect("layout");
-    let list = h.root::<NavList>();
-    assert!(list.row_rect("orders").is_some());
-    assert!(
-        list.row_rect("user_roles").is_none(),
-        "the parent folds again"
-    );
 }
 
 #[test]
@@ -1055,20 +1810,6 @@ fn a_row_menu_is_asked_for_with_its_lift() {
 }
 
 #[test]
-fn choosing_a_row_brings_it_into_view() {
-    let items: Vec<NavItem> = (0..40)
-        .map(|i| NavItem::new(format!("p{i}"), format!("Page {i}")))
-        .collect();
-    let list = NavList::new(vec![NavSection::untitled("pages", items)]).selected("p39");
-    let h = harness(list, Theme::dark());
-    let row = h
-        .root::<NavList>()
-        .row_rect("p39")
-        .expect("the chosen row is in view");
-    assert!(row.y1 <= 360.0 + 0.5);
-}
-
-#[test]
 fn delete_and_semantic_keys_address_items() {
     let deleted = Rc::new(Cell2::new(Vec::<String>::new()));
     let seen = Rc::clone(&deleted);
@@ -1093,134 +1834,6 @@ fn delete_and_semantic_keys_address_items() {
         .collect();
     assert!(keys.contains(&Some("page:alpha".to_owned())), "{keys:?}");
     assert!(keys.contains(&Some("nav:item:b".to_owned())), "{keys:?}");
-}
-
-#[test]
-fn a_staged_drag_lifts_the_row_over_its_drop_line() {
-    let mut list = NavList::new(mailboxes()).on_move(|_, _| {});
-    list.stage_drag("travel", "work");
-    let h = harness(list, Theme::dark());
-    let list = h.root::<NavList>();
-    assert!(list.list().is_dragging());
-    let line = list.list().reorder_preview().expect("drop line");
-    let work = list.row_rect("work").expect("work");
-    assert!(
-        (line.center().y - work.y0).abs() < 2.0,
-        "the line is the seam above Work"
-    );
-}
-
-// From the coordinator (2026-10-19): shared rails never hyphenate a single word
-// ("Connec-tions"); a caption wraps only at spaces.
-#[test]
-fn rail_captions_wrap_at_spaces_and_never_break_a_word() {
-    let list = NavList::new(vec![NavSection::untitled(
-        "places",
-        vec![
-            NavItem::new("home", "Home").icon(Icon::Home),
-            NavItem::new("subs", "Subscriptions").icon(Icon::Rss),
-        ],
-    )])
-    .rail();
-    let theme = Theme::dark();
-    let mut h = FrameHarness::for_root(State::new(), list, (76, 360), theme.clone());
-    h.relayout_at((76, 360)).expect("layout");
-    let list = h.root::<NavList>();
-    let home = list.row_rect("home").expect("home");
-    let subs = list.row_rect("subs").expect("subs");
-    assert!((home.height() - crate::chrome::nav_rail_row_height(&theme)).abs() < 0.5);
-    assert!(
-        (subs.height() - home.height()).abs() < 0.5,
-        "one word too wide for the rail stays one line"
-    );
-    let mut text = crate::text_render::TextRenderer::new();
-    for (label, width) in [
-        ("Subscriptions", 60.0),
-        ("Connections", 52.0),
-        ("Connections", 60.0),
-        ("Connections", 68.0),
-    ] {
-        let lines = crate::chrome::rail_caption_lines(&theme, &mut text, label, width);
-        assert_eq!(lines.len(), 1, "{label} at {width}: {lines:?}");
-        assert!(
-            !lines[0].contains('-'),
-            "{label} at {width} is never hyphenated: {lines:?}"
-        );
-        assert!(
-            lines[0] == label || lines[0].ends_with('\u{2026}'),
-            "{label} at {width} shows whole or elided: {lines:?}"
-        );
-    }
-    let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Liked songs", 40.0);
-    assert_eq!(lines, ["Liked", "songs"], "two words wrap at the space");
-
-    use super::RailExtent as _;
-    let big = Theme::dark().with_text_scale(2.0);
-    let list = NavList::new(vec![NavSection::untitled(
-        "places",
-        vec![
-            NavItem::new("home", "Home").icon(Icon::Home),
-            NavItem::new("channels", "Channels").icon(Icon::Rss),
-        ],
-    )])
-    .rail();
-    let width = list.fitted_rail_width(&big).expect("a rail");
-    assert!(width > f64::from(big.tokens.metrics.rail_width), "{width}");
-    assert!(
-        width <= f64::from(big.tokens.metrics.rail_max_width),
-        "{width}"
-    );
-    let mut text = crate::text_render::TextRenderer::new();
-    text.set_text_scale(big.text_scale);
-    let caption = width - 4.0 * f64::from(big.tokens.spacing.s1);
-    assert_eq!(
-        crate::chrome::rail_caption_lines(&big, &mut text, "Channels", caption),
-        ["Channels"]
-    );
-    let plain = NavList::new(vec![NavSection::untitled(
-        "p",
-        vec![NavItem::new("a", "A")],
-    )]);
-    assert_eq!(plain.fitted_rail_width(&big), None);
-}
-
-/// Sections handed over before the first layout stand at the navigation
-/// metrics once laid out, with nothing animating from the stock row
-/// height.
-#[test]
-fn sections_set_before_layout_stand_at_the_nav_metrics() {
-    let mut list = NavList::new(vec![NavSection::untitled(
-        "top",
-        vec![NavItem::new("inbox", "Inbox")],
-    )]);
-    list.set_sections(mailboxes());
-    assert!(!still_moving(&list), "nothing moves before layout");
-    let h = harness(list, Theme::dark());
-    let theme = Theme::dark();
-    let list = h.root::<NavList>();
-    assert!(!still_moving(list));
-    let row = crate::chrome::nav_row_height(&theme);
-    for id in ["inbox", "sent", "work", "design", "travel"] {
-        let rect = list.row_rect(id).expect("row");
-        assert!((rect.height() - row).abs() < 0.5, "{id}: {}", rect.height());
-    }
-    let work = list.row_rect("work").expect("work");
-    let gap = work.y0 - list.row_rect("sent").expect("sent").y1;
-    assert!((gap - crate::chrome::nav_section_height(&theme, false)).abs() < 0.5);
-}
-
-#[test]
-fn sections_changed_after_layout_immediately_share_paint_and_hit_geometry() {
-    let mut h = harness(NavList::new(mailboxes()), Theme::dark());
-    let mut next = mailboxes();
-    next[0].items.insert(1, NavItem::new("drafts", "Drafts"));
-    h.root_mut::<NavList>().set_sections(next);
-    assert!(!still_moving(h.root::<NavList>()));
-    h.relayout_at((280, 360)).expect("layout");
-    let theme = Theme::dark();
-    let row = crate::chrome::nav_row_height(&theme);
-    let drafts = h.root::<NavList>().row_rect("drafts").expect("drafts");
-    assert!((drafts.height() - row).abs() < 0.5);
 }
 
 #[test]
@@ -1317,63 +1930,6 @@ fn exported_section_and_row_buttons_keep_their_keyboard_identity() {
     );
     assert_eq!(sections_called.borrow().len(), 1);
     assert!(h.a11y_node_named("Rename row One").is_none());
-}
-
-#[test]
-fn bound_navigation_inventory_follows_the_visible_semantic_window() {
-    fn targets(node: &crate::a11y::AccessNode, result: &mut HashSet<String>) {
-        if let Some(target) = &node.action_target {
-            result.insert(target.clone());
-        }
-        for child in &node.children {
-            targets(child, result);
-        }
-    }
-    let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
-        tilo_actions::ActionSpec::operation(
-            "open",
-            "Open destination",
-            tilo_actions::OperationKind::View,
-            "test.open",
-            &(),
-        )
-        .unwrap(),
-    );
-    let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").unwrap();
-    let items = (0..40)
-        .map(|index| NavItem::new(format!("item-{index}"), format!("Item {index}")))
-        .collect();
-    let list = NavList::new(vec![NavSection::new("items", "", items).filterable()])
-        .selection_actions((0..40).map(|index| (format!("item-{index}"), binding.clone())));
-    let mut frame = harness(list, Theme::dark());
-    for filtered in [false, true] {
-        if filtered {
-            frame.root_mut::<NavList>().set_filter("Item 39");
-            frame.relayout_at((280, 360)).unwrap();
-        }
-        let list = frame.root::<NavList>();
-        let mut exported = HashSet::new();
-        targets(&Widget::accessibility(list).unwrap(), &mut exported);
-        let bindings = crate::widget::controls::control_action_bindings(list);
-        assert!(!bindings.is_empty());
-        assert!(
-            bindings.len() < 40,
-            "the inventory must follow viewport/filter bounds"
-        );
-        for binding in &bindings {
-            assert!(
-                exported.contains(&binding.control_id),
-                "orphan: {binding:?}"
-            );
-        }
-        if filtered {
-            assert_eq!(
-                bindings.len(),
-                1,
-                "the filtered destination alone is mounted"
-            );
-        }
-    }
 }
 
 fn api_sections(populated: bool) -> Vec<NavSection> {
@@ -1521,219 +2077,6 @@ fn focused_navigation_target_stays_at_its_painted_row_after_population() {
     );
 }
 
-#[test]
-fn labelled_section_insets_items_without_inventing_tree_depth() {
-    let h = harness(NavList::new(mailboxes()), Theme::dark());
-    let list = h.root::<NavList>();
-    for (id, grouped, depth) in [("inbox", false, 0), ("work", true, 0), ("design", true, 1)] {
-        let spec = spec_of(list, id);
-        assert_eq!(spec.under_section, grouped, "{id}");
-        assert_eq!(spec.depth, depth, "real tree depth for {id}");
-        let rect = list.row_rect(id).unwrap();
-        assert_eq!(rect.x0, 0.0);
-        assert_eq!(
-            rect.width(),
-            280.0,
-            "the full row remains the pointer target"
-        );
-    }
-}
-
-#[test]
-fn a_row_is_found_by_its_search_terms_and_says_which() {
-    let items = vec![
-        NavItem::new("pointing", "Mouse & touchpad").search_terms([
-            NavSearchTerm::named("Tap to click"),
-            NavSearchTerm::named("Natural scrolling").also(["reverse scrolling"]),
-            NavSearchTerm::words(["trackpad"]),
-        ]),
-        NavItem::new("network", "Network")
-            .search_terms([NavSearchTerm::named("Airplane mode").also(["flight mode"])]),
-        NavItem::new("displays", "Displays").search_terms([NavSearchTerm::named("Night light")]),
-    ];
-    let tap = super::model::narrow(&items, "tap");
-    assert_eq!(tap.len(), 1, "only the page holding it");
-    assert_eq!(tap[0].secondary.as_deref(), Some("Tap to click"));
-    let reverse = super::model::narrow(&items, "reverse");
-    assert_eq!(
-        reverse[0].secondary.as_deref(),
-        Some("Natural scrolling"),
-        "a word finds the thing and the row names it"
-    );
-    let trackpad = super::model::narrow(&items, "trackpad");
-    assert_eq!(trackpad[0].id, "pointing");
-    assert_eq!(
-        trackpad[0].secondary, None,
-        "words for the page itself add nothing"
-    );
-    let light = super::model::narrow(&items, "light");
-    assert_eq!(
-        light
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["displays"],
-        "a word start, not the middle of \"flight\""
-    );
-    assert!(super::model::narrow(&items, "zzz").is_empty());
-}
-
-/// The two widths a navigation sidebar needs follow its places: the rail's holds the longest
-/// word of a caption, the list's every label whole beside its icon, and a list is wider than
-/// its rail.
-#[test]
-fn a_place_sets_the_widths_its_rail_and_its_list_need() {
-    use super::AdaptiveNav as _;
-    let theme = Theme::dark();
-    let place = |id: &str, label: &str| NavItem::new(id, label).icon(Icon::Home);
-    let flat = |items: Vec<NavItem>| NavList::new(vec![NavSection::untitled("p", items)]);
-    let six: Vec<NavItem> = [
-        "Home",
-        "Trending",
-        "Subscriptions",
-        "Queue",
-        "History",
-        "Settings",
-    ]
-    .iter()
-    .map(|label| place(&label.to_lowercase(), label))
-    .collect();
-
-    let mut long = six.clone();
-    long[0] = place("long", "Keyboard shortcuts and input methods");
-    assert!(
-        flat(long).list_fit(&theme) > flat(six.clone()).list_fit(&theme),
-        "a longer label needs a wider list"
-    );
-
-    let mut list = flat(six).selected("queue");
-    assert!(list.list_fit(&theme) > list.rail_fit(&theme));
-    assert!(!list.is_rail());
-    assert!(list.set_rail(true));
-    assert!(list.is_rail() && !list.set_rail(true));
-    assert_eq!(list.selected_id().as_deref(), Some("queue"));
-    assert!(list.set_rail(false));
-    assert_eq!(list.selected_id().as_deref(), Some("queue"));
-}
-
-/// A row that starts expanded but has nothing under it yet (Photos'
-/// Albums before the library loads) opens as asked when its first children
-/// arrive: the person never had a chance to fold it.
-#[test]
-fn a_row_asked_open_opens_when_its_first_children_arrive() {
-    let parent = |children: Vec<NavItem>| {
-        vec![NavSection::untitled(
-            "places",
-            vec![
-                NavItem::new("albums", "Albums")
-                    .icon(Icon::Folder)
-                    .children(children)
-                    .expanded(),
-            ],
-        )]
-    };
-    let mut list = NavList::new(parent(Vec::new()));
-    assert!(!list.is_expanded("albums"), "nothing to open yet");
-    list.set_sections(parent(vec![NavItem::new("trip", "Trip")]));
-    assert!(list.is_expanded("albums"), "the albums show as they arrive");
-    list.set_expanded("albums", false);
-    list.set_sections(parent(vec![
-        NavItem::new("trip", "Trip"),
-        NavItem::new("home", "Home"),
-    ]));
-    assert!(
-        !list.is_expanded("albums"),
-        "what the person folded stays folded"
-    );
-}
-
-#[test]
-fn a_pending_section_holds_its_rows_place_until_the_items_arrive() {
-    let list = NavList::new(vec![
-        NavSection::untitled("drives", Vec::new())
-            .pending(1)
-            .empty_caption("No drives"),
-    ]);
-    let h = harness(list, Theme::dark());
-    let list = h.root::<NavList>();
-    let rows = shown_labels(list);
-    assert_eq!(rows, ["Loading"], "one row stands in, and no caption");
-    let model = list.list().model();
-    let pending = model.key_at(0).expect("the pending row");
-    assert!(
-        !model.is_stop(&pending),
-        "a pending row is not a destination"
-    );
-    let stand_in = list.list().row_rect(&pending).expect("the pending row");
-
-    let arrived = NavList::new(vec![
-        NavSection::untitled("drives", vec![NavItem::new("disk", "Disk").meta("1 TB")]).pending(1),
-    ]);
-    let h = harness(arrived, Theme::dark());
-    let row = h.root::<NavList>().row_rect("disk").expect("the item");
-    assert_eq!(row, stand_in, "the item takes the pending row's place");
-}
-
-/// An unread conversation's row stands out, and a person's row carries
-/// their avatar in their colour, ringed while they speak.
-#[test]
-fn an_unread_row_stands_out_and_a_persons_row_shows_them() {
-    let colour = Color::from_rgb8(0x40, 0x80, 0xc0);
-    let list = NavList::new(vec![NavSection::untitled(
-        "rows",
-        vec![
-            NavItem::new("talk", "talk").unread(true),
-            NavItem::new("dana", "Dana").person("u_dana", Some(colour), true),
-        ],
-    )]);
-    let h = harness(list, Theme::dark());
-    let list = h.root::<NavList>();
-    let face_of = |id: &str| spec_of(list, id);
-
-    let talk = face_of("talk");
-    let face = spec_face(&talk, Rect::new(0.0, 0.0, 200.0, 32.0), "talk");
-    assert!(face.unread);
-    assert!(face.avatar.is_none());
-    let dana = face_of("dana");
-    let face = spec_face(&dana, Rect::new(0.0, 0.0, 200.0, 32.0), "Dana");
-    assert!(!face.unread);
-    assert!(face.avatar.is_some(), "a person's row shows them");
-    assert_eq!(
-        dana.person
-            .as_ref()
-            .map(|person| (person.colour, person.speaking)),
-        Some((Some(colour), true))
-    );
-}
-
-/// A person whose row says more than their name ("Dana (via Discord)")
-/// shows their own initials, or their picture.
-#[test]
-fn a_persons_row_takes_their_face_from_their_name() {
-    let colour = Color::from_rgb8(0x40, 0x80, 0xc0);
-    let list = NavList::new(vec![NavSection::untitled(
-        "rows",
-        vec![
-            NavItem::new("dana", "Dana Reyes (via Discord)")
-                .person("discord:7", Some(colour), false)
-                .person_face("Dana Reyes", None),
-        ],
-    )]);
-    let h = harness(list, Theme::dark());
-    let list = h.root::<NavList>();
-    let item = spec_of(list, "dana");
-
-    let face = spec_face(
-        &item,
-        Rect::new(0.0, 0.0, 200.0, 32.0),
-        "Dana Reyes (via Discord)",
-    );
-    assert_eq!(
-        face.avatar.map(|avatar| avatar.initials()),
-        Some("DR".into())
-    );
-}
-
 /// `count` destinations as a mail sidebar lists them: icons, counts,
 /// account badges and secondary lines, in two sections, the second with a
 /// "New folder" action, and a calendar section of checkable rows.
@@ -1788,206 +2131,6 @@ fn rows_of(list: &NavList) -> Vec<std::sync::Arc<crate::a11y::AccessNode>> {
     Widget::accessibility_shared(list)
         .expect("the list's node")
         .children
-}
-
-/// A walk that finds the list as it was (a keystroke in the pane beside it) builds none of its
-/// rows and hands each over as the very node of the last walk, however many destinations it
-/// lists, and publishes what a walk keeping nothing publishes.
-#[test]
-fn an_unchanged_list_builds_no_row_and_hands_each_over_as_it_was() {
-    for count in [3_usize, 60] {
-        let h = tall(NavList::new(destinations(count)));
-        let list = h.root::<NavList>();
-        let first = rows_of(list);
-        assert!(
-            first.len() > count,
-            "every destination and header is on screen: {} rows for {count}",
-            first.len()
-        );
-        let builds = list.list.access_row_builds_for_test();
-        let again = rows_of(list);
-        assert_eq!(
-            list.list.access_row_builds_for_test(),
-            builds,
-            "a walk of {count} unchanged destinations built a row"
-        );
-        assert_eq!(first.len(), again.len());
-        assert!(
-            first
-                .iter()
-                .zip(&again)
-                .all(|(before, after)| std::sync::Arc::ptr_eq(before, after)),
-            "an unchanged row is handed over as the very node it was"
-        );
-        assert!(
-            !Widget::accessibility_hidden(list),
-            "a list is never hidden"
-        );
-        let root = Widget::accessibility_root(list);
-        assert_eq!(
-            list.list.access_row_builds_for_test(),
-            builds,
-            "the root and hidden state are read without building rows"
-        );
-        let mut published = Widget::accessibility(list).expect("the list's node");
-        assert_eq!(Some(&published), published_afresh(list).as_ref());
-        published.children.clear();
-        assert_eq!(
-            root,
-            Some(published),
-            "the root is the published node without its rows"
-        );
-    }
-}
-
-/// What changes a row builds it again, and every walk publishes what a walk
-/// keeping nothing publishes: a selection moved, a check toggled before the
-/// app confirms it, a destination renamed, the theme changed.
-#[test]
-fn a_change_builds_the_rows_it_changes_and_publishes_as_a_fresh_walk() {
-    let mut h = tall(NavList::new(destinations(12)));
-    let rows = rows_of(h.root::<NavList>()).len();
-    let builds = h.root::<NavList>().list.access_row_builds_for_test();
-
-    h.root_mut::<NavList>().set_selected(Some("item-5"));
-    h.relayout_at(TALL).expect("layout");
-    let list = h.root::<NavList>();
-    let _ = rows_of(list);
-    let after_select = list.list.access_row_builds_for_test();
-    assert!(
-        after_select > builds && after_select <= builds + 2,
-        "choosing a destination builds the rows it selected and left: {builds} -> {after_select}"
-    );
-    assert_eq!(Widget::accessibility(list), published_afresh(list));
-
-    // A check shows at once, before the app's next sections confirm it.
-    let work = list.row_rect("work").expect("work");
-    point(&mut h, work.center().x, work.center().y);
-    h.relayout_at(TALL).expect("layout");
-    press(&mut h, winit::event::MouseButton::Left);
-    h.relayout_at(TALL).expect("layout");
-    let list = h.root::<NavList>();
-    let published = Widget::accessibility(list).expect("the list's node");
-    let work = published
-        .children
-        .iter()
-        .find(|row| row.name.as_deref() == Some("Work"))
-        .expect("the work calendar's row");
-    assert_eq!(work.state.checked, Some(true), "the toggled check");
-    assert_eq!(Some(published), published_afresh(list));
-
-    let mut renamed = destinations(12);
-    renamed[0].items[1].label = "Renamed".to_owned();
-    h.root_mut::<NavList>().set_sections(renamed);
-    h.relayout_at(TALL).expect("layout");
-    let list = h.root::<NavList>();
-    let published = Widget::accessibility(list).expect("the list's node");
-    assert!(
-        published
-            .children
-            .iter()
-            .any(|row| row.name.as_deref() == Some("Renamed")),
-        "the renamed destination is published by its new name"
-    );
-    assert_eq!(Some(published), published_afresh(list));
-
-    h.relayout_themed(TALL, Theme::light()).expect("layout");
-    let list = h.root::<NavList>();
-    assert_eq!(Widget::accessibility(list), published_afresh(list));
-    assert_eq!(rows_of(list).len(), rows);
-}
-
-/// A destination whose selection action is unavailable is published
-/// disabled on every walk, however its row is kept; the rows of other
-/// destinations are still handed over as they were.
-#[test]
-fn an_unavailable_destination_is_published_disabled_and_the_rest_kept() {
-    let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
-        tilo_actions::ActionSpec::operation(
-            "open",
-            "Open destination",
-            tilo_actions::OperationKind::View,
-            "test.open",
-            &(),
-        )
-        .expect("an action"),
-    );
-    let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").expect("a binding");
-    let list = NavList::new(destinations(8))
-        .selection_actions((0..4).map(|index| (format!("item-{index}"), binding.clone())));
-    let mut h = tall(list);
-    crate::widget::controls::ActionControls::refresh_control_action_availability(
-        &mut *h.root_mut::<NavList>(),
-        &HashSet::new(),
-    );
-    let list = h.root::<NavList>();
-    let first = rows_of(list);
-    let again = rows_of(list);
-    for (before, after) in first.iter().zip(&again) {
-        let name = before.name.as_deref().unwrap_or_default();
-        let gated = (0..4).any(|index| name == format!("Folder {index}"));
-        assert_eq!(
-            after.state.disabled, gated,
-            "{name} is disabled exactly when its action is unavailable"
-        );
-        assert_eq!(
-            std::sync::Arc::ptr_eq(before, after),
-            !gated,
-            "{name}: only the rows the list disables are copied"
-        );
-    }
-    assert_eq!(Widget::accessibility(list), published_afresh(list));
-}
-
-/// Whether a list holds an action binding, which the host asks on every
-/// frame, is what its full binding inventory says, answered without
-/// building a row: the visible destinations' selection actions, and nothing
-/// for a list without them.
-#[test]
-fn whether_a_list_binds_actions_is_answered_without_building_rows() {
-    use crate::widget::controls::ActionControls;
-    fn binds_an_action(list: &NavList) -> bool {
-        list.control_action_bindings()
-            .iter()
-            .any(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)))
-    }
-    let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
-        tilo_actions::ActionSpec::operation(
-            "open",
-            "Open destination",
-            tilo_actions::OperationKind::View,
-            "test.open",
-            &(),
-        )
-        .expect("an action"),
-    );
-    let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").expect("a binding");
-    let lists = [
-        NavList::new(destinations(8)),
-        NavList::new(destinations(8)).selection_actions([("item-2".to_owned(), binding.clone())]),
-        NavList::new(destinations(8)).selection_actions([("elsewhere".to_owned(), binding)]),
-    ];
-    for (index, list) in lists.into_iter().enumerate() {
-        let h = tall(list);
-        let list = h.root::<NavList>();
-        let _ = rows_of(list);
-        let builds = list.list.access_row_builds_for_test();
-        assert_eq!(
-            list.has_action_control_bindings(),
-            index == 1,
-            "list {index}: only a visible destination's selection action is an action binding"
-        );
-        assert_eq!(
-            list.list.access_row_builds_for_test(),
-            builds,
-            "list {index}: answered without building rows"
-        );
-        assert_eq!(
-            list.has_action_control_bindings(),
-            binds_an_action(list),
-            "list {index}: the answer is the inventory's"
-        );
-    }
 }
 
 #[cfg(feature = "native")]
@@ -2119,39 +2262,42 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
     );
 }
 
-/// Moving the pointer from one destination to the next repaints those two
-/// rows, not the sidebar, the content beside it or the window: each frame's
-/// damage stays within the two rows the hover moved between, and no frame
-/// asks for a layout.
-#[cfg(feature = "native")]
-#[test]
-fn a_hover_moving_between_destinations_damages_only_those_two_rows() {
-    assert_sidebar_hovers_damage_only_their_rows(Box::new(
-        crate::widget::Stack::new().push(Box::new(crate::widget::Text::new("A folder"))),
-    ));
-}
+tilo_test_env::scenario! {
+    #[cfg(feature = "native")]
+    fn a_hover_repaints_only_the_rows_it_touches;
 
-/// The content beside the sidebar keeps what it painted while the pointer
-/// moves over the sidebar: a collapsible section's header and its chevron,
-/// and a month, repaint nothing a hover in the sidebar did not change.
-#[cfg(feature = "native")]
-#[test]
-fn a_sidebar_hover_repaints_no_section_header_or_month_beside_it() {
-    let section = crate::widget::Section::new(vec![
-        Box::new(crate::widget::ListRow::new("wifi", "Wi-Fi")),
-        Box::new(crate::widget::ListRow::new("vpn", "VPN")),
-    ])
-    .with_header(crate::widget::SectionHeader::group("Connections"))
-    .collapsible();
-    let month = crate::widget::DatePicker::new(
-        chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default(),
-    )
-    .with_today(chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default());
-    assert_sidebar_hovers_damage_only_their_rows(Box::new(
-        crate::widget::Column::new()
-            .push(Box::new(section))
-            .push(Box::new(month)),
-    ));
+    // Moving the pointer from one destination to the next repaints those two
+    // rows, not the sidebar, the content beside it or the window: each frame's
+    // damage stays within the two rows the hover moved between, and no frame
+    // asks for a layout.
+    phase a_hover_moving_between_destinations_damages_only_those_two_rows;
+    {
+        assert_sidebar_hovers_damage_only_their_rows(Box::new(
+            crate::widget::Stack::new().push(Box::new(crate::widget::Text::new("A folder"))),
+        ));
+    }
+
+    // The content beside the sidebar keeps what it painted while the pointer
+    // moves over the sidebar: a collapsible section's header and its chevron,
+    // and a month, repaint nothing a hover in the sidebar did not change.
+    phase a_sidebar_hover_repaints_no_section_header_or_month_beside_it;
+    {
+        let section = crate::widget::Section::new(vec![
+            Box::new(crate::widget::ListRow::new("wifi", "Wi-Fi")),
+            Box::new(crate::widget::ListRow::new("vpn", "VPN")),
+        ])
+        .with_header(crate::widget::SectionHeader::group("Connections"))
+        .collapsible();
+        let month = crate::widget::DatePicker::new(
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default(),
+        )
+        .with_today(chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default());
+        assert_sidebar_hovers_damage_only_their_rows(Box::new(
+            crate::widget::Column::new()
+                .push(Box::new(section))
+                .push(Box::new(month)),
+        ));
+    }
 }
 
 /// Move the pointer from one destination to the next of a sidebar beside
@@ -2206,129 +2352,6 @@ fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element)
             );
         }
     }
-}
-
-/// Choosing a destination is the list's published view action: an agent
-/// choosing one through it sees the list show it and the app hear of it,
-/// as a person's click does; a destination the list does not have is
-/// refused.
-#[test]
-fn an_agent_chooses_a_destination_through_the_published_view_action() {
-    let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
-    let seen = Rc::clone(&chosen);
-    let list = NavList::new(mailboxes())
-        .selected("inbox")
-        .on_view("mail.places", move |id| seen.borrow_mut().push(id));
-    let mut h = harness(list, Theme::dark());
-    let resources = h.resources();
-    let control = resources
-        .iter()
-        .find(|resource| resource.id.0 == "tilo.control:mail.places")
-        .expect("the list publishes its selection");
-    // The resource a sheet names reads as the place the person is at
-    // ("Inbox"), never as the control's id: an agent's confirmation of a
-    // step reads a person's words, never an address.
-    assert_eq!(
-        control.label, "Inbox",
-        "the published choice is named by the place shown, not its id"
-    );
-    let select = control
-        .actions
-        .iter()
-        .find(|action| action.id == "select")
-        .expect("a select action");
-    assert_eq!(select.kind, tilo_actions::OperationKind::View);
-    let choices: Vec<&str> = select.params()[0]
-        .choices
-        .iter()
-        .map(AsRef::as_ref)
-        .collect();
-    assert_eq!(choices, ["inbox", "sent", "work", "design", "travel"]);
-
-    let destination =
-        |id: &str| serde_json::Map::from_iter([("entry".into(), serde_json::json!(id))]);
-    h.invoke_published("tilo.control:mail.places", "select", &destination("travel"))
-        .expect("an agent chooses a destination");
-    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("travel"));
-    assert_eq!(chosen.borrow().as_slice(), ["travel"]);
-    assert!(
-        h.invoke_published("tilo.control:mail.places", "select", &destination("spam"))
-            .is_err(),
-        "a destination the list does not have is refused"
-    );
-    assert_eq!(chosen.borrow().as_slice(), ["travel"]);
-}
-
-#[test]
-fn a_described_list_holds_places_and_sections_under_their_headings_in_order() {
-    use crate::component::Described as _;
-    let place = |key: &str, label: &str| NavItemProps {
-        key: key.into(),
-        label: label.into(),
-        icon: Some(Icon::Hash),
-        ..NavItemProps::default()
-    };
-    let queue = crate::Intents::default();
-    let add = crate::component::OfferedAction {
-        label: "New channel".into(),
-        icon: Some(Icon::Plus),
-        run: crate::component::Event::View(crate::component::Intent::new(
-            &queue, "channels", "add",
-        )),
-        ..crate::component::OfferedAction::default()
-    };
-    let list = NavList::from_props(
-        "channels",
-        NavListProps {
-            items: vec![
-                NavEntry::Item(NavItemProps {
-                    count: Some(3),
-                    ..place("/general", "general")
-                }),
-                NavEntry::Section(NavSectionProps {
-                    title: "Team".into(),
-                    collapsible: true,
-                    add: Some(add),
-                    items: vec![
-                        place("Team/design", "design"),
-                        place("Team/release", "release"),
-                    ],
-                }),
-                NavEntry::Item(place("/random", "random")),
-            ],
-            ..NavListProps::default()
-        },
-    );
-    let shown: Vec<(&str, bool, Vec<&str>)> = list
-        .sections
-        .iter()
-        .map(|s| {
-            (
-                s.title.as_str(),
-                s.collapsible,
-                s.items.iter().map(|i| i.label.as_str()).collect(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        shown,
-        [
-            ("", false, vec!["general"]),
-            ("Team", true, vec!["design", "release"]),
-            ("", false, vec!["random"]),
-        ]
-    );
-    assert_eq!(
-        list.sections[0].items[0].count,
-        Some(crate::chrome::NavCount::Neutral(3)),
-        "a place shows what it holds"
-    );
-    let trailing = list.sections[1]
-        .trailing_action
-        .as_ref()
-        .expect("the section heads an add");
-    assert_eq!(trailing.label, "New channel");
-    assert_eq!(trailing.icon, Icon::Plus);
 }
 
 /// A test action taking the gesture's input as its one `value`.

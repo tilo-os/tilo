@@ -60,83 +60,88 @@ fn ledger() -> Vec<(String, String)> {
         .collect()
 }
 
-#[test]
-fn every_app_facing_widget_is_bound_or_says_why_not() {
-    let scan = toolkit();
-    let bound = bound();
-    let owed: BTreeSet<String> = ledger().into_iter().map(|(name, _)| name).collect();
-    let unaccounted: Vec<String> = scan
-        .widgets
-        .iter()
-        .filter(|w| w.exempt.is_none())
-        // A widget reaches a view by the name its component is described by: `IconWidget` is
-        // `ui.Icon`, `ReactionStripWidget` is `ui.Reactions`.
-        .map(|w| {
-            scan.component_of_widget(&w.name)
-                .unwrap_or_else(|| w.name.clone())
-        })
-        .filter(|name| !bound.contains(name) && !owed.contains(name))
-        .collect();
-    assert!(
-        unaccounted.is_empty(),
-        "{} public app-facing widget(s) are neither reachable from tilolang as `ui.<Name>` nor \
+tilo_test_env::scenario! {
+    /// The coverage of the toolkit's components, and the list of those not described yet.
+    fn every_toolkit_widget_is_bound_or_listed_as_not_yet_described;
+
+    phase every_app_facing_widget_is_bound_or_says_why_not;
+    {
+        let scan = toolkit();
+        let bound = bound();
+        let owed: BTreeSet<String> = ledger().into_iter().map(|(name, _)| name).collect();
+        let unaccounted: Vec<String> = scan
+            .widgets
+            .iter()
+            .filter(|w| w.exempt.is_none())
+            // A widget reaches a view by the name its component is described by: `IconWidget` is
+            // `ui.Icon`, `ReactionStripWidget` is `ui.Reactions`.
+            .map(|w| {
+                scan.component_of_widget(&w.name)
+                    .unwrap_or_else(|| w.name.clone())
+            })
+            .filter(|name| !bound.contains(name) && !owed.contains(name))
+            .collect();
+        assert!(
+            unaccounted.is_empty(),
+            "{} public app-facing widget(s) are neither reachable from tilolang as `ui.<Name>` nor \
          listed with a reason in crates/sdk/ui-core/src/component/not_yet_described.txt: {}. \
          Describe each widget (`#[derive(Component)]` props and `impl Described`, see \
          `tilo_ui::component`) so every app can place it from a view, or say where it is \
          declared why a view never places it (`#[not_a_component(kind, \"why\")]`).",
-        unaccounted.len(),
-        unaccounted.join(", ")
-    );
-}
-
-#[test]
-fn the_ledger_only_shrinks_and_names_widgets_that_are_really_out() {
-    let scan = toolkit();
-    let bound = bound();
-    let mut stale = Vec::new();
-    for (name, why) in ledger() {
-        assert!(
-            !why.is_empty(),
-            "`{name}` says why it is not reachable from tilolang yet"
+            unaccounted.len(),
+            unaccounted.join(", ")
         );
-        let widget = scan.widgets.iter().find(|w| w.name == name);
-        let component = scan
-            .component_of_widget(&name)
-            .unwrap_or_else(|| name.clone());
-        if bound.contains(&name) || bound.contains(&component) || scan.is_described(&name) {
-            stale.push(format!(
-                "{name}: the toolkit describes it, so `ui.{name}` is bound"
-            ));
-        } else {
-            match widget {
-                None => stale.push(format!("{name}: the toolkit declares no such widget")),
-                Some(w) if w.exempt.is_some() => stale.push(format!(
-                    "{name}: the toolkit says where it is declared that it is not a component"
-                )),
-                Some(_) => {}
+    }
+
+    phase the_ledger_only_shrinks_and_names_widgets_that_are_really_out;
+    {
+        let scan = toolkit();
+        let bound = bound();
+        let mut stale = Vec::new();
+        for (name, why) in ledger() {
+            assert!(
+                !why.is_empty(),
+                "`{name}` says why it is not reachable from tilolang yet"
+            );
+            let widget = scan.widgets.iter().find(|w| w.name == name);
+            let component = scan
+                .component_of_widget(&name)
+                .unwrap_or_else(|| name.clone());
+            if bound.contains(&name) || bound.contains(&component) || scan.is_described(&name) {
+                stale.push(format!(
+                    "{name}: the toolkit describes it, so `ui.{name}` is bound"
+                ));
+            } else {
+                match widget {
+                    None => stale.push(format!("{name}: the toolkit declares no such widget")),
+                    Some(w) if w.exempt.is_some() => stale.push(format!(
+                        "{name}: the toolkit says where it is declared that it is not a component"
+                    )),
+                    Some(_) => {}
+                }
             }
         }
-    }
-    assert!(
-        stale.is_empty(),
-        "remove these from crates/sdk/ui-core/src/component/not_yet_described.txt, which only \
+        assert!(
+            stale.is_empty(),
+            "remove these from crates/sdk/ui-core/src/component/not_yet_described.txt, which only \
          shrinks:\n{}",
-        stale.join("\n")
-    );
-}
+            stale.join("\n")
+        );
+    }
 
-/// The ledger holds no component the toolkit has not written yet: the catalogue and the toolkit's
-/// declarations are one reading, so a component bound without a described widget cannot hide.
-#[test]
-fn every_bound_component_is_one_the_toolkit_declares() {
-    let declared: BTreeSet<String> = toolkit().component_names().into_iter().collect();
-    let undeclared: Vec<String> = bound()
-        .into_iter()
-        .filter(|name| !declared.contains(name))
-        .collect();
-    assert!(
-        undeclared.is_empty(),
-        "the catalogue names components the toolkit's sources do not declare: {}",
-        undeclared.join(", ")
-    );
+    phase every_bound_component_is_one_the_toolkit_declares;
+    // The ledger holds no component the toolkit has not written yet: the catalogue and the toolkit's
+    // declarations are one reading, so a component bound without a described widget cannot hide.
+    {
+        let declared: BTreeSet<String> = toolkit().component_names().into_iter().collect();
+        let undeclared: Vec<String> = bound()
+            .into_iter()
+            .filter(|name| !declared.contains(name))
+            .collect();
+        assert!(
+            undeclared.is_empty(),
+            "the catalogue names components the toolkit's sources do not declare: {}",
+            undeclared.join(", ")
+        );
+    }
 }

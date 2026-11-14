@@ -58,80 +58,86 @@ impl ControlSize {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_control_of_a_size_is_that_tall() {
-        use crate::headless::{FrameHarness, InspectionNode};
-        use crate::widget::toggle_group::Segment;
-        use crate::widget::{
-            Button, ButtonRole, Dropdown, NumberInput, Row, SearchField, ToggleGroup,
-        };
-        fn collect(node: &InspectionNode, out: &mut Vec<(String, f64)>) {
-            if [
-                "Button",
-                "Dropdown",
-                "NumberInput",
-                "ToggleGroup",
-                "SearchField",
-            ]
-            .contains(&node.widget.as_str())
-            {
-                out.push((node.widget.clone(), node.rect[3]));
-            }
-            for child in &node.children {
-                collect(child, out);
-            }
-        }
-        let theme = Theme::dark();
-        for size in [ControlSize::Small, ControlSize::Regular, ControlSize::Large] {
-            let row = Row::new()
-                .push(Box::new(
-                    Button::new("p", "Save")
-                        .role(ButtonRole::Primary)
-                        .control_size(size),
-                ))
-                .push(Box::new(Button::new("s", "Discard").control_size(size)))
-                .push(Box::new(
-                    Dropdown::new(vec!["Medium".into()], "d").control_size(size),
-                ))
-                .push(Box::new(NumberInput::new(1.0).control_size(size)))
-                .push(Box::new(
-                    ToggleGroup::new(vec![Segment::new("List"), Segment::new("Grid")], 0)
-                        .control_size(size),
-                ))
-                .push(Box::new(SearchField::new().control_size(size)));
-            let harness = FrameHarness::new_with_theme(
-                crate::State::new(),
-                Box::new(row),
-                (1200, 200),
-                theme.clone(),
-            );
-            let mut heights = Vec::new();
-            collect(&harness.inspection().root, &mut heights);
-            assert_eq!(heights.len(), 6, "{size:?}: {heights:?}");
-            let want = size.height(&theme);
-            for (widget, height) in &heights {
-                assert!(
-                    (height - want).abs() < 0.5,
-                    "{size:?}: {widget} is {height} tall, not {want}: {heights:?}"
-                );
-            }
-        }
-    }
+    tilo_test_env::scenario! {
+        /// The control sizes.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn control_sizes_set_every_controls_height_and_label_role;
 
-    #[test]
-    fn sizes_order_heights_and_pick_label_roles() {
-        let theme = Theme::dark();
-        assert_eq!(ControlSize::Small.height(&theme), 28.0);
-        assert_eq!(ControlSize::Regular.height(&theme), 32.0);
-        assert_eq!(ControlSize::Large.height(&theme), 40.0);
-        assert_eq!(ControlSize::Small.text_role(), TextRole::Label);
-        assert_eq!(ControlSize::Regular.text_role(), TextRole::Label);
-        assert_eq!(ControlSize::Large.text_role(), TextRole::Body);
-        let scaled = Theme::dark().with_ui_scale(1.5);
-        assert_eq!(ControlSize::Regular.height(&scaled), 48.0);
-        assert_eq!(
-            ControlSize::Large.label_style(&scaled),
-            scaled.text(TextRole::Body)
-        );
+        phase every_control_of_a_size_is_that_tall;
+        {
+            use crate::headless::{FrameHarness, InspectionNode};
+            use crate::widget::toggle_group::Segment;
+            use crate::widget::{
+                Button, ButtonRole, Dropdown, NumberInput, Row, SearchField, ToggleGroup,
+            };
+            fn collect(node: &InspectionNode, out: &mut Vec<(String, f64)>) {
+                if [
+                    "Button",
+                    "Dropdown",
+                    "NumberInput",
+                    "ToggleGroup",
+                    "SearchField",
+                ]
+                .contains(&node.widget.as_str())
+                {
+                    out.push((node.widget.clone(), node.rect[3]));
+                }
+                for child in &node.children {
+                    collect(child, out);
+                }
+            }
+            let theme = Theme::dark();
+            for size in [ControlSize::Small, ControlSize::Regular, ControlSize::Large] {
+                let row = Row::new()
+                    .push(Box::new(
+                        Button::new("p", "Save")
+                            .role(ButtonRole::Primary)
+                            .control_size(size),
+                    ))
+                    .push(Box::new(Button::new("s", "Discard").control_size(size)))
+                    .push(Box::new(
+                        Dropdown::new(vec!["Medium".into()], "d").control_size(size),
+                    ))
+                    .push(Box::new(NumberInput::new(1.0).control_size(size)))
+                    .push(Box::new(
+                        ToggleGroup::new(vec![Segment::new("List"), Segment::new("Grid")], 0)
+                            .control_size(size),
+                    ))
+                    .push(Box::new(SearchField::new().control_size(size)));
+                let harness = FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(row),
+                    (1200, 200),
+                    theme.clone(),
+                );
+                let mut heights = Vec::new();
+                collect(&harness.inspection().root, &mut heights);
+                assert_eq!(heights.len(), 6, "{size:?}: {heights:?}");
+                let want = size.height(&theme);
+                for (widget, height) in &heights {
+                    assert!(
+                        (height - want).abs() < 0.5,
+                        "{size:?}: {widget} is {height} tall, not {want}: {heights:?}"
+                    );
+                }
+            }
+        }
+
+        phase sizes_order_heights_and_pick_label_roles;
+        {
+            let theme = Theme::dark();
+            assert_eq!(ControlSize::Small.height(&theme), 28.0);
+            assert_eq!(ControlSize::Regular.height(&theme), 32.0);
+            assert_eq!(ControlSize::Large.height(&theme), 40.0);
+            assert_eq!(ControlSize::Small.text_role(), TextRole::Label);
+            assert_eq!(ControlSize::Regular.text_role(), TextRole::Label);
+            assert_eq!(ControlSize::Large.text_role(), TextRole::Body);
+            let scaled = Theme::dark().with_ui_scale(1.5);
+            assert_eq!(ControlSize::Regular.height(&scaled), 48.0);
+            assert_eq!(
+                ControlSize::Large.label_style(&scaled),
+                scaled.text(TextRole::Body)
+            );
+        }
     }
 }

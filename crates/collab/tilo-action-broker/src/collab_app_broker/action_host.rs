@@ -14,11 +14,10 @@ use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND,
-    APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal, CataloguePage,
-    CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt,
-    InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation,
-    application_provider, application_provider_record, pending, provider_workspace,
-    workspace_provider,
+    APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CataloguePage, CatalogueProvider,
+    CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
+    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
+    application_provider_record, pending, provider_workspace, workspace_provider,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
@@ -657,10 +656,7 @@ impl AppBrokerState {
         let access = self.app_action_access(app_id);
         let owner = person
             .acting_for_person()
-            .or_else(|| match person.principal() {
-                tilo_actions::remote::CallerPrincipal::Person(id) => Some(id.as_str()),
-                _ => None,
-            })
+            .or_else(|| person.acting().person_id())
             .unwrap_or_default()
             .to_owned();
         let mut as_app = Caller::local_app(app_id).acting_for(owner);
@@ -715,11 +711,9 @@ impl AppBrokerState {
             RemoteActionMessage::RecordRead { read, .. } => Some(if read.app == app_id {
                 person.clone()
             } else {
-                match person.principal() {
-                    tilo_actions::remote::CallerPrincipal::Person(id) => {
-                        as_app.acting_for(id.clone())
-                    }
-                    _ => as_app,
+                match person.acting().person_id() {
+                    Some(id) => as_app.acting_for(id),
+                    None => as_app,
                 }
             }),
             RemoteActionMessage::FeedbackRequest { .. }
@@ -850,25 +844,23 @@ impl AppBrokerState {
             // session to (`Caller::delegated_to`) through that person's.
             Some(confined) => {
                 confined == workspace.id().to_string()
-                    && match caller.principal() {
-                        CallerPrincipal::Agent(_) => {
-                            BrokerActor::for_caller(caller).reads_in(workspace, now)
-                        }
-                        CallerPrincipal::Person(_)
-                        | CallerPrincipal::App(_)
-                        | CallerPrincipal::Bot(_) => true,
+                    && if caller.acting().is_agent() {
+                        BrokerActor::for_caller(caller).reads_in(workspace, now)
+                    } else {
+                        true
                     }
             }
-            None => match caller.principal() {
+            None => {
                 // An application or a bot is always admitted into one workspace;
                 // unconfined, it takes part in none.
-                CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
-                // Anyone else takes part in a workspace they may read; a foreign
-                // device reads wherever its person does.
-                CallerPrincipal::Person(_) | CallerPrincipal::Agent(_) => {
+                if caller.acting().app().is_some() || caller.acting().is_bot() {
+                    false
+                } else {
+                    // Anyone else takes part in a workspace they may read; a foreign
+                    // device reads wherever its person does.
                     BrokerActor::for_caller(caller).reads_in(workspace, now)
                 }
-            },
+            }
         }
     }
 
@@ -879,9 +871,7 @@ impl AppBrokerState {
     /// caller, and for an agent that may act in its workspace.
     fn agent_workspace_unreachable(&self, caller: &Caller) -> Option<String> {
         let workspace_id = caller.workspace()?;
-        let CallerPrincipal::Agent(agent) = caller.principal() else {
-            return None;
-        };
+        let agent = caller.acting().agent_id()?;
         let Some(membership) = self.membership.as_ref() else {
             return Some("this session's workspaces are not attached to its actions".into());
         };
@@ -1320,8 +1310,8 @@ impl AppBrokerState {
                 // process reads the same list from disk; a remote caller is
                 // told only what it may open. A scope asking for one
                 // application is told only that one's.
-                let names_unopened = matches!(caller.principal(), CallerPrincipal::Agent(_))
-                    && caller.device_public_key().is_none();
+                let names_unopened =
+                    caller.acting().is_agent() && caller.device_public_key().is_none();
                 for app in applications
                     .iter()
                     .filter(|app| scope.wants_app(&app.package_id))
@@ -2412,10 +2402,8 @@ impl AppBrokerState {
             }) => {
                 self.checked_policy_time(Some(time)).map_err(refusal)?;
                 if original_workspace != workspace
-                    || caller.principal()
-                        != &tilo_actions::remote::CallerPrincipal::Person(
-                            super::principal_id_for_root(certificate.user_public_key),
-                        )
+                    || caller.acting().person_id()
+                        != Some(super::person_id_for_root(certificate.user_public_key).as_str())
                 {
                     return Err(ActionHostError::NotPermitted);
                 }
@@ -2547,17 +2535,20 @@ impl AppBrokerState {
                 app_id: scope.app_id.clone(),
             };
         }
-        match caller.principal() {
-            CallerPrincipal::Person(_) => LaunchPlace::Focus,
-            CallerPrincipal::App(app_id) if pressed_for(app_id) => LaunchPlace::Focus,
-            CallerPrincipal::App(app_id) => LaunchPlace::Beside {
-                app_id: app_id.clone(),
-            },
-            CallerPrincipal::Agent(_) | CallerPrincipal::Bot(_) => self
-                .launchable
-                .view_of(workspace, &BrokerActor::for_caller(caller).id)
-                .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id }),
+        if let Some(app_id) = caller.acting().app() {
+            if pressed_for(app_id) {
+                return LaunchPlace::Focus;
+            }
+            return LaunchPlace::Beside {
+                app_id: app_id.to_string(),
+            };
         }
+        if caller.acting().is_person() {
+            return LaunchPlace::Focus;
+        }
+        self.launchable
+            .view_of(workspace, &BrokerActor::for_caller(caller).id)
+            .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id })
     }
 
     /// The live connection of `app_id` in `workspace` that publishes `address`
@@ -2788,14 +2779,16 @@ impl AppBrokerState {
             return Pending::ready(Err(ActionHostError::UnknownInvocation));
         };
         let (receipt, answered) = pending();
-        let state = Arc::clone(self);
-        self.journal_in_flight(&invocation).then(move |outcome| {
-            receipt.complete(
-                outcome
-                    .map(|()| state.receipt_for(invocation, job))
-                    .map_err(|reason| ActionHostError::Unavailable { reason }),
-            );
-        });
+        self.when_durable(
+            self.journal_in_flight(&invocation),
+            move |state, outcome| {
+                receipt.complete(
+                    outcome
+                        .map(|()| state.receipt_for(invocation, job))
+                        .map_err(|reason| ActionHostError::Unavailable { reason }),
+                );
+            },
+        );
         answered
     }
 
@@ -3890,10 +3883,11 @@ mod device_pairing_tests {
         let state = fixture.state.clone();
         let person = fixture.caller.clone();
         let workspace = fixture.workspace.clone();
-        let owner = match person.principal() {
-            tilo_actions::remote::CallerPrincipal::Person(owner) => owner.clone(),
-            _ => panic!("the settings caller is a person"),
-        };
+        let owner = person
+            .acting()
+            .person_id()
+            .expect("the settings caller is a person")
+            .to_owned();
 
         let rows = state
             .eager_catalogue(&person, RowScope::Provider(device_pairing::PROVIDER))
@@ -3907,9 +3901,9 @@ mod device_pairing_tests {
         assert_eq!(
             state
                 .app_door(&person, "so.tilo.settings", &discover)
-                .map(|caller| caller.principal().clone())
+                .map(|caller| caller.acting().clone())
                 .ok(),
-            Some(person.principal().clone())
+            Some(person.acting().clone())
         );
         assert!(state.app_door(&person, "so.tilo.notes", &discover).is_err());
 

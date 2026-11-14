@@ -531,7 +531,7 @@ impl Replica {
     }
 
     /// Where the participant's last operation left it, as the live plane's
-    /// selection anchors every collaborator's window resolves against the
+    /// selection anchors every member's window resolves against the
     /// record's own items: the paragraph it wrote and the caret at its end,
     /// the item it acted on. `None` before any operation, or for one that
     /// lands nowhere in particular.
@@ -1227,10 +1227,15 @@ fn replica_standing(
     let permissions = match actor {
         ReplicaActor::Agent => {
             let member = PermissionContext::member_of(workspace, participant, Role::Editor);
-            let standing = member.standing().clone().as_acting(
-                policy::Acting::agent(participant).acting_for(policy::Acting::person(participant)),
-            );
-            match standing {
+            let acting =
+                policy::Acting::agent(participant).acting_for(policy::Acting::person(participant));
+            let granted = policy::roles::agent_grants(workspace, participant, participant, &[]);
+            match member
+                .standing()
+                .clone()
+                .as_acting(acting)
+                .map(|standing| standing.granted(granted))
+            {
                 Some(standing) => member.with_standing(standing),
                 None => member.read_only(),
             }
@@ -1244,7 +1249,7 @@ fn replica_standing(
             invoker = invoker
                 .with_kind(tilo_actions::ActorKind::Bot)
                 .acting_for(installer);
-            PermissionContext::from_standing(workspace, standing)
+            PermissionContext::from_standing(standing)
         }
         ReplicaActor::Member {
             standing,
@@ -1253,12 +1258,12 @@ fn replica_standing(
             agent,
             agent_name,
         } => {
-            let person = standing.person_id().unwrap_or_default().to_owned();
             // The host bounded the standing as it reads the caller
             // (`Caller::invoker`), and puts an ask to the person on their own
             // devices when their agent acts.
+            let person = standing.person_id().unwrap_or_default().to_owned();
             let permissions = PermissionContext::new(
-                ui::permissions::Actor::person(person.clone()).in_workspace(workspace),
+                ui::permissions::Acting::person(person.clone()),
                 sandbox,
                 standing,
             )

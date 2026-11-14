@@ -380,21 +380,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_code_reads_back_however_it_is_typed() {
-        let code = code_from([0, 1, 2, 3, 4, 5, 29]);
-        assert_eq!(code, "234-567Z");
-        assert_eq!(normalize_code("234567z").as_deref(), Some("234-567Z"));
-        assert_eq!(normalize_code(" 234 567Z ").as_deref(), Some("234-567Z"));
-        assert_eq!(normalize_code("234-567"), None);
-        assert_eq!(normalize_code("O34-567Z"), None);
-        assert_eq!(normalize_code("234-5671"), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_login_code_is_spelled_so_it_reads_back;
 
-    #[test]
-    fn every_letter_is_one_a_person_cannot_misread() {
-        for confusable in b"01OILU" {
-            assert!(!CODE_ALPHABET.contains(confusable));
+        phase a_code_reads_back_however_it_is_typed;
+        {
+            let code = code_from([0, 1, 2, 3, 4, 5, 29]);
+            assert_eq!(code, "234-567Z");
+            assert_eq!(normalize_code("234567z").as_deref(), Some("234-567Z"));
+            assert_eq!(normalize_code(" 234 567Z ").as_deref(), Some("234-567Z"));
+            assert_eq!(normalize_code("234-567"), None);
+            assert_eq!(normalize_code("O34-567Z"), None);
+            assert_eq!(normalize_code("234-5671"), None);
+        }
+
+        phase every_letter_is_one_a_person_cannot_misread;
+        {
+            for confusable in b"01OILU" {
+                assert!(!CODE_ALPHABET.contains(confusable));
+            }
         }
     }
 }

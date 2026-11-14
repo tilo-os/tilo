@@ -541,11 +541,18 @@ view note_page(n: Note) {
         );
     }
 
-    /// A page whose item offers nothing shows no "…": the door would open on nothing, taking a
-    /// line of the page for a control with nothing behind it.
-    #[test]
-    fn a_page_whose_item_offers_nothing_shows_no_dots() {
-        const QUIET: &str = r#"
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_page_places_its_dots_and_a_bar_its_toggle;
+
+        phase a_page_whose_item_offers_nothing_shows_no_dots;
+        // A page whose item offers nothing shows no "…": the door would open on nothing, taking a
+        // line of the page for a control with nothing behind it.
+        {
+            const QUIET: &str = r#"
 app so.tilo.test.quiet "Quiet"
 type Quiet {
     title: Text
@@ -571,78 +578,160 @@ view quiet_page(q: Quiet) {
     }
 }
 "#;
-        let w = install(QUIET);
-        let root = w.root("Quiets");
-        let item = returned_ref(w.call("new", vec![Value::resource(&root)]));
-        let window = w.window("quiet_page", &item);
-        let tree = window.tree();
-        assert!(
-            of_kind(tree, "ui.MenuButton").is_empty(),
-            "an item with nothing to do shows no \"…\":\n{}",
-            dump(tree)
-        );
-        assert_eq!(
-            of_kind(tree, "ui.TextInput").len(),
-            1,
-            "the page edits its title:\n{}",
-            dump(tree)
-        );
-    }
+            let w = install(QUIET);
+            let root = w.root("Quiets");
+            let item = returned_ref(w.call("new", vec![Value::resource(&root)]));
+            let window = w.window("quiet_page", &item);
+            let tree = window.tree();
+            assert!(
+                of_kind(tree, "ui.MenuButton").is_empty(),
+                "an item with nothing to do shows no \"…\":\n{}",
+                dump(tree)
+            );
+            assert_eq!(
+                of_kind(tree, "ui.TextInput").len(),
+                1,
+                "the page edits its title:\n{}",
+                dump(tree)
+            );
+        }
 
-    /// A page whose item offers commands keeps its "…" at the trailing edge of the line its
-    /// title is on, whatever the view left the title in: the door stands beside the title, not
-    /// on a line of its own under it.
-    #[test]
-    fn a_pages_dots_stand_beside_its_title() {
-        let w = install(BOARD);
-        let root = w.root("Board");
-        let column = returned_ref(w.call("new_column", vec![Value::resource(&root)]));
-        let card = returned_ref(w.call(
-            "new_card",
-            vec![
-                Value::resource(&column),
+        phase a_pages_dots_stand_beside_its_title;
+        // A page whose item offers commands keeps its "…" at the trailing edge of the line its
+        // title is on, whatever the view left the title in: the door stands beside the title, not
+        // on a line of its own under it.
+        {
+            let w = install(BOARD);
+            let root = w.root("Board");
+            let column = returned_ref(w.call("new_column", vec![Value::resource(&root)]));
+            let card = returned_ref(w.call(
+                "new_card",
+                vec![
+                    Value::resource(&column),
+                    Value::text("Merge the offline queue"),
+                ],
+            ));
+            assert_eq!(
+                w.rt.read(&card, "title").unwrap(),
                 Value::text("Merge the offline queue"),
-            ],
-        ));
-        assert_eq!(
-            w.rt.read(&card, "title").unwrap(),
-            Value::text("Merge the offline queue"),
-            "the card is named what the call gave it"
-        );
-        let window = w.window("card_page", &card);
-        let tree = window.tree();
-        let title = title_field(tree);
-        let path = path_to(tree, &title.key).expect("the title stands in the tree");
-        let line = path[path.len() - 2];
-        assert_eq!(
-            line.kind,
-            "row",
-            "the title stands on a line:\n{}",
-            dump(tree)
-        );
-        let more = line
-            .children
-            .iter()
-            .find(|child| child.kind == "ui.MenuButton" && child.key.ends_with("~more"))
-            .unwrap_or_else(|| panic!("a \"…\" stands beside the title:\n{}", dump(tree)));
-        assert!(
-            more.children
+                "the card is named what the call gave it"
+            );
+            let window = w.window("card_page", &card);
+            let tree = window.tree();
+            let title = title_field(tree);
+            let path = path_to(tree, &title.key).expect("the title stands in the tree");
+            let line = path[path.len() - 2];
+            assert_eq!(
+                line.kind,
+                "row",
+                "the title stands on a line:\n{}",
+                dump(tree)
+            );
+            let more = line
+                .children
                 .iter()
-                .any(|child| child.kind == "ui.MenuItem"),
-            "the \"…\" holds the commands on the card:\n{}",
-            dump(tree)
-        );
-        assert_eq!(
-            line.children.last().map(|child| child.key.clone()),
-            Some(more.key.clone()),
-            "the \"…\" stands at the line's trailing edge:\n{}",
-            dump(tree)
-        );
-        assert!(
-            title.props.contains_key("fill"),
-            "the title spans the line it is on:\n{}",
-            dump(tree)
-        );
+                .find(|child| child.kind == "ui.MenuButton" && child.key.ends_with("~more"))
+                .unwrap_or_else(|| panic!("a \"…\" stands beside the title:\n{}", dump(tree)));
+            assert!(
+                more.children
+                    .iter()
+                    .any(|child| child.kind == "ui.MenuItem"),
+                "the \"…\" holds the commands on the card:\n{}",
+                dump(tree)
+            );
+            assert_eq!(
+                line.children.last().map(|child| child.key.clone()),
+                Some(more.key.clone()),
+                "the \"…\" stands at the line's trailing edge:\n{}",
+                dump(tree)
+            );
+            assert!(
+                title.props.contains_key("fill"),
+                "the title spans the line it is on:\n{}",
+                dump(tree)
+            );
+        }
+
+        phase the_bar_places_a_toggle_beside_the_primary_and_the_rest_in_its_menu;
+        // Where an action stands in the bar is read off what the action is, never said by its
+        // declaration: the primary is the bar's button, a command that toggles a state of what the
+        // window shows is the control a person flips where they see whether it is on, and every
+        // other action is a row of the bar's menu.
+        {
+            const SHELF: &str = r#"
+app so.tilo.test.shelf "Shelf"
+type Album {
+    title: Text
+}
+type Shelf {
+    title: Text
+    albums: Collection<Album>
+    open: Bool = false
+}
+root Shelf
+default view shelf for Shelf
+primary action add(s: Shelf) -> Album (icon: .plus) {
+    s.albums.insert(Album(title: "Blue"))
+}
+action open_it(s: Shelf, open: Bool = not s.open) (icon: .eye, label: "Show the albums", on: s.open) {
+    s.open = open
+}
+action rename(s: Shelf, title: Text) (icon: .pen_tool) {
+    s.title = title
+}
+view shelf(s: Shelf) {
+    std.browse(s, s.albums) { a ->
+        ui.ListRow(title: a.title)
+    }
+}
+"#;
+            let w = install(SHELF);
+            let root = w.root("Shelf");
+            let window = w.window("shelf", &root);
+            let tree = window.tree();
+            let shell = of_kind(tree, "ui.NavShell")[0];
+            let bar: Vec<&UiNode> = slot(shell, "actions")
+                .into_iter()
+                .filter(|node| node.kind == "ui.Button")
+                .collect();
+            let happened = |label: &str| {
+                bar.iter()
+                    .find(|node| node.props.get("label") == Some(&Value::text(label)))
+                    .unwrap_or_else(|| panic!("`{label}` stands in the bar:\n{}", dump(tree)))
+            };
+            let add = happened("Add");
+            assert_eq!(add.props.get("role"), Some(&Value::text("primary")));
+            assert!(
+                !add.props.contains_key("in_menu"),
+                "the primary is the bar's button:\n{}",
+                dump(tree)
+            );
+            let toggle = happened("Show the albums");
+            assert!(
+                !toggle.props.contains_key("in_menu"),
+                "a toggle is a control of the bar, not a row of its menu:\n{}",
+                dump(tree)
+            );
+            assert_eq!(toggle.props.get("icon_only"), Some(&Value::Int(1)));
+            assert_eq!(
+                toggle.props.get("toggled"),
+                Some(&Value::Int(0)),
+                "a control says whether the state it toggles is on:\n{}",
+                dump(tree)
+            );
+            let rename = happened("Rename…");
+            assert_eq!(
+                rename.props.get("in_menu"),
+                Some(&Value::Int(1)),
+                "a command with nothing to show stands in the bar's menu:\n{}",
+                dump(tree)
+            );
+            assert_eq!(
+                w.rt.read(&root, "open").unwrap(),
+                Value::Bool(false),
+                "reading the bar wrote nothing"
+            );
+        }
     }
 
     /// A project's window offers the views its type declares as labelled tabs in its bar, the
@@ -710,87 +799,6 @@ view quiet_page(q: Quiet) {
             1,
             "the window keeps the view it was left in:\n{}",
             dump(reopened.tree())
-        );
-    }
-
-    /// Where an action stands in the bar is read off what the action is, never said by its
-    /// declaration: the primary is the bar's button, a command that toggles a state of what the
-    /// window shows is the control a person flips where they see whether it is on, and every
-    /// other action is a row of the bar's menu.
-    #[test]
-    fn the_bar_places_a_toggle_beside_the_primary_and_the_rest_in_its_menu() {
-        const SHELF: &str = r#"
-app so.tilo.test.shelf "Shelf"
-type Album {
-    title: Text
-}
-type Shelf {
-    title: Text
-    albums: Collection<Album>
-    open: Bool = false
-}
-root Shelf
-default view shelf for Shelf
-primary action add(s: Shelf) -> Album (icon: .plus) {
-    s.albums.insert(Album(title: "Blue"))
-}
-action open_it(s: Shelf, open: Bool = not s.open) (icon: .eye, label: "Show the albums", on: s.open) {
-    s.open = open
-}
-action rename(s: Shelf, title: Text) (icon: .pen_tool) {
-    s.title = title
-}
-view shelf(s: Shelf) {
-    std.browse(s, s.albums) { a ->
-        ui.ListRow(title: a.title)
-    }
-}
-"#;
-        let w = install(SHELF);
-        let root = w.root("Shelf");
-        let window = w.window("shelf", &root);
-        let tree = window.tree();
-        let shell = of_kind(tree, "ui.NavShell")[0];
-        let bar: Vec<&UiNode> = slot(shell, "actions")
-            .into_iter()
-            .filter(|node| node.kind == "ui.Button")
-            .collect();
-        let happened = |label: &str| {
-            bar.iter()
-                .find(|node| node.props.get("label") == Some(&Value::text(label)))
-                .unwrap_or_else(|| panic!("`{label}` stands in the bar:\n{}", dump(tree)))
-        };
-        let add = happened("Add");
-        assert_eq!(add.props.get("role"), Some(&Value::text("primary")));
-        assert!(
-            !add.props.contains_key("in_menu"),
-            "the primary is the bar's button:\n{}",
-            dump(tree)
-        );
-        let toggle = happened("Show the albums");
-        assert!(
-            !toggle.props.contains_key("in_menu"),
-            "a toggle is a control of the bar, not a row of its menu:\n{}",
-            dump(tree)
-        );
-        assert_eq!(toggle.props.get("icon_only"), Some(&Value::Int(1)));
-        assert_eq!(
-            toggle.props.get("toggled"),
-            Some(&Value::Int(0)),
-            "a control says whether the state it toggles is on:\n{}",
-            dump(tree)
-        );
-        let rename = happened("Rename…");
-        assert_eq!(
-            rename.props.get("in_menu"),
-            Some(&Value::Int(1)),
-            "a command with nothing to show stands in the bar's menu:\n{}",
-            dump(tree)
-        );
-        assert_eq!(
-            w.rt.read(&root, "open").unwrap(),
-            Value::Bool(false),
-            "reading the bar wrote nothing"
         );
     }
 

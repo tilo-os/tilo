@@ -15,10 +15,10 @@
 //! ([`WorkspacesRequest::WaitList`]).
 
 use tilo_action_policy::roles::governance;
-use tilo_peer_state::join::{MemberRole, VerifiedRedemption};
+use tilo_peer_state::join::VerifiedRedemption;
 use tilo_relay_protocol::workspaces::{
-    Inviter, JoinReply, PendingInvite, PreAdmission, WaitListEntry, Workspace, WorkspaceMember,
-    WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+    Inviter, JoinReply, PendingInvite, PreAdmission, Role, WaitListEntry, Workspace,
+    WorkspaceMember, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -30,6 +30,7 @@ use super::{
 };
 use crate::host_authority::HostOperation;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// One pre-admission to record: the owner's signed grant and, when the
 /// invitation is for one person only, that person.
@@ -73,7 +74,7 @@ impl Presented {
 
     /// The workspace the invitation names, read without trusting it: the
     /// redemption is then verified against what that workspace issued.
-    fn workspace(&self, now: u64) -> Result<String, CollaborationError> {
+    fn workspace(&self, now: u64) -> Result<WorkspaceId, CollaborationError> {
         tilo_peer_state::join_ledger::invitation_workspace(&self.invitation, now)
     }
 
@@ -105,24 +106,6 @@ impl Presented {
     }
 }
 
-pub(super) const fn member_role(role: WorkspaceRole) -> MemberRole {
-    match role {
-        WorkspaceRole::Viewer => MemberRole::Viewer,
-        WorkspaceRole::Commenter => MemberRole::Commenter,
-        WorkspaceRole::Editor => MemberRole::Editor,
-        WorkspaceRole::Moderator => MemberRole::Moderator,
-    }
-}
-
-const fn room_role(role: MemberRole) -> WorkspaceRole {
-    match role {
-        MemberRole::Viewer => WorkspaceRole::Viewer,
-        MemberRole::Commenter => WorkspaceRole::Commenter,
-        MemberRole::Editor => WorkspaceRole::Editor,
-        MemberRole::Moderator => WorkspaceRole::Moderator,
-    }
-}
-
 /// `workspace` as a page sees it, with `summary` its people as
 /// [`Workspaces::people`] names them, `certificates` the devices its
 /// governance records and `owner` the person whose workspace it is.
@@ -139,7 +122,7 @@ fn page_room(summary: WorkspaceSummary, certificates: &[DeviceCert], owner: [u8;
                     .filter(|label| !label.is_empty())
             }),
             user_public_key: member.user_public_key,
-            role: room_role(member.role),
+            role: member.role,
             owner: member.user_public_key == owner,
             removed: member.removed,
         })
@@ -255,7 +238,7 @@ impl Workspaces {
             } => {
                 let request = IssueInvitationRequest {
                     request_id,
-                    role: member_role(role),
+                    role,
                     recipient_user_public_key: recipient,
                     invitee_name: None,
                     expires_at_ns,
@@ -360,9 +343,13 @@ impl Workspaces {
         }))
     }
 
-    /// Name `device`'s person `name` in `workspace`: the name the workspace shows for
-    /// them from now on. Only a person names themself, on a device the
-    /// workspace admitted as theirs. A name they already go by writes nothing.
+    /// Name `device`'s person `name` in `workspace`: the name the workspace
+    /// shows for them from now on, in its member list and on the invitations
+    /// they make. Only a person names themself, and only in a workspace they
+    /// are a member of: from any of their devices or keys — one the workspace
+    /// admitted as theirs, or a key of theirs it holds them by their root,
+    /// which is what a declared owner's key is before any device of theirs
+    /// arrived. A name they already go by writes nothing.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked from the check until the name is committed"
@@ -375,15 +362,32 @@ impl Workspaces {
         now: u64,
     ) -> Result<WorkspacesReply, CollaborationError> {
         let name = valid_name(name)?;
+        let person = hex::encode(device.user_public_key);
         let state = self.workspace(workspace).await?;
         let mut workspace = state.lock().await;
         let at = system_time(now);
-        let member = workspace.peer().permissions(device.device_public_key, at)?;
-        if member.foreign
-            || member.delegate.is_some()
-            || member.person != hex::encode(device.user_public_key)
-        {
-            return Err(CollaborationError::new("only a person names themself"));
+        // An agent's grant, a stand-in and a bot act as members of their own:
+        // they never name the person they act for.
+        let asking = workspace.peer().permissions(device.device_public_key, at);
+        let theirs = !device.capabilities.stand_in
+            && match asking {
+                Ok(member) => {
+                    !member.acting.delegated() && member.person_id() == Some(person.as_str())
+                }
+                Err(_) => device.capabilities.server_key && device.capabilities.agent.is_some(),
+            };
+        let names_themself = theirs
+            && workspace
+                .peer()
+                .governance()
+                .governed_members(at)
+                .map_err(CollaborationError::new)?
+                .iter()
+                .any(|member| member.user_public_key == device.user_public_key && !member.removed);
+        if !names_themself {
+            return Err(CollaborationError::new(
+                "only a person names themself, in a workspace they are a member of",
+            ));
         }
         let key = self.inner.host.key.clone();
         let mut candidate = workspace.peer().clone();
@@ -443,7 +447,7 @@ impl Workspaces {
                     SetMemberRoleRequest {
                         request_id,
                         user_public_key,
-                        role: member_role(role),
+                        role,
                     },
                 )
                 .await?;
@@ -582,7 +586,7 @@ impl Workspaces {
                 device,
                 IssueInvitationRequest {
                     request_id,
-                    role: member_role(grant.role),
+                    role: grant.role,
                     recipient_user_public_key,
                     invitee_name: None,
                     expires_at_ns: grant.expires_at_ns,
@@ -705,7 +709,7 @@ impl Workspaces {
             self.authorize(
                 device,
                 Some(&governed),
-                WorkspaceOp::Invite(request.role.into()),
+                WorkspaceOp::Invite(request.role),
                 now,
             )?;
             if !governed.wait_list.has(entry, now) {
@@ -752,7 +756,7 @@ impl Workspaces {
                 .into_iter()
                 .map(|invitation| PendingInvite {
                     invite_id: invitation.invite_id,
-                    role: room_role(invitation.role),
+                    role: invitation.role,
                     expires_at_ns: invitation.expires_at_ns,
                     recipient: invitation.recipient_user_public_key,
                     invitee_name: invitation.invitee_name,
@@ -1041,9 +1045,9 @@ impl Workspaces {
     async fn inspected(&self, invitation: &[u8]) -> Result<JoinReply, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let workspace = self
-            .workspace(&tilo_peer_state::join_ledger::invitation_workspace(
-                invitation, now,
-            )?)
+            .workspace(
+                &tilo_peer_state::join_ledger::invitation_workspace(invitation, now)?.to_string(),
+            )
             .await?;
         let workspace = workspace.lock().await;
         let join = workspace
@@ -1053,7 +1057,7 @@ impl Workspaces {
             workspace: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
             name: workspace.record.name.clone(),
-            role: room_role(join.grant().role),
+            role: join.grant().role,
             expires_at_ns: join.grant().expires_at_ns,
             inviter: join.inviter().map(|inviter| Inviter {
                 user_public_key: inviter.user_public_key,
@@ -1154,7 +1158,7 @@ impl Workspaces {
         let request_id = presented.request_id;
         let device = presented.device();
         let proof_digest = presented.digest()?;
-        let governed = self.workspace(&identity).await?;
+        let governed = self.workspace(&identity.to_string()).await?;
         let mut workspace = governed.lock().await;
         // A page that asked again under the same request — a reload, a lost
         // answer — hears what became of it, not that its invitation is spent.
@@ -1173,7 +1177,7 @@ impl Workspaces {
         self.authorize(
             &issuer,
             Some(&workspace),
-            WorkspaceOp::Invite(redemption.join().grant().role.into()),
+            WorkspaceOp::Invite(redemption.join().grant().role),
             now,
         )?;
         let join = super::collaboration::Redeeming {
@@ -1206,19 +1210,17 @@ impl Workspaces {
     ) -> Result<JoinReply, CollaborationError> {
         let role = workspace
             .peer()
-            .permissions(device, system_time(now))
+            .role(&device, system_time(now))
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         Ok(JoinReply::Admitted {
             workspace: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
             name: workspace.record.name.clone(),
-            role: match role.role {
-                collab_types::role::Role::Moderator => WorkspaceRole::Moderator,
-                collab_types::role::Role::Commenter => WorkspaceRole::Commenter,
-                collab_types::role::Role::Viewer => WorkspaceRole::Viewer,
-                collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
-                    WorkspaceRole::Editor
-                }
+            role: match role {
+                collab_types::role::Role::Moderator => Role::Moderator,
+                collab_types::role::Role::Commenter => Role::Commenter,
+                collab_types::role::Role::Viewer => Role::Viewer,
+                collab_types::role::Role::Owner | collab_types::role::Role::Editor => Role::Editor,
             },
         })
     }
@@ -1241,7 +1243,7 @@ impl Workspaces {
         let proof_digest = presented.digest()?;
         let (answer, answered) = tokio::sync::oneshot::channel();
         let first = self.queue_admission(
-            &workspace,
+            &workspace.to_string(),
             QueuedAdmission {
                 presented,
                 proof_digest,
@@ -1254,7 +1256,7 @@ impl Workspaces {
             // Its own task: a page that goes away mid-pass must not cut off
             // the answers of everyone else in it.
             let workspaces = self.clone();
-            tokio::spawn(async move { workspaces.admit_queued(&workspace).await });
+            tokio::spawn(async move { workspaces.admit_queued(&workspace.to_string()).await });
         }
         answered
             .await
@@ -1418,10 +1420,8 @@ impl Workspaces {
         join: &QueuedAdmission,
         invites: &mut std::collections::BTreeSet<[u8; 32]>,
         now: u64,
-    ) -> Result<
-        (VerifiedRedemption, String, WorkspaceRole),
-        Box<Result<JoinReply, CollaborationError>>,
-    > {
+    ) -> Result<(VerifiedRedemption, String, Role), Box<Result<JoinReply, CollaborationError>>>
+    {
         let redemption = join
             .presented
             .redeem(workspace, now)
@@ -1432,7 +1432,7 @@ impl Workspaces {
                 "invitation was already redeemed",
             ))));
         }
-        let role = room_role(redemption.join().grant().role);
+        let role = redemption.join().grant().role;
         let grant = workspace
             .admissions
             .grant_for(invite_id, &join.token, now)

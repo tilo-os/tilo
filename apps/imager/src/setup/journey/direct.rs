@@ -571,223 +571,227 @@ impl InstallerPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn review_allocation_tracks_selected_space_and_method_without_granting_approval() {
-        use crate::setup::strings::{t, t_args};
-        use ui::theme::Theme;
-        let mut preview = InstallerPreview::default();
-        preview.journey.page = Page::Review;
-        preview.journey.destination = Some(Destination::Computer);
-        assert_eq!(
-            preview.direct_storage_blocker(),
-            Some(t("installer-review-storage-pending"))
-        );
-        assert_eq!(
-            preview.review_storage_summary(),
-            t("installer-review-storage-pending")
-        );
-        preview.storage.stage();
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let source = root.join("source");
-        let destination = root.join("recovery");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::create_dir(&destination).unwrap();
-        let belongings = super::super::belongings::Belongings::from_windows_roots(&[
-            imager_backend::windows_inventory::SelectedRoot {
-                path: source,
-                role: imager_backend::windows_inventory::RootRole::KnownFolder,
-            },
-        ])
-        .unwrap();
-        let inventory = belongings.windows.as_ref().unwrap();
-        preview
-            .recovery
-            .review_directory(inventory, &inventory.roots[0].source_id, &destination)
-            .unwrap();
-        assert_eq!(
-            preview.direct_storage_blocker(),
-            Some(t("installer-recovery-copy-required"))
-        );
-        for size in [80, 120] {
-            preview.storage.set_size(size).unwrap();
-            let body = preview.body(&Theme::default());
-            let row =
-                super::super::visual_tests::control(&body, "installer.review.storage").unwrap();
-            let node = row.accessibility().unwrap();
-            let summary = preview.review_storage_summary();
-            assert!(summary.contains(&t_args(
-                "installer-review-allocation",
-                &[("size", size.into())]
-            )));
-            assert!(summary.contains(&t("installer-review-unallocated")));
-            assert!(format!("{node:?}").contains(&size.to_string()));
-        }
-        let basis = crate::setup::staging::plan::tests::windows_basis(512, 500, 100, false);
-        preview.storage.accept(staging::probe::HostFacts {
-            basis: Some(basis),
-            bitlocker_protected: false,
-            blockers: Vec::new(),
-        });
-        preview.storage.set_size(120).unwrap();
-        let shrink = preview
-            .storage
-            .plan
-            .as_ref()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .shrink
-            .as_ref()
-            .unwrap();
-        assert!(preview.review_storage_summary().contains(&t_args(
-            "installer-review-resize",
-            &[
-                ("before", ui::format::memory(shrink.from_bytes).into()),
-                ("after", ui::format::memory(shrink.to_bytes).into()),
-            ]
-        )));
-        preview
-            .storage
-            .plan
-            .as_mut()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .target_extent
-            .first_lba += 2048;
-        assert!(preview.storage.admit().is_err());
-        assert_eq!(
-            preview.direct_storage_blocker(),
-            Some(t("installer-review-storage-pending"))
-        );
-        assert!(!preview.direct_available());
-        assert_eq!(
-            preview.prepare_direct(),
-            Err("installer-preview-storage-unavailable")
-        );
-        assert!(!preview.direct.active);
-        preview.journey.edit("storage").unwrap();
-        assert_eq!(preview.journey.page, Page::Storage);
-        assert!(preview.journey.saving_edit());
-    }
+    tilo_test_env::scenario! {
+        fn the_direct_installation_follows_the_review_and_the_chosen_name;
 
-    #[test]
-    fn live_review_blocker_matches_disabled_action_and_belongings_edit_says_save() {
-        use crate::setup::strings::t;
-        use ui::theme::Theme;
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_IMAGER_ALLOW_INTERNAL_INSTALL", "1");
-        let mut preview = InstallerPreview {
-            live: true,
-            ..Default::default()
-        };
-        preview.journey.page = Page::Review;
-        preview.journey.destination = Some(Destination::Computer);
-        let root = preview.composition(&Theme::default());
-        let control = super::super::visual_tests::control;
-        assert!(
-            control(root.as_ref(), "installer.prepare-direct")
+        phase review_allocation_tracks_selected_space_and_method_without_granting_approval;
+        {
+            use crate::setup::strings::{t, t_args};
+            use ui::theme::Theme;
+            let mut preview = InstallerPreview::default();
+            preview.journey.page = Page::Review;
+            preview.journey.destination = Some(Destination::Computer);
+            assert_eq!(
+                preview.direct_storage_blocker(),
+                Some(t("installer-review-storage-pending"))
+            );
+            assert_eq!(
+                preview.review_storage_summary(),
+                t("installer-review-storage-pending")
+            );
+            preview.storage.stage();
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let source = root.join("source");
+            let destination = root.join("recovery");
+            std::fs::create_dir(&source).unwrap();
+            std::fs::create_dir(&destination).unwrap();
+            let belongings = super::super::belongings::Belongings::from_windows_roots(&[
+                imager_backend::windows_inventory::SelectedRoot {
+                    path: source,
+                    role: imager_backend::windows_inventory::RootRole::KnownFolder,
+                },
+            ])
+            .unwrap();
+            let inventory = belongings.windows.as_ref().unwrap();
+            preview
+                .recovery
+                .review_directory(inventory, &inventory.roots[0].source_id, &destination)
+                .unwrap();
+            assert_eq!(
+                preview.direct_storage_blocker(),
+                Some(t("installer-recovery-copy-required"))
+            );
+            for size in [80, 120] {
+                preview.storage.set_size(size).unwrap();
+                let body = preview.body(&Theme::default());
+                let row =
+                    super::super::visual_tests::control(&body, "installer.review.storage").unwrap();
+                let node = row.accessibility().unwrap();
+                let summary = preview.review_storage_summary();
+                assert!(summary.contains(&t_args(
+                    "installer-review-allocation",
+                    &[("size", size.into())]
+                )));
+                assert!(summary.contains(&t("installer-review-unallocated")));
+                assert!(format!("{node:?}").contains(&size.to_string()));
+            }
+            let basis = crate::setup::staging::plan::tests::windows_basis(512, 500, 100, false);
+            preview.storage.accept(staging::probe::HostFacts {
+                basis: Some(basis),
+                bitlocker_protected: false,
+                blockers: Vec::new(),
+            });
+            preview.storage.set_size(120).unwrap();
+            let shrink = preview
+                .storage
+                .plan
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .shrink
+                .as_ref()
+                .unwrap();
+            assert!(preview.review_storage_summary().contains(&t_args(
+                "installer-review-resize",
+                &[
+                    ("before", ui::format::memory(shrink.from_bytes).into()),
+                    ("after", ui::format::memory(shrink.to_bytes).into()),
+                ]
+            )));
+            preview
+                .storage
+                .plan
+                .as_mut()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .target_extent
+                .first_lba += 2048;
+            assert!(preview.storage.admit().is_err());
+            assert_eq!(
+                preview.direct_storage_blocker(),
+                Some(t("installer-review-storage-pending"))
+            );
+            assert!(!preview.direct_available());
+            assert_eq!(
+                preview.prepare_direct(),
+                Err("installer-preview-storage-unavailable")
+            );
+            assert!(!preview.direct.active);
+            preview.journey.edit("storage").unwrap();
+            assert_eq!(preview.journey.page, Page::Storage);
+            assert!(preview.journey.saving_edit());
+        }
+
+        phase live_review_blocker_matches_disabled_action_and_belongings_edit_says_save;
+        {
+            use crate::setup::strings::t;
+            use ui::theme::Theme;
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_IMAGER_ALLOW_INTERNAL_INSTALL", "1");
+            let mut preview = InstallerPreview {
+                live: true,
+                ..Default::default()
+            };
+            preview.journey.page = Page::Review;
+            preview.journey.destination = Some(Destination::Computer);
+            let root = preview.composition(&Theme::default());
+            let control = super::super::visual_tests::control;
+            assert!(
+                control(root.as_ref(), "installer.prepare-direct")
+                    .unwrap()
+                    .accessibility()
+                    .unwrap()
+                    .state
+                    .disabled
+            );
+            assert_eq!(
+                preview.direct_blocker(),
+                Some(t("installer-review-context-pending"))
+            );
+            let blocker = control(root.as_ref(), "installer.review.blocker")
                 .unwrap()
                 .accessibility()
+                .unwrap();
+            assert_eq!(
+                blocker.name.as_deref(),
+                Some(t("installer-review-context-pending").as_str())
+            );
+            assert!(control(root.as_ref(), "installer.review.storage").is_some());
+            preview.journey.migrate = Some(true);
+            preview.journey.edit("belongings-details").unwrap();
+            assert!(preview.journey.saving_edit());
+            let root = preview.composition(&Theme::default());
+            let next = control(root.as_ref(), "installer.next")
                 .unwrap()
-                .state
-                .disabled
-        );
-        assert_eq!(
-            preview.direct_blocker(),
-            Some(t("installer-review-context-pending"))
-        );
-        let blocker = control(root.as_ref(), "installer.review.blocker")
-            .unwrap()
-            .accessibility()
-            .unwrap();
-        assert_eq!(
-            blocker.name.as_deref(),
-            Some(t("installer-review-context-pending").as_str())
-        );
-        assert!(control(root.as_ref(), "installer.review.storage").is_some());
-        preview.journey.migrate = Some(true);
-        preview.journey.edit("belongings-details").unwrap();
-        assert!(preview.journey.saving_edit());
-        let root = preview.composition(&Theme::default());
-        let next = control(root.as_ref(), "installer.next")
-            .unwrap()
-            .accessibility()
-            .unwrap();
-        assert_eq!(
-            next.name.as_deref(),
-            Some(t("installer-preview-save").as_str())
-        );
-    }
+                .accessibility()
+                .unwrap();
+            assert_eq!(
+                next.name.as_deref(),
+                Some(t("installer-preview-save").as_str())
+            );
+        }
 
-    #[test]
-    fn direct_refuses_missing_review_without_discarding_personal_choices() {
-        let mut preview = InstallerPreview {
-            live: true,
-            ..Default::default()
-        };
-        preview.journey.page = Page::Storage;
-        preview.journey.destination = Some(Destination::Computer);
-        preview.journey.name = "Chosen name".into();
-        preview.journey.password = "private chosen password".into();
-        assert_eq!(
-            preview.prepare_direct(),
-            Err("installer-preview-storage-unavailable")
-        );
-        assert!(preview.direct.pending.is_none());
-        assert!(!preview.media_preparation.busy());
-        assert_eq!(preview.journey.name, "Chosen name");
-        assert_eq!(preview.journey.password, "private chosen password");
-        assert!(!preview.direct.active);
-    }
+        phase direct_refuses_missing_review_without_discarding_personal_choices;
+        {
+            let mut preview = InstallerPreview {
+                live: true,
+                ..Default::default()
+            };
+            preview.journey.page = Page::Storage;
+            preview.journey.destination = Some(Destination::Computer);
+            preview.journey.name = "Chosen name".into();
+            preview.journey.password = "private chosen password".into();
+            assert_eq!(
+                preview.prepare_direct(),
+                Err("installer-preview-storage-unavailable")
+            );
+            assert!(preview.direct.pending.is_none());
+            assert!(!preview.media_preparation.busy());
+            assert_eq!(preview.journey.name, "Chosen name");
+            assert_eq!(preview.journey.password, "private chosen password");
+            assert!(!preview.direct.active);
+        }
 
-    #[test]
-    fn chosen_device_name_survives_authenticated_and_media_profile_roundtrip() {
-        let mut preview = InstallerPreview::default();
-        preview.journey.name = "Ada".into();
-        preview.journey.device_name = "Ada’s workstation 🌿".into();
-        let public = preview.public_install_profile().unwrap();
-        let restored: PublicInstallProfile =
-            serde_json::from_slice(&serde_json::to_vec(&public).unwrap()).unwrap();
-        let draft = restored.to_draft().unwrap();
-        assert_eq!(draft.device_label, preview.journey.device_name);
-        let media = crate::setup::staging::handoff::profile_from_install(&draft).unwrap();
-        assert_eq!(media["device_label"], preview.journey.device_name);
-        let mut legacy = serde_json::to_value(&restored).unwrap();
-        legacy.as_object_mut().unwrap().remove("device_label");
-        let legacy: PublicInstallProfile = serde_json::from_value(legacy).unwrap();
-        assert!(legacy.to_draft().unwrap().device_label.is_empty());
-        preview.journey.device_name = "é".repeat(32);
-        assert_eq!(
-            preview.public_install_profile().unwrap().device_label,
-            preview.journey.device_name
-        );
-        preview.journey.device_name = "é".repeat(33);
-        assert!(preview.public_install_profile().is_err());
-        assert_eq!(preview.journey.device_name.len(), 66);
-        preview.journey.device_name = "invalid\nname".into();
-        assert!(preview.public_install_profile().is_err());
-    }
+        phase chosen_device_name_survives_authenticated_and_media_profile_roundtrip;
+        {
+            let mut preview = InstallerPreview::default();
+            preview.journey.name = "Ada".into();
+            preview.journey.device_name = "Ada’s workstation 🌿".into();
+            let public = preview.public_install_profile().unwrap();
+            let restored: PublicInstallProfile =
+                serde_json::from_slice(&serde_json::to_vec(&public).unwrap()).unwrap();
+            let draft = restored.to_draft().unwrap();
+            assert_eq!(draft.device_label, preview.journey.device_name);
+            let media = crate::setup::staging::handoff::profile_from_install(&draft).unwrap();
+            assert_eq!(media["device_label"], preview.journey.device_name);
+            let mut legacy = serde_json::to_value(&restored).unwrap();
+            legacy.as_object_mut().unwrap().remove("device_label");
+            let legacy: PublicInstallProfile = serde_json::from_value(legacy).unwrap();
+            assert!(legacy.to_draft().unwrap().device_label.is_empty());
+            preview.journey.device_name = "é".repeat(32);
+            assert_eq!(
+                preview.public_install_profile().unwrap().device_label,
+                preview.journey.device_name
+            );
+            preview.journey.device_name = "é".repeat(33);
+            assert!(preview.public_install_profile().is_err());
+            assert_eq!(preview.journey.device_name.len(), 66);
+            preview.journey.device_name = "invalid\nname".into();
+            assert!(preview.public_install_profile().is_err());
+        }
 
-    #[test]
-    fn authenticated_install_preferences_use_chosen_name_without_passwords() {
-        let mut preview = InstallerPreview::default();
-        preview.journey.name = "Ada Lovelace".into();
-        preview.install_preferences.user.password = "must not travel".into();
-        preview.install_preferences.encryption_passphrase = "also private".into();
-        let profile = preview.public_install_profile().unwrap();
-        assert_eq!(profile.full_name, "Ada Lovelace");
-        let bytes = serde_json::to_string(&profile).unwrap();
-        assert!(!bytes.contains("must not travel"));
-        assert!(!bytes.contains("also private"));
-        preview.journey.name = format!("Name: {}", "界".repeat(120));
-        let public = preview.public_install_profile().unwrap();
-        assert!(!public.full_name.contains(':'));
-        assert_eq!(public.full_name.chars().count(), 100);
-        assert!(preview.journey.name.contains(':'));
-        assert!(preview.journey.name.chars().count() > 100);
-        preview.install_preferences.user.username = "root".into();
-        assert!(preview.public_install_profile().is_err());
+        phase authenticated_install_preferences_use_chosen_name_without_passwords;
+        {
+            let mut preview = InstallerPreview::default();
+            preview.journey.name = "Ada Lovelace".into();
+            preview.install_preferences.user.password = "must not travel".into();
+            preview.install_preferences.encryption_passphrase = "also private".into();
+            let profile = preview.public_install_profile().unwrap();
+            assert_eq!(profile.full_name, "Ada Lovelace");
+            let bytes = serde_json::to_string(&profile).unwrap();
+            assert!(!bytes.contains("must not travel"));
+            assert!(!bytes.contains("also private"));
+            preview.journey.name = format!("Name: {}", "界".repeat(120));
+            let public = preview.public_install_profile().unwrap();
+            assert!(!public.full_name.contains(':'));
+            assert_eq!(public.full_name.chars().count(), 100);
+            assert!(preview.journey.name.contains(':'));
+            assert!(preview.journey.name.chars().count() > 100);
+            preview.install_preferences.user.username = "root".into();
+            assert!(preview.public_install_profile().is_err());
+        }
     }
 }

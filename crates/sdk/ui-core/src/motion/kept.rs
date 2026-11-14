@@ -237,98 +237,102 @@ impl Drop for LayingOutWindow {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_rebuilt_widget_takes_up_what_its_predecessor_left_by_id_or_by_place() {
-        keep("sync", Some(Rect::new(0.0, 10.0, 100.0, 40.0)), 7_u32);
-        assert_eq!(take_kept::<u32>("other"), None);
-        assert_eq!(take_kept::<u8>("sync"), None, "only a widget of its kind");
-        assert_eq!(take_kept::<u32>("sync"), Some(7));
-        assert_eq!(take_kept::<u32>("sync"), None, "taken once");
+    tilo_test_env::scenario! {
+        fn what_a_widget_leaves_is_taken_up_once_and_let_go;
 
-        keep("old title", Some(Rect::new(0.0, 10.0, 100.0, 40.0)), 8_u32);
-        assert_eq!(take_kept_at::<u32>(Rect::new(0.0, 50.0, 100.0, 90.0)), None);
-        assert_eq!(
-            take_kept_at::<u32>(Rect::new(0.0, 10.0, 100.0, 70.0)),
-            Some(8),
-            "a widget in the same place, whatever it now says"
-        );
-    }
-
-    #[test]
-    fn a_hand_on_goes_by_identity_else_by_place_and_in_order() {
-        let at = |y: f64| Rect::new(0.0, y, 100.0, y + 30.0);
-        let left = |identity: Option<&str>, y: f64, value: u16| {
-            let mut hand_on = HandOn::<u16>::default();
-            assert_eq!(hand_on.build(identity), None);
-            assert_eq!(hand_on.place(at(y)), None);
-            hand_on.leave(value);
-        };
-        left(Some("wifi"), 0.0, 5);
-        let mut next = HandOn::<u16>::default();
-        assert_eq!(next.build(Some("wifi")), Some((5, Found::Same)));
-        assert_eq!(next.place(at(40.0)), None, "taken once");
-        // Without one, by place: another's may have stood there.
-        left(None, 0.0, 1);
-        left(None, 40.0, 2);
-        let mut second = HandOn::<u16>::default();
-        assert_eq!(second.build(None), None);
-        assert_eq!(second.place(at(40.0)), Some((2, Found::Where)));
-        let mut first = HandOn::<u16>::default();
-        first.build(None);
-        assert_eq!(first.place(at(0.0)), Some((1, Found::Where)));
-        // Rows sharing an identity go on in the order they were left.
-        let mut rows: Vec<_> = (0..2).map(|_| HandOn::<u16>::default()).collect();
-        for (y, row) in [0.0, 40.0].into_iter().zip(&mut rows) {
-            assert_eq!(row.build(Some("row")), None);
-            assert_eq!(row.place(at(y)), None);
-        }
-        for (value, mut row) in [7, 8].into_iter().zip(rows) {
-            row.leave(value);
-        }
-        let mut row = HandOn::<u16>::default();
-        assert_eq!(row.build(Some("row")), Some((7, Found::Same)));
-        let mut row = HandOn::<u16>::default();
-        assert_eq!(row.build(Some("row")), Some((8, Found::Same)));
-        // A widget never laid out leaves nothing.
-        HandOn::<u16>::default().leave(9);
-        KEPT.with(|kept| assert!(kept.borrow().is_empty()));
-    }
-
-    #[test]
-    fn what_nothing_takes_up_is_let_go_after_a_few_frames() {
-        keep("sync", None, 1_u32);
-        frame_ended();
-        assert_eq!(
-            take_kept::<u32>("sync"),
-            Some(1),
-            "a rebuild in the next frame"
-        );
-        keep("sync", None, 1_u32);
-        frame_ended();
-        frame_ended();
-        assert_eq!(
-            take_kept::<u32>("sync"),
-            Some(1),
-            "a rebuild whose successor is laid out a frame later"
-        );
-        frame_ended();
-        assert_eq!(take_kept::<u32>("sync"), None);
-        KEPT.with(|kept| assert!(kept.borrow().is_empty()));
-    }
-
-    #[test]
-    fn a_closing_window_leaves_nothing_for_the_next_one() {
-        let at = Rect::new(0.0, 0.0, 100.0, 30.0);
-        let mut band = HandOn::<u16>::default();
-        assert_eq!(band.build(Some("section")), None);
-        assert_eq!(band.place(at), None);
+        phase a_rebuilt_widget_takes_up_what_its_predecessor_left_by_id_or_by_place;
         {
-            let _closing = closing_window();
-            band.leave(4);
+            keep("sync", Some(Rect::new(0.0, 10.0, 100.0, 40.0)), 7_u32);
+            assert_eq!(take_kept::<u32>("other"), None);
+            assert_eq!(take_kept::<u8>("sync"), None, "only a widget of its kind");
+            assert_eq!(take_kept::<u32>("sync"), Some(7));
+            assert_eq!(take_kept::<u32>("sync"), None, "taken once");
+
+            keep("old title", Some(Rect::new(0.0, 10.0, 100.0, 40.0)), 8_u32);
+            assert_eq!(take_kept_at::<u32>(Rect::new(0.0, 50.0, 100.0, 90.0)), None);
+            assert_eq!(
+                take_kept_at::<u32>(Rect::new(0.0, 10.0, 100.0, 70.0)),
+                Some(8),
+                "a widget in the same place, whatever it now says"
+            );
         }
-        let mut next = HandOn::<u16>::default();
-        assert_eq!(next.build(Some("section")), None);
-        assert_eq!(next.place(at), None, "nor by its place");
-        KEPT.with(|kept| assert!(kept.borrow().is_empty()));
+
+        phase a_hand_on_goes_by_identity_else_by_place_and_in_order;
+        {
+            let at = |y: f64| Rect::new(0.0, y, 100.0, y + 30.0);
+            let left = |identity: Option<&str>, y: f64, value: u16| {
+                let mut hand_on = HandOn::<u16>::default();
+                assert_eq!(hand_on.build(identity), None);
+                assert_eq!(hand_on.place(at(y)), None);
+                hand_on.leave(value);
+            };
+            left(Some("wifi"), 0.0, 5);
+            let mut next = HandOn::<u16>::default();
+            assert_eq!(next.build(Some("wifi")), Some((5, Found::Same)));
+            assert_eq!(next.place(at(40.0)), None, "taken once");
+            // Without one, by place: another's may have stood there.
+            left(None, 0.0, 1);
+            left(None, 40.0, 2);
+            let mut second = HandOn::<u16>::default();
+            assert_eq!(second.build(None), None);
+            assert_eq!(second.place(at(40.0)), Some((2, Found::Where)));
+            let mut first = HandOn::<u16>::default();
+            first.build(None);
+            assert_eq!(first.place(at(0.0)), Some((1, Found::Where)));
+            // Rows sharing an identity go on in the order they were left.
+            let mut rows: Vec<_> = (0..2).map(|_| HandOn::<u16>::default()).collect();
+            for (y, row) in [0.0, 40.0].into_iter().zip(&mut rows) {
+                assert_eq!(row.build(Some("row")), None);
+                assert_eq!(row.place(at(y)), None);
+            }
+            for (value, mut row) in [7, 8].into_iter().zip(rows) {
+                row.leave(value);
+            }
+            let mut row = HandOn::<u16>::default();
+            assert_eq!(row.build(Some("row")), Some((7, Found::Same)));
+            let mut row = HandOn::<u16>::default();
+            assert_eq!(row.build(Some("row")), Some((8, Found::Same)));
+            // A widget never laid out leaves nothing.
+            HandOn::<u16>::default().leave(9);
+            KEPT.with(|kept| assert!(kept.borrow().is_empty()));
+        }
+
+        phase what_nothing_takes_up_is_let_go_after_a_few_frames;
+        {
+            keep("sync", None, 1_u32);
+            frame_ended();
+            assert_eq!(
+                take_kept::<u32>("sync"),
+                Some(1),
+                "a rebuild in the next frame"
+            );
+            keep("sync", None, 1_u32);
+            frame_ended();
+            frame_ended();
+            assert_eq!(
+                take_kept::<u32>("sync"),
+                Some(1),
+                "a rebuild whose successor is laid out a frame later"
+            );
+            frame_ended();
+            assert_eq!(take_kept::<u32>("sync"), None);
+            KEPT.with(|kept| assert!(kept.borrow().is_empty()));
+        }
+
+        phase a_closing_window_leaves_nothing_for_the_next_one;
+        {
+            let at = Rect::new(0.0, 0.0, 100.0, 30.0);
+            let mut band = HandOn::<u16>::default();
+            assert_eq!(band.build(Some("section")), None);
+            assert_eq!(band.place(at), None);
+            {
+                let _closing = closing_window();
+                band.leave(4);
+            }
+            let mut next = HandOn::<u16>::default();
+            assert_eq!(next.build(Some("section")), None);
+            assert_eq!(next.place(at), None, "nor by its place");
+            KEPT.with(|kept| assert!(kept.borrow().is_empty()));
+        }
     }
 }

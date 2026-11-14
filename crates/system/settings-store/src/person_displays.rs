@@ -1,8 +1,9 @@
 //! One person's displays across all of their devices, in one shared layout.
 //!
 //! Every device publishes the outputs it drives as [`DeviceOutput`], and the person's
-//! [`Arrangement`] is one roaming setting: for each display, whether it takes part in the shared
-//! layout, its order, and its position in one coordinate space. Each display's entry carries its
+//! [`Arrangement`] is one roaming setting: for each display, its order and its position in one
+//! coordinate space. The pointer crosses only where two displays meet, so a display placed apart
+//! from the others is out of reach. Each display's entry carries its
 //! own revision, so edits made at the same time to different displays on different devices all
 //! survive.
 //!
@@ -24,18 +25,17 @@ pub const MAX_DEVICE_OUTPUTS: usize = 16;
 pub const MAX_NAME_BYTES: usize = 128;
 pub const MAX_COORDINATE: i32 = 1_000_000;
 
-/// One display's place in the person's shared layout.
+/// One display's place in the person's shared layout. Unknown fields are ignored: entries stored
+/// while a display could be left out of the layout carry an `enabled` flag, which placement
+/// replaced.
 #[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(remote = "Self", deny_unknown_fields)]
+#[serde(remote = "Self")]
 pub struct ArrangedDisplay {
     /// Fabric device id of the device that drives the display.
     pub device: String,
     /// The device's stable output id ([`DeviceOutput::id`]).
     pub output: String,
-    /// Whether the display takes part in the shared layout: the pointer
-    /// can reach it from the person's other devices.
-    pub enabled: bool,
     /// Sort key of the display order; lower comes first.
     pub order: i64,
     /// Whether `x`/`y` were ever set. A display first arranged while off
@@ -327,7 +327,6 @@ pub struct ResolvedDisplay {
     pub builtin: bool,
     pub local: bool,
     pub online: bool,
-    pub enabled: bool,
     pub order: usize,
     pub local_rect: Rect,
     pub rect: Rect,
@@ -418,68 +417,21 @@ fn device_offsets<'a>(
     offsets
 }
 
-type Keyed = (Option<i64>, ResolvedDisplay);
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layout {
     pub displays: Vec<ResolvedDisplay>,
-    pub inactive: Vec<ResolvedDisplay>,
 }
 
 impl Layout {
-    /// Resolve the observed device desktop origins until an explicit shared
-    /// arrangement has placed that device. Shell and Settings use this bridge
-    /// so unarranged outputs retain the same checked coordinates in both.
-    pub fn resolve_at_device_origins(
-        devices: &[PersonDevice],
-        arrangement: &Arrangement,
-        origins: &BTreeMap<String, (i32, i32)>,
-    ) -> Self {
-        let mut observed = arrangement.clone();
-        for device in devices {
-            if device.outputs.iter().any(|output| {
-                observed
-                    .entry(&device.device, &output.id)
-                    .is_some_and(|entry| entry.placed)
-            }) {
-                continue;
-            }
-            let Some(&(x, y)) = origins.get(&device.device) else {
-                continue;
-            };
-            let Some(output) = device.outputs.iter().find(|output| output.active()) else {
-                continue;
-            };
-            let mut anchor = observed
-                .entry(&device.device, &output.id)
-                .cloned()
-                .unwrap_or_else(|| ArrangedDisplay {
-                    device: device.device.clone(),
-                    output: output.id.clone(),
-                    enabled: true,
-                    order: i64::try_from(observed.displays.len()).unwrap_or(0),
-                    placed: false,
-                    x: 0,
-                    y: 0,
-                    rev: 0,
-                });
-            anchor.placed = true;
-            anchor.x = x.saturating_add(output.x);
-            anchor.y = y.saturating_add(output.y);
-            observed
-                .displays
-                .retain(|entry| !(entry.device == anchor.device && entry.output == anchor.output));
-            observed.displays.push(anchor);
-        }
-        Self::resolve(devices, &observed)
-    }
+    /// Lay out the person's screens that show something: a device placed in the arrangement
+    /// stands where its anchor screen was put, and the devices not placed yet line up to the
+    /// right of the others, by id, so every device and Settings lay them out alike.
     pub fn resolve(devices: &[PersonDevice], arrangement: &Arrangement) -> Self {
         let mut sorted: Vec<&PersonDevice> = devices.iter().collect();
         sorted.sort_by(|a, b| a.device.cmp(&b.device));
         let offsets = device_offsets(&sorted, arrangement);
 
-        let mut displays: Vec<Keyed> = Vec::new();
-        let mut inactive: Vec<Keyed> = Vec::new();
+        let mut displays: Vec<(Option<i64>, ResolvedDisplay)> = Vec::new();
         for device in &sorted {
             let (dx, dy) = offsets
                 .get(device.device.as_str())
@@ -488,62 +440,39 @@ impl Layout {
             let mut outputs: Vec<&DeviceOutput> = device
                 .outputs
                 .iter()
-                .filter(|output| output.connected)
+                .filter(|output| output.active())
                 .collect();
-            outputs.sort_by_key(|output| (!output.active(), output.x, output.y));
+            outputs.sort_by_key(|output| (output.x, output.y));
             for output in outputs {
                 let entry = arrangement.entry(&device.device, &output.id);
-                let active = output.active();
-                let resolved = ResolvedDisplay {
-                    device: device.device.clone(),
-                    output: output.id.clone(),
-                    name: output.name.clone(),
-                    device_label: device.label.clone(),
-                    builtin: output.builtin,
-                    local: device.local,
-                    online: device.online,
-                    enabled: entry.is_none_or(|entry| entry.enabled),
-                    order: 0,
-                    local_rect: if active {
-                        output.rect()
-                    } else {
-                        Rect::default()
+                displays.push((
+                    entry.map(|entry| entry.order),
+                    ResolvedDisplay {
+                        device: device.device.clone(),
+                        output: output.id.clone(),
+                        name: output.name.clone(),
+                        device_label: device.label.clone(),
+                        builtin: output.builtin,
+                        local: device.local,
+                        online: device.online,
+                        order: 0,
+                        local_rect: output.rect(),
+                        rect: output.rect().translate(dx, dy),
                     },
-                    rect: if active {
-                        output.rect().translate(dx, dy)
-                    } else {
-                        Rect::default()
-                    },
-                };
-                let keyed = (entry.map(|entry| entry.order), resolved);
-                if active {
-                    displays.push(keyed);
-                } else {
-                    inactive.push(keyed);
-                }
+                ));
             }
         }
-        let by_order = |(order, _): &Keyed| (order.is_none(), order.unwrap_or_default());
-        displays.sort_by_key(by_order);
-        inactive.sort_by_key(by_order);
-        let count = displays.len();
-        let number = |offset: usize, list: Vec<Keyed>| -> Vec<ResolvedDisplay> {
-            list.into_iter()
+        displays.sort_by_key(|(order, _)| (order.is_none(), order.unwrap_or_default()));
+        Self {
+            displays: displays
+                .into_iter()
                 .enumerate()
                 .map(|(order, (_, mut display))| {
-                    display.order = order.saturating_add(offset);
+                    display.order = order;
                     display
                 })
-                .collect()
-        };
-        Self {
-            displays: number(0, displays),
-            inactive: number(count, inactive),
+                .collect(),
         }
-    }
-
-    pub fn listed(&self) -> impl Iterator<Item = &ResolvedDisplay> {
-        self.displays.iter().chain(&self.inactive)
     }
 
     pub fn find(&self, device: &str, output: &str) -> Option<&ResolvedDisplay> {
@@ -601,7 +530,6 @@ impl Layout {
         ArrangedDisplay {
             device: display.device.clone(),
             output: display.output.clone(),
-            enabled: display.enabled,
             order: entry.map_or(order, |entry| entry.order),
             placed: true,
             x: display.rect.x,
@@ -643,96 +571,6 @@ impl Layout {
             })
             .collect::<Vec<_>>();
         pinned.with_changes(moved)
-    }
-
-    #[must_use]
-    pub fn set_enabled(
-        &self,
-        previous: &Arrangement,
-        device: &str,
-        output: &str,
-        enabled: bool,
-    ) -> Arrangement {
-        let previous = &previous.with_changes(self.pin_missing(previous));
-        let order = previous.max_order().saturating_add(ORDER_GAP);
-        let entry = if let Some(display) = self.find(device, output) {
-            ArrangedDisplay {
-                enabled,
-                ..Self::pin(display, previous, order)
-            }
-        } else if let Some(existing) = previous.entry(device, output) {
-            ArrangedDisplay {
-                enabled,
-                ..existing.clone()
-            }
-        } else {
-            ArrangedDisplay {
-                device: device.into(),
-                output: output.into(),
-                enabled,
-                order,
-                placed: false,
-                x: 0,
-                y: 0,
-                rev: 0,
-            }
-        };
-        previous.with_changes([entry])
-    }
-
-    #[must_use]
-    pub fn move_to_order(
-        &self,
-        previous: &Arrangement,
-        device: &str,
-        output: &str,
-        index: usize,
-    ) -> Arrangement {
-        let pinned = previous.with_changes(self.pin_missing(previous));
-        let Some(moving) = self.find(device, output) else {
-            return pinned;
-        };
-        let others: Vec<(&ResolvedDisplay, i64)> = self
-            .displays
-            .iter()
-            .filter(|display| !display.is(device, output))
-            .filter_map(|display| {
-                pinned
-                    .entry(&display.device, &display.output)
-                    .map(|entry| (display, entry.order))
-            })
-            .collect();
-        let index = index.min(others.len());
-        let below = index
-            .checked_sub(1)
-            .and_then(|at| others.get(at))
-            .map(|(_, order)| *order);
-        let above = others.get(index).map(|(_, order)| *order);
-        let key = match (below, above) {
-            (None, None) => Some(0),
-            (Some(low), None) => Some(low.saturating_add(ORDER_GAP)),
-            (None, Some(high)) => Some(high.saturating_sub(ORDER_GAP)),
-            (Some(low), Some(high)) => (high.saturating_sub(low) >= 2)
-                .then(|| low.saturating_add(high.saturating_sub(low) / 2)),
-        };
-        if let Some(order) = key {
-            return pinned.with_changes([ArrangedDisplay {
-                order,
-                ..Self::pin(moving, &pinned, 0)
-            }]);
-        }
-        let mut sequence: Vec<&ResolvedDisplay> =
-            others.iter().map(|(display, _)| *display).collect();
-        sequence.insert(index, moving);
-        let respaced = sequence
-            .into_iter()
-            .zip(1_i64..)
-            .map(|(display, position)| ArrangedDisplay {
-                order: position.saturating_mul(ORDER_GAP),
-                ..Self::pin(display, &pinned, 0)
-            })
-            .collect::<Vec<_>>();
-        pinned.with_changes(respaced)
     }
 }
 
@@ -837,18 +675,10 @@ mod tests {
         }
     }
 
-    fn arranged(
-        device: &str,
-        output: &str,
-        enabled: bool,
-        order: i64,
-        x: i32,
-        y: i32,
-    ) -> ArrangedDisplay {
+    fn arranged(device: &str, output: &str, order: i64, x: i32, y: i32) -> ArrangedDisplay {
         ArrangedDisplay {
             device: device.into(),
             output: output.into(),
-            enabled,
             order,
             placed: true,
             x,
@@ -881,216 +711,189 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn unarranged_devices_line_up_left_to_right_by_id() {
-        let layout = Layout::resolve(&laptop_and_pi(), &Arrangement::default());
-        let names: Vec<_> = layout.displays.iter().map(|d| d.output.as_str()).collect();
-        assert_eq!(names, ["panel", "hdmi", "pi-hdmi"]);
-        assert_eq!(layout.find("laptop", "hdmi").unwrap().rect.x, 1440);
-        let pi = layout.find("pi", "pi-hdmi").unwrap();
-        assert_eq!((pi.rect.x, pi.rect.y), (3360, 0));
-        assert!(layout.displays.iter().all(|d| d.enabled));
-        assert_eq!(
-            layout.displays.iter().map(|d| d.order).collect::<Vec<_>>(),
-            [0, 1, 2]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_shared_layout_places_displays_and_carries_the_pointer;
 
-    #[test]
-    fn a_device_keeps_its_own_screen_layout_around_its_anchor() {
-        let arrangement = Arrangement {
-            displays: vec![
-                arranged("pi", "pi-hdmi", true, 1, -1920, 100),
-                arranged("laptop", "hdmi", false, 2, 5000, 5000),
-            ],
-        };
-        let layout = Layout::resolve(&laptop_and_pi(), &arrangement);
-        let names: Vec<_> = layout.displays.iter().map(|d| d.output.as_str()).collect();
-        assert_eq!(names, ["pi-hdmi", "hdmi", "panel"]);
-        let hdmi = layout.find("laptop", "hdmi").unwrap();
-        let panel = layout.find("laptop", "panel").unwrap();
-        assert_eq!((hdmi.rect.x, hdmi.rect.y), (5000, 5000));
-        assert_eq!((panel.rect.x, panel.rect.y), (5000 - 1440, 5000));
-        assert!(!hdmi.enabled);
-        assert!(panel.enabled);
-    }
+        phase unarranged_devices_line_up_left_to_right_by_id;
+        {
+            let layout = Layout::resolve(&laptop_and_pi(), &Arrangement::default());
+            let names: Vec<_> = layout.displays.iter().map(|d| d.output.as_str()).collect();
+            assert_eq!(names, ["panel", "hdmi", "pi-hdmi"]);
+            assert_eq!(layout.find("laptop", "hdmi").unwrap().rect.x, 1440);
+            let pi = layout.find("pi", "pi-hdmi").unwrap();
+            assert_eq!((pi.rect.x, pi.rect.y), (3360, 0));
+            assert_eq!(
+                layout.displays.iter().map(|d| d.order).collect::<Vec<_>>(),
+                [0, 1, 2]
+            );
+        }
 
-    #[test]
-    fn the_pointer_crosses_at_the_mapped_position_and_slides_along_blocked_edges() {
-        let layout = Layout::resolve(&laptop_and_pi(), &Arrangement::default());
-        let hdmi = layout
-            .displays
-            .iter()
-            .position(|d| d.output == "hdmi")
-            .unwrap();
-        let pi = layout
-            .displays
-            .iter()
-            .position(|d| d.output == "pi-hdmi")
-            .unwrap();
-        let from = (3359.5, 500.25);
-        let step = layout
-            .step_pointer(hdmi, from, (4.0, 1.0), |_| true)
-            .unwrap();
-        assert_eq!(step.display, pi);
-        assert_eq!(step.shared, (3363.5, 501.25));
-        assert_eq!(step.device_point, (3.5, 501.25));
-        let back = layout
-            .step_pointer(pi, step.shared, (-8.0, 0.0), |_| true)
-            .unwrap();
-        assert_eq!(back.display, hdmi);
-        assert_eq!(back.device_point, (3355.5, 501.25));
-        let blocked = layout
-            .step_pointer(hdmi, from, (4.0, 3.0), |d| d.device != "pi")
-            .unwrap();
-        assert_eq!(blocked.display, hdmi);
-        assert_eq!(blocked.shared.1, 503.25, "motion along the edge is kept");
-        assert!(
-            blocked.shared.0 < 3360.0 && blocked.shared.0 > 3359.9,
-            "rests at the edge"
-        );
-        let panel = layout
-            .displays
-            .iter()
-            .position(|d| d.output == "panel")
-            .unwrap();
-        let down = layout
-            .step_pointer(panel, (100.0, 899.0), (0.0, 5.0), |_| true)
-            .unwrap();
-        assert_eq!(down.display, panel);
-        assert!(down.shared.1 < 900.0);
-    }
+        phase a_device_keeps_its_own_screen_layout_around_its_anchor;
+        {
+            let arrangement = Arrangement {
+                displays: vec![
+                    arranged("pi", "pi-hdmi", 1, -1920, 100),
+                    arranged("laptop", "hdmi", 2, 5000, 5000),
+                ],
+            };
+            let layout = Layout::resolve(&laptop_and_pi(), &arrangement);
+            let names: Vec<_> = layout.displays.iter().map(|d| d.output.as_str()).collect();
+            assert_eq!(names, ["pi-hdmi", "hdmi", "panel"]);
+            let hdmi = layout.find("laptop", "hdmi").unwrap();
+            let panel = layout.find("laptop", "panel").unwrap();
+            assert_eq!((hdmi.rect.x, hdmi.rect.y), (5000, 5000));
+            assert_eq!((panel.rect.x, panel.rect.y), (5000 - 1440, 5000));
+        }
 
-    #[test]
-    fn edits_touch_only_their_displays_and_keep_offline_places() {
-        let devices = laptop_and_pi();
-        let previous = Arrangement {
-            displays: vec![arranged("tv", "tv-panel", true, 0, -4000, 0)],
-        };
-        let layout = Layout::resolve(&devices, &previous);
-        let moved = layout.move_device(&previous, "pi", -3360 - 1920, 0);
-        let again = Layout::resolve(&devices, &moved);
-        let pi = again.find("pi", "pi-hdmi").unwrap();
-        assert_eq!(pi.rect.x, -1920);
-        assert_eq!(again.find("laptop", "panel").unwrap().rect.x, 0);
-        assert_eq!(
-            moved.entry("tv", "tv-panel"),
-            previous.entry("tv", "tv-panel")
-        );
-
-        let first = layout.set_enabled(&previous, "pi", "pi-hdmi", false);
-        assert_eq!(
-            Layout::resolve(&devices, &first)
+        phase the_pointer_crosses_at_the_mapped_position_and_slides_along_blocked_edges;
+        {
+            let layout = Layout::resolve(&laptop_and_pi(), &Arrangement::default());
+            let hdmi = layout
                 .displays
                 .iter()
-                .map(|d| d.rect)
-                .collect::<Vec<_>>(),
-            layout.displays.iter().map(|d| d.rect).collect::<Vec<_>>()
-        );
-
-        let disabled = again.set_enabled(&moved, "pi", "pi-hdmi", false);
-        assert!(!disabled.entry("pi", "pi-hdmi").unwrap().enabled);
-        let changed: Vec<_> = disabled
-            .displays
-            .iter()
-            .filter(|entry| moved.entry(&entry.device, &entry.output) != Some(*entry))
-            .map(|entry| entry.output.as_str())
-            .collect();
-        assert_eq!(changed, ["pi-hdmi"], "a toggle writes only its own entry");
-
-        let reordered = again.move_to_order(&moved, "pi", "pi-hdmi", 0);
-        let resolved = Layout::resolve(&devices, &reordered);
-        assert_eq!(resolved.displays[0].output, "pi-hdmi");
-        assert_eq!(resolved.find("pi", "pi-hdmi").unwrap().rect.x, -1920);
-        let changed: Vec<_> = reordered
-            .displays
-            .iter()
-            .filter(|entry| moved.entry(&entry.device, &entry.output) != Some(*entry))
-            .map(|entry| entry.output.as_str())
-            .collect();
-        assert_eq!(changed, ["pi-hdmi"], "a reorder writes only its own entry");
-    }
-
-    #[test]
-    fn concurrent_edits_to_different_displays_both_survive_the_merge() {
-        let devices = laptop_and_pi();
-        let base = Layout::resolve(&devices, &Arrangement::default());
-        let shared = base.move_device(&Arrangement::default(), "pi", 0, 0);
-        let layout = Layout::resolve(&devices, &shared);
-        let on_laptop = layout.set_enabled(&shared, "pi", "pi-hdmi", false);
-        let on_pi = layout.move_to_order(&shared, "laptop", "hdmi", 0);
-        let merged = Arrangement::merge([("laptop", on_laptop.clone()), ("pi", on_pi.clone())]);
-        let resolved = Layout::resolve(&devices, &merged);
-        assert!(!resolved.find("pi", "pi-hdmi").unwrap().enabled);
-        assert_eq!(resolved.displays[0].output, "hdmi");
-        assert_eq!(
-            merged,
-            Arrangement::merge([("pi", on_pi), ("laptop", on_laptop)])
-        );
-        assert_eq!(merged, Arrangement::merge([("x", merged.clone())]));
-        let a = shared.with_changes([arranged("pi", "pi-hdmi", true, 0, 1, 1)]);
-        let b = shared.with_changes([arranged("pi", "pi-hdmi", true, 0, 2, 2)]);
-        let winner = Arrangement::merge([("aa", a.clone()), ("bb", b.clone())]);
-        assert_eq!(winner, Arrangement::merge([("bb", b), ("aa", a)]));
-        assert_eq!(winner.entry("pi", "pi-hdmi").unwrap().x, 2);
-    }
-
-    #[test]
-    fn switched_off_displays_are_listed_and_keep_their_choice() {
-        let mut devices = laptop_and_pi();
-        devices[1].outputs.push(DeviceOutput {
-            enabled: false,
-            width: 0,
-            height: 0,
-            ..output("pi-dp", 0, 0, 0, 0)
-        });
-        let layout = Layout::resolve(&devices, &Arrangement::default());
-        assert!(
-            layout.find("pi", "pi-dp").is_none(),
-            "an off display is not reachable"
-        );
-        let off = &layout.inactive[0];
-        assert_eq!((off.output.as_str(), off.order), ("pi-dp", 3));
-        let arrangement = layout.set_enabled(&Arrangement::default(), "pi", "pi-dp", false);
-        let entry = arrangement.entry("pi", "pi-dp").unwrap();
-        assert!(!entry.enabled && !entry.placed);
-        devices[1].outputs[1] = output("pi-dp", 1920, 0, 1920, 1080);
-        let on = Layout::resolve(&devices, &arrangement);
-        assert!(!on.find("pi", "pi-dp").unwrap().enabled);
-        assert_eq!(on.find("pi", "pi-hdmi").unwrap().rect.x, 3360);
-    }
-
-    #[test]
-    fn stored_arrangements_are_bounded_and_deduplicated() {
-        let entry = serde_json::json!({"device": "a", "output": "b", "enabled": true,
-            "order": 0, "placed": true, "x": 1, "y": 2, "rev": 1});
-        let value = serde_json::json!({"displays": [entry, entry]});
-        assert_eq!(Arrangement::from_value(&value).unwrap().displays.len(), 1);
-        let far = serde_json::json!({"displays": [{"device": "a", "output": "b", "enabled": true,
-            "order": 0, "placed": true, "x": 2_000_000, "y": 0, "rev": 1}]});
-        assert!(Arrangement::from_value(&far).is_none());
-        for (field, value) in [
-            ("x", serde_json::json!(i32::MIN)),
-            ("y", serde_json::json!(i32::MIN)),
-            ("order", serde_json::json!(i64::MIN)),
-        ] {
-            let mut invalid = far.clone();
-            invalid["displays"][0][field] = value;
-            assert!(Arrangement::from_value(&invalid).is_none());
+                .position(|d| d.output == "hdmi")
+                .unwrap();
+            let pi = layout
+                .displays
+                .iter()
+                .position(|d| d.output == "pi-hdmi")
+                .unwrap();
+            let from = (3359.5, 500.25);
+            let step = layout
+                .step_pointer(hdmi, from, (4.0, 1.0), |_| true)
+                .unwrap();
+            assert_eq!(step.display, pi);
+            assert_eq!(step.shared, (3363.5, 501.25));
+            assert_eq!(step.device_point, (3.5, 501.25));
+            let back = layout
+                .step_pointer(pi, step.shared, (-8.0, 0.0), |_| true)
+                .unwrap();
+            assert_eq!(back.display, hdmi);
+            assert_eq!(back.device_point, (3355.5, 501.25));
+            let blocked = layout
+                .step_pointer(hdmi, from, (4.0, 3.0), |d| d.device != "pi")
+                .unwrap();
+            assert_eq!(blocked.display, hdmi);
+            assert_eq!(blocked.shared.1, 503.25, "motion along the edge is kept");
+            assert!(
+                blocked.shared.0 < 3360.0 && blocked.shared.0 > 3359.9,
+                "rests at the edge"
+            );
+            let panel = layout
+                .displays
+                .iter()
+                .position(|d| d.output == "panel")
+                .unwrap();
+            let down = layout
+                .step_pointer(panel, (100.0, 899.0), (0.0, 5.0), |_| true)
+                .unwrap();
+            assert_eq!(down.display, panel);
+            assert!(down.shared.1 < 900.0);
         }
-        let mut malformed_output = output("bad", i32::MIN, 0, 100, 100);
-        assert!(!malformed_output.valid());
-        malformed_output.x = 0;
-        malformed_output.y = i32::MIN;
-        assert!(!malformed_output.valid());
-        let unknown = serde_json::json!({"displays": [], "extra": 1});
-        assert!(Arrangement::from_value(&unknown).is_none());
-        let mut document = Map::new();
-        document.insert(
-            ARRANGEMENT_SECTION.into(),
-            serde_json::json!({"arrangement": value}),
-        );
-        assert_eq!(Arrangement::from_document(&document).displays.len(), 1);
+
+        phase switched_off_displays_are_out_of_the_layout;
+        {
+            let mut devices = laptop_and_pi();
+            devices[1].outputs.push(DeviceOutput {
+                enabled: false,
+                width: 0,
+                height: 0,
+                ..output("pi-dp", 0, 0, 0, 0)
+            });
+            let layout = Layout::resolve(&devices, &Arrangement::default());
+            assert!(
+                layout.find("pi", "pi-dp").is_none(),
+                "an off display is not reachable"
+            );
+            assert_eq!(layout.displays.len(), 3);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn arrangements_merge_edits_and_stay_bounded;
+
+        phase edits_touch_only_their_displays_and_keep_offline_places;
+        {
+            let devices = laptop_and_pi();
+            let previous = Arrangement {
+                displays: vec![arranged("tv", "tv-panel", 0, -4000, 0)],
+            };
+            let layout = Layout::resolve(&devices, &previous);
+            let moved = layout.move_device(&previous, "pi", -3360 - 1920, 0);
+            let again = Layout::resolve(&devices, &moved);
+            let pi = again.find("pi", "pi-hdmi").unwrap();
+            assert_eq!(pi.rect.x, -1920);
+            assert_eq!(again.find("laptop", "panel").unwrap().rect.x, 0);
+            assert_eq!(
+                moved.entry("tv", "tv-panel"),
+                previous.entry("tv", "tv-panel")
+            );
+        }
+
+        phase concurrent_moves_of_different_devices_both_survive_the_merge;
+        {
+            let devices = vec![
+                device("laptop", true, vec![output("panel", 0, 0, 1440, 900)]),
+                device("pi", false, vec![output("pi-hdmi", 0, 0, 1920, 1080)]),
+                device("tv", false, vec![output("tv-panel", 0, 0, 1920, 1080)]),
+            ];
+            let base = Layout::resolve(&devices, &Arrangement::default());
+            let shared = base.move_device(&Arrangement::default(), "pi", 0, 0);
+            let layout = Layout::resolve(&devices, &shared);
+            let on_laptop = layout.move_device(&shared, "pi", 0, 900);
+            let on_pi = layout.move_device(&shared, "tv", -1920 - 3360, 0);
+            let merged = Arrangement::merge([("laptop", on_laptop.clone()), ("pi", on_pi.clone())]);
+            let resolved = Layout::resolve(&devices, &merged);
+            assert_eq!(resolved.find("pi", "pi-hdmi").unwrap().rect.y, 900);
+            assert_eq!(resolved.find("tv", "tv-panel").unwrap().rect.x, -1920);
+            assert_eq!(
+                merged,
+                Arrangement::merge([("pi", on_pi), ("laptop", on_laptop)])
+            );
+            assert_eq!(merged, Arrangement::merge([("x", merged.clone())]));
+            let a = shared.with_changes([arranged("pi", "pi-hdmi", 0, 1, 1)]);
+            let b = shared.with_changes([arranged("pi", "pi-hdmi", 0, 2, 2)]);
+            let winner = Arrangement::merge([("aa", a.clone()), ("bb", b.clone())]);
+            assert_eq!(winner, Arrangement::merge([("bb", b), ("aa", a)]));
+            assert_eq!(winner.entry("pi", "pi-hdmi").unwrap().x, 2);
+        }
+
+        phase stored_arrangements_are_bounded_and_deduplicated;
+        {
+            let entry = serde_json::json!({"device": "a", "output": "b", "enabled": true,
+                "order": 0, "placed": true, "x": 1, "y": 2, "rev": 1});
+            let value = serde_json::json!({"displays": [entry, entry]});
+            assert_eq!(
+                Arrangement::from_value(&value).unwrap().displays.len(),
+                1,
+                "an entry stored with the flag that once left a display out still reads"
+            );
+            let far = serde_json::json!({"displays": [{"device": "a", "output": "b",
+                "order": 0, "placed": true, "x": 2_000_000, "y": 0, "rev": 1}]});
+            assert!(Arrangement::from_value(&far).is_none());
+            for (field, value) in [
+                ("x", serde_json::json!(i32::MIN)),
+                ("y", serde_json::json!(i32::MIN)),
+                ("order", serde_json::json!(i64::MIN)),
+            ] {
+                let mut invalid = far.clone();
+                invalid["displays"][0][field] = value;
+                assert!(Arrangement::from_value(&invalid).is_none());
+            }
+            let mut malformed_output = output("bad", i32::MIN, 0, 100, 100);
+            assert!(!malformed_output.valid());
+            malformed_output.x = 0;
+            malformed_output.y = i32::MIN;
+            assert!(!malformed_output.valid());
+            let unknown = serde_json::json!({"displays": [], "extra": 1});
+            assert!(Arrangement::from_value(&unknown).is_none());
+            let mut document = Map::new();
+            document.insert(
+                ARRANGEMENT_SECTION.into(),
+                serde_json::json!({"arrangement": value}),
+            );
+            assert_eq!(Arrangement::from_document(&document).displays.len(), 1);
+        }
     }
 }
 

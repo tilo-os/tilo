@@ -235,75 +235,79 @@ mod tests {
         scene
     }
 
-    #[test]
-    fn icon_widget_paints_resolved_glyph_or_nothing() {
-        /// A laid-out icon widget must emit at least one stroke into the scene.
-        fn icon_widget_paints_glyph() {
-            let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
-            let scene = paint(&mut w);
-            let color_tags = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(color_tags >= 1, "icon widget must paint its glyph");
+    tilo_test_env::scenario! {
+        fn an_icon_paints_its_glyph_and_says_what_it_means;
+
+        phase icon_widget_paints_resolved_glyph_or_nothing;
+        {
+            /// A laid-out icon widget must emit at least one stroke into the scene.
+            fn icon_widget_paints_glyph() {
+                let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
+                let scene = paint(&mut w);
+                let color_tags = scene
+                    .encoding()
+                    .draw_tags
+                    .iter()
+                    .filter(|t| **t == DrawTag::COLOR)
+                    .count();
+                assert!(color_tags >= 1, "icon widget must paint its glyph");
+            }
+
+            fn icon_widget_zero_rect_is_noop() {
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
+                w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                let tags = scene.encoding().draw_tags.len();
+                assert_eq!(tags, 0, "no draw work for a zero-size icon");
+            }
+
+            fn icon_widget_color_resolution() {
+                let theme = Theme::dark();
+                let primary = IconWidget::new(Icon::Star);
+                assert_eq!(primary.resolve_color(&theme), theme.text_primary);
+
+                let dim = IconWidget::new(Icon::Star).dim();
+                assert_eq!(dim.resolve_color(&theme), theme.text_dim);
+
+                let fixed = IconWidget::new(Icon::Star).with_color(Color::from_rgb8(1, 2, 3));
+                assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
+            }
+
+            fn icon_widget_sizes_follow_the_theme() {
+                let theme = Theme::dark();
+                let metrics = &theme.tokens.metrics;
+                assert_eq!(IconSize::Small.px(&theme), metrics.icon_sm);
+                assert_eq!(IconSize::Regular.px(&theme), metrics.icon_md);
+                assert_eq!(IconSize::Large.px(&theme), metrics.icon_lg);
+                assert_eq!(IconWidget::new(Icon::Star).size, IconSize::Regular);
+            }
+
+            icon_widget_paints_glyph();
+            icon_widget_sizes_follow_the_theme();
+            icon_widget_zero_rect_is_noop();
+            icon_widget_color_resolution();
         }
 
-        fn icon_widget_zero_rect_is_noop() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
-            w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let tags = scene.encoding().draw_tags.len();
-            assert_eq!(tags, 0, "no draw work for a zero-size icon");
+        phase an_icon_says_what_it_means_on_hover;
+        {
+            let mut w = IconWidget::new(Icon::WifiOff).describing("Mail: no route to host");
+            w.rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+            assert_eq!(w.tooltip().as_deref(), Some("Mail: no route to host"));
+            assert_eq!(
+                w.tooltip_target_at(vello::kurbo::Point::new(10.0, 10.0)),
+                Some((w.rect, "Mail: no route to host".to_owned()))
+            );
+
+            let mut plain = IconWidget::new(Icon::WifiOff);
+            plain.rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+            assert_eq!(plain.tooltip(), None);
+            assert_eq!(
+                plain.tooltip_target_at(vello::kurbo::Point::new(10.0, 10.0)),
+                None
+            );
         }
-
-        fn icon_widget_color_resolution() {
-            let theme = Theme::dark();
-            let primary = IconWidget::new(Icon::Star);
-            assert_eq!(primary.resolve_color(&theme), theme.text_primary);
-
-            let dim = IconWidget::new(Icon::Star).dim();
-            assert_eq!(dim.resolve_color(&theme), theme.text_dim);
-
-            let fixed = IconWidget::new(Icon::Star).with_color(Color::from_rgb8(1, 2, 3));
-            assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
-        }
-
-        fn icon_widget_sizes_follow_the_theme() {
-            let theme = Theme::dark();
-            let metrics = &theme.tokens.metrics;
-            assert_eq!(IconSize::Small.px(&theme), metrics.icon_sm);
-            assert_eq!(IconSize::Regular.px(&theme), metrics.icon_md);
-            assert_eq!(IconSize::Large.px(&theme), metrics.icon_lg);
-            assert_eq!(IconWidget::new(Icon::Star).size, IconSize::Regular);
-        }
-
-        icon_widget_paints_glyph();
-        icon_widget_sizes_follow_the_theme();
-        icon_widget_zero_rect_is_noop();
-        icon_widget_color_resolution();
-    }
-
-    #[test]
-    fn an_icon_says_what_it_means_on_hover() {
-        let mut w = IconWidget::new(Icon::WifiOff).describing("Mail: no route to host");
-        w.rect = Rect::new(0.0, 0.0, 20.0, 20.0);
-        assert_eq!(w.tooltip().as_deref(), Some("Mail: no route to host"));
-        assert_eq!(
-            w.tooltip_target_at(vello::kurbo::Point::new(10.0, 10.0)),
-            Some((w.rect, "Mail: no route to host".to_owned()))
-        );
-
-        let mut plain = IconWidget::new(Icon::WifiOff);
-        plain.rect = Rect::new(0.0, 0.0, 20.0, 20.0);
-        assert_eq!(plain.tooltip(), None);
-        assert_eq!(
-            plain.tooltip_target_at(vello::kurbo::Point::new(10.0, 10.0)),
-            None
-        );
     }
 }

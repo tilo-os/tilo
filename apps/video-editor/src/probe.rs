@@ -1089,307 +1089,311 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn probe_refuses_non_media_and_never_panics() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario: each former test is a labelled case block with its own fixture"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn probe_reads_headers_and_refuses_what_is_not_media;
+
+        phase probe_refuses_non_media_and_never_panics;
         {
-            // A cut-short file can end anywhere inside a header. Each sniffer and
-            // parser must answer from what is there rather than read past it.
-            let mut mp3 = b"ID3\x04\x00\x00\x00\x00\x00\x14".to_vec();
-            mp3.extend_from_slice(&[0u8; 20]);
-            mp3.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
-            mp3.extend_from_slice(&[0u8; 40]);
-            mp3.extend_from_slice(b"Xing\x00\x00\x00\x01\x00\x00\x00\x10");
-            let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x02\x80\x00\x00\x01\x68";
-            let wav = b"RIFF\x00\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x02\x00";
-            let jpeg = [
-                0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x68, 0x02, 0x80, 0x03,
-            ];
-            let mkv = [
-                0x1A, 0x45, 0xDF, 0xA3, 0x18, 0x53, 0x80, 0x67, 0x84, 0x15, 0x49, 0xA9,
-            ];
-            let samples: [&[u8]; 5] = [&mp3, png, wav, &jpeg, &mkv];
-            for data in samples {
-                for n in 0..=data.len() {
-                    let _ = probe_bytes(&data[..n], Path::new("clip.mp3"));
-                }
-            }
-        }
-        {
-            // The failing case: a download that returned the web page instead of the file,
-            // saved under the media name it asked for. The leading whitespace is why a
-            // naive prefix check misses it.
-            let html =
-                b"\n\n<!DOCTYPE html>\n<html lang=\"en\" class=\"fixed_navbar\">\n\t<head>\n\
-\t\t<title>\n\t\tEverything wrong with the world is in this video\n\t\t</title>\n\
-\t</head>\n\t<body></body>\n</html>";
-            let err = probe_bytes(
-                html,
-                Path::new("redlib_everything_wrong_with_the_world_CMAF_480.mp4"),
-            )
-            .expect_err("an HTML page is not a video, whatever it is named");
-            assert_eq!(
-                err,
-                ProbeError::NotMedia {
-                    detected: "video-editor-file-html"
-                }
-            );
-            assert!(
-                err.to_string().contains("HTML page"),
-                "the refusal names what the file really is: {err}"
-            );
-        }
-        {
-            // Through the production entry point the importer calls.
-            let f = std::env::temp_dir().join(format!("tilo-ve-fake-{}.mp4", std::process::id()));
-            std::fs::write(&f, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
-            let err = probe_file(&f).expect_err("probe_file refuses an HTML page named .mp4");
-            assert_eq!(
-                err,
-                ProbeError::NotMedia {
-                    detected: "video-editor-file-html"
-                }
-            );
-            std::fs::remove_file(&f).ok();
-        }
-        {
-            for (bytes, name, detected) in [
-                (
-                    &b"%PDF-1.7\n%\xE2\xE3\xCF\xD3"[..],
-                    "paper.mov",
-                    "video-editor-file-pdf",
-                ),
-                (
-                    &b"PK\x03\x04\x14\x00"[..],
-                    "bundle.mp4",
-                    "video-editor-file-zip",
-                ),
-                (
-                    &b"\x7FELF\x02\x01\x01"[..],
-                    "clip.mkv",
-                    "video-editor-file-elf",
-                ),
-                (
-                    &b"{\"error\": \"not found\"}"[..],
-                    "reply.mp4",
-                    "video-editor-file-json",
-                ),
-                (
-                    &b"1\n00:00:01,000 --> 00:00:04,000\nhello\n"[..],
-                    "subs.mp4",
-                    "video-editor-file-text",
-                ),
-                (
-                    &b"#EXTM3U\n#EXT-X-VERSION:3\n"[..],
-                    "stream.mp4",
-                    "video-editor-file-playlist",
-                ),
-            ] {
-                match probe_bytes(bytes, Path::new(name)) {
-                    Err(ProbeError::NotMedia { detected: d }) => {
-                        assert_eq!(d, detected, "{name} must be named for what it is");
+            {
+                // A cut-short file can end anywhere inside a header. Each sniffer and
+                // parser must answer from what is there rather than read past it.
+                let mut mp3 = b"ID3\x04\x00\x00\x00\x00\x00\x14".to_vec();
+                mp3.extend_from_slice(&[0u8; 20]);
+                mp3.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
+                mp3.extend_from_slice(&[0u8; 40]);
+                mp3.extend_from_slice(b"Xing\x00\x00\x00\x01\x00\x00\x00\x10");
+                let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x02\x80\x00\x00\x01\x68";
+                let wav = b"RIFF\x00\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x02\x00";
+                let jpeg = [
+                    0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x68, 0x02, 0x80, 0x03,
+                ];
+                let mkv = [
+                    0x1A, 0x45, 0xDF, 0xA3, 0x18, 0x53, 0x80, 0x67, 0x84, 0x15, 0x49, 0xA9,
+                ];
+                let samples: [&[u8]; 5] = [&mp3, png, wav, &jpeg, &mkv];
+                for data in samples {
+                    for n in 0..=data.len() {
+                        let _ = probe_bytes(&data[..n], Path::new("clip.mp3"));
                     }
-                    other => panic!("{name} must be refused as not-media, got {other:?}"),
+                }
+            }
+            {
+                // The failing case: a download that returned the web page instead of the file,
+                // saved under the media name it asked for. The leading whitespace is why a
+                // naive prefix check misses it.
+                let html =
+                    b"\n\n<!DOCTYPE html>\n<html lang=\"en\" class=\"fixed_navbar\">\n\t<head>\n\
+    \t\t<title>\n\t\tEverything wrong with the world is in this video\n\t\t</title>\n\
+    \t</head>\n\t<body></body>\n</html>";
+                let err = probe_bytes(
+                    html,
+                    Path::new("redlib_everything_wrong_with_the_world_CMAF_480.mp4"),
+                )
+                .expect_err("an HTML page is not a video, whatever it is named");
+                assert_eq!(
+                    err,
+                    ProbeError::NotMedia {
+                        detected: "video-editor-file-html"
+                    }
+                );
+                assert!(
+                    err.to_string().contains("HTML page"),
+                    "the refusal names what the file really is: {err}"
+                );
+            }
+            {
+                // Through the production entry point the importer calls.
+                let f = std::env::temp_dir().join(format!("tilo-ve-fake-{}.mp4", std::process::id()));
+                std::fs::write(&f, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
+                let err = probe_file(&f).expect_err("probe_file refuses an HTML page named .mp4");
+                assert_eq!(
+                    err,
+                    ProbeError::NotMedia {
+                        detected: "video-editor-file-html"
+                    }
+                );
+                std::fs::remove_file(&f).ok();
+            }
+            {
+                for (bytes, name, detected) in [
+                    (
+                        &b"%PDF-1.7\n%\xE2\xE3\xCF\xD3"[..],
+                        "paper.mov",
+                        "video-editor-file-pdf",
+                    ),
+                    (
+                        &b"PK\x03\x04\x14\x00"[..],
+                        "bundle.mp4",
+                        "video-editor-file-zip",
+                    ),
+                    (
+                        &b"\x7FELF\x02\x01\x01"[..],
+                        "clip.mkv",
+                        "video-editor-file-elf",
+                    ),
+                    (
+                        &b"{\"error\": \"not found\"}"[..],
+                        "reply.mp4",
+                        "video-editor-file-json",
+                    ),
+                    (
+                        &b"1\n00:00:01,000 --> 00:00:04,000\nhello\n"[..],
+                        "subs.mp4",
+                        "video-editor-file-text",
+                    ),
+                    (
+                        &b"#EXTM3U\n#EXT-X-VERSION:3\n"[..],
+                        "stream.mp4",
+                        "video-editor-file-playlist",
+                    ),
+                ] {
+                    match probe_bytes(bytes, Path::new(name)) {
+                        Err(ProbeError::NotMedia { detected: d }) => {
+                            assert_eq!(d, detected, "{name} must be named for what it is");
+                        }
+                        other => panic!("{name} must be refused as not-media, got {other:?}"),
+                    }
+                }
+            }
+            {
+                assert_eq!(
+                    probe_bytes(b"", Path::new("empty.mp4")),
+                    Err(ProbeError::Empty)
+                );
+            }
+            {
+                // Arbitrary binary with no media extension: say nothing rather than call it a
+                // video.
+                let err = probe_bytes(&[0x00, 0x11, 0x22, 0xFE, 0xED, 0x00], Path::new("blob.dat"))
+                    .expect_err("an unknown extension is not a video");
+                assert_eq!(err, ProbeError::Unrecognised);
+            }
+            // Media files come from the user, so a malformed one must not crash the editor.
+            {
+                let path = std::path::Path::new("probe.mp4");
+
+                let seeds: [&[u8]; 6] = [
+                    b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom",
+                    b"\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x1f",
+                    b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00",
+                    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00",
+                    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00",
+                    b"\xff\xfb\x90\x00",
+                ];
+                for seed in seeds {
+                    for n in 0..=seed.len() {
+                        let _ = probe_bytes(seed.get(..n).unwrap_or_default(), path);
+                    }
+                }
+
+                // Length fields claiming more than the buffer holds.
+                let mut huge = b"\x00\x00\x00\x18ftypmp42".to_vec();
+                huge.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+                huge.extend_from_slice(b"moov");
+                let _ = probe_bytes(&huge, path);
+
+                let mut large = b"\x00\x00\x00\x18ftypmp42".to_vec();
+                large.extend_from_slice(&[0, 0, 0, 1]);
+                large.extend_from_slice(b"moov");
+                let _ = probe_bytes(&large, path);
+
+                let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+                for len in [0usize, 1, 4, 8, 16, 64, 128, 512, 4096] {
+                    let blob: Vec<u8> = (0..len)
+                        .map(|_| {
+                            seed ^= seed << 13;
+                            seed ^= seed >> 7;
+                            seed ^= seed << 17;
+                            (seed >> 32) as u8
+                        })
+                        .collect();
+                    let _ = probe_bytes(&blob, path);
                 }
             }
         }
-        {
-            assert_eq!(
-                probe_bytes(b"", Path::new("empty.mp4")),
-                Err(ProbeError::Empty)
-            );
-        }
-        {
-            // Arbitrary binary with no media extension: say nothing rather than call it a
-            // video.
-            let err = probe_bytes(&[0x00, 0x11, 0x22, 0xFE, 0xED, 0x00], Path::new("blob.dat"))
-                .expect_err("an unknown extension is not a video");
-            assert_eq!(err, ProbeError::Unrecognised);
-        }
-        // Media files come from the user, so a malformed one must not crash the editor.
-        {
-            let path = std::path::Path::new("probe.mp4");
 
-            let seeds: [&[u8]; 6] = [
-                b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom",
-                b"\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x1f",
-                b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00",
-                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00",
-                b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00",
-                b"\xff\xfb\x90\x00",
-            ];
-            for seed in seeds {
-                for n in 0..=seed.len() {
-                    let _ = probe_bytes(seed.get(..n).unwrap_or_default(), path);
-                }
+        phase probe_parses_image_webm_and_mp3_headers;
+        {
+            {
+                let mut png = Vec::new();
+                png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+                png.extend_from_slice(&13u32.to_be_bytes()); // IHDR length
+                png.extend_from_slice(b"IHDR");
+                png.extend_from_slice(&640u32.to_be_bytes());
+                png.extend_from_slice(&360u32.to_be_bytes());
+                png.extend_from_slice(&[8, 2, 0, 0, 0]); // bit depth, colour type, ...
+                let p = probe_bytes(&png, Path::new("logo.png")).expect("a real png probes");
+                assert_eq!(p.kind, MediaKind::Image);
+                assert_eq!((p.width, p.height), (640, 360));
+                assert!((p.duration - DEFAULT_IMAGE_DURATION).abs() < 1e-9);
             }
-
-            // Length fields claiming more than the buffer holds.
-            let mut huge = b"\x00\x00\x00\x18ftypmp42".to_vec();
-            huge.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
-            huge.extend_from_slice(b"moov");
-            let _ = probe_bytes(&huge, path);
-
-            let mut large = b"\x00\x00\x00\x18ftypmp42".to_vec();
-            large.extend_from_slice(&[0, 0, 0, 1]);
-            large.extend_from_slice(b"moov");
-            let _ = probe_bytes(&large, path);
-
-            let mut seed = 0x9E37_79B9_7F4A_7C15u64;
-            for len in [0usize, 1, 4, 8, 16, 64, 128, 512, 4096] {
-                let blob: Vec<u8> = (0..len)
-                    .map(|_| {
-                        seed ^= seed << 13;
-                        seed ^= seed >> 7;
-                        seed ^= seed << 17;
-                        (seed >> 32) as u8
-                    })
-                    .collect();
-                let _ = probe_bytes(&blob, path);
+            {
+                // SOI, then a SOF0 marker with height 480, width 720.
+                let mut jpg = vec![0xFF, 0xD8, 0xFF];
+                jpg[2] = 0xFF;
+                jpg.push(0xC0); // SOF0
+                jpg.extend_from_slice(&(11u16).to_be_bytes()); // segment length
+                jpg.push(8); // precision
+                jpg.extend_from_slice(&(480u16).to_be_bytes()); // height
+                jpg.extend_from_slice(&(720u16).to_be_bytes()); // width
+                jpg.extend_from_slice(&[3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+                let p = probe_bytes(&jpg, Path::new("frame.jpg")).expect("a real jpeg probes");
+                assert_eq!(p.kind, MediaKind::Image);
+                assert_eq!((p.width, p.height), (720, 480));
             }
-        }
-    }
+            {
+                // TimestampScale = 1_000_000 ns, Duration = 8000 units → 8.0 s.
+                let timescale = ebml(&[0x2A, 0xD7, 0xB1], &1_000_000u64.to_be_bytes()[5..]);
+                let duration = ebml(&[0x44, 0x89], &8000.0f64.to_be_bytes());
+                let info = ebml(&[0x15, 0x49, 0xA9, 0x66], &[timescale, duration].concat());
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn probe_parses_image_webm_and_mp3_headers() {
-        {
-            let mut png = Vec::new();
-            png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
-            png.extend_from_slice(&13u32.to_be_bytes()); // IHDR length
-            png.extend_from_slice(b"IHDR");
-            png.extend_from_slice(&640u32.to_be_bytes());
-            png.extend_from_slice(&360u32.to_be_bytes());
-            png.extend_from_slice(&[8, 2, 0, 0, 0]); // bit depth, colour type, ...
-            let p = probe_bytes(&png, Path::new("logo.png")).expect("a real png probes");
-            assert_eq!(p.kind, MediaKind::Image);
-            assert_eq!((p.width, p.height), (640, 360));
-            assert!((p.duration - DEFAULT_IMAGE_DURATION).abs() < 1e-9);
-        }
-        {
-            // SOI, then a SOF0 marker with height 480, width 720.
-            let mut jpg = vec![0xFF, 0xD8, 0xFF];
-            jpg[2] = 0xFF;
-            jpg.push(0xC0); // SOF0
-            jpg.extend_from_slice(&(11u16).to_be_bytes()); // segment length
-            jpg.push(8); // precision
-            jpg.extend_from_slice(&(480u16).to_be_bytes()); // height
-            jpg.extend_from_slice(&(720u16).to_be_bytes()); // width
-            jpg.extend_from_slice(&[3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
-            let p = probe_bytes(&jpg, Path::new("frame.jpg")).expect("a real jpeg probes");
-            assert_eq!(p.kind, MediaKind::Image);
-            assert_eq!((p.width, p.height), (720, 480));
-        }
-        {
-            // TimestampScale = 1_000_000 ns, Duration = 8000 units → 8.0 s.
-            let timescale = ebml(&[0x2A, 0xD7, 0xB1], &1_000_000u64.to_be_bytes()[5..]);
-            let duration = ebml(&[0x44, 0x89], &8000.0f64.to_be_bytes());
-            let info = ebml(&[0x15, 0x49, 0xA9, 0x66], &[timescale, duration].concat());
+                // One video TrackEntry: TrackType=1, Video{ PixelWidth=320, Height=180 }.
+                let ttype = ebml(&[0x83], &[1u8]);
+                let pw = ebml(&[0xB0], &320u16.to_be_bytes());
+                let ph = ebml(&[0xBA], &180u16.to_be_bytes());
+                let video = ebml(&[0xE0], &[pw, ph].concat());
+                let entry = ebml(&[0xAE], &[ttype, video].concat());
+                let tracks = ebml(&[0x16, 0x54, 0xAE, 0x6B], &entry);
 
-            // One video TrackEntry: TrackType=1, Video{ PixelWidth=320, Height=180 }.
-            let ttype = ebml(&[0x83], &[1u8]);
-            let pw = ebml(&[0xB0], &320u16.to_be_bytes());
-            let ph = ebml(&[0xBA], &180u16.to_be_bytes());
-            let video = ebml(&[0xE0], &[pw, ph].concat());
-            let entry = ebml(&[0xAE], &[ttype, video].concat());
-            let tracks = ebml(&[0x16, 0x54, 0xAE, 0x6B], &entry);
+                let segment = ebml(&[0x18, 0x53, 0x80, 0x67], &[info, tracks].concat());
+                let header = ebml(&[0x1A, 0x45, 0xDF, 0xA3], &[0x42, 0x82]); // minimal EBML header
+                let file = [header, segment].concat();
 
-            let segment = ebml(&[0x18, 0x53, 0x80, 0x67], &[info, tracks].concat());
-            let header = ebml(&[0x1A, 0x45, 0xDF, 0xA3], &[0x42, 0x82]); // minimal EBML header
-            let file = [header, segment].concat();
+                let p = probe_bytes(&file, Path::new("clip.webm")).expect("a real webm probes");
+                assert_eq!(p.kind, MediaKind::Video);
+                assert!((p.duration - 8.0).abs() < 1e-6, "duration {}", p.duration);
+                assert_eq!((p.width, p.height), (320, 180));
+            }
+            {
+                let timescale = ebml(&[0x2A, 0xD7, 0xB1], &1_000_000u64.to_be_bytes()[5..]);
+                let duration = ebml(&[0x44, 0x89], &3000.0f64.to_be_bytes()); // 3.0 s
+                let info = ebml(&[0x15, 0x49, 0xA9, 0x66], &[timescale, duration].concat());
+                let ttype = ebml(&[0x83], &[2u8]); // audio
+                let entry = ebml(&[0xAE], &ttype);
+                let tracks = ebml(&[0x16, 0x54, 0xAE, 0x6B], &entry);
+                let segment = ebml(&[0x18, 0x53, 0x80, 0x67], &[info, tracks].concat());
+                let header = ebml(&[0x1A, 0x45, 0xDF, 0xA3], &[]);
+                let file = [header, segment].concat();
+                let p = probe_bytes(&file, Path::new("sound.webm")).expect("a real webm probes");
+                assert_eq!(p.kind, MediaKind::Audio);
+                assert!((p.duration - 3.0).abs() < 1e-6);
+            }
+            {
+                // MPEG1 Layer III, 128 kbps, 44100 Hz, stereo; Xing with 1000 frames.
+                let mut mp3 = vec![0xFF, 0xFB, 0x90, 0x00];
+                mp3.extend_from_slice(&[0u8; 32]); // stereo side info
+                mp3.extend_from_slice(b"Xing");
+                mp3.extend_from_slice(&1u32.to_be_bytes()); // flags: frame count present
+                mp3.extend_from_slice(&1000u32.to_be_bytes());
+                mp3.extend_from_slice(&[0u8; 64]);
+                let p = probe_bytes(&mp3, Path::new("song.mp3")).expect("a real mp3 probes");
+                assert_eq!(p.kind, MediaKind::Audio);
+                assert_eq!(p.codec, "mp3");
+                // 1000 frames × 1152 samples / 44100 Hz ≈ 26.12 s.
+                assert!(
+                    (p.duration - 26.122).abs() < 0.01,
+                    "duration {}",
+                    p.duration
+                );
+            }
+            {
+                // ID3v2 tag of 20 bytes, then a 128 kbps frame with no Xing header.
+                let mut mp3 = Vec::new();
+                mp3.extend_from_slice(b"ID3\x03\x00\x00");
+                mp3.extend_from_slice(&[0x00, 0x00, 0x00, 0x14]); // syncsafe size = 20
+                mp3.extend_from_slice(&[0u8; 20]); // tag body
+                let audio_start = mp3.len();
+                mp3.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+                mp3.extend_from_slice(&[0x11u8; 32]); // side info (not "Xing")
+                mp3.extend_from_slice(&[0x22u8; 4000]); // audio payload
+                let audio_bytes = mp3.len() - audio_start;
+                let p = probe_bytes(&mp3, Path::new("cbr.mp3")).expect("a real mp3 probes");
+                assert_eq!(p.kind, MediaKind::Audio);
+                let expected = audio_bytes as f64 * 8.0 / 128_000.0;
+                assert!(
+                    (p.duration - expected).abs() < 0.05,
+                    "duration {} vs {}",
+                    p.duration,
+                    expected
+                );
+            }
+            {
+                // AVI and FLAC are genuine media we have no parser for: right kind, no
+                // invented numbers.
+                let avi = probe_bytes(
+                    &[
+                        b'R', b'I', b'F', b'F', 0x10, 0x00, 0x00, 0x00, b'A', b'V', b'I', b' ', 0x00,
+                        0x01,
+                    ],
+                    Path::new("legacy.avi"),
+                )
+                .expect("an AVI is still importable");
+                assert_eq!(avi.kind, MediaKind::Video);
+                assert_eq!((avi.width, avi.height), (0, 0));
+                assert_eq!(avi.duration, 0.0);
+                assert_eq!(avi.codec, "unknown");
 
-            let p = probe_bytes(&file, Path::new("clip.webm")).expect("a real webm probes");
-            assert_eq!(p.kind, MediaKind::Video);
-            assert!((p.duration - 8.0).abs() < 1e-6, "duration {}", p.duration);
-            assert_eq!((p.width, p.height), (320, 180));
-        }
-        {
-            let timescale = ebml(&[0x2A, 0xD7, 0xB1], &1_000_000u64.to_be_bytes()[5..]);
-            let duration = ebml(&[0x44, 0x89], &3000.0f64.to_be_bytes()); // 3.0 s
-            let info = ebml(&[0x15, 0x49, 0xA9, 0x66], &[timescale, duration].concat());
-            let ttype = ebml(&[0x83], &[2u8]); // audio
-            let entry = ebml(&[0xAE], &ttype);
-            let tracks = ebml(&[0x16, 0x54, 0xAE, 0x6B], &entry);
-            let segment = ebml(&[0x18, 0x53, 0x80, 0x67], &[info, tracks].concat());
-            let header = ebml(&[0x1A, 0x45, 0xDF, 0xA3], &[]);
-            let file = [header, segment].concat();
-            let p = probe_bytes(&file, Path::new("sound.webm")).expect("a real webm probes");
-            assert_eq!(p.kind, MediaKind::Audio);
-            assert!((p.duration - 3.0).abs() < 1e-6);
-        }
-        {
-            // MPEG1 Layer III, 128 kbps, 44100 Hz, stereo; Xing with 1000 frames.
-            let mut mp3 = vec![0xFF, 0xFB, 0x90, 0x00];
-            mp3.extend_from_slice(&[0u8; 32]); // stereo side info
-            mp3.extend_from_slice(b"Xing");
-            mp3.extend_from_slice(&1u32.to_be_bytes()); // flags: frame count present
-            mp3.extend_from_slice(&1000u32.to_be_bytes());
-            mp3.extend_from_slice(&[0u8; 64]);
-            let p = probe_bytes(&mp3, Path::new("song.mp3")).expect("a real mp3 probes");
-            assert_eq!(p.kind, MediaKind::Audio);
-            assert_eq!(p.codec, "mp3");
-            // 1000 frames × 1152 samples / 44100 Hz ≈ 26.12 s.
-            assert!(
-                (p.duration - 26.122).abs() < 0.01,
-                "duration {}",
-                p.duration
-            );
-        }
-        {
-            // ID3v2 tag of 20 bytes, then a 128 kbps frame with no Xing header.
-            let mut mp3 = Vec::new();
-            mp3.extend_from_slice(b"ID3\x03\x00\x00");
-            mp3.extend_from_slice(&[0x00, 0x00, 0x00, 0x14]); // syncsafe size = 20
-            mp3.extend_from_slice(&[0u8; 20]); // tag body
-            let audio_start = mp3.len();
-            mp3.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
-            mp3.extend_from_slice(&[0x11u8; 32]); // side info (not "Xing")
-            mp3.extend_from_slice(&[0x22u8; 4000]); // audio payload
-            let audio_bytes = mp3.len() - audio_start;
-            let p = probe_bytes(&mp3, Path::new("cbr.mp3")).expect("a real mp3 probes");
-            assert_eq!(p.kind, MediaKind::Audio);
-            let expected = audio_bytes as f64 * 8.0 / 128_000.0;
-            assert!(
-                (p.duration - expected).abs() < 0.05,
-                "duration {} vs {}",
-                p.duration,
-                expected
-            );
-        }
-        {
-            // AVI and FLAC are genuine media we have no parser for: right kind, no
-            // invented numbers.
-            let avi = probe_bytes(
-                &[
-                    b'R', b'I', b'F', b'F', 0x10, 0x00, 0x00, 0x00, b'A', b'V', b'I', b' ', 0x00,
-                    0x01,
-                ],
-                Path::new("legacy.avi"),
-            )
-            .expect("an AVI is still importable");
-            assert_eq!(avi.kind, MediaKind::Video);
-            assert_eq!((avi.width, avi.height), (0, 0));
-            assert_eq!(avi.duration, 0.0);
-            assert_eq!(avi.codec, "unknown");
+                let flac = probe_bytes(b"fLaC\x00\x00\x00\x22\x10\x00", Path::new("track.flac"))
+                    .expect("a FLAC is still importable");
+                assert_eq!(flac.kind, MediaKind::Audio);
+                assert_eq!(flac.duration, 0.0);
 
-            let flac = probe_bytes(b"fLaC\x00\x00\x00\x22\x10\x00", Path::new("track.flac"))
-                .expect("a FLAC is still importable");
-            assert_eq!(flac.kind, MediaKind::Audio);
-            assert_eq!(flac.duration, 0.0);
-
-            // YUV4MPEG2 opens with a line of ASCII and is still real video.
-            let y4m = probe_bytes(
-                b"YUV4MPEG2 W640 H480 F30:1 Ip A1:1\nFRAME\n",
-                Path::new("raw.y4m"),
-            )
-            .expect("a y4m header is not a text file");
-            assert_eq!(y4m.kind, MediaKind::Video);
+                // YUV4MPEG2 opens with a line of ASCII and is still real video.
+                let y4m = probe_bytes(
+                    b"YUV4MPEG2 W640 H480 F30:1 Ip A1:1\nFRAME\n",
+                    Path::new("raw.y4m"),
+                )
+                .expect("a y4m header is not a text file");
+                assert_eq!(y4m.kind, MediaKind::Video);
+            }
         }
     }
 

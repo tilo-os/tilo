@@ -110,11 +110,6 @@ impl Joined {
         self.hosted_by_own(workspace) == Some(true)
     }
 
-    /// Whether `workspace` is one this device joined through another device's host.
-    pub(in crate::standalone) fn hosted_elsewhere(&self, workspace: WorkspaceId) -> bool {
-        self.hosted_by_own(workspace) == Some(false)
-    }
-
     /// Whether this device's own host hosts `workspace`; `None` for a workspace
     /// whose host is not known here.
     fn hosted_by_own(&self, workspace: WorkspaceId) -> Option<bool> {
@@ -195,14 +190,16 @@ impl Joined {
             .own_host
             .get()
             .ok_or("this profile runs no workspace host")?;
-        let (held, authors, generation) = self.owner.with_current(workspace, |view| {
+        let (held, changes, generation) = self.owner.with_current(workspace, |view| {
             let now = SystemTime::now();
             Ok((
                 view.peer().holds_document(&app, &record),
                 view.peer().permissions(own, now).is_ok_and(|member| {
-                    member
-                        .policy
-                        .app_authors(&app, &tilo_action_policy::Context::at_time(now))
+                    member.allows(
+                        &member.policy.node().app(&app),
+                        tilo_action_policy::ActionKind::Undoable,
+                        now,
+                    )
                 }),
                 view.generation(),
             ))
@@ -215,23 +212,10 @@ impl Joined {
                 return Err(format!("{app} does not declare the resource kind `{kind}`"));
             }
         }
-        if !authors {
-            // This device lets the app author, committed by its own host,
-            // which signs the workspace's history under this device's key. The
-            // link carries the grant to this device behind the write, and the
-            // host decides the write with the grant in hand.
-            own_host
-                .host
-                .workspaces()
-                .commit_own_membership(
-                    &workspace.to_string(),
-                    &self.custody.device_cert,
-                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                        app: app.clone(),
-                    },
-                )
-                .await
-                .map_err(|error| error.to_string())?;
+        if !changes {
+            return Err(format!(
+                "the person at this device may not change {app} in this workspace"
+            ));
         }
         let message = neighbour_wire::NeighbourMsg::AppDocument {
             peer: neighbour_wire::peer_handle(&own),
@@ -246,7 +230,7 @@ impl Joined {
         let deadline = Instant::now()
             .checked_add(KEPT_WITHIN)
             .ok_or("the clock cannot count a write's wait")?;
-        let ws = super::workspace_topic(workspace)?;
+        let ws = workspace;
         let host = own_host
             .host
             .workspaces()
@@ -345,7 +329,7 @@ impl Joined {
         let host = self
             .room_host()
             .ok_or("this profile runs no workspace host")?;
-        let ws = super::workspace_topic(workspace)?;
+        let ws = workspace;
         let link = host
             .workspaces()
             .direct()
@@ -365,12 +349,11 @@ impl Joined {
                 },
             )
             .map_err(|error| error.to_string())?;
-        let route = collab_types::ChannelRoute::new(app, record);
         let keys = self
             .channel_keys()
             .get()
             .ok_or("this device holds no channel keys")?
-            .record_keys(workspace, &route)
+            .record_keys(workspace)
             .ok_or_else(|| {
                 format!(
                     "the host keeps {} writes but this device takes part in no channel of {app}'s {record}",

@@ -110,13 +110,16 @@ impl App {
                 self.persistence.autosave.as_mut(),
                 self.persistence.room_index.as_mut(),
             ) {
-                saver.request_checkpoint(index.document_mut());
+                let index = index.document_mut();
+                index.commit();
+                saver.request_checkpoint(index);
                 if let Err(error) = saver.try_flush() {
                     errors.push(error);
                 }
             }
         } else if let Some(saver) = self.persistence.autosave.as_mut() {
-            saver.request_checkpoint(&mut self.state.doc);
+            self.state.doc.commit();
+            saver.request_checkpoint(&self.state.doc);
             if let Err(error) = saver.try_flush() {
                 errors.push(error);
             }

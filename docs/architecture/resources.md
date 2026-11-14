@@ -251,7 +251,9 @@ fields are all it holds answers with `tilo_resource::read::fields(self, item)`,
 which is its own model's JSON; a record that reads more than its fields (a
 notebook's pages, a sheet's cells, a form's values) says so in a read of its
 own. Without one a caller is told the record offers no read at all, so
-`tools/policy/check_app_record_reads.py` fails on a record that names none.
+`tools/policy/check_app_record_reads.py` fails on a record that names none. A
+record whose content must not reach anyone holding its path names no read and
+is listed in that check's exceptions with the reason.
 
 ### 2.3 How the kind is derived
 

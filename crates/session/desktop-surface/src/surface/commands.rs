@@ -94,8 +94,8 @@ impl DesktopSurface {
                     }
                     Admitted::Float(ids, on) if live(&shared.tree, ids) => {
                         // A chord, a menu row or an agent floats the window — a card back to the
-                        // column, any other over the place it stands — or puts it back in its strip;
-                        // the row reads it in `present` .
+                        // column, any other over the place it stands — or puts it back in its strip,
+                        // as an arranging action the host makes (`floats::set`).
                         let lifted = match self.rows.get_mut(&ids.strip) {
                             Some(row) if on => {
                                 floats::float(&mut shared, ids.strip, row, ids.group)

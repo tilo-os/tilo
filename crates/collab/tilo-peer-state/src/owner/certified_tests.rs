@@ -1,10 +1,10 @@
 use super::*;
-use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, MemberRole};
+use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, Role};
 use crate::owner::testing::member_certificate as certificate;
 use crate::{SeedState, StatePeer, seed_workspace};
 use ed25519_dalek::SigningKey;
 use std::time::{Duration, SystemTime};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::RevocationList;
 
 fn actual_redemption() -> (
@@ -52,17 +52,17 @@ fn actual_redemption_at(
         "Joining device",
     );
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let workspace_id = tilo_relay_protocol::room_workspace_id(workspace).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
+    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
+    let hint = WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: workspace.into(),
+        holds_keys: true,
+        runs_work: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
-        host_user_public_key: governor.user_public_key,
-        host_device_certificate: governor.clone(),
+        user_public_key: governor.user_public_key,
+        device_certificate: governor.clone(),
         packet_relay_url: "https://relay.invalid".into(),
     }
     .transport_hint(&governor_key)
@@ -70,9 +70,8 @@ fn actual_redemption_at(
     let signed = join::issue_invitation(
         InviteGrant {
             workspace_id,
-            room: workspace.into(),
             issuer: governor.clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [75; 16],
             recipient_user_public_key: Some(device.user_public_key),
             invitee_name: Some("Guest".into()),
@@ -132,8 +131,7 @@ fn actual_redemption_at(
         version: 1,
         invite_id: join.invite_id(),
         device_cert: device.clone(),
-        role: MemberRole::Editor,
-        room: workspace.into(),
+        role: Role::Editor,
         workspace_id,
         host: governor,
         certified_roster: peer.certificates(),
@@ -178,10 +176,10 @@ fn native_enrollment_refuses_bootstrap_scope_and_identity_substitution() {
         let (join, complete, mut bootstrap, device, hint, now) = actual_redemption();
         match change {
             0 => bootstrap.invite_id[0] ^= 1,
-            1 => bootstrap.workspace_id ^= 1,
-            2 => bootstrap.room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+            1 => bootstrap.workspace_id = WorkspaceId::from_u128(1),
+            2 => bootstrap.host = bootstrap.device_cert.clone(),
             3 => bootstrap.device_cert = bootstrap.host.clone(),
-            4 => bootstrap.role = MemberRole::Viewer,
+            4 => bootstrap.role = Role::Viewer,
             _ => bootstrap.generation = 0,
         }
         let intent =

@@ -35,6 +35,14 @@ impl Calculator {}
 
 
 class RecordReadsTests(unittest.TestCase):
+    def setUp(self):
+        # The fixture roots are not this tree: an exception this tree carries
+        # names a record they do not declare.
+        self.exceptions = dict(record_reads.EXCEPTIONS)
+        record_reads.EXCEPTIONS.clear()
+        self.addCleanup(record_reads.EXCEPTIONS.update, self.exceptions)
+        self.addCleanup(record_reads.EXCEPTIONS.clear)
+
     def fixture(self, files: dict[str, str]) -> Path:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

@@ -136,239 +136,239 @@ fn property(
     )
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one fixture of two buses and their proxies, then every allowed and refused call"
-)]
-fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
-    let dir = tempfile::tempdir().unwrap();
+tilo_test_env::scenario! {
+    fn an_app_reaches_only_the_bus_names_and_calls_listed_for_it;
 
-    // Session bus: the accessibility launcher and an unrelated service.
-    let session = PrivateBus::start_at(&dir.path().join("session"));
-    let _a11y_launcher = connect(session.address())
-        .name("org.a11y.Bus")
-        .unwrap()
-        .serve_at("/org/a11y/bus", A11yBus)
-        .unwrap()
-        .serve_at("/org/a11y/bus", A11yStatus { enabled: true })
-        .unwrap()
-        .build()
-        .unwrap();
-    let _other = connect(session.address())
-        .name("org.example.Other")
-        .unwrap()
-        .serve_at("/", Other)
-        .unwrap()
-        .build()
-        .unwrap();
+    phase a_graphical_app_reaches_only_the_listed_accessibility_calls;
+    {
+        let dir = tempfile::tempdir().unwrap();
 
-    // AT-SPI bus: the registry, and another app's accessible tree.
-    let atspi = PrivateBus::start_at(&dir.path().join("atspi"));
-    let _registry = connect(atspi.address())
-        .name("org.a11y.atspi.Registry")
-        .unwrap()
-        .serve_at("/org/a11y/atspi/accessible/root", Socket)
-        .unwrap()
+        // Session bus: the accessibility launcher and an unrelated service.
+        let session = PrivateBus::start_at(&dir.path().join("session"));
+        let _a11y_launcher = connect(session.address())
+            .name("org.a11y.Bus")
+            .unwrap()
+            .serve_at("/org/a11y/bus", A11yBus)
+            .unwrap()
+            .serve_at("/org/a11y/bus", A11yStatus { enabled: true })
+            .unwrap()
+            .build()
+            .unwrap();
+        let _other = connect(session.address())
+            .name("org.example.Other")
+            .unwrap()
+            .serve_at("/", Other)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // AT-SPI bus: the registry, and another app's accessible tree.
+        let atspi = PrivateBus::start_at(&dir.path().join("atspi"));
+        let _registry = connect(atspi.address())
+            .name("org.a11y.atspi.Registry")
+            .unwrap()
+            .serve_at("/org/a11y/atspi/accessible/root", Socket)
+            .unwrap()
+            .serve_at("/org/a11y/atspi/accessible/root", Accessible)
+            .unwrap()
+            .serve_at("/org/a11y/atspi/registry/deviceeventcontroller", Controller)
+            .unwrap()
+            .build()
+            .unwrap();
+        let other_app = connect(atspi.address())
+            .serve_at("/org/a11y/atspi/accessible/root", Accessible)
+            .unwrap()
+            .build()
+            .unwrap();
+        let other_app_name = other_app.unique_name().unwrap().to_string();
+
+        // A portal-less graphical app: the session filter has only the accessibility status rules.
+        let session_proxy = Proxy::start(
+            session.address(),
+            &dir.path().join("session-proxy"),
+            &session_filter_args(false, true, None)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
+        let atspi_proxy = Proxy::start(
+            atspi.address(),
+            &dir.path().join("atspi-proxy"),
+            ATSPI_FILTER_ARGS,
+        );
+        let app_session = session_proxy.connect();
+        // The app publishes its accessible tree on its own connection, through the proxy.
+        let app_atspi = connect(&format!(
+            "unix:path={}",
+            atspi_proxy.guard.socket_path().display()
+        ))
         .serve_at("/org/a11y/atspi/accessible/root", Accessible)
         .unwrap()
-        .serve_at("/org/a11y/atspi/registry/deviceeventcontroller", Controller)
-        .unwrap()
         .build()
-        .unwrap();
-    let other_app = connect(atspi.address())
-        .serve_at("/org/a11y/atspi/accessible/root", Accessible)
-        .unwrap()
-        .build()
-        .unwrap();
-    let other_app_name = other_app.unique_name().unwrap().to_string();
+        .expect("the proxy accepts the sandboxed client");
 
-    // A portal-less graphical app: the session filter has only the accessibility status rules.
-    let session_proxy = Proxy::start(
-        session.address(),
-        &dir.path().join("session-proxy"),
-        &session_filter_args(false, true, None)
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-    );
-    let atspi_proxy = Proxy::start(
-        atspi.address(),
-        &dir.path().join("atspi-proxy"),
-        ATSPI_FILTER_ARGS,
-    );
-    let app_session = session_proxy.connect();
-    // The app publishes its accessible tree on its own connection, through the proxy.
-    let app_atspi = connect(&format!(
-        "unix:path={}",
-        atspi_proxy.guard.socket_path().display()
-    ))
-    .serve_at("/org/a11y/atspi/accessible/root", Accessible)
-    .unwrap()
-    .build()
-    .expect("the proxy accepts the sandboxed client");
-
-    // Session bus: where the AT-SPI bus is, and whether AT is on.
-    let reply = call(
-        &app_session,
-        "org.a11y.Bus",
-        "/org/a11y/bus",
-        "org.a11y.Bus",
-        "GetAddress",
-    )
-    .expect("GetAddress is allowed");
-    let address: String = reply.body().deserialize().unwrap();
-    assert_eq!(address, "unix:path=/run/user/0/at-spi/bus");
-    property(&app_session, "org.a11y.Bus", "/org/a11y/bus", "IsEnabled")
-        .expect("reading IsEnabled is allowed");
-
-    // Nothing else on the session bus.
-    assert!(
-        call(
+        // Session bus: where the AT-SPI bus is, and whether AT is on.
+        let reply = call(
             &app_session,
             "org.a11y.Bus",
             "/org/a11y/bus",
             "org.a11y.Bus",
-            "Reset"
+            "GetAddress",
         )
-        .is_err(),
-        "only GetAddress of the accessibility launcher is allowed"
-    );
-    assert!(
-        app_session
-            .call_method(
-                Some("org.a11y.Bus"),
+        .expect("GetAddress is allowed");
+        let address: String = reply.body().deserialize().unwrap();
+        assert_eq!(address, "unix:path=/run/user/0/at-spi/bus");
+        property(&app_session, "org.a11y.Bus", "/org/a11y/bus", "IsEnabled")
+            .expect("reading IsEnabled is allowed");
+
+        // Nothing else on the session bus.
+        assert!(
+            call(
+                &app_session,
+                "org.a11y.Bus",
                 "/org/a11y/bus",
-                Some("org.freedesktop.DBus.Properties"),
-                "Set",
-                &(
-                    "org.a11y.Status",
-                    "IsEnabled",
-                    zbus::zvariant::Value::from(false)
-                ),
+                "org.a11y.Bus",
+                "Reset"
             )
             .is_err(),
-        "the app must not switch accessibility off"
-    );
-    assert!(
-        call(
-            &app_session,
-            "org.example.Other",
-            "/",
-            "org.example.Other",
-            "Ping"
-        )
-        .is_err(),
-        "a portal-less app reaches no other session service"
-    );
+            "only GetAddress of the accessibility launcher is allowed"
+        );
+        assert!(
+            app_session
+                .call_method(
+                    Some("org.a11y.Bus"),
+                    "/org/a11y/bus",
+                    Some("org.freedesktop.DBus.Properties"),
+                    "Set",
+                    &(
+                        "org.a11y.Status",
+                        "IsEnabled",
+                        zbus::zvariant::Value::from(false)
+                    ),
+                )
+                .is_err(),
+            "the app must not switch accessibility off"
+        );
+        assert!(
+            call(
+                &app_session,
+                "org.example.Other",
+                "/",
+                "org.example.Other",
+                "Ping"
+            )
+            .is_err(),
+            "a portal-less app reaches no other session service"
+        );
 
-    // AT-SPI bus: embedding its root and the listener queries.
-    let reply = call(
-        &app_atspi,
-        "org.a11y.atspi.Registry",
-        "/org/a11y/atspi/accessible/root",
-        "org.a11y.atspi.Socket",
-        "Embed",
-    )
-    .expect("Socket.Embed is allowed");
-    let embedded: String = reply.body().deserialize().unwrap();
-    assert_eq!(embedded, "embedded");
-    call(
-        &app_atspi,
-        "org.a11y.atspi.Registry",
-        "/org/a11y/atspi/registry/deviceeventcontroller",
-        "org.a11y.atspi.DeviceEventController",
-        "GetKeystrokeListeners",
-    )
-    .expect("GetKeystrokeListeners is allowed");
-
-    // Assistive technology on the AT-SPI bus reads the app's tree: calls into the sandboxed app pass
-    // the proxy.
-    let reader = connect(atspi.address()).build().unwrap();
-    let app_name = app_atspi.unique_name().unwrap().to_string();
-    let reply = call(
-        &reader,
-        &app_name,
-        "/org/a11y/atspi/accessible/root",
-        "org.a11y.atspi.Accessible",
-        "GetChildCount",
-    )
-    .expect("a screen reader reaches the sandboxed app's accessible tree");
-    let count: i32 = reply.body().deserialize().unwrap();
-    assert_eq!(count, 1);
-
-    // Nothing else on the AT-SPI bus: not the registry's tree, not input injection, and never another
-    // app.
-    assert!(
-        call(
+        // AT-SPI bus: embedding its root and the listener queries.
+        let reply = call(
             &app_atspi,
             "org.a11y.atspi.Registry",
             "/org/a11y/atspi/accessible/root",
-            "org.a11y.atspi.Accessible",
-            "GetChildCount",
+            "org.a11y.atspi.Socket",
+            "Embed",
         )
-        .is_err(),
-        "the app must not read the desktop's accessible tree"
-    );
-    assert!(
+        .expect("Socket.Embed is allowed");
+        let embedded: String = reply.body().deserialize().unwrap();
+        assert_eq!(embedded, "embedded");
         call(
             &app_atspi,
             "org.a11y.atspi.Registry",
             "/org/a11y/atspi/registry/deviceeventcontroller",
             "org.a11y.atspi.DeviceEventController",
-            "GenerateKeyboardEvent",
+            "GetKeystrokeListeners",
         )
-        .is_err(),
-        "the app must not inject input"
-    );
-    assert!(
-        call(
-            &app_atspi,
-            &other_app_name,
+        .expect("GetKeystrokeListeners is allowed");
+
+        // Assistive technology on the AT-SPI bus reads the app's tree: calls into the sandboxed app pass
+        // the proxy.
+        let reader = connect(atspi.address()).build().unwrap();
+        let app_name = app_atspi.unique_name().unwrap().to_string();
+        let reply = call(
+            &reader,
+            &app_name,
             "/org/a11y/atspi/accessible/root",
             "org.a11y.atspi.Accessible",
             "GetChildCount",
         )
-        .is_err(),
-        "the app must not read another app's accessible tree"
-    );
-}
+        .expect("a screen reader reaches the sandboxed app's accessible tree");
+        let count: i32 = reply.body().deserialize().unwrap();
+        assert_eq!(count, 1);
 
-#[test]
-fn a_media_app_owns_its_own_player_name_and_no_other() {
-    let dir = tempfile::tempdir().unwrap();
-    let session = PrivateBus::start_at(&dir.path().join("session"));
-    let player = launcher::dbus_proxy::media_player_name("so.tilo.music").unwrap();
-    let filter = session_filter_args(false, true, Some(&player));
-    let proxy = Proxy::start(
-        session.address(),
-        &dir.path().join("session-proxy"),
-        &filter.iter().map(String::as_str).collect::<Vec<_>>(),
-    );
-    let request = |connection: &Connection, name: &str| {
-        connection.request_name_with_flags(name, zbus::fdo::RequestNameFlags::DoNotQueue.into())
-    };
+        // Nothing else on the AT-SPI bus: not the registry's tree, not input injection, and never another
+        // app.
+        assert!(
+            call(
+                &app_atspi,
+                "org.a11y.atspi.Registry",
+                "/org/a11y/atspi/accessible/root",
+                "org.a11y.atspi.Accessible",
+                "GetChildCount",
+            )
+            .is_err(),
+            "the app must not read the desktop's accessible tree"
+        );
+        assert!(
+            call(
+                &app_atspi,
+                "org.a11y.atspi.Registry",
+                "/org/a11y/atspi/registry/deviceeventcontroller",
+                "org.a11y.atspi.DeviceEventController",
+                "GenerateKeyboardEvent",
+            )
+            .is_err(),
+            "the app must not inject input"
+        );
+        assert!(
+            call(
+                &app_atspi,
+                &other_app_name,
+                "/org/a11y/atspi/accessible/root",
+                "org.a11y.atspi.Accessible",
+                "GetChildCount",
+            )
+            .is_err(),
+            "the app must not read another app's accessible tree"
+        );
+    }
 
-    // The app takes its player's name, as the toolkit's media session does, and the desktop's
-    // now-playing observer on the real bus finds it there.
-    let app = proxy.connect();
-    assert_eq!(
-        request(&app, &player).expect("the app may own its player name"),
-        zbus::fdo::RequestNameReply::PrimaryOwner
-    );
-    let desktop = connect(session.address()).build().unwrap();
-    let owner = zbus::blocking::fdo::DBusProxy::new(&desktop)
-        .unwrap()
-        .get_name_owner(player.as_str().try_into().unwrap())
-        .expect("the player is on the session bus");
-    assert_eq!(owner.as_str(), app.unique_name().unwrap().as_str());
+    phase a_media_app_owns_its_own_player_name_and_no_other;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let session = PrivateBus::start_at(&dir.path().join("session"));
+        let player = launcher::dbus_proxy::media_player_name("so.tilo.music").unwrap();
+        let filter = session_filter_args(false, true, Some(&player));
+        let proxy = Proxy::start(
+            session.address(),
+            &dir.path().join("session-proxy"),
+            &filter.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        let request = |connection: &Connection, name: &str| {
+            connection.request_name_with_flags(name, zbus::fdo::RequestNameFlags::DoNotQueue.into())
+        };
 
-    // Another app's player, and a name below its own, stay refused.
-    for other in [
-        "org.mpris.MediaPlayer2.so.tilo.tube",
-        "org.mpris.MediaPlayer2.so.tilo.music.extra",
-    ] {
-        assert!(request(&app, other).is_err(), "{other} must stay refused");
+        // The app takes its player's name, as the toolkit's media session does, and the desktop's
+        // now-playing observer on the real bus finds it there.
+        let app = proxy.connect();
+        assert_eq!(
+            request(&app, &player).expect("the app may own its player name"),
+            zbus::fdo::RequestNameReply::PrimaryOwner
+        );
+        let desktop = connect(session.address()).build().unwrap();
+        let owner = zbus::blocking::fdo::DBusProxy::new(&desktop)
+            .unwrap()
+            .get_name_owner(player.as_str().try_into().unwrap())
+            .expect("the player is on the session bus");
+        assert_eq!(owner.as_str(), app.unique_name().unwrap().as_str());
+
+        // Another app's player, and a name below its own, stay refused.
+        for other in [
+            "org.mpris.MediaPlayer2.so.tilo.tube",
+            "org.mpris.MediaPlayer2.so.tilo.music.extra",
+        ] {
+            assert!(request(&app, other).is_err(), "{other} must stay refused");
+        }
     }
 }
 

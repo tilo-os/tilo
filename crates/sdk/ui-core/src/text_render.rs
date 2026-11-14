@@ -3789,398 +3789,255 @@ fn rich_run_below_clip(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_line_that_fits_is_drawn_where_its_alignment_puts_it() {
-        let mut renderer = crate::font_catalog::fixture_renderer();
-        let first_x = |renderer: &mut TextRenderer, align: ParagraphAlign| {
-            let style = TextStyle::new(16.0).with_align(align);
-            let width = renderer.collapse_unused_max_width(
-                &CacheQuery::new("New note", &style),
-                Some(400.0),
-                &style,
-                true,
-            );
-            let runs = renderer.shaped_runs("New note", width, &style);
-            runs.iter()
-                .flat_map(|run| run.glyphs.iter())
-                .map(|glyph| glyph.x)
-                .fold(f32::INFINITY, f32::min)
-        };
-        let start = first_x(&mut renderer, ParagraphAlign::Start);
-        let center = first_x(&mut renderer, ParagraphAlign::Center);
-        let end = first_x(&mut renderer, ParagraphAlign::End);
-        let (natural, _) = renderer.measure_style("New note", None, &TextStyle::new(16.0));
-        assert!(start.abs() < 1.0, "{start}");
-        assert!(
-            (center - (400.0 - natural) / 2.0).abs() < 2.0,
-            "{center} of {natural}"
-        );
-        assert!((end - (400.0 - natural)).abs() < 2.0, "{end} of {natural}");
-    }
+    tilo_test_env::scenario! {
+        /// A browser renderer's optional font assets.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn browser_fonts_are_demanded_installed_and_refused_by_digest;
 
-    #[test]
-    fn renderer_font_system_pins_families_weights_and_fallbacks() {
+        phase browser_missing_glyphs_demand_exact_assets_then_install_reshapes;
         {
-            let mut renderer = crate::font_catalog::fixture_renderer();
-            let first = renderer.measure("Reading", 16.0, None);
-            let second = renderer.measure("Reading", 16.0, None);
-            assert_eq!(first, second);
-            assert!(first.0 > 0.0 && first.1 > 0.0);
-            assert_eq!(renderer.hits, 1);
-            assert_eq!(renderer.misses, 1);
-        }
-
-        {
-            let font_system = crate::font_catalog::fixture_font_system();
-            let database = font_system.db();
-            assert_eq!(database.family_name(&Family::SansSerif), UI_SANS_FAMILY);
-            assert_eq!(database.family_name(&Family::Serif), UI_SERIF_FAMILY);
-            assert_eq!(
-                database.family_name(&Family::Monospace),
-                UI_MONOSPACE_FAMILY
-            );
-        }
-
-        {
-            let mut renderer = crate::font_catalog::fixture_renderer();
+            let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+            let root = crate::font_catalog::checkout_root();
+            let fonts = catalog
+                .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
+                .unwrap();
+            let mut renderer = TextRenderer::with_browser_font_system(fonts);
             let style = TextStyle::new(18.0);
-            let samples = [
-                ("Arabic", "مرحبا"),
-                ("Hebrew", "שלום"),
-                ("Devanagari", "नमस्ते"),
-                ("Bengali", "বাংলা"),
-                ("Thai", "สวัสดี"),
-                ("CJK", "日本語"),
-                ("symbols", "∞→✓"),
-                ("emoji", "🙂"),
-            ];
-
-            for (script, sample) in samples {
-                let runs = renderer.shaped_runs(sample, None, &style);
-                let glyphs: Vec<_> = runs.iter().flat_map(|run| run.glyphs.iter()).collect();
-                assert!(!glyphs.is_empty(), "{script} produced no shaped glyphs");
+            for (text, expected) in [
+                ("مَرْحَبًا", "NotoSansArabic[wght].ttf"),
+                ("東京", "NotoSansCJK-VF.ttc"),
+                ("🙂", "Noto-COLRv1.ttf"),
+                ("ƀ ϰ Ѧ ʰ", "NotoSans[wght].ttf"),
+            ] {
+                let before = renderer.shape_buffer(text, None, &style).buffer;
                 assert!(
-                    glyphs.iter().all(|glyph| glyph.id != 0),
-                    "{script} fell through to a .notdef glyph; install the Tilo Noto fallback package"
+                    before
+                        .layout_runs()
+                        .flat_map(|run| run.glyphs)
+                        .any(|glyph| glyph.glyph_id == 0),
+                    "{text} must expose missing canonical glyphs before demand"
                 );
+                // The host asks this before the take, so it must say where the demand is and
+                // where it is not: nothing before shaping asked.
+                assert!(renderer.browser_font_demands_pending());
+                assert_eq!(renderer.take_browser_font_demands(), [expected]);
+                assert!(
+                    !renderer.browser_font_demands_pending(),
+                    "the take drained what the predicate named"
+                );
+                let old_generation = renderer.generation;
+                assert!(
+                    renderer
+                        .install_browser_font(
+                            expected,
+                            std::fs::read(root.join(expected)).unwrap(),
+                            &crate::font_catalog::test_sha256(
+                                &std::fs::read(root.join(expected)).unwrap()
+                            )
+                        )
+                        .unwrap()
+                );
+                assert_ne!(
+                    renderer.generation, old_generation,
+                    "font install must invalidate shape/measure caches"
+                );
+                let after = renderer.shape_buffer(text, None, &style).buffer;
+                assert!(
+                    after
+                        .layout_runs()
+                        .flat_map(|run| run.glyphs)
+                        .all(|glyph| glyph.glyph_id != 0),
+                    "{text} must reshape with the installed canonical font"
+                );
+                assert!(renderer.take_browser_font_demands().is_empty());
             }
         }
 
+        phase a_browser_font_whose_page_digest_differs_from_the_build_is_refused;
         {
-            assert_eq!(TextWeight::Regular.to_u16(), 400);
-            assert_eq!(TextWeight::Medium.to_u16(), 500);
-            assert_eq!(TextWeight::Semibold.to_u16(), 600);
-            assert_eq!(TextWeight::Bold.to_u16(), 700);
-            assert_eq!(TextWeight::Bold.to_cosmic_weight(), Weight(700));
-            assert_eq!(TextWeight::Regular.to_cosmic_weight(), Weight::NORMAL);
-            // Default must be Regular so call sites through `draw_text` keep their
-            // 400-weight behaviour.
-            assert_eq!(TextWeight::default(), TextWeight::Regular);
-        }
-
-        // Case `font_choice_families_resolve_and_shape`: Two different families must be
-        // distinct shape-cache entries (so serif doesn't collide with sans).
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let fams = tr.system_families();
-            assert!(!fams.is_empty(), "the system font db exposes some families");
-
-            let (ws, _) = tr.measure_font(
-                "Reading",
-                20.0,
-                None,
-                TextWeight::Regular,
-                false,
-                &FontChoice::Serif,
-            );
-            let (wn, _) = tr.measure_font(
-                "Reading",
-                20.0,
-                None,
-                TextWeight::Regular,
-                false,
-                &FontChoice::SansSerif,
-            );
-            assert!(ws > 0.0, "serif shapes to a real width");
-            assert!(wn > 0.0, "sans shapes to a real width");
-
-            let mut scene = Scene::new();
-            let named = FontChoice::Named(fams[0].clone());
-            tr.draw_style(
-                &mut scene,
-                "Reading",
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-                &TextStyle::new(20.0).with_family(named.clone()),
-            );
-
-            let _ = tr.take_shape_stats();
-            tr.draw_style(
-                &mut scene,
-                "Reading",
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-                &TextStyle::new(20.0).with_family(FontChoice::Serif),
-            );
-            tr.draw_style(
-                &mut scene,
-                "Reading",
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-                &TextStyle::new(20.0).with_family(FontChoice::SansSerif),
-            );
-            let (h, m, _ns) = tr.take_shape_stats();
-            assert_eq!(m, 0, "measure_font warms paint geometry for each family");
-            assert_eq!(h, 2, "serif and sans remain distinct shape-cache entries");
-        }
-    }
-
-    #[test]
-    fn browser_missing_glyphs_demand_exact_assets_then_install_reshapes() {
-        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
-        let root = crate::font_catalog::checkout_root();
-        let fonts = catalog
-            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
-            .unwrap();
-        let mut renderer = TextRenderer::with_browser_font_system(fonts);
-        let style = TextStyle::new(18.0);
-        for (text, expected) in [
-            ("مَرْحَبًا", "NotoSansArabic[wght].ttf"),
-            ("東京", "NotoSansCJK-VF.ttc"),
-            ("🙂", "Noto-COLRv1.ttf"),
-            ("ƀ ϰ Ѧ ʰ", "NotoSans[wght].ttf"),
-        ] {
-            let before = renderer.shape_buffer(text, None, &style).buffer;
-            assert!(
-                before
-                    .layout_runs()
-                    .flat_map(|run| run.glyphs)
-                    .any(|glyph| glyph.glyph_id == 0),
-                "{text} must expose missing canonical glyphs before demand"
-            );
-            // The host asks this before the take, so it must say where the demand is and
-            // where it is not: nothing before shaping asked.
-            assert!(renderer.browser_font_demands_pending());
-            assert_eq!(renderer.take_browser_font_demands(), [expected]);
-            assert!(
-                !renderer.browser_font_demands_pending(),
-                "the take drained what the predicate named"
-            );
-            let old_generation = renderer.generation;
-            assert!(
-                renderer
-                    .install_browser_font(
-                        expected,
-                        std::fs::read(root.join(expected)).unwrap(),
-                        &crate::font_catalog::test_sha256(
-                            &std::fs::read(root.join(expected)).unwrap()
-                        )
-                    )
-                    .unwrap()
-            );
-            assert_ne!(
-                renderer.generation, old_generation,
-                "font install must invalidate shape/measure caches"
-            );
-            let after = renderer.shape_buffer(text, None, &style).buffer;
-            assert!(
-                after
-                    .layout_runs()
-                    .flat_map(|run| run.glyphs)
-                    .all(|glyph| glyph.glyph_id != 0),
-                "{text} must reshape with the installed canonical font"
-            );
-            assert!(renderer.take_browser_font_demands().is_empty());
-        }
-    }
-
-    #[test]
-    fn a_browser_font_whose_page_digest_differs_from_the_build_is_refused() {
-        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
-        let root = crate::font_catalog::checkout_root();
-        let fonts = catalog
-            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
-            .unwrap();
-        let mut renderer = TextRenderer::with_browser_font_system(fonts);
-        let name = "NotoSansMath-Regular.ttf";
-        let bytes = std::fs::read(root.join(name)).unwrap();
-        let has_math = |renderer: &TextRenderer| {
-            renderer.font_system.db().faces().any(|face| {
-                face.families
-                    .iter()
-                    .any(|family| family.0 == UI_MATH_FAMILY)
-            })
-        };
-        let generation = renderer.generation;
-        let mut wrong = crate::font_catalog::test_sha256(&bytes);
-        wrong.replace_range(..1, if wrong.starts_with('0') { "1" } else { "0" });
-        let error = renderer
-            .install_browser_font(name, bytes.clone(), &wrong)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("SHA-256 mismatch"), "{error}");
-        let short = bytes[..bytes.len() - 1].to_vec();
-        let error = renderer
-            .install_browser_font(
-                name,
-                short.clone(),
-                &crate::font_catalog::test_sha256(&short),
-            )
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("SHA-256 mismatch"), "{error}");
-        assert_eq!(
-            renderer.generation, generation,
-            "a refused font changes nothing"
-        );
-        assert!(!has_math(&renderer), "a refused font is not installed");
-
-        let digest = crate::font_catalog::test_sha256(&bytes);
-        assert!(renderer.install_browser_font(name, bytes, &digest).unwrap());
-        assert!(has_math(&renderer));
-    }
-
-    #[test]
-    fn browser_explicit_math_family_demands_its_face_while_core_emoji_stays_loaded() {
-        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
-        let root = crate::font_catalog::checkout_root();
-        let fonts = catalog
-            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
-            .unwrap();
-        let mut renderer = TextRenderer::with_browser_font_system(fonts);
-        let math = TextStyle::new(18.0).with_family(FontChoice::Named(UI_MATH_FAMILY.to_owned()));
-        let before = renderer.shape_buffer("x", None, &math).buffer;
-        assert!(
-            before
-                .layout_runs()
-                .flat_map(|run| run.glyphs)
-                .all(|glyph| {
-                    renderer
-                        .font_system
-                        .db()
-                        .face(glyph.font_id)
-                        .is_none_or(|face| {
-                            !face
-                                .families
-                                .iter()
-                                .any(|family| family.0 == UI_MATH_FAMILY)
-                        })
-                })
-        );
-        assert_eq!(
-            renderer.take_browser_font_demands(),
-            ["NotoSansMath-Regular.ttf"]
-        );
-        renderer
-            .install_browser_font(
-                "NotoSansMath-Regular.ttf",
-                std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
-                &crate::font_catalog::test_sha256(
-                    &std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
-                ),
-            )
-            .unwrap();
-        let after = renderer.shape_buffer("x", None, &math).buffer;
-        assert!(after.layout_runs().flat_map(|run| run.glyphs).all(|glyph| {
-            renderer
-                .font_system
-                .db()
-                .face(glyph.font_id)
-                .is_some_and(|face| {
+            let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+            let root = crate::font_catalog::checkout_root();
+            let fonts = catalog
+                .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
+                .unwrap();
+            let mut renderer = TextRenderer::with_browser_font_system(fonts);
+            let name = "NotoSansMath-Regular.ttf";
+            let bytes = std::fs::read(root.join(name)).unwrap();
+            let has_math = |renderer: &TextRenderer| {
+                renderer.font_system.db().faces().any(|face| {
                     face.families
                         .iter()
                         .any(|family| family.0 == UI_MATH_FAMILY)
                 })
-        }));
-        assert!(renderer.take_browser_font_demands().is_empty());
+            };
+            let generation = renderer.generation;
+            let mut wrong = crate::font_catalog::test_sha256(&bytes);
+            wrong.replace_range(..1, if wrong.starts_with('0') { "1" } else { "0" });
+            let error = renderer
+                .install_browser_font(name, bytes.clone(), &wrong)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("SHA-256 mismatch"), "{error}");
+            let short = bytes[..bytes.len() - 1].to_vec();
+            let error = renderer
+                .install_browser_font(
+                    name,
+                    short.clone(),
+                    &crate::font_catalog::test_sha256(&short),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("SHA-256 mismatch"), "{error}");
+            assert_eq!(
+                renderer.generation, generation,
+                "a refused font changes nothing"
+            );
+            assert!(!has_math(&renderer), "a refused font is not installed");
 
-        let core_emoji = renderer
-            .shape_buffer("©®™", None, &TextStyle::new(18.0))
-            .buffer;
-        assert!(
-            core_emoji
-                .layout_runs()
-                .flat_map(|run| run.glyphs)
-                .all(|glyph| glyph.glyph_id != 0)
-        );
-        assert!(renderer.take_browser_font_demands().is_empty());
-        let core_emoji_presentation = renderer
-            .shape_buffer("‼️", None, &TextStyle::new(18.0))
-            .buffer;
-        assert!(
-            core_emoji_presentation
-                .layout_runs()
-                .flat_map(|run| run.glyphs)
-                .any(|glyph| glyph.glyph_id != 0),
-            "a core glyph must not hide its requested emoji presentation"
-        );
-        assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
-        renderer.shape_buffer("✈️", None, &TextStyle::new(18.0));
-        assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
-        renderer.shape_buffer("⌚", None, &TextStyle::new(18.0));
-        assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
-        renderer
-            .install_browser_font(
-                "Noto-COLRv1.ttf",
-                std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
-                &crate::font_catalog::test_sha256(
-                    &std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
-                ),
-            )
-            .unwrap();
-        for emoji in ["‼️", "✈️", "⌚"] {
-            let shaped = renderer
-                .shape_buffer(emoji, None, &TextStyle::new(18.0))
-                .buffer;
-            let glyphs: Vec<_> = shaped
-                .layout_runs()
-                .flat_map(|run| run.glyphs)
-                .filter(|glyph| glyph.glyph_id != 0)
-                .collect();
-            assert!(!glyphs.is_empty(), "{emoji} must shape a visible glyph");
+            let digest = crate::font_catalog::test_sha256(&bytes);
+            assert!(renderer.install_browser_font(name, bytes, &digest).unwrap());
+            assert!(has_math(&renderer));
+        }
+
+        phase browser_explicit_math_family_demands_its_face_while_core_emoji_stays_loaded;
+        {
+            let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+            let root = crate::font_catalog::checkout_root();
+            let fonts = catalog
+                .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
+                .unwrap();
+            let mut renderer = TextRenderer::with_browser_font_system(fonts);
+            let math = TextStyle::new(18.0).with_family(FontChoice::Named(UI_MATH_FAMILY.to_owned()));
+            let before = renderer.shape_buffer("x", None, &math).buffer;
             assert!(
-                glyphs.iter().all(|glyph| renderer
+                before
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs)
+                    .all(|glyph| {
+                        renderer
+                            .font_system
+                            .db()
+                            .face(glyph.font_id)
+                            .is_none_or(|face| {
+                                !face
+                                    .families
+                                    .iter()
+                                    .any(|family| family.0 == UI_MATH_FAMILY)
+                            })
+                    })
+            );
+            assert_eq!(
+                renderer.take_browser_font_demands(),
+                ["NotoSansMath-Regular.ttf"]
+            );
+            renderer
+                .install_browser_font(
+                    "NotoSansMath-Regular.ttf",
+                    std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
+                    &crate::font_catalog::test_sha256(
+                        &std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
+                    ),
+                )
+                .unwrap();
+            let after = renderer.shape_buffer("x", None, &math).buffer;
+            assert!(after.layout_runs().flat_map(|run| run.glyphs).all(|glyph| {
+                renderer
                     .font_system
                     .db()
                     .face(glyph.font_id)
-                    .is_some_and(|face| face
-                        .families
-                        .iter()
-                        .any(|family| family.0 == "Noto Color Emoji"))),
-                "{emoji} must reshape through the installed emoji family"
+                    .is_some_and(|face| {
+                        face.families
+                            .iter()
+                            .any(|family| family.0 == UI_MATH_FAMILY)
+                    })
+            }));
+            assert!(renderer.take_browser_font_demands().is_empty());
+
+            let core_emoji = renderer
+                .shape_buffer("©®™", None, &TextStyle::new(18.0))
+                .buffer;
+            assert!(
+                core_emoji
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs)
+                    .all(|glyph| glyph.glyph_id != 0)
+            );
+            assert!(renderer.take_browser_font_demands().is_empty());
+            let core_emoji_presentation = renderer
+                .shape_buffer("‼️", None, &TextStyle::new(18.0))
+                .buffer;
+            assert!(
+                core_emoji_presentation
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs)
+                    .any(|glyph| glyph.glyph_id != 0),
+                "a core glyph must not hide its requested emoji presentation"
+            );
+            assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
+            renderer.shape_buffer("✈️", None, &TextStyle::new(18.0));
+            assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
+            renderer.shape_buffer("⌚", None, &TextStyle::new(18.0));
+            assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
+            renderer
+                .install_browser_font(
+                    "Noto-COLRv1.ttf",
+                    std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
+                    &crate::font_catalog::test_sha256(
+                        &std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
+                    ),
+                )
+                .unwrap();
+            for emoji in ["‼️", "✈️", "⌚"] {
+                let shaped = renderer
+                    .shape_buffer(emoji, None, &TextStyle::new(18.0))
+                    .buffer;
+                let glyphs: Vec<_> = shaped
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs)
+                    .filter(|glyph| glyph.glyph_id != 0)
+                    .collect();
+                assert!(!glyphs.is_empty(), "{emoji} must shape a visible glyph");
+                assert!(
+                    glyphs.iter().all(|glyph| renderer
+                        .font_system
+                        .db()
+                        .face(glyph.font_id)
+                        .is_some_and(|face| face
+                            .families
+                            .iter()
+                            .any(|family| family.0 == "Noto Color Emoji"))),
+                    "{emoji} must reshape through the installed emoji family"
+                );
+            }
+            assert!(renderer.take_browser_font_demands().is_empty());
+        }
+
+        phase failed_browser_fetch_rearms_cached_text_for_a_later_relevant_shape;
+        {
+            let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+            let root = crate::font_catalog::checkout_root();
+            let fonts = catalog
+                .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
+                .unwrap();
+            let mut renderer = TextRenderer::with_browser_font_system(fonts);
+            let style = TextStyle::new(18.0);
+            renderer.measure_style("مَرْحَبًا", None, &style);
+            assert_eq!(
+                renderer.take_browser_font_demands(),
+                ["NotoSansArabic[wght].ttf"]
+            );
+            renderer.measure_style("مَرْحَبًا", None, &style);
+            assert!(
+                renderer.take_browser_font_demands().is_empty(),
+                "the cached measure does not spin demand"
+            );
+            renderer.browser_font_failed();
+            renderer.measure_style("مَرْحَبًا", None, &style);
+            assert_eq!(
+                renderer.take_browser_font_demands(),
+                ["NotoSansArabic[wght].ttf"]
             );
         }
-        assert!(renderer.take_browser_font_demands().is_empty());
-    }
-
-    #[test]
-    fn failed_browser_fetch_rearms_cached_text_for_a_later_relevant_shape() {
-        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
-        let root = crate::font_catalog::checkout_root();
-        let fonts = catalog
-            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
-            .unwrap();
-        let mut renderer = TextRenderer::with_browser_font_system(fonts);
-        let style = TextStyle::new(18.0);
-        renderer.measure_style("مَرْحَبًا", None, &style);
-        assert_eq!(
-            renderer.take_browser_font_demands(),
-            ["NotoSansArabic[wght].ttf"]
-        );
-        renderer.measure_style("مَرْحَبًا", None, &style);
-        assert!(
-            renderer.take_browser_font_demands().is_empty(),
-            "the cached measure does not spin demand"
-        );
-        renderer.browser_font_failed();
-        renderer.measure_style("مَرْحَبًا", None, &style);
-        assert_eq!(
-            renderer.take_browser_font_demands(),
-            ["NotoSansArabic[wght].ttf"]
-        );
     }
 
     struct EveryThirdByte;
@@ -4382,771 +4239,932 @@ mod tests {
         }
     }
 
-    #[test]
-    fn measure_cache_hits_and_keys_on_size_policy_and_generation() {
-        // Case `measure_cache_returns_hit_on_second_call`: Measuring the same string
-        // twice should hit the cache the second time — without this, every widget's
-        // `draw` pays a full cosmic-text shape.
+    tilo_test_env::scenario! {
+        /// Shaping, styling, alignment and truncation through a renderer.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn text_is_shaped_styled_and_truncated_as_its_style_says;
+
+        phase a_line_that_fits_is_drawn_where_its_alignment_puts_it;
         {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let label = "Hello, gallery!";
-            let (w1, h1) = tr.measure(label, 16.0, None);
-            let (hits1, misses1) = tr.cache_stats();
-            assert_eq!(misses1, 1);
-            assert_eq!(hits1, 0);
-
-            let (w2, h2) = tr.measure(label, 16.0, None);
-            let (hits2, misses2) = tr.cache_stats();
-            assert_eq!(hits2, 1, "second measure of same string must hit");
-            assert_eq!(misses2, 1, "miss count unchanged after a hit");
-            assert_eq!((w1, h1), (w2, h2), "cached value must equal recomputed");
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let _ = tr.measure("abc", 12.0, None);
-            let _ = tr.measure("abc", 16.0, None);
-            let _ = tr.measure("abc", 12.0, None); // hit
-            let (hits, misses) = tr.cache_stats();
-            assert_eq!(hits, 1);
-            assert_eq!(misses, 2);
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let text = "extensive";
-            let width = 1000.0;
-            let plain = TextStyle::new(20.0);
-            let automatic = plain.clone().with_auto_hyphenation("en");
-            let _ = tr.measure_style(text, Some(width), &plain);
-            let _ = tr.measure_style(text, Some(width), &automatic);
-            let (hits, misses) = tr.cache_stats();
-            // Plain collapses to unconstrained (probe miss + re-lookup hit); hyphenation
-            // keeps the wrap width as a second distinct miss.
-            assert_eq!((hits, misses), (1, 2));
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let _ = tr.measure("abc", 12.0, None);
-            let _ = tr.measure("abc", 12.0, None); // hit
-            tr.bump_generation();
-            let _ = tr.measure("abc", 12.0, None); // miss after bump
-            let (hits, misses) = tr.cache_stats();
-            assert_eq!(hits, 1);
-            assert_eq!(misses, 2);
-        }
-    }
-
-    #[test]
-    fn style_is_shared_by_measurement_and_drawing_including_backgrounds() {
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let compact = TextStyle::new(20.0).with_line_height(1.2);
-            let relaxed = TextStyle::new(20.0).with_line_height(1.6);
-
-            let (_, compact_h) = tr.measure_style("first\nsecond", None, &compact);
-            let (_, relaxed_h) = tr.measure_style("first\nsecond", None, &relaxed);
-            assert!((compact_h - 48.0).abs() < 0.01);
-            assert!((relaxed_h - 64.0).abs() < 0.01);
-
-            let (hits, misses) = tr.cache_stats();
-            assert_eq!(hits, 0);
-            assert_eq!(misses, 2, "different leading must not alias in the cache");
-            let _ = tr.measure_style("first\nsecond", None, &relaxed);
-            let (hits, misses) = tr.cache_stats();
-            assert_eq!(hits, 1);
-            assert_eq!(misses, 2);
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let style = TextStyle::new(18.0)
-                .with_line_height(1.4)
-                .with_weight(TextWeight::Semibold)
-                .with_italic(true)
-                .with_family(FontChoice::Serif);
-            let _ = tr.measure_style("Consistent typography", Some(180.0), &style);
-            let _ = tr.take_shape_stats();
-
-            let mut scene = Scene::new();
-            tr.draw_style(
-                &mut scene,
-                "Consistent typography",
-                Color::WHITE,
-                Affine::IDENTITY,
-                Some(180.0),
-                &style,
-            );
-            let (hits, misses, _ns) = tr.take_shape_stats();
-            assert_eq!(
-                misses, 0,
-                "measure warms shape so the matching draw does not reshape"
-            );
-            assert_eq!(hits, 1, "draw reuses the geometry measure produced");
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            let first_x = |renderer: &mut TextRenderer, align: ParagraphAlign| {
+                let style = TextStyle::new(16.0).with_align(align);
+                let width = renderer.collapse_unused_max_width(
+                    &CacheQuery::new("New note", &style),
+                    Some(400.0),
+                    &style,
+                    true,
+                );
+                let runs = renderer.shaped_runs("New note", width, &style);
+                runs.iter()
+                    .flat_map(|run| run.glyphs.iter())
+                    .map(|glyph| glyph.x)
+                    .fold(f32::INFINITY, f32::min)
+            };
+            let start = first_x(&mut renderer, ParagraphAlign::Start);
+            let center = first_x(&mut renderer, ParagraphAlign::Center);
+            let end = first_x(&mut renderer, ParagraphAlign::End);
+            let (natural, _) = renderer.measure_style("New note", None, &TextStyle::new(16.0));
+            assert!(start.abs() < 1.0, "{start}");
             assert!(
-                !scene.encoding().resources.glyph_runs.is_empty(),
-                "the complete style produces drawable glyph geometry"
+                (center - (400.0 - natural) / 2.0).abs() < 2.0,
+                "{center} of {natural}"
             );
+            assert!((end - (400.0 - natural)).abs() < 2.0, "{end} of {natural}");
         }
 
-        // Case `background_span_emits_an_extra_fill_in_the_scene`: A highlighted run must
-        // add a real fill: the highlighted scene must encode strictly more paths than the
-        // plain one.
+        phase renderer_font_system_pins_families_weights_and_fallbacks;
         {
-            use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
-            let mut tr = crate::font_catalog::fixture_renderer();
+            {
+                let mut renderer = crate::font_catalog::fixture_renderer();
+                let first = renderer.measure("Reading", 16.0, None);
+                let second = renderer.measure("Reading", 16.0, None);
+                assert_eq!(first, second);
+                assert!(first.0 > 0.0 && first.1 > 0.0);
+                assert_eq!(renderer.hits, 1);
+                assert_eq!(renderer.misses, 1);
+            }
 
-            let plain_spans = [RichSpan::new("highlighted")];
-            let plain = RichTextLayout::shape_styled(
-                &mut tr.font_system,
-                &plain_spans,
-                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
-                Some(400.0),
-                TextAlign::Left,
-                vec![],
-                vec![],
-            );
-            let hl_spans = [RichSpan::new("highlighted").background(Some([255, 235, 59]))];
-            let highlighted = RichTextLayout::shape_styled(
-                &mut tr.font_system,
-                &hl_spans,
-                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
-                Some(400.0),
-                TextAlign::Left,
-                vec![],
-                vec![],
-            );
-
-            let mut plain_scene = Scene::new();
-            tr.draw_rich(
-                &mut plain_scene,
-                &plain,
-                Affine::IDENTITY,
-                Color::from_rgb8(0, 0, 0),
-            );
-            let plain_paths = plain_scene.encoding().n_paths;
-
-            let mut hl_scene = Scene::new();
-            tr.draw_rich(
-                &mut hl_scene,
-                &highlighted,
-                Affine::IDENTITY,
-                Color::from_rgb8(0, 0, 0),
-            );
-            let hl_paths = hl_scene.encoding().n_paths;
-
-            assert!(
-                hl_paths > plain_paths,
-                "highlight must add a fill path: plain={plain_paths} highlighted={hl_paths}",
-            );
-        }
-    }
-
-    #[test]
-    fn styled_line_clamping_keeps_drawn_weight_within_the_budget() {
-        for scale in [1.0, 2.0] {
-            let theme = crate::theme::Theme::light().with_text_scale(scale);
-            with_layout_renderer(&theme, |renderer| {
-                let title = "Review the launch announcement, compact navigation, translated labels, and final release checklist";
-                let style = TextStyle::new(13.0).with_weight(TextWeight::Semibold);
-                let width = 240.0;
-                assert!(renderer.measure_style(title, None, &style).0 > width);
-                let lines = renderer.clamp_to_lines_style(title, width, 2, &style);
-                assert_eq!(lines.len(), 2);
-                assert!(lines.last().is_some_and(|line| line.ends_with(ELLIPSIS)));
-                for line in &lines {
-                    let (actual_width, height) = renderer.measure_style(line, None, &style);
-                    assert!(height > 0.0, "real glyph metrics must be observable");
-                    assert!(actual_width <= width + 0.1, "{line:?} exceeds {width}");
-                }
+            {
+                let font_system = crate::font_catalog::fixture_font_system();
+                let database = font_system.db();
+                assert_eq!(database.family_name(&Family::SansSerif), UI_SANS_FAMILY);
+                assert_eq!(database.family_name(&Family::Serif), UI_SERIF_FAMILY);
                 assert_eq!(
-                    renderer.clamp_to_lines_style("Review", width, 2, &style),
-                    ["Review"]
+                    database.family_name(&Family::Monospace),
+                    UI_MONOSPACE_FAMILY
                 );
-                assert!(
-                    renderer
-                        .clamp_to_lines_style(title, width, 0, &style)
-                        .is_empty()
-                );
-                assert_eq!(
-                    renderer.clamp_to_lines_style(title, width, 1, &style),
-                    [renderer.elide_to_width_style(title, width, &style)]
-                );
-                let unbreakable = "abcdefghijklmnopqrstuvwxyzzabcdefghijklmnopqrstuvwxyzz";
-                let lines = renderer.clamp_to_lines_style(unbreakable, width, 2, &style);
-                assert_eq!(lines.len(), 1);
-                assert!(lines[0].ends_with(ELLIPSIS));
-                assert!(renderer.measure_style(&lines[0], None, &style).0 <= width + 0.1);
-            });
-        }
-    }
+            }
 
-    #[test]
-    fn elide_and_clamp_truncate_at_grapheme_boundaries() {
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let s = "short";
-            let (w, _) = tr.measure(s, 14.0, None);
-            let out = tr.elide_to_width(s, 14.0, w + 50.0);
-            assert_eq!(out, s, "fitting text must be returned unchanged");
-            assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
-        }
+            {
+                let mut renderer = crate::font_catalog::fixture_renderer();
+                let style = TextStyle::new(18.0);
+                let samples = [
+                    ("Arabic", "مرحبا"),
+                    ("Hebrew", "שלום"),
+                    ("Devanagari", "नमस्ते"),
+                    ("Bengali", "বাংলা"),
+                    ("Thai", "สวัสดี"),
+                    ("CJK", "日本語"),
+                    ("symbols", "∞→✓"),
+                    ("emoji", "🙂"),
+                ];
 
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let s = "the quick brown fox jumps over the lazy dog";
-            let (full_w, _) = tr.measure(s, 14.0, None);
-            let budget = full_w / 3.0; // force truncation
-            let out = tr.elide_to_width(s, 14.0, budget);
-            assert!(
-                out.ends_with('\u{2026}'),
-                "truncated text must end with …, got {out:?}"
-            );
-            assert!(
-                out.chars().count() < s.chars().count(),
-                "must drop characters"
-            );
-            let (out_w, _) = tr.measure(&out, 14.0, None);
-            assert!(
-                out_w <= budget + 0.5,
-                "elided string ({out_w}) must fit the budget ({budget})",
-            );
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let s = "cafe\u{301} cafe\u{301} cafe\u{301} cafe\u{301}";
-            for budget in [10.0_f32, 25.0, 40.0, 55.0, 70.0, 85.0] {
-                let out = tr.elide_to_width(s, 14.0, budget);
-                let kept = out.trim_end_matches(ELLIPSIS);
-                assert!(s.starts_with(kept), "{out:?} is not a prefix of the text");
-                let rest = s.get(kept.len()..).unwrap_or_default();
-                assert!(
-                    !rest.starts_with('\u{301}'),
-                    "{out:?} strands a combining mark"
-                );
-                assert!(!kept.ends_with(' '), "space before the ellipsis in {out:?}");
-                if out != ELLIPSIS.to_string() {
+                for (script, sample) in samples {
+                    let runs = renderer.shaped_runs(sample, None, &style);
+                    let glyphs: Vec<_> = runs.iter().flat_map(|run| run.glyphs.iter()).collect();
+                    assert!(!glyphs.is_empty(), "{script} produced no shaped glyphs");
                     assert!(
-                        tr.measure(&out, 14.0, None).0 <= budget,
-                        "{out:?} overflows {budget}"
+                        glyphs.iter().all(|glyph| glyph.id != 0),
+                        "{script} fell through to a .notdef glyph; install the Tilo Noto fallback package"
                     );
                 }
             }
-        }
 
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let s = "the quick brown fox jumps over the lazy dog";
-            let (full_w, _) = tr.measure(s, 14.0, None);
-            let budget = full_w / 2.0;
-            let out = tr.elide_to_width(s, 14.0, budget);
-            let kept = out.trim_end_matches(ELLIPSIS);
-            // One more character (plus the ellipsis) must no longer fit.
-            let rest = s.get(kept.len()..).unwrap_or_default();
-            let next_end = kept.len() + rest.chars().next().map_or(0, char::len_utf8);
-            let longer = format!(
-                "{}{ELLIPSIS}",
-                s.get(..next_end).unwrap_or_default().trim_end()
-            );
-            if longer != out {
-                assert!(
-                    tr.measure(&longer, 14.0, None).0 > budget,
-                    "{longer:?} would still fit"
-                );
+            {
+                assert_eq!(TextWeight::Regular.to_u16(), 400);
+                assert_eq!(TextWeight::Medium.to_u16(), 500);
+                assert_eq!(TextWeight::Semibold.to_u16(), 600);
+                assert_eq!(TextWeight::Bold.to_u16(), 700);
+                assert_eq!(TextWeight::Bold.to_cosmic_weight(), Weight(700));
+                assert_eq!(TextWeight::Regular.to_cosmic_weight(), Weight::NORMAL);
+                // Default must be Regular so call sites through `draw_text` keep their
+                // 400-weight behaviour.
+                assert_eq!(TextWeight::default(), TextWeight::Regular);
             }
-        }
 
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let s = "fn render_scene(scene: &mut Scene, transform: Affine)";
-            let mono = TextStyle::new(13.0).with_family(FontChoice::Monospace);
-            let budget = tr.measure_style(s, None, &mono).0 / 2.0;
-            let out = tr.elide_to_width_style(s, budget, &mono);
-            assert!(out.ends_with(ELLIPSIS));
-            assert!(tr.measure_style(&out, None, &mono).0 <= budget);
-        }
+            // Case `font_choice_families_resolve_and_shape`: Two different families must be
+            // distinct shape-cache entries (so serif doesn't collide with sans).
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let fams = tr.system_families();
+                assert!(!fams.is_empty(), "the system font db exposes some families");
 
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
-            assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
-             incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
-            // Narrow width forces several wrapped lines; cap to 2.
-            let lines = tr.clamp_to_lines(paragraph, &TextStyle::new(14.0), 120.0, 2);
-            assert!(
-                lines.len() <= 2,
-                "must not exceed max_lines, got {}",
-                lines.len()
-            );
-            assert_eq!(lines.len(), 2, "this paragraph wraps to more than 2 lines");
-            assert!(
-                lines.last().unwrap().ends_with('\u{2026}'),
-                "overflowing clamp must elide the final line: {:?}",
-                lines.last(),
-            );
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            assert!(
-                tr.clamp_to_lines("anything", &TextStyle::new(14.0), 80.0, 0)
-                    .is_empty()
-            );
-            let one = tr.clamp_to_lines(
-                "a fairly long single line of text here",
-                &TextStyle::new(14.0),
-                60.0,
-                1,
-            );
-            assert_eq!(one.len(), 1);
-            assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let lines = tr.clamp_to_lines("two words", &TextStyle::new(14.0), 1000.0, 3);
-            assert_eq!(lines, vec!["two words".to_string()]);
-            assert!(!lines[0].ends_with('\u{2026}'));
-        }
-    }
-
-    #[test]
-    fn shape_cache_reuses_geometry_and_keys_on_width_and_generation() {
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let mut scene = Scene::new();
-            let t = Affine::IDENTITY;
-            let c = Color::WHITE;
-            tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
-            let (_h, m1, _ns1) = tr.take_shape_stats();
-            assert_eq!(m1, 1, "first draw must shape once (miss)");
-
-            // Every redraw must be a cache hit; zero reshapes.
-            for _ in 0..5 {
-                tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
-            }
-            let (h, m, ns) = tr.take_shape_stats();
-            assert_eq!(m, 0, "repeated identical draws must not reshape");
-            assert_eq!(h, 5, "all five redraws must hit the shape cache");
-            assert_eq!(ns, 0, "no shaping time on an all-hit frame");
-        }
-
-        // Case `measure_warms_shape_cache_for_matching_draw_width`: Layout measures a
-        // label, then paint draws it inside a wider box. Collapsing an unused wrap width
-        // plus warming shape from measure must make that first paint a shape-cache hit
-        // (one cosmic-text reshape total).
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let style = TextStyle::new(16.0);
-            let label = "Send message";
-            let (natural_w, _) = tr.measure_style(label, None, &style);
-            let _ = tr.take_shape_stats();
-
-            let mut scene = Scene::new();
-            tr.draw_style(
-                &mut scene,
-                label,
-                Color::WHITE,
-                Affine::IDENTITY,
-                Some(natural_w + 40.0),
-                &style,
-            );
-            let (h, m, ns) = tr.take_shape_stats();
-            assert_eq!(m, 0, "draw inside a wider box must not reshape");
-            assert_eq!(h, 1, "draw must hit the shape entry measure warmed");
-            assert_eq!(ns, 0, "no shaping time when measure already warmed paint");
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let mut scene = Scene::new();
-            let t = Affine::IDENTITY;
-            tr.draw_text_weighted(
-                &mut scene,
-                "Clear",
-                16.0,
-                Color::WHITE,
-                t,
-                None,
-                TextWeight::Regular,
-            );
-            let _ = tr.take_shape_stats();
-            tr.draw_text_weighted(
-                &mut scene,
-                "Clear",
-                16.0,
-                Color::BLACK,
-                t,
-                None,
-                TextWeight::Regular,
-            );
-            let (h, m, _ns) = tr.take_shape_stats();
-            assert_eq!(m, 0, "recolour must not reshape");
-            assert_eq!(h, 1, "recolour must hit the cached geometry");
-        }
-
-        // Case `shape_cache_keys_on_width`: A different wrap width is a different shape —
-        // wrapping changes glyph positions, so it must miss and reshape. Both widths must
-        // actually wrap; an unused wider box collapses to unconstrained.
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let mut scene = Scene::new();
-            let t = Affine::IDENTITY;
-            let s = "the quick brown fox jumps over the lazy dog";
-            tr.draw_text_weighted(
-                &mut scene,
-                s,
-                16.0,
-                Color::WHITE,
-                t,
-                Some(120.0),
-                TextWeight::Regular,
-            );
-            tr.draw_text_weighted(
-                &mut scene,
-                s,
-                16.0,
-                Color::WHITE,
-                t,
-                Some(60.0),
-                TextWeight::Regular,
-            );
-            tr.draw_text_weighted(
-                &mut scene,
-                s,
-                16.0,
-                Color::WHITE,
-                t,
-                Some(120.0),
-                TextWeight::Regular,
-            ); // hit
-            let (h, m, _ns) = tr.take_shape_stats();
-            assert_eq!(m, 2, "each distinct wrapping width shapes once");
-            assert_eq!(h, 1, "the repeated width hits");
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let mut scene = Scene::new();
-            let t = Affine::IDENTITY;
-            tr.draw_text_weighted(
-                &mut scene,
-                "Send",
-                16.0,
-                Color::WHITE,
-                t,
-                None,
-                TextWeight::Regular,
-            );
-            let _ = tr.take_shape_stats();
-            tr.draw_text_weighted(
-                &mut scene,
-                "Send",
-                16.0,
-                Color::WHITE,
-                t,
-                None,
-                TextWeight::Regular,
-            );
-            let (h, _m, _ns) = tr.take_shape_stats();
-            assert_eq!(h, 1, "second draw hits before bump");
-            tr.bump_generation();
-            tr.draw_text_weighted(
-                &mut scene,
-                "Send",
-                16.0,
-                Color::WHITE,
-                t,
-                None,
-                TextWeight::Regular,
-            );
-            let (_h, m, _ns) = tr.take_shape_stats();
-            assert_eq!(m, 1, "draw after bump must reshape");
-        }
-    }
-
-    #[test]
-    fn font_features_and_variation_axes_shape_and_measure() {
-        {
-            let mut renderer = crate::font_catalog::fixture_renderer();
-            let base = TextStyle::new(32.0).with_family(FontChoice::Serif);
-            let kerned =
-                renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(true));
-            let unkerned =
-                renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(false));
-            assert!(
-                (kerned.0 - unkerned.0).abs() > 0.1,
-                "explicit kerning must alter positioned advances"
-            );
-
-            let normal = renderer.measure_style("TRACKING", None, &base);
-            let tracked =
-                renderer.measure_style("TRACKING", None, &base.clone().with_tracking(0.08));
-            assert!(tracked.0 > normal.0, "positive tracking must widen the run");
-
-            let mut scene = Scene::new();
-            let _ = renderer.take_shape_stats();
-            renderer.draw_style(
-                &mut scene,
-                "Features",
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-                &base,
-            );
-            renderer.draw_style(
-                &mut scene,
-                "Features",
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-                &base.clone().with_small_caps(true),
-            );
-            let (_, misses, _) = renderer.take_shape_stats();
-            assert_eq!(misses, 2, "feature settings must not collide in the cache");
-        }
-
-        {
-            let style = TextStyle::new(20.0)
-                .with_font_feature(OpenTypeTag::KERNING, 0)
-                .with_kerning(true)
-                .with_numeric_style(NumericStyle::ProportionalLining)
-                .with_numeric_style(NumericStyle::TabularOldstyle)
-                .with_font_variation(OpenTypeTag::WEIGHT, 310.0)
-                .with_font_variation(OpenTypeTag::WEIGHT, 675.0)
-                .with_optical_sizing(OpticalSizing::Auto);
-            assert_eq!(
-                style
-                    .font_features
-                    .iter()
-                    .find(|feature| feature.tag == OpenTypeTag::KERNING)
-                    .map(|feature| feature.value),
-                Some(1)
-            );
-            assert!(style.font_features.iter().any(|feature| {
-                feature.tag == OpenTypeTag::TABULAR_NUMERALS && feature.value == 1
-            }));
-            assert!(style.font_features.iter().any(|feature| {
-                feature.tag == OpenTypeTag::OLDSTYLE_NUMERALS && feature.value == 1
-            }));
-            assert_eq!(style.effective_weight().0, 675);
-            assert_eq!(
-                style
-                    .resolved_variations()
-                    .iter()
-                    .find(|axis| axis.tag == OpenTypeTag::OPTICAL_SIZE)
-                    .map(|axis| axis.value),
-                Some(20.0)
-            );
-            assert_eq!(
-                style
-                    .font_variations
-                    .iter()
-                    .filter(|axis| axis.tag == OpenTypeTag::WEIGHT)
-                    .count(),
-                1
-            );
-        }
-
-        {
-            let renderer = crate::font_catalog::fixture_renderer();
-            let face = renderer
-                .font_system
-                .db()
-                .query(&cosmic_text::fontdb::Query {
-                    families: &[Family::Name("Adwaita Sans")],
-                    ..cosmic_text::fontdb::Query::default()
-                })
-                .expect("the controlled fixture ships Adwaita Sans");
-            let coords = renderer.normalized_coords(
-                face,
-                &[
-                    FontVariation {
-                        tag: OpenTypeTag::WEIGHT,
-                        value: 700.0,
-                    },
-                    FontVariation {
-                        tag: OpenTypeTag::OPTICAL_SIZE,
-                        value: 32.0,
-                    },
-                ],
-                Weight(700),
-            );
-            assert_eq!(coords.len(), 2, "Adwaita exposes opsz and wght");
-            assert!(
-                coords.iter().all(|coordinate| *coordinate > 0),
-                "both requested values sit above the face defaults: {coords:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn text_and_ui_scale_apply_once_to_metrics_and_caches() {
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let base = tr.measure("Accessible calendar", 18.0, None);
-            tr.set_text_scale(1.0);
-            assert_eq!(tr.measure("Accessible calendar", 18.0, None), base);
-
-            tr.set_text_scale(f32::NAN);
-            assert_eq!(tr.text_scale, 1.0, "NaN resets to the safe identity scale");
-            tr.set_text_scale(100.0);
-            assert_eq!(tr.text_scale, 4.0, "oversized scales are bounded");
-            tr.set_text_scale(0.0);
-            assert_eq!(tr.text_scale, 0.5, "undersized scales are bounded");
-        }
-
-        {
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let base = tr.measure("Calendar", 20.0, None);
-            tr.set_text_scale(2.0);
-            let doubled = tr.measure("Calendar", 20.0, None);
-            assert!(
-                (doubled.0 - base.0 * 2.0).abs() < 0.1 && (doubled.1 - base.1 * 2.0).abs() < 0.1,
-                "measurement uses the same scaled metrics that drawing receives: {base:?} -> {doubled:?}"
-            );
-
-            // Measure already warmed both scaled geometries; drawing must hit each once
-            // rather than reshaping.
-            let mut scene = Scene::new();
-            let _ = tr.take_shape_stats();
-            tr.draw_text(
-                &mut scene,
-                "Calendar",
-                20.0,
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-            );
-            tr.set_text_scale(1.0);
-            tr.draw_text(
-                &mut scene,
-                "Calendar",
-                20.0,
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-            );
-            let (hits, misses, _ns) = tr.take_shape_stats();
-            assert_eq!(misses, 0, "scaled measures warm the paint-side cache");
-            assert_eq!(
-                hits, 2,
-                "each scaled style owns a distinct shape-cache entry"
-            );
-        }
-
-        {
-            for scale in [1.0, 1.25, 1.5, 2.0] {
-                let mut renderer = crate::font_catalog::fixture_renderer();
-                renderer.set_text_scale(scale);
-                let style = TextStyle::new(14.0).with_letter_spacing(2.0);
-                let (_, height) = renderer.measure_style("Canvas", None, &style);
-                assert!(
-                    (height - 14.0 * 1.25 * scale).abs() < 0.001,
-                    "custom canvas measure at {scale}x: {height}"
+                let (ws, _) = tr.measure_font(
+                    "Reading",
+                    20.0,
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    &FontChoice::Serif,
                 );
+                let (wn, _) = tr.measure_font(
+                    "Reading",
+                    20.0,
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    &FontChoice::SansSerif,
+                );
+                assert!(ws > 0.0, "serif shapes to a real width");
+                assert!(wn > 0.0, "sans shapes to a real width");
 
                 let mut scene = Scene::new();
-                renderer.draw_style(
+                let named = FontChoice::Named(fams[0].clone());
+                tr.draw_style(
                     &mut scene,
-                    "Canvas",
+                    "Reading",
                     Color::WHITE,
                     Affine::IDENTITY,
                     None,
+                    &TextStyle::new(20.0).with_family(named.clone()),
+                );
+
+                let _ = tr.take_shape_stats();
+                tr.draw_style(
+                    &mut scene,
+                    "Reading",
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                    &TextStyle::new(20.0).with_family(FontChoice::Serif),
+                );
+                tr.draw_style(
+                    &mut scene,
+                    "Reading",
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                    &TextStyle::new(20.0).with_family(FontChoice::SansSerif),
+                );
+                let (h, m, _ns) = tr.take_shape_stats();
+                assert_eq!(m, 0, "measure_font warms paint geometry for each family");
+                assert_eq!(h, 2, "serif and sans remain distinct shape-cache entries");
+            }
+        }
+
+        phase style_is_shared_by_measurement_and_drawing_including_backgrounds;
+        {
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let compact = TextStyle::new(20.0).with_line_height(1.2);
+                let relaxed = TextStyle::new(20.0).with_line_height(1.6);
+
+                let (_, compact_h) = tr.measure_style("first\nsecond", None, &compact);
+                let (_, relaxed_h) = tr.measure_style("first\nsecond", None, &relaxed);
+                assert!((compact_h - 48.0).abs() < 0.01);
+                assert!((relaxed_h - 64.0).abs() < 0.01);
+
+                let (hits, misses) = tr.cache_stats();
+                assert_eq!(hits, 0);
+                assert_eq!(misses, 2, "different leading must not alias in the cache");
+                let _ = tr.measure_style("first\nsecond", None, &relaxed);
+                let (hits, misses) = tr.cache_stats();
+                assert_eq!(hits, 1);
+                assert_eq!(misses, 2);
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let style = TextStyle::new(18.0)
+                    .with_line_height(1.4)
+                    .with_weight(TextWeight::Semibold)
+                    .with_italic(true)
+                    .with_family(FontChoice::Serif);
+                let _ = tr.measure_style("Consistent typography", Some(180.0), &style);
+                let _ = tr.take_shape_stats();
+
+                let mut scene = Scene::new();
+                tr.draw_style(
+                    &mut scene,
+                    "Consistent typography",
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    Some(180.0),
                     &style,
                 );
-                let runs = &scene.encoding().resources.glyph_runs;
-                assert!(!runs.is_empty(), "custom canvas draw emitted no glyphs");
-                for run in runs {
+                let (hits, misses, _ns) = tr.take_shape_stats();
+                assert_eq!(
+                    misses, 0,
+                    "measure warms shape so the matching draw does not reshape"
+                );
+                assert_eq!(hits, 1, "draw reuses the geometry measure produced");
+                assert!(
+                    !scene.encoding().resources.glyph_runs.is_empty(),
+                    "the complete style produces drawable glyph geometry"
+                );
+            }
+
+            // Case `background_span_emits_an_extra_fill_in_the_scene`: A highlighted run must
+            // add a real fill: the highlighted scene must encode strictly more paths than the
+            // plain one.
+            {
+                use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
+                let mut tr = crate::font_catalog::fixture_renderer();
+
+                let plain_spans = [RichSpan::new("highlighted")];
+                let plain = RichTextLayout::shape_styled(
+                    &mut tr.font_system,
+                    &plain_spans,
+                    &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                    Some(400.0),
+                    TextAlign::Left,
+                    vec![],
+                    vec![],
+                );
+                let hl_spans = [RichSpan::new("highlighted").background(Some([255, 235, 59]))];
+                let highlighted = RichTextLayout::shape_styled(
+                    &mut tr.font_system,
+                    &hl_spans,
+                    &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                    Some(400.0),
+                    TextAlign::Left,
+                    vec![],
+                    vec![],
+                );
+
+                let mut plain_scene = Scene::new();
+                tr.draw_rich(
+                    &mut plain_scene,
+                    &plain,
+                    Affine::IDENTITY,
+                    Color::from_rgb8(0, 0, 0),
+                );
+                let plain_paths = plain_scene.encoding().n_paths;
+
+                let mut hl_scene = Scene::new();
+                tr.draw_rich(
+                    &mut hl_scene,
+                    &highlighted,
+                    Affine::IDENTITY,
+                    Color::from_rgb8(0, 0, 0),
+                );
+                let hl_paths = hl_scene.encoding().n_paths;
+
+                assert!(
+                    hl_paths > plain_paths,
+                    "highlight must add a fill path: plain={plain_paths} highlighted={hl_paths}",
+                );
+            }
+        }
+
+        phase styled_line_clamping_keeps_drawn_weight_within_the_budget;
+        {
+            for scale in [1.0, 2.0] {
+                let theme = crate::theme::Theme::light().with_text_scale(scale);
+                with_layout_renderer(&theme, |renderer| {
+                    let title = "Review the launch announcement, compact navigation, translated labels, and final release checklist";
+                    let style = TextStyle::new(13.0).with_weight(TextWeight::Semibold);
+                    let width = 240.0;
+                    assert!(renderer.measure_style(title, None, &style).0 > width);
+                    let lines = renderer.clamp_to_lines_style(title, width, 2, &style);
+                    assert_eq!(lines.len(), 2);
+                    assert!(lines.last().is_some_and(|line| line.ends_with(ELLIPSIS)));
+                    for line in &lines {
+                        let (actual_width, height) = renderer.measure_style(line, None, &style);
+                        assert!(height > 0.0, "real glyph metrics must be observable");
+                        assert!(actual_width <= width + 0.1, "{line:?} exceeds {width}");
+                    }
+                    assert_eq!(
+                        renderer.clamp_to_lines_style("Review", width, 2, &style),
+                        ["Review"]
+                    );
                     assert!(
-                        (run.font_size - 14.0 * scale).abs() < 0.001,
-                        "custom canvas draw at {scale}x: {}",
-                        run.font_size
+                        renderer
+                            .clamp_to_lines_style(title, width, 0, &style)
+                            .is_empty()
+                    );
+                    assert_eq!(
+                        renderer.clamp_to_lines_style(title, width, 1, &style),
+                        [renderer.elide_to_width_style(title, width, &style)]
+                    );
+                    let unbreakable = "abcdefghijklmnopqrstuvwxyzzabcdefghijklmnopqrstuvwxyzz";
+                    let lines = renderer.clamp_to_lines_style(unbreakable, width, 2, &style);
+                    assert_eq!(lines.len(), 1);
+                    assert!(lines[0].ends_with(ELLIPSIS));
+                    assert!(renderer.measure_style(&lines[0], None, &style).0 <= width + 0.1);
+                });
+            }
+        }
+
+        phase elide_and_clamp_truncate_at_grapheme_boundaries;
+        {
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let s = "short";
+                let (w, _) = tr.measure(s, 14.0, None);
+                let out = tr.elide_to_width(s, 14.0, w + 50.0);
+                assert_eq!(out, s, "fitting text must be returned unchanged");
+                assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let s = "the quick brown fox jumps over the lazy dog";
+                let (full_w, _) = tr.measure(s, 14.0, None);
+                let budget = full_w / 3.0; // force truncation
+                let out = tr.elide_to_width(s, 14.0, budget);
+                assert!(
+                    out.ends_with('\u{2026}'),
+                    "truncated text must end with …, got {out:?}"
+                );
+                assert!(
+                    out.chars().count() < s.chars().count(),
+                    "must drop characters"
+                );
+                let (out_w, _) = tr.measure(&out, 14.0, None);
+                assert!(
+                    out_w <= budget + 0.5,
+                    "elided string ({out_w}) must fit the budget ({budget})",
+                );
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let s = "cafe\u{301} cafe\u{301} cafe\u{301} cafe\u{301}";
+                for budget in [10.0_f32, 25.0, 40.0, 55.0, 70.0, 85.0] {
+                    let out = tr.elide_to_width(s, 14.0, budget);
+                    let kept = out.trim_end_matches(ELLIPSIS);
+                    assert!(s.starts_with(kept), "{out:?} is not a prefix of the text");
+                    let rest = s.get(kept.len()..).unwrap_or_default();
+                    assert!(
+                        !rest.starts_with('\u{301}'),
+                        "{out:?} strands a combining mark"
+                    );
+                    assert!(!kept.ends_with(' '), "space before the ellipsis in {out:?}");
+                    if out != ELLIPSIS.to_string() {
+                        assert!(
+                            tr.measure(&out, 14.0, None).0 <= budget,
+                            "{out:?} overflows {budget}"
+                        );
+                    }
+                }
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let s = "the quick brown fox jumps over the lazy dog";
+                let (full_w, _) = tr.measure(s, 14.0, None);
+                let budget = full_w / 2.0;
+                let out = tr.elide_to_width(s, 14.0, budget);
+                let kept = out.trim_end_matches(ELLIPSIS);
+                // One more character (plus the ellipsis) must no longer fit.
+                let rest = s.get(kept.len()..).unwrap_or_default();
+                let next_end = kept.len() + rest.chars().next().map_or(0, char::len_utf8);
+                let longer = format!(
+                    "{}{ELLIPSIS}",
+                    s.get(..next_end).unwrap_or_default().trim_end()
+                );
+                if longer != out {
+                    assert!(
+                        tr.measure(&longer, 14.0, None).0 > budget,
+                        "{longer:?} would still fit"
                     );
                 }
             }
-        }
 
-        {
-            let text = "Tracked resolved text";
-            let mut resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
-            resolved.scaling = TextScaling::Resolved;
-            let mut renderer = crate::font_catalog::fixture_renderer();
-
-            let legacy_at_one = renderer.measure_style(text, None, &TextStyle::new(14.0));
-            let resolved_at_one = renderer.measure_style(text, None, &resolved);
-            let mut scene_at_one = Scene::new();
-            renderer.draw_style(
-                &mut scene_at_one,
-                text,
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-                &resolved,
-            );
-
-            renderer.set_text_scale(2.0);
-            let legacy_at_two = renderer.measure_style(text, None, &TextStyle::new(14.0));
-            assert!((legacy_at_two.1 - legacy_at_one.1 * 2.0).abs() < 0.001);
-
-            let resolved_at_two = renderer.measure_style(text, None, &resolved);
-            assert_eq!(resolved_at_two, resolved_at_one);
-
-            let mut scene_at_two = Scene::new();
-            renderer.draw_style(
-                &mut scene_at_two,
-                text,
-                Color::WHITE,
-                Affine::IDENTITY,
-                None,
-                &resolved,
-            );
-            let first = scene_at_one.encoding();
-            let second = scene_at_two.encoding();
-            assert_eq!(first.resources.glyphs.len(), second.resources.glyphs.len());
-            for (left, right) in first.resources.glyphs.iter().zip(&second.resources.glyphs) {
-                assert_eq!(left.id, right.id);
-                assert_eq!(left.x, right.x);
-                assert_eq!(left.y, right.y);
-            }
-            assert_eq!(
-                first.resources.glyph_runs.len(),
-                second.resources.glyph_runs.len()
-            );
-            for (left, right) in first
-                .resources
-                .glyph_runs
-                .iter()
-                .zip(&second.resources.glyph_runs)
             {
-                assert_eq!(left.font_size, right.font_size);
-                assert_eq!(left.transform, right.transform);
-                assert_eq!(left.glyphs, right.glyphs);
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let s = "fn render_scene(scene: &mut Scene, transform: Affine)";
+                let mono = TextStyle::new(13.0).with_family(FontChoice::Monospace);
+                let budget = tr.measure_style(s, None, &mono).0 / 2.0;
+                let out = tr.elide_to_width_style(s, budget, &mono);
+                assert!(out.ends_with(ELLIPSIS));
+                assert!(tr.measure_style(&out, None, &mono).0 <= budget);
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
+                assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
+             incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
+                // Narrow width forces several wrapped lines; cap to 2.
+                let lines = tr.clamp_to_lines(paragraph, &TextStyle::new(14.0), 120.0, 2);
+                assert!(
+                    lines.len() <= 2,
+                    "must not exceed max_lines, got {}",
+                    lines.len()
+                );
+                assert_eq!(lines.len(), 2, "this paragraph wraps to more than 2 lines");
+                assert!(
+                    lines.last().unwrap().ends_with('\u{2026}'),
+                    "overflowing clamp must elide the final line: {:?}",
+                    lines.last(),
+                );
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                assert!(
+                    tr.clamp_to_lines("anything", &TextStyle::new(14.0), 80.0, 0)
+                        .is_empty()
+                );
+                let one = tr.clamp_to_lines(
+                    "a fairly long single line of text here",
+                    &TextStyle::new(14.0),
+                    60.0,
+                    1,
+                );
+                assert_eq!(one.len(), 1);
+                assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let lines = tr.clamp_to_lines("two words", &TextStyle::new(14.0), 1000.0, 3);
+                assert_eq!(lines, vec!["two words".to_string()]);
+                assert!(!lines[0].ends_with('\u{2026}'));
             }
         }
 
+        phase font_features_and_variation_axes_shape_and_measure;
         {
-            let role = crate::tokens::TextRole::Caption;
-            let base = crate::theme::Theme::dark().text(role).size;
-            let theme = crate::theme::Theme::dark()
-                .with_ui_scale(1.25)
-                .with_text_scale(2.0);
-            let resolved = theme.text(role);
-            let mut renderer = crate::font_catalog::fixture_renderer();
-            renderer.set_text_scale(2.0);
-            let (_, height) = renderer.measure_style("Scale once", None, &resolved);
-            assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
+            {
+                let mut renderer = crate::font_catalog::fixture_renderer();
+                let base = TextStyle::new(32.0).with_family(FontChoice::Serif);
+                let kerned =
+                    renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(true));
+                let unkerned =
+                    renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(false));
+                assert!(
+                    (kerned.0 - unkerned.0).abs() > 0.1,
+                    "explicit kerning must alter positioned advances"
+                );
 
-            let content = TextStyle::content(19.0);
-            let (_, content_height) = renderer.measure_style("Page", None, &content);
-            assert!((content_height - 19.0 * content.line_height).abs() < 0.001);
+                let normal = renderer.measure_style("TRACKING", None, &base);
+                let tracked =
+                    renderer.measure_style("TRACKING", None, &base.clone().with_tracking(0.08));
+                assert!(tracked.0 > normal.0, "positive tracking must widen the run");
+
+                let mut scene = Scene::new();
+                let _ = renderer.take_shape_stats();
+                renderer.draw_style(
+                    &mut scene,
+                    "Features",
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                    &base,
+                );
+                renderer.draw_style(
+                    &mut scene,
+                    "Features",
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                    &base.clone().with_small_caps(true),
+                );
+                let (_, misses, _) = renderer.take_shape_stats();
+                assert_eq!(misses, 2, "feature settings must not collide in the cache");
+            }
+
+            {
+                let style = TextStyle::new(20.0)
+                    .with_font_feature(OpenTypeTag::KERNING, 0)
+                    .with_kerning(true)
+                    .with_numeric_style(NumericStyle::ProportionalLining)
+                    .with_numeric_style(NumericStyle::TabularOldstyle)
+                    .with_font_variation(OpenTypeTag::WEIGHT, 310.0)
+                    .with_font_variation(OpenTypeTag::WEIGHT, 675.0)
+                    .with_optical_sizing(OpticalSizing::Auto);
+                assert_eq!(
+                    style
+                        .font_features
+                        .iter()
+                        .find(|feature| feature.tag == OpenTypeTag::KERNING)
+                        .map(|feature| feature.value),
+                    Some(1)
+                );
+                assert!(style.font_features.iter().any(|feature| {
+                    feature.tag == OpenTypeTag::TABULAR_NUMERALS && feature.value == 1
+                }));
+                assert!(style.font_features.iter().any(|feature| {
+                    feature.tag == OpenTypeTag::OLDSTYLE_NUMERALS && feature.value == 1
+                }));
+                assert_eq!(style.effective_weight().0, 675);
+                assert_eq!(
+                    style
+                        .resolved_variations()
+                        .iter()
+                        .find(|axis| axis.tag == OpenTypeTag::OPTICAL_SIZE)
+                        .map(|axis| axis.value),
+                    Some(20.0)
+                );
+                assert_eq!(
+                    style
+                        .font_variations
+                        .iter()
+                        .filter(|axis| axis.tag == OpenTypeTag::WEIGHT)
+                        .count(),
+                    1
+                );
+            }
+
+            {
+                let renderer = crate::font_catalog::fixture_renderer();
+                let face = renderer
+                    .font_system
+                    .db()
+                    .query(&cosmic_text::fontdb::Query {
+                        families: &[Family::Name("Adwaita Sans")],
+                        ..cosmic_text::fontdb::Query::default()
+                    })
+                    .expect("the controlled fixture ships Adwaita Sans");
+                let coords = renderer.normalized_coords(
+                    face,
+                    &[
+                        FontVariation {
+                            tag: OpenTypeTag::WEIGHT,
+                            value: 700.0,
+                        },
+                        FontVariation {
+                            tag: OpenTypeTag::OPTICAL_SIZE,
+                            value: 32.0,
+                        },
+                    ],
+                    Weight(700),
+                );
+                assert_eq!(coords.len(), 2, "Adwaita exposes opsz and wght");
+                assert!(
+                    coords.iter().all(|coordinate| *coordinate > 0),
+                    "both requested values sit above the face defaults: {coords:?}"
+                );
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// A renderer's measure and shape caches, each on a renderer of its own.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn renderer_caches_key_on_what_changes_the_answer;
+
+        phase measure_cache_hits_and_keys_on_size_policy_and_generation;
+        {
+            // Case `measure_cache_returns_hit_on_second_call`: Measuring the same string
+            // twice should hit the cache the second time — without this, every widget's
+            // `draw` pays a full cosmic-text shape.
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let label = "Hello, gallery!";
+                let (w1, h1) = tr.measure(label, 16.0, None);
+                let (hits1, misses1) = tr.cache_stats();
+                assert_eq!(misses1, 1);
+                assert_eq!(hits1, 0);
+
+                let (w2, h2) = tr.measure(label, 16.0, None);
+                let (hits2, misses2) = tr.cache_stats();
+                assert_eq!(hits2, 1, "second measure of same string must hit");
+                assert_eq!(misses2, 1, "miss count unchanged after a hit");
+                assert_eq!((w1, h1), (w2, h2), "cached value must equal recomputed");
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let _ = tr.measure("abc", 12.0, None);
+                let _ = tr.measure("abc", 16.0, None);
+                let _ = tr.measure("abc", 12.0, None); // hit
+                let (hits, misses) = tr.cache_stats();
+                assert_eq!(hits, 1);
+                assert_eq!(misses, 2);
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let text = "extensive";
+                let width = 1000.0;
+                let plain = TextStyle::new(20.0);
+                let automatic = plain.clone().with_auto_hyphenation("en");
+                let _ = tr.measure_style(text, Some(width), &plain);
+                let _ = tr.measure_style(text, Some(width), &automatic);
+                let (hits, misses) = tr.cache_stats();
+                // Plain collapses to unconstrained (probe miss + re-lookup hit); hyphenation
+                // keeps the wrap width as a second distinct miss.
+                assert_eq!((hits, misses), (1, 2));
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let _ = tr.measure("abc", 12.0, None);
+                let _ = tr.measure("abc", 12.0, None); // hit
+                tr.bump_generation();
+                let _ = tr.measure("abc", 12.0, None); // miss after bump
+                let (hits, misses) = tr.cache_stats();
+                assert_eq!(hits, 1);
+                assert_eq!(misses, 2);
+            }
+        }
+
+        phase shape_cache_reuses_geometry_and_keys_on_width_and_generation;
+        {
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let mut scene = Scene::new();
+                let t = Affine::IDENTITY;
+                let c = Color::WHITE;
+                tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
+                let (_h, m1, _ns1) = tr.take_shape_stats();
+                assert_eq!(m1, 1, "first draw must shape once (miss)");
+
+                // Every redraw must be a cache hit; zero reshapes.
+                for _ in 0..5 {
+                    tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
+                }
+                let (h, m, ns) = tr.take_shape_stats();
+                assert_eq!(m, 0, "repeated identical draws must not reshape");
+                assert_eq!(h, 5, "all five redraws must hit the shape cache");
+                assert_eq!(ns, 0, "no shaping time on an all-hit frame");
+            }
+
+            // Case `measure_warms_shape_cache_for_matching_draw_width`: Layout measures a
+            // label, then paint draws it inside a wider box. Collapsing an unused wrap width
+            // plus warming shape from measure must make that first paint a shape-cache hit
+            // (one cosmic-text reshape total).
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let style = TextStyle::new(16.0);
+                let label = "Send message";
+                let (natural_w, _) = tr.measure_style(label, None, &style);
+                let _ = tr.take_shape_stats();
+
+                let mut scene = Scene::new();
+                tr.draw_style(
+                    &mut scene,
+                    label,
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    Some(natural_w + 40.0),
+                    &style,
+                );
+                let (h, m, ns) = tr.take_shape_stats();
+                assert_eq!(m, 0, "draw inside a wider box must not reshape");
+                assert_eq!(h, 1, "draw must hit the shape entry measure warmed");
+                assert_eq!(ns, 0, "no shaping time when measure already warmed paint");
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let mut scene = Scene::new();
+                let t = Affine::IDENTITY;
+                tr.draw_text_weighted(
+                    &mut scene,
+                    "Clear",
+                    16.0,
+                    Color::WHITE,
+                    t,
+                    None,
+                    TextWeight::Regular,
+                );
+                let _ = tr.take_shape_stats();
+                tr.draw_text_weighted(
+                    &mut scene,
+                    "Clear",
+                    16.0,
+                    Color::BLACK,
+                    t,
+                    None,
+                    TextWeight::Regular,
+                );
+                let (h, m, _ns) = tr.take_shape_stats();
+                assert_eq!(m, 0, "recolour must not reshape");
+                assert_eq!(h, 1, "recolour must hit the cached geometry");
+            }
+
+            // Case `shape_cache_keys_on_width`: A different wrap width is a different shape —
+            // wrapping changes glyph positions, so it must miss and reshape. Both widths must
+            // actually wrap; an unused wider box collapses to unconstrained.
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let mut scene = Scene::new();
+                let t = Affine::IDENTITY;
+                let s = "the quick brown fox jumps over the lazy dog";
+                tr.draw_text_weighted(
+                    &mut scene,
+                    s,
+                    16.0,
+                    Color::WHITE,
+                    t,
+                    Some(120.0),
+                    TextWeight::Regular,
+                );
+                tr.draw_text_weighted(
+                    &mut scene,
+                    s,
+                    16.0,
+                    Color::WHITE,
+                    t,
+                    Some(60.0),
+                    TextWeight::Regular,
+                );
+                tr.draw_text_weighted(
+                    &mut scene,
+                    s,
+                    16.0,
+                    Color::WHITE,
+                    t,
+                    Some(120.0),
+                    TextWeight::Regular,
+                ); // hit
+                let (h, m, _ns) = tr.take_shape_stats();
+                assert_eq!(m, 2, "each distinct wrapping width shapes once");
+                assert_eq!(h, 1, "the repeated width hits");
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let mut scene = Scene::new();
+                let t = Affine::IDENTITY;
+                tr.draw_text_weighted(
+                    &mut scene,
+                    "Send",
+                    16.0,
+                    Color::WHITE,
+                    t,
+                    None,
+                    TextWeight::Regular,
+                );
+                let _ = tr.take_shape_stats();
+                tr.draw_text_weighted(
+                    &mut scene,
+                    "Send",
+                    16.0,
+                    Color::WHITE,
+                    t,
+                    None,
+                    TextWeight::Regular,
+                );
+                let (h, _m, _ns) = tr.take_shape_stats();
+                assert_eq!(h, 1, "second draw hits before bump");
+                tr.bump_generation();
+                tr.draw_text_weighted(
+                    &mut scene,
+                    "Send",
+                    16.0,
+                    Color::WHITE,
+                    t,
+                    None,
+                    TextWeight::Regular,
+                );
+                let (_h, m, _ns) = tr.take_shape_stats();
+                assert_eq!(m, 1, "draw after bump must reshape");
+            }
+        }
+
+        phase text_and_ui_scale_apply_once_to_metrics_and_caches;
+        {
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let base = tr.measure("Accessible calendar", 18.0, None);
+                tr.set_text_scale(1.0);
+                assert_eq!(tr.measure("Accessible calendar", 18.0, None), base);
+
+                tr.set_text_scale(f32::NAN);
+                assert_eq!(tr.text_scale, 1.0, "NaN resets to the safe identity scale");
+                tr.set_text_scale(100.0);
+                assert_eq!(tr.text_scale, 4.0, "oversized scales are bounded");
+                tr.set_text_scale(0.0);
+                assert_eq!(tr.text_scale, 0.5, "undersized scales are bounded");
+            }
+
+            {
+                let mut tr = crate::font_catalog::fixture_renderer();
+                let base = tr.measure("Calendar", 20.0, None);
+                tr.set_text_scale(2.0);
+                let doubled = tr.measure("Calendar", 20.0, None);
+                assert!(
+                    (doubled.0 - base.0 * 2.0).abs() < 0.1 && (doubled.1 - base.1 * 2.0).abs() < 0.1,
+                    "measurement uses the same scaled metrics that drawing receives: {base:?} -> {doubled:?}"
+                );
+
+                // Measure already warmed both scaled geometries; drawing must hit each once
+                // rather than reshaping.
+                let mut scene = Scene::new();
+                let _ = tr.take_shape_stats();
+                tr.draw_text(
+                    &mut scene,
+                    "Calendar",
+                    20.0,
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                );
+                tr.set_text_scale(1.0);
+                tr.draw_text(
+                    &mut scene,
+                    "Calendar",
+                    20.0,
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                );
+                let (hits, misses, _ns) = tr.take_shape_stats();
+                assert_eq!(misses, 0, "scaled measures warm the paint-side cache");
+                assert_eq!(
+                    hits, 2,
+                    "each scaled style owns a distinct shape-cache entry"
+                );
+            }
+
+            {
+                for scale in [1.0, 1.25, 1.5, 2.0] {
+                    let mut renderer = crate::font_catalog::fixture_renderer();
+                    renderer.set_text_scale(scale);
+                    let style = TextStyle::new(14.0).with_letter_spacing(2.0);
+                    let (_, height) = renderer.measure_style("Canvas", None, &style);
+                    assert!(
+                        (height - 14.0 * 1.25 * scale).abs() < 0.001,
+                        "custom canvas measure at {scale}x: {height}"
+                    );
+
+                    let mut scene = Scene::new();
+                    renderer.draw_style(
+                        &mut scene,
+                        "Canvas",
+                        Color::WHITE,
+                        Affine::IDENTITY,
+                        None,
+                        &style,
+                    );
+                    let runs = &scene.encoding().resources.glyph_runs;
+                    assert!(!runs.is_empty(), "custom canvas draw emitted no glyphs");
+                    for run in runs {
+                        assert!(
+                            (run.font_size - 14.0 * scale).abs() < 0.001,
+                            "custom canvas draw at {scale}x: {}",
+                            run.font_size
+                        );
+                    }
+                }
+            }
+
+            {
+                let text = "Tracked resolved text";
+                let mut resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
+                resolved.scaling = TextScaling::Resolved;
+                let mut renderer = crate::font_catalog::fixture_renderer();
+
+                let legacy_at_one = renderer.measure_style(text, None, &TextStyle::new(14.0));
+                let resolved_at_one = renderer.measure_style(text, None, &resolved);
+                let mut scene_at_one = Scene::new();
+                renderer.draw_style(
+                    &mut scene_at_one,
+                    text,
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                    &resolved,
+                );
+
+                renderer.set_text_scale(2.0);
+                let legacy_at_two = renderer.measure_style(text, None, &TextStyle::new(14.0));
+                assert!((legacy_at_two.1 - legacy_at_one.1 * 2.0).abs() < 0.001);
+
+                let resolved_at_two = renderer.measure_style(text, None, &resolved);
+                assert_eq!(resolved_at_two, resolved_at_one);
+
+                let mut scene_at_two = Scene::new();
+                renderer.draw_style(
+                    &mut scene_at_two,
+                    text,
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                    &resolved,
+                );
+                let first = scene_at_one.encoding();
+                let second = scene_at_two.encoding();
+                assert_eq!(first.resources.glyphs.len(), second.resources.glyphs.len());
+                for (left, right) in first.resources.glyphs.iter().zip(&second.resources.glyphs) {
+                    assert_eq!(left.id, right.id);
+                    assert_eq!(left.x, right.x);
+                    assert_eq!(left.y, right.y);
+                }
+                assert_eq!(
+                    first.resources.glyph_runs.len(),
+                    second.resources.glyph_runs.len()
+                );
+                for (left, right) in first
+                    .resources
+                    .glyph_runs
+                    .iter()
+                    .zip(&second.resources.glyph_runs)
+                {
+                    assert_eq!(left.font_size, right.font_size);
+                    assert_eq!(left.transform, right.transform);
+                    assert_eq!(left.glyphs, right.glyphs);
+                }
+            }
+
+            {
+                let role = crate::tokens::TextRole::Caption;
+                let base = crate::theme::Theme::dark().text(role).size;
+                let theme = crate::theme::Theme::dark()
+                    .with_ui_scale(1.25)
+                    .with_text_scale(2.0);
+                let resolved = theme.text(role);
+                let mut renderer = crate::font_catalog::fixture_renderer();
+                renderer.set_text_scale(2.0);
+                let (_, height) = renderer.measure_style("Scale once", None, &resolved);
+                assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
+
+                let content = TextStyle::content(19.0);
+                let (_, content_height) = renderer.measure_style("Page", None, &content);
+                assert!((content_height - 19.0 * content.line_height).abs() < 0.001);
+            }
         }
     }
 }

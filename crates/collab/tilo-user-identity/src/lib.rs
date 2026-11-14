@@ -99,7 +99,6 @@ pub mod nofollow;
 pub mod persist;
 pub mod projection;
 pub mod revocation;
-pub mod role;
 pub mod root_envelope;
 pub mod root_statement;
 pub mod sign;
@@ -114,13 +113,14 @@ pub use approval::{
 };
 pub use canonical::CanonicalError;
 pub use cert::{
-    AgentScope, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DEVCERT_V4_PREIMAGE_TAG,
-    DEVCERT_V5_PREIMAGE_TAG, DEVCERT_V6_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
-    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, STAND_IN_LIFETIME_NS,
-    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, check_agent_grant, device_cert_signing_digest,
-    device_name, prepare_minted_grant, prepare_stand_in_cert, sign_device_cert,
-    sign_device_cert_async, take_signature_checks, verify_device_cert, verify_device_cert_at,
-    verify_remembered, verify_stand_in_cert, verify_stand_in_cert_at,
+    AgentScope, BINARY_LAYOUT, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG,
+    DEVCERT_V4_PREIMAGE_TAG, DEVCERT_V5_PREIMAGE_TAG, DEVCERT_V6_PREIMAGE_TAG, DeviceCapabilities,
+    DeviceCert, DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, RetiredFlags,
+    STAND_IN_LIFETIME_NS, UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, binary_layout_of,
+    check_agent_grant, device_cert_signing_digest, device_name, prepare_minted_grant,
+    prepare_stand_in_cert, sign_device_cert, sign_device_cert_async, take_signature_checks,
+    verify_device_cert, verify_device_cert_at, verify_remembered, verify_stand_in_cert,
+    verify_stand_in_cert_at,
 };
 pub use certification::{
     CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
@@ -172,7 +172,6 @@ pub use revocation::{
     revocation_signing_digest, sign_revocation_entry, sign_revocation_entry_async,
     verify_revocation_entry,
 };
-pub use role::DeviceRole;
 pub use sign::{CallbackSigner, SignError, StatementSigner};
 pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
 pub use witness::{Answered, HOST_WITNESS_PREIMAGE_TAG, HostWitness, HostWitnessError, Parties};
@@ -298,11 +297,12 @@ pub fn home_peer_registry_path(identity_root: &std::path::Path) -> std::path::Pa
 mod tests {
     use super::*;
 
-    /// The signing preimage is a frozen ABI, and user and device identities round-trip after
-    /// generation.
-    #[test]
-    fn identities_generate_round_trip_under_a_frozen_signing_preimage() {
-        // Phase: signing_preimage_is_frozen_abi.
+    tilo_test_env::scenario! {
+        /// The signing preimage is a frozen ABI, and user and device identities round-trip after
+        /// generation.
+        fn identities_generate_round_trip_under_a_frozen_signing_preimage;
+
+        phase signing_preimage_is_frozen_abi;
         // The signing-preimage byte constants are wire ABI. If any of
         // these byte sequences change, previously-issued
         // certificates and revocations stop verifying — that would
@@ -337,7 +337,7 @@ mod tests {
             assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 33);
         }
 
-        // Phase: user_identity_generate_round_trip.
+        phase user_identity_generate_round_trip;
         {
             let (_sk, user) = UserIdentity::generate("Alice", 1_720_000_000_000_000_000);
             assert_eq!(user.label, "Alice");
@@ -349,7 +349,7 @@ mod tests {
             assert_eq!(user, back);
         }
 
-        // Phase: device_identity_generate_round_trip.
+        phase device_identity_generate_round_trip;
         {
             let (_sk, dev) = DeviceIdentity::generate("Framework 16", 1_720_000_000_000_000_000);
             assert_eq!(dev.label, "Framework 16");

@@ -40,36 +40,12 @@ pub struct HomePeerBundle {
     #[serde(default)]
     pub authority: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
     #[serde(default)]
-    pub principals: Vec<String>,
+    pub members: Vec<String>,
     /// Shell and relay workspace shards backed by this filesystem workspace: a
     /// desktop may attach one tree to several collaboration workspaces, so this
     /// mapping is authoritative for relay binding.
-    #[serde(default, with = "relay_workspace_ids_serde")]
-    pub relay_workspace_ids: Vec<u64>,
-}
-
-mod relay_workspace_ids_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S>(ids: &[u64], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        ids.iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<String>::deserialize(deserializer)?
-            .into_iter()
-            .map(|value| value.parse().map_err(serde::de::Error::custom))
-            .collect()
-    }
+    #[serde(default)]
+    pub relay_workspace_ids: Vec<collab_types::WorkspaceId>,
 }
 
 /// The one configuration file installed on a home peer: Tilo has one global Files
@@ -470,24 +446,102 @@ async fn retain_manifest_tree(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_replica_is_running_while_it_holds_its_liveness_lock() {
-        let temp = tempfile::tempdir().unwrap();
-        let status = temp.path().join("full-replica").join("status.json");
-        assert!(!replica_is_running(&status), "no replica ever ran");
-        let alive = ReplicaLiveness::hold(&status).unwrap();
-        assert!(replica_is_running(&status));
-        assert!(
-            ReplicaLiveness::hold(&status).is_err(),
-            "a second replica must not take over a running one's status"
-        );
-        drop(alive);
-        assert!(!replica_is_running(&status), "the replica exited");
-        let _again = ReplicaLiveness::hold(&status).unwrap();
-        assert!(
-            replica_is_running(&status),
-            "a restarted replica is running"
-        );
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_full_replica_holds_its_liveness_lock_and_validates_its_topology;
+
+        phase a_replica_is_running_while_it_holds_its_liveness_lock;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let status = temp.path().join("full-replica").join("status.json");
+            assert!(!replica_is_running(&status), "no replica ever ran");
+            let alive = ReplicaLiveness::hold(&status).unwrap();
+            assert!(replica_is_running(&status));
+            assert!(
+                ReplicaLiveness::hold(&status).is_err(),
+                "a second replica must not take over a running one's status"
+            );
+            drop(alive);
+            assert!(!replica_is_running(&status), "the replica exited");
+            let _again = ReplicaLiveness::hold(&status).unwrap();
+            assert!(
+                replica_is_running(&status),
+                "a restarted replica is running"
+            );
+        }
+
+        phase replica_topology_and_relay_ids_are_validated;
+        {
+            {
+                let mut ready = FullReplicaStatus::syncing();
+                ready.state = "ready".into();
+                ready.full_content_replication = true;
+                ready.records = u64::MAX;
+                ready.namespace_generation = Some("generation-a".into());
+                let aggregate = aggregate_status(&[ready.clone(), ready.clone()]);
+                assert!(aggregate.full_content_replication);
+                assert_eq!(aggregate.state, "ready");
+                assert_eq!(aggregate.records, u64::MAX);
+                assert_eq!(aggregate.namespace_generation, None);
+
+                let aggregate = aggregate_status(&[ready.clone()]);
+                assert_eq!(
+                    aggregate.namespace_generation.as_deref(),
+                    Some("generation-a")
+                );
+
+                let aggregate = aggregate_status(&[ready, FullReplicaStatus::syncing()]);
+                assert!(!aggregate.full_content_replication);
+                assert_eq!(aggregate.state, "syncing");
+                assert_eq!(aggregate.namespace_generation, None);
+            }
+            {
+                let workspace = HomePeerBundle {
+                    ticket: "not-decoded-by-topology-validation".into(),
+                    cache_dir: std::path::PathBuf::from("/tmp/files"),
+                    capability_json: "[]".into(),
+                    authority: None,
+                    members: Vec::new(),
+                    relay_workspace_ids: vec![
+                        collab_types::WorkspaceId::from_u128(7),
+                        collab_types::WorkspaceId::from_u128(8),
+                    ],
+                };
+                let one = HomePeerSet {
+                    status_file: std::path::PathBuf::from("/tmp/status"),
+                    workspaces: vec![workspace.clone()],
+                };
+                assert!(validate_home_peer_set(&one).is_ok());
+                let many = HomePeerSet {
+                    status_file: one.status_file,
+                    workspaces: vec![workspace.clone(), workspace],
+                };
+                assert!(validate_home_peer_set(&many).is_err());
+            }
+            {
+                let high = collab_types::WorkspaceId::from_u128((i64::MAX as u128) + 42);
+                let bundle = HomePeerSet {
+                    status_file: std::path::PathBuf::from("/tmp/status"),
+                    workspaces: vec![HomePeerBundle {
+                        ticket: "opaque".into(),
+                        cache_dir: std::path::PathBuf::from("/tmp/cache"),
+                        capability_json: "[]".into(),
+                        authority: None,
+                        members: Vec::new(),
+                        relay_workspace_ids: vec![high],
+                    }],
+                };
+                let text = toml::to_string(&bundle).unwrap();
+                assert!(text.contains(&format!("relay_workspace_ids = [\"{high}\"]")));
+                assert_eq!(
+                    toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].relay_workspace_ids,
+                    vec![high]
+                );
+            }
+        }
     }
     use crate::ContentStore;
     use crate::content::{ChunkRef, Manifest};
@@ -553,73 +607,6 @@ mod tests {
         assert_eq!(status.state, "failed");
         assert!(!status.full_content_replication);
         endpoint.close().await;
-    }
-
-    #[test]
-    fn replica_topology_and_relay_ids_are_validated() {
-        {
-            let mut ready = FullReplicaStatus::syncing();
-            ready.state = "ready".into();
-            ready.full_content_replication = true;
-            ready.records = u64::MAX;
-            ready.namespace_generation = Some("generation-a".into());
-            let aggregate = aggregate_status(&[ready.clone(), ready.clone()]);
-            assert!(aggregate.full_content_replication);
-            assert_eq!(aggregate.state, "ready");
-            assert_eq!(aggregate.records, u64::MAX);
-            assert_eq!(aggregate.namespace_generation, None);
-
-            let aggregate = aggregate_status(&[ready.clone()]);
-            assert_eq!(
-                aggregate.namespace_generation.as_deref(),
-                Some("generation-a")
-            );
-
-            let aggregate = aggregate_status(&[ready, FullReplicaStatus::syncing()]);
-            assert!(!aggregate.full_content_replication);
-            assert_eq!(aggregate.state, "syncing");
-            assert_eq!(aggregate.namespace_generation, None);
-        }
-        {
-            let workspace = HomePeerBundle {
-                ticket: "not-decoded-by-topology-validation".into(),
-                cache_dir: std::path::PathBuf::from("/tmp/files"),
-                capability_json: "[]".into(),
-                authority: None,
-                principals: Vec::new(),
-                relay_workspace_ids: vec![7, 8],
-            };
-            let one = HomePeerSet {
-                status_file: std::path::PathBuf::from("/tmp/status"),
-                workspaces: vec![workspace.clone()],
-            };
-            assert!(validate_home_peer_set(&one).is_ok());
-            let many = HomePeerSet {
-                status_file: one.status_file,
-                workspaces: vec![workspace.clone(), workspace],
-            };
-            assert!(validate_home_peer_set(&many).is_err());
-        }
-        {
-            let high = (i64::MAX as u64) + 42;
-            let bundle = HomePeerSet {
-                status_file: std::path::PathBuf::from("/tmp/status"),
-                workspaces: vec![HomePeerBundle {
-                    ticket: "opaque".into(),
-                    cache_dir: std::path::PathBuf::from("/tmp/cache"),
-                    capability_json: "[]".into(),
-                    authority: None,
-                    principals: Vec::new(),
-                    relay_workspace_ids: vec![high],
-                }],
-            };
-            let text = toml::to_string(&bundle).unwrap();
-            assert!(text.contains(&format!("relay_workspace_ids = [\"{high}\"]")));
-            assert_eq!(
-                toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].relay_workspace_ids,
-                vec![high]
-            );
-        }
     }
 
     #[tokio::test]
@@ -698,14 +685,14 @@ mod tests {
         governor: &ed25519_dalek::SigningKey,
         collaborator: crate::IdentityKey,
     ) {
-        use collab_types::{Access, CapOverride, Effect, Scope, Subject};
+        use collab_types::{Access, CapOverride, Effect, Scope};
         authority
             .apply(
                 crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                     workspace,
                     1,
                     vec![CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                        tilo_action_policy::Grantee::person(hex::encode(collaborator)),
                         Scope::FsPath("/".into()),
                         Effect::Grant,
                         Access::Read,

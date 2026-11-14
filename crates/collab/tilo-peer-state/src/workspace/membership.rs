@@ -281,7 +281,7 @@ pub fn invitation_admits(
     )
     .map_err(refused)?;
     let grant = join.grant().clone();
-    if grant.room != workspace {
+    if grant.workspace_id.to_string() != workspace {
         return Err(refused("it is for another workspace".into()));
     }
     let issuer = hex::encode(grant.issuer.user_public_key);
@@ -293,7 +293,7 @@ pub fn invitation_admits(
         .check_invite(
             &issuer,
             &authority,
-            grant.role.into(),
+            grant.role,
             &Context::at_secs(at_ns / 1_000_000_000),
             false,
         )
@@ -368,7 +368,7 @@ fn redemptions(
             }
             let grant =
                 invitation_admits(held, workspace, &signed, receipt.user_public_key, at_ns)?;
-            let role: Role = grant.role.into();
+            let role: Role = grant.role;
             if grant.role != receipt.role || wanted.role_of(&person) != Some(role) {
                 return Err(MembershipRefusal::Refused(format!(
                     "{person} does not take the role their invitation gives"
@@ -566,7 +566,7 @@ fn sandbox(
                 "sandbox capability {id} ends with a session or a single use"
             )));
         }
-        if capability.granted_by != Some(collab_types::caps::Principal::Person(actor.to_owned())) {
+        if capability.granted_by != Some(tilo_action_policy::MemberId::person(actor.to_owned())) {
             return Err(MembershipRefusal::Refused(format!(
                 "sandbox capability {id} is not recorded as the writer's"
             )));

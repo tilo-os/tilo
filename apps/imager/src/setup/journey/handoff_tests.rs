@@ -12,130 +12,134 @@ fn review_preview() -> InstallerPreview {
     preview
 }
 
-#[test]
-fn normal_flow_has_no_password_or_purpose_stop() {
-    let mut journey = model::Journey::new("Ada".into());
-    journey.destination = Some(Destination::Computer);
-    journey.migrate = Some(false);
-    journey.identity = Some(Identity::New);
-    journey.name = "Ada".into();
-    journey.device_name = "Ada's computer".into();
-    journey.page = Page::Profile;
-    journey.next().unwrap();
-    assert_eq!(journey.page, Page::Devices);
-    assert_eq!(journey.status()["handoff"], "deferred");
-    journey.next().unwrap();
-    assert_eq!(journey.page, Page::Storage);
-    assert!(!journey.history.contains(&Page::Password));
-    assert!(!journey.history.contains(&Page::Purpose));
+tilo_test_env::scenario! {
+    fn a_deferred_handoff_asks_for_no_password_and_starts_no_package;
 
-    let mut migrating = model::Journey::new("Ada".into());
-    migrating.destination = Some(Destination::Computer);
-    migrating.migrate = Some(true);
-    migrating.identity = Some(Identity::New);
-    migrating.name = "Ada".into();
-    migrating.device_name = "Ada's computer".into();
-    migrating.page = Page::Profile;
-    migrating.next().unwrap();
-    assert_eq!(migrating.page, Page::Devices);
-    migrating.next().unwrap();
-    assert_eq!(migrating.page, Page::Belongings);
-}
+    phase normal_flow_has_no_password_or_purpose_stop;
+    {
+        let mut journey = model::Journey::new("Ada".into());
+        journey.destination = Some(Destination::Computer);
+        journey.migrate = Some(false);
+        journey.identity = Some(Identity::New);
+        journey.name = "Ada".into();
+        journey.device_name = "Ada's computer".into();
+        journey.page = Page::Profile;
+        journey.next().unwrap();
+        assert_eq!(journey.page, Page::Devices);
+        assert_eq!(journey.status()["handoff"], "deferred");
+        journey.next().unwrap();
+        assert_eq!(journey.page, Page::Storage);
+        assert!(!journey.history.contains(&Page::Password));
+        assert!(!journey.history.contains(&Page::Purpose));
 
-#[test]
-fn deferred_review_names_the_destination_handoff_and_offers_no_secret_field() {
-    let mut preview = review_preview();
-    let root = preview.composition(&Theme::dark());
-    let control = super::visual_tests::control;
-    assert!(control(root.as_ref(), "installer.password").is_none());
-    assert!(control(root.as_ref(), "installer.review.purpose").is_none());
-    let handoff = control(root.as_ref(), "installer.review.handoff")
-        .expect("deferred review must disclose where the remaining work happens");
-    assert_eq!(
-        handoff.accessibility().unwrap().name.as_deref(),
-        Some(t("installer-preview-deferred-handoff").as_str())
-    );
-    assert!(preview.sensitive_handoff_deferred());
-    preview.journey.password = "an explicit retained preparation password".into();
-    assert!(!preview.sensitive_handoff_deferred());
-}
+        let mut migrating = model::Journey::new("Ada".into());
+        migrating.destination = Some(Destination::Computer);
+        migrating.migrate = Some(true);
+        migrating.identity = Some(Identity::New);
+        migrating.name = "Ada".into();
+        migrating.device_name = "Ada's computer".into();
+        migrating.page = Page::Profile;
+        migrating.next().unwrap();
+        assert_eq!(migrating.page, Page::Devices);
+        migrating.next().unwrap();
+        assert_eq!(migrating.page, Page::Belongings);
+    }
 
-#[test]
-fn deferred_preparation_never_starts_a_ciphertext_package() {
-    let mut preview = InstallerPreview {
-        live: true,
-        ..Default::default()
-    };
-    preview.journey.destination = Some(Destination::Computer);
-    preview.journey.migrate = Some(false);
-    preview.journey.identity = Some(Identity::New);
-    preview.journey.name = "Ada".into();
-    preview.journey.device_name = "Ada's computer".into();
-    preview.journey.page = Page::Belongings;
-    preview.direct.context = None;
-    preview.prepare_belongings().unwrap();
-    assert!(!preview.media_preparation.busy());
-    assert!(!preview.direct.belongings_pending);
-    assert_eq!(preview.journey.status()["handoff"], "deferred");
-}
+    phase deferred_review_names_the_destination_handoff_and_offers_no_secret_field;
+    {
+        let mut preview = review_preview();
+        let root = preview.composition(&Theme::dark());
+        let control = super::visual_tests::control;
+        assert!(control(root.as_ref(), "installer.password").is_none());
+        assert!(control(root.as_ref(), "installer.review.purpose").is_none());
+        let handoff = control(root.as_ref(), "installer.review.handoff")
+            .expect("deferred review must disclose where the remaining work happens");
+        assert_eq!(
+            handoff.accessibility().unwrap().name.as_deref(),
+            Some(t("installer-preview-deferred-handoff").as_str())
+        );
+        assert!(preview.sensitive_handoff_deferred());
+        preview.journey.password = "an explicit retained preparation password".into();
+        assert!(!preview.sensitive_handoff_deferred());
+    }
 
-#[test]
-fn deferred_files_remain_selected_without_a_preparation_password() {
-    let mut preview = InstallerPreview {
-        live: true,
-        ..Default::default()
-    };
-    preview.journey.destination = Some(Destination::Computer);
-    preview.journey.migrate = Some(true);
-    preview.journey.categories = [true, false, false];
-    preview.journey.identity = Some(Identity::New);
-    preview.journey.name = "Ada".into();
-    preview.journey.device_name = "Ada's computer".into();
-    preview.journey.page = Page::Belongings;
-    preview.direct.context = None;
-    preview.prepare_belongings().unwrap();
-    assert!(preview.sensitive_handoff_deferred());
-    assert!(!preview.media_preparation.busy());
-    assert!(!preview.direct.belongings_pending);
-    assert_eq!(preview.journey.status()["handoff"], "deferred");
-    assert!(preview.journey.categories[0], "files stay selected");
-}
+    phase deferred_preparation_never_starts_a_ciphertext_package;
+    {
+        let mut preview = InstallerPreview {
+            live: true,
+            ..Default::default()
+        };
+        preview.journey.destination = Some(Destination::Computer);
+        preview.journey.migrate = Some(false);
+        preview.journey.identity = Some(Identity::New);
+        preview.journey.name = "Ada".into();
+        preview.journey.device_name = "Ada's computer".into();
+        preview.journey.page = Page::Belongings;
+        preview.direct.context = None;
+        preview.prepare_belongings().unwrap();
+        assert!(!preview.media_preparation.busy());
+        assert!(!preview.direct.belongings_pending);
+        assert_eq!(preview.journey.status()["handoff"], "deferred");
+    }
 
-#[test]
-fn deferred_preparation_keeps_application_selection_without_a_package() {
-    let mut preview = InstallerPreview {
-        live: true,
-        ..Default::default()
-    };
-    preview.journey.destination = Some(Destination::Computer);
-    preview.journey.migrate = Some(true);
-    preview.journey.categories = [true, true, false];
-    preview.journey.identity = Some(Identity::New);
-    preview.journey.name = "Ada".into();
-    preview.journey.device_name = "Ada's computer".into();
-    preview.journey.page = Page::Belongings;
-    preview.direct.context = None;
-    preview.prepare_belongings().unwrap();
-    assert!(preview.sensitive_handoff_deferred());
-    assert!(!preview.media_preparation.busy());
-    assert!(preview.journey.categories[1], "applications stay selected");
-    assert_eq!(preview.journey.status()["handoff"], "deferred");
-}
+    phase deferred_files_remain_selected_without_a_preparation_password;
+    {
+        let mut preview = InstallerPreview {
+            live: true,
+            ..Default::default()
+        };
+        preview.journey.destination = Some(Destination::Computer);
+        preview.journey.migrate = Some(true);
+        preview.journey.categories = [true, false, false];
+        preview.journey.identity = Some(Identity::New);
+        preview.journey.name = "Ada".into();
+        preview.journey.device_name = "Ada's computer".into();
+        preview.journey.page = Page::Belongings;
+        preview.direct.context = None;
+        preview.prepare_belongings().unwrap();
+        assert!(preview.sensitive_handoff_deferred());
+        assert!(!preview.media_preparation.busy());
+        assert!(!preview.direct.belongings_pending);
+        assert_eq!(preview.journey.status()["handoff"], "deferred");
+        assert!(preview.journey.categories[0], "files stay selected");
+    }
 
-#[test]
-fn an_explicit_retained_password_keeps_the_legacy_encrypted_route() {
-    let mut preview = InstallerPreview::default();
-    preview.journey.password = "several unrelated installation words".into();
-    preview.journey.confirmation = preview.journey.password.clone();
-    preview.journey.page = Page::Password;
-    assert!(!preview.sensitive_handoff_deferred());
-    assert_eq!(preview.journey.status()["handoff"], "prepared");
-    preview.journey.password = "short".into();
-    preview.journey.confirmation = "short".into();
-    assert_eq!(
-        preview.journey.validation(),
-        Some("installer-preview-password-short")
-    );
+    phase deferred_preparation_keeps_application_selection_without_a_package;
+    {
+        let mut preview = InstallerPreview {
+            live: true,
+            ..Default::default()
+        };
+        preview.journey.destination = Some(Destination::Computer);
+        preview.journey.migrate = Some(true);
+        preview.journey.categories = [true, true, false];
+        preview.journey.identity = Some(Identity::New);
+        preview.journey.name = "Ada".into();
+        preview.journey.device_name = "Ada's computer".into();
+        preview.journey.page = Page::Belongings;
+        preview.direct.context = None;
+        preview.prepare_belongings().unwrap();
+        assert!(preview.sensitive_handoff_deferred());
+        assert!(!preview.media_preparation.busy());
+        assert!(preview.journey.categories[1], "applications stay selected");
+        assert_eq!(preview.journey.status()["handoff"], "deferred");
+    }
+
+    phase an_explicit_retained_password_keeps_the_legacy_encrypted_route;
+    {
+        let mut preview = InstallerPreview::default();
+        preview.journey.password = "several unrelated installation words".into();
+        preview.journey.confirmation = preview.journey.password.clone();
+        preview.journey.page = Page::Password;
+        assert!(!preview.sensitive_handoff_deferred());
+        assert_eq!(preview.journey.status()["handoff"], "prepared");
+        preview.journey.password = "short".into();
+        preview.journey.confirmation = "short".into();
+        assert_eq!(
+            preview.journey.validation(),
+            Some("installer-preview-password-short")
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]

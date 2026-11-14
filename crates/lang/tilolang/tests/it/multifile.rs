@@ -32,284 +32,294 @@ fn split_counter() -> PackageSource {
     files(&[("a.tl", HEAD), ("b.tl", ACTIONS), ("c.tl", VIEWS)])
 }
 
-#[test]
-fn a_package_split_over_files_is_the_same_module_as_one_file() {
-    let whole = tilolang::compile_package_with(
-        &fixture("counter.tl"),
-        &IdsLock::new(),
-        &[],
-        &mut SeededEntropy(7),
-    )
-    .unwrap();
-    let split = compile(&split_counter()).unwrap_or_else(|d| panic!("{d:#?}"));
-    assert_eq!(split.meta, whole.meta);
-    // The code is the same module; the lines beside it name the files each declaration is written in.
-    assert_eq!(
-        tilolang::meta::without_section(&split.wasm, tilolang::meta::LINES_SECTION),
-        tilolang::meta::without_section(&whole.wasm, tilolang::meta::LINES_SECTION)
-    );
-    let split_lines = tilolang::meta::lines_from_wasm(&split.wasm);
-    assert!(
-        split_lines.iter().any(|line| line.file == "b.tl"),
-        "the action is placed in the file it is written in: {split_lines:?}"
-    );
-    assert!(
-        tilolang::meta::lines_from_wasm(&whole.wasm)
-            .iter()
-            .all(|line| line.file == "/"),
-        "one file's declarations are all placed in it"
-    );
-    assert_eq!(split.ids.to_text(), whole.ids.to_text());
-}
+tilo_test_env::scenario! {
+    /// One module from several files, and diagnostics that name their file.
+    fn a_package_of_several_files_is_one_module_with_diagnostics_per_file;
 
-#[test]
-fn the_order_files_are_given_in_does_not_matter() {
-    let given = files(&[("c.tl", VIEWS), ("a.tl", HEAD), ("b.tl", ACTIONS)]);
-    assert_eq!(
-        compile(&given).unwrap().wasm,
-        compile(&split_counter()).unwrap().wasm
-    );
-}
+    phase a_package_split_over_files_is_the_same_module_as_one_file;
+    {
+        let whole = tilolang::compile_package_with(
+            &fixture("counter.tl"),
+            &IdsLock::new(),
+            &[],
+            &mut SeededEntropy(7),
+        )
+        .unwrap();
+        let split = compile(&split_counter()).unwrap_or_else(|d| panic!("{d:#?}"));
+        assert_eq!(split.meta, whole.meta);
+        // The code is the same module; the lines beside it name the files each declaration is written in.
+        assert_eq!(
+            tilolang::meta::without_section(&split.wasm, tilolang::meta::LINES_SECTION),
+            tilolang::meta::without_section(&whole.wasm, tilolang::meta::LINES_SECTION)
+        );
+        let split_lines = tilolang::meta::lines_from_wasm(&split.wasm);
+        assert!(
+            split_lines.iter().any(|line| line.file == "b.tl"),
+            "the action is placed in the file it is written in: {split_lines:?}"
+        );
+        assert!(
+            tilolang::meta::lines_from_wasm(&whole.wasm)
+                .iter()
+                .all(|line| line.file == "/"),
+            "one file's declarations are all placed in it"
+        );
+        assert_eq!(split.ids.to_text(), whole.ids.to_text());
+    }
 
-#[test]
-fn a_file_uses_what_a_later_file_declares() {
-    // The view and action come before the type they use, in file order.
-    let source = files(&[
-        ("a.tl", "app so.tilo.counter \"Counter\"\n"),
-        ("b.tl", VIEWS),
-        ("c.tl", ACTIONS),
-        ("d.tl", "type Counter {\n    value: Int merge counter\n}\n"),
-    ]);
-    let compiled = compile(&source).unwrap_or_else(|d| panic!("{d:#?}"));
-    assert_eq!(compiled.meta.views.len(), 1);
-}
+    phase the_order_files_are_given_in_does_not_matter;
+    {
+        let given = files(&[("c.tl", VIEWS), ("a.tl", HEAD), ("b.tl", ACTIONS)]);
+        assert_eq!(
+            compile(&given).unwrap().wasm,
+            compile(&split_counter()).unwrap().wasm
+        );
+    }
 
-#[test]
-fn a_package_without_the_app_header_names_the_fix() {
-    let diags = compile(&files(&[("a.tl", ACTIONS), ("b.tl", VIEWS)])).unwrap_err();
-    assert_eq!(diags.len(), 1, "{diags:#?}");
-    assert_eq!(diags[0].code, "E010");
-    assert_eq!(diags[0].file.as_deref(), Some("a.tl"));
-    assert!(
-        diags[0].message.contains("app <app id>"),
-        "{}",
-        diags[0].message
-    );
-}
+    phase a_file_uses_what_a_later_file_declares;
+    {
+        // The view and action come before the type they use, in file order.
+        let source = files(&[
+            ("a.tl", "app so.tilo.counter \"Counter\"\n"),
+            ("b.tl", VIEWS),
+            ("c.tl", ACTIONS),
+            ("d.tl", "type Counter {\n    value: Int merge counter\n}\n"),
+        ]);
+        let compiled = compile(&source).unwrap_or_else(|d| panic!("{d:#?}"));
+        assert_eq!(compiled.meta.views.len(), 1);
+    }
 
-#[test]
-fn a_second_app_header_is_an_error_in_its_own_file() {
-    let source = files(&[
-        ("a.tl", HEAD),
-        (
-            "b.tl",
-            "app so.tilo.other \"Other\"\n\n/// Add one.\naction increment(c: Counter) {\n    c.value += 1\n}\n",
-        ),
-    ]);
-    let diags = compile(&source).unwrap_err();
-    assert_eq!(diags.len(), 1, "{diags:#?}");
-    let d = &diags[0];
-    assert_eq!(d.code, "E017");
-    assert_eq!(d.file.as_deref(), Some("b.tl"));
-    assert_eq!((d.line, d.col), (1, 1));
-    assert!(d.message.contains("`a.tl`"), "{}", d.message);
-}
+    phase a_package_without_the_app_header_names_the_fix;
+    {
+        let diags = compile(&files(&[("a.tl", ACTIONS), ("b.tl", VIEWS)])).unwrap_err();
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(diags[0].code, "E010");
+        assert_eq!(diags[0].file.as_deref(), Some("a.tl"));
+        assert!(
+            diags[0].message.contains("app <app id>"),
+            "{}",
+            diags[0].message
+        );
+    }
 
-#[test]
-fn the_app_header_comes_first_in_its_file() {
-    let source = files(&[(
-        "a.tl",
-        &format!("{ACTIONS}\napp so.tilo.counter \"Counter\"\n"),
-    )]);
-    let codes: Vec<String> = compile(&source)
-        .unwrap_err()
-        .into_iter()
-        .map(|d| d.code)
-        .collect();
-    assert!(codes.contains(&"E017".to_string()), "{codes:?}");
-}
+    phase a_second_app_header_is_an_error_in_its_own_file;
+    {
+        let source = files(&[
+            ("a.tl", HEAD),
+            (
+                "b.tl",
+                "app so.tilo.other \"Other\"\n\n/// Add one.\naction increment(c: Counter) {\n    c.value += 1\n}\n",
+            ),
+        ]);
+        let diags = compile(&source).unwrap_err();
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        let d = &diags[0];
+        assert_eq!(d.code, "E017");
+        assert_eq!(d.file.as_deref(), Some("b.tl"));
+        assert_eq!((d.line, d.col), (1, 1));
+        assert!(d.message.contains("`a.tl`"), "{}", d.message);
+    }
 
-#[test]
-fn diagnostics_carry_the_file_and_the_line_within_it() {
-    let broken = "view counter(c: Counter) {\n    stack {\n        text(c.missing)\n    }\n}\n";
-    let source = files(&[("a.tl", HEAD), ("b.tl", ACTIONS), ("c.tl", broken)]);
-    let diags = compile(&source).unwrap_err();
-    let d = diags.first().unwrap();
-    assert_eq!(d.file.as_deref(), Some("c.tl"));
-    assert_eq!(d.line, 3);
-    assert_eq!(broken.get(d.span.start..d.span.end), Some("missing"));
-    assert!(
-        d.render("ignored").starts_with("c.tl:3:"),
-        "{}",
-        d.render("ignored")
-    );
-    assert_eq!(d.to_json()["file"], "c.tl");
-}
-
-#[test]
-fn a_declaration_repeated_in_another_file_is_reported_there() {
-    let again = "type Counter {\n    value: Int\n}\n";
-    let diags = compile(&files(&[("a.tl", HEAD), ("b.tl", again)])).unwrap_err();
-    assert_eq!(diags[0].code, "E011");
-    assert_eq!(diags[0].file.as_deref(), Some("b.tl"));
-    assert_eq!(diags[0].line, 1);
-}
-
-#[test]
-fn syntax_errors_in_several_files_are_all_reported() {
-    let diags = compile(&files(&[
-        ("a.tl", HEAD),
-        ("b.tl", "action (c: Counter) {}\n"),
-        ("c.tl", "view v( {\n}\n"),
-    ]))
-    .unwrap_err();
-    let in_files: Vec<_> = diags.iter().filter_map(|d| d.file.as_deref()).collect();
-    assert!(
-        in_files.contains(&"b.tl") && in_files.contains(&"c.tl"),
-        "{diags:#?}"
-    );
-}
-
-#[test]
-fn the_single_text_api_reports_no_file() {
-    let diags = tilolang::check(
-        "app t.x \"X\"\nfn f() -> Int {\n    return y\n}\n",
-        &IdsLock::new(),
-        &[],
-    );
-    assert!(!diags.is_empty());
-    assert!(diags.iter().all(|d| d.file.is_none()));
-    assert!(
-        tilolang::diagnostics_json(&diags)
-            .find("\"file\"")
-            .is_none()
-    );
-}
-
-#[test]
-fn check_package_agrees_with_compile() {
-    assert!(tilolang::check_package(&split_counter(), &IdsLock::new(), &[]).is_empty());
-}
-
-#[test]
-fn fmt_prints_each_file_on_its_own_and_keeps_the_header_in_its_file() {
-    let messy = files(&[
-        (
+    phase the_app_header_comes_first_in_its_file;
+    {
+        let source = files(&[(
             "a.tl",
-            "app so.tilo.counter   \"Counter\"\ntype Counter { value: Int merge counter }\n",
-        ),
-        (
-            "b.tl",
-            "\n\naction increment(c: Counter) { c.value += 1 }\naction decrement(c: Counter) { c.value -= 1 }\n",
-        ),
-    ]);
-    let out = format_package(&messy).unwrap();
-    let a = &out.files.iter().find(|f| f.0 == "a.tl").unwrap().2;
-    let b = &out.files.iter().find(|f| f.0 == "b.tl").unwrap().2;
-    assert!(
-        a.starts_with("app so.tilo.counter \"Counter\"\n\ntype Counter {\n"),
-        "{a}"
-    );
-    assert!(b.starts_with("action increment(c: Counter) {\n"), "{b}");
-    assert!(b.contains("}\n\naction decrement"), "{b}");
-    assert!(!b.contains("app "), "{b}");
-    let again = format_package(&files(&[("a.tl", a), ("b.tl", b)])).unwrap();
-    for (_, old, new) in &again.files {
-        assert_eq!(old, new);
+            &format!("{ACTIONS}\napp so.tilo.counter \"Counter\"\n"),
+        )]);
+        let codes: Vec<String> = compile(&source)
+            .unwrap_err()
+            .into_iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(codes.contains(&"E017".to_string()), "{codes:?}");
+    }
+
+    phase diagnostics_carry_the_file_and_the_line_within_it;
+    {
+        let broken = "view counter(c: Counter) {\n    stack {\n        text(c.missing)\n    }\n}\n";
+        let source = files(&[("a.tl", HEAD), ("b.tl", ACTIONS), ("c.tl", broken)]);
+        let diags = compile(&source).unwrap_err();
+        let d = diags.first().unwrap();
+        assert_eq!(d.file.as_deref(), Some("c.tl"));
+        assert_eq!(d.line, 3);
+        assert_eq!(broken.get(d.span.start..d.span.end), Some("missing"));
+        assert!(
+            d.render("ignored").starts_with("c.tl:3:"),
+            "{}",
+            d.render("ignored")
+        );
+        assert_eq!(d.to_json()["file"], "c.tl");
+    }
+
+    phase a_declaration_repeated_in_another_file_is_reported_there;
+    {
+        let again = "type Counter {\n    value: Int\n}\n";
+        let diags = compile(&files(&[("a.tl", HEAD), ("b.tl", again)])).unwrap_err();
+        assert_eq!(diags[0].code, "E011");
+        assert_eq!(diags[0].file.as_deref(), Some("b.tl"));
+        assert_eq!(diags[0].line, 1);
+    }
+
+    phase syntax_errors_in_several_files_are_all_reported;
+    {
+        let diags = compile(&files(&[
+            ("a.tl", HEAD),
+            ("b.tl", "action (c: Counter) {}\n"),
+            ("c.tl", "view v( {\n}\n"),
+        ]))
+        .unwrap_err();
+        let in_files: Vec<_> = diags.iter().filter_map(|d| d.file.as_deref()).collect();
+        assert!(
+            in_files.contains(&"b.tl") && in_files.contains(&"c.tl"),
+            "{diags:#?}"
+        );
+    }
+
+    phase the_single_text_api_reports_no_file;
+    {
+        let diags = tilolang::check(
+            "app t.x \"X\"\nfn f() -> Int {\n    return y\n}\n",
+            &IdsLock::new(),
+            &[],
+        );
+        assert!(!diags.is_empty());
+        assert!(diags.iter().all(|d| d.file.is_none()));
+        assert!(
+            tilolang::diagnostics_json(&diags)
+                .find("\"file\"")
+                .is_none()
+        );
+    }
+
+    phase check_package_agrees_with_compile;
+    {
+        assert!(tilolang::check_package(&split_counter(), &IdsLock::new(), &[]).is_empty());
     }
 }
 
-#[test]
-fn fmt_keeps_plain_comments_above_what_they_explain() {
-    let out = format_package(&files(&[
-        (
-            "a.tl",
-            "app so.tilo.counter \"Counter\"\n// the counter, above its declaration\ntype Counter {\n    /// How far it counts.\n    // merged by adding\n    value: Int merge counter\n}\n",
-        ),
-        (
-            "b.tl",
-            "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n",
-        ),
-    ]))
-    .unwrap();
-    let a = &out.files.iter().find(|f| f.0 == "a.tl").unwrap().2;
-    assert_eq!(
-        a,
-        "app so.tilo.counter \"Counter\"\n\n// the counter, above its declaration\ntype Counter {\n    /// How far it counts.\n    // merged by adding\n    value: Int merge counter\n}\n"
-    );
-    let b = &out.files.iter().find(|f| f.0 == "b.tl").unwrap().2;
-    assert_eq!(
-        b,
-        "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\n\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n"
-    );
-    let again = format_package(&files(&[("a.tl", a), ("b.tl", b)])).unwrap();
-    for (_, old, new) in &again.files {
-        assert_eq!(old, new);
+tilo_test_env::scenario! {
+    /// `fmt` over a package's files.
+    fn fmt_prints_each_file_and_keeps_its_comments;
+
+    phase fmt_prints_each_file_on_its_own_and_keeps_the_header_in_its_file;
+    {
+        let messy = files(&[
+            (
+                "a.tl",
+                "app so.tilo.counter   \"Counter\"\ntype Counter { value: Int merge counter }\n",
+            ),
+            (
+                "b.tl",
+                "\n\naction increment(c: Counter) { c.value += 1 }\naction decrement(c: Counter) { c.value -= 1 }\n",
+            ),
+        ]);
+        let out = format_package(&messy).unwrap();
+        let a = &out.files.iter().find(|f| f.0 == "a.tl").unwrap().2;
+        let b = &out.files.iter().find(|f| f.0 == "b.tl").unwrap().2;
+        assert!(
+            a.starts_with("app so.tilo.counter \"Counter\"\n\ntype Counter {\n"),
+            "{a}"
+        );
+        assert!(b.starts_with("action increment(c: Counter) {\n"), "{b}");
+        assert!(b.contains("}\n\naction decrement"), "{b}");
+        assert!(!b.contains("app "), "{b}");
+        let again = format_package(&files(&[("a.tl", a), ("b.tl", b)])).unwrap();
+        for (_, old, new) in &again.files {
+            assert_eq!(old, new);
+        }
     }
-}
 
-#[test]
-fn fmt_keeps_a_comment_above_the_require_it_explains() {
-    let out = format_package(&files(&[(
-        "a.tl",
-        "app so.tilo.counter \"Counter\"\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n",
-    )]))
-    .unwrap();
-    let a = &out.files[0].2;
-    assert_eq!(
-        a,
-        "app so.tilo.counter \"Counter\"\n\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n"
-    );
-    let again = format_package(&files(&[("a.tl", a)])).unwrap();
-    assert_eq!(&again.files[0].2, a);
-}
+    phase fmt_keeps_plain_comments_above_what_they_explain;
+    {
+        let out = format_package(&files(&[
+            (
+                "a.tl",
+                "app so.tilo.counter \"Counter\"\n// the counter, above its declaration\ntype Counter {\n    /// How far it counts.\n    // merged by adding\n    value: Int merge counter\n}\n",
+            ),
+            (
+                "b.tl",
+                "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n",
+            ),
+        ]))
+        .unwrap();
+        let a = &out.files.iter().find(|f| f.0 == "a.tl").unwrap().2;
+        assert_eq!(
+            a,
+            "app so.tilo.counter \"Counter\"\n\n// the counter, above its declaration\ntype Counter {\n    /// How far it counts.\n    // merged by adding\n    value: Int merge counter\n}\n"
+        );
+        let b = &out.files.iter().find(|f| f.0 == "b.tl").unwrap().2;
+        assert_eq!(
+            b,
+            "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\n\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n"
+        );
+        let again = format_package(&files(&[("a.tl", a), ("b.tl", b)])).unwrap();
+        for (_, old, new) in &again.files {
+            assert_eq!(old, new);
+        }
+    }
 
-#[test]
-fn fmt_keeps_a_paragraph_break_in_a_doc_comment() {
-    let out = format_package(&files(&[(
-        "a.tl",
-        "app so.tilo.counter \"Counter\"\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n",
-    )]))
-    .unwrap();
-    let a = &out.files[0].2;
-    assert_eq!(
-        a,
-        "app so.tilo.counter \"Counter\"\n\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n///\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n"
-    );
-    let again = format_package(&files(&[("a.tl", a)])).unwrap();
-    assert_eq!(&again.files[0].2, a);
-}
+    phase fmt_keeps_a_comment_above_the_require_it_explains;
+    {
+        let out = format_package(&files(&[(
+            "a.tl",
+            "app so.tilo.counter \"Counter\"\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n",
+        )]))
+        .unwrap();
+        let a = &out.files[0].2;
+        assert_eq!(
+            a,
+            "app so.tilo.counter \"Counter\"\n\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n"
+        );
+        let again = format_package(&files(&[("a.tl", a)])).unwrap();
+        assert_eq!(&again.files[0].2, a);
+    }
 
-#[test]
-fn fmt_places_comments_inside_expression_blocks_above_their_statement() {
-    let out = format_package(&files(&[(
-        "a.tl",
-        "app so.tilo.counter \"Counter\"\nfn label(c: Counter) -> Text {\n    let shown = if c.value > 0 {\n        // it counts, so say how far\n        text(\"{c.value}\")\n        // and nothing else\n    } else {\n        text(\"none\")\n    }\n    // a short block stays on one line unless it holds a comment\n    let kept = { 1 }\n    return shown\n}\n",
-    )]))
-    .unwrap();
-    let a = &out.files[0].2;
-    assert_eq!(
-        a,
-        "app so.tilo.counter \"Counter\"\n\nfn label(c: Counter) -> Text {\n    let shown = if c.value > 0 {\n        // it counts, so say how far\n        text(\"{c.value}\")\n        // and nothing else\n    } else { text(\"none\") }\n    // a short block stays on one line unless it holds a comment\n    let kept = { 1 }\n    return shown\n}\n"
-    );
-    let again = format_package(&files(&[("a.tl", a)])).unwrap();
-    assert_eq!(&again.files[0].2, a);
-}
+    phase fmt_keeps_a_paragraph_break_in_a_doc_comment;
+    {
+        let out = format_package(&files(&[(
+            "a.tl",
+            "app so.tilo.counter \"Counter\"\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n",
+        )]))
+        .unwrap();
+        let a = &out.files[0].2;
+        assert_eq!(
+            a,
+            "app so.tilo.counter \"Counter\"\n\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n///\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n"
+        );
+        let again = format_package(&files(&[("a.tl", a)])).unwrap();
+        assert_eq!(&again.files[0].2, a);
+    }
 
-#[test]
-fn fmt_places_comments_inside_a_plain_match_above_its_arm() {
-    let out = format_package(&files(&[(
-        "a.tl",
-        "app so.tilo.counter \"Counter\"\nfn label(c: Counter) -> Text {\n    let maybe = .some(c.value)\n    return match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        // and none below\n        .none => {\n            // nothing to say\n            text(\"none\")\n        },\n        // after the last arm\n    }\n}\n",
-    )]))
-    .unwrap();
-    let a = &out.files[0].2;
-    assert_eq!(
-        a,
-        "app so.tilo.counter \"Counter\"\n\nfn label(c: Counter) -> Text {\n    let maybe = .some(c.value)\n    return match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        // and none below\n        .none => {\n            // nothing to say\n            text(\"none\")\n        }\n        // after the last arm\n    }\n}\n"
-    );
-    let again = format_package(&files(&[("a.tl", a)])).unwrap();
-    assert_eq!(&again.files[0].2, a);
+    phase fmt_places_comments_inside_expression_blocks_above_their_statement;
+    {
+        let out = format_package(&files(&[(
+            "a.tl",
+            "app so.tilo.counter \"Counter\"\nfn label(c: Counter) -> Text {\n    let shown = if c.value > 0 {\n        // it counts, so say how far\n        text(\"{c.value}\")\n        // and nothing else\n    } else {\n        text(\"none\")\n    }\n    // a short block stays on one line unless it holds a comment\n    let kept = { 1 }\n    return shown\n}\n",
+        )]))
+        .unwrap();
+        let a = &out.files[0].2;
+        assert_eq!(
+            a,
+            "app so.tilo.counter \"Counter\"\n\nfn label(c: Counter) -> Text {\n    let shown = if c.value > 0 {\n        // it counts, so say how far\n        text(\"{c.value}\")\n        // and nothing else\n    } else { text(\"none\") }\n    // a short block stays on one line unless it holds a comment\n    let kept = { 1 }\n    return shown\n}\n"
+        );
+        let again = format_package(&files(&[("a.tl", a)])).unwrap();
+        assert_eq!(&again.files[0].2, a);
+    }
+
+    phase fmt_places_comments_inside_a_plain_match_above_its_arm;
+    {
+        let out = format_package(&files(&[(
+            "a.tl",
+            "app so.tilo.counter \"Counter\"\nfn label(c: Counter) -> Text {\n    let maybe = .some(c.value)\n    return match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        // and none below\n        .none => {\n            // nothing to say\n            text(\"none\")\n        },\n        // after the last arm\n    }\n}\n",
+        )]))
+        .unwrap();
+        let a = &out.files[0].2;
+        assert_eq!(
+            a,
+            "app so.tilo.counter \"Counter\"\n\nfn label(c: Counter) -> Text {\n    let maybe = .some(c.value)\n    return match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        // and none below\n        .none => {\n            // nothing to say\n            text(\"none\")\n        }\n        // after the last arm\n    }\n}\n"
+        );
+        let again = format_package(&files(&[("a.tl", a)])).unwrap();
+        assert_eq!(&again.files[0].2, a);
+    }
 }
 
 #[test]
@@ -432,178 +442,240 @@ impl Drop for Scratch {
     }
 }
 
-#[test]
-fn imports_are_found_among_sibling_packages_and_compiled_first() {
-    let today = apps_tl().join("today");
-    let order = dependency_order(&today, &[]).unwrap();
-    let names: Vec<String> = order
-        .iter()
-        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(names.last().map(String::as_str), Some("today"));
-    // `discussion` is not today's own import: tasks and notes use it, so it comes first.
-    for dep in ["notes", "tasks", "chat", "discussion"] {
-        assert!(names.contains(&dep.to_string()), "{names:?}");
+tilo_test_env::scenario! {
+    /// The directory tools: imports among sibling packages, by path and by an earlier id, build errors and the stamp.
+    fn packages_in_directories_import_their_siblings_and_build;
+
+    phase imports_are_found_among_sibling_packages_and_compiled_first;
+    {
+        let today = apps_tl().join("today");
+        let order = dependency_order(&today, &[]).unwrap();
+        let names: Vec<String> = order
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.last().map(String::as_str), Some("today"));
+        // `discussion` is not today's own import: tasks and notes use it, so it comes first.
+        for dep in ["notes", "tasks", "chat", "discussion"] {
+            assert!(names.contains(&dep.to_string()), "{names:?}");
+        }
+        assert_eq!(names.len(), 5, "only what today imports: {names:?}");
+        let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            built.last().unwrap().compiled.meta.app,
+            "so.tilo.lang.today"
+        );
     }
-    assert_eq!(names.len(), 5, "only what today imports: {names:?}");
-    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(
-        built.last().unwrap().compiled.meta.app,
-        "so.tilo.lang.today"
-    );
-}
 
-// Every example package building from its directory is `tilolang-cli`'s test rather than this one: a
-// package may `use` a native app (the shell calls the session's actions), and the native app's described
-// package, which only the catalogue reads, is what compiling it needs.
+    // Every example package building from its directory is `tilolang-cli`'s test rather than this one: a
+    // package may `use` a native app (the shell calls the session's actions), and the native app's described
+    // package, which only the catalogue reads, is what compiling it needs.
 
-#[test]
-fn a_missing_import_names_the_app_and_where_it_looked() {
-    let scratch = Scratch::new("missing");
-    let dir = scratch.package("a", &[("app.tl", "app t.a \"A\"\n\nuse t.nowhere as n\n")]);
-    let error = dependency_order(&dir, &[]).unwrap_err();
-    assert!(
-        error.contains("`use t.nowhere`") && error.contains("--path"),
-        "{error}"
-    );
-}
+    phase a_missing_import_names_the_app_and_where_it_looked;
+    {
+        let scratch = Scratch::new("missing");
+        let dir = scratch.package("a", &[("app.tl", "app t.a \"A\"\n\nuse t.nowhere as n\n")]);
+        let error = dependency_order(&dir, &[]).unwrap_err();
+        assert!(
+            error.contains("`use t.nowhere`") && error.contains("--path"),
+            "{error}"
+        );
+    }
 
-#[test]
-fn the_agent_library_is_provided_like_the_host() {
-    let scratch = Scratch::new("agent");
-    let dir = scratch.package(
-        "a",
-        &[(
-            "app.tl",
-            "app t.a \"A\"\n\nuse tilo.agent as agent\n\ntype Tag {\n    title: Text\n}\n\naction who() -> Principal {\n    return agent.me\n}\n\naction what() -> Text {\n    return agent.describe(Tag)\n}\n",
-        )],
-    );
-    let order = dependency_order(&dir, &[]).unwrap();
-    assert_eq!(order, vec![dir]);
-    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(built[0].compiled.meta.uses, ["tilo.agent", "tilo.std"]);
-}
+    phase the_agent_library_is_provided_like_the_host;
+    {
+        let scratch = Scratch::new("agent");
+        let dir = scratch.package(
+            "a",
+            &[(
+                "app.tl",
+                "app t.a \"A\"\n\nuse tilo.agent as agent\n\ntype Tag {\n    title: Text\n}\n\naction who() -> Principal {\n    return agent.me\n}\n\naction what() -> Text {\n    return agent.describe(Tag)\n}\n",
+            )],
+        );
+        let order = dependency_order(&dir, &[]).unwrap();
+        assert_eq!(order, vec![dir]);
+        let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(built[0].compiled.meta.uses, ["tilo.agent", "tilo.std"]);
+    }
 
-#[test]
-fn a_path_names_a_package_outside_the_siblings() {
-    let scratch = Scratch::new("path");
-    let lib = scratch.package(
-        "elsewhere/lib",
-        &[(
-            "types.tl",
-            "app t.lib \"Lib\"\n\ntype Item {\n    title: Text\n}\n",
-        )],
-    );
-    let dir = scratch.package(
-        "apps/main",
-        &[
-            ("main.tl", "app t.main \"Main\"\n\nuse t.lib as lib\n"),
-            (
-                "views.tl",
-                "view item(i: lib.Item) {\n    text(i.title)\n}\n",
-            ),
-        ],
-    );
-    assert!(dependency_order(&dir, &[]).is_err(), "not a sibling");
-    let order = dependency_order(&dir, std::slice::from_ref(&lib)).unwrap();
-    assert_eq!(order, vec![lib, dir]);
-    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(built[1].compiled.meta.views[0].name, "item");
-}
+    phase a_path_names_a_package_outside_the_siblings;
+    {
+        let scratch = Scratch::new("path");
+        let lib = scratch.package(
+            "elsewhere/lib",
+            &[(
+                "types.tl",
+                "app t.lib \"Lib\"\n\ntype Item {\n    title: Text\n}\n",
+            )],
+        );
+        let dir = scratch.package(
+            "apps/main",
+            &[
+                ("main.tl", "app t.main \"Main\"\n\nuse t.lib as lib\n"),
+                (
+                    "views.tl",
+                    "view item(i: lib.Item) {\n    text(i.title)\n}\n",
+                ),
+            ],
+        );
+        assert!(dependency_order(&dir, &[]).is_err(), "not a sibling");
+        let order = dependency_order(&dir, std::slice::from_ref(&lib)).unwrap();
+        assert_eq!(order, vec![lib, dir]);
+        let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(built[1].compiled.meta.views[0].name, "item");
+    }
 
-#[test]
-fn a_use_of_an_earlier_id_imports_the_renamed_package() {
-    let scratch = Scratch::new("renamed");
-    let tasks = scratch.package(
-        "tasks",
-        &[(
-            "app.tl",
-            "app t.tasks \"Tasks\" (previously: t.todo)\n\ntype Item {\n    title: Text\n}\n",
-        )],
-    );
-    let source = "app t.main \"Main\"\n\nuse t.todo as todo\n\nview item(i: todo.Item) {\n    text(i.title)\n}\n";
-    let dir = scratch.package("main", &[("app.tl", source)]);
-    let order = dependency_order(&dir, &[]).unwrap();
-    assert_eq!(order, vec![tasks, dir.clone()]);
-    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    let main = &built[1].compiled.meta;
-    assert_eq!(
-        main.uses,
-        ["t.tasks", "tilo.std"],
-        "imported under the id it has now, and the library every module compiles with"
-    );
-    assert_eq!(main.views[0].name, "item");
-    assert_eq!(std::fs::read_to_string(dir.join("app.tl")).unwrap(), source);
-}
+    phase a_use_of_an_earlier_id_imports_the_renamed_package;
+    {
+        let scratch = Scratch::new("renamed");
+        let tasks = scratch.package(
+            "tasks",
+            &[(
+                "app.tl",
+                "app t.tasks \"Tasks\" (previously: t.todo)\n\ntype Item {\n    title: Text\n}\n",
+            )],
+        );
+        let source = "app t.main \"Main\"\n\nuse t.todo as todo\n\nview item(i: todo.Item) {\n    text(i.title)\n}\n";
+        let dir = scratch.package("main", &[("app.tl", source)]);
+        let order = dependency_order(&dir, &[]).unwrap();
+        assert_eq!(order, vec![tasks, dir.clone()]);
+        let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+        let main = &built[1].compiled.meta;
+        assert_eq!(
+            main.uses,
+            ["t.tasks", "tilo.std"],
+            "imported under the id it has now, and the library every module compiles with"
+        );
+        assert_eq!(main.views[0].name, "item");
+        assert_eq!(std::fs::read_to_string(dir.join("app.tl")).unwrap(), source);
+    }
 
-#[test]
-fn an_id_a_package_still_has_is_its_own_not_a_renamed_ones() {
-    let scratch = Scratch::new("still-there");
-    scratch.package(
-        "tasks",
-        &[(
-            "app.tl",
-            "app t.tasks \"Tasks\" (previously: t.todo)\n\ntype Item {\n    title: Text\n}\n",
-        )],
-    );
-    let todo = scratch.package(
-        "todo",
-        &[(
-            "app.tl",
-            "app t.todo \"Todo\"\n\ntype Item {\n    title: Text\n}\n",
-        )],
-    );
-    let dir = scratch.package(
-        "main",
-        &[("app.tl", "app t.main \"Main\"\n\nuse t.todo as todo\n")],
-    );
-    let order = dependency_order(&dir, &[]).unwrap();
-    assert_eq!(order, vec![todo, dir]);
-    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(built[1].compiled.meta.uses, ["t.todo", "tilo.std"]);
-}
+    phase an_id_a_package_still_has_is_its_own_not_a_renamed_ones;
+    {
+        let scratch = Scratch::new("still-there");
+        scratch.package(
+            "tasks",
+            &[(
+                "app.tl",
+                "app t.tasks \"Tasks\" (previously: t.todo)\n\ntype Item {\n    title: Text\n}\n",
+            )],
+        );
+        let todo = scratch.package(
+            "todo",
+            &[(
+                "app.tl",
+                "app t.todo \"Todo\"\n\ntype Item {\n    title: Text\n}\n",
+            )],
+        );
+        let dir = scratch.package(
+            "main",
+            &[("app.tl", "app t.main \"Main\"\n\nuse t.todo as todo\n")],
+        );
+        let order = dependency_order(&dir, &[]).unwrap();
+        assert_eq!(order, vec![todo, dir]);
+        let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(built[1].compiled.meta.uses, ["t.todo", "tilo.std"]);
+    }
 
-#[test]
-fn import_cycles_are_refused() {
-    let scratch = Scratch::new("cycle");
-    let a = scratch.package("a", &[("app.tl", "app t.a \"A\"\n\nuse t.b as b\n")]);
-    scratch.package("b", &[("app.tl", "app t.b \"B\"\n\nuse t.a as a\n")]);
-    let error = dependency_order(&a, &[]).unwrap_err();
-    assert!(error.contains("cycle"), "{error}");
-}
+    phase import_cycles_are_refused;
+    {
+        let scratch = Scratch::new("cycle");
+        let a = scratch.package("a", &[("app.tl", "app t.a \"A\"\n\nuse t.b as b\n")]);
+        scratch.package("b", &[("app.tl", "app t.b \"B\"\n\nuse t.a as a\n")]);
+        let error = dependency_order(&a, &[]).unwrap_err();
+        assert!(error.contains("cycle"), "{error}");
+    }
 
-#[test]
-fn a_build_error_in_a_directory_names_the_file() {
-    let scratch = Scratch::new("err");
-    let dir = scratch.package(
-        "p",
-        &[
-            ("a.tl", "app t.p \"P\"\n"),
-            ("b.tl", "fn f() -> Int {\n    return nope\n}\n"),
-        ],
-    );
-    let error = compile_dirs(std::slice::from_ref(&dir), &[], &mut SeededEntropy(1)).unwrap_err();
-    let BuildError::Diagnostics { diags, .. } = &error else {
-        panic!("{error}");
-    };
-    let expected = dir.join("b.tl").display().to_string();
-    assert_eq!(diags[0].file.as_deref(), Some(expected.as_str()));
-    assert!(
-        error.to_string().starts_with(&format!("{expected}:2:")),
-        "{error}"
-    );
-}
+    phase a_build_error_in_a_directory_names_the_file;
+    {
+        let scratch = Scratch::new("err");
+        let dir = scratch.package(
+            "p",
+            &[
+                ("a.tl", "app t.p \"P\"\n"),
+                ("b.tl", "fn f() -> Int {\n    return nope\n}\n"),
+            ],
+        );
+        let error = compile_dirs(std::slice::from_ref(&dir), &[], &mut SeededEntropy(1)).unwrap_err();
+        let BuildError::Diagnostics { diags, .. } = &error else {
+            panic!("{error}");
+        };
+        let expected = dir.join("b.tl").display().to_string();
+        assert_eq!(diags[0].file.as_deref(), Some(expected.as_str()));
+        assert!(
+            error.to_string().starts_with(&format!("{expected}:2:")),
+            "{error}"
+        );
+    }
 
-#[test]
-fn the_stamp_changes_with_a_source_file_and_not_with_the_ids_lock() {
-    let scratch = Scratch::new("stamp");
-    let dir = scratch.package("p", &[("a.tl", "app t.p \"P\"\n")]);
-    let dirs = vec![dir.clone()];
-    let before = Stamp::of(&dirs);
-    std::fs::write(dir.join("app.ids"), "x = abcdefgh\n").unwrap();
-    assert_eq!(Stamp::of(&dirs), before);
-    std::fs::write(dir.join("b.tl"), "fn f() -> Int {\n    return 1\n}\n").unwrap();
-    assert_ne!(Stamp::of(&dirs), before);
+    phase the_stamp_changes_with_a_source_file_and_not_with_the_ids_lock;
+    {
+        let scratch = Scratch::new("stamp");
+        let dir = scratch.package("p", &[("a.tl", "app t.p \"P\"\n")]);
+        let dirs = vec![dir.clone()];
+        let before = Stamp::of(&dirs);
+        std::fs::write(dir.join("app.ids"), "x = abcdefgh\n").unwrap();
+        assert_eq!(Stamp::of(&dirs), before);
+        std::fs::write(dir.join("b.tl"), "fn f() -> Int {\n    return 1\n}\n").unwrap();
+        assert_ne!(Stamp::of(&dirs), before);
+    }
+
+    phase a_library_package_declares_types_fns_and_a_resource_of_its_own;
+    // A library package's declarations are as much a package's as any other's: a type, an enum, an action, a
+    // function and a resource type, all of them under the library's app id, and a package that uses it
+    // reaches them as `marks.*`.
+    {
+        let scratch = Scratch::new("library");
+        let library = scratch.package("marks", &[("app.tl", LIBRARY_PACKAGE)]);
+        let notes = scratch.package("notes", &[("app.tl", LIBRARY_USER)]);
+        let order = dependency_order(&notes, &[]).unwrap();
+        assert_eq!(order, vec![library, notes]);
+        let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+        let (lib, user) = (&built[0].compiled, &built[1].compiled);
+
+        assert_eq!(lib.meta.app, "test.marks");
+        assert_eq!(
+            names(lib.meta.types.iter().map(|t| t.name.as_str())),
+            ["Mark", "Marks"]
+        );
+        assert_eq!(
+            names(lib.meta.enums.iter().map(|e| e.name.as_str())),
+            ["Importance"]
+        );
+        assert_eq!(
+            names(lib.meta.actions.iter().map(|a| a.name.as_str())),
+            ["add"]
+        );
+        assert_eq!(
+            names(lib.meta.fns.iter().map(|f| f.name.as_str())),
+            ["count"]
+        );
+        assert_eq!(lib.meta.roots.len(), 1, "a resource of the library's own");
+        for name in ["Mark", "Marks", "Importance", "add", "count"] {
+            assert!(lib.ids.get(name).is_some(), "`{name}` is locked");
+        }
+        assert!(lib.ids.get("Mark.title").is_some());
+        assert!(lib.ids.get("Importance.high").is_some());
+
+        assert_eq!(user.meta.app, "test.notes");
+        assert_eq!(user.meta.uses, ["test.marks", "tilo.std"]);
+        assert_eq!(
+            names(user.meta.actions.iter().map(|a| a.name.as_str())),
+            ["add_high"],
+            "the library's action is not copied"
+        );
+        assert!(
+            user.meta.enums.is_empty(),
+            "the library's enum is not copied"
+        );
+        for name in ["Mark", "Importance", "add", "count"] {
+            assert!(user.ids.get(name).is_none(), "`{name}` stays the library's");
+        }
+        assert_eq!(
+            names(user.meta.offered_views().map(|v| v.name.as_str())),
+            ["main"]
+        );
+    }
 }
 
 /// A library: a record type of its own, an enum, a function over its resource type, the action that writes
@@ -692,61 +764,4 @@ view main(n: Notebook) {
 
 fn names<'a>(items: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
     items.collect()
-}
-
-/// A library package's declarations are as much a package's as any other's: a type, an enum, an action, a
-/// function and a resource type, all of them under the library's app id, and a package that uses it
-/// reaches them as `marks.*`.
-#[test]
-fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
-    let scratch = Scratch::new("library");
-    let library = scratch.package("marks", &[("app.tl", LIBRARY_PACKAGE)]);
-    let notes = scratch.package("notes", &[("app.tl", LIBRARY_USER)]);
-    let order = dependency_order(&notes, &[]).unwrap();
-    assert_eq!(order, vec![library, notes]);
-    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    let (lib, user) = (&built[0].compiled, &built[1].compiled);
-
-    assert_eq!(lib.meta.app, "test.marks");
-    assert_eq!(
-        names(lib.meta.types.iter().map(|t| t.name.as_str())),
-        ["Mark", "Marks"]
-    );
-    assert_eq!(
-        names(lib.meta.enums.iter().map(|e| e.name.as_str())),
-        ["Importance"]
-    );
-    assert_eq!(
-        names(lib.meta.actions.iter().map(|a| a.name.as_str())),
-        ["add"]
-    );
-    assert_eq!(
-        names(lib.meta.fns.iter().map(|f| f.name.as_str())),
-        ["count"]
-    );
-    assert_eq!(lib.meta.roots.len(), 1, "a resource of the library's own");
-    for name in ["Mark", "Marks", "Importance", "add", "count"] {
-        assert!(lib.ids.get(name).is_some(), "`{name}` is locked");
-    }
-    assert!(lib.ids.get("Mark.title").is_some());
-    assert!(lib.ids.get("Importance.high").is_some());
-
-    assert_eq!(user.meta.app, "test.notes");
-    assert_eq!(user.meta.uses, ["test.marks", "tilo.std"]);
-    assert_eq!(
-        names(user.meta.actions.iter().map(|a| a.name.as_str())),
-        ["add_high"],
-        "the library's action is not copied"
-    );
-    assert!(
-        user.meta.enums.is_empty(),
-        "the library's enum is not copied"
-    );
-    for name in ["Mark", "Importance", "add", "count"] {
-        assert!(user.ids.get(name).is_none(), "`{name}` stays the library's");
-    }
-    assert_eq!(
-        names(user.meta.offered_views().map(|v| v.name.as_str())),
-        ["main"]
-    );
 }

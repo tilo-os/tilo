@@ -537,32 +537,6 @@ fn confirmed_account_change_clears_old_draft_and_invalidates_pending_send() {
 }
 
 #[test]
-fn sending_text_is_secret_and_history_is_device_bound_read_only() {
-    use ui::framework::Effect;
-    let specs = MessagesEffect::specs();
-    let send = specs
-        .iter()
-        .find(|spec| spec.id == MessagesEffect::SEND.id)
-        .expect("send contract");
-    assert!(
-        send.params()
-            .iter()
-            .any(|param| param.name == "text" && param.ty == ui::tilo_actions::ParamType::Secret)
-    );
-    let history = MessagesEffect::declarations()
-        .into_iter()
-        .find(|decl| decl.id == MessagesEffect::READ_HISTORY.id)
-        .expect("history contract");
-    let private = MessagesEffect::Send {
-        choice: choice(),
-        operation: "fixture".into(),
-        text: PRIVATE.into(),
-    };
-    assert!(!format!("{private:?}").contains(PRIVATE));
-    assert_eq!(history.action_kind, ui::tilo_actions::ActionKind::Read);
-}
-
-#[test]
 fn capture_only_history_is_readable_in_narrow_wide_and_os_themes() {
     for (width, theme) in [
         (420, ui::theme::Theme::dark()),
@@ -687,34 +661,6 @@ fn another_personas_host_capability_is_unavailable_before_any_read() {
     assert!(!has_text(&mut app, PRIVATE));
 }
 
-/// The transport's five answers land on the shared vocabulary — the same words, glyphs and
-/// tones Chat shows — rather than on five labels of this app's own.
-#[test]
-fn every_transport_state_speaks_the_shared_delivery_vocabulary() {
-    use tilo_messaging::Delivery;
-    assert_eq!(
-        crate::history::delivery_key(Delivery::Submitted),
-        "conversation-delivery-submitted"
-    );
-    assert_eq!(
-        crate::history::delivery_key(Delivery::ServerAcknowledged),
-        "conversation-delivery-sent"
-    );
-    assert_eq!(
-        crate::history::delivery_key(Delivery::RecipientDelivered),
-        "conversation-delivery-delivered"
-    );
-    assert_eq!(
-        crate::history::delivery_key(Delivery::RecipientRead),
-        "conversation-delivery-read"
-    );
-    // "We cannot say" is a state somebody can read, not silence.
-    assert_eq!(
-        crate::history::delivery_key(Delivery::Uncertain),
-        "conversation-delivery-uncertain"
-    );
-}
-
 /// A host with two pages of one conversation: the newest page, and the page before the
 /// oldest message it carries.
 #[derive(Clone)]
@@ -811,47 +757,105 @@ fn the_page_before_is_asked_for_by_the_oldest_message_shown() {
     );
 }
 
-/// The conversation with a person reads from Chat's messages as the record door answers
-/// them: only theirs with this person, in each part's order, the person's as incoming.
-#[test]
-fn a_direct_conversation_reads_from_chats_messages() {
-    let (me, peer) = ("aa", "bb");
-    let channel = "direct:person:aa|person:bb";
-    let route = routing::Route {
-        person: Id::from_raw("bb"),
-        association: Id::from_raw("tilo"),
-        sender: Id::from_raw("me"),
-        service: "tilo".into(),
-        scope: String::new(),
-        recipient: peer.into(),
-        revision: String::new(),
-    };
-    let readings = serde_json::json!({"revision": "r", "records": [
-        {"record": "part.0", "value": {"messages": {
-            "m2": {"k": "b", "v": {"channel": channel, "author": me, "text": "fine", "ts": 2}},
-            "m1": {"k": "a", "v": {"channel": channel, "author": peer, "text": "hi", "ts": 1}},
-            "x": {"k": "a", "v": {"channel": "general", "author": peer, "text": "elsewhere", "ts": 1}},
-        }}},
-        {"record": "part.1", "arriving": true},
-    ]});
-    let page = crate::history::direct_page(route, (me, peer), &readings);
-    let read: Vec<_> = page
-        .messages
-        .iter()
-        .map(|message| {
-            (
-                message.id.as_str(),
-                message.text.to_string(),
-                message.direction,
-                message.timestamp_ms,
-            )
-        })
-        .collect();
-    assert_eq!(
-        read,
-        [
-            ("m1", "hi".to_owned(), Direction::Incoming, 1000),
-            ("m2", "fine".to_owned(), Direction::Outgoing, 2000),
-        ]
-    );
+tilo_test_env::scenario! {
+    fn history_contracts_vocabulary_and_direct_pages_need_no_window;
+
+    phase sending_text_is_secret_and_history_is_device_bound_read_only;
+    {
+        use ui::framework::Effect;
+        let specs = MessagesEffect::specs();
+        let send = specs
+            .iter()
+            .find(|spec| spec.id == MessagesEffect::SEND.id)
+            .expect("send contract");
+        assert!(
+            send.params()
+                .iter()
+                .any(|param| param.name == "text" && param.ty == ui::tilo_actions::ParamType::Secret)
+        );
+        let history = MessagesEffect::declarations()
+            .into_iter()
+            .find(|decl| decl.id == MessagesEffect::READ_HISTORY.id)
+            .expect("history contract");
+        let private = MessagesEffect::Send {
+            choice: choice(),
+            operation: "fixture".into(),
+            text: PRIVATE.into(),
+        };
+        assert!(!format!("{private:?}").contains(PRIVATE));
+        assert_eq!(history.action_kind, ui::tilo_actions::ActionKind::Read);
+    }
+
+    phase every_transport_state_speaks_the_shared_delivery_vocabulary;
+    // The transport's five answers land on the shared vocabulary — the same words, glyphs and
+    // tones Chat shows — rather than on five labels of this app's own.
+    {
+        use tilo_messaging::Delivery;
+        assert_eq!(
+            crate::history::delivery_key(Delivery::Submitted),
+            "conversation-delivery-submitted"
+        );
+        assert_eq!(
+            crate::history::delivery_key(Delivery::ServerAcknowledged),
+            "conversation-delivery-sent"
+        );
+        assert_eq!(
+            crate::history::delivery_key(Delivery::RecipientDelivered),
+            "conversation-delivery-delivered"
+        );
+        assert_eq!(
+            crate::history::delivery_key(Delivery::RecipientRead),
+            "conversation-delivery-read"
+        );
+        // "We cannot say" is a state somebody can read, not silence.
+        assert_eq!(
+            crate::history::delivery_key(Delivery::Uncertain),
+            "conversation-delivery-uncertain"
+        );
+    }
+
+    phase a_direct_conversation_reads_from_chats_messages;
+    // The conversation with a person reads from Chat's messages as the record door answers
+    // them: only theirs with this person, in each part's order, the person's as incoming.
+    {
+        let (me, peer) = ("aa", "bb");
+        let channel = "direct:person:aa|person:bb";
+        let route = routing::Route {
+            person: Id::from_raw("bb"),
+            association: Id::from_raw("tilo"),
+            sender: Id::from_raw("me"),
+            service: "tilo".into(),
+            scope: String::new(),
+            recipient: peer.into(),
+            revision: String::new(),
+        };
+        let readings = serde_json::json!({"revision": "r", "records": [
+            {"record": "part.0", "value": {"messages": {
+                "m2": {"k": "b", "v": {"channel": channel, "author": me, "text": "fine", "ts": 2}},
+                "m1": {"k": "a", "v": {"channel": channel, "author": peer, "text": "hi", "ts": 1}},
+                "x": {"k": "a", "v": {"channel": "general", "author": peer, "text": "elsewhere", "ts": 1}},
+            }}},
+            {"record": "part.1", "arriving": true},
+        ]});
+        let page = crate::history::direct_page(route, (me, peer), &readings);
+        let read: Vec<_> = page
+            .messages
+            .iter()
+            .map(|message| {
+                (
+                    message.id.as_str(),
+                    message.text.to_string(),
+                    message.direction,
+                    message.timestamp_ms,
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("m1", "hi".to_owned(), Direction::Incoming, 1000),
+                ("m2", "fine".to_owned(), Direction::Outgoing, 2000),
+            ]
+        );
+    }
 }

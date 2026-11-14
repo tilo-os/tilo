@@ -295,71 +295,75 @@ mod tests {
         (vec![mia.clone(), sam], mia)
     }
 
-    #[test]
-    fn a_picked_person_is_shown_and_reported_and_clearing_reports_nobody() {
-        let (people, mia) = people();
-        let reported: Rc<Cell<Option<Option<Person>>>> = Rc::default();
-        let seen = Rc::clone(&reported);
-        let mut field = PersonField::new("assignee", None, people, Some(mia.clone()))
-            .on_change(move |who| seen.set(Some(who)));
-        assert_eq!(field.who_name(field.value()), "No one");
-        field.picked.set(Some(Some(mia.clone())));
-        assert!(field.take_pick());
-        assert_eq!(field.value(), Some("scenario:Mia"));
-        assert_eq!(field.who_name(field.value()), "Mia");
-        assert_eq!(reported.take(), Some(Some(mia)));
-        field.picked.set(Some(None));
-        assert!(field.take_pick());
-        assert_eq!(field.value(), None);
-        assert_eq!(field.who_name(field.value()), "No one");
-        assert_eq!(reported.take(), Some(None));
-    }
+    tilo_test_env::scenario! {
+        fn a_person_field_shows_and_reports_who_was_picked;
 
-    #[test]
-    fn a_person_from_elsewhere_is_shown_without_being_reported() {
-        let (people, mia) = people();
-        let reported: Rc<Cell<bool>> = Rc::default();
-        let seen = Rc::clone(&reported);
-        let mut field = PersonField::new("assignee", None, people, Some(mia))
-            .on_change(move |_| seen.set(true));
-        field.set_value(Some("scenario:Sam"));
-        assert_eq!(field.value(), Some("scenario:Sam"));
-        assert_eq!(field.who_name(field.value()), "Sam");
-        assert!(!field.take_pick());
-        assert!(!reported.get());
-    }
+        phase a_picked_person_is_shown_and_reported_and_clearing_reports_nobody;
+        {
+            let (people, mia) = people();
+            let reported: Rc<Cell<Option<Option<Person>>>> = Rc::default();
+            let seen = Rc::clone(&reported);
+            let mut field = PersonField::new("assignee", None, people, Some(mia.clone()))
+                .on_change(move |who| seen.set(Some(who)));
+            assert_eq!(field.who_name(field.value()), "No one");
+            field.picked.set(Some(Some(mia.clone())));
+            assert!(field.take_pick());
+            assert_eq!(field.value(), Some("scenario:Mia"));
+            assert_eq!(field.who_name(field.value()), "Mia");
+            assert_eq!(reported.take(), Some(Some(mia)));
+            field.picked.set(Some(None));
+            assert!(field.take_pick());
+            assert_eq!(field.value(), None);
+            assert_eq!(field.who_name(field.value()), "No one");
+            assert_eq!(reported.take(), Some(None));
+        }
 
-    #[test]
-    fn a_bound_identity_shows_and_one_set_while_the_list_is_open_waits_for_it() {
-        let (people, mia) = people();
-        let state = crate::LocalState::new("scenario:Mia".to_owned());
-        let mut field = PersonField::from_state("assignee", &state, people, Some(mia));
-        assert_eq!(
-            field.value(),
-            Some("scenario:Mia"),
-            "the person the binding holds is shown"
-        );
-        state.set("scenario:Sam".to_owned());
-        Decorator::sync(&mut field, &(), &());
-        assert_eq!(
-            field.value(),
-            Some("scenario:Sam"),
-            "a person set elsewhere shows in place"
-        );
-        field.inner_mut().open();
-        state.set(String::new());
-        Decorator::sync(&mut field, &(), &());
-        assert_eq!(
-            field.value(),
-            Some("scenario:Sam"),
-            "a change while the list is open is not shown yet"
-        );
-        field.inner_mut().close();
-        assert!(Decorator::update(&mut field, &(), &()));
-        assert_eq!(
-            field.value(),
-            None,
-            "who it took shows once the list closes"
-        );
+        phase a_person_from_elsewhere_is_shown_without_being_reported;
+        {
+            let (people, mia) = people();
+            let reported: Rc<Cell<bool>> = Rc::default();
+            let seen = Rc::clone(&reported);
+            let mut field = PersonField::new("assignee", None, people, Some(mia))
+                .on_change(move |_| seen.set(true));
+            field.set_value(Some("scenario:Sam"));
+            assert_eq!(field.value(), Some("scenario:Sam"));
+            assert_eq!(field.who_name(field.value()), "Sam");
+            assert!(!field.take_pick());
+            assert!(!reported.get());
+        }
+
+        phase a_bound_identity_shows_and_one_set_while_the_list_is_open_waits_for_it;
+        {
+            let (people, mia) = people();
+            let state = crate::LocalState::new("scenario:Mia".to_owned());
+            let mut field = PersonField::from_state("assignee", &state, people, Some(mia));
+            assert_eq!(
+                field.value(),
+                Some("scenario:Mia"),
+                "the person the binding holds is shown"
+            );
+            state.set("scenario:Sam".to_owned());
+            Decorator::sync(&mut field, &(), &());
+            assert_eq!(
+                field.value(),
+                Some("scenario:Sam"),
+                "a person set elsewhere shows in place"
+            );
+            field.inner_mut().open();
+            state.set(String::new());
+            Decorator::sync(&mut field, &(), &());
+            assert_eq!(
+                field.value(),
+                Some("scenario:Sam"),
+                "a change while the list is open is not shown yet"
+            );
+            field.inner_mut().close();
+            assert!(Decorator::update(&mut field, &(), &()));
+            assert_eq!(
+                field.value(),
+                None,
+                "who it took shows once the list closes"
+            );
+        }
     }
 }

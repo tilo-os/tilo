@@ -141,46 +141,50 @@ impl WebResponse {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_declared_host_covers_itself_or_its_subdomains() {
-        assert!(granted(&["example.com".to_owned()], "example.com"));
-        assert!(granted(&["*.rss.org".to_owned()], "feeds.rss.org"));
-        assert!(!granted(&["*.rss.org".to_owned()], "rss.org"));
-        assert!(!granted(&["*.rss.org".to_owned()], "evilrss.org"));
-        assert!(!granted(
-            &["example.com".to_owned()],
-            "example.com.evil.org"
-        ));
-        assert!(!granted(&[], "example.com"));
-    }
+    tilo_test_env::scenario! {
+        fn a_request_names_its_host_and_carries_its_body;
 
-    #[test]
-    fn a_url_names_its_host_without_its_port() {
-        assert_eq!(
-            host_of("https://Example.COM:8443/a?b").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(host_of("http://a.b/c").as_deref(), Some("a.b"));
-        assert_eq!(host_of("ftp://a.b/c"), None);
-        assert_eq!(host_of("no scheme"), None);
-    }
+        phase a_declared_host_covers_itself_or_its_subdomains;
+        {
+            assert!(granted(&["example.com".to_owned()], "example.com"));
+            assert!(granted(&["*.rss.org".to_owned()], "feeds.rss.org"));
+            assert!(!granted(&["*.rss.org".to_owned()], "rss.org"));
+            assert!(!granted(&["*.rss.org".to_owned()], "evilrss.org"));
+            assert!(!granted(
+                &["example.com".to_owned()],
+                "example.com.evil.org"
+            ));
+            assert!(!granted(&[], "example.com"));
+        }
 
-    #[test]
-    fn a_body_reads_back_as_the_bytes_it_was() {
-        let response = WebResponse::of(WebReply {
-            status: 200,
-            status_text: "OK".to_owned(),
-            headers: vec![],
-            body: vec![0xff, 0xfe],
-        });
-        assert_eq!(response.bytes(), vec![0xff, 0xfe]);
-        let text = WebResponse::of(WebReply {
-            status: 200,
-            status_text: "OK".to_owned(),
-            headers: vec![],
-            body: b"hi".to_vec(),
-        });
-        assert_eq!(text.bytes(), b"hi");
-        assert_eq!(text.body, Some(serde_json::json!("hi")));
+        phase a_url_names_its_host_without_its_port;
+        {
+            assert_eq!(
+                host_of("https://Example.COM:8443/a?b").as_deref(),
+                Some("example.com")
+            );
+            assert_eq!(host_of("http://a.b/c").as_deref(), Some("a.b"));
+            assert_eq!(host_of("ftp://a.b/c"), None);
+            assert_eq!(host_of("no scheme"), None);
+        }
+
+        phase a_body_reads_back_as_the_bytes_it_was;
+        {
+            let response = WebResponse::of(WebReply {
+                status: 200,
+                status_text: "OK".to_owned(),
+                headers: vec![],
+                body: vec![0xff, 0xfe],
+            });
+            assert_eq!(response.bytes(), vec![0xff, 0xfe]);
+            let text = WebResponse::of(WebReply {
+                status: 200,
+                status_text: "OK".to_owned(),
+                headers: vec![],
+                body: b"hi".to_vec(),
+            });
+            assert_eq!(text.bytes(), b"hi");
+            assert_eq!(text.body, Some(serde_json::json!("hi")));
+        }
     }
 }

@@ -1234,76 +1234,80 @@ impl MintIds for Reserved {
 mod command_id_tests {
     use super::*;
 
-    #[test]
-    fn a_command_id_round_trips_through_its_text_form() {
-        let id = DesktopCommandId {
-            device: [0xab; 32],
-            invocation: uuid::Uuid::from_u128(0x1234_5678_9abc_4def_8123_4567_89ab_cdef),
-        };
-        let text = id.to_string();
-        assert_eq!(text.len(), 64 + 1 + 36);
-        assert_eq!(text.parse::<DesktopCommandId>().unwrap(), id);
-        assert!("ab:not-a-uuid".parse::<DesktopCommandId>().is_err());
-        let nil = format!("{}:{}", hex::encode([1; 32]), uuid::Uuid::nil());
-        assert!(nil.parse::<DesktopCommandId>().is_err());
-        let upper = text.to_ascii_uppercase();
-        assert!(
-            upper.parse::<DesktopCommandId>().is_err(),
-            "one canonical form"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn command_ids_receipts_and_refusals_on_the_wire;
 
-    #[test]
-    fn a_receipt_carries_the_id_and_window_ids_as_decimal_strings() {
-        let id = DesktopCommandId {
-            device: [7; 32],
-            invocation: uuid::Uuid::from_u128(9),
-        };
-        let receipt = DesktopCommandReceipt::new(
-            &id,
-            5,
-            vec![OpenedWindow {
-                app_id: "so.tilo.notes".into(),
-                record_id: "r".into(),
-                strip: u64::MAX,
-                group: 2,
-                tab: 3,
-            }],
-        );
-        let value = receipt.to_value();
-        assert_eq!(value["kind"], RECEIPT_KIND);
-        assert_eq!(value["command"], id.to_string());
-        assert_eq!(value["opened"][0]["strip"], u64::MAX.to_string());
-        assert_eq!(value["opened"][0]["appId"], "so.tilo.notes");
-        let back: DesktopCommandReceipt = serde_json::from_value(value).unwrap();
-        assert_eq!(back, receipt);
-    }
-
-    #[test]
-    fn refusal_messages_map_to_stable_reasons() {
-        use DesktopRefusal::*;
-        for (message, reason) in [
-            ("caller cannot change this desktop", NotPermitted),
-            ("agent tasks may only open applications", NotPermitted),
-            ("desktop source revision is stale", StaleSource),
-            ("application cannot be opened here", UnknownApp),
-            ("target belongs to another topology owner", ForeignTarget),
-            ("tab was removed or moved", TargetMissing),
-            (
-                "invocation identity reused with a different desktop command",
-                IdConflict,
-            ),
-            ("desktop command exceeds bounded size", Invalid),
-        ] {
-            assert_eq!(DesktopRefusal::classify(message), reason, "{message}");
+        phase a_command_id_round_trips_through_its_text_form;
+        {
+            let id = DesktopCommandId {
+                device: [0xab; 32],
+                invocation: uuid::Uuid::from_u128(0x1234_5678_9abc_4def_8123_4567_89ab_cdef),
+            };
+            let text = id.to_string();
+            assert_eq!(text.len(), 64 + 1 + 36);
+            assert_eq!(text.parse::<DesktopCommandId>().unwrap(), id);
+            assert!("ab:not-a-uuid".parse::<DesktopCommandId>().is_err());
+            let nil = format!("{}:{}", hex::encode([1; 32]), uuid::Uuid::nil());
+            assert!(nil.parse::<DesktopCommandId>().is_err());
+            let upper = text.to_ascii_uppercase();
+            assert!(
+                upper.parse::<DesktopCommandId>().is_err(),
+                "one canonical form"
+            );
         }
-        let id = DesktopCommandId {
-            device: [1; 32],
-            invocation: uuid::Uuid::from_u128(2),
-        };
-        assert_eq!(
-            StaleSource.details(&id),
-            serde_json::json!({"command": id.to_string(), "reason": "stale_source"})
-        );
+
+        phase a_receipt_carries_the_id_and_window_ids_as_decimal_strings;
+        {
+            let id = DesktopCommandId {
+                device: [7; 32],
+                invocation: uuid::Uuid::from_u128(9),
+            };
+            let receipt = DesktopCommandReceipt::new(
+                &id,
+                5,
+                vec![OpenedWindow {
+                    app_id: "so.tilo.notes".into(),
+                    record_id: "r".into(),
+                    strip: u64::MAX,
+                    group: 2,
+                    tab: 3,
+                }],
+            );
+            let value = receipt.to_value();
+            assert_eq!(value["kind"], RECEIPT_KIND);
+            assert_eq!(value["command"], id.to_string());
+            assert_eq!(value["opened"][0]["strip"], u64::MAX.to_string());
+            assert_eq!(value["opened"][0]["appId"], "so.tilo.notes");
+            let back: DesktopCommandReceipt = serde_json::from_value(value).unwrap();
+            assert_eq!(back, receipt);
+        }
+
+        phase refusal_messages_map_to_stable_reasons;
+        {
+            use DesktopRefusal::*;
+            for (message, reason) in [
+                ("caller cannot change this desktop", NotPermitted),
+                ("agent tasks may only open applications", NotPermitted),
+                ("desktop source revision is stale", StaleSource),
+                ("application cannot be opened here", UnknownApp),
+                ("target belongs to another topology owner", ForeignTarget),
+                ("tab was removed or moved", TargetMissing),
+                (
+                    "invocation identity reused with a different desktop command",
+                    IdConflict,
+                ),
+                ("desktop command exceeds bounded size", Invalid),
+            ] {
+                assert_eq!(DesktopRefusal::classify(message), reason, "{message}");
+            }
+            let id = DesktopCommandId {
+                device: [1; 32],
+                invocation: uuid::Uuid::from_u128(2),
+            };
+            assert_eq!(
+                StaleSource.details(&id),
+                serde_json::json!({"command": id.to_string(), "reason": "stale_source"})
+            );
+        }
     }
 }

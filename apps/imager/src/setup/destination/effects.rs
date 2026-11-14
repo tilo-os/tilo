@@ -227,49 +227,53 @@ pub fn reviewed_digest<T: serde::Serialize>(value: &T) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn effects_round_trip_and_refusals_never_echo_secrets() {
-        for effect in [
-            DestinationEffect::Next,
-            DestinationEffect::SelectDisk {
-                device: "/dev/vdb".into(),
-            },
-            DestinationEffect::SetIdentity {
-                username: Some("ada".into()),
-                full_name: None,
-            },
-            DestinationEffect::Begin {
+    tilo_test_env::scenario! {
+        fn destination_effects_round_trip_and_name_their_target;
+
+        phase effects_round_trip_and_refusals_never_echo_secrets;
+        {
+            for effect in [
+                DestinationEffect::Next,
+                DestinationEffect::SelectDisk {
+                    device: "/dev/vdb".into(),
+                },
+                DestinationEffect::SetIdentity {
+                    username: Some("ada".into()),
+                    full_name: None,
+                },
+                DestinationEffect::Begin {
+                    target: "/dev/vdb".into(),
+                    allocation: String::new(),
+                },
+            ] {
+                let decoded = DestinationEffect::decode(effect.id(), &effect.arguments()).ok();
+                assert!(decoded == Some(effect));
+            }
+            assert!(DestinationEffect::decode("format-everything", &serde_json::Map::new()).is_err());
+            let refused = DestinationEffect::decode(
+                "set-passphrase",
+                serde_json::json!({ "passphrase": "hunter2-correct-horse", "confirmation": 5 })
+                    .as_object()
+                    .unwrap(),
+            )
+            .err()
+            .unwrap();
+            assert!(!format!("{refused:?}").contains("hunter2"), "{refused}");
+        }
+
+        phase begin_asks_for_the_target_it_formats;
+        {
+            let begin = DestinationEffect::Begin {
                 target: "/dev/vdb".into(),
                 allocation: String::new(),
-            },
-        ] {
-            let decoded = DestinationEffect::decode(effect.id(), &effect.arguments()).ok();
-            assert!(decoded == Some(effect));
-        }
-        assert!(DestinationEffect::decode("format-everything", &serde_json::Map::new()).is_err());
-        let refused = DestinationEffect::decode(
-            "set-passphrase",
-            serde_json::json!({ "passphrase": "hunter2-correct-horse", "confirmation": 5 })
-                .as_object()
-                .unwrap(),
-        )
-        .err()
-        .unwrap();
-        assert!(!format!("{refused:?}").contains("hunter2"), "{refused}");
-    }
-
-    #[test]
-    fn begin_asks_for_the_target_it_formats() {
-        let begin = DestinationEffect::Begin {
-            target: "/dev/vdb".into(),
-            allocation: String::new(),
-        }
-        .bound();
-        assert_eq!(
-            begin.contract.confirmation,
-            ui::tilo_actions::ConfirmationPolicy::Phrase {
-                phrase: "/dev/vdb".into()
             }
-        );
+            .bound();
+            assert_eq!(
+                begin.contract.confirmation,
+                ui::tilo_actions::ConfirmationPolicy::Phrase {
+                    phrase: "/dev/vdb".into()
+                }
+            );
+        }
     }
 }

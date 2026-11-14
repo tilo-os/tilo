@@ -124,106 +124,102 @@ fn rows(doc: &Doc, submission: &Submission) -> Vec<crate::model::Message> {
         .collect()
 }
 
-#[test]
-fn a_picked_report_reads_out_its_picks_notes_actions_and_timings() {
-    let (doc, submission) = picked(false);
-    let rows = rows(&doc, &submission);
-    assert_eq!(rows.len(), 1, "one message for the report");
-    let row = &rows[0];
-    assert_eq!(row.author, "visitor:one");
-    let lines: Vec<&str> = row.text.lines().collect();
-    assert_eq!(
-        lines,
-        [
-            "1. The \u{201C}Save\u{201D} button in Files",
-            "\u{201C}Nothing happens when \u{2039}name\u{203A} clicks it\u{201D}",
-            "2. A row",
-            "Modified",
-            "\u{2039}personal\u{203A}",
-            "Just before: open on files.folder, Save the file (refused)",
-            "Slow: 2 of the last 4 frames over 16 ms, the slowest 52 ms",
-        ]
-    );
-    assert_eq!(row.body.len(), lines.len(), "a paragraph per line");
-    assert!(row.attachments.is_empty());
-    // The record keeps the structured report the person reviewed, not the
-    // sentences read out of it.
-    assert_eq!(
-        crate::feedback::report(&doc, &submission.id)
+tilo_test_env::scenario! {
+    /// The message a filed report shows as.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_filed_report_reads_as_a_message_with_its_picture_reactions_and_record;
+
+    phase a_picked_report_reads_out_its_picks_notes_actions_and_timings;
+    {
+        let (doc, submission) = picked(false);
+        let rows = rows(&doc, &submission);
+        assert_eq!(rows.len(), 1, "one message for the report");
+        let row = &rows[0];
+        assert_eq!(row.author, "visitor:one");
+        let lines: Vec<&str> = row.text.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "1. The \u{201C}Save\u{201D} button in Files",
+                "\u{201C}Nothing happens when \u{2039}name\u{203A} clicks it\u{201D}",
+                "2. A row",
+                "Modified",
+                "\u{2039}personal\u{203A}",
+                "Just before: open on files.folder, Save the file (refused)",
+                "Slow: 2 of the last 4 frames over 16 ms, the slowest 52 ms",
+            ]
+        );
+        assert_eq!(row.body.len(), lines.len(), "a paragraph per line");
+        assert!(row.attachments.is_empty());
+        // The record keeps the structured report the person reviewed, not the
+        // sentences read out of it.
+        assert_eq!(
+            crate::feedback::report(&doc, &submission.id)
+                .unwrap()
+                .unwrap()
+                .submission,
+            submission
+        );
+    }
+
+    phase the_masked_picture_is_the_report_messages_image;
+    {
+        let (doc, submission) = picked(true);
+        assert_eq!(
+            rows(&doc, &submission)[0].attachments,
+            vec![tilo_reference::Attached::Image {
+                name: ui::feedback_read_out::PICTURE_NAME.into(),
+                blob: "ab".repeat(32),
+                w: 640,
+                h: 360,
+            }]
+        );
+    }
+
+    phase members_react_to_a_report_as_to_any_message;
+    {
+        let (mut doc, submission) = picked(false);
+        let report = Id::from_raw(submission.id.clone());
+        let react = || {
+            Chat::paths()
+                .feedback
+                .item(&report)
+                .reactions
+                .react("\u{1F44D}")
+                .into()
+        };
+        apply_as(&mut doc, "visitor:two", react()).unwrap();
+        apply_as(&mut doc, "visitor:three", react()).unwrap();
+        let rows = rows(&doc, &submission);
+        assert_eq!(rows.len(), 1, "reacting adds no second message");
+        assert_eq!(rows[0].reactions.len(), 1);
+        assert_eq!(rows[0].reactions[0].emoji, "\u{1F44D}");
+        assert_eq!(rows[0].reactions[0].count(), 2);
+    }
+
+    phase a_bot_reading_the_record_through_the_door_reads_the_report_out;
+    {
+        use ui::tilo_resource::Model as _;
+        let (mut doc, submission) = picked(true);
+        // What the record door answers every reader: the record as plain data.
+        let read = ui::tilo_actions::remote::RecordCopy::Document(doc.save())
+            .readable()
+            .unwrap();
+        let filed = read["feedback"]
+            .as_object()
             .unwrap()
-            .unwrap()
-            .submission,
-        submission
-    );
-}
-
-#[test]
-fn a_pick_from_an_app_with_no_known_name_is_the_part_alone_never_the_apps_id() {
-    let (doc, submission) = picked(false);
-    let text = rows(&doc, &submission)[0].text.clone();
-    assert!(text.lines().any(|line| line == "2. A row"), "{text}");
-    assert!(
-        !text.contains("so.tilo.files"),
-        "the id only routes: {text}"
-    );
-}
-
-#[test]
-fn the_masked_picture_is_the_report_messages_image() {
-    let (doc, submission) = picked(true);
-    assert_eq!(
-        rows(&doc, &submission)[0].attachments,
-        vec![tilo_reference::Attached::Image {
-            name: ui::feedback_read_out::PICTURE_NAME.into(),
-            blob: "ab".repeat(32),
-            w: 640,
-            h: 360,
-        }]
-    );
-}
-
-#[test]
-fn members_react_to_a_report_as_to_any_message() {
-    let (mut doc, submission) = picked(false);
-    let report = Id::from_raw(submission.id.clone());
-    let react = || {
-        Chat::paths()
-            .feedback
-            .item(&report)
-            .reactions
-            .react("\u{1F44D}")
-            .into()
-    };
-    apply_as(&mut doc, "visitor:two", react()).unwrap();
-    apply_as(&mut doc, "visitor:three", react()).unwrap();
-    let rows = rows(&doc, &submission);
-    assert_eq!(rows.len(), 1, "reacting adds no second message");
-    assert_eq!(rows[0].reactions.len(), 1);
-    assert_eq!(rows[0].reactions[0].emoji, "\u{1F44D}");
-    assert_eq!(rows[0].reactions[0].count(), 2);
-}
-
-#[test]
-fn a_bot_reading_the_record_through_the_door_reads_the_report_out() {
-    use ui::tilo_resource::Model as _;
-    let (mut doc, submission) = picked(true);
-    // What the record door answers every reader: the record as plain data.
-    let read = ui::tilo_actions::remote::RecordCopy::Document(doc.save())
-        .readable()
-        .unwrap();
-    let filed = read["feedback"]
-        .as_object()
-        .unwrap()
-        .values()
-        .find(|filed| filed["v"]["submission"]["id"] == submission.id.as_str())
-        .expect("the report is in the record");
-    let read_back = Submission::from_json(&filed["v"]["submission"]).unwrap();
-    assert_eq!(
-        read_back.destination.channel,
-        submission.destination.channel
-    );
-    assert!(
-        ui::feedback_read_out::lines(&read_back.feedback)[0]
-            .starts_with("1. The \u{201C}Save\u{201D} button in Files")
-    );
+            .values()
+            .find(|filed| filed["v"]["submission"]["id"] == submission.id.as_str())
+            .expect("the report is in the record");
+        let read_back = Submission::from_json(&filed["v"]["submission"]).unwrap();
+        assert_eq!(
+            read_back.destination.channel,
+            submission.destination.channel
+        );
+        assert!(
+            ui::feedback_read_out::lines(&read_back.feedback)[0]
+                .starts_with("1. The \u{201C}Save\u{201D} button in Files")
+        );
+    }
 }

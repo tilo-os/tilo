@@ -59,12 +59,12 @@ Type=simple
 # ever hold a scoped capability; the socket is group-connectable like the
 # storage socket and never bound into a sandbox.
 #
-# `--principal person:local` is the subject the shipped list grants to.
-# The shipped default uses a human-readable local principal. The mount also
+# `--member person:local` is the member the shipped list grants to.
+# The shipped default uses a human-readable local member. The mount also
 # has the machine's durable certified device key, shared with the shell, so
-# remote policies can name a stable cryptographic subject when required.
+# remote policies can name a stable cryptographic member when required.
 #
-# The shipped list grants that principal read+write on the whole
+# The shipped list grants that member read+write on the whole
 # workspace — i.e. exactly the access an unenforced mount gave. This
 # change does not narrow the single-user desktop; it makes the
 # enforcement point live so that a restriction added to
@@ -82,7 +82,7 @@ Environment=TILO_FS_DATA_PLANE_ARGS=--data-plane=fuse
 EnvironmentFile=-/run/tilo-store/fs.env
 ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
     --storage-sock /run/tilo/fs-storage/storage.sock --blob-sock /run/tilo/fs-blobs.sock \
-    --acl /var/lib/tilo/fs-capabilities.json --principal person:local \
+    --acl /var/lib/tilo/fs-capabilities.json --member person:local \
     $TILO_FS_DATA_PLANE_ARGS
 # No ExecStop=: the daemon ends its own mount. systemd's SIGTERM takes the
 # daemon's stop path, which unmounts and then makes the final namespace save.

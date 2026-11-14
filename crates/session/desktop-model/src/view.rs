@@ -91,35 +91,39 @@ mod tests {
     use super::*;
     use crate::workspace::Workspace;
 
-    #[test]
-    fn switching_walks_workspaces_and_clamps_at_the_ends() {
-        let mut tree = DesktopTree {
-            workspaces: vec![
-                Workspace::new(WorkspaceSlot(1), "A"),
-                Workspace::new(WorkspaceSlot(2), "B"),
-            ],
-            active: WorkspaceSlot(1),
-            ..DesktopTree::default()
-        };
-        assert!(!tree.switch_up());
-        assert!(tree.switch_down());
-        assert_eq!(tree.active, WorkspaceSlot(2));
-        assert!(!tree.switch_down());
-        tree.set_active(WorkspaceSlot(9));
-        assert_eq!(tree.active, WorkspaceSlot(2));
-        assert_eq!(tree.workspace_ids().len(), 2);
-        assert_eq!(tree.id_of(WorkspaceSlot(1)), Some(tree.workspaces[0].id()));
-    }
+    tilo_test_env::scenario! {
+        fn a_desktop_trees_local_view;
 
-    #[test]
-    fn workspace_records_report_only_news() {
-        let mut tree = DesktopTree::default();
-        let identity = WorkspaceId::new();
-        let held = BTreeMap::from([("r".to_owned(), "doc".to_owned())]);
-        assert!(tree.set_workspace_records(identity, held.clone()));
-        assert!(!tree.set_workspace_records(identity, held));
-        assert_eq!(tree.local_salt(), 0);
-        tree.salt = 3;
-        assert_eq!(tree.local_salt(), 3);
+        phase switching_walks_workspaces_and_clamps_at_the_ends;
+        {
+            let mut tree = DesktopTree {
+                workspaces: vec![
+                    Workspace::new(WorkspaceSlot(1), "A"),
+                    Workspace::new(WorkspaceSlot(2), "B"),
+                ],
+                active: WorkspaceSlot(1),
+                ..DesktopTree::default()
+            };
+            assert!(!tree.switch_up());
+            assert!(tree.switch_down());
+            assert_eq!(tree.active, WorkspaceSlot(2));
+            assert!(!tree.switch_down());
+            tree.set_active(WorkspaceSlot(9));
+            assert_eq!(tree.active, WorkspaceSlot(2));
+            assert_eq!(tree.workspace_ids().len(), 2);
+            assert_eq!(tree.id_of(WorkspaceSlot(1)), Some(tree.workspaces[0].id()));
+        }
+
+        phase workspace_records_report_only_news;
+        {
+            let mut tree = DesktopTree::default();
+            let identity = WorkspaceId::new();
+            let held = BTreeMap::from([("r".to_owned(), "doc".to_owned())]);
+            assert!(tree.set_workspace_records(identity, held.clone()));
+            assert!(!tree.set_workspace_records(identity, held));
+            assert_eq!(tree.local_salt(), 0);
+            tree.salt = 3;
+            assert_eq!(tree.local_salt(), 3);
+        }
     }
 }

@@ -150,29 +150,39 @@ view shell_settings(s: Shell) {
             section("Top bar") {
                 form {
                     toggle("Show the top bar", bind: s.bar_shown)
-                    field("Edge") {
+                    ui.ToggleGroup(caption: "Edge", fill: true) {
                         for edge in cases(Edge) {
-                            button(edge.label(), on: bar_on(s, edge))
+                            ui.Segment(edge.label(), chosen: s.bar_edge == edge) {
+                                on press: bar_on(s, edge)
+                            }
                         }
                     }
-                    field("Fit") {
+                    ui.ToggleGroup(caption: "Fit", fill: true) {
                         for fit in cases(Fit) {
-                            button(fit.label(), on: set_bar_fit(s, fit))
+                            ui.Segment(fit.label(), chosen: s.bar_fit == fit) {
+                                on press: set_bar_fit(s, fit)
+                            }
                         }
                     }
-                    field("Material") {
+                    ui.ToggleGroup(caption: "Material", fill: true) {
                         for finish in cases(Finish) {
-                            button(finish.label(), on: set_bar_finish(s, finish))
+                            ui.Segment(finish.label(), chosen: s.bar_finish == finish) {
+                                on press: set_bar_finish(s, finish)
+                            }
                         }
                     }
-                    field("When it shows") {
+                    ui.ToggleGroup(caption: "When it shows", fill: true) {
                         for showing in cases(Showing) {
-                            button(showing.label(), on: set_bar_showing(s, showing))
+                            ui.Segment(showing.label(), chosen: s.bar_showing == showing) {
+                                on press: set_bar_showing(s, showing)
+                            }
                         }
                     }
-                    field("Size") {
+                    ui.ToggleGroup(caption: "Size", fill: true) {
                         for size in cases(Size) {
-                            button(size.label(), on: set_bar_size(s, size))
+                            ui.Segment(size.label(), chosen: s.bar_size == size) {
+                                on press: set_bar_size(s, size)
+                            }
                         }
                     }
                 }
@@ -181,29 +191,39 @@ view shell_settings(s: Shell) {
             section("Dock") {
                 form {
                     toggle("Show the dock", bind: s.dock_shown)
-                    field("Edge") {
+                    ui.ToggleGroup(caption: "Edge", fill: true) {
                         for edge in cases(Edge) {
-                            button(edge.label(), on: dock_on(s, edge))
+                            ui.Segment(edge.label(), chosen: s.dock_edge == edge) {
+                                on press: dock_on(s, edge)
+                            }
                         }
                     }
-                    field("Fit") {
+                    ui.ToggleGroup(caption: "Fit", fill: true) {
                         for fit in cases(Fit) {
-                            button(fit.label(), on: set_dock_fit(s, fit))
+                            ui.Segment(fit.label(), chosen: s.dock_fit == fit) {
+                                on press: set_dock_fit(s, fit)
+                            }
                         }
                     }
-                    field("Material") {
+                    ui.ToggleGroup(caption: "Material", fill: true) {
                         for finish in cases(Finish) {
-                            button(finish.label(), on: set_dock_finish(s, finish))
+                            ui.Segment(finish.label(), chosen: s.dock_finish == finish) {
+                                on press: set_dock_finish(s, finish)
+                            }
                         }
                     }
-                    field("When it shows") {
+                    ui.ToggleGroup(caption: "When it shows", fill: true) {
                         for showing in cases(Showing) {
-                            button(showing.label(), on: set_dock_showing(s, showing))
+                            ui.Segment(showing.label(), chosen: s.dock_showing == showing) {
+                                on press: set_dock_showing(s, showing)
+                            }
                         }
                     }
-                    field("Size") {
+                    ui.ToggleGroup(caption: "Size", fill: true) {
                         for size in cases(Size) {
-                            button(size.label(), on: set_dock_size(s, size))
+                            ui.Segment(size.label(), chosen: s.dock_size == size) {
+                                on press: set_dock_size(s, size)
+                            }
                         }
                     }
                 }

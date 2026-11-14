@@ -34,6 +34,7 @@ use automerge::AutoCommit;
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
+use collab_types::WorkspaceId;
 
 /// Failure modes for an anti-entropy round trip.
 #[derive(Debug)]
@@ -88,7 +89,7 @@ pub fn apply_sync_response(
 /// Returns [`SyncError::Disconnected`] if the relay connection is gone.
 pub fn send_sync_request(
     client: &RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     doc: &mut AutoCommit,
 ) -> Result<(), SyncError> {
     client
@@ -119,7 +120,7 @@ pub fn send_sync_request(
 /// and [`SyncError::Apply`] if the response's changes fail to apply.
 pub async fn reconcile(
     client: &RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     doc: &mut AutoCommit,
     timeout: Duration,
 ) -> Result<usize, SyncError> {

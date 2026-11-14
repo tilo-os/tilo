@@ -137,6 +137,11 @@ pub struct VmEntry {
     pub uuid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nic_mac: Option<String>,
+    /// The MAC of the VM's NIC on the network its host's VMs share
+    /// ([`crate::lan`]), or `"off"` for none. Absent on a VM made before
+    /// that network: it gets one at its next `vm start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from: Option<String>,
     /// The VM whose workspaces `vm branch` has not yet seen take this

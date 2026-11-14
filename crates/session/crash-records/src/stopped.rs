@@ -340,87 +340,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_dumps_parts_are_joined_oldest_first_and_a_console_log_is_no_stop() {
-        let entries = [
-            entry("dmesg-ramoops-0", "Panic#1 Part2\nsecond half\n", None),
-            entry("dmesg-ramoops-1", "Panic#1 Part1\nfirst half\n", Some(17)),
-            entry("console-ramoops-0", "just a console log\n", None),
-            entry(
-                "dmesg-ramoops-2",
-                "Panic#2 Part1\nthe next stop\n",
-                Some(23),
-            ),
-            entry("dmesg-ramoops-3", "not a dump heading\n", None),
-        ];
-        let stops = stops(&entries);
-        assert_eq!(stops.len(), 2);
-        assert_eq!(stops[0].reason, StopReason::Panic);
-        assert_eq!(stops[0].log, "first half\nsecond half");
-        assert_eq!(stops[0].written, Some(17));
-        assert_eq!(stops[1].log, "the next stop");
+    tilo_test_env::scenario! {
+        fn stops_are_read_from_what_the_kernel_left;
+
+        phase a_dumps_parts_are_joined_oldest_first_and_a_console_log_is_no_stop;
+        {
+            let entries = [
+                entry("dmesg-ramoops-0", "Panic#1 Part2\nsecond half\n", None),
+                entry("dmesg-ramoops-1", "Panic#1 Part1\nfirst half\n", Some(17)),
+                entry("console-ramoops-0", "just a console log\n", None),
+                entry(
+                    "dmesg-ramoops-2",
+                    "Panic#2 Part1\nthe next stop\n",
+                    Some(23),
+                ),
+                entry("dmesg-ramoops-3", "not a dump heading\n", None),
+            ];
+            let stops = stops(&entries);
+            assert_eq!(stops.len(), 2);
+            assert_eq!(stops[0].reason, StopReason::Panic);
+            assert_eq!(stops[0].log, "first half\nsecond half");
+            assert_eq!(stops[0].written, Some(17));
+            assert_eq!(stops[1].log, "the next stop");
+        }
+
+        phase a_clean_shutdown_dump_is_no_stop;
+        {
+            assert!(stops(&[entry("dmesg-ramoops-0", "Something else\nlog", None)]).is_empty());
+        }
+
+        phase the_journals_records_are_read_from_the_messages_that_carried_them;
+        {
+            let lines = concat!(
+                r#"{"MESSAGE":"PStore dmesg-ramoops-0 moved to /var/lib/systemd/pstore/0/","FILE":[80,97,110,105,99]}"#,
+                "\n",
+                r#"{"MESSAGE":"PStore dmesg-ramoops-0.","FILE":"Panic#1 Part1\ntext"}"#,
+                "\n",
+                r#"{"MESSAGE":"Started pstore.service."}"#,
+            );
+            let entries = journal_entries(lines);
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].name, "dmesg-ramoops-0");
+            assert_eq!(entries[0].content, b"Panic");
+            assert_eq!(entries[1].content, b"Panic#1 Part1\ntext");
+            assert_eq!(stops(&entries).len(), 1);
+        }
     }
 
-    #[test]
-    fn a_clean_shutdown_dump_is_no_stop() {
-        assert!(stops(&[entry("dmesg-ramoops-0", "Something else\nlog", None)]).is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn a_stop_is_kept_as_a_record_that_says_what_happened;
 
-    #[test]
-    fn the_journals_records_are_read_from_the_messages_that_carried_them() {
-        let lines = concat!(
-            r#"{"MESSAGE":"PStore dmesg-ramoops-0 moved to /var/lib/systemd/pstore/0/","FILE":[80,97,110,105,99]}"#,
-            "\n",
-            r#"{"MESSAGE":"PStore dmesg-ramoops-0.","FILE":"Panic#1 Part1\ntext"}"#,
-            "\n",
-            r#"{"MESSAGE":"Started pstore.service."}"#,
-        );
-        let entries = journal_entries(lines);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].name, "dmesg-ramoops-0");
-        assert_eq!(entries[0].content, b"Panic");
-        assert_eq!(entries[1].content, b"Panic#1 Part1\ntext");
-        assert_eq!(stops(&entries).len(), 1);
-    }
+        phase a_stop_is_kept_once_and_says_why;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            tilo_files::native::private::directory(dir.path()).unwrap();
+            let stop = Stop {
+                reason: StopReason::Emergency,
+                written: Some(1_790_000_000),
+                log: "sysrq triggered".to_owned(),
+            };
+            let first = keep_stops(dir.path(), std::slice::from_ref(&stop), 1_790_000_100).unwrap();
+            assert_eq!(first.len(), 1);
+            assert!(first[0].ends_with(STOPPED_SUFFIX), "{first:?}");
+            assert!(
+                keep_stops(dir.path(), &[stop], 1_790_000_200)
+                    .unwrap()
+                    .is_empty()
+            );
+            let text = std::fs::read_to_string(dir.path().join(&first[0])).unwrap();
+            assert!(text.starts_with(STOPPED_TITLE), "{text}");
+            assert!(text.contains("reason:    emergency\n"), "{text}");
+            assert!(text.contains("sysrq triggered\n"), "{text}");
+        }
 
-    #[test]
-    fn a_stop_is_kept_once_and_says_why() {
-        let dir = tempfile::tempdir().unwrap();
-        tilo_files::native::private::directory(dir.path()).unwrap();
-        let stop = Stop {
-            reason: StopReason::Emergency,
-            written: Some(1_790_000_000),
-            log: "sysrq triggered".to_owned(),
-        };
-        let first = keep_stops(dir.path(), std::slice::from_ref(&stop), 1_790_000_100).unwrap();
-        assert_eq!(first.len(), 1);
-        assert!(first[0].ends_with(STOPPED_SUFFIX), "{first:?}");
-        assert!(
-            keep_stops(dir.path(), &[stop], 1_790_000_200)
-                .unwrap()
-                .is_empty()
-        );
-        let text = std::fs::read_to_string(dir.path().join(&first[0])).unwrap();
-        assert!(text.starts_with(STOPPED_TITLE), "{text}");
-        assert!(text.contains("reason:    emergency\n"), "{text}");
-        assert!(text.contains("sysrq triggered\n"), "{text}");
-    }
-
-    #[test]
-    fn a_fault_kept_as_a_record_says_the_system_ran_on() {
-        let record = render_stop(
-            &Stop {
-                reason: StopReason::Oops,
-                written: None,
-                log: "BUG: kernel page fault".to_owned(),
-            },
-            "2026-10-24-225201",
-        );
-        assert!(record.starts_with(FAULT_TITLE), "{record}");
-        assert!(
-            record.contains("time-of:   the start that found it\n"),
-            "{record}"
-        );
-        assert!(record.contains("went on running"), "{record}");
+        phase a_fault_kept_as_a_record_says_the_system_ran_on;
+        {
+            let record = render_stop(
+                &Stop {
+                    reason: StopReason::Oops,
+                    written: None,
+                    log: "BUG: kernel page fault".to_owned(),
+                },
+                "2026-10-24-225201",
+            );
+            assert!(record.starts_with(FAULT_TITLE), "{record}");
+            assert!(
+                record.contains("time-of:   the start that found it\n"),
+                "{record}"
+            );
+            assert!(record.contains("went on running"), "{record}");
+        }
     }
 }

@@ -510,30 +510,34 @@ impl Drop for Reap {
 mod tests {
     use super::*;
 
-    #[test]
-    fn alias_cleanup_refuses_unadmitted_paths_without_touching_data() {
-        let untouched = tempfile::tempdir().unwrap();
-        std::fs::write(untouched.path().join("personal"), b"unchanged").unwrap();
-        let metadata = std::fs::metadata(untouched.path()).unwrap();
-        let receipt = Alias {
-            path: untouched.path().into(),
-            dev: metadata.dev(),
-            ino: metadata.ino(),
-            source: 0,
-            output: None,
-            scratch: None,
-        };
-        assert!(receipt.cleanup().is_err());
-        assert_eq!(
-            std::fs::read(untouched.path().join("personal")).unwrap(),
-            b"unchanged"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn projection_refuses_unadmitted_paths_and_live_host_namespaces;
 
-    #[test]
-    fn projection_refuses_an_ordinary_live_host_namespace() {
-        let process =
-            Incarnation::capture(std::process::id(), rustix::process::getuid().as_raw()).unwrap();
-        assert!(process.mount_namespace().is_err());
+        phase alias_cleanup_refuses_unadmitted_paths_without_touching_data;
+        {
+            let untouched = tempfile::tempdir().unwrap();
+            std::fs::write(untouched.path().join("personal"), b"unchanged").unwrap();
+            let metadata = std::fs::metadata(untouched.path()).unwrap();
+            let receipt = Alias {
+                path: untouched.path().into(),
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+                source: 0,
+                output: None,
+                scratch: None,
+            };
+            assert!(receipt.cleanup().is_err());
+            assert_eq!(
+                std::fs::read(untouched.path().join("personal")).unwrap(),
+                b"unchanged"
+            );
+        }
+
+        phase projection_refuses_an_ordinary_live_host_namespace;
+        {
+            let process =
+                Incarnation::capture(std::process::id(), rustix::process::getuid().as_raw()).unwrap();
+            assert!(process.mount_namespace().is_err());
+        }
     }
 }

@@ -10,7 +10,7 @@ use tilo_document::{BodyOrder, ClipAttr};
 
 use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
 use super::{
-    MAX_ACTION_TEXT_CHARS, MAX_RESOURCE_SEARCH_HITS, MarkVal, RegionKind, RichTextAction,
+    MAX_ACTION_TEXT_BYTES, MAX_RESOURCE_SEARCH_HITS, MarkVal, RegionKind, RichTextAction,
     SearchTarget, SelectionTarget, Span, WpResourceCtx, apply_named_style_action,
     paste_fragment_action, replace_selection_action, set_mark_action, set_paragraph_style_action,
     splice_text_action, split_block_action, valid_hyperlink_target,
@@ -1084,7 +1084,7 @@ fn literal_matches(blocks: &[tilo_doc::snapshot::BlockView], query: &str) -> Vec
 fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
     match content {
         PasteContent::Text(text) => {
-            if text.chars().count() > MAX_ACTION_TEXT_CHARS {
+            if text.len() > MAX_ACTION_TEXT_BYTES {
                 return Err(EditingError::Invalid("pasted text is too long".into()));
             }
             Ok(text
@@ -1106,7 +1106,7 @@ fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
 }
 
 fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> {
-    if markdown.chars().count() > MAX_ACTION_TEXT_CHARS {
+    if markdown.len() > MAX_ACTION_TEXT_BYTES {
         return Err(EditingError::Invalid("pasted Markdown is too long".into()));
     }
     // Pasted Markdown references no content this document keeps.
@@ -1814,42 +1814,227 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn typing_enter_and_erase_match_the_widget_envelopes_byte_for_byte() {
-        let (mut state, mut wp, ids) = writer(&["alpha", "beta", "gamma"]);
-        apply(
-            &mut state.doc,
-            &set_paragraph_style_action(
-                RegionKind::Body,
-                vec![ids[1].clone()],
-                "list_item",
-                None,
-                Some(true),
-            ),
-        );
-        let doc = &state.doc;
-        for view in views(&ids) {
-            place(&mut wp, &view);
-            let m = wp.model();
-            let (typed, _) = type_text(&view, doc, "Xy").unwrap();
-            assert_eq!(
-                bytes(&typed),
-                bytes(&old_insert_text(m, doc, "Xy")),
-                "type {view:?}"
+    tilo_test_env::scenario! {
+        /// Typing, Enter and erasing through the published operations.
+        fn typing_enter_and_erase_build_the_keystrokes_actions;
+
+        phase typing_enter_and_erase_match_the_widget_envelopes_byte_for_byte;
+        {
+            let (mut state, mut wp, ids) = writer(&["alpha", "beta", "gamma"]);
+            apply(
+                &mut state.doc,
+                &set_paragraph_style_action(
+                    RegionKind::Body,
+                    vec![ids[1].clone()],
+                    "list_item",
+                    None,
+                    Some(true),
+                ),
             );
-            let (enter, _) = new_paragraph(&view, doc).unwrap();
-            assert_eq!(bytes(&enter), bytes(&old_enter(m, doc)), "enter {view:?}");
-            for (direction, backward) in [
-                (DeleteDirection::Backward, true),
-                (DeleteDirection::Forward, false),
-            ] {
-                let (erased, _) = delete(&view, doc, direction, 1).unwrap();
+            let doc = &state.doc;
+            for view in views(&ids) {
+                place(&mut wp, &view);
+                let m = wp.model();
+                let (typed, _) = type_text(&view, doc, "Xy").unwrap();
                 assert_eq!(
-                    bytes(&erased),
-                    bytes(&old_delete(m, doc, backward)),
-                    "erase {backward} {view:?}"
+                    bytes(&typed),
+                    bytes(&old_insert_text(m, doc, "Xy")),
+                    "type {view:?}"
+                );
+                let (enter, _) = new_paragraph(&view, doc).unwrap();
+                assert_eq!(bytes(&enter), bytes(&old_enter(m, doc)), "enter {view:?}");
+                for (direction, backward) in [
+                    (DeleteDirection::Backward, true),
+                    (DeleteDirection::Forward, false),
+                ] {
+                    let (erased, _) = delete(&view, doc, direction, 1).unwrap();
+                    assert_eq!(
+                        bytes(&erased),
+                        bytes(&old_delete(m, doc, backward)),
+                        "erase {backward} {view:?}"
+                    );
+                }
+            }
+        }
+
+        phase enter_lands_in_the_new_block_once_applied_and_typing_follows;
+        {
+            let (mut state, _, ids) = writer(&["hello world"]);
+            let view = at(&ids[0], 5);
+            let (actions, next) = new_paragraph(&view, &state.doc).unwrap();
+            assert!(next.pending.is_some());
+            assert_eq!(next.settle(&state.doc).caret, ViewPoint::new(&ids[0], 5));
+            apply_all(&mut state.doc, &actions);
+            let settled = next.settle(&state.doc);
+            let new_block = order(&state.doc)[1].clone();
+            assert_eq!(settled.caret, ViewPoint::new(&new_block, 0));
+            assert!(settled.pending.is_none());
+            let (typed, _) = type_text(&next, &state.doc, "big ").unwrap();
+            apply_all(&mut state.doc, &typed);
+            assert_eq!(texts(&state.doc), ["hello", "big  world"]);
+        }
+
+        phase agent_style_streaming_through_published_operations_builds_one_paragraph;
+        {
+            let (mut state, _, ids) = writer(&["Intro", "Middle"]);
+            let mut agent = at(&ids[0], 0);
+            let step = |agent: &mut ParticipantView,
+                        doc: &mut AutoCommit,
+                        id: &str,
+                        args: serde_json::Value| {
+                let encoded = invoke(agent, doc, id, args.clone());
+                if let Some(action) = crate::model::decoded(&encoded) {
+                    let (actions, next) = match id {
+                        op::NEW_PARAGRAPH => new_paragraph(agent, doc).unwrap(),
+                        op::TYPE_TEXT => type_text(agent, doc, args["text"].as_str().unwrap()).unwrap(),
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(actions, vec![action.clone()]);
+                    apply(doc, &action);
+                    *agent = next.settle(doc);
+                } else {
+                    let Some(crate::effects::ViewMove::Operation(operation)) =
+                        crate::effects::decode(&encoded)
+                            .expect("a published effect")
+                            .view_operation()
+                            .unwrap()
+                    else {
+                        panic!("{id} moves the caret");
+                    };
+                    *agent = crate::actions::view_ops::apply(agent, doc, &operation)
+                        .unwrap()
+                        .1;
+                }
+            };
+            step(
+                &mut agent,
+                &mut state.doc,
+                op::MOVE_CARET,
+                serde_json::json!({"to": "document-end"}),
+            );
+            step(
+                &mut agent,
+                &mut state.doc,
+                op::NEW_PARAGRAPH,
+                serde_json::json!({}),
+            );
+            for chunk in ["The ocean ", "covers most ", "of the planet."] {
+                step(
+                    &mut agent,
+                    &mut state.doc,
+                    op::TYPE_TEXT,
+                    serde_json::json!({"text": chunk}),
                 );
             }
+            assert_eq!(
+                texts(&state.doc),
+                ["Intro", "Middle", "The ocean covers most of the planet."]
+            );
+            let last = order(&state.doc)[2].clone();
+            assert_eq!(agent.caret, ViewPoint::new(&last, 36));
+        }
+
+        phase erase_extends_across_paragraphs_and_stays_bounded;
+        {
+            let (mut state, _, ids) = writer(&["abc", "", "def"]);
+            let view = at(&ids[2], 1);
+            let (actions, next) = delete(&view, &state.doc, DeleteDirection::Backward, 4).unwrap();
+            assert_eq!(
+                actions,
+                vec![replace_selection_action(
+                    RegionKind::Body,
+                    &ids[0],
+                    2,
+                    &ids[2],
+                    1,
+                    ""
+                )]
+            );
+            assert_eq!(next.caret, ViewPoint::new(&ids[0], 2));
+            apply_all(&mut state.doc, &actions);
+            assert_eq!(texts(&state.doc), ["abef"]);
+            let (actions, _) =
+                delete(&at(&ids[0], 2), &state.doc, DeleteDirection::Backward, 200).unwrap();
+            assert_eq!(
+                actions,
+                vec![replace_selection_action(
+                    RegionKind::Body,
+                    &ids[0],
+                    0,
+                    &ids[0],
+                    2,
+                    ""
+                )]
+            );
+            let (actions, _) =
+                delete(&at(&ids[0], 0), &state.doc, DeleteDirection::Backward, 3).unwrap();
+            assert!(actions.is_empty());
+            for count in [0, MAX_ERASE_COUNT + 1] {
+                assert!(matches!(
+                    delete(&at(&ids[0], 1), &state.doc, DeleteDirection::Forward, count),
+                    Err(EditingError::Invalid(_))
+                ));
+            }
+            let refused = invoke(
+                &at(&ids[0], 1),
+                &state.doc,
+                op::DELETE,
+                serde_json::json!({"count": 1}),
+            );
+            assert_eq!(
+                refused.type_id,
+                <crate::model::Document as ui::tilo_resource::Resource>::ACTION_TYPE
+            );
+            let edge = invoke(
+                &at(&ids[0], 0),
+                &state.doc,
+                op::DELETE,
+                serde_json::json!({}),
+            );
+            assert_eq!(edge.type_id, tilo_actions::resource::INVALID_ARGUMENTS_TYPE);
+            let over = invoke(
+                &at(&ids[0], 1),
+                &state.doc,
+                op::DELETE,
+                serde_json::json!({"count": MAX_ERASE_COUNT + 1}),
+            );
+            assert_eq!(over.type_id, tilo_actions::resource::INVALID_ARGUMENTS_TYPE);
+        }
+
+        phase in_block_keystrokes_do_not_scan_the_whole_document;
+        {
+            let mut doc = AutoCommit::new();
+            let containers = crate::model::init(&mut doc).unwrap();
+            let mut next_ids = tilo_doc::model::seeded_id_gen(&doc, &containers);
+            let mut ids = Vec::new();
+            {
+                let mut dm = tilo_doc::DocMut {
+                    doc: &mut doc,
+                    c: &containers,
+                    ids: &mut next_ids,
+                };
+                let mut after: Option<String> = None;
+                for i in 0..800 {
+                    let id = dm.insert_block(after.as_deref(), "paragraph");
+                    dm.splice_text(&id, 0, 0, &format!("paragraph {i}"));
+                    after = Some(id.clone());
+                    ids.push(id);
+                }
+            }
+            doc.commit();
+            let doc = &doc;
+            let view = at(&ids[400], 4);
+            let scans = tilo_doc::model::ordered_keys_scan_count();
+            for _ in 0..30 {
+                type_text(&view, doc, "x").unwrap();
+                delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
+                delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
+            }
+            assert_eq!(
+                tilo_doc::model::ordered_keys_scan_count(),
+                scans,
+                "a keystroke inside a block listed the document's paragraphs"
+            );
         }
     }
 
@@ -2087,244 +2272,264 @@ mod tests {
         }
     }
 
-    #[test]
-    fn root_operations_have_the_published_kinds_and_contracts() {
-        let (state, _, ids) = writer(&["alpha"]);
-        let root = root(&at(&ids[0], 2), &state.doc);
-        for id in [
-            op::TYPE_TEXT,
-            op::NEW_PARAGRAPH,
-            op::DELETE,
-            op::TOGGLE_MARK,
-            op::SET_MARK,
-            op::CLEAR_MARK,
-            op::SET_PARAGRAPH_STYLE,
-            op::APPLY_NAMED_STYLE,
-            op::PASTE,
-            op::MOVE_CARET,
-            op::SELECT_RANGE,
-            op::SELECT_BLOCK,
-            op::SELECT_ALL,
-            op::FIND,
-        ] {
-            let spec = spec(&root, id);
-            assert_eq!(spec.kind, OperationKind::View, "{id}");
-            assert!(spec.contract.is_participant_view(), "{id}");
-            assert!(
-                matches!(spec.contract.confirmation, ConfirmationPolicy::None),
-                "{id}"
-            );
-            assert!(spec.contract.requirements().is_empty(), "{id}");
-            assert!(spec.contract.validate_declaration().is_empty(), "{id}");
-            assert!(
-                spec.params()
-                    .iter()
-                    .all(|p| p.validate_declaration().is_empty()),
-                "{id}"
-            );
-        }
-        assert_eq!(spec(&root, "find").kind, OperationKind::View);
-        assert!(spec(&root, "find").params().is_empty());
-        let _ = ContextRequirement::Caret;
-    }
+    tilo_test_env::scenario! {
+        /// What the root publishes for each operation, and what a view without a usable caret is answered.
+        fn operations_keep_their_contracts_and_refuse_a_caret_that_is_not_there;
 
-    #[test]
-    fn enter_lands_in_the_new_block_once_applied_and_typing_follows() {
-        let (mut state, _, ids) = writer(&["hello world"]);
-        let view = at(&ids[0], 5);
-        let (actions, next) = new_paragraph(&view, &state.doc).unwrap();
-        assert!(next.pending.is_some());
-        assert_eq!(next.settle(&state.doc).caret, ViewPoint::new(&ids[0], 5));
-        apply_all(&mut state.doc, &actions);
-        let settled = next.settle(&state.doc);
-        let new_block = order(&state.doc)[1].clone();
-        assert_eq!(settled.caret, ViewPoint::new(&new_block, 0));
-        assert!(settled.pending.is_none());
-        let (typed, _) = type_text(&next, &state.doc, "big ").unwrap();
-        apply_all(&mut state.doc, &typed);
-        assert_eq!(texts(&state.doc), ["hello", "big  world"]);
-    }
-
-    #[test]
-    fn agent_style_streaming_through_published_operations_builds_one_paragraph() {
-        let (mut state, _, ids) = writer(&["Intro", "Middle"]);
-        let mut agent = at(&ids[0], 0);
-        let step = |agent: &mut ParticipantView,
-                    doc: &mut AutoCommit,
-                    id: &str,
-                    args: serde_json::Value| {
-            let encoded = invoke(agent, doc, id, args.clone());
-            if let Some(action) = crate::model::decoded(&encoded) {
-                let (actions, next) = match id {
-                    op::NEW_PARAGRAPH => new_paragraph(agent, doc).unwrap(),
-                    op::TYPE_TEXT => type_text(agent, doc, args["text"].as_str().unwrap()).unwrap(),
-                    _ => unreachable!(),
-                };
-                assert_eq!(actions, vec![action.clone()]);
-                apply(doc, &action);
-                *agent = next.settle(doc);
-            } else {
-                let Some(crate::effects::ViewMove::Operation(operation)) =
-                    crate::effects::decode(&encoded)
-                        .expect("a published effect")
-                        .view_operation()
-                        .unwrap()
-                else {
-                    panic!("{id} moves the caret");
-                };
-                *agent = crate::actions::view_ops::apply(agent, doc, &operation)
-                    .unwrap()
-                    .1;
-            }
-        };
-        step(
-            &mut agent,
-            &mut state.doc,
-            op::MOVE_CARET,
-            serde_json::json!({"to": "document-end"}),
-        );
-        step(
-            &mut agent,
-            &mut state.doc,
-            op::NEW_PARAGRAPH,
-            serde_json::json!({}),
-        );
-        for chunk in ["The ocean ", "covers most ", "of the planet."] {
-            step(
-                &mut agent,
-                &mut state.doc,
+        phase root_operations_have_the_published_kinds_and_contracts;
+        {
+            let (state, _, ids) = writer(&["alpha"]);
+            let root = root(&at(&ids[0], 2), &state.doc);
+            for id in [
                 op::TYPE_TEXT,
-                serde_json::json!({"text": chunk}),
+                op::NEW_PARAGRAPH,
+                op::DELETE,
+                op::TOGGLE_MARK,
+                op::SET_MARK,
+                op::CLEAR_MARK,
+                op::SET_PARAGRAPH_STYLE,
+                op::APPLY_NAMED_STYLE,
+                op::PASTE,
+                op::MOVE_CARET,
+                op::SELECT_RANGE,
+                op::SELECT_BLOCK,
+                op::SELECT_ALL,
+                op::FIND,
+            ] {
+                let spec = spec(&root, id);
+                assert_eq!(spec.kind, OperationKind::View, "{id}");
+                assert!(spec.contract.is_participant_view(), "{id}");
+                assert!(
+                    matches!(spec.contract.confirmation, ConfirmationPolicy::None),
+                    "{id}"
+                );
+                assert!(spec.contract.requirements().is_empty(), "{id}");
+                assert!(spec.contract.validate_declaration().is_empty(), "{id}");
+                assert!(
+                    spec.params()
+                        .iter()
+                        .all(|p| p.validate_declaration().is_empty()),
+                    "{id}"
+                );
+            }
+            assert_eq!(spec(&root, "find").kind, OperationKind::View);
+            assert!(spec(&root, "find").params().is_empty());
+            let _ = ContextRequirement::Caret;
+        }
+
+        phase stale_or_missing_carets_refuse_instead_of_guessing;
+        {
+            let (state, _, ids) = writer(&["abc"]);
+            let doc = &state.doc;
+            assert_eq!(
+                type_text(&ParticipantView::default(), doc, "x").unwrap_err(),
+                EditingError::NoCaret
             );
-        }
-        assert_eq!(
-            texts(&state.doc),
-            ["Intro", "Middle", "The ocean covers most of the planet."]
-        );
-        let last = order(&state.doc)[2].clone();
-        assert_eq!(agent.caret, ViewPoint::new(&last, 36));
-    }
-
-    #[test]
-    fn multi_paragraph_paste_settles_after_the_last_pasted_block() {
-        let (mut state, _, ids) = writer(&["abXYcd"]);
-        let view = sel((&ids[0], 2), (&ids[0], 4));
-        let (actions, next) = paste(
-            &view,
-            &state.doc,
-            &PasteContent::Text("one\ntwo\nthree".into()),
-        )
-        .unwrap();
-        apply_all(&mut state.doc, &actions);
-        assert_eq!(texts(&state.doc), ["abone", "two", "threecd"]);
-        let settled = next.settle(&state.doc);
-        assert_eq!(settled.caret, ViewPoint::new(&order(&state.doc)[2], 5));
-    }
-
-    #[test]
-    fn erase_extends_across_paragraphs_and_stays_bounded() {
-        let (mut state, _, ids) = writer(&["abc", "", "def"]);
-        let view = at(&ids[2], 1);
-        let (actions, next) = delete(&view, &state.doc, DeleteDirection::Backward, 4).unwrap();
-        assert_eq!(
-            actions,
-            vec![replace_selection_action(
-                RegionKind::Body,
-                &ids[0],
-                2,
-                &ids[2],
-                1,
-                ""
-            )]
-        );
-        assert_eq!(next.caret, ViewPoint::new(&ids[0], 2));
-        apply_all(&mut state.doc, &actions);
-        assert_eq!(texts(&state.doc), ["abef"]);
-        let (actions, _) =
-            delete(&at(&ids[0], 2), &state.doc, DeleteDirection::Backward, 200).unwrap();
-        assert_eq!(
-            actions,
-            vec![replace_selection_action(
-                RegionKind::Body,
-                &ids[0],
-                0,
-                &ids[0],
-                2,
-                ""
-            )]
-        );
-        let (actions, _) =
-            delete(&at(&ids[0], 0), &state.doc, DeleteDirection::Backward, 3).unwrap();
-        assert!(actions.is_empty());
-        for count in [0, MAX_ERASE_COUNT + 1] {
-            assert!(matches!(
-                delete(&at(&ids[0], 1), &state.doc, DeleteDirection::Forward, count),
-                Err(EditingError::Invalid(_))
-            ));
-        }
-        let refused = invoke(
-            &at(&ids[0], 1),
-            &state.doc,
-            op::DELETE,
-            serde_json::json!({"count": 1}),
-        );
-        assert_eq!(
-            refused.type_id,
-            <crate::model::Document as ui::tilo_resource::Resource>::ACTION_TYPE
-        );
-        let edge = invoke(
-            &at(&ids[0], 0),
-            &state.doc,
-            op::DELETE,
-            serde_json::json!({}),
-        );
-        assert_eq!(edge.type_id, tilo_actions::resource::INVALID_ARGUMENTS_TYPE);
-        let over = invoke(
-            &at(&ids[0], 1),
-            &state.doc,
-            op::DELETE,
-            serde_json::json!({"count": MAX_ERASE_COUNT + 1}),
-        );
-        assert_eq!(over.type_id, tilo_actions::resource::INVALID_ARGUMENTS_TYPE);
-    }
-
-    #[test]
-    fn large_selection_replacements_are_refused_with_an_unchanged_contract() {
-        let long = "x".repeat(LARGE_REMOVAL_CHARS + 10);
-        let (state, _, ids) = writer(&[&long, "tail"]);
-        let small = sel((&ids[0], 0), (&ids[0], 10));
-        let large = sel((&ids[0], 0), (&ids[1], 2));
-        let refused = |encoded: EncodedAction| {
-            encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE
-                && encoded.payload.starts_with(b"large-removal")
-        };
-        for (id, args) in [
-            (op::TYPE_TEXT, serde_json::json!({"text": "x"})),
-            (op::DELETE, serde_json::json!({})),
-            (op::PASTE, serde_json::json!({"text": "x"})),
-            ("replace-selection", serde_json::json!({"text": "x"})),
-        ] {
-            let calm = spec(&root(&small, &state.doc), id);
-            let loud = spec(&root(&large, &state.doc), id);
-            assert_eq!(calm.contract, loud.contract, "{id}");
+            assert_eq!(
+                new_paragraph(&at("gone", 0), doc).unwrap_err(),
+                EditingError::NoCaret
+            );
+            let (actions, next) = type_text(&at(&ids[0], 99), doc, "!").unwrap();
+            assert_eq!(
+                actions,
+                vec![splice_text_action(RegionKind::Body, &ids[0], 3, 3, "!")]
+            );
+            assert_eq!(next.caret.offset, 4);
             assert!(
-                matches!(calm.contract.confirmation, ConfirmationPolicy::None),
-                "{id}"
+                toggle_mark(&at(&ids[0], 1), doc, InlineMark::Strong)
+                    .unwrap()
+                    .0
+                    .is_empty()
             );
-            assert!(
-                !refused(invoke(&small, &state.doc, id, args.clone())),
-                "{id}"
+            let refused = invoke(
+                &at(&ids[0], 1),
+                doc,
+                op::TOGGLE_MARK,
+                serde_json::json!({"mark": "strong"}),
             );
-            assert!(refused(invoke(&large, &state.doc, id, args)), "{id}");
+            assert_eq!(
+                refused.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+            );
+            assert!(refused.payload.starts_with(b"needs-selection"));
+            let refused = invoke(
+                &at(&ids[0], 1),
+                doc,
+                op::TYPE_TEXT,
+                serde_json::json!({"text": ""}),
+            );
+            assert_eq!(
+                refused.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+            );
+            let refused = invoke(
+                &at(&ids[0], 1),
+                doc,
+                op::SET_MARK,
+                serde_json::json!({"name": "color", "value": "red"}),
+            );
+            assert_eq!(
+                refused.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+            );
         }
-        let (_, all) = select_all(&at(&ids[0], 0), &state.doc).unwrap();
-        assert!(refused(invoke(
-            &all,
-            &state.doc,
-            op::TYPE_TEXT,
-            serde_json::json!({"text": ""})
-        )));
-        assert_eq!(type_text(&all, &state.doc, "").unwrap().0.len(), 1);
+    }
+
+    tilo_test_env::scenario! {
+        /// Pasting plain text, Markdown and tables, and replacing a large selection.
+        fn pastes_and_replacements_land_whole_or_are_refused;
+
+        phase multi_paragraph_paste_settles_after_the_last_pasted_block;
+        {
+            let (mut state, _, ids) = writer(&["abXYcd"]);
+            let view = sel((&ids[0], 2), (&ids[0], 4));
+            let (actions, next) = paste(
+                &view,
+                &state.doc,
+                &PasteContent::Text("one\ntwo\nthree".into()),
+            )
+            .unwrap();
+            apply_all(&mut state.doc, &actions);
+            assert_eq!(texts(&state.doc), ["abone", "two", "threecd"]);
+            let settled = next.settle(&state.doc);
+            assert_eq!(settled.caret, ViewPoint::new(&order(&state.doc)[2], 5));
+        }
+
+        phase large_selection_replacements_are_refused_with_an_unchanged_contract;
+        {
+            let long = "x".repeat(LARGE_REMOVAL_CHARS + 10);
+            let (state, _, ids) = writer(&[&long, "tail"]);
+            let small = sel((&ids[0], 0), (&ids[0], 10));
+            let large = sel((&ids[0], 0), (&ids[1], 2));
+            let refused = |encoded: EncodedAction| {
+                encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+                    && encoded.payload.starts_with(b"large-removal")
+            };
+            for (id, args) in [
+                (op::TYPE_TEXT, serde_json::json!({"text": "x"})),
+                (op::DELETE, serde_json::json!({})),
+                (op::PASTE, serde_json::json!({"text": "x"})),
+                ("replace-selection", serde_json::json!({"text": "x"})),
+            ] {
+                let calm = spec(&root(&small, &state.doc), id);
+                let loud = spec(&root(&large, &state.doc), id);
+                assert_eq!(calm.contract, loud.contract, "{id}");
+                assert!(
+                    matches!(calm.contract.confirmation, ConfirmationPolicy::None),
+                    "{id}"
+                );
+                assert!(
+                    !refused(invoke(&small, &state.doc, id, args.clone())),
+                    "{id}"
+                );
+                assert!(refused(invoke(&large, &state.doc, id, args)), "{id}");
+            }
+            let (_, all) = select_all(&at(&ids[0], 0), &state.doc).unwrap();
+            assert!(refused(invoke(
+                &all,
+                &state.doc,
+                op::TYPE_TEXT,
+                serde_json::json!({"text": ""})
+            )));
+            assert_eq!(type_text(&all, &state.doc, "").unwrap().0.len(), 1);
+        }
+
+        phase markdown_paste_keeps_structure_and_drops_unsafe_links;
+        {
+            let (mut state, _, ids) = writer(&["start"]);
+            let md = "# Title\n\nSome **bold** and [bad](javascript:alert(1)) and [ok](https://example.test).\n";
+            let (actions, next) = paste(
+                &at(&ids[0], 5),
+                &state.doc,
+                &PasteContent::Markdown(md.into()),
+            )
+            .unwrap();
+            let RichTextAction::PasteFragment { blocks, .. } = &actions[0] else {
+                panic!("paste is one PasteFragment");
+            };
+            assert_eq!(blocks[0].kind, "heading");
+            let links: Vec<_> = blocks
+                .iter()
+                .flat_map(|block| block.marks.iter())
+                .filter(|mark| mark.name == "link")
+                .collect();
+            assert_eq!(links.len(), 1, "{links:?}");
+            assert!(
+                blocks
+                    .iter()
+                    .flat_map(|b| b.marks.iter())
+                    .any(|m| m.name == "strong")
+            );
+            apply_all(&mut state.doc, &actions);
+            let settled = next.settle(&state.doc);
+            assert_eq!(settled.caret.block, *order(&state.doc).last().unwrap());
+            let refused = invoke(
+                &at(&ids[0], 0),
+                &state.doc,
+                op::PASTE,
+                serde_json::json!({"text": "a", "markdown": "b"}),
+            );
+            assert_eq!(
+                refused.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+            );
+        }
+
+        phase markdown_table_pastes_as_a_table_of_this_document;
+        {
+            let (mut state, _, ids) = writer(&["intro outro"]);
+            let md = "| Person | Blocked |\n| --- | --- |\n| Maya | no |\n";
+            for _ in 0..2 {
+                let (actions, _) = paste(
+                    &at(&ids[0], 6),
+                    &state.doc,
+                    &PasteContent::Markdown(md.into()),
+                )
+                .unwrap();
+                apply_all(&mut state.doc, &actions);
+            }
+            let c = crate::model::open(&state.doc).unwrap();
+            let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
+            let rows: Vec<_> = blocks
+                .iter()
+                .map(|block| {
+                    let attr = |key: &str| match block.attrs.get(key) {
+                        Some(tilo_doc::AttrVal::Int(value)) => value.to_string(),
+                        Some(tilo_doc::AttrVal::Str(value)) => value.clone(),
+                        _ => String::new(),
+                    };
+                    (
+                        block.kind.as_str(),
+                        block.text.as_str(),
+                        attr("row"),
+                        attr("col"),
+                    )
+                })
+                .collect();
+            let cell = |text, row: &str, col: &str| ("cell", text, row.to_owned(), col.to_owned());
+            let para = |text| ("paragraph", text, String::new(), String::new());
+            assert_eq!(
+                rows,
+                [
+                    para("intro "),
+                    cell("Person", "0", "0"),
+                    cell("Blocked", "0", "1"),
+                    cell("Maya", "1", "0"),
+                    cell("no", "1", "1"),
+                    para(""),
+                    cell("Person", "0", "0"),
+                    cell("Blocked", "0", "1"),
+                    cell("Maya", "1", "0"),
+                    cell("no", "1", "1"),
+                    para("outro"),
+                ]
+            );
+            let tables: std::collections::BTreeSet<_> = blocks
+                .iter()
+                .filter_map(|block| block.str_attr("table").map(str::to_owned))
+                .collect();
+            assert_eq!(tables.len(), 2, "each paste is its own table: {tables:?}");
+        }
     }
 
     #[test]
@@ -2460,296 +2665,111 @@ mod tests {
         assert_eq!(state.doc.clone().get_heads(), heads);
     }
 
-    #[test]
-    fn markdown_paste_keeps_structure_and_drops_unsafe_links() {
-        let (mut state, _, ids) = writer(&["start"]);
-        let md = "# Title\n\nSome **bold** and [bad](javascript:alert(1)) and [ok](https://example.test).\n";
-        let (actions, next) = paste(
-            &at(&ids[0], 5),
-            &state.doc,
-            &PasteContent::Markdown(md.into()),
-        )
-        .unwrap();
-        let RichTextAction::PasteFragment { blocks, .. } = &actions[0] else {
-            panic!("paste is one PasteFragment");
-        };
-        assert_eq!(blocks[0].kind, "heading");
-        let links: Vec<_> = blocks
-            .iter()
-            .flat_map(|block| block.marks.iter())
-            .filter(|mark| mark.name == "link")
-            .collect();
-        assert_eq!(links.len(), 1, "{links:?}");
-        assert!(
-            blocks
-                .iter()
-                .flat_map(|b| b.marks.iter())
-                .any(|m| m.name == "strong")
-        );
-        apply_all(&mut state.doc, &actions);
-        let settled = next.settle(&state.doc);
-        assert_eq!(settled.caret.block, *order(&state.doc).last().unwrap());
-        let refused = invoke(
-            &at(&ids[0], 0),
-            &state.doc,
-            op::PASTE,
-            serde_json::json!({"text": "a", "markdown": "b"}),
-        );
-        assert_eq!(
-            refused.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Setting a mark on, and marks that carry a value or exclude another.
+        fn marks_are_set_over_the_selection_or_the_caret_block;
 
-    #[test]
-    fn markdown_table_pastes_as_a_table_of_this_document() {
-        let (mut state, _, ids) = writer(&["intro outro"]);
-        let md = "| Person | Blocked |\n| --- | --- |\n| Maya | no |\n";
-        for _ in 0..2 {
-            let (actions, _) = paste(
-                &at(&ids[0], 6),
-                &state.doc,
-                &PasteContent::Markdown(md.into()),
-            )
-            .unwrap();
-            apply_all(&mut state.doc, &actions);
-        }
-        let c = crate::model::open(&state.doc).unwrap();
-        let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
-        let rows: Vec<_> = blocks
-            .iter()
-            .map(|block| {
-                let attr = |key: &str| match block.attrs.get(key) {
-                    Some(tilo_doc::AttrVal::Int(value)) => value.to_string(),
-                    Some(tilo_doc::AttrVal::Str(value)) => value.clone(),
-                    _ => String::new(),
-                };
-                (
-                    block.kind.as_str(),
-                    block.text.as_str(),
-                    attr("row"),
-                    attr("col"),
+        phase set_mark_on_keeps_bold_that_a_toggle_would_remove;
+        {
+            let (mut state, _, ids) = writer(&["Deadline"]);
+            let view = sel((&ids[0], 0), (&ids[0], 8));
+            let (bold, _) = toggle_mark(&view, &state.doc, InlineMark::Strong).unwrap();
+            apply_all(&mut state.doc, &bold);
+            let doc = &state.doc;
+            let line = vec![Span {
+                block: ids[0].clone(),
+                start: 0,
+                end: 8,
+            }];
+            let strong = |value| {
+                encode(&set_mark_action(
+                    RegionKind::Body,
+                    line.clone(),
+                    "strong",
+                    value,
+                    vec![],
+                ))
+            };
+            let set = |on| {
+                invoke(
+                    &view,
+                    doc,
+                    op::SET_MARK,
+                    serde_json::json!({"name": "strong", "on": on}),
                 )
-            })
-            .collect();
-        let cell = |text, row: &str, col: &str| ("cell", text, row.to_owned(), col.to_owned());
-        let para = |text| ("paragraph", text, String::new(), String::new());
-        assert_eq!(
-            rows,
-            [
-                para("intro "),
-                cell("Person", "0", "0"),
-                cell("Blocked", "0", "1"),
-                cell("Maya", "1", "0"),
-                cell("no", "1", "1"),
-                para(""),
-                cell("Person", "0", "0"),
-                cell("Blocked", "0", "1"),
-                cell("Maya", "1", "0"),
-                cell("no", "1", "1"),
-                para("outro"),
-            ]
-        );
-        let tables: std::collections::BTreeSet<_> = blocks
-            .iter()
-            .filter_map(|block| block.str_attr("table").map(str::to_owned))
-            .collect();
-        assert_eq!(tables.len(), 2, "each paste is its own table: {tables:?}");
-    }
-
-    #[test]
-    fn stale_or_missing_carets_refuse_instead_of_guessing() {
-        let (state, _, ids) = writer(&["abc"]);
-        let doc = &state.doc;
-        assert_eq!(
-            type_text(&ParticipantView::default(), doc, "x").unwrap_err(),
-            EditingError::NoCaret
-        );
-        assert_eq!(
-            new_paragraph(&at("gone", 0), doc).unwrap_err(),
-            EditingError::NoCaret
-        );
-        let (actions, next) = type_text(&at(&ids[0], 99), doc, "!").unwrap();
-        assert_eq!(
-            actions,
-            vec![splice_text_action(RegionKind::Body, &ids[0], 3, 3, "!")]
-        );
-        assert_eq!(next.caret.offset, 4);
-        assert!(
-            toggle_mark(&at(&ids[0], 1), doc, InlineMark::Strong)
-                .unwrap()
-                .0
-                .is_empty()
-        );
-        let refused = invoke(
-            &at(&ids[0], 1),
-            doc,
-            op::TOGGLE_MARK,
-            serde_json::json!({"mark": "strong"}),
-        );
-        assert_eq!(
-            refused.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
-        );
-        assert!(refused.payload.starts_with(b"needs-selection"));
-        let refused = invoke(
-            &at(&ids[0], 1),
-            doc,
-            op::TYPE_TEXT,
-            serde_json::json!({"text": ""}),
-        );
-        assert_eq!(
-            refused.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
-        );
-        let refused = invoke(
-            &at(&ids[0], 1),
-            doc,
-            op::SET_MARK,
-            serde_json::json!({"name": "color", "value": "red"}),
-        );
-        assert_eq!(
-            refused.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
-        );
-    }
-
-    #[test]
-    fn set_mark_on_keeps_bold_that_a_toggle_would_remove() {
-        let (mut state, _, ids) = writer(&["Deadline"]);
-        let view = sel((&ids[0], 0), (&ids[0], 8));
-        let (bold, _) = toggle_mark(&view, &state.doc, InlineMark::Strong).unwrap();
-        apply_all(&mut state.doc, &bold);
-        let doc = &state.doc;
-        let line = vec![Span {
-            block: ids[0].clone(),
-            start: 0,
-            end: 8,
-        }];
-        let strong = |value| {
-            encode(&set_mark_action(
-                RegionKind::Body,
-                line.clone(),
-                "strong",
-                value,
-                vec![],
-            ))
-        };
-        let set = |on| {
-            invoke(
+            };
+            assert_eq!(set(true), strong(Some(MarkVal::Bool(true))));
+            assert_eq!(
+                invoke(
+                    &view,
+                    doc,
+                    op::TOGGLE_MARK,
+                    serde_json::json!({"mark": "strong"})
+                ),
+                strong(None)
+            );
+            assert_eq!(set(false), strong(None));
+            let missing = invoke(
                 &view,
                 doc,
                 op::SET_MARK,
-                serde_json::json!({"name": "strong", "on": on}),
-            )
-        };
-        assert_eq!(set(true), strong(Some(MarkVal::Bool(true))));
-        assert_eq!(
-            invoke(
-                &view,
+                serde_json::json!({"name": "strong"}),
+            );
+            assert_eq!(
+                missing.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+            );
+            let caret_only = invoke(
+                &at(&ids[0], 1),
                 doc,
-                op::TOGGLE_MARK,
-                serde_json::json!({"mark": "strong"})
-            ),
-            strong(None)
-        );
-        assert_eq!(set(false), strong(None));
-        let missing = invoke(
-            &view,
-            doc,
-            op::SET_MARK,
-            serde_json::json!({"name": "strong"}),
-        );
-        assert_eq!(
-            missing.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
-        );
-        let caret_only = invoke(
-            &at(&ids[0], 1),
-            doc,
-            op::SET_MARK,
-            serde_json::json!({"name": "em", "on": true}),
-        );
-        assert!(caret_only.payload.starts_with(b"needs-selection"));
-    }
+                op::SET_MARK,
+                serde_json::json!({"name": "em", "on": true}),
+            );
+            assert!(caret_only.payload.starts_with(b"needs-selection"));
+        }
 
-    #[test]
-    fn valued_and_exclusive_marks_fall_back_to_the_caret_block() {
-        let (state, _, ids) = writer(&["alpha", "beta"]);
-        let view = at(&ids[1], 2);
-        let caret_block = vec![Span {
-            block: ids[1].clone(),
-            start: 0,
-            end: 4,
-        }];
-        let (actions, _) = set_mark(&view, &state.doc, "size", MarkVal::Int(14)).unwrap();
-        assert_eq!(
-            actions,
-            vec![set_mark_action(
-                RegionKind::Body,
-                caret_block.clone(),
-                "size",
-                Some(MarkVal::Int(14)),
-                vec![]
-            )]
-        );
-        let (actions, _) = clear_mark(&view, &state.doc, "color").unwrap();
-        assert_eq!(
-            actions,
-            vec![set_mark_action(
-                RegionKind::Body,
-                caret_block.clone(),
-                "color",
-                None,
-                vec![]
-            )]
-        );
-        let (actions, _) = toggle_mark(&view, &state.doc, InlineMark::Superscript).unwrap();
-        assert_eq!(
-            actions,
-            vec![set_mark_action(
-                RegionKind::Body,
-                caret_block,
-                "super",
-                Some(MarkVal::Bool(true)),
-                vec!["sub".into()]
-            )]
-        );
-    }
-
-    #[test]
-    fn in_block_keystrokes_do_not_scan_the_whole_document() {
-        let mut doc = AutoCommit::new();
-        let containers = crate::model::init(&mut doc).unwrap();
-        let mut next_ids = tilo_doc::model::seeded_id_gen(&doc, &containers);
-        let mut ids = Vec::new();
+        phase valued_and_exclusive_marks_fall_back_to_the_caret_block;
         {
-            let mut dm = tilo_doc::DocMut {
-                doc: &mut doc,
-                c: &containers,
-                ids: &mut next_ids,
-            };
-            let mut after: Option<String> = None;
-            for i in 0..800 {
-                let id = dm.insert_block(after.as_deref(), "paragraph");
-                dm.splice_text(&id, 0, 0, &format!("paragraph {i}"));
-                after = Some(id.clone());
-                ids.push(id);
-            }
+            let (state, _, ids) = writer(&["alpha", "beta"]);
+            let view = at(&ids[1], 2);
+            let caret_block = vec![Span {
+                block: ids[1].clone(),
+                start: 0,
+                end: 4,
+            }];
+            let (actions, _) = set_mark(&view, &state.doc, "size", MarkVal::Int(14)).unwrap();
+            assert_eq!(
+                actions,
+                vec![set_mark_action(
+                    RegionKind::Body,
+                    caret_block.clone(),
+                    "size",
+                    Some(MarkVal::Int(14)),
+                    vec![]
+                )]
+            );
+            let (actions, _) = clear_mark(&view, &state.doc, "color").unwrap();
+            assert_eq!(
+                actions,
+                vec![set_mark_action(
+                    RegionKind::Body,
+                    caret_block.clone(),
+                    "color",
+                    None,
+                    vec![]
+                )]
+            );
+            let (actions, _) = toggle_mark(&view, &state.doc, InlineMark::Superscript).unwrap();
+            assert_eq!(
+                actions,
+                vec![set_mark_action(
+                    RegionKind::Body,
+                    caret_block,
+                    "super",
+                    Some(MarkVal::Bool(true)),
+                    vec!["sub".into()]
+                )]
+            );
         }
-        doc.commit();
-        let doc = &doc;
-        let view = at(&ids[400], 4);
-        let scans = tilo_doc::model::ordered_keys_scan_count();
-        for _ in 0..30 {
-            type_text(&view, doc, "x").unwrap();
-            delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
-            delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
-        }
-        assert_eq!(
-            tilo_doc::model::ordered_keys_scan_count(),
-            scans,
-            "a keystroke inside a block listed the document's paragraphs"
-        );
     }
 }

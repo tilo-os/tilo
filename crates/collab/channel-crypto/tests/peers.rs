@@ -7,8 +7,8 @@ use std::path::Path;
 
 use channel_crypto::{Access, ChannelPeer, PeerEvent, VaultKey};
 use collab_types::{
-    ArtifactId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata,
-    MlsGovernanceAction, MlsGovernanceFrame,
+    ArtifactId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, MlsGovernanceAction,
+    MlsGovernanceFrame, WorkspaceId,
 };
 use ed25519_dalek::SigningKey;
 
@@ -16,7 +16,7 @@ fn vault() -> VaultKey {
     VaultKey::new([7; 32])
 }
 
-/// The peers kept in `dir`, as a host's channels directory keeps them.
+/// The peers kept in `dir`, as a host's workspaces directory keeps them.
 fn states(dir: &Path) -> std::sync::Arc<dyn channel_crypto::PeerStates> {
     std::sync::Arc::new(channel_crypto::Files::new(dir))
 }
@@ -31,15 +31,16 @@ impl Device {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
     }
 
-    fn creating(seed: u8, channel: ChannelId) -> Self {
+    fn creating(seed: u8, workspace: WorkspaceId) -> Self {
         let key = SigningKey::from_bytes(&[seed; 32]);
-        let peer = ChannelPeer::create_now(None, channel, Box::new(key.clone()), &vault()).unwrap();
+        let peer =
+            ChannelPeer::create_now(None, workspace, Box::new(key.clone()), &vault()).unwrap();
         Self { key, peer }
     }
 
-    fn waiting(seed: u8, channel: ChannelId) -> Self {
+    fn waiting(seed: u8, workspace: WorkspaceId) -> Self {
         let key = SigningKey::from_bytes(&[seed; 32]);
-        let peer = ChannelPeer::waiting(None, channel, Box::new(key.clone()), &vault()).unwrap();
+        let peer = ChannelPeer::waiting(None, workspace, Box::new(key.clone()), &vault()).unwrap();
         Self { key, peer }
     }
 
@@ -91,22 +92,22 @@ impl Device {
     }
 }
 
-/// A member that was not reached when the channel's newest commit was published
-/// is current again from what a member that took the commit holds of the
-/// channel: nobody has to commit again for it to hear of the epoch it missed.
+/// A member that was not reached when the workspace's newest commit was
+/// published is current again from what a member that took the commit holds of
+/// the group: nobody has to commit again for it to hear of the epoch it missed.
 #[test]
 fn a_member_that_missed_the_newest_commit_is_current_from_what_another_holds() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut carol = Device::waiting(3, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut carol = Device::waiting(3, workspace);
     let members = allowed(&[&alice, &bob, &carol]);
     alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&members, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut bob], &members);
     assert_eq!(bob.epoch(), alice.epoch());
     assert!(
-        Device::waiting(4, channel).peer.standing().is_empty(),
+        Device::waiting(4, workspace).peer.standing().is_empty(),
         "a device that is not in the group has nothing of it to hand over"
     );
 
@@ -119,7 +120,7 @@ fn a_member_that_missed_the_newest_commit_is_current_from_what_another_holds() {
     assert!(bob.epoch() < alice.epoch(), "Bob missed the commit");
     assert!(alice.peer.outbox().is_empty(), "and nothing is left to say");
 
-    // What Alice holds of the channel, handed to Bob as he reaches her again.
+    // What Alice holds of the group, handed to Bob as he reaches her again.
     let standing = alice.peer.standing();
     assert!(
         standing
@@ -157,9 +158,9 @@ fn deliver(
 
 #[test]
 fn genesis_closes_the_plaintext_gate_for_everyone() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
     assert!(alice.peer.gate().encryption_required);
     assert!(!bob.peer.gate().encryption_required);
     let everyone = allowed(&[&alice, &bob]);
@@ -179,10 +180,10 @@ fn genesis_closes_the_plaintext_gate_for_everyone() {
 
 #[test]
 fn any_participant_admits_and_late_joiners_read_all_past_content() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut carol = Device::waiting(3, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut carol = Device::waiting(3, workspace);
     let first = alice.seal("before anyone joined");
 
     // Alice admits Bob.
@@ -201,7 +202,7 @@ fn any_participant_admits_and_late_joiners_read_all_past_content() {
     assert_eq!(bob.epoch(), Some(1));
     let second = bob.seal("bob at epoch one");
 
-    // Bob, not the channel's creator, admits Carol.
+    // Bob, not the workspace's creator, admits Carol.
     members = allowed(&[&alice, &bob, &carol]);
     let request = carol.ask(false);
     bob.peer.learn_request(request.clone()).unwrap();
@@ -239,82 +240,12 @@ fn any_participant_admits_and_late_joiners_read_all_past_content() {
     assert!(bob.opens(&after).is_none());
 }
 
-/// A group adopts the keys of a legacy group this device holds for a unit
-/// the group now carries: one commit hands them to every member, a device
-/// admitted afterwards reads the old content through its key history, and
-/// adopting again queues nothing a second time.
-#[test]
-fn a_group_hands_a_legacy_groups_keys_to_every_member_and_joiner() {
-    let channel = ChannelId::new();
-    let legacy = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut members = allowed(&[&alice, &bob]);
-    let request = bob.ask(false);
-    alice.peer.learn_request(request).unwrap();
-    alice.peer.reconcile_now(&members, &vault()).unwrap();
-    let frames = alice.take();
-    deliver(&frames, &mut [&mut bob], &members);
-    assert_eq!(bob.epoch(), Some(1));
-
-    // Alice's group for the unit, from before key scopes, with the unit's
-    // history sealed under it.
-    let old = Device::creating(1, legacy);
-    let before = old.seal("before key scopes");
-    let old_keys = old.peer.keyring().unwrap().clone();
-    let named_for_the_unit = |keys: &channel_crypto::ChannelContentKeys| keys.for_unit(legacy);
-
-    // Alice hands the old group's keys to the group: one commit, and the
-    // keys are queued once.
-    assert!(alice.peer.adopt(&old_keys));
-    assert!(
-        !alice.peer.adopt(&old_keys),
-        "adoption queues nothing twice"
-    );
-    assert!(alice.peer.holds_unshared_keys());
-    assert!(
-        alice
-            .peer
-            .reconcile_now(&members, &vault())
-            .unwrap()
-            .history,
-        "the commit that hands the keys over changes no member"
-    );
-    let frames = alice.take();
-    deliver(&frames, &mut [&mut bob], &members);
-    assert!(!alice.peer.holds_unshared_keys());
-    let keys = named_for_the_unit(&bob.peer.content_keys().unwrap());
-    assert_eq!(
-        keys.open_content(before.0, &before.1, &before.2)
-            .unwrap()
-            .as_slice(),
-        b"before key scopes",
-        "the member reads what the old group sealed, by the unit's channel"
-    );
-
-    // A device admitted afterwards receives them with its key history.
-    let mut carol = Device::waiting(3, channel);
-    members = allowed(&[&alice, &bob, &carol]);
-    let request = carol.ask(false);
-    alice.peer.learn_request(request).unwrap();
-    alice.peer.reconcile_now(&members, &vault()).unwrap();
-    let frames = alice.take();
-    deliver(&frames, &mut [&mut carol], &members);
-    let keys = named_for_the_unit(&carol.peer.content_keys().unwrap());
-    assert_eq!(
-        keys.open_content(before.0, &before.1, &before.2)
-            .unwrap()
-            .as_slice(),
-        b"before key scopes"
-    );
-}
-
 #[test]
 fn a_commit_the_membership_does_not_back_is_refused() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut eve = Device::waiting(9, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut eve = Device::waiting(9, workspace);
     let both = allowed(&[&alice, &bob]);
     alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&both, &vault()).unwrap();
@@ -347,7 +278,7 @@ fn a_commit_the_membership_does_not_back_is_refused() {
     );
 
     // A frame declaring other changes than its MLS commit makes is refused.
-    let mut dave = Device::waiting(4, channel);
+    let mut dave = Device::waiting(4, workspace);
     let all = allowed(&[&alice, &bob, &eve, &dave]);
     alice.peer.learn_request(dave.ask(false)).unwrap();
     alice.peer.reconcile_now(&all, &vault()).unwrap();
@@ -363,7 +294,7 @@ fn a_commit_the_membership_does_not_back_is_refused() {
         panic!("a commit");
     };
     let forged = MlsGovernanceFrame::signed(
-        channel,
+        workspace,
         real.previous_frame_digest,
         real.epoch,
         MlsGovernanceAction::Commit {
@@ -389,11 +320,11 @@ fn a_commit_the_membership_does_not_back_is_refused() {
 
 #[test]
 fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut carol = Device::waiting(3, channel);
-    let mut dave = Device::waiting(4, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut carol = Device::waiting(3, workspace);
+    let mut dave = Device::waiting(4, workspace);
     let three = allowed(&[&alice, &bob, &carol]);
     alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.learn_request(carol.ask(false)).unwrap();
@@ -481,11 +412,11 @@ fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
 /// branch it left stays readable.
 #[test]
 fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut dave = Device::waiting(4, channel);
-    let mut erin = Device::waiting(5, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut dave = Device::waiting(4, workspace);
+    let mut erin = Device::waiting(5, workspace);
     let both = allowed(&[&alice, &bob]);
     alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&both, &vault()).unwrap();
@@ -605,15 +536,15 @@ fn settle(devices: &mut [&mut Device], allowed: &BTreeSet<Ed25519PublicKey>) {
             }
         }
     }
-    assert!(settled, "the channel never settled");
+    assert!(settled, "the workspace never settled");
 }
 
-/// Two participants create a channel's group at once and each seals content
+/// Two participants create a workspace's group at once and each seals content
 /// before hearing of the other: one group remains, and everything written
 /// under either genesis opens for every member, a later joiner included.
 #[test]
 fn concurrent_geneses_leave_one_group_and_all_content_readable() {
-    // Which genesis wins is down to its digest: enough channels that both
+    // Which genesis wins is down to its digest: enough workspaces that both
     // sides win.
     for _ in 0..8 {
         concurrent_geneses_leave_one_group_and_all_content_readable_once();
@@ -621,15 +552,15 @@ fn concurrent_geneses_leave_one_group_and_all_content_readable() {
 }
 
 fn concurrent_geneses_leave_one_group_and_all_content_readable_once() {
-    let channel = ChannelId::new();
-    let mut alice = Device::waiting(1, channel);
-    let mut bob = Device::waiting(2, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::waiting(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
     assert!(alice.peer.found_now(&vault()).unwrap());
     assert!(bob.peer.found_now(&vault()).unwrap());
     assert!(!alice.peer.found_now(&vault()).unwrap(), "one genesis each");
     let from_alice = alice.seal("from alice's group");
     let from_bob = bob.seal("from bob's group");
-    let mut carol = Device::waiting(3, channel);
+    let mut carol = Device::waiting(3, workspace);
     let everyone = allowed(&[&alice, &bob, &carol]);
     settle(&mut [&mut alice, &mut bob], &everyone);
     assert_eq!(alice.peer.members(), bob.peer.members());
@@ -645,13 +576,13 @@ fn concurrent_geneses_leave_one_group_and_all_content_readable_once() {
     }
 }
 
-/// A device that missed a channel's genesis during an outage creates a
+/// A device that missed a workspace's genesis during an outage creates a
 /// second group and writes there. Whichever genesis wins, no one loses what
 /// was sealed under the other, and a device that has seen a genesis never
 /// creates another.
 #[test]
 fn a_device_that_missed_the_genesis_destroys_no_history() {
-    // Which genesis wins is down to its digest: enough channels that both
+    // Which genesis wins is down to its digest: enough workspaces that both
     // sides win.
     for _ in 0..8 {
         a_device_that_missed_the_genesis_destroys_no_history_once();
@@ -659,10 +590,10 @@ fn a_device_that_missed_the_genesis_destroys_no_history() {
 }
 
 fn a_device_that_missed_the_genesis_destroys_no_history_once() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut carol = Device::waiting(3, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut carol = Device::waiting(3, workspace);
     let everyone = allowed(&[&alice, &bob, &carol]);
     settle(&mut [&mut alice, &mut bob], &everyone);
     let before = alice.seal("before the outage");
@@ -687,15 +618,15 @@ fn a_device_that_missed_the_genesis_destroys_no_history_once() {
     }
 }
 
-/// A device that cannot name the channel's record follows commits from the
+/// A device that cannot name the workspace's record follows commits from the
 /// group's members, and a genesis of anyone else's does not make it leave
 /// its group.
 #[test]
 fn a_device_without_the_route_follows_commits_and_keeps_its_group() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut carol = Device::waiting(3, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut carol = Device::waiting(3, workspace);
     let everyone = allowed(&[&alice, &bob, &carol]);
     settle(&mut [&mut alice, &mut bob], &everyone);
     let request = carol.ask(false);
@@ -709,7 +640,7 @@ fn a_device_without_the_route_follows_commits_and_keeps_its_group() {
             );
         }
     }
-    let mut eve = Device::waiting(5, channel);
+    let mut eve = Device::waiting(5, workspace);
     assert!(eve.peer.found_now(&vault()).unwrap());
     let genesis = eve.take().remove(0);
     assert_eq!(
@@ -721,11 +652,11 @@ fn a_device_without_the_route_follows_commits_and_keeps_its_group() {
 
 #[test]
 fn a_member_that_fell_behind_or_lost_its_state_is_admitted_again() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut carol = Device::waiting(3, channel);
-    let mut dave = Device::waiting(4, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut carol = Device::waiting(3, workspace);
+    let mut dave = Device::waiting(4, workspace);
     let history = alice.seal("history");
     let members = allowed(&[&alice, &bob, &carol, &dave]);
     alice.peer.learn_request(bob.ask(false)).unwrap();
@@ -766,7 +697,7 @@ fn a_member_that_fell_behind_or_lost_its_state_is_admitted_again() {
 
     // Dave never got his Welcome applied (he lost his state): his fresh
     // request is answered again; a stale one is not.
-    let mut dave = Device::waiting(4, channel);
+    let mut dave = Device::waiting(4, workspace);
     let stale_epoch = alice.epoch();
     assert!(!alice.peer.differs(&members));
     alice.peer.learn_request(dave.ask(true)).unwrap();
@@ -784,9 +715,9 @@ fn a_member_that_fell_behind_or_lost_its_state_is_admitted_again() {
 
 #[test]
 fn competing_geneses_keep_the_lower_digest() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::creating(2, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::creating(2, workspace);
     let both = allowed(&[&alice, &bob]);
     let from_alice = alice.take();
     let from_bob = bob.take();
@@ -817,9 +748,9 @@ fn competing_geneses_keep_the_lower_digest() {
 /// first, it ends up in the winner's group.
 #[test]
 fn a_welcomed_member_judges_competing_geneses_by_its_own_group() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::creating(2, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::creating(2, workspace);
     let from_alice = alice.take().remove(0);
     let from_bob = bob.take().remove(0);
     let alice_wins = from_alice.digest().unwrap() < from_bob.digest().unwrap();
@@ -828,8 +759,8 @@ fn a_welcomed_member_judges_competing_geneses_by_its_own_group() {
     } else {
         (bob, alice, from_bob, from_alice)
     };
-    let mut in_winner = Device::waiting(3, channel);
-    let mut in_loser = Device::waiting(4, channel);
+    let mut in_winner = Device::waiting(3, workspace);
+    let mut in_loser = Device::waiting(4, workspace);
     let everyone = allowed(&[&winner, &loser, &in_winner, &in_loser]);
     for (founder, joiner) in [(&mut winner, &mut in_winner), (&mut loser, &mut in_loser)] {
         founder.peer.learn_request(joiner.ask(false)).unwrap();
@@ -866,7 +797,7 @@ fn a_welcomed_member_judges_competing_geneses_by_its_own_group() {
 
     // A device welcomed into the losing group after it learnt of the winner
     // starts over at once, and tells the group that admitted it.
-    let mut late = Device::waiting(5, channel);
+    let mut late = Device::waiting(5, workspace);
     let everyone = allowed(&[&winner, &loser, &in_winner, &in_loser, &late]);
     assert_eq!(
         late.receive(&winning, &everyone).unwrap(),
@@ -891,11 +822,15 @@ fn a_welcomed_member_judges_competing_geneses_by_its_own_group() {
 fn state_survives_a_restart_and_an_export() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path();
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let key = SigningKey::from_bytes(&[1; 32]);
-    let created =
-        ChannelPeer::create_now(Some(states(dir)), channel, Box::new(key.clone()), &vault())
-            .unwrap();
+    let created = ChannelPeer::create_now(
+        Some(states(dir)),
+        workspace,
+        Box::new(key.clone()),
+        &vault(),
+    )
+    .unwrap();
     let sealed = {
         let device = Device {
             key: key.clone(),
@@ -903,7 +838,7 @@ fn state_survives_a_restart_and_an_export() {
         };
         device.seal("kept")
     };
-    let reopened = reopen(dir, channel, &key).unwrap().unwrap();
+    let reopened = reopen(dir, workspace, &key).unwrap().unwrap();
     assert_eq!(reopened.access(), Access::Ready { epoch: 0 });
     assert_eq!(
         reopened.outbox().len(),
@@ -917,13 +852,13 @@ fn state_survives_a_restart_and_an_export() {
     assert_eq!(device.opens(&sealed).as_deref(), Some("kept"));
     let exported = device.peer.export_sealed(&vault()).unwrap();
     let restored =
-        ChannelPeer::restore(channel, Box::new(key.clone()), &exported, &vault()).unwrap();
+        ChannelPeer::restore(workspace, Box::new(key.clone()), &exported, &vault()).unwrap();
     assert_eq!(restored.gate(), device.peer.gate());
     // Another device's state, as a machine copied from this one holds: the
     // caller tells it apart, drops it and joins as itself.
     assert!(matches!(
         ChannelPeer::restore(
-            channel,
+            workspace,
             Box::new(SigningKey::from_bytes(&[2; 32])),
             &exported,
             &vault()
@@ -931,26 +866,37 @@ fn state_survives_a_restart_and_an_export() {
         Err(channel_crypto::Error::OtherDevice)
     ));
     assert!(
-        ChannelPeer::restore(ChannelId::new(), Box::new(key.clone()), &exported, &vault()).is_err()
+        ChannelPeer::restore(
+            WorkspaceId::new(),
+            Box::new(key.clone()),
+            &exported,
+            &vault()
+        )
+        .is_err()
     );
     assert!(
         ChannelPeer::restore(
-            channel,
+            workspace,
             Box::new(key.clone()),
             &exported,
             &VaultKey::new([8; 32])
         )
         .is_err()
     );
-    assert!(reopen(dir, ChannelId::new(), &key).unwrap().is_none());
+    assert!(reopen(dir, WorkspaceId::new(), &key).unwrap().is_none());
 }
 
 fn reopen(
     dir: &Path,
-    channel: ChannelId,
+    workspace: WorkspaceId,
     key: &SigningKey,
 ) -> channel_crypto::Result<Option<ChannelPeer>> {
-    ChannelPeer::open(Some(states(dir)), channel, Box::new(key.clone()), &vault())
+    ChannelPeer::open(
+        Some(states(dir)),
+        workspace,
+        Box::new(key.clone()),
+        &vault(),
+    )
 }
 
 /// A signer that answers on the second poll, as a browser's `WebCrypto` key
@@ -991,20 +937,20 @@ impl std::future::Future for Yield {
 
 #[test]
 fn a_signer_that_answers_later_signs_every_frame() {
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let key = SigningKey::from_bytes(&[1; 32]);
     assert!(
-        ChannelPeer::create_now(None, channel, Box::new(LateSigner(key.clone())), &vault())
+        ChannelPeer::create_now(None, workspace, Box::new(LateSigner(key.clone())), &vault())
             .is_err()
     );
     let mut alice = pollster::block_on(ChannelPeer::create(
         None,
-        channel,
+        workspace,
         Box::new(LateSigner(key.clone())),
         &vault(),
     ))
     .unwrap();
-    let mut bob = Device::waiting(2, channel);
+    let mut bob = Device::waiting(2, workspace);
     let both: BTreeSet<_> = [
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         bob.public(),
@@ -1028,11 +974,11 @@ fn a_signer_that_answers_later_signs_every_frame() {
 /// again. Everything the loser sealed on its branch stays readable.
 #[test]
 fn a_device_that_went_on_from_a_commit_that_lost_starts_over() {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut dave = Device::waiting(4, channel);
-    let mut erin = Device::waiting(5, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut dave = Device::waiting(4, workspace);
+    let mut erin = Device::waiting(5, workspace);
     let both = allowed(&[&alice, &bob]);
     alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&both, &vault()).unwrap();
@@ -1099,9 +1045,9 @@ fn a_device_that_went_on_from_a_commit_that_lost_starts_over() {
 /// off no commits.
 #[test]
 fn the_founder_is_in_the_group_with_the_key_it_asked_with() {
-    let channel = ChannelId::new();
-    let mut alice = Device::waiting(1, channel);
-    let mut bob = Device::waiting(2, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::waiting(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
     let both = allowed(&[&alice, &bob]);
     let asked = alice.ask(false);
     bob.peer.learn_request(asked).unwrap();
@@ -1126,12 +1072,12 @@ fn the_founder_is_in_the_group_with_the_key_it_asked_with() {
 /// on the winning branch with the keys every other member holds, and all it
 /// sealed on its own branch opens for them.
 fn a_device_that_went_on_from_a_lost_commit_by(depth: u8) {
-    let channel = ChannelId::new();
-    let mut alice = Device::creating(1, channel);
-    let mut bob = Device::waiting(2, channel);
-    let mut dave = Device::waiting(4, channel);
+    let workspace = WorkspaceId::new();
+    let mut alice = Device::creating(1, workspace);
+    let mut bob = Device::waiting(2, workspace);
+    let mut dave = Device::waiting(4, workspace);
     let mut joiners: Vec<Device> = (0..depth)
-        .map(|seed| Device::waiting(10 + seed, channel))
+        .map(|seed| Device::waiting(10 + seed, workspace))
         .collect();
     let both = allowed(&[&alice, &bob]);
     alice.peer.learn_request(bob.ask(false)).unwrap();

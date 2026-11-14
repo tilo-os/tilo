@@ -217,84 +217,88 @@ mod tests {
         here
     }
 
-    /// A wave already there when the page arrived is not news; a new one at this person shows once,
-    /// however often the frame is restated, and a wave at someone else shows nothing here.
-    #[test]
-    fn a_new_wave_at_this_person_shows_once() {
-        let mut here = here();
-        assert!(here.take_waves().is_empty(), "already there on arrival");
-        here.set_members(
-            Some(member("me", "Kim", None)),
-            Some(vec![member("ada", "Ada", Some((5, "me")))]),
-        );
-        assert_eq!(
-            here.take_waves(),
-            [WaveFrom {
-                id: "ada".into(),
-                name: "Ada".into()
-            }]
-        );
-        let mut restated = member("ada", "Ada", Some((5, "me")));
-        restated.place = Some("2".into());
-        here.set_members(Some(member("me", "Kim", None)), Some(vec![restated]));
-        assert!(here.take_waves().is_empty(), "the same wave, restated");
-        here.set_members(
-            Some(member("me", "Kim", None)),
-            Some(vec![member("ada", "Ada", Some((6, "ben")))]),
-        );
-        assert!(here.take_waves().is_empty(), "for someone else");
-    }
+    tilo_test_env::scenario! {
+        fn a_wave_reaches_this_person_once;
 
-    /// Someone here who never waved before: their first wave is news.
-    #[test]
-    fn a_first_wave_from_someone_already_here_shows() {
-        let mut here = HereState::default();
-        here.set_members(
-            Some(member("me", "Kim", None)),
-            Some(vec![member("ada", "Ada", None)]),
-        );
-        here.set_members(
-            Some(member("me", "Kim", None)),
-            Some(vec![member("ada", "Ada", Some((1, "me")))]),
-        );
-        assert_eq!(here.take_waves().len(), 1);
-    }
+        phase a_new_wave_at_this_person_shows_once;
+        // A wave already there when the page arrived is not news; a new one at this person shows once,
+        // however often the frame is restated, and a wave at someone else shows nothing here.
+        {
+            let mut here = here();
+            assert!(here.take_waves().is_empty(), "already there on arrival");
+            here.set_members(
+                Some(member("me", "Kim", None)),
+                Some(vec![member("ada", "Ada", Some((5, "me")))]),
+            );
+            assert_eq!(
+                here.take_waves(),
+                [WaveFrom {
+                    id: "ada".into(),
+                    name: "Ada".into()
+                }]
+            );
+            let mut restated = member("ada", "Ada", Some((5, "me")));
+            restated.place = Some("2".into());
+            here.set_members(Some(member("me", "Kim", None)), Some(vec![restated]));
+            assert!(here.take_waves().is_empty(), "the same wave, restated");
+            here.set_members(
+                Some(member("me", "Kim", None)),
+                Some(vec![member("ada", "Ada", Some((6, "ben")))]),
+            );
+            assert!(here.take_waves().is_empty(), "for someone else");
+        }
 
-    #[test]
-    fn a_wave_at_another_device_of_this_person_reaches_them() {
-        let mut here = HereState::default();
-        let mut own = member("me", "Kim", None);
-        own.user = Some("kim-root".into());
-        let mut phone = member("me-phone", "Kim", None);
-        phone.user = Some("kim-root".into());
-        here.set_members(
-            Some(own.clone()),
-            Some(vec![phone.clone(), member("ada", "Ada", Some((1, "x")))]),
-        );
-        here.set_members(
-            Some(own),
-            Some(vec![phone, member("ada", "Ada", Some((2, "me-phone")))]),
-        );
-        assert_eq!(here.take_waves().len(), 1);
-    }
+        phase a_first_wave_from_someone_already_here_shows;
+        // Someone here who never waved before: their first wave is news.
+        {
+            let mut here = HereState::default();
+            here.set_members(
+                Some(member("me", "Kim", None)),
+                Some(vec![member("ada", "Ada", None)]),
+            );
+            here.set_members(
+                Some(member("me", "Kim", None)),
+                Some(vec![member("ada", "Ada", Some((1, "me")))]),
+            );
+            assert_eq!(here.take_waves().len(), 1);
+        }
 
-    /// Waving puts a new wave on this page's presence, and the same person is waved at again only
-    /// after a while.
-    #[test]
-    fn waving_counts_up_and_waits_before_the_same_person_again() {
-        let mut here = here();
-        assert!(here.wave_at("ada", 1_000));
-        assert_eq!(
-            here.sent_wave(),
-            Some(&Wave {
-                seq: 1,
-                target: "ada".into()
-            })
-        );
-        assert!(!here.wave_at("ada", 2_000), "not again so soon");
-        assert_eq!(here.waved(2_000), ["ada".to_owned()]);
-        assert!(here.wave_at("ada", 1_000 + WAVE_AGAIN_MS));
-        assert_eq!(here.sent_wave().map(|wave| wave.seq), Some(2));
-        assert!(!here.wave_at("me", 0), "nobody waves at themselves");
+        phase a_wave_at_another_device_of_this_person_reaches_them;
+        {
+            let mut here = HereState::default();
+            let mut own = member("me", "Kim", None);
+            own.user = Some("kim-root".into());
+            let mut phone = member("me-phone", "Kim", None);
+            phone.user = Some("kim-root".into());
+            here.set_members(
+                Some(own.clone()),
+                Some(vec![phone.clone(), member("ada", "Ada", Some((1, "x")))]),
+            );
+            here.set_members(
+                Some(own),
+                Some(vec![phone, member("ada", "Ada", Some((2, "me-phone")))]),
+            );
+            assert_eq!(here.take_waves().len(), 1);
+        }
+
+        phase waving_counts_up_and_waits_before_the_same_person_again;
+        // Waving puts a new wave on this page's presence, and the same person is waved at again only
+        // after a while.
+        {
+            let mut here = here();
+            assert!(here.wave_at("ada", 1_000));
+            assert_eq!(
+                here.sent_wave(),
+                Some(&Wave {
+                    seq: 1,
+                    target: "ada".into()
+                })
+            );
+            assert!(!here.wave_at("ada", 2_000), "not again so soon");
+            assert_eq!(here.waved(2_000), ["ada".to_owned()]);
+            assert!(here.wave_at("ada", 1_000 + WAVE_AGAIN_MS));
+            assert_eq!(here.sent_wave().map(|wave| wave.seq), Some(2));
+            assert!(!here.wave_at("me", 0), "nobody waves at themselves");
+        }
     }
 }

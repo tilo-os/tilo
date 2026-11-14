@@ -96,73 +96,78 @@ mod tests {
     use base64::Engine as _;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn keys_are_letters_and_digits_of_a_fair_length() {
-        assert!(valid_key("abcdefghij012345"));
-        assert!(!valid_key("short"));
-        assert!(!valid_key("abcdefghij01234;"));
-        assert!(!valid_key(&"a".repeat(65)));
-        assert!(is_bash(Path::new("/usr/bin/bash")));
-        assert!(!is_bash(Path::new("/usr/bin/zsh")));
-    }
+    tilo_test_env::scenario! {
+        /// The run marks a session's shell writes for Terminal, and their key.
+        fn a_run_key_marks_each_run_and_stays_hidden;
 
-    #[test]
-    fn bash_marks_each_run_and_hides_the_key() {
-        let Ok(bash) = which("bash") else {
-            eprintln!("no bash on this machine; the marks are not exercised");
-            return;
-        };
-        let home = tempfile::tempdir().unwrap();
-        let rc = home.path().join("runs.bash");
-        std::fs::write(&rc, crate::shell_start::bash_rc(true)).unwrap();
-        let key = "k3y0fth1ss3ss10n";
-        let output = std::process::Command::new(bash)
-            .args(["--rcfile", rc.to_str().unwrap(), "-i"])
-            .env("HOME", home.path())
-            .env(KEY_ENV, key)
-            .env("HISTFILE", home.path().join("history"))
-            .current_dir(home.path())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn_locked()
-            .and_then(|mut child| {
-                use std::io::Write as _;
-                child.stdin.take().unwrap().write_all(
-                    b"echo hello | tr h j\nfalse\nenv | grep -c TILO_USH_RUNS\nexit\n",
-                )?;
-                child.wait_with_output()
-            })
-            .unwrap();
-        let out = String::from_utf8_lossy(&output.stdout);
-        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
-        let cwd = b64(&home.path().display().to_string());
-        let started = |line: &str, number: &str| {
-            format!(
-                "\x1b]133;C;k={key};cmd={};cwd={cwd};t={number}\x07",
-                b64(line)
-            )
-        };
-        let commands = [
-            ("echo hello | tr h j", 1, 0),
-            ("false", 2, 1),
-            ("env | grep -c TILO_USH_RUNS", 3, 1),
-        ];
-        for (line, number, status) in commands {
-            let mark = started(line, &number.to_string());
-            let ended = format!("\x1b]133;D;{status};k={key};t={number}\x07");
-            assert!(out.contains(&mark), "{line} starts: {out:?}");
-            assert!(out.contains(&ended), "{line} ends: {out:?}");
+        phase keys_are_letters_and_digits_of_a_fair_length;
+        {
+            assert!(valid_key("abcdefghij012345"));
+            assert!(!valid_key("short"));
+            assert!(!valid_key("abcdefghij01234;"));
+            assert!(!valid_key(&"a".repeat(65)));
+            assert!(is_bash(Path::new("/usr/bin/bash")));
+            assert!(!is_bash(Path::new("/usr/bin/zsh")));
         }
-        assert!(out.contains("jello"), "{out:?}");
-        assert!(
-            out.contains(&format!(
-                "{}0\n",
-                started("env | grep -c TILO_USH_RUNS", "3")
-            )),
-            "no program sees the key: {out:?}"
-        );
-        assert!(out.contains(&format!("\x1b]133;A;k={key}\x07")), "{out:?}");
+
+        phase bash_marks_each_run_and_hides_the_key;
+        {
+            let Ok(bash) = which("bash") else {
+                eprintln!("no bash on this machine; the marks are not exercised");
+                return;
+            };
+            let home = tempfile::tempdir().unwrap();
+            let rc = home.path().join("runs.bash");
+            std::fs::write(&rc, crate::shell_start::bash_rc(true)).unwrap();
+            let key = "k3y0fth1ss3ss10n";
+            let output = std::process::Command::new(bash)
+                .args(["--rcfile", rc.to_str().unwrap(), "-i"])
+                .env("HOME", home.path())
+                .env(KEY_ENV, key)
+                .env("HISTFILE", home.path().join("history"))
+                .current_dir(home.path())
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn_locked()
+                .and_then(|mut child| {
+                    use std::io::Write as _;
+                    child.stdin.take().unwrap().write_all(
+                        b"echo hello | tr h j\nfalse\nenv | grep -c TILO_USH_RUNS\nexit\n",
+                    )?;
+                    child.wait_with_output()
+                })
+                .unwrap();
+            let out = String::from_utf8_lossy(&output.stdout);
+            let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+            let cwd = b64(&home.path().display().to_string());
+            let started = |line: &str, number: &str| {
+                format!(
+                    "\x1b]133;C;k={key};cmd={};cwd={cwd};t={number}\x07",
+                    b64(line)
+                )
+            };
+            let commands = [
+                ("echo hello | tr h j", 1, 0),
+                ("false", 2, 1),
+                ("env | grep -c TILO_USH_RUNS", 3, 1),
+            ];
+            for (line, number, status) in commands {
+                let mark = started(line, &number.to_string());
+                let ended = format!("\x1b]133;D;{status};k={key};t={number}\x07");
+                assert!(out.contains(&mark), "{line} starts: {out:?}");
+                assert!(out.contains(&ended), "{line} ends: {out:?}");
+            }
+            assert!(out.contains("jello"), "{out:?}");
+            assert!(
+                out.contains(&format!(
+                    "{}0\n",
+                    started("env | grep -c TILO_USH_RUNS", "3")
+                )),
+                "no program sees the key: {out:?}"
+            );
+            assert!(out.contains(&format!("\x1b]133;A;k={key}\x07")), "{out:?}");
+        }
     }
 
     fn which(program: &str) -> Result<std::path::PathBuf, ()> {

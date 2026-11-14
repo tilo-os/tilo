@@ -608,161 +608,167 @@ mod tests {
         }
     }
 
-    #[test]
-    fn final_bootnext_reuses_exact_options_across_holes_and_preserves_foreign_entries() {
-        let (mut platform, receipt) = FilePlatform::new(true);
-        arm(&mut platform, &receipt).unwrap();
-        let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
-        std::fs::remove_file(platform.var("BootNext")).unwrap();
-        platform.writes.clear();
-        assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0100");
-        assert_eq!(platform.writes, ["BootNext"]);
-        std::fs::remove_file(platform.var("BootNext")).unwrap();
-        std::fs::remove_file(platform.var("Boot0100")).unwrap();
-        std::fs::write(platform.var("Boot0102"), &option).unwrap();
-        std::fs::write(platform.var("Boot0101"), b"foreign option").unwrap();
-        platform.writes.clear();
-        assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0102");
-        assert_eq!(platform.writes, ["BootNext"]);
-        assert_eq!(
-            platform.get_efi_var("Boot0101").unwrap().unwrap(),
-            b"foreign option"
-        );
-        assert_eq!(platform.get_efi_var("Boot0102").unwrap().unwrap(), option);
-        assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
-        platform.writes.clear();
-        assert!(
-            arm(&mut platform, &receipt)
-                .unwrap_err()
-                .contains("occupied")
-        );
-        assert!(platform.writes.is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// Arming the firmware's BootNext for the final boot.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn final_bootnext_reuses_or_arms_only_exact_verified_options;
 
-    #[test]
-    fn final_bootnext_does_not_reuse_a_different_tilo_device_path() {
-        let (mut platform, receipt) = FilePlatform::new(true);
-        arm(&mut platform, &receipt).unwrap();
-        std::fs::remove_file(platform.var("BootNext")).unwrap();
-        let mut decoded =
-            efi::decode_load_option(&platform.get_efi_var("Boot0100").unwrap().unwrap()).unwrap();
-        decoded.partition_guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
-        let option = efi::encode_load_option(&decoded).unwrap();
-        std::fs::write(platform.var("Boot0100"), &option).unwrap();
-        platform.writes.clear();
-        assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0101");
-        assert_eq!(platform.writes, ["Boot0101", "BootNext"]);
-        assert_eq!(platform.get_efi_var("Boot0100").unwrap().unwrap(), option);
-    }
-
-    #[test]
-    fn final_bootnext_failed_rearm_never_deletes_the_reused_option() {
-        let (mut platform, receipt) = FilePlatform::new(true);
-        arm(&mut platform, &receipt).unwrap();
-        let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
-        std::fs::remove_file(platform.var("BootNext")).unwrap();
-        platform.writes.clear();
-        platform.fail_bootnext = true;
-        assert!(
-            arm(&mut platform, &receipt)
-                .unwrap_err()
-                .contains("injected")
-        );
-        assert!(platform.writes.is_empty());
-        assert_eq!(platform.get_efi_var("Boot0100").unwrap().unwrap(), option);
-        assert!(platform.get_efi_var("BootNext").unwrap().is_none());
-        assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
-    }
-
-    /// Arming, refusals and fallback.
-    #[test]
-    fn final_bootnext_arms_only_verified_new_options() {
+        phase final_bootnext_reuses_exact_options_across_holes_and_preserves_foreign_entries;
         {
             let (mut platform, receipt) = FilePlatform::new(true);
-            let armed = arm(&mut platform, &receipt).unwrap();
-            assert_eq!(armed.boot_number, "0100");
-            assert_eq!(platform.writes, ["Boot0100", "BootNext"]);
-            assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
-            assert_eq!(platform.get_efi_var("BootNext").unwrap().unwrap(), [0, 1]);
+            arm(&mut platform, &receipt).unwrap();
             let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
-            let decoded = efi::decode_load_option(&option).unwrap();
-            assert_eq!(decoded.partition_guid, ESP_GUID);
-            assert_eq!(decoded.file_path, PRIMARY);
-            assert_eq!(decoded.partition_number, 4);
-        }
-
-        // Hardware UniqueId is not the GPT GUID. Missing, invalid or mismatched
-        // GPT identity must refuse firmware writes, even with the hardware ID.
-        for guid in [
-            "",
-            "eui.0025380000000001",
-            "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-        ] {
-            let (mut platform, mut receipt) = FilePlatform::new(true);
-            receipt.disk.disk_guid = guid.into();
-            assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
-            assert!(platform.writes.is_empty());
-        }
-        {
-            let (mut platform, mut receipt) = FilePlatform::new(true);
-            receipt.schema = "tilo.windows-direct-final-readback.v1".into();
-            assert!(arm(&mut platform, &receipt).is_err());
-            assert!(platform.writes.is_empty());
-        }
-
-        {
-            let (mut platform, receipt) = FilePlatform::new(true);
-            std::fs::write(platform.var("BootNext"), [1, 0]).unwrap();
+            std::fs::remove_file(platform.var("BootNext")).unwrap();
+            platform.writes.clear();
+            assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0100");
+            assert_eq!(platform.writes, ["BootNext"]);
+            std::fs::remove_file(platform.var("BootNext")).unwrap();
+            std::fs::remove_file(platform.var("Boot0100")).unwrap();
+            std::fs::write(platform.var("Boot0102"), &option).unwrap();
+            std::fs::write(platform.var("Boot0101"), b"foreign option").unwrap();
+            platform.writes.clear();
+            assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0102");
+            assert_eq!(platform.writes, ["BootNext"]);
+            assert_eq!(
+                platform.get_efi_var("Boot0101").unwrap().unwrap(),
+                b"foreign option"
+            );
+            assert_eq!(platform.get_efi_var("Boot0102").unwrap().unwrap(), option);
+            assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
+            platform.writes.clear();
             assert!(
                 arm(&mut platform, &receipt)
                     .unwrap_err()
                     .contains("occupied")
             );
             assert!(platform.writes.is_empty());
+        }
+
+        phase final_bootnext_does_not_reuse_a_different_tilo_device_path;
+        {
+            let (mut platform, receipt) = FilePlatform::new(true);
+            arm(&mut platform, &receipt).unwrap();
             std::fs::remove_file(platform.var("BootNext")).unwrap();
-            let loader_offset = platform
-                .image
-                .windows(b"verified ARM64 loader".len())
-                .position(|bytes| bytes == b"verified ARM64 loader")
-                .unwrap();
-            platform.image[loader_offset] ^= 1;
-            assert!(arm(&mut platform, &receipt).is_err());
-            assert!(platform.writes.is_empty());
-            platform.disk.guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
-            assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
-            assert!(platform.writes.is_empty());
+            let mut decoded =
+                efi::decode_load_option(&platform.get_efi_var("Boot0100").unwrap().unwrap()).unwrap();
+            decoded.partition_guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
+            let option = efi::encode_load_option(&decoded).unwrap();
+            std::fs::write(platform.var("Boot0100"), &option).unwrap();
+            platform.writes.clear();
+            assert_eq!(arm(&mut platform, &receipt).unwrap().boot_number, "0101");
+            assert_eq!(platform.writes, ["Boot0101", "BootNext"]);
+            assert_eq!(platform.get_efi_var("Boot0100").unwrap().unwrap(), option);
         }
 
+        phase final_bootnext_failed_rearm_never_deletes_the_reused_option;
         {
-            let (mut platform, mut receipt) = FilePlatform::new(true);
-            platform.disk.partitions[1].last_lba += 1;
+            let (mut platform, receipt) = FilePlatform::new(true);
+            arm(&mut platform, &receipt).unwrap();
+            let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
+            std::fs::remove_file(platform.var("BootNext")).unwrap();
+            platform.writes.clear();
+            platform.fail_bootnext = true;
             assert!(
                 arm(&mut platform, &receipt)
                     .unwrap_err()
-                    .contains("final-boot geometry")
+                    .contains("injected")
             );
             assert!(platform.writes.is_empty());
-            platform.disk.partitions[1].last_lba -= 1;
-            platform.disk.partitions[2].type_guid = LINUX_TYPE.into();
-            assert!(
-                arm(&mut platform, &receipt)
-                    .unwrap_err()
-                    .contains("final-root geometry")
-            );
-            assert!(platform.writes.is_empty());
-            platform.disk.partitions[2].type_guid = TILO_ROOT_TYPE.into();
-            receipt.r#final[2].offset_bytes += 512;
-            assert!(
-                arm(&mut platform, &receipt)
-                    .unwrap_err()
-                    .contains("final-root geometry")
-            );
-            assert!(platform.writes.is_empty());
+            assert_eq!(platform.get_efi_var("Boot0100").unwrap().unwrap(), option);
+            assert!(platform.get_efi_var("BootNext").unwrap().is_none());
+            assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
         }
 
+        // Arming, refusals and fallback.
+        phase final_bootnext_arms_only_verified_new_options;
         {
-            let (mut platform, receipt) = FilePlatform::new(false);
-            assert_eq!(arm(&mut platform, &receipt).unwrap().loader_path, FALLBACK);
+            {
+                let (mut platform, receipt) = FilePlatform::new(true);
+                let armed = arm(&mut platform, &receipt).unwrap();
+                assert_eq!(armed.boot_number, "0100");
+                assert_eq!(platform.writes, ["Boot0100", "BootNext"]);
+                assert_eq!(platform.get_efi_var("BootOrder").unwrap().unwrap(), [1, 0]);
+                assert_eq!(platform.get_efi_var("BootNext").unwrap().unwrap(), [0, 1]);
+                let option = platform.get_efi_var("Boot0100").unwrap().unwrap();
+                let decoded = efi::decode_load_option(&option).unwrap();
+                assert_eq!(decoded.partition_guid, ESP_GUID);
+                assert_eq!(decoded.file_path, PRIMARY);
+                assert_eq!(decoded.partition_number, 4);
+            }
+
+            // Hardware UniqueId is not the GPT GUID. Missing, invalid or mismatched
+            // GPT identity must refuse firmware writes, even with the hardware ID.
+            for guid in [
+                "",
+                "eui.0025380000000001",
+                "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            ] {
+                let (mut platform, mut receipt) = FilePlatform::new(true);
+                receipt.disk.disk_guid = guid.into();
+                assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
+                assert!(platform.writes.is_empty());
+            }
+            {
+                let (mut platform, mut receipt) = FilePlatform::new(true);
+                receipt.schema = "tilo.windows-direct-final-readback.v1".into();
+                assert!(arm(&mut platform, &receipt).is_err());
+                assert!(platform.writes.is_empty());
+            }
+
+            {
+                let (mut platform, receipt) = FilePlatform::new(true);
+                std::fs::write(platform.var("BootNext"), [1, 0]).unwrap();
+                assert!(
+                    arm(&mut platform, &receipt)
+                        .unwrap_err()
+                        .contains("occupied")
+                );
+                assert!(platform.writes.is_empty());
+                std::fs::remove_file(platform.var("BootNext")).unwrap();
+                let loader_offset = platform
+                    .image
+                    .windows(b"verified ARM64 loader".len())
+                    .position(|bytes| bytes == b"verified ARM64 loader")
+                    .unwrap();
+                platform.image[loader_offset] ^= 1;
+                assert!(arm(&mut platform, &receipt).is_err());
+                assert!(platform.writes.is_empty());
+                platform.disk.guid = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
+                assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
+                assert!(platform.writes.is_empty());
+            }
+
+            {
+                let (mut platform, mut receipt) = FilePlatform::new(true);
+                platform.disk.partitions[1].last_lba += 1;
+                assert!(
+                    arm(&mut platform, &receipt)
+                        .unwrap_err()
+                        .contains("final-boot geometry")
+                );
+                assert!(platform.writes.is_empty());
+                platform.disk.partitions[1].last_lba -= 1;
+                platform.disk.partitions[2].type_guid = LINUX_TYPE.into();
+                assert!(
+                    arm(&mut platform, &receipt)
+                        .unwrap_err()
+                        .contains("final-root geometry")
+                );
+                assert!(platform.writes.is_empty());
+                platform.disk.partitions[2].type_guid = TILO_ROOT_TYPE.into();
+                receipt.r#final[2].offset_bytes += 512;
+                assert!(
+                    arm(&mut platform, &receipt)
+                        .unwrap_err()
+                        .contains("final-root geometry")
+                );
+                assert!(platform.writes.is_empty());
+            }
+
+            {
+                let (mut platform, receipt) = FilePlatform::new(false);
+                assert_eq!(arm(&mut platform, &receipt).unwrap().loader_path, FALLBACK);
+            }
         }
     }
 }

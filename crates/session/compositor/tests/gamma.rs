@@ -140,84 +140,89 @@ fn table(size: u32) -> std::fs::File {
     file
 }
 
-#[test]
-fn ordinary_clients_cannot_set_gamma() {
-    let mut compositor = compositor();
-    let mut client = Client::connect(&mut compositor, false);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.globals.iter().any(|global| global == "wl_compositor")
-    });
-    assert!(
-        !client
-            .tool
-            .globals
-            .iter()
-            .any(|global| global == "zwlr_gamma_control_manager_v1")
-    );
-}
+tilo_test_env::scenario! {
+    /// Who sets the gamma ramp of a display.
+    fn gamma_control_is_for_trusted_tools_and_night_light;
 
-#[test]
-fn night_light_warms_the_screen_and_turns_off_again() {
-    let mut compositor = compositor();
-    assert_eq!(shown(&mut compositor), BACKGROUND);
-    compositor
-        .set_night_light(Some(2_000))
-        .expect("night light");
-    let warm = shown(&mut compositor);
-    assert_eq!(warm[0], BACKGROUND[0], "red stays");
-    assert!(
-        warm[1] < BACKGROUND[1] && warm[2] < BACKGROUND[2],
-        "{warm:?}"
-    );
-    assert!(
-        BACKGROUND[2] - warm[2] > BACKGROUND[1] - warm[1],
-        "blue falls most"
-    );
-    compositor.set_night_light(None).expect("night light off");
-    assert_eq!(shown(&mut compositor), BACKGROUND);
-}
+    phase ordinary_clients_cannot_set_gamma;
+    {
+        let mut compositor = compositor();
+        let mut client = Client::connect(&mut compositor, false);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.globals.iter().any(|global| global == "wl_compositor")
+        });
+        assert!(
+            !client
+                .tool
+                .globals
+                .iter()
+                .any(|global| global == "zwlr_gamma_control_manager_v1")
+        );
+    }
 
-#[test]
-fn a_gamma_tool_holds_the_ramp_exclusively_until_it_lets_go() {
-    let mut compositor = compositor();
-    compositor
-        .set_night_light(Some(2_000))
-        .expect("night light");
-    let warm = shown(&mut compositor);
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.manager.is_some() && tool.output.is_some()
-    });
+    phase night_light_warms_the_screen_and_turns_off_again;
+    {
+        let mut compositor = compositor();
+        assert_eq!(shown(&mut compositor), BACKGROUND);
+        compositor
+            .set_night_light(Some(2_000))
+            .expect("night light");
+        let warm = shown(&mut compositor);
+        assert_eq!(warm[0], BACKGROUND[0], "red stays");
+        assert!(
+            warm[1] < BACKGROUND[1] && warm[2] < BACKGROUND[2],
+            "{warm:?}"
+        );
+        assert!(
+            BACKGROUND[2] - warm[2] > BACKGROUND[1] - warm[1],
+            "blue falls most"
+        );
+        compositor.set_night_light(None).expect("night light off");
+        assert_eq!(shown(&mut compositor), BACKGROUND);
+    }
 
-    let control = client.control();
-    pump(&mut compositor, &mut client, |tool| {
-        tool.controls[0].0.is_some()
-    });
-    let size = client.tool.controls[0].0.unwrap();
-    assert_eq!(size, 256);
-    let file = table(size);
-    control.set_gamma(file.as_fd());
-    pump(&mut compositor, &mut client, |_| true);
-    compositor
-        .dispatch(Duration::from_millis(2))
-        .expect("dispatch");
-    let tool = shown(&mut compositor);
-    assert_eq!(tool[0], BACKGROUND[0]);
-    assert!(tool[1].abs_diff(BACKGROUND[1] / 2) <= 1, "{tool:?}");
-    assert_eq!(tool[2], 0, "the tool's ramp replaces night light");
+    phase a_gamma_tool_holds_the_ramp_exclusively_until_it_lets_go;
+    {
+        let mut compositor = compositor();
+        compositor
+            .set_night_light(Some(2_000))
+            .expect("night light");
+        let warm = shown(&mut compositor);
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.manager.is_some() && tool.output.is_some()
+        });
 
-    // A second control on the same output fails at once.
-    let second = client.control();
-    pump(&mut compositor, &mut client, |tool| tool.controls[1].1);
-    second.destroy();
+        let control = client.control();
+        pump(&mut compositor, &mut client, |tool| {
+            tool.controls[0].0.is_some()
+        });
+        let size = client.tool.controls[0].0.unwrap();
+        assert_eq!(size, 256);
+        let file = table(size);
+        control.set_gamma(file.as_fd());
+        pump(&mut compositor, &mut client, |_| true);
+        compositor
+            .dispatch(Duration::from_millis(2))
+            .expect("dispatch");
+        let tool = shown(&mut compositor);
+        assert_eq!(tool[0], BACKGROUND[0]);
+        assert!(tool[1].abs_diff(BACKGROUND[1] / 2) <= 1, "{tool:?}");
+        assert_eq!(tool[2], 0, "the tool's ramp replaces night light");
 
-    // Letting go puts night light back.
-    control.destroy();
-    pump(&mut compositor, &mut client, |_| true);
-    compositor
-        .dispatch(Duration::from_millis(2))
-        .expect("dispatch");
-    assert_eq!(shown(&mut compositor), warm);
+        // A second control on the same output fails at once.
+        let second = client.control();
+        pump(&mut compositor, &mut client, |tool| tool.controls[1].1);
+        second.destroy();
+
+        // Letting go puts night light back.
+        control.destroy();
+        pump(&mut compositor, &mut client, |_| true);
+        compositor
+            .dispatch(Duration::from_millis(2))
+            .expect("dispatch");
+        assert_eq!(shown(&mut compositor), warm);
+    }
 }
 
 #[test]

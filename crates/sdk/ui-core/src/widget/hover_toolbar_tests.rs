@@ -78,65 +78,69 @@ fn message() -> Laid {
     Laid { bar, taffy, node }
 }
 
-#[test]
-fn the_toolbar_shows_while_the_row_is_hovered() {
-    let _settled = crate::motion::testing::settled();
-    let mut laid = message();
-    assert!(!laid.bar.is_shown(), "hidden until the pointer comes");
-    let row = Widget::get_rect(&laid.bar);
-    laid.send(&crate::synthetic_input::cursor_moved(
-        row.center().x,
-        row.center().y,
-    ));
-    assert!(laid.bar.is_shown());
-    laid.send(&crate::synthetic_input::cursor_moved(
-        row.center().x,
-        row.y1 + 40.0,
-    ));
-    assert!(!laid.bar.is_shown(), "and goes when it leaves");
-}
+tilo_test_env::scenario! {
+    fn the_toolbar_shows_for_hover_and_keyboard_focus;
 
-#[test]
-fn hovering_damages_only_the_toolbar_not_the_row() {
-    let _settled = crate::motion::testing::settled();
-    let mut laid = message();
-    let row = Widget::get_rect(&laid.bar);
-    laid.send(&crate::synthetic_input::cursor_moved(
-        row.center().x,
-        row.center().y,
-    ));
-    let mut damage = Vec::new();
-    Widget::collect_damage(&laid.bar, &mut damage);
-    assert_eq!(damage.len(), 1, "one region: {damage:?}");
-    let region = damage[0];
-    assert!(
-        region.area() < row.area() / 4.0,
-        "the toolbar's box ({region:?}), never the row's ({row:?})"
-    );
-    drawn(&mut laid.bar);
-    let mut after = Vec::new();
-    Widget::collect_damage(&laid.bar, &mut after);
-    assert!(after.is_empty(), "drawn, nothing is left to repaint");
-    laid.send(&crate::synthetic_input::cursor_moved(
-        row.center().x + 10.0,
-        row.center().y,
-    ));
-    let mut still = Vec::new();
-    Widget::collect_damage(&laid.bar, &mut still);
-    assert!(still.is_empty(), "a move within the row repaints nothing");
-}
-
-#[test]
-fn focus_in_the_toolbar_shows_it_for_the_keyboard() {
-    let _settled = crate::motion::testing::settled();
-    let mut laid = message();
-    let mut focused = false;
-    for child in Widget::children_mut(&mut laid.bar) {
-        focus_first(child, &mut focused);
+    phase the_toolbar_shows_while_the_row_is_hovered;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut laid = message();
+        assert!(!laid.bar.is_shown(), "hidden until the pointer comes");
+        let row = Widget::get_rect(&laid.bar);
+        laid.send(&crate::synthetic_input::cursor_moved(
+            row.center().x,
+            row.center().y,
+        ));
+        assert!(laid.bar.is_shown());
+        laid.send(&crate::synthetic_input::cursor_moved(
+            row.center().x,
+            row.y1 + 40.0,
+        ));
+        assert!(!laid.bar.is_shown(), "and goes when it leaves");
     }
-    assert!(focused, "the toolbar's buttons are in the focus order");
-    drawn(&mut laid.bar);
-    assert!(laid.bar.is_shown(), "focus in it shows it");
+
+    phase hovering_damages_only_the_toolbar_not_the_row;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut laid = message();
+        let row = Widget::get_rect(&laid.bar);
+        laid.send(&crate::synthetic_input::cursor_moved(
+            row.center().x,
+            row.center().y,
+        ));
+        let mut damage = Vec::new();
+        Widget::collect_damage(&laid.bar, &mut damage);
+        assert_eq!(damage.len(), 1, "one region: {damage:?}");
+        let region = damage[0];
+        assert!(
+            region.area() < row.area() / 4.0,
+            "the toolbar's box ({region:?}), never the row's ({row:?})"
+        );
+        drawn(&mut laid.bar);
+        let mut after = Vec::new();
+        Widget::collect_damage(&laid.bar, &mut after);
+        assert!(after.is_empty(), "drawn, nothing is left to repaint");
+        laid.send(&crate::synthetic_input::cursor_moved(
+            row.center().x + 10.0,
+            row.center().y,
+        ));
+        let mut still = Vec::new();
+        Widget::collect_damage(&laid.bar, &mut still);
+        assert!(still.is_empty(), "a move within the row repaints nothing");
+    }
+
+    phase focus_in_the_toolbar_shows_it_for_the_keyboard;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut laid = message();
+        let mut focused = false;
+        for child in Widget::children_mut(&mut laid.bar) {
+            focus_first(child, &mut focused);
+        }
+        assert!(focused, "the toolbar's buttons are in the focus order");
+        drawn(&mut laid.bar);
+        assert!(laid.bar.is_shown(), "focus in it shows it");
+    }
 }
 
 fn focus_first(widget: &mut dyn Widget, done: &mut bool) {

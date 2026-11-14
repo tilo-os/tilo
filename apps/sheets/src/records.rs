@@ -490,67 +490,71 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn formulas_name_columns_and_their_row() {
-        let cols = columns(&["Item", "Per person", "People", "Total"]);
-        assert_eq!(
-            expand_formula("=[Per person]*[people]", 4, &cols).unwrap(),
-            "=B5*C5"
-        );
-        assert_eq!(
-            expand_formula("=B{row}*C{row}", 1, &cols).unwrap(),
-            "=B2*C2"
-        );
-        assert_eq!(
-            expand_formula("=IF([Total]>0,\"[x] {row}\",'[Q]'!A1)", 2, &cols).unwrap(),
-            "=IF(D3>0,\"[x] {row}\",'[Q]'!A1)",
-            "quoted text is kept"
-        );
-        let error = expand_formula("=[Cost]*2", 1, &cols).unwrap_err();
-        assert!(
-            error.0.contains("no column `Cost`") && error.0.contains("`People`"),
-            "{}",
-            error.0
-        );
-        assert!(expand_formula("=[Total", 1, &cols).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn records_write_by_column_name;
 
-    #[test]
-    fn columns_are_named_once_each() {
-        for names in [vec!["A", "a "], vec!["A", ""], vec![]] {
-            let names: Vec<String> = names.into_iter().map(str::to_owned).collect();
-            assert!(Columns::from_names(&names).is_err(), "{names:?}");
+        phase formulas_name_columns_and_their_row;
+        {
+            let cols = columns(&["Item", "Per person", "People", "Total"]);
+            assert_eq!(
+                expand_formula("=[Per person]*[people]", 4, &cols).unwrap(),
+                "=B5*C5"
+            );
+            assert_eq!(
+                expand_formula("=B{row}*C{row}", 1, &cols).unwrap(),
+                "=B2*C2"
+            );
+            assert_eq!(
+                expand_formula("=IF([Total]>0,\"[x] {row}\",'[Q]'!A1)", 2, &cols).unwrap(),
+                "=IF(D3>0,\"[x] {row}\",'[Q]'!A1)",
+                "quoted text is kept"
+            );
+            let error = expand_formula("=[Cost]*2", 1, &cols).unwrap_err();
+            assert!(
+                error.0.contains("no column `Cost`") && error.0.contains("`People`"),
+                "{}",
+                error.0
+            );
+            assert!(expand_formula("=[Total", 1, &cols).is_err());
         }
-    }
 
-    #[test]
-    fn a_left_out_key_leaves_its_cell() {
-        let cols = columns(&["Item", "Per person", "People", "Total"]);
-        let writes = record_writes(
-            &cols,
-            1..,
-            &[json!({"Item": "Venue", "Per person": 145, "Total": "=[Per person]*[People]"})],
-        )
-        .unwrap();
-        let mut at: Vec<(String, String)> = writes
-            .into_iter()
-            .map(|write| (write.cell, write.input.unwrap_or_default()))
-            .collect();
-        at.sort_unstable();
-        assert_eq!(
-            at,
-            [
-                ("A2".to_owned(), "Venue".to_owned()),
-                ("B2".to_owned(), "145".to_owned()),
-                ("D2".to_owned(), "=B2*C2".to_owned()),
-            ]
-        );
-    }
+        phase columns_are_named_once_each;
+        {
+            for names in [vec!["A", "a "], vec!["A", ""], vec![]] {
+                let names: Vec<String> = names.into_iter().map(str::to_owned).collect();
+                assert!(Columns::from_names(&names).is_err(), "{names:?}");
+            }
+        }
 
-    #[test]
-    fn keys_match_ignoring_case_and_number_spelling() {
-        assert!(same_key(" Venue", "venue"));
-        assert!(same_key("7", "7.0"));
-        assert!(!same_key("7", "8"));
+        phase a_left_out_key_leaves_its_cell;
+        {
+            let cols = columns(&["Item", "Per person", "People", "Total"]);
+            let writes = record_writes(
+                &cols,
+                1..,
+                &[json!({"Item": "Venue", "Per person": 145, "Total": "=[Per person]*[People]"})],
+            )
+            .unwrap();
+            let mut at: Vec<(String, String)> = writes
+                .into_iter()
+                .map(|write| (write.cell, write.input.unwrap_or_default()))
+                .collect();
+            at.sort_unstable();
+            assert_eq!(
+                at,
+                [
+                    ("A2".to_owned(), "Venue".to_owned()),
+                    ("B2".to_owned(), "145".to_owned()),
+                    ("D2".to_owned(), "=B2*C2".to_owned()),
+                ]
+            );
+        }
+
+        phase keys_match_ignoring_case_and_number_spelling;
+        {
+            assert!(same_key(" Venue", "venue"));
+            assert!(same_key("7", "7.0"));
+            assert!(!same_key("7", "8"));
+        }
     }
 }

@@ -7,9 +7,9 @@
 use iroh::protocol::Router;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_delivery_protocol::workspace_join::WorkspaceHostTrust;
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-use tilo_relay::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use tilo_delivery_protocol::workspace_join::ServedWorkspace;
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
+use tilo_relay::host::{HostConfig, HostIdentity, WorkspaceHost};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::{
     ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
@@ -19,12 +19,13 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on, next_delta};
+use tilo_relay::WorkspaceId;
 
 /// A workspace the person's devices hold on the host before any room.
-const HOME: u64 = 0x686f_6d65;
+const HOME: WorkspaceId = WorkspaceId::from_u128(0x686f_6d65);
 
 /// Subscribe `client` to `workspace_id` and wait until the host lets it in.
-async fn subscribe(client: &RelayClient, workspace_id: u64) {
+async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("the host admits the subscription", async {
         loop {
@@ -149,7 +150,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let bob = TestUser::fresh("Bob");
     let bobs_phone = bob.enrol("phone", DeviceCapabilities::member());
-    let hosted = host_on(&alice, &laptop, HostMode::Device).await;
+    let hosted = host_on(&alice, &laptop, tilo_relay_protocol::WorkSetting::none()).await;
     let room = hosted.host.workspaces().create("Plans").await.unwrap();
 
     // The laptop governs and serves the room itself: its join answers name
@@ -162,7 +163,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
             &laptop.cert,
             IssueInvitationRequest {
                 request_id: [3; 32],
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: Some(bob.user_pk),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns()
@@ -192,18 +193,16 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
         )
         .await
         .unwrap();
-    assert_eq!(admission.bootstrap.room, room.workspace);
-    let WorkspaceHostTrust::InteractiveOwner(trust) = admission.trust else {
-        panic!("a device host is the room's own governor, not a certified host");
-    };
-    assert_eq!(trust.host(), &laptop.cert);
+    assert_eq!(admission.bootstrap.workspace_id, room.workspace_id);
+    let served: ServedWorkspace = admission.served;
+    assert_eq!(served.device(), &laptop.cert);
 
     // Bob's phone reaches the room on the laptop, by the trust the join
     // gave it, and nothing else of the laptop's.
-    let bobs_session = RelayClient::connect_v2_to_interactive_workspace_owner(
+    let bobs_session = RelayClient::connect_to_workspace_device(
         bobs_endpoint,
         hosted.host.node_addr(),
-        trust,
+        served,
         bobs_phone.cert.clone(),
         bobs_phone.sk.clone(),
         RevocationList::new(),
@@ -257,7 +256,7 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
-    let hosted = host_on(&alice, &laptop, HostMode::Device).await;
+    let hosted = host_on(&alice, &laptop, tilo_relay_protocol::WorkSetting::none()).await;
     let local = hosted
         .host
         .connect_local(
@@ -324,7 +323,10 @@ async fn a_router_built_before_any_room_refuses_until_its_host_is_installed() {
 
     let state = tempfile::tempdir().unwrap();
     let host = WorkspaceHost::open(
-        HostConfig::new(state.path().to_path_buf(), HostMode::Device),
+        HostConfig::new(
+            state.path().to_path_buf(),
+            tilo_relay_protocol::WorkSetting::none(),
+        ),
         HostIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: laptop.sk.clone(),

@@ -693,12 +693,7 @@ impl BotRunner {
                     let role = if member.administrator {
                         "owner"
                     } else {
-                        match member.role {
-                            tilo_peer_state::join::MemberRole::Viewer => "viewer",
-                            tilo_peer_state::join::MemberRole::Commenter => "commenter",
-                            tilo_peer_state::join::MemberRole::Editor => "editor",
-                            tilo_peer_state::join::MemberRole::Moderator => "moderator",
-                        }
+                        member.role.key()
                     };
                     serde_json::json!({
                         "person": hex::encode(member.user_public_key),

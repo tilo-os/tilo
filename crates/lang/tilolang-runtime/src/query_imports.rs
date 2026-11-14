@@ -197,7 +197,7 @@ impl Core {
             Imp::Grep => {
                 let pattern = self.text(a.h(0)?)?;
                 let options = self.text(a.h(1)?)?;
-                let scope = self.val(a.h(2)?)?;
+                let scope = self.val_whole(a.h(2)?)?;
                 let found = self.journaled_read(|| self.grep(&pattern, &options, &scope))?;
                 self.ret_h(found)
             }

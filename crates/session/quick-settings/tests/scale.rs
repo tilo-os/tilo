@@ -17,9 +17,7 @@
 
 use std::rc::Rc;
 
-mod common;
-
-use common::{click, drawn_on_each_other, has, hosted_at, target};
+use crate::common::{click, drawn_on_each_other, has, hosted_at, target};
 use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::{QsEffect, QsSection, QuickSettings, QuickSettingsApp};
 use ui::framework::testing::HeadlessApp;

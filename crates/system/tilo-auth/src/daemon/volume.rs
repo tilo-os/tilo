@@ -254,111 +254,115 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_btrfs_sysroot_is_found_by_its_source_device_not_its_anonymous_number() {
-        let sys = tempfile::tempdir().unwrap();
-        let root = sys.path().join("dev/block/253:0");
-        std::fs::create_dir_all(root.join("dm")).unwrap();
-        std::fs::create_dir_all(root.join("slaves/vda3")).unwrap();
-        std::fs::write(root.join("dm/name"), "root\n").unwrap();
-        std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
-        std::fs::create_dir_all(sys.path().join("dev/block/0:45")).unwrap();
-        let volume = |mounts, link: &str| {
-            root_volume_in(&Mounts(mounts), sys.path(), Path::new(link), &nodes)
-        };
-        let found = Some(SystemVolume {
-            device: PathBuf::from("/dev/vda3"),
-            mapping: Some("root".into()),
-        });
-        assert_eq!(
-            volume(
-                &[("/sysroot", "/dev/mapper/root[/root]"), ("/", "composefs")],
-                "/run/no-link"
-            ),
-            found,
-            "a btrfs subvolume on the mapping"
-        );
-        assert_eq!(
-            volume(&[("/", "/dev/mapper/root")], "/run/no-link"),
-            found,
-            "the mapping mounted at / directly"
-        );
-        assert_eq!(
-            volume(&[("/", "composefs")], "/run/root-link"),
-            found,
-            "the initrd's record of the root device"
-        );
-        assert_eq!(
-            volume(
-                &[("/sysroot", "/dev/vda2"), ("/", "composefs")],
-                "/run/no-link"
-            ),
-            None,
-            "a plain partition"
-        );
-        assert_eq!(volume(&[("/", "composefs")], "/run/no-link"), None);
-    }
+    tilo_test_env::scenario! {
+        fn the_system_volume_is_found_from_the_mount_table_and_sysfs;
 
-    #[test]
-    fn findmnt_sources_name_a_device_or_nothing() {
-        assert_eq!(
-            mount_source("/dev/mapper/root[/root]\n"),
-            Some(PathBuf::from("/dev/mapper/root"))
-        );
-        assert_eq!(
-            mount_source("/dev/vda3\n"),
-            Some(PathBuf::from("/dev/vda3"))
-        );
-        assert_eq!(mount_source("composefs\n"), None);
-        assert_eq!(mount_source("overlay"), None);
-        assert_eq!(mount_source(""), None);
-    }
+        phase a_btrfs_sysroot_is_found_by_its_source_device_not_its_anonymous_number;
+        {
+            let sys = tempfile::tempdir().unwrap();
+            let root = sys.path().join("dev/block/253:0");
+            std::fs::create_dir_all(root.join("dm")).unwrap();
+            std::fs::create_dir_all(root.join("slaves/vda3")).unwrap();
+            std::fs::write(root.join("dm/name"), "root\n").unwrap();
+            std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
+            std::fs::create_dir_all(sys.path().join("dev/block/0:45")).unwrap();
+            let volume = |mounts, link: &str| {
+                root_volume_in(&Mounts(mounts), sys.path(), Path::new(link), &nodes)
+            };
+            let found = Some(SystemVolume {
+                device: PathBuf::from("/dev/vda3"),
+                mapping: Some("root".into()),
+            });
+            assert_eq!(
+                volume(
+                    &[("/sysroot", "/dev/mapper/root[/root]"), ("/", "composefs")],
+                    "/run/no-link"
+                ),
+                found,
+                "a btrfs subvolume on the mapping"
+            );
+            assert_eq!(
+                volume(&[("/", "/dev/mapper/root")], "/run/no-link"),
+                found,
+                "the mapping mounted at / directly"
+            );
+            assert_eq!(
+                volume(&[("/", "composefs")], "/run/root-link"),
+                found,
+                "the initrd's record of the root device"
+            );
+            assert_eq!(
+                volume(
+                    &[("/sysroot", "/dev/vda2"), ("/", "composefs")],
+                    "/run/no-link"
+                ),
+                None,
+                "a plain partition"
+            );
+            assert_eq!(volume(&[("/", "composefs")], "/run/no-link"), None);
+        }
 
-    #[test]
-    fn a_block_node_reports_its_own_device_number() {
-        assert_eq!(block_device_number(Path::new("/dev/null")), None);
-        assert_eq!(block_device_number(Path::new("/nonexistent")), None);
-    }
+        phase findmnt_sources_name_a_device_or_nothing;
+        {
+            assert_eq!(
+                mount_source("/dev/mapper/root[/root]\n"),
+                Some(PathBuf::from("/dev/mapper/root"))
+            );
+            assert_eq!(
+                mount_source("/dev/vda3\n"),
+                Some(PathBuf::from("/dev/vda3"))
+            );
+            assert_eq!(mount_source("composefs\n"), None);
+            assert_eq!(mount_source("overlay"), None);
+            assert_eq!(mount_source(""), None);
+        }
 
-    #[test]
-    fn the_root_mapping_is_followed_through_sysfs() {
-        let sys = tempfile::tempdir().unwrap();
-        let root = sys.path().join("dev/block/253:0");
-        std::fs::create_dir_all(root.join("dm")).unwrap();
-        std::fs::create_dir_all(root.join("slaves/vda3")).unwrap();
-        std::fs::write(root.join("dm/name"), "root\n").unwrap();
-        std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
-        assert_eq!(
-            crypt_backing(sys.path(), "253:0"),
-            Some(("root".into(), "vda3".into()))
-        );
-        assert_eq!(crypt_backing(sys.path(), "0:31"), None);
-        assert_eq!(crypt_backing(sys.path(), "../253:0"), None);
-        std::fs::write(root.join("dm/uuid"), "CRYPT-PLAIN-root\n").unwrap();
-        assert_eq!(crypt_backing(sys.path(), "253:0"), None);
-        std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
-        std::fs::create_dir_all(root.join("slaves/vdb1")).unwrap();
-        assert_eq!(
-            crypt_backing(sys.path(), "253:0"),
-            None,
-            "two devices under it"
-        );
-    }
+        phase a_block_node_reports_its_own_device_number;
+        {
+            assert_eq!(block_device_number(Path::new("/dev/null")), None);
+            assert_eq!(block_device_number(Path::new("/nonexistent")), None);
+        }
 
-    #[test]
-    fn only_a_key_the_table_spells_out_is_used() {
-        assert_eq!(
-            parse_crypt_table_key("0 2048 crypt aes-xts-plain64 00ff10 0 7:0 0 1 allow_discards\n")
-                .unwrap()
-                .as_slice(),
-            &[0x00, 0xff, 0x10]
-        );
-        assert!(
-            parse_crypt_table_key(
-                "0 2048 crypt aes-xts-plain64 :64:logon:cryptsetup:1234-d0 0 7:0 0\n"
-            )
-            .is_none()
-        );
-        assert!(parse_crypt_table_key("0 2048 linear 7:0 0\n").is_none());
+        phase the_root_mapping_is_followed_through_sysfs;
+        {
+            let sys = tempfile::tempdir().unwrap();
+            let root = sys.path().join("dev/block/253:0");
+            std::fs::create_dir_all(root.join("dm")).unwrap();
+            std::fs::create_dir_all(root.join("slaves/vda3")).unwrap();
+            std::fs::write(root.join("dm/name"), "root\n").unwrap();
+            std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
+            assert_eq!(
+                crypt_backing(sys.path(), "253:0"),
+                Some(("root".into(), "vda3".into()))
+            );
+            assert_eq!(crypt_backing(sys.path(), "0:31"), None);
+            assert_eq!(crypt_backing(sys.path(), "../253:0"), None);
+            std::fs::write(root.join("dm/uuid"), "CRYPT-PLAIN-root\n").unwrap();
+            assert_eq!(crypt_backing(sys.path(), "253:0"), None);
+            std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
+            std::fs::create_dir_all(root.join("slaves/vdb1")).unwrap();
+            assert_eq!(
+                crypt_backing(sys.path(), "253:0"),
+                None,
+                "two devices under it"
+            );
+        }
+
+        phase only_a_key_the_table_spells_out_is_used;
+        {
+            assert_eq!(
+                parse_crypt_table_key("0 2048 crypt aes-xts-plain64 00ff10 0 7:0 0 1 allow_discards\n")
+                    .unwrap()
+                    .as_slice(),
+                &[0x00, 0xff, 0x10]
+            );
+            assert!(
+                parse_crypt_table_key(
+                    "0 2048 crypt aes-xts-plain64 :64:logon:cryptsetup:1234-d0 0 7:0 0\n"
+                )
+                .is_none()
+            );
+            assert!(parse_crypt_table_key("0 2048 linear 7:0 0\n").is_none());
+        }
     }
 }

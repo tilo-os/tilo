@@ -53,94 +53,198 @@ fn png(width: u32, height: u32) -> Vec<u8> {
     bytes
 }
 
-#[test]
-fn priority_maps_to_urgency_and_markup_reduces_to_text() {
-    for (priority, expected) in [
-        ("low", 0),
-        ("normal", 1),
-        ("high", 2),
-        ("urgent", 2),
-        ("bogus", 1),
-    ] {
-        let options = Options::from([("priority".to_owned(), text(priority))]);
-        assert_eq!(urgency(&options), expected, "{priority}");
+tilo_test_env::scenario! {
+    fn a_portal_notification_is_translated_and_bounded_for_the_daemon;
+
+    phase priority_maps_to_urgency_and_markup_reduces_to_text;
+    {
+        for (priority, expected) in [
+            ("low", 0),
+            ("normal", 1),
+            ("high", 2),
+            ("urgent", 2),
+            ("bogus", 1),
+        ] {
+            let options = Options::from([("priority".to_owned(), text(priority))]);
+            assert_eq!(urgency(&options), expected, "{priority}");
+        }
+        assert_eq!(urgency(&Options::new()), 1);
+        assert_eq!(
+            markup_to_plain_text("Hello <b>world</b> &amp; <a href='x'>friends</a>"),
+            "Hello world & friends"
+        );
+        let options = Options::from([
+            ("body".to_owned(), text("plain")),
+            ("markup-body".to_owned(), text("<i>marked</i> up")),
+        ]);
+        assert_eq!(body(&options), "marked up", "the markup wins");
     }
-    assert_eq!(urgency(&Options::new()), 1);
-    assert_eq!(
-        markup_to_plain_text("Hello <b>world</b> &amp; <a href='x'>friends</a>"),
-        "Hello world & friends"
-    );
-    let options = Options::from([
-        ("body".to_owned(), text("plain")),
-        ("markup-body".to_owned(), text("<i>marked</i> up")),
-    ]);
-    assert_eq!(body(&options), "marked up", "the markup wins");
-}
 
-#[test]
-fn the_default_action_and_buttons_become_the_daemons_actions() {
-    let options = Options::from([
-        ("default-action".to_owned(), text("app.open")),
-        (
-            "default-action-target".to_owned(),
-            owned(Value::new("thread-7")),
-        ),
-        (
-            "buttons".to_owned(),
-            owned(Value::new(vec![
-                button("Mark read", "app.read", Some("thread-7"), None),
-                button("", "app.unlabelled", None, None),
-                button("Reply", "app.reply", None, Some(REPLY_WITH_TEXT)),
-                button("Archive", "app.archive", None, None),
-                button("Fourth", "app.too-many", None, None),
-            ])),
-        ),
-    ]);
-    let (listed, routes) = actions(&options);
-    assert_eq!(
-        listed,
-        [
-            (DEFAULT.to_owned(), default_label()),
-            ("button-0".to_owned(), "Mark read".to_owned()),
-            (INLINE_REPLY.to_owned(), "Reply".to_owned()),
-        ],
-        "a button without a label is skipped; only three buttons are read"
-    );
-    assert_eq!(
-        routes.get(DEFAULT).map(|route| route.action.as_str()),
-        Some("app.open")
-    );
-    assert_eq!(
-        routes.get(INLINE_REPLY).map(|route| route.action.as_str()),
-        Some("app.reply")
-    );
-}
+    phase the_default_action_and_buttons_become_the_daemons_actions;
+    {
+        let options = Options::from([
+            ("default-action".to_owned(), text("app.open")),
+            (
+                "default-action-target".to_owned(),
+                owned(Value::new("thread-7")),
+            ),
+            (
+                "buttons".to_owned(),
+                owned(Value::new(vec![
+                    button("Mark read", "app.read", Some("thread-7"), None),
+                    button("", "app.unlabelled", None, None),
+                    button("Reply", "app.reply", None, Some(REPLY_WITH_TEXT)),
+                    button("Archive", "app.archive", None, None),
+                    button("Fourth", "app.too-many", None, None),
+                ])),
+            ),
+        ]);
+        let (listed, routes) = actions(&options);
+        assert_eq!(
+            listed,
+            [
+                (DEFAULT.to_owned(), default_label()),
+                ("button-0".to_owned(), "Mark read".to_owned()),
+                (INLINE_REPLY.to_owned(), "Reply".to_owned()),
+            ],
+            "a button without a label is skipped; only three buttons are read"
+        );
+        assert_eq!(
+            routes.get(DEFAULT).map(|route| route.action.as_str()),
+            Some("app.open")
+        );
+        assert_eq!(
+            routes.get(INLINE_REPLY).map(|route| route.action.as_str()),
+            Some("app.reply")
+        );
+    }
 
-#[test]
-fn display_hints_category_and_sound_shape_the_notification() {
-    let options = Options::from([
-        ("title".to_owned(), text("Rain")),
-        (
-            "display-hint".to_owned(),
-            owned(Value::new(vec!["persistent", "transient"])),
-        ),
-        ("category".to_owned(), text("weather.warning.extreme")),
-        ("sound".to_owned(), text("silent")),
-    ]);
-    let shown = shown(9, "org.example.Weather", &options, Vec::new());
-    assert_eq!(shown.id, 9);
-    assert_eq!(shown.summary, "Rain");
-    assert_eq!(shown.expire_timeout, 0, "persistent stays until closed");
-    assert!(shown.transient);
-    assert!(shown.suppress_sound);
-    assert_eq!(shown.category.as_deref(), Some("weather.warning.extreme"));
-    assert_eq!(
-        shown.caller.map(|caller| caller.app_id),
-        Some("org.example.Weather".to_owned())
-    );
-    let plain = super::shown(1, "app", &Options::new(), Vec::new());
-    assert_eq!(plain.expire_timeout, -1);
-    assert!(!plain.suppress_sound && !plain.transient);
+    phase display_hints_category_and_sound_shape_the_notification;
+    {
+        let options = Options::from([
+            ("title".to_owned(), text("Rain")),
+            (
+                "display-hint".to_owned(),
+                owned(Value::new(vec!["persistent", "transient"])),
+            ),
+            ("category".to_owned(), text("weather.warning.extreme")),
+            ("sound".to_owned(), text("silent")),
+        ]);
+        let shown = shown(9, "org.example.Weather", &options, Vec::new());
+        assert_eq!(shown.id, 9);
+        assert_eq!(shown.summary, "Rain");
+        assert_eq!(shown.expire_timeout, 0, "persistent stays until closed");
+        assert!(shown.transient);
+        assert!(shown.suppress_sound);
+        assert_eq!(shown.category.as_deref(), Some("weather.warning.extreme"));
+        assert_eq!(
+            shown.caller.map(|caller| caller.app_id),
+            Some("org.example.Weather".to_owned())
+        );
+        let plain = super::shown(1, "app", &Options::new(), Vec::new());
+        assert_eq!(plain.expire_timeout, -1);
+        assert!(!plain.suppress_sound && !plain.transient);
+    }
+
+    phase records_are_bounded_and_route_actions_with_their_targets;
+    {
+        let records = Records::default();
+        let mut next = 0_u32;
+        let mut alloc = || {
+            next = next.wrapping_add(1);
+            next
+        };
+        for index in 0..=MAX_ACTIVE {
+            let (_, evicted) = records.upsert(
+                "org.example.App",
+                &index.to_string(),
+                HashMap::new(),
+                &mut alloc,
+            );
+            assert_eq!(
+                evicted,
+                (index == MAX_ACTIVE).then_some(1),
+                "the oldest makes room"
+            );
+        }
+        assert_eq!(records.keys().len(), MAX_ACTIVE);
+        assert!(!records.keys().iter().any(|(_, id)| id == "0"));
+
+        let routes = HashMap::from([(
+            DEFAULT.to_owned(),
+            Route {
+                action: "app.open".into(),
+                target: Some(owned(Value::new("thread-7"))),
+            },
+        )]);
+        let (numeric, _) = records.upsert("org.example.Chat", "msg", routes, &mut alloc);
+        let (again, _) = records.upsert("org.example.Chat", "msg", HashMap::new(), &mut alloc);
+        assert_eq!(again, numeric, "replacing keeps its id");
+        assert!(
+            records
+                .invoked(
+                    numeric,
+                    Taken::Action {
+                        key: DEFAULT,
+                        activation_token: None
+                    }
+                )
+                .is_none(),
+            "the replacement offers nothing"
+        );
+        let routes = HashMap::from([(
+            DEFAULT.to_owned(),
+            Route {
+                action: "app.open".into(),
+                target: Some(owned(Value::new("thread-7"))),
+            },
+        )]);
+        records.upsert("org.example.Chat", "msg", routes, &mut alloc);
+        let invoked = records
+            .invoked(
+                numeric,
+                Taken::Action {
+                    key: DEFAULT,
+                    activation_token: Some("tok"),
+                },
+            )
+            .expect("routed");
+        assert_eq!(
+            (
+                invoked.app_id.as_str(),
+                invoked.id.as_str(),
+                invoked.action.as_str()
+            ),
+            ("org.example.Chat", "msg", "app.open")
+        );
+        let [target, platform] = invoked.parameter.as_slice() else {
+            panic!("the target and the platform data");
+        };
+        assert_eq!(
+            String::try_from(target.try_clone().expect("clone"))
+                .ok()
+                .as_deref(),
+            Some("thread-7")
+        );
+        let platform: HashMap<String, OwnedValue> = platform
+            .try_clone()
+            .expect("clone")
+            .try_into()
+            .expect("a{sv}");
+        assert_eq!(
+            platform
+                .get("activation-token")
+                .and_then(|token| String::try_from(token.try_clone().ok()?).ok())
+                .as_deref(),
+            Some("tok")
+        );
+        assert_eq!(
+            records.remove("org.example.Other", "msg"),
+            None,
+            "another app's id is not this one"
+        );
+        assert_eq!(records.remove("org.example.Chat", "msg"), Some(numeric));
+    }
 }
 
 #[tokio::test]
@@ -188,106 +292,6 @@ async fn an_icon_by_file_descriptor_is_read_from_its_start() {
         panic!("the file decodes to pixels");
     };
     assert_eq!((pixels.width, pixels.height), (2, 2));
-}
-
-#[test]
-fn records_are_bounded_and_route_actions_with_their_targets() {
-    let records = Records::default();
-    let mut next = 0_u32;
-    let mut alloc = || {
-        next = next.wrapping_add(1);
-        next
-    };
-    for index in 0..=MAX_ACTIVE {
-        let (_, evicted) = records.upsert(
-            "org.example.App",
-            &index.to_string(),
-            HashMap::new(),
-            &mut alloc,
-        );
-        assert_eq!(
-            evicted,
-            (index == MAX_ACTIVE).then_some(1),
-            "the oldest makes room"
-        );
-    }
-    assert_eq!(records.keys().len(), MAX_ACTIVE);
-    assert!(!records.keys().iter().any(|(_, id)| id == "0"));
-
-    let routes = HashMap::from([(
-        DEFAULT.to_owned(),
-        Route {
-            action: "app.open".into(),
-            target: Some(owned(Value::new("thread-7"))),
-        },
-    )]);
-    let (numeric, _) = records.upsert("org.example.Chat", "msg", routes, &mut alloc);
-    let (again, _) = records.upsert("org.example.Chat", "msg", HashMap::new(), &mut alloc);
-    assert_eq!(again, numeric, "replacing keeps its id");
-    assert!(
-        records
-            .invoked(
-                numeric,
-                Taken::Action {
-                    key: DEFAULT,
-                    activation_token: None
-                }
-            )
-            .is_none(),
-        "the replacement offers nothing"
-    );
-    let routes = HashMap::from([(
-        DEFAULT.to_owned(),
-        Route {
-            action: "app.open".into(),
-            target: Some(owned(Value::new("thread-7"))),
-        },
-    )]);
-    records.upsert("org.example.Chat", "msg", routes, &mut alloc);
-    let invoked = records
-        .invoked(
-            numeric,
-            Taken::Action {
-                key: DEFAULT,
-                activation_token: Some("tok"),
-            },
-        )
-        .expect("routed");
-    assert_eq!(
-        (
-            invoked.app_id.as_str(),
-            invoked.id.as_str(),
-            invoked.action.as_str()
-        ),
-        ("org.example.Chat", "msg", "app.open")
-    );
-    let [target, platform] = invoked.parameter.as_slice() else {
-        panic!("the target and the platform data");
-    };
-    assert_eq!(
-        String::try_from(target.try_clone().expect("clone"))
-            .ok()
-            .as_deref(),
-        Some("thread-7")
-    );
-    let platform: HashMap<String, OwnedValue> = platform
-        .try_clone()
-        .expect("clone")
-        .try_into()
-        .expect("a{sv}");
-    assert_eq!(
-        platform
-            .get("activation-token")
-            .and_then(|token| String::try_from(token.try_clone().ok()?).ok())
-            .as_deref(),
-        Some("tok")
-    );
-    assert_eq!(
-        records.remove("org.example.Other", "msg"),
-        None,
-        "another app's id is not this one"
-    );
-    assert_eq!(records.remove("org.example.Chat", "msg"), Some(numeric));
 }
 
 /// The backend with its notification interface on a bus of its own, a

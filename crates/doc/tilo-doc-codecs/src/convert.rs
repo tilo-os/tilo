@@ -141,7 +141,6 @@ pub fn from_markdown(markdown: &str, ext: &str) -> Result<Vec<u8>, CodecError> {
 mod tests {
     use super::*;
 
-    #[test]
     fn a_word_document_reads_as_markdown_and_back() {
         let docx = from_markdown("# Report\n\nThe *first* finding.\n", "docx").unwrap();
         assert!(docx.starts_with(b"PK"), "a docx is a zip package");
@@ -152,7 +151,6 @@ mod tests {
         assert!(markdown_of("odt", &odt).unwrap().contains("Report"));
     }
 
-    #[test]
     fn plain_text_keeps_its_lines_and_is_never_parsed_as_markdown() {
         let text = "# not a heading\n*not emphasis*\n";
         assert_eq!(markdown_of("txt", text.as_bytes()).unwrap(), text);
@@ -167,7 +165,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn binary_bytes_and_unknown_outputs_are_refused_with_a_reason() {
         let error = markdown_of("bin", &[0xff, 0xfe, 0x00]).unwrap_err();
         assert!(error.to_string().contains("neither text"), "{error}");
@@ -177,9 +174,31 @@ mod tests {
         assert_eq!(reading("csv"), Reading::Text);
     }
 
-    #[test]
     fn markdown_writes_as_html() {
         let html = String::from_utf8(from_markdown("Hello **there**", "html").unwrap()).unwrap();
         assert!(html.contains("there"), "{html}");
+    }
+
+    #[test]
+    fn files_convert_to_markdown_and_back_or_are_refused_with_a_reason() {
+        let cases: [(&str, fn()); 4] = [
+            (
+                "a word document reads as markdown and back",
+                a_word_document_reads_as_markdown_and_back,
+            ),
+            (
+                "plain text keeps its lines and is never parsed as markdown",
+                plain_text_keeps_its_lines_and_is_never_parsed_as_markdown,
+            ),
+            (
+                "binary bytes and unknown outputs are refused with a reason",
+                binary_bytes_and_unknown_outputs_are_refused_with_a_reason,
+            ),
+            ("markdown writes as html", markdown_writes_as_html),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

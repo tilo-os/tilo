@@ -213,32 +213,36 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn an_administrator_is_a_member_of_wheel() {
-        let groups = std::process::Command::new("id")
-            .arg("-nG")
-            .output_locked()
-            .expect("id runs");
-        let in_wheel = String::from_utf8_lossy(&groups.stdout)
-            .split_whitespace()
-            .any(|group| group == "wheel");
-        assert_eq!(administers_this_device(), in_wheel);
-    }
+    tilo_test_env::scenario! {
+        fn accounts_are_administered_by_wheel_and_their_input_is_checked;
 
-    #[test]
-    fn account_input_is_validated_and_scrubbed_before_the_privilege_boundary() {
+        phase an_administrator_is_a_member_of_wheel;
         {
-            assert!(validate_username("ada").is_ok());
-            assert!(validate_username("ada_2").is_ok());
-            assert!(validate_username("Ada").is_err());
-            assert!(validate_username("../root").is_err());
-            assert!(validate_real_name("Ada Lovelace").is_ok());
-            assert!(validate_real_name("Ada\nroot").is_err());
+            let groups = std::process::Command::new("id")
+                .arg("-nG")
+                .output_locked()
+                .expect("id runs");
+            let in_wheel = String::from_utf8_lossy(&groups.stdout)
+                .split_whitespace()
+                .any(|group| group == "wheel");
+            assert_eq!(administers_this_device(), in_wheel);
         }
+
+        phase account_input_is_validated_and_scrubbed_before_the_privilege_boundary;
         {
-            let mut short = b"bad".to_vec();
-            assert!(set_password("ada", &mut short).is_err());
-            assert!(short.iter().all(|b| *b == 0));
+            {
+                assert!(validate_username("ada").is_ok());
+                assert!(validate_username("ada_2").is_ok());
+                assert!(validate_username("Ada").is_err());
+                assert!(validate_username("../root").is_err());
+                assert!(validate_real_name("Ada Lovelace").is_ok());
+                assert!(validate_real_name("Ada\nroot").is_err());
+            }
+            {
+                let mut short = b"bad".to_vec();
+                assert!(set_password("ada", &mut short).is_err());
+                assert!(short.iter().all(|b| *b == 0));
+            }
         }
     }
 }

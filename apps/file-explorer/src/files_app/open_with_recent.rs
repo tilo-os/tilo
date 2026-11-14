@@ -93,6 +93,14 @@ impl FilesState {
             if let Some(icon) = app.icon.as_deref().and_then(ui::icons::Icon::from_name) {
                 item = item.with_icon(icon);
             }
+            // The app's own icon, which the session read for it, in its glyph's place.
+            if let Some(image) = app
+                .artwork
+                .as_deref()
+                .and_then(|png| ui::icons::AppImage::from_png(format!("app:{}", app.id), png))
+            {
+                item = item.with_image(image);
+            }
             if let Some(source) = app.source {
                 item = item.with_detail(crate::applications::kind_label(source));
             }

@@ -177,66 +177,70 @@ mod tests {
         cert
     }
 
-    #[test]
-    fn a_certified_device_signs_its_person_in_once_for_one_service() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
-        let cert = device(&root, &key);
-        let audience = "https://door.example";
-        let proof = SignInProof::sign(cert.clone(), &key, audience, [7; 32]).unwrap();
-        let none = RevocationList::new();
-        assert_eq!(
-            proof.verify(audience, &[7; 32], &none, 10),
-            Ok(root.verifying_key().to_bytes())
-        );
-        assert_eq!(
-            proof.verify("https://other.example", &[7; 32], &none, 10),
-            Err(SignInError::WrongChallenge)
-        );
-        assert_eq!(
-            proof.verify(audience, &[8; 32], &none, 10),
-            Err(SignInError::WrongChallenge)
-        );
-        // Another device may not borrow the certificate.
-        let other = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        assert!(SignInProof::sign(cert.clone(), &other, audience, [7; 32]).is_err());
-        let mut forged = proof.clone();
-        forged.signature = other
-            .sign(&sign_in_digest(&cert, audience, &[7; 32]).unwrap())
-            .to_bytes();
-        assert_eq!(
-            forged.verify(audience, &[7; 32], &none, 10),
-            Err(SignInError::Signature)
-        );
-        // A device certified by another root is another person.
-        let stranger = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        let mut claimed = proof;
-        claimed.cert.user_public_key = stranger.verifying_key().to_bytes();
-        assert!(matches!(
-            claimed.verify(audience, &[7; 32], &none, 10),
-            Err(SignInError::Certificate(_))
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn a_device_signs_its_person_in_only_while_certified;
 
-    #[test]
-    fn a_revoked_device_signs_nobody_in() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
-        let cert = device(&root, &key);
-        let proof = SignInProof::sign(cert, &key, "https://door.example", [7; 32]).unwrap();
-        let mut entry = crate::RevocationEntry {
-            user_public_key: root.verifying_key().to_bytes(),
-            revoked_device_public_key: key.verifying_key().to_bytes(),
-            revoked_at_ns: 5,
-            reason: crate::RevocationReason::Lost,
-            signature: [0; 64],
-        };
-        crate::sign_revocation_entry(&mut entry, &root).unwrap();
-        let mut revoked = RevocationList::new();
-        revoked.insert(entry).unwrap();
-        assert_eq!(
-            proof.verify("https://door.example", &[7; 32], &revoked, 10),
-            Err(SignInError::Revoked)
-        );
+        phase a_certified_device_signs_its_person_in_once_for_one_service;
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+            let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+            let cert = device(&root, &key);
+            let audience = "https://door.example";
+            let proof = SignInProof::sign(cert.clone(), &key, audience, [7; 32]).unwrap();
+            let none = RevocationList::new();
+            assert_eq!(
+                proof.verify(audience, &[7; 32], &none, 10),
+                Ok(root.verifying_key().to_bytes())
+            );
+            assert_eq!(
+                proof.verify("https://other.example", &[7; 32], &none, 10),
+                Err(SignInError::WrongChallenge)
+            );
+            assert_eq!(
+                proof.verify(audience, &[8; 32], &none, 10),
+                Err(SignInError::WrongChallenge)
+            );
+            // Another device may not borrow the certificate.
+            let other = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+            assert!(SignInProof::sign(cert.clone(), &other, audience, [7; 32]).is_err());
+            let mut forged = proof.clone();
+            forged.signature = other
+                .sign(&sign_in_digest(&cert, audience, &[7; 32]).unwrap())
+                .to_bytes();
+            assert_eq!(
+                forged.verify(audience, &[7; 32], &none, 10),
+                Err(SignInError::Signature)
+            );
+            // A device certified by another root is another person.
+            let stranger = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+            let mut claimed = proof;
+            claimed.cert.user_public_key = stranger.verifying_key().to_bytes();
+            assert!(matches!(
+                claimed.verify(audience, &[7; 32], &none, 10),
+                Err(SignInError::Certificate(_))
+            ));
+        }
+
+        phase a_revoked_device_signs_nobody_in;
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+            let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+            let cert = device(&root, &key);
+            let proof = SignInProof::sign(cert, &key, "https://door.example", [7; 32]).unwrap();
+            let mut entry = crate::RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: key.verifying_key().to_bytes(),
+                revoked_at_ns: 5,
+                reason: crate::RevocationReason::Lost,
+                signature: [0; 64],
+            };
+            crate::sign_revocation_entry(&mut entry, &root).unwrap();
+            let mut revoked = RevocationList::new();
+            revoked.insert(entry).unwrap();
+            assert_eq!(
+                proof.verify("https://door.example", &[7; 32], &revoked, 10),
+                Err(SignInError::Revoked)
+            );
+        }
     }
 }

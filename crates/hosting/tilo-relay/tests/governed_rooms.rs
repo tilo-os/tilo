@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use neighbour_wire::NeighbourMsg;
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -31,6 +31,7 @@ use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, device_endpoint};
+use tilo_relay::WorkspaceId;
 
 const APP: &str = "so.tilo.chat";
 
@@ -72,7 +73,11 @@ async fn start_at(
     .unwrap()
 }
 
-async fn session(relay: &Relay, device: &TestDevice, workspace_id: u64) -> RelayCoeditSession {
+async fn session(
+    relay: &Relay,
+    device: &TestDevice,
+    workspace_id: WorkspaceId,
+) -> RelayCoeditSession {
     let client = RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
@@ -112,7 +117,7 @@ async fn invite(
     relay: &Relay,
     issuer: &TestDevice,
     room: &str,
-    role: MemberRole,
+    role: Role,
     person: [u8; 32],
 ) -> IssuedInvitation {
     relay
@@ -202,9 +207,7 @@ fn text(peer: &StatePeer, key: &str) -> Option<String> {
 }
 
 fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
-    peer.permissions(device, SystemTime::now())
-        .ok()
-        .map(|member| member.role)
+    peer.role(&device, SystemTime::now()).ok()
 }
 
 /// What every scenario here starts from: Alice's relay governing a room her
@@ -229,11 +232,11 @@ struct Governed {
 
 /// A governed room's whole setup. Boxed: the fixture's own future is far larger
 /// than the tests that only destructure its result.
-fn governed_room(granted: MemberRole) -> std::pin::Pin<Box<dyn Future<Output = Governed> + Send>> {
+fn governed_room(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Governed> + Send>> {
     Box::pin(async move {
         let alice = TestUser::fresh("Alice");
         let bob = TestUser::fresh("Bob");
-        let host = alice.enrol("alice-home", DeviceCapabilities::host());
+        let host = alice.enrol("alice-home", DeviceCapabilities::member());
         let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
         let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
@@ -269,13 +272,12 @@ fn governed_room(granted: MemberRole) -> std::pin::Pin<Box<dyn Future<Output = G
             .await
             .unwrap();
         let bootstrap = admission.bootstrap;
-        assert_eq!(bootstrap.room, room.workspace);
         assert_eq!(bootstrap.workspace_id, room.workspace_id);
         assert_eq!(bootstrap.role, granted);
 
         // Bob's own replica, from the bootstrap alone, makes him an editor.
         let mut bob_peer = StatePeer::new(
-            &bootstrap.room,
+            &bootstrap.workspace_id.to_string(),
             bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             RevocationList::new(),
@@ -292,7 +294,7 @@ fn governed_room(granted: MemberRole) -> std::pin::Pin<Box<dyn Future<Output = G
                 )
                 .unwrap();
         }
-        assert_eq!(role(&bob_peer, phone.device_pubkey()), Some(granted.into()));
+        assert_eq!(role(&bob_peer, phone.device_pubkey()), Some(granted));
 
         // Alice's replica learns governance from the relay's retained history.
         let mut alice_peer = StatePeer::new(
@@ -314,7 +316,7 @@ fn governed_room(granted: MemberRole) -> std::pin::Pin<Box<dyn Future<Output = G
             &mut alice_presence,
             |peer, _| {
                 role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
-                    && role(peer, phone.device_pubkey()) == Some(granted.into())
+                    && role(peer, phone.device_pubkey()) == Some(granted)
             },
         )
         .await;
@@ -356,7 +358,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
         bob_session,
         mut alice_presence,
         mut bob_presence,
-    } = governed_room(MemberRole::Editor).await;
+    } = governed_room(Role::Editor).await;
 
     // Alice writes; Bob's replica verifies and applies it.
     let mut doc = AutoCommit::new();
@@ -540,7 +542,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
 async fn a_restarted_host_names_its_relay_before_its_first_invitation() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
@@ -555,27 +557,19 @@ async fn a_restarted_host_names_its_relay_before_its_first_invitation() {
 
     let relay = start_at(state.path(), &alice, &host, iroh_listen).await;
     // What a person does as soon as their host is up again: hand out a link.
-    let invited = invite(
-        &relay,
-        &laptop,
-        &room.workspace,
-        MemberRole::Editor,
-        bob.user_pk,
-    )
-    .await;
-    let hint =
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::from_transport_hint(
-            &decode_and_verify_invitation(
-                &invited.signed_invitation,
-                None,
-                &RevocationList::new(),
-                tilo_clock::unix_now_ns(),
-            )
-            .unwrap()
-            .grant()
-            .transport[0],
+    let invited = invite(&relay, &laptop, &room.workspace, Role::Editor, bob.user_pk).await;
+    let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
+        &decode_and_verify_invitation(
+            &invited.signed_invitation,
+            None,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
         )
-        .unwrap();
+        .unwrap()
+        .grant()
+        .transport[0],
+    )
+    .unwrap();
     let relay_url = relay
         .node_addr()
         .relay_urls()
@@ -642,7 +636,7 @@ type = "String"
         bob_session,
         mut bob_presence,
         ..
-    } = governed_room(MemberRole::Editor).await;
+    } = governed_room(Role::Editor).await;
 
     // A change claiming a verb the app does not publish: refused by the
     // relay, so it never reaches Bob (whose replica would refuse it loudly).
@@ -747,7 +741,7 @@ params = []
         mut alice_presence,
         mut bob_presence,
         ..
-    } = governed_room(MemberRole::Commenter).await;
+    } = governed_room(Role::Commenter).await;
 
     // Alice's chat: the record exists before Bob writes to it.
     let mut doc = AutoCommit::new();
@@ -831,7 +825,7 @@ params = []
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_nobody() {
     let alice = TestUser::fresh("Alice");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
@@ -844,7 +838,7 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
             &relay,
             &laptop,
             &room.workspace,
-            MemberRole::Editor,
+            Role::Editor,
             guest.user_pk,
         )
         .await;

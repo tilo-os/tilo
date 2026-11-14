@@ -709,7 +709,7 @@ fn wait_until_their_pointer(
     what: &str,
 ) {
     let workspace_id =
-        tilo_relay_protocol::room_workspace_id(&room.workspace).expect("a workspace id");
+        tilo_relay_protocol::WorkspaceId::parse(&room.workspace).expect("a workspace id");
     let deadline = Instant::now()
         .checked_add(tilo_test_env::hang_bound())
         .expect("the wait's bound fits in an Instant");
@@ -800,7 +800,7 @@ fn invite(room: &Room, member_page: &Link, person: [u8; 32]) -> String {
         .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Invite {
             workspace: room.workspace.clone(),
             request_id: random_key(),
-            role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+            role: tilo_relay_protocol::workspaces::Role::Editor,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
             inviter_name: Some("The Lounge".to_owned()),
             wait_list_entry: None,

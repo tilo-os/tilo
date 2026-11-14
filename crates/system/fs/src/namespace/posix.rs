@@ -74,38 +74,42 @@ impl Namespace {
 mod tests {
     use super::*;
 
-    #[test]
-    fn attributes_replicate_and_keep_only_what_is_portable() {
-        let mut a = Namespace::new("a").unwrap();
-        let record = FileRecordId::new();
-        assert!(a.posix_attrs(record).is_none());
-        let exec = PosixAttrs::of_local(0o104_755, false, false);
-        assert_eq!(exec.mode, 0o755, "setuid and the file type are dropped");
-        assert!(a.put_posix_attrs(record, &exec));
-        let b = Namespace::from_bytes("b", &a.save()).unwrap();
-        assert_eq!(b.posix_attrs(record), Some(exec));
-        assert_eq!(PosixAttrs::of_local(0o42_775, true, false).mode, 0o2775);
-        let link = PosixAttrs::of_local(0o120_777, false, true);
-        assert!(link.symlink);
-        assert_eq!(PosixAttrs::default_for(true).mode, 0o755);
-    }
+    tilo_test_env::scenario! {
+        fn posix_attributes_replicate_and_present_the_mode_given;
 
-    #[test]
-    fn a_file_is_presented_with_the_mode_it_was_given() {
-        let mut ns = Namespace::new("a").unwrap();
-        let ino = ns
-            .create_file(crate::namespace::ROOT_INO, "tool", None, 0, 1)
-            .unwrap();
-        assert_eq!(ns.getattr(ino).unwrap().perm, 0o644);
-        let record = ns.record_id_for(ino).unwrap();
-        assert!(ns.put_posix_attrs(record, &PosixAttrs::of_local(0o104_755, false, false)));
-        assert_eq!(
-            ns.getattr(ino).unwrap().perm,
-            0o755,
-            "executable, and never setuid"
-        );
-        let mut b = Namespace::from_bytes("b", &ns.save()).unwrap();
-        let there = b.lookup(crate::namespace::ROOT_INO, "tool").unwrap();
-        assert_eq!(there.perm, 0o755, "the mode replicates with the file");
+        phase attributes_replicate_and_keep_only_what_is_portable;
+        {
+            let mut a = Namespace::new("a").unwrap();
+            let record = FileRecordId::new();
+            assert!(a.posix_attrs(record).is_none());
+            let exec = PosixAttrs::of_local(0o104_755, false, false);
+            assert_eq!(exec.mode, 0o755, "setuid and the file type are dropped");
+            assert!(a.put_posix_attrs(record, &exec));
+            let b = Namespace::from_bytes("b", &a.save()).unwrap();
+            assert_eq!(b.posix_attrs(record), Some(exec));
+            assert_eq!(PosixAttrs::of_local(0o42_775, true, false).mode, 0o2775);
+            let link = PosixAttrs::of_local(0o120_777, false, true);
+            assert!(link.symlink);
+            assert_eq!(PosixAttrs::default_for(true).mode, 0o755);
+        }
+
+        phase a_file_is_presented_with_the_mode_it_was_given;
+        {
+            let mut ns = Namespace::new("a").unwrap();
+            let ino = ns
+                .create_file(crate::namespace::ROOT_INO, "tool", None, 0, 1)
+                .unwrap();
+            assert_eq!(ns.getattr(ino).unwrap().perm, 0o644);
+            let record = ns.record_id_for(ino).unwrap();
+            assert!(ns.put_posix_attrs(record, &PosixAttrs::of_local(0o104_755, false, false)));
+            assert_eq!(
+                ns.getattr(ino).unwrap().perm,
+                0o755,
+                "executable, and never setuid"
+            );
+            let mut b = Namespace::from_bytes("b", &ns.save()).unwrap();
+            let there = b.lookup(crate::namespace::ROOT_INO, "tool").unwrap();
+            assert_eq!(there.perm, 0o755, "the mode replicates with the file");
+        }
     }
 }

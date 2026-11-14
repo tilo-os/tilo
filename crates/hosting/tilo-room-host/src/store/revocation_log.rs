@@ -344,6 +344,31 @@ mod tests {
         );
     }
 
+    /// The log this build writes: one root's revocation of two of its
+    /// devices. Kept so a relay's log goes on reading the same way; a field
+    /// added, removed or reordered changes these bytes.
+    const GOLDEN: &str = include_str!("../../golden/relay-revocation-log/v2.hex");
+
+    fn golden() -> Vec<u8> {
+        hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
+    }
+
+    #[test]
+    fn the_log_kept_here_reads_and_writes_as_it_is() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let entries = vec![revocation(&root, 2, 10), revocation(&root, 3, 20)];
+        tilo_files::native::migration::assert_golden_bytes(
+            FORMAT.name,
+            &golden(),
+            |bytes| {
+                let (held, valid) = read(bytes).unwrap();
+                assert_eq!(valid, bytes.len(), "every frame of the kept log is whole");
+                assert_eq!(held.entries, entries);
+            },
+            || whole(&entries).unwrap(),
+        );
+    }
+
     /// An entry appends only what the log does not hold as early, and an
     /// earlier one of the same root and key takes its place.
     #[test]

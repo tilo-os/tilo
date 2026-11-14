@@ -211,113 +211,223 @@ mod tests {
         }
     }
 
-    #[test]
-    fn matching_honours_the_options_across_paragraphs() {
-        let blocks = [
-            block("p1", "Hello hello HELLO category"),
-            block("p2", "a cat sat"),
-        ];
-        let any = FindOptions::default();
-        assert_eq!(find_in(&blocks, "hello", any).len(), 3);
-        let case = FindOptions {
-            match_case: true,
-            ..FindOptions::default()
-        };
-        assert_eq!(find_in(&blocks, "hello", case), vec![("p1".into(), 6, 11)]);
-        let word = FindOptions {
-            whole_word: true,
-            ..FindOptions::default()
-        };
-        assert_eq!(find_in(&blocks, "cat", word), vec![("p2".into(), 2, 5)]);
-        assert_eq!(find_in(&blocks, "cat", any).len(), 2);
-        let pattern = FindOptions {
-            mode: ui::widget::FindMode::Regex,
-            ..FindOptions::default()
-        };
-        assert_eq!(
-            find_in(&blocks, r"c\w+", pattern),
-            vec![("p1".into(), 18, 26), ("p2".into(), 2, 5)],
-            "a pattern matches in characters"
-        );
-        assert!(
-            find_in(&blocks, "(", pattern).is_empty(),
-            "a pattern that does not compile finds nothing"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `find_in`: literal, whole-word and pattern matching over the paragraphs.
+        fn find_in_matches_by_its_options_and_ends;
 
-    #[test]
-    fn literal_whole_word_reconsiders_overlapping_candidates_after_boundary_rejection() {
-        let options = FindOptions {
-            whole_word: true,
-            ..FindOptions::default()
-        };
-        for (text, query, expected) in [
-            ("xfoo-foo-foo", "foo-foo", vec![(5, 12)]),
-            ("İfoo-foo-foo", "foo-foo", vec![(5, 12)]),
-            ("xéé-éé-éé", "éé-éé", vec![(4, 9)]),
-            ("🙂 xfoo-foo-foo", "foo-foo", vec![(7, 14)]),
-            ("foo-foo-foo", "foo-foo", vec![(0, 7)]),
-            ("xfoo-foo", "foo-foo", vec![]),
-        ] {
-            let blocks = [block("p1", text)];
+        phase matching_honours_the_options_across_paragraphs;
+        {
+            let blocks = [
+                block("p1", "Hello hello HELLO category"),
+                block("p2", "a cat sat"),
+            ];
+            let any = FindOptions::default();
+            assert_eq!(find_in(&blocks, "hello", any).len(), 3);
+            let case = FindOptions {
+                match_case: true,
+                ..FindOptions::default()
+            };
+            assert_eq!(find_in(&blocks, "hello", case), vec![("p1".into(), 6, 11)]);
+            let word = FindOptions {
+                whole_word: true,
+                ..FindOptions::default()
+            };
+            assert_eq!(find_in(&blocks, "cat", word), vec![("p2".into(), 2, 5)]);
+            assert_eq!(find_in(&blocks, "cat", any).len(), 2);
+            let pattern = FindOptions {
+                mode: ui::widget::FindMode::Regex,
+                ..FindOptions::default()
+            };
             assert_eq!(
-                find_in(&blocks, query, options)
-                    .iter()
-                    .map(|(_, s, e)| (*s, *e))
-                    .collect::<Vec<_>>(),
-                expected,
-                "{text}"
+                find_in(&blocks, r"c\w+", pattern),
+                vec![("p1".into(), 18, 26), ("p2".into(), 2, 5)],
+                "a pattern matches in characters"
+            );
+            assert!(
+                find_in(&blocks, "(", pattern).is_empty(),
+                "a pattern that does not compile finds nothing"
+            );
+        }
+
+        phase literal_whole_word_reconsiders_overlapping_candidates_after_boundary_rejection;
+        {
+            let options = FindOptions {
+                whole_word: true,
+                ..FindOptions::default()
+            };
+            for (text, query, expected) in [
+                ("xfoo-foo-foo", "foo-foo", vec![(5, 12)]),
+                ("İfoo-foo-foo", "foo-foo", vec![(5, 12)]),
+                ("xéé-éé-éé", "éé-éé", vec![(4, 9)]),
+                ("🙂 xfoo-foo-foo", "foo-foo", vec![(7, 14)]),
+                ("foo-foo-foo", "foo-foo", vec![(0, 7)]),
+                ("xfoo-foo", "foo-foo", vec![]),
+            ] {
+                let blocks = [block("p1", text)];
+                assert_eq!(
+                    find_in(&blocks, query, options)
+                        .iter()
+                        .map(|(_, s, e)| (*s, *e))
+                        .collect::<Vec<_>>(),
+                    expected,
+                    "{text}"
+                );
+            }
+        }
+
+        phase a_pattern_that_can_match_nothing_finds_only_what_it_matches_and_ends;
+        {
+            let pattern = FindOptions {
+                mode: ui::widget::FindMode::Regex,
+                ..FindOptions::default()
+            };
+            for (text, query, expected) in [
+                ("baa", "a*", vec![(1, 3)]),
+                ("aXa", "a*", vec![(0, 1), (2, 3)]),
+                ("a\u{e9}\u{e9}", "\u{e9}*", vec![(1, 3)]),
+                ("ab", "x*", vec![]),
+                ("ab", "", vec![]),
+                ("", "a*", vec![]),
+            ] {
+                let blocks = [block("p1", text)];
+                assert_eq!(
+                    find_in(&blocks, query, pattern)
+                        .iter()
+                        .map(|(_, s, e)| (*s, *e))
+                        .collect::<Vec<_>>(),
+                    expected,
+                    "{query:?} in {text:?}"
+                );
+            }
+            assert!(
+                find_in(&[block("p1", "ab")], "", FindOptions::default()).is_empty(),
+                "an empty query finds nothing"
             );
         }
     }
 
     #[test]
-    fn a_search_finds_reveals_and_closing_forgets() {
-        let mut find = DocumentFind::default();
-        assert_eq!(find.find("report", FindOptions::default()), 0);
-        assert!(
-            find.wants_blocks(false),
-            "an open search reads the paragraphs"
-        );
-        let revision = find.revision();
-        find.set_blocks(vec![block("p1", "report and report")]);
-        assert_ne!(find.revision(), revision, "the bar finds again");
-        assert_eq!(find.matches().len(), 2);
-        assert!(find.take_first_reveal(), "the first match shows once read");
-        assert_eq!(find.active_match(), Some(&("p1".to_string(), 0, 6)));
-        assert!(!find.take_first_reveal(), "and only once");
-        assert!(find.reveal(1));
-        assert_eq!(find.active_match(), Some(&("p1".to_string(), 11, 17)));
-        find.clear();
-        assert!(!find.is_active());
-        assert!(find.matches().is_empty());
-        assert!(!find.wants_blocks(true), "a closed search reads nothing");
+    fn replacements_splice_characters_from_the_back_and_skip_what_is_not_there() {
+        let at = |id: &str, start: usize, end: usize| (id.to_string(), start, end);
+        let cats = "cat and cat";
+        for (row, text, matches, with, expected) in [
+            (
+                "two in one paragraph, the later one given first",
+                cats,
+                vec![at("p1", 8, 11), at("p1", 0, 3)],
+                "horse",
+                "horse and horse",
+            ),
+            (
+                "characters, not bytes",
+                "\u{e9}t\u{e9} cat",
+                vec![at("p1", 4, 7)],
+                "dog",
+                "\u{e9}t\u{e9} dog",
+            ),
+            (
+                "nothing in its place",
+                cats,
+                vec![at("p1", 0, 4)],
+                "",
+                "and cat",
+            ),
+            (
+                "an empty range",
+                cats,
+                vec![at("p1", 3, 3)],
+                "s",
+                "cats and cat",
+            ),
+            ("the whole paragraph", cats, vec![at("p1", 0, 11)], "", ""),
+            (
+                "a range past the end",
+                cats,
+                vec![at("p1", 8, 12)],
+                "dog",
+                cats,
+            ),
+            (
+                "one of two past the end",
+                cats,
+                vec![at("p1", 0, 3), at("p1", 8, 12)],
+                "dog",
+                "dog and cat",
+            ),
+            (
+                "a range that ends before it starts",
+                cats,
+                vec![at("p1", 5, 3)],
+                "dog",
+                cats,
+            ),
+            (
+                "a paragraph that is not there",
+                cats,
+                vec![at("p9", 0, 3)],
+                "dog",
+                cats,
+            ),
+        ] {
+            let mut blocks = [block("p1", text), block("p2", "cat")];
+            splice_blocks(&mut blocks, &matches, with);
+            assert_eq!(blocks[0].text, expected, "{row}");
+            assert_eq!(blocks[1].text, "cat", "{row}: the other paragraph");
+        }
     }
 
-    #[test]
-    fn replacements_wait_in_order_and_show_at_once() {
-        let mut find = DocumentFind::default();
-        find.set_blocks(vec![block("p1", "cat and cat")]);
-        find.find("cat", FindOptions::default());
-        let first = find.matches()[0].clone();
-        assert_eq!(find.queue_replace(vec![first.clone()], "dog"), 1);
-        assert_eq!(find.matches(), [("p1".to_string(), 8, 11)]);
-        let rest = find.matches().to_vec();
-        assert_eq!(find.queue_replace(rest.clone(), "bird"), 1);
-        assert!(find.matches().is_empty());
-        assert_eq!(
-            find.take_pending(),
-            vec![
-                PendingReplace {
-                    matches: vec![first],
-                    with: "dog".into()
-                },
-                PendingReplace {
-                    matches: rest,
-                    with: "bird".into()
-                },
-            ]
-        );
-        assert!(find.take_pending().is_empty());
+    tilo_test_env::scenario! {
+        /// `DocumentFind`, the state of one search.
+        fn a_document_search_reveals_its_matches_and_queues_replacements;
+
+        phase a_search_finds_reveals_and_closing_forgets;
+        {
+            let mut find = DocumentFind::default();
+            assert_eq!(find.find("report", FindOptions::default()), 0);
+            assert!(
+                find.wants_blocks(false),
+                "an open search reads the paragraphs"
+            );
+            let revision = find.revision();
+            find.set_blocks(vec![block("p1", "report and report")]);
+            assert_ne!(find.revision(), revision, "the bar finds again");
+            assert_eq!(find.matches().len(), 2);
+            assert!(find.take_first_reveal(), "the first match shows once read");
+            assert_eq!(find.active_match(), Some(&("p1".to_string(), 0, 6)));
+            assert!(!find.take_first_reveal(), "and only once");
+            assert!(find.reveal(1));
+            assert_eq!(find.active_match(), Some(&("p1".to_string(), 11, 17)));
+            find.clear();
+            assert!(!find.is_active());
+            assert!(find.matches().is_empty());
+            assert!(!find.wants_blocks(true), "a closed search reads nothing");
+        }
+
+        phase replacements_wait_in_order_and_show_at_once;
+        {
+            let mut find = DocumentFind::default();
+            find.set_blocks(vec![block("p1", "cat and cat")]);
+            find.find("cat", FindOptions::default());
+            let first = find.matches()[0].clone();
+            assert_eq!(find.queue_replace(vec![first.clone()], "dog"), 1);
+            assert_eq!(find.matches(), [("p1".to_string(), 8, 11)]);
+            let rest = find.matches().to_vec();
+            assert_eq!(find.queue_replace(rest.clone(), "bird"), 1);
+            assert!(find.matches().is_empty());
+            assert_eq!(
+                find.take_pending(),
+                vec![
+                    PendingReplace {
+                        matches: vec![first],
+                        with: "dog".into()
+                    },
+                    PendingReplace {
+                        matches: rest,
+                        with: "bird".into()
+                    },
+                ]
+            );
+            assert!(find.take_pending().is_empty());
+        }
     }
 }

@@ -883,297 +883,317 @@ impl Drop for Harness {
     }
 }
 
-#[test]
-fn selection_before_enter_and_same_client_surface_switch_keep_one_offer() {
-    let h = Harness::new();
-    h.select(0, Some("文🙂"), false);
-    h.fence();
-    assert!(
-        h.query(|state| state.received.is_empty()),
-        "selection alone cannot authorize a read"
-    );
-    assert!(h.backend().rich_text().is_none());
-    h.enter(0, 0);
-    h.assert_offer("文🙂");
-    assert_eq!(h.query(|state| state.received.len()), 2);
-    h.leave(0);
-    h.fence();
-    assert!(h.backend().rich_text().is_none());
-    h.enter(0, 1);
-    h.assert_offer("文🙂");
-    assert_eq!(h.query(|state| state.received.len()), 4);
-}
+tilo_test_env::scenario! {
+    fn a_paste_reads_the_focused_seats_offer_and_is_cancelled_with_it;
 
-#[test]
-fn worker_leaves_application_callbacks_to_the_application() {
-    use client::backend::{Backend, ObjectData, ObjectId, protocol::Message};
-
-    struct Completion(mpsc::Sender<std::thread::ThreadId>);
-    impl ObjectData for Completion {
-        fn event(
-            self: Arc<Self>,
-            _: &Backend,
-            _: Message<ObjectId, OwnedFd>,
-        ) -> Option<Arc<dyn ObjectData>> {
-            self.0
-                .send(std::thread::current().id())
-                .expect("completion receiver");
-            None
-        }
-
-        fn destroyed(&self, _: ObjectId) {}
+    phase selection_before_enter_and_same_client_surface_switch_keep_one_offer;
+    {
+        let h = Harness::new();
+        h.select(0, Some("文🙂"), false);
+        h.fence();
+        assert!(
+            h.query(|state| state.received.is_empty()),
+            "selection alone cannot authorize a read"
+        );
+        assert!(h.backend().rich_text().is_none());
+        h.enter(0, 0);
+        h.assert_offer("文🙂");
+        assert_eq!(h.query(|state| state.received.len()), 2);
+        h.leave(0);
+        h.fence();
+        assert!(h.backend().rich_text().is_none());
+        h.enter(0, 1);
+        h.assert_offer("文🙂");
+        assert_eq!(h.query(|state| state.received.len()), 4);
     }
 
-    let h = Harness::new();
-    let (completed, received) = mpsc::channel();
-    h.connection
-        .send_request(
-            &h.connection.display(),
-            client::protocol::wl_display::Request::Sync {},
-            Some(Arc::new(Completion(completed))),
-        )
-        .expect("application sync request");
-    h.connection.flush().expect("flush application sync");
-    // The worker's own sync reply follows the application's on the same
-    // socket, so once the fence returns the application's reply was read.
-    h.fence();
-    assert_eq!(
-        received.try_recv(),
-        Err(mpsc::TryRecvError::Empty),
-        "the clipboard worker dispatched the application's sync callback"
-    );
-    h.connection
-        .backend()
-        .dispatch_inner_queue()
-        .expect("application dispatch");
-    assert_eq!(
-        received.recv_timeout(h.remaining()),
-        Ok(std::thread::current().id())
-    );
-}
+    phase worker_leaves_application_callbacks_to_the_application;
+    {
+        use client::backend::{Backend, ObjectData, ObjectId, protocol::Message};
 
-#[test]
-fn leave_and_null_cancel_both_pending_pipes_before_the_deadline() {
-    let h = Harness::new();
-    h.select(0, Some("stalled"), true);
-    h.enter(0, 0);
-    let pipes = h.take_pending();
-    h.leave(0);
-    h.fence();
-    h.assert_closed(pipes, "Leave");
-    assert!(h.backend().rich_text().is_none());
-    h.select(0, Some("fresh"), false);
-    h.enter(0, 1);
-    h.assert_offer("fresh");
-    h.select(0, Some("replaced"), true);
-    let pipes = h.take_pending();
-    h.select(0, None, false);
-    h.fence();
-    h.assert_closed(pipes, "NULL");
-    assert!(h.backend().rich_text().is_none());
-    h.select(0, Some("after NULL"), false);
-    h.assert_offer("after NULL");
-}
+        struct Completion(mpsc::Sender<std::thread::ThreadId>);
+        impl ObjectData for Completion {
+            fn event(
+                self: Arc<Self>,
+                _: &Backend,
+                _: Message<ObjectId, OwnedFd>,
+            ) -> Option<Arc<dyn ObjectData>> {
+                self.0
+                    .send(std::thread::current().id())
+                    .expect("completion receiver");
+                None
+            }
 
-#[test]
-fn active_seat_switch_and_stale_seat_events_preserve_authority() {
-    let h = Harness::new();
-    h.select(0, Some("first"), false);
-    h.enter(0, 0);
-    h.assert_offer("first");
-    h.select(1, None, false);
-    h.enter(1, 1);
-    h.fence();
-    assert!(
-        h.backend().rich_text().is_none(),
-        "a new seat with NULL cannot retain the previous seat's offer"
-    );
-    h.select(1, Some("second"), false);
-    h.assert_offer("second");
-    h.leave(0);
-    h.select(0, None, false);
-    h.fence();
-    h.assert_offer("second");
-    h.enter(0, 0);
-    h.fence();
-    assert!(h.backend().rich_text().is_none());
-    h.select(1, Some("inactive"), false);
-    h.fence();
-    assert!(h.backend().rich_text().is_none());
-    assert!(!h.query(|state| state.received.iter().any(|(label, _)| label == "inactive")));
-    h.operation(|state, _| state.modifiers(1));
-    h.assert_offer("inactive");
-}
+            fn destroyed(&self, _: ObjectId) {}
+        }
 
-#[test]
-fn production_deadline_closes_both_pipes_without_focus_or_selection_changes() {
-    let h = Harness::with_deadline(ReadDeadline::Production);
-    h.select(0, Some("timeout"), true);
-    h.enter(0, 0);
-    let pipes = h.take_pending();
-    h.wait(
-        || {
-            pipes.iter().all(|(_, fd)| {
-                let mut poll = libc::pollfd {
-                    fd: fd.as_raw_fd(),
-                    events: libc::POLLOUT,
-                    revents: 0,
-                };
-                // SAFETY: the pipe owns the descriptor throughout this poll.
-                let count = unsafe { libc::poll(&raw mut poll, 1, 0) };
-                assert!(count >= 0, "poll pending pipe");
-                count > 0 && poll.revents & libc::POLLERR != 0
-            })
-        },
-        "production read deadline",
-    );
-    h.assert_closed(pipes, "production deadline");
-    assert!(h.backend().rich_text().is_none());
-    h.select(0, Some("after timeout"), false);
-    h.assert_offer("after timeout");
-}
+        let h = Harness::new();
+        let (completed, received) = mpsc::channel();
+        h.connection
+            .send_request(
+                &h.connection.display(),
+                client::protocol::wl_display::Request::Sync {},
+                Some(Arc::new(Completion(completed))),
+            )
+            .expect("application sync request");
+        h.connection.flush().expect("flush application sync");
+        // The worker's own sync reply follows the application's on the same
+        // socket, so once the fence returns the application's reply was read.
+        h.fence();
+        assert_eq!(
+            received.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
+            "the clipboard worker dispatched the application's sync callback"
+        );
+        h.connection
+            .backend()
+            .dispatch_inner_queue()
+            .expect("application dispatch");
+        assert_eq!(
+            received.recv_timeout(h.remaining()),
+            Ok(std::thread::current().id())
+        );
+    }
 
-#[test]
-fn image_copy_acknowledgement_follows_server_selection() {
-    let harness = focused_harness();
+    phase leave_and_null_cancel_both_pending_pipes_before_the_deadline;
+    {
+        let h = Harness::new();
+        h.select(0, Some("stalled"), true);
+        h.enter(0, 0);
+        let pipes = h.take_pending();
+        h.leave(0);
+        h.fence();
+        h.assert_closed(pipes, "Leave");
+        assert!(h.backend().rich_text().is_none());
+        h.select(0, Some("fresh"), false);
+        h.enter(0, 1);
+        h.assert_offer("fresh");
+        h.select(0, Some("replaced"), true);
+        let pipes = h.take_pending();
+        h.select(0, None, false);
+        h.fence();
+        h.assert_closed(pipes, "NULL");
+        assert!(h.backend().rich_text().is_none());
+        h.select(0, Some("after NULL"), false);
+        h.assert_offer("after NULL");
+    }
 
-    let entered = Arc::new(AtomicBool::new(false));
-    let release = Arc::new(AtomicBool::new(false));
-    let gate = SelectionGate {
-        entered: Arc::clone(&entered),
-        release: Arc::clone(&release),
-    };
-    harness.operation(move |state, _| state.selection_gate = Some(gate));
-    harness.query(|state| assert!(state.selection_gate.is_some()));
+    phase active_seat_switch_and_stale_seat_events_preserve_authority;
+    {
+        let h = Harness::new();
+        h.select(0, Some("first"), false);
+        h.enter(0, 0);
+        h.assert_offer("first");
+        h.select(1, None, false);
+        h.enter(1, 1);
+        h.fence();
+        assert!(
+            h.backend().rich_text().is_none(),
+            "a new seat with NULL cannot retain the previous seat's offer"
+        );
+        h.select(1, Some("second"), false);
+        h.assert_offer("second");
+        h.leave(0);
+        h.select(0, None, false);
+        h.fence();
+        h.assert_offer("second");
+        h.enter(0, 0);
+        h.fence();
+        assert!(h.backend().rich_text().is_none());
+        h.select(1, Some("inactive"), false);
+        h.fence();
+        assert!(h.backend().rich_text().is_none());
+        assert!(!h.query(|state| state.received.iter().any(|(label, _)| label == "inactive")));
+        h.operation(|state, _| state.modifiers(1));
+        h.assert_offer("inactive");
+    }
 
-    let png = super::encode_png(1, 1, &[0xff, 0, 0x80, 0xff]).expect("small image");
-    let (reply, result) = mpsc::channel();
-    let deadline = outlasting_deadline();
-    assert!(harness.backend().send_publication(publish(
-        PublicationPayload::Image(png),
-        reply,
-        deadline
-    )));
-    harness.wait(
-        || entered.load(Ordering::Acquire),
-        "server receiving the image selection",
-    );
-    let early = result.try_recv();
-    release.store(true, Ordering::Release);
-    assert!(
-        matches!(early, Err(mpsc::TryRecvError::Empty)),
-        "copy acknowledged before the server processed its selection: {early:?}"
-    );
-    assert!(
-        result
-            .recv_timeout(harness.remaining())
-            .expect("image copy acknowledgement")
-    );
-    harness.wait(
-        || harness.query(|state| state.publications == [state.serial]),
-        "server-side image selection",
-    );
-}
+    phase production_deadline_closes_both_pipes_without_focus_or_selection_changes;
+    {
+        let h = Harness::with_deadline(ReadDeadline::Production);
+        h.select(0, Some("timeout"), true);
+        h.enter(0, 0);
+        let pipes = h.take_pending();
+        h.wait(
+            || {
+                pipes.iter().all(|(_, fd)| {
+                    let mut poll = libc::pollfd {
+                        fd: fd.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    // SAFETY: the pipe owns the descriptor throughout this poll.
+                    let count = unsafe { libc::poll(&raw mut poll, 1, 0) };
+                    assert!(count >= 0, "poll pending pipe");
+                    count > 0 && poll.revents & libc::POLLERR != 0
+                })
+            },
+            "production read deadline",
+        );
+        h.assert_closed(pipes, "production deadline");
+        assert!(h.backend().rich_text().is_none());
+        h.select(0, Some("after timeout"), false);
+        h.assert_offer("after timeout");
+    }
 
-#[test]
-fn copy_acknowledgement_waits_for_already_sent_keyboard_focus() {
-    let harness = Harness::new();
-    harness.query(|state| {
-        state.hold_flush = true;
-        state.enter(0, 0);
-    });
-    let (result_tx, result_rx) = mpsc::channel();
-    assert!(harness.backend().send_publication(publish(
-        PublicationPayload::Text(b"caption".to_vec()),
-        result_tx,
-        outlasting_deadline()
-    )));
-    // Observe FIFO processing of the actual production copy command. This
-    // neither dispatches nor changes the worker's focus; a protocol fence
-    // would flush the very race under test before the copy is processed.
-    let (processed_tx, processed_rx) = mpsc::channel();
-    harness
-        .backend()
-        .publication
-        .sender
-        .send(ClipboardCommand::CommandProcessed(processed_tx))
-        .expect("worker command observation");
-    processed_rx
-        .recv_timeout(harness.remaining())
-        .expect("copy command processed");
-    let early_result = result_rx.try_recv();
-    harness.query(|state| state.hold_flush = false);
-    assert!(
-        matches!(early_result, Err(mpsc::TryRecvError::Empty)),
-        "copy must wait for the queued focus event instead of acknowledging failure: {early_result:?}"
-    );
-    assert!(
-        result_rx
-            .recv_timeout(harness.remaining())
-            .expect("copy acknowledgement")
-    );
-    harness.wait(
-        || harness.query(|state| state.publications == [state.serial]),
-        "focus-gated publication",
-    );
-}
-
-#[test]
-fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
-    let harness = focused_harness();
-    harness.query(|state| {
-        state.hold_flush = true;
-        state.leave(0);
-    });
-    let (reply, result) = mpsc::channel();
-    assert!(harness.backend().send_publication(publish(
-        PublicationPayload::Text(b"unfocused".to_vec()),
-        reply,
-        outlasting_deadline(),
-    )));
-    let (processed, observed) = mpsc::channel();
-    harness
-        .backend()
-        .publication
-        .sender
-        .send(ClipboardCommand::CommandProcessed(processed))
-        .expect("worker command observation");
-    observed
-        .recv_timeout(harness.remaining())
-        .expect("copy processed");
-    let early = result.try_recv();
-    harness.query(|state| state.hold_flush = false);
-    assert!(
-        matches!(early, Err(mpsc::TryRecvError::Empty)),
-        "copy used stale focus: {early:?}"
-    );
-    assert!(
-        !result
-            .recv_timeout(harness.remaining())
-            .expect("copy refused")
-    );
-    harness.enter(0, 0);
-    harness.fence();
-    assert!(
-        harness.query(|state| state.publications.is_empty()),
-        "refused copy must not publish on later focus"
-    );
-}
-
-#[test]
-fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
-    for published in [false, true] {
-        let mut harness = focused_harness();
-        harness.query(move |state| {
-            state.hold_flush = !published;
-            state.hold_flush_after_selection = published;
+    phase explicit_plain_paste_survives_a_delayed_transfer_without_blocking_the_worker;
+    {
+        let h = Harness::new();
+        h.select(0, Some("slow"), true);
+        h.enter(0, 0);
+        h.fence();
+        let result = h.backend().request_text(crate::ClipboardTarget::Clipboard);
+        h.wait(
+            || h.query(|state| state.held.len() >= 3),
+            "explicit plain receive",
+        );
+        // The fixture holds every pipe until it is written below.
+        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        h.fence(); // A pending clipboard transfer must not stall protocol dispatch.
+        h.query(|state| {
+            let (_, fd) = state.held.pop().expect("explicit paste pipe");
+            std::fs::File::from(fd)
+                .write_all(b"delayed selection")
+                .unwrap();
         });
+        assert_eq!(
+            result.recv_timeout(h.remaining()).unwrap(),
+            Some("delayed selection".into())
+        );
+    }
+
+    phase explicit_plain_paste_is_revoked_on_keyboard_leave;
+    {
+        let h = Harness::new();
+        h.select(0, Some("private"), true);
+        h.enter(0, 0);
+        h.fence();
+        let result = h.backend().request_text(crate::ClipboardTarget::Clipboard);
+        h.wait(
+            || h.query(|state| state.held.len() >= 3),
+            "explicit plain receive",
+        );
+        h.leave(0);
+        h.fence();
+        assert_eq!(result.recv_timeout(h.remaining()).unwrap(), None);
+        let pipes = h.query(|state| std::mem::take(&mut state.held));
+        assert_eq!(pipes.len(), 3);
+        for (_, fd) in pipes {
+            assert_eq!(
+                std::fs::File::from(fd)
+                    .write_all(b"late")
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::BrokenPipe
+            );
+        }
+    }
+}
+
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn a_copy_is_published_with_keyboard_focus_and_settles_as_the_compositor_answers;
+
+    phase image_copy_acknowledgement_follows_server_selection;
+    {
+        let harness = focused_harness();
+
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let gate = SelectionGate {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        };
+        harness.operation(move |state, _| state.selection_gate = Some(gate));
+        harness.query(|state| assert!(state.selection_gate.is_some()));
+
+        let png = super::encode_png(1, 1, &[0xff, 0, 0x80, 0xff]).expect("small image");
         let (reply, result) = mpsc::channel();
         let deadline = outlasting_deadline();
         assert!(harness.backend().send_publication(publish(
-            PublicationPayload::Text(b"pending at shutdown".to_vec()),
+            PublicationPayload::Image(png),
             reply,
-            deadline,
+            deadline
+        )));
+        harness.wait(
+            || entered.load(Ordering::Acquire),
+            "server receiving the image selection",
+        );
+        let early = result.try_recv();
+        release.store(true, Ordering::Release);
+        assert!(
+            matches!(early, Err(mpsc::TryRecvError::Empty)),
+            "copy acknowledged before the server processed its selection: {early:?}"
+        );
+        assert!(
+            result
+                .recv_timeout(harness.remaining())
+                .expect("image copy acknowledgement")
+        );
+        harness.wait(
+            || harness.query(|state| state.publications == [state.serial]),
+            "server-side image selection",
+        );
+    }
+
+    phase copy_acknowledgement_waits_for_already_sent_keyboard_focus;
+    {
+        let harness = Harness::new();
+        harness.query(|state| {
+            state.hold_flush = true;
+            state.enter(0, 0);
+        });
+        let (result_tx, result_rx) = mpsc::channel();
+        assert!(harness.backend().send_publication(publish(
+            PublicationPayload::Text(b"caption".to_vec()),
+            result_tx,
+            outlasting_deadline()
+        )));
+        // Observe FIFO processing of the actual production copy command. This
+        // neither dispatches nor changes the worker's focus; a protocol fence
+        // would flush the very race under test before the copy is processed.
+        let (processed_tx, processed_rx) = mpsc::channel();
+        harness
+            .backend()
+            .publication
+            .sender
+            .send(ClipboardCommand::CommandProcessed(processed_tx))
+            .expect("worker command observation");
+        processed_rx
+            .recv_timeout(harness.remaining())
+            .expect("copy command processed");
+        let early_result = result_rx.try_recv();
+        harness.query(|state| state.hold_flush = false);
+        assert!(
+            matches!(early_result, Err(mpsc::TryRecvError::Empty)),
+            "copy must wait for the queued focus event instead of acknowledging failure: {early_result:?}"
+        );
+        assert!(
+            result_rx
+                .recv_timeout(harness.remaining())
+                .expect("copy acknowledgement")
+        );
+        harness.wait(
+            || harness.query(|state| state.publications == [state.serial]),
+            "focus-gated publication",
+        );
+    }
+
+    phase copy_does_not_publish_after_an_already_sent_keyboard_leave;
+    {
+        let harness = focused_harness();
+        harness.query(|state| {
+            state.hold_flush = true;
+            state.leave(0);
+        });
+        let (reply, result) = mpsc::channel();
+        assert!(harness.backend().send_publication(publish(
+            PublicationPayload::Text(b"unfocused".to_vec()),
+            reply,
+            outlasting_deadline(),
         )));
         let (processed, observed) = mpsc::channel();
         harness
@@ -1184,363 +1204,359 @@ fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
             .expect("worker command observation");
         observed
             .recv_timeout(harness.remaining())
-            .expect("publication dispatched before shutdown");
-        if published {
+            .expect("copy processed");
+        let early = result.try_recv();
+        harness.query(|state| state.hold_flush = false);
+        assert!(
+            matches!(early, Err(mpsc::TryRecvError::Empty)),
+            "copy used stale focus: {early:?}"
+        );
+        assert!(
+            !result
+                .recv_timeout(harness.remaining())
+                .expect("copy refused")
+        );
+        harness.enter(0, 0);
+        harness.fence();
+        assert!(
+            harness.query(|state| state.publications.is_empty()),
+            "refused copy must not publish on later focus"
+        );
+    }
+
+    phase worker_shutdown_settles_dispatched_copies_with_the_connection_retained;
+    {
+        for published in [false, true] {
+            let mut harness = focused_harness();
+            harness.query(move |state| {
+                state.hold_flush = !published;
+                state.hold_flush_after_selection = published;
+            });
+            let (reply, result) = mpsc::channel();
+            let deadline = outlasting_deadline();
+            assert!(harness.backend().send_publication(publish(
+                PublicationPayload::Text(b"pending at shutdown".to_vec()),
+                reply,
+                deadline,
+            )));
+            let (processed, observed) = mpsc::channel();
+            harness
+                .backend()
+                .publication
+                .sender
+                .send(ClipboardCommand::CommandProcessed(processed))
+                .expect("worker command observation");
+            observed
+                .recv_timeout(harness.remaining())
+                .expect("publication dispatched before shutdown");
+            if published {
+                harness.wait(
+                    || harness.query(|state| !state.publications.is_empty()),
+                    "selection with its confirmation withheld",
+                );
+            }
+            assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+            drop(harness.clipboard.take());
+            assert_eq!(
+                result
+                    .recv_timeout(harness.remaining())
+                    .expect("shutdown must explicitly settle a dispatched copy"),
+                published,
+            );
+            assert!(matches!(
+                result.try_recv(),
+                Err(mpsc::TryRecvError::Disconnected)
+            ));
+            harness.query(move |state| {
+                assert_eq!(state.publications.len(), usize::from(published));
+                state.hold_flush = false;
+            });
+        }
+    }
+
+    phase pointer_crossing_neither_revokes_nor_grants_copy_permission;
+    {
+        let h = Harness::new();
+        h.enter(0, 0);
+        h.fence();
+        assert!(
+            h.backend()
+                .set_text(crate::ClipboardTarget::Clipboard, "caption")
+        );
+        h.operation(|state, _| state.pointer_crossing(0, 0));
+        h.fence();
+        assert!(
+            h.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]),
+            "pointer leave refused a copy from the keyboard-focused client"
+        );
+        assert_eq!(h.query(|state| state.publications.len()), 2);
+
+        h.leave(0);
+        h.operation(|state, _| state.pointer_crossing(0, 0));
+        h.fence();
+        assert!(
+            !h.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]),
+            "pointer focus authorized a copy without keyboard focus"
+        );
+        assert_eq!(h.query(|state| state.publications.len()), 2);
+    }
+
+    phase input_after_a_copy_does_not_publish_it_again;
+    {
+        let h = Harness::new();
+        h.enter(0, 0);
+        h.fence();
+        assert!(
+            h.backend()
+                .set_text(crate::ClipboardTarget::Clipboard, "caption")
+        );
+        // Another client copies, which cancels this client's source. The
+        // earlier copy must not take the selection back when this client sees
+        // input or focus again.
+        h.operation(|state, _| {
+            state
+                .selection
+                .take()
+                .expect("published source")
+                .cancelled();
+            state.modifiers(0);
+            state.pointer_crossing(0, 0);
+            state.leave(0);
+            state.enter(0, 0);
+        });
+        h.fence();
+        assert_eq!(h.query(|state| state.publications.len()), 1);
+    }
+
+    phase expired_copy_does_not_publish_on_current_or_later_focus;
+    {
+        let harness = focused_harness();
+        let (reply, result) = mpsc::channel();
+        assert!(harness.backend().send_publication(publish(
+            PublicationPayload::Text(b"expired".to_vec()),
+            reply,
+            tilo_clock::now(),
+        )));
+        assert!(
+            !result
+                .recv_timeout(harness.remaining())
+                .expect("expired copy refused")
+        );
+        harness.leave(0);
+        harness.enter(0, 0);
+        harness.fence();
+        assert!(
+            harness.query(|state| state.publications.is_empty()),
+            "expired copy must never publish"
+        );
+    }
+
+    phase a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms;
+    {
+        let harness = focused_harness();
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let gate = SelectionGate {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        };
+        harness.operation(move |state, _| state.selection_gate = Some(gate));
+        harness.query(|state| assert!(state.selection_gate.is_some()));
+
+        std::thread::scope(|scope| {
+            let copy = scope.spawn(|| harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
             harness.wait(
-                || harness.query(|state| !state.publications.is_empty()),
-                "selection with its confirmation withheld",
+                || entered.load(Ordering::Acquire),
+                "server receiving the image selection",
+            );
+            let taken = Instant::now();
+            harness.wait(
+                || taken.elapsed() > super::PUBLICATION_BUDGET * 3,
+                "the copy's budgets to pass",
+            );
+            release.store(true, Ordering::Release);
+            assert!(
+                copy.join().expect("copy thread"),
+                "a selection the compositor took was reported as a failed copy"
+            );
+        });
+        harness.wait(
+            || harness.query(|state| state.publications == [state.serial]),
+            "server-side image selection",
+        );
+    }
+
+    phase a_copy_reported_as_failed_never_becomes_the_selection;
+    {
+        let harness = focused_harness();
+        // The focus check's answer is held until the copy gave up on it.
+        harness.query(|state| state.hold_flush = true);
+        let started = Instant::now();
+        assert!(
+            !harness
+                .backend()
+                .set_text(crate::ClipboardTarget::Clipboard, "too late"),
+            "the copy cannot be confirmed while the compositor does not answer"
+        );
+        assert!(started.elapsed() >= super::PUBLICATION_BUDGET);
+        harness.query(|state| state.hold_flush = false);
+        harness.fence();
+        assert!(
+            harness.query(|state| state.publications.is_empty()),
+            "a copy reported as failed became the selection"
+        );
+    }
+
+    phase a_copy_settles_once_the_compositor_answers_and_not_before;
+    {
+        let harness = focused_harness();
+        // Nothing the compositor says reaches the app until released. The copy's
+        // deadline outlasts the test, so only the compositor's answer settles it.
+        harness.query(|state| state.hold_flush = true);
+        let (copy, settler) = crate::ClipboardCopy::pending();
+        let deadline = tilo_clock::now()
+            .checked_add(harness.remaining())
+            .expect("bounded publication");
+        assert!(
+            harness
+                .backend()
+                .send_publication(ClipboardCommand::Publish(Publication::new(
+                    PublicationPayload::SecretText(b"hunter2".to_vec()),
+                    Settle::new(move |copied| settler.settle(copied)),
+                    deadline,
+                )))
+        );
+        assert_eq!(
+            copy.outcome(),
+            None,
+            "the copy cannot be settled before the compositor answers"
+        );
+        harness.query(|state| state.hold_flush = false);
+        harness.wait(|| copy.outcome().is_some(), "the copy's outcome");
+        assert_eq!(copy.outcome(), Some(true));
+        assert_eq!(harness.query(|state| state.publications.len()), 1);
+    }
+
+    phase an_unanswered_copy_settles_as_failed_at_its_deadline;
+    {
+        let harness = focused_harness();
+        harness.query(|state| state.hold_flush = true);
+        let copy = harness.backend().copy(crate::CopyContent::Text("too late"));
+        harness.wait(|| copy.outcome().is_some(), "the copy's deadline");
+        assert_eq!(copy.outcome(), Some(false));
+        harness.query(|state| state.hold_flush = false);
+        harness.fence();
+        assert!(
+            harness.query(|state| state.publications.is_empty()),
+            "a copy settled as failed became the selection"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_copy_offers_the_content_it_was_given_and_nothing_copied_before;
+
+    phase a_secret_copy_pastes_as_plain_text_and_carries_the_history_markers;
+    {
+        let harness = focused_harness();
+
+        assert!(harness.backend().set_secret_text("hunter2"));
+        let mimes = harness.selection_mimes();
+        for mime in [
+            PLAIN,
+            "text/plain",
+            crate::SECRET_MIME,
+            crate::PASSWORD_MANAGER_HINT_MIME,
+        ] {
+            assert!(
+                mimes.iter().any(|offered| offered == mime),
+                "a secret copy must offer {mime}: {mimes:?}"
             );
         }
-        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
-
-        drop(harness.clipboard.take());
+        assert_eq!(harness.selection_bytes("text/plain"), b"hunter2");
         assert_eq!(
-            result
-                .recv_timeout(harness.remaining())
-                .expect("shutdown must explicitly settle a dispatched copy"),
-            published,
+            harness.selection_bytes(crate::PASSWORD_MANAGER_HINT_MIME),
+            crate::SECRET_MARKER
         );
-        assert!(matches!(
-            result.try_recv(),
-            Err(mpsc::TryRecvError::Disconnected)
-        ));
-        harness.query(move |state| {
-            assert_eq!(state.publications.len(), usize::from(published));
-            state.hold_flush = false;
-        });
+
+        // The next ordinary copy is not a secret, and an image never rides along
+        // under (or keeps offering) an earlier secret.
+        assert!(
+            harness
+                .backend()
+                .set_text(crate::ClipboardTarget::Clipboard, "next")
+        );
+        let mimes = harness.selection_mimes();
+        assert!(
+            !mimes
+                .iter()
+                .any(|mime| mime == crate::SECRET_MIME || mime == crate::PASSWORD_MANAGER_HINT_MIME),
+            "an ordinary copy must not inherit the secret markers: {mimes:?}"
+        );
+        assert!(harness.backend().set_secret_text("hunter3"));
+        assert!(harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
+        assert_eq!(harness.selection_mimes(), ["image/png"]);
     }
-}
 
-#[test]
-fn pointer_crossing_neither_revokes_nor_grants_copy_permission() {
-    let h = Harness::new();
-    h.enter(0, 0);
-    h.fence();
-    assert!(
-        h.backend()
-            .set_text(crate::ClipboardTarget::Clipboard, "caption")
-    );
-    h.operation(|state, _| state.pointer_crossing(0, 0));
-    h.fence();
-    assert!(
-        h.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]),
-        "pointer leave refused a copy from the keyboard-focused client"
-    );
-    assert_eq!(h.query(|state| state.publications.len()), 2);
+    phase an_image_copy_replaces_the_text_copied_before_it;
+    {
+        let harness = focused_harness();
 
-    h.leave(0);
-    h.operation(|state, _| state.pointer_crossing(0, 0));
-    h.fence();
-    assert!(
-        !h.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]),
-        "pointer focus authorized a copy without keyboard focus"
-    );
-    assert_eq!(h.query(|state| state.publications.len()), 2);
-}
-
-#[test]
-fn input_after_a_copy_does_not_publish_it_again() {
-    let h = Harness::new();
-    h.enter(0, 0);
-    h.fence();
-    assert!(
-        h.backend()
-            .set_text(crate::ClipboardTarget::Clipboard, "caption")
-    );
-    // Another client copies, which cancels this client's source. The
-    // earlier copy must not take the selection back when this client sees
-    // input or focus again.
-    h.operation(|state, _| {
-        state
-            .selection
-            .take()
-            .expect("published source")
-            .cancelled();
-        state.modifiers(0);
-        state.pointer_crossing(0, 0);
-        state.leave(0);
-        state.enter(0, 0);
-    });
-    h.fence();
-    assert_eq!(h.query(|state| state.publications.len()), 1);
-}
-
-#[test]
-fn expired_copy_does_not_publish_on_current_or_later_focus() {
-    let harness = focused_harness();
-    let (reply, result) = mpsc::channel();
-    assert!(harness.backend().send_publication(publish(
-        PublicationPayload::Text(b"expired".to_vec()),
-        reply,
-        tilo_clock::now(),
-    )));
-    assert!(
-        !result
-            .recv_timeout(harness.remaining())
-            .expect("expired copy refused")
-    );
-    harness.leave(0);
-    harness.enter(0, 0);
-    harness.fence();
-    assert!(
-        harness.query(|state| state.publications.is_empty()),
-        "expired copy must never publish"
-    );
-}
-
-#[test]
-fn explicit_plain_paste_survives_a_delayed_transfer_without_blocking_the_worker() {
-    let h = Harness::new();
-    h.select(0, Some("slow"), true);
-    h.enter(0, 0);
-    h.fence();
-    let result = h.backend().request_text(crate::ClipboardTarget::Clipboard);
-    h.wait(
-        || h.query(|state| state.held.len() >= 3),
-        "explicit plain receive",
-    );
-    // The fixture holds every pipe until it is written below.
-    assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
-    h.fence(); // A pending clipboard transfer must not stall protocol dispatch.
-    h.query(|state| {
-        let (_, fd) = state.held.pop().expect("explicit paste pipe");
-        std::fs::File::from(fd)
-            .write_all(b"delayed selection")
-            .unwrap();
-    });
-    assert_eq!(
-        result.recv_timeout(h.remaining()).unwrap(),
-        Some("delayed selection".into())
-    );
-}
-
-#[test]
-fn explicit_plain_paste_is_revoked_on_keyboard_leave() {
-    let h = Harness::new();
-    h.select(0, Some("private"), true);
-    h.enter(0, 0);
-    h.fence();
-    let result = h.backend().request_text(crate::ClipboardTarget::Clipboard);
-    h.wait(
-        || h.query(|state| state.held.len() >= 3),
-        "explicit plain receive",
-    );
-    h.leave(0);
-    h.fence();
-    assert_eq!(result.recv_timeout(h.remaining()).unwrap(), None);
-    let pipes = h.query(|state| std::mem::take(&mut state.held));
-    assert_eq!(pipes.len(), 3);
-    for (_, fd) in pipes {
+        assert!(
+            harness
+                .backend()
+                .set_text(crate::ClipboardTarget::Clipboard, "copied before")
+        );
+        assert!(harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
         assert_eq!(
-            std::fs::File::from(fd)
-                .write_all(b"late")
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::BrokenPipe
+            harness.selection_mimes(),
+            ["image/png"],
+            "the image copy offers the image and nothing copied before it"
+        );
+        let png = harness.selection_bytes("image/png");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+        assert!(
+            harness
+                .backend()
+                .set_text(crate::ClipboardTarget::Clipboard, "copied after")
+        );
+        assert!(
+            !harness
+                .selection_mimes()
+                .iter()
+                .any(|mime| mime == "image/png"),
+            "the text copy replaced the image"
+        );
+        assert_eq!(harness.selection_bytes("text/plain"), b"copied after");
+    }
+
+    phase a_rich_copy_offers_its_html_and_its_words;
+    {
+        let harness = focused_harness();
+
+        let html = "<p>plain <b>bold</b></p>";
+        assert!(harness.backend().set_rich_text(html, "plain bold"));
+        let mimes = harness.selection_mimes();
+        for mime in ["text/html", PLAIN, "text/plain"] {
+            assert!(
+                mimes.iter().any(|offered| offered == mime),
+                "a rich copy must offer {mime}: {mimes:?}"
+            );
+        }
+        assert_eq!(harness.selection_bytes("text/html"), html.as_bytes());
+        assert_eq!(harness.selection_bytes("text/plain"), b"plain bold");
+
+        assert!(
+            harness
+                .backend()
+                .set_text(crate::ClipboardTarget::Clipboard, "next")
+        );
+        let mimes = harness.selection_mimes();
+        assert!(
+            !mimes.iter().any(|mime| mime.starts_with("text/html")),
+            "a plain copy must not keep the formatting of the one before: {mimes:?}"
         );
     }
-}
-
-#[test]
-fn a_secret_copy_pastes_as_plain_text_and_carries_the_history_markers() {
-    let harness = focused_harness();
-
-    assert!(harness.backend().set_secret_text("hunter2"));
-    let mimes = harness.selection_mimes();
-    for mime in [
-        PLAIN,
-        "text/plain",
-        crate::SECRET_MIME,
-        crate::PASSWORD_MANAGER_HINT_MIME,
-    ] {
-        assert!(
-            mimes.iter().any(|offered| offered == mime),
-            "a secret copy must offer {mime}: {mimes:?}"
-        );
-    }
-    assert_eq!(harness.selection_bytes("text/plain"), b"hunter2");
-    assert_eq!(
-        harness.selection_bytes(crate::PASSWORD_MANAGER_HINT_MIME),
-        crate::SECRET_MARKER
-    );
-
-    // The next ordinary copy is not a secret, and an image never rides along
-    // under (or keeps offering) an earlier secret.
-    assert!(
-        harness
-            .backend()
-            .set_text(crate::ClipboardTarget::Clipboard, "next")
-    );
-    let mimes = harness.selection_mimes();
-    assert!(
-        !mimes
-            .iter()
-            .any(|mime| mime == crate::SECRET_MIME || mime == crate::PASSWORD_MANAGER_HINT_MIME),
-        "an ordinary copy must not inherit the secret markers: {mimes:?}"
-    );
-    assert!(harness.backend().set_secret_text("hunter3"));
-    assert!(harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
-    assert_eq!(harness.selection_mimes(), ["image/png"]);
-}
-
-#[test]
-fn an_image_copy_replaces_the_text_copied_before_it() {
-    let harness = focused_harness();
-
-    assert!(
-        harness
-            .backend()
-            .set_text(crate::ClipboardTarget::Clipboard, "copied before")
-    );
-    assert!(harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
-    assert_eq!(
-        harness.selection_mimes(),
-        ["image/png"],
-        "the image copy offers the image and nothing copied before it"
-    );
-    let png = harness.selection_bytes("image/png");
-    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-
-    assert!(
-        harness
-            .backend()
-            .set_text(crate::ClipboardTarget::Clipboard, "copied after")
-    );
-    assert!(
-        !harness
-            .selection_mimes()
-            .iter()
-            .any(|mime| mime == "image/png"),
-        "the text copy replaced the image"
-    );
-    assert_eq!(harness.selection_bytes("text/plain"), b"copied after");
-}
-
-#[test]
-fn a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms() {
-    let harness = focused_harness();
-    let entered = Arc::new(AtomicBool::new(false));
-    let release = Arc::new(AtomicBool::new(false));
-    let gate = SelectionGate {
-        entered: Arc::clone(&entered),
-        release: Arc::clone(&release),
-    };
-    harness.operation(move |state, _| state.selection_gate = Some(gate));
-    harness.query(|state| assert!(state.selection_gate.is_some()));
-
-    std::thread::scope(|scope| {
-        let copy = scope.spawn(|| harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
-        harness.wait(
-            || entered.load(Ordering::Acquire),
-            "server receiving the image selection",
-        );
-        let taken = Instant::now();
-        harness.wait(
-            || taken.elapsed() > super::PUBLICATION_BUDGET * 3,
-            "the copy's budgets to pass",
-        );
-        release.store(true, Ordering::Release);
-        assert!(
-            copy.join().expect("copy thread"),
-            "a selection the compositor took was reported as a failed copy"
-        );
-    });
-    harness.wait(
-        || harness.query(|state| state.publications == [state.serial]),
-        "server-side image selection",
-    );
-}
-
-#[test]
-fn a_copy_reported_as_failed_never_becomes_the_selection() {
-    let harness = focused_harness();
-    // The focus check's answer is held until the copy gave up on it.
-    harness.query(|state| state.hold_flush = true);
-    let started = Instant::now();
-    assert!(
-        !harness
-            .backend()
-            .set_text(crate::ClipboardTarget::Clipboard, "too late"),
-        "the copy cannot be confirmed while the compositor does not answer"
-    );
-    assert!(started.elapsed() >= super::PUBLICATION_BUDGET);
-    harness.query(|state| state.hold_flush = false);
-    harness.fence();
-    assert!(
-        harness.query(|state| state.publications.is_empty()),
-        "a copy reported as failed became the selection"
-    );
-}
-
-#[test]
-fn a_copy_settles_once_the_compositor_answers_and_not_before() {
-    let harness = focused_harness();
-    // Nothing the compositor says reaches the app until released. The copy's
-    // deadline outlasts the test, so only the compositor's answer settles it.
-    harness.query(|state| state.hold_flush = true);
-    let (copy, settler) = crate::ClipboardCopy::pending();
-    let deadline = tilo_clock::now()
-        .checked_add(harness.remaining())
-        .expect("bounded publication");
-    assert!(
-        harness
-            .backend()
-            .send_publication(ClipboardCommand::Publish(Publication::new(
-                PublicationPayload::SecretText(b"hunter2".to_vec()),
-                Settle::new(move |copied| settler.settle(copied)),
-                deadline,
-            )))
-    );
-    assert_eq!(
-        copy.outcome(),
-        None,
-        "the copy cannot be settled before the compositor answers"
-    );
-    harness.query(|state| state.hold_flush = false);
-    harness.wait(|| copy.outcome().is_some(), "the copy's outcome");
-    assert_eq!(copy.outcome(), Some(true));
-    assert_eq!(harness.query(|state| state.publications.len()), 1);
-}
-
-#[test]
-fn an_unanswered_copy_settles_as_failed_at_its_deadline() {
-    let harness = focused_harness();
-    harness.query(|state| state.hold_flush = true);
-    let copy = harness.backend().copy(crate::CopyContent::Text("too late"));
-    harness.wait(|| copy.outcome().is_some(), "the copy's deadline");
-    assert_eq!(copy.outcome(), Some(false));
-    harness.query(|state| state.hold_flush = false);
-    harness.fence();
-    assert!(
-        harness.query(|state| state.publications.is_empty()),
-        "a copy settled as failed became the selection"
-    );
-}
-
-#[test]
-fn a_rich_copy_offers_its_html_and_its_words() {
-    let harness = focused_harness();
-
-    let html = "<p>plain <b>bold</b></p>";
-    assert!(harness.backend().set_rich_text(html, "plain bold"));
-    let mimes = harness.selection_mimes();
-    for mime in ["text/html", PLAIN, "text/plain"] {
-        assert!(
-            mimes.iter().any(|offered| offered == mime),
-            "a rich copy must offer {mime}: {mimes:?}"
-        );
-    }
-    assert_eq!(harness.selection_bytes("text/html"), html.as_bytes());
-    assert_eq!(harness.selection_bytes("text/plain"), b"plain bold");
-
-    assert!(
-        harness
-            .backend()
-            .set_text(crate::ClipboardTarget::Clipboard, "next")
-    );
-    let mimes = harness.selection_mimes();
-    assert!(
-        !mimes.iter().any(|mime| mime.starts_with("text/html")),
-        "a plain copy must not keep the formatting of the one before: {mimes:?}"
-    );
 }

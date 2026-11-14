@@ -12,11 +12,10 @@ use tilo_session_core::remote::Heard;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
 
     let peer = start_peer(
         Host::at(hosted.relay.node_addr()),
@@ -25,7 +24,7 @@ async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {
         device.key.clone(),
     );
     let events = peer.events();
-    let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
+    let workspace = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
 
     // The page joins and asks the workspace for its catalogue at once, as a
     // page does when it opens on the workspace's records: the join is a round

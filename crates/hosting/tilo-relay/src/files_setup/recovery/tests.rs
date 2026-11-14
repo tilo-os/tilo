@@ -1,12 +1,14 @@
 use super::*;
-use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
+use collab_types::WorkspaceId;
+use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
 use std::sync::Mutex;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, persist, sign_device_cert};
 
 fn files_grant(person: [u8; 32]) -> CapOverride {
     CapOverride {
         id: String::default(),
-        subject: Subject::User(Ed25519PublicKey(person)),
+        grantee: tilo_action_policy::Grantee::person(hex::encode(person)),
+        app: None,
         scope: Scope::FsPath("/".into()),
         access: Access::Write,
         effect: Effect::Grant,
@@ -155,7 +157,7 @@ fn recovery_refusals_leave_no_cache() {
         acl: temp.path().join("absent-acl"),
         device: String::new(),
         service: String::new(),
-        workspace_id: 1,
+        workspace_id: WorkspaceId::from_u128(1),
         files_workspace_id: workspace,
         registry: None,
         confirm_existing_files_access: false,

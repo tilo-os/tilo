@@ -145,7 +145,6 @@ fn fixture(keyring: Keyring) -> Fixture {
         .complete_enrollment(
             &profile.id,
             &token,
-            tilo_identity_host::enrollment::DeviceRole::Personal,
             phone.verifying_key().to_bytes(),
             "The phone",
             now,
@@ -184,7 +183,7 @@ fn admit(
     ));
     let invitation = governor.issue(
         vec![hint],
-        join::MemberRole::Editor,
+        join::Role::Editor,
         Some(certificate.user_public_key),
         Some(certificate.device_label.clone()),
         ns.saturating_add(60_000_000_000),
@@ -248,12 +247,7 @@ fn hold_workspace(state: &Path, keys: &Keys) {
 
 /// The person `root` certifies, as a workspace names its owner.
 fn principal(root: &[u8; 32]) -> String {
-    match collab_types::caps::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(*root),
-    ) {
-        collab_types::caps::Principal::Person(id) => id,
-        other => panic!("{other:?} is not a person"),
-    }
+    hex::encode(root)
 }
 
 /// A desk showing the workspace, known by its id, owned by the person.

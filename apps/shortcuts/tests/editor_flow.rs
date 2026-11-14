@@ -263,8 +263,9 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
         .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
-        host.callers().iter().all(|caller| *caller.principal()
-            == ui::tilo_actions::remote::CallerPrincipal::App(APP_ID.into())),
+        host.callers()
+            .iter()
+            .all(|caller| caller.acting().app().is_some_and(|app| *app == APP_ID)),
         "every request goes to the door as the Shortcuts app"
     );
     assert_eq!(library_calls(&host, "list").len(), 1, "the library is read");

@@ -167,34 +167,38 @@ mod tests {
         StateKey::view("tasks", "ada", state)
     }
 
-    #[test]
-    fn a_slot_changed_twice_is_handed_over_once_as_it_is_now() {
-        let mut states = ViewStates::default();
-        states.write(view("filter"), Value::text("All"));
-        states.write(view("filter"), Value::text("Today"));
-        assert_eq!(
-            states.take_writes(),
-            vec![(view("filter"), Value::text("Today"))]
-        );
-        assert_eq!(states.take_writes(), Vec::new(), "once");
-    }
+    tilo_test_env::scenario! {
+        fn view_state_hands_over_each_slot_once_and_keeps_only_the_persons;
 
-    #[test]
-    fn a_reading_the_runtime_sets_is_never_kept_in_a_record() {
-        let mut states = ViewStates::default();
-        let present = StateKey::runtime("tasks", None, "present");
-        states.set(present.clone(), Value::text("ada"));
-        assert_eq!(states.take_writes(), Vec::new());
-        assert_eq!(states.get(&present), Some(&Value::text("ada")));
-    }
+        phase a_slot_changed_twice_is_handed_over_once_as_it_is_now;
+        {
+            let mut states = ViewStates::default();
+            states.write(view("filter"), Value::text("All"));
+            states.write(view("filter"), Value::text("Today"));
+            assert_eq!(
+                states.take_writes(),
+                vec![(view("filter"), Value::text("Today"))]
+            );
+            assert_eq!(states.take_writes(), Vec::new(), "once");
+        }
 
-    #[test]
-    fn restoring_a_slot_that_already_holds_its_value_leaves_it_alone() {
-        let mut states = ViewStates::default();
-        assert!(states.restore(view("filter"), Value::text("Today")));
-        let generation = states.generation(&view("filter"));
-        assert!(!states.restore(view("filter"), Value::text("Today")));
-        assert_eq!(states.generation(&view("filter")), generation);
-        assert_eq!(states.take_writes(), Vec::new(), "a restore is no change");
+        phase a_reading_the_runtime_sets_is_never_kept_in_a_record;
+        {
+            let mut states = ViewStates::default();
+            let present = StateKey::runtime("tasks", None, "present");
+            states.set(present.clone(), Value::text("ada"));
+            assert_eq!(states.take_writes(), Vec::new());
+            assert_eq!(states.get(&present), Some(&Value::text("ada")));
+        }
+
+        phase restoring_a_slot_that_already_holds_its_value_leaves_it_alone;
+        {
+            let mut states = ViewStates::default();
+            assert!(states.restore(view("filter"), Value::text("Today")));
+            let generation = states.generation(&view("filter"));
+            assert!(!states.restore(view("filter"), Value::text("Today")));
+            assert_eq!(states.generation(&view("filter")), generation);
+            assert_eq!(states.take_writes(), Vec::new(), "a restore is no change");
+        }
     }
 }

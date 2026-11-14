@@ -88,7 +88,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let host = enrol(
         &identity,
         "temporary-node",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let device = enrol(&identity, "temporary-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
@@ -266,7 +266,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
     let host = enrol(
         &identity,
         "review-node",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let device = enrol(&identity, "review-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
@@ -344,13 +344,13 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     use super::resource_support::{admit_person, open_admitted_peer};
-    use tilo_peer_state::join::MemberRole;
+    use tilo_peer_state::join::Role;
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Feedback host", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Feedback guest", 1);
     let host = enrol(
         &owner,
         "feedback-node",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
@@ -391,7 +391,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         &host,
         &workspace.workspace,
         &guest_device,
-        MemberRole::Commenter,
+        Role::Commenter,
     )
     .await;
     let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.workspace).await;
@@ -733,8 +733,7 @@ async fn assert_signed_canonical(
                 Some(hex::encode(reporter.user_public_key).as_str())
             );
             ui::permissions::PermissionContext::new(
-                ui::permissions::Actor::person(standing.person_id().unwrap_or_default().to_owned())
-                    .in_workspace(&submission.destination.room),
+                ui::permissions::Acting::person(standing.person_id().unwrap_or_default()),
                 serde_json::from_value(admission.admission.sandbox).unwrap(),
                 standing,
             )

@@ -188,7 +188,6 @@ fn fleet(value: Option<&Value>, own: &[u8; 32]) -> Value {
                 "fingerprint": fingerprint(&key),
                 "current": key == *own,
                 "revoked": device.get("revoked").and_then(Value::as_bool).unwrap_or(false),
-                "can_host": flag("can_act_as_host"),
                 "kind": kind,
                 "browser": device.get("browser"),
                 "agent": runs,
@@ -333,91 +332,95 @@ mod tests {
         device
     }
 
-    /// The list says of each key what the person's record kept: the agent a
-    /// computer runs, the one workspace an agent's grant reaches (by name where
-    /// the record names it), when the key was issued and expires, and when a
-    /// session of it was last here and whether one is now.
-    #[test]
-    fn the_device_list_says_what_the_persons_record_kept() {
-        let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
-        let record = json!({
-            "workspaces": [{"workspace": workspace, "name": "Studio"}],
-            "devices": [
-                device(
-                    cert("Laptop", 2, json!({"can_act_as_host": false}), 5_000_000_000, None),
-                    json!({"last_active_ms": 7_000, "online": true}),
-                ),
-                device(
-                    cert("Claude Code on laptop", 3, json!({}), 6_000_000_000, None),
-                    json!({"agent": "Claude Code", "last_active_ms": 9_000}),
-                ),
-                device(
-                    cert(
-                        "Claude Code",
-                        4,
-                        json!({"agent": workspace, "server_key": false}),
-                        8_000_000_000,
-                        Some(9_000_000_000),
+    tilo_test_env::scenario! {
+        fn the_device_list_reads_the_persons_record;
+
+        phase the_device_list_says_what_the_persons_record_kept;
+        // The list says of each key what the person's record kept: the agent a
+        // computer runs, the one workspace an agent's grant reaches (by name where
+        // the record names it), when the key was issued and expires, and when a
+        // session of it was last here and whether one is now.
+        {
+            let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+            let record = json!({
+                "workspaces": [{"workspace": workspace, "name": "Studio"}],
+                "devices": [
+                    device(
+                        cert("Laptop", 2, json!({}), 5_000_000_000, None),
+                        json!({"last_active_ms": 7_000, "online": true}),
                     ),
-                    json!({}),
-                ),
-            ],
-        });
-        let listed = fleet(Some(&record), &[2; 32]);
-        let listed = listed.as_array().unwrap();
-        let of = |key: u8| {
-            listed
-                .iter()
-                .find(|device| device["key_hex"] == hex::encode([key; 32]))
-                .unwrap_or_else(|| panic!("the key {key} is listed"))
-        };
+                    device(
+                        cert("Claude Code on laptop", 3, json!({}), 6_000_000_000, None),
+                        json!({"agent": "Claude Code", "last_active_ms": 9_000}),
+                    ),
+                    device(
+                        cert(
+                            "Claude Code",
+                            4,
+                            json!({"agent": workspace, "server_key": false}),
+                            8_000_000_000,
+                            Some(9_000_000_000),
+                        ),
+                        json!({}),
+                    ),
+                ],
+            });
+            let listed = fleet(Some(&record), &[2; 32]);
+            let listed = listed.as_array().unwrap();
+            let of = |key: u8| {
+                listed
+                    .iter()
+                    .find(|device| device["key_hex"] == hex::encode([key; 32]))
+                    .unwrap_or_else(|| panic!("the key {key} is listed"))
+            };
 
-        let laptop = of(2);
-        assert_eq!(laptop["label"], "Laptop");
-        assert!(laptop["current"].as_bool().unwrap());
-        assert_eq!(laptop["online"], true);
-        assert_eq!(laptop["last_active_ms"], 7_000);
-        assert_eq!(laptop["issued_ms"], 5_000);
-        assert_eq!(laptop["kind"], "device");
-        assert!(
-            laptop["workspace"].is_null(),
-            "a device of theirs reaches every workspace of theirs"
-        );
+            let laptop = of(2);
+            assert_eq!(laptop["label"], "Laptop");
+            assert!(laptop["current"].as_bool().unwrap());
+            assert_eq!(laptop["online"], true);
+            assert_eq!(laptop["last_active_ms"], 7_000);
+            assert_eq!(laptop["issued_ms"], 5_000);
+            assert_eq!(laptop["kind"], "device");
+            assert!(
+                laptop["workspace"].is_null(),
+                "a device of theirs reaches every workspace of theirs"
+            );
 
-        let computer = of(3);
-        assert_eq!(computer["agent"], "Claude Code");
-        assert_eq!(
-            computer["kind"], "agent",
-            "a computer an agent runs on is a key acting for the person"
-        );
-        assert_eq!(computer["last_active_ms"], 9_000);
-        assert!(!computer["online"].as_bool().unwrap());
+            let computer = of(3);
+            assert_eq!(computer["agent"], "Claude Code");
+            assert_eq!(
+                computer["kind"], "agent",
+                "a computer an agent runs on is a key acting for the person"
+            );
+            assert_eq!(computer["last_active_ms"], 9_000);
+            assert!(!computer["online"].as_bool().unwrap());
 
-        let grant = of(4);
-        assert_eq!(grant["kind"], "agent");
-        assert_eq!(
-            grant["workspace"], "Studio",
-            "the workspace is named, not its id"
-        );
-        assert_eq!(grant["issued_ms"], 8_000);
-        assert_eq!(grant["expires_ms"], 9_000);
-    }
+            let grant = of(4);
+            assert_eq!(grant["kind"], "agent");
+            assert_eq!(
+                grant["workspace"], "Studio",
+                "the workspace is named, not its id"
+            );
+            assert_eq!(grant["issued_ms"], 8_000);
+            assert_eq!(grant["expires_ms"], 9_000);
+        }
 
-    /// A key the record says nothing more of reads as it was: no time, not
-    /// online, and no workspace an agent's grant reaches.
-    #[test]
-    fn a_key_with_nothing_said_of_it_reads_as_it_was() {
-        let record = json!({
-            "devices": [device(cert("Phone", 5, json!({}), 1_000_000, None), json!({}))],
-        });
-        let listed = fleet(Some(&record), &[9; 32]);
-        let phone = &listed.as_array().unwrap()[0];
-        assert!(phone["agent"].is_null());
-        assert!(phone["last_active_ms"].is_null());
-        assert!(phone["expires_ms"].is_null());
-        assert!(phone["workspace"].is_null());
-        assert!(!phone["online"].as_bool().unwrap());
-        assert!(!phone["current"].as_bool().unwrap());
-        assert_eq!(phone["fingerprint"], "05 05 05 05 05 05");
+        phase a_key_with_nothing_said_of_it_reads_as_it_was;
+        // A key the record says nothing more of reads as it was: no time, not
+        // online, and no workspace an agent's grant reaches.
+        {
+            let record = json!({
+                "devices": [device(cert("Phone", 5, json!({}), 1_000_000, None), json!({}))],
+            });
+            let listed = fleet(Some(&record), &[9; 32]);
+            let phone = &listed.as_array().unwrap()[0];
+            assert!(phone["agent"].is_null());
+            assert!(phone["last_active_ms"].is_null());
+            assert!(phone["expires_ms"].is_null());
+            assert!(phone["workspace"].is_null());
+            assert!(!phone["online"].as_bool().unwrap());
+            assert!(!phone["current"].as_bool().unwrap());
+            assert_eq!(phone["fingerprint"], "05 05 05 05 05 05");
+        }
     }
 }

@@ -18,7 +18,7 @@ use winit::event::WindowEvent;
 
 #[test]
 fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
-    use settings_store::personal_dictionary::{Service, Vocabulary, host::Host};
+    use settings_store::personal_dictionary::{Reader, Vocabulary};
     use std::sync::Arc;
     struct Restore;
     impl Drop for Restore {
@@ -35,19 +35,12 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
             avatar_color: [0; 3],
         },
     ))));
-    let profile = tempfile::tempdir().unwrap();
-    let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
-    let source = Arc::new(Host::new(
-        Arc::new(settings_store::HostDocument::new(
-            serde_json::Map::new(),
-            |_| Ok(()),
-        )),
-        service.clone(),
-        Arc::new(|| Some([1; 32])),
-    ));
+    let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
+        settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+    );
+    let reader = Reader::bind(Arc::clone(&source));
     let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
-    let mut host =
-        ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
+    let mut host = ui::personal_dictionary::TestHost::new(source.clone(), "so.tilo.settings");
     app.harness().resize((1200, 2200)).unwrap();
     crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
     app.settle();
@@ -57,7 +50,6 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
     app.settle();
     host.flush().unwrap();
     app.settle();
-    let reader = service.reader().unwrap();
     assert_eq!(
         reader.snapshot().unwrap().hints("en").collect::<Vec<_>>(),
         ["Tilo"]
@@ -76,9 +68,8 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
         reader.snapshot().unwrap().hints("nl").collect::<Vec<_>>(),
         ["TiLo"]
     );
-    let reopened = Service::new(profile.path().join("dictionary")).unwrap();
     assert_eq!(
-        reopened.bind(Some([1; 32])).unwrap().snapshot().unwrap(),
+        settings_store::personal_dictionary::snapshot_in(source.as_ref()),
         reader.snapshot().unwrap()
     );
     if let Some(path) = std::env::var_os("TILO_DICTIONARY_LIVE_SCREENSHOT") {
@@ -110,7 +101,7 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
 
 #[test]
 fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
-    use settings_store::personal_dictionary::{Edit, Service, Vocabulary, Word, host::Host};
+    use settings_store::personal_dictionary::{Edit, Word, edit_in};
     use std::sync::Arc;
     struct Restore;
     impl Drop for Restore {
@@ -127,30 +118,20 @@ fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
             avatar_color: [0; 3],
         },
     ))));
-    let profile = tempfile::tempdir().unwrap();
-    let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
-    let reader = service.bind(Some([1; 32])).unwrap();
+    let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
+        settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+    );
     for (word, language) in [("Tilo", None), ("Élodie", Some("fr")), ("東京", Some("ja"))] {
-        let revision = reader.snapshot().unwrap().revision;
-        service
-            .edit(
-                &reader,
-                revision,
-                Edit::Add(Word::new(word, language).unwrap()),
-            )
-            .unwrap();
+        let revision = settings_store::personal_dictionary::snapshot_in(source.as_ref()).revision;
+        edit_in(
+            source.as_ref(),
+            revision,
+            Edit::Add(Word::new(word, language).unwrap()),
+        )
+        .unwrap();
     }
-    let source = Arc::new(Host::new(
-        Arc::new(settings_store::HostDocument::new(
-            serde_json::Map::new(),
-            |_| Ok(()),
-        )),
-        service,
-        Arc::new(|| Some([1; 32])),
-    ));
     let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
-    let _host =
-        ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
+    let _host = ui::personal_dictionary::TestHost::new(source.clone(), "so.tilo.settings");
     app.harness().resize((1100, 1400)).unwrap();
     crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
     app.settle();
@@ -332,66 +313,70 @@ fn area_with(catalog: Vec<CatalogEntry>) -> (tempfile::TempDir, InputArea) {
     (profile, area)
 }
 
-#[test]
-fn attached_devices_are_read_when_their_snapshot_changes_not_on_a_timer() {
-    let long_ago = || {
-        ui::time::now()
-            .checked_sub(std::time::Duration::from_secs(5))
-            .unwrap()
-    };
-    let (_profile, area) = area_with(catalog());
-    area.live.set(true);
-    let watch = Rc::new(crate::watch::Watched::by_hand());
-    let showing = Rc::new(Showing {
-        watch: Some(Rc::clone(&watch)),
-    });
-    *area.showing.borrow_mut() = Rc::downgrade(&showing);
-    assert!(area.devices_due(Some(&watch)), "the first look reads them");
-    assert!(!area.devices_due(Some(&watch)));
-    area.next_device_poll.set(Some(long_ago()));
-    assert!(
-        !area.devices_due(Some(&watch)),
-        "an idle page reads nothing on a timer"
-    );
-    assert_eq!(area.wake_deadline(), None, "nor sets a deadline");
-    watch.touch();
-    assert!(area.devices_due(Some(&watch)), "a changed snapshot is read");
-    assert!(!area.devices_due(Some(&watch)), "once");
+tilo_test_env::scenario! {
+    fn the_input_area_reads_devices_when_their_snapshot_changes;
 
-    let root = tempfile::tempdir().unwrap();
-    let unwatched = Rc::new(crate::watch::Watched::files(&[root
-        .path()
-        .join("absent")
-        .join("input-state.json")]));
-    let showing = Rc::new(Showing {
-        watch: Some(Rc::clone(&unwatched)),
-    });
-    *area.showing.borrow_mut() = Rc::downgrade(&showing);
-    assert!(area.wake_deadline().is_some());
-    area.next_device_poll.set(Some(long_ago()));
-    assert!(
-        area.devices_due(Some(&unwatched)),
-        "an unwatchable snapshot is read each second"
-    );
-    drop(showing);
-    assert_eq!(area.wake_deadline(), None, "no page, no wake");
-}
+    phase attached_devices_are_read_when_their_snapshot_changes_not_on_a_timer;
+    {
+        let long_ago = || {
+            ui::time::now()
+                .checked_sub(std::time::Duration::from_secs(5))
+                .unwrap()
+        };
+        let (_profile, area) = area_with(catalog());
+        area.live.set(true);
+        let watch = Rc::new(crate::watch::Watched::by_hand());
+        let showing = Rc::new(Showing {
+            watch: Some(Rc::clone(&watch)),
+        });
+        *area.showing.borrow_mut() = Rc::downgrade(&showing);
+        assert!(area.devices_due(Some(&watch)), "the first look reads them");
+        assert!(!area.devices_due(Some(&watch)));
+        area.next_device_poll.set(Some(long_ago()));
+        assert!(
+            !area.devices_due(Some(&watch)),
+            "an idle page reads nothing on a timer"
+        );
+        assert_eq!(area.wake_deadline(), None, "nor sets a deadline");
+        watch.touch();
+        assert!(area.devices_due(Some(&watch)), "a changed snapshot is read");
+        assert!(!area.devices_due(Some(&watch)), "once");
 
-#[test]
-fn the_input_area_watches_the_compositors_input_snapshot() {
-    let runtime = tempfile::tempdir().unwrap();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_RUNTIME_DIR", runtime.path());
-    let snapshot = settings_store::hardware::input_snapshot_path().unwrap();
-    std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
-    let (_profile, area) = area_with(catalog());
-    area.live.set(true);
-    let watch = area.follow().expect("a live area follows its devices");
-    assert!(watch.is_complete());
-    assert!(Rc::ptr_eq(&watch, &area.follow().unwrap()));
-    assert!(watch.take(), "the first look reads the snapshot");
-    InputHardwareSnapshot::default().save().unwrap();
-    tilo_test_env::wait_until("a published snapshot to be flagged", || watch.take());
+        let root = tempfile::tempdir().unwrap();
+        let unwatched = Rc::new(crate::watch::Watched::files(&[root
+            .path()
+            .join("absent")
+            .join("input-state.json")]));
+        let showing = Rc::new(Showing {
+            watch: Some(Rc::clone(&unwatched)),
+        });
+        *area.showing.borrow_mut() = Rc::downgrade(&showing);
+        assert!(area.wake_deadline().is_some());
+        area.next_device_poll.set(Some(long_ago()));
+        assert!(
+            area.devices_due(Some(&unwatched)),
+            "an unwatchable snapshot is read each second"
+        );
+        drop(showing);
+        assert_eq!(area.wake_deadline(), None, "no page, no wake");
+    }
+
+    phase the_input_area_watches_the_compositors_input_snapshot;
+    {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let snapshot = settings_store::hardware::input_snapshot_path().unwrap();
+        std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        let (_profile, area) = area_with(catalog());
+        area.live.set(true);
+        let watch = area.follow().expect("a live area follows its devices");
+        assert!(watch.is_complete());
+        assert!(Rc::ptr_eq(&watch, &area.follow().unwrap()));
+        assert!(watch.take(), "the first look reads the snapshot");
+        InputHardwareSnapshot::default().save().unwrap();
+        tilo_test_env::wait_until("a published snapshot to be flagged", || watch.take());
+    }
 }
 
 fn catalog() -> Vec<CatalogEntry> {
@@ -480,170 +465,180 @@ fn the_keyboard_page_shows_imported_repeat_settings() {
     );
 }
 
-#[test]
-fn pointer_sections_follow_the_attached_devices() {
-    let with = |kinds: &[InputDeviceKind]| InputHardwareSnapshot {
-        devices: kinds
-            .iter()
-            .map(|kind| settings_store::hardware::InputDeviceSnapshot {
-                kind: *kind,
-                ..Default::default()
-            })
-            .collect(),
-        ..Default::default()
-    };
-    let everything = InputSections::for_devices(None);
-    assert!(everything.touchpad && everything.mouse && everything.pointer);
+tilo_test_env::scenario! {
+    fn input_choices_and_sections_follow_the_devices_as_stable_ids;
 
-    let desktop = InputSections::for_devices(Some(&with(&[
-        InputDeviceKind::Mouse,
-        InputDeviceKind::Keyboard,
-    ])));
-    assert!(!desktop.touchpad, "no touchpad, no touchpad settings");
-    assert!(desktop.mouse && desktop.pointer);
-    assert!(!desktop.tablet);
-
-    let laptop = InputSections::for_devices(Some(&with(&[InputDeviceKind::Touchpad])));
-    assert!(laptop.touchpad && laptop.pointer && !laptop.mouse);
-
-    let keyboard_only = InputSections::for_devices(Some(&with(&[InputDeviceKind::Keyboard])));
-    assert!(
-        !keyboard_only.pointer,
-        "buttons need a pointer to belong to"
-    );
-
-    let pad_only = InputSections::for_devices(Some(&with(&[InputDeviceKind::TabletPad])));
-    assert!(pad_only.tablet);
-}
-
-#[test]
-fn tablet_and_pad_choices_travel_as_stable_ids() {
-    let actions = [
-        StylusButtonAction::Default,
-        StylusButtonAction::Right,
-        StylusButtonAction::Disabled,
-        StylusButtonAction::Shortcut(ShortcutAction::Search),
-    ];
-    for action in actions {
-        assert_eq!(stylus_button(&stylus_button_id(action)), Some(action));
-    }
-    assert_eq!(
-        stylus_button_id(StylusButtonAction::Shortcut(
-            ShortcutAction::WorkspaceOverview
-        )),
-        "shortcut:workspace_overview"
-    );
-    assert_eq!(stylus_button("Right click"), None);
-    let choices = stylus_button_choices();
-    assert_eq!(choices[3], ("right".into(), "Right click".into()));
-    assert!(
-        choices.iter().any(|(id, _)| id == "shortcut:search"),
-        "every listed shortcut can go on a pen button"
-    );
-
-    assert_eq!(pad_button("none"), Some(PadButtonChoice::Nothing));
-    let mut pad = TabletConfig::default();
-    set_pad_button(&mut pad, 2, PadButtonChoice::Shortcut(ShortcutAction::Lock));
-    assert_eq!(
-        pad_button(&pad_button_id(&pad, 2)),
-        Some(PadButtonChoice::Shortcut(ShortcutAction::Lock))
-    );
-    set_pad_button(&mut pad, 2, PadButtonChoice::ShowMap);
-    assert_eq!(pad_button_id(&pad, 2), "show-map");
-    assert!(
-        pad.pad_buttons.is_empty(),
-        "the map button runs no shortcut"
-    );
-    set_pad_button(&mut pad, 0, PadButtonChoice::ShowMap);
-    assert_eq!(pad.pad_map_button, Some(0), "one button shows the map");
-    assert_eq!(pad_button_id(&pad, 2), "none");
-    assert_eq!(pad_button("left"), None, "a pad runs shortcuts only");
-
-    for id in ["native", "left", "back", "shortcut:search"] {
-        let action = eraser(id).expect("an offered eraser choice");
-        assert_eq!(eraser_id(action), id);
-    }
-    assert!(
-        eraser_choices()
-            .iter()
-            .any(|(id, _)| id == "shortcut:search"),
-        "every listed shortcut can go on the eraser"
-    );
-    assert_eq!(eraser("disabled"), None);
-    for (id, _) in dial_choices() {
-        let action = dial(&id).expect("an offered dial choice");
-        assert_eq!(dial_id(action), id);
-    }
-    assert_eq!(dial("shortcut:search"), None);
-
-    assert_eq!(tablet_output_for_id(WHOLE_DESKTOP), Ok(None));
-    assert_eq!(tablet_output_choices()[0].0, WHOLE_DESKTOP);
-}
-
-#[test]
-fn each_tablet_is_one_card_holding_its_own_pad_buttons() {
-    let device = |kind, product, name: &str, group: &str, pad_buttons| {
-        settings_store::hardware::InputDeviceSnapshot {
-            key: settings_store::hardware::input_device_key(0x056a, product, name),
-            name: name.into(),
-            kind,
-            pad_buttons,
-            physical_device: group.into(),
+    phase pointer_sections_follow_the_attached_devices;
+    {
+        let with = |kinds: &[InputDeviceKind]| InputHardwareSnapshot {
+            devices: kinds
+                .iter()
+                .map(|kind| settings_store::hardware::InputDeviceSnapshot {
+                    kind: *kind,
+                    ..Default::default()
+                })
+                .collect(),
             ..Default::default()
+        };
+        let everything = InputSections::for_devices(None);
+        assert!(everything.touchpad && everything.mouse && everything.pointer);
+
+        let desktop = InputSections::for_devices(Some(&with(&[
+            InputDeviceKind::Mouse,
+            InputDeviceKind::Keyboard,
+        ])));
+        assert!(!desktop.touchpad, "no touchpad, no touchpad settings");
+        assert!(desktop.mouse && desktop.pointer);
+        assert!(!desktop.tablet);
+
+        let laptop = InputSections::for_devices(Some(&with(&[InputDeviceKind::Touchpad])));
+        assert!(laptop.touchpad && laptop.pointer && !laptop.mouse);
+
+        let keyboard_only = InputSections::for_devices(Some(&with(&[InputDeviceKind::Keyboard])));
+        assert!(
+            !keyboard_only.pointer,
+            "buttons need a pointer to belong to"
+        );
+
+        let pad_only = InputSections::for_devices(Some(&with(&[InputDeviceKind::TabletPad])));
+        assert!(pad_only.tablet);
+    }
+
+    phase tablet_and_pad_choices_travel_as_stable_ids;
+    {
+        let actions = [
+            StylusButtonAction::Default,
+            StylusButtonAction::Right,
+            StylusButtonAction::Disabled,
+            StylusButtonAction::Shortcut(ShortcutAction::Search),
+        ];
+        for action in actions {
+            assert_eq!(stylus_button(&stylus_button_id(action)), Some(action));
         }
-    };
-    let tablets = [
-        device(
-            InputDeviceKind::Tablet,
-            0x0374,
-            "Wacom Intuos S Pen",
-            "event4",
-            0,
-        ),
-        device(
-            InputDeviceKind::Tablet,
-            0x0357,
-            "Wacom Intuos Pro M Pen",
-            "event7",
-            0,
-        ),
-    ];
-    let pads = [
-        // Listed after both pens, in the other order: each pad still
-        // belongs to its own tablet.
-        device(
-            InputDeviceKind::TabletPad,
-            0x0357,
-            "Wacom Intuos Pro M Pad",
-            "event7",
-            8,
-        ),
-        device(
-            InputDeviceKind::TabletPad,
-            0x0374,
-            "Wacom Intuos S Pad",
-            "event4",
-            4,
-        ),
-        device(
-            InputDeviceKind::TabletPad,
-            0x0331,
-            "Wacom ExpressKey Remote Pad",
-            "event9",
-            18,
-        ),
-    ];
-    let cards = tablet_devices(&tablets, &pads);
-    assert_eq!(cards.len(), 3, "one card per device, never one per pad");
-    let pad_buttons = |card: &TabletDevice<'_>| card.pad.map_or(0, |pad| pad.pad_buttons);
-    assert_eq!(cards[0].title(), "Wacom Intuos S");
-    assert!(cards[0].pen.is_some(), "a tablet's card maps its pen");
-    assert_eq!(pad_buttons(&cards[0]), 4);
-    assert_eq!(cards[1].title(), "Wacom Intuos Pro M");
-    assert_eq!(pad_buttons(&cards[1]), 8);
-    assert_eq!(cards[2].title(), "Wacom ExpressKey Remote");
-    assert!(cards[2].pen.is_none(), "a remote maps no pen");
-    assert_eq!(pad_buttons(&cards[2]), 18);
+        assert_eq!(
+            stylus_button_id(StylusButtonAction::Shortcut(
+                ShortcutAction::WorkspaceOverview
+            )),
+            "shortcut:workspace_overview"
+        );
+        assert_eq!(stylus_button("Right click"), None);
+        let choices = stylus_button_choices();
+        assert_eq!(choices[3], ("right".into(), "Right click".into()));
+        assert!(
+            choices.iter().any(|(id, _)| id == "shortcut:search"),
+            "every listed shortcut can go on a pen button"
+        );
+
+        assert_eq!(pad_button("none"), Some(PadButtonChoice::Nothing));
+        let mut pad = TabletConfig::default();
+        set_pad_button(&mut pad, 2, PadButtonChoice::Shortcut(ShortcutAction::Lock));
+        assert_eq!(
+            pad_button(&pad_button_id(&pad, 2)),
+            Some(PadButtonChoice::Shortcut(ShortcutAction::Lock))
+        );
+        set_pad_button(&mut pad, 2, PadButtonChoice::ShowMap);
+        assert_eq!(pad_button_id(&pad, 2), "show-map");
+        assert!(
+            pad.pad_buttons.is_empty(),
+            "the map button runs no shortcut"
+        );
+        set_pad_button(&mut pad, 0, PadButtonChoice::ShowMap);
+        assert_eq!(pad.pad_map_button, Some(0), "one button shows the map");
+        assert_eq!(pad_button_id(&pad, 2), "none");
+        assert_eq!(pad_button("left"), None, "a pad runs shortcuts only");
+
+        for id in ["native", "left", "back", "shortcut:search"] {
+            let action = eraser(id).expect("an offered eraser choice");
+            assert_eq!(eraser_id(action), id);
+        }
+        assert!(
+            eraser_choices()
+                .iter()
+                .any(|(id, _)| id == "shortcut:search"),
+            "every listed shortcut can go on the eraser"
+        );
+        assert_eq!(eraser("disabled"), None);
+        for (id, _) in dial_choices() {
+            let action = dial(&id).expect("an offered dial choice");
+            assert_eq!(dial_id(action), id);
+        }
+        assert_eq!(dial("shortcut:search"), None);
+
+        assert_eq!(tablet_output_for_id(WHOLE_DESKTOP), Ok(None));
+        assert_eq!(tablet_output_choices()[0].0, WHOLE_DESKTOP);
+    }
+
+    phase each_tablet_is_one_card_holding_its_own_pad_buttons;
+    {
+        let device = |kind, product, name: &str, group: &str, pad_buttons| {
+            settings_store::hardware::InputDeviceSnapshot {
+                key: settings_store::hardware::input_device_key(0x056a, product, name),
+                name: name.into(),
+                kind,
+                pad_buttons,
+                physical_device: group.into(),
+                ..Default::default()
+            }
+        };
+        let tablets = [
+            device(
+                InputDeviceKind::Tablet,
+                0x0374,
+                "Wacom Intuos S Pen",
+                "event4",
+                0,
+            ),
+            device(
+                InputDeviceKind::Tablet,
+                0x0357,
+                "Wacom Intuos Pro M Pen",
+                "event7",
+                0,
+            ),
+        ];
+        let pads = [
+            // Listed after both pens, in the other order: each pad still
+            // belongs to its own tablet.
+            device(
+                InputDeviceKind::TabletPad,
+                0x0357,
+                "Wacom Intuos Pro M Pad",
+                "event7",
+                8,
+            ),
+            device(
+                InputDeviceKind::TabletPad,
+                0x0374,
+                "Wacom Intuos S Pad",
+                "event4",
+                4,
+            ),
+            device(
+                InputDeviceKind::TabletPad,
+                0x0331,
+                "Wacom ExpressKey Remote Pad",
+                "event9",
+                18,
+            ),
+        ];
+        let cards = tablet_devices(&tablets, &pads);
+        assert_eq!(cards.len(), 3, "one card per device, never one per pad");
+        let pad_buttons = |card: &TabletDevice<'_>| card.pad.map_or(0, |pad| pad.pad_buttons);
+        assert_eq!(cards[0].title(), "Wacom Intuos S");
+        assert!(cards[0].pen.is_some(), "a tablet's card maps its pen");
+        assert_eq!(pad_buttons(&cards[0]), 4);
+        assert_eq!(cards[1].title(), "Wacom Intuos Pro M");
+        assert_eq!(pad_buttons(&cards[1]), 8);
+        assert_eq!(cards[2].title(), "Wacom ExpressKey Remote");
+        assert!(cards[2].pen.is_none(), "a remote maps no pen");
+        assert_eq!(pad_buttons(&cards[2]), 18);
+    }
+
+    phase touchpad_choices_travel_as_stable_ids;
+    {
+        let labels = localized_choices(&CLICK_METHOD_CHOICES);
+        assert_eq!(labels[1], ("areas".into(), "Bottom-right corner".into()));
+    }
 }
 
 fn pointing_with(devices: Option<InputHardwareSnapshot>) -> TestApp<SettingsShell> {
@@ -762,12 +757,6 @@ fn a_tablets_row_offers_its_choices() {
         app.settings::<InputDevicePrefs>().get().tablets["pen-a"].eraser,
         EraserAction::Right
     );
-}
-
-#[test]
-fn touchpad_choices_travel_as_stable_ids() {
-    let labels = localized_choices(&CLICK_METHOD_CHOICES);
-    assert_eq!(labels[1], ("areas".into(), "Bottom-right corner".into()));
 }
 
 #[test]

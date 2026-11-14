@@ -452,7 +452,7 @@ fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
     books(&mut app).query = super::query_view::BookQuery::hermetic();
-    let lane = ContentLane::of("so.tilo.books-query-test", "arriving");
+    let lane = std::sync::Arc::new(ContentLane::default());
     books(&mut app).content = Some(RecordContent::store(
         tilo_content::ContentStore::memory(),
         std::sync::Arc::clone(&lane),

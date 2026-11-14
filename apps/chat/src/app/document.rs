@@ -37,8 +37,8 @@ impl ChatApp {
                     .map(|participant| ui::tilo_resource::search_index::IndexPerson {
                         name: String::new(),
                         anchor: String::new(),
-                        identity: participant.id().to_owned(),
-                        agent: participant.is_agent(),
+                        identity: participant.key(),
+                        agent: !participant.is_person(),
                     })
                     .collect();
                 crate::resource::conversation_entry(&id, &row.name, &row.topic).showing(people)

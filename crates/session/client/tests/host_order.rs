@@ -42,7 +42,7 @@ async fn durable(peer: &Link) -> (u64, u64) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_and_iroh_commits_share_one_host_order() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
@@ -54,7 +54,6 @@ async fn https_and_iroh_commits_share_one_host_order() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     let browser_peer = start_peer(
         host.iroh(),

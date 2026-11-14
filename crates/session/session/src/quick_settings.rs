@@ -578,14 +578,11 @@ pub(crate) enum ArrangementAction {
 /// The arrangement resource: which controls the panel shows, read by the panel and by anyone else
 /// who asks.
 fn arrangement_resource() -> tilo_actions::ResourceSpec {
-    tilo_service::offer::<ArrangementAction>(
-        tilo_actions::ResourceSpec::new(
-            ARRANGEMENT,
-            ARRANGEMENT_KIND,
-            crate::i18n::t("session-quick-settings"),
-        )
-        .with_granted_reading(),
-    )
+    tilo_service::offer::<ArrangementAction>(tilo_actions::ResourceSpec::new(
+        ARRANGEMENT,
+        ARRANGEMENT_KIND,
+        crate::i18n::t("session-quick-settings"),
+    ))
 }
 
 /// Which controls the panel shows, as the panel reads them: the person's arrangement of this

@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use crate::platform::fabric::Continuity;
 use crate::sync::Event;
 use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
+use collab_types::Ed25519PublicKey;
 use collab_types::presence::{Availability, Payload, Presence};
-use collab_types::{ChannelRoute, Ed25519PublicKey};
 use iroh::EndpointId;
 use runtime_collab::native_media::{Command, Request, State};
 use tilo_broker_core::collab_core::BrokerChannels;
@@ -24,7 +24,7 @@ use tilo_channels::{
 };
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
-use tilo_network_actor::{HostIdentity, workspace_topic_id};
+use tilo_network_actor::HostIdentity;
 
 use super::*;
 use crate::sync::{Client, Entry, OwnPresence};
@@ -139,19 +139,12 @@ impl ChannelDirectory for Directory {
     fn allowed_devices(
         &self,
         _workspace: WorkspaceId,
-        _channel: collab_types::ChannelId,
-        _route: Option<&ChannelRoute>,
         _now: u64,
     ) -> Option<std::collections::BTreeSet<Ed25519PublicKey>> {
         Some(self.admitted.clone())
     }
-    fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &ChannelRoute,
-        _: u64,
-    ) -> Option<collab_types::ChannelId> {
-        Some(route.channel(&workspace.to_string()))
+    fn founds(&self, _workspace: WorkspaceId) -> bool {
+        true
     }
 }
 
@@ -183,11 +176,6 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile
     (provider, directory)
 }
 
-/// The channel a call on `target` runs on: the workspace's record of it.
-fn call_channel() -> collab_types::ChannelId {
-    collab_types::document_channel_id(APP, WORKSPACE, RECORD)
-}
-
 /// Found the call's channel, as the pass a session runs does: the first device that takes part
 /// creates the group once its wait is due, and the test's workspace has no other participant to
 /// ask.
@@ -207,14 +195,11 @@ async fn founded(keys: &ChannelKeyProvider) {
     }
     let access = keys.get().expect("this device's channel service");
     // Reading first is what makes the device take part, as a call does.
-    access.access(workspace_id(), call_channel());
+    access.access(workspace_id());
     let deadline = tilo_test_env::hang_deadline();
     loop {
         access.pump(&Nowhere);
-        if matches!(
-            access.access(workspace_id(), call_channel()).0,
-            ChannelAccess::Ready(_)
-        ) {
+        if matches!(access.access(workspace_id()).0, ChannelAccess::Ready(_)) {
             return;
         }
         assert!(
@@ -250,7 +235,7 @@ fn step(session: &mut Session) {
 /// One thing `from` said in the workspace.
 fn said(from: u8, msg: neighbour_wire::NeighbourMsg) -> Event {
     Event::Msg {
-        ws: workspace_topic_id(workspace_id()),
+        ws: workspace_id(),
         peer: public(from),
         msg: Box::new(msg),
     }
@@ -433,7 +418,7 @@ fn relay() -> Arc<Relay> {
 
 /// The workspace scope's content keys, as its own channel hands them to its members.
 fn workspace_keys() -> channel_crypto::ChannelContentKeys {
-    let channel = Scope::workspace(WORKSPACE.to_owned()).channel_id();
+    let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
     ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
         .expect("the workspace's channel")
         .content_keys()

@@ -90,32 +90,36 @@ pub const GONE: u16 = 410;
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_handle_is_sixteen_spelled_characters_of_base64url() {
-        assert_eq!(
-            handle_of("/i/abcdefghijklmnop"),
-            Some("abcdefghijklmnop"),
-            "a site's own route"
-        );
-        assert_eq!(
-            handle_of("/peer/v1/i/abcdefghijklmnop"),
-            Some("abcdefghijklmnop"),
-            "the same route below a relay's API prefix"
-        );
-        assert_eq!(handle_of("/i/abcdefghijklmnop/"), None);
-        assert_eq!(handle_of("/i/abcdefghijklmno"), None);
-        assert_eq!(handle_of("/i/abcdefghijklmnopq"), None);
-        assert_eq!(handle_of("/i/abcdefghijklmno!"), None);
-        assert_eq!(handle_of("/i/"), None);
-        assert_eq!(handle_of("/directory"), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_sealed_invitation_keeps_its_handle_and_limits;
 
-    #[test]
-    fn the_limits_hold_an_invitation_and_no_more() {
-        // An invitation is under 2 KiB sealed; a month is as long as a site
-        // keeps one.
-        assert_eq!(MAX_SEALED_BYTES, 8 * 1024);
-        assert_eq!(MAX_STORED_SECONDS, 30 * 24 * 60 * 60);
-        assert_eq!(GONE, 410);
+        phase a_handle_is_sixteen_spelled_characters_of_base64url;
+        {
+            assert_eq!(
+                handle_of("/i/abcdefghijklmnop"),
+                Some("abcdefghijklmnop"),
+                "a site's own route"
+            );
+            assert_eq!(
+                handle_of("/peer/v1/i/abcdefghijklmnop"),
+                Some("abcdefghijklmnop"),
+                "the same route below a relay's API prefix"
+            );
+            assert_eq!(handle_of("/i/abcdefghijklmnop/"), None);
+            assert_eq!(handle_of("/i/abcdefghijklmno"), None);
+            assert_eq!(handle_of("/i/abcdefghijklmnopq"), None);
+            assert_eq!(handle_of("/i/abcdefghijklmno!"), None);
+            assert_eq!(handle_of("/i/"), None);
+            assert_eq!(handle_of("/directory"), None);
+        }
+
+        phase the_limits_hold_an_invitation_and_no_more;
+        {
+            // An invitation is under 2 KiB sealed; a month is as long as a site
+            // keeps one.
+            assert_eq!(MAX_SEALED_BYTES, 8 * 1024);
+            assert_eq!(MAX_STORED_SECONDS, 30 * 24 * 60 * 60);
+            assert_eq!(GONE, 410);
+        }
     }
 }

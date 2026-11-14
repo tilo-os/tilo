@@ -46,8 +46,7 @@
 //! checks the host's `HelloAck` before anything else it reads.
 //!
 //! The entry also carries the device's request to join the workspace's
-//! channel group ([`collab_types::workspace_scope`]), which its channels
-//! prepare before they know anything of the workspace's governance. The host
+//! key group, which its key service prepares before they know anything of the workspace's governance. The host
 //! hands it to the workspace's channel participants as it admits the device,
 //! as it hands every member's, so the Welcome that keys the device is the
 //! first thing its download carries, not something it asks for once the
@@ -55,10 +54,11 @@
 //! the workspace's shared desktop, so the device opens it with those keys
 //! before the governance that decides it arrives.
 
+use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
 
 use crate::directory::DoorRefused;
-use crate::workspaces::WorkspaceRole;
+use crate::workspaces::Role;
 
 /// How many entries a host runs at once, across every connection: the same
 /// bound its iroh join service holds its exchanges to.
@@ -113,8 +113,8 @@ pub enum Through {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub entering: Entering,
-    /// The device's signed request for the keys of the workspace's channel
-    /// group ([`collab_types::workspace_scope`]), as it would publish it once
+    /// The device's signed request for the keys of the workspace's group, as
+    /// it would publish it once
     /// a member: handed to the group's participants once the workspace
     /// admitted the device. `None` from a device whose channels keep no
     /// state, which asks as a member later. A request for another group, or
@@ -189,19 +189,11 @@ pub enum Entered {
         /// The workspace's UUID.
         workspace: String,
         /// Its relay workspace.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Its name.
         name: String,
         /// What the person may do there.
-        role: WorkspaceRole,
-        /// The channel group whose keys seal the workspace's shared desktop
-        /// record, as the workspace's governance decides it now: the
-        /// workspace's own group ([`collab_types::workspace_scope`]) while
-        /// everyone in it may read the desktop, or the record's own group.
-        /// The device opens the desktop with those keys before the governance
-        /// that decides it arrives; once it holds the governance, that
-        /// decides. `None` when the governance names neither.
-        desktop_scope: Option<collab_types::ChannelId>,
+        role: Role,
         /// The host's own signed address for the workspace (a
         /// `tilo_workspace_join::TransportHint`, postcard): where a device that
         /// keeps the workspace's state itself (a desktop) takes it in, by the

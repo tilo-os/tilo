@@ -250,19 +250,6 @@ impl Drop for Active {
     }
 }
 
-/// Another relay's shared origin, kept in this relay's: every broadcast the
-/// other relay announces, republished here and only while someone here asks
-/// for it.
-///
-/// The members of one workspace can end up on different relays — the first
-/// relay one device reaches is not the first another reaches — and a member
-/// that landed here hears every member of the workspace, not only those that
-/// landed here too. What crosses is sealed end to end: a bridge copies
-/// objects it cannot open, like any relay between them.
-pub struct Bridge {
-    _watch: crate::Task,
-}
-
 /// A publisher's private ingress origin: the session writes into it, the
 /// relay's forwarder reads from it.
 struct Ingress {
@@ -328,16 +315,6 @@ impl Relay {
     #[must_use]
     pub fn shared(&self) -> moq_net::origin::Producer {
         self.origin.clone()
-    }
-
-    /// Carry what another relay of this workspace serves into this one, so a
-    /// member that reached a different relay is heard here too. `source` is
-    /// what this relay reads from the other one; the bytes are sealed end to
-    /// end, so nothing is opened here. Dropping the answer stops the bridge.
-    pub fn bridge(&self, source: moq_net::origin::Consumer) -> Bridge {
-        Bridge {
-            _watch: crate::Task::spawn(crate::mirror::watch(source, self.origin.clone(), None)),
-        }
     }
 
     pub fn counters(&self) -> CounterSnapshot {
@@ -1049,14 +1026,31 @@ mod status_all_tests {
         }
     }
 
-    #[test]
-    fn one_owner_turn_observes_every_scope() {
-        let owner = OneTurn {
-            observed: AtomicUsize::new(0),
-            names: vec!["call/one".into(), "call/two".into()],
-        };
-        assert!(matches!(scope_status(&owner), AuthorizationStatus::Denied));
-        assert_eq!(owner.observed.load(Ordering::Relaxed), 1);
+    tilo_test_env::scenario! {
+        fn a_sessions_status_is_what_its_owner_says_of_every_scope;
+
+        phase one_owner_turn_observes_every_scope;
+        {
+            let owner = OneTurn {
+                observed: AtomicUsize::new(0),
+                names: vec!["call/one".into(), "call/two".into()],
+            };
+            assert!(matches!(scope_status(&owner), AuthorizationStatus::Denied));
+            assert_eq!(owner.observed.load(Ordering::Relaxed), 1);
+        }
+
+        phase default_aggregate_denies_on_any_namespace_denial;
+        {
+            let mut owner = PerScope {
+                names: vec!["call/one".into(), "call/two".into()],
+                denied: false,
+            };
+            assert!(matches!(scope_status(&owner), AuthorizationStatus::Current));
+            owner.denied = true;
+            assert!(matches!(scope_status(&owner), AuthorizationStatus::Denied));
+            owner.names.clear();
+            assert!(matches!(scope_status(&owner), AuthorizationStatus::Current));
+        }
     }
 
     struct PerScope {
@@ -1079,18 +1073,5 @@ mod status_all_tests {
                 _ => AuthorizationStatus::Current,
             }
         }
-    }
-
-    #[test]
-    fn default_aggregate_denies_on_any_namespace_denial() {
-        let mut owner = PerScope {
-            names: vec!["call/one".into(), "call/two".into()],
-            denied: false,
-        };
-        assert!(matches!(scope_status(&owner), AuthorizationStatus::Current));
-        owner.denied = true;
-        assert!(matches!(scope_status(&owner), AuthorizationStatus::Denied));
-        owner.names.clear();
-        assert!(matches!(scope_status(&owner), AuthorizationStatus::Current));
     }
 }

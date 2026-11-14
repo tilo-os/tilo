@@ -47,6 +47,7 @@ use crate::control::{
 use crate::model::ModelChoice;
 use crate::participant::{AgentParticipant, ParticipantConfig};
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 const STATE_FILE: &str = "agents.json";
 /// The least time between two writes of the state: a burst of changes (an
@@ -349,7 +350,14 @@ fn spawn_agent(
         .ok_or("the agent host has not started")?;
     let workspace = control
         .workspace()
-        .or_else(|| identity.delegation.scope.rooms.first().cloned())
+        .or_else(|| {
+            identity
+                .delegation
+                .scope
+                .workspaces
+                .first()
+                .map(ToString::to_string)
+        })
         .ok_or("the agent has no workspace")?;
     let thread_shared = shared.clone();
     let name = format!("agent-{}", crate::control::agent_id(&identity.delegation));
@@ -406,7 +414,7 @@ fn run_agent(
     let workspace_name = shared
         .link
         .get()
-        .zip(tilo_relay_protocol::room_workspace_id(&workspace).ok())
+        .zip(WorkspaceId::parse(&workspace))
         .and_then(|(link, id)| link.workspace_name(id));
     let session = Arc::clone(
         shared

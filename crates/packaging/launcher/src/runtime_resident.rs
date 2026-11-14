@@ -384,116 +384,6 @@ mod tests {
         std::fs::write(path, bytes).unwrap();
     }
 
-    #[test]
-    fn the_closure_follows_needed_libraries_inside_the_bundle_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let lib = dir.path().join("lib");
-        write(
-            &lib.join(RUNTIME_LIBRARY),
-            &elf_fixture(
-                &["libstd-0123.so", "libc.so.6", "libnot-in-bundle.so.1"],
-                None,
-            ),
-        );
-        write(
-            &lib.join("libstd-0123.so"),
-            &elf_fixture(&["libc.so.6"], None),
-        );
-        write(
-            &lib.join("libc.so.6"),
-            &elf_fixture(&["ld-linux-aarch64.so.1"], None),
-        );
-        write(&lib.join("ld-linux-aarch64.so.1"), &elf_fixture(&[], None));
-        // An engine library sits beside the runtime; no runtime library names it.
-        write(
-            &lib.join("libtilo_typst_engine.so"),
-            &elf_fixture(&[RUNTIME_LIBRARY], None),
-        );
-
-        let names: Vec<String> = bundle_libraries(dir.path())
-            .unwrap()
-            .iter()
-            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                RUNTIME_LIBRARY,
-                "libstd-0123.so",
-                "libc.so.6",
-                "ld-linux-aarch64.so.1"
-            ]
-        );
-    }
-
-    #[test]
-    fn a_bundle_without_the_runtime_library_has_nothing_to_keep() {
-        let dir = tempfile::tempdir().unwrap();
-        write(&dir.path().join("lib/libcef.so"), &elf_fixture(&[], None));
-        assert!(bundle_libraries(dir.path()).unwrap().is_empty());
-        assert!(
-            bundle_libraries(&dir.path().join("absent"))
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_needed_name_with_a_path_is_never_followed_out_of_the_bundle() {
-        let dir = tempfile::tempdir().unwrap();
-        write(
-            &dir.path().join("lib").join(RUNTIME_LIBRARY),
-            &elf_fixture(&["../outside.so", "/usr/lib64/libc.so.6"], None),
-        );
-        write(&dir.path().join("outside.so"), &elf_fixture(&[], None));
-        assert_eq!(bundle_libraries(dir.path()).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn registered_versions_are_the_runtime_references_of_the_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("registry.toml");
-        std::fs::write(
-            &path,
-            r#"
-            [[entry]]
-            id = "so.tilo.calculator"
-            version = "0.1.0"
-            package_id_hex = "00"
-            payload_root = "/x"
-            manifest_path = "/x.pkg/manifest.toml"
-            publisher_key_hex = "00"
-            runtime = "tilo-runtime/2026.07+native.abc"
-
-            [[entry]]
-            id = "so.tilo.notes"
-            version = "0.1.0"
-            package_id_hex = "01"
-            payload_root = "/y"
-            manifest_path = "/y.pkg/manifest.toml"
-            publisher_key_hex = "00"
-            runtime = "tilo-runtime/2026.07+native.abc"
-
-            [[entry]]
-            id = "so.tilo.host"
-            version = "0.1.0"
-            package_id_hex = "02"
-            payload_root = "/z"
-            manifest_path = "/z.pkg/manifest.toml"
-            publisher_key_hex = "00"
-            runtime = "tilo-runtime/../escape"
-            "#,
-        )
-        .unwrap();
-        let registry = package_store::Registry::load(&path).unwrap();
-        assert_eq!(
-            registered_versions(&registry)
-                .into_iter()
-                .collect::<Vec<_>>(),
-            ["2026.07+native.abc"]
-        );
-    }
-
     fn listed(bundle: &Path, paths: &[&str]) -> runtime_bundle::BundleManifest {
         runtime_bundle::BundleManifest {
             version: "1".into(),
@@ -522,130 +412,244 @@ mod tests {
             .is_ok_and(|meta| meta.len() == expected.size)
     }
 
-    #[test]
-    fn a_persons_runtime_is_kept_by_its_identity_not_its_path() {
-        // An ABI-bound version names its payload: the system's bundle of it is the same bytes, kept by
-        // the system service; the person's own runtimes of other versions, and release-only names, are
-        // theirs.
-        let system = tempfile::tempdir().unwrap();
-        let bound = "2026.07+native.0123456789abcdef0123456789abcdef";
-        let theirs = "2026.08+native.fedcba9876543210fedcba9876543210";
-        write(
-            &system
-                .path()
-                .join(bound)
-                .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
-            b"",
-        );
-        write(
-            &system
-                .path()
-                .join("1")
-                .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
-            b"",
-        );
-        let registered: BTreeSet<String> = [bound, theirs, "1"].map(str::to_owned).into();
-        assert_eq!(
-            user_kept_versions(&registered, system.path())
-                .into_iter()
-                .collect::<Vec<_>>(),
-            ["1", theirs]
-        );
+    tilo_test_env::scenario! {
+        fn the_resident_set_is_the_bundles_own_vouched_libraries;
 
-        // Two names for one root hash are kept once; an unverified bundle not at all.
-        let user = tempfile::tempdir().unwrap();
-        for version in ["a", "b", "c"] {
-            let bundle = user.path().join(version);
-            write(&bundle.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME), b"");
+        phase the_closure_follows_needed_libraries_inside_the_bundle_only;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let lib = dir.path().join("lib");
             write(
-                &bundle.join("lib").join(RUNTIME_LIBRARY),
-                &elf_fixture(&[], None),
+                &lib.join(RUNTIME_LIBRARY),
+                &elf_fixture(
+                    &["libstd-0123.so", "libc.so.6", "libnot-in-bundle.so.1"],
+                    None,
+                ),
+            );
+            write(
+                &lib.join("libstd-0123.so"),
+                &elf_fixture(&["libc.so.6"], None),
+            );
+            write(
+                &lib.join("libc.so.6"),
+                &elf_fixture(&["ld-linux-aarch64.so.1"], None),
+            );
+            write(&lib.join("ld-linux-aarch64.so.1"), &elf_fixture(&[], None));
+            // An engine library sits beside the runtime; no runtime library names it.
+            write(
+                &lib.join("libtilo_typst_engine.so"),
+                &elf_fixture(&[RUNTIME_LIBRARY], None),
+            );
+
+            let names: Vec<String> = bundle_libraries(dir.path())
+                .unwrap()
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    RUNTIME_LIBRARY,
+                    "libstd-0123.so",
+                    "libc.so.6",
+                    "ld-linux-aarch64.so.1"
+                ]
             );
         }
-        let versions: BTreeSet<String> = ["a", "b", "c", "absent"].map(str::to_owned).into();
-        let (files, problems) = user_resident_files(
-            &versions,
-            user.path(),
-            |bundle| {
-                if bundle.ends_with("c") {
-                    return Err("a byte differs".to_owned());
-                }
-                Ok(listed(bundle, &[&format!("lib/{RUNTIME_LIBRARY}")]))
-            },
-            listed_size,
-        );
-        assert_eq!(files.len(), 1, "{files:?}");
-        assert!(files[0].path.starts_with(user.path().join("a")));
-        assert_eq!(problems, ["c not verified: a byte differs"]);
-    }
 
-    #[test]
-    fn only_libraries_the_signed_digests_vouch_for_are_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let lib = dir.path().join("lib");
-        write(
-            &lib.join(RUNTIME_LIBRARY),
-            &elf_fixture(&["libstd-0123.so", "libc.so.6", "libnot-listed.so"], None),
-        );
-        write(
-            &lib.join("libstd-0123.so"),
-            &elf_fixture(&["libc.so.6"], None),
-        );
-        write(&lib.join("libc.so.6"), &elf_fixture(&[], None));
-        write(&lib.join("libnot-listed.so"), &elf_fixture(&[], None));
-        let manifest = listed(
-            dir.path(),
-            &[
-                &format!("lib/{RUNTIME_LIBRARY}"),
-                "lib/libstd-0123.so",
-                "lib/libc.so.6",
-            ],
-        );
+        phase a_bundle_without_the_runtime_library_has_nothing_to_keep;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            write(&dir.path().join("lib/libcef.so"), &elf_fixture(&[], None));
+            assert!(bundle_libraries(dir.path()).unwrap().is_empty());
+            assert!(
+                bundle_libraries(&dir.path().join("absent"))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
 
-        let names = |files: &[VerifiedFile]| -> Vec<String> {
-            files
-                .iter()
-                .map(|file| {
-                    file.path
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned()
-                })
-                .collect()
-        };
-        let (kept, unkept) = verified_user_libraries(dir.path(), &manifest, listed_size).unwrap();
-        assert_eq!(
-            names(&kept),
-            [RUNTIME_LIBRARY, "libstd-0123.so", "libc.so.6"]
-        );
-        assert!(unkept.is_empty(), "{unkept:?}");
+        phase a_needed_name_with_a_path_is_never_followed_out_of_the_bundle;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            write(
+                &dir.path().join("lib").join(RUNTIME_LIBRARY),
+                &elf_fixture(&["../outside.so", "/usr/lib64/libc.so.6"], None),
+            );
+            write(&dir.path().join("outside.so"), &elf_fixture(&[], None));
+            assert_eq!(bundle_libraries(dir.path()).unwrap().len(), 1);
+        }
 
-        // A file the digest does not vouch for is left out, and what only it needs is not followed.
-        let (kept, unkept) = verified_user_libraries(dir.path(), &manifest, |file, expected| {
-            listed_size(file, expected) && !expected.path.ends_with("libstd-0123.so")
-        })
-        .unwrap();
-        assert_eq!(names(&kept), [RUNTIME_LIBRARY, "libc.so.6"]);
-        assert_eq!(unkept, [Unkept::NotVouched(lib.join("libstd-0123.so"))]);
+        phase registered_versions_are_the_runtime_references_of_the_entries;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("registry.toml");
+            std::fs::write(
+                &path,
+                r#"
+            [[entry]]
+            id = "so.tilo.calculator"
+            version = "0.1.0"
+            package_id_hex = "00"
+            payload_root = "/x"
+            manifest_path = "/x.pkg/manifest.toml"
+            publisher_key_hex = "00"
+            runtime = "tilo-runtime/2026.07+native.abc"
 
-        // Without a verity signature no digest vouches for anything.
-        let unsigned = runtime_bundle::BundleManifest {
-            verity_signature_hex: None,
-            ..manifest
-        };
-        let (kept, unkept) = verified_user_libraries(dir.path(), &unsigned, listed_size).unwrap();
-        assert!(kept.is_empty());
-        assert_eq!(unkept, [Unkept::NoVeritySignature]);
+            [[entry]]
+            id = "so.tilo.notes"
+            version = "0.1.0"
+            package_id_hex = "01"
+            payload_root = "/y"
+            manifest_path = "/y.pkg/manifest.toml"
+            publisher_key_hex = "00"
+            runtime = "tilo-runtime/2026.07+native.abc"
 
-        // A link is never followed out of the bundle.
-        std::fs::remove_file(lib.join("libc.so.6")).unwrap();
-        std::os::unix::fs::symlink("/usr/lib64/libc.so.6", lib.join("libc.so.6")).unwrap();
-        let (kept, unkept) =
-            verified_user_libraries(dir.path(), &with_verity_signature(&unsigned), listed_size)
-                .unwrap();
-        assert_eq!(names(&kept), [RUNTIME_LIBRARY, "libstd-0123.so"]);
-        assert_eq!(unkept, [Unkept::NotVouched(lib.join("libc.so.6"))]);
+            [[entry]]
+            id = "so.tilo.host"
+            version = "0.1.0"
+            package_id_hex = "02"
+            payload_root = "/z"
+            manifest_path = "/z.pkg/manifest.toml"
+            publisher_key_hex = "00"
+            runtime = "tilo-runtime/../escape"
+            "#,
+            )
+            .unwrap();
+            let registry = package_store::Registry::load(&path).unwrap();
+            assert_eq!(
+                registered_versions(&registry)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                ["2026.07+native.abc"]
+            );
+        }
+
+        phase a_persons_runtime_is_kept_by_its_identity_not_its_path;
+        {
+            // An ABI-bound version names its payload: the system's bundle of it is the same bytes, kept by
+            // the system service; the person's own runtimes of other versions, and release-only names, are
+            // theirs.
+            let system = tempfile::tempdir().unwrap();
+            let bound = "2026.07+native.0123456789abcdef0123456789abcdef";
+            let theirs = "2026.08+native.fedcba9876543210fedcba9876543210";
+            write(
+                &system
+                    .path()
+                    .join(bound)
+                    .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
+                b"",
+            );
+            write(
+                &system
+                    .path()
+                    .join("1")
+                    .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
+                b"",
+            );
+            let registered: BTreeSet<String> = [bound, theirs, "1"].map(str::to_owned).into();
+            assert_eq!(
+                user_kept_versions(&registered, system.path())
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                ["1", theirs]
+            );
+
+            // Two names for one root hash are kept once; an unverified bundle not at all.
+            let user = tempfile::tempdir().unwrap();
+            for version in ["a", "b", "c"] {
+                let bundle = user.path().join(version);
+                write(&bundle.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME), b"");
+                write(
+                    &bundle.join("lib").join(RUNTIME_LIBRARY),
+                    &elf_fixture(&[], None),
+                );
+            }
+            let versions: BTreeSet<String> = ["a", "b", "c", "absent"].map(str::to_owned).into();
+            let (files, problems) = user_resident_files(
+                &versions,
+                user.path(),
+                |bundle| {
+                    if bundle.ends_with("c") {
+                        return Err("a byte differs".to_owned());
+                    }
+                    Ok(listed(bundle, &[&format!("lib/{RUNTIME_LIBRARY}")]))
+                },
+                listed_size,
+            );
+            assert_eq!(files.len(), 1, "{files:?}");
+            assert!(files[0].path.starts_with(user.path().join("a")));
+            assert_eq!(problems, ["c not verified: a byte differs"]);
+        }
+
+        phase only_libraries_the_signed_digests_vouch_for_are_kept;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let lib = dir.path().join("lib");
+            write(
+                &lib.join(RUNTIME_LIBRARY),
+                &elf_fixture(&["libstd-0123.so", "libc.so.6", "libnot-listed.so"], None),
+            );
+            write(
+                &lib.join("libstd-0123.so"),
+                &elf_fixture(&["libc.so.6"], None),
+            );
+            write(&lib.join("libc.so.6"), &elf_fixture(&[], None));
+            write(&lib.join("libnot-listed.so"), &elf_fixture(&[], None));
+            let manifest = listed(
+                dir.path(),
+                &[
+                    &format!("lib/{RUNTIME_LIBRARY}"),
+                    "lib/libstd-0123.so",
+                    "lib/libc.so.6",
+                ],
+            );
+
+            let names = |files: &[VerifiedFile]| -> Vec<String> {
+                files
+                    .iter()
+                    .map(|file| {
+                        file.path
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .collect()
+            };
+            let (kept, unkept) = verified_user_libraries(dir.path(), &manifest, listed_size).unwrap();
+            assert_eq!(
+                names(&kept),
+                [RUNTIME_LIBRARY, "libstd-0123.so", "libc.so.6"]
+            );
+            assert!(unkept.is_empty(), "{unkept:?}");
+
+            // A file the digest does not vouch for is left out, and what only it needs is not followed.
+            let (kept, unkept) = verified_user_libraries(dir.path(), &manifest, |file, expected| {
+                listed_size(file, expected) && !expected.path.ends_with("libstd-0123.so")
+            })
+            .unwrap();
+            assert_eq!(names(&kept), [RUNTIME_LIBRARY, "libc.so.6"]);
+            assert_eq!(unkept, [Unkept::NotVouched(lib.join("libstd-0123.so"))]);
+
+            // Without a verity signature no digest vouches for anything.
+            let unsigned = runtime_bundle::BundleManifest {
+                verity_signature_hex: None,
+                ..manifest
+            };
+            let (kept, unkept) = verified_user_libraries(dir.path(), &unsigned, listed_size).unwrap();
+            assert!(kept.is_empty());
+            assert_eq!(unkept, [Unkept::NoVeritySignature]);
+
+            // A link is never followed out of the bundle.
+            std::fs::remove_file(lib.join("libc.so.6")).unwrap();
+            std::os::unix::fs::symlink("/usr/lib64/libc.so.6", lib.join("libc.so.6")).unwrap();
+            let (kept, unkept) =
+                verified_user_libraries(dir.path(), &with_verity_signature(&unsigned), listed_size)
+                    .unwrap();
+            assert_eq!(names(&kept), [RUNTIME_LIBRARY, "libstd-0123.so"]);
+            assert_eq!(unkept, [Unkept::NotVouched(lib.join("libc.so.6"))]);
+        }
     }
 
     fn with_verity_signature(

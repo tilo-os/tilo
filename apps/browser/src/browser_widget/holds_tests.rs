@@ -394,8 +394,29 @@ fn a_click_on_the_submit_button_is_held_and_the_page_stays() {
     );
 }
 
+/// The departures a window publishes for the person to answer, by the id each
+/// names.
+fn published_departures(widget: &BrowserWidget) -> Vec<String> {
+    page_resource(widget)
+        .actions
+        .into_iter()
+        .filter(|action| action.id == "send-held-request")
+        .filter_map(|action| {
+            Some(
+                action
+                    .params()
+                    .iter()
+                    .find(|param| param.name == "id")?
+                    .choices
+                    .first()?
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
 #[test]
-fn a_hold_one_departure_names_does_not_answer_another() {
+fn departures_are_asked_about_one_at_a_time_and_one_answer_answers_one() {
     let (engine, mut widget, doc, root) =
         page_in(BrowsingMode::Visitor, "https://shop.example/order");
     for (id, origin) in [(4, "https://orders.example"), (5, "https://pay.example")] {
@@ -405,28 +426,47 @@ fn a_hold_one_departure_names_does_not_answer_another() {
         engine.hold(request);
     }
     widget.sync(&doc, &root);
-    // Each departure is answered by the id it is published with: the page
-    // names both, and neither answers the other.
-    let named: Vec<String> = page_resource(&widget)
+    // The oldest is asked about first, and alone: two answers at one address
+    // would leave the window publishing none of its actions.
+    // Each is named by the number the window holds it under, whatever the
+    // engine calls it.
+    assert_eq!(
+        published_departures(&widget),
+        ["1"],
+        "the oldest waits first"
+    );
+    let violations = ui::tilo_actions::validate_surface_contracts(
+        &[widget.published()],
+        &ui::tilo_actions::ActionRegistry::default(),
+    );
+    assert!(
+        !violations
+            .iter()
+            .any(|violation| format!("{violation:?}").contains("duplicate action address")),
+        "the page's actions are each at their own address: {violations:?}"
+    );
+    let keep = page_resource(&widget)
         .actions
         .into_iter()
-        .filter(|action| action.id == "send-held-request")
-        .filter_map(|action| {
-            let id = action
-                .params()
-                .iter()
-                .find(|param| param.name == "id")?
-                .choices
-                .first()?
-                .to_string();
-            Some(id)
-        })
-        .collect();
+        .find(|action| action.id == "keep-held-request")
+        .expect("the person may keep the page as it is")
+        .build_json(serde_json::json!({"id": "1"}).as_object().expect("an id"))
+        .expect("the answer names the held request");
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&keep.payload),
+        )
+        .expect("the answer is accepted");
     assert_eq!(
-        named,
-        ["1", "2"],
-        "each wait names the departure it answers"
+        held_answers(&engine),
+        vec![(4, false)],
+        "the answer is the oldest departure's alone"
     );
+    // The page closes the request it was answered about, and the next is asked.
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 4 });
+    widget.sync(&doc, &root);
+    assert_eq!(published_departures(&widget), ["2"], "then the next one");
 }
 
 #[test]
@@ -999,8 +1039,9 @@ fn published_answers(widget: &BrowserWidget) -> Vec<(String, String)> {
 
 /// The engine counts the requests it holds and the downloads its pages offer
 /// apart, so a request and a download may carry one number. They are two
-/// holds: each is published and answered under a name of its own, and neither
-/// an answer nor an ending meant for one reaches the other.
+/// holds: each is published and answered under a name of its own, one at a
+/// time and the older first, and neither an answer nor an ending meant for one
+/// reaches the other.
 #[test]
 fn a_request_and_a_download_of_one_number_are_two_holds() {
     let (engine, mut widget, doc, root) =
@@ -1015,19 +1056,24 @@ fn a_request_and_a_download_of_one_number_are_two_holds() {
         name: "return.pdf".into(),
     });
     widget.sync(&doc, &root);
-    let waiting = published_answers(&widget);
-    assert_eq!(waiting.len(), 2, "both wait for the person: {waiting:?}");
-    let named = |what: &str| -> u32 {
-        waiting
-            .iter()
-            .find(|(_, label)| label.contains(what))
-            .unwrap_or_else(|| panic!("{what} waits: {waiting:?}"))
-            .0
-            .parse()
-            .expect("a hold is named by a number")
+    assert_eq!(
+        widget.holds.waiting().count(),
+        2,
+        "both wait for the person"
+    );
+    // The hold the page asks about now, which says `what` leaves, by the
+    // number it states.
+    let named = |widget: &BrowserWidget, what: &str| -> u32 {
+        let waiting = published_answers(widget);
+        assert_eq!(
+            waiting.len(),
+            1,
+            "one is asked about at a time: {waiting:?}"
+        );
+        assert!(waiting[0].1.contains(what), "{what} waits: {waiting:?}");
+        waiting[0].0.parse().expect("a hold is named by a number")
     };
-    let (posted, offered) = (named("orders.example"), named("return.pdf"));
-    assert_ne!(posted, offered, "one name never answers two holds");
+    let posted = named(&widget, "orders.example");
     let downloads_answered = |engine: &TestEngine| {
         engine
             .commands()
@@ -1046,6 +1092,11 @@ fn a_request_and_a_download_of_one_number_are_two_holds() {
         .expect("the answer is accepted");
     assert_eq!(held_answers(&engine), vec![(1, false)]);
     assert_eq!(downloads_answered(&engine), 0, "the download still waits");
+    // The request is answered, so the download is asked about now, under a
+    // name of its own.
+    widget.sync(&doc, &root);
+    let offered = named(&widget, "return.pdf");
+    assert_ne!(posted, offered, "one name never answers two holds");
     // The engine says the request is over: the download of the same number
     // is not over with it.
     engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
@@ -1233,9 +1284,10 @@ fn stated(action: &ui::tilo_actions::ActionSpec, name: &str) -> Option<String> {
 
 /// A host that holds this window for the person reads each published hold by
 /// the number stated on it and by what it says leaves, and answers with that
-/// number. A request and a download the engine gave one number are two rows:
-/// each states its own number beside its own page, kind and destination, and
-/// the number stated beside the download answers the download.
+/// number. A request and a download the engine gave one number are two rows,
+/// asked about one at a time and the older first: each states its own number
+/// beside its own page, kind and destination, and the number stated beside
+/// the download answers the download.
 #[test]
 fn each_published_hold_states_its_own_number_beside_what_leaves() {
     let (engine, mut widget, doc, root) =
@@ -1261,50 +1313,18 @@ fn each_published_hold_states_its_own_number_beside_what_leaves() {
             .collect()
     };
     let said = |row: [&str; 5]| row.map(|value| Some(value.to_owned()));
-    assert_eq!(
-        rows(&widget),
-        [
-            said([
-                "1",
-                "request",
-                "https://shop.example",
-                "POST",
-                "https://orders.example"
-            ]),
-            said([
-                "2",
-                "download",
-                "https://shop.example",
-                "GET",
-                "https://files.example"
-            ]),
-        ],
-        "each hold is one row: its own number, and what leaves"
-    );
-    // The host answers with the number stated beside the download.
-    let send = answer_payload(&widget, "send-held-request", 2);
-    widget
-        .admit(
-            ui::tilo_actions::InvocationId::new(),
-            effect_operation(&send),
-        )
-        .expect("the answer is accepted");
-    assert!(
-        engine.commands().into_iter().any(|command| matches!(
-            command,
-            WebViewCommand::DownloadDecision {
-                id: 1,
-                allow: true,
-                ..
-            }
-        )),
-        "the download is saved"
-    );
-    assert!(
-        held_answers(&engine).is_empty(),
-        "and the request of the same engine number still waits"
-    );
-    widget.sync(&doc, &root);
+    let download_saved = |engine: &TestEngine| {
+        engine.commands().into_iter().any(|command| {
+            matches!(
+                command,
+                WebViewCommand::DownloadDecision {
+                    id: 1,
+                    allow: true,
+                    ..
+                }
+            )
+        })
+    };
     assert_eq!(
         rows(&widget),
         [said([
@@ -1314,8 +1334,50 @@ fn each_published_hold_states_its_own_number_beside_what_leaves() {
             "POST",
             "https://orders.example"
         ])],
-        "which the page goes on publishing as it was"
+        "the older hold is one row: its own number, and what leaves"
     );
+    // The host answers with the number stated beside the request: the page
+    // stays as it is.
+    let keep = answer_payload(&widget, "keep-held-request", 1);
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&keep),
+        )
+        .expect("the answer is accepted");
+    assert_eq!(held_answers(&engine), vec![(1, false)]);
+    assert!(
+        !download_saved(&engine),
+        "and the download of the same engine number still waits"
+    );
+    widget.sync(&doc, &root);
+    assert_eq!(
+        rows(&widget),
+        [said([
+            "2",
+            "download",
+            "https://shop.example",
+            "GET",
+            "https://files.example"
+        ])],
+        "then the download is one row: a number of its own, and what leaves"
+    );
+    // The host answers with the number stated beside the download.
+    let send = answer_payload(&widget, "send-held-request", 2);
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&send),
+        )
+        .expect("the answer is accepted");
+    assert!(download_saved(&engine), "the download is saved");
+    assert_eq!(
+        held_answers(&engine),
+        vec![(1, false)],
+        "and the request of the same engine number is not answered again"
+    );
+    widget.sync(&doc, &root);
+    assert!(rows(&widget).is_empty(), "nothing waits any more");
 }
 
 /// The filled page is kept as content for a hold that waits, so the person

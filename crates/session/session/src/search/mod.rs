@@ -261,7 +261,7 @@ struct PendingFind {
     /// Where the answer goes, and the pass it must be answered by: the caller has its own
     /// deadline, and a source that never answers is cut off with what is in.
     answer: Option<FindAnswer>,
-    due: std::time::Instant,
+    due: ui::time::Instant,
 }
 
 /// Who a find was asked for, and so what its hits become when they are in.
@@ -712,9 +712,9 @@ impl SessionSearch {
         let stream = tilo_desktop_search::search_stream(needle, &refs, 0, &workers, &*used);
         // What is in already answers at once; what still works comes on a later pass.
         if stream.pending() {
-            let due = std::time::Instant::now()
+            let due = ui::time::now()
                 .checked_add(within)
-                .unwrap_or_else(std::time::Instant::now);
+                .unwrap_or_else(ui::time::now);
             self.pending.borrow_mut().push(PendingFind {
                 stream,
                 sources,
@@ -747,7 +747,7 @@ impl SessionSearch {
                 .map(|source| source as &dyn Source)
                 .collect();
             let _ = find.stream.resume(&refs, &find.workers, &*find.used);
-            let overdue = std::time::Instant::now() >= find.due;
+            let overdue = ui::time::now() >= find.due;
             if find.stream.pending() && !overdue {
                 kept.push(find);
                 continue;
@@ -1336,9 +1336,10 @@ impl ResourceSearch for SearchThrough {
     ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionHostError>> {
         // An agent finds what the workspace it works in holds: the search is the person's, over
         // every workspace they see, and an agent is in one.
-        let workspace = match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::Person(_) => None,
-            _ => match caller.workspace() {
+        let workspace = if caller.acting().is_person() {
+            None
+        } else {
+            match caller.workspace() {
                 Some(workspace) => Some(workspace.to_owned()),
                 None => {
                     return tilo_actions::remote::Pending::ready(Err(
@@ -1349,7 +1350,7 @@ impl ResourceSearch for SearchThrough {
                         },
                     ));
                 }
-            },
+            }
         };
         let (done, answer) = tilo_actions::remote::pending();
         self.ask(needle.trim().to_owned(), workspace, done);

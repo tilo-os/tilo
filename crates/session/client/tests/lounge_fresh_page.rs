@@ -38,7 +38,7 @@
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
-use tilo_session_client::{Cmd, Event, Link, Outbox};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use std::time::Duration;
 use tilo_relay_client::https::HttpFuture;
@@ -50,7 +50,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
 use tilo_relay_client::invite::guest_certificate;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
-use tilo_relay_protocol::workspaces::{WorkspaceRole, WorkspacesReply, WorkspacesRequest};
+use tilo_relay_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -314,7 +314,7 @@ impl Lounge {
             user_public_key: self.owner_root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
             device_label: "the Lounge's operator".into(),
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],
@@ -345,7 +345,7 @@ impl Lounge {
                 // a request of its own: the id names this ask, not a fixed
                 // number two asks would share.
                 request_id: *blake3::hash(&to.root.verifying_key().to_bytes()).as_bytes(),
-                role: WorkspaceRole::Editor,
+                role: Role::Editor,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: Some("The Lounge".into()),
                 wait_list_entry: None,
@@ -513,7 +513,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     println!("the host minted an invitation for the visitor");
 
     let page = fresh_page(&lounge, &visitor, &invitation).await;
-    let room_id = tilo_relay_protocol::room_workspace_id(&lounge.workspace).unwrap();
+    let room_id = tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap();
     println!("the fresh page joined the Lounge");
 
     let desktop = DocumentRoute {
@@ -538,7 +538,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
             .into_iter()
             .all(|(app, record)| {
                 channels.lines().any(|line| {
-                    line.starts_with(&format!("route {app}/{record} ")) && line.contains(": ready;")
+                    line.starts_with(&format!("route {app}/{record}:")) && line.contains(": ready;")
                 })
             });
         if ready || tokio::time::Instant::now() >= deadline {
@@ -548,7 +548,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     };
     println!("--- the page's channels:\n{channels}");
     for (app, record) in [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)] {
-        let prefix = format!("route {app}/{record} ");
+        let prefix = format!("route {app}/{record}:");
         let line = channels
             .lines()
             .find(|line| line.starts_with(&prefix))
@@ -607,6 +607,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     let other = person("Second visitor").await;
     let second_invitation = lounge.invite(&other);
     let second = fresh_page(&lounge, &other, &second_invitation).await;
+    let second_heard = second.events();
     second.send(Cmd::OpenRoute(desktop.clone())).unwrap();
     let first_device = visitor.cert.device_public_key;
     let second_device = other.cert.device_public_key;
@@ -636,7 +637,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
             )],
         ))
         .unwrap();
-        let (frames, people) = presence_frames(&second, 1).await;
+        let (frames, people) = presence_frames(&second_heard, 1).await;
         live_seen = live_seen.saturating_add(frames.len());
         live_peers.extend(people);
         heard.extend(frames);
@@ -722,6 +723,7 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     // The first page says where its pointer is, once, and the second page's
     // board draws it: what a person's page does when they move the pointer,
     // measured from the word leaving the first page to the second drawing it.
+    let other_heard = other.events();
     let started = std::time::Instant::now();
     page.send(Cmd::Presence(
         workspace_id,
@@ -729,7 +731,7 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     ))
     .unwrap();
     loop {
-        gather_presence(&other, &mut heard, &mut live_peers);
+        gather_presence(&other_heard, &mut heard, &mut live_peers);
         if let Some(found) = pointer_on(
             &heard,
             second.cert.device_public_key,
@@ -767,6 +769,104 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     page.close();
 }
 
+/// How much more an agent's bridge may hold after a busy workspace's traffic than before it.
+const BRIDGE_GROWTH: isize = 1 << 20;
+/// The pointer moves the person's page says while the bridge is in the workspace: eleven minutes
+/// of a tab whose pointer moves thirty times a second.
+const POINTER_MOVES: u32 = 20_000;
+/// The pointer moves that fill the plane's window of recent groups first, at the rate this test
+/// says them (about a thousand a second): ten seconds of them.
+const WINDOW_MOVES: u32 = 10_000;
+
+/// An agent's bridge (`tilo mcp`) is a device of the person in their workspace, asking the host's
+/// actions through its session, while the person's page in the same workspace says where its
+/// pointer is many times a second. The bridge reads none of that presence, so it keeps none of
+/// it: its memory stays flat however long the page is open, rather than growing with every frame
+/// the workspace fans out to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
+    let lounge = Lounge::fresh();
+    let person_tab = person("The person").await;
+    let agent = person("The agent's computer").await;
+    let tab_invitation = lounge.invite(&person_tab);
+    let agent_invitation = lounge.invite(&agent);
+    let tab = fresh_page(&lounge, &person_tab, &tab_invitation).await;
+    let bridge = fresh_page(&lounge, &agent, &agent_invitation).await;
+    let workspace_id = room_id(&lounge);
+    wait_for_plane(&tab).await;
+    wait_for_plane(&bridge).await;
+    // What `tilo mcp` holds once it entered: the device's session and the host's actions asked
+    // through it, and nothing that reads the workspace's live frames.
+    let actions = tilo_session_client::device::Device::of(
+        bridge.clone(),
+        agent.cert.clone(),
+        lounge.host_cert.clone(),
+        "Claude Code",
+    )
+    .actions(workspace_id);
+    // Only to count that the frames reach the bridge: a reader that keeps nothing.
+    let arriving = bridge.events_where(|event| {
+        matches!(
+            event,
+            Event::LivePlane {
+                track: tilo_live::live::Track::Presence,
+                ..
+            }
+        )
+    });
+    let mut heard = 0_usize;
+    let say = |n: u32| {
+        let at = f32::from(u16::try_from(n % 1000).unwrap_or(0));
+        tab.send(Cmd::Presence(
+            workspace_id,
+            vec![Presence::pointing(&lounge.workspace, 0x41, at, at / 2.0)],
+        ))
+        .unwrap();
+    };
+    // The plane keeps the groups of the last few seconds for a reader that joins late (moq's
+    // `max_age`): the bridge is measured once that window is full, as it is after the page has
+    // been open a while.
+    for n in 0..WINDOW_MOVES {
+        say(n);
+        if n % 50 == 0 {
+            heard += arriving.drain().len();
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    heard += arriving.drain().len();
+    let heard_before = heard;
+    let before = tilo_test_env::held::bytes();
+    for n in 0..POINTER_MOVES {
+        say(n);
+        if n % 50 == 0 {
+            heard += arriving.drain().len();
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    heard += arriving.drain().len();
+    let after = tilo_test_env::held::bytes();
+    let grown = after - before;
+    let heard = heard - heard_before;
+    println!(
+        "the bridge heard {heard} presence frame(s); the process holds {before} bytes before and \
+         {after} after ({grown} more)"
+    );
+    // A bridge that kept each frame would hold at least an event per frame: the bound must be
+    // well under that, or it would not tell the two apart.
+    let kept_each = isize::try_from(heard * std::mem::size_of::<Event>()).unwrap_or(isize::MAX);
+    assert!(
+        kept_each > BRIDGE_GROWTH * 2,
+        "too few frames reached the bridge ({heard}) to tell keeping them from not"
+    );
+    assert!(
+        grown < BRIDGE_GROWTH,
+        "the bridge grew {grown} bytes over {heard} presence frames it never reads"
+    );
+    drop(actions);
+    bridge.close();
+    tab.close();
+}
+
 /// Wait until `page` is in the workspace's live plane: the plane reports the
 /// devices it reads and the objects it heard, which it lists only once joined.
 async fn wait_for_plane(page: &Link) {
@@ -788,8 +888,8 @@ async fn wait_for_plane(page: &Link) {
 }
 
 /// The workspace's id as a page numbers it.
-fn room_id(lounge: &Lounge) -> u64 {
-    tilo_relay_protocol::room_workspace_id(&lounge.workspace).unwrap()
+fn room_id(lounge: &Lounge) -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap()
 }
 
 /// Every presence frame `page` heard over `secs`, and the devices that said
@@ -799,7 +899,7 @@ fn room_id(lounge: &Lounge) -> u64 {
 /// ([`Event::LivePlane`] with `Track::Presence`): the plane opened the
 /// scope's seal, and the body is the [`Presence`] frame the device said.
 async fn presence_frames(
-    page: &Link,
+    page: &Events,
     secs: u64,
 ) -> (
     Vec<([u8; 32], Vec<u8>)>,
@@ -820,7 +920,7 @@ async fn presence_frames(
 /// Take every presence frame `page` holds now into `frames` (with its sender)
 /// and `people`, and report whether it held any.
 fn gather_presence(
-    page: &Link,
+    page: &Events,
     frames: &mut Vec<([u8; 32], Vec<u8>)>,
     people: &mut std::collections::BTreeSet<[u8; 32]>,
 ) -> bool {

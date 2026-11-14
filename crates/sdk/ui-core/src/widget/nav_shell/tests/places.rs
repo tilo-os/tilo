@@ -34,60 +34,109 @@ fn go_back(h: &mut FrameHarness, input: BackInput) {
     settle(h, W, H);
 }
 
-/// The places of a phone-wide window stand in front of the list the window opened on: their own
-/// screen has one navigation affordance, Back, at the leading corner of its header, and it
-/// takes the person to that list — its title starts after the chip rather than under it.
-#[test]
-fn a_phone_places_screen_goes_back_to_the_list_it_covered() {
-    let _settled = crate::motion::testing::settled();
-    for input in [BackInput::Chip, BackInput::Escape, BackInput::Gesture] {
-        let mut h = harness(files_shell(), W, H, Theme::light());
-        settle(&mut h, W, H);
-        assert_eq!(
-            h.root::<NavShell>().front_pane(),
-            NavPane::Content,
-            "{input:?}: the window opens on its folder"
+tilo_test_env::scenario! {
+    fn the_places_screen_goes_back_to_where_the_person_was;
+
+    // A window whose toolbar is its bar's keeps Back there: the places' screen offers it in the bar
+    // and the sidebar's toggle stands aside for it, so the one leading control is the way back.
+    phase a_places_screen_in_the_window_bar_offers_back_alone;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut h = harness(
+            NavShell::new()
+                .content_kind(ContentKind::Reading)
+                .sidebar(Probe::boxed("sidebar").0)
+                .overview(Probe::boxed("overview").0)
+                .content(Probe::boxed("content").0)
+                .with_window_toolbar(),
+            W,
+            H,
+            Theme::light(),
         );
+        settle(&mut h, W, H);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+        let toolbar = h.root::<NavShell>().window_toolbar();
+        assert_eq!(toolbar.sidebar, Some(false), "the list offers the places");
+
         h.root_mut::<NavShell>().show(NavPane::Sidebar);
         settle(&mut h, W, H);
-        let shell = h.root::<NavShell>();
-        assert_eq!(shell.front_pane(), NavPane::Sidebar, "{input:?}");
-        assert!(shell.can_go_back(), "{input:?}: the places go back");
-        assert!(
-            rect_named(&h, "sidebar").is_some(),
-            "{input:?}: the places are the screen"
+        let toolbar = h.root::<NavShell>().window_toolbar();
+        assert_eq!(
+            toolbar.sidebar, None,
+            "the places hold no toggle: {toolbar:?}"
         );
         assert_eq!(
-            rect_named(&h, "nav-shell-sidebar"),
-            None,
-            "{input:?}: the places hold no second way to navigate"
+            toolbar.leading.len(),
+            1,
+            "one leading control, the way back: {toolbar:?}"
         );
-        let title = h
-            .root::<NavShell>()
-            .part(Part::Title(Column::Sidebar))
-            .map(Widget::get_rect)
-            .unwrap_or_else(|| panic!("{input:?}: the places' title"));
-        let back = geometry(&h).back;
-        assert!(
-            title.x0 >= back.x1,
-            "{input:?}: the title starts after the chip, not under it: {title:?} against {back:?}"
-        );
-
-        go_back(&mut h, input);
+        let event = crate::window_toolbar::ToolbarEvent::Action {
+            id: WINDOW_BACK.into(),
+        };
+        assert!(h.root_mut::<NavShell>().window_toolbar_event(&event));
+        settle(&mut h, W, H);
         assert_eq!(
             h.root::<NavShell>().front_pane(),
-            NavPane::Content,
-            "{input:?}: back reaches the folder the places covered"
+            NavPane::Overview,
+            "the bar's Back returns to the list the places covered"
         );
-        assert_eq!(
-            geometry(&h).back,
-            Rect::ZERO,
-            "{input:?}: the folder is where the window opened, with nothing to go back to"
-        );
-        assert!(
-            rect_named(&h, "nav-shell-sidebar").is_some(),
-            "{input:?}: it holds the way to the places again"
-        );
+    }
+
+    // The places of a phone-wide window stand in front of the list the window opened on: their own
+    // screen has one navigation affordance, Back, at the leading corner of its header, and it
+    // takes the person to that list — its title starts after the chip rather than under it.
+    phase a_phone_places_screen_goes_back_to_the_list_it_covered;
+    {
+        let _settled = crate::motion::testing::settled();
+        for input in [BackInput::Chip, BackInput::Escape, BackInput::Gesture] {
+            let mut h = harness(files_shell(), W, H, Theme::light());
+            settle(&mut h, W, H);
+            assert_eq!(
+                h.root::<NavShell>().front_pane(),
+                NavPane::Content,
+                "{input:?}: the window opens on its folder"
+            );
+            h.root_mut::<NavShell>().show(NavPane::Sidebar);
+            settle(&mut h, W, H);
+            let shell = h.root::<NavShell>();
+            assert_eq!(shell.front_pane(), NavPane::Sidebar, "{input:?}");
+            assert!(shell.can_go_back(), "{input:?}: the places go back");
+            assert!(
+                rect_named(&h, "sidebar").is_some(),
+                "{input:?}: the places are the screen"
+            );
+            assert_eq!(
+                rect_named(&h, "nav-shell-sidebar"),
+                None,
+                "{input:?}: the places hold no second way to navigate"
+            );
+            let title = h
+                .root::<NavShell>()
+                .part(Part::Title(Column::Sidebar))
+                .map(Widget::get_rect)
+                .unwrap_or_else(|| panic!("{input:?}: the places' title"));
+            let back = geometry(&h).back;
+            assert!(
+                title.x0 >= back.x1,
+                "{input:?}: the title starts after the chip, not under it: {title:?} against {back:?}"
+            );
+
+            go_back(&mut h, input);
+            assert_eq!(
+                h.root::<NavShell>().front_pane(),
+                NavPane::Content,
+                "{input:?}: back reaches the folder the places covered"
+            );
+            assert_eq!(
+                geometry(&h).back,
+                Rect::ZERO,
+                "{input:?}: the folder is where the window opened, with nothing to go back to"
+            );
+            assert!(
+                rect_named(&h, "nav-shell-sidebar").is_some(),
+                "{input:?}: it holds the way to the places again"
+            );
+        }
     }
 }
 
@@ -124,51 +173,6 @@ fn the_places_go_back_to_the_screen_the_person_last_worked_in() {
         h.root::<NavShell>().front_pane(),
         NavPane::Content,
         "back reaches the message, the screen the places covered"
-    );
-}
-
-/// A window whose toolbar is its bar's keeps Back there: the places' screen offers it in the bar
-/// and the sidebar's toggle stands aside for it, so the one leading control is the way back.
-#[test]
-fn a_places_screen_in_the_window_bar_offers_back_alone() {
-    let _settled = crate::motion::testing::settled();
-    let mut h = harness(
-        NavShell::new()
-            .content_kind(ContentKind::Reading)
-            .sidebar(Probe::boxed("sidebar").0)
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0)
-            .with_window_toolbar(),
-        W,
-        H,
-        Theme::light(),
-    );
-    settle(&mut h, W, H);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    let toolbar = h.root::<NavShell>().window_toolbar();
-    assert_eq!(toolbar.sidebar, Some(false), "the list offers the places");
-
-    h.root_mut::<NavShell>().show(NavPane::Sidebar);
-    settle(&mut h, W, H);
-    let toolbar = h.root::<NavShell>().window_toolbar();
-    assert_eq!(
-        toolbar.sidebar, None,
-        "the places hold no toggle: {toolbar:?}"
-    );
-    assert_eq!(
-        toolbar.leading.len(),
-        1,
-        "one leading control, the way back: {toolbar:?}"
-    );
-    let event = crate::window_toolbar::ToolbarEvent::Action {
-        id: WINDOW_BACK.into(),
-    };
-    assert!(h.root_mut::<NavShell>().window_toolbar_event(&event));
-    settle(&mut h, W, H);
-    assert_eq!(
-        h.root::<NavShell>().front_pane(),
-        NavPane::Overview,
-        "the bar's Back returns to the list the places covered"
     );
 }
 

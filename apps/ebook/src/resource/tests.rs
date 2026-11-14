@@ -112,292 +112,6 @@ fn find(library: &Replica<Ebook>, test: impl Fn(&Annotation) -> bool) -> Annotat
         .expect("the annotation is there")
 }
 
-/// The library is named by the books on its shelf, and reads right: one is
-/// "1 book", never "1 books".
-#[test]
-fn the_library_is_named_by_its_shelf() {
-    let mut library = Replica::<Ebook>::new();
-    let name = |library: &Replica<Ebook>| {
-        <EbookShell as ui::framework::ResourceApp>::label(&state(library))
-    };
-    assert_eq!(name(&library), "Books");
-    apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
-    assert_eq!(name(&library), "1 book");
-    let other = "book:fedcba9876543210fedcba9876543210";
-    apply(&mut library, shelve(&row(other, "B"))).unwrap();
-    assert_eq!(name(&library), "2 books");
-}
-
-/// The shelf: a book joins once under its content id, refreshing its row
-/// keeps when it was added, and leaving the shelf keeps what was read and
-/// marked in it.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each phase and its fixture visible"
-)]
-fn books_join_and_leave_the_shelf_under_their_content_ids() {
-    let mut library = Replica::<Ebook>::new();
-    library.set_now_ms(1_000);
-    apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
-    let shelf = state(&library).entries;
-    assert_eq!(shelf.len(), 1);
-    let first = shelf.values().next().unwrap().clone();
-    assert_eq!((first.title.as_str(), first.added), ("Novel", 1_000));
-
-    library.set_now_ms(9_999);
-    apply(
-        &mut library,
-        shelve(&LibraryEntry {
-            shared: true,
-            ..row(BOOK, "Novel, revised")
-        }),
-    )
-    .unwrap();
-    let shelf = state(&library).entries;
-    assert_eq!(shelf.len(), 1, "the same content id updates in place");
-    let again = shelf.values().next().unwrap();
-    assert!(again.shared, "shared availability is replicated");
-    assert_eq!(again.title, "Novel, revised");
-    assert_eq!(
-        again.added, 1_000,
-        "added time is preserved across a re-import"
-    );
-    apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
-    assert!(
-        state(&library).entry(BOOK).unwrap().shared,
-        "a later import without the workspace does not withdraw it"
-    );
-
-    assert!(
-        apply(&mut library, shelve(&row("not-a-book", "Bad"))).is_err(),
-        "a row names its book by book: and its content hash"
-    );
-    let content = "f".repeat(64);
-    assert!(
-        apply(
-            &mut library,
-            shelve(&LibraryEntry {
-                content: LibraryEntry::stored(&content, 9).unwrap(),
-                ..row(BOOK, "Novel")
-            })
-        )
-        .is_err(),
-        "content that is not this book's is refused"
-    );
-    let content = format!("0123456789abcdef0123456789abcdef{}", "0".repeat(32));
-    apply(
-        &mut library,
-        shelve(&LibraryEntry {
-            content: LibraryEntry::stored(&content, 9).unwrap(),
-            ..row(BOOK, "Novel")
-        }),
-    )
-    .unwrap();
-    assert_eq!(
-        state(&library)
-            .entry(BOOK)
-            .unwrap()
-            .content_hash()
-            .as_deref(),
-        Some(content.as_str()),
-        "the row names the bytes a content store keeps"
-    );
-
-    apply(
-        &mut library,
-        Ebook::RECORD_PROGRESS.with(books::RecordProgress {
-            book: BOOK.into(),
-            chapter: 2,
-            block: 5,
-            fraction: 0.42,
-            opened: true,
-        }),
-    )
-    .unwrap();
-    apply(
-        &mut library,
-        Ebook::RECORD_PROGRESS.with(books::RecordProgress {
-            book: BOOK.into(),
-            chapter: 2,
-            block: 7,
-            fraction: 0.5,
-            opened: false,
-        }),
-    )
-    .unwrap();
-    assert_eq!(
-        state(&library).progress_of(BOOK),
-        Progress {
-            chapter: 2,
-            block: 7,
-            fraction: 0.5,
-            opened: 9_999,
-        },
-        "reading on keeps when the book was opened"
-    );
-    assert_eq!(
-        state(&library).progress_of("book:nope"),
-        Progress::default()
-    );
-
-    apply(&mut library, note(1, "kept")).unwrap();
-    let remove = Ebook::REMOVE_FROM_LIBRARY.with(books::RemoveFromLibrary { book: BOOK.into() });
-    assert!(
-        library.apply(remove.clone()).is_err(),
-        "removing a book asks first: Undo cannot give back this device's access to its file"
-    );
-    library.apply_confirmed(remove).unwrap();
-    let after = state(&library);
-    assert!(after.entries.is_empty(), "removed from the shelf");
-    assert_eq!(
-        after.progress_of(BOOK).chapter,
-        2,
-        "where the reader was stays"
-    );
-    assert_eq!(
-        after.annotations_for(BOOK).len(),
-        1,
-        "what was marked stays"
-    );
-    let bytes = library.save();
-    assert!(
-        !String::from_utf8_lossy(&bytes).contains("/home/reader/"),
-        "a source path never enters the library"
-    );
-}
-
-/// Reading settings, shelf preferences, fonts and schemes are fields,
-/// edited at their paths and held to their invariants.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each phase and its fixture visible"
-)]
-fn settings_fonts_and_schemes_are_edited_at_their_paths() {
-    let mut library = Replica::<Ebook>::new();
-    let fresh = state(&library);
-    assert_eq!(fresh.settings.mode, ReadMode::Paged, "readers open paged");
-    assert_eq!(
-        fresh.settings.composition,
-        CompositionStyle::Ragged,
-        "ragged until a reader asks for justified"
-    );
-    assert!(
-        fresh
-            .fonts
-            .values()
-            .any(|font| font.kind == FontKind::Serif),
-        "a new library has the built-in fonts"
-    );
-    assert_eq!(fresh.schemes.len(), crate::model::default_schemes().len());
-
-    let settings = Ebook::paths().settings;
-    let wanted = Settings {
-        font_scale: 1.3,
-        line_spacing: 1.45,
-        font_id: "serif".into(),
-        theme: ReadTheme::Dark,
-        scheme_id: "midnight".into(),
-        mode: ReadMode::TwoUp,
-        composition: CompositionStyle::Ragged,
-    };
-    for change in settings.path().edits(&fresh.settings, &wanted) {
-        edit(&mut library, &change).unwrap();
-    }
-    assert_eq!(state(&library).settings, wanted);
-    assert!(
-        edit(&mut library, &settings.font_scale.set(9.0)).is_err(),
-        "the text size stays within its bounds, however it is set"
-    );
-    assert!(edit(&mut library, &settings.line_spacing.set(f32::NAN)).is_err());
-
-    let prefs = Ebook::paths().prefs;
-    edit(&mut library, &prefs.sort.set(LibrarySort::Recent)).unwrap();
-    edit(&mut library, &prefs.hide_read.set(true)).unwrap();
-    assert_eq!(
-        state(&library).prefs,
-        LibraryPrefs {
-            sort: LibrarySort::Recent,
-            hide_read: true,
-        }
-    );
-
-    let literata = FontEntry::new(
-        "u1",
-        FontKind::Named("Literata".into()),
-        "Literata",
-        1.1,
-        true,
-    );
-    let fonts = Ebook::paths().fonts;
-    edit(
-        &mut library,
-        &fonts.insert_as(&Id::from_raw("u1"), fresh.fonts.len(), &literata),
-    )
-    .unwrap();
-    let u1 = fonts.item(&Id::from_raw("u1"));
-    edit(&mut library, &u1.name.replace("Book")).unwrap();
-    edit(&mut library, &u1.shown.set(false)).unwrap();
-    assert!(edit(&mut library, &u1.size_mult.set(3.0)).is_err());
-    assert!(
-        edit(&mut library, &u1.id.replace("other")).is_err(),
-        "a font's id is the key it is stored under"
-    );
-    let stored = state(&library).fonts.values().last().unwrap().clone();
-    assert_eq!(
-        (stored.name.as_str(), stored.shown, stored.kind.clone()),
-        ("Book", false, FontKind::Named("Literata".into()))
-    );
-    edit(&mut library, &settings.font_id.replace("u1")).unwrap();
-    edit(
-        &mut library,
-        &Ebook::paths().default_font.set(Atom("u1".into())),
-    )
-    .unwrap();
-    library
-        .apply_confirmed(Ebook::REMOVE_FONT.with(books::RemoveFont { font: "u1".into() }))
-        .unwrap();
-    let after = state(&library);
-    assert!(after.fonts.values().all(|font| font.id != "u1"));
-    assert!(
-        after.settings.font_id.is_empty() && after.default_font.0.is_empty(),
-        "nothing keeps choosing a removed font"
-    );
-
-    let ocean = ColorScheme::from_bg("u1", "Ocean", [0x0A, 0x22, 0x33]);
-    let schemes = Ebook::paths().schemes;
-    edit(
-        &mut library,
-        &schemes.insert_as(&Id::from_raw("u1"), after.schemes.len(), &ocean),
-    )
-    .unwrap();
-    edit(
-        &mut library,
-        &schemes.item(&Id::from_raw("light")).enabled.set(false),
-    )
-    .unwrap();
-    let stored = state(&library);
-    assert!(!stored.schemes.get(&Id::from_raw("light")).unwrap().enabled);
-    let custom = stored.schemes.get(&Id::from_raw("u1")).unwrap();
-    assert_eq!(custom.page, [0x0A, 0x22, 0x33]);
-    assert!(custom.dark && !custom.builtin);
-    assert!(
-        library
-            .apply_confirmed(Ebook::DELETE_SCHEME.with(books::DeleteScheme {
-                scheme: "light".into(),
-            }))
-            .is_err(),
-        "a built-in scheme is turned off, never deleted"
-    );
-    library
-        .apply_confirmed(Ebook::DELETE_SCHEME.with(books::DeleteScheme {
-            scheme: "u1".into(),
-        }))
-        .unwrap();
-    assert!(state(&library).schemes.get(&Id::from_raw("u1")).is_none());
-}
-
 /// A built-in's name is read where a person reads it: one shared record names
 /// its faces and pages in each member's language, and a name someone gave one
 /// travels with the record instead.
@@ -476,328 +190,8 @@ fn built_in_names_read_in_each_members_language() {
     assert_eq!(font(&renamed, "serif").title(), "Book face");
 }
 
-/// Annotation verbs: a highlight goes with its comments, what is gone is
-/// refused, and a malformed or oversized change is refused whole.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each phase and its fixture visible"
-)]
-fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
-    let (mut library, group) = annotated();
-    assert_eq!(
-        marks(&library).len(),
-        5,
-        "highlight + 2 comments + note + bookmark"
-    );
-    let comments: Vec<String> = marks(&library)
-        .into_iter()
-        .filter(Annotation::is_comment)
-        .map(|comment| comment.note)
-        .collect();
-    assert_eq!(comments, ["first comment", "second comment"]);
-    let comment = find(&library, Annotation::is_comment);
-    assert_eq!(
-        (comment.block, comment.start, comment.end, comment.color),
-        (3, 0, 12, HighlightColor::Green),
-        "a comment sits on its highlight's first piece"
-    );
-
-    apply(
-        &mut library,
-        Ebook::CHANGE_COLOR.with(books::ChangeColor {
-            highlight: group,
-            color: HighlightColor::Purple,
-        }),
-    )
-    .unwrap();
-    assert!(
-        marks(&library)
-            .iter()
-            .filter(|mark| mark.group == group)
-            .all(|mark| mark.color == HighlightColor::Purple),
-        "a highlight is recoloured with its comments"
-    );
-
-    let standalone = find(&library, |mark| {
-        mark.kind == AnnoKind::Note && !mark.is_comment()
-    });
-    edit(
-        &mut library,
-        &note_paths(standalone.id).created.set(1_700_000_123_456),
-    )
-    .unwrap();
-    assert_eq!(
-        find(&library, |mark| mark.id == standalone.id).created,
-        1_700_000_123_456
-    );
-    let piece = find(&library, |mark| mark.kind == AnnoKind::Highlight);
-    let at = note_paths(piece.id);
-    for change in [at.block.set(9), at.end.set(5), at.excerpt.replace("moved")] {
-        edit(&mut library, &change).unwrap();
-    }
-    let moved = find(&library, |mark| mark.id == piece.id);
-    assert_eq!((moved.block, moved.start, moved.end), (9, 0, 5));
-    assert_eq!(
-        marks(&library)
-            .iter()
-            .filter(|mark| mark.is_comment())
-            .count(),
-        2,
-        "the highlight's comments survive the re-anchor"
-    );
-    assert!(
-        edit(&mut library, &at.start.set(7)).is_err(),
-        "a range never ends before it starts"
-    );
-
-    assert!(
-        apply(
-            &mut library,
-            Ebook::HIGHLIGHT.with(books::Highlight {
-                book: BOOK.into(),
-                chapter: 0,
-                color: HighlightColor::Yellow,
-                replacing: vec![group],
-                pieces: vec![HiPiece {
-                    block: 1,
-                    start: 9,
-                    end: 2,
-                    excerpt: "backwards".into(),
-                }],
-            })
-        )
-        .is_err()
-    );
-    assert_eq!(marks(&library).len(), 5);
-    assert!(
-        edit(
-            &mut library,
-            &note_text(standalone.id)
-                .perform(&RichTextAction::ReplaceBody {
-                    markdown: "x".repeat(MAX_NOTE_BYTES + 1),
-                })
-                .unwrap()
-        )
-        .is_err(),
-        "an oversized note is refused"
-    );
-    assert_eq!(
-        find(&library, |mark| mark.id == standalone.id).note,
-        "standalone"
-    );
-
-    apply(
-        &mut library,
-        Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
-    )
-    .unwrap();
-    let left = marks(&library);
-    assert_eq!(
-        left.len(),
-        2,
-        "only the standalone note and the bookmark survive"
-    );
-    assert!(left.iter().all(|mark| mark.group != group));
-    for late in [
-        Ebook::ADD_COMMENT.with(books::AddComment {
-            highlight: group,
-            text: "late comment".into(),
-        }),
-        Ebook::CHANGE_COLOR.with(books::ChangeColor {
-            highlight: group,
-            color: HighlightColor::Pink,
-        }),
-        Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
-    ] {
-        assert!(
-            apply(&mut library, late).is_err(),
-            "a deleted highlight is refused"
-        );
-    }
-
-    apply(
-        &mut library,
-        Ebook::DELETE_ANNOTATION.with(books::DeleteAnnotation {
-            annotation: standalone.id,
-        }),
-    )
-    .unwrap();
-    assert!(
-        edit(
-            &mut library,
-            &note_text(standalone.id)
-                .perform(&RichTextAction::ReplaceBody {
-                    markdown: "late edit".into(),
-                })
-                .unwrap()
-        )
-        .is_err(),
-        "a deleted note is not written to"
-    );
-    assert!(edit(&mut library, &note_paths(standalone.id).created.set(1)).is_err());
-    assert!(
-        apply(
-            &mut library,
-            Ebook::DELETE_ANNOTATION.with(books::DeleteAnnotation {
-                annotation: standalone.id,
-            })
-        )
-        .is_err(),
-        "an annotation that is gone is said to be gone"
-    );
-}
-
 fn note_paths(id: Uuid) -> <Mark as Model>::Paths<Ebook> {
     Ebook::paths().annotations.item(&annotation_key(id))
-}
-
-/// Two readers changing one library at once converge: each field of a
-/// note, a recolour and a comment's text, settings and fonts side by side,
-/// and a deleted highlight keeps its comments deleted.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each phase and its fixture visible"
-)]
-fn concurrent_changes_converge() {
-    let (mut ours, group) = annotated();
-    let mut theirs = ours.fork();
-    let standalone = find(&ours, |mark| {
-        mark.kind == AnnoKind::Note && !mark.is_comment()
-    });
-    let comment = find(&ours, Annotation::is_comment);
-    edit(
-        &mut ours,
-        &note_text(standalone.id)
-            .perform(&RichTextAction::ReplaceBody {
-                markdown: "edited concurrently".into(),
-            })
-            .unwrap(),
-    )
-    .unwrap();
-    edit(
-        &mut ours,
-        &note_text(comment.id)
-            .perform(&RichTextAction::ReplaceBody {
-                markdown: "comment edited".into(),
-            })
-            .unwrap(),
-    )
-    .unwrap();
-    edit(
-        &mut ours,
-        &Ebook::paths().settings.theme.set(ReadTheme::Dark),
-    )
-    .unwrap();
-    let at = note_paths(standalone.id);
-    for change in [
-        at.chapter.set(2),
-        at.block.set(7),
-        at.excerpt.replace("new anchor"),
-    ] {
-        edit(&mut theirs, &change).unwrap();
-    }
-    apply(
-        &mut theirs,
-        Ebook::CHANGE_COLOR.with(books::ChangeColor {
-            highlight: group,
-            color: HighlightColor::Purple,
-        }),
-    )
-    .unwrap();
-    edit(&mut theirs, &Ebook::paths().settings.line_spacing.set(1.55)).unwrap();
-    ours.sync_with(&mut theirs).unwrap();
-    assert_eq!(state(&ours), state(&theirs));
-    let merged = find(&ours, |mark| mark.id == standalone.id);
-    assert_eq!(merged.note, "edited concurrently");
-    assert_eq!((merged.chapter, merged.block), (2, 7));
-    assert_eq!(merged.excerpt, "new anchor");
-    let merged = find(&ours, |mark| mark.id == comment.id);
-    assert_eq!(
-        (merged.note.as_str(), merged.color),
-        ("comment edited", HighlightColor::Purple)
-    );
-    let settings = state(&ours).settings;
-    assert_eq!(
-        (settings.theme, settings.line_spacing),
-        (ReadTheme::Dark, 1.55)
-    );
-
-    let fonts = Ebook::paths().fonts;
-    for (replica, id) in [(&mut ours, "left"), (&mut theirs, "right")] {
-        let font = FontEntry::new(id, FontKind::Named(id.into()), id, 1.0, true);
-        edit(replica, &fonts.insert_as(&Id::from_raw(id), 99, &font)).unwrap();
-    }
-    ours.sync_with(&mut theirs).unwrap();
-    ours.apply_confirmed(Ebook::REMOVE_FONT.with(books::RemoveFont {
-        font: "left".into(),
-    }))
-    .unwrap();
-    edit(
-        &mut theirs,
-        &fonts
-            .item(&Id::from_raw("left"))
-            .name
-            .replace("Late offline rename"),
-    )
-    .unwrap();
-    ours.sync_with(&mut theirs).unwrap();
-    for replica in [&ours, &theirs] {
-        let ids: Vec<String> = state(replica)
-            .fonts
-            .values()
-            .map(|font| font.id.clone())
-            .collect();
-        assert!(ids.contains(&"right".to_owned()));
-        assert!(
-            !ids.contains(&"left".to_owned()),
-            "the removal wins over the rename"
-        );
-    }
-
-    apply(
-        &mut ours,
-        Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
-    )
-    .unwrap();
-    apply(
-        &mut theirs,
-        Ebook::ADD_COMMENT.with(books::AddComment {
-            highlight: group,
-            text: "offline comment".into(),
-        }),
-    )
-    .unwrap();
-    ours.sync_with(&mut theirs).unwrap();
-    for replica in [&ours, &theirs] {
-        assert!(
-            marks(replica).iter().all(|mark| mark.group != group),
-            "no row of the deleted highlight shows"
-        );
-    }
-
-    let bookmark = |block| {
-        Ebook::TOGGLE_BOOKMARK.with(books::ToggleBookmark {
-            book: BOOK.into(),
-            chapter: 0,
-            block,
-            excerpt: "bm".into(),
-        })
-    };
-    apply(&mut ours, bookmark(9)).unwrap();
-    apply(&mut theirs, bookmark(9)).unwrap();
-    ours.sync_with(&mut theirs).unwrap();
-    let on_nine = |replica: &Replica<Ebook>| {
-        marks(replica)
-            .iter()
-            .filter(|mark| mark.kind == AnnoKind::Bookmark && mark.block == 9)
-            .count()
-    };
-    assert_eq!((on_nine(&ours), on_nine(&theirs)), (2, 2));
-    apply(&mut ours, bookmark(9)).unwrap();
-    ours.sync_with(&mut theirs).unwrap();
-    assert_eq!((on_nine(&ours), on_nine(&theirs)), (0, 0));
 }
 
 /// The library as a device creates it on its own: the genesis every
@@ -809,26 +203,6 @@ fn started_apart(device: &[u8]) -> Replica<Ebook> {
     doc.commit();
     doc.set_actor(ui::automerge::ActorId::from(device));
     Replica::from_doc(doc)
-}
-
-/// Two devices that created the library on their own merge every book and
-/// annotation.
-#[test]
-fn libraries_started_apart_merge_whole() {
-    let mut left = started_apart(b"left");
-    let mut right = started_apart(b"right");
-    apply(&mut left, shelve(&row("book:left", "Left"))).unwrap();
-    apply(&mut right, shelve(&row("book:right", "Right"))).unwrap();
-    apply(&mut left, note(1, "left note")).unwrap();
-    apply(&mut right, note(2, "right note")).unwrap();
-    left.sync_with(&mut right).unwrap();
-    for replica in [&left, &right] {
-        let library = state(replica);
-        let mut books: Vec<&str> = library.entries.values().map(|e| e.id.as_str()).collect();
-        books.sort_unstable();
-        assert_eq!(books, ["book:left", "book:right"]);
-        assert_eq!(library.annotations_for(BOOK).len(), 2);
-    }
 }
 
 /// Each book is a place offering what acts on it, its annotations beneath
@@ -1081,11 +455,21 @@ fn reads_chapter(app: &mut ui::framework::testing::TestApp<EbookShell>, title: &
 
 #[test]
 fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
+    let mut comments_shown = false;
     for scenario in
         std::iter::once(None).chain(crate::scenarios::SCENARIOS.iter().copied().map(Some))
     {
-        let app = ui::framework::testing::TestApp::<EbookShell>::capture(scenario)
+        let mut app = ui::framework::testing::TestApp::<EbookShell>::capture(scenario)
             .unwrap_or_else(|error| panic!("{scenario:?}: {error}"));
+        if scenario == Some("comments") {
+            assert!(
+                app.harness().a11y_nodes().iter().any(|(_, node)| node
+                    .label()
+                    .is_some_and(|label| label.contains("colour that keeps the time of day"))),
+                "the comments scenario has the highlight's comments open"
+            );
+            comments_shown = true;
+        }
         let shelf = app.state().entries.len();
         if scenario == Some("onboarding") {
             assert_eq!(shelf, 0, "the first start is an empty shelf");
@@ -1097,14 +481,607 @@ fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
             assert_eq!(shelf, 3, "{scenario:?} shows the sample shelf");
         }
     }
-    let mut comments =
-        ui::framework::testing::TestApp::<EbookShell>::capture(Some("comments")).unwrap();
     assert!(
-        comments.harness().a11y_nodes().iter().any(|(_, node)| node
-            .label()
-            .is_some_and(|label| label.contains("colour that keeps the time of day"))),
-        "the comments scenario has the highlight's comments open"
+        comments_shown,
+        "the comments scenario is one of the scenarios"
     );
+}
+
+tilo_test_env::scenario! {
+    fn the_library_changes_through_its_edits_and_verbs;
+
+    phase the_library_is_named_by_its_shelf;
+    // The library is named by the books on its shelf, and reads right: one is
+    // "1 book", never "1 books".
+    {
+        let mut library = Replica::<Ebook>::new();
+        let name = |library: &Replica<Ebook>| {
+            <EbookShell as ui::framework::ResourceApp>::label(&state(library))
+        };
+        assert_eq!(name(&library), "Books");
+        apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
+        assert_eq!(name(&library), "1 book");
+        let other = "book:fedcba9876543210fedcba9876543210";
+        apply(&mut library, shelve(&row(other, "B"))).unwrap();
+        assert_eq!(name(&library), "2 books");
+    }
+
+    phase books_join_and_leave_the_shelf_under_their_content_ids;
+    // The shelf: a book joins once under its content id, refreshing its row
+    // keeps when it was added, and leaving the shelf keeps what was read and
+    // marked in it.
+    {
+        let mut library = Replica::<Ebook>::new();
+        library.set_now_ms(1_000);
+        apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
+        let shelf = state(&library).entries;
+        assert_eq!(shelf.len(), 1);
+        let first = shelf.values().next().unwrap().clone();
+        assert_eq!((first.title.as_str(), first.added), ("Novel", 1_000));
+
+        library.set_now_ms(9_999);
+        apply(
+            &mut library,
+            shelve(&LibraryEntry {
+                shared: true,
+                ..row(BOOK, "Novel, revised")
+            }),
+        )
+        .unwrap();
+        let shelf = state(&library).entries;
+        assert_eq!(shelf.len(), 1, "the same content id updates in place");
+        let again = shelf.values().next().unwrap();
+        assert!(again.shared, "shared availability is replicated");
+        assert_eq!(again.title, "Novel, revised");
+        assert_eq!(
+            again.added, 1_000,
+            "added time is preserved across a re-import"
+        );
+        apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
+        assert!(
+            state(&library).entry(BOOK).unwrap().shared,
+            "a later import without the workspace does not withdraw it"
+        );
+
+        assert!(
+            apply(&mut library, shelve(&row("not-a-book", "Bad"))).is_err(),
+            "a row names its book by book: and its content hash"
+        );
+        let content = "f".repeat(64);
+        assert!(
+            apply(
+                &mut library,
+                shelve(&LibraryEntry {
+                    content: LibraryEntry::stored(&content, 9).unwrap(),
+                    ..row(BOOK, "Novel")
+                })
+            )
+            .is_err(),
+            "content that is not this book's is refused"
+        );
+        let content = format!("0123456789abcdef0123456789abcdef{}", "0".repeat(32));
+        apply(
+            &mut library,
+            shelve(&LibraryEntry {
+                content: LibraryEntry::stored(&content, 9).unwrap(),
+                ..row(BOOK, "Novel")
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            state(&library)
+                .entry(BOOK)
+                .unwrap()
+                .content_hash()
+                .as_deref(),
+            Some(content.as_str()),
+            "the row names the bytes a content store keeps"
+        );
+
+        apply(
+            &mut library,
+            Ebook::RECORD_PROGRESS.with(books::RecordProgress {
+                book: BOOK.into(),
+                chapter: 2,
+                block: 5,
+                fraction: 0.42,
+                opened: true,
+            }),
+        )
+        .unwrap();
+        apply(
+            &mut library,
+            Ebook::RECORD_PROGRESS.with(books::RecordProgress {
+                book: BOOK.into(),
+                chapter: 2,
+                block: 7,
+                fraction: 0.5,
+                opened: false,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            state(&library).progress_of(BOOK),
+            Progress {
+                chapter: 2,
+                block: 7,
+                fraction: 0.5,
+                opened: 9_999,
+            },
+            "reading on keeps when the book was opened"
+        );
+        assert_eq!(
+            state(&library).progress_of("book:nope"),
+            Progress::default()
+        );
+
+        apply(&mut library, note(1, "kept")).unwrap();
+        let remove = Ebook::REMOVE_FROM_LIBRARY.with(books::RemoveFromLibrary { book: BOOK.into() });
+        assert!(
+            library.apply(remove.clone()).is_err(),
+            "removing a book asks first: Undo cannot give back this device's access to its file"
+        );
+        library.apply_confirmed(remove).unwrap();
+        let after = state(&library);
+        assert!(after.entries.is_empty(), "removed from the shelf");
+        assert_eq!(
+            after.progress_of(BOOK).chapter,
+            2,
+            "where the reader was stays"
+        );
+        assert_eq!(
+            after.annotations_for(BOOK).len(),
+            1,
+            "what was marked stays"
+        );
+        let bytes = library.save();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("/home/reader/"),
+            "a source path never enters the library"
+        );
+    }
+
+    phase settings_fonts_and_schemes_are_edited_at_their_paths;
+    // Reading settings, shelf preferences, fonts and schemes are fields,
+    // edited at their paths and held to their invariants.
+    {
+        let mut library = Replica::<Ebook>::new();
+        let fresh = state(&library);
+        assert_eq!(fresh.settings.mode, ReadMode::Paged, "readers open paged");
+        assert_eq!(
+            fresh.settings.composition,
+            CompositionStyle::Ragged,
+            "ragged until a reader asks for justified"
+        );
+        assert!(
+            fresh
+                .fonts
+                .values()
+                .any(|font| font.kind == FontKind::Serif),
+            "a new library has the built-in fonts"
+        );
+        assert_eq!(fresh.schemes.len(), crate::model::default_schemes().len());
+
+        let settings = Ebook::paths().settings;
+        let wanted = Settings {
+            font_scale: 1.3,
+            line_spacing: 1.45,
+            font_id: "serif".into(),
+            theme: ReadTheme::Dark,
+            scheme_id: "midnight".into(),
+            mode: ReadMode::TwoUp,
+            composition: CompositionStyle::Ragged,
+        };
+        for change in settings.path().edits(&fresh.settings, &wanted) {
+            edit(&mut library, &change).unwrap();
+        }
+        assert_eq!(state(&library).settings, wanted);
+        assert!(
+            edit(&mut library, &settings.font_scale.set(9.0)).is_err(),
+            "the text size stays within its bounds, however it is set"
+        );
+        assert!(edit(&mut library, &settings.line_spacing.set(f32::NAN)).is_err());
+
+        let prefs = Ebook::paths().prefs;
+        edit(&mut library, &prefs.sort.set(LibrarySort::Recent)).unwrap();
+        edit(&mut library, &prefs.hide_read.set(true)).unwrap();
+        assert_eq!(
+            state(&library).prefs,
+            LibraryPrefs {
+                sort: LibrarySort::Recent,
+                hide_read: true,
+            }
+        );
+
+        let literata = FontEntry::new(
+            "u1",
+            FontKind::Named("Literata".into()),
+            "Literata",
+            1.1,
+            true,
+        );
+        let fonts = Ebook::paths().fonts;
+        edit(
+            &mut library,
+            &fonts.insert_as(&Id::from_raw("u1"), fresh.fonts.len(), &literata),
+        )
+        .unwrap();
+        let u1 = fonts.item(&Id::from_raw("u1"));
+        edit(&mut library, &u1.name.replace("Book")).unwrap();
+        edit(&mut library, &u1.shown.set(false)).unwrap();
+        assert!(edit(&mut library, &u1.size_mult.set(3.0)).is_err());
+        assert!(
+            edit(&mut library, &u1.id.replace("other")).is_err(),
+            "a font's id is the key it is stored under"
+        );
+        let stored = state(&library).fonts.values().last().unwrap().clone();
+        assert_eq!(
+            (stored.name.as_str(), stored.shown, stored.kind.clone()),
+            ("Book", false, FontKind::Named("Literata".into()))
+        );
+        edit(&mut library, &settings.font_id.replace("u1")).unwrap();
+        edit(
+            &mut library,
+            &Ebook::paths().default_font.set(Atom("u1".into())),
+        )
+        .unwrap();
+        library
+            .apply_confirmed(Ebook::REMOVE_FONT.with(books::RemoveFont { font: "u1".into() }))
+            .unwrap();
+        let after = state(&library);
+        assert!(after.fonts.values().all(|font| font.id != "u1"));
+        assert!(
+            after.settings.font_id.is_empty() && after.default_font.0.is_empty(),
+            "nothing keeps choosing a removed font"
+        );
+
+        let ocean = ColorScheme::from_bg("u1", "Ocean", [0x0A, 0x22, 0x33]);
+        let schemes = Ebook::paths().schemes;
+        edit(
+            &mut library,
+            &schemes.insert_as(&Id::from_raw("u1"), after.schemes.len(), &ocean),
+        )
+        .unwrap();
+        edit(
+            &mut library,
+            &schemes.item(&Id::from_raw("light")).enabled.set(false),
+        )
+        .unwrap();
+        let stored = state(&library);
+        assert!(!stored.schemes.get(&Id::from_raw("light")).unwrap().enabled);
+        let custom = stored.schemes.get(&Id::from_raw("u1")).unwrap();
+        assert_eq!(custom.page, [0x0A, 0x22, 0x33]);
+        assert!(custom.dark && !custom.builtin);
+        assert!(
+            library
+                .apply_confirmed(Ebook::DELETE_SCHEME.with(books::DeleteScheme {
+                    scheme: "light".into(),
+                }))
+                .is_err(),
+            "a built-in scheme is turned off, never deleted"
+        );
+        library
+            .apply_confirmed(Ebook::DELETE_SCHEME.with(books::DeleteScheme {
+                scheme: "u1".into(),
+            }))
+            .unwrap();
+        assert!(state(&library).schemes.get(&Id::from_raw("u1")).is_none());
+    }
+
+    phase annotations_change_through_their_verbs_and_refuse_what_is_gone;
+    // Annotation verbs: a highlight goes with its comments, what is gone is
+    // refused, and a malformed or oversized change is refused whole.
+    {
+        let (mut library, group) = annotated();
+        assert_eq!(
+            marks(&library).len(),
+            5,
+            "highlight + 2 comments + note + bookmark"
+        );
+        let comments: Vec<String> = marks(&library)
+            .into_iter()
+            .filter(Annotation::is_comment)
+            .map(|comment| comment.note)
+            .collect();
+        assert_eq!(comments, ["first comment", "second comment"]);
+        let comment = find(&library, Annotation::is_comment);
+        assert_eq!(
+            (comment.block, comment.start, comment.end, comment.color),
+            (3, 0, 12, HighlightColor::Green),
+            "a comment sits on its highlight's first piece"
+        );
+
+        apply(
+            &mut library,
+            Ebook::CHANGE_COLOR.with(books::ChangeColor {
+                highlight: group,
+                color: HighlightColor::Purple,
+            }),
+        )
+        .unwrap();
+        assert!(
+            marks(&library)
+                .iter()
+                .filter(|mark| mark.group == group)
+                .all(|mark| mark.color == HighlightColor::Purple),
+            "a highlight is recoloured with its comments"
+        );
+
+        let standalone = find(&library, |mark| {
+            mark.kind == AnnoKind::Note && !mark.is_comment()
+        });
+        edit(
+            &mut library,
+            &note_paths(standalone.id).created.set(1_700_000_123_456),
+        )
+        .unwrap();
+        assert_eq!(
+            find(&library, |mark| mark.id == standalone.id).created,
+            1_700_000_123_456
+        );
+        let piece = find(&library, |mark| mark.kind == AnnoKind::Highlight);
+        let at = note_paths(piece.id);
+        for change in [at.block.set(9), at.end.set(5), at.excerpt.replace("moved")] {
+            edit(&mut library, &change).unwrap();
+        }
+        let moved = find(&library, |mark| mark.id == piece.id);
+        assert_eq!((moved.block, moved.start, moved.end), (9, 0, 5));
+        assert_eq!(
+            marks(&library)
+                .iter()
+                .filter(|mark| mark.is_comment())
+                .count(),
+            2,
+            "the highlight's comments survive the re-anchor"
+        );
+        assert!(
+            edit(&mut library, &at.start.set(7)).is_err(),
+            "a range never ends before it starts"
+        );
+
+        assert!(
+            apply(
+                &mut library,
+                Ebook::HIGHLIGHT.with(books::Highlight {
+                    book: BOOK.into(),
+                    chapter: 0,
+                    color: HighlightColor::Yellow,
+                    replacing: vec![group],
+                    pieces: vec![HiPiece {
+                        block: 1,
+                        start: 9,
+                        end: 2,
+                        excerpt: "backwards".into(),
+                    }],
+                })
+            )
+            .is_err()
+        );
+        assert_eq!(marks(&library).len(), 5);
+        assert!(
+            edit(
+                &mut library,
+                &note_text(standalone.id)
+                    .perform(&RichTextAction::ReplaceBody {
+                        markdown: "x".repeat(MAX_NOTE_BYTES + 1),
+                    })
+                    .unwrap()
+            )
+            .is_err(),
+            "an oversized note is refused"
+        );
+        assert_eq!(
+            find(&library, |mark| mark.id == standalone.id).note,
+            "standalone"
+        );
+
+        apply(
+            &mut library,
+            Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
+        )
+        .unwrap();
+        let left = marks(&library);
+        assert_eq!(
+            left.len(),
+            2,
+            "only the standalone note and the bookmark survive"
+        );
+        assert!(left.iter().all(|mark| mark.group != group));
+        for late in [
+            Ebook::ADD_COMMENT.with(books::AddComment {
+                highlight: group,
+                text: "late comment".into(),
+            }),
+            Ebook::CHANGE_COLOR.with(books::ChangeColor {
+                highlight: group,
+                color: HighlightColor::Pink,
+            }),
+            Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
+        ] {
+            assert!(
+                apply(&mut library, late).is_err(),
+                "a deleted highlight is refused"
+            );
+        }
+
+        apply(
+            &mut library,
+            Ebook::DELETE_ANNOTATION.with(books::DeleteAnnotation {
+                annotation: standalone.id,
+            }),
+        )
+        .unwrap();
+        assert!(
+            edit(
+                &mut library,
+                &note_text(standalone.id)
+                    .perform(&RichTextAction::ReplaceBody {
+                        markdown: "late edit".into(),
+                    })
+                    .unwrap()
+            )
+            .is_err(),
+            "a deleted note is not written to"
+        );
+        assert!(edit(&mut library, &note_paths(standalone.id).created.set(1)).is_err());
+        assert!(
+            apply(
+                &mut library,
+                Ebook::DELETE_ANNOTATION.with(books::DeleteAnnotation {
+                    annotation: standalone.id,
+                })
+            )
+            .is_err(),
+            "an annotation that is gone is said to be gone"
+        );
+    }
+
+    phase a_number_is_kept_at_its_bound_and_refused_past_it;
+    // Each bounded number of the library at its bound and past it: the bound
+    // is kept, and what lies past it (a step, an infinity, no number) is
+    // refused and leaves the value as it was.
+    {
+        let literata = FontEntry::new(
+            "u1",
+            FontKind::Named("Literata".into()),
+            "Literata",
+            1.1,
+            true,
+        );
+        let settings = Ebook::paths().settings;
+        let font = Ebook::paths().fonts.item(&Id::from_raw("u1"));
+        let scale: fn(&Ebook) -> f32 = |library| library.settings.font_scale;
+        let spacing: fn(&Ebook) -> f32 = |library| library.settings.line_spacing;
+        let size: fn(&Ebook) -> f32 = |library| library.fonts.values().last().unwrap().size_mult;
+        let set_scale: &dyn Fn(f32) -> Edit<Ebook> = &|value| settings.font_scale.set(value);
+        let set_spacing: &dyn Fn(f32) -> Edit<Ebook> = &|value| settings.line_spacing.set(value);
+        let set_size: &dyn Fn(f32) -> Edit<Ebook> = &|value| font.size_mult.set(value);
+        for (what, read, set, least, most) in [
+            (
+                "the text size",
+                scale,
+                set_scale,
+                Settings::READING_SCALE_MIN,
+                Settings::READING_SCALE_MAX,
+            ),
+            (
+                "the line spacing",
+                spacing,
+                set_spacing,
+                Settings::SPACING_MIN,
+                Settings::SPACING_MAX,
+            ),
+            (
+                "a font's size",
+                size,
+                set_size,
+                FontEntry::MULT_MIN,
+                FontEntry::MULT_MAX,
+            ),
+        ] {
+            for (value, kept) in [
+                (least, true),
+                (most, true),
+                (least - 0.01, false),
+                (most + 0.01, false),
+                (f32::INFINITY, false),
+                (f32::NEG_INFINITY, false),
+                (f32::NAN, false),
+            ] {
+                let mut library = Replica::<Ebook>::new();
+                let last = state(&library).fonts.len();
+                let add = Ebook::paths()
+                    .fonts
+                    .insert_as(&Id::from_raw("u1"), last, &literata);
+                edit(&mut library, &add).unwrap();
+                let before = read(&state(&library));
+                let done = edit(&mut library, &set(value));
+                let after = read(&state(&library));
+                if kept {
+                    assert_eq!(done, Ok(()), "{what} of {value} is kept");
+                    assert_eq!(after, value, "{what} of {value} is kept");
+                } else {
+                    assert!(done.is_err(), "{what} of {value} is refused");
+                    assert_eq!(after, before, "{what} of {value} changed nothing");
+                }
+            }
+        }
+    }
+
+    phase a_text_is_kept_at_its_longest_and_refused_a_byte_longer;
+    // A shelf row's labels and an annotated passage are kept at their longest
+    // and refused a byte longer, by the verb that writes them and by an edit
+    // of the field.
+    {
+        use crate::model::MAX_EXCERPT_BYTES;
+        /// The longest title, author or subject a shelf row keeps, in bytes.
+        const LABEL: usize = 4 * 1024;
+        for (what, len, kept) in [
+            ("at its longest", LABEL, true),
+            ("a byte longer", LABEL + 1, false),
+        ] {
+            for label in ["title", "author", "subject"] {
+                let mut entry = row(BOOK, "Novel");
+                let text = "x".repeat(len);
+                match label {
+                    "title" => entry.title = text,
+                    "author" => entry.author = text,
+                    _ => entry.subject = text,
+                }
+                let mut library = Replica::<Ebook>::new();
+                let done = apply(&mut library, shelve(&entry));
+                assert_eq!(done.is_ok(), kept, "a {label} {what}: {done:?}");
+                assert_eq!(
+                    state(&library).entries.len(),
+                    usize::from(kept),
+                    "a {label} {what}"
+                );
+            }
+        }
+        for (what, len, kept) in [
+            ("at its longest", MAX_EXCERPT_BYTES, true),
+            ("a byte longer", MAX_EXCERPT_BYTES + 1, false),
+        ] {
+            let mut library = Replica::<Ebook>::new();
+            apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
+            let done = apply(
+                &mut library,
+                Ebook::HIGHLIGHT.with(books::Highlight {
+                    book: BOOK.into(),
+                    chapter: 0,
+                    color: HighlightColor::Yellow,
+                    replacing: Vec::new(),
+                    pieces: vec![HiPiece {
+                        block: 1,
+                        start: 0,
+                        end: 9,
+                        excerpt: "x".repeat(len),
+                    }],
+                }),
+            );
+            assert_eq!(
+                done.is_ok(),
+                kept,
+                "a passage {what}, highlighted: {done:?}"
+            );
+            assert_eq!(
+                marks(&library).len(),
+                usize::from(kept),
+                "a passage {what}, highlighted"
+            );
+
+            let (mut library, _) = annotated();
+            let piece = find(&library, |mark| mark.kind == AnnoKind::Highlight);
+            let change = note_paths(piece.id).excerpt.replace("x".repeat(len));
+            let done = edit(&mut library, &change);
+            assert_eq!(done.is_ok(), kept, "a passage {what}, edited: {done:?}");
+            assert_eq!(
+                find(&library, |mark| mark.id == piece.id).excerpt.len() == len,
+                kept,
+                "a passage {what}, edited"
+            );
+        }
+    }
 }
 
 /// The library's verbs bound to where the reader is follow the page and
@@ -1144,54 +1121,222 @@ fn the_library_verbs_bound_to_the_reader_follow_the_selection() {
     assert_eq!(app.library().len(), before);
 }
 
-/// A page turn while the shelf holds the library copies the turned book's
-/// chunk of the progress, not every book's; shelving a book copies none.
-#[test]
-fn a_page_turn_while_the_library_is_held_copies_one_chunk_of_progress() {
-    use ui::tilo_resource::Reader;
-    let book = |n: usize| format!("book:{n:032x}");
-    let record = |n: usize, fraction: f32| {
-        Ebook::RECORD_PROGRESS.with(books::RecordProgress {
-            book: book(n),
-            chapter: 1,
-            block: 2,
-            fraction,
-            opened: false,
-        })
-    };
-    let mut library = Replica::<Ebook>::new();
-    for n in 0..500 {
-        apply(&mut library, record(n, 0.1)).unwrap();
-    }
-    let mut reader = Reader::<Ebook>::open(library.doc_mut()).unwrap();
-    let shared = |now: &Ebook, shown: &Ebook| {
-        (0..500)
-            .filter(|n| {
-                std::ptr::eq(
-                    now.progress.get(&book(*n)).unwrap(),
-                    shown.progress.get(&book(*n)).unwrap(),
-                )
+tilo_test_env::scenario! {
+    fn libraries_merge_and_share_what_did_not_change;
+
+    phase concurrent_changes_converge;
+    // Two readers changing one library at once converge: each field of a
+    // note, a recolour and a comment's text, settings and fonts side by side,
+    // and a deleted highlight keeps its comments deleted.
+    {
+        let (mut ours, group) = annotated();
+        let mut theirs = ours.fork();
+        let standalone = find(&ours, |mark| {
+            mark.kind == AnnoKind::Note && !mark.is_comment()
+        });
+        let comment = find(&ours, Annotation::is_comment);
+        edit(
+            &mut ours,
+            &note_text(standalone.id)
+                .perform(&RichTextAction::ReplaceBody {
+                    markdown: "edited concurrently".into(),
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        edit(
+            &mut ours,
+            &note_text(comment.id)
+                .perform(&RichTextAction::ReplaceBody {
+                    markdown: "comment edited".into(),
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        edit(
+            &mut ours,
+            &Ebook::paths().settings.theme.set(ReadTheme::Dark),
+        )
+        .unwrap();
+        let at = note_paths(standalone.id);
+        for change in [
+            at.chapter.set(2),
+            at.block.set(7),
+            at.excerpt.replace("new anchor"),
+        ] {
+            edit(&mut theirs, &change).unwrap();
+        }
+        apply(
+            &mut theirs,
+            Ebook::CHANGE_COLOR.with(books::ChangeColor {
+                highlight: group,
+                color: HighlightColor::Purple,
+            }),
+        )
+        .unwrap();
+        edit(&mut theirs, &Ebook::paths().settings.line_spacing.set(1.55)).unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        assert_eq!(state(&ours), state(&theirs));
+        let merged = find(&ours, |mark| mark.id == standalone.id);
+        assert_eq!(merged.note, "edited concurrently");
+        assert_eq!((merged.chapter, merged.block), (2, 7));
+        assert_eq!(merged.excerpt, "new anchor");
+        let merged = find(&ours, |mark| mark.id == comment.id);
+        assert_eq!(
+            (merged.note.as_str(), merged.color),
+            ("comment edited", HighlightColor::Purple)
+        );
+        let settings = state(&ours).settings;
+        assert_eq!(
+            (settings.theme, settings.line_spacing),
+            (ReadTheme::Dark, 1.55)
+        );
+
+        let fonts = Ebook::paths().fonts;
+        for (replica, id) in [(&mut ours, "left"), (&mut theirs, "right")] {
+            let font = FontEntry::new(id, FontKind::Named(id.into()), id, 1.0, true);
+            edit(replica, &fonts.insert_as(&Id::from_raw(id), 99, &font)).unwrap();
+        }
+        ours.sync_with(&mut theirs).unwrap();
+        ours.apply_confirmed(Ebook::REMOVE_FONT.with(books::RemoveFont {
+            font: "left".into(),
+        }))
+        .unwrap();
+        edit(
+            &mut theirs,
+            &fonts
+                .item(&Id::from_raw("left"))
+                .name
+                .replace("Late offline rename"),
+        )
+        .unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        for replica in [&ours, &theirs] {
+            let ids: Vec<String> = state(replica)
+                .fonts
+                .values()
+                .map(|font| font.id.clone())
+                .collect();
+            assert!(ids.contains(&"right".to_owned()));
+            assert!(
+                !ids.contains(&"left".to_owned()),
+                "the removal wins over the rename"
+            );
+        }
+
+        apply(
+            &mut ours,
+            Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
+        )
+        .unwrap();
+        apply(
+            &mut theirs,
+            Ebook::ADD_COMMENT.with(books::AddComment {
+                highlight: group,
+                text: "offline comment".into(),
+            }),
+        )
+        .unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        for replica in [&ours, &theirs] {
+            assert!(
+                marks(replica).iter().all(|mark| mark.group != group),
+                "no row of the deleted highlight shows"
+            );
+        }
+
+        let bookmark = |block| {
+            Ebook::TOGGLE_BOOKMARK.with(books::ToggleBookmark {
+                book: BOOK.into(),
+                chapter: 0,
+                block,
+                excerpt: "bm".into(),
             })
-            .count()
-    };
+        };
+        apply(&mut ours, bookmark(9)).unwrap();
+        apply(&mut theirs, bookmark(9)).unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        let on_nine = |replica: &Replica<Ebook>| {
+            marks(replica)
+                .iter()
+                .filter(|mark| mark.kind == AnnoKind::Bookmark && mark.block == 9)
+                .count()
+        };
+        assert_eq!((on_nine(&ours), on_nine(&theirs)), (2, 2));
+        apply(&mut ours, bookmark(9)).unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        assert_eq!((on_nine(&ours), on_nine(&theirs)), (0, 0));
+    }
 
-    let shown = Rc::clone(reader.state());
-    apply(&mut library, shelve(&row(BOOK, "Shelved"))).unwrap();
-    assert!(reader.sync(library.doc()).unwrap());
-    assert_eq!(shared(reader.state(), &shown), 500, "no progress copied");
+    phase libraries_started_apart_merge_whole;
+    // Two devices that created the library on their own merge every book and
+    // annotation.
+    {
+        let mut left = started_apart(b"left");
+        let mut right = started_apart(b"right");
+        apply(&mut left, shelve(&row("book:left", "Left"))).unwrap();
+        apply(&mut right, shelve(&row("book:right", "Right"))).unwrap();
+        apply(&mut left, note(1, "left note")).unwrap();
+        apply(&mut right, note(2, "right note")).unwrap();
+        left.sync_with(&mut right).unwrap();
+        for replica in [&left, &right] {
+            let library = state(replica);
+            let mut books: Vec<&str> = library.entries.values().map(|e| e.id.as_str()).collect();
+            books.sort_unstable();
+            assert_eq!(books, ["book:left", "book:right"]);
+            assert_eq!(library.annotations_for(BOOK).len(), 2);
+        }
+    }
 
-    let shown = Rc::clone(reader.state());
-    apply(&mut library, record(250, 0.75)).unwrap();
-    assert!(reader.sync(library.doc()).unwrap());
-    let now = reader.state();
-    assert_eq!(shown.progress_of(&book(250)).fraction, 0.1);
-    assert_eq!(now.progress_of(&book(250)).fraction, 0.75);
-    assert_eq!(now.as_ref(), &state(&library));
-    let kept = shared(now, &shown);
-    assert!(
-        kept >= 500 - 64,
-        "{kept} of 500 books' progress still shared"
-    );
+    phase a_page_turn_while_the_library_is_held_copies_one_chunk_of_progress;
+    // A page turn while the shelf holds the library copies the turned book's
+    // chunk of the progress, not every book's; shelving a book copies none.
+    {
+        use ui::tilo_resource::Reader;
+        let book = |n: usize| format!("book:{n:032x}");
+        let record = |n: usize, fraction: f32| {
+            Ebook::RECORD_PROGRESS.with(books::RecordProgress {
+                book: book(n),
+                chapter: 1,
+                block: 2,
+                fraction,
+                opened: false,
+            })
+        };
+        let mut library = Replica::<Ebook>::new();
+        for n in 0..500 {
+            apply(&mut library, record(n, 0.1)).unwrap();
+        }
+        let mut reader = Reader::<Ebook>::open(library.doc_mut()).unwrap();
+        let shared = |now: &Ebook, shown: &Ebook| {
+            (0..500)
+                .filter(|n| {
+                    std::ptr::eq(
+                        now.progress.get(&book(*n)).unwrap(),
+                        shown.progress.get(&book(*n)).unwrap(),
+                    )
+                })
+                .count()
+        };
+
+        let shown = Rc::clone(reader.state());
+        apply(&mut library, shelve(&row(BOOK, "Shelved"))).unwrap();
+        assert!(reader.sync(library.doc()).unwrap());
+        assert_eq!(shared(reader.state(), &shown), 500, "no progress copied");
+
+        let shown = Rc::clone(reader.state());
+        apply(&mut library, record(250, 0.75)).unwrap();
+        assert!(reader.sync(library.doc()).unwrap());
+        let now = reader.state();
+        assert_eq!(shown.progress_of(&book(250)).fraction, 0.1);
+        assert_eq!(now.progress_of(&book(250)).fraction, 0.75);
+        assert_eq!(now.as_ref(), &state(&library));
+        let kept = shared(now, &shown);
+        assert!(
+            kept >= 500 - 64,
+            "{kept} of 500 books' progress still shared"
+        );
+    }
 }
 
 /// Whether this device keeps the book catalogues is a setting of the

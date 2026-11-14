@@ -367,160 +367,168 @@ mod tests {
         format!("cargo {}", command.args.join(" "))
     }
 
-    #[test]
-    fn builds_pick_the_right_cargo_features_and_tools() {
-        {
-            assert_eq!(cargo_program_from(Some("my-cargo".into())), "my-cargo");
-            assert_eq!(cargo_program_from(Some(" ".into())), "cargo");
-            assert_eq!(cargo_program_from(None), "cargo");
-        }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn cargo_is_asked_for_the_right_build_and_its_metadata;
 
+        phase builds_pick_the_right_cargo_features_and_tools;
         {
-            let shell = component(
-                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/thin\"]\n",
-            );
-            let metadata = json!({"packages": [
-                {"name": "browser", "features": {"thin": [], "dev-overrides": []}},
-                {"name": "helper", "features": {}},
-            ]});
-            let extra = dev_features(&metadata, &shell.packages);
-            assert_eq!(extra, ["browser/dev-overrides"]);
-            assert_eq!(
-                as_cargo(&cargo_build(&shell, &extra)),
-                "cargo build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/thin,browser/dev-overrides"
-            );
-            let plain = component(
-                "[[component]]\nname = \"x\"\npackages = [\"x\"]\nprofile = \"thin-app\"\n",
-            );
-            assert_eq!(
-                as_cargo(&cargo_build(&plain, &[])),
-                "cargo build --locked --profile thin-app -p x"
-            );
-        }
-
-        {
-            let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
-            assert_eq!(
-                install(&fs, "target", Path::new("/stage/tree")).display(),
-                "python3 os/scripts/install-components.py --quiet --from target/release --dest /stage/tree fs"
-            );
-            assert_eq!(target_dir(&json!({"target_directory": "/t"})), "/t");
-            assert_eq!(target_dir(&json!(null)), "target");
-        }
-
-        {
-            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-            let manifest =
-                Manifest::parse(&std::fs::read_to_string(repo.join("os/components.toml")).unwrap())
-                    .unwrap();
-            let ntfs = &manifest.components["ntfs-mount"];
-            let builds: Vec<String> = native_builds(ntfs, "/t")
-                .iter()
-                .map(CommandLine::display)
-                .collect();
-            assert_eq!(
-                builds,
-                [format!(
-                    "python3 crates/system/ntfs-mount/native/build.py --out /t/{}/ntfs-mount/fuse-handoff.so",
-                    ntfs.profile_dir()
-                )]
-            );
-            for (_, _, script) in NATIVE_OUTPUTS {
-                assert!(repo.join(script).is_file(), "{script}");
+            {
+                assert_eq!(cargo_program_from(Some("my-cargo".into())), "my-cargo");
+                assert_eq!(cargo_program_from(Some(" ".into())), "cargo");
+                assert_eq!(cargo_program_from(None), "cargo");
             }
-            let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
-            assert!(native_builds(&fs, "/t").is_empty());
-        }
 
-        {
-            let package = app_package("target", "notes", Path::new("/w/notes.tapp"));
-            assert_eq!(
-                package.display(),
-                "CARGO=cargo python3 os/dev/assemble-app-runtime.py --repo . --target-dir target --profile thin-app --app notes --tapp-out /w/notes.tapp"
-            );
-            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-            assert!(apps_in(&repo).contains(&"notes".to_owned()));
-        }
-    }
-
-    #[test]
-    fn metadata_requires_successful_complete_json_and_preserves_launch_errors() {
-        struct MetadataRunner {
-            response: Option<Result<crate::hypervisor::Output, CliError>>,
-            observed: Vec<CommandLine>,
-            builds: usize,
-        }
-        impl Runner for MetadataRunner {
-            fn output(
-                &mut self,
-                line: &CommandLine,
-            ) -> Result<crate::hypervisor::Output, CliError> {
-                self.observed.push(line.clone());
-                self.response
-                    .take()
-                    .ok_or_else(|| CliError::InvalidInput("unexpected command".into()))?
+            {
+                let shell = component(
+                    "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/thin\"]\n",
+                );
+                let metadata = json!({"packages": [
+                    {"name": "browser", "features": {"thin": [], "dev-overrides": []}},
+                    {"name": "helper", "features": {}},
+                ]});
+                let extra = dev_features(&metadata, &shell.packages);
+                assert_eq!(extra, ["browser/dev-overrides"]);
+                assert_eq!(
+                    as_cargo(&cargo_build(&shell, &extra)),
+                    "cargo build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/thin,browser/dev-overrides"
+                );
+                let plain = component(
+                    "[[component]]\nname = \"x\"\npackages = [\"x\"]\nprofile = \"thin-app\"\n",
+                );
+                assert_eq!(
+                    as_cargo(&cargo_build(&plain, &[])),
+                    "cargo build --locked --profile thin-app -p x"
+                );
             }
-            fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
-                self.builds += 1;
-                Err(CliError::InvalidInput("unexpected builder".into()))
+
+            {
+                let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
+                assert_eq!(
+                    install(&fs, "target", Path::new("/stage/tree")).display(),
+                    "python3 os/scripts/install-components.py --quiet --from target/release --dest /stage/tree fs"
+                );
+                assert_eq!(target_dir(&json!({"target_directory": "/t"})), "/t");
+                assert_eq!(target_dir(&json!(null)), "target");
+            }
+
+            {
+                let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+                let manifest =
+                    Manifest::parse(&std::fs::read_to_string(repo.join("os/components.toml")).unwrap())
+                        .unwrap();
+                let ntfs = &manifest.components["ntfs-mount"];
+                let builds: Vec<String> = native_builds(ntfs, "/t")
+                    .iter()
+                    .map(CommandLine::display)
+                    .collect();
+                assert_eq!(
+                    builds,
+                    [format!(
+                        "python3 crates/system/ntfs-mount/native/build.py --out /t/{}/ntfs-mount/fuse-handoff.so",
+                        ntfs.profile_dir()
+                    )]
+                );
+                for (_, _, script) in NATIVE_OUTPUTS {
+                    assert!(repo.join(script).is_file(), "{script}");
+                }
+                let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
+                assert!(native_builds(&fs, "/t").is_empty());
+            }
+
+            {
+                let package = app_package("target", "notes", Path::new("/w/notes.tapp"));
+                assert_eq!(
+                    package.display(),
+                    "CARGO=cargo python3 os/dev/assemble-app-runtime.py --repo . --target-dir target --profile thin-app --app notes --tapp-out /w/notes.tapp"
+                );
+                let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+                assert!(apps_in(&repo).contains(&"notes".to_owned()));
             }
         }
-        for (success, stdout, status) in [
-            (
-                false,
-                r#"{"packages":[],"target_directory":"/owned/target"}"#,
-                "exit 73",
-            ),
-            (true, "not JSON", "invalid metadata JSON"),
-            (true, "null", "incomplete metadata response"),
-            (true, "{}", "incomplete metadata response"),
-        ] {
+
+        phase metadata_requires_successful_complete_json_and_preserves_launch_errors;
+        {
+            struct MetadataRunner {
+                response: Option<Result<crate::hypervisor::Output, CliError>>,
+                observed: Vec<CommandLine>,
+                builds: usize,
+            }
+            impl Runner for MetadataRunner {
+                fn output(
+                    &mut self,
+                    line: &CommandLine,
+                ) -> Result<crate::hypervisor::Output, CliError> {
+                    self.observed.push(line.clone());
+                    self.response
+                        .take()
+                        .ok_or_else(|| CliError::InvalidInput("unexpected command".into()))?
+                }
+                fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
+                    self.builds += 1;
+                    Err(CliError::InvalidInput("unexpected builder".into()))
+                }
+            }
+            for (success, stdout, status) in [
+                (
+                    false,
+                    r#"{"packages":[],"target_directory":"/owned/target"}"#,
+                    "exit 73",
+                ),
+                (true, "not JSON", "invalid metadata JSON"),
+                (true, "null", "incomplete metadata response"),
+                (true, "{}", "incomplete metadata response"),
+            ] {
+                let mut runner = MetadataRunner {
+                    observed: Vec::new(),
+                    builds: 0,
+                    response: Some(Ok(crate::hypervisor::Output {
+                        success,
+                        stdout: stdout.into(),
+                        status: "exit 73".into(),
+                        stderr: "source graph refused".into(),
+                    })),
+                };
+                let CliError::CommandFailed { status: actual, .. } =
+                    cargo_metadata(&mut runner).unwrap_err()
+                else {
+                    panic!("typed failure required")
+                };
+                assert_eq!(actual, status);
+                assert_eq!(runner.observed.len(), 1);
+                assert_eq!(
+                    runner.observed[0].display(),
+                    "cargo metadata --locked --no-deps --format-version 1"
+                );
+                assert!(runner.observed[0].env.is_empty());
+                assert_eq!(runner.builds, 0);
+            }
             let mut runner = MetadataRunner {
                 observed: Vec::new(),
                 builds: 0,
-                response: Some(Ok(crate::hypervisor::Output {
-                    success,
-                    stdout: stdout.into(),
-                    status: "exit 73".into(),
-                    stderr: "source graph refused".into(),
+                response: Some(Err(CliError::ToolMissing {
+                    tool: "cargo".into(),
+                    purpose: "metadata".into(),
                 })),
             };
-            let CliError::CommandFailed { status: actual, .. } =
-                cargo_metadata(&mut runner).unwrap_err()
-            else {
-                panic!("typed failure required")
-            };
-            assert_eq!(actual, status);
-            assert_eq!(runner.observed.len(), 1);
+            assert!(matches!(
+                cargo_metadata(&mut runner),
+                Err(CliError::ToolMissing { .. })
+            ));
+            let mut runner = MetadataRunner { observed: Vec::new(), builds: 0, response: Some(Ok(crate::hypervisor::Output {
+                success: true, status: "exit 0".into(), stderr: String::new(),
+                stdout: r#"{"packages":[{"name":"shell","features":{"dev-overrides":[]}}],"target_directory":"/owned/target"}"#.into(),
+            })) };
+            let metadata = cargo_metadata(&mut runner).unwrap();
+            assert_eq!(target_dir(&metadata), "/owned/target");
             assert_eq!(
-                runner.observed[0].display(),
-                "cargo metadata --locked --no-deps --format-version 1"
+                dev_features(&metadata, &["shell".into()]),
+                ["shell/dev-overrides"]
             );
-            assert!(runner.observed[0].env.is_empty());
-            assert_eq!(runner.builds, 0);
         }
-        let mut runner = MetadataRunner {
-            observed: Vec::new(),
-            builds: 0,
-            response: Some(Err(CliError::ToolMissing {
-                tool: "cargo".into(),
-                purpose: "metadata".into(),
-            })),
-        };
-        assert!(matches!(
-            cargo_metadata(&mut runner),
-            Err(CliError::ToolMissing { .. })
-        ));
-        let mut runner = MetadataRunner { observed: Vec::new(), builds: 0, response: Some(Ok(crate::hypervisor::Output {
-            success: true, status: "exit 0".into(), stderr: String::new(),
-            stdout: r#"{"packages":[{"name":"shell","features":{"dev-overrides":[]}}],"target_directory":"/owned/target"}"#.into(),
-        })) };
-        let metadata = cargo_metadata(&mut runner).unwrap();
-        assert_eq!(target_dir(&metadata), "/owned/target");
-        assert_eq!(
-            dev_features(&metadata, &["shell".into()]),
-            ["shell/dev-overrides"]
-        );
     }
 
     fn component(text: &str) -> Component {
@@ -561,106 +569,110 @@ mod tests {
         bytes
     }
 
-    #[test]
-    fn provenance_reads_target_and_rustc_from_the_built_binary() {
-        let comment =
-            b"Linker: LLD 22\0rustc version 1.98.0 (88d9e12ae 2026-08-18)\0GCC: (GNU) 16\0";
-        assert_eq!(
-            elf_facts(&elf(0xb7, comment)),
-            Some(ElfFacts {
-                target: Some("aarch64-unknown-linux-gnu".into()),
-                toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
-            })
-        );
-        assert_eq!(
-            elf_facts(&elf(0x3e, b"GCC: (GNU) 16\0")),
-            Some(ElfFacts {
-                target: Some("x86_64-unknown-linux-gnu".into()),
-                toolchain: None,
-            })
-        );
-        assert_eq!(elf_facts(b"#!/bin/sh\n"), None);
-        assert_eq!(
-            elf_facts(&elf(0xb7, comment)[..40]).map(|f| f.toolchain),
-            Some(None)
-        );
+    tilo_test_env::scenario! {
+        fn a_built_binary_tells_its_provenance_and_runtime;
 
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/share/x")).unwrap();
-        std::fs::write(dir.path().join("usr/share/x/readme"), b"text").unwrap();
-        std::fs::write(dir.path().join("usr/bin/shell"), elf(0xb7, comment)).unwrap();
-        assert_eq!(
-            first_elf(dir.path()).and_then(|f| f.target).as_deref(),
-            Some("aarch64-unknown-linux-gnu")
-        );
-        #[cfg(target_os = "linux")]
+        phase provenance_reads_target_and_rustc_from_the_built_binary;
         {
-            let me = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+            let comment =
+                b"Linker: LLD 22\0rustc version 1.98.0 (88d9e12ae 2026-08-18)\0GCC: (GNU) 16\0";
             assert_eq!(
-                elf_facts(&me).and_then(|f| f.target),
-                Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+                elf_facts(&elf(0xb7, comment)),
+                Some(ElfFacts {
+                    target: Some("aarch64-unknown-linux-gnu".into()),
+                    toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
+                })
             );
-        }
-    }
+            assert_eq!(
+                elf_facts(&elf(0x3e, b"GCC: (GNU) 16\0")),
+                Some(ElfFacts {
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    toolchain: None,
+                })
+            );
+            assert_eq!(elf_facts(b"#!/bin/sh\n"), None);
+            assert_eq!(
+                elf_facts(&elf(0xb7, comment)[..40]).map(|f| f.toolchain),
+                Some(None)
+            );
 
-    #[test]
-    fn native_layer_facts_find_rust_runtime_after_c_dependencies() {
-        let dir = tempfile::tempdir().unwrap();
-        let dependency = dir.path().join("usr/lib/tilo-runtime/00-deps");
-        let runtime = dir.path().join("usr/lib/tilo-runtime/zz-runtime");
-        std::fs::create_dir_all(&dependency).unwrap();
-        std::fs::create_dir_all(&runtime).unwrap();
-        std::fs::write(
-            dependency.join("libnative.so"),
-            elf(0x3e, b"GCC: (GNU) 16\0"),
-        )
-        .unwrap();
-        // This is the same reader that builderlayer::pack uses. With only the
-        // dependency, it must not fabricate a compiler from the build host.
-        assert_eq!(
-            first_elf(dir.path()),
-            Some(ElfFacts {
-                target: Some("x86_64-unknown-linux-gnu".into()),
-                toolchain: None,
-            })
-        );
-        std::fs::write(
-            runtime.join("libtilo_runtime.so"),
-            elf(0x3e, b"rustc version 1.98.0 (88d9e12ae 2026-08-18)\0"),
-        )
-        .unwrap();
-        let facts = first_elf(dir.path()).unwrap();
-        assert_eq!(
-            facts,
-            ElfFacts {
-                target: Some("x86_64-unknown-linux-gnu".into()),
-                toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/share/x")).unwrap();
+            std::fs::write(dir.path().join("usr/share/x/readme"), b"text").unwrap();
+            std::fs::write(dir.path().join("usr/bin/shell"), elf(0xb7, comment)).unwrap();
+            assert_eq!(
+                first_elf(dir.path()).and_then(|f| f.target).as_deref(),
+                Some("aarch64-unknown-linux-gnu")
+            );
+            #[cfg(target_os = "linux")]
+            {
+                let me = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+                assert_eq!(
+                    elf_facts(&me).and_then(|f| f.target),
+                    Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+                );
             }
-        );
-        let mut bytes = Vec::new();
-        crate::builderlayer::write_layer(
-            dir.path(),
-            crate::builderlayer::Packed {
-                component: "apps+runtime".into(),
-                target: facts.target.clone(),
-                toolchain: facts.toolchain.clone(),
-                source_digest: Some("a".repeat(64)),
-                ..crate::builderlayer::Packed::default()
-            },
-            &[],
-            &mut bytes,
-        )
-        .unwrap();
-        let mut stream = crate::builderlayer::Stream::new(std::io::Cursor::new(bytes));
-        let packed = stream.header(&mut Vec::new()).unwrap();
-        assert_eq!(packed.component, "apps+runtime");
-        assert_eq!(packed.target, facts.target);
-        assert_eq!(packed.toolchain, facts.toolchain);
-        assert!(!packed.reused);
-        assert!(packed.layer_hash.is_some());
-        std::io::Read::read_to_end(&mut stream, &mut Vec::new()).unwrap();
-        stream.finish().unwrap();
+        }
+
+        phase native_layer_facts_find_rust_runtime_after_c_dependencies;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let dependency = dir.path().join("usr/lib/tilo-runtime/00-deps");
+            let runtime = dir.path().join("usr/lib/tilo-runtime/zz-runtime");
+            std::fs::create_dir_all(&dependency).unwrap();
+            std::fs::create_dir_all(&runtime).unwrap();
+            std::fs::write(
+                dependency.join("libnative.so"),
+                elf(0x3e, b"GCC: (GNU) 16\0"),
+            )
+            .unwrap();
+            // This is the same reader that builderlayer::pack uses. With only the
+            // dependency, it must not fabricate a compiler from the build host.
+            assert_eq!(
+                first_elf(dir.path()),
+                Some(ElfFacts {
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    toolchain: None,
+                })
+            );
+            std::fs::write(
+                runtime.join("libtilo_runtime.so"),
+                elf(0x3e, b"rustc version 1.98.0 (88d9e12ae 2026-08-18)\0"),
+            )
+            .unwrap();
+            let facts = first_elf(dir.path()).unwrap();
+            assert_eq!(
+                facts,
+                ElfFacts {
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
+                }
+            );
+            let mut bytes = Vec::new();
+            crate::builderlayer::write_layer(
+                dir.path(),
+                crate::builderlayer::Packed {
+                    component: "apps+runtime".into(),
+                    target: facts.target.clone(),
+                    toolchain: facts.toolchain.clone(),
+                    source_digest: Some("a".repeat(64)),
+                    ..crate::builderlayer::Packed::default()
+                },
+                &[],
+                &mut bytes,
+            )
+            .unwrap();
+            let mut stream = crate::builderlayer::Stream::new(std::io::Cursor::new(bytes));
+            let packed = stream.header(&mut Vec::new()).unwrap();
+            assert_eq!(packed.component, "apps+runtime");
+            assert_eq!(packed.target, facts.target);
+            assert_eq!(packed.toolchain, facts.toolchain);
+            assert!(!packed.reused);
+            assert!(packed.layer_hash.is_some());
+            std::io::Read::read_to_end(&mut stream, &mut Vec::new()).unwrap();
+            stream.finish().unwrap();
+        }
     }
 
     #[test]

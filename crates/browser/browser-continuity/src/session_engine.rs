@@ -644,29 +644,57 @@ mod tests {
             ["shutdown", "reopen", "verify", "shutdown", "cleanup"]
         );
     }
-    #[test]
-    fn failed_shutdown_keeps_profile_and_retries_under_same_custody() {
-        let state = Arc::new(State::default());
-        state.refuse_shutdown.store(true, Ordering::Release);
-        let done = Arc::new(AtomicBool::new(false));
-        let mut cleanup = cleanup_after_native_exit(
-            TestEngine(state.clone()),
-            TestProfile(state.clone()),
-            done.clone(),
-            None,
-        );
-        assert!(cleanup.finish().is_err());
-        assert!(!done.load(Ordering::Acquire));
-        assert_eq!(*state.events.lock().unwrap(), ["shutdown"]);
-        assert!(cleanup.slot.lock().unwrap().is_some());
-        state.refuse_shutdown.store(false, Ordering::Release);
-        state.refuse_cleanup.store(true, Ordering::Release);
-        assert!(cleanup.finish().is_err());
-        assert!(cleanup.slot.lock().unwrap().is_some());
-        state.refuse_cleanup.store(false, Ordering::Release);
-        cleanup.finish().unwrap();
-        assert!(done.load(Ordering::Acquire));
-        assert!(cleanup.slot.lock().unwrap().is_none());
+    tilo_test_env::scenario! {
+        fn teardown_keeps_custody_until_it_is_confirmed;
+
+        phase failed_shutdown_keeps_profile_and_retries_under_same_custody;
+        {
+            let state = Arc::new(State::default());
+            state.refuse_shutdown.store(true, Ordering::Release);
+            let done = Arc::new(AtomicBool::new(false));
+            let mut cleanup = cleanup_after_native_exit(
+                TestEngine(state.clone()),
+                TestProfile(state.clone()),
+                done.clone(),
+                None,
+            );
+            assert!(cleanup.finish().is_err());
+            assert!(!done.load(Ordering::Acquire));
+            assert_eq!(*state.events.lock().unwrap(), ["shutdown"]);
+            assert!(cleanup.slot.lock().unwrap().is_some());
+            state.refuse_shutdown.store(false, Ordering::Release);
+            state.refuse_cleanup.store(true, Ordering::Release);
+            assert!(cleanup.finish().is_err());
+            assert!(cleanup.slot.lock().unwrap().is_some());
+            state.refuse_cleanup.store(false, Ordering::Release);
+            cleanup.finish().unwrap();
+            assert!(done.load(Ordering::Acquire));
+            assert!(cleanup.slot.lock().unwrap().is_none());
+        }
+
+        phase cancelling_open_waits_for_worker_and_closes_unpublished_view;
+        {
+            let mut opening = Opening::default();
+            let closed = Arc::new(AtomicBool::new(false));
+            let worker_closed = closed.clone();
+            let (release, gate) = mpsc::channel();
+            let (wake, receive) = wake();
+            opening
+                .start(
+                    move || {
+                        gate.recv().unwrap();
+                        Ok(TestView(worker_closed))
+                    },
+                    Some(wake),
+                )
+                .unwrap();
+            assert!(!opening.request_close());
+            release.send(()).unwrap();
+            tilo_test_env::recv("the restart to wake its owner", &receive);
+            opening.finish_close().unwrap();
+            assert!(closed.load(Ordering::Acquire));
+            assert!(opening.close_complete());
+        }
     }
 
     struct TestView(Arc<AtomicBool>);
@@ -681,29 +709,6 @@ mod tests {
             self.request_close();
             Ok(())
         }
-    }
-    #[test]
-    fn cancelling_open_waits_for_worker_and_closes_unpublished_view() {
-        let mut opening = Opening::default();
-        let closed = Arc::new(AtomicBool::new(false));
-        let worker_closed = closed.clone();
-        let (release, gate) = mpsc::channel();
-        let (wake, receive) = wake();
-        opening
-            .start(
-                move || {
-                    gate.recv().unwrap();
-                    Ok(TestView(worker_closed))
-                },
-                Some(wake),
-            )
-            .unwrap();
-        assert!(!opening.request_close());
-        release.send(()).unwrap();
-        tilo_test_env::recv("the restart to wake its owner", &receive);
-        opening.finish_close().unwrap();
-        assert!(closed.load(Ordering::Acquire));
-        assert!(opening.close_complete());
     }
     #[test]
     fn forget_publishes_only_after_local_barrier() {

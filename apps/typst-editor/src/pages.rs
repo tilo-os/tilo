@@ -188,64 +188,72 @@ mod tests {
     use super::*;
     use crate::compile::{WorldParts, compile_source};
 
-    #[test]
-    fn a_tile_shows_its_region_of_the_page() {
-        let out = compile_source(
-            &WorldParts::new(),
-            "#set page(width: 300pt, height: 400pt)\n= Tiles\n#lorem(120)\n#rect(width: 100%, height: 80pt, fill: blue)\n",
-        );
-        let document = out.document.expect("laid out");
-        let level = 8;
-        let (pw, ph) = tiles::page_pixels(document.sizes()[0], level);
-        let page = document.render_page(0, pw).expect("the page renders");
-        assert_eq!((page.width, page.height), (pw, ph));
-        let key = TileKey {
-            page: 0,
-            level,
-            col: 1,
-            row: 1,
-        };
-        let tile = document.render_tile(key).expect("the tile renders");
-        let region = tiles::tile_region(document.sizes()[0], level, 1, 1).unwrap();
-        assert_eq!((tile.width, tile.height), (region.width, region.height));
-        let (page_px, tile_px) = (page.data.data(), tile.data.data());
-        let mut diff = 0u64;
-        let mut inked = 0u64;
-        for y in 0..region.height {
-            for x in 0..region.width {
-                let p = (((region.y + y) * pw + region.x + x) * 4) as usize;
-                let t = ((y * region.width + x) * 4) as usize;
-                for c in 0..3 {
-                    diff += u64::from(page_px[p + c].abs_diff(tile_px[t + c]));
-                }
-                inked += u64::from(tile_px[t] < 128);
-            }
-        }
-        let mean = diff as f64 / f64::from(region.width * region.height * 3);
-        assert!(inked > 100, "the tile carries the page's text and figure");
-        assert!(
-            mean < 2.0,
-            "the tile matches the page's pixels (mean difference {mean})"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn pages_render_their_tiles_and_keep_untouched_looks;
 
-    #[test]
-    fn an_edit_changes_only_the_looks_of_the_pages_it_touches() {
-        let parts = WorldParts::new();
-        let source = |middle: &str| {
-            format!(
-                "= One\n#lorem(30)\n#pagebreak()\n= Two\n{middle}\n#pagebreak()\n= Three\n#lorem(30)\n"
-            )
-        };
-        let before = compile_source(&parts, &source("#lorem(30)"))
-            .document
-            .unwrap();
-        let after = compile_source(&parts, &source("Edited. #lorem(30)"))
-            .document
-            .unwrap();
-        assert_eq!(before.len(), 3);
-        assert_eq!(before.looks()[0], after.looks()[0]);
-        assert_ne!(before.looks()[1], after.looks()[1]);
-        assert_eq!(before.looks()[2], after.looks()[2]);
+        phase a_tile_shows_its_region_of_the_page;
+        {
+            let out = compile_source(
+                &WorldParts::new(),
+                "#set page(width: 300pt, height: 400pt)\n= Tiles\n#lorem(120)\n#rect(width: 100%, height: 80pt, fill: blue)\n",
+            );
+            let document = out.document.expect("laid out");
+            let level = 8;
+            let (pw, ph) = tiles::page_pixels(document.sizes()[0], level);
+            let page = document.render_page(0, pw).expect("the page renders");
+            assert_eq!((page.width, page.height), (pw, ph));
+            let key = TileKey {
+                page: 0,
+                level,
+                col: 1,
+                row: 1,
+            };
+            let tile = document.render_tile(key).expect("the tile renders");
+            let region = tiles::tile_region(document.sizes()[0], level, 1, 1).unwrap();
+            assert_eq!((tile.width, tile.height), (region.width, region.height));
+            let (page_px, tile_px) = (page.data.data(), tile.data.data());
+            let mut diff = 0u64;
+            let mut inked = 0u64;
+            for y in 0..region.height {
+                for x in 0..region.width {
+                    let p = (((region.y + y) * pw + region.x + x) * 4) as usize;
+                    let t = ((y * region.width + x) * 4) as usize;
+                    for c in 0..3 {
+                        diff += u64::from(page_px[p + c].abs_diff(tile_px[t + c]));
+                    }
+                    inked += u64::from(tile_px[t] < 128);
+                }
+            }
+            let mean = diff as f64 / f64::from(region.width * region.height * 3);
+            assert!(inked > 100, "the tile carries the page's text and figure");
+            assert!(
+                mean < 2.0,
+                "the tile matches the page's pixels (mean difference {mean})"
+            );
+        }
+
+        phase an_edit_changes_only_the_looks_of_the_pages_it_touches;
+        {
+            let parts = WorldParts::new();
+            let source = |middle: &str| {
+                format!(
+                    "= One\n#lorem(30)\n#pagebreak()\n= Two\n{middle}\n#pagebreak()\n= Three\n#lorem(30)\n"
+                )
+            };
+            let before = compile_source(&parts, &source("#lorem(30)"))
+                .document
+                .unwrap();
+            let after = compile_source(&parts, &source("Edited. #lorem(30)"))
+                .document
+                .unwrap();
+            assert_eq!(before.len(), 3);
+            assert_eq!(before.looks()[0], after.looks()[0]);
+            assert_ne!(before.looks()[1], after.looks()[1]);
+            assert_eq!(before.looks()[2], after.looks()[2]);
+        }
     }
 }

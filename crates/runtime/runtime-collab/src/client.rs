@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
+use collab_types::MemberId;
 use runtime_portal::NotAvailable;
 
 use crate::wire::{
     Changes, ContextUpdate, Event, Handle, InvocationCall, Join, LiveActivityCall, Operation,
-    Participant, Publication, Read, Receipt, Reply, Report, Service, SettingsCall, TaskCall,
-    TaskStep, Topic,
+    Publication, Read, Receipt, Reply, Report, Service, SettingsCall, TaskCall, TaskStep, Topic,
     client::{Answerer, Client, Failure, Subscription},
 };
 use crate::{
@@ -40,6 +40,10 @@ pub(crate) fn failure(failure: Failure) -> NotAvailable {
         Failure::Refused(reason) => NotAvailable::Refused(reason),
         Failure::Closed => NotAvailable::ConnectionFailed(std::io::Error::new(
             std::io::ErrorKind::BrokenPipe,
+            failure.to_string(),
+        )),
+        Failure::Unreadable(_) => NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
             failure.to_string(),
         )),
     }
@@ -303,9 +307,9 @@ impl CollabClient {
             .await
     }
 
-    /// Join as an explicitly typed participant (`person`, or `agent` with
-    /// the agent's id as the handle). `record_kind` names the resource kind
-    /// of the record the channel carries, or is empty.
+    /// Join as an explicitly typed member (`person`, or `agent` with the
+    /// agent's id as the handle). `record_kind` names the resource kind of the
+    /// record the channel carries, or is empty.
     ///
     /// # Errors
     ///
@@ -318,23 +322,21 @@ impl CollabClient {
         participant_kind: &str,
         record_kind: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
-        let participant = match participant_kind {
-            "" | "person" => Participant::Person {
-                handle: participant_handle.to_owned(),
-            },
-            "agent" => Participant::Agent {
-                id: participant_handle.to_owned(),
-            },
+        let handler = participant_handle.to_owned();
+        let member = match participant_kind {
+            "" | "person" => None,
+            "agent" => Some(MemberId::Agent(handler.clone())),
             other => {
                 return Err(refused(format!(
-                    "unknown collaboration participant kind `{other}`"
+                    "unknown collaboration member kind `{other}`"
                 )));
             }
         };
         let join = Join {
             channel: channel_id.to_owned(),
             identity: identity.to_vec(),
-            participant,
+            member,
+            handle: handler,
             record_kind: Some(record_kind.to_owned()).filter(|kind| !kind.is_empty()),
         };
         match self
@@ -1398,7 +1400,9 @@ impl ChannelHandle {
                     || crate::LocalDocumentActionError::Uncertain(reason.clone()),
                     |reason| crate::LocalDocumentActionError::Rejected(reason.to_owned()),
                 ),
-                Failure::Closed => crate::LocalDocumentActionError::Uncertain(error.to_string()),
+                Failure::Closed | Failure::Unreadable(_) => {
+                    crate::LocalDocumentActionError::Uncertain(error.to_string())
+                }
             })?;
         let Reply::Admitted(observation) = reply else {
             return Err(crate::LocalDocumentActionError::Uncertain(format!(
@@ -1937,11 +1941,11 @@ impl ContextStream {
         let mut context = ChannelContext::default();
         match update {
             ContextUpdate::Snapshot {
-                collaborators,
+                members,
                 permissions,
                 apps,
             } => {
-                context.collaborators = collaborators;
+                context.members = members;
                 context.permissions = permissions;
                 context.apps = apps;
             }

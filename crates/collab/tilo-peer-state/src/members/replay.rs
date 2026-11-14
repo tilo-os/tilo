@@ -402,10 +402,7 @@ impl<'a> Ledger<'a> {
             .joined
             .entry(person.clone())
             .or_insert(at_ns / 1_000_000);
-        policy
-            .members
-            .entry(person)
-            .or_insert_with(|| Role::from(grant.role));
+        policy.members.entry(person).or_insert(grant.role);
         true
     }
 }

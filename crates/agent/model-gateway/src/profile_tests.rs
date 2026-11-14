@@ -61,154 +61,159 @@ fn minted(
     })
 }
 
-/// A minted access token is reused only until shortly before it expires,
-/// however recently it was read; a sweep lets go of an expired one.
-#[test]
-fn a_minted_token_is_reused_only_while_it_is_valid() {
-    let start = Instant::now();
-    let cache = ProfileCache::new();
-    // Expires in 120 s: reused for the 30 s before the margin.
-    let until = reuse_until(1_120, 1_000, start);
-    assert_eq!(until, at(start, 30));
-    let first = minted(&cache, start, "first", until).unwrap();
-    let later = minted(&cache, at(start, 29), "later", until).unwrap();
-    assert_eq!(key_of(&first), Some("first"));
-    assert_eq!(key_of(&later), Some("first"));
-    assert_eq!(reads(&cache), 1);
-    let renewed = minted(&cache, at(start, 30), "renewed", at(start, 3000)).unwrap();
-    assert_eq!(key_of(&renewed), Some("renewed"));
-    assert_eq!(reads(&cache), 2);
-    // Still bounded by the reuse age, not only the token's lifetime.
-    let aged = minted(&cache, at(start, 91), "aged", at(start, 3000)).unwrap();
-    assert_eq!(key_of(&aged), Some("aged"));
-    // A token already inside the margin is used once and never kept.
-    let cache = ProfileCache::new();
-    let due = reuse_until(1_050, 1_000, start);
-    assert_eq!(due, start);
-    minted(&cache, start, "due", due).unwrap();
-    assert_eq!(kept(&cache), 0);
-    // A sweep drops a token whose time is up even within the reuse age.
-    minted(&cache, start, "short", at(start, 10)).unwrap();
-    cache.sweep(at(start, 9));
-    assert_eq!(kept(&cache), 1);
-    cache.sweep(at(start, 10));
-    assert_eq!(kept(&cache), 0);
+tilo_test_env::scenario! {
+    /// The profile cache on caches of the cases' own, with the clock handed in.
+    fn a_cached_reading_is_reused_only_while_it_is_still_good;
+
+    phase a_minted_token_is_reused_only_while_it_is_valid;
+    // A minted access token is reused only until shortly before it expires,
+    // however recently it was read; a sweep lets go of an expired one.
+    {
+        let start = Instant::now();
+        let cache = ProfileCache::new();
+        // Expires in 120 s: reused for the 30 s before the margin.
+        let until = reuse_until(1_120, 1_000, start);
+        assert_eq!(until, at(start, 30));
+        let first = minted(&cache, start, "first", until).unwrap();
+        let later = minted(&cache, at(start, 29), "later", until).unwrap();
+        assert_eq!(key_of(&first), Some("first"));
+        assert_eq!(key_of(&later), Some("first"));
+        assert_eq!(reads(&cache), 1);
+        let renewed = minted(&cache, at(start, 30), "renewed", at(start, 3000)).unwrap();
+        assert_eq!(key_of(&renewed), Some("renewed"));
+        assert_eq!(reads(&cache), 2);
+        // Still bounded by the reuse age, not only the token's lifetime.
+        let aged = minted(&cache, at(start, 91), "aged", at(start, 3000)).unwrap();
+        assert_eq!(key_of(&aged), Some("aged"));
+        // A token already inside the margin is used once and never kept.
+        let cache = ProfileCache::new();
+        let due = reuse_until(1_050, 1_000, start);
+        assert_eq!(due, start);
+        minted(&cache, start, "due", due).unwrap();
+        assert_eq!(kept(&cache), 0);
+        // A sweep drops a token whose time is up even within the reuse age.
+        minted(&cache, start, "short", at(start, 10)).unwrap();
+        cache.sweep(at(start, 9));
+        assert_eq!(kept(&cache), 1);
+        cache.sweep(at(start, 10));
+        assert_eq!(kept(&cache), 0);
+    }
+
+    phase a_kept_profile_is_reused_only_while_nothing_says_it_changed;
+    // A kept reading serves later turns without reading again; a changed
+    // source, its age, a forgotten key, an unstamped or failed reading, and a
+    // reading overtaken by a forget each lead to reading again, and nothing
+    // stale stays in memory.
+    {
+        let start = Instant::now();
+
+        // Phase: a later turn reuses the first turn's reading.
+        {
+            let cache = ProfileCache::new();
+            let first = through(&cache, Some(stamp(1)), start, "first").unwrap();
+            let later = through(&cache, Some(stamp(1)), at(start, 59), "later").unwrap();
+            assert_eq!(reads(&cache), 1);
+            assert_eq!(key_of(&first), Some("first"));
+            assert_eq!(key_of(&later), Some("first"));
+            assert_eq!(later.0.id, "p");
+            cache
+                .resolve(("p", "other"), Some(stamp(1)), start, || {
+                    Ok(((ProviderProfile::local_vllm(), None), None))
+                })
+                .unwrap();
+            assert_eq!(reads(&cache), 2);
+            assert_eq!(kept(&cache), 2);
+        }
+
+        // Phase: a changed settings document or vault is read again.
+        {
+            let cache = ProfileCache::new();
+            through(&cache, Some(stamp(1)), start, "first").unwrap();
+            let changed = through(&cache, Some(stamp(2)), start, "second").unwrap();
+            assert_eq!(key_of(&changed), Some("second"));
+            assert_eq!(reads(&cache), 2);
+            // The superseded reading is gone, not merely shadowed.
+            assert_eq!(kept(&cache), 1);
+            let mut vault_only = stamp(2);
+            vault_only.1 = None;
+            let removed = through(&cache, Some(vault_only), start, "third").unwrap();
+            assert_eq!(key_of(&removed), Some("third"));
+            assert_eq!(reads(&cache), 3);
+        }
+
+        // Phase: a reading is not reused past its age, and an idle sweep drops it.
+        {
+            let cache = ProfileCache::new();
+            through(&cache, Some(stamp(1)), start, "first").unwrap();
+            let aged = through(&cache, Some(stamp(1)), at(start, 60), "aged").unwrap();
+            assert_eq!(key_of(&aged), Some("aged"));
+            assert_eq!(reads(&cache), 2);
+            cache.sweep(at(start, 119));
+            assert_eq!(kept(&cache), 1);
+            cache.sweep(at(start, 120));
+            assert_eq!(kept(&cache), 0);
+        }
+
+        // Phase: a forgotten key is dropped at once and read again.
+        {
+            let cache = ProfileCache::new();
+            through(&cache, Some(stamp(1)), start, "first").unwrap();
+            cache.forget("another-profile");
+            assert_eq!(kept(&cache), 1);
+            cache.forget("p");
+            assert_eq!(kept(&cache), 0);
+            let again = through(&cache, Some(stamp(1)), start, "set").unwrap();
+            assert_eq!(key_of(&again), Some("set"));
+            assert_eq!(reads(&cache), 2);
+        }
+
+        // Phase: a reading the key changed under is used once and not kept.
+        {
+            let cache = ProfileCache::new();
+            let raced = cache
+                .resolve(("p", "m"), Some(stamp(1)), start, || {
+                    cache.forget("p");
+                    Ok((
+                        (
+                            ProviderProfile::local_vllm(),
+                            Some(Zeroizing::new("old".into())),
+                        ),
+                        None,
+                    ))
+                })
+                .unwrap();
+            assert_eq!(key_of(&raced), Some("old"));
+            assert_eq!(kept(&cache), 0);
+            through(&cache, Some(stamp(1)), start, "new").unwrap();
+            assert_eq!(reads(&cache), 2);
+        }
+
+        // Phase: an unstamped reading and a failed one are never kept, and an
+        // unstamped turn lets go of an earlier reading of the same pair.
+        {
+            let cache = ProfileCache::new();
+            through(&cache, Some(stamp(1)), start, "first").unwrap();
+            through(&cache, None, start, "unstamped").unwrap();
+            assert_eq!(kept(&cache), 0);
+            through(&cache, None, start, "unstamped").unwrap();
+            assert_eq!(reads(&cache), 3);
+            let failed = cache.resolve(("p", "m"), Some(stamp(1)), start, || {
+                Err(resolution_error(
+                    ErrorKind::InvalidRequest,
+                    "provider is not enabled",
+                ))
+            });
+            assert_eq!(
+                failed.unwrap_err(),
+                resolution_error(ErrorKind::InvalidRequest, "provider is not enabled")
+            );
+            assert_eq!(kept(&cache), 0);
+        }
+    }
 }
 
 fn reads(cache: &ProfileCache) -> u64 {
     cache.reads.load(Ordering::Relaxed)
-}
-
-/// A kept reading serves later turns without reading again; a changed
-/// source, its age, a forgotten key, an unstamped or failed reading, and a
-/// reading overtaken by a forget each lead to reading again, and nothing
-/// stale stays in memory.
-#[test]
-fn a_kept_profile_is_reused_only_while_nothing_says_it_changed() {
-    let start = Instant::now();
-
-    // Phase: a later turn reuses the first turn's reading.
-    {
-        let cache = ProfileCache::new();
-        let first = through(&cache, Some(stamp(1)), start, "first").unwrap();
-        let later = through(&cache, Some(stamp(1)), at(start, 59), "later").unwrap();
-        assert_eq!(reads(&cache), 1);
-        assert_eq!(key_of(&first), Some("first"));
-        assert_eq!(key_of(&later), Some("first"));
-        assert_eq!(later.0.id, "p");
-        cache
-            .resolve(("p", "other"), Some(stamp(1)), start, || {
-                Ok(((ProviderProfile::local_vllm(), None), None))
-            })
-            .unwrap();
-        assert_eq!(reads(&cache), 2);
-        assert_eq!(kept(&cache), 2);
-    }
-
-    // Phase: a changed settings document or vault is read again.
-    {
-        let cache = ProfileCache::new();
-        through(&cache, Some(stamp(1)), start, "first").unwrap();
-        let changed = through(&cache, Some(stamp(2)), start, "second").unwrap();
-        assert_eq!(key_of(&changed), Some("second"));
-        assert_eq!(reads(&cache), 2);
-        // The superseded reading is gone, not merely shadowed.
-        assert_eq!(kept(&cache), 1);
-        let mut vault_only = stamp(2);
-        vault_only.1 = None;
-        let removed = through(&cache, Some(vault_only), start, "third").unwrap();
-        assert_eq!(key_of(&removed), Some("third"));
-        assert_eq!(reads(&cache), 3);
-    }
-
-    // Phase: a reading is not reused past its age, and an idle sweep drops it.
-    {
-        let cache = ProfileCache::new();
-        through(&cache, Some(stamp(1)), start, "first").unwrap();
-        let aged = through(&cache, Some(stamp(1)), at(start, 60), "aged").unwrap();
-        assert_eq!(key_of(&aged), Some("aged"));
-        assert_eq!(reads(&cache), 2);
-        cache.sweep(at(start, 119));
-        assert_eq!(kept(&cache), 1);
-        cache.sweep(at(start, 120));
-        assert_eq!(kept(&cache), 0);
-    }
-
-    // Phase: a forgotten key is dropped at once and read again.
-    {
-        let cache = ProfileCache::new();
-        through(&cache, Some(stamp(1)), start, "first").unwrap();
-        cache.forget("another-profile");
-        assert_eq!(kept(&cache), 1);
-        cache.forget("p");
-        assert_eq!(kept(&cache), 0);
-        let again = through(&cache, Some(stamp(1)), start, "set").unwrap();
-        assert_eq!(key_of(&again), Some("set"));
-        assert_eq!(reads(&cache), 2);
-    }
-
-    // Phase: a reading the key changed under is used once and not kept.
-    {
-        let cache = ProfileCache::new();
-        let raced = cache
-            .resolve(("p", "m"), Some(stamp(1)), start, || {
-                cache.forget("p");
-                Ok((
-                    (
-                        ProviderProfile::local_vllm(),
-                        Some(Zeroizing::new("old".into())),
-                    ),
-                    None,
-                ))
-            })
-            .unwrap();
-        assert_eq!(key_of(&raced), Some("old"));
-        assert_eq!(kept(&cache), 0);
-        through(&cache, Some(stamp(1)), start, "new").unwrap();
-        assert_eq!(reads(&cache), 2);
-    }
-
-    // Phase: an unstamped reading and a failed one are never kept, and an
-    // unstamped turn lets go of an earlier reading of the same pair.
-    {
-        let cache = ProfileCache::new();
-        through(&cache, Some(stamp(1)), start, "first").unwrap();
-        through(&cache, None, start, "unstamped").unwrap();
-        assert_eq!(kept(&cache), 0);
-        through(&cache, None, start, "unstamped").unwrap();
-        assert_eq!(reads(&cache), 3);
-        let failed = cache.resolve(("p", "m"), Some(stamp(1)), start, || {
-            Err(resolution_error(
-                ErrorKind::InvalidRequest,
-                "provider is not enabled",
-            ))
-        });
-        assert_eq!(
-            failed.unwrap_err(),
-            resolution_error(ErrorKind::InvalidRequest, "provider is not enabled")
-        );
-        assert_eq!(kept(&cache), 0);
-    }
 }
 
 fn save_profile(enabled: bool) {

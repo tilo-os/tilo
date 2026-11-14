@@ -303,406 +303,412 @@ mod tests {
         key_press(Key::Character(SmolStr::new(c)), Some(c))
     }
 
-    #[test]
-    fn visibility_resets_filter_and_invisible_menu_ignores_keys() {
-        let _settled = crate::motion::testing::settled();
+    tilo_test_env::scenario! {
+        /// The slash menu.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_slash_menu_filters_moves_commits_and_places_itself;
+
+        phase visibility_resets_filter_and_invisible_menu_ignores_keys;
         {
-            let m = SlashMenu::new();
-            assert!(!m.is_visible());
-            assert_eq!(m.visible_len(), entries(false, &[]).len());
+            let _settled = crate::motion::testing::settled();
+            {
+                let m = SlashMenu::new();
+                assert!(!m.is_visible());
+                assert_eq!(m.visible_len(), entries(false, &[]).len());
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.set_filter("h");
+                let _ = m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+                assert!(m.visible_len() > 0);
+                m.set_visible(false);
+                assert_eq!(m.filter(), "");
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                let consumed = m.handle_key(&char_press("h"));
+                assert!(!consumed);
+                assert_eq!(m.filter(), "");
+            }
         }
 
+        phase filter_narrows_rows_from_typing_ime_and_backspace;
         {
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            m.set_filter("h");
-            let _ = m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-            assert!(m.visible_len() > 0);
-            m.set_visible(false);
-            assert_eq!(m.filter(), "");
-        }
+            let _settled = crate::motion::testing::settled();
+            {
+                let mut m = SlashMenu::new();
+                m.set_filter("h");
+                // "Heading 1/2/3" and "Checklist" (contains "h" in "Checklist")
+                // match. All three Heading rows should be present.
+                assert!(m.visible_len() < entries(false, &[]).len());
+                // Specifically: "Heading 1" must be in the visible set.
+                let any_h1 = (0..m.visible_len()).any(|_| {
+                    matches!(
+                        m.highlighted(),
+                        Some(SlashCommand::Block(BlockKind::Heading(1)))
+                    ) || m.visible_len() > 0
+                });
+                assert!(any_h1);
+            }
 
-        {
-            let mut m = SlashMenu::new();
-            let consumed = m.handle_key(&char_press("h"));
-            assert!(!consumed);
-            assert_eq!(m.filter(), "");
-        }
-    }
-
-    #[test]
-    fn filter_narrows_rows_from_typing_ime_and_backspace() {
-        let _settled = crate::motion::testing::settled();
-        {
-            let mut m = SlashMenu::new();
-            m.set_filter("h");
-            // "Heading 1/2/3" and "Checklist" (contains "h" in "Checklist")
-            // match. All three Heading rows should be present.
-            assert!(m.visible_len() < entries(false, &[]).len());
-            // Specifically: "Heading 1" must be in the visible set.
-            let any_h1 = (0..m.visible_len()).any(|_| {
-                matches!(
+            {
+                let mut m = SlashMenu::new();
+                m.set_filter("Heading 2");
+                assert_eq!(m.visible_len(), 1);
+                assert_eq!(
                     m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Heading(2)))
+                );
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.handle_key(&char_press("h"));
+                assert_eq!(m.filter(), "h");
+                m.handle_key(&char_press("2"));
+                assert_eq!(m.filter(), "h2");
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                let initial_rows = m.visible_len();
+                assert!(m.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(
+                    "h2".into(),
+                    Some((1, 1)),
+                ))));
+                assert_eq!(m.filter(), "");
+                assert_eq!(m.visible_len(), initial_rows);
+                assert_eq!(Widget::accessibility(&m).unwrap().value, None);
+
+                let mut scene = Scene::new();
+                let mut renderer = TextRenderer::new();
+                m.draw_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
+                assert!(Widget::ime_cursor_rect(&m).is_some());
+
+                assert!(m.handle_key(&WindowEvent::Ime(winit::event::Ime::Commit("h2".into()))));
+                assert_eq!(m.filter(), "h2");
+                assert_eq!(m.visible_len(), 1);
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Heading(2)))
+                );
+                let access = Widget::accessibility(&m).unwrap();
+                assert_eq!(access.name.as_deref(), Some("Block types"));
+                assert_eq!(access.value.as_deref(), Some("h2"));
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.set_filter("👩🏽‍💻");
+                assert!(m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None)));
+                assert_eq!(m.filter(), "");
+                assert!(m.is_visible());
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.set_filter("h2");
+                m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
+                assert_eq!(m.filter(), "h");
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                let consumed = m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
+                assert!(!consumed);
+                assert!(!m.is_visible());
+            }
+        }
+
+        phase keyboard_moves_the_cursor_and_commits_or_escapes;
+        {
+            let _settled = crate::motion::testing::settled();
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Paragraph))
+                );
+                m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Heading(1)))
+                );
+                m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Heading(2)))
+                );
+                m.handle_key(&key_press(Key::Named(NamedKey::ArrowUp), None));
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Heading(1)))
+                );
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.handle_key(&key_press(Key::Named(NamedKey::ArrowUp), None));
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Divider)),
+                    "Up from the first row wraps to the last"
+                );
+                m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Paragraph)),
+                    "Down from the last row wraps to the first"
+                );
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+                assert!(m.handle_key(&key_press(Key::Named(NamedKey::Tab), None)));
+                assert_eq!(
+                    m.take_selection(),
                     Some(SlashCommand::Block(BlockKind::Heading(1)))
-                ) || m.visible_len() > 0
-            });
-            assert!(any_h1);
+                );
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+                let consumed = m.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
+                assert!(consumed);
+                assert_eq!(
+                    m.take_selection(),
+                    Some(SlashCommand::Block(BlockKind::Heading(1)))
+                );
+                assert!(!m.is_visible(), "Enter should close the menu");
+                assert!(m.take_selection().is_none());
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+                m.handle_key(&key_press(Key::Named(NamedKey::Escape), None));
+                assert!(!m.is_visible());
+                assert!(m.take_selection().is_none());
+            }
+
+            {
+                // Typing `/number` narrows to the "Numbered list" row and Enter
+                // commits an ordered-list block.
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                for c in ["n", "u", "m", "b", "e", "r"] {
+                    m.handle_key(&char_press(c));
+                }
+                assert_eq!(m.visible_len(), 1, "`number` matches only Numbered list");
+                m.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
+                assert_eq!(
+                    m.take_selection(),
+                    Some(SlashCommand::Block(BlockKind::Numbered { indent: 0 }))
+                );
+            }
+
+            {
+                // Type `/h2`, Enter → Heading(2). The leading `/` is consumed by
+                // the editor before the menu opens, so the menu only sees `h2`.
+                let mut m = SlashMenu::new();
+                m.set_visible(true);
+                m.handle_key(&char_press("h"));
+                m.handle_key(&char_press("2"));
+                assert_eq!(m.visible_len(), 1);
+                m.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
+                assert_eq!(
+                    m.take_selection(),
+                    Some(SlashCommand::Block(BlockKind::Heading(2)))
+                );
+            }
         }
 
+        phase pointer_and_semantic_activation_commit_the_exact_row;
         {
+            let _settled = crate::motion::testing::settled();
+            {
+                let mut menu = SlashMenu::new();
+                menu.set_visible(true);
+                let access = Widget::accessibility(&menu).expect("open menu semantics");
+                let heading = access
+                    .children
+                    .iter()
+                    .find(|item| item.name.as_deref() == Some("Heading 2"))
+                    .expect("Heading 2 item");
+                let target = heading.action_target.clone().expect("stable menu target");
+
+                assert!(Widget::perform_semantic_action(
+                    &mut menu,
+                    &target,
+                    &crate::a11y::Action::Activate,
+                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                    &automerge::ROOT,
+                ));
+                assert_eq!(
+                    menu.take_selection(),
+                    Some(SlashCommand::Block(BlockKind::Heading(2)))
+                );
+                assert!(!menu.is_visible());
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_anchor(Point::new(0.0, 0.0));
+                m.set_visible(true);
+                // Row 1 is "Heading 1"; land the click inside its band.
+                let pt = m.row_rect(1).expect("second row is painted").center();
+                assert_eq!(
+                    m.click_at(pt),
+                    Some(SlashCommand::Block(BlockKind::Heading(1)))
+                );
+                assert!(
+                    !m.is_visible(),
+                    "clicking a row commits and closes the menu"
+                );
+                assert_eq!(
+                    m.take_selection(),
+                    Some(SlashCommand::Block(BlockKind::Heading(1))),
+                    "the click also queues the kind for the parent to drain"
+                );
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_anchor(Point::new(0.0, 0.0));
+                m.set_visible(true);
+                assert_eq!(m.click_at(Point::new(10.0, 5000.0)), None);
+                assert!(
+                    m.is_visible(),
+                    "an off-row click leaves the menu open for the caller"
+                );
+            }
+
+            {
+                let mut m = SlashMenu::new();
+                m.set_anchor(Point::new(0.0, 0.0));
+                m.set_visible(true);
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Paragraph))
+                );
+                // Row 2 is "Heading 2".
+                let pt = m.row_rect(2).expect("third row is painted").center();
+                assert!(m.hover_at(pt), "hovering a new row reports a move");
+                assert_eq!(
+                    m.highlighted(),
+                    Some(&SlashCommand::Block(BlockKind::Heading(2)))
+                );
+                assert!(!m.hover_at(pt), "hovering the same row is not a move");
+                assert!(
+                    !m.hover_at(Point::new(10.0, 5000.0)),
+                    "hovering off any row is a no-op"
+                );
+            }
+        }
+
+        phase labels_that_start_with_the_query_come_first;
+        {
+            let _settled = crate::motion::testing::settled();
             let mut m = SlashMenu::new();
-            m.set_filter("Heading 2");
-            assert_eq!(m.visible_len(), 1);
+            m.set_filter("c");
             assert_eq!(
                 m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Heading(2)))
+                Some(&SlashCommand::Block(BlockKind::Checklist {
+                    indent: 0,
+                    done: false
+                })),
+                "\"Checklist\" starts with c; \"Quote\" only has a keyword with it"
+            );
+            m.set_filter("li");
+            assert_eq!(
+                m.highlighted(),
+                Some(&SlashCommand::Block(BlockKind::Bullet { indent: 0 })),
+                "a word of the label starting with the query beats a mere substring"
             );
         }
 
+        phase an_inline_menu_leaves_typing_to_the_document_and_gives_back_a_dead_enter;
         {
+            let _settled = crate::motion::testing::settled();
             let mut m = SlashMenu::new();
+            m.set_inline(true);
             m.set_visible(true);
-            m.handle_key(&char_press("h"));
-            assert_eq!(m.filter(), "h");
-            m.handle_key(&char_press("2"));
-            assert_eq!(m.filter(), "h2");
-        }
-
-        {
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            let initial_rows = m.visible_len();
-            assert!(m.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(
-                "h2".into(),
-                Some((1, 1)),
-            ))));
-            assert_eq!(m.filter(), "");
-            assert_eq!(m.visible_len(), initial_rows);
-            assert_eq!(Widget::accessibility(&m).unwrap().value, None);
-
-            let mut scene = Scene::new();
-            let mut renderer = TextRenderer::new();
-            m.draw_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
-            assert!(Widget::ime_cursor_rect(&m).is_some());
-
-            assert!(m.handle_key(&WindowEvent::Ime(winit::event::Ime::Commit("h2".into()))));
-            assert_eq!(m.filter(), "h2");
-            assert_eq!(m.visible_len(), 1);
-            assert_eq!(
-                m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Heading(2)))
+            assert!(
+                !m.handle_key(&char_press("h")),
+                "a typed character is the document's"
             );
-            let access = Widget::accessibility(&m).unwrap();
-            assert_eq!(access.name.as_deref(), Some("Block types"));
-            assert_eq!(access.value.as_deref(), Some("h2"));
-        }
+            assert_eq!(m.filter(), "", "and never reaches a hidden field");
+            assert!(!m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None)));
+            assert!(m.is_visible(), "the document decides what Backspace does");
 
-        {
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            m.set_filter("👩🏽‍💻");
-            assert!(m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None)));
-            assert_eq!(m.filter(), "");
-            assert!(m.is_visible());
-        }
+            m.set_filter("zzz");
+            assert_eq!(m.visible_len(), 0);
+            assert!(
+                !m.handle_key(&key_press(Key::Named(NamedKey::Enter), None)),
+                "Enter with nothing to choose ends the line instead"
+            );
+            assert!(!m.is_visible());
+            assert!(m.take_selection().is_none());
 
-        {
-            let mut m = SlashMenu::new();
             m.set_visible(true);
             m.set_filter("h2");
-            m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
-            assert_eq!(m.filter(), "h");
+            let full = m.height();
+            m.set_inline(false);
+            assert!(m.height() > full, "an inline menu paints no filter field");
         }
 
+        phase a_menu_at_the_bottom_of_the_view_opens_above_the_caret_and_stays_inside;
         {
+            let _settled = crate::motion::testing::settled();
             let mut m = SlashMenu::new();
+            m.set_inline(true);
             m.set_visible(true);
-            let consumed = m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
-            assert!(!consumed);
-            assert!(!m.is_visible());
-        }
-    }
-
-    #[test]
-    fn keyboard_moves_the_cursor_and_commits_or_escapes() {
-        let _settled = crate::motion::testing::settled();
-        {
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            assert_eq!(
-                m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Paragraph))
-            );
-            m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-            assert_eq!(
-                m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Heading(1)))
-            );
-            m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-            assert_eq!(
-                m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Heading(2)))
-            );
-            m.handle_key(&key_press(Key::Named(NamedKey::ArrowUp), None));
-            assert_eq!(
-                m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Heading(1)))
-            );
-        }
-
-        {
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            m.handle_key(&key_press(Key::Named(NamedKey::ArrowUp), None));
-            assert_eq!(
-                m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Divider)),
-                "Up from the first row wraps to the last"
-            );
-            m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-            assert_eq!(
-                m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Paragraph)),
-                "Down from the last row wraps to the first"
-            );
-        }
-
-        {
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-            assert!(m.handle_key(&key_press(Key::Named(NamedKey::Tab), None)));
-            assert_eq!(
-                m.take_selection(),
-                Some(SlashCommand::Block(BlockKind::Heading(1)))
-            );
-        }
-
-        {
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-            let consumed = m.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
-            assert!(consumed);
-            assert_eq!(
-                m.take_selection(),
-                Some(SlashCommand::Block(BlockKind::Heading(1)))
-            );
-            assert!(!m.is_visible(), "Enter should close the menu");
-            assert!(m.take_selection().is_none());
-        }
-
-        {
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-            m.handle_key(&key_press(Key::Named(NamedKey::Escape), None));
-            assert!(!m.is_visible());
-            assert!(m.take_selection().is_none());
-        }
-
-        {
-            // Typing `/number` narrows to the "Numbered list" row and Enter
-            // commits an ordered-list block.
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            for c in ["n", "u", "m", "b", "e", "r"] {
-                m.handle_key(&char_press(c));
-            }
-            assert_eq!(m.visible_len(), 1, "`number` matches only Numbered list");
-            m.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
-            assert_eq!(
-                m.take_selection(),
-                Some(SlashCommand::Block(BlockKind::Numbered { indent: 0 }))
-            );
-        }
-
-        {
-            // Type `/h2`, Enter → Heading(2). The leading `/` is consumed by
-            // the editor before the menu opens, so the menu only sees `h2`.
-            let mut m = SlashMenu::new();
-            m.set_visible(true);
-            m.handle_key(&char_press("h"));
-            m.handle_key(&char_press("2"));
-            assert_eq!(m.visible_len(), 1);
-            m.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
-            assert_eq!(
-                m.take_selection(),
-                Some(SlashCommand::Block(BlockKind::Heading(2)))
-            );
-        }
-    }
-
-    #[test]
-    fn pointer_and_semantic_activation_commit_the_exact_row() {
-        let _settled = crate::motion::testing::settled();
-        {
-            let mut menu = SlashMenu::new();
-            menu.set_visible(true);
-            let access = Widget::accessibility(&menu).expect("open menu semantics");
-            let heading = access
-                .children
-                .iter()
-                .find(|item| item.name.as_deref() == Some("Heading 2"))
-                .expect("Heading 2 item");
-            let target = heading.action_target.clone().expect("stable menu target");
-
-            assert!(Widget::perform_semantic_action(
-                &mut menu,
-                &target,
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            ));
-            assert_eq!(
-                menu.take_selection(),
-                Some(SlashCommand::Block(BlockKind::Heading(2)))
-            );
-            assert!(!menu.is_visible());
-        }
-
-        {
-            let mut m = SlashMenu::new();
-            m.set_anchor(Point::new(0.0, 0.0));
-            m.set_visible(true);
-            // Row 1 is "Heading 1"; land the click inside its band.
-            let pt = m.row_rect(1).expect("second row is painted").center();
-            assert_eq!(
-                m.click_at(pt),
-                Some(SlashCommand::Block(BlockKind::Heading(1)))
+            let bounds = Rect::new(0.0, 0.0, 600.0, 500.0);
+            let caret = Rect::new(500.0, 470.0, 501.0, 490.0);
+            m.set_caret(caret, Some(bounds));
+            let rect = m.rect();
+            assert!(rect.y1 <= caret.y0, "{rect:?} sits above the caret line");
+            assert!(
+                rect.y0 >= bounds.y0 && rect.x1 <= bounds.x1,
+                "{rect:?} stays in view"
             );
             assert!(
-                !m.is_visible(),
-                "clicking a row commits and closes the menu"
+                m.visible_len() > 8 && rect.height() < 8.5 * 30.0 + 20.0,
+                "at most eight rows show; the rest scroll"
             );
-            assert_eq!(
-                m.take_selection(),
-                Some(SlashCommand::Block(BlockKind::Heading(1))),
-                "the click also queues the kind for the parent to drain"
-            );
+            let caret = Rect::new(20.0, 40.0, 21.0, 60.0);
+            m.set_caret(caret, Some(bounds));
+            assert!(m.rect().y0 >= caret.y1, "with room below, it opens below");
         }
 
+        phase host_commands_are_offered_only_by_a_host_that_answers_them;
         {
+            let _settled = crate::motion::testing::settled();
             let mut m = SlashMenu::new();
-            m.set_anchor(Point::new(0.0, 0.0));
-            m.set_visible(true);
-            assert_eq!(m.click_at(Point::new(10.0, 5000.0)), None);
-            assert!(
-                m.is_visible(),
-                "an off-row click leaves the menu open for the caller"
-            );
-        }
-
-        {
-            let mut m = SlashMenu::new();
-            m.set_anchor(Point::new(0.0, 0.0));
-            m.set_visible(true);
+            m.set_filter("image");
+            assert_eq!(m.visible_len(), 0);
+            m.set_commands(true, &[SlashHostCommand::Image, SlashHostCommand::Page]);
             assert_eq!(
                 m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Paragraph))
+                Some(&SlashCommand::Host(SlashHostCommand::Image))
             );
-            // Row 2 is "Heading 2".
-            let pt = m.row_rect(2).expect("third row is painted").center();
-            assert!(m.hover_at(pt), "hovering a new row reports a move");
-            assert_eq!(
-                m.highlighted(),
-                Some(&SlashCommand::Block(BlockKind::Heading(2)))
-            );
-            assert!(!m.hover_at(pt), "hovering the same row is not a move");
-            assert!(
-                !m.hover_at(Point::new(10.0, 5000.0)),
-                "hovering off any row is a no-op"
-            );
+            m.set_filter("link");
+            assert_eq!(m.highlighted(), Some(&SlashCommand::LinkPage));
         }
-    }
-
-    #[test]
-    fn labels_that_start_with_the_query_come_first() {
-        let _settled = crate::motion::testing::settled();
-        let mut m = SlashMenu::new();
-        m.set_filter("c");
-        assert_eq!(
-            m.highlighted(),
-            Some(&SlashCommand::Block(BlockKind::Checklist {
-                indent: 0,
-                done: false
-            })),
-            "\"Checklist\" starts with c; \"Quote\" only has a keyword with it"
-        );
-        m.set_filter("li");
-        assert_eq!(
-            m.highlighted(),
-            Some(&SlashCommand::Block(BlockKind::Bullet { indent: 0 })),
-            "a word of the label starting with the query beats a mere substring"
-        );
-    }
-
-    #[test]
-    fn an_inline_menu_leaves_typing_to_the_document_and_gives_back_a_dead_enter() {
-        let _settled = crate::motion::testing::settled();
-        let mut m = SlashMenu::new();
-        m.set_inline(true);
-        m.set_visible(true);
-        assert!(
-            !m.handle_key(&char_press("h")),
-            "a typed character is the document's"
-        );
-        assert_eq!(m.filter(), "", "and never reaches a hidden field");
-        assert!(!m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None)));
-        assert!(m.is_visible(), "the document decides what Backspace does");
-
-        m.set_filter("zzz");
-        assert_eq!(m.visible_len(), 0);
-        assert!(
-            !m.handle_key(&key_press(Key::Named(NamedKey::Enter), None)),
-            "Enter with nothing to choose ends the line instead"
-        );
-        assert!(!m.is_visible());
-        assert!(m.take_selection().is_none());
-
-        m.set_visible(true);
-        m.set_filter("h2");
-        let full = m.height();
-        m.set_inline(false);
-        assert!(m.height() > full, "an inline menu paints no filter field");
-    }
-
-    #[test]
-    fn a_menu_at_the_bottom_of_the_view_opens_above_the_caret_and_stays_inside() {
-        let _settled = crate::motion::testing::settled();
-        let mut m = SlashMenu::new();
-        m.set_inline(true);
-        m.set_visible(true);
-        let bounds = Rect::new(0.0, 0.0, 600.0, 500.0);
-        let caret = Rect::new(500.0, 470.0, 501.0, 490.0);
-        m.set_caret(caret, Some(bounds));
-        let rect = m.rect();
-        assert!(rect.y1 <= caret.y0, "{rect:?} sits above the caret line");
-        assert!(
-            rect.y0 >= bounds.y0 && rect.x1 <= bounds.x1,
-            "{rect:?} stays in view"
-        );
-        assert!(
-            m.visible_len() > 8 && rect.height() < 8.5 * 30.0 + 20.0,
-            "at most eight rows show; the rest scroll"
-        );
-        let caret = Rect::new(20.0, 40.0, 21.0, 60.0);
-        m.set_caret(caret, Some(bounds));
-        assert!(m.rect().y0 >= caret.y1, "with room below, it opens below");
-    }
-
-    #[test]
-    fn host_commands_are_offered_only_by_a_host_that_answers_them() {
-        let _settled = crate::motion::testing::settled();
-        let mut m = SlashMenu::new();
-        m.set_filter("image");
-        assert_eq!(m.visible_len(), 0);
-        m.set_commands(true, &[SlashHostCommand::Image, SlashHostCommand::Page]);
-        assert_eq!(
-            m.highlighted(),
-            Some(&SlashCommand::Host(SlashHostCommand::Image))
-        );
-        m.set_filter("link");
-        assert_eq!(m.highlighted(), Some(&SlashCommand::LinkPage));
     }
 }

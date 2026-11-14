@@ -124,24 +124,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn settings_is_personal_and_chat_is_not() {
-        assert!(is_personal_app("so.tilo.settings"));
-        assert!(!is_personal_app("so.tilo.chat"));
-    }
+    tilo_test_env::scenario! {
+        fn a_persons_own_windows_stay_off_the_shared_desktop;
 
-    #[test]
-    fn a_shared_desktop_leaves_out_a_persons_own_window_and_what_it_noted() {
-        let mut shared = desktop();
-        leave_out(&mut shared);
-        let left: Vec<u64> = shared.tree.tabs().map(|tab| tab.id).collect();
-        assert_eq!(left, vec![1], "the chat stays, the settings window goes");
-        assert_eq!(
-            shared.tree.workspaces[0].strips[0].window_groups.len(),
-            1,
-            "its group goes with it"
-        );
-        assert_eq!(shared.records, vec![(1, String::new())]);
-        assert!(!shared.authors.contains_key(&2));
+        phase settings_is_personal_and_chat_is_not;
+        {
+            assert!(is_personal_app("so.tilo.settings"));
+            assert!(!is_personal_app("so.tilo.chat"));
+        }
+
+        phase a_shared_desktop_leaves_out_a_persons_own_window_and_what_it_noted;
+        {
+            let mut shared = desktop();
+            leave_out(&mut shared);
+            let left: Vec<u64> = shared.tree.tabs().map(|tab| tab.id).collect();
+            assert_eq!(left, vec![1], "the chat stays, the settings window goes");
+            assert_eq!(
+                shared.tree.workspaces[0].strips[0].window_groups.len(),
+                1,
+                "its group goes with it"
+            );
+            assert_eq!(shared.records, vec![(1, String::new())]);
+            assert!(!shared.authors.contains_key(&2));
+        }
     }
 }

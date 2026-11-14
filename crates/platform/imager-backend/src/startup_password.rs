@@ -67,33 +67,39 @@ pub fn validate(password: &str) -> Result<(), ValidationError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn preparation_requires_a_passphrase_even_for_a_valid_tpm_pin() {
-        assert!(tilo_unlock_protocol::startup_secret::validate_typed("539172", true).is_ok());
-        assert_eq!(validate("539172"), Err(ValidationError::PassphraseTooShort));
-    }
+    tilo_test_env::scenario! {
+        /// Preparing and admitting the startup password.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_startup_password_is_prepared_and_admitted_by_policy;
 
-    #[test]
-    fn typed_admission_preserves_policy_reasons_and_diagnostics() {
-        for (password, reason) in [
-            (
-                " several unrelated installation words",
-                ValidationError::SurroundingSpaces,
-            ),
-            ("short", ValidationError::PassphraseTooShort),
-            ("password123456789", ValidationError::PassphraseCommon),
-            (
-                "1234567890123456",
-                ValidationError::NumericPassphraseTooShort,
-            ),
-            ("aaaaaaaaaaaaaaa", ValidationError::PassphraseRepetitive),
-        ] {
-            assert_eq!(validate(password), Err(reason));
-            assert_eq!(
-                reason.to_string(),
-                tilo_unlock_protocol::startup_secret::validate(password, false).unwrap_err()
-            );
+        phase preparation_requires_a_passphrase_even_for_a_valid_tpm_pin;
+        {
+            assert!(tilo_unlock_protocol::startup_secret::validate_typed("539172", true).is_ok());
+            assert_eq!(validate("539172"), Err(ValidationError::PassphraseTooShort));
         }
-        assert_eq!(validate("several unrelated installation words"), Ok(()));
+
+        phase typed_admission_preserves_policy_reasons_and_diagnostics;
+        {
+            for (password, reason) in [
+                (
+                    " several unrelated installation words",
+                    ValidationError::SurroundingSpaces,
+                ),
+                ("short", ValidationError::PassphraseTooShort),
+                ("password123456789", ValidationError::PassphraseCommon),
+                (
+                    "1234567890123456",
+                    ValidationError::NumericPassphraseTooShort,
+                ),
+                ("aaaaaaaaaaaaaaa", ValidationError::PassphraseRepetitive),
+            ] {
+                assert_eq!(validate(password), Err(reason));
+                assert_eq!(
+                    reason.to_string(),
+                    tilo_unlock_protocol::startup_secret::validate(password, false).unwrap_err()
+                );
+            }
+            assert_eq!(validate("several unrelated installation words"), Ok(()));
+        }
     }
 }

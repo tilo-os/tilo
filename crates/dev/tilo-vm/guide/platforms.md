@@ -96,6 +96,37 @@ fresh baseline, stop and remove only the owned VM, then repeat `vm create
 child and leaves the base unchanged. This is a cold reset, not an installer
 or retained-other-OS proof.
 
+### One network for a host's VMs
+
+passt reaches out from the host, but not the host's other VMs, so two boxes
+on one machine could find each other only through an internet relay. So
+every libvirt VM tilo-vm makes also has a NIC on a network of its host's own:
+a branch is taken in by its source there (`vm branch`), and two boxes sync
+and reach each other's agent door there, with no internet.
+
+- The network is QEMU's socket multicast on the host's loopback
+  (`239.255.84.76`, a port of your own from your home directory,
+  `localaddr=127.0.0.1`): its frames never leave the host, and it needs no
+  root, no bridge and no route. libvirt's `<interface type='mcast'>` cannot
+  keep it on the loopback, so the domain passes the NIC to QEMU in
+  `<qemu:commandline>`; `virsh dumpxml` shows it there.
+- The NIC's MAC starts `52:54:01:00` and is the VM's own (`lan` in
+  `vms.toml`; each branch gets another). The dev image names that NIC
+  `tilolan0`, NetworkManager leaves it alone, and `tilo-vm-lan.service`
+  gives it `198.18.<5th MAC byte>.<6th MAC byte>/16`: no DHCP, no gateway,
+  so it is never the default route and SSH keeps coming in through passt.
+  198.18.0.0/15 is set aside for benchmarking, so it overlaps none of the
+  host's own networks, which passt gives the guest.
+- A VM made before this gets its NIC at its next `vm start` (its domain is
+  defined again). `vm create --no-lan`, or `lan = "off"` in its entry, gives
+  a VM none; its branches have none either.
+- UTM's shared network already puts its VMs on one subnet of the host. WHPX
+  has none: `vm branch` there refuses to boot the branches to be taken in and
+  says so; branch with `--no-admit`.
+
+Check it from a guest: `tilo-vm vm ssh <vm> -- ip -4 addr show dev tilolan0`,
+and `ping 198.18.x.y` for another VM.
+
 ## Windows ARM64 Home: QEMU with WHPX
 
 Install the MSYS2 CLANGARM64 QEMU package and enable **Windows Hypervisor

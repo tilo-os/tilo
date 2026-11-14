@@ -597,117 +597,120 @@ mod tests {
         bytes
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn prepared_ciphertext_stage_delivers_exact_slots_and_arm_uses_private_custody() {
-        let mut platform = linux_platform();
-        let mut world = world_with_esp(
-            &platform,
-            fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192),
-        );
-        let original = with_prepared(&mut world);
-        run(&mut platform, &world, Action::Stage).unwrap();
-        let (esp_guid, _) = staged_guids(&platform, &world.request.plan);
-        let image = platform.partition_bytes(&esp_guid, world.esp.len());
-        let mut read = |offset: u64, bytes: &mut [u8]| {
-            bytes.copy_from_slice(&image[offset as usize..offset as usize + bytes.len()]);
-            Ok(())
-        };
-        let gather = |ranges: &[fat::Range]| {
-            ranges
-                .iter()
-                .flat_map(|range| {
-                    image[range.offset as usize..(range.offset + range.len) as usize].to_vec()
-                })
-                .collect::<Vec<_>>()
-        };
-        let package = gather(
-            &fat::file_ranges(
-                &mut read,
-                image.len() as u64,
-                imager_backend::staging::prepared_setup::PACKAGE_PATH,
-            )
-            .unwrap(),
-        );
-        assert_eq!(package.get(..original.len()).unwrap(), original);
-        assert!(
-            package
-                .get(original.len()..)
-                .unwrap()
-                .iter()
-                .all(|byte| *byte == b' ')
-        );
-        let handoff = Handoff::parse(&gather(
-            &fat::file_ranges(
-                &mut read,
-                image.len() as u64,
-                "/EFI/tilo-staging/handoff.json",
-            )
-            .unwrap(),
-        ))
-        .unwrap();
-        let expected = world
-            .request
-            .prepared_setup
-            .as_ref()
-            .unwrap()
-            .expectation
-            .clone();
-        assert_eq!(
-            handoff.profile.get("prepared_setup"),
-            Some(&serde_json::to_value(&expected).unwrap())
-        );
-        let source = world.request.prepared_setup.take().unwrap().source_path;
-        std::fs::remove_file(source).unwrap();
-        run(&mut platform, &world, Action::Arm).unwrap();
-        run(&mut platform, &world, Action::Stage).unwrap();
-        let record = world
-            .store
-            .load(&world.request.operation_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(record.prepared_setup, Some(expected.clone()));
-        assert_eq!(
-            world
-                .store
-                .read_prepared(&world.request.operation_id, &expected)
-                .unwrap(),
-            original
-        );
-        let custody = world
-            .store
-            .prepared_path(&world.request.operation_id)
-            .unwrap();
-        std::fs::write(custody, [b"TILOMIG1".as_slice(), &[9u8; 2048]].concat()).unwrap();
-        assert!(run(&mut platform, &world, Action::Arm).is_err());
-    }
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn a_prepared_ciphertext_stage_delivers_its_slots_or_refuses_before_writing;
 
-    #[test]
-    #[cfg(unix)]
-    fn prepared_ciphertext_refuses_legacy_slots_and_changed_source_before_disk_writes() {
-        for variant in 0..3 {
+        phase prepared_ciphertext_stage_delivers_exact_slots_and_arm_uses_private_custody;
+        {
             let mut platform = linux_platform();
-            let mut world = if variant == 0 {
-                world(&platform)
-            } else {
-                world_with_esp(
-                    &platform,
-                    fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192),
-                )
+            let mut world = world_with_esp(
+                &platform,
+                fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192),
+            );
+            let original = with_prepared(&mut world);
+            run(&mut platform, &world, Action::Stage).unwrap();
+            let (esp_guid, _) = staged_guids(&platform, &world.request.plan);
+            let image = platform.partition_bytes(&esp_guid, world.esp.len());
+            let mut read = |offset: u64, bytes: &mut [u8]| {
+                bytes.copy_from_slice(&image[offset as usize..offset as usize + bytes.len()]);
+                Ok(())
             };
-            with_prepared(&mut world);
-            let source = &world.request.prepared_setup.as_ref().unwrap().source_path;
-            if variant == 1 {
-                std::fs::write(source, b"changed").unwrap();
+            let gather = |ranges: &[fat::Range]| {
+                ranges
+                    .iter()
+                    .flat_map(|range| {
+                        image[range.offset as usize..(range.offset + range.len) as usize].to_vec()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let package = gather(
+                &fat::file_ranges(
+                    &mut read,
+                    image.len() as u64,
+                    imager_backend::staging::prepared_setup::PACKAGE_PATH,
+                )
+                .unwrap(),
+            );
+            assert_eq!(package.get(..original.len()).unwrap(), original);
+            assert!(
+                package
+                    .get(original.len()..)
+                    .unwrap()
+                    .iter()
+                    .all(|byte| *byte == b' ')
+            );
+            let handoff = Handoff::parse(&gather(
+                &fat::file_ranges(
+                    &mut read,
+                    image.len() as u64,
+                    "/EFI/tilo-staging/handoff.json",
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+            let expected = world
+                .request
+                .prepared_setup
+                .as_ref()
+                .unwrap()
+                .expectation
+                .clone();
+            assert_eq!(
+                handoff.profile.get("prepared_setup"),
+                Some(&serde_json::to_value(&expected).unwrap())
+            );
+            let source = world.request.prepared_setup.take().unwrap().source_path;
+            std::fs::remove_file(source).unwrap();
+            run(&mut platform, &world, Action::Arm).unwrap();
+            run(&mut platform, &world, Action::Stage).unwrap();
+            let record = world
+                .store
+                .load(&world.request.operation_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.prepared_setup, Some(expected.clone()));
+            assert_eq!(
+                world
+                    .store
+                    .read_prepared(&world.request.operation_id, &expected)
+                    .unwrap(),
+                original
+            );
+            let custody = world
+                .store
+                .prepared_path(&world.request.operation_id)
+                .unwrap();
+            std::fs::write(custody, [b"TILOMIG1".as_slice(), &[9u8; 2048]].concat()).unwrap();
+            assert!(run(&mut platform, &world, Action::Arm).is_err());
+        }
+
+        phase prepared_ciphertext_refuses_legacy_slots_and_changed_source_before_disk_writes;
+        {
+            for variant in 0..3 {
+                let mut platform = linux_platform();
+                let mut world = if variant == 0 {
+                    world(&platform)
+                } else {
+                    world_with_esp(
+                        &platform,
+                        fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192),
+                    )
+                };
+                with_prepared(&mut world);
+                let source = &world.request.prepared_setup.as_ref().unwrap().source_path;
+                if variant == 1 {
+                    std::fs::write(source, b"changed").unwrap();
+                }
+                if variant == 2 {
+                    let link = world._dir.path().join("linked-prepared.sealed");
+                    std::os::unix::fs::symlink(source, &link).unwrap();
+                    world.request.prepared_setup.as_mut().unwrap().source_path =
+                        link.to_str().unwrap().into();
+                }
+                assert!(run(&mut platform, &world, Action::Stage).is_err());
+                assert_eq!(platform.mutations, 0);
             }
-            if variant == 2 {
-                let link = world._dir.path().join("linked-prepared.sealed");
-                std::os::unix::fs::symlink(source, &link).unwrap();
-                world.request.prepared_setup.as_mut().unwrap().source_path =
-                    link.to_str().unwrap().into();
-            }
-            assert!(run(&mut platform, &world, Action::Stage).is_err());
-            assert_eq!(platform.mutations, 0);
         }
     }
 
@@ -744,97 +747,101 @@ mod tests {
             });
         bytes
     }
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn browser_ciphertext_stage_delivers_slots_and_arm_uses_protected_custody() {
-        let mut platform = linux_platform();
-        let mut world = world_with_esp(
-            &platform,
-            fat::tests::staging_esp_image_with_browser_slots(false, 8192, 512, 8192, 8192),
-        );
-        with_prepared(&mut world);
-        let original = with_browser(&mut world);
-        let artifact = world
-            .request
-            .prepared_setup
-            .as_ref()
-            .unwrap()
-            .browser
-            .as_ref()
-            .unwrap()
-            .clone();
-        run(&mut platform, &world, Action::Stage).unwrap();
-        let (guid, _) = staged_guids(&platform, &world.request.plan);
-        let image = platform.partition_bytes(&guid, world.esp.len());
-        let mut read = |offset: u64, bytes: &mut [u8]| {
-            bytes.copy_from_slice(&image[offset as usize..offset as usize + bytes.len()]);
-            Ok(())
-        };
-        let ranges = fat::file_ranges(
-            &mut read,
-            image.len() as u64,
-            imager_backend::staging::browser::PACKAGE_PATH,
-        )
-        .unwrap();
-        let payload = ranges
-            .iter()
-            .flat_map(|range| {
-                image[range.offset as usize..(range.offset + range.len) as usize].to_vec()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(&payload[..original.len()], original);
-        assert!(payload[original.len()..].iter().all(|byte| *byte == b' '));
-        let record = world
-            .store
-            .load(&world.request.operation_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            record.prepared_browser.as_ref(),
-            Some(&artifact.expectation)
-        );
-        assert_eq!(
-            world
-                .store
-                .read_browser(&world.request.operation_id, &artifact.expectation)
-                .unwrap(),
-            original
-        );
-        std::fs::remove_file(&artifact.source_path).unwrap();
-        let prepared = world.request.prepared_setup.take().unwrap();
-        std::fs::remove_file(prepared.source_path).unwrap();
-        run(&mut platform, &world, Action::Arm).unwrap();
-    }
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn browser_stage_refuses_missing_slots_and_changed_ciphertext_before_disk_writes() {
-        for missing_slots in [true, false] {
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn a_browser_ciphertext_stage_delivers_its_slots_or_refuses_before_writing;
+
+        phase browser_ciphertext_stage_delivers_slots_and_arm_uses_protected_custody;
+        {
             let mut platform = linux_platform();
-            let esp = if missing_slots {
-                fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192)
-            } else {
-                fat::tests::staging_esp_image_with_browser_slots(false, 8192, 512, 8192, 8192)
-            };
-            let mut world = world_with_esp(&platform, esp);
+            let mut world = world_with_esp(
+                &platform,
+                fat::tests::staging_esp_image_with_browser_slots(false, 8192, 512, 8192, 8192),
+            );
             with_prepared(&mut world);
-            with_browser(&mut world);
-            if !missing_slots {
-                std::fs::write(
-                    &world
-                        .request
-                        .prepared_setup
-                        .as_ref()
-                        .unwrap()
-                        .browser
-                        .as_ref()
-                        .unwrap()
-                        .source_path,
-                    b"changed browser",
-                )
+            let original = with_browser(&mut world);
+            let artifact = world
+                .request
+                .prepared_setup
+                .as_ref()
+                .unwrap()
+                .browser
+                .as_ref()
+                .unwrap()
+                .clone();
+            run(&mut platform, &world, Action::Stage).unwrap();
+            let (guid, _) = staged_guids(&platform, &world.request.plan);
+            let image = platform.partition_bytes(&guid, world.esp.len());
+            let mut read = |offset: u64, bytes: &mut [u8]| {
+                bytes.copy_from_slice(&image[offset as usize..offset as usize + bytes.len()]);
+                Ok(())
+            };
+            let ranges = fat::file_ranges(
+                &mut read,
+                image.len() as u64,
+                imager_backend::staging::browser::PACKAGE_PATH,
+            )
+            .unwrap();
+            let payload = ranges
+                .iter()
+                .flat_map(|range| {
+                    image[range.offset as usize..(range.offset + range.len) as usize].to_vec()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(&payload[..original.len()], original);
+            assert!(payload[original.len()..].iter().all(|byte| *byte == b' '));
+            let record = world
+                .store
+                .load(&world.request.operation_id)
+                .unwrap()
                 .unwrap();
+            assert_eq!(
+                record.prepared_browser.as_ref(),
+                Some(&artifact.expectation)
+            );
+            assert_eq!(
+                world
+                    .store
+                    .read_browser(&world.request.operation_id, &artifact.expectation)
+                    .unwrap(),
+                original
+            );
+            std::fs::remove_file(&artifact.source_path).unwrap();
+            let prepared = world.request.prepared_setup.take().unwrap();
+            std::fs::remove_file(prepared.source_path).unwrap();
+            run(&mut platform, &world, Action::Arm).unwrap();
+        }
+
+        phase browser_stage_refuses_missing_slots_and_changed_ciphertext_before_disk_writes;
+        {
+            for missing_slots in [true, false] {
+                let mut platform = linux_platform();
+                let esp = if missing_slots {
+                    fat::tests::staging_esp_image_with_slots(false, 8192, 512, 8192)
+                } else {
+                    fat::tests::staging_esp_image_with_browser_slots(false, 8192, 512, 8192, 8192)
+                };
+                let mut world = world_with_esp(&platform, esp);
+                with_prepared(&mut world);
+                with_browser(&mut world);
+                if !missing_slots {
+                    std::fs::write(
+                        &world
+                            .request
+                            .prepared_setup
+                            .as_ref()
+                            .unwrap()
+                            .browser
+                            .as_ref()
+                            .unwrap()
+                            .source_path,
+                        b"changed browser",
+                    )
+                    .unwrap();
+                }
+                assert!(run(&mut platform, &world, Action::Stage).is_err());
+                assert_eq!(platform.mutations, 0);
             }
-            assert!(run(&mut platform, &world, Action::Stage).is_err());
-            assert_eq!(platform.mutations, 0);
         }
     }
     #[test]

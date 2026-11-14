@@ -87,53 +87,62 @@ mod tests {
             root_pid: std::process::id(),
         }
     }
-    #[test]
-    fn terminal_socket_receipt_is_exact_and_closed() {
-        let expected = subject();
-        let (mut reader, mut writer) = UnixStream::pair().unwrap();
-        write(&mut writer, &expected).unwrap();
-        writer.shutdown(std::net::Shutdown::Write).unwrap();
-        read(&mut reader, &expected).unwrap();
-        for changed in [
-            Subject {
-                context_sha256: "b".repeat(64),
-                ..expected.clone()
-            },
-            Subject {
-                root_pid: expected.root_pid + 1,
-                ..expected.clone()
-            },
-            subject(),
-        ] {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn terminal_socket_receipts;
+
+        phase terminal_socket_receipt_is_exact_and_closed;
+        {
+            let expected = subject();
             let (mut reader, mut writer) = UnixStream::pair().unwrap();
-            write(&mut writer, &changed).unwrap();
+            write(&mut writer, &expected).unwrap();
+            writer.shutdown(std::net::Shutdown::Write).unwrap();
+            read(&mut reader, &expected).unwrap();
+            for changed in [
+                Subject {
+                    context_sha256: "b".repeat(64),
+                    ..expected.clone()
+                },
+                Subject {
+                    root_pid: expected.root_pid + 1,
+                    ..expected.clone()
+                },
+                subject(),
+            ] {
+                let (mut reader, mut writer) = UnixStream::pair().unwrap();
+                write(&mut writer, &changed).unwrap();
+                writer.shutdown(std::net::Shutdown::Write).unwrap();
+                assert!(read(&mut reader, &expected).is_err());
+            }
+        }
+
+        phase malformed_or_extra_terminal_data_never_counts_as_cleanup;
+        {
+            let expected = subject();
+            for bytes in [
+                serde_json::to_vec(
+                    &serde_json::json!({"schema":1,"subject":expected,"authority":true}),
+                )
+                .unwrap(),
+                serde_json::to_vec(&serde_json::json!({"schema":2,"subject":expected})).unwrap(),
+                vec![b'x'; BOUND + 1],
+            ] {
+                let (mut reader, mut writer) = UnixStream::pair().unwrap();
+                writer
+                    .write_all(&u32::try_from(bytes.len()).unwrap().to_le_bytes())
+                    .unwrap();
+                writer.write_all(&bytes).unwrap();
+                writer.shutdown(std::net::Shutdown::Write).unwrap();
+                assert!(read(&mut reader, &expected).is_err());
+            }
+            let (mut reader, mut writer) = UnixStream::pair().unwrap();
+            write(&mut writer, &expected).unwrap();
+            writer.write_all(&[1]).unwrap();
             writer.shutdown(std::net::Shutdown::Write).unwrap();
             assert!(read(&mut reader, &expected).is_err());
         }
-    }
-    #[test]
-    fn malformed_or_extra_terminal_data_never_counts_as_cleanup() {
-        let expected = subject();
-        for bytes in [
-            serde_json::to_vec(
-                &serde_json::json!({"schema":1,"subject":expected,"authority":true}),
-            )
-            .unwrap(),
-            serde_json::to_vec(&serde_json::json!({"schema":2,"subject":expected})).unwrap(),
-            vec![b'x'; BOUND + 1],
-        ] {
-            let (mut reader, mut writer) = UnixStream::pair().unwrap();
-            writer
-                .write_all(&u32::try_from(bytes.len()).unwrap().to_le_bytes())
-                .unwrap();
-            writer.write_all(&bytes).unwrap();
-            writer.shutdown(std::net::Shutdown::Write).unwrap();
-            assert!(read(&mut reader, &expected).is_err());
-        }
-        let (mut reader, mut writer) = UnixStream::pair().unwrap();
-        write(&mut writer, &expected).unwrap();
-        writer.write_all(&[1]).unwrap();
-        writer.shutdown(std::net::Shutdown::Write).unwrap();
-        assert!(read(&mut reader, &expected).is_err());
     }
 }

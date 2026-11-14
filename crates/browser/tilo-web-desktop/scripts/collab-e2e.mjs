@@ -38,7 +38,7 @@ import {createServer as netServer} from 'node:net';
 import {createInterface} from 'node:readline';
 import {dirname, extname, join, normalize, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../tools/web/chrome.mjs';
 
 /** The page expression that runs one of the supervisor's actions and answers its output. */
 const agentInvoke = (resource, action, argument) => `peer.actions.invoke({provider: 'agents', address: {resource: ${JSON.stringify(resource)}, `
@@ -245,6 +245,11 @@ if (!hostLine) throw new Error(`the relay did not start: ${read(relay.stderr).sl
 const host = JSON.parse(hostLine);
 summary.host = {origin: host.origin, userPublicKey: host.userPublicKey, agents: withAgent};
 log('host', host.origin, 'pages', pagesOrigin);
+// The pages are served plain http; the host they reach is https with the
+// certificate it announced at its start, which is what each page loads and the
+// only certificate it accepts.
+const hostCertificate = await servedCertificate(host.origin);
+const pageArgs = [pinnedCertificates([{...hostCertificate, sha256: host.certificateSha256}]), '--use-angle=metal'];
 
 // A native profile whose identity is the dev host's user root: the host
 // treats its device as one of the user's, like the pages it certifies. Each
@@ -289,7 +294,7 @@ const NODES = `(() => {
 })()`;
 
 async function openPage(name, app, room, profileName = `${name}-${app.bin}`) {
-  const browser = await launch({args: ['--ignore-certificate-errors', '--use-angle=metal']});
+  const browser = await launch({args: pageArgs});
   const tab = await browser.tab();
   await tab.send('Emulation.setDeviceMetricsOverride', {width: 1240, height: 860, deviceScaleFactor: 1, mobile: false});
   await tab.send('Accessibility.enable');

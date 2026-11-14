@@ -291,65 +291,71 @@ fn same_bytes(left: &File, right: &File) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn openpgp_library_dedup_checks_exact_bytes_before_omitting_mount() {
-        use std::io::Write;
-        let mut tar = tempfile::tempfile().unwrap();
-        tar.write_all(b"library-one").unwrap();
-        let mut same = tempfile::tempfile().unwrap();
-        same.write_all(b"library-one").unwrap();
-        let mut changed = tempfile::tempfile().unwrap();
-        changed.write_all(b"library-two").unwrap();
-        assert!(same_bytes(&tar, &same).unwrap());
-        assert!(!same_bytes(&tar, &changed).unwrap());
-        assert!(reserved_fd(1536));
-        assert!(reserved_fd(1796));
-        assert!(!reserved_fd(1535));
-        assert!(!reserved_fd(1797));
-    }
-    #[test]
-    fn signed_ostree_policy_grants_only_exact_readonly_boot_id() {
-        let helper = OpenPgp {
-            entries: Vec::new(),
-        };
-        let mut argv = Vec::new();
-        let mut read_only = Vec::new();
-        helper.splice(&mut argv, &mut read_only);
-        assert_eq!(read_only, [BOOT_ID]);
-        assert!(!argv.iter().any(|arg| arg.starts_with("/proc")));
-        assert!(!read_only.iter().any(|arg| matches!(
-            arg.as_str(),
-            "/proc" | "/proc/sys" | "/proc/sys/kernel" | "/proc/sys/kernel/random"
-        )));
-    }
     fn table() -> serde_json::Value {
         serde_json::json!({"schema":1,"openpgp_version":"2.4.7","libexecdir":"/usr/libexec","helpers":[{"role":"ostree","target":"/usr/bin/ostree","bundle":"bin/ostree"},{"role":"openpgp","target":"/usr/bin/gpg2","bundle":"bin/gpg"},{"role":"gpgconf","target":"/usr/bin/gpgconf","bundle":"bin/gpgconf"},{"role":"agent","target":"/usr/bin/gpg-agent","bundle":"bin/gpg-agent"}]})
     }
-    #[test]
-    fn openpgp_table_refuses_ambient_or_redirected_helper_authority() {
-        let good: Table = serde_json::from_value(table()).unwrap();
-        good.validate().unwrap();
-        for target in [
-            "/tmp/gpg",
-            "/usr/bin/../secret",
-            "/usr/bin//gpg",
-            "/usr/bin/gpg\n",
-        ] {
+    tilo_test_env::scenario! {
+        fn the_openpgp_capsule_admits_exact_bytes_and_no_ambient_authority;
+
+        phase openpgp_library_dedup_checks_exact_bytes_before_omitting_mount;
+        {
+            use std::io::Write;
+            let mut tar = tempfile::tempfile().unwrap();
+            tar.write_all(b"library-one").unwrap();
+            let mut same = tempfile::tempfile().unwrap();
+            same.write_all(b"library-one").unwrap();
+            let mut changed = tempfile::tempfile().unwrap();
+            changed.write_all(b"library-two").unwrap();
+            assert!(same_bytes(&tar, &same).unwrap());
+            assert!(!same_bytes(&tar, &changed).unwrap());
+            assert!(reserved_fd(1536));
+            assert!(reserved_fd(1796));
+            assert!(!reserved_fd(1535));
+            assert!(!reserved_fd(1797));
+        }
+
+        phase signed_ostree_policy_grants_only_exact_readonly_boot_id;
+        {
+            let helper = OpenPgp {
+                entries: Vec::new(),
+            };
+            let mut argv = Vec::new();
+            let mut read_only = Vec::new();
+            helper.splice(&mut argv, &mut read_only);
+            assert_eq!(read_only, [BOOT_ID]);
+            assert!(!argv.iter().any(|arg| arg.starts_with("/proc")));
+            assert!(!read_only.iter().any(|arg| matches!(
+                arg.as_str(),
+                "/proc" | "/proc/sys" | "/proc/sys/kernel" | "/proc/sys/kernel/random"
+            )));
+        }
+
+        phase openpgp_table_refuses_ambient_or_redirected_helper_authority;
+        {
+            let good: Table = serde_json::from_value(table()).unwrap();
+            good.validate().unwrap();
+            for target in [
+                "/tmp/gpg",
+                "/usr/bin/../secret",
+                "/usr/bin//gpg",
+                "/usr/bin/gpg\n",
+            ] {
+                let mut raw = table();
+                raw["helpers"][1]["target"] = target.into();
+                let parsed: Table = serde_json::from_value(raw).unwrap();
+                assert!(parsed.validate().is_err());
+            }
             let mut raw = table();
-            raw["helpers"][1]["target"] = target.into();
+            raw["helpers"][1]["role"] = "ostree".into();
             let parsed: Table = serde_json::from_value(raw).unwrap();
             assert!(parsed.validate().is_err());
+            let mut raw = table();
+            raw["helpers"][1]["bundle"] = "bin/../../unsigned".into();
+            let parsed: Table = serde_json::from_value(raw).unwrap();
+            assert!(parsed.validate().is_err());
+            let mut raw = table();
+            raw["helpers"][1]["override"] = true.into();
+            assert!(serde_json::from_value::<Table>(raw).is_err());
         }
-        let mut raw = table();
-        raw["helpers"][1]["role"] = "ostree".into();
-        let parsed: Table = serde_json::from_value(raw).unwrap();
-        assert!(parsed.validate().is_err());
-        let mut raw = table();
-        raw["helpers"][1]["bundle"] = "bin/../../unsigned".into();
-        let parsed: Table = serde_json::from_value(raw).unwrap();
-        assert!(parsed.validate().is_err());
-        let mut raw = table();
-        raw["helpers"][1]["override"] = true.into();
-        assert!(serde_json::from_value::<Table>(raw).is_err());
     }
 }

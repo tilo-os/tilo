@@ -12,6 +12,7 @@
 
 use tilo_actions::door::{ActionAddress, DoorError};
 use ui::collaboration::DocumentMutation;
+use ui::framework::testing::TEST_WORKSPACE;
 use ui::framework::{AttachedView, definition};
 use ui::permissions::PermissionContext;
 use ui::prelude::*;
@@ -64,7 +65,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     let definition = definition::<VideoEditor>();
     let mut agent = AttachedView::open(
         definition,
-        "test-workspace",
+        TEST_WORKSPACE,
         RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
         "headless-driver",

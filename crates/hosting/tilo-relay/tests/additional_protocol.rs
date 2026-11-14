@@ -37,7 +37,7 @@ impl ProtocolHandler for Echo {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn extra_protocol_and_relay_share_one_endpoint() {
     let user = TestUser::fresh("owner");
-    let host = user.enrol("host", DeviceCapabilities::host());
+    let host = user.enrol("host", DeviceCapabilities::member());
     let device = user.enrol("laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let shutdown = Arc::new(AtomicBool::new(false));

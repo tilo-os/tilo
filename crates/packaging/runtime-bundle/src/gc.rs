@@ -591,198 +591,6 @@ mod tests {
             .exists()
     }
 
-    /// Apps opened at once each hold the runtime they start on: the first
-    /// holds of a fresh root race to make its lease directory, and every one
-    /// of them holds it.
-    #[test]
-    fn launches_started_side_by_side_all_hold_their_runtime() {
-        for _ in 0..50 {
-            let dir = tempfile::tempdir().unwrap();
-            let root = std::sync::Arc::new(BundleRoot::new(dir.path()));
-            bundle(&root, "0.1.0+tilolang", 10);
-            let start = std::sync::Arc::new(std::sync::Barrier::new(8));
-            let holds: Vec<_> = (0..8)
-                .map(|_| {
-                    let (root, start) = (root.clone(), start.clone());
-                    std::thread::spawn(move || {
-                        start.wait();
-                        root.hold_launch("0.1.0+tilolang")
-                    })
-                })
-                .collect();
-            for hold in holds {
-                let _held = hold
-                    .join()
-                    .unwrap()
-                    .expect("every launch holds its runtime");
-            }
-        }
-    }
-
-    #[test]
-    fn unreferenced_versions_are_reclaimed_and_named_ones_stay() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        for version in [
-            "2026.07+native.aa",
-            "2026.07+native.bb",
-            "2026.07+native.cc",
-        ] {
-            bundle(&root, version, 1000);
-        }
-        let collected = root
-            .collect(&refs(&["2026.07+native.cc"]), &nothing_held, options())
-            .unwrap();
-        assert_eq!(
-            collected.removed,
-            vec![
-                ("2026.07+native.aa".to_string(), 1014),
-                ("2026.07+native.bb".to_string(), 1014)
-            ]
-        );
-        assert_eq!(
-            collected.kept,
-            vec![("2026.07+native.cc".to_string(), Kept::Referenced)]
-        );
-        assert!(!root.bundle("2026.07+native.aa").exists());
-        assert!(selectable(&root, "2026.07+native.cc"));
-        assert_eq!(collected.freed_bytes(), 2028);
-        assert!(
-            fs::read_dir(dir.path().join(TRASH_DIR))
-                .unwrap()
-                .next()
-                .is_none(),
-            "the trash is empty afterwards"
-        );
-    }
-
-    #[test]
-    fn pinned_leased_and_mounted_bundles_survive() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        for version in ["pinned", "fresh", "stale-lease", "mounted", "unused"] {
-            bundle(&root, version, 10);
-        }
-        root.pin("pinned").unwrap();
-        root.lease("fresh", NOW.saturating_sub(60)).unwrap();
-        root.lease("stale-lease", NOW.saturating_sub(DEFAULT_GRACE_SECS))
-            .unwrap();
-        let mounted = root.bundle("mounted");
-        let in_use = move || -> Holds {
-            let mounted = mounted.clone();
-            Box::new(move |path: &Path, _: &str| path == mounted)
-        };
-        let collected = root.collect(&refs(&[]), &in_use, options()).unwrap();
-        let removed: Vec<&str> = collected.removed.iter().map(|(v, _)| v.as_str()).collect();
-        assert_eq!(removed, ["stale-lease", "unused"]);
-        assert_eq!(
-            collected.kept,
-            vec![
-                ("fresh".to_string(), Kept::Leased),
-                ("mounted".to_string(), Kept::InUse),
-                ("pinned".to_string(), Kept::Pinned),
-            ]
-        );
-        assert!(
-            root.leased_at("stale-lease").is_none(),
-            "its lease went with it"
-        );
-        root.unpin("pinned").unwrap();
-        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
-        let removed: Vec<&str> = collected.removed.iter().map(|(v, _)| v.as_str()).collect();
-        assert_eq!(removed, ["mounted", "pinned"]);
-    }
-
-    #[test]
-    fn a_launch_that_mounts_during_the_collection_keeps_its_bundle() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "v1", 10);
-        let looked = std::cell::Cell::new(false);
-        let in_use = || -> Holds {
-            if looked.replace(true) {
-                Box::new(|path: &Path, _: &str| path.to_string_lossy().contains("/.trash/v1."))
-            } else {
-                nothing_held()
-            }
-        };
-        let collected = root.collect(&refs(&[]), &in_use, options()).unwrap();
-        assert!(collected.removed.is_empty());
-        assert_eq!(collected.kept, vec![("v1".to_string(), Kept::InUse)]);
-        assert!(
-            selectable(&root, "v1"),
-            "it is back where the launcher finds it"
-        );
-    }
-
-    #[test]
-    fn a_crash_mid_collection_never_leaves_a_selectable_partial_bundle() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "v1", 4096);
-        bundle(&root, "v2", 10);
-        let trashed = root.retire("v1").unwrap().unwrap();
-        fs::remove_file(trashed.join("lib/libruntime_dylib.so")).unwrap();
-        assert!(trashed.join(crate::BUNDLE_MANIFEST_FILENAME).exists());
-        assert!(
-            !selectable(&root, "v1"),
-            "a lookup never finds the half-deleted bundle"
-        );
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(crate::RUNTIME_DIR_ENV, dir.path());
-        assert_eq!(crate::resolve_bundle_path("v1"), None);
-        assert!(crate::resolve_bundle_path("v2").is_some());
-        assert_eq!(crate::resolve_bundle_path(TRASH_DIR), None);
-        drop(env);
-        let collected = root
-            .collect(&refs(&["v2"]), &nothing_held, options())
-            .unwrap();
-        assert!(collected.removed.is_empty());
-        assert!(collected.swept_bytes > 0);
-        assert!(!trashed.exists());
-        assert!(selectable(&root, "v2"));
-    }
-
-    #[test]
-    fn a_held_lock_skips_the_collection() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "v1", 10);
-        let install = root.install_lock().unwrap();
-        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
-        assert!(collected.busy);
-        assert!(selectable(&root, "v1"));
-        drop(install);
-        assert!(
-            !root
-                .collect(&refs(&[]), &nothing_held, options())
-                .unwrap()
-                .busy
-        );
-        assert!(!root.bundle("v1").exists());
-    }
-
-    #[test]
-    fn abandoned_staging_is_swept_and_a_dry_run_touches_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "v1", 100);
-        fs::create_dir_all(dir.path().join(".install-4242/tree")).unwrap();
-        fs::write(dir.path().join(".install-4242/tree/blob"), vec![1u8; 50]).unwrap();
-        let dry = Options {
-            dry_run: true,
-            ..options()
-        };
-        let collected = root.collect(&refs(&[]), &nothing_held, dry).unwrap();
-        assert_eq!(collected.removed, vec![("v1".to_string(), 114)]);
-        assert_eq!(collected.swept_bytes, 50);
-        assert!(selectable(&root, "v1"));
-        assert!(dir.path().join(".install-4242").exists());
-        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
-        assert_eq!(collected.freed_bytes(), 164);
-        assert!(!dir.path().join(".install-4242").exists());
-    }
-
     #[cfg(unix)]
     #[test]
     fn nothing_outside_the_root_is_touched() {
@@ -799,69 +607,6 @@ mod tests {
         assert!(root.retire("../escape").is_err());
         assert!(root.purge(outside.path(), &nothing_held()).is_err());
         assert_eq!(fs::read(outside.path().join("keep")).unwrap(), b"precious");
-    }
-
-    #[test]
-    fn retiring_and_purging_a_named_bundle() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "2026.07+native.ab", 10);
-        let trashed = root.retire("2026.07+native.ab").unwrap().unwrap();
-        assert_eq!(
-            trashed_version(trashed.file_name().unwrap().to_str().unwrap()),
-            "2026.07+native.ab"
-        );
-        assert!(
-            !root
-                .purge(&trashed, &(Box::new(|_: &Path, _: &str| true) as Holds))
-                .unwrap()
-        );
-        assert!(trashed.exists(), "a held bundle stays in the trash");
-        assert!(root.purge(&trashed, &nothing_held()).unwrap());
-        assert!(!trashed.exists());
-        assert_eq!(root.retire("2026.07+native.ab").unwrap(), None);
-    }
-
-    #[test]
-    fn a_launch_lease_keeps_an_unreferenced_bundle() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "v1", 10);
-        let launch = root.hold_launch("v1").unwrap();
-        let dry = Options {
-            dry_run: true,
-            ..options()
-        };
-        let collected = root.collect(&refs(&[]), &nothing_held, dry).unwrap();
-        assert_eq!(collected.kept, vec![("v1".to_string(), Kept::Launching)]);
-        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
-        assert!(collected.removed.is_empty());
-        assert_eq!(collected.kept, vec![("v1".to_string(), Kept::Launching)]);
-        assert!(selectable(&root, "v1"), "a held bundle stays where it is");
-        drop(launch);
-        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
-        assert_eq!(collected.removed, vec![("v1".to_string(), 24)]);
-        assert!(
-            !dir.path().join(LAUNCHES_DIR).join("v1").exists(),
-            "the lease went with its bundle"
-        );
-    }
-
-    #[test]
-    fn a_held_trashed_bundle_is_not_purged() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "v1", 10);
-        let launch = root.hold_launch("v1").unwrap();
-        let trashed = root.retire("v1").unwrap().unwrap();
-        assert!(!root.purge(&trashed, &nothing_held()).unwrap());
-        assert!(trashed.join("lib/libruntime_dylib.so").exists());
-        root.collect(&refs(&[]), &nothing_held, options()).unwrap();
-        assert!(trashed.join("lib/libruntime_dylib.so").exists());
-        drop(launch);
-        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
-        assert!(collected.swept_bytes > 0);
-        assert!(!trashed.exists());
     }
 
     fn waiting_on(lease: &Path) {
@@ -882,95 +627,362 @@ mod tests {
         let _ = lease;
     }
 
-    #[test]
-    fn a_launch_waiting_on_a_collection_sees_the_bundle_whole_or_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "v1", 4096);
-        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
-        let launcher = std::cell::RefCell::new(None);
-        let looks = std::cell::Cell::new(0);
-        let in_use = || -> Holds {
-            looks.set(looks.get() + 1);
-            if looks.get() == 2 {
-                let root = root.clone();
-                let seen_tx = seen_tx.clone();
-                launcher.replace(Some(std::thread::spawn(move || {
-                    let _hold = root.hold_launch("v1").unwrap();
-                    let bundle = root.bundle("v1");
-                    let manifest = bundle.join(crate::BUNDLE_MANIFEST_FILENAME);
-                    let toolkit = bundle.join("lib/libruntime_dylib.so");
-                    seen_tx.send((manifest.exists(), toolkit.exists())).unwrap();
-                })));
-                waiting_on(&dir.path().join(LAUNCHES_DIR).join("v1"));
-                assert!(
-                    seen_rx.try_recv().is_err(),
-                    "the launch waits while the collection holds the bundle"
-                );
-            }
-            nothing_held()
-        };
-        let collected = root.collect(&refs(&[]), &in_use, options()).unwrap();
-        assert_eq!(collected.removed.len(), 1);
-        launcher.take().unwrap().join().unwrap();
-        assert_eq!(
-            seen_rx.recv().unwrap(),
-            (false, false),
-            "the launch finds the bundle gone, not half deleted"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn launches_and_holds_keep_a_bundle_from_collection_and_purge;
 
-    #[test]
-    fn idle_launch_leases_of_absent_bundles_are_dropped() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = BundleRoot::new(dir.path());
-        bundle(&root, "v1", 10);
-        drop(root.hold_launch("system-only").unwrap());
-        let held = root.hold_launch("system-held").unwrap();
-        root.collect(&refs(&["v1"]), &nothing_held, options())
-            .unwrap();
-        let launches = dir.path().join(LAUNCHES_DIR);
-        assert!(!launches.join("system-only").exists());
-        assert!(launches.join("system-held").exists());
-        drop(held);
-    }
-
-    #[test]
-    fn disk_after_runtime_updates() {
-        const UPDATES: usize = 10;
-        const BUNDLE_BYTES: usize = 205_000;
-        let kept = tempfile::tempdir().unwrap();
-        let collected = tempfile::tempdir().unwrap();
-        let (kept, collected) = (
-            BundleRoot::new(kept.path()),
-            BundleRoot::new(collected.path()),
-        );
-        for update in 0..UPDATES {
-            let version = format!("2026.07+native.{update:02}");
-            for root in [&kept, &collected] {
-                bundle(root, &version, BUNDLE_BYTES);
-                root.lease(&version, NOW).unwrap();
+        phase launches_started_side_by_side_all_hold_their_runtime;
+        // Apps opened at once each hold the runtime they start on: the first
+        // holds of a fresh root race to make its lease directory, and every one
+        // of them holds it.
+        {
+            for _ in 0..50 {
+                let dir = tempfile::tempdir().unwrap();
+                let root = std::sync::Arc::new(BundleRoot::new(dir.path()));
+                bundle(&root, "0.1.0+tilolang", 10);
+                let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+                let holds: Vec<_> = (0..8)
+                    .map(|_| {
+                        let (root, start) = (root.clone(), start.clone());
+                        std::thread::spawn(move || {
+                            start.wait();
+                            root.hold_launch("0.1.0+tilolang")
+                        })
+                    })
+                    .collect();
+                for hold in holds {
+                    let _held = hold
+                        .join()
+                        .unwrap()
+                        .expect("every launch holds its runtime");
+                }
             }
-            let later = Options {
-                now: NOW.saturating_add(DEFAULT_GRACE_SECS),
+        }
+
+        phase retiring_and_purging_a_named_bundle;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "2026.07+native.ab", 10);
+            let trashed = root.retire("2026.07+native.ab").unwrap().unwrap();
+            assert_eq!(
+                trashed_version(trashed.file_name().unwrap().to_str().unwrap()),
+                "2026.07+native.ab"
+            );
+            assert!(
+                !root
+                    .purge(&trashed, &(Box::new(|_: &Path, _: &str| true) as Holds))
+                    .unwrap()
+            );
+            assert!(trashed.exists(), "a held bundle stays in the trash");
+            assert!(root.purge(&trashed, &nothing_held()).unwrap());
+            assert!(!trashed.exists());
+            assert_eq!(root.retire("2026.07+native.ab").unwrap(), None);
+        }
+
+        phase a_launch_lease_keeps_an_unreferenced_bundle;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "v1", 10);
+            let launch = root.hold_launch("v1").unwrap();
+            let dry = Options {
+                dry_run: true,
                 ..options()
             };
-            collected
-                .collect(&refs(&[&version]), &nothing_held, later)
-                .unwrap();
+            let collected = root.collect(&refs(&[]), &nothing_held, dry).unwrap();
+            assert_eq!(collected.kept, vec![("v1".to_string(), Kept::Launching)]);
+            let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+            assert!(collected.removed.is_empty());
+            assert_eq!(collected.kept, vec![("v1".to_string(), Kept::Launching)]);
+            assert!(selectable(&root, "v1"), "a held bundle stays where it is");
+            drop(launch);
+            let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+            assert_eq!(collected.removed, vec![("v1".to_string(), 24)]);
+            assert!(
+                !dir.path().join(LAUNCHES_DIR).join("v1").exists(),
+                "the lease went with its bundle"
+            );
         }
-        let without = tree_size(kept.path());
-        let with = tree_size(collected.path());
-        println!(
-            "RUNTIME-GC updates={UPDATES} bundle_bytes={BUNDLE_BYTES} without_gc={without} \
+
+        phase a_held_trashed_bundle_is_not_purged;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "v1", 10);
+            let launch = root.hold_launch("v1").unwrap();
+            let trashed = root.retire("v1").unwrap().unwrap();
+            assert!(!root.purge(&trashed, &nothing_held()).unwrap());
+            assert!(trashed.join("lib/libruntime_dylib.so").exists());
+            root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+            assert!(trashed.join("lib/libruntime_dylib.so").exists());
+            drop(launch);
+            let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+            assert!(collected.swept_bytes > 0);
+            assert!(!trashed.exists());
+        }
+
+        phase a_launch_waiting_on_a_collection_sees_the_bundle_whole_or_gone;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "v1", 4096);
+            let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+            let launcher = std::cell::RefCell::new(None);
+            let looks = std::cell::Cell::new(0);
+            let in_use = || -> Holds {
+                looks.set(looks.get() + 1);
+                if looks.get() == 2 {
+                    let root = root.clone();
+                    let seen_tx = seen_tx.clone();
+                    launcher.replace(Some(std::thread::spawn(move || {
+                        let _hold = root.hold_launch("v1").unwrap();
+                        let bundle = root.bundle("v1");
+                        let manifest = bundle.join(crate::BUNDLE_MANIFEST_FILENAME);
+                        let toolkit = bundle.join("lib/libruntime_dylib.so");
+                        seen_tx.send((manifest.exists(), toolkit.exists())).unwrap();
+                    })));
+                    waiting_on(&dir.path().join(LAUNCHES_DIR).join("v1"));
+                    assert!(
+                        seen_rx.try_recv().is_err(),
+                        "the launch waits while the collection holds the bundle"
+                    );
+                }
+                nothing_held()
+            };
+            let collected = root.collect(&refs(&[]), &in_use, options()).unwrap();
+            assert_eq!(collected.removed.len(), 1);
+            launcher.take().unwrap().join().unwrap();
+            assert_eq!(
+                seen_rx.recv().unwrap(),
+                (false, false),
+                "the launch finds the bundle gone, not half deleted"
+            );
+        }
+
+        phase idle_launch_leases_of_absent_bundles_are_dropped;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "v1", 10);
+            drop(root.hold_launch("system-only").unwrap());
+            let held = root.hold_launch("system-held").unwrap();
+            root.collect(&refs(&["v1"]), &nothing_held, options())
+                .unwrap();
+            let launches = dir.path().join(LAUNCHES_DIR);
+            assert!(!launches.join("system-only").exists());
+            assert!(launches.join("system-held").exists());
+            drop(held);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_collection_reclaims_only_what_nothing_references_pins_leases_or_mounts;
+
+        phase unreferenced_versions_are_reclaimed_and_named_ones_stay;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            for version in [
+                "2026.07+native.aa",
+                "2026.07+native.bb",
+                "2026.07+native.cc",
+            ] {
+                bundle(&root, version, 1000);
+            }
+            let collected = root
+                .collect(&refs(&["2026.07+native.cc"]), &nothing_held, options())
+                .unwrap();
+            assert_eq!(
+                collected.removed,
+                vec![
+                    ("2026.07+native.aa".to_string(), 1014),
+                    ("2026.07+native.bb".to_string(), 1014)
+                ]
+            );
+            assert_eq!(
+                collected.kept,
+                vec![("2026.07+native.cc".to_string(), Kept::Referenced)]
+            );
+            assert!(!root.bundle("2026.07+native.aa").exists());
+            assert!(selectable(&root, "2026.07+native.cc"));
+            assert_eq!(collected.freed_bytes(), 2028);
+            assert!(
+                fs::read_dir(dir.path().join(TRASH_DIR))
+                    .unwrap()
+                    .next()
+                    .is_none(),
+                "the trash is empty afterwards"
+            );
+        }
+
+        phase pinned_leased_and_mounted_bundles_survive;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            for version in ["pinned", "fresh", "stale-lease", "mounted", "unused"] {
+                bundle(&root, version, 10);
+            }
+            root.pin("pinned").unwrap();
+            root.lease("fresh", NOW.saturating_sub(60)).unwrap();
+            root.lease("stale-lease", NOW.saturating_sub(DEFAULT_GRACE_SECS))
+                .unwrap();
+            let mounted = root.bundle("mounted");
+            let in_use = move || -> Holds {
+                let mounted = mounted.clone();
+                Box::new(move |path: &Path, _: &str| path == mounted)
+            };
+            let collected = root.collect(&refs(&[]), &in_use, options()).unwrap();
+            let removed: Vec<&str> = collected.removed.iter().map(|(v, _)| v.as_str()).collect();
+            assert_eq!(removed, ["stale-lease", "unused"]);
+            assert_eq!(
+                collected.kept,
+                vec![
+                    ("fresh".to_string(), Kept::Leased),
+                    ("mounted".to_string(), Kept::InUse),
+                    ("pinned".to_string(), Kept::Pinned),
+                ]
+            );
+            assert!(
+                root.leased_at("stale-lease").is_none(),
+                "its lease went with it"
+            );
+            root.unpin("pinned").unwrap();
+            let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+            let removed: Vec<&str> = collected.removed.iter().map(|(v, _)| v.as_str()).collect();
+            assert_eq!(removed, ["mounted", "pinned"]);
+        }
+
+        phase a_launch_that_mounts_during_the_collection_keeps_its_bundle;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "v1", 10);
+            let looked = std::cell::Cell::new(false);
+            let in_use = || -> Holds {
+                if looked.replace(true) {
+                    Box::new(|path: &Path, _: &str| path.to_string_lossy().contains("/.trash/v1."))
+                } else {
+                    nothing_held()
+                }
+            };
+            let collected = root.collect(&refs(&[]), &in_use, options()).unwrap();
+            assert!(collected.removed.is_empty());
+            assert_eq!(collected.kept, vec![("v1".to_string(), Kept::InUse)]);
+            assert!(
+                selectable(&root, "v1"),
+                "it is back where the launcher finds it"
+            );
+        }
+
+        phase a_crash_mid_collection_never_leaves_a_selectable_partial_bundle;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "v1", 4096);
+            bundle(&root, "v2", 10);
+            let trashed = root.retire("v1").unwrap().unwrap();
+            fs::remove_file(trashed.join("lib/libruntime_dylib.so")).unwrap();
+            assert!(trashed.join(crate::BUNDLE_MANIFEST_FILENAME).exists());
+            assert!(
+                !selectable(&root, "v1"),
+                "a lookup never finds the half-deleted bundle"
+            );
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(crate::RUNTIME_DIR_ENV, dir.path());
+            assert_eq!(crate::resolve_bundle_path("v1"), None);
+            assert!(crate::resolve_bundle_path("v2").is_some());
+            assert_eq!(crate::resolve_bundle_path(TRASH_DIR), None);
+            drop(env);
+            let collected = root
+                .collect(&refs(&["v2"]), &nothing_held, options())
+                .unwrap();
+            assert!(collected.removed.is_empty());
+            assert!(collected.swept_bytes > 0);
+            assert!(!trashed.exists());
+            assert!(selectable(&root, "v2"));
+        }
+
+        phase a_held_lock_skips_the_collection;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "v1", 10);
+            let install = root.install_lock().unwrap();
+            let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+            assert!(collected.busy);
+            assert!(selectable(&root, "v1"));
+            drop(install);
+            assert!(
+                !root
+                    .collect(&refs(&[]), &nothing_held, options())
+                    .unwrap()
+                    .busy
+            );
+            assert!(!root.bundle("v1").exists());
+        }
+
+        phase abandoned_staging_is_swept_and_a_dry_run_touches_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = BundleRoot::new(dir.path());
+            bundle(&root, "v1", 100);
+            fs::create_dir_all(dir.path().join(".install-4242/tree")).unwrap();
+            fs::write(dir.path().join(".install-4242/tree/blob"), vec![1u8; 50]).unwrap();
+            let dry = Options {
+                dry_run: true,
+                ..options()
+            };
+            let collected = root.collect(&refs(&[]), &nothing_held, dry).unwrap();
+            assert_eq!(collected.removed, vec![("v1".to_string(), 114)]);
+            assert_eq!(collected.swept_bytes, 50);
+            assert!(selectable(&root, "v1"));
+            assert!(dir.path().join(".install-4242").exists());
+            let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+            assert_eq!(collected.freed_bytes(), 164);
+            assert!(!dir.path().join(".install-4242").exists());
+        }
+
+        phase disk_after_runtime_updates;
+        {
+            const UPDATES: usize = 10;
+            const BUNDLE_BYTES: usize = 205_000;
+            let kept = tempfile::tempdir().unwrap();
+            let collected = tempfile::tempdir().unwrap();
+            let (kept, collected) = (
+                BundleRoot::new(kept.path()),
+                BundleRoot::new(collected.path()),
+            );
+            for update in 0..UPDATES {
+                let version = format!("2026.07+native.{update:02}");
+                for root in [&kept, &collected] {
+                    bundle(root, &version, BUNDLE_BYTES);
+                    root.lease(&version, NOW).unwrap();
+                }
+                let later = Options {
+                    now: NOW.saturating_add(DEFAULT_GRACE_SECS),
+                    ..options()
+                };
+                collected
+                    .collect(&refs(&[&version]), &nothing_held, later)
+                    .unwrap();
+            }
+            let without = tree_size(kept.path());
+            let with = tree_size(collected.path());
+            println!(
+                "RUNTIME-GC updates={UPDATES} bundle_bytes={BUNDLE_BYTES} without_gc={without} \
              with_gc={with}"
-        );
-        assert_eq!(kept.bundles().unwrap().len(), UPDATES);
-        assert_eq!(
-            collected.bundles().unwrap().len(),
-            1,
-            "only the build in use"
-        );
-        assert!(with.saturating_mul(9) < without, "{with} of {without}");
+            );
+            assert_eq!(kept.bundles().unwrap().len(), UPDATES);
+            assert_eq!(
+                collected.bundles().unwrap().len(),
+                1,
+                "only the build in use"
+            );
+            assert!(with.saturating_mul(9) < without, "{with} of {without}");
+        }
     }
 }

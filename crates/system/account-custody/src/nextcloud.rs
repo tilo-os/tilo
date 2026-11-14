@@ -329,89 +329,94 @@ mod tests {
         (responder, tokens)
     }
 
-    #[test]
-    fn login_flow_polls_until_the_app_password_is_minted() {
-        let (server, tokens) = fake_nextcloud(2);
-        let flow = begin(&format!("{}/", server.url())).unwrap();
-        assert_eq!(
-            flow.login_url(),
-            format!("{}/login/v2/flow/abc", server.url())
-        );
-        let (_keep_open, cancel) = mpsc::channel();
-        let login = flow
-            .wait(&cancel, Duration::ZERO, Duration::from_secs(30))
-            .unwrap();
-        assert_eq!(login.server, server.url());
-        assert_eq!(login.login_name, "ada");
-        assert_eq!(login.app_password.as_str(), "minted-app-password");
-        let polls = tokens.lock().unwrap().clone();
-        assert_eq!(polls.len(), 3, "two pending answers, then the result");
-        assert!(polls.iter().all(|body| body == "token=poll-token-1"));
-        assert!(!format!("{login:?}").contains("minted"));
-        revoke_app_password(&login.server, &login.login_name, &login.app_password).unwrap();
-        let revoke = server
-            .drain_requests()
-            .into_iter()
-            .find(|request| request.method == "DELETE")
-            .expect("revocation request");
-        assert_eq!(revoke.header("OCS-APIRequest"), Some("true"));
-        assert!(
-            revoke
-                .header("Authorization")
-                .is_some_and(|value| value.starts_with("Basic "))
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Nextcloud's login flow v2.
+        fn the_nextcloud_login_flow_polls_only_its_own_secure_server;
 
-    #[test]
-    fn cancelling_stops_polling() {
-        let (server, tokens) = fake_nextcloud(usize::MAX);
-        let flow = begin(&server.url()).unwrap();
-        let (stop, cancel) = mpsc::channel();
-        stop.send(()).unwrap();
-        assert_eq!(
-            flow.wait(&cancel, Duration::from_secs(60), Duration::from_secs(60))
-                .unwrap_err(),
-            NextcloudError::Cancelled
-        );
-        assert_eq!(tokens.lock().unwrap().len(), 1);
-        let (_keep_open, idle) = mpsc::channel();
-        assert_eq!(
-            flow.wait(&idle, Duration::ZERO, Duration::ZERO)
-                .unwrap_err(),
-            NextcloudError::TimedOut
-        );
-    }
+        phase login_flow_polls_until_the_app_password_is_minted;
+        {
+            let (server, tokens) = fake_nextcloud(2);
+            let flow = begin(&format!("{}/", server.url())).unwrap();
+            assert_eq!(
+                flow.login_url(),
+                format!("{}/login/v2/flow/abc", server.url())
+            );
+            let (_keep_open, cancel) = mpsc::channel();
+            let login = flow
+                .wait(&cancel, Duration::ZERO, Duration::from_secs(30))
+                .unwrap();
+            assert_eq!(login.server, server.url());
+            assert_eq!(login.login_name, "ada");
+            assert_eq!(login.app_password.as_str(), "minted-app-password");
+            let polls = tokens.lock().unwrap().clone();
+            assert_eq!(polls.len(), 3, "two pending answers, then the result");
+            assert!(polls.iter().all(|body| body == "token=poll-token-1"));
+            assert!(!format!("{login:?}").contains("minted"));
+            revoke_app_password(&login.server, &login.login_name, &login.app_password).unwrap();
+            let revoke = server
+                .drain_requests()
+                .into_iter()
+                .find(|request| request.method == "DELETE")
+                .expect("revocation request");
+            assert_eq!(revoke.header("OCS-APIRequest"), Some("true"));
+            assert!(
+                revoke
+                    .header("Authorization")
+                    .is_some_and(|value| value.starts_with("Basic "))
+            );
+        }
 
-    #[test]
-    fn a_poll_endpoint_on_another_host_is_refused() {
-        let responder = Responder::handle(|_| {
-            Some(
-                Reply::status(200).body(
-                    serde_json::json!({
-                        "poll": {"token": "t", "endpoint": "https://collector.example/poll"},
-                        "login": "https://collector.example/login",
-                    })
-                    .to_string(),
-                ),
-            )
-        });
-        assert_eq!(
-            begin(&responder.url()).unwrap_err(),
-            NextcloudError::Protocol("poll endpoint is on another server")
-        );
-    }
+        phase cancelling_stops_polling;
+        {
+            let (server, tokens) = fake_nextcloud(usize::MAX);
+            let flow = begin(&server.url()).unwrap();
+            let (stop, cancel) = mpsc::channel();
+            stop.send(()).unwrap();
+            assert_eq!(
+                flow.wait(&cancel, Duration::from_secs(60), Duration::from_secs(60))
+                    .unwrap_err(),
+                NextcloudError::Cancelled
+            );
+            assert_eq!(tokens.lock().unwrap().len(), 1);
+            let (_keep_open, idle) = mpsc::channel();
+            assert_eq!(
+                flow.wait(&idle, Duration::ZERO, Duration::ZERO)
+                    .unwrap_err(),
+                NextcloudError::TimedOut
+            );
+        }
 
-    #[test]
-    fn server_urls_must_be_secure() {
-        assert!(server_url("https://cloud.example.com/").is_ok());
-        assert!(server_url("http://127.0.0.1:8080").is_ok());
-        assert!(server_url("http://cloud.example.com").is_err());
-        assert!(server_url("https://ada:pw@cloud.example.com").is_err());
-        assert_eq!(
-            server_url("https://cloud.example.com/nc/?x=1")
-                .unwrap()
-                .as_str(),
-            "https://cloud.example.com/nc"
-        );
+        phase a_poll_endpoint_on_another_host_is_refused;
+        {
+            let responder = Responder::handle(|_| {
+                Some(
+                    Reply::status(200).body(
+                        serde_json::json!({
+                            "poll": {"token": "t", "endpoint": "https://collector.example/poll"},
+                            "login": "https://collector.example/login",
+                        })
+                        .to_string(),
+                    ),
+                )
+            });
+            assert_eq!(
+                begin(&responder.url()).unwrap_err(),
+                NextcloudError::Protocol("poll endpoint is on another server")
+            );
+        }
+
+        phase server_urls_must_be_secure;
+        {
+            assert!(server_url("https://cloud.example.com/").is_ok());
+            assert!(server_url("http://127.0.0.1:8080").is_ok());
+            assert!(server_url("http://cloud.example.com").is_err());
+            assert!(server_url("https://ada:pw@cloud.example.com").is_err());
+            assert_eq!(
+                server_url("https://cloud.example.com/nc/?x=1")
+                    .unwrap()
+                    .as_str(),
+                "https://cloud.example.com/nc"
+            );
+        }
     }
 }

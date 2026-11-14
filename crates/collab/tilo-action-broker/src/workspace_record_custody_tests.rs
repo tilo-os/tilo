@@ -211,7 +211,7 @@ mod workspace_record_custody {
                     .authorize_certified_document(&route, &identity, &add)
                     .expect("someone the workspace lets change it changes it from any app");
 
-                let principal = principal_id_for_root(workspace.cert.user_public_key);
+                let principal = person_id_for_root(workspace.cert.user_public_key);
                 {
                     let mut tree = workspace.membership.write();
                     let workspace = &mut tree.workspaces[0];

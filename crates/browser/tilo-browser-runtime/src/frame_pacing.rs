@@ -226,130 +226,134 @@ mod tests {
         }
     }
 
-    #[test]
-    fn keys_typed_while_the_gpu_is_behind_reach_the_next_frame_together() {
-        let mut page = Loop::default();
-        page.input('a');
-        page.animation_frame(FRAME);
-        page.input('b');
-        page.animation_frame(FRAME);
-        assert_eq!(
-            page.drawn,
-            [vec!['a'], vec!['b']],
-            "two frames may be in flight"
-        );
-        // The GPU takes many display frames for each: keys keep coming.
-        for key in ['c', 'd', 'e', 'f'] {
-            page.input(key);
-            page.animation_frame(FRAME);
-        }
-        assert_eq!(page.drawn.len(), 2, "no frame queues behind a busy GPU");
-        assert_eq!(
-            page.notes,
-            Vec::<String>::new(),
-            "a GPU a frame behind is late, not lost"
-        );
-        page.gpu_finishes_one();
-        page.animation_frame(FRAME);
-        page.animation_frame(FRAME);
-        assert_eq!(
-            page.drawn,
-            [vec!['a'], vec!['b'], vec!['c', 'd', 'e', 'f']],
-            "exactly one following frame draws every key held for it"
-        );
-        page.gpu_finishes_one();
-        page.gpu_finishes_one();
-        page.animation_frame(FRAME);
-        assert_eq!(page.drawn.len(), 3, "nothing pending draws nothing");
-        page.input('g');
-        page.animation_frame(FRAME);
-        assert_eq!(
-            page.drawn.last(),
-            Some(&vec!['g']),
-            "no key is ever dropped"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn frames_are_paced_by_what_the_gpu_finished;
 
-    #[test]
-    fn a_gpu_that_keeps_up_never_holds_a_frame() {
-        let typed = "every key gets its own frame";
-        let mut page = Loop::default();
-        for key in typed.chars() {
-            page.input(key);
+        phase keys_typed_while_the_gpu_is_behind_reach_the_next_frame_together;
+        {
+            let mut page = Loop::default();
+            page.input('a');
             page.animation_frame(FRAME);
-            // Done is reported late, after the next frame was submitted.
-            if page.gpu.len() > 1 {
-                page.gpu_finishes_one();
+            page.input('b');
+            page.animation_frame(FRAME);
+            assert_eq!(
+                page.drawn,
+                [vec!['a'], vec!['b']],
+                "two frames may be in flight"
+            );
+            // The GPU takes many display frames for each: keys keep coming.
+            for key in ['c', 'd', 'e', 'f'] {
+                page.input(key);
+                page.animation_frame(FRAME);
             }
-        }
-        assert_eq!(page.drawn.len(), typed.len());
-        assert_eq!(page.notes, Vec::<String>::new());
-    }
-
-    /// A GPU that never reports a frame done — a completion lost for good, a
-    /// software rasteriser starved of the CPU: the page keeps presenting, and
-    /// each frame it stops waiting for is counted and said with the frame's
-    /// number and how long it had been out. Slow is not lost: no number of
-    /// them makes the page give the device up.
-    #[test]
-    fn a_gpu_that_never_reports_keeps_the_page_drawing_and_says_so() {
-        let mut page = Loop::default();
-        // A person keeps working — every frame has something to draw — and the
-        // GPU never reports one of them done, for two minutes.
-        for _ in 0..7_500 {
-            page.input('x');
-            page.animation_frame(FRAME);
-        }
-        assert!(
-            page.drawn.len() >= 10,
-            "a page whose GPU never answers keeps presenting: {} frames, {:?}",
-            page.drawn.len(),
-            page.notes.first()
-        );
-        assert_eq!(
-            usize::try_from(page.pacing.stalls()).ok(),
-            Some(page.notes.len()),
-            "every frame the GPU left out was counted and said"
-        );
-        let first = page.notes.first().expect("the first stall was said");
-        assert!(
-            first.starts_with("Browser runtime: frame 1 was handed to the GPU 6.0 s ago"),
-            "the note names the frame and how long it waited: {first}"
-        );
-        assert!(
-            first.contains("1 left out since it last reported one"),
-            "and how many it has left out: {first}"
-        );
-        assert!(
-            page.notes.iter().all(|note| !note.contains("lost")),
-            "no stall says the device is lost: {:?}",
-            page.notes.last()
-        );
-        // The GPU comes back and reports what it owes: the count starts again.
-        while !page.gpu.is_empty() {
+            assert_eq!(page.drawn.len(), 2, "no frame queues behind a busy GPU");
+            assert_eq!(
+                page.notes,
+                Vec::<String>::new(),
+                "a GPU a frame behind is late, not lost"
+            );
             page.gpu_finishes_one();
-        }
-        page.input('y');
-        page.animation_frame(FRAME);
-        assert_eq!(page.pacing.stalls(), 0, "a GPU that reports is working");
-    }
-
-    /// A GPU a second and a half behind is waited for, not given up on: the
-    /// bound sits several frame times past what a page drawing a megapixel
-    /// takes, so only a completion that never comes reaches it.
-    #[test]
-    fn a_gpu_that_answers_late_is_still_waited_for() {
-        let mut page = Loop::default();
-        for step in 0..400 {
-            page.input('c');
             page.animation_frame(FRAME);
-            // About every second and a half, as a software rasteriser under
-            // load reports: late, but never silent.
-            if step % 94 == 93 {
+            page.animation_frame(FRAME);
+            assert_eq!(
+                page.drawn,
+                [vec!['a'], vec!['b'], vec!['c', 'd', 'e', 'f']],
+                "exactly one following frame draws every key held for it"
+            );
+            page.gpu_finishes_one();
+            page.gpu_finishes_one();
+            page.animation_frame(FRAME);
+            assert_eq!(page.drawn.len(), 3, "nothing pending draws nothing");
+            page.input('g');
+            page.animation_frame(FRAME);
+            assert_eq!(
+                page.drawn.last(),
+                Some(&vec!['g']),
+                "no key is ever dropped"
+            );
+        }
+
+        phase a_gpu_that_keeps_up_never_holds_a_frame;
+        {
+            let typed = "every key gets its own frame";
+            let mut page = Loop::default();
+            for key in typed.chars() {
+                page.input(key);
+                page.animation_frame(FRAME);
+                // Done is reported late, after the next frame was submitted.
+                if page.gpu.len() > 1 {
+                    page.gpu_finishes_one();
+                }
+            }
+            assert_eq!(page.drawn.len(), typed.len());
+            assert_eq!(page.notes, Vec::<String>::new());
+        }
+
+        phase a_gpu_that_never_reports_keeps_the_page_drawing_and_says_so;
+        // A GPU that never reports a frame done — a completion lost for good, a
+        // software rasteriser starved of the CPU: the page keeps presenting, and
+        // each frame it stops waiting for is counted and said with the frame's
+        // number and how long it had been out. Slow is not lost: no number of
+        // them makes the page give the device up.
+        {
+            let mut page = Loop::default();
+            // A person keeps working — every frame has something to draw — and the
+            // GPU never reports one of them done, for two minutes.
+            for _ in 0..7_500 {
+                page.input('x');
+                page.animation_frame(FRAME);
+            }
+            assert!(
+                page.drawn.len() >= 10,
+                "a page whose GPU never answers keeps presenting: {} frames, {:?}",
+                page.drawn.len(),
+                page.notes.first()
+            );
+            assert_eq!(
+                usize::try_from(page.pacing.stalls()).ok(),
+                Some(page.notes.len()),
+                "every frame the GPU left out was counted and said"
+            );
+            let first = page.notes.first().expect("the first stall was said");
+            assert!(
+                first.starts_with("Browser runtime: frame 1 was handed to the GPU 6.0 s ago"),
+                "the note names the frame and how long it waited: {first}"
+            );
+            assert!(
+                first.contains("1 left out since it last reported one"),
+                "and how many it has left out: {first}"
+            );
+            assert!(
+                page.notes.iter().all(|note| !note.contains("lost")),
+                "no stall says the device is lost: {:?}",
+                page.notes.last()
+            );
+            // The GPU comes back and reports what it owes: the count starts again.
+            while !page.gpu.is_empty() {
                 page.gpu_finishes_one();
             }
+            page.input('y');
+            page.animation_frame(FRAME);
+            assert_eq!(page.pacing.stalls(), 0, "a GPU that reports is working");
         }
-        assert_eq!(page.notes, Vec::<String>::new(), "no frame was given up on");
-        assert_eq!(page.pacing.stalls(), 0);
+
+        phase a_gpu_that_answers_late_is_still_waited_for;
+        // A GPU a second and a half behind is waited for, not given up on: the
+        // bound sits several frame times past what a page drawing a megapixel
+        // takes, so only a completion that never comes reaches it.
+        {
+            let mut page = Loop::default();
+            for step in 0..400 {
+                page.input('c');
+                page.animation_frame(FRAME);
+                // About every second and a half, as a software rasteriser under
+                // load reports: late, but never silent.
+                if step % 94 == 93 {
+                    page.gpu_finishes_one();
+                }
+            }
+            assert_eq!(page.notes, Vec::<String>::new(), "no frame was given up on");
+            assert_eq!(page.pacing.stalls(), 0);
+        }
     }
 }

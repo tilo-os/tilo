@@ -148,36 +148,40 @@ mod tests {
         std::fs::write(root.join("hard"), format!("{hard}\n")).unwrap();
     }
 
-    #[test]
-    fn any_switch_of_a_kind_blocking_keeps_that_radio_off() {
-        let class = tempfile::tempdir().unwrap();
-        assert_eq!(
-            state_in(class.path(), RadioKind::Wlan),
-            RfkillState::default(),
-            "no switch: nothing to say"
-        );
-        switch(class.path(), "rfkill0", "wlan", "0", "0");
-        switch(class.path(), "rfkill1", "bluetooth", "1", "0");
-        let wlan = state_in(class.path(), RadioKind::Wlan);
-        assert!(wlan.present && wlan.allows());
-        switch(class.path(), "rfkill2", "wlan", "1", "0");
-        let wlan = state_in(class.path(), RadioKind::Wlan);
-        assert!(wlan.soft_blocked && !wlan.hard_blocked && !wlan.allows());
-        switch(class.path(), "rfkill3", "wlan", "0", "1");
-        assert!(state_in(class.path(), RadioKind::Wlan).hard_blocked);
-        assert!(state_in(class.path(), RadioKind::Bluetooth).soft_blocked);
-        assert!(!state_in(class.path(), RadioKind::Wwan).present);
-    }
+    tilo_test_env::scenario! {
+        fn a_radios_kill_switches_are_read_together_and_unblocked_as_the_kernel_expects;
 
-    #[test]
-    fn the_unblock_event_is_the_kernels_change_all_for_that_radio() {
-        assert_eq!(
-            change_all_event(RadioKind::Wlan, false),
-            [0, 0, 0, 0, 1, 3, 0, 0]
-        );
-        assert_eq!(
-            change_all_event(RadioKind::Wwan, true),
-            [0, 0, 0, 0, 5, 3, 1, 0]
-        );
+        phase any_switch_of_a_kind_blocking_keeps_that_radio_off;
+        {
+            let class = tempfile::tempdir().unwrap();
+            assert_eq!(
+                state_in(class.path(), RadioKind::Wlan),
+                RfkillState::default(),
+                "no switch: nothing to say"
+            );
+            switch(class.path(), "rfkill0", "wlan", "0", "0");
+            switch(class.path(), "rfkill1", "bluetooth", "1", "0");
+            let wlan = state_in(class.path(), RadioKind::Wlan);
+            assert!(wlan.present && wlan.allows());
+            switch(class.path(), "rfkill2", "wlan", "1", "0");
+            let wlan = state_in(class.path(), RadioKind::Wlan);
+            assert!(wlan.soft_blocked && !wlan.hard_blocked && !wlan.allows());
+            switch(class.path(), "rfkill3", "wlan", "0", "1");
+            assert!(state_in(class.path(), RadioKind::Wlan).hard_blocked);
+            assert!(state_in(class.path(), RadioKind::Bluetooth).soft_blocked);
+            assert!(!state_in(class.path(), RadioKind::Wwan).present);
+        }
+
+        phase the_unblock_event_is_the_kernels_change_all_for_that_radio;
+        {
+            assert_eq!(
+                change_all_event(RadioKind::Wlan, false),
+                [0, 0, 0, 0, 1, 3, 0, 0]
+            );
+            assert_eq!(
+                change_all_event(RadioKind::Wwan, true),
+                [0, 0, 0, 0, 5, 3, 1, 0]
+            );
+        }
     }
 }

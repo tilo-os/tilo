@@ -123,98 +123,102 @@ mod tests {
         Zeroizing::new(text.as_bytes().to_vec())
     }
 
-    #[test]
-    fn actual_glib_dictionary_preserves_escaping_tokens_and_absolute_expiry() {
-        let input = secret(
-            r#"{'authorization_code': <'discard-code'>, 'access_token': <"access'quote\\tail">, 'refresh_token': <"refresh'quote\\tail">, 'access_token_expires_at': <int64 2000000123456789>, 'password': <'discard-password'>, 'other': <true>}"#,
-        );
-        let parsed = parse(&input).expect("canonical upstream a{sv}");
-        assert_eq!(parsed.access_token, "access'quote\\tail");
-        assert_eq!(parsed.refresh_token, "refresh'quote\\tail");
-        assert_eq!(parsed.obtained_at, 0);
-        assert_eq!(parsed.expires_at(), Some(2_000_000_123));
-        assert_eq!(parsed.scope, None);
-        let debug = format!("{parsed:?}");
-        assert!(!debug.contains("refresh'quote"));
-        assert!(!debug.contains("access'quote"));
-    }
+    tilo_test_env::scenario! {
+        fn goa_token_variants_parse_exactly_or_refuse;
 
-    #[test]
-    fn refresh_only_does_not_invent_scopes_or_expiry() {
-        let parsed =
-            parse(&secret("{'refresh_token': <'refresh-only'>}")).expect("refreshable grant");
-        assert!(parsed.access_token.is_empty());
-        assert_eq!(parsed.refresh_token, "refresh-only");
-        assert_eq!(parsed.expires_at(), None);
-        assert_eq!(parsed.scope, None);
-        assert_eq!(
-            parse(&secret("{'password': <'not-a-refresh-token'>}"))
-                .expect_err("password is not a grant"),
-            ParseError::MissingRefreshToken
-        );
-        assert_eq!(
-            parse(&secret("{'refresh_token': <'   '>}")).expect_err("unusable refresh token"),
-            ParseError::MissingRefreshToken
-        );
-    }
-
-    #[test]
-    fn malformed_wrong_type_duplicates_and_expiry_refuse_without_secret_diagnostics() {
-        for text in [
-            "{'refresh_token': <'secret-unterminated>}",
-            "['secret-wrong-container']",
-            "{'refresh_token': <int64 12>}",
-            "{'refresh_token': <objectpath '/not_a_token'>}",
-            "{'refresh_token': <'secret'>}\0ignored",
-            "{'refresh_token': <'first'>, 'refresh_token': <'second'>}",
-            "{'refresh_token': <'secret'>, 'access_token_expires_at': <'123'>}",
-            "{'refresh_token': <'secret'>, 'access_token_expires_at': <int64 -1>}",
-            "{'refresh_token': <'secret'>, 'access_token_expires_at': <int64 0>}",
-            "{'refresh_token': <'secret\\ncontrol'>}",
-        ] {
-            let error = parse(&secret(text)).expect_err("invalid source grant");
-            assert_eq!(error, ParseError::Invalid);
-            assert!(!error.to_string().contains("secret"));
+        phase actual_glib_dictionary_preserves_escaping_tokens_and_absolute_expiry;
+        {
+            let input = secret(
+                r#"{'authorization_code': <'discard-code'>, 'access_token': <"access'quote\\tail">, 'refresh_token': <"refresh'quote\\tail">, 'access_token_expires_at': <int64 2000000123456789>, 'password': <'discard-password'>, 'other': <true>}"#,
+            );
+            let parsed = parse(&input).expect("canonical upstream a{sv}");
+            assert_eq!(parsed.access_token, "access'quote\\tail");
+            assert_eq!(parsed.refresh_token, "refresh'quote\\tail");
+            assert_eq!(parsed.obtained_at, 0);
+            assert_eq!(parsed.expires_at(), Some(2_000_000_123));
+            assert_eq!(parsed.scope, None);
+            let debug = format!("{parsed:?}");
+            assert!(!debug.contains("refresh'quote"));
+            assert!(!debug.contains("access'quote"));
         }
-        assert_eq!(
-            parse(&Zeroizing::new(vec![0xff])).expect_err("non UTF-8 response"),
-            ParseError::Invalid
-        );
-    }
 
-    #[test]
-    fn malformed_secret_sentinel_never_enters_error_debug_or_display() {
-        let sentinel = "synthetic-private-sentinel-4af8";
-        let input = secret(&format!("{{'refresh_token': <'{sentinel}>}}"));
-        let error = parse(&input).expect_err("malformed private source response");
-        assert_eq!(error, ParseError::Invalid);
-        assert!(!format!("{error:?}").contains(sentinel));
-        assert!(!error.to_string().contains(sentinel));
-    }
+        phase refresh_only_does_not_invent_scopes_or_expiry;
+        {
+            let parsed =
+                parse(&secret("{'refresh_token': <'refresh-only'>}")).expect("refreshable grant");
+            assert!(parsed.access_token.is_empty());
+            assert_eq!(parsed.refresh_token, "refresh-only");
+            assert_eq!(parsed.expires_at(), None);
+            assert_eq!(parsed.scope, None);
+            assert_eq!(
+                parse(&secret("{'password': <'not-a-refresh-token'>}"))
+                    .expect_err("password is not a grant"),
+                ParseError::MissingRefreshToken
+            );
+            assert_eq!(
+                parse(&secret("{'refresh_token': <'   '>}")).expect_err("unusable refresh token"),
+                ParseError::MissingRefreshToken
+            );
+        }
 
-    #[test]
-    fn oversized_input_token_and_dictionary_refuse() {
-        assert_eq!(
-            parse(&Zeroizing::new(vec![
-                b' ';
-                MAX_SECRET_BYTES.saturating_add(1)
-            ]))
-            .expect_err("bounded response"),
-            ParseError::LimitExceeded
-        );
-        let token = "x".repeat(MAX_TOKEN_BYTES.saturating_add(1));
-        assert_eq!(
-            parse(&secret(&format!("{{'refresh_token': <'{token}'>}}")))
-                .expect_err("bounded token"),
-            ParseError::LimitExceeded
-        );
-        let fields = (0..MAX_FIELDS.saturating_add(1))
-            .map(|index| format!("'field{index}': <true>"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        assert_eq!(
-            parse(&secret(&format!("{{{fields}}}"))).expect_err("bounded dictionary"),
-            ParseError::LimitExceeded
-        );
+        phase malformed_wrong_type_duplicates_and_expiry_refuse_without_secret_diagnostics;
+        {
+            for text in [
+                "{'refresh_token': <'secret-unterminated>}",
+                "['secret-wrong-container']",
+                "{'refresh_token': <int64 12>}",
+                "{'refresh_token': <objectpath '/not_a_token'>}",
+                "{'refresh_token': <'secret'>}\0ignored",
+                "{'refresh_token': <'first'>, 'refresh_token': <'second'>}",
+                "{'refresh_token': <'secret'>, 'access_token_expires_at': <'123'>}",
+                "{'refresh_token': <'secret'>, 'access_token_expires_at': <int64 -1>}",
+                "{'refresh_token': <'secret'>, 'access_token_expires_at': <int64 0>}",
+                "{'refresh_token': <'secret\\ncontrol'>}",
+            ] {
+                let error = parse(&secret(text)).expect_err("invalid source grant");
+                assert_eq!(error, ParseError::Invalid);
+                assert!(!error.to_string().contains("secret"));
+            }
+            assert_eq!(
+                parse(&Zeroizing::new(vec![0xff])).expect_err("non UTF-8 response"),
+                ParseError::Invalid
+            );
+        }
+
+        phase malformed_secret_sentinel_never_enters_error_debug_or_display;
+        {
+            let sentinel = "synthetic-private-sentinel-4af8";
+            let input = secret(&format!("{{'refresh_token': <'{sentinel}>}}"));
+            let error = parse(&input).expect_err("malformed private source response");
+            assert_eq!(error, ParseError::Invalid);
+            assert!(!format!("{error:?}").contains(sentinel));
+            assert!(!error.to_string().contains(sentinel));
+        }
+
+        phase oversized_input_token_and_dictionary_refuse;
+        {
+            assert_eq!(
+                parse(&Zeroizing::new(vec![
+                    b' ';
+                    MAX_SECRET_BYTES.saturating_add(1)
+                ]))
+                .expect_err("bounded response"),
+                ParseError::LimitExceeded
+            );
+            let token = "x".repeat(MAX_TOKEN_BYTES.saturating_add(1));
+            assert_eq!(
+                parse(&secret(&format!("{{'refresh_token': <'{token}'>}}")))
+                    .expect_err("bounded token"),
+                ParseError::LimitExceeded
+            );
+            let fields = (0..MAX_FIELDS.saturating_add(1))
+                .map(|index| format!("'field{index}': <true>"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            assert_eq!(
+                parse(&secret(&format!("{{{fields}}}"))).expect_err("bounded dictionary"),
+                ParseError::LimitExceeded
+            );
+        }
     }
 }

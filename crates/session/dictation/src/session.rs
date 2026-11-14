@@ -693,227 +693,231 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_dictation_waits_for_the_person_before_it_records() {
-        let now = Instant::now();
-        let mut target = FakeField::open(1);
-        let mut dictation = Dictation::default();
-        let id = dictation.begin(now).unwrap();
-        assert_eq!(dictation.status(), DictationStatus::Preparing);
-        dictation.advance(&mut target, now);
-        assert_eq!(dictation.status(), DictationStatus::Consent);
-        assert!(
-            dictation.preview(id).is_some_and(str::is_empty),
-            "a bound dictation has an empty draft and nothing else"
-        );
-        // No recognizer exists, so no worker and no microphone is open.
-        assert!(dictation.recognition.is_none());
-        // No recognizer can speak before the person allows it, and the stop
-        // refuses a dictation that is not listening.
-        assert_eq!(
-            dictation.stop_recording(id),
-            Err(DictationError::StaleSession)
-        );
-        assert_eq!(
-            dictation.stop_recording(id),
-            Err(DictationError::StaleSession)
-        );
-        // Nothing was heard, so finishing ends the dictation and writes
-        // nothing.
-        assert_eq!(dictation.finish(id, &mut target, now), Ok(()));
-        assert!(target.inserted.is_empty());
-        assert_eq!(dictation.status(), DictationStatus::Idle);
-    }
+    tilo_test_env::scenario! {
+        fn a_dictation_goes_from_the_persons_consent_to_the_field_it_was_dictated_into;
 
-    #[test]
-    fn only_the_dictation_the_person_was_asked_about_can_be_allowed() {
-        let now = Instant::now();
-        let mut target = FakeField::open(1);
-        let mut dictation = Dictation::default();
-        let id = dictation.begin(now).unwrap();
-        dictation.advance(&mut target, now);
-        // A retired prompt names its own dictation, never a successor.
-        assert_eq!(
-            dictation.allow(SessionId::new(id.get().saturating_add(1)), &mut target, now),
-            Err(DictationError::StaleSession)
-        );
-        assert!(dictation.recognition.is_none());
-        assert_eq!(dictation.status(), DictationStatus::Consent);
-        // The person's own answer, for the dictation they were asked about,
-        // is the only thing that starts the recognizer.
-        let _ = dictation.allow(id, &mut target, now);
-        assert_eq!(
-            dictation.id(),
-            Some(id),
-            "the dictation keeps its identity while it runs or fails"
-        );
-    }
+        phase a_dictation_waits_for_the_person_before_it_records;
+        {
+            let now = Instant::now();
+            let mut target = FakeField::open(1);
+            let mut dictation = Dictation::default();
+            let id = dictation.begin(now).unwrap();
+            assert_eq!(dictation.status(), DictationStatus::Preparing);
+            dictation.advance(&mut target, now);
+            assert_eq!(dictation.status(), DictationStatus::Consent);
+            assert!(
+                dictation.preview(id).is_some_and(str::is_empty),
+                "a bound dictation has an empty draft and nothing else"
+            );
+            // No recognizer exists, so no worker and no microphone is open.
+            assert!(dictation.recognition.is_none());
+            // No recognizer can speak before the person allows it, and the stop
+            // refuses a dictation that is not listening.
+            assert_eq!(
+                dictation.stop_recording(id),
+                Err(DictationError::StaleSession)
+            );
+            assert_eq!(
+                dictation.stop_recording(id),
+                Err(DictationError::StaleSession)
+            );
+            // Nothing was heard, so finishing ends the dictation and writes
+            // nothing.
+            assert_eq!(dictation.finish(id, &mut target, now), Ok(()));
+            assert!(target.inserted.is_empty());
+            assert_eq!(dictation.status(), DictationStatus::Idle);
+        }
 
-    #[test]
-    fn a_field_that_moved_before_insertion_gets_no_text() {
-        let now = Instant::now();
-        let mut moved = FakeField::moved();
-        let mut dictation = bound("spoken words");
-        assert_eq!(
-            dictation.finish(SessionId::new(1), &mut moved, now),
-            Err(DictationError::TargetChanged)
-        );
-        assert!(
-            moved.inserted.is_empty(),
-            "nothing is written into the new field"
-        );
-        assert_eq!(
-            dictation.status(),
-            DictationStatus::Unavailable(DictationError::TargetChanged)
-        );
-    }
+        phase only_the_dictation_the_person_was_asked_about_can_be_allowed;
+        {
+            let now = Instant::now();
+            let mut target = FakeField::open(1);
+            let mut dictation = Dictation::default();
+            let id = dictation.begin(now).unwrap();
+            dictation.advance(&mut target, now);
+            // A retired prompt names its own dictation, never a successor.
+            assert_eq!(
+                dictation.allow(SessionId::new(id.get().saturating_add(1)), &mut target, now),
+                Err(DictationError::StaleSession)
+            );
+            assert!(dictation.recognition.is_none());
+            assert_eq!(dictation.status(), DictationStatus::Consent);
+            // The person's own answer, for the dictation they were asked about,
+            // is the only thing that starts the recognizer.
+            let _ = dictation.allow(id, &mut target, now);
+            assert_eq!(
+                dictation.id(),
+                Some(id),
+                "the dictation keeps its identity while it runs or fails"
+            );
+        }
 
-    #[test]
-    fn a_field_that_refused_the_text_keeps_it_out() {
-        let now = Instant::now();
-        let mut secret = FakeField::open(1);
-        secret.field = Err(FieldRefusal::Secret);
-        let mut dictation = bound("spoken words");
-        assert_eq!(
-            dictation.finish(SessionId::new(1), &mut secret, now),
-            Err(DictationError::SensitiveField)
-        );
-        assert!(secret.inserted.is_empty());
-    }
+        phase a_field_that_moved_before_insertion_gets_no_text;
+        {
+            let now = Instant::now();
+            let mut moved = FakeField::moved();
+            let mut dictation = bound("spoken words");
+            assert_eq!(
+                dictation.finish(SessionId::new(1), &mut moved, now),
+                Err(DictationError::TargetChanged)
+            );
+            assert!(
+                moved.inserted.is_empty(),
+                "nothing is written into the new field"
+            );
+            assert_eq!(
+                dictation.status(),
+                DictationStatus::Unavailable(DictationError::TargetChanged)
+            );
+        }
 
-    #[test]
-    fn unchanged_field_takes_the_text_once() {
-        let now = Instant::now();
-        let mut target = FakeField::open(1);
-        let mut dictation = bound("spoken words");
-        dictation
-            .finish(SessionId::new(1), &mut target, now)
-            .unwrap();
-        assert_eq!(
-            target.inserted,
-            vec![(
-                Field {
-                    id: 7,
-                    revision: 1,
-                    multiline: true
-                },
-                "spoken words".to_owned()
-            )]
-        );
-        assert_eq!(dictation.status(), DictationStatus::Idle);
-    }
+        phase a_field_that_refused_the_text_keeps_it_out;
+        {
+            let now = Instant::now();
+            let mut secret = FakeField::open(1);
+            secret.field = Err(FieldRefusal::Secret);
+            let mut dictation = bound("spoken words");
+            assert_eq!(
+                dictation.finish(SessionId::new(1), &mut secret, now),
+                Err(DictationError::SensitiveField)
+            );
+            assert!(secret.inserted.is_empty());
+        }
 
-    #[test]
-    fn a_transcript_too_long_for_a_field_is_kept_for_the_person_to_copy() {
-        let now = Instant::now();
-        let mut target = FakeField::open(1);
-        let long = "a".repeat(MAX_COMMIT_BYTES.saturating_add(1));
-        let mut dictation = bound(&long);
-        dictation
-            .finish(SessionId::new(1), &mut target, now)
-            .unwrap();
-        assert!(
-            target.inserted.is_empty(),
-            "a field never takes half a text"
-        );
-        assert_eq!(
-            dictation.recovery(SessionId::new(1)).map(str::len),
-            Some(long.len())
-        );
-        assert_eq!(
-            dictation.status(),
-            DictationStatus::Recovery {
-                reason: RecoveryReason::TooLong,
-                copied: false,
-                copy_failed: false
-            }
-        );
-        // Only copying takes the transcript out, and it says whether it worked.
-        dictation.note_copied(SessionId::new(1), false);
-        assert_eq!(
-            dictation.status(),
-            DictationStatus::Recovery {
-                reason: RecoveryReason::TooLong,
-                copied: false,
-                copy_failed: true
-            }
-        );
-        dictation.note_copied(SessionId::new(1), true);
-        assert!(dictation.discard_recovery_of(SessionId::new(1)));
-        assert_eq!(dictation.status(), DictationStatus::Idle);
-    }
+        phase unchanged_field_takes_the_text_once;
+        {
+            let now = Instant::now();
+            let mut target = FakeField::open(1);
+            let mut dictation = bound("spoken words");
+            dictation
+                .finish(SessionId::new(1), &mut target, now)
+                .unwrap();
+            assert_eq!(
+                target.inserted,
+                vec![(
+                    Field {
+                        id: 7,
+                        revision: 1,
+                        multiline: true
+                    },
+                    "spoken words".to_owned()
+                )]
+            );
+            assert_eq!(dictation.status(), DictationStatus::Idle);
+        }
 
-    #[test]
-    fn a_draft_with_a_control_character_never_reaches_a_field() {
-        let now = Instant::now();
-        let mut target = FakeField::open(1);
-        let mut dictation = bound("");
-        assert_eq!(
-            dictation.update(SessionId::new(1), "two\nlines".into(), &mut target, now),
-            Ok(()),
-            "a multiline field takes a line feed"
-        );
-        assert_eq!(
-            dictation.update(SessionId::new(1), "bell\u{7}".into(), &mut target, now),
-            Err(DictationError::ControlCharacter)
-        );
-        assert_eq!(
-            dictation.status(),
-            DictationStatus::Unavailable(DictationError::ControlCharacter)
-        );
-    }
+        phase a_transcript_too_long_for_a_field_is_kept_for_the_person_to_copy;
+        {
+            let now = Instant::now();
+            let mut target = FakeField::open(1);
+            let long = "a".repeat(MAX_COMMIT_BYTES.saturating_add(1));
+            let mut dictation = bound(&long);
+            dictation
+                .finish(SessionId::new(1), &mut target, now)
+                .unwrap();
+            assert!(
+                target.inserted.is_empty(),
+                "a field never takes half a text"
+            );
+            assert_eq!(
+                dictation.recovery(SessionId::new(1)).map(str::len),
+                Some(long.len())
+            );
+            assert_eq!(
+                dictation.status(),
+                DictationStatus::Recovery {
+                    reason: RecoveryReason::TooLong,
+                    copied: false,
+                    copy_failed: false
+                }
+            );
+            // Only copying takes the transcript out, and it says whether it worked.
+            dictation.note_copied(SessionId::new(1), false);
+            assert_eq!(
+                dictation.status(),
+                DictationStatus::Recovery {
+                    reason: RecoveryReason::TooLong,
+                    copied: false,
+                    copy_failed: true
+                }
+            );
+            dictation.note_copied(SessionId::new(1), true);
+            assert!(dictation.discard_recovery_of(SessionId::new(1)));
+            assert_eq!(dictation.status(), DictationStatus::Idle);
+        }
 
-    #[test]
-    fn a_late_answer_cannot_cancel_its_successor() {
-        let now = Instant::now();
-        let mut target = FakeField::open(1);
-        let mut dictation = Dictation::default();
-        let first = dictation.begin(now).unwrap();
-        dictation.advance(&mut target, now);
-        assert!(dictation.cancel(first));
-        assert_eq!(dictation.status(), DictationStatus::Idle);
-        let second = dictation.begin(now).unwrap();
-        assert_ne!(first, second);
-        dictation.advance(&mut target, now);
-        assert!(!dictation.cancel(first), "the first dictation is over");
-        assert_eq!(dictation.status(), DictationStatus::Consent);
-    }
+        phase a_draft_with_a_control_character_never_reaches_a_field;
+        {
+            let now = Instant::now();
+            let mut target = FakeField::open(1);
+            let mut dictation = bound("");
+            assert_eq!(
+                dictation.update(SessionId::new(1), "two\nlines".into(), &mut target, now),
+                Ok(()),
+                "a multiline field takes a line feed"
+            );
+            assert_eq!(
+                dictation.update(SessionId::new(1), "bell\u{7}".into(), &mut target, now),
+                Err(DictationError::ControlCharacter)
+            );
+            assert_eq!(
+                dictation.status(),
+                DictationStatus::Unavailable(DictationError::ControlCharacter)
+            );
+        }
 
-    #[test]
-    fn a_field_that_never_asks_for_typing_ends_the_dictation() {
-        let now = Instant::now();
-        let mut target = FakeField::open(1);
-        target.field = Err(FieldRefusal::NoField);
-        let mut dictation = Dictation::default();
-        dictation.begin(now).unwrap();
-        dictation.advance(&mut target, now);
-        assert_eq!(dictation.status(), DictationStatus::Preparing);
-        dictation.advance(&mut target, now.checked_add(DELIVERY_WINDOW).unwrap());
-        assert_eq!(
-            dictation.status(),
-            DictationStatus::Unavailable(DictationError::NoEditableField)
-        );
-        // The card names the dictation that failed, and closing it clears the
-        // failure even though no dictation is left behind.
-        let failed = dictation.last_id().expect("the dictation asked for");
-        assert_eq!(dictation.id(), None);
-        assert!(dictation.cancel(failed), "the person closes the failure");
-        assert_eq!(dictation.status(), DictationStatus::Idle);
-    }
+        phase a_late_answer_cannot_cancel_its_successor;
+        {
+            let now = Instant::now();
+            let mut target = FakeField::open(1);
+            let mut dictation = Dictation::default();
+            let first = dictation.begin(now).unwrap();
+            dictation.advance(&mut target, now);
+            assert!(dictation.cancel(first));
+            assert_eq!(dictation.status(), DictationStatus::Idle);
+            let second = dictation.begin(now).unwrap();
+            assert_ne!(first, second);
+            dictation.advance(&mut target, now);
+            assert!(!dictation.cancel(first), "the first dictation is over");
+            assert_eq!(dictation.status(), DictationStatus::Consent);
+        }
 
-    #[test]
-    fn dictation_starts_nothing_while_a_transcript_is_kept() {
-        let now = Instant::now();
-        let mut target = FakeField::open(1);
-        let long = "a".repeat(MAX_COMMIT_BYTES.saturating_add(1));
-        let mut dictation = bound(&long);
-        dictation
-            .finish(SessionId::new(1), &mut target, now)
-            .unwrap();
-        assert_eq!(dictation.begin(now), Err(DictationError::Busy));
-        dictation.discard();
-        assert_eq!(dictation.status(), DictationStatus::Idle);
-        assert!(dictation.recovery(SessionId::new(1)).is_none());
-        dictation.begin(now).unwrap();
+        phase a_field_that_never_asks_for_typing_ends_the_dictation;
+        {
+            let now = Instant::now();
+            let mut target = FakeField::open(1);
+            target.field = Err(FieldRefusal::NoField);
+            let mut dictation = Dictation::default();
+            dictation.begin(now).unwrap();
+            dictation.advance(&mut target, now);
+            assert_eq!(dictation.status(), DictationStatus::Preparing);
+            dictation.advance(&mut target, now.checked_add(DELIVERY_WINDOW).unwrap());
+            assert_eq!(
+                dictation.status(),
+                DictationStatus::Unavailable(DictationError::NoEditableField)
+            );
+            // The card names the dictation that failed, and closing it clears the
+            // failure even though no dictation is left behind.
+            let failed = dictation.last_id().expect("the dictation asked for");
+            assert_eq!(dictation.id(), None);
+            assert!(dictation.cancel(failed), "the person closes the failure");
+            assert_eq!(dictation.status(), DictationStatus::Idle);
+        }
+
+        phase dictation_starts_nothing_while_a_transcript_is_kept;
+        {
+            let now = Instant::now();
+            let mut target = FakeField::open(1);
+            let long = "a".repeat(MAX_COMMIT_BYTES.saturating_add(1));
+            let mut dictation = bound(&long);
+            dictation
+                .finish(SessionId::new(1), &mut target, now)
+                .unwrap();
+            assert_eq!(dictation.begin(now), Err(DictationError::Busy));
+            dictation.discard();
+            assert_eq!(dictation.status(), DictationStatus::Idle);
+            assert!(dictation.recovery(SessionId::new(1)).is_none());
+            dictation.begin(now).unwrap();
+        }
     }
 }

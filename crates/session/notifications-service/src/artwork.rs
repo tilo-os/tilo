@@ -160,47 +160,51 @@ mod tests {
         bytes
     }
 
-    #[test]
-    fn a_png_is_decoded_and_a_large_one_scaled_down() {
-        let small = decode(&png(2, 1)).expect("decoded");
-        assert_eq!((small.width, small.height), (2, 1));
-        assert_eq!(small.rgba, [255, 0, 0, 255, 255, 0, 0, 255]);
-        let large = decode(&png(1024, 512)).expect("decoded");
-        assert_eq!((large.width, large.height), (MAX_EDGE, MAX_EDGE / 2));
-        assert_eq!(large.rgba.len(), (MAX_EDGE * MAX_EDGE / 2 * 4) as usize);
-    }
+    tilo_test_env::scenario! {
+        fn artwork_is_decoded_from_bytes_and_read_from_locations;
 
-    #[test]
-    fn an_svg_is_rendered_at_the_kept_edge() {
-        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"><rect width="16" height="8" fill="#00ff00"/></svg>"##;
-        let image = decode(svg).expect("rendered");
-        assert_eq!((image.width, image.height), (MAX_EDGE, MAX_EDGE / 2));
-        assert_eq!(image.rgba.get(..4), Some(&[0, 255, 0, 255][..]));
-    }
+        phase a_png_is_decoded_and_a_large_one_scaled_down;
+        {
+            let small = decode(&png(2, 1)).expect("decoded");
+            assert_eq!((small.width, small.height), (2, 1));
+            assert_eq!(small.rgba, [255, 0, 0, 255, 255, 0, 0, 255]);
+            let large = decode(&png(1024, 512)).expect("decoded");
+            assert_eq!((large.width, large.height), (MAX_EDGE, MAX_EDGE / 2));
+            assert_eq!(large.rgba.len(), (MAX_EDGE * MAX_EDGE / 2 * 4) as usize);
+        }
 
-    #[test]
-    fn what_is_no_image_is_refused() {
-        assert!(decode(b"not an image").is_none());
-        assert!(decode(&[]).is_none());
-        assert!(
-            from_location("dialog-information").is_none(),
-            "an icon name"
-        );
-        assert!(from_location("relative/path.png").is_none());
-    }
+        phase an_svg_is_rendered_at_the_kept_edge;
+        {
+            let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"><rect width="16" height="8" fill="#00ff00"/></svg>"##;
+            let image = decode(svg).expect("rendered");
+            assert_eq!((image.width, image.height), (MAX_EDGE, MAX_EDGE / 2));
+            assert_eq!(image.rgba.get(..4), Some(&[0, 255, 0, 255][..]));
+        }
 
-    #[test]
-    fn an_image_file_is_read_by_path_and_by_uri() {
-        let dir = tempfile::tempdir().expect("directory");
-        let path = dir.path().join("a picture.png");
-        std::fs::write(&path, png(3, 3)).expect("written");
-        let by_path = from_location(path.to_str().expect("utf-8")).expect("read");
-        assert_eq!((by_path.width, by_path.height), (3, 3));
-        let uri = url::Url::from_file_path(&path).expect("uri");
-        assert!(from_location(uri.as_str()).is_some());
-        assert!(
-            from_location(dir.path().to_str().expect("utf-8")).is_none(),
-            "a directory"
-        );
+        phase what_is_no_image_is_refused;
+        {
+            assert!(decode(b"not an image").is_none());
+            assert!(decode(&[]).is_none());
+            assert!(
+                from_location("dialog-information").is_none(),
+                "an icon name"
+            );
+            assert!(from_location("relative/path.png").is_none());
+        }
+
+        phase an_image_file_is_read_by_path_and_by_uri;
+        {
+            let dir = tempfile::tempdir().expect("directory");
+            let path = dir.path().join("a picture.png");
+            std::fs::write(&path, png(3, 3)).expect("written");
+            let by_path = from_location(path.to_str().expect("utf-8")).expect("read");
+            assert_eq!((by_path.width, by_path.height), (3, 3));
+            let uri = url::Url::from_file_path(&path).expect("uri");
+            assert!(from_location(uri.as_str()).is_some());
+            assert!(
+                from_location(dir.path().to_str().expect("utf-8")).is_none(),
+                "a directory"
+            );
+        }
     }
 }

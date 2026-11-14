@@ -226,51 +226,55 @@ mod tests {
         ICloud::new(Connector::new(stage.path().to_path_buf()), stage)
     }
 
-    #[test]
-    fn private_editor_validates_login_and_back_discards_credentials() {
-        let mut flow = flow();
-        assert_eq!(flow.confirm(), Err("installer-accounts-icloud-required"));
-        assert!(
-            flow.edit("icloud-password", Zeroizing::new("private".into()))
-                .is_err()
-        );
-        flow.edit("icloud-login", Zeroizing::new("invalid\nlogin".into()))
-            .unwrap();
-        assert_eq!(
-            flow.confirm(),
-            Err("installer-accounts-icloud-login-invalid")
-        );
-        flow.edit("icloud-login", Zeroizing::new("person@example.org".into()))
-            .unwrap();
-        flow.confirm().unwrap();
-        assert_eq!(flow.field(), 1);
-        flow.edit(
-            "icloud-password",
-            Zeroizing::new("private fixture password".into()),
-        )
-        .unwrap();
-        assert!(!flow.back());
-        assert_eq!(flow.field(), 0);
-        assert_eq!(flow.value(1), "");
-        assert_eq!(flow.value(2), "");
-        assert!(!flow.active());
-    }
+    tilo_test_env::scenario! {
+        fn icloud_private_editor_discards_credentials_on_back_and_cancel;
 
-    #[test]
-    fn cancellation_erases_private_input_without_starting_sign_in() {
-        let mut flow = flow();
-        flow.edit("icloud-login", Zeroizing::new("person@example.org".into()))
+        phase private_editor_validates_login_and_back_discards_credentials;
+        {
+            let mut flow = flow();
+            assert_eq!(flow.confirm(), Err("installer-accounts-icloud-required"));
+            assert!(
+                flow.edit("icloud-password", Zeroizing::new("private".into()))
+                    .is_err()
+            );
+            flow.edit("icloud-login", Zeroizing::new("invalid\nlogin".into()))
+                .unwrap();
+            assert_eq!(
+                flow.confirm(),
+                Err("installer-accounts-icloud-login-invalid")
+            );
+            flow.edit("icloud-login", Zeroizing::new("person@example.org".into()))
+                .unwrap();
+            flow.confirm().unwrap();
+            assert_eq!(flow.field(), 1);
+            flow.edit(
+                "icloud-password",
+                Zeroizing::new("private fixture password".into()),
+            )
             .unwrap();
-        flow.confirm().unwrap();
-        flow.edit(
-            "icloud-password",
-            Zeroizing::new("private fixture password".into()),
-        )
-        .unwrap();
-        flow.cancel();
-        assert_eq!(flow.state(), "cancelling");
-        assert_eq!(flow.value(1), "");
-        assert!(!flow.active());
-        assert!(flow.poll().is_none());
+            assert!(!flow.back());
+            assert_eq!(flow.field(), 0);
+            assert_eq!(flow.value(1), "");
+            assert_eq!(flow.value(2), "");
+            assert!(!flow.active());
+        }
+
+        phase cancellation_erases_private_input_without_starting_sign_in;
+        {
+            let mut flow = flow();
+            flow.edit("icloud-login", Zeroizing::new("person@example.org".into()))
+                .unwrap();
+            flow.confirm().unwrap();
+            flow.edit(
+                "icloud-password",
+                Zeroizing::new("private fixture password".into()),
+            )
+            .unwrap();
+            flow.cancel();
+            assert_eq!(flow.state(), "cancelling");
+            assert_eq!(flow.value(1), "");
+            assert!(!flow.active());
+            assert!(flow.poll().is_none());
+        }
     }
 }

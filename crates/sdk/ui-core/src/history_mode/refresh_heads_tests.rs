@@ -109,223 +109,269 @@ fn state(document: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize, Option<St
     )
 }
 
-#[test]
-fn refresh_heads_current_and_changed_real_component_frontier_without_owned_clone() {
-    let mut fixture = BoundFixture::new();
-    let outer = outer();
-    let mut history = fixture.history(&outer);
-    assert!(history.request_open());
-    history.refresh(&outer);
-    let owner = HistoryOwner::component(fixture.binding.clone());
-    let expected = owner.document(&outer).unwrap().base_heads();
-    reset_clones();
-    let current = history.source().committed_heads(&outer).unwrap();
-    let unchanged = history.needs_refresh(&outer, 900.0);
-    fixture
-        .binding
-        .records
-        .with_history(&fixture.binding.checkout.id, |document, _| {
-            document
-                .put(ROOT, "body", "next committed owned body")
-                .unwrap();
-            document.commit();
-        })
-        .unwrap();
-    let changed = history.needs_refresh(&outer, 900.0);
-    let next = history.source().committed_heads(&outer).unwrap();
-    let clone_count = clones();
-    fixture.close();
-    assert_eq!(current, expected);
-    assert_ne!(
-        current,
-        outer.base_heads(),
-        "the owner must supply the frontier"
-    );
-    assert!(!unchanged);
-    assert!(changed);
-    assert_ne!(next, current);
-    assert_eq!(
-        clone_count, 0,
-        "the refresh predicate must not clone the owned graph"
-    );
-}
+tilo_test_env::scenario! {
+    fn refresh_heads_read_the_real_frontier_and_refuse_what_they_cannot_own;
 
-#[test]
-fn refresh_heads_leave_real_pending_operations_and_body_unmodified() {
-    let mut fixture = BoundFixture::new();
-    let outer = outer();
-    let history = fixture.history(&outer);
-    fixture
-        .binding
-        .records
-        .with_history(&fixture.binding.checkout.id, |document, _| {
-            document.put(ROOT, "body", "unfinished owned edit").unwrap();
-        })
-        .unwrap();
-    let before = fixture
-        .binding
-        .records
-        .read_checked(&fixture.binding.checkout.id, state)
-        .unwrap();
-    assert!(
-        before.1 > 0,
-        "the probe must have a genuinely unfinished transaction"
-    );
-    reset_clones();
-    let heads = history.source().committed_heads(&outer).unwrap();
-    let refresh = history.needs_refresh(&outer, 900.0);
-    let after = fixture
-        .binding
-        .records
-        .read_checked(&fixture.binding.checkout.id, state)
-        .unwrap();
-    let clone_count = clones();
-    fixture.close();
-    assert_eq!(heads, before.0);
-    assert_eq!(after, before);
-    assert!(!refresh, "uncommitted operations do not advance base_heads");
-    assert_eq!(clone_count, 0);
-}
-
-#[test]
-fn refresh_heads_busy_read_refuses_even_without_controller_and_recovers_after_loan() {
-    let mut fixture = BoundFixture::new();
-    let outer = outer();
-    let mut history = fixture.history(&outer);
-    for no_controller in [false, true] {
-        if no_controller {
-            history.controller = None;
-        }
-        let (heads, refresh) = fixture
+    phase refresh_heads_current_and_changed_real_component_frontier_without_owned_clone;
+    {
+        let mut fixture = BoundFixture::new();
+        let outer = outer();
+        let mut history = fixture.history(&outer);
+        assert!(history.request_open());
+        history.refresh(&outer);
+        let owner = HistoryOwner::component(fixture.binding.clone());
+        let expected = owner.document(&outer).unwrap().base_heads();
+        reset_clones();
+        let current = history.source().committed_heads(&outer).unwrap();
+        let unchanged = history.needs_refresh(&outer, 900.0);
+        fixture
             .binding
             .records
-            .read_checked(&fixture.binding.checkout.id, |_| {
-                (
-                    history.source().committed_heads(&outer),
-                    history.needs_refresh(&outer, 900.0),
-                )
+            .with_history(&fixture.binding.checkout.id, |document, _| {
+                document
+                    .put(ROOT, "body", "next committed owned body")
+                    .unwrap();
+                document.commit();
             })
             .unwrap();
-        assert_eq!(heads, Err(HistoryRegistrationError::UnsupportedOwner));
-        assert!(
-            refresh,
-            "failed admission requires refresh, controllerNone={no_controller}"
+        let changed = history.needs_refresh(&outer, 900.0);
+        let next = history.source().committed_heads(&outer).unwrap();
+        let clone_count = clones();
+        fixture.close();
+        assert_eq!(current, expected);
+        assert_ne!(
+            current,
+            outer.base_heads(),
+            "the owner must supply the frontier"
         );
-        assert!(history.source().committed_heads(&outer).is_ok());
-        assert!(!history.needs_refresh(&outer, 900.0));
-    }
-    fixture.close();
-}
-
-#[test]
-fn refresh_heads_closed_real_component_refuses_even_without_controller() {
-    let mut fixture = BoundFixture::new();
-    let outer = outer();
-    let mut history = fixture.history(&outer);
-    fixture.close();
-    for no_controller in [false, true] {
-        if no_controller {
-            history.controller = None;
-        }
+        assert!(!unchanged);
+        assert!(changed);
+        assert_ne!(next, current);
         assert_eq!(
-            history.source().committed_heads(&outer),
+            clone_count, 0,
+            "the refresh predicate must not clone the owned graph"
+        );
+    }
+
+    phase refresh_heads_leave_real_pending_operations_and_body_unmodified;
+    {
+        let mut fixture = BoundFixture::new();
+        let outer = outer();
+        let history = fixture.history(&outer);
+        fixture
+            .binding
+            .records
+            .with_history(&fixture.binding.checkout.id, |document, _| {
+                document.put(ROOT, "body", "unfinished owned edit").unwrap();
+            })
+            .unwrap();
+        let before = fixture
+            .binding
+            .records
+            .read_checked(&fixture.binding.checkout.id, state)
+            .unwrap();
+        assert!(
+            before.1 > 0,
+            "the probe must have a genuinely unfinished transaction"
+        );
+        reset_clones();
+        let heads = history.source().committed_heads(&outer).unwrap();
+        let refresh = history.needs_refresh(&outer, 900.0);
+        let after = fixture
+            .binding
+            .records
+            .read_checked(&fixture.binding.checkout.id, state)
+            .unwrap();
+        let clone_count = clones();
+        fixture.close();
+        assert_eq!(heads, before.0);
+        assert_eq!(after, before);
+        assert!(!refresh, "uncommitted operations do not advance base_heads");
+        assert_eq!(clone_count, 0);
+    }
+
+    phase refresh_heads_busy_read_refuses_even_without_controller_and_recovers_after_loan;
+    {
+        let mut fixture = BoundFixture::new();
+        let outer = outer();
+        let mut history = fixture.history(&outer);
+        for no_controller in [false, true] {
+            if no_controller {
+                history.controller = None;
+            }
+            let (heads, refresh) = fixture
+                .binding
+                .records
+                .read_checked(&fixture.binding.checkout.id, |_| {
+                    (
+                        history.source().committed_heads(&outer),
+                        history.needs_refresh(&outer, 900.0),
+                    )
+                })
+                .unwrap();
+            assert_eq!(heads, Err(HistoryRegistrationError::UnsupportedOwner));
+            assert!(
+                refresh,
+                "failed admission requires refresh, controllerNone={no_controller}"
+            );
+            assert!(history.source().committed_heads(&outer).is_ok());
+            assert!(!history.needs_refresh(&outer, 900.0));
+        }
+        fixture.close();
+    }
+
+    phase refresh_heads_closed_real_component_refuses_even_without_controller;
+    {
+        let mut fixture = BoundFixture::new();
+        let outer = outer();
+        let mut history = fixture.history(&outer);
+        fixture.close();
+        for no_controller in [false, true] {
+            if no_controller {
+                history.controller = None;
+            }
+            assert_eq!(
+                history.source().committed_heads(&outer),
+                Err(HistoryRegistrationError::UnsupportedOwner)
+            );
+            assert!(
+                history.needs_refresh(&outer, 900.0),
+                "closed custody is not a current frontier"
+            );
+        }
+    }
+
+    phase refresh_heads_foreign_registration_and_stale_record_identity_remain_refused;
+    {
+        let mut fixture = BoundFixture::new();
+        let owner = HistoryOwner::component(fixture.binding.clone());
+        assert!(matches!(
+            HistorySourceRegistration::owned("document", "foreign.application", owner),
+            Err(HistoryRegistrationError::ForeignSource)
+        ));
+        fixture.close();
+
+        let store = RecordStore::in_memory();
+        let live = RecordCheckout::new(crate::RecordId::for_tab(941), RecordKind::new("note"));
+        store.open_record(&live);
+        let lifetime = RecordOwnerLifetime::new();
+        let live_owner = HistoryOwner::record(store.clone(), live.clone(), &lifetime, true);
+        let resource = live_owner.resource(APP).unwrap();
+        let stale = RecordCheckout::new(live.id.clone(), RecordKind::new("foreign-kind"));
+        let owner = HistoryOwner::record(store, stale, &lifetime, true);
+        assert!(matches!(
+            HistorySourceRegistration::owned("document", APP, owner.clone()),
+            Err(HistoryRegistrationError::UnsupportedOwner)
+        ));
+        // The retained descriptor alone cannot authorize a now-invalid checkout.
+        let source = HistorySourceRegistration::OwnedDocument {
+            scope: "document",
+            owner,
+            resource,
+        };
+        assert_eq!(
+            source.document(&outer()).err(),
+            Some(HistoryRegistrationError::UnsupportedOwner)
+        );
+        assert_eq!(
+            source.committed_heads(&outer()),
             Err(HistoryRegistrationError::UnsupportedOwner)
         );
-        assert!(
-            history.needs_refresh(&outer, 900.0),
-            "closed custody is not a current frontier"
+        lifetime.active.set(false);
+    }
+
+    phase refresh_heads_host_and_unversioned_borrow_outer_committed_frontier;
+    {
+        let mut document = outer();
+        let host_source = HistorySourceRegistration::HostDocument {
+            scope: "document",
+            resource: HistoryResource::new("host", "workspace", APP, crate::RecordId::for_tab(942)),
+        };
+        let unversioned = HistorySourceRegistration::Unversioned {
+            scope: "document",
+            reason: "unversioned",
+        };
+        let mut host = HistoryHost::new(
+            HistoryRegistration::new(&DEFINITION, vec![host_source]).unwrap(),
+            &document,
+        )
+        .unwrap();
+        let unversioned_host = HistoryHost::new(
+            HistoryRegistration::new(&UNVERSIONED_DEFINITION, vec![unversioned]).unwrap(),
+            &document,
+        )
+        .unwrap();
+        assert!(host.request_open());
+        host.refresh(&document);
+        assert!(!host.needs_refresh(&document, 900.0));
+        assert!(unversioned_host.controller.is_none());
+        document.put(ROOT, "body", "pending outer edit").unwrap();
+        let before = state(&document);
+        assert!(before.1 > 0);
+        assert_eq!(host.source().committed_heads(&document).unwrap(), before.0);
+        assert_eq!(
+            unversioned_host
+                .source()
+                .committed_heads(&document)
+                .unwrap(),
+            before.0
+        );
+        assert!(!host.needs_refresh(&document, 900.0));
+        assert!(!unversioned_host.needs_refresh(&document, 900.0));
+        assert_eq!(state(&document), before);
+        document.commit();
+        assert!(host.needs_refresh(&document, 900.0));
+        assert!(!unversioned_host.needs_refresh(&document, 900.0));
+        assert_eq!(
+            unversioned_host
+                .source()
+                .committed_heads(&document)
+                .unwrap(),
+            document.base_heads()
         );
     }
-}
 
-#[test]
-fn refresh_heads_foreign_registration_and_stale_record_identity_remain_refused() {
-    let mut fixture = BoundFixture::new();
-    let owner = HistoryOwner::component(fixture.binding.clone());
-    assert!(matches!(
-        HistorySourceRegistration::owned("document", "foreign.application", owner),
-        Err(HistoryRegistrationError::ForeignSource)
-    ));
-    fixture.close();
-
-    let store = RecordStore::in_memory();
-    let live = RecordCheckout::new(crate::RecordId::for_tab(941), RecordKind::new("note"));
-    store.open_record(&live);
-    let lifetime = RecordOwnerLifetime::new();
-    let live_owner = HistoryOwner::record(store.clone(), live.clone(), &lifetime, true);
-    let resource = live_owner.resource(APP).unwrap();
-    let stale = RecordCheckout::new(live.id.clone(), RecordKind::new("foreign-kind"));
-    let owner = HistoryOwner::record(store, stale, &lifetime, true);
-    assert!(matches!(
-        HistorySourceRegistration::owned("document", APP, owner.clone()),
-        Err(HistoryRegistrationError::UnsupportedOwner)
-    ));
-    // The retained descriptor alone cannot authorize a now-invalid checkout.
-    let source = HistorySourceRegistration::OwnedDocument {
-        scope: "document",
-        owner,
-        resource,
-    };
-    assert_eq!(
-        source.document(&outer()).err(),
-        Some(HistoryRegistrationError::UnsupportedOwner)
-    );
-    assert_eq!(
-        source.committed_heads(&outer()),
-        Err(HistoryRegistrationError::UnsupportedOwner)
-    );
-    lifetime.active.set(false);
-}
-
-#[test]
-fn refresh_heads_host_and_unversioned_borrow_outer_committed_frontier() {
-    let mut document = outer();
-    let host_source = HistorySourceRegistration::HostDocument {
-        scope: "document",
-        resource: HistoryResource::new("host", "workspace", APP, crate::RecordId::for_tab(942)),
-    };
-    let unversioned = HistorySourceRegistration::Unversioned {
-        scope: "document",
-        reason: "unversioned",
-    };
-    let mut host = HistoryHost::new(
-        HistoryRegistration::new(&DEFINITION, vec![host_source]).unwrap(),
-        &document,
-    )
-    .unwrap();
-    let unversioned_host = HistoryHost::new(
-        HistoryRegistration::new(&UNVERSIONED_DEFINITION, vec![unversioned]).unwrap(),
-        &document,
-    )
-    .unwrap();
-    assert!(host.request_open());
-    host.refresh(&document);
-    assert!(!host.needs_refresh(&document, 900.0));
-    assert!(unversioned_host.controller.is_none());
-    document.put(ROOT, "body", "pending outer edit").unwrap();
-    let before = state(&document);
-    assert!(before.1 > 0);
-    assert_eq!(host.source().committed_heads(&document).unwrap(), before.0);
-    assert_eq!(
-        unversioned_host
-            .source()
-            .committed_heads(&document)
-            .unwrap(),
-        before.0
-    );
-    assert!(!host.needs_refresh(&document, 900.0));
-    assert!(!unversioned_host.needs_refresh(&document, 900.0));
-    assert_eq!(state(&document), before);
-    document.commit();
-    assert!(host.needs_refresh(&document, 900.0));
-    assert!(!unversioned_host.needs_refresh(&document, 900.0));
-    assert_eq!(
-        unversioned_host
-            .source()
-            .committed_heads(&document)
-            .unwrap(),
-        document.base_heads()
-    );
+    phase closed_history_defers_frontier_refresh_until_opening;
+    {
+        let mut fixture = BoundFixture::new();
+        let outer = outer();
+        let mut history = fixture.history(&outer);
+        let before = history
+            .controller
+            .as_ref()
+            .unwrap()
+            .observed_live_heads
+            .clone();
+        fixture
+            .binding
+            .records
+            .with_history(&fixture.binding.checkout.id, |doc, _| {
+                doc.put(ROOT, "body", "edited with history closed").unwrap();
+                doc.commit();
+            })
+            .unwrap();
+        let next = super::super::sorted_heads(history.source().committed_heads(&outer).unwrap());
+        assert_ne!(before, next);
+        assert!(!history.needs_refresh(&outer, 900.0));
+        history.refresh(&outer);
+        assert!(
+            !history.needs_refresh(&outer, 900.0),
+            "closed refresh must not request itself again"
+        );
+        assert_eq!(
+            history.controller.as_ref().unwrap().observed_live_heads,
+            before
+        );
+        assert!(history.request_open());
+        assert!(history.needs_refresh(&outer, 900.0));
+        history.refresh(&outer);
+        assert_eq!(
+            history.controller.as_ref().unwrap().observed_live_heads,
+            next
+        );
+        assert!(!history.needs_refresh(&outer, 900.0));
+        fixture.close();
+    }
 }
 
 fn populate(document: &mut AutoCommit, size: usize) {
@@ -410,46 +456,4 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
         failures.is_empty(),
         "content-dependent refresh allocation/owned clones: {failures:#?}"
     );
-}
-
-#[test]
-fn closed_history_defers_frontier_refresh_until_opening() {
-    let mut fixture = BoundFixture::new();
-    let outer = outer();
-    let mut history = fixture.history(&outer);
-    let before = history
-        .controller
-        .as_ref()
-        .unwrap()
-        .observed_live_heads
-        .clone();
-    fixture
-        .binding
-        .records
-        .with_history(&fixture.binding.checkout.id, |doc, _| {
-            doc.put(ROOT, "body", "edited with history closed").unwrap();
-            doc.commit();
-        })
-        .unwrap();
-    let next = super::super::sorted_heads(history.source().committed_heads(&outer).unwrap());
-    assert_ne!(before, next);
-    assert!(!history.needs_refresh(&outer, 900.0));
-    history.refresh(&outer);
-    assert!(
-        !history.needs_refresh(&outer, 900.0),
-        "closed refresh must not request itself again"
-    );
-    assert_eq!(
-        history.controller.as_ref().unwrap().observed_live_heads,
-        before
-    );
-    assert!(history.request_open());
-    assert!(history.needs_refresh(&outer, 900.0));
-    history.refresh(&outer);
-    assert_eq!(
-        history.controller.as_ref().unwrap().observed_live_heads,
-        next
-    );
-    assert!(!history.needs_refresh(&outer, 900.0));
-    fixture.close();
 }

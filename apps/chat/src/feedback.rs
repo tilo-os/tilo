@@ -63,9 +63,11 @@ fn refused(reason: impl Into<String>) -> ActionError {
 pub fn replay_launch(
     recording: &ui::feedback::RecordingRef,
 ) -> tilo_actions::remote::ApplicationLaunch {
+    // A launch names content by its lower-case address, and a recording's hash is the plain
+    // BLAKE3 of its bytes: it carries no key, so the whole reference is the address.
     tilo_actions::remote::ApplicationLaunch::with_content(
         recording.app.clone(),
-        recording.hash.clone(),
+        recording.hash.to_ascii_lowercase(),
     )
 }
 
@@ -306,284 +308,163 @@ mod tests {
         })
     }
 
-    #[test]
-    fn retry_after_reload_keeps_one_attributed_message_and_report() {
-        use ui::tilo_resource::Resource as _;
-        let (mut doc, submission) = seeded();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        let saved = doc.save();
-        let mut restored = Doc::load(&saved).unwrap();
-        apply_as(&mut restored, "visitor:one", action(&submission)).unwrap();
-        let messages = messages(&restored, &submission.destination.channel);
-        let matching: Vec<_> = messages
-            .iter()
-            .filter(|message| message.id == message_id(&submission.id))
-            .collect();
-        assert_eq!(matching.len(), 1);
-        assert_eq!(matching[0].author, "visitor:one");
-        assert_eq!(
-            report(&restored, &submission.id)
-                .unwrap()
-                .unwrap()
-                .submission,
-            submission
-        );
-        let state = Chat::read(&restored).unwrap();
-        let report_id = crate::testing::item("feedback", &submission.id);
-        let entries = Chat::search(&state);
-        let matching: Vec<_> = entries
-            .iter()
-            .filter(|entry| entry.anchor.as_deref() == Some(report_id.as_str()))
-            .collect();
-        assert_eq!(
-            matching.len(),
-            1,
-            "a retried report has one typed search result"
-        );
-        assert_eq!(matching[0].title, submission.feedback.text);
-        let published = Chat::child(&state, &report_id).expect("the report is an item");
-        assert!(published.actions.iter().any(|spec| spec.id == "triage"));
-    }
+    tilo_test_env::scenario! {
+        /// Filing a report and triaging it, retried, reloaded and merged.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn submissions_and_triage_are_attributed_and_survive_retries_and_merges;
 
-    #[test]
-    fn unauthored_and_conflicting_retries_are_refused_without_changes() {
-        let (mut doc, submission) = seeded();
-        let mut unauthored = ui::tilo_resource::Replica::<Chat>::from_doc(doc.fork());
-        assert!(unauthored.apply(action(&submission)).is_err());
-        assert!(reports(unauthored.doc()).unwrap().is_empty());
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        let before = doc.get_heads();
-        assert!(apply_as(&mut doc, "visitor:other", action(&submission)).is_err());
-        let mut changed = submission.clone();
-        changed.feedback.text = "different".into();
-        assert!(apply_as(&mut doc, "visitor:one", action(&changed)).is_err());
-        let mut elsewhere = submission;
-        elsewhere.id = "fedcba9876543210fedcba9876543210".into();
-        elsewhere.destination.channel = "c_random".into();
-        assert!(
-            apply_as(
-                &mut doc,
-                "visitor:one",
-                Chat::SUBMIT_FEEDBACK.with(chat::SubmitFeedback {
-                    channel: Id::from_raw("c_general"),
-                    submission: serde_json::to_value(&elsewhere).unwrap(),
-                })
-            )
-            .is_err(),
-            "a submission is filed in the channel it names"
-        );
-        assert_eq!(doc.get_heads(), before);
-    }
-
-    #[test]
-    fn concurrent_first_submissions_both_survive() {
-        let (mut doc, submission) = seeded();
-        let mut peer = doc.fork();
-        let mut other = submission.clone();
-        other.id = "fedcba9876543210fedcba9876543210".into();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        apply_as(&mut peer, "visitor:two", action(&other)).unwrap();
-        doc.merge_incoming(&mut peer).unwrap();
-        assert_eq!(reports(&doc).unwrap().len(), 2);
-        assert!(report(&doc, &submission.id).unwrap().is_some());
-        assert!(report(&doc, &other.id).unwrap().is_some());
-    }
-
-    #[test]
-    fn triage_is_attributed_and_preserves_the_issue() {
-        let (mut doc, submission) = seeded();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        apply_as(
-            &mut doc,
-            "maintainer:one",
-            triage(&submission, &TriageUpdate::Investigating),
-        )
-        .unwrap();
-        apply_as(
-            &mut doc,
-            "maintainer:two",
-            triage(
-                &submission,
-                &TriageUpdate::Duplicate {
-                    report: "fedcba9876543210fedcba9876543210".into(),
-                },
-            ),
-        )
-        .unwrap();
-        let report = report(&doc, &submission.id).unwrap().unwrap();
-        assert_eq!(report.submission, submission);
-        assert_eq!(report.author, "visitor:one");
-        assert_eq!(
-            report
-                .triage
+        phase retry_after_reload_keeps_one_attributed_message_and_report;
+        {
+            use ui::tilo_resource::Resource as _;
+            let (mut doc, submission) = seeded();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            let saved = doc.save();
+            let mut restored = Doc::load(&saved).unwrap();
+            apply_as(&mut restored, "visitor:one", action(&submission)).unwrap();
+            let messages = messages(&restored, &submission.destination.channel);
+            let matching: Vec<_> = messages
                 .iter()
-                .map(|entry| entry.author.as_str())
-                .collect::<Vec<_>>(),
-            ["maintainer:one", "maintainer:two"]
-        );
-        assert_eq!(report.triage[0].update, TriageUpdate::Investigating);
-        assert!(
+                .filter(|message| message.id == message_id(&submission.id))
+                .collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].author, "visitor:one");
+            assert_eq!(
+                report(&restored, &submission.id)
+                    .unwrap()
+                    .unwrap()
+                    .submission,
+                submission
+            );
+            let state = Chat::read(&restored).unwrap();
+            let report_id = crate::testing::item("feedback", &submission.id);
+            let entries = Chat::search(&state);
+            let matching: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry.anchor.as_deref() == Some(report_id.as_str()))
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "a retried report has one typed search result"
+            );
+            assert_eq!(matching[0].title, submission.feedback.text);
+            let published = Chat::child(&state, &report_id).expect("the report is an item");
+            assert!(published.actions.iter().any(|spec| spec.id == "triage"));
+        }
+
+        phase concurrent_first_submissions_both_survive;
+        {
+            let (mut doc, submission) = seeded();
+            let mut peer = doc.fork();
+            let mut other = submission.clone();
+            other.id = "fedcba9876543210fedcba9876543210".into();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut peer, "visitor:two", action(&other)).unwrap();
+            doc.merge_incoming(&mut peer).unwrap();
+            assert_eq!(reports(&doc).unwrap().len(), 2);
+            assert!(report(&doc, &submission.id).unwrap().is_some());
+            assert!(report(&doc, &other.id).unwrap().is_some());
+        }
+
+        phase triage_is_attributed_and_preserves_the_issue;
+        {
+            let (mut doc, submission) = seeded();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
             apply_as(
                 &mut doc,
                 "maintainer:one",
-                Chat::TRIAGE.with(chat::Triage {
-                    report: Id::from_raw(submission.id),
-                    update: serde_json::json!({"status": "lost"}),
-                })
+                triage(&submission, &TriageUpdate::Investigating),
             )
-            .is_err()
-        );
-    }
+            .unwrap();
+            apply_as(
+                &mut doc,
+                "maintainer:two",
+                triage(
+                    &submission,
+                    &TriageUpdate::Duplicate {
+                        report: "fedcba9876543210fedcba9876543210".into(),
+                    },
+                ),
+            )
+            .unwrap();
+            let report = report(&doc, &submission.id).unwrap().unwrap();
+            assert_eq!(report.submission, submission);
+            assert_eq!(report.author, "visitor:one");
+            assert_eq!(
+                report
+                    .triage
+                    .iter()
+                    .map(|entry| entry.author.as_str())
+                    .collect::<Vec<_>>(),
+                ["maintainer:one", "maintainer:two"]
+            );
+            assert_eq!(report.triage[0].update, TriageUpdate::Investigating);
+            assert!(
+                apply_as(
+                    &mut doc,
+                    "maintainer:one",
+                    Chat::TRIAGE.with(chat::Triage {
+                        report: Id::from_raw(submission.id),
+                        update: serde_json::json!({"status": "lost"}),
+                    })
+                )
+                .is_err()
+            );
+        }
 
-    #[test]
-    fn concurrent_retry_deduplicates_the_visible_report_message() {
-        let (mut doc, submission) = seeded();
-        let mut peer = doc.fork();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        apply_as(&mut peer, "visitor:one", action(&submission)).unwrap();
-        doc.merge_incoming(&mut peer).unwrap();
-        assert_eq!(reports(&doc).unwrap().len(), 1);
-        assert_eq!(
-            messages(&doc, &submission.destination.channel)
-                .iter()
-                .filter(|message| message.id == message_id(&submission.id))
-                .count(),
-            1
-        );
+        phase concurrent_retry_deduplicates_the_visible_report_message;
+        {
+            let (mut doc, submission) = seeded();
+            let mut peer = doc.fork();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut peer, "visitor:one", action(&submission)).unwrap();
+            doc.merge_incoming(&mut peer).unwrap();
+            assert_eq!(reports(&doc).unwrap().len(), 1);
+            assert_eq!(
+                messages(&doc, &submission.destination.channel)
+                    .iter()
+                    .filter(|message| message.id == message_id(&submission.id))
+                    .count(),
+                1
+            );
+        }
+
+        phase unauthored_and_conflicting_retries_are_refused_without_changes;
+        {
+            let (mut doc, submission) = seeded();
+            let mut unauthored = ui::tilo_resource::Replica::<Chat>::from_doc(doc.fork());
+            assert!(unauthored.apply(action(&submission)).is_err());
+            assert!(reports(unauthored.doc()).unwrap().is_empty());
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            let before = doc.get_heads();
+            assert!(apply_as(&mut doc, "visitor:other", action(&submission)).is_err());
+            let mut changed = submission.clone();
+            changed.feedback.text = "different".into();
+            assert!(apply_as(&mut doc, "visitor:one", action(&changed)).is_err());
+            let mut elsewhere = submission;
+            elsewhere.id = "fedcba9876543210fedcba9876543210".into();
+            elsewhere.destination.channel = "c_random".into();
+            assert!(
+                apply_as(
+                    &mut doc,
+                    "visitor:one",
+                    Chat::SUBMIT_FEEDBACK.with(chat::SubmitFeedback {
+                        channel: Id::from_raw("c_general"),
+                        submission: serde_json::to_value(&elsewhere).unwrap(),
+                    })
+                )
+                .is_err(),
+                "a submission is filed in the channel it names"
+            );
+            assert_eq!(doc.get_heads(), before);
+        }
     }
 
     /// Seed the demo and file `submission` as `visitor:one` in `doc`.
     fn filed(doc: &mut Doc, submission: &Submission) {
         crate::demo::seed(doc).unwrap();
         apply_as(doc, "visitor:one", action(submission)).unwrap();
-    }
-
-    #[test]
-    fn canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records() {
-        use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
-        let (_, submission) = seeded();
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = RecordOwners::new(temp.path().join("profile"));
-        let store = owners
-            .open("so.tilo.chat", &submission.destination.room)
-            .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.workspace"));
-        store
-            .reserve_record(&checkout)
-            .unwrap()
-            .initialize(|doc| {
-                filed(doc, &submission);
-                Ok::<(), String>(())
-            })
-            .unwrap();
-        store.try_flush().unwrap();
-        assert!(
-            receipt_from_record(
-                &store,
-                &checkout.id,
-                &submission.id,
-                &submission.destination
-            )
-            .is_ok()
-        );
-        store
-            .with(&checkout.id, |doc| {
-                ui::tilo_resource::write_key(
-                    doc,
-                    &ROOT,
-                    "newer_edit",
-                    &ui::tilo_resource::Atom("not yet stored".into()),
-                )
-                .unwrap();
-            })
-            .unwrap();
-        assert!(
-            receipt_from_record(
-                &store,
-                &checkout.id,
-                &submission.id,
-                &submission.destination
-            )
-            .is_err()
-        );
-        store.try_flush().unwrap();
-        assert!(
-            receipt_from_record(
-                &store,
-                &checkout.id,
-                &submission.id,
-                &submission.destination
-            )
-            .is_ok()
-        );
-        let memory = RecordStore::new(
-            ui::record::RecordSet::in_memory().with_home(&submission.destination.room),
-        );
-        memory.create_record(&checkout).unwrap();
-        memory
-            .with(&checkout.id, |doc| filed(doc, &submission))
-            .unwrap();
-        assert!(
-            receipt_from_record(
-                &memory,
-                &checkout.id,
-                &submission.id,
-                &submission.destination
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp() {
-        use ui::record::{RecordCheckout, RecordKind, RecordOwners};
-        let (_, submission) = seeded();
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = RecordOwners::new(temp.path().join("profile"));
-        let store = owners
-            .open(
-                <crate::resource::ChatShell as ui::framework::ResourceApp>::ID,
-                &submission.destination.room,
-            )
-            .unwrap();
-        let primary = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
-        store
-            .reserve_record(&primary)
-            .unwrap()
-            .initialize(|doc| {
-                filed(doc, &submission);
-                Ok::<(), String>(())
-            })
-            .unwrap();
-        store.try_flush().unwrap();
-        assert!(
-            store
-                .read(&primary.id, |doc| ui::record::workspace_scope(doc)
-                    .is_none())
-                .unwrap()
-        );
-        assert!(
-            receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
-                .is_ok()
-        );
-        let mut elsewhere = submission.destination.clone();
-        elsewhere.room = "another-room".into();
-        assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
-        store
-            .with(&primary.id, |doc| {
-                ui::tilo_resource::write_key(
-                    doc,
-                    &ROOT,
-                    "later",
-                    &ui::tilo_resource::Atom("unsaved".into()),
-                )
-                .unwrap();
-            })
-            .unwrap();
-        assert!(
-            receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
-                .is_err()
-        );
     }
 
     /// The record the reporter's window showed: a chat whose channels they
@@ -621,136 +502,276 @@ mod tests {
         (shown, made)
     }
 
-    #[test]
-    fn a_report_with_a_recording_replays_for_another_member_to_the_states_the_reporter_saw() {
-        use ui::feedback::recording::{self, LIMITS};
-        let (mut shown, made) = reorganised();
-        assert!(made >= 3);
-        let heads = shown.get_heads();
-        let limits = ui::tilo_resource::recording::Limits {
-            steps: made,
-            ..LIMITS
-        };
-        let cut = ui::tilo_resource::recording::record(&shown, 0, &heads, &limits).unwrap();
-        let recorded =
-            ui::feedback::Recorded::new("so.tilo.chat", "Chat", "chat.workspace", &cut).unwrap();
-        let (mut destination, mut submission) = seeded();
-        submission.feedback.recording = Some(recorded.reference().clone());
-        apply_as(&mut destination, "visitor:one", action(&submission)).unwrap();
+    tilo_test_env::scenario! {
+        /// A report's recording, replayed by another member and through the launch that opens it.
+        fn a_reports_recording_replays_for_another_member_and_through_its_launch;
 
-        // Another member: their replica of the destination's chat, and the
-        // recording's bytes as the record's route hands them over.
-        let mut member = Doc::new();
-        member.merge_incoming(&mut destination.fork()).unwrap();
-        let filed = report(&member, &submission.id).unwrap().unwrap();
-        let reference = filed.submission.feedback.recording.unwrap();
-        assert_eq!(reference, *recorded.reference());
-        let line = messages(&member, &submission.destination.channel)
-            .into_iter()
-            .find(|message| message.id == message_id(&submission.id))
-            .unwrap()
-            .text;
-        assert!(line.contains("Recording of Chat"), "{line}");
-        let replay = recording::open(&reference, recorded.bytes()).unwrap();
-        assert_eq!(replay.step_count(), made);
+        phase a_report_with_a_recording_replays_for_another_member_to_the_states_the_reporter_saw;
+        {
+            use ui::feedback::recording::{self, LIMITS};
+            let (mut shown, made) = reorganised();
+            assert!(made >= 3);
+            let heads = shown.get_heads();
+            let limits = ui::tilo_resource::recording::Limits {
+                steps: made,
+                ..LIMITS
+            };
+            let cut = ui::tilo_resource::recording::record(&shown, 0, &heads, &limits).unwrap();
+            let recorded =
+                ui::feedback::Recorded::new("so.tilo.chat", "Chat", "chat.workspace", &cut).unwrap();
+            let (mut destination, mut submission) = seeded();
+            submission.feedback.recording = Some(recorded.reference().clone());
+            apply_as(&mut destination, "visitor:one", action(&submission)).unwrap();
 
-        let read_at = |doc: &Doc, heads: &[automerge::ChangeHash]| {
-            crate::projection::read(&doc.clone().fork_at(heads).unwrap())
-        };
-        let start = shown
-            .get_change_by_hash(&cut.steps[0].original)
-            .unwrap()
-            .deps()
-            .to_vec();
-        assert_eq!(
-            read_at(replay.doc(), &replay.heads_at(0).unwrap()),
-            read_at(&shown, &start),
-            "the replay starts where the window started"
-        );
-        for (step, original) in cut.steps.iter().enumerate() {
+            // Another member: their replica of the destination's chat, and the
+            // recording's bytes as the record's route hands them over.
+            let mut member = Doc::new();
+            member.merge_incoming(&mut destination.fork()).unwrap();
+            let filed = report(&member, &submission.id).unwrap().unwrap();
+            let reference = filed.submission.feedback.recording.unwrap();
+            assert_eq!(reference, *recorded.reference());
+            let line = messages(&member, &submission.destination.channel)
+                .into_iter()
+                .find(|message| message.id == message_id(&submission.id))
+                .unwrap()
+                .text;
+            assert!(line.contains("Recording of Chat"), "{line}");
+            let replay = recording::open(&reference, recorded.bytes()).unwrap();
+            assert_eq!(replay.step_count(), made);
+
+            let read_at = |doc: &Doc, heads: &[automerge::ChangeHash]| {
+                crate::projection::read(&doc.clone().fork_at(heads).unwrap())
+            };
+            let start = shown
+                .get_change_by_hash(&cut.steps[0].original)
+                .unwrap()
+                .deps()
+                .to_vec();
             assert_eq!(
-                read_at(replay.doc(), &replay.heads_at(step + 1).unwrap()),
-                read_at(&shown, &[original.original]),
-                "step {step} replays to the state the reporter saw"
+                read_at(replay.doc(), &replay.heads_at(0).unwrap()),
+                read_at(&shown, &start),
+                "the replay starts where the window started"
             );
-        }
-        let end = read_at(replay.doc(), &replay.heads_at(made).unwrap());
-        assert!(
-            end.channels
-                .iter()
-                .any(|(_, channel)| channel.name == "roadmap")
-        );
-        let mut forged = reference;
-        forged.hash = "00".repeat(32);
-        assert!(
-            recording::open(&forged, recorded.bytes()).is_err(),
-            "bytes that are not the report's recording are refused"
-        );
-    }
-
-    #[test]
-    fn a_reports_recording_replays_through_the_launch_that_opens_content_in_its_app() {
-        let reference = ui::feedback::RecordingRef {
-            hash: "AB".repeat(32),
-            app: "so.tilo.notes".into(),
-            app_name: "Notes".into(),
-            kind: "notes.note".into(),
-            from_ms: 1_000,
-            to_ms: 2_000,
-            steps: 2,
-            bytes: 64,
-        };
-        let launch = replay_launch(&reference);
-        assert_eq!(
-            launch,
-            tilo_actions::remote::ApplicationLaunch::with_content("so.tilo.notes", "ab".repeat(32))
-        );
-        assert!(launch.valid());
-        let spec = replay_spec(&reference);
-        assert_eq!(spec.id, REPLAY_ACTION);
-        assert_eq!(
-            spec.operation_type.as_deref(),
-            Some(tilo_actions::remote::ApplicationLaunch::TYPE)
-        );
-        assert!(
-            spec.contract
-                .tags
-                .iter()
-                .any(|tag| tag == tilo_actions::OWN_DEVICE_SCOPE),
-            "replaying opens a window of the person's own, reaching no one else"
-        );
-    }
-
-    #[test]
-    fn receipt_requires_saved_destination_and_canonical_attributed_message() {
-        use ui::record::RecordSaveStatus;
-        let (mut doc, submission) = seeded();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        for status in [
-            RecordSaveStatus::Saving,
-            RecordSaveStatus::MemoryOnly,
-            RecordSaveStatus::Failed("disk full".into()),
-        ] {
+            for (step, original) in cut.steps.iter().enumerate() {
+                assert_eq!(
+                    read_at(replay.doc(), &replay.heads_at(step + 1).unwrap()),
+                    read_at(&shown, &[original.original]),
+                    "step {step} replays to the state the reporter saw"
+                );
+            }
+            let end = read_at(replay.doc(), &replay.heads_at(made).unwrap());
             assert!(
-                durable_receipt(&doc, &submission.id, &submission.destination, &status).is_err()
+                end.channels
+                    .iter()
+                    .any(|(_, channel)| channel.name == "roadmap")
+            );
+            let mut forged = reference;
+            forged.hash = "00".repeat(32);
+            assert!(
+                recording::open(&forged, recorded.bytes()).is_err(),
+                "bytes that are not the report's recording are refused"
             );
         }
-        let receipt = durable_receipt(
-            &doc,
-            &submission.id,
-            &submission.destination,
-            &RecordSaveStatus::Saved,
-        )
-        .unwrap();
-        assert_eq!(receipt.digest, submission.digest().unwrap());
-        assert_eq!(
-            receipt.report,
-            crate::testing::item("messages", &message_id(&submission.id))
-        );
-        let mut elsewhere = submission.destination.clone();
-        elsewhere.room = "other-room".into();
-        assert!(
-            durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
-        );
+
+        phase a_reports_recording_replays_through_the_launch_that_opens_content_in_its_app;
+        {
+            let reference = ui::feedback::RecordingRef {
+                hash: "AB".repeat(32),
+                app: "so.tilo.notes".into(),
+                app_name: "Notes".into(),
+                kind: "notes.note".into(),
+                from_ms: 1_000,
+                to_ms: 2_000,
+                steps: 2,
+                bytes: 64,
+            };
+            let launch = replay_launch(&reference);
+            assert_eq!(
+                launch,
+                tilo_actions::remote::ApplicationLaunch::with_content("so.tilo.notes", "ab".repeat(32))
+            );
+            assert!(launch.valid());
+            let spec = replay_spec(&reference);
+            assert_eq!(spec.id, REPLAY_ACTION);
+            assert_eq!(
+                spec.operation_type.as_deref(),
+                Some(tilo_actions::remote::ApplicationLaunch::TYPE)
+            );
+            assert!(
+                spec.contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == tilo_actions::OWN_DEVICE_SCOPE),
+                "replaying opens a window of the person's own, reaching no one else"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// When a filed report earns its durable receipt.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn a_receipt_is_given_only_for_a_saved_attributed_report;
+
+        phase canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records;
+        {
+            use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
+            let (_, submission) = seeded();
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = RecordOwners::new(temp.path().join("profile"));
+            let store = owners
+                .open("so.tilo.chat", &submission.destination.room)
+                .unwrap();
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.workspace"));
+            store
+                .reserve_record(&checkout)
+                .unwrap()
+                .initialize(|doc| {
+                    filed(doc, &submission);
+                    Ok::<(), String>(())
+                })
+                .unwrap();
+            store.try_flush().unwrap();
+            assert!(
+                receipt_from_record(
+                    &store,
+                    &checkout.id,
+                    &submission.id,
+                    &submission.destination
+                )
+                .is_ok()
+            );
+            store
+                .with(&checkout.id, |doc| {
+                    ui::tilo_resource::write_key(
+                        doc,
+                        &ROOT,
+                        "newer_edit",
+                        &ui::tilo_resource::Atom("not yet stored".into()),
+                    )
+                    .unwrap();
+                })
+                .unwrap();
+            assert!(
+                receipt_from_record(
+                    &store,
+                    &checkout.id,
+                    &submission.id,
+                    &submission.destination
+                )
+                .is_err()
+            );
+            store.try_flush().unwrap();
+            assert!(
+                receipt_from_record(
+                    &store,
+                    &checkout.id,
+                    &submission.id,
+                    &submission.destination
+                )
+                .is_ok()
+            );
+            let memory = RecordStore::new(
+                ui::record::RecordSet::in_memory().with_home(&submission.destination.room),
+            );
+            memory.create_record(&checkout).unwrap();
+            memory
+                .with(&checkout.id, |doc| filed(doc, &submission))
+                .unwrap();
+            assert!(
+                receipt_from_record(
+                    &memory,
+                    &checkout.id,
+                    &submission.id,
+                    &submission.destination
+                )
+                .is_err()
+            );
+        }
+
+        phase primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp;
+        {
+            use ui::record::{RecordCheckout, RecordKind, RecordOwners};
+            let (_, submission) = seeded();
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = RecordOwners::new(temp.path().join("profile"));
+            let store = owners
+                .open(
+                    <crate::resource::ChatShell as ui::framework::ResourceApp>::ID,
+                    &submission.destination.room,
+                )
+                .unwrap();
+            let primary = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+            store
+                .reserve_record(&primary)
+                .unwrap()
+                .initialize(|doc| {
+                    filed(doc, &submission);
+                    Ok::<(), String>(())
+                })
+                .unwrap();
+            store.try_flush().unwrap();
+            assert!(
+                store
+                    .read(&primary.id, |doc| ui::record::workspace_scope(doc)
+                        .is_none())
+                    .unwrap()
+            );
+            assert!(
+                receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
+                    .is_ok()
+            );
+            let mut elsewhere = submission.destination.clone();
+            elsewhere.room = "another-room".into();
+            assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
+            store
+                .with(&primary.id, |doc| {
+                    ui::tilo_resource::write_key(
+                        doc,
+                        &ROOT,
+                        "later",
+                        &ui::tilo_resource::Atom("unsaved".into()),
+                    )
+                    .unwrap();
+                })
+                .unwrap();
+            assert!(
+                receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
+                    .is_err()
+            );
+        }
+
+        phase receipt_requires_saved_destination_and_canonical_attributed_message;
+        {
+            use ui::record::RecordSaveStatus;
+            let (mut doc, submission) = seeded();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            for status in [
+                RecordSaveStatus::Saving,
+                RecordSaveStatus::MemoryOnly,
+                RecordSaveStatus::Failed("disk full".into()),
+            ] {
+                assert!(
+                    durable_receipt(&doc, &submission.id, &submission.destination, &status).is_err()
+                );
+            }
+            let receipt = durable_receipt(
+                &doc,
+                &submission.id,
+                &submission.destination,
+                &RecordSaveStatus::Saved,
+            )
+            .unwrap();
+            assert_eq!(receipt.digest, submission.digest().unwrap());
+            assert_eq!(
+                receipt.report,
+                crate::testing::item("messages", &message_id(&submission.id))
+            );
+            let mut elsewhere = submission.destination.clone();
+            elsewhere.room = "other-room".into();
+            assert!(
+                durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
+            );
+        }
     }
 }

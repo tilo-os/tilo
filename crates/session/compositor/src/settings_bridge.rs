@@ -326,58 +326,63 @@ mod tests {
         output
     }
 
-    #[test]
-    fn a_turned_monitor_takes_its_sideways_size_in_the_layout() {
-        let turned = output("DP-1", (800, 600), Transform::_90, 2.0);
-        let snapshot = snapshot(&[(turned, true)], &[], "headless", None);
-        let layout = &snapshot.layout[0];
-        assert_eq!((layout.x, layout.y), (0, 0));
-        assert_eq!(
-            (layout.width, layout.height),
-            (300, 400),
-            "800x600 at 2x turned on its side is 300x400"
-        );
-        assert!(
-            (snapshot.outputs[0].scale - 2.0).abs() < f64::EPSILON,
-            "the scale the person chose"
-        );
-        assert_eq!(
-            (
-                snapshot.outputs[0].current_mode.width,
-                snapshot.outputs[0].current_mode.height,
-                snapshot.outputs[0].current_mode.refresh_mhz
-            ),
-            (800, 600, 60_000),
-            "Settings offers the mode the monitor shows"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The snapshot of the displays the settings read.
+        fn a_display_snapshot_describes_the_outputs_as_laid_out;
 
-    #[test]
-    fn an_output_nothing_gave_a_mode_is_not_a_display_yet() {
-        let bare = Output::new(
-            "DP-2".to_owned(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "Tilo".into(),
-                model: "test".into(),
-            },
-        );
-        let snapshot = snapshot(&[(bare, true)], &[], "headless", None);
-        assert!(snapshot.outputs.is_empty());
-        assert!(snapshot.layout.is_empty());
-    }
+        phase a_turned_monitor_takes_its_sideways_size_in_the_layout;
+        {
+            let turned = output("DP-1", (800, 600), Transform::_90, 2.0);
+            let snapshot = snapshot(&[(turned, true)], &[], "headless", None);
+            let layout = &snapshot.layout[0];
+            assert_eq!((layout.x, layout.y), (0, 0));
+            assert_eq!(
+                (layout.width, layout.height),
+                (300, 400),
+                "800x600 at 2x turned on its side is 300x400"
+            );
+            assert!(
+                (snapshot.outputs[0].scale - 2.0).abs() < f64::EPSILON,
+                "the scale the person chose"
+            );
+            assert_eq!(
+                (
+                    snapshot.outputs[0].current_mode.width,
+                    snapshot.outputs[0].current_mode.height,
+                    snapshot.outputs[0].current_mode.refresh_mhz
+                ),
+                (800, 600, 60_000),
+                "Settings offers the mode the monitor shows"
+            );
+        }
 
-    #[test]
-    fn a_snapshot_counts_as_the_same_whatever_second_it_was_taken_in() {
-        let left = output("eDP-1", (1280, 800), Transform::Normal, 1.0);
-        let first = snapshot(&[(left.clone(), true)], &[], "drm-kms", None);
-        let second = snapshot(&[(left, true)], &[], "drm-kms", None);
-        assert!(same(&first, &second));
-        let rescaled = output("eDP-1", (1280, 800), Transform::Normal, 1.5);
-        assert!(!same(
-            &first,
-            &snapshot(&[(rescaled, true)], &[], "drm-kms", None)
-        ));
+        phase an_output_nothing_gave_a_mode_is_not_a_display_yet;
+        {
+            let bare = Output::new(
+                "DP-2".to_owned(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "Tilo".into(),
+                    model: "test".into(),
+                },
+            );
+            let snapshot = snapshot(&[(bare, true)], &[], "headless", None);
+            assert!(snapshot.outputs.is_empty());
+            assert!(snapshot.layout.is_empty());
+        }
+
+        phase a_snapshot_counts_as_the_same_whatever_second_it_was_taken_in;
+        {
+            let left = output("eDP-1", (1280, 800), Transform::Normal, 1.0);
+            let first = snapshot(&[(left.clone(), true)], &[], "drm-kms", None);
+            let second = snapshot(&[(left, true)], &[], "drm-kms", None);
+            assert!(same(&first, &second));
+            let rescaled = output("eDP-1", (1280, 800), Transform::Normal, 1.5);
+            assert!(!same(
+                &first,
+                &snapshot(&[(rescaled, true)], &[], "drm-kms", None)
+            ));
+        }
     }
 }

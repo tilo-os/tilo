@@ -158,36 +158,41 @@ pub(crate) use require_trusted_loader;
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_system_shim_requires_the_tilo_system_provider() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("usr/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("tilo"), "").unwrap();
+    tilo_test_env::scenario! {
+        /// The commands a guest's PATH carries beside its images.
+        fn guest_commands_are_the_runtimes_own_before_any_apps;
 
-        assert!(guest_command_available(dir.path(), "tilo"));
-        assert!(
-            !guest_command_available(dir.path(), "system"),
-            "a client binary alone must not expose the system alias"
-        );
+        phase the_system_shim_requires_the_tilo_system_provider;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("usr/bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("tilo"), "").unwrap();
 
-        let provider = dir.path().join("usr/libexec/tilo-deployment");
-        std::fs::create_dir_all(provider.parent().unwrap()).unwrap();
-        std::fs::write(provider, "").unwrap();
-        assert!(guest_command_available(dir.path(), "system"));
-    }
+            assert!(guest_command_available(dir.path(), "tilo"));
+            assert!(
+                !guest_command_available(dir.path(), "system"),
+                "a client binary alone must not expose the system alias"
+            );
 
-    #[test]
-    fn legacy_apps_never_shadow_the_runtimes_own_commands() {
-        let registry = legacy_vm::apps::Registry::from_guest(
-            legacy_vm::GuestOs::Linux,
-            &[
-                installed_app("com.visualstudio.code"),
-                installed_app("org.example.pkg"),
-            ],
-            &[],
-        );
-        assert_eq!(legacy_command_names(&registry), ["code"]);
+            let provider = dir.path().join("usr/libexec/tilo-deployment");
+            std::fs::create_dir_all(provider.parent().unwrap()).unwrap();
+            std::fs::write(provider, "").unwrap();
+            assert!(guest_command_available(dir.path(), "system"));
+        }
+
+        phase legacy_apps_never_shadow_the_runtimes_own_commands;
+        {
+            let registry = legacy_vm::apps::Registry::from_guest(
+                legacy_vm::GuestOs::Linux,
+                &[
+                    installed_app("com.visualstudio.code"),
+                    installed_app("org.example.pkg"),
+                ],
+                &[],
+            );
+            assert_eq!(legacy_command_names(&registry), ["code"]);
+        }
     }
 
     fn installed_app(id: &str) -> legacy_vm::apps::InstalledApp {

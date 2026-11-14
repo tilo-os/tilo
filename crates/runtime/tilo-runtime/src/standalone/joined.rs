@@ -248,7 +248,7 @@ impl Joined {
                 "this device takes part in that workspace through the desktop session".into(),
             );
         }
-        let topic = workspace_topic(workspace)?;
+        let topic = workspace;
         let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
             self.join_client(invitation)?,
             self.custody.clone(),
@@ -298,9 +298,7 @@ impl Joined {
     ) -> io::Result<tilo_fs::identity::PeerCredentials> {
         let workspace =
             WorkspaceId::parse(workspace).ok_or_else(|| io::Error::other("not a workspace id"))?;
-        let (cert, _) = self
-            .custody
-            .material_for(workspace_topic(workspace).map_err(io::Error::other)?);
+        let (cert, _) = self.custody.material_for(workspace);
         tilo_fs::identity::PeerCredentials::certified(
             cert,
             self.signer(),
@@ -327,10 +325,12 @@ impl Joined {
                 .peer()
                 .permissions(cert.device_public_key, SystemTime::now())
                 .map_err(|error| error.to_string())?
-                .person;
+                .person_id()
+                .ok_or("the device acts for no person")?
+                .to_owned();
             let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
             let mut workspace = Workspace::in_workspace(
-                WorkspaceSlot(view.workspace_id()),
+                WorkspaceSlot::of_workspace(view.workspace_id()),
                 workspace,
                 String::new(),
             );
@@ -364,48 +364,33 @@ impl Joined {
         Arc::clone(&self.governance_wake)
     }
 
-    /// The member devices `workspace`'s governance lets read `channel` at `now`
-    /// (Unix seconds): the projection the channel's group follows.
-    pub(super) fn channel_readers(
+    /// The devices that hold `workspace`'s keys at `now` (Unix seconds), as
+    /// its governance decides it; `None` while it cannot be read.
+    pub(super) fn key_holders(
         &self,
         workspace: WorkspaceId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
         now: u64,
     ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
         let at = std::time::SystemTime::UNIX_EPOCH
             .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let readers = self
+        let holders = self
             .owner
-            .with_current(workspace, |view| view.channel_readers(at, channel, route))
-            // Governance that cannot be read says nothing of who reads.
-            .ok()
-            .flatten()?;
+            .with_current(workspace, |view| view.key_holders(at))
+            .ok()?;
         Some(
-            readers
+            holders
                 .into_iter()
                 .map(collab_types::Ed25519PublicKey::from_bytes)
                 .collect(),
         )
     }
 
-    /// The scope `route`'s record seals under, as `workspace`'s governance
-    /// decides it at `now` (Unix seconds), or `None` while governance cannot
-    /// be read: a guessed scope could hand a device keys its record's policy
-    /// withholds.
-    pub(super) fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &collab_types::ChannelRoute,
-        now: u64,
-    ) -> Option<collab_types::ChannelId> {
-        let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    /// Whether this device created `workspace`, and so founds its group.
+    pub(super) fn founded_here(&self, workspace: WorkspaceId) -> bool {
         self.owner
-            .with_current(workspace, |view| view.unit_scope(at, route))
-            .ok()
+            .with_current(workspace, |view| Ok(view.founded_here()))
+            .unwrap_or(false)
     }
 
     fn invited_workspace(&self, invitation: &str) -> Result<WorkspaceId, String> {
@@ -416,8 +401,11 @@ impl Joined {
             &tilo_user_identity::RevocationList::new(),
             now,
         )?;
-        WorkspaceId::parse(&join.grant().room)
-            .ok_or_else(|| "invitation names no valid workspace".into())
+        let workspace = join.grant().workspace_id;
+        if workspace.is_nil() {
+            return Err("invitation names no valid workspace".into());
+        }
+        Ok(workspace)
     }
 
     pub(super) fn hold_session(self: &Arc<Self>, workspace: WorkspaceId) {
@@ -817,10 +805,6 @@ pub(super) fn desktop_enrolled(profile: &Path) -> io::Result<BTreeSet<WorkspaceI
     tilo_peer_state::owner::read_file(&record)
         .map(|storage| storage.workspaces().collect())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-fn workspace_topic(workspace: WorkspaceId) -> Result<u64, String> {
-    tilo_relay_protocol::room_workspace_id(&workspace.to_string()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -320,9 +320,13 @@ mod tests {
 
     #[test]
     fn embedded_bigrams_predict_next_words_sensibly() {
+        // One parse serves the three phases that read the embedded tables:
+        // they only call `&self` methods.
+        let english = Predictor::english();
+
         eprintln!("phase embedded_predictor_loads_bigrams");
         {
-            let p = Predictor::english();
+            let p = &english;
             assert!(
                 p.bigram_contexts() > 1000,
                 "want many bigram contexts, got {}",
@@ -341,7 +345,7 @@ mod tests {
 
         eprintln!("phase embedded_real_bigram_predicts_sensibly");
         {
-            let p = Predictor::english();
+            let p = &english;
             let preds = p.predict_next(Some("of"), "");
             assert!(!preds.is_empty());
             let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
@@ -350,7 +354,7 @@ mod tests {
 
         eprintln!("phase embedded_tables_are_consistent");
         {
-            let p = Predictor::english();
+            let p = &english;
             let dict = p.dictionary();
             assert!(
                 dict.words()
@@ -373,52 +377,143 @@ mod tests {
         }
     }
 
-    #[test]
-    fn prefix_completion_filters_context_and_falls_back_to_common_words() {
-        eprintln!("phase prefix_completion_respects_prefix");
+    tilo_test_env::scenario! {
+        fn the_predictor_completes_adapts_and_learns_only_words;
+
+        phase prefix_completion_filters_context_and_falls_back_to_common_words;
         {
-            let p = small();
-            let preds = p.predict_next(None, "mo");
-            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-            assert!(words.iter().all(|w| w.starts_with("mo")), "got {words:?}");
-            // Frequency order among "mo*": more(70) > morning(60) > mood(40).
-            assert_eq!(words[0], "more", "got {words:?}");
+            eprintln!("phase prefix_completion_respects_prefix");
+            {
+                let p = small();
+                let preds = p.predict_next(None, "mo");
+                let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+                assert!(words.iter().all(|w| w.starts_with("mo")), "got {words:?}");
+                // Frequency order among "mo*": more(70) > morning(60) > mood(40).
+                assert_eq!(words[0], "more", "got {words:?}");
+            }
+
+            eprintln!("phase bigram_plus_prefix_filters_to_matching_successor");
+            {
+                let p = small();
+                let preds = p.predict_next(Some("good"), "m");
+                let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+                assert_eq!(words[0], "morning", "got {words:?}");
+                assert!(!words.contains(&"luck"), "luck doesn't start with m");
+            }
+
+            eprintln!("phase cold_start_returns_common_words");
+            {
+                let p = small();
+                let preds = p.predict_next(None, "");
+                assert!(!preds.is_empty());
+                assert_eq!(preds[0].0, "the");
+                assert_eq!(p.predict_next_n(None, "", 1).len(), 1, "no more than asked");
+                assert!(p.predict_next_n(None, "", 0).is_empty(), "none asked for");
+                assert!(p.predict_next_n(Some("good"), "m", 0).is_empty());
+            }
+
+            eprintln!("phase unknown_context_falls_back_to_prefix_or_common");
+            {
+                let p = small();
+                let preds = p.predict_next(Some("xyzzy"), "ar");
+                let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+                assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
+                assert!(words.contains(&"are"));
+            }
+
+            eprintln!("phase next_key_distribution_blends_lexicon_with_bigram_context");
+            {
+                let p = small();
+                let plain = p.next_key_distribution(None, "mo");
+                assert!(plain.prob('r') > plain.prob('o'));
+                let ctx = p.next_key_distribution(Some("good"), "mo");
+                assert!(ctx.prob('r') > plain.prob('r'));
+                assert!(p.next_key_distribution(None, "zzq").is_uniform());
+            }
         }
 
-        eprintln!("phase bigram_plus_prefix_filters_to_matching_successor");
+        phase local_adaptation_learns_commits_within_bounds_and_clears;
         {
-            let p = small();
-            let preds = p.predict_next(Some("good"), "m");
-            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-            assert_eq!(words[0], "morning", "got {words:?}");
-            assert!(!words.contains(&"luck"), "luck doesn't start with m");
+            eprintln!("phase committed_transitions_adapt_predictions_locally");
+            {
+                let mut p = small();
+                for _ in 0..4 {
+                    p.learn_transition(Some("good"), "mood");
+                }
+                let predictions = p.predict_next(Some("good"), "");
+                assert_eq!(
+                    predictions.first().map(|(word, _)| word.as_str()),
+                    Some("mood"),
+                    "repeated personal usage should outrank the generic corpus"
+                );
+            }
+
+            eprintln!("phase local_adaptation_is_bounded_and_clearable");
+            {
+                let mut predictor = small();
+                for index in 0..(MAX_LEARNED_CONTEXTS + 10) {
+                    predictor.learn_transition(Some(&format!("context-{index}")), "word");
+                }
+                assert_eq!(predictor.learned_context_count(), MAX_LEARNED_CONTEXTS);
+                predictor.clear_learned();
+                assert_eq!(predictor.learned_context_count(), 0);
+            }
+
+            eprintln!("phase a_full_context_learns_no_new_word_and_still_counts_its_own");
+            {
+                let mut predictor = small();
+                // Distinct words of letters only: "wa", "waa", "waaa", ...
+                let words: Vec<String> = (1..=MAX_LEARNED_WORDS_PER_CONTEXT + 3)
+                    .map(|letters| format!("w{}", "a".repeat(letters)))
+                    .collect();
+                let (within, beyond) = words.split_at(MAX_LEARNED_WORDS_PER_CONTEXT);
+                for word in within {
+                    assert!(predictor.learn_transition(Some("the"), word).is_some());
+                }
+                for word in beyond {
+                    assert_eq!(predictor.learn_transition(Some("the"), word), None);
+                    assert!(!predictor.has_learned(word), "{word} is one too many");
+                }
+                assert!(within.iter().all(|word| predictor.has_learned(word)));
+                assert!(
+                    predictor.learn_transition(Some("the"), "wa").is_some(),
+                    "a word the full context holds is still counted"
+                );
+                assert_eq!(predictor.learned_context_count(), 1);
+            }
         }
 
-        eprintln!("phase cold_start_returns_common_words");
+        phase only_letters_and_their_apostrophes_are_learned;
+        // What a committed word teaches: letters, and the apostrophes inside or
+        // at the end of them. Anything else is not a word and leaves no trace.
         {
-            let p = small();
-            let preds = p.predict_next(None, "");
-            assert!(!preds.is_empty());
-            assert_eq!(preds[0].0, "the");
-        }
-
-        eprintln!("phase unknown_context_falls_back_to_prefix_or_common");
-        {
-            let p = small();
-            let preds = p.predict_next(Some("xyzzy"), "ar");
-            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-            assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
-            assert!(words.contains(&"are"));
-        }
-
-        eprintln!("phase next_key_distribution_blends_lexicon_with_bigram_context");
-        {
-            let p = small();
-            let plain = p.next_key_distribution(None, "mo");
-            assert!(plain.prob('r') > plain.prob('o'));
-            let ctx = p.next_key_distribution(Some("good"), "mo");
-            assert!(ctx.prob('r') > plain.prob('r'));
-            assert!(p.next_key_distribution(None, "zzq").is_uniform());
+            for (previous, word, expected) in [
+                (None, "Hello", Some(("", "hello"))),
+                (Some("Good"), " Morning ", Some(("good", "morning"))),
+                (Some("que"), "l'", Some(("que", "l'"))),
+                (None, "aujourd'hui", Some(("", "aujourd'hui"))),
+                (None, "'tis", None),
+                (None, "a1", None),
+                (None, "p@ss", None),
+                (None, "1234", None),
+                (None, "", None),
+                (None, "  ", None),
+            ] {
+                let taught = Predictor::transition(previous, word);
+                assert_eq!(
+                    taught
+                        .as_ref()
+                        .map(|(context, next)| (context.as_str(), next.as_str())),
+                    expected,
+                    "{word:?} after {previous:?}"
+                );
+            }
+            let mut p = small();
+            for not_a_word in ["p@ss", "1234", "'tis", ""] {
+                assert_eq!(p.learn_transition(Some("my"), not_a_word), None);
+                assert!(!p.has_learned(not_a_word));
+            }
+            assert_eq!(p.learned_context_count(), 0);
         }
     }
 
@@ -486,34 +581,6 @@ mod tests {
                     assert!(dict.contains(w2), "bigram {w1:?} {w2:?} not in dictionary");
                 }
             }
-        }
-    }
-
-    #[test]
-    fn local_adaptation_learns_commits_within_bounds_and_clears() {
-        eprintln!("phase committed_transitions_adapt_predictions_locally");
-        {
-            let mut p = small();
-            for _ in 0..4 {
-                p.learn_transition(Some("good"), "mood");
-            }
-            let predictions = p.predict_next(Some("good"), "");
-            assert_eq!(
-                predictions.first().map(|(word, _)| word.as_str()),
-                Some("mood"),
-                "repeated personal usage should outrank the generic corpus"
-            );
-        }
-
-        eprintln!("phase local_adaptation_is_bounded_and_clearable");
-        {
-            let mut predictor = small();
-            for index in 0..(MAX_LEARNED_CONTEXTS + 10) {
-                predictor.learn_transition(Some(&format!("context-{index}")), "word");
-            }
-            assert_eq!(predictor.learned_context_count(), MAX_LEARNED_CONTEXTS);
-            predictor.clear_learned();
-            assert_eq!(predictor.learned_context_count(), 0);
         }
     }
 }

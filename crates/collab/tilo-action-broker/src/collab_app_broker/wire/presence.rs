@@ -47,13 +47,8 @@ impl PresenceSession {
     }
 
     fn revalidate(&self) -> Result<(), String> {
-        let route = if self.verified_identity.host_scope.is_some() {
-            self.full_route()
-        } else {
-            self.route()
-        };
         self.state
-            .revalidate_admission(&route, &self.verified_identity)
+            .revalidate_admission(&self.route(), &self.verified_identity)
             .map(|_| ())
             .map_err(Refusal::refusal)
     }
@@ -131,7 +126,6 @@ impl PresenceSession {
     pub(in crate::collab_app_broker) fn subscribe(&self) -> Result<Feed<PresenceEnvelope>, String> {
         self.revalidate()?;
         Ok(Feed::new(
-            HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity),
             self.state
                 .subscribe_presence(&self.channel_id, self.peer_id),
         ))

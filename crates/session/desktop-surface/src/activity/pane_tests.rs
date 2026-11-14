@@ -16,7 +16,7 @@ mod tests {
     //! — nothing writes a synthetic `HistoryEntry` .
 
     use super::*;
-    use crate::activity::testing::TestTree as WorkspaceTree;
+    use crate::activity::testing::{TestTree as WorkspaceTree, next_id};
     use tilo_desktop_model::WorkspaceSlot;
     use ui::record::RecordStore;
 
@@ -28,7 +28,8 @@ mod tests {
     }
     use automerge::ActorId;
     use automerge::transaction::{CommitOptions, Transactable};
-    use collab_types::caps::{Access, CapOverride, Scope, Subject};
+    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_action_policy::Grantee;
     use tilo_automerge::ApplyIncoming as _;
 
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
@@ -37,54 +38,83 @@ mod tests {
         busy_workspace_written_by(None)
     }
 
-    /// [`busy_workspace`], but the half-hour is a collaborator's: what Catch up exists to show.
+    /// [`busy_workspace`], but the half-hour is a member's: what Catch up exists to show.
     fn peers_busy_workspace() -> (WorkspaceTree, WorkspaceSlot, String) {
-        busy_workspace_written_by(Some(ActorId::from(b"ada-device".as_slice())))
+        let peer = ActorId::from(b"ada-device".as_slice());
+        busy_workspace_written_by(Some(&peer))
     }
 
-    fn busy_workspace_written_by(peer: Option<ActorId>) -> (WorkspaceTree, WorkspaceSlot, String) {
+    fn busy_workspace_written_by(peer: Option<&ActorId>) -> (WorkspaceTree, WorkspaceSlot, String) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let reader = tree.doc.get_actor().clone();
         if let Some(peer) = peer {
-            tree.doc.set_actor(peer);
+            tree.doc.set_actor(peer.clone());
         }
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
         let slot = tree.desktop.active;
+        // The collaborator's work in the workspace's layout: the windows it closed, one change
+        // each. Windows opened are history, not news; a window closed is.
+        if let Some(peer) = peer {
+            tree.doc.set_actor(peer.clone());
+            for _ in 0..4 {
+                let closed = tree
+                    .desktop
+                    .workspaces
+                    .iter_mut()
+                    .find(|workspace| workspace.slot == slot)
+                    .and_then(|workspace| {
+                        workspace
+                            .strips
+                            .iter_mut()
+                            .find_map(|strip| strip.window_groups.first_mut())
+                    })
+                    .and_then(|group| group.tabs.pop());
+                assert!(closed.is_some(), "the desk has a window to close");
+                assert!(tree.seed_doc_from_cache(), "the layout takes the close");
+            }
+            tree.doc.set_actor(reader.clone());
+        }
 
         let granted = tree
             .grant_in_workspace(
                 slot,
                 &user,
                 CapOverride::grant(
-                    Subject::app("files"),
+                    Grantee::person("ada"),
                     Scope::FsPath("/home/user/notes".to_string()),
                     Access::Read,
-                ),
+                )
+                .through("files"),
             )
             .expect("the owner may grant in their own workspace");
         tree.grant_in_workspace(
             slot,
             &user,
             CapOverride::grant(
-                Subject::app("terminal"),
+                Grantee::person("ada"),
                 Scope::Device("camera".to_string()),
                 Access::Read,
-            ),
+            )
+            .through("terminal"),
         )
         .expect("the owner may grant in their own workspace");
         assert!(tree.revoke_in_workspace(slot, &user, &granted));
 
+        // A workspace's name is its own to govern, and its layout is a record beside it.
         if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == slot) {
             ws.name = "Design review".to_string();
         }
+        tree.govern(slot);
         tree.seed_doc_from_cache();
         tree.doc.set_actor(reader);
         (tree, slot, user)
     }
 
+    /// Which workspace a desk shows is the device's, so a switch writes no change: the pane reads
+    /// nothing, describes nothing, and shows the rows of the workspace now in front.
     #[test]
-    fn a_workspace_switch_reads_only_its_own_change_and_derives_nothing() {
+    fn a_workspace_switch_reads_no_change_and_shows_the_workspace_in_front() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let first = tree.active;
         let second = tree.append_empty_workspace("Second");
@@ -97,36 +127,30 @@ mod tests {
                 crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
             )
         };
-        let derived = format!("{:?}", pane.derived);
         for n in 0..12 {
             tree.set_active(if n % 2 == 0 { second } else { first });
-            tree.commit_workspace_change();
             let (diffs, forks) = reads();
             let logged = pane.history_log.changes_read();
             pane.refresh(&mut tree);
             let (diffs_after, forks_after) = reads();
-            // The switch's change is read once and passed over: no row to describe, nothing derived
-            // again.
             assert_eq!(
                 pane.history_log.changes_read() - logged,
-                1,
-                "switch {n} reads only its own change"
+                0,
+                "switch {n} reads no change"
             );
             assert_eq!(diffs_after - diffs, 0, "switch {n} describes no change");
+            assert_eq!(forks_after - forks, 0, "switch {n} forks nothing");
             assert_eq!(
-                format!("{:?}", pane.derived),
-                derived,
-                "switch {n} leaves the rows as they were"
-            );
-            // The first visit to "Second" checkpoints the change that created it, a row of that
-            // workspace; nothing else forks.
-            assert!(
-                forks_after - forks <= usize::from(n == 0),
-                "switch {n} forks the document {} times",
-                forks_after - forks
+                pane.last_active,
+                Some(tree.active.raw()),
+                "switch {n} shows the workspace in front"
             );
         }
 
+        // Back in the first workspace, the pane holds what a pane opened there holds.
+        tree.set_active(first);
+        tree.commit_workspace_change();
+        pane.refresh(&mut tree);
         let mut fresh = native_pane();
         fresh.refresh(&mut tree);
         assert_eq!(
@@ -161,9 +185,12 @@ mod tests {
         let first = tree.active;
         let second = tree.append_empty_workspace("Second");
         tree.commit_workspace_change();
+        // The workspace exists: its own document is made, then renamed.
+        tree.govern(first);
         if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == first) {
             workspace.name = "Renamed before switching".to_string();
         }
+        tree.govern(first);
         tree.seed_doc_from_cache();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
@@ -274,6 +301,7 @@ mod tests {
         let mut restored = WorkspaceTree {
             desktop: serde_json::from_slice(&persisted).expect("restore workspace tree"),
             doc: automerge::AutoCommit::new(),
+            governance: HashMap::new(),
         };
         restored.seed_doc_from_cache();
 
@@ -304,9 +332,13 @@ mod tests {
             ),
             tilo_actions::EffectReceiptStatus::Succeeded,
         ));
+        let active = tree.desktop.active;
+        // The workspace exists — its own document is made — and then renamed.
+        tree.govern(active);
         if let Some(workspace) = tree.desktop.active_workspace_mut() {
             workspace.name = "Board review".to_string();
         }
+        tree.govern(active);
         tree.seed_doc_from_cache();
 
         let mut pane = native_pane();
@@ -320,7 +352,7 @@ mod tests {
         let edit = pane
             .entries()
             .iter()
-            .find(|entry| entry.id != receipt_id)
+            .find(|entry| entry.id != receipt_id && entry.summary.contains("Board review"))
             .expect("the device's own edit is a row");
         assert!(
             (receipt.author.avatar_hue - edit.author.avatar_hue).abs() < f32::EPSILON,
@@ -791,20 +823,21 @@ mod tests {
             "the history a device arrives to is not news"
         );
 
-        let reader = tree.doc.get_actor().clone();
-        tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
-        tree.grant_in_workspace(
-            workspace,
-            &user,
-            CapOverride::grant(
-                Subject::app("files"),
-                Scope::FsPath("/home/user/later".to_string()),
-                Access::Read,
-            ),
-        )
-        .expect("the owner may grant in their own workspace");
-        tree.seed_doc_from_cache();
-        tree.doc.set_actor(reader);
+        // Another device of the workspace grants afterwards: what is news here.
+        let ada = ActorId::from(b"ada-device".as_slice());
+        tree.written_as(workspace, &ada, |tree| {
+            tree.grant_in_workspace(
+                workspace,
+                &user,
+                CapOverride::grant(
+                    Grantee::person("ada"),
+                    Scope::FsPath("/home/user/later".to_string()),
+                    Access::Read,
+                )
+                .through("files"),
+            )
+            .expect("the owner may grant in their own workspace");
+        });
         pane.refresh(&mut tree);
         let after_change = pane.passive_unread;
         assert!(after_change > 0, "a change after arriving is");
@@ -923,20 +956,20 @@ mod tests {
         let index = 0;
         let anchor = pane.digest.briefs[index].entry_ids[0];
         pane.expanded_brief = Some(index);
-        let reader = tree.doc.get_actor().clone();
-        tree.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
-        tree.grant_in_workspace(
-            workspace,
-            &user,
-            CapOverride::grant(
-                Subject::app("files"),
-                Scope::FsPath("/home/user/new-result".into()),
-                Access::Read,
-            ),
-        )
-        .unwrap();
-        tree.seed_doc_from_cache();
-        tree.doc.set_actor(reader);
+        let bea = ActorId::from(b"bea-device".as_slice());
+        tree.written_as(workspace, &bea, |tree| {
+            tree.grant_in_workspace(
+                workspace,
+                &user,
+                CapOverride::grant(
+                    Grantee::person("ada"),
+                    Scope::FsPath("/home/user/new-result".into()),
+                    Access::Read,
+                )
+                .through("files"),
+            )
+            .unwrap();
+        });
         pane.refresh(&mut tree);
         let Some(expanded) = pane.expanded_brief else {
             panic!("the opened session stays open");
@@ -1086,6 +1119,8 @@ mod tests {
         let departed_at = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(10_000))
             .expect("fixed test timestamp");
+        // The workspace exists — its own document is made — before the person looks at it.
+        tree.govern(home);
         let mut pane = native_pane();
         pane.persistent_frontiers = false;
         pane.set_now_for_test(departed_at);
@@ -1097,16 +1132,15 @@ mod tests {
         pane.finish_view(home.raw());
 
         if changed {
-            let reader = tree.doc.get_actor().clone();
-            tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
             tree.desktop
                 .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.slot == home)
                 .expect("home workspace")
                 .name = "Board review".to_string();
-            tree.seed_doc_from_cache();
-            tree.doc.set_actor(reader);
+            // Another device of the workspace renames it while this one is away.
+            let ada = ActorId::from(b"ada-device".as_slice());
+            tree.written_as(home, &ada, |tree| tree.govern(home));
         }
 
         pane.set_now_for_test(
@@ -1148,7 +1182,7 @@ mod tests {
         let pane = pane_over(&mut tree);
         assert!(
             pane.entries().len() >= 3,
-            "grants, a revoke and the rename stay; setup writes do not, got {}",
+            "the grants, the revoke and the rename stay; setup writes do not, got {}",
             pane.entries().len()
         );
         let summaries: Vec<&str> = pane.entries().iter().map(|e| e.summary.as_str()).collect();
@@ -1168,13 +1202,22 @@ mod tests {
             !summaries.iter().any(|s| s == &"Granted 4 capabilities"),
             "a flush that granted nothing must not read as a grant: {summaries:?}"
         );
+        // A workspace being made — its own fields, and the windows it is made with — is setup: the
+        // history keeps it, and the feed does not.
+        let feed: Vec<&str> = pane
+            .entries()
+            .iter()
+            .filter(|entry| is_news(entry))
+            .map(|entry| entry.summary.as_str())
+            .collect();
         assert!(
-            summaries.iter().all(|s| {
+            feed.iter().all(|s| {
                 !s.starts_with("Opened")
-                    && !s.contains("Recorded workspace")
-                    && !s.contains("Created the workspace")
+                    && !s.contains("Recorded")
+                    && !s.contains("Created")
+                    && !s.contains("Updated the workspace")
             }),
-            "setup bookkeeping, with the windows a workspace is made with, is not a change: {summaries:?}"
+            "setup bookkeeping, with the windows a workspace is made with, is not a change: {feed:?}"
         );
     }
 
@@ -1183,8 +1226,13 @@ mod tests {
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         show_summary(&mut pane);
+        // A row of the desk's own document: a governed row is read-only, and offers neither.
         let idx = (0..pane.timeline.row_count())
-            .find(|&i| pane.timeline.row_entry(i).is_some())
+            .find(|&i| {
+                pane.timeline
+                    .row_entry(i)
+                    .is_some_and(|entry| !pane.governance_rows.contains(&entry.id))
+            })
             .expect("a change row");
         let index = pane.timeline.row_entry_index(idx).expect("entry");
         pane.timeline.set_selection(Some((index, index)));
@@ -1243,7 +1291,8 @@ mod tests {
         );
     }
 
-    /// A second workspace with its own governance, interleaved in one document.
+    /// A second workspace with its own governance: each workspace governs itself in a document of
+    /// its own.
     fn two_workspace_tree() -> (WorkspaceTree, WorkspaceSlot, WorkspaceSlot) {
         let (mut tree, first, user) = busy_workspace();
         let second = tree.append_empty_workspace("Research");
@@ -1252,10 +1301,11 @@ mod tests {
             second,
             &user,
             CapOverride::grant(
-                Subject::app("browser"),
+                Grantee::person("ada"),
                 Scope::NetHost("research.example".to_string()),
                 Access::Read,
-            ),
+            )
+            .through("browser"),
         )
         .expect("owner may grant in the second workspace too");
         tree.set_active(first);
@@ -1263,8 +1313,8 @@ mod tests {
     }
 
     #[test]
-    fn this_workspaces_scope_excludes_another_workspaces_governance() {
-        let (mut tree, _first, _second) = two_workspace_tree();
+    fn this_workspaces_own_document_is_the_only_governance_it_reads() {
+        let (mut tree, _first, second) = two_workspace_tree();
         let mut pane = pane_over(&mut tree);
         assert_eq!(
             pane.scope,
@@ -1282,44 +1332,51 @@ mod tests {
             "this workspace's own grant is present: {scoped:?}"
         );
 
-        let all_tree = { tree.desktop.workspaces.clone() };
-        let _ = all_tree;
-        pane.set_scope(WorkspaceScope::AllWorkspaces, &tree);
-        let widened: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
+        // The other workspace's own document is read when it is the one in front.
+        tree.set_active(second);
+        pane.refresh(&mut tree);
+        let there: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
-            widened.iter().any(|s| s.contains("research.example")),
-            "widening the scope must reveal the other workspace: {widened:?}"
+            there.iter().any(|s| s.contains("research.example")),
+            "the other workspace's grant is its own: {there:?}"
         );
         assert!(
-            widened.len() > scoped.len(),
-            "the whole tree is strictly more than one workspace: {} vs {}",
-            widened.len(),
-            scoped.len()
+            !there.iter().any(|s| s.contains("/home/user/notes")),
+            "the first workspace's grant is not the second's: {there:?}"
         );
     }
 
     #[test]
     fn a_widened_row_names_the_workspace_it_happened_in() {
-        let (mut tree, _first, _second) = two_workspace_tree();
+        let (mut tree, first, _second) = two_workspace_tree();
+        // A window opened in the workspace in front, whose grant its own document holds: a row of
+        // the layout and a row of the governance.
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            next_id(),
+            "Brief".into(),
+            Vec::new()
+        ));
         let mut pane = pane_over(&mut tree);
         pane.set_scope(WorkspaceScope::AllWorkspaces, &tree);
         let named_rows: Vec<String> = pane
             .entries()
             .iter()
-            .filter(|e| {
-                e.summary.contains("research.example") || e.summary.contains("/home/user/notes")
-            })
+            .filter(|e| e.summary.contains("/home/user/notes") || e.summary.contains("Brief"))
             .map(|e| e.summary.clone())
             .collect();
+        assert_eq!(named_rows.len(), 2, "both rows are here: {named_rows:?}");
+        let name = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.slot == first)
+            .map(|workspace| workspace.name.clone())
+            .expect("the workspace in front");
         assert!(
-            named_rows.iter().any(|s| s.contains("Research")),
-            "a row must name the workspace it happened in: {named_rows:?}"
-        );
-        let distinct: std::collections::HashSet<&String> = named_rows.iter().collect();
-        assert_eq!(
-            distinct.len(),
-            named_rows.len(),
-            "no two rows may read identically: {named_rows:?}"
+            named_rows
+                .iter()
+                .any(|row| row.contains(&name) && row.contains("/home/user/notes")),
+            "a governed row names the workspace it governs: {named_rows:?}"
         );
     }
 
@@ -1410,52 +1467,29 @@ mod tests {
         let slot = tree.desktop.active;
 
         let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
-        let last_week = CapOverride::grant(
-            Subject::app("files"),
-            Scope::FsPath("/home/user/last-week".to_string()),
-            Access::Read,
-        );
-        let cap_id = {
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.slot == slot)
-                .expect("active workspace");
-            assert!(workspace.may_govern_at(
-                &user,
-                tilo_action_policy::roles::governance::GRANT,
-                tilo_clock::unix_now()
-            ));
-            workspace.grant_sandbox(last_week)
-        };
-        let stored = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.slot == slot)
-            .expect("active workspace")
-            .sandbox
-            .iter()
-            .find(|capability| capability.id == cap_id)
-            .cloned()
-            .expect("stored grant");
-        assert!(tilo_desktop_model::desktop_doc::insert_sandbox(
-            &mut tree.doc,
+        tree.grant_uncommitted(
             slot,
-            &stored
-        ));
-        tilo_resource::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
+            &user,
+            CapOverride::grant(
+                Grantee::person("ada"),
+                Scope::FsPath("/home/user/last-week".to_string()),
+                Access::Read,
+            )
+            .through("files"),
+        )
+        .expect("owner may grant");
+        tilo_resource::history::commit_stamped_at(tree.governance_of(slot), week_ago_secs)
             .expect("the grant left a transaction to stamp");
 
         tree.grant_in_workspace(
             slot,
             &user,
             CapOverride::grant(
-                Subject::app("files"),
+                Grantee::person("ada"),
                 Scope::FsPath("/home/user/today".to_string()),
                 Access::Read,
-            ),
+            )
+            .through("files"),
         )
         .expect("owner may grant");
 
@@ -1474,14 +1508,10 @@ mod tests {
             today < all,
             "the week-old change must be filtered out: {today} of {all} survived"
         );
-        assert!(
-            !pane.timeline.entries().is_empty(),
-            "filtering hides rows, it does not discard them"
-        );
         for i in 0..pane.timeline.visible_len() {
             let e = pane.timeline.visible_entry(i).unwrap();
             assert!(
-                !e.summary.contains("Last week"),
+                !e.summary.contains("last-week"),
                 "the week-old row leaked through the day filter: {}",
                 e.summary
             );
@@ -1500,32 +1530,23 @@ mod tests {
     fn contributor_filter_narrows_to_one_person() {
         let (mut tree, _, _) = busy_workspace();
 
-        let mut peer = automerge::AutoCommit::new();
+        // A peer of the same workspace renames it: its own document, applied here as the
+        // workspace hands it back.
+        let slot = tree.desktop.active;
+        let mut peer = tree.governance_of(slot).fork();
         peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
-        peer.apply_incoming(
-            tree.export_changes_since(&[])
-                .iter()
-                .map(|b| automerge::Change::try_from(b.as_slice()).unwrap()),
-        )
-        .unwrap();
         {
             use automerge::transaction::Transactable;
-            let (_, ws_entry) = peer
-                .get(
-                    &peer.get(&automerge::ROOT, "workspaces").unwrap().unwrap().1,
-                    0_usize,
-                )
-                .unwrap()
-                .unwrap();
-            peer.put(&ws_entry, "name", "Bob's rename").unwrap();
+            peer.put(automerge::ROOT, "name", "Bob's rename").unwrap();
         }
         tilo_resource::history::commit_stamped(&mut peer).expect("the peer's edit commits");
         let blobs: Vec<Vec<u8>> = peer
-            .get_changes(&tree.doc.get_heads())
+            .get_changes(&tree.governance_of(slot).get_heads())
             .into_iter()
             .map(|c| c.raw_bytes().to_vec())
             .collect();
-        tree.apply_changes(&blobs).unwrap();
+        tree.apply_governance_changes(slot, &blobs)
+            .expect("the peer's rename lands");
 
         let mut pane = pane_over(&mut tree);
         assert!(
@@ -1533,7 +1554,7 @@ mod tests {
             "two actors wrote to this workspace; contributors = {:?}",
             pane.contributors
         );
-        // bootstrap_demo seeds a Research collaborator id "bob" named "Bob" with a cursor colour.
+        // bootstrap_demo seeds a Research member id "bob" named "Bob" with a cursor colour.
         // seed_roster_colours registers that display name on the handle actor, so history shows
         // "Bob" rather than the raw handle — same person, roster wins for colour and label.
         let bob = pane
@@ -1611,28 +1632,59 @@ mod tests {
         assert_eq!(before_name, "Design review");
         let versions_before = pane.entries().len();
 
-        // Rename again, so there is something to revert back across.
-        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == slot) {
-            ws.name = "Renamed by mistake".to_string();
-        }
-        tree.seed_doc_from_cache();
+        // Another window opens, so there is a change of the desk's own document to revert.
+        assert!(
+            tree.doc_append_tab_to_first_group_of_active_workspace(
+                next_id(),
+                "Opened by mistake".into(),
+                Vec::new()
+            ),
+            "the layout record takes the window"
+        );
         pane.refresh(&mut tree);
         assert!(pane.entries().len() > versions_before);
 
-        let target = pane.entries()[versions_before - 1].id;
+        let target = pane
+            .entries()
+            .iter()
+            .find(|entry| entry.summary.contains("Opened by mistake"))
+            .map(|entry| entry.id)
+            .expect("the window's row");
+        // Another window opens on top of it: the revert takes back what came after the row.
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            next_id(),
+            "Kept".into(),
+            Vec::new()
+        ));
+        pane.refresh(&mut tree);
         assert!(
             pane.revert_to(&mut tree, &target),
             "the revert wrote something"
         );
 
-        assert_eq!(
+        let windows = |title: &str| {
             tree.desktop
                 .workspaces
                 .iter()
                 .find(|w| w.slot == slot)
-                .map(|w| w.name.as_str()),
-            Some("Design review"),
-            "the workspace is back to the state the row named"
+                .map(|w| {
+                    w.strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .filter(|tab| tab.title == title)
+                        .count()
+                })
+        };
+        assert_eq!(
+            windows("Kept"),
+            Some(0),
+            "the window that came after the row is gone again"
+        );
+        assert_eq!(
+            windows("Opened by mistake"),
+            Some(1),
+            "the window the row named stays"
         );
         assert!(
             pane.entries().len() > versions_before + 1,
@@ -1689,8 +1741,8 @@ mod tests {
         assert!(
             grant
                 .summary
-                .starts_with("Granted read on /home/user/notes to files"),
-            "the grant names verb, scope and subject: {:?}",
+                .starts_with("Granted read on /home/user/notes to ada in files"),
+            "the grant names the verb, the scope, who it reaches and the app: {:?}",
             grant.summary
         );
         assert_eq!(grant.entry_kind, EntryKind::Access);
@@ -1725,12 +1777,8 @@ mod tests {
     #[test]
     fn contributors_are_only_people_who_actually_did_something() {
         let (mut tree, _, _) = busy_workspace();
-        tree.desktop
-            .collaborators
-            .push(tilo_desktop_model::Collaborator::new(
-                "ghost",
-                "Never Edited",
-            ));
+        tree.desktop.workspaces[0]
+            .member_here(tilo_desktop_model::Member::keyed("ghost", "Never Edited"));
         let pane = pane_over(&mut tree);
         assert!(
             !pane.contributors.iter().any(|c| c == "Never Edited"),
@@ -1748,7 +1796,7 @@ mod tests {
             .iter()
             .filter(|entry| !author_is_local(&entry.author, &pane.local_user()))
             .count();
-        assert!(others > 0, "the fixture is a collaborator's work");
+        assert!(others > 0, "the fixture is a member's work");
         assert_eq!(pane.digest.total_changes, others);
         assert!(!pane.digest.briefs.is_empty());
         assert!(pane.digest.headline().is_some());
@@ -1841,10 +1889,11 @@ mod tests {
                 slot,
                 &user,
                 CapOverride::grant(
-                    Subject::app("files"),
+                    Grantee::person("ada"),
                     Scope::FsPath(format!("/tmp/bound/{i}")),
                     Access::Read,
-                ),
+                )
+                .through("files"),
             )
             .expect("owner may grant");
         }
@@ -2095,30 +2144,30 @@ mod tests {
         // The band header's [Restore] passes the band's last change, so this is the production path
         // for "restore to the end of this version".
         let (mut tree, slot, _) = busy_workspace();
+        // A window opens, and one more after it: the band boundary is the first.
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            next_id(),
+            "First".into(),
+            Vec::new()
+        ));
         let mut pane = pane_over(&mut tree);
-
-        // Find the change that named the workspace, and the state just after it.
-        let renamed_at = pane
+        let boundary_at = pane
             .entries()
             .iter()
-            .position(|e| e.summary.contains("Design review"))
-            .expect("the fixture renames the workspace");
-        let boundary = pane.entries()[renamed_at].id;
-
-        // Move on: rename again, so the document is no longer in that state.
-        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == slot) {
-            ws.name = "Something else".to_string();
-        }
-        tree.seed_doc_from_cache();
+            .position(|entry| entry.summary.contains("First"))
+            .expect("the window's row");
+        let boundary = pane.entries()[boundary_at].id;
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            next_id(),
+            "Second".into(),
+            Vec::new()
+        ));
         pane.invalidate();
         pane.refresh(&mut tree);
         assert_eq!(
-            tree.desktop
-                .workspaces
-                .iter()
-                .find(|w| w.slot == slot)
-                .map(|w| w.name.clone()),
-            Some("Something else".to_string())
+            windows_titled(&tree, slot, "Second"),
+            1,
+            "the window opened"
         );
 
         assert!(
@@ -2126,19 +2175,34 @@ mod tests {
             "the restore wrote something"
         );
         assert_eq!(
-            tree.desktop
-                .workspaces
-                .iter()
-                .find(|w| w.slot == slot)
-                .map(|w| w.name.clone()),
-            Some("Design review".to_string()),
+            windows_titled(&tree, slot, "Second"),
+            0,
             "the workspace is back in the state that boundary produced"
         );
+        assert_eq!(windows_titled(&tree, slot, "First"), 1);
         // Forward, not a rewind: the change we rolled past is still in the graph.
         assert!(
-            pane.entries().len() > renamed_at + 1,
+            pane.entries().len() > boundary_at + 1,
             "history was appended to, not rewritten"
         );
+    }
+
+    /// How many windows of the workspace at `slot` are titled `title`.
+    fn windows_titled(tree: &WorkspaceTree, slot: WorkspaceSlot, title: &str) -> usize {
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.slot == slot)
+            .map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .filter(|tab| tab.title == title)
+                    .count()
+            })
+            .unwrap_or_default()
     }
 
     /// The app shows what is new and says so ([`wire::MARK_VIEWED`]), to be counted seen once the
@@ -2590,47 +2654,6 @@ mod tests {
                 .iter()
                 .any(|(entry, _)| entry.author.name.contains("bea")),
             "the peer's receipt is attributed to the peer"
-        );
-    }
-}
-
-#[cfg(test)]
-mod resume_card_tests {
-    use super::*;
-    use ui::tilo_actions::ActionContext;
-    use ui::widget::history::HistoryAuthor;
-
-    fn resume_entry(id: u8, author: &str, timestamp: SystemTime) -> HistoryEntry {
-        HistoryEntry {
-            id: HistoryEntryId([id; 16]),
-            author: HistoryAuthor::new(author, 210.0, ui::history_source::short_id(author)),
-            entry_kind: EntryKind::Text,
-            artifact_kind: ArtifactKind::File,
-            timestamp,
-            summary: "Edited assumptions".into(),
-            text_delta: Some((4, 1)),
-            diff_payload: None,
-            redaction: None,
-            context: Some(
-                ActionContext::for_resource("finance:q2", "sheet", "Q2 finance report")
-                    .with_app("so.tilo.sheets", "Sheets"),
-            ),
-        }
-    }
-
-    #[test]
-    fn resume_uses_the_local_users_latest_targeted_action() {
-        let local = "kai";
-        let now = SystemTime::now();
-        let older = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
-        let entries = vec![resume_entry(1, local, older), resume_entry(2, "Ada", now)];
-        let resume =
-            local_resume_snapshot(&entries, local).expect("local targeted work is resumable");
-        assert_eq!(resume.target.label, "Q2 finance report");
-        assert_eq!(resume.timestamp, older, "a peer's newer work is not yours");
-        assert!(
-            local_resume_snapshot(&entries, "").is_none(),
-            "an unknown local identity resumes nothing"
         );
     }
 }

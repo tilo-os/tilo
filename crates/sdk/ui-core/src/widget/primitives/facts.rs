@@ -365,95 +365,99 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn facts_drop_lowest_priority_first_and_keep_one() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let facts = facts();
-        let face = FactsFace::new(&facts);
-        let all = face.natural_width(&mut text, &theme);
-        assert_eq!(face.shown_in(all, &mut text, &theme), vec![0, 1, 2]);
-        // A little short: the size (priority 0) goes first.
-        assert_eq!(face.shown_in(all - 1.0, &mut text, &theme), vec![0, 2]);
-        assert_eq!(face.shown_in(10.0, &mut text, &theme), vec![0]);
-    }
+    tilo_test_env::scenario! {
+        fn facts_are_separate_items_that_drop_by_priority;
 
-    /// A row of facts standing beside the chips it shares its line with is measured at its
-    /// text's exact width, and the solver that places it rounds every edge onto the display's
-    /// device pixels.
-    #[test]
-    fn a_row_measured_for_its_text_is_not_handed_a_box_that_shaves_it() {
-        let theme = Theme::light();
-        let mut text = TextRenderer::new();
-        let m = FactsMetrics::of(&theme);
-        for fact in [
-            Fact::with_icon(Icon::Users, "1 here"),
-            Fact::with_icon(Icon::Users, "3 here"),
-            Fact::text("12 files"),
-        ] {
-            let natural = crate::num::f32_of_f64(
-                FactsFace::new(std::slice::from_ref(&fact)).natural_width(&mut text, &theme),
+        phase facts_drop_lowest_priority_first_and_keep_one;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let facts = facts();
+            let face = FactsFace::new(&facts);
+            let all = face.natural_width(&mut text, &theme);
+            assert_eq!(face.shown_in(all, &mut text, &theme), vec![0, 1, 2]);
+            // A little short: the size (priority 0) goes first.
+            assert_eq!(face.shown_in(all - 1.0, &mut text, &theme), vec![0, 2]);
+            assert_eq!(face.shown_in(10.0, &mut text, &theme), vec![0]);
+        }
+
+        // A row of facts standing beside the chips it shares its line with is measured at its
+        // text's exact width, and the solver that places it rounds every edge onto the display's
+        // device pixels.
+        phase a_row_measured_for_its_text_is_not_handed_a_box_that_shaves_it;
+        {
+            let theme = Theme::light();
+            let mut text = TextRenderer::new();
+            let m = FactsMetrics::of(&theme);
+            for fact in [
+                Fact::with_icon(Icon::Users, "1 here"),
+                Fact::with_icon(Icon::Users, "3 here"),
+                Fact::text("12 files"),
+            ] {
+                let natural = crate::num::f32_of_f64(
+                    FactsFace::new(std::slice::from_ref(&fact)).natural_width(&mut text, &theme),
+                );
+                let mut row = Facts::new(vec![fact.clone()]);
+                let measured = row.measure(
+                    Size {
+                        width: None,
+                        height: None,
+                    },
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1000.0),
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                    &mut text,
+                );
+                let grid = f64::from(crate::widget::device_scale());
+                let boxed = f64::from(measured.width) * grid;
+                let boxed = boxed.round() / grid;
+                let inset = m.mark_width(fact.mark);
+                let room = crate::num::f32_of_f64(boxed - inset);
+                assert_eq!(
+                    text.elide_to_width_style(&fact.text, room, &m.style),
+                    fact.text,
+                    "{:?} measured {natural} stands in a box of {boxed}",
+                    fact.text
+                );
+            }
+        }
+
+        // Something happening now is marked by a dot in its own colour, in the slot an icon takes: the
+        // same room, and the words after it read as they do anywhere.
+        phase a_live_fact_is_a_dot_in_its_tone_before_its_words;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let m = FactsMetrics::of(&theme);
+            let hue = crate::tokens::PresenceHue::Orange;
+            let live = Fact::dot(Tone::Presence(hue), "Working now");
+            assert_eq!(live.mark, Some(FactMark::Dot(Tone::Presence(hue))));
+            let face = FactsFace::new(std::slice::from_ref(&live));
+            let label = f64::from(text.measure_style(&live.text, None, &m.style).0);
+            assert!(
+                (face.natural_width(&mut text, &theme) - (m.dot + m.icon_gap + label)).abs() < 0.01,
+                "the dot stands in the icon's slot"
             );
-            let mut row = Facts::new(vec![fact.clone()]);
-            let measured = row.measure(
-                Size {
-                    width: None,
-                    height: None,
-                },
-                Size {
-                    width: taffy::AvailableSpace::Definite(1000.0),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                &mut text,
-            );
-            let grid = f64::from(crate::widget::device_scale());
-            let boxed = f64::from(measured.width) * grid;
-            let boxed = boxed.round() / grid;
-            let inset = m.mark_width(fact.mark);
-            let room = crate::num::f32_of_f64(boxed - inset);
+            assert_eq!(face.spoken(), vec!["Working now"], "the dot says nothing");
             assert_eq!(
-                text.elide_to_width_style(&fact.text, room, &m.style),
-                fact.text,
-                "{:?} measured {natural} stands in a box of {boxed}",
-                fact.text
+                Tone::Presence(hue).colour(&theme),
+                theme.tokens.colors.presence.hue(hue),
+                "it wears the presence colour of whoever it is about"
             );
         }
-    }
 
-    /// Something happening now is marked by a dot in its own colour, in the slot an icon takes: the
-    /// same room, and the words after it read as they do anywhere.
-    #[test]
-    fn a_live_fact_is_a_dot_in_its_tone_before_its_words() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let m = FactsMetrics::of(&theme);
-        let hue = crate::tokens::PresenceHue::Orange;
-        let live = Fact::dot(Tone::Presence(hue), "Working now");
-        assert_eq!(live.mark, Some(FactMark::Dot(Tone::Presence(hue))));
-        let face = FactsFace::new(std::slice::from_ref(&live));
-        let label = f64::from(text.measure_style(&live.text, None, &m.style).0);
-        assert!(
-            (face.natural_width(&mut text, &theme) - (m.dot + m.icon_gap + label)).abs() < 0.01,
-            "the dot stands in the icon's slot"
-        );
-        assert_eq!(face.spoken(), vec!["Working now"], "the dot says nothing");
-        assert_eq!(
-            Tone::Presence(hue).colour(&theme),
-            theme.tokens.colors.presence.hue(hue),
-            "it wears the presence colour of whoever it is about"
-        );
-    }
-
-    #[test]
-    fn facts_are_separate_items_with_no_separator_glyph() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let facts = facts();
-        let face = FactsFace::new(&facts);
-        assert_eq!(face.spoken(), vec!["12 files", "3.4 MB", "Edited today"]);
-        let m = FactsMetrics::of(&theme);
-        let parts: f64 = facts.iter().map(|f| m.fact_width(f, &mut text)).sum();
-        let gaps = 2.0 * f64::from(theme.tokens.spacing.rhythm.sibling);
-        assert!((face.natural_width(&mut text, &theme) - parts - gaps).abs() < 0.01);
+        phase facts_are_separate_items_with_no_separator_glyph;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let facts = facts();
+            let face = FactsFace::new(&facts);
+            assert_eq!(face.spoken(), vec!["12 files", "3.4 MB", "Edited today"]);
+            let m = FactsMetrics::of(&theme);
+            let parts: f64 = facts.iter().map(|f| m.fact_width(f, &mut text)).sum();
+            let gaps = 2.0 * f64::from(theme.tokens.spacing.rhythm.sibling);
+            assert!((face.natural_width(&mut text, &theme) - parts - gaps).abs() < 0.01);
+        }
     }
 }

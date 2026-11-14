@@ -211,166 +211,170 @@ mod tests {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
-    #[test]
-    fn a_new_chromium_profile_is_seeded_with_the_system_title_bar() {
-        let home = tempfile::tempdir().unwrap();
-        let profile = profile_for(&launch(
-            "/usr/bin/chromium-browser",
-            EntrySource::Host,
-            &["--new-window"],
-            home.path(),
-        ))
-        .unwrap();
-        assert_eq!(profile.user_data_dir, home.path().join(".config/chromium"));
+    tilo_test_env::scenario! {
+        fn the_chromium_frame_seed_touches_only_what_is_its_own;
 
-        assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::Seeded);
-        let preferences = home.path().join(".config/chromium/Default/Preferences");
-        assert_eq!(
-            read(&preferences),
-            serde_json::json!({ "browser": { "custom_chrome_frame": false } })
-        );
-        let mode = std::fs::metadata(&preferences)
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
+        phase a_new_chromium_profile_is_seeded_with_the_system_title_bar;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let profile = profile_for(&launch(
+                "/usr/bin/chromium-browser",
+                EntrySource::Host,
+                &["--new-window"],
+                home.path(),
+            ))
+            .unwrap();
+            assert_eq!(profile.user_data_dir, home.path().join(".config/chromium"));
 
-    #[test]
-    fn an_existing_profile_gets_only_the_frame_key_and_keeps_every_other_setting() {
-        let home = tempfile::tempdir().unwrap();
-        let dir = home
-            .path()
-            .join(".var/app/com.google.Chrome/config/google-chrome/Work");
-        std::fs::create_dir_all(&dir).unwrap();
-        let before = serde_json::json!({
-            "browser": { "has_seen_welcome_page": true, "window_placement": { "maximized": true } },
-            "homepage": "https://example.org/",
-            "profile": { "name": "Work", "exit_type": "Normal", "content_settings": { "zoom": 1.25 } },
-            "extensions": { "pinned_extensions": ["abc", "def"] },
-            "counter": 13_284_123_456_789_u64
-        });
-        std::fs::write(
-            dir.join("Preferences"),
-            serde_json::to_vec(&before).unwrap(),
-        )
-        .unwrap();
-
-        let profile = profile_for(&launch(
-            "/usr/bin/flatpak",
-            EntrySource::Flatpak {
-                app_id: "com.google.Chrome".into(),
-            },
-            &["run", "com.google.Chrome", "--profile-directory=Work"],
-            home.path(),
-        ))
-        .unwrap();
-        assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::Merged);
-
-        let mut expected = before;
-        expected["browser"]["custom_chrome_frame"] = Value::Bool(false);
-        assert_eq!(read(&dir.join("Preferences")), expected);
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name != "Preferences")
-            .collect();
-        assert!(leftovers.is_empty(), "{leftovers:?}");
-    }
-
-    #[test]
-    fn a_frame_the_person_chose_stays() {
-        let home = tempfile::tempdir().unwrap();
-        let dir = home.path().join(".config/chromium/Default");
-        std::fs::create_dir_all(&dir).unwrap();
-        let chosen = br#"{"browser":{"custom_chrome_frame":true},"homepage":"x"}"#;
-        std::fs::write(dir.join("Preferences"), chosen).unwrap();
-        let profile = ChromiumProfile {
-            user_data_dir: home.path().join(".config/chromium"),
-            profile: "Default".into(),
-        };
-        assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::AlreadySet);
-        assert_eq!(std::fs::read(dir.join("Preferences")).unwrap(), chosen);
-    }
-
-    #[test]
-    fn a_corrupt_or_unexpected_profile_is_left_untouched() {
-        let home = tempfile::tempdir().unwrap();
-        let dir = home.path().join(".config/chromium/Default");
-        std::fs::create_dir_all(&dir).unwrap();
-        let profile = ChromiumProfile {
-            user_data_dir: home.path().join(".config/chromium"),
-            profile: "Default".into(),
-        };
-        for contents in [
-            &b"{\"browser\": {\"custom_chrome_fr"[..],
-            b"",
-            b"[1, 2, 3]",
-            b"{\"browser\": \"not an object\"}",
-            &[0xff, 0xfe, 0x00][..],
-        ] {
-            std::fs::write(dir.join("Preferences"), contents).unwrap();
-            assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::Unreadable);
-            assert_eq!(std::fs::read(dir.join("Preferences")).unwrap(), contents);
-            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+            assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::Seeded);
+            let preferences = home.path().join(".config/chromium/Default/Preferences");
+            assert_eq!(
+                read(&preferences),
+                serde_json::json!({ "browser": { "custom_chrome_frame": false } })
+            );
+            let mode = std::fs::metadata(&preferences)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
         }
-    }
 
-    #[test]
-    fn a_running_browsers_profile_is_left_to_the_browser() {
-        let home = tempfile::tempdir().unwrap();
-        let user_data_dir = home.path().join(".config/chromium");
-        std::fs::create_dir_all(&user_data_dir).unwrap();
-        std::os::unix::fs::symlink("host-4242", user_data_dir.join("SingletonLock")).unwrap();
-        let profile = ChromiumProfile {
-            user_data_dir: user_data_dir.clone(),
-            profile: "Default".into(),
-        };
-        assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::Running);
-        assert!(!user_data_dir.join("Default").exists());
-    }
+        phase an_existing_profile_gets_only_the_frame_key_and_keeps_every_other_setting;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let dir = home
+                .path()
+                .join(".var/app/com.google.Chrome/config/google-chrome/Work");
+            std::fs::create_dir_all(&dir).unwrap();
+            let before = serde_json::json!({
+                "browser": { "has_seen_welcome_page": true, "window_placement": { "maximized": true } },
+                "homepage": "https://example.org/",
+                "profile": { "name": "Work", "exit_type": "Normal", "content_settings": { "zoom": 1.25 } },
+                "extensions": { "pinned_extensions": ["abc", "def"] },
+                "counter": 13_284_123_456_789_u64
+            });
+            std::fs::write(
+                dir.join("Preferences"),
+                serde_json::to_vec(&before).unwrap(),
+            )
+            .unwrap();
 
-    #[test]
-    fn only_default_profiles_of_chromium_family_browsers_are_touched() {
-        let home = tempfile::tempdir().unwrap();
-        let home = home.path();
-        assert_eq!(
-            profile_for(&launch("/usr/bin/firefox", EntrySource::Host, &[], home)),
-            None
-        );
-        assert_eq!(
-            profile_for(&launch(
+            let profile = profile_for(&launch(
                 "/usr/bin/flatpak",
                 EntrySource::Flatpak {
-                    app_id: "org.mozilla.firefox".into()
+                    app_id: "com.google.Chrome".into(),
                 },
-                &[],
-                home
-            )),
-            None
-        );
-        for args in [
-            &["--user-data-dir=/srv/kiosk"][..],
-            &["--user-data-dir", "/srv/kiosk"],
-            &["--profile-directory=../elsewhere"],
-            &["--profile-directory", "/abs"],
-        ] {
+                &["run", "com.google.Chrome", "--profile-directory=Work"],
+                home.path(),
+            ))
+            .unwrap();
+            assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::Merged);
+
+            let mut expected = before;
+            expected["browser"]["custom_chrome_frame"] = Value::Bool(false);
+            assert_eq!(read(&dir.join("Preferences")), expected);
+            let leftovers: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| name != "Preferences")
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
+        }
+
+        phase a_frame_the_person_chose_stays;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let dir = home.path().join(".config/chromium/Default");
+            std::fs::create_dir_all(&dir).unwrap();
+            let chosen = br#"{"browser":{"custom_chrome_frame":true},"homepage":"x"}"#;
+            std::fs::write(dir.join("Preferences"), chosen).unwrap();
+            let profile = ChromiumProfile {
+                user_data_dir: home.path().join(".config/chromium"),
+                profile: "Default".into(),
+            };
+            assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::AlreadySet);
+            assert_eq!(std::fs::read(dir.join("Preferences")).unwrap(), chosen);
+        }
+
+        phase a_corrupt_or_unexpected_profile_is_left_untouched;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let dir = home.path().join(".config/chromium/Default");
+            std::fs::create_dir_all(&dir).unwrap();
+            let profile = ChromiumProfile {
+                user_data_dir: home.path().join(".config/chromium"),
+                profile: "Default".into(),
+            };
+            for contents in [
+                &b"{\"browser\": {\"custom_chrome_fr"[..],
+                b"",
+                b"[1, 2, 3]",
+                b"{\"browser\": \"not an object\"}",
+                &[0xff, 0xfe, 0x00][..],
+            ] {
+                std::fs::write(dir.join("Preferences"), contents).unwrap();
+                assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::Unreadable);
+                assert_eq!(std::fs::read(dir.join("Preferences")).unwrap(), contents);
+                assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+            }
+        }
+
+        phase a_running_browsers_profile_is_left_to_the_browser;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let user_data_dir = home.path().join(".config/chromium");
+            std::fs::create_dir_all(&user_data_dir).unwrap();
+            std::os::unix::fs::symlink("host-4242", user_data_dir.join("SingletonLock")).unwrap();
+            let profile = ChromiumProfile {
+                user_data_dir: user_data_dir.clone(),
+                profile: "Default".into(),
+            };
+            assert_eq!(prefer_system_frame(&profile).unwrap(), Outcome::Running);
+            assert!(!user_data_dir.join("Default").exists());
+        }
+
+        phase only_default_profiles_of_chromium_family_browsers_are_touched;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let home = home.path();
             assert_eq!(
-                profile_for(&launch("/usr/bin/chromium", EntrySource::Host, args, home)),
-                None,
-                "{args:?}"
+                profile_for(&launch("/usr/bin/firefox", EntrySource::Host, &[], home)),
+                None
+            );
+            assert_eq!(
+                profile_for(&launch(
+                    "/usr/bin/flatpak",
+                    EntrySource::Flatpak {
+                        app_id: "org.mozilla.firefox".into()
+                    },
+                    &[],
+                    home
+                )),
+                None
+            );
+            for args in [
+                &["--user-data-dir=/srv/kiosk"][..],
+                &["--user-data-dir", "/srv/kiosk"],
+                &["--profile-directory=../elsewhere"],
+                &["--profile-directory", "/abs"],
+            ] {
+                assert_eq!(
+                    profile_for(&launch("/usr/bin/chromium", EntrySource::Host, args, home)),
+                    None,
+                    "{args:?}"
+                );
+            }
+            let mut with_config_home = launch("/usr/bin/brave-browser", EntrySource::Host, &[], home);
+            with_config_home
+                .env
+                .insert("XDG_CONFIG_HOME".into(), "/elsewhere/config".into());
+            assert_eq!(
+                profile_for(&with_config_home),
+                Some(ChromiumProfile {
+                    user_data_dir: PathBuf::from("/elsewhere/config/BraveSoftware/Brave-Browser"),
+                    profile: "Default".into(),
+                })
             );
         }
-        let mut with_config_home = launch("/usr/bin/brave-browser", EntrySource::Host, &[], home);
-        with_config_home
-            .env
-            .insert("XDG_CONFIG_HOME".into(), "/elsewhere/config".into());
-        assert_eq!(
-            profile_for(&with_config_home),
-            Some(ChromiumProfile {
-                user_data_dir: PathBuf::from("/elsewhere/config/BraveSoftware/Brave-Browser"),
-                profile: "Default".into(),
-            })
-        );
     }
 }

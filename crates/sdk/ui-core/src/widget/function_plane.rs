@@ -419,102 +419,106 @@ pub fn format_tick(value: f64, step: f64) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn axis_ticks_are_round_numbers_inside_the_range() {
-        assert_eq!(nice_ticks(0.0, 46.0, 5), vec![0.0, 10.0, 20.0, 30.0, 40.0]);
-        assert_eq!(nice_ticks(-0.5, 12.5, 6), vec![0.0, 5.0, 10.0]);
-        assert_eq!(nice_ticks(-0.3, 5.3, 4), vec![0.0, 2.0, 4.0]);
-        assert_eq!(
-            nice_ticks(38.48, 60.52, 5),
-            vec![40.0, 45.0, 50.0, 55.0, 60.0]
-        );
-        assert_eq!(nice_ticks(0.1, 0.7, 4), vec![0.2, 0.4, 0.6]);
-        for (min, max, count) in [(0.0, 46.0, 5), (3.0, 3.2, 3), (-7.0, 1e6, 6)] {
-            let ticks = nice_ticks(min, max, count);
-            assert!(
-                ticks.len() >= 2 && ticks.len() <= count,
-                "{min}..{max}: {ticks:?}"
+    tilo_test_env::scenario! {
+        fn the_plane_maps_the_world_and_labels_round_ticks;
+
+        phase axis_ticks_are_round_numbers_inside_the_range;
+        {
+            assert_eq!(nice_ticks(0.0, 46.0, 5), vec![0.0, 10.0, 20.0, 30.0, 40.0]);
+            assert_eq!(nice_ticks(-0.5, 12.5, 6), vec![0.0, 5.0, 10.0]);
+            assert_eq!(nice_ticks(-0.3, 5.3, 4), vec![0.0, 2.0, 4.0]);
+            assert_eq!(
+                nice_ticks(38.48, 60.52, 5),
+                vec![40.0, 45.0, 50.0, 55.0, 60.0]
             );
-            assert!(ticks.iter().all(|t| *t >= min && *t <= max), "{ticks:?}");
+            assert_eq!(nice_ticks(0.1, 0.7, 4), vec![0.2, 0.4, 0.6]);
+            for (min, max, count) in [(0.0, 46.0, 5), (3.0, 3.2, 3), (-7.0, 1e6, 6)] {
+                let ticks = nice_ticks(min, max, count);
+                assert!(
+                    ticks.len() >= 2 && ticks.len() <= count,
+                    "{min}..{max}: {ticks:?}"
+                );
+                assert!(ticks.iter().all(|t| *t >= min && *t <= max), "{ticks:?}");
+            }
+            assert_eq!(nice_ticks(1.0, 1.0, 5), vec![1.0, 1.0]);
         }
-        assert_eq!(nice_ticks(1.0, 1.0, 5), vec![1.0, 1.0]);
-    }
 
-    #[test]
-    fn nice_steps_follow_one_two_five() {
-        assert_eq!(nice_step(1.1), 1.0);
-        assert_eq!(nice_step(0.018), 0.02);
-        assert_eq!(nice_step(4.0), 5.0);
-        assert_eq!(nice_step(80.0), 100.0);
-        assert_eq!(nice_step(f64::NAN), 1.0);
-        assert_eq!(nice_step(-3.0), 1.0);
-    }
+        phase nice_steps_follow_one_two_five;
+        {
+            assert_eq!(nice_step(1.1), 1.0);
+            assert_eq!(nice_step(0.018), 0.02);
+            assert_eq!(nice_step(4.0), 5.0);
+            assert_eq!(nice_step(80.0), 100.0);
+            assert_eq!(nice_step(f64::NAN), 1.0);
+            assert_eq!(nice_step(-3.0), 1.0);
+        }
 
-    #[test]
-    fn ticks_print_at_step_precision() {
-        assert_eq!(format_tick(0.30000000000000004, 0.1), "0.3");
-        assert_eq!(format_tick(2.0, 1.0), "2");
-        assert_eq!(format_tick(1e-12, 0.5), "0");
-        assert_eq!(format_tick(-0.25, 0.05), "\u{2212}0.25");
-    }
+        phase ticks_print_at_step_precision;
+        {
+            assert_eq!(format_tick(0.30000000000000004, 0.1), "0.3");
+            assert_eq!(format_tick(2.0, 1.0), "2");
+            assert_eq!(format_tick(1e-12, 0.5), "0");
+            assert_eq!(format_tick(-0.25, 0.05), "\u{2212}0.25");
+        }
 
-    #[test]
-    fn world_and_screen_round_trip() {
-        let plane = FunctionPlane::new(
-            Rect::new(0.0, 0.0, 400.0, 200.0),
-            Point::new(1.0, -2.0),
-            50.0,
-        );
-        assert_eq!(
-            plane.to_screen(Point::new(1.0, -2.0)),
-            Point::new(200.0, 100.0)
-        );
-        let world = Point::new(3.5, 0.25);
-        let back = plane.to_world(plane.to_screen(world));
-        assert!((back - world).hypot() < 1e-9);
-        assert!(plane.to_screen(Point::new(1.0, 0.0)).y < 100.0);
-    }
-
-    #[test]
-    fn tick_labels_never_collide_and_stay_whole_inside_the_canvas() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut text = TextRenderer::new();
-        let plane = FunctionPlane::new(
-            Rect::new(0.0, 0.0, 360.0, 240.0),
-            Point::new(1500.0, 0.0),
-            0.09,
-        )
-        .with_major_spacing(40.0);
-        let step = plane.major_step();
-        let top_left = plane.to_world(Point::new(0.0, 0.0));
-        let bottom_right = plane.to_world(Point::new(360.0, 240.0));
-        let span = WorldSpan {
-            left: top_left.x,
-            right: bottom_right.x,
-            bottom: bottom_right.y,
-            top: top_left.y,
-        };
-        let origin = plane.to_screen(Point::ZERO);
-        let labels = plane.label_layout(&mut text, &theme, span, (step, origin));
-        assert!(!labels.is_empty());
-        let gap = f64::from(theme.tokens.spacing.s1);
-        for (i, a) in labels.iter().enumerate() {
-            assert!(
-                a.rect.x0 >= plane.canvas.x0 && a.rect.x1 <= plane.canvas.x1,
-                "{a:?} is cut by the canvas"
+        phase world_and_screen_round_trip;
+        {
+            let plane = FunctionPlane::new(
+                Rect::new(0.0, 0.0, 400.0, 200.0),
+                Point::new(1.0, -2.0),
+                50.0,
             );
-            for b in labels.iter().skip(i + 1) {
-                assert!(!overlaps(a.rect, b.rect, gap - 0.01), "{a:?} touches {b:?}");
+            assert_eq!(
+                plane.to_screen(Point::new(1.0, -2.0)),
+                Point::new(200.0, 100.0)
+            );
+            let world = Point::new(3.5, 0.25);
+            let back = plane.to_world(plane.to_screen(world));
+            assert!((back - world).hypot() < 1e-9);
+            assert!(plane.to_screen(Point::new(1.0, 0.0)).y < 100.0);
+        }
+
+        phase tick_labels_never_collide_and_stay_whole_inside_the_canvas;
+        {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut text = TextRenderer::new();
+            let plane = FunctionPlane::new(
+                Rect::new(0.0, 0.0, 360.0, 240.0),
+                Point::new(1500.0, 0.0),
+                0.09,
+            )
+            .with_major_spacing(40.0);
+            let step = plane.major_step();
+            let top_left = plane.to_world(Point::new(0.0, 0.0));
+            let bottom_right = plane.to_world(Point::new(360.0, 240.0));
+            let span = WorldSpan {
+                left: top_left.x,
+                right: bottom_right.x,
+                bottom: bottom_right.y,
+                top: top_left.y,
+            };
+            let origin = plane.to_screen(Point::ZERO);
+            let labels = plane.label_layout(&mut text, &theme, span, (step, origin));
+            assert!(!labels.is_empty());
+            let gap = f64::from(theme.tokens.spacing.s1);
+            for (i, a) in labels.iter().enumerate() {
+                assert!(
+                    a.rect.x0 >= plane.canvas.x0 && a.rect.x1 <= plane.canvas.x1,
+                    "{a:?} is cut by the canvas"
+                );
+                for b in labels.iter().skip(i + 1) {
+                    assert!(!overlaps(a.rect, b.rect, gap - 0.01), "{a:?} touches {b:?}");
+                }
+            }
+            let negative = labels.iter().find(|l| l.text.starts_with('-'));
+            if let Some(negative) = negative {
+                assert!(negative.rect.x0 >= plane.canvas.x0);
             }
         }
-        let negative = labels.iter().find(|l| l.text.starts_with('-'));
-        if let Some(negative) = negative {
-            assert!(negative.rect.x0 >= plane.canvas.x0);
-        }
-    }
 
-    #[test]
-    fn a_degenerate_zoom_is_bounded() {
-        assert!(step_indices(-1e300, 1e300, 1e-300).count() <= 100_001);
+        phase a_degenerate_zoom_is_bounded;
+        {
+            assert!(step_indices(-1e300, 1e300, 1e-300).count() <= 100_001);
+        }
     }
 }

@@ -73,31 +73,35 @@ pub fn is_first_party_app_id(app_id: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn builtin_labels_name_their_packages() {
-        assert_eq!(app_id_for_builtin_label("Notes"), Some("so.tilo.notes"));
-        assert_eq!(
-            app_id_for_builtin_label("PdfViewer"),
-            Some("so.tilo.pdf-viewer")
-        );
-        assert_eq!(
-            app_id_for_builtin_label("Files"),
-            Some("so.tilo.file-explorer")
-        );
-        assert_eq!(app_id_for_builtin_label("FileExplorer"), None);
-        assert_eq!(
-            app_id_for_builtin_label("Editor"),
-            Some("so.tilo.code-editor")
-        );
-        assert_eq!(app_id_for_builtin_label("Scratch"), None);
-        assert_eq!(app_id_for_builtin_label("notes"), None);
-    }
+    tilo_test_env::scenario! {
+        fn first_party_app_ids;
 
-    #[test]
-    fn only_the_tilo_namespace_is_first_party() {
-        assert!(is_first_party_app_id("so.tilo.chat"));
-        assert!(is_first_party_app_id("so.tilo.desktop"));
-        assert!(!is_first_party_app_id("so.tilonet.App"));
-        assert!(!is_first_party_app_id("so.tilo."));
+        phase builtin_labels_name_their_packages;
+        {
+            assert_eq!(app_id_for_builtin_label("Notes"), Some("so.tilo.notes"));
+            assert_eq!(
+                app_id_for_builtin_label("PdfViewer"),
+                Some("so.tilo.pdf-viewer")
+            );
+            assert_eq!(
+                app_id_for_builtin_label("Files"),
+                Some("so.tilo.file-explorer")
+            );
+            assert_eq!(app_id_for_builtin_label("FileExplorer"), None);
+            assert_eq!(
+                app_id_for_builtin_label("Editor"),
+                Some("so.tilo.code-editor")
+            );
+            assert_eq!(app_id_for_builtin_label("Scratch"), None);
+            assert_eq!(app_id_for_builtin_label("notes"), None);
+        }
+
+        phase only_the_tilo_namespace_is_first_party;
+        {
+            assert!(is_first_party_app_id("so.tilo.chat"));
+            assert!(is_first_party_app_id("so.tilo.desktop"));
+            assert!(!is_first_party_app_id("so.tilonet.App"));
+            assert!(!is_first_party_app_id("so.tilo."));
+        }
     }
 }

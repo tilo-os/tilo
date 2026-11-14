@@ -143,259 +143,344 @@ fn document_scenarios_edit_through_the_dispatcher() {
     assert_eq!(raw(&paste, "E3").as_deref(), Some("=SUM(B3:D3)"));
 }
 
-#[test]
-fn a_change_refreshes_only_what_it_touched() {
-    let mut book = sample();
-    let mut reader = tilo_resource::Reader::<Workbook>::read(book.doc()).unwrap();
-    write(&mut book, &budget(), &[("B2", "1300")]);
-    edit(
-        &mut book,
-        &Workbook::paths()
-            .sheets
-            .item(&budget())
-            .name
-            .set(Atom("Plan".into())),
-    );
-    assert!(reader.sync(book.doc()).unwrap());
-    assert!(!reader.last_delta().is_everything(), "read in part");
-    let fresh = Workbook::read(book.doc()).unwrap();
-    assert_eq!(**reader.state(), fresh);
-    let total = crate::cell_actions::shown_cells(&sheet_of(&fresh, &budget()).snapshot())
-        .into_iter()
-        .find(|cell| (cell.col, cell.row) == (4, 1))
-        .unwrap();
-    assert_eq!(total.display, "$3,700.00", "the edit is recalculated");
+tilo_test_env::scenario! {
+    fn the_workbook_reads_and_searches_what_its_cells_show;
+
+    phase a_change_refreshes_only_what_it_touched;
+    {
+        let mut book = sample();
+        let mut reader = tilo_resource::Reader::<Workbook>::read(book.doc()).unwrap();
+        write(&mut book, &budget(), &[("B2", "1300")]);
+        edit(
+            &mut book,
+            &Workbook::paths()
+                .sheets
+                .item(&budget())
+                .name
+                .set(Atom("Plan".into())),
+        );
+        assert!(reader.sync(book.doc()).unwrap());
+        assert!(!reader.last_delta().is_everything(), "read in part");
+        let fresh = Workbook::read(book.doc()).unwrap();
+        assert_eq!(**reader.state(), fresh);
+        let total = crate::cell_actions::shown_cells(&sheet_of(&fresh, &budget()).snapshot())
+            .into_iter()
+            .find(|cell| (cell.col, cell.row) == (4, 1))
+            .unwrap();
+        assert_eq!(total.display, "$3,700.00", "the edit is recalculated");
+    }
+
+    phase search_hits_open_cells_the_workbook_resolves;
+    {
+        let state = sample().state().unwrap();
+        let entries = Workbook::search(&state);
+        let rent = entries
+            .iter()
+            .find(|entry| entry.title == "Budget!A2")
+            .expect("a cell hit");
+        assert!(rent.text.contains("Rent"));
+        assert_eq!(
+            rent.anchor.as_deref().and_then(parse_cell_anchor),
+            Some((budget(), (0, 1)))
+        );
+        let total = entries
+            .iter()
+            .find(|entry| entry.title == "Budget!E2")
+            .expect("a formula hit");
+        assert!(total.text.contains("=SUM(B2:D2)") && total.text.contains("$3,600.00"));
+        assert!(entries.iter().any(|entry| entry.title == "Sales"));
+    }
+
+    phase the_workbook_reads_as_rows_of_what_its_cells_show;
+    {
+        let mut book = Replica::<Workbook>::new();
+        let first = Id::from_raw(FIRST_SHEET_ID);
+        write(
+            &mut book,
+            &first,
+            &[
+                ("A1", "Item"),
+                ("B1", "Cost"),
+                ("A2", "Tea"),
+                ("B2", "3"),
+                ("A3", "Cake"),
+                ("B3", "4"),
+                ("B4", "=SUM(B2:B3)"),
+            ],
+        );
+        let state = book.state().unwrap();
+        let sheets = Workbook::read_content(&state, book.doc(), None).unwrap();
+        assert_eq!(sheets["sheets"][0]["name"], "Sheet1");
+
+        let whole = Workbook::read_content(&state, book.doc(), Some("Sheet1")).unwrap();
+        assert_eq!(whole["range"], "A1:B4");
+        assert_eq!(
+            whole["rows"],
+            serde_json::json!([["Item", "Cost"], ["Tea", "3"], ["Cake", "4"], ["", "7"]])
+        );
+        assert_eq!(whole["formulas"]["B4"], "=SUM(B2:B3)");
+
+        let part = Workbook::read_content(&state, book.doc(), Some(&format!("{FIRST_SHEET_ID}!B2:B3")))
+            .unwrap();
+        assert_eq!(part["rows"], serde_json::json!([["3"], ["4"]]));
+        assert!(Workbook::read_content(&state, book.doc(), Some("Nope")).is_err());
+        assert!(Workbook::read_content(&state, book.doc(), Some("Sheet1!ZZ")).is_err());
+    }
 }
 
-#[test]
-fn search_hits_open_cells_the_workbook_resolves() {
-    let state = sample().state().unwrap();
-    let entries = Workbook::search(&state);
-    let rent = entries
-        .iter()
-        .find(|entry| entry.title == "Budget!A2")
-        .expect("a cell hit");
-    assert!(rent.text.contains("Rent"));
-    assert_eq!(
-        rent.anchor.as_deref().and_then(parse_cell_anchor),
-        Some((budget(), (0, 1)))
-    );
-    let total = entries
-        .iter()
-        .find(|entry| entry.title == "Budget!E2")
-        .expect("a formula hit");
-    assert!(total.text.contains("=SUM(B2:D2)") && total.text.contains("$3,600.00"));
-    assert!(entries.iter().any(|entry| entry.title == "Sales"));
-}
+tilo_test_env::scenario! {
+    fn structural_edits_keep_formulas_and_anchors;
 
-#[test]
-fn deleting_a_range_edge_row_or_column_shrinks_the_formula_range() {
-    let mut book = Replica::<Workbook>::new();
-    let sheet = Id::from_raw(FIRST_SHEET_ID);
-    write(
-        &mut book,
-        &sheet,
-        &[
-            ("B2", "1"),
-            ("B3", "2"),
-            ("B4", "4"),
-            ("C3", "8"),
-            ("D1", "=SUM(B2:B4)"),
-            ("E1", "=SUM($B3:C$3)"),
-        ],
-    );
-    let delete_row = |book: &mut Replica<Workbook>, row: u32| {
-        book.apply_confirmed(Workbook::DELETE_ROWS.with(verbs::DeleteRows {
+    phase deleting_a_range_edge_row_or_column_shrinks_the_formula_range;
+    {
+        let mut book = Replica::<Workbook>::new();
+        let sheet = Id::from_raw(FIRST_SHEET_ID);
+        write(
+            &mut book,
+            &sheet,
+            &[
+                ("B2", "1"),
+                ("B3", "2"),
+                ("B4", "4"),
+                ("C3", "8"),
+                ("D1", "=SUM(B2:B4)"),
+                ("E1", "=SUM($B3:C$3)"),
+            ],
+        );
+        let delete_row = |book: &mut Replica<Workbook>, row: u32| {
+            book.apply_confirmed(Workbook::DELETE_ROWS.with(verbs::DeleteRows {
+                sheet: sheet.clone(),
+                rows: vec![row],
+            }))
+            .unwrap();
+        };
+        delete_row(&mut book, 2);
+        assert_eq!(raw(&book, &sheet, "D1"), "=SUM(B2:B3)");
+        delete_row(&mut book, 3);
+        assert_eq!(raw(&book, &sheet, "D1"), "=SUM(B2:B2)");
+
+        assert_eq!(raw(&book, &sheet, "E1"), "=SUM($B2:C$2)");
+        book.apply_confirmed(Workbook::DELETE_COLUMNS.with(verbs::DeleteColumns {
             sheet: sheet.clone(),
-            rows: vec![row],
+            columns: vec!["C".into()],
         }))
         .unwrap();
-    };
-    delete_row(&mut book, 2);
-    assert_eq!(raw(&book, &sheet, "D1"), "=SUM(B2:B3)");
-    delete_row(&mut book, 3);
-    assert_eq!(raw(&book, &sheet, "D1"), "=SUM(B2:B2)");
+        assert_eq!(raw(&book, &sheet, "D1"), "=SUM($B2:B$2)");
 
-    assert_eq!(raw(&book, &sheet, "E1"), "=SUM($B2:C$2)");
-    book.apply_confirmed(Workbook::DELETE_COLUMNS.with(verbs::DeleteColumns {
-        sheet: sheet.clone(),
-        columns: vec!["C".into()],
-    }))
-    .unwrap();
-    assert_eq!(raw(&book, &sheet, "D1"), "=SUM($B2:B$2)");
-
-    delete_row(&mut book, 2);
-    assert_eq!(raw(&book, &sheet, "C1"), "=SUM(#REF!)");
-}
-
-#[test]
-fn rows_move_cells_formulas_and_anchors_and_targets_stay_put() {
-    let mut book = sample();
-    let budget = budget();
-    let insert = Workbook::INSERT_ROWS.with(verbs::InsertRows {
-        sheet: budget.clone(),
-        at: 1,
-        count: None,
-    });
-    book.apply(Workbook::ADD_CHART.with(verbs::AddChart {
-        sheet: budget.clone(),
-        range: "B2:E7".into(),
-        kind: ChartKind::Column,
-        title: "Spend".into(),
-    }))
-    .unwrap();
-    book.apply(insert).unwrap();
-    assert_eq!(raw(&book, &budget, "A2"), "Category");
-    assert_eq!(raw(&book, &budget, "E3"), "=SUM(B3:D3)");
-    let state = book.state().unwrap();
-    let sheet = sheet_of(&state, &budget);
-    let chart = &sheet.chart_snapshots(&sheet.layout())[0];
-    assert_eq!(
-        (chart.start, chart.end),
-        ((1, 2), (4, 7)),
-        "the chart moved down"
-    );
-
-    edit(&mut book, &Workbook::paths().sheets.move_to(&budget, 1));
-    write(&mut book, &budget, &[("H8", "on the intended sheet")]);
-    assert_eq!(raw(&book, &budget, "H8"), "on the intended sheet");
-    let sales = Id::from_raw(crate::sample::SALES_SHEET_ID);
-    assert_eq!(raw(&book, &sales, "H8"), "");
-}
-
-#[test]
-fn a_renamed_sheet_keeps_the_formulas_that_read_it() {
-    let mut book = sample();
-    let budget = budget();
-    let sales = Id::from_raw(crate::sample::SALES_SHEET_ID);
-    write(
-        &mut book,
-        &sales,
-        &[("H1", "=budget!E3+'Budget'!B2+\"Budget!A1\"&Sales!A1")],
-    );
-    write(&mut book, &budget, &[("H1", "=Budget!B2")]);
-    book.apply(Workbook::RENAME_SHEET.with(verbs::RenameSheet {
-        sheet: budget.clone(),
-        name: " Q3 budget ".parse().unwrap(),
-    }))
-    .unwrap();
-    assert_eq!(
-        raw(&book, &sales, "H1"),
-        "='Q3 budget'!E3+'Q3 budget'!B2+\"Budget!A1\"&Sales!A1"
-    );
-    assert_eq!(raw(&book, &budget, "H1"), "='Q3 budget'!B2");
-    assert_eq!(
-        sheet_of(&book.state().unwrap(), &budget).name.0,
-        "Q3 budget"
-    );
-}
-
-#[test]
-fn sheets_are_added_duplicated_and_the_last_is_kept() {
-    let mut book = sample();
-    book.apply(Workbook::DUPLICATE_SHEET.with(verbs::DuplicateSheet { sheet: budget() }))
-        .unwrap();
-    let names = |book: &Replica<Workbook>| -> Vec<String> {
-        book.state()
-            .unwrap()
-            .sheets
-            .values()
-            .map(|sheet| sheet.name.0.clone())
-            .collect()
-    };
-    assert_eq!(names(&book), ["Budget", "Budget copy", "Sales"]);
-    let ids: Vec<Id> = book.state().unwrap().sheets.ids().cloned().collect();
-    for id in &ids[..2] {
-        book.apply_confirmed(Workbook::DELETE_SHEET.with(verbs::DeleteSheet { sheet: id.clone() }))
-            .unwrap();
+        delete_row(&mut book, 2);
+        assert_eq!(raw(&book, &sheet, "C1"), "=SUM(#REF!)");
     }
-    let last = Workbook::DELETE_SHEET.with(verbs::DeleteSheet {
-        sheet: ids[2].clone(),
-    });
-    assert!(
-        book.apply_confirmed(last).is_err(),
-        "a workbook keeps one sheet"
-    );
-    book.apply(Workbook::NEW_SHEET.with(verbs::NewSheet {
-        new: crate::resource::SheetSpec {
-            after: None,
-            ..crate::resource::SheetSpec::default()
-        },
-    }))
-    .unwrap();
-    assert_eq!(names(&book), ["Sales", "Sheet2"]);
-}
 
-#[test]
-fn hostile_batches_are_refused_whole() {
-    let mut book = sample();
-    let heads = book.heads();
-    let bad = Workbook::WRITE_CELLS.with(verbs::WriteCells {
-        sheet: budget(),
-        cells: vec![
-            CellWrite::at((0, 30), "fine", None),
-            CellWrite {
-                cell: "XFE1".into(),
-                input: Some("too far".into()),
-                ..CellWrite::default()
+    phase rows_move_cells_formulas_and_anchors_and_targets_stay_put;
+    {
+        let mut book = sample();
+        let budget = budget();
+        let insert = Workbook::INSERT_ROWS.with(verbs::InsertRows {
+            sheet: budget.clone(),
+            at: 1,
+            count: None,
+        });
+        book.apply(Workbook::ADD_CHART.with(verbs::AddChart {
+            sheet: budget.clone(),
+            range: "B2:E7".into(),
+            kind: ChartKind::Column,
+            title: "Spend".into(),
+        }))
+        .unwrap();
+        book.apply(insert).unwrap();
+        assert_eq!(raw(&book, &budget, "A2"), "Category");
+        assert_eq!(raw(&book, &budget, "E3"), "=SUM(B3:D3)");
+        let state = book.state().unwrap();
+        let sheet = sheet_of(&state, &budget);
+        let chart = &sheet.chart_snapshots(&sheet.layout())[0];
+        assert_eq!(
+            (chart.start, chart.end),
+            ((1, 2), (4, 7)),
+            "the chart moved down"
+        );
+
+        edit(&mut book, &Workbook::paths().sheets.move_to(&budget, 1));
+        write(&mut book, &budget, &[("H8", "on the intended sheet")]);
+        assert_eq!(raw(&book, &budget, "H8"), "on the intended sheet");
+        let sales = Id::from_raw(crate::sample::SALES_SHEET_ID);
+        assert_eq!(raw(&book, &sales, "H8"), "");
+    }
+
+    phase a_renamed_sheet_keeps_the_formulas_that_read_it;
+    {
+        let mut book = sample();
+        let budget = budget();
+        let sales = Id::from_raw(crate::sample::SALES_SHEET_ID);
+        write(
+            &mut book,
+            &sales,
+            &[("H1", "=budget!E3+'Budget'!B2+\"Budget!A1\"&Sales!A1")],
+        );
+        write(&mut book, &budget, &[("H1", "=Budget!B2")]);
+        book.apply(Workbook::RENAME_SHEET.with(verbs::RenameSheet {
+            sheet: budget.clone(),
+            name: " Q3 budget ".parse().unwrap(),
+        }))
+        .unwrap();
+        assert_eq!(
+            raw(&book, &sales, "H1"),
+            "='Q3 budget'!E3+'Q3 budget'!B2+\"Budget!A1\"&Sales!A1"
+        );
+        assert_eq!(raw(&book, &budget, "H1"), "='Q3 budget'!B2");
+        assert_eq!(
+            sheet_of(&book.state().unwrap(), &budget).name.0,
+            "Q3 budget"
+        );
+    }
+
+    phase sheets_are_added_duplicated_and_the_last_is_kept;
+    {
+        let mut book = sample();
+        book.apply(Workbook::DUPLICATE_SHEET.with(verbs::DuplicateSheet { sheet: budget() }))
+            .unwrap();
+        let names = |book: &Replica<Workbook>| -> Vec<String> {
+            book.state()
+                .unwrap()
+                .sheets
+                .values()
+                .map(|sheet| sheet.name.0.clone())
+                .collect()
+        };
+        assert_eq!(names(&book), ["Budget", "Budget copy", "Sales"]);
+        let ids: Vec<Id> = book.state().unwrap().sheets.ids().cloned().collect();
+        for id in &ids[..2] {
+            book.apply_confirmed(Workbook::DELETE_SHEET.with(verbs::DeleteSheet { sheet: id.clone() }))
+                .unwrap();
+        }
+        let last = Workbook::DELETE_SHEET.with(verbs::DeleteSheet {
+            sheet: ids[2].clone(),
+        });
+        assert!(
+            book.apply_confirmed(last).is_err(),
+            "a workbook keeps one sheet"
+        );
+        book.apply(Workbook::NEW_SHEET.with(verbs::NewSheet {
+            new: crate::resource::SheetSpec {
+                after: None,
+                ..crate::resource::SheetSpec::default()
             },
-        ],
-    });
-    assert!(book.apply(bad).is_err());
-    let huge = Workbook::WRITE_CELLS.with(verbs::WriteCells {
-        sheet: budget(),
-        cells: vec![CellWrite::at((0, 0), "x".repeat(40 * 1024), None)],
-    });
-    assert!(book.apply(huge).is_err(), "a cell holds at most 32 KiB");
-    let sheet = Workbook::paths().sheets.item(&budget());
-    assert!(
-        book.apply(Invoke::edit(&sheet.name.set(Atom("  ".into()))).unwrap())
-            .is_err()
-    );
-    assert!(
-        book.apply(Invoke::edit(&sheet.color.set(Some(9))).unwrap())
-            .is_err()
-    );
-    assert_eq!(book.heads(), heads, "nothing was written");
+        }))
+        .unwrap();
+        assert_eq!(names(&book), ["Sales", "Sheet2"]);
+    }
+
+    phase hostile_batches_are_refused_whole;
+    {
+        let mut book = sample();
+        let heads = book.heads();
+        let bad = Workbook::WRITE_CELLS.with(verbs::WriteCells {
+            sheet: budget(),
+            cells: vec![
+                CellWrite::at((0, 30), "fine", None),
+                CellWrite {
+                    cell: "XFE1".into(),
+                    input: Some("too far".into()),
+                    ..CellWrite::default()
+                },
+            ],
+        });
+        assert!(book.apply(bad).is_err());
+        let huge = Workbook::WRITE_CELLS.with(verbs::WriteCells {
+            sheet: budget(),
+            cells: vec![CellWrite::at((0, 0), "x".repeat(40 * 1024), None)],
+        });
+        assert!(book.apply(huge).is_err(), "a cell holds at most 32 KiB");
+        let sheet = Workbook::paths().sheets.item(&budget());
+        assert!(
+            book.apply(Invoke::edit(&sheet.name.set(Atom("  ".into()))).unwrap())
+                .is_err()
+        );
+        assert!(
+            book.apply(Invoke::edit(&sheet.color.set(Some(9))).unwrap())
+                .is_err()
+        );
+        assert_eq!(book.heads(), heads, "nothing was written");
+    }
 }
 
-#[test]
-fn two_replicas_converge() {
-    let mut ours = sample();
-    let mut theirs = ours.fork();
-    write(&mut ours, &budget(), &[("B2", "1250"), ("A40", "ours")]);
-    write(&mut theirs, &budget(), &[("C2", "1250"), ("B39", "theirs")]);
-    ours.sync_with(&mut theirs).unwrap();
-    let state = ours.state().unwrap();
-    assert_eq!(state, theirs.state().unwrap());
-    let snapshot = sheet_of(&state, &budget()).snapshot();
-    assert_eq!(snapshot.raw.get(&(1, 1)).map(String::as_str), Some("1250"));
-    assert_eq!(snapshot.raw.get(&(2, 1)).map(String::as_str), Some("1250"));
-    assert_eq!(snapshot.raw.get(&(0, 39)).map(String::as_str), Some("ours"));
-    assert_eq!(
-        snapshot.raw.get(&(1, 38)).map(String::as_str),
-        Some("theirs")
-    );
-    assert_eq!(
-        sheet_of(&state, &budget()).layout().rows().len(),
-        40,
-        "the rows both added are one set"
-    );
-}
+tilo_test_env::scenario! {
+    fn replicas_converge;
 
-#[test]
-fn first_writes_into_one_row_both_survive() {
-    let mut ours = sample();
-    let mut theirs = ours.fork();
-    write(&mut ours, &budget(), &[("A40", "ours")]);
-    write(&mut theirs, &budget(), &[("B40", "theirs")]);
-    ours.sync_with(&mut theirs).unwrap();
-    let snapshot = sheet_of(&ours.state().unwrap(), &budget()).snapshot();
-    assert_eq!(snapshot.raw.get(&(0, 39)).map(String::as_str), Some("ours"));
-    assert_eq!(
-        snapshot.raw.get(&(1, 39)).map(String::as_str),
-        Some("theirs")
-    );
+    phase two_replicas_converge;
+    {
+        let mut ours = sample();
+        let mut theirs = ours.fork();
+        write(&mut ours, &budget(), &[("B2", "1250"), ("A40", "ours")]);
+        write(&mut theirs, &budget(), &[("C2", "1250"), ("B39", "theirs")]);
+        ours.sync_with(&mut theirs).unwrap();
+        let state = ours.state().unwrap();
+        assert_eq!(state, theirs.state().unwrap());
+        let snapshot = sheet_of(&state, &budget()).snapshot();
+        assert_eq!(snapshot.raw.get(&(1, 1)).map(String::as_str), Some("1250"));
+        assert_eq!(snapshot.raw.get(&(2, 1)).map(String::as_str), Some("1250"));
+        assert_eq!(snapshot.raw.get(&(0, 39)).map(String::as_str), Some("ours"));
+        assert_eq!(
+            snapshot.raw.get(&(1, 38)).map(String::as_str),
+            Some("theirs")
+        );
+        assert_eq!(
+            sheet_of(&state, &budget()).layout().rows().len(),
+            40,
+            "the rows both added are one set"
+        );
+    }
+
+    phase first_writes_into_one_row_both_survive;
+    {
+        let mut ours = sample();
+        let mut theirs = ours.fork();
+        write(&mut ours, &budget(), &[("A40", "ours")]);
+        write(&mut theirs, &budget(), &[("B40", "theirs")]);
+        ours.sync_with(&mut theirs).unwrap();
+        let snapshot = sheet_of(&ours.state().unwrap(), &budget()).snapshot();
+        assert_eq!(snapshot.raw.get(&(0, 39)).map(String::as_str), Some("ours"));
+        assert_eq!(
+            snapshot.raw.get(&(1, 39)).map(String::as_str),
+            Some("theirs")
+        );
+    }
+
+    phase rows_two_replicas_upsert_at_once_are_two_rows;
+    // Two people adding a row by its key at once each keep their own row: the
+    // row an upsert appends is new, never the next row reached by position.
+    {
+        let mut ours = Replica::<Workbook>::new();
+        let first = Id::from_raw(FIRST_SHEET_ID);
+        write(&mut ours, &first, &[("A1", "Name"), ("B1", "Seats")]);
+        let mut theirs = ours.fork();
+        let upsert = |name: &str, seats: i64| {
+            Workbook::UPSERT_ITEM.with(verbs::UpsertItem {
+                sheet: first.clone(),
+                matching: [("Name".to_owned(), serde_json::json!(name))].into(),
+                value: [("Seats".to_owned(), serde_json::json!(seats))].into(),
+            })
+        };
+        ours.apply(upsert("Ana", 2)).unwrap();
+        theirs.apply(upsert("Ben", 3)).unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        let state = ours.state().unwrap();
+        assert_eq!(state, theirs.state().unwrap());
+        let snapshot = sheet_of(&state, &first).snapshot();
+        let mut rows: Vec<(String, String)> = (1..3)
+            .map(|row| {
+                let cell = |col| snapshot.raw.get(&(col, row)).cloned().unwrap_or_default();
+                (cell(0), cell(1))
+            })
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            [
+                ("Ana".to_owned(), "2".to_owned()),
+                ("Ben".to_owned(), "3".to_owned())
+            ]
+        );
+    }
 }
 
 #[test]
@@ -482,79 +567,6 @@ fn history_entries_render_as_the_apps_sentences() {
             "Inserted rows above row 1",
             "Renamed Sheet1 to Plan",
             "Commented on A2: Check this",
-        ]
-    );
-}
-
-#[test]
-fn the_workbook_reads_as_rows_of_what_its_cells_show() {
-    let mut book = Replica::<Workbook>::new();
-    let first = Id::from_raw(FIRST_SHEET_ID);
-    write(
-        &mut book,
-        &first,
-        &[
-            ("A1", "Item"),
-            ("B1", "Cost"),
-            ("A2", "Tea"),
-            ("B2", "3"),
-            ("A3", "Cake"),
-            ("B3", "4"),
-            ("B4", "=SUM(B2:B3)"),
-        ],
-    );
-    let state = book.state().unwrap();
-    let sheets = Workbook::read_content(&state, book.doc(), None).unwrap();
-    assert_eq!(sheets["sheets"][0]["name"], "Sheet1");
-
-    let whole = Workbook::read_content(&state, book.doc(), Some("Sheet1")).unwrap();
-    assert_eq!(whole["range"], "A1:B4");
-    assert_eq!(
-        whole["rows"],
-        serde_json::json!([["Item", "Cost"], ["Tea", "3"], ["Cake", "4"], ["", "7"]])
-    );
-    assert_eq!(whole["formulas"]["B4"], "=SUM(B2:B3)");
-
-    let part = Workbook::read_content(&state, book.doc(), Some(&format!("{FIRST_SHEET_ID}!B2:B3")))
-        .unwrap();
-    assert_eq!(part["rows"], serde_json::json!([["3"], ["4"]]));
-    assert!(Workbook::read_content(&state, book.doc(), Some("Nope")).is_err());
-    assert!(Workbook::read_content(&state, book.doc(), Some("Sheet1!ZZ")).is_err());
-}
-
-/// Two people adding a row by its key at once each keep their own row: the
-/// row an upsert appends is new, never the next row reached by position.
-#[test]
-fn rows_two_replicas_upsert_at_once_are_two_rows() {
-    let mut ours = Replica::<Workbook>::new();
-    let first = Id::from_raw(FIRST_SHEET_ID);
-    write(&mut ours, &first, &[("A1", "Name"), ("B1", "Seats")]);
-    let mut theirs = ours.fork();
-    let upsert = |name: &str, seats: i64| {
-        Workbook::UPSERT_ITEM.with(verbs::UpsertItem {
-            sheet: first.clone(),
-            matching: [("Name".to_owned(), serde_json::json!(name))].into(),
-            value: [("Seats".to_owned(), serde_json::json!(seats))].into(),
-        })
-    };
-    ours.apply(upsert("Ana", 2)).unwrap();
-    theirs.apply(upsert("Ben", 3)).unwrap();
-    ours.sync_with(&mut theirs).unwrap();
-    let state = ours.state().unwrap();
-    assert_eq!(state, theirs.state().unwrap());
-    let snapshot = sheet_of(&state, &first).snapshot();
-    let mut rows: Vec<(String, String)> = (1..3)
-        .map(|row| {
-            let cell = |col| snapshot.raw.get(&(col, row)).cloned().unwrap_or_default();
-            (cell(0), cell(1))
-        })
-        .collect();
-    rows.sort();
-    assert_eq!(
-        rows,
-        [
-            ("Ana".to_owned(), "2".to_owned()),
-            ("Ben".to_owned(), "3".to_owned())
         ]
     );
 }

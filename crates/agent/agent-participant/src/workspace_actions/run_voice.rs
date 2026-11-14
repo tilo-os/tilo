@@ -30,6 +30,7 @@ use tilo_session_client::presence::now_ms;
 use tilo_session_client::{Cmd, Link, Outbox, narration};
 
 use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, record_of as route_of};
+use tilo_relay_protocol::WorkspaceId;
 
 /// How soon a run leaves once the session that is the run ended.
 const ENDED_WITHIN: Duration = Duration::from_millis(250);
@@ -53,9 +54,8 @@ struct Voice {
 /// The runs the host speaks for in one workspace, and the board that holds
 /// them: one member per run, as a device's agents at its own door are.
 pub(super) struct Runs {
-    /// The workspace, as the relay's room names it, and the device speaking
-    /// for its runs.
-    id: u64,
+    /// The workspace and the device speaking for its runs.
+    id: WorkspaceId,
     publisher: Device,
     /// The workspace's presence, while this host has a run to speak for there.
     board: Option<Board>,
@@ -64,7 +64,7 @@ pub(super) struct Runs {
 
 impl Runs {
     /// The runs of the host whose device is `publisher`, in `workspace`.
-    pub(super) fn new(workspace: u64, publisher: Device) -> Self {
+    pub(super) fn new(workspace: WorkspaceId, publisher: Device) -> Self {
         Self {
             id: workspace,
             publisher,
@@ -268,7 +268,7 @@ fn live(provider: &str, cluster: &str) -> Option<LiveRecord> {
 /// When a run this host speaks for is next due: said again, or leaving. A run
 /// present is looked at within [`ENDED_WITHIN`], so it leaves with its session
 /// rather than at the next restatement.
-pub(super) fn next_due(workspaces: &HashMap<u64, super::Workspace>) -> Option<Instant> {
+pub(super) fn next_due(workspaces: &HashMap<WorkspaceId, super::Workspace>) -> Option<Instant> {
     let now = now_ms();
     let said = workspaces
         .values()
@@ -291,7 +291,7 @@ impl super::Worker {
     /// action left it ([`run_voice`]).
     pub(super) fn voice(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
         (phase, left_at): (&InteractionPhase, Option<&ActorPlace>),
@@ -315,7 +315,7 @@ impl super::Worker {
     }
 
     /// Say `caller`'s run present in `workspace_id`, waiting ([`run_voice`]).
-    pub(super) fn voice_arrived(&mut self, workspace_id: u64, caller: &Caller) {
+    pub(super) fn voice_arrived(&mut self, workspace_id: WorkspaceId, caller: &Caller) {
         let Some((workspace, cluster)) = self.said_in(workspace_id) else {
             return;
         };
@@ -325,7 +325,7 @@ impl super::Worker {
     /// Say `caller`'s run reading the catalogue `query` asks ([`run_voice`]).
     pub(super) fn voice_catalogue(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         query: &CatalogueQuery,
     ) {
@@ -355,7 +355,7 @@ impl super::Worker {
 
     /// The workspace `workspace_id` names, as its presence frames name it:
     /// where a run of this host's is said.
-    fn said_in(&mut self, workspace_id: u64) -> Option<(&mut super::Workspace, String)> {
+    fn said_in(&mut self, workspace_id: WorkspaceId) -> Option<(&mut super::Workspace, String)> {
         let workspace = self.workspaces.get_mut(&workspace_id)?;
         let cluster = workspace.cluster_id(workspace_id)?;
         Some((workspace, cluster))

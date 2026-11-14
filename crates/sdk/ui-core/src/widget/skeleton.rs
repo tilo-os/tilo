@@ -397,32 +397,38 @@ impl Widget for Skeleton {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_tone_registers_on_every_preset_including_high_contrast() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = theme.tokens.colors.surfaces.content;
-            let tone = skeleton_tone(ground);
-            assert!(
-                crate::surface::edge_delta(tone, ground)
-                    >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                "{}: skeleton tone does not register",
-                theme.name
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        /// A skeleton's tone and size.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_skeleton_registers_its_tone_and_row_height;
 
-    #[test]
-    fn a_row_skeleton_takes_the_list_rows_height() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let row = crate::widget::ListRowFace::new("Ada Lovelace").secondary("ada@example.org");
-        let skeleton =
-            SkeletonFace::new(SkeletonShape::Row(row.shape())).height(&mut text, &theme, 400.0);
-        assert!((skeleton - row.height(&mut text, &theme)).abs() < 0.01);
-        let three =
-            SkeletonFace::new(SkeletonShape::Text { lines: 3 }).height(&mut text, &theme, 400.0);
-        let one =
-            SkeletonFace::new(SkeletonShape::Text { lines: 1 }).height(&mut text, &theme, 400.0);
-        assert!((three - 3.0 * one).abs() < 0.01);
+        phase the_tone_registers_on_every_preset_including_high_contrast;
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let ground = theme.tokens.colors.surfaces.content;
+                let tone = skeleton_tone(ground);
+                assert!(
+                    crate::surface::edge_delta(tone, ground)
+                        >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: skeleton tone does not register",
+                    theme.name
+                );
+            }
+        }
+
+        phase a_row_skeleton_takes_the_list_rows_height;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let row = crate::widget::ListRowFace::new("Ada Lovelace").secondary("ada@example.org");
+            let skeleton =
+                SkeletonFace::new(SkeletonShape::Row(row.shape())).height(&mut text, &theme, 400.0);
+            assert!((skeleton - row.height(&mut text, &theme)).abs() < 0.01);
+            let three =
+                SkeletonFace::new(SkeletonShape::Text { lines: 3 }).height(&mut text, &theme, 400.0);
+            let one =
+                SkeletonFace::new(SkeletonShape::Text { lines: 1 }).height(&mut text, &theme, 400.0);
+            assert!((three - 3.0 * one).abs() < 0.01);
+        }
     }
 }

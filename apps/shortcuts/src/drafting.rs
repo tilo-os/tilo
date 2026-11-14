@@ -192,58 +192,62 @@ fn fresh_id(name: &str, saved: &[Shortcut]) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_answer_is_parsed_checked_and_stripped_of_authority() {
-        let catalog = crate::samples::catalog();
-        let saved: Vec<Shortcut> = vec![
-            serde_json::from_value(json!({"id": "tidy-notes", "name": "Tidy", "steps": []}))
-                .unwrap(),
-        ];
-        let answer = json!({
-            "id": "tidy",
-            "name": "Tidy notes",
-            "steps": [
-                {"id": "list", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
-                 "resource": {"fixed": "notes.folder:inbox"}},
-                {"id": "note", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
-                 "resource": {"fixed": "notes.folder:inbox"},
-                 "args": {"title": {"literal": "Digest"}}}
-            ],
-            "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}],
-            "triggers": [{"trigger": "keyboard", "chord": "Super+X"}]
-        });
-        let drafted = adopt(answer, &saved, &catalog).unwrap();
-        assert_eq!(drafted.shortcut.id, "tidy-notes-2", "never a saved id");
-        assert!(
-            drafted.shortcut.triggers.is_empty(),
-            "no trigger carried in"
-        );
-        assert_eq!(
-            drafted.shortcut.grant.len(),
-            2,
-            "the least grant, not the agent's"
-        );
-        assert!(
-            drafted
-                .problems
-                .iter()
-                .any(|problem| problem == "Step 2: Pin it needs a value"),
-            "the checker's verdict comes with it: {:?}",
-            drafted.problems
-        );
-        assert!(adopt(json!("no"), &saved, &catalog).is_err());
-        assert!(adopt(json!({"name": "x"}), &saved, &catalog).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_described_shortcut_is_asked_of_the_agent_and_its_answer_adopted;
 
-    #[test]
-    fn drafting_is_offered_only_with_the_agent_transform() {
-        let catalog = crate::samples::catalog();
-        assert!(target(&catalog).is_none(), "the sample offers no freeform");
-        let summary = catalogue_summary(&catalog);
-        assert!(summary.contains("\"action\":\"create\""));
-        assert!(!summary.contains(SHORTCUTS_APP_ID));
-        let args = arguments("tidy my notes", &catalog);
-        assert!(args["prompt"].as_str().unwrap().ends_with("tidy my notes"));
-        assert_eq!(args["schema"], schema());
+        phase an_answer_is_parsed_checked_and_stripped_of_authority;
+        {
+            let catalog = crate::samples::catalog();
+            let saved: Vec<Shortcut> = vec![
+                serde_json::from_value(json!({"id": "tidy-notes", "name": "Tidy", "steps": []}))
+                    .unwrap(),
+            ];
+            let answer = json!({
+                "id": "tidy",
+                "name": "Tidy notes",
+                "steps": [
+                    {"id": "list", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                     "resource": {"fixed": "notes.folder:inbox"}},
+                    {"id": "note", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                     "resource": {"fixed": "notes.folder:inbox"},
+                     "args": {"title": {"literal": "Digest"}}}
+                ],
+                "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}],
+                "triggers": [{"trigger": "keyboard", "chord": "Super+X"}]
+            });
+            let drafted = adopt(answer, &saved, &catalog).unwrap();
+            assert_eq!(drafted.shortcut.id, "tidy-notes-2", "never a saved id");
+            assert!(
+                drafted.shortcut.triggers.is_empty(),
+                "no trigger carried in"
+            );
+            assert_eq!(
+                drafted.shortcut.grant.len(),
+                2,
+                "the least grant, not the agent's"
+            );
+            assert!(
+                drafted
+                    .problems
+                    .iter()
+                    .any(|problem| problem == "Step 2: Pin it needs a value"),
+                "the checker's verdict comes with it: {:?}",
+                drafted.problems
+            );
+            assert!(adopt(json!("no"), &saved, &catalog).is_err());
+            assert!(adopt(json!({"name": "x"}), &saved, &catalog).is_err());
+        }
+
+        phase drafting_is_offered_only_with_the_agent_transform;
+        {
+            let catalog = crate::samples::catalog();
+            assert!(target(&catalog).is_none(), "the sample offers no freeform");
+            let summary = catalogue_summary(&catalog);
+            assert!(summary.contains("\"action\":\"create\""));
+            assert!(!summary.contains(SHORTCUTS_APP_ID));
+            let args = arguments("tidy my notes", &catalog);
+            assert!(args["prompt"].as_str().unwrap().ends_with("tidy my notes"));
+            assert_eq!(args["schema"], schema());
+        }
     }
 }

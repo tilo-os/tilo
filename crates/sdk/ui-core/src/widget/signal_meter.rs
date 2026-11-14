@@ -215,27 +215,89 @@ mod tests {
     use super::*;
     use vello_encoding::DrawTag;
 
-    #[test]
-    fn a_strength_bucket_fills_as_many_bars_and_names_its_level() {
-        let levels: Vec<(u8, &str)> = (0..=5)
-            .map(|bars| {
-                let level = SignalLevel::from_bars(bars);
-                (level.filled(), level_key(level))
-            })
-            .collect();
-        assert_eq!(
-            levels,
-            [
-                (0, "unknown"),
-                (1, "weak"),
-                (2, "fair"),
-                (3, "good"),
-                (4, "strong"),
-                (4, "strong"),
-            ]
-        );
-        assert_eq!(SignalLevel::Strong.name(), "Strong signal");
-        assert_eq!(SignalLevel::Weak.name(), "Weak signal");
+    tilo_test_env::scenario! {
+        /// A signal meter.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_signal_meter_fills_lights_and_names_its_level;
+
+        phase a_strength_bucket_fills_as_many_bars_and_names_its_level;
+        {
+            let levels: Vec<(u8, &str)> = (0..=5)
+                .map(|bars| {
+                    let level = SignalLevel::from_bars(bars);
+                    (level.filled(), level_key(level))
+                })
+                .collect();
+            assert_eq!(
+                levels,
+                [
+                    (0, "unknown"),
+                    (1, "weak"),
+                    (2, "fair"),
+                    (3, "good"),
+                    (4, "strong"),
+                    (4, "strong"),
+                ]
+            );
+            assert_eq!(SignalLevel::Strong.name(), "Strong signal");
+            assert_eq!(SignalLevel::Weak.name(), "Weak signal");
+        }
+
+        phase the_bars_rise_left_to_right_on_one_baseline_inside_the_square;
+        {
+            let rect = Rect::new(10.0, 10.0, 40.0, 30.0);
+            let bars = SignalMeterFace::bars(rect);
+            let square = Rect::from_center_size(rect.center(), (20.0, 20.0));
+            for pair in bars.windows(2) {
+                let [shorter, taller] = pair else { continue };
+                assert!(taller.height() > shorter.height());
+                assert!(taller.x0 > shorter.x1, "bars do not touch");
+                assert!((taller.width() - shorter.width()).abs() < 1e-9);
+            }
+            for bar in &bars {
+                assert!((bar.y1 - square.y1).abs() < 1e-9, "one baseline");
+                assert!(bar.x0 >= square.x0 - 1e-9 && bar.x1 <= square.x1 + 1e-9);
+            }
+            assert!(
+                (bars[3].height() - 20.0).abs() < 1e-9,
+                "the tallest fills it"
+            );
+        }
+
+        phase the_level_lights_its_bars_in_the_accent_and_leaves_the_rest_as_track;
+        // Lit bars are the accent ink, the others the muted track: the colours
+        // of the four fills follow the level.
+        {
+            let theme = Theme::dark();
+            for level in [SignalLevel::Unknown, SignalLevel::Fair, SignalLevel::Strong] {
+                let mut scene = Scene::new();
+                SignalMeterFace::new(level).paint(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &theme,
+                    Rect::new(0.0, 0.0, 20.0, 20.0),
+                );
+                let fills = scene
+                    .encoding()
+                    .draw_tags
+                    .iter()
+                    .filter(|tag| **tag == DrawTag::COLOR)
+                    .count();
+                assert_eq!(fills, usize::from(SIGNAL_BARS), "every bar is drawn");
+            }
+            assert_ne!(
+                theme.tokens.colors.intent.accent_ink, theme.tokens.colors.intent.selection,
+                "lit and unlit bars differ"
+            );
+        }
+
+        phase the_retained_meter_is_named_by_its_level;
+        {
+            let meter = SignalMeter::new(SignalLevel::Good);
+            let node = meter.accessibility().expect("the meter is announced");
+            assert_eq!(node.name.as_deref(), Some("Good signal"));
+            assert_eq!(node.value.as_deref(), Some("3/4"));
+        }
     }
 
     fn level_key(level: SignalLevel) -> &'static str {
@@ -246,61 +308,5 @@ mod tests {
             SignalLevel::Good => "good",
             SignalLevel::Strong => "strong",
         }
-    }
-
-    #[test]
-    fn the_bars_rise_left_to_right_on_one_baseline_inside_the_square() {
-        let rect = Rect::new(10.0, 10.0, 40.0, 30.0);
-        let bars = SignalMeterFace::bars(rect);
-        let square = Rect::from_center_size(rect.center(), (20.0, 20.0));
-        for pair in bars.windows(2) {
-            let [shorter, taller] = pair else { continue };
-            assert!(taller.height() > shorter.height());
-            assert!(taller.x0 > shorter.x1, "bars do not touch");
-            assert!((taller.width() - shorter.width()).abs() < 1e-9);
-        }
-        for bar in &bars {
-            assert!((bar.y1 - square.y1).abs() < 1e-9, "one baseline");
-            assert!(bar.x0 >= square.x0 - 1e-9 && bar.x1 <= square.x1 + 1e-9);
-        }
-        assert!(
-            (bars[3].height() - 20.0).abs() < 1e-9,
-            "the tallest fills it"
-        );
-    }
-
-    /// Lit bars are the accent ink, the others the muted track: the colours
-    /// of the four fills follow the level.
-    #[test]
-    fn the_level_lights_its_bars_in_the_accent_and_leaves_the_rest_as_track() {
-        let theme = Theme::dark();
-        for level in [SignalLevel::Unknown, SignalLevel::Fair, SignalLevel::Strong] {
-            let mut scene = Scene::new();
-            SignalMeterFace::new(level).paint(
-                &mut scene,
-                Affine::IDENTITY,
-                &theme,
-                Rect::new(0.0, 0.0, 20.0, 20.0),
-            );
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|tag| **tag == DrawTag::COLOR)
-                .count();
-            assert_eq!(fills, usize::from(SIGNAL_BARS), "every bar is drawn");
-        }
-        assert_ne!(
-            theme.tokens.colors.intent.accent_ink, theme.tokens.colors.intent.selection,
-            "lit and unlit bars differ"
-        );
-    }
-
-    #[test]
-    fn the_retained_meter_is_named_by_its_level() {
-        let meter = SignalMeter::new(SignalLevel::Good);
-        let node = meter.accessibility().expect("the meter is announced");
-        assert_eq!(node.name.as_deref(), Some("Good signal"));
-        assert_eq!(node.value.as_deref(), Some("3/4"));
     }
 }

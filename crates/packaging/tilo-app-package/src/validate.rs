@@ -1102,168 +1102,6 @@ mode = "off"
         Manifest::from_toml_str(&src).unwrap()
     }
 
-    /// A language pack is one locale's catalogues: named by the locale, for
-    /// every architecture, nothing in it launched; its payload is only that
-    /// locale's `.ftl` files, and its id prefix is no other kind's.
-    #[test]
-    fn a_language_pack_is_one_locales_catalogues_and_nothing_else() {
-        let pack = language_pack("so.tilo.language-pack.de-de", "");
-        assert!(validate_language_pack(&pack).is_ok());
-        assert_eq!(crate::language_pack_locale(&pack.package.id), Some("de-de"));
-        let catalogues = [
-            std::path::PathBuf::from("de-DE/settings.ftl"),
-            std::path::PathBuf::from("de-DE/tilo-ui.ftl"),
-        ];
-        assert!(validate_language_pack_payload(&pack, &catalogues).is_ok());
-        for wrong in ["fr-FR/settings.ftl", "de-DE/bin/tool", "settings.ftl"] {
-            assert!(
-                validate_language_pack_payload(&pack, &[std::path::PathBuf::from(wrong)]).is_err(),
-                "{wrong}"
-            );
-        }
-        assert!(validate_language_pack_payload(&pack, &[]).is_err());
-
-        for wrong_id in [
-            "so.tilo.language-pack.",
-            "so.tilo.language-pack.de-DE",
-            "so.tilo.de-de",
-        ] {
-            assert!(
-                validate_language_pack(&language_pack(wrong_id, "")).is_err(),
-                "{wrong_id}"
-            );
-        }
-        let launched = language_pack(
-            "so.tilo.language-pack.de-de",
-            "[entrypoint]\nbin = \"bin/x\"\n",
-        );
-        assert!(validate_language_pack(&launched).is_err());
-        let arch_bound = language_pack(
-            "so.tilo.language-pack.de-de",
-            "[package.isa]\nx86_64 = \"v3\"\n",
-        );
-        assert!(validate_language_pack(&arch_bound).is_err());
-
-        let mut app = app_with_listing("");
-        app.package.id = "so.tilo.language-pack.de-de".into();
-        assert!(validate_language_pack(&app).is_err());
-    }
-
-    #[test]
-    fn the_icon_is_one_svg_or_png_of_the_payload() {
-        let fine = app_with_listing("icon = \"icon.svg\"");
-        assert_eq!(validate_manifest(&fine), Ok(()));
-        assert_eq!(
-            validate_manifest_with_payload(&fine, &["icon.svg".into()]),
-            Ok(())
-        );
-        assert_eq!(
-            validate_manifest_with_payload(&fine, &["bin/example".into()]),
-            Err(ManifestError::BadIcon("icon.svg".into())),
-            "an icon the payload does not carry"
-        );
-        for bad in ["/icon.svg", "../icon.svg", "icon.exe", "a/./icon.png", ""] {
-            let m = app_with_listing(&format!("icon = {bad:?}"));
-            assert_eq!(
-                validate_manifest(&m),
-                Err(ManifestError::BadIcon(bad.into())),
-                "{bad:?}"
-            );
-        }
-        assert_eq!(
-            validate_manifest(&app_with_listing("icon = \"share/Icon.PNG\"")),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn an_entrypoint_runs_a_runtime_binary_only_when_the_runtime_is_declared() {
-        let declared = |optional: &str| {
-            let mut m = app_with_listing(optional);
-            if let Some(entrypoint) = m.entrypoint.as_mut() {
-                entrypoint.runtime = Some("tilolang/0.1.0".into());
-                entrypoint.bin = "bin/tilolang".into();
-            }
-            m
-        };
-        assert_eq!(
-            validate_manifest(&declared("optional-runtimes = [\"tilolang/0.1.0\"]")),
-            Ok(())
-        );
-        assert_eq!(
-            validate_manifest(&declared("")),
-            Err(ManifestError::EntrypointRuntimeUndeclared(
-                "tilolang/0.1.0".into()
-            ))
-        );
-        assert_eq!(
-            validate_manifest(&declared("optional-runtimes = [\"tilolang/0.2.0\"]")),
-            Err(ManifestError::EntrypointRuntimeUndeclared(
-                "tilolang/0.1.0".into()
-            ))
-        );
-        let mut outside = declared("optional-runtimes = [\"tilolang/0.1.0\"]");
-        if let Some(entrypoint) = outside.entrypoint.as_mut() {
-            entrypoint.bin = "../bin/sh".into();
-        }
-        assert_eq!(
-            validate_manifest(&outside),
-            Err(ManifestError::RuntimeEntrypoint("../bin/sh".into()))
-        );
-        let mut malformed = declared("optional-runtimes = [\"tilolang/0.1.0\"]");
-        if let Some(entrypoint) = malformed.entrypoint.as_mut() {
-            entrypoint.runtime = Some("tilolang".into());
-        }
-        assert_eq!(
-            validate_manifest(&malformed),
-            Err(ManifestError::BadRuntimeForm("tilolang".into()))
-        );
-        // The schema round-trips: what a packer writes, an installer reads.
-        let m = declared("optional-runtimes = [\"tilolang/0.1.0\"]\nicon = \"icon.svg\"");
-        let text = toml::to_string(&m).unwrap();
-        let back = Manifest::from_toml_str(&text).unwrap();
-        assert_eq!(back.package.icon.as_deref(), Some("icon.svg"));
-        assert_eq!(
-            back.entrypoint
-                .and_then(|entrypoint| entrypoint.runtime)
-                .as_deref(),
-            Some("tilolang/0.1.0")
-        );
-    }
-
-    #[test]
-    fn taglines_are_one_short_line_and_screenshots_live_under_their_directory() {
-        let fine = app_with_listing(
-            "screenshots = [\"screenshots/home.png\", \"screenshots/detail.webp\"]\n\
-             [package.taglines]\nen = \"Notes you write alone or together\"\n",
-        );
-        assert!(validate_store_listing(&fine).is_ok());
-        assert_eq!(
-            fine.package.tagline_for("de-DE"),
-            Some("Notes you write alone or together"),
-            "a language without its own tag line falls back to English"
-        );
-        for bad in [
-            "screenshots = [\"home.png\"]",
-            "screenshots = [\"screenshots/../secret.png\"]",
-            "screenshots = [\"screenshots/notes.txt\"]",
-            "screenshots = [\"screenshots/a.png\", \"screenshots/a.png\"]",
-        ] {
-            assert!(
-                matches!(
-                    validate_store_listing(&app_with_listing(bad)),
-                    Err(ManifestError::BadScreenshot(_))
-                ),
-                "{bad}"
-            );
-        }
-        let long = format!("[package.taglines]\nen = \"{}\"", "x".repeat(81));
-        assert!(matches!(
-            validate_store_listing(&app_with_listing(&long)),
-            Err(ManifestError::BadTagline(_))
-        ));
-    }
-
     fn minimal_runtime_manifest() -> Manifest {
         let src = r#"
 [package]
@@ -1297,98 +1135,116 @@ mode = "off"
         m
     }
 
-    #[test]
-    fn validation_stages_preserve_first_error_order() {
-        let mut manifest = minimal_runtime_manifest();
-        manifest.sandbox.fs.write = vec!["/".into()];
-        manifest.sandbox.fs.read = vec!["/etc/shadow".into()];
-        manifest.continuity.required = vec![ContinuityFacet::Semantic];
-        manifest.package.version = "invalid".into();
-        manifest.package.service_protocol = Some(crate::manifest::ServiceProtocol {
-            name: "invalid/contract".into(),
-            version: 0,
-        });
-        assert_eq!(
-            validate_manifest(&manifest),
-            Err(ManifestError::FsWriteDeclared {
-                package: manifest.package.id.clone(),
-                entry: "/".into(),
-            })
-        );
-        manifest.sandbox.fs.write.clear();
-        assert_eq!(
-            validate_manifest(&manifest),
-            Err(ManifestError::FsReadDeclared {
-                package: manifest.package.id.clone(),
-                entry: "/etc/shadow".into(),
-            })
-        );
-        manifest.sandbox.fs.read.clear();
-        assert_eq!(
-            validate_manifest(&manifest),
-            Err(ManifestError::SemanticContinuityWithoutPresentation)
-        );
-        manifest.continuity.required.clear();
-        assert!(matches!(
-            validate_manifest(&manifest),
-            Err(ManifestError::BadVersion(..))
-        ));
-        manifest.package.version = "2025.6.0".into();
-        assert_eq!(
-            validate_manifest(&manifest),
-            Err(ManifestError::BadServiceProtocol)
-        );
-        manifest.package.service_protocol = None;
-        assert_eq!(validate_manifest(&manifest), Ok(()));
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn runtime_and_provider_manifests_validate_their_kind;
 
-    #[test]
-    fn service_wire_contract_is_bounded_and_preserves_legacy_packages() {
-        let mut manifest = minimal_runtime_manifest();
-        assert!(manifest.package.service_protocol.is_none());
-        assert_eq!(validate_manifest(&manifest), Ok(()));
-        manifest.package.service_protocol = Some(crate::manifest::ServiceProtocol {
-            name: "tilo.home-capture".into(),
-            version: 6,
-        });
-        assert_eq!(validate_manifest(&manifest), Ok(()));
-        let encoded = toml::to_string(&manifest).unwrap();
-        let parsed = Manifest::from_toml_str(&encoded).unwrap();
-        assert_eq!(
-            parsed.package.service_protocol,
-            manifest.package.service_protocol
-        );
-        for name in [
-            "",
-            "Tilo.home-capture",
-            "../capture",
-            "tilo/capture",
-            "tilo.capture-",
-            &"a".repeat(129),
-        ] {
-            manifest.package.service_protocol.as_mut().unwrap().name = name.into();
+        phase a_language_pack_is_one_locales_catalogues_and_nothing_else;
+        // A language pack is one locale's catalogues: named by the locale, for
+        // every architecture, nothing in it launched; its payload is only that
+        // locale's `.ftl` files, and its id prefix is no other kind's.
+        {
+            let pack = language_pack("so.tilo.language-pack.de-de", "");
+            assert!(validate_language_pack(&pack).is_ok());
+            assert_eq!(crate::language_pack_locale(&pack.package.id), Some("de-de"));
+            let catalogues = [
+                std::path::PathBuf::from("de-DE/settings.ftl"),
+                std::path::PathBuf::from("de-DE/tilo-ui.ftl"),
+            ];
+            assert!(validate_language_pack_payload(&pack, &catalogues).is_ok());
+            for wrong in ["fr-FR/settings.ftl", "de-DE/bin/tool", "settings.ftl"] {
+                assert!(
+                    validate_language_pack_payload(&pack, &[std::path::PathBuf::from(wrong)]).is_err(),
+                    "{wrong}"
+                );
+            }
+            assert!(validate_language_pack_payload(&pack, &[]).is_err());
+
+            for wrong_id in [
+                "so.tilo.language-pack.",
+                "so.tilo.language-pack.de-DE",
+                "so.tilo.de-de",
+            ] {
+                assert!(
+                    validate_language_pack(&language_pack(wrong_id, "")).is_err(),
+                    "{wrong_id}"
+                );
+            }
+            let launched = language_pack(
+                "so.tilo.language-pack.de-de",
+                "[entrypoint]\nbin = \"bin/x\"\n",
+            );
+            assert!(validate_language_pack(&launched).is_err());
+            let arch_bound = language_pack(
+                "so.tilo.language-pack.de-de",
+                "[package.isa]\nx86_64 = \"v3\"\n",
+            );
+            assert!(validate_language_pack(&arch_bound).is_err());
+
+            let mut app = app_with_listing("");
+            app.package.id = "so.tilo.language-pack.de-de".into();
+            assert!(validate_language_pack(&app).is_err());
+        }
+
+        phase an_entrypoint_runs_a_runtime_binary_only_when_the_runtime_is_declared;
+        {
+            let declared = |optional: &str| {
+                let mut m = app_with_listing(optional);
+                if let Some(entrypoint) = m.entrypoint.as_mut() {
+                    entrypoint.runtime = Some("tilolang/0.1.0".into());
+                    entrypoint.bin = "bin/tilolang".into();
+                }
+                m
+            };
             assert_eq!(
-                validate_manifest(&manifest),
-                Err(ManifestError::BadServiceProtocol)
+                validate_manifest(&declared("optional-runtimes = [\"tilolang/0.1.0\"]")),
+                Ok(())
+            );
+            assert_eq!(
+                validate_manifest(&declared("")),
+                Err(ManifestError::EntrypointRuntimeUndeclared(
+                    "tilolang/0.1.0".into()
+                ))
+            );
+            assert_eq!(
+                validate_manifest(&declared("optional-runtimes = [\"tilolang/0.2.0\"]")),
+                Err(ManifestError::EntrypointRuntimeUndeclared(
+                    "tilolang/0.1.0".into()
+                ))
+            );
+            let mut outside = declared("optional-runtimes = [\"tilolang/0.1.0\"]");
+            if let Some(entrypoint) = outside.entrypoint.as_mut() {
+                entrypoint.bin = "../bin/sh".into();
+            }
+            assert_eq!(
+                validate_manifest(&outside),
+                Err(ManifestError::RuntimeEntrypoint("../bin/sh".into()))
+            );
+            let mut malformed = declared("optional-runtimes = [\"tilolang/0.1.0\"]");
+            if let Some(entrypoint) = malformed.entrypoint.as_mut() {
+                entrypoint.runtime = Some("tilolang".into());
+            }
+            assert_eq!(
+                validate_manifest(&malformed),
+                Err(ManifestError::BadRuntimeForm("tilolang".into()))
+            );
+            // The schema round-trips: what a packer writes, an installer reads.
+            let m = declared("optional-runtimes = [\"tilolang/0.1.0\"]\nicon = \"icon.svg\"");
+            let text = toml::to_string(&m).unwrap();
+            let back = Manifest::from_toml_str(&text).unwrap();
+            assert_eq!(back.package.icon.as_deref(), Some("icon.svg"));
+            assert_eq!(
+                back.entrypoint
+                    .and_then(|entrypoint| entrypoint.runtime)
+                    .as_deref(),
+                Some("tilolang/0.1.0")
             );
         }
-        manifest.package.service_protocol.as_mut().unwrap().name = "tilo.home-capture".into();
-        manifest.package.service_protocol.as_mut().unwrap().version = 0;
-        assert_eq!(
-            validate_manifest(&manifest),
-            Err(ManifestError::BadServiceProtocol)
-        );
-        assert!(
-            toml::from_str::<crate::manifest::ServiceProtocol>(
-                "name='tilo.home-capture'\nversion=6\nauthority=true"
-            )
-            .is_err()
-        );
-    }
 
-    #[test]
-    fn runtime_and_provider_manifests_validate_their_kind() {
-        // phase: format_provider_payload_needs_provider_module
+        phase format_provider_payload_needs_provider_module;
         {
             let m = minimal_format_provider_manifest();
             assert_eq!(
@@ -1404,7 +1260,8 @@ mode = "off"
                 Err(ManifestError::FormatProviderMissingModule)
             );
         }
-        // phase: runtime_kind_with_runtime_field_rejected
+
+        phase runtime_kind_with_runtime_field_rejected;
         {
             let mut m = minimal_runtime_manifest();
             m.package.runtime = Some("tilo-runtime/2025.06".into());
@@ -1413,7 +1270,8 @@ mode = "off"
                 Err(ManifestError::RuntimeKindHasRuntime)
             );
         }
-        // phase: calendar_runtime_version_accepted
+
+        phase calendar_runtime_version_accepted;
         {
             let mut m = minimal_runtime_manifest();
             m.package.kind = Kind::App;
@@ -1427,7 +1285,8 @@ mode = "off"
                 "expected app-entrypoint error, got {e:?}"
             );
         }
-        // phase: an_app_names_the_exact_runtime_build
+
+        phase an_app_names_the_exact_runtime_build;
         {
             let mut m = minimal_runtime_manifest();
             m.package.kind = Kind::App;
@@ -1439,7 +1298,8 @@ mode = "off"
                 "expected app-entrypoint error, got {e:?}"
             );
         }
-        // phase: a_native_runtime_package_provides_one_build
+
+        phase a_native_runtime_package_provides_one_build;
         {
             let mut m = minimal_runtime_manifest();
             m.package.isa.aarch64 = Some(crate::manifest::AArch64Level::Armv8A);
@@ -1467,7 +1327,8 @@ mode = "off"
                 Err(ManifestError::ProvidesOnNonRuntime)
             );
         }
-        // phase: browser_manifest_names_its_engine_runtime
+
+        phase browser_manifest_names_its_engine_runtime;
         {
             let source = include_str!("../../../../apps/browser/tilo-app.toml");
             let manifest = Manifest::from_toml_str(source).expect("browser TOML");
@@ -1481,150 +1342,304 @@ mode = "off"
             );
             assert_eq!(validate_manifest(&manifest), Ok(()));
         }
-    }
 
-    #[test]
-    fn required_runtimes_are_runtime_references() {
-        let mut m = minimal_runtime_manifest();
-        // phase: a_runtime_package_names_no_further_runtimes
-        m.package.required_runtimes = vec!["tilo-runtime/2026.10.0-chromium".into()];
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::RuntimeKindHasRuntime)
-        );
-        m.package.kind = Kind::Service;
-        m.package.runtime = Some("tilo-runtime/2026.07".into());
-        assert_eq!(validate_manifest(&m), Ok(()));
-        // phase: a_malformed_reference_is_refused
-        m.package.required_runtimes = vec!["chromium".into()];
-        assert!(matches!(
-            validate_manifest(&m),
-            Err(ManifestError::BadRuntimeForm(_))
-        ));
-        // phase: one_bundle_version_is_named_once
-        m.package.required_runtimes = vec![
-            "tilo-runtime/2026.10.0-chromium".into(),
-            "engine/2026.10.0-chromium".into(),
-        ];
-        assert!(matches!(
-            validate_manifest(&m),
-            Err(ManifestError::DuplicateRequiredRuntime(_))
-        ));
-        m.package.required_runtimes = vec!["tilo-runtime/2026.07".into()];
-        assert!(matches!(
-            validate_manifest(&m),
-            Err(ManifestError::DuplicateRequiredRuntime(_))
-        ));
-        // phase: the_list_is_bounded
-        m.package.required_runtimes = (0..=MAX_REQUIRED_RUNTIMES)
-            .map(|minor| format!("tilo-runtime/2026.{}.0", minor + 10))
-            .collect();
-        assert_eq!(
-            validate_manifest(&m),
-            Err(ManifestError::TooManyRequiredRuntimes)
-        );
-    }
-
-    #[test]
-    fn required_services_are_the_interfaces_a_package_needs() {
-        use crate::manifest::{Requirement, ServiceReq};
-        let service = |requirement, version| ServiceReq {
-            protocol: String::new(),
-            requirement,
-            version,
-        };
-        let mut m = minimal_runtime_manifest();
-        m.sandbox.services = [
-            ("system".to_owned(), service(Requirement::Required, 2)),
-            ("collab".to_owned(), service(Requirement::Optional, 1)),
-            (
-                "model-gateway".to_owned(),
-                service(Requirement::Required, 1),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(validate_manifest(&m), Ok(()));
-        assert_eq!(
-            m.required_interface_wire(),
-            vec!["model-gateway@1".to_owned(), "system@2".to_owned()]
-        );
-        m.sandbox
-            .services
-            .insert("Bad Name".to_owned(), service(Requirement::Optional, 1));
-        assert!(matches!(
-            validate_manifest(&m),
-            Err(ManifestError::BadService(_))
-        ));
-        m.sandbox.services.remove("Bad Name");
-        m.sandbox
-            .services
-            .insert("system".to_owned(), service(Requirement::Required, 0));
-        assert!(matches!(
-            validate_manifest(&m),
-            Err(ManifestError::BadService(_))
-        ));
-    }
-
-    #[test]
-    fn offered_actions_name_stable_addresses_once() {
-        let offer = |resource: &str, action: &str| crate::manifest::OfferedAction {
-            resource: resource.into(),
-            resource_kind: None,
-            action: action.into(),
-            label: "Show tasks".into(),
-            description: None,
-            kind: crate::manifest::OfferKind::Read,
-            operation: crate::manifest::OfferOperation::View,
-            confirm: false,
-        };
-        let mut m = minimal_runtime_manifest();
-        m.offers = vec![
-            offer("calendar.calendar", "show-tasks"),
-            offer("calendar.calendar", "show-week"),
-        ];
-        assert_eq!(validate_manifest(&m), Ok(()));
-        let refused = |offers: Vec<crate::manifest::OfferedAction>| {
+        phase required_runtimes_are_runtime_references;
+        {
             let mut m = minimal_runtime_manifest();
-            m.offers = offers;
-            matches!(validate_manifest(&m), Err(ManifestError::BadOffer(_)))
-        };
-        assert!(refused(vec![offer("calendar.calendar", "show-tasks"); 2]));
-        assert!(refused(vec![offer("app.so.tilo.notes", "open")]));
-        assert!(refused(vec![offer("tilo-ui-bound:v1:a:b:c", "invoke")]));
-        assert!(refused(vec![offer("", "show-tasks")]));
-        assert!(refused(vec![offer("calendar calendar", "show-tasks")]));
-        assert!(refused(vec![offer("calendar.calendar", "show tasks")]));
-        let mut unlabelled = offer("calendar.calendar", "show-tasks");
-        unlabelled.label = " ".into();
-        assert!(refused(vec![unlabelled]));
-        let mut two_lines = offer("calendar.calendar", "show-tasks");
-        two_lines.description = Some("one\ntwo".into());
-        assert!(refused(vec![two_lines]));
-        assert!(refused(
-            (0..=MAX_OFFERS)
-                .map(|n| offer("calendar.calendar", &format!("a{n}")))
-                .collect()
-        ));
-    }
-
-    #[test]
-    fn declared_resource_kinds_must_be_record_kinds() {
-        let mut m = minimal_runtime_manifest();
-        m.resources.kinds = vec!["example.note".into(), "notes.note-book_2".into()];
-        assert_eq!(validate_manifest(&m), Ok(()));
-        for bad in ["", "1note", "note book", "note/page", &"k".repeat(65)] {
-            m.resources.kinds = vec![bad.to_owned()];
+            // phase: a_runtime_package_names_no_further_runtimes
+            m.package.required_runtimes = vec!["tilo-runtime/2026.10.0-chromium".into()];
             assert_eq!(
                 validate_manifest(&m),
-                Err(ManifestError::BadResourceKind(bad.to_owned()))
+                Err(ManifestError::RuntimeKindHasRuntime)
+            );
+            m.package.kind = Kind::Service;
+            m.package.runtime = Some("tilo-runtime/2026.07".into());
+            assert_eq!(validate_manifest(&m), Ok(()));
+            // phase: a_malformed_reference_is_refused
+            m.package.required_runtimes = vec!["chromium".into()];
+            assert!(matches!(
+                validate_manifest(&m),
+                Err(ManifestError::BadRuntimeForm(_))
+            ));
+            // phase: one_bundle_version_is_named_once
+            m.package.required_runtimes = vec![
+                "tilo-runtime/2026.10.0-chromium".into(),
+                "engine/2026.10.0-chromium".into(),
+            ];
+            assert!(matches!(
+                validate_manifest(&m),
+                Err(ManifestError::DuplicateRequiredRuntime(_))
+            ));
+            m.package.required_runtimes = vec!["tilo-runtime/2026.07".into()];
+            assert!(matches!(
+                validate_manifest(&m),
+                Err(ManifestError::DuplicateRequiredRuntime(_))
+            ));
+            // phase: the_list_is_bounded
+            m.package.required_runtimes = (0..=MAX_REQUIRED_RUNTIMES)
+                .map(|minor| format!("tilo-runtime/2026.{}.0", minor + 10))
+                .collect();
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::TooManyRequiredRuntimes)
             );
         }
     }
 
-    #[test]
-    fn continuity_declarations_are_validated() {
-        // phase: semantic_continuity_requires_presentation
+    tilo_test_env::scenario! {
+        fn a_manifests_listing_services_offers_and_resource_kinds_are_validated;
+
+        phase the_icon_is_one_svg_or_png_of_the_payload;
+        {
+            let fine = app_with_listing("icon = \"icon.svg\"");
+            assert_eq!(validate_manifest(&fine), Ok(()));
+            assert_eq!(
+                validate_manifest_with_payload(&fine, &["icon.svg".into()]),
+                Ok(())
+            );
+            assert_eq!(
+                validate_manifest_with_payload(&fine, &["bin/example".into()]),
+                Err(ManifestError::BadIcon("icon.svg".into())),
+                "an icon the payload does not carry"
+            );
+            for bad in ["/icon.svg", "../icon.svg", "icon.exe", "a/./icon.png", ""] {
+                let m = app_with_listing(&format!("icon = {bad:?}"));
+                assert_eq!(
+                    validate_manifest(&m),
+                    Err(ManifestError::BadIcon(bad.into())),
+                    "{bad:?}"
+                );
+            }
+            assert_eq!(
+                validate_manifest(&app_with_listing("icon = \"share/Icon.PNG\"")),
+                Ok(())
+            );
+        }
+
+        phase taglines_are_one_short_line_and_screenshots_live_under_their_directory;
+        {
+            let fine = app_with_listing(
+                "screenshots = [\"screenshots/home.png\", \"screenshots/detail.webp\"]\n\
+             [package.taglines]\nen = \"Notes you write alone or together\"\n",
+            );
+            assert!(validate_store_listing(&fine).is_ok());
+            assert_eq!(
+                fine.package.tagline_for("de-DE"),
+                Some("Notes you write alone or together"),
+                "a language without its own tag line falls back to English"
+            );
+            for bad in [
+                "screenshots = [\"home.png\"]",
+                "screenshots = [\"screenshots/../secret.png\"]",
+                "screenshots = [\"screenshots/notes.txt\"]",
+                "screenshots = [\"screenshots/a.png\", \"screenshots/a.png\"]",
+            ] {
+                assert!(
+                    matches!(
+                        validate_store_listing(&app_with_listing(bad)),
+                        Err(ManifestError::BadScreenshot(_))
+                    ),
+                    "{bad}"
+                );
+            }
+            let long = format!("[package.taglines]\nen = \"{}\"", "x".repeat(81));
+            assert!(matches!(
+                validate_store_listing(&app_with_listing(&long)),
+                Err(ManifestError::BadTagline(_))
+            ));
+        }
+
+        phase validation_stages_preserve_first_error_order;
+        {
+            let mut manifest = minimal_runtime_manifest();
+            manifest.sandbox.fs.write = vec!["/".into()];
+            manifest.sandbox.fs.read = vec!["/etc/shadow".into()];
+            manifest.continuity.required = vec![ContinuityFacet::Semantic];
+            manifest.package.version = "invalid".into();
+            manifest.package.service_protocol = Some(crate::manifest::ServiceProtocol {
+                name: "invalid/contract".into(),
+                version: 0,
+            });
+            assert_eq!(
+                validate_manifest(&manifest),
+                Err(ManifestError::FsWriteDeclared {
+                    package: manifest.package.id.clone(),
+                    entry: "/".into(),
+                })
+            );
+            manifest.sandbox.fs.write.clear();
+            assert_eq!(
+                validate_manifest(&manifest),
+                Err(ManifestError::FsReadDeclared {
+                    package: manifest.package.id.clone(),
+                    entry: "/etc/shadow".into(),
+                })
+            );
+            manifest.sandbox.fs.read.clear();
+            assert_eq!(
+                validate_manifest(&manifest),
+                Err(ManifestError::SemanticContinuityWithoutPresentation)
+            );
+            manifest.continuity.required.clear();
+            assert!(matches!(
+                validate_manifest(&manifest),
+                Err(ManifestError::BadVersion(..))
+            ));
+            manifest.package.version = "2025.6.0".into();
+            assert_eq!(
+                validate_manifest(&manifest),
+                Err(ManifestError::BadServiceProtocol)
+            );
+            manifest.package.service_protocol = None;
+            assert_eq!(validate_manifest(&manifest), Ok(()));
+        }
+
+        phase service_wire_contract_is_bounded_and_preserves_legacy_packages;
+        {
+            let mut manifest = minimal_runtime_manifest();
+            assert!(manifest.package.service_protocol.is_none());
+            assert_eq!(validate_manifest(&manifest), Ok(()));
+            manifest.package.service_protocol = Some(crate::manifest::ServiceProtocol {
+                name: "tilo.home-capture".into(),
+                version: 6,
+            });
+            assert_eq!(validate_manifest(&manifest), Ok(()));
+            let encoded = toml::to_string(&manifest).unwrap();
+            let parsed = Manifest::from_toml_str(&encoded).unwrap();
+            assert_eq!(
+                parsed.package.service_protocol,
+                manifest.package.service_protocol
+            );
+            for name in [
+                "",
+                "Tilo.home-capture",
+                "../capture",
+                "tilo/capture",
+                "tilo.capture-",
+                &"a".repeat(129),
+            ] {
+                manifest.package.service_protocol.as_mut().unwrap().name = name.into();
+                assert_eq!(
+                    validate_manifest(&manifest),
+                    Err(ManifestError::BadServiceProtocol)
+                );
+            }
+            manifest.package.service_protocol.as_mut().unwrap().name = "tilo.home-capture".into();
+            manifest.package.service_protocol.as_mut().unwrap().version = 0;
+            assert_eq!(
+                validate_manifest(&manifest),
+                Err(ManifestError::BadServiceProtocol)
+            );
+            assert!(
+                toml::from_str::<crate::manifest::ServiceProtocol>(
+                    "name='tilo.home-capture'\nversion=6\nauthority=true"
+                )
+                .is_err()
+            );
+        }
+
+        phase required_services_are_the_interfaces_a_package_needs;
+        {
+            use crate::manifest::{Requirement, ServiceReq};
+            let service = |requirement, version| ServiceReq {
+                protocol: String::new(),
+                requirement,
+                version,
+            };
+            let mut m = minimal_runtime_manifest();
+            m.sandbox.services = [
+                ("system".to_owned(), service(Requirement::Required, 2)),
+                ("collab".to_owned(), service(Requirement::Optional, 1)),
+                (
+                    "model-gateway".to_owned(),
+                    service(Requirement::Required, 1),
+                ),
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(validate_manifest(&m), Ok(()));
+            assert_eq!(
+                m.required_interface_wire(),
+                vec!["model-gateway@1".to_owned(), "system@2".to_owned()]
+            );
+            m.sandbox
+                .services
+                .insert("Bad Name".to_owned(), service(Requirement::Optional, 1));
+            assert!(matches!(
+                validate_manifest(&m),
+                Err(ManifestError::BadService(_))
+            ));
+            m.sandbox.services.remove("Bad Name");
+            m.sandbox
+                .services
+                .insert("system".to_owned(), service(Requirement::Required, 0));
+            assert!(matches!(
+                validate_manifest(&m),
+                Err(ManifestError::BadService(_))
+            ));
+        }
+
+        phase offered_actions_name_stable_addresses_once;
+        {
+            let offer = |resource: &str, action: &str| crate::manifest::OfferedAction {
+                resource: resource.into(),
+                resource_kind: None,
+                action: action.into(),
+                label: "Show tasks".into(),
+                description: None,
+                kind: crate::manifest::OfferKind::Read,
+                operation: crate::manifest::OfferOperation::View,
+                confirm: false,
+            };
+            let mut m = minimal_runtime_manifest();
+            m.offers = vec![
+                offer("calendar.calendar", "show-tasks"),
+                offer("calendar.calendar", "show-week"),
+            ];
+            assert_eq!(validate_manifest(&m), Ok(()));
+            let refused = |offers: Vec<crate::manifest::OfferedAction>| {
+                let mut m = minimal_runtime_manifest();
+                m.offers = offers;
+                matches!(validate_manifest(&m), Err(ManifestError::BadOffer(_)))
+            };
+            assert!(refused(vec![offer("calendar.calendar", "show-tasks"); 2]));
+            assert!(refused(vec![offer("app.so.tilo.notes", "open")]));
+            assert!(refused(vec![offer("tilo-ui-bound:v1:a:b:c", "invoke")]));
+            assert!(refused(vec![offer("", "show-tasks")]));
+            assert!(refused(vec![offer("calendar calendar", "show-tasks")]));
+            assert!(refused(vec![offer("calendar.calendar", "show tasks")]));
+            let mut unlabelled = offer("calendar.calendar", "show-tasks");
+            unlabelled.label = " ".into();
+            assert!(refused(vec![unlabelled]));
+            let mut two_lines = offer("calendar.calendar", "show-tasks");
+            two_lines.description = Some("one\ntwo".into());
+            assert!(refused(vec![two_lines]));
+            assert!(refused(
+                (0..=MAX_OFFERS)
+                    .map(|n| offer("calendar.calendar", &format!("a{n}")))
+                    .collect()
+            ));
+        }
+
+        phase declared_resource_kinds_must_be_record_kinds;
+        {
+            let mut m = minimal_runtime_manifest();
+            m.resources.kinds = vec!["example.note".into(), "notes.note-book_2".into()];
+            assert_eq!(validate_manifest(&m), Ok(()));
+            for bad in ["", "1note", "note book", "note/page", &"k".repeat(65)] {
+                m.resources.kinds = vec![bad.to_owned()];
+                assert_eq!(
+                    validate_manifest(&m),
+                    Err(ManifestError::BadResourceKind(bad.to_owned()))
+                );
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn continuity_declarations_are_validated;
+
+        phase semantic_continuity_requires_presentation;
         {
             let mut m = minimal_runtime_manifest();
             m.continuity.required = vec![ContinuityFacet::Semantic];
@@ -1633,7 +1648,8 @@ mode = "off"
                 Err(ManifestError::SemanticContinuityWithoutPresentation)
             );
         }
-        // phase: semantic_continuity_requires_a_signed_portable_schema
+
+        phase semantic_continuity_requires_a_signed_portable_schema;
         {
             let mut m = minimal_runtime_manifest();
             m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic];
@@ -1642,7 +1658,8 @@ mode = "off"
                 Err(ManifestError::SemanticContinuityWithoutSchema)
             );
         }
-        // phase: continuity_facets_cannot_be_repeated
+
+        phase continuity_facets_cannot_be_repeated;
         {
             let mut m = minimal_runtime_manifest();
             m.continuity.required =
@@ -1654,7 +1671,8 @@ mode = "off"
                 ))
             );
         }
-        // phase: apps_cannot_opt_out_of_structural_presentation
+
+        phase apps_cannot_opt_out_of_structural_presentation;
         {
             let mut m = minimal_runtime_manifest();
             m.package.kind = Kind::App;

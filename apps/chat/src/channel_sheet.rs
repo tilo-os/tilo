@@ -598,29 +598,43 @@ fn field_height(theme: &Theme) -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_text_channel_name_is_kept_lower_case_and_joined_by_dashes() {
-        assert_eq!(channel_slug("Design Reviews!", false), "design-reviews");
-        assert_eq!(channel_slug("  release  notes ", false), "release-notes");
-        assert_eq!(channel_slug("Q3 plan ", true), "q3-plan-");
-        assert_eq!(channel_slug("ünïcode_ok", false), "ünïcode_ok");
-        assert_eq!(channel_slug("---", false), "");
-    }
+    tilo_test_env::scenario! {
+        /// A channel's kept name and the sheet's answer.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn a_sheet_answers_with_the_name_as_it_is_kept;
 
-    #[test]
-    fn a_sheet_needs_a_name_and_keeps_where_it_was_opened() {
-        let mut sheet = ChannelSheet::new_channel("cat_design", ChannelKind::Voice);
-        assert_eq!(sheet.answer(), None, "no name yet");
-        sheet.name.set_text("Stand Up");
-        let answer = sheet.answer().expect("named");
-        assert_eq!(
-            answer.name.as_str(),
-            "Stand Up",
-            "a voice channel keeps its name"
-        );
-        assert_eq!(answer.category.as_deref(), Some("cat_design"));
-        assert_eq!(answer.kind, ChannelKind::Voice);
-        sheet.kind = ChannelKind::Text;
-        assert_eq!(sheet.answer().expect("named").name.as_str(), "stand-up");
+        phase a_text_channel_name_is_kept_lower_case_and_joined_by_dashes;
+        {
+            assert_eq!(channel_slug("Design Reviews!", false), "design-reviews");
+            assert_eq!(channel_slug("  release  notes ", false), "release-notes");
+            assert_eq!(channel_slug("Q3 plan ", true), "q3-plan-");
+            assert_eq!(channel_slug("ünïcode_ok", false), "ünïcode_ok");
+            assert_eq!(channel_slug("---", false), "");
+            assert_eq!(channel_slug("", false), "", "nothing typed");
+            assert_eq!(channel_slug("   ", true), "", "only spaces");
+            assert_eq!(
+                channel_slug(&"a".repeat(MAX_NAME_CHARS + 1), false),
+                "a".repeat(MAX_NAME_CHARS),
+                "one past the longest name"
+            );
+        }
+
+        phase a_sheet_needs_a_name_and_keeps_where_it_was_opened;
+        {
+            let mut sheet = ChannelSheet::new_channel("cat_design", ChannelKind::Voice);
+            assert_eq!(sheet.answer(), None, "no name yet");
+            sheet.name.set_text("Stand Up");
+            let answer = sheet.answer().expect("named");
+            assert_eq!(
+                answer.name.as_str(),
+                "Stand Up",
+                "a voice channel keeps its name"
+            );
+            assert_eq!(answer.category.as_deref(), Some("cat_design"));
+            assert_eq!(answer.kind, ChannelKind::Voice);
+            sheet.kind = ChannelKind::Text;
+            assert_eq!(sheet.answer().expect("named").name.as_str(), "stand-up");
+        }
     }
 }

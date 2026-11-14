@@ -992,118 +992,250 @@ impl TubeModel {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sponsorblock_categories_default_cycle_and_round_trip() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario: each former test is a labelled case block with its own fixture"
+        )]
+        fn the_model_keeps_its_settings_filters_and_channel_records;
+
+        phase sponsorblock_categories_default_cycle_and_round_trip;
         {
-            let s = Settings::default();
-            assert!(s.category_enabled(Category::Sponsor));
-            assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Skip);
-            assert!(s.should_auto_skip(Category::Sponsor));
-            assert!(!s.category_enabled(Category::Filler));
-            assert_eq!(s.mode_of(Category::Filler), SkipMode::Disabled);
-        }
-        {
-            let s = Settings {
-                sponsorblock_enabled: false,
-                ..Settings::default()
-            };
-            assert!(!s.category_enabled(Category::Sponsor));
-            assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
-            assert!(!s.should_auto_skip(Category::Sponsor));
-        }
-        {
-            let mut s = Settings::default();
-            assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip);
-            let cycle = |s: &mut Settings| {
-                let next = s.mode_of(Category::Intro).next();
-                s.categories
-                    .insert(Category::Intro.api_key().to_string(), next);
-            };
-            cycle(&mut s);
-            assert_eq!(s.mode_of(Category::Intro), SkipMode::Show);
-            assert!(s.should_show_skip(Category::Intro));
-            assert!(s.category_enabled(Category::Intro), "Show is still enabled");
-            cycle(&mut s);
-            assert_eq!(s.mode_of(Category::Intro), SkipMode::Disabled);
-            assert!(!s.category_enabled(Category::Intro));
-            cycle(&mut s);
-            assert_eq!(
-                s.mode_of(Category::Intro),
-                SkipMode::Skip,
-                "cycles back to Auto-skip"
-            );
-        }
-        {
-            for c in Category::ALL {
-                assert_eq!(Category::from_api_key(c.api_key()), Some(c));
+            {
+                let s = Settings::default();
+                assert!(s.category_enabled(Category::Sponsor));
+                assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Skip);
+                assert!(s.should_auto_skip(Category::Sponsor));
+                assert!(!s.category_enabled(Category::Filler));
+                assert_eq!(s.mode_of(Category::Filler), SkipMode::Disabled);
+            }
+            {
+                let s = Settings {
+                    sponsorblock_enabled: false,
+                    ..Settings::default()
+                };
+                assert!(!s.category_enabled(Category::Sponsor));
+                assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
+                assert!(!s.should_auto_skip(Category::Sponsor));
+            }
+            {
+                let mut s = Settings::default();
+                assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip);
+                let cycle = |s: &mut Settings| {
+                    let next = s.mode_of(Category::Intro).next();
+                    s.categories
+                        .insert(Category::Intro.api_key().to_string(), next);
+                };
+                cycle(&mut s);
+                assert_eq!(s.mode_of(Category::Intro), SkipMode::Show);
+                assert!(s.should_show_skip(Category::Intro));
+                assert!(s.category_enabled(Category::Intro), "Show is still enabled");
+                cycle(&mut s);
+                assert_eq!(s.mode_of(Category::Intro), SkipMode::Disabled);
+                assert!(!s.category_enabled(Category::Intro));
+                cycle(&mut s);
+                assert_eq!(
+                    s.mode_of(Category::Intro),
+                    SkipMode::Skip,
+                    "cycles back to Auto-skip"
+                );
+            }
+            {
+                for c in Category::ALL {
+                    assert_eq!(Category::from_api_key(c.api_key()), Some(c));
+                }
             }
         }
-    }
 
-    #[test]
-    fn dearrow_toggles_gate_titles_and_thumbnails() {
+        phase dearrow_toggles_gate_titles_and_thumbnails;
         {
-            let mut s = Settings::default();
-            assert!(s.dearrow_titles_on() && s.dearrow_thumbs_on());
-            s.dearrow_titles = false;
-            assert!(!s.dearrow_titles_on() && s.dearrow_thumbs_on());
-            s.dearrow_enabled = false;
-            assert!(
-                !s.dearrow_titles_on() && !s.dearrow_thumbs_on(),
-                "master gates both"
-            );
+            {
+                let mut s = Settings::default();
+                assert!(s.dearrow_titles_on() && s.dearrow_thumbs_on());
+                s.dearrow_titles = false;
+                assert!(!s.dearrow_titles_on() && s.dearrow_thumbs_on());
+                s.dearrow_enabled = false;
+                assert!(
+                    !s.dearrow_titles_on() && !s.dearrow_thumbs_on(),
+                    "master gates both"
+                );
+            }
+            {
+                let mut v = sample_video();
+                v.dearrow_title = Some("Calm title".into());
+                assert_eq!(v.display_title(true), "Calm title");
+                assert_eq!(v.display_title(false), "ORIGINAL");
+                v.dearrow_title = None;
+                assert_eq!(v.display_title(true), "ORIGINAL");
+            }
         }
-        {
-            let mut v = sample_video();
-            v.dearrow_title = Some("Calm title".into());
-            assert_eq!(v.display_title(true), "Calm title");
-            assert_eq!(v.display_title(false), "ORIGINAL");
-            v.dearrow_title = None;
-            assert_eq!(v.display_title(true), "ORIGINAL");
-        }
-    }
 
-    #[test]
-    fn search_type_filter_narrows_toggles_and_reverts() {
+        phase search_type_filter_narrows_toggles_and_reverts;
         {
-            let f = SearchTypeFilter::default();
-            assert!(f.shows(SearchType::Video));
-            assert!(f.shows(SearchType::Playlist));
-            assert!(f.shows(SearchType::Creator));
-            assert!(f.pristine);
+            {
+                let f = SearchTypeFilter::default();
+                assert!(f.shows(SearchType::Video));
+                assert!(f.shows(SearchType::Playlist));
+                assert!(f.shows(SearchType::Creator));
+                assert!(f.pristine);
+            }
+            {
+                let mut f = SearchTypeFilter::default();
+                f.click(SearchType::Playlist);
+                assert!(
+                    !f.shows(SearchType::Video),
+                    "first click deselects the others"
+                );
+                assert!(
+                    f.shows(SearchType::Playlist),
+                    "first click selects the clicked type"
+                );
+                assert!(!f.shows(SearchType::Creator));
+                assert!(!f.pristine);
+            }
+            {
+                let mut f = SearchTypeFilter::default();
+                f.click(SearchType::Video); // narrow to Video only
+                f.click(SearchType::Creator); // now Video + Creator
+                assert!(f.shows(SearchType::Video));
+                assert!(f.shows(SearchType::Creator));
+                assert!(!f.shows(SearchType::Playlist));
+                f.click(SearchType::Video); // toggle Video off → Creator only
+                assert!(!f.shows(SearchType::Video));
+                assert!(f.shows(SearchType::Creator));
+            }
+            {
+                let mut f = SearchTypeFilter::default();
+                f.click(SearchType::Video); // Video only
+                f.click(SearchType::Video); // would be empty → revert to all
+                assert!(f.shows(SearchType::Video));
+                assert!(f.shows(SearchType::Playlist));
+                assert!(f.shows(SearchType::Creator));
+            }
         }
+
+        phase channel_records_reconcile_avatars_without_losing_data;
         {
-            let mut f = SearchTypeFilter::default();
-            f.click(SearchType::Playlist);
-            assert!(
-                !f.shows(SearchType::Video),
-                "first click deselects the others"
-            );
-            assert!(
-                f.shows(SearchType::Playlist),
-                "first click selects the clicked type"
-            );
-            assert!(!f.shows(SearchType::Creator));
-            assert!(!f.pristine);
+            {
+                let mut m = TubeModel::default();
+                m.channels.push(chan("UC_A", "Blender Studio", ""));
+                let changed = m.adopt_channel_avatar("UC_B", "Blender Studio", "https://yt3/av");
+                assert!(changed, "adopt reported a change");
+                assert_eq!(
+                    m.channel("UC_A").unwrap().avatar_url,
+                    "https://yt3/av",
+                    "matched by name"
+                );
+
+                m.channels.push(chan("UC_C", "Other Creator", ""));
+                m.adopt_channel_avatar("UC_C", "irrelevant name", "https://yt3/c");
+                assert_eq!(
+                    m.channel("UC_C").unwrap().avatar_url,
+                    "https://yt3/c",
+                    "matched by id"
+                );
+            }
+            {
+                let mut m = TubeModel::default();
+                m.channels
+                    .push(chan("UC_A", "Chan", "https://yt3/original"));
+                let changed = m.adopt_channel_avatar("UC_A", "Chan", "https://yt3/other");
+                assert!(!changed);
+                assert_eq!(
+                    m.channel("UC_A").unwrap().avatar_url,
+                    "https://yt3/original"
+                );
+            }
+            {
+                let mut m = TubeModel::default();
+                m.upsert_channel(chan("UC_A", "Creator", "https://yt3/good"));
+                m.upsert_channel(chan("UC_A", "Creator", ""));
+                assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/good");
+            }
+            {
+                let mut m = TubeModel::default();
+                m.channels.push(chan("UC_A", "Blender Studio", ""));
+                m.channels
+                    .push(chan("UC_B", "Blender Studio", "https://yt3/bs"));
+                m.reconcile_channel_avatars();
+                assert_eq!(
+                    m.channel("UC_A").unwrap().avatar_url,
+                    "https://yt3/bs",
+                    "avatar-less record filled from the same-name record that had one",
+                );
+            }
+            {
+                let mut m = TubeModel::default();
+                m.upsert_playlist(Playlist {
+                    id: "PL1".into(),
+                    title: "Mix".into(),
+                    channel_id: "c".into(),
+                    channel_name: "C".into(),
+                    thumbnail_url: String::new(),
+                    seed: "PL1".into(),
+                    video_count: 3,
+                    video_ids: vec!["a".into(), "b".into(), "c".into()],
+                });
+                m.upsert_playlist(Playlist {
+                    id: "PL1".into(),
+                    title: "Mix".into(),
+                    channel_id: "c".into(),
+                    channel_name: "C".into(),
+                    thumbnail_url: "https://x/t.jpg".into(),
+                    seed: "PL1".into(),
+                    video_count: 3,
+                    video_ids: vec![],
+                });
+                let p = m.playlist("PL1").unwrap();
+                assert_eq!(
+                    p.video_ids.len(),
+                    3,
+                    "stub upsert keeps the fetched video list"
+                );
+                assert_eq!(
+                    p.thumbnail_url, "https://x/t.jpg",
+                    "but refreshes other fields"
+                );
+            }
+            {
+                let mut v = sample_video();
+                v.thumbnail_url = "https://i.ytimg.com/vi/x/hqdefault.jpg".into();
+                let json = serde_json::to_string(&v).unwrap();
+                let back: Video = serde_json::from_str(&json).unwrap();
+                assert_eq!(back.thumbnail_url, v.thumbnail_url);
+
+                let sparse = r#"{"id":"y","title":"T","channel_id":"c","channel_name":"C",
+            "channel_seed":"c","views":0,"published":"","duration":0,"description":"",
+            "likes":0,"seed":"y","category":"x"}"#;
+                let v2: Video = serde_json::from_str(sparse).unwrap();
+                assert_eq!(v2.thumbnail_url, "", "missing thumbnail_url defaults empty");
+
+                let ch = Channel {
+                    id: "c".into(),
+                    name: "C".into(),
+                    handle: "@c".into(),
+                    subscribers: 1,
+                    verified: false,
+                    description: String::new(),
+                    seed: "c".into(),
+                    avatar_url: "https://yt3/av".into(),
+                    banner_url: "https://yt3/ba".into(),
+                };
+                let cj = serde_json::to_string(&ch).unwrap();
+                let cback: Channel = serde_json::from_str(&cj).unwrap();
+                assert_eq!(cback.avatar_url, "https://yt3/av");
+                assert_eq!(cback.banner_url, "https://yt3/ba");
+            }
         }
+
+        phase an_imported_url_subscription_is_the_creators_subscription;
         {
-            let mut f = SearchTypeFilter::default();
-            f.click(SearchType::Video); // narrow to Video only
-            f.click(SearchType::Creator); // now Video + Creator
-            assert!(f.shows(SearchType::Video));
-            assert!(f.shows(SearchType::Creator));
-            assert!(!f.shows(SearchType::Playlist));
-            f.click(SearchType::Video); // toggle Video off → Creator only
-            assert!(!f.shows(SearchType::Video));
-            assert!(f.shows(SearchType::Creator));
-        }
-        {
-            let mut f = SearchTypeFilter::default();
-            f.click(SearchType::Video); // Video only
-            f.click(SearchType::Video); // would be empty → revert to all
-            assert!(f.shows(SearchType::Video));
-            assert!(f.shows(SearchType::Playlist));
-            assert!(f.shows(SearchType::Creator));
+            let mut m = TubeModel::default();
+            m.channels.push(chan("UC_A", "Creator", ""));
+            m.subscriptions.push("https://youtube.com/UC_A".into());
+            assert!(m.is_subscribed("UC_A"));
+            assert_eq!(m.subscription_key("UC_A"), Some("https://youtube.com/UC_A"));
+            assert!(!m.is_subscribed("UC_B"));
         }
     }
 
@@ -1119,134 +1251,6 @@ mod tests {
             avatar_url: avatar.into(),
             banner_url: String::new(),
         }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn channel_records_reconcile_avatars_without_losing_data() {
-        {
-            let mut m = TubeModel::default();
-            m.channels.push(chan("UC_A", "Blender Studio", ""));
-            let changed = m.adopt_channel_avatar("UC_B", "Blender Studio", "https://yt3/av");
-            assert!(changed, "adopt reported a change");
-            assert_eq!(
-                m.channel("UC_A").unwrap().avatar_url,
-                "https://yt3/av",
-                "matched by name"
-            );
-
-            m.channels.push(chan("UC_C", "Other Creator", ""));
-            m.adopt_channel_avatar("UC_C", "irrelevant name", "https://yt3/c");
-            assert_eq!(
-                m.channel("UC_C").unwrap().avatar_url,
-                "https://yt3/c",
-                "matched by id"
-            );
-        }
-        {
-            let mut m = TubeModel::default();
-            m.channels
-                .push(chan("UC_A", "Chan", "https://yt3/original"));
-            let changed = m.adopt_channel_avatar("UC_A", "Chan", "https://yt3/other");
-            assert!(!changed);
-            assert_eq!(
-                m.channel("UC_A").unwrap().avatar_url,
-                "https://yt3/original"
-            );
-        }
-        {
-            let mut m = TubeModel::default();
-            m.upsert_channel(chan("UC_A", "Creator", "https://yt3/good"));
-            m.upsert_channel(chan("UC_A", "Creator", ""));
-            assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/good");
-        }
-        {
-            let mut m = TubeModel::default();
-            m.channels.push(chan("UC_A", "Blender Studio", ""));
-            m.channels
-                .push(chan("UC_B", "Blender Studio", "https://yt3/bs"));
-            m.reconcile_channel_avatars();
-            assert_eq!(
-                m.channel("UC_A").unwrap().avatar_url,
-                "https://yt3/bs",
-                "avatar-less record filled from the same-name record that had one",
-            );
-        }
-        {
-            let mut m = TubeModel::default();
-            m.upsert_playlist(Playlist {
-                id: "PL1".into(),
-                title: "Mix".into(),
-                channel_id: "c".into(),
-                channel_name: "C".into(),
-                thumbnail_url: String::new(),
-                seed: "PL1".into(),
-                video_count: 3,
-                video_ids: vec!["a".into(), "b".into(), "c".into()],
-            });
-            m.upsert_playlist(Playlist {
-                id: "PL1".into(),
-                title: "Mix".into(),
-                channel_id: "c".into(),
-                channel_name: "C".into(),
-                thumbnail_url: "https://x/t.jpg".into(),
-                seed: "PL1".into(),
-                video_count: 3,
-                video_ids: vec![],
-            });
-            let p = m.playlist("PL1").unwrap();
-            assert_eq!(
-                p.video_ids.len(),
-                3,
-                "stub upsert keeps the fetched video list"
-            );
-            assert_eq!(
-                p.thumbnail_url, "https://x/t.jpg",
-                "but refreshes other fields"
-            );
-        }
-        {
-            let mut v = sample_video();
-            v.thumbnail_url = "https://i.ytimg.com/vi/x/hqdefault.jpg".into();
-            let json = serde_json::to_string(&v).unwrap();
-            let back: Video = serde_json::from_str(&json).unwrap();
-            assert_eq!(back.thumbnail_url, v.thumbnail_url);
-
-            let sparse = r#"{"id":"y","title":"T","channel_id":"c","channel_name":"C",
-            "channel_seed":"c","views":0,"published":"","duration":0,"description":"",
-            "likes":0,"seed":"y","category":"x"}"#;
-            let v2: Video = serde_json::from_str(sparse).unwrap();
-            assert_eq!(v2.thumbnail_url, "", "missing thumbnail_url defaults empty");
-
-            let ch = Channel {
-                id: "c".into(),
-                name: "C".into(),
-                handle: "@c".into(),
-                subscribers: 1,
-                verified: false,
-                description: String::new(),
-                seed: "c".into(),
-                avatar_url: "https://yt3/av".into(),
-                banner_url: "https://yt3/ba".into(),
-            };
-            let cj = serde_json::to_string(&ch).unwrap();
-            let cback: Channel = serde_json::from_str(&cj).unwrap();
-            assert_eq!(cback.avatar_url, "https://yt3/av");
-            assert_eq!(cback.banner_url, "https://yt3/ba");
-        }
-    }
-
-    #[test]
-    fn an_imported_url_subscription_is_the_creators_subscription() {
-        let mut m = TubeModel::default();
-        m.channels.push(chan("UC_A", "Creator", ""));
-        m.subscriptions.push("https://youtube.com/UC_A".into());
-        assert!(m.is_subscribed("UC_A"));
-        assert_eq!(m.subscription_key("UC_A"), Some("https://youtube.com/UC_A"));
-        assert!(!m.is_subscribed("UC_B"));
     }
 
     fn sample_video() -> Video {

@@ -309,140 +309,148 @@ mod tests {
             .rows
     }
 
-    #[allow(
-        clippy::float_cmp,
-        reason = "a fallback or clamp yields exactly the named constant, so equality is the assertion"
-    )]
-    #[test]
-    fn settings_round_trip_and_fall_back_per_key() {
-        let entry = RecentMedia {
-            id: "local-queue-local-media-35ed1e2e-open-0".into(),
-            title: "Family clip.mp4".into(),
-            source: media::Source::LocalFile("/home/alice/Private/Family clip.mp4".into()),
-            position_ms: 100_400,
-        };
-        let stored = PlayerSettings {
-            autoplay: false,
-            loop_enabled: true,
-            volume: 0.35,
-            rate: 1.5,
-        };
-        let json = serde_json::to_string(&stored).unwrap();
-        assert_eq!(read(&json), stored, "every key survives a restart");
-        let rows = DeviceVideos {
-            rows: [entry].into_iter().collect(),
-        };
-        let json = serde_json::to_string(&rows).unwrap();
-        assert_eq!(read_rows(&json), rows.rows, "every row survives a restart");
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::float_cmp,
+            reason = "a fallback or clamp yields exactly the named constant, so equality is the assertion"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn device_settings_and_resume_points_are_kept;
 
-        assert_eq!(
-            read(r#"{"autoplay":"yes","loop_enabled":true}"#),
-            PlayerSettings {
-                autoplay: true,
+        phase settings_round_trip_and_fall_back_per_key;
+        {
+            let entry = RecentMedia {
+                id: "local-queue-local-media-35ed1e2e-open-0".into(),
+                title: "Family clip.mp4".into(),
+                source: media::Source::LocalFile("/home/alice/Private/Family clip.mp4".into()),
+                position_ms: 100_400,
+            };
+            let stored = PlayerSettings {
+                autoplay: false,
                 loop_enabled: true,
-                ..PlayerSettings::default()
-            },
-            "a wrong-typed key falls back alone"
-        );
-        // Each playback level falls back alone: a malformed key never takes its
-        // neighbours with it.
-        let levels =
-            read(r#"{"volume":"loud","rate":"fast","autoplay":false,"loop_enabled":true}"#);
-        assert!((levels.volume - DEFAULT_VOLUME).abs() < f32::EPSILON);
-        assert!((levels.rate - DEFAULT_RATE).abs() < f32::EPSILON);
-        assert!(!levels.autoplay, "the neighbours are untouched");
-        assert!(levels.loop_enabled);
-        let out_of_range = read(r#"{"volume":7.5,"rate":-3.0}"#);
-        assert!(
-            (out_of_range.volume - 1.0).abs() < f32::EPSILON,
-            "a volume is a fraction"
-        );
-        assert!(
-            (out_of_range.rate - 0.25).abs() < f32::EPSILON,
-            "a speed is one the menu offers"
-        );
-        let foreign = read(r#"{"volume":0.4,"rate":1.1}"#).rate;
-        assert!(
-            (foreign - 1.0).abs() < f32::EPSILON,
-            "a foreign speed restores to the nearest offered one: {foreign}"
-        );
-        assert!(
-            read_rows(r#"{"rows":[{"id":"","title":"bad"}]}"#).is_empty(),
-            "a malformed row is dropped"
-        );
-        assert_eq!(
-            read_rows(
-                r#"{"rows":[{"id":"a","title":"Old","source_kind":"local","source":"/v/old.mp4"}]}"#
-            )[0]
-            .position_ms,
-            0,
-            "a row written before positions were kept starts at the beginning"
-        );
-        let rows: Vec<Value> = (0..RECENT_HISTORY_LIMIT.saturating_add(4))
-            .map(|index| {
-                RecentMedia {
-                    id: format!("opaque-{index}"),
-                    title: format!("Clip {index}"),
-                    source: media::Source::Remote {
-                        url: format!("https://example.invalid/{index}.mp4"),
-                    },
-                    position_ms: 0,
-                }
-                .to_value()
-            })
-            .collect();
-        let bounded = serde_json::json!({ "rows": rows }).to_string();
-        assert_eq!(read_rows(&bounded).len(), RECENT_HISTORY_LIMIT);
-    }
+                volume: 0.35,
+                rate: 1.5,
+            };
+            let json = serde_json::to_string(&stored).unwrap();
+            assert_eq!(read(&json), stored, "every key survives a restart");
+            let rows = DeviceVideos {
+                rows: [entry].into_iter().collect(),
+            };
+            let json = serde_json::to_string(&rows).unwrap();
+            assert_eq!(read_rows(&json), rows.rows, "every row survives a restart");
 
-    #[test]
-    fn resume_points_are_kept_per_video_and_bounded() {
-        let mut points = ResumePoints::default();
-        points.record("clip-a", 12_000, false);
-        points.record("clip-b", 4_000, true);
-        assert_eq!(points.point("clip-a"), Some((12_000, false)));
-        assert_eq!(points.point("clip-b"), Some((4_000, true)));
-        assert_eq!(points.point("clip-c"), None, "an unseen video starts over");
-
-        points.record("clip-b", 9_000, false);
-        assert_eq!(
-            points.point("clip-b"),
-            Some((9_000, false)),
-            "a video has one resume point, the newest"
-        );
-        assert_eq!(
-            points.point("clip-a"),
-            Some((12_000, false)),
-            "recording again does not disturb another video"
-        );
-
-        points.record("clip-a", 0, false);
-        assert_eq!(
-            points.point("clip-a"),
-            None,
-            "a video back at the start has nothing to resume"
-        );
-
-        // The map is bounded like the rows it is saved with: the oldest videos are
-        // forgotten first.
-        let last = RECENT_HISTORY_LIMIT.saturating_add(8);
-        for index in 0..last {
-            points.record(&format!("clip-{index}"), 1_000, false);
+            assert_eq!(
+                read(r#"{"autoplay":"yes","loop_enabled":true}"#),
+                PlayerSettings {
+                    autoplay: true,
+                    loop_enabled: true,
+                    ..PlayerSettings::default()
+                },
+                "a wrong-typed key falls back alone"
+            );
+            // Each playback level falls back alone: a malformed key never takes its
+            // neighbours with it.
+            let levels =
+                read(r#"{"volume":"loud","rate":"fast","autoplay":false,"loop_enabled":true}"#);
+            assert!((levels.volume - DEFAULT_VOLUME).abs() < f32::EPSILON);
+            assert!((levels.rate - DEFAULT_RATE).abs() < f32::EPSILON);
+            assert!(!levels.autoplay, "the neighbours are untouched");
+            assert!(levels.loop_enabled);
+            let out_of_range = read(r#"{"volume":7.5,"rate":-3.0}"#);
+            assert!(
+                (out_of_range.volume - 1.0).abs() < f32::EPSILON,
+                "a volume is a fraction"
+            );
+            assert!(
+                (out_of_range.rate - 0.25).abs() < f32::EPSILON,
+                "a speed is one the menu offers"
+            );
+            let foreign = read(r#"{"volume":0.4,"rate":1.1}"#).rate;
+            assert!(
+                (foreign - 1.0).abs() < f32::EPSILON,
+                "a foreign speed restores to the nearest offered one: {foreign}"
+            );
+            assert!(
+                read_rows(r#"{"rows":[{"id":"","title":"bad"}]}"#).is_empty(),
+                "a malformed row is dropped"
+            );
+            assert_eq!(
+                read_rows(
+                    r#"{"rows":[{"id":"a","title":"Old","source_kind":"local","source":"/v/old.mp4"}]}"#
+                )[0]
+                .position_ms,
+                0,
+                "a row written before positions were kept starts at the beginning"
+            );
+            let rows: Vec<Value> = (0..RECENT_HISTORY_LIMIT.saturating_add(4))
+                .map(|index| {
+                    RecentMedia {
+                        id: format!("opaque-{index}"),
+                        title: format!("Clip {index}"),
+                        source: media::Source::Remote {
+                            url: format!("https://example.invalid/{index}.mp4"),
+                        },
+                        position_ms: 0,
+                    }
+                    .to_value()
+                })
+                .collect();
+            let bounded = serde_json::json!({ "rows": rows }).to_string();
+            assert_eq!(read_rows(&bounded).len(), RECENT_HISTORY_LIMIT);
         }
-        assert_eq!(
-            points.point("clip-b"),
-            None,
-            "the oldest is forgotten first"
-        );
-        assert_eq!(points.point("clip-0"), None);
-        assert_eq!(
-            points.point(&format!("clip-{}", last.saturating_sub(1))),
-            Some((1_000, false)),
-            "the newest video is kept"
-        );
-        let kept = (0..last)
-            .filter(|index| points.point(&format!("clip-{index}")).is_some())
-            .count();
-        assert_eq!(kept, RECENT_HISTORY_LIMIT);
+
+        phase resume_points_are_kept_per_video_and_bounded;
+        {
+            let mut points = ResumePoints::default();
+            points.record("clip-a", 12_000, false);
+            points.record("clip-b", 4_000, true);
+            assert_eq!(points.point("clip-a"), Some((12_000, false)));
+            assert_eq!(points.point("clip-b"), Some((4_000, true)));
+            assert_eq!(points.point("clip-c"), None, "an unseen video starts over");
+
+            points.record("clip-b", 9_000, false);
+            assert_eq!(
+                points.point("clip-b"),
+                Some((9_000, false)),
+                "a video has one resume point, the newest"
+            );
+            assert_eq!(
+                points.point("clip-a"),
+                Some((12_000, false)),
+                "recording again does not disturb another video"
+            );
+
+            points.record("clip-a", 0, false);
+            assert_eq!(
+                points.point("clip-a"),
+                None,
+                "a video back at the start has nothing to resume"
+            );
+
+            // The map is bounded like the rows it is saved with: the oldest videos are
+            // forgotten first.
+            let last = RECENT_HISTORY_LIMIT.saturating_add(8);
+            for index in 0..last {
+                points.record(&format!("clip-{index}"), 1_000, false);
+            }
+            assert_eq!(
+                points.point("clip-b"),
+                None,
+                "the oldest is forgotten first"
+            );
+            assert_eq!(points.point("clip-0"), None);
+            assert_eq!(
+                points.point(&format!("clip-{}", last.saturating_sub(1))),
+                Some((1_000, false)),
+                "the newest video is kept"
+            );
+            let kept = (0..last)
+                .filter(|index| points.point(&format!("clip-{index}")).is_some())
+                .count();
+            assert_eq!(kept, RECENT_HISTORY_LIMIT);
+        }
     }
 }

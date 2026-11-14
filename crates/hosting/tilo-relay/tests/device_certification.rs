@@ -39,7 +39,7 @@ fn browser_request(user: [u8; 32], device: &SigningKey) -> CertificationRequest 
 
 async fn start_relay(user: &TestUser, revocations: RevocationList) -> (Relay, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
-    let host = user.enrol("home-server", DeviceCapabilities::host());
+    let host = user.enrol("home-server", DeviceCapabilities::member());
     let cfg = tilo_relay::RelayConfig {
         state_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -133,7 +133,7 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
         panic!("the browser was not certified");
     };
     assert_eq!(issued, cert);
-    assert!(host_cert.capabilities.can_act_as_host);
+    assert!(host_cert.capabilities.can_own_workspaces);
     assert!(!issued.capabilities.can_admit_devices);
 
     // The new certificate authenticates on the relay ALPN with a signer.

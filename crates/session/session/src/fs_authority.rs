@@ -20,10 +20,9 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use collab_types::Role;
-use collab_types::caps::{
-    Access, Actor, CapOverride, FsAuthority, Scope, Subject, WorkspaceMember,
-};
+use collab_types::caps::{Access, CapOverride, FsAuthority, Scope, WorkspaceMember};
 use collab_types::crypto::Ed25519PublicKey;
+use tilo_action_policy::{Acting, Grantee, MemberId};
 use tilo_desktop_model::DesktopTree;
 use tilo_lock::MutexRecover as _;
 
@@ -48,14 +47,14 @@ pub(crate) fn list(
     device: Option<[u8; 32]>,
     now: u64,
 ) -> FsAuthority {
-    let actor = person_key(person).map(Actor::signed);
+    let acting = person_key(person).map(|key| Acting::person(hex::encode(key.0)));
     let mut capabilities = Vec::new();
     let mut workspace_members = std::collections::BTreeMap::new();
     for workspace in &tree.workspaces {
         for capability in workspace.sandbox.iter().filter(|capability| {
             capability.persists_across_restart() && matches!(capability.scope, Scope::FsPath(_))
         }) {
-            push_with_device(&mut capabilities, capability, actor.as_ref(), device);
+            push_with_device(&mut capabilities, capability, acting.as_ref(), device);
         }
         // What the workspace's roles let each member reach in its files. The roles are the
         // workspace's one statement of who may do what, so a role change rewrites this list and the
@@ -63,17 +62,17 @@ pub(crate) fn list(
         // holds nothing here, and their device stops at once without being told.
         for (member, role) in workspace.roster() {
             let capability = CapOverride::grant(
-                Subject::person(member.clone()),
+                Grantee::person(member.clone()),
                 Scope::FsPath(WORKSPACE_FILES.into()),
                 role_files_access(role),
             )
             .with_id(role_capability_id(&workspace.id().to_string(), &member));
-            push_with_device(&mut capabilities, &capability, actor.as_ref(), device);
+            push_with_device(&mut capabilities, &capability, acting.as_ref(), device);
         }
         // Signed membership is a separate projection from Files access: who the workspace's policy
         // lets read it, per relay shard.
         workspace_members.insert(
-            tilo_network_actor::workspace_topic_id(workspace.id()).to_string(),
+            workspace.id().to_string(),
             workspace
                 .workspace_readers_at(now)
                 .iter()
@@ -117,18 +116,18 @@ fn role_capability_id(workspace: &str, member: &str) -> String {
 fn push_with_device(
     capabilities: &mut Vec<CapOverride>,
     capability: &CapOverride,
-    actor: Option<&Actor>,
+    acting: Option<&Acting>,
     device: Option<[u8; 32]>,
 ) {
     capabilities.push(capability.clone());
-    let (Some(device), Some(actor)) = (device, actor) else {
+    let (Some(device), Some(acting)) = (device, acting) else {
         return;
     };
-    if !capability.subject.matches_actor(actor) {
+    if !capability.reaches(acting) {
         return;
     }
     let mut bound = capability.clone();
-    bound.subject = Subject::User(Ed25519PublicKey::from_bytes(device));
+    bound.grantee = Grantee::Member(MemberId::person(hex::encode(device)));
     capabilities.push(bound);
 }
 
@@ -421,7 +420,7 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 )]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal};
+    use collab_types::caps::{Access, CapOverride, Effect, Expiry};
     use std::os::unix::fs::PermissionsExt as _;
     use tilo_desktop_model::Workspace;
 
@@ -439,18 +438,19 @@ mod tests {
 
     fn app_folder_grant() -> CapOverride {
         CapOverride::grant(
-            Subject::app("so.tilo.notes"),
+            Grantee::person(PERSON),
             Scope::FsPath(FOLDER.into()),
             Access::Read,
         )
+        .through("so.tilo.notes")
     }
 
-    /// Does the list the session published let `actor` read `path` ? This is the decision every
+    /// Does the list the session published let `acting` read `path` ? This is the decision every
     /// Files open asks ([`collab_types::decide_capability`]), so an answer here is the daemon's
     /// answer.
-    fn may_read(list: &FsAuthority, actor: &Actor, path: &str) -> bool {
+    fn may_read(list: &FsAuthority, acting: &Acting, path: &str) -> bool {
         collab_types::decide_capability(
-            actor,
+            acting,
             &collab_types::ResourceRef::FsPath(path.into()),
             Access::Read,
             &list.capabilities,
@@ -459,9 +459,9 @@ mod tests {
     }
 
     /// [`may_read`] for a write.
-    fn may_write(list: &FsAuthority, actor: &Actor, path: &str) -> bool {
+    fn may_write(list: &FsAuthority, acting: &Acting, path: &str) -> bool {
         collab_types::decide_capability(
-            actor,
+            acting,
             &collab_types::ResourceRef::FsPath(path.into()),
             Access::Write,
             &list.capabilities,
@@ -473,7 +473,7 @@ mod tests {
     fn a_members_role_decides_whether_they_write_the_workspace_files() {
         const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
         const NOTE: &str = "/var/workspace/brief/plan.md";
-        let member = Actor::signed(person_key(MEMBER).unwrap());
+        let member = Acting::person(MEMBER);
         let mut tree = tree_with(app_folder_grant());
         tree.workspaces[0].admit(MEMBER, Role::Viewer);
         let read_only = list(&tree, PERSON, None, 0);
@@ -506,28 +506,27 @@ mod tests {
     #[test]
     fn a_revoked_folder_is_refused_at_the_next_open_and_the_app_keeps_running() {
         let device = Some([9u8; 32]);
-        let person = person_key(PERSON).unwrap();
         let grant = CapOverride::grant(
-            Subject::Principal(Principal::person_from_key(person)),
+            Grantee::person(PERSON),
             Scope::FsPath(FOLDER.into()),
             Access::Read,
         )
         .with_id("brief");
         let keeps = CapOverride::grant(
-            Subject::Principal(Principal::person_from_key(person)),
+            Grantee::person(PERSON),
             Scope::FsPath("/var/workspace/notes".into()),
             Access::Read,
         )
         .with_id("notes");
         let mut tree = tree_with(grant);
         tree.workspaces[0].sandbox.push(keeps);
-        let actor = Actor::signed(person);
+        let actor = Acting::person(PERSON);
         let published = list(&tree, PERSON, device, 0);
         assert!(may_read(&published, &actor, &format!("{FOLDER}/plan.md")));
         // The device key the mount authenticates as holds the same grant.
         assert!(may_read(
             &published,
-            &Actor::signed(Ed25519PublicKey::from_bytes([9u8; 32])),
+            &Acting::person(hex::encode([9u8; 32])),
             &format!("{FOLDER}/plan.md")
         ));
 
@@ -547,16 +546,18 @@ mod tests {
     #[test]
     fn only_durable_file_capabilities_are_published() {
         let transient = CapOverride::grant(
-            Subject::app("so.tilo.notes"),
+            Grantee::person(PERSON),
             Scope::FsPath("/var/workspace/scratch".into()),
             Access::Read,
         )
+        .through("so.tilo.notes")
         .expiring(Expiry::EndOfSession);
         let device_only = CapOverride::grant(
-            Subject::app("so.tilo.notes"),
+            Grantee::person(PERSON),
             Scope::Device("camera".into()),
             Access::Read,
-        );
+        )
+        .through("so.tilo.notes");
         let mut tree = tree_with(app_folder_grant());
         tree.workspaces[0].sandbox.push(transient);
         tree.workspaces[0].sandbox.push(device_only);
@@ -573,7 +574,7 @@ mod tests {
         let published = list(&tree, PERSON, None, 0);
         let readers = published
             .workspace_members
-            .get(&tilo_network_actor::workspace_topic_id(tree.workspaces[0].id()).to_string())
+            .get(&tree.workspaces[0].id().to_string())
             .expect("the workspace's topic");
         assert!(
             readers

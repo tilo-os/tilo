@@ -302,100 +302,109 @@ writes = ["record", "comments.*"]
         )
     }
 
-    /// A surface fetched by its hash decides kinds, editable fields and
-    /// footprints; other bytes under that hash are not it.
-    #[test]
-    fn a_surface_named_by_hash_decides_claims() {
-        let (source, hash) = surfaces();
-        let record = Record {
-            room: "r",
-            app: "notes",
-            record: "p1",
-        };
-        assert!(
-            source.surface(&record, None, None).is_none(),
-            "named nothing"
-        );
-        assert!(
-            source.surface(&record, None, Some(&[0; 32])).is_none(),
-            "not here"
-        );
-        let surface = source
-            .surface(&record, Some("notes.page"), Some(&hash))
-            .unwrap();
-        assert_eq!(surface.kind(), "notes.page");
-        assert_eq!(
-            surface.outboxes(),
-            vec![vec![PathStep::Field("shares".into())]],
-            "its outbox, and no other field"
-        );
-        assert_eq!(
-            surface.verb("comment"),
-            Some((ActionKind::Undoable, Some("comments".into())))
-        );
-        assert!(surface.editable(&[PathStep::Field("body".into())]));
-        assert!(!surface.editable(&[PathStep::Field("created".into())]));
-        assert!(
-            surface.editable(&[
+    tilo_test_env::scenario! {
+        /// An app's surface file: the committed ones parse, and one named by hash decides claims.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_surface_file_parses_and_decides_claims_by_hash;
+
+        phase a_surface_named_by_hash_decides_claims;
+        // A surface fetched by its hash decides kinds, editable fields and
+        // footprints; other bytes under that hash are not it.
+        {
+            let (source, hash) = surfaces();
+            let record = Record {
+                workspace: "r",
+                app: "notes",
+                record: "p1",
+            };
+            assert!(
+                source.surface(&record, None, None).is_none(),
+                "named nothing"
+            );
+            assert!(
+                source.surface(&record, None, Some(&[0; 32])).is_none(),
+                "not here"
+            );
+            let surface = source
+                .surface(&record, Some("notes.page"), Some(&hash))
+                .unwrap();
+            assert_eq!(surface.kind(), "notes.page");
+            assert_eq!(
+                surface.outboxes(),
+                vec![vec![PathStep::Field("shares".into())]],
+                "its outbox, and no other field"
+            );
+            assert_eq!(
+                surface.verb("comment"),
+                Some((ActionKind::Undoable, Some("comments".into())))
+            );
+            assert!(surface.editable(&[PathStep::Field("body".into())]));
+            assert!(!surface.editable(&[PathStep::Field("created".into())]));
+            assert!(
+                surface.editable(&[
+                    PathStep::Field("comments".into()),
+                    PathStep::Item("c1".into()),
+                ]),
+                "an item of an editable collection is editable"
+            );
+            assert!(
+                !surface.editable(&[PathStep::Field("created".into()), PathStep::Key("x".into()),])
+            );
+            let entry = |field: &str| {
+                [
+                    PathStep::Field("log".into()),
+                    PathStep::Item("e1".into()),
+                    PathStep::Field(field.into()),
+                ]
+            };
+            assert!(
+                surface.editable(&entry("reactions")),
+                "a read-only item still takes reactions"
+            );
+            assert!(!surface.editable(&entry("text")));
+            let comment = ClaimedAction::Verb {
+                action: ActionKey::new("notes", "notes.page", "comment"),
+                item: Some("c1".into()),
+            };
+            let footprint = surface.footprint(&comment);
+            let c1 = [
                 PathStep::Field("comments".into()),
                 PathStep::Item("c1".into()),
-            ]),
-            "an item of an editable collection is editable"
-        );
-        assert!(
-            !surface.editable(&[PathStep::Field("created".into()), PathStep::Key("x".into()),])
-        );
-        let entry = |field: &str| {
-            [
-                PathStep::Field("log".into()),
-                PathStep::Item("e1".into()),
-                PathStep::Field(field.into()),
-            ]
-        };
-        assert!(
-            surface.editable(&entry("reactions")),
-            "a read-only item still takes reactions"
-        );
-        assert!(!surface.editable(&entry("text")));
-        let comment = ClaimedAction::Verb {
-            action: ActionKey::new("notes", "notes.page", "comment"),
-            item: Some("c1".into()),
-        };
-        let footprint = surface.footprint(&comment);
-        let c1 = [
-            PathStep::Field("comments".into()),
-            PathStep::Item("c1".into()),
-        ];
-        let c2 = [
-            PathStep::Field("comments".into()),
-            PathStep::Item("c2".into()),
-        ];
-        assert!(footprint.iter().any(|unit| covers(unit, &c1)));
-        assert!(!footprint.iter().any(|unit| covers(unit, &c2)));
-        let whole = surface.footprint(&ClaimedAction::whole_record_edit(String::new()));
-        assert!(
-            whole.iter().any(|unit| covers(unit, &c2)),
-            "a whole-record edit writes any unit"
-        );
+            ];
+            let c2 = [
+                PathStep::Field("comments".into()),
+                PathStep::Item("c2".into()),
+            ];
+            assert!(footprint.iter().any(|unit| covers(unit, &c1)));
+            assert!(!footprint.iter().any(|unit| covers(unit, &c2)));
+            let whole = surface.footprint(&ClaimedAction::whole_record_edit(String::new()));
+            assert!(
+                whole.iter().any(|unit| covers(unit, &c2)),
+                "a whole-record edit writes any unit"
+            );
 
-        let forged = ContentSurfaces::new(|_, _| Some(b"[[resources]]".to_vec()));
-        assert!(forged.surface(&record, None, Some(&hash)).is_none());
-    }
-
-    #[test]
-    fn every_committed_surface_parses() {
-        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
-        let mut parsed = 0;
-        for app in std::fs::read_dir(apps).unwrap() {
-            let file = app.unwrap().path().join("surface.toml");
-            let Ok(bytes) = std::fs::read(&file) else {
-                continue;
-            };
-            let surface = SurfaceFile::parse(&bytes)
-                .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
-            assert!(surface.resource(None).is_some(), "{}", file.display());
-            parsed += 1;
+            let forged = ContentSurfaces::new(|_, _| Some(b"[[resources]]".to_vec()));
+            assert!(forged.surface(&record, None, Some(&hash)).is_none());
         }
-        assert!(parsed > 10, "found the apps' surfaces");
+
+        phase every_committed_surface_parses;
+        {
+            let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+            let mut parsed = 0;
+            for app in std::fs::read_dir(apps).unwrap() {
+                let file = app.unwrap().path().join("surface.toml");
+                let Ok(bytes) = std::fs::read(&file) else {
+                    continue;
+                };
+                let surface = SurfaceFile::parse(&bytes)
+                    .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+                assert!(surface.resource(None).is_some(), "{}", file.display());
+                parsed += 1;
+            }
+            assert!(parsed > 10, "found the apps' surfaces");
+        }
     }
 }

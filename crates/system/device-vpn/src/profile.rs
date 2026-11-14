@@ -146,163 +146,167 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_profile_blocks_while_set_to_connect_and_not_connected() {
-        let mut intent = Intent::default();
-        let switches = on(false);
-        assert_eq!(
-            intent.decide(&switches, &now(None), &[]),
-            None,
-            "never asked for"
-        );
-        assert_eq!(
-            intent.decide(&switches, &now(Some(Activity::Activating)), &[]),
-            Some(blocking(false))
-        );
-        assert_eq!(
-            intent.decide(&switches, &now(Some(Activity::Activated)), &[]),
-            None,
-            "connected"
-        );
-        assert_eq!(
-            intent.decide(&switches, &now(Some(Activity::Deactivating)), &[]),
-            Some(blocking(false)),
-            "dropping"
-        );
-        assert_eq!(
-            intent.decide(&switches, &now(None), &[]),
-            Some(blocking(false)),
-            "dropped, not on purpose"
-        );
-        assert!(intent.wants("work"));
-        assert_eq!(
-            intent.decide(&switches, &now(None), &["work".into()]),
-            None,
-            "turned off on purpose"
-        );
-        assert!(!intent.wants("work"));
-        assert_eq!(intent.decide(&switches, &now(None), &[]), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_profiles_kill_switch_blocks_only_while_it_should;
 
-    #[test]
-    fn an_adopted_intent_blocks_at_once_and_lifts_only_what_was_turned_off() {
-        let switches = on(false);
-        let mut before = Intent::default();
-        before.decide(&switches, &now(Some(Activity::Activated)), &[]);
-        let kept: Vec<String> = before.wanted().cloned().collect();
-        assert_eq!(kept, ["work"]);
-        let mut after = Intent::adopt(kept.clone());
-        assert_eq!(
-            after.decide(&switches, &now(None), &[]),
-            Some(blocking(false))
-        );
-        let mut after = Intent::adopt(kept.clone());
-        assert_eq!(
-            after.decide(&switches, &now(Some(Activity::Activated)), &[]),
-            None,
-            "up again"
-        );
-        assert!(after.wants("work"));
-        let mut after = Intent::adopt(kept.clone());
-        assert_eq!(
-            after.decide(&switches, &now(None), &["work".into()]),
-            None,
-            "turned off while it was away"
-        );
-        let mut after = Intent::adopt(kept);
-        assert_eq!(
-            after.decide(&BTreeMap::new(), &now(None), &[]),
-            None,
-            "its kill switch turned off while it was away"
-        );
-        assert_eq!(after.wanted().count(), 0);
-    }
+        phase a_profile_blocks_while_set_to_connect_and_not_connected;
+        {
+            let mut intent = Intent::default();
+            let switches = on(false);
+            assert_eq!(
+                intent.decide(&switches, &now(None), &[]),
+                None,
+                "never asked for"
+            );
+            assert_eq!(
+                intent.decide(&switches, &now(Some(Activity::Activating)), &[]),
+                Some(blocking(false))
+            );
+            assert_eq!(
+                intent.decide(&switches, &now(Some(Activity::Activated)), &[]),
+                None,
+                "connected"
+            );
+            assert_eq!(
+                intent.decide(&switches, &now(Some(Activity::Deactivating)), &[]),
+                Some(blocking(false)),
+                "dropping"
+            );
+            assert_eq!(
+                intent.decide(&switches, &now(None), &[]),
+                Some(blocking(false)),
+                "dropped, not on purpose"
+            );
+            assert!(intent.wants("work"));
+            assert_eq!(
+                intent.decide(&switches, &now(None), &["work".into()]),
+                None,
+                "turned off on purpose"
+            );
+            assert!(!intent.wants("work"));
+            assert_eq!(intent.decide(&switches, &now(None), &[]), None);
+        }
 
-    #[test]
-    fn a_profile_without_its_switch_never_blocks() {
-        let mut intent = Intent::default();
-        let off = BTreeMap::new();
-        assert_eq!(
-            intent.decide(&off, &now(Some(Activity::Activating)), &[]),
-            None
-        );
-        assert_eq!(intent.decide(&off, &now(None), &[]), None);
-        // Turning the switch off while blocking lifts the block; turning it
-        // on again does not bring back a profile no longer set to connect.
-        let switches = on(false);
-        intent.decide(&switches, &now(Some(Activity::Activated)), &[]);
-        assert_eq!(
-            intent.decide(&switches, &now(None), &[]),
-            Some(blocking(false))
-        );
-        assert_eq!(intent.decide(&off, &now(None), &[]), None);
-        assert_eq!(intent.decide(&switches, &now(None), &[]), None);
-    }
+        phase an_adopted_intent_blocks_at_once_and_lifts_only_what_was_turned_off;
+        {
+            let switches = on(false);
+            let mut before = Intent::default();
+            before.decide(&switches, &now(Some(Activity::Activated)), &[]);
+            let kept: Vec<String> = before.wanted().cloned().collect();
+            assert_eq!(kept, ["work"]);
+            let mut after = Intent::adopt(kept.clone());
+            assert_eq!(
+                after.decide(&switches, &now(None), &[]),
+                Some(blocking(false))
+            );
+            let mut after = Intent::adopt(kept.clone());
+            assert_eq!(
+                after.decide(&switches, &now(Some(Activity::Activated)), &[]),
+                None,
+                "up again"
+            );
+            assert!(after.wants("work"));
+            let mut after = Intent::adopt(kept.clone());
+            assert_eq!(
+                after.decide(&switches, &now(None), &["work".into()]),
+                None,
+                "turned off while it was away"
+            );
+            let mut after = Intent::adopt(kept);
+            assert_eq!(
+                after.decide(&BTreeMap::new(), &now(None), &[]),
+                None,
+                "its kill switch turned off while it was away"
+            );
+            assert_eq!(after.wanted().count(), 0);
+        }
 
-    #[test]
-    fn turning_off_a_connected_profile_on_purpose_never_blocks() {
-        let mut intent = Intent::default();
-        let switches = on(true);
-        intent.decide(&switches, &now(Some(Activity::Activated)), &[]);
-        // The person's request arrives while it is still up, and its going
-        // down follows.
-        assert_eq!(
-            intent.decide(
-                &switches,
-                &now(Some(Activity::Deactivating)),
-                &["work".into()]
-            ),
-            None
-        );
-        assert_eq!(intent.decide(&switches, &now(None), &[]), None);
-    }
+        phase a_profile_without_its_switch_never_blocks;
+        {
+            let mut intent = Intent::default();
+            let off = BTreeMap::new();
+            assert_eq!(
+                intent.decide(&off, &now(Some(Activity::Activating)), &[]),
+                None
+            );
+            assert_eq!(intent.decide(&off, &now(None), &[]), None);
+            // Turning the switch off while blocking lifts the block; turning it
+            // on again does not bring back a profile no longer set to connect.
+            let switches = on(false);
+            intent.decide(&switches, &now(Some(Activity::Activated)), &[]);
+            assert_eq!(
+                intent.decide(&switches, &now(None), &[]),
+                Some(blocking(false))
+            );
+            assert_eq!(intent.decide(&off, &now(None), &[]), None);
+            assert_eq!(intent.decide(&switches, &now(None), &[]), None);
+        }
 
-    #[test]
-    fn the_local_network_stays_reachable_only_if_every_blocking_profile_allows_it() {
-        let mut intent = Intent::default();
-        let mut switches = on(true);
-        switches.insert("home".into(), Switch { allow_local: false });
-        let active = BTreeMap::from([
-            ("work".to_owned(), Activity::Activating),
-            ("home".to_owned(), Activity::Activated),
-        ]);
-        assert_eq!(intent.decide(&switches, &active, &[]), Some(blocking(true)));
-        let active = BTreeMap::from([("work".to_owned(), Activity::Activating)]);
-        assert_eq!(
-            intent.decide(&switches, &active, &[]),
-            Some(Blocking {
-                profiles: vec!["home".into(), "work".into()],
-                allow_local: false,
-            })
-        );
-    }
+        phase turning_off_a_connected_profile_on_purpose_never_blocks;
+        {
+            let mut intent = Intent::default();
+            let switches = on(true);
+            intent.decide(&switches, &now(Some(Activity::Activated)), &[]);
+            // The person's request arrives while it is still up, and its going
+            // down follows.
+            assert_eq!(
+                intent.decide(
+                    &switches,
+                    &now(Some(Activity::Deactivating)),
+                    &["work".into()]
+                ),
+                None
+            );
+            assert_eq!(intent.decide(&switches, &now(None), &[]), None);
+        }
 
-    #[test]
-    fn the_block_lets_through_each_servers_address_once() {
-        let servers = BTreeMap::from([
-            (
-                "work".to_owned(),
-                vec![
-                    "198.51.100.7".parse().unwrap(),
-                    "198.51.100.7".parse().unwrap(),
-                    "127.0.0.1".parse().unwrap(),
-                ],
-            ),
-            ("other".to_owned(), vec!["203.0.113.1".parse().unwrap()]),
-        ]);
-        let block = block_for(&blocking(false), &servers);
-        assert_eq!(
-            block,
-            ProfileBlock {
-                servers: vec!["198.51.100.7".parse().unwrap()],
-                allow_local: false,
-            }
-        );
-        assert_eq!(block.check(), Ok(()));
-        assert!(
-            block_for(&blocking(true), &BTreeMap::new())
-                .servers
-                .is_empty()
-        );
+        phase the_local_network_stays_reachable_only_if_every_blocking_profile_allows_it;
+        {
+            let mut intent = Intent::default();
+            let mut switches = on(true);
+            switches.insert("home".into(), Switch { allow_local: false });
+            let active = BTreeMap::from([
+                ("work".to_owned(), Activity::Activating),
+                ("home".to_owned(), Activity::Activated),
+            ]);
+            assert_eq!(intent.decide(&switches, &active, &[]), Some(blocking(true)));
+            let active = BTreeMap::from([("work".to_owned(), Activity::Activating)]);
+            assert_eq!(
+                intent.decide(&switches, &active, &[]),
+                Some(Blocking {
+                    profiles: vec!["home".into(), "work".into()],
+                    allow_local: false,
+                })
+            );
+        }
+
+        phase the_block_lets_through_each_servers_address_once;
+        {
+            let servers = BTreeMap::from([
+                (
+                    "work".to_owned(),
+                    vec![
+                        "198.51.100.7".parse().unwrap(),
+                        "198.51.100.7".parse().unwrap(),
+                        "127.0.0.1".parse().unwrap(),
+                    ],
+                ),
+                ("other".to_owned(), vec!["203.0.113.1".parse().unwrap()]),
+            ]);
+            let block = block_for(&blocking(false), &servers);
+            assert_eq!(
+                block,
+                ProfileBlock {
+                    servers: vec!["198.51.100.7".parse().unwrap()],
+                    allow_local: false,
+                }
+            );
+            assert_eq!(block.check(), Ok(()));
+            assert!(
+                block_for(&blocking(true), &BTreeMap::new())
+                    .servers
+                    .is_empty()
+            );
+        }
     }
 }

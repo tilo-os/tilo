@@ -869,179 +869,183 @@ mod tests {
         std::fs::write(runtime.join("lib").join(name), original_library).unwrap();
     }
 
-    #[test]
-    fn signed_portable_shim_admission_rejects_wrong_publisher_and_mutated_bytes() {
-        use std::io::{Seek, SeekFrom};
-        let root = tempfile::tempdir().unwrap();
-        let (runtime, identity) = signed_capture_runtime(root.path());
-        let selected = root.path().join("selected");
-        std::fs::create_dir(&selected).unwrap();
-        let uid = rustix::process::geteuid().as_raw();
-        let mut admission = CaptureAdmission::verify(
-            &runtime,
-            &identity.public_key_hex(),
-            File::open(&selected).unwrap(),
-            uid,
-        )
-        .unwrap();
-        assert_archive_custody(&admission, &runtime);
-        let alien = runtime_bundle::Identity::generate();
-        // A portable native host authenticates its own runtime.
-        let mut env = tilo_test_env::ScopedEnv::new();
-        let trust = root.path().join("host-publishers.txt");
-        std::fs::write(&trust, format!("{}\n", alien.public_key_hex())).unwrap();
-        env.set(crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV, &trust);
-        let mut manifest: crate::manifest::ManifestView =
-            toml::from_str(include_str!("../../signal-provider.toml")).unwrap();
-        manifest.runtime = Some("tilo-runtime/capture-fixture".into());
-        for mode in [
-            crate::run::LaunchMode::Gui,
-            crate::run::LaunchMode::Cli {
-                command: "fixture".into(),
-                passthrough_argv: Vec::new(),
-            },
-            crate::run::LaunchMode::Service {
-                passthrough_argv: Vec::new(),
-            },
-        ] {
-            let options = crate::run::RunOptions {
-                mode,
-                runtime_root: Some(runtime.clone()),
-                require_runtime_publisher: Some(identity.public_key_hex()),
-                ..Default::default()
-            };
-            assert!(matches!(
-                crate::run::resolve_runtime(&manifest, &options),
-                Err(RunError::RuntimeBundleSignature { .. })
-            ));
-        }
-        assert_eq!(
-            admission.resolve_runtime(&manifest).unwrap(),
-            (runtime.clone(), "capture-fixture".into())
-        );
-        let admitted_root = admission.runtime_root_hash.clone();
-        admission.runtime_root_hash = "0".repeat(64);
-        assert!(admission.resolve_runtime(&manifest).is_err());
-        admission.runtime_root_hash = admitted_root;
-        manifest.runtime = Some("tilo-runtime/substituted-abi".into());
-        assert!(admission.resolve_runtime(&manifest).is_err());
-        manifest.runtime = Some("tilo-runtime/capture-fixture".into());
-        assert!(
-            CaptureAdmission::verify(
-                &runtime,
-                &alien.public_key_hex(),
-                File::open(&selected).unwrap(),
-                uid
-            )
-            .is_err()
-        );
-        std::fs::write(runtime.join(SHIM_FILE), b"replacement signed executable??").unwrap();
-        assert!(admission.resolve_runtime(&manifest).is_err());
-        assert!(
-            CaptureAdmission::verify(
+    tilo_test_env::scenario! {
+        fn capture_admission_binds_signed_bytes_credentials_and_a_read_only_view;
+
+        phase signed_portable_shim_admission_rejects_wrong_publisher_and_mutated_bytes;
+        {
+            use std::io::{Seek, SeekFrom};
+            let root = tempfile::tempdir().unwrap();
+            let (runtime, identity) = signed_capture_runtime(root.path());
+            let selected = root.path().join("selected");
+            std::fs::create_dir(&selected).unwrap();
+            let uid = rustix::process::geteuid().as_raw();
+            let mut admission = CaptureAdmission::verify(
                 &runtime,
                 &identity.public_key_hex(),
                 File::open(&selected).unwrap(),
-                uid
+                uid,
             )
-            .is_err()
-        );
-        // An already admitted launch holds immutable authenticated bytes, never the replacement.
-        let mut pinned = admission.shim.try_clone().unwrap();
-        pinned.seek(SeekFrom::Start(0)).unwrap();
-        let mut bytes = Vec::new();
-        pinned.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"fixture signed executable bytes");
-        let renamed = root.path().join("renamed");
-        std::fs::rename(&selected, &renamed).unwrap();
-        admission.check().unwrap();
-        assert_eq!(
-            admission.source.metadata().unwrap().ino(),
-            std::fs::metadata(renamed).unwrap().ino()
-        );
-    }
+            .unwrap();
+            assert_archive_custody(&admission, &runtime);
+            let alien = runtime_bundle::Identity::generate();
+            // A portable native host authenticates its own runtime.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            let trust = root.path().join("host-publishers.txt");
+            std::fs::write(&trust, format!("{}\n", alien.public_key_hex())).unwrap();
+            env.set(crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV, &trust);
+            let mut manifest: crate::manifest::ManifestView =
+                toml::from_str(include_str!("../../signal-provider.toml")).unwrap();
+            manifest.runtime = Some("tilo-runtime/capture-fixture".into());
+            for mode in [
+                crate::run::LaunchMode::Gui,
+                crate::run::LaunchMode::Cli {
+                    command: "fixture".into(),
+                    passthrough_argv: Vec::new(),
+                },
+                crate::run::LaunchMode::Service {
+                    passthrough_argv: Vec::new(),
+                },
+            ] {
+                let options = crate::run::RunOptions {
+                    mode,
+                    runtime_root: Some(runtime.clone()),
+                    require_runtime_publisher: Some(identity.public_key_hex()),
+                    ..Default::default()
+                };
+                assert!(matches!(
+                    crate::run::resolve_runtime(&manifest, &options),
+                    Err(RunError::RuntimeBundleSignature { .. })
+                ));
+            }
+            assert_eq!(
+                admission.resolve_runtime(&manifest).unwrap(),
+                (runtime.clone(), "capture-fixture".into())
+            );
+            let admitted_root = admission.runtime_root_hash.clone();
+            admission.runtime_root_hash = "0".repeat(64);
+            assert!(admission.resolve_runtime(&manifest).is_err());
+            admission.runtime_root_hash = admitted_root;
+            manifest.runtime = Some("tilo-runtime/substituted-abi".into());
+            assert!(admission.resolve_runtime(&manifest).is_err());
+            manifest.runtime = Some("tilo-runtime/capture-fixture".into());
+            assert!(
+                CaptureAdmission::verify(
+                    &runtime,
+                    &alien.public_key_hex(),
+                    File::open(&selected).unwrap(),
+                    uid
+                )
+                .is_err()
+            );
+            std::fs::write(runtime.join(SHIM_FILE), b"replacement signed executable??").unwrap();
+            assert!(admission.resolve_runtime(&manifest).is_err());
+            assert!(
+                CaptureAdmission::verify(
+                    &runtime,
+                    &identity.public_key_hex(),
+                    File::open(&selected).unwrap(),
+                    uid
+                )
+                .is_err()
+            );
+            // An already admitted launch holds immutable authenticated bytes, never the replacement.
+            let mut pinned = admission.shim.try_clone().unwrap();
+            pinned.seek(SeekFrom::Start(0)).unwrap();
+            let mut bytes = Vec::new();
+            pinned.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"fixture signed executable bytes");
+            let renamed = root.path().join("renamed");
+            std::fs::rename(&selected, &renamed).unwrap();
+            admission.check().unwrap();
+            assert_eq!(
+                admission.source.metadata().unwrap().ino(),
+                std::fs::metadata(renamed).unwrap().ino()
+            );
+        }
 
-    #[test]
-    fn admitted_launcher_copy_cannot_be_modified_through_its_held_descriptor() {
-        let mut file = sealed_shim(b"verified launcher bytes").unwrap();
-        assert!(file.write_all(b"substitution").is_err());
-        assert!(file.set_len(0).is_err());
-        let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
-        assert_eq!(seals & libc::F_SEAL_WRITE, libc::F_SEAL_WRITE);
-    }
+        phase admitted_launcher_copy_cannot_be_modified_through_its_held_descriptor;
+        {
+            let mut file = sealed_shim(b"verified launcher bytes").unwrap();
+            assert!(file.write_all(b"substitution").is_err());
+            assert!(file.set_len(0).is_err());
+            let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+            assert_eq!(seals & libc::F_SEAL_WRITE, libc::F_SEAL_WRITE);
+        }
 
-    #[test]
-    fn original_filesystem_credentials_are_required_without_changing_them() {
-        let original = rustix::process::geteuid().as_raw();
-        check_credentials(original).unwrap();
-        assert!(check_credentials(original.wrapping_add(1)).is_err());
-        assert_eq!(rustix::process::geteuid().as_raw(), original);
-        check_credentials(original).unwrap();
-    }
+        phase original_filesystem_credentials_are_required_without_changing_them;
+        {
+            let original = rustix::process::geteuid().as_raw();
+            check_credentials(original).unwrap();
+            assert!(check_credentials(original.wrapping_add(1)).is_err());
+            assert_eq!(rustix::process::geteuid().as_raw(), original);
+            check_credentials(original).unwrap();
+        }
 
-    #[test]
-    fn actual_capture_projection_is_readonly_and_exposes_no_source_ancestor() {
-        let root = tempfile::tempdir().unwrap();
-        let selected = root.path().join("selected");
-        std::fs::create_dir(&selected).unwrap();
-        std::fs::write(selected.join("document"), b"original data").unwrap();
-        std::fs::write(root.path().join("outside-secret"), b"unselected").unwrap();
-        let held = File::open(&selected).unwrap();
-        let host_network = std::fs::read_link("/proc/self/ns/net").unwrap();
-        let mut argv = vec![
-            "--unshare-all".into(),
-            "--die-with-parent".into(),
-            "--ro-bind".into(),
-            "/usr".into(),
-            "/usr".into(),
-            "--ro-bind".into(),
-            "/lib".into(),
-            "/lib".into(),
-            "--ro-bind".into(),
-            "/lib64".into(),
-            "/lib64".into(),
-            "--proc".into(),
-            "/proc".into(),
-            "--dev".into(),
-            "/dev".into(),
-            "--tmpfs".into(),
-            "/tmp".into(),
-            "--dir".into(),
-            "/run/tilo".into(),
-        ];
-        splice(&mut argv, &mut Vec::new());
-        let script = format!(
-            "set -eu; test \"$(cat {SOURCE_PATH}/document)\" = 'original data'; \
+        phase actual_capture_projection_is_readonly_and_exposes_no_source_ancestor;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let selected = root.path().join("selected");
+            std::fs::create_dir(&selected).unwrap();
+            std::fs::write(selected.join("document"), b"original data").unwrap();
+            std::fs::write(root.path().join("outside-secret"), b"unselected").unwrap();
+            let held = File::open(&selected).unwrap();
+            let host_network = std::fs::read_link("/proc/self/ns/net").unwrap();
+            let mut argv = vec![
+                "--unshare-all".into(),
+                "--die-with-parent".into(),
+                "--ro-bind".into(),
+                "/usr".into(),
+                "/usr".into(),
+                "--ro-bind".into(),
+                "/lib".into(),
+                "/lib".into(),
+                "--ro-bind".into(),
+                "/lib64".into(),
+                "/lib64".into(),
+                "--proc".into(),
+                "/proc".into(),
+                "--dev".into(),
+                "/dev".into(),
+                "--tmpfs".into(),
+                "/tmp".into(),
+                "--dir".into(),
+                "/run/tilo".into(),
+            ];
+            splice(&mut argv, &mut Vec::new());
+            let script = format!(
+                "set -eu; test \"$(cat {SOURCE_PATH}/document)\" = 'original data'; \
             if printf changed > {SOURCE_PATH}/document; then exit 31; fi; \
             test ! -e '{}'; test ! -e {SOURCE_PATH}/../outside-secret; \
             readlink /proc/self/ns/net",
-            root.path().join("outside-secret").display()
-        );
-        argv.extend(["/usr/bin/sh".into(), "-c".into(), script]);
-        let mut command = std::process::Command::new("/usr/bin/bwrap");
-        command.args(argv);
-        let raw = held.as_raw_fd();
-        unsafe {
-            command.pre_exec(move || {
-                if libc::dup2(raw, SOURCE_FD) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
+                root.path().join("outside-secret").display()
+            );
+            argv.extend(["/usr/bin/sh".into(), "-c".into(), script]);
+            let mut command = std::process::Command::new("/usr/bin/bwrap");
+            command.args(argv);
+            let raw = held.as_raw_fd();
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::dup2(raw, SOURCE_FD) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let output = command.output_locked().unwrap();
+            assert!(
+                output.status.success(),
+                "actual confinement unavailable or violated: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_ne!(
+                String::from_utf8(output.stdout).unwrap().trim(),
+                host_network.to_str().unwrap()
+            );
+            assert_eq!(
+                std::fs::read(selected.join("document")).unwrap(),
+                b"original data"
+            );
         }
-        let output = command.output_locked().unwrap();
-        assert!(
-            output.status.success(),
-            "actual confinement unavailable or violated: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_ne!(
-            String::from_utf8(output.stdout).unwrap().trim(),
-            host_network.to_str().unwrap()
-        );
-        assert_eq!(
-            std::fs::read(selected.join("document")).unwrap(),
-            b"original data"
-        );
     }
 }

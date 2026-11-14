@@ -149,15 +149,16 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
     (runs, underlines, strikes)
 }
 
-/// Mark boundaries avoid per-character resolution and merge equal styles, and their runs match the
-/// per-character reference.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
-fn mark_boundary_runs_merge_equal_styles_and_match_the_reference() {
-    // Phase: mark_boundaries_avoid_per_character_resolution_and_merge_equal_styles.
+tilo_test_env::scenario! {
+    /// Mark boundaries avoid per-character resolution and merge equal styles, and their runs match the
+    /// per-character reference.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn mark_boundary_runs_merge_equal_styles_and_match_the_reference;
+
+    phase mark_boundaries_avoid_per_character_resolution_and_merge_equal_styles;
     {
         let marks = vec![MarkSpan {
             start: 100,
@@ -180,7 +181,7 @@ fn mark_boundary_runs_merge_equal_styles_and_match_the_reference() {
         assert!(mark_style_segments(0, &marks, |_| true).is_empty());
     }
 
-    // Phase: mark_boundary_runs_match_per_character_reference.
+    phase mark_boundary_runs_match_per_character_reference;
     {
         let names = [
             "strong",

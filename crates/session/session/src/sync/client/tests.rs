@@ -25,7 +25,6 @@ fn topic(workspace: &str) -> WorkspaceId {
 fn desk(workspace: &str) -> DesktopTree {
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
-    assert_eq!(topic(&workspace.as_uuid().to_string()), slot.raw());
     let workspace = Workspace::in_workspace(slot, workspace, "Desk");
     DesktopTree {
         workspaces: vec![workspace.clone()],
@@ -64,7 +63,7 @@ fn list_of(
     );
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     directory
-        .add_workspace_with_topic(topic_of(workspace), &workspace.to_string(), "Desk")
+        .add_workspace(workspace, "Desk")
         .expect("a listed workspace");
     let update = directory
         .signed_snapshot(signing, tilo_clock::unix_now_ns())
@@ -318,7 +317,7 @@ fn a_list_is_kept_only_from_the_device_that_said_it() {
 }
 
 #[test]
-fn a_peer_here_is_a_collaborator_of_the_active_workspace() {
+fn a_peer_here_is_a_member_of_the_active_workspace() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
     here(&sync, 1);
@@ -329,12 +328,13 @@ fn a_peer_here_is_a_collaborator_of_the_active_workspace() {
     assert_eq!(people[0].label, "Framework 16");
     assert_eq!(people[0].user, Some(person(0xaa)));
 
-    let collaborators = &tree.workspaces[0].collaborators;
-    assert_eq!(collaborators.len(), 1);
-    assert_eq!(collaborators[0].id, device(1).to_string());
-    assert_eq!(collaborators[0].name, "Framework 16");
-    assert!(collaborators[0].cursor_color.is_some());
-    assert_eq!(collaborators[0].role_id, None);
+    let members = &tree.workspaces[0].members;
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].name, "Framework 16");
+    assert!(members[0].id.is_person());
+    let here = &tree.workspaces[0].present;
+    assert_eq!(here.len(), 1);
+    assert_eq!(here[0].device, device(1).to_string());
 }
 
 /// The person came to a workspace where people already are: the bar says who is here, once, not on
@@ -453,7 +453,7 @@ fn a_peer_away_is_away_on_the_roster() {
     let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people[0].availability, ui::Availability::Away);
     assert!(people[0].availability.dims());
-    let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+    let rows = tilo_desktop::people::roster_rows(&tree, "me");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].availability, ui::Availability::Away);
 
@@ -461,7 +461,7 @@ fn a_peer_away_is_away_on_the_roster() {
     heard(&sync, 1, WORKSPACE, away("focusing"));
     let mut tree = desk(WORKSPACE);
     sync.show(&mut tree, &no_records(), &|_| None);
-    let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+    let rows = tilo_desktop::people::roster_rows(&tree, "me");
     assert_eq!(rows[0].availability, ui::Availability::Focusing);
     assert!(!rows[0].availability.dims());
 }
@@ -525,7 +525,7 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
         [(true, false)],
         "the camera this device turned on is what the peer reads"
     );
-    let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+    let rows = tilo_desktop::people::roster_rows(&tree, "me");
     assert_eq!(rows[0].call.as_deref(), Some("Voice"));
 
     // Out of the call, the peer's roster says nothing of a channel.
@@ -573,7 +573,7 @@ fn a_peer_who_leaves_leaves_the_roster() {
 
     let mut tree = desk(WORKSPACE);
     sync.show(&mut tree, &no_records(), &|_| None);
-    assert!(tree.workspaces[0].collaborators.is_empty());
+    assert!(tree.workspaces[0].members.is_empty());
 }
 
 /// Two relays nobody listens on: this endpoint never has a home relay to be published with, so the
@@ -926,11 +926,12 @@ fn this_devices_endpoint_holds_back_the_relays_its_person_chose() {
     let own = tilo_endpoint_reachability::EndpointRelays::for_choice(
         &settings_store::relay::Relays::Own("https://relay.example.com.".into()),
     );
-    let held = endpoint_for(Some(&identity), &own)
+    let lan = tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {}));
+    let held = endpoint_for(Some(&identity), &own, &lan)
         .expect("an endpoint to bind")
         .1;
     assert_eq!(held.urls::<Vec<_>>(), own.relays.urls::<Vec<_>>());
-    let nobody = endpoint_for(None, &own)
+    let nobody = endpoint_for(None, &own, &lan)
         .expect("a loopback endpoint to bind")
         .1;
     assert!(
@@ -1264,7 +1265,7 @@ fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
 /// each other's lines as their devices said them.
 #[test]
 fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
-    use tilo_desktop::collaborators::LineSource::{Observed, Written};
+    use tilo_desktop::people::LineSource::{Observed, Written};
 
     let (page_device, desk_device, agent_device) = (0xa0, 0xd0, 0xc0);
     let (page, _page_said) = Client::offline(device(page_device), saying("Ada", 2, None));
@@ -1433,7 +1434,7 @@ fn saying(label: &str, user: u8, status: Option<(&str, bool)>) -> OwnPresence {
 type RosterRow = (
     String,
     bool,
-    Option<(String, tilo_desktop::collaborators::LineSource)>,
+    Option<(String, tilo_desktop::people::LineSource)>,
     (u8, u8, u8),
 );
 
@@ -1485,4 +1486,156 @@ fn mcp_agent_frames(device_seed: u8) -> Vec<Presence> {
         .into_iter()
         .map(|(_, frame)| frame)
         .collect()
+}
+
+/// What the test host below answers on: it echoes what it is sent.
+const ECHO_ALPN: &[u8] = b"tilo-test/echo/0";
+
+/// What `endpoint` hears back from the host at `host` on [`ECHO_ALPN`], or why it heard nothing
+/// within `within`.
+async fn echoed(
+    endpoint: &iroh::Endpoint,
+    host: EndpointAddr,
+    within: Duration,
+) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(within, async {
+        let connection = endpoint
+            .connect(host, ECHO_ALPN)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (mut send, mut receive) = connection
+            .open_bi()
+            .await
+            .map_err(|error| error.to_string())?;
+        send.write_all(b"here")
+            .await
+            .map_err(|error| error.to_string())?;
+        send.finish().map_err(|error| error.to_string())?;
+        receive
+            .read_to_end(64)
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| format!("nothing answered within {within:?}"))?
+}
+
+/// The endpoint this device's session binds, as `listening` binds it: dialling a host through what
+/// the session heard of it (`heard`) and where the session reached it (`reached`).
+async fn session_endpoint(
+    reached: &Reached,
+    heard: &iroh::address_lookup::memory::MemoryLookup,
+) -> iroh::Endpoint {
+    let (cert, key) = certified(1, 2, "here");
+    let identity = HostIdentity::kept(cert, key);
+    let relays = tilo_endpoint_reachability::EndpointRelays::for_choice(
+        &settings_store::relay::Relays::None,
+    );
+    let lan = tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {}));
+    let (builder, _) = endpoint_for(Some(&identity), &relays, &lan).expect("an endpoint to bind");
+    reached
+        .resolving(builder, heard)
+        .bind()
+        .await
+        .expect("the session's endpoint binds")
+}
+
+/// A host behind a NAT, a port forward or a VM's network says it is where it sees itself: its own
+/// loopback and a packet relay of its own network, which from where this device is are nobody.
+/// This device was given the address it reaches the host at, and reached it there: everything after
+/// that first contact (the join, the workspace's sessions, the host's actions) reaches the host
+/// there too, while the host's own address stays heard beside it.
+#[test]
+fn a_host_is_dialled_where_this_device_reached_it_whatever_it_says_of_itself() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for the endpoints");
+    runtime.block_on(async {
+        let host = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("a loopback address")
+            .alpns(vec![ECHO_ALPN.to_vec()])
+            .bind()
+            .await
+            .expect("the host binds");
+        let serving = host.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = serving.accept().await {
+                tokio::spawn(async move {
+                    let Ok(connection) = incoming.await else {
+                        return;
+                    };
+                    while let Ok((mut send, mut receive)) = connection.accept_bi().await {
+                        let said = receive.read_to_end(64).await.unwrap_or_default();
+                        let _ = send.write_all(&said).await;
+                        let _ = send.finish();
+                    }
+                });
+            }
+        });
+        // Where the host says it is: nothing listens there.
+        let nowhere: std::net::SocketAddr = "127.0.0.1:9".parse().expect("an address");
+        let says = EndpointAddr::from_parts(
+            host.id(),
+            [
+                iroh::TransportAddr::Ip(nowhere),
+                iroh::TransportAddr::Relay("http://127.0.0.1:9/".parse().expect("a relay url")),
+            ],
+        );
+        // Where this device was told the host is, and reached it: the first contact is made the way
+        // a VM's session makes it, on an endpoint of its own.
+        let given = host.addr();
+        let first = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .expect("the first contact's endpoint binds");
+        assert_eq!(
+            echoed(&first, given.clone(), Duration::from_secs(10)).await,
+            Ok(b"here".to_vec()),
+            "the host answers where this device was told it is"
+        );
+        first.close().await;
+
+        let reached = Reached::default();
+        reached.note(&given);
+        let heard = iroh::address_lookup::memory::MemoryLookup::new();
+        let session = session_endpoint(&reached, &heard).await;
+        // What the host says of itself is heard, as a workspace's host address is.
+        heard.add_endpoint_info(says.clone());
+        assert_eq!(
+            echoed(&session, says.clone(), Duration::from_secs(10)).await,
+            Ok(b"here".to_vec()),
+            "the host is dialled where this device reached it"
+        );
+        assert_eq!(
+            echoed(
+                &session,
+                EndpointAddr::new(host.id()),
+                Duration::from_secs(10)
+            )
+            .await,
+            Ok(b"here".to_vec()),
+            "and by its id alone"
+        );
+        session.close().await;
+
+        // A device that never reached the host has nothing but what the host says of itself.
+        let stranger = session_endpoint(
+            &Reached::default(),
+            &iroh::address_lookup::memory::MemoryLookup::new(),
+        )
+        .await;
+        assert!(
+            echoed(&stranger, says, Duration::from_secs(3))
+                .await
+                .is_err(),
+            "where the host says it is reaches nobody"
+        );
+        stranger.close().await;
+        host.close().await;
+    });
 }

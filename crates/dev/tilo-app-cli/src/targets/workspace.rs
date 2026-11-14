@@ -359,47 +359,55 @@ fn write_secret(path: &Path, text: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn one_page_opens_an_apps_record_and_everyone_else_waits_for_it() {
-        let mut records = Records::default();
-        let now = Instant::now();
-        let first = records.claim("so.example.app", true, now);
-        assert_eq!(
-            first,
-            RecordClaim {
-                record: None,
-                open: true
-            }
-        );
-        let second = records.claim("so.example.app", true, now);
-        assert_eq!(
-            second,
-            RecordClaim {
-                record: None,
-                open: false
-            },
-            "one opens it"
-        );
-        records.opened("so.example.app", "derived:default@tab:0000000000000001");
-        records.opened("so.example.app", "derived:default@tab:0000000000000002");
-        let later = records.claim("so.example.app", true, now);
-        assert_eq!(
-            later.record.as_deref(),
-            Some("derived:default@tab:0000000000000001")
-        );
-        assert!(!later.open);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn one_page_at_a_time_opens_an_apps_record;
 
-    #[test]
-    fn a_page_that_never_opens_the_record_lets_another_open_it() {
-        let mut records = Records::default();
-        let now = Instant::now();
-        assert!(records.claim("so.example.app", true, now).open);
-        let late = now + OPENING_TIMEOUT + Duration::from_secs(1);
-        assert!(records.claim("so.example.app", true, late).open);
-        assert!(
-            !records.claim("so.example.app", false, late).open,
-            "asking is not opening"
-        );
+        phase one_page_opens_an_apps_record_and_everyone_else_waits_for_it;
+        {
+            let mut records = Records::default();
+            let now = Instant::now();
+            let first = records.claim("so.example.app", true, now);
+            assert_eq!(
+                first,
+                RecordClaim {
+                    record: None,
+                    open: true
+                }
+            );
+            let second = records.claim("so.example.app", true, now);
+            assert_eq!(
+                second,
+                RecordClaim {
+                    record: None,
+                    open: false
+                },
+                "one opens it"
+            );
+            records.opened("so.example.app", "derived:default@tab:0000000000000001");
+            records.opened("so.example.app", "derived:default@tab:0000000000000002");
+            let later = records.claim("so.example.app", true, now);
+            assert_eq!(
+                later.record.as_deref(),
+                Some("derived:default@tab:0000000000000001")
+            );
+            assert!(!later.open);
+        }
+
+        phase a_page_that_never_opens_the_record_lets_another_open_it;
+        {
+            let mut records = Records::default();
+            let now = Instant::now();
+            assert!(records.claim("so.example.app", true, now).open);
+            let late = now + OPENING_TIMEOUT + Duration::from_secs(1);
+            assert!(records.claim("so.example.app", true, late).open);
+            assert!(
+                !records.claim("so.example.app", false, late).open,
+                "asking is not opening"
+            );
+        }
     }
 }

@@ -482,319 +482,323 @@ mod tests {
         )
     }
 
-    /// `flatpak run` drops X11 for a `fallback-x11` app when a Wayland socket is
-    /// set, so 1Password's X11 clipboard had no server to open. The plan asks for
-    /// the socket whenever there is a workspace display to give.
-    #[test]
-    fn a_flatpak_is_given_the_x11_bridge_it_would_otherwise_drop() {
-        let bridged = LaunchEnv {
-            wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
-            x11_display: Some(":13625".into()),
-            ..Default::default()
-        };
-        let launch = plan(&spotify(), &bridged).expect("plans");
-        assert_eq!(
-            launch.args,
-            vec![
-                "run",
-                "--socket=x11",
-                "--file-forwarding",
-                "com.spotify.Client"
-            ]
-        );
-        let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
-        assert!(
-            !launch.args.iter().any(|arg| arg.starts_with("--socket")),
-            "no bridge, no socket request"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each phase keeps one former test's body verbatim"
+        )]
+        fn a_host_launch_is_planned_from_its_entry_and_the_display_handoff;
 
-    #[test]
-    fn launch_plans_unwrap_flatpaks_refuse_unrunnable_entries_and_carry_documents() {
+        phase a_flatpak_is_given_the_x11_bridge_it_would_otherwise_drop;
+        // `flatpak run` drops X11 for a `fallback-x11` app when a Wayland socket is
+        // set, so 1Password's X11 clipboard had no server to open. The plan asks for
+        // the socket whenever there is a workspace display to give.
         {
-            let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
-            assert_eq!(launch.program, PathBuf::from("/usr/bin/flatpak"));
-            assert_eq!(
-                launch.args,
-                vec!["run", "--file-forwarding", "com.spotify.Client"]
-            );
-            assert_eq!(
-                launch.source,
-                EntrySource::Flatpak {
-                    app_id: "com.spotify.Client".into()
-                }
-            );
-        }
-        {
-            let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
-            assert!(!launch.is_confined());
-        }
-        {
-            let launch = plan(
-                &spotify(),
-                &LaunchEnv {
-                    files: vec!["/tmp/a.txt".into()],
-                    ..Default::default()
-                },
-            )
-            .expect("plans");
+            let bridged = LaunchEnv {
+                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
+                x11_display: Some(":13625".into()),
+                ..Default::default()
+            };
+            let launch = plan(&spotify(), &bridged).expect("plans");
             assert_eq!(
                 launch.args,
                 vec![
                     "run",
+                    "--socket=x11",
                     "--file-forwarding",
-                    "com.spotify.Client",
-                    "@@u",
-                    "file:///tmp/a.txt",
-                    "@@"
+                    "com.spotify.Client"
                 ]
             );
-        }
-        {
-            let e = entry(
-                "[Desktop Entry]\nType=Application\nName=htop\nExec=/usr/bin/htop\nTerminal=true\n",
-                "htop",
-            );
-            assert!(matches!(
-                plan(&e, &LaunchEnv::default()),
-                Err(HostLaunchError::NeedsTerminal { .. })
-            ));
-        }
-        {
-            let e = entry(
-                "[Desktop Entry]\nType=Link\nName=Site\nURL=https://example.com\n",
-                "site",
-            );
-            assert!(matches!(
-                plan(&e, &LaunchEnv::default()),
-                Err(HostLaunchError::NotAnApplication { .. })
-            ));
-        }
-        {
             let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
-            assert_eq!(
-                launch.window_identities,
-                vec!["spotify", "com.spotify.Client"]
+            assert!(
+                !launch.args.iter().any(|arg| arg.starts_with("--socket")),
+                "no bridge, no socket request"
             );
         }
-    }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn launch_environment_carries_only_the_display_handoff_and_no_tilo_authority() {
+        phase launch_plans_unwrap_flatpaks_refuse_unrunnable_entries_and_carry_documents;
         {
-            let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
-            for absent in [
-                "TILO_WORKSPACE_ID",
-                "TILO_APP_DIR",
-                "TILO_USER_IDENTITY",
-                "TILO_NET_GATE",
-            ] {
-                assert!(
-                    !launch.env.contains_key(absent),
-                    "{absent} describes a confinement a host app does not have"
+            {
+                let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+                assert_eq!(launch.program, PathBuf::from("/usr/bin/flatpak"));
+                assert_eq!(
+                    launch.args,
+                    vec!["run", "--file-forwarding", "com.spotify.Client"]
+                );
+                assert_eq!(
+                    launch.source,
+                    EntrySource::Flatpak {
+                        app_id: "com.spotify.Client".into()
+                    }
                 );
             }
-            assert_eq!(launch.env.get(HOST_APP_ENV).map(String::as_str), Some("1"));
-        }
-        {
-            let launch = plan(
-                &spotify(),
-                &LaunchEnv {
-                    wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
-                    ..Default::default()
-                },
-            )
-            .expect("plans");
-            assert_eq!(
-                launch.env.get("WAYLAND_DISPLAY").map(String::as_str),
-                Some("wayland-3")
-            );
-            assert_eq!(
-                launch.env.get("XDG_RUNTIME_DIR").map(String::as_str),
-                Some("/run/user/1000")
-            );
-            assert_eq!(
-                launch.env.get("XDG_CURRENT_DESKTOP").map(String::as_str),
-                Some("tilo:GNOME")
-            );
-            assert!(
-                !launch.env.contains_key("DISPLAY"),
-                "without an explicit Xwayland bridge, a stale DISPLAY is worse than none"
-            );
-        }
-        {
-            let launch = plan(
-                &spotify(),
-                &LaunchEnv {
-                    activation_token: Some("one-shot-token".into()),
-                    x11_display: Some(":42".into()),
-                    ..Default::default()
-                },
-            )
-            .expect("plans");
-            assert_eq!(
-                launch.env.get("XDG_ACTIVATION_TOKEN").map(String::as_str),
-                Some("one-shot-token")
-            );
-            assert_eq!(
-                launch.env.get("DESKTOP_STARTUP_ID").map(String::as_str),
-                Some("one-shot-token"),
-                "classic X11 clients receive the startup-notification bridge too; xwayland-satellite itself reads XDG_ACTIVATION_TOKEN"
-            );
-            assert!(!launch.env.contains_key("TILO_HOST_ACTIVATION_TOKEN"));
-        }
-        {
-            let launch = plan(
-                &spotify(),
-                &LaunchEnv {
-                    wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
-                    x11_display: Some(":1234".into()),
-                    ..Default::default()
-                },
-            )
-            .expect("plans");
-            assert_eq!(launch.env.get("DISPLAY").map(String::as_str), Some(":1234"));
-            assert_eq!(
-                launch
-                    .env
-                    .get("_JAVA_AWT_WM_NONREPARENTING")
-                    .map(String::as_str),
-                Some("1")
-            );
-            assert_eq!(
-                launch.env.get("XMODIFIERS").map(String::as_str),
-                Some("@im=fcitx"),
-                "X11 apps find the session's input method over XIM"
-            );
-            assert_eq!(
-                launch
-                    .env
-                    .get("QT_AUTO_SCREEN_SCALE_FACTOR")
-                    .map(String::as_str),
-                Some("1")
-            );
-            assert_eq!(
-                launch
-                    .env
-                    .get("QT_ENABLE_HIGHDPI_SCALING")
-                    .map(String::as_str),
-                Some("1")
-            );
-        }
-        {
-            let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
-            let cmd = launch.to_command();
-            let vars: Vec<String> = cmd
-                .get_envs()
-                .filter_map(|(k, v)| v.map(|_| k.to_string_lossy().to_string()))
-                .collect();
-            for k in launch.env.keys() {
-                assert!(vars.contains(k), "{k} must reach the child");
+            {
+                let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+                assert!(!launch.is_confined());
             }
-            assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/flatpak"));
-        }
-        {
-            let probe = entry(
-                "[Desktop Entry]\nType=Application\nName=Environment probe\nExec=/usr/bin/env\n",
-                "org.example.EnvProbe",
-            );
-            let launch = plan(
-                &probe,
-                &LaunchEnv {
-                    wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-tilo")),
-                    x11_display: Some(":71".into()),
-                    ..Default::default()
-                },
-            )
-            .expect("plans");
-            let output = launch
-                .to_command()
-                .output_locked()
-                .expect("run environment probe");
-            assert!(output.status.success());
-            let stdout = String::from_utf8(output.stdout).expect("environment is UTF-8");
-            for expected in [
-                "WAYLAND_DISPLAY=wayland-tilo",
-                "XDG_RUNTIME_DIR=/run/user/1000",
-                "DISPLAY=:71",
-                "XDG_CURRENT_DESKTOP=tilo:GNOME",
-                "XDG_SESSION_DESKTOP=tilo",
-                "QT_AUTO_SCREEN_SCALE_FACTOR=1",
-                "QT_ENABLE_HIGHDPI_SCALING=1",
-                "ELECTRON_OZONE_PLATFORM_HINT=auto",
-                "MOZ_GTK_TITLEBAR_DECORATION=none",
-                "TILO_HOST_APP=1",
-            ] {
-                assert!(
-                    stdout.lines().any(|line| line == expected),
-                    "missing {expected}"
+            {
+                let launch = plan(
+                    &spotify(),
+                    &LaunchEnv {
+                        files: vec!["/tmp/a.txt".into()],
+                        ..Default::default()
+                    },
+                )
+                .expect("plans");
+                assert_eq!(
+                    launch.args,
+                    vec![
+                        "run",
+                        "--file-forwarding",
+                        "com.spotify.Client",
+                        "@@u",
+                        "file:///tmp/a.txt",
+                        "@@"
+                    ]
                 );
             }
-            assert!(
-                !stdout
-                    .lines()
-                    .any(|line| line.starts_with("TILO_WORKSPACE_ID=")),
-                "portal attribution must never become ambient workspace authority"
-            );
+            {
+                let e = entry(
+                    "[Desktop Entry]\nType=Application\nName=htop\nExec=/usr/bin/htop\nTerminal=true\n",
+                    "htop",
+                );
+                assert!(matches!(
+                    plan(&e, &LaunchEnv::default()),
+                    Err(HostLaunchError::NeedsTerminal { .. })
+                ));
+            }
+            {
+                let e = entry(
+                    "[Desktop Entry]\nType=Link\nName=Site\nURL=https://example.com\n",
+                    "site",
+                );
+                assert!(matches!(
+                    plan(&e, &LaunchEnv::default()),
+                    Err(HostLaunchError::NotAnApplication { .. })
+                ));
+            }
+            {
+                let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+                assert_eq!(
+                    launch.window_identities,
+                    vec!["spotify", "com.spotify.Client"]
+                );
+            }
         }
-    }
 
-    #[test]
-    fn a_terminal_entry_yields_the_argv_its_terminal_runs() {
-        let e = entry(
-            "[Desktop Entry]\nType=Application\nName=Vim\nExec=vim -- %F\nTerminal=true\n",
-            "vim",
-        );
-        let argv = terminal_argv(
-            &e,
-            &LaunchEnv {
-                files: vec!["/home/u/notes.txt".into()],
-                ..Default::default()
-            },
-        )
-        .expect("a runnable argv");
-        assert_eq!(argv, vec!["vim", "--", "/home/u/notes.txt"]);
-    }
+        phase launch_environment_carries_only_the_display_handoff_and_no_tilo_authority;
+        {
+            {
+                let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+                for absent in [
+                    "TILO_WORKSPACE_ID",
+                    "TILO_APP_DIR",
+                    "TILO_USER_IDENTITY",
+                    "TILO_NET_GATE",
+                ] {
+                    assert!(
+                        !launch.env.contains_key(absent),
+                        "{absent} describes a confinement a host app does not have"
+                    );
+                }
+                assert_eq!(launch.env.get(HOST_APP_ENV).map(String::as_str), Some("1"));
+            }
+            {
+                let launch = plan(
+                    &spotify(),
+                    &LaunchEnv {
+                        wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
+                        ..Default::default()
+                    },
+                )
+                .expect("plans");
+                assert_eq!(
+                    launch.env.get("WAYLAND_DISPLAY").map(String::as_str),
+                    Some("wayland-3")
+                );
+                assert_eq!(
+                    launch.env.get("XDG_RUNTIME_DIR").map(String::as_str),
+                    Some("/run/user/1000")
+                );
+                assert_eq!(
+                    launch.env.get("XDG_CURRENT_DESKTOP").map(String::as_str),
+                    Some("tilo:GNOME")
+                );
+                assert!(
+                    !launch.env.contains_key("DISPLAY"),
+                    "without an explicit Xwayland bridge, a stale DISPLAY is worse than none"
+                );
+            }
+            {
+                let launch = plan(
+                    &spotify(),
+                    &LaunchEnv {
+                        activation_token: Some("one-shot-token".into()),
+                        x11_display: Some(":42".into()),
+                        ..Default::default()
+                    },
+                )
+                .expect("plans");
+                assert_eq!(
+                    launch.env.get("XDG_ACTIVATION_TOKEN").map(String::as_str),
+                    Some("one-shot-token")
+                );
+                assert_eq!(
+                    launch.env.get("DESKTOP_STARTUP_ID").map(String::as_str),
+                    Some("one-shot-token"),
+                    "classic X11 clients receive the startup-notification bridge too; xwayland-satellite itself reads XDG_ACTIVATION_TOKEN"
+                );
+                assert!(!launch.env.contains_key("TILO_HOST_ACTIVATION_TOKEN"));
+            }
+            {
+                let launch = plan(
+                    &spotify(),
+                    &LaunchEnv {
+                        wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
+                        x11_display: Some(":1234".into()),
+                        ..Default::default()
+                    },
+                )
+                .expect("plans");
+                assert_eq!(launch.env.get("DISPLAY").map(String::as_str), Some(":1234"));
+                assert_eq!(
+                    launch
+                        .env
+                        .get("_JAVA_AWT_WM_NONREPARENTING")
+                        .map(String::as_str),
+                    Some("1")
+                );
+                assert_eq!(
+                    launch.env.get("XMODIFIERS").map(String::as_str),
+                    Some("@im=fcitx"),
+                    "X11 apps find the session's input method over XIM"
+                );
+                assert_eq!(
+                    launch
+                        .env
+                        .get("QT_AUTO_SCREEN_SCALE_FACTOR")
+                        .map(String::as_str),
+                    Some("1")
+                );
+                assert_eq!(
+                    launch
+                        .env
+                        .get("QT_ENABLE_HIGHDPI_SCALING")
+                        .map(String::as_str),
+                    Some("1")
+                );
+            }
+            {
+                let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+                let cmd = launch.to_command();
+                let vars: Vec<String> = cmd
+                    .get_envs()
+                    .filter_map(|(k, v)| v.map(|_| k.to_string_lossy().to_string()))
+                    .collect();
+                for k in launch.env.keys() {
+                    assert!(vars.contains(k), "{k} must reach the child");
+                }
+                assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/flatpak"));
+            }
+            {
+                let probe = entry(
+                    "[Desktop Entry]\nType=Application\nName=Environment probe\nExec=/usr/bin/env\n",
+                    "org.example.EnvProbe",
+                );
+                let launch = plan(
+                    &probe,
+                    &LaunchEnv {
+                        wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-tilo")),
+                        x11_display: Some(":71".into()),
+                        ..Default::default()
+                    },
+                )
+                .expect("plans");
+                let output = launch
+                    .to_command()
+                    .output_locked()
+                    .expect("run environment probe");
+                assert!(output.status.success());
+                let stdout = String::from_utf8(output.stdout).expect("environment is UTF-8");
+                for expected in [
+                    "WAYLAND_DISPLAY=wayland-tilo",
+                    "XDG_RUNTIME_DIR=/run/user/1000",
+                    "DISPLAY=:71",
+                    "XDG_CURRENT_DESKTOP=tilo:GNOME",
+                    "XDG_SESSION_DESKTOP=tilo",
+                    "QT_AUTO_SCREEN_SCALE_FACTOR=1",
+                    "QT_ENABLE_HIGHDPI_SCALING=1",
+                    "ELECTRON_OZONE_PLATFORM_HINT=auto",
+                    "MOZ_GTK_TITLEBAR_DECORATION=none",
+                    "TILO_HOST_APP=1",
+                ] {
+                    assert!(
+                        stdout.lines().any(|line| line == expected),
+                        "missing {expected}"
+                    );
+                }
+                assert!(
+                    !stdout
+                        .lines()
+                        .any(|line| line.starts_with("TILO_WORKSPACE_ID=")),
+                    "portal attribution must never become ambient workspace authority"
+                );
+            }
+        }
 
-    #[test]
-    fn reopening_a_singleton_prefers_its_declared_new_window_action() {
-        let editor = entry(
-            "[Desktop Entry]\nType=Application\nName=Text Editor\nExec=editor %U\n\
+        phase a_terminal_entry_yields_the_argv_its_terminal_runs;
+        {
+            let e = entry(
+                "[Desktop Entry]\nType=Application\nName=Vim\nExec=vim -- %F\nTerminal=true\n",
+                "vim",
+            );
+            let argv = terminal_argv(
+                &e,
+                &LaunchEnv {
+                    files: vec!["/home/u/notes.txt".into()],
+                    ..Default::default()
+                },
+            )
+            .expect("a runnable argv");
+            assert_eq!(argv, vec!["vim", "--", "/home/u/notes.txt"]);
+        }
+
+        phase reopening_a_singleton_prefers_its_declared_new_window_action;
+        {
+            let editor = entry(
+                "[Desktop Entry]\nType=Application\nName=Text Editor\nExec=editor %U\n\
              Actions=new-window;\n\n[Desktop Action new-window]\nName=New Window\nExec=editor --new-window\n",
-            "org.example.Editor",
-        );
-        let ordinary = plan(&editor, &LaunchEnv::default()).expect("ordinary launch plans");
-        let reopened = plan(
-            &editor,
-            &LaunchEnv {
-                prefer_new_window: true,
-                ..LaunchEnv::default()
-            },
-        )
-        .expect("reopen plans");
+                "org.example.Editor",
+            );
+            let ordinary = plan(&editor, &LaunchEnv::default()).expect("ordinary launch plans");
+            let reopened = plan(
+                &editor,
+                &LaunchEnv {
+                    prefer_new_window: true,
+                    ..LaunchEnv::default()
+                },
+            )
+            .expect("reopen plans");
 
-        assert!(ordinary.args.is_empty());
-        assert_eq!(reopened.args, ["--new-window"]);
-    }
+            assert!(ordinary.args.is_empty());
+            assert_eq!(reopened.args, ["--new-window"]);
+        }
 
-    #[test]
-    fn reopening_without_a_new_window_action_keeps_the_primary_exec() {
-        let launch = plan(
-            &spotify(),
-            &LaunchEnv {
-                prefer_new_window: true,
-                ..LaunchEnv::default()
-            },
-        )
-        .expect("fallback plans");
-        assert_eq!(
-            launch.args,
-            ["run", "--file-forwarding", "com.spotify.Client"]
-        );
+        phase reopening_without_a_new_window_action_keeps_the_primary_exec;
+        {
+            let launch = plan(
+                &spotify(),
+                &LaunchEnv {
+                    prefer_new_window: true,
+                    ..LaunchEnv::default()
+                },
+            )
+            .expect("fallback plans");
+            assert_eq!(
+                launch.args,
+                ["run", "--file-forwarding", "com.spotify.Client"]
+            );
+        }
     }
 
     #[test]

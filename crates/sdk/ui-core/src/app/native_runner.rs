@@ -1973,9 +1973,6 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
                     ..
                 }
-                | crate::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
-                    ..
-                }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
                 }

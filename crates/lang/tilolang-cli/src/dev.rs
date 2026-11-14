@@ -1890,43 +1890,79 @@ fn dev_build_dir(state: &Path, dir: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    /// Two packages developed at once build apart; the
-    /// same package always builds where it did before.
-    #[test]
-    fn each_developed_package_builds_in_its_own_directory() {
-        let checkout = tempfile::tempdir().unwrap();
-        let (notes, tasks) = (checkout.path().join("notes"), checkout.path().join("tasks"));
-        std::fs::create_dir_all(&notes).unwrap();
-        std::fs::create_dir_all(&tasks).unwrap();
-        let state = Path::new("/session/state");
-        let one = dev_build_dir(state, &notes).unwrap();
-        assert_ne!(one, dev_build_dir(state, &tasks).unwrap());
-        assert_eq!(one, dev_build_dir(state, &notes.join(".")).unwrap());
-        assert!(
-            one.starts_with(state.join("dev-build")),
-            "{}",
-            one.display()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_dev_loop_knows_its_builds_and_its_watches;
 
-    #[test]
-    fn a_build_of_another_architecture_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let this = std::env::current_exe().unwrap();
-        check_architecture(&this).unwrap();
-        let mut other = std::fs::read(&this).unwrap();
-        let foreign: u16 = if cfg!(target_arch = "aarch64") {
-            62
-        } else {
-            183
-        };
-        other[18..20].copy_from_slice(&foreign.to_le_bytes());
-        let path = dir.path().join("tilolang-app");
-        std::fs::write(&path, &other).unwrap();
-        let error = check_architecture(&path).unwrap_err();
-        assert!(error.contains("is not built for"), "{error}");
-        std::fs::write(&path, b"#!/bin/sh\nexit 0\n# not an ELF file at all").unwrap();
-        assert!(check_architecture(&path).is_err());
+        phase each_developed_package_builds_in_its_own_directory;
+        // Two packages developed at once build apart; the
+        // same package always builds where it did before.
+        {
+            let checkout = tempfile::tempdir().unwrap();
+            let (notes, tasks) = (checkout.path().join("notes"), checkout.path().join("tasks"));
+            std::fs::create_dir_all(&notes).unwrap();
+            std::fs::create_dir_all(&tasks).unwrap();
+            let state = Path::new("/session/state");
+            let one = dev_build_dir(state, &notes).unwrap();
+            assert_ne!(one, dev_build_dir(state, &tasks).unwrap());
+            assert_eq!(one, dev_build_dir(state, &notes.join(".")).unwrap());
+            assert!(
+                one.starts_with(state.join("dev-build")),
+                "{}",
+                one.display()
+            );
+        }
+
+        phase a_build_of_another_architecture_is_refused;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let this = std::env::current_exe().unwrap();
+            check_architecture(&this).unwrap();
+            let mut other = std::fs::read(&this).unwrap();
+            let foreign: u16 = if cfg!(target_arch = "aarch64") {
+                62
+            } else {
+                183
+            };
+            other[18..20].copy_from_slice(&foreign.to_le_bytes());
+            let path = dir.path().join("tilolang-app");
+            std::fs::write(&path, &other).unwrap();
+            let error = check_architecture(&path).unwrap_err();
+            assert!(error.contains("is not built for"), "{error}");
+            std::fs::write(&path, b"#!/bin/sh\nexit 0\n# not an ELF file at all").unwrap();
+            assert!(check_architecture(&path).is_err());
+        }
+
+        phase a_builds_ids_lock_is_no_save;
+        // A build's ids lock is written by the tool itself: a save it is not.
+        {
+            assert!(is_ids_lock(
+                &Path::new("/app/notes").join(tilolang::source::IDS_FILE)
+            ));
+            assert!(!is_ids_lock(Path::new("/app/notes/app.tl")));
+            assert!(!is_ids_lock(Path::new("/app/notes/locales/de-DE.ftl")));
+        }
+
+        phase a_watch_ends_with_the_directory_it_reports_gone;
+        // A watch whose directory the events report gone ends, even where the directory is there
+        // again: the watch of it was of the directory that went away.
+        {
+            let dir = PathBuf::from("/repo/target/debug");
+            let gone = WatchEvent {
+                path: dir.clone(),
+                kind: ChangeKind::Removed,
+            };
+            let inside = WatchEvent {
+                path: dir.join("tilolang-app"),
+                kind: ChangeKind::Removed,
+            };
+            let created = WatchEvent {
+                path: dir.clone(),
+                kind: ChangeKind::Created,
+            };
+            assert!(ends_watch(&dir, &[gone]));
+            assert!(!ends_watch(&dir, &[inside]));
+            assert!(!ends_watch(&dir, &[created]));
+        }
     }
 
     /// How long a test gives a program to appear and to be written.
@@ -1940,85 +1976,56 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// A program a build is still writing is taken once it has stopped growing, and one it has not
-    /// written yet answers that there is none.
-    #[cfg(unix)]
-    #[test]
-    fn a_program_is_taken_once_it_is_whole() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilolang-app");
-        assert_eq!(
-            whole_program(&path, Duration::from_millis(50), PATIENCE),
-            Ok(false)
-        );
-        write_program(&path, "half");
-        let written = path.clone();
-        let writing = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            write_program(&written, "half and the other half");
-        });
-        assert_eq!(whole_program(&path, PATIENCE, PATIENCE), Ok(true));
-        writing.join().unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "#!/bin/sh\nhalf and the other half\n",
-            "the answer waited for the whole program"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn a_program_is_the_whole_file_its_build_made;
 
-    /// The program of a build is the file the build made: one renamed over the old is another
-    /// program, even when it is as long and was written at the same moment.
-    #[cfg(unix)]
-    #[test]
-    fn a_program_renamed_over_the_old_one_is_another_program() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilolang-app");
-        write_program(&path, "one");
-        let first = program(&path).unwrap();
-        let staged = dir.path().join(".staged");
-        write_program(&staged, "one");
-        // Written at the moment the first was, so that only the file itself tells them apart: a
-        // filesystem's clock is coarser than two writes made one after the other, but a loaded
-        // machine may spread them over two ticks.
-        let file = std::fs::File::options().write(true).open(&staged).unwrap();
-        file.set_times(std::fs::FileTimes::new().set_modified(first.written))
-            .unwrap();
-        drop(file);
-        std::fs::rename(&staged, &path).unwrap();
-        let second = program(&path).unwrap();
-        assert_eq!((first.size, first.written), (second.size, second.written));
-        assert_ne!(first, second, "a renamed program is a new file");
-    }
+        phase a_program_is_taken_once_it_is_whole;
+        // A program a build is still writing is taken once it has stopped growing, and one it has not
+        // written yet answers that there is none.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tilolang-app");
+            assert_eq!(
+                whole_program(&path, Duration::from_millis(50), PATIENCE),
+                Ok(false)
+            );
+            write_program(&path, "half");
+            let written = path.clone();
+            let writing = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                write_program(&written, "half and the other half");
+            });
+            assert_eq!(whole_program(&path, PATIENCE, PATIENCE), Ok(true));
+            writing.join().unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "#!/bin/sh\nhalf and the other half\n",
+                "the answer waited for the whole program"
+            );
+        }
 
-    /// A build's ids lock is written by the tool itself: a save it is not.
-    #[test]
-    fn a_builds_ids_lock_is_no_save() {
-        assert!(is_ids_lock(
-            &Path::new("/app/notes").join(tilolang::source::IDS_FILE)
-        ));
-        assert!(!is_ids_lock(Path::new("/app/notes/app.tl")));
-        assert!(!is_ids_lock(Path::new("/app/notes/locales/de-DE.ftl")));
-    }
-
-    /// A watch whose directory the events report gone ends, even where the directory is there
-    /// again: the watch of it was of the directory that went away.
-    #[test]
-    fn a_watch_ends_with_the_directory_it_reports_gone() {
-        let dir = PathBuf::from("/repo/target/debug");
-        let gone = WatchEvent {
-            path: dir.clone(),
-            kind: ChangeKind::Removed,
-        };
-        let inside = WatchEvent {
-            path: dir.join("tilolang-app"),
-            kind: ChangeKind::Removed,
-        };
-        let created = WatchEvent {
-            path: dir.clone(),
-            kind: ChangeKind::Created,
-        };
-        assert!(ends_watch(&dir, &[gone]));
-        assert!(!ends_watch(&dir, &[inside]));
-        assert!(!ends_watch(&dir, &[created]));
+        phase a_program_renamed_over_the_old_one_is_another_program;
+        // The program of a build is the file the build made: one renamed over the old is another
+        // program, even when it is as long and was written at the same moment.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tilolang-app");
+            write_program(&path, "one");
+            let first = program(&path).unwrap();
+            let staged = dir.path().join(".staged");
+            write_program(&staged, "one");
+            // Written at the moment the first was, so that only the file itself tells them apart: a
+            // filesystem's clock is coarser than two writes made one after the other, but a loaded
+            // machine may spread them over two ticks.
+            let file = std::fs::File::options().write(true).open(&staged).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(first.written))
+                .unwrap();
+            drop(file);
+            std::fs::rename(&staged, &path).unwrap();
+            let second = program(&path).unwrap();
+            assert_eq!((first.size, first.written), (second.size, second.written));
+            assert_ne!(first, second, "a renamed program is a new file");
+        }
     }
 }

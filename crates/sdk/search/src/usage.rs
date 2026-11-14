@@ -148,68 +148,76 @@ mod tests {
 
     const DAY: u64 = 86_400;
 
-    #[test]
-    fn frequent_and_recent_choices_earn_a_bigger_boost() {
-        let mut usage = Frecency::default();
-        let now = 100 * DAY;
-        for _ in 0..12 {
-            usage.record("daily", now - DAY);
-        }
-        usage.record("once-recently", now - DAY);
-        usage.record("once-long-ago", now - 90 * DAY);
-        let daily = usage.boost("daily", now, 8);
-        let recent = usage.boost("once-recently", now, 8);
-        let old = usage.boost("once-long-ago", now, 8);
-        assert!(daily > recent && recent > old, "{daily} {recent} {old}");
-        assert_eq!(usage.boost("never", now, 8), 0);
-        assert!(daily <= 8);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn usage_boosts_what_is_chosen_often_and_lately_and_keeps_the_most_used;
 
-    #[test]
-    fn a_boost_fades_as_a_choice_ages() {
-        let mut usage = Frecency::default();
-        for _ in 0..30 {
-            usage.record("app", 0);
+        phase frequent_and_recent_choices_earn_a_bigger_boost;
+        {
+            let mut usage = Frecency::default();
+            let now = 100 * DAY;
+            for _ in 0..12 {
+                usage.record("daily", now - DAY);
+            }
+            usage.record("once-recently", now - DAY);
+            usage.record("once-long-ago", now - 90 * DAY);
+            let daily = usage.boost("daily", now, 8);
+            let recent = usage.boost("once-recently", now, 8);
+            let old = usage.boost("once-long-ago", now, 8);
+            assert!(daily > recent && recent > old, "{daily} {recent} {old}");
+            assert_eq!(usage.boost("never", now, 8), 0);
+            assert!(daily <= 8);
         }
-        assert_eq!(usage.boost("app", 0, 8), 8);
-        assert!(usage.boost("app", 60 * DAY, 8) < 8);
-    }
 
-    #[test]
-    fn usage_round_trips_through_text_and_ignores_garbage() {
-        let mut usage = Frecency::default();
-        usage.record("so.tilo.tube", 5);
-        usage.record("so.tilo.tube", 9);
-        let mut text = usage.serialize();
-        text.push_str("broken line\n\tx\ty\n");
-        assert_eq!(Frecency::parse(&text), usage);
-    }
+        phase a_boost_fades_as_a_choice_ages;
+        {
+            let mut usage = Frecency::default();
+            for _ in 0..30 {
+                usage.record("app", 0);
+            }
+            assert_eq!(usage.boost("app", 0, 8), 8);
+            assert!(usage.boost("app", 60 * DAY, 8) < 8);
+        }
 
-    #[test]
-    fn shares_grow_with_use_and_recents_come_newest_first() {
-        let mut usage = Frecency::default();
-        usage.record("a", 10);
-        usage.record("b", 30);
-        for _ in 0..6 {
-            usage.record("c", 20);
+        phase usage_round_trips_through_text_and_ignores_garbage;
+        {
+            let mut usage = Frecency::default();
+            usage.record("so.tilo.tube", 5);
+            usage.record("so.tilo.tube", 9);
+            let mut text = usage.serialize();
+            text.push_str("broken line\n\tx\ty\n");
+            assert_eq!(Frecency::parse(&text), usage);
         }
-        assert!(usage.share("c", 40) > usage.share("a", 40));
-        assert!(usage.share("a", 40) > 0.0 && usage.share("c", 40) <= 1.0);
-        assert!(usage.share("never", 40).abs() < f32::EPSILON);
-        assert_eq!(usage.most_recent(2), ["b", "c"]);
-        assert_eq!(usage.most_recent(9), ["b", "c", "a"]);
-    }
 
-    #[test]
-    fn only_the_most_used_entries_are_kept() {
-        let mut usage = Frecency::default();
-        for _ in 0..5 {
-            usage.record("favourite", 10);
+        phase shares_grow_with_use_and_recents_come_newest_first;
+        {
+            let mut usage = Frecency::default();
+            usage.record("a", 10);
+            usage.record("b", 30);
+            for _ in 0..6 {
+                usage.record("c", 20);
+            }
+            assert!(usage.share("c", 40) > usage.share("a", 40));
+            assert!(usage.share("a", 40) > 0.0 && usage.share("c", 40) <= 1.0);
+            assert!(usage.share("never", 40).abs() < f32::EPSILON);
+            assert_eq!(usage.most_recent(2), ["b", "c"]);
+            assert_eq!(usage.most_recent(9), ["b", "c", "a"]);
         }
-        for at in 0..=MAX_ENTRIES {
-            usage.record(&format!("one-off-{at}"), 10);
+
+        phase only_the_most_used_entries_are_kept;
+        {
+            let mut usage = Frecency::default();
+            for _ in 0..5 {
+                usage.record("favourite", 10);
+            }
+            for at in 0..=MAX_ENTRIES {
+                usage.record(&format!("one-off-{at}"), 10);
+            }
+            assert!(usage.entries.len() <= MAX_ENTRIES);
+            assert!(usage.boost("favourite", 10, 8) > 0);
         }
-        assert!(usage.entries.len() <= MAX_ENTRIES);
-        assert!(usage.boost("favourite", 10, 8) > 0);
     }
 }

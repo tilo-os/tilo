@@ -2618,25 +2618,6 @@ pub mod plan_stream {
         }
 
         #[test]
-        fn random_chunk_splits_grow_monotonically_to_the_same_values() {
-            for seed in 0..300 {
-                let pieces = random_split(ARGS, seed);
-                let seen = scan(&pieces);
-                assert_eq!(finals(&seen), expected(), "seed {seed}");
-                for (field, final_value) in expected() {
-                    let mut last = String::new();
-                    for (_, value, _) in seen.iter().filter(|(f, _, _)| *f == field) {
-                        assert!(
-                            value.starts_with(&last) && final_value.starts_with(value.as_str()),
-                            "seed {seed}: {field:?} went {last:?} -> {value:?}"
-                        );
-                        last.clone_from(value);
-                    }
-                }
-            }
-        }
-
-        #[test]
         fn a_partial_escape_is_withheld_until_complete() {
             let seen = scan(&[r#"{"reply":"a\"#, r"u00", r"e9b\ud83c", r"\udf0a"]);
             let values: Vec<&str> = seen.iter().map(|(_, v, _)| v.as_str()).collect();
@@ -2644,115 +2625,138 @@ pub mod plan_stream {
             assert!(seen.iter().all(|(_, _, done)| !done), "still unterminated");
         }
 
-        #[test]
-        fn lone_surrogates_become_replacement_characters() {
-            let seen = scan(&[r#"{"reply":"x\ud83cy\udf0az\ud83c"}"#]);
-            assert_eq!(
-                finals(&seen),
-                [(Field::Reply, "x\u{FFFD}y\u{FFFD}z\u{FFFD}".to_string())]
-            );
-        }
+        tilo_test_env::scenario! {
+            fn a_streamed_plan_call_is_read_as_it_arrives;
 
-        #[test]
-        fn gateway_delta_frames_of_the_plan_call_become_stream_signals() {
-            use super::super::{StreamSignal, stream_plan_delta};
-            let mut scanners = std::collections::BTreeMap::new();
-            let mut seen = Vec::new();
-            let frames = [
-                ("list_operations", r#"{"search":"text"}"#),
-                ("plan", r#"{"reply":"Hi"#),
-                (
-                    "plan",
-                    r#" there","steps":[{"operation":"op","arguments":{"text":"Oc"#,
-                ),
-                ("plan", r#"ean"}}],"why":"w","then":null}"#),
-            ];
-            for (name, delta) in frames {
-                let frame =
-                    serde_json::json!({"index": 1, "id": "c", "name": name, "delta": delta});
-                stream_plan_delta(&mut scanners, &frame.to_string(), &mut |signal| {
-                    seen.push(match signal {
-                        StreamSignal::Reply { text, done } => format!("reply {text:?} {done}"),
-                        StreamSignal::StepOperation { step, operation } => {
-                            format!("op {step} {operation:?}")
+            phase random_chunk_splits_grow_monotonically_to_the_same_values;
+            {
+                for seed in 0..300 {
+                    let pieces = random_split(ARGS, seed);
+                    let seen = scan(&pieces);
+                    assert_eq!(finals(&seen), expected(), "seed {seed}");
+                    for (field, final_value) in expected() {
+                        let mut last = String::new();
+                        for (_, value, _) in seen.iter().filter(|(f, _, _)| *f == field) {
+                            assert!(
+                                value.starts_with(&last) && final_value.starts_with(value.as_str()),
+                                "seed {seed}: {field:?} went {last:?} -> {value:?}"
+                            );
+                            last.clone_from(value);
                         }
-                        StreamSignal::StepArgument {
-                            step,
-                            name,
-                            text,
-                            done,
-                        } => format!("{name} {step} {text:?} {done}"),
-                        other => format!("{other:?}"),
-                    });
-                });
+                    }
+                }
             }
-            assert_eq!(
-                seen,
-                [
-                    r#"reply "Hi" false"#,
-                    r#"reply "Hi there" true"#,
-                    r#"op 0 "op""#,
-                    r#"text 0 "Oc" false"#,
-                    r#"text 0 "Ocean" true"#,
-                ]
-            );
-        }
 
-        /// An `invoke` call's operation and string arguments are followed at
-        /// the top level, so its text can be previewed while it streams.
-        #[test]
-        fn invoke_frames_become_call_signals() {
-            use super::super::{StreamSignal, stream_plan_delta};
-            let mut scanners = std::collections::BTreeMap::new();
-            let mut seen = Vec::new();
-            let frames = [
-                (2, "invoke", r#"{"operation":"broker:7:doc#type-t"#),
-                (2, "invoke", r#"ext","parameters":{"text":"Hel"#),
-                (2, "invoke", r#"lo","count":3,"nested":{"text":"no"}}}"#),
-                (3, "list_operations", r#"{"search":"x"}"#),
-            ];
-            for (index, name, delta) in frames {
-                let frame =
-                    serde_json::json!({"index": index, "id": "c", "name": name, "delta": delta});
-                stream_plan_delta(&mut scanners, &frame.to_string(), &mut |signal| {
-                    seen.push(match signal {
-                        StreamSignal::CallOperation {
-                            call,
-                            operation,
-                            done,
-                        } => format!("op {call} {operation:?} {done}"),
-                        StreamSignal::CallArgument {
-                            call,
-                            name,
-                            text,
-                            done,
-                        } => format!("{name} {call} {text:?} {done}"),
-                        other => format!("{other:?}"),
-                    });
-                });
+            phase lone_surrogates_become_replacement_characters;
+            {
+                let seen = scan(&[r#"{"reply":"x\ud83cy\udf0az\ud83c"}"#]);
+                assert_eq!(
+                    finals(&seen),
+                    [(Field::Reply, "x\u{FFFD}y\u{FFFD}z\u{FFFD}".to_string())]
+                );
             }
-            assert_eq!(
-                seen,
-                [
-                    r#"op 2 "broker:7:doc#type-t" false"#,
-                    r#"op 2 "broker:7:doc#type-text" true"#,
-                    r#"text 2 "Hel" false"#,
-                    r#"text 2 "Hello" true"#,
-                ]
-            );
-        }
 
-        #[test]
-        fn malformed_input_stops_reporting_without_panicking() {
-            let mut scanner = PlanArgumentsScanner::new();
-            let mut reports = 0;
-            scanner.feed(r#"{"reply" "x"}"#, &mut |_, _, _| reports += 1);
-            assert!(scanner.failed);
-            assert_eq!(reports, 0);
-            let mut nested = PlanArgumentsScanner::new();
-            nested.feed(r#"{"reply":{"text":"x"}}"#, &mut |_, _, _| reports += 1);
-            assert!(!nested.failed);
-            assert_eq!(reports, 0, "only the top-level string reply is followed");
+            phase gateway_delta_frames_of_the_plan_call_become_stream_signals;
+            {
+                use super::super::{StreamSignal, stream_plan_delta};
+                let mut scanners = std::collections::BTreeMap::new();
+                let mut seen = Vec::new();
+                let frames = [
+                    ("list_operations", r#"{"search":"text"}"#),
+                    ("plan", r#"{"reply":"Hi"#),
+                    (
+                        "plan",
+                        r#" there","steps":[{"operation":"op","arguments":{"text":"Oc"#,
+                    ),
+                    ("plan", r#"ean"}}],"why":"w","then":null}"#),
+                ];
+                for (name, delta) in frames {
+                    let frame =
+                        serde_json::json!({"index": 1, "id": "c", "name": name, "delta": delta});
+                    stream_plan_delta(&mut scanners, &frame.to_string(), &mut |signal| {
+                        seen.push(match signal {
+                            StreamSignal::Reply { text, done } => format!("reply {text:?} {done}"),
+                            StreamSignal::StepOperation { step, operation } => {
+                                format!("op {step} {operation:?}")
+                            }
+                            StreamSignal::StepArgument {
+                                step,
+                                name,
+                                text,
+                                done,
+                            } => format!("{name} {step} {text:?} {done}"),
+                            other => format!("{other:?}"),
+                        });
+                    });
+                }
+                assert_eq!(
+                    seen,
+                    [
+                        r#"reply "Hi" false"#,
+                        r#"reply "Hi there" true"#,
+                        r#"op 0 "op""#,
+                        r#"text 0 "Oc" false"#,
+                        r#"text 0 "Ocean" true"#,
+                    ]
+                );
+            }
+
+            phase invoke_frames_become_call_signals;
+            // An `invoke` call's operation and string arguments are followed at
+            // the top level, so its text can be previewed while it streams.
+            {
+                use super::super::{StreamSignal, stream_plan_delta};
+                let mut scanners = std::collections::BTreeMap::new();
+                let mut seen = Vec::new();
+                let frames = [
+                    (2, "invoke", r#"{"operation":"broker:7:doc#type-t"#),
+                    (2, "invoke", r#"ext","parameters":{"text":"Hel"#),
+                    (2, "invoke", r#"lo","count":3,"nested":{"text":"no"}}}"#),
+                    (3, "list_operations", r#"{"search":"x"}"#),
+                ];
+                for (index, name, delta) in frames {
+                    let frame =
+                        serde_json::json!({"index": index, "id": "c", "name": name, "delta": delta});
+                    stream_plan_delta(&mut scanners, &frame.to_string(), &mut |signal| {
+                        seen.push(match signal {
+                            StreamSignal::CallOperation {
+                                call,
+                                operation,
+                                done,
+                            } => format!("op {call} {operation:?} {done}"),
+                            StreamSignal::CallArgument {
+                                call,
+                                name,
+                                text,
+                                done,
+                            } => format!("{name} {call} {text:?} {done}"),
+                            other => format!("{other:?}"),
+                        });
+                    });
+                }
+                assert_eq!(
+                    seen,
+                    [
+                        r#"op 2 "broker:7:doc#type-t" false"#,
+                        r#"op 2 "broker:7:doc#type-text" true"#,
+                        r#"text 2 "Hel" false"#,
+                        r#"text 2 "Hello" true"#,
+                    ]
+                );
+            }
+
+            phase malformed_input_stops_reporting_without_panicking;
+            {
+                let mut scanner = PlanArgumentsScanner::new();
+                let mut reports = 0;
+                scanner.feed(r#"{"reply" "x"}"#, &mut |_, _, _| reports += 1);
+                assert!(scanner.failed);
+                assert_eq!(reports, 0);
+                let mut nested = PlanArgumentsScanner::new();
+                nested.feed(r#"{"reply":{"text":"x"}}"#, &mut |_, _, _| reports += 1);
+                assert!(!nested.failed);
+                assert_eq!(reports, 0, "only the top-level string reply is followed");
+            }
         }
     }
 }

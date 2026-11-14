@@ -938,176 +938,183 @@ mod tests {
         let _ = doc;
     }
 
-    #[test]
-    fn media_cards_keep_the_picture_shape_inside_a_regular_card() {
-        let theme = Theme::dark();
-        let max_h = MediaSize::Regular.extent(&theme);
-        let wide = tilo_reference::Attached::Image {
-            name: "wide.png".into(),
-            blob: "sha256:image".into(),
-            w: 800,
-            h: 400,
-        };
-        let meta = media_meta(&wide);
-        assert_eq!(meta, vec!["800 × 400".to_owned()]);
-        let (w, _) = media_face(&wide, MediaArt::Placeholder, &meta, 1000.0, &theme);
-        assert!(
-            (w - 2.0 * max_h).abs() < 1e-6,
-            "a wide picture is a regular card high"
-        );
-        let (narrow, _) = media_face(&wide, MediaArt::Placeholder, &meta, 120.0, &theme);
-        assert!((narrow - 120.0).abs() < 1e-6, "never wider than its column");
+    tilo_test_env::scenario! {
+        /// Media and file cards, and an agent's work under its answer.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn cards_and_agent_work_draw_what_the_message_holds;
 
-        let unknown_video = tilo_reference::Attached::Video {
-            name: "clip.mp4".into(),
-            blob: "sha256:video".into(),
-            w: 0,
-            h: 0,
-            size: 1024,
-        };
-        assert_eq!(media_meta(&unknown_video), vec!["1 kB".to_owned()]);
-        let (vw, _) = media_face(&unknown_video, MediaArt::Placeholder, &[], 1000.0, &theme);
-        assert!(
-            (vw - max_h * 16.0 / 9.0).abs() < 1e-6,
-            "an unknown video is 16:9"
-        );
-    }
+        phase media_cards_keep_the_picture_shape_inside_a_regular_card;
+        {
+            let theme = Theme::dark();
+            let max_h = MediaSize::Regular.extent(&theme);
+            let wide = tilo_reference::Attached::Image {
+                name: "wide.png".into(),
+                blob: "sha256:image".into(),
+                w: 800,
+                h: 400,
+            };
+            let meta = media_meta(&wide);
+            assert_eq!(meta, vec!["800 × 400".to_owned()]);
+            let (w, _) = media_face(&wide, MediaArt::Placeholder, &meta, 1000.0, &theme);
+            assert!(
+                (w - 2.0 * max_h).abs() < 1e-6,
+                "a wide picture is a regular card high"
+            );
+            let (narrow, _) = media_face(&wide, MediaArt::Placeholder, &meta, 120.0, &theme);
+            assert!((narrow - 120.0).abs() < 1e-6, "never wider than its column");
 
-    #[test]
-    fn a_file_card_names_the_file_and_never_a_path() {
-        let file = tilo_reference::Attached::File {
-            name: "transport-notes.md".into(),
-            blob: "sha256:file".into(),
-            size: 18_944,
-        };
-        assert!(media_meta(&file).is_empty());
-        assert_eq!(ui::format::size(18_944), "18.9 kB");
-    }
-
-    #[test]
-    fn agent_work_says_it_is_working_then_folds_what_it_did_under_the_answer() {
-        let working = |state| AgentWorkPresentation::of(&AgentWork::new(state, 42), false, false);
-        let doing = AgentWorkState::Doing {
-            did: "Add function".into(),
-            about: "the revenue curve".into(),
-        };
-        for state in [AgentWorkState::Taken, doing] {
-            assert_eq!(working(state).unwrap().summary.as_deref(), Some("Working"));
+            let unknown_video = tilo_reference::Attached::Video {
+                name: "clip.mp4".into(),
+                blob: "sha256:video".into(),
+                w: 0,
+                h: 0,
+                size: 1024,
+            };
+            assert_eq!(media_meta(&unknown_video), vec!["1 kB".to_owned()]);
+            let (vw, _) = media_face(&unknown_video, MediaArt::Placeholder, &[], 1000.0, &theme);
+            assert!(
+                (vw - max_h * 16.0 / 9.0).abs() < 1e-6,
+                "an unknown video is 16:9"
+            );
         }
-        let waiting = AgentWorkState::Waiting {
-            app: "Calculator".into(),
-        };
-        assert_eq!(
-            working(waiting).unwrap().summary.as_deref(),
-            Some("Waiting for Calculator")
-        );
-        assert_eq!(
-            working(AgentWorkState::Refused).unwrap().summary.as_deref(),
-            Some("Could not complete this request")
-        );
-        // A refused run whose reply carries the failure in its own words
-        // says it once: the card adds no second failure.
-        assert_eq!(
-            AgentWorkPresentation::of(&AgentWork::new(AgentWorkState::Refused, 42), false, true),
-            None
-        );
-        // An answer with nothing done is the reply's words alone.
-        let complete = AgentWorkState::ProviderFinished {
-            outcome: crate::agent_stream::AgentFinish::Complete,
-        };
-        assert_eq!(working(complete.clone()), None);
 
-        let steps = vec![
-            AgentStep::authored(
-                "calculator.workspace",
-                "Add function",
-                AgentStepOutcome::Asked,
-                0,
-            ),
-            AgentStep::authored(
-                "calculator.workspace",
-                "Add function",
-                AgentStepOutcome::NoChange,
-                1,
-            ),
-            AgentStep::authored(
-                "calculator.graph",
-                "Set bounds",
-                AgentStepOutcome::Refused {
-                    why: "Outside the granted range".into(),
-                },
-                2,
-            ),
-        ];
-        let lines = [
-            "Requested: Add function",
-            "No change: Add function",
-            "Refused: Set bounds: Outside the granted range",
-        ];
-        // While it works, every dispatched operation shows as it happens.
-        let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
-        let shown = AgentWorkPresentation::of(&running, false, false).unwrap();
-        assert_eq!(shown.did, None);
-        assert_eq!(shown.steps, lines);
-        // Done, it is one line that opens the list.
-        let done = AgentWork::new(complete, 42).with_trace(steps);
-        let folded = AgentWorkPresentation::of(&done, false, false).unwrap();
-        assert_eq!(folded.summary, None);
-        assert_eq!(folded.did.as_deref(), Some("Did 3 things"));
-        assert!(folded.steps.is_empty());
-        assert_eq!(
-            AgentWorkPresentation::of(&done, true, false).unwrap().steps,
-            lines
-        );
-    }
+        phase a_file_card_names_the_file_and_never_a_path;
+        {
+            let file = tilo_reference::Attached::File {
+                name: "transport-notes.md".into(),
+                blob: "sha256:file".into(),
+                size: 18_944,
+            };
+            assert!(media_meta(&file).is_empty());
+            assert_eq!(ui::format::size(18_944), "18.9 kB");
+        }
 
-    #[test]
-    fn agent_work_projection_keeps_every_recorded_step_and_row_reserves_the_card() {
-        let steps = (0..7)
-            .map(|index| {
+        phase agent_work_says_it_is_working_then_folds_what_it_did_under_the_answer;
+        {
+            let working = |state| AgentWorkPresentation::of(&AgentWork::new(state, 42), false, false);
+            let doing = AgentWorkState::Doing {
+                did: "Add function".into(),
+                about: "the revenue curve".into(),
+            };
+            for state in [AgentWorkState::Taken, doing] {
+                assert_eq!(working(state).unwrap().summary.as_deref(), Some("Working"));
+            }
+            let waiting = AgentWorkState::Waiting {
+                app: "Calculator".into(),
+            };
+            assert_eq!(
+                working(waiting).unwrap().summary.as_deref(),
+                Some("Waiting for Calculator")
+            );
+            assert_eq!(
+                working(AgentWorkState::Refused).unwrap().summary.as_deref(),
+                Some("Could not complete this request")
+            );
+            // A refused run whose reply carries the failure in its own words
+            // says it once: the card adds no second failure.
+            assert_eq!(
+                AgentWorkPresentation::of(&AgentWork::new(AgentWorkState::Refused, 42), false, true),
+                None
+            );
+            // An answer with nothing done is the reply's words alone.
+            let complete = AgentWorkState::ProviderFinished {
+                outcome: crate::agent_stream::AgentFinish::Complete,
+            };
+            assert_eq!(working(complete.clone()), None);
+
+            let steps = vec![
                 AgentStep::authored(
-                    format!("resource-{index}"),
-                    format!("Action {index}"),
-                    AgentStepOutcome::Applied,
-                    index,
-                )
-            })
-            .collect();
-        let work = AgentWork::new(
-            AgentWorkState::Done {
-                did: "Finish".into(),
-            },
-            42,
-        )
-        .with_trace(steps);
-        let presentation = AgentWorkPresentation::of(&work, true, false).unwrap();
-        assert_eq!(presentation.steps.len(), 7);
-        for (index, line) in presentation.steps.iter().enumerate() {
-            assert_eq!(*line, format!("Applied: Action {index}"));
+                    "calculator.workspace",
+                    "Add function",
+                    AgentStepOutcome::Asked,
+                    0,
+                ),
+                AgentStep::authored(
+                    "calculator.workspace",
+                    "Add function",
+                    AgentStepOutcome::NoChange,
+                    1,
+                ),
+                AgentStep::authored(
+                    "calculator.graph",
+                    "Set bounds",
+                    AgentStepOutcome::Refused {
+                        why: "Outside the granted range".into(),
+                    },
+                    2,
+                ),
+            ];
+            let lines = [
+                "Requested: Add function",
+                "No change: Add function",
+                "Refused: Set bounds: Outside the granted range",
+            ];
+            // While it works, every dispatched operation shows as it happens.
+            let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
+            let shown = AgentWorkPresentation::of(&running, false, false).unwrap();
+            assert_eq!(shown.did, None);
+            assert_eq!(shown.steps, lines);
+            // Done, it is one line that opens the list.
+            let done = AgentWork::new(complete, 42).with_trace(steps);
+            let folded = AgentWorkPresentation::of(&done, false, false).unwrap();
+            assert_eq!(folded.summary, None);
+            assert_eq!(folded.did.as_deref(), Some("Did 3 things"));
+            assert!(folded.steps.is_empty());
+            assert_eq!(
+                AgentWorkPresentation::of(&done, true, false).unwrap().steps,
+                lines
+            );
         }
 
-        let row = RowM {
-            idx_id: "reply".into(),
-            show_header: false,
-            top_gap: 3.0,
-            pad: 4.0,
-            header_h: 0.0,
-            body_h: 0.0,
-            work_h: 96.0,
-            reasoning_h: 0.0,
-            resource_h: 0.0,
-            att_h: 0.0,
-            react_h: 0.0,
-            edited_h: 0.0,
-            thread_h: 0.0,
-            editing: false,
-            edit_ctrl_h: 0.0,
-            unmeasured: false,
-        };
-        assert_eq!(
-            row.height(),
-            103.0,
-            "an empty agent reply reserves its work card"
-        );
+        phase agent_work_projection_keeps_every_recorded_step_and_row_reserves_the_card;
+        {
+            let steps = (0..7)
+                .map(|index| {
+                    AgentStep::authored(
+                        format!("resource-{index}"),
+                        format!("Action {index}"),
+                        AgentStepOutcome::Applied,
+                        index,
+                    )
+                })
+                .collect();
+            let work = AgentWork::new(
+                AgentWorkState::Done {
+                    did: "Finish".into(),
+                },
+                42,
+            )
+            .with_trace(steps);
+            let presentation = AgentWorkPresentation::of(&work, true, false).unwrap();
+            assert_eq!(presentation.steps.len(), 7);
+            for (index, line) in presentation.steps.iter().enumerate() {
+                assert_eq!(*line, format!("Applied: Action {index}"));
+            }
+
+            let row = RowM {
+                idx_id: "reply".into(),
+                show_header: false,
+                top_gap: 3.0,
+                pad: 4.0,
+                header_h: 0.0,
+                body_h: 0.0,
+                work_h: 96.0,
+                reasoning_h: 0.0,
+                resource_h: 0.0,
+                att_h: 0.0,
+                react_h: 0.0,
+                edited_h: 0.0,
+                thread_h: 0.0,
+                editing: false,
+                edit_ctrl_h: 0.0,
+                unmeasured: false,
+            };
+            assert_eq!(
+                row.height(),
+                103.0,
+                "an empty agent reply reserves its work card"
+            );
+        }
     }
 }

@@ -112,7 +112,7 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
     .into_iter()
     .map(|verb| {
         collab_types::CapOverride::new(
-            collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
+            tilo_action_policy::Grantee::person(hex::encode(person)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
             verb,

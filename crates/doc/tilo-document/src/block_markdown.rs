@@ -1085,7 +1085,6 @@ mod tests {
         assert!(resolve(ids, "zz").unwrap_err().contains("no block"));
     }
 
-    #[test]
     fn blocks_read_one_line_each_with_their_ids() {
         let blocks = [
             view(
@@ -1138,7 +1137,6 @@ mod tests {
         assert!(!render(&blocks, &shown, false).contains('^'));
     }
 
-    #[test]
     fn code_lines_of_one_group_are_one_fence_and_each_keeps_its_id() {
         let attrs = |group: &str| {
             [
@@ -1177,7 +1175,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn what_is_rendered_parses_back_to_the_same_lines() {
         let mut bold = view("b1b1", "paragraph", "Deadline: *Friday* [soon]", &[]);
         bold.marks = vec![
@@ -1236,7 +1233,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn a_callout_is_a_quote_with_its_alert() {
         let callout = view(
             "c1c1",
@@ -1272,6 +1268,31 @@ mod tests {
     }
 
     #[test]
+    fn blocks_render_one_line_each_and_parse_back() {
+        let cases: [(&str, fn()); 4] = [
+            (
+                "blocks read one line each with their ids",
+                blocks_read_one_line_each_with_their_ids,
+            ),
+            (
+                "code lines of one group are one fence and each keeps its id",
+                code_lines_of_one_group_are_one_fence_and_each_keeps_its_id,
+            ),
+            (
+                "what is rendered parses back to the same lines",
+                what_is_rendered_parses_back_to_the_same_lines,
+            ),
+            (
+                "a callout is a quote with its alert",
+                a_callout_is_a_quote_with_its_alert,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
+    }
+
     fn written_markdown_is_blocks_with_marks() {
         let parsed = parse(
             "## Plan\n- [ ] buy **oat** milk\n  - [x] done _already_\n> a ~~quote~~ with `code`\nsee [docs](https://example.test)\n---\n",
@@ -1308,7 +1329,6 @@ mod tests {
         assert_eq!(items[4].text, "see docs");
     }
 
-    #[test]
     fn a_table_is_refused_and_an_unknown_kept_block_is_named() {
         assert!(
             parse("| a | b |\n| - | - |\n", &Ids::Discard)
@@ -1323,7 +1343,6 @@ mod tests {
         assert_eq!(kept, [Parsed::Keep("t1t1".into())]);
     }
 
-    #[test]
     fn an_unknown_id_stays_the_text_it_is() {
         let none: [&str; 0] = [];
         let parsed = parse("see ^caret\n", &Ids::Known(&known(&none))).unwrap();
@@ -1332,5 +1351,27 @@ mod tests {
         };
         assert_eq!(item.text, "see ^caret");
         assert_eq!(item.id, None);
+    }
+
+    #[test]
+    fn markdown_parses_to_blocks_keeps_named_tables_and_refuses_new_ones() {
+        let cases: [(&str, fn()); 3] = [
+            (
+                "written markdown is blocks with marks",
+                written_markdown_is_blocks_with_marks,
+            ),
+            (
+                "a table is refused and an unknown kept block is named",
+                a_table_is_refused_and_an_unknown_kept_block_is_named,
+            ),
+            (
+                "an unknown id stays the text it is",
+                an_unknown_id_stays_the_text_it_is,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

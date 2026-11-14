@@ -217,13 +217,10 @@ impl FileRestoreSession {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn checked_file_requests_are_exact_consumed_once_and_undo_only_real_changes() {
-        // phase: open_request_distinguishes_idle_unspecified_and_exact_version_and_is_consumed_once
+    tilo_test_env::scenario! {
+        fn checked_file_requests_are_exact_consumed_once_and_undo_only_real_changes;
+
+        phase open_request_distinguishes_idle_unspecified_and_exact_version_and_is_consumed_once;
         {
             let source = super::FileHistorySource::default();
             assert!(!source.wants_open());
@@ -241,7 +238,8 @@ mod tests {
             source.open(None);
             assert_eq!(source.take_open().unwrap().version, None);
         }
-        // phase: files_uncertain_result_keeps_exact_request_and_blocks_replacement
+
+        phase files_uncertain_result_keeps_exact_request_and_blocks_replacement;
         {
             let (mut session, request) = prepared(5);
             assert!(session.receive(
@@ -259,7 +257,8 @@ mod tests {
             assert!(!session.receive(foreign, Outcome::NotVisible));
             assert_eq!(session.request, Some(request));
         }
-        // phase: files_late_completion_of_a_settled_request_is_recognised_as_stale
+
+        phase files_late_completion_of_a_settled_request_is_recognised_as_stale;
         {
             let (mut session, request) = prepared(5);
             assert!(
@@ -282,7 +281,8 @@ mod tests {
             assert!(session.has_settled(&request));
             assert!(!session.has_settled(&next));
         }
-        // phase: files_unchanged_and_definite_rejections_do_not_create_undo_entries
+
+        phase files_unchanged_and_definite_rejections_do_not_create_undo_entries;
         {
             for outcome in [
                 Outcome::ReviewRequired,

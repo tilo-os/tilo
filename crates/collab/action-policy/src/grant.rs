@@ -126,6 +126,43 @@ impl Role {
             Self::Owner => "Owner",
         }
     }
+
+    /// The roles a member can be given, least to most. The owner's authority is
+    /// the workspace's own and is never handed out.
+    pub const ASSIGNABLE: [Self; 4] =
+        [Self::Viewer, Self::Commenter, Self::Editor, Self::Moderator];
+
+    /// Whether a member can be given this role ([`Self::ASSIGNABLE`]).
+    #[must_use]
+    pub const fn assignable(self) -> bool {
+        !matches!(self, Self::Owner)
+    }
+
+    /// The name a role is stored and asked for by: `viewer`, `commenter`,
+    /// `editor`, `moderator`, `owner`.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Viewer => "viewer",
+            Self::Commenter => "commenter",
+            Self::Editor => "editor",
+            Self::Moderator => "moderator",
+            Self::Owner => "owner",
+        }
+    }
+
+    /// The role named by [`Self::key`].
+    #[must_use]
+    pub fn parse(key: &str) -> Option<Self> {
+        match key.trim() {
+            "viewer" => Some(Self::Viewer),
+            "commenter" => Some(Self::Commenter),
+            "editor" => Some(Self::Editor),
+            "moderator" => Some(Self::Moderator),
+            "owner" => Some(Self::Owner),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Role {
@@ -143,12 +180,6 @@ pub enum Grantee {
     /// Everyone holding `role` or a higher one: a grant to `Role::Viewer` is
     /// everyone in the workspace.
     Role(Role),
-    /// The work done on an issue, by its address: grants naming it bound
-    /// every run of the issue, and give no one more than they hold.
-    Task(String),
-    /// A Shortcut run for a person.
-    Shortcut(String),
-    App(String),
 }
 
 impl Grantee {
@@ -177,27 +208,12 @@ impl Grantee {
         Self::Role(role)
     }
 
-    #[must_use]
-    pub fn task(id: impl Into<String>) -> Self {
-        Self::Task(id.into())
-    }
-
-    #[must_use]
-    pub fn shortcut(id: impl Into<String>) -> Self {
-        Self::Shortcut(id.into())
-    }
-
-    #[must_use]
-    pub fn app(id: impl Into<String>) -> Self {
-        Self::App(id.into())
-    }
-
     /// The member, when a grant names one.
     #[must_use]
     pub fn as_member(&self) -> Option<&crate::MemberId> {
         match self {
             Self::Member(member) => Some(member),
-            _ => None,
+            Self::Role(_) => None,
         }
     }
 
@@ -205,7 +221,9 @@ impl Grantee {
     pub fn person_id(&self) -> Option<&str> {
         match self {
             Self::Member(crate::MemberId::Person(person)) => Some(person),
-            _ => None,
+            Self::Member(crate::MemberId::Agent(_) | crate::MemberId::Bot(_)) | Self::Role(_) => {
+                None
+            }
         }
     }
 
@@ -213,7 +231,9 @@ impl Grantee {
     pub fn agent_id(&self) -> Option<&str> {
         match self {
             Self::Member(crate::MemberId::Agent(agent)) => Some(agent),
-            _ => None,
+            Self::Member(crate::MemberId::Person(_) | crate::MemberId::Bot(_)) | Self::Role(_) => {
+                None
+            }
         }
     }
 
@@ -221,15 +241,8 @@ impl Grantee {
     pub fn bot_id(&self) -> Option<&str> {
         match self {
             Self::Member(crate::MemberId::Bot(bot)) => Some(bot),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn app_id(&self) -> Option<&str> {
-        match self {
-            Self::App(app) => Some(app),
-            _ => None,
+            Self::Member(crate::MemberId::Person(_) | crate::MemberId::Agent(_))
+            | Self::Role(_) => None,
         }
     }
 
@@ -237,7 +250,7 @@ impl Grantee {
     pub fn role_of(&self) -> Option<Role> {
         match self {
             Self::Role(role) => Some(*role),
-            _ => None,
+            Self::Member(_) => None,
         }
     }
 }
@@ -247,9 +260,6 @@ impl fmt::Display for Grantee {
         match self {
             Self::Member(member) => member.fmt(f),
             Self::Role(role) => write!(f, "every {role}"),
-            Self::Task(id) => write!(f, "task {id}"),
-            Self::Shortcut(id) => write!(f, "Shortcut {id}"),
-            Self::App(id) => write!(f, "app {id}"),
         }
     }
 }
@@ -447,18 +457,10 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// Whether a grant to `granted` speaks for one of `grantees`, an app's under its earlier ids
-    /// too.
+    /// Whether a grant to `granted` speaks for one of `grantees`.
     #[must_use]
     pub fn grantee_matches(&self, granted: &Grantee, grantees: &[Grantee]) -> bool {
-        match self.earlier {
-            Some(earlier) => earlier.grantee_matches(granted, grantees),
-            None => {
-                grantees.contains(granted)
-                    || crate::earlier::with_held(|held| held.grantee_matches(granted, grantees))
-                        .unwrap_or(false)
-            }
-        }
+        grantees.contains(granted)
     }
 
     #[must_use]

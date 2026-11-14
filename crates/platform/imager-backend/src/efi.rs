@@ -317,105 +317,109 @@ mod tests {
         0x7f, 0xff, 0x04, 0x00,
     ];
 
-    #[test]
-    fn efi_load_option_codec_round_trips_and_rejects_unsafe_data() {
+    tilo_test_env::scenario! {
+        fn efi_load_options_and_variables_follow_the_firmware_layout;
+
+        phase efi_load_option_codec_round_trips_and_rejects_unsafe_data;
         {
-            assert_eq!(FIXTURE.len(), 4 + 2 + 30 + 94);
-            let bytes = encode_load_option(&fixture_option()).unwrap();
-            assert_eq!(hex::encode(&bytes), hex::encode(FIXTURE));
+            {
+                assert_eq!(FIXTURE.len(), 4 + 2 + 30 + 94);
+                let bytes = encode_load_option(&fixture_option()).unwrap();
+                assert_eq!(hex::encode(&bytes), hex::encode(FIXTURE));
+            }
+
+            {
+                assert_eq!(decode_load_option(FIXTURE).unwrap(), fixture_option());
+                assert_eq!(load_option_attributes(FIXTURE), Some(LOAD_OPTION_ACTIVE));
+            }
+
+            {
+                // Firmware sometimes writes one File() node per path component.
+                let mut option = Vec::new();
+                option.extend(1_u32.to_le_bytes());
+                let hd = &FIXTURE[36..78];
+                let file = |text: &str| {
+                    let units: Vec<u8> = text
+                        .encode_utf16()
+                        .chain([0])
+                        .flat_map(u16::to_le_bytes)
+                        .collect();
+                    let mut node = vec![4, 4];
+                    node.extend(u16::try_from(4 + units.len()).unwrap().to_le_bytes());
+                    node.extend(units);
+                    node
+                };
+                let mut path = hd.to_vec();
+                path.extend(file("\\EFI\\BOOT"));
+                path.extend(file("BOOTX64.EFI"));
+                path.extend([0x7f, 0xff, 4, 0]);
+                option.extend(u16::try_from(path.len()).unwrap().to_le_bytes());
+                option.extend(&FIXTURE[6..36]);
+                option.extend(path);
+                option.extend(b"optional");
+                assert_eq!(decode_load_option(&option).unwrap(), fixture_option());
+            }
+
+            {
+                assert!(decode_load_option(&FIXTURE[..40]).is_err());
+                let mut long = FIXTURE.to_vec();
+                long[4] = 0xff;
+                assert!(decode_load_option(&long).is_err());
+                let mut pci = FIXTURE.to_vec();
+                pci[36] = 0x01; // hardware device path, not HD()
+                assert!(decode_load_option(&pci).is_err());
+                let mut mbr = FIXTURE.to_vec();
+                mbr[36 + 40] = 0x01;
+                assert!(decode_load_option(&mbr).is_err());
+                let mut unterminated = FIXTURE[..6].to_vec();
+                unterminated.extend([b'T', 0]);
+                assert!(decode_load_option(&unterminated).is_err());
+            }
+
+            {
+                let mut option = fixture_option();
+                option.file_path = "EFI/BOOT/BOOTX64.EFI".into();
+                assert!(encode_load_option(&option).is_err());
+                let mut option = fixture_option();
+                option.partition_guid = "not-a-guid".into();
+                assert!(encode_load_option(&option).is_err());
+                let mut option = fixture_option();
+                option.description = "a\0b".into();
+                assert!(encode_load_option(&option).is_err());
+                let mut option = fixture_option();
+                option.partition_number = 0;
+                assert!(encode_load_option(&option).is_err());
+            }
         }
 
+        phase efi_guids_and_boot_numbers_follow_firmware_layout;
         {
-            assert_eq!(decode_load_option(FIXTURE).unwrap(), fixture_option());
-            assert_eq!(load_option_attributes(FIXTURE), Some(LOAD_OPTION_ACTIVE));
-        }
+            {
+                let g = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+                let bytes = guid_bytes(g).unwrap();
+                assert_eq!(
+                    hex::encode(bytes),
+                    "61dfe48bca93d211aa0d00e098032b8c",
+                    "EFI_GLOBAL_VARIABLE as stored in memory"
+                );
+                assert_eq!(guid_text(&bytes), g);
+                assert_eq!(guid_bytes(&g.to_ascii_uppercase()).unwrap(), bytes);
+            }
 
-        {
-            // Firmware sometimes writes one File() node per path component.
-            let mut option = Vec::new();
-            option.extend(1_u32.to_le_bytes());
-            let hd = &FIXTURE[36..78];
-            let file = |text: &str| {
-                let units: Vec<u8> = text
-                    .encode_utf16()
-                    .chain([0])
-                    .flat_map(u16::to_le_bytes)
-                    .collect();
-                let mut node = vec![4, 4];
-                node.extend(u16::try_from(4 + units.len()).unwrap().to_le_bytes());
-                node.extend(units);
-                node
-            };
-            let mut path = hd.to_vec();
-            path.extend(file("\\EFI\\BOOT"));
-            path.extend(file("BOOTX64.EFI"));
-            path.extend([0x7f, 0xff, 4, 0]);
-            option.extend(u16::try_from(path.len()).unwrap().to_le_bytes());
-            option.extend(&FIXTURE[6..36]);
-            option.extend(path);
-            option.extend(b"optional");
-            assert_eq!(decode_load_option(&option).unwrap(), fixture_option());
-        }
-
-        {
-            assert!(decode_load_option(&FIXTURE[..40]).is_err());
-            let mut long = FIXTURE.to_vec();
-            long[4] = 0xff;
-            assert!(decode_load_option(&long).is_err());
-            let mut pci = FIXTURE.to_vec();
-            pci[36] = 0x01; // hardware device path, not HD()
-            assert!(decode_load_option(&pci).is_err());
-            let mut mbr = FIXTURE.to_vec();
-            mbr[36 + 40] = 0x01;
-            assert!(decode_load_option(&mbr).is_err());
-            let mut unterminated = FIXTURE[..6].to_vec();
-            unterminated.extend([b'T', 0]);
-            assert!(decode_load_option(&unterminated).is_err());
-        }
-
-        {
-            let mut option = fixture_option();
-            option.file_path = "EFI/BOOT/BOOTX64.EFI".into();
-            assert!(encode_load_option(&option).is_err());
-            let mut option = fixture_option();
-            option.partition_guid = "not-a-guid".into();
-            assert!(encode_load_option(&option).is_err());
-            let mut option = fixture_option();
-            option.description = "a\0b".into();
-            assert!(encode_load_option(&option).is_err());
-            let mut option = fixture_option();
-            option.partition_number = 0;
-            assert!(encode_load_option(&option).is_err());
-        }
-    }
-
-    #[test]
-    fn efi_guids_and_boot_numbers_follow_firmware_layout() {
-        {
-            let g = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
-            let bytes = guid_bytes(g).unwrap();
-            assert_eq!(
-                hex::encode(bytes),
-                "61dfe48bca93d211aa0d00e098032b8c",
-                "EFI_GLOBAL_VARIABLE as stored in memory"
-            );
-            assert_eq!(guid_text(&bytes), g);
-            assert_eq!(guid_bytes(&g.to_ascii_uppercase()).unwrap(), bytes);
-        }
-
-        {
-            let order = [0x0001, 0x0000, 0x0100];
-            let existing = [0x0101_u16, 0x0103];
-            let n = allocate_boot_number(&order, |n| Ok(existing.contains(&n))).unwrap();
-            assert_eq!(n, 0x0102);
-            assert_eq!(allocate_boot_number(&[], |_| Ok(false)).unwrap(), 0x0100);
-            assert!(allocate_boot_number(&[], |_| Err("io".into())).is_err());
-            assert_eq!(boot_var_name(0x0102), "Boot0102");
-            assert_eq!(format_boot_number(0xab), "00AB");
-            assert_eq!(parse_boot_number("00ab").unwrap(), 0xab);
-            assert!(parse_boot_number("12").is_err());
-            assert_eq!(parse_u16_list(&[1, 0, 0, 1]).unwrap(), vec![1, 0x100]);
-            assert!(parse_u16_list(&[1]).is_err());
+            {
+                let order = [0x0001, 0x0000, 0x0100];
+                let existing = [0x0101_u16, 0x0103];
+                let n = allocate_boot_number(&order, |n| Ok(existing.contains(&n))).unwrap();
+                assert_eq!(n, 0x0102);
+                assert_eq!(allocate_boot_number(&[], |_| Ok(false)).unwrap(), 0x0100);
+                assert!(allocate_boot_number(&[], |_| Err("io".into())).is_err());
+                assert_eq!(boot_var_name(0x0102), "Boot0102");
+                assert_eq!(format_boot_number(0xab), "00AB");
+                assert_eq!(parse_boot_number("00ab").unwrap(), 0xab);
+                assert!(parse_boot_number("12").is_err());
+                assert_eq!(parse_u16_list(&[1, 0, 0, 1]).unwrap(), vec![1, 0x100]);
+                assert!(parse_u16_list(&[1]).is_err());
+            }
         }
     }
 }

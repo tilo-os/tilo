@@ -5,12 +5,12 @@
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope, Subject,
-    decide_capability,
+    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app,
 };
 use legacy_agent_protocol::{GuestShare, share_path_allowed};
+use tilo_action_policy::{Grantee, MemberId};
 
-/// The subject every legacy VM grant names.
+/// The app every legacy VM grant names.
 pub const LEGACY_APP_ID: &str = "so.tilo.legacy";
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -89,7 +89,7 @@ impl Grants {
         self.capabilities.retain(|cap| cap.id != id);
         self.capabilities.push(
             CapOverride::grant(
-                Subject::Principal(Principal::App(LEGACY_APP_ID.to_string())),
+                Grantee::person("local"),
                 Scope::FsPath(raw),
                 if read_only {
                     Access::Read
@@ -97,8 +97,9 @@ impl Grants {
                     Access::Write
                 },
             )
+            .through(LEGACY_APP_ID)
             .with_id(id.clone())
-            .granted_by(Principal::Person("local".to_string())),
+            .granted_by(MemberId::person("local")),
         );
         Some(id)
     }
@@ -108,7 +109,7 @@ impl Grants {
         let before = self.capabilities.len();
         self.capabilities.retain(|cap| {
             cap.id != dir_or_id
-                && !(cap.subject.matches_actor(&actor())
+                && !(cap.names_app(LEGACY_APP_ID)
                     && cap.scope == Scope::FsPath(dir_or_id.to_string()))
         });
         before != self.capabilities.len()
@@ -117,10 +118,9 @@ impl Grants {
     /// Every directory the VM sees at `now`, writable ones before read-only.
     #[must_use]
     pub fn shares(&self, now: Option<u64>) -> Vec<HostShare> {
-        let actor = actor();
         let mut out: Vec<HostShare> = Vec::new();
         for cap in &self.capabilities {
-            if cap.effect != Effect::Grant || !cap.subject.matches_actor(&actor) {
+            if cap.effect != Effect::Grant || !cap.names_app(LEGACY_APP_ID) {
                 continue;
             }
             let Scope::FsPath(raw) = &cap.scope else {
@@ -132,7 +132,7 @@ impl Grants {
             }
             let resource = ResourceRef::FsPath(raw.clone());
             let allows = |verb| {
-                decide_capability(&actor, &resource, verb, &self.capabilities, now)
+                decide_app(LEGACY_APP_ID, &resource, verb, &self.capabilities, now)
                     == CapDecision::Allow
             };
             if allows(Access::Write) {
@@ -150,10 +150,6 @@ impl Grants {
         out.sort();
         out
     }
-}
-
-fn actor() -> Actor {
-    Actor::app(LEGACY_APP_ID)
 }
 
 #[cfg(test)]
@@ -194,22 +190,28 @@ mod tests {
             let mut grants = Grants::default();
             assert_eq!(grants.grant(Path::new("/usr/lib"), false), None);
             assert_eq!(grants.grant(Path::new("relative"), false), None);
-            grants.capabilities.push(CapOverride::grant(
-                Subject::Principal(Principal::App("so.tilo.ush".into())),
-                Scope::FsPath("/var/home/you/other".into()),
-                Access::Write,
-            ));
+            grants.capabilities.push(
+                CapOverride::grant(
+                    Grantee::person("local"),
+                    Scope::FsPath("/var/home/you/other".into()),
+                    Access::Write,
+                )
+                .through("so.tilo.ush"),
+            );
             assert!(grants.shares(Some(0)).is_empty());
         }
         {
             let mut grants = Grants::default();
             grants.grant(Path::new("/var/home/you/src"), false).unwrap();
-            grants.capabilities.push(CapOverride::new(
-                Subject::Principal(Principal::App(LEGACY_APP_ID.into())),
-                Scope::FsPath("/var/home/you/src".into()),
-                Effect::Restrict,
-                Access::Read,
-            ));
+            grants.capabilities.push(
+                CapOverride::new(
+                    Grantee::person("local"),
+                    Scope::FsPath("/var/home/you/src".into()),
+                    Effect::Restrict,
+                    Access::Read,
+                )
+                .through(LEGACY_APP_ID),
+            );
             assert!(grants.shares(Some(0))[0].read_only);
             assert!(grants.revoke("/var/home/you/src"));
             assert!(grants.shares(Some(0)).is_empty());

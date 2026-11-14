@@ -92,9 +92,10 @@ impl HistoricalAssetResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn asset_admission_and_responses_keep_the_recorded_key() {
-        // phase: explicit_blake3_admission_preserves_recorded_key
+    tilo_test_env::scenario! {
+        fn asset_admission_and_responses_keep_the_recorded_key;
+
+        phase explicit_blake3_admission_preserves_recorded_key;
         {
             let key = AssetResponseKey {
                 host: uuid::Uuid::new_v4(),
@@ -112,7 +113,8 @@ mod tests {
             assert_eq!(received, key);
             assert_eq!(result.unwrap().get(hash), Some([].as_slice()));
         }
-        // phase: response_verifies_content_hash_and_keeps_original_request_key
+
+        phase response_verifies_content_hash_and_keeps_original_request_key;
         {
             let key = AssetResponseKey {
                 host: uuid::Uuid::new_v4(),
@@ -162,9 +164,10 @@ mod algorithm_regressions {
         assert_eq!(received, key);
         result
     }
-    #[test]
-    fn algorithm_semantics_and_limits_precede_delivery() {
-        // phase: explicit_algorithms_wrong_bytes_malformed_unknown_and_bare_sha256_semantics
+    tilo_test_env::scenario! {
+        fn algorithm_semantics_and_limits_precede_delivery;
+
+        phase explicit_algorithms_wrong_bytes_malformed_unknown_and_bare_sha256_semantics;
         {
             let bytes: Arc<[u8]> = Arc::from(b"historical image bytes".as_slice());
             let sha = hex::encode(Sha256::digest(&bytes));
@@ -195,7 +198,8 @@ mod algorithm_regressions {
                 assert!(admit(BTreeMap::from([(id, bytes.clone())])).is_err());
             }
         }
-        // phase: count_and_aggregate_limits_precede_delivery
+
+        phase count_and_aggregate_limits_precede_delivery;
         {
             let too_many = (0..4097).map(|i| (i.to_string(), Arc::from([]))).collect();
             assert!(admit(too_many).unwrap_err().contains("too many pictures"));

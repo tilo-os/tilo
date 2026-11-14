@@ -162,14 +162,13 @@ impl Browser {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
 
     let hosted = start(&root, &host, state.path()).await;
 
-    let mut channels = crate::participant::Participant::start(&hosted.relay, &root).await;
     let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -266,7 +265,6 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
     let hosted = start(&root, &host, state.path()).await;
 
-    channels.reconnect(&hosted.relay, &root).await;
     let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let resumed = browser
@@ -324,7 +322,6 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
     let hosted = start(&root, &host, state.path()).await;
 
-    channels.reconnect(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let after = browser.status().await;
@@ -539,12 +536,11 @@ impl Page {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -696,13 +692,12 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let first_device = enrol(&root, "browser", DeviceCapabilities::member());
     let second_device = enrol(&root, "second browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut first = Browser::open(&hosted, &first_device, &host).await;
     let mut second = Browser::open(&hosted, &second_device, &host).await;
@@ -799,12 +794,11 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     )
     .unwrap();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start_with(&root, &host, state.path(), model).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let mut page = Page::create(&browser, SHEETS);
@@ -963,12 +957,11 @@ fn shelve_then_remove() -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let (_endpoint, mut device) = person_device(&hosted.relay, &laptop).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -1142,12 +1135,11 @@ fn chat_step(resource: &str, action: &str, arguments: &serde_json::Value) -> ser
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let reader = approved_grant(&mut browser, "Reader", &[CHAT]).await;

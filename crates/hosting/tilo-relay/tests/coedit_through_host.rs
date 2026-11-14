@@ -32,6 +32,7 @@ use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay_on};
+use tilo_relay::WorkspaceId;
 
 /// A fresh document with a `Text` object at `ROOT["text"]` holding
 /// `seed` — mirroring what a toolkit editor binds to.
@@ -50,7 +51,7 @@ fn text_of(doc: &AutoCommit) -> String {
     }
 }
 
-fn retained_count(state_root: &std::path::Path, workspace: u64) -> usize {
+fn retained_count(state_root: &std::path::Path, workspace: WorkspaceId) -> usize {
     tilo_relay::store::WorkspaceStore::open(state_root, workspace, false)
         .unwrap()
         .load_retained()
@@ -93,7 +94,7 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
 async fn coedits_converge_through_the_host_live_and_offline() {
     // Phase `live_coedit_fans_out_through_host`.
     {
-        const WS: u64 = 21;
+        const WS: WorkspaceId = WorkspaceId::from_u128(21);
 
         let user = TestUser::fresh("Alice");
         let a = user.enrol("laptop", DeviceCapabilities::primary());
@@ -101,7 +102,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         let members = [a.device_pubkey(), b.device_pubkey()];
 
         let state = tempfile::tempdir().unwrap();
-        let host_dev = user.enrol("home-server", DeviceCapabilities::host());
+        let host_dev = user.enrol("home-server", DeviceCapabilities::member());
         let host = Box::pin(spawn_relay_on(
             state.path(),
             &user,
@@ -168,7 +169,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
     }
     // Phase `never_both_online_coedit_converges_through_host`.
     {
-        const WS: u64 = 22;
+        const WS: WorkspaceId = WorkspaceId::from_u128(22);
 
         let user = TestUser::fresh("Alice");
         let a = user.enrol("laptop", DeviceCapabilities::primary());
@@ -181,7 +182,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
         // ---- Host boots; A joins, co-edits, and leaves. B has NEVER
         //      connected. ----
-        let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
+        let host1_dev = user.enrol("home-server", DeviceCapabilities::member());
         let host1 = Box::pin(spawn_relay_on(
             &state_root,
             &user,
@@ -204,7 +205,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             "the queued co-edit must survive the host process dying"
         );
 
-        let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
+        let host2_dev = user.enrol("home-server-2", DeviceCapabilities::member());
         let host2 = Box::pin(spawn_relay_on(
             &state_root,
             &user,
@@ -247,7 +248,7 @@ async fn publish_offline_coedit(
     addr1: iroh_base::EndpointAddr,
     user: &TestUser,
     a: &crate::common::TestDevice,
-    ws: u64,
+    ws: WorkspaceId,
     state_root: &std::path::Path,
 ) -> AutoCommit {
     let a_client = RelayClient::connect(
@@ -300,7 +301,7 @@ async fn catch_up_first_connection(
     addr2: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
-    ws: u64,
+    ws: WorkspaceId,
 ) -> AutoCommit {
     let b_client = RelayClient::connect(
         client_endpoint().await,
@@ -360,12 +361,12 @@ async fn catch_up_first_connection(
 /// serving its session from one that is merely idle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pinged_host_answers_and_resets_the_silence() {
-    const WS: u64 = 23;
+    const WS: WorkspaceId = WorkspaceId::from_u128(23);
 
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let host_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host_dev = user.enrol("home-server", DeviceCapabilities::member());
     let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &[a.device_pubkey()]).await;
     let client = RelayClient::connect(
         client_endpoint().await,

@@ -325,29 +325,35 @@ impl Decorator for ChromeBody {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_rect_of_an_unlaid_out_body_is_empty() {
-        let props = ChromeProps::default();
-        let body = ChromeBody::from_props("c", props);
-        assert_eq!(body.rect, Rect::ZERO);
-        assert_eq!(body.shape, ChromeShape::Square);
-        assert_eq!(body.material, ChromeMaterial::Bar);
-    }
+    tilo_test_env::scenario! {
+        /// What a chrome body remembers.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_chrome_body_keeps_its_rect_and_its_material;
 
-    #[test]
-    fn a_body_remembered_the_material_it_was_built_with() {
-        let mut body = ChromeBody::from_props(
-            "c",
-            ChromeProps {
-                material: Some(ChromeMaterial::Calm),
+        phase the_rect_of_an_unlaid_out_body_is_empty;
+        {
+            let props = ChromeProps::default();
+            let body = ChromeBody::from_props("c", props);
+            assert_eq!(body.rect, Rect::ZERO);
+            assert_eq!(body.shape, ChromeShape::Square);
+            assert_eq!(body.material, ChromeMaterial::Bar);
+        }
+
+        phase a_body_remembered_the_material_it_was_built_with;
+        {
+            let mut body = ChromeBody::from_props(
+                "c",
+                ChromeProps {
+                    material: Some(ChromeMaterial::Calm),
+                    ..ChromeProps::default()
+                },
+            );
+            assert_eq!(body.material, ChromeMaterial::Calm);
+            body.set_props(ChromeProps {
+                material: Some(ChromeMaterial::Glass),
                 ..ChromeProps::default()
-            },
-        );
-        assert_eq!(body.material, ChromeMaterial::Calm);
-        body.set_props(ChromeProps {
-            material: Some(ChromeMaterial::Glass),
-            ..ChromeProps::default()
-        });
-        assert_eq!(body.material, ChromeMaterial::Glass);
+            });
+            assert_eq!(body.material, ChromeMaterial::Glass);
+        }
     }
 }

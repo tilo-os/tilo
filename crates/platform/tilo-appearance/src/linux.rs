@@ -142,46 +142,50 @@ mod tests {
         appearance
     }
 
-    #[test]
-    fn color_scheme_maps_prefer_dark_and_prefer_light() {
-        assert_eq!(
-            applied("color-scheme", &Value::U32(1)).scheme,
-            Some(Scheme::Dark)
-        );
-        assert_eq!(
-            applied("color-scheme", &Value::U32(2)).scheme,
-            Some(Scheme::Light)
-        );
-        assert_eq!(applied("color-scheme", &Value::U32(0)).scheme, None);
-        assert_eq!(applied("color-scheme", &Value::U32(7)).scheme, None);
-        assert_eq!(
-            applied("color-scheme", &Value::Value(Box::new(Value::U32(1)))).scheme,
-            Some(Scheme::Dark),
-            "a doubly boxed value reads the same"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_portal_setting_is_read_into_the_appearance;
 
-    #[test]
-    fn accent_maps_unit_rgb_and_rejects_out_of_range() {
-        let rgb = |r, g, b| Value::from((r, g, b));
-        assert_eq!(
-            applied("accent-color", &rgb(1.0, 0.5, 0.0)).accent,
-            Some([255, 128, 0])
-        );
-        assert_eq!(applied("accent-color", &rgb(-1.0, 0.5, 0.0)).accent, None);
-        assert_eq!(applied("accent-color", &rgb(0.2, 1.5, 0.0)).accent, None);
-        assert_eq!(applied("accent-color", &Value::U32(3)).accent, None);
-    }
+        phase color_scheme_maps_prefer_dark_and_prefer_light;
+        {
+            assert_eq!(
+                applied("color-scheme", &Value::U32(1)).scheme,
+                Some(Scheme::Dark)
+            );
+            assert_eq!(
+                applied("color-scheme", &Value::U32(2)).scheme,
+                Some(Scheme::Light)
+            );
+            assert_eq!(applied("color-scheme", &Value::U32(0)).scheme, None);
+            assert_eq!(applied("color-scheme", &Value::U32(7)).scheme, None);
+            assert_eq!(
+                applied("color-scheme", &Value::Value(Box::new(Value::U32(1)))).scheme,
+                Some(Scheme::Dark),
+                "a doubly boxed value reads the same"
+            );
+        }
 
-    #[test]
-    fn contrast_and_reduced_motion_are_on_only_at_one() {
-        assert!(applied("contrast", &Value::U32(1)).high_contrast);
-        assert!(!applied("contrast", &Value::U32(0)).high_contrast);
-        assert!(applied("reduced-motion", &Value::U32(1)).reduce_motion);
-        assert!(!applied("reduced-motion", &Value::U32(0)).reduce_motion);
-        let mut appearance = Appearance::default();
-        assert!(!apply(&mut appearance, "wallpaper", &Value::U32(1)));
-        assert_eq!(appearance, Appearance::default());
+        phase accent_maps_unit_rgb_and_rejects_out_of_range;
+        {
+            let rgb = |r, g, b| Value::from((r, g, b));
+            assert_eq!(
+                applied("accent-color", &rgb(1.0, 0.5, 0.0)).accent,
+                Some([255, 128, 0])
+            );
+            assert_eq!(applied("accent-color", &rgb(-1.0, 0.5, 0.0)).accent, None);
+            assert_eq!(applied("accent-color", &rgb(0.2, 1.5, 0.0)).accent, None);
+            assert_eq!(applied("accent-color", &Value::U32(3)).accent, None);
+        }
+
+        phase contrast_and_reduced_motion_are_on_only_at_one;
+        {
+            assert!(applied("contrast", &Value::U32(1)).high_contrast);
+            assert!(!applied("contrast", &Value::U32(0)).high_contrast);
+            assert!(applied("reduced-motion", &Value::U32(1)).reduce_motion);
+            assert!(!applied("reduced-motion", &Value::U32(0)).reduce_motion);
+            let mut appearance = Appearance::default();
+            assert!(!apply(&mut appearance, "wallpaper", &Value::U32(1)));
+            assert_eq!(appearance, Appearance::default());
+        }
     }
 
     struct FakePortal {

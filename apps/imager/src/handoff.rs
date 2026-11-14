@@ -652,7 +652,7 @@ mod tests {
             label: "setup".into(),
             user_public_key: identity_id.clone(),
             device_cert: None,
-            relay_workspace_ids: vec![7],
+            relay_workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(7)],
         };
         fs::write(
             &home_peers,
@@ -701,7 +701,6 @@ mod tests {
         );
         assert_eq!(cert.user_public_key, local_cert.user_public_key);
         assert!(cert.capabilities.can_own_workspaces);
-        assert!(cert.capabilities.can_read_all_workspaces);
         let copied: Vec<tilo_relay_protocol::HomePeerRegistration> = serde_json::from_slice(
             &fs::read(tilo_relay_protocol::home_peer_registry_path(
                 &dir.path().join("var/lib/tilo"),
@@ -751,263 +750,274 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stage_setup_handoff_requires_a_wifi_password_when_ssid_is_set() {
-        let local_dir = tempfile::tempdir().unwrap();
-        let identity_dir = local_dir.path().join("identity");
-        let local_system =
-            tilo_user_identity::IdentityPaths::under(local_dir.path().join("system"));
-        let home_peers = local_dir.path().join("home-peers.json");
-        let local = LocalIdentity {
-            identity_dir: &identity_dir,
-            system: &local_system,
-            home_peers: &home_peers,
-        };
-        let profile = InstallProfile {
-            wifi_ssid: "studio".into(),
-            ..InstallProfile::default()
-        };
-        let err = stage_setup_handoff(&profile, "", &local).unwrap_err();
-        assert!(err.contains("Wi-Fi password"));
-    }
+    tilo_test_env::scenario! {
+        fn a_setup_handoff_stages_what_was_chosen_and_keeps_the_root_secret;
 
-    #[test]
-    fn staged_tree_installs_onto_a_bootc_layout() {
-        let staged = tempfile::tempdir().unwrap();
-        write_wifi_connection(staged.path(), "studio", "correct-horse").unwrap();
-        fs::create_dir_all(staged.path().join("var/lib/tilo")).unwrap();
-        fs::write(staged.path().join("var/lib/tilo/marker"), b"ok").unwrap();
-
-        let mnt = tempfile::tempdir().unwrap();
-        let etc = mnt.path().join("state/deploy/abcd/etc");
-        let var = mnt.path().join("state/os/fedora/var");
-        fs::create_dir_all(&etc).unwrap();
-        fs::create_dir_all(&var).unwrap();
-        install_staged_onto_mounted_root(mnt.path(), staged.path()).unwrap();
-        assert!(
-            etc.join("NetworkManager/system-connections/tilo-setup.nmconnection")
-                .is_file()
-        );
-        assert_eq!(fs::read(var.join("lib/tilo/marker")).unwrap(), b"ok");
-    }
-
-    #[test]
-    fn setup_handoff_embeds_in_the_slack_before_the_profile_block() {
-        let staged = tempfile::tempdir().unwrap();
-        fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
-        let image_len = 1000_u64;
-        let device_len = image_len + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;
-        let device = tempfile::NamedTempFile::new().unwrap();
-        device.as_file().set_len(device_len).unwrap();
+        phase stage_setup_handoff_requires_a_wifi_password_when_ssid_is_set;
         {
-            use std::io::Write;
-            let mut file = device.reopen().unwrap();
-            file.write_all(&vec![0xAB; image_len as usize]).unwrap();
+            let local_dir = tempfile::tempdir().unwrap();
+            let identity_dir = local_dir.path().join("identity");
+            let local_system =
+                tilo_user_identity::IdentityPaths::under(local_dir.path().join("system"));
+            let home_peers = local_dir.path().join("home-peers.json");
+            let local = LocalIdentity {
+                identity_dir: &identity_dir,
+                system: &local_system,
+                home_peers: &home_peers,
+            };
+            let profile = InstallProfile {
+                wifi_ssid: "studio".into(),
+                ..InstallProfile::default()
+            };
+            let err = stage_setup_handoff(&profile, "", &local).unwrap_err();
+            assert!(err.contains("Wi-Fi password"));
         }
-        embed_setup_handoff(device.path(), image_len, device_len, staged.path()).unwrap();
-        let bytes = fs::read(device.path()).unwrap();
-        assert!(bytes[..image_len as usize].iter().all(|byte| *byte == 0xAB));
-        let header_at =
-            (device_len - PROFILE_BLOCK_SIZE as u64 - SETUP_HANDOFF_HEADER_SIZE) as usize;
-        let header = String::from_utf8_lossy(&bytes[header_at..header_at + 80]);
-        assert!(header.starts_with(SETUP_HANDOFF_MAGIC));
-        assert!(bytes.windows(11).any(|window| window == b"wifi-secret"));
+
+        phase staged_tree_installs_onto_a_bootc_layout;
+        {
+            let staged = tempfile::tempdir().unwrap();
+            write_wifi_connection(staged.path(), "studio", "correct-horse").unwrap();
+            fs::create_dir_all(staged.path().join("var/lib/tilo")).unwrap();
+            fs::write(staged.path().join("var/lib/tilo/marker"), b"ok").unwrap();
+
+            let mnt = tempfile::tempdir().unwrap();
+            let etc = mnt.path().join("state/deploy/abcd/etc");
+            let var = mnt.path().join("state/os/fedora/var");
+            fs::create_dir_all(&etc).unwrap();
+            fs::create_dir_all(&var).unwrap();
+            install_staged_onto_mounted_root(mnt.path(), staged.path()).unwrap();
+            assert!(
+                etc.join("NetworkManager/system-connections/tilo-setup.nmconnection")
+                    .is_file()
+            );
+            assert_eq!(fs::read(var.join("lib/tilo/marker")).unwrap(), b"ok");
+        }
+
+        phase setup_handoff_embeds_in_the_slack_before_the_profile_block;
+        {
+            let staged = tempfile::tempdir().unwrap();
+            fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
+            let image_len = 1000_u64;
+            let device_len = image_len + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;
+            let device = tempfile::NamedTempFile::new().unwrap();
+            device.as_file().set_len(device_len).unwrap();
+            {
+                use std::io::Write;
+                let mut file = device.reopen().unwrap();
+                file.write_all(&vec![0xAB; image_len as usize]).unwrap();
+            }
+            embed_setup_handoff(device.path(), image_len, device_len, staged.path()).unwrap();
+            let bytes = fs::read(device.path()).unwrap();
+            assert!(bytes[..image_len as usize].iter().all(|byte| *byte == 0xAB));
+            let header_at =
+                (device_len - PROFILE_BLOCK_SIZE as u64 - SETUP_HANDOFF_HEADER_SIZE) as usize;
+            let header = String::from_utf8_lossy(&bytes[header_at..header_at + 80]);
+            assert!(header.starts_with(SETUP_HANDOFF_MAGIC));
+            assert!(bytes.windows(11).any(|window| window == b"wifi-secret"));
+        }
+
+        phase the_human_root_secret_never_leaves_the_setup_machine;
+        {
+            let staged = tempfile::tempdir().unwrap();
+            let secret = staged.path().join("var/lib/tilo/user-identity/privkey.bin");
+            fs::create_dir_all(secret.parent().unwrap()).unwrap();
+            fs::write(&secret, b"human-root-secret").unwrap();
+
+            let mnt = tempfile::tempdir().unwrap();
+            let var = mnt.path().join("state/os/fedora/var");
+            fs::create_dir_all(mnt.path().join("state/deploy/abcd/etc")).unwrap();
+            fs::create_dir_all(&var).unwrap();
+            assert!(install_staged_onto_mounted_root(mnt.path(), staged.path()).is_err());
+            assert!(!var.join("lib/tilo/user-identity/privkey.bin").exists());
+
+            let device = tempfile::NamedTempFile::new().unwrap();
+            let device_len = 1000 + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;
+            device.as_file().set_len(device_len).unwrap();
+            assert!(embed_setup_handoff(device.path(), 1000, device_len, staged.path()).is_err());
+            assert!(
+                !fs::read(device.path())
+                    .unwrap()
+                    .windows(17)
+                    .any(|window| window == b"human-root-secret")
+            );
+        }
     }
 
     const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA test@example";
 
-    #[test]
-    fn access_handoff_writes_wifi_and_the_owner_key_without_an_identity() {
-        let profile = InstallProfile {
-            wifi_ssid: "studio".into(),
-            ..InstallProfile::default()
-        };
-        let stage =
-            stage_access_handoff(&profile, "correct-horse", &format!("  {TEST_KEY}\n"), true)
-                .unwrap()
-                .expect("Wi-Fi and a key stage a tree");
-        let root = stage.path();
-        assert!(
-            root.join("etc/NetworkManager/system-connections/tilo-setup.nmconnection")
-                .is_file()
-        );
-        assert_eq!(
-            fs::read_to_string(root.join(BRINGUP_SSH_KEY)).unwrap(),
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
-        );
-        assert!(!root.join("var").exists(), "no identity was asked for");
-        fs::remove_dir_all(root).unwrap();
+    tilo_test_env::scenario! {
+        fn an_access_handoff_carries_wifi_and_owner_keys_without_an_identity;
 
-        let none = stage_access_handoff(&InstallProfile::default(), "", "", true).unwrap();
-        assert!(none.is_none());
-        let err = stage_access_handoff(&profile, "", "", true).unwrap_err();
-        assert!(err.contains("Wi-Fi password"));
-    }
-
-    #[test]
-    fn owner_keys_are_public_keys_one_per_line() {
-        validate_bringup_ssh_key("").unwrap();
-        validate_bringup_ssh_key(TEST_KEY).unwrap();
-        let root = tempfile::tempdir().unwrap();
-        install_bringup_ssh_key(root.path(), &format!("{TEST_KEY}\n\n  {TEST_KEY} other\n"))
-            .unwrap();
-        assert_eq!(
-            fs::read_to_string(root.path().join(BRINGUP_SSH_KEY))
-                .unwrap()
-                .lines()
-                .count(),
-            2
-        );
-        let too_many = format!("{TEST_KEY}\n").repeat(MAX_BRINGUP_SSH_KEYS + 1);
-        assert!(validate_bringup_ssh_key(&too_many).is_err());
-        for bad in [
-            "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----", // placeholder
-            &format!("{TEST_KEY}\nnot a key"),
-            "no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "ssh-ed25519 not-base64!",
-            "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        ] {
-            assert!(validate_bringup_ssh_key(bad).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn access_handoff_names_the_target_only_when_a_hostname_was_chosen() {
-        let unnamed = InstallProfile {
-            wifi_ssid: "studio".into(),
-            ..InstallProfile::default()
-        };
-        let staged = stage_access_handoff(&unnamed, "correct-horse", "", true)
-            .unwrap()
-            .unwrap();
-        assert!(!staged.path().join("etc/hostname").exists());
-        fs::remove_dir_all(staged.path()).unwrap();
-
-        let named = InstallProfile {
-            hostname: "tilo-board".into(),
-            ..InstallProfile::default()
-        };
-        let staged = stage_access_handoff(&named, "", "", true).unwrap().unwrap();
-        let hostname = staged.path().join("etc/hostname");
-        assert_eq!(fs::read_to_string(&hostname).unwrap(), "tilo-board\n");
-        #[cfg(unix)]
+        phase access_handoff_writes_wifi_and_the_owner_key_without_an_identity;
         {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&hostname).unwrap().permissions().mode() & 0o777,
-                0o644
-            );
-        }
-        assert!(
-            !staged
-                .path()
-                .join("etc/NetworkManager/system-connections")
-                .exists()
-        );
-        fs::remove_dir_all(staged.path()).unwrap();
-
-        assert!(
-            stage_access_handoff(&named, "", "", false)
-                .unwrap()
-                .is_none(),
-            "installer media name the machine from their profile"
-        );
-
-        let invalid = InstallProfile {
-            hostname: "bad host".into(),
-            ..InstallProfile::default()
-        };
-        let error = stage_access_handoff(&invalid, "", "", true).unwrap_err();
-        assert!(error.contains("Hostname"), "{error}");
-    }
-
-    #[test]
-    fn account_home_staging_refuses_non_plain_names() {
-        let staged = tempfile::tempdir().unwrap();
-        for bad in ["", ".bashrc", "../escape", "a/b", "sp ace"] {
+            let profile = InstallProfile {
+                wifi_ssid: "studio".into(),
+                ..InstallProfile::default()
+            };
+            let stage =
+                stage_access_handoff(&profile, "correct-horse", &format!("  {TEST_KEY}\n"), true)
+                    .unwrap()
+                    .expect("Wi-Fi and a key stage a tree");
+            let root = stage.path();
             assert!(
-                stage_account_home_file(staged.path(), bad, b"x").is_err(),
-                "{bad:?}"
+                root.join("etc/NetworkManager/system-connections/tilo-setup.nmconnection")
+                    .is_file()
             );
+            assert_eq!(
+                fs::read_to_string(root.join(BRINGUP_SSH_KEY)).unwrap(),
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+            );
+            assert!(!root.join("var").exists(), "no identity was asked for");
+            fs::remove_dir_all(root).unwrap();
+
+            let none = stage_access_handoff(&InstallProfile::default(), "", "", true).unwrap();
+            assert!(none.is_none());
+            let err = stage_access_handoff(&profile, "", "", true).unwrap_err();
+            assert!(err.contains("Wi-Fi password"));
         }
-        assert!(!staged.path().join(ACCOUNT_HOME_FILES).exists());
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn handoff_copy_refuses_a_planted_destination_parent() {
-        let source = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::create_dir_all(source.path().join("NetworkManager/system-connections")).unwrap();
-        fs::write(
-            source
-                .path()
-                .join("NetworkManager/system-connections/tilo-setup.nmconnection"),
-            b"wifi-secret",
-        )
-        .unwrap();
-        std::os::unix::fs::symlink(outside.path(), target.path().join("NetworkManager")).unwrap();
-        let error = copy_tree(source.path(), target.path())
-            .expect_err("a planted parent must refuse the copy");
-        assert!(
-            error.to_string().contains("not a real directory"),
-            "{error}"
-        );
-        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
-    }
+        phase owner_keys_are_public_keys_one_per_line;
+        {
+            validate_bringup_ssh_key("").unwrap();
+            validate_bringup_ssh_key(TEST_KEY).unwrap();
+            let root = tempfile::tempdir().unwrap();
+            install_bringup_ssh_key(root.path(), &format!("{TEST_KEY}\n\n  {TEST_KEY} other\n"))
+                .unwrap();
+            assert_eq!(
+                fs::read_to_string(root.path().join(BRINGUP_SSH_KEY))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                2
+            );
+            let too_many = format!("{TEST_KEY}\n").repeat(MAX_BRINGUP_SSH_KEYS + 1);
+            assert!(validate_bringup_ssh_key(&too_many).is_err());
+            for bad in [
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----", // placeholder
+                &format!("{TEST_KEY}\nnot a key"),
+                "no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "ssh-ed25519 not-base64!",
+                "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ] {
+                assert!(validate_bringup_ssh_key(bad).is_err(), "{bad}");
+            }
+        }
 
-    #[test]
-    fn the_human_root_secret_never_leaves_the_setup_machine() {
-        let staged = tempfile::tempdir().unwrap();
-        let secret = staged.path().join("var/lib/tilo/user-identity/privkey.bin");
-        fs::create_dir_all(secret.parent().unwrap()).unwrap();
-        fs::write(&secret, b"human-root-secret").unwrap();
-
-        let mnt = tempfile::tempdir().unwrap();
-        let var = mnt.path().join("state/os/fedora/var");
-        fs::create_dir_all(mnt.path().join("state/deploy/abcd/etc")).unwrap();
-        fs::create_dir_all(&var).unwrap();
-        assert!(install_staged_onto_mounted_root(mnt.path(), staged.path()).is_err());
-        assert!(!var.join("lib/tilo/user-identity/privkey.bin").exists());
-
-        let device = tempfile::NamedTempFile::new().unwrap();
-        let device_len = 1000 + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;
-        device.as_file().set_len(device_len).unwrap();
-        assert!(embed_setup_handoff(device.path(), 1000, device_len, staged.path()).is_err());
-        assert!(
-            !fs::read(device.path())
+        phase access_handoff_names_the_target_only_when_a_hostname_was_chosen;
+        {
+            let unnamed = InstallProfile {
+                wifi_ssid: "studio".into(),
+                ..InstallProfile::default()
+            };
+            let staged = stage_access_handoff(&unnamed, "correct-horse", "", true)
                 .unwrap()
-                .windows(17)
-                .any(|window| window == b"human-root-secret")
-        );
+                .unwrap();
+            assert!(!staged.path().join("etc/hostname").exists());
+            fs::remove_dir_all(staged.path()).unwrap();
+
+            let named = InstallProfile {
+                hostname: "tilo-board".into(),
+                ..InstallProfile::default()
+            };
+            let staged = stage_access_handoff(&named, "", "", true).unwrap().unwrap();
+            let hostname = staged.path().join("etc/hostname");
+            assert_eq!(fs::read_to_string(&hostname).unwrap(), "tilo-board\n");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&hostname).unwrap().permissions().mode() & 0o777,
+                    0o644
+                );
+            }
+            assert!(
+                !staged
+                    .path()
+                    .join("etc/NetworkManager/system-connections")
+                    .exists()
+            );
+            fs::remove_dir_all(staged.path()).unwrap();
+
+            assert!(
+                stage_access_handoff(&named, "", "", false)
+                    .unwrap()
+                    .is_none(),
+                "installer media name the machine from their profile"
+            );
+
+            let invalid = InstallProfile {
+                hostname: "bad host".into(),
+                ..InstallProfile::default()
+            };
+            let error = stage_access_handoff(&invalid, "", "", true).unwrap_err();
+            assert!(error.contains("Hostname"), "{error}");
+        }
+
+        phase account_home_staging_refuses_non_plain_names;
+        {
+            let staged = tempfile::tempdir().unwrap();
+            for bad in ["", ".bashrc", "../escape", "a/b", "sp ace"] {
+                assert!(
+                    stage_account_home_file(staged.path(), bad, b"x").is_err(),
+                    "{bad:?}"
+                );
+            }
+            assert!(!staged.path().join(ACCOUNT_HOME_FILES).exists());
+        }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn handoff_copy_does_not_follow_symlinks_on_either_side() {
-        let outside = tempfile::tempdir().unwrap();
-        let secret = outside.path().join("secret");
-        fs::write(&secret, b"keep").unwrap();
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn a_handoff_copy_stays_inside_the_tree_it_was_given;
 
-        let staged = tempfile::tempdir().unwrap();
-        fs::create_dir_all(staged.path().join("etc")).unwrap();
-        std::os::unix::fs::symlink(&secret, staged.path().join("etc/leak")).unwrap();
-        fs::write(staged.path().join("etc/marker"), b"new").unwrap();
+        phase handoff_copy_refuses_a_planted_destination_parent;
+        {
+            let source = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            fs::create_dir_all(source.path().join("NetworkManager/system-connections")).unwrap();
+            fs::write(
+                source
+                    .path()
+                    .join("NetworkManager/system-connections/tilo-setup.nmconnection"),
+                b"wifi-secret",
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(outside.path(), target.path().join("NetworkManager")).unwrap();
+            let error = copy_tree(source.path(), target.path())
+                .expect_err("a planted parent must refuse the copy");
+            assert!(
+                error.to_string().contains("not a real directory"),
+                "{error}"
+            );
+            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        }
 
-        let target = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(&secret, target.path().join("marker")).unwrap();
-        copy_tree(&staged.path().join("etc"), target.path()).unwrap();
+        phase handoff_copy_does_not_follow_symlinks_on_either_side;
+        {
+            let outside = tempfile::tempdir().unwrap();
+            let secret = outside.path().join("secret");
+            fs::write(&secret, b"keep").unwrap();
 
-        assert!(!target.path().join("leak").exists());
-        assert_eq!(fs::read(&secret).unwrap(), b"keep");
-        let marker = target.path().join("marker");
-        assert!(
-            !fs::symlink_metadata(&marker)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(fs::read(&marker).unwrap(), b"new");
+            let staged = tempfile::tempdir().unwrap();
+            fs::create_dir_all(staged.path().join("etc")).unwrap();
+            std::os::unix::fs::symlink(&secret, staged.path().join("etc/leak")).unwrap();
+            fs::write(staged.path().join("etc/marker"), b"new").unwrap();
+
+            let target = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(&secret, target.path().join("marker")).unwrap();
+            copy_tree(&staged.path().join("etc"), target.path()).unwrap();
+
+            assert!(!target.path().join("leak").exists());
+            assert_eq!(fs::read(&secret).unwrap(), b"keep");
+            let marker = target.path().join("marker");
+            assert!(
+                !fs::symlink_metadata(&marker)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(fs::read(&marker).unwrap(), b"new");
+        }
     }
 }

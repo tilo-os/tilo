@@ -27,6 +27,7 @@ bounded-command = { path = "../../system/bounded-command" }
 sha2.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
+tilo-action-policy = { path = "../../collab/action-policy" }
 # The shell a session runs: POSIX sh and bash's common features, with
 # Tilo's own commands in-process.
 ush-shell = { path = "../ush-shell" }

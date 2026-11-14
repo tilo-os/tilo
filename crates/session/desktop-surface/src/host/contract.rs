@@ -53,7 +53,7 @@ pub const REPORT_PROBLEM: &str = "session-report-problem";
 /// What the host answers about the person at this desktop and the workspace it shows.
 pub trait DesktopRules {
     /// The tree as the chrome shows it: the surface's, with who is here as the active workspace's
-    /// collaborators.
+    /// members.
     fn tree(&self) -> DesktopTree;
 
     /// Changes whenever who is here does, beyond the tree.

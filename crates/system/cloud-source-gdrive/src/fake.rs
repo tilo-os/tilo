@@ -1723,49 +1723,53 @@ fn format_rfc3339(time: SystemTime) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn timestamps_round_trip_through_the_client_parser() {
-        let now = SystemTime::now();
-        let text = format_rfc3339(now);
-        let parsed = cloud_source::http::parse_rfc3339(&text).unwrap();
-        let diff = now.duration_since(parsed).unwrap();
-        assert!(diff.as_millis() < 1, "{text}");
-    }
+    tilo_test_env::scenario! {
+        fn the_fake_reads_what_the_client_writes;
 
-    #[test]
-    fn field_selections_nest() {
-        let value = json!({"kind": "x", "files": [{"id": "1", "name": "a", "size": "3"}], "nextPageToken": "t"});
-        let picked = select(
-            &value,
-            &parse_fields("nextPageToken,files(id,size)").unwrap(),
-        );
-        assert_eq!(
-            picked,
-            json!({"files": [{"id": "1", "size": "3"}], "nextPageToken": "t"})
-        );
-        assert!(parse_fields("files(id").is_none());
-    }
+        phase timestamps_round_trip_through_the_client_parser;
+        {
+            let now = SystemTime::now();
+            let text = format_rfc3339(now);
+            let parsed = cloud_source::http::parse_rfc3339(&text).unwrap();
+            let diff = now.duration_since(parsed).unwrap();
+            assert!(diff.as_millis() < 1, "{text}");
+        }
 
-    #[test]
-    fn queries_parse_the_client_subset() {
-        let q = parse_query(
-            r"('a' in parents or 'b' in parents) and trashed = false and name != 'it\'s'",
-        )
-        .unwrap();
-        let node = Node {
-            id: "x".into(),
-            name: "plan".into(),
-            mime: "text/plain".into(),
-            parents: vec!["b".into()],
-            trashed: false,
-            explicitly_trashed: false,
-            version: 1,
-            modified: SystemTime::now(),
-            revisions: Vec::new(),
-            drive_id: None,
-            permissions: Vec::new(),
-        };
-        assert!(q.eval(&node, "r"));
-        assert!(parse_query("fullText contains 'x'").is_err());
+        phase field_selections_nest;
+        {
+            let value = json!({"kind": "x", "files": [{"id": "1", "name": "a", "size": "3"}], "nextPageToken": "t"});
+            let picked = select(
+                &value,
+                &parse_fields("nextPageToken,files(id,size)").unwrap(),
+            );
+            assert_eq!(
+                picked,
+                json!({"files": [{"id": "1", "size": "3"}], "nextPageToken": "t"})
+            );
+            assert!(parse_fields("files(id").is_none());
+        }
+
+        phase queries_parse_the_client_subset;
+        {
+            let q = parse_query(
+                r"('a' in parents or 'b' in parents) and trashed = false and name != 'it\'s'",
+            )
+            .unwrap();
+            let node = Node {
+                id: "x".into(),
+                name: "plan".into(),
+                mime: "text/plain".into(),
+                parents: vec!["b".into()],
+                trashed: false,
+                explicitly_trashed: false,
+                version: 1,
+                modified: SystemTime::now(),
+                revisions: Vec::new(),
+                drive_id: None,
+                permissions: Vec::new(),
+            };
+            assert!(q.eval(&node, "r"));
+            assert!(parse_query("fullText contains 'x'").is_err());
+        }
     }
 }

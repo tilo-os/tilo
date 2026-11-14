@@ -9,15 +9,14 @@
 //! an H.264 encoder is installed and its absence is a failure, because the question
 //! only has an answer on a machine that can pose it.
 
-mod common;
-
 #[cfg(feature = "decode")]
 mod real {
-    use super::common::*;
+    use crate::common::*;
     use tilo_media::{DecoderKind, EngineConfig, FramePayload, MediaEngine};
 
     #[test]
     fn the_decoder_that_ran_is_the_hardware_one_when_the_machine_has_one() {
+        shared_gst_registry();
         let _registry = registry_policy_lock();
         let summary = registry_summary();
         println!("registry: {summary}");
@@ -73,6 +72,7 @@ mod real {
 
     #[test]
     fn a_gpu_native_consumer_is_not_handed_forced_rgba() {
+        shared_gst_registry();
         let _registry = registry_policy_lock();
         let mut engine = MediaEngine::with_config(EngineConfig::gpu().frames_only());
         engine.open(fixture_source());
@@ -123,6 +123,8 @@ mod real {
 
     #[test]
     fn no_hardware_claim_is_made_before_a_decoder_has_been_plugged() {
+        shared_gst_registry();
+        let _registry = registry_policy_lock();
         let engine = MediaEngine::with_config(EngineConfig::gpu().frames_only());
         let report = engine.hw_report();
         assert!(
@@ -138,6 +140,7 @@ mod real {
 
     #[test]
     fn h264_decodes_through_the_codec_block_where_the_machine_has_one() {
+        shared_gst_registry();
         let clip = h264_fixture().unwrap_or_else(|reason| {
             panic!(
                 "{reason}. This test's subject is an H.264 clip, so it has nothing to \
@@ -197,6 +200,7 @@ mod real {
     #[test]
     fn a_dmabuf_frame_is_described_completely_enough_to_import() {
         use tilo_media::{DmabufImage, HwPolicy};
+        shared_gst_registry();
         let _registry = registry_policy_lock();
 
         let va_capable = tilo_media::gst_backend::decoders_for(FIXTURE_CAPS)
@@ -285,6 +289,7 @@ mod real {
     #[test]
     fn one_pipeline_serves_repeated_requests_for_the_same_source() {
         use tilo_media::SessionPool;
+        shared_gst_registry();
         let _registry = registry_policy_lock();
 
         let mut pool = SessionPool::for_editor();

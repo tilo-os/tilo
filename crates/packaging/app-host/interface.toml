@@ -18,6 +18,9 @@ sources = [
     "crates/packaging/app-host/src/client.rs",
 ]
 roots = ["Request", "Response", "Call", "Reply"]
+# The Settings language-pack messages are length-prefixed JSON on this socket; the
+# Store's calls beside them are postcard (see the header above).
+json_roots = ["Request", "Response"]
 
 [opaque]
 

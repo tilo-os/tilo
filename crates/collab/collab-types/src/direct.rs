@@ -62,44 +62,49 @@ mod tests {
         hex::encode([byte; 32])
     }
 
-    #[test]
-    fn a_pairs_record_names_the_pair_in_either_order() {
-        let (ada, bob) = (person(0x11), person(0x22));
-        let pair = direct_pair_id(WORKSPACE, &ada, &bob).unwrap();
-        assert_eq!(direct_pair_id(WORKSPACE, &bob, &ada), Some(pair.clone()));
-        assert_eq!(direct_record(&pair), format!("direct/{pair}"));
-        assert!(canonical_pair(&pair));
-        assert!(!canonical_pair("direct/not-a-pair"));
-    }
+    tilo_test_env::scenario! {
+        /// How the record two people share is named and spelt, and which pairs name one.
+        fn a_direct_record_is_named_by_its_pair_of_people;
 
-    #[test]
-    fn the_stored_pair_spelling_is_the_records() {
-        // The spelling the owner-side conversation store keeps, from the same
-        // workspace and people.
-        let (ada, bob) = (person(0x11), person(0x22));
-        let mut people = [ada.as_str(), bob.as_str()];
-        people.sort_unstable();
-        let stored = serde_json::to_vec(&(
-            "private-person-pair-v1",
-            uuid::Uuid::parse_str(WORKSPACE).unwrap(),
-            people,
-        ))
-        .unwrap();
-        assert_eq!(
-            direct_pair_id(WORKSPACE, &ada, &bob),
-            Some(format!("direct_{}", blake3::hash(&stored).to_hex()))
-        );
-    }
+        phase a_pairs_record_names_the_pair_in_either_order;
+        {
+            let (ada, bob) = (person(0x11), person(0x22));
+            let pair = direct_pair_id(WORKSPACE, &ada, &bob).unwrap();
+            assert_eq!(direct_pair_id(WORKSPACE, &bob, &ada), Some(pair.clone()));
+            assert_eq!(direct_record(&pair), format!("direct/{pair}"));
+            assert!(canonical_pair(&pair));
+            assert!(!canonical_pair("direct/not-a-pair"));
+        }
 
-    #[test]
-    fn only_two_distinct_people_in_a_workspace_name_a_pair() {
-        assert_eq!(direct_pair_id("not-a-workspace", ADA, BOB), None);
-        assert_eq!(
-            direct_pair_id(WORKSPACE, ADA, BOB),
-            None,
-            "keys are canonical lowercase hex"
-        );
-        let ada = person(0x11);
-        assert_eq!(direct_pair_id(WORKSPACE, &ada, &ada), None);
+        phase the_stored_pair_spelling_is_the_records;
+        {
+            // The spelling the owner-side conversation store keeps, from the same
+            // workspace and people.
+            let (ada, bob) = (person(0x11), person(0x22));
+            let mut people = [ada.as_str(), bob.as_str()];
+            people.sort_unstable();
+            let stored = serde_json::to_vec(&(
+                "private-person-pair-v1",
+                uuid::Uuid::parse_str(WORKSPACE).unwrap(),
+                people,
+            ))
+            .unwrap();
+            assert_eq!(
+                direct_pair_id(WORKSPACE, &ada, &bob),
+                Some(format!("direct_{}", blake3::hash(&stored).to_hex()))
+            );
+        }
+
+        phase only_two_distinct_people_in_a_workspace_name_a_pair;
+        {
+            assert_eq!(direct_pair_id("not-a-workspace", ADA, BOB), None);
+            assert_eq!(
+                direct_pair_id(WORKSPACE, ADA, BOB),
+                None,
+                "keys are canonical lowercase hex"
+            );
+            let ada = person(0x11);
+            assert_eq!(direct_pair_id(WORKSPACE, &ada, &ada), None);
+        }
     }
 }

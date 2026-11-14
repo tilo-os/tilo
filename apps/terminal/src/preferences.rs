@@ -132,44 +132,48 @@ impl Preferences {
 mod tests {
     use super::*;
 
-    #[test]
-    fn preferences_survive_a_new_terminal() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().to_path_buf();
-        let first = Preferences::at(&path);
-        assert_eq!(first.load(), PreferencesSetting::default());
-        first.set_copy_on_select(true);
-        first.set_bell(Bell::Visual);
+    tilo_test_env::scenario! {
+        fn preferences_are_kept_only_where_a_store_is_and_the_bell_toggles;
 
-        let second = Preferences::at(&path);
-        let stored = second.load();
-        assert!(stored.copy_on_select, "copy-on-select is remembered");
-        assert_eq!(stored.bell, Bell::Visual, "the bell is remembered");
-        assert!(
-            !stored.allow_osc52_clipboard,
-            "an untouched preference is its default"
-        );
-    }
+        phase preferences_survive_a_new_terminal;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().to_path_buf();
+            let first = Preferences::at(&path);
+            assert_eq!(first.load(), PreferencesSetting::default());
+            first.set_copy_on_select(true);
+            first.set_bell(Bell::Visual);
 
-    /// With no store the preferences are the defaults and stay in memory: a
-    /// test or an embedded terminal never writes the person's settings.
-    #[test]
-    fn no_store_means_no_writes() {
-        let prefs = Preferences::none();
-        assert_eq!(prefs.load(), PreferencesSetting::default());
-        prefs.set_copy_on_select(true);
-        assert!(
-            !prefs.load().copy_on_select,
-            "nothing was kept, because nothing can be"
-        );
-    }
+            let second = Preferences::at(&path);
+            let stored = second.load();
+            assert!(stored.copy_on_select, "copy-on-select is remembered");
+            assert_eq!(stored.bell, Bell::Visual, "the bell is remembered");
+            assert!(
+                !stored.allow_osc52_clipboard,
+                "an untouched preference is its default"
+            );
+        }
 
-    #[test]
-    fn the_bell_toggles_between_off_and_a_flash() {
-        assert_eq!(Bell::Off.toggled(), Bell::Visual);
-        assert_eq!(Bell::Visual.toggled(), Bell::Off);
-        assert_eq!(Bell::of_index(1), Bell::Visual);
-        assert_eq!(Bell::Visual.index(), 1);
-        assert_eq!(Bell::Visual.label(), "Flash on a bell");
+        phase no_store_means_no_writes;
+        // With no store the preferences are the defaults and stay in memory: a
+        // test or an embedded terminal never writes the person's settings.
+        {
+            let prefs = Preferences::none();
+            assert_eq!(prefs.load(), PreferencesSetting::default());
+            prefs.set_copy_on_select(true);
+            assert!(
+                !prefs.load().copy_on_select,
+                "nothing was kept, because nothing can be"
+            );
+        }
+
+        phase the_bell_toggles_between_off_and_a_flash;
+        {
+            assert_eq!(Bell::Off.toggled(), Bell::Visual);
+            assert_eq!(Bell::Visual.toggled(), Bell::Off);
+            assert_eq!(Bell::of_index(1), Bell::Visual);
+            assert_eq!(Bell::Visual.index(), 1);
+            assert_eq!(Bell::Visual.label(), "Flash on a bell");
+        }
     }
 }

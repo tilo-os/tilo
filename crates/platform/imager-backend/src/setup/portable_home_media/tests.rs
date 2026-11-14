@@ -3,56 +3,226 @@ use crate::setup::portable_transfer::ImportReview;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 const PASSWORD: &[u8] = b"portable home fixture secret";
-#[test]
-fn setup_selection_pairs_completed_ciphertext_without_overwriting_another_transfer() {
-    let root = fixture();
-    let media = root.path().join("media");
-    let source = root.path().join("source");
-    std::fs::write(source.join("document"), b"my document").unwrap();
-    let grant = MediaGrant::open(&media).unwrap();
-    let cancel = AtomicBool::new(false);
-    let home = HomeSource::review(&source)
-        .unwrap()
-        .export_to(
-            &grant,
-            "selected",
-            "prepared-binding",
-            Zeroizing::new(PASSWORD.to_vec()),
-            &cancel,
-        )
-        .unwrap();
-    grant.publish_expectation(&home, &cancel).unwrap();
-    std::fs::create_dir(media.join(super::super::media_setup::DIRECTORY)).unwrap();
-    // This receipt locates opaque setup bytes; the native consumer separately
-    // authenticates identity custody. Publication must not imply that authority.
-    let setup = super::super::media_setup::DeliveryReceipt {
-        relative_path: PathBuf::from(".tilo-installer/prepared-setup.sealed"),
-        sealed_bytes: 48,
-        ciphertext_sha256: "a".repeat(64),
-    };
-    grant
-        .publish_setup_selection(&setup, &home, &cancel)
-        .unwrap();
-    let path = media.join(".tilo-installer/home-selection.json");
-    let before = std::fs::read(&path).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&before).unwrap();
-    assert_eq!(value["home"]["filename"], home.filename);
-    assert_eq!(value["home"]["setup_binding"], "prepared-binding");
-    grant
-        .publish_setup_selection(&setup, &home, &cancel)
-        .unwrap();
-    let mut other = setup;
-    other.ciphertext_sha256 = "b".repeat(64);
-    assert!(
+tilo_test_env::scenario! {
+    /// Writing a portable home to the granted medium.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn portable_home_media_publishes_only_complete_authenticated_ciphertext;
+
+    phase setup_selection_pairs_completed_ciphertext_without_overwriting_another_transfer;
+    {
+        let root = fixture();
+        let media = root.path().join("media");
+        let source = root.path().join("source");
+        std::fs::write(source.join("document"), b"my document").unwrap();
+        let grant = MediaGrant::open(&media).unwrap();
+        let cancel = AtomicBool::new(false);
+        let home = HomeSource::review(&source)
+            .unwrap()
+            .export_to(
+                &grant,
+                "selected",
+                "prepared-binding",
+                Zeroizing::new(PASSWORD.to_vec()),
+                &cancel,
+            )
+            .unwrap();
+        grant.publish_expectation(&home, &cancel).unwrap();
+        std::fs::create_dir(media.join(super::super::media_setup::DIRECTORY)).unwrap();
+        // This receipt locates opaque setup bytes; the native consumer separately
+        // authenticates identity custody. Publication must not imply that authority.
+        let setup = super::super::media_setup::DeliveryReceipt {
+            relative_path: PathBuf::from(".tilo-installer/prepared-setup.sealed"),
+            sealed_bytes: 48,
+            ciphertext_sha256: "a".repeat(64),
+        };
         grant
-            .publish_setup_selection(&other, &home, &cancel)
-            .is_err()
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert_eq!(
-        std::fs::read(source.join("document")).unwrap(),
-        b"my document"
-    );
+            .publish_setup_selection(&setup, &home, &cancel)
+            .unwrap();
+        let path = media.join(".tilo-installer/home-selection.json");
+        let before = std::fs::read(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        assert_eq!(value["home"]["filename"], home.filename);
+        assert_eq!(value["home"]["setup_binding"], "prepared-binding");
+        grant
+            .publish_setup_selection(&setup, &home, &cancel)
+            .unwrap();
+        let mut other = setup;
+        other.ciphertext_sha256 = "b".repeat(64);
+        assert!(
+            grant
+                .publish_setup_selection(&other, &home, &cancel)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            std::fs::read(source.join("document")).unwrap(),
+            b"my document"
+        );
+    }
+
+    phase cancellation_source_mutation_and_existing_publication_never_replace_or_publish;
+    {
+        let root = fixture();
+        let source = root.path().join("source");
+        std::fs::write(source.join("document"), b"original").unwrap();
+        let review = HomeSource::review(&source).unwrap();
+        let grant = MediaGrant::open(&root.path().join("media")).unwrap();
+        assert!(
+            review
+                .export_to(
+                    &grant,
+                    "cancelled",
+                    "binding",
+                    Zeroizing::new(PASSWORD.to_vec()),
+                    &AtomicBool::new(true)
+                )
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path().join("media"))
+                .unwrap()
+                .count(),
+            0
+        );
+        std::fs::write(source.join("document"), b"changed after consent").unwrap();
+        assert!(
+            review
+                .export_to(
+                    &grant,
+                    "changed",
+                    "binding",
+                    Zeroizing::new(PASSWORD.to_vec()),
+                    &AtomicBool::new(false)
+                )
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path().join("media"))
+                .unwrap()
+                .count(),
+            0
+        );
+        let fresh = HomeSource::review(&source).unwrap();
+        let target = root.path().join("media/home-existing.sealed");
+        std::fs::write(&target, b"existing package").unwrap();
+        assert!(
+            fresh
+                .export_to(
+                    &grant,
+                    "existing",
+                    "binding",
+                    Zeroizing::new(PASSWORD.to_vec()),
+                    &AtomicBool::new(false)
+                )
+                .is_err()
+        );
+        assert_eq!(std::fs::read(target).unwrap(), b"existing package");
+        assert_eq!(
+            std::fs::read_dir(root.path().join("media"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    phase changed_media_grant_and_source_descendant_destination_are_refused;
+    {
+        let root = fixture();
+        let source = root.path().join("source");
+        std::fs::write(source.join("document"), b"unchanged source").unwrap();
+        std::fs::create_dir(source.join("nested")).unwrap();
+        let reviewed = HomeSource::review(&source).unwrap();
+        let nested = MediaGrant::open(&source.join("nested")).unwrap();
+        assert!(
+            reviewed
+                .export_to(
+                    &nested,
+                    "recursive",
+                    "binding",
+                    Zeroizing::new(PASSWORD.to_vec()),
+                    &AtomicBool::new(false)
+                )
+                .is_err()
+        );
+        let grant = MediaGrant::open(&root.path().join("media")).unwrap();
+        std::fs::rename(root.path().join("media"), root.path().join("old-media")).unwrap();
+        std::fs::create_dir(root.path().join("media")).unwrap();
+        assert!(
+            reviewed
+                .export_to(
+                    &grant,
+                    "replaced",
+                    "binding",
+                    Zeroizing::new(PASSWORD.to_vec()),
+                    &AtomicBool::new(false)
+                )
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path().join("old-media"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path().join("media"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    phase cancellation_after_ciphertext_creation_cleans_partial_without_publication;
+    {
+        let root = fixture();
+        let source = root.path().join("source");
+        std::fs::write(source.join("document"), vec![0x5a; 4 * 1024 * 1024]).unwrap();
+        let reviewed = HomeSource::review(&source).unwrap();
+        let media_path = root.path().join("media");
+        let grant = MediaGrant::open(&media_path).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        // The export is held at its first progress report, with its ciphertext
+        // storage created, until the test has cancelled it.
+        let (reached, observed) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let mut hold = Some((reached, held));
+            reviewed.export_to_reporting(
+                &grant,
+                "interrupted",
+                "binding",
+                Zeroizing::new(PASSWORD.to_vec()),
+                &worker_cancel,
+                &mut |_| {
+                    if let Some((reached, held)) = hold.take() {
+                        let _ = reached.send(());
+                        let _ = held.recv();
+                    }
+                    Ok(())
+                },
+            )
+        });
+        tilo_test_env::recv("the export to stream into storage", &observed);
+        assert!(
+            std::fs::read_dir(&media_path).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".partial")
+            }),
+            "the streaming export has its ciphertext storage"
+        );
+        cancel.store(true, Ordering::Relaxed);
+        release.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        assert_eq!(std::fs::read_dir(&media_path).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::metadata(source.join("document")).unwrap().len(),
+            4 * 1024 * 1024
+        );
+    }
 }
 fn fixture() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
@@ -189,168 +359,6 @@ fn full_home_streams_directly_to_granted_media_and_authenticated_binding_roundtr
     assert_eq!(
         std::fs::read(source.join("script")).unwrap(),
         b"executable user file"
-    );
-}
-#[test]
-fn cancellation_source_mutation_and_existing_publication_never_replace_or_publish() {
-    let root = fixture();
-    let source = root.path().join("source");
-    std::fs::write(source.join("document"), b"original").unwrap();
-    let review = HomeSource::review(&source).unwrap();
-    let grant = MediaGrant::open(&root.path().join("media")).unwrap();
-    assert!(
-        review
-            .export_to(
-                &grant,
-                "cancelled",
-                "binding",
-                Zeroizing::new(PASSWORD.to_vec()),
-                &AtomicBool::new(true)
-            )
-            .is_err()
-    );
-    assert_eq!(
-        std::fs::read_dir(root.path().join("media"))
-            .unwrap()
-            .count(),
-        0
-    );
-    std::fs::write(source.join("document"), b"changed after consent").unwrap();
-    assert!(
-        review
-            .export_to(
-                &grant,
-                "changed",
-                "binding",
-                Zeroizing::new(PASSWORD.to_vec()),
-                &AtomicBool::new(false)
-            )
-            .is_err()
-    );
-    assert_eq!(
-        std::fs::read_dir(root.path().join("media"))
-            .unwrap()
-            .count(),
-        0
-    );
-    let fresh = HomeSource::review(&source).unwrap();
-    let target = root.path().join("media/home-existing.sealed");
-    std::fs::write(&target, b"existing package").unwrap();
-    assert!(
-        fresh
-            .export_to(
-                &grant,
-                "existing",
-                "binding",
-                Zeroizing::new(PASSWORD.to_vec()),
-                &AtomicBool::new(false)
-            )
-            .is_err()
-    );
-    assert_eq!(std::fs::read(target).unwrap(), b"existing package");
-    assert_eq!(
-        std::fs::read_dir(root.path().join("media"))
-            .unwrap()
-            .count(),
-        1
-    );
-}
-#[test]
-fn changed_media_grant_and_source_descendant_destination_are_refused() {
-    let root = fixture();
-    let source = root.path().join("source");
-    std::fs::write(source.join("document"), b"unchanged source").unwrap();
-    std::fs::create_dir(source.join("nested")).unwrap();
-    let reviewed = HomeSource::review(&source).unwrap();
-    let nested = MediaGrant::open(&source.join("nested")).unwrap();
-    assert!(
-        reviewed
-            .export_to(
-                &nested,
-                "recursive",
-                "binding",
-                Zeroizing::new(PASSWORD.to_vec()),
-                &AtomicBool::new(false)
-            )
-            .is_err()
-    );
-    let grant = MediaGrant::open(&root.path().join("media")).unwrap();
-    std::fs::rename(root.path().join("media"), root.path().join("old-media")).unwrap();
-    std::fs::create_dir(root.path().join("media")).unwrap();
-    assert!(
-        reviewed
-            .export_to(
-                &grant,
-                "replaced",
-                "binding",
-                Zeroizing::new(PASSWORD.to_vec()),
-                &AtomicBool::new(false)
-            )
-            .is_err()
-    );
-    assert_eq!(
-        std::fs::read_dir(root.path().join("old-media"))
-            .unwrap()
-            .count(),
-        0
-    );
-    assert_eq!(
-        std::fs::read_dir(root.path().join("media"))
-            .unwrap()
-            .count(),
-        0
-    );
-}
-
-#[test]
-fn cancellation_after_ciphertext_creation_cleans_partial_without_publication() {
-    let root = fixture();
-    let source = root.path().join("source");
-    std::fs::write(source.join("document"), vec![0x5a; 4 * 1024 * 1024]).unwrap();
-    let reviewed = HomeSource::review(&source).unwrap();
-    let media_path = root.path().join("media");
-    let grant = MediaGrant::open(&media_path).unwrap();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let worker_cancel = Arc::clone(&cancel);
-    // The export is held at its first progress report, with its ciphertext
-    // storage created, until the test has cancelled it.
-    let (reached, observed) = std::sync::mpsc::channel();
-    let (release, held) = std::sync::mpsc::channel::<()>();
-    let worker = std::thread::spawn(move || {
-        let mut hold = Some((reached, held));
-        reviewed.export_to_reporting(
-            &grant,
-            "interrupted",
-            "binding",
-            Zeroizing::new(PASSWORD.to_vec()),
-            &worker_cancel,
-            &mut |_| {
-                if let Some((reached, held)) = hold.take() {
-                    let _ = reached.send(());
-                    let _ = held.recv();
-                }
-                Ok(())
-            },
-        )
-    });
-    tilo_test_env::recv("the export to stream into storage", &observed);
-    assert!(
-        std::fs::read_dir(&media_path).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .ends_with(".partial")
-        }),
-        "the streaming export has its ciphertext storage"
-    );
-    cancel.store(true, Ordering::Relaxed);
-    release.send(()).unwrap();
-    assert!(worker.join().unwrap().is_err());
-    assert_eq!(std::fs::read_dir(&media_path).unwrap().count(), 0);
-    assert_eq!(
-        std::fs::metadata(source.join("document")).unwrap().len(),
-        4 * 1024 * 1024
     );
 }
 

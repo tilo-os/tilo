@@ -94,554 +94,558 @@ fn supported_graphics() -> ComponentSupport {
     )
 }
 
-#[test]
-fn another_destination_checks_compatibility_before_identity_and_media() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    assert_eq!(preview.journey.page, Page::Target);
-    assert!(preview.journey.identity.is_none());
-    assert!(preview.journey.password.is_empty());
-    assert!(preview.storage.facts.is_none());
-    assert!(!preview.compatibility.pending);
-    assert!(!preview.direct.active);
+tilo_test_env::scenario! {
+    fn another_computers_compatibility_is_decided_before_identity_and_media;
 
-    for (field, value) in [
-        ("manufacturer", "Prepared Vendor"),
-        ("model", "Prepared Laptop 14"),
-        ("variant", "PREPARED-BOARD"),
-    ] {
+    phase another_destination_checks_compatibility_before_identity_and_media;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        assert_eq!(preview.journey.page, Page::Target);
+        assert!(preview.journey.identity.is_none());
+        assert!(preview.journey.password.is_empty());
+        assert!(preview.storage.facts.is_none());
+        assert!(!preview.compatibility.pending);
+        assert!(!preview.direct.active);
+
+        for (field, value) in [
+            ("manufacturer", "Prepared Vendor"),
+            ("model", "Prepared Laptop 14"),
+            ("variant", "PREPARED-BOARD"),
+        ] {
+            preview
+                .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: value.into(),
+                })
+                .unwrap();
+        }
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        assert_eq!(preview.journey.page, Page::Migration);
+        assert_eq!(
+            preview.journey.history,
+            vec![Page::Destination, Page::Target]
+        );
+        assert!(preview.journey.identity.is_none());
+        assert!(preview.journey.password.is_empty());
+    }
+
+    phase model_only_never_authorizes_boot_partition_or_protection;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
         preview
             .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                field: field.into(),
-                value: value.into(),
+                field: "manufacturer".into(),
+                value: "Prepared Vendor".into(),
             })
             .unwrap();
-    }
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    assert_eq!(preview.journey.page, Page::Migration);
-    assert_eq!(
-        preview.journey.history,
-        vec![Page::Destination, Page::Target]
-    );
-    assert!(preview.journey.identity.is_none());
-    assert!(preview.journey.password.is_empty());
-}
-
-#[test]
-fn model_only_never_authorizes_boot_partition_or_protection() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    preview
-        .apply(InstallerPreviewEffect::SetTargetIdentityField {
-            field: "manufacturer".into(),
-            value: "Prepared Vendor".into(),
-        })
-        .unwrap();
-    preview
-        .apply(InstallerPreviewEffect::SetTargetIdentityField {
-            field: "model".into(),
-            value: "Prepared Laptop 14".into(),
-        })
-        .unwrap();
-    preview
-        .apply(InstallerPreviewEffect::SetTargetIdentityField {
-            field: "variant".into(),
-            value: "PREPARED-BOARD".into(),
-        })
-        .unwrap();
-    let projection = preview.target.projection();
-    assert_eq!(projection["ready"], true);
-    assert_eq!(projection["source"], "declared-model");
-    assert_eq!(projection["destination_check_required"], true);
-    assert_eq!(projection["blocks_preparation"], false);
-    assert_eq!(projection["report"]["components"], serde_json::json!([]));
-    assert!(preview.storage.facts.is_none());
-
-    preview.target.clear_report();
-    for field in ["manufacturer", "model", "variant"] {
         preview
             .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                field: field.into(),
-                value: String::new(),
+                field: "model".into(),
+                value: "Prepared Laptop 14".into(),
             })
             .unwrap();
+        preview
+            .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                field: "variant".into(),
+                value: "PREPARED-BOARD".into(),
+            })
+            .unwrap();
+        let projection = preview.target.projection();
+        assert_eq!(projection["ready"], true);
+        assert_eq!(projection["source"], "declared-model");
+        assert_eq!(projection["destination_check_required"], true);
+        assert_eq!(projection["blocks_preparation"], false);
+        assert_eq!(projection["report"]["components"], serde_json::json!([]));
+        assert!(preview.storage.facts.is_none());
+
+        preview.target.clear_report();
+        for field in ["manufacturer", "model", "variant"] {
+            preview
+                .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: String::new(),
+                })
+                .unwrap();
+        }
+        preview.journey.page = Page::Review;
+        assert_eq!(
+            preview.apply(InstallerPreviewEffect::PrepareUsb),
+            Err("installer-preview-target-incomplete")
+        );
+        assert!(!preview.direct.active);
+        assert!(preview.storage.facts.is_none());
     }
-    preview.journey.page = Page::Review;
-    assert_eq!(
-        preview.apply(InstallerPreviewEffect::PrepareUsb),
-        Err("installer-preview-target-incomplete")
-    );
-    assert!(!preview.direct.active);
-    assert!(preview.storage.facts.is_none());
-}
 
-#[test]
-fn imported_report_must_name_a_supported_architecture_and_model() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    let host = std::env::consts::ARCH;
-    let other = if host == "aarch64" {
-        "x86_64"
-    } else {
-        "aarch64"
-    };
-    let bytes = report(Some(host), vec![supported_graphics()])
-        .to_json()
-        .unwrap();
-    preview
-        .target
-        .import_bytes(Some("prepared.json".into()), &bytes)
-        .unwrap();
-    let projection = preview.target.projection();
-    assert_eq!(projection["source"], "imported");
-    assert_eq!(projection["architecture"], host);
-    assert_eq!(projection["ready"], true);
-    assert_eq!(projection["destination_check_required"], true);
-
-    let missing = report(None, vec![supported_graphics()]).to_json().unwrap();
-    assert_eq!(
+    phase imported_report_must_name_a_supported_architecture_and_model;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        let host = std::env::consts::ARCH;
+        let other = if host == "aarch64" {
+            "x86_64"
+        } else {
+            "aarch64"
+        };
+        let bytes = report(Some(host), vec![supported_graphics()])
+            .to_json()
+            .unwrap();
         preview
             .target
-            .import_bytes(Some("old.json".into()), &missing),
-        Err("installer-preview-target-report-missing-architecture")
-    );
-    assert_eq!(
-        preview.target.projection()["architecture"],
-        serde_json::json!(host),
-        "a rejected file leaves the accepted report in place"
-    );
+            .import_bytes(Some("prepared.json".into()), &bytes)
+            .unwrap();
+        let projection = preview.target.projection();
+        assert_eq!(projection["source"], "imported");
+        assert_eq!(projection["architecture"], host);
+        assert_eq!(projection["ready"], true);
+        assert_eq!(projection["destination_check_required"], true);
 
-    let other_architecture = report(Some(other), vec![supported_graphics()])
-        .to_json()
-        .unwrap();
-    preview
-        .target
-        .import_bytes(Some("elsewhere.json".into()), &other_architecture)
-        .unwrap();
-    let projection = preview.target.projection();
-    assert_eq!(projection["architecture"], other);
-    assert_eq!(projection["ready"], true);
-    assert_eq!(projection["destination_check_required"], true);
-    assert_eq!(
-        preview.apply(InstallerPreviewEffect::SetTargetArchitecture {
-            architecture: other.into(),
-        }),
-        Ok(())
-    );
-    assert_eq!(
-        preview.apply(InstallerPreviewEffect::SetTargetArchitecture {
-            architecture: host.into(),
-        }),
-        Err("installer-preview-target-report-architecture-fixed")
-    );
+        let missing = report(None, vec![supported_graphics()]).to_json().unwrap();
+        assert_eq!(
+            preview
+                .target
+                .import_bytes(Some("old.json".into()), &missing),
+            Err("installer-preview-target-report-missing-architecture")
+        );
+        assert_eq!(
+            preview.target.projection()["architecture"],
+            serde_json::json!(host),
+            "a rejected file leaves the accepted report in place"
+        );
 
-    let unsupported = report(Some("s390x"), vec![supported_graphics()])
-        .to_json()
-        .unwrap();
-    assert_eq!(
+        let other_architecture = report(Some(other), vec![supported_graphics()])
+            .to_json()
+            .unwrap();
         preview
             .target
-            .import_bytes(Some("other.json".into()), &unsupported),
-        Err("installer-preview-target-report-unsupported-architecture")
-    );
-}
+            .import_bytes(Some("elsewhere.json".into()), &other_architecture)
+            .unwrap();
+        let projection = preview.target.projection();
+        assert_eq!(projection["architecture"], other);
+        assert_eq!(projection["ready"], true);
+        assert_eq!(projection["destination_check_required"], true);
+        assert_eq!(
+            preview.apply(InstallerPreviewEffect::SetTargetArchitecture {
+                architecture: other.into(),
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            preview.apply(InstallerPreviewEffect::SetTargetArchitecture {
+                architecture: host.into(),
+            }),
+            Err("installer-preview-target-report-architecture-fixed")
+        );
 
-#[test]
-fn architecture_boundaries_state_why_tilo_cannot_run_there() {
-    let boundaries: [(&[&str], &str); 3] = [
-        (
-            &["i686", "i386", "armv7hl", "armhf"],
-            "installer-preview-target-architecture-unsupported-processor-size",
-        ),
-        (
-            &["s390x", "ppc64"],
-            "installer-preview-target-architecture-unsupported-byte-order",
-        ),
-        (
-            &["sparc64"],
-            "installer-preview-target-architecture-unsupported-graphics",
-        ),
-    ];
-    for (architectures, key) in boundaries {
-        for architecture in architectures {
+        let unsupported = report(Some("s390x"), vec![supported_graphics()])
+            .to_json()
+            .unwrap();
+        assert_eq!(
+            preview
+                .target
+                .import_bytes(Some("other.json".into()), &unsupported),
+            Err("installer-preview-target-report-unsupported-architecture")
+        );
+    }
+
+    phase architecture_boundaries_state_why_tilo_cannot_run_there;
+    {
+        let boundaries: [(&[&str], &str); 3] = [
+            (
+                &["i686", "i386", "armv7hl", "armhf"],
+                "installer-preview-target-architecture-unsupported-processor-size",
+            ),
+            (
+                &["s390x", "ppc64"],
+                "installer-preview-target-architecture-unsupported-byte-order",
+            ),
+            (
+                &["sparc64"],
+                "installer-preview-target-architecture-unsupported-graphics",
+            ),
+        ];
+        for (architectures, key) in boundaries {
+            for architecture in architectures {
+                assert_eq!(
+                    crate::release::unqualified_architecture(architecture),
+                    Some(key),
+                    "{architecture} is refused with its reason"
+                );
+            }
+        }
+
+        for architecture in ["riscv64", "ppc64le", "x86_64", "aarch64"] {
             assert_eq!(
                 crate::release::unqualified_architecture(architecture),
-                Some(key),
-                "{architecture} is refused with its reason"
+                None,
+                "{architecture} is limited by its catalog, not by the processor"
             );
+            for selected in [
+                crate::release::bundled_releases_for_arch(architecture),
+                crate::release::bundled_internal_releases_for_arch(architecture).map(|_| Vec::new()),
+            ] {
+                assert!(
+                    selected.is_ok(),
+                    "{architecture} resolves to a selection instead of an error"
+                );
+            }
         }
     }
 
-    for architecture in ["riscv64", "ppc64le", "x86_64", "aarch64"] {
-        assert_eq!(
-            crate::release::unqualified_architecture(architecture),
-            None,
-            "{architecture} is limited by its catalog, not by the processor"
-        );
-        for selected in [
-            crate::release::bundled_releases_for_arch(architecture),
-            crate::release::bundled_internal_releases_for_arch(architecture).map(|_| Vec::new()),
-        ] {
-            assert!(
-                selected.is_ok(),
-                "{architecture} resolves to a selection instead of an error"
-            );
-        }
-    }
-}
-
-#[test]
-fn a_selected_or_imported_architecture_boundary_is_refused_with_its_reason() {
-    let text = |key: &str| crate::setup::strings::t(key);
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    for (field, value) in [
-        ("manufacturer", "Prepared Vendor"),
-        ("model", "Prepared Laptop 14"),
-        ("variant", "PREPARED-BOARD"),
-    ] {
+    phase a_selected_or_imported_architecture_boundary_is_refused_with_its_reason;
+    {
+        let text = |key: &str| crate::setup::strings::t(key);
+        let mut preview = preview();
         preview
-            .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                field: field.into(),
-                value: value.into(),
-            })
+            .apply(InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-    }
-    assert_eq!(
-        preview.apply(InstallerPreviewEffect::SetTargetArchitecture {
-            architecture: "ppc64".into(),
-        }),
-        Err("installer-preview-target-report-unsupported-architecture")
-    );
-    assert_eq!(
-        preview.target.projection()["error"],
-        serde_json::json!(text(
-            "installer-preview-target-architecture-unsupported-byte-order"
-        )),
-        "the page names the boundary, and the selection is unchanged"
-    );
-    assert_ne!(preview.target.architecture(), "ppc64");
+        for (field, value) in [
+            ("manufacturer", "Prepared Vendor"),
+            ("model", "Prepared Laptop 14"),
+            ("variant", "PREPARED-BOARD"),
+        ] {
+            preview
+                .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: value.into(),
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            preview.apply(InstallerPreviewEffect::SetTargetArchitecture {
+                architecture: "ppc64".into(),
+            }),
+            Err("installer-preview-target-report-unsupported-architecture")
+        );
+        assert_eq!(
+            preview.target.projection()["error"],
+            serde_json::json!(text(
+                "installer-preview-target-architecture-unsupported-byte-order"
+            )),
+            "the page names the boundary, and the selection is unchanged"
+        );
+        assert_ne!(preview.target.architecture(), "ppc64");
 
-    let bytes = report(Some("i686"), vec![supported_graphics()])
+        let bytes = report(Some("i686"), vec![supported_graphics()])
+            .to_json()
+            .unwrap();
+        assert_eq!(
+            preview
+                .target
+                .import_bytes(Some("thirtytwobit.json".into()), &bytes),
+            Err("installer-preview-target-report-unsupported-architecture")
+        );
+        assert_eq!(
+            preview.target.projection()["error"],
+            serde_json::json!(text(
+                "installer-preview-target-architecture-unsupported-processor-size"
+            ))
+        );
+        assert_eq!(preview.target.projection()["source"], "declared-model");
+    }
+
+    phase an_unsupported_essential_component_blocks_preparation_before_identity;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        let bytes = report(
+            Some(std::env::consts::ARCH),
+            vec![component(
+                ComponentKind::Graphics,
+                "Test graphics",
+                SupportState::Unsupported,
+                SupportReason::DriverMissing {
+                    devices: vec!["Test graphics".into()],
+                },
+                vec![Evidence {
+                    scope: EvidenceScope::Observation,
+                    fact: EvidenceFact::Device {
+                        name: "Test graphics".into(),
+                        driver: None,
+                        firmware: None,
+                        vendor: None,
+                        product: None,
+                        reported_problem: false,
+                    },
+                }],
+                Some(Remedy::CheckDriver),
+            )],
+        )
         .to_json()
         .unwrap();
-    assert_eq!(
         preview
             .target
-            .import_bytes(Some("thirtytwobit.json".into()), &bytes),
-        Err("installer-preview-target-report-unsupported-architecture")
-    );
-    assert_eq!(
-        preview.target.projection()["error"],
-        serde_json::json!(text(
-            "installer-preview-target-architecture-unsupported-processor-size"
-        ))
-    );
-    assert_eq!(preview.target.projection()["source"], "declared-model");
-}
+            .import_bytes(Some("blocked.json".into()), &bytes)
+            .unwrap();
+        assert_eq!(preview.target.projection()["blocks_preparation"], true);
+        assert_eq!(
+            preview.apply(InstallerPreviewEffect::ContinuePreview),
+            Err("installer-preview-target-blocking")
+        );
+        assert_eq!(preview.journey.page, Page::Target);
+        assert!(preview.journey.identity.is_none());
+    }
 
-#[test]
-fn an_unsupported_essential_component_blocks_preparation_before_identity() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    let bytes = report(
-        Some(std::env::consts::ARCH),
-        vec![component(
-            ComponentKind::Graphics,
-            "Test graphics",
-            SupportState::Unsupported,
-            SupportReason::DriverMissing {
-                devices: vec!["Test graphics".into()],
-            },
-            vec![Evidence {
-                scope: EvidenceScope::Observation,
-                fact: EvidenceFact::Device {
-                    name: "Test graphics".into(),
-                    driver: None,
-                    firmware: None,
-                    vendor: None,
-                    product: None,
-                    reported_problem: false,
-                },
-            }],
-            Some(Remedy::CheckDriver),
-        )],
-    )
-    .to_json()
-    .unwrap();
-    preview
-        .target
-        .import_bytes(Some("blocked.json".into()), &bytes)
-        .unwrap();
-    assert_eq!(preview.target.projection()["blocks_preparation"], true);
-    assert_eq!(
-        preview.apply(InstallerPreviewEffect::ContinuePreview),
-        Err("installer-preview-target-blocking")
-    );
-    assert_eq!(preview.journey.page, Page::Target);
-    assert!(preview.journey.identity.is_none());
-}
-
-#[test]
-fn recheck_stays_on_the_target_and_never_probes_this_computer() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    preview
-        .apply(InstallerPreviewEffect::SetTargetIdentityField {
-            field: "manufacturer".into(),
-            value: "Prepared Vendor".into(),
-        })
-        .unwrap();
-    preview
-        .apply(InstallerPreviewEffect::SetTargetIdentityField {
-            field: "model".into(),
-            value: "Prepared Laptop 14".into(),
-        })
-        .unwrap();
-    preview
-        .apply(InstallerPreviewEffect::SetTargetIdentityField {
-            field: "variant".into(),
-            value: "PREPARED-BOARD".into(),
-        })
-        .unwrap();
-    preview
-        .apply(InstallerPreviewEffect::RecheckTargetHardware)
-        .unwrap();
-    assert_eq!(preview.journey.page, Page::Target);
-    assert!(!preview.compatibility.pending);
-    assert!(preview.storage.facts.is_none());
-    assert!(preview.target.ready());
-    assert!(preview.target.projection()["error"].is_null());
-}
-
-#[test]
-fn an_incomplete_target_refuses_continue_and_reveals_the_first_field() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    assert_eq!(
-        preview.apply(InstallerPreviewEffect::ContinuePreview),
-        Err("installer-preview-target-incomplete")
-    );
-    assert_eq!(preview.journey.page, Page::Target);
-    assert!(preview.journey.identity.is_none());
-    assert_eq!(
-        preview.target.first_invalid_focus().as_deref(),
-        Some("installer.target.manufacturer")
-    );
-}
-
-#[test]
-fn going_back_from_the_target_keeps_the_destination_and_what_was_entered() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    for (field, value) in [
-        ("manufacturer", "Prepared Vendor"),
-        ("model", "Prepared Laptop 14"),
-        ("variant", "PREPARED-BOARD"),
-    ] {
+    phase recheck_stays_on_the_target_and_never_probes_this_computer;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
         preview
             .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                field: field.into(),
-                value: value.into(),
+                field: "manufacturer".into(),
+                value: "Prepared Vendor".into(),
             })
             .unwrap();
-    }
-    preview
-        .apply(InstallerPreviewEffect::BackInPreview)
-        .unwrap();
-    assert_eq!(preview.journey.page, Page::Destination);
-    assert_eq!(preview.journey.destination, Some(Destination::Another));
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    assert_eq!(preview.journey.page, Page::Target);
-    assert_eq!(
-        preview.target.projection()["report"]["manufacturer"],
-        serde_json::json!("Prepared Vendor")
-    );
-}
-
-#[test]
-fn a_board_or_sku_distinguishes_the_model_without_a_variant_name() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    for (field, value) in [
-        ("manufacturer", "Prepared Vendor"),
-        ("model", "Prepared Laptop 14"),
-        ("board", "PREPARED-BOARD"),
-    ] {
         preview
             .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                field: field.into(),
-                value: value.into(),
+                field: "model".into(),
+                value: "Prepared Laptop 14".into(),
             })
             .unwrap();
-    }
-    assert!(preview.target.ready());
-    assert_eq!(preview.target.first_invalid_focus(), None);
-    assert_eq!(
-        preview.target.projection()["report"]["board"],
-        serde_json::json!("PREPARED-BOARD")
-    );
-}
-
-#[test]
-fn a_medium_for_another_architecture_never_falls_back_to_this_ones_payload() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    let host = std::env::consts::ARCH;
-    let other = if host == "aarch64" {
-        "x86_64"
-    } else {
-        "aarch64"
-    };
-    let bytes = report(Some(other), vec![supported_graphics()])
-        .to_json()
-        .unwrap();
-    preview
-        .target
-        .import_bytes(Some("elsewhere.json".into()), &bytes)
-        .unwrap();
-    assert_eq!(preview.target.architecture(), other);
-    let catalog = tempfile::tempdir().unwrap();
-    let path = catalog.path().join("catalog.json");
-    std::fs::write(&path, r#"{"schema":1,"tag":"unreleased","releases":[]}"#).unwrap();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("TILO_STAGING_TEST_CATALOG", &path);
-    assert!(
-        crate::release::bundled_releases_for_arch(other)
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        crate::release::bundled_internal_releases_for_arch(other)
-            .unwrap()
-            .is_empty()
-    );
-    preview.journey.page = Page::Review;
-    assert_eq!(
-        preview.apply(InstallerPreviewEffect::PrepareUsb),
-        Err("installer-preview-target-payload-missing")
-    );
-}
-
-#[test]
-fn a_saved_target_choice_restores_the_same_model_and_report_without_a_path() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    for (field, value) in [
-        ("manufacturer", "Prepared Vendor"),
-        ("model", "Prepared Laptop 14"),
-        ("variant", "PREPARED-BOARD"),
-    ] {
         preview
             .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                field: field.into(),
-                value: value.into(),
+                field: "variant".into(),
+                value: "PREPARED-BOARD".into(),
             })
             .unwrap();
-    }
-    let host = std::env::consts::ARCH;
-    let other = if host == "aarch64" {
-        "x86_64"
-    } else {
-        "aarch64"
-    };
-    let bytes = report(Some(other), vec![supported_graphics()])
-        .to_json()
-        .unwrap();
-    preview
-        .target
-        .import_bytes(Some("private-destination.json".into()), &bytes)
-        .unwrap();
-    let draft = preview.target.draft_choices();
-    let encoded = serde_json::to_vec(&draft).unwrap();
-    assert!(!String::from_utf8_lossy(&encoded).contains("private-destination"));
-    assert!(!String::from_utf8_lossy(&encoded).contains("Prepared Setup"));
-    let restored_draft: super::draft::TargetDraft = serde_json::from_slice(&encoded).unwrap();
-    let mut restored = super::target::Target::default();
-    restored.restore(Some(&restored_draft));
-    assert_eq!(restored.architecture(), other);
-    let projection = restored.projection();
-    assert_eq!(projection["source"], "imported");
-    assert_eq!(projection["ready"], true);
-    assert_eq!(projection["architecture"], other);
-    assert_eq!(
-        projection["report"]["model"],
-        serde_json::json!("Prepared Laptop 14")
-    );
-    assert_eq!(projection["destination_check_required"], true);
-    assert!(
-        !serde_json::to_string(&projection)
-            .unwrap()
-            .contains("private-destination"),
-        "the public status carries no file hint"
-    );
-}
-
-#[test]
-fn a_declared_model_keeps_the_selected_architecture_across_a_restart() {
-    let mut preview = preview();
-    preview
-        .apply(InstallerPreviewEffect::ContinuePreview)
-        .unwrap();
-    for (field, value) in [
-        ("manufacturer", "Prepared Vendor"),
-        ("model", "Prepared Laptop 14"),
-        ("board", "PREPARED-BOARD"),
-    ] {
         preview
-            .apply(InstallerPreviewEffect::SetTargetIdentityField {
-                field: field.into(),
-                value: value.into(),
+            .apply(InstallerPreviewEffect::RecheckTargetHardware)
+            .unwrap();
+        assert_eq!(preview.journey.page, Page::Target);
+        assert!(!preview.compatibility.pending);
+        assert!(preview.storage.facts.is_none());
+        assert!(preview.target.ready());
+        assert!(preview.target.projection()["error"].is_null());
+    }
+
+    phase an_incomplete_target_refuses_continue_and_reveals_the_first_field;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        assert_eq!(
+            preview.apply(InstallerPreviewEffect::ContinuePreview),
+            Err("installer-preview-target-incomplete")
+        );
+        assert_eq!(preview.journey.page, Page::Target);
+        assert!(preview.journey.identity.is_none());
+        assert_eq!(
+            preview.target.first_invalid_focus().as_deref(),
+            Some("installer.target.manufacturer")
+        );
+    }
+
+    phase going_back_from_the_target_keeps_the_destination_and_what_was_entered;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        for (field, value) in [
+            ("manufacturer", "Prepared Vendor"),
+            ("model", "Prepared Laptop 14"),
+            ("variant", "PREPARED-BOARD"),
+        ] {
+            preview
+                .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: value.into(),
+                })
+                .unwrap();
+        }
+        preview
+            .apply(InstallerPreviewEffect::BackInPreview)
+            .unwrap();
+        assert_eq!(preview.journey.page, Page::Destination);
+        assert_eq!(preview.journey.destination, Some(Destination::Another));
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        assert_eq!(preview.journey.page, Page::Target);
+        assert_eq!(
+            preview.target.projection()["report"]["manufacturer"],
+            serde_json::json!("Prepared Vendor")
+        );
+    }
+
+    phase a_board_or_sku_distinguishes_the_model_without_a_variant_name;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        for (field, value) in [
+            ("manufacturer", "Prepared Vendor"),
+            ("model", "Prepared Laptop 14"),
+            ("board", "PREPARED-BOARD"),
+        ] {
+            preview
+                .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: value.into(),
+                })
+                .unwrap();
+        }
+        assert!(preview.target.ready());
+        assert_eq!(preview.target.first_invalid_focus(), None);
+        assert_eq!(
+            preview.target.projection()["report"]["board"],
+            serde_json::json!("PREPARED-BOARD")
+        );
+    }
+
+    phase a_medium_for_another_architecture_never_falls_back_to_this_ones_payload;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        let host = std::env::consts::ARCH;
+        let other = if host == "aarch64" {
+            "x86_64"
+        } else {
+            "aarch64"
+        };
+        let bytes = report(Some(other), vec![supported_graphics()])
+            .to_json()
+            .unwrap();
+        preview
+            .target
+            .import_bytes(Some("elsewhere.json".into()), &bytes)
+            .unwrap();
+        assert_eq!(preview.target.architecture(), other);
+        let catalog = tempfile::tempdir().unwrap();
+        let path = catalog.path().join("catalog.json");
+        std::fs::write(&path, r#"{"schema":1,"tag":"unreleased","releases":[]}"#).unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("TILO_STAGING_TEST_CATALOG", &path);
+        assert!(
+            crate::release::bundled_releases_for_arch(other)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            crate::release::bundled_internal_releases_for_arch(other)
+                .unwrap()
+                .is_empty()
+        );
+        preview.journey.page = Page::Review;
+        assert_eq!(
+            preview.apply(InstallerPreviewEffect::PrepareUsb),
+            Err("installer-preview-target-payload-missing")
+        );
+    }
+
+    phase a_saved_target_choice_restores_the_same_model_and_report_without_a_path;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        for (field, value) in [
+            ("manufacturer", "Prepared Vendor"),
+            ("model", "Prepared Laptop 14"),
+            ("variant", "PREPARED-BOARD"),
+        ] {
+            preview
+                .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: value.into(),
+                })
+                .unwrap();
+        }
+        let host = std::env::consts::ARCH;
+        let other = if host == "aarch64" {
+            "x86_64"
+        } else {
+            "aarch64"
+        };
+        let bytes = report(Some(other), vec![supported_graphics()])
+            .to_json()
+            .unwrap();
+        preview
+            .target
+            .import_bytes(Some("private-destination.json".into()), &bytes)
+            .unwrap();
+        let draft = preview.target.draft_choices();
+        let encoded = serde_json::to_vec(&draft).unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("private-destination"));
+        assert!(!String::from_utf8_lossy(&encoded).contains("Prepared Setup"));
+        let restored_draft: super::draft::TargetDraft = serde_json::from_slice(&encoded).unwrap();
+        let mut restored = super::target::Target::default();
+        restored.restore(Some(&restored_draft));
+        assert_eq!(restored.architecture(), other);
+        let projection = restored.projection();
+        assert_eq!(projection["source"], "imported");
+        assert_eq!(projection["ready"], true);
+        assert_eq!(projection["architecture"], other);
+        assert_eq!(
+            projection["report"]["model"],
+            serde_json::json!("Prepared Laptop 14")
+        );
+        assert_eq!(projection["destination_check_required"], true);
+        assert!(
+            !serde_json::to_string(&projection)
+                .unwrap()
+                .contains("private-destination"),
+            "the public status carries no file hint"
+        );
+    }
+
+    phase a_declared_model_keeps_the_selected_architecture_across_a_restart;
+    {
+        let mut preview = preview();
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        for (field, value) in [
+            ("manufacturer", "Prepared Vendor"),
+            ("model", "Prepared Laptop 14"),
+            ("board", "PREPARED-BOARD"),
+        ] {
+            preview
+                .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: value.into(),
+                })
+                .unwrap();
+        }
+        let host = std::env::consts::ARCH;
+        let other = if host == "aarch64" {
+            "x86_64"
+        } else {
+            "aarch64"
+        };
+        preview
+            .apply(InstallerPreviewEffect::SetTargetArchitecture {
+                architecture: other.into(),
             })
             .unwrap();
+        let draft = preview.target.draft_choices();
+        let restored_draft: super::draft::TargetDraft =
+            serde_json::from_slice(&serde_json::to_vec(&draft).unwrap()).unwrap();
+        let mut restored = super::target::Target::default();
+        restored.restore(Some(&restored_draft));
+        assert_eq!(restored.architecture(), other);
+        let projection = restored.projection();
+        assert_eq!(projection["source"], "declared-model");
+        assert_eq!(projection["ready"], true);
+        assert_eq!(projection["report"]["components"], serde_json::json!([]));
     }
-    let host = std::env::consts::ARCH;
-    let other = if host == "aarch64" {
-        "x86_64"
-    } else {
-        "aarch64"
-    };
-    preview
-        .apply(InstallerPreviewEffect::SetTargetArchitecture {
-            architecture: other.into(),
-        })
-        .unwrap();
-    let draft = preview.target.draft_choices();
-    let restored_draft: super::draft::TargetDraft =
-        serde_json::from_slice(&serde_json::to_vec(&draft).unwrap()).unwrap();
-    let mut restored = super::target::Target::default();
-    restored.restore(Some(&restored_draft));
-    assert_eq!(restored.architecture(), other);
-    let projection = restored.projection();
-    assert_eq!(projection["source"], "declared-model");
-    assert_eq!(projection["ready"], true);
-    assert_eq!(projection["report"]["components"], serde_json::json!([]));
 }
 
 #[cfg(unix)]

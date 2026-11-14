@@ -101,162 +101,170 @@ fn body(store: &RecordStore, id: &RecordId) -> Option<String> {
     }
 }
 
-/// A record the workspace still sends (or still has to say it holds none of)
-/// is not a new one, and opens with the workspace's content once it is here.
-#[test]
-fn a_record_the_workspace_still_sends_is_not_founded_as_new() {
-    let definition = definition(false);
-    let (memory, store) = page(&definition);
-    let want = default_record(&definition);
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn a_page_opens_what_its_workspace_holds_of_a_record;
 
-    assert!(matches!(
-        opening(&definition, &store, None, false, INSTANCE).unwrap(),
-        Opening::Arriving
-    ));
-    assert_eq!(
-        store.wanted_records(),
-        std::slice::from_ref(&want.id),
-        "asked of the workspace"
-    );
-    assert!(!store.is_ready(&want.id), "nothing was founded");
+    phase a_record_the_workspace_still_sends_is_not_founded_as_new;
+    // A record the workspace still sends (or still has to say it holds none of)
+    // is not a new one, and opens with the workspace's content once it is here.
+    {
+        let definition = definition(false);
+        let (memory, store) = page(&definition);
+        let want = default_record(&definition);
 
-    let theirs = written_elsewhere(&want, "the workspace's");
-    arrives(&memory, &store, &want.id, theirs);
-    let Opening::Target(LaunchTarget::Record { checkout, .. }) =
-        opening(&definition, &store, None, false, INSTANCE).unwrap()
-    else {
-        panic!("the record the workspace sent is what opens");
-    };
-    assert_eq!(checkout.id, want.id);
-    assert_eq!(
-        body(&store, &want.id).as_deref(),
-        Some("the workspace's"),
-        "opened with the workspace's content"
-    );
-    assert!(store.wanted_records().is_empty());
-}
-
-/// Only the workspace's answer that it holds none of the record makes it a new
-/// one, and the new one is the record the page named.
-#[test]
-fn a_record_is_new_only_once_the_workspace_answered_it_holds_none_of_it() {
-    let definition = definition(false);
-    let (_memory, store) = page(&definition);
-    let want = default_record(&definition);
-
-    assert!(matches!(
-        opening(&definition, &store, None, false, INSTANCE).unwrap(),
-        Opening::Arriving
-    ));
-    store.note_workspace_answered(want.id.clone());
-    let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE).unwrap() else {
-        panic!("a record the workspace does not hold is a new one");
-    };
-    assert_eq!(id, want.id, "the new record is the one the page named");
-    assert!(store.wanted_records().is_empty());
-}
-
-/// An app that keeps one document of the workspace waits for it too: it is the
-/// workspace's own that a page naming no record opens, and a page that founded
-/// a fresh one before the answer forked it.
-#[test]
-fn an_apps_own_document_of_the_workspace_waits_for_it_too() {
-    let definition = definition(true);
-    let (memory, store) = page(&definition);
-    let want = RecordCheckout::package_primary(definition.record_kind.clone());
-
-    assert!(matches!(
-        opening(&definition, &store, None, false, INSTANCE).unwrap(),
-        Opening::Arriving
-    ));
-    let theirs = written_elsewhere(&want, "the workspace's own");
-    arrives(&memory, &store, &want.id, theirs);
-    let Opening::Target(LaunchTarget::Record { checkout, .. }) =
-        opening(&definition, &store, None, false, INSTANCE).unwrap()
-    else {
-        panic!("the workspace's own document is what opens");
-    };
-    assert_eq!(checkout.id, want.id);
-
-    // A workspace that holds none of it: the app starts it.
-    let (_memory, store) = page(&definition);
-    assert!(matches!(
-        opening(&definition, &store, None, false, INSTANCE).unwrap(),
-        Opening::Arriving
-    ));
-    store.note_workspace_answered(want.id);
-    assert!(matches!(
-        opening(&definition, &store, None, false, INSTANCE).unwrap(),
-        Opening::Target(LaunchTarget::PrimaryNew)
-    ));
-}
-
-/// A page whose store keeps its own records creates a missing one, as before:
-/// no workspace sends it.
-#[test]
-fn a_store_of_its_own_takes_a_missing_record_as_new() {
-    let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
-    let store = owners.open(PACKAGE, WORKSPACE).unwrap();
-    let definition = definition(false);
-    let want = default_record(&definition);
-    let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE).unwrap() else {
-        panic!("a record of the page's own is new");
-    };
-    assert_eq!(id, want.id);
-    assert!(store.wanted_records().is_empty());
-}
-
-/// A desk window saved on a record the workspace still sends (one a shared desk names) is
-/// loading, not a failure: preparing it says so, asks the workspace for it, and prepares once it
-/// is here. The person never reads the store's own words for it.
-#[test]
-fn a_window_on_a_record_still_on_its_way_waits_for_it() {
-    let definition = definition(false);
-    let (memory, store) = page(&definition);
-    let saved = RecordCheckout::new(
-        RecordId::derived("default", &RecordId::for_tab(INSTANCE + 1)),
-        definition.record_kind.clone(),
-    );
-    let prepare = |store: &RecordStore| {
-        let views = Rc::new(
-            ui::application_view::InstanceViewStore::with_store(
-                Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>,
-                "D",
-                WORKSPACE,
-            )
-            .unwrap(),
+        assert!(matches!(
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            Opening::Arriving
+        ));
+        assert_eq!(
+            store.wanted_records(),
+            std::slice::from_ref(&want.id),
+            "asked of the workspace"
         );
-        HostContext::prepare(
-            &definition,
-            ui::application::HostContextInputs {
-                records: store.clone(),
-                views,
-                device_id: "D".into(),
-                instance_id: INSTANCE,
-                permissions: ui::permissions::SharedPermissions::new(
-                    ui::permissions::PermissionContext::permissive(),
-                ),
-                author: ui::permissions::UserId("ada".into()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            &LaunchTarget::Record {
-                checkout: saved.clone(),
-                reveal: None,
-            },
-        )
-        .map_err(Unbuilt::of)
-    };
-    assert!(matches!(prepare(&store), Err(Unbuilt::Arriving)));
-    assert_eq!(
-        store.wanted_records(),
-        std::slice::from_ref(&saved.id),
-        "asked of the workspace"
-    );
-    arrives(
-        &memory,
-        &store,
-        &saved.id,
-        written_elsewhere(&saved, "theirs"),
-    );
-    assert!(prepare(&store).is_ok(), "it opens once it is here");
+        assert!(!store.is_ready(&want.id), "nothing was founded");
+
+        let theirs = written_elsewhere(&want, "the workspace's");
+        arrives(&memory, &store, &want.id, theirs);
+        let Opening::Target(LaunchTarget::Record { checkout, .. }) =
+            opening(&definition, &store, None, false, INSTANCE).unwrap()
+        else {
+            panic!("the record the workspace sent is what opens");
+        };
+        assert_eq!(checkout.id, want.id);
+        assert_eq!(
+            body(&store, &want.id).as_deref(),
+            Some("the workspace's"),
+            "opened with the workspace's content"
+        );
+        assert!(store.wanted_records().is_empty());
+    }
+
+    phase a_record_is_new_only_once_the_workspace_answered_it_holds_none_of_it;
+    // Only the workspace's answer that it holds none of the record makes it a new
+    // one, and the new one is the record the page named.
+    {
+        let definition = definition(false);
+        let (_memory, store) = page(&definition);
+        let want = default_record(&definition);
+
+        assert!(matches!(
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            Opening::Arriving
+        ));
+        store.note_workspace_answered(want.id.clone());
+        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE).unwrap() else {
+            panic!("a record the workspace does not hold is a new one");
+        };
+        assert_eq!(id, want.id, "the new record is the one the page named");
+        assert!(store.wanted_records().is_empty());
+    }
+
+    phase an_apps_own_document_of_the_workspace_waits_for_it_too;
+    // An app that keeps one document of the workspace waits for it too: it is the
+    // workspace's own that a page naming no record opens, and a page that founded
+    // a fresh one before the answer forked it.
+    {
+        let definition = definition(true);
+        let (memory, store) = page(&definition);
+        let want = RecordCheckout::package_primary(definition.record_kind.clone());
+
+        assert!(matches!(
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            Opening::Arriving
+        ));
+        let theirs = written_elsewhere(&want, "the workspace's own");
+        arrives(&memory, &store, &want.id, theirs);
+        let Opening::Target(LaunchTarget::Record { checkout, .. }) =
+            opening(&definition, &store, None, false, INSTANCE).unwrap()
+        else {
+            panic!("the workspace's own document is what opens");
+        };
+        assert_eq!(checkout.id, want.id);
+
+        // A workspace that holds none of it: the app starts it.
+        let (_memory, store) = page(&definition);
+        assert!(matches!(
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            Opening::Arriving
+        ));
+        store.note_workspace_answered(want.id);
+        assert!(matches!(
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            Opening::Target(LaunchTarget::PrimaryNew)
+        ));
+    }
+
+    phase a_store_of_its_own_takes_a_missing_record_as_new;
+    // A page whose store keeps its own records creates a missing one, as before:
+    // no workspace sends it.
+    {
+        let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
+        let store = owners.open(PACKAGE, WORKSPACE).unwrap();
+        let definition = definition(false);
+        let want = default_record(&definition);
+        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE).unwrap() else {
+            panic!("a record of the page's own is new");
+        };
+        assert_eq!(id, want.id);
+        assert!(store.wanted_records().is_empty());
+    }
+
+    phase a_window_on_a_record_still_on_its_way_waits_for_it;
+    // A desk window saved on a record the workspace still sends (one a shared desk names) is
+    // loading, not a failure: preparing it says so, asks the workspace for it, and prepares once it
+    // is here. The person never reads the store's own words for it.
+    {
+        let definition = definition(false);
+        let (memory, store) = page(&definition);
+        let saved = RecordCheckout::new(
+            RecordId::derived("default", &RecordId::for_tab(INSTANCE + 1)),
+            definition.record_kind.clone(),
+        );
+        let prepare = |store: &RecordStore| {
+            let views = Rc::new(
+                ui::application_view::InstanceViewStore::with_store(
+                    Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>,
+                    "D",
+                    WORKSPACE,
+                )
+                .unwrap(),
+            );
+            HostContext::prepare(
+                &definition,
+                ui::application::HostContextInputs {
+                    records: store.clone(),
+                    views,
+                    device_id: "D".into(),
+                    instance_id: INSTANCE,
+                    permissions: ui::permissions::SharedPermissions::new(
+                        ui::permissions::PermissionContext::permissive(),
+                    ),
+                    author: ui::permissions::UserId("ada".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
+                &LaunchTarget::Record {
+                    checkout: saved.clone(),
+                    reveal: None,
+                },
+            )
+            .map_err(Unbuilt::of)
+        };
+        assert!(matches!(prepare(&store), Err(Unbuilt::Arriving)));
+        assert_eq!(
+            store.wanted_records(),
+            std::slice::from_ref(&saved.id),
+            "asked of the workspace"
+        );
+        arrives(
+            &memory,
+            &store,
+            &saved.id,
+            written_elsewhere(&saved, "theirs"),
+        );
+        assert!(prepare(&store).is_ok(), "it opens once it is here");
+    }
 }

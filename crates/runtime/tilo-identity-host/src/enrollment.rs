@@ -7,8 +7,7 @@
 //! desktop's fleet and the nearby-pairing broker alike — goes through
 //! [`redeem`], so every one of them applies the same rules:
 //!
-//! * the token is genuine, unexpired and grants the shape of its
-//!   [`DeviceRole`];
+//! * the token is genuine, unexpired and admits a device;
 //! * its issuer is this identity's device, was certified both when the token
 //!   was minted and now, and is not revoked; it must be allowed to admit
 //!   devices unless the person's devices that hold the identity's key
@@ -28,7 +27,6 @@ use tilo_user_identity::{
 };
 
 use crate::device_fleet::DeviceFleetStore;
-pub use tilo_user_identity::DeviceRole;
 
 fn refused(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
@@ -228,8 +226,6 @@ impl NonceStore {
 #[derive(Clone, Copy, Debug)]
 pub struct Redemption<'a> {
     pub token: &'a EnrollmentToken,
-    /// What the approving person admits the device as.
-    pub role: DeviceRole,
     /// The key of the device being admitted.
     pub device_public_key: [u8; 32],
     pub label: &'a str,
@@ -276,8 +272,8 @@ impl Certifier<'_> {
 ///
 /// # Errors
 ///
-/// `PermissionDenied` when the token is not genuine, unexpired and of
-/// `role`'s shape, when the issuer may not admit the device, or when the
+/// `PermissionDenied` when the token is not genuine, unexpired and a
+/// device's, when the issuer may not admit the device, or when the
 /// token was already redeemed; otherwise the error loading, signing or
 /// persisting.
 pub fn redeem(
@@ -288,11 +284,8 @@ pub fn redeem(
 ) -> io::Result<DeviceCert> {
     let token = request.token;
     verify_enrollment_token(token, request.now_ns).map_err(|error| refused(error.to_string()))?;
-    if !request.role.admits(&token.capabilities) {
-        return Err(refused(format!(
-            "enrollment token does not grant the {} role",
-            request.role.name()
-        )));
+    if !token.capabilities.can_own_workspaces {
+        return Err(refused("enrollment token does not admit a device"));
     }
     if request.valid_from_ns > request.now_ns {
         return Err(io::Error::new(
@@ -425,358 +418,324 @@ mod tests {
             .to_bytes()
     }
 
-    #[test]
-    fn roles_have_one_preset_and_refuse_the_other_shape() {
-        for role in [DeviceRole::Personal, DeviceRole::Host] {
-            assert!(role.admits(&role.capabilities()));
-            assert_eq!(DeviceRole::parse(role.name()), Some(role));
-        }
-        assert!(!DeviceRole::Host.admits(&DeviceCapabilities::member()));
-        assert!(!DeviceRole::Personal.admits(&DeviceCapabilities::host()));
-        assert_eq!(DeviceRole::parse("administrator"), None);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn enrolling_a_device;
 
-    /// One nonce store: a token the nearby-pairing broker redeemed through
-    /// [`redeem`] is spent for the fleet's own entry point too, and the
-    /// reverse.
-    #[test]
-    fn token_redeems_once_across_both_entry_points() {
-        let fixture = fixture();
-        let store = &fixture.store;
-        let now = fixture.issued_at_ns;
-        let (root, _) = store.identity(&fixture.identity_id).expect("root");
-        let sign = |digest: &[u8]| {
-            root.sign(digest)
-                .map_err(|e| io::Error::other(e.to_string()))
-        };
+        phase token_redeems_once_across_both_entry_points;
+        // One nonce store: a token the nearby-pairing broker redeemed through
+        // [`redeem`] is spent for the fleet's own entry point too, and the
+        // reverse.
+        {
+            let fixture = fixture();
+            let store = &fixture.store;
+            let now = fixture.issued_at_ns;
+            let (root, _) = store.identity(&fixture.identity_id).expect("root");
+            let sign = |digest: &[u8]| {
+                root.sign(digest)
+                    .map_err(|e| io::Error::other(e.to_string()))
+            };
 
-        let (encoded, token) = fixture.mint();
-        let cert = redeem(
-            Some(store),
-            &store.nonces(),
-            &Redemption {
-                token: &token,
-                role: DeviceRole::Personal,
-                device_public_key: device(41),
-                label: "Laptop",
-                now_ns: now,
-                valid_from_ns: now,
-                local_issuer: None,
-            },
-            Certifier::Root(&sign),
-        )
-        .expect("broker redemption");
-        assert_eq!(cert.capabilities, DeviceCapabilities::member());
-        assert!(store.nonces().is_consumed(&token.nonce).expect("marker"));
-        let replay = store.complete_enrollment(
-            &fixture.identity_id,
-            &encoded,
-            DeviceRole::Personal,
-            device(42),
-            "Replay",
-            now + 1,
-        );
-        let error = replay.expect_err("the fleet must see the broker's redemption");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(
-            error.to_string().contains("already been consumed"),
-            "{error}"
-        );
-
-        let (encoded, token) = fixture.mint();
-        store
-            .complete_enrollment(
+            let (encoded, token) = fixture.mint();
+            let cert = redeem(
+                Some(store),
+                &store.nonces(),
+                &Redemption {
+                    token: &token,
+                    device_public_key: device(41),
+                    label: "Laptop",
+                    now_ns: now,
+                    valid_from_ns: now,
+                    local_issuer: None,
+                },
+                Certifier::Root(&sign),
+            )
+            .expect("broker redemption");
+            assert_eq!(cert.capabilities, DeviceCapabilities::member());
+            assert!(store.nonces().is_consumed(&token.nonce).expect("marker"));
+            let replay = store.complete_enrollment(
                 &fixture.identity_id,
                 &encoded,
-                DeviceRole::Personal,
-                device(43),
-                "Phone",
-                now,
-            )
-            .expect("fleet redemption");
-        let replay = redeem(
-            None,
-            &store.nonces(),
-            &Redemption {
-                token: &token,
-                role: DeviceRole::Personal,
-                device_public_key: device(44),
-                label: "Replay",
-                now_ns: now + 1,
-                valid_from_ns: now + 1,
-                local_issuer: store
+                device(42),
+                "Replay",
+                now + 1,
+            );
+            let error = replay.expect_err("the fleet must see the broker's redemption");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(
+                error.to_string().contains("already been consumed"),
+                "{error}"
+            );
+
+            let (encoded, token) = fixture.mint();
+            store
+                .complete_enrollment(&fixture.identity_id, &encoded, device(43), "Phone", now)
+                .expect("fleet redemption");
+            let replay = redeem(
+                None,
+                &store.nonces(),
+                &Redemption {
+                    token: &token,
+                    device_public_key: device(44),
+                    label: "Replay",
+                    now_ns: now + 1,
+                    valid_from_ns: now + 1,
+                    local_issuer: store
+                        .load(&fixture.identity_id)
+                        .expect("fleet")
+                        .certificates
+                        .iter()
+                        .find(|cert| cert.device_public_key == token.issuer_device_public_key),
+                },
+                Certifier::Root(&sign),
+            );
+            assert_eq!(
+                replay
+                    .expect_err("the broker must see the fleet's redemption")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                store
                     .load(&fixture.identity_id)
                     .expect("fleet")
                     .certificates
-                    .iter()
-                    .find(|cert| cert.device_public_key == token.issuer_device_public_key),
-            },
-            Certifier::Root(&sign),
-        );
-        assert_eq!(
-            replay
-                .expect_err("the broker must see the fleet's redemption")
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert_eq!(
-            store
+                    .len(),
+                3,
+                "each token admitted exactly one device"
+            );
+        }
+
+        phase issuer_checked_at_issue_and_now;
+        // The issuer must have been certified when it minted the token, not just
+        // now, and must still be valid now.
+        {
+            let fixture = fixture();
+            let store = &fixture.store;
+            let now = fixture.issued_at_ns;
+            let (_, token) = fixture.mint();
+            let (root, _) = store.identity(&fixture.identity_id).expect("root");
+            let sign = |digest: &[u8]| {
+                root.sign(digest)
+                    .map_err(|e| io::Error::other(e.to_string()))
+            };
+            let issuer = store
                 .load(&fixture.identity_id)
                 .expect("fleet")
                 .certificates
-                .len(),
-            3,
-            "each token admitted exactly one device"
-        );
-    }
+                .into_iter()
+                .find(|cert| cert.device_public_key == token.issuer_device_public_key)
+                .expect("issuer");
+            let resigned = |mut cert: DeviceCert| {
+                let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("digest");
+                cert.signature = sign(&digest).expect("sign");
+                cert
+            };
 
-    /// The issuer must have been certified when it minted the token, not just
-    /// now, and must still be valid now.
-    #[test]
-    fn issuer_checked_at_issue_and_now() {
-        let fixture = fixture();
-        let store = &fixture.store;
-        let now = fixture.issued_at_ns;
-        let (_, token) = fixture.mint();
-        let (root, _) = store.identity(&fixture.identity_id).expect("root");
-        let sign = |digest: &[u8]| {
-            root.sign(digest)
-                .map_err(|e| io::Error::other(e.to_string()))
-        };
-        let issuer = store
-            .load(&fixture.identity_id)
-            .expect("fleet")
-            .certificates
-            .into_iter()
-            .find(|cert| cert.device_public_key == token.issuer_device_public_key)
-            .expect("issuer");
-        let resigned = |mut cert: DeviceCert| {
-            let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("digest");
-            cert.signature = sign(&digest).expect("sign");
-            cert
-        };
+            // Certified only after the token claims to have been minted.
+            let not_yet_valid = resigned(DeviceCert {
+                issued_at_ns: now + 10,
+                ..issuer.clone()
+            });
+            let error = check_issuer(&token, &not_yet_valid, false, true, now + 20)
+                .expect_err("an issuer not yet certified at the token's issue time");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains("issue time"), "{error}");
+            let error = redeem(
+                None,
+                &store.nonces(),
+                &Redemption {
+                    token: &token,
+                    device_public_key: device(51),
+                    label: "Phone",
+                    now_ns: now + 20,
+                    valid_from_ns: now + 20,
+                    local_issuer: Some(&not_yet_valid),
+                },
+                Certifier::Root(&sign),
+            )
+            .expect_err("the broker's entry point applies the same rule");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
-        // Certified only after the token claims to have been minted.
-        let not_yet_valid = resigned(DeviceCert {
-            issued_at_ns: now + 10,
-            ..issuer.clone()
-        });
-        let error = check_issuer(&token, &not_yet_valid, false, true, now + 20)
-            .expect_err("an issuer not yet certified at the token's issue time");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(error.to_string().contains("issue time"), "{error}");
-        let error = redeem(
-            None,
-            &store.nonces(),
-            &Redemption {
+            let expired = resigned(DeviceCert {
+                expires_at_ns: Some(now + 2),
+                ..issuer.clone()
+            });
+            assert!(check_issuer(&token, &expired, false, true, now + 1).is_ok());
+            assert_eq!(
+                check_issuer(&token, &expired, false, true, now + 3)
+                    .expect_err("an issuer expired at redemption")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+
+            // Revoked, or never allowed to admit.
+            assert!(check_issuer(&token, &issuer, true, true, now).is_err());
+            let mut member = issuer;
+            member.capabilities = DeviceCapabilities::member();
+            assert!(check_issuer(&token, &resigned(member), false, true, now).is_err());
+            assert!(
+                !store.nonces().is_consumed(&token.nonce).expect("marker"),
+                "a refused redemption spends nothing"
+            );
+        }
+
+        phase an_approved_certificate_admits_through_a_device_that_cannot_admit;
+        // A device that may not admit introduces a new device whose
+        // certificate the person's key holders approved: the approval admits
+        // it, for exactly that device, and never a revoked one.
+        {
+            let fixture = fixture();
+            let store = &fixture.store;
+            let now = fixture.issued_at_ns;
+            let (_, token) = fixture.mint();
+            let (root, _) = store.identity(&fixture.identity_id).expect("root");
+            let signed = |mut cert: DeviceCert| {
+                let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("digest");
+                cert.signature = root.sign(&digest).expect("sign");
+                cert
+            };
+            let mut member = store
+                .load(&fixture.identity_id)
+                .expect("fleet")
+                .certificates
+                .into_iter()
+                .find(|cert| cert.device_public_key == token.issuer_device_public_key)
+                .expect("issuer");
+            member.capabilities = DeviceCapabilities::member();
+            let member = signed(member);
+            let approved = signed(DeviceCert {
+                user_public_key: token.user_public_key,
+                device_public_key: device(61),
+                device_label: "Tablet".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: now,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            });
+            let redemption = |device_public_key, label| Redemption {
                 token: &token,
-                role: DeviceRole::Personal,
-                device_public_key: device(51),
-                label: "Phone",
-                now_ns: now + 20,
-                valid_from_ns: now + 20,
-                local_issuer: Some(&not_yet_valid),
-            },
-            Certifier::Root(&sign),
-        )
-        .expect_err("the broker's entry point applies the same rule");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-
-        let expired = resigned(DeviceCert {
-            expires_at_ns: Some(now + 2),
-            ..issuer.clone()
-        });
-        assert!(check_issuer(&token, &expired, false, true, now + 1).is_ok());
-        assert_eq!(
-            check_issuer(&token, &expired, false, true, now + 3)
-                .expect_err("an issuer expired at redemption")
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-
-        // Revoked, or never allowed to admit.
-        assert!(check_issuer(&token, &issuer, true, true, now).is_err());
-        let mut member = issuer;
-        member.capabilities = DeviceCapabilities::member();
-        assert!(check_issuer(&token, &resigned(member), false, true, now).is_err());
-        assert!(
-            !store.nonces().is_consumed(&token.nonce).expect("marker"),
-            "a refused redemption spends nothing"
-        );
-    }
-
-    /// A device that may not admit introduces a new device whose
-    /// certificate the person's key holders approved: the approval admits
-    /// it, for exactly that device, and never a revoked one.
-    #[test]
-    fn an_approved_certificate_admits_through_a_device_that_cannot_admit() {
-        let fixture = fixture();
-        let store = &fixture.store;
-        let now = fixture.issued_at_ns;
-        let (_, token) = fixture.mint();
-        let (root, _) = store.identity(&fixture.identity_id).expect("root");
-        let signed = |mut cert: DeviceCert| {
-            let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("digest");
-            cert.signature = root.sign(&digest).expect("sign");
-            cert
-        };
-        let mut member = store
-            .load(&fixture.identity_id)
-            .expect("fleet")
-            .certificates
-            .into_iter()
-            .find(|cert| cert.device_public_key == token.issuer_device_public_key)
-            .expect("issuer");
-        member.capabilities = DeviceCapabilities::member();
-        let member = signed(member);
-        let approved = signed(DeviceCert {
-            user_public_key: token.user_public_key,
-            device_public_key: device(61),
-            device_label: "Tablet".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        });
-        let redemption = |device_public_key, label| Redemption {
-            token: &token,
-            role: DeviceRole::Personal,
-            device_public_key,
-            label,
-            now_ns: now,
-            valid_from_ns: now,
-            local_issuer: Some(&member),
-        };
-        let refuse = |error: io::Error| assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        refuse(
-            redeem(
+                device_public_key,
+                label,
+                now_ns: now,
+                valid_from_ns: now,
+                local_issuer: Some(&member),
+            };
+            let refuse = |error: io::Error| assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            refuse(
+                redeem(
+                    None,
+                    &store.nonces(),
+                    &redemption(device(61), "Tablet"),
+                    Certifier::Root(&|_| Ok([0; 64])),
+                )
+                .expect_err("a member may not admit with a root of its own"),
+            );
+            refuse(
+                redeem(
+                    None,
+                    &store.nonces(),
+                    &redemption(device(62), "Tablet"),
+                    Certifier::Approved(&approved),
+                )
+                .expect_err("an approval names its device"),
+            );
+            refuse(
+                redeem(
+                    None,
+                    &store.nonces(),
+                    &redemption(device(61), "Laptop"),
+                    Certifier::Approved(&approved),
+                )
+                .expect_err("an approval names its label"),
+            );
+            assert!(!store.nonces().is_consumed(&token.nonce).expect("marker"));
+            let cert = redeem(
                 None,
                 &store.nonces(),
                 &redemption(device(61), "Tablet"),
-                Certifier::Root(&|_| Ok([0; 64])),
-            )
-            .expect_err("a member may not admit with a root of its own"),
-        );
-        refuse(
-            redeem(
-                None,
-                &store.nonces(),
-                &redemption(device(62), "Tablet"),
                 Certifier::Approved(&approved),
             )
-            .expect_err("an approval names its device"),
-        );
-        refuse(
-            redeem(
-                None,
-                &store.nonces(),
-                &redemption(device(61), "Laptop"),
-                Certifier::Approved(&approved),
-            )
-            .expect_err("an approval names its label"),
-        );
-        assert!(!store.nonces().is_consumed(&token.nonce).expect("marker"));
-        let cert = redeem(
-            None,
-            &store.nonces(),
-            &redemption(device(61), "Tablet"),
-            Certifier::Approved(&approved),
-        )
-        .expect("the approved certificate admits");
-        assert_eq!(cert, approved);
-        assert!(store.nonces().is_consumed(&token.nonce).expect("marker"));
-    }
+            .expect("the approved certificate admits");
+            assert_eq!(cert, approved);
+            assert!(store.nonces().is_consumed(&token.nonce).expect("marker"));
+        }
 
-    #[test]
-    fn a_revoked_device_is_not_admitted_again() {
-        let fixture = fixture();
-        let store = &fixture.store;
-        let now = fixture.issued_at_ns;
-        let (encoded, _) = fixture.mint();
-        store
-            .complete_enrollment(
-                &fixture.identity_id,
-                &encoded,
-                DeviceRole::Personal,
-                device(71),
-                "Lost phone",
-                now,
-            )
-            .expect("enrolled");
-        store
-            .revoke(
-                &fixture.identity_id,
-                device(71),
-                tilo_user_identity::RevocationReason::Lost,
-                now + 1,
-            )
-            .expect("revoked");
-        let (encoded, _) = fixture.mint();
-        let error = store
-            .complete_enrollment(
-                &fixture.identity_id,
-                &encoded,
-                DeviceRole::Personal,
-                device(71),
-                "Found phone",
-                now + 2,
-            )
-            .expect_err("revocation wins over a later enrollment");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-    }
+        phase a_revoked_device_is_not_admitted_again;
+        {
+            let fixture = fixture();
+            let store = &fixture.store;
+            let now = fixture.issued_at_ns;
+            let (encoded, _) = fixture.mint();
+            store
+                .complete_enrollment(
+                    &fixture.identity_id,
+                    &encoded,
+                    device(71),
+                    "Lost phone",
+                    now,
+                )
+                .expect("enrolled");
+            store
+                .revoke(
+                    &fixture.identity_id,
+                    device(71),
+                    tilo_user_identity::RevocationReason::Lost,
+                    now + 1,
+                )
+                .expect("revoked");
+            let (encoded, _) = fixture.mint();
+            let error = store
+                .complete_enrollment(
+                    &fixture.identity_id,
+                    &encoded,
+                    device(71),
+                    "Found phone",
+                    now + 2,
+                )
+                .expect_err("revocation wins over a later enrollment");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
 
-    #[test]
-    fn a_token_of_the_other_role_is_refused_before_anything_is_spent() {
-        let fixture = fixture();
-        let store = &fixture.store;
-        let now = fixture.issued_at_ns;
-        let encoded = store
-            .mint_enrollment(
-                &fixture.identity_id,
-                DeviceCapabilities::host(),
-                now,
-                now + 5_000,
-            )
-            .expect("token");
-        let error = store
-            .complete_enrollment(
-                &fixture.identity_id,
-                &encoded,
-                DeviceRole::Personal,
-                device(61),
-                "Server",
-                now,
-            )
-            .expect_err("a home-peer token cannot admit a personal device");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
-        assert!(!store.nonces().is_consumed(&token.nonce).expect("marker"));
-        store
-            .complete_enrollment(
-                &fixture.identity_id,
-                &encoded,
-                DeviceRole::Host,
-                device(61),
-                "Server",
-                now,
-            )
-            .expect("the same token admits its own role");
-    }
+        phase a_token_that_admits_no_device_is_refused_before_anything_is_spent;
+        {
+            let fixture = fixture();
+            let store = &fixture.store;
+            let now = fixture.issued_at_ns;
+            let encoded = store
+                .mint_enrollment(
+                    &fixture.identity_id,
+                    DeviceCapabilities::administrator(),
+                    now,
+                    now + 5_000,
+                )
+                .expect("token");
+            let error = store
+                .complete_enrollment(&fixture.identity_id, &encoded, device(61), "Server", now)
+                .expect_err("a token without a device's capabilities admits nothing");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
+            assert!(!store.nonces().is_consumed(&token.nonce).expect("marker"));
+        }
 
-    #[test]
-    fn nonce_markers_spend_once_and_record_idempotently() {
-        let directory = tempfile::tempdir().expect("temp");
-        let nonces = NonceStore::under(directory.path());
-        nonces.record(&[4; 16], [7; 32]).expect("first record");
-        nonces
-            .record(&[4; 16], [7; 32])
-            .expect("the same device again");
-        assert!(nonces.record(&[4; 16], [8; 32]).is_err());
-        assert!(nonces.claim(&[4; 16], [7; 32]).is_err());
-        nonces.claim(&[5; 16], [7; 32]).expect("a fresh nonce");
-        nonces.import(&[6; 16]).expect("migrated");
-        assert!(nonces.is_consumed(&[6; 16]).expect("marker"));
-        assert!(nonces.record(&[6; 16], [7; 32]).is_err());
+        phase nonce_markers_spend_once_and_record_idempotently;
+        {
+            let directory = tempfile::tempdir().expect("temp");
+            let nonces = NonceStore::under(directory.path());
+            nonces.record(&[4; 16], [7; 32]).expect("first record");
+            nonces
+                .record(&[4; 16], [7; 32])
+                .expect("the same device again");
+            assert!(nonces.record(&[4; 16], [8; 32]).is_err());
+            assert!(nonces.claim(&[4; 16], [7; 32]).is_err());
+            nonces.claim(&[5; 16], [7; 32]).expect("a fresh nonce");
+            nonces.import(&[6; 16]).expect("migrated");
+            assert!(nonces.is_consumed(&[6; 16]).expect("marker"));
+            assert!(nonces.record(&[6; 16], [7; 32]).is_err());
+        }
     }
 }

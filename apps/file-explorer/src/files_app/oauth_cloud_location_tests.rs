@@ -23,9 +23,18 @@ fn fixture_store(root: &Path) -> accounts::AccountStore {
     store
 }
 
-#[test]
-fn canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts() {
-    with_owner_callback(canonical_oauth_accounts);
+tilo_test_env::scenario! {
+    fn oauth_accounts_are_sidebar_places_that_follow_their_account;
+
+    phase canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts;
+    {
+        with_owner_callback(canonical_oauth_accounts);
+    }
+
+    phase disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions;
+    {
+        with_owner_callback(disabled_and_removed_oauth_accounts);
+    }
 }
 
 fn canonical_oauth_accounts() {
@@ -114,11 +123,6 @@ fn canonical_oauth_accounts() {
         !accounts::vault_dir_in(config.path()).exists(),
         "projection and open must not create credential custody"
     );
-}
-
-#[test]
-fn disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions() {
-    with_owner_callback(disabled_and_removed_oauth_accounts);
 }
 
 fn disabled_and_removed_oauth_accounts() {

@@ -370,78 +370,82 @@ mod tests {
         GridMetrics::for_theme(&Theme::dark())
     }
 
-    #[test]
-    fn strips_stack_top_to_bottom_with_their_windows_in_strip_order_and_relative_sizes() {
-        let m = metrics();
-        let area = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        let strips = vec![
-            vec![Size::new(1000.0, 900.0), Size::new(500.0, 900.0)],
-            vec![],
-            vec![Size::new(800.0, 900.0)],
-        ];
-        let places = layout_strips(area, &strips, &[], &m, None);
-        assert_eq!(places.len(), 3);
-        let first = &places[0];
-        assert_eq!(first.wells.len(), 2);
-        assert!(first.wells[0].x1 < first.wells[1].x0, "left to right");
-        let ratio = first.wells[0].width() / first.wells[1].width();
-        assert!((ratio - 2.0).abs() < 1e-6, "sizes stay relative: {ratio}");
-        assert!(places[1].empty.is_some(), "an empty strip keeps its row");
-        assert!(places[0].label.y1 <= first.wells[0].y0);
-        assert!(first.titles[0].y0 > first.wells[0].y1);
-        for pair in places.windows(2) {
-            assert!(pair[0].bounds().y1 <= pair[1].label.y0, "top to bottom");
+    tilo_test_env::scenario! {
+        fn the_overview_picture_lays_out_strips_and_windows;
+
+        phase strips_stack_top_to_bottom_with_their_windows_in_strip_order_and_relative_sizes;
+        {
+            let m = metrics();
+            let area = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            let strips = vec![
+                vec![Size::new(1000.0, 900.0), Size::new(500.0, 900.0)],
+                vec![],
+                vec![Size::new(800.0, 900.0)],
+            ];
+            let places = layout_strips(area, &strips, &[], &m, None);
+            assert_eq!(places.len(), 3);
+            let first = &places[0];
+            assert_eq!(first.wells.len(), 2);
+            assert!(first.wells[0].x1 < first.wells[1].x0, "left to right");
+            let ratio = first.wells[0].width() / first.wells[1].width();
+            assert!((ratio - 2.0).abs() < 1e-6, "sizes stay relative: {ratio}");
+            assert!(places[1].empty.is_some(), "an empty strip keeps its row");
+            assert!(places[0].label.y1 <= first.wells[0].y0);
+            assert!(first.titles[0].y0 > first.wells[0].y1);
+            for pair in places.windows(2) {
+                assert!(pair[0].bounds().y1 <= pair[1].label.y0, "top to bottom");
+            }
+            for place in &places {
+                let b = place.bounds();
+                assert!(b.x0 >= area.x0 && b.x1 <= area.x1 + 1e-6, "{b:?}");
+                assert!(b.y0 >= area.y0 && b.y1 <= area.y1 + 1e-6, "{b:?}");
+            }
+            // Never larger than half the window it pictures.
+            assert!(places[2].wells[0].height() <= 900.0 * MAX_SCALE + 1e-6);
         }
-        for place in &places {
-            let b = place.bounds();
-            assert!(b.x0 >= area.x0 && b.x1 <= area.x1 + 1e-6, "{b:?}");
-            assert!(b.y0 >= area.y0 && b.y1 <= area.y1 + 1e-6, "{b:?}");
+
+        phase the_tabs_of_one_window_sit_together_and_windows_apart;
+        {
+            let m = metrics();
+            let area = Rect::new(0.0, 0.0, 1600.0, 800.0);
+            let strips = vec![vec![Size::new(400.0, 900.0); 3]];
+            // The first two are tabs of one window, the third its own window.
+            let places = layout_strips(area, &strips, &[vec![false, true, false]], &m, None);
+            let wells = &places[0].wells;
+            assert!((wells[1].x0 - wells[0].x1 - m.tab_gap).abs() < 1e-6);
+            assert!((wells[2].x0 - wells[1].x1 - m.window_gap).abs() < 1e-6);
         }
-        // Never larger than half the window it pictures.
-        assert!(places[2].wells[0].height() <= 900.0 * MAX_SCALE + 1e-6);
-    }
 
-    #[test]
-    fn the_tabs_of_one_window_sit_together_and_windows_apart() {
-        let m = metrics();
-        let area = Rect::new(0.0, 0.0, 1600.0, 800.0);
-        let strips = vec![vec![Size::new(400.0, 900.0); 3]];
-        // The first two are tabs of one window, the third its own window.
-        let places = layout_strips(area, &strips, &[vec![false, true, false]], &m, None);
-        let wells = &places[0].wells;
-        assert!((wells[1].x0 - wells[0].x1 - m.tab_gap).abs() < 1e-6);
-        assert!((wells[2].x0 - wells[1].x1 - m.window_gap).abs() < 1e-6);
-    }
+        phase a_strip_too_wide_for_the_picture_shrinks_alone;
+        {
+            let m = metrics();
+            let area = Rect::new(0.0, 0.0, 600.0, 800.0);
+            let strips = vec![
+                vec![Size::new(1000.0, 900.0); 6],
+                vec![Size::new(400.0, 900.0)],
+            ];
+            let places = layout_strips(area, &strips, &[], &m, None);
+            let wide = places[0].wells.last().expect("windows");
+            assert!(wide.x1 <= area.x1 + 1e-6, "{wide:?}");
+            assert!(
+                places[1].wells[0].height() > places[0].wells[0].height(),
+                "the other strip keeps the picture's scale"
+            );
+        }
 
-    #[test]
-    fn a_strip_too_wide_for_the_picture_shrinks_alone() {
-        let m = metrics();
-        let area = Rect::new(0.0, 0.0, 600.0, 800.0);
-        let strips = vec![
-            vec![Size::new(1000.0, 900.0); 6],
-            vec![Size::new(400.0, 900.0)],
-        ];
-        let places = layout_strips(area, &strips, &[], &m, None);
-        let wide = places[0].wells.last().expect("windows");
-        assert!(wide.x1 <= area.x1 + 1e-6, "{wide:?}");
-        assert!(
-            places[1].wells[0].height() > places[0].wells[0].height(),
-            "the other strip keeps the picture's scale"
-        );
-    }
-
-    #[test]
-    fn inside_the_panel_every_strip_is_one_band_tall_and_the_picture_grows_down() {
-        let m = metrics();
-        let area = Rect::new(10.0, 100.0, 610.0, 100.0);
-        let strips = vec![vec![Size::new(800.0, 600.0)], vec![Size::new(400.0, 600.0)]];
-        let places = layout_strips(area, &strips, &[], &m, Some(m.band));
-        assert_eq!(places[0].label.y0, area.y0);
-        assert!((places[0].wells[0].height() - m.band).abs() < 1e-6);
-        let bottom = places.last().map(StripPlace::bounds).expect("strips").y1;
-        assert!(
-            (bottom - (area.y0 + band_height(2, &m, m.band))).abs() < 1e-6,
-            "{bottom}"
-        );
+        phase inside_the_panel_every_strip_is_one_band_tall_and_the_picture_grows_down;
+        {
+            let m = metrics();
+            let area = Rect::new(10.0, 100.0, 610.0, 100.0);
+            let strips = vec![vec![Size::new(800.0, 600.0)], vec![Size::new(400.0, 600.0)]];
+            let places = layout_strips(area, &strips, &[], &m, Some(m.band));
+            assert_eq!(places[0].label.y0, area.y0);
+            assert!((places[0].wells[0].height() - m.band).abs() < 1e-6);
+            let bottom = places.last().map(StripPlace::bounds).expect("strips").y1;
+            assert!(
+                (bottom - (area.y0 + band_height(2, &m, m.band))).abs() < 1e-6,
+                "{bottom}"
+            );
+        }
     }
 }

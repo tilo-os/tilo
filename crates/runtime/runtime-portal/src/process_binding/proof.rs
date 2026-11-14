@@ -119,42 +119,46 @@ impl Proof {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    #[test]
-    fn owned_proof_answers_a_real_kernel_credential_challenge() {
-        use std::io::Write as _;
-        let mut proof = Proof::start().unwrap();
-        let mut host = proof.remote.try_clone().unwrap();
-        super::super::arm(&host).unwrap();
-        host.set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let nonce = [53; 32];
-        host.write_all(&super::super::MAGIC).unwrap();
-        host.write_all(&nonce).unwrap();
-        let peer =
-            super::super::receive(&host, &nonce, rustix::process::geteuid().as_raw()).unwrap();
-        assert_eq!(peer.pid(), std::process::id());
-        assert!(peer.current());
-        host.write_all(&[1]).unwrap();
-        proof.result().unwrap();
-        // A valid process response still cannot be replayed for a new challenge.
-        host.set_read_timeout(Some(std::time::Duration::from_millis(20)))
-            .unwrap();
-        assert!(
-            super::super::receive(&host, &[54; 32], rustix::process::geteuid().as_raw()).is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_owned_proof;
 
-    #[test]
-    fn stalled_actual_proof_has_total_deadline() {
-        let mut proof = Proof::start_with_timeout(std::time::Duration::from_millis(50))
-            .expect("owned socketpair");
-        tilo_test_env::wait_until("the handshake to stop without a challenge", || {
-            proof.finished()
-        });
-        assert!(
-            proof.result().is_err(),
-            "stalled peer never supplied kernel proof"
-        );
+        phase owned_proof_answers_a_real_kernel_credential_challenge;
+        {
+            use std::io::Write as _;
+            let mut proof = Proof::start().unwrap();
+            let mut host = proof.remote.try_clone().unwrap();
+            super::super::arm(&host).unwrap();
+            host.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let nonce = [53; 32];
+            host.write_all(&super::super::MAGIC).unwrap();
+            host.write_all(&nonce).unwrap();
+            let peer =
+                super::super::receive(&host, &nonce, rustix::process::geteuid().as_raw()).unwrap();
+            assert_eq!(peer.pid(), std::process::id());
+            assert!(peer.current());
+            host.write_all(&[1]).unwrap();
+            proof.result().unwrap();
+            // A valid process response still cannot be replayed for a new challenge.
+            host.set_read_timeout(Some(std::time::Duration::from_millis(20)))
+                .unwrap();
+            assert!(
+                super::super::receive(&host, &[54; 32], rustix::process::geteuid().as_raw()).is_err()
+            );
+        }
+
+        phase stalled_actual_proof_has_total_deadline;
+        {
+            let mut proof = Proof::start_with_timeout(std::time::Duration::from_millis(50))
+                .expect("owned socketpair");
+            tilo_test_env::wait_until("the handshake to stop without a challenge", || {
+                proof.finished()
+            });
+            assert!(
+                proof.result().is_err(),
+                "stalled peer never supplied kernel proof"
+            );
+        }
     }
     #[test]
     fn cancellation_stops_actual_proof_before_descriptor_custody_ends() {

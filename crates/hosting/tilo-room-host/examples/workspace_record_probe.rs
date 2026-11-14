@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use tilo_peer_state::join::invitations::IssuedInvitation;
 use tilo_peer_state::join::{InviteGrant, JoinBootstrap, JoinChallenge, MembershipChallenge};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 #[derive(Deserialize)]
@@ -15,7 +16,7 @@ use tilo_user_identity::DeviceCert;
 struct Record {
     version: u32,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     name: String,
     authority: DeviceCert,
     peer: Vec<Part>,

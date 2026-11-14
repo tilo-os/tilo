@@ -52,6 +52,7 @@ use tilo_session_client::device::{Entering, door_entry};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{enrol, enter_page, keyed, start_workspace_host_relaying};
+use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -420,7 +421,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
@@ -432,7 +433,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -598,7 +599,7 @@ struct Member {
     host: Host,
     host_cert: tilo_user_identity::DeviceCert,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     desktop: DocumentRoute,
 }
 
@@ -719,7 +720,7 @@ struct Place<'a> {
     /// over with the page (`tilo-relay page-host`).
     site: &'a tilo_relay_protocol::web::PageHost,
     workspace: &'a str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     host: iroh::EndpointId,
     relay: iroh::RelayUrl,
     desktop: &'a DocumentRoute,
@@ -1077,6 +1078,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,
     );
+    let events = page.events();
     page.send(Cmd::Join(place.workspace_id)).unwrap();
     page.send(Cmd::OpenRoute(place.desktop.clone())).unwrap();
     let (mut connected, mut admitted, mut ready, mut keyed_desktop, mut desktop_doc) =
@@ -1106,7 +1108,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         if keyed_desktop.is_none() && keyed(&page, place.desktop) {
             keyed_desktop = Some(started.elapsed());
         }
-        for event in page.drain() {
+        for event in events.drain() {
             match &event {
                 Event::Landed {
                     route,
@@ -1152,7 +1154,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         .unwrap();
     let (mut note, mut opened) = (false, None);
     while !note || opened.is_none() || when_opened.is_none() {
-        for event in page.drain() {
+        for event in events.drain() {
             match event {
                 Event::Landed {
                     route,
@@ -1199,7 +1201,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         .unwrap();
     let (mut part, mut answered) = (false, None);
     while !part || answered.is_none() {
-        for event in page.drain() {
+        for event in events.drain() {
             match event {
                 Event::Landed {
                     route,

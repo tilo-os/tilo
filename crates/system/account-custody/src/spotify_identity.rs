@@ -105,69 +105,74 @@ mod tests {
     use super::*;
     use test_http::{Reply, Responder};
 
-    #[test]
-    fn exact_native_token_is_verified_before_consumer_and_opaque_account_is_not_a_username() {
-        let api = Responder::start(vec![
-            Reply::status(200)
-                .body(br#"{"id":"visible-user","account_id":"other-account"}"#.to_vec()),
-            Reply::status(200)
-                .body(br#"{"id":"visible-user","account_id":"immutable-opaque"}"#.to_vec()),
-        ]);
-        let expected = SpotifyIdentity::AccountId("immutable-opaque".into());
-        let native_started = std::cell::Cell::new(false);
-        let refused = verified_at(&expected, "exact-native-token", &api.url(), |_| {
-            native_started.set(true);
-        });
-        assert_eq!(refused, Err(crate::CustodyError::NeedsAuthentication));
-        assert!(!native_started.get());
-        // The authenticated native protocol can supply a different canonical
-        // username. Consumer construction follows exact-token account proof,
-        // without requiring equality between these separate identity domains.
-        let native_name = verified_at(&expected, "exact-native-token", &api.url(), |token| {
-            assert_eq!(token, "exact-native-token");
-            native_started.set(true);
-            "native-canonical-username"
-        })
-        .unwrap();
-        assert!(native_started.get());
-        assert_eq!(native_name, "native-canonical-username");
-        for _ in 0..2 {
-            let request = api.next_request();
-            assert_eq!(request.method, "GET");
-            assert_eq!(
-                request.header("Authorization"),
-                Some("Bearer exact-native-token")
-            );
-        }
-        api.assert_untouched();
-    }
+    tilo_test_env::scenario! {
+        /// Who a Spotify token belongs to.
+        fn a_spotify_identity_is_verified_before_it_is_used;
 
-    #[test]
-    fn legacy_user_identity_is_explicit_and_invalid_modern_identity_cannot_fall_back() {
-        let legacy =
-            SpotifyIdentity::from_profile(&serde_json::json!({"id":"legacy-user"})).unwrap();
-        assert_eq!(legacy, SpotifyIdentity::LegacyUserId("legacy-user".into()));
-        for account in [
-            serde_json::json!(""),
-            serde_json::json!(null),
-            serde_json::json!("bad\nidentity"),
-        ] {
-            assert_eq!(
-                SpotifyIdentity::from_profile(
-                    &serde_json::json!({"id":"legacy-user","account_id":account})
-                ),
-                Err(crate::CustodyError::NeedsAuthentication)
-            );
+        phase exact_native_token_is_verified_before_consumer_and_opaque_account_is_not_a_username;
+        {
+            let api = Responder::start(vec![
+                Reply::status(200)
+                    .body(br#"{"id":"visible-user","account_id":"other-account"}"#.to_vec()),
+                Reply::status(200)
+                    .body(br#"{"id":"visible-user","account_id":"immutable-opaque"}"#.to_vec()),
+            ]);
+            let expected = SpotifyIdentity::AccountId("immutable-opaque".into());
+            let native_started = std::cell::Cell::new(false);
+            let refused = verified_at(&expected, "exact-native-token", &api.url(), |_| {
+                native_started.set(true);
+            });
+            assert_eq!(refused, Err(crate::CustodyError::NeedsAuthentication));
+            assert!(!native_started.get());
+            // The authenticated native protocol can supply a different canonical
+            // username. Consumer construction follows exact-token account proof,
+            // without requiring equality between these separate identity domains.
+            let native_name = verified_at(&expected, "exact-native-token", &api.url(), |token| {
+                assert_eq!(token, "exact-native-token");
+                native_started.set(true);
+                "native-canonical-username"
+            })
+            .unwrap();
+            assert!(native_started.get());
+            assert_eq!(native_name, "native-canonical-username");
+            for _ in 0..2 {
+                let request = api.next_request();
+                assert_eq!(request.method, "GET");
+                assert_eq!(
+                    request.header("Authorization"),
+                    Some("Bearer exact-native-token")
+                );
+            }
+            api.assert_untouched();
         }
-        let api = Responder::start(vec![
-            Reply::status(200)
-                .body(br#"{"id":"legacy-user","account_id":"modern-account"}"#.to_vec()),
-        ]);
-        verified_at(&legacy, "legacy-token", &api.url(), |token| {
-            assert_eq!(token, "legacy-token");
-        })
-        .unwrap();
-        api.next_request();
-        api.assert_untouched();
+
+        phase legacy_user_identity_is_explicit_and_invalid_modern_identity_cannot_fall_back;
+        {
+            let legacy =
+                SpotifyIdentity::from_profile(&serde_json::json!({"id":"legacy-user"})).unwrap();
+            assert_eq!(legacy, SpotifyIdentity::LegacyUserId("legacy-user".into()));
+            for account in [
+                serde_json::json!(""),
+                serde_json::json!(null),
+                serde_json::json!("bad\nidentity"),
+            ] {
+                assert_eq!(
+                    SpotifyIdentity::from_profile(
+                        &serde_json::json!({"id":"legacy-user","account_id":account})
+                    ),
+                    Err(crate::CustodyError::NeedsAuthentication)
+                );
+            }
+            let api = Responder::start(vec![
+                Reply::status(200)
+                    .body(br#"{"id":"legacy-user","account_id":"modern-account"}"#.to_vec()),
+            ]);
+            verified_at(&legacy, "legacy-token", &api.url(), |token| {
+                assert_eq!(token, "legacy-token");
+            })
+            .unwrap();
+            api.next_request();
+            api.assert_untouched();
+        }
     }
 }

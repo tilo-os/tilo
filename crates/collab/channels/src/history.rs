@@ -1,7 +1,7 @@
 //! Maintaining a sealed record's history: opening any of its writes, and
 //! sealing the checkpoint that replaces the ones it covers.
 use channel_crypto::ChannelContentKeys;
-use collab_types::{ChannelRoute, EncryptionMetadata, SignedOp};
+use collab_types::{EncryptionMetadata, SignedOp};
 use tilo_desktop_model::WorkspaceId;
 
 use crate::encryption::{ChannelAccess, ChannelKeyAccess};
@@ -28,12 +28,12 @@ impl From<ChannelContentKeys> for HistoryKeys {
 }
 
 impl HistoryKeys {
-    /// Which keys these are: the channel they open and the epoch they seal under now. A rotation,
+    /// Which keys these are: the workspace they open and the epoch they seal under now. A rotation,
     /// which removing a member makes, moves the epoch, so what a reader opened under earlier keys
     /// is told apart from what it opens under these.
     #[must_use]
-    pub fn generation(&self) -> (collab_types::ChannelId, u64) {
-        (self.0.channel_id(), self.0.epoch())
+    pub fn generation(&self) -> (WorkspaceId, u64) {
+        (self.0.workspace(), self.0.epoch())
     }
 
     /// Open `envelope`, a write of the record's history (a compaction
@@ -50,17 +50,13 @@ impl HistoryKeys {
 }
 
 impl ChannelKeyAccess {
-    /// `route`'s keys as this device holds them now, for opening a sealed
-    /// record's history outside the service's lock ([`HistoryKeys`]).
-    /// `None` when this device takes part in no group that could carry the
-    /// route; [`Err`] when it does and holds none yet.
+    /// `workspace`'s keys as this device holds them now, for opening a
+    /// sealed record's history outside the service's lock ([`HistoryKeys`]).
+    /// `None` when this device takes part in no group of the workspace;
+    /// [`Err`] when it does and holds none yet.
     #[must_use]
-    pub fn history_keys(
-        &self,
-        workspace: WorkspaceId,
-        route: &ChannelRoute,
-    ) -> Option<Result<HistoryKeys, String>> {
-        self.record_keys(workspace, route)
+    pub fn history_keys(&self, workspace: WorkspaceId) -> Option<Result<HistoryKeys, String>> {
+        self.record_keys(workspace)
             .map(|keys| keys.map(HistoryKeys))
     }
 
@@ -73,9 +69,8 @@ impl ChannelKeyAccess {
         workspace: WorkspaceId,
         envelope: &SignedOp,
     ) -> Result<Vec<u8>, String> {
-        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
         let keys = self
-            .run(|service| service.record_keys(workspace, metadata.channel, None))
+            .run(|service| service.record_keys(workspace))
             .ok_or("channel service unavailable")?
             .ok_or("this device holds no existing key for the history's channel")??;
         HistoryKeys(keys).open(envelope)
@@ -94,8 +89,7 @@ impl ChannelKeyAccess {
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
         let name = workspace.to_string();
         let artifact = collab_types::document_artifact_id(app, &name, record);
-        let route = collab_types::ChannelRoute::new(app, record);
-        let (access, _) = self.access_record(workspace, &route);
+        let (access, _) = self.access(workspace);
         let ChannelAccess::Ready(keys) = access else {
             return Err("this device holds no current key for the record's channel".into());
         };

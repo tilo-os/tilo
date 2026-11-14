@@ -867,127 +867,135 @@ mod tests {
         .sized_by(&Spacing::BASE, &Metrics::BASE)
     }
 
-    #[test]
-    fn opens_browses_searches_and_closes() {
-        let mut p = panel();
-        assert_eq!(p.mode(), PanelMode::Closed);
-        p.start_search();
-        assert_eq!(p.mode(), PanelMode::Closed, "a closed panel cannot search");
-        p.open();
-        assert_eq!(p.mode(), PanelMode::Browse);
-        p.select_group(3);
-        assert_eq!(p.group(), 3);
-        p.start_search();
-        p.type_text("piz");
-        p.type_text("za");
-        assert_eq!(p.query(), "pizza");
-        p.backspace();
-        assert_eq!(p.query(), "pizz");
-        p.end_search();
-        assert_eq!(p.mode(), PanelMode::Browse);
-        assert_eq!(p.query(), "", "leaving the search drops the query");
-        assert_eq!(p.group(), 3, "the group survives a search");
-        p.close();
-        assert!(!p.is_open());
+    tilo_test_env::scenario! {
+        fn the_panel_browses_searches_and_offers_recents;
+
+        phase opens_browses_searches_and_closes;
+        {
+            let mut p = panel();
+            assert_eq!(p.mode(), PanelMode::Closed);
+            p.start_search();
+            assert_eq!(p.mode(), PanelMode::Closed, "a closed panel cannot search");
+            p.open();
+            assert_eq!(p.mode(), PanelMode::Browse);
+            p.select_group(3);
+            assert_eq!(p.group(), 3);
+            p.start_search();
+            p.type_text("piz");
+            p.type_text("za");
+            assert_eq!(p.query(), "pizza");
+            p.backspace();
+            assert_eq!(p.query(), "pizz");
+            p.end_search();
+            assert_eq!(p.mode(), PanelMode::Browse);
+            assert_eq!(p.query(), "", "leaving the search drops the query");
+            assert_eq!(p.group(), 3, "the group survives a search");
+            p.close();
+            assert!(!p.is_open());
+        }
+
+        phase group_index_is_clamped;
+        {
+            let mut p = panel();
+            p.select_group(usize::MAX);
+            assert_eq!(p.group(), Catalogue::english().groups().len() - 1);
+        }
+
+        phase recents_come_first_in_the_grid;
+        {
+            let p = panel();
+            let mut recents = Recents::default();
+            assert_eq!(p.sections(&recents).len(), 1, "no recents, no section");
+            recents.record("🍕");
+            let sections = p.sections(&recents);
+            assert_eq!(sections.len(), 2);
+            assert_eq!(sections[0].emoji, vec!["🍕".to_owned()]);
+            assert_eq!(sections[0].heading, i18n::t("osk-emoji-recent"));
+        }
+
+        phase search_ranks_matches_and_fills_the_strip;
+        {
+            let mut p = panel();
+            p.open();
+            p.start_search();
+            p.type_text("pizza");
+            assert_eq!(p.results().first().map(String::as_str), Some("🍕"));
+            p.layout(bands(), &Recents::default(), &Theme::dark());
+            assert!(p.emoji_rect("🍕").is_some(), "the match is in the strip");
+            let at = p.emoji_rect("🍕").unwrap().center();
+            assert_eq!(p.hit(at), Some(PanelHit::Emoji("🍕".into())));
+        }
+
+        phase empty_search_strip_offers_recents;
+        {
+            let mut p = panel();
+            p.open();
+            p.start_search();
+            let mut recents = Recents::default();
+            recents.record("🎉");
+            p.layout(bands(), &recents, &Theme::dark());
+            assert!(p.emoji_rect("🎉").is_some());
+        }
     }
 
-    #[test]
-    fn group_index_is_clamped() {
-        let mut p = panel();
-        p.select_group(usize::MAX);
-        assert_eq!(p.group(), Catalogue::english().groups().len() - 1);
-    }
+    tilo_test_env::scenario! {
+        fn the_panel_lays_out_its_tones_tabs_grid_and_names;
 
-    #[test]
-    fn recents_come_first_in_the_grid() {
-        let p = panel();
-        let mut recents = Recents::default();
-        assert_eq!(p.sections(&recents).len(), 1, "no recents, no section");
-        recents.record("🍕");
-        let sections = p.sections(&recents);
-        assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].emoji, vec!["🍕".to_owned()]);
-        assert_eq!(sections[0].heading, i18n::t("osk-emoji-recent"));
-    }
+        phase skin_tone_row_only_for_emoji_that_take_a_tone;
+        {
+            let mut p = panel();
+            p.open();
+            assert!(!p.open_tones("🍕", Rect::ZERO));
+            assert!(p.open_tones("👍🏽", Rect::new(100.0, 200.0, 144.0, 244.0)));
+            assert_eq!(p.tones_for(), Some("👍"), "the row is on the base form");
+            let options = p.tone_options();
+            assert_eq!(options.len(), 6);
+            assert_eq!(options[0], "👍");
+            assert_eq!(options[3], "👍🏽");
+            p.layout(bands(), &Recents::default(), &Theme::dark());
+            let at = p.tone_cells[3].1.center();
+            assert_eq!(p.hit(at), Some(PanelHit::Tone("👍🏽".into())));
+            assert_eq!(p.hit(Point::new(1.0, 300.0)), Some(PanelHit::Nothing));
+        }
 
-    #[test]
-    fn search_ranks_matches_and_fills_the_strip() {
-        let mut p = panel();
-        p.open();
-        p.start_search();
-        p.type_text("pizza");
-        assert_eq!(p.results().first().map(String::as_str), Some("🍕"));
-        p.layout(bands(), &Recents::default(), &Theme::dark());
-        assert!(p.emoji_rect("🍕").is_some(), "the match is in the strip");
-        let at = p.emoji_rect("🍕").unwrap().center();
-        assert_eq!(p.hit(at), Some(PanelHit::Emoji("🍕".into())));
-    }
+        phase browse_layout_hits_tabs_grid_and_bottom_row;
+        {
+            let mut p = panel();
+            p.open();
+            p.layout(bands(), &Recents::default(), &Theme::dark());
+            let tab = p.tab_rects[2].center();
+            assert_eq!(p.hit(tab), Some(PanelHit::Group(2)));
+            let (first, rect) = p.cells[0].clone();
+            assert_eq!(p.hit(rect.center()), Some(PanelHit::Emoji(first)));
+            assert_eq!(p.hit(p.letters_rect.center()), Some(PanelHit::Letters));
+            assert_eq!(p.hit(p.delete_rect.center()), Some(PanelHit::Delete));
+            assert_eq!(p.hit(p.search_rect.center()), Some(PanelHit::Search));
+        }
 
-    #[test]
-    fn empty_search_strip_offers_recents() {
-        let mut p = panel();
-        p.open();
-        p.start_search();
-        let mut recents = Recents::default();
-        recents.record("🎉");
-        p.layout(bands(), &recents, &Theme::dark());
-        assert!(p.emoji_rect("🎉").is_some());
-    }
+        phase scrolling_stays_within_the_content;
+        {
+            let mut p = panel();
+            p.open();
+            p.layout(bands(), &Recents::default(), &Theme::dark());
+            let first = p.cells[0].clone();
+            p.scroll_by(-50.0);
+            p.layout(bands(), &Recents::default(), &Theme::dark());
+            assert_eq!(p.cells[0], first, "cannot scroll above the top");
+            p.scroll_by(1e9);
+            p.layout(bands(), &Recents::default(), &Theme::dark());
+            assert!(
+                p.cells.iter().all(|(t, _)| *t != first.0),
+                "scrolled to the end"
+            );
+        }
 
-    #[test]
-    fn skin_tone_row_only_for_emoji_that_take_a_tone() {
-        let mut p = panel();
-        p.open();
-        assert!(!p.open_tones("🍕", Rect::ZERO));
-        assert!(p.open_tones("👍🏽", Rect::new(100.0, 200.0, 144.0, 244.0)));
-        assert_eq!(p.tones_for(), Some("👍"), "the row is on the base form");
-        let options = p.tone_options();
-        assert_eq!(options.len(), 6);
-        assert_eq!(options[0], "👍");
-        assert_eq!(options[3], "👍🏽");
-        p.layout(bands(), &Recents::default(), &Theme::dark());
-        let at = p.tone_cells[3].1.center();
-        assert_eq!(p.hit(at), Some(PanelHit::Tone("👍🏽".into())));
-        assert_eq!(p.hit(Point::new(1.0, 300.0)), Some(PanelHit::Nothing));
-    }
-
-    #[test]
-    fn browse_layout_hits_tabs_grid_and_bottom_row() {
-        let mut p = panel();
-        p.open();
-        p.layout(bands(), &Recents::default(), &Theme::dark());
-        let tab = p.tab_rects[2].center();
-        assert_eq!(p.hit(tab), Some(PanelHit::Group(2)));
-        let (first, rect) = p.cells[0].clone();
-        assert_eq!(p.hit(rect.center()), Some(PanelHit::Emoji(first)));
-        assert_eq!(p.hit(p.letters_rect.center()), Some(PanelHit::Letters));
-        assert_eq!(p.hit(p.delete_rect.center()), Some(PanelHit::Delete));
-        assert_eq!(p.hit(p.search_rect.center()), Some(PanelHit::Search));
-    }
-
-    #[test]
-    fn scrolling_stays_within_the_content() {
-        let mut p = panel();
-        p.open();
-        p.layout(bands(), &Recents::default(), &Theme::dark());
-        let first = p.cells[0].clone();
-        p.scroll_by(-50.0);
-        p.layout(bands(), &Recents::default(), &Theme::dark());
-        assert_eq!(p.cells[0], first, "cannot scroll above the top");
-        p.scroll_by(1e9);
-        p.layout(bands(), &Recents::default(), &Theme::dark());
-        assert!(
-            p.cells.iter().all(|(t, _)| *t != first.0),
-            "scrolled to the end"
-        );
-    }
-
-    #[test]
-    fn toned_emoji_are_named_with_their_tone() {
-        let p = panel();
-        let plain = p.spoken_name("👍");
-        let toned = p.spoken_name("👍🏽");
-        assert!(toned.starts_with(&plain), "{toned}");
-        assert_ne!(toned, plain);
+        phase toned_emoji_are_named_with_their_tone;
+        {
+            let p = panel();
+            let plain = p.spoken_name("👍");
+            let toned = p.spoken_name("👍🏽");
+            assert!(toned.starts_with(&plain), "{toned}");
+            assert_ne!(toned, plain);
+        }
     }
 }

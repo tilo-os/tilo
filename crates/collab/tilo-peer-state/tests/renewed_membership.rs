@@ -12,11 +12,11 @@
 use ed25519_dalek::SigningKey;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::join::invitations::{IssueInvitationRequest, IssuedInvitation};
 use tilo_peer_state::join::{
-    self, JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
+    self, JoinTransportRequest, JoinTransportResponse, Role, TransportHint,
 };
 use tilo_peer_state::join_answer::{JoinAnswer, JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
@@ -49,7 +49,7 @@ impl HeldWorkspace {
         Governed {
             peer: (&self.peer.0).into(),
             host: &self.host,
-            workspace_id: join::room_workspace_id(WORKSPACE).unwrap(),
+            workspace_id: join::WorkspaceId::parse(WORKSPACE).unwrap(),
             generation: self.generation,
             governance_messages: None,
         }
@@ -252,17 +252,17 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let joined_at = SystemTime::now();
     let joined_ns = testing::ns(joined_at).unwrap();
     let governor = JoinAnswer(MemoryWorkspaces::new(&device, &key, joined_at));
-    let workspace_id = join::room_workspace_id(WORKSPACE).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
+    let workspace_id = join::WorkspaceId::parse(WORKSPACE).unwrap();
+    let hint = WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: WORKSPACE.into(),
+        holds_keys: true,
+        runs_work: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&device.device_public_key).unwrap(),
         ),
-        host_user_public_key: device.user_public_key,
-        host_device_certificate: device.clone(),
+        user_public_key: device.user_public_key,
+        device_certificate: device.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(&key)
@@ -280,7 +280,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let issued = governor.0.issue(
         IssueInvitationRequest {
             request_id: [1; 32],
-            role: MemberRole::Editor,
+            role: Role::Editor,
             recipient_user_public_key: Some(first.user_public_key),
             invitee_name: None,
             expires_at_ns: joined_ns.saturating_add(60_000_000_000),
@@ -355,7 +355,6 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
             &governor,
             slot_key.verifying_key().to_bytes(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
-                room: WORKSPACE.into(),
                 workspace_id,
                 device_cert: device_cert.clone(),
                 request_id: [seed; 32],
@@ -381,11 +380,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         panic!("the governor answers the slot's renewed membership");
     };
     assert_eq!(renewal.device_cert, renewed);
-    assert_eq!(
-        renewal.role,
-        MemberRole::Editor,
-        "the same member, with its role"
-    );
+    assert_eq!(renewal.role, Role::Editor, "the same member, with its role");
     member
         .renew_membership(workspace, &renewed, &renewal, later)
         .unwrap();

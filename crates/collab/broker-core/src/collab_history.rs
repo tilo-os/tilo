@@ -470,7 +470,7 @@ impl CollabHistoryStore {
 mod tests {
     use super::*;
     use collab_types::{
-        AttestationId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpKind,
+        AttestationId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpKind,
     };
 
     fn op(artifact: ArtifactId, seq: u64, encryption: Option<EncryptionMetadata>) -> SignedOp {
@@ -491,11 +491,7 @@ mod tests {
     fn history_outlives_the_memory_window_and_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let artifact = ArtifactId::new();
-        let sealed = Some(EncryptionMetadata::content_key(
-            1,
-            ChannelId::new(),
-            ContentRetention::Delta,
-        ));
+        let sealed = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
         {
             let mut store = CollabHistoryStore::open(dir.path().join("history")).unwrap();
             // Far more than the broker's in-memory window, stored the way a
@@ -523,7 +519,7 @@ mod tests {
                 .record(&op(
                     artifact,
                     20_001,
-                    Some(EncryptionMetadata::mls_application(1, ChannelId::new())),
+                    Some(EncryptionMetadata::mls_application(1)),
                 ))
                 .unwrap()
                 .sync()
@@ -548,7 +544,6 @@ mod tests {
         let artifact = ArtifactId::new();
         let sealed = Some(EncryptionMetadata::content_key(
             1,
-            ChannelId::new(),
             ContentRetention::Checkpoint,
         ));
         let root = dir.path().join("history");
@@ -606,11 +601,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (key, _) = collab_types::generate_keypair();
         let artifact = ArtifactId::new();
-        let sealed = Some(EncryptionMetadata::content_key(
-            4,
-            ChannelId::new(),
-            ContentRetention::Delta,
-        ));
+        let sealed = Some(EncryptionMetadata::content_key(4, ContentRetention::Delta));
         let mut channels = crate::collab_core::BrokerChannels {
             history: Some(CollabHistoryStore::open(dir.path().join("history")).unwrap()),
             ..Default::default()

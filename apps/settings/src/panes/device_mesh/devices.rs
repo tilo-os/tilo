@@ -2,20 +2,19 @@
 //! settings open under it, renaming a home server in place, and removing a
 //! device after asking.
 
-use tilo_relay_protocol::{DeviceRole, ReplicationIntent};
+use tilo_relay_protocol::WorkFrom;
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, RelayRuntimeStatus, home_server_row,
-    last_seen_label, peer_health_badge, peer_health_detail, peer_key, personal_device_key,
-    replication_description, replication_shown, role_shown, runtime_status_tone,
-    shows_advanced_services,
+    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, ROOM, RelayRuntimeStatus, WORK_FROM,
+    home_server_row, last_seen_label, peer_health_badge, peer_health_detail, peer_key,
+    personal_device_key, room_shown, runtime_status_tone, takes_work, work_key,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{
     SettingsSection, StatusTone, error_caption, note, row, rows, section_with,
-    semantic_status_pill, setting_row_described, value_row,
+    semantic_status_pill, setting_row_described,
 };
 
 const THIS_DEVICE_KEY: &str = "this-device";
@@ -23,33 +22,31 @@ const THIS_DEVICE_KEY: &str = "this-device";
 struct DeviceEntry<'a> {
     key: String,
     label: String,
-    personal: Option<&'a crate::device_fleet::DeviceView>,
+    personal: Option<&'a super::PersonalDevice>,
     peer: Option<&'a tilo_relay_protocol::HomePeerRegistration>,
     this: bool,
 }
 
 impl Page<'_> {
+    /// This device first, then the person's other devices as the session reads them, then the
+    /// home servers paired here that it does not list.
     fn device_entries(&self) -> Vec<DeviceEntry<'_>> {
-        let peer_of = |device: &crate::device_fleet::DeviceView| {
-            let key = hex::encode(device.key);
+        let devices = self.personal_devices.iter().flatten();
+        let peer_of = |device: &super::PersonalDevice| {
             self.home_peers
                 .iter()
-                .find(|peer| peer.device_node_id.eq_ignore_ascii_case(&key))
+                .find(|peer| peer.device_node_id.eq_ignore_ascii_case(&device.id))
         };
         let mut entries = Vec::new();
-        match self
-            .personal_devices
-            .iter()
-            .find(|device| device.current && !device.revoked)
-        {
+        match devices.clone().find(|device| device.local) {
             Some(device) => entries.push(DeviceEntry {
-                key: hex::encode(device.key),
+                key: device.id.clone(),
                 label: device.label.clone(),
                 personal: Some(device),
                 peer: None,
                 this: true,
             }),
-            // Before the device list answers, this device still has its
+            // Before the session's reading lands, this device still has its
             // settings.
             None => entries.push(DeviceEntry {
                 key: THIS_DEVICE_KEY.to_owned(),
@@ -59,13 +56,9 @@ impl Page<'_> {
                 this: true,
             }),
         }
-        for device in self
-            .personal_devices
-            .iter()
-            .filter(|device| !device.current && !device.revoked)
-        {
+        for device in devices.filter(|device| !device.local) {
             entries.push(DeviceEntry {
-                key: hex::encode(device.key),
+                key: device.id.clone(),
                 label: device.label.clone(),
                 personal: Some(device),
                 peer: peer_of(device),
@@ -86,15 +79,6 @@ impl Page<'_> {
                     this: false,
                 });
             }
-        }
-        for device in self.personal_devices.iter().filter(|device| device.revoked) {
-            entries.push(DeviceEntry {
-                key: hex::encode(device.key),
-                label: device.label.clone(),
-                personal: Some(device),
-                peer: None,
-                this: false,
-            });
         }
         entries
     }
@@ -119,14 +103,6 @@ impl Page<'_> {
         } else {
             t("mesh-add-device")
         };
-        let add_device = Box::new(
-            self.bind_invocation(
-                Button::new("device_mesh.approve_personal_device", &personal_label)
-                    .with_enabled(!pairing),
-                DeviceMeshEffect::AddPersonalDevice,
-            ),
-        );
-
         let mut items = Vec::new();
         for entry in self.device_entries() {
             items.push(row(Box::new(
@@ -138,7 +114,7 @@ impl Page<'_> {
                 )
                 .icon(if entry.this {
                     ui::icons::Icon::Monitor
-                } else if entry.peer.is_some() || entry.personal.is_some_and(|d| d.can_host) {
+                } else if entry.peer.is_some() {
                     ui::icons::Icon::HardDrive
                 } else {
                     ui::icons::Icon::MonitorSmartphone
@@ -150,6 +126,8 @@ impl Page<'_> {
             items.push(row(error_caption(&t(
                 "mesh-status-device-list-unavailable",
             ))));
+        } else if self.personal_devices.is_none() {
+            items.push(note(&t("mesh-status-devices-reading")));
         }
 
         let home_label = if pairing && self.pairing_target == PairingTarget::HomePeer {
@@ -169,17 +147,27 @@ impl Page<'_> {
         } else {
             t("mesh-pair-home")
         };
-        items.push(setting_row_described(
-            &t("mesh-home-nas"),
-            &t("mesh-home-caption"),
-            Box::new(self.bind_invocation(
-                Button::new("device_mesh.approve_enrollment", &home_label).with_enabled(!pairing),
-                DeviceMeshEffect::PairHomeServer,
-            )),
-        ));
-        items.push(note(&t("mesh-personal-caption")));
+        let pair_home = self.bind_invocation(
+            Button::new("device_mesh.approve_enrollment", &home_label).with_enabled(!pairing),
+            DeviceMeshEffect::PairHomeServer,
+        );
+        items.push(row(Box::new(
+            ui::widget::Row::new()
+                .push(Box::new(pair_home))
+                .push(Box::new(ui::widget::Spacer::new())),
+        )));
+        let add_device = Box::new(
+            self.bind_invocation(
+                Button::new("device_mesh.approve_personal_device", &personal_label)
+                    .with_enabled(!pairing),
+                DeviceMeshEffect::AddPersonalDevice,
+            ),
+        );
         if let Some(status) = self.status.pairing_shown() {
             items.push(note(&status));
+        }
+        if let Some(trouble) = self.status.settings_trouble_shown() {
+            items.push(row(error_caption(&trouble)));
         }
         section_with(&t("mesh-trusted-title"), add_device, rows(items))
     }
@@ -188,14 +176,14 @@ impl Page<'_> {
         if entry.this {
             return t("mesh-status-this-device");
         }
-        if entry.personal.is_some_and(|device| device.revoked) {
-            return t("mesh-status-revoked");
+        if entry.personal.is_some_and(|device| device.nearby) {
+            return t("mesh-status-nearby");
         }
         if let Some(peer) = entry.peer {
             return self.peer_health(peer);
         }
-        t(if entry.personal.is_some_and(|device| device.can_host) {
-            "mesh-status-home-server"
+        t(if entry.personal.is_some_and(|device| device.online) {
+            "mesh-badge-online"
         } else {
             "mesh-status-trusted"
         })
@@ -216,19 +204,13 @@ impl Page<'_> {
 
     fn device_details(&self, entry: &DeviceEntry<'_>) -> Box<dyn Widget> {
         let mut items = Vec::new();
-        if let Some(device) = entry.personal {
-            items.push(value_row(&t("mesh-fingerprint-label"), &device.fingerprint));
-        }
         if entry.this {
             items.extend(self.this_device_rows());
         }
         if let Some(peer) = entry.peer {
             items.extend(self.home_peer_rows(peer));
         }
-        let removable = entry
-            .personal
-            .is_some_and(|device| !device.current && !device.revoked && !device.can_host);
-        if removable || entry.peer.is_some() {
+        if !entry.this && (entry.personal.is_some() || entry.peer.is_some()) {
             items.extend(self.removal_rows(entry));
         }
         provider_settings_ui::widgets::page(vec![provider_settings_ui::widgets::untitled(rows(
@@ -237,28 +219,22 @@ impl Page<'_> {
     }
 
     fn this_device_rows(&self) -> Vec<provider_settings_ui::widgets::Item> {
-        let role_shown_value = role_shown(self.config.device_role);
-        let role_state = ui::LocalState::new(role_shown_value.clone());
-        let role = Dropdown::from_state(
-            [
-                DeviceRole::Interactive,
-                DeviceRole::Hybrid,
-                DeviceRole::AlwaysOnServer,
-            ]
-            .into_iter()
-            .map(role_shown)
-            .collect(),
-            &role_state,
-        )
-        .with_id("device_mesh.role")
-        .with_placeholder(&role_shown_value);
-        let role = self.bind(role, effect(DeviceMeshEffect::SET_DEVICE_ROLE));
+        // Work the page cannot set (some workspaces) shows as the placeholder.
+        let chosen = work_key(&self.config.work.from);
+        let selected = WORK_FROM.contains(&chosen).then(|| chosen.to_owned());
+        let state = ui::LocalState::new(selected.unwrap_or_default());
+        let mut work = Dropdown::from_state(Vec::new(), &state)
+            .with_id("device_mesh.work")
+            .with_placeholder(&t(chosen));
+        work.set_value_options(WORK_FROM.map(|key| (key.to_owned(), t(key))).to_vec());
+        let work = self.bind(work, effect(DeviceMeshEffect::SET_WORK));
         let mut out = vec![setting_row_described(
             &t("mesh-this-device"),
             &t("mesh-this-device-desc"),
-            Box::new(role),
+            Box::new(work),
         )];
-        if shows_advanced_services(self.config.device_role) {
+        let taking = takes_work(&self.config.work);
+        if taking {
             let home_desc = t(match self.runtime_status {
                 RelayRuntimeStatus::Ready => "mesh-home-ready",
                 RelayRuntimeStatus::Online => "mesh-home-online",
@@ -273,53 +249,67 @@ impl Page<'_> {
                 semantic_status_pill(&runtime, runtime_status_tone(self.runtime_status)),
             ));
         }
-        out.push(self.files_row());
-        if shows_advanced_services(self.config.device_role) {
+        if taking {
+            out.extend(self.when_rows());
             out.extend(self.service_rows());
         }
-        out.push(note(&t(match self.config.device_role {
-            DeviceRole::Interactive => "mesh-role-hint-personal",
-            DeviceRole::Hybrid => "mesh-role-hint-hybrid",
-            DeviceRole::AlwaysOnServer
-                if self.common_replication() == ReplicationIntent::FullWorkspace =>
-            {
-                "mesh-role-hint-server-full"
-            }
-            DeviceRole::AlwaysOnServer => "mesh-role-hint-server",
+        out.push(note(&t(match self.config.work.from {
+            WorkFrom::Nobody => "mesh-work-hint-nothing",
+            WorkFrom::OwnDevices => "mesh-work-hint-own",
+            WorkFrom::Anyone | WorkFrom::Workspaces(_) => "mesh-work-hint-anyone",
         })));
         out
     }
 
-    fn files_row(&self) -> provider_settings_ui::widgets::Item {
-        let files = t("mesh-files");
-        if !self.config.device_role.can_serve() {
-            return value_row(&files, &t("mesh-download-opened"));
-        }
-        let repl_shown = replication_shown(&self.common_replication());
-        let replication_state = ui::LocalState::new(repl_shown.clone());
-        let replication = Dropdown::from_state(
-            [
-                ReplicationIntent::OnDemand,
-                ReplicationIntent::WorkspaceOnly,
-                ReplicationIntent::FullWorkspace,
-            ]
-            .into_iter()
-            .map(|intent| replication_shown(&intent))
-            .collect(),
-            &replication_state,
-        )
-        .with_id("device_mesh.replication")
-        .with_placeholder(&repl_shown);
-        let replication = self.bind(replication, effect(DeviceMeshEffect::SET_REPLICATION));
-        setting_row_described(
-            &files,
-            &replication_description(&self.common_replication()),
-            Box::new(replication),
-        )
+    /// The states this device takes work in: only while charging, and how much of the processors
+    /// and memory it leaves to the people at it.
+    fn when_rows(&self) -> [provider_settings_ui::widgets::Item; 3] {
+        let when = self.config.work.when;
+        let room = |part: &'static str, label: &str, desc: &str, percent: u8| {
+            let shown = room_shown(percent);
+            let state = ui::LocalState::new(shown.clone());
+            let choice = Dropdown::from_state(ROOM.into_iter().map(room_shown).collect(), &state)
+                .with_id(&format!("device_mesh.work_room.{part}"))
+                .with_placeholder(&shown);
+            let choice = self.bind(
+                choice,
+                effect(DeviceMeshEffect::SET_WORK_ROOM)
+                    .map(move |percent: String| (part.to_owned(), percent)),
+            );
+            setting_row_described(&t(label), &t(desc), Box::new(choice))
+        };
+        [
+            self.switch(
+                t("mesh-work-charging"),
+                t("mesh-work-charging-desc"),
+                "device_mesh.work_charging".to_owned(),
+                when.charging_only,
+                effect(DeviceMeshEffect::SET_WORK_WHILE_CHARGING),
+            ),
+            room(
+                "processors",
+                "mesh-work-room-cpu",
+                "mesh-work-room-cpu-desc",
+                when.free_cpu_percent,
+            ),
+            room(
+                "memory",
+                "mesh-work-room-memory",
+                "mesh-work-room-memory-desc",
+                when.free_memory_percent,
+            ),
+        ]
     }
 
-    fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 4] {
+    fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 5] {
         [
+            self.service_row(
+                "mesh-svc-files",
+                "mesh-svc-files-desc",
+                "full_content_replication",
+                "device_mesh.full_content_replication",
+                self.config.services.full_content_replication,
+            ),
             self.service_row(
                 "mesh-svc-relay",
                 "mesh-svc-relay-desc",

@@ -608,38 +608,115 @@ impl Drop for Remote {
 mod tests {
     use super::*;
 
-    #[test]
-    fn imported_daemon_command_preserves_rpc_policy_and_refuses_untrusted_paths() {
-        let hash = "ab".repeat(32);
-        let command = imported_daemon_command(
-            Some("sudo -n /usr/libexec/tilo/tilo-vmd rpc --root /old --expect-domain greetd_t"),
-            "/var/lib/tilo-vm",
-            &hash,
-        )
-        .unwrap();
-        assert_eq!(
-            command,
-            [
-                "sudo".to_owned(),
-                "-n".into(),
-                format!("/var/lib/tilo-vm/layers/{hash}/usr/libexec/tilo/tilo-vmd"),
-                "rpc".into(),
-                "--expect-domain".into(),
-                "greetd_t".into(),
-                "--root".into(),
-                "/var/lib/tilo-vm".into(),
-            ]
-        );
-        for root in ["relative", "/var/lib/../etc", "/var/lib/a\nBAD"] {
-            assert!(imported_daemon_command(None, root, &hash).is_err());
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn remote_commands_keep_their_policy;
+
+        phase imported_daemon_command_preserves_rpc_policy_and_refuses_untrusted_paths;
+        {
+            let hash = "ab".repeat(32);
+            let command = imported_daemon_command(
+                Some("sudo -n /usr/libexec/tilo/tilo-vmd rpc --root /old --expect-domain greetd_t"),
+                "/var/lib/tilo-vm",
+                &hash,
+            )
+            .unwrap();
+            assert_eq!(
+                command,
+                [
+                    "sudo".to_owned(),
+                    "-n".into(),
+                    format!("/var/lib/tilo-vm/layers/{hash}/usr/libexec/tilo/tilo-vmd"),
+                    "rpc".into(),
+                    "--expect-domain".into(),
+                    "greetd_t".into(),
+                    "--root".into(),
+                    "/var/lib/tilo-vm".into(),
+                ]
+            );
+            for root in ["relative", "/var/lib/../etc", "/var/lib/a\nBAD"] {
+                assert!(imported_daemon_command(None, root, &hash).is_err());
+            }
+            for layer in ["../outside", &"a".repeat(63), &"z".repeat(64)] {
+                assert!(imported_daemon_command(None, "/var/lib/tilo-vm", layer).is_err());
+            }
+            assert!(
+                imported_daemon_command(Some("other-daemon rpc"), "/var/lib/tilo-vm", &hash).is_err()
+            );
+            assert!(imported_daemon_command(Some("tilo-vmd exec"), "/var/lib/tilo-vm", &hash).is_err());
         }
-        for layer in ["../outside", &"a".repeat(63), &"z".repeat(64)] {
-            assert!(imported_daemon_command(None, "/var/lib/tilo-vm", layer).is_err());
+
+        phase remote_ssh_is_key_only_bounded_and_takes_the_daemons_lock;
+        {
+            {
+                let endpoint = SshEndpoint {
+                    user: "root".into(),
+                    host: "127.0.0.1".into(),
+                    port: 2223,
+                };
+                let line = ssh_command(
+                    &endpoint,
+                    Some("/k/id"),
+                    &["tilo-vmd".into(), "rpc".into()],
+                    false,
+                );
+                assert_eq!(
+                    line.display(),
+                    "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 \
+                 -o UserKnownHostsFile=/k/id.known_hosts -i /k/id -p 2223 root@127.0.0.1 tilo-vmd rpc"
+                );
+                let interactive = ssh_command(&endpoint, None, &[], true);
+                assert!(interactive.args.contains(&"-t".to_string()));
+            }
+
+            {
+                let owner = SshEndpoint {
+                    user: "me".into(),
+                    host: "10.0.0.223".into(),
+                    port: 22,
+                };
+                let line = ssh_command(&owner, Some("/k/yoga"), &vm_lock_command(), false);
+                let remote =
+                    &line.args[line.args.iter().position(|a| a == "me@10.0.0.223").unwrap() + 1..];
+                assert_eq!(&remote[..5], ["sudo", "-n", "--", "sh", "-c"]);
+                assert!(
+                    remote[5].starts_with("'mkdir -p /var/lib/tilo-vm/locks && flock"),
+                    "{}",
+                    remote[5]
+                );
+                let rpc = ssh_command(&owner, None, &["tilo-vmd".into(), "rpc".into()], false);
+                assert_eq!(rpc.args.last().unwrap(), "'tilo-vmd rpc'");
+                let shell = ssh_command(&owner, None, &[], true);
+                assert_eq!(&shell.args[shell.args.len() - 2..], ["sudo", "-i"]);
+                assert_eq!(
+                    rsync_path_as_root(&owner, "mkdir -p /x && flock --nonblock /l rsync"),
+                    "sudo -n -- sh -c 'mkdir -p /x && flock --nonblock /l rsync \"$@\"' rsync"
+                );
+                let root = SshEndpoint {
+                    user: "root".into(),
+                    ..owner
+                };
+                assert_eq!(rsync_path_as_root(&root, "rsync"), "rsync");
+                assert_eq!(as_root(&root, &["true".into()]), ["true"]);
+                assert_eq!(
+                    sudo_refusal("motd\nsudo: a password is required\n").as_deref(),
+                    Some("a password is required")
+                );
+                assert_eq!(sudo_refusal("bash: tilo-vmd: command not found"), None);
+            }
+
+            {
+                let command = vm_lock_command().join(" ");
+                assert!(
+                    command.contains("flock --nonblock /var/lib/tilo-vm/locks/vm.lock"),
+                    "{command}"
+                );
+                assert!(command.contains("echo locked"));
+            }
         }
-        assert!(
-            imported_daemon_command(Some("other-daemon rpc"), "/var/lib/tilo-vm", &hash).is_err()
-        );
-        assert!(imported_daemon_command(Some("tilo-vmd exec"), "/var/lib/tilo-vm", &hash).is_err());
     }
 
     #[test]
@@ -743,74 +820,5 @@ for line in sys.stdin:
             std::fs::read_to_string(wrong_root.join("calls")).unwrap(),
             "imported hello\n"
         );
-    }
-
-    #[test]
-    fn remote_ssh_is_key_only_bounded_and_takes_the_daemons_lock() {
-        {
-            let endpoint = SshEndpoint {
-                user: "root".into(),
-                host: "127.0.0.1".into(),
-                port: 2223,
-            };
-            let line = ssh_command(
-                &endpoint,
-                Some("/k/id"),
-                &["tilo-vmd".into(), "rpc".into()],
-                false,
-            );
-            assert_eq!(
-                line.display(),
-                "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 \
-                 -o UserKnownHostsFile=/k/id.known_hosts -i /k/id -p 2223 root@127.0.0.1 tilo-vmd rpc"
-            );
-            let interactive = ssh_command(&endpoint, None, &[], true);
-            assert!(interactive.args.contains(&"-t".to_string()));
-        }
-
-        {
-            let owner = SshEndpoint {
-                user: "me".into(),
-                host: "10.0.0.223".into(),
-                port: 22,
-            };
-            let line = ssh_command(&owner, Some("/k/yoga"), &vm_lock_command(), false);
-            let remote =
-                &line.args[line.args.iter().position(|a| a == "me@10.0.0.223").unwrap() + 1..];
-            assert_eq!(&remote[..5], ["sudo", "-n", "--", "sh", "-c"]);
-            assert!(
-                remote[5].starts_with("'mkdir -p /var/lib/tilo-vm/locks && flock"),
-                "{}",
-                remote[5]
-            );
-            let rpc = ssh_command(&owner, None, &["tilo-vmd".into(), "rpc".into()], false);
-            assert_eq!(rpc.args.last().unwrap(), "'tilo-vmd rpc'");
-            let shell = ssh_command(&owner, None, &[], true);
-            assert_eq!(&shell.args[shell.args.len() - 2..], ["sudo", "-i"]);
-            assert_eq!(
-                rsync_path_as_root(&owner, "mkdir -p /x && flock --nonblock /l rsync"),
-                "sudo -n -- sh -c 'mkdir -p /x && flock --nonblock /l rsync \"$@\"' rsync"
-            );
-            let root = SshEndpoint {
-                user: "root".into(),
-                ..owner
-            };
-            assert_eq!(rsync_path_as_root(&root, "rsync"), "rsync");
-            assert_eq!(as_root(&root, &["true".into()]), ["true"]);
-            assert_eq!(
-                sudo_refusal("motd\nsudo: a password is required\n").as_deref(),
-                Some("a password is required")
-            );
-            assert_eq!(sudo_refusal("bash: tilo-vmd: command not found"), None);
-        }
-
-        {
-            let command = vm_lock_command().join(" ");
-            assert!(
-                command.contains("flock --nonblock /var/lib/tilo-vm/locks/vm.lock"),
-                "{command}"
-            );
-            assert!(command.contains("echo locked"));
-        }
     }
 }

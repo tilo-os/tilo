@@ -1268,147 +1268,377 @@ mod tests {
         ui::tilo_resource::history::versions(&mut doc.clone()).len()
     }
 
-    #[test]
-    fn select_all_waits_for_the_pages_that_are_still_arriving() {
-        let mut st = state();
-        let held = st.list_rows().len();
-        assert!(held > 0, "the sample inbox holds rows");
-        // What the app does on Select all when the folder has more: the rows
-        // held are chosen, and the rest of the folder is on its way.
-        st.select_all_visible();
-        st.more_older = true;
-        st.selecting_all = true;
-        assert!(st.selecting_all, "the rest of the folder is being read");
-        assert_eq!(st.selected_bulk_ids().len(), held);
+    tilo_test_env::scenario! {
+        /// The window state: selection, ingest and the actions it writes to the document.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+        )]
+        fn mail_state_selects_ingests_and_acts_through_the_document;
 
-        let mut doc = crate::resource::TestMail::doc();
-        let mut edits = ui::widget::Edits::lend(&mut doc);
-        assert_eq!(
-            st.apply_bulk_action(&mut edits, BulkAction::MarkRead),
-            0,
-            "a part of the folder is not the folder"
-        );
-        assert_eq!(
-            st.status.as_deref(),
-            Some(format!("Still reading this folder; {held} selected so far").as_str())
-        );
-
-        let mut arriving = st
-            .mailbox
-            .messages_in(Folder::Starred)
-            .into_iter()
-            .next()
-            .cloned()
-            .expect("a message outside the inbox");
-        arriving.folder = Folder::Inbox;
-        arriving.id = uuid::Uuid::new_v4();
-        arriving.subject = "A page that arrived while selecting".into();
-        arriving.timestamp_min += 1;
-        // Mail that is only here (the account the mailbox is open on shows
-        // it), and its own conversation rather than a reply into one held.
-        arriving.account = String::new();
-        arriving.in_reply_to = None;
-        arriving.rfc_message_id = None;
-        st.mailbox.insert(arriving);
-        let rows: Vec<MessageId> = st.list_rows().into_iter().map(|(id, _)| id).collect();
-        assert!(rows.len() > held, "the folder holds one more row");
-        assert!(st.extend_selection(), "the new rows joined the selection");
-        assert_eq!(
-            st.selected_bulk_ids().len(),
-            rows.len(),
-            "every row the device now holds is chosen"
-        );
-
-        st.more_older = false;
-        st.finish_selection(Some("Inbox"));
-        assert!(!st.selecting_all);
-        assert_eq!(st.selected_bulk_ids().len(), rows.len());
-        assert_eq!(
-            st.status.as_deref(),
-            Some(format!("Selected all {} messages in Inbox", rows.len()).as_str())
-        );
-
-        assert!(!st.selection_still_arriving());
-    }
-
-    #[test]
-    fn ingesting_records_server_baselines_outside_undo() {
-        let st = state();
-        let message = st
-            .mailbox
-            .messages_in(Folder::Inbox)
-            .into_iter()
-            .next()
-            .cloned()
-            .expect("sample inbox");
-        let mut doc = crate::resource::TestMail::doc();
-        let before = version_count(&doc);
-        st.ingest_messages(
-            &mut ui::widget::Edits::lend(&mut doc),
-            std::slice::from_ref(&message),
-        );
-        assert_eq!(
-            crate::resource::TestMail::get_read(&doc, &message.id.to_string()),
-            Some(message.read)
-        );
-        assert_eq!(version_count(&doc), before + 1, "one ingest is one version");
-        assert!(steps_since(&doc, before).is_empty(), "and no undo step");
-    }
-
-    #[test]
-    fn reader_selection_is_read_neutral_and_reply_all_is_distinct() {
-        {
-            let st = state();
-            let selected = st
-                .selected
-                .expect("sample selects an initial reader message");
-            assert!(
-                st.mailbox
-                    .get(selected)
-                    .is_some_and(|message| !message.read),
-                "the sample's initially-rendered unread message must stay unread until a deliberate Open"
-            );
-        }
-
+        phase select_all_waits_for_the_pages_that_are_still_arriving;
         {
             let mut st = state();
-            let rows = st.list_rows();
-            let unread_index = rows
-                .iter()
-                .position(|(id, _)| st.mailbox.get(*id).is_some_and(|message| !message.read))
-                .expect("sample contains an unread row");
-            if unread_index > 0 {
-                st.selected = Some(rows[unread_index - 1].0);
-            } else {
-                st.selected = Some(rows[1].0);
-            }
-            let target = rows[unread_index].0;
-            let delta = if unread_index > 0 { 1 } else { -1 };
+            let held = st.list_rows().len();
+            assert!(held > 0, "the sample inbox holds rows");
+            // What the app does on Select all when the folder has more: the rows
+            // held are chosen, and the rest of the folder is on its way.
+            st.select_all_visible();
+            st.more_older = true;
+            st.selecting_all = true;
+            assert!(st.selecting_all, "the rest of the folder is being read");
+            assert_eq!(st.selected_bulk_ids().len(), held);
+
             let mut doc = crate::resource::TestMail::doc();
-            let heads_before = doc.get_heads();
-            st.move_selection(&mut ui::widget::Edits::lend(&mut doc), delta);
-            assert_eq!(st.selected, Some(target));
-            assert!(st.mailbox.get(target).is_some_and(|message| !message.read));
-            assert_eq!(doc.get_heads(), heads_before);
+            let mut edits = ui::widget::Edits::lend(&mut doc);
+            assert_eq!(
+                st.apply_bulk_action(&mut edits, BulkAction::MarkRead),
+                0,
+                "a part of the folder is not the folder"
+            );
+            assert_eq!(
+                st.status.as_deref(),
+                Some(format!("Still reading this folder; {held} selected so far").as_str())
+            );
+
+            let mut arriving = st
+                .mailbox
+                .messages_in(Folder::Starred)
+                .into_iter()
+                .next()
+                .cloned()
+                .expect("a message outside the inbox");
+            arriving.folder = Folder::Inbox;
+            arriving.id = uuid::Uuid::new_v4();
+            arriving.subject = "A page that arrived while selecting".into();
+            arriving.timestamp_min += 1;
+            // Mail that is only here (the account the mailbox is open on shows
+            // it), and its own conversation rather than a reply into one held.
+            arriving.account = String::new();
+            arriving.in_reply_to = None;
+            arriving.rfc_message_id = None;
+            st.mailbox.insert(arriving);
+            let rows: Vec<MessageId> = st.list_rows().into_iter().map(|(id, _)| id).collect();
+            assert!(rows.len() > held, "the folder holds one more row");
+            assert!(st.extend_selection(), "the new rows joined the selection");
+            assert_eq!(
+                st.selected_bulk_ids().len(),
+                rows.len(),
+                "every row the device now holds is chosen"
+            );
+
+            st.more_older = false;
+            st.finish_selection(Some("Inbox"));
+            assert!(!st.selecting_all);
+            assert_eq!(st.selected_bulk_ids().len(), rows.len());
+            assert_eq!(
+                st.status.as_deref(),
+                Some(format!("Selected all {} messages in Inbox", rows.len()).as_str())
+            );
+
+            assert!(!st.selection_still_arriving());
         }
 
+        phase ingesting_records_server_baselines_outside_undo;
         {
+            let st = state();
+            let message = st
+                .mailbox
+                .messages_in(Folder::Inbox)
+                .into_iter()
+                .next()
+                .cloned()
+                .expect("sample inbox");
+            let mut doc = crate::resource::TestMail::doc();
+            let before = version_count(&doc);
+            st.ingest_messages(
+                &mut ui::widget::Edits::lend(&mut doc),
+                std::slice::from_ref(&message),
+            );
+            assert_eq!(
+                crate::resource::TestMail::get_read(&doc, &message.id.to_string()),
+                Some(message.read)
+            );
+            assert_eq!(version_count(&doc), before + 1, "one ingest is one version");
+            assert!(steps_since(&doc, before).is_empty(), "and no undo step");
+        }
+
+        phase reader_selection_is_read_neutral_and_reply_all_is_distinct;
+        {
+            {
+                let st = state();
+                let selected = st
+                    .selected
+                    .expect("sample selects an initial reader message");
+                assert!(
+                    st.mailbox
+                        .get(selected)
+                        .is_some_and(|message| !message.read),
+                    "the sample's initially-rendered unread message must stay unread until a deliberate Open"
+                );
+            }
+
+            {
+                let mut st = state();
+                let rows = st.list_rows();
+                let unread_index = rows
+                    .iter()
+                    .position(|(id, _)| st.mailbox.get(*id).is_some_and(|message| !message.read))
+                    .expect("sample contains an unread row");
+                if unread_index > 0 {
+                    st.selected = Some(rows[unread_index - 1].0);
+                } else {
+                    st.selected = Some(rows[1].0);
+                }
+                let target = rows[unread_index].0;
+                let delta = if unread_index > 0 { 1 } else { -1 };
+                let mut doc = crate::resource::TestMail::doc();
+                let heads_before = doc.get_heads();
+                st.move_selection(&mut ui::widget::Edits::lend(&mut doc), delta);
+                assert_eq!(st.selected, Some(target));
+                assert!(st.mailbox.get(target).is_some_and(|message| !message.read));
+                assert_eq!(doc.get_heads(), heads_before);
+            }
+
+            {
+                let mut st = state();
+                let mut doc = crate::resource::TestMail::doc();
+                let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+                st.apply_message_action(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    id,
+                    CtxAction::ReplyAll,
+                );
+                let intents = st.take_intents();
+                assert!(
+                    intents
+                        .iter()
+                        .any(|i| matches!(i, Intent::ReplyAll(mid) if *mid == id)),
+                    "Reply-all must raise ReplyAll, not the plain Reply intent"
+                );
+                assert!(!intents.iter().any(|i| matches!(i, Intent::Reply(_))));
+            }
+        }
+
+        phase message_actions_reach_the_server_through_the_document;
+        {
+            use crate::actions::ServerUpdate;
+            let posts_nothing = |st: &mut MailState| {
+                assert!(
+                    !st.take_intents()
+                        .iter()
+                        .any(|intent| matches!(intent, Intent::Engine(_))),
+                    "a control never talks to the engine itself"
+                );
+            };
+
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
             let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+            fetch(&mut st, &mut doc, id);
             st.apply_message_action(
                 &mut ui::widget::Edits::lend(&mut doc),
                 id,
-                CtxAction::ReplyAll,
+                CtxAction::ToggleStar,
             );
-            let intents = st.take_intents();
+            posts_nothing(&mut st);
+            assert!(matches!(
+                crate::resource::TestMail::server_updates(&doc).as_slice(),
+                [ServerUpdate::Flags {
+                    starred: true,
+                    folder: Folder::Inbox,
+                    ..
+                }]
+            ));
+
+            let mut st = state();
+            let mut doc = crate::resource::TestMail::doc();
+            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+            fetch(&mut st, &mut doc, id);
+            st.apply_message_action(
+                &mut ui::widget::Edits::lend(&mut doc),
+                id,
+                CtxAction::Archive,
+            );
+            posts_nothing(&mut st);
+            assert!(matches!(
+                crate::resource::TestMail::server_updates(&doc).as_slice(),
+                [ServerUpdate::Move {
+                    from: Folder::Inbox,
+                    to: Folder::Archive,
+                    ..
+                }]
+            ));
+
+            let mut st = state();
+            let mut doc = crate::resource::TestMail::doc();
+            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+            fetch(&mut st, &mut doc, id);
+            st.apply_message_action(
+                &mut ui::widget::Edits::lend(&mut doc),
+                id,
+                CtxAction::Delete,
+            );
+            st.apply_message_action(
+                &mut ui::widget::Edits::lend(&mut doc),
+                id,
+                CtxAction::Delete,
+            );
+            let dispatcher = st.dispatcher.clone().expect("a dispatcher");
+            crate::resource::TestMail::confirm(&mut doc, &dispatcher);
+            posts_nothing(&mut st);
             assert!(
-                intents
-                    .iter()
-                    .any(|i| matches!(i, Intent::ReplyAll(mid) if *mid == id)),
-                "Reply-all must raise ReplyAll, not the plain Reply intent"
+                matches!(
+                    crate::resource::TestMail::server_updates(&doc).as_slice(),
+                    [ServerUpdate::Remove {
+                        folder: Folder::Inbox,
+                        ..
+                    }]
+                ),
+                "a message deleted for good is removed from where the server has it"
             );
-            assert!(!intents.iter().any(|i| matches!(i, Intent::Reply(_))));
+        }
+
+        phase bulk_actions_are_bounded_canonical_and_never_partial;
+        {
+            {
+                let mut st = state();
+                let mut doc = crate::resource::TestMail::doc();
+                let ids: Vec<MessageId> = st
+                    .list_rows()
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .take(2)
+                    .collect();
+                assert_eq!(ids.len(), 2, "sample exposes two list rows");
+                for id in &ids {
+                    assert!(st.toggle_bulk_selection(*id));
+                }
+                let archive_before = st.mailbox.count(Folder::Archive);
+                let versions_before = version_count(&doc);
+                assert_eq!(
+                    st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Archive),
+                    2
+                );
+                assert_eq!(st.mailbox.count(Folder::Archive), archive_before + 2);
+                assert!(
+                    st.bulk_selection.is_empty(),
+                    "moved rows cannot stay selected"
+                );
+                assert_eq!(
+                    steps_since(&doc, versions_before).len(),
+                    1,
+                    "two archives are one undo step"
+                );
+                for id in &ids {
+                    assert_eq!(
+                        crate::resource::TestMail::get_folder_for(&doc, &id.to_string()),
+                        Some(Folder::Archive)
+                    );
+                }
+                assert!(
+                    doc.get(&automerge::ROOT, "bulk_selection")
+                        .expect("document remains readable")
+                        .is_none(),
+                    "device-local selection is never written to the shared document"
+                );
+            }
+
+            {
+                let mut st = state();
+                let mut doc = crate::resource::TestMail::doc();
+                let ids: Vec<MessageId> = st
+                    .list_rows()
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .take(2)
+                    .collect();
+                for id in &ids {
+                    st.toggle_bulk_selection(*id);
+                }
+                assert_eq!(
+                    st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::MarkRead),
+                    2
+                );
+                assert!(
+                    ids.iter()
+                        .all(|id| st.mailbox.get(*id).is_some_and(|m| m.read))
+                );
+                assert_eq!(st.selected_bulk_ids(), ids);
+            }
+
+            {
+                let mut st = state();
+                let mut doc = crate::resource::TestMail::doc();
+                let ids: Vec<MessageId> = st
+                    .mailbox
+                    .messages_in(Folder::Inbox)
+                    .into_iter()
+                    .take(2)
+                    .map(|message| message.id)
+                    .collect();
+                let (already_trash, inbox) = (ids[0], ids[1]);
+                st.mailbox.move_to(already_trash, Folder::Trash);
+                // Starred is a virtual folder in the real app, so this deliberately
+                // models a selection whose physical rows come from different folders.
+                st.folder = Folder::Starred;
+                st.mailbox.get_mut(already_trash).unwrap().starred = true;
+                st.mailbox.get_mut(inbox).unwrap().starred = true;
+                st.toggle_bulk_selection(already_trash);
+                st.toggle_bulk_selection(inbox);
+
+                assert_eq!(
+                    st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Delete),
+                    1
+                );
+                assert_eq!(
+                    st.mailbox.get(already_trash).map(|message| message.folder),
+                    Some(Folder::Trash),
+                    "Delete means move-to-Trash even when a mixed selection includes Trash"
+                );
+                assert_eq!(
+                    st.mailbox.get(inbox).map(|message| message.folder),
+                    Some(Folder::Trash)
+                );
+                assert_eq!(
+                    crate::resource::TestMail::get_folder_for(&doc, &inbox.to_string()),
+                    Some(Folder::Trash)
+                );
+                assert!(
+                    crate::resource::TestMail::is_present_message(&doc, &already_trash.to_string()),
+                    "the row already in Trash is never purged"
+                );
+            }
+
+            {
+                let mut st = state();
+                let mut doc = crate::resource::TestMail::doc();
+                let ids: Vec<MessageId> = st
+                    .mailbox
+                    .messages_in(Folder::Inbox)
+                    .into_iter()
+                    .take(2)
+                    .map(|message| message.id)
+                    .collect();
+                let (trash, inbox) = (ids[0], ids[1]);
+                st.mailbox.move_to(trash, Folder::Trash);
+                st.toggle_bulk_selection(trash);
+                st.toggle_bulk_selection(inbox);
+                st.bulk_selection.push(uuid::Uuid::new_v4());
+
+                let heads_before = doc.get_heads();
+                assert_eq!(
+                    st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Purge),
+                    0
+                );
+                assert!(st.mailbox.get(trash).is_some());
+                assert!(st.mailbox.get(inbox).is_some());
+                assert_eq!(
+                    doc.get_heads(),
+                    heads_before,
+                    "a rejected mixed/stale purge never creates a partial document mutation"
+                );
+            }
         }
     }
 
@@ -1421,230 +1651,5 @@ mod tests {
             "you@example.test",
             std::slice::from_ref(&message),
         );
-    }
-
-    #[test]
-    fn message_actions_reach_the_server_through_the_document() {
-        use crate::actions::ServerUpdate;
-        let posts_nothing = |st: &mut MailState| {
-            assert!(
-                !st.take_intents()
-                    .iter()
-                    .any(|intent| matches!(intent, Intent::Engine(_))),
-                "a control never talks to the engine itself"
-            );
-        };
-
-        let mut st = state();
-        let mut doc = crate::resource::TestMail::doc();
-        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-        fetch(&mut st, &mut doc, id);
-        st.apply_message_action(
-            &mut ui::widget::Edits::lend(&mut doc),
-            id,
-            CtxAction::ToggleStar,
-        );
-        posts_nothing(&mut st);
-        assert!(matches!(
-            crate::resource::TestMail::server_updates(&doc).as_slice(),
-            [ServerUpdate::Flags {
-                starred: true,
-                folder: Folder::Inbox,
-                ..
-            }]
-        ));
-
-        let mut st = state();
-        let mut doc = crate::resource::TestMail::doc();
-        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-        fetch(&mut st, &mut doc, id);
-        st.apply_message_action(
-            &mut ui::widget::Edits::lend(&mut doc),
-            id,
-            CtxAction::Archive,
-        );
-        posts_nothing(&mut st);
-        assert!(matches!(
-            crate::resource::TestMail::server_updates(&doc).as_slice(),
-            [ServerUpdate::Move {
-                from: Folder::Inbox,
-                to: Folder::Archive,
-                ..
-            }]
-        ));
-
-        let mut st = state();
-        let mut doc = crate::resource::TestMail::doc();
-        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-        fetch(&mut st, &mut doc, id);
-        st.apply_message_action(
-            &mut ui::widget::Edits::lend(&mut doc),
-            id,
-            CtxAction::Delete,
-        );
-        st.apply_message_action(
-            &mut ui::widget::Edits::lend(&mut doc),
-            id,
-            CtxAction::Delete,
-        );
-        let dispatcher = st.dispatcher.clone().expect("a dispatcher");
-        crate::resource::TestMail::confirm(&mut doc, &dispatcher);
-        posts_nothing(&mut st);
-        assert!(
-            matches!(
-                crate::resource::TestMail::server_updates(&doc).as_slice(),
-                [ServerUpdate::Remove {
-                    folder: Folder::Inbox,
-                    ..
-                }]
-            ),
-            "a message deleted for good is removed from where the server has it"
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn bulk_actions_are_bounded_canonical_and_never_partial() {
-        {
-            let mut st = state();
-            let mut doc = crate::resource::TestMail::doc();
-            let ids: Vec<MessageId> = st
-                .list_rows()
-                .into_iter()
-                .map(|(id, _)| id)
-                .take(2)
-                .collect();
-            assert_eq!(ids.len(), 2, "sample exposes two list rows");
-            for id in &ids {
-                assert!(st.toggle_bulk_selection(*id));
-            }
-            let archive_before = st.mailbox.count(Folder::Archive);
-            let versions_before = version_count(&doc);
-            assert_eq!(
-                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Archive),
-                2
-            );
-            assert_eq!(st.mailbox.count(Folder::Archive), archive_before + 2);
-            assert!(
-                st.bulk_selection.is_empty(),
-                "moved rows cannot stay selected"
-            );
-            assert_eq!(
-                steps_since(&doc, versions_before).len(),
-                1,
-                "two archives are one undo step"
-            );
-            for id in &ids {
-                assert_eq!(
-                    crate::resource::TestMail::get_folder_for(&doc, &id.to_string()),
-                    Some(Folder::Archive)
-                );
-            }
-            assert!(
-                doc.get(&automerge::ROOT, "bulk_selection")
-                    .expect("document remains readable")
-                    .is_none(),
-                "device-local selection is never written to the shared document"
-            );
-        }
-
-        {
-            let mut st = state();
-            let mut doc = crate::resource::TestMail::doc();
-            let ids: Vec<MessageId> = st
-                .list_rows()
-                .into_iter()
-                .map(|(id, _)| id)
-                .take(2)
-                .collect();
-            for id in &ids {
-                st.toggle_bulk_selection(*id);
-            }
-            assert_eq!(
-                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::MarkRead),
-                2
-            );
-            assert!(
-                ids.iter()
-                    .all(|id| st.mailbox.get(*id).is_some_and(|m| m.read))
-            );
-            assert_eq!(st.selected_bulk_ids(), ids);
-        }
-
-        {
-            let mut st = state();
-            let mut doc = crate::resource::TestMail::doc();
-            let ids: Vec<MessageId> = st
-                .mailbox
-                .messages_in(Folder::Inbox)
-                .into_iter()
-                .take(2)
-                .map(|message| message.id)
-                .collect();
-            let (already_trash, inbox) = (ids[0], ids[1]);
-            st.mailbox.move_to(already_trash, Folder::Trash);
-            // Starred is a virtual folder in the real app, so this deliberately
-            // models a selection whose physical rows come from different folders.
-            st.folder = Folder::Starred;
-            st.mailbox.get_mut(already_trash).unwrap().starred = true;
-            st.mailbox.get_mut(inbox).unwrap().starred = true;
-            st.toggle_bulk_selection(already_trash);
-            st.toggle_bulk_selection(inbox);
-
-            assert_eq!(
-                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Delete),
-                1
-            );
-            assert_eq!(
-                st.mailbox.get(already_trash).map(|message| message.folder),
-                Some(Folder::Trash),
-                "Delete means move-to-Trash even when a mixed selection includes Trash"
-            );
-            assert_eq!(
-                st.mailbox.get(inbox).map(|message| message.folder),
-                Some(Folder::Trash)
-            );
-            assert_eq!(
-                crate::resource::TestMail::get_folder_for(&doc, &inbox.to_string()),
-                Some(Folder::Trash)
-            );
-            assert!(
-                crate::resource::TestMail::is_present_message(&doc, &already_trash.to_string()),
-                "the row already in Trash is never purged"
-            );
-        }
-
-        {
-            let mut st = state();
-            let mut doc = crate::resource::TestMail::doc();
-            let ids: Vec<MessageId> = st
-                .mailbox
-                .messages_in(Folder::Inbox)
-                .into_iter()
-                .take(2)
-                .map(|message| message.id)
-                .collect();
-            let (trash, inbox) = (ids[0], ids[1]);
-            st.mailbox.move_to(trash, Folder::Trash);
-            st.toggle_bulk_selection(trash);
-            st.toggle_bulk_selection(inbox);
-            st.bulk_selection.push(uuid::Uuid::new_v4());
-
-            let heads_before = doc.get_heads();
-            assert_eq!(
-                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Purge),
-                0
-            );
-            assert!(st.mailbox.get(trash).is_some());
-            assert!(st.mailbox.get(inbox).is_some());
-            assert_eq!(
-                doc.get_heads(),
-                heads_before,
-                "a rejected mixed/stale purge never creates a partial document mutation"
-            );
-        }
     }
 }

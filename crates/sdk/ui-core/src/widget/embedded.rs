@@ -499,183 +499,189 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_child_under_a_transform_is_hit_and_reported_where_it_is_drawn() {
-        let theme = Theme::dark();
-        let mut text = crate::font_catalog::fixture_renderer();
-        let mut doc = AutoCommit::new();
-        let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
-        host.widget_mut()
-            .present_blocks(&[BlockContent::paragraph("a", "a line of text")]);
-        // The box is laid out at (100, 100)..(500, ..) in its own space and
-        // drawn at half size, 10 px in.
-        host.set_transform(Affine::translate((10.0, 10.0)) * Affine::scale(0.5));
-        let height = host.layout(Rect::new(100.0, 100.0, 500.0, 100.0), &theme, &mut text);
-        assert!(height > 0.0);
-        let drawn = host.rect();
-        assert!((drawn.x0 - 60.0).abs() < 1e-9 && (drawn.width() - 200.0).abs() < 1e-9);
-        click(
-            &mut host,
-            &mut crate::widget::Edits::lend(&mut doc),
-            Point::new(drawn.x0 + 20.0, drawn.y0 + 4.0),
-        );
-        assert!(host.widget().is_focused(), "the click reached the box");
-        assert!(
-            host.take_focus_request(),
-            "the owner is asked to take focus"
-        );
-        assert!(!host.take_focus_request(), "once");
-        let caret = host.ime_cursor_rect().expect("a focused line has a caret");
-        assert!(
-            drawn.inflate(1.0, 1.0).contains(caret.center()),
-            "{caret:?} within {drawn:?}"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A child embedded in a host.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_embedded_child_is_hit_reflowed_and_laid_out_once;
 
-    #[test]
-    fn a_menu_opened_on_small_words_near_an_edge_stays_inside_the_owner() {
-        let theme = Theme::dark();
-        let mut text = crate::font_catalog::fixture_renderer();
-        let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
-        host.widget_mut()
-            .present_blocks(&[BlockContent::paragraph("a", "words at the edge")]);
-        host.set_transform(Affine::translate((600.0, 570.0)) * Affine::scale(0.5));
-        host.layout(Rect::new(0.0, 0.0, 400.0, 0.0), &theme, &mut text);
-        let owner = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let presence = PresenceCtx::empty();
-        presence.viewport.set(Some(owner));
-        host.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &presence,
-        );
-        assert_eq!(
-            presence.viewport.get(),
-            Some(owner),
-            "the owner's viewport is put back"
-        );
-        assert!(host.widget_mut().open_text_menu(Point::new(380.0, 10.0)));
-        host.draw_overlay(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &presence,
-        );
-        let menu = host.modal_capture().expect("the menu is open");
-        assert!(
-            menu.x0 >= owner.x0 - 1e-6
-                && menu.x1 <= owner.x1 + 1e-6
-                && menu.y0 >= owner.y0 - 1e-6
-                && menu.y1 <= owner.y1 + 1e-6,
-            "{menu:?} inside {owner:?}"
-        );
-        assert!(
-            menu.width() > 100.0,
-            "drawn at the owner's scale, not the words': {menu:?}"
-        );
-    }
+        phase a_child_under_a_transform_is_hit_and_reported_where_it_is_drawn;
+        {
+            let theme = Theme::dark();
+            let mut text = crate::font_catalog::fixture_renderer();
+            let mut doc = AutoCommit::new();
+            let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
+            host.widget_mut()
+                .present_blocks(&[BlockContent::paragraph("a", "a line of text")]);
+            // The box is laid out at (100, 100)..(500, ..) in its own space and
+            // drawn at half size, 10 px in.
+            host.set_transform(Affine::translate((10.0, 10.0)) * Affine::scale(0.5));
+            let height = host.layout(Rect::new(100.0, 100.0, 500.0, 100.0), &theme, &mut text);
+            assert!(height > 0.0);
+            let drawn = host.rect();
+            assert!((drawn.x0 - 60.0).abs() < 1e-9 && (drawn.width() - 200.0).abs() < 1e-9);
+            click(
+                &mut host,
+                &mut crate::widget::Edits::lend(&mut doc),
+                Point::new(drawn.x0 + 20.0, drawn.y0 + 4.0),
+            );
+            assert!(host.widget().is_focused(), "the click reached the box");
+            assert!(
+                host.take_focus_request(),
+                "the owner is asked to take focus"
+            );
+            assert!(!host.take_focus_request(), "once");
+            let caret = host.ime_cursor_rect().expect("a focused line has a caret");
+            assert!(
+                drawn.inflate(1.0, 1.0).contains(caret.center()),
+                "{caret:?} within {drawn:?}"
+            );
+        }
 
-    #[test]
-    fn retained_unfocused_editor_reflows_when_the_host_text_scale_changes() {
-        let normal = Theme::dark();
-        let large = Theme::high_contrast().with_text_scale(2.0);
-        let fixture = [BlockContent::paragraph("private", "Unsent Studio context")];
-        for width in [220.0, 180.0] {
+        phase a_menu_opened_on_small_words_near_an_edge_stays_inside_the_owner;
+        {
+            let theme = Theme::dark();
             let mut text = crate::font_catalog::fixture_renderer();
             let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
-            host.widget_mut().present_blocks(&fixture);
             host.widget_mut()
-                .focus_block(0, super::super::CursorPlacement::End);
-            host.widget_mut().select_before_caret(8);
-            host.widget_mut().set_focus(false);
-            let before = host
-                .widget()
-                .blocks()
-                .first()
-                .unwrap()
-                .line
-                .selection_range();
-            for _ in 0..3 {
-                host.layout(Rect::new(0.0, 0.0, 220.0, 0.0), &normal, &mut text);
-                host.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &normal,
-                    &PresenceCtx::empty(),
-                );
-            }
-
-            text.set_text_scale(large.text_scale);
-            let rect = Rect::new(0.0, 0.0, width, 0.0);
-            let retained_height = host.layout(rect, &large, &mut text);
-            let mut fresh = Embedded::new(BlockEditor::new().with_wrap_lines(true));
-            fresh.widget_mut().present_blocks(&fixture);
-            let fresh_height = fresh.layout(rect, &large, &mut text);
-            assert!(fresh_height > 40.0, "the large-text fixture must wrap");
-            assert!(
-                (retained_height - fresh_height).abs() < 0.01,
-                "retained editor measured {retained_height}, fresh editor {fresh_height} at width {width}"
+                .present_blocks(&[BlockContent::paragraph("a", "words at the edge")]);
+            host.set_transform(Affine::translate((600.0, 570.0)) * Affine::scale(0.5));
+            host.layout(Rect::new(0.0, 0.0, 400.0, 0.0), &theme, &mut text);
+            let owner = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let presence = PresenceCtx::empty();
+            presence.viewport.set(Some(owner));
+            host.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &presence,
             );
-            let block = host.widget().blocks().first().unwrap();
-            assert_eq!(block.line.value(), "Unsent Studio context");
-            assert_eq!(block.line.selection_range(), before);
-            assert!(!host.widget().is_focused());
-        }
-    }
-
-    #[test]
-    fn equal_themes_reuse_layout_but_same_named_custom_tokens_rebuild_it() {
-        struct ThemedBox {
-            builds: usize,
-        }
-        impl Widget for ThemedBox {
-            fn build_layout(
-                &mut self,
-                tree: &mut TaffyTree<()>,
-                theme: &Theme,
-                nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-            ) -> NodeId {
-                self.builds = self.builds.saturating_add(1);
-                let node = tree.leaf_node(taffy::Style {
-                    size: Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::length(theme.padding_standard),
-                    },
-                    ..Default::default()
-                });
-                nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-                node
-            }
-            fn name(&self) -> &str {
-                "themed-box"
-            }
+            assert_eq!(
+                presence.viewport.get(),
+                Some(owner),
+                "the owner's viewport is put back"
+            );
+            assert!(host.widget_mut().open_text_menu(Point::new(380.0, 10.0)));
+            host.draw_overlay(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &presence,
+            );
+            let menu = host.modal_capture().expect("the menu is open");
+            assert!(
+                menu.x0 >= owner.x0 - 1e-6
+                    && menu.x1 <= owner.x1 + 1e-6
+                    && menu.y0 >= owner.y0 - 1e-6
+                    && menu.y1 <= owner.y1 + 1e-6,
+                "{menu:?} inside {owner:?}"
+            );
+            assert!(
+                menu.width() > 100.0,
+                "drawn at the owner's scale, not the words': {menu:?}"
+            );
         }
 
-        let mut theme = Theme::dark();
-        let original_name = theme.name.clone();
-        let mut text = crate::font_catalog::fixture_renderer();
-        let mut host = Embedded::new(ThemedBox { builds: 0 });
-        let rect = Rect::new(0.0, 0.0, 200.0, 0.0);
-        let original_height = host.layout(rect, &theme, &mut text);
-        host.layout(rect, &theme.clone(), &mut text);
-        assert_eq!(
-            host.widget().builds,
-            1,
-            "equal theme content keeps the tree"
-        );
-        theme.padding_standard += 8.0;
-        assert_eq!(theme.name, original_name);
-        assert_eq!(host.layout(rect, &theme, &mut text), original_height + 8.0);
-        assert_eq!(
-            host.widget().builds,
-            2,
-            "changed tokens rebuild the same widget"
-        );
-        host.layout(rect, &theme.clone(), &mut text);
-        assert_eq!(host.widget().builds, 2);
+        phase retained_unfocused_editor_reflows_when_the_host_text_scale_changes;
+        {
+            let normal = Theme::dark();
+            let large = Theme::high_contrast().with_text_scale(2.0);
+            let fixture = [BlockContent::paragraph("private", "Unsent Studio context")];
+            for width in [220.0, 180.0] {
+                let mut text = crate::font_catalog::fixture_renderer();
+                let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
+                host.widget_mut().present_blocks(&fixture);
+                host.widget_mut()
+                    .focus_block(0, super::super::CursorPlacement::End);
+                host.widget_mut().select_before_caret(8);
+                host.widget_mut().set_focus(false);
+                let before = host
+                    .widget()
+                    .blocks()
+                    .first()
+                    .unwrap()
+                    .line
+                    .selection_range();
+                for _ in 0..3 {
+                    host.layout(Rect::new(0.0, 0.0, 220.0, 0.0), &normal, &mut text);
+                    host.draw(
+                        &mut Scene::new(),
+                        Affine::IDENTITY,
+                        &mut text,
+                        &normal,
+                        &PresenceCtx::empty(),
+                    );
+                }
+
+                text.set_text_scale(large.text_scale);
+                let rect = Rect::new(0.0, 0.0, width, 0.0);
+                let retained_height = host.layout(rect, &large, &mut text);
+                let mut fresh = Embedded::new(BlockEditor::new().with_wrap_lines(true));
+                fresh.widget_mut().present_blocks(&fixture);
+                let fresh_height = fresh.layout(rect, &large, &mut text);
+                assert!(fresh_height > 40.0, "the large-text fixture must wrap");
+                assert!(
+                    (retained_height - fresh_height).abs() < 0.01,
+                    "retained editor measured {retained_height}, fresh editor {fresh_height} at width {width}"
+                );
+                let block = host.widget().blocks().first().unwrap();
+                assert_eq!(block.line.value(), "Unsent Studio context");
+                assert_eq!(block.line.selection_range(), before);
+                assert!(!host.widget().is_focused());
+            }
+        }
+
+        phase equal_themes_reuse_layout_but_same_named_custom_tokens_rebuild_it;
+        {
+            struct ThemedBox {
+                builds: usize,
+            }
+            impl Widget for ThemedBox {
+                fn build_layout(
+                    &mut self,
+                    tree: &mut TaffyTree<()>,
+                    theme: &Theme,
+                    nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+                ) -> NodeId {
+                    self.builds = self.builds.saturating_add(1);
+                    let node = tree.leaf_node(taffy::Style {
+                        size: Size {
+                            width: taffy::Dimension::percent(1.0),
+                            height: taffy::Dimension::length(theme.padding_standard),
+                        },
+                        ..Default::default()
+                    });
+                    nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+                    node
+                }
+                fn name(&self) -> &str {
+                    "themed-box"
+                }
+            }
+
+            let mut theme = Theme::dark();
+            let original_name = theme.name.clone();
+            let mut text = crate::font_catalog::fixture_renderer();
+            let mut host = Embedded::new(ThemedBox { builds: 0 });
+            let rect = Rect::new(0.0, 0.0, 200.0, 0.0);
+            let original_height = host.layout(rect, &theme, &mut text);
+            host.layout(rect, &theme.clone(), &mut text);
+            assert_eq!(
+                host.widget().builds,
+                1,
+                "equal theme content keeps the tree"
+            );
+            theme.padding_standard += 8.0;
+            assert_eq!(theme.name, original_name);
+            assert_eq!(host.layout(rect, &theme, &mut text), original_height + 8.0);
+            assert_eq!(
+                host.widget().builds,
+                2,
+                "changed tokens rebuild the same widget"
+            );
+            host.layout(rect, &theme.clone(), &mut text);
+            assert_eq!(host.widget().builds, 2);
+        }
     }
 }

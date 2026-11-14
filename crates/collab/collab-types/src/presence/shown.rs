@@ -84,6 +84,11 @@ pub struct Shown {
     pub epoch: u64,
     /// Their presence says they are an agent.
     pub agent: bool,
+    /// The workspace member this presence is, where it names one: an agent's
+    /// key for a row its host speaks for. A device's member is the person
+    /// behind it, which [`Self::user`] names.
+    #[serde(default)]
+    pub member: Option<String>,
     /// The workspace's host, hex, when it speaks for this member: an
     /// agent's or a key's run it executes, which says nothing itself. A
     /// surface shows them as the agent, said by the host.

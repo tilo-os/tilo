@@ -27,6 +27,7 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::delegation::{Delegate, Delegation};
 
 use super::{GovernedIdentity, Role, SystemTime, err, now_ns, workspace};
+use crate::join::WorkspaceId;
 
 /// What a governed identity carries when its device is a delegate of its
 /// person: an agent, or an installed bot.
@@ -85,8 +86,7 @@ impl GovernedDelegateRow {
         delegation
             .verify(&cert.user_public_key, now_ns)
             .map_err(|_| DelegateInactive::Delegation)?;
-        let workspace = tilo_workspace_join::room_workspace_id(workspace)
-            .map_err(|_| DelegateInactive::OtherWorkspace)?;
+        let workspace = WorkspaceId::parse(workspace).ok_or(DelegateInactive::OtherWorkspace)?;
         if !delegation.permits_workspace(workspace) {
             return Err(DelegateInactive::OtherWorkspace);
         }
@@ -150,8 +150,6 @@ pub(crate) const fn holds_no_power(cert: &DeviceCert) -> bool {
     let capabilities = &cert.capabilities;
     !(capabilities.can_own_workspaces
         || capabilities.can_admit_devices
-        || capabilities.can_act_as_host
-        || capabilities.can_read_all_workspaces
         || capabilities.can_administer_devices)
 }
 
@@ -363,12 +361,4 @@ mod tests;
 pub struct ActingAs {
     pub actor: tilo_action_policy::Actor,
     pub grants: Vec<tilo_action_policy::Grant>,
-}
-
-impl ActingAs {
-    /// The grantee this actor is named by.
-    #[must_use]
-    pub fn grantee(&self) -> tilo_action_policy::Grantee {
-        self.actor.grantee()
-    }
 }

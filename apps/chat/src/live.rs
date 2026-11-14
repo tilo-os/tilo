@@ -106,66 +106,100 @@ mod tests {
         ui::time::now()
     }
 
-    /// A running call reads as who it is with, how long it has run, and the
-    /// two things the person does from the card.
-    #[test]
-    fn a_call_reads_as_who_and_for_how_long() {
-        let call = CallState {
-            active: true,
-            channel: "voice".into(),
-            started: Some(started()),
-            ..CallState::default()
-        };
-        let shown = published(&call, "Ada and Grace", "2 people", started());
-        assert!(shown.overlay, "a call asks for its card");
-        let summary = shown.summary.expect("a summary");
-        assert_eq!(summary.kind, Kind::Call);
-        assert_eq!(summary.id, "chat-call:voice");
-        assert_eq!(summary.title, "Ada and Grace");
-        assert_eq!(summary.subtitle, "2 people");
-        assert_eq!(summary.value, "0:00");
-        assert_eq!(summary.icon, "phone");
-        let controls: Vec<_> = summary.controls.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(controls, ["mute", "leave"]);
-        assert_eq!(
-            summary.close_control().map(|c| c.id.as_str()),
-            Some("leave")
-        );
+    tilo_test_env::scenario! {
+        /// What the call's live activity says.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn a_call_publishes_its_card_and_no_call_publishes_nothing;
 
-        // A muted call offers to unmute instead.
-        let muted = CallState {
-            muted: true,
-            ..call
-        };
-        let summary = published(&muted, "Ada and Grace", "2 people", started())
-            .summary
-            .expect("a summary");
-        assert_eq!(summary.controls[0].label, "Unmute");
-    }
+        phase a_call_reads_as_who_and_for_how_long;
+        // A running call reads as who it is with, how long it has run, and the
+        // two things the person does from the card.
+        {
+            let call = CallState {
+                active: true,
+                channel: "voice".into(),
+                started: Some(started()),
+                ..CallState::default()
+            };
+            let shown = published(&call, "Ada and Grace", "2 people", started());
+            assert!(shown.overlay, "a call asks for its card");
+            let summary = shown.summary.expect("a summary");
+            assert_eq!(summary.kind, Kind::Call);
+            assert_eq!(summary.id, "chat-call:voice");
+            assert_eq!(summary.title, "Ada and Grace");
+            assert_eq!(summary.subtitle, "2 people");
+            assert_eq!(summary.value, "0:00");
+            assert_eq!(summary.icon, "phone");
+            let controls: Vec<_> = summary.controls.iter().map(|c| c.id.as_str()).collect();
+            assert_eq!(controls, ["mute", "leave"]);
+            assert_eq!(
+                summary.close_control().map(|c| c.id.as_str()),
+                Some("leave")
+            );
 
-    /// A call that is not running shows nothing at all.
-    #[test]
-    fn no_call_is_no_activity() {
-        let shown = published(&CallState::default(), "Ada", "", started());
-        assert!(shown.summary.is_none());
-        assert!(!shown.overlay);
-    }
+            // A muted call offers to unmute instead.
+            let muted = CallState {
+                muted: true,
+                ..call
+            };
+            let summary = published(&muted, "Ada and Grace", "2 people", started())
+                .summary
+                .expect("a summary");
+            assert_eq!(summary.controls[0].label, "Unmute");
+        }
 
-    /// The elapsed time reads as a clock past the hour.
-    #[test]
-    fn a_long_call_reads_in_hours() {
-        let long_ago = started()
-            .checked_sub(ui::time::Duration::from_secs(3725))
-            .expect("a platform clock that has run for an hour");
-        let call = CallState {
-            active: true,
-            channel: "voice".into(),
-            started: Some(long_ago),
-            ..CallState::default()
-        };
-        let summary = published(&call, "Ada", "", started())
-            .summary
-            .expect("a summary");
-        assert_eq!(summary.value, "1:02:05");
+        phase no_call_is_no_activity;
+        // A call that is not running shows nothing at all.
+        {
+            let shown = published(&CallState::default(), "Ada", "", started());
+            assert!(shown.summary.is_none());
+            assert!(!shown.overlay);
+        }
+
+        phase a_long_call_reads_in_hours;
+        // The elapsed time reads as a clock past the hour.
+        {
+            let long_ago = started()
+                .checked_sub(ui::time::Duration::from_secs(3725))
+                .expect("a platform clock that has run for an hour");
+            let call = CallState {
+                active: true,
+                channel: "voice".into(),
+                started: Some(long_ago),
+                ..CallState::default()
+            };
+            let summary = published(&call, "Ada", "", started())
+                .summary
+                .expect("a summary");
+            assert_eq!(summary.value, "1:02:05");
+
+            // The clock turns over at the minute and at the hour, and a call
+            // started after the moment it is read at has run for no time.
+            let now = started();
+            let hour = ui::time::Duration::from_secs(3600);
+            let read_at = |started: Option<Instant>| {
+                let call = CallState {
+                    active: true,
+                    channel: "voice".into(),
+                    started,
+                    ..CallState::default()
+                };
+                published(&call, "Ada", "", now)
+                    .summary
+                    .expect("a summary")
+                    .value
+            };
+            for (secs, reads) in [
+                (59, "0:59"),
+                (60, "1:00"),
+                (3599, "59:59"),
+                (3600, "1:00:00"),
+            ] {
+                let ago = ui::time::Duration::from_secs(secs);
+                assert_eq!(read_at(now.checked_sub(ago)), reads, "after {secs} s");
+            }
+            assert_eq!(read_at(now.checked_add(hour)), "0:00", "not started yet");
+        }
     }
 }

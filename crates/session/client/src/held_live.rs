@@ -1,4 +1,4 @@
-//! Live frames waiting for their record's channel keys.
+//! Live frames waiting for their workspace's keys.
 //!
 //! A live frame travels only sealed with the keys of the record it names. A
 //! device learns a record's keys a moment after the record itself: an agent
@@ -12,25 +12,29 @@ use std::collections::{BTreeMap, VecDeque};
 use tilo_relay_protocol::live::LiveRecord;
 
 use crate::session::LiveCompletion;
+use tilo_relay_protocol::WorkspaceId;
 
-/// Frames kept per record or channel.
+/// Frames kept per record.
 const PER_KEY: usize = 16;
-/// Records and channels with waiting frames.
+/// Records with waiting frames.
 const KEYS: usize = 64;
 
 /// One live frame waiting for keys.
 pub(crate) enum Waiting {
     /// A canonical frame to seal and send on the session.
-    Send { workspace_id: u64, frame: Vec<u8> },
+    Send {
+        workspace_id: WorkspaceId,
+        frame: Vec<u8>,
+    },
     /// A canonical frame to seal for another carrier.
     Seal {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         frame: Vec<u8>,
         done: LiveCompletion,
     },
     /// A sealed frame the host relayed.
     Receive {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         frame: Vec<u8>,
     },
@@ -82,10 +86,10 @@ impl<K: Ord + Clone> Bounded<K> {
 }
 
 /// Live frames waiting for keys: outbound by the record they name, inbound
-/// by the channel that sealed them.
+/// by the record digest they carry.
 pub(crate) struct HeldLive {
-    outbound: Bounded<(u64, LiveRecord)>,
-    inbound: Bounded<[u8; 16]>,
+    outbound: Bounded<(WorkspaceId, LiveRecord)>,
+    inbound: Bounded<(WorkspaceId, [u8; 32])>,
 }
 
 impl HeldLive {
@@ -97,27 +101,38 @@ impl HeldLive {
     }
 
     /// Keep an outbound frame of `workspace_id` until `record`'s keys arrive.
-    pub(crate) fn hold_outbound(&mut self, workspace_id: u64, record: LiveRecord, frame: Waiting) {
+    pub(crate) fn hold_outbound(
+        &mut self,
+        workspace_id: WorkspaceId,
+        record: LiveRecord,
+        frame: Waiting,
+    ) {
         self.outbound.hold((workspace_id, record), frame);
     }
 
-    /// Keep an inbound frame until `channel`'s keys arrive.
-    pub(crate) fn hold_inbound(&mut self, channel: [u8; 16], frame: Waiting) {
-        self.inbound.hold(channel, frame);
+    /// Keep an inbound frame of `workspace_id` until the keys of the record
+    /// whose digest is `record` arrive.
+    pub(crate) fn hold_inbound(
+        &mut self,
+        workspace_id: WorkspaceId,
+        record: [u8; 32],
+        frame: Waiting,
+    ) {
+        self.inbound.hold((workspace_id, record), frame);
     }
 
-    /// Everything that waited for the keys of `record` of `workspace_id`,
-    /// whose channel is `channel`: outbound frames first, in order.
+    /// Everything that waited for the keys of `record` of `workspace_id`:
+    /// outbound frames first, in order.
     pub(crate) fn release(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         record: LiveRecord,
-        channel: [u8; 16],
     ) -> impl Iterator<Item = Waiting> {
+        let digest = record.digest();
         self.outbound
             .release(&(workspace_id, record))
             .into_iter()
-            .chain(self.inbound.release(&channel))
+            .chain(self.inbound.release(&(workspace_id, digest)))
     }
 }
 
@@ -140,10 +155,10 @@ mod tests {
             let (done, receipt) = crate::answer();
             receipts.push(receipt);
             held.hold_outbound(
-                1,
+                WorkspaceId::from_u128(1),
                 record("r"),
                 Waiting::Seal {
-                    workspace_id: 1,
+                    workspace_id: WorkspaceId::from_u128(1),
                     frame: vec![u8::try_from(seq).unwrap()],
                     done,
                 },
@@ -157,21 +172,27 @@ mod tests {
         };
         assert_eq!(dropped(), 1, "the oldest gave way");
         held.hold_inbound(
-            [7; 16],
+            WorkspaceId::from_u128(1),
+            record("r").digest(),
             Waiting::Receive {
-                workspace_id: 1,
+                workspace_id: WorkspaceId::from_u128(1),
                 from: [1; 32],
                 frame: vec![9],
             },
         );
-        let released: Vec<_> = held.release(1, record("r"), [7; 16]).collect();
+        let released: Vec<_> = held
+            .release(WorkspaceId::from_u128(1), record("r"))
+            .collect();
         assert_eq!(released.len(), PER_KEY + 1);
         assert!(matches!(released.last(), Some(Waiting::Receive { .. })));
         assert!(matches!(
             released.first(),
             Some(Waiting::Seal { frame, .. }) if frame == &[1]
         ));
-        assert_eq!(held.release(1, record("r"), [7; 16]).count(), 0);
+        assert_eq!(
+            held.release(WorkspaceId::from_u128(1), record("r")).count(),
+            0
+        );
         for frame in released {
             frame.drop_frame();
         }

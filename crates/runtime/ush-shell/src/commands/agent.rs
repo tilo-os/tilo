@@ -315,46 +315,51 @@ impl<'c, 'a> Lines<'c, 'a> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn counts_have_separators() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1234), "1,234");
-        assert_eq!(thousands(1_234_567), "1,234,567");
-    }
+    tilo_test_env::scenario! {
+        /// The pieces of the short rendering an agent is given.
+        fn the_agent_rendering_counts_quotes_clips_and_groups;
 
-    #[test]
-    fn names_that_read_ambiguously_are_quoted() {
-        assert_eq!(quote("a.rs"), "a.rs");
-        assert_eq!(quote("two words"), "'two words'");
-        assert_eq!(quote("it's"), "'it'\\''s'");
-        assert_eq!(quote("x*"), "'x*'");
-        assert_eq!(quote(""), "''");
-    }
+        phase counts_have_separators;
+        {
+            assert_eq!(thousands(0), "0");
+            assert_eq!(thousands(999), "999");
+            assert_eq!(thousands(1234), "1,234");
+            assert_eq!(thousands(1_234_567), "1,234,567");
+        }
 
-    #[test]
-    fn a_long_line_keeps_its_match_and_says_what_it_cut() {
-        let mut line = vec![b'a'; 1000];
-        line.extend_from_slice(b"NEEDLE");
-        line.extend(vec![b'b'; 2000]);
-        let out = clip(&line, Some((1000, 1006)));
-        assert!(out.contains("NEEDLE"), "{out}");
-        assert!(out.starts_with("…[925 bytes cut]"), "{out}");
-        assert!(out.ends_with("[1,781 bytes cut]…"), "{out}");
-    }
+        phase names_that_read_ambiguously_are_quoted;
+        {
+            assert_eq!(quote("a.rs"), "a.rs");
+            assert_eq!(quote("two words"), "'two words'");
+            assert_eq!(quote("it's"), "'it'\\''s'");
+            assert_eq!(quote("x*"), "'x*'");
+            assert_eq!(quote(""), "''");
+        }
 
-    #[test]
-    fn names_group_by_directory_and_count_what_is_left_out() {
-        let mut names = Names::new(3);
-        names.add_path(".", "/");
-        names.add_path("./a", "");
-        names.add_path("./sub", "/");
-        names.add_path("./sub/x", "");
-        names.add_path("./sub/y", "");
-        names.add_path("./b", "");
-        assert_eq!(
-            names.render("names"),
-            format!("./\n./: a sub/ +1 more\n./sub/: 2 more\n… 3 more names {FULL}\n")
-        );
+        phase a_long_line_keeps_its_match_and_says_what_it_cut;
+        {
+            let mut line = vec![b'a'; 1000];
+            line.extend_from_slice(b"NEEDLE");
+            line.extend(vec![b'b'; 2000]);
+            let out = clip(&line, Some((1000, 1006)));
+            assert!(out.contains("NEEDLE"), "{out}");
+            assert!(out.starts_with("…[925 bytes cut]"), "{out}");
+            assert!(out.ends_with("[1,781 bytes cut]…"), "{out}");
+        }
+
+        phase names_group_by_directory_and_count_what_is_left_out;
+        {
+            let mut names = Names::new(3);
+            names.add_path(".", "/");
+            names.add_path("./a", "");
+            names.add_path("./sub", "/");
+            names.add_path("./sub/x", "");
+            names.add_path("./sub/y", "");
+            names.add_path("./b", "");
+            assert_eq!(
+                names.render("names"),
+                format!("./\n./: a sub/ +1 more\n./sub/: 2 more\n… 3 more names {FULL}\n")
+            );
+        }
     }
 }

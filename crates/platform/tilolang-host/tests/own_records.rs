@@ -303,7 +303,6 @@ fn nothing_of_reaches(ada: &Member, bo: &Member) {
         .hosted()
         .record()
         .doc()
-        .clone()
         .get_changes(&[])
         .iter()
         .map(automerge::Change::hash)
@@ -312,7 +311,6 @@ fn nothing_of_reaches(ada: &Member, bo: &Member) {
         bo.hosted()
             .record()
             .doc()
-            .clone()
             .get_changes(&[])
             .iter()
             .all(|change| !theirs.contains(&change.hash())),
@@ -407,7 +405,7 @@ fn mail_is_each_members_own_record_of_the_workspace() {
         .expect("Ada's conversations offer Archive")
         .address
         .clone();
-    let heads = ada.hosted().record().doc().clone().get_heads();
+    let heads = ada.hosted().record().doc().get_heads();
     let invoke = |id: u64, actor: &str| CollabEvent::Invocation {
         id,
         invocation: tilo_actions::InvocationId::new(),
@@ -425,7 +423,7 @@ fn mail_is_each_members_own_record_of_the_workspace() {
         ada.answer(1)
     );
     assert_eq!(
-        ada.hosted().record().doc().clone().get_heads(),
+        ada.hosted().record().doc().get_heads(),
         heads,
         "Ada's mail is as it was"
     );

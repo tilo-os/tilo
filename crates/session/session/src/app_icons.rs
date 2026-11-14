@@ -122,7 +122,7 @@ impl crate::Session {
             if self.window_artwork.get(&window.id) != Some(&source) {
                 let image = match window.icon.as_ref() {
                     Some(icon) => Some(window_art(window.id, icon)),
-                    None => window.app_id.as_deref().and_then(app_art),
+                    None => window.app_id.as_deref().and_then(ui::icons::app_artwork),
                 };
                 self.shared.handle.set_window_artwork(window.id, image);
             }
@@ -137,20 +137,52 @@ impl crate::Session {
     }
 }
 
-/// The app `app_id`'s own artwork, as the launcher draws it: the icon its installed package
-/// signed, else the icon its desktop entry names. `None` for an app with neither, which wears its
-/// glyph. Never touches the disk on the frame's thread: both are read from the app lists and the
-/// memoised entry scan.
+/// The app `app_id`'s own artwork, as every surface that lists it draws it
+/// ([`ui::icons::app_artwork`]): the icon its installed package signed, else the icon its desktop
+/// entry names. `None` for an app with neither, which wears its glyph. Never touches the disk on
+/// the frame's thread: both are read from the app lists and the memoised entry scan, and the
+/// pixels come from the worker.
 fn app_art(app_id: &str) -> Option<AppImage> {
-    let id = app_id.trim();
-    if id.is_empty() {
-        return None;
-    }
-    let name = installed_icon(id).or_else(|| entry_icon(id))?;
+    let name = app_icon_name(app_id)?;
     Some(AppImage::new(Artwork {
         key: format!("app:{name}"),
         layers: vec![Layer::Named(name)],
     }))
+}
+
+/// The icon that is the app `app_id`'s own: the one its installed package signed, else the one its
+/// desktop entry names. A machine's app is named by its desktop id, bare or as search launches it
+/// (`host:<id>`).
+fn app_icon_name(app_id: &str) -> Option<String> {
+    let id = app_id.trim();
+    let id = tilo_desktop_search::providers::host_apps::launched(id).unwrap_or(id);
+    if id.is_empty() {
+        return None;
+    }
+    installed_icon(id).or_else(|| entry_icon(id))
+}
+
+/// The app `app_id`'s own artwork as PNG bytes, `px` square: what a sandboxed app that lists apps
+/// is handed, since it reads no icon theme. Reads the disk the first time an icon is asked for at
+/// that size, so it is called off the session's loop (the tool service's thread); the pixels are
+/// kept in the same cache the frame's artwork reads.
+pub(crate) fn app_png(app_id: &str, px: u32) -> Option<Vec<u8>> {
+    let name = app_icon_name(app_id)?;
+    let px = px.clamp(1, ui::icons::MAX_DEVICE_PX);
+    let image = registry().resolve_now(&name, px)?;
+    let rgba = image.data.data();
+    let encoded = encode_png(rgba, image.width, image.height)?;
+    (encoded.len() <= ui::icons::MAX_PNG_BYTES).then_some(encoded)
+}
+
+/// Straight-alpha RGBA pixels as a PNG.
+fn encode_png(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_raw(width, height, rgba.to_vec())
+        .map(image::DynamicImage::ImageRgba8)?
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .ok()?;
+    Some(bytes.into_inner())
 }
 
 /// The pixels that fill `device_px` : the smallest offer at least that big, so artwork is never
@@ -314,9 +346,11 @@ pub(crate) fn app_lists_snapshot() -> Option<(u64, Arc<AppLists>)> {
     LISTS.lock_recover().as_ref().map(Lists::snapshot)
 }
 
-/// Wake the loop once artwork is ready, so the banner repaints with it.
+/// Wake the loop once artwork is ready, so what paints it repaints with it, and answer every
+/// surface of this process that asks for an app's artwork ([`ui::icons::app_artwork`]).
 pub(crate) fn set_wake(wake: Arc<dyn Fn() + Send + Sync>) {
     *registry().wake.lock_recover() = Some(wake);
+    ui::icons::set_app_artwork(Arc::new(app_art));
 }
 
 struct Registry {
@@ -352,6 +386,25 @@ impl Registry {
             .cloned()
     }
 
+    /// What `name` at `px` rasterises to, found out on this thread when the worker has not yet:
+    /// for a caller that may read the disk.
+    fn resolve_now(&self, name: &str, px: u32) -> Option<ui::peniko::ImageData> {
+        if let Some(answer) = self.answer(name, px) {
+            return answer;
+        }
+        let answer = resolve(name, px);
+        self.remember(name.to_owned(), px, answer.clone());
+        answer
+    }
+
+    fn remember(&self, name: String, px: u32, answer: Option<ui::peniko::ImageData>) {
+        let mut answers = self.answers.lock_recover();
+        if answers.len() >= CACHE_LIMIT {
+            answers.clear();
+        }
+        answers.insert((name, px), answer);
+    }
+
     /// Have the worker find out what `name` at `px` is.
     fn ask(&self, name: &str, px: u32) {
         let key = (name.to_owned(), px);
@@ -377,13 +430,7 @@ impl Registry {
             .spawn(move || {
                 while let Ok((name, px)) = receive.recv() {
                     let answer = resolve(&name, px);
-                    {
-                        let mut answers = registry.answers.lock_recover();
-                        if answers.len() >= CACHE_LIMIT {
-                            answers.clear();
-                        }
-                        answers.insert((name, px), answer);
-                    }
+                    registry.remember(name, px, answer);
                     if let Some(wake) = registry.wake.lock_recover().as_ref() {
                         wake();
                     }
@@ -614,6 +661,58 @@ mod tests {
         assert_eq!(width(16), Some(16));
         assert_eq!(width(64), Some(48), "the largest there is, never stretched");
         assert_eq!(pick(&[], 16).map(|image| image.width), None);
+    }
+
+    /// An app's own icon is what every surface that lists it paints, asked of the toolkit's one
+    /// lane, and what a sandboxed app is handed as PNG bytes; both read one cache, so an icon once
+    /// rasterised at a size is not read again. An app with no icon is no artwork: its glyph shows.
+    #[test]
+    fn an_apps_own_icon_is_its_artwork_everywhere_and_is_cached_per_size() {
+        let dir = tempfile::tempdir().expect("a package");
+        let icon = dir.path().join("mail.svg");
+        std::fs::write(&icon, SQUARE).expect("the icon");
+        set_lists(Lists::fixed(AppLists {
+            icons: [("so.tilo.mail".to_owned(), icon.clone())].into(),
+            ..AppLists::default()
+        }));
+        set_wake(Arc::new(|| {}));
+
+        let image = ui::icons::app_artwork("so.tilo.mail").expect("the app's artwork");
+        assert!(image.pixels(32).is_none(), "the frame never reads the disk");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while image.pixels(32).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker rasterised it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let pixels = image.pixels(32).expect("its pixels");
+        assert_eq!(
+            (pixels.width, pixels.height),
+            (32, 32),
+            "at the size it is painted"
+        );
+
+        let png = app_png("so.tilo.mail", 48).expect("handed over as a png");
+        let decoded = image::load_from_memory(&png).expect("a png").into_rgba8();
+        assert_eq!(decoded.dimensions(), (48, 48));
+        assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 255]);
+
+        // Once rasterised at a size, an icon is not read again.
+        std::fs::remove_file(&icon).expect("the icon goes");
+        assert!(app_png("so.tilo.mail", 48).is_some(), "kept at that size");
+        assert!(
+            app_png("so.tilo.mail", 64).is_none(),
+            "another size reads the disk"
+        );
+
+        assert!(
+            ui::icons::app_artwork("so.tilo.none").is_none(),
+            "no icon: the glyph"
+        );
+        assert!(app_png("so.tilo.none", 48).is_none());
+        assert!(app_png("host:", 48).is_none());
     }
 
     #[test]

@@ -107,47 +107,52 @@ pub fn suffix(pattern: &str) -> &str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn identifiers_are_held_as_uris_from_their_written_and_bare_forms() {
-        assert_eq!(
-            normalize("mailto:Jane@YCombinator.com").as_deref(),
-            Ok("mailto:jane@ycombinator.com")
-        );
-        assert_eq!(
-            normalize("jane@ycombinator.com").as_deref(),
-            Ok("mailto:jane@ycombinator.com")
-        );
-        assert_eq!(normalize("+49 30").ok(), None, "a space is no identifier");
-        assert_eq!(normalize("+49-30-123").as_deref(), Ok("tel:+4930123"));
-        assert_eq!(
-            normalize("matrix:@jane:matrix.org").as_deref(),
-            Ok("matrix:@jane:matrix.org")
-        );
-        assert_eq!(
-            normalize("discord:JaneDoe").as_deref(),
-            Ok("discord:janedoe")
-        );
-        assert!(normalize("janedoe").is_err());
-        assert!(normalize("*@x.com").is_err());
-        assert_eq!(parts("tel:+4930"), ("tel", "+4930"));
-    }
+    tilo_test_env::scenario! {
+        /// Identifiers and the one pattern over them.
+        fn identifiers_and_their_pattern_are_held_as_uris;
 
-    #[test]
-    fn a_star_is_the_one_pattern() {
-        let domain = normalize_pattern("*@ycombinator.com").unwrap();
-        assert_eq!(domain, "mailto:*@ycombinator.com");
-        assert_eq!(normalize_pattern("@ycombinator.com").unwrap(), domain);
-        assert!(matches(&domain, "mailto:jane@ycombinator.com"));
-        assert!(!matches(&domain, "mailto:jane@ycombinator.com.evil"));
-        assert!(!matches(&domain, "tel:+49"));
-        let german = normalize_pattern("tel:+49*").unwrap();
-        assert!(matches(&german, "tel:+4930123"));
-        assert!(!matches(&german, "tel:+4430123"));
-        assert!(matches("discord:*", "discord:janedoe"));
-        assert!(matches("*", "tel:+1"));
-        assert!(matches("mailto:j*e@*.com", "mailto:jane@x.com"));
-        assert_eq!(prefix("tel:+49*"), "tel:+49");
-        assert_eq!(suffix("mailto:*@x.com"), "@x.com");
-        assert_eq!(suffix("tel:+49"), "tel:+49");
+        phase identifiers_are_held_as_uris_from_their_written_and_bare_forms;
+        {
+            assert_eq!(
+                normalize("mailto:Jane@YCombinator.com").as_deref(),
+                Ok("mailto:jane@ycombinator.com")
+            );
+            assert_eq!(
+                normalize("jane@ycombinator.com").as_deref(),
+                Ok("mailto:jane@ycombinator.com")
+            );
+            assert_eq!(normalize("+49 30").ok(), None, "a space is no identifier");
+            assert_eq!(normalize("+49-30-123").as_deref(), Ok("tel:+4930123"));
+            assert_eq!(
+                normalize("matrix:@jane:matrix.org").as_deref(),
+                Ok("matrix:@jane:matrix.org")
+            );
+            assert_eq!(
+                normalize("discord:JaneDoe").as_deref(),
+                Ok("discord:janedoe")
+            );
+            assert!(normalize("janedoe").is_err());
+            assert!(normalize("*@x.com").is_err());
+            assert_eq!(parts("tel:+4930"), ("tel", "+4930"));
+        }
+
+        phase a_star_is_the_one_pattern;
+        {
+            let domain = normalize_pattern("*@ycombinator.com").unwrap();
+            assert_eq!(domain, "mailto:*@ycombinator.com");
+            assert_eq!(normalize_pattern("@ycombinator.com").unwrap(), domain);
+            assert!(matches(&domain, "mailto:jane@ycombinator.com"));
+            assert!(!matches(&domain, "mailto:jane@ycombinator.com.evil"));
+            assert!(!matches(&domain, "tel:+49"));
+            let german = normalize_pattern("tel:+49*").unwrap();
+            assert!(matches(&german, "tel:+4930123"));
+            assert!(!matches(&german, "tel:+4430123"));
+            assert!(matches("discord:*", "discord:janedoe"));
+            assert!(matches("*", "tel:+1"));
+            assert!(matches("mailto:j*e@*.com", "mailto:jane@x.com"));
+            assert_eq!(prefix("tel:+49*"), "tel:+49");
+            assert_eq!(suffix("mailto:*@x.com"), "@x.com");
+            assert_eq!(suffix("tel:+49"), "tel:+49");
+        }
     }
 }

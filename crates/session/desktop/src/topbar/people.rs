@@ -53,7 +53,7 @@ impl TopBarChrome {
     /// Where the face of the person with roster id `id` was last drawn.
     #[must_use]
     pub fn face_rect(&self, id: &str) -> Option<Rect> {
-        let index = self.collaborator_ids.iter().position(|shown| shown == id)?;
+        let index = self.face_ids.iter().position(|shown| shown == id)?;
         let drawn = self.shown_faces.iter().position(|shown| *shown == index)?;
         self.face_rects.get(drawn).copied()
     }
@@ -66,7 +66,7 @@ impl TopBarChrome {
 
     /// Whether anyone but this person is here or reading along: the people button then stands.
     fn anyone_else(&self) -> bool {
-        !self.collaborator_initials.is_empty() || self.watching() > 0
+        !self.face_initials.is_empty() || self.watching() > 0
     }
 
     /// The person whose face is under `point` , by roster id.
@@ -77,7 +77,7 @@ impl TopBarChrome {
             .zip(&self.shown_faces)
             .rev()
             .find(|(rect, _)| rect.contains(point))
-            .and_then(|(_, index)| self.collaborator_ids.get(*index).cloned())
+            .and_then(|(_, index)| self.face_ids.get(*index).cloned())
     }
 
     /// What a press at `point` on the people cluster asks for: invite, open one person, or open
@@ -93,7 +93,7 @@ impl TopBarChrome {
             || self.people_count_rect.contains(point)
             || self.avatar_stack_rect.contains(point)
             || self.sharing_indicator_rect.contains(point))
-        .then_some(ChromeIntent::ToggleCollaborators)
+        .then_some(ChromeIntent::TogglePeople)
     }
 
     /// Where the people button was last drawn; zero when it is not shown.
@@ -115,7 +115,7 @@ impl TopBarChrome {
             .hovered(hovered)
             .focused(
                 self.focus_ring_visible()
-                    && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_PEOPLE),
             )
     }
 
@@ -130,7 +130,7 @@ impl TopBarChrome {
     ) -> f64 {
         use ui::widget::BarChipFace;
         let seat = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
-        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_COLLABORATORS)
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_PEOPLE)
             && self.last_cursor.is_some_and(|point| {
                 Rect::new(
                     right_x - seat,
@@ -140,7 +140,7 @@ impl TopBarChrome {
                 )
                 .contains(point)
             });
-        let name = t("topbar-show-collaborators");
+        let name = t("topbar-show-people");
         let width = self.people_chip(&name, hovered).width(text_renderer, theme);
         let pill = BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
         self.people_button_rect = pill;
@@ -176,12 +176,8 @@ impl TopBarChrome {
                 + gap
         };
         let invite_w = glyph_chip_width(&t("topbar-invite"), INVITE_GLYPH, text_renderer, theme);
-        let people_w = glyph_chip_width(
-            &t("topbar-show-collaborators"),
-            USERS_GLYPH,
-            text_renderer,
-            theme,
-        );
+        let people_w =
+            glyph_chip_width(&t("topbar-show-people"), USERS_GLYPH, text_renderer, theme);
         // The people button ends where the invite leaves it, and its own gap on either side is
         // the bar's: what stands left of this cluster must still clear the lane by one gap.
         right_x - invite_w - gap - watching_w - people_w - seat >= self.center_lane.x1 + gap
@@ -275,7 +271,7 @@ impl TopBarChrome {
                 (before_middle, (before_middle - pill_right).max(0.0))
             }
         };
-        let (most, past) = stack.split(self.collaborator_names.len());
+        let (most, past) = stack.split(self.face_names.len());
         let mut shown: Vec<usize> = (0..most).collect();
         let mut more = past;
         while !shown.is_empty() && stack.width_of(shown.len(), more) > room {
@@ -292,7 +288,7 @@ impl TopBarChrome {
         let count = shown.len();
         self.faces_shown = count;
         self.shown_faces.clone_from(&shown);
-        self.collaborator_overflow = more;
+        self.face_overflow = more;
         self.face_rects = Self::faces_drawn(rects);
         self.placed.faces = Some(super::placed::FacesPlaced {
             shown,
@@ -342,15 +338,15 @@ impl TopBarChrome {
     fn face_of(&self, i: usize, theme: &Theme) -> ui::presence::Face<'_> {
         let look = self.face_looks.get(i).copied();
         ui::presence::Face {
-            name: self.collaborator_names.get(i).map_or("", String::as_str),
-            identity: self.collaborator_ids.get(i).map_or("", String::as_str),
+            name: self.face_names.get(i).map_or("", String::as_str),
+            identity: self.face_ids.get(i).map_or("", String::as_str),
             colour: self
-                .collaborator_colors
+                .face_colors
                 .get(i)
                 .copied()
                 .unwrap_or(theme.tokens.colors.intent.you),
             // Software is never drawn as a person: the shared agent mark in the same ring.
-            is_agent: self.collaborator_agents.get(i).copied().unwrap_or(false),
+            is_agent: self.face_agents.get(i).copied().unwrap_or(false),
             dimmed: look.is_some_and(|look| look.dimmed),
             in_call: look.and_then(|look| look.call),
             scale: look.map_or(1.0, |look| look.scale),
@@ -386,7 +382,7 @@ impl TopBarChrome {
             left = left.max(self.center_lane.x1 + gap);
         }
         let others = self
-            .collaborator_ids
+            .face_ids
             .len()
             .saturating_sub(usize::from(self.following));
         let room = right_x - left;
@@ -400,7 +396,7 @@ impl TopBarChrome {
             (Vec::new(), 0)
         };
         self.faces_shown = shown.len();
-        self.collaborator_overflow = if shown.is_empty() && more == 0 {
+        self.face_overflow = if shown.is_empty() && more == 0 {
             others
         } else {
             more
@@ -436,10 +432,10 @@ impl TopBarChrome {
         self.people_count_rect = Rect::ZERO;
         self.placed.people_count = None;
         let button = self.people_button_rect;
-        if self.collaborator_overflow == 0 || button.is_zero_area() {
+        if self.face_overflow == 0 || button.is_zero_area() {
             return;
         }
-        let label = format!("+{}", self.collaborator_overflow.min(99));
+        let label = format!("+{}", self.face_overflow.min(99));
         let height = ui::widget::BadgeFace::height(theme);
         let width =
             ui::widget::BadgeFace::intrinsic_width(&label, text_renderer, theme).max(height);
@@ -459,7 +455,7 @@ impl TopBarChrome {
         label: &'a str,
         right_x: f64,
     ) -> ui::widget::BarChipFace<'a> {
-        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_COLLABORATORS)
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_PEOPLE)
             && self.last_cursor.is_some_and(|point| point.x <= right_x);
         ui::widget::BarChipFace::new(label, &[])
             .label(label)
@@ -467,7 +463,7 @@ impl TopBarChrome {
             .hovered(hovered)
             .focused(
                 self.focus_ring_visible()
-                    && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_PEOPLE),
             )
     }
 
@@ -520,9 +516,9 @@ impl TopBarChrome {
         self.avatar_stack_rect = self.place_avatar_chips(theme, center_y, right_x);
         // Someone is here but the bar had no room for their face or the count: the people button
         // is who is here then.
-        if self.avatar_stack_rect.is_zero_area() && !self.collaborator_ids.is_empty() {
-            self.collaborator_overflow = self
-                .collaborator_ids
+        if self.avatar_stack_rect.is_zero_area() && !self.face_ids.is_empty() {
+            self.face_overflow = self
+                .face_ids
                 .len()
                 .saturating_sub(usize::from(self.following && self.phone_wide()));
             self.place_people_button(theme, text_renderer, center_y, right_x);
@@ -575,7 +571,7 @@ impl TopBarChrome {
         if let Some(hovered) = self.placed.people_button {
             // The button's own rect, before the watching count joined its target.
             let width = self.people_button_rect.width();
-            let name = t("topbar-show-collaborators");
+            let name = t("topbar-show-people");
             let chip = self.people_chip(&name, hovered);
             let own = chip.width(text_renderer, theme);
             let rect = if self.placed.watching.is_some() && own < width {
@@ -606,14 +602,15 @@ impl TopBarChrome {
 mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
-    use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceSlot};
 
     fn desk(people: &[(&str, &str)]) -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
-        workspace.collaborators = people
-            .iter()
-            .map(|(id, name)| Collaborator::new(*id, *name))
-            .collect();
+        workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
+        // The device a member is here through is what a face is pressed by.
+        for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
+            here.device.clone_from(&member.id.id().to_owned());
+        }
         DesktopTree {
             active: workspace.slot,
             workspaces: vec![workspace],
@@ -648,140 +645,177 @@ mod tests {
         handled
     }
 
-    /// The invite button stays beside the faces once people arrive, and a press on it invites: one
-    /// step, never the list first.
-    #[test]
-    fn invite_stays_in_the_bar_and_invites_in_one_step() {
-        for people in [&[][..], &[("ada", "Ada Lovelace")][..]] {
-            let tree = desk(people);
-            let (mut bar, chrome) = bar_over(&tree, true);
-            let invite = bar.invite_rect();
-            assert!(!invite.is_zero_area(), "with {} here", people.len());
-            if !people.is_empty() {
+    tilo_test_env::scenario! {
+        fn the_bars_faces_show_who_is_here_and_invite;
+
+        phase invite_stays_in_the_bar_and_invites_in_one_step;
+        // The invite button stays beside the faces once people arrive, and a press on it invites: one
+        // step, never the list first.
+        {
+            for people in [&[][..], &[("ada", "Ada Lovelace")][..]] {
+                let tree = desk(people);
+                let (mut bar, chrome) = bar_over(&tree, true);
+                let invite = bar.invite_rect();
+                assert!(!invite.is_zero_area(), "with {} here", people.len());
+                if !people.is_empty() {
+                    assert!(
+                        bar.avatar_stack_rect.x1 <= invite.x0,
+                        "the faces, then the seat the next person takes"
+                    );
+                }
+                assert!(press(&mut bar, invite.center()));
+                assert_eq!(chrome.borrow().intents.last(), Some(&ChromeIntent::Invite));
                 assert!(
-                    bar.avatar_stack_rect.x1 <= invite.x0,
-                    "the faces, then the seat the next person takes"
+                    !chrome.borrow().overlays.people,
+                    "inviting does not open the list"
                 );
             }
-            assert!(press(&mut bar, invite.center()));
-            assert_eq!(chrome.borrow().intents.last(), Some(&ChromeIntent::Invite));
+            let (bar, _) = bar_over(&desk(&[]), false);
             assert!(
-                !chrome.borrow().overlays.collaborators,
-                "inviting does not open the list"
+                bar.invite_rect().is_zero_area(),
+                "nobody is offered an invite the host would refuse"
             );
         }
-        let (bar, _) = bar_over(&desk(&[]), false);
-        assert!(
-            bar.invite_rect().is_zero_area(),
-            "nobody is offered an invite the host would refuse"
-        );
-    }
 
-    /// Pages reading along are counted beside the invite button, never instead of it.
-    #[test]
-    fn watching_never_replaces_the_invite() {
-        let tree = desk(&[]);
-        let chrome = FixtureChrome::new(tree.clone());
-        chrome.borrow_mut().can_invite = true;
-        chrome.borrow_mut().watching = 1;
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-        super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
-        assert!(!bar.invite_rect().is_zero_area());
-        assert!(
-            !bar.people_button_rect().is_zero_area(),
-            "the count opens who is here"
-        );
-        assert!(bar.people_button_rect().x1 <= bar.invite_rect().x0);
-    }
+        phase watching_never_replaces_the_invite;
+        // Pages reading along are counted beside the invite button, never instead of it.
+        {
+            let tree = desk(&[]);
+            let chrome = FixtureChrome::new(tree.clone());
+            chrome.borrow_mut().can_invite = true;
+            chrome.borrow_mut().watching = 1;
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+            super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
+            assert!(!bar.invite_rect().is_zero_area());
+            assert!(
+                !bar.people_button_rect().is_zero_area(),
+                "the count opens who is here"
+            );
+            assert!(bar.people_button_rect().x1 <= bar.invite_rect().x0);
+        }
 
-    /// The faces are who is here: each opens the panel at its person, so no second people
-    /// button stands beside them, and the panel opens from the faces.
-    #[test]
-    fn the_faces_open_who_is_here_without_a_second_button() {
-        let tree = desk(&[("ada", "Ada Lovelace")]);
-        let (mut bar, chrome) = bar_over(&tree, true);
-        assert!(
-            bar.people_button_rect().is_zero_area(),
-            "no people button beside a face"
-        );
-        let face = bar.face_rect("ada").expect("Ada's face");
-        assert!(
-            face.x1 <= bar.invite_rect().x0,
-            "the faces, then the seat the next person takes"
-        );
-        assert!(press(&mut bar, face.center()));
-        assert_eq!(
-            chrome.borrow().intents.last(),
-            Some(&ChromeIntent::ShowPerson("ada".into()))
-        );
-        assert_eq!(
-            bar.collaborators_rect(),
-            bar.avatar_stack_rect,
-            "the panel opens from the faces"
-        );
-
-        let (bar, _) = bar_over(&desk(&[]), true);
-        assert!(
-            bar.people_button_rect().is_zero_area() && bar.avatar_stack_rect.is_zero_area(),
-            "nobody else here: only the invite"
-        );
-    }
-
-    /// This person appears once on their bar: their avatar at the far right, never also among
-    /// the faces, however the host lists them; and it is drawn as the faces are, at their size.
-    #[test]
-    fn this_person_appears_once_drawn_as_everyone_is() {
-        let tree = desk(&[("ada", "Ada Lovelace"), ("me-root", "Jo Doe")]);
-        let chrome = FixtureChrome::new(tree.clone());
-        chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
-            name: "Jo Doe".into(),
-            rgb: (247, 133, 125),
-            identity: "me-root".into(),
-        });
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-        bar.sync_from_tree(&tree);
-        super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
-        assert!(bar.face_rect("me-root").is_none(), "not among the others");
-        assert_eq!(bar.collaborator_ids, vec!["ada".to_owned()]);
-        let own = bar.own_avatar_rect();
-        assert!(!own.is_zero_area(), "their own avatar stands");
-        let ada = bar.face_rect("ada").expect("Ada's face");
-        assert!(
-            (own.width() - ada.width()).abs() < 0.01 && (own.height() - ada.height()).abs() < 0.01,
-            "one size for every face: {own:?} and {ada:?}"
-        );
-        assert!(
-            bar.right_side_x() < own.x0 && own.x1 <= bar.tray_pill_rect().x0,
-            "their avatar stands right of who is here, before the notifications"
-        );
-    }
-
-    /// Each face is one place: the rect a reader is told is the rect a press reaches, the middle
-    /// of which opens that person, and it is a control of its own — so a reader presses the face
-    /// where a person does, never the bar behind it.
-    #[test]
-    fn a_face_is_published_where_a_press_reaches_it() {
-        let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
-        let (bar, _chrome) = bar_over(&tree, true);
-        let faces = bar.face_accessibility();
-        assert_eq!(faces.len(), 2, "one node per face");
-        for (face, id) in faces.iter().zip(["ada", "bo"]) {
-            let bounds = face.bounds.expect("placed");
-            let rect = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+        phase the_faces_open_who_is_here_without_a_second_button;
+        // The faces are who is here: each opens the panel at its person, so no second people
+        // button stands beside them, and the panel opens from the faces.
+        {
+            let tree = desk(&[("ada", "Ada Lovelace")]);
+            let (mut bar, chrome) = bar_over(&tree, true);
+            assert!(
+                bar.people_button_rect().is_zero_area(),
+                "no people button beside a face"
+            );
+            let face = bar.face_rect("ada").expect("Ada's face");
+            assert!(
+                face.x1 <= bar.invite_rect().x0,
+                "the faces, then the seat the next person takes"
+            );
+            assert!(press(&mut bar, face.center()));
             assert_eq!(
-                bar.face_rect(id),
-                Some(rect),
-                "the bar publishes a face where it draws and hit-tests it"
+                chrome.borrow().intents.last(),
+                Some(&ChromeIntent::ShowPerson("ada".into()))
             );
             assert_eq!(
-                bar.face_at(rect.center()).as_deref(),
-                Some(id),
-                "a press at {id}'s middle opens {id}"
+                bar.roster_rect(),
+                bar.avatar_stack_rect,
+                "the panel opens from the faces"
             );
-            assert_eq!(
-                face.action_target.as_deref(),
-                Some(format!("{}{id}", TopBarChrome::FACE_TARGET).as_str()),
-                "the face carries its own press"
+
+            let (bar, _) = bar_over(&desk(&[]), true);
+            assert!(
+                bar.people_button_rect().is_zero_area() && bar.avatar_stack_rect.is_zero_area(),
+                "nobody else here: only the invite"
+            );
+        }
+
+        phase this_person_appears_once_drawn_as_everyone_is;
+        // This person appears once on their bar: their avatar at the far right, never also among
+        // the faces, however the host lists them; and it is drawn as the faces are, at their size.
+        {
+            let tree = desk(&[("ada", "Ada Lovelace"), ("me-root", "Jo Doe")]);
+            let chrome = FixtureChrome::new(tree.clone());
+            chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
+                name: "Jo Doe".into(),
+                rgb: (247, 133, 125),
+                identity: "me-root".into(),
+            });
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+            bar.sync_from_tree(&tree);
+            super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
+            assert!(bar.face_rect("me-root").is_none(), "not among the others");
+            assert_eq!(bar.face_ids, vec!["ada".to_owned()]);
+            let own = bar.own_avatar_rect();
+            assert!(!own.is_zero_area(), "their own avatar stands");
+            let ada = bar.face_rect("ada").expect("Ada's face");
+            assert!(
+                (own.width() - ada.width()).abs() < 0.01 && (own.height() - ada.height()).abs() < 0.01,
+                "one size for every face: {own:?} and {ada:?}"
+            );
+            assert!(
+                bar.right_side_x() < own.x0 && own.x1 <= bar.tray_pill_rect().x0,
+                "their avatar stands right of who is here, before the notifications"
+            );
+        }
+
+        phase a_face_is_published_where_a_press_reaches_it;
+        // Each face is one place: the rect a reader is told is the rect a press reaches, the middle
+        // of which opens that person, and it is a control of its own — so a reader presses the face
+        // where a person does, never the bar behind it.
+        {
+            let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+            let (bar, _chrome) = bar_over(&tree, true);
+            let faces = bar.face_accessibility();
+            assert_eq!(faces.len(), 2, "one node per face");
+            for (face, id) in faces.iter().zip(["ada", "bo"]) {
+                let bounds = face.bounds.expect("placed");
+                let rect = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+                assert_eq!(
+                    bar.face_rect(id),
+                    Some(rect),
+                    "the bar publishes a face where it draws and hit-tests it"
+                );
+                assert_eq!(
+                    bar.face_at(rect.center()).as_deref(),
+                    Some(id),
+                    "a press at {id}'s middle opens {id}"
+                );
+                assert_eq!(
+                    face.action_target.as_deref(),
+                    Some(format!("{}{id}", TopBarChrome::FACE_TARGET).as_str()),
+                    "the face carries its own press"
+                );
+            }
+        }
+
+        phase a_wave_is_worded_beside_the_faces_on_a_laptop_wide_bar;
+        // On a laptop-wide bar a wave still says who waved, in words, beside the faces: the notice
+        // yields to the clock, not to the whole lane kept for an activity.
+        {
+            let tree = desk(&[("gd", "Gentle Dolphin")]);
+            let (mut bar, chrome) = bar_over(&tree, true);
+            super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
+            let quiet = bar.people_left_x;
+            chrome.borrow_mut().waved = Some(crate::chrome::WaveNotice {
+                from: "Gentle Dolphin".into(),
+                at: ui::time::now(),
+            });
+            super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
+            let theme = Theme::default();
+            let mut text = TextRenderer::new();
+            let least = ui::widget::ChipFace::intrinsic_width(
+                "Gentle D\u{2026} waved at you",
+                ui::widget::ChipLead::Glyph(ui::icons::Icon::Hand),
+                false,
+                &mut text,
+                &theme,
+            );
+            assert!(
+                quiet - bar.people_left_x >= least,
+                "the notice takes room for its words: {quiet} -> {}",
+                bar.people_left_x
+            );
+            assert!(
+                bar.people_left_x > bar.center_rect.x1,
+                "and keeps off the clock"
             );
         }
     }
@@ -806,46 +840,13 @@ mod tests {
             .map(|(a, b)| (a.as_str(), b.as_str()))
             .collect();
         let (mut bar, chrome) = bar_over(&desk(&crowd), true);
-        assert!(bar.collaborator_overflow() > 0, "crowded: a +N badge");
+        assert!(bar.face_overflow() > 0, "crowded: a +N badge");
         let badge_x = bar.face_rects.last().unwrap().x1 + 4.0;
         let stack_y = bar.avatar_stack_rect.center().y;
         assert!(press(&mut bar, Point::new(badge_x + 6.0, stack_y)));
         assert_eq!(
             chrome.borrow().intents.last(),
-            Some(&ChromeIntent::ToggleCollaborators)
-        );
-    }
-
-    /// On a laptop-wide bar a wave still says who waved, in words, beside the faces: the notice
-    /// yields to the clock, not to the whole lane kept for an activity.
-    #[test]
-    fn a_wave_is_worded_beside_the_faces_on_a_laptop_wide_bar() {
-        let tree = desk(&[("gd", "Gentle Dolphin")]);
-        let (mut bar, chrome) = bar_over(&tree, true);
-        super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
-        let quiet = bar.people_left_x;
-        chrome.borrow_mut().waved = Some(crate::chrome::WaveNotice {
-            from: "Gentle Dolphin".into(),
-            at: ui::time::now(),
-        });
-        super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
-        let theme = Theme::default();
-        let mut text = TextRenderer::new();
-        let least = ui::widget::ChipFace::intrinsic_width(
-            "Gentle D\u{2026} waved at you",
-            ui::widget::ChipLead::Glyph(ui::icons::Icon::Hand),
-            false,
-            &mut text,
-            &theme,
-        );
-        assert!(
-            quiet - bar.people_left_x >= least,
-            "the notice takes room for its words: {quiet} -> {}",
-            bar.people_left_x
-        );
-        assert!(
-            bar.people_left_x > bar.center_rect.x1,
-            "and keeps off the clock"
+            Some(&ChromeIntent::TogglePeople)
         );
     }
 
@@ -868,9 +869,7 @@ mod tests {
     }
 
     fn agent_and_person() -> DesktopTree {
-        let mut tree = desk(&[("ada", "Ada Lovelace"), ("cc", "Claude Code")]);
-        tree.workspaces[0].collaborators[1].role_id = Some("agent".into());
-        tree
+        desk(&[("ada", "Ada Lovelace"), ("agent:cc", "Claude Code")])
     }
 
     /// What the bar tells a reader its faces are, in the order drawn. A face is a control of its
@@ -887,17 +886,213 @@ mod tests {
             .collect()
     }
 
-    /// The phone's bar has room for one face, and it is whoever did something last: an agent
-    /// that starts working (or comes back) is on the bar at once, as its client's square face,
-    /// and everyone else here is the stack's "+N" beside it. The invite waits in the panel, and
-    /// nothing stands on the clock or the workspace's name.
-    ///
-    /// The bar reads the workspace at one monotonic instant throughout: who did something last is
-    /// the order the changes reached the bar, so no amount of clock the host does or does not
-    /// advance can decide it.
-    #[test]
-    fn a_phone_bar_shows_whoever_did_something_last() {
-        ui::time::testing::with_monotonic_time(ui::time::now(), phone_bar_at_one_instant);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_phone_bar_keeps_its_people_and_the_followed_face;
+
+        phase a_phone_bar_shows_whoever_did_something_last;
+        // The phone's bar has room for one face, and it is whoever did something last: an agent
+        // that starts working (or comes back) is on the bar at once, as its client's square face,
+        // and everyone else here is the stack's "+N" beside it. The invite waits in the panel, and
+        // nothing stands on the clock or the workspace's name.
+        //
+        // The bar reads the workspace at one monotonic instant throughout: who did something last is
+        // the order the changes reached the bar, so no amount of clock the host does or does not
+        // advance can decide it.
+        {
+            ui::time::testing::with_monotonic_time(ui::time::now(), phone_bar_at_one_instant);
+        }
+
+        phase an_empty_phone_bar_keeps_the_invite;
+        // Nobody else here, the phone's bar keeps the invite: it yields only to people.
+        {
+            let (bar, _chrome) = phone_bar(&desk(&[]), 390.0);
+            assert!(!bar.invite_rect().is_zero_area());
+            assert!(bar.people_button_rect().is_zero_area());
+        }
+
+        phase a_phone_bar_never_draws_the_followed_face_twice;
+        // Following someone on a phone, the banner's face is theirs: the bar never draws it again,
+        // and everyone else here is a face or counted.
+        {
+            let mut tree = agent_and_person();
+            tree.workspaces[0].present[1].followed = true;
+            for width in [390.0, 360.0] {
+                let (bar, _chrome) = phone_bar(&tree, width);
+                assert!(
+                    bar.face_rect("cc").is_none(),
+                    "the banner stands for the agent at {width}"
+                );
+                assert_eq!(
+                    bar.faces_shown + bar.face_overflow(),
+                    1,
+                    "Ada is a face or counted at {width}"
+                );
+            }
+        }
+
+        phase following_keeps_the_people_beside_it_on_a_phone;
+        // Following someone never costs the bar the people beside them: while the banner that says
+        // whose view this is stands in the middle lane, the people button, the workspace's name and
+        // the faces keep their room either side of it, and Stop stands in the banner at every width.
+        {
+            let mut tree = desk(&[("ada", "Ada Lovelace"), ("agent:cc", "Claude Code")]);
+            tree.workspaces[0].present[1].followed = true;
+            let theme = Theme::default();
+            for width in [390.0f32, 360.0] {
+                let (bar, _chrome) = phone_bar(&tree, width);
+                assert!(bar.following, "the bar knows this view is not its own");
+                let lane = crate::follow_banner::lane_width(f64::from(width));
+                assert!(
+                    (bar.center_lane.width() - lane).abs() < 0.5,
+                    "the middle lane is the banner's, where the clock stood: {:?} at {width}",
+                    bar.center_lane
+                );
+                assert!(
+                    bar.center_rect.is_zero_area(),
+                    "and the clock stands aside at {width}"
+                );
+                // The banner as it stands on this bar: their face and Stop in the lane.
+                let bar_rect = bar.bar_rect();
+                let mut text = TextRenderer::new();
+                let card = crate::follow_banner::rects(
+                    &mut text,
+                    &theme,
+                    (
+                        &t_args("follow-label", &[("person", "Claude Code".into())]),
+                        &t("follow-stop"),
+                    ),
+                    crate::follow_banner::BannerFrame {
+                        work_area: Rect::new(0.0, bar_rect.y1, f64::from(width), bar_rect.y1 + 760.0),
+                        bar: bar_rect,
+                        cursor: None,
+                        motion: theme.motion(),
+                    },
+                    true,
+                );
+                let (chip, stop) = (card.chip, card.stop);
+                assert!(!chip.is_zero_area(), "the banner stands at {width}");
+                assert!(
+                    chip.width() >= f64::from(theme.tokens.metrics.avatar_inline),
+                    "with their face at {width}: {chip:?}"
+                );
+                assert!(!stop.is_zero_area(), "and Stop at {width}: {chip:?}");
+                let people = bar.control_rect(TopBarChrome::CONTROL_PEOPLE);
+                assert!(!people.is_zero_area(), "who is here stands at {width}");
+                let mut beside: Vec<(&str, Rect)> = vec![
+                    ("the workspace's name", bar.ws_pill_rect),
+                    ("who is here", people),
+                    ("the count on the people button", bar.people_count_rect),
+                    ("the invite button", bar.invite_rect),
+                    ("the notifications", bar.tray_hit_rect),
+                ];
+                beside.extend(bar.face_rects.iter().map(|rect| ("a face", *rect)));
+                // The gap the bar keeps between its own controls: a neighbour the banner merely
+                // misses reads as one control with it, so the banner keeps this, not zero.
+                let gap = f64::from(theme.tokens.spacing.s2);
+                for (what, rect) in beside.into_iter().filter(|(_, rect)| !rect.is_zero_area()) {
+                    assert!(
+                        chip.intersect(rect).is_zero_area(),
+                        "the banner covers no {what} at {width}: {chip:?} over {rect:?}"
+                    );
+                    assert!(
+                        apart(chip, rect) >= gap,
+                        "the banner keeps the bar's gap from {what} at {width}: {chip:?} beside {rect:?}"
+                    );
+                    assert!(
+                        stop.intersect(rect).is_zero_area(),
+                        "nor Stop over {what} at {width}: {stop:?} over {rect:?}"
+                    );
+                    assert!(
+                        apart(stop, rect) >= gap,
+                        "and Stop keeps it from {what} at {width}: {stop:?} beside {rect:?}"
+                    );
+                }
+                // Whatever the bar can hold, nothing of who is here stands in the banner's lane...
+                assert!(
+                    people.x0 >= bar.center_lane.x1 + gap,
+                    "the people button keeps clear of the banner at {width}: {people:?}"
+                );
+                // ...and where it cannot hold the invite too, the invite waits in the panel the
+                // people button opens, rather than pressing the button into the banner.
+                if !bar.invite_rect.is_zero_area() {
+                    assert!(
+                        apart(bar.invite_rect, people) >= gap,
+                        "the invite keeps its seat at {width}: {:?} beside {people:?}",
+                        bar.invite_rect
+                    );
+                }
+                assert!(
+                    bar.ws_pill_rect.x1 <= bar.center_lane.x0,
+                    "the workspace keeps its name and chevron at {width}: {:?}",
+                    bar.ws_pill_rect
+                );
+                // Everyone here is a face, counted, or the one the banner stands for: following never
+                // hides anyone.
+                assert_eq!(
+                    bar.faces_shown + bar.face_overflow() + 1,
+                    2,
+                    "both people are accounted for at {width}"
+                );
+            }
+        }
+
+        phase a_crowded_bar_keeps_the_followed_face;
+        // Where the bar stands only some of the faces, the one this person follows is always among
+        // them, and everyone else is counted.
+        {
+            let crowd: Vec<(String, String)> = (0..6)
+                .map(|i| (format!("p{i}"), format!("Person {i}")))
+                .collect();
+            let mut tree = desk(
+                &crowd
+                    .iter()
+                    .map(|(a, b)| (a.as_str(), b.as_str()))
+                    .collect::<Vec<_>>(),
+            );
+            tree.workspaces[0].present[4].followed = true;
+            // Narrower, the bar is a phone's, where the banner's face is the followed one's
+            // (`a_phone_bar_never_draws_the_followed_face_twice`).
+            for width in [720.0, 900.0, 1024.0] {
+                let (mut bar, _chrome) = bar_over(&tree, true);
+                super::super::tests::lay_out_and_draw(&mut bar, width);
+                assert!(bar.faces_shown > 0, "some faces stand at {width}");
+                assert!(
+                    bar.face_rect("p4").is_some(),
+                    "the followed one is among them at {width}"
+                );
+                assert_eq!(
+                    bar.faces_shown + bar.face_overflow(),
+                    6,
+                    "and the badge counts the rest at {width}"
+                );
+            }
+        }
+
+        phase the_faces_stay_put_as_unread_notifications_arrive;
+        // A count arriving on the bell, or growing, never moves a face: the pointer already on its way
+        // to someone still lands on them, on the web and on the desktop alike, from nothing unread on.
+        {
+            let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+            for web in [true, false] {
+                let (mut bar, chrome) = bar_over(&tree, true);
+                chrome.borrow_mut().notifications_only = web;
+                super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
+                let resting = bar.face_rects.clone();
+                assert_eq!(resting.len(), 2, "both faces stand");
+                for unread in [1, 7, 42, 100, 5000, 0] {
+                    chrome.borrow_mut().notification_badge = unread;
+                    super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
+                    assert_eq!(
+                        bar.face_rects, resting,
+                        "with {unread} unread (the web: {web})"
+                    );
+                }
+            }
+        }
     }
 
     fn phone_bar_at_one_instant() {
@@ -907,13 +1102,9 @@ mod tests {
             let mut tree = agent_and_person();
             let (mut bar, _chrome) = phone_bar(&tree, width);
             assert_eq!(bar.faces_shown, 1, "one face at {width}");
-            assert_eq!(
-                bar.collaborator_overflow(),
-                1,
-                "and the other counted at {width}"
-            );
+            assert_eq!(bar.face_overflow(), 1, "and the other counted at {width}");
             // The agent starts writing: its presence says so, and its face takes the bar.
-            tree.workspaces[0].collaborators[1].status = Some(tilo_desktop_model::Status {
+            tree.workspaces[0].present[1].status = Some(tilo_desktop_model::Status {
                 text: "Editing Launch notes in Notes".into(),
                 automatic: true,
             });
@@ -932,7 +1123,7 @@ mod tests {
                 bar.people_button_rect().is_zero_area(),
                 "no people button beside the face at {width}"
             );
-            assert_eq!(bar.collaborator_overflow(), 1, "Ada is counted at {width}");
+            assert_eq!(bar.face_overflow(), 1, "Ada is counted at {width}");
             let stack = bar.avatar_stack_rect;
             assert!(
                 stack.x1 > face.x1 + 1.0,
@@ -965,208 +1156,18 @@ mod tests {
             );
             assert_eq!(
                 bar.people_intent_at(Point::new(stack.x1 - 4.0, stack.center().y)),
-                Some(ChromeIntent::ToggleCollaborators)
+                Some(ChromeIntent::TogglePeople)
             );
 
             // Alone, an agent that comes back is the one face, with no count.
-            let mut alone = desk(&[("cc", "Claude Code")]);
-            alone.workspaces[0].collaborators[0].role_id = Some("agent".into());
+            let alone = desk(&[("agent:cc", "Claude Code")]);
             let (bar, _chrome) = phone_bar(&alone, width);
             assert!(
                 bar.face_rect("cc").is_some(),
                 "the agent is on the bar at {width}"
             );
-            assert_eq!(bar.collaborator_overflow(), 0);
+            assert_eq!(bar.face_overflow(), 0);
             assert!(bar.people_count_rect.is_zero_area(), "no count at {width}");
-        }
-    }
-
-    /// Nobody else here, the phone's bar keeps the invite: it yields only to people.
-    #[test]
-    fn an_empty_phone_bar_keeps_the_invite() {
-        let (bar, _chrome) = phone_bar(&desk(&[]), 390.0);
-        assert!(!bar.invite_rect().is_zero_area());
-        assert!(bar.people_button_rect().is_zero_area());
-    }
-
-    /// Following someone on a phone, the banner's face is theirs: the bar never draws it again,
-    /// and everyone else here is a face or counted.
-    #[test]
-    fn a_phone_bar_never_draws_the_followed_face_twice() {
-        let mut tree = agent_and_person();
-        tree.workspaces[0].collaborators[1].following = true;
-        for width in [390.0, 360.0] {
-            let (bar, _chrome) = phone_bar(&tree, width);
-            assert!(
-                bar.face_rect("cc").is_none(),
-                "the banner stands for the agent at {width}"
-            );
-            assert_eq!(
-                bar.faces_shown + bar.collaborator_overflow(),
-                1,
-                "Ada is a face or counted at {width}"
-            );
-        }
-    }
-
-    /// Following someone never costs the bar the people beside them: while the banner that says
-    /// whose view this is stands in the middle lane, the people button, the workspace's name and
-    /// the faces keep their room either side of it, and Stop stands in the banner at every width.
-    #[test]
-    fn following_keeps_the_people_beside_it_on_a_phone() {
-        let mut tree = desk(&[("ada", "Ada Lovelace"), ("cc", "Claude Code")]);
-        tree.workspaces[0].collaborators[1].role_id = Some("agent".into());
-        tree.workspaces[0].collaborators[1].following = true;
-        let theme = Theme::default();
-        for width in [390.0f32, 360.0] {
-            let (bar, _chrome) = phone_bar(&tree, width);
-            assert!(bar.following, "the bar knows this view is not its own");
-            let lane = crate::follow_banner::lane_width(f64::from(width));
-            assert!(
-                (bar.center_lane.width() - lane).abs() < 0.5,
-                "the middle lane is the banner's, where the clock stood: {:?} at {width}",
-                bar.center_lane
-            );
-            assert!(
-                bar.center_rect.is_zero_area(),
-                "and the clock stands aside at {width}"
-            );
-            // The banner as it stands on this bar: their face and Stop in the lane.
-            let bar_rect = bar.bar_rect();
-            let mut text = TextRenderer::new();
-            let card = crate::follow_banner::rects(
-                &mut text,
-                &theme,
-                (
-                    &t_args("follow-label", &[("person", "Claude Code".into())]),
-                    &t("follow-stop"),
-                ),
-                crate::follow_banner::BannerFrame {
-                    work_area: Rect::new(0.0, bar_rect.y1, f64::from(width), bar_rect.y1 + 760.0),
-                    bar: bar_rect,
-                    cursor: None,
-                    motion: theme.motion(),
-                },
-                true,
-            );
-            let (chip, stop) = (card.chip, card.stop);
-            assert!(!chip.is_zero_area(), "the banner stands at {width}");
-            assert!(
-                chip.width() >= f64::from(theme.tokens.metrics.avatar_inline),
-                "with their face at {width}: {chip:?}"
-            );
-            assert!(!stop.is_zero_area(), "and Stop at {width}: {chip:?}");
-            let people = bar.control_rect(TopBarChrome::CONTROL_COLLABORATORS);
-            assert!(!people.is_zero_area(), "who is here stands at {width}");
-            let mut beside: Vec<(&str, Rect)> = vec![
-                ("the workspace's name", bar.ws_pill_rect),
-                ("who is here", people),
-                ("the count on the people button", bar.people_count_rect),
-                ("the invite button", bar.invite_rect),
-                ("the notifications", bar.tray_hit_rect),
-            ];
-            beside.extend(bar.face_rects.iter().map(|rect| ("a face", *rect)));
-            // The gap the bar keeps between its own controls: a neighbour the banner merely
-            // misses reads as one control with it, so the banner keeps this, not zero.
-            let gap = f64::from(theme.tokens.spacing.s2);
-            for (what, rect) in beside.into_iter().filter(|(_, rect)| !rect.is_zero_area()) {
-                assert!(
-                    chip.intersect(rect).is_zero_area(),
-                    "the banner covers no {what} at {width}: {chip:?} over {rect:?}"
-                );
-                assert!(
-                    apart(chip, rect) >= gap,
-                    "the banner keeps the bar's gap from {what} at {width}: {chip:?} beside {rect:?}"
-                );
-                assert!(
-                    stop.intersect(rect).is_zero_area(),
-                    "nor Stop over {what} at {width}: {stop:?} over {rect:?}"
-                );
-                assert!(
-                    apart(stop, rect) >= gap,
-                    "and Stop keeps it from {what} at {width}: {stop:?} beside {rect:?}"
-                );
-            }
-            // Whatever the bar can hold, nothing of who is here stands in the banner's lane...
-            assert!(
-                people.x0 >= bar.center_lane.x1 + gap,
-                "the people button keeps clear of the banner at {width}: {people:?}"
-            );
-            // ...and where it cannot hold the invite too, the invite waits in the panel the
-            // people button opens, rather than pressing the button into the banner.
-            if !bar.invite_rect.is_zero_area() {
-                assert!(
-                    apart(bar.invite_rect, people) >= gap,
-                    "the invite keeps its seat at {width}: {:?} beside {people:?}",
-                    bar.invite_rect
-                );
-            }
-            assert!(
-                bar.ws_pill_rect.x1 <= bar.center_lane.x0,
-                "the workspace keeps its name and chevron at {width}: {:?}",
-                bar.ws_pill_rect
-            );
-            // Everyone here is a face, counted, or the one the banner stands for: following never
-            // hides anyone.
-            assert_eq!(
-                bar.faces_shown + bar.collaborator_overflow() + 1,
-                2,
-                "both people are accounted for at {width}"
-            );
-        }
-    }
-
-    /// Where the bar stands only some of the faces, the one this person follows is always among
-    /// them, and everyone else is counted.
-    #[test]
-    fn a_crowded_bar_keeps_the_followed_face() {
-        let crowd: Vec<(String, String)> = (0..6)
-            .map(|i| (format!("p{i}"), format!("Person {i}")))
-            .collect();
-        let mut tree = desk(
-            &crowd
-                .iter()
-                .map(|(a, b)| (a.as_str(), b.as_str()))
-                .collect::<Vec<_>>(),
-        );
-        tree.workspaces[0].collaborators[4].following = true;
-        // Narrower, the bar is a phone's, where the banner's face is the followed one's
-        // (`a_phone_bar_never_draws_the_followed_face_twice`).
-        for width in [720.0, 900.0, 1024.0] {
-            let (mut bar, _chrome) = bar_over(&tree, true);
-            super::super::tests::lay_out_and_draw(&mut bar, width);
-            assert!(bar.faces_shown > 0, "some faces stand at {width}");
-            assert!(
-                bar.face_rect("p4").is_some(),
-                "the followed one is among them at {width}"
-            );
-            assert_eq!(
-                bar.faces_shown + bar.collaborator_overflow(),
-                6,
-                "and the badge counts the rest at {width}"
-            );
-        }
-    }
-
-    /// A count arriving on the bell, or growing, never moves a face: the pointer already on its way
-    /// to someone still lands on them, on the web and on the desktop alike, from nothing unread on.
-    #[test]
-    fn the_faces_stay_put_as_unread_notifications_arrive() {
-        let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
-        for web in [true, false] {
-            let (mut bar, chrome) = bar_over(&tree, true);
-            chrome.borrow_mut().notifications_only = web;
-            super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
-            let resting = bar.face_rects.clone();
-            assert_eq!(resting.len(), 2, "both faces stand");
-            for unread in [1, 7, 42, 100, 5000, 0] {
-                chrome.borrow_mut().notification_badge = unread;
-                super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
-                assert_eq!(
-                    bar.face_rects, resting,
-                    "with {unread} unread (the web: {web})"
-                );
-            }
         }
     }
 }

@@ -20,6 +20,7 @@ use std::{
     },
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 pub(super) use tilo_relay_store::frames::{equal_files, frame_bytes};
 
 pub(crate) const DEFAULT_BATCH_FRAMES: usize = 64;
@@ -616,7 +617,7 @@ pub struct ReplaySnapshot {
     link: Option<Link>,
     root: PathBuf,
     workspace: PathBuf,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     pending_root: PathBuf,
     /// A final cut's held queue, which it cleans up like the device's own.
     held_root: Option<PathBuf>,
@@ -664,7 +665,7 @@ impl ReplaySnapshot {
                 // A retained frame that does not decode is not replayed; it
                 // is reported, never left out unseen.
                 tracing::warn!(
-                    workspace_id = self.workspace_id,
+                    workspace_id = %self.workspace_id,
                     pin = meta.pin,
                     %error,
                     "a retained frame does not decode; it is left out of the replay"

@@ -236,27 +236,32 @@ mod tests {
         file.rewind().unwrap();
         file
     }
-    #[test]
-    fn exact_kernel_table_parser_preserves_paths_and_restrictions() {
-        let rows=mounts(table(b"42 2 0:1 / /run/stage rw,nosuid,nodev,noexec - tmpfs stage rw\n43 42 0:2 / /run/stage/view ro,nosuid,nodev,noexec - fuse view rw\n")).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[1].parent, 42);
-        assert!(rows[0].private && rows[0].restricted && rows[1].readonly);
-        let shared = mounts(table(
-            b"42 2 0:1 / /raw\xff rw,nosuid,nodev,noexec shared:7 - tmpfs stage rw\n",
-        ))
-        .unwrap();
-        assert!(!shared[0].private);
-        assert_eq!(shared[0].path, b"/raw\xff");
-    }
-    #[test]
-    fn exact_kernel_table_parser_refuses_duplicate_malformed_and_unbounded() {
-        let row = b"42 2 0:1 / /run/stage rw - tmpfs stage rw\n";
-        let mut duplicate = row.to_vec();
-        duplicate.extend_from_slice(row);
-        assert!(mounts(table(&duplicate)).is_err());
-        assert!(mounts(table(b"x 2 0:1 / /run/stage rw - tmpfs stage rw\n")).is_err());
-        assert!(mounts(table(b"42 2 0:1 / /run/stage rw tmpfs stage rw\n")).is_err());
-        assert!(mounts(table(&vec![b'x'; 4 * 1024 * 1024 + 1])).is_err());
+    tilo_test_env::scenario! {
+        fn the_kernel_mount_table_parser_is_exact;
+
+        phase exact_kernel_table_parser_preserves_paths_and_restrictions;
+        {
+            let rows=mounts(table(b"42 2 0:1 / /run/stage rw,nosuid,nodev,noexec - tmpfs stage rw\n43 42 0:2 / /run/stage/view ro,nosuid,nodev,noexec - fuse view rw\n")).unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[1].parent, 42);
+            assert!(rows[0].private && rows[0].restricted && rows[1].readonly);
+            let shared = mounts(table(
+                b"42 2 0:1 / /raw\xff rw,nosuid,nodev,noexec shared:7 - tmpfs stage rw\n",
+            ))
+            .unwrap();
+            assert!(!shared[0].private);
+            assert_eq!(shared[0].path, b"/raw\xff");
+        }
+
+        phase exact_kernel_table_parser_refuses_duplicate_malformed_and_unbounded;
+        {
+            let row = b"42 2 0:1 / /run/stage rw - tmpfs stage rw\n";
+            let mut duplicate = row.to_vec();
+            duplicate.extend_from_slice(row);
+            assert!(mounts(table(&duplicate)).is_err());
+            assert!(mounts(table(b"x 2 0:1 / /run/stage rw - tmpfs stage rw\n")).is_err());
+            assert!(mounts(table(b"42 2 0:1 / /run/stage rw tmpfs stage rw\n")).is_err());
+            assert!(mounts(table(&vec![b'x'; 4 * 1024 * 1024 + 1])).is_err());
+        }
     }
 }

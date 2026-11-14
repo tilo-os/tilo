@@ -15,7 +15,7 @@ use crate::support::{enrol, start_host_plain};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_routes_answer_over_loopback_plain_http_only() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host_plain(
         &root,

@@ -499,77 +499,100 @@ mod tests {
         regions
     }
 
-    #[test]
-    fn a_placed_part_that_came_damages_where_it_is_and_moves_the_parts_below() {
-        let repainted = damage(
-            vec![placed("a", 0.0), placed("c", 20.0)],
-            vec![placed("a", 0.0), placed("b", 20.0), placed("c", 40.0)],
-        );
-        assert_eq!(repainted, vec![row(20.0), row(40.0)]);
-    }
+    tilo_test_env::scenario! {
+        fn parts_damage_where_they_came_went_or_changed;
 
-    #[test]
-    fn a_placed_part_that_went_damages_where_it_was() {
-        let repainted = damage(
-            vec![placed("a", 0.0), placed("b", 20.0), placed("c", 40.0)],
-            vec![placed("a", 0.0), placed("c", 20.0)],
-        );
-        assert_eq!(repainted, vec![row(20.0), row(40.0)]);
-    }
+        phase a_placed_part_that_came_damages_where_it_is_and_moves_the_parts_below;
+        {
+            let repainted = damage(
+                vec![placed("a", 0.0), placed("c", 20.0)],
+                vec![placed("a", 0.0), placed("b", 20.0), placed("c", 40.0)],
+            );
+            assert_eq!(repainted, vec![row(20.0), row(40.0)]);
+        }
 
-    #[test]
-    fn a_placed_part_that_paints_nothing_damages_nothing_where_it_goes() {
-        let empty = |top| PaintPart::placed("handles", row(top), Scene::new(), Vec::new());
-        let repainted = damage(
-            vec![placed("a", 0.0), empty(0.0)],
-            vec![placed("a", 0.0), empty(20.0)],
-        );
-        assert!(repainted.is_empty(), "{repainted:?}");
-    }
+        phase a_placed_part_that_went_damages_where_it_was;
+        {
+            let repainted = damage(
+                vec![placed("a", 0.0), placed("b", 20.0), placed("c", 40.0)],
+                vec![placed("a", 0.0), placed("c", 20.0)],
+            );
+            assert_eq!(repainted, vec![row(20.0), row(40.0)]);
+        }
 
-    #[test]
-    fn parts_that_are_not_placed_still_repaint_whole_when_they_move_come_or_go() {
-        assert_eq!(
-            damage(vec![unplaced("a", 0.0)], vec![unplaced("a", 20.0)]),
-            vec![BOUNDS]
-        );
-        assert_eq!(
-            damage(
-                vec![unplaced("a", 0.0)],
-                vec![unplaced("a", 0.0), unplaced("b", 20.0)]
-            ),
-            vec![BOUNDS]
-        );
-        assert_eq!(
-            damage(
-                vec![unplaced("a", 0.0), unplaced("b", 20.0)],
-                vec![unplaced("a", 0.0)]
-            ),
-            vec![BOUNDS]
-        );
-        let changed = PaintPart::new("a", row(0.0), filled(row(1.0)), vec![row(0.0)]);
-        assert_eq!(
-            damage(vec![unplaced("a", 0.0)], vec![changed]),
-            vec![row(0.0)]
-        );
-    }
+        phase a_placed_part_that_paints_nothing_damages_nothing_where_it_goes;
+        {
+            let empty = |top| PaintPart::placed("handles", row(top), Scene::new(), Vec::new());
+            let repainted = damage(
+                vec![placed("a", 0.0), empty(0.0)],
+                vec![placed("a", 0.0), empty(20.0)],
+            );
+            assert!(repainted.is_empty(), "{repainted:?}");
+        }
 
-    #[test]
-    fn repeated_keys_or_reordered_parts_repaint_whole() {
-        assert_eq!(
-            damage(
-                vec![placed("a", 0.0), placed("b", 20.0)],
-                vec![placed("b", 0.0), placed("a", 20.0)]
-            ),
-            vec![BOUNDS]
-        );
-        assert_eq!(
-            damage(
-                vec![placed("a", 0.0)],
-                vec![placed("a", 0.0), placed("a", 20.0)]
-            ),
-            vec![BOUNDS]
-        );
+        phase parts_that_are_not_placed_still_repaint_whole_when_they_move_come_or_go;
+        {
+            assert_eq!(
+                damage(vec![unplaced("a", 0.0)], vec![unplaced("a", 20.0)]),
+                vec![BOUNDS]
+            );
+            assert_eq!(
+                damage(
+                    vec![unplaced("a", 0.0)],
+                    vec![unplaced("a", 0.0), unplaced("b", 20.0)]
+                ),
+                vec![BOUNDS]
+            );
+            assert_eq!(
+                damage(
+                    vec![unplaced("a", 0.0), unplaced("b", 20.0)],
+                    vec![unplaced("a", 0.0)]
+                ),
+                vec![BOUNDS]
+            );
+            let changed = PaintPart::new("a", row(0.0), filled(row(1.0)), vec![row(0.0)]);
+            assert_eq!(
+                damage(vec![unplaced("a", 0.0)], vec![changed]),
+                vec![row(0.0)]
+            );
+        }
+
+        phase repeated_keys_or_reordered_parts_repaint_whole;
+        {
+            assert_eq!(
+                damage(
+                    vec![placed("a", 0.0), placed("b", 20.0)],
+                    vec![placed("b", 0.0), placed("a", 20.0)]
+                ),
+                vec![BOUNDS]
+            );
+            assert_eq!(
+                damage(
+                    vec![placed("a", 0.0)],
+                    vec![placed("a", 0.0), placed("a", 20.0)]
+                ),
+                vec![BOUNDS]
+            );
+        }
+
+        phase hand_drawn_parts_damage_the_part_that_changed_and_ink_outside_them_all;
+        {
+            let mut damage = PaintDamage::default();
+            hand_drawn(&mut damage, &[0.0, 40.0], false);
+            hand_drawn(&mut damage, &[0.0, 60.0], false);
+            let mut regions = Vec::new();
+            damage.collect(BOUNDS, &mut regions);
+            assert_eq!(regions, vec![row(40.0), row(60.0)]);
+
+            hand_drawn(&mut damage, &[0.0, 60.0], true);
+            let mut regions = Vec::new();
+            damage.collect(BOUNDS, &mut regions);
+            assert_eq!(
+                regions,
+                vec![BOUNDS],
+                "ink outside the parts proves nothing"
+            );
+        }
     }
 
     /// A hand-drawn widget's frame through [`PaintParts`]: `rows` filled,
@@ -590,24 +613,5 @@ mod tests {
         let frame = parts.finish(&scene, vec![BOUNDS], Affine::IDENTITY, &theme);
         damage.mark_drawn();
         damage.record(BOUNDS, frame);
-    }
-
-    #[test]
-    fn hand_drawn_parts_damage_the_part_that_changed_and_ink_outside_them_all() {
-        let mut damage = PaintDamage::default();
-        hand_drawn(&mut damage, &[0.0, 40.0], false);
-        hand_drawn(&mut damage, &[0.0, 60.0], false);
-        let mut regions = Vec::new();
-        damage.collect(BOUNDS, &mut regions);
-        assert_eq!(regions, vec![row(40.0), row(60.0)]);
-
-        hand_drawn(&mut damage, &[0.0, 60.0], true);
-        let mut regions = Vec::new();
-        damage.collect(BOUNDS, &mut regions);
-        assert_eq!(
-            regions,
-            vec![BOUNDS],
-            "ink outside the parts proves nothing"
-        );
     }
 }

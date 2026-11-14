@@ -340,112 +340,6 @@ fn a_folder_beyond_the_former_inspection_cap_streams_into_the_mail_cache() {
     );
 }
 
-#[test]
-fn an_excluded_folder_is_neither_read_nor_copied() {
-    let (home, reviewed) = fixture(2, BODY);
-    let drafts_path = home
-        .path()
-        .join(".thunderbird/abc.default/ImapMail/imap.example.test/Drafts");
-    let imap_reviewed = reviewed
-        .accounts
-        .iter()
-        .find(|account| account.inventory.needs_reconnect)
-        .unwrap();
-    let drafts = imap_reviewed
-        .folders
-        .iter()
-        .find(|folder| folder.inventory.hierarchy == ["Drafts"])
-        .unwrap()
-        .inventory
-        .source_id
-        .clone();
-    let mut selection = ThunderbirdSelection::all(&reviewed);
-    selection
-        .accounts
-        .iter_mut()
-        .find(|account| account.source_id == imap_reviewed.inventory.source_id)
-        .unwrap()
-        .folders
-        .retain(|id| id != &drafts);
-    // An excluded folder is never opened: were it still read, its absence
-    // would fail the import instead of leaving the folder out.
-    std::fs::remove_file(&drafts_path).unwrap();
-    let target = tempfile::tempdir().unwrap();
-    let receipt = import(target.path(), &reviewed, &selection).unwrap();
-    assert!(
-        !imap(&receipt)
-            .folders
-            .iter()
-            .any(|folder| folder.source_id == drafts)
-    );
-    let cache = target.path().join(".cache").join(MAIL_APP).join("mail");
-    assert!(!text_under(&cache).contains("Excluded draft"));
-    let retained = target
-        .path()
-        .join(".local/share/tilo/mail-import/thunderbird");
-    assert!(!text_under(&retained).contains("Excluded draft"));
-}
-
-#[test]
-fn cancelling_part_way_through_a_folder_publishes_nothing() {
-    let (_home, reviewed) = fixture(8, BODY);
-    let selection = ThunderbirdSelection::all(&reviewed);
-    let target = tempfile::tempdir().unwrap();
-    let cancel = AtomicBool::new(false);
-    let error = import_with(
-        target.path(),
-        &reviewed,
-        &selection,
-        BINDING,
-        &cancel,
-        &mut |messages: u64| {
-            if messages >= 3 {
-                cancel.store(true, Ordering::Release);
-            }
-        },
-    )
-    .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    assert!(!target.path().join(".config/tilo/accounts").exists());
-    let cache = target.path().join(".cache").join(MAIL_APP).join("mail");
-    if cache.exists() {
-        let kept: Vec<_> = std::fs::read_dir(&cache)
-            .unwrap()
-            .filter_map(|entry| {
-                let name = entry.unwrap().file_name().into_string().unwrap();
-                name.rsplit_once('.')
-                    .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("json"))
-                    .then_some(name)
-            })
-            .collect();
-        assert!(
-            kept.is_empty(),
-            "a cancelled import leaves no kept mail behind: {kept:?}"
-        );
-    }
-}
-
-#[test]
-fn a_source_that_changed_after_review_is_refused_before_publication() {
-    let (home, reviewed) = fixture(2, BODY);
-    let selection = ThunderbirdSelection::all(&reviewed);
-    let inbox = home
-        .path()
-        .join(".thunderbird/abc.default/ImapMail/imap.example.test/Inbox");
-    let before = std::fs::read(&inbox).unwrap();
-    let mut grown = before.clone();
-    grown.extend_from_slice(&message("late", "Added later", "0001", b"late", false));
-    std::fs::write(&inbox, &grown).unwrap();
-    let target = tempfile::tempdir().unwrap();
-    let error = import(target.path(), &reviewed, &selection).unwrap_err();
-    assert!(
-        error.to_string().contains("changed since it was reviewed"),
-        "{error}"
-    );
-    assert!(!target.path().join(".config/tilo/accounts").exists());
-    std::fs::write(&inbox, &before).unwrap();
-}
-
 #[cfg(unix)]
 #[test]
 fn a_redirected_folder_file_is_refused_rather_than_followed() {
@@ -466,101 +360,6 @@ fn a_redirected_folder_file_is_refused_rather_than_followed() {
     let target = tempfile::tempdir().unwrap();
     assert!(import(target.path(), &reviewed, &selection).is_err());
     assert!(!target.path().join(".config/tilo/accounts").exists());
-}
-
-#[test]
-fn flags_folders_attachments_and_existing_accounts_survive_the_streamed_import() {
-    let (home, reviewed) = fixture(3, BODY);
-    let selection = ThunderbirdSelection::all(&reviewed);
-    let source_inbox = home
-        .path()
-        .join(".thunderbird/abc.default/ImapMail/imap.example.test/Inbox");
-    let original = std::fs::read(&source_inbox).unwrap();
-    let target = tempfile::tempdir().unwrap();
-    let root = target.path().join(".config/tilo");
-    let mut store = AccountStore::new();
-    let mut existing =
-        accounts::Account::new(accounts::AccountId::new("person@example.test"), "email");
-    existing.display_name = "Existing owner label".into();
-    existing.config =
-        serde_json::json!({"email":"person@example.test","owner_extension":"preserve-me"});
-    store.upsert(existing.clone());
-    store.save_in(&root).unwrap();
-
-    let receipt = import(target.path(), &reviewed, &selection).unwrap();
-    assert!(!imap(&receipt).created);
-    let stored = AccountStore::load_in(&root);
-    assert_eq!(stored.len(), 2);
-    let account = stored.get(&existing.id).unwrap();
-    assert_eq!(account.type_id.as_str(), "email");
-    assert_eq!(account.config["owner_extension"], "preserve-me");
-    assert_eq!(
-        account.config["source_provenance"]["mail_client"],
-        "thunderbird"
-    );
-
-    let kept_mail = kept(target.path(), imap(&receipt));
-    assert_eq!(kept_mail.messages.len(), 4, "the Inbox and Drafts folders");
-    let flagged = kept_mail
-        .messages
-        .iter()
-        .find(|message| message.subject == "Message 1")
-        .expect("the flagged message");
-    assert!(flagged.read && flagged.starred);
-    let unread = kept_mail
-        .messages
-        .iter()
-        .find(|message| message.subject == "Message 2")
-        .unwrap();
-    assert!(!unread.read && !unread.starred);
-    let attached = kept_mail
-        .messages
-        .iter()
-        .find(|message| !message.attachments.is_empty())
-        .unwrap();
-    assert_eq!(attached.attachments[0].filename, "report.pdf");
-    assert_eq!(attached.folder, CachedFolder::Inbox);
-    let files = cache_of(target.path(), imap(&receipt)).with_extension("files");
-    assert_eq!(
-        std::fs::read(files.join(format!("{}.0", attached.id))).unwrap(),
-        b"%PDF-1.7"
-    );
-    let local_kept = kept(target.path(), local(&receipt));
-    assert!(local_kept.messages.iter().any(|message| {
-        message
-            .labels
-            .iter()
-            .any(|label| label == "Thunderbird/Projects/2024")
-    }));
-    let retained = target
-        .path()
-        .join(".local/share/tilo/mail-import/thunderbird");
-    assert!(std::fs::read_dir(&retained).unwrap().count() > 0);
-    let receipt_json = serde_json::to_string(&receipt).unwrap();
-    assert!(!receipt_json.contains("person@example.test"));
-    assert!(!receipt_json.contains(&target.path().to_string_lossy().to_string()));
-    assert_eq!(
-        std::fs::read(&source_inbox).unwrap(),
-        original,
-        "the import never rewrites the source mail"
-    );
-
-    let cache_bytes = std::fs::read(cache_of(target.path(), imap(&receipt))).unwrap();
-    let again = import(target.path(), &reviewed, &selection).unwrap();
-    assert!(again.accounts.iter().all(|account| !account.created));
-    assert!(
-        again
-            .accounts
-            .iter()
-            .all(|account| account.folders.iter().all(|folder| folder.messages == 0)),
-        "a second import inserts nothing"
-    );
-    assert_eq!(
-        std::fs::read(cache_of(target.path(), imap(&again))).unwrap(),
-        cache_bytes,
-        "a retry that inserts nothing rewrites nothing"
-    );
-    assert_eq!(AccountStore::load_in(&root).len(), 2);
 }
 
 #[test]
@@ -593,34 +392,239 @@ fn an_oversized_message_is_reported_by_folder_and_nothing_is_published() {
     assert!(!target.path().join(".config/tilo/accounts").exists());
 }
 
-#[test]
-fn a_selection_from_another_operation_is_refused() {
-    let (_home, reviewed) = fixture(1, BODY);
-    let selection = ThunderbirdSelection::all(&reviewed);
-    let target = tempfile::tempdir().unwrap();
-    assert_eq!(
-        import_reviewed(
+tilo_test_env::scenario! {
+    fn streamed_thunderbird_import_publishes_only_the_reviewed_selection;
+
+    phase an_excluded_folder_is_neither_read_nor_copied;
+    {
+        let (home, reviewed) = fixture(2, BODY);
+        let drafts_path = home
+            .path()
+            .join(".thunderbird/abc.default/ImapMail/imap.example.test/Drafts");
+        let imap_reviewed = reviewed
+            .accounts
+            .iter()
+            .find(|account| account.inventory.needs_reconnect)
+            .unwrap();
+        let drafts = imap_reviewed
+            .folders
+            .iter()
+            .find(|folder| folder.inventory.hierarchy == ["Drafts"])
+            .unwrap()
+            .inventory
+            .source_id
+            .clone();
+        let mut selection = ThunderbirdSelection::all(&reviewed);
+        selection
+            .accounts
+            .iter_mut()
+            .find(|account| account.source_id == imap_reviewed.inventory.source_id)
+            .unwrap()
+            .folders
+            .retain(|id| id != &drafts);
+        // An excluded folder is never opened: were it still read, its absence
+        // would fail the import instead of leaving the folder out.
+        std::fs::remove_file(&drafts_path).unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let receipt = import(target.path(), &reviewed, &selection).unwrap();
+        assert!(
+            !imap(&receipt)
+                .folders
+                .iter()
+                .any(|folder| folder.source_id == drafts)
+        );
+        let cache = target.path().join(".cache").join(MAIL_APP).join("mail");
+        assert!(!text_under(&cache).contains("Excluded draft"));
+        let retained = target
+            .path()
+            .join(".local/share/tilo/mail-import/thunderbird");
+        assert!(!text_under(&retained).contains("Excluded draft"));
+    }
+
+    phase cancelling_part_way_through_a_folder_publishes_nothing;
+    {
+        let (_home, reviewed) = fixture(8, BODY);
+        let selection = ThunderbirdSelection::all(&reviewed);
+        let target = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let error = import_with(
             target.path(),
             &reviewed,
             &selection,
-            b"",
-            &AtomicBool::new(false)
-        )
-        .unwrap_err()
-        .kind(),
-        io::ErrorKind::InvalidData
-    );
-    let mut widened = selection;
-    widened.accounts[0].folders.push("not-a-folder".into());
-    assert!(
-        import_reviewed(
-            target.path(),
-            &reviewed,
-            &widened,
             BINDING,
-            &AtomicBool::new(false)
+            &cancel,
+            &mut |messages: u64| {
+                if messages >= 3 {
+                    cancel.store(true, Ordering::Release);
+                }
+            },
         )
-        .is_err()
-    );
-    assert!(!target.path().join(".config/tilo/accounts").exists());
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(!target.path().join(".config/tilo/accounts").exists());
+        let cache = target.path().join(".cache").join(MAIL_APP).join("mail");
+        if cache.exists() {
+            let kept: Vec<_> = std::fs::read_dir(&cache)
+                .unwrap()
+                .filter_map(|entry| {
+                    let name = entry.unwrap().file_name().into_string().unwrap();
+                    name.rsplit_once('.')
+                        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("json"))
+                        .then_some(name)
+                })
+                .collect();
+            assert!(
+                kept.is_empty(),
+                "a cancelled import leaves no kept mail behind: {kept:?}"
+            );
+        }
+    }
+
+    phase a_source_that_changed_after_review_is_refused_before_publication;
+    {
+        let (home, reviewed) = fixture(2, BODY);
+        let selection = ThunderbirdSelection::all(&reviewed);
+        let inbox = home
+            .path()
+            .join(".thunderbird/abc.default/ImapMail/imap.example.test/Inbox");
+        let before = std::fs::read(&inbox).unwrap();
+        let mut grown = before.clone();
+        grown.extend_from_slice(&message("late", "Added later", "0001", b"late", false));
+        std::fs::write(&inbox, &grown).unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let error = import(target.path(), &reviewed, &selection).unwrap_err();
+        assert!(
+            error.to_string().contains("changed since it was reviewed"),
+            "{error}"
+        );
+        assert!(!target.path().join(".config/tilo/accounts").exists());
+        std::fs::write(&inbox, &before).unwrap();
+    }
+
+    phase flags_folders_attachments_and_existing_accounts_survive_the_streamed_import;
+    {
+        let (home, reviewed) = fixture(3, BODY);
+        let selection = ThunderbirdSelection::all(&reviewed);
+        let source_inbox = home
+            .path()
+            .join(".thunderbird/abc.default/ImapMail/imap.example.test/Inbox");
+        let original = std::fs::read(&source_inbox).unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let root = target.path().join(".config/tilo");
+        let mut store = AccountStore::new();
+        let mut existing =
+            accounts::Account::new(accounts::AccountId::new("person@example.test"), "email");
+        existing.display_name = "Existing owner label".into();
+        existing.config =
+            serde_json::json!({"email":"person@example.test","owner_extension":"preserve-me"});
+        store.upsert(existing.clone());
+        store.save_in(&root).unwrap();
+
+        let receipt = import(target.path(), &reviewed, &selection).unwrap();
+        assert!(!imap(&receipt).created);
+        let stored = AccountStore::load_in(&root);
+        assert_eq!(stored.len(), 2);
+        let account = stored.get(&existing.id).unwrap();
+        assert_eq!(account.type_id.as_str(), "email");
+        assert_eq!(account.config["owner_extension"], "preserve-me");
+        assert_eq!(
+            account.config["source_provenance"]["mail_client"],
+            "thunderbird"
+        );
+
+        let kept_mail = kept(target.path(), imap(&receipt));
+        assert_eq!(kept_mail.messages.len(), 4, "the Inbox and Drafts folders");
+        let flagged = kept_mail
+            .messages
+            .iter()
+            .find(|message| message.subject == "Message 1")
+            .expect("the flagged message");
+        assert!(flagged.read && flagged.starred);
+        let unread = kept_mail
+            .messages
+            .iter()
+            .find(|message| message.subject == "Message 2")
+            .unwrap();
+        assert!(!unread.read && !unread.starred);
+        let attached = kept_mail
+            .messages
+            .iter()
+            .find(|message| !message.attachments.is_empty())
+            .unwrap();
+        assert_eq!(attached.attachments[0].filename, "report.pdf");
+        assert_eq!(attached.folder, CachedFolder::Inbox);
+        let files = cache_of(target.path(), imap(&receipt)).with_extension("files");
+        assert_eq!(
+            std::fs::read(files.join(format!("{}.0", attached.id))).unwrap(),
+            b"%PDF-1.7"
+        );
+        let local_kept = kept(target.path(), local(&receipt));
+        assert!(local_kept.messages.iter().any(|message| {
+            message
+                .labels
+                .iter()
+                .any(|label| label == "Thunderbird/Projects/2024")
+        }));
+        let retained = target
+            .path()
+            .join(".local/share/tilo/mail-import/thunderbird");
+        assert!(std::fs::read_dir(&retained).unwrap().count() > 0);
+        let receipt_json = serde_json::to_string(&receipt).unwrap();
+        assert!(!receipt_json.contains("person@example.test"));
+        assert!(!receipt_json.contains(&target.path().to_string_lossy().to_string()));
+        assert_eq!(
+            std::fs::read(&source_inbox).unwrap(),
+            original,
+            "the import never rewrites the source mail"
+        );
+
+        let cache_bytes = std::fs::read(cache_of(target.path(), imap(&receipt))).unwrap();
+        let again = import(target.path(), &reviewed, &selection).unwrap();
+        assert!(again.accounts.iter().all(|account| !account.created));
+        assert!(
+            again
+                .accounts
+                .iter()
+                .all(|account| account.folders.iter().all(|folder| folder.messages == 0)),
+            "a second import inserts nothing"
+        );
+        assert_eq!(
+            std::fs::read(cache_of(target.path(), imap(&again))).unwrap(),
+            cache_bytes,
+            "a retry that inserts nothing rewrites nothing"
+        );
+        assert_eq!(AccountStore::load_in(&root).len(), 2);
+    }
+
+    phase a_selection_from_another_operation_is_refused;
+    {
+        let (_home, reviewed) = fixture(1, BODY);
+        let selection = ThunderbirdSelection::all(&reviewed);
+        let target = tempfile::tempdir().unwrap();
+        assert_eq!(
+            import_reviewed(
+                target.path(),
+                &reviewed,
+                &selection,
+                b"",
+                &AtomicBool::new(false)
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidData
+        );
+        let mut widened = selection;
+        widened.accounts[0].folders.push("not-a-folder".into());
+        assert!(
+            import_reviewed(
+                target.path(),
+                &reviewed,
+                &widened,
+                BINDING,
+                &AtomicBool::new(false)
+            )
+            .is_err()
+        );
+        assert!(!target.path().join(".config/tilo/accounts").exists());
+    }
 }

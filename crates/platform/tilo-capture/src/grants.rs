@@ -300,107 +300,111 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[test]
-    fn decisions_are_per_app_workspace_and_device_persisted_and_revocable() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state/device-grants");
-        let grants = DeviceGrants::open(&path).unwrap();
-        assert_eq!(grants.decision("r", "a", DeviceKind::Camera), None);
-        grants
-            .record("r", "a", DeviceKind::Camera, Decision::Allow)
-            .unwrap();
-        grants
-            .record("r", "a", DeviceKind::Microphone, Decision::Deny)
-            .unwrap();
-        assert_eq!(
-            grants.decision("other-workspace", "a", DeviceKind::Camera),
-            None
-        );
-        assert_eq!(grants.decision("r", "other-app", DeviceKind::Camera), None);
+    tilo_test_env::scenario! {
+        fn device_grants_are_kept_per_app_asked_for_once_and_revocable;
 
-        let reopened = DeviceGrants::open(&path).unwrap();
-        assert_eq!(
-            reopened.decision("r", "a", DeviceKind::Camera),
-            Some(Decision::Allow)
-        );
-        assert_eq!(
-            reopened.decision("r", "a", DeviceKind::Microphone),
-            Some(Decision::Deny)
-        );
-        assert_eq!(
-            reopened.list(),
-            [
-                Grant {
-                    workspace: "r".into(),
-                    app: "a".into(),
-                    device: DeviceKind::Camera,
-                    decision: Decision::Allow,
-                },
-                Grant {
-                    workspace: "r".into(),
-                    app: "a".into(),
-                    device: DeviceKind::Microphone,
-                    decision: Decision::Deny,
-                },
-            ]
-        );
-        assert!(reopened.revoke("r", "a", DeviceKind::Camera).unwrap());
-        assert!(!reopened.revoke("r", "a", DeviceKind::Camera).unwrap());
-        assert_eq!(
-            DeviceGrants::open(&path)
-                .unwrap()
-                .decision("r", "a", DeviceKind::Camera),
-            None
-        );
-        assert!(
+        phase decisions_are_per_app_workspace_and_device_persisted_and_revocable;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state/device-grants");
+            let grants = DeviceGrants::open(&path).unwrap();
+            assert_eq!(grants.decision("r", "a", DeviceKind::Camera), None);
             grants
-                .record("r\tx", "a", DeviceKind::Camera, Decision::Allow)
-                .is_err()
-        );
-        std::fs::write(&path, "r\ta\tcamera\tmaybe\n").unwrap();
-        assert!(DeviceGrants::open(&path).is_err(), "corruption is an error");
-    }
+                .record("r", "a", DeviceKind::Camera, Decision::Allow)
+                .unwrap();
+            grants
+                .record("r", "a", DeviceKind::Microphone, Decision::Deny)
+                .unwrap();
+            assert_eq!(
+                grants.decision("other-workspace", "a", DeviceKind::Camera),
+                None
+            );
+            assert_eq!(grants.decision("r", "other-app", DeviceKind::Camera), None);
 
-    #[test]
-    fn the_policy_asks_once_refuses_undeclared_devices_and_follows_revocation() {
-        let dir = tempfile::tempdir().unwrap();
-        let grants = Arc::new(DeviceGrants::open(&dir.path().join("grants")).unwrap());
-        let asked = Arc::new(AtomicUsize::new(0));
-        let answer = Arc::new(Mutex::new(true));
-        let policy = GrantPolicy {
-            grants: Arc::clone(&grants),
-            workspace: "r".into(),
-            app: "so.tilo.video".into(),
-            declared: vec![DeviceKind::Camera],
-            consent: {
-                let (asked, answer) = (Arc::clone(&asked), Arc::clone(&answer));
-                move |_| {
-                    asked.fetch_add(1, Ordering::SeqCst);
-                    Ok(*answer.lock().unwrap())
-                }
-            },
-        };
-        let refused = policy.admit(DeviceKind::Microphone).unwrap_err();
-        assert!(refused.contains("does not declare"), "{refused}");
-        assert_eq!(
-            asked.load(Ordering::SeqCst),
-            0,
-            "an undeclared device asked"
-        );
+            let reopened = DeviceGrants::open(&path).unwrap();
+            assert_eq!(
+                reopened.decision("r", "a", DeviceKind::Camera),
+                Some(Decision::Allow)
+            );
+            assert_eq!(
+                reopened.decision("r", "a", DeviceKind::Microphone),
+                Some(Decision::Deny)
+            );
+            assert_eq!(
+                reopened.list(),
+                [
+                    Grant {
+                        workspace: "r".into(),
+                        app: "a".into(),
+                        device: DeviceKind::Camera,
+                        decision: Decision::Allow,
+                    },
+                    Grant {
+                        workspace: "r".into(),
+                        app: "a".into(),
+                        device: DeviceKind::Microphone,
+                        decision: Decision::Deny,
+                    },
+                ]
+            );
+            assert!(reopened.revoke("r", "a", DeviceKind::Camera).unwrap());
+            assert!(!reopened.revoke("r", "a", DeviceKind::Camera).unwrap());
+            assert_eq!(
+                DeviceGrants::open(&path)
+                    .unwrap()
+                    .decision("r", "a", DeviceKind::Camera),
+                None
+            );
+            assert!(
+                grants
+                    .record("r\tx", "a", DeviceKind::Camera, Decision::Allow)
+                    .is_err()
+            );
+            std::fs::write(&path, "r\ta\tcamera\tmaybe\n").unwrap();
+            assert!(DeviceGrants::open(&path).is_err(), "corruption is an error");
+        }
 
-        policy.admit(DeviceKind::Camera).unwrap();
-        policy.admit(DeviceKind::Camera).unwrap();
-        assert_eq!(asked.load(Ordering::SeqCst), 1, "asked twice");
-        assert!(policy.allows(DeviceKind::Camera));
+        phase the_policy_asks_once_refuses_undeclared_devices_and_follows_revocation;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let grants = Arc::new(DeviceGrants::open(&dir.path().join("grants")).unwrap());
+            let asked = Arc::new(AtomicUsize::new(0));
+            let answer = Arc::new(Mutex::new(true));
+            let policy = GrantPolicy {
+                grants: Arc::clone(&grants),
+                workspace: "r".into(),
+                app: "so.tilo.video".into(),
+                declared: vec![DeviceKind::Camera],
+                consent: {
+                    let (asked, answer) = (Arc::clone(&asked), Arc::clone(&answer));
+                    move |_| {
+                        asked.fetch_add(1, Ordering::SeqCst);
+                        Ok(*answer.lock().unwrap())
+                    }
+                },
+            };
+            let refused = policy.admit(DeviceKind::Microphone).unwrap_err();
+            assert!(refused.contains("does not declare"), "{refused}");
+            assert_eq!(
+                asked.load(Ordering::SeqCst),
+                0,
+                "an undeclared device asked"
+            );
 
-        let elsewhere = DeviceGrants::open(&dir.path().join("grants")).unwrap();
-        elsewhere
-            .revoke("r", "so.tilo.video", DeviceKind::Camera)
-            .unwrap();
-        assert!(!policy.allows(DeviceKind::Camera));
-        *answer.lock().unwrap() = false;
-        assert!(policy.admit(DeviceKind::Camera).is_err());
-        assert!(policy.admit(DeviceKind::Camera).is_err());
-        assert_eq!(asked.load(Ordering::SeqCst), 2, "a denial asked again");
+            policy.admit(DeviceKind::Camera).unwrap();
+            policy.admit(DeviceKind::Camera).unwrap();
+            assert_eq!(asked.load(Ordering::SeqCst), 1, "asked twice");
+            assert!(policy.allows(DeviceKind::Camera));
+
+            let elsewhere = DeviceGrants::open(&dir.path().join("grants")).unwrap();
+            elsewhere
+                .revoke("r", "so.tilo.video", DeviceKind::Camera)
+                .unwrap();
+            assert!(!policy.allows(DeviceKind::Camera));
+            *answer.lock().unwrap() = false;
+            assert!(policy.admit(DeviceKind::Camera).is_err());
+            assert!(policy.admit(DeviceKind::Camera).is_err());
+            assert_eq!(asked.load(Ordering::SeqCst), 2, "a denial asked again");
+        }
     }
 }

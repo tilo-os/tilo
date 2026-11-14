@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Declare a person an owner of a running Lounge, through its operator socket.
 
-Usage: declare-owner SOCKET USER_PUBLIC_KEY
+Usage: declare-owner SOCKET USER_PUBLIC_KEY [--name NAME]
 
 SOCKET is the workspace's `--operator-socket` (a UNIX socket in its state
 directory), and USER_PUBLIC_KEY the person's user root, 64 hex characters. The
 workspace's governance holds them as an administrator from then on, by their
 root: its door lets them in, and a key of theirs reaches the workspace.
+
+--name NAME is the name the person goes by: the workspace's member list and
+the invitations they make say it from then on, before any device of theirs has
+joined.
 
 Answers 0 once the workspace says so, 1 with the reason on stderr otherwise.
 """
@@ -16,14 +20,25 @@ import sys
 
 
 def main(argv):
-    if len(argv) != 3:
+    arguments = argv[1:]
+    name = None
+    if "--name" in arguments:
+        index = arguments.index("--name")
+        if index + 1 >= len(arguments):
+            print(__doc__.strip().splitlines()[2], file=sys.stderr)
+            return 2
+        name = arguments[index + 1].strip() or None
+        del arguments[index:index + 2]
+    if len(arguments) != 2:
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
-    path, key = argv[1], argv[2].strip()
+    path, key = arguments[0], arguments[1].strip()
     if len(key) != 64 or any(character not in "0123456789abcdef" for character in key):
         print(f"{key!r} is not a user public key: 64 lowercase hex characters", file=sys.stderr)
         return 2
-    command = json.dumps({"op": "declare_owner", "user_public_key": key}) + "\n"
+    command = {"op": "declare_owner", "user_public_key": key}
+    if name:
+        command["name"] = name
     try:
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.connect(path)
@@ -31,7 +46,7 @@ def main(argv):
         print(f"the workspace is not listening on {path}: {error}", file=sys.stderr)
         return 1
     with connection:
-        connection.sendall(command.encode())
+        connection.sendall((json.dumps(command) + "\n").encode())
         answer = b""
         while True:
             chunk = connection.recv(4096)
@@ -45,7 +60,7 @@ def main(argv):
         return 1
     event = json.loads(line[len(prefix):])
     if event.get("event") == "owner_declared":
-        print(f"{key} is an owner of the workspace")
+        print(f"{key} is an owner of the workspace" + (f" as {name}" if name else ""))
         return 0
     print(event.get("reason") or f"the workspace answered {event}", file=sys.stderr)
     return 1

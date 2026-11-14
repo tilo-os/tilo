@@ -39,8 +39,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::artifact::ArtifactId;
 use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
-use crate::channel::ArtifactId;
 use crate::crypto::Ed25519PublicKey;
 use crate::op::{ContentRetention, SignedOp};
 use crate::role::OpKind;
@@ -437,8 +437,7 @@ impl SealedCompaction {
             && segment.author == head.author
             && segment.seq == head.seq
             && segment.artifact == head.artifact
-            && segment.encryption.map(|meta| (meta.channel, meta.epoch))
-                == head.encryption.map(|meta| (meta.channel, meta.epoch))
+            && segment.encryption.map(|meta| meta.epoch) == head.encryption.map(|meta| meta.epoch)
             && SealedCompactionSegment::parse(segment).is_ok()
     }
 }
@@ -491,11 +490,12 @@ mod tests {
         )
     }
 
-    /// Compaction payloads round-trip and reject the wrong op class; prefix hashes are deterministic,
-    /// order-sensitive and stable for an empty prefix.
-    #[test]
-    fn compaction_payloads_and_prefix_hashes_are_exact() {
-        // Phase: parse_compaction_payload_round_trip.
+    tilo_test_env::scenario! {
+        /// Compaction payloads round-trip and reject the wrong op class; prefix hashes are deterministic,
+        /// order-sensitive and stable for an empty prefix.
+        fn compaction_payloads_and_prefix_hashes_are_exact;
+
+        phase parse_compaction_payload_round_trip;
         {
             let cp = CompactionCheckpoint {
                 artifact: ArtifactId::new(),
@@ -518,7 +518,7 @@ mod tests {
             assert_eq!(parsed, cp);
         }
 
-        // Phase: parse_compaction_payload_rejects_wrong_op_kind.
+        phase parse_compaction_payload_rejects_wrong_op_kind;
         {
             // A SignedOp with kind=Splice carrying a checkpoint-shaped
             // payload still must be rejected — the grants give Editors
@@ -548,7 +548,7 @@ mod tests {
             }
         }
 
-        // Phase: hash_op_prefix_is_deterministic.
+        phase hash_op_prefix_is_deterministic;
         {
             let a = dummy_op(1);
             let b = dummy_op(2);
@@ -557,7 +557,7 @@ mod tests {
             assert_eq!(h1, h2);
         }
 
-        // Phase: hash_op_prefix_order_sensitive.
+        phase hash_op_prefix_order_sensitive;
         {
             // The hash must be sensitive to op order so a peer reordering
             // its log can't pass verification.
@@ -568,7 +568,7 @@ mod tests {
             assert_ne!(h_ab, h_ba);
         }
 
-        // Phase: hash_op_prefix_empty_is_stable.
+        phase hash_op_prefix_empty_is_stable;
         {
             // Edge case: an empty prefix (a checkpoint before any ops) — the
             // hash must be SHA-256 of the empty string, not a panic.
@@ -589,202 +589,211 @@ mod tests {
             kind,
             SystemTime::UNIX_EPOCH,
             9,
-            crate::op::EncryptionMetadata::content_key(3, crate::ChannelId::new(), retention),
+            crate::op::EncryptionMetadata::content_key(3, retention),
         )
     }
 
-    /// A sealed compaction lists each author's highest superseded write once and hashes the
-    /// superseded set independently of admission order.
-    #[test]
-    fn sealed_compaction_covers_exactly_its_writes() {
-        let (a, b, c) = (dummy_op(1), dummy_op(2), dummy_op(3));
-        let compaction =
-            SealedCompaction::new(&[a.clone(), b.clone(), c.clone()], vec![7]).unwrap();
-        assert!(compaction.covers(&a) && compaction.covers(&b) && compaction.covers(&c));
-        assert!(
-            compaction
-                .covers
-                .iter()
-                .zip(compaction.covers.iter().skip(1))
-                .all(|(x, y)| x.0 < y.0),
-            "covers is sorted by author"
-        );
-        assert!(!compaction.covers(&dummy_op(1)), "another author's write");
-        assert_eq!(
-            hash_sealed_prefix([&c, &a, &b]).unwrap(),
-            hash_sealed_prefix([&b, &c, &a]).unwrap(),
-            "the digest does not depend on admission order"
-        );
-        assert_ne!(
-            hash_sealed_prefix([&a, &b]).unwrap(),
-            compaction.prefix_hash,
-            "a different set hashes differently"
-        );
-        assert!(SealedCompaction::new(&[], vec![7]).is_err());
-        assert!(SealedCompaction::new(std::slice::from_ref(&a), Vec::new()).is_err());
-    }
+    tilo_test_env::scenario! {
+        /// The contract of a sealed and of a segmented compaction: what it covers, what parses and what is refused.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_sealed_compaction_names_exactly_what_it_supersedes;
 
-    /// A sealed compaction decodes only from a sealed checkpoint `Compaction` op that keeps
-    /// its contract, and only its ciphertext is what a key holder opens.
-    #[test]
-    fn sealed_compaction_parses_only_its_contract() {
-        let a = dummy_op(1);
-        let compaction =
-            SealedCompaction::new(&[a.clone(), dummy_op(2), dummy_op(3)], vec![7]).unwrap();
-        let payload = compaction.encode().unwrap();
-        let op = sealed_op(
-            payload.clone(),
-            OpKind::Compaction,
-            ContentRetention::Checkpoint,
-        );
-        assert_eq!(SealedCompaction::parse(&op).unwrap(), compaction);
-        assert_eq!(sealed_ciphertext(&op).unwrap().as_ref(), &[7]);
-        let write = sealed_op(vec![1, 2], OpKind::Change, ContentRetention::Delta);
-        assert_eq!(sealed_ciphertext(&write).unwrap().as_ref(), &[1, 2]);
-
-        for (op, why) in [
-            (
-                sealed_op(
-                    payload.clone(),
-                    OpKind::Change,
-                    ContentRetention::Checkpoint,
-                ),
-                "another op class",
-            ),
-            (
-                sealed_op(payload.clone(), OpKind::Compaction, ContentRetention::Delta),
-                "delta retention",
-            ),
-            (
-                SignedOp::new_unsigned(
-                    payload.clone(),
-                    ArtifactId::new(),
-                    a.author,
-                    AttestationId::new(),
-                    OpKind::Compaction,
-                    SystemTime::UNIX_EPOCH,
-                    1,
-                ),
-                "a cleartext compaction",
-            ),
-        ] {
-            assert!(SealedCompaction::parse(&op).is_err(), "{why} parses");
+        phase sealed_compaction_covers_exactly_its_writes;
+        // A sealed compaction lists each author's highest superseded write once and hashes the
+        // superseded set independently of admission order.
+        {
+            let (a, b, c) = (dummy_op(1), dummy_op(2), dummy_op(3));
+            let compaction =
+                SealedCompaction::new(&[a.clone(), b.clone(), c.clone()], vec![7]).unwrap();
+            assert!(compaction.covers(&a) && compaction.covers(&b) && compaction.covers(&c));
+            assert!(
+                compaction
+                    .covers
+                    .iter()
+                    .zip(compaction.covers.iter().skip(1))
+                    .all(|(x, y)| x.0 < y.0),
+                "covers is sorted by author"
+            );
+            assert!(!compaction.covers(&dummy_op(1)), "another author's write");
+            assert_eq!(
+                hash_sealed_prefix([&c, &a, &b]).unwrap(),
+                hash_sealed_prefix([&b, &c, &a]).unwrap(),
+                "the digest does not depend on admission order"
+            );
+            assert_ne!(
+                hash_sealed_prefix([&a, &b]).unwrap(),
+                compaction.prefix_hash,
+                "a different set hashes differently"
+            );
+            assert!(SealedCompaction::new(&[], vec![7]).is_err());
+            assert!(SealedCompaction::new(std::slice::from_ref(&a), Vec::new()).is_err());
         }
-        let mut extended = payload;
-        extended.push(0);
-        assert!(
-            SealedCompaction::parse(&sealed_op(
-                extended,
-                OpKind::Compaction,
-                ContentRetention::Checkpoint
-            ))
-            .is_err(),
-            "trailing bytes"
-        );
-    }
 
-    /// A compaction whose snapshot spans several ops names each segment by its payload, keeps
-    /// the one-op encoding for one that does not, and opens each segment as its own ciphertext.
-    #[test]
-    fn a_segmented_compaction_names_exactly_its_segments() {
-        let superseded = [dummy_op(1), dummy_op(2)];
-        let whole = SealedCompaction::new(&superseded, vec![7]).unwrap();
-        let encoded = whole.encode().unwrap();
-        assert_eq!(encoded.first(), Some(&SEALED_COMPACTION_VERSION));
-        let payloads: Vec<Vec<u8>> = [vec![8], vec![9]]
-            .into_iter()
-            .map(|ciphertext| SealedCompactionSegment::new(ciphertext).encode().unwrap())
-            .collect();
-        let segmented = whole.segmented(&payloads);
-        let head = sealed_op(
-            segmented.encode().unwrap(),
-            OpKind::Compaction,
-            ContentRetention::Checkpoint,
-        );
-        assert_eq!(SealedCompaction::parse(&head).unwrap(), segmented);
-        assert!(is_compaction_piece(&head) && !is_compaction_segment(&head));
-        let segment = |payload: &Vec<u8>, retention| {
-            let mut op = sealed_op(payload.clone(), OpKind::Compaction, retention);
-            op.author = head.author;
-            op.seq = head.seq;
-            op.artifact = head.artifact;
-            op.encryption = head.encryption.map(|meta| {
-                crate::op::EncryptionMetadata::content_key(meta.epoch, meta.channel, retention)
-            });
-            op
-        };
-        let first = segment(&payloads[0], ContentRetention::Delta);
-        let second = segment(&payloads[1], ContentRetention::Delta);
-        assert!(is_compaction_segment(&first) && is_compaction_piece(&first));
-        assert!(segmented.names_segment(&head, 0, &first));
-        assert!(segmented.names_segment(&head, 1, &second));
-        assert!(!segmented.names_segment(&head, 0, &second), "out of order");
-        assert!(
-            !segmented.names_segment(
-                &head,
-                0,
-                &segment(&payloads[0], ContentRetention::Checkpoint)
-            ),
-            "a segment follows its compaction as a delta"
-        );
-        assert_eq!(sealed_ciphertext(&second).unwrap().as_ref(), &[9]);
-        let mut other = first;
-        other.seq += 1;
-        assert!(
-            !segmented.names_segment(&head, 0, &other),
-            "another sequence"
-        );
-    }
-
-    /// A sealed compaction whose own fields break its contract neither parses nor opens.
-    #[test]
-    fn sealed_compaction_refuses_a_broken_contract() {
-        let compaction =
-            SealedCompaction::new(&[dummy_op(1), dummy_op(2), dummy_op(3)], vec![7]).unwrap();
-        for (tampered, why) in [
-            (
-                SealedCompaction {
-                    version: 2,
-                    ..compaction.clone()
-                },
-                "an unknown version",
-            ),
-            (
-                SealedCompaction {
-                    covers: compaction.covers.iter().rev().copied().collect(),
-                    ..compaction.clone()
-                },
-                "unsorted covers",
-            ),
-            (
-                SealedCompaction {
-                    covers: vec![compaction.covers[0], compaction.covers[0]],
-                    ..compaction.clone()
-                },
-                "a repeated author",
-            ),
-            (
-                SealedCompaction {
-                    covers: Vec::new(),
-                    ..compaction.clone()
-                },
-                "empty covers",
-            ),
-            (
-                SealedCompaction {
-                    ciphertext: Vec::new(),
-                    ..compaction.clone()
-                },
-                "an empty ciphertext",
-            ),
-        ] {
+        phase sealed_compaction_parses_only_its_contract;
+        // A sealed compaction decodes only from a sealed checkpoint `Compaction` op that keeps
+        // its contract, and only its ciphertext is what a key holder opens.
+        {
+            let a = dummy_op(1);
+            let compaction =
+                SealedCompaction::new(&[a.clone(), dummy_op(2), dummy_op(3)], vec![7]).unwrap();
+            let payload = compaction.encode().unwrap();
             let op = sealed_op(
-                tampered.encode().unwrap(),
+                payload.clone(),
                 OpKind::Compaction,
                 ContentRetention::Checkpoint,
             );
-            assert!(SealedCompaction::parse(&op).is_err(), "{why} parses");
-            assert!(sealed_ciphertext(&op).is_err(), "{why} opens");
+            assert_eq!(SealedCompaction::parse(&op).unwrap(), compaction);
+            assert_eq!(sealed_ciphertext(&op).unwrap().as_ref(), &[7]);
+            let write = sealed_op(vec![1, 2], OpKind::Change, ContentRetention::Delta);
+            assert_eq!(sealed_ciphertext(&write).unwrap().as_ref(), &[1, 2]);
+
+            for (op, why) in [
+                (
+                    sealed_op(
+                        payload.clone(),
+                        OpKind::Change,
+                        ContentRetention::Checkpoint,
+                    ),
+                    "another op class",
+                ),
+                (
+                    sealed_op(payload.clone(), OpKind::Compaction, ContentRetention::Delta),
+                    "delta retention",
+                ),
+                (
+                    SignedOp::new_unsigned(
+                        payload.clone(),
+                        ArtifactId::new(),
+                        a.author,
+                        AttestationId::new(),
+                        OpKind::Compaction,
+                        SystemTime::UNIX_EPOCH,
+                        1,
+                    ),
+                    "a cleartext compaction",
+                ),
+            ] {
+                assert!(SealedCompaction::parse(&op).is_err(), "{why} parses");
+            }
+            let mut extended = payload;
+            extended.push(0);
+            assert!(
+                SealedCompaction::parse(&sealed_op(
+                    extended,
+                    OpKind::Compaction,
+                    ContentRetention::Checkpoint
+                ))
+                .is_err(),
+                "trailing bytes"
+            );
+        }
+
+        phase a_segmented_compaction_names_exactly_its_segments;
+        // A compaction whose snapshot spans several ops names each segment by its payload, keeps
+        // the one-op encoding for one that does not, and opens each segment as its own ciphertext.
+        {
+            let superseded = [dummy_op(1), dummy_op(2)];
+            let whole = SealedCompaction::new(&superseded, vec![7]).unwrap();
+            let encoded = whole.encode().unwrap();
+            assert_eq!(encoded.first(), Some(&SEALED_COMPACTION_VERSION));
+            let payloads: Vec<Vec<u8>> = [vec![8], vec![9]]
+                .into_iter()
+                .map(|ciphertext| SealedCompactionSegment::new(ciphertext).encode().unwrap())
+                .collect();
+            let segmented = whole.segmented(&payloads);
+            let head = sealed_op(
+                segmented.encode().unwrap(),
+                OpKind::Compaction,
+                ContentRetention::Checkpoint,
+            );
+            assert_eq!(SealedCompaction::parse(&head).unwrap(), segmented);
+            assert!(is_compaction_piece(&head) && !is_compaction_segment(&head));
+            let segment = |payload: &Vec<u8>, retention| {
+                let mut op = sealed_op(payload.clone(), OpKind::Compaction, retention);
+                op.author = head.author;
+                op.seq = head.seq;
+                op.artifact = head.artifact;
+                op.encryption = head.encryption.map(|meta| {
+                    crate::op::EncryptionMetadata::content_key(meta.epoch, retention)
+                });
+                op
+            };
+            let first = segment(&payloads[0], ContentRetention::Delta);
+            let second = segment(&payloads[1], ContentRetention::Delta);
+            assert!(is_compaction_segment(&first) && is_compaction_piece(&first));
+            assert!(segmented.names_segment(&head, 0, &first));
+            assert!(segmented.names_segment(&head, 1, &second));
+            assert!(!segmented.names_segment(&head, 0, &second), "out of order");
+            assert!(
+                !segmented.names_segment(
+                    &head,
+                    0,
+                    &segment(&payloads[0], ContentRetention::Checkpoint)
+                ),
+                "a segment follows its compaction as a delta"
+            );
+            assert_eq!(sealed_ciphertext(&second).unwrap().as_ref(), &[9]);
+            let mut other = first;
+            other.seq += 1;
+            assert!(
+                !segmented.names_segment(&head, 0, &other),
+                "another sequence"
+            );
+        }
+
+        phase sealed_compaction_refuses_a_broken_contract;
+        // A sealed compaction whose own fields break its contract neither parses nor opens.
+        {
+            let compaction =
+                SealedCompaction::new(&[dummy_op(1), dummy_op(2), dummy_op(3)], vec![7]).unwrap();
+            for (tampered, why) in [
+                (
+                    SealedCompaction {
+                        version: 2,
+                        ..compaction.clone()
+                    },
+                    "an unknown version",
+                ),
+                (
+                    SealedCompaction {
+                        covers: compaction.covers.iter().rev().copied().collect(),
+                        ..compaction.clone()
+                    },
+                    "unsorted covers",
+                ),
+                (
+                    SealedCompaction {
+                        covers: vec![compaction.covers[0], compaction.covers[0]],
+                        ..compaction.clone()
+                    },
+                    "a repeated author",
+                ),
+                (
+                    SealedCompaction {
+                        covers: Vec::new(),
+                        ..compaction.clone()
+                    },
+                    "empty covers",
+                ),
+                (
+                    SealedCompaction {
+                        ciphertext: Vec::new(),
+                        ..compaction.clone()
+                    },
+                    "an empty ciphertext",
+                ),
+            ] {
+                let op = sealed_op(
+                    tampered.encode().unwrap(),
+                    OpKind::Compaction,
+                    ContentRetention::Checkpoint,
+                );
+                assert!(SealedCompaction::parse(&op).is_err(), "{why} parses");
+                assert!(sealed_ciphertext(&op).is_err(), "{why} opens");
+            }
         }
     }
 }

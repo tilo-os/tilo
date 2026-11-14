@@ -188,67 +188,71 @@ mod tests {
 615 590 0:31 /var/home/you/My\\040Files /home/you/My\\040Files rw - btrfs /dev/vda3 rw
 ";
 
-    #[test]
-    fn a_sandbox_mount_table_names_the_trees_it_binds() {
-        let mut mounts = Mounts::default();
-        mounts.add_mountinfo(SANDBOX);
-        assert!(mounts.holds(Path::new(
-            "/home/you/.local/share/tilo-runtime/2026.07+native.ab"
-        )));
-        assert!(mounts.holds(Path::new("/srv/tilo-apps/pkgs/7f7f")));
-        assert!(!mounts.holds(Path::new(
-            "/home/you/.local/share/tilo-runtime/2026.07+native.cd"
-        )));
-        assert!(!mounts.holds(Path::new("/home/you/.local/share/tilo-apps/pkgs/8e8e")));
-        assert!(mounts.has_mount_point(Path::new("/run/tilo-runtime/2026.07+native.ab")));
-        assert!(
-            mounts.holds(Path::new("/var/home/you/My Files")),
-            "escapes are undone"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_mount_table_names_what_is_in_use;
 
-    #[test]
-    fn a_renamed_tree_is_found_under_its_new_name() {
-        let mut mounts = Mounts::default();
-        mounts.add_mountinfo(
-            "700 1 0:31 /home/you/.local/share/tilo-runtime/.trash/v1.42.7 /run/tilo-runtime/v1 ro - ext4 /dev/sda1 rw\n",
-        );
-        assert!(mounts.holds(Path::new(
-            "/home/you/.local/share/tilo-runtime/.trash/v1.42.7"
-        )));
-        assert!(!mounts.holds(Path::new("/home/you/.local/share/tilo-runtime/v1")));
-        assert!(mounts.has_mount_point(Path::new("/run/tilo-runtime/v1")));
-    }
-
-    #[test]
-    fn an_unreadable_table_holds_everything() {
-        let unknown = InUse::unknown("no /proc");
-        assert!(unknown.holds(Path::new("/anything/at/all")));
-        assert!(unknown.has_mount_point(Path::new("/run/tilo-runtime/x")));
-        assert!(!InUse::known(Mounts::default()).holds(Path::new("/a/b")));
-    }
-
-    #[test]
-    fn scanning_a_proc_tree_reads_every_process() {
-        let proc_root = tempfile::tempdir().unwrap();
-        for (pid, table) in [("1", SANDBOX), ("22", ""), ("self", SANDBOX)] {
-            std::fs::create_dir_all(proc_root.path().join(pid)).unwrap();
-            std::fs::write(proc_root.path().join(pid).join("mountinfo"), table).unwrap();
+        phase a_sandbox_mount_table_names_the_trees_it_binds;
+        {
+            let mut mounts = Mounts::default();
+            mounts.add_mountinfo(SANDBOX);
+            assert!(mounts.holds(Path::new(
+                "/home/you/.local/share/tilo-runtime/2026.07+native.ab"
+            )));
+            assert!(mounts.holds(Path::new("/srv/tilo-apps/pkgs/7f7f")));
+            assert!(!mounts.holds(Path::new(
+                "/home/you/.local/share/tilo-runtime/2026.07+native.cd"
+            )));
+            assert!(!mounts.holds(Path::new("/home/you/.local/share/tilo-apps/pkgs/8e8e")));
+            assert!(mounts.has_mount_point(Path::new("/run/tilo-runtime/2026.07+native.ab")));
+            assert!(
+                mounts.holds(Path::new("/var/home/you/My Files")),
+                "escapes are undone"
+            );
         }
-        let mounts = Mounts::scan_proc(proc_root.path()).unwrap();
-        assert!(mounts.holds(Path::new("/x/pkgs/7f7f")));
-        assert!(Mounts::scan_proc(&proc_root.path().join("missing")).is_err());
-    }
 
-    #[test]
-    fn the_table_is_read_when_first_asked() {
-        let in_use = InUse::now();
-        assert!(
-            in_use.0.get().is_none(),
-            "nothing is read before a question"
-        );
-        let _ = in_use.holds(Path::new("/a/b"));
-        assert!(in_use.0.get().is_some());
+        phase a_renamed_tree_is_found_under_its_new_name;
+        {
+            let mut mounts = Mounts::default();
+            mounts.add_mountinfo(
+                "700 1 0:31 /home/you/.local/share/tilo-runtime/.trash/v1.42.7 /run/tilo-runtime/v1 ro - ext4 /dev/sda1 rw\n",
+            );
+            assert!(mounts.holds(Path::new(
+                "/home/you/.local/share/tilo-runtime/.trash/v1.42.7"
+            )));
+            assert!(!mounts.holds(Path::new("/home/you/.local/share/tilo-runtime/v1")));
+            assert!(mounts.has_mount_point(Path::new("/run/tilo-runtime/v1")));
+        }
+
+        phase an_unreadable_table_holds_everything;
+        {
+            let unknown = InUse::unknown("no /proc");
+            assert!(unknown.holds(Path::new("/anything/at/all")));
+            assert!(unknown.has_mount_point(Path::new("/run/tilo-runtime/x")));
+            assert!(!InUse::known(Mounts::default()).holds(Path::new("/a/b")));
+        }
+
+        phase scanning_a_proc_tree_reads_every_process;
+        {
+            let proc_root = tempfile::tempdir().unwrap();
+            for (pid, table) in [("1", SANDBOX), ("22", ""), ("self", SANDBOX)] {
+                std::fs::create_dir_all(proc_root.path().join(pid)).unwrap();
+                std::fs::write(proc_root.path().join(pid).join("mountinfo"), table).unwrap();
+            }
+            let mounts = Mounts::scan_proc(proc_root.path()).unwrap();
+            assert!(mounts.holds(Path::new("/x/pkgs/7f7f")));
+            assert!(Mounts::scan_proc(&proc_root.path().join("missing")).is_err());
+        }
+
+        phase the_table_is_read_when_first_asked;
+        {
+            let in_use = InUse::now();
+            assert!(
+                in_use.0.get().is_none(),
+                "nothing is read before a question"
+            );
+            let _ = in_use.holds(Path::new("/a/b"));
+            assert!(in_use.0.get().is_some());
+        }
     }
 
     #[cfg(target_os = "linux")]

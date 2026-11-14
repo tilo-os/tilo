@@ -250,6 +250,11 @@ mod tests {
                 .collect(),
         };
         let bundle = ImportBundle::from_batch(raw).unwrap();
+        // The window whose code records the import keeps its large parts in
+        // its content store, as every window's does.
+        let window = ui::wake::WakeScope::new();
+        ui::tilo_resource::content::register(&window.handle(), ui::content::ContentStore::memory());
+        let _in_the_window = window.enter();
         let mut personal = Replica::<BrowsingHistory>::new();
         personal.apply(bundle.history_action().unwrap()).unwrap();
         let history = History::of(&personal.state().unwrap());

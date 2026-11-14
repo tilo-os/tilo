@@ -511,15 +511,6 @@ mod tests {
     }
 
     #[test]
-    fn pkce_s256_challenge_matches_rfc7636_appendix_b() {
-        let pkce = Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk");
-        assert_eq!(
-            pkce.challenge,
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-        );
-    }
-
-    #[test]
     fn generated_verifier_is_valid_and_matches_its_challenge() {
         let pkce = Pkce::generate().unwrap();
         assert_eq!(pkce.verifier.len(), 43);
@@ -533,20 +524,33 @@ mod tests {
         assert!(!format!("{pkce:?}").contains(&pkce.verifier));
     }
 
-    #[test]
-    fn base64url_matches_rfc4648_vectors() {
-        assert_eq!(base64url_nopad(b""), "");
-        assert_eq!(base64url_nopad(b"f"), "Zg");
-        assert_eq!(base64url_nopad(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64url_nopad(&[0xfb, 0xff, 0xbf]), "-_-_");
-    }
+    tilo_test_env::scenario! {
+        fn pkce_and_its_encodings_match_their_specifications;
 
-    #[test]
-    fn sha256_matches_known_vectors() {
-        assert_eq!(
-            hex::encode(Sha256::digest(b"abc")),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
+        phase pkce_s256_challenge_matches_rfc7636_appendix_b;
+        {
+            let pkce = Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk");
+            assert_eq!(
+                pkce.challenge,
+                "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            );
+        }
+
+        phase base64url_matches_rfc4648_vectors;
+        {
+            assert_eq!(base64url_nopad(b""), "");
+            assert_eq!(base64url_nopad(b"f"), "Zg");
+            assert_eq!(base64url_nopad(b"foobar"), "Zm9vYmFy");
+            assert_eq!(base64url_nopad(&[0xfb, 0xff, 0xbf]), "-_-_");
+        }
+
+        phase sha256_matches_known_vectors;
+        {
+            assert_eq!(
+                hex::encode(Sha256::digest(b"abc")),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            );
+        }
     }
 
     #[test]
@@ -603,59 +607,6 @@ mod tests {
     }
 
     #[test]
-    fn token_response_parses_access_refresh_and_lifetime() {
-        let tokens = parse_token_response(
-            r#"{"access_token":"ya29.abc","expires_in":3599,"refresh_token":"1//xyz","token_type":"Bearer"}"#,
-        )
-        .unwrap();
-        assert_eq!(tokens.access_token, "ya29.abc");
-        assert_eq!(tokens.refresh_token, "1//xyz");
-        assert_eq!(tokens.expires_in, 3599);
-        let debug = format!("{tokens:?}");
-        assert!(
-            !debug.contains("ya29") && !debug.contains("1//xyz"),
-            "{debug}"
-        );
-    }
-
-    #[test]
-    fn token_response_retains_provider_scope_without_adding_permissions() {
-        let tokens = parse_token_response(
-            r#"{"access_token":"access","scope":"user-read-private user-library-read"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            tokens.scope.as_deref(),
-            Some("user-read-private user-library-read")
-        );
-        assert_eq!(
-            parse_token_response(r#"{"access_token":"access"}"#)
-                .unwrap()
-                .scope,
-            None
-        );
-        assert!(parse_token_response(r#"{"access_token":"access","scope":42}"#).is_err());
-    }
-
-    #[test]
-    fn token_errors_are_typed_and_never_echo_descriptions() {
-        assert_eq!(
-            parse_token_response(
-                r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#
-            ),
-            Err(OAuthError::InvalidGrant)
-        );
-        let Err(OAuthError::Protocol(message)) = parse_token_response(
-            r#"{"error":"invalid_client","error_description":"secret-bearing prose"}"#,
-        ) else {
-            panic!("expected a protocol error");
-        };
-        assert_eq!(message, "error invalid_client");
-        assert!(parse_token_response("<html>").is_err());
-        assert!(parse_token_response(r#"{"access_token":""}"#).is_err());
-    }
-
-    #[test]
     fn expiry_accounts_for_lifetime_and_skew() {
         let tokens = TokenSet {
             access_token: "a".into(),
@@ -675,12 +626,69 @@ mod tests {
         assert_eq!(no_lifetime.expires_at(), None);
     }
 
-    #[test]
-    fn stored_token_shape_is_unchanged() {
-        // Vault entries written by Mail's sign-in must keep deserialising.
-        let stored =
-            r#"{"access_token":"at","refresh_token":"rt","expires_in":3600,"obtained_at":1000}"#;
-        let tokens: TokenSet = serde_json::from_str(stored).unwrap();
-        assert_eq!(serde_json::to_string(&tokens).unwrap(), stored);
+    tilo_test_env::scenario! {
+        fn a_token_response_is_parsed_typed_and_stored_as_it_was;
+
+        phase token_response_parses_access_refresh_and_lifetime;
+        {
+            let tokens = parse_token_response(
+                r#"{"access_token":"ya29.abc","expires_in":3599,"refresh_token":"1//xyz","token_type":"Bearer"}"#,
+            )
+            .unwrap();
+            assert_eq!(tokens.access_token, "ya29.abc");
+            assert_eq!(tokens.refresh_token, "1//xyz");
+            assert_eq!(tokens.expires_in, 3599);
+            let debug = format!("{tokens:?}");
+            assert!(
+                !debug.contains("ya29") && !debug.contains("1//xyz"),
+                "{debug}"
+            );
+        }
+
+        phase token_response_retains_provider_scope_without_adding_permissions;
+        {
+            let tokens = parse_token_response(
+                r#"{"access_token":"access","scope":"user-read-private user-library-read"}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                tokens.scope.as_deref(),
+                Some("user-read-private user-library-read")
+            );
+            assert_eq!(
+                parse_token_response(r#"{"access_token":"access"}"#)
+                    .unwrap()
+                    .scope,
+                None
+            );
+            assert!(parse_token_response(r#"{"access_token":"access","scope":42}"#).is_err());
+        }
+
+        phase token_errors_are_typed_and_never_echo_descriptions;
+        {
+            assert_eq!(
+                parse_token_response(
+                    r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#
+                ),
+                Err(OAuthError::InvalidGrant)
+            );
+            let Err(OAuthError::Protocol(message)) = parse_token_response(
+                r#"{"error":"invalid_client","error_description":"secret-bearing prose"}"#,
+            ) else {
+                panic!("expected a protocol error");
+            };
+            assert_eq!(message, "error invalid_client");
+            assert!(parse_token_response("<html>").is_err());
+            assert!(parse_token_response(r#"{"access_token":""}"#).is_err());
+        }
+
+        phase stored_token_shape_is_unchanged;
+        {
+            // Vault entries written by Mail's sign-in must keep deserialising.
+            let stored =
+                r#"{"access_token":"at","refresh_token":"rt","expires_in":3600,"obtained_at":1000}"#;
+            let tokens: TokenSet = serde_json::from_str(stored).unwrap();
+            assert_eq!(serde_json::to_string(&tokens).unwrap(), stored);
+        }
     }
 }

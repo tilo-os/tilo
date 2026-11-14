@@ -1143,204 +1143,208 @@ mod tests {
         );
     }
 
-    #[test]
-    fn page_list_operations_reorder_duplicate_and_measure() {
+    tilo_test_env::scenario! {
+        fn page_lists_reorder_select_and_offer_their_menu;
+
+        phase page_list_operations_reorder_duplicate_and_measure;
         {
-            let mut v = vec![0, 1, 2, 3];
-            move_item(&mut v, 0, 3);
-            assert_eq!(v, vec![1, 2, 3, 0]);
-            let mut v = vec![0, 1, 2, 3];
-            move_item(&mut v, 3, 0);
-            assert_eq!(v, vec![3, 0, 1, 2]);
-            let mut v = vec![0, 1];
-            move_item(&mut v, 0, 0);
-            assert_eq!(v, vec![0, 1]);
-            move_item(&mut v, 5, 0);
-            assert_eq!(v, vec![0, 1]);
+            {
+                let mut v = vec![0, 1, 2, 3];
+                move_item(&mut v, 0, 3);
+                assert_eq!(v, vec![1, 2, 3, 0]);
+                let mut v = vec![0, 1, 2, 3];
+                move_item(&mut v, 3, 0);
+                assert_eq!(v, vec![3, 0, 1, 2]);
+                let mut v = vec![0, 1];
+                move_item(&mut v, 0, 0);
+                assert_eq!(v, vec![0, 1]);
+                move_item(&mut v, 5, 0);
+                assert_eq!(v, vec![0, 1]);
+            }
+
+            {
+                let theme = Theme::dark();
+                let themed = RailMetrics::from_theme(&theme);
+                let d = RailMetrics::DEFAULT;
+                assert_eq!(
+                    (themed.pad, themed.gap, themed.num_gutter, themed.header_h),
+                    (d.pad, d.gap, d.num_gutter, d.header_h)
+                );
+                assert_eq!(
+                    (
+                        themed.add_margin,
+                        themed.menu_row_h,
+                        themed.menu_sep_h,
+                        themed.menu_pad,
+                        themed.menu_row_inset
+                    ),
+                    (
+                        d.add_margin,
+                        d.menu_row_h,
+                        d.menu_sep_h,
+                        d.menu_pad,
+                        d.menu_row_inset
+                    )
+                );
+                assert_eq!(themed.menu_w, d.menu_w);
+                assert_eq!(themed.add_h, f64::from(theme.tokens.metrics.bar_height));
+
+                let rect = Rect::new(0.0, 0.0, 200.0, 800.0);
+                let mut s = PageSidebar::new(1.0).with_add("Import…");
+                s.begin_frame_with_theme(&theme, rect, 3, 0);
+                assert_eq!(s.add_rect.height(), themed.add_h);
+                assert_eq!(s.thumb_rects()[0].1.x0, themed.pad + themed.num_gutter);
+                let mut plain = PageSidebar::new(1.0).with_add("Import…");
+                plain.begin_frame(rect, 3, 0);
+                assert_eq!(plain.add_rect.height(), d.add_h);
+                assert_eq!(plain.thumb_rects()[0].1.x0, d.pad + d.num_gutter);
+            }
+
+            {
+                let s = rail(4);
+                let rects = s.thumb_rects();
+                assert_eq!(rects.len(), 4);
+                for (_, r) in &rects {
+                    assert!(
+                        r.height() > r.width(),
+                        "portrait pages are taller than wide"
+                    );
+                }
+                assert!(rects[1].1.y0 > rects[0].1.y1, "slot 1 sits below slot 0");
+            }
         }
 
+        phase thumbnail_pointer_selects_drags_and_scrolls;
         {
-            let theme = Theme::dark();
-            let themed = RailMetrics::from_theme(&theme);
-            let d = RailMetrics::DEFAULT;
-            assert_eq!(
-                (themed.pad, themed.gap, themed.num_gutter, themed.header_h),
-                (d.pad, d.gap, d.num_gutter, d.header_h)
-            );
-            assert_eq!(
-                (
-                    themed.add_margin,
-                    themed.menu_row_h,
-                    themed.menu_sep_h,
-                    themed.menu_pad,
-                    themed.menu_row_inset
-                ),
-                (
-                    d.add_margin,
-                    d.menu_row_h,
-                    d.menu_sep_h,
-                    d.menu_pad,
-                    d.menu_row_inset
-                )
-            );
-            assert_eq!(themed.menu_w, d.menu_w);
-            assert_eq!(themed.add_h, f64::from(theme.tokens.metrics.bar_height));
+            {
+                let mut s = rail(4);
+                let (_, r2) = s.thumb_rects()[2];
+                assert!(s.on_press(r2.center()));
+                assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(2)]);
+            }
 
-            let rect = Rect::new(0.0, 0.0, 200.0, 800.0);
-            let mut s = PageSidebar::new(1.0).with_add("Import…");
-            s.begin_frame_with_theme(&theme, rect, 3, 0);
-            assert_eq!(s.add_rect.height(), themed.add_h);
-            assert_eq!(s.thumb_rects()[0].1.x0, themed.pad + themed.num_gutter);
-            let mut plain = PageSidebar::new(1.0).with_add("Import…");
-            plain.begin_frame(rect, 3, 0);
-            assert_eq!(plain.add_rect.height(), d.add_h);
-            assert_eq!(plain.thumb_rects()[0].1.x0, d.pad + d.num_gutter);
-        }
-
-        {
-            let s = rail(4);
-            let rects = s.thumb_rects();
-            assert_eq!(rects.len(), 4);
-            for (_, r) in &rects {
-                assert!(
-                    r.height() > r.width(),
-                    "portrait pages are taller than wide"
+            {
+                let mut s = rail(4);
+                let rects = s.thumb_rects();
+                s.on_press(rects[0].1.center());
+                assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(0)]);
+                let far_down = Point::new(rects[3].1.center().x, rects[3].1.center().y + 400.0);
+                s.on_motion(far_down);
+                assert!(s.is_dragging(), "cleared the drag threshold");
+                assert!(s.on_release());
+                assert_eq!(
+                    s.take_events(),
+                    vec![PageSidebarEvent::Reorder { from: 0, to: 3 }]
                 );
             }
-            assert!(rects[1].1.y0 > rects[0].1.y1, "slot 1 sits below slot 0");
-        }
-    }
 
-    #[test]
-    fn thumbnail_pointer_selects_drags_and_scrolls() {
-        {
-            let mut s = rail(4);
-            let (_, r2) = s.thumb_rects()[2];
-            assert!(s.on_press(r2.center()));
-            assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(2)]);
+            {
+                let mut s = rail(4);
+                let rects = s.thumb_rects();
+                s.on_press(rects[1].1.center());
+                s.take_events(); // clear the Select
+                s.on_motion(rects[1].1.center() + Vec2::new(1.0, 1.0));
+                assert!(!s.is_dragging());
+                assert!(!s.on_release());
+                assert!(s.take_events().is_empty(), "a click produces no reorder");
+            }
+
+            {
+                let mut s = rail(4);
+                let rects = s.thumb_rects();
+                s.on_press(rects[0].1.center());
+                s.on_motion(rects[3].1.center());
+                assert!(s.is_dragging());
+                assert!(s.on_escape());
+                assert!(!s.is_dragging());
+                assert!(!s.on_release());
+                assert!(
+                    !s.take_events()
+                        .iter()
+                        .any(|e| matches!(e, PageSidebarEvent::Reorder { .. }))
+                );
+            }
+
+            {
+                // Many pages so the content overflows the viewport.
+                let mut s = rail(40);
+                assert!(s.max_scroll > 0.0);
+                assert!(s.on_wheel(120.0));
+                assert!(s.scroll() > 0.0);
+                s.set_scroll(0.0);
+                assert!(!s.on_wheel(-50.0), "already at the top");
+                assert_eq!(s.scroll(), 0.0);
+            }
+
+            {
+                let mut s = rail(4);
+                assert!(s.on_press(s.add_rect.center()));
+                assert_eq!(s.take_events(), vec![PageSidebarEvent::Add]);
+            }
         }
 
+        phase page_menu_duplicates_deletes_and_moves_within_bounds;
         {
-            let mut s = rail(4);
-            let rects = s.thumb_rects();
-            s.on_press(rects[0].1.center());
-            assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(0)]);
-            let far_down = Point::new(rects[3].1.center().x, rects[3].1.center().y + 400.0);
-            s.on_motion(far_down);
-            assert!(s.is_dragging(), "cleared the drag threshold");
-            assert!(s.on_release());
-            assert_eq!(
-                s.take_events(),
-                vec![PageSidebarEvent::Reorder { from: 0, to: 3 }]
-            );
-        }
+            {
+                let mut s = rail(4);
+                let rects = s.thumb_rects();
+                assert!(s.on_right_press(rects[1].1.center()));
+                assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(1)]);
+                assert!(s.menu_open());
+                let dup_row = s.menu.as_ref().unwrap().items[0].1.center();
+                assert!(s.on_press(dup_row));
+                assert_eq!(s.take_events(), vec![PageSidebarEvent::Duplicate(1)]);
+                assert!(!s.menu_open(), "picking a row closes the menu");
 
-        {
-            let mut s = rail(4);
-            let rects = s.thumb_rects();
-            s.on_press(rects[1].1.center());
-            s.take_events(); // clear the Select
-            s.on_motion(rects[1].1.center() + Vec2::new(1.0, 1.0));
-            assert!(!s.is_dragging());
-            assert!(!s.on_release());
-            assert!(s.take_events().is_empty(), "a click produces no reorder");
-        }
-
-        {
-            let mut s = rail(4);
-            let rects = s.thumb_rects();
-            s.on_press(rects[0].1.center());
-            s.on_motion(rects[3].1.center());
-            assert!(s.is_dragging());
-            assert!(s.on_escape());
-            assert!(!s.is_dragging());
-            assert!(!s.on_release());
-            assert!(
-                !s.take_events()
+                s.on_right_press(rects[2].1.center());
+                s.take_events();
+                let menu = s.menu.as_ref().unwrap();
+                let del = menu
+                    .items
                     .iter()
-                    .any(|e| matches!(e, PageSidebarEvent::Reorder { .. }))
-            );
-        }
+                    .find(|(a, _)| *a == MenuAction::Delete)
+                    .unwrap()
+                    .1
+                    .center();
+                assert!(s.on_press(del));
+                assert_eq!(s.take_events(), vec![PageSidebarEvent::Delete(2)]);
+            }
 
-        {
-            // Many pages so the content overflows the viewport.
-            let mut s = rail(40);
-            assert!(s.max_scroll > 0.0);
-            assert!(s.on_wheel(120.0));
-            assert!(s.scroll() > 0.0);
-            s.set_scroll(0.0);
-            assert!(!s.on_wheel(-50.0), "already at the top");
-            assert_eq!(s.scroll(), 0.0);
-        }
+            {
+                let mut s = rail(4);
+                let rects = s.thumb_rects();
+                s.on_right_press(rects[2].1.center());
+                s.take_events();
+                let up = s
+                    .menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find(|(a, _)| *a == MenuAction::MoveUp)
+                    .unwrap()
+                    .1
+                    .center();
+                s.on_press(up);
+                assert_eq!(
+                    s.take_events(),
+                    vec![PageSidebarEvent::Reorder { from: 2, to: 1 }]
+                );
+            }
 
-        {
-            let mut s = rail(4);
-            assert!(s.on_press(s.add_rect.center()));
-            assert_eq!(s.take_events(), vec![PageSidebarEvent::Add]);
-        }
-    }
-
-    #[test]
-    fn page_menu_duplicates_deletes_and_moves_within_bounds() {
-        {
-            let mut s = rail(4);
-            let rects = s.thumb_rects();
-            assert!(s.on_right_press(rects[1].1.center()));
-            assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(1)]);
-            assert!(s.menu_open());
-            let dup_row = s.menu.as_ref().unwrap().items[0].1.center();
-            assert!(s.on_press(dup_row));
-            assert_eq!(s.take_events(), vec![PageSidebarEvent::Duplicate(1)]);
-            assert!(!s.menu_open(), "picking a row closes the menu");
-
-            s.on_right_press(rects[2].1.center());
-            s.take_events();
-            let menu = s.menu.as_ref().unwrap();
-            let del = menu
-                .items
-                .iter()
-                .find(|(a, _)| *a == MenuAction::Delete)
-                .unwrap()
-                .1
-                .center();
-            assert!(s.on_press(del));
-            assert_eq!(s.take_events(), vec![PageSidebarEvent::Delete(2)]);
-        }
-
-        {
-            let mut s = rail(4);
-            let rects = s.thumb_rects();
-            s.on_right_press(rects[2].1.center());
-            s.take_events();
-            let up = s
-                .menu
-                .as_ref()
-                .unwrap()
-                .items
-                .iter()
-                .find(|(a, _)| *a == MenuAction::MoveUp)
-                .unwrap()
-                .1
-                .center();
-            s.on_press(up);
-            assert_eq!(
-                s.take_events(),
-                vec![PageSidebarEvent::Reorder { from: 2, to: 1 }]
-            );
-        }
-
-        {
-            let mut s = rail(4);
-            let rects = s.thumb_rects();
-            s.on_right_press(rects[0].1.center());
-            let has_up = s
-                .menu
-                .as_ref()
-                .unwrap()
-                .items
-                .iter()
-                .any(|(a, _)| *a == MenuAction::MoveUp);
-            assert!(!has_up, "the first page cannot move up");
+            {
+                let mut s = rail(4);
+                let rects = s.thumb_rects();
+                s.on_right_press(rects[0].1.center());
+                let has_up = s
+                    .menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .any(|(a, _)| *a == MenuAction::MoveUp);
+                assert!(!has_up, "the first page cannot move up");
+            }
         }
     }
 }

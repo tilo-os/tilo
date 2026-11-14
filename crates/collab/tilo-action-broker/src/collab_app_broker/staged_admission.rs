@@ -58,16 +58,16 @@ impl StagedJob {
     }
 
     /// Start it once durable and hand `then` the outcome, without waiting
-    /// here: for a caller answered through a [`Pending`]. Both may run on
-    /// the journal's writer thread, so neither may wait on the journal.
+    /// here: for a caller answered through a [`Pending`]. The journal resolves
+    /// its write on a thread of its own, which must not take the broker, so the
+    /// work goes to the turn that owns it.
     pub(crate) fn start_then(
         self,
         state: &Arc<AppBrokerState>,
         then: impl FnOnce(Result<InvocationJob, String>) + Send + 'static,
     ) {
-        let state = Arc::clone(state);
         let start = self.start;
-        self.admitted.then(move |outcome| {
+        state.when_durable(self.admitted, move |state, outcome| {
             then(outcome.and_then(|()| state.start_admitted(start)));
         });
     }
@@ -128,6 +128,24 @@ impl AppBrokerState {
                     .map(|journal| journal.in_flight(invocation))
             })
             .unwrap_or_else(invocation_journal::Durable::settled)
+    }
+
+    /// Run `work` with this broker for `durable`'s outcome: now when nothing is
+    /// in flight, else on the turn. The journal resolves a write on a thread of
+    /// its own, which must not take the broker, so work that needs it goes
+    /// there.
+    pub(super) fn when_durable(
+        self: &Arc<Self>,
+        durable: invocation_journal::Durable,
+        work: impl FnOnce(&Self, Result<(), String>) + Send + 'static,
+    ) {
+        if durable.is_settled() {
+            return work(self, Ok(()));
+        }
+        let turn_work = Arc::clone(&self.turn_work);
+        durable.then(move |outcome| {
+            turn_work.hand(Box::new(move |state| work(state, outcome)));
+        });
     }
 
     /// Write `update`, invocation `id`'s definite outcome, if `peer_id`'s

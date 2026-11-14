@@ -80,104 +80,108 @@ mod tests {
     use super::*;
     use agent_provider_config::{AgentModel, ProviderProfile, ProviderProtocol};
 
-    /// A request carries the kind of interaction it is, so a translation can
-    /// run on the model chosen for short answers while a task runs on the
-    /// larger one chosen for tasks.
-    #[test]
-    fn a_request_of_each_kind_is_asked_of_the_model_chosen_for_that_kind() {
-        let mut small = ProviderProfile::local_vllm();
-        small.models = vec![ModelDescriptor::new("small")];
-        let mut large = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        large.models = vec![ModelDescriptor::new("large")];
-        large.default_model = Some("large".into());
-        let mut config = ProviderConfig {
-            default_profile: Some(large.id.clone()),
-            profiles: vec![small.clone(), large.clone()],
-            ..Default::default()
-        };
-        config
-            .set_interaction_model(
-                Interaction::OneShot,
-                Some(AgentModel {
-                    profile: small.id,
-                    model: "small".into(),
-                }),
-            )
-            .unwrap();
-        config
-            .set_interaction_model(
-                Interaction::Task,
-                Some(AgentModel {
-                    profile: large.id,
-                    model: "large".into(),
-                }),
-            )
-            .unwrap();
-        let chosen = |kind| {
+    tilo_test_env::scenario! {
+        fn a_request_reaches_its_chosen_model_only_through_the_gateway;
+
+        phase a_request_of_each_kind_is_asked_of_the_model_chosen_for_that_kind;
+        // A request carries the kind of interaction it is, so a translation can
+        // run on the model chosen for short answers while a task runs on the
+        // larger one chosen for tasks.
+        {
+            let mut small = ProviderProfile::local_vllm();
+            small.models = vec![ModelDescriptor::new("small")];
+            let mut large = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            large.models = vec![ModelDescriptor::new("large")];
+            large.default_model = Some("large".into());
+            let mut config = ProviderConfig {
+                default_profile: Some(large.id.clone()),
+                profiles: vec![small.clone(), large.clone()],
+                ..Default::default()
+            };
             config
-                .interaction_selection(kind)
-                .map(|(profile, model)| (profile.location, model.id.clone()))
-        };
-        assert_eq!(
-            chosen(Interaction::OneShot),
-            Some((
-                agent_provider_config::EndpointLocation::ThisDevice,
-                "small".into()
-            ))
-        );
-        assert_eq!(
-            chosen(Interaction::Task),
-            Some((
-                agent_provider_config::EndpointLocation::Hosted,
-                "large".into()
-            ))
-        );
-        assert_eq!(chosen(Interaction::Subtask), None, "it follows the task");
-    }
-
-    /// A task's provider selection names a model and never a secret, and the
-    /// packaged agent has no route of its own to a provider or an
-    /// environment key: the desktop-owned gateway is the only way out.
-    #[test]
-    fn a_provider_is_reached_only_through_the_gateway_with_an_explicit_model_and_no_secret() {
-        {
-            let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-            profile.models.push(ModelDescriptor::new("claude-test"));
-            profile.default_model = Some("claude-test".into());
-            let config = ProviderConfig {
-                default_profile: Some(profile.id.clone()),
-                profiles: vec![profile],
-                ..Default::default()
+                .set_interaction_model(
+                    Interaction::OneShot,
+                    Some(AgentModel {
+                        profile: small.id,
+                        model: "small".into(),
+                    }),
+                )
+                .unwrap();
+            config
+                .set_interaction_model(
+                    Interaction::Task,
+                    Some(AgentModel {
+                        profile: large.id,
+                        model: "large".into(),
+                    }),
+                )
+                .unwrap();
+            let chosen = |kind| {
+                config
+                    .interaction_selection(kind)
+                    .map(|(profile, model)| (profile.location, model.id.clone()))
             };
-            let selected = ProviderSelection::from_config(&config).expect("configured provider");
-            assert_eq!(selected.model.id, "claude-test");
-            assert!(selected.credential.is_some());
-            let serialised = format!("{selected:?}");
-            assert!(!serialised.contains("sk-ant-"));
+            assert_eq!(
+                chosen(Interaction::OneShot),
+                Some((
+                    agent_provider_config::EndpointLocation::ThisDevice,
+                    "small".into()
+                ))
+            );
+            assert_eq!(
+                chosen(Interaction::Task),
+                Some((
+                    agent_provider_config::EndpointLocation::Hosted,
+                    "large".into()
+                ))
+            );
+            assert_eq!(chosen(Interaction::Subtask), None, "it follows the task");
         }
 
+        phase a_provider_is_reached_only_through_the_gateway_with_an_explicit_model_and_no_secret;
+        // A task's provider selection names a model and never a secret, and the
+        // packaged agent has no route of its own to a provider or an
+        // environment key: the desktop-owned gateway is the only way out.
         {
-            let profile = ProviderProfile::local_vllm();
-            let config = ProviderConfig {
-                default_profile: Some(profile.id.clone()),
-                profiles: vec![profile],
-                ..Default::default()
-            };
-            assert!(ProviderSelection::from_config(&config).is_none());
-        }
+            {
+                let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+                profile.models.push(ModelDescriptor::new("claude-test"));
+                profile.default_model = Some("claude-test".into());
+                let config = ProviderConfig {
+                    default_profile: Some(profile.id.clone()),
+                    profiles: vec![profile],
+                    ..Default::default()
+                };
+                let selected = ProviderSelection::from_config(&config).expect("configured provider");
+                assert_eq!(selected.model.id, "claude-test");
+                assert!(selected.credential.is_some());
+                let serialised = format!("{selected:?}");
+                assert!(!serialised.contains("sk-ant-"));
+            }
 
-        {
-            let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/");
-            let model = std::fs::read_to_string(format!("{root}model.rs")).unwrap();
-            let providers = std::fs::read_to_string(format!("{root}providers.rs")).unwrap();
-            assert!(model.contains("tilo_model_client::complete_streaming"));
-            assert!(model.contains("ModelConversation::new"));
-            assert!(!model.contains("ANTHROPIC_API_KEY"));
-            assert!(!model.contains("reqwest::"));
-            // This scan now reads the file it is written in, so the needle is
-            // assembled at run time: spelling it out here would find itself.
-            let secret_resolver = ["Secret", "Resolver"].concat();
-            assert!(!providers.contains(&secret_resolver));
+            {
+                let profile = ProviderProfile::local_vllm();
+                let config = ProviderConfig {
+                    default_profile: Some(profile.id.clone()),
+                    profiles: vec![profile],
+                    ..Default::default()
+                };
+                assert!(ProviderSelection::from_config(&config).is_none());
+            }
+
+            {
+                let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/");
+                let model = std::fs::read_to_string(format!("{root}model.rs")).unwrap();
+                let providers = std::fs::read_to_string(format!("{root}providers.rs")).unwrap();
+                assert!(model.contains("tilo_model_client::complete_streaming"));
+                assert!(model.contains("ModelConversation::new"));
+                assert!(!model.contains("ANTHROPIC_API_KEY"));
+                assert!(!model.contains("reqwest::"));
+                // This scan now reads the file it is written in, so the needle is
+                // assembled at run time: spelling it out here would find itself.
+                let secret_resolver = ["Secret", "Resolver"].concat();
+                assert!(!providers.contains(&secret_resolver));
+            }
         }
     }
 }

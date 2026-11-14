@@ -194,101 +194,109 @@ pub mod testing {
 mod scoped_monotonic_tests {
     use super::*;
 
-    #[test]
-    fn a_shared_wall_pins_the_threads_following_it_until_released() {
-        const PINNED: u64 = 123_456;
-        let wall = testing::SharedWall::default();
-        let follower = {
-            let wall = wall.clone();
-            move || {
-                wall.follow();
-                unix_now()
-            }
-        };
-        assert_ne!(std::thread::spawn(follower.clone()).join().unwrap(), PINNED);
-        wall.pin(UNIX_EPOCH + Duration::from_secs(PINNED));
-        assert_eq!(std::thread::spawn(follower.clone()).join().unwrap(), PINNED);
-        assert_ne!(
-            unix_now(),
-            PINNED,
-            "a thread following none keeps its clock"
-        );
-        wall.release();
-        assert_ne!(std::thread::spawn(follower).join().unwrap(), PINNED);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_held_clock_is_the_holding_threads_alone_and_ends_with_its_scope;
 
-    #[test]
-    fn scoped_time_is_thread_local_nested_and_restored_after_unwind() {
-        let at = now().checked_add(Duration::from_secs(60)).unwrap();
-        testing::with_monotonic_time(at, || {
-            assert_eq!(now(), at);
-            let later = at.checked_add(Duration::from_secs(1)).unwrap();
-            testing::with_monotonic_time(later, || assert_eq!(now(), later));
-            assert_eq!(now(), at);
-            assert!(std::thread::spawn(now).join().unwrap() < at);
-            let panicked = std::panic::catch_unwind(|| {
-                testing::with_monotonic_time(later, || panic!("unwind the clock scope"));
-            });
-            assert!(panicked.is_err());
-            assert_eq!(now(), at);
-        });
-        assert!(now() < at);
-    }
+        phase a_shared_wall_pins_the_threads_following_it_until_released;
+        {
+            const PINNED: u64 = 123_456;
+            let wall = testing::SharedWall::default();
+            let follower = {
+                let wall = wall.clone();
+                move || {
+                    wall.follow();
+                    unix_now()
+                }
+            };
+            assert_ne!(std::thread::spawn(follower.clone()).join().unwrap(), PINNED);
+            wall.pin(UNIX_EPOCH + Duration::from_secs(PINNED));
+            assert_eq!(std::thread::spawn(follower.clone()).join().unwrap(), PINNED);
+            assert_ne!(
+                unix_now(),
+                PINNED,
+                "a thread following none keeps its clock"
+            );
+            wall.release();
+            assert_ne!(std::thread::spawn(follower).join().unwrap(), PINNED);
+        }
 
-    #[test]
-    fn scoped_wall_time_is_thread_local_nested_and_restored_after_unwind() {
-        let at = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
-        testing::with_wall(at, || {
-            assert_eq!(wall(), at);
-            let later = at + Duration::from_secs(3);
-            testing::with_wall(later, || assert_eq!(wall(), later));
-            assert_eq!(wall(), at);
-            assert!(std::thread::spawn(wall).join().unwrap() < at);
-            let panicked = std::panic::catch_unwind(|| {
-                testing::with_wall(later, || panic!("unwind the clock scope"));
-            });
-            assert!(panicked.is_err());
-            assert_eq!(wall(), at);
-        });
-        assert!(wall() < at);
-    }
-
-    #[test]
-    fn a_clock_lent_at_the_epoch_is_a_clock_the_code_reads() {
-        // `0` is the epoch, not the absence of a hold: a bare wasm32 has no
-        // `std` clock, so falling back to the machine's would trap a module lent
-        // this clock.
-        let (ms, held, frozen) = with_wall_ms(0, || (unix_now_ms(), wall(), wall_frozen()));
-        assert_eq!(ms, 0, "the lent time is the time the code reads");
-        assert_eq!(held, UNIX_EPOCH);
-        assert!(frozen, "a hold at the epoch is a hold");
-        assert!(
-            unix_now_ms() > 0,
-            "the thread's own clock runs again after the hold"
-        );
-    }
-
-    #[test]
-    fn two_threads_holding_different_wall_times_at_once_each_read_their_own() {
-        let first = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
-        let second = UNIX_EPOCH + Duration::from_secs(4_100_000_000);
-        let together = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let hold = |at: SystemTime, other: SystemTime| {
-            let together = std::sync::Arc::clone(&together);
-            std::thread::spawn(move || {
-                testing::with_wall(at, || {
-                    together.wait();
-                    assert_eq!(wall(), at);
-                    assert_ne!(wall(), other);
-                    together.wait();
+        phase scoped_time_is_thread_local_nested_and_restored_after_unwind;
+        {
+            let at = now().checked_add(Duration::from_secs(60)).unwrap();
+            testing::with_monotonic_time(at, || {
+                assert_eq!(now(), at);
+                let later = at.checked_add(Duration::from_secs(1)).unwrap();
+                testing::with_monotonic_time(later, || assert_eq!(now(), later));
+                assert_eq!(now(), at);
+                assert!(std::thread::spawn(now).join().unwrap() < at);
+                let panicked = std::panic::catch_unwind(|| {
+                    testing::with_monotonic_time(later, || panic!("unwind the clock scope"));
                 });
-                together.wait();
-                assert!(wall() < first, "the hold ended with its scope");
-            })
-        };
-        let threads = [hold(first, second), hold(second, first)];
-        for thread in threads {
-            thread.join().unwrap();
+                assert!(panicked.is_err());
+                assert_eq!(now(), at);
+            });
+            assert!(now() < at);
+        }
+
+        phase scoped_wall_time_is_thread_local_nested_and_restored_after_unwind;
+        {
+            let at = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
+            testing::with_wall(at, || {
+                assert_eq!(wall(), at);
+                let later = at + Duration::from_secs(3);
+                testing::with_wall(later, || assert_eq!(wall(), later));
+                assert_eq!(wall(), at);
+                assert!(std::thread::spawn(wall).join().unwrap() < at);
+                let panicked = std::panic::catch_unwind(|| {
+                    testing::with_wall(later, || panic!("unwind the clock scope"));
+                });
+                assert!(panicked.is_err());
+                assert_eq!(wall(), at);
+            });
+            assert!(wall() < at);
+        }
+
+        phase a_clock_lent_at_the_epoch_is_a_clock_the_code_reads;
+        {
+            // `0` is the epoch, not the absence of a hold: a bare wasm32 has no
+            // `std` clock, so falling back to the machine's would trap a module lent
+            // this clock.
+            let (ms, held, frozen) = with_wall_ms(0, || (unix_now_ms(), wall(), wall_frozen()));
+            assert_eq!(ms, 0, "the lent time is the time the code reads");
+            assert_eq!(held, UNIX_EPOCH);
+            assert!(frozen, "a hold at the epoch is a hold");
+            assert!(
+                unix_now_ms() > 0,
+                "the thread's own clock runs again after the hold"
+            );
+        }
+
+        phase two_threads_holding_different_wall_times_at_once_each_read_their_own;
+        {
+            let first = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
+            let second = UNIX_EPOCH + Duration::from_secs(4_100_000_000);
+            let together = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let hold = |at: SystemTime, other: SystemTime| {
+                let together = std::sync::Arc::clone(&together);
+                std::thread::spawn(move || {
+                    testing::with_wall(at, || {
+                        together.wait();
+                        assert_eq!(wall(), at);
+                        assert_ne!(wall(), other);
+                        together.wait();
+                    });
+                    together.wait();
+                    assert!(wall() < first, "the hold ended with its scope");
+                })
+            };
+            let threads = [hold(first, second), hold(second, first)];
+            for thread in threads {
+                thread.join().unwrap();
+            }
         }
     }
 }
@@ -564,67 +572,75 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_frozen_wall_clock_holds_while_the_monotonic_clock_runs() {
-        let at = UNIX_EPOCH + Duration::from_secs(1_782_816_120);
-        let before = now();
-        testing::with_wall(at, || {
-            assert!(wall_frozen());
-            assert_eq!(wall(), at);
-            assert_eq!(unix_now(), 1_782_816_120);
-            assert_eq!(wall(), at, "it stays put");
-            assert!(now() >= before, "the monotonic clock is not frozen");
-        });
-        assert!(!wall_frozen(), "the scope ended");
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn clocks_read_units_that_agree_and_a_hold_ends_with_its_scope;
 
-    #[test]
-    fn clocks_agree_on_units_move_only_as_told_and_never_backwards() {
-        assert!(!wall_frozen(), "no other test's pinned time is read here");
+        phase a_frozen_wall_clock_holds_while_the_monotonic_clock_runs;
         {
-            let secs = unix_now();
-            let ms = unix_now_ms();
-            let ns = unix_now_ns();
-            assert!(secs > 1_600_000_000);
-            assert!(ms / 1_000 >= secs);
-            assert!(ns / 1_000_000 >= ms);
-            assert_eq!(unix_now_i64(), i64::try_from(unix_now()).unwrap());
+            let at = UNIX_EPOCH + Duration::from_secs(1_782_816_120);
+            let before = now();
+            testing::with_wall(at, || {
+                assert!(wall_frozen());
+                assert_eq!(wall(), at);
+                assert_eq!(unix_now(), 1_782_816_120);
+                assert_eq!(wall(), at, "it stays put");
+                assert!(now() >= before, "the monotonic clock is not frozen");
+            });
+            assert!(!wall_frozen(), "the scope ended");
         }
+
+        phase clocks_agree_on_units_move_only_as_told_and_never_backwards;
         {
-            assert_eq!(FixedClock(7).now_ms(), 7);
-            let clock = ManualClock::new(10);
-            assert_eq!(clock.now_ms(), 10);
-            clock.advance(5);
-            assert_eq!(clock.now_ms(), 15);
-            clock.set(3);
-            assert_eq!(clock.now_ms(), 3);
-            clock.set(u64::MAX - 1);
-            clock.advance(10);
-            assert_eq!(clock.now_ms(), u64::MAX);
+            assert!(!wall_frozen(), "no other test's pinned time is read here");
+            {
+                let secs = unix_now();
+                let ms = unix_now_ms();
+                let ns = unix_now_ns();
+                assert!(secs > 1_600_000_000);
+                assert!(ms / 1_000 >= secs);
+                assert!(ns / 1_000_000 >= ms);
+                assert_eq!(unix_now_i64(), i64::try_from(unix_now()).unwrap());
+            }
+            {
+                assert_eq!(FixedClock(7).now_ms(), 7);
+                let clock = ManualClock::new(10);
+                assert_eq!(clock.now_ms(), 10);
+                clock.advance(5);
+                assert_eq!(clock.now_ms(), 15);
+                clock.set(3);
+                assert_eq!(clock.now_ms(), 3);
+                clock.set(u64::MAX - 1);
+                clock.advance(10);
+                assert_eq!(clock.now_ms(), u64::MAX);
+            }
+            {
+                let first = MonotonicClock.now_ms();
+                assert!(MonotonicClock.now_ms() >= first);
+            }
         }
+
+        phase now_is_monotonic;
         {
-            let first = MonotonicClock.now_ms();
-            assert!(MonotonicClock.now_ms() >= first);
+            let earlier = now();
+            assert!(now() >= earlier);
         }
-    }
 
-    #[test]
-    fn now_is_monotonic() {
-        let earlier = now();
-        assert!(now() >= earlier);
-    }
-
-    #[test]
-    fn wall_is_after_the_epoch() {
-        assert!(wall().duration_since(UNIX_EPOCH).is_ok());
-    }
-
-    #[test]
-    fn std_conversions_round_trip_on_both_sides_of_the_epoch() {
-        let offset = Duration::from_millis(1_700_000_000_123);
-        for time in [UNIX_EPOCH + offset, UNIX_EPOCH - offset, UNIX_EPOCH] {
-            assert_eq!(from_std(to_std(time)), time);
+        phase wall_is_after_the_epoch;
+        {
+            assert!(wall().duration_since(UNIX_EPOCH).is_ok());
         }
-        assert_eq!(to_std(UNIX_EPOCH + offset), std::time::UNIX_EPOCH + offset);
+
+        phase std_conversions_round_trip_on_both_sides_of_the_epoch;
+        {
+            let offset = Duration::from_millis(1_700_000_000_123);
+            for time in [UNIX_EPOCH + offset, UNIX_EPOCH - offset, UNIX_EPOCH] {
+                assert_eq!(from_std(to_std(time)), time);
+            }
+            assert_eq!(to_std(UNIX_EPOCH + offset), std::time::UNIX_EPOCH + offset);
+        }
     }
 }

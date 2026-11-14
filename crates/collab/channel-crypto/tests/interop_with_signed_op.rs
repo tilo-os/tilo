@@ -8,7 +8,7 @@
 //! on failure), then feeds the payload to its matching
 //! `ChannelGroup::decrypt`; decrypted bytes go to the ordinary
 //! Automerge-change-application ingestion path (out of scope here —
-//! `channel-crypto` doesn't depend on Automerge).
+//! `workspace-crypto` doesn't depend on Automerge).
 
 #![allow(
     clippy::unwrap_used,
@@ -20,7 +20,7 @@ use std::time::SystemTime;
 
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::{
-    ArtifactId, AttestationId, ChannelId, EncryptionMetadata, OpKind, SignedOp, generate_keypair,
+    ArtifactId, AttestationId, EncryptionMetadata, OpKind, SignedOp, WorkspaceId, generate_keypair,
     sign_op, verify_op,
 };
 
@@ -30,21 +30,21 @@ use collab_types::{
 /// from its MLS signature keypair — kept separate here so the test
 /// fails loudly if the two signature paths get accidentally merged.
 fn fixture() -> (
-    ChannelId,
+    WorkspaceId,
     ChannelGroup,
     ChannelGroup,
     ed25519_dalek::SigningKey,
     collab_types::Ed25519PublicKey,
 ) {
-    let cid = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let alice = MemberKey::generate("alice").unwrap();
     let bob = MemberKey::generate("bob").unwrap();
     let bob_kp = bob.fresh_key_package().unwrap();
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let welcome = alice_g.add_member(bob_kp).unwrap();
-    let bob_g = ChannelGroup::process_welcome(cid, &welcome, bob).unwrap();
+    let bob_g = ChannelGroup::process_welcome(workspace, &welcome, bob).unwrap();
     let (sk, pk) = generate_keypair();
-    (cid, alice_g, bob_g, sk, pk)
+    (workspace, alice_g, bob_g, sk, pk)
 }
 
 /// An encrypted signed op round-trips its outer signature, Bob decrypts after verifying it,
@@ -60,7 +60,7 @@ fn encrypted_signed_ops_verify_and_decrypt_like_plain_ones() {
 }
 
 fn encrypted_signed_op_round_trips_outer_signature() {
-    let (cid, mut alice_g, _bob_g, sk, pk) = fixture();
+    let (_, mut alice_g, _bob_g, sk, pk) = fixture();
     let cleartext = b"crdt-change-blob".to_vec();
     let ct = alice_g.encrypt(&cleartext).unwrap();
     let epoch = alice_g.epoch();
@@ -72,7 +72,7 @@ fn encrypted_signed_op_round_trips_outer_signature() {
         OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata::mls_application(epoch, cid),
+        EncryptionMetadata::mls_application(epoch),
     );
     sign_op(&mut op, &sk).unwrap();
     // Outer signature verifies — the only contract verify_op cares
@@ -81,7 +81,7 @@ fn encrypted_signed_op_round_trips_outer_signature() {
 }
 
 fn bob_decrypts_payload_after_verifying_outer_signature() {
-    let (cid, mut alice_g, mut bob_g, sk, pk) = fixture();
+    let (_, mut alice_g, mut bob_g, sk, pk) = fixture();
     let cleartext = b"crdt-change-blob".to_vec();
     let ct = alice_g.encrypt(&cleartext).unwrap();
     let epoch = alice_g.epoch();
@@ -93,15 +93,14 @@ fn bob_decrypts_payload_after_verifying_outer_signature() {
         OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata::mls_application(epoch, cid),
+        EncryptionMetadata::mls_application(epoch),
     );
     sign_op(&mut op, &sk).unwrap();
 
     // Bob's broker step: verify the outer signature.
     verify_op(&op).unwrap();
     // Then route to the matching ChannelGroup and decrypt.
-    let meta = op.encryption.unwrap();
-    assert_eq!(meta.channel, cid);
+    assert_eq!(op.encryption.unwrap().epoch, epoch);
     let pt = bob_g.decrypt(&op.payload).unwrap();
     assert_eq!(pt, cleartext);
 }
@@ -118,7 +117,7 @@ fn tampering_with_payload_breaks_outer_signature() {
     // The outer signature covers the (cipher)bytes. A peer re-encrypting
     // the inner payload cannot keep the outer signature valid — they'd
     // need the author's signing key.
-    let (cid, mut alice_g, _bob_g, sk, pk) = fixture();
+    let (_, mut alice_g, _bob_g, sk, pk) = fixture();
     let ct = alice_g.encrypt(b"a").unwrap();
     let mut op = SignedOp::new_unsigned_with_encryption(
         ct,
@@ -128,7 +127,7 @@ fn tampering_with_payload_breaks_outer_signature() {
         OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata::mls_application(alice_g.epoch(), cid),
+        EncryptionMetadata::mls_application(alice_g.epoch()),
     );
     sign_op(&mut op, &sk).unwrap();
     // Tamper: flip a payload byte. Outer signature must fail.
@@ -139,10 +138,9 @@ fn tampering_with_payload_breaks_outer_signature() {
 
 fn tampering_with_encryption_metadata_breaks_outer_signature() {
     // Same as above but tampering the metadata: a peer tries to
-    // redirect a ciphertext to a *different* channel by rewriting
-    // EncryptionMetadata.channel. The outer signature covers the
+    // move a ciphertext to another epoch. The outer signature covers the
     // metadata too, so this also fails.
-    let (cid, mut alice_g, _bob_g, sk, pk) = fixture();
+    let (_, mut alice_g, _bob_g, sk, pk) = fixture();
     let ct = alice_g.encrypt(b"a").unwrap();
     let mut op = SignedOp::new_unsigned_with_encryption(
         ct,
@@ -152,18 +150,15 @@ fn tampering_with_encryption_metadata_breaks_outer_signature() {
         OpKind::Change,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata::mls_application(alice_g.epoch(), cid),
+        EncryptionMetadata::mls_application(alice_g.epoch()),
     );
     sign_op(&mut op, &sk).unwrap();
-    op.encryption = Some(EncryptionMetadata::mls_application(
-        alice_g.epoch(),
-        ChannelId::new(),
-    ));
+    op.encryption = Some(EncryptionMetadata::mls_application(alice_g.epoch() + 1));
     assert!(verify_op(&op).is_err());
 }
 
 fn unencrypted_op_still_works_alongside_encrypted_ones() {
-    // Backwards-compat: legacy/unencrypted channels keep round-tripping
+    // Backwards-compat: legacy/unencrypted workspaces keep round-tripping
     // with `encryption: None` — same signing pipeline, same verify call, no decrypt.
     let (sk, pk) = generate_keypair();
     let mut op = SignedOp::new_unsigned(
@@ -184,10 +179,10 @@ fn epoch_in_metadata_matches_group_epoch_at_time_of_encrypt() {
     // The receiver uses meta.epoch to decide whether the ChannelGroup is
     // current enough to decrypt; pins the invariant that the producer
     // stamps the current epoch.
-    let (cid, mut alice_g, _bob_g, _sk, _pk) = fixture();
+    let (_, mut alice_g, _bob_g, _sk, _pk) = fixture();
     let snapshot_epoch = alice_g.epoch();
     let ct = alice_g.encrypt(b"x").unwrap();
-    let meta = EncryptionMetadata::mls_application(snapshot_epoch, cid);
+    let meta = EncryptionMetadata::mls_application(snapshot_epoch);
     // (No actual SignedOp built here — the invariant is just about
     // the per-encrypt epoch value mirroring `alice_g.epoch()` at
     // the moment of encrypt.)

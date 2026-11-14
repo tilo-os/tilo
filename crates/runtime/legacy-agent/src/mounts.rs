@@ -111,8 +111,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shares_converge_on_the_desired_set() {
+    tilo_test_env::scenario! {
+        fn shares_converge_on_the_desired_set;
+
+        phase new_shares_mount_parent_first_revoked_ones_unmount_child_first;
         // phase: new shares mount parent-first, revoked ones unmount child-first
         {
             let current = vec![share("a", "/h/a", false), share("b", "/h/a/b", false)];
@@ -127,6 +129,8 @@ mod tests {
                 [share("e", "/h/c", true), share("c", "/h/c/d", false)]
             );
         }
+
+        phase an_unchanged_share_is_left_alone_a_changed_mode_remounts;
         // phase: an unchanged share is left alone, a changed mode remounts
         {
             let current = vec![share("a", "/h/a", false), share("b", "/h/b", false)];
@@ -135,6 +139,8 @@ mod tests {
             assert_eq!(plan.unmount, [share("b", "/h/b", false)]);
             assert_eq!(plan.mount, [share("b", "/h/b", true)]);
         }
+
+        phase read_only_shares_mount_read_only;
         // phase: read-only shares mount read-only
         {
             assert_eq!(

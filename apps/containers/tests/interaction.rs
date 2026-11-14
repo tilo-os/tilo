@@ -174,11 +174,12 @@ fn hosted_named(app: &mut TestApp<ContainersShell>, name: &str) -> ui::accesskit
     named(d, name, ui::accesskit::Role::TextInput)
 }
 
-/// Typing in the new-container form splices the draft's texts: plain keys, a replaced
-/// selection, an IME commit, Tab and an assistive value; undo takes a typed word back.
-#[test]
-fn create_form_edits_the_draft() {
-    // --- phase: typing_splices_and_undo_takes_a_word_back ---
+tilo_test_env::scenario! {
+    /// Typing in the new-container form splices the draft's texts: plain keys, a replaced
+    /// selection, an IME commit, Tab and an assistive value; undo takes a typed word back.
+    fn create_form_edits_the_draft;
+
+    phase typing_splices_and_undo_takes_a_word_back;
     {
         let mut app = hosted();
         // `n` opens the form on its image field.
@@ -189,7 +190,7 @@ fn create_form_edits_the_draft() {
         assert_eq!(draft(&app, CreateField::Image), "");
     }
 
-    // --- phase: select_all_then_typing_replaces ---
+    phase select_all_then_typing_replaces;
     {
         let mut app = hosted();
         app.harness().key("n");
@@ -205,7 +206,7 @@ fn create_form_edits_the_draft() {
         );
     }
 
-    // --- phase: ime_commit_replicates_as_crdt_text ---
+    phase ime_commit_replicates_as_crdt_text;
     {
         let mut app = hosted();
         app.harness().key("n");
@@ -223,7 +224,7 @@ fn create_form_edits_the_draft() {
         );
     }
 
-    // --- phase: the_image_field_suggests_installed_images ---
+    phase the_image_field_suggests_installed_images;
     {
         let mut app = hosted();
         app.harness().key("n");
@@ -237,7 +238,7 @@ fn create_form_edits_the_draft() {
         );
     }
 
-    // --- phase: tab_follows_the_form_order ---
+    phase tab_follows_the_form_order;
     {
         let mut d = offline();
         d.key("n");
@@ -251,7 +252,7 @@ fn create_form_edits_the_draft() {
         );
     }
 
-    // --- phase: the_form_is_a_modal_with_named_fields ---
+    phase the_form_is_a_modal_with_named_fields;
     {
         let mut app = hosted();
         app.harness().key("n");
@@ -325,10 +326,11 @@ fn create_draft_assembles_full_podman_run() {
     assert_eq!(args.last().unwrap(), "ghcr.io/acme/app:edge");
 }
 
-/// Entering a distrobox asks for Terminal, and the log resource opens the detail.
-#[test]
-fn container_resources_open_terminal_and_log_detail() {
-    // --- phase: enter_distrobox_asks_for_terminal_running_distrobox_enter ---
+tilo_test_env::scenario! {
+    /// Entering a distrobox asks for Terminal, and the log resource opens the detail.
+    fn container_resources_open_terminal_and_log_detail;
+
+    phase enter_distrobox_asks_for_terminal_running_distrobox_enter;
     {
         // Terminal is asked for by intent; the shell runs `distrobox enter`.
         let intent = terminal::distrobox_enter_intent("my-distrobox");
@@ -346,7 +348,7 @@ fn container_resources_open_terminal_and_log_detail() {
         );
     }
 
-    // --- phase: canonical_log_resource_opens_the_logs ---
+    phase canonical_log_resource_opens_the_logs;
     {
         let mut d = offline();
         d.key("2");

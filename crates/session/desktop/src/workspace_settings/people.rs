@@ -5,8 +5,8 @@ use super::{
     CapRole, UserId, Workspace, member_row_name, member_row_offers, members_authority_note,
     ordered_roster, role_label,
 };
-use crate::collaborators::PeopleNames;
 use crate::i18n::{t, t_args};
+use crate::people::PeopleNames;
 
 /// One person of the list, in the viewer's words.
 #[derive(Clone, Debug, PartialEq)]

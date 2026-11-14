@@ -54,7 +54,6 @@
 "crates/doc/tilo-doc-codecs/src/docx/export.rs" = 4000
 "crates/doc/tilo-doc-codecs/src/odt/export.rs" = 3500
 "crates/doc/tilo-doc/src/model.rs" = 5000
-"crates/doc/tilo-document/src/action.rs" = 3500
 "crates/packaging/launcher/src/run.rs" = 6000
 "crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/runtime/tilo-runtime/src/mcp.rs" = 3500
@@ -90,7 +89,7 @@
 "crates/session/desktop-surface/src/activity/pane.rs" = 3500
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
-"crates/session/device-fabric/src/lib.rs" = 4500
+"crates/session/device-fabric/src/lib.rs" = 4000
 "crates/session/network-actor/src/lib.rs" = 4000
 "crates/session/onboarding-host/src/view.rs" = 7000
 "crates/session/speaker-service/src/remote_audio.rs" = 3500

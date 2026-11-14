@@ -1,4 +1,5 @@
 use super::*;
+use crate::join::WorkspaceId;
 use crate::join::{sign_membership_proof, verify_membership_proof};
 use crate::state::now_ns;
 use ed25519_dalek::SigningKey;
@@ -13,7 +14,7 @@ fn proof(
     let challenge = peer
         .governance()
         .membership_challenge(
-            7,
+            WorkspaceId::parse(peer.workspace_id()).unwrap(),
             &peer.owner_certificates()[0],
             cert,
             [10; 32],
@@ -34,24 +35,24 @@ fn proof(
 }
 
 /// The owner's own device is answered as the workspace's owner, which a
-/// member's answer cannot say: it names the strongest collaborator role, and
+/// member's answer cannot say: it names the strongest member role, and
 /// its authority stays governance's to decide.
 #[test]
-fn the_owner_s_own_device_is_answered_the_strongest_collaborator_role() {
+fn the_owner_s_own_device_is_answered_the_strongest_member_role() {
     let (peer, _, key, cert, now) = crate::admission_tests::seeded();
     let membership = proof(&peer, &cert, &key, now);
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().role,
+        peer.role(&cert.device_public_key, now).unwrap(),
         Role::Owner
     );
     assert_eq!(
         peer.governance().member_role(&membership, now).unwrap(),
-        crate::join::MemberRole::Moderator
+        crate::join::Role::Moderator
     );
 }
 
 #[test]
-fn all_collaborator_roles_remain_refreshable_until_removed() {
+fn all_member_roles_remain_refreshable_until_removed() {
     use crate::join::*;
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let root = SigningKey::from_bytes(&[41; 32]);
@@ -62,10 +63,9 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
     let ticket = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [43; 16],
             recipient_user_public_key: Some(cert.user_public_key),
             invitee_name: None,
@@ -103,11 +103,7 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
     peer.governance_mut()
         .admit_invited_member(&redemption, &host_key, now)
         .unwrap();
-    for role in [
-        MemberRole::Viewer,
-        MemberRole::Commenter,
-        MemberRole::Editor,
-    ] {
+    for role in [Role::Viewer, Role::Commenter, Role::Editor] {
         peer.governance_mut()
             .set_member_role(cert.user_public_key, role, &host_key, now)
             .unwrap();

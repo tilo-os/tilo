@@ -129,9 +129,290 @@ mod tests {
     use crate::actions::item_resource_id;
     use ui::tilo_resource::Resource;
 
-    #[test]
-    fn every_launch_withholds_the_vault_window_from_captures() {
-        const { assert!(<PasswordsShell as ResourceApp>::BEHAVIOUR.capture_protected) };
+    tilo_test_env::scenario! {
+        fn the_passwords_shell_guards_its_vault_and_changes_it_by_action;
+
+        phase every_launch_withholds_the_vault_window_from_captures;
+        {
+            const { assert!(<PasswordsShell as ResourceApp>::BEHAVIOUR.capture_protected) };
+        }
+
+        phase vault_items_are_live_rows_whose_effects_reach_the_vault;
+        {
+            let _profile = profile();
+            let mut model = crate::PasswordsModel::open();
+            let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
+            item.add_origin("https://private.example").unwrap();
+            let id = model.save_item(&mut item).unwrap();
+            drop(model);
+
+            let clipboard = std::sync::Arc::new(Clipboard::default());
+            let _host = ui::host::enter(
+                &ui::host::HostServices::null().with_clipboard(std::sync::Arc::clone(&clipboard) as _),
+            );
+            let mut app = TestApp::<PasswordsShell>::new().unwrap();
+            let row_id = item_resource_id(&id.0);
+            let row = published(&mut app, &row_id).expect("the item is a live row");
+            assert_eq!(row.label, "Saved login");
+            for action in &row.actions {
+                assert_eq!(action.kind, OperationKind::Effect, "{}", action.id);
+            }
+            let vault = published(&mut app, Passwords::KIND).unwrap();
+            let published_text = serde_json::to_string(&app.agent_surface()).unwrap();
+            for private in ["Private bank", "ada@private.example", "not-public-7A"] {
+                assert!(!published_text.contains(private), "published {private:?}");
+            }
+            assert!(
+                vault
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "open")
+                    .is_some_and(|open| open.params().iter().any(|p| p.name == "anchor")),
+                "the vault opens an item by its anchor; the row opens itself"
+            );
+            for id in ["add", "import", "export", "filter"] {
+                assert!(
+                    vault.actions.iter().any(|action| action.id == id),
+                    "the vault offers {id}"
+                );
+            }
+            let save = vault
+                .actions
+                .iter()
+                .find(|action| action.id == "save")
+                .unwrap();
+            assert!(
+                matches!(
+                    save.contract.availability,
+                    ui::tilo_actions::Availability::Unavailable { .. }
+                ),
+                "nothing to save before an item is opened"
+            );
+
+            let copy = row
+                .actions
+                .iter()
+                .find(|action| action.id == "copy")
+                .unwrap();
+            assert_eq!(copy.contract.confirmation, ConfirmationPolicy::Confirm);
+            app.effect_confirmed(&PasswordsEffect::Copy { item: id.0.clone() })
+                .unwrap();
+            assert_eq!(
+                clipboard.0.lock().unwrap().as_deref(),
+                Some("not-public-7A")
+            );
+            assert!(
+                clipboard.1.load(std::sync::atomic::Ordering::Acquire),
+                "a password is copied as a secret, out of history and device sync"
+            );
+
+            let versions = app.versions().len();
+            app.effect_on(&row_id, &PasswordsEffect::Open { item: id.0.clone() })
+                .unwrap();
+            app.effect(&PasswordsEffect::Filter {
+                filter: "favorites".into(),
+            })
+            .unwrap();
+            assert!(
+                app.effect(&PasswordsEffect::Filter {
+                    filter: "everything".into()
+                })
+                .is_err()
+            );
+            assert_eq!(app.versions().len(), versions);
+
+            assert!(
+                app.effect(&PasswordsEffect::Delete { item: id.0.clone() })
+                    .is_err(),
+                "deleting needs the caller's confirmation"
+            );
+            assert_eq!(crate::PasswordsModel::open().items().len(), 1);
+            app.effect_confirmed(&PasswordsEffect::Delete { item: id.0 })
+                .unwrap();
+            assert!(crate::PasswordsModel::open().items().is_empty());
+            assert!(published(&mut app, &row_id).is_none(), "its row is gone");
+        }
+
+        phase opening_an_anchor_shows_its_item_and_refuses_one_the_vault_lacks;
+        // Opening an item's anchor, as a search hit or an agent does, shows it even where a
+        // filter hid it; an item the vault lacks is refused.
+        {
+            let _profile = profile();
+            let mut model = crate::PasswordsModel::open();
+            let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
+            let id = model.save_item(&mut item).unwrap();
+            drop(model);
+            let mut app = TestApp::<PasswordsShell>::new().unwrap();
+            app.effect(&PasswordsEffect::Filter {
+                filter: "favorites".into(),
+            })
+            .unwrap();
+            app.call(
+                "open",
+                serde_json::json!({ "anchor": item_resource_id(&id.0) }),
+            )
+            .unwrap();
+            assert!(
+                app.call(
+                    "open",
+                    serde_json::json!({ "anchor": item_resource_id("not-in-the-vault") })
+                )
+                .is_err(),
+                "an item the vault does not hold is not opened"
+            );
+            app.settle();
+            assert_eq!(
+                app.surface_mut::<PasswordsWindow>()
+                    .core()
+                    .selected
+                    .as_ref(),
+                Some(&id),
+                "opening its anchor shows the item, as a search hit does"
+            );
+        }
+
+        phase an_item_is_made_a_favorite_and_back_by_its_action;
+        // A favorite is vault state an agent, a script or a screen reader sets by the item's
+        // id, not only by the row's star.
+        {
+            let _profile = profile();
+            let mut model = crate::PasswordsModel::open();
+            let mut item = SecretItem::login("Mail", "ada@example.com", "not-public-7A");
+            let id = model.save_item(&mut item).unwrap();
+            drop(model);
+            let mut app = TestApp::<PasswordsShell>::new().unwrap();
+            let vault = published(&mut app, Passwords::KIND).unwrap();
+            assert!(
+                vault.actions.iter().any(|action| action.id == "favorite"),
+                "the vault offers favorite"
+            );
+            let stored = || {
+                crate::PasswordsModel::open()
+                    .items()
+                    .iter()
+                    .any(|item| item.tags.contains("favorite"))
+            };
+            let favorite = |favorite| PasswordsEffect::Favorite {
+                item: id.0.clone(),
+                favorite,
+            };
+
+            app.effect(&favorite(true)).unwrap();
+            assert!(stored(), "the vault keeps the favorite");
+            app.effect(&favorite(true)).unwrap();
+            assert!(stored(), "asking again leaves it a favorite");
+            app.effect(&PasswordsEffect::Filter {
+                filter: "favorites".into(),
+            })
+            .unwrap();
+            assert_eq!(
+                app.surface_mut::<PasswordsWindow>().core().visible().len(),
+                1,
+                "Favorites lists it"
+            );
+            app.effect(&favorite(false)).unwrap();
+            assert!(!stored(), "and no longer once it is removed");
+            assert!(
+                app.effect(&PasswordsEffect::Favorite {
+                    item: "not-in-the-vault".into(),
+                    favorite: true,
+                })
+                .is_err(),
+                "an item the vault does not hold is refused"
+            );
+        }
+
+        phase an_item_saved_from_the_editor_lands_in_the_vault;
+        {
+            let _profile = profile();
+            let mut app = TestApp::<PasswordsShell>::new().unwrap();
+            app.effect(&PasswordsEffect::Add).unwrap();
+            app.harness()
+                .click_named("passwords.field.name")
+                .expect("the editor shows the name field");
+            app.harness().type_text("Mail");
+            app.effect(&PasswordsEffect::Generate).unwrap();
+            app.effect(&PasswordsEffect::Save).unwrap();
+            let items = crate::PasswordsModel::open().items();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].title, "Mail");
+            assert!(items[0].password.len() >= 20, "a generated password");
+            assert!(
+                app.effect(&PasswordsEffect::Save).is_err(),
+                "the editor closed with the save"
+            );
+        }
+
+        phase a_login_saved_in_one_step_lands_in_the_vault_and_its_password_nowhere_else;
+        // A login an agent or a script saves in one step lands in the vault and is listed by
+        // its name; the password it was given is in the vault alone: the action takes it as a
+        // secret, and it is in none of what Passwords publishes, answers or a log of the call
+        // would print.
+        {
+            use ui::tilo_actions::{ActionArgs, ParamType};
+            const PASSWORD: &str = "secret-sentinel-41xq";
+            let _profile = profile();
+            let mut app = TestApp::<PasswordsShell>::new().unwrap();
+            let vault = published(&mut app, Passwords::KIND).unwrap();
+            let save = vault
+                .actions
+                .iter()
+                .find(|action| action.id == "save-login")
+                .expect("the vault offers save-login");
+            assert_eq!(
+                save.params()
+                    .iter()
+                    .find(|param| param.name == "password")
+                    .map(|param| param.ty),
+                Some(ParamType::Secret),
+                "the password is a secret parameter"
+            );
+            let arguments = serde_json::json!({
+                "name": "Mail",
+                "origin": "https://mail.example",
+                "username": "ada@mail.example",
+                "password": PASSWORD,
+            });
+            let bound = ActionArgs::bind_json(save.params(), arguments.as_object().unwrap()).unwrap();
+            assert!(
+                !format!("{bound:?}").contains(PASSWORD),
+                "bound arguments print the password redacted"
+            );
+
+            let answered = app.call("save-login", arguments).unwrap();
+            assert!(!format!("{answered:?}").contains(PASSWORD));
+            let items = crate::PasswordsModel::open().items();
+            assert_eq!(items.len(), 1, "the login is in the vault");
+            assert_eq!(items[0].title, "Mail");
+            assert_eq!(items[0].kind, accounts::SecretItemKind::Login);
+            assert_eq!(items[0].password.as_str(), PASSWORD);
+            assert!(
+                app.effect(&PasswordsEffect::Save).is_err(),
+                "no editor is left open behind it"
+            );
+
+            let listed = app
+                .call("list-logins", serde_json::json!({}))
+                .unwrap()
+                .expect("the logins are answered");
+            let listed = listed.to_string();
+            assert!(listed.contains("Mail") && listed.contains(&items[0].id.0));
+            for private in [PASSWORD, "ada@mail.example", "mail.example"] {
+                assert!(!listed.contains(private), "the listing holds {private:?}");
+            }
+            let published_text = serde_json::to_string(&app.agent_surface()).unwrap();
+            assert!(!published_text.contains(PASSWORD), "published the password");
+
+            assert!(
+                app.call(
+                    "save-login",
+                    serde_json::json!({"name": "", "origin": "", "username": "", "password": "x"})
+                )
+                .is_err(),
+                "a login with no name is refused as the editor refuses it"
+            );
+            assert_eq!(crate::PasswordsModel::open().items().len(), 1);
+        }
     }
 
     /// A private profile whose vault is the test's own: its key in an in-process secret
@@ -206,283 +487,6 @@ mod tests {
             })
         }
         find(&app.harness().resources(), id)
-    }
-
-    #[test]
-    fn vault_items_are_live_rows_whose_effects_reach_the_vault() {
-        let _profile = profile();
-        let mut model = crate::PasswordsModel::open();
-        let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
-        item.add_origin("https://private.example").unwrap();
-        let id = model.save_item(&mut item).unwrap();
-        drop(model);
-
-        let clipboard = std::sync::Arc::new(Clipboard::default());
-        let _host = ui::host::enter(
-            &ui::host::HostServices::null().with_clipboard(std::sync::Arc::clone(&clipboard) as _),
-        );
-        let mut app = TestApp::<PasswordsShell>::new().unwrap();
-        let row_id = item_resource_id(&id.0);
-        let row = published(&mut app, &row_id).expect("the item is a live row");
-        assert_eq!(row.label, "Saved login");
-        for action in &row.actions {
-            assert_eq!(action.kind, OperationKind::Effect, "{}", action.id);
-        }
-        let vault = published(&mut app, Passwords::KIND).unwrap();
-        let published_text = serde_json::to_string(&app.agent_surface()).unwrap();
-        for private in ["Private bank", "ada@private.example", "not-public-7A"] {
-            assert!(!published_text.contains(private), "published {private:?}");
-        }
-        assert!(
-            vault
-                .actions
-                .iter()
-                .find(|action| action.id == "open")
-                .is_some_and(|open| open.params().iter().any(|p| p.name == "anchor")),
-            "the vault opens an item by its anchor; the row opens itself"
-        );
-        for id in ["add", "import", "export", "filter"] {
-            assert!(
-                vault.actions.iter().any(|action| action.id == id),
-                "the vault offers {id}"
-            );
-        }
-        let save = vault
-            .actions
-            .iter()
-            .find(|action| action.id == "save")
-            .unwrap();
-        assert!(
-            matches!(
-                save.contract.availability,
-                ui::tilo_actions::Availability::Unavailable { .. }
-            ),
-            "nothing to save before an item is opened"
-        );
-
-        let copy = row
-            .actions
-            .iter()
-            .find(|action| action.id == "copy")
-            .unwrap();
-        assert_eq!(copy.contract.confirmation, ConfirmationPolicy::Confirm);
-        app.effect_confirmed(&PasswordsEffect::Copy { item: id.0.clone() })
-            .unwrap();
-        assert_eq!(
-            clipboard.0.lock().unwrap().as_deref(),
-            Some("not-public-7A")
-        );
-        assert!(
-            clipboard.1.load(std::sync::atomic::Ordering::Acquire),
-            "a password is copied as a secret, out of history and device sync"
-        );
-
-        let versions = app.versions().len();
-        app.effect_on(&row_id, &PasswordsEffect::Open { item: id.0.clone() })
-            .unwrap();
-        app.effect(&PasswordsEffect::Filter {
-            filter: "favorites".into(),
-        })
-        .unwrap();
-        assert!(
-            app.effect(&PasswordsEffect::Filter {
-                filter: "everything".into()
-            })
-            .is_err()
-        );
-        assert_eq!(app.versions().len(), versions);
-
-        assert!(
-            app.effect(&PasswordsEffect::Delete { item: id.0.clone() })
-                .is_err(),
-            "deleting needs the caller's confirmation"
-        );
-        assert_eq!(crate::PasswordsModel::open().items().len(), 1);
-        app.effect_confirmed(&PasswordsEffect::Delete { item: id.0 })
-            .unwrap();
-        assert!(crate::PasswordsModel::open().items().is_empty());
-        assert!(published(&mut app, &row_id).is_none(), "its row is gone");
-    }
-
-    /// Opening an item's anchor, as a search hit or an agent does, shows it even where a
-    /// filter hid it; an item the vault lacks is refused.
-    #[test]
-    fn opening_an_anchor_shows_its_item_and_refuses_one_the_vault_lacks() {
-        let _profile = profile();
-        let mut model = crate::PasswordsModel::open();
-        let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
-        let id = model.save_item(&mut item).unwrap();
-        drop(model);
-        let mut app = TestApp::<PasswordsShell>::new().unwrap();
-        app.effect(&PasswordsEffect::Filter {
-            filter: "favorites".into(),
-        })
-        .unwrap();
-        app.call(
-            "open",
-            serde_json::json!({ "anchor": item_resource_id(&id.0) }),
-        )
-        .unwrap();
-        assert!(
-            app.call(
-                "open",
-                serde_json::json!({ "anchor": item_resource_id("not-in-the-vault") })
-            )
-            .is_err(),
-            "an item the vault does not hold is not opened"
-        );
-        app.settle();
-        assert_eq!(
-            app.surface_mut::<PasswordsWindow>()
-                .core()
-                .selected
-                .as_ref(),
-            Some(&id),
-            "opening its anchor shows the item, as a search hit does"
-        );
-    }
-
-    /// A favorite is vault state an agent, a script or a screen reader sets by the item's
-    /// id, not only by the row's star.
-    #[test]
-    fn an_item_is_made_a_favorite_and_back_by_its_action() {
-        let _profile = profile();
-        let mut model = crate::PasswordsModel::open();
-        let mut item = SecretItem::login("Mail", "ada@example.com", "not-public-7A");
-        let id = model.save_item(&mut item).unwrap();
-        drop(model);
-        let mut app = TestApp::<PasswordsShell>::new().unwrap();
-        let vault = published(&mut app, Passwords::KIND).unwrap();
-        assert!(
-            vault.actions.iter().any(|action| action.id == "favorite"),
-            "the vault offers favorite"
-        );
-        let stored = || {
-            crate::PasswordsModel::open()
-                .items()
-                .iter()
-                .any(|item| item.tags.contains("favorite"))
-        };
-        let favorite = |favorite| PasswordsEffect::Favorite {
-            item: id.0.clone(),
-            favorite,
-        };
-
-        app.effect(&favorite(true)).unwrap();
-        assert!(stored(), "the vault keeps the favorite");
-        app.effect(&favorite(true)).unwrap();
-        assert!(stored(), "asking again leaves it a favorite");
-        app.effect(&PasswordsEffect::Filter {
-            filter: "favorites".into(),
-        })
-        .unwrap();
-        assert_eq!(
-            app.surface_mut::<PasswordsWindow>().core().visible().len(),
-            1,
-            "Favorites lists it"
-        );
-        app.effect(&favorite(false)).unwrap();
-        assert!(!stored(), "and no longer once it is removed");
-        assert!(
-            app.effect(&PasswordsEffect::Favorite {
-                item: "not-in-the-vault".into(),
-                favorite: true,
-            })
-            .is_err(),
-            "an item the vault does not hold is refused"
-        );
-    }
-
-    #[test]
-    fn an_item_saved_from_the_editor_lands_in_the_vault() {
-        let _profile = profile();
-        let mut app = TestApp::<PasswordsShell>::new().unwrap();
-        app.effect(&PasswordsEffect::Add).unwrap();
-        app.harness()
-            .click_named("passwords.field.name")
-            .expect("the editor shows the name field");
-        app.harness().type_text("Mail");
-        app.effect(&PasswordsEffect::Generate).unwrap();
-        app.effect(&PasswordsEffect::Save).unwrap();
-        let items = crate::PasswordsModel::open().items();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].title, "Mail");
-        assert!(items[0].password.len() >= 20, "a generated password");
-        assert!(
-            app.effect(&PasswordsEffect::Save).is_err(),
-            "the editor closed with the save"
-        );
-    }
-
-    /// A login an agent or a script saves in one step lands in the vault and is listed by
-    /// its name; the password it was given is in the vault alone: the action takes it as a
-    /// secret, and it is in none of what Passwords publishes, answers or a log of the call
-    /// would print.
-    #[test]
-    fn a_login_saved_in_one_step_lands_in_the_vault_and_its_password_nowhere_else() {
-        use ui::tilo_actions::{ActionArgs, ParamType};
-        const PASSWORD: &str = "secret-sentinel-41xq";
-        let _profile = profile();
-        let mut app = TestApp::<PasswordsShell>::new().unwrap();
-        let vault = published(&mut app, Passwords::KIND).unwrap();
-        let save = vault
-            .actions
-            .iter()
-            .find(|action| action.id == "save-login")
-            .expect("the vault offers save-login");
-        assert_eq!(
-            save.params()
-                .iter()
-                .find(|param| param.name == "password")
-                .map(|param| param.ty),
-            Some(ParamType::Secret),
-            "the password is a secret parameter"
-        );
-        let arguments = serde_json::json!({
-            "name": "Mail",
-            "origin": "https://mail.example",
-            "username": "ada@mail.example",
-            "password": PASSWORD,
-        });
-        let bound = ActionArgs::bind_json(save.params(), arguments.as_object().unwrap()).unwrap();
-        assert!(
-            !format!("{bound:?}").contains(PASSWORD),
-            "bound arguments print the password redacted"
-        );
-
-        let answered = app.call("save-login", arguments).unwrap();
-        assert!(!format!("{answered:?}").contains(PASSWORD));
-        let items = crate::PasswordsModel::open().items();
-        assert_eq!(items.len(), 1, "the login is in the vault");
-        assert_eq!(items[0].title, "Mail");
-        assert_eq!(items[0].kind, accounts::SecretItemKind::Login);
-        assert_eq!(items[0].password.as_str(), PASSWORD);
-        assert!(
-            app.effect(&PasswordsEffect::Save).is_err(),
-            "no editor is left open behind it"
-        );
-
-        let listed = app
-            .call("list-logins", serde_json::json!({}))
-            .unwrap()
-            .expect("the logins are answered");
-        let listed = listed.to_string();
-        assert!(listed.contains("Mail") && listed.contains(&items[0].id.0));
-        for private in [PASSWORD, "ada@mail.example", "mail.example"] {
-            assert!(!listed.contains(private), "the listing holds {private:?}");
-        }
-        let published_text = serde_json::to_string(&app.agent_surface()).unwrap();
-        assert!(!published_text.contains(PASSWORD), "published the password");
-
-        assert!(
-            app.call(
-                "save-login",
-                serde_json::json!({"name": "", "origin": "", "username": "", "password": "x"})
-            )
-            .is_err(),
-            "a login with no name is refused as the editor refuses it"
-        );
-        assert_eq!(crate::PasswordsModel::open().items().len(), 1);
     }
 
     #[test]

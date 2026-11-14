@@ -2829,35 +2829,212 @@ mod tests {
         (ev, doc)
     }
 
-    #[test]
-    fn committed_text_cache_tracks_pending_remote_and_rebound_content() {
-        let (mut view, mut doc) = bound_editor("base");
-        doc.commit();
-        view.sync(&doc, &automerge::ROOT);
-        let mut left = doc.clone();
-        let mut right = doc.clone();
-        let text = view.text_obj.clone().unwrap();
-        EditorDoc::splice(&mut left, &text, 0, 4, "left");
-        EditorDoc::splice(&mut right, &text, 0, 4, "else");
-        assert_eq!(left.pending_ops(), right.pending_ops());
-        view.sync(&left, &automerge::ROOT);
-        assert_eq!(view.text_for_test(), "left");
-        view.sync(&right, &automerge::ROOT);
-        assert_eq!(view.text_for_test(), "else");
-        right.commit();
-        view.sync(&right, &automerge::ROOT);
-        assert_eq!(view.text_for_test(), "else");
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(
-            view.text_for_test(),
-            "base",
-            "restoring earlier heads refreshes text"
-        );
-        let other = EditorDoc::ensure_buffer_key(&mut doc, "other", "another buffer").unwrap();
-        doc.commit();
-        view.bind(other, Language::PlainText);
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(view.text_for_test(), "another buffer");
+    tilo_test_env::scenario! {
+        fn the_editor_view_caches_completes_clips_and_types;
+
+        phase committed_text_cache_tracks_pending_remote_and_rebound_content;
+        {
+            let (mut view, mut doc) = bound_editor("base");
+            doc.commit();
+            view.sync(&doc, &automerge::ROOT);
+            let mut left = doc.clone();
+            let mut right = doc.clone();
+            let text = view.text_obj.clone().unwrap();
+            EditorDoc::splice(&mut left, &text, 0, 4, "left");
+            EditorDoc::splice(&mut right, &text, 0, 4, "else");
+            assert_eq!(left.pending_ops(), right.pending_ops());
+            view.sync(&left, &automerge::ROOT);
+            assert_eq!(view.text_for_test(), "left");
+            view.sync(&right, &automerge::ROOT);
+            assert_eq!(view.text_for_test(), "else");
+            right.commit();
+            view.sync(&right, &automerge::ROOT);
+            assert_eq!(view.text_for_test(), "else");
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(
+                view.text_for_test(),
+                "base",
+                "restoring earlier heads refreshes text"
+            );
+            let other = EditorDoc::ensure_buffer_key(&mut doc, "other", "another buffer").unwrap();
+            doc.commit();
+            view.bind(other, Language::PlainText);
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(view.text_for_test(), "another buffer");
+        }
+
+        phase recent_buffer_projections_restore_viewports_and_follow_changed_source_heads;
+        {
+            use automerge::ReadDoc;
+            use std::fmt::Write as _;
+            let mut source = String::new();
+            for line in 0..120 {
+                writeln!(source, "let value_{line} = {line};").unwrap();
+            }
+            let (mut view, mut doc) = bound_editor(&source);
+            let first = view.text_obj.clone().unwrap();
+            let second = EditorDoc::ensure_buffer_key(&mut doc, "second", &source).unwrap();
+            doc.commit();
+            view.sync(&doc, &automerge::ROOT);
+            view.carets = vec![Caret::at(80, 3)];
+            view.scroll_y = 60.0;
+            view.scroll_x = 10.0;
+            let cached_lines = Arc::clone(&view.lines);
+            let cached_spans = view.spans.as_ptr();
+            view.bind(second.clone(), Language::Rust);
+            view.sync(&doc, &automerge::ROOT);
+            view.carets = vec![Caret::at(90, 4)];
+            view.scroll_y = 70.0;
+            view.bind(first.clone(), Language::Rust);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(
+                Arc::ptr_eq(&view.lines, &cached_lines),
+                "returning retains the line projection"
+            );
+            assert_eq!(
+                view.spans.as_ptr(),
+                cached_spans,
+                "returning does not rerun tokenization"
+            );
+            assert_eq!(view.primary_caret(), (80, 3));
+            assert_eq!(view.native_scroll_offsets(), (10.0, 60.0));
+            view.bind(second, Language::Rust);
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(view.primary_caret(), (90, 4));
+            assert_eq!(view.native_scroll_offsets().1.to_bits(), 70.0_f64.to_bits());
+            EditorDoc::splice(&mut doc, &first, 0, 0, "remote\n");
+            doc.commit();
+            view.bind(first.clone(), Language::Rust);
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(
+                view.cached_text,
+                doc.text(&first).unwrap(),
+                "cached inactive buffers follow remote edits"
+            );
+            assert!(!Arc::ptr_eq(&view.lines, &cached_lines));
+            for number in 0..3 {
+                let object =
+                    EditorDoc::ensure_buffer_key(&mut doc, &format!("other{number}"), "new buffer")
+                        .unwrap();
+                doc.commit();
+                view.bind(object, Language::Rust);
+                view.sync(&doc, &automerge::ROOT);
+            }
+            view.bind(first, Language::Rust);
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(
+                view.primary_caret(),
+                (0, 0),
+                "oldest projection was evicted"
+            );
+            assert_eq!(view.native_scroll_offsets(), (0.0, 0.0));
+        }
+
+        phase a_completion_row_is_chosen_with_the_pointer;
+        {
+            let (mut ev, mut doc) = bound_editor("pri");
+            ev.set_caret_for_test(0, 3);
+            let item = |label: &str| CompletionItem {
+                label: label.into(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: None,
+                insert_text: label.into(),
+            };
+            ev.show_completions(vec![item("primes_below"), item("println")]);
+            ev.completion_list.set_rows(
+                ev.completions
+                    .iter()
+                    .map(|item| Suggestion::new(&item.insert_text))
+                    .collect(),
+            );
+            ev.completion_list
+                .set_anchor(Rect::new(10.0, 10.0, 210.0, 30.0));
+            let row = ev.completion_list.row_rect(1).expect("second row in view");
+            ev.last_cursor = row.center();
+            let mut handled = false;
+            let press = ui::synthetic_input::mouse_press();
+            assert!(ev.handle_completion_pointer(
+                &press,
+                1.0,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &mut handled
+            ));
+            assert!(handled);
+            assert!(!ev.completion_active(), "accepting closes the popup");
+            assert_eq!(ev.text_for_test(), "println");
+
+            ev.show_completions(vec![item("primes_below")]);
+            ev.last_cursor = Point::new(500.0, 500.0);
+            let mut handled = false;
+            assert!(!ev.handle_completion_pointer(
+                &press,
+                1.0,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &mut handled
+            ));
+            assert!(!ev.completion_active());
+        }
+
+        phase the_viewport_is_clipped_to_whole_lines;
+        {
+            let (mut ev, _doc) = bound_editor("a\nb\nc\n");
+            ev.line_h = 20.0;
+            ev.rect = Rect::new(0.0, 10.0, 400.0, 10.0 + 5.0 * 20.0 + 13.0);
+            let view = ev.whole_line_rect();
+            assert!((view.height() - 100.0).abs() < 1e-9, "{view:?}");
+            assert!((view.y0 - ev.rect.y0).abs() < 1e-9);
+            ev.rect = Rect::new(0.0, 0.0, 400.0, 12.0);
+            assert_eq!(ev.whole_line_rect(), ev.rect);
+        }
+
+        phase completion_candidates_show_their_kind_and_macros_have_their_own_icon;
+        {
+            let item =
+                |label: &str, kind: Option<CompletionItemKind>, detail: Option<&str>| CompletionItem {
+                    label: label.to_string(),
+                    kind,
+                    detail: detail.map(str::to_string),
+                    insert_text: label.to_string(),
+                };
+            assert_eq!(
+                completion_kind_icon(&item(
+                    "primes_below",
+                    Some(CompletionItemKind::FUNCTION),
+                    Some("fn(u64) -> Vec<u64>")
+                )),
+                Icon::Code
+            );
+            assert_eq!(
+                completion_kind_icon(&item(
+                    "println",
+                    Some(CompletionItemKind::FUNCTION),
+                    Some("macro")
+                )),
+                Icon::Sparkles
+            );
+            assert_eq!(
+                completion_kind_icon(&item("vec!", Some(CompletionItemKind::FUNCTION), None)),
+                Icon::Sparkles
+            );
+            assert_eq!(
+                completion_kind_icon(&item(
+                    "primary",
+                    Some(CompletionItemKind::VARIABLE),
+                    Some("let binding")
+                )),
+                Icon::Square
+            );
+            assert_eq!(completion_kind_icon(&item("x", None, None)), Icon::FileText);
+        }
+
+        phase typing_requests_action_owned_edits_and_keeps_the_caret_in_chars;
+        {
+            insert_text_requests_an_action_owned_edit();
+            newline_preserves_leading_indent();
+            backspace_at_line_start_joins_previous_line();
+            backspace_removes_char_before_caret();
+            multi_char_unicode_inserts_keep_caret_in_chars();
+        }
     }
 
     #[test]
@@ -2933,130 +3110,6 @@ mod tests {
     }
 
     #[test]
-    fn recent_buffer_projections_restore_viewports_and_follow_changed_source_heads() {
-        use automerge::ReadDoc;
-        use std::fmt::Write as _;
-        let mut source = String::new();
-        for line in 0..120 {
-            writeln!(source, "let value_{line} = {line};").unwrap();
-        }
-        let (mut view, mut doc) = bound_editor(&source);
-        let first = view.text_obj.clone().unwrap();
-        let second = EditorDoc::ensure_buffer_key(&mut doc, "second", &source).unwrap();
-        doc.commit();
-        view.sync(&doc, &automerge::ROOT);
-        view.carets = vec![Caret::at(80, 3)];
-        view.scroll_y = 60.0;
-        view.scroll_x = 10.0;
-        let cached_lines = Arc::clone(&view.lines);
-        let cached_spans = view.spans.as_ptr();
-        view.bind(second.clone(), Language::Rust);
-        view.sync(&doc, &automerge::ROOT);
-        view.carets = vec![Caret::at(90, 4)];
-        view.scroll_y = 70.0;
-        view.bind(first.clone(), Language::Rust);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(
-            Arc::ptr_eq(&view.lines, &cached_lines),
-            "returning retains the line projection"
-        );
-        assert_eq!(
-            view.spans.as_ptr(),
-            cached_spans,
-            "returning does not rerun tokenization"
-        );
-        assert_eq!(view.primary_caret(), (80, 3));
-        assert_eq!(view.native_scroll_offsets(), (10.0, 60.0));
-        view.bind(second, Language::Rust);
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(view.primary_caret(), (90, 4));
-        assert_eq!(view.native_scroll_offsets().1.to_bits(), 70.0_f64.to_bits());
-        EditorDoc::splice(&mut doc, &first, 0, 0, "remote\n");
-        doc.commit();
-        view.bind(first.clone(), Language::Rust);
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(
-            view.cached_text,
-            doc.text(&first).unwrap(),
-            "cached inactive buffers follow remote edits"
-        );
-        assert!(!Arc::ptr_eq(&view.lines, &cached_lines));
-        for number in 0..3 {
-            let object =
-                EditorDoc::ensure_buffer_key(&mut doc, &format!("other{number}"), "new buffer")
-                    .unwrap();
-            doc.commit();
-            view.bind(object, Language::Rust);
-            view.sync(&doc, &automerge::ROOT);
-        }
-        view.bind(first, Language::Rust);
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(
-            view.primary_caret(),
-            (0, 0),
-            "oldest projection was evicted"
-        );
-        assert_eq!(view.native_scroll_offsets(), (0.0, 0.0));
-    }
-
-    #[test]
-    fn a_completion_row_is_chosen_with_the_pointer() {
-        let (mut ev, mut doc) = bound_editor("pri");
-        ev.set_caret_for_test(0, 3);
-        let item = |label: &str| CompletionItem {
-            label: label.into(),
-            kind: Some(CompletionItemKind::FUNCTION),
-            detail: None,
-            insert_text: label.into(),
-        };
-        ev.show_completions(vec![item("primes_below"), item("println")]);
-        ev.completion_list.set_rows(
-            ev.completions
-                .iter()
-                .map(|item| Suggestion::new(&item.insert_text))
-                .collect(),
-        );
-        ev.completion_list
-            .set_anchor(Rect::new(10.0, 10.0, 210.0, 30.0));
-        let row = ev.completion_list.row_rect(1).expect("second row in view");
-        ev.last_cursor = row.center();
-        let mut handled = false;
-        let press = ui::synthetic_input::mouse_press();
-        assert!(ev.handle_completion_pointer(
-            &press,
-            1.0,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &mut handled
-        ));
-        assert!(handled);
-        assert!(!ev.completion_active(), "accepting closes the popup");
-        assert_eq!(ev.text_for_test(), "println");
-
-        ev.show_completions(vec![item("primes_below")]);
-        ev.last_cursor = Point::new(500.0, 500.0);
-        let mut handled = false;
-        assert!(!ev.handle_completion_pointer(
-            &press,
-            1.0,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &mut handled
-        ));
-        assert!(!ev.completion_active());
-    }
-
-    #[test]
-    fn the_viewport_is_clipped_to_whole_lines() {
-        let (mut ev, _doc) = bound_editor("a\nb\nc\n");
-        ev.line_h = 20.0;
-        ev.rect = Rect::new(0.0, 10.0, 400.0, 10.0 + 5.0 * 20.0 + 13.0);
-        let view = ev.whole_line_rect();
-        assert!((view.height() - 100.0).abs() < 1e-9, "{view:?}");
-        assert!((view.y0 - ev.rect.y0).abs() < 1e-9);
-        ev.rect = Rect::new(0.0, 0.0, 400.0, 12.0);
-        assert_eq!(ev.whole_line_rect(), ev.rect);
-    }
-
-    #[test]
     fn pointer_hit_testing_follows_the_line_pitch_and_selects_words_lines_and_ranges() {
         line_pitch_matches_the_code_line_at_1x_and_follows_the_text_scale();
         double_click_selects_word();
@@ -3102,46 +3155,6 @@ mod tests {
     }
 
     #[test]
-    fn completion_candidates_show_their_kind_and_macros_have_their_own_icon() {
-        let item =
-            |label: &str, kind: Option<CompletionItemKind>, detail: Option<&str>| CompletionItem {
-                label: label.to_string(),
-                kind,
-                detail: detail.map(str::to_string),
-                insert_text: label.to_string(),
-            };
-        assert_eq!(
-            completion_kind_icon(&item(
-                "primes_below",
-                Some(CompletionItemKind::FUNCTION),
-                Some("fn(u64) -> Vec<u64>")
-            )),
-            Icon::Code
-        );
-        assert_eq!(
-            completion_kind_icon(&item(
-                "println",
-                Some(CompletionItemKind::FUNCTION),
-                Some("macro")
-            )),
-            Icon::Sparkles
-        );
-        assert_eq!(
-            completion_kind_icon(&item("vec!", Some(CompletionItemKind::FUNCTION), None)),
-            Icon::Sparkles
-        );
-        assert_eq!(
-            completion_kind_icon(&item(
-                "primary",
-                Some(CompletionItemKind::VARIABLE),
-                Some("let binding")
-            )),
-            Icon::Square
-        );
-        assert_eq!(completion_kind_icon(&item("x", None, None)), Icon::FileText);
-    }
-
-    #[test]
     fn dictation_target_tracks_code_selection_content_and_pending_edits() {
         let (mut view, mut doc) = bound_editor("same source");
         view.set_focus(true);
@@ -3177,15 +3190,6 @@ mod tests {
         view.set_focus(false);
         assert!(view.ime_content().is_none());
         assert!(view.ime_edit_fingerprint(&key).is_none());
-    }
-
-    #[test]
-    fn typing_requests_action_owned_edits_and_keeps_the_caret_in_chars() {
-        insert_text_requests_an_action_owned_edit();
-        newline_preserves_leading_indent();
-        backspace_at_line_start_joins_previous_line();
-        backspace_removes_char_before_caret();
-        multi_char_unicode_inserts_keep_caret_in_chars();
     }
 
     fn insert_text_requests_an_action_owned_edit() {

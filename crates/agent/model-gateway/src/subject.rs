@@ -174,28 +174,33 @@ fn millis(since: Instant) -> u64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_digest_is_spelt_as_the_store_names_files() {
-        assert_eq!(
-            hex_digest(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// What is decided about a subject request before any model is loaded.
+        fn a_subject_request_names_its_file_and_family_and_refuses_what_is_not_a_picture;
 
-    #[test]
-    fn only_known_model_families_run() {
-        assert_eq!(family("u2net-subject"), Some(Family::U2Net));
-        assert_eq!(family("isnet-general"), Some(Family::IsNet));
-        assert_eq!(family("smolvlm2-500m"), None);
-    }
+        phase the_digest_is_spelt_as_the_store_names_files;
+        {
+            assert_eq!(
+                hex_digest(b"abc"),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            );
+        }
 
-    #[test]
-    fn a_picture_that_is_not_one_is_refused_before_any_model() {
-        let image = VisionImage {
-            media_type: "image/png".into(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(b"not a picture"),
-            source_content_hash: "0".repeat(64),
-        };
-        assert_eq!(segment(&image), Err("the picture cannot be decoded".into()));
+        phase only_known_model_families_run;
+        {
+            assert_eq!(family("u2net-subject"), Some(Family::U2Net));
+            assert_eq!(family("isnet-general"), Some(Family::IsNet));
+            assert_eq!(family("smolvlm2-500m"), None);
+        }
+
+        phase a_picture_that_is_not_one_is_refused_before_any_model;
+        {
+            let image = VisionImage {
+                media_type: "image/png".into(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(b"not a picture"),
+                source_content_hash: "0".repeat(64),
+            };
+            assert_eq!(segment(&image), Err("the picture cannot be decoded".into()));
+        }
     }
 }

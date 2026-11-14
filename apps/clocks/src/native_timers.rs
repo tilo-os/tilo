@@ -343,47 +343,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn real_alarm_handoff_transmits_the_full_resource_identity() {
-        let now = chrono::Local::now();
-        let due = now + chrono::Duration::minutes(5);
-        let mut clocks = Clocks::default();
-        clocks.alarms.insert(
-            0,
-            Id::from_raw("complete-alarm-resource-identity"),
-            crate::Alarm {
-                label: "Requested".into(),
-                hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
-                minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
-                enabled: true,
-                enabled_at_ms: now.timestamp_millis(),
-                ..crate::Alarm::default()
-            },
-        );
-        let mut delivery = Delivery::default();
-        crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
-        let captured = CapturedAlarm::default();
-        let host: &dyn Notifier = &captured;
-        let record = ui::record::RecordId::minted();
-        reconcile(
-            Some(&record),
-            &clocks,
-            &mut delivery,
-            host,
-            now.with_timezone(&Utc),
-            |_| Ok(()),
-        )
-        .unwrap();
-        let notification = captured.0.lock().unwrap().clone().unwrap();
-        assert_eq!(
-            notification.activation.as_deref(),
-            Some(
-                format!("tilo-clocks:record/{record}/alarm/complete-alarm-resource-identity")
-                    .as_str()
-            )
-        );
-    }
-
     #[derive(Default)]
     struct TestScheduler {
         pending: RefCell<BTreeMap<String, SystemTime>>,
@@ -429,296 +388,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn enabled_alarm_is_handed_to_scheduler_before_app_closes() {
-        let now = chrono::Local::now();
-        let due = now + chrono::Duration::minutes(2);
-        let mut clocks = Clocks::default();
-        clocks.alarms.push(
-            Id::from_raw("closed-app-alarm"),
-            crate::Alarm {
-                label: "Wake up".into(),
-                hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
-                minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
-                repeat: 0,
-                enabled: true,
-                enabled_at_ms: now.timestamp_millis(),
-            },
-        );
-        let mut delivery = Delivery::default();
-        assert!(
-            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now)
-                .due
-                .is_empty()
-        );
-        let stored = RefCell::new(Delivery::default());
-        let host = TestScheduler::default();
-        reconcile(
-            None,
-            &clocks,
-            &mut delivery,
-            &host,
-            now.with_timezone(&Utc),
-            |d| {
-                *stored.borrow_mut() = d.clone();
-                Ok(())
-            },
-        )
-        .unwrap();
-        // Closing Clocks means no more ticks. Only the platform can deliver
-        // the armed deadline, so it must have been submitted before closing.
-        drop(delivery);
-        assert_eq!(
-            host.pending().unwrap().len(),
-            1,
-            "an enabled alarm must survive the app closing in the scheduler"
-        );
-        assert!(
-            !stored.borrow().alarms.is_empty(),
-            "the armed occurrence must survive restart"
-        );
-    }
-
-    #[test]
-    fn disabling_alarm_retries_failed_cancellation_after_restart() {
-        let now = chrono::Local::now();
-        let due = now + chrono::Duration::minutes(2);
-        let id = Id::from_raw("cancel-alarm");
-        let mut clocks = Clocks::default();
-        clocks.alarms.push(
-            id.clone(),
-            crate::Alarm {
-                label: "Wake up".into(),
-                hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
-                minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
-                repeat: 0,
-                enabled: true,
-                enabled_at_ms: now.timestamp_millis(),
-            },
-        );
-        let mut delivery = Delivery::default();
-        crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
-        let stored = RefCell::new(Delivery::default());
-        let persist = |d: &Delivery| {
-            *stored.borrow_mut() = d.clone();
-            Ok(())
-        };
-        let host = TestScheduler::default();
-        reconcile(
-            None,
-            &clocks,
-            &mut delivery,
-            &host,
-            now.with_timezone(&Utc),
-            persist,
-        )
-        .unwrap();
-        clocks.alarms.get_mut(&id).unwrap().enabled = false;
-        host.fail_cancel.set(true);
-        assert!(
-            reconcile(
-                None,
-                &clocks,
-                &mut delivery,
-                &host,
-                now.with_timezone(&Utc),
-                persist
-            )
-            .is_err()
-        );
-        let mut restarted = stored.borrow().clone();
-        assert!(restarted.native_alarm_owners.contains(id.as_str()));
-        assert_eq!(host.pending().unwrap().len(), 1);
-        host.fail_cancel.set(false);
-        reconcile(
-            None,
-            &clocks,
-            &mut restarted,
-            &host,
-            now.with_timezone(&Utc),
-            persist,
-        )
-        .unwrap();
-        assert!(host.pending().unwrap().is_empty());
-        assert!(stored.borrow().native_alarm_owners.is_empty());
-        assert!(stored.borrow().native_alarms_scheduled.is_empty());
-    }
-
-    #[test]
-    fn reopening_completed_one_shot_preserves_host_snooze_until_edit() {
-        let now = chrono::Local::now();
-        let due = now + chrono::Duration::minutes(2);
-        let id = Id::from_raw("completed-one-shot");
-        let mut clocks = Clocks::default();
-        clocks.alarms.push(
-            id.clone(),
-            crate::Alarm {
-                label: "Fixture".into(),
-                hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
-                minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
-                repeat: 0,
-                enabled: true,
-                enabled_at_ms: now.timestamp_millis(),
-            },
-        );
-        let mut delivery = Delivery::default();
-        let host = TestScheduler::default();
-        crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
-        reconcile(
-            None,
-            &clocks,
-            &mut delivery,
-            &host,
-            now.with_timezone(&Utc),
-            |_| Ok(()),
-        )
-        .unwrap();
-        let deadline = delivery.alarms[id.as_str()].next_due_ms.unwrap();
-        let ring = DateTime::<Utc>::from_timestamp_millis(deadline).unwrap();
-        let tick = crate::schedule::tick(
-            &clocks,
-            &mut delivery,
-            ring,
-            ring.with_timezone(&chrono::Local),
-        );
-        assert_eq!(tick.finished_alarms, vec![id.clone()]);
-        assert!(matches!(
-            tick.due.as_slice(),
-            [crate::schedule::DueEvent::Alarm {
-                native_scheduled: true,
-                ..
-            }]
-        ));
-        clocks.alarms.get_mut(&id).unwrap().enabled = false;
-        let encoded = serde_json::to_vec(&delivery).unwrap();
-        let mut restarted: Delivery = serde_json::from_slice(&encoded).unwrap();
-        crate::schedule::tick(
-            &clocks,
-            &mut restarted,
-            ring,
-            ring.with_timezone(&chrono::Local),
-        );
-        reconcile(None, &clocks, &mut restarted, &host, ring, |_| Ok(())).unwrap();
-        assert!(
-            host.pending.borrow().contains_key(&alarm_id(id.as_str())),
-            "automatic completion canceled the retained host occurrence"
-        );
-        assert!(restarted.native_alarm_owners.contains(id.as_str()));
-        clocks.alarms.get_mut(&id).unwrap().minute =
-            (clocks.alarms.get(&id).unwrap().minute + 1) % 60;
-        reconcile(None, &clocks, &mut restarted, &host, ring, |_| Ok(())).unwrap();
-        assert!(
-            host.pending.borrow().is_empty(),
-            "editing a completed generation must cancel it"
-        );
-        assert!(restarted.native_completed_alarms.is_empty());
-        assert!(restarted.native_alarm_owners.is_empty());
-    }
-
-    #[test]
-    fn reenabled_alarm_hands_off_the_previously_delivered_date() {
-        let now = chrono::Local::now();
-        let id = Id::from_raw("rearmed-alarm");
-        let mut clocks = Clocks::default();
-        clocks.alarms.push(
-            id.clone(),
-            crate::Alarm {
-                label: "Wake up".into(),
-                hour: 12,
-                minute: 0,
-                repeat: 0,
-                enabled: true,
-                enabled_at_ms: now.timestamp_millis(),
-            },
-        );
-        let mut delivery = Delivery::default();
-        delivery.alarms.insert(
-            id.as_str().to_owned(),
-            crate::schedule::ArmedAlarm {
-                last_rung: Some(now.date_naive()),
-                ..Default::default()
-            },
-        );
-        crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
-        let host = TestScheduler::default();
-        reconcile(
-            None,
-            &clocks,
-            &mut delivery,
-            &host,
-            now.with_timezone(&Utc),
-            |_| Ok(()),
-        )
-        .unwrap();
-        assert_eq!(
-            host.alarm_last_rung.borrow().get(&alarm_id(id.as_str())),
-            Some(&Some(now.date_naive())),
-            "the host must exclude the app's consumed local date"
-        );
-    }
-
-    #[test]
-    fn service_history_restores_occurrences_without_rearming_delivered_alarms() {
-        let now = chrono::Local::now();
-        let yesterday = now - chrono::Duration::days(1);
-        let mut clocks = Clocks::default();
-        let id = Id::from_raw("restore-alarm");
-        clocks.alarms.push(
-            id.clone(),
-            crate::Alarm {
-                label: "Wake up".into(),
-                hour: 12,
-                minute: 0,
-                repeat: 0,
-                enabled: true,
-                enabled_at_ms: 1,
-            },
-        );
-        let mut delivery = Delivery::default();
-        let mut state = ui::notify::AlarmState {
-            tag: alarm_id(id.as_str()),
-            alarm: ui::notify::CalendarAlarm {
-                hour: 12,
-                minute: 0,
-                weekdays: 0,
-            },
-            enabled_at_ms: 1,
-            next_at: None,
-            last_at: Some(system_time(yesterday.with_timezone(&Utc))),
-            last_rung: Some(yesterday.date_naive()),
-        };
-        restore_alarms(&clocks, &mut delivery, &[state.clone()]);
-        let due = crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
-        assert!(matches!(
-            due.due.as_slice(),
-            [crate::DueEvent::Alarm {
-                native_scheduled: true,
-                ..
-            }]
-        ));
-        assert_eq!(due.finished_alarms, vec![id.clone()]);
-        assert!(
-            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now)
-                .due
-                .is_empty()
-        );
-        // A timezone-adjusted future occurrence is restored exactly, rather
-        // than cancelling it because the app retained the old UTC deadline.
-        let future = now.with_timezone(&Utc) + chrono::Duration::hours(4);
-        state.next_at = Some(system_time(future));
-        state.last_at = None;
-        state.last_rung = None;
-        restore_alarms(&clocks, &mut delivery, &[state]);
-        assert_eq!(
-            delivery.alarms.get(id.as_str()).unwrap().next_due_ms,
-            Some(future.timestamp_millis())
-        );
-        assert_eq!(
-            delivery.native_alarms_scheduled.get(id.as_str()),
-            Some(&future.timestamp_millis())
-        );
-    }
-
     fn running(label: &str) -> Clocks {
         let mut clocks = Clocks::default();
         clocks.timers.push(
@@ -737,155 +406,490 @@ mod tests {
         clocks.timers.ids().next().unwrap().as_str().to_owned()
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn reconcile_touches_only_owned_timers_and_persists_ownership_before_the_host() {
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+        fn reconcile_hands_alarms_and_timers_to_the_hosts_scheduler;
+
+        phase real_alarm_handoff_transmits_the_full_resource_identity;
         {
-            let host = TestScheduler::default();
-            let foreign_id = timer_id("0123456789abcdef");
-            host.schedule(
-                &foreign_id,
-                "Other profile",
-                system_time(Utc::now() + chrono::Duration::hours(1)),
-            )
-            .unwrap();
+            let now = chrono::Local::now();
+            let due = now + chrono::Duration::minutes(5);
+            let mut clocks = Clocks::default();
+            clocks.alarms.insert(
+                0,
+                Id::from_raw("complete-alarm-resource-identity"),
+                crate::Alarm {
+                    label: "Requested".into(),
+                    hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
+                    minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                    enabled: true,
+                    enabled_at_ms: now.timestamp_millis(),
+                    ..crate::Alarm::default()
+                },
+            );
+            let mut delivery = Delivery::default();
+            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            let captured = CapturedAlarm::default();
+            let host: &dyn Notifier = &captured;
+            let record = ui::record::RecordId::minted();
             reconcile(
-                None,
-                &Clocks::default(),
-                &mut Delivery::default(),
-                &host,
-                Utc::now(),
+                Some(&record),
+                &clocks,
+                &mut delivery,
+                host,
+                now.with_timezone(&Utc),
                 |_| Ok(()),
             )
             .unwrap();
-            assert!(
-                host.pending.borrow().contains_key(&foreign_id),
-                "another profile's timer was cancelled"
+            let notification = captured.0.lock().unwrap().clone().unwrap();
+            assert_eq!(
+                notification.activation.as_deref(),
+                Some(
+                    format!("tilo-clocks:record/{record}/alarm/complete-alarm-resource-identity")
+                        .as_str()
+                )
             );
         }
 
+        phase enabled_alarm_is_handed_to_scheduler_before_app_closes;
         {
-            let host = TestScheduler::default();
+            let now = chrono::Local::now();
+            let due = now + chrono::Duration::minutes(2);
+            let mut clocks = Clocks::default();
+            clocks.alarms.push(
+                Id::from_raw("closed-app-alarm"),
+                crate::Alarm {
+                    label: "Wake up".into(),
+                    hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
+                    minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                    repeat: 0,
+                    enabled: true,
+                    enabled_at_ms: now.timestamp_millis(),
+                },
+            );
+            let mut delivery = Delivery::default();
+            assert!(
+                crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now)
+                    .due
+                    .is_empty()
+            );
             let stored = RefCell::new(Delivery::default());
-            let store = |delivery: &Delivery| {
-                *stored.borrow_mut() = delivery.clone();
+            let host = TestScheduler::default();
+            reconcile(
+                None,
+                &clocks,
+                &mut delivery,
+                &host,
+                now.with_timezone(&Utc),
+                |d| {
+                    *stored.borrow_mut() = d.clone();
+                    Ok(())
+                },
+            )
+            .unwrap();
+            // Closing Clocks means no more ticks. Only the platform can deliver
+            // the armed deadline, so it must have been submitted before closing.
+            drop(delivery);
+            assert_eq!(
+                host.pending().unwrap().len(),
+                1,
+                "an enabled alarm must survive the app closing in the scheduler"
+            );
+            assert!(
+                !stored.borrow().alarms.is_empty(),
+                "the armed occurrence must survive restart"
+            );
+        }
+
+        phase disabling_alarm_retries_failed_cancellation_after_restart;
+        {
+            let now = chrono::Local::now();
+            let due = now + chrono::Duration::minutes(2);
+            let id = Id::from_raw("cancel-alarm");
+            let mut clocks = Clocks::default();
+            clocks.alarms.push(
+                id.clone(),
+                crate::Alarm {
+                    label: "Wake up".into(),
+                    hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
+                    minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                    repeat: 0,
+                    enabled: true,
+                    enabled_at_ms: now.timestamp_millis(),
+                },
+            );
+            let mut delivery = Delivery::default();
+            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            let stored = RefCell::new(Delivery::default());
+            let persist = |d: &Delivery| {
+                *stored.borrow_mut() = d.clone();
                 Ok(())
             };
-            let mut first = running("Owned timer");
-            let owned_id = first_id(&first);
-            let mut delivery = Delivery::default();
-            reconcile(None, &first, &mut delivery, &host, Utc::now(), store).unwrap();
-            assert_eq!(
-                stored.borrow().native_scheduled.len(),
-                1,
-                "case deleted-timer: the handoff is recorded"
-            );
-            let second = running("Other profile");
-            let second_id = timer_id(&first_id(&second));
+            let host = TestScheduler::default();
             reconcile(
                 None,
-                &second,
-                &mut Delivery::default(),
+                &clocks,
+                &mut delivery,
                 &host,
-                Utc::now(),
-                |_| Ok(()),
+                now.with_timezone(&Utc),
+                persist,
             )
             .unwrap();
-            assert_eq!(
-                host.pending.borrow().len(),
-                2,
-                "case deleted-timer: both profiles scheduled"
-            );
-
-            first.timers = Collection::default();
+            clocks.alarms.get_mut(&id).unwrap().enabled = false;
             host.fail_cancel.set(true);
             assert!(
-                reconcile(None, &first, &mut delivery, &host, Utc::now(), store).is_err(),
-                "case deleted-timer: failed cancellation is reported"
+                reconcile(
+                    None,
+                    &clocks,
+                    &mut delivery,
+                    &host,
+                    now.with_timezone(&Utc),
+                    persist
+                )
+                .is_err()
             );
             let mut restarted = stored.borrow().clone();
-            assert!(
-                restarted.native_owners.contains(&owned_id),
-                "case deleted-timer: ownership retained for retry"
-            );
+            assert!(restarted.native_alarm_owners.contains(id.as_str()));
+            assert_eq!(host.pending().unwrap().len(), 1);
             host.fail_cancel.set(false);
-            reconcile(None, &first, &mut restarted, &host, Utc::now(), store).unwrap();
-            assert_eq!(
-                host.pending.borrow().len(),
-                1,
-                "case deleted-timer: retry cancels"
-            );
-            assert!(
-                host.pending.borrow().contains_key(&second_id),
-                "case deleted-timer: other profile untouched"
-            );
-            assert!(
-                stored.borrow().native_owners.is_empty(),
-                "case deleted-timer: ownership released"
-            );
+            reconcile(
+                None,
+                &clocks,
+                &mut restarted,
+                &host,
+                now.with_timezone(&Utc),
+                persist,
+            )
+            .unwrap();
+            assert!(host.pending().unwrap().is_empty());
+            assert!(stored.borrow().native_alarm_owners.is_empty());
+            assert!(stored.borrow().native_alarms_scheduled.is_empty());
         }
 
+        phase reopening_completed_one_shot_preserves_host_snooze_until_edit;
         {
-            let host = TestScheduler::default();
-            let clocks = running("Owned timer");
-            let mut delivery = Delivery::default();
-            assert!(
-                reconcile(None, &clocks, &mut delivery, &host, Utc::now(), |_| Err(
-                    "storage unavailable".into()
-                ))
-                .is_err(),
-                "case storage-failure: reported"
+            let now = chrono::Local::now();
+            let due = now + chrono::Duration::minutes(2);
+            let id = Id::from_raw("completed-one-shot");
+            let mut clocks = Clocks::default();
+            clocks.alarms.push(
+                id.clone(),
+                crate::Alarm {
+                    label: "Fixture".into(),
+                    hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
+                    minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                    repeat: 0,
+                    enabled: true,
+                    enabled_at_ms: now.timestamp_millis(),
+                },
             );
+            let mut delivery = Delivery::default();
+            let host = TestScheduler::default();
+            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            reconcile(
+                None,
+                &clocks,
+                &mut delivery,
+                &host,
+                now.with_timezone(&Utc),
+                |_| Ok(()),
+            )
+            .unwrap();
+            let deadline = delivery.alarms[id.as_str()].next_due_ms.unwrap();
+            let ring = DateTime::<Utc>::from_timestamp_millis(deadline).unwrap();
+            let tick = crate::schedule::tick(
+                &clocks,
+                &mut delivery,
+                ring,
+                ring.with_timezone(&chrono::Local),
+            );
+            assert_eq!(tick.finished_alarms, vec![id.clone()]);
+            assert!(matches!(
+                tick.due.as_slice(),
+                [crate::schedule::DueEvent::Alarm {
+                    native_scheduled: true,
+                    ..
+                }]
+            ));
+            clocks.alarms.get_mut(&id).unwrap().enabled = false;
+            let encoded = serde_json::to_vec(&delivery).unwrap();
+            let mut restarted: Delivery = serde_json::from_slice(&encoded).unwrap();
+            crate::schedule::tick(
+                &clocks,
+                &mut restarted,
+                ring,
+                ring.with_timezone(&chrono::Local),
+            );
+            reconcile(None, &clocks, &mut restarted, &host, ring, |_| Ok(())).unwrap();
+            assert!(
+                host.pending.borrow().contains_key(&alarm_id(id.as_str())),
+                "automatic completion canceled the retained host occurrence"
+            );
+            assert!(restarted.native_alarm_owners.contains(id.as_str()));
+            clocks.alarms.get_mut(&id).unwrap().minute =
+                (clocks.alarms.get(&id).unwrap().minute + 1) % 60;
+            reconcile(None, &clocks, &mut restarted, &host, ring, |_| Ok(())).unwrap();
             assert!(
                 host.pending.borrow().is_empty(),
-                "case storage-failure: nothing submitted"
+                "editing a completed generation must cancel it"
             );
-            assert!(
-                delivery.native_scheduled.is_empty(),
-                "case storage-failure: no handoff recorded"
+            assert!(restarted.native_completed_alarms.is_empty());
+            assert!(restarted.native_alarm_owners.is_empty());
+        }
+
+        phase reenabled_alarm_hands_off_the_previously_delivered_date;
+        {
+            let now = chrono::Local::now();
+            let id = Id::from_raw("rearmed-alarm");
+            let mut clocks = Clocks::default();
+            clocks.alarms.push(
+                id.clone(),
+                crate::Alarm {
+                    label: "Wake up".into(),
+                    hour: 12,
+                    minute: 0,
+                    repeat: 0,
+                    enabled: true,
+                    enabled_at_ms: now.timestamp_millis(),
+                },
+            );
+            let mut delivery = Delivery::default();
+            delivery.alarms.insert(
+                id.as_str().to_owned(),
+                crate::schedule::ArmedAlarm {
+                    last_rung: Some(now.date_naive()),
+                    ..Default::default()
+                },
+            );
+            crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            let host = TestScheduler::default();
+            reconcile(
+                None,
+                &clocks,
+                &mut delivery,
+                &host,
+                now.with_timezone(&Utc),
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(
+                host.alarm_last_rung.borrow().get(&alarm_id(id.as_str())),
+                Some(&Some(now.date_naive())),
+                "the host must exclude the app's consumed local date"
             );
         }
 
+        phase service_history_restores_occurrences_without_rearming_delivered_alarms;
         {
-            let host = TestScheduler::default();
-            let id = "fedcba9876543210".to_owned();
+            let now = chrono::Local::now();
+            let yesterday = now - chrono::Duration::days(1);
+            let mut clocks = Clocks::default();
+            let id = Id::from_raw("restore-alarm");
+            clocks.alarms.push(
+                id.clone(),
+                crate::Alarm {
+                    label: "Wake up".into(),
+                    hour: 12,
+                    minute: 0,
+                    repeat: 0,
+                    enabled: true,
+                    enabled_at_ms: 1,
+                },
+            );
             let mut delivery = Delivery::default();
-            delivery.native_owners.insert(id.clone());
-            host.pending.borrow_mut().insert(
-                timer_id(&id),
-                system_time(Utc::now() - chrono::Duration::minutes(1)),
-            );
-            reconcile(
-                None,
-                &Clocks::default(),
-                &mut delivery,
-                &host,
-                Utc::now(),
-                |_| Ok(()),
-            )
-            .unwrap();
+            let mut state = ui::notify::AlarmState {
+                tag: alarm_id(id.as_str()),
+                alarm: ui::notify::CalendarAlarm {
+                    hour: 12,
+                    minute: 0,
+                    weekdays: 0,
+                },
+                enabled_at_ms: 1,
+                next_at: None,
+                last_at: Some(system_time(yesterday.with_timezone(&Utc))),
+                last_rung: Some(yesterday.date_naive()),
+            };
+            restore_alarms(&clocks, &mut delivery, &[state.clone()]);
+            let due = crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+            assert!(matches!(
+                due.due.as_slice(),
+                [crate::DueEvent::Alarm {
+                    native_scheduled: true,
+                    ..
+                }]
+            ));
+            assert_eq!(due.finished_alarms, vec![id.clone()]);
             assert!(
-                host.pending.borrow().contains_key(&timer_id(&id)),
-                "case elapsed: still pending on the host"
+                crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now)
+                    .due
+                    .is_empty()
             );
-            assert!(
-                delivery.native_owners.contains(&id),
-                "case elapsed: ownership retained"
+            // A timezone-adjusted future occurrence is restored exactly, rather
+            // than cancelling it because the app retained the old UTC deadline.
+            let future = now.with_timezone(&Utc) + chrono::Duration::hours(4);
+            state.next_at = Some(system_time(future));
+            state.last_at = None;
+            state.last_rung = None;
+            restore_alarms(&clocks, &mut delivery, &[state]);
+            assert_eq!(
+                delivery.alarms.get(id.as_str()).unwrap().next_due_ms,
+                Some(future.timestamp_millis())
             );
-            host.pending.borrow_mut().clear();
-            reconcile(
-                None,
-                &Clocks::default(),
-                &mut delivery,
-                &host,
-                Utc::now(),
-                |_| Ok(()),
-            )
-            .unwrap();
-            assert!(
-                delivery.native_owners.is_empty(),
-                "case elapsed: ownership released after delivery"
+            assert_eq!(
+                delivery.native_alarms_scheduled.get(id.as_str()),
+                Some(&future.timestamp_millis())
             );
+        }
+
+        phase reconcile_touches_only_owned_timers_and_persists_ownership_before_the_host;
+        {
+            {
+                let host = TestScheduler::default();
+                let foreign_id = timer_id("0123456789abcdef");
+                host.schedule(
+                    &foreign_id,
+                    "Other profile",
+                    system_time(Utc::now() + chrono::Duration::hours(1)),
+                )
+                .unwrap();
+                reconcile(
+                    None,
+                    &Clocks::default(),
+                    &mut Delivery::default(),
+                    &host,
+                    Utc::now(),
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert!(
+                    host.pending.borrow().contains_key(&foreign_id),
+                    "another profile's timer was cancelled"
+                );
+            }
+
+            {
+                let host = TestScheduler::default();
+                let stored = RefCell::new(Delivery::default());
+                let store = |delivery: &Delivery| {
+                    *stored.borrow_mut() = delivery.clone();
+                    Ok(())
+                };
+                let mut first = running("Owned timer");
+                let owned_id = first_id(&first);
+                let mut delivery = Delivery::default();
+                reconcile(None, &first, &mut delivery, &host, Utc::now(), store).unwrap();
+                assert_eq!(
+                    stored.borrow().native_scheduled.len(),
+                    1,
+                    "case deleted-timer: the handoff is recorded"
+                );
+                let second = running("Other profile");
+                let second_id = timer_id(&first_id(&second));
+                reconcile(
+                    None,
+                    &second,
+                    &mut Delivery::default(),
+                    &host,
+                    Utc::now(),
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert_eq!(
+                    host.pending.borrow().len(),
+                    2,
+                    "case deleted-timer: both profiles scheduled"
+                );
+
+                first.timers = Collection::default();
+                host.fail_cancel.set(true);
+                assert!(
+                    reconcile(None, &first, &mut delivery, &host, Utc::now(), store).is_err(),
+                    "case deleted-timer: failed cancellation is reported"
+                );
+                let mut restarted = stored.borrow().clone();
+                assert!(
+                    restarted.native_owners.contains(&owned_id),
+                    "case deleted-timer: ownership retained for retry"
+                );
+                host.fail_cancel.set(false);
+                reconcile(None, &first, &mut restarted, &host, Utc::now(), store).unwrap();
+                assert_eq!(
+                    host.pending.borrow().len(),
+                    1,
+                    "case deleted-timer: retry cancels"
+                );
+                assert!(
+                    host.pending.borrow().contains_key(&second_id),
+                    "case deleted-timer: other profile untouched"
+                );
+                assert!(
+                    stored.borrow().native_owners.is_empty(),
+                    "case deleted-timer: ownership released"
+                );
+            }
+
+            {
+                let host = TestScheduler::default();
+                let clocks = running("Owned timer");
+                let mut delivery = Delivery::default();
+                assert!(
+                    reconcile(None, &clocks, &mut delivery, &host, Utc::now(), |_| Err(
+                        "storage unavailable".into()
+                    ))
+                    .is_err(),
+                    "case storage-failure: reported"
+                );
+                assert!(
+                    host.pending.borrow().is_empty(),
+                    "case storage-failure: nothing submitted"
+                );
+                assert!(
+                    delivery.native_scheduled.is_empty(),
+                    "case storage-failure: no handoff recorded"
+                );
+            }
+
+            {
+                let host = TestScheduler::default();
+                let id = "fedcba9876543210".to_owned();
+                let mut delivery = Delivery::default();
+                delivery.native_owners.insert(id.clone());
+                host.pending.borrow_mut().insert(
+                    timer_id(&id),
+                    system_time(Utc::now() - chrono::Duration::minutes(1)),
+                );
+                reconcile(
+                    None,
+                    &Clocks::default(),
+                    &mut delivery,
+                    &host,
+                    Utc::now(),
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert!(
+                    host.pending.borrow().contains_key(&timer_id(&id)),
+                    "case elapsed: still pending on the host"
+                );
+                assert!(
+                    delivery.native_owners.contains(&id),
+                    "case elapsed: ownership retained"
+                );
+                host.pending.borrow_mut().clear();
+                reconcile(
+                    None,
+                    &Clocks::default(),
+                    &mut delivery,
+                    &host,
+                    Utc::now(),
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert!(
+                    delivery.native_owners.is_empty(),
+                    "case elapsed: ownership released after delivery"
+                );
+            }
         }
     }
 }

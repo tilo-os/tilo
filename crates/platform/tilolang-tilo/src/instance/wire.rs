@@ -407,50 +407,54 @@ mod tests {
         patches
     }
 
-    #[test]
-    fn the_diff_brings_the_windows_tree_to_the_views_by_key() {
-        let old = stack(
-            "s",
-            vec![
-                text("a", "a"),
-                text("b", "b"),
-                stack("c", vec![text("c1", "1")]),
-            ],
-        );
-        let new = stack(
-            "s",
-            vec![
-                text("n", "n"),
-                stack("c", vec![text("c1", "2"), text("c2", "3")]),
-                text("a", "a"),
-            ],
-        );
-        let patches = round_trip(&old, &new);
-        assert!(
-            !patches
-                .iter()
-                .any(|patch| matches!(patch, wire::Patch::SetRoot(_))),
-            "a change by key, not the tree anew: {patches:#?}"
-        );
-        assert!(round_trip(&new, &new).is_empty(), "no change, no patch");
-        // A child that changes kind under the same key is replaced.
-        let swapped = stack("s", vec![wire::Node::empty("divider", "a")]);
-        round_trip(&old, &swapped);
-        // A root of another kind is the tree anew.
-        let other = wire::Node::empty("page", "s");
-        assert_eq!(
-            round_trip(&old, &other),
-            vec![wire::Patch::SetRoot(other.clone())]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_wire_diff_sends_a_tree_by_key;
 
-    #[test]
-    fn siblings_sharing_a_key_are_sent_whole() {
-        let old = stack("s", vec![text("a", "1"), text("a", "2")]);
-        let new = stack("s", vec![text("a", "3")]);
-        assert_eq!(
-            round_trip(&old, &new),
-            vec![wire::Patch::SetRoot(new.clone())]
-        );
+        phase the_diff_brings_the_windows_tree_to_the_views_by_key;
+        {
+            let old = stack(
+                "s",
+                vec![
+                    text("a", "a"),
+                    text("b", "b"),
+                    stack("c", vec![text("c1", "1")]),
+                ],
+            );
+            let new = stack(
+                "s",
+                vec![
+                    text("n", "n"),
+                    stack("c", vec![text("c1", "2"), text("c2", "3")]),
+                    text("a", "a"),
+                ],
+            );
+            let patches = round_trip(&old, &new);
+            assert!(
+                !patches
+                    .iter()
+                    .any(|patch| matches!(patch, wire::Patch::SetRoot(_))),
+                "a change by key, not the tree anew: {patches:#?}"
+            );
+            assert!(round_trip(&new, &new).is_empty(), "no change, no patch");
+            // A child that changes kind under the same key is replaced.
+            let swapped = stack("s", vec![wire::Node::empty("divider", "a")]);
+            round_trip(&old, &swapped);
+            // A root of another kind is the tree anew.
+            let other = wire::Node::empty("page", "s");
+            assert_eq!(
+                round_trip(&old, &other),
+                vec![wire::Patch::SetRoot(other.clone())]
+            );
+        }
+
+        phase siblings_sharing_a_key_are_sent_whole;
+        {
+            let old = stack("s", vec![text("a", "1"), text("a", "2")]);
+            let new = stack("s", vec![text("a", "3")]);
+            assert_eq!(
+                round_trip(&old, &new),
+                vec![wire::Patch::SetRoot(new.clone())]
+            );
+        }
     }
 }

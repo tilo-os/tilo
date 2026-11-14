@@ -14,15 +14,13 @@
 //! Nothing counts anything down on a timer of its own: the projector's worker
 //! wakes the loop when it has news, and every pass reads what came back.
 
-use settings_store::person_displays::Arrangement;
 use tilo_compositor::OutputInfo;
 use tilo_projector::{
     DisplayResolutionLimit, ProjectionDevice, ProjectionMode, ProjectionProtocol,
 };
 use tilo_sheets::Seat as _;
 use tilo_sheets::displays::{
-    Band, Discovery, DisplaysEffect, DisplaysSeat, Layout, LayoutRow, Link, Receiver, Screen,
-    Sheet, Stream,
+    Band, Discovery, DisplaysEffect, DisplaysSeat, Layout, LayoutRow, Link, Receiver, Sheet, Stream,
 };
 
 use crate::displays::{self, DisplayMode};
@@ -42,65 +40,6 @@ pub struct DisplaySheet {
     chosen: Option<String>,
     /// The opening the search was made for, so every opening looks again.
     searched: Option<u64>,
-}
-
-/// Include `device` 's screen `output` in the shared arrangement, or leave it out, as the person
-/// chose it against `revision` . A screen the arrangement moved since the sheet drew it is not
-/// changed under them.
-fn include(device: &str, output: &str, revision: u64, include: bool) {
-    let Some((_, layout)) = crate::shared_displays::person() else {
-        tracing::info!(%device, %output, "no shared display arrangement is published");
-        return;
-    };
-    let arrangement = Arrangement::load();
-    if layout.find(device, output).is_none() {
-        tracing::info!(%device, %output, "that screen is not in the shared arrangement");
-        return;
-    }
-    let current = arrangement
-        .entry(device, output)
-        .map_or(0, |entry| entry.rev);
-    if current != revision {
-        tracing::info!(
-            %device,
-            %output,
-            current,
-            revision,
-            "the arrangement moved since the sheet drew that screen"
-        );
-        return;
-    }
-    let next = layout.set_enabled(&arrangement, device, output, include);
-    if let Err(error) = next.save() {
-        tracing::warn!(%error, %device, %output, "the shared arrangement is not saved");
-    }
-}
-
-/// The person's screens on their other devices, as the shared arrangement lays them out, and
-/// whether the person may change which of them take part here.
-fn screens() -> (Vec<Screen>, bool) {
-    let Some((_, layout)) = crate::shared_displays::person() else {
-        return (Vec::new(), false);
-    };
-    let arrangement = Arrangement::load();
-    let screens = layout
-        .listed()
-        .filter(|display| !display.local)
-        .map(|display| Screen {
-            device: display.device.clone(),
-            output: display.output.clone(),
-            revision: arrangement
-                .entry(&display.device, &display.output)
-                .map_or(0, |entry| entry.rev),
-            name: display.name.clone(),
-            number: display.order.saturating_add(1),
-            device_label: display.device_label.clone(),
-            online: display.online,
-            active: display.rect.width > 0,
-            enabled: display.enabled,
-        })
-        .collect::<Vec<_>>();
-    (screens, true)
 }
 
 impl DisplaySheet {
@@ -233,14 +172,6 @@ impl DisplaySheet {
             // which has a sheet of its own that stands on every display
             // (see [`crate::display_confirm`]).
             DisplaysEffect::Keep | DisplaysEffect::Revert => {}
-            // A screen of the person's other devices takes part in the shared layout, or leaves it:
-            // the arrangement is the document Settings edits, and this writes the same one.
-            DisplaysEffect::Include {
-                device,
-                output,
-                revision,
-                include: taking_part,
-            } => include(&device, &output, revision, taking_part),
             DisplaysEffect::Choose { receiver } => self.choose_receiver(&receiver),
             DisplaysEffect::Connect { receiver } => {
                 let pin = self
@@ -416,12 +347,9 @@ impl DisplaySheet {
             _ => Discovery::NoneFound,
         };
         let policy = &self.controller.options.stream_policy;
-        let (screens, screens_editable) = screens();
         Sheet {
             layouts,
             band: Band::Idle,
-            screens,
-            screens_editable,
             receivers,
             discovery,
             stream: self.target().map(|_| Stream {
@@ -612,127 +540,5 @@ mod tests {
                 "{layout:?} is chosen by its own name"
             );
         }
-    }
-
-    /// A published view of the person's devices: this laptop's own panel and the tablet's screen,
-    /// with the arrangement they are laid out by.
-    fn published() -> tilo_test_env::TestHome {
-        use settings_store::person_displays::{DeviceOutput, PersonDevice};
-        let home = tilo_test_env::TestHome::new().expect("a home");
-        let (publisher_pid, publisher_start_ticks) =
-            settings_store::hardware::publisher_identity().expect("a publisher");
-        let panel = DeviceOutput {
-            id: "edid:laptop|panel|1".into(),
-            name: "Built-in display".into(),
-            builtin: true,
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1200,
-            mode_width: 1920,
-            mode_height: 1200,
-            refresh_mhz: 60_000,
-            scale_milli: 1500,
-            connected: true,
-            enabled: true,
-        };
-        let tablet = DeviceOutput {
-            id: "edid:tablet|panel|2".into(),
-            name: "Tablet".into(),
-            builtin: true,
-            x: 0,
-            y: 0,
-            width: 1600,
-            height: 2560,
-            mode_width: 1600,
-            mode_height: 2560,
-            refresh_mhz: 60_000,
-            scale_milli: 2000,
-            connected: true,
-            enabled: true,
-        };
-        let view = settings_store::person_displays::PersonDisplays {
-            schema_version: settings_store::person_displays::SCHEMA_VERSION,
-            publisher_pid,
-            publisher_start_ticks,
-            local_device: "laptop".into(),
-            devices: vec![
-                PersonDevice {
-                    device: "laptop".into(),
-                    label: "Laptop".into(),
-                    local: true,
-                    online: true,
-                    outputs: vec![panel],
-                },
-                PersonDevice {
-                    device: "tablet".into(),
-                    label: "Tablet".into(),
-                    local: false,
-                    online: true,
-                    outputs: vec![tablet],
-                },
-            ],
-        };
-        view.save().expect("the person's displays are published");
-        home
-    }
-
-    /// The sheet lists the person's other devices' screens, and choosing one includes it or leaves
-    /// it out of the shared arrangement.
-    #[test]
-    fn the_sheet_lists_the_person_s_other_screens_and_keeps_their_choice() {
-        let _home = published();
-        let (listed, editable) = screens();
-        assert!(editable, "the person may change which screens take part");
-        assert_eq!(
-            listed
-                .iter()
-                .map(|screen| (screen.device.as_str(), screen.name.as_str()))
-                .collect::<Vec<_>>(),
-            [("tablet", "Tablet")],
-            "their own screen is not one of the other devices' screens: {listed:?}"
-        );
-        let tablet = &listed[0];
-        assert!(tablet.online && tablet.enabled && tablet.active);
-        assert_eq!(tablet.revision, 0, "nothing arranged it yet");
-
-        include("tablet", &tablet.output, tablet.revision, false);
-        let arrangement = Arrangement::load();
-        let entry = arrangement
-            .entry("tablet", &tablet.output)
-            .expect("the tablet's screen is arranged now");
-        assert!(!entry.enabled, "the person left it out");
-        let (shown, _) = screens();
-        assert!(
-            shown
-                .iter()
-                .any(|screen| screen.device == "tablet" && !screen.enabled),
-            "the sheet shows it left out: {shown:?}"
-        );
-
-        // A choice made against a revision the arrangement moved past does not change it under the
-        // person.
-        let revision = arrangement
-            .entry("tablet", &tablet.output)
-            .expect("still arranged")
-            .rev;
-        include("tablet", &tablet.output, revision.saturating_add(5), true);
-        let arrangement = Arrangement::load();
-        assert!(
-            !arrangement
-                .entry("tablet", &tablet.output)
-                .expect("still arranged")
-                .enabled,
-            "a stale choice is refused"
-        );
-        include("tablet", &tablet.output, revision, true);
-        let arrangement = Arrangement::load();
-        assert!(
-            arrangement
-                .entry("tablet", &tablet.output)
-                .expect("still arranged")
-                .enabled,
-            "the screen takes part again"
-        );
     }
 }

@@ -116,34 +116,79 @@ mod tests {
         ui::framework::testing::search_source::<Notebook>(entries(&notebook.state().unwrap()))
     }
 
-    #[test]
-    fn search_finds_titled_and_untitled_pages_within_budget() {
+    tilo_test_env::scenario! {
+        fn search_finds_notes_and_opens_the_note_a_hit_is_in;
+
+        phase search_finds_titled_and_untitled_pages_within_budget;
         {
-            let hits = search(&populated().0).search("meeting");
-            assert!(
-                hits.iter().any(|r| r.title == "Meeting notes"),
-                "the source surfaces the matching page, got {:?}",
-                hits.iter().map(|r| &r.title).collect::<Vec<_>>()
-            );
-            assert!(
-                hits.iter().all(|r| r.kind == note_kind()),
-                "all hits are listed under Notes"
-            );
+            {
+                let hits = search(&populated().0).search("meeting");
+                assert!(
+                    hits.iter().any(|r| r.title == "Meeting notes"),
+                    "the source surfaces the matching page, got {:?}",
+                    hits.iter().map(|r| &r.title).collect::<Vec<_>>()
+                );
+                assert!(
+                    hits.iter().all(|r| r.kind == note_kind()),
+                    "all hits are listed under Notes"
+                );
+            }
+            {
+                let mut notebook = Replica::<Notebook>::new();
+                add(&mut notebook, "");
+                let hits = search(&notebook).search("untitled");
+                assert_eq!(
+                    hits.len(),
+                    1,
+                    "a blank-titled page surfaces under its placeholder"
+                );
+            }
+            {
+                let source = search(&populated().0);
+                assert_eq!(source.search_limited("trip", 1).len(), 1);
+                assert!(source.search_limited("trip", 0).is_empty());
+            }
         }
+
+        phase search_results_open_the_note_they_are_in;
         {
-            let mut notebook = Replica::<Notebook>::new();
-            add(&mut notebook, "");
-            let hits = search(&notebook).search("untitled");
-            assert_eq!(
-                hits.len(),
-                1,
-                "a blank-titled page surfaces under its placeholder"
-            );
-        }
-        {
-            let source = search(&populated().0);
-            assert_eq!(source.search_limited("trip", 1).len(), 1);
-            assert!(source.search_limited("trip", 0).is_empty());
+            {
+                let (notebook, pages) = populated();
+                let top = search(&notebook).search("trip").remove(0);
+                assert_eq!(top.title, "Trip planning", "the best match leads");
+                assert_eq!(
+                    top.action_id,
+                    crate::actions::page_resource_id(pages[2]),
+                    "a hit opens the note's item"
+                );
+            }
+            {
+                let (mut notebook, pages) = populated();
+                with_blocks(&mut notebook, pages[1], &["Budget decisions"]);
+                let hit = search(&notebook)
+                    .search("budget")
+                    .into_iter()
+                    .find(|hit| hit.kind == block_kind())
+                    .expect("block hit");
+                assert_eq!(hit.subtitle.as_deref(), Some("Meeting notes"));
+                assert_eq!(hit.action_id, crate::actions::page_resource_id(pages[1]));
+            }
+            {
+                // A long block reads as its opening words; the rest is still found.
+                let long = format!(
+                    "{}Write the migration guide with the release team",
+                    "Earlier context. ".repeat(12)
+                );
+                let (mut notebook, pages) = populated();
+                with_blocks(&mut notebook, pages[0], &[&long]);
+                let hit = search(&notebook)
+                    .search("release team")
+                    .into_iter()
+                    .find(|hit| hit.kind == block_kind())
+                    .expect("a match late in a long block is found");
+                assert!(hit.title.ends_with('…'));
+                assert!(hit.title.chars().count() <= BLOCK_LABEL_CHARS);
+            }
         }
     }
 
@@ -172,48 +217,15 @@ mod tests {
     }
 
     #[test]
-    fn search_results_open_the_note_they_are_in() {
-        {
-            let (notebook, pages) = populated();
-            let top = search(&notebook).search("trip").remove(0);
-            assert_eq!(top.title, "Trip planning", "the best match leads");
-            assert_eq!(
-                top.action_id,
-                crate::actions::page_resource_id(pages[2]),
-                "a hit opens the note's item"
-            );
-        }
-        {
-            let (mut notebook, pages) = populated();
-            with_blocks(&mut notebook, pages[1], &["Budget decisions"]);
-            let hit = search(&notebook)
-                .search("budget")
-                .into_iter()
-                .find(|hit| hit.kind == block_kind())
-                .expect("block hit");
-            assert_eq!(hit.subtitle.as_deref(), Some("Meeting notes"));
-            assert_eq!(hit.action_id, crate::actions::page_resource_id(pages[1]));
-        }
-        {
-            // A long block reads as its opening words; the rest is still found.
-            let long = format!(
-                "{}Write the migration guide with the release team",
-                "Earlier context. ".repeat(12)
-            );
-            let (mut notebook, pages) = populated();
-            with_blocks(&mut notebook, pages[0], &[&long]);
-            let hit = search(&notebook)
-                .search("release team")
-                .into_iter()
-                .find(|hit| hit.kind == block_kind())
-                .expect("a match late in a long block is found");
-            assert!(hit.title.ends_with('…'));
-            assert!(hit.title.chars().count() <= BLOCK_LABEL_CHARS);
-        }
-    }
-
-    #[test]
     fn every_block_stays_reachable_page_by_page() {
+        // A body this large records its text as content the window keeps, as
+        // the host lends every window a store to keep it in.
+        let window = ui::wake::WakeScope::new();
+        ui::tilo_resource::content::register(
+            &window.handle(),
+            tilo_content::ContentStore::memory(),
+        );
+        let _in_the_window = window.enter();
         let texts: Vec<String> = (0..3_000).map(|n| format!("ordinary record {n}")).collect();
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let (mut notebook, pages) = populated();

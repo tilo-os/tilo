@@ -153,90 +153,94 @@ mod tests {
         .with_id("request-tabs")
     }
 
-    #[test]
-    fn view_tabs_are_a_tab_list_whose_showing_tab_is_selected() {
-        let node = tabs().accessibility().expect("tabs describe themselves");
-        assert_eq!(node.role, Role::TabBar);
-        let roles: Vec<Role> = node.children.iter().map(|tab| tab.role).collect();
-        assert_eq!(roles, vec![Role::Tab; 4]);
-        let selected: Vec<bool> = node.children.iter().map(|tab| tab.state.selected).collect();
-        assert_eq!(selected, vec![false, true, false, false]);
-        assert!(
-            node.children.iter().all(|tab| tab.state.checked.is_none()),
-            "a tab is selected, never checked"
-        );
-        let names: Vec<_> = node
-            .children
-            .iter()
-            .map(|tab| tab.name.clone().unwrap_or_default())
-            .collect();
-        assert_eq!(names, ["Params", "Headers", "Auth", "Body"]);
-    }
+    tilo_test_env::scenario! {
+        fn view_tabs_read_act_and_stand_as_a_tab_list;
 
-    #[test]
-    fn a_segmented_control_stays_a_group_of_toggles() {
-        let strip = ToggleGroup::new(vec![Segment::new("Left"), Segment::new("Right")], 0);
-        let node = strip.accessibility().expect("a strip describes itself");
-        assert_eq!(node.role, Role::Group);
-        assert!(node.children.iter().all(|c| c.role == Role::ToggleButton));
-    }
-
-    #[test]
-    fn activating_a_tab_from_assistive_technology_shows_it_and_reports_it() {
-        let chosen = std::rc::Rc::new(std::cell::Cell::new(None));
-        let seen = std::rc::Rc::clone(&chosen);
-        let mut tabs = tabs().on_view("request-tabs", move |index| seen.set(Some(index)));
-        let target = tabs
-            .accessibility()
-            .and_then(|node| {
-                node.children
-                    .get(3)
-                    .and_then(|tab| tab.action_target.clone())
-            })
-            .expect("each tab is an action target");
-        let acted = tabs.perform_semantic_action(
-            &target,
-            &Action::Activate,
-            &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
-            &automerge::ROOT,
-        );
-        assert!(acted);
-        assert_eq!(
-            crate::testing::answer_controls(&mut tabs),
-            1,
-            "the choice reaches its handler when it is answered"
-        );
-        assert_eq!(tabs.selected(), 3);
-        assert_eq!(chosen.get(), Some(3));
-    }
-
-    #[test]
-    fn a_hand_placed_strip_names_where_each_tab_stands() {
-        let theme = crate::theme::Theme::dark();
-        let mut tabs = tabs();
-        let strip = vello::kurbo::Rect::new(10.0, 20.0, 410.0, 60.0);
-        tabs.apply_layout_external(strip);
-        tabs.draw(
-            &mut vello::Scene::new(),
-            vello::kurbo::Affine::IDENTITY,
-            &mut crate::text_render::TextRenderer::new(),
-            &theme,
-            &crate::presence::PresenceCtx::default(),
-        );
-        tabs.apply_layout_external(strip);
-        let rects: Vec<_> = (0..4).map(|i| tabs.tab_rect(i).expect("a tab")).collect();
-        assert_eq!(tabs.tab_rect(4), None);
-        for pair in rects.windows(2) {
-            if let [left, right] = pair {
-                assert!(
-                    left.x1 <= right.x0,
-                    "tabs run left to right without overlap"
-                );
-            }
+        phase view_tabs_are_a_tab_list_whose_showing_tab_is_selected;
+        {
+            let node = tabs().accessibility().expect("tabs describe themselves");
+            assert_eq!(node.role, Role::TabBar);
+            let roles: Vec<Role> = node.children.iter().map(|tab| tab.role).collect();
+            assert_eq!(roles, vec![Role::Tab; 4]);
+            let selected: Vec<bool> = node.children.iter().map(|tab| tab.state.selected).collect();
+            assert_eq!(selected, vec![false, true, false, false]);
+            assert!(
+                node.children.iter().all(|tab| tab.state.checked.is_none()),
+                "a tab is selected, never checked"
+            );
+            let names: Vec<_> = node
+                .children
+                .iter()
+                .map(|tab| tab.name.clone().unwrap_or_default())
+                .collect();
+            assert_eq!(names, ["Params", "Headers", "Auth", "Body"]);
         }
-        for rect in &rects {
-            assert!(rect.width() > 0.0);
-            assert!(rect.x0 >= strip.x0 && rect.x1 <= strip.x1);
+
+        phase a_segmented_control_stays_a_group_of_toggles;
+        {
+            let strip = ToggleGroup::new(vec![Segment::new("Left"), Segment::new("Right")], 0);
+            let node = strip.accessibility().expect("a strip describes itself");
+            assert_eq!(node.role, Role::Group);
+            assert!(node.children.iter().all(|c| c.role == Role::ToggleButton));
+        }
+
+        phase activating_a_tab_from_assistive_technology_shows_it_and_reports_it;
+        {
+            let chosen = std::rc::Rc::new(std::cell::Cell::new(None));
+            let seen = std::rc::Rc::clone(&chosen);
+            let mut tabs = tabs().on_view("request-tabs", move |index| seen.set(Some(index)));
+            let target = tabs
+                .accessibility()
+                .and_then(|node| {
+                    node.children
+                        .get(3)
+                        .and_then(|tab| tab.action_target.clone())
+                })
+                .expect("each tab is an action target");
+            let acted = tabs.perform_semantic_action(
+                &target,
+                &Action::Activate,
+                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+                &automerge::ROOT,
+            );
+            assert!(acted);
+            assert_eq!(
+                crate::testing::answer_controls(&mut tabs),
+                1,
+                "the choice reaches its handler when it is answered"
+            );
+            assert_eq!(tabs.selected(), 3);
+            assert_eq!(chosen.get(), Some(3));
+        }
+
+        phase a_hand_placed_strip_names_where_each_tab_stands;
+        {
+            let theme = crate::theme::Theme::dark();
+            let mut tabs = tabs();
+            let strip = vello::kurbo::Rect::new(10.0, 20.0, 410.0, 60.0);
+            tabs.apply_layout_external(strip);
+            tabs.draw(
+                &mut vello::Scene::new(),
+                vello::kurbo::Affine::IDENTITY,
+                &mut crate::text_render::TextRenderer::new(),
+                &theme,
+                &crate::presence::PresenceCtx::default(),
+            );
+            tabs.apply_layout_external(strip);
+            let rects: Vec<_> = (0..4).map(|i| tabs.tab_rect(i).expect("a tab")).collect();
+            assert_eq!(tabs.tab_rect(4), None);
+            for pair in rects.windows(2) {
+                if let [left, right] = pair {
+                    assert!(
+                        left.x1 <= right.x0,
+                        "tabs run left to right without overlap"
+                    );
+                }
+            }
+            for rect in &rects {
+                assert!(rect.width() > 0.0);
+                assert!(rect.x0 >= strip.x0 && rect.x1 <= strip.x1);
+            }
         }
     }
 }

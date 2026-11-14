@@ -117,18 +117,23 @@ mod tests {
         (one, meta)
     }
 
-    #[test]
-    fn a_field_two_devices_wrote_alike_reads_as_written() {
-        let (doc, meta) = written_apart(("personal", "personal"));
-        let StringAt::String(home) = string_at(&doc, &meta, "home") else {
-            panic!("two devices writing the same home agree");
-        };
-        assert_eq!(home, "personal");
-    }
+    tilo_test_env::scenario! {
+        /// A string field two devices wrote without seeing each other.
+        fn a_field_reads_only_when_its_writers_agree;
 
-    #[test]
-    fn a_field_two_devices_wrote_apart_does_not_read() {
-        let (doc, meta) = written_apart(("personal", "tilo:abc"));
-        assert!(matches!(string_at(&doc, &meta, "home"), StringAt::Invalid));
+        phase a_field_two_devices_wrote_alike_reads_as_written;
+        {
+            let (doc, meta) = written_apart(("personal", "personal"));
+            let StringAt::String(home) = string_at(&doc, &meta, "home") else {
+                panic!("two devices writing the same home agree");
+            };
+            assert_eq!(home, "personal");
+        }
+
+        phase a_field_two_devices_wrote_apart_does_not_read;
+        {
+            let (doc, meta) = written_apart(("personal", "tilo:abc"));
+            assert!(matches!(string_at(&doc, &meta, "home"), StringAt::Invalid));
+        }
     }
 }

@@ -194,156 +194,160 @@ Exec=/usr/bin/weston
 Type=Application
 ";
 
-    #[test]
-    fn session_desktop_files_are_discovered_and_parsed() {
+    tilo_test_env::scenario! {
+        fn sessions_are_read_from_their_desktop_files;
+
+        phase session_desktop_files_are_discovered_and_parsed;
         {
-            let s = parse_desktop_entry(NATIVE).expect("should parse");
-            assert_eq!(s.name, "Tilo");
-            assert_eq!(
-                s.argv,
-                vec!["/usr/libexec/tilo-session", "--backend", "drm"]
-            );
-            assert!(s.default);
-        }
-        {
-            let s = parse_desktop_entry(SECONDARY).expect("should parse");
-            assert_eq!(s.name, "Tilo (headless)");
-            assert_eq!(
-                s.argv,
-                vec!["/usr/libexec/tilo-session", "--backend", "headless"]
-            );
-            assert!(!s.default);
-        }
-        {
-            let s = parse_desktop_entry(WESTON).expect("should parse");
-            assert_eq!(s.name, "Weston");
-            assert_eq!(s.argv, vec!["/usr/bin/weston"]);
-            assert!(!s.default);
-        }
-        {
-            let entry = "\
+            {
+                let s = parse_desktop_entry(NATIVE).expect("should parse");
+                assert_eq!(s.name, "Tilo");
+                assert_eq!(
+                    s.argv,
+                    vec!["/usr/libexec/tilo-session", "--backend", "drm"]
+                );
+                assert!(s.default);
+            }
+            {
+                let s = parse_desktop_entry(SECONDARY).expect("should parse");
+                assert_eq!(s.name, "Tilo (headless)");
+                assert_eq!(
+                    s.argv,
+                    vec!["/usr/libexec/tilo-session", "--backend", "headless"]
+                );
+                assert!(!s.default);
+            }
+            {
+                let s = parse_desktop_entry(WESTON).expect("should parse");
+                assert_eq!(s.name, "Weston");
+                assert_eq!(s.argv, vec!["/usr/bin/weston"]);
+                assert!(!s.default);
+            }
+            {
+                let entry = "\
     [Desktop Entry]
     # a comment
     Name=Real Name
     Name[de]=Echter Name
     Exec=/usr/bin/foo --bar
     ";
-            let s = parse_desktop_entry(entry).expect("should parse");
-            assert_eq!(s.name, "Real Name");
-            assert_eq!(s.argv, vec!["/usr/bin/foo", "--bar"]);
+                let s = parse_desktop_entry(entry).expect("should parse");
+                assert_eq!(s.name, "Real Name");
+                assert_eq!(s.argv, vec!["/usr/bin/foo", "--bar"]);
+            }
+            {
+                let entry = "[Desktop Entry]\nName=No Exec\nType=Application\n";
+                assert!(parse_desktop_entry(entry).is_none());
+            }
+            {
+                let dir =
+                    std::env::temp_dir().join(format!("tilo-greeter-sessions-{}", std::process::id()));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("a.desktop"), NATIVE).unwrap();
+                std::fs::write(dir.join("b.desktop"), WESTON).unwrap();
+                // A non-.desktop file must be skipped.
+                std::fs::write(dir.join("README.txt"), "ignore me").unwrap();
+
+                let sessions = read_sessions(&dir);
+                let _ = std::fs::remove_dir_all(&dir);
+
+                assert_eq!(sessions.len(), 2);
+                // The default first, then the rest by name: "Tilo" before
+                // "Weston".
+                assert_eq!(sessions[0].name, "Tilo");
+                assert_eq!(sessions[1].name, "Weston");
+            }
+            {
+                let sessions = read_sessions(Path::new("/nonexistent/tilo/sessions/dir"));
+                assert!(sessions.is_empty());
+            }
         }
+
+        phase the_default_session_is_offered_first;
         {
-            let entry = "[Desktop Entry]\nName=No Exec\nType=Application\n";
-            assert!(parse_desktop_entry(entry).is_none());
-        }
-        {
-            let dir =
-                std::env::temp_dir().join(format!("tilo-greeter-sessions-{}", std::process::id()));
+            // The shipped entry beside one written by hand, in the directory the
+            // greeter reads: signing in without touching the picker starts the
+            // native session.
+            let dir = std::env::temp_dir().join(format!(
+                "tilo-greeter-default-session-{}",
+                std::process::id()
+            ));
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("a.desktop"), NATIVE).unwrap();
-            std::fs::write(dir.join("b.desktop"), WESTON).unwrap();
-            // A non-.desktop file must be skipped.
-            std::fs::write(dir.join("README.txt"), "ignore me").unwrap();
+            std::fs::write(dir.join("tilo-headless.desktop"), SECONDARY).unwrap();
+            std::fs::write(dir.join("tilo-session.desktop"), NATIVE).unwrap();
 
             let sessions = read_sessions(&dir);
-            let _ = std::fs::remove_dir_all(&dir);
 
-            assert_eq!(sessions.len(), 2);
-            // The default first, then the rest by name: "Tilo" before
-            // "Weston".
+            assert_eq!(sessions.len(), 2, "{sessions:?}");
             assert_eq!(sessions[0].name, "Tilo");
-            assert_eq!(sessions[1].name, "Weston");
+            assert_eq!(
+                sessions[0].argv,
+                vec!["/usr/libexec/tilo-session", "--backend", "drm"]
+            );
+            assert_eq!(sessions[1].name, "Tilo (headless)");
+
+            // Name order does not decide it: an entry whose name sorts first still
+            // comes after the one that declares itself the default, and those
+            // without the key keep their order among themselves.
+            std::fs::write(
+                dir.join("aardvark.desktop"),
+                "[Desktop Entry]\nName=Aardvark\nExec=/usr/bin/aardvark\nType=Application\n",
+            )
+            .unwrap();
+            let sessions = read_sessions(&dir);
+            let _ = std::fs::remove_dir_all(&dir);
+            let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(names, ["Tilo", "Aardvark", "Tilo (headless)"]);
         }
+
+        phase only_real_launchable_sessions_are_offered;
         {
-            let sessions = read_sessions(Path::new("/nonexistent/tilo/sessions/dir"));
-            assert!(sessions.is_empty());
+            let dir =
+                std::env::temp_dir().join(format!("tilo-greeter-real-sessions-{}", std::process::id()));
+            let bin = dir.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("weston"), "").unwrap();
+            let sessions_dir = dir.join("sessions");
+            std::fs::create_dir_all(&sessions_dir).unwrap();
+            std::fs::write(sessions_dir.join("tilo.desktop"), NATIVE).unwrap();
+            // The same command under another file is one session, not two.
+            std::fs::write(sessions_dir.join("tilo-copy.desktop"), NATIVE).unwrap();
+            std::fs::write(
+                sessions_dir.join("hidden.desktop"),
+                "[Desktop Entry]\nName=Hidden\nExec=/usr/bin/hidden\nHidden=true\n",
+            )
+            .unwrap();
+            std::fs::write(
+                sessions_dir.join("nodisplay.desktop"),
+                "[Desktop Entry]\nName=Quiet\nExec=/usr/bin/quiet\nNoDisplay=true\n",
+            )
+            .unwrap();
+            std::fs::write(
+                sessions_dir.join("missing.desktop"),
+                "[Desktop Entry]\nName=Gone\nTryExec=not-installed-anywhere\nExec=gone\n",
+            )
+            .unwrap();
+            // An action group's keys do not describe the session.
+            std::fs::write(
+                sessions_dir.join("action.desktop"),
+                "[Desktop Action other]\nName=Other\nExec=/usr/bin/other\n",
+            )
+            .unwrap();
+
+            let path = std::ffi::OsString::from(bin.as_os_str());
+            let one = read_sessions_with_path(&sessions_dir, Some(&path));
+            let names: Vec<&str> = one.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(names, ["Tilo"]);
+
+            std::fs::write(
+                sessions_dir.join("weston.desktop"),
+                "[Desktop Entry]\nName=Weston\nTryExec=weston\nExec=weston\n",
+            )
+            .unwrap();
+            let two = read_sessions_with_path(&sessions_dir, Some(&path));
+            let _ = std::fs::remove_dir_all(&dir);
+            let names: Vec<&str> = two.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(names, ["Tilo", "Weston"]);
         }
-    }
-
-    #[test]
-    fn the_default_session_is_offered_first() {
-        // The shipped entry beside one written by hand, in the directory the
-        // greeter reads: signing in without touching the picker starts the
-        // native session.
-        let dir = std::env::temp_dir().join(format!(
-            "tilo-greeter-default-session-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("tilo-headless.desktop"), SECONDARY).unwrap();
-        std::fs::write(dir.join("tilo-session.desktop"), NATIVE).unwrap();
-
-        let sessions = read_sessions(&dir);
-
-        assert_eq!(sessions.len(), 2, "{sessions:?}");
-        assert_eq!(sessions[0].name, "Tilo");
-        assert_eq!(
-            sessions[0].argv,
-            vec!["/usr/libexec/tilo-session", "--backend", "drm"]
-        );
-        assert_eq!(sessions[1].name, "Tilo (headless)");
-
-        // Name order does not decide it: an entry whose name sorts first still
-        // comes after the one that declares itself the default, and those
-        // without the key keep their order among themselves.
-        std::fs::write(
-            dir.join("aardvark.desktop"),
-            "[Desktop Entry]\nName=Aardvark\nExec=/usr/bin/aardvark\nType=Application\n",
-        )
-        .unwrap();
-        let sessions = read_sessions(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
-        let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tilo", "Aardvark", "Tilo (headless)"]);
-    }
-
-    #[test]
-    fn only_real_launchable_sessions_are_offered() {
-        let dir =
-            std::env::temp_dir().join(format!("tilo-greeter-real-sessions-{}", std::process::id()));
-        let bin = dir.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("weston"), "").unwrap();
-        let sessions_dir = dir.join("sessions");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-        std::fs::write(sessions_dir.join("tilo.desktop"), NATIVE).unwrap();
-        // The same command under another file is one session, not two.
-        std::fs::write(sessions_dir.join("tilo-copy.desktop"), NATIVE).unwrap();
-        std::fs::write(
-            sessions_dir.join("hidden.desktop"),
-            "[Desktop Entry]\nName=Hidden\nExec=/usr/bin/hidden\nHidden=true\n",
-        )
-        .unwrap();
-        std::fs::write(
-            sessions_dir.join("nodisplay.desktop"),
-            "[Desktop Entry]\nName=Quiet\nExec=/usr/bin/quiet\nNoDisplay=true\n",
-        )
-        .unwrap();
-        std::fs::write(
-            sessions_dir.join("missing.desktop"),
-            "[Desktop Entry]\nName=Gone\nTryExec=not-installed-anywhere\nExec=gone\n",
-        )
-        .unwrap();
-        // An action group's keys do not describe the session.
-        std::fs::write(
-            sessions_dir.join("action.desktop"),
-            "[Desktop Action other]\nName=Other\nExec=/usr/bin/other\n",
-        )
-        .unwrap();
-
-        let path = std::ffi::OsString::from(bin.as_os_str());
-        let one = read_sessions_with_path(&sessions_dir, Some(&path));
-        let names: Vec<&str> = one.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tilo"]);
-
-        std::fs::write(
-            sessions_dir.join("weston.desktop"),
-            "[Desktop Entry]\nName=Weston\nTryExec=weston\nExec=weston\n",
-        )
-        .unwrap();
-        let two = read_sessions_with_path(&sessions_dir, Some(&path));
-        let _ = std::fs::remove_dir_all(&dir);
-        let names: Vec<&str> = two.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tilo", "Weston"]);
     }
 }

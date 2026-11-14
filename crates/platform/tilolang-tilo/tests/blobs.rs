@@ -277,188 +277,286 @@ fn field(r: &Replica, at: &tilolang_runtime::ResourceRef, name: &str) -> Value {
 
 const PIXELS: &[u8] = b"\x89PNG\r\n\x1a\n-a-picture-nobody-should-store-as-a-register";
 
-/// A person picks a picture: the bytes go to the content store, the record keeps its address,
-/// history says what the action did, and a replica that syncs reads the same picture.
-#[test]
-fn a_chosen_file_is_kept_by_address_and_never_in_the_record() {
-    let device = Device::with(vec![Pick {
-        name: "Ferns.png",
-        media: "image/png",
-        bytes: PIXELS.to_vec(),
-    }]);
-    let (mut ada, loaded) = page(&device);
-    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
-    let view = ada.view(APP);
-    assert_eq!(picture(&ada, &at), None, "a page starts with no picture");
+tilo_test_env::scenario! {
+    fn a_chosen_file_is_kept_or_refused;
 
-    view.press(&button(&view, "Choose a picture")).unwrap();
-    ada.commit();
+    phase a_chosen_file_is_kept_by_address_and_never_in_the_record;
+    // A person picks a picture: the bytes go to the content store, the record keeps its address,
+    // history says what the action did, and a replica that syncs reads the same picture.
+    {
+        let device = Device::with(vec![Pick {
+            name: "Ferns.png",
+            media: "image/png",
+            bytes: PIXELS.to_vec(),
+        }]);
+        let (mut ada, loaded) = page(&device);
+        let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
+        let view = ada.view(APP);
+        assert_eq!(picture(&ada, &at), None, "a page starts with no picture");
 
-    let held = picture(&ada, &at).expect("the picture the person chose");
-    assert_eq!(held.name, "Ferns.png");
-    assert_eq!(held.media, "image/png");
-    assert_eq!(held.size, i64::try_from(PIXELS.len()).expect("a size"));
-    assert_eq!(
-        device.content(&held.hash).as_deref(),
-        Some(PIXELS),
-        "the bytes are in the content store, at the address the file names"
-    );
-    assert_eq!(
-        field(&ada, &at, "bytes"),
-        Value::Int(i64::try_from(PIXELS.len()).expect("a size"))
-    );
+        view.press(&button(&view, "Choose a picture")).unwrap();
+        ada.commit();
 
-    // What is recorded is the address: the record's own bytes hold the hash and none of the
-    // picture.
-    let recorded = String::from_utf8_lossy(&ada.doc.save()).to_string();
-    assert!(
-        recorded.contains(&held.hash)
-            || ada.log.iter().any(|envelope| {
-                let bytes = String::from_utf8_lossy(&envelope.action.payload).to_string();
-                bytes.contains(&held.hash)
-            }),
-        "the change names the content address"
-    );
-    assert!(
-        !recorded.contains("nobody-should-store-as-a-register"),
-        "no byte of the picture is in the record"
-    );
+        let held = picture(&ada, &at).expect("the picture the person chose");
+        assert_eq!(held.name, "Ferns.png");
+        assert_eq!(held.media, "image/png");
+        assert_eq!(held.size, i64::try_from(PIXELS.len()).expect("a size"));
+        assert_eq!(
+            device.content(&held.hash).as_deref(),
+            Some(PIXELS),
+            "the bytes are in the content store, at the address the file names"
+        );
+        assert_eq!(
+            field(&ada, &at, "bytes"),
+            Value::Int(i64::try_from(PIXELS.len()).expect("a size"))
+        );
 
-    // A replica that syncs reads the same file, and a view shows its name and address.
-    let mut ben = ada.fork("ben", &[(PICTURES, &loaded[0].ids)]);
-    ada.sync_with(&mut ben);
-    assert_eq!(picture(&ben, &at), Some(held.clone()));
-    let view = ada.view(APP);
-    assert_eq!(
-        shown(&view),
-        [
-            String::new(),
-            "Ferns.png".to_owned(),
-            held.url(),
-            held.size.to_string(),
-            "created it".to_owned(),
-            "added an image".to_owned(),
-        ],
-        "the page shows the picture by name and address, and history says what the action did"
-    );
-    assert_eq!(
-        device.asked.borrow().first().map(String::as_str),
-        Some("Put"),
-        "the chooser is titled with the action's own label"
-    );
+        // What is recorded is the address: the record's own bytes hold the hash and none of the
+        // picture.
+        let recorded = String::from_utf8_lossy(&ada.doc.save()).to_string();
+        assert!(
+            recorded.contains(&held.hash)
+                || ada.log.iter().any(|envelope| {
+                    let bytes = String::from_utf8_lossy(&envelope.action.payload).to_string();
+                    bytes.contains(&held.hash)
+                }),
+            "the change names the content address"
+        );
+        assert!(
+            !recorded.contains("nobody-should-store-as-a-register"),
+            "no byte of the picture is in the record"
+        );
+
+        // A replica that syncs reads the same file, and a view shows its name and address.
+        let mut ben = ada.fork("ben", &[(PICTURES, &loaded[0].ids)]);
+        ada.sync_with(&mut ben);
+        assert_eq!(picture(&ben, &at), Some(held.clone()));
+        let view = ada.view(APP);
+        assert_eq!(
+            shown(&view),
+            [
+                String::new(),
+                "Ferns.png".to_owned(),
+                held.url(),
+                held.size.to_string(),
+                "created it".to_owned(),
+                "added an image".to_owned(),
+            ],
+            "the page shows the picture by name and address, and history says what the action did"
+        );
+        assert_eq!(
+            device.asked.borrow().first().map(String::as_str),
+            Some("Put"),
+            "the chooser is titled with the action's own label"
+        );
+    }
+
+    phase a_file_too_large_to_choose_is_refused;
+    // A file larger than a chosen file may be is refused as a value: nothing is written.
+    {
+        let big = vec![0u8; MAX_CHOSEN + 1];
+        let device = Device::with(vec![Pick {
+            name: "Huge.png",
+            media: "image/png",
+            bytes: big,
+        }]);
+        let (mut ada, _loaded) = page(&device);
+        let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
+        let view = ada.view(APP);
+        let refused = view.press(&button(&view, "Choose a picture"));
+        let error = refused.expect_err("a file too large to keep is refused");
+        assert!(
+            error.to_string().contains("more than the"),
+            "it says how large a file may be: {error}"
+        );
+        ada.commit();
+        assert_eq!(picture(&ada, &at), None, "nothing was written");
+    }
+
+    phase a_file_of_another_type_than_asked_for_is_refused;
+    // A file whose media type the chooser did not ask for is refused the same way.
+    {
+        let device = Device::with(vec![Pick {
+            name: "Notes.txt",
+            media: "text/plain",
+            bytes: b"not a picture".to_vec(),
+        }]);
+        let (ada, _loaded) = page(&device);
+        let view = ada.view(APP);
+        let error = view
+            .press(&button(&view, "Choose a picture"))
+            .expect_err("the chooser takes pictures");
+        assert!(
+            error.to_string().contains("image/png"),
+            "it says what is asked for: {error}"
+        );
+    }
 }
 
-/// A file larger than a chosen file may be is refused as a value: nothing is written.
-#[test]
-fn a_file_too_large_to_choose_is_refused() {
-    let big = vec![0u8; MAX_CHOSEN + 1];
-    let device = Device::with(vec![Pick {
-        name: "Huge.png",
-        media: "image/png",
-        bytes: big,
-    }]);
-    let (mut ada, _loaded) = page(&device);
-    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
-    let view = ada.view(APP);
-    let refused = view.press(&button(&view, "Choose a picture"));
-    let error = refused.expect_err("a file too large to keep is refused");
-    assert!(
-        error.to_string().contains("more than the"),
-        "it says how large a file may be: {error}"
-    );
-    ada.commit();
-    assert_eq!(picture(&ada, &at), None, "nothing was written");
-}
+tilo_test_env::scenario! {
+    fn an_action_reads_saves_and_makes_files;
 
-/// A file whose media type the chooser did not ask for is refused the same way.
-#[test]
-fn a_file_of_another_type_than_asked_for_is_refused() {
-    let device = Device::with(vec![Pick {
-        name: "Notes.txt",
-        media: "text/plain",
-        bytes: b"not a picture".to_vec(),
-    }]);
-    let (ada, _loaded) = page(&device);
-    let view = ada.view(APP);
-    let error = view
-        .press(&button(&view, "Choose a picture"))
-        .expect_err("the chooser takes pictures");
-    assert!(
-        error.to_string().contains("image/png"),
-        "it says what is asked for: {error}"
-    );
-}
+    phase an_action_reads_a_text_file_and_says_why_when_it_cannot;
+    // An action reads a text file's content, and a file that is not text, or is more than an
+    // action reads as text, answers why instead.
+    {
+        let device = Device::with(vec![
+            Pick {
+                name: "plan.md",
+                media: "text/markdown",
+                bytes: b"# Plan\n\nShip it.".to_vec(),
+            },
+            Pick {
+                name: "scan.pdf",
+                media: "application/pdf",
+                bytes: vec![0xff, 0xfe, 0x00],
+            },
+            Pick {
+                name: "book.md",
+                media: "text/markdown",
+                bytes: vec![b'a'; tilolang_runtime::blob::MAX_TEXT + 1],
+            },
+        ]);
+        let (mut ada, _loaded) = page(&device);
+        let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
 
-/// An action reads a text file's content, and a file that is not text, or is more than an
-/// action reads as text, answers why instead.
-#[test]
-fn an_action_reads_a_text_file_and_says_why_when_it_cannot() {
-    let device = Device::with(vec![
-        Pick {
-            name: "plan.md",
+        let view = ada.view(APP);
+        view.press(&button(&view, "Take a text file")).unwrap();
+        ada.commit();
+        assert_eq!(field(&ada, &at, "words"), Value::text("# Plan\n\nShip it."));
+
+        let view = ada.view(APP);
+        view.press(&button(&view, "Take a text file")).unwrap();
+        ada.commit();
+        assert_eq!(
+            field(&ada, &at, "words"),
+            Value::text("`scan.pdf` is not text")
+        );
+
+        let view = ada.view(APP);
+        view.press(&button(&view, "Take a text file")).unwrap();
+        ada.commit();
+        let said = match field(&ada, &at, "words") {
+            Value::Text(words) => words,
+            other => panic!("text: {other:?}"),
+        };
+        assert!(
+            said.contains("more than the") && said.contains("reads as text"),
+            "a file too large to read says so: {said}"
+        );
+    }
+
+    phase an_action_saves_what_it_made_as_the_file_the_person_names;
+    // What an action made is put where the person says, under the name the app asks for.
+    {
+        let device = Device::with(vec![Pick {
+            name: "two-ferns.md",
             media: "text/markdown",
-            bytes: b"# Plan\n\nShip it.".to_vec(),
-        },
-        Pick {
-            name: "scan.pdf",
-            media: "application/pdf",
-            bytes: vec![0xff, 0xfe, 0x00],
-        },
-        Pick {
-            name: "book.md",
-            media: "text/markdown",
-            bytes: vec![b'a'; tilolang_runtime::blob::MAX_TEXT + 1],
-        },
-    ]);
-    let (mut ada, _loaded) = page(&device);
-    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
+            bytes: b"Two ferns".to_vec(),
+        }]);
+        let (mut ada, _loaded) = page(&device);
 
-    let view = ada.view(APP);
-    view.press(&button(&view, "Take a text file")).unwrap();
-    ada.commit();
-    assert_eq!(field(&ada, &at, "words"), Value::text("# Plan\n\nShip it."));
+        let view = ada.view(APP);
+        view.press(&button(&view, "Take a text file")).unwrap();
+        ada.commit();
+        let view = ada.view(APP);
+        view.press(&button(&view, "Save the words")).unwrap();
+        assert_eq!(
+            device.saved(),
+            vec![("page.md".to_owned(), b"# Two ferns".to_vec())],
+            "the file the action made is written under the name it asked for"
+        );
+    }
 
-    let view = ada.view(APP);
-    view.press(&button(&view, "Take a text file")).unwrap();
-    ada.commit();
-    assert_eq!(
-        field(&ada, &at, "words"),
-        Value::text("`scan.pdf` is not text")
-    );
+    phase an_action_makes_a_file_of_the_text_and_the_bytes_it_holds;
+    // An action makes a file of what it holds — the text, the bytes an answer brought — and the
+    // device keeps its bytes under the name and media type it is made as.
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = page(&device);
+        ada.host
+            .runtime()
+            .set_web(Page(b"<h1>a page</h1>".to_vec()));
+        let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
 
-    let view = ada.view(APP);
-    view.press(&button(&view, "Take a text file")).unwrap();
-    ada.commit();
-    let said = match field(&ada, &at, "words") {
-        Value::Text(words) => words,
-        other => panic!("text: {other:?}"),
-    };
-    assert!(
-        said.contains("more than the") && said.contains("reads as text"),
-        "a file too large to read says so: {said}"
-    );
-}
+        let text = made(&ada, "make_text", &at);
+        assert_eq!(text.name, "made.md");
+        assert_eq!(text.media, "text/markdown");
+        assert_eq!(text.size, 2);
+        assert_eq!(
+            device.content(&text.hash).as_deref(),
+            Some(b"# ".as_slice())
+        );
 
-/// What an action made is put where the person says, under the name the app asks for.
-#[test]
-fn an_action_saves_what_it_made_as_the_file_the_person_names() {
-    let device = Device::with(vec![Pick {
-        name: "two-ferns.md",
-        media: "text/markdown",
-        bytes: b"Two ferns".to_vec(),
-    }]);
-    let (mut ada, _loaded) = page(&device);
+        let bytes = made(&ada, "fetch", &at);
+        assert_eq!(bytes.name, "page.html");
+        assert_eq!(bytes.media, "text/html");
+        assert_eq!(
+            device.content(&bytes.hash).as_deref(),
+            Some(b"<h1>a page</h1>".as_slice()),
+            "the answer's bytes are kept as they came"
+        );
+        ada.commit();
+    }
 
-    let view = ada.view(APP);
-    view.press(&button(&view, "Take a text file")).unwrap();
-    ada.commit();
-    let view = ada.view(APP);
-    view.press(&button(&view, "Save the words")).unwrap();
-    assert_eq!(
-        device.saved(),
-        vec![("page.md".to_owned(), b"# Two ferns".to_vec())],
-        "the file the action made is written under the name it asked for"
-    );
+    phase an_action_makes_an_archive_of_the_files_it_holds;
+    // An action makes an archive of the files it holds, each under its own name, and a name no
+    // folder may have is refused rather than written.
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = page(&device);
+        let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
+
+        let zip = made(&ada, "make_zip", &at);
+        assert_eq!(zip.name, "made.zip");
+        assert_eq!(zip.media, "application/zip");
+        let bytes = device.content(&zip.hash).expect("the archive is kept");
+        let files = bounded_zip::read_zip_parts(&bytes, &bounded_zip::ZipLimits::default())
+            .expect("the archive reads");
+        assert_eq!(
+            files,
+            [
+                ("words.md".to_owned(), b"# ".to_vec()),
+                ("images/fox.png".to_owned(), b"0".to_vec()),
+            ],
+            "each file under the name it was made as, in the order it was given"
+        );
+
+        let refused = asked(&ada, "make_unsafe", &at).expect_err("a name outside the folder");
+        assert!(
+            refused.contains("../outside.md"),
+            "it says which name: {refused}"
+        );
+        ada.commit();
+    }
+
+    phase an_action_names_the_content_an_address_holds;
+    // An action names the content an address holds: the picture its record shows, and none a device
+    // does not hold.
+    {
+        let device = Device::with(vec![Pick {
+            name: "Ferns.png",
+            media: "image/png",
+            bytes: PIXELS.to_vec(),
+        }]);
+        let (mut ada, _loaded) = page(&device);
+        let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
+        let view = ada.view(APP);
+        view.press(&button(&view, "Choose a picture")).unwrap();
+        ada.commit();
+
+        let again = made(&ada, "again", &at);
+        assert_eq!(again.name, "again.png");
+        assert_eq!(again.media, "image/png");
+        assert_eq!(again.size, i64::try_from(PIXELS.len()).expect("a size"));
+        assert_eq!(device.content(&again.hash).as_deref(), Some(PIXELS));
+
+        let missing = asked(&ada, "missing", &at).expect_err("content no device holds");
+        assert!(
+            missing.contains("is not on this device"),
+            "it says what is missing: {missing}"
+        );
+    }
 }
 
 /// A picture put in a note is taken back like any other change: the field it wrote goes back
@@ -544,94 +642,4 @@ impl WebTransport for Page {
             body: self.0.clone(),
         }
     }
-}
-
-/// An action makes a file of what it holds — the text, the bytes an answer brought — and the
-/// device keeps its bytes under the name and media type it is made as.
-#[test]
-fn an_action_makes_a_file_of_the_text_and_the_bytes_it_holds() {
-    let device = Device::default();
-    let (mut ada, _loaded) = page(&device);
-    ada.host
-        .runtime()
-        .set_web(Page(b"<h1>a page</h1>".to_vec()));
-    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
-
-    let text = made(&ada, "make_text", &at);
-    assert_eq!(text.name, "made.md");
-    assert_eq!(text.media, "text/markdown");
-    assert_eq!(text.size, 2);
-    assert_eq!(
-        device.content(&text.hash).as_deref(),
-        Some(b"# ".as_slice())
-    );
-
-    let bytes = made(&ada, "fetch", &at);
-    assert_eq!(bytes.name, "page.html");
-    assert_eq!(bytes.media, "text/html");
-    assert_eq!(
-        device.content(&bytes.hash).as_deref(),
-        Some(b"<h1>a page</h1>".as_slice()),
-        "the answer's bytes are kept as they came"
-    );
-    ada.commit();
-}
-
-/// An action makes an archive of the files it holds, each under its own name, and a name no
-/// folder may have is refused rather than written.
-#[test]
-fn an_action_makes_an_archive_of_the_files_it_holds() {
-    let device = Device::default();
-    let (mut ada, _loaded) = page(&device);
-    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
-
-    let zip = made(&ada, "make_zip", &at);
-    assert_eq!(zip.name, "made.zip");
-    assert_eq!(zip.media, "application/zip");
-    let bytes = device.content(&zip.hash).expect("the archive is kept");
-    let files = bounded_zip::read_zip_parts(&bytes, &bounded_zip::ZipLimits::default())
-        .expect("the archive reads");
-    assert_eq!(
-        files,
-        [
-            ("words.md".to_owned(), b"# ".to_vec()),
-            ("images/fox.png".to_owned(), b"0".to_vec()),
-        ],
-        "each file under the name it was made as, in the order it was given"
-    );
-
-    let refused = asked(&ada, "make_unsafe", &at).expect_err("a name outside the folder");
-    assert!(
-        refused.contains("../outside.md"),
-        "it says which name: {refused}"
-    );
-    ada.commit();
-}
-
-/// An action names the content an address holds: the picture its record shows, and none a device
-/// does not hold.
-#[test]
-fn an_action_names_the_content_an_address_holds() {
-    let device = Device::with(vec![Pick {
-        name: "Ferns.png",
-        media: "image/png",
-        bytes: PIXELS.to_vec(),
-    }]);
-    let (mut ada, _loaded) = page(&device);
-    let at = target(&Value::resource(&ada.host.root_of(APP).unwrap()));
-    let view = ada.view(APP);
-    view.press(&button(&view, "Choose a picture")).unwrap();
-    ada.commit();
-
-    let again = made(&ada, "again", &at);
-    assert_eq!(again.name, "again.png");
-    assert_eq!(again.media, "image/png");
-    assert_eq!(again.size, i64::try_from(PIXELS.len()).expect("a size"));
-    assert_eq!(device.content(&again.hash).as_deref(), Some(PIXELS));
-
-    let missing = asked(&ada, "missing", &at).expect_err("content no device holds");
-    assert!(
-        missing.contains("is not on this device"),
-        "it says what is missing: {missing}"
-    );
 }

@@ -280,97 +280,285 @@ fn assert_refused(out: &Output, text: &str) {
     );
 }
 
-#[test]
-fn applies_counters_and_the_repair_entry() {
-    let f = Fixture::new();
-    let digest = f.stage("repair.efi", b"MZ repair image");
-    let out = f.run(&json!([
-        {"op": "mkdir", "path": "EFI/tilo"},
-        {"op": "rename", "src": "loader/entries/bootc_fedora-44-1.conf",
-         "dst": "loader/entries/bootc_fedora-44-1+3.conf"},
-        {"op": "install", "file": "repair.efi", "sha256": digest,
-         "dst": "EFI/Linux/tilo-repair.efi"},
-        {"op": "remove", "path": "EFI/tilo/repair.efi"},
-    ]));
-    assert_ok(&out);
-    assert!(
-        f.esp
-            .join("loader/entries/bootc_fedora-44-1+3.conf")
-            .is_file()
-    );
-    assert!(!f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
-    assert_eq!(
-        fs::read(f.esp.join("EFI/Linux/tilo-repair.efi")).unwrap(),
-        b"MZ repair image"
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("caller=boot-entries"), "{stdout}");
-    // The journal line is the operation as it always read: sorted keys.
-    assert!(
-        stdout
-            .contains(r#"tilo-esp-write: caller=boot-entries {"op": "mkdir", "path": "EFI/tilo"}"#),
-        "{stdout}"
-    );
-    assert_eq!(f.plan_dir_entries(), Vec::<String>::new());
-}
+tilo_test_env::scenario! {
+    fn a_staged_plan_is_applied_whole;
 
-#[test]
-fn staged_counters_stay_in_the_same_directory() {
-    let f = Fixture::new();
-    let staged = f.esp.join("loader/entries.staged");
-    fs::create_dir(&staged).unwrap();
-    let source = staged.join("bootc_fedora-44-1.conf");
-    fs::write(&source, "incoming\n").unwrap();
-    for (src, dst) in [
-        (
-            "loader/entries.staged/bootc_fedora-44-1.conf",
-            "loader/entries/bootc_fedora-44-1+3.conf",
-        ),
-        (
-            "loader/entries/bootc_fedora-44-1.conf",
-            "loader/entries.staged/bootc_fedora-44-1+3.conf",
-        ),
-    ] {
-        assert_refused(
-            &f.run(&json!([{"op": "rename", "src": src, "dst": dst}])),
-            "may not rename",
+    phase applies_counters_and_the_repair_entry;
+    {
+        let f = Fixture::new();
+        let digest = f.stage("repair.efi", b"MZ repair image");
+        let out = f.run(&json!([
+            {"op": "mkdir", "path": "EFI/tilo"},
+            {"op": "rename", "src": "loader/entries/bootc_fedora-44-1.conf",
+             "dst": "loader/entries/bootc_fedora-44-1+3.conf"},
+            {"op": "install", "file": "repair.efi", "sha256": digest,
+             "dst": "EFI/Linux/tilo-repair.efi"},
+            {"op": "remove", "path": "EFI/tilo/repair.efi"},
+        ]));
+        assert_ok(&out);
+        assert!(
+            f.esp
+                .join("loader/entries/bootc_fedora-44-1+3.conf")
+                .is_file()
         );
+        assert!(!f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
+        assert_eq!(
+            fs::read(f.esp.join("EFI/Linux/tilo-repair.efi")).unwrap(),
+            b"MZ repair image"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("caller=boot-entries"), "{stdout}");
+        // The journal line is the operation as it always read: sorted keys.
+        assert!(
+            stdout
+                .contains(r#"tilo-esp-write: caller=boot-entries {"op": "mkdir", "path": "EFI/tilo"}"#),
+            "{stdout}"
+        );
+        assert_eq!(f.plan_dir_entries(), Vec::<String>::new());
     }
-    let out = f.run(&json!([{"op": "rename",
-        "src": "loader/entries.staged/bootc_fedora-44-1.conf",
-        "dst": "loader/entries.staged/bootc_fedora-44-1+3.conf"}]));
-    assert_ok(&out);
-    assert_eq!(
-        fs::read_to_string(staged.join("bootc_fedora-44-1+3.conf")).unwrap(),
-        "incoming\n"
-    );
-    assert!(!source.exists());
+
+    phase staged_counters_stay_in_the_same_directory;
+    {
+        let f = Fixture::new();
+        let staged = f.esp.join("loader/entries.staged");
+        fs::create_dir(&staged).unwrap();
+        let source = staged.join("bootc_fedora-44-1.conf");
+        fs::write(&source, "incoming\n").unwrap();
+        for (src, dst) in [
+            (
+                "loader/entries.staged/bootc_fedora-44-1.conf",
+                "loader/entries/bootc_fedora-44-1+3.conf",
+            ),
+            (
+                "loader/entries/bootc_fedora-44-1.conf",
+                "loader/entries.staged/bootc_fedora-44-1+3.conf",
+            ),
+        ] {
+            assert_refused(
+                &f.run(&json!([{"op": "rename", "src": src, "dst": dst}])),
+                "may not rename",
+            );
+        }
+        let out = f.run(&json!([{"op": "rename",
+            "src": "loader/entries.staged/bootc_fedora-44-1.conf",
+            "dst": "loader/entries.staged/bootc_fedora-44-1+3.conf"}]));
+        assert_ok(&out);
+        assert_eq!(
+            fs::read_to_string(staged.join("bootc_fedora-44-1+3.conf")).unwrap(),
+            "incoming\n"
+        );
+        assert!(!source.exists());
+    }
+
+    phase an_interruption_between_operations_leaves_whole_files;
+    {
+        let f = Fixture::new();
+        fs::create_dir(f.esp.join("EFI/tilo")).unwrap();
+        fs::write(f.esp.join("EFI/tilo/repair.source"), "old\n").unwrap();
+        let new_efi = f.stage("repair.efi", b"MZ new");
+        let new_src = f.stage("repair.source", b"new\n");
+        let out = f.run_plan(
+            &json!([
+                {"op": "install", "file": "repair.efi", "sha256": new_efi, "dst": "EFI/Linux/tilo-repair.efi"},
+                {"op": "install", "file": "repair.source", "sha256": new_src, "dst": "EFI/tilo/repair.source"},
+            ]),
+            "boot-entries",
+            &[("TILO_ESP_WRITE_CRASH_AFTER", "1")],
+        );
+        assert_eq!(out.status.code(), Some(99), "{}", stderr(&out));
+        assert_eq!(
+            fs::read(f.esp.join("EFI/Linux/tilo-repair.efi")).unwrap(),
+            b"MZ new"
+        );
+        assert_eq!(
+            fs::read_to_string(f.esp.join("EFI/tilo/repair.source")).unwrap(),
+            "old\n"
+        );
+        // The interrupted plan stays, as a crash would leave it.
+        assert_eq!(
+            f.plan_dir_entries(),
+            ["plan.json", "repair.efi", "repair.source"]
+        );
+        let mut leftovers = Vec::new();
+        for dir in ["EFI/Linux", "EFI/tilo", "loader/entries"] {
+            for entry in fs::read_dir(f.esp.join(dir)).unwrap() {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                if name.starts_with(".tilo-esp-write.") {
+                    leftovers.push(name);
+                }
+            }
+        }
+        assert_eq!(leftovers, Vec::<String>::new());
+        // No partial *.efi in EFI/Linux, where it would be a boot entry.
+        let mut names: Vec<String> = fs::read_dir(f.esp.join("EFI/Linux"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["tilo-repair.efi"]);
+    }
+
+    phase removing_what_is_not_there_succeeds;
+    {
+        let f = Fixture::new();
+        assert_ok(&f.run(&json!([
+            {"op": "remove", "path": "EFI/tilo/repair.efi"},
+            {"op": "remove", "path": "EFI/Linux/tilo-repair.efi"},
+        ])));
+        let out = f.run(
+            &json!([{"op": "rename", "src": "loader/entries/bootc_gone.conf",
+                                "dst": "loader/entries/bootc_gone+3.conf"}]),
+        );
+        assert_refused(&out, "no loader/entries/bootc_gone.conf to rename");
+    }
+
+    phase tilo_deployment_plans_are_accepted;
+    {
+        let f = Fixture::new();
+        let text = deployment();
+        let helpers = between(&text, "ESP_PLAN_DIR=", "# --- listing");
+        let script = format!(
+            "{helpers}
+die() {{ echo \"$*\" >&2; exit 1; }}
+esp_plan_reset
+esp_plan_op rename src loader/entries/bootc_fedora-44-1.conf dst loader/entries/bootc_fedora-44-1+3.conf
+printf 'bootc/x.efi\\n' > \"$ESP_PLAN_DIR/repair.source\"
+esp_plan_op mkdir path EFI/tilo
+esp_plan_install repair.source EFI/tilo/repair.source
+esp_plan_commit
+"
+        );
+        let plan_dir = f.plan_dir.display().to_string();
+        let writer = format!("{} boot-entries", helper().display());
+        let out = f
+            .command(
+                "bash",
+                &[
+                    ("TILO_ESP_PLAN_DIR", &plan_dir),
+                    ("TILO_ESP_WRITE_CMD", &writer),
+                ],
+            )
+            .arg("-c")
+            .arg(script)
+            .output_locked()
+            .unwrap();
+        assert_ok(&out);
+        assert!(
+            f.esp
+                .join("loader/entries/bootc_fedora-44-1+3.conf")
+                .is_file()
+        );
+        assert_eq!(
+            fs::read_to_string(f.esp.join("EFI/tilo/repair.source")).unwrap(),
+            "bootc/x.efi\n"
+        );
+        assert!(!text.contains("mv -f \"$f\""));
+        assert!(!text.contains("> \"$stamp\""));
+    }
 }
 
-#[test]
-fn staging_counts_incoming_and_preserves_booted_identity() {
-    let f = Fixture::new();
-    f.make_uki("old.efi", &"a".repeat(128));
-    f.make_uki("new.efi", &"b".repeat(128));
-    f.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi");
-    f.bootc_entry("entries.staged", "bootc_fedora-44-0.conf", "old.efi");
-    f.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi");
-    let out = f.run_entries(None, false);
-    assert_ok(&out);
-    assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
-    assert!(
-        f.esp
-            .join("loader/entries.staged/bootc_fedora-44-0.conf")
-            .exists()
-    );
-    let counted = f.esp.join("loader/entries.staged/bootc_fedora-44-1+3.conf");
-    assert!(counted.exists());
-    assert!(!counted.with_file_name("bootc_fedora-44-1.conf").exists());
-    // A repeated maintenance pass must not reset tries already spent.
-    let spent = counted.with_file_name("bootc_fedora-44-1+2-1.conf");
-    fs::rename(&counted, &spent).unwrap();
-    assert_ok(&f.run_entries(None, false));
-    assert!(spent.exists());
+tilo_test_env::scenario! {
+    fn tilo_deployment_counts_boot_entries_through_the_writer;
+
+    phase staging_counts_incoming_and_preserves_booted_identity;
+    {
+        let f = Fixture::new();
+        f.make_uki("old.efi", &"a".repeat(128));
+        f.make_uki("new.efi", &"b".repeat(128));
+        f.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi");
+        f.bootc_entry("entries.staged", "bootc_fedora-44-0.conf", "old.efi");
+        f.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi");
+        let out = f.run_entries(None, false);
+        assert_ok(&out);
+        assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
+        assert!(
+            f.esp
+                .join("loader/entries.staged/bootc_fedora-44-0.conf")
+                .exists()
+        );
+        let counted = f.esp.join("loader/entries.staged/bootc_fedora-44-1+3.conf");
+        assert!(counted.exists());
+        assert!(!counted.with_file_name("bootc_fedora-44-1.conf").exists());
+        // A repeated maintenance pass must not reset tries already spent.
+        let spent = counted.with_file_name("bootc_fedora-44-1+2-1.conf");
+        fs::rename(&counted, &spent).unwrap();
+        assert_ok(&f.run_entries(None, false));
+        assert!(spent.exists());
+    }
+
+    phase unobserved_identity_cannot_change_the_esp;
+    {
+        let f = Fixture::new();
+        f.make_uki("new.efi", &"b".repeat(128));
+        f.bootc_entry("entries", "bootc_fedora-44-1.conf", "new.efi");
+        let out = f.run_entries(None, false);
+        assert_ne!(out.status.code(), Some(0));
+        assert!(
+            stderr(&out).contains("no retained entry matches"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
+        assert!(
+            !f.esp
+                .join("loader/entries/bootc_fedora-44-1+3.conf")
+                .exists()
+        );
+        fs::write(f.esp.join("EFI/Linux/bootc/new.efi"), b"unreadable UKI").unwrap();
+        let out = f.run_entries(None, false);
+        assert_ne!(out.status.code(), Some(0));
+        assert!(
+            stderr(&out).contains("cannot read entry identity"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
+    }
+
+    phase sealed_image_refuses_kernel_initrd_entries;
+    {
+        let booted = "a".repeat(128);
+        for flavour in [None, Some(""), Some("release"), Some("dev-but-not")] {
+            let f = Fixture::new();
+            if let Some(flavour) = flavour {
+                f.set_flavour(flavour);
+            }
+            f.type1_entry(
+                "entries",
+                "bootc_fedora-44-1.conf",
+                &booted,
+                &format!("composefs={booted}"),
+            );
+            f.type1_entry(
+                "entries.staged",
+                "bootc_fedora-44-1.conf",
+                &booted,
+                &format!("composefs={}", "b".repeat(128)),
+            );
+            assert_refused(&f.run_entries(None, false), "not a managed UKI entry");
+            assert_eq!(f.entries_in("entries.staged"), ["bootc_fedora-44-1.conf"]);
+        }
+    }
+
+    phase repair_entry_skips_a_deployment_without_a_uki;
+    {
+        let f = Fixture::new();
+        f.set_flavour("dev");
+        let booted = "a".repeat(128);
+        f.type1_entry(
+            "entries",
+            "bootc_fedora-44-1.conf",
+            &booted,
+            &format!("composefs={booted}"),
+        );
+        let out = f.run_entries_and_repair();
+        assert_ok(&out);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("is not a UKI entry"), "{stdout}");
+        assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
+        assert!(!f.esp.join("EFI/tilo/repair.source").exists());
+        assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
+    }
 }
 
 #[test]
@@ -387,35 +575,6 @@ fn finalized_filename_collision_does_not_count_old_fallback() {
             .join("loader/entries/bootc_fedora-44-1+3.conf")
             .exists()
     );
-}
-
-#[test]
-fn unobserved_identity_cannot_change_the_esp() {
-    let f = Fixture::new();
-    f.make_uki("new.efi", &"b".repeat(128));
-    f.bootc_entry("entries", "bootc_fedora-44-1.conf", "new.efi");
-    let out = f.run_entries(None, false);
-    assert_ne!(out.status.code(), Some(0));
-    assert!(
-        stderr(&out).contains("no retained entry matches"),
-        "{}",
-        stderr(&out)
-    );
-    assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
-    assert!(
-        !f.esp
-            .join("loader/entries/bootc_fedora-44-1+3.conf")
-            .exists()
-    );
-    fs::write(f.esp.join("EFI/Linux/bootc/new.efi"), b"unreadable UKI").unwrap();
-    let out = f.run_entries(None, false);
-    assert_ne!(out.status.code(), Some(0));
-    assert!(
-        stderr(&out).contains("cannot read entry identity"),
-        "{}",
-        stderr(&out)
-    );
-    assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
 }
 
 #[test]
@@ -579,51 +738,6 @@ fn dev_image_keeps_the_managed_uki_checks() {
 }
 
 #[test]
-fn sealed_image_refuses_kernel_initrd_entries() {
-    let booted = "a".repeat(128);
-    for flavour in [None, Some(""), Some("release"), Some("dev-but-not")] {
-        let f = Fixture::new();
-        if let Some(flavour) = flavour {
-            f.set_flavour(flavour);
-        }
-        f.type1_entry(
-            "entries",
-            "bootc_fedora-44-1.conf",
-            &booted,
-            &format!("composefs={booted}"),
-        );
-        f.type1_entry(
-            "entries.staged",
-            "bootc_fedora-44-1.conf",
-            &booted,
-            &format!("composefs={}", "b".repeat(128)),
-        );
-        assert_refused(&f.run_entries(None, false), "not a managed UKI entry");
-        assert_eq!(f.entries_in("entries.staged"), ["bootc_fedora-44-1.conf"]);
-    }
-}
-
-#[test]
-fn repair_entry_skips_a_deployment_without_a_uki() {
-    let f = Fixture::new();
-    f.set_flavour("dev");
-    let booted = "a".repeat(128);
-    f.type1_entry(
-        "entries",
-        "bootc_fedora-44-1.conf",
-        &booted,
-        &format!("composefs={booted}"),
-    );
-    let out = f.run_entries_and_repair();
-    assert_ok(&out);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("is not a UKI entry"), "{stdout}");
-    assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
-    assert!(!f.esp.join("EFI/tilo/repair.source").exists());
-    assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
-}
-
-#[test]
 fn only_the_callers_operations() {
     let f = Fixture::new();
     let digest = sha256(b"x");
@@ -653,225 +767,181 @@ fn only_the_callers_operations() {
     assert_eq!(out.status.code(), Some(2));
 }
 
-#[test]
-fn the_signer_only_replaces_managed_artefacts() {
-    let f = Fixture::new();
-    let signer = f.plans.join("secureboot-sign");
-    fs::create_dir(&signer).unwrap();
-    fs::set_permissions(&signer, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::create_dir(f.esp.join("EFI/Linux/bootc")).unwrap();
-    fs::write(f.esp.join("EFI/Linux/bootc/uki.efi"), b"MZ unsigned").unwrap();
+tilo_test_env::scenario! {
+    fn the_writer_refuses_what_a_caller_may_not_change_or_did_not_stage;
 
-    let sign = |dst: &str| {
-        let data = b"MZ signed";
-        fs::write(signer.join("signed.efi"), data).unwrap();
-        let plan = json!({"ops": [{"op": "install", "file": "signed.efi",
-                                   "sha256": sha256(data), "dst": dst}]});
-        fs::write(signer.join("plan.json"), plan.to_string()).unwrap();
-        f.command(helper(), &[])
+    phase the_signer_only_replaces_managed_artefacts;
+    {
+        let f = Fixture::new();
+        let signer = f.plans.join("secureboot-sign");
+        fs::create_dir(&signer).unwrap();
+        fs::set_permissions(&signer, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(f.esp.join("EFI/Linux/bootc")).unwrap();
+        fs::write(f.esp.join("EFI/Linux/bootc/uki.efi"), b"MZ unsigned").unwrap();
+
+        let sign = |dst: &str| {
+            let data = b"MZ signed";
+            fs::write(signer.join("signed.efi"), data).unwrap();
+            let plan = json!({"ops": [{"op": "install", "file": "signed.efi",
+                                       "sha256": sha256(data), "dst": dst}]});
+            fs::write(signer.join("plan.json"), plan.to_string()).unwrap();
+            f.command(helper(), &[])
+                .arg("secureboot-sign")
+                .output_locked()
+                .unwrap()
+        };
+
+        assert_ok(&sign("EFI/Linux/bootc/uki.efi"));
+        assert_eq!(
+            fs::read(f.esp.join("EFI/Linux/bootc/uki.efi")).unwrap(),
+            b"MZ signed"
+        );
+        // A new .efi would be a new boot menu entry: the signer may not add one.
+        assert_refused(&sign("EFI/Linux/bootc/new.efi"), "may only replace");
+        assert!(!f.esp.join("EFI/Linux/bootc/new.efi").exists());
+        assert_refused(
+            &sign("loader/entries/bootc_fedora-44-1.conf"),
+            "may not install",
+        );
+    }
+
+    phase the_signer_finds_its_esp_as_tilo_secureboot_does;
+    {
+        // Without TILO_ESP the helper looks where its caller looks; a fixture has
+        // neither /boot/efi/EFI nor, on a build host, a writable one.
+        let f = Fixture::new();
+        let signer = f.plans.join("secureboot-sign");
+        fs::create_dir(&signer).unwrap();
+        fs::set_permissions(&signer, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(signer.join("plan.json"), r#"{"ops": []}"#).unwrap();
+        let out = f
+            .command(helper(), &[("TILO_ESP", "")])
             .arg("secureboot-sign")
             .output_locked()
-            .unwrap()
-    };
-
-    assert_ok(&sign("EFI/Linux/bootc/uki.efi"));
-    assert_eq!(
-        fs::read(f.esp.join("EFI/Linux/bootc/uki.efi")).unwrap(),
-        b"MZ signed"
-    );
-    // A new .efi would be a new boot menu entry: the signer may not add one.
-    assert_refused(&sign("EFI/Linux/bootc/new.efi"), "may only replace");
-    assert!(!f.esp.join("EFI/Linux/bootc/new.efi").exists());
-    assert_refused(
-        &sign("loader/entries/bootc_fedora-44-1.conf"),
-        "may not install",
-    );
-}
-
-#[test]
-fn the_signer_finds_its_esp_as_tilo_secureboot_does() {
-    // Without TILO_ESP the helper looks where its caller looks; a fixture has
-    // neither /boot/efi/EFI nor, on a build host, a writable one.
-    let f = Fixture::new();
-    let signer = f.plans.join("secureboot-sign");
-    fs::create_dir(&signer).unwrap();
-    fs::set_permissions(&signer, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(signer.join("plan.json"), r#"{"ops": []}"#).unwrap();
-    let out = f
-        .command(helper(), &[("TILO_ESP", "")])
-        .arg("secureboot-sign")
-        .output_locked()
-        .unwrap();
-    if Path::new("/boot/efi/EFI").is_dir() || Path::new("/boot/EFI").is_dir() {
-        // A real ESP is read-only to the test, or (as root) writable: either
-        // way it must not be refused for being absent.
-        assert!(!stderr(&out).contains("no ESP at"), "{}", stderr(&out));
-    } else {
-        assert_refused(&out, "no ESP at /boot or /boot/efi");
-    }
-    assert_eq!(fs::read_dir(&signer).unwrap().count(), 0);
-}
-
-#[test]
-fn traversal_is_refused() {
-    let f = Fixture::new();
-    for path in [
-        "../outside",
-        "EFI/../../outside",
-        "/boot/EFI/tilo",
-        "EFI//tilo",
-        "EFI/./tilo",
-    ] {
-        assert_refused(&f.run(&json!([{"op": "mkdir", "path": path}])), "refused");
-    }
-    assert!(!f.root.join("outside").exists());
-}
-
-#[test]
-fn symlinks_on_the_esp_are_refused() {
-    let f = Fixture::new();
-    let outside = f.root.join("outside");
-    fs::create_dir(&outside).unwrap();
-    symlink(&outside, f.esp.join("EFI/tilo")).unwrap();
-    let digest = f.stage("repair.source", b"bootc/x.efi\n");
-    let out = f.run(
-        &json!([{"op": "install", "file": "repair.source", "sha256": digest,
-                            "dst": "EFI/tilo/repair.source"}]),
-    );
-    assert_refused(&out, "symlink");
-    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
-    // A symlinked destination file is refused too, not written through.
-    symlink(
-        outside.join("target"),
-        f.esp.join("EFI/Linux/tilo-repair.efi"),
-    )
-    .unwrap();
-    let digest = f.stage("repair.efi", b"MZ");
-    let out = f.run(
-        &json!([{"op": "install", "file": "repair.efi", "sha256": digest,
-                            "dst": "EFI/Linux/tilo-repair.efi"}]),
-    );
-    assert_refused(&out, "symlink");
-    assert!(!outside.join("target").exists());
-    symlink(
-        outside.join("entry"),
-        f.esp.join("loader/entries/bootc_link.conf"),
-    )
-    .unwrap();
-    let out = f.run(
-        &json!([{"op": "rename", "src": "loader/entries/bootc_link.conf",
-                            "dst": "loader/entries/bootc_link+3.conf"}]),
-    );
-    assert_refused(&out, "symlink");
-    let out = f.run(&json!([{"op": "remove", "path": "EFI/Linux/tilo-repair.efi"}]));
-    assert_refused(&out, "symlink");
-    assert!(fs::symlink_metadata(f.esp.join("EFI/Linux/tilo-repair.efi")).is_ok());
-}
-
-#[test]
-fn staged_files_are_verified() {
-    let f = Fixture::new();
-    f.stage("repair.efi", b"what was planned");
-    let out = f.run(&json!([{"op": "install", "file": "repair.efi",
-                            "sha256": sha256(b"something else"),
-                            "dst": "EFI/Linux/tilo-repair.efi"}]));
-    assert_refused(&out, "SHA-256");
-    fs::write(f.root.join("elsewhere"), b"x").unwrap();
-    symlink(f.root.join("elsewhere"), f.plan_dir.join("link.efi")).unwrap();
-    let out = f.run(
-        &json!([{"op": "install", "file": "link.efi", "sha256": sha256(b"x"),
-                            "dst": "EFI/Linux/tilo-repair.efi"}]),
-    );
-    assert_ne!(out.status.code(), Some(0));
-    assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
-    let out = f.run(
-        &json!([{"op": "install", "file": "../elsewhere", "sha256": sha256(b"x"),
-                            "dst": "EFI/Linux/tilo-repair.efi"}]),
-    );
-    assert_refused(&out, "not a staged file name");
-    assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
-}
-
-#[test]
-fn the_plan_directory_must_be_the_callers_alone() {
-    let f = Fixture::new();
-    fs::set_permissions(&f.plan_dir, fs::Permissions::from_mode(0o755)).unwrap();
-    let digest = f.stage("repair.efi", b"MZ");
-    let out = f.run(
-        &json!([{"op": "install", "file": "repair.efi", "sha256": digest,
-                            "dst": "EFI/Linux/tilo-repair.efi"}]),
-    );
-    assert_refused(&out, "0700");
-    assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
-    assert_eq!(f.plan_dir_entries(), ["plan.json", "repair.efi"]);
-    fs::set_permissions(&f.plan_dir, fs::Permissions::from_mode(0o700)).unwrap();
-    let out = f.run_plan(
-        &json!([]),
-        "boot-entries",
-        &[("TILO_ESP_PLAN_OWNER", "4242")],
-    );
-    assert_refused(&out, "must be root's alone (0700)");
-}
-
-#[test]
-fn a_plan_without_an_operation_list_is_refused() {
-    let f = Fixture::new();
-    fs::write(f.plan_dir.join("plan.json"), r#"{"ops": {}}"#).unwrap();
-    let out = f
-        .command(helper(), &[])
-        .arg("boot-entries")
-        .output_locked()
-        .unwrap();
-    assert_refused(&out, "plan.json has no operation list");
-    assert_eq!(f.plan_dir_entries(), Vec::<String>::new());
-}
-
-#[test]
-fn an_interruption_between_operations_leaves_whole_files() {
-    let f = Fixture::new();
-    fs::create_dir(f.esp.join("EFI/tilo")).unwrap();
-    fs::write(f.esp.join("EFI/tilo/repair.source"), "old\n").unwrap();
-    let new_efi = f.stage("repair.efi", b"MZ new");
-    let new_src = f.stage("repair.source", b"new\n");
-    let out = f.run_plan(
-        &json!([
-            {"op": "install", "file": "repair.efi", "sha256": new_efi, "dst": "EFI/Linux/tilo-repair.efi"},
-            {"op": "install", "file": "repair.source", "sha256": new_src, "dst": "EFI/tilo/repair.source"},
-        ]),
-        "boot-entries",
-        &[("TILO_ESP_WRITE_CRASH_AFTER", "1")],
-    );
-    assert_eq!(out.status.code(), Some(99), "{}", stderr(&out));
-    assert_eq!(
-        fs::read(f.esp.join("EFI/Linux/tilo-repair.efi")).unwrap(),
-        b"MZ new"
-    );
-    assert_eq!(
-        fs::read_to_string(f.esp.join("EFI/tilo/repair.source")).unwrap(),
-        "old\n"
-    );
-    // The interrupted plan stays, as a crash would leave it.
-    assert_eq!(
-        f.plan_dir_entries(),
-        ["plan.json", "repair.efi", "repair.source"]
-    );
-    let mut leftovers = Vec::new();
-    for dir in ["EFI/Linux", "EFI/tilo", "loader/entries"] {
-        for entry in fs::read_dir(f.esp.join(dir)).unwrap() {
-            let name = entry.unwrap().file_name().into_string().unwrap();
-            if name.starts_with(".tilo-esp-write.") {
-                leftovers.push(name);
-            }
+            .unwrap();
+        if Path::new("/boot/efi/EFI").is_dir() || Path::new("/boot/EFI").is_dir() {
+            // A real ESP is read-only to the test, or (as root) writable: either
+            // way it must not be refused for being absent.
+            assert!(!stderr(&out).contains("no ESP at"), "{}", stderr(&out));
+        } else {
+            assert_refused(&out, "no ESP at /boot or /boot/efi");
         }
+        assert_eq!(fs::read_dir(&signer).unwrap().count(), 0);
     }
-    assert_eq!(leftovers, Vec::<String>::new());
-    // No partial *.efi in EFI/Linux, where it would be a boot entry.
-    let mut names: Vec<String> = fs::read_dir(f.esp.join("EFI/Linux"))
-        .unwrap()
-        .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .collect();
-    names.sort();
-    assert_eq!(names, ["tilo-repair.efi"]);
+
+    phase traversal_is_refused;
+    {
+        let f = Fixture::new();
+        for path in [
+            "../outside",
+            "EFI/../../outside",
+            "/boot/EFI/tilo",
+            "EFI//tilo",
+            "EFI/./tilo",
+        ] {
+            assert_refused(&f.run(&json!([{"op": "mkdir", "path": path}])), "refused");
+        }
+        assert!(!f.root.join("outside").exists());
+    }
+
+    phase symlinks_on_the_esp_are_refused;
+    {
+        let f = Fixture::new();
+        let outside = f.root.join("outside");
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, f.esp.join("EFI/tilo")).unwrap();
+        let digest = f.stage("repair.source", b"bootc/x.efi\n");
+        let out = f.run(
+            &json!([{"op": "install", "file": "repair.source", "sha256": digest,
+                                "dst": "EFI/tilo/repair.source"}]),
+        );
+        assert_refused(&out, "symlink");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        // A symlinked destination file is refused too, not written through.
+        symlink(
+            outside.join("target"),
+            f.esp.join("EFI/Linux/tilo-repair.efi"),
+        )
+        .unwrap();
+        let digest = f.stage("repair.efi", b"MZ");
+        let out = f.run(
+            &json!([{"op": "install", "file": "repair.efi", "sha256": digest,
+                                "dst": "EFI/Linux/tilo-repair.efi"}]),
+        );
+        assert_refused(&out, "symlink");
+        assert!(!outside.join("target").exists());
+        symlink(
+            outside.join("entry"),
+            f.esp.join("loader/entries/bootc_link.conf"),
+        )
+        .unwrap();
+        let out = f.run(
+            &json!([{"op": "rename", "src": "loader/entries/bootc_link.conf",
+                                "dst": "loader/entries/bootc_link+3.conf"}]),
+        );
+        assert_refused(&out, "symlink");
+        let out = f.run(&json!([{"op": "remove", "path": "EFI/Linux/tilo-repair.efi"}]));
+        assert_refused(&out, "symlink");
+        assert!(fs::symlink_metadata(f.esp.join("EFI/Linux/tilo-repair.efi")).is_ok());
+    }
+
+    phase staged_files_are_verified;
+    {
+        let f = Fixture::new();
+        f.stage("repair.efi", b"what was planned");
+        let out = f.run(&json!([{"op": "install", "file": "repair.efi",
+                                "sha256": sha256(b"something else"),
+                                "dst": "EFI/Linux/tilo-repair.efi"}]));
+        assert_refused(&out, "SHA-256");
+        fs::write(f.root.join("elsewhere"), b"x").unwrap();
+        symlink(f.root.join("elsewhere"), f.plan_dir.join("link.efi")).unwrap();
+        let out = f.run(
+            &json!([{"op": "install", "file": "link.efi", "sha256": sha256(b"x"),
+                                "dst": "EFI/Linux/tilo-repair.efi"}]),
+        );
+        assert_ne!(out.status.code(), Some(0));
+        assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
+        let out = f.run(
+            &json!([{"op": "install", "file": "../elsewhere", "sha256": sha256(b"x"),
+                                "dst": "EFI/Linux/tilo-repair.efi"}]),
+        );
+        assert_refused(&out, "not a staged file name");
+        assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
+    }
+
+    phase the_plan_directory_must_be_the_callers_alone;
+    {
+        let f = Fixture::new();
+        fs::set_permissions(&f.plan_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let digest = f.stage("repair.efi", b"MZ");
+        let out = f.run(
+            &json!([{"op": "install", "file": "repair.efi", "sha256": digest,
+                                "dst": "EFI/Linux/tilo-repair.efi"}]),
+        );
+        assert_refused(&out, "0700");
+        assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
+        assert_eq!(f.plan_dir_entries(), ["plan.json", "repair.efi"]);
+        fs::set_permissions(&f.plan_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let out = f.run_plan(
+            &json!([]),
+            "boot-entries",
+            &[("TILO_ESP_PLAN_OWNER", "4242")],
+        );
+        assert_refused(&out, "must be root's alone (0700)");
+    }
+
+    phase a_plan_without_an_operation_list_is_refused;
+    {
+        let f = Fixture::new();
+        fs::write(f.plan_dir.join("plan.json"), r#"{"ops": {}}"#).unwrap();
+        let out = f
+            .command(helper(), &[])
+            .arg("boot-entries")
+            .output_locked()
+            .unwrap();
+        assert_refused(&out, "plan.json has no operation list");
+        assert_eq!(f.plan_dir_entries(), Vec::<String>::new());
+    }
 }
 
 #[test]
@@ -889,62 +959,4 @@ fn leftovers_of_an_earlier_interruption_are_removed() {
         .collect();
     names.sort();
     assert_eq!(names, ["tilo-repair.efi"]);
-}
-
-#[test]
-fn removing_what_is_not_there_succeeds() {
-    let f = Fixture::new();
-    assert_ok(&f.run(&json!([
-        {"op": "remove", "path": "EFI/tilo/repair.efi"},
-        {"op": "remove", "path": "EFI/Linux/tilo-repair.efi"},
-    ])));
-    let out = f.run(
-        &json!([{"op": "rename", "src": "loader/entries/bootc_gone.conf",
-                            "dst": "loader/entries/bootc_gone+3.conf"}]),
-    );
-    assert_refused(&out, "no loader/entries/bootc_gone.conf to rename");
-}
-
-#[test]
-fn tilo_deployment_plans_are_accepted() {
-    let f = Fixture::new();
-    let text = deployment();
-    let helpers = between(&text, "ESP_PLAN_DIR=", "# --- listing");
-    let script = format!(
-        "{helpers}
-die() {{ echo \"$*\" >&2; exit 1; }}
-esp_plan_reset
-esp_plan_op rename src loader/entries/bootc_fedora-44-1.conf dst loader/entries/bootc_fedora-44-1+3.conf
-printf 'bootc/x.efi\\n' > \"$ESP_PLAN_DIR/repair.source\"
-esp_plan_op mkdir path EFI/tilo
-esp_plan_install repair.source EFI/tilo/repair.source
-esp_plan_commit
-"
-    );
-    let plan_dir = f.plan_dir.display().to_string();
-    let writer = format!("{} boot-entries", helper().display());
-    let out = f
-        .command(
-            "bash",
-            &[
-                ("TILO_ESP_PLAN_DIR", &plan_dir),
-                ("TILO_ESP_WRITE_CMD", &writer),
-            ],
-        )
-        .arg("-c")
-        .arg(script)
-        .output_locked()
-        .unwrap();
-    assert_ok(&out);
-    assert!(
-        f.esp
-            .join("loader/entries/bootc_fedora-44-1+3.conf")
-            .is_file()
-    );
-    assert_eq!(
-        fs::read_to_string(f.esp.join("EFI/tilo/repair.source")).unwrap(),
-        "bootc/x.efi\n"
-    );
-    assert!(!text.contains("mv -f \"$f\""));
-    assert!(!text.contains("> \"$stamp\""));
 }

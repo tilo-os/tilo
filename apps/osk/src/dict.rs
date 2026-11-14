@@ -309,116 +309,166 @@ pub fn weight_to_count(weight: u32) -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn embedded_dictionary_loads_with_sane_normalised_frequencies() {
-        eprintln!("phase embedded_dictionary_loads_thousands_of_words");
-        {
-            let d = Dictionary::english();
-            assert!(d.len() > 10_000, "want tens of thousands, got {}", d.len());
-            assert!(!d.is_empty());
-        }
+    tilo_test_env::scenario! {
+        fn the_dictionary_loads_ranks_and_answers_without_words;
 
-        eprintln!("phase common_words_present_with_sane_relative_frequency");
+        phase embedded_dictionary_loads_with_sane_normalised_frequencies;
         {
+            // One parse serves the three phases that read it: every method they
+            // call takes `&self`.
             let d = Dictionary::english();
-            assert!(d.contains("the"));
-            assert!(d.contains("quick"));
-            assert!(d.contains("hello"));
-            assert!(d.contains("keyboard"));
-            assert!(d.weight("the").unwrap() > d.weight("quick").unwrap());
-            assert_eq!(d.weight("THE"), d.weight("the"));
-            assert!(!d.contains("zzxqj"));
-            assert_eq!(d.frequency("zzxqj"), 0.0);
-        }
 
-        eprintln!("phase frequency_is_normalised_and_monotone");
-        {
-            let d = Dictionary::english();
-            let f_the = d.frequency("the");
-            let f_quick = d.frequency("quick");
-            assert!((0.0..=1.0).contains(&f_the));
-            assert!(f_the >= f_quick);
-            assert!(f_the > 0.0);
-        }
+            eprintln!("phase embedded_dictionary_loads_thousands_of_words");
+            {
+                assert!(d.len() > 10_000, "want tens of thousands, got {}", d.len());
+                assert!(!d.is_empty());
+            }
 
-        eprintln!("phase from_str_parses_and_skips_malformed");
-        {
-            let d = Dictionary::from_str("apple\t100\nbanana\t50\nbroken-line\ncherry\t75\n");
-            assert_eq!(d.len(), 3);
-            assert!(d.contains("apple"));
-            assert!(d.contains("cherry"));
-            assert!(!d.contains("broken-line"));
-            // Frequency order: apple (100) > cherry (75) > banana (50).
-            assert_eq!(d.words()[0].word, "apple");
-            assert_eq!(d.words()[2].word, "banana");
-        }
-    }
+            eprintln!("phase common_words_present_with_sane_relative_frequency");
+            {
+                assert!(d.contains("the"));
+                assert!(d.contains("quick"));
+                assert!(d.contains("hello"));
+                assert!(d.contains("keyboard"));
+                assert!(d.weight("the").unwrap() > d.weight("quick").unwrap());
+                assert_eq!(d.weight("THE"), d.weight("the"));
+                assert!(!d.contains("zzxqj"));
+                assert_eq!(d.frequency("zzxqj"), 0.0);
+            }
 
-    #[test]
-    fn prefix_iteration_and_completion_return_ranked_matches() {
-        eprintln!("phase prefix_iteration_returns_only_matching_words");
-        {
-            let d = Dictionary::english();
-            let qu: Vec<_> = d.iter_prefix("qu").map(|e| e.word.clone()).collect();
-            assert!(qu.iter().all(|w| w.starts_with("qu")));
-            assert!(qu.contains(&"quick".to_string()));
-            assert!(qu.contains(&"question".to_string()));
-            assert_eq!(d.iter_prefix("qzx").count(), 0);
-        }
+            eprintln!("phase frequency_is_normalised_and_monotone");
+            {
+                let f_the = d.frequency("the");
+                let f_quick = d.frequency("quick");
+                assert!((0.0..=1.0).contains(&f_the));
+                assert!(f_the >= f_quick);
+                assert!(f_the > 0.0);
+            }
 
-        eprintln!("phase complete_ranks_by_frequency");
-        {
-            let d = Dictionary::english();
-            let top = d.complete("th", 5);
-            assert!(!top.is_empty());
-            assert_eq!(top[0].word, "the");
-            for w in top.windows(2) {
-                assert!(w[0].weight >= w[1].weight);
+            eprintln!("phase from_str_parses_and_skips_malformed");
+            {
+                let d = Dictionary::from_str("apple\t100\nbanana\t50\nbroken-line\ncherry\t75\n");
+                assert_eq!(d.len(), 3);
+                assert!(d.contains("apple"));
+                assert!(d.contains("cherry"));
+                assert!(!d.contains("broken-line"));
+                // Frequency order: apple (100) > cherry (75) > banana (50).
+                assert_eq!(d.words()[0].word, "apple");
+                assert_eq!(d.words()[2].word, "banana");
             }
         }
 
-        eprintln!("phase prefixes_match_accent_insensitively");
+        phase empty_and_malformed_tables_answer_without_words;
         {
-            let d = Dictionary::from_str(
-                "tres\t10\ntrès\t900\ntrésor\t300\ntrain\t500\nou\t800\noù\t700\n",
-            );
-            let tre: Vec<&str> = d.iter_prefix("tre").map(|e| e.word.as_str()).collect();
-            assert_eq!(tre, ["tres", "très", "trésor"]);
-            assert_eq!(d.complete("tres", 1)[0].word, "très");
-            assert_eq!(d.weight("ou"), Some(800));
-            assert_eq!(d.weight("où"), Some(700));
-            assert_eq!(d.weight("trés"), None);
-            let next: HashMap<char, f64> = d.next_char_weights("tr").into_iter().collect();
-            assert!(next[&'e'] > next[&'a'], "è and é count for e: {next:?}");
-        }
+            let empty = Dictionary::from_str("");
+            assert!(empty.is_empty());
+            assert_eq!(empty.len(), 0);
+            assert!(!empty.contains("the"));
+            assert_eq!(empty.weight("the"), None);
+            assert_eq!(empty.frequency("the"), 0.0);
+            assert!(empty.complete("t", 5).is_empty());
+            assert_eq!(empty.iter_prefix("").count(), 0);
+            assert!(empty.next_char_weights("").is_empty());
 
-        eprintln!("phase embedded_french_dictionary_loads");
-        {
-            let d = Dictionary::french();
-            assert!(d.len() > 10_000, "want tens of thousands, got {}", d.len());
-            for word in ["de", "bonjour", "très", "été", "ça", "merci"] {
-                assert!(d.contains(word), "{word} missing");
+            // A word of weight zero is a word, and its frequency is zero rather
+            // than a division by the largest weight.
+            let rare = Dictionary::from_str("rare\t0\n");
+            assert!(rare.contains("rare"));
+            assert_eq!(rare.weight("rare"), Some(0));
+            assert_eq!(rare.frequency("rare"), 0.0);
+
+            for (line, why) in [
+                ("\t5", "no word"),
+                ("word\t", "no weight"),
+                ("word\tmany", "a weight that is no number"),
+                ("word\t-1", "a negative weight"),
+                ("   ", "only spaces"),
+            ] {
+                assert!(Dictionary::from_str(line).is_empty(), "{line:?}: {why}");
             }
-            assert!(d.weight("de").unwrap() > d.weight("bonjour").unwrap());
-            // Stray letters and elided articles are not words.
-            assert!(!d.contains("l") && !d.contains("d"));
-            assert!(d.contains("à"));
+
+            // Windows line ends and spaces around a weight still parse.
+            let d = Dictionary::from_str("the\t 7 \r\nthis\t9\r\n");
+            assert_eq!(d.len(), 2);
+            assert_eq!(d.weight("the"), Some(7));
+            assert_eq!(d.weight("this"), Some(9));
+            let top: Vec<&str> = d
+                .complete("TH", 5)
+                .into_iter()
+                .map(|e| e.word.as_str())
+                .collect();
+            assert_eq!(top, ["this", "the"], "a prefix matches in any case");
+            assert_eq!(d.complete("th", 1).len(), 1, "no more than asked for");
+            assert!(d.complete("th", 0).is_empty(), "none asked for");
         }
 
-        eprintln!("phase empty_prefix_iterates_all");
+        phase prefix_iteration_and_completion_return_ranked_matches;
         {
-            let d = Dictionary::from_str("a\t3\nb\t2\nc\t1\n");
-            assert_eq!(d.iter_prefix("").count(), 3);
-        }
+            // One parse serves the two phases that read the English words.
+            let d = Dictionary::english();
 
-        eprintln!("phase next_char_weights_credit_the_letter_after_the_prefix");
-        {
-            let d = Dictionary::from_str("the\t3000\nthree\t2000\nthat\t2500\nth\t1000\n");
-            let w: std::collections::HashMap<char, f64> =
-                d.next_char_weights("th").into_iter().collect();
-            assert_eq!(w.len(), 3, "'th' itself ends there: {w:?}");
-            assert!(w[&'e'] > w[&'a'] && w[&'a'] > w[&'r']);
-            assert!((w[&'e'] - weight_to_count(3000)).abs() < 1e-6);
+            eprintln!("phase prefix_iteration_returns_only_matching_words");
+            {
+                let qu: Vec<_> = d.iter_prefix("qu").map(|e| e.word.clone()).collect();
+                assert!(qu.iter().all(|w| w.starts_with("qu")));
+                assert!(qu.contains(&"quick".to_string()));
+                assert!(qu.contains(&"question".to_string()));
+                assert_eq!(d.iter_prefix("qzx").count(), 0);
+            }
+
+            eprintln!("phase complete_ranks_by_frequency");
+            {
+                let top = d.complete("th", 5);
+                assert!(!top.is_empty());
+                assert_eq!(top[0].word, "the");
+                for w in top.windows(2) {
+                    assert!(w[0].weight >= w[1].weight);
+                }
+            }
+
+            eprintln!("phase prefixes_match_accent_insensitively");
+            {
+                let d = Dictionary::from_str(
+                    "tres\t10\ntrès\t900\ntrésor\t300\ntrain\t500\nou\t800\noù\t700\n",
+                );
+                let tre: Vec<&str> = d.iter_prefix("tre").map(|e| e.word.as_str()).collect();
+                assert_eq!(tre, ["tres", "très", "trésor"]);
+                assert_eq!(d.complete("tres", 1)[0].word, "très");
+                assert_eq!(d.weight("ou"), Some(800));
+                assert_eq!(d.weight("où"), Some(700));
+                assert_eq!(d.weight("trés"), None);
+                let next: HashMap<char, f64> = d.next_char_weights("tr").into_iter().collect();
+                assert!(next[&'e'] > next[&'a'], "è and é count for e: {next:?}");
+            }
+
+            eprintln!("phase embedded_french_dictionary_loads");
+            {
+                let d = Dictionary::french();
+                assert!(d.len() > 10_000, "want tens of thousands, got {}", d.len());
+                for word in ["de", "bonjour", "très", "été", "ça", "merci"] {
+                    assert!(d.contains(word), "{word} missing");
+                }
+                assert!(d.weight("de").unwrap() > d.weight("bonjour").unwrap());
+                // Stray letters and elided articles are not words.
+                assert!(!d.contains("l") && !d.contains("d"));
+                assert!(d.contains("à"));
+            }
+
+            eprintln!("phase empty_prefix_iterates_all");
+            {
+                let d = Dictionary::from_str("a\t3\nb\t2\nc\t1\n");
+                assert_eq!(d.iter_prefix("").count(), 3);
+            }
+
+            eprintln!("phase next_char_weights_credit_the_letter_after_the_prefix");
+            {
+                let d = Dictionary::from_str("the\t3000\nthree\t2000\nthat\t2500\nth\t1000\n");
+                let w: std::collections::HashMap<char, f64> =
+                    d.next_char_weights("th").into_iter().collect();
+                assert_eq!(w.len(), 3, "'th' itself ends there: {w:?}");
+                assert!(w[&'e'] > w[&'a'] && w[&'a'] > w[&'r']);
+                assert!((w[&'e'] - weight_to_count(3000)).abs() < 1e-6);
+            }
         }
     }
 }

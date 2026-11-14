@@ -49,7 +49,7 @@ topbar-bell-silenced = { $unread ->
     [one] Mitteilungen stummgeschaltet, 1 ungelesen
    *[other] Mitteilungen stummgeschaltet, { $unread } ungelesen
 }
-topbar-show-collaborators = Alle hier
+topbar-show-people = Alle hier
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -57,7 +57,7 @@ topbar-viewer-entry = { $name } ({ $kind ->
         [person] Person
        *[session] unbekannte Sitzung
     }): { $access }
-topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
+topbar-people-visible = Bildschirm sichtbar für { $viewers }. Zeigen, wer hier ist
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
 topbar-invite = Einladen
@@ -276,14 +276,14 @@ activity-capability = { $effect ->
             [read] Lesen
            *[write] Schreiben
         }
-    } für { $scope } an { $subject }
+    } für { $scope } an { $who }
 activity-capability-unknown = eine Berechtigung
 activity-capability-this-workspace = diesen Arbeitsbereich
 activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
-activity-capability-a-person = eine Person
 activity-capability-agent = Agent { $agent }
-activity-capability-invite-token = ein Einladungstoken
+activity-capability-bot = Bot { $bot }
+activity-capability-through-app = { $who } in { $app }
 
 # Schreibtischflächen
 desktop-system-status = Systemstatus
@@ -475,21 +475,15 @@ workspace-settings-expiry-until = Bis
 workspace-settings-expiry-always = Immer
 workspace-settings-granted-by-person = erteilt von { $id }
 workspace-settings-granted-by-you = von dir erteilt
-workspace-settings-granted-by-app = erteilt von der App { $app }
 workspace-settings-granted-by-agent = erteilt von Agent { $id }
-workspace-settings-granted-by-token = erteilt über Token { $id }
-workspace-settings-granted-by-workspace = erteilt vom Arbeitsbereich { $id }
+workspace-settings-granted-by-bot = erteilt von Bot { $id }
 workspace-settings-permission-detail = { $allows }, { $grantor }
 workspace-settings-section-apps = Apps
-workspace-settings-section-app-actions = App-Aktionen
 workspace-settings-section-people = Personen
 workspace-settings-section-agents = Agenten
 workspace-settings-section-roles = Rollen
-workspace-settings-section-other = Sonstige
 workspace-settings-subject-bot = Bot { $id }
 workspace-settings-subject-role = alle mit der Rolle { $role }
-workspace-settings-subject-token = Token { $id }
-workspace-settings-subject-workspace = Arbeitsbereich { $id }
 workspace-settings-grant-camera = Kamera
 workspace-settings-grant-microphone = Mikrofon
 workspace-settings-grant-screencast = Bildschirmaufnahme
@@ -780,6 +774,7 @@ overview-access-only-you = Nur du
 overview-access-one = Geteilt mit { $name }
 overview-access-two = Geteilt mit { $name } und { $other }
 overview-access-many = Geteilt mit { $name } und { $count } weiteren
+overview-shared-in-app = { $scope } in { $app }
 overview-shares = { $count ->
         [one] 1 Element geteilt
        *[other] { $count } Elemente geteilt
@@ -1271,7 +1266,7 @@ so-tilo-chrome-step-strip = Durch die Leisten wechseln
 so-tilo-chrome-stop-desktop-control = Die Fernsteuerung beenden
 so-tilo-chrome-switch-workspace = Arbeitsbereich wechseln
 so-tilo-chrome-tilo-menu = Tilo-Menü
-so-tilo-chrome-toggle-collaborators = Wer hier ist
+so-tilo-chrome-toggle-people = Wer hier ist
 so-tilo-chrome-workspace-menu = Arbeitsbereich-Menü
 so-tilo-chrome-workspace-settings = Einstellungen des Arbeitsbereichs
 so-tilo-desk-choose-search-row = Ein Suchergebnis wählen

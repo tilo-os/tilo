@@ -34,6 +34,7 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, pending_count, spawn_relay_on};
+use tilo_relay::WorkspaceId;
 
 /// A connects to `addr1`, subscribes, drains Ready(0), publishes
 /// `note = "durable"`, waits until the host has queued it on disk for
@@ -42,7 +43,7 @@ async fn publish_and_leave(
     addr1: iroh_base::EndpointAddr,
     user: &TestUser,
     a: &crate::common::TestDevice,
-    ws: u64,
+    ws: WorkspaceId,
     pending_dir: &std::path::Path,
 ) -> AutoCommit {
     let a_client = RelayClient::connect(
@@ -107,7 +108,7 @@ async fn catch_up_after_restart(
     addr2: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
-    ws: u64,
+    ws: WorkspaceId,
 ) -> AutoCommit {
     let b_client = RelayClient::connect(
         client_endpoint().await,
@@ -162,7 +163,7 @@ async fn catch_up_after_restart(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn never_simultaneously_online_devices_converge_across_host_restart() {
-    const WS: u64 = 9;
+    const WS: WorkspaceId = WorkspaceId::from_u128(9);
 
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
@@ -176,7 +177,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
 
     // ---- Host boots; A publishes an edit and leaves. B has never
     //      connected. ----
-    let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host1_dev = user.enrol("home-server", DeviceCapabilities::member());
     let host1 = Box::pin(spawn_relay_on(
         &state_root,
         &user,
@@ -211,7 +212,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
         "queued delta must survive the host process dying"
     );
 
-    let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
+    let host2_dev = user.enrol("home-server-2", DeviceCapabilities::member());
     let host2 = Box::pin(spawn_relay_on(
         &state_root,
         &user,

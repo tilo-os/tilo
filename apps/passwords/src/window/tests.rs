@@ -105,284 +105,373 @@ fn clipboard_fixture(accepts: bool) -> ui::host::HostScope {
     ui::host::enter(&services)
 }
 
-#[test]
-fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
-    let mut app = PasswordsWindow::demo();
-    assert!(app.shell().has_sidebar());
-    assert!(app.shell().has_overview(), "the vault shows its item list");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn the_vault_list_shows_and_changes_real_vault_state;
 
-    request(&mut app, Request::Navigate("review".into()));
-    assert_eq!(app.core().screen, Screen::Review);
-    assert!(!app.shell().has_overview());
-
-    request(&mut app, Request::Navigate("filter:wifi".into()));
-    assert!(app.shell().has_overview());
-    let core = app.core();
-    assert_eq!(core.filter, VaultFilter::Kind(SecretItemKind::Wifi));
-    assert_eq!(core.visible().len(), 1);
-    assert_eq!(
-        core.selected_item().map(|item| item.title.as_str()),
-        Some("Home Wi-Fi"),
-        "the first item of the place opens"
-    );
-    drop(core);
-
-    let sections = app.core().nav_sections();
-    assert_eq!(sections.len(), 2);
-    let sidebar = format!("{sections:?}");
-    for label in [
-        "All items",
-        "Favorites",
-        "Password review",
-        "Import and export",
-    ] {
-        assert!(sidebar.contains(label), "{label} is in the sidebar");
-    }
-}
-
-#[test]
-fn list_rows_open_items_and_toggle_favorites_through_the_list() {
-    let mut app =
-        ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::drive("detail")
-            .unwrap();
-    let selected = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
-        app.surface::<PasswordsWindow, _>(|surface| {
-            surface.core().selected.as_ref().map(|id| id.0.clone())
-        })
-        .flatten()
-    };
-    let favorites = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
-        app.surface::<PasswordsWindow, _>(|surface| surface.core().count(VaultFilter::Favorites))
-            .unwrap()
-    };
-
-    app.harness()
-        .click_named("passwords.item:demo-mail")
-        .unwrap();
-    app.settle();
-    assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
-
-    app.harness()
-        .perform_semantic_named(
-            "passwords.items",
-            Some("key:demo-recovery"),
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
-    app.settle();
-    assert_eq!(selected(&mut app).as_deref(), Some("demo-recovery"));
-
-    let published = public_text(&app.harness().resources());
-    assert!(published.contains("passwords:item:demo-mail"));
-    for title in ["Personal mail", "Northstar Bank", "Recovery codes"] {
-        assert!(!published.contains(title), "the window published {title:?}");
-    }
-
-    let before = favorites(&mut app);
-    app.harness()
-        .perform_semantic_named(
-            "passwords.item:demo-mail",
-            Some("passwords.item:demo-mail/action/0"),
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
-    app.settle();
-    assert_eq!(favorites(&mut app), before + 1);
-
-    app.surface::<PasswordsWindow, _>(|surface| surface.core_mut().step(false));
-    assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
-}
-
-#[test]
-fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
-    let app = PasswordsWindow::demo();
-    let secrets = ["Harbor-Lights-2019", "harbourlights", "4821-7730", "tv1234"];
-
-    let rows: Vec<_> = app
-        .core()
-        .item_rows()
-        .into_iter()
-        .map(ui::framework::LiveRow::into_resource)
-        .collect();
-    let resources = public_text(&rows);
-    let hits = format!("{:?}", crate::search::entries(&app.core().items));
-    for secret in secrets {
-        assert!(!resources.contains(secret), "resources leak {secret}");
-        assert!(!hits.contains(secret), "search leaks {secret}");
-    }
-
-    let shared = Rc::clone(&app.core);
-    for screen in [
-        Screen::Vault,
-        Screen::Editor,
-        Screen::Review,
-        Screen::AppAccess,
-        Screen::Transfer,
-    ] {
-        shared.borrow_mut().screen = screen;
-        let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
-        let tree = page
-            .accessibility()
-            .map(|node| spoken(&node))
-            .unwrap_or_default();
-        for secret in secrets {
-            assert!(!tree.contains(secret), "{screen:?} reads out {secret}");
-        }
-    }
-}
-
-#[test]
-fn a_revealed_value_expires_and_locks_when_the_window_loses_focus() {
-    let mut doc = AutoCommit::new();
-    let mut app = PasswordsWindow::demo();
-    let at = ui::time::now();
-    let until = at + std::time::Duration::from_secs(10);
-    ui::time::testing::with_monotonic_time(at, || {
-        app.core_mut().revealed = Some((
-            SecretId("demo-bank".into()),
-            Zeroizing::new("temporary-value".into()),
-            until,
-        ));
-        Widget::sync(&mut app, &doc, &automerge::ROOT);
-        assert!(app.core().revealed.is_some(), "shown until it expires");
-        assert!(Widget::next_wake_deadline(&app).is_some());
-        send(&mut app, &mut doc, &WindowEvent::Focused(false));
-        assert!(app.core().revealed.is_none());
-
-        app.core_mut().revealed = Some((
-            SecretId("demo-bank".into()),
-            Zeroizing::new("fixture secret".into()),
-            until,
-        ));
-    });
-    ui::time::testing::with_monotonic_time(until, || {
-        Widget::sync(&mut app, &doc, &automerge::ROOT);
-    });
-    assert!(app.core().revealed.is_none());
-}
-
-#[test]
-fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
-    eprintln!("phase a pending transfer keeps the host polling on a fixed deadline");
+    phase the_window_is_the_shared_shell_and_follows_the_chosen_place;
     {
-        let doc = AutoCommit::new();
         let mut app = PasswordsWindow::demo();
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.core_mut().export_portal = Some(crate::transfer::Saving::Path(rx));
-        let at = ui::time::now();
-        let wake_at = |t| ui::time::testing::with_monotonic_time(t, || app.core().next_wake());
-        let first = wake_at(at).unwrap();
+        assert!(app.shell().has_sidebar());
+        assert!(app.shell().has_overview(), "the vault shows its item list");
+
+        request(&mut app, Request::Navigate("review".into()));
+        assert_eq!(app.core().screen, Screen::Review);
+        assert!(!app.shell().has_overview());
+
+        request(&mut app, Request::Navigate("filter:wifi".into()));
+        assert!(app.shell().has_overview());
+        let core = app.core();
+        assert_eq!(core.filter, VaultFilter::Kind(SecretItemKind::Wifi));
+        assert_eq!(core.visible().len(), 1);
         assert_eq!(
-            wake_at(at + std::time::Duration::from_millis(2)),
-            Some(first)
+            core.selected_item().map(|item| item.title.as_str()),
+            Some("Home Wi-Fi"),
+            "the first item of the place opens"
         );
-        tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
-        Widget::sync(&mut app, &doc, &automerge::ROOT);
-        assert!(app.core().next_wake().is_none());
-    }
+        drop(core);
 
-    eprintln!("phase copying and revealing are distinct actions");
-    {
-        let _clipboard = clipboard_fixture(true);
-        let root = temp_root("secret-actions");
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut item = SecretItem::login("Account", "ada", "private-value");
-        item.add_origin("https://example.invalid").unwrap();
-        let id = model.save_item(&mut item).unwrap();
-        let mut app = PasswordsWindow::new(model);
-
-        request(&mut app, Request::CopySecret);
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
-        assert!(
-            app.core().revealed.is_none(),
-            "copying must not disclose the value"
-        );
-        assert!(
-            app.shell()
-                .toast_text()
-                .is_some_and(|message| message.starts_with("Copied password"))
-        );
-
-        effect(&mut app, PasswordsEffect::Reveal { item: id.0.clone() });
-        assert_eq!(
-            app.core()
-                .revealed
-                .as_ref()
-                .map(|(_, value, _)| value.to_string()),
-            Some("private-value".into())
-        );
-        effect(&mut app, PasswordsEffect::Reveal { item: id.0.clone() });
-        assert!(
-            app.core().revealed.is_some(),
-            "revealing again leaves it shown"
-        );
-        effect(&mut app, PasswordsEffect::Hide { item: id.0 });
-        assert!(app.core().revealed.is_none(), "hiding puts it away");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    eprintln!("phase a failed copy says so and leaves the clipboard alone");
-    {
-        let _clipboard = clipboard_fixture(false);
-        let root = temp_root("copy-failure");
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut item = SecretItem::login("Account", "ada", "private-value");
-        item.add_origin("https://example.invalid").unwrap();
-        let id = model.save_item(&mut item).unwrap();
-        let mut app = PasswordsWindow::new(model);
-        for copy in [
-            PasswordsEffect::Copy { item: id.0.clone() },
-            PasswordsEffect::CopyIdentity { item: id.0.clone() },
-            PasswordsEffect::CopyOrigins { item: id.0 },
+        let sections = app.core().nav_sections();
+        assert_eq!(sections.len(), 2);
+        let sidebar = format!("{sections:?}");
+        for label in [
+            "All items",
+            "Favorites",
+            "Password review",
+            "Import and export",
         ] {
-            app.shell.dismiss_toast();
-            effect(&mut app, copy);
-            assert_eq!(
-                app.shell().toast_text(),
-                Some("Could not copy to the clipboard. Try again.")
-            );
-            assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
+            assert!(sidebar.contains(label), "{label} is in the sidebar");
         }
+    }
+
+    phase list_rows_open_items_and_toggle_favorites_through_the_list;
+    {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::drive("detail")
+                .unwrap();
+        let selected = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
+            app.surface::<PasswordsWindow, _>(|surface| {
+                surface.core().selected.as_ref().map(|id| id.0.clone())
+            })
+            .flatten()
+        };
+        let favorites = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
+            app.surface::<PasswordsWindow, _>(|surface| surface.core().count(VaultFilter::Favorites))
+                .unwrap()
+        };
+
+        app.harness()
+            .click_named("passwords.item:demo-mail")
+            .unwrap();
+        app.settle();
+        assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
+
+        app.harness()
+            .perform_semantic_named(
+                "passwords.items",
+                Some("key:demo-recovery"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        app.settle();
+        assert_eq!(selected(&mut app).as_deref(), Some("demo-recovery"));
+
+        let published = public_text(&app.harness().resources());
+        assert!(published.contains("passwords:item:demo-mail"));
+        for title in ["Personal mail", "Northstar Bank", "Recovery codes"] {
+            assert!(!published.contains(title), "the window published {title:?}");
+        }
+
+        let before = favorites(&mut app);
+        app.harness()
+            .perform_semantic_named(
+                "passwords.item:demo-mail",
+                Some("passwords.item:demo-mail/action/0"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        app.settle();
+        assert_eq!(favorites(&mut app), before + 1);
+
+        app.surface::<PasswordsWindow, _>(|surface| surface.core_mut().step(false));
+        assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
+    }
+
+    phase filters_favorites_and_confirmed_deletes_are_real_vault_state;
+    {
+        let root = temp_root("delete");
+        let mut model = crate::PasswordsModel::open_in(&root);
+        let mut kept = SecretItem::login("Kept", "ada", "kept-secret-1A");
+        let mut gone = SecretItem::login("Removed", "ada", "removed-secret-1A");
+        model.save_item(&mut kept).unwrap();
+        model.save_item(&mut gone).unwrap();
+        let mut app = PasswordsWindow::new(model);
+
+        request(&mut app, Request::Open(gone.id.clone()));
+        request(&mut app, Request::ToggleFavorite(gone.id.clone()));
+        request(&mut app, Request::Navigate("filter:favorites".into()));
+        assert_eq!(app.core().visible().len(), 1);
+
+        request(&mut app, Request::Delete);
+        assert!(matches!(
+            app.core().dialog,
+            Some(Dialog::DeleteConfirm { ref title, .. }) if title == "Removed"
+        ));
+        assert_eq!(
+            app.core().model.as_ref().unwrap().items().len(),
+            2,
+            "nothing is deleted before the person confirms"
+        );
+        request(&mut app, Request::CloseDialog);
+        assert!(app.core().dialog.is_none());
+        assert_eq!(app.core().model.as_ref().unwrap().items().len(), 2);
+
+        request(&mut app, Request::Delete);
+        request(&mut app, Request::ConfirmDelete);
+        let remaining = app.core().model.as_ref().unwrap().items();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].title, "Kept");
+        assert!(app.core().visible().is_empty(), "no favorite is left");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    phase every_capture_scenario_stages_on_the_fixture_vault;
+    {
+        for scenario in SCENARIOS.iter().copied().map(Some).chain([None]) {
+            let root = temp_root("capture");
+            let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+            app.stager()(scenario);
+            app.settle();
+            let core = app.core();
+            assert!(
+                core.model.is_none(),
+                "{scenario:?} never shows a real vault"
+            );
+            let expected = match scenario {
+                Some("editor" | "new-item" | "delete") => Screen::Editor,
+                Some("review") => Screen::Review,
+                Some("app-access") => Screen::AppAccess,
+                Some("transfer" | "import" | "export" | "backup") => Screen::Transfer,
+                _ => Screen::Vault,
+            };
+            assert_eq!(core.screen, expected, "{scenario:?}");
+            drop(core);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    phase hosted_by_the_window_bar_the_items_actions_are_the_bars;
+    {
+        ui::window_toolbar::set_hosted(true);
+        let mut app = PasswordsWindow::demo();
+        app.settle();
+        let favorite = {
+            let core = app.core.borrow();
+            crate::vault::is_favorite(core.selected_item().expect("the demo shows an item"))
+        };
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let ids: Vec<&str> = toolbar
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(ids, [NEW_ITEM, COPY_SECRET, EDIT_ITEM, FAVORITE]);
+
+        let page = {
+            let shared = Rc::clone(&app.core);
+            crate::pages::content(&shared.borrow(), &shared, &app.requests, true)
+        };
+        for id in ["passwords.copy", "passwords.edit", "passwords.favorite"] {
+            assert!(
+                ui::widget::find_test_id(page.as_ref(), id).is_none(),
+                "the item's page draws no {id} of its own"
+            );
+        }
+
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+            id: FAVORITE.into(),
+        });
+        app.settle();
+        let now = {
+            let core = app.core.borrow();
+            crate::vault::is_favorite(core.selected_item().expect("the item is still shown"))
+        };
+        assert_ne!(now, favorite, "the bar's star toggles the item's favorite");
+        let star = ui::window_toolbar::declared()
+            .and_then(|toolbar| {
+                toolbar
+                    .actions
+                    .into_iter()
+                    .find(|action| action.id == FAVORITE)
+            })
+            .expect("the bar still offers the star");
+        assert_eq!(star.on, now, "the star shows the item's state");
     }
 }
 
-#[test]
-fn filters_favorites_and_confirmed_deletes_are_real_vault_state() {
-    let root = temp_root("delete");
-    let mut model = crate::PasswordsModel::open_in(&root);
-    let mut kept = SecretItem::login("Kept", "ada", "kept-secret-1A");
-    let mut gone = SecretItem::login("Removed", "ada", "removed-secret-1A");
-    model.save_item(&mut kept).unwrap();
-    model.save_item(&mut gone).unwrap();
-    let mut app = PasswordsWindow::new(model);
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn the_window_gives_out_a_secret_only_briefly_and_on_request;
 
-    request(&mut app, Request::Open(gone.id.clone()));
-    request(&mut app, Request::ToggleFavorite(gone.id.clone()));
-    request(&mut app, Request::Navigate("filter:favorites".into()));
-    assert_eq!(app.core().visible().len(), 1);
+    phase nothing_the_window_publishes_or_reads_out_holds_a_secret;
+    {
+        let app = PasswordsWindow::demo();
+        let secrets = ["Harbor-Lights-2019", "harbourlights", "4821-7730", "tv1234"];
 
-    request(&mut app, Request::Delete);
-    assert!(matches!(
-        app.core().dialog,
-        Some(Dialog::DeleteConfirm { ref title, .. }) if title == "Removed"
-    ));
-    assert_eq!(
-        app.core().model.as_ref().unwrap().items().len(),
-        2,
-        "nothing is deleted before the person confirms"
-    );
-    request(&mut app, Request::CloseDialog);
-    assert!(app.core().dialog.is_none());
-    assert_eq!(app.core().model.as_ref().unwrap().items().len(), 2);
+        let rows: Vec<_> = app
+            .core()
+            .item_rows()
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect();
+        let resources = public_text(&rows);
+        let hits = format!("{:?}", crate::search::entries(&app.core().items));
+        for secret in secrets {
+            assert!(!resources.contains(secret), "resources leak {secret}");
+            assert!(!hits.contains(secret), "search leaks {secret}");
+        }
 
-    request(&mut app, Request::Delete);
-    request(&mut app, Request::ConfirmDelete);
-    let remaining = app.core().model.as_ref().unwrap().items();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].title, "Kept");
-    assert!(app.core().visible().is_empty(), "no favorite is left");
-    let _ = std::fs::remove_dir_all(root);
+        let shared = Rc::clone(&app.core);
+        for screen in [
+            Screen::Vault,
+            Screen::Editor,
+            Screen::Review,
+            Screen::AppAccess,
+            Screen::Transfer,
+        ] {
+            shared.borrow_mut().screen = screen;
+            let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
+            let tree = page
+                .accessibility()
+                .map(|node| spoken(&node))
+                .unwrap_or_default();
+            for secret in secrets {
+                assert!(!tree.contains(secret), "{screen:?} reads out {secret}");
+            }
+        }
+    }
+
+    phase a_revealed_value_expires_and_locks_when_the_window_loses_focus;
+    {
+        let mut doc = AutoCommit::new();
+        let mut app = PasswordsWindow::demo();
+        let at = ui::time::now();
+        let until = at + std::time::Duration::from_secs(10);
+        ui::time::testing::with_monotonic_time(at, || {
+            app.core_mut().revealed = Some((
+                SecretId("demo-bank".into()),
+                Zeroizing::new("temporary-value".into()),
+                until,
+            ));
+            Widget::sync(&mut app, &doc, &automerge::ROOT);
+            assert!(app.core().revealed.is_some(), "shown until it expires");
+            assert!(Widget::next_wake_deadline(&app).is_some());
+            send(&mut app, &mut doc, &WindowEvent::Focused(false));
+            assert!(app.core().revealed.is_none());
+
+            app.core_mut().revealed = Some((
+                SecretId("demo-bank".into()),
+                Zeroizing::new("fixture secret".into()),
+                until,
+            ));
+        });
+        ui::time::testing::with_monotonic_time(until, || {
+            Widget::sync(&mut app, &doc, &automerge::ROOT);
+        });
+        assert!(app.core().revealed.is_none());
+    }
+
+    phase reveal_and_copy_are_temporary_and_honest_about_the_clipboard;
+    {
+        eprintln!("phase a pending transfer keeps the host polling on a fixed deadline");
+        {
+            let doc = AutoCommit::new();
+            let mut app = PasswordsWindow::demo();
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.core_mut().export_portal = Some(crate::transfer::Saving::Path(rx));
+            let at = ui::time::now();
+            let wake_at = |t| ui::time::testing::with_monotonic_time(t, || app.core().next_wake());
+            let first = wake_at(at).unwrap();
+            assert_eq!(
+                wake_at(at + std::time::Duration::from_millis(2)),
+                Some(first)
+            );
+            tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
+            Widget::sync(&mut app, &doc, &automerge::ROOT);
+            assert!(app.core().next_wake().is_none());
+        }
+
+        eprintln!("phase copying and revealing are distinct actions");
+        {
+            let _clipboard = clipboard_fixture(true);
+            let root = temp_root("secret-actions");
+            let mut model = crate::PasswordsModel::open_in(&root);
+            let mut item = SecretItem::login("Account", "ada", "private-value");
+            item.add_origin("https://example.invalid").unwrap();
+            let id = model.save_item(&mut item).unwrap();
+            let mut app = PasswordsWindow::new(model);
+
+            request(&mut app, Request::CopySecret);
+            assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
+            assert!(
+                app.core().revealed.is_none(),
+                "copying must not disclose the value"
+            );
+            assert!(
+                app.shell()
+                    .toast_text()
+                    .is_some_and(|message| message.starts_with("Copied password"))
+            );
+
+            effect(&mut app, PasswordsEffect::Reveal { item: id.0.clone() });
+            assert_eq!(
+                app.core()
+                    .revealed
+                    .as_ref()
+                    .map(|(_, value, _)| value.to_string()),
+                Some("private-value".into())
+            );
+            effect(&mut app, PasswordsEffect::Reveal { item: id.0.clone() });
+            assert!(
+                app.core().revealed.is_some(),
+                "revealing again leaves it shown"
+            );
+            effect(&mut app, PasswordsEffect::Hide { item: id.0 });
+            assert!(app.core().revealed.is_none(), "hiding puts it away");
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        eprintln!("phase a failed copy says so and leaves the clipboard alone");
+        {
+            let _clipboard = clipboard_fixture(false);
+            let root = temp_root("copy-failure");
+            let mut model = crate::PasswordsModel::open_in(&root);
+            let mut item = SecretItem::login("Account", "ada", "private-value");
+            item.add_origin("https://example.invalid").unwrap();
+            let id = model.save_item(&mut item).unwrap();
+            let mut app = PasswordsWindow::new(model);
+            for copy in [
+                PasswordsEffect::Copy { item: id.0.clone() },
+                PasswordsEffect::CopyIdentity { item: id.0.clone() },
+                PasswordsEffect::CopyOrigins { item: id.0 },
+            ] {
+                app.shell.dismiss_toast();
+                effect(&mut app, copy);
+                assert_eq!(
+                    app.shell().toast_text(),
+                    Some("Could not copy to the clipboard. Try again.")
+                );
+                assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
 }
 
 #[test]
@@ -551,47 +640,129 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
     }
 }
 
-/// An empty vault has nothing to review: the page says so instead of grading zero passwords
-/// as all clear.
-#[test]
-fn an_empty_vault_review_says_there_is_nothing_to_check() {
-    let root = temp_root("empty-review");
-    let app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
-    let shared = Rc::clone(&app.core);
-    shared.borrow_mut().screen = Screen::Review;
-    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
-    let tree = spoken_tree(page.as_ref());
-    assert!(tree.contains("Nothing to check yet"), "{tree}");
-    assert!(!tree.contains("Nothing to fix"), "{tree}");
-    assert!(!tree.contains("Reused"), "no grades for nothing: {tree}");
-    let _ = std::fs::remove_dir_all(root);
+tilo_test_env::scenario! {
+    fn the_password_review_says_what_it_checked;
+
+    phase an_empty_vault_review_says_there_is_nothing_to_check;
+    // An empty vault has nothing to review: the page says so instead of grading zero passwords
+    // as all clear.
+    {
+        let root = temp_root("empty-review");
+        let app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+        let shared = Rc::clone(&app.core);
+        shared.borrow_mut().screen = Screen::Review;
+        let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
+        let tree = spoken_tree(page.as_ref());
+        assert!(tree.contains("Nothing to check yet"), "{tree}");
+        assert!(!tree.contains("Nothing to fix"), "{tree}");
+        assert!(!tree.contains("Reused"), "no grades for nothing: {tree}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    phase the_review_says_it_checked_this_vault;
+    // The review names what it checked as the vault itself, which is true wherever the vault
+    // is kept, not as a device or a browser.
+    {
+        let app = PasswordsWindow::demo();
+        let shared = Rc::clone(&app.core);
+        shared.borrow_mut().screen = Screen::Review;
+        let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
+        let tree = spoken_tree(page.as_ref());
+        assert!(tree.contains("Only the passwords in this vault"), "{tree}");
+        assert!(!tree.contains("on this device"), "{tree}");
+    }
 }
 
-/// The review names what it checked as the vault itself, which is true wherever the vault
-/// is kept, not as a device or a browser.
-#[test]
-fn the_review_says_it_checked_this_vault() {
-    let app = PasswordsWindow::demo();
-    let shared = Rc::clone(&app.core);
-    shared.borrow_mut().screen = Screen::Review;
-    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
-    let tree = spoken_tree(page.as_ref());
-    assert!(tree.contains("Only the passwords in this vault"), "{tree}");
-    assert!(!tree.contains("on this device"), "{tree}");
-}
+tilo_test_env::scenario! {
+    fn the_editor_names_scrolls_and_saves_what_it_shows;
 
-/// The editor names the item's kind in full, as one choice in a list, so a narrow editor
-/// pane never cuts the kinds' names short.
-#[test]
-fn the_editor_names_each_kind_in_full() {
-    let mut app = PasswordsWindow::demo();
-    request(&mut app, Request::NewItem);
-    request(&mut app, Request::SetKind(SecretItemKind::SecureNote));
-    let shared = Rc::clone(&app.core);
-    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
-    let tree = spoken_tree(page.as_ref());
-    assert!(tree.contains("ComboBox"), "{tree}");
-    assert!(tree.contains("Secure note"), "{tree}");
+    phase the_editor_names_each_kind_in_full;
+    // The editor names the item's kind in full, as one choice in a list, so a narrow editor
+    // pane never cuts the kinds' names short.
+    {
+        let mut app = PasswordsWindow::demo();
+        request(&mut app, Request::NewItem);
+        request(&mut app, Request::SetKind(SecretItemKind::SecureNote));
+        let shared = Rc::clone(&app.core);
+        let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
+        let tree = spoken_tree(page.as_ref());
+        assert!(tree.contains("ComboBox"), "{tree}");
+        assert!(tree.contains("Secure note"), "{tree}");
+    }
+
+    phase the_wheel_scrolls_the_editor_to_its_save_button;
+    // The editor is taller than a laptop window: the wheel scrolls it until its Save button is
+    // in view.
+    {
+        let _settled = ui::motion::testing::settled();
+        for width in [960.0, 460.0] {
+            let mut framed = ui::headless::Framed::new(
+                ui::State::new(),
+                PasswordsWindow::demo(),
+                ui::headless::viewport((width, 560.0)),
+                ui::Theme::dark(),
+            );
+            framed.requests.borrow_mut().push(Request::NewItem);
+            framed.settle();
+            let harness = ui::headless::Framed::harness_mut(&mut framed);
+            harness.relayout();
+            harness.relayout();
+            let save = save_button(harness);
+            assert!(
+                save.y1 > 560.0,
+                "at {width} the Save button starts below the window: {save:?}"
+            );
+            harness.click_at(width - 60.0, 90.0);
+            for _ in 0..10 {
+                harness.scroll(0.0, -3.0);
+                harness.relayout();
+            }
+            let after = save_button(harness);
+            assert!(
+                after.y1 <= 560.0,
+                "at {width} the wheel brought Save into view: {after:?}"
+            );
+        }
+    }
+
+    phase a_bare_host_saves_as_its_https_site_and_an_edit_clears_the_complaint;
+    // A bare host is the https site it names, a corrected field drops its complaint at once,
+    // and a saved item is kept, with nothing left writing.
+    {
+        let root = temp_root("bare-host");
+        let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+        request(&mut app, Request::NewItem);
+        {
+            let mut core = app.core_mut();
+            core.set_draft(DraftField::Name, "Forge");
+            core.set_draft(DraftField::Origin, "not a host");
+            core.set_draft(DraftField::Password, "correct horse battery staple");
+        }
+        request(&mut app, Request::Save);
+        assert!(matches!(
+            app.core().draft_error,
+            Some((DraftField::Origin, ref message)) if message.starts_with("not a host is not a web address")
+        ));
+        app.core_mut().set_draft(DraftField::Origin, "git.tilo.so");
+        assert!(
+            app.core().draft_error.is_none(),
+            "the corrected field no longer shows the old complaint"
+        );
+        request(&mut app, Request::Save);
+        assert_eq!(app.acknowledgement().as_deref(), Some("Saved Forge"));
+        let stored = app.core().model.as_ref().unwrap().items();
+        assert_eq!(stored.len(), 1);
+        assert!(
+            stored[0].origins.contains("https://git.tilo.so"),
+            "{:?}",
+            stored[0].origins
+        );
+        assert!(
+            !app.core().writing,
+            "a saved item is kept, not left writing"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 fn save_button(harness: &ui::headless::FrameHarness) -> vello::kurbo::Rect {
@@ -601,80 +772,6 @@ fn save_button(harness: &ui::headless::FrameHarness) -> vello::kurbo::Rect {
         .find(|(id, _)| id.contains("passwords.save"))
         .map(|(_, rect)| rect)
         .expect("the editor has a Save button")
-}
-
-/// The editor is taller than a laptop window: the wheel scrolls it until its Save button is
-/// in view.
-#[test]
-fn the_wheel_scrolls_the_editor_to_its_save_button() {
-    let _settled = ui::motion::testing::settled();
-    for width in [960.0, 460.0] {
-        let mut framed = ui::headless::Framed::new(
-            ui::State::new(),
-            PasswordsWindow::demo(),
-            ui::headless::viewport((width, 560.0)),
-            ui::Theme::dark(),
-        );
-        framed.requests.borrow_mut().push(Request::NewItem);
-        framed.settle();
-        let harness = ui::headless::Framed::harness_mut(&mut framed);
-        harness.relayout();
-        harness.relayout();
-        let save = save_button(harness);
-        assert!(
-            save.y1 > 560.0,
-            "at {width} the Save button starts below the window: {save:?}"
-        );
-        harness.click_at(width - 60.0, 90.0);
-        for _ in 0..10 {
-            harness.scroll(0.0, -3.0);
-            harness.relayout();
-        }
-        let after = save_button(harness);
-        assert!(
-            after.y1 <= 560.0,
-            "at {width} the wheel brought Save into view: {after:?}"
-        );
-    }
-}
-
-/// A bare host is the https site it names, a corrected field drops its complaint at once,
-/// and a saved item is kept, with nothing left writing.
-#[test]
-fn a_bare_host_saves_as_its_https_site_and_an_edit_clears_the_complaint() {
-    let root = temp_root("bare-host");
-    let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
-    request(&mut app, Request::NewItem);
-    {
-        let mut core = app.core_mut();
-        core.set_draft(DraftField::Name, "Forge");
-        core.set_draft(DraftField::Origin, "not a host");
-        core.set_draft(DraftField::Password, "correct horse battery staple");
-    }
-    request(&mut app, Request::Save);
-    assert!(matches!(
-        app.core().draft_error,
-        Some((DraftField::Origin, ref message)) if message.starts_with("not a host is not a web address")
-    ));
-    app.core_mut().set_draft(DraftField::Origin, "git.tilo.so");
-    assert!(
-        app.core().draft_error.is_none(),
-        "the corrected field no longer shows the old complaint"
-    );
-    request(&mut app, Request::Save);
-    assert_eq!(app.acknowledgement().as_deref(), Some("Saved Forge"));
-    let stored = app.core().model.as_ref().unwrap().items();
-    assert_eq!(stored.len(), 1);
-    assert!(
-        stored[0].origins.contains("https://git.tilo.so"),
-        "{:?}",
-        stored[0].origins
-    );
-    assert!(
-        !app.core().writing,
-        "a saved item is kept, not left writing"
-    );
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -835,77 +932,4 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         assert!(restored.core().backup_password.is_empty());
         let _ = std::fs::remove_dir_all(base);
     }
-}
-
-#[test]
-fn every_capture_scenario_stages_on_the_fixture_vault() {
-    for scenario in SCENARIOS.iter().copied().map(Some).chain([None]) {
-        let root = temp_root("capture");
-        let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
-        app.stager()(scenario);
-        app.settle();
-        let core = app.core();
-        assert!(
-            core.model.is_none(),
-            "{scenario:?} never shows a real vault"
-        );
-        let expected = match scenario {
-            Some("editor" | "new-item" | "delete") => Screen::Editor,
-            Some("review") => Screen::Review,
-            Some("app-access") => Screen::AppAccess,
-            Some("transfer" | "import" | "export" | "backup") => Screen::Transfer,
-            _ => Screen::Vault,
-        };
-        assert_eq!(core.screen, expected, "{scenario:?}");
-        drop(core);
-        let _ = std::fs::remove_dir_all(root);
-    }
-}
-
-#[test]
-fn hosted_by_the_window_bar_the_items_actions_are_the_bars() {
-    ui::window_toolbar::set_hosted(true);
-    let mut app = PasswordsWindow::demo();
-    app.settle();
-    let favorite = {
-        let core = app.core.borrow();
-        crate::vault::is_favorite(core.selected_item().expect("the demo shows an item"))
-    };
-    let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
-    let ids: Vec<&str> = toolbar
-        .actions
-        .iter()
-        .map(|action| action.id.as_str())
-        .collect();
-    assert_eq!(ids, [NEW_ITEM, COPY_SECRET, EDIT_ITEM, FAVORITE]);
-
-    let page = {
-        let shared = Rc::clone(&app.core);
-        crate::pages::content(&shared.borrow(), &shared, &app.requests, true)
-    };
-    for id in ["passwords.copy", "passwords.edit", "passwords.favorite"] {
-        assert!(
-            ui::widget::find_test_id(page.as_ref(), id).is_none(),
-            "the item's page draws no {id} of its own"
-        );
-    }
-
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-        id: FAVORITE.into(),
-    });
-    app.settle();
-    let now = {
-        let core = app.core.borrow();
-        crate::vault::is_favorite(core.selected_item().expect("the item is still shown"))
-    };
-    assert_ne!(now, favorite, "the bar's star toggles the item's favorite");
-    let star = ui::window_toolbar::declared()
-        .and_then(|toolbar| {
-            toolbar
-                .actions
-                .into_iter()
-                .find(|action| action.id == FAVORITE)
-        })
-        .expect("the bar still offers the star");
-    assert_eq!(star.on, now, "the star shows the item's state");
 }

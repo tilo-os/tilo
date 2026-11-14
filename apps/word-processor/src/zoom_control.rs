@@ -72,9 +72,10 @@ impl ZoomControl {
 mod tests {
     use super::*;
 
-    #[test]
-    fn zoom_scale_is_clamped_about_a_fixed_anchor_and_converts_back() {
-        // Phase: scale_is_clamped_and_anchor_is_fixed.
+    tilo_test_env::scenario! {
+        fn zoom_scale_is_clamped_about_a_fixed_anchor_and_converts_back;
+
+        phase scale_is_clamped_and_anchor_is_fixed;
         {
             let mut zoom = ZoomControl::new();
             zoom.set_anchor(Point::new(50.0, 20.0));
@@ -88,7 +89,7 @@ mod tests {
             assert_eq!(zoom.factor(), MIN);
         }
 
-        // Phase: coordinate_conversion_round_trips.
+        phase coordinate_conversion_round_trips;
         {
             let mut zoom = ZoomControl::new();
             zoom.set_anchor(Point::new(100.0, 0.0));

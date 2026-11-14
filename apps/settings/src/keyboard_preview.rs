@@ -377,80 +377,133 @@ fn finish(
 mod tests {
     use super::*;
     use winit::keyboard::{KeyCode, PhysicalKey};
-    #[test]
-    fn the_compact_drawing_is_the_main_block_with_arrows_and_stays_inside_its_width() {
-        let geometry = pc_keyboard_geometry::models().unwrap();
-        let (width, keys) = compact_geometry(&geometry["pc105"]);
-        for gone in ["PRSC", "PGUP", "NMLK", "KP5", "RCTL", "MENU"] {
-            assert!(keys.iter().all(|key| key.name != gone), "{gone} stays out");
-        }
-        for kept in ["ESC", "AD06", "SPCE", "LEFT", "UP", "DOWN", "RGHT"] {
-            assert!(keys.iter().any(|key| key.name == kept), "{kept} stays in");
-        }
-        assert!(
-            keys.iter()
-                .flat_map(|key| key.outline.iter())
-                .all(|[x, _]| *x <= width - 20.0),
-            "every key sits inside the compact width"
-        );
-        assert!(!chassis_is_compact(Some(3)) && chassis_is_compact(Some(10)));
-        assert!(chassis_is_compact(None), "unknown is a laptop");
-        let map = map_for_form("de", "pc105", String::new(), Some(""), true).unwrap();
-        assert!(map.inspection_keys().iter().any(|(name, _)| name == "AD06"));
-    }
+    tilo_test_env::scenario! {
+        fn a_keyboard_drawing_keeps_its_keys_in_place_and_inside_its_bounds;
 
-    #[test]
-    fn the_drawing_is_cut_to_its_keys() {
-        let geometry = pc_keyboard_geometry::models().unwrap();
-        let (size, keys) = tight(compact_geometry(&geometry["pc105"]).1);
-        let points: Vec<[f64; 2]> = keys.iter().flat_map(|key| key.outline.clone()).collect();
-        let min_x = points.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
-        let max_y = points.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
-        assert!((min_x - 1.5).abs() < 1e-9, "{min_x}");
-        assert!(
-            (size.height - max_y - 1.5).abs() < 1e-9,
-            "{max_y} in {}",
-            size.height
-        );
-        assert!(
-            size.height < 140.0,
-            "the 180-unit model's margins are gone: {}",
-            size.height
-        );
-    }
-
-    #[test]
-    fn jis_and_korean_models_preserve_the_native_language_key_positions() {
-        let geometry = pc_keyboard_geometry::models().unwrap();
-        for (source, model, positions) in [
-            (
-                "jp",
-                "jp106",
-                vec![
-                    ("AE13", KeyCode::IntlYen),
-                    ("AB11", KeyCode::IntlRo),
-                    ("MUHE", KeyCode::NonConvert),
-                    ("HENK", KeyCode::Convert),
-                    ("HKTG", KeyCode::KanaMode),
-                ],
-            ),
-            (
-                "kr",
-                "kr106",
-                vec![("HNGL", KeyCode::Lang1), ("HJCV", KeyCode::Lang2)],
-            ),
-        ] {
-            assert_eq!(geometry[model].keys.len(), 106);
-            let source = settings_store::hardware::KeyboardInputSource::parse(source).unwrap();
-            let keys = compile(&source, model, &geometry[model].keys, Some("")).unwrap();
-            for (name, physical) in positions {
-                let key = keys.iter().find(|key| key.name == name).unwrap();
-                assert_eq!(key.physical, PhysicalKey::Code(physical));
-                assert!(
-                    !key.levels.is_empty(),
-                    "{model}/{name} must have native symbols"
-                );
+        phase the_compact_drawing_is_the_main_block_with_arrows_and_stays_inside_its_width;
+        {
+            let geometry = pc_keyboard_geometry::models().unwrap();
+            let (width, keys) = compact_geometry(&geometry["pc105"]);
+            for gone in ["PRSC", "PGUP", "NMLK", "KP5", "RCTL", "MENU"] {
+                assert!(keys.iter().all(|key| key.name != gone), "{gone} stays out");
             }
+            for kept in ["ESC", "AD06", "SPCE", "LEFT", "UP", "DOWN", "RGHT"] {
+                assert!(keys.iter().any(|key| key.name == kept), "{kept} stays in");
+            }
+            assert!(
+                keys.iter()
+                    .flat_map(|key| key.outline.iter())
+                    .all(|[x, _]| *x <= width - 20.0),
+                "every key sits inside the compact width"
+            );
+            assert!(!chassis_is_compact(Some(3)) && chassis_is_compact(Some(10)));
+            assert!(chassis_is_compact(None), "unknown is a laptop");
+            let map = map_for_form("de", "pc105", String::new(), Some(""), true).unwrap();
+            assert!(map.inspection_keys().iter().any(|(name, _)| name == "AD06"));
+        }
+
+        phase the_drawing_is_cut_to_its_keys;
+        {
+            let geometry = pc_keyboard_geometry::models().unwrap();
+            let (size, keys) = tight(compact_geometry(&geometry["pc105"]).1);
+            let points: Vec<[f64; 2]> = keys.iter().flat_map(|key| key.outline.clone()).collect();
+            let min_x = points.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+            let max_y = points.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
+            assert!((min_x - 1.5).abs() < 1e-9, "{min_x}");
+            assert!(
+                (size.height - max_y - 1.5).abs() < 1e-9,
+                "{max_y} in {}",
+                size.height
+            );
+            assert!(
+                size.height < 140.0,
+                "the 180-unit model's margins are gone: {}",
+                size.height
+            );
+        }
+
+        phase jis_and_korean_models_preserve_the_native_language_key_positions;
+        {
+            let geometry = pc_keyboard_geometry::models().unwrap();
+            for (source, model, positions) in [
+                (
+                    "jp",
+                    "jp106",
+                    vec![
+                        ("AE13", KeyCode::IntlYen),
+                        ("AB11", KeyCode::IntlRo),
+                        ("MUHE", KeyCode::NonConvert),
+                        ("HENK", KeyCode::Convert),
+                        ("HKTG", KeyCode::KanaMode),
+                    ],
+                ),
+                (
+                    "kr",
+                    "kr106",
+                    vec![("HNGL", KeyCode::Lang1), ("HJCV", KeyCode::Lang2)],
+                ),
+            ] {
+                assert_eq!(geometry[model].keys.len(), 106);
+                let source = settings_store::hardware::KeyboardInputSource::parse(source).unwrap();
+                let keys = compile(&source, model, &geometry[model].keys, Some("")).unwrap();
+                for (name, physical) in positions {
+                    let key = keys.iter().find(|key| key.name == name).unwrap();
+                    assert_eq!(key.physical, PhysicalKey::Code(physical));
+                    assert!(
+                        !key.levels.is_empty(),
+                        "{model}/{name} must have native symbols"
+                    );
+                }
+            }
+        }
+
+        phase installed_xkb_legends_keep_physical_positions_across_layouts_and_models;
+        {
+            let geometry = pc_keyboard_geometry::models().unwrap();
+            assert_eq!(geometry["pc104"].keys.len(), 104);
+            assert_eq!(geometry["pc105"].keys.len(), 105);
+            assert!(!geometry["pc104"].keys.iter().any(|key| key.name == "LSGT"));
+            assert_eq!(
+                geometry["pc105"]
+                    .keys
+                    .iter()
+                    .find(|key| key.name == "RTRN")
+                    .unwrap()
+                    .outline
+                    .len(),
+                6
+            );
+            let at = |source: &str, name: &str| {
+                let source = settings_store::hardware::KeyboardInputSource::parse(source).unwrap();
+                compile(&source, "pc105", &geometry["pc105"].keys, Some(""))
+                    .unwrap()
+                    .into_iter()
+                    .find(|key| key.name == name)
+                    .unwrap()
+            };
+            let us = at("us", "AD06");
+            let de = at("de", "AD06");
+            assert_eq!(us.physical, PhysicalKey::Code(KeyCode::KeyY));
+            assert_eq!(de.physical, us.physical);
+            assert_eq!(us.levels.first().map(String::as_str), Some("y"));
+            assert_eq!(de.levels.first().map(String::as_str), Some("z"));
+            let dead = at("de", "AE12");
+            assert_eq!(dead.levels.first().map(String::as_str), Some("◌́"));
+            let greek = at("gr", "AD06");
+            assert_eq!(greek.physical, us.physical);
+            assert_eq!(greek.levels.first().map(String::as_str), Some("υ"));
+            let dvorak = at("us:dvorak", "AD01");
+            assert_eq!(dvorak.physical, PhysicalKey::Code(KeyCode::KeyQ));
+            assert_eq!(dvorak.levels.first().map(String::as_str), Some("'"));
+            let legend = |source: &str, name: &str| at(source, name).levels.first().cloned();
+            assert_eq!(legend("de", "BKSP").as_deref(), Some("Rück"));
+            assert_eq!(legend("de", "LCTL").as_deref(), Some("Strg"));
+            assert_eq!(legend("de", "LFSH").as_deref(), Some("Umschalt"));
+            assert_eq!(legend("us", "BKSP").as_deref(), Some("Bksp"));
+            assert_eq!(legend("us", "LCTL").as_deref(), Some("Ctrl"));
+            assert_eq!(legend("us", "CAPS").as_deref(), Some("Caps"));
+            assert!(map_with_options("ime/rime", "pc105", String::new(), Some("")).is_err());
+            assert!(map_with_options("us", "../../attacker", String::new(), Some("")).is_err());
         }
     }
 
@@ -476,55 +529,6 @@ mod tests {
             observed > 100,
             "the proof must observe the installed full catalogue"
         );
-    }
-
-    #[test]
-    fn installed_xkb_legends_keep_physical_positions_across_layouts_and_models() {
-        let geometry = pc_keyboard_geometry::models().unwrap();
-        assert_eq!(geometry["pc104"].keys.len(), 104);
-        assert_eq!(geometry["pc105"].keys.len(), 105);
-        assert!(!geometry["pc104"].keys.iter().any(|key| key.name == "LSGT"));
-        assert_eq!(
-            geometry["pc105"]
-                .keys
-                .iter()
-                .find(|key| key.name == "RTRN")
-                .unwrap()
-                .outline
-                .len(),
-            6
-        );
-        let at = |source: &str, name: &str| {
-            let source = settings_store::hardware::KeyboardInputSource::parse(source).unwrap();
-            compile(&source, "pc105", &geometry["pc105"].keys, Some(""))
-                .unwrap()
-                .into_iter()
-                .find(|key| key.name == name)
-                .unwrap()
-        };
-        let us = at("us", "AD06");
-        let de = at("de", "AD06");
-        assert_eq!(us.physical, PhysicalKey::Code(KeyCode::KeyY));
-        assert_eq!(de.physical, us.physical);
-        assert_eq!(us.levels.first().map(String::as_str), Some("y"));
-        assert_eq!(de.levels.first().map(String::as_str), Some("z"));
-        let dead = at("de", "AE12");
-        assert_eq!(dead.levels.first().map(String::as_str), Some("◌́"));
-        let greek = at("gr", "AD06");
-        assert_eq!(greek.physical, us.physical);
-        assert_eq!(greek.levels.first().map(String::as_str), Some("υ"));
-        let dvorak = at("us:dvorak", "AD01");
-        assert_eq!(dvorak.physical, PhysicalKey::Code(KeyCode::KeyQ));
-        assert_eq!(dvorak.levels.first().map(String::as_str), Some("'"));
-        let legend = |source: &str, name: &str| at(source, name).levels.first().cloned();
-        assert_eq!(legend("de", "BKSP").as_deref(), Some("Rück"));
-        assert_eq!(legend("de", "LCTL").as_deref(), Some("Strg"));
-        assert_eq!(legend("de", "LFSH").as_deref(), Some("Umschalt"));
-        assert_eq!(legend("us", "BKSP").as_deref(), Some("Bksp"));
-        assert_eq!(legend("us", "LCTL").as_deref(), Some("Ctrl"));
-        assert_eq!(legend("us", "CAPS").as_deref(), Some("Caps"));
-        assert!(map_with_options("ime/rime", "pc105", String::new(), Some("")).is_err());
-        assert!(map_with_options("us", "../../attacker", String::new(), Some("")).is_err());
     }
 }
 

@@ -499,6 +499,25 @@ impl FabricRuntime {
             .collect()
     }
 
+    /// The person's other devices among `heard`, the endpoints heard on this
+    /// device's local network: each that proved a certificate of theirs to
+    /// this session, or whose record the fabric holds. Anyone else heard
+    /// there is no device of the person's, and is named nowhere.
+    pub fn nearby_device_ids(&self, heard: &BTreeSet<EndpointId>) -> BTreeSet<DeviceId> {
+        let local = self.local.as_ref().map(|local| &local.device);
+        heard
+            .iter()
+            .filter_map(|peer| {
+                self.device_behind(*peer).or_else(|| {
+                    DeviceId::new(hex::encode(peer.as_bytes()))
+                        .ok()
+                        .filter(|device| self.fabric.snapshots().contains_key(device))
+                })
+            })
+            .filter(|device| Some(device) != local)
+            .collect()
+    }
+
     /// This device's fabric id and label, once it is a certified device of
     /// the person's.
     pub fn local_identity(&self) -> Option<(DeviceId, String)> {
@@ -687,6 +706,32 @@ mod tests {
 
     fn bytes(envelope: &PersonalFabricActionEnvelope) -> Vec<u8> {
         postcard::to_allocvec(envelope).expect("an encoded envelope")
+    }
+
+    /// What is heard on the local network names only the person's devices:
+    /// one that proved its certificate here, and one whose record the fabric
+    /// kept from before; a stranger's endpoint heard beside them is nobody's.
+    #[test]
+    fn only_the_persons_devices_heard_on_the_local_network_are_nearby() {
+        let mut runtime = runtime();
+        let (proved, kept, stranger) = (endpoint(2), endpoint(3), endpoint(4));
+        runtime.sibling(proved, &[cert(proved, "Studio")], &[]);
+        runtime.sibling(kept, &[cert(kept, "Phone")], &[]);
+        runtime
+            .snapshot(kept, &announcement(&device_at(kept), "Phone", 5))
+            .expect("its own record");
+        runtime.sibling_left(kept);
+        let heard = BTreeSet::from([proved, kept, stranger]);
+        assert_eq!(
+            runtime.nearby_device_ids(&heard),
+            BTreeSet::from([device_at(proved), device_at(kept)]),
+        );
+        assert!(
+            runtime
+                .nearby_device_ids(&BTreeSet::from([stranger]))
+                .is_empty(),
+            "an endpoint no device of the person's proved is not named"
+        );
     }
 
     #[test]

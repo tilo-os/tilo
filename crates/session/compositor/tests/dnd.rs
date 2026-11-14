@@ -814,3 +814,137 @@ delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
 delegate_noop!(Seen: ignore XdgToplevel);
 delegate_noop!(Seen: ignore WlDataDeviceManager);
+
+/// Words dragged out of a window, as an editor drags a selection.
+const WORDS: &[u8] = b"carried across";
+const TEXT: &str = "text/plain;charset=utf-8";
+
+tilo_test_env::scenario! {
+    /// A drag that leaves for another device, and one that arrives from one.
+    fn a_drag_is_carried_between_devices;
+
+    phase a_drag_carried_to_another_device_is_read_and_ends_here_dropped_nowhere;
+    {
+        let log = Rc::new(RefCell::new(DropLog::default()));
+        let (mut compositor, mut client) = setup(&log);
+        assert_eq!(compositor.dragged_formats(), None, "no drag runs yet");
+
+        input(
+            &mut compositor,
+            InputEvent::PointerMotion { x: 300.0, y: 240.0 },
+        );
+        input(
+            &mut compositor,
+            InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true,
+            },
+        );
+        pump(&mut compositor, &mut client, |_, client| {
+            client.seen.pressed.is_some()
+        });
+        let qh = client.queue.handle();
+        let source = client
+            .seen
+            .data_manager
+            .as_ref()
+            .unwrap()
+            .create_data_source(&qh, ());
+        source.offer(TEXT.into());
+        source.set_actions(DndAction::Copy);
+        client.seen.payload = WORDS.to_vec();
+        client.data_device.as_ref().unwrap().start_drag(
+            Some(&source),
+            client.surface.as_ref().unwrap(),
+            None,
+            client.seen.pressed.unwrap(),
+        );
+        settle(&mut compositor, &mut client);
+        input(
+            &mut compositor,
+            InputEvent::PointerMotion { x: 310.0, y: 245.0 },
+        );
+        settle(&mut compositor, &mut client);
+        assert_eq!(compositor.dragged_formats(), Some(vec![TEXT.to_owned()]));
+
+        // What crosses is read from the source while the drag still runs.
+        let mut pull = compositor.pull_drag(TEXT).unwrap();
+        let mut read = None;
+        pump(&mut compositor, &mut client, |_, _| {
+            if let tilo_compositor::clipboard_history::Pulled::Ready(bytes) = pull.drain() {
+                read = Some(bytes);
+            }
+            read.is_some()
+        });
+        assert_eq!(read.as_deref(), Some(WORDS));
+
+        // The drag went on on the other device: here it ends over the window it was over, dropped
+        // nowhere, and its source hears it was cancelled.
+        assert!(compositor.cancel_drag().unwrap());
+        pump(&mut compositor, &mut client, |_, client| {
+            client
+                .seen
+                .source_events
+                .iter()
+                .any(|event| event == "cancelled")
+        });
+        assert!(!client.seen.dropped, "the window under it took no drop");
+        assert_eq!(compositor.dragged_formats(), None);
+        input(
+            &mut compositor,
+            InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
+            },
+        );
+        settle(&mut compositor, &mut client);
+        assert!(!client.seen.dropped, "the release after it drops nothing");
+    }
+
+    phase a_drag_carried_here_from_another_device_drops_where_the_release_comes;
+    {
+        let log = Rc::new(RefCell::new(DropLog::default()));
+        let (mut compositor, mut client) = setup(&log);
+        // The pointer arrived from the other device with the button held there: nothing here was
+        // pressed.
+        input(
+            &mut compositor,
+            InputEvent::PointerMotion { x: 100.0, y: 100.0 },
+        );
+        assert!(
+            compositor
+                .carry_drag_here(vec![(URI_LIST.to_owned(), WORDS.to_vec())])
+                .unwrap()
+        );
+        input(
+            &mut compositor,
+            InputEvent::PointerMotion { x: 300.0, y: 240.0 },
+        );
+        pump(&mut compositor, &mut client, |_, client| {
+            client.seen.entered.is_some()
+        });
+        input(
+            &mut compositor,
+            InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
+            },
+        );
+        pump(&mut compositor, &mut client, |_, client| {
+            client.seen.dropped
+        });
+        let offer = client.seen.entered.clone().unwrap();
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        offer.receive(URI_LIST.into(), writer.as_fd());
+        drop(writer);
+        settle(&mut compositor, &mut client);
+        let mut received = Vec::new();
+        reader.read_to_end(&mut received).unwrap();
+        assert_eq!(received, WORDS);
+        assert_eq!(
+            log.borrow().buttons,
+            Vec::<(u32, bool)>::new(),
+            "no app here started it, so none hears its button"
+        );
+    }
+}

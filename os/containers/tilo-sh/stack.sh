@@ -46,7 +46,8 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
   stack.sh logs NAME     a service's log (relay, tls, api, web, discord, releases, mail)
   stack.sh mail          the mail the door sent (wait-list confirmations,
                          invitations), with the links in each
-  stack.sh owner [KEY]   declare the person with user public key KEY an owner
+  stack.sh owner [KEY] [--name NAME]
+                         declare the person with user public key KEY an owner
                          of the Lounge: the door, which takes people by
                          invitation as production's does, lets them in, and
                          the workspace makes them an administrator; they
@@ -56,10 +57,11 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          key it then approves: an export TILO_API_KEY=… line
                          in $state/operator.env, with which
                          tilo members invite -w Lounge prints an invite link.
-                         It then prints a link to open in the browser you use
-                         for the Lounge, which makes that person an owner too.
-                         `up` declares the operator's identity on its own
-                         (TILO_SH_OWNER=0 not)
+                         The Lounge names them by the identity's own name, or
+                         by --name when given. It then prints a link to open in
+                         the browser you use for the Lounge, which makes that
+                         person an owner too. `up` declares the operator's
+                         identity on its own (TILO_SH_OWNER=0 not)
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -93,6 +95,10 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   mail      the mail sink the door's mail goes to (production: Resend),
             http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
+
+A running stack belongs to the checkout that started it: up, down and restart
+from another checkout refuse (TILO_SH_TAKE_OVER=1 takes it over). Give each
+checkout its own TILO_SH_STATE and TILO_SH_PORT_BASE instead.
 
 Natively: the programs are t's lounge-gate build (the release's code and
 opt-level without its whole-program link) in ./target/lounge-gate, built by
@@ -215,6 +221,21 @@ lock_state() {
   exec 9>"$state/lock"
   flock -n 9 || die "another stack.sh is working on $state (its pid: $(cat "$state/lock.pid" 2>/dev/null || echo unknown)); wait for it, or give this one its own TILO_SH_STATE and TILO_SH_PORT_BASE"
   echo $$ > "$state/lock.pid"
+  claim_state
+}
+# claim_state: a running stack belongs to the checkout that started it. Another
+# checkout stopping or restarting it took someone's stack down under them (an
+# agent that forgot its own TILO_SH_STATE stopped the one a person was using),
+# so that asks for TILO_SH_TAKE_OVER=1; a stack with nothing running is anyone's.
+claim_state() {
+  local owner svc
+  owner=$(cat "$state/checkout" 2>/dev/null || true)
+  if [[ -n $owner && $owner != "$repo" && ${TILO_SH_TAKE_OVER:-0} != 1 ]]; then
+    for svc in tls relay api web; do
+      running "$svc" && die "the stack in $state runs from $owner, not this checkout ($repo): give this one its own TILO_SH_STATE and TILO_SH_PORT_BASE, or TILO_SH_TAKE_OVER=1 to take that one over"
+    done
+  fi
+  printf '%s\n' "$repo" > "$state/checkout"
 }
 running() {
   if [[ $mode == native ]]; then
@@ -450,34 +471,48 @@ start_mail() {
   done
 }
 
-# owner [KEY] [--no-link]: declare the person whose user public key (hex) is
-# KEY an owner of the Lounge: its governance holds them as an administrator by
-# their root from now on, so the door lets them in without an invitation and a
-# key of theirs reaches the Lounge before any device of theirs joined. On a fresh
-# stack nobody is a member yet, so this is how the first person gets in to
-# invite the others. The workspace answers at once, or says why it did not.
+# owner [KEY] [--name NAME] [--no-link]: declare the person whose user public
+# key (hex) is KEY an owner of the Lounge: its governance holds them as an
+# administrator by their root from now on, so the door lets them in without an
+# invitation and a key of theirs reaches the Lounge before any device of theirs
+# joined. On a fresh stack nobody is a member yet, so this is how the first
+# person gets in to invite the others. The workspace answers at once, or says
+# why it did not.
 #
-# Without KEY it declares the identity this computer's tilo command holds, and
-# then prints a link that makes the browser someone opens it in an owner too:
-# `--no-link` stops after the identity, since `up` runs this with nobody there
-# to open one.
+# Without KEY it declares the identity this computer's tilo command holds,
+# under the name that identity goes by, and then prints a link that makes the
+# browser someone opens it in an owner too: `--no-link` stops after the
+# identity, since `up` runs this with nobody there to open one.
 declare_owner() {
   local key=''
+  local name=''
   local linked=1
-  local arg
-  for arg in "$@"; do
-    case $arg in
+  while [[ $# -gt 0 ]]; do
+    case $1 in
       --no-link) linked='' ;;
-      *) key=$arg ;;
+      --name)
+        [[ $# -ge 2 ]] || die 'owner --name: the name the person goes by'
+        name=$2
+        shift
+        ;;
+      *) key=$1 ;;
     esac
+    shift
   done
   local tilo=''
   if [[ -z $key ]]; then
+    local identity
     tilo=$(find_tilo)
-    key=$("$tilo" login --new-identity) || die "the tilo command made no identity ($tilo login --new-identity)"
+    if identity=$("$tilo" login --new-identity --json 2>/dev/null); then
+      key=$(printf '%s' "$identity" | json_field user_public_key)
+      [[ -n $name ]] || name=$(printf '%s' "$identity" | json_field name)
+    else
+      # A tilo from before it answered JSON declares the key alone.
+      key=$("$tilo" login --new-identity) || die "the tilo command made no identity ($tilo login --new-identity)"
+    fi
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab that opened the site names it in its localStorage key tilo-own-workspace-named:ORIGIN:KEY)'
-  declare_owner_at_lounge "$key"
+  declare_owner_at_lounge "$key" "$name"
   [[ -n $tilo ]] || return 0
   # The identity approves its own key, as its Tilo on the web would: the
   # door lets it in now that the workspace counts it an owner.
@@ -491,15 +526,24 @@ declare_owner() {
   [[ -z $linked ]] || declare_owner_by_link
 }
 
+# The one field FIELD of the JSON object on standard input.
+json_field() {
+  python3 -c 'import json, sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$1"
+}
+
 # The running Lounge declares KEY an owner, as production's operator does: its
-# governance holds them as an administrator, and its door lets them in.
+# governance holds them as an administrator, and its door lets them in. NAME,
+# when the stack knows it, is how the Lounge names them from then on.
 declare_owner_at_lounge() {
   local key=$1
+  local name=${2:-}
   local socket=$state/relay/lounge/operator.sock
+  local -a named=()
+  [[ -z $name ]] || named=(--name "$name")
   [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
-  python3 -I "$repo/os/containers/tilo-lounge/declare-owner" "$socket" "$key" \
+  python3 -I "$repo/os/containers/tilo-lounge/declare-owner" "$socket" "$key" "${named[@]}" \
     || die "the Lounge did not make $key an owner"
-  say "$key is an owner of the Lounge: an administrator from now on, whom its door lets in"
+  say "$key is an owner of the Lounge: an administrator from now on, whom its door lets in${name:+ as $name}"
 }
 
 # How long `owner` waits for its link to be opened.

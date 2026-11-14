@@ -94,7 +94,7 @@
         },
         {
           "seconds": 3.515695987,
-          "test": "perf_interaction$interaction_costs"
+          "test": "it$perf_interaction::interaction_costs"
         },
         {
           "seconds": 1.974019456,

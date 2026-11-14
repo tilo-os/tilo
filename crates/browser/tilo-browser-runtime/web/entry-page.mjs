@@ -117,15 +117,15 @@ function card(text, choices, name) {
   });
 }
 
-/** What each role lets someone do, in the words the desktop's role chooser
- * uses (`workspace-settings-role-<role>-preview`), so an invitation says what
- * it gives, not only its name. */
+/** What each role lets someone do, in the desktop role chooser's words
+ * (`workspace-settings-role-<role>-preview`), so an invitation says what it
+ * gives, not only its name. */
 const ROLE_WORDS = {
-  owner: 'you can manage people, permissions and settings',
-  moderator: 'you can edit shared work and remove other people’s messages',
-  editor: 'you can view, comment on and edit shared work',
-  commenter: 'you can add comments, but not edit shared work',
-  viewer: 'you can view shared work, but not comment or edit it',
+  owner: 'Can manage people, permissions, and workspace settings.',
+  moderator: 'Can edit shared work and remove other people’s messages.',
+  editor: 'Can view, comment on, and edit shared work.',
+  commenter: 'Can view shared work and add comments, but cannot edit it.',
+  viewer: 'Can view shared work, but cannot comment or edit it.',
 };
 
 /** The colour an initial is drawn in on `background`, `#rrggbb`: black or
@@ -138,66 +138,69 @@ function readableOn(background) {
   return luminance > 0.179 ? '#101114' : '#ffffff';
 }
 
-/** What an invitation offers, before the person joins: who it is from, the
- * workspace it is for and how many people are in it, and what the role lets
+const element = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+
+/** What an invitation offers, before the person joins: the workspace it is
+ * for, who it is from and how many people are in it, and what the role lets
  * them do. `inviterColour` is the presence colour of who made it, where the
  * page has one for them. Resolves to whether they join. */
 function invitationCard(offer, inviterColour) {
   return new Promise(resolve => {
-    const form = document.createElement('form');
-    form.className = 'tilo-entry-card tilo-invite';
+    const form = element('form', 'tilo-entry-card tilo-invite');
     form.dataset.card = 'invite';
-    const inviter = offer.inviter?.name || 'Someone';
-    const who = document.createElement('div');
-    who.className = 'tilo-invite-who';
-    // The picture a person sets is not the workspace's to hand to someone
-    // who is not in it yet; their initial is, as the desktop draws who it
-    // has no picture of — in the colour presence gives them everywhere else
-    // the desktop shows them.
-    const face = document.createElement('span');
-    face.className = 'tilo-invite-face';
-    face.setAttribute('aria-hidden', 'true');
-    face.textContent = [...inviter][0]?.toUpperCase() ?? '?';
-    if (typeof inviterColour === 'string' && /^#[0-9a-f]{6}$/i.test(inviterColour)) {
-      face.style.background = inviterColour;
-      face.style.color = readableOn(inviterColour);
+    form.setAttribute('role', 'dialog');
+    form.setAttribute('aria-labelledby', 'tilo-invite-workspace');
+    // One sentence, read top to bottom: who asked, then the workspace as
+    // the card's heading.
+    const from = element('p', 'tilo-invite-from');
+    const inviter = typeof offer.inviter?.name === 'string' ? offer.inviter.name.trim() : '';
+    if (inviter) {
+      // The picture a person sets is not the workspace's to hand to someone
+      // who is not in it yet; their initial is, as the desktop draws who it
+      // has no picture of, in the colour presence gives them everywhere
+      // else the desktop shows them.
+      const face = element('span', 'tilo-invite-face', [...inviter][0].toUpperCase());
+      face.setAttribute('aria-hidden', 'true');
+      if (typeof inviterColour === 'string' && /^#[0-9a-f]{6}$/i.test(inviterColour)) {
+        face.style.background = inviterColour;
+        face.style.color = readableOn(inviterColour);
+      }
+      const says = element('span', 'tilo-invite-says');
+      says.append(element('strong', 'tilo-invite-name', inviter), ' invited you to');
+      from.append(face, says);
+    } else {
+      from.append('You’re invited to');
     }
-    const name = document.createElement('span');
-    name.className = 'tilo-invite-name';
-    name.textContent = inviter;
-    who.append(face, name);
-    const lead = document.createElement('p');
-    lead.className = 'tilo-invite-lead';
-    lead.textContent = 'invites you to';
-    const workspace = document.createElement('p');
-    workspace.className = 'tilo-invite-workspace';
-    workspace.textContent = offer.workspaceName;
-    const place = document.createElement('div');
-    place.className = 'tilo-invite-place';
-    place.append(workspace);
+    const workspace = element('h2', 'tilo-invite-workspace', offer.workspaceName);
+    workspace.id = 'tilo-invite-workspace';
+    const head = element('div', 'tilo-invite-head');
+    head.append(from, workspace);
     if (Number.isInteger(offer.members) && offer.members > 0) {
-      const people = document.createElement('p');
-      people.className = 'tilo-invite-people';
-      people.textContent = offer.members === 1 ? '1 person' : `${offer.members} people`;
-      place.append(people);
+      head.append(element('p', 'tilo-invite-people', offer.members === 1 ? '1 person' : `${offer.members} people`));
     }
-    const role = typeof offer.role === 'string' && offer.role ? offer.role : 'member';
-    const roleLine = document.createElement('p');
-    roleLine.className = 'tilo-invite-role';
-    const roleName = document.createElement('strong');
-    roleName.textContent = role[0].toUpperCase() + role.slice(1);
-    roleLine.append(roleName, ` — ${ROLE_WORDS[role] ?? 'you join the workspace'}.`);
-    const actions = document.createElement('div');
-    actions.className = 'tilo-entry-actions';
+    form.append(head);
+    // The role as the desktop's role chooser shows one: its name, and
+    // beneath it what it lets them do.
+    const role = typeof offer.role === 'string' ? offer.role : '';
+    if (ROLE_WORDS[role]) {
+      const panel = element('div', 'tilo-invite-role');
+      panel.append(element('p', 'tilo-invite-role-name', role[0].toUpperCase() + role.slice(1)),
+        element('p', 'tilo-invite-role-words', ROLE_WORDS[role]));
+      form.append(panel);
+    }
+    const actions = element('div', 'tilo-entry-actions');
     for (const [label, join] of [['Join', true], ['Not now', false]]) {
-      const button = document.createElement('button');
+      const button = element('button', join ? 'tilo-entry-primary' : '', label);
       button.type = 'button';
-      button.textContent = label;
-      if (join) button.className = 'tilo-entry-primary';
       button.addEventListener('click', () => { form.remove(); resolve(join); });
       actions.append(button);
     }
-    form.append(who, lead, place, roleLine, actions);
+    form.append(actions);
     document.body.append(form);
   });
 }

@@ -253,68 +253,72 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn installed_controller_uses_only_its_exact_fixed_capture_sidecar() {
-        assert_eq!(
-            sidecar_for_executable(Path::new("/usr/libexec/tilo-prepared-setup")).unwrap(),
-            Path::new("/usr/share/tilo-imager/capture")
-        );
-        for executable in [
-            "/tmp/tilo-prepared-setup",
-            "/usr/libexec/tilo-prepared-setup-other",
-            "/usr/libexec/other",
-        ] {
-            assert_ne!(
-                sidecar_for_executable(Path::new(executable)).unwrap(),
+    tilo_test_env::scenario! {
+        fn capture_sidecar_is_trusted_only_by_exact_pins;
+
+        phase installed_controller_uses_only_its_exact_fixed_capture_sidecar;
+        {
+            assert_eq!(
+                sidecar_for_executable(Path::new("/usr/libexec/tilo-prepared-setup")).unwrap(),
                 Path::new("/usr/share/tilo-imager/capture")
             );
+            for executable in [
+                "/tmp/tilo-prepared-setup",
+                "/usr/libexec/tilo-prepared-setup-other",
+                "/usr/libexec/other",
+            ] {
+                assert_ne!(
+                    sidecar_for_executable(Path::new(executable)).unwrap(),
+                    Path::new("/usr/share/tilo-imager/capture")
+                );
+            }
+            assert_eq!(
+                sidecar_for_executable(Path::new("/portable/bin/tilo-imager")).unwrap(),
+                Path::new("/portable/share/tilo-imager/capture")
+            );
+            assert_eq!(
+                sidecar_for_executable(Path::new("/portable/tilo-imager")).unwrap(),
+                Path::new("/portable/share/tilo-imager/capture")
+            );
         }
-        assert_eq!(
-            sidecar_for_executable(Path::new("/portable/bin/tilo-imager")).unwrap(),
-            Path::new("/portable/share/tilo-imager/capture")
-        );
-        assert_eq!(
-            sidecar_for_executable(Path::new("/portable/tilo-imager")).unwrap(),
-            Path::new("/portable/share/tilo-imager/capture")
-        );
-    }
-    #[test]
-    fn signed_sidecar_requires_embedded_identity_and_exact_payload() {
-        let directory = tempfile::tempdir().unwrap();
-        let sidecar = directory.path();
-        let native = sidecar.join("host");
-        let loader = if std::env::consts::ARCH == "aarch64" {
-            "lib/ld-linux-aarch64.so.1"
-        } else {
-            "lib64/ld-linux-x86-64.so.2"
-        };
-        std::fs::create_dir_all(native.join(loader).parent().unwrap()).unwrap();
-        std::fs::write(native.join(loader), b"fixture native loader").unwrap();
-        let identity = runtime_bundle::Identity::generate();
-        let identity_path = sidecar.join("runtime-identity.json");
-        std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
-        let (runtime, _) = runtime_bundle::build_abi_bundle(
-            &sidecar.join("runtime"),
-            "2026.07",
-            &runtime_bundle::BuildOptions {
-                from: Some(&native),
-                identity: Some(&identity_path),
-                arch: Some(std::env::consts::ARCH),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let payload = sidecar.join("source");
-        std::fs::create_dir_all(payload.join("bin")).unwrap();
-        std::fs::write(
-            payload.join("bin/tilo-home-export"),
-            b"signed worker fixture",
-        )
-        .unwrap();
-        let signer = tilo_app_package::SigningIdentity::generate();
-        let publisher = hex(&signer.public_key_bytes());
-        let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
-            r#"
+
+        phase signed_sidecar_requires_embedded_identity_and_exact_payload;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let sidecar = directory.path();
+            let native = sidecar.join("host");
+            let loader = if std::env::consts::ARCH == "aarch64" {
+                "lib/ld-linux-aarch64.so.1"
+            } else {
+                "lib64/ld-linux-x86-64.so.2"
+            };
+            std::fs::create_dir_all(native.join(loader).parent().unwrap()).unwrap();
+            std::fs::write(native.join(loader), b"fixture native loader").unwrap();
+            let identity = runtime_bundle::Identity::generate();
+            let identity_path = sidecar.join("runtime-identity.json");
+            std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+            let (runtime, _) = runtime_bundle::build_abi_bundle(
+                &sidecar.join("runtime"),
+                "2026.07",
+                &runtime_bundle::BuildOptions {
+                    from: Some(&native),
+                    identity: Some(&identity_path),
+                    arch: Some(std::env::consts::ARCH),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let payload = sidecar.join("source");
+            std::fs::create_dir_all(payload.join("bin")).unwrap();
+            std::fs::write(
+                payload.join("bin/tilo-home-export"),
+                b"signed worker fixture",
+            )
+            .unwrap();
+            let signer = tilo_app_package::SigningIdentity::generate();
+            let publisher = hex(&signer.public_key_bytes());
+            let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+                r#"
 [package]
 id = "{PACKAGE}"
 version = "1.0.0"
@@ -336,62 +340,64 @@ mode = "off"
 bin = "bin/tilo-home-export"
 type = "cli"
 "#,
-            runtime.version
-        ))
-        .unwrap();
-        let packed = tilo_app_package::pack(&payload, &manifest, &signer).unwrap();
-        let metadata = sidecar.join("service/metadata");
-        std::fs::create_dir_all(&metadata).unwrap();
-        for (name, bytes) in [
-            ("signed-root", packed.meta.signed_root_bytes().to_vec()),
-            ("manifest.toml", packed.meta.manifest_bytes.clone()),
-            ("collection.qcl", packed.meta.collection_bytes.clone()),
-        ] {
-            std::fs::write(metadata.join(name), bytes).unwrap();
-        }
-        tilo_app_package::unpack(&packed.meta, &packed, &sidecar.join("service/payload")).unwrap();
-        let pins = CaptureServicePins {
-            schema: 1,
-            worker_protocol: WORKER_PROTOCOL,
-            arch: std::env::consts::ARCH.into(),
-            package_id: PACKAGE.into(),
-            service_publisher: publisher,
-            package_hash: packed.id().to_hex(),
-            manifest_sha256: hex(&Sha256::digest(&packed.meta.manifest_bytes)),
-            payload_root_hash: packed.meta.root.payload_root_hash.to_hex(),
-            runtime_version: runtime.version,
-            runtime_publisher: identity.public_key_hex(),
-            runtime_root_hash: runtime.root_hash,
-        };
-        assert!(TrustedCaptureService::verify(sidecar, &pins).is_ok());
-        assert_eq!(
-            manifest.package.service_protocol.as_ref().unwrap().version,
-            pins.worker_protocol
-        );
-        let mut wrong = pins.clone();
-        wrong.worker_protocol = 1;
-        let error = TrustedCaptureService::verify(&sidecar.join("not-created"), &wrong)
-            .err()
+                runtime.version
+            ))
             .unwrap();
-        assert!(error.to_string().contains("worker protocol"));
-        wrong = pins.clone();
-        wrong.service_publisher = "00".repeat(32);
-        assert!(TrustedCaptureService::verify(sidecar, &wrong).is_err());
-        wrong = pins.clone();
-        wrong.runtime_root_hash = "00".repeat(32);
-        assert!(TrustedCaptureService::verify(sidecar, &wrong).is_err());
-        std::fs::write(sidecar.join("service/payload/extra"), b"unsigned extra").unwrap();
-        assert!(TrustedCaptureService::verify(sidecar, &pins).is_err());
-        std::fs::remove_file(sidecar.join("service/payload/extra")).unwrap();
-        std::fs::write(
-            sidecar.join("service/payload/bin/tilo-home-export"),
-            b"substituted worker",
-        )
-        .unwrap();
-        assert!(TrustedCaptureService::verify(sidecar, &pins).is_err());
-    }
-    #[test]
-    fn missing_protocol_pin_is_not_accepted_as_legacy_capability() {
-        assert!(serde_json::from_str::<CaptureServicePins>(r#"{"schema":1,"arch":"x86_64","package_id":"so.tilo.imager.home-export","service_publisher":"00","package_hash":"00","manifest_sha256":"00","payload_root_hash":"00","runtime_version":"1","runtime_publisher":"00","runtime_root_hash":"00"}"#).is_err());
+            let packed = tilo_app_package::pack(&payload, &manifest, &signer).unwrap();
+            let metadata = sidecar.join("service/metadata");
+            std::fs::create_dir_all(&metadata).unwrap();
+            for (name, bytes) in [
+                ("signed-root", packed.meta.signed_root_bytes().to_vec()),
+                ("manifest.toml", packed.meta.manifest_bytes.clone()),
+                ("collection.qcl", packed.meta.collection_bytes.clone()),
+            ] {
+                std::fs::write(metadata.join(name), bytes).unwrap();
+            }
+            tilo_app_package::unpack(&packed.meta, &packed, &sidecar.join("service/payload")).unwrap();
+            let pins = CaptureServicePins {
+                schema: 1,
+                worker_protocol: WORKER_PROTOCOL,
+                arch: std::env::consts::ARCH.into(),
+                package_id: PACKAGE.into(),
+                service_publisher: publisher,
+                package_hash: packed.id().to_hex(),
+                manifest_sha256: hex(&Sha256::digest(&packed.meta.manifest_bytes)),
+                payload_root_hash: packed.meta.root.payload_root_hash.to_hex(),
+                runtime_version: runtime.version,
+                runtime_publisher: identity.public_key_hex(),
+                runtime_root_hash: runtime.root_hash,
+            };
+            assert!(TrustedCaptureService::verify(sidecar, &pins).is_ok());
+            assert_eq!(
+                manifest.package.service_protocol.as_ref().unwrap().version,
+                pins.worker_protocol
+            );
+            let mut wrong = pins.clone();
+            wrong.worker_protocol = 1;
+            let error = TrustedCaptureService::verify(&sidecar.join("not-created"), &wrong)
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("worker protocol"));
+            wrong = pins.clone();
+            wrong.service_publisher = "00".repeat(32);
+            assert!(TrustedCaptureService::verify(sidecar, &wrong).is_err());
+            wrong = pins.clone();
+            wrong.runtime_root_hash = "00".repeat(32);
+            assert!(TrustedCaptureService::verify(sidecar, &wrong).is_err());
+            std::fs::write(sidecar.join("service/payload/extra"), b"unsigned extra").unwrap();
+            assert!(TrustedCaptureService::verify(sidecar, &pins).is_err());
+            std::fs::remove_file(sidecar.join("service/payload/extra")).unwrap();
+            std::fs::write(
+                sidecar.join("service/payload/bin/tilo-home-export"),
+                b"substituted worker",
+            )
+            .unwrap();
+            assert!(TrustedCaptureService::verify(sidecar, &pins).is_err());
+        }
+
+        phase missing_protocol_pin_is_not_accepted_as_legacy_capability;
+        {
+            assert!(serde_json::from_str::<CaptureServicePins>(r#"{"schema":1,"arch":"x86_64","package_id":"so.tilo.imager.home-export","service_publisher":"00","package_hash":"00","manifest_sha256":"00","payload_root_hash":"00","runtime_version":"1","runtime_publisher":"00","runtime_root_hash":"00"}"#).is_err());
+        }
     }
 }

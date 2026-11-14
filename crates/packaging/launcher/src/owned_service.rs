@@ -1265,22 +1265,149 @@ impl Drop for ServiceChild {
 mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
-    #[test]
-    fn stopping_enrollment_child_preserves_parent_but_parent_retirement_stops_new_children() {
-        let owner = Arc::new(());
-        let parent = ServiceCancellation::for_owner(Arc::downgrade(&owner));
-        let child = parent.child();
-        child.cancel();
-        assert!(child.is_cancelled());
-        assert!(!parent.is_cancelled());
-        let next = parent.child();
-        assert!(!next.is_cancelled());
-        parent.cancel();
-        assert!(next.is_cancelled());
-        let original = ServiceCancellation::for_owner(Arc::downgrade(&owner));
-        let next = original.child();
-        drop(owner);
-        assert!(next.is_cancelled());
+    tilo_test_env::scenario! {
+        fn registration_and_cancellation_bind_the_exact_namespace;
+
+        phase stopping_enrollment_child_preserves_parent_but_parent_retirement_stops_new_children;
+        {
+            let owner = Arc::new(());
+            let parent = ServiceCancellation::for_owner(Arc::downgrade(&owner));
+            let child = parent.child();
+            child.cancel();
+            assert!(child.is_cancelled());
+            assert!(!parent.is_cancelled());
+            let next = parent.child();
+            assert!(!next.is_cancelled());
+            parent.cancel();
+            assert!(next.is_cancelled());
+            let original = ServiceCancellation::for_owner(Arc::downgrade(&owner));
+            let next = original.child();
+            drop(owner);
+            assert!(next.is_cancelled());
+        }
+
+        phase stalled_ordinary_registration_cancels_exact_namespace_before_releasing_owner;
+        {
+            use std::io::Read as _;
+            let cancellation = ServiceCancellation::default();
+            let (sender, mut receiver) = UnixStream::pair().unwrap();
+            receiver
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let owner = Arc::new(
+                NamespaceOwner::for_ordinary(
+                    Arc::new(Authority(AtomicBool::new(true))),
+                    cancellation.clone(),
+                    crate::ordinary_namespace::ConnectedNamespace::new(sender),
+                )
+                .unwrap(),
+            );
+            let fd = owner.namespace_init_fd().unwrap();
+            let mut command = std::process::Command::new("/usr/bin/bwrap");
+            command.args([
+                "--unshare-all",
+                "--as-pid-1",
+                "--die-with-parent",
+                "--info-fd",
+                &fd.to_string(),
+                "--ro-bind",
+                "/usr",
+                "/usr",
+                "--ro-bind",
+                "/lib",
+                "/lib",
+                "--ro-bind",
+                "/lib64",
+                "/lib64",
+                "--symlink",
+                "/usr/bin",
+                "/bin",
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "/usr/bin/sleep",
+                "30",
+            ]);
+            command.process_group(0);
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            owner.before_spawn().unwrap();
+            let child = command.spawn_locked().unwrap();
+            owner.child_created();
+            let observed = owner.clone();
+            let worker = std::thread::spawn(move || observed.supervise(child));
+            let mut numbers = [0; 12];
+            receiver.read_exact(&mut numbers).unwrap();
+            let (bytes, init) = runtime_portal::fd_transport::recv_with_fd(&receiver).unwrap();
+            assert_eq!(bytes, [0]);
+            let init = init.expect("canonical registration must send actual init pidfd");
+            assert!(
+                !exited(&init).unwrap(),
+                "test must observe its live namespace subject"
+            );
+            // Retain actual root-side handle but withhold descriptor ACK.
+            cancellation.cancel();
+            tilo_test_env::wait_until("the cancelled registration to return", || {
+                worker.is_finished()
+            });
+            let error = worker
+                .join()
+                .unwrap()
+                .expect_err("stalled registration must cancel");
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert!(
+                exited(&init).unwrap(),
+                "return requires exact namespace kernel stop"
+            );
+            assert!(owner.shutdown.load(Ordering::Acquire));
+            assert!(
+                !owner.quiescent.load(Ordering::Acquire),
+                "cancelled registration cannot admit successful completion"
+            );
+            assert_eq!(
+                unsafe { libc::fcntl(init.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+                libc::FD_CLOEXEC,
+                "root-side init custody remains owned after incomplete handoff"
+            );
+        }
+
+        phase outer_process_wait_without_verified_init_never_mints_cleanup_receipt;
+        {
+            let child = std::process::Command::new("/bin/true")
+                .spawn_locked()
+                .unwrap();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let mut service = ServiceChild {
+                child,
+                init: None,
+                shutdown: shutdown.clone(),
+            };
+            service.child.wait().unwrap();
+            drop(service);
+            assert!(!shutdown.load(Ordering::Acquire));
+            let mut owner = NamespaceOwner::new(
+                Arc::new(Authority(AtomicBool::new(true))),
+                ServiceCancellation::default(),
+            )
+            .unwrap();
+            owner.shutdown = shutdown;
+            assert!(
+                owner
+                    .confirmed_shutdown(
+                        &ServiceLeaseKey::default(),
+                        Path::new("/fixture"),
+                        "fixture.service"
+                    )
+                    .is_none()
+            );
+        }
     }
 
     use std::os::unix::{fs::PermissionsExt as _, process::CommandExt as _};
@@ -1463,176 +1590,6 @@ mod tests {
             }
         }
     }
-    #[test]
-    fn stalled_ordinary_registration_cancels_exact_namespace_before_releasing_owner() {
-        use std::io::Read as _;
-        let cancellation = ServiceCancellation::default();
-        let (sender, mut receiver) = UnixStream::pair().unwrap();
-        receiver
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let owner = Arc::new(
-            NamespaceOwner::for_ordinary(
-                Arc::new(Authority(AtomicBool::new(true))),
-                cancellation.clone(),
-                crate::ordinary_namespace::ConnectedNamespace::new(sender),
-            )
-            .unwrap(),
-        );
-        let fd = owner.namespace_init_fd().unwrap();
-        let mut command = std::process::Command::new("/usr/bin/bwrap");
-        command.args([
-            "--unshare-all",
-            "--as-pid-1",
-            "--die-with-parent",
-            "--info-fd",
-            &fd.to_string(),
-            "--ro-bind",
-            "/usr",
-            "/usr",
-            "--ro-bind",
-            "/lib",
-            "/lib",
-            "--ro-bind",
-            "/lib64",
-            "/lib64",
-            "--symlink",
-            "/usr/bin",
-            "/bin",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "/usr/bin/sleep",
-            "30",
-        ]);
-        command.process_group(0);
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        owner.before_spawn().unwrap();
-        let child = command.spawn_locked().unwrap();
-        owner.child_created();
-        let observed = owner.clone();
-        let worker = std::thread::spawn(move || observed.supervise(child));
-        let mut numbers = [0; 12];
-        receiver.read_exact(&mut numbers).unwrap();
-        let (bytes, init) = runtime_portal::fd_transport::recv_with_fd(&receiver).unwrap();
-        assert_eq!(bytes, [0]);
-        let init = init.expect("canonical registration must send actual init pidfd");
-        assert!(
-            !exited(&init).unwrap(),
-            "test must observe its live namespace subject"
-        );
-        // Retain actual root-side handle but withhold descriptor ACK.
-        cancellation.cancel();
-        tilo_test_env::wait_until("the cancelled registration to return", || {
-            worker.is_finished()
-        });
-        let error = worker
-            .join()
-            .unwrap()
-            .expect_err("stalled registration must cancel");
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(
-            exited(&init).unwrap(),
-            "return requires exact namespace kernel stop"
-        );
-        assert!(owner.shutdown.load(Ordering::Acquire));
-        assert!(
-            !owner.quiescent.load(Ordering::Acquire),
-            "cancelled registration cannot admit successful completion"
-        );
-        assert_eq!(
-            unsafe { libc::fcntl(init.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
-            libc::FD_CLOEXEC,
-            "root-side init custody remains owned after incomplete handoff"
-        );
-    }
-
-    #[test]
-    fn outer_process_wait_without_verified_init_never_mints_cleanup_receipt() {
-        let child = std::process::Command::new("/bin/true")
-            .spawn_locked()
-            .unwrap();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let mut service = ServiceChild {
-            child,
-            init: None,
-            shutdown: shutdown.clone(),
-        };
-        service.child.wait().unwrap();
-        drop(service);
-        assert!(!shutdown.load(Ordering::Acquire));
-        let mut owner = NamespaceOwner::new(
-            Arc::new(Authority(AtomicBool::new(true))),
-            ServiceCancellation::default(),
-        )
-        .unwrap();
-        owner.shutdown = shutdown;
-        assert!(
-            owner
-                .confirmed_shutdown(
-                    &ServiceLeaseKey::default(),
-                    Path::new("/fixture"),
-                    "fixture.service"
-                )
-                .is_none()
-        );
-    }
-    #[test]
-    fn successful_namespace_exit_waits_for_the_actual_live_descendant() {
-        let mut running = Running::start();
-        let descendant = running.orphan_handle();
-        std::fs::write(running.root.path().join("stop"), b"exit").unwrap();
-        let status = running.worker.take().unwrap().join().unwrap().unwrap();
-        assert!(status.success());
-        assert!(running.owner.quiescent.load(Ordering::Acquire));
-        assert!(
-            exited(&descendant).unwrap(),
-            "kernel namespace teardown must finish the descendant before checkpoint admission"
-        );
-    }
-    #[test]
-    fn outer_failure_stops_the_owned_namespace_without_admitting_a_checkpoint() {
-        let mut running = Running::start();
-        let descendant = running.orphan_handle();
-        let outer = i32::try_from(running.outer).unwrap();
-        assert_eq!(unsafe { libc::kill(outer, libc::SIGKILL) }, 0);
-        let status = running.worker.take().unwrap().join().unwrap().unwrap();
-        assert!(!status.success());
-        assert!(!running.owner.quiescent.load(Ordering::Acquire));
-        let key = ServiceLeaseKey::default();
-        let cleanup = running
-            .owner
-            .confirmed_shutdown(&key, Path::new("/fixture"), "fixture.service")
-            .expect("actual failed namespace teardown yields cleanup only");
-        assert!(cleanup.matches(&key, Path::new("/fixture"), "fixture.service"));
-        assert!(!cleanup.matches(
-            &ServiceLeaseKey::default(),
-            Path::new("/fixture"),
-            "fixture.service"
-        ));
-        assert!(
-            exited(&descendant).unwrap(),
-            "outer failure must observe every owned writer stopped before returning"
-        );
-    }
-    #[test]
-    fn cancellation_finishes_descendants_before_a_clean_seal() {
-        let mut running = Running::start();
-        let descendant = running.orphan_handle();
-        running.owner.cancellation.cancel();
-        let status = running.worker.take().unwrap().join().unwrap().unwrap();
-        assert!(status.success());
-        assert!(running.owner.quiescent.load(Ordering::Acquire));
-        assert!(exited(&descendant).unwrap());
-    }
     use tilo_test_env::idle::context_switches;
 
     const WAITING_PROVIDER: &str =
@@ -1700,31 +1657,87 @@ mod tests {
             revoked.elapsed()
         );
     }
-    #[test]
-    fn revoked_authority_stops_the_service() {
-        let mut running = Running::start();
-        let descendant = running.orphan_handle();
-        running.authority.0.store(false, Ordering::Release);
-        let worker = running.worker.take().unwrap();
-        tilo_test_env::wait_until("the revoked service to stop", || worker.is_finished());
-        let status = worker.join().unwrap().unwrap();
-        assert!(status.success());
-        assert!(running.owner.quiescent.load(Ordering::Acquire));
-        assert!(exited(&descendant).unwrap());
-    }
-    #[test]
-    fn dropping_original_host_lifetime_stops_only_its_private_namespace() {
-        let host = Arc::new(());
-        let mut running = Running::with_cancellation(
-            "trap 'exit 0' TERM; @WRITER@ while :; do sleep 0.02; done",
-            ServiceCancellation::for_owner(Arc::downgrade(&host)),
-        );
-        let descendant = running.orphan_handle();
-        drop(host);
-        let status = running.worker.take().unwrap().join().unwrap().unwrap();
-        assert!(status.success());
-        assert!(running.owner.quiescent.load(Ordering::Acquire));
-        assert!(exited(&descendant).unwrap());
+    tilo_test_env::scenario! {
+        fn an_owned_namespace_stops_with_its_owner_and_seals_only_when_clean;
+
+        phase successful_namespace_exit_waits_for_the_actual_live_descendant;
+        {
+            let mut running = Running::start();
+            let descendant = running.orphan_handle();
+            std::fs::write(running.root.path().join("stop"), b"exit").unwrap();
+            let status = running.worker.take().unwrap().join().unwrap().unwrap();
+            assert!(status.success());
+            assert!(running.owner.quiescent.load(Ordering::Acquire));
+            assert!(
+                exited(&descendant).unwrap(),
+                "kernel namespace teardown must finish the descendant before checkpoint admission"
+            );
+        }
+
+        phase outer_failure_stops_the_owned_namespace_without_admitting_a_checkpoint;
+        {
+            let mut running = Running::start();
+            let descendant = running.orphan_handle();
+            let outer = i32::try_from(running.outer).unwrap();
+            assert_eq!(unsafe { libc::kill(outer, libc::SIGKILL) }, 0);
+            let status = running.worker.take().unwrap().join().unwrap().unwrap();
+            assert!(!status.success());
+            assert!(!running.owner.quiescent.load(Ordering::Acquire));
+            let key = ServiceLeaseKey::default();
+            let cleanup = running
+                .owner
+                .confirmed_shutdown(&key, Path::new("/fixture"), "fixture.service")
+                .expect("actual failed namespace teardown yields cleanup only");
+            assert!(cleanup.matches(&key, Path::new("/fixture"), "fixture.service"));
+            assert!(!cleanup.matches(
+                &ServiceLeaseKey::default(),
+                Path::new("/fixture"),
+                "fixture.service"
+            ));
+            assert!(
+                exited(&descendant).unwrap(),
+                "outer failure must observe every owned writer stopped before returning"
+            );
+        }
+
+        phase cancellation_finishes_descendants_before_a_clean_seal;
+        {
+            let mut running = Running::start();
+            let descendant = running.orphan_handle();
+            running.owner.cancellation.cancel();
+            let status = running.worker.take().unwrap().join().unwrap().unwrap();
+            assert!(status.success());
+            assert!(running.owner.quiescent.load(Ordering::Acquire));
+            assert!(exited(&descendant).unwrap());
+        }
+
+        phase revoked_authority_stops_the_service;
+        {
+            let mut running = Running::start();
+            let descendant = running.orphan_handle();
+            running.authority.0.store(false, Ordering::Release);
+            let worker = running.worker.take().unwrap();
+            tilo_test_env::wait_until("the revoked service to stop", || worker.is_finished());
+            let status = worker.join().unwrap().unwrap();
+            assert!(status.success());
+            assert!(running.owner.quiescent.load(Ordering::Acquire));
+            assert!(exited(&descendant).unwrap());
+        }
+
+        phase dropping_original_host_lifetime_stops_only_its_private_namespace;
+        {
+            let host = Arc::new(());
+            let mut running = Running::with_cancellation(
+                "trap 'exit 0' TERM; @WRITER@ while :; do sleep 0.02; done",
+                ServiceCancellation::for_owner(Arc::downgrade(&host)),
+            );
+            let descendant = running.orphan_handle();
+            drop(host);
+            let status = running.worker.take().unwrap().join().unwrap().unwrap();
+            assert!(status.success());
+            assert!(running.owner.quiescent.load(Ordering::Acquire));
+            assert!(exited(&descendant).unwrap());
+        }
     }
     #[test]
     fn forced_namespace_shutdown_never_admits_a_checkpoint() {
@@ -1744,64 +1757,69 @@ mod tests {
         );
         assert!(exited(&descendant).unwrap());
     }
-    #[test]
-    fn owned_endpoint_refuses_another_namespace_peer_and_retirement() {
-        let running = Running::start();
-        let mut endpoint = running.endpoint();
-        let stream = endpoint.connect().unwrap();
-        assert!(
-            endpoint.connect_pending_worker().is_err(),
-            "ordinary fixture has no actual signed retained program admission"
-        );
-        assert!(
-            retained_worker::same_worker_peer(
-                &stream,
-                &endpoint.custody().unwrap(),
-                rustix::process::geteuid().as_raw(),
-                rustix::process::getegid().as_raw()
-            )
-            .is_err(),
-            "actual descendant listener cannot substitute for exact fixed-entry init"
-        );
-        drop(stream);
-        let alien_path = running.root.path().join("alien.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&alien_path).unwrap();
-        std::fs::set_permissions(&alien_path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        endpoint.path = alien_path;
-        assert_eq!(
-            endpoint.connect().unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        let (mut peer, _) = listener.accept().unwrap();
-        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        assert_eq!(
-            peer.read(&mut [0; 1]).unwrap(),
-            0,
-            "substituted peer receives no protocol bytes"
-        );
-        endpoint.path = running.root.path().join("provider.sock");
-        running.owner.cancellation.cancel();
-        assert_eq!(
-            endpoint.connect().unwrap_err().kind(),
-            io::ErrorKind::Interrupted
-        );
-    }
-    #[test]
-    fn another_lease_cannot_reuse_a_namespace_checkpoint_witness() {
-        let key = ServiceLeaseKey::default();
-        let exit = QuiescentExit {
-            key: key.clone(),
-            data_home: "/fixture".into(),
-            package: "fixture.service".into(),
-        };
-        assert!(exit.matches(&key, Path::new("/fixture"), "fixture.service"));
-        assert!(!exit.matches(
-            &ServiceLeaseKey::default(),
-            Path::new("/fixture"),
-            "fixture.service"
-        ));
-        assert!(!exit.matches(&key, Path::new("/other"), "fixture.service"));
-        assert!(!exit.matches(&key, Path::new("/fixture"), "other.service"));
+    tilo_test_env::scenario! {
+        fn an_owned_endpoint_and_its_checkpoint_belong_to_one_lease;
+
+        phase owned_endpoint_refuses_another_namespace_peer_and_retirement;
+        {
+            let running = Running::start();
+            let mut endpoint = running.endpoint();
+            let stream = endpoint.connect().unwrap();
+            assert!(
+                endpoint.connect_pending_worker().is_err(),
+                "ordinary fixture has no actual signed retained program admission"
+            );
+            assert!(
+                retained_worker::same_worker_peer(
+                    &stream,
+                    &endpoint.custody().unwrap(),
+                    rustix::process::geteuid().as_raw(),
+                    rustix::process::getegid().as_raw()
+                )
+                .is_err(),
+                "actual descendant listener cannot substitute for exact fixed-entry init"
+            );
+            drop(stream);
+            let alien_path = running.root.path().join("alien.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&alien_path).unwrap();
+            std::fs::set_permissions(&alien_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            endpoint.path = alien_path;
+            assert_eq!(
+                endpoint.connect().unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            let (mut peer, _) = listener.accept().unwrap();
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            assert_eq!(
+                peer.read(&mut [0; 1]).unwrap(),
+                0,
+                "substituted peer receives no protocol bytes"
+            );
+            endpoint.path = running.root.path().join("provider.sock");
+            running.owner.cancellation.cancel();
+            assert_eq!(
+                endpoint.connect().unwrap_err().kind(),
+                io::ErrorKind::Interrupted
+            );
+        }
+
+        phase another_lease_cannot_reuse_a_namespace_checkpoint_witness;
+        {
+            let key = ServiceLeaseKey::default();
+            let exit = QuiescentExit {
+                key: key.clone(),
+                data_home: "/fixture".into(),
+                package: "fixture.service".into(),
+            };
+            assert!(exit.matches(&key, Path::new("/fixture"), "fixture.service"));
+            assert!(!exit.matches(
+                &ServiceLeaseKey::default(),
+                Path::new("/fixture"),
+                "fixture.service"
+            ));
+            assert!(!exit.matches(&key, Path::new("/other"), "fixture.service"));
+            assert!(!exit.matches(&key, Path::new("/fixture"), "other.service"));
+        }
     }
 }

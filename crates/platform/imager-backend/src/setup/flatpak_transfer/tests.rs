@@ -30,148 +30,160 @@ impl Runner for Fake {
     }
 }
 
-#[test]
-fn inventory_uses_named_installations() {
-    let runner = Fake::new(vec![
-        Ok(
-            "org.example.Chat/x86_64/stable\tflathub\tuser\tChat\norg.example.Paint/x86_64/stable\tcompany\tsystem (work)\tPaint\n",
-        ),
-        Ok("org.example.Platform/x86_64/24.08\tflathub\tsystem\tPlatform\n"),
-        Ok("flathub\thttps://dl.flathub.org/repo/\t\n"),
-        Ok("flathub\thttps://dl.flathub.org/repo/\t\n"),
-        Ok("company\thttps://example.org/repo/\t\n"),
-    ]);
-    let inventory = discover(&runner, Path::new("/source/home")).unwrap();
-    assert_eq!(inventory.refs.len(), 3);
-    assert_eq!(inventory.refs[0].app_id(), Some("org.example.Chat"));
-    assert_eq!(inventory.remotes.len(), 3);
-    assert!(
-        runner
-            .calls
-            .borrow()
-            .iter()
-            .any(|(_, arguments)| arguments.contains(&"--installation=work".into()))
-    );
-}
+tilo_test_env::scenario! {
+    /// The Flatpak inventory of the source system.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn the_flatpak_inventory_names_installations_and_refuses_malformed_input;
 
-#[test]
-fn malformed_inventory_is_refused() {
-    for line in [
-        "app/../../evil\tflathub\tuser\tBad",
-        "app/org.example.App/x86_64/stable\t--evil\tuser\tBad",
-        "truncated",
-    ] {
-        let runner = Fake::new(vec![Ok(line)]);
-        assert!(discover(&runner, Path::new("/source")).is_err());
-        assert_eq!(runner.calls.borrow().len(), 1);
+    phase inventory_uses_named_installations;
+    {
+        let runner = Fake::new(vec![
+            Ok(
+                "org.example.Chat/x86_64/stable\tflathub\tuser\tChat\norg.example.Paint/x86_64/stable\tcompany\tsystem (work)\tPaint\n",
+            ),
+            Ok("org.example.Platform/x86_64/24.08\tflathub\tsystem\tPlatform\n"),
+            Ok("flathub\thttps://dl.flathub.org/repo/\t\n"),
+            Ok("flathub\thttps://dl.flathub.org/repo/\t\n"),
+            Ok("company\thttps://example.org/repo/\t\n"),
+        ]);
+        let inventory = discover(&runner, Path::new("/source/home")).unwrap();
+        assert_eq!(inventory.refs.len(), 3);
+        assert_eq!(inventory.refs[0].app_id(), Some("org.example.Chat"));
+        assert_eq!(inventory.remotes.len(), 3);
+        assert!(
+            runner
+                .calls
+                .borrow()
+                .iter()
+                .any(|(_, arguments)| arguments.contains(&"--installation=work".into()))
+        );
+    }
+
+    phase malformed_inventory_is_refused;
+    {
+        for line in [
+            "app/../../evil\tflathub\tuser\tBad",
+            "app/org.example.App/x86_64/stable\t--evil\tuser\tBad",
+            "truncated",
+        ] {
+            let runner = Fake::new(vec![Ok(line)]);
+            assert!(discover(&runner, Path::new("/source")).is_err());
+            assert_eq!(runner.calls.borrow().len(), 1);
+        }
+    }
+
+    phase custom_installation_root_comes_from_matching_deployment_location;
+    {
+        let reference = InstalledRef {
+            reference: "app/org.example.App/x86_64/stable".into(),
+            origin: "flathub".into(),
+            installation: Installation::System("work".into()),
+            name: "App".into(),
+        };
+        let inventory = Inventory {
+            refs: vec![reference],
+            remotes: Vec::new(),
+        };
+        let location = format!(
+            "/mnt/apps/work/app/org.example.App/x86_64/stable/{}\n",
+            "a".repeat(64)
+        );
+        let runner = Fake::new(vec![Ok(&location)]);
+        assert_eq!(
+            installation_roots(&runner, Path::new("/source"), &inventory)
+                .unwrap()
+                .get(&Installation::System("work".into())),
+            Some(&PathBuf::from("/mnt/apps/work"))
+        );
+        let runner = Fake::new(vec![Ok("/mnt/apps/../../other\n")]);
+        assert!(installation_roots(&runner, Path::new("/source"), &inventory).is_err());
+    }
+
+    phase native_named_installation_ids_do_not_use_display_names;
+    {
+        assert_eq!(
+            installation("system (native-fixture)").unwrap(),
+            Installation::System("native-fixture".into())
+        );
+        for malformed in [
+            "system (Native fixture)",
+            "system ()",
+            "system (fixture))",
+            "system (../fixture)",
+            "system (user)",
+            "system (default)",
+        ] {
+            assert!(installation(malformed).is_err(), "must refuse {malformed}");
+        }
     }
 }
 
-#[test]
-fn sideload_export_passes_literal_refs_without_shell_or_source_writes() {
-    let runner = Fake::new(vec![Ok("")]);
-    export_sideload(
-        &runner,
-        Path::new("/source"),
-        &Installation::System("work".into()),
-        &["app/org.example.App/x86_64/stable".into()],
-        Path::new("/private/export"),
-    )
-    .unwrap();
-    assert_eq!(
-        runner.calls.borrow()[0].1,
-        [
-            "create-usb",
-            "--installation=work",
-            "/private/export",
-            "app/org.example.App/x86_64/stable"
-        ]
-    );
-    assert!(
+tilo_test_env::scenario! {
+    /// The sideload export and the repository it is extracted into.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_sideload_export_and_its_repository_take_literal_refs_and_signed_sources;
+
+    phase sideload_export_passes_literal_refs_without_shell_or_source_writes;
+    {
+        let runner = Fake::new(vec![Ok("")]);
         export_sideload(
             &runner,
             Path::new("/source"),
-            &Installation::User,
-            &["--delete".into()],
-            Path::new("/private/export")
+            &Installation::System("work".into()),
+            &["app/org.example.App/x86_64/stable".into()],
+            Path::new("/private/export"),
         )
-        .is_err()
-    );
-    assert_eq!(runner.calls.borrow().len(), 1);
-}
-
-#[test]
-fn repository_extraction_preserves_existing_key_and_refuses_links_or_unsigned_sources() {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    std::fs::create_dir(root.join("repo")).unwrap();
-    let key_path = root.join("repo/flathub.trustedkeys.gpg");
-    std::fs::write(&key_path, [0x99, 0x01, 0xff]).unwrap();
-    let mut remote = Remote {
-        installation: Installation::System("default".into()),
-        name: "flathub".into(),
-        url: "https://dl.flathub.org/repo/".into(),
-        options: String::new(),
-    };
-    let definition = String::from_utf8(extract_remote_definition(&remote, &root).unwrap()).unwrap();
-    assert!(definition.contains(&format!("GPGKey={}\n", STANDARD.encode([0x99, 0x01, 0xff]))));
-    assert_eq!(std::fs::read(&key_path).unwrap(), [0x99, 0x01, 0xff]);
-    remote.options = "no-gpg-verify".into();
-    assert!(extract_remote_definition(&remote, &root).is_err());
-    remote.options.clear();
-    remote.url = "https://person:secret@example.org/repo/".into();
-    assert!(extract_remote_definition(&remote, &root).is_err());
-    #[cfg(unix)]
-    {
-        remote.url = "https://dl.flathub.org/repo/".into();
-        std::fs::remove_file(&key_path).unwrap();
-        std::os::unix::fs::symlink("/etc/passwd", &key_path).unwrap();
-        assert!(extract_remote_definition(&remote, &root).is_err());
+        .unwrap();
+        assert_eq!(
+            runner.calls.borrow()[0].1,
+            [
+                "create-usb",
+                "--installation=work",
+                "/private/export",
+                "app/org.example.App/x86_64/stable"
+            ]
+        );
+        assert!(
+            export_sideload(
+                &runner,
+                Path::new("/source"),
+                &Installation::User,
+                &["--delete".into()],
+                Path::new("/private/export")
+            )
+            .is_err()
+        );
+        assert_eq!(runner.calls.borrow().len(), 1);
     }
-}
 
-#[test]
-fn custom_installation_root_comes_from_matching_deployment_location() {
-    let reference = InstalledRef {
-        reference: "app/org.example.App/x86_64/stable".into(),
-        origin: "flathub".into(),
-        installation: Installation::System("work".into()),
-        name: "App".into(),
-    };
-    let inventory = Inventory {
-        refs: vec![reference],
-        remotes: Vec::new(),
-    };
-    let location = format!(
-        "/mnt/apps/work/app/org.example.App/x86_64/stable/{}\n",
-        "a".repeat(64)
-    );
-    let runner = Fake::new(vec![Ok(&location)]);
-    assert_eq!(
-        installation_roots(&runner, Path::new("/source"), &inventory)
-            .unwrap()
-            .get(&Installation::System("work".into())),
-        Some(&PathBuf::from("/mnt/apps/work"))
-    );
-    let runner = Fake::new(vec![Ok("/mnt/apps/../../other\n")]);
-    assert!(installation_roots(&runner, Path::new("/source"), &inventory).is_err());
-}
-
-#[test]
-fn native_named_installation_ids_do_not_use_display_names() {
-    assert_eq!(
-        installation("system (native-fixture)").unwrap(),
-        Installation::System("native-fixture".into())
-    );
-    for malformed in [
-        "system (Native fixture)",
-        "system ()",
-        "system (fixture))",
-        "system (../fixture)",
-        "system (user)",
-        "system (default)",
-    ] {
-        assert!(installation(malformed).is_err(), "must refuse {malformed}");
+    phase repository_extraction_preserves_existing_key_and_refuses_links_or_unsigned_sources;
+    {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("repo")).unwrap();
+        let key_path = root.join("repo/flathub.trustedkeys.gpg");
+        std::fs::write(&key_path, [0x99, 0x01, 0xff]).unwrap();
+        let mut remote = Remote {
+            installation: Installation::System("default".into()),
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            options: String::new(),
+        };
+        let definition = String::from_utf8(extract_remote_definition(&remote, &root).unwrap()).unwrap();
+        assert!(definition.contains(&format!("GPGKey={}\n", STANDARD.encode([0x99, 0x01, 0xff]))));
+        assert_eq!(std::fs::read(&key_path).unwrap(), [0x99, 0x01, 0xff]);
+        remote.options = "no-gpg-verify".into();
+        assert!(extract_remote_definition(&remote, &root).is_err());
+        remote.options.clear();
+        remote.url = "https://person:secret@example.org/repo/".into();
+        assert!(extract_remote_definition(&remote, &root).is_err());
+        #[cfg(unix)]
+        {
+            remote.url = "https://dl.flathub.org/repo/".into();
+            std::fs::remove_file(&key_path).unwrap();
+            std::os::unix::fs::symlink("/etc/passwd", &key_path).unwrap();
+            assert!(extract_remote_definition(&remote, &root).is_err());
+        }
     }
 }

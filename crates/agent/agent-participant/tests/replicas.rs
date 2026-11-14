@@ -336,7 +336,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         })
         .unwrap();
     // The paragraph it wrote, as the record's own item: the key every
-    // collaborator's Writer draws a collaborator's caret under (as its
+    // member's Writer draws a member's caret under (as its
     // digest, when the key outgrows the live plane's anchor).
     let written = ui::presence::PresenceKey::Resource {
         app: app.to_owned(),

@@ -569,336 +569,344 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn the_revision_step_reads_the_lock_then_the_app_manifest() {
-        use crate::standalone::{Baseline, SdkSource, Standalone};
+    tilo_test_env::scenario! {
+        fn generated_workflows_check_build_and_publish_on_each_forge;
 
-        let text = workflow(Forge::Forgejo, "docker", "apps/editor", "Cargo.lock");
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
-        let step = yaml["jobs"]["check"]["steps"]
-            .as_sequence()
-            .expect("steps")
-            .iter()
-            .find(|step| step["id"].as_str() == Some("sdk"))
-            .expect("the revision step");
-        assert_eq!(
-            step["env"]["APP_MANIFEST"].as_str(),
-            Some("apps/editor/Cargo.toml")
-        );
-        let script = step["run"].as_str().expect("its script");
+        phase the_revision_step_reads_the_lock_then_the_app_manifest;
+        {
+            use crate::standalone::{Baseline, SdkSource, Standalone};
 
-        let pinned = "0123456789abcdef0123456789abcdef01234567";
-        let scaffold = Standalone {
-            source: SdkSource::Git {
-                url: SDK_GIT.to_owned(),
-                rev: Some(pinned.to_owned()),
-            },
-            baseline: Baseline::embedded().expect("the embedded baseline"),
-        };
-        let temp = tempfile::tempdir().expect("tempdir");
-        let manifest = temp.path().join("Cargo.toml");
-        let lock = temp.path().join("Cargo.lock");
-        let output = temp.path().join("output");
-        let revision = |lock_text: &str| {
-            std::fs::write(&lock, lock_text).expect("lock");
-            std::fs::write(&output, "").expect("output");
-            let status = std::process::Command::new("bash")
-                .arg("-c")
-                .arg(script)
-                .env("LOCK_FILE", &lock)
-                .env("APP_MANIFEST", &manifest)
-                .env("GITHUB_OUTPUT", &output)
-                .status_locked()
-                .expect("bash runs the step");
-            assert!(status.success(), "the step failed: {status}");
-            std::fs::read_to_string(&output).expect("step output")
-        };
+            let text = workflow(Forge::Forgejo, "docker", "apps/editor", "Cargo.lock");
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
+            let step = yaml["jobs"]["check"]["steps"]
+                .as_sequence()
+                .expect("steps")
+                .iter()
+                .find(|step| step["id"].as_str() == Some("sdk"))
+                .expect("the revision step");
+            assert_eq!(
+                step["env"]["APP_MANIFEST"].as_str(),
+                Some("apps/editor/Cargo.toml")
+            );
+            let script = step["run"].as_str().expect("its script");
 
-        std::fs::write(
-            &manifest,
-            format!(
-                "[package]\nname = \"editor\"\n\n[dependencies]\n{}",
-                scaffold.dependencies()
-            ),
-        )
-        .expect("manifest");
-        let seeded = "[[package]]\nname = \"tilo-app\"\nversion = \"0.1.0\"\n";
-        assert_eq!(revision(seeded), format!("rev={pinned}\n"));
+            let pinned = "0123456789abcdef0123456789abcdef01234567";
+            let scaffold = Standalone {
+                source: SdkSource::Git {
+                    url: SDK_GIT.to_owned(),
+                    rev: Some(pinned.to_owned()),
+                },
+                baseline: Baseline::embedded().expect("the embedded baseline"),
+            };
+            let temp = tempfile::tempdir().expect("tempdir");
+            let manifest = temp.path().join("Cargo.toml");
+            let lock = temp.path().join("Cargo.lock");
+            let output = temp.path().join("output");
+            let revision = |lock_text: &str| {
+                std::fs::write(&lock, lock_text).expect("lock");
+                std::fs::write(&output, "").expect("output");
+                let status = std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(script)
+                    .env("LOCK_FILE", &lock)
+                    .env("APP_MANIFEST", &manifest)
+                    .env("GITHUB_OUTPUT", &output)
+                    .status_locked()
+                    .expect("bash runs the step");
+                assert!(status.success(), "the step failed: {status}");
+                std::fs::read_to_string(&output).expect("step output")
+            };
 
-        let resolved_rev = "fedcba9876543210fedcba9876543210fedcba98";
-        let resolved =
-            format!("{seeded}source = \"git+{SDK_GIT}?rev={resolved_rev}#{resolved_rev}\"\n");
-        assert_eq!(revision(&resolved), format!("rev={resolved_rev}\n"));
+            std::fs::write(
+                &manifest,
+                format!(
+                    "[package]\nname = \"editor\"\n\n[dependencies]\n{}",
+                    scaffold.dependencies()
+                ),
+            )
+            .expect("manifest");
+            let seeded = "[[package]]\nname = \"tilo-app\"\nversion = \"0.1.0\"\n";
+            assert_eq!(revision(seeded), format!("rev={pinned}\n"));
 
-        std::fs::write(
-            &manifest,
-            "[dependencies]\nui = { package = \"tilo-app\", path = \"../tilo/crates/sdk/tilo-app\" }\n",
-        )
-        .expect("path manifest");
-        assert_eq!(revision(seeded), "rev=main\n");
-    }
+            let resolved_rev = "fedcba9876543210fedcba9876543210fedcba98";
+            let resolved =
+                format!("{seeded}source = \"git+{SDK_GIT}?rev={resolved_rev}#{resolved_rev}\"\n");
+            assert_eq!(revision(&resolved), format!("rev={resolved_rev}\n"));
 
-    #[test]
-    fn github_reusable_checks_the_callers_app_and_publishes_only_when_requested() {
-        let text = github_reusable("ubuntu-latest");
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
-        let call = &yaml["on"]["workflow_call"];
-        assert_eq!(call["inputs"]["publish"]["type"].as_str(), Some("boolean"));
-        assert_eq!(call["inputs"]["publish"]["default"].as_bool(), Some(false));
-        assert_eq!(
-            call["secrets"]["TILO_PUBLISHER_KEY"]["required"].as_bool(),
-            Some(false)
-        );
-        assert_eq!(yaml["permissions"]["contents"].as_str(), Some("read"));
-        assert_eq!(
-            yaml["jobs"]["check"]["defaults"]["run"]["working-directory"].as_str(),
-            Some("${{ inputs.working-directory }}")
-        );
-        assert_eq!(
-            yaml["jobs"]["publish"]["if"].as_str(),
-            Some("inputs.publish && github.event_name != 'pull_request'")
-        );
-        assert_eq!(
-            yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
+            std::fs::write(
+                &manifest,
+                "[dependencies]\nui = { package = \"tilo-app\", path = \"../tilo/crates/sdk/tilo-app\" }\n",
+            )
+            .expect("path manifest");
+            assert_eq!(revision(seeded), "rev=main\n");
+        }
+
+        phase github_reusable_checks_the_callers_app_and_publishes_only_when_requested;
+        {
+            let text = github_reusable("ubuntu-latest");
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
+            let call = &yaml["on"]["workflow_call"];
+            assert_eq!(call["inputs"]["publish"]["type"].as_str(), Some("boolean"));
+            assert_eq!(call["inputs"]["publish"]["default"].as_bool(), Some(false));
+            assert_eq!(
+                call["secrets"]["TILO_PUBLISHER_KEY"]["required"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(yaml["permissions"]["contents"].as_str(), Some("read"));
+            assert_eq!(
+                yaml["jobs"]["check"]["defaults"]["run"]["working-directory"].as_str(),
+                Some("${{ inputs.working-directory }}")
+            );
+            assert_eq!(
+                yaml["jobs"]["publish"]["if"].as_str(),
+                Some("inputs.publish && github.event_name != 'pull_request'")
+            );
+            assert_eq!(
+                yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
+                    .as_sequence()
+                    .expect("matrix")
+                    .len(),
+                GITHUB_BUILDS.len()
+            );
+            assert!(text.contains("hashFiles(inputs.lockfile)"));
+            assert!(!text.contains("hashFiles('${{"));
+            assert!(text.contains("\"$LOCK_FILE\""));
+            assert!(text.contains("${{ inputs.working-directory }}/dist"));
+            assert!(text.contains("inputs.registry || vars.TILO_REGISTRY"));
+            for secret in [
+                "TILO_PUBLISHER_KEY",
+                "TILO_ANDROID_KEYSTORE",
+                "TILO_ANDROID_KEYSTORE_PASS",
+            ] {
+                assert!(text.contains(&format!("${{{{ inputs.publish && github.event_name != 'pull_request' && secrets.{secret} || '' }}}}")));
+                assert!(!text.contains(&format!("${{{{ secrets.{secret} }}}}")));
+            }
+            assert!(yaml["defaults"]["run"]["working-directory"].is_null());
+        }
+
+        phase github_workflow_builds_every_platform_and_publishes_tags_once;
+        {
+            let text = workflow(Forge::Github, "ubuntu-latest", "apps/editor", "Cargo.lock");
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
+            let include = &yaml["jobs"]["package"]["strategy"]["matrix"]["include"];
+            let builds: Vec<String> = include
                 .as_sequence()
                 .expect("matrix")
-                .len(),
-            GITHUB_BUILDS.len()
-        );
-        assert!(text.contains("hashFiles(inputs.lockfile)"));
-        assert!(!text.contains("hashFiles('${{"));
-        assert!(text.contains("\"$LOCK_FILE\""));
-        assert!(text.contains("${{ inputs.working-directory }}/dist"));
-        assert!(text.contains("inputs.registry || vars.TILO_REGISTRY"));
-        for secret in [
-            "TILO_PUBLISHER_KEY",
-            "TILO_ANDROID_KEYSTORE",
-            "TILO_ANDROID_KEYSTORE_PASS",
-        ] {
-            assert!(text.contains(&format!("${{{{ inputs.publish && github.event_name != 'pull_request' && secrets.{secret} || '' }}}}")));
-            assert!(!text.contains(&format!("${{{{ secrets.{secret} }}}}")));
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{}-{}",
+                        entry["platform"].as_str().unwrap_or_default(),
+                        entry["arch"].as_str().unwrap_or_default()
+                    )
+                })
+                .collect();
+            assert_eq!(
+                builds,
+                [
+                    "tilo-x86_64",
+                    "tilo-aarch64",
+                    "linux-x86_64",
+                    "linux-aarch64",
+                    "windows-x86_64",
+                    "windows-aarch64",
+                    "macos-aarch64",
+                    "macos-x86_64",
+                    "web-wasm32",
+                    "android-aarch64"
+                ]
+            );
+            assert_eq!(
+                yaml["defaults"]["run"]["working-directory"].as_str(),
+                Some("apps/editor")
+            );
+            let publish = &yaml["jobs"]["publish"];
+            assert_eq!(
+                publish["if"].as_str(),
+                Some("startsWith(github.ref, 'refs/tags/v')")
+            );
+            let steps = publish["steps"].as_sequence().expect("steps");
+            let runs: Vec<&str> = steps
+                .iter()
+                .filter_map(|step| step["run"].as_str())
+                .collect();
+            assert_eq!(
+                runs.iter()
+                    .filter(|run| run.contains("tilo-app publish"))
+                    .count(),
+                1
+            );
+            assert!(text.contains("path: apps/editor/dist/${{ matrix.platform }}"));
+            assert!(text.contains(r"rev=\([0-9a-f]\{40\}\)#"));
         }
-        assert!(yaml["defaults"]["run"]["working-directory"].is_null());
-    }
 
-    #[test]
-    fn github_generator_writes_a_callable_pair_and_preserves_existing_files() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().canonicalize().expect("canonical tempdir");
-        let app = root.join("apps/editor");
-        std::fs::create_dir_all(root.join(".git")).expect("git");
-        std::fs::create_dir_all(&app).expect("app");
-        std::fs::write(root.join("Cargo.lock"), "").expect("lock");
-        let reusable = root.join(".github/workflows/tilo-build.yml");
-        let preview = add_ci(&app, Forge::Github, None, false, true).expect("preview");
-        assert_eq!(preview.reusable_path.as_ref(), Some(&reusable));
-        assert_eq!(preview.to_json()["written"], false);
-        assert!(!preview.path.exists());
-        assert!(!reusable.exists());
-        std::fs::create_dir_all(reusable.parent().expect("parent")).expect("directory");
-        std::fs::write(&reusable, "existing workflow").expect("existing");
-        assert!(add_ci(&app, Forge::Github, None, false, false).is_err());
-        assert!(
-            !preview.path.exists(),
-            "refusal must not create half the pair"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&reusable).expect("read"),
-            "existing workflow"
-        );
-        let outcome = add_ci(&app, Forge::Github, None, true, false).expect("write pair");
-        let caller: serde_yaml::Value =
-            serde_yaml::from_str(&std::fs::read_to_string(&outcome.path).expect("caller"))
-                .expect("YAML");
-        assert_eq!(
-            caller["jobs"]["app"]["uses"].as_str(),
-            Some("./.github/workflows/tilo-build.yml")
-        );
-        assert_eq!(
-            caller["jobs"]["app"]["with"]["working-directory"].as_str(),
-            Some("apps/editor")
-        );
-        assert_eq!(
-            caller["jobs"]["app"]["with"]["lockfile"].as_str(),
-            Some("Cargo.lock")
-        );
-        assert_eq!(
-            caller["jobs"]["app"]["with"]["publish"].as_str(),
-            Some("${{ startsWith(github.ref, 'refs/tags/v') }}")
-        );
-        let reusable_document: serde_yaml::Value =
-            serde_yaml::from_str(&std::fs::read_to_string(&reusable).expect("callee"))
-                .expect("YAML");
-        for secret in caller["jobs"]["app"]["secrets"]
-            .as_mapping()
-            .expect("secrets")
-            .keys()
+        phase forgejo_workflow_uses_forgejo_artifacts_and_one_runner_label;
         {
+            let text = workflow(Forge::Forgejo, "codeberg-small", ".", "Cargo.lock");
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
+            let include = yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
+                .as_sequence()
+                .expect("matrix");
+            let builds: Vec<(&str, &str)> = include
+                .iter()
+                .map(|entry| {
+                    (
+                        entry["platform"].as_str().unwrap_or_default(),
+                        entry["runner"].as_str().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                builds,
+                [
+                    ("tilo", "codeberg-small"),
+                    ("web", "codeberg-small"),
+                    ("android", "codeberg-small")
+                ],
+                "the Linux x86_64 builds are on"
+            );
+            assert!(text.contains("# - { platform: tilo, arch: aarch64"));
+            assert!(text.contains("# Windows and macOS need runners on those systems, and Linux"));
+            assert!(text.contains("https://code.forgejo.org/forgejo/upload-artifact@v4"));
+            assert!(!text.contains("actions/upload-artifact"));
+            assert_eq!(
+                yaml["jobs"]["check"]["runs-on"].as_str(),
+                Some("codeberg-small")
+            );
+        }
+
+        phase android_builds_in_the_builder_with_the_sdk_it_installs_and_ships_the_apk;
+        {
+            let text = workflow(Forge::Github, "ubuntu-latest", ".", "Cargo.lock");
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
+            let android = yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
+                .as_sequence()
+                .expect("matrix")
+                .iter()
+                .find(|entry| entry["platform"].as_str() == Some("android"))
+                .expect("an android build");
+            assert_eq!(android["runner"].as_str(), Some("ubuntu-latest"));
+            assert_eq!(android["container"].as_str(), Some(BUILDER_IMAGE));
+            let steps = yaml["jobs"]["package"]["steps"]
+                .as_sequence()
+                .expect("steps");
+            let android_only: Vec<&serde_yaml::Value> = steps
+                .iter()
+                .filter(|step| step["if"].as_str() == Some("matrix.platform == 'android'"))
+                .collect();
+            let runs: Vec<&str> = android_only
+                .iter()
+                .filter_map(|step| step["run"].as_str())
+                .collect();
+            assert!(runs.iter().any(|run| run.contains("java-21-openjdk-devel")));
+            assert!(runs.contains(&"tilo-app setup android --accept-licenses"));
             assert!(
-                !reusable_document["on"]["workflow_call"]["secrets"][secret].is_null(),
-                "caller secret must be declared by callee"
+                runs.iter()
+                    .any(|run| run.contains("TILO_ANDROID_KEYSTORE="))
+            );
+            let setup = steps
+                .iter()
+                .position(|step| {
+                    step["run"].as_str() == Some("tilo-app setup android --accept-licenses")
+                })
+                .expect("setup step");
+            let package = steps
+                .iter()
+                .position(|step| step["name"].as_str() == Some("Package"))
+                .expect("package step");
+            assert!(setup < package, "the SDK is installed before packaging");
+            let uploads: Vec<&str> = android_only
+                .iter()
+                .filter_map(|step| step["with"]["path"].as_str())
+                .collect();
+            assert!(
+                uploads
+                    .iter()
+                    .any(|path| path.contains("dist/android-${{ matrix.arch }}.apk")
+                        && path.contains("dist/android-${{ matrix.arch }}.aab")),
+                "{uploads:?}"
             );
         }
     }
 
-    #[test]
-    fn github_workflow_builds_every_platform_and_publishes_tags_once() {
-        let text = workflow(Forge::Github, "ubuntu-latest", "apps/editor", "Cargo.lock");
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
-        let include = &yaml["jobs"]["package"]["strategy"]["matrix"]["include"];
-        let builds: Vec<String> = include
-            .as_sequence()
-            .expect("matrix")
-            .iter()
-            .map(|entry| {
-                format!(
-                    "{}-{}",
-                    entry["platform"].as_str().unwrap_or_default(),
-                    entry["arch"].as_str().unwrap_or_default()
-                )
-            })
-            .collect();
-        assert_eq!(
-            builds,
-            [
-                "tilo-x86_64",
-                "tilo-aarch64",
-                "linux-x86_64",
-                "linux-aarch64",
-                "windows-x86_64",
-                "windows-aarch64",
-                "macos-aarch64",
-                "macos-x86_64",
-                "web-wasm32",
-                "android-aarch64"
-            ]
-        );
-        assert_eq!(
-            yaml["defaults"]["run"]["working-directory"].as_str(),
-            Some("apps/editor")
-        );
-        let publish = &yaml["jobs"]["publish"];
-        assert_eq!(
-            publish["if"].as_str(),
-            Some("startsWith(github.ref, 'refs/tags/v')")
-        );
-        let steps = publish["steps"].as_sequence().expect("steps");
-        let runs: Vec<&str> = steps
-            .iter()
-            .filter_map(|step| step["run"].as_str())
-            .collect();
-        assert_eq!(
-            runs.iter()
-                .filter(|run| run.contains("tilo-app publish"))
-                .count(),
-            1
-        );
-        assert!(text.contains("path: apps/editor/dist/${{ matrix.platform }}"));
-        assert!(text.contains(r"rev=\([0-9a-f]\{40\}\)#"));
-    }
+    tilo_test_env::scenario! {
+        fn add_ci_writes_workflows_at_the_repository_root_and_keeps_existing_files;
 
-    #[test]
-    fn forgejo_workflow_uses_forgejo_artifacts_and_one_runner_label() {
-        let text = workflow(Forge::Forgejo, "codeberg-small", ".", "Cargo.lock");
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
-        let include = yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
-            .as_sequence()
-            .expect("matrix");
-        let builds: Vec<(&str, &str)> = include
-            .iter()
-            .map(|entry| {
-                (
-                    entry["platform"].as_str().unwrap_or_default(),
-                    entry["runner"].as_str().unwrap_or_default(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            builds,
-            [
-                ("tilo", "codeberg-small"),
-                ("web", "codeberg-small"),
-                ("android", "codeberg-small")
-            ],
-            "the Linux x86_64 builds are on"
-        );
-        assert!(text.contains("# - { platform: tilo, arch: aarch64"));
-        assert!(text.contains("# Windows and macOS need runners on those systems, and Linux"));
-        assert!(text.contains("https://code.forgejo.org/forgejo/upload-artifact@v4"));
-        assert!(!text.contains("actions/upload-artifact"));
-        assert_eq!(
-            yaml["jobs"]["check"]["runs-on"].as_str(),
-            Some("codeberg-small")
-        );
-    }
+        phase github_generator_writes_a_callable_pair_and_preserves_existing_files;
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path().canonicalize().expect("canonical tempdir");
+            let app = root.join("apps/editor");
+            std::fs::create_dir_all(root.join(".git")).expect("git");
+            std::fs::create_dir_all(&app).expect("app");
+            std::fs::write(root.join("Cargo.lock"), "").expect("lock");
+            let reusable = root.join(".github/workflows/tilo-build.yml");
+            let preview = add_ci(&app, Forge::Github, None, false, true).expect("preview");
+            assert_eq!(preview.reusable_path.as_ref(), Some(&reusable));
+            assert_eq!(preview.to_json()["written"], false);
+            assert!(!preview.path.exists());
+            assert!(!reusable.exists());
+            std::fs::create_dir_all(reusable.parent().expect("parent")).expect("directory");
+            std::fs::write(&reusable, "existing workflow").expect("existing");
+            assert!(add_ci(&app, Forge::Github, None, false, false).is_err());
+            assert!(
+                !preview.path.exists(),
+                "refusal must not create half the pair"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&reusable).expect("read"),
+                "existing workflow"
+            );
+            let outcome = add_ci(&app, Forge::Github, None, true, false).expect("write pair");
+            let caller: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&outcome.path).expect("caller"))
+                    .expect("YAML");
+            assert_eq!(
+                caller["jobs"]["app"]["uses"].as_str(),
+                Some("./.github/workflows/tilo-build.yml")
+            );
+            assert_eq!(
+                caller["jobs"]["app"]["with"]["working-directory"].as_str(),
+                Some("apps/editor")
+            );
+            assert_eq!(
+                caller["jobs"]["app"]["with"]["lockfile"].as_str(),
+                Some("Cargo.lock")
+            );
+            assert_eq!(
+                caller["jobs"]["app"]["with"]["publish"].as_str(),
+                Some("${{ startsWith(github.ref, 'refs/tags/v') }}")
+            );
+            let reusable_document: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&reusable).expect("callee"))
+                    .expect("YAML");
+            for secret in caller["jobs"]["app"]["secrets"]
+                .as_mapping()
+                .expect("secrets")
+                .keys()
+            {
+                assert!(
+                    !reusable_document["on"]["workflow_call"]["secrets"][secret].is_null(),
+                    "caller secret must be declared by callee"
+                );
+            }
+        }
 
-    #[test]
-    fn android_builds_in_the_builder_with_the_sdk_it_installs_and_ships_the_apk() {
-        let text = workflow(Forge::Github, "ubuntu-latest", ".", "Cargo.lock");
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
-        let android = yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
-            .as_sequence()
-            .expect("matrix")
-            .iter()
-            .find(|entry| entry["platform"].as_str() == Some("android"))
-            .expect("an android build");
-        assert_eq!(android["runner"].as_str(), Some("ubuntu-latest"));
-        assert_eq!(android["container"].as_str(), Some(BUILDER_IMAGE));
-        let steps = yaml["jobs"]["package"]["steps"]
-            .as_sequence()
-            .expect("steps");
-        let android_only: Vec<&serde_yaml::Value> = steps
-            .iter()
-            .filter(|step| step["if"].as_str() == Some("matrix.platform == 'android'"))
-            .collect();
-        let runs: Vec<&str> = android_only
-            .iter()
-            .filter_map(|step| step["run"].as_str())
-            .collect();
-        assert!(runs.iter().any(|run| run.contains("java-21-openjdk-devel")));
-        assert!(runs.contains(&"tilo-app setup android --accept-licenses"));
-        assert!(
-            runs.iter()
-                .any(|run| run.contains("TILO_ANDROID_KEYSTORE="))
-        );
-        let setup = steps
-            .iter()
-            .position(|step| {
-                step["run"].as_str() == Some("tilo-app setup android --accept-licenses")
-            })
-            .expect("setup step");
-        let package = steps
-            .iter()
-            .position(|step| step["name"].as_str() == Some("Package"))
-            .expect("package step");
-        assert!(setup < package, "the SDK is installed before packaging");
-        let uploads: Vec<&str> = android_only
-            .iter()
-            .filter_map(|step| step["with"]["path"].as_str())
-            .collect();
-        assert!(
-            uploads
-                .iter()
-                .any(|path| path.contains("dist/android-${{ matrix.arch }}.apk")
-                    && path.contains("dist/android-${{ matrix.arch }}.aab")),
-            "{uploads:?}"
-        );
-    }
-
-    #[test]
-    fn workflow_goes_at_the_repository_root() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().canonicalize().expect("canonical tempdir");
-        let app = root.join("apps/editor");
-        std::fs::create_dir_all(root.join(".git")).expect("git");
-        std::fs::create_dir_all(&app).expect("app");
-        std::fs::write(root.join("Cargo.lock"), "").expect("lock");
-        let outcome = add_ci(&app, Forge::Gitea, None, false, false).expect("add ci");
-        assert_eq!(outcome.path, root.join(".gitea/workflows/tilo.yml"));
-        assert_eq!(outcome.working_directory, "apps/editor");
-        let text = std::fs::read_to_string(&outcome.path).expect("written");
-        assert!(text.contains("hashFiles('Cargo.lock')"));
-        assert!(add_ci(&app, Forge::Gitea, None, false, false).is_err());
-        assert!(add_ci(&app, Forge::Gitea, None, true, false).is_ok());
+        phase workflow_goes_at_the_repository_root;
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path().canonicalize().expect("canonical tempdir");
+            let app = root.join("apps/editor");
+            std::fs::create_dir_all(root.join(".git")).expect("git");
+            std::fs::create_dir_all(&app).expect("app");
+            std::fs::write(root.join("Cargo.lock"), "").expect("lock");
+            let outcome = add_ci(&app, Forge::Gitea, None, false, false).expect("add ci");
+            assert_eq!(outcome.path, root.join(".gitea/workflows/tilo.yml"));
+            assert_eq!(outcome.working_directory, "apps/editor");
+            let text = std::fs::read_to_string(&outcome.path).expect("written");
+            assert!(text.contains("hashFiles('Cargo.lock')"));
+            assert!(add_ci(&app, Forge::Gitea, None, false, false).is_err());
+            assert!(add_ci(&app, Forge::Gitea, None, true, false).is_ok());
+        }
     }
 }

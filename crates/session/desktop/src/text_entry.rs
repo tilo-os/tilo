@@ -205,227 +205,231 @@ mod tests {
         (buf, sel)
     }
 
-    #[test]
-    fn typing_inserts_characters_at_the_caret_and_filters_the_rest() {
-        {
-            let (buf, sel) = typed("hunter2");
-            assert_eq!(buf, "hunter2");
-            assert_eq!(sel.cursor, 7);
-            assert!(sel.is_collapsed());
-        }
+    tilo_test_env::scenario! {
+        fn a_text_entry_types_deletes_and_moves_its_caret;
 
+        phase typing_inserts_characters_at_the_caret_and_filters_the_rest;
         {
-            // Space arrives as a NamedKey, not a Character.
-            let (buf, _) = typed("correct horse");
-            assert_eq!(buf, "correct horse");
-        }
-
-        {
-            let (mut buf, mut sel) = typed("secret");
-            sel.anchor = 0;
-            sel.cursor = 6;
-            apply(&ch("x"), plain(), &mut buf, &mut sel);
-            assert_eq!(buf, "x");
-            assert_eq!(sel.cursor, 1);
-        }
-
-        {
-            let mut buf = String::new();
-            let mut sel = Selection::collapsed(0);
-            apply(&ch("é"), plain(), &mut buf, &mut sel);
-            apply(&ch("漢"), plain(), &mut buf, &mut sel);
-            assert_eq!(buf, "é漢");
-            apply(
-                &Key::Named(NamedKey::Backspace),
-                plain(),
-                &mut buf,
-                &mut sel,
-            );
-            assert_eq!(buf, "é");
-            assert!(buf.is_char_boundary(sel.cursor));
-        }
-
-        {
-            let mut buf = String::new();
-            let mut sel = Selection::collapsed(0);
-            assert_eq!(
-                apply(&ch("\u{7}"), plain(), &mut buf, &mut sel),
-                Edit::Ignored
-            );
-            assert!(buf.is_empty(), "an invisible byte must never reach nmcli");
-        }
-    }
-
-    #[test]
-    fn characters_are_what_a_person_sees_and_input_methods_type_at_the_caret() {
-        {
-            let mut buf = String::new();
-            let mut sel = Selection::collapsed(0);
-            for text in ["a", "e\u{301}", "👍🏽", "🇳🇱"] {
-                assert_eq!(commit(text, &mut buf, &mut sel), Edit::Changed);
+            {
+                let (buf, sel) = typed("hunter2");
+                assert_eq!(buf, "hunter2");
+                assert_eq!(sel.cursor, 7);
+                assert!(sel.is_collapsed());
             }
-            assert_eq!(buf, "ae\u{301}👍🏽🇳🇱");
-            apply(
-                &Key::Named(NamedKey::ArrowLeft),
-                plain(),
-                &mut buf,
-                &mut sel,
-            );
-            apply(
-                &Key::Named(NamedKey::Backspace),
-                plain(),
-                &mut buf,
-                &mut sel,
-            );
-            assert_eq!(buf, "ae\u{301}🇳🇱", "the skin-toned emoji goes whole");
-            apply(
-                &Key::Named(NamedKey::Backspace),
-                plain(),
-                &mut buf,
-                &mut sel,
-            );
-            assert_eq!(buf, "a🇳🇱", "the accented letter goes whole");
-        }
 
-        {
-            let (mut buf, mut sel) = typed("hello world");
-            sel.anchor = 6;
-            sel.cursor = 11;
-            assert_eq!(commit("Welt", &mut buf, &mut sel), Edit::Changed);
-            assert_eq!(buf, "hello Welt");
-            assert_eq!(sel, Selection::collapsed(10));
-            assert_eq!(commit("\u{1b}", &mut buf, &mut sel), Edit::Ignored);
-            assert_eq!(buf, "hello Welt");
-        }
-    }
+            {
+                // Space arrives as a NamedKey, not a Character.
+                let (buf, _) = typed("correct horse");
+                assert_eq!(buf, "correct horse");
+            }
 
-    #[test]
-    fn deletion_keys_remove_characters_and_words_or_say_nothing_changed() {
-        {
-            let (mut buf, mut sel) = typed("hello world");
-            assert_eq!(
+            {
+                let (mut buf, mut sel) = typed("secret");
+                sel.anchor = 0;
+                sel.cursor = 6;
+                apply(&ch("x"), plain(), &mut buf, &mut sel);
+                assert_eq!(buf, "x");
+                assert_eq!(sel.cursor, 1);
+            }
+
+            {
+                let mut buf = String::new();
+                let mut sel = Selection::collapsed(0);
+                apply(&ch("é"), plain(), &mut buf, &mut sel);
+                apply(&ch("漢"), plain(), &mut buf, &mut sel);
+                assert_eq!(buf, "é漢");
                 apply(
                     &Key::Named(NamedKey::Backspace),
                     plain(),
                     &mut buf,
-                    &mut sel
-                ),
-                Edit::Changed
-            );
-            assert_eq!(buf, "hello worl");
-            apply(&Key::Named(NamedKey::Backspace), ctrl(), &mut buf, &mut sel);
-            assert_eq!(buf, "hello ", "ctrl+backspace deletes the word");
+                    &mut sel,
+                );
+                assert_eq!(buf, "é");
+                assert!(buf.is_char_boundary(sel.cursor));
+            }
+
+            {
+                let mut buf = String::new();
+                let mut sel = Selection::collapsed(0);
+                assert_eq!(
+                    apply(&ch("\u{7}"), plain(), &mut buf, &mut sel),
+                    Edit::Ignored
+                );
+                assert!(buf.is_empty(), "an invisible byte must never reach nmcli");
+            }
         }
 
+        phase characters_are_what_a_person_sees_and_input_methods_type_at_the_caret;
         {
-            let mut buf = String::new();
-            let mut sel = Selection::collapsed(0);
-            assert_eq!(
+            {
+                let mut buf = String::new();
+                let mut sel = Selection::collapsed(0);
+                for text in ["a", "e\u{301}", "👍🏽", "🇳🇱"] {
+                    assert_eq!(commit(text, &mut buf, &mut sel), Edit::Changed);
+                }
+                assert_eq!(buf, "ae\u{301}👍🏽🇳🇱");
+                apply(
+                    &Key::Named(NamedKey::ArrowLeft),
+                    plain(),
+                    &mut buf,
+                    &mut sel,
+                );
                 apply(
                     &Key::Named(NamedKey::Backspace),
                     plain(),
                     &mut buf,
-                    &mut sel
-                ),
-                Edit::ConsumedQuiet,
-                "swallowed, but no repaint is owed"
-            );
+                    &mut sel,
+                );
+                assert_eq!(buf, "ae\u{301}🇳🇱", "the skin-toned emoji goes whole");
+                apply(
+                    &Key::Named(NamedKey::Backspace),
+                    plain(),
+                    &mut buf,
+                    &mut sel,
+                );
+                assert_eq!(buf, "a🇳🇱", "the accented letter goes whole");
+            }
+
+            {
+                let (mut buf, mut sel) = typed("hello world");
+                sel.anchor = 6;
+                sel.cursor = 11;
+                assert_eq!(commit("Welt", &mut buf, &mut sel), Edit::Changed);
+                assert_eq!(buf, "hello Welt");
+                assert_eq!(sel, Selection::collapsed(10));
+                assert_eq!(commit("\u{1b}", &mut buf, &mut sel), Edit::Ignored);
+                assert_eq!(buf, "hello Welt");
+            }
         }
 
+        phase deletion_keys_remove_characters_and_words_or_say_nothing_changed;
         {
-            let (mut buf, _) = typed("hello world");
-            let mut sel = Selection::collapsed(0);
-            apply(&Key::Named(NamedKey::Delete), ctrl(), &mut buf, &mut sel);
-            assert_eq!(buf, "world");
-            assert_eq!(sel, Selection::collapsed(0));
-        }
-    }
+            {
+                let (mut buf, mut sel) = typed("hello world");
+                assert_eq!(
+                    apply(
+                        &Key::Named(NamedKey::Backspace),
+                        plain(),
+                        &mut buf,
+                        &mut sel
+                    ),
+                    Edit::Changed
+                );
+                assert_eq!(buf, "hello worl");
+                apply(&Key::Named(NamedKey::Backspace), ctrl(), &mut buf, &mut sel);
+                assert_eq!(buf, "hello ", "ctrl+backspace deletes the word");
+            }
 
-    #[test]
-    fn caret_keys_move_and_extend_the_selection() {
-        {
-            let (mut buf, mut sel) = typed("abc");
-            assert_eq!(apply(&ch("a"), ctrl(), &mut buf, &mut sel), Edit::Changed);
-            assert_eq!(
-                apply(&ch("a"), ctrl(), &mut buf, &mut sel),
-                Edit::ConsumedQuiet,
-                "selecting what is already selected changes nothing"
-            );
-            assert_eq!(sel.anchor, 0);
-            assert_eq!(sel.cursor, 3);
-            assert_eq!(buf, "abc", "ctrl+a must not type an 'a'");
-        }
+            {
+                let mut buf = String::new();
+                let mut sel = Selection::collapsed(0);
+                assert_eq!(
+                    apply(
+                        &Key::Named(NamedKey::Backspace),
+                        plain(),
+                        &mut buf,
+                        &mut sel
+                    ),
+                    Edit::ConsumedQuiet,
+                    "swallowed, but no repaint is owed"
+                );
+            }
 
-        {
-            let (mut buf, mut sel) = typed("abcdef");
-            apply(&Key::Named(NamedKey::Home), plain(), &mut buf, &mut sel);
-            assert_eq!(sel.cursor, 0);
-            apply(&Key::Named(NamedKey::End), plain(), &mut buf, &mut sel);
-            assert_eq!(sel.cursor, 6);
-        }
-
-        {
-            let (mut buf, mut sel) = typed("abcdef");
-            let shift = Mods {
-                shift: true,
-                ctrl: false,
-            };
-            apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
-            apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
-            assert!(!sel.is_collapsed());
-            assert_eq!(sel.range(), 4..6);
+            {
+                let (mut buf, _) = typed("hello world");
+                let mut sel = Selection::collapsed(0);
+                apply(&Key::Named(NamedKey::Delete), ctrl(), &mut buf, &mut sel);
+                assert_eq!(buf, "world");
+                assert_eq!(sel, Selection::collapsed(0));
+            }
         }
 
+        phase caret_keys_move_and_extend_the_selection;
         {
-            let (mut buf, _) = typed("hello world");
-            let mut sel = Selection::collapsed(0);
-            let ctrl_shift = Mods {
-                shift: true,
-                ctrl: true,
-            };
-            apply(
-                &Key::Named(NamedKey::ArrowRight),
-                ctrl_shift,
-                &mut buf,
-                &mut sel,
-            );
-            assert_eq!(sel.range(), 0..6);
-            apply(
-                &Key::Named(NamedKey::End),
-                Mods {
+            {
+                let (mut buf, mut sel) = typed("abc");
+                assert_eq!(apply(&ch("a"), ctrl(), &mut buf, &mut sel), Edit::Changed);
+                assert_eq!(
+                    apply(&ch("a"), ctrl(), &mut buf, &mut sel),
+                    Edit::ConsumedQuiet,
+                    "selecting what is already selected changes nothing"
+                );
+                assert_eq!(sel.anchor, 0);
+                assert_eq!(sel.cursor, 3);
+                assert_eq!(buf, "abc", "ctrl+a must not type an 'a'");
+            }
+
+            {
+                let (mut buf, mut sel) = typed("abcdef");
+                apply(&Key::Named(NamedKey::Home), plain(), &mut buf, &mut sel);
+                assert_eq!(sel.cursor, 0);
+                apply(&Key::Named(NamedKey::End), plain(), &mut buf, &mut sel);
+                assert_eq!(sel.cursor, 6);
+            }
+
+            {
+                let (mut buf, mut sel) = typed("abcdef");
+                let shift = Mods {
                     shift: true,
                     ctrl: false,
-                },
-                &mut buf,
-                &mut sel,
-            );
-            assert_eq!(sel.range(), 0..buf.len());
-        }
-    }
+                };
+                apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
+                apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
+                assert!(!sel.is_collapsed());
+                assert_eq!(sel.range(), 4..6);
+            }
 
-    #[test]
-    fn non_text_keys_are_reported_or_fall_through_without_editing() {
-        {
-            let (mut buf, mut sel) = typed("pw");
-            assert_eq!(
-                apply(&Key::Named(NamedKey::Enter), plain(), &mut buf, &mut sel),
-                Edit::Submit
-            );
-            assert_eq!(
-                apply(&Key::Named(NamedKey::Escape), plain(), &mut buf, &mut sel),
-                Edit::Cancel
-            );
-            assert_eq!(buf, "pw", "neither key changes the buffer");
+            {
+                let (mut buf, _) = typed("hello world");
+                let mut sel = Selection::collapsed(0);
+                let ctrl_shift = Mods {
+                    shift: true,
+                    ctrl: true,
+                };
+                apply(
+                    &Key::Named(NamedKey::ArrowRight),
+                    ctrl_shift,
+                    &mut buf,
+                    &mut sel,
+                );
+                assert_eq!(sel.range(), 0..6);
+                apply(
+                    &Key::Named(NamedKey::End),
+                    Mods {
+                        shift: true,
+                        ctrl: false,
+                    },
+                    &mut buf,
+                    &mut sel,
+                );
+                assert_eq!(sel.range(), 0..buf.len());
+            }
         }
 
+        phase non_text_keys_are_reported_or_fall_through_without_editing;
         {
-            let mut buf = String::new();
-            let mut sel = Selection::collapsed(0);
-            assert_eq!(
-                apply(&Key::Named(NamedKey::F5), plain(), &mut buf, &mut sel),
-                Edit::Ignored
-            );
-            assert_eq!(apply(&ch("q"), ctrl(), &mut buf, &mut sel), Edit::Ignored);
+            {
+                let (mut buf, mut sel) = typed("pw");
+                assert_eq!(
+                    apply(&Key::Named(NamedKey::Enter), plain(), &mut buf, &mut sel),
+                    Edit::Submit
+                );
+                assert_eq!(
+                    apply(&Key::Named(NamedKey::Escape), plain(), &mut buf, &mut sel),
+                    Edit::Cancel
+                );
+                assert_eq!(buf, "pw", "neither key changes the buffer");
+            }
+
+            {
+                let mut buf = String::new();
+                let mut sel = Selection::collapsed(0);
+                assert_eq!(
+                    apply(&Key::Named(NamedKey::F5), plain(), &mut buf, &mut sel),
+                    Edit::Ignored
+                );
+                assert_eq!(apply(&ch("q"), ctrl(), &mut buf, &mut sel), Edit::Ignored);
+            }
         }
     }
 }

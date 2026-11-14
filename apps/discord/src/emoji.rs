@@ -195,75 +195,79 @@ mod tests {
         guild
     }
 
-    #[test]
-    fn unicode_crosses_as_itself_and_compares_without_selectors() {
-        let guild = Guild::default();
-        assert_eq!(to_discord(&guild, "👍🏽").as_deref(), Some("👍🏽"));
-        assert_eq!(to_discord(&guild, "❤️").as_deref(), Some("❤️"));
-        assert_eq!(key("❤️"), key("❤"));
-        assert_ne!(key("👍🏽"), key("👍"), "a skin tone is its own emoji");
-    }
+    tilo_test_env::scenario! {
+        fn emoji_are_spelled_as_each_side_spells_them;
 
-    #[test]
-    fn a_workspace_emoji_is_the_servers_emoji_of_its_name_or_stays_in_tilo() {
-        let guild = guild_with(&[("tilo_hello", "55")]);
-        assert_eq!(
-            to_discord(&guild, ":tilo_hello:").as_deref(),
-            Some("tilo_hello:55")
-        );
-        assert_eq!(to_discord(&guild, ":pizza:"), None);
-        assert_eq!(to_discord(&guild, ":not an emoji:"), None);
-    }
+        phase unicode_crosses_as_itself_and_compares_without_selectors;
+        {
+            let guild = Guild::default();
+            assert_eq!(to_discord(&guild, "👍🏽").as_deref(), Some("👍🏽"));
+            assert_eq!(to_discord(&guild, "❤️").as_deref(), Some("❤️"));
+            assert_eq!(key("❤️"), key("❤"));
+            assert_ne!(key("👍🏽"), key("👍"), "a skin tone is its own emoji");
+        }
 
-    #[test]
-    fn an_emoji_the_bridge_uploaded_stands_for_its_workspace_emoji() {
-        let mut guild = guild_with(&[("party", "7")]);
-        guild.map.push(crate::record::Mapping {
-            key: crate::record::map_key(MappedKind::Emoji, "tilo_wave"),
-            kind: MappedKind::Emoji,
-            tilo: "tilo_wave".into(),
-            discord: "91".into(),
-            ..Default::default()
-        });
-        assert_eq!(
-            to_discord(&guild, ":tilo_wave:").as_deref(),
-            Some("tilo_wave:91")
-        );
-        assert_eq!(
-            to_discord_text(&guild, "hi :tilo_wave: and :party: but :pizza: 10:30:45"),
-            "hi <:tilo_wave:91> and <:party:7> but :pizza: 10:30:45"
-        );
-        assert_eq!(
-            to_discord_text(&guild, "already <:party:7>, a:tilo_wave:b"),
-            "already <:party:7>, a<:tilo_wave:91>b"
-        );
-    }
+        phase a_workspace_emoji_is_the_servers_emoji_of_its_name_or_stays_in_tilo;
+        {
+            let guild = guild_with(&[("tilo_hello", "55")]);
+            assert_eq!(
+                to_discord(&guild, ":tilo_hello:").as_deref(),
+                Some("tilo_hello:55")
+            );
+            assert_eq!(to_discord(&guild, ":pizza:"), None);
+            assert_eq!(to_discord(&guild, ":not an emoji:"), None);
+        }
 
-    #[test]
-    fn a_servers_emoji_in_a_discord_message_arrives_as_its_name() {
-        assert_eq!(
-            from_discord_text("look <:party:7> <a:dance:8> <@12> <:no:x> <3"),
-            "look :party: :dance: <@12> <:no:x> <3"
-        );
-    }
+        phase an_emoji_the_bridge_uploaded_stands_for_its_workspace_emoji;
+        {
+            let mut guild = guild_with(&[("party", "7")]);
+            guild.map.push(crate::record::Mapping {
+                key: crate::record::map_key(MappedKind::Emoji, "tilo_wave"),
+                kind: MappedKind::Emoji,
+                tilo: "tilo_wave".into(),
+                discord: "91".into(),
+                ..Default::default()
+            });
+            assert_eq!(
+                to_discord(&guild, ":tilo_wave:").as_deref(),
+                Some("tilo_wave:91")
+            );
+            assert_eq!(
+                to_discord_text(&guild, "hi :tilo_wave: and :party: but :pizza: 10:30:45"),
+                "hi <:tilo_wave:91> and <:party:7> but :pizza: 10:30:45"
+            );
+            assert_eq!(
+                to_discord_text(&guild, "already <:party:7>, a:tilo_wave:b"),
+                "already <:party:7>, a<:tilo_wave:91>b"
+            );
+        }
 
-    #[test]
-    fn a_discord_name_keeps_discords_rule() {
-        assert_eq!(discord_name("tilo_wave"), "tilo_wave");
-        assert_eq!(discord_name("a"), "a_");
-        assert_eq!(discord_name("x-y"), "x_y");
-        assert_eq!(discord_name(&"a".repeat(40)).len(), 32);
-    }
+        phase a_servers_emoji_in_a_discord_message_arrives_as_its_name;
+        {
+            assert_eq!(
+                from_discord_text("look <:party:7> <a:dance:8> <@12> <:no:x> <3"),
+                "look :party: :dance: <@12> <:no:x> <3"
+            );
+        }
 
-    #[test]
-    fn a_discord_reaction_takes_the_spelling_tilo_already_uses() {
-        let held = [Reaction {
-            emoji: "❤".into(),
-            by: "u_ada".into(),
-            ..Reaction::default()
-        }];
-        assert_eq!(to_tilo("❤️", &held), "❤");
-        assert_eq!(to_tilo("❤️", &[]), "❤️");
-        assert_eq!(to_tilo(":tilo_hello:", &held), ":tilo_hello:");
+        phase a_discord_name_keeps_discords_rule;
+        {
+            assert_eq!(discord_name("tilo_wave"), "tilo_wave");
+            assert_eq!(discord_name("a"), "a_");
+            assert_eq!(discord_name("x-y"), "x_y");
+            assert_eq!(discord_name(&"a".repeat(40)).len(), 32);
+        }
+
+        phase a_discord_reaction_takes_the_spelling_tilo_already_uses;
+        {
+            let held = [Reaction {
+                emoji: "❤".into(),
+                by: "u_ada".into(),
+                ..Reaction::default()
+            }];
+            assert_eq!(to_tilo("❤️", &held), "❤");
+            assert_eq!(to_tilo("❤️", &[]), "❤️");
+            assert_eq!(to_tilo(":tilo_hello:", &held), ":tilo_hello:");
+        }
     }
 }

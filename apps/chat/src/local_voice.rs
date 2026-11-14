@@ -1031,275 +1031,323 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shared_space_call_status_exposes_muted_join_and_leave_without_starting_capture() {
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let before = doc.save();
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.answer_effect(crate::effects::ChatEffect::JoinCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        app.answer_effect(crate::effects::ChatEffect::CallStatus {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        assert_eq!(app.native_voice.snapshot.state, State::Preparing);
-        assert!(app.native_voice.snapshot.muted);
-        assert!(!app.native_voice.snapshot.capture_active);
-        app.answer_effect(crate::effects::ChatEffect::LeaveCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        assert_eq!(app.native_voice.snapshot.state, State::Ended);
-        assert!(app.native_voice.channel.is_none());
-        assert_eq!(
-            doc.save(),
-            before,
-            "call state is transient, never persistent consent"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A join and its status go through the voice service, and nothing but an asked join starts capture.
+        fn the_voice_service_joins_a_call_and_nothing_unasked_starts_capture;
 
-    #[test]
-    fn an_unanswered_join_wakes_the_window_to_give_up() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
+        phase shared_space_call_status_exposes_muted_join_and_leave_without_starting_capture;
+        {
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let before = doc.save();
+            let mut app = crate::app::ChatApp::new_ephemeral();
+            app.reload(&doc);
+            app.answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
             })
             .unwrap();
-        let _ = voice.take_requests(now);
-        assert_eq!(voice.snapshot.state, State::Preparing);
-        let due = voice
-            .next_deadline(now)
-            .expect("an unanswered join asks for a wake");
-        assert_eq!(due, now + REPLY_LOST);
-        let _ = voice.take_requests(due);
-        assert_ne!(voice.snapshot.state, State::Preparing, "the join gave up");
-        assert_eq!(voice.client_issue, Some("reply_timeout"));
-        assert!(
-            voice.next_deadline(due).is_none_or(|next| next > due),
-            "a deadline that passed does not keep waking the window"
-        );
-    }
-
-    #[test]
-    fn a_join_is_held_while_its_answer_crosses_to_the_host() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
+            app.answer_effect(crate::effects::ChatEffect::CallStatus {
+                channel: "c_standup".into(),
             })
             .unwrap();
-        let _ = voice.take_requests(now);
-        let answered = voice.take_requests(now + REPLY_TIMEOUT);
-        assert!(
-            answered.is_empty(),
-            "nothing gives up while the host may still answer"
-        );
-        assert_eq!(voice.snapshot.state, State::Preparing);
-        assert_eq!(voice.client_issue, None);
-    }
-
-    #[test]
-    fn a_stalled_app_does_not_give_up_a_call_it_could_not_hear_from() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
+            assert_eq!(app.native_voice.snapshot.state, State::Preparing);
+            assert!(app.native_voice.snapshot.muted);
+            assert!(!app.native_voice.snapshot.capture_active);
+            app.answer_effect(crate::effects::ChatEffect::LeaveCall {
+                channel: "c_standup".into(),
             })
             .unwrap();
-        let join = voice.take_requests(now);
-        voice.complete(request_id(&join[0]), &Ok(live()));
-        let watch = voice.take_requests(now);
-        assert_eq!(watch.len(), 1, "one watch outstanding");
-        let leaves = |requests: &[CollabRequest]| {
-            requests.iter().any(|request| {
-                matches!(
-                    request,
-                    CollabRequest::NativeMediaCommand {
-                        command: Request {
-                            command: Command::Leave,
-                            ..
-                        },
-                        ..
-                    }
-                )
-            })
-        };
-        let woken = now + WATCH_LOST + Duration::from_secs(30);
-        assert!(!leaves(&voice.take_requests(woken)), "the call stays");
-        assert_eq!(voice.snapshot.state, State::Live);
-        assert_eq!(voice.channel.as_deref(), Some("voice"));
-        assert!(!voice.complete(request_id(&watch[0]), &Ok(live())));
-        assert_eq!(voice.snapshot.state, State::Live);
-        let next = voice.take_requests(woken);
-        assert_eq!(next.len(), 1);
-        let lost = woken + WATCH_LOST;
-        assert!(
-            leaves(&voice.take_requests(lost)),
-            "a lost reply still ends it"
-        );
-        assert_eq!(voice.snapshot.state, State::Unavailable);
-    }
+            assert_eq!(app.native_voice.snapshot.state, State::Ended);
+            assert!(app.native_voice.channel.is_none());
+            assert_eq!(
+                doc.save(),
+                before,
+                "call state is transient, never persistent consent"
+            );
+        }
 
-    #[test]
-    fn a_reply_lost_while_running_gives_up_after_the_grace_a_stall_gets() {
-        let now = ui::time::now();
-        let sent = now;
-        // On time: unchanged.
-        assert_eq!(
-            rearmed_after_stall(sent, REPLY_LOST, now + REPLY_LOST),
-            sent
-        );
-        // Woken late: lost `AFTER_STALL` from then.
-        let woken = now + REPLY_LOST + Duration::from_secs(10);
-        let rearmed = rearmed_after_stall(sent, REPLY_LOST, woken);
-        assert_eq!(rearmed + REPLY_LOST, woken + AFTER_STALL);
-    }
-
-    #[test]
-    fn newer_join_response_retires_prior_pending_intents() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "first".into(),
-            })
-            .unwrap();
-        let first = voice.take_requests(now);
-        voice
-            .submit(Command::Join {
-                channel_id: "second".into(),
-            })
-            .unwrap();
-        let second = voice.take_requests(now);
-        voice.complete(request_id(&second[0]), &Ok(live()));
-        voice.complete(request_id(&first[0]), &Ok(live()));
-        let requests = voice.take_requests(now + Duration::from_secs(3));
-        assert_eq!(voice.snapshot.state, State::Live);
-        assert_eq!(voice.channel.as_deref(), Some("second"));
-        assert!(requests.iter().all(|request| matches!(
-            request,
-            CollabRequest::NativeMediaCommand {
-                command: Request {
-                    command: Command::Watch { .. },
-                    ..
-                },
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn lost_status_reply_clears_retained_inventory_and_fences_late_response() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        let join = voice.take_requests(now);
-        let mut snapshot = live();
-        snapshot.inventory_revision = Some(1);
-        snapshot.publishers = vec!["22".repeat(32)];
-        voice.complete(request_id(&join[0]), &Ok(snapshot.clone()));
-        let status = voice.take_requests(now + Duration::from_millis(500));
-        assert_eq!(status.len(), 1, "one watch outstanding");
-        assert!(
+        phase unsolicited_or_invalid_status_cannot_activate_capture;
+        {
+            let mut voice = LocalVoice::default();
+            voice.complete(999, &Ok(live()));
+            assert_eq!(voice.snapshot.state, State::Unavailable);
             voice
-                .take_requests(now + Duration::from_secs(20))
-                .is_empty(),
-            "a held watch is no lost reply"
-        );
-        let stopping = voice.take_requests(now + Duration::from_millis(500) + WATCH_LOST);
-        assert_eq!(voice.snapshot.state, State::Unavailable);
-        assert!(voice.snapshot.publishers.is_empty());
-        assert!(stopping.iter().any(|request| matches!(
-            request,
-            CollabRequest::NativeMediaCommand {
-                command: Request {
-                    command: Command::Leave,
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let requests = voice.take_requests(ui::time::now());
+            let mut invalid = live();
+            invalid.capture_active = true;
+            voice.complete(request_id(&requests[0]), &Ok(invalid));
+            assert_eq!(voice.snapshot.state, State::Unavailable);
+            assert!(voice.snapshot.muted);
+            assert!(!voice.snapshot.capture_active);
+        }
+
+        phase public_status_retains_a_safe_client_failure_after_cleanup_then_clears_on_rejoin;
+        {
+            let now = ui::time::now();
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let mut app = crate::app::ChatApp::new_ephemeral();
+            app.reload(&doc);
+            app.answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+            let join = app.native_voice.take_requests(now);
+            app.native_voice.complete(request_id(&join[0]), &Ok(live()));
+            let refresh = app
+                .native_voice
+                .take_requests(now + Duration::from_millis(500));
+            app.native_voice.complete(
+                request_id(&refresh[0]),
+                &Err("native media command timed out".into()),
+            );
+            let stop = app.native_voice.take_requests(now + Duration::from_secs(1));
+            let mut ended = Snapshot::unavailable();
+            ended.state = State::Ended;
+            ended.issue = None;
+            app.native_voice.complete(request_id(&stop[0]), &Ok(ended));
+            let ui::framework::Effected::Done(output) = app
+                .answer_effect(crate::effects::ChatEffect::CallStatus {
+                    channel: "c_standup".into(),
+                })
+                .unwrap()
+            else {
+                panic!("status must answer immediately");
+            };
+            let output = output.value.unwrap();
+            assert_eq!(output["reported"]["state"], "ended");
+            assert_eq!(output["clientIssue"], "reply_timeout");
+            assert_eq!(output["channel"], serde_json::Value::Null);
+            app.answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+            assert_eq!(app.native_voice.client_issue, None);
+            let join = app
+                .native_voice
+                .take_requests(now + Duration::from_millis(1500));
+            let join_id = join
+                .iter()
+                .find_map(|request| match request {
+                    CollabRequest::NativeMediaCommand {
+                        request_id,
+                        command:
+                            Request {
+                                command: Command::Join { .. },
+                                ..
+                            },
+                    } => Some(*request_id),
+                    _ => None,
+                })
+                .unwrap();
+            app.native_voice.complete(
+                join_id,
+                &Err("private service detail must not escape".into()),
+            );
+            let ui::framework::Effected::Done(output) = app
+                .answer_effect(crate::effects::ChatEffect::CallStatus {
+                    channel: "c_standup".into(),
+                })
+                .unwrap()
+            else {
+                panic!("status must answer immediately");
+            };
+            let output = output.value.unwrap();
+            assert_eq!(output["clientIssue"], "unavailable");
+            assert!(!output.to_string().contains("private service detail"));
+            assert_eq!(output["reported"]["capture_active"], false);
+        }
+
+        phase reader_pointer_and_resource_join_use_the_same_service_without_document_mutation;
+        {
+            use ui::permissions::{PermissionContext, Role};
+            use ui::widget::Collaborative;
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let before = doc.save();
+            let mut pointer = crate::app::ChatApp::new_ephemeral();
+            pointer.reload(&doc);
+            pointer.perms = crate::permissions::ChatPermissions::from_context(
+                PermissionContext::member("reader", Role::Viewer),
+            );
+            pointer.on_hit(
+                crate::app::Hit::Channel("c_standup".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            let pointer_requests = pointer.take_collab_requests();
+            let mut resource = crate::app::ChatApp::new_ephemeral();
+            resource.reload(&doc);
+            resource.perms = pointer.perms.clone();
+            resource
+                .answer_effect(crate::effects::ChatEffect::JoinCall {
+                    channel: "c_standup".into(),
+                })
+                .unwrap();
+            let resource_requests = resource.take_collab_requests();
+            let command = |requests: Vec<CollabRequest>| match requests.into_iter().next().unwrap() {
+                CollabRequest::NativeMediaCommand { command, .. } => command,
+                _ => panic!("native service expected"),
+            };
+            assert_eq!(command(pointer_requests), command(resource_requests));
+            assert_eq!(doc.save(), before);
+            assert!(pointer.call.muted);
+            assert!(
+                pointer
+                    .native_voice_command("c_standup", Command::SetMuted { muted: false })
+                    .is_err()
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// What the call's client does when an answer never comes.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn a_lost_reply_gives_up_on_its_deadline_and_a_stall_does_not;
+
+        phase an_unanswered_join_wakes_the_window_to_give_up;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let _ = voice.take_requests(now);
+            assert_eq!(voice.snapshot.state, State::Preparing);
+            let due = voice
+                .next_deadline(now)
+                .expect("an unanswered join asks for a wake");
+            assert_eq!(due, now + REPLY_LOST);
+            let _ = voice.take_requests(due);
+            assert_ne!(voice.snapshot.state, State::Preparing, "the join gave up");
+            assert_eq!(voice.client_issue, Some("reply_timeout"));
+            assert!(
+                voice.next_deadline(due).is_none_or(|next| next > due),
+                "a deadline that passed does not keep waking the window"
+            );
+        }
+
+        phase a_join_is_held_while_its_answer_crosses_to_the_host;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let _ = voice.take_requests(now);
+            let answered = voice.take_requests(now + REPLY_TIMEOUT);
+            assert!(
+                answered.is_empty(),
+                "nothing gives up while the host may still answer"
+            );
+            assert_eq!(voice.snapshot.state, State::Preparing);
+            assert_eq!(voice.client_issue, None);
+        }
+
+        phase a_stalled_app_does_not_give_up_a_call_it_could_not_hear_from;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let join = voice.take_requests(now);
+            voice.complete(request_id(&join[0]), &Ok(live()));
+            let watch = voice.take_requests(now);
+            assert_eq!(watch.len(), 1, "one watch outstanding");
+            let leaves = |requests: &[CollabRequest]| {
+                requests.iter().any(|request| {
+                    matches!(
+                        request,
+                        CollabRequest::NativeMediaCommand {
+                            command: Request {
+                                command: Command::Leave,
+                                ..
+                            },
+                            ..
+                        }
+                    )
+                })
+            };
+            let woken = now + WATCH_LOST + Duration::from_secs(30);
+            assert!(!leaves(&voice.take_requests(woken)), "the call stays");
+            assert_eq!(voice.snapshot.state, State::Live);
+            assert_eq!(voice.channel.as_deref(), Some("voice"));
+            assert!(!voice.complete(request_id(&watch[0]), &Ok(live())));
+            assert_eq!(voice.snapshot.state, State::Live);
+            let next = voice.take_requests(woken);
+            assert_eq!(next.len(), 1);
+            let lost = woken + WATCH_LOST;
+            assert!(
+                leaves(&voice.take_requests(lost)),
+                "a lost reply still ends it"
+            );
+            assert_eq!(voice.snapshot.state, State::Unavailable);
+        }
+
+        phase a_reply_lost_while_running_gives_up_after_the_grace_a_stall_gets;
+        {
+            let now = ui::time::now();
+            let sent = now;
+            // On time: unchanged.
+            assert_eq!(
+                rearmed_after_stall(sent, REPLY_LOST, now + REPLY_LOST),
+                sent
+            );
+            // Woken late: lost `AFTER_STALL` from then.
+            let woken = now + REPLY_LOST + Duration::from_secs(10);
+            let rearmed = rearmed_after_stall(sent, REPLY_LOST, woken);
+            assert_eq!(rearmed + REPLY_LOST, woken + AFTER_STALL);
+        }
+
+        phase lost_status_reply_clears_retained_inventory_and_fences_late_response;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let join = voice.take_requests(now);
+            let mut snapshot = live();
+            snapshot.inventory_revision = Some(1);
+            snapshot.publishers = vec!["22".repeat(32)];
+            voice.complete(request_id(&join[0]), &Ok(snapshot.clone()));
+            let status = voice.take_requests(now + Duration::from_millis(500));
+            assert_eq!(status.len(), 1, "one watch outstanding");
+            assert!(
+                voice
+                    .take_requests(now + Duration::from_secs(20))
+                    .is_empty(),
+                "a held watch is no lost reply"
+            );
+            let stopping = voice.take_requests(now + Duration::from_millis(500) + WATCH_LOST);
+            assert_eq!(voice.snapshot.state, State::Unavailable);
+            assert!(voice.snapshot.publishers.is_empty());
+            assert!(stopping.iter().any(|request| matches!(
+                request,
+                CollabRequest::NativeMediaCommand {
+                    command: Request {
+                        command: Command::Leave,
+                        ..
+                    },
                     ..
-                },
-                ..
-            }
-        )));
-        voice.complete(request_id(&status[0]), &Ok(snapshot));
-        assert_eq!(voice.snapshot.state, State::Unavailable);
-    }
-
-    #[test]
-    fn join_stays_muted_and_unjoined_until_service_response() {
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        assert_eq!(voice.snapshot.state, State::Preparing);
-        assert!(voice.snapshot.muted);
-        assert!(!voice.snapshot.capture_active);
-        let requests = voice.take_requests(ui::time::now());
-        assert_eq!(requests.len(), 1);
-        assert!(
-            matches!(&requests[0], CollabRequest::NativeMediaCommand { command: Request { version: 1, command: Command::Join { channel_id }, .. }, .. } if channel_id == "voice")
-        );
-        voice.complete(request_id(&requests[0]), &Ok(live()));
-        assert_eq!(voice.snapshot.state, State::Live);
-        assert_eq!(voice.channel.as_deref(), Some("voice"));
-    }
-
-    #[test]
-    fn leave_fences_late_join_and_unmute_results() {
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        let join = voice.take_requests(ui::time::now());
-        voice.submit(Command::Leave).unwrap();
-        let leave = voice.take_requests(ui::time::now());
-        voice.complete(request_id(&join[0]), &Ok(live()));
-        assert_eq!(voice.snapshot.state, State::Ended);
-        assert!(voice.channel.is_none());
-        assert!(voice.snapshot.muted);
-        assert!(matches!(
-            &leave[0],
-            CollabRequest::NativeMediaCommand {
-                command: Request {
-                    command: Command::Leave,
-                    ..
-                },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn unsolicited_or_invalid_status_cannot_activate_capture() {
-        let mut voice = LocalVoice::default();
-        voice.complete(999, &Ok(live()));
-        assert_eq!(voice.snapshot.state, State::Unavailable);
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        let requests = voice.take_requests(ui::time::now());
-        let mut invalid = live();
-        invalid.capture_active = true;
-        voice.complete(request_id(&requests[0]), &Ok(invalid));
-        assert_eq!(voice.snapshot.state, State::Unavailable);
-        assert!(voice.snapshot.muted);
-        assert!(!voice.snapshot.capture_active);
+                }
+            )));
+            voice.complete(request_id(&status[0]), &Ok(snapshot));
+            assert_eq!(voice.snapshot.state, State::Unavailable);
+        }
     }
 
     fn watch_of(request: &CollabRequest) -> Option<u64> {
@@ -1316,670 +1364,522 @@ mod tests {
         }
     }
 
-    #[test]
-    fn one_watch_is_outstanding_and_the_next_waits_past_what_was_seen() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        let first = voice.take_requests(now);
-        assert_eq!(first.len(), 1);
-        assert_eq!(watch_of(&first[0]), Some(0), "nothing seen yet");
-        assert!(
-            voice.take_requests(now + Duration::from_secs(5)).is_empty(),
-            "no poll while the watch is held"
-        );
-        let mut unavailable = Snapshot::unavailable();
-        unavailable.revision = 7;
-        voice.complete(request_id(&first[0]), &Ok(unavailable.clone()));
-        let next = voice.take_requests(now + Duration::from_secs(5));
-        assert_eq!(next.len(), 1);
-        assert_eq!(watch_of(&next[0]), Some(7), "the next waits past it");
-        assert!(
-            !voice.complete(request_id(&next[0]), &Ok(unavailable)),
-            "an unchanged answer changes nothing"
-        );
+    tilo_test_env::scenario! {
+        /// The held watch and the status reads asked beside it.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn one_watch_follows_the_call_and_status_reads_coalesce_beside_it;
 
-        // Someone joins the standup: the held watch answers with it.
-        voice
-            .submit(Command::Join {
+        phase one_watch_is_outstanding_and_the_next_waits_past_what_was_seen;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            let first = voice.take_requests(now);
+            assert_eq!(first.len(), 1);
+            assert_eq!(watch_of(&first[0]), Some(0), "nothing seen yet");
+            assert!(
+                voice.take_requests(now + Duration::from_secs(5)).is_empty(),
+                "no poll while the watch is held"
+            );
+            let mut unavailable = Snapshot::unavailable();
+            unavailable.revision = 7;
+            voice.complete(request_id(&first[0]), &Ok(unavailable.clone()));
+            let next = voice.take_requests(now + Duration::from_secs(5));
+            assert_eq!(next.len(), 1);
+            assert_eq!(watch_of(&next[0]), Some(7), "the next waits past it");
+            assert!(
+                !voice.complete(request_id(&next[0]), &Ok(unavailable)),
+                "an unchanged answer changes nothing"
+            );
+
+            // Someone joins the standup: the held watch answers with it.
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let join = voice.take_requests(now + Duration::from_secs(5));
+            assert_eq!(join.len(), 1, "a join waits for no watch");
+            assert!(voice.complete(request_id(&join[0]), &Ok(live())));
+            let held = voice.take_requests(now + Duration::from_secs(5));
+            let mut joined = live();
+            joined.rosters = vec![ui::native_media::Roster {
                 channel_id: "voice".into(),
-            })
-            .unwrap();
-        let join = voice.take_requests(now + Duration::from_secs(5));
-        assert_eq!(join.len(), 1, "a join waits for no watch");
-        assert!(voice.complete(request_id(&join[0]), &Ok(live())));
-        let held = voice.take_requests(now + Duration::from_secs(5));
-        let mut joined = live();
-        joined.rosters = vec![ui::native_media::Roster {
-            channel_id: "voice".into(),
-            people: vec!["a".repeat(64)],
-            ..Default::default()
-        }];
-        joined.speaking = vec!["a".repeat(64)];
-        joined.revision = 9;
-        assert!(voice.complete(request_id(&held[0]), &Ok(joined)));
-        assert_eq!(voice.snapshot.speaking, vec!["a".repeat(64)]);
-        assert_eq!(voice.snapshot.rosters.len(), 1);
-    }
-
-    #[test]
-    fn a_watch_answered_under_a_newer_intent_takes_only_who_is_in_the_call() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        let join = voice.take_requests(now);
-        voice.complete(request_id(&join[0]), &Ok(live()));
-        let watch = voice.take_requests(now);
-        voice.submit(Command::SetMuted { muted: false }).unwrap();
-        let unmute = voice.take_requests(now);
-        let mut stale = live();
-        stale.state = State::Reconnecting;
-        stale.speaking = vec!["b".repeat(64)];
-        voice.complete(request_id(&watch[0]), &Ok(stale));
-        assert_eq!(
-            voice.snapshot.state,
-            State::Live,
-            "the unmute in flight decides the call's own state"
-        );
-        assert_eq!(voice.snapshot.speaking, vec!["b".repeat(64)]);
-        voice.complete(request_id(&unmute[0]), &Ok(live()));
-    }
-
-    #[test]
-    fn semantic_status_reads_coalesce_beside_the_watch() {
-        let now = ui::time::now();
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let before = doc.save();
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.answer_effect(crate::effects::ChatEffect::JoinCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        let join = app.native_voice.take_requests(now);
-        app.native_voice.complete(request_id(&join[0]), &Ok(live()));
-        let watch = app.native_voice.take_requests(now);
-        assert_eq!(watch.len(), 1);
-        assert!(watch_of(&watch[0]).is_some());
-        for _ in 0..12 {
-            app.answer_effect(crate::effects::ChatEffect::CallStatus {
-                channel: "c_standup".into(),
-            })
-            .unwrap();
+                people: vec!["a".repeat(64)],
+                ..Default::default()
+            }];
+            joined.speaking = vec!["a".repeat(64)];
+            joined.revision = 9;
+            assert!(voice.complete(request_id(&held[0]), &Ok(joined)));
+            assert_eq!(voice.snapshot.speaking, vec!["a".repeat(64)]);
+            assert_eq!(voice.snapshot.rosters.len(), 1);
         }
-        let reads = app.native_voice.take_requests(now + Duration::from_secs(1));
-        assert_eq!(reads.len(), 1, "twelve reads are one");
-        assert_eq!(app.native_voice.snapshot.state, State::Live);
-        assert_eq!(app.native_voice.channel.as_deref(), Some("c_standup"));
-        assert!(
-            !app.native_voice
-                .complete(request_id(&reads[0]), &Ok(live()))
-        );
-        assert!(
-            app.native_voice
-                .take_requests(now + Duration::from_millis(1500))
-                .is_empty(),
-            "the watch is still held"
-        );
-        assert_eq!(
-            doc.save(),
-            before,
-            "query coalescing writes no shared state"
-        );
-    }
 
-    #[test]
-    fn coalesced_status_keeps_service_failures_terminal_and_leave_immediate() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        let join = voice.take_requests(now);
-        voice.complete(request_id(&join[0]), &Ok(live()));
-        let refresh = voice.take_requests(now + Duration::from_millis(500));
-        assert!(watch_of(&refresh[0]).is_some());
-        assert!(voice.complete(request_id(&refresh[0]), &Err("service refused".into())));
-        let stop = voice.take_requests(now + Duration::from_secs(1));
-        assert_eq!(stop.len(), 1);
-        assert!(matches!(
-            &stop[0],
-            CollabRequest::NativeMediaCommand {
-                command: Request {
-                    command: Command::Leave,
-                    ..
-                },
-                ..
-            }
-        ));
-        assert!(voice.channel.is_none());
-        assert!(voice.snapshot.muted);
-        assert!(!voice.snapshot.capture_active);
-    }
+        phase a_watch_answered_under_a_newer_intent_takes_only_who_is_in_the_call;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let join = voice.take_requests(now);
+            voice.complete(request_id(&join[0]), &Ok(live()));
+            let watch = voice.take_requests(now);
+            voice.submit(Command::SetMuted { muted: false }).unwrap();
+            let unmute = voice.take_requests(now);
+            let mut stale = live();
+            stale.state = State::Reconnecting;
+            stale.speaking = vec!["b".repeat(64)];
+            voice.complete(request_id(&watch[0]), &Ok(stale));
+            assert_eq!(
+                voice.snapshot.state,
+                State::Live,
+                "the unmute in flight decides the call's own state"
+            );
+            assert_eq!(voice.snapshot.speaking, vec!["b".repeat(64)]);
+            voice.complete(request_id(&unmute[0]), &Ok(live()));
+        }
 
-    #[test]
-    fn public_status_retains_a_safe_client_failure_after_cleanup_then_clears_on_rejoin() {
-        let now = ui::time::now();
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.answer_effect(crate::effects::ChatEffect::JoinCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        let join = app.native_voice.take_requests(now);
-        app.native_voice.complete(request_id(&join[0]), &Ok(live()));
-        let refresh = app
-            .native_voice
-            .take_requests(now + Duration::from_millis(500));
-        app.native_voice.complete(
-            request_id(&refresh[0]),
-            &Err("native media command timed out".into()),
-        );
-        let stop = app.native_voice.take_requests(now + Duration::from_secs(1));
-        let mut ended = Snapshot::unavailable();
-        ended.state = State::Ended;
-        ended.issue = None;
-        app.native_voice.complete(request_id(&stop[0]), &Ok(ended));
-        let ui::framework::Effected::Done(output) = app
-            .answer_effect(crate::effects::ChatEffect::CallStatus {
-                channel: "c_standup".into(),
-            })
-            .unwrap()
-        else {
-            panic!("status must answer immediately");
-        };
-        let output = output.value.unwrap();
-        assert_eq!(output["reported"]["state"], "ended");
-        assert_eq!(output["clientIssue"], "reply_timeout");
-        assert_eq!(output["channel"], serde_json::Value::Null);
-        app.answer_effect(crate::effects::ChatEffect::JoinCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        assert_eq!(app.native_voice.client_issue, None);
-        let join = app
-            .native_voice
-            .take_requests(now + Duration::from_millis(1500));
-        let join_id = join
-            .iter()
-            .find_map(|request| match request {
-                CollabRequest::NativeMediaCommand {
-                    request_id,
-                    command:
-                        Request {
-                            command: Command::Join { .. },
-                            ..
-                        },
-                } => Some(*request_id),
-                _ => None,
-            })
-            .unwrap();
-        app.native_voice.complete(
-            join_id,
-            &Err("private service detail must not escape".into()),
-        );
-        let ui::framework::Effected::Done(output) = app
-            .answer_effect(crate::effects::ChatEffect::CallStatus {
-                channel: "c_standup".into(),
-            })
-            .unwrap()
-        else {
-            panic!("status must answer immediately");
-        };
-        let output = output.value.unwrap();
-        assert_eq!(output["clientIssue"], "unavailable");
-        assert!(!output.to_string().contains("private service detail"));
-        assert_eq!(output["reported"]["capture_active"], false);
-    }
-
-    /// A join the workspace refuses, or a grant that never comes, leaves the
-    /// voice card up saying why, never a card stuck joining or one that
-    /// vanishes; leaving closes it.
-    #[test]
-    fn a_refused_join_keeps_the_card_with_its_reason_until_left() {
-        let now = ui::time::now();
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        let join = |app: &mut crate::app::ChatApp, at| {
+        phase semantic_status_reads_coalesce_beside_the_watch;
+        {
+            let now = ui::time::now();
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let before = doc.save();
+            let mut app = crate::app::ChatApp::new_ephemeral();
+            app.reload(&doc);
             app.answer_effect(crate::effects::ChatEffect::JoinCall {
                 channel: "c_standup".into(),
             })
             .unwrap();
-            app.native_voice
-                .take_requests(at)
-                .iter()
-                .find_map(|request| match request {
-                    CollabRequest::NativeMediaCommand {
-                        request_id,
-                        command:
-                            Request {
-                                command: Command::Join { .. },
-                                ..
-                            },
-                    } => Some(*request_id),
-                    _ => None,
-                })
-                .unwrap()
-        };
-
-        let refused = join(&mut app, now);
-        assert!(
-            app.native_voice
-                .complete(refused, &Err("the workspace said no".into()))
-        );
-        app.project_native_voice();
-        assert!(app.call.active, "the card stays");
-        assert_eq!(app.native_voice.snapshot.state, State::Ended);
-        assert_eq!(
-            app.media_error.as_deref(),
-            Some(crate::i18n::t("chat-call-issue-unavailable").as_str())
-        );
-        assert!(
-            app.native_voice
-                .take_requests(now)
-                .iter()
-                .all(|request| !matches!(
-                    request,
-                    CollabRequest::NativeMediaCommand {
-                        command: Request {
-                            command: Command::Leave,
-                            ..
-                        },
-                        ..
-                    }
-                ))
-        );
-
-        // The service ends a call it never got a grant for, with a reason.
-        let pending = join(&mut app, now + Duration::from_secs(3));
-        let mut joining = live();
-        joining.state = State::Joining;
-        app.native_voice.complete(pending, &Ok(joining));
-        let mut ended = Snapshot::unavailable();
-        ended.state = State::Ended;
-        ended.issue = Some(ui::native_media::Issue::Denied);
-        let status = app
-            .native_voice
-            .take_requests(now + Duration::from_secs(4))
-            .iter()
-            .map(request_id)
-            .next()
-            .unwrap();
-        app.native_voice.complete(status, &Ok(ended));
-        app.project_native_voice();
-        assert!(app.call.active, "the card stays");
-        assert_eq!(
-            app.media_error.as_deref(),
-            Some(crate::i18n::t("chat-call-issue-denied").as_str())
-        );
-
-        app.answer_effect(crate::effects::ChatEffect::LeaveCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        app.project_native_voice();
-        assert!(!app.call.active, "leaving closes the card");
-        assert!(app.native_voice.channel.is_none());
-    }
-
-    /// Muting shows at once on the control, but the call says the
-    /// microphone stopped only once the service did: a status that still
-    /// reports capture keeps saying so, however the person asked.
-    #[test]
-    fn mute_reports_capture_stopped_only_once_the_service_stopped_it() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        let join = voice.take_requests(now);
-        voice.complete(
-            sent(&join, |c| matches!(c, Command::Join { .. })),
-            &Ok(live()),
-        );
-        voice.submit(Command::SetMuted { muted: false }).unwrap();
-        let unmute = voice.take_requests(now);
-        let mut capturing = live();
-        capturing.muted = false;
-        capturing.capture_active = true;
-        capturing.input_id = Some("mic".into());
-        voice.complete(
-            sent(&unmute, |c| matches!(c, Command::SetMuted { muted: false })),
-            &Ok(capturing.clone()),
-        );
-        assert!(voice.snapshot.capture_active);
-
-        voice.submit(Command::SetMuted { muted: true }).unwrap();
-        assert!(voice.snapshot.muted, "the control shows muted at once");
-        assert!(
-            voice.snapshot.capture_active,
-            "the microphone is still capturing until the service stops it"
-        );
-        let mute = voice.take_requests(now);
-        // A status the service sent before it stopped capture.
-        voice.complete(
-            sent(&mute, |c| matches!(c, Command::SetMuted { muted: true })),
-            &Ok(capturing),
-        );
-        assert!(voice.snapshot.muted);
-        assert!(voice.snapshot.capture_active);
-        voice.submit(Command::Status).unwrap();
-        let status = voice.take_requests(now);
-        let mut stopped = live();
-        stopped.muted = true;
-        stopped.capture_active = false;
-        voice.complete(
-            sent(&status, |c| matches!(c, Command::Status)),
-            &Ok(stopped),
-        );
-        assert!(!voice.snapshot.capture_active);
-    }
-
-    #[test]
-    fn status_polling_and_pending_commands_are_bounded_and_mute_always_fits() {
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        assert_eq!(voice.take_requests(now).len(), 1, "the watch");
-        assert!(voice.take_requests(now).is_empty());
-        for _ in 0..8 {
-            voice
-                .submit(Command::SelectInput {
-                    input_id: "input".into(),
+            let join = app.native_voice.take_requests(now);
+            app.native_voice.complete(request_id(&join[0]), &Ok(live()));
+            let watch = app.native_voice.take_requests(now);
+            assert_eq!(watch.len(), 1);
+            assert!(watch_of(&watch[0]).is_some());
+            for _ in 0..12 {
+                app.answer_effect(crate::effects::ChatEffect::CallStatus {
+                    channel: "c_standup".into(),
                 })
                 .unwrap();
+            }
+            let reads = app.native_voice.take_requests(now + Duration::from_secs(1));
+            assert_eq!(reads.len(), 1, "twelve reads are one");
+            assert_eq!(app.native_voice.snapshot.state, State::Live);
+            assert_eq!(app.native_voice.channel.as_deref(), Some("c_standup"));
+            assert!(
+                !app.native_voice
+                    .complete(request_id(&reads[0]), &Ok(live()))
+            );
+            assert!(
+                app.native_voice
+                    .take_requests(now + Duration::from_millis(1500))
+                    .is_empty(),
+                "the watch is still held"
+            );
+            assert_eq!(
+                doc.save(),
+                before,
+                "query coalescing writes no shared state"
+            );
         }
-        assert!(
+
+        phase coalesced_status_keeps_service_failures_terminal_and_leave_immediate;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
             voice
-                .submit(Command::SelectInput {
-                    input_id: "input".into()
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
                 })
-                .is_err()
-        );
-        voice.submit(Command::SetMuted { muted: true }).unwrap();
-        assert_eq!(voice.take_requests(now).len(), 1);
-        assert!(voice.snapshot.muted);
+                .unwrap();
+            let join = voice.take_requests(now);
+            voice.complete(request_id(&join[0]), &Ok(live()));
+            let refresh = voice.take_requests(now + Duration::from_millis(500));
+            assert!(watch_of(&refresh[0]).is_some());
+            assert!(voice.complete(request_id(&refresh[0]), &Err("service refused".into())));
+            let stop = voice.take_requests(now + Duration::from_secs(1));
+            assert_eq!(stop.len(), 1);
+            assert!(matches!(
+                &stop[0],
+                CollabRequest::NativeMediaCommand {
+                    command: Request {
+                        command: Command::Leave,
+                        ..
+                    },
+                    ..
+                }
+            ));
+            assert!(voice.channel.is_none());
+            assert!(voice.snapshot.muted);
+            assert!(!voice.snapshot.capture_active);
+        }
     }
 
-    #[test]
-    fn a_voice_channel_says_who_is_in_its_call() {
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let mut chat = crate::app::ChatApp::new_ephemeral();
-        chat.reload(&doc);
-        // The people in the call are the channel's rows in the sidebar.
-        let in_call = |chat: &crate::app::ChatApp| -> Vec<String> {
-            chat.sidebar_sections()
-                .into_iter()
-                .flat_map(|section| section.items)
-                .find(|item| item.id == crate::sidebar::channel_place("c_standup"))
-                .map(|item| item.children.into_iter().map(|row| row.label).collect())
-                .unwrap_or_default()
-        };
-        assert!(in_call(&chat).is_empty());
-        chat.voice_members.insert(
-            "c_standup".into(),
-            vec![crate::model::VoiceMember {
-                user: "someone".into(),
-                talking: false,
-                muted: false,
-                deafened: false,
-                audio_only: true,
-                sharing: false,
-                ticket: None,
-                video: None,
-            }],
-        );
-        assert_eq!(in_call(&chat), [chat.user_name("someone")]);
+    tilo_test_env::scenario! {
+        /// Joining, leaving, muting and the pending-command bound of the call's client.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn a_join_waits_for_the_service_and_later_intents_fence_earlier_answers;
+
+        phase join_stays_muted_and_unjoined_until_service_response;
+        {
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            assert_eq!(voice.snapshot.state, State::Preparing);
+            assert!(voice.snapshot.muted);
+            assert!(!voice.snapshot.capture_active);
+            let requests = voice.take_requests(ui::time::now());
+            assert_eq!(requests.len(), 1);
+            assert!(
+                matches!(&requests[0], CollabRequest::NativeMediaCommand { command: Request { version: 1, command: Command::Join { channel_id }, .. }, .. } if channel_id == "voice")
+            );
+            voice.complete(request_id(&requests[0]), &Ok(live()));
+            assert_eq!(voice.snapshot.state, State::Live);
+            assert_eq!(voice.channel.as_deref(), Some("voice"));
+        }
+
+        phase leave_fences_late_join_and_unmute_results;
+        {
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let join = voice.take_requests(ui::time::now());
+            voice.submit(Command::Leave).unwrap();
+            let leave = voice.take_requests(ui::time::now());
+            voice.complete(request_id(&join[0]), &Ok(live()));
+            assert_eq!(voice.snapshot.state, State::Ended);
+            assert!(voice.channel.is_none());
+            assert!(voice.snapshot.muted);
+            assert!(matches!(
+                &leave[0],
+                CollabRequest::NativeMediaCommand {
+                    command: Request {
+                        command: Command::Leave,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        }
+
+        phase newer_join_response_retires_prior_pending_intents;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "first".into(),
+                })
+                .unwrap();
+            let first = voice.take_requests(now);
+            voice
+                .submit(Command::Join {
+                    channel_id: "second".into(),
+                })
+                .unwrap();
+            let second = voice.take_requests(now);
+            voice.complete(request_id(&second[0]), &Ok(live()));
+            voice.complete(request_id(&first[0]), &Ok(live()));
+            let requests = voice.take_requests(now + Duration::from_secs(3));
+            assert_eq!(voice.snapshot.state, State::Live);
+            assert_eq!(voice.channel.as_deref(), Some("second"));
+            assert!(requests.iter().all(|request| matches!(
+                request,
+                CollabRequest::NativeMediaCommand {
+                    command: Request {
+                        command: Command::Watch { .. },
+                        ..
+                    },
+                    ..
+                }
+            )));
+        }
+
+        phase a_join_is_muted_and_a_refused_microphone_stays_in_the_call;
+        // A join is listening, muted; a refused microphone keeps the person in
+        // the call, muted, and the call says why instead of ending.
+        {
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "c_standup".into(),
+                })
+                .unwrap();
+            let join = request_id(&voice.take_requests(Instant::now())[0]);
+            // A service that answers unmuted is shown muted, as no one asked,
+            // but a microphone it says captures is not hidden.
+            let mut answered = live();
+            answered.muted = false;
+            answered.capture_active = true;
+            answered.input_id = Some("mic".into());
+            voice.complete(join, &Ok(answered));
+            assert!(voice.snapshot.muted && voice.snapshot.capture_active);
+            voice.submit(Command::SetMuted { muted: false }).unwrap();
+            let unmute = voice
+                .take_requests(Instant::now())
+                .iter()
+                .map(request_id)
+                .max()
+                .unwrap();
+            let mut refused = live();
+            refused.issue = Some(ui::native_media::Issue::PermissionDenied);
+            voice.complete(unmute, &Ok(refused));
+            assert_eq!(voice.channel.as_deref(), Some("c_standup"), "still in it");
+            assert_eq!(voice.snapshot.state, State::Live);
+            assert!(voice.snapshot.muted);
+            assert_eq!(
+                voice.snapshot.issue,
+                Some(ui::native_media::Issue::PermissionDenied)
+            );
+        }
+
+        phase mute_reports_capture_stopped_only_once_the_service_stopped_it;
+        // Muting shows at once on the control, but the call says the
+        // microphone stopped only once the service did: a status that still
+        // reports capture keeps saying so, however the person asked.
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let join = voice.take_requests(now);
+            voice.complete(
+                sent(&join, |c| matches!(c, Command::Join { .. })),
+                &Ok(live()),
+            );
+            voice.submit(Command::SetMuted { muted: false }).unwrap();
+            let unmute = voice.take_requests(now);
+            let mut capturing = live();
+            capturing.muted = false;
+            capturing.capture_active = true;
+            capturing.input_id = Some("mic".into());
+            voice.complete(
+                sent(&unmute, |c| matches!(c, Command::SetMuted { muted: false })),
+                &Ok(capturing.clone()),
+            );
+            assert!(voice.snapshot.capture_active);
+
+            voice.submit(Command::SetMuted { muted: true }).unwrap();
+            assert!(voice.snapshot.muted, "the control shows muted at once");
+            assert!(
+                voice.snapshot.capture_active,
+                "the microphone is still capturing until the service stops it"
+            );
+            let mute = voice.take_requests(now);
+            // A status the service sent before it stopped capture.
+            voice.complete(
+                sent(&mute, |c| matches!(c, Command::SetMuted { muted: true })),
+                &Ok(capturing),
+            );
+            assert!(voice.snapshot.muted);
+            assert!(voice.snapshot.capture_active);
+            voice.submit(Command::Status).unwrap();
+            let status = voice.take_requests(now);
+            let mut stopped = live();
+            stopped.muted = true;
+            stopped.capture_active = false;
+            voice.complete(
+                sent(&status, |c| matches!(c, Command::Status)),
+                &Ok(stopped),
+            );
+            assert!(!voice.snapshot.capture_active);
+        }
+
+        phase status_polling_and_pending_commands_are_bounded_and_mute_always_fits;
+        {
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            assert_eq!(voice.take_requests(now).len(), 1, "the watch");
+            assert!(voice.take_requests(now).is_empty());
+            for _ in 0..8 {
+                voice
+                    .submit(Command::SelectInput {
+                        input_id: "input".into(),
+                    })
+                    .unwrap();
+            }
+            assert!(
+                voice
+                    .submit(Command::SelectInput {
+                        input_id: "input".into()
+                    })
+                    .is_err()
+            );
+            voice.submit(Command::SetMuted { muted: true }).unwrap();
+            assert_eq!(voice.take_requests(now).len(), 1);
+            assert!(voice.snapshot.muted);
+        }
     }
 
-    #[test]
-    fn reader_pointer_and_resource_join_use_the_same_service_without_document_mutation() {
-        use ui::permissions::{PermissionContext, Role};
-        use ui::widget::Collaborative;
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let before = doc.save();
-        let mut pointer = crate::app::ChatApp::new_ephemeral();
-        pointer.reload(&doc);
-        pointer.perms = crate::permissions::ChatPermissions::from_context(
-            PermissionContext::member("reader", Role::Viewer),
-        );
-        pointer.on_hit(
-            crate::app::Hit::Channel("c_standup".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        let pointer_requests = pointer.take_collab_requests();
-        let mut resource = crate::app::ChatApp::new_ephemeral();
-        resource.reload(&doc);
-        resource.perms = pointer.perms.clone();
-        resource
-            .answer_effect(crate::effects::ChatEffect::JoinCall {
+    tilo_test_env::scenario! {
+        /// What the voice card and the channel's rows show of a call.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn the_call_card_and_its_channel_say_what_the_service_said;
+
+        phase a_refused_join_keeps_the_card_with_its_reason_until_left;
+        // A join the workspace refuses, or a grant that never comes, leaves the
+        // voice card up saying why, never a card stuck joining or one that
+        // vanishes; leaving closes it.
+        {
+            let now = ui::time::now();
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let mut app = crate::app::ChatApp::new_ephemeral();
+            app.reload(&doc);
+            let join = |app: &mut crate::app::ChatApp, at| {
+                app.answer_effect(crate::effects::ChatEffect::JoinCall {
+                    channel: "c_standup".into(),
+                })
+                .unwrap();
+                app.native_voice
+                    .take_requests(at)
+                    .iter()
+                    .find_map(|request| match request {
+                        CollabRequest::NativeMediaCommand {
+                            request_id,
+                            command:
+                                Request {
+                                    command: Command::Join { .. },
+                                    ..
+                                },
+                        } => Some(*request_id),
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+
+            let refused = join(&mut app, now);
+            assert!(
+                app.native_voice
+                    .complete(refused, &Err("the workspace said no".into()))
+            );
+            app.project_native_voice();
+            assert!(app.call.active, "the card stays");
+            assert_eq!(app.native_voice.snapshot.state, State::Ended);
+            assert_eq!(
+                app.media_error.as_deref(),
+                Some(crate::i18n::t("chat-call-issue-unavailable").as_str())
+            );
+            assert!(
+                app.native_voice
+                    .take_requests(now)
+                    .iter()
+                    .all(|request| !matches!(
+                        request,
+                        CollabRequest::NativeMediaCommand {
+                            command: Request {
+                                command: Command::Leave,
+                                ..
+                            },
+                            ..
+                        }
+                    ))
+            );
+
+            // The service ends a call it never got a grant for, with a reason.
+            let pending = join(&mut app, now + Duration::from_secs(3));
+            let mut joining = live();
+            joining.state = State::Joining;
+            app.native_voice.complete(pending, &Ok(joining));
+            let mut ended = Snapshot::unavailable();
+            ended.state = State::Ended;
+            ended.issue = Some(ui::native_media::Issue::Denied);
+            let status = app
+                .native_voice
+                .take_requests(now + Duration::from_secs(4))
+                .iter()
+                .map(request_id)
+                .next()
+                .unwrap();
+            app.native_voice.complete(status, &Ok(ended));
+            app.project_native_voice();
+            assert!(app.call.active, "the card stays");
+            assert_eq!(
+                app.media_error.as_deref(),
+                Some(crate::i18n::t("chat-call-issue-denied").as_str())
+            );
+
+            app.answer_effect(crate::effects::ChatEffect::LeaveCall {
                 channel: "c_standup".into(),
             })
             .unwrap();
-        let resource_requests = resource.take_collab_requests();
-        let command = |requests: Vec<CollabRequest>| match requests.into_iter().next().unwrap() {
-            CollabRequest::NativeMediaCommand { command, .. } => command,
-            _ => panic!("native service expected"),
-        };
-        assert_eq!(command(pointer_requests), command(resource_requests));
-        assert_eq!(doc.save(), before);
-        assert!(pointer.call.muted);
-        assert!(
-            pointer
-                .native_voice_command("c_standup", Command::SetMuted { muted: false })
-                .is_err()
-        );
-    }
+            app.project_native_voice();
+            assert!(!app.call.active, "leaving closes the card");
+            assert!(app.native_voice.channel.is_none());
+        }
 
-    /// A join is listening, muted; a refused microphone keeps the person in
-    /// the call, muted, and the call says why instead of ending.
-    #[test]
-    fn a_join_is_muted_and_a_refused_microphone_stays_in_the_call() {
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "c_standup".into(),
-            })
-            .unwrap();
-        let join = request_id(&voice.take_requests(Instant::now())[0]);
-        // A service that answers unmuted is shown muted, as no one asked,
-        // but a microphone it says captures is not hidden.
-        let mut answered = live();
-        answered.muted = false;
-        answered.capture_active = true;
-        answered.input_id = Some("mic".into());
-        voice.complete(join, &Ok(answered));
-        assert!(voice.snapshot.muted && voice.snapshot.capture_active);
-        voice.submit(Command::SetMuted { muted: false }).unwrap();
-        let unmute = voice
-            .take_requests(Instant::now())
-            .iter()
-            .map(request_id)
-            .max()
-            .unwrap();
-        let mut refused = live();
-        refused.issue = Some(ui::native_media::Issue::PermissionDenied);
-        voice.complete(unmute, &Ok(refused));
-        assert_eq!(voice.channel.as_deref(), Some("c_standup"), "still in it");
-        assert_eq!(voice.snapshot.state, State::Live);
-        assert!(voice.snapshot.muted);
-        assert_eq!(
-            voice.snapshot.issue,
-            Some(ui::native_media::Issue::PermissionDenied)
-        );
-    }
+        phase a_voice_channel_says_who_is_in_its_call;
+        {
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let mut chat = crate::app::ChatApp::new_ephemeral();
+            chat.reload(&doc);
+            // The people in the call are the channel's rows in the sidebar.
+            let in_call = |chat: &crate::app::ChatApp| -> Vec<String> {
+                chat.sidebar_sections()
+                    .into_iter()
+                    .flat_map(|section| section.items)
+                    .find(|item| item.id == crate::sidebar::channel_place("c_standup"))
+                    .map(|item| item.children.into_iter().map(|row| row.label).collect())
+                    .unwrap_or_default()
+            };
+            assert!(in_call(&chat).is_empty());
+            chat.voice_members.insert(
+                "c_standup".into(),
+                vec![crate::model::VoiceMember {
+                    user: "someone".into(),
+                    talking: false,
+                    muted: false,
+                    deafened: false,
+                    audio_only: true,
+                    sharing: false,
+                    ticket: None,
+                    video: None,
+                }],
+            );
+            assert_eq!(in_call(&chat), [chat.user_name("someone")]);
+        }
 
-    #[test]
-    fn joining_panel_is_visible_without_claiming_live_capture_or_streams() {
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.native_voice_command(
-            "c_standup",
-            Command::Join {
-                channel_id: "c_standup".into(),
-            },
-        )
-        .unwrap();
-        assert!(
-            app.call.active,
-            "the joining/unavailable status must be visible"
-        );
-        assert_eq!(app.native_voice.snapshot.state, State::Preparing);
-        assert!(app.call.muted);
-        assert!(!app.native_voice.snapshot.capture_active);
-        assert!(app.native_voice.snapshot.publishers.is_empty());
+        phase joining_panel_is_visible_without_claiming_live_capture_or_streams;
+        {
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let mut app = crate::app::ChatApp::new_ephemeral();
+            app.reload(&doc);
+            app.native_voice_command(
+                "c_standup",
+                Command::Join {
+                    channel_id: "c_standup".into(),
+                },
+            )
+            .unwrap();
+            assert!(
+                app.call.active,
+                "the joining/unavailable status must be visible"
+            );
+            assert_eq!(app.native_voice.snapshot.state, State::Preparing);
+            assert!(app.call.muted);
+            assert!(!app.native_voice.snapshot.capture_active);
+            assert!(app.native_voice.snapshot.publishers.is_empty());
+        }
     }
 
     fn person(n: u8) -> String {
         format!("{n:02x}").repeat(32)
-    }
-
-    #[test]
-    fn a_tile_asks_for_the_smallest_layer_that_covers_it() {
-        use ui::native_media::{PictureLayer, PictureSource};
-        assert_eq!(
-            layer_for(200.0, 112.0, PictureSource::Camera),
-            PictureLayer::Low
-        );
-        assert_eq!(
-            layer_for(480.0, 270.0, PictureSource::Camera),
-            PictureLayer::Mid
-        );
-        assert_eq!(
-            layer_for(1100.0, 620.0, PictureSource::Camera),
-            PictureLayer::High
-        );
-        // A screen has no middle layer: past its preview it is the screen.
-        assert_eq!(
-            layer_for(480.0, 270.0, PictureSource::Screen),
-            PictureLayer::High
-        );
-    }
-
-    #[test]
-    fn the_call_is_asked_for_exactly_the_pictures_its_tiles_show_of_people_who_show_them() {
-        use ui::native_media::{PictureLayer, PictureSource, Roster, Shown};
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.presented = true;
-        app.call.join("c_standup");
-        app.native_voice.snapshot.rosters = vec![Roster {
-            channel_id: "c_standup".into(),
-            people: vec![person(1), person(2), person(3)],
-            cameras: vec![person(1), person(3)],
-            screens: vec![person(3)],
-            ..Default::default()
-        }];
-        {
-            let mut tiles = app.picture_tiles.borrow_mut();
-            tiles.push((person(1), PictureSource::Camera, (500.0, 280.0)));
-            // Their camera is off: nothing is asked for, whatever the tile.
-            tiles.push((person(2), PictureSource::Camera, (500.0, 280.0)));
-            tiles.push((person(3), PictureSource::Camera, (200.0, 110.0)));
-            tiles.push((person(3), PictureSource::Screen, (1600.0, 900.0)));
-        }
-        assert_eq!(
-            app.wanted_pictures(),
-            vec![
-                Shown {
-                    person: person(1),
-                    source: PictureSource::Camera,
-                    layer: PictureLayer::Mid,
-                },
-                Shown {
-                    person: person(3),
-                    source: PictureSource::Camera,
-                    layer: PictureLayer::Low,
-                },
-                Shown {
-                    person: person(3),
-                    source: PictureSource::Screen,
-                    layer: PictureLayer::High,
-                },
-            ]
-        );
-        app.presented = false;
-        assert!(app.wanted_pictures().is_empty());
-    }
-
-    #[test]
-    fn a_live_call_tells_the_service_what_shows_and_keeps_one_collection_outstanding() {
-        use ui::native_media::{Picture, PictureLayer, PictureSource, Shown};
-        let now = ui::time::now();
-        let mut voice = LocalVoice::default();
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        let join = voice.take_requests(now);
-        voice.complete(request_id(&join[0]), &Ok(live()));
-        let shown = vec![Shown {
-            person: person(1),
-            source: PictureSource::Camera,
-            layer: PictureLayer::Low,
-        }];
-        voice.video.wanted = shown.clone();
-        let requests = voice.take_requests(now);
-        let command = |request: &CollabRequest| match request {
-            CollabRequest::NativeMediaCommand { command, .. } => command.command.clone(),
-            _ => panic!("only native media requests"),
-        };
-        let show = requests
-            .iter()
-            .find(|request| matches!(command(request), Command::Show { .. }))
-            .expect("the service hears what shows");
-        assert_eq!(command(show), Command::Show { pictures: shown });
-        let collect = requests
-            .iter()
-            .find(|request| matches!(command(request), Command::Pictures { after: 0 }))
-            .expect("and its pictures are collected");
-        // Nothing more while both are in flight.
-        assert!(voice.take_requests(now).iter().all(|request| !matches!(
-            command(request),
-            Command::Show { .. } | Command::Pictures { .. }
-        )));
-        voice.complete(request_id(show), &Ok(live()));
-        let mut answer = live();
-        answer.pictures = vec![Picture {
-            person: person(1),
-            stream: "s".into(),
-            source: PictureSource::Camera,
-            object: vec![1; 40],
-        }];
-        answer.pictures_cursor = 5;
-        assert!(!voice.complete(request_id(collect), &Ok(answer)));
-        assert_eq!(voice.video.arrived.len(), 1, "for the decoder");
-        let next = voice.take_requests(now);
-        assert!(
-            next.iter()
-                .any(|request| command(request) == Command::Pictures { after: 5 }),
-            "the next collection continues where the last ended"
-        );
-        voice.submit(Command::Leave).unwrap();
-        assert!(
-            voice
-                .take_requests(now)
-                .iter()
-                .all(|request| !matches!(command(request), Command::Pictures { .. }))
-        );
     }
 
     /// The Standup's call with Ana in it.
@@ -1992,65 +1892,223 @@ mod tests {
         app
     }
 
-    #[test]
-    fn a_participants_volume_is_told_once_the_call_is_live_and_again_in_the_next() {
-        let now = ui::time::now();
-        let mut app = standup();
-        app.set_call_listening(
-            "u_aria",
-            Listening {
-                percent: 150,
-                silenced: true,
-            },
-        );
-        let volume = |requests: &[CollabRequest]| {
-            requests.iter().find_map(|request| match request {
-                CollabRequest::NativeMediaCommand {
-                    request_id,
-                    command:
-                        Request {
-                            command:
-                                Command::SetVolume {
-                                    participant,
-                                    percent,
-                                },
-                            intent,
-                            ..
-                        },
-                } => Some((*request_id, participant.clone(), *percent, *intent)),
-                _ => None,
-            })
-        };
-        assert_eq!(
-            volume(&app.native_voice.take_requests(now)),
-            None,
-            "not outside a call"
-        );
-        app.native_voice
-            .submit(Command::Join {
+    tilo_test_env::scenario! {
+        /// Picture layers, the pictures asked for and collected, and a participant's volume.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn the_service_is_told_which_pictures_show_and_how_loud_each_person_is;
+
+        phase a_tile_asks_for_the_smallest_layer_that_covers_it;
+        {
+            use ui::native_media::{PictureLayer, PictureSource};
+            assert_eq!(
+                layer_for(200.0, 112.0, PictureSource::Camera),
+                PictureLayer::Low
+            );
+            assert_eq!(
+                layer_for(480.0, 270.0, PictureSource::Camera),
+                PictureLayer::Mid
+            );
+            assert_eq!(
+                layer_for(1100.0, 620.0, PictureSource::Camera),
+                PictureLayer::High
+            );
+            // A screen has no middle layer: past its preview it is the screen.
+            assert_eq!(
+                layer_for(480.0, 270.0, PictureSource::Screen),
+                PictureLayer::High
+            );
+            // Each layer covers a tile up to its own size, and not a pixel past it.
+            for (width, height, source, layer) in [
+                (320.0, 180.0, PictureSource::Camera, PictureLayer::Low),
+                (321.0, 180.0, PictureSource::Camera, PictureLayer::Mid),
+                (320.0, 181.0, PictureSource::Camera, PictureLayer::Mid),
+                (640.0, 360.0, PictureSource::Camera, PictureLayer::Mid),
+                (641.0, 360.0, PictureSource::Camera, PictureLayer::High),
+                (320.0, 180.0, PictureSource::Screen, PictureLayer::Low),
+                (0.0, 0.0, PictureSource::Camera, PictureLayer::Low),
+                (0.0, 0.0, PictureSource::Screen, PictureLayer::Low),
+                (321.0, 180.0, PictureSource::Screen, PictureLayer::High),
+            ] {
+                assert_eq!(
+                    layer_for(width, height, source),
+                    layer,
+                    "a {width} x {height} tile of a {source:?}"
+                );
+            }
+        }
+
+        phase the_call_is_asked_for_exactly_the_pictures_its_tiles_show_of_people_who_show_them;
+        {
+            use ui::native_media::{PictureLayer, PictureSource, Roster, Shown};
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let mut app = crate::app::ChatApp::new_ephemeral();
+            app.reload(&doc);
+            app.presented = true;
+            app.call.join("c_standup");
+            app.native_voice.snapshot.rosters = vec![Roster {
                 channel_id: "c_standup".into(),
-            })
-            .unwrap();
-        let join = app.native_voice.take_requests(now);
-        app.native_voice.complete(request_id(&join[0]), &Ok(live()));
-        let (id, participant, percent, intent) =
-            volume(&app.native_voice.take_requests(now)).expect("told once live");
-        assert_eq!((participant.as_str(), percent, intent), ("u_aria", 0, 0));
-        assert_eq!(
-            volume(&app.native_voice.take_requests(now)),
-            None,
-            "one at a time"
-        );
-        app.native_voice.complete(id, &Ok(live()));
-        assert_eq!(volume(&app.native_voice.take_requests(now)), None, "told");
-        app.set_call_listening(
-            "u_aria",
-            Listening {
-                percent: 150,
-                silenced: false,
-            },
-        );
-        let (_, _, percent, _) = volume(&app.native_voice.take_requests(now)).expect("heard again");
-        assert_eq!(percent, 150);
+                people: vec![person(1), person(2), person(3)],
+                cameras: vec![person(1), person(3)],
+                screens: vec![person(3)],
+                ..Default::default()
+            }];
+            {
+                let mut tiles = app.picture_tiles.borrow_mut();
+                tiles.push((person(1), PictureSource::Camera, (500.0, 280.0)));
+                // Their camera is off: nothing is asked for, whatever the tile.
+                tiles.push((person(2), PictureSource::Camera, (500.0, 280.0)));
+                tiles.push((person(3), PictureSource::Camera, (200.0, 110.0)));
+                tiles.push((person(3), PictureSource::Screen, (1600.0, 900.0)));
+            }
+            assert_eq!(
+                app.wanted_pictures(),
+                vec![
+                    Shown {
+                        person: person(1),
+                        source: PictureSource::Camera,
+                        layer: PictureLayer::Mid,
+                    },
+                    Shown {
+                        person: person(3),
+                        source: PictureSource::Camera,
+                        layer: PictureLayer::Low,
+                    },
+                    Shown {
+                        person: person(3),
+                        source: PictureSource::Screen,
+                        layer: PictureLayer::High,
+                    },
+                ]
+            );
+            app.presented = false;
+            assert!(app.wanted_pictures().is_empty());
+        }
+
+        phase a_live_call_tells_the_service_what_shows_and_keeps_one_collection_outstanding;
+        {
+            use ui::native_media::{Picture, PictureLayer, PictureSource, Shown};
+            let now = ui::time::now();
+            let mut voice = LocalVoice::default();
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let join = voice.take_requests(now);
+            voice.complete(request_id(&join[0]), &Ok(live()));
+            let shown = vec![Shown {
+                person: person(1),
+                source: PictureSource::Camera,
+                layer: PictureLayer::Low,
+            }];
+            voice.video.wanted = shown.clone();
+            let requests = voice.take_requests(now);
+            let command = |request: &CollabRequest| match request {
+                CollabRequest::NativeMediaCommand { command, .. } => command.command.clone(),
+                _ => panic!("only native media requests"),
+            };
+            let show = requests
+                .iter()
+                .find(|request| matches!(command(request), Command::Show { .. }))
+                .expect("the service hears what shows");
+            assert_eq!(command(show), Command::Show { pictures: shown });
+            let collect = requests
+                .iter()
+                .find(|request| matches!(command(request), Command::Pictures { after: 0 }))
+                .expect("and its pictures are collected");
+            // Nothing more while both are in flight.
+            assert!(voice.take_requests(now).iter().all(|request| !matches!(
+                command(request),
+                Command::Show { .. } | Command::Pictures { .. }
+            )));
+            voice.complete(request_id(show), &Ok(live()));
+            let mut answer = live();
+            answer.pictures = vec![Picture {
+                person: person(1),
+                stream: "s".into(),
+                source: PictureSource::Camera,
+                object: vec![1; 40],
+            }];
+            answer.pictures_cursor = 5;
+            assert!(!voice.complete(request_id(collect), &Ok(answer)));
+            assert_eq!(voice.video.arrived.len(), 1, "for the decoder");
+            let next = voice.take_requests(now);
+            assert!(
+                next.iter()
+                    .any(|request| command(request) == Command::Pictures { after: 5 }),
+                "the next collection continues where the last ended"
+            );
+            voice.submit(Command::Leave).unwrap();
+            assert!(
+                voice
+                    .take_requests(now)
+                    .iter()
+                    .all(|request| !matches!(command(request), Command::Pictures { .. }))
+            );
+        }
+
+        phase a_participants_volume_is_told_once_the_call_is_live_and_again_in_the_next;
+        {
+            let now = ui::time::now();
+            let mut app = standup();
+            app.set_call_listening(
+                "u_aria",
+                Listening {
+                    percent: 150,
+                    silenced: true,
+                },
+            );
+            let volume = |requests: &[CollabRequest]| {
+                requests.iter().find_map(|request| match request {
+                    CollabRequest::NativeMediaCommand {
+                        request_id,
+                        command:
+                            Request {
+                                command:
+                                    Command::SetVolume {
+                                        participant,
+                                        percent,
+                                    },
+                                intent,
+                                ..
+                            },
+                    } => Some((*request_id, participant.clone(), *percent, *intent)),
+                    _ => None,
+                })
+            };
+            assert_eq!(
+                volume(&app.native_voice.take_requests(now)),
+                None,
+                "not outside a call"
+            );
+            app.native_voice
+                .submit(Command::Join {
+                    channel_id: "c_standup".into(),
+                })
+                .unwrap();
+            let join = app.native_voice.take_requests(now);
+            app.native_voice.complete(request_id(&join[0]), &Ok(live()));
+            let (id, participant, percent, intent) =
+                volume(&app.native_voice.take_requests(now)).expect("told once live");
+            assert_eq!((participant.as_str(), percent, intent), ("u_aria", 0, 0));
+            assert_eq!(
+                volume(&app.native_voice.take_requests(now)),
+                None,
+                "one at a time"
+            );
+            app.native_voice.complete(id, &Ok(live()));
+            assert_eq!(volume(&app.native_voice.take_requests(now)), None, "told");
+            app.set_call_listening(
+                "u_aria",
+                Listening {
+                    percent: 150,
+                    silenced: false,
+                },
+            );
+            let (_, _, percent, _) = volume(&app.native_voice.take_requests(now)).expect("heard again");
+            assert_eq!(percent, 150);
+        }
     }
 }

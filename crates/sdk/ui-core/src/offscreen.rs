@@ -2010,27 +2010,45 @@ fn scan_differing(
     let width = width.map(|width| width.max(1));
     let mut count = 0;
     let mut bounds: Option<(usize, usize, usize, usize)> = None;
-    for (index, (x, y)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
-        if !differs_beyond_aa(x, y) {
+    // The frames a test compares are alike nearly everywhere, and it compares a pair for every frame
+    // it presents, in a build that is not optimised: bytes that are equal are told a block at a time
+    // (one `memcmp`), and only a block that differs somewhere is read pixel by pixel.
+    let shared = (a.len().min(b.len()) / 4).saturating_mul(4);
+    let blocks = a
+        .get(..shared)
+        .unwrap_or(a)
+        .chunks(SCAN_BLOCK_BYTES)
+        .zip(b.get(..shared).unwrap_or(b).chunks(SCAN_BLOCK_BYTES));
+    for (block, (xs, ys)) in blocks.enumerate() {
+        if xs == ys {
             continue;
         }
-        count += 1;
-        let Some(width) = width else {
-            continue;
-        };
-        let (at_x, at_y) = (index % width, index / width);
-        bounds = Some(match bounds {
-            None => (at_x, at_y, at_x + 1, at_y + 1),
-            Some((x0, y0, x1, y1)) => (
-                x0.min(at_x),
-                y0.min(at_y),
-                x1.max(at_x + 1),
-                y1.max(at_y + 1),
-            ),
-        });
+        for (offset, (x, y)) in xs.chunks_exact(4).zip(ys.chunks_exact(4)).enumerate() {
+            if x == y || !differs_beyond_aa(x, y) {
+                continue;
+            }
+            count += 1;
+            let Some(width) = width else {
+                continue;
+            };
+            let index = block * (SCAN_BLOCK_BYTES / 4) + offset;
+            let (at_x, at_y) = (index % width, index / width);
+            bounds = Some(match bounds {
+                None => (at_x, at_y, at_x + 1, at_y + 1),
+                Some((x0, y0, x1, y1)) => (
+                    x0.min(at_x),
+                    y0.min(at_y),
+                    x1.max(at_x + 1),
+                    y1.max(at_y + 1),
+                ),
+            });
+        }
     }
     (count + a.len().abs_diff(b.len()).div_ceil(4), bounds)
 }
+
+/// How many bytes of two frames [`scan_differing`] tells apart at once: 256 pixels.
+const SCAN_BLOCK_BYTES: usize = 1024;
 
 /// Whether two stored straight-alpha pixels differ beyond the ±1 the module docs describe; RGB under
 /// zero alpha on both sides is invisible.
@@ -2564,6 +2582,43 @@ mod tests {
                 OffscreenRenderer::differing_beyond_aa(&frame, &stale, width),
                 (2, Some((1, 0, 4, 3))),
                 "the rectangle covers both differing pixels"
+            );
+        }
+
+        // Case `a_difference_is_counted_and_located_past_the_first_block`:
+        // Equal bytes are told a block at a time. What differs in a later
+        // block, or in the last pixels of a frame that ends within one, is
+        // counted and located as it is in the first; the one-step tolerance
+        // and the invisible pixels hold inside a block that differs.
+        {
+            let (width, height) = (100_usize, 7_usize);
+            let mut frame = vec![200_u8; width * height * 4];
+            let mut other = frame.clone();
+            other[10 * 4] = 201;
+            frame[300 * 4 + 3] = 0;
+            other[300 * 4] = 0;
+            other[300 * 4 + 3] = 0;
+            assert_eq!(
+                OffscreenRenderer::differing_beyond_aa(&frame, &other, width),
+                (0, None),
+                "one step and a colour under no alpha are the same frame in any block"
+            );
+            for pixel in [20_usize, 600, 699] {
+                other[pixel * 4 + 1] = 190;
+            }
+            assert_eq!(
+                OffscreenRenderer::differing_beyond_aa(&frame, &other, width),
+                (3, Some((0, 0, 100, 7))),
+                "the first block, a later one and the frame's last pixel"
+            );
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&frame, &other),
+                3
+            );
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&frame, &other[..other.len() - 6]),
+                4,
+                "a frame cut short within a block: two pixels differ, two have no counterpart"
             );
         }
 

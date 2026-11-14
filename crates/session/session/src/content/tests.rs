@@ -26,7 +26,7 @@ use tilo_action_broker::record_content::{ContentSources, ContentState};
 use tilo_broker_core::route::CrdtRoute;
 use tilo_content::hash_bytes;
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
-use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
+use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
 
 use super::Plane;
 use crate::sync::Cmd;
@@ -45,8 +45,7 @@ fn route() -> CrdtRoute {
 }
 
 fn topic() -> WorkspaceId {
-    let workspace = ModelWorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    workspace_topic_id(workspace)
+    ModelWorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
 
 /// One of the workspace's devices: its plane, its address on the network, and what it said, waiting
@@ -217,6 +216,51 @@ fn a_device_that_joins_later_reads_content_another_device_kept() {
     let arrived = news.try_recv().expect("the content this device kept");
     assert_eq!(arrived.state, ContentState::Resolved);
     assert_eq!(arrived.bytes, bytes);
+}
+
+/// The store a session lends the records it keeps itself: what an action too large to record whole
+/// keeps is kept beside the workspace's records — where the workspace's devices fetch it from —
+/// and what this device lacks is asked of the record's route.
+#[test]
+fn a_record_the_session_keeps_itself_keeps_its_parts_where_its_devices_fetch_them() {
+    let kept = tempfile::tempdir().expect("the keeping device's state");
+    let joined = tempfile::tempdir().expect("the joining device's state");
+    let bytes = picture();
+    let mut keeping = Device::open(Some(kept.path()), 0xA1);
+    let mut joining = Device::open(Some(joined.path()), 0xB2);
+    keeping.sees(&joining);
+    joining.sees(&keeping);
+
+    // The record's store keeps the part as the session lends it: sealed, beside the record.
+    let mine = keeping.plane.store(WORKSPACE, APP);
+    let reference = mine.put(&bytes).expect("the record's store keeps the part");
+    assert!(
+        tilo_content::is_sealed(&reference),
+        "a record's parts are sealed: {reference}"
+    );
+    assert_eq!(
+        mine.read(&reference).as_deref(),
+        Some(bytes.as_slice()),
+        "the device that kept the part reads it back"
+    );
+
+    // The workspace's other device lacks it, asks the record's route, and reads it once it comes.
+    let theirs = joining.plane.store(WORKSPACE, APP);
+    assert!(
+        theirs.read(&reference).is_none(),
+        "the other device lacks the part until it arrives"
+    );
+    let handed_over = until(|| {
+        keeping.carry(&joining);
+        joining.carry(&keeping);
+        theirs.has(&reference)
+    });
+    assert!(handed_over, "the device that kept the part hands it over");
+    assert_eq!(
+        theirs.read(&reference).as_deref(),
+        Some(bytes.as_slice()),
+        "the part reads back on the device that fetched it"
+    );
 }
 
 #[test]

@@ -49,100 +49,104 @@ fn home_row_groups(view: &mut ViewInstance) -> Vec<(String, bool)> {
     out
 }
 
-/// Done stands what was finished under the day it was finished on, newest first, as a log of
-/// the week: the day a task is due never orders it, and a task opened again keeps no day there.
-#[test]
-fn done_stands_what_was_finished_under_the_day_it_was_finished() {
-    let (mut ada, root) = workspace();
-    let finish = |ada: &mut Replica, title: &str, at: &str| {
-        let at = at.to_owned();
-        ada.host.set_clock(move || at.clone());
-        let made = call(ada, "new_task", crate::tasks::create(&root, title));
-        call(ada, "check", vec![made.clone()]);
+tilo_test_env::scenario! {
+    fn a_finished_task_stands_under_its_day;
+
+    phase done_stands_what_was_finished_under_the_day_it_was_finished;
+    // Done stands what was finished under the day it was finished on, newest first, as a log of
+    // the week: the day a task is due never orders it, and a task opened again keeps no day there.
+    {
+        let (mut ada, root) = workspace();
+        let finish = |ada: &mut Replica, title: &str, at: &str| {
+            let at = at.to_owned();
+            ada.host.set_clock(move || at.clone());
+            let made = call(ada, "new_task", crate::tasks::create(&root, title));
+            call(ada, "check", vec![made.clone()]);
+            ada.commit();
+            made
+        };
+        // Two finished on Monday, one on Wednesday, and one of them due on a day of its own.
+        finish(&mut ada, "Pay the electricity bill", "2026-10-26T09:00:00Z");
+        finish(&mut ada, "Book a haircut", "2026-10-26T15:00:00Z");
+        let milk = finish(&mut ada, "Buy oat milk", "2026-10-28T18:00:00Z");
+        call(
+            &ada,
+            "schedule",
+            vec![milk.clone(), Value::some(Value::text("2026-10-30"))],
+        );
         ada.commit();
-        made
-    };
-    // Two finished on Monday, one on Wednesday, and one of them due on a day of its own.
-    finish(&mut ada, "Pay the electricity bill", "2026-10-26T09:00:00Z");
-    finish(&mut ada, "Book a haircut", "2026-10-26T15:00:00Z");
-    let milk = finish(&mut ada, "Buy oat milk", "2026-10-28T18:00:00Z");
-    call(
-        &ada,
-        "schedule",
-        vec![milk.clone(), Value::some(Value::text("2026-10-30"))],
-    );
-    ada.commit();
 
-    ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
-    let mut view = ada.view(APP);
-    go_to(&mut view, "Done");
-    assert_eq!(
-        home_list_titles(&ada, &mut view),
-        ["Buy oat milk", "Book a haircut", "Pay the electricity bill"],
-        "what was finished last stands first"
-    );
-    assert_eq!(
-        home_row_groups(&mut view),
-        [
-            ("2026-10-28".to_owned(), true),
-            ("2026-10-26".to_owned(), true),
-            ("2026-10-26".to_owned(), true),
-        ],
-        "each run of a day finished under that day, never under the day it is due"
-    );
+        ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+        let mut view = ada.view(APP);
+        go_to(&mut view, "Done");
+        assert_eq!(
+            home_list_titles(&ada, &mut view),
+            ["Buy oat milk", "Book a haircut", "Pay the electricity bill"],
+            "what was finished last stands first"
+        );
+        assert_eq!(
+            home_row_groups(&mut view),
+            [
+                ("2026-10-28".to_owned(), true),
+                ("2026-10-26".to_owned(), true),
+                ("2026-10-26".to_owned(), true),
+            ],
+            "each run of a day finished under that day, never under the day it is due"
+        );
 
-    // A task opened again is not done, and keeps no day Done could group it by: the version
-    // that last changed its box is the one that opened it.
-    call(&ada, "check", vec![milk, Value::Bool(false)]);
-    ada.commit();
-    let mut view = ada.view(APP);
-    go_to(&mut view, "Done");
-    assert_eq!(
-        home_list_titles(&ada, &mut view),
-        ["Book a haircut", "Pay the electricity bill"]
-    );
-    assert_eq!(
-        home_row_groups(&mut view),
-        [
-            ("2026-10-26".to_owned(), true),
-            ("2026-10-26".to_owned(), true),
-        ],
-        "the tasks still finished keep the days they were finished on"
-    );
-}
-
-/// A task finished by a version that kept no moment of it stands under the day of the change
-/// that finished it, read from the log, rather than under no day at all.
-#[test]
-fn a_task_finished_before_the_app_kept_its_moment_keeps_its_day() {
-    const BEFORE: &str = include_str!("tasks_before_done_at/app.tl");
-    const BEFORE_IDS: &str = include_str!("tasks_before_done_at/app.ids");
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
-    ada.host.set_clock(|| "2026-10-26T09:00:00Z".to_owned());
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    ada.commit();
-    let old = call(&ada, "add", vec![all, Value::text("Send the invoice")]);
-    ada.commit();
-    call(&ada, "check", vec![old]);
-    ada.commit();
-
-    // The same workspace, opened by the version that keeps nothing of it but the box.
-    let (mut later, _) = Replica::new(
-        "ada",
-        ada.doc.fork(),
-        &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
-    );
-    later.host.sync_from(&later.doc);
-    later.host.migrate();
-    for done in later.host.take_committed() {
-        later.apply(&done.action);
+        // A task opened again is not done, and keeps no day Done could group it by: the version
+        // that last changed its box is the one that opened it.
+        call(&ada, "check", vec![milk, Value::Bool(false)]);
+        ada.commit();
+        let mut view = ada.view(APP);
+        go_to(&mut view, "Done");
+        assert_eq!(
+            home_list_titles(&ada, &mut view),
+            ["Book a haircut", "Pay the electricity bill"]
+        );
+        assert_eq!(
+            home_row_groups(&mut view),
+            [
+                ("2026-10-26".to_owned(), true),
+                ("2026-10-26".to_owned(), true),
+            ],
+            "the tasks still finished keep the days they were finished on"
+        );
     }
-    later.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
-    let mut view = later.view(APP);
-    go_to(&mut view, "Done");
-    assert_eq!(
-        home_row_groups(&mut view),
-        [("2026-10-26".to_owned(), true)],
-        "the day the log says it was finished on"
-    );
+
+    phase a_task_finished_before_the_app_kept_its_moment_keeps_its_day;
+    // A task finished by a version that kept no moment of it stands under the day of the change
+    // that finished it, read from the log, rather than under no day at all.
+    {
+        const BEFORE: &str = include_str!("tasks_before_done_at/app.tl");
+        const BEFORE_IDS: &str = include_str!("tasks_before_done_at/app.ids");
+        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
+        ada.host.set_clock(|| "2026-10-26T09:00:00Z".to_owned());
+        let all = Value::resource(&ada.host.root_of(APP).unwrap());
+        ada.commit();
+        let old = call(&ada, "add", vec![all, Value::text("Send the invoice")]);
+        ada.commit();
+        call(&ada, "check", vec![old]);
+        ada.commit();
+
+        // The same workspace, opened by the version that keeps nothing of it but the box.
+        let (mut later, _) = Replica::new(
+            "ada",
+            ada.doc.fork(),
+            &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
+        );
+        later.host.sync_from(&later.doc);
+        later.host.migrate();
+        for done in later.host.take_committed() {
+            later.apply(&done.action);
+        }
+        later.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+        let mut view = later.view(APP);
+        go_to(&mut view, "Done");
+        assert_eq!(
+            home_row_groups(&mut view),
+            [("2026-10-26".to_owned(), true)],
+            "the day the log says it was finished on"
+        );
+    }
 }

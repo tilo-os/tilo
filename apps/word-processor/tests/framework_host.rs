@@ -665,7 +665,6 @@ fn scenarios_stage_the_document_through_actions() {
 
 #[test]
 fn the_persons_own_words_are_spelled_right_in_every_window() {
-    use settings_store::personal_dictionary::{Service, host::Host};
     use std::sync::Arc;
     use ui::personal_dictionary::{Edit, Word};
     use word_processor::WordProcessorWidget;
@@ -684,19 +683,11 @@ fn the_persons_own_words_are_spelled_right_in_every_window() {
             avatar_color: [0; 3],
         },
     ))));
-    let profile = tempfile::tempdir().unwrap();
-    let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
-    let source = Arc::new(Host::new(
-        Arc::new(settings_store::HostDocument::new(
-            serde_json::Map::new(),
-            |_| Ok(()),
-        )),
-        service,
-        Arc::new(|| Some([1; 32])),
-    ));
+    let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
+        settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+    );
     let mut app = TestApp::<WordProcessorApp>::for_person(&"01".repeat(32)).unwrap();
-    let mut host =
-        ui::personal_dictionary::TestHost::new(source, "so.tilo.word-processor", [1; 32]).unwrap();
+    let mut host = ui::personal_dictionary::TestHost::new(source, "so.tilo.word-processor");
     let bias_reader = ui::personal_dictionary::reader();
     let flagged = app.with_surface(|editor: &mut WordProcessorWidget| {
         !editor.state().is_spelled_right("qwordz")

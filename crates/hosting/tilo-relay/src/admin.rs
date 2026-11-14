@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
+use collab_types::WorkspaceId;
 use tilo_relay::RelayConfig;
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/relay.toml";
@@ -64,7 +65,7 @@ enum Cmd {
         #[arg(long)]
         service: String,
         #[arg(long)]
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Inspect an existing legacy registry without migrating or copying it.
         #[arg(long)]
         registry: Option<PathBuf>,
@@ -544,7 +545,9 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u64>().ok())
+        .filter_map(|entry| {
+            tilo_relay_protocol::WorkspaceId::parse(&entry.file_name().to_string_lossy())
+        })
         .collect();
     durable.sort_unstable();
     durable.dedup();

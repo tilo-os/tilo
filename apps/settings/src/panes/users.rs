@@ -1234,89 +1234,163 @@ mod tests {
         }
     }
 
-    #[test]
-    fn user_accounts_parse_and_change_through_narrow_backends() {
-        let admins = admins_from_group("wheel:x:10:ada\n");
-        let parsed = read_passwd_users(
-            "root:x:0:0:root:/root:/bin/bash\nada:x:1000:1000:Ada Lovelace:/home/ada:/bin/bash\n",
-            Some("ada"),
-            &admins,
-        );
-        assert_eq!(parsed.len(), 1);
-        assert!(parsed[0].admin && parsed[0].current);
-        assert_eq!(parsed[0].uid, 1000);
+    tilo_test_env::scenario! {
+        fn people_and_identities_change_through_their_backends;
 
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Rc::new(RecordingIds::default());
-        let backends = backends(&users);
-        let people = [user("ada", true), user("bob", false)];
-        let none = || "";
-        for effect in [
-            UsersEffect::RemoveUser {
-                user: "bob".into(),
-                keep_files: false,
-            },
-            UsersEffect::SetAdministrator {
-                user: "bob".into(),
-                admin: true,
-            },
-        ] {
-            carry_out(&backends, &people, &effect, none()).unwrap();
-        }
-        let mut pane = UsersModel::sample();
-        pane.identity_admin = Some(Rc::clone(&ids) as Rc<dyn IdentityAdmin>);
-        for effect in [
-            UsersEffect::UseIdentity {
-                identity: "work".into(),
-            },
-            UsersEffect::ProtectIdentity {
-                identity: "personal".into(),
-            },
-        ] {
-            pane.start_identity_change(&effect)
-                .expect("an identity change")
-                .expect("the store answers");
-        }
-        assert!(
-            pane.start_identity_change(&UsersEffect::SetAdministrator {
-                user: "bob".into(),
-                admin: false,
-            })
-            .is_none(),
-            "account changes never reach the identity store"
-        );
-        assert!(
+        phase user_accounts_parse_and_change_through_narrow_backends;
+        {
+            let admins = admins_from_group("wheel:x:10:ada\n");
+            let parsed = read_passwd_users(
+                "root:x:0:0:root:/root:/bin/bash\nada:x:1000:1000:Ada Lovelace:/home/ada:/bin/bash\n",
+                Some("ada"),
+                &admins,
+            );
+            assert_eq!(parsed.len(), 1);
+            assert!(parsed[0].admin && parsed[0].current);
+            assert_eq!(parsed[0].uid, 1000);
+
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Rc::new(RecordingIds::default());
+            let backends = backends(&users);
+            let people = [user("ada", true), user("bob", false)];
+            let none = || "";
+            for effect in [
+                UsersEffect::RemoveUser {
+                    user: "bob".into(),
+                    keep_files: false,
+                },
+                UsersEffect::SetAdministrator {
+                    user: "bob".into(),
+                    admin: true,
+                },
+            ] {
+                carry_out(&backends, &people, &effect, none()).unwrap();
+            }
+            let mut pane = UsersModel::sample();
+            pane.identity_admin = Some(Rc::clone(&ids) as Rc<dyn IdentityAdmin>);
+            for effect in [
+                UsersEffect::UseIdentity {
+                    identity: "work".into(),
+                },
+                UsersEffect::ProtectIdentity {
+                    identity: "personal".into(),
+                },
+            ] {
+                pane.start_identity_change(&effect)
+                    .expect("an identity change")
+                    .expect("the store answers");
+            }
+            assert!(
+                pane.start_identity_change(&UsersEffect::SetAdministrator {
+                    user: "bob".into(),
+                    admin: false,
+                })
+                .is_none(),
+                "account changes never reach the identity store"
+            );
+            assert!(
+                carry_out(
+                    &backends,
+                    &people,
+                    &UsersEffect::RemoveUser {
+                        user: "ada".into(),
+                        keep_files: true
+                    },
+                    none()
+                )
+                .is_err(),
+                "the signed-in account is never removed"
+            );
             carry_out(
                 &backends,
                 &people,
-                &UsersEffect::RemoveUser {
-                    user: "ada".into(),
-                    keep_files: true
+                &UsersEffect::CreateUser {
+                    username: "cy".into(),
+                    full_name: "Cy".into(),
                 },
-                none()
+                "correct horse",
             )
-            .is_err(),
-            "the signed-in account is never removed"
-        );
-        carry_out(
-            &backends,
-            &people,
-            &UsersEffect::CreateUser {
-                username: "cy".into(),
-                full_name: "Cy".into(),
-            },
-            "correct horse",
-        )
-        .unwrap();
-        assert_eq!(
-            users.0.lock().unwrap().as_slice(),
-            ["delete:bob:true", "admin:bob:true", "create:cy:Cy:13"]
-        );
-        assert_eq!(
-            ids.0.lock().unwrap().as_slice(),
-            ["activate:work", "protect:personal"]
-        );
-        let _ = identity("work", false);
+            .unwrap();
+            assert_eq!(
+                users.0.lock().unwrap().as_slice(),
+                ["delete:bob:true", "admin:bob:true", "create:cy:Cy:13"]
+            );
+            assert_eq!(
+                ids.0.lock().unwrap().as_slice(),
+                ["activate:work", "protect:personal"]
+            );
+            let _ = identity("work", false);
+        }
+
+        phase identities_are_listed_and_changed_through_the_host_actions;
+        // The pane reads and changes identities only through the host's
+        // identity actions: the list arrives as the host answers it, removal
+        // carries the person's confirmation, and nothing reads the store.
+        {
+            use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+            let host = Arc::new(IdentityHost::default());
+            let remote = ui::RemoteActions::with_host(
+                host.clone(),
+                ui::tilo_actions::remote::Caller::local_person("owner"),
+            );
+            let mut pane = UsersModel::from_read(
+                UsersRead {
+                    users: Ok(Vec::new()),
+                },
+                Rc::new(RemoteIdentityAdmin { remote }),
+            );
+            pane.poll_identities();
+            assert_eq!(pane.identities, [identity("work", true)]);
+            assert!(pane.identity_list.is_none(), "the list has answered");
+
+            for effect in [
+                UsersEffect::RemoveIdentity {
+                    identity: "old".into(),
+                },
+                UsersEffect::UseIdentity {
+                    identity: "old".into(),
+                },
+            ] {
+                let call = pane
+                    .start_identity_change(&effect)
+                    .expect("an identity change")
+                    .expect("the host answers");
+                assert_eq!(
+                    crate::device_fleet::settled(&call).map(|answer| answer.is_ok()),
+                    Some(true)
+                );
+            }
+            let asked = host.asked.lock().unwrap().clone();
+            let targets: Vec<_> = asked
+                .iter()
+                .map(|request| request.target.address.action.as_str())
+                .collect();
+            assert_eq!(
+                targets,
+                [
+                    identity_admin::LIST,
+                    identity_admin::REMOVE,
+                    identity_admin::ACTIVATE
+                ]
+            );
+            assert!(
+                asked
+                    .iter()
+                    .all(|request| request.target.provider == identity_admin::PROVIDER)
+            );
+            assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
+            assert_eq!(
+                asked[1].argument,
+                InvokeArgument::Json(
+                    serde_json::json!({ "id": "old", "confirm": true })
+                        .as_object()
+                        .unwrap()
+                        .clone()
+                )
+            );
+            assert_eq!(asked[0].confirmation, None, "listing asks nothing");
+            assert_eq!(asked[2].confirmation, Some(Confirmation::Confirmed));
+        }
     }
 
     #[derive(Default)]
@@ -1387,76 +1461,6 @@ mod tests {
         {
             ui::tilo_actions::remote::Pending::ready(Ok(()))
         }
-    }
-
-    /// The pane reads and changes identities only through the host's
-    /// identity actions: the list arrives as the host answers it, removal
-    /// carries the person's confirmation, and nothing reads the store.
-    #[test]
-    fn identities_are_listed_and_changed_through_the_host_actions() {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
-        let host = Arc::new(IdentityHost::default());
-        let remote = ui::RemoteActions::with_host(
-            host.clone(),
-            ui::tilo_actions::remote::Caller::local_person("owner"),
-        );
-        let mut pane = UsersModel::from_read(
-            UsersRead {
-                users: Ok(Vec::new()),
-            },
-            Rc::new(RemoteIdentityAdmin { remote }),
-        );
-        pane.poll_identities();
-        assert_eq!(pane.identities, [identity("work", true)]);
-        assert!(pane.identity_list.is_none(), "the list has answered");
-
-        for effect in [
-            UsersEffect::RemoveIdentity {
-                identity: "old".into(),
-            },
-            UsersEffect::UseIdentity {
-                identity: "old".into(),
-            },
-        ] {
-            let call = pane
-                .start_identity_change(&effect)
-                .expect("an identity change")
-                .expect("the host answers");
-            assert_eq!(
-                crate::device_fleet::settled(&call).map(|answer| answer.is_ok()),
-                Some(true)
-            );
-        }
-        let asked = host.asked.lock().unwrap().clone();
-        let targets: Vec<_> = asked
-            .iter()
-            .map(|request| request.target.address.action.as_str())
-            .collect();
-        assert_eq!(
-            targets,
-            [
-                identity_admin::LIST,
-                identity_admin::REMOVE,
-                identity_admin::ACTIVATE
-            ]
-        );
-        assert!(
-            asked
-                .iter()
-                .all(|request| request.target.provider == identity_admin::PROVIDER)
-        );
-        assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
-        assert_eq!(
-            asked[1].argument,
-            InvokeArgument::Json(
-                serde_json::json!({ "id": "old", "confirm": true })
-                    .as_object()
-                    .unwrap()
-                    .clone()
-            )
-        );
-        assert_eq!(asked[0].confirmation, None, "listing asks nothing");
-        assert_eq!(asked[2].confirmation, Some(Confirmation::Confirmed));
     }
 
     struct StalledAdmin(std::sync::Arc<crate::stall::Stall>);

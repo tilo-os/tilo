@@ -252,25 +252,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_first_song_lands_and_the_next_cross_fades() {
-        let motion = Theme::dark().motion();
-        let now = crate::time::now();
-        let mut face = SongFace::new();
-        assert!(face.show(&song("One"), motion, now));
-        assert!(!face.is_moving(now), "the first song is there at once");
-        crate::motion::note_source(MotionSource::Pointer);
-        assert!(face.show(&song("Two"), motion, now));
-        assert!(face.is_moving(now), "the next one fades in");
-        let layers: Vec<_> = face.layers(now).map(|(s, _)| s.title.clone()).collect();
-        assert_eq!(layers, ["One", "Two"], "the old song fades under the new");
-        assert!(
-            !face.show(&song("Two"), motion, now),
-            "the same song changes nothing"
-        );
-        let settled = face.settles_at().expect("a fade settles");
-        assert!(!face.is_moving(settled));
-        assert_eq!(face.layers(settled).count(), 1);
+    tilo_test_env::scenario! {
+        fn a_song_lands_cross_fades_and_follows_a_scrub;
+
+        phase a_held_scrub_follows_the_hand_and_seeks_once_on_release;
+        {
+            let face = SliderFace::new(Rect::new(0.0, 0.0, 200.0, 24.0), 0.25);
+            let track = face.track_rect();
+            let at = |fraction: f64| Point::new(track.x0 + track.width() * fraction, 12.0);
+            let mut scrub = Scrub::default();
+            assert_eq!(
+                scrub.drag(&face, at(0.5)),
+                None,
+                "nothing held, nothing moves"
+            );
+            assert!((scrub.press(&face, at(0.5)) - 0.5).abs() < 1e-9);
+            assert!((scrub.drag(&face, at(0.8)).expect("held") - 0.8).abs() < 1e-9);
+            assert!(
+                (scrub.shown(0.25) - 0.8).abs() < 1e-9,
+                "the knob is under the hand"
+            );
+            assert!((scrub.release().expect("a seek") - 0.8).abs() < 1e-9);
+            assert_eq!(scrub.release(), None, "one seek per hold");
+            assert!(
+                (scrub.shown(0.25) - 0.25).abs() < 1e-9,
+                "back at the playhead"
+            );
+        }
+
+        phase the_first_song_lands_and_the_next_cross_fades;
+        {
+            let motion = Theme::dark().motion();
+            let now = crate::time::now();
+            let mut face = SongFace::new();
+            assert!(face.show(&song("One"), motion, now));
+            assert!(!face.is_moving(now), "the first song is there at once");
+            crate::motion::note_source(MotionSource::Pointer);
+            assert!(face.show(&song("Two"), motion, now));
+            assert!(face.is_moving(now), "the next one fades in");
+            let layers: Vec<_> = face.layers(now).map(|(s, _)| s.title.clone()).collect();
+            assert_eq!(layers, ["One", "Two"], "the old song fades under the new");
+            assert!(
+                !face.show(&song("Two"), motion, now),
+                "the same song changes nothing"
+            );
+            let settled = face.settles_at().expect("a fade settles");
+            assert!(!face.is_moving(settled));
+            assert_eq!(face.layers(settled).count(), 1);
+        }
     }
 
     #[test]
@@ -283,30 +312,5 @@ mod tests {
         face.show(&song("Two"), motion, now);
         assert!(!face.is_moving(now));
         assert_eq!(face.song().title, "Two");
-    }
-
-    #[test]
-    fn a_held_scrub_follows_the_hand_and_seeks_once_on_release() {
-        let face = SliderFace::new(Rect::new(0.0, 0.0, 200.0, 24.0), 0.25);
-        let track = face.track_rect();
-        let at = |fraction: f64| Point::new(track.x0 + track.width() * fraction, 12.0);
-        let mut scrub = Scrub::default();
-        assert_eq!(
-            scrub.drag(&face, at(0.5)),
-            None,
-            "nothing held, nothing moves"
-        );
-        assert!((scrub.press(&face, at(0.5)) - 0.5).abs() < 1e-9);
-        assert!((scrub.drag(&face, at(0.8)).expect("held") - 0.8).abs() < 1e-9);
-        assert!(
-            (scrub.shown(0.25) - 0.8).abs() < 1e-9,
-            "the knob is under the hand"
-        );
-        assert!((scrub.release().expect("a seek") - 0.8).abs() < 1e-9);
-        assert_eq!(scrub.release(), None, "one seek per hold");
-        assert!(
-            (scrub.shown(0.25) - 0.25).abs() < 1e-9,
-            "back at the playhead"
-        );
     }
 }

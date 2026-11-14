@@ -108,179 +108,242 @@ fn place(source: &str, label: &str) -> PhotoLocation {
     }
 }
 
-#[test]
-fn an_import_is_content_addressed_portable_idempotent_and_bounded() {
-    let mut library = Replica::<PhotoLibrary>::new();
-    let origin = "/var/home/alice/Private/harbour.png";
-    let hash = "a".repeat(64);
-    let image = OpenImage::named(origin, 800, 600, &hash);
-    library
-        .apply(PhotoLibrary::IMPORT_PHOTO.with((image.clone(), None, None)))
-        .expect("a content-addressed photograph imports");
-    let id = format!("photos.photo:{hash}");
-    let imported = photo(&library, &id);
-    assert_eq!(
-        imported.image.name, "harbour.png",
-        "the origin path stays home"
-    );
-    assert!(!String::from_utf8_lossy(&library.save()).contains(origin));
+tilo_test_env::scenario! {
+    fn an_import_and_a_reindex_keep_what_the_file_says;
 
-    edit(&mut library, &photo_paths(&id).favorite.set(true)).unwrap();
-    library
-        .apply(PhotoLibrary::IMPORT_PHOTO.with((image, None, None)))
-        .unwrap();
-    assert!(photo(&library, &id).favorite);
-    assert_eq!(library.state().unwrap().photos.len(), 1);
-
-    let unaddressed = OpenImage::new(
-        "/private/unaddressed.png",
-        20,
-        10,
-        ui::tilo_resource::Bytes::of(b"unaddressed"),
-    );
-    assert!(
+    phase an_import_is_content_addressed_portable_idempotent_and_bounded;
+    {
+        let mut library = Replica::<PhotoLibrary>::new();
+        let origin = "/var/home/alice/Private/harbour.png";
+        let hash = "a".repeat(64);
+        let image = OpenImage::named(origin, 800, 600, &hash);
         library
-            .apply(PhotoLibrary::IMPORT_PHOTO.with((unaddressed, None, None)))
-            .is_err()
-    );
-    let mut impostor = portable_photo("/private/harbour.png", 20, 10);
-    impostor.id = "photos.album:collision".into();
-    assert!(edit(&mut library, &insert(&impostor)).is_err());
+            .apply(PhotoLibrary::IMPORT_PHOTO.with((image.clone(), None, None)))
+            .expect("a content-addressed photograph imports");
+        let id = format!("photos.photo:{hash}");
+        let imported = photo(&library, &id);
+        assert_eq!(
+            imported.image.name, "harbour.png",
+            "the origin path stays home"
+        );
+        assert!(!String::from_utf8_lossy(&library.save()).contains(origin));
 
-    let big = portable_photo("/var/tmp/big.png", 4000, 3000);
-    edit(&mut library, &insert(&big)).unwrap();
-    library
-        .apply(PhotoLibrary::ROTATE_RIGHT.with(big.item()))
-        .unwrap();
-    assert!(
-        library.save().len() < 8192,
-        "an image never travels in a change"
-    );
+        edit(&mut library, &photo_paths(&id).favorite.set(true)).unwrap();
+        library
+            .apply(PhotoLibrary::IMPORT_PHOTO.with((image, None, None)))
+            .unwrap();
+        assert!(photo(&library, &id).favorite);
+        assert_eq!(library.state().unwrap().photos.len(), 1);
+
+        let unaddressed = OpenImage::new(
+            "/private/unaddressed.png",
+            20,
+            10,
+            ui::tilo_resource::Bytes::of(b"unaddressed"),
+        );
+        assert!(
+            library
+                .apply(PhotoLibrary::IMPORT_PHOTO.with((unaddressed, None, None)))
+                .is_err()
+        );
+        let mut impostor = portable_photo("/private/harbour.png", 20, 10);
+        impostor.id = "photos.album:collision".into();
+        assert!(edit(&mut library, &insert(&impostor)).is_err());
+
+        let big = portable_photo("/var/tmp/big.png", 4000, 3000);
+        edit(&mut library, &insert(&big)).unwrap();
+        library
+            .apply(PhotoLibrary::ROTATE_RIGHT.with(big.item()))
+            .unwrap();
+        assert!(
+            library.save().len() < 8192,
+            "an image never travels in a change"
+        );
+    }
+
+    phase reindexing_refreshes_only_what_the_file_says;
+    {
+        let mut item = portable_photo("reindex.png", 40, 20);
+        item.favorite = true;
+        item.folder = Some("Family".into());
+        item.people = labels(["Ada"]);
+        item.tags = labels(["birthday"]);
+        item.location = Some(place("user", "Chosen place"));
+        let mut library = library_of(std::slice::from_ref(&item));
+        let exif = PhotoLocation {
+            latitude: 50.0,
+            longitude: 4.0,
+            label: None,
+            provenance: LocationProvenance {
+                source: "exif".into(),
+                scope: "shared".into(),
+            },
+        };
+        library
+            .apply(PhotoLibrary::REFRESH_IMPORTED_METADATA.with((
+                item.item(),
+                Some("2026:09:18 10:20:30".into()),
+                Some(exif),
+            )))
+            .unwrap();
+        let refreshed = photo(&library, &item.id);
+        assert_eq!(
+            refreshed.captured_at.as_deref(),
+            Some("2026-09-18T10:20:30")
+        );
+        assert_eq!(
+            refreshed
+                .location
+                .as_ref()
+                .and_then(|location| location.label.as_deref()),
+            Some("Chosen place"),
+            "a place the person chose stays"
+        );
+        assert!(refreshed.favorite);
+        assert_eq!(refreshed.folder.as_deref(), Some("Family"));
+        assert_eq!(refreshed.people(), ["Ada"]);
+        assert_eq!(refreshed.tags(), ["birthday"]);
+        assert!(
+            library
+                .apply(PhotoLibrary::REFRESH_IMPORTED_METADATA.with((
+                    item.item(),
+                    None,
+                    Some(place("user", "Not from a file")),
+                )))
+                .is_err(),
+            "a reindex carries only what a file says"
+        );
+    }
 }
 
-#[test]
-fn edits_rotate_compose_crops_and_refuse_what_is_not_a_crop() {
-    let harbour = portable_photo("/x/harbour.png", 800, 600);
-    let other = portable_photo("/x/other.png", 10, 10);
-    let mut library = library_of(&[harbour.clone(), other.clone()]);
+tilo_test_env::scenario! {
+    fn edits_compose_merge_and_refuse_what_is_not_a_crop;
 
-    library
-        .apply(PhotoLibrary::ROTATE_RIGHT.with(harbour.item()))
-        .unwrap();
-    assert_eq!(photo(&library, &harbour.id).edits.rotate_quarters, 1);
-    library
-        .apply(PhotoLibrary::ROTATE_LEFT.with(harbour.item()))
-        .unwrap();
-    library
-        .apply(PhotoLibrary::ROTATE_LEFT.with(harbour.item()))
-        .unwrap();
-    assert_eq!(photo(&library, &harbour.id).edits.rotate_quarters, 3);
+    phase edits_rotate_compose_crops_and_refuse_what_is_not_a_crop;
+    {
+        let harbour = portable_photo("/x/harbour.png", 800, 600);
+        let other = portable_photo("/x/other.png", 10, 10);
+        let mut library = library_of(&[harbour.clone(), other.clone()]);
 
-    let half = Rect01 {
-        x: 0.0,
-        y: 0.0,
-        w: 0.5,
-        h: 0.5,
-    };
-    library
-        .apply(PhotoLibrary::CROP.with((other.item(), half)))
-        .unwrap();
-    library
-        .apply(PhotoLibrary::CROP.with((other.item(), half)))
-        .unwrap();
-    let cropped = photo(&library, &other.id).edits;
-    assert!((cropped.crop.w - 0.25).abs() < 1e-9, "{cropped:?}");
-    assert_eq!(
-        photo(&library, &harbour.id).edits.rotate_quarters,
-        3,
-        "editing one photograph leaves every other alone"
-    );
-
-    let outside = Rect01 {
-        x: 1.0,
-        y: 1.0,
-        w: 1.0,
-        h: 1.0,
-    };
-    assert!(
         library
-            .apply(PhotoLibrary::CROP.with((other.item(), outside)))
+            .apply(PhotoLibrary::ROTATE_RIGHT.with(harbour.item()))
+            .unwrap();
+        assert_eq!(photo(&library, &harbour.id).edits.rotate_quarters, 1);
+        library
+            .apply(PhotoLibrary::ROTATE_LEFT.with(harbour.item()))
+            .unwrap();
+        library
+            .apply(PhotoLibrary::ROTATE_LEFT.with(harbour.item()))
+            .unwrap();
+        assert_eq!(photo(&library, &harbour.id).edits.rotate_quarters, 3);
+
+        let half = Rect01 {
+            x: 0.0,
+            y: 0.0,
+            w: 0.5,
+            h: 0.5,
+        };
+        library
+            .apply(PhotoLibrary::CROP.with((other.item(), half)))
+            .unwrap();
+        library
+            .apply(PhotoLibrary::CROP.with((other.item(), half)))
+            .unwrap();
+        let cropped = photo(&library, &other.id).edits;
+        assert!((cropped.crop.w - 0.25).abs() < 1e-9, "{cropped:?}");
+        assert_eq!(
+            photo(&library, &harbour.id).edits.rotate_quarters,
+            3,
+            "editing one photograph leaves every other alone"
+        );
+
+        let outside = Rect01 {
+            x: 1.0,
+            y: 1.0,
+            w: 1.0,
+            h: 1.0,
+        };
+        assert!(
+            library
+                .apply(PhotoLibrary::CROP.with((other.item(), outside)))
+                .is_err()
+        );
+        let paths = photo_paths(&other.id).edits;
+        assert!(
+            group(
+                &mut library,
+                &[
+                    paths.crop.set(Rect01 {
+                        x: -2.0,
+                        y: 0.5,
+                        w: 9.0,
+                        h: 9.0,
+                    }),
+                    paths.rotate_quarters.set(250),
+                ],
+            )
             .is_err()
-    );
-    let paths = photo_paths(&other.id).edits;
-    assert!(
+        );
+        assert_eq!(photo(&library, &other.id).edits, cropped);
+        assert!(
+            library
+                .apply(PhotoLibrary::ROTATE_RIGHT.with(Id::from_raw("photos.photo:gone")))
+                .is_err(),
+            "an edit of a photograph the library lacks refuses"
+        );
+
         group(
             &mut library,
-            &[
-                paths.crop.set(Rect01 {
-                    x: -2.0,
-                    y: 0.5,
-                    w: 9.0,
-                    h: 9.0,
-                }),
-                paths.rotate_quarters.set(250),
-            ],
+            &[paths.crop.set(Rect01::FULL), paths.rotate_quarters.set(0)],
         )
-        .is_err()
-    );
-    assert_eq!(photo(&library, &other.id).edits, cropped);
-    assert!(
-        library
-            .apply(PhotoLibrary::ROTATE_RIGHT.with(Id::from_raw("photos.photo:gone")))
-            .is_err(),
-        "an edit of a photograph the library lacks refuses"
-    );
-
-    group(
-        &mut library,
-        &[paths.crop.set(Rect01::FULL), paths.rotate_quarters.set(0)],
-    )
-    .unwrap();
-    assert!(photo(&library, &other.id).edits.is_identity());
-
-    let crop = PhotoLibrary::surface()
-        .verbs
-        .into_iter()
-        .find(|verb| verb.id == "crop")
-        .expect("crop is published");
-    assert!(crop.params.iter().any(|param| param.name == "region"));
-}
-
-#[test]
-fn a_crop_and_a_turn_merge_independently_and_a_reset_supersedes_what_it_saw() {
-    let harbour = portable_photo("/x/harbour.png", 800, 600);
-    let mut library = library_of(std::slice::from_ref(&harbour));
-    let mut cropper = library.fork();
-    let mut rotator = library.fork();
-    let crop = Rect01 {
-        x: 0.2,
-        y: 0.1,
-        w: 0.6,
-        h: 0.75,
-    };
-    edit(&mut cropper, &photo_paths(&harbour.id).edits.crop.set(crop)).unwrap();
-    rotator
-        .apply(PhotoLibrary::ROTATE_RIGHT.with(harbour.item()))
         .unwrap();
-    cropper.sync_with(&mut rotator).unwrap();
-    let both = photo(&cropper, &harbour.id).edits;
-    assert_eq!(both.crop, crop);
-    assert_eq!(both.rotate_quarters, 1);
+        assert!(photo(&library, &other.id).edits.is_identity());
 
-    let paths = photo_paths(&harbour.id).edits;
-    group(
-        &mut cropper,
-        &[paths.crop.set(Rect01::FULL), paths.rotate_quarters.set(0)],
-    )
-    .unwrap();
-    library.sync_with(&mut cropper).unwrap();
-    assert!(photo(&library, &harbour.id).edits.is_identity());
+        let crop = PhotoLibrary::surface()
+            .verbs
+            .into_iter()
+            .find(|verb| verb.id == "crop")
+            .expect("crop is published");
+        assert!(crop.params.iter().any(|param| param.name == "region"));
+    }
+
+    phase a_crop_and_a_turn_merge_independently_and_a_reset_supersedes_what_it_saw;
+    {
+        let harbour = portable_photo("/x/harbour.png", 800, 600);
+        let mut library = library_of(std::slice::from_ref(&harbour));
+        let mut cropper = library.fork();
+        let mut rotator = library.fork();
+        let crop = Rect01 {
+            x: 0.2,
+            y: 0.1,
+            w: 0.6,
+            h: 0.75,
+        };
+        edit(&mut cropper, &photo_paths(&harbour.id).edits.crop.set(crop)).unwrap();
+        rotator
+            .apply(PhotoLibrary::ROTATE_RIGHT.with(harbour.item()))
+            .unwrap();
+        cropper.sync_with(&mut rotator).unwrap();
+        let both = photo(&cropper, &harbour.id).edits;
+        assert_eq!(both.crop, crop);
+        assert_eq!(both.rotate_quarters, 1);
+
+        let paths = photo_paths(&harbour.id).edits;
+        group(
+            &mut cropper,
+            &[paths.crop.set(Rect01::FULL), paths.rotate_quarters.set(0)],
+        )
+        .unwrap();
+        library.sync_with(&mut cropper).unwrap();
+        assert!(photo(&library, &harbour.id).edits.is_identity());
+    }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn metadata_edits_are_bounded_canonical_and_merge_per_label() {
-    eprintln!("phase details_save_keeps_clears_sets_adds_and_removes_atomically");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn metadata_edits_are_bounded_canonical_and_merge_per_label;
+
+    phase details_save_keeps_clears_sets_adds_and_removes_atomically;
     {
         let mut first = portable_photo("/photos/first.png", 20, 10);
         first.folder = Some("Old folder".into());
@@ -367,7 +430,7 @@ fn metadata_edits_are_bounded_canonical_and_merge_per_label() {
         assert!(!crate::model::canonical_capture_at("2026-09-18T14:30Z"));
     }
 
-    eprintln!("phase the_full_bounded_selection_saves_in_one_change");
+    phase the_full_bounded_selection_saves_in_one_change;
     {
         let photos: Vec<_> = (0..MAX_BATCH_PHOTOS)
             .map(|index| portable_photo(&format!("/photos/batch-{index}.png"), 20, 10))
@@ -404,7 +467,7 @@ fn metadata_edits_are_bounded_canonical_and_merge_per_label() {
         );
     }
 
-    eprintln!("phase concurrent_label_adds_converge_without_replacing_each_other");
+    phase concurrent_label_adds_converge_without_replacing_each_other;
     {
         let item = portable_photo("/photos/concurrent-labels.png", 20, 10);
         let mut left = library_of(std::slice::from_ref(&item));
@@ -424,7 +487,7 @@ fn metadata_edits_are_bounded_canonical_and_merge_per_label() {
         assert_eq!(photo(&right, &item.id).tags(), ["left", "right"]);
     }
 
-    eprintln!("phase different_fields_of_one_photograph_merge");
+    phase different_fields_of_one_photograph_merge;
     {
         let item = portable_photo("/photos/same.png", 20, 10);
         let mut favorite = library_of(std::slice::from_ref(&item));
@@ -442,173 +505,124 @@ fn metadata_edits_are_bounded_canonical_and_merge_per_label() {
     }
 }
 
-#[test]
-fn reindexing_refreshes_only_what_the_file_says() {
-    let mut item = portable_photo("reindex.png", 40, 20);
-    item.favorite = true;
-    item.folder = Some("Family".into());
-    item.people = labels(["Ada"]);
-    item.tags = labels(["birthday"]);
-    item.location = Some(place("user", "Chosen place"));
-    let mut library = library_of(std::slice::from_ref(&item));
-    let exif = PhotoLocation {
-        latitude: 50.0,
-        longitude: 4.0,
-        label: None,
-        provenance: LocationProvenance {
-            source: "exif".into(),
-            scope: "shared".into(),
-        },
-    };
-    library
-        .apply(PhotoLibrary::REFRESH_IMPORTED_METADATA.with((
-            item.item(),
-            Some("2026:09:18 10:20:30".into()),
-            Some(exif),
-        )))
-        .unwrap();
-    let refreshed = photo(&library, &item.id);
-    assert_eq!(
-        refreshed.captured_at.as_deref(),
-        Some("2026-09-18T10:20:30")
-    );
-    assert_eq!(
-        refreshed
-            .location
-            .as_ref()
-            .and_then(|location| location.label.as_deref()),
-        Some("Chosen place"),
-        "a place the person chose stays"
-    );
-    assert!(refreshed.favorite);
-    assert_eq!(refreshed.folder.as_deref(), Some("Family"));
-    assert_eq!(refreshed.people(), ["Ada"]);
-    assert_eq!(refreshed.tags(), ["birthday"]);
-    assert!(
-        library
-            .apply(PhotoLibrary::REFRESH_IMPORTED_METADATA.with((
-                item.item(),
-                None,
-                Some(place("user", "Not from a file")),
-            )))
-            .is_err(),
-        "a reindex carries only what a file says"
-    );
-}
+tilo_test_env::scenario! {
+    fn people_and_places_are_shared_typed_labels;
 
-#[test]
-fn people_are_shared_labels_offered_as_places() {
-    let first = portable_photo("people-one.png", 40, 20);
-    let second = portable_photo("people-two.png", 40, 20);
-    let mut library = library_of(&[first.clone(), second.clone()]);
-    library
-        .apply(PhotoLibrary::SET_PERSON_MEMBERSHIP.with((
-            "Sam".parse().unwrap(),
-            vec![first.id.clone(), second.id.clone()],
-        )))
-        .unwrap();
-    assert_eq!(photo(&library, &first.id).people(), ["Sam"]);
-    assert_eq!(photo(&library, &second.id).people(), ["Sam"]);
-    let state = library.state().unwrap();
-    let person = PhotoLibrary::child(&state, &crate::derived::person_resource_id("Sam"))
-        .expect("an approved person is a place");
-    for verb in [
-        "set-person-membership",
-        "rename-person",
-        "remove-person",
-        "view-person",
-    ] {
+    phase people_are_shared_labels_offered_as_places;
+    {
+        let first = portable_photo("people-one.png", 40, 20);
+        let second = portable_photo("people-two.png", 40, 20);
+        let mut library = library_of(&[first.clone(), second.clone()]);
+        library
+            .apply(PhotoLibrary::SET_PERSON_MEMBERSHIP.with((
+                "Sam".parse().unwrap(),
+                vec![first.id.clone(), second.id.clone()],
+            )))
+            .unwrap();
+        assert_eq!(photo(&library, &first.id).people(), ["Sam"]);
+        assert_eq!(photo(&library, &second.id).people(), ["Sam"]);
+        let state = library.state().unwrap();
+        let person = PhotoLibrary::child(&state, &crate::derived::person_resource_id("Sam"))
+            .expect("an approved person is a place");
+        for verb in [
+            "set-person-membership",
+            "rename-person",
+            "remove-person",
+            "view-person",
+        ] {
+            assert!(
+                person.actions.iter().any(|action| action.id == verb),
+                "a person offers {verb}"
+            );
+        }
         assert!(
-            person.actions.iter().any(|action| action.id == verb),
-            "a person offers {verb}"
+            library
+                .apply(
+                    PhotoLibrary::SET_PERSON_MEMBERSHIP
+                        .with(("Sam".parse().unwrap(), vec!["photos.photo:gone".to_owned()])),
+                )
+                .is_err(),
+            "a stale membership refuses whole"
         );
-    }
-    assert!(
+
         library
             .apply(
-                PhotoLibrary::SET_PERSON_MEMBERSHIP
-                    .with(("Sam".parse().unwrap(), vec!["photos.photo:gone".to_owned()])),
+                PhotoLibrary::RENAME_PERSON.with(("Sam".parse().unwrap(), "Samantha".parse().unwrap())),
             )
-            .is_err(),
-        "a stale membership refuses whole"
-    );
-
-    library
-        .apply(
-            PhotoLibrary::RENAME_PERSON.with(("Sam".parse().unwrap(), "Samantha".parse().unwrap())),
-        )
-        .unwrap();
-    assert_eq!(photo(&library, &first.id).people(), ["Samantha"]);
-    library
-        .apply_confirmed(
-            PhotoLibrary::REMOVE_PERSON
-                .with("Samantha".parse::<ui::tilo_resource::NonBlank>().unwrap()),
-        )
-        .unwrap();
-    assert!(photo(&library, &first.id).people.is_empty());
-    let state = library.state().unwrap();
-    assert!(
-        PhotoLibrary::child(&state, &crate::derived::person_resource_id("Samantha")).is_none(),
-        "a person no photograph carries is no place"
-    );
-    assert!(
+            .unwrap();
+        assert_eq!(photo(&library, &first.id).people(), ["Samantha"]);
         library
             .apply_confirmed(
                 PhotoLibrary::REMOVE_PERSON
-                    .with("Nobody".parse::<ui::tilo_resource::NonBlank>().unwrap())
+                    .with("Samantha".parse::<ui::tilo_resource::NonBlank>().unwrap()),
             )
-            .is_err()
-    );
-}
+            .unwrap();
+        assert!(photo(&library, &first.id).people.is_empty());
+        let state = library.state().unwrap();
+        assert!(
+            PhotoLibrary::child(&state, &crate::derived::person_resource_id("Samantha")).is_none(),
+            "a person no photograph carries is no place"
+        );
+        assert!(
+            library
+                .apply_confirmed(
+                    PhotoLibrary::REMOVE_PERSON
+                        .with("Nobody".parse::<ui::tilo_resource::NonBlank>().unwrap())
+                )
+                .is_err()
+        );
+    }
 
-#[test]
-fn places_are_typed_shared_and_range_checked() {
-    let item = portable_photo("place.png", 40, 20);
-    let mut library = library_of(std::slice::from_ref(&item));
-    let location = place("exif", "San Francisco");
-    edit(
-        &mut library,
-        &photo_paths(&item.id).location.set(Some(location.clone())),
-    )
-    .unwrap();
-    assert_eq!(photo(&library, &item.id).location, Some(location.clone()));
-    let place_id = crate::derived::place_resource_id(&location.place_key());
-    let state = library.state().unwrap();
-    let published = PhotoLibrary::child(&state, &place_id).expect("the place is published");
-    assert_eq!(published.label, "San Francisco");
-    assert!(
-        published
-            .actions
-            .iter()
-            .any(|action| action.id == "view-place")
-    );
-
-    edit(&mut library, &photo_paths(&item.id).location.set(None)).unwrap();
-    assert!(photo(&library, &item.id).location.is_none());
-    assert!(PhotoLibrary::child(&library.state().unwrap(), &place_id).is_none());
-
-    let invalid = PhotoLocation {
-        latitude: 91.0,
-        longitude: 0.0,
-        label: None,
-        provenance: LocationProvenance {
-            source: "user".to_owned(),
-            scope: "local".to_owned(),
-        },
-    };
-    assert!(
+    phase places_are_typed_shared_and_range_checked;
+    {
+        let item = portable_photo("place.png", 40, 20);
+        let mut library = library_of(std::slice::from_ref(&item));
+        let location = place("exif", "San Francisco");
         edit(
             &mut library,
-            &photo_paths(&item.id).location.set(Some(invalid))
+            &photo_paths(&item.id).location.set(Some(location.clone())),
         )
-        .is_err()
-    );
+        .unwrap();
+        assert_eq!(photo(&library, &item.id).location, Some(location.clone()));
+        let place_id = crate::derived::place_resource_id(&location.place_key());
+        let state = library.state().unwrap();
+        let published = PhotoLibrary::child(&state, &place_id).expect("the place is published");
+        assert_eq!(published.label, "San Francisco");
+        assert!(
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == "view-place")
+        );
+
+        edit(&mut library, &photo_paths(&item.id).location.set(None)).unwrap();
+        assert!(photo(&library, &item.id).location.is_none());
+        assert!(PhotoLibrary::child(&library.state().unwrap(), &place_id).is_none());
+
+        let invalid = PhotoLocation {
+            latitude: 91.0,
+            longitude: 0.0,
+            label: None,
+            provenance: LocationProvenance {
+                source: "user".to_owned(),
+                scope: "local".to_owned(),
+            },
+        };
+        assert!(
+            edit(
+                &mut library,
+                &photo_paths(&item.id).location.set(Some(invalid))
+            )
+            .is_err()
+        );
+    }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
-    eprintln!("phase shared_analysis_is_bounded_readable_and_removable");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn shared_analysis_is_bounded_pinned_and_merges_by_component;
+
+    phase shared_analysis_is_bounded_readable_and_removable;
     {
         let item = portable_photo("analysis.png", 40, 20);
         let content = item.image.hash();
@@ -645,7 +659,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         assert!(photo(&library, &item.id).analysis().is_none());
     }
 
-    eprintln!("phase text_then_image_and_image_then_text_keep_each_component");
+    phase text_then_image_and_image_then_text_keep_each_component;
     {
         let item = portable_photo("ocr-then-vision.png", 40, 20);
         let content = item.image.hash();
@@ -670,7 +684,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         assert_eq!(merged.description, "A dog beside a red bicycle");
     }
 
-    eprintln!("phase a_new_vision_pass_refreshes_only_incidental_text");
+    phase a_new_vision_pass_refreshes_only_incidental_text;
     {
         let item = portable_photo("vision-refresh.png", 40, 20);
         let content = item.image.hash();
@@ -689,7 +703,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         assert_eq!(merged.description, "The same scene after a model refresh");
     }
 
-    eprintln!("phase a_component_of_other_bytes_is_replaced_not_kept");
+    phase a_component_of_other_bytes_is_replaced_not_kept;
     {
         let item = portable_photo("stale-analysis.png", 40, 20);
         let content = item.image.hash();
@@ -710,7 +724,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         assert!(merged.vision_provenance.is_none());
     }
 
-    eprintln!("phase analysis_needs_a_pinned_model_but_keeps_an_empty_scene");
+    phase analysis_needs_a_pinned_model_but_keeps_an_empty_scene;
     {
         let item = portable_photo("blank-vision.png", 40, 20);
         let content = item.image.hash();
@@ -736,7 +750,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         );
     }
 
-    eprintln!("phase concurrent_text_and_image_analysis_both_survive");
+    phase concurrent_text_and_image_analysis_both_survive;
     {
         let item = portable_photo("concurrent-analysis.png", 40, 20);
         let content = item.image.hash();
@@ -757,7 +771,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         }
     }
 
-    eprintln!("phase local_analysis_is_a_cancellable_background_job");
+    phase local_analysis_is_a_cancellable_background_job;
     {
         let effects = <PhotosEffect as ui::tilo_resource::Effect>::specs();
         for id in ["import-directory", "reindex-directory"] {

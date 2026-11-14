@@ -395,7 +395,10 @@ pub struct DynAction {
 }
 
 fn refused(error: &ModelError) -> ActionError {
-    ActionError::Refused(error.to_string())
+    match error {
+        ModelError::Declined(reason) => ActionError::Declined(*reason),
+        other => ActionError::Refused(other.to_string()),
+    }
 }
 
 impl DynAction {
@@ -1389,18 +1392,45 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
         .collect()
 }
 
+/// The seed the `index`th edit an action writes into one chunk mints ids from: known before the
+/// action is whole, so the store that writes an action edit by edit writes what replaying the
+/// action writes ([`tilo_actions::commit_written`]).
+#[must_use]
+pub fn edit_seed(index: usize) -> [u8; 8] {
+    u64::try_from(index).unwrap_or(u64::MAX).to_le_bytes()
+}
+
+/// The resource an action writes first, as the record read before the action wrote it: its
+/// published id, its type, and its title ([`DynAction::subject`]).
+pub type Subject = (String, &'static crate::schema::TypeSchema, Option<String>);
+
 impl Action for DynAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        let payload =
-            serde_json::to_vec(self).map_err(|error| ActionError::Refused(error.to_string()))?;
         // The package that wrote this action, installed: its record's type resolves by that
         // package version, whatever other version of the app the thread loaded last (a receiver
         // replaying a peer's action, two versions in one process).
         let _package = self.package_schemas();
-        apply_edits(doc, &self.app, &self.edits, &payload)
+        for (index, edit) in self.edits.iter().enumerate() {
+            apply_edits(
+                doc,
+                &self.app,
+                std::slice::from_ref(edit),
+                &edit_seed(index),
+            )?;
+        }
+        Ok(())
     }
 
     fn describe(&self, doc: &Doc) -> Option<Described> {
+        Some(self.described_with(|edit| read_subject(&self.app, edit, doc)))
+    }
+}
+
+impl DynAction {
+    /// What the action did, as history names it, with `read` reading the subject of an edit of a
+    /// resource the record held before the action ([`read_subject`]).
+    #[must_use]
+    pub fn described_with(&self, read: impl FnOnce(&DynEdit) -> Option<Subject>) -> Described {
         let _package = self.package_schemas();
         let args = self
             .args
@@ -1417,28 +1447,23 @@ impl Action for DynAction {
         // History names the resource as it reads, by its title and never by its id: the item
         // the action wrote (a note of the notebook), else the record; one without a title yet
         // by what its type says it is called then ("Created Notebook", "Pin: Untitled").
-        let Some((at, schema, title)) = self.subject(doc) else {
-            return Some(described);
+        let Some((at, schema, title)) = self.subject(read) else {
+            return described;
         };
-        Some(described.on(at, title.unwrap_or_else(|| schema.untitled())))
+        described.on(at, title.unwrap_or_else(|| schema.untitled()))
     }
-}
 
-impl DynAction {
-    /// The resource this action writes first, as the record reads before it applies: its
-    /// published id (an item of a record by its path), its type, and its title, the first text
-    /// among its own fields. A resource the action creates is read from the record it creates.
-    fn subject(
-        &self,
-        doc: &Doc,
-    ) -> Option<(String, &'static crate::schema::TypeSchema, Option<String>)> {
+    /// The resource this action writes first: its published id (an item of a record by its
+    /// path), its type, and its title, the first text among its own fields. A resource the
+    /// action creates is read from the record it creates; any other `read` reads.
+    fn subject(&self, read: impl FnOnce(&DynEdit) -> Option<Subject>) -> Option<Subject> {
         // What it describes is what it wrote of a resource, not the run entry it records first.
         let edit = self
             .edits
             .iter()
             .map(DynEdit::bare)
-            .find(|edit| !matches!(edit, DynEdit::RunChunk { .. }))?;
-        let (id, path) = match edit {
+            .find(|edit| subject_of(edit))?;
+        match edit {
             DynEdit::Create { id, record } => {
                 let schema = record
                     .get(crate::schema::TYPE_KEY)
@@ -1448,7 +1473,7 @@ impl DynAction {
                     self.written_text(id, None, field)
                         .or_else(|| record.get(field).and_then(Json::as_str).map(str::to_owned))
                 });
-                return Some((id.clone(), schema, title));
+                Some((id.clone(), schema, title))
             }
             DynEdit::Insert {
                 id, item, record, ..
@@ -1461,8 +1486,27 @@ impl DynAction {
                     self.written_text(id, Some(item), field)
                         .or_else(|| record.get(field).and_then(Json::as_str).map(str::to_owned))
                 });
-                return Some((format!("{id}/{item}"), schema, title));
+                Some((format!("{id}/{item}"), schema, title))
             }
+            edit => read(edit),
+        }
+    }
+}
+
+/// Whether `edit` (bare) is what an action that writes it first is described by: anything but
+/// the run entry it records first.
+#[must_use]
+pub fn subject_of(edit: &DynEdit) -> bool {
+    !matches!(edit, DynEdit::RunChunk { .. })
+}
+
+/// The resource the bare `edit` of an action of `app` writes, as `doc` holds it before the edit:
+/// its published id, its type, and its title. `None` for an edit that makes its resource (the
+/// action's own edits say what it is) or names none.
+#[must_use]
+pub fn read_subject(app: &str, edit: &DynEdit, doc: &Doc) -> Option<Subject> {
+    {
+        let (id, path) = match edit {
             DynEdit::Edit { id, edit } => {
                 // The last item the path goes down to.
                 let item = edit.path().iter().rev().find_map(|segment| match segment {
@@ -1479,9 +1523,13 @@ impl DynAction {
             | DynEdit::OutboxMark { id, .. }
             | DynEdit::Migrated { id, .. }
             | DynEdit::TriggerRan { id, .. } => (id, None),
-            DynEdit::In { .. } | DynEdit::Chunk { .. } | DynEdit::RunChunk { .. } => return None,
+            DynEdit::Create { .. }
+            | DynEdit::Insert { .. }
+            | DynEdit::In { .. }
+            | DynEdit::Chunk { .. }
+            | DynEdit::RunChunk { .. } => return None,
         };
-        let root = crate::reads::resource_obj(doc, &self.app, id)?;
+        let root = crate::reads::resource_obj(doc, app, id)?;
         let root_ty = crate::reads::type_at(doc, &root)?;
         let at = tilolang_runtime::value::ResourceRef {
             doc: id.clone(),
@@ -1491,7 +1539,7 @@ impl DynAction {
         let located = crate::reads::locate_ref(
             doc,
             None,
-            (&AppId::from(self.app.as_str()), &root_ty),
+            (&AppId::from(app), &root_ty),
             &at,
             &crate::items::Nested::default(),
         )
@@ -1663,66 +1711,70 @@ mod outbox_tests {
         }
     }
 
-    /// A record of `app` holding the resource `id` with no outbox: what an earlier version of the
-    /// platform left, and what two replicas that queued the first effect on it each made one for.
-    #[test]
-    fn an_outbox_each_replica_queued_before_they_met_is_one_outbox_after_a_write() {
-        let mut ada = holding("app", "r", &[]);
-        let obj = crate::reads::resource_obj(&ada, "app", "r").expect("the resource");
-        {
-            use automerge::ReadDoc as _;
-            use automerge::transaction::Transactable as _;
-            assert!(ada.get(&obj, OUTBOX_KEY).expect("outbox").is_some());
-            ada.delete(&obj, OUTBOX_KEY).expect("no outbox");
-        }
-        ada.commit();
-        let mut grace = ada.fork();
-        apply_edits(&mut ada, "app", &[push("1")], b"ada").expect("ada queues");
-        ada.commit();
-        apply_edits(&mut grace, "app", &[push("2")], b"grace").expect("grace queues");
-        grace.commit();
-        ada.merge_incoming(&mut grace)
-            .expect("ada takes grace's entries");
-        assert_eq!(outboxes(&ada, "app", "r"), 2, "each replica made an outbox");
-        let queued: Vec<String> = outbox_entries(&ada, "app", "r")
-            .into_iter()
-            .map(|entry| entry.entry)
-            .collect();
-        assert_eq!(queued, ["1", "2"], "both queued entries read");
+    tilo_test_env::scenario! {
+        fn an_outbox_merges_and_keeps_what_does_not_read;
 
-        // The next write folds the two into the one the record keeps, and nothing queued is lost.
-        apply_edits(&mut ada, "app", &[push("3")], b"ada").expect("ada queues again");
-        ada.commit();
-        assert_eq!(outboxes(&ada, "app", "r"), 1, "one outbox after the write");
-        grace
-            .merge_incoming(&mut ada)
-            .expect("grace takes ada's entries");
-        for (name, doc) in [("ada", &ada), ("grace", &grace)] {
-            assert_eq!(outboxes(doc, "app", "r"), 1, "{name}: one outbox");
-            let queued: Vec<String> = outbox_entries(doc, "app", "r")
+        phase an_outbox_each_replica_queued_before_they_met_is_one_outbox_after_a_write;
+        // A record of `app` holding the resource `id` with no outbox: what an earlier version of the
+        // platform left, and what two replicas that queued the first effect on it each made one for.
+        {
+            let mut ada = holding("app", "r", &[]);
+            let obj = crate::reads::resource_obj(&ada, "app", "r").expect("the resource");
+            {
+                use automerge::ReadDoc as _;
+                use automerge::transaction::Transactable as _;
+                assert!(ada.get(&obj, OUTBOX_KEY).expect("outbox").is_some());
+                ada.delete(&obj, OUTBOX_KEY).expect("no outbox");
+            }
+            ada.commit();
+            let mut grace = ada.fork();
+            apply_edits(&mut ada, "app", &[push("1")], b"ada").expect("ada queues");
+            ada.commit();
+            apply_edits(&mut grace, "app", &[push("2")], b"grace").expect("grace queues");
+            grace.commit();
+            ada.merge_incoming(&mut grace)
+                .expect("ada takes grace's entries");
+            assert_eq!(outboxes(&ada, "app", "r"), 2, "each replica made an outbox");
+            let queued: Vec<String> = outbox_entries(&ada, "app", "r")
                 .into_iter()
                 .map(|entry| entry.entry)
                 .collect();
-            assert_eq!(queued, ["1", "2", "3"], "{name}: every queued entry");
-        }
-    }
+            assert_eq!(queued, ["1", "2"], "both queued entries read");
 
-    #[test]
-    fn an_outbox_entry_that_does_not_read_stands_rejected_with_why() {
-        let doc = holding("app", "r", &[("1", "[\"to\"]"), ("2", "{not json")]);
-        let entries = outbox_entries(&doc, "app", "r");
-        assert_eq!(entries.len(), 2, "no entry is left out");
-        assert_eq!(entries[0].settled, None, "the readable one waits");
-        assert_eq!(entries[0].payload, serde_json::json!(["to"]));
-        let unreadable = &entries[1];
-        assert_eq!(unreadable.settled.as_deref(), Some("rejected"));
-        assert!(
-            unreadable.reason.contains("payload"),
-            "{}",
-            unreadable.reason
-        );
-        let delivery = unreadable.delivery();
-        assert_eq!(delivery.state, "rejected");
-        assert!(!delivery.reason.is_empty());
+            // The next write folds the two into the one the record keeps, and nothing queued is lost.
+            apply_edits(&mut ada, "app", &[push("3")], b"ada").expect("ada queues again");
+            ada.commit();
+            assert_eq!(outboxes(&ada, "app", "r"), 1, "one outbox after the write");
+            grace
+                .merge_incoming(&mut ada)
+                .expect("grace takes ada's entries");
+            for (name, doc) in [("ada", &ada), ("grace", &grace)] {
+                assert_eq!(outboxes(doc, "app", "r"), 1, "{name}: one outbox");
+                let queued: Vec<String> = outbox_entries(doc, "app", "r")
+                    .into_iter()
+                    .map(|entry| entry.entry)
+                    .collect();
+                assert_eq!(queued, ["1", "2", "3"], "{name}: every queued entry");
+            }
+        }
+
+        phase an_outbox_entry_that_does_not_read_stands_rejected_with_why;
+        {
+            let doc = holding("app", "r", &[("1", "[\"to\"]"), ("2", "{not json")]);
+            let entries = outbox_entries(&doc, "app", "r");
+            assert_eq!(entries.len(), 2, "no entry is left out");
+            assert_eq!(entries[0].settled, None, "the readable one waits");
+            assert_eq!(entries[0].payload, serde_json::json!(["to"]));
+            let unreadable = &entries[1];
+            assert_eq!(unreadable.settled.as_deref(), Some("rejected"));
+            assert!(
+                unreadable.reason.contains("payload"),
+                "{}",
+                unreadable.reason
+            );
+            let delivery = unreadable.delivery();
+            assert_eq!(delivery.state, "rejected");
+            assert!(!delivery.reason.is_empty());
+        }
     }
 }

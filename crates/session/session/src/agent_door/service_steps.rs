@@ -96,18 +96,15 @@ pub(crate) fn invoke_service_step(
 /// then the workspace's, changed through the broker.
 pub(super) fn change_through(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
-    actor: &tilo_actions::remote::CallerPrincipal,
+    actor: &tilo_action_policy::Acting,
     change: &tilo_actions::remote::RecordChange,
 ) -> Option<Result<serde_json::Value, ActionHostError>> {
-    use tilo_actions::remote::CallerPrincipal;
     // Who the change is attributed to: the agent acting for its person, or the person.
-    let invoker = match actor {
-        CallerPrincipal::Agent(agent) => {
-            tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
-                .with_kind(tilo_actions::ActorKind::Agent)
-        }
-        CallerPrincipal::Person(person) => tilo_actions::ActionInvoker::actor(person.clone()),
-        _ => return None,
+    let invoker = if let Some(agent) = actor.agent_id() {
+        tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
+            .with_kind(tilo_actions::ActorKind::Agent)
+    } else {
+        tilo_actions::ActionInvoker::actor(actor.person_id()?.to_owned())
     };
     services.borrow().record(&change.app)?;
     let ran = services.borrow_mut().invoke_as(

@@ -547,157 +547,161 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_template_is_held_once_and_expands_onto_every_resource() {
-        let mut table = SurfaceTable::default();
-        let mut delta = catalogue();
-        delta.resources = (0..40)
-            .map(|n| resource(&format!("page-{n}"), &format!("Page {n}"), 11))
-            .collect();
-        table.apply(&delta).unwrap();
-        let actions = table.actions();
-        assert_eq!(actions.len(), 80);
-        assert_eq!(actions[14].resource, "page-7", "published order is kept");
-        assert_eq!(actions[14].action, "apply");
-        assert_eq!(actions[15].action, "open", "template order is kept");
-        assert_eq!(actions[14].resource_label, "Page 7");
-    }
+    tilo_test_env::scenario! {
+        fn surface_deltas;
 
-    #[test]
-    fn a_delta_changes_only_the_resources_it_names() {
-        let mut table = SurfaceTable::default();
-        let mut delta = catalogue();
-        delta.resources = vec![
-            resource("a", "A", 11),
-            resource("b", "B", 11),
-            resource("c", "C", 10),
-        ];
-        table.apply(&delta).unwrap();
-        table
-            .apply(&SurfaceDelta {
-                resources: vec![resource("b", "B renamed", 10)],
-                removed: vec!["c".into()],
-                ..SurfaceDelta::default()
-            })
-            .unwrap();
-        assert_eq!(
-            labels(&table),
-            vec![
-                ("a".into(), "apply".into(), "A".into()),
-                ("a".into(), "open".into(), "A".into()),
-                ("b".into(), "apply".into(), "B renamed".into()),
-            ]
-        );
-    }
+        phase a_template_is_held_once_and_expands_onto_every_resource;
+        {
+            let mut table = SurfaceTable::default();
+            let mut delta = catalogue();
+            delta.resources = (0..40)
+                .map(|n| resource(&format!("page-{n}"), &format!("Page {n}"), 11))
+                .collect();
+            table.apply(&delta).unwrap();
+            let actions = table.actions();
+            assert_eq!(actions.len(), 80);
+            assert_eq!(actions[14].resource, "page-7", "published order is kept");
+            assert_eq!(actions[14].action, "apply");
+            assert_eq!(actions[15].action, "open", "template order is kept");
+            assert_eq!(actions[14].resource_label, "Page 7");
+        }
 
-    #[test]
-    fn a_delta_that_does_not_apply_changes_nothing() {
-        let mut table = SurfaceTable::default();
-        let mut delta = catalogue();
-        delta.resources = vec![resource("a", "A", 11)];
-        table.apply(&delta).unwrap();
-        let before = labels(&table);
-        let unknown_template = SurfaceDelta {
-            resources: vec![resource("z", "Z", 99)],
-            removed: vec!["a".into()],
-            ..SurfaceDelta::default()
-        };
-        assert!(
+        phase a_delta_changes_only_the_resources_it_names;
+        {
+            let mut table = SurfaceTable::default();
+            let mut delta = catalogue();
+            delta.resources = vec![
+                resource("a", "A", 11),
+                resource("b", "B", 11),
+                resource("c", "C", 10),
+            ];
+            table.apply(&delta).unwrap();
             table
-                .apply(&unknown_template)
-                .unwrap_err()
-                .contains("template")
-        );
-        let unknown_shape = SurfaceDelta {
-            templates: vec![(id(20), vec![id(9)])],
-            resources: vec![resource("z", "Z", 20)],
-            ..SurfaceDelta::default()
-        };
-        assert!(table.apply(&unknown_shape).unwrap_err().contains("shape"));
-        let carries_resource = SurfaceDelta {
-            shapes: vec![(
-                id(3),
-                ExportedAction {
-                    state: tilo_actions::ActionState::default(),
-                    resource: "leak".into(),
-                    ..shape("x", "X")
-                },
-            )],
-            ..SurfaceDelta::default()
-        };
-        assert!(table.apply(&carries_resource).is_err());
-        assert_eq!(labels(&table), before);
-        // A reset cannot lean on what the broker held before it.
-        let reset_without_catalogue = SurfaceDelta {
-            reset: true,
-            resources: vec![resource("a", "A", 11)],
-            ..SurfaceDelta::default()
-        };
-        assert!(table.apply(&reset_without_catalogue).is_err());
-        assert_eq!(labels(&table), before);
-    }
+                .apply(&SurfaceDelta {
+                    resources: vec![resource("b", "B renamed", 10)],
+                    removed: vec!["c".into()],
+                    ..SurfaceDelta::default()
+                })
+                .unwrap();
+            assert_eq!(
+                labels(&table),
+                vec![
+                    ("a".into(), "apply".into(), "A".into()),
+                    ("a".into(), "open".into(), "A".into()),
+                    ("b".into(), "apply".into(), "B renamed".into()),
+                ]
+            );
+        }
 
-    #[test]
-    fn what_no_resource_names_is_dropped() {
-        let mut table = SurfaceTable::default();
-        let mut delta = catalogue();
-        delta.resources = vec![resource("a", "A", 11)];
-        table.apply(&delta).unwrap();
-        table
-            .apply(&SurfaceDelta {
+        phase a_delta_that_does_not_apply_changes_nothing;
+        {
+            let mut table = SurfaceTable::default();
+            let mut delta = catalogue();
+            delta.resources = vec![resource("a", "A", 11)];
+            table.apply(&delta).unwrap();
+            let before = labels(&table);
+            let unknown_template = SurfaceDelta {
+                resources: vec![resource("z", "Z", 99)],
                 removed: vec!["a".into()],
                 ..SurfaceDelta::default()
-            })
-            .unwrap();
-        assert!(table.is_empty());
-        let again = SurfaceDelta {
-            resources: vec![resource("a", "A", 11)],
-            ..SurfaceDelta::default()
-        };
-        assert!(
-            table.apply(&again).is_err(),
-            "the publisher must send the template again"
-        );
-    }
+            };
+            assert!(
+                table
+                    .apply(&unknown_template)
+                    .unwrap_err()
+                    .contains("template")
+            );
+            let unknown_shape = SurfaceDelta {
+                templates: vec![(id(20), vec![id(9)])],
+                resources: vec![resource("z", "Z", 20)],
+                ..SurfaceDelta::default()
+            };
+            assert!(table.apply(&unknown_shape).unwrap_err().contains("shape"));
+            let carries_resource = SurfaceDelta {
+                shapes: vec![(
+                    id(3),
+                    ExportedAction {
+                        state: tilo_actions::ActionState::default(),
+                        resource: "leak".into(),
+                        ..shape("x", "X")
+                    },
+                )],
+                ..SurfaceDelta::default()
+            };
+            assert!(table.apply(&carries_resource).is_err());
+            assert_eq!(labels(&table), before);
+            // A reset cannot lean on what the broker held before it.
+            let reset_without_catalogue = SurfaceDelta {
+                reset: true,
+                resources: vec![resource("a", "A", 11)],
+                ..SurfaceDelta::default()
+            };
+            assert!(table.apply(&reset_without_catalogue).is_err());
+            assert_eq!(labels(&table), before);
+        }
 
-    #[test]
-    fn two_deltas_folded_equal_the_two_applied_in_turn() {
-        let mut base = catalogue();
-        base.resources = vec![
-            resource("a", "A", 11),
-            resource("b", "B", 11),
-            resource("c", "C", 10),
-        ];
-        let first = SurfaceDelta {
-            resources: vec![resource("a", "A1", 10), resource("d", "D", 11)],
-            removed: vec!["c".into()],
-            ..SurfaceDelta::default()
-        };
-        let second = SurfaceDelta {
-            resources: vec![resource("c", "C again", 10), resource("a", "A2", 11)],
-            removed: vec!["d".into()],
-            ..SurfaceDelta::default()
-        };
-        let mut turn = SurfaceTable::default();
-        turn.apply(&base).unwrap();
-        turn.apply(&first).unwrap();
-        turn.apply(&second).unwrap();
-        let sort = |mut rows: Vec<(String, String, String)>| {
-            rows.compact_sort();
-            rows
-        };
-        let mut folded = SurfaceTable::default();
-        folded.apply(&base).unwrap();
-        folded.apply(&first.clone().then(second.clone())).unwrap();
-        assert_eq!(sort(labels(&folded)), sort(labels(&turn)));
+        phase what_no_resource_names_is_dropped;
+        {
+            let mut table = SurfaceTable::default();
+            let mut delta = catalogue();
+            delta.resources = vec![resource("a", "A", 11)];
+            table.apply(&delta).unwrap();
+            table
+                .apply(&SurfaceDelta {
+                    removed: vec!["a".into()],
+                    ..SurfaceDelta::default()
+                })
+                .unwrap();
+            assert!(table.is_empty());
+            let again = SurfaceDelta {
+                resources: vec![resource("a", "A", 11)],
+                ..SurfaceDelta::default()
+            };
+            assert!(
+                table.apply(&again).is_err(),
+                "the publisher must send the template again"
+            );
+        }
 
-        let mut from_reset = SurfaceTable::default();
-        from_reset
-            .apply(&base.clone().then(first.clone()).then(second))
-            .unwrap();
-        assert_eq!(sort(labels(&from_reset)), sort(labels(&turn)));
-        let mut reset_again = catalogue();
-        reset_again.resources = vec![resource("z", "Z", 10)];
-        assert_eq!(first.then(reset_again.clone()), reset_again);
+        phase two_deltas_folded_equal_the_two_applied_in_turn;
+        {
+            let mut base = catalogue();
+            base.resources = vec![
+                resource("a", "A", 11),
+                resource("b", "B", 11),
+                resource("c", "C", 10),
+            ];
+            let first = SurfaceDelta {
+                resources: vec![resource("a", "A1", 10), resource("d", "D", 11)],
+                removed: vec!["c".into()],
+                ..SurfaceDelta::default()
+            };
+            let second = SurfaceDelta {
+                resources: vec![resource("c", "C again", 10), resource("a", "A2", 11)],
+                removed: vec!["d".into()],
+                ..SurfaceDelta::default()
+            };
+            let mut turn = SurfaceTable::default();
+            turn.apply(&base).unwrap();
+            turn.apply(&first).unwrap();
+            turn.apply(&second).unwrap();
+            let sort = |mut rows: Vec<(String, String, String)>| {
+                rows.compact_sort();
+                rows
+            };
+            let mut folded = SurfaceTable::default();
+            folded.apply(&base).unwrap();
+            folded.apply(&first.clone().then(second.clone())).unwrap();
+            assert_eq!(sort(labels(&folded)), sort(labels(&turn)));
+
+            let mut from_reset = SurfaceTable::default();
+            from_reset
+                .apply(&base.clone().then(first.clone()).then(second))
+                .unwrap();
+            assert_eq!(sort(labels(&from_reset)), sort(labels(&turn)));
+            let mut reset_again = catalogue();
+            reset_again.resources = vec![resource("z", "Z", 10)];
+            assert_eq!(first.then(reset_again.clone()), reset_again);
+        }
     }
 }

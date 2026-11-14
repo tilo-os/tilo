@@ -16,6 +16,29 @@ use crate::Error;
 /// drawing is read this often all the same.
 const KEEP_INTERVAL: Duration = Duration::from_millis(100);
 
+/// The content secret the members of the workspace `workspace` hold for the record of `app`, as
+/// this device's engine keeps it: `None` until the keys reach it, when each part is sealed under a
+/// fresh key instead.
+fn secret_of(
+    engine: &crate::engine::Engine,
+    workspace: tilo_desktop_model::WorkspaceId,
+    app: &str,
+) -> Option<tilo_seal::SymmetricKey> {
+    match engine.seal_keys(workspace) {
+        Ok(crate::engine::SealKeys::Here(keys)) => keys.record_content_secret().ok(),
+        Ok(crate::engine::SealKeys::Waiting | crate::engine::SealKeys::NoSecretStore) => None,
+        Err(error) => {
+            // A session that takes no part in the collaboration plane keeps no channel of its
+            // own: what it stores is sealed under a fresh key until it does.
+            tilo_failure::ignored!(
+                "a session with no channel service seals each part under a key of its own",
+                tracing::debug!(%error, %app, "no content secret for a record the session keeps")
+            );
+            None
+        }
+    }
+}
+
 impl Session {
     /// How long this pass may sleep: no longer than `timeout` , and no longer than the next thing
     /// that is due on a clock of its own — a held direction repeating, or a profile the owner asked
@@ -56,6 +79,11 @@ impl Session {
         self.read_controls();
         self.shared.feed_agents();
         let mut services = self.shared.services.borrow_mut();
+        // What the records the services keep themselves reference: each record's content, kept in
+        // the store of the workspace it stands in and offered on its route, so a device of the
+        // workspace fetches a part from where the record is. An agent's change too large to record
+        // whole is recorded rather than refused, and reads back here and on the person's devices.
+        self.lend_record_content(&mut services);
         // What the packages the session runs itself (the shell) wrote into the records their parts
         // share, published with every app's before the door answers this pass.
         if let Err(error) = services.follow_shared() {
@@ -68,6 +96,29 @@ impl Session {
         // What the answers wrote (an agent's record of its work) reaches the workspace in this
         // pass, not in the next one's.
         self.shared.records.write();
+    }
+
+    /// Keep each record the services keep themselves in the content store of the workspace it
+    /// stands in: the session's own records' large parts are offered on their routes, where the
+    /// workspace's devices fetch them, sealed under the secret its members hold
+    /// ([`crate::content::Plane::store`]).
+    fn lend_record_content(&self, services: &mut tilo_service::Services) {
+        let Some(workspace) = self
+            .shared
+            .handle
+            .read(|tree| tree.active_workspace().map(|space| space.id().to_string()))
+        else {
+            return;
+        };
+        let front = tilo_desktop_model::WorkspaceId::parse(&workspace);
+        let engine = self.shared.engine.as_deref();
+        let content = &self.content;
+        services.lend_content(&mut |app| {
+            if let (Some(id), Some(engine)) = (front, engine) {
+                content.seal_under(&workspace, app, secret_of(engine, id, app));
+            }
+            content.store(&workspace, app)
+        });
     }
 
     /// The person's login is over once a frame reaches the display: the startup is measured and
@@ -119,6 +170,8 @@ impl Session {
         // here, and each time the wait for the frame below is woken, so the frame carries it as it
         // carries a key the person pressed.
         let mut tool_input = serve_tool_input(&self.control, &self.shared, &mut self.compositor);
+        // So is what the keyboard and pointer of another of the person's devices sent this one.
+        serve_fabric_input(&self.shared, &mut self.compositor);
         // A frame that is owed is shown at the display's next blank: what arrives before that blank
         // joins the frame it is shown in, so the desk below is laid out once per refresh however
         // fast events come.
@@ -131,6 +184,7 @@ impl Session {
                 &self.shared,
                 compositor,
             ));
+            serve_fabric_input(&self.shared, compositor);
         })?;
         self.tool_input = tool_input;
         self.follow_logout_request();
@@ -379,6 +433,8 @@ impl Session {
             // nothing draws before it.
             self.shared.desk_overlays.deadline(now),
             self.shared.restore.borrow().next_deadline(),
+            // The add-a-device sheet counts its minutes down, and renews its link once it ran out.
+            self.shared.pair_device_deadline(),
             // A branch being copied off the loop is looked at again soon, so it goes on the desk
             // once it is there.
             self.shared.branches.next_deadline(now),
@@ -563,6 +619,11 @@ impl Session {
         self.shared.serve_activity();
         self.shared.serve_mentions();
         self.follow_collaboration();
+        // A workspace's strips and windows are the workspace's: what its members put there —
+        // before this device joined, and since — is this device's desk too, and what this device
+        // arranges there is theirs to see. A desk with no one else on it writes its workspaces'
+        // layouts through the same records.
+        self.shared.follow_shared_desktops();
         self.follow_automation();
         // The person's list is kept on the hosts of their workspaces through the sessions the
         // broker reaches them on.
@@ -720,6 +781,31 @@ impl Session {
                 sync.announce_fabric();
             }
         }
+        // The keyboard and pointer of the person's other devices that drive this one, on the pass
+        // their actions were routed in.
+        if let Some(shared_input) = &self.shared.keyboard_and_pointer {
+            // A drag carried between the person's devices keeps its content in the workspace's,
+            // sealed under the secret its members hold, as a record the session keeps itself does.
+            let engine = self.shared.engine.as_deref();
+            let content = &self.content;
+            let store = |workspace: &str| {
+                let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+                let app = tilo_desktop_model::ownership::DESKTOP_APP;
+                if let Some(engine) = engine {
+                    content.seal_under(workspace, app, secret_of(engine, id, app));
+                }
+                Some(content.store(workspace, app))
+            };
+            let desk = crate::shared_input::Desk {
+                handle: &self.shared.handle,
+                content: &store,
+            };
+            let handover = shared_input.follow(&mut self.compositor, &desk);
+            // The clipboard follows them: what was copied last is what pastes where they are.
+            self.shared
+                .clipboard
+                .follow_control(handover.arrived, &handover.partners);
+        }
         Ok(())
     }
 }
@@ -737,6 +823,16 @@ fn serve_tool_input(
     answering.elapsed()
 }
 
+/// What the keyboard and pointer of the person's other devices sent this one, handed to the desk the
+/// moment it arrived rather than on the pass that routes the rest of what their devices sent.
+fn serve_fabric_input(shared: &crate::Shared, compositor: &mut Compositor) {
+    let (Some(sync), Some(shared_input)) = (&shared.sync, &shared.keyboard_and_pointer) else {
+        return;
+    };
+    sync.fabric_actions_now(|envelope| shared_input.route(envelope));
+    shared_input.inject(compositor, None);
+}
+
 /// The session as the control socket's answers read it now.
 fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_control::Desk<'a> {
     crate::test_control::Desk {
@@ -751,5 +847,9 @@ fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_c
         locked: compositor.locked(),
         lock_screen_drawn: compositor.lock_drawn(),
         lock: &shared.lock,
+        pointer: compositor.pointer_location(),
+        pointer_shown: compositor.pointer_shown(),
+        clipboard: &shared.clipboard,
+        shared_input: shared.keyboard_and_pointer.as_deref(),
     }
 }

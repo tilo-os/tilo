@@ -230,66 +230,96 @@ impl RecentTarget {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_target_round_trips_and_rejects_what_a_request_may_not_carry() {
-        for target in [
-            SessionTarget::Host,
-            SessionTarget::default_environment(),
-            SessionTarget::environment("work"),
-            SessionTarget::Legacy { vm: "linux".into() },
-        ] {
-            assert_eq!(SessionTarget::decode(&target.encode()), Some(target));
-        }
-        assert_eq!(
-            SessionTarget::environment(tilo_environment::DEFAULT_RECORD),
-            SessionTarget::default_environment()
-        );
-        assert_eq!(
-            SessionTarget::decode(r#"{"kind":"environment","shell":"linux"}"#),
-            Some(SessionTarget::default_environment())
-        );
-        assert_eq!(
-            SessionTarget::decode(r#"{"kind":"environment","record":"work","shell":"linux"}"#),
-            Some(SessionTarget::environment("work"))
-        );
-        for bad in [
-            r#"{"kind":"environment","record":"../etc"}"#,
-            r#"{"kind":"legacy","vm":""}"#,
-            r#"{"kind":"nonsense"}"#,
-            "not json",
-        ] {
-            assert_eq!(SessionTarget::decode(bad), None, "{bad}");
-        }
-        assert_eq!(
-            SessionTarget::decode(&format!(
-                r#"{{"kind":"legacy","vm":"{}"}}"#,
-                "a".repeat(2000)
-            )),
-            None
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_session_target_is_carried_served_and_listed;
 
-    #[test]
-    fn the_supervisor_serves_and_carries_every_target_but_legacy_vms() {
-        assert_eq!(
-            SessionTarget::Host.to_supervisor(),
-            Some(tilo_environment::Target::Host)
-        );
-        assert_eq!(
-            SessionTarget::environment("work").to_supervisor(),
-            Some(tilo_environment::Target::Environment {
-                record: Some("work".into()),
-            })
-        );
-        assert_eq!(
-            SessionTarget::decode(r#"{"kind":"environment","location":{"kind":"relay"}}"#),
-            Some(SessionTarget::default_environment()),
-            "a location stored while environments could run elsewhere means this device"
-        );
-        assert_eq!(
-            SessionTarget::Legacy { vm: "linux".into() }.to_supervisor(),
-            None
-        );
+        phase a_target_round_trips_and_rejects_what_a_request_may_not_carry;
+        {
+            for target in [
+                SessionTarget::Host,
+                SessionTarget::default_environment(),
+                SessionTarget::environment("work"),
+                SessionTarget::Legacy { vm: "linux".into() },
+            ] {
+                assert_eq!(SessionTarget::decode(&target.encode()), Some(target));
+            }
+            assert_eq!(
+                SessionTarget::environment(tilo_environment::DEFAULT_RECORD),
+                SessionTarget::default_environment()
+            );
+            assert_eq!(
+                SessionTarget::decode(r#"{"kind":"environment","shell":"linux"}"#),
+                Some(SessionTarget::default_environment())
+            );
+            assert_eq!(
+                SessionTarget::decode(r#"{"kind":"environment","record":"work","shell":"linux"}"#),
+                Some(SessionTarget::environment("work"))
+            );
+            for bad in [
+                r#"{"kind":"environment","record":"../etc"}"#,
+                r#"{"kind":"legacy","vm":""}"#,
+                r#"{"kind":"nonsense"}"#,
+                "not json",
+            ] {
+                assert_eq!(SessionTarget::decode(bad), None, "{bad}");
+            }
+            assert_eq!(
+                SessionTarget::decode(&format!(
+                    r#"{{"kind":"legacy","vm":"{}"}}"#,
+                    "a".repeat(2000)
+                )),
+                None
+            );
+        }
+
+        phase the_supervisor_serves_and_carries_every_target_but_legacy_vms;
+        {
+            assert_eq!(
+                SessionTarget::Host.to_supervisor(),
+                Some(tilo_environment::Target::Host)
+            );
+            assert_eq!(
+                SessionTarget::environment("work").to_supervisor(),
+                Some(tilo_environment::Target::Environment {
+                    record: Some("work".into()),
+                })
+            );
+            assert_eq!(
+                SessionTarget::decode(r#"{"kind":"environment","location":{"kind":"relay"}}"#),
+                Some(SessionTarget::default_environment()),
+                "a location stored while environments could run elsewhere means this device"
+            );
+            assert_eq!(
+                SessionTarget::Legacy { vm: "linux".into() }.to_supervisor(),
+                None
+            );
+        }
+
+        phase the_picker_lists_environments_then_the_host_then_legacy_vms_when_reported;
+        {
+            let work = EnvironmentSummary {
+                key: "work".into(),
+                name: "Work".into(),
+                tools: vec![],
+                grants: vec![],
+            };
+            assert_eq!(
+                picker_targets(&[], true, &[]),
+                vec![SessionTarget::default_environment(), SessionTarget::Host]
+            );
+            assert_eq!(
+                picker_targets(std::slice::from_ref(&work), false, &[]),
+                vec![SessionTarget::environment("work")]
+            );
+            assert_eq!(
+                picker_targets(&[work], true, &["linux".into(), "../x".into()]),
+                vec![
+                    SessionTarget::environment("work"),
+                    SessionTarget::Host,
+                    SessionTarget::Legacy { vm: "linux".into() }
+                ]
+            );
+        }
     }
 
     #[test]
@@ -321,32 +351,6 @@ mod tests {
             default_target(recent.load().as_ref(), false),
             SessionTarget::Host,
             "where no environment can run, the device's own shell is the only target"
-        );
-    }
-
-    #[test]
-    fn the_picker_lists_environments_then_the_host_then_legacy_vms_when_reported() {
-        let work = EnvironmentSummary {
-            key: "work".into(),
-            name: "Work".into(),
-            tools: vec![],
-            grants: vec![],
-        };
-        assert_eq!(
-            picker_targets(&[], true, &[]),
-            vec![SessionTarget::default_environment(), SessionTarget::Host]
-        );
-        assert_eq!(
-            picker_targets(std::slice::from_ref(&work), false, &[]),
-            vec![SessionTarget::environment("work")]
-        );
-        assert_eq!(
-            picker_targets(&[work], true, &["linux".into(), "../x".into()]),
-            vec![
-                SessionTarget::environment("work"),
-                SessionTarget::Host,
-                SessionTarget::Legacy { vm: "linux".into() }
-            ]
         );
     }
 }

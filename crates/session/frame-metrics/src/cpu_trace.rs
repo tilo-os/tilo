@@ -248,114 +248,119 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cpu_trace_distinguishes_main_thread_work_sleep_and_worker_cpu() {
-        let dir = tempfile::tempdir().expect("private trace fixture");
-        let path = dir.path().join("cpu.csv");
-        let mut recorder = FrameRecorder::disabled();
-        recorder.enabled = true;
-        recorder.env_enabled = true;
-        recorder.cpu_trace = Some(CpuTrace::open(&path).expect("open real CPU trace"));
-        let before = SystemTime::now().duration_since(UNIX_EPOCH).expect("UTC");
-        let mono_lower = monotonic_time().expect("monotonic clock").as_micros();
-        let paint_start = Instant::now();
-        let mono_upper = monotonic_time().expect("monotonic clock").as_micros();
-        recorder.begin_tick(paint_start);
-        let paint_cpu = recorder.cpu_snapshot();
-        let phase = Instant::now();
-        busy_cpu(Duration::from_millis(8));
-        recorder.mark_layout(phase.elapsed());
-        recorder.mark_cpu(CpuPhase::Layout, paint_cpu);
-        let phase = Instant::now();
-        let cpu = recorder.cpu_snapshot();
-        std::thread::sleep(Duration::from_millis(30));
-        recorder.mark_scene(phase.elapsed());
-        recorder.mark_cpu(CpuPhase::Scene, cpu);
-        let phase = Instant::now();
-        let cpu = recorder.cpu_snapshot();
-        let worker = std::thread::spawn(|| busy_cpu(Duration::from_millis(10)));
-        worker.join().expect("owned CPU worker");
-        let done = Instant::now();
-        recorder.mark_submit(done.saturating_duration_since(phase), false, done, None);
-        recorder.mark_cpu(CpuPhase::Submit, cpu);
-        recorder.mark_cpu(CpuPhase::Paint, paint_cpu);
-        recorder.mark_paint_wall(done.saturating_duration_since(paint_start));
-        recorder.end_tick();
-        let after = SystemTime::now().duration_since(UNIX_EPOCH).expect("UTC");
-        // Read before Drop: the actual first-row flush must expose the sample.
-        let text = std::fs::read_to_string(&path).expect("read flushed companion");
-        let mut lines = text.lines();
-        assert_eq!(lines.next(), Some(HEADER));
-        let row = lines.next().expect("actual painted sample");
-        assert!(lines.next().is_none());
-        let values = row
-            .split(',')
-            .map(|v| v.parse::<u128>().expect("numeric clocks, not missing"))
-            .collect::<Vec<_>>();
-        assert_eq!(values.len(), HEADER.split(',').count());
-        assert!(values[2] <= values[4], "monotonic clock brackets UTC read");
-        assert!(
-            values[2].saturating_sub(values[5]) <= mono_upper.saturating_add(2),
-            "anchor bracket includes tick start"
-        );
-        assert!(
-            values[4].saturating_sub(values[5]).saturating_add(2) >= mono_lower,
-            "offset is sampled inside the bracket"
-        );
-        assert!((before.as_micros()..=after.as_micros()).contains(&values[3]));
-        assert!(values[12] >= 8_000, "layout records real main-thread work");
-        assert!(
-            values[8] >= 30_000,
-            "scene wall includes the deliberate wait"
-        );
-        assert!(
-            values[14] < values[8] / 2,
-            "sleep is not charged as thread CPU"
-        );
-        assert!(
-            values[17] >= values[16] + 5_000,
-            "submit includes worker CPU absent from calling thread"
-        );
-        assert!(
-            values[11] > values[10],
-            "total paint separates process and calling-thread CPU"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
+        fn the_cpu_trace_tells_work_from_sleep_and_stays_bounded;
 
-    #[test]
-    fn cpu_trace_is_bounded_and_records_missing_clocks_as_missing() {
-        let dir = tempfile::tempdir().expect("private trace fixture");
-        let path = dir.path().join("bounded.csv");
-        let mut trace = CpuTrace::open(&path).expect("open companion");
-        // Drive the production boundary without generating 200k rows.
-        trace.rows = MAX_TRACE_ROWS - 1;
-        trace.end_tick(FrameSample {
-            seq: 4,
-            painted: true,
-            ..Default::default()
-        });
-        assert!(
-            trace.snapshot().is_none(),
-            "reaching the bound stops new CPU reads"
-        );
-        trace.end_tick(FrameSample {
-            seq: 5,
-            painted: true,
-            ..Default::default()
-        });
-        let text = std::fs::read_to_string(path).expect("read bounded trace");
-        assert_eq!(text.lines().count(), 2, "no row beyond the limit");
-        let fields = text
-            .lines()
-            .nth(1)
-            .expect("last permitted row")
-            .split(',')
-            .collect::<Vec<_>>();
-        assert_eq!(fields.len(), HEADER.split(',').count());
-        assert!(
-            fields[10..18].iter().all(|v| v.is_empty()),
-            "unobserved CPU is never fabricated zero"
-        );
-        assert!(FrameRecorder::disabled().cpu_snapshot().is_none());
+        phase cpu_trace_distinguishes_main_thread_work_sleep_and_worker_cpu;
+        {
+            let dir = tempfile::tempdir().expect("private trace fixture");
+            let path = dir.path().join("cpu.csv");
+            let mut recorder = FrameRecorder::disabled();
+            recorder.enabled = true;
+            recorder.env_enabled = true;
+            recorder.cpu_trace = Some(CpuTrace::open(&path).expect("open real CPU trace"));
+            let before = SystemTime::now().duration_since(UNIX_EPOCH).expect("UTC");
+            let mono_lower = monotonic_time().expect("monotonic clock").as_micros();
+            let paint_start = Instant::now();
+            let mono_upper = monotonic_time().expect("monotonic clock").as_micros();
+            recorder.begin_tick(paint_start);
+            let paint_cpu = recorder.cpu_snapshot();
+            let phase = Instant::now();
+            busy_cpu(Duration::from_millis(8));
+            recorder.mark_layout(phase.elapsed());
+            recorder.mark_cpu(CpuPhase::Layout, paint_cpu);
+            let phase = Instant::now();
+            let cpu = recorder.cpu_snapshot();
+            std::thread::sleep(Duration::from_millis(30));
+            recorder.mark_scene(phase.elapsed());
+            recorder.mark_cpu(CpuPhase::Scene, cpu);
+            let phase = Instant::now();
+            let cpu = recorder.cpu_snapshot();
+            let worker = std::thread::spawn(|| busy_cpu(Duration::from_millis(10)));
+            worker.join().expect("owned CPU worker");
+            let done = Instant::now();
+            recorder.mark_submit(done.saturating_duration_since(phase), false, done, None);
+            recorder.mark_cpu(CpuPhase::Submit, cpu);
+            recorder.mark_cpu(CpuPhase::Paint, paint_cpu);
+            recorder.mark_paint_wall(done.saturating_duration_since(paint_start));
+            recorder.end_tick();
+            let after = SystemTime::now().duration_since(UNIX_EPOCH).expect("UTC");
+            // Read before Drop: the actual first-row flush must expose the sample.
+            let text = std::fs::read_to_string(&path).expect("read flushed companion");
+            let mut lines = text.lines();
+            assert_eq!(lines.next(), Some(HEADER));
+            let row = lines.next().expect("actual painted sample");
+            assert!(lines.next().is_none());
+            let values = row
+                .split(',')
+                .map(|v| v.parse::<u128>().expect("numeric clocks, not missing"))
+                .collect::<Vec<_>>();
+            assert_eq!(values.len(), HEADER.split(',').count());
+            assert!(values[2] <= values[4], "monotonic clock brackets UTC read");
+            assert!(
+                values[2].saturating_sub(values[5]) <= mono_upper.saturating_add(2),
+                "anchor bracket includes tick start"
+            );
+            assert!(
+                values[4].saturating_sub(values[5]).saturating_add(2) >= mono_lower,
+                "offset is sampled inside the bracket"
+            );
+            assert!((before.as_micros()..=after.as_micros()).contains(&values[3]));
+            assert!(values[12] >= 8_000, "layout records real main-thread work");
+            assert!(
+                values[8] >= 30_000,
+                "scene wall includes the deliberate wait"
+            );
+            assert!(
+                values[14] < values[8] / 2,
+                "sleep is not charged as thread CPU"
+            );
+            assert!(
+                values[17] >= values[16] + 5_000,
+                "submit includes worker CPU absent from calling thread"
+            );
+            assert!(
+                values[11] > values[10],
+                "total paint separates process and calling-thread CPU"
+            );
+        }
+
+        phase cpu_trace_is_bounded_and_records_missing_clocks_as_missing;
+        {
+            let dir = tempfile::tempdir().expect("private trace fixture");
+            let path = dir.path().join("bounded.csv");
+            let mut trace = CpuTrace::open(&path).expect("open companion");
+            // Drive the production boundary without generating 200k rows.
+            trace.rows = MAX_TRACE_ROWS - 1;
+            trace.end_tick(FrameSample {
+                seq: 4,
+                painted: true,
+                ..Default::default()
+            });
+            assert!(
+                trace.snapshot().is_none(),
+                "reaching the bound stops new CPU reads"
+            );
+            trace.end_tick(FrameSample {
+                seq: 5,
+                painted: true,
+                ..Default::default()
+            });
+            let text = std::fs::read_to_string(path).expect("read bounded trace");
+            assert_eq!(text.lines().count(), 2, "no row beyond the limit");
+            let fields = text
+                .lines()
+                .nth(1)
+                .expect("last permitted row")
+                .split(',')
+                .collect::<Vec<_>>();
+            assert_eq!(fields.len(), HEADER.split(',').count());
+            assert!(
+                fields[10..18].iter().all(|v| v.is_empty()),
+                "unobserved CPU is never fabricated zero"
+            );
+            assert!(FrameRecorder::disabled().cpu_snapshot().is_none());
+        }
     }
 }

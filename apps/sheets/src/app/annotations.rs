@@ -1044,13 +1044,56 @@ fn chart_data(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> PlotD
 mod chart_data_tests {
     use super::*;
 
-    #[test]
-    fn a_series_of_one_value_has_one_tick_it_labels() {
-        let (ticks, step) = SheetsApp::value_ticks(7.0, 7.0);
-        assert_eq!((ticks.as_slice(), step), (&[7.0][..], 1.0));
-        assert_eq!(ui::charts::format_tick(ticks[0], step), "7");
-        let (zeros, step) = SheetsApp::value_ticks(0.0, 0.0);
-        assert_eq!((zeros.as_slice(), step), (&[0.0][..], 1.0));
+    tilo_test_env::scenario! {
+        fn a_chart_reads_its_ticks_and_series_from_the_cells;
+
+        phase a_series_of_one_value_has_one_tick_it_labels;
+        {
+            let (ticks, step) = SheetsApp::value_ticks(7.0, 7.0);
+            assert_eq!((ticks.as_slice(), step), (&[7.0][..], 1.0));
+            assert_eq!(ui::charts::format_tick(ticks[0], step), "7");
+            let (zeros, step) = SheetsApp::value_ticks(0.0, 0.0);
+            assert_eq!((zeros.as_slice(), step), (&[0.0][..], 1.0));
+        }
+
+        phase the_label_column_is_the_category_axis_and_never_a_series;
+        {
+            let values = sheet(&[
+                &["Region", "Q1", "Q2", "Q3", "Q4"],
+                &["North", "18200", "21450", "19800", "24300"],
+                &["South", "15600", "16900", "18750", "20100"],
+                &["East", "12400", "14800", "16300", "17900"],
+                &["West", "20900", "19700", "22600", "26800"],
+            ]);
+            let data = chart_data(&chart((0, 0), (4, 4)), &values);
+            assert_eq!(data.categories, ["North", "South", "East", "West"]);
+            let names: Vec<&str> = data.series.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(names, ["Q1", "Q2", "Q3", "Q4"], "Region is no series");
+            assert_eq!(
+                data.series[0].values,
+                [Some(18200.0), Some(15600.0), Some(12400.0), Some(20900.0)]
+            );
+
+            let values = sheet(&[
+                &["Month", "Jan", "Feb", "Mar", "Apr", "May"],
+                &["Rent", "1250", "1250", "1250", "1250", "1250"],
+                &["Food", "420", "386", "", "402", "399"],
+            ]);
+            let data = chart_data(&chart((0, 0), (5, 2)), &values);
+            assert_eq!(data.categories, ["Jan", "Feb", "Mar", "Apr", "May"]);
+            let names: Vec<&str> = data.series.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(names, ["Rent", "Food"]);
+            assert_eq!(
+                data.series[1].values[2], None,
+                "a blank is a gap, not a shift"
+            );
+
+            let values = sheet(&[&["3"], &["5"], &["8"]]);
+            let data = chart_data(&chart((0, 0), (0, 2)), &values);
+            assert!(data.categories.is_empty());
+            assert_eq!(data.series.len(), 1);
+            assert_eq!(data.series[0].name, "A");
+        }
     }
 
     fn sheet(rows: &[&[&str]]) -> HashMap<Addr, CellValue> {
@@ -1076,44 +1119,5 @@ mod chart_data_tests {
             start,
             end,
         }
-    }
-
-    #[test]
-    fn the_label_column_is_the_category_axis_and_never_a_series() {
-        let values = sheet(&[
-            &["Region", "Q1", "Q2", "Q3", "Q4"],
-            &["North", "18200", "21450", "19800", "24300"],
-            &["South", "15600", "16900", "18750", "20100"],
-            &["East", "12400", "14800", "16300", "17900"],
-            &["West", "20900", "19700", "22600", "26800"],
-        ]);
-        let data = chart_data(&chart((0, 0), (4, 4)), &values);
-        assert_eq!(data.categories, ["North", "South", "East", "West"]);
-        let names: Vec<&str> = data.series.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Q1", "Q2", "Q3", "Q4"], "Region is no series");
-        assert_eq!(
-            data.series[0].values,
-            [Some(18200.0), Some(15600.0), Some(12400.0), Some(20900.0)]
-        );
-
-        let values = sheet(&[
-            &["Month", "Jan", "Feb", "Mar", "Apr", "May"],
-            &["Rent", "1250", "1250", "1250", "1250", "1250"],
-            &["Food", "420", "386", "", "402", "399"],
-        ]);
-        let data = chart_data(&chart((0, 0), (5, 2)), &values);
-        assert_eq!(data.categories, ["Jan", "Feb", "Mar", "Apr", "May"]);
-        let names: Vec<&str> = data.series.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Rent", "Food"]);
-        assert_eq!(
-            data.series[1].values[2], None,
-            "a blank is a gap, not a shift"
-        );
-
-        let values = sheet(&[&["3"], &["5"], &["8"]]);
-        let data = chart_data(&chart((0, 0), (0, 2)), &values);
-        assert!(data.categories.is_empty());
-        assert_eq!(data.series.len(), 1);
-        assert_eq!(data.series[0].name, "A");
     }
 }

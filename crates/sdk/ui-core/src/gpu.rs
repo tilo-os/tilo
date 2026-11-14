@@ -148,6 +148,26 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
     (target_texture, target_view)
 }
 
+/// How far past a frame's edge a swapchain that crops its frames reaches when it is made.
+const SWAPCHAIN_STEP: u32 = 128;
+
+/// The swapchain a surface that crops its frames draws a frame of `frame` pixels in, having
+/// `current`: the same one while the frame fits and fills at least half of it, else one
+/// [`SWAPCHAIN_STEP`]-rounded past the frame, so a window growing and shrinking by some rows
+/// at a time keeps the swapchain it has.
+fn swapchain_size(frame: (u32, u32), current: (u32, u32), limit: u32) -> (u32, u32) {
+    let area = |(width, height): (u32, u32)| u64::from(width) * u64::from(height);
+    if frame.0 <= current.0 && frame.1 <= current.1 && 2 * area(frame) >= area(current) {
+        return current;
+    }
+    let past = |edge: u32| {
+        edge.div_ceil(SWAPCHAIN_STEP)
+            .saturating_mul(SWAPCHAIN_STEP)
+            .min(limit.max(edge))
+    };
+    (past(frame.0), past(frame.1))
+}
+
 /// The largest texture edge of every device this module opens: wgpu's
 /// default, which `required_limits` keeps. A window's frame is fitted under
 /// it before it is drawn (`crate::scale::fit_to_texture_limit`), since a
@@ -625,7 +645,18 @@ impl RenderContext {
         Ok(surface)
     }
 
-    pub fn resize_surface(&self, surface: &mut RenderSurface<'_>, width: u32, height: u32) {
+    /// Draw frames of `width` × `height` on `surface`. A surface whose window shows only a
+    /// frame's own pixels of a larger buffer (`crops`, `tilo_presentation::crops_frames`) keeps
+    /// its swapchain while frames fit in it ([`swapchain_size`]): recreating a swapchain waits
+    /// for the device to go idle and allocates its buffers, many times the cost of a frame, so a
+    /// panel growing a step each frame would trail its content.
+    pub fn resize_surface(
+        &self,
+        surface: &mut RenderSurface<'_>,
+        width: u32,
+        height: u32,
+        crops: bool,
+    ) {
         let Some(handle) = self.devices.get(surface.dev_id) else {
             return;
         };
@@ -635,9 +666,20 @@ impl RenderContext {
         let (texture, view) = create_targets(width, height, &handle.device);
         surface.target_texture = texture;
         surface.target_view = view;
-        surface.config.width = width;
-        surface.config.height = height;
-        self.configure_surface(surface);
+        let current = (surface.config.width, surface.config.height);
+        let wanted = if crops && surface.blitter.is_none() {
+            swapchain_size(
+                (width, height),
+                current,
+                handle.device.limits().max_texture_dimension_2d,
+            )
+        } else {
+            (width, height)
+        };
+        if wanted != current {
+            (surface.config.width, surface.config.height) = wanted;
+            self.configure_surface(surface);
+        }
     }
 
     pub fn configure_surface(&self, surface: &RenderSurface<'_>) {
@@ -677,8 +719,8 @@ pub fn draw_target_to_surface(
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::Extent3d {
-                width: surface.config.width,
-                height: surface.config.height,
+                width: surface.target_texture.width(),
+                height: surface.target_texture.height(),
                 depth_or_array_layers: 1,
             },
         ),
@@ -786,8 +828,43 @@ pub enum CreateSurfaceError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BackendChoice, RenderContext, create_targets, passed_over_hardware};
+    use super::{
+        BackendChoice, RenderContext, create_targets, passed_over_hardware, swapchain_size,
+    };
     use wgpu::Backends;
+
+    /// A panel that grows and shrinks a few rows a frame, as Quick settings does when a section
+    /// opens and closes, makes a swapchain only when it grows past the one it has, never per
+    /// frame: making one waits for the device to go idle.
+    #[test]
+    fn a_panel_growing_a_step_a_frame_keeps_its_swapchain() {
+        let limit = 8192;
+        let mut current = (380, 344);
+        let mut made = Vec::new();
+        let open_and_close = (344..=436).chain((344..436).rev());
+        for height in open_and_close.clone().chain(open_and_close) {
+            let next = swapchain_size((380, height), current, limit);
+            assert!(
+                next.0 >= 380 && next.1 >= height,
+                "the frame fits its swapchain"
+            );
+            if next != current {
+                made.push(next);
+                current = next;
+            }
+        }
+        assert_eq!(
+            made,
+            [(384, 384), (384, 512)],
+            "made growing past it, then kept"
+        );
+        assert_eq!(
+            swapchain_size((380, 300), (1280, 800), limit),
+            (384, 384),
+            "a frame filling less than half of its swapchain gets a smaller one"
+        );
+        assert_eq!(swapchain_size((8150, 100), (100, 100), limit), (8192, 128));
+    }
 
     #[test]
     fn a_context_whose_backends_offer_no_adapter_starts_again_on_its_fallback_once() {

@@ -102,51 +102,59 @@ pub fn read(app_dir: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_tagline_is_its_own_message_and_optional() {
-        let source = "search-keywords = notes\napp-tagline =  Notes you write alone or together \n";
-        assert_eq!(
-            parse_tagline(source).as_deref(),
-            Some("Notes you write alone or together")
-        );
-        assert_eq!(parse_tagline("search-keywords = notes\n"), None);
-        assert_eq!(parse_tagline("app-tagline =   \n"), None);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn search_messages_give_an_apps_keywords_and_tagline;
 
-    #[test]
-    fn every_app_has_an_english_and_german_tagline() {
-        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
-        let mut checked = 0;
-        for entry in std::fs::read_dir(&apps).expect("apps/") {
-            let dir = entry.expect("entry").path();
-            if !dir.join("tilo-app.toml").is_file() {
-                continue;
-            }
-            let taglines = read_taglines(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-            for language in ["en", "de"] {
-                let tagline = taglines
-                    .get(language)
-                    .unwrap_or_else(|| panic!("{} lacks an {language} app-tagline", dir.display()));
-                assert!(
-                    tagline.chars().count() <= crate::validate::MAX_TAGLINE_CHARS,
-                    "{}: {tagline:?} is longer than a row",
-                    dir.display()
-                );
-                assert!(
-                    !tagline.contains(" · ") && !tagline.ends_with('.'),
-                    "{}: {tagline:?} is one phrase, without separators or a full stop",
-                    dir.display()
-                );
-            }
-            checked += 1;
+        phase the_tagline_is_its_own_message_and_optional;
+        {
+            let source = "search-keywords = notes\napp-tagline =  Notes you write alone or together \n";
+            assert_eq!(
+                parse_tagline(source).as_deref(),
+                Some("Notes you write alone or together")
+            );
+            assert_eq!(parse_tagline("search-keywords = notes\n"), None);
+            assert_eq!(parse_tagline("app-tagline =   \n"), None);
         }
-        assert!(checked > 40, "found only {checked} apps");
-    }
 
-    #[test]
-    fn the_message_is_read_trimmed_and_without_repeats() {
-        let source = "# comment\nsearch-keywords = youtube,  Video , video, ,videos\n";
-        assert_eq!(parse(source).unwrap(), ["youtube", "Video", "videos"]);
-        assert_eq!(parse("other = x"), None);
+        phase every_app_has_an_english_and_german_tagline;
+        {
+            let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+            let mut checked = 0;
+            for entry in std::fs::read_dir(&apps).expect("apps/") {
+                let dir = entry.expect("entry").path();
+                if !dir.join("tilo-app.toml").is_file() {
+                    continue;
+                }
+                let taglines = read_taglines(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+                for language in ["en", "de"] {
+                    let tagline = taglines
+                        .get(language)
+                        .unwrap_or_else(|| panic!("{} lacks an {language} app-tagline", dir.display()));
+                    assert!(
+                        tagline.chars().count() <= crate::validate::MAX_TAGLINE_CHARS,
+                        "{}: {tagline:?} is longer than a row",
+                        dir.display()
+                    );
+                    assert!(
+                        !tagline.contains(" · ") && !tagline.ends_with('.'),
+                        "{}: {tagline:?} is one phrase, without separators or a full stop",
+                        dir.display()
+                    );
+                }
+                checked += 1;
+            }
+            assert!(checked > 40, "found only {checked} apps");
+        }
+
+        phase the_message_is_read_trimmed_and_without_repeats;
+        {
+            let source = "# comment\nsearch-keywords = youtube,  Video , video, ,videos\n";
+            assert_eq!(parse(source).unwrap(), ["youtube", "Video", "videos"]);
+            assert_eq!(parse("other = x"), None);
+        }
     }
 }

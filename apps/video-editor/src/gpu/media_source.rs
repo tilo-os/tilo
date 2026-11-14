@@ -474,69 +474,77 @@ mod tests {
     use super::{MediaFrameSource, sample, source_ms};
     use crate::model::{MediaItem, MediaKind, Project};
 
-    #[test]
-    fn a_still_is_asked_for_its_one_picture_wherever_its_clip_is() {
-        let dir = tempfile::tempdir().expect("a scratch directory");
-        let mut project = Project::new("Stills");
-        let mut item = |name: &str, kind: MediaKind| {
-            let path = dir.path().join(name);
-            std::fs::write(&path, b"bytes").expect("a local file");
-            let item = MediaItem {
-                id: uuid::Uuid::new_v4(),
-                name: name.into(),
-                kind,
-                duration: 5.0,
-                fps: 30.0,
-                path: path.to_string_lossy().into_owned(),
-                ..Default::default()
-            };
-            let id = item.id;
-            project.media.push(item);
-            id
-        };
-        let still = item("Harbour.png", MediaKind::Image);
-        let footage = item("Harbour.mp4", MediaKind::Video);
-        let index = MediaFrameSource::index(&project);
-        assert_eq!(
-            index[&still].2,
-            Some(0),
-            "a still's picture is at its start"
-        );
-        assert!(
-            index[&footage].2.is_some_and(|last| last > 4000),
-            "footage holds its last frame: {:?}",
-            index[&footage].2
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_media_frame_source_indexes_asks_and_samples;
 
-    #[test]
-    fn a_frame_is_asked_for_inside_itself_not_inside_the_one_before() {
-        for fps in [24.0, 25.0, 29.97, 30.0, 60.0] {
-            for n in 0..600u32 {
-                let start = f64::from(n) / fps;
-                let ms = source_ms(start) as f64 / 1000.0;
-                assert!(
-                    ms >= start - 1e-9 && ms < start + 1.0 / fps,
-                    "frame {n} at {fps} fps starts at {start}s but is asked for at {ms}s"
-                );
+        phase a_still_is_asked_for_its_one_picture_wherever_its_clip_is;
+        {
+            let dir = tempfile::tempdir().expect("a scratch directory");
+            let mut project = Project::new("Stills");
+            let mut item = |name: &str, kind: MediaKind| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, b"bytes").expect("a local file");
+                let item = MediaItem {
+                    id: uuid::Uuid::new_v4(),
+                    name: name.into(),
+                    kind,
+                    duration: 5.0,
+                    fps: 30.0,
+                    path: path.to_string_lossy().into_owned(),
+                    ..Default::default()
+                };
+                let id = item.id;
+                project.media.push(item);
+                id
+            };
+            let still = item("Harbour.png", MediaKind::Image);
+            let footage = item("Harbour.mp4", MediaKind::Video);
+            let index = MediaFrameSource::index(&project);
+            assert_eq!(
+                index[&still].2,
+                Some(0),
+                "a still's picture is at its start"
+            );
+            assert!(
+                index[&footage].2.is_some_and(|last| last > 4000),
+                "footage holds its last frame: {:?}",
+                index[&footage].2
+            );
+        }
+
+        phase a_frame_is_asked_for_inside_itself_not_inside_the_one_before;
+        {
+            for fps in [24.0, 25.0, 29.97, 30.0, 60.0] {
+                for n in 0..600u32 {
+                    let start = f64::from(n) / fps;
+                    let ms = source_ms(start) as f64 / 1000.0;
+                    assert!(
+                        ms >= start - 1e-9 && ms < start + 1.0 / fps,
+                        "frame {n} at {fps} fps starts at {start}s but is asked for at {ms}s"
+                    );
+                }
             }
         }
-    }
 
-    #[test]
-    fn a_sample_reads_the_pixel_under_the_coordinates() {
-        let mut rgba = Vec::new();
-        for _ in 0..2 {
-            rgba.extend_from_slice(&[255, 0, 0, 255, 255, 0, 0, 255]);
-            rgba.extend_from_slice(&[0, 0, 255, 255, 0, 0, 255, 255]);
+        phase a_sample_reads_the_pixel_under_the_coordinates;
+        {
+            let mut rgba = Vec::new();
+            for _ in 0..2 {
+                rgba.extend_from_slice(&[255, 0, 0, 255, 255, 0, 0, 255]);
+                rgba.extend_from_slice(&[0, 0, 255, 255, 0, 0, 255, 255]);
+            }
+            let frame = media::Frame {
+                width: 4,
+                height: 2,
+                pts_ms: 0,
+                payload: media::FramePayload::Rgba(std::sync::Arc::new(rgba)),
+            };
+            assert_eq!(sample(&frame, 0.1, 0.5), Some([1.0, 0.0, 0.0]));
+            assert_eq!(sample(&frame, 1.0, 1.0), Some([0.0, 0.0, 1.0]));
         }
-        let frame = media::Frame {
-            width: 4,
-            height: 2,
-            pts_ms: 0,
-            payload: media::FramePayload::Rgba(std::sync::Arc::new(rgba)),
-        };
-        assert_eq!(sample(&frame, 0.1, 0.5), Some([1.0, 0.0, 0.0]));
-        assert_eq!(sample(&frame, 1.0, 1.0), Some([0.0, 0.0, 1.0]));
     }
 }

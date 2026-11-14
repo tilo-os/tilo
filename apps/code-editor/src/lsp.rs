@@ -1030,12 +1030,104 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
-    #[test]
-    fn route_message_answers_requests_but_not_notifications_and_resolves_responses() {
-        a_workspace_configuration_request_is_answered_per_item();
-        every_server_request_gets_some_reply();
-        a_notification_is_not_answered();
-        route_message_resolves_response_ids_to_kinds();
+    tilo_test_env::scenario! {
+        fn the_language_client_routes_frames_parses_and_fails_safe;
+
+        phase route_message_answers_requests_but_not_notifications_and_resolves_responses;
+        {
+            a_workspace_configuration_request_is_answered_per_item();
+            every_server_request_gets_some_reply();
+            a_notification_is_not_answered();
+            route_message_resolves_response_ids_to_kinds();
+        }
+
+        phase progress_keeps_titles_across_reports_and_shows_the_busiest_task;
+        {
+            progress_notifications_parse_into_an_indexing_state();
+            a_report_without_a_title_inherits_the_one_begin_carried();
+            the_busiest_task_is_the_one_shown();
+        }
+
+        phase client_roots_request_ids_and_server_exit_fail_safe;
+        {
+            a_project_path_becomes_a_correctly_encoded_uri();
+            a_server_cannot_be_rooted_at_a_path_that_is_not_a_directory();
+            missing_server_binary_degrades_gracefully();
+            request_identity_exhaustion_never_reuses_an_old_response_id();
+            a_disconnected_bounded_reader_still_reports_server_exit();
+        }
+
+        phase formatting_edits_apply_to_the_text_they_were_made_for;
+        // A formatter's edits apply to the text it was asked about, columns
+        // counted in UTF-16 units; a refusal and overlapping edits are errors.
+        {
+            let edit = |start: (u32, u32), end: (u32, u32), text: &str| TextEdit {
+                range: Range {
+                    start: Position {
+                        line: start.0,
+                        character: start.1,
+                    },
+                    end: Position {
+                        line: end.0,
+                        character: end.1,
+                    },
+                },
+                new_text: text.into(),
+            };
+            let text = "fn main(){\nlet s=\"😀\";x\n}\n";
+            let edits = [
+                edit((0, 9), (0, 9), " "),
+                edit((1, 0), (1, 0), "    "),
+                // After the emoji, two UTF-16 units wide.
+                edit((1, 11), (1, 12), ""),
+                edit((9, 0), (9, 4), ""),
+            ];
+            assert_eq!(
+                apply_text_edits(text, &edits).unwrap(),
+                "fn main() {\n    let s=\"😀\";\n}\n"
+            );
+            assert!(
+                apply_text_edits(text, &[edit((0, 0), (0, 4), ""), edit((0, 2), (0, 3), "")]).is_err()
+            );
+
+            let pending = Arc::new(Mutex::new(HashMap::from([(7, Pending::Formatting)])));
+            let answer = json!({"jsonrpc": "2.0", "id": 7, "result": [
+                {"range": {"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 9}},
+                 "newText": " "}
+            ]});
+            let Some(LspEvent::Formatted(Ok(edits))) = route_message(&answer, &pending).event else {
+                panic!("a formatting answer is its edits");
+            };
+            assert_eq!(edits, [edit((0, 9), (0, 9), " ")]);
+            let pending = Arc::new(Mutex::new(HashMap::from([(8, Pending::Formatting)])));
+            let refusal = json!({"jsonrpc": "2.0", "id": 8,
+                "error": {"code": -32603, "message": "rustfmt failed"}});
+            let Some(LspEvent::Formatted(Err(reason))) = route_message(&refusal, &pending).event else {
+                panic!("a refusal is the formatter's reason");
+            };
+            assert_eq!(reason, "rustfmt failed");
+            assert_eq!(
+                parse_formatting(&json!({"id": 9, "result": null})),
+                Ok(Vec::new())
+            );
+        }
+
+        phase framing_round_trips_back_to_back_messages_and_refuses_oversized_bodies;
+        {
+            framing_round_trips();
+            framing_reads_two_back_to_back_messages();
+            framing_refuses_an_oversized_advertised_body_before_allocating_it();
+        }
+
+        phase server_payloads_parse_into_diagnostics_completions_hover_and_definitions;
+        {
+            parses_publish_diagnostics_into_model();
+            absent_severity_defaults_to_error();
+            parses_completion_list_and_array_shapes();
+            completion_prefers_text_edit_new_text();
+            parses_hover_markup_marked_string_and_array();
+            parses_definition_location_shapes();
+        }
     }
 
     fn a_workspace_configuration_request_is_answered_per_item() {
@@ -1084,13 +1176,6 @@ mod tests {
         let routed = route_message(&msg, &no_pending());
         assert!(routed.reply.is_none());
         assert!(matches!(routed.event, Some(LspEvent::Diagnostics { .. })));
-    }
-
-    #[test]
-    fn progress_keeps_titles_across_reports_and_shows_the_busiest_task() {
-        progress_notifications_parse_into_an_indexing_state();
-        a_report_without_a_title_inherits_the_one_begin_carried();
-        the_busiest_task_is_the_one_shown();
     }
 
     fn progress_notifications_parse_into_an_indexing_state() {
@@ -1165,15 +1250,6 @@ mod tests {
         assert_eq!(client.busy_task().unwrap().title, "Indexing");
     }
 
-    #[test]
-    fn client_roots_request_ids_and_server_exit_fail_safe() {
-        a_project_path_becomes_a_correctly_encoded_uri();
-        a_server_cannot_be_rooted_at_a_path_that_is_not_a_directory();
-        missing_server_binary_degrades_gracefully();
-        request_identity_exhaustion_never_reuses_an_old_response_id();
-        a_disconnected_bounded_reader_still_reports_server_exit();
-    }
-
     fn a_project_path_becomes_a_correctly_encoded_uri() {
         #[cfg(windows)]
         let (prefix, uri_prefix) = ("C:", "file:///c:");
@@ -1215,68 +1291,6 @@ mod tests {
 
     fn fake_client() -> LspClient {
         LspClient::inert()
-    }
-
-    /// A formatter's edits apply to the text it was asked about, columns
-    /// counted in UTF-16 units; a refusal and overlapping edits are errors.
-    #[test]
-    fn formatting_edits_apply_to_the_text_they_were_made_for() {
-        let edit = |start: (u32, u32), end: (u32, u32), text: &str| TextEdit {
-            range: Range {
-                start: Position {
-                    line: start.0,
-                    character: start.1,
-                },
-                end: Position {
-                    line: end.0,
-                    character: end.1,
-                },
-            },
-            new_text: text.into(),
-        };
-        let text = "fn main(){\nlet s=\"😀\";x\n}\n";
-        let edits = [
-            edit((0, 9), (0, 9), " "),
-            edit((1, 0), (1, 0), "    "),
-            // After the emoji, two UTF-16 units wide.
-            edit((1, 11), (1, 12), ""),
-            edit((9, 0), (9, 4), ""),
-        ];
-        assert_eq!(
-            apply_text_edits(text, &edits).unwrap(),
-            "fn main() {\n    let s=\"😀\";\n}\n"
-        );
-        assert!(
-            apply_text_edits(text, &[edit((0, 0), (0, 4), ""), edit((0, 2), (0, 3), "")]).is_err()
-        );
-
-        let pending = Arc::new(Mutex::new(HashMap::from([(7, Pending::Formatting)])));
-        let answer = json!({"jsonrpc": "2.0", "id": 7, "result": [
-            {"range": {"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 9}},
-             "newText": " "}
-        ]});
-        let Some(LspEvent::Formatted(Ok(edits))) = route_message(&answer, &pending).event else {
-            panic!("a formatting answer is its edits");
-        };
-        assert_eq!(edits, [edit((0, 9), (0, 9), " ")]);
-        let pending = Arc::new(Mutex::new(HashMap::from([(8, Pending::Formatting)])));
-        let refusal = json!({"jsonrpc": "2.0", "id": 8,
-            "error": {"code": -32603, "message": "rustfmt failed"}});
-        let Some(LspEvent::Formatted(Err(reason))) = route_message(&refusal, &pending).event else {
-            panic!("a refusal is the formatter's reason");
-        };
-        assert_eq!(reason, "rustfmt failed");
-        assert_eq!(
-            parse_formatting(&json!({"id": 9, "result": null})),
-            Ok(Vec::new())
-        );
-    }
-
-    #[test]
-    fn framing_round_trips_back_to_back_messages_and_refuses_oversized_bodies() {
-        framing_round_trips();
-        framing_reads_two_back_to_back_messages();
-        framing_refuses_an_oversized_advertised_body_before_allocating_it();
     }
 
     fn framing_round_trips() {
@@ -1324,16 +1338,6 @@ mod tests {
         drop(sender);
         client.events = receiver;
         assert!(matches!(client.poll().as_slice(), [LspEvent::Exited]));
-    }
-
-    #[test]
-    fn server_payloads_parse_into_diagnostics_completions_hover_and_definitions() {
-        parses_publish_diagnostics_into_model();
-        absent_severity_defaults_to_error();
-        parses_completion_list_and_array_shapes();
-        completion_prefers_text_edit_new_text();
-        parses_hover_markup_marked_string_and_array();
-        parses_definition_location_shapes();
     }
 
     fn parses_publish_diagnostics_into_model() {

@@ -68,54 +68,58 @@ impl Published {
 mod tests {
     use super::*;
 
-    /// A host publishes a channel by its catalogue address, and the runtime names the same
-    /// resource on its tree by the document and item form: the verb is found by either, so a
-    /// press is the channel's `post` however the address is written.
-    #[test]
-    fn a_verb_is_found_by_the_address_the_host_publishes_and_the_reference_the_tree_names() {
-        let mut table = Published::default();
-        table.insert(
-            "chat.workspace/channels/c_general",
-            "post",
-            PublishedAction {
-                app: "chat".to_owned(),
-                params: vec!["channel".to_owned(), "text".to_owned()],
-            },
-        );
-        assert!(
-            table.get("chat.workspace/c_general", "post").is_some(),
-            "the reference the tree names the channel by"
-        );
-        assert!(
-            table
-                .get("chat.workspace/channels/c_general", "post")
-                .is_some(),
-            "the catalogue address itself"
-        );
-        assert!(
-            table.get("chat.workspace/other", "post").is_none(),
-            "another item of the document is no channel"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_published_verb_is_found_by_its_address;
 
-    /// A resource published by a colon address (`chat.workspace.channels:c_crit`, a reading
-    /// fixture's spelling) reads the same: the flattening leaves it alone.
-    #[test]
-    fn an_address_flattening_to_itself_is_published_as_it_stands() {
-        let mut table = Published::default();
-        table.insert(
-            "chat.workspace.channels:c_crit",
-            "post",
-            PublishedAction {
-                app: "chat".to_owned(),
-                params: Vec::new(),
-            },
-        );
-        assert!(
-            table
-                .get("chat.workspace.channels:c_crit", "post")
-                .is_some(),
-            "the colon address is its own reference"
-        );
+        phase a_verb_is_found_by_the_address_the_host_publishes_and_the_reference_the_tree_names;
+        // A host publishes a channel by its catalogue address, and the runtime names the same
+        // resource on its tree by the document and item form: the verb is found by either, so a
+        // press is the channel's `post` however the address is written.
+        {
+            let mut table = Published::default();
+            table.insert(
+                "chat.workspace/channels/c_general",
+                "post",
+                PublishedAction {
+                    app: "chat".to_owned(),
+                    params: vec!["channel".to_owned(), "text".to_owned()],
+                },
+            );
+            assert!(
+                table.get("chat.workspace/c_general", "post").is_some(),
+                "the reference the tree names the channel by"
+            );
+            assert!(
+                table
+                    .get("chat.workspace/channels/c_general", "post")
+                    .is_some(),
+                "the catalogue address itself"
+            );
+            assert!(
+                table.get("chat.workspace/other", "post").is_none(),
+                "another item of the document is no channel"
+            );
+        }
+
+        phase an_address_flattening_to_itself_is_published_as_it_stands;
+        // A resource published by a colon address (`chat.workspace.channels:c_crit`, a reading
+        // fixture's spelling) reads the same: the flattening leaves it alone.
+        {
+            let mut table = Published::default();
+            table.insert(
+                "chat.workspace.channels:c_crit",
+                "post",
+                PublishedAction {
+                    app: "chat".to_owned(),
+                    params: Vec::new(),
+                },
+            );
+            assert!(
+                table
+                    .get("chat.workspace.channels:c_crit", "post")
+                    .is_some(),
+                "the colon address is its own reference"
+            );
+        }
     }
 }

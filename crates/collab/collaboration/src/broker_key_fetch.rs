@@ -55,8 +55,7 @@ pub(super) fn update_route_keys(route: &SdkRoute, answer: KeysAnswer, generation
 /// Let the content `spec`'s record references be sealed under the secret
 /// of the members `keys` belong to, while they hold one.
 pub(super) fn hold_content_secret(spec: &crate::RouteSpec, keys: &crate::route_keys::RouteKeys) {
-    crate::record_content::ContentLane::of(&spec.app_id, spec.record.as_deref().unwrap_or(""))
-        .hold_secret(keys.content_secret());
+    crate::record_content::ContentLane::of(spec).hold_secret(keys.content_secret());
 }
 
 /// One route's question to the identity service, taken off the route so it

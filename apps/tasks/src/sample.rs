@@ -97,6 +97,7 @@ pub(crate) fn tracker(person: &str) -> Tracker {
                 body: Some(format!("## Why\n\n{} before the launch.", issue.title)),
                 status: Some(issue.status),
                 assignee,
+                url: None,
             }))
             .is_err()
         {

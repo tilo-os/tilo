@@ -14,7 +14,37 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use tilo_actions::remote::identity_admin::FleetDevice;
-use tilo_user_identity::{DeviceRole, IdentityPaths, RevocationEntry, RevocationReason};
+use tilo_user_identity::{IdentityPaths, RevocationEntry, RevocationReason};
+
+/// Which pairing finds and admits a new device: one the person uses
+/// themselves, or a home peer that runs their workspaces' sync without a
+/// screen. Both are certified as the person's devices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeviceKind {
+    Personal,
+    HomePeer,
+}
+
+impl DeviceKind {
+    /// The name the kind is asked for by: `personal-device` or `home-peer`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Personal => "personal-device",
+            Self::HomePeer => "home-peer",
+        }
+    }
+
+    /// The kind named by [`Self::name`].
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "personal-device" => Some(Self::Personal),
+            "home-peer" => Some(Self::HomePeer),
+            _ => None,
+        }
+    }
+}
 
 use crate::device_fleet::DeviceFleetStore;
 
@@ -25,18 +55,18 @@ pub const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 
 /// The `tilo-enroll` command that listens for a device of `role`.
 #[must_use]
-pub const fn discover_command(role: DeviceRole) -> &'static str {
+pub const fn discover_command(role: DeviceKind) -> &'static str {
     match role {
-        DeviceRole::Personal => "discover-device",
-        DeviceRole::Host => "discover",
+        DeviceKind::Personal => "discover-device",
+        DeviceKind::HomePeer => "discover",
     }
 }
 
 /// The helper's command that admits a device of `role`.
-const fn approve_command(role: DeviceRole) -> &'static str {
+const fn approve_command(role: DeviceKind) -> &'static str {
     match role {
-        DeviceRole::Personal => "approve-device",
-        DeviceRole::Host => "approve-enrollment",
+        DeviceKind::Personal => "approve-device",
+        DeviceKind::HomePeer => "approve-enrollment",
     }
 }
 
@@ -53,7 +83,7 @@ pub struct Candidate {
 
 impl Candidate {
     #[must_use]
-    pub fn answer(&self, role: DeviceRole) -> serde_json::Value {
+    pub fn answer(&self, role: DeviceKind) -> serde_json::Value {
         serde_json::json!({
             "role": role.name(),
             "device": self.device_node_id,
@@ -83,7 +113,7 @@ pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candida
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approval {
-    pub role: DeviceRole,
+    pub role: DeviceKind,
     pub device: String,
     /// The relay service node id it announced, in lowercase hex.
     pub service: String,
@@ -144,7 +174,7 @@ pub fn approval_args(
     args.push(approval.device.clone().into());
     args.push("--expected-service".into());
     args.push(approval.service.clone().into());
-    if approval.role == DeviceRole::Host {
+    if approval.role == DeviceKind::HomePeer {
         for id in workspace_ids {
             args.push("--workspace-id".into());
             args.push(id.to_string().into());
@@ -207,7 +237,7 @@ pub fn proposed_certificate(
             user_public_key: person,
             device_public_key: key(&candidate.device_node_id)?,
             device_label: candidate.label.clone(),
-            capabilities: DeviceRole::Personal.capabilities(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             // As a certificate issued here: a minute back, for a new device
             // whose clock trails.
             issued_at_ns: now_ns.saturating_sub(60 * 1_000_000_000),
@@ -228,7 +258,7 @@ pub fn approved_args(
     paths: &PersonPaths,
     approved_cert: &Path,
 ) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![approve_command(DeviceRole::Personal).into()];
+    let mut args: Vec<OsString> = vec![approve_command(DeviceKind::Personal).into()];
     for (flag, value) in [
         ("--identity-root", paths.root.as_os_str()),
         ("--identity-dir", paths.dir.as_os_str()),
@@ -331,7 +361,6 @@ fn listed_device(
         fingerprint: fingerprint(&cert.device_public_key),
         current,
         revoked,
-        can_host: cert.capabilities.can_act_as_host,
         kind: tilo_actions::remote::identity_admin::KeyKind::of(
             cert.capabilities.agent.is_some(),
             cert.capabilities.server_key,
@@ -554,222 +583,230 @@ mod tests {
         }
     }
 
-    /// A device another of the person's devices paired, or a browser
-    /// certified in its own tab, is in the record and not in this device's
-    /// fleet: the list Settings shows is both, each key once.
-    #[test]
-    fn the_devices_of_the_record_join_the_fleets_own() {
-        let devices = with_record(
-            vec![listed("This desktop", 2, true, false)],
-            Record {
-                devices: vec![
-                    recorded(certified("This desktop", 2)),
-                    RecordDevice {
-                        browser: Some("0f".repeat(16)),
-                        ..recorded(certified("Browser", 3))
-                    },
+    tilo_test_env::scenario! {
+        fn the_device_list;
+
+        phase the_devices_of_the_record_join_the_fleets_own;
+        // A device another of the person's devices paired, or a browser
+        // certified in its own tab, is in the record and not in this device's
+        // fleet: the list Settings shows is both, each key once.
+        {
+            let devices = with_record(
+                vec![listed("This desktop", 2, true, false)],
+                Record {
+                    devices: vec![
+                        recorded(certified("This desktop", 2)),
+                        RecordDevice {
+                            browser: Some("0f".repeat(16)),
+                            ..recorded(certified("Browser", 3))
+                        },
+                    ],
+                    workspaces: BTreeMap::new(),
+                },
+            );
+            assert_eq!(
+                devices
+                    .iter()
+                    .map(|device| (device.label.as_str(), device.current, device.revoked))
+                    .collect::<Vec<_>>(),
+                [("This desktop", true, false), ("Browser", false, false)]
+            );
+            assert_eq!(devices[1].key_hex, hex::encode([3; 32]));
+            assert_eq!(
+                devices[1].browser.as_deref(),
+                Some("0f".repeat(16).as_str()),
+                "a browser's tab key says which browser it is of"
+            );
+        }
+
+        phase a_revocation_marks_a_device_from_either_list;
+        // A revocation reaches this device's list from either side: one its own
+        // fleet signed, and one the host keeping the record keeps. The record
+        // never says a key the fleet refused is fine again.
+        {
+            let devices = with_record(
+                vec![
+                    listed("Lost laptop", 4, false, true),
+                    listed("Phone", 5, false, false),
                 ],
-                workspaces: BTreeMap::new(),
-            },
-        );
-        assert_eq!(
-            devices
-                .iter()
-                .map(|device| (device.label.as_str(), device.current, device.revoked))
-                .collect::<Vec<_>>(),
-            [("This desktop", true, false), ("Browser", false, false)]
-        );
-        assert_eq!(devices[1].key_hex, hex::encode([3; 32]));
-        assert_eq!(
-            devices[1].browser.as_deref(),
-            Some("0f".repeat(16).as_str()),
-            "a browser's tab key says which browser it is of"
-        );
+                Record {
+                    devices: vec![
+                        recorded(certified("Lost laptop", 4)),
+                        RecordDevice {
+                            refused: true,
+                            ..recorded(certified("Phone", 5))
+                        },
+                    ],
+                    workspaces: BTreeMap::new(),
+                },
+            );
+            assert_eq!(
+                devices
+                    .iter()
+                    .map(|device| (device.label.as_str(), device.revoked))
+                    .collect::<Vec<_>>(),
+                [("Lost laptop", true), ("Phone", true)]
+            );
+        }
+
+        phase what_each_host_says_of_a_key_is_one_line_in_the_list;
+        // What the hosts of the person's workspaces said of one key is said once:
+        // the newest time it was there, online when any host has it now, the agent
+        // any of its sessions named, refused where any host refuses it, and the
+        // one workspace an agent's grant reaches by the name the record gives it.
+        {
+            let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+            let mut grants = certified("Claude Code", 6);
+            grants.capabilities = tilo_user_identity::DeviceCapabilities::agent_grant(
+                tilo_user_identity::AgentScope::parse(workspace).unwrap(),
+            );
+            let mut record = Record {
+                workspaces: BTreeMap::from([(workspace.to_owned(), "Studio".to_owned())]),
+                ..Record::default()
+            };
+            record.add(RecordDevice {
+                last_active_ms: Some(9_000),
+                agent: Some("Claude Code".to_owned()),
+                ..recorded(grants.clone())
+            });
+            record.add(RecordDevice {
+                last_active_ms: Some(7_000),
+                refused: true,
+                // A host that has it open now, which said nothing newer.
+                online: true,
+                ..recorded(grants)
+            });
+            let devices = with_record(Vec::new(), record);
+            assert_eq!(devices.len(), 1, "one key, one line");
+            let grant = &devices[0];
+            assert_eq!(grant.agent.as_deref(), Some("Claude Code"));
+            assert_eq!(grant.last_active_ms, Some(9_000), "the newest time wins");
+            assert!(grant.online, "a host that has it open now says so");
+            assert!(grant.revoked, "a host that refuses it says so");
+            assert_eq!(
+                grant.workspace.as_deref(),
+                Some("Studio"),
+                "the one workspace it reaches, by its name"
+            );
+            assert_eq!(
+                grant.kind,
+                tilo_actions::remote::identity_admin::KeyKind::Agent
+            );
+            assert_eq!(grant.issued_ms, Some(0), "issued at 1 ns, said in ms");
+        }
+
+        phase a_key_an_agent_runs_on_is_listed_with_its_agent;
+        // A computer an agent works on is a key acting for the person, and the
+        // list says the agent and when the key was last here: what a `tilo login`
+        // computer's sessions told the person's host.
+        {
+            let computer = certified("Claude Code on laptop", 7);
+            let devices = with_record(
+                vec![listed("Claude Code on laptop", 7, true, false)],
+                Record {
+                    devices: vec![RecordDevice {
+                        agent: Some("Claude Code".to_owned()),
+                        last_active_ms: Some(6_000),
+                        online: true,
+                        ..recorded(computer)
+                    }],
+                    workspaces: BTreeMap::new(),
+                },
+            );
+            let device = &devices[0];
+            assert_eq!(device.agent.as_deref(), Some("Claude Code"));
+            assert_eq!(device.last_active_ms, Some(6_000));
+            assert!(device.online);
+            assert_eq!(
+                device.kind,
+                tilo_actions::remote::identity_admin::KeyKind::Agent,
+                "a key an agent runs on acts for the person"
+            );
+            assert!(device.workspace.is_none());
+            assert!(device.current, "the fleet's own word stands");
+        }
     }
 
-    /// A revocation reaches this device's list from either side: one its own
-    /// fleet signed, and one the host keeping the record keeps. The record
-    /// never says a key the fleet refused is fine again.
-    #[test]
-    fn a_revocation_marks_a_device_from_either_list() {
-        let devices = with_record(
-            vec![
-                listed("Lost laptop", 4, false, true),
-                listed("Phone", 5, false, false),
-            ],
-            Record {
-                devices: vec![
-                    recorded(certified("Lost laptop", 4)),
-                    RecordDevice {
-                        refused: true,
-                        ..recorded(certified("Phone", 5))
-                    },
-                ],
-                workspaces: BTreeMap::new(),
-            },
-        );
-        assert_eq!(
-            devices
-                .iter()
-                .map(|device| (device.label.as_str(), device.revoked))
-                .collect::<Vec<_>>(),
-            [("Lost laptop", true), ("Phone", true)]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_device_helper;
 
-    /// What the hosts of the person's workspaces said of one key is said once:
-    /// the newest time it was there, online when any host has it now, the agent
-    /// any of its sessions named, refused where any host refuses it, and the
-    /// one workspace an agent's grant reaches by the name the record gives it.
-    #[test]
-    fn what_each_host_says_of_a_key_is_one_line_in_the_list() {
-        let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
-        let mut grants = certified("Claude Code", 6);
-        grants.capabilities = tilo_user_identity::DeviceCapabilities::agent_grant(
-            tilo_user_identity::AgentScope::parse(workspace).unwrap(),
-        );
-        let mut record = Record {
-            workspaces: BTreeMap::from([(workspace.to_owned(), "Studio".to_owned())]),
-            ..Record::default()
-        };
-        record.add(RecordDevice {
-            last_active_ms: Some(9_000),
-            agent: Some("Claude Code".to_owned()),
-            ..recorded(grants.clone())
-        });
-        record.add(RecordDevice {
-            last_active_ms: Some(7_000),
-            refused: true,
-            // A host that has it open now, which said nothing newer.
-            online: true,
-            ..recorded(grants)
-        });
-        let devices = with_record(Vec::new(), record);
-        assert_eq!(devices.len(), 1, "one key, one line");
-        let grant = &devices[0];
-        assert_eq!(grant.agent.as_deref(), Some("Claude Code"));
-        assert_eq!(grant.last_active_ms, Some(9_000), "the newest time wins");
-        assert!(grant.online, "a host that has it open now says so");
-        assert!(grant.revoked, "a host that refuses it says so");
-        assert_eq!(
-            grant.workspace.as_deref(),
-            Some("Studio"),
-            "the one workspace it reaches, by its name"
-        );
-        assert_eq!(
-            grant.kind,
-            tilo_actions::remote::identity_admin::KeyKind::Agent
-        );
-        assert_eq!(grant.issued_ms, Some(0), "issued at 1 ns, said in ms");
-    }
-
-    /// A computer an agent works on is a key acting for the person, and the
-    /// list says the agent and when the key was last here: what a `tilo login`
-    /// computer's sessions told the person's host.
-    #[test]
-    fn a_key_an_agent_runs_on_is_listed_with_its_agent() {
-        let computer = certified("Claude Code on laptop", 7);
-        let devices = with_record(
-            vec![listed("Claude Code on laptop", 7, true, false)],
-            Record {
-                devices: vec![RecordDevice {
-                    agent: Some("Claude Code".to_owned()),
-                    last_active_ms: Some(6_000),
-                    online: true,
-                    ..recorded(computer)
-                }],
-                workspaces: BTreeMap::new(),
-            },
-        );
-        let device = &devices[0];
-        assert_eq!(device.agent.as_deref(), Some("Claude Code"));
-        assert_eq!(device.last_active_ms, Some(6_000));
-        assert!(device.online);
-        assert_eq!(
-            device.kind,
-            tilo_actions::remote::identity_admin::KeyKind::Agent,
-            "a key an agent runs on acts for the person"
-        );
-        assert!(device.workspace.is_none());
-        assert!(device.current, "the fleet's own word stands");
-    }
-
-    #[test]
-    fn keys_roles_and_discoveries_are_checked_before_anything_runs() {
-        assert_eq!(DeviceRole::parse("home-peer"), Some(DeviceRole::Host));
-        assert_eq!(
-            DeviceRole::parse(" personal-device "),
-            Some(DeviceRole::Personal)
-        );
-        assert!(DeviceRole::parse("server").is_none());
-        assert_eq!(
-            node_id(&DEVICE.to_ascii_uppercase(), "device"),
-            Ok(DEVICE.into())
-        );
-        assert!(node_id("abc", "device").is_err());
-        assert!(node_id(&"g".repeat(64), "device").is_err());
-        assert_eq!(
-            discovered(false, b"", b"\x1b[31mno matching device\n"),
-            Err("[31mno matching device".into())
-        );
-        assert!(discovered(true, b"{\"device_node_id\":\"x\"}", b"").is_err());
-        let found = format!(
-            "{{\"device_node_id\":\"{}\",\"relay_service_node_id\":\"{SERVICE}\",\
+        phase keys_roles_and_discoveries_are_checked_before_anything_runs;
+        {
+            assert_eq!(DeviceKind::parse("home-peer"), Some(DeviceKind::HomePeer));
+            assert_eq!(
+                DeviceKind::parse(" personal-device "),
+                Some(DeviceKind::Personal)
+            );
+            assert!(DeviceKind::parse("server").is_none());
+            assert_eq!(
+                node_id(&DEVICE.to_ascii_uppercase(), "device"),
+                Ok(DEVICE.into())
+            );
+            assert!(node_id("abc", "device").is_err());
+            assert!(node_id(&"g".repeat(64), "device").is_err());
+            assert_eq!(
+                discovered(false, b"", b"\x1b[31mno matching device\n"),
+                Err("[31mno matching device".into())
+            );
+            assert!(discovered(true, b"{\"device_node_id\":\"x\"}", b"").is_err());
+            let found = format!(
+                "{{\"device_node_id\":\"{}\",\"relay_service_node_id\":\"{SERVICE}\",\
              \"label\":\"Phone\",\"verification_code\":\"123-456\",\"kind\":\"PersonalDevice\"}}\n",
-            DEVICE.to_ascii_uppercase()
-        );
-        let candidate = discovered(true, found.as_bytes(), b"").unwrap();
-        assert_eq!(candidate.device_node_id, DEVICE);
-        assert_eq!(candidate.verification_code, "123-456");
-        assert_eq!(revocation_reason(" Lost "), Ok(RevocationReason::Lost));
-        assert!(revocation_reason("misplaced").is_err());
-    }
+                DEVICE.to_ascii_uppercase()
+            );
+            let candidate = discovered(true, found.as_bytes(), b"").unwrap();
+            assert_eq!(candidate.device_node_id, DEVICE);
+            assert_eq!(candidate.verification_code, "123-456");
+            assert_eq!(revocation_reason(" Lost "), Ok(RevocationReason::Lost));
+            assert!(revocation_reason("misplaced").is_err());
+        }
 
-    #[test]
-    fn every_door_runs_the_helper_with_the_same_arguments() {
-        let paths = PersonPaths {
-            root: PathBuf::from("/var/lib/tilo"),
-            dir: PathBuf::from("/home/person/.config/tilo/identity"),
-        };
-        let approval = Approval {
-            role: DeviceRole::Host,
-            device: DEVICE.into(),
-            service: SERVICE.into(),
-            workspace_ids: None,
-        };
-        assert_eq!(
-            approval_args(&approval, &paths, &[7, 9]),
-            [
-                CONTROL_HELPER,
-                "approve-enrollment",
-                "--identity-root",
-                "/var/lib/tilo",
-                "--identity-dir",
-                "/home/person/.config/tilo/identity",
-                "--expected-device",
-                DEVICE,
-                "--expected-service",
-                SERVICE,
-                "--workspace-id",
-                "7",
-                "--workspace-id",
-                "9",
-            ]
-            .map(OsString::from)
-            .to_vec()
-        );
-        let personal = approval_args(
-            &Approval {
-                role: DeviceRole::Personal,
-                ..approval
-            },
-            &paths,
-            &[7],
-        );
-        assert_eq!(personal.get(1), Some(&OsString::from("approve-device")));
-        assert!(
-            !personal.contains(&OsString::from("--workspace-id")),
-            "a personal device keeps no workspaces of its own"
-        );
+        phase every_door_runs_the_helper_with_the_same_arguments;
+        {
+            let paths = PersonPaths {
+                root: PathBuf::from("/var/lib/tilo"),
+                dir: PathBuf::from("/home/person/.config/tilo/identity"),
+            };
+            let approval = Approval {
+                role: DeviceKind::HomePeer,
+                device: DEVICE.into(),
+                service: SERVICE.into(),
+                workspace_ids: None,
+            };
+            assert_eq!(
+                approval_args(&approval, &paths, &[7, 9]),
+                [
+                    CONTROL_HELPER,
+                    "approve-enrollment",
+                    "--identity-root",
+                    "/var/lib/tilo",
+                    "--identity-dir",
+                    "/home/person/.config/tilo/identity",
+                    "--expected-device",
+                    DEVICE,
+                    "--expected-service",
+                    SERVICE,
+                    "--workspace-id",
+                    "7",
+                    "--workspace-id",
+                    "9",
+                ]
+                .map(OsString::from)
+                .to_vec()
+            );
+            let personal = approval_args(
+                &Approval {
+                    role: DeviceKind::Personal,
+                    ..approval
+                },
+                &paths,
+                &[7],
+            );
+            assert_eq!(personal.get(1), Some(&OsString::from("approve-device")));
+            assert!(
+                !personal.contains(&OsString::from("--workspace-id")),
+                "a personal device keeps no workspaces of its own"
+            );
+        }
     }
 }

@@ -141,6 +141,41 @@ impl PersonView {
         changed
     }
 
+    /// This view, read from the record, laid over `here`, the device's own view, which showed
+    /// `written` before the person changed it here: what they changed, and what the record says
+    /// nothing of, stays; everything else takes the record's.
+    #[must_use]
+    pub fn over(&self, here: &Self, written: &Self) -> Self {
+        fn each<K: Ord + Copy, V: Clone + PartialEq>(
+            record: &BTreeMap<K, V>,
+            here: &BTreeMap<K, V>,
+            written: &BTreeMap<K, V>,
+        ) -> BTreeMap<K, V> {
+            let mut kept = record.clone();
+            for (key, value) in here {
+                if written.get(key) != Some(value) || !record.contains_key(key) {
+                    kept.insert(*key, value.clone());
+                }
+            }
+            kept
+        }
+        let mut maximized = self.maximized.clone();
+        maximized.extend(here.maximized.difference(&written.maximized));
+        maximized
+            .retain(|group| here.maximized.contains(group) || !written.maximized.contains(group));
+        Self {
+            front_strip: if here.front_strip == written.front_strip {
+                self.front_strip
+            } else {
+                here.front_strip
+            },
+            front_group: each(&self.front_group, &here.front_group, &written.front_group),
+            front_tab: each(&self.front_tab, &here.front_tab, &written.front_tab),
+            widths: each(&self.widths, &here.widths, &written.widths),
+            maximized,
+        }
+    }
+
     /// The view `doc` holds.
     #[must_use]
     pub fn read(doc: &AutoCommit) -> Self {
@@ -187,7 +222,7 @@ impl PersonView {
 fn field<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Option<T> {
     let (value, id) = doc.get(ROOT, key).ok().flatten()?;
     let json = match &value {
-        Value::Object(automerge::ObjType::Map) => {
+        Value::Object(automerge::ObjType::Map | automerge::ObjType::List) => {
             tilo_automerge::json::read_value(doc, &value, &id).ok()?
         }
         Value::Scalar(scalar) => tilo_automerge::json::scalar_json(scalar.as_ref()).ok()?,
@@ -266,94 +301,136 @@ mod tests {
         shared_record::read(&doc, None).expect("the layout").tree
     }
 
-    /// Two people in one workspace see one layout, and each their own strip in front.
-    #[test]
-    fn one_layout_and_each_person_their_own_strip_in_front() {
-        let shared = layout();
-        let mut hers = shared.clone();
-        let mut his = shared;
+    tilo_test_env::scenario! {
+        fn a_persons_view_of_the_shared_layout;
 
-        let her_view = PersonView {
-            front_strip: Some(StripId(12)),
-            front_group: BTreeMap::from([(StripId(12), 23)]),
-            front_tab: BTreeMap::from([(21, 32)]),
-            widths: BTreeMap::from([(21, WindowWidth::Fraction(700))]),
-            maximized: BTreeSet::from([23]),
-        };
-        assert!(her_view.applied(&mut hers, WorkspaceSlot(1)));
-        let his_view = PersonView {
-            front_strip: Some(StripId(11)),
-            ..PersonView::default()
-        };
-        assert!(his_view.applied(&mut his, WorkspaceSlot(1)));
+        phase one_layout_and_each_person_their_own_strip_in_front;
+        // Two people in one workspace see one layout, and each their own strip in front.
+        {
+            let shared = layout();
+            let mut hers = shared.clone();
+            let mut his = shared;
 
-        assert_eq!(
-            hers.workspaces[0].strips.len(),
-            his.workspaces[0].strips.len(),
-            "one layout, whoever looks at it"
-        );
-        assert_eq!(hers.active_strip.get(&WorkspaceSlot(1)), Some(&StripId(12)));
-        assert_eq!(his.active_strip.get(&WorkspaceSlot(1)), Some(&StripId(11)));
-        assert_eq!(
-            hers.active_group.get(&StripId(12)),
-            Some(&23),
-            "the group in front is the person's"
-        );
-        assert_eq!(
-            hers.workspaces[0].strips[0].window_groups[0].active_tab, 32,
-            "and the tab in front of a group"
-        );
-        assert_eq!(
-            his.workspaces[0].strips[0].window_groups[0].active_tab, 31,
-            "which the other person did not move"
-        );
-        assert_eq!(
-            hers.workspaces[0].strips[0].window_groups[0].width,
-            WindowWidth::Fraction(700)
-        );
-        assert!(hers.workspaces[0].strips[1].window_groups[0].maximized);
-        assert!(!his.workspaces[0].strips[1].window_groups[0].maximized);
+            let her_view = PersonView {
+                front_strip: Some(StripId(12)),
+                front_group: BTreeMap::from([(StripId(12), 23)]),
+                front_tab: BTreeMap::from([(21, 32)]),
+                widths: BTreeMap::from([(21, WindowWidth::Fraction(700))]),
+                maximized: BTreeSet::from([23]),
+            };
+            assert!(her_view.applied(&mut hers, WorkspaceSlot(1)));
+            let his_view = PersonView {
+                front_strip: Some(StripId(11)),
+                ..PersonView::default()
+            };
+            assert!(his_view.applied(&mut his, WorkspaceSlot(1)));
+
+            assert_eq!(
+                hers.workspaces[0].strips.len(),
+                his.workspaces[0].strips.len(),
+                "one layout, whoever looks at it"
+            );
+            assert_eq!(hers.active_strip.get(&WorkspaceSlot(1)), Some(&StripId(12)));
+            assert_eq!(his.active_strip.get(&WorkspaceSlot(1)), Some(&StripId(11)));
+            assert_eq!(
+                hers.active_group.get(&StripId(12)),
+                Some(&23),
+                "the group in front is the person's"
+            );
+            assert_eq!(
+                hers.workspaces[0].strips[0].window_groups[0].active_tab, 32,
+                "and the tab in front of a group"
+            );
+            assert_eq!(
+                his.workspaces[0].strips[0].window_groups[0].active_tab, 31,
+                "which the other person did not move"
+            );
+            assert_eq!(
+                hers.workspaces[0].strips[0].window_groups[0].width,
+                WindowWidth::Fraction(700)
+            );
+            assert!(hers.workspaces[0].strips[1].window_groups[0].maximized);
+            assert!(!his.workspaces[0].strips[1].window_groups[0].maximized);
+        }
+
+        phase a_view_reads_back_from_the_record_of_the_person;
+        // What one device of the person kept, the other reads: the view is the person's.
+        {
+            let tree = layout();
+            let view = PersonView {
+                front_strip: Some(StripId(12)),
+                ..PersonView::of(&tree, WorkspaceSlot(1))
+            };
+            let mut doc = AutoCommit::new();
+            assert!(
+                view.write(&mut doc)
+                    .expect("a document that takes the view")
+            );
+            assert!(
+                !view.write(&mut doc).expect("the same view again"),
+                "a view that did not move writes nothing"
+            );
+            let saved = AutoCommit::load(&doc.save()).expect("the view's record");
+            assert_eq!(PersonView::read(&saved), view);
+
+            let mut elsewhere = layout();
+            let mut moved = view.clone();
+            moved.front_tab.insert(21, 32);
+            assert!(moved.applied(&mut elsewhere, WorkspaceSlot(1)));
+            assert_eq!(PersonView::of(&elsewhere, WorkspaceSlot(1)), moved);
+        }
+
+        phase a_view_of_windows_that_are_gone_leaves_the_layout_alone;
+        // A view naming windows the layout no longer holds shows the layout as it is.
+        {
+            let mut tree = layout();
+            let view = PersonView {
+                front_strip: Some(StripId(99)),
+                front_group: BTreeMap::from([(StripId(11), 99)]),
+                front_tab: BTreeMap::from([(21, 99)]),
+                ..PersonView::default()
+            };
+            assert!(!view.applied(&mut tree, WorkspaceSlot(1)));
+            assert_eq!(tree.active_strip.get(&WorkspaceSlot(1)), None);
+            assert_eq!(PersonView::of(&tree, WorkspaceSlot(1)).front_tab.len(), 3);
+        }
     }
 
-    /// What one device of the person kept, the other reads: the view is the person's.
+    /// A view reads back as it was written, the groups made as large as their display with it.
     #[test]
-    fn a_view_reads_back_from_the_record_of_the_person() {
-        let tree = layout();
+    fn a_view_reads_back_as_written() {
         let view = PersonView {
-            front_strip: Some(StripId(12)),
-            ..PersonView::of(&tree, WorkspaceSlot(1))
+            front_strip: Some(StripId(11)),
+            widths: [(21, WindowWidth::Fraction(480))].into_iter().collect(),
+            maximized: [22].into_iter().collect(),
+            ..PersonView::default()
         };
         let mut doc = AutoCommit::new();
-        assert!(
-            view.write(&mut doc)
-                .expect("a document that takes the view")
-        );
-        assert!(
-            !view.write(&mut doc).expect("the same view again"),
-            "a view that did not move writes nothing"
-        );
-        let saved = AutoCommit::load(&doc.save()).expect("the view's record");
-        assert_eq!(PersonView::read(&saved), view);
-
-        let mut elsewhere = layout();
-        let mut moved = view.clone();
-        moved.front_tab.insert(21, 32);
-        assert!(moved.applied(&mut elsewhere, WorkspaceSlot(1)));
-        assert_eq!(PersonView::of(&elsewhere, WorkspaceSlot(1)), moved);
+        assert!(view.write(&mut doc).expect("the view is written"));
+        assert_eq!(PersonView::read(&doc), view);
     }
 
-    /// A view naming windows the layout no longer holds shows the layout as it is.
+    /// A tab the person brought to the front here, before this device wrote it, stays in front
+    /// when another device's view arrives; what this device did not change takes the record's.
     #[test]
-    fn a_view_of_windows_that_are_gone_leaves_the_layout_alone() {
-        let mut tree = layout();
-        let view = PersonView {
-            front_strip: Some(StripId(99)),
-            front_group: BTreeMap::from([(StripId(11), 99)]),
-            front_tab: BTreeMap::from([(21, 99)]),
+    fn what_the_person_changed_here_stays_over_another_devices_view() {
+        let view = |tabs: &[(u64, u64)], strip: u64| PersonView {
+            front_strip: Some(StripId(strip)),
+            front_tab: tabs.iter().copied().collect(),
             ..PersonView::default()
         };
-        assert!(!view.applied(&mut tree, WorkspaceSlot(1)));
-        assert_eq!(tree.active_strip.get(&WorkspaceSlot(1)), None);
-        assert_eq!(PersonView::of(&tree, WorkspaceSlot(1)).front_tab.len(), 3);
+        let written = view(&[(1, 10), (2, 20)], 7);
+        let here = view(&[(1, 11), (2, 20)], 7);
+        let record = view(&[(1, 10), (2, 21)], 8);
+        assert_eq!(
+            record.over(&here, &written),
+            view(&[(1, 11), (2, 21)], 8),
+            "the tab chosen here stays; the other device's choices and strip come in"
+        );
+        assert_eq!(
+            record.over(&written, &written),
+            record,
+            "nothing changed here"
+        );
     }
 }

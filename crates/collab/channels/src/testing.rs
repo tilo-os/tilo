@@ -1,9 +1,9 @@
 //! In-memory workspaces and directories the channel service's tests drive.
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
+use collab_types::Ed25519PublicKey;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
@@ -11,15 +11,11 @@ use tilo_desktop_model::WorkspaceId;
 use crate::encryption::{ChannelDirectory, GovernanceTransport, InboundChannelGovernance};
 
 /// An in-memory workspace: every endpoint publishes to all the others while
-/// the workspace is up, and loses what it publishes while it is down. Its host
-/// answers each access request for a channel it carries no genesis of
-/// ([`InboundChannelGovernance::Unfounded`]), unless it is `silent`.
+/// the workspace is up, and loses what it publishes while it is down.
 #[derive(Default)]
 pub struct Workspace {
     pub queues: Mutex<HashMap<usize, Vec<InboundChannelGovernance>>>,
     pub down: AtomicBool,
-    pub silent: AtomicBool,
-    geneses: Mutex<HashSet<ChannelId>>,
 }
 
 pub struct Endpoint {
@@ -47,49 +43,16 @@ impl GovernanceTransport for Endpoint {
         let workspace = self.workspace_id;
         let inbound = match message {
             NeighbourMsg::MlsGovernance { frame, .. } => {
-                if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
-                    self.workspace.geneses.lock().unwrap().insert(frame.channel);
-                }
                 InboundChannelGovernance::Frame { workspace, frame }
             }
             NeighbourMsg::MlsAccessRequest { request, .. } => {
-                InboundChannelGovernance::AccessRequest {
-                    workspace,
-                    request,
-                    route: None,
-                }
-            }
-            NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
-                InboundChannelGovernance::AccessRequest {
-                    workspace,
-                    request,
-                    route: Some(route),
-                }
+                InboundChannelGovernance::AccessRequest { workspace, request }
             }
             _ => return false,
         };
-        let mut queues = self.workspace.queues.lock().unwrap();
-        for (id, queue) in queues.iter_mut() {
+        for (id, queue) in self.workspace.queues.lock().unwrap().iter_mut() {
             if *id != self.id {
                 queue.push(inbound.clone());
-            }
-        }
-        if let InboundChannelGovernance::AccessRequest { request, .. } = &inbound
-            && !self.workspace.silent.load(Ordering::SeqCst)
-            && !self
-                .workspace
-                .geneses
-                .lock()
-                .unwrap()
-                .contains(&request.channel)
-        {
-            let answer = InboundChannelGovernance::Unfounded {
-                workspace,
-                channel: request.channel,
-                device: request.device,
-            };
-            for queue in queues.values_mut() {
-                queue.push(answer.clone());
             }
         }
         true
@@ -119,18 +82,9 @@ pub struct Policy {
     /// The instants groups asked to be announced at, in order; the
     /// test announces them itself when it moves the wall clock there.
     pub announce_at: Arc<Mutex<Vec<u64>>>,
-    /// Devices kept out of one channel alone: a Read Deny on its record.
-    pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
-    /// Devices kept out of every record of an app: a Read Deny on the
-    /// app. A channel whose route a device does not know may be any
-    /// app's, so they are kept out of it too (a production directory
-    /// keeps everyone out of a channel whose record it cannot name).
-    pub withheld_apps: Arc<Mutex<HashMap<String, BTreeSet<Ed25519PublicKey>>>>,
-    /// Channels whose record no grant names: without a route the
-    /// directory cannot tell who reads them.
-    pub unnamed: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
-    /// The device hosts the workspace ([`ChannelDirectory::hosts`]).
-    pub hosted: Arc<std::sync::atomic::AtomicBool>,
+    /// The workspace's governance is not known here: the directory names no
+    /// one.
+    pub unknown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The epoch a test [`Directory`] reports as its
@@ -145,17 +99,24 @@ pub enum Announcements {
 
 pub struct Directory {
     pub policy: Policy,
+    /// This device created the workspace, so it founds its group
+    /// ([`ChannelDirectory::founds`]).
+    pub founds: Arc<AtomicBool>,
+}
+
+impl Directory {
+    /// The directory of the device that created the workspace.
+    pub fn new(policy: Policy) -> Self {
+        Self {
+            policy,
+            founds: Arc::new(AtomicBool::new(true)),
+        }
+    }
 }
 
 impl ChannelDirectory for Directory {
-    fn allowed_devices(
-        &self,
-        _: WorkspaceId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        if route.is_none() && self.policy.unnamed.lock().unwrap().contains(&channel) {
+    fn allowed_devices(&self, _: WorkspaceId, now: u64) -> Option<BTreeSet<Ed25519PublicKey>> {
+        if self.policy.unknown.load(Ordering::SeqCst) {
             return None;
         }
         let mut allowed = self.policy.allowed.lock().unwrap().clone();
@@ -168,29 +129,10 @@ impl ChannelDirectory for Directory {
                 .filter(|(_, until)| now < **until)
                 .map(|(device, _)| *device),
         );
-        if let Some(withheld) = self.policy.withheld.lock().unwrap().get(&channel) {
-            allowed.retain(|device| !withheld.contains(device));
-        }
-        for (app, withheld) in self.policy.withheld_apps.lock().unwrap().iter() {
-            if route.is_none_or(|route| &route.app == app) {
-                allowed.retain(|device| !withheld.contains(device));
-            }
-        }
         Some(allowed)
     }
-    /// Each channel of these tests is a reader set of its own: the fixture
-    /// narrows every record, so its keys never leave the devices its policy
-    /// names for it.
-    fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &ChannelRoute,
-        _: u64,
-    ) -> Option<ChannelId> {
-        Some(route.channel(&workspace.to_string()))
-    }
-    fn hosts(&self, _: WorkspaceId) -> bool {
-        self.policy.hosted.load(Ordering::SeqCst)
+    fn founds(&self, _: WorkspaceId) -> bool {
+        self.founds.load(Ordering::SeqCst)
     }
     fn policy_epoch(&self) -> Option<u64> {
         match &*self.policy.announces.lock().unwrap() {

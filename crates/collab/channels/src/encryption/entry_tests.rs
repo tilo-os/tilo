@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use channel_crypto::VaultKey;
-use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
+use collab_types::Ed25519PublicKey;
 use tilo_desktop_model::WorkspaceId;
 
 use crate::encryption::{
@@ -13,19 +13,15 @@ use crate::encryption::{
 use crate::gates::{ChannelGates, Gates};
 use crate::testing::{Directory, Endpoint, Policy, Workspace, key, public};
 
-/// A device that holds nothing of the workspace's governance yet: it can name
-/// no channel's readers and no record's scope.
+/// A device that holds nothing of the workspace's governance yet.
 struct Unknown;
 
 impl ChannelDirectory for Unknown {
-    fn allowed_devices(
-        &self,
-        _: WorkspaceId,
-        _: ChannelId,
-        _: Option<&ChannelRoute>,
-        _: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+    fn allowed_devices(&self, _: WorkspaceId, _: u64) -> Option<BTreeSet<Ed25519PublicKey>> {
         None
+    }
+    fn founds(&self, _: WorkspaceId) -> bool {
+        false
     }
 }
 
@@ -49,15 +45,13 @@ fn service(
 }
 
 #[test]
-fn a_device_entering_opens_the_desktop_before_the_governance_that_decides_it() {
+fn a_device_entering_opens_the_desktop_before_the_workspace_governance_arrives() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let scope = collab_types::workspace_scope(&workspace_id.to_string());
-    let desktop = ChannelRoute::new("so.tilo.browser-desktop", "desktop");
     let policy = Policy::readers([1, 2]);
     let (host_dir, page_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let mut host = service(
-        Box::new(Directory { policy }),
+        Box::new(Directory::new(policy)),
         1,
         Role::Participant,
         host_dir.path(),
@@ -68,11 +62,10 @@ fn a_device_entering_opens_the_desktop_before_the_governance_that_decides_it() {
 
     // The workspace's group exists, its host in it.
     let mut now = tilo_clock::now();
-    host.access(workspace_id, scope, now);
-    host.peers.get_mut(&scope).unwrap().founding.answered = true;
-    host.found(scope, now, 1_000);
+    host.access(workspace_id, now);
+    host.found(workspace_id, now, 1_000);
     assert!(matches!(
-        host.access(workspace_id, scope, now),
+        host.access(workspace_id, now),
         ChannelAccess::Ready(_)
     ));
     let _ = page_link.take_inbound();
@@ -81,7 +74,7 @@ fn a_device_entering_opens_the_desktop_before_the_governance_that_decides_it() {
     // workspace: the request is its own, for the workspace's group.
     let request = pollster::block_on(page.ask_on_entry(workspace_id, now, 1_000))
         .expect("an entering device asks for the workspace's keys");
-    assert_eq!(request.channel, scope);
+    assert_eq!(request.workspace, workspace_id);
     assert_eq!(request.device, public(2));
     request.verify().unwrap();
     // It is asked: the pump does not ask again at once.
@@ -93,7 +86,6 @@ fn a_device_entering_opens_the_desktop_before_the_governance_that_decides_it() {
         InboundChannelGovernance::AccessRequest {
             workspace: workspace_id,
             request: Box::new(request),
-            route: None,
         },
     );
     for _ in 0..8 {
@@ -101,28 +93,11 @@ fn a_device_entering_opens_the_desktop_before_the_governance_that_decides_it() {
         host.pump(&host_link, now, 1_000);
     }
 
-    // The page follows the Welcome with no governance at all; the desktop
-    // waits only for the host to name the group that seals it.
+    // The page follows the Welcome with no governance at all, and its desktop
+    // opens with the workspace's keys.
     page.pump(&page_link, now, 1_000);
     assert!(matches!(
-        page.access(workspace_id, scope, now),
+        page.access(workspace_id, now),
         ChannelAccess::Ready(_)
-    ));
-    assert!(matches!(
-        page.access_record(workspace_id, &desktop, now).1,
-        ChannelAccess::Unavailable
-    ));
-    page.scope_told(workspace_id, &desktop, scope);
-    let (unit, access) = page.access_record(workspace_id, &desktop, now);
-    assert_eq!(unit, desktop.channel(&workspace_id.to_string()));
-    assert!(matches!(access, ChannelAccess::Ready(_)), "{access:?}");
-
-    // A host cannot name a group other than the workspace's or the record's
-    // own.
-    let notes = ChannelRoute::new("so.tilo.notes", "a");
-    page.scope_told(workspace_id, &notes, ChannelId::new());
-    assert!(matches!(
-        page.access_record(workspace_id, &notes, now).1,
-        ChannelAccess::Unavailable
     ));
 }

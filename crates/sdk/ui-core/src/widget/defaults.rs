@@ -461,33 +461,39 @@ pub(super) fn draw_overlay(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_key_action_target_decodes_to_its_key_path() {
-        assert_eq!(
-            key_action_path("tilo.key-action:board:3/14/15"),
-            Some(vec![3, 14, 15])
-        );
-        assert_eq!(key_action_path("tilo.key-action:board:"), None);
-        assert_eq!(key_action_path("tilo.key-action:board:3/x"), None);
-        assert_eq!(key_action_path("tilo.key-action:no-path"), None);
-        assert_eq!(key_action_path("dialog:1:primary"), None);
-    }
+    tilo_test_env::scenario! {
+        /// The widget trait's defaults.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn widget_defaults_decode_targets_and_answer_for_children;
 
-    #[test]
-    fn a_childless_widget_is_clean_and_a_container_answers_for_its_children() {
-        let none: EachChild<'_> = &|_| {};
-        assert!(!needs_redraw(none));
-        assert!(is_layout_dirty(none));
-        assert_eq!(layout_needs_measure(none), None);
-        let label = crate::widget::Text::new("x");
-        let one: EachChild<'_> = &|visit| visit(&label);
-        assert_eq!(
-            needs_redraw(one),
-            crate::widget::Widget::needs_redraw(&label)
-        );
-        assert_eq!(
-            layout_needs_measure(one),
-            Some(crate::widget::Widget::layout_needs_measure(&label))
-        );
+        phase a_key_action_target_decodes_to_its_key_path;
+        {
+            assert_eq!(
+                key_action_path("tilo.key-action:board:3/14/15"),
+                Some(vec![3, 14, 15])
+            );
+            assert_eq!(key_action_path("tilo.key-action:board:"), None);
+            assert_eq!(key_action_path("tilo.key-action:board:3/x"), None);
+            assert_eq!(key_action_path("tilo.key-action:no-path"), None);
+            assert_eq!(key_action_path("dialog:1:primary"), None);
+        }
+
+        phase a_childless_widget_is_clean_and_a_container_answers_for_its_children;
+        {
+            let none: EachChild<'_> = &|_| {};
+            assert!(!needs_redraw(none));
+            assert!(is_layout_dirty(none));
+            assert_eq!(layout_needs_measure(none), None);
+            let label = crate::widget::Text::new("x");
+            let one: EachChild<'_> = &|visit| visit(&label);
+            assert_eq!(
+                needs_redraw(one),
+                crate::widget::Widget::needs_redraw(&label)
+            );
+            assert_eq!(
+                layout_needs_measure(one),
+                Some(crate::widget::Widget::layout_needs_measure(&label))
+            );
+        }
     }
 }

@@ -1595,43 +1595,47 @@ mod precipitation_tests {
         (tile.value, tile.unit)
     }
 
-    #[test]
-    fn a_rainfall_reading_follows_the_measurement_system() {
-        assert_eq!(tile(Units::METRIC, 0.0), ("0.0".into(), Some("mm".into())));
-        assert_eq!(tile(Units::METRIC, 2.44), ("2.4".into(), Some("mm".into())));
-        assert_eq!(
-            tile(Units::METRIC, 187.6),
-            ("187.6".into(), Some("mm".into()))
-        );
-        // Imperial: inches, two decimals — a shower reads 0.10, not 0.1 mm.
-        assert_eq!(
-            tile(Units::IMPERIAL, 0.0),
-            ("0.00".into(), Some("in".into()))
-        );
-        assert_eq!(
-            tile(Units::IMPERIAL, 2.44),
-            ("0.10".into(), Some("in".into()))
-        );
-        assert_eq!(
-            tile(Units::IMPERIAL, 187.6),
-            ("7.39".into(), Some("in".into()))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_precipitation_reading_is_converted_for_eyes_and_ears;
 
-    #[test]
-    fn the_screen_reader_hears_the_same_converted_reading() {
-        let model = crate::sample::sample_model();
-        let mut snap = model
-            .selected_snapshot()
-            .expect("a bundled forecast")
-            .clone();
-        snap.current.precipitation = 2.44;
-        let node = reading_tiles(&snap, Units::IMPERIAL, false)
-            .into_iter()
-            .find(|tile| tile.label == "Precipitation")
-            .expect("the readings include precipitation")
-            .access_node();
-        assert_eq!(node.value.as_deref(), Some("0.10 in"));
+        phase a_rainfall_reading_follows_the_measurement_system;
+        {
+            assert_eq!(tile(Units::METRIC, 0.0), ("0.0".into(), Some("mm".into())));
+            assert_eq!(tile(Units::METRIC, 2.44), ("2.4".into(), Some("mm".into())));
+            assert_eq!(
+                tile(Units::METRIC, 187.6),
+                ("187.6".into(), Some("mm".into()))
+            );
+            // Imperial: inches, two decimals — a shower reads 0.10, not 0.1 mm.
+            assert_eq!(
+                tile(Units::IMPERIAL, 0.0),
+                ("0.00".into(), Some("in".into()))
+            );
+            assert_eq!(
+                tile(Units::IMPERIAL, 2.44),
+                ("0.10".into(), Some("in".into()))
+            );
+            assert_eq!(
+                tile(Units::IMPERIAL, 187.6),
+                ("7.39".into(), Some("in".into()))
+            );
+        }
+
+        phase the_screen_reader_hears_the_same_converted_reading;
+        {
+            let model = crate::sample::sample_model();
+            let mut snap = model
+                .selected_snapshot()
+                .expect("a bundled forecast")
+                .clone();
+            snap.current.precipitation = 2.44;
+            let node = reading_tiles(&snap, Units::IMPERIAL, false)
+                .into_iter()
+                .find(|tile| tile.label == "Precipitation")
+                .expect("the readings include precipitation")
+                .access_node();
+            assert_eq!(node.value.as_deref(), Some("0.10 in"));
+        }
     }
 }
 

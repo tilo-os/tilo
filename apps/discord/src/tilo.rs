@@ -514,130 +514,134 @@ mod tests {
         )
     }
 
-    #[test]
-    fn reads_the_parts_read_and_counts_the_channels_of_the_parts_before() {
-        let part =
-            |record: &str, value: Value| json!({"records": [{"record": record, "value": value}]});
-        let message =
-            |channel: &str, k: &str| json!({"k": k, "v": {"channel": channel, "text": k}});
-        let read = ChatRead::of(&json!({
-            "chat": part("", json!({"channels": {}})),
-            "changed": part("p1", json!({"messages": {"m1": message("c_a", "a")}})),
-            "messages": part("p2", json!({
-                "messages": {"m2": message("c_b", "b")},
-                "earlier": {"0": {"c_old": 3, "c_gone": 0}, "1": {"c_a": 1}}
-            })),
-        }));
-        let ids: Vec<String> = messages(&read).into_iter().map(|m| m.id).collect();
-        assert_eq!(ids, ["m1", "m2"], "the changed part, then the newest");
-        assert_eq!(
-            WorkspaceChat::from_chat(&read).busy,
-            ["c_a", "c_b", "c_old"],
-            "a channel counted in an earlier part holds messages"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn chat_is_read_from_what_the_record_door_gives;
 
-    #[test]
-    fn reads_the_workspaces_chat_in_order() {
-        let ws = WorkspaceChat::from_chat(&chat());
-        assert_eq!(
-            ws.categories,
-            [Category {
-                id: "k_chat".into(),
-                name: "chat".into()
-            }]
-        );
-        assert_eq!(ws.channels.len(), 3);
-        assert!(ws.channel("c_voice").unwrap().voice);
-        assert_eq!(ws.first_text_channel().unwrap().id, "c_goal");
-    }
+        phase reads_the_parts_read_and_counts_the_channels_of_the_parts_before;
+        {
+            let part =
+                |record: &str, value: Value| json!({"records": [{"record": record, "value": value}]});
+            let message =
+                |channel: &str, k: &str| json!({"k": k, "v": {"channel": channel, "text": k}});
+            let read = ChatRead::of(&json!({
+                "chat": part("", json!({"channels": {}})),
+                "changed": part("p1", json!({"messages": {"m1": message("c_a", "a")}})),
+                "messages": part("p2", json!({
+                    "messages": {"m2": message("c_b", "b")},
+                    "earlier": {"0": {"c_old": 3, "c_gone": 0}, "1": {"c_a": 1}}
+                })),
+            }));
+            let ids: Vec<String> = messages(&read).into_iter().map(|m| m.id).collect();
+            assert_eq!(ids, ["m1", "m2"], "the changed part, then the newest");
+            assert_eq!(
+                WorkspaceChat::from_chat(&read).busy,
+                ["c_a", "c_b", "c_old"],
+                "a channel counted in an earlier part holds messages"
+            );
+        }
 
-    #[test]
-    fn reads_a_message_with_json_text_fields() {
-        let m = message(&chat(), "m1").unwrap();
-        assert_eq!(m.author, "u_ada");
-        assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
-        assert_eq!(m.reactions.len(), 2);
-        assert_eq!(
-            m.reactions[0],
-            Reaction {
-                emoji: "👍".into(),
-                by: "u_bo".into(),
-                persona: None,
-                name: None,
-            }
-        );
-        assert_eq!(m.reactions[1].persona.as_deref(), Some("discord/d7"));
-        assert_eq!(m.reactions[1].name.as_deref(), Some("Dee"));
-        assert_eq!(m.attachments[0].size, Some(5));
-        assert_eq!(
-            person(&chat(), "u_ada").unwrap().avatar.as_deref(),
-            Some("aa")
-        );
-    }
+        phase reads_the_workspaces_chat_in_order;
+        {
+            let ws = WorkspaceChat::from_chat(&chat());
+            assert_eq!(
+                ws.categories,
+                [Category {
+                    id: "k_chat".into(),
+                    name: "chat".into()
+                }]
+            );
+            assert_eq!(ws.channels.len(), 3);
+            assert!(ws.channel("c_voice").unwrap().voice);
+            assert_eq!(ws.first_text_channel().unwrap().id, "c_goal");
+        }
 
-    /// A message as the chat stores it now: its mentions, attachments and
-    /// shown name as values, each attachment naming its variant.
-    #[test]
-    fn reads_a_message_with_model_fields() {
-        let chat = crate::tilo::ChatRead::new(
-            serde_json::Value::Null,
-            vec![(
-                "m2".into(),
-                json!({"channel": "c_general", "author": "bot:i", "text": "hi @Bo", "parent": null, "reactions": [], "mentions": [{"user": "u_bo", "start": 3, "len": 3, "is_agent": false}], "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}], "appearance": {"name": "Bo"}}),
-            )],
-        );
-        let m = message(&chat, "m2").unwrap();
-        assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
-        let attachment = &m.attachments[0];
-        assert_eq!((attachment.blob.as_str(), attachment.size), ("ff", Some(5)));
-        assert_eq!(m.appearance_name.as_deref(), Some("Bo"));
-    }
+        phase reads_a_message_with_json_text_fields;
+        {
+            let m = message(&chat(), "m1").unwrap();
+            assert_eq!(m.author, "u_ada");
+            assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
+            assert_eq!(m.reactions.len(), 2);
+            assert_eq!(
+                m.reactions[0],
+                Reaction {
+                    emoji: "👍".into(),
+                    by: "u_bo".into(),
+                    persona: None,
+                    name: None,
+                }
+            );
+            assert_eq!(m.reactions[1].persona.as_deref(), Some("discord/d7"));
+            assert_eq!(m.reactions[1].name.as_deref(), Some("Dee"));
+            assert_eq!(m.attachments[0].size, Some(5));
+            assert_eq!(
+                person(&chat(), "u_ada").unwrap().avatar.as_deref(),
+                Some("aa")
+            );
+        }
 
-    /// A window shared live: its address, its record and the share's
-    /// state, the access stored as a data enum or as text.
-    #[test]
-    fn reads_a_shared_window() {
-        let chat = crate::tilo::ChatRead::new(
-            serde_json::Value::Null,
-            vec![
-                (
-                    "m3".into(),
-                    json!({"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "record": "plan", "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan", "span": null}}}], "share": {"access": {"$variant": "edit"}, "open": true, "ended": false}}),
-                ),
-                (
-                    "m4".into(),
-                    json!({"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "reference": "{\"kind\":\"notes.page\",\"id\":\"notes.page:1\",\"label\":\"Plan\"}"}}], "share": {"access": "View", "open": false, "ended": true}}),
-                ),
-            ],
-        );
-        let live = message(&chat, "m3").unwrap();
-        assert_eq!(
-            live.reference,
-            Some(Reference {
-                kind: "notes.page".into(),
-                id: "notes.page:1".into(),
-                label: "Plan".into(),
-                provider: Some("record:so.tilo.notes:plan".into()),
-            })
-        );
-        assert_eq!(
-            live.share,
-            Some(Share {
-                access: "edit".into(),
-                open: true,
-                ended: false
-            })
-        );
-        let ended = message(&chat, "m4").unwrap();
-        let reference = ended.reference.unwrap();
-        assert_eq!(
-            (reference.label.as_str(), reference.provider),
-            ("Plan", Some("record:so.tilo.notes:".into()))
-        );
-        let share = ended.share.unwrap();
-        assert_eq!((share.access.as_str(), share.ended), ("view", true));
-        assert_eq!(message(&self::chat(), "m1").unwrap().share, None);
+        phase reads_a_message_with_model_fields;
+        // A message as the chat stores it now: its mentions, attachments and
+        // shown name as values, each attachment naming its variant.
+        {
+            let chat = crate::tilo::ChatRead::new(
+                serde_json::Value::Null,
+                vec![(
+                    "m2".into(),
+                    json!({"channel": "c_general", "author": "bot:i", "text": "hi @Bo", "parent": null, "reactions": [], "mentions": [{"user": "u_bo", "start": 3, "len": 3, "is_agent": false}], "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}], "appearance": {"name": "Bo"}}),
+                )],
+            );
+            let m = message(&chat, "m2").unwrap();
+            assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
+            let attachment = &m.attachments[0];
+            assert_eq!((attachment.blob.as_str(), attachment.size), ("ff", Some(5)));
+            assert_eq!(m.appearance_name.as_deref(), Some("Bo"));
+        }
+
+        phase reads_a_shared_window;
+        // A window shared live: its address, its record and the share's
+        // state, the access stored as a data enum or as text.
+        {
+            let chat = crate::tilo::ChatRead::new(
+                serde_json::Value::Null,
+                vec![
+                    (
+                        "m3".into(),
+                        json!({"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "record": "plan", "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan", "span": null}}}], "share": {"access": {"$variant": "edit"}, "open": true, "ended": false}}),
+                    ),
+                    (
+                        "m4".into(),
+                        json!({"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "reference": "{\"kind\":\"notes.page\",\"id\":\"notes.page:1\",\"label\":\"Plan\"}"}}], "share": {"access": "View", "open": false, "ended": true}}),
+                    ),
+                ],
+            );
+            let live = message(&chat, "m3").unwrap();
+            assert_eq!(
+                live.reference,
+                Some(Reference {
+                    kind: "notes.page".into(),
+                    id: "notes.page:1".into(),
+                    label: "Plan".into(),
+                    provider: Some("record:so.tilo.notes:plan".into()),
+                })
+            );
+            assert_eq!(
+                live.share,
+                Some(Share {
+                    access: "edit".into(),
+                    open: true,
+                    ended: false
+                })
+            );
+            let ended = message(&chat, "m4").unwrap();
+            let reference = ended.reference.unwrap();
+            assert_eq!(
+                (reference.label.as_str(), reference.provider),
+                ("Plan", Some("record:so.tilo.notes:".into()))
+            );
+            let share = ended.share.unwrap();
+            assert_eq!((share.access.as_str(), share.ended), ("view", true));
+            assert_eq!(message(&self::chat(), "m1").unwrap().share, None);
+        }
     }
 
     #[test]

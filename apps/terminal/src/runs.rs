@@ -402,72 +402,76 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(text)
     }
 
-    #[test]
-    fn marks_split_anywhere_make_runs_and_forged_ones_stay_output() {
-        let key = "0123456789abcdef0123456789abcdef";
-        let stream = format!(
-            "\x1b]133;A;k={key}\x07$ \x1b]133;C;k={key};cmd={};cwd={};t=4\x07hello\r\n\
-             \x1b]133;D;0;k=forged\x07more\r\n\x1b]133;D;3;k={key};t=4\x07\x1b]133;A;k={key}\x07$ ",
-            b64("echo hello"),
-            b64("/home/you")
-        );
-        for split in [1, 2, 7, stream.len()] {
-            let mut marks = Marks::new(key);
-            let mut runs = Runs::default();
-            let mut finished = Vec::new();
-            let mut shown = Vec::new();
-            for chunk in stream.as_bytes().chunks(split) {
-                for piece in marks.push(chunk) {
-                    if let Piece::Output(bytes) = &piece {
-                        shown.extend_from_slice(bytes);
-                    }
-                    finished.extend(runs.follow(&piece, 7));
-                }
-            }
-            let [run] = finished.as_slice() else {
-                panic!("one run at split {split}: {finished:?}");
-            };
-            assert_eq!(run.command, "echo hello");
-            assert_eq!(run.cwd, "/home/you");
-            assert_eq!(run.exit, 3);
-            assert_eq!(run.number, Some(4), "the shell's own history number");
-            let output = String::from_utf8_lossy(&run.output);
-            assert!(
-                output.starts_with("hello\r\n\x1b]133;D;0;k=forged\x07more"),
-                "{output:?}"
-            );
-            let shown = String::from_utf8_lossy(&shown);
-            assert!(!shown.contains(&format!("k={key}")), "{shown:?}");
-            assert!(
-                shown.contains("k=forged"),
-                "the forged mark is output: {shown:?}"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_sessions_output_is_followed_into_its_runs;
 
-    #[test]
-    fn output_past_the_limit_is_cut_and_says_so() {
-        let mut runs = Runs::default();
-        runs.follow(
-            &Piece::Mark(Mark::Started {
-                command: "yes".into(),
-                cwd: String::new(),
-                number: None,
-            }),
-            1,
-        );
-        runs.follow(&Piece::Output(vec![b'y'; MAX_OUTPUT_BYTES + 10]), 2);
-        let run = runs
-            .follow(
-                &Piece::Mark(Mark::Ended {
-                    status: 130,
+        phase marks_split_anywhere_make_runs_and_forged_ones_stay_output;
+        {
+            let key = "0123456789abcdef0123456789abcdef";
+            let stream = format!(
+                "\x1b]133;A;k={key}\x07$ \x1b]133;C;k={key};cmd={};cwd={};t=4\x07hello\r\n\
+             \x1b]133;D;0;k=forged\x07more\r\n\x1b]133;D;3;k={key};t=4\x07\x1b]133;A;k={key}\x07$ ",
+                b64("echo hello"),
+                b64("/home/you")
+            );
+            for split in [1, 2, 7, stream.len()] {
+                let mut marks = Marks::new(key);
+                let mut runs = Runs::default();
+                let mut finished = Vec::new();
+                let mut shown = Vec::new();
+                for chunk in stream.as_bytes().chunks(split) {
+                    for piece in marks.push(chunk) {
+                        if let Piece::Output(bytes) = &piece {
+                            shown.extend_from_slice(bytes);
+                        }
+                        finished.extend(runs.follow(&piece, 7));
+                    }
+                }
+                let [run] = finished.as_slice() else {
+                    panic!("one run at split {split}: {finished:?}");
+                };
+                assert_eq!(run.command, "echo hello");
+                assert_eq!(run.cwd, "/home/you");
+                assert_eq!(run.exit, 3);
+                assert_eq!(run.number, Some(4), "the shell's own history number");
+                let output = String::from_utf8_lossy(&run.output);
+                assert!(
+                    output.starts_with("hello\r\n\x1b]133;D;0;k=forged\x07more"),
+                    "{output:?}"
+                );
+                let shown = String::from_utf8_lossy(&shown);
+                assert!(!shown.contains(&format!("k={key}")), "{shown:?}");
+                assert!(
+                    shown.contains("k=forged"),
+                    "the forged mark is output: {shown:?}"
+                );
+            }
+        }
+
+        phase output_past_the_limit_is_cut_and_says_so;
+        {
+            let mut runs = Runs::default();
+            runs.follow(
+                &Piece::Mark(Mark::Started {
+                    command: "yes".into(),
+                    cwd: String::new(),
                     number: None,
                 }),
-                3,
-            )
-            .unwrap();
-        assert_eq!(run.output.len(), MAX_OUTPUT_BYTES);
-        assert!(run.truncated);
-        assert_eq!((run.started_ms, run.ended_ms, run.exit), (1, 3, 130));
+                1,
+            );
+            runs.follow(&Piece::Output(vec![b'y'; MAX_OUTPUT_BYTES + 10]), 2);
+            let run = runs
+                .follow(
+                    &Piece::Mark(Mark::Ended {
+                        status: 130,
+                        number: None,
+                    }),
+                    3,
+                )
+                .unwrap();
+            assert_eq!(run.output.len(), MAX_OUTPUT_BYTES);
+            assert!(run.truncated);
+            assert_eq!((run.started_ms, run.ended_ms, run.exit), (1, 3, 130));
+        }
     }
 }

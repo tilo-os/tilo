@@ -514,7 +514,7 @@ that module's `an_announced_revocation_is_enforced_at_once_and_idle_groups_park`
 `delivery_survives_a_network_outage` and
 `observing_live_keys_never_opens_a_channel_or_rejoins_after_removal`, plus
 `channel-crypto/tests/content_history.rs::removed_member_cannot_read_content_sealed_after_removal`.
-Participants admit per record, a Deny over an app or a pattern of records included; see `P1-11`.
+Participants admit per workspace; Read inside a workspace is no key boundary, see `P1-11`.
 Provisioning and recovery UX were not assessed by this reconciliation.
 
 ---
@@ -952,38 +952,14 @@ Peer sync with a second device was not part of that run. The shipped kernel has 
 the native data plane itself cannot start there (fs serves FUSE); its own rules will come from
 AVCs on a kernel that has it.
 
-## P1-11 — A Read Deny below the workspace does not withhold that record's channel key
+## P1-11 — A Read Deny inside a workspace does not withhold keys
 
-`docs/architecture/permissions.md` §5.3. Workspace grants can deny Read on one app or record, and
-every per-record read path honours it (`StatePeer::check_document_read`). Channels used to admit
-devices per workspace: `allowed_devices` in
-`crates/session/session/src/channel_policy.rs` asked Read once, on the workspace's node, and
-`crates/collab/tilo-action-broker/src/channel_encryption.rs` admitted every allowed device to
-every record channel of that workspace. A person denied one record therefore still received that
-record's MLS keys, and the workspace was the confidentiality boundary against the member's own
-modified client.
-
-**Resolved for records, apps and patterns of records.** Participants admit per channel
-(`ChannelDirectory::allowed_devices(workspace, channel, route, now)`; the relay's
-`PeerGovernance::withheld_record_readers`), deciding Read on the channel's record with the same decision
-every door applies, and refuse a commit that admits anyone else. A channel id is a hash of its
-record's route, so a participant names the record
-from a grant naming it or from the route a device sends beside its access request
-(`NeighbourMsg::MlsRoutedAccessRequest`), which it keeps only if the route hashes to the channel's
-id and keeps beside the channel's group across restarts. A channel whose record it cannot name is
-withheld from every device until one names it (it may be a member's own record), so omitting the
-route gains a denied device nothing. A
-denied device that held a key is removed in a new epoch of that channel alone. Held by
-`channel_encryption`'s `a_read_deny_on_an_app_withholds_every_routed_channel_of_it` and
-`a_device_withheld_from_one_channel_loses_only_that_channels_key`, `channel_policy`'s
-`a_read_deny_over_an_app_withholds_every_routed_channel_of_it`, the relay participation's
-`a_read_deny_over_an_app_withholds_its_routed_and_its_unknown_channels` and
-`learned_routes_survive_a_restart_and_only_true_ones_are_kept`, and peer-state's
-`a_read_deny_on_a_record_withholds_only_that_records_channel`.
-
-**Remaining:** a Deny below a record (an item, a field) binds honest clients and doors only. One
-key opens the whole record, so against a modified client the record is the boundary; content that
-must stay hidden from a member belongs in a record of its own, denied by name or pattern.
+Workspace grants can deny Read on an app, a record or a pattern of records, and every per-record
+read path honours it (`StatePeer::check_document_read`). Keys do not: a workspace has one MLS
+group, and every device of its members holds the keys of every record in it
+(`docs/architecture/workspace.md`, "Read permission is not a key boundary"). Against a member's own
+modified client the workspace is the confidentiality boundary. This is the design: content that
+must stay hidden from a member belongs in another workspace or in a person's personal resources.
 
 ## P2-7 — `sudo` and polkit ship in the image although the design brokers every privileged operation
 

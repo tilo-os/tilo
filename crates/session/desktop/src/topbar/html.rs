@@ -184,7 +184,7 @@ impl TopBarChrome {
         }
         if let Some(hovered) = self.placed.people_button {
             part(cx, "people", self.people_button_rect, None);
-            let name = super::t("topbar-show-collaborators");
+            let name = super::t("topbar-show-people");
             face_of(
                 cx,
                 ui::composition::bar_chip_face(&self.people_chip(&name, hovered), theme, ground),

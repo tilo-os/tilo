@@ -905,49 +905,53 @@ pub fn relocation_dirs(ld_conf_text: &str) -> Vec<Vec<String>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn shapes_match_the_original_patterns() {
-        assert!(
-            is_id("media-codecs")
-                && is_id("a")
-                && !is_id("-a")
-                && !is_id("A")
-                && !is_id(&"a".repeat(64))
-        );
-        assert!(
-            is_evr("0:1.26.5-1.fc44") && !is_evr("0:1-2-3") && !is_evr(":1-2") && !is_evr("0:1")
-        );
-        assert!(
-            is_host("download1.rpmfusion.org")
-                && !is_host("localhost")
-                && !is_host("a-.b")
-                && !is_host("a..b")
-        );
-        assert!(is_package("libavcodec-freeworld-7.1.1-1.fc44.x86_64") && !is_package("a b"));
-    }
+    tilo_test_env::scenario! {
+        fn names_and_archive_members_are_read_as_the_original_patterns_did;
 
-    #[test]
-    fn package_names_and_members() {
-        assert_eq!(
-            package_name("libavcodec-freeworld-7.1.1-3.fc44.x86_64"),
-            "libavcodec-freeworld"
-        );
-        assert_eq!(package_name("openh264"), "openh264");
-        assert_eq!(
-            safe_member(b"./usr/lib64/x.so").unwrap(),
-            Some(vec![&b"usr"[..], b"lib64", b"x.so"])
-        );
-        assert_eq!(safe_member(b"./etc/x").unwrap(), None);
-        assert_eq!(safe_member(b"./usr/lib/.build-id/aa").unwrap(), None);
-        assert!(safe_member(b"./usr/../etc/x").is_err());
-        assert_eq!(
-            relocation_dirs(
-                "# c\n/usr/lib64/mesa-freeworld\n//usr/lib64/x\n/opt/x\n/usr/lib64/a/./\n"
-            ),
-            vec![
-                vec!["usr", "lib64", "mesa-freeworld"],
-                vec!["usr", "lib64", "a"]
-            ]
-        );
+        phase shapes_match_the_original_patterns;
+        {
+            assert!(
+                is_id("media-codecs")
+                    && is_id("a")
+                    && !is_id("-a")
+                    && !is_id("A")
+                    && !is_id(&"a".repeat(64))
+            );
+            assert!(
+                is_evr("0:1.26.5-1.fc44") && !is_evr("0:1-2-3") && !is_evr(":1-2") && !is_evr("0:1")
+            );
+            assert!(
+                is_host("download1.rpmfusion.org")
+                    && !is_host("localhost")
+                    && !is_host("a-.b")
+                    && !is_host("a..b")
+            );
+            assert!(is_package("libavcodec-freeworld-7.1.1-1.fc44.x86_64") && !is_package("a b"));
+        }
+
+        phase package_names_and_members;
+        {
+            assert_eq!(
+                package_name("libavcodec-freeworld-7.1.1-3.fc44.x86_64"),
+                "libavcodec-freeworld"
+            );
+            assert_eq!(package_name("openh264"), "openh264");
+            assert_eq!(
+                safe_member(b"./usr/lib64/x.so").unwrap(),
+                Some(vec![&b"usr"[..], b"lib64", b"x.so"])
+            );
+            assert_eq!(safe_member(b"./etc/x").unwrap(), None);
+            assert_eq!(safe_member(b"./usr/lib/.build-id/aa").unwrap(), None);
+            assert!(safe_member(b"./usr/../etc/x").is_err());
+            assert_eq!(
+                relocation_dirs(
+                    "# c\n/usr/lib64/mesa-freeworld\n//usr/lib64/x\n/opt/x\n/usr/lib64/a/./\n"
+                ),
+                vec![
+                    vec!["usr", "lib64", "mesa-freeworld"],
+                    vec!["usr", "lib64", "a"]
+                ]
+            );
+        }
     }
 }

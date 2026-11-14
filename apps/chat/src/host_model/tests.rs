@@ -244,348 +244,370 @@ fn assert_reply_unchanged(actual: &crate::model::Message, original: &crate::mode
     assert_eq!(actual.edited, original.edited);
 }
 
-#[test]
-fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
-    let (mut app, mut doc) = chat(backend("Answer"));
-    let start = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let mut message = reply(&doc, &start["reply"]);
-    message.appearance = Some(tilo_actions::Appearance {
-        name: "Another person".into(),
-        avatar: None,
-        persona: None,
-    });
-    let initiator = app.user_name(&message.author);
-    let name = app.message_author_name(&message);
-    assert_eq!(name, "Another person");
-    assert!(
-        matches!(app.message_author(&message, &name, &initiator, None),
-        ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
-    );
-    assert!(app.message_author_label(&message).contains("requested by"));
-    message.appearance = None;
-    assert_eq!(app.message_author_name(&message), "Assistant");
-    message.appearance = Some(tilo_actions::Appearance {
-        name: "Another person".into(),
-        avatar: None,
-        persona: None,
-    });
-    let stream_work = message.work.take();
-    let name = app.message_author_name(&message);
-    assert_eq!(
-        name, initiator,
-        "ordinary people cannot adopt appearance names"
-    );
-    assert!(
-        matches!(app.message_author(&message, &name, &initiator, None),
-        ui::author::Author::Person { identity, .. } if identity == crate::model::ME)
-    );
-    assert!(!app.model_message_label(&message).contains("Another person"));
-    message.work = stream_work;
-    message.author = "bot:installed".into();
-    let name = app.message_author_name(&message);
-    assert!(matches!(app.message_author(&message, &name, "", None),
-        ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
-    assert!(!app.is_provider_output(&message));
-    let label = app.model_message_label(&message);
-    assert!(label.starts_with("Another person (bot:"));
-    assert!(!label.contains("model output"));
-    message.author = "agent-task:actual".into();
-    app.agent_authors
-        .insert(message.author.clone(), "Actual agent".into());
-    let name = app.message_author_name(&message);
-    assert_eq!(name, app.user_name(&message.author));
-    assert!(name.starts_with("Actual agent"));
-    assert!(matches!(
-        app.message_author(&message, &name, "", None),
-        ui::author::Author::Agent {
-            for_person: None,
-            ..
-        }
-    ));
-    assert!(!app.is_provider_output(&message));
-}
+tilo_test_env::scenario! {
+    /// A model's reply: who it is by, what its tool calls do, and what a denial leaves.
+    fn a_model_reply_keeps_its_author_runs_no_tool_and_survives_a_denial;
 
-#[test]
-fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
-    let (mut app, mut doc) = chat(backend("Answer"));
-    let start = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let mut message = reply(&doc, &start["reply"]);
-    message.work = None;
-    message.author = "bot:bridge-installation".into();
-    message.appearance = Some(tilo_actions::Appearance {
-        name: "Dana".into(),
-        avatar: None,
-        persona: Some(tilo_actions::Persona {
-            service: "discord".into(),
-            account: "3001".into(),
-            linked: None,
-        }),
-    });
-    assert_eq!(app.message_author_name(&message), "Discord bridge");
-    let label = app.model_message_label(&message);
-    assert!(label.starts_with("Dana, from Discord: "), "{label}");
-    assert!(!label.contains("Someone"), "{label}");
-
-    // A member named alike: an unlinked persona says where it is from, one
-    // linked to that member is them.
-    app.users.push(crate::model::User {
-        id: "u_dana".into(),
-        name: "Dana".into(),
-        initials: "D".into(),
-        color_idx: 0,
-        status: crate::model::Presence::Online,
-        is_agent: false,
-    });
-    let label = app.model_message_label(&message);
-    assert!(label.starts_with("Dana, via Discord: "), "{label}");
-    if let Some(persona) = message
-        .appearance
-        .as_mut()
-        .and_then(|appearance| appearance.persona.as_mut())
+    phase stream_display_names_do_not_change_person_bot_or_agent_identity;
     {
-        persona.linked = Some("u_dana".into());
-    }
-    let label = app.model_message_label(&message);
-    assert!(label.starts_with("Dana, from Discord: "), "{label}");
-    // One person, one colour: the bridged tile wears the linked member's.
-    let name = app.message_author_name(&message);
-    let ui::author::Author::Bot { linked_color, .. } =
-        app.message_author(&message, &name, "", None)
-    else {
-        panic!("a bridged message is the bot's");
-    };
-    assert_eq!(linked_color, Some(app.identity_colour("u_dana")));
-    assert_ne!(
-        app.identity_colour("u_dana"),
-        app.identity_colour(&message.author),
-        "not the bridge's own colour"
-    );
-}
-
-/// A member who has only ever written from their linked Discord account is
-/// still one of the workspace's people: their bridged message is theirs, by
-/// their name with Discord's mark, never "Dana · Discord" as if a namesake
-/// wrote it.
-#[test]
-fn a_member_writing_only_from_a_linked_account_reads_as_themselves() {
-    let (mut app, mut doc) = chat(backend("Answer"));
-    let start = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let mut base = reply(&doc, &start["reply"]);
-    base.work = None;
-    let channel = base.channel.clone();
-    let mut record = crate::record::Chat::default();
-    for (id, name) in [("u_dana", "Dana"), ("u_other_dana", "Dana")] {
-        record.people.push(crate::record::Person {
-            id: ui::tilo_resource::Atom(id.to_owned()),
-            name: name.into(),
-            ..crate::record::Person::default()
+        let (mut app, mut doc) = chat(backend("Answer"));
+        let start = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let mut message = reply(&doc, &start["reply"]);
+        message.appearance = Some(tilo_actions::Appearance {
+            name: "Another person".into(),
+            avatar: None,
+            persona: None,
         });
+        let initiator = app.user_name(&message.author);
+        let name = app.message_author_name(&message);
+        assert_eq!(name, "Another person");
+        assert!(
+            matches!(app.message_author(&message, &name, &initiator, None),
+            ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
+        );
+        assert!(
+            app.message_author_label(&message, crate::identity::RoleWord::InName)
+                .contains("requested by")
+        );
+        message.appearance = None;
+        assert_eq!(app.message_author_name(&message), "Assistant");
+        message.appearance = Some(tilo_actions::Appearance {
+            name: "Another person".into(),
+            avatar: None,
+            persona: None,
+        });
+        let stream_work = message.work.take();
+        let name = app.message_author_name(&message);
+        assert_eq!(
+            name, initiator,
+            "ordinary people cannot adopt appearance names"
+        );
+        assert!(
+            matches!(app.message_author(&message, &name, &initiator, None),
+            ui::author::Author::Person { identity, .. } if identity == crate::model::ME)
+        );
+        assert!(!app.model_message_label(&message).contains("Another person"));
+        message.work = stream_work;
+        message.author = "bot:installed".into();
+        let name = app.message_author_name(&message);
+        assert!(matches!(app.message_author(&message, &name, "", None),
+            ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
+        assert!(!app.is_provider_output(&message));
+        let label = app.model_message_label(&message);
+        assert!(label.starts_with("Another person (bot:"));
+        assert!(!label.contains("model output"));
+        message.author = "agent-task:actual".into();
+        app.agent_authors
+            .insert(message.author.clone(), "Actual agent".into());
+        let name = app.message_author_name(&message);
+        assert_eq!(name, app.user_name(&message.author));
+        assert!(name.starts_with("Actual agent"));
+        assert!(matches!(
+            app.message_author(&message, &name, "", None),
+            ui::author::Author::Agent {
+                for_person: None,
+                ..
+            }
+        ));
+        assert!(!app.is_provider_output(&message));
     }
-    let mut other = base.clone();
-    other.author = "u_other_dana".into();
-    let mut bridged = base;
-    bridged.author = "bot:bridge-installation".into();
-    bridged.appearance = Some(tilo_actions::Appearance {
-        name: "Dana".into(),
-        avatar: None,
-        persona: Some(tilo_actions::Persona {
-            service: "discord".into(),
-            account: "3001".into(),
-            linked: Some("u_dana".into()),
-        }),
-    });
-    app.users = app.workspace_people_from(&record, &[(channel, vec![other, bridged.clone()])]);
-    assert!(
-        app.users.iter().any(|user| user.id == "u_dana"),
-        "the linked member is one of the workspace's people"
-    );
-    let members: Vec<&str> = app.users.iter().map(|user| user.name.as_str()).collect();
-    let name = app.message_author_name(&bridged);
-    let author = app.message_author(&bridged, &name, "", None);
-    assert_eq!(author.label(&members), "Dana");
-    assert!(author.chip_label().is_none(), "no text tag");
-    assert!(author.service_mark().is_some(), "Discord's mark instead");
-    assert_eq!(
-        author.linked_line().as_deref(),
-        Some("Linked to Dana on Tilo")
-    );
+
+    phase completed_stream_is_not_duplicated_and_model_tool_calls_are_inert;
+    {
+        let backend = backend("Streamed answer");
+        backend.finish.set(true);
+        backend.stop.set(StopReason::EndTurn);
+        let (mut app, mut doc) = chat(backend.clone());
+        let start = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let message = reply(&doc, &start["reply"]);
+        assert_eq!(message.text, "Streamed answer");
+        assert_eq!(
+            message
+                .work
+                .as_ref()
+                .unwrap()
+                .stream
+                .as_ref()
+                .unwrap()
+                .reasoning,
+            "Provider summary"
+        );
+        assert_eq!(
+            message
+                .work
+                .as_ref()
+                .unwrap()
+                .stream
+                .as_ref()
+                .unwrap()
+                .finish,
+            Some(AgentFinish::Complete)
+        );
+        assert!(
+            message.work.as_ref().unwrap().trace.is_empty(),
+            "model-proposed tools are not actions"
+        );
+        let before = doc.save();
+        assert!(!app.pump_model());
+        assert_eq!(doc.save(), before);
+        let requests = backend.requests.borrow();
+        assert!(requests[0].tools.is_empty());
+        assert_eq!(requests[0].tool_choice, ToolChoice::None);
+    }
+
+    phase denial_retains_partial_output_and_retry_uses_a_fresh_reply;
+    {
+        let backend = backend("Partial");
+        backend.finish.set(true);
+        backend
+            .error
+            .set(Some(ui::models::ErrorKind::PermissionDenied));
+        let (mut app, mut doc) = chat(backend.clone());
+        let first = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let original = reply(&doc, &first["reply"]);
+        let stream = original.work.as_ref().unwrap().stream.as_ref().unwrap();
+        assert_eq!(stream.finish, Some(AgentFinish::Failed));
+        assert!(!stream.detail.is_empty());
+        backend.error.set(None);
+        backend.stop.set(StopReason::EndTurn);
+        let retry = app.model_command("c_chat", "retry").unwrap();
+        assert_ne!(retry["reply"], first["reply"]);
+        pump(&mut app, &mut doc);
+        assert_reply_unchanged(&reply(&doc, &first["reply"]), &original);
+        assert_eq!(reply(&doc, &retry["reply"]).text, "Partial");
+    }
 }
 
-#[test]
-fn a_messages_name_says_which_file_it_shares() {
-    let (mut app, mut doc) = chat(backend("Answer"));
-    let start = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let mut message = reply(&doc, &start["reply"]);
-    message.work = None;
-    message.text = String::new();
-    message.attachments = vec![tilo_reference::Attached::File {
-        name: "plan.txt".into(),
-        blob: "ff".into(),
-        size: 5,
-    }];
-    assert!(app.model_message_label(&message).ends_with(": plan.txt"));
-    message.text = "see this".into();
-    assert!(
-        app.model_message_label(&message)
-            .ends_with(": see this\nplan.txt")
-    );
+tilo_test_env::scenario! {
+    /// The name a message is read out under.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_message_is_named_by_who_wrote_it_and_what_it_shares;
+
+    phase a_bridged_author_reads_via_their_service_and_the_bot_after_it;
+    {
+        let (mut app, mut doc) = chat(backend("Answer"));
+        let start = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let mut message = reply(&doc, &start["reply"]);
+        message.work = None;
+        message.author = "bot:bridge-installation".into();
+        message.appearance = Some(tilo_actions::Appearance {
+            name: "Dana".into(),
+            avatar: None,
+            persona: Some(tilo_actions::Persona {
+                service: "discord".into(),
+                account: "3001".into(),
+                linked: None,
+            }),
+        });
+        assert_eq!(app.message_author_name(&message), "Discord bridge");
+        let label = app.model_message_label(&message);
+        assert!(label.starts_with("Dana, from Discord: "), "{label}");
+        assert!(!label.contains("Someone"), "{label}");
+
+        // A member named alike: an unlinked persona says where it is from, one
+        // linked to that member is them.
+        app.users.push(crate::model::User {
+            id: "u_dana".into(),
+            name: "Dana".into(),
+            initials: "D".into(),
+            color_idx: 0,
+            status: crate::model::Presence::Online,
+            is_agent: false,
+        });
+        let label = app.model_message_label(&message);
+        assert!(label.starts_with("Dana, via Discord: "), "{label}");
+        if let Some(persona) = message
+            .appearance
+            .as_mut()
+            .and_then(|appearance| appearance.persona.as_mut())
+        {
+            persona.linked = Some("u_dana".into());
+        }
+        let label = app.model_message_label(&message);
+        assert!(label.starts_with("Dana, from Discord: "), "{label}");
+        // One person, one colour: the bridged tile wears the linked member's.
+        let name = app.message_author_name(&message);
+        let ui::author::Author::Bot { linked_color, .. } =
+            app.message_author(&message, &name, "", None)
+        else {
+            panic!("a bridged message is the bot's");
+        };
+        assert_eq!(linked_color, Some(app.identity_colour("u_dana")));
+        assert_ne!(
+            app.identity_colour("u_dana"),
+            app.identity_colour(&message.author),
+            "not the bridge's own colour"
+        );
+    }
+
+    phase a_member_writing_only_from_a_linked_account_reads_as_themselves;
+    // A member who has only ever written from their linked Discord account is
+    // still one of the workspace's people: their bridged message is theirs, by
+    // their name with Discord's mark, never "Dana · Discord" as if a namesake
+    // wrote it.
+    {
+        let (mut app, mut doc) = chat(backend("Answer"));
+        let start = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let mut base = reply(&doc, &start["reply"]);
+        base.work = None;
+        let channel = base.channel.clone();
+        let mut record = crate::record::Chat::default();
+        for (id, name) in [("u_dana", "Dana"), ("u_other_dana", "Dana")] {
+            record.people.push(crate::record::Person {
+                id: ui::tilo_resource::Atom(id.to_owned()),
+                name: name.into(),
+                ..crate::record::Person::default()
+            });
+        }
+        let mut other = base.clone();
+        other.author = "u_other_dana".into();
+        let mut bridged = base;
+        bridged.author = "bot:bridge-installation".into();
+        bridged.appearance = Some(tilo_actions::Appearance {
+            name: "Dana".into(),
+            avatar: None,
+            persona: Some(tilo_actions::Persona {
+                service: "discord".into(),
+                account: "3001".into(),
+                linked: Some("u_dana".into()),
+            }),
+        });
+        app.users = app.workspace_people_from(&record, &[(channel, vec![other, bridged.clone()])]);
+        assert!(
+            app.users.iter().any(|user| user.id == "u_dana"),
+            "the linked member is one of the workspace's people"
+        );
+        let members: Vec<&str> = app.users.iter().map(|user| user.name.as_str()).collect();
+        let name = app.message_author_name(&bridged);
+        let author = app.message_author(&bridged, &name, "", None);
+        assert_eq!(author.label(&members), "Dana");
+        assert!(author.chip_label().is_none(), "no text tag");
+        assert!(author.service_mark().is_some(), "Discord's mark instead");
+        assert_eq!(
+            author.linked_line().as_deref(),
+            Some("Linked to Dana on Tilo")
+        );
+    }
+
+    phase a_messages_name_says_which_file_it_shares;
+    {
+        let (mut app, mut doc) = chat(backend("Answer"));
+        let start = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let mut message = reply(&doc, &start["reply"]);
+        message.work = None;
+        message.text = String::new();
+        message.attachments = vec![tilo_reference::Attached::File {
+            name: "plan.txt".into(),
+            blob: "ff".into(),
+            size: 5,
+        }];
+        assert!(app.model_message_label(&message).ends_with(": plan.txt"));
+        message.text = "see this".into();
+        assert!(
+            app.model_message_label(&message)
+                .ends_with(": see this\nplan.txt")
+        );
+    }
 }
 
-#[test]
-fn completed_stream_is_not_duplicated_and_model_tool_calls_are_inert() {
-    let backend = backend("Streamed answer");
-    backend.finish.set(true);
-    backend.stop.set(StopReason::EndTurn);
-    let (mut app, mut doc) = chat(backend.clone());
-    let start = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let message = reply(&doc, &start["reply"]);
-    assert_eq!(message.text, "Streamed answer");
-    assert_eq!(
-        message
-            .work
-            .as_ref()
-            .unwrap()
-            .stream
-            .as_ref()
-            .unwrap()
-            .reasoning,
-        "Provider summary"
-    );
-    assert_eq!(
-        message
-            .work
-            .as_ref()
-            .unwrap()
-            .stream
-            .as_ref()
-            .unwrap()
-            .finish,
-        Some(AgentFinish::Complete)
-    );
-    assert!(
-        message.work.as_ref().unwrap().trace.is_empty(),
-        "model-proposed tools are not actions"
-    );
-    let before = doc.save();
-    assert!(!app.pump_model());
-    assert_eq!(doc.save(), before);
-    let requests = backend.requests.borrow();
-    assert!(requests[0].tools.is_empty());
-    assert_eq!(requests[0].tool_choice, ToolChoice::None);
-}
+tilo_test_env::scenario! {
+    /// Stopping and continuing a model's turn, and asking in an empty chat.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_model_turn_stops_continues_and_hides_ask_where_there_is_nothing_to_ask;
 
-#[test]
-fn denial_retains_partial_output_and_retry_uses_a_fresh_reply() {
-    let backend = backend("Partial");
-    backend.finish.set(true);
-    backend
-        .error
-        .set(Some(ui::models::ErrorKind::PermissionDenied));
-    let (mut app, mut doc) = chat(backend.clone());
-    let first = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let original = reply(&doc, &first["reply"]);
-    let stream = original.work.as_ref().unwrap().stream.as_ref().unwrap();
-    assert_eq!(stream.finish, Some(AgentFinish::Failed));
-    assert!(!stream.detail.is_empty());
-    backend.error.set(None);
-    backend.stop.set(StopReason::EndTurn);
-    let retry = app.model_command("c_chat", "retry").unwrap();
-    assert_ne!(retry["reply"], first["reply"]);
-    pump(&mut app, &mut doc);
-    assert_reply_unchanged(&reply(&doc, &first["reply"]), &original);
-    assert_eq!(reply(&doc, &retry["reply"]).text, "Partial");
-}
+    phase truncation_continue_keeps_the_original_answer_and_sends_explicit_context;
+    {
+        let backend = backend("Partial answer");
+        backend.finish.set(true);
+        let (mut app, mut doc) = chat(backend.clone());
+        let first = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let original = reply(&doc, &first["reply"]);
+        assert_eq!(
+            original
+                .work
+                .as_ref()
+                .unwrap()
+                .stream
+                .as_ref()
+                .unwrap()
+                .finish,
+            Some(AgentFinish::Truncated)
+        );
+        assert!(app.model_controls("c_chat").contains(&"continue"));
+        let continuation = app.model_command("c_chat", "continue").unwrap();
+        pump(&mut app, &mut doc);
+        assert_ne!(first["reply"], continuation["reply"]);
+        assert_reply_unchanged(&reply(&doc, &first["reply"]), &original);
+        let requests = backend.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].messages.len(), 3);
+        assert_eq!(requests[1].messages[1].role, Role::Assistant);
+        assert!(requests[1].tools.is_empty());
+    }
 
-#[test]
-fn truncation_continue_keeps_the_original_answer_and_sends_explicit_context() {
-    let backend = backend("Partial answer");
-    backend.finish.set(true);
-    let (mut app, mut doc) = chat(backend.clone());
-    let first = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let original = reply(&doc, &first["reply"]);
-    assert_eq!(
-        original
-            .work
-            .as_ref()
-            .unwrap()
-            .stream
-            .as_ref()
-            .unwrap()
-            .finish,
-        Some(AgentFinish::Truncated)
-    );
-    assert!(app.model_controls("c_chat").contains(&"continue"));
-    let continuation = app.model_command("c_chat", "continue").unwrap();
-    pump(&mut app, &mut doc);
-    assert_ne!(first["reply"], continuation["reply"]);
-    assert_reply_unchanged(&reply(&doc, &first["reply"]), &original);
-    let requests = backend.requests.borrow();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[1].messages.len(), 3);
-    assert_eq!(requests[1].messages[1].role, Role::Assistant);
-    assert!(requests[1].tools.is_empty());
-}
+    phase stop_preserves_partial_output_and_blocks_replacement_until_terminal_publish;
+    {
+        let backend = backend("Keep this");
+        let (mut app, mut doc) = chat(backend);
+        let first = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        assert!(app.host_model.running());
+        assert_eq!(app.model_controls("c_chat"), vec!["stop"]);
+        assert_eq!(
+            app.model_command("c_chat", "stop").unwrap()["stopped"],
+            true
+        );
+        assert!(app.model_command("c_chat", "retry").is_err());
+        assert!(app.host_model.controls("other-channel").is_empty());
+        pump(&mut app, &mut doc);
+        let message = reply(&doc, &first["reply"]);
+        assert_eq!(message.text, "Keep this");
+        assert_eq!(
+            message.work.unwrap().stream.unwrap().finish,
+            Some(AgentFinish::Cancelled)
+        );
+        assert!(app.model_controls("c_chat").contains(&"retry"));
+    }
 
-#[test]
-fn stop_preserves_partial_output_and_blocks_replacement_until_terminal_publish() {
-    let backend = backend("Keep this");
-    let (mut app, mut doc) = chat(backend);
-    let first = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    assert!(app.host_model.running());
-    assert_eq!(app.model_controls("c_chat"), vec!["stop"]);
-    assert_eq!(
-        app.model_command("c_chat", "stop").unwrap()["stopped"],
-        true
-    );
-    assert!(app.model_command("c_chat", "retry").is_err());
-    assert!(app.host_model.controls("other-channel").is_empty());
-    pump(&mut app, &mut doc);
-    let message = reply(&doc, &first["reply"]);
-    assert_eq!(message.text, "Keep this");
-    assert_eq!(
-        message.work.unwrap().stream.unwrap().finish,
-        Some(AgentFinish::Cancelled)
-    );
-    assert!(app.model_controls("c_chat").contains(&"retry"));
-}
+    phase stop_before_first_pump_still_records_cancellation;
+    {
+        let (mut app, mut doc) = chat(backend("Never polled"));
+        let first = app.model_command("c_chat", "ask").unwrap();
+        app.model_command("c_chat", "stop").unwrap();
+        pump(&mut app, &mut doc);
+        let message = reply(&doc, &first["reply"]);
+        assert!(message.text.is_empty());
+        assert_eq!(
+            message.work.unwrap().stream.unwrap().finish,
+            Some(AgentFinish::Cancelled)
+        );
+    }
 
-#[test]
-fn stop_before_first_pump_still_records_cancellation() {
-    let (mut app, mut doc) = chat(backend("Never polled"));
-    let first = app.model_command("c_chat", "ask").unwrap();
-    app.model_command("c_chat", "stop").unwrap();
-    pump(&mut app, &mut doc);
-    let message = reply(&doc, &first["reply"]);
-    assert!(message.text.is_empty());
-    assert_eq!(
-        message.work.unwrap().stream.unwrap().finish,
-        Some(AgentFinish::Cancelled)
-    );
-}
-
-#[test]
-fn empty_chat_hides_ask_and_stale_activation_reports_the_refusal() {
-    let backend = backend("Answer");
-    let mut doc = automerge::AutoCommit::new();
-    crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
-    let mut app = ChatApp::new_ephemeral().with_models(Models::new(backend.clone()));
-    app.reload(&doc);
-    assert!(app.model_controls("c_chat").is_empty());
-    assert!(!app.activate_model_control("ask"));
-    assert!(
-        app.attachment_status
-            .as_ref()
-            .is_some_and(|message| !message.is_empty())
-    );
-    assert!(backend.requests.borrow().is_empty());
+    phase empty_chat_hides_ask_and_stale_activation_reports_the_refusal;
+    {
+        let backend = backend("Answer");
+        let mut doc = automerge::AutoCommit::new();
+        crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+        let mut app = ChatApp::new_ephemeral().with_models(Models::new(backend.clone()));
+        app.reload(&doc);
+        assert!(app.model_controls("c_chat").is_empty());
+        assert!(!app.activate_model_control("ask"));
+        assert!(
+            app.attachment_status
+                .as_ref()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert!(backend.requests.borrow().is_empty());
+    }
 }
 
 fn message_resource<'a>(

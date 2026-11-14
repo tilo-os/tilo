@@ -329,10 +329,10 @@ impl Core {
                 ListOrColl::Coll(coll) if imp == Imp::CollEmpty => {
                     ret_i32(i32::from(self.coll_empty(&coll)?))
                 }
-                ListOrColl::Coll(coll) => {
-                    let count = imp == Imp::CollCount;
-                    ret_i64(len_to_i64(self.coll_len_or_count(&coll, count)?))
+                ListOrColl::Coll(coll) if imp == Imp::CollCount => {
+                    ret_i64(len_to_i64(self.coll_count(&coll)?))
                 }
+                ListOrColl::Coll(coll) => ret_i64(len_to_i64(self.coll_len(&coll)?)),
             },
             // A list's count is the app's own, but what it was built from is the store's: until
             // the store has read all of the workspace, either is the part read so far, which a

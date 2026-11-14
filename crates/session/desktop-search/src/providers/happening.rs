@@ -339,81 +339,85 @@ mod tests {
         }
     }
 
-    /// The empty palette lists the workspace someone is in, the window they
-    /// are in and the call to join, in that order, and nothing else: a
-    /// query finds people by what they say elsewhere, not here.
-    #[test]
-    fn who_is_here_and_the_calls_are_listed_while_nothing_is_typed() {
-        let happening = Happening::new(false, vec![workspace()]);
-        let rows = happening.query("");
-        let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
-        assert_eq!(ids, ["workspace:3", "window:3:7", "call:c_voice"]);
-        assert_eq!(rows[0].title, "Studio");
-        assert_eq!(
-            rows[0].subtitle.as_deref(),
-            Some("Ada and Bo are here"),
-            "the header says who is here"
-        );
-        assert_eq!(rows[0].faces.len(), 2, "their faces are worn");
-        assert_eq!(rows[1].title, "Quarterly plan");
-        assert_eq!(rows[1].subtitle.as_deref(), Some("With Ada"));
-        assert_eq!(rows[2].title, "Call in voice");
-        assert_eq!(rows[2].subtitle.as_deref(), Some("With Bo"));
-        assert_eq!(rows[0].kind, happening_kind());
-        assert!(rows.iter().all(|row| row.outcome.is_some()));
-        assert!(happening.query("ada").is_empty(), "typed text is not this");
-    }
+    tilo_test_env::scenario! {
+        fn what_is_happening_now_lists_who_is_here_and_the_calls;
 
-    /// Choosing a call joins it: Chat's own action on the channel's call
-    /// row, in the workspace the call is in.
-    #[test]
-    fn a_call_joins_chats_channel() {
-        let happening = Happening::new(false, vec![workspace()]);
-        let rows = happening.query("");
-        let call = rows.iter().find(|row| row.id == "call:c_voice").unwrap();
-        let Target::Invoke(invoke) = &call.target else {
-            panic!("a call is joined by asking Chat, not by the desk");
-        };
-        assert_eq!(invoke.app, "so.tilo.chat");
-        assert_eq!(invoke.workspace, "workspace-3");
-        assert_eq!(
-            invoke.address,
-            tilo_actions::ActionAddress::new("chat.workspace/channels/c_voice/call", "join-call")
-        );
-        assert_eq!(call.outcome.as_deref(), Some("Join"));
-        let window = &rows[1];
-        assert_eq!(window.target, Target::Window { tab: 7, app: None });
-        let Target::Invoke(panel) = &rows[0].target else {
-            panic!("who is here opens the people panel");
-        };
-        assert_eq!(panel.address.action.as_str(), SHOW_COLLABORATORS);
-    }
+        phase who_is_here_and_the_calls_are_listed_while_nothing_is_typed;
+        // The empty palette lists the workspace someone is in, the window they
+        // are in and the call to join, in that order, and nothing else: a
+        // query finds people by what they say elsewhere, not here.
+        {
+            let happening = Happening::new(false, vec![workspace()]);
+            let rows = happening.query("");
+            let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
+            assert_eq!(ids, ["workspace:3", "window:3:7", "call:c_voice"]);
+            assert_eq!(rows[0].title, "Studio");
+            assert_eq!(
+                rows[0].subtitle.as_deref(),
+                Some("Ada and Bo are here"),
+                "the header says who is here"
+            );
+            assert_eq!(rows[0].faces.len(), 2, "their faces are worn");
+            assert_eq!(rows[1].title, "Quarterly plan");
+            assert_eq!(rows[1].subtitle.as_deref(), Some("With Ada"));
+            assert_eq!(rows[2].title, "Call in voice");
+            assert_eq!(rows[2].subtitle.as_deref(), Some("With Bo"));
+            assert_eq!(rows[0].kind, happening_kind());
+            assert!(rows.iter().all(|row| row.outcome.is_some()));
+            assert!(happening.query("ada").is_empty(), "typed text is not this");
+        }
 
-    /// Another workspace is listed when the search is widened, and its
-    /// header goes there instead of opening who is here.
-    #[test]
-    fn the_search_over_every_workspace_lists_the_others_too() {
-        let mut other = WorkspaceHere {
-            id: 4,
-            workspace: "workspace-4".into(),
-            name: "Elsewhere".into(),
-            active: false,
-            ..workspace()
-        };
-        other.windows.clear();
-        other.calls.clear();
-        let everywhere = Happening::new(true, vec![workspace(), other.clone()]);
-        let rows = everywhere.query("");
-        let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
-        assert_eq!(ids.first().copied(), Some("workspace:3"), "in front first");
-        assert!(ids.contains(&"workspace:4"), "{ids:?}");
-        let here_only = Happening::new(false, vec![workspace(), other]);
-        let rows = here_only.query("");
-        let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["workspace:3", "window:3:7", "call:c_voice"],
-            "the workspace in front, and nothing of the others"
-        );
+        phase a_call_joins_chats_channel;
+        // Choosing a call joins it: Chat's own action on the channel's call
+        // row, in the workspace the call is in.
+        {
+            let happening = Happening::new(false, vec![workspace()]);
+            let rows = happening.query("");
+            let call = rows.iter().find(|row| row.id == "call:c_voice").unwrap();
+            let Target::Invoke(invoke) = &call.target else {
+                panic!("a call is joined by asking Chat, not by the desk");
+            };
+            assert_eq!(invoke.app, "so.tilo.chat");
+            assert_eq!(invoke.workspace, "workspace-3");
+            assert_eq!(
+                invoke.address,
+                tilo_actions::ActionAddress::new("chat.workspace/channels/c_voice/call", "join-call")
+            );
+            assert_eq!(call.outcome.as_deref(), Some("Join"));
+            let window = &rows[1];
+            assert_eq!(window.target, Target::Window { tab: 7, app: None });
+            let Target::Invoke(panel) = &rows[0].target else {
+                panic!("who is here opens the people panel");
+            };
+            assert_eq!(panel.address.action.as_str(), SHOW_COLLABORATORS);
+        }
+
+        phase the_search_over_every_workspace_lists_the_others_too;
+        // Another workspace is listed when the search is widened, and its
+        // header goes there instead of opening who is here.
+        {
+            let mut other = WorkspaceHere {
+                id: 4,
+                workspace: "workspace-4".into(),
+                name: "Elsewhere".into(),
+                active: false,
+                ..workspace()
+            };
+            other.windows.clear();
+            other.calls.clear();
+            let everywhere = Happening::new(true, vec![workspace(), other.clone()]);
+            let rows = everywhere.query("");
+            let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
+            assert_eq!(ids.first().copied(), Some("workspace:3"), "in front first");
+            assert!(ids.contains(&"workspace:4"), "{ids:?}");
+            let here_only = Happening::new(false, vec![workspace(), other]);
+            let rows = here_only.query("");
+            let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["workspace:3", "window:3:7", "call:c_voice"],
+                "the workspace in front, and nothing of the others"
+            );
+        }
     }
 }

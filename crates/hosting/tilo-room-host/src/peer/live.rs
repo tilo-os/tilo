@@ -5,14 +5,15 @@
 use super::{
     Arc, AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, WorkspaceOperation,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 /// Handle `RetiredLiveJoin`: add a subscribed device to the workspace's live
 /// plane and send it one `LiveMember` per member already present.
 pub(super) async fn handle_live_join(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
-    workspace_id: u64,
+    subscribed: &[WorkspaceId],
+    workspace_id: WorkspaceId,
 ) -> Result<Option<Envelope>, PeerError> {
     const UNSUBSCRIBED: &str = "live join requires a subscription";
     let refused = |reason: &str| {
@@ -57,7 +58,7 @@ pub(super) async fn handle_live_join(
 async fn subscription_refusal(
     session: &SessionCtx<'_>,
     peer: &AuthenticatedPeer,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> Result<Option<&'static str>, PeerError> {
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
@@ -77,8 +78,8 @@ async fn subscription_refusal(
 /// None unless they subscribed to it.
 async fn call_host(
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
-    workspace_id: u64,
+    subscribed: &[WorkspaceId],
+    workspace_id: WorkspaceId,
 ) -> Option<CallHost> {
     if !subscribed.contains(&workspace_id) {
         return None;
@@ -108,7 +109,7 @@ async fn call_host(
 pub(super) async fn handle_voice(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
     let workspace_id = match &env {
@@ -198,7 +199,7 @@ async fn call_answer(
 /// fresh join it refused.
 async fn join_answer(
     host: Option<&CallHost>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     call: [u8; 32],
@@ -264,7 +265,7 @@ async fn calls_answer(
 pub(super) async fn handle_presence(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     mut env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
     // A presence that is no toolkit presence may ask the workspace for content.
@@ -332,7 +333,7 @@ pub(super) async fn handle_presence(
 pub(super) async fn handle_host_said(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     env: Envelope,
 ) {
     let Envelope::HostSaid {
@@ -346,7 +347,7 @@ pub(super) async fn handle_host_said(
     let host = session.own_device_public_key;
     if peer.device_public_key != *host || !subscribed.contains(workspace_id) {
         tracing::debug!(
-            workspace_id,
+            workspace_id = %workspace_id,
             "host frame dropped: only the host's own subscribed device speaks for its runs"
         );
         return;
@@ -354,7 +355,7 @@ pub(super) async fn handle_host_said(
     if let Err(error) =
         tilo_relay_protocol::host_voice::HostSaid::open(said, signature, *workspace_id, host)
     {
-        tracing::debug!(workspace_id, %error, "host frame dropped");
+        tracing::debug!(workspace_id = %workspace_id, %error, "host frame dropped");
         return;
     }
     let ws = session.workspaces.lock().await.get(workspace_id).cloned();
@@ -373,7 +374,7 @@ pub(super) async fn handle_host_said(
 pub(super) async fn handle_content_want(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     mut env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
     let Envelope::RecordContentWant {
@@ -422,7 +423,7 @@ pub(super) async fn handle_content_want(
 fn answer_content(
     ws: &Arc<tokio::sync::Mutex<crate::workspace::WorkspaceRuntime>>,
     authority: Option<&crate::workspaces::WorkspaceAuthority>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     (host, member): ([u8; 32], [u8; 32]),
     body: Vec<u8>,
 ) {
@@ -443,7 +444,7 @@ fn answer_content(
         {
             Ok(frames) => frames,
             Err(error) => {
-                tracing::error!(workspace_id, %error, "answering a member's content request failed");
+                tracing::error!(workspace_id = %workspace_id, %error, "answering a member's content request failed");
                 return;
             }
         };
@@ -472,7 +473,7 @@ fn answer_content(
 pub(super) async fn route_record_content(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     envelope: Envelope,
 ) {
     let Envelope::RecordContent {

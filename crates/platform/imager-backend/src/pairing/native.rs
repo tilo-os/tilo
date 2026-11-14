@@ -543,52 +543,57 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    #[test]
-    fn missing_or_unsafe_helper_fails_before_creating_custody() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        let temporary = tempfile::tempdir().unwrap();
-        let state = temporary.path().join("state");
-        env.set("XDG_STATE_HOME", state.as_os_str());
-        let current = std::env::current_exe().unwrap().canonicalize().unwrap();
-        let helper = temporary.path().join("tilo-enroll");
-        let mut pairing = Pairing::default();
-        let mut check = || {
-            assert_eq!(
-                pairing.start_resolving("Future computer", 1, 1, || {
-                    trusted_helper_from(&current, [helper.clone()])
-                }),
-                Err("installer-pairing-component-missing")
-            );
-            assert!(!pairing.busy());
-            assert!(!pairing.ready());
-            assert!(pairing.custody.is_none());
-            assert!(pairing.prepared().is_none());
-            assert!(!state.exists());
-        };
-        check();
-        std::fs::write(&helper, b"must never execute").unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o600)).unwrap();
-        check();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o777)).unwrap();
-        check();
-        std::fs::remove_file(&helper).unwrap();
-        std::os::unix::fs::symlink(&current, &helper).unwrap();
-        check();
-        std::fs::remove_file(&helper).unwrap();
-        std::fs::create_dir(&helper).unwrap();
-        check();
-    }
 
-    #[test]
-    fn trusted_helper_accepts_owned_executable_and_falls_back_after_unsafe_candidate() {
-        let temporary = tempfile::tempdir().unwrap();
-        let current = std::env::current_exe().unwrap().canonicalize().unwrap();
-        let unsafe_candidate = temporary.path().join("tilo-enroll");
-        std::os::unix::fs::symlink(&current, &unsafe_candidate).unwrap();
-        assert_eq!(
-            trusted_helper_from(&current, [unsafe_candidate, current.clone()]),
-            Some(current)
-        );
+    tilo_test_env::scenario! {
+        fn pairing_helper_is_trusted_only_when_owned_and_safe;
+
+        phase missing_or_unsafe_helper_fails_before_creating_custody;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            let temporary = tempfile::tempdir().unwrap();
+            let state = temporary.path().join("state");
+            env.set("XDG_STATE_HOME", state.as_os_str());
+            let current = std::env::current_exe().unwrap().canonicalize().unwrap();
+            let helper = temporary.path().join("tilo-enroll");
+            let mut pairing = Pairing::default();
+            let mut check = || {
+                assert_eq!(
+                    pairing.start_resolving("Future computer", 1, 1, || {
+                        trusted_helper_from(&current, [helper.clone()])
+                    }),
+                    Err("installer-pairing-component-missing")
+                );
+                assert!(!pairing.busy());
+                assert!(!pairing.ready());
+                assert!(pairing.custody.is_none());
+                assert!(pairing.prepared().is_none());
+                assert!(!state.exists());
+            };
+            check();
+            std::fs::write(&helper, b"must never execute").unwrap();
+            std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o600)).unwrap();
+            check();
+            std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o777)).unwrap();
+            check();
+            std::fs::remove_file(&helper).unwrap();
+            std::os::unix::fs::symlink(&current, &helper).unwrap();
+            check();
+            std::fs::remove_file(&helper).unwrap();
+            std::fs::create_dir(&helper).unwrap();
+            check();
+        }
+
+        phase trusted_helper_accepts_owned_executable_and_falls_back_after_unsafe_candidate;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let current = std::env::current_exe().unwrap().canonicalize().unwrap();
+            let unsafe_candidate = temporary.path().join("tilo-enroll");
+            std::os::unix::fs::symlink(&current, &unsafe_candidate).unwrap();
+            assert_eq!(
+                trusted_helper_from(&current, [unsafe_candidate, current.clone()]),
+                Some(current)
+            );
+        }
     }
 
     #[test]
@@ -620,40 +625,45 @@ mod tests {
         // moment before it is a zombie, so its end is waited for, not sampled.
         tilo_test_env::exited("the cancelled helper's orphan", pid);
     }
-    #[test]
-    fn forged_complete_status_never_becomes_enrolled_custody() {
-        let (_temporary, custody) = fixture();
-        let record = custody.identities.join("forged.json");
-        let fake = serde_json::json!({"state":"complete", "identity":"03".repeat(32), "record_path": record});
-        let mut command = Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg(r#"printf '%s' "$2" > "$1""#)
-            .arg("fixture")
-            .arg(&custody.status)
-            .arg(fake.to_string());
-        let mut pairing = Pairing::default();
-        pairing
-            .begin(command, custody, tilo_test_env::hang_bound())
+    tilo_test_env::scenario! {
+        fn pairing_status_never_enrolls_from_forged_or_redirected_files;
+
+        phase forged_complete_status_never_becomes_enrolled_custody;
+        {
+            let (_temporary, custody) = fixture();
+            let record = custody.identities.join("forged.json");
+            let fake = serde_json::json!({"state":"complete", "identity":"03".repeat(32), "record_path": record});
+            let mut command = Command::new("/bin/sh");
+            command
+                .arg("-c")
+                .arg(r#"printf '%s' "$2" > "$1""#)
+                .arg("fixture")
+                .arg(&custody.status)
+                .arg(fake.to_string());
+            let mut pairing = Pairing::default();
+            pairing
+                .begin(command, custody, tilo_test_env::hang_bound())
+                .unwrap();
+            wait(&mut pairing, |value| !value.busy());
+            assert_eq!(pairing.projection()["state"], "failed");
+            assert!(!pairing.ready());
+        }
+
+        phase status_reader_refuses_redirects_and_nonregular_files;
+        {
+            let (temporary, custody) = fixture();
+            let external = temporary.path().join("external");
+            std::fs::write(&external, b"{}").unwrap();
+            std::os::unix::fs::symlink(&external, &custody.status).unwrap();
+            assert!(read_status(&custody).is_err());
+            std::fs::remove_file(&custody.status).unwrap();
+            let path = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
+                custody.status.as_os_str(),
+            ))
             .unwrap();
-        wait(&mut pairing, |value| !value.busy());
-        assert_eq!(pairing.projection()["state"], "failed");
-        assert!(!pairing.ready());
-    }
-    #[test]
-    fn status_reader_refuses_redirects_and_nonregular_files() {
-        let (temporary, custody) = fixture();
-        let external = temporary.path().join("external");
-        std::fs::write(&external, b"{}").unwrap();
-        std::os::unix::fs::symlink(&external, &custody.status).unwrap();
-        assert!(read_status(&custody).is_err());
-        std::fs::remove_file(&custody.status).unwrap();
-        let path = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
-            custody.status.as_os_str(),
-        ))
-        .unwrap();
-        // SAFETY: path is a valid fixture-only NUL-terminated pathname.
-        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
-        assert!(read_status(&custody).is_err());
+            // SAFETY: path is a valid fixture-only NUL-terminated pathname.
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            assert!(read_status(&custody).is_err());
+        }
     }
 }

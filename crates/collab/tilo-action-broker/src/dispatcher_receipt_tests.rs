@@ -56,7 +56,7 @@ async fn actor_only_local_dispatch_never_receives_certified_evidence() {
                 .publish_actions(&[row.descriptor.unwrap()])
                 .await
                 .unwrap();
-            let actor = principal_id_for_root(env.cert.user_public_key);
+            let actor = person_id_for_root(env.cert.user_public_key);
             let job = rig
                 .state
                 .start_invocation_confirmed(903, "workspace:atlas", "open", None, &actor, None)
@@ -229,7 +229,7 @@ async fn an_authenticated_read_is_admitted_with_private_signed_evidence() {
                     device: env.cert.device_public_key,
                     agent: None,
                 },
-                actor_id: principal_id_for_root(env.cert.user_public_key),
+                actor_id: person_id_for_root(env.cert.user_public_key),
                 app_id: env.route.app_id.clone(),
                 record_id: env.route.record_id.clone(),
                 resource: "workspace:atlas".into(),

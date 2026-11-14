@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::platform::surfaces::{Heard, Layer, Placement, Surfaces};
-use tilo_desktop_model::{Collaborator, DesktopTree, Tab, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Member, Tab, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_desktop_surface::{DesktopSurface, TileSource};
 use ui::widget::{TileContent, TileHost};
 
@@ -101,11 +101,7 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
     // desk, and there is no panel of it whose Put back in the bar a pointer could press.
     let here = WorkspaceId::new();
     let mut desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(here), here, "Desk");
-    desk.collaborators.push(Collaborator {
-        id: "ada".to_owned(),
-        name: "Ada".to_owned(),
-        ..Collaborator::default()
-    });
+    desk.member_here(Member::keyed("ada", "Ada"));
     let (_desk, handle) = DesktopSurface::new(
         DesktopTree {
             active: desk.slot,
@@ -151,7 +147,7 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
 }
 
 /// The roster lists whoever the bar's faces are drawn from: on a page, an agent's run the
-/// workspace's host speaks for is heard on a track of its own and is in the desk's collaborators
+/// workspace's host speaks for is heard on a track of its own and is in the desk's member rows
 /// only as the page writes them in, and the roster lists it with its Follow.
 #[test]
 fn the_roster_lists_who_the_bar_shows() {
@@ -254,12 +250,15 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
             ))),
             here: Rc::new(|tree: &mut DesktopTree| {
                 if let Some(workspace) = tree.workspaces.first_mut() {
-                    workspace.collaborators = vec![Collaborator {
-                        id: "run".to_owned(),
-                        name: "Claude Code".to_owned(),
-                        role_id: Some("agent".to_owned()),
-                        ..Collaborator::default()
-                    }];
+                    let agent = Member::keyed("agent:run", "Claude Code");
+                    workspace.member_here(agent.clone());
+                    if let Some(here) = workspace
+                        .present
+                        .iter_mut()
+                        .find(|here| here.member == agent.id)
+                    {
+                        here.device = "run".into();
+                    }
                 }
             }),
             intents: Rc::default(),

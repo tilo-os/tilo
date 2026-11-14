@@ -329,86 +329,6 @@ fn retained_heading_list_and_quote_typing_damages_its_row_and_matches_gpu_pixels
     }
 }
 
-/// A fence is one code field: its rows take the mono text's line height, one
-/// under the next, and the fence's painted ground pads the run once at each
-/// end, so N lines measure N rows plus the language header.
-#[test]
-fn fence_rows_of_one_code_group_take_the_mono_line_height() {
-    for scale in [1.0_f32, 1.5] {
-        let group = "fence".to_string();
-        let blocks: Vec<Block> = (0..4)
-            .map(|row| {
-                let mut block = Block::code_block(
-                    Some("rust".into()),
-                    &format!("let row_{row} = compute({row});"),
-                );
-                block.code_group = Some(group.clone());
-                block
-            })
-            .collect();
-        let fixture = RetainedEditor::with_blocks(640.0, scale, blocks);
-        let editor = &fixture.editor;
-        let rects: Vec<Rect> = editor
-            .blocks
-            .iter()
-            .map(|block| block.line.get_rect())
-            .collect();
-        let header = code_header_height(&editor.blocks, 0, f64::from(scale));
-        let row = f64::from(editor.blocks[1].line.row_height(scale));
-        assert!(
-            (rects[1].height() - row).abs() < 0.05,
-            "a row is the mono text's line height: {rects:?}"
-        );
-        for index in 1..rects.len() {
-            assert!(
-                (rects[index].y0 - rects[index - 1].y1).abs() < 0.05,
-                "rows of one fence touch: {rects:?}"
-            );
-            assert!(
-                (rects[index].height() - row).abs() < 0.05,
-                "every row of a fence is one line tall: {rects:?}"
-            );
-        }
-        let first = editor.block_paint_rect(0).expect("the fence's first line");
-        assert!(
-            (first.height() - row - header).abs() < 0.05,
-            "the first row carries the fence's header above its line: {first:?}"
-        );
-        let last = rects[rects.len() - 1];
-        assert!(
-            (last.y1 - first.y0 - (header + 4.0 * row)).abs() < 0.05,
-            "four fence rows measure four rows plus the header: {rects:?}"
-        );
-    }
-}
-
-/// Every line of a compact document run — prose, a list item, a quote — sits
-/// on the text's line height; only the block stack's gaps separate them.
-#[test]
-fn compact_prose_runs_set_every_line_at_the_line_height() {
-    let fixture = RetainedEditor::with_compact_blocks(
-        640.0,
-        1.0,
-        vec![
-            Block::paragraph("First paragraph line"),
-            Block::paragraph("Second paragraph line"),
-            Block::bullet(0, "First bullet"),
-            Block::bullet(0, "Second bullet"),
-            Block::quote("First quote line"),
-            Block::quote("Second quote line"),
-        ],
-    );
-    let row = f64::from(fixture.editor.blocks[0].line.row_height(1.0));
-    for (index, block) in fixture.editor.blocks.iter().enumerate() {
-        let rect = block.line.get_rect();
-        assert!(
-            (rect.height() - row).abs() < 1.0,
-            "block {index} ({:?}) is one line tall, not a padded field: {rect:?}",
-            block.kind
-        );
-    }
-}
-
 #[test]
 fn retained_code_lines_and_prose_beside_code_and_tables_damage_their_row_and_match_gpu_pixels() {
     let blocks = || {
@@ -912,34 +832,6 @@ fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_
     assert_damage_pixels(&before, &fixture, true);
 }
 
-#[test]
-fn handles_hang_in_their_own_gutter_outside_the_text_column() {
-    for scale in [1.0, 2.0] {
-        let fixture = RetainedEditor::new(480.0, scale, false);
-        let editor = &fixture.editor;
-        let gutter = editor.handle_gutter(&fixture.theme);
-        assert!(gutter > 0.0, "an editable document has a handle gutter");
-        assert_eq!(editor.text_inset(&fixture.theme), gutter);
-        let line = editor.blocks[1].line.get_rect();
-        let text_edge = line.x0 + editor.blocks[1].line.text_inset(&fixture.theme);
-        assert!(
-            (text_edge - (editor.get_rect().x0 + gutter)).abs() < 1e-6,
-            "text starts one handle gutter in at {scale}x: {text_edge}"
-        );
-        let handle = editor.block_drag_handle_rect(1).unwrap();
-        assert!(
-            handle.x0 >= editor.get_rect().x0 - 1e-6,
-            "the handle stays inside the editor at {scale}x: {handle:?}"
-        );
-        assert!(
-            handle.x1 < text_edge,
-            "the handle hangs outside the text column at {scale}x: {handle:?}"
-        );
-    }
-    let read_only = BlockEditor::new().with_read_only(true);
-    assert_eq!(read_only.handle_gutter(&Theme::dark()), 0.0);
-}
-
 /// A note shaped like a working one, `sections` times over: a heading, a
 /// paragraph with a link, a bullet pair, a ten-line Rust fence and a TeX
 /// formula, so every per-run derivation the draw makes has a subject.
@@ -1241,127 +1133,216 @@ fn published_afresh(fixture: &RetainedEditor) -> Vec<crate::a11y_tree::SemanticN
     tree.iter().cloned().collect()
 }
 
-#[test]
-fn a_keystroke_builds_the_accessibility_row_of_its_block_alone() {
-    let mut built = Vec::new();
-    for count in [40, 160] {
-        let blocks = (0..count)
-            .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary line.")))
-            .collect();
+tilo_test_env::scenario! {
+    /// The accessibility rows the retained editor keeps.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn accessibility_rows_are_kept_per_block;
+
+    phase a_keystroke_builds_the_accessibility_row_of_its_block_alone;
+    {
+        let mut built = Vec::new();
+        for count in [40, 160] {
+            let blocks = (0..count)
+                .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary line.")))
+                .collect();
+            let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+            let mut tree = crate::a11y_tree::SemanticTree::new();
+            tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+            assert!(
+                tree.nodes_built_for_test() > count * 6,
+                "the first refresh builds every row"
+            );
+            let rows = fixture.editor.access_row_builds_for_test();
+
+            fixture.key(Key::Character("x".into()), Modifiers::default());
+            let delta = tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+
+            assert_eq!(
+                fixture.editor.access_row_builds_for_test() - rows,
+                1,
+                "a keystroke into one of {count} blocks builds one row"
+            );
+            let typed = tree
+                .iter()
+                .find(|node| {
+                    node.role == crate::a11y::Role::ListItem && node.place.pos_in_set == Some(1)
+                })
+                .map(|node| node.id.clone())
+                .expect("the typed block's row");
+            assert_eq!(
+                tree.nodes_built_for_test(),
+                subtree_len(&tree, &typed) + 2,
+                "the tree builds the typed row's nodes, the document's and the window's alone, \
+             of {count} blocks"
+            );
+            assert!(
+                delta.added.is_empty() && delta.removed.is_empty() && !delta.updated.is_empty(),
+                "the keystroke updates nodes, adding and removing none: {delta:?}"
+            );
+            assert_eq!(
+                tree.iter().cloned().collect::<Vec<_>>(),
+                published_afresh(&fixture),
+                "the kept rows publish what a full rebuild publishes"
+            );
+            built.push(tree.nodes_built_for_test());
+        }
+        assert_eq!(
+            built[0], built[1],
+            "a keystroke costs the same whatever the document's length"
+        );
+    }
+
+    phase kept_accessibility_rows_follow_caret_indent_and_moves;
+    // A row is kept only while everything it is built from is the same: a
+    // caret moved, a block indented or a block moved builds the rows it
+    // changed and publishes what a full rebuild publishes.
+    {
+        let blocks = vec![
+            Block::paragraph("First"),
+            Block::bullet(0, "Second"),
+            Block::bullet(0, "Third"),
+            Block::paragraph("Fourth"),
+        ];
         let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
         let mut tree = crate::a11y_tree::SemanticTree::new();
         tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
-        assert!(
-            tree.nodes_built_for_test() > count * 6,
-            "the first refresh builds every row"
-        );
-        let rows = fixture.editor.access_row_builds_for_test();
-
-        fixture.key(Key::Character("x".into()), Modifiers::default());
-        let delta = tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
-
-        assert_eq!(
-            fixture.editor.access_row_builds_for_test() - rows,
-            1,
-            "a keystroke into one of {count} blocks builds one row"
-        );
-        let typed = tree
-            .iter()
-            .find(|node| {
-                node.role == crate::a11y::Role::ListItem && node.place.pos_in_set == Some(1)
-            })
-            .map(|node| node.id.clone())
-            .expect("the typed block's row");
-        assert_eq!(
-            tree.nodes_built_for_test(),
-            subtree_len(&tree, &typed) + 2,
-            "the tree builds the typed row's nodes, the document's and the window's alone, \
-             of {count} blocks"
-        );
-        assert!(
-            delta.added.is_empty() && delta.removed.is_empty() && !delta.updated.is_empty(),
-            "the keystroke updates nodes, adding and removing none: {delta:?}"
-        );
-        assert_eq!(
-            tree.iter().cloned().collect::<Vec<_>>(),
-            published_afresh(&fixture),
-            "the kept rows publish what a full rebuild publishes"
-        );
-        built.push(tree.nodes_built_for_test());
-    }
-    assert_eq!(
-        built[0], built[1],
-        "a keystroke costs the same whatever the document's length"
-    );
-}
-
-/// A row is kept only while everything it is built from is the same: a
-/// caret moved, a block indented or a block moved builds the rows it
-/// changed and publishes what a full rebuild publishes.
-#[test]
-fn kept_accessibility_rows_follow_caret_indent_and_moves() {
-    let blocks = vec![
-        Block::paragraph("First"),
-        Block::bullet(0, "Second"),
-        Block::bullet(0, "Third"),
-        Block::paragraph("Fourth"),
-    ];
-    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
-    let mut tree = crate::a11y_tree::SemanticTree::new();
-    tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
-    for key in [
-        Key::Named(NamedKey::ArrowRight),
-        Key::Named(NamedKey::ArrowDown),
-        Key::Named(NamedKey::ArrowDown),
-        Key::Named(NamedKey::Tab),
-    ] {
-        fixture.key(key.clone(), Modifiers::default());
+        for key in [
+            Key::Named(NamedKey::ArrowRight),
+            Key::Named(NamedKey::ArrowDown),
+            Key::Named(NamedKey::ArrowDown),
+            Key::Named(NamedKey::Tab),
+        ] {
+            fixture.key(key.clone(), Modifiers::default());
+            tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+            assert_eq!(
+                tree.iter().cloned().collect::<Vec<_>>(),
+                published_afresh(&fixture),
+                "after {key:?} the kept rows publish what a full rebuild publishes"
+            );
+        }
+        let moved = fixture.editor.focused_index().expect("a focused block");
+        assert!(fixture.editor.move_block_to(moved, 0), "the block moves up");
+        if fixture.editor.take_structure_dirty() {
+            fixture.rebuild_after_structure_change();
+        }
+        fixture.frame();
         tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
         assert_eq!(
             tree.iter().cloned().collect::<Vec<_>>(),
             published_afresh(&fixture),
-            "after {key:?} the kept rows publish what a full rebuild publishes"
+            "after a move the kept rows publish what a full rebuild publishes"
         );
     }
-    let moved = fixture.editor.focused_index().expect("a focused block");
-    assert!(fixture.editor.move_block_to(moved, 0), "the block moves up");
-    if fixture.editor.take_structure_dirty() {
-        fixture.rebuild_after_structure_change();
-    }
-    fixture.frame();
-    tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
-    assert_eq!(
-        tree.iter().cloned().collect::<Vec<_>>(),
-        published_afresh(&fixture),
-        "after a move the kept rows publish what a full rebuild publishes"
-    );
 }
 
-/// The drag handles are for the pointer: moving it brings them up, typing
-/// hides them, and a few seconds' rest fades them out, after which the editor
-/// asks for no frame and sets no wake until something moves again.
-#[test]
-fn drag_handles_show_on_pointer_motion_and_go_on_typing_or_rest() {
-    use super::handle_reveal::HANDLE_HOLD;
-    use crate::time::testing::with_monotonic_time;
-    let t0 = crate::time::now();
-    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
-    let mut fixture = with_monotonic_time(at(0), || RetainedEditor::new(480.0, 1.0, false));
-    let quiet = |fixture: &RetainedEditor| {
-        !fixture.editor.needs_redraw()
-            && !Widget::needs_animation_frame(&*fixture.editor)
-            && fixture.editor.handle_fade_deadline().is_none()
-    };
-    assert_eq!(
-        fixture.editor.handle_opacity_drawn_for_test(),
-        0.0,
-        "no handle shows beside the caret before the pointer moves"
-    );
-    assert!(quiet(&fixture));
+tilo_test_env::scenario! {
+    /// The drag handles' fade.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn drag_handles_show_fade_and_stop_asking_for_frames;
 
-    let over_text = fixture.editor.blocks[1].line.get_rect().center();
-    let point = |fixture: &mut RetainedEditor, at| {
-        with_monotonic_time(at, || {
+    phase drag_handles_show_on_pointer_motion_and_go_on_typing_or_rest;
+    // The drag handles are for the pointer: moving it brings them up, typing
+    // hides them, and a few seconds' rest fades them out, after which the editor
+    // asks for no frame and sets no wake until something moves again.
+    {
+        use super::handle_reveal::HANDLE_HOLD;
+        use crate::time::testing::with_monotonic_time;
+        let t0 = crate::time::now();
+        let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+        let mut fixture = with_monotonic_time(at(0), || RetainedEditor::new(480.0, 1.0, false));
+        let quiet = |fixture: &RetainedEditor| {
+            !fixture.editor.needs_redraw()
+                && !Widget::needs_animation_frame(&*fixture.editor)
+                && fixture.editor.handle_fade_deadline().is_none()
+        };
+        assert_eq!(
+            fixture.editor.handle_opacity_drawn_for_test(),
+            0.0,
+            "no handle shows beside the caret before the pointer moves"
+        );
+        assert!(quiet(&fixture));
+
+        let over_text = fixture.editor.blocks[1].line.get_rect().center();
+        let point = |fixture: &mut RetainedEditor, at| {
+            with_monotonic_time(at, || {
+                Dispatch::new()
+                    .doc(&mut fixture.doc)
+                    .layout(&fixture.tree, fixture.root)
+                    .send(
+                        &mut *fixture.editor,
+                        &crate::synthetic_input::cursor_moved(over_text.x, over_text.y),
+                    );
+                fixture.frame();
+            });
+        };
+        point(&mut fixture, at(0));
+        assert_eq!(
+            fixture.editor.handle_opacity_drawn_for_test(),
+            1.0,
+            "moving the pointer shows the handles"
+        );
+
+        with_monotonic_time(at(100), || fixture.type_text("a"));
+        assert_eq!(
+            fixture.editor.handle_opacity_drawn_for_test(),
+            0.0,
+            "a keystroke hides them"
+        );
+        assert!(quiet(&fixture), "hidden handles need nothing");
+
+        point(&mut fixture, at(200));
+        assert_eq!(fixture.editor.handle_opacity_drawn_for_test(), 1.0);
+        let rest = at(200) + HANDLE_HOLD;
+        with_monotonic_time(at(300), || {
+            assert!(!Widget::needs_animation_frame(&*fixture.editor));
+            assert!(
+                !fixture.editor.needs_redraw(),
+                "resting handles cost no frames"
+            );
+            assert_eq!(
+                fixture.editor.handle_fade_deadline(),
+                Some(rest),
+                "the editor sleeps until the fade starts"
+            );
+            assert!(
+                Widget::next_wake_deadline(&*fixture.editor).is_some_and(|wake| wake <= rest),
+                "and its host wakes it then"
+            );
+        });
+        let midway = rest + crate::animation::CHROME_FADE / 2;
+        with_monotonic_time(midway, || {
+            assert!(Widget::needs_animation_frame(&*fixture.editor), "fading");
+            fixture.frame();
+        });
+        let fading = fixture.editor.handle_opacity_drawn_for_test();
+        assert!(fading > 0.0 && fading < 1.0, "halfway faded: {fading}");
+        let gone = rest + crate::animation::CHROME_FADE;
+        with_monotonic_time(midway, || {
+            assert_eq!(
+                Widget::next_wake_deadline(&*fixture.editor),
+                Some(gone),
+                "the host wakes it when the fade is over"
+            );
+        });
+        with_monotonic_time(gone, || {
+            fixture.frame();
+            assert_eq!(fixture.editor.handle_opacity_drawn_for_test(), 0.0);
+            assert!(quiet(&fixture), "faded handles need no frame or wake");
+        });
+    }
+
+    phase undrawn_drag_handles_stop_asking_for_frames_once_their_fade_is_over;
+    // The handles' frames follow the clock, not the draws: an editor that is
+    // never drawn (its host culls it) asks for frames only during the fade, and
+    // for none once the fade is over, so it cannot keep the window spinning.
+    {
+        use super::handle_reveal::HANDLE_HOLD;
+        use crate::time::testing::with_monotonic_time;
+        let t0 = crate::time::now();
+        let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+        let mut fixture = with_monotonic_time(at(0), || RetainedEditor::new(480.0, 1.0, false));
+        let over_text = fixture.editor.blocks[1].line.get_rect().center();
+        with_monotonic_time(at(0), || {
             Dispatch::new()
                 .doc(&mut fixture.doc)
                 .layout(&fixture.tree, fixture.root)
@@ -1369,186 +1350,223 @@ fn drag_handles_show_on_pointer_motion_and_go_on_typing_or_rest() {
                     &mut *fixture.editor,
                     &crate::synthetic_input::cursor_moved(over_text.x, over_text.y),
                 );
-            fixture.frame();
         });
-    };
-    point(&mut fixture, at(0));
-    assert_eq!(
-        fixture.editor.handle_opacity_drawn_for_test(),
-        1.0,
-        "moving the pointer shows the handles"
-    );
-
-    with_monotonic_time(at(100), || fixture.type_text("a"));
-    assert_eq!(
-        fixture.editor.handle_opacity_drawn_for_test(),
-        0.0,
-        "a keystroke hides them"
-    );
-    assert!(quiet(&fixture), "hidden handles need nothing");
-
-    point(&mut fixture, at(200));
-    assert_eq!(fixture.editor.handle_opacity_drawn_for_test(), 1.0);
-    let rest = at(200) + HANDLE_HOLD;
-    with_monotonic_time(at(300), || {
-        assert!(!Widget::needs_animation_frame(&*fixture.editor));
-        assert!(
-            !fixture.editor.needs_redraw(),
-            "resting handles cost no frames"
-        );
-        assert_eq!(
-            fixture.editor.handle_fade_deadline(),
-            Some(rest),
-            "the editor sleeps until the fade starts"
-        );
-        assert!(
-            Widget::next_wake_deadline(&*fixture.editor).is_some_and(|wake| wake <= rest),
-            "and its host wakes it then"
-        );
-    });
-    let midway = rest + crate::animation::CHROME_FADE / 2;
-    with_monotonic_time(midway, || {
-        assert!(Widget::needs_animation_frame(&*fixture.editor), "fading");
-        fixture.frame();
-    });
-    let fading = fixture.editor.handle_opacity_drawn_for_test();
-    assert!(fading > 0.0 && fading < 1.0, "halfway faded: {fading}");
-    let gone = rest + crate::animation::CHROME_FADE;
-    with_monotonic_time(midway, || {
-        assert_eq!(
-            Widget::next_wake_deadline(&*fixture.editor),
-            Some(gone),
-            "the host wakes it when the fade is over"
-        );
-    });
-    with_monotonic_time(gone, || {
-        fixture.frame();
-        assert_eq!(fixture.editor.handle_opacity_drawn_for_test(), 0.0);
-        assert!(quiet(&fixture), "faded handles need no frame or wake");
-    });
-}
-
-/// The handles' frames follow the clock, not the draws: an editor that is
-/// never drawn (its host culls it) asks for frames only during the fade, and
-/// for none once the fade is over, so it cannot keep the window spinning.
-#[test]
-fn undrawn_drag_handles_stop_asking_for_frames_once_their_fade_is_over() {
-    use super::handle_reveal::HANDLE_HOLD;
-    use crate::time::testing::with_monotonic_time;
-    let t0 = crate::time::now();
-    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
-    let mut fixture = with_monotonic_time(at(0), || RetainedEditor::new(480.0, 1.0, false));
-    let over_text = fixture.editor.blocks[1].line.get_rect().center();
-    with_monotonic_time(at(0), || {
-        Dispatch::new()
-            .doc(&mut fixture.doc)
-            .layout(&fixture.tree, fixture.root)
-            .send(
-                &mut *fixture.editor,
-                &crate::synthetic_input::cursor_moved(over_text.x, over_text.y),
+        let rest = at(0) + HANDLE_HOLD;
+        with_monotonic_time(at(100), || {
+            assert!(
+                !Widget::needs_animation_frame(&*fixture.editor),
+                "the hold needs no frames"
             );
-    });
-    let rest = at(0) + HANDLE_HOLD;
-    with_monotonic_time(at(100), || {
-        assert!(
-            !Widget::needs_animation_frame(&*fixture.editor),
-            "the hold needs no frames"
-        );
-        assert_eq!(fixture.editor.handle_fade_deadline(), Some(rest));
-    });
-    with_monotonic_time(rest + crate::animation::CHROME_FADE / 2, || {
-        assert!(
-            Widget::needs_animation_frame(&*fixture.editor),
-            "the fade has frames"
-        );
-    });
-    with_monotonic_time(rest + crate::animation::CHROME_FADE, || {
-        assert!(
-            !Widget::needs_animation_frame(&*fixture.editor),
-            "an undrawn editor asks for no frame once the fade is over"
-        );
-        assert!(fixture.editor.handle_fade_deadline().is_none());
-        assert!(Widget::next_wake_deadline(&*fixture.editor).is_none());
-    });
+            assert_eq!(fixture.editor.handle_fade_deadline(), Some(rest));
+        });
+        with_monotonic_time(rest + crate::animation::CHROME_FADE / 2, || {
+            assert!(
+                Widget::needs_animation_frame(&*fixture.editor),
+                "the fade has frames"
+            );
+        });
+        with_monotonic_time(rest + crate::animation::CHROME_FADE, || {
+            assert!(
+                !Widget::needs_animation_frame(&*fixture.editor),
+                "an undrawn editor asks for no frame once the fade is over"
+            );
+            assert!(fixture.editor.handle_fade_deadline().is_none());
+            assert!(Widget::next_wake_deadline(&*fixture.editor).is_none());
+        });
+    }
 }
 
-/// A host that solves the layout without measuring the stack (the tree was already solved,
-/// and only the blocks moved) keeps every line's height: a restacked paragraph is not clipped
-/// to the empty row a measure it cannot run would give it.
-#[test]
-fn a_probe_at_no_width_leaves_the_stack_the_host_applies() {
-    let mut fixture = RetainedEditor::with_compact_blocks(
-        234.0,
-        1.0,
-        vec![Block::paragraph(
-            "The supplier quotes six weeks. Do we order before the summer?",
-        )],
-    );
-    let measured = fixture.editor.blocks[0].line.get_rect().height();
-    assert!(
-        measured > 20.0,
-        "the sentence wraps over more than one row: {measured}"
-    );
-    let probe = fixture.editor.measure_stack(
-        Size {
-            width: Some(0.0),
-            height: None,
-        },
-        Size {
-            width: taffy::AvailableSpace::Definite(0.0),
-            height: taffy::AvailableSpace::MaxContent,
-        },
-        &mut fixture.text,
-    );
-    assert!(
-        f64::from(probe.height) > measured,
-        "one word per row is taller than the wrapped paragraph: {probe:?} against {measured}"
-    );
-    fixture
-        .editor
-        .apply_layout(&fixture.tree, fixture.root, Point::ZERO);
-    assert_eq!(
-        fixture.editor.blocks[0].line.get_rect().height(),
-        measured,
-        "a probe must not replace the stack the blocks are painted from"
-    );
-    fixture.assert_focused_content_fits();
-}
+tilo_test_env::scenario! {
+    /// Line heights, handle gutters and layout probes of the retained editor.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn rows_and_handles_keep_their_place_at_any_probe_width;
 
-#[test]
-fn a_probe_at_another_width_keeps_the_rows_the_applied_one_needs() {
-    let mut fixture = RetainedEditor::with_compact_blocks(
-        216.0,
-        1.0,
-        vec![Block::paragraph(
-            "The new onboarding build is on the test machines.",
-        )],
-    );
-    let applied = fixture.editor.blocks[0].line.get_rect().height();
-    assert!(
-        applied > 30.0,
-        "the sentence wraps over two rows at 216: {applied}"
-    );
-    // A parent asks the stack what it takes at a width that is never applied, as a flex solve
-    // does when it probes a child's intrinsic size.
-    fixture.editor.measure_stack(
-        Size {
-            width: Some(400.0),
-            height: None,
-        },
-        Size {
-            width: taffy::AvailableSpace::Definite(400.0),
-            height: taffy::AvailableSpace::MinContent,
-        },
-        &mut fixture.text,
-    );
-    // The host then applies the layout it solved at 216, without a renderer to measure with.
-    fixture
-        .editor
-        .apply_layout(&fixture.tree, fixture.root, Point::ZERO);
-    assert_eq!(
-        fixture.editor.blocks[0].line.get_rect().height(),
-        applied,
-        "a probe at another width must not stack the paragraph at that width's height"
-    );
+    phase fence_rows_of_one_code_group_take_the_mono_line_height;
+    // A fence is one code field: its rows take the mono text's line height, one
+    // under the next, and the fence's painted ground pads the run once at each
+    // end, so N lines measure N rows plus the language header.
+    {
+        for scale in [1.0_f32, 1.5] {
+            let group = "fence".to_string();
+            let blocks: Vec<Block> = (0..4)
+                .map(|row| {
+                    let mut block = Block::code_block(
+                        Some("rust".into()),
+                        &format!("let row_{row} = compute({row});"),
+                    );
+                    block.code_group = Some(group.clone());
+                    block
+                })
+                .collect();
+            let fixture = RetainedEditor::with_blocks(640.0, scale, blocks);
+            let editor = &fixture.editor;
+            let rects: Vec<Rect> = editor
+                .blocks
+                .iter()
+                .map(|block| block.line.get_rect())
+                .collect();
+            let header = code_header_height(&editor.blocks, 0, f64::from(scale));
+            let row = f64::from(editor.blocks[1].line.row_height(scale));
+            assert!(
+                (rects[1].height() - row).abs() < 0.05,
+                "a row is the mono text's line height: {rects:?}"
+            );
+            for index in 1..rects.len() {
+                assert!(
+                    (rects[index].y0 - rects[index - 1].y1).abs() < 0.05,
+                    "rows of one fence touch: {rects:?}"
+                );
+                assert!(
+                    (rects[index].height() - row).abs() < 0.05,
+                    "every row of a fence is one line tall: {rects:?}"
+                );
+            }
+            let first = editor.block_paint_rect(0).expect("the fence's first line");
+            assert!(
+                (first.height() - row - header).abs() < 0.05,
+                "the first row carries the fence's header above its line: {first:?}"
+            );
+            let last = rects[rects.len() - 1];
+            assert!(
+                (last.y1 - first.y0 - (header + 4.0 * row)).abs() < 0.05,
+                "four fence rows measure four rows plus the header: {rects:?}"
+            );
+        }
+    }
+
+    phase compact_prose_runs_set_every_line_at_the_line_height;
+    // Every line of a compact document run — prose, a list item, a quote — sits
+    // on the text's line height; only the block stack's gaps separate them.
+    {
+        let fixture = RetainedEditor::with_compact_blocks(
+            640.0,
+            1.0,
+            vec![
+                Block::paragraph("First paragraph line"),
+                Block::paragraph("Second paragraph line"),
+                Block::bullet(0, "First bullet"),
+                Block::bullet(0, "Second bullet"),
+                Block::quote("First quote line"),
+                Block::quote("Second quote line"),
+            ],
+        );
+        let row = f64::from(fixture.editor.blocks[0].line.row_height(1.0));
+        for (index, block) in fixture.editor.blocks.iter().enumerate() {
+            let rect = block.line.get_rect();
+            assert!(
+                (rect.height() - row).abs() < 1.0,
+                "block {index} ({:?}) is one line tall, not a padded field: {rect:?}",
+                block.kind
+            );
+        }
+    }
+
+    phase handles_hang_in_their_own_gutter_outside_the_text_column;
+    {
+        for scale in [1.0, 2.0] {
+            let fixture = RetainedEditor::new(480.0, scale, false);
+            let editor = &fixture.editor;
+            let gutter = editor.handle_gutter(&fixture.theme);
+            assert!(gutter > 0.0, "an editable document has a handle gutter");
+            assert_eq!(editor.text_inset(&fixture.theme), gutter);
+            let line = editor.blocks[1].line.get_rect();
+            let text_edge = line.x0 + editor.blocks[1].line.text_inset(&fixture.theme);
+            assert!(
+                (text_edge - (editor.get_rect().x0 + gutter)).abs() < 1e-6,
+                "text starts one handle gutter in at {scale}x: {text_edge}"
+            );
+            let handle = editor.block_drag_handle_rect(1).unwrap();
+            assert!(
+                handle.x0 >= editor.get_rect().x0 - 1e-6,
+                "the handle stays inside the editor at {scale}x: {handle:?}"
+            );
+            assert!(
+                handle.x1 < text_edge,
+                "the handle hangs outside the text column at {scale}x: {handle:?}"
+            );
+        }
+        let read_only = BlockEditor::new().with_read_only(true);
+        assert_eq!(read_only.handle_gutter(&Theme::dark()), 0.0);
+    }
+
+    phase a_probe_at_no_width_leaves_the_stack_the_host_applies;
+    // A host that solves the layout without measuring the stack (the tree was already solved,
+    // and only the blocks moved) keeps every line's height: a restacked paragraph is not clipped
+    // to the empty row a measure it cannot run would give it.
+    {
+        let mut fixture = RetainedEditor::with_compact_blocks(
+            234.0,
+            1.0,
+            vec![Block::paragraph(
+                "The supplier quotes six weeks. Do we order before the summer?",
+            )],
+        );
+        let measured = fixture.editor.blocks[0].line.get_rect().height();
+        assert!(
+            measured > 20.0,
+            "the sentence wraps over more than one row: {measured}"
+        );
+        let probe = fixture.editor.measure_stack(
+            Size {
+                width: Some(0.0),
+                height: None,
+            },
+            Size {
+                width: taffy::AvailableSpace::Definite(0.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut fixture.text,
+        );
+        assert!(
+            f64::from(probe.height) > measured,
+            "one word per row is taller than the wrapped paragraph: {probe:?} against {measured}"
+        );
+        fixture
+            .editor
+            .apply_layout(&fixture.tree, fixture.root, Point::ZERO);
+        assert_eq!(
+            fixture.editor.blocks[0].line.get_rect().height(),
+            measured,
+            "a probe must not replace the stack the blocks are painted from"
+        );
+        fixture.assert_focused_content_fits();
+    }
+
+    phase a_probe_at_another_width_keeps_the_rows_the_applied_one_needs;
+    {
+        let mut fixture = RetainedEditor::with_compact_blocks(
+            216.0,
+            1.0,
+            vec![Block::paragraph(
+                "The new onboarding build is on the test machines.",
+            )],
+        );
+        let applied = fixture.editor.blocks[0].line.get_rect().height();
+        assert!(
+            applied > 30.0,
+            "the sentence wraps over two rows at 216: {applied}"
+        );
+        // A parent asks the stack what it takes at a width that is never applied, as a flex solve
+        // does when it probes a child's intrinsic size.
+        fixture.editor.measure_stack(
+            Size {
+                width: Some(400.0),
+                height: None,
+            },
+            Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::MinContent,
+            },
+            &mut fixture.text,
+        );
+        // The host then applies the layout it solved at 216, without a renderer to measure with.
+        fixture
+            .editor
+            .apply_layout(&fixture.tree, fixture.root, Point::ZERO);
+        assert_eq!(
+            fixture.editor.blocks[0].line.get_rect().height(),
+            applied,
+            "a probe at another width must not stack the paragraph at that width's height"
+        );
+    }
 }

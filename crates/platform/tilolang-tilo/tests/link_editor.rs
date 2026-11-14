@@ -211,113 +211,194 @@ fn rendered(replica: &Replica, view: &ViewInstance) -> tilo_ui_host::UiNode {
     convert.node(view.tree())
 }
 
-#[test]
-fn a_note_offers_its_notebooks_notes_by_the_titles_they_read_as_now() {
-    let Workspace {
-        mut ada,
-        plan,
-        groceries,
-    } = workspace();
-    // A note opens with its picker closed, and offers nothing: reading the notebook's notes is
-    // the picker's work, not every frame of the document's.
-    let (_view, tree) = window(&ada, &plan);
-    let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
-    assert_eq!(
-        offered(editor),
-        [],
-        "no note is read while the picker is closed"
-    );
+tilo_test_env::scenario! {
+    fn a_note_links_and_embeds_other_notes;
 
-    let (_view, tree) = picking(&ada, &plan, "");
-    let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
-    let links = offered(editor);
-    assert_eq!(
-        links
-            .iter()
-            .map(|(_, title)| title.as_str())
-            .collect::<Vec<_>>(),
-        ["Plan", "Groceries"],
-        "the notebook's notes, each by its title: {links:?}"
-    );
-    assert!(
-        links.iter().all(
-            |(reference, title)| reference.contains("so.tilo.lang.notes") && reference != title
-        ),
-        "each is the catalogue's reference to the note, never its title: {links:?}"
-    );
-    // What is typed in the picker narrows them, as search finds them.
-    let (_view, tree) = picking(&ada, &plan, "gro");
-    assert_eq!(
-        offered(find(&tree, "ui.BlockEditor").unwrap())
-            .iter()
-            .map(|(_, title)| title.as_str())
-            .collect::<Vec<_>>(),
-        ["Groceries"],
-        "only the note holding what was typed"
-    );
+    phase a_note_offers_its_notebooks_notes_by_the_titles_they_read_as_now;
+    {
+        let Workspace {
+            mut ada,
+            plan,
+            groceries,
+        } = workspace();
+        // A note opens with its picker closed, and offers nothing: reading the notebook's notes is
+        // the picker's work, not every frame of the document's.
+        let (_view, tree) = window(&ada, &plan);
+        let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
+        assert_eq!(
+            offered(editor),
+            [],
+            "no note is read while the picker is closed"
+        );
 
-    // A note renamed later is offered by its new title: the view names the record, and how it
-    // reads is read now.
-    let package = ada.host.package(APP).unwrap();
-    call(
-        &mut ada,
-        &package.meta,
-        "Note",
-        &groceries,
-        "retitle",
-        json!({ "title": "Shopping" }),
-    );
-    let (_view, tree) = picking(&ada, &plan, "");
-    let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
-    assert_eq!(
-        offered(editor)
-            .iter()
-            .map(|(_, title)| title.as_str())
-            .collect::<Vec<_>>(),
-        ["Plan", "Shopping"],
-        "the new title, not the one it had when the view first ran"
-    );
-}
+        let (_view, tree) = picking(&ada, &plan, "");
+        let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
+        let links = offered(editor);
+        assert_eq!(
+            links
+                .iter()
+                .map(|(_, title)| title.as_str())
+                .collect::<Vec<_>>(),
+            ["Plan", "Groceries"],
+            "the notebook's notes, each by its title: {links:?}"
+        );
+        assert!(
+            links.iter().all(
+                |(reference, title)| reference.contains("so.tilo.lang.notes") && reference != title
+            ),
+            "each is the catalogue's reference to the note, never its title: {links:?}"
+        );
+        // What is typed in the picker narrows them, as search finds them.
+        let (_view, tree) = picking(&ada, &plan, "gro");
+        assert_eq!(
+            offered(find(&tree, "ui.BlockEditor").unwrap())
+                .iter()
+                .map(|(_, title)| title.as_str())
+                .collect::<Vec<_>>(),
+            ["Groceries"],
+            "only the note holding what was typed"
+        );
 
-#[test]
-fn a_reference_written_into_a_note_is_a_mention_that_linked_reports() {
-    let Workspace {
-        ada,
-        plan,
-        groceries,
-    } = workspace();
-    let (view, tree) = window(&ada, &plan);
-    let key = find(&tree, "ui.BlockEditor")
-        .expect("the note's body is the editor")
-        .key
-        .clone();
+        // A note renamed later is offered by its new title: the view names the record, and how it
+        // reads is read now.
+        let package = ada.host.package(APP).unwrap();
+        call(
+            &mut ada,
+            &package.meta,
+            "Note",
+            &groceries,
+            "retitle",
+            json!({ "title": "Shopping" }),
+        );
+        let (_view, tree) = picking(&ada, &plan, "");
+        let editor = find(&tree, "ui.BlockEditor").expect("the note's body is the editor");
+        assert_eq!(
+            offered(editor)
+                .iter()
+                .map(|(_, title)| title.as_str())
+                .collect::<Vec<_>>(),
+            ["Plan", "Shopping"],
+            "the new title, not the one it had when the view first ran"
+        );
+    }
 
-    // What choosing a note in the editor writes: a run that reads as the note's title, marked
-    // as the reference to it (`ui.BlockEditor`'s own test drives the picker to this).
-    let (_view, other) = picking(&ada, &groceries, "gro");
-    let (reference, title) = offered(find(&other, "ui.BlockEditor").unwrap())
-        .into_iter()
-        .find(|(_, title)| title == "Groceries")
-        .expect("the note it offers");
-    let target = Reference::of_mark(&reference).expect("a reference");
-    let mut body = RichValue::from_text("Groceries: ");
-    body.push_reference(&title, &target);
-    view.edit(&key, &Value::Rich(body)).expect("the body edits");
+    phase a_reference_written_into_a_note_is_a_mention_that_linked_reports;
+    {
+        let Workspace {
+            ada,
+            plan,
+            groceries,
+        } = workspace();
+        let (view, tree) = window(&ada, &plan);
+        let key = find(&tree, "ui.BlockEditor")
+            .expect("the note's body is the editor")
+            .key
+            .clone();
 
-    let mentioned = ada
-        .host
-        .store()
-        .linked(&ResourceRef::parse_id(&groceries, String::new()).unwrap())
-        .unwrap();
-    let plan_id = ResourceRef::parse_id(&plan, String::new())
-        .unwrap()
-        .id_string();
-    assert!(
-        mentioned
-            .iter()
-            .any(|link| link.how == LinkHow::Mention && link.of.id_string() == plan_id),
-        "the note that mentions it, and how: {mentioned:?}"
-    );
+        // What choosing a note in the editor writes: a run that reads as the note's title, marked
+        // as the reference to it (`ui.BlockEditor`'s own test drives the picker to this).
+        let (_view, other) = picking(&ada, &groceries, "gro");
+        let (reference, title) = offered(find(&other, "ui.BlockEditor").unwrap())
+            .into_iter()
+            .find(|(_, title)| title == "Groceries")
+            .expect("the note it offers");
+        let target = Reference::of_mark(&reference).expect("a reference");
+        let mut body = RichValue::from_text("Groceries: ");
+        body.push_reference(&title, &target);
+        view.edit(&key, &Value::Rich(body)).expect("the body edits");
+
+        let mentioned = ada
+            .host
+            .store()
+            .linked(&ResourceRef::parse_id(&groceries, String::new()).unwrap())
+            .unwrap();
+        let plan_id = ResourceRef::parse_id(&plan, String::new())
+            .unwrap()
+            .id_string();
+        assert!(
+            mentioned
+                .iter()
+                .any(|link| link.how == LinkHow::Mention && link.of.id_string() == plan_id),
+            "the note that mentions it, and how: {mentioned:?}"
+        );
+    }
+
+    phase an_embedded_note_shows_its_first_lines_and_follows_them;
+    {
+        let Workspace {
+            ada,
+            plan,
+            groceries,
+        } = workspace();
+        // The embedded note says six lines, more than a card shows at once.
+        let told = [
+            "Oat milk, eggs, two lemons, and the bread the baker keeps back under the counter.",
+            "Cheese from the stall by the river, the hard one, and something soft for the weekend.",
+            "Coffee beans, the dark roast, ground for the machine rather than the pot this time.",
+            "Apples for the crumble, the ones that keep, and a lemon for the end of the soup.",
+            "Yoghurt, the plain one, and the small jars of the jam the grocer orders from the farm.",
+            "Something green for Sunday, and candles for the table, and the good butter again.",
+        ];
+        let (groceries_view, tree) = live(&ada, &groceries);
+        let groceries_key = find(&tree, "ui.BlockEditor")
+            .expect("its body is the editor")
+            .key
+            .clone();
+        groceries_view
+            .borrow_mut()
+            .edit(
+                &groceries_key,
+                &Value::Rich(RichValue::from_text(&told.join("\n"))),
+            )
+            .expect("the body writes");
+
+        // The note that embeds it: a paragraph that is nothing but a projection of it.
+        let (view, _tree, reference) = projecting(&ada, &plan, "Groceries");
+        let Some((title, said)) = embed_of(&ada, &view, &reference) else {
+            panic!("the card shows what it projects");
+        };
+        assert_eq!(
+            title, "Groceries",
+            "the card is titled by the note it projects"
+        );
+        let lines: Vec<&str> = said
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        assert!(
+            lines.len() >= 3,
+            "a card of it shows several lines of what it says, not one: {lines:?}"
+        );
+        assert_eq!(
+            lines.first().map(|line| line.trim()),
+            Some(told[0]),
+            "the first line of the note, as it says it: {lines:?}"
+        );
+        assert!(
+            lines.len() < told.len(),
+            "the card shows the start of it, and the note reads on: {lines:?}"
+        );
+
+        // What it says changes: the card is what it says now, from its first line.
+        groceries_view
+            .borrow_mut()
+            .edit(
+                &groceries_key,
+                &Value::Rich(RichValue::from_text(
+                    "Bread, cheese and apples, from the market.",
+                )),
+            )
+            .expect("the body writes");
+        assert!(view.borrow_mut().poll_patches().is_ok(), "the view runs");
+        let Some((_, said)) = embed_of(&ada, &view, &reference) else {
+            panic!("the card still shows what it projects");
+        };
+        assert_eq!(
+            said.lines().next().map(str::trim),
+            Some("Bread, cheese and apples, from the market."),
+            "the card follows the note it shows"
+        );
+    }
 }
 
 /// The window's view of the note `note`, and the tree the window receives of it: what
@@ -514,81 +595,4 @@ fn projecting(
         .edit(&key, &Value::Rich(body))
         .expect("the body writes");
     (view, tree, reference)
-}
-
-#[test]
-fn an_embedded_note_shows_its_first_lines_and_follows_them() {
-    let Workspace {
-        ada,
-        plan,
-        groceries,
-    } = workspace();
-    // The embedded note says six lines, more than a card shows at once.
-    let told = [
-        "Oat milk, eggs, two lemons, and the bread the baker keeps back under the counter.",
-        "Cheese from the stall by the river, the hard one, and something soft for the weekend.",
-        "Coffee beans, the dark roast, ground for the machine rather than the pot this time.",
-        "Apples for the crumble, the ones that keep, and a lemon for the end of the soup.",
-        "Yoghurt, the plain one, and the small jars of the jam the grocer orders from the farm.",
-        "Something green for Sunday, and candles for the table, and the good butter again.",
-    ];
-    let (groceries_view, tree) = live(&ada, &groceries);
-    let groceries_key = find(&tree, "ui.BlockEditor")
-        .expect("its body is the editor")
-        .key
-        .clone();
-    groceries_view
-        .borrow_mut()
-        .edit(
-            &groceries_key,
-            &Value::Rich(RichValue::from_text(&told.join("\n"))),
-        )
-        .expect("the body writes");
-
-    // The note that embeds it: a paragraph that is nothing but a projection of it.
-    let (view, _tree, reference) = projecting(&ada, &plan, "Groceries");
-    let Some((title, said)) = embed_of(&ada, &view, &reference) else {
-        panic!("the card shows what it projects");
-    };
-    assert_eq!(
-        title, "Groceries",
-        "the card is titled by the note it projects"
-    );
-    let lines: Vec<&str> = said
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    assert!(
-        lines.len() >= 3,
-        "a card of it shows several lines of what it says, not one: {lines:?}"
-    );
-    assert_eq!(
-        lines.first().map(|line| line.trim()),
-        Some(told[0]),
-        "the first line of the note, as it says it: {lines:?}"
-    );
-    assert!(
-        lines.len() < told.len(),
-        "the card shows the start of it, and the note reads on: {lines:?}"
-    );
-
-    // What it says changes: the card is what it says now, from its first line.
-    groceries_view
-        .borrow_mut()
-        .edit(
-            &groceries_key,
-            &Value::Rich(RichValue::from_text(
-                "Bread, cheese and apples, from the market.",
-            )),
-        )
-        .expect("the body writes");
-    assert!(view.borrow_mut().poll_patches().is_ok(), "the view runs");
-    let Some((_, said)) = embed_of(&ada, &view, &reference) else {
-        panic!("the card still shows what it projects");
-    };
-    assert_eq!(
-        said.lines().next().map(str::trim),
-        Some("Bread, cheese and apples, from the market."),
-        "the card follows the note it shows"
-    );
 }

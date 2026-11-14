@@ -212,117 +212,121 @@ pub fn guarded_at(path: &[EditStep<'_>], guarded: &[&str]) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_a_loud_collections_removal_asks() {
-        let notes = [EditStep::Field("notes")];
-        let tags = [
-            EditStep::Field("notes"),
-            EditStep::Item,
-            EditStep::Field("tags"),
-        ];
-        let quiet = ["notes.*.tags"];
-        assert!(field_edit_asks("remove-item", &notes, &quiet, &[]));
-        assert!(!field_edit_asks("remove-item", &tags, &quiet, &[]));
-        for op in [
-            "set",
-            "splice",
-            "insert-item",
-            "upsert-item",
-            "move-to",
-            "settle",
-            "forget",
-            "remove-key",
-        ] {
-            assert!(!field_edit_asks(op, &notes, &quiet, &[]), "{op}");
+    tilo_test_env::scenario! {
+        fn guarded_edits_ask_when_they_weaken;
+
+        phase only_a_loud_collections_removal_asks;
+        {
+            let notes = [EditStep::Field("notes")];
+            let tags = [
+                EditStep::Field("notes"),
+                EditStep::Item,
+                EditStep::Field("tags"),
+            ];
+            let quiet = ["notes.*.tags"];
+            assert!(field_edit_asks("remove-item", &notes, &quiet, &[]));
+            assert!(!field_edit_asks("remove-item", &tags, &quiet, &[]));
+            for op in [
+                "set",
+                "splice",
+                "insert-item",
+                "upsert-item",
+                "move-to",
+                "settle",
+                "forget",
+                "remove-key",
+            ] {
+                assert!(!field_edit_asks(op, &notes, &quiet, &[]), "{op}");
+            }
+            assert_eq!(dotted(&tags), "notes.*.tags");
         }
-        assert_eq!(dotted(&tags), "notes.*.tags");
-    }
 
-    #[test]
-    fn every_edit_at_or_below_a_guarded_field_asks() {
-        let lock = [EditStep::Field("lock")];
-        let delay = [EditStep::Field("lock"), EditStep::Field("delay")];
-        let other = [EditStep::Field("locked")];
-        let guarded = ["lock"];
-        for op in ["set", "splice", "insert-item", "remove-item"] {
-            assert!(field_edit_asks(op, &lock, &[], &guarded), "{op}");
-            assert!(field_edit_asks(op, &delay, &[], &guarded), "{op}");
+        phase every_edit_at_or_below_a_guarded_field_asks;
+        {
+            let lock = [EditStep::Field("lock")];
+            let delay = [EditStep::Field("lock"), EditStep::Field("delay")];
+            let other = [EditStep::Field("locked")];
+            let guarded = ["lock"];
+            for op in ["set", "splice", "insert-item", "remove-item"] {
+                assert!(field_edit_asks(op, &lock, &[], &guarded), "{op}");
+                assert!(field_edit_asks(op, &delay, &[], &guarded), "{op}");
+            }
+            assert!(!field_edit_asks("set", &other, &[], &guarded));
+            assert!(
+                field_edit_asks("remove-item", &lock, &["lock"], &guarded),
+                "a quiet removal of a guarded field still asks"
+            );
         }
-        assert!(!field_edit_asks("set", &other, &[], &guarded));
-        assert!(
-            field_edit_asks("remove-item", &lock, &["lock"], &guarded),
-            "a quiet removal of a guarded field still asks"
-        );
-    }
 
-    #[test]
-    fn a_number_weakens_its_way_and_its_weakest_value_beats_all() {
-        let delay = Weaker::Higher { weakest: Some(0) };
-        assert!(!delay.weakens(Some("5"), "1"), "shorter is stricter");
-        assert!(!delay.weakens(Some("5"), "5"));
-        assert!(delay.weakens(Some("5"), "10"));
-        assert!(delay.weakens(Some("60"), "0"), "never is the weakest");
-        assert!(!delay.weakens(Some("0"), "60"), "any delay beats never");
-        assert!(delay.weakens(None, "1"), "not knowing the value now asks");
-        assert!(
-            delay.weakens(Some("5"), "\"soon\""),
-            "an unranked value asks"
-        );
-        let floor = Weaker::Lower { weakest: None };
-        assert!(floor.weakens(Some("8"), "4"));
-        assert!(!floor.weakens(Some("8"), "12"));
-    }
+        phase a_number_weakens_its_way_and_its_weakest_value_beats_all;
+        {
+            let delay = Weaker::Higher { weakest: Some(0) };
+            assert!(!delay.weakens(Some("5"), "1"), "shorter is stricter");
+            assert!(!delay.weakens(Some("5"), "5"));
+            assert!(delay.weakens(Some("5"), "10"));
+            assert!(delay.weakens(Some("60"), "0"), "never is the weakest");
+            assert!(!delay.weakens(Some("0"), "60"), "any delay beats never");
+            assert!(delay.weakens(None, "1"), "not knowing the value now asks");
+            assert!(
+                delay.weakens(Some("5"), "\"soon\""),
+                "an unranked value asks"
+            );
+            let floor = Weaker::Lower { weakest: None };
+            assert!(floor.weakens(Some("8"), "4"));
+            assert!(!floor.weakens(Some("8"), "12"));
+        }
 
-    #[test]
-    fn a_switch_and_a_choice_weaken_down_their_order() {
-        let shown = Weaker::Order(&["false", "true"]);
-        assert!(shown.weakens(Some("false"), "true"));
-        assert!(!shown.weakens(Some("true"), "false"));
-        let zone = Weaker::Order(&["\"drop\"", "\"public\"", "\"trusted\""]);
-        assert!(zone.weakens(Some("\"public\""), "\"trusted\""));
-        assert!(!zone.weakens(Some("\"public\""), "\"drop\""));
-        assert!(zone.weakens(Some("\"drop\""), "\"other\""));
-    }
+        phase a_switch_and_a_choice_weaken_down_their_order;
+        {
+            let shown = Weaker::Order(&["false", "true"]);
+            assert!(shown.weakens(Some("false"), "true"));
+            assert!(!shown.weakens(Some("true"), "false"));
+            let zone = Weaker::Order(&["\"drop\"", "\"public\"", "\"trusted\""]);
+            assert!(zone.weakens(Some("\"public\""), "\"trusted\""));
+            assert!(!zone.weakens(Some("\"public\""), "\"drop\""));
+            assert!(zone.weakens(Some("\"drop\""), "\"other\""));
+        }
 
-    #[test]
-    fn a_published_weakening_field_reads_back_and_decides_its_edits() {
-        let order = ["false", "true"];
-        let tags = [
-            weakening_tag("lock", Some("5"), Weaker::Higher { weakest: Some(0) }),
-            weakening_tag("shown", Some("false"), Weaker::Order(&order)),
-            weakening_tag("rules.*.on", None, Weaker::Order(&order)),
-        ];
-        let fields: Vec<WeakeningField<'_>> = tags
-            .iter()
-            .map(|tag| WeakeningField::parse(tag.strip_prefix(WEAKENING_FIELD_TAG).unwrap()))
-            .collect::<Option<_>>()
-            .unwrap();
-        assert_eq!(
-            fields[0].weaker(),
-            Some(Weaker::Higher { weakest: Some(0) })
-        );
-        assert_eq!(fields[1].weaker(), Some(Weaker::Order(&order)));
-        let lock = [EditStep::Field("lock")];
-        let shown = [EditStep::Field("shown")];
-        let rule = [
-            EditStep::Field("rules"),
-            EditStep::Item,
-            EditStep::Field("on"),
-        ];
-        assert!(!weakening_edit("set", &lock, Some("1"), &fields));
-        assert!(weakening_edit("set", &lock, Some("0"), &fields));
-        assert!(weakening_edit("splice", &lock, None, &fields));
-        assert!(weakening_edit("set", &shown, Some("true"), &fields));
-        assert!(!weakening_edit("set", &shown, Some("false"), &fields));
-        assert!(
-            weakening_edit("set", &rule, Some("false"), &fields),
-            "an item's value is not published, so any edit asks"
-        );
-        assert!(!weakening_edit(
-            "set",
-            &[EditStep::Field("other")],
-            Some("1"),
-            &fields
-        ));
+        phase a_published_weakening_field_reads_back_and_decides_its_edits;
+        {
+            let order = ["false", "true"];
+            let tags = [
+                weakening_tag("lock", Some("5"), Weaker::Higher { weakest: Some(0) }),
+                weakening_tag("shown", Some("false"), Weaker::Order(&order)),
+                weakening_tag("rules.*.on", None, Weaker::Order(&order)),
+            ];
+            let fields: Vec<WeakeningField<'_>> = tags
+                .iter()
+                .map(|tag| WeakeningField::parse(tag.strip_prefix(WEAKENING_FIELD_TAG).unwrap()))
+                .collect::<Option<_>>()
+                .unwrap();
+            assert_eq!(
+                fields[0].weaker(),
+                Some(Weaker::Higher { weakest: Some(0) })
+            );
+            assert_eq!(fields[1].weaker(), Some(Weaker::Order(&order)));
+            let lock = [EditStep::Field("lock")];
+            let shown = [EditStep::Field("shown")];
+            let rule = [
+                EditStep::Field("rules"),
+                EditStep::Item,
+                EditStep::Field("on"),
+            ];
+            assert!(!weakening_edit("set", &lock, Some("1"), &fields));
+            assert!(weakening_edit("set", &lock, Some("0"), &fields));
+            assert!(weakening_edit("splice", &lock, None, &fields));
+            assert!(weakening_edit("set", &shown, Some("true"), &fields));
+            assert!(!weakening_edit("set", &shown, Some("false"), &fields));
+            assert!(
+                weakening_edit("set", &rule, Some("false"), &fields),
+                "an item's value is not published, so any edit asks"
+            );
+            assert!(!weakening_edit(
+                "set",
+                &[EditStep::Field("other")],
+                Some("1"),
+                &fields
+            ));
+        }
     }
 }

@@ -108,7 +108,7 @@ pub(crate) fn serve(
     woken: &Arc<AtomicBool>,
 ) -> Revoked {
     let revoked = Revoked::default();
-    if let (Some(peer), Ok(workspace)) = (peer, crate::peer::workspace_number(workspace))
+    if let (Some(peer), Ok(workspace)) = (peer, crate::peer::workspace_id(workspace))
         && let Some(door) = crate::peer_sync::actions_of(peer, workspace)
     {
         session.serve_person_door(

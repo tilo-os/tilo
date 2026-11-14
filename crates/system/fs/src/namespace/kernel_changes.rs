@@ -114,48 +114,52 @@ mod tests {
         let _ = ns.readdir(dir);
     }
 
-    #[test]
-    fn a_merged_creation_names_the_directory_it_lands_in() {
-        let mut ours = Namespace::new("ours").unwrap();
-        let docs = ours.create_dir(ROOT_INO, "docs", 1).unwrap();
-        let mut theirs = Namespace::from_bytes("theirs", &ours.save()).unwrap();
-        listed(&mut ours, ROOT_INO);
-        listed(&mut ours, docs);
-        let before = ours.heads();
+    tilo_test_env::scenario! {
+        fn kernel_changes_name_exactly_what_a_change_touched;
 
-        let their_docs = theirs.resolve_path_ino("/docs").unwrap();
-        theirs
-            .create_file(their_docs, "new.md", None, 3, 2)
-            .unwrap();
-        ours.merge_doc(&mut theirs).unwrap();
+        phase a_merged_creation_names_the_directory_it_lands_in;
+        {
+            let mut ours = Namespace::new("ours").unwrap();
+            let docs = ours.create_dir(ROOT_INO, "docs", 1).unwrap();
+            let mut theirs = Namespace::from_bytes("theirs", &ours.save()).unwrap();
+            listed(&mut ours, ROOT_INO);
+            listed(&mut ours, docs);
+            let before = ours.heads();
 
-        let changes = ours.kernel_changes_since(&before);
-        assert_eq!(changes.directories, BTreeSet::from([docs]));
-        assert_eq!(ours.kernel_path_for(docs), Some(PathBuf::from("docs")));
-        assert_eq!(ours.kernel_path_for(ROOT_INO), Some(PathBuf::new()));
-    }
+            let their_docs = theirs.resolve_path_ino("/docs").unwrap();
+            theirs
+                .create_file(their_docs, "new.md", None, 3, 2)
+                .unwrap();
+            ours.merge_doc(&mut theirs).unwrap();
 
-    #[test]
-    fn a_move_names_both_directories_and_the_node() {
-        let mut ns = Namespace::new("mover").unwrap();
-        let from = ns.create_dir(ROOT_INO, "from", 1).unwrap();
-        let to = ns.create_dir(ROOT_INO, "to", 1).unwrap();
-        let file = ns.create_file(from, "a.md", None, 1, 1).unwrap();
-        let before = ns.heads();
+            let changes = ours.kernel_changes_since(&before);
+            assert_eq!(changes.directories, BTreeSet::from([docs]));
+            assert_eq!(ours.kernel_path_for(docs), Some(PathBuf::from("docs")));
+            assert_eq!(ours.kernel_path_for(ROOT_INO), Some(PathBuf::new()));
+        }
 
-        assert!(ns.rename(from, "a.md", to, "b.md", 2));
+        phase a_move_names_both_directories_and_the_node;
+        {
+            let mut ns = Namespace::new("mover").unwrap();
+            let from = ns.create_dir(ROOT_INO, "from", 1).unwrap();
+            let to = ns.create_dir(ROOT_INO, "to", 1).unwrap();
+            let file = ns.create_file(from, "a.md", None, 1, 1).unwrap();
+            let before = ns.heads();
 
-        let changes = ns.kernel_changes_since(&before);
-        assert_eq!(changes.directories, BTreeSet::from([from, to]));
-        assert_eq!(changes.nodes, BTreeSet::from([file]));
-        assert_eq!(ns.kernel_path_for(file), Some(PathBuf::from("to/b.md")));
-    }
+            assert!(ns.rename(from, "a.md", to, "b.md", 2));
 
-    #[test]
-    fn nothing_changed_names_nothing() {
-        let mut ns = Namespace::new("idle").unwrap();
-        ns.create_dir(ROOT_INO, "docs", 1).unwrap();
-        let heads = ns.heads();
-        assert_eq!(ns.kernel_changes_since(&heads), KernelChanges::default());
+            let changes = ns.kernel_changes_since(&before);
+            assert_eq!(changes.directories, BTreeSet::from([from, to]));
+            assert_eq!(changes.nodes, BTreeSet::from([file]));
+            assert_eq!(ns.kernel_path_for(file), Some(PathBuf::from("to/b.md")));
+        }
+
+        phase nothing_changed_names_nothing;
+        {
+            let mut ns = Namespace::new("idle").unwrap();
+            ns.create_dir(ROOT_INO, "docs", 1).unwrap();
+            let heads = ns.heads();
+            assert_eq!(ns.kernel_changes_since(&heads), KernelChanges::default());
+        }
     }
 }

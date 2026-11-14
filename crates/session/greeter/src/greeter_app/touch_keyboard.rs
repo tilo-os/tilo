@@ -426,45 +426,144 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn keys_pressed_are_kept_for_the_screen_and_shift_changes_the_keyboard() {
-        let theme = Theme::dark();
-        let keyboard = laid_out(&theme);
-        for key in [
-            PasscodeKey::Char('1'),
-            PasscodeKey::Shift,
-            PasscodeKey::Char('a'),
-            PasscodeKey::Backspace,
-            PasscodeKey::Enter,
-        ] {
-            let at = centre_of(&keyboard, key);
-            assert!(keyboard.press_at(at), "{key:?}");
-        }
-        assert!(!keyboard.press_at(Point::new(-5.0, -5.0)));
-        assert_eq!(
-            *keyboard.shared.typed.borrow(),
-            [
-                PasscodeInput::Text("1".into()),
-                PasscodeInput::Text("A".into()),
-                PasscodeInput::Backspace,
-                PasscodeInput::Enter,
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_touch_keyboard_types_what_is_pressed_and_names_its_keys;
 
-    #[test]
-    fn the_pads_enter_submits_only_once_the_passcode_has_something_in_it() {
-        let theme = Theme::dark();
-        let keyboard = laid_out(&theme);
-        let shared = &keyboard.shared;
-        assert!(!enter_submits(shared));
-        *shared.passcode.lock_recover() = "1".into();
-        assert!(enter_submits(shared));
-        *shared.passcode.lock_recover() = String::new();
-        // A recovery key goes into the recovery form, whose own action
-        // submits it whatever the passcode holds.
-        shared.recovery.set(true);
-        assert!(enter_submits(shared));
+        phase keys_pressed_are_kept_for_the_screen_and_shift_changes_the_keyboard;
+        {
+            let theme = Theme::dark();
+            let keyboard = laid_out(&theme);
+            for key in [
+                PasscodeKey::Char('1'),
+                PasscodeKey::Shift,
+                PasscodeKey::Char('a'),
+                PasscodeKey::Backspace,
+                PasscodeKey::Enter,
+            ] {
+                let at = centre_of(&keyboard, key);
+                assert!(keyboard.press_at(at), "{key:?}");
+            }
+            assert!(!keyboard.press_at(Point::new(-5.0, -5.0)));
+            assert_eq!(
+                *keyboard.shared.typed.borrow(),
+                [
+                    PasscodeInput::Text("1".into()),
+                    PasscodeInput::Text("A".into()),
+                    PasscodeInput::Backspace,
+                    PasscodeInput::Enter,
+                ]
+            );
+        }
+
+        phase the_pads_enter_submits_only_once_the_passcode_has_something_in_it;
+        {
+            let theme = Theme::dark();
+            let keyboard = laid_out(&theme);
+            let shared = &keyboard.shared;
+            assert!(!enter_submits(shared));
+            *shared.passcode.lock_recover() = "1".into();
+            assert!(enter_submits(shared));
+            *shared.passcode.lock_recover() = String::new();
+            // A recovery key goes into the recovery form, whose own action
+            // submits it whatever the passcode holds.
+            shared.recovery.set(true);
+            assert!(enter_submits(shared));
+        }
+
+        phase the_pad_taps_digits_then_enter;
+        {
+            let theme = Theme::dark();
+            let keyboard = laid_out_for(&theme, PasscodeKeyboard::for_pin());
+            for key in [
+                PasscodeKey::Char('2'),
+                PasscodeKey::Char('0'),
+                PasscodeKey::Backspace,
+                PasscodeKey::Enter,
+            ] {
+                assert!(keyboard.press_at(centre_of(&keyboard, key)), "{key:?}");
+            }
+            assert!(keyboard.shared.keyboard.get().is_for_pin());
+            assert_eq!(
+                *keyboard.shared.typed.borrow(),
+                [
+                    PasscodeInput::Text("2".into()),
+                    PasscodeInput::Text("0".into()),
+                    PasscodeInput::Backspace,
+                    PasscodeInput::Enter,
+                ]
+            );
+        }
+
+        phase the_screen_reader_names_every_key_row_by_row_and_presses_it;
+        {
+            let theme = Theme::dark();
+            let mut keyboard = laid_out_for(&theme, PasscodeKeyboard::for_pin());
+            assert_eq!(
+                spoken_keys(&keyboard),
+                [
+                    "1", "2", "3", "4", "5", "6", "7", "8", "9", "Delete", "0", "Enter"
+                ]
+            );
+            let node = keyboard
+                .accessibility()
+                .expect("the keyboard is accessible");
+            assert!(
+                node.children.iter().all(|key| key.bounds.is_some()
+                    && key.state.focusable
+                    && key.action_target.is_some())
+            );
+            assert_eq!(
+                ui::screen_reader::describe(&node.children[9]),
+                "Delete, button"
+            );
+
+            // Activating a digit from the screen reader types it.
+            let two = node
+                .children
+                .iter()
+                .find(|key| key.name.as_deref() == Some("2"))
+                .and_then(|key| key.action_target.clone())
+                .unwrap();
+            let mut doc = automerge::AutoCommit::new();
+            let mut edits = ui::widget::Edits::lend(&mut doc);
+            assert!(keyboard.perform_semantic_action(
+                &two,
+                &Action::Activate,
+                &mut edits,
+                &automerge::ROOT
+            ));
+            assert_eq!(
+                *keyboard.shared.typed.borrow(),
+                [PasscodeInput::Text("2".into())]
+            );
+
+            // The letters keyboard names what each key does, row by row.
+            let mut letters = laid_out_for(&theme, PasscodeKeyboard::default());
+            let spoken = spoken_keys(&letters);
+            for name in ["Shift", "Delete", "Symbols", "Space", "Enter"] {
+                assert!(
+                    spoken.iter().any(|said| said == name),
+                    "{name} in {spoken:?}"
+                );
+            }
+            let symbols = letters
+                .accessibility()
+                .expect("the keyboard is accessible")
+                .children
+                .iter()
+                .find(|key| key.name.as_deref() == Some("Symbols"))
+                .and_then(|key| key.action_target.clone())
+                .unwrap();
+            let mut doc = automerge::AutoCommit::new();
+            let mut edits = ui::widget::Edits::lend(&mut doc);
+            assert!(letters.perform_semantic_action(
+                &symbols,
+                &Action::Activate,
+                &mut edits,
+                &automerge::ROOT
+            ));
+            assert_eq!(spoken_keys(&letters)[10], "!");
+        }
     }
 
     /// What the screen reader says for each key, in the order the keyboard
@@ -478,100 +577,5 @@ mod tests {
             .inspect(|node| assert_eq!(node.role, Role::Button))
             .map(|node| node.name.clone().unwrap_or_default())
             .collect()
-    }
-
-    #[test]
-    fn the_pad_taps_digits_then_enter() {
-        let theme = Theme::dark();
-        let keyboard = laid_out_for(&theme, PasscodeKeyboard::for_pin());
-        for key in [
-            PasscodeKey::Char('2'),
-            PasscodeKey::Char('0'),
-            PasscodeKey::Backspace,
-            PasscodeKey::Enter,
-        ] {
-            assert!(keyboard.press_at(centre_of(&keyboard, key)), "{key:?}");
-        }
-        assert!(keyboard.shared.keyboard.get().is_for_pin());
-        assert_eq!(
-            *keyboard.shared.typed.borrow(),
-            [
-                PasscodeInput::Text("2".into()),
-                PasscodeInput::Text("0".into()),
-                PasscodeInput::Backspace,
-                PasscodeInput::Enter,
-            ]
-        );
-    }
-
-    #[test]
-    fn the_screen_reader_names_every_key_row_by_row_and_presses_it() {
-        let theme = Theme::dark();
-        let mut keyboard = laid_out_for(&theme, PasscodeKeyboard::for_pin());
-        assert_eq!(
-            spoken_keys(&keyboard),
-            [
-                "1", "2", "3", "4", "5", "6", "7", "8", "9", "Delete", "0", "Enter"
-            ]
-        );
-        let node = keyboard
-            .accessibility()
-            .expect("the keyboard is accessible");
-        assert!(
-            node.children.iter().all(|key| key.bounds.is_some()
-                && key.state.focusable
-                && key.action_target.is_some())
-        );
-        assert_eq!(
-            ui::screen_reader::describe(&node.children[9]),
-            "Delete, button"
-        );
-
-        // Activating a digit from the screen reader types it.
-        let two = node
-            .children
-            .iter()
-            .find(|key| key.name.as_deref() == Some("2"))
-            .and_then(|key| key.action_target.clone())
-            .unwrap();
-        let mut doc = automerge::AutoCommit::new();
-        let mut edits = ui::widget::Edits::lend(&mut doc);
-        assert!(keyboard.perform_semantic_action(
-            &two,
-            &Action::Activate,
-            &mut edits,
-            &automerge::ROOT
-        ));
-        assert_eq!(
-            *keyboard.shared.typed.borrow(),
-            [PasscodeInput::Text("2".into())]
-        );
-
-        // The letters keyboard names what each key does, row by row.
-        let mut letters = laid_out_for(&theme, PasscodeKeyboard::default());
-        let spoken = spoken_keys(&letters);
-        for name in ["Shift", "Delete", "Symbols", "Space", "Enter"] {
-            assert!(
-                spoken.iter().any(|said| said == name),
-                "{name} in {spoken:?}"
-            );
-        }
-        let symbols = letters
-            .accessibility()
-            .expect("the keyboard is accessible")
-            .children
-            .iter()
-            .find(|key| key.name.as_deref() == Some("Symbols"))
-            .and_then(|key| key.action_target.clone())
-            .unwrap();
-        let mut doc = automerge::AutoCommit::new();
-        let mut edits = ui::widget::Edits::lend(&mut doc);
-        assert!(letters.perform_semantic_action(
-            &symbols,
-            &Action::Activate,
-            &mut edits,
-            &automerge::ROOT
-        ));
-        assert_eq!(spoken_keys(&letters)[10], "!");
     }
 }

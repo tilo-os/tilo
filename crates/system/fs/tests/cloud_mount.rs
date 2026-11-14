@@ -145,36 +145,111 @@ fn dropbox_mount_syncs_remote_edits_and_local_writes() {
     assert_eq!(read_all(&volume, "document.txt"), b"local edit");
 }
 
-#[test]
-fn drive_mount_syncs_remote_edits_and_local_writes() {
-    use cloud_source_gdrive::{
-        GDrive,
-        fake::{FakeDrive, SOURCE_TOKEN},
-    };
-    let server = FakeDrive::start();
-    let id = server.put_file(&server.root_id(), "document.txt", b"initial");
-    server.put_native(
-        &server.root_id(),
-        "Essay",
-        "application/vnd.google-apps.document",
-    );
-    let dir = tempfile::tempdir().unwrap();
-    let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
-    let volume = oauth_volume(Arc::new(source), dir.path());
-    volume.sync_once().unwrap();
-    assert_eq!(read_all(&volume, "document.txt"), b"initial");
-    server.write_file(&id, b"remote edit");
-    volume.sync_once().unwrap();
-    assert_eq!(read_all(&volume, "document.txt"), b"remote edit");
-    write_file(&volume, "document.txt", b"local edit");
-    volume.upload_pending().unwrap();
-    assert_eq!(server.bytes(&id).unwrap(), b"local edit");
-    volume.sync_once().unwrap();
-    assert_eq!(read_all(&volume, "document.txt"), b"local edit");
-    assert_eq!(read_all(&volume, "Essay.docx"), OFFICE_DOCX);
-    let attr = volume.lookup(ROOT_INO, "Essay.docx").unwrap();
-    assert_eq!(attr.size, OFFICE_DOCX.len() as u64);
-    assert_eq!(attr.perm, 0o444);
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn oauth_drives_sync_both_ways_and_export_native_office_files;
+
+    phase drive_mount_syncs_remote_edits_and_local_writes;
+    {
+        use cloud_source_gdrive::{
+            GDrive,
+            fake::{FakeDrive, SOURCE_TOKEN},
+        };
+        let server = FakeDrive::start();
+        let id = server.put_file(&server.root_id(), "document.txt", b"initial");
+        server.put_native(
+            &server.root_id(),
+            "Essay",
+            "application/vnd.google-apps.document",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+        let volume = oauth_volume(Arc::new(source), dir.path());
+        volume.sync_once().unwrap();
+        assert_eq!(read_all(&volume, "document.txt"), b"initial");
+        server.write_file(&id, b"remote edit");
+        volume.sync_once().unwrap();
+        assert_eq!(read_all(&volume, "document.txt"), b"remote edit");
+        write_file(&volume, "document.txt", b"local edit");
+        volume.upload_pending().unwrap();
+        assert_eq!(server.bytes(&id).unwrap(), b"local edit");
+        volume.sync_once().unwrap();
+        assert_eq!(read_all(&volume, "document.txt"), b"local edit");
+        assert_eq!(read_all(&volume, "Essay.docx"), OFFICE_DOCX);
+        let attr = volume.lookup(ROOT_INO, "Essay.docx").unwrap();
+        assert_eq!(attr.size, OFFICE_DOCX.len() as u64);
+        assert_eq!(attr.perm, 0o444);
+    }
+
+    phase native_office_exports_are_read_only_but_can_be_renamed_and_deleted;
+    {
+        use cloud_source_gdrive::{
+            GDrive,
+            fake::{FakeDrive, SOURCE_TOKEN},
+        };
+        let server = FakeDrive::start();
+        let dir = tempfile::tempdir().unwrap();
+        let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+        let volume = oauth_volume(Arc::new(source), dir.path());
+        for (kind, extension, bytes) in [
+            ("document", "docx", OFFICE_DOCX),
+            ("spreadsheet", "xlsx", OFFICE_XLSX),
+            ("presentation", "pptx", OFFICE_PPTX),
+        ] {
+            let id = server.put_native(
+                &server.root_id(),
+                "Native",
+                &format!("application/vnd.google-apps.{kind}"),
+            );
+            volume.sync_once().unwrap();
+            let name = format!("Native.{extension}");
+            let attr = volume.lookup(ROOT_INO, &name).unwrap();
+            assert_eq!(attr.size, bytes.len() as u64);
+            assert_eq!(attr.perm, 0o444);
+            assert!(bytes.starts_with(b"PK\x03\x04"));
+            assert_eq!(read_all(&volume, &name), bytes);
+            assert_eq!(volume.read_ino(attr.ino, 7, 19).unwrap(), bytes[7..26]);
+            assert_eq!(volume.read_ino(attr.ino, attr.size, 19).unwrap(), b"");
+            for (write, truncate) in [(true, false), (true, true), (false, true)] {
+                assert_eq!(
+                    volume.open_file(attr.ino, write, truncate),
+                    Err(libc::EACCES)
+                );
+            }
+            for size in [0, 1, attr.size + 1] {
+                assert_eq!(volume.truncate(attr.ino, size), Err(libc::EACCES));
+            }
+            let fh = volume.open_file(attr.ino, false, false).unwrap();
+            assert_eq!(volume.write(fh, 0, b"overwrite"), Err(libc::EBADF));
+            volume.release(fh).unwrap();
+            write_file(&volume, "safe-save.tmp", b"replacement");
+            let pending = volume.pending();
+            assert_eq!(
+                volume.rename(ROOT_INO, "safe-save.tmp", ROOT_INO, &name),
+                Err(libc::EACCES)
+            );
+            assert_eq!(volume.pending(), pending);
+            assert_eq!(read_all(&volume, "safe-save.tmp"), b"replacement");
+            assert_eq!(read_all(&volume, &name), bytes);
+            volume.unlink(ROOT_INO, "safe-save.tmp").unwrap();
+            let renamed = format!("Renamed.{extension}");
+            volume.rename(ROOT_INO, &name, ROOT_INO, &renamed).unwrap();
+            volume.upload_pending().unwrap();
+            assert_eq!(volume.resolve(&renamed).unwrap(), attr.ino);
+            assert_eq!(volume.resolve(&name), Err(libc::ENOENT));
+            let provider = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+            assert_eq!(
+                provider.stat(&cloud_source::ItemId::new(&id)).unwrap().name,
+                "Renamed"
+            );
+            volume.unlink(ROOT_INO, &renamed).unwrap();
+            volume.upload_pending().unwrap();
+            assert_eq!(server.is_trashed(&id), Some(true));
+        }
+    }
 }
 
 const OFFICE_DOCX: &[u8] = {
@@ -196,73 +271,6 @@ const OFFICE_PPTX: &[u8] = {
     fixture::BYTES
 };
 
-#[test]
-fn native_office_exports_are_read_only_but_can_be_renamed_and_deleted() {
-    use cloud_source_gdrive::{
-        GDrive,
-        fake::{FakeDrive, SOURCE_TOKEN},
-    };
-    let server = FakeDrive::start();
-    let dir = tempfile::tempdir().unwrap();
-    let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
-    let volume = oauth_volume(Arc::new(source), dir.path());
-    for (kind, extension, bytes) in [
-        ("document", "docx", OFFICE_DOCX),
-        ("spreadsheet", "xlsx", OFFICE_XLSX),
-        ("presentation", "pptx", OFFICE_PPTX),
-    ] {
-        let id = server.put_native(
-            &server.root_id(),
-            "Native",
-            &format!("application/vnd.google-apps.{kind}"),
-        );
-        volume.sync_once().unwrap();
-        let name = format!("Native.{extension}");
-        let attr = volume.lookup(ROOT_INO, &name).unwrap();
-        assert_eq!(attr.size, bytes.len() as u64);
-        assert_eq!(attr.perm, 0o444);
-        assert!(bytes.starts_with(b"PK\x03\x04"));
-        assert_eq!(read_all(&volume, &name), bytes);
-        assert_eq!(volume.read_ino(attr.ino, 7, 19).unwrap(), bytes[7..26]);
-        assert_eq!(volume.read_ino(attr.ino, attr.size, 19).unwrap(), b"");
-        for (write, truncate) in [(true, false), (true, true), (false, true)] {
-            assert_eq!(
-                volume.open_file(attr.ino, write, truncate),
-                Err(libc::EACCES)
-            );
-        }
-        for size in [0, 1, attr.size + 1] {
-            assert_eq!(volume.truncate(attr.ino, size), Err(libc::EACCES));
-        }
-        let fh = volume.open_file(attr.ino, false, false).unwrap();
-        assert_eq!(volume.write(fh, 0, b"overwrite"), Err(libc::EBADF));
-        volume.release(fh).unwrap();
-        write_file(&volume, "safe-save.tmp", b"replacement");
-        let pending = volume.pending();
-        assert_eq!(
-            volume.rename(ROOT_INO, "safe-save.tmp", ROOT_INO, &name),
-            Err(libc::EACCES)
-        );
-        assert_eq!(volume.pending(), pending);
-        assert_eq!(read_all(&volume, "safe-save.tmp"), b"replacement");
-        assert_eq!(read_all(&volume, &name), bytes);
-        volume.unlink(ROOT_INO, "safe-save.tmp").unwrap();
-        let renamed = format!("Renamed.{extension}");
-        volume.rename(ROOT_INO, &name, ROOT_INO, &renamed).unwrap();
-        volume.upload_pending().unwrap();
-        assert_eq!(volume.resolve(&renamed).unwrap(), attr.ino);
-        assert_eq!(volume.resolve(&name), Err(libc::ENOENT));
-        let provider = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
-        assert_eq!(
-            provider.stat(&cloud_source::ItemId::new(&id)).unwrap().name,
-            "Renamed"
-        );
-        volume.unlink(ROOT_INO, &renamed).unwrap();
-        volume.upload_pending().unwrap();
-        assert_eq!(server.is_trashed(&id), Some(true));
-    }
-}
-
 #[path = "cloud_mount/import.rs"]
 mod cloud_import;
 #[path = "cloud_mount/native.rs"]
@@ -274,163 +282,219 @@ fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
 }
 
-#[test]
-fn listing_mirrors_the_server_tree() {
-    let server = FakeDav::nextcloud();
-    server.put("Notes/plan.md", b"# plan");
-    server.put("Photos/2024/beach.jpg", b"jpeg");
-    server.put("readme.txt", b"hello");
-    let dir = tempfile::tempdir().unwrap();
-    let mount = mount_volume(&server, dir.path());
-    mount.volume.sync_once().unwrap();
-    assert_eq!(names(&mount.volume, ""), ["Notes", "Photos", "readme.txt"]);
-    assert_eq!(names(&mount.volume, "Photos/2024"), ["beach.jpg"]);
-    let attr = mount
-        .volume
-        .getattr(mount.volume.resolve("readme.txt").unwrap())
-        .unwrap();
-    assert_eq!(attr.size, 5);
-    assert_eq!(
-        mount.health.lock().unwrap().last(),
-        Some(&MountHealth::Healthy)
-    );
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn a_webdav_volume_mirrors_reads_and_writes_through_its_cache;
 
-    server.put("Notes/todo.md", b"- ship");
-    server.remove("readme.txt");
-    let _ = server.requests();
-    mount.volume.sync_once().unwrap();
-    assert_eq!(names(&mount.volume, ""), ["Notes", "Photos"]);
-    assert_eq!(names(&mount.volume, "Notes"), ["plan.md", "todo.md"]);
-    let walked: Vec<String> = server
-        .requests()
-        .into_iter()
-        .filter(|r| r.method == "PROPFIND")
-        .map(|r| r.target)
-        .collect();
-    assert!(
-        !walked.iter().any(|t| t.contains("/Photos/")),
-        "the unchanged Photos subtree was walked again: {walked:?}"
-    );
-}
+    phase listing_mirrors_the_server_tree;
+    {
+        let server = FakeDav::nextcloud();
+        server.put("Notes/plan.md", b"# plan");
+        server.put("Photos/2024/beach.jpg", b"jpeg");
+        server.put("readme.txt", b"hello");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_volume(&server, dir.path());
+        mount.volume.sync_once().unwrap();
+        assert_eq!(names(&mount.volume, ""), ["Notes", "Photos", "readme.txt"]);
+        assert_eq!(names(&mount.volume, "Photos/2024"), ["beach.jpg"]);
+        let attr = mount
+            .volume
+            .getattr(mount.volume.resolve("readme.txt").unwrap())
+            .unwrap();
+        assert_eq!(attr.size, 5);
+        assert_eq!(
+            mount.health.lock().unwrap().last(),
+            Some(&MountHealth::Healthy)
+        );
 
-#[test]
-fn cold_and_ranged_reads_hydrate_only_what_is_read() {
-    let server = FakeDav::generic();
-    let big = pattern(8 << 20);
-    server.put("video.bin", &big);
-    server.put("small.txt", b"tiny");
-    let dir = tempfile::tempdir().unwrap();
-    let mount = mount_volume(&server, dir.path());
-    mount.volume.sync_once().unwrap();
-    assert_eq!(
-        server.stats().bytes_served,
-        0,
-        "listing never reads content"
-    );
-
-    assert_eq!(read_all(&mount.volume, "small.txt"), b"tiny");
-
-    let ino = mount.volume.resolve("video.bin").unwrap();
-    let offset = 5 << 20;
-    let chunk = mount.volume.read_ino(ino, offset, 4096).unwrap();
-    assert_eq!(chunk, &big[5 << 20..(5 << 20) + 4096]);
-    let stats = server.stats();
-    assert!(stats.ranged_gets >= 1);
-    assert!(
-        stats.bytes_served <= (1 << 20) + 4,
-        "a 4 KiB read fetched {} bytes",
-        stats.bytes_served
-    );
-
-    let fetched_before = server.stats().bytes_served;
-    assert_eq!(
-        mount.volume.read_ino(ino, offset + 100, 100).unwrap(),
-        &big[(5 << 20) + 100..(5 << 20) + 200]
-    );
-    assert_eq!(server.stats().bytes_served, fetched_before);
-
-    let fh = mount.volume.open_file(ino, false, false).unwrap();
-    let mut got = Vec::new();
-    while got.len() < big.len() {
-        let part = mount.volume.read(fh, got.len() as u64, 128 * 1024).unwrap();
-        assert!(!part.is_empty());
-        got.extend_from_slice(&part);
+        server.put("Notes/todo.md", b"- ship");
+        server.remove("readme.txt");
+        let _ = server.requests();
+        mount.volume.sync_once().unwrap();
+        assert_eq!(names(&mount.volume, ""), ["Notes", "Photos"]);
+        assert_eq!(names(&mount.volume, "Notes"), ["plan.md", "todo.md"]);
+        let walked: Vec<String> = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.method == "PROPFIND")
+            .map(|r| r.target)
+            .collect();
+        assert!(
+            !walked.iter().any(|t| t.contains("/Photos/")),
+            "the unchanged Photos subtree was walked again: {walked:?}"
+        );
     }
-    mount.volume.release(fh).unwrap();
-    assert_eq!(got, big);
-}
 
-#[test]
-fn local_writes_upload_with_revision_preconditions() {
-    let server = FakeDav::nextcloud();
-    server.put("doc.txt", b"version one");
-    let dir = tempfile::tempdir().unwrap();
-    let mount = mount_volume(&server, dir.path());
-    mount.volume.sync_once().unwrap();
-    let _ = server.requests();
+    phase cold_and_ranged_reads_hydrate_only_what_is_read;
+    {
+        let server = FakeDav::generic();
+        let big = pattern(8 << 20);
+        server.put("video.bin", &big);
+        server.put("small.txt", b"tiny");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_volume(&server, dir.path());
+        mount.volume.sync_once().unwrap();
+        assert_eq!(
+            server.stats().bytes_served,
+            0,
+            "listing never reads content"
+        );
 
-    write_file(&mount.volume, "doc.txt", b"version two, edited here");
-    assert_eq!(mount.volume.pending(), 1);
-    assert_eq!(
-        read_all(&mount.volume, "doc.txt"),
-        b"version two, edited here",
-        "reads see local writes before they upload"
-    );
-    mount.volume.upload_pending().unwrap();
-    assert_eq!(mount.volume.pending(), 0);
-    assert_eq!(server.get("doc.txt").unwrap(), b"version two, edited here");
-    let put = server
-        .requests()
-        .into_iter()
-        .find(|r| r.method == "PUT")
-        .expect("an upload");
-    assert!(put.header("if-match").is_some(), "uploads are conditional");
+        assert_eq!(read_all(&mount.volume, "small.txt"), b"tiny");
 
-    let root = ROOT_INO;
-    mount.volume.mkdir(root, "Reports").unwrap();
-    write_file(&mount.volume, "Reports/q3.txt", b"numbers");
-    let big = pattern(200 * 1024);
-    write_file(&mount.volume, "Reports/big.bin", &big);
-    let reports = mount.volume.resolve("Reports").unwrap();
-    mount
-        .volume
-        .rename(reports, "q3.txt", reports, "q3-final.txt")
-        .unwrap();
-    mount.volume.unlink(root, "doc.txt").unwrap();
-    mount.volume.upload_pending().unwrap();
-    assert_eq!(server.get("Reports/q3-final.txt").unwrap(), b"numbers");
-    assert_eq!(
-        server.get("Reports/big.bin").unwrap(),
-        big,
-        "chunked upload"
-    );
-    assert!(server.get("doc.txt").is_none());
-    assert!(server.get("Reports/q3.txt").is_none());
+        let ino = mount.volume.resolve("video.bin").unwrap();
+        let offset = 5 << 20;
+        let chunk = mount.volume.read_ino(ino, offset, 4096).unwrap();
+        assert_eq!(chunk, &big[5 << 20..(5 << 20) + 4096]);
+        let stats = server.stats();
+        assert!(stats.ranged_gets >= 1);
+        assert!(
+            stats.bytes_served <= (1 << 20) + 4,
+            "a 4 KiB read fetched {} bytes",
+            stats.bytes_served
+        );
 
-    mount.volume.sync_once().unwrap();
-    assert_eq!(names(&mount.volume, "Reports"), ["big.bin", "q3-final.txt"]);
-    assert_eq!(read_all(&mount.volume, "Reports/big.bin"), big);
-}
+        let fetched_before = server.stats().bytes_served;
+        assert_eq!(
+            mount.volume.read_ino(ino, offset + 100, 100).unwrap(),
+            &big[(5 << 20) + 100..(5 << 20) + 200]
+        );
+        assert_eq!(server.stats().bytes_served, fetched_before);
 
-#[test]
-fn an_editor_save_by_rename_replaces_the_file_in_place() {
-    let server = FakeDav::generic();
-    server.put("essay.md", b"draft");
-    let dir = tempfile::tempdir().unwrap();
-    let mount = mount_volume(&server, dir.path());
-    mount.volume.sync_once().unwrap();
-    write_file(&mount.volume, ".essay.md.swp", b"final text");
-    mount
-        .volume
-        .rename(ROOT_INO, ".essay.md.swp", ROOT_INO, "essay.md")
-        .unwrap();
-    mount.volume.upload_pending().unwrap();
-    assert_eq!(server.get("essay.md").unwrap(), b"final text");
-    assert_eq!(
-        server.paths(),
-        ["essay.md"],
-        "no temp file or conflict copy"
-    );
+        let fh = mount.volume.open_file(ino, false, false).unwrap();
+        let mut got = Vec::new();
+        while got.len() < big.len() {
+            let part = mount.volume.read(fh, got.len() as u64, 128 * 1024).unwrap();
+            assert!(!part.is_empty());
+            got.extend_from_slice(&part);
+        }
+        mount.volume.release(fh).unwrap();
+        assert_eq!(got, big);
+    }
+
+    phase local_writes_upload_with_revision_preconditions;
+    {
+        let server = FakeDav::nextcloud();
+        server.put("doc.txt", b"version one");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_volume(&server, dir.path());
+        mount.volume.sync_once().unwrap();
+        let _ = server.requests();
+
+        write_file(&mount.volume, "doc.txt", b"version two, edited here");
+        assert_eq!(mount.volume.pending(), 1);
+        assert_eq!(
+            read_all(&mount.volume, "doc.txt"),
+            b"version two, edited here",
+            "reads see local writes before they upload"
+        );
+        mount.volume.upload_pending().unwrap();
+        assert_eq!(mount.volume.pending(), 0);
+        assert_eq!(server.get("doc.txt").unwrap(), b"version two, edited here");
+        let put = server
+            .requests()
+            .into_iter()
+            .find(|r| r.method == "PUT")
+            .expect("an upload");
+        assert!(put.header("if-match").is_some(), "uploads are conditional");
+
+        let root = ROOT_INO;
+        mount.volume.mkdir(root, "Reports").unwrap();
+        write_file(&mount.volume, "Reports/q3.txt", b"numbers");
+        let big = pattern(200 * 1024);
+        write_file(&mount.volume, "Reports/big.bin", &big);
+        let reports = mount.volume.resolve("Reports").unwrap();
+        mount
+            .volume
+            .rename(reports, "q3.txt", reports, "q3-final.txt")
+            .unwrap();
+        mount.volume.unlink(root, "doc.txt").unwrap();
+        mount.volume.upload_pending().unwrap();
+        assert_eq!(server.get("Reports/q3-final.txt").unwrap(), b"numbers");
+        assert_eq!(
+            server.get("Reports/big.bin").unwrap(),
+            big,
+            "chunked upload"
+        );
+        assert!(server.get("doc.txt").is_none());
+        assert!(server.get("Reports/q3.txt").is_none());
+
+        mount.volume.sync_once().unwrap();
+        assert_eq!(names(&mount.volume, "Reports"), ["big.bin", "q3-final.txt"]);
+        assert_eq!(read_all(&mount.volume, "Reports/big.bin"), big);
+    }
+
+    phase an_editor_save_by_rename_replaces_the_file_in_place;
+    {
+        let server = FakeDav::generic();
+        server.put("essay.md", b"draft");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_volume(&server, dir.path());
+        mount.volume.sync_once().unwrap();
+        write_file(&mount.volume, ".essay.md.swp", b"final text");
+        mount
+            .volume
+            .rename(ROOT_INO, ".essay.md.swp", ROOT_INO, "essay.md")
+            .unwrap();
+        mount.volume.upload_pending().unwrap();
+        assert_eq!(server.get("essay.md").unwrap(), b"final text");
+        assert_eq!(
+            server.paths(),
+            ["essay.md"],
+            "no temp file or conflict copy"
+        );
+    }
+
+    phase offline_reads_come_from_cache_and_writes_queue_across_restarts;
+    {
+        let server = FakeDav::nextcloud();
+        server.put("cached.txt", b"read before going offline");
+        server.put("cold.txt", b"never read");
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mount = mount_volume(&server, dir.path());
+            mount.volume.sync_once().unwrap();
+            assert_eq!(
+                read_all(&mount.volume, "cached.txt"),
+                b"read before going offline"
+            );
+            mount.volume.shutdown();
+        }
+
+        server.set_offline(true);
+        let mount = mount_volume(&server, dir.path());
+        assert!(mount.volume.sync_once().is_err());
+        assert_eq!(
+            mount.health.lock().unwrap().last(),
+            Some(&MountHealth::Offline)
+        );
+        assert_eq!(names(&mount.volume, ""), ["cached.txt", "cold.txt"]);
+        assert_eq!(
+            read_all(&mount.volume, "cached.txt"),
+            b"read before going offline"
+        );
+        let cold = mount.volume.resolve("cold.txt").unwrap();
+        assert_eq!(mount.volume.read_ino(cold, 0, 10), Err(libc::EIO));
+
+        write_file(&mount.volume, "offline-note.txt", b"written offline");
+        assert!(mount.volume.upload_pending().is_err());
+        assert_eq!(mount.volume.pending(), 1);
+        mount.volume.shutdown();
+        drop(mount);
+
+        server.set_offline(false);
+        let mount = mount_volume(&server, dir.path());
+        assert_eq!(mount.volume.pending(), 1);
+        assert_eq!(
+            read_all(&mount.volume, "offline-note.txt"),
+            b"written offline"
+        );
+        mount.volume.upload_pending().unwrap();
+        assert_eq!(server.get("offline-note.txt").unwrap(), b"written offline");
+    }
 }
 
 #[test]
@@ -459,54 +523,6 @@ fn a_remote_edit_during_a_local_edit_keeps_both_versions() {
     let listed = names(&mount.volume, "Shared");
     assert_eq!(listed.len(), 2, "{listed:?}");
     assert_eq!(read_all(&mount.volume, "Shared/budget.csv"), b"a,b\n9,9\n");
-}
-
-#[test]
-fn offline_reads_come_from_cache_and_writes_queue_across_restarts() {
-    let server = FakeDav::nextcloud();
-    server.put("cached.txt", b"read before going offline");
-    server.put("cold.txt", b"never read");
-    let dir = tempfile::tempdir().unwrap();
-    {
-        let mount = mount_volume(&server, dir.path());
-        mount.volume.sync_once().unwrap();
-        assert_eq!(
-            read_all(&mount.volume, "cached.txt"),
-            b"read before going offline"
-        );
-        mount.volume.shutdown();
-    }
-
-    server.set_offline(true);
-    let mount = mount_volume(&server, dir.path());
-    assert!(mount.volume.sync_once().is_err());
-    assert_eq!(
-        mount.health.lock().unwrap().last(),
-        Some(&MountHealth::Offline)
-    );
-    assert_eq!(names(&mount.volume, ""), ["cached.txt", "cold.txt"]);
-    assert_eq!(
-        read_all(&mount.volume, "cached.txt"),
-        b"read before going offline"
-    );
-    let cold = mount.volume.resolve("cold.txt").unwrap();
-    assert_eq!(mount.volume.read_ino(cold, 0, 10), Err(libc::EIO));
-
-    write_file(&mount.volume, "offline-note.txt", b"written offline");
-    assert!(mount.volume.upload_pending().is_err());
-    assert_eq!(mount.volume.pending(), 1);
-    mount.volume.shutdown();
-    drop(mount);
-
-    server.set_offline(false);
-    let mount = mount_volume(&server, dir.path());
-    assert_eq!(mount.volume.pending(), 1);
-    assert_eq!(
-        read_all(&mount.volume, "offline-note.txt"),
-        b"written offline"
-    );
-    mount.volume.upload_pending().unwrap();
-    assert_eq!(server.get("offline-note.txt").unwrap(), b"written offline");
 }
 
 fn tree_json(dir: &Path) -> Option<u64> {
@@ -552,31 +568,131 @@ fn idle_sync_does_not_rewrite_tree_json() {
     }
 }
 
-#[test]
-fn failed_sync_does_not_rewrite_tree_json() {
-    let server = FakeDav::generic();
-    server.put("readme.txt", b"hello");
-    let dir = tempfile::tempdir().unwrap();
-    let mount = mount_volume(&server, dir.path());
+tilo_test_env::scenario! {
+    fn sync_passes_pause_resume_and_keep_uploads_in_order;
 
-    server.set_offline(true);
-    assert!(mount.volume.sync_once().is_err());
-    assert_eq!(
-        tree_json(dir.path()),
-        None,
-        "a failed first sync wrote tree.json"
-    );
+    phase failed_sync_does_not_rewrite_tree_json;
+    {
+        let server = FakeDav::generic();
+        server.put("readme.txt", b"hello");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_volume(&server, dir.path());
 
-    server.set_offline(false);
-    mount.volume.sync_once().unwrap();
-    let written = tree_json(dir.path()).unwrap();
-    server.set_offline(true);
-    assert!(mount.volume.sync_once().is_err());
-    assert_eq!(
-        mount.health.lock().unwrap().last(),
-        Some(&MountHealth::Offline)
-    );
-    assert_eq!(tree_json(dir.path()), Some(written));
+        server.set_offline(true);
+        assert!(mount.volume.sync_once().is_err());
+        assert_eq!(
+            tree_json(dir.path()),
+            None,
+            "a failed first sync wrote tree.json"
+        );
+
+        server.set_offline(false);
+        mount.volume.sync_once().unwrap();
+        let written = tree_json(dir.path()).unwrap();
+        server.set_offline(true);
+        assert!(mount.volume.sync_once().is_err());
+        assert_eq!(
+            mount.health.lock().unwrap().last(),
+            Some(&MountHealth::Offline)
+        );
+        assert_eq!(tree_json(dir.path()), Some(written));
+    }
+
+    phase sync_now_cuts_backoff_and_syncs_immediately;
+    {
+        let server = FakeDav::generic();
+        server.put("readme.txt", b"hello");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_polling(
+            &server,
+            dir.path(),
+            Duration::from_secs(300),
+            DEFAULT_IDLE_POLL_MAX,
+        );
+        server.set_offline(true);
+        let workers = mount.volume.spawn_workers();
+        wait_until("the first failed pass", || {
+            mount.health.lock().unwrap().contains(&MountHealth::Offline)
+        });
+        let _ = server.requests();
+        dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
+        wait_until("the second failed pass", || !server.requests().is_empty());
+
+        server.set_offline(false);
+        dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
+        wait_until("sync now to cut the back-off short", || {
+            mount.health.lock().unwrap().last() == Some(&MountHealth::Healthy)
+        });
+        assert_eq!(names(&mount.volume, ""), ["readme.txt"]);
+
+        mount.volume.shutdown();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
+
+    phase pause_stops_uploads_until_resume;
+    {
+        let server = FakeDav::generic();
+        server.put("readme.txt", b"hello");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_volume(&server, dir.path());
+        mount.volume.sync_once().unwrap();
+        let workers = mount.volume.spawn_workers();
+
+        dispatch(&mount.volume, ToMount::Pause, &no_reply());
+        assert!(mount.volume.is_paused());
+        write_file(&mount.volume, "new.txt", b"written while paused");
+        assert_eq!(mount.volume.upload_pending_unless_paused().unwrap(), 0);
+        assert_eq!(server.get("new.txt"), None, "a paused mount uploaded");
+        assert_eq!(mount.volume.pending(), 1, "the edit is queued, not lost");
+        assert_eq!(read_all(&mount.volume, "readme.txt"), b"hello");
+
+        dispatch(&mount.volume, ToMount::Resume, &no_reply());
+        assert!(!mount.volume.is_paused());
+        wait_until("the queued upload", || server.get("new.txt").is_some());
+        assert_eq!(server.get("new.txt").unwrap(), b"written while paused");
+
+        mount.volume.shutdown();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
+
+    phase a_pause_during_a_new_files_upload_leaves_the_volume_synced;
+    {
+        let server = FakeDav::nextcloud();
+        let dir = tempfile::tempdir().unwrap();
+        let source = DuringUpload::new(&server);
+        let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
+        volume.sync_once().unwrap();
+
+        write_file(&volume, "new.txt", b"written by a POSIX tool");
+        let paused = Arc::downgrade(&volume);
+        source.once(move || paused.upgrade().unwrap().pause());
+        assert_eq!(volume.upload_pending_unless_paused().unwrap(), 1);
+        assert_eq!(server.get("new.txt").unwrap(), b"written by a POSIX tool");
+        assert_eq!(volume.pending(), 0, "the sent change is still queued");
+        volume.prepare_import().unwrap();
+    }
+
+    phase a_write_closed_during_an_upload_is_sent_after_it;
+    {
+        let server = FakeDav::nextcloud();
+        server.put("doc.txt", b"version one");
+        let dir = tempfile::tempdir().unwrap();
+        let source = DuringUpload::new(&server);
+        let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
+        volume.sync_once().unwrap();
+
+        write_file(&volume, "doc.txt", b"version two");
+        let editor = Arc::downgrade(&volume);
+        source.once(move || write_file(&editor.upgrade().unwrap(), "doc.txt", b"version three"));
+        assert_eq!(volume.upload_pending().unwrap(), 2);
+        assert_eq!(server.get("doc.txt").unwrap(), b"version three");
+        assert_eq!(volume.pending(), 0);
+        volume.prepare_import().unwrap();
+    }
 }
 
 #[test]
@@ -743,67 +859,6 @@ fn wait_until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-#[test]
-fn sync_now_cuts_backoff_and_syncs_immediately() {
-    let server = FakeDav::generic();
-    server.put("readme.txt", b"hello");
-    let dir = tempfile::tempdir().unwrap();
-    let mount = mount_polling(
-        &server,
-        dir.path(),
-        Duration::from_secs(300),
-        DEFAULT_IDLE_POLL_MAX,
-    );
-    server.set_offline(true);
-    let workers = mount.volume.spawn_workers();
-    wait_until("the first failed pass", || {
-        mount.health.lock().unwrap().contains(&MountHealth::Offline)
-    });
-    let _ = server.requests();
-    dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
-    wait_until("the second failed pass", || !server.requests().is_empty());
-
-    server.set_offline(false);
-    dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
-    wait_until("sync now to cut the back-off short", || {
-        mount.health.lock().unwrap().last() == Some(&MountHealth::Healthy)
-    });
-    assert_eq!(names(&mount.volume, ""), ["readme.txt"]);
-
-    mount.volume.shutdown();
-    for worker in workers {
-        worker.join().unwrap();
-    }
-}
-
-#[test]
-fn pause_stops_uploads_until_resume() {
-    let server = FakeDav::generic();
-    server.put("readme.txt", b"hello");
-    let dir = tempfile::tempdir().unwrap();
-    let mount = mount_volume(&server, dir.path());
-    mount.volume.sync_once().unwrap();
-    let workers = mount.volume.spawn_workers();
-
-    dispatch(&mount.volume, ToMount::Pause, &no_reply());
-    assert!(mount.volume.is_paused());
-    write_file(&mount.volume, "new.txt", b"written while paused");
-    assert_eq!(mount.volume.upload_pending_unless_paused().unwrap(), 0);
-    assert_eq!(server.get("new.txt"), None, "a paused mount uploaded");
-    assert_eq!(mount.volume.pending(), 1, "the edit is queued, not lost");
-    assert_eq!(read_all(&mount.volume, "readme.txt"), b"hello");
-
-    dispatch(&mount.volume, ToMount::Resume, &no_reply());
-    assert!(!mount.volume.is_paused());
-    wait_until("the queued upload", || server.get("new.txt").is_some());
-    assert_eq!(server.get("new.txt").unwrap(), b"written while paused");
-
-    mount.volume.shutdown();
-    for worker in workers {
-        worker.join().unwrap();
-    }
-}
-
 struct DuringUpload {
     dav: DavSource,
     hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -885,373 +940,342 @@ impl CloudSource for DuringUpload {
     }
 }
 
-#[test]
-fn a_pause_during_a_new_files_upload_leaves_the_volume_synced() {
-    let server = FakeDav::nextcloud();
-    let dir = tempfile::tempdir().unwrap();
-    let source = DuringUpload::new(&server);
-    let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
-    volume.sync_once().unwrap();
+tilo_test_env::scenario! {
+    fn the_cloud_service_answers_requests_for_its_mounts;
 
-    write_file(&volume, "new.txt", b"written by a POSIX tool");
-    let paused = Arc::downgrade(&volume);
-    source.once(move || paused.upgrade().unwrap().pause());
-    assert_eq!(volume.upload_pending_unless_paused().unwrap(), 1);
-    assert_eq!(server.get("new.txt").unwrap(), b"written by a POSIX tool");
-    assert_eq!(volume.pending(), 0, "the sent change is still queued");
-    volume.prepare_import().unwrap();
-}
+    phase revision_request_resolves_path_and_returns_provider_revisions;
+    {
+        let server = FakeDav::nextcloud();
+        server.put("Notes/plan.md", b"first draft");
+        server.put("Notes/plan.md", b"second draft");
+        let mut account = serve(&server);
 
-#[test]
-fn a_write_closed_during_an_upload_is_sent_after_it() {
-    let server = FakeDav::nextcloud();
-    server.put("doc.txt", b"version one");
-    let dir = tempfile::tempdir().unwrap();
-    let source = DuringUpload::new(&server);
-    let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
-    volume.sync_once().unwrap();
+        let CloudResponse::Mounts(mounts) = account
+            .service
+            .request(CloudRequest::List, tilo_test_env::hang_bound())
+        else {
+            panic!("a mount list");
+        };
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].account, "files-1");
+        assert_eq!(
+            mounts[0].mount_point,
+            account.home.path().join("Remote/Work files")
+        );
+        assert!(mounts[0].capabilities.revisions);
+        assert!(!mounts[0].capabilities.share_links);
+        assert!(!mounts[0].paused);
 
-    write_file(&volume, "doc.txt", b"version two");
-    let editor = Arc::downgrade(&volume);
-    source.once(move || write_file(&editor.upgrade().unwrap(), "doc.txt", b"version three"));
-    assert_eq!(volume.upload_pending().unwrap(), 2);
-    assert_eq!(server.get("doc.txt").unwrap(), b"version three");
-    assert_eq!(volume.pending(), 0);
-    volume.prepare_import().unwrap();
-}
-
-#[test]
-fn revision_request_resolves_path_and_returns_provider_revisions() {
-    let server = FakeDav::nextcloud();
-    server.put("Notes/plan.md", b"first draft");
-    server.put("Notes/plan.md", b"second draft");
-    let mut account = serve(&server);
-
-    let CloudResponse::Mounts(mounts) = account
-        .service
-        .request(CloudRequest::List, tilo_test_env::hang_bound())
-    else {
-        panic!("a mount list");
-    };
-    assert_eq!(mounts.len(), 1);
-    assert_eq!(mounts[0].account, "files-1");
-    assert_eq!(
-        mounts[0].mount_point,
-        account.home.path().join("Remote/Work files")
-    );
-    assert!(mounts[0].capabilities.revisions);
-    assert!(!mounts[0].capabilities.share_links);
-    assert!(!mounts[0].paused);
-
-    let response = account.service.request(
-        CloudRequest::File {
-            account: "files-1".into(),
-            request: FileRequest::Revisions {
-                path: "Notes/plan.md".into(),
-            },
-        },
-        tilo_test_env::hang_bound(),
-    );
-    let CloudResponse::File(FileReply::Revisions(revisions)) = response else {
-        panic!("revisions, not {response:?}");
-    };
-    assert_eq!(revisions.len(), 1, "{revisions:?}");
-
-    let restored = account.service.request(
-        CloudRequest::File {
-            account: "files-1".into(),
-            request: FileRequest::RestoreRevision {
-                path: "Notes/plan.md".into(),
-                revision: revisions[0].revision.clone(),
-            },
-        },
-        tilo_test_env::hang_bound(),
-    );
-    assert_eq!(restored, CloudResponse::File(FileReply::Restored));
-    assert_eq!(server.get("Notes/plan.md").unwrap(), b"first draft");
-    assert_eq!(read_all(&account.volume, "Notes/plan.md"), b"first draft");
-
-    let link = account.service.request(
-        CloudRequest::File {
-            account: "files-1".into(),
-            request: FileRequest::ShareLink {
-                path: "Notes/plan.md".into(),
-            },
-        },
-        tilo_test_env::hang_bound(),
-    );
-    assert!(
-        matches!(&link, CloudResponse::Error(error) if error.contains("not supported")),
-        "{link:?}"
-    );
-    let missing = account.service.request(
-        CloudRequest::File {
-            account: "files-1".into(),
-            request: FileRequest::Revisions {
-                path: "Notes/absent.md".into(),
-            },
-        },
-        tilo_test_env::hang_bound(),
-    );
-    assert!(matches!(missing, CloudResponse::Error(_)), "{missing:?}");
-    account.service.shutdown();
-}
-
-#[test]
-fn restore_revision_request_is_refused_when_capability_absent() {
-    let server = FakeDav::generic();
-    server.put("readme.txt", b"hello");
-    let mut account = serve(&server);
-    let _ = server.requests();
-    for request in [
-        FileRequest::Revisions {
-            path: "readme.txt".into(),
-        },
-        FileRequest::RestoreRevision {
-            path: "readme.txt".into(),
-            revision: "1".into(),
-        },
-    ] {
         let response = account.service.request(
             CloudRequest::File {
                 account: "files-1".into(),
-                request,
+                request: FileRequest::Revisions {
+                    path: "Notes/plan.md".into(),
+                },
+            },
+            tilo_test_env::hang_bound(),
+        );
+        let CloudResponse::File(FileReply::Revisions(revisions)) = response else {
+            panic!("revisions, not {response:?}");
+        };
+        assert_eq!(revisions.len(), 1, "{revisions:?}");
+
+        let restored = account.service.request(
+            CloudRequest::File {
+                account: "files-1".into(),
+                request: FileRequest::RestoreRevision {
+                    path: "Notes/plan.md".into(),
+                    revision: revisions[0].revision.clone(),
+                },
+            },
+            tilo_test_env::hang_bound(),
+        );
+        assert_eq!(restored, CloudResponse::File(FileReply::Restored));
+        assert_eq!(server.get("Notes/plan.md").unwrap(), b"first draft");
+        assert_eq!(read_all(&account.volume, "Notes/plan.md"), b"first draft");
+
+        let link = account.service.request(
+            CloudRequest::File {
+                account: "files-1".into(),
+                request: FileRequest::ShareLink {
+                    path: "Notes/plan.md".into(),
+                },
             },
             tilo_test_env::hang_bound(),
         );
         assert!(
-            matches!(&response, CloudResponse::Error(error) if error.contains("not supported")),
-            "{response:?}"
+            matches!(&link, CloudResponse::Error(error) if error.contains("not supported")),
+            "{link:?}"
         );
-    }
-    assert!(
-        server.requests().is_empty(),
-        "a refused request reached the server"
-    );
-    assert_eq!(server.get("readme.txt").unwrap(), b"hello");
-    let CloudResponse::Mounts(mounts) = account
-        .service
-        .request(CloudRequest::List, tilo_test_env::hang_bound())
-    else {
-        panic!("a mount list");
-    };
-    assert!(!mounts[0].capabilities.revisions);
-    account.service.shutdown();
-}
-
-#[test]
-fn pause_is_remembered_and_sync_now_reaches_the_mount() {
-    let server = FakeDav::generic();
-    server.put("readme.txt", b"hello");
-    let mut account = serve(&server);
-    let paused = account.service.request(
-        CloudRequest::Pause {
-            account: "files-1".into(),
-        },
-        tilo_test_env::hang_bound(),
-    );
-    assert_eq!(paused, CloudResponse::Done);
-    assert!(account.volume.is_paused());
-    let unknown = account.service.request(
-        CloudRequest::SyncNow {
-            account: "nobody".into(),
-        },
-        tilo_test_env::hang_bound(),
-    );
-    assert!(matches!(unknown, CloudResponse::Error(_)));
-
-    account.service.shutdown();
-    let mut service = CloudService::new(
-        service_config(account.config_root.path(), account.home.path()),
-        Box::new(account.launcher.clone()),
-    );
-    service.reconcile();
-    let volume = account.launcher.volume("files-1").unwrap();
-    assert!(volume.is_paused());
-    let CloudResponse::Mounts(mounts) =
-        service.request(CloudRequest::List, tilo_test_env::hang_bound())
-    else {
-        panic!("a mount list");
-    };
-    assert!(mounts[0].paused);
-
-    let resumed = service.request(
-        CloudRequest::Resume {
-            account: "files-1".into(),
-        },
-        tilo_test_env::hang_bound(),
-    );
-    assert_eq!(resumed, CloudResponse::Done);
-    assert!(!volume.is_paused());
-    assert_eq!(
-        service.request(
-            CloudRequest::SyncNow {
+        let missing = account.service.request(
+            CloudRequest::File {
                 account: "files-1".into(),
+                request: FileRequest::Revisions {
+                    path: "Notes/absent.md".into(),
+                },
             },
             tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Done
-    );
-    service.shutdown();
-}
-
-#[test]
-fn the_control_socket_lists_mounts_without_credentials() {
-    let server = FakeDav::nextcloud();
-    server.put("a.txt", b"a");
-    let mut account = serve(&server);
-    let runtime = tempfile::tempdir().unwrap();
-    let socket = runtime_fs::cloud::socket_in(runtime.path());
-    let files_socket = runtime_fs::cloud::files_socket_in(runtime.path());
-    account
-        .service
-        .serve_control(&socket, CloudSocket::Accounts)
-        .unwrap();
-    account
-        .service
-        .serve_control(&files_socket, CloudSocket::Files)
-        .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for path in [&socket, &files_socket] {
-            let mode = std::fs::metadata(path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
+        );
+        assert!(matches!(missing, CloudResponse::Error(_)), "{missing:?}");
+        account.service.shutdown();
     }
-    let client = std::thread::spawn(move || {
-        let mut client = CloudClient::connect(&socket).unwrap();
-        let mounts = client.mounts().unwrap();
-        let raw = client.request(&CloudRequest::List).unwrap();
-        client
-            .control(&CloudRequest::SyncNow {
-                account: "files-1".into(),
-            })
-            .unwrap();
-        let refused = [
+
+    phase restore_revision_request_is_refused_when_capability_absent;
+    {
+        let server = FakeDav::generic();
+        server.put("readme.txt", b"hello");
+        let mut account = serve(&server);
+        let _ = server.requests();
+        for request in [
             FileRequest::Revisions {
-                path: "a.txt".into(),
+                path: "readme.txt".into(),
             },
             FileRequest::RestoreRevision {
-                path: "a.txt".into(),
+                path: "readme.txt".into(),
                 revision: "1".into(),
             },
-            FileRequest::ShareLink {
-                path: "a.txt".into(),
-            },
-        ]
-        .map(|request| match client.file("files-1", request) {
-            Err(error) => error.to_string(),
-            Ok(reply) => format!("served: {reply:?}"),
-        });
-        let revisions = CloudClient::connect(&files_socket).unwrap().file(
-            "files-1",
-            FileRequest::Revisions {
-                path: "a.txt".into(),
-            },
-        );
-        (mounts, raw, refused, revisions)
-    });
-    let started = std::time::Instant::now();
-    while !client.is_finished() {
+        ] {
+            let response = account.service.request(
+                CloudRequest::File {
+                    account: "files-1".into(),
+                    request,
+                },
+                tilo_test_env::hang_bound(),
+            );
+            assert!(
+                matches!(&response, CloudResponse::Error(error) if error.contains("not supported")),
+                "{response:?}"
+            );
+        }
         assert!(
-            started.elapsed() < tilo_test_env::hang_bound(),
-            "the control client did not finish"
+            server.requests().is_empty(),
+            "a refused request reached the server"
         );
-        account.service.pump();
-        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(server.get("readme.txt").unwrap(), b"hello");
+        let CloudResponse::Mounts(mounts) = account
+            .service
+            .request(CloudRequest::List, tilo_test_env::hang_bound())
+        else {
+            panic!("a mount list");
+        };
+        assert!(!mounts[0].capabilities.revisions);
+        account.service.shutdown();
     }
-    let (mounts, raw, refused, revisions) = client.join().unwrap();
-    let mounts: Vec<CloudMount> = mounts;
-    for answer in &refused {
+
+    phase pause_is_remembered_and_sync_now_reaches_the_mount;
+    {
+        let server = FakeDav::generic();
+        server.put("readme.txt", b"hello");
+        let mut account = serve(&server);
+        let paused = account.service.request(
+            CloudRequest::Pause {
+                account: "files-1".into(),
+            },
+            tilo_test_env::hang_bound(),
+        );
+        assert_eq!(paused, CloudResponse::Done);
+        assert!(account.volume.is_paused());
+        let unknown = account.service.request(
+            CloudRequest::SyncNow {
+                account: "nobody".into(),
+            },
+            tilo_test_env::hang_bound(),
+        );
+        assert!(matches!(unknown, CloudResponse::Error(_)));
+
+        account.service.shutdown();
+        let mut service = CloudService::new(
+            service_config(account.config_root.path(), account.home.path()),
+            Box::new(account.launcher.clone()),
+        );
+        service.reconcile();
+        let volume = account.launcher.volume("files-1").unwrap();
+        assert!(volume.is_paused());
+        let CloudResponse::Mounts(mounts) =
+            service.request(CloudRequest::List, tilo_test_env::hang_bound())
+        else {
+            panic!("a mount list");
+        };
+        assert!(mounts[0].paused);
+
+        let resumed = service.request(
+            CloudRequest::Resume {
+                account: "files-1".into(),
+            },
+            tilo_test_env::hang_bound(),
+        );
+        assert_eq!(resumed, CloudResponse::Done);
+        assert!(!volume.is_paused());
         assert_eq!(
-            answer, "this socket does not serve that request",
-            "the account socket served a file request"
+            service.request(
+                CloudRequest::SyncNow {
+                    account: "files-1".into(),
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Done
         );
+        service.shutdown();
     }
-    assert!(
-        matches!(revisions, Ok(FileReply::Revisions(_))),
-        "the file socket answers revisions: {revisions:?}"
-    );
-    assert_eq!(mounts.len(), 1);
-    assert_eq!(mounts[0].account, "files-1");
-    assert_eq!(mounts[0].health, Some(MountHealth::Healthy));
-    let bytes = postcard::to_stdvec(&raw).unwrap();
-    let json = serde_json::to_string(&raw).unwrap();
-    let secret = PASSWORD.as_bytes();
-    assert!(
-        !bytes.windows(secret.len()).any(|window| window == secret),
-        "the mount list carries a credential"
-    );
-    assert!(!json.contains(PASSWORD));
-    assert!(!json.to_lowercase().contains("password"));
-    assert!(!json.to_lowercase().contains("token"));
-    account.service.shutdown();
-}
 
-#[test]
-fn accounts_mount_and_unmount_with_the_account_store() {
-    let server = FakeDav::generic();
-    server.put("hello.txt", b"from the server");
-    let config_root = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let root = config_root.path();
-    account_store(root, server.root_url().as_str(), true);
-    publish(root, "files-1", PASSWORD);
+    phase the_control_socket_lists_mounts_without_credentials;
+    {
+        let server = FakeDav::nextcloud();
+        server.put("a.txt", b"a");
+        let mut account = serve(&server);
+        let runtime = tempfile::tempdir().unwrap();
+        let socket = runtime_fs::cloud::socket_in(runtime.path());
+        let files_socket = runtime_fs::cloud::files_socket_in(runtime.path());
+        account
+            .service
+            .serve_control(&socket, CloudSocket::Accounts)
+            .unwrap();
+        account
+            .service
+            .serve_control(&files_socket, CloudSocket::Files)
+            .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&socket, &files_socket] {
+                let mode = std::fs::metadata(path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+        }
+        let client = std::thread::spawn(move || {
+            let mut client = CloudClient::connect(&socket).unwrap();
+            let mounts = client.mounts().unwrap();
+            let raw = client.request(&CloudRequest::List).unwrap();
+            client
+                .control(&CloudRequest::SyncNow {
+                    account: "files-1".into(),
+                })
+                .unwrap();
+            let refused = [
+                FileRequest::Revisions {
+                    path: "a.txt".into(),
+                },
+                FileRequest::RestoreRevision {
+                    path: "a.txt".into(),
+                    revision: "1".into(),
+                },
+                FileRequest::ShareLink {
+                    path: "a.txt".into(),
+                },
+            ]
+            .map(|request| match client.file("files-1", request) {
+                Err(error) => error.to_string(),
+                Ok(reply) => format!("served: {reply:?}"),
+            });
+            let revisions = CloudClient::connect(&files_socket).unwrap().file(
+                "files-1",
+                FileRequest::Revisions {
+                    path: "a.txt".into(),
+                },
+            );
+            (mounts, raw, refused, revisions)
+        });
+        let started = std::time::Instant::now();
+        while !client.is_finished() {
+            assert!(
+                started.elapsed() < tilo_test_env::hang_bound(),
+                "the control client did not finish"
+            );
+            account.service.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (mounts, raw, refused, revisions) = client.join().unwrap();
+        let mounts: Vec<CloudMount> = mounts;
+        for answer in &refused {
+            assert_eq!(
+                answer, "this socket does not serve that request",
+                "the account socket served a file request"
+            );
+        }
+        assert!(
+            matches!(revisions, Ok(FileReply::Revisions(_))),
+            "the file socket answers revisions: {revisions:?}"
+        );
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].account, "files-1");
+        assert_eq!(mounts[0].health, Some(MountHealth::Healthy));
+        let bytes = postcard::to_stdvec(&raw).unwrap();
+        let json = serde_json::to_string(&raw).unwrap();
+        let secret = PASSWORD.as_bytes();
+        assert!(
+            !bytes.windows(secret.len()).any(|window| window == secret),
+            "the mount list carries a credential"
+        );
+        assert!(!json.contains(PASSWORD));
+        assert!(!json.to_lowercase().contains("password"));
+        assert!(!json.to_lowercase().contains("token"));
+        account.service.shutdown();
+    }
 
-    let launcher = InProcessLauncher::default();
-    let mut service = CloudService::new(
-        service_config(root, home.path()),
-        Box::new(launcher.clone()),
-    );
-    service.reconcile();
-    let mounted = service.mounted();
-    assert_eq!(mounted.len(), 1);
-    assert_eq!(mounted[0].1, home.path().join("Remote/Work files"));
-    assert!(mounted[0].1.is_dir());
-    let volume = launcher.volume("files-1").expect("a running volume");
-    volume.sync_once().unwrap();
-    assert_eq!(read_all(&volume, "hello.txt"), b"from the server");
-    service.pump();
-    let status = accounts::AccountSyncStatusStore::load_in(root);
-    assert_eq!(
-        status
-            .get(&accounts::AccountId::from("files-1"))
-            .map(|s| s.health),
-        Some(accounts::AccountSyncHealth::Healthy),
-        "mount health reaches the status store Settings and Files read"
-    );
+    phase accounts_mount_and_unmount_with_the_account_store;
+    {
+        let server = FakeDav::generic();
+        server.put("hello.txt", b"from the server");
+        let config_root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let root = config_root.path();
+        account_store(root, server.root_url().as_str(), true);
+        publish(root, "files-1", PASSWORD);
 
-    account_store(root, server.root_url().as_str(), false);
-    service.reconcile();
-    assert!(service.mounted().is_empty());
-    assert!(!home.path().join("Remote/Work files").exists());
-    assert!(launcher.volume("files-1").is_none());
-    assert!(
-        home.path()
-            .join("state")
-            .read_dir()
-            .unwrap()
-            .next()
-            .is_some()
-    );
+        let launcher = InProcessLauncher::default();
+        let mut service = CloudService::new(
+            service_config(root, home.path()),
+            Box::new(launcher.clone()),
+        );
+        service.reconcile();
+        let mounted = service.mounted();
+        assert_eq!(mounted.len(), 1);
+        assert_eq!(mounted[0].1, home.path().join("Remote/Work files"));
+        assert!(mounted[0].1.is_dir());
+        let volume = launcher.volume("files-1").expect("a running volume");
+        volume.sync_once().unwrap();
+        assert_eq!(read_all(&volume, "hello.txt"), b"from the server");
+        service.pump();
+        let status = accounts::AccountSyncStatusStore::load_in(root);
+        assert_eq!(
+            status
+                .get(&accounts::AccountId::from("files-1"))
+                .map(|s| s.health),
+            Some(accounts::AccountSyncHealth::Healthy),
+            "mount health reaches the status store Settings and Files read"
+        );
 
-    account_store(root, server.root_url().as_str(), true);
-    service.reconcile();
-    assert_eq!(service.mounted().len(), 1);
-    let mut store = accounts::AccountStore::load_in(root);
-    store.remove(&accounts::AccountId::from("files-1"));
-    store.save_in(root).unwrap();
-    service.reconcile();
-    assert!(service.mounted().is_empty());
-    assert!(
-        home.path()
-            .join("state")
-            .read_dir()
-            .unwrap()
-            .next()
-            .is_none()
-    );
-    assert!(!home.path().join("Remote/Work files").exists());
+        account_store(root, server.root_url().as_str(), false);
+        service.reconcile();
+        assert!(service.mounted().is_empty());
+        assert!(!home.path().join("Remote/Work files").exists());
+        assert!(launcher.volume("files-1").is_none());
+        assert!(
+            home.path()
+                .join("state")
+                .read_dir()
+                .unwrap()
+                .next()
+                .is_some()
+        );
+
+        account_store(root, server.root_url().as_str(), true);
+        service.reconcile();
+        assert_eq!(service.mounted().len(), 1);
+        let mut store = accounts::AccountStore::load_in(root);
+        store.remove(&accounts::AccountId::from("files-1"));
+        store.save_in(root).unwrap();
+        service.reconcile();
+        assert!(service.mounted().is_empty());
+        assert!(
+            home.path()
+                .join("state")
+                .read_dir()
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        assert!(!home.path().join("Remote/Work files").exists());
+    }
 }
 
 #[test]

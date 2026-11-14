@@ -1397,375 +1397,414 @@ mod tests {
         }
     }
 
-    /// One document is one row, however many sources offer it: the window
-    /// showing it, the app asking for it and the place the person left are
-    /// the same result, and the strongest offer is the row.
-    #[test]
-    fn a_document_is_one_row_and_not_one_per_source() {
-        let world = world();
-        let groups = search("", &world.all(), 0, &|_| 0.0);
-        let listed = rows(&groups);
-        assert_eq!(
-            listed
-                .iter()
-                .filter(|row| row.ends_with(":Groceries"))
-                .count(),
-            1,
-            "the window showing Groceries is the Groceries row, listed once: {listed:?}"
-        );
-        assert!(
-            !listed.iter().any(|row| row == "desktop-windows:Groceries"),
-            "the window is not listed beside the document: {listed:?}"
-        );
-        assert!(
-            listed.iter().any(|row| row == "desktop-windows:Budget"),
-            "a window showing something else is its own row: {listed:?}"
-        );
-        assert_eq!(
-            groups.iter().map(|group| group.total).sum::<usize>(),
-            groups
-                .iter()
-                .map(|group| group.results.len())
-                .sum::<usize>(),
-            "no group counts a row it does not show"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_search_gives_each_thing_one_row_ranked_by_its_match;
 
-    /// The place the person continues from, when that place is a window
-    /// still open, is that window: one row, offered by Continue, never the
-    /// same window twice.
-    #[test]
-    fn a_place_that_is_an_open_window_is_that_window() {
-        let mut world = world();
-        let window = window_row("Home", 9);
-        let place = place_in_window("Home", 9);
-        world.windows.hits.push(window);
-        world.places.hits = vec![place];
-        let groups = search("", &world.all(), 0, &|_| 0.0);
-        let listed = rows(&groups);
-        assert_eq!(
-            listed
-                .iter()
-                .filter(|row| row.ends_with(":Home"))
-                .collect::<Vec<_>>(),
-            ["continue:Home"],
-            "the window is listed once, as where the person continues: {listed:?}"
-        );
-        assert!(
-            !listed.iter().any(|row| row == "desktop-windows:Home"),
-            "the window wearing the same name is not listed beside it: {listed:?}"
-        );
-    }
-
-    /// The same action published by two sources is one row.
-    #[test]
-    fn an_action_offered_twice_is_one_row() {
-        let mut world = world();
-        let shared = world.actions.hits[0].clone();
-        world.commands.hits.push(shared);
-        let groups = search("share", &world.all(), 0, &|_| 0.0);
-        assert_eq!(rows(&groups), ["window-actions:Share"]);
-    }
-
-    /// Two sources that search the same kind of thing under one id (an
-    /// app's open providers and the index of what apps published) both
-    /// answer: a search asks each source it was given, never the first one
-    /// that carries the id.
-    #[test]
-    fn two_sources_sharing_an_id_both_answer() {
-        let one = Fixed {
-            id: "app-content",
-            rank: 0,
-            hits: vec![hit(
-                "app-content",
-                "n1",
-                "Groceries for the weekend",
-                ResourceKind::Note,
-                20,
-                Target::Cancel {
-                    app: "notes".into(),
-                    workspace: "Main".into(),
-                    invocation: "close".into(),
-                },
-            )],
-        };
-        let two = Fixed {
-            id: "app-content",
-            rank: 0,
-            hits: vec![hit(
-                "app-content",
-                "n2",
-                "Groceries list",
-                ResourceKind::Note,
-                20,
-                Target::Cancel {
-                    app: "notes".into(),
-                    workspace: "Main".into(),
-                    invocation: "close".into(),
-                },
-            )],
-        };
-        let sources: Vec<&dyn Source> = vec![&one, &two];
-        let groups = search("groceries", &sources, 0, &|_| 0.0);
-        assert_eq!(
-            rows(&groups),
-            [
-                "app-content:Groceries for the weekend",
-                "app-content:Groceries list"
-            ],
-            "both sources answered"
-        );
-    }
-
-    /// What the person chose before leads among equal matches: the ranking
-    /// a tool that places text uses is the palette's.
-    #[test]
-    fn what_the_person_chose_before_leads_equal_matches() {
-        let world = world();
-        let used = |hit: &Hit| if hit.title == "Trip plan" { 0.6 } else { 0.0 };
-        let groups = search("", &world.all(), 0, &used);
-        let listed = rows(&groups);
-        let tabs: Vec<&str> = listed.iter().take(3).map(String::as_str).collect();
-        assert_eq!(
-            tabs[0], "continue:Trip plan",
-            "the place the person chose before leads the equal ones: {tabs:?}"
-        );
-    }
-
-    /// The one ranking, as a table: what a person types, and the rows they
-    /// see in order, for every entry point (the palette, a window, the
-    /// text placed on the canvas, an agent's `tilo` tool). Two desktops
-    /// must agree on it.
-    #[test]
-    fn the_one_ranking_table() {
-        let world = world();
-        let table: &[(&str, &[&str])] = &[
-            (
-                "",
-                &[
-                    "window-actions:Share",
-                    "desktop-commands:Toggle theme",
-                    "desktop-applications:Notes",
-                    "desktop-applications:Sheets",
-                    "continue:Groceries",
-                    "continue:Trip plan",
-                    "desktop-windows:Budget",
-                ],
-            ),
-            ("notes", &["desktop-applications:Notes"]),
-            ("groceries", &["continue:Groceries"]),
-            ("share", &["window-actions:Share"]),
-            ("toggle", &["desktop-commands:Toggle theme"]),
-            ("budget", &["desktop-windows:Budget"]),
-            // Nothing matches, and nothing is invented for it: a web
-            // search is another source's row, not this ranking's.
-            ("zzz", &[]),
-        ];
-        for (query, expected) in table {
+        phase a_document_is_one_row_and_not_one_per_source;
+        // One document is one row, however many sources offer it: the window
+        // showing it, the app asking for it and the place the person left are
+        // the same result, and the strongest offer is the row.
+        {
+            let world = world();
+            let groups = search("", &world.all(), 0, &|_| 0.0);
+            let listed = rows(&groups);
             assert_eq!(
-                rows(&search(query, &world.all(), 0, &|_| 0.0)),
-                *expected,
-                "query {query:?}"
+                listed
+                    .iter()
+                    .filter(|row| row.ends_with(":Groceries"))
+                    .count(),
+                1,
+                "the window showing Groceries is the Groceries row, listed once: {listed:?}"
+            );
+            assert!(
+                !listed.iter().any(|row| row == "desktop-windows:Groceries"),
+                "the window is not listed beside the document: {listed:?}"
+            );
+            assert!(
+                listed.iter().any(|row| row == "desktop-windows:Budget"),
+                "a window showing something else is its own row: {listed:?}"
+            );
+            assert_eq!(
+                groups.iter().map(|group| group.total).sum::<usize>(),
+                groups
+                    .iter()
+                    .map(|group| group.results.len())
+                    .sum::<usize>(),
+                "no group counts a row it does not show"
             );
         }
-    }
 
-    #[test]
-    fn an_app_the_person_has_is_one_row_and_its_store_page_gives_way() {
-        // The machine's Notes, as its desktop entry starts it, and the same
-        // app as the Store would install it: one app, one row, the one the
-        // person already has.
-        let had = fixed(
-            "desktop-applications",
-            BROWSE_RANK_APPS,
-            vec![hit(
-                "desktop-applications",
-                "host:org.gnome.Notes.desktop",
-                "Notes",
-                ResourceKind::Application,
-                100,
-                Target::Launch {
-                    app: "host:org.gnome.Notes.desktop".into(),
-                    place: LaunchPlace::Focus,
-                },
-            )],
-        );
-        let store = fixed(
-            "store-catalogue",
-            BROWSE_RANK_LATER,
-            vec![Hit {
-                row: None,
-                preview: None,
-                faces: Vec::new(),
-                outcome: Some("In the Store".into()),
-                kind: ResourceKind::Custom("Store".into()),
-                provider: "store-catalogue".into(),
-                id: "app:org.gnome.Notes".into(),
-                title: "Notes".into(),
-                subtitle: None,
-                facts: vec!["Flathub".into()],
-                score: 97,
-                icon: None,
-                target: Target::Open {
-                    uri: "tilo-store:app/org.gnome.Notes".into(),
-                    fallback: None,
-                },
-            }],
-        );
-        assert_eq!(
-            rows(&search("notes", &[&had, &store], 0, &|_| 0.0)),
-            ["desktop-applications:Notes"],
-            "the app is listed once, as the app the person has"
-        );
-        assert_eq!(
-            rows(&search("notes", &[&store], 0, &|_| 0.0)),
-            ["store-catalogue:Notes"],
-            "an app the person does not have is still offered"
-        );
-    }
-
-    #[test]
-    fn a_store_offer_follows_every_row_the_person_has() {
-        // A Flathub page matching the query better than any file named
-        // files: it still lists after the file, which is already here.
-        let files = fixed(
-            "search-files",
-            BROWSE_RANK_LATER,
-            vec![hit(
-                "search-files",
-                "file:notes.txt",
-                "files.txt",
-                ResourceKind::File,
-                30,
-                Target::Open {
-                    uri: "file:///home/q/files.txt".into(),
-                    fallback: None,
-                },
-            )],
-        );
-        let store = fixed(
-            CATALOGUE_SOURCE,
-            BROWSE_RANK_LATER,
-            vec![hit(
-                CATALOGUE_SOURCE,
-                "app:com.example.Files",
-                "Files",
-                ResourceKind::Custom("Store".into()),
-                100,
-                Target::Open {
-                    uri: "tilo-store:app/com.example.Files".into(),
-                    fallback: None,
-                },
-            )],
-        );
-        assert_eq!(
-            rows(&search("files", &[&files, &store], 0, &|_| 0.0)),
-            ["search-files:files.txt", "store-catalogue:Files"]
-        );
-    }
-
-    #[test]
-    fn a_catalogue_row_knows_what_the_person_would_have_to_do() {
-        let offer = |target| Hit {
-            target,
-            ..hit(
-                CATALOGUE_SOURCE,
-                "app:so.tilo.sheets",
-                "Sheets",
-                ResourceKind::Custom("Store".into()),
-                90,
-                Target::Open {
-                    uri: "tilo-store:app/so.tilo.sheets".into(),
-                    fallback: None,
-                },
-            )
-        };
-        assert_eq!(
-            offer(Target::Launch {
-                app: "so.tilo.sheets".into(),
-                place: LaunchPlace::Focus,
-            })
-            .availability(),
-            system::Availability::TiloCatalogue,
-            "a Tilo app opens at once"
-        );
-        assert_eq!(
-            offer(Target::Open {
-                uri: "tilo-store:app/com.example.App".into(),
-                fallback: None,
-            })
-            .availability(),
-            system::Availability::ThirdPartyCatalogue,
-            "a Flathub app is a Store page first"
-        );
-        assert_eq!(
-            hit(
-                "search-files",
-                "file:notes.txt",
-                "notes",
-                ResourceKind::File,
-                30,
-                Target::Open {
-                    uri: "file:///home/q/notes.txt".into(),
-                    fallback: None,
-                },
-            )
-            .availability(),
-            system::Availability::OnDevice,
-            "a row of the person's own is theirs"
-        );
-    }
-
-    #[test]
-    fn an_app_identity_is_one_however_its_rows_start_it() {
-        for id in [
-            "so.tilo.notes",
-            " host:so.tilo.notes.desktop ",
-            "SO.TILO.NOTES.desktop",
-        ] {
-            assert_eq!(app_identity(id), "so.tilo.notes", "{id}");
+        phase a_place_that_is_an_open_window_is_that_window;
+        // The place the person continues from, when that place is a window
+        // still open, is that window: one row, offered by Continue, never the
+        // same window twice.
+        {
+            let mut world = world();
+            let window = window_row("Home", 9);
+            let place = place_in_window("Home", 9);
+            world.windows.hits.push(window);
+            world.places.hits = vec![place];
+            let groups = search("", &world.all(), 0, &|_| 0.0);
+            let listed = rows(&groups);
+            assert_eq!(
+                listed
+                    .iter()
+                    .filter(|row| row.ends_with(":Home"))
+                    .collect::<Vec<_>>(),
+                ["continue:Home"],
+                "the window is listed once, as where the person continues: {listed:?}"
+            );
+            assert!(
+                !listed.iter().any(|row| row == "desktop-windows:Home"),
+                "the window wearing the same name is not listed beside it: {listed:?}"
+            );
         }
-    }
 
-    #[test]
-    fn a_store_link_names_the_app_it_installs() {
-        assert_eq!(
-            store_page_app("tilo-store:app/org.gnome.Notes"),
-            Some("org.gnome.Notes")
-        );
-        assert_eq!(store_page_app("https://example.com"), None);
-        assert_eq!(store_page_app("tilo-store:app/"), None);
-    }
+        phase an_action_offered_twice_is_one_row;
+        // The same action published by two sources is one row.
+        {
+            let mut world = world();
+            let shared = world.actions.hits[0].clone();
+            world.commands.hits.push(shared);
+            let groups = search("share", &world.all(), 0, &|_| 0.0);
+            assert_eq!(rows(&groups), ["window-actions:Share"]);
+        }
 
-    #[test]
-    fn a_query_is_ranked_by_its_match() {
-        let world = world();
-        assert_eq!(
-            rows(&search("grocer", &world.all(), 0, &|_| 0.0)),
-            ["continue:Groceries"]
-        );
-        assert_eq!(
-            rows(&search("sheet", &world.all(), 0, &|_| 0.0)),
-            ["desktop-applications:Sheets"]
-        );
-        assert_eq!(
-            rows(&search("budge", &world.all(), 0, &|_| 0.0)),
-            ["desktop-windows:Budget"]
-        );
-    }
+        phase two_sources_sharing_an_id_both_answer;
+        // Two sources that search the same kind of thing under one id (an
+        // app's open providers and the index of what apps published) both
+        // answer: a search asks each source it was given, never the first one
+        // that carries the id.
+        {
+            let one = Fixed {
+                id: "app-content",
+                rank: 0,
+                hits: vec![hit(
+                    "app-content",
+                    "n1",
+                    "Groceries for the weekend",
+                    ResourceKind::Note,
+                    20,
+                    Target::Cancel {
+                        app: "notes".into(),
+                        workspace: "Main".into(),
+                        invocation: "close".into(),
+                    },
+                )],
+            };
+            let two = Fixed {
+                id: "app-content",
+                rank: 0,
+                hits: vec![hit(
+                    "app-content",
+                    "n2",
+                    "Groceries list",
+                    ResourceKind::Note,
+                    20,
+                    Target::Cancel {
+                        app: "notes".into(),
+                        workspace: "Main".into(),
+                        invocation: "close".into(),
+                    },
+                )],
+            };
+            let sources: Vec<&dyn Source> = vec![&one, &two];
+            let groups = search("groceries", &sources, 0, &|_| 0.0);
+            assert_eq!(
+                rows(&groups),
+                [
+                    "app-content:Groceries for the weekend",
+                    "app-content:Groceries list"
+                ],
+                "both sources answered"
+            );
+        }
 
-    #[test]
-    fn an_empty_query_keeps_the_browse_order_of_the_palette() {
-        let world = world();
-        let groups = search("", &world.all(), 0, &|_| 0.0);
-        let kinds: Vec<String> = groups
-            .iter()
-            .map(|group| group.kind.label().to_owned())
-            .collect();
-        assert_eq!(
-            kinds.len(),
-            kinds.iter().collect::<std::collections::HashSet<_>>().len()
-        );
+        phase what_the_person_chose_before_leads_equal_matches;
+        // What the person chose before leads among equal matches: the ranking
+        // a tool that places text uses is the palette's.
+        {
+            let world = world();
+            let used = |hit: &Hit| if hit.title == "Trip plan" { 0.6 } else { 0.0 };
+            let groups = search("", &world.all(), 0, &used);
+            let listed = rows(&groups);
+            let tabs: Vec<&str> = listed.iter().take(3).map(String::as_str).collect();
+            assert_eq!(
+                tabs[0], "continue:Trip plan",
+                "the place the person chose before leads the equal ones: {tabs:?}"
+            );
+        }
+
+        phase the_one_ranking_table;
+        // The one ranking, as a table: what a person types, and the rows they
+        // see in order, for every entry point (the palette, a window, the
+        // text placed on the canvas, an agent's `tilo` tool). Two desktops
+        // must agree on it.
+        {
+            let world = world();
+            let table: &[(&str, &[&str])] = &[
+                (
+                    "",
+                    &[
+                        "window-actions:Share",
+                        "desktop-commands:Toggle theme",
+                        "desktop-applications:Notes",
+                        "desktop-applications:Sheets",
+                        "continue:Groceries",
+                        "continue:Trip plan",
+                        "desktop-windows:Budget",
+                    ],
+                ),
+                ("notes", &["desktop-applications:Notes"]),
+                ("groceries", &["continue:Groceries"]),
+                ("share", &["window-actions:Share"]),
+                ("toggle", &["desktop-commands:Toggle theme"]),
+                ("budget", &["desktop-windows:Budget"]),
+                // Nothing matches, and nothing is invented for it: a web
+                // search is another source's row, not this ranking's.
+                ("zzz", &[]),
+            ];
+            for (query, expected) in table {
+                assert_eq!(
+                    rows(&search(query, &world.all(), 0, &|_| 0.0)),
+                    *expected,
+                    "query {query:?}"
+                );
+            }
+        }
+
+        phase an_app_the_person_has_is_one_row_and_its_store_page_gives_way;
+        {
+            // The machine's Notes, as its desktop entry starts it, and the same
+            // app as the Store would install it: one app, one row, the one the
+            // person already has.
+            let had = fixed(
+                "desktop-applications",
+                BROWSE_RANK_APPS,
+                vec![hit(
+                    "desktop-applications",
+                    "host:org.gnome.Notes.desktop",
+                    "Notes",
+                    ResourceKind::Application,
+                    100,
+                    Target::Launch {
+                        app: "host:org.gnome.Notes.desktop".into(),
+                        place: LaunchPlace::Focus,
+                    },
+                )],
+            );
+            let store = fixed(
+                "store-catalogue",
+                BROWSE_RANK_LATER,
+                vec![Hit {
+                    row: None,
+                    preview: None,
+                    faces: Vec::new(),
+                    outcome: Some("In the Store".into()),
+                    kind: ResourceKind::Custom("Store".into()),
+                    provider: "store-catalogue".into(),
+                    id: "app:org.gnome.Notes".into(),
+                    title: "Notes".into(),
+                    subtitle: None,
+                    facts: vec!["Flathub".into()],
+                    score: 97,
+                    icon: None,
+                    target: Target::Open {
+                        uri: "tilo-store:app/org.gnome.Notes".into(),
+                        fallback: None,
+                    },
+                }],
+            );
+            assert_eq!(
+                rows(&search("notes", &[&had, &store], 0, &|_| 0.0)),
+                ["desktop-applications:Notes"],
+                "the app is listed once, as the app the person has"
+            );
+            assert_eq!(
+                rows(&search("notes", &[&store], 0, &|_| 0.0)),
+                ["store-catalogue:Notes"],
+                "an app the person does not have is still offered"
+            );
+        }
+
+        phase a_store_offer_follows_every_row_the_person_has;
+        {
+            // A Flathub page matching the query better than any file named
+            // files: it still lists after the file, which is already here.
+            let files = fixed(
+                "search-files",
+                BROWSE_RANK_LATER,
+                vec![hit(
+                    "search-files",
+                    "file:notes.txt",
+                    "files.txt",
+                    ResourceKind::File,
+                    30,
+                    Target::Open {
+                        uri: "file:///home/q/files.txt".into(),
+                        fallback: None,
+                    },
+                )],
+            );
+            let store = fixed(
+                CATALOGUE_SOURCE,
+                BROWSE_RANK_LATER,
+                vec![hit(
+                    CATALOGUE_SOURCE,
+                    "app:com.example.Files",
+                    "Files",
+                    ResourceKind::Custom("Store".into()),
+                    100,
+                    Target::Open {
+                        uri: "tilo-store:app/com.example.Files".into(),
+                        fallback: None,
+                    },
+                )],
+            );
+            assert_eq!(
+                rows(&search("files", &[&files, &store], 0, &|_| 0.0)),
+                ["search-files:files.txt", "store-catalogue:Files"]
+            );
+        }
+
+        phase a_catalogue_row_knows_what_the_person_would_have_to_do;
+        {
+            let offer = |target| Hit {
+                target,
+                ..hit(
+                    CATALOGUE_SOURCE,
+                    "app:so.tilo.sheets",
+                    "Sheets",
+                    ResourceKind::Custom("Store".into()),
+                    90,
+                    Target::Open {
+                        uri: "tilo-store:app/so.tilo.sheets".into(),
+                        fallback: None,
+                    },
+                )
+            };
+            assert_eq!(
+                offer(Target::Launch {
+                    app: "so.tilo.sheets".into(),
+                    place: LaunchPlace::Focus,
+                })
+                .availability(),
+                system::Availability::TiloCatalogue,
+                "a Tilo app opens at once"
+            );
+            assert_eq!(
+                offer(Target::Open {
+                    uri: "tilo-store:app/com.example.App".into(),
+                    fallback: None,
+                })
+                .availability(),
+                system::Availability::ThirdPartyCatalogue,
+                "a Flathub app is a Store page first"
+            );
+            assert_eq!(
+                hit(
+                    "search-files",
+                    "file:notes.txt",
+                    "notes",
+                    ResourceKind::File,
+                    30,
+                    Target::Open {
+                        uri: "file:///home/q/notes.txt".into(),
+                        fallback: None,
+                    },
+                )
+                .availability(),
+                system::Availability::OnDevice,
+                "a row of the person's own is theirs"
+            );
+        }
+
+        phase an_app_identity_is_one_however_its_rows_start_it;
+        {
+            for id in [
+                "so.tilo.notes",
+                " host:so.tilo.notes.desktop ",
+                "SO.TILO.NOTES.desktop",
+            ] {
+                assert_eq!(app_identity(id), "so.tilo.notes", "{id}");
+            }
+        }
+
+        phase a_store_link_names_the_app_it_installs;
+        {
+            assert_eq!(
+                store_page_app("tilo-store:app/org.gnome.Notes"),
+                Some("org.gnome.Notes")
+            );
+            assert_eq!(store_page_app("https://example.com"), None);
+            assert_eq!(store_page_app("tilo-store:app/"), None);
+        }
+
+        phase a_query_is_ranked_by_its_match;
+        {
+            let world = world();
+            assert_eq!(
+                rows(&search("grocer", &world.all(), 0, &|_| 0.0)),
+                ["continue:Groceries"]
+            );
+            assert_eq!(
+                rows(&search("sheet", &world.all(), 0, &|_| 0.0)),
+                ["desktop-applications:Sheets"]
+            );
+            assert_eq!(
+                rows(&search("budge", &world.all(), 0, &|_| 0.0)),
+                ["desktop-windows:Budget"]
+            );
+        }
+
+        phase an_empty_query_keeps_the_browse_order_of_the_palette;
+        {
+            let world = world();
+            let groups = search("", &world.all(), 0, &|_| 0.0);
+            let kinds: Vec<String> = groups
+                .iter()
+                .map(|group| group.kind.label().to_owned())
+                .collect();
+            assert_eq!(
+                kinds.len(),
+                kinds.iter().collect::<std::collections::HashSet<_>>().len()
+            );
+        }
+
+        phase items_shown_in_one_window_are_their_own_rows;
+        // A window is one row; the items it shows are their own rows, or
+        // every item one window shows would collapse into it.
+        {
+            use crate::providers::WINDOWS_KIND;
+            let to_window = || Target::Window { tab: 0, app: None };
+            let window = hit(
+                "windows",
+                "window:0",
+                "Notes",
+                ResourceKind::Custom(WINDOWS_KIND.into()),
+                10,
+                to_window(),
+            );
+            let groceries = hit(
+                "app-actions",
+                "note:one",
+                "Groceries",
+                ResourceKind::Note,
+                10,
+                to_window(),
+            );
+            let bills = hit(
+                "app-actions",
+                "note:two",
+                "Bills",
+                ResourceKind::Note,
+                10,
+                to_window(),
+            );
+            assert_eq!(window.thing(), Thing::Window(0));
+            assert_ne!(groceries.thing(), bills.thing());
+            assert_ne!(groceries.thing(), Thing::Window(0));
+        }
     }
 
     /// A source that takes `delay` to answer, as a source reading a large
@@ -2134,41 +2173,6 @@ mod tests {
             names.iter().any(|name| name.starts_with("Search the web")),
             "the web row is still offered: {names:?}"
         );
-    }
-
-    /// A window is one row; the items it shows are their own rows, or
-    /// every item one window shows would collapse into it.
-    #[test]
-    fn items_shown_in_one_window_are_their_own_rows() {
-        use crate::providers::WINDOWS_KIND;
-        let to_window = || Target::Window { tab: 0, app: None };
-        let window = hit(
-            "windows",
-            "window:0",
-            "Notes",
-            ResourceKind::Custom(WINDOWS_KIND.into()),
-            10,
-            to_window(),
-        );
-        let groceries = hit(
-            "app-actions",
-            "note:one",
-            "Groceries",
-            ResourceKind::Note,
-            10,
-            to_window(),
-        );
-        let bills = hit(
-            "app-actions",
-            "note:two",
-            "Bills",
-            ResourceKind::Note,
-            10,
-            to_window(),
-        );
-        assert_eq!(window.thing(), Thing::Window(0));
-        assert_ne!(groceries.thing(), bills.thing());
-        assert_ne!(groceries.thing(), Thing::Window(0));
     }
 }
 

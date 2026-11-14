@@ -471,103 +471,109 @@ pub fn page_content_width(width: f32, measure: Option<f32>, gutter: f32) -> f32 
 mod tests {
     use super::*;
 
-    #[test]
-    fn lengths_resolve_against_the_text_size() {
-        assert!((Length::Rem(11.0).resolve(16.0) - 176.0).abs() < f32::EPSILON);
-        assert!((Length::Rem(11.0).resolve(32.0) - 352.0).abs() < f32::EPSILON);
-        assert!((Length::Dp(5.0).resolve(32.0) - 5.0).abs() < f32::EPSILON);
-    }
+    tilo_test_env::scenario! {
+        /// The pure arithmetic of arrangement: lengths, classes, orientation, columns, splits, pages and direction.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn arrangement_units_resolve_against_the_space_offered;
 
-    #[test]
-    fn a_grid_has_as_many_columns_as_fit_and_always_one() {
-        let min = 11.0 * 16.0;
-        assert_eq!(columns_for(320.0, min, 16.0), 1, "a phone");
-        assert_eq!(columns_for(2000.0, min, 16.0), 10);
-        assert_eq!(columns_for(1000.0, min, 16.0), 5);
-        assert_eq!(columns_for(3.0 * min + 2.0 * 16.0, min, 16.0), 3);
-        assert_eq!(columns_for(3.0 * min + 2.0 * 16.0 - 1.0, min, 16.0), 2);
-        assert_eq!(columns_for(0.0, min, 16.0), 1);
-        assert_eq!(columns_for(1000.0, 2.0 * min, 16.0), 2);
-    }
+        phase lengths_resolve_against_the_text_size;
+        {
+            assert!((Length::Rem(11.0).resolve(16.0) - 176.0).abs() < f32::EPSILON);
+            assert!((Length::Rem(11.0).resolve(32.0) - 352.0).abs() < f32::EPSILON);
+            assert!((Length::Dp(5.0).resolve(32.0) - 5.0).abs() < f32::EPSILON);
+        }
 
-    #[test]
-    fn classes_follow_the_rem_boundaries() {
-        assert_eq!(WidthClass::of(29.9), WidthClass::Compact);
-        assert_eq!(WidthClass::of(30.0), WidthClass::Medium);
-        assert_eq!(WidthClass::of(51.9), WidthClass::Medium);
-        assert_eq!(WidthClass::of(52.0), WidthClass::Expanded);
-        assert_eq!(WidthClass::of(75.0), WidthClass::Wide);
-        // The same window at 1.5 times the text size is a narrower class.
-        let window = 700.0;
-        assert_eq!(WidthClass::of(window / 16.0), WidthClass::Medium);
-        assert_eq!(WidthClass::of(window / 24.0), WidthClass::Compact);
-    }
+        phase a_grid_has_as_many_columns_as_fit_and_always_one;
+        {
+            let min = 11.0 * 16.0;
+            assert_eq!(columns_for(320.0, min, 16.0), 1, "a phone");
+            assert_eq!(columns_for(2000.0, min, 16.0), 10);
+            assert_eq!(columns_for(1000.0, min, 16.0), 5);
+            assert_eq!(columns_for(3.0 * min + 2.0 * 16.0, min, 16.0), 3);
+            assert_eq!(columns_for(3.0 * min + 2.0 * 16.0 - 1.0, min, 16.0), 2);
+            assert_eq!(columns_for(0.0, min, 16.0), 1);
+            assert_eq!(columns_for(1000.0, 2.0 * min, 16.0), 2);
+        }
 
-    #[test]
-    fn a_class_holds_through_a_small_band_around_its_boundary() {
-        let compact = Some(WidthClass::Compact);
-        assert_eq!(WidthClass::with_history(30.2, compact), WidthClass::Compact);
-        assert_eq!(WidthClass::with_history(30.6, compact), WidthClass::Medium);
-        let medium = Some(WidthClass::Medium);
-        assert_eq!(WidthClass::with_history(29.8, medium), WidthClass::Medium);
-        assert_eq!(WidthClass::with_history(29.4, medium), WidthClass::Compact);
-        assert_eq!(WidthClass::with_history(30.0, None), WidthClass::Medium);
-    }
+        phase classes_follow_the_rem_boundaries;
+        {
+            assert_eq!(WidthClass::of(29.9), WidthClass::Compact);
+            assert_eq!(WidthClass::of(30.0), WidthClass::Medium);
+            assert_eq!(WidthClass::of(51.9), WidthClass::Medium);
+            assert_eq!(WidthClass::of(52.0), WidthClass::Expanded);
+            assert_eq!(WidthClass::of(75.0), WidthClass::Wide);
+            // The same window at 1.5 times the text size is a narrower class.
+            let window = 700.0;
+            assert_eq!(WidthClass::of(window / 16.0), WidthClass::Medium);
+            assert_eq!(WidthClass::of(window / 24.0), WidthClass::Compact);
+        }
 
-    #[test]
-    fn orientation_separates_portrait_landscape_and_ultrawide() {
-        assert_eq!(Orientation::of(390.0, 844.0), Orientation::Portrait);
-        assert_eq!(Orientation::of(1280.0, 800.0), Orientation::Landscape);
-        assert_eq!(Orientation::of(3440.0, 1440.0), Orientation::Ultrawide);
-        assert_eq!(Orientation::of(1080.0, 1920.0), Orientation::Portrait);
-    }
+        phase a_class_holds_through_a_small_band_around_its_boundary;
+        {
+            let compact = Some(WidthClass::Compact);
+            assert_eq!(WidthClass::with_history(30.2, compact), WidthClass::Compact);
+            assert_eq!(WidthClass::with_history(30.6, compact), WidthClass::Medium);
+            let medium = Some(WidthClass::Medium);
+            assert_eq!(WidthClass::with_history(29.8, medium), WidthClass::Medium);
+            assert_eq!(WidthClass::with_history(29.4, medium), WidthClass::Compact);
+            assert_eq!(WidthClass::with_history(30.0, None), WidthClass::Medium);
+        }
 
-    #[test]
-    fn a_split_collapses_when_both_minimums_no_longer_fit() {
-        let (primary, secondary, gap) = (18.0 * 16.0, 22.0 * 16.0, 16.0);
-        let needed = primary + secondary + gap;
-        assert_eq!(
-            arrangement_for(needed, primary, secondary, gap),
-            Arrangement::SideBySide
-        );
-        assert_eq!(
-            arrangement_for(needed - 0.5, primary, secondary, gap),
-            Arrangement::Collapsed
-        );
-        // At 150 % text the same window collapses.
-        assert_eq!(
-            arrangement_for(needed, 1.5 * primary, 1.5 * secondary, gap),
-            Arrangement::Collapsed
-        );
-    }
+        phase orientation_separates_portrait_landscape_and_ultrawide;
+        {
+            assert_eq!(Orientation::of(390.0, 844.0), Orientation::Portrait);
+            assert_eq!(Orientation::of(1280.0, 800.0), Orientation::Landscape);
+            assert_eq!(Orientation::of(3440.0, 1440.0), Orientation::Ultrawide);
+            assert_eq!(Orientation::of(1080.0, 1920.0), Orientation::Portrait);
+        }
 
-    #[test]
-    fn a_page_is_bounded_to_its_measure_and_keeps_its_gutters() {
-        let measure = Some(40.0 * 16.0);
-        assert!((page_content_width(1920.0, measure, 24.0) - 640.0).abs() < f32::EPSILON);
-        assert!((page_content_width(390.0, measure, 16.0) - 358.0).abs() < f32::EPSILON);
-        assert!((page_content_width(1920.0, None, 24.0) - 1872.0).abs() < f32::EPSILON);
-        assert!(page_content_width(10.0, measure, 16.0).abs() < f32::EPSILON);
-    }
+        phase a_split_collapses_when_both_minimums_no_longer_fit;
+        {
+            let (primary, secondary, gap) = (18.0 * 16.0, 22.0 * 16.0, 16.0);
+            let needed = primary + secondary + gap;
+            assert_eq!(
+                arrangement_for(needed, primary, secondary, gap),
+                Arrangement::SideBySide
+            );
+            assert_eq!(
+                arrangement_for(needed - 0.5, primary, secondary, gap),
+                Arrangement::Collapsed
+            );
+            // At 150 % text the same window collapses.
+            assert_eq!(
+                arrangement_for(needed, 1.5 * primary, 1.5 * secondary, gap),
+                Arrangement::Collapsed
+            );
+        }
 
-    #[test]
-    fn leading_is_the_right_edge_in_right_to_left() {
-        use taffy::AlignItems::{FlexEnd as End, FlexStart as Start};
-        let (inline, _) = At::TopLeading.aligns(Direction::Ltr);
-        assert_eq!(inline, Start);
-        let (inline, _) = At::TopLeading.aligns(Direction::Rtl);
-        assert_eq!(inline, End);
-        let (inline, block) = At::BottomTrailing.aligns(Direction::Rtl);
-        assert_eq!((inline, block), (Start, End));
-        assert_eq!(Direction::Rtl.row(), taffy::FlexDirection::RowReverse);
-    }
+        phase a_page_is_bounded_to_its_measure_and_keeps_its_gutters;
+        {
+            let measure = Some(40.0 * 16.0);
+            assert!((page_content_width(1920.0, measure, 24.0) - 640.0).abs() < f32::EPSILON);
+            assert!((page_content_width(390.0, measure, 16.0) - 358.0).abs() < f32::EPSILON);
+            assert!((page_content_width(1920.0, None, 24.0) - 1872.0).abs() < f32::EPSILON);
+            assert!(page_content_width(10.0, measure, 16.0).abs() < f32::EPSILON);
+        }
 
-    #[test]
-    fn space_reads_the_offer_in_rem() {
-        let space = Space::offered(480.0, 800.0, 16.0, None);
-        assert!((space.width - 30.0).abs() < f32::EPSILON);
-        assert!(!space.compact());
-        assert_eq!(space.orientation, Orientation::Portrait);
-        assert!(Space::offered(479.0, 800.0, 16.0, None).compact());
+        phase leading_is_the_right_edge_in_right_to_left;
+        {
+            use taffy::AlignItems::{FlexEnd as End, FlexStart as Start};
+            let (inline, _) = At::TopLeading.aligns(Direction::Ltr);
+            assert_eq!(inline, Start);
+            let (inline, _) = At::TopLeading.aligns(Direction::Rtl);
+            assert_eq!(inline, End);
+            let (inline, block) = At::BottomTrailing.aligns(Direction::Rtl);
+            assert_eq!((inline, block), (Start, End));
+            assert_eq!(Direction::Rtl.row(), taffy::FlexDirection::RowReverse);
+        }
+
+        phase space_reads_the_offer_in_rem;
+        {
+            let space = Space::offered(480.0, 800.0, 16.0, None);
+            assert!((space.width - 30.0).abs() < f32::EPSILON);
+            assert!(!space.compact());
+            assert_eq!(space.orientation, Orientation::Portrait);
+            assert!(Space::offered(479.0, 800.0, 16.0, None).compact());
+        }
     }
 }

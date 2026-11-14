@@ -397,148 +397,152 @@ mod tests {
         }
     }
 
-    #[test]
-    fn forest_build_promotes_boundaries_keeps_orphans_and_survives_cycles() {
+    tilo_test_env::scenario! {
+        fn the_process_tree_builds_sums_and_flattens;
+
+        phase forest_build_promotes_boundaries_keeps_orphans_and_survives_cycles;
         {
-            let procs = vec![
-                p(1, None, "init", 0.0, 10),
-                p(2, Some(1), "child", 0.0, 10),
-                p(99, Some(404), "orphan", 0.0, 10),
-            ];
-            let f = Forest::build(&procs);
-            assert_eq!(f.roots.len(), 3, "init + promoted child + orphan are roots");
-            assert_eq!(f.nodes.len(), 3, "no process dropped");
-            let root_pids: std::collections::HashSet<u32> =
-                f.roots.iter().map(|&i| f.nodes[i].proc.pid).collect();
-            assert!(
-                root_pids.contains(&2),
-                "a child of init is a top-level root"
-            );
-            let init = f.nodes.iter().find(|n| n.proc.pid == 1).unwrap();
-            assert!(init.children.is_empty(), "init does not nest the world");
+            {
+                let procs = vec![
+                    p(1, None, "init", 0.0, 10),
+                    p(2, Some(1), "child", 0.0, 10),
+                    p(99, Some(404), "orphan", 0.0, 10),
+                ];
+                let f = Forest::build(&procs);
+                assert_eq!(f.roots.len(), 3, "init + promoted child + orphan are roots");
+                assert_eq!(f.nodes.len(), 3, "no process dropped");
+                let root_pids: std::collections::HashSet<u32> =
+                    f.roots.iter().map(|&i| f.nodes[i].proc.pid).collect();
+                assert!(
+                    root_pids.contains(&2),
+                    "a child of init is a top-level root"
+                );
+                let init = f.nodes.iter().find(|n| n.proc.pid == 1).unwrap();
+                assert!(init.children.is_empty(), "init does not nest the world");
+            }
+
+            {
+                let procs = vec![
+                    p(1, None, "systemd", 0.0, 10),
+                    p(1000, Some(1), "systemd", 0.0, 10), // systemd --user
+                    p(1200, Some(1000), "shell", 0.0, 10),
+                    p(1300, Some(1200), "editor", 0.0, 10),
+                ];
+                let f = Forest::build(&procs);
+                let root_pids: std::collections::HashSet<u32> =
+                    f.roots.iter().map(|&i| f.nodes[i].proc.pid).collect();
+                assert!(
+                    root_pids.contains(&1200),
+                    "shell promoted out of systemd --user"
+                );
+                let shell = f.nodes.iter().find(|n| n.proc.pid == 1200).unwrap();
+                assert_eq!(shell.children.len(), 1, "editor stays under the shell");
+            }
+
+            {
+                let procs = vec![p(1, Some(2), "a", 1.0, 10), p(2, Some(1), "b", 1.0, 10)];
+                let f = Forest::build(&procs);
+                assert_eq!(f.nodes.len(), 2);
+                assert!(!f.roots.is_empty());
+            }
         }
 
+        phase subtree_sums_drive_collapsed_rows_per_sum_mode;
         {
-            let procs = vec![
-                p(1, None, "systemd", 0.0, 10),
-                p(1000, Some(1), "systemd", 0.0, 10), // systemd --user
-                p(1200, Some(1000), "shell", 0.0, 10),
-                p(1300, Some(1200), "editor", 0.0, 10),
-            ];
-            let f = Forest::build(&procs);
-            let root_pids: std::collections::HashSet<u32> =
-                f.roots.iter().map(|&i| f.nodes[i].proc.pid).collect();
-            assert!(
-                root_pids.contains(&1200),
-                "shell promoted out of systemd --user"
-            );
-            let shell = f.nodes.iter().find(|n| n.proc.pid == 1200).unwrap();
-            assert_eq!(shell.children.len(), 1, "editor stays under the shell");
+            {
+                let f = Forest::build(&discord_tree());
+                let discord = f.nodes.iter().find(|n| n.proc.pid == 10).unwrap();
+                assert!((discord.cpu_subtree - 65.0).abs() < 1e-3, "cpu sum");
+                let mem_mib = discord.mem_subtree / (1024 * 1024);
+                assert_eq!(mem_mib, 100 + 500 + 300 + 60, "mem sum");
+                let renderer = f.nodes.iter().find(|n| n.proc.pid == 11).unwrap();
+                assert!((renderer.cpu_subtree - 45.0).abs() < 1e-3);
+            }
+
+            {
+                let f = Forest::build(&discord_tree());
+                let expanded = HashSet::new(); // all collapsed
+                let rows = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""));
+                assert_eq!(rows.len(), 1, "collapsed root only");
+                assert_eq!(rows[0].pid, 10);
+                assert!(
+                    (rows[0].cpu - 65.0).abs() < 1e-3,
+                    "collapsed parent = subtree sum"
+                );
+                assert!(rows[0].has_children && !rows[0].expanded);
+            }
+
+            {
+                let f = Forest::build(&discord_tree());
+                let expanded = HashSet::new();
+                let rows = f.flatten(&opts(SumMode::PerProcess, &expanded, ""));
+                assert_eq!(rows.len(), 1);
+                assert!(
+                    (rows[0].cpu - 2.0).abs() < 1e-3,
+                    "per-process = own usage only"
+                );
+            }
+
+            {
+                let f = Forest::build(&discord_tree());
+                let expanded = HashSet::new();
+                let summed = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""))[0].cpu;
+                let per = f.flatten(&opts(SumMode::PerProcess, &expanded, ""))[0].cpu;
+                assert!(
+                    summed > per + 1.0,
+                    "sum {summed} must exceed per-process {per}"
+                );
+            }
         }
 
+        phase flatten_expands_filters_with_ancestors_and_prunes_kernel_nodes;
         {
-            let procs = vec![p(1, Some(2), "a", 1.0, 10), p(2, Some(1), "b", 1.0, 10)];
-            let f = Forest::build(&procs);
-            assert_eq!(f.nodes.len(), 2);
-            assert!(!f.roots.is_empty());
-        }
-    }
+            {
+                let f = Forest::build(&discord_tree());
+                let mut expanded = HashSet::new();
+                expanded.insert(10); // open discord, but not Renderer
+                let rows = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""));
+                assert_eq!(rows.len(), 3);
+                let renderer = rows.iter().find(|r| r.pid == 11).unwrap();
+                assert!((renderer.cpu - 45.0).abs() < 1e-3);
+                assert_eq!(renderer.depth, 1, "child is indented");
+                let gpu = rows.iter().find(|r| r.pid == 12).unwrap();
+                assert!((gpu.cpu - 18.0).abs() < 1e-3);
+            }
 
-    #[test]
-    fn subtree_sums_drive_collapsed_rows_per_sum_mode() {
-        {
-            let f = Forest::build(&discord_tree());
-            let discord = f.nodes.iter().find(|n| n.proc.pid == 10).unwrap();
-            assert!((discord.cpu_subtree - 65.0).abs() < 1e-3, "cpu sum");
-            let mem_mib = discord.mem_subtree / (1024 * 1024);
-            assert_eq!(mem_mib, 100 + 500 + 300 + 60, "mem sum");
-            let renderer = f.nodes.iter().find(|n| n.proc.pid == 11).unwrap();
-            assert!((renderer.cpu_subtree - 45.0).abs() < 1e-3);
-        }
+            {
+                let f = Forest::build(&discord_tree());
+                let expanded = HashSet::new(); // nothing user-expanded
+                let rows = f.flatten(&opts(SumMode::SumSubtree, &expanded, "audio"));
+                let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+                assert!(names.contains(&"discord"), "ancestor kept: {names:?}");
+                assert!(names.contains(&"Renderer"), "ancestor kept: {names:?}");
+                assert!(names.contains(&"Audio"), "match kept: {names:?}");
+                assert!(
+                    !names.contains(&"GPU"),
+                    "non-matching sibling pruned: {names:?}"
+                );
+            }
 
-        {
-            let f = Forest::build(&discord_tree());
-            let expanded = HashSet::new(); // all collapsed
-            let rows = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""));
-            assert_eq!(rows.len(), 1, "collapsed root only");
-            assert_eq!(rows[0].pid, 10);
-            assert!(
-                (rows[0].cpu - 65.0).abs() < 1e-3,
-                "collapsed parent = subtree sum"
-            );
-            assert!(rows[0].has_children && !rows[0].expanded);
-        }
-
-        {
-            let f = Forest::build(&discord_tree());
-            let expanded = HashSet::new();
-            let rows = f.flatten(&opts(SumMode::PerProcess, &expanded, ""));
-            assert_eq!(rows.len(), 1);
-            assert!(
-                (rows[0].cpu - 2.0).abs() < 1e-3,
-                "per-process = own usage only"
-            );
-        }
-
-        {
-            let f = Forest::build(&discord_tree());
-            let expanded = HashSet::new();
-            let summed = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""))[0].cpu;
-            let per = f.flatten(&opts(SumMode::PerProcess, &expanded, ""))[0].cpu;
-            assert!(
-                summed > per + 1.0,
-                "sum {summed} must exceed per-process {per}"
-            );
-        }
-    }
-
-    #[test]
-    fn flatten_expands_filters_with_ancestors_and_prunes_kernel_nodes() {
-        {
-            let f = Forest::build(&discord_tree());
-            let mut expanded = HashSet::new();
-            expanded.insert(10); // open discord, but not Renderer
-            let rows = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""));
-            assert_eq!(rows.len(), 3);
-            let renderer = rows.iter().find(|r| r.pid == 11).unwrap();
-            assert!((renderer.cpu - 45.0).abs() < 1e-3);
-            assert_eq!(renderer.depth, 1, "child is indented");
-            let gpu = rows.iter().find(|r| r.pid == 12).unwrap();
-            assert!((gpu.cpu - 18.0).abs() < 1e-3);
-        }
-
-        {
-            let f = Forest::build(&discord_tree());
-            let expanded = HashSet::new(); // nothing user-expanded
-            let rows = f.flatten(&opts(SumMode::SumSubtree, &expanded, "audio"));
-            let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-            assert!(names.contains(&"discord"), "ancestor kept: {names:?}");
-            assert!(names.contains(&"Renderer"), "ancestor kept: {names:?}");
-            assert!(names.contains(&"Audio"), "match kept: {names:?}");
-            assert!(
-                !names.contains(&"GPU"),
-                "non-matching sibling pruned: {names:?}"
-            );
-        }
-
-        {
-            let mut procs = discord_tree();
-            let mut kthread = p(50, None, "kworker/0", 1.0, 0);
-            kthread.kernel = true;
-            procs.push(kthread);
-            let f = Forest::build(&procs);
-            let expanded = HashSet::new();
-            let hidden = FlattenOpts {
-                show_kernel: false,
-                ..opts(SumMode::SumSubtree, &expanded, "")
-            };
-            let rows = f.flatten(&hidden);
-            assert!(rows.iter().all(|r| r.name != "kworker/0"), "kernel pruned");
-            let shown = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""));
-            assert!(
-                shown.iter().any(|r| r.name == "kworker/0"),
-                "kernel shown when on"
-            );
+            {
+                let mut procs = discord_tree();
+                let mut kthread = p(50, None, "kworker/0", 1.0, 0);
+                kthread.kernel = true;
+                procs.push(kthread);
+                let f = Forest::build(&procs);
+                let expanded = HashSet::new();
+                let hidden = FlattenOpts {
+                    show_kernel: false,
+                    ..opts(SumMode::SumSubtree, &expanded, "")
+                };
+                let rows = f.flatten(&hidden);
+                assert!(rows.iter().all(|r| r.name != "kworker/0"), "kernel pruned");
+                let shown = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""));
+                assert!(
+                    shown.iter().any(|r| r.name == "kworker/0"),
+                    "kernel shown when on"
+                );
+            }
         }
     }
 }

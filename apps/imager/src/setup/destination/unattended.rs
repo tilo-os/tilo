@@ -1263,387 +1263,462 @@ mod tests {
         Recipe::parse(serde_json::to_vec(value).unwrap().as_slice()).unwrap()
     }
 
-    #[test]
-    fn a_private_hash_recipe_installs_through_published_actions() {
-        let fake = Fake::succeeding();
-        let mut app = build_app(
-            &fake,
-            Protection {
+    tilo_test_env::scenario! {
+        fn an_unattended_recipe_installs_with_the_protection_it_reviewed;
+
+        phase a_private_hash_recipe_installs_through_published_actions;
+        {
+            let fake = Fake::succeeding();
+            let mut app = build_app(
+                &fake,
+                Protection {
+                    tpm2: false,
+                    secure_boot: false,
+                    kernel_lockdown: false,
+                    target_verified_boot: false,
+                },
+            );
+            let recipe = parse(&recipe(true));
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("recovery-key");
+            let mut sink = RecoveryDestination::File(path.clone()).open().unwrap();
+            let mut probe = Probe(ProtectionReport {
                 tpm2: false,
-                secure_boot: false,
-                kernel_lockdown: false,
+                pin_defensible: false,
+                lockout_auth_set: false,
+                shared_with_windows: false,
                 target_verified_boot: false,
-            },
-        );
-        let recipe = parse(&recipe(true));
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("recovery-key");
-        let mut sink = RecoveryDestination::File(path.clone()).open().unwrap();
-        let mut probe = Probe(ProtectionReport {
-            tpm2: false,
-            pin_defensible: false,
-            lockout_auth_set: false,
-            shared_with_windows: false,
-            target_verified_boot: false,
-        });
+            });
 
-        execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
+            execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
 
-        let installs = fake.installs.lock().unwrap().clone();
-        assert_eq!(installs.len(), 1);
-        let (target, user, password, options) = &installs[0];
-        assert_eq!((target.as_str(), user.as_str()), ("/dev/vdb", "ada"));
-        assert_eq!(password, &account_hash());
-        assert!(options.password_is_hash);
-        assert!(options.force_startup_passphrase);
-        assert_eq!(options.filesystem, "xfs");
-        assert_eq!(options.hostname, "lab-1");
-        assert_eq!(options.pin.as_str(), DISK_SECRET);
-        assert_eq!(app.install_state(), InstallState::Done);
+            let installs = fake.installs.lock().unwrap().clone();
+            assert_eq!(installs.len(), 1);
+            let (target, user, password, options) = &installs[0];
+            assert_eq!((target.as_str(), user.as_str()), ("/dev/vdb", "ada"));
+            assert_eq!(password, &account_hash());
+            assert!(options.password_is_hash);
+            assert!(options.force_startup_passphrase);
+            assert_eq!(options.filesystem, "xfs");
+            assert_eq!(options.hostname, "lab-1");
+            assert_eq!(options.pin.as_str(), DISK_SECRET);
+            assert_eq!(app.install_state(), InstallState::Done);
 
-        let delivered = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(delivered.trim(), KEY);
-        let state = app.console_state().to_string();
-        assert!(
-            !state.contains(&account_hash()),
-            "the hash reached state: {state}"
-        );
-        assert!(
-            !state.contains(DISK_SECRET),
-            "the disk secret reached state"
-        );
-        assert!(!state.contains(KEY), "the recovery key reached state");
-        assert_eq!(app.console_state()["unattended"]["active"], true);
-    }
-
-    #[test]
-    fn without_protection_the_account_password_is_the_startup_secret() {
-        let fake = Fake::succeeding();
-        let mut app = build_app(
-            &fake,
-            Protection {
-                tpm2: false,
-                secure_boot: false,
-                kernel_lockdown: false,
-                target_verified_boot: false,
-            },
-        );
-        let mut value = recipe(false);
-        value.as_object_mut().unwrap().remove("protection");
-        let recipe = parse(&value);
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("recovery-key");
-        let mut sink = RecoveryDestination::File(path.clone()).open().unwrap();
-        let mut probe = Probe(ProtectionReport {
-            tpm2: false,
-            pin_defensible: false,
-            lockout_auth_set: false,
-            shared_with_windows: false,
-            target_verified_boot: false,
-        });
-
-        execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
-
-        let installs = fake.installs.lock().unwrap().clone();
-        assert_eq!(installs.len(), 1);
-        let (_, _, password, options) = &installs[0];
-        assert_eq!(password, "ordinary typed password");
-        assert_eq!(options.pin.as_str(), "ordinary typed password");
-        assert!(!options.password_is_hash);
-        assert_eq!(app.install_state(), InstallState::Done);
-        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), KEY);
-    }
-
-    #[test]
-    fn tpm2_requires_the_actual_probe_and_uses_the_reviewed_pin() {
-        let fake = Fake::succeeding();
-        let mut app = build_app(
-            &fake,
-            Protection {
-                tpm2: true,
-                secure_boot: true,
-                kernel_lockdown: true,
-                target_verified_boot: true,
-            },
-        );
-        let mut value = recipe(false);
-        value["protection"] = json!({"kind": "tpm2", "secret": PIN});
-        let recipe = parse(&value);
-        let mut sink =
-            RecoveryDestination::File(tempfile::tempdir().unwrap().path().join("recovery-key"))
-                .open()
-                .unwrap();
-        let mut probe = Probe(ProtectionReport {
-            tpm2: true,
-            pin_defensible: false,
-            lockout_auth_set: false,
-            shared_with_windows: false,
-            target_verified_boot: true,
-        });
-
-        execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
-        let installs = fake.installs.lock().unwrap().clone();
-        assert_eq!(installs.len(), 1);
-        assert_eq!(installs[0].3.pin.as_str(), PIN);
-        assert!(!installs[0].3.force_startup_passphrase);
-        assert!(!installs[0].3.password_is_hash);
-    }
-
-    #[test]
-    fn an_explicit_passphrase_plan_survives_a_tpm_verified_target() {
-        let fake = Fake::succeeding();
-        let mut app = build_app(
-            &fake,
-            Protection {
-                tpm2: true,
-                secure_boot: true,
-                kernel_lockdown: true,
-                target_verified_boot: true,
-            },
-        );
-        let recipe = parse(&recipe(false));
-        let mut sink =
-            RecoveryDestination::File(tempfile::tempdir().unwrap().path().join("recovery-key"))
-                .open()
-                .unwrap();
-        let mut probe = Probe(ProtectionReport {
-            tpm2: true,
-            pin_defensible: false,
-            lockout_auth_set: false,
-            shared_with_windows: false,
-            target_verified_boot: true,
-        });
-
-        execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
-        let installs = fake.installs.lock().unwrap().clone();
-        assert_eq!(installs.len(), 1);
-        assert_eq!(installs[0].3.pin.as_str(), DISK_SECRET);
-        assert!(installs[0].3.force_startup_passphrase);
-        assert_eq!(
-            app.console_state()["account"]["secret_policy"],
-            "passphrase"
-        );
-    }
-
-    #[test]
-    fn a_failed_hardware_probe_refuses_before_disk_mutation_and_leaves_the_wizard() {
-        let fake = Fake::succeeding();
-        let mut app = build_app(
-            &fake,
-            Protection {
-                tpm2: true,
-                secure_boot: true,
-                kernel_lockdown: true,
-                target_verified_boot: true,
-            },
-        );
-        let mut value = recipe(false);
-        value["protection"] = json!({"kind": "tpm2", "secret": PIN});
-        let recipe = parse(&value);
-        let mut sink =
-            RecoveryDestination::File(tempfile::tempdir().unwrap().path().join("recovery-key"))
-                .open()
-                .unwrap();
-        let error = execute(&mut app, &recipe, &mut Refuse, &mut sink).unwrap_err();
-        assert!(error.contains("actual TPM2"));
-        assert!(fake.installs.lock().unwrap().is_empty());
-
-        app.note_unattended_error(error);
-        let state = app.console_state();
-        assert_eq!(state["unattended"]["active"], true);
-        assert_eq!(
-            state["unattended"]["error"],
-            "the actual TPM2 did not answer"
-        );
-        assert_eq!(state["step"], "keyboard");
-        let dump: Value =
-            serde_json::from_str(&app.answer_console(r#"{"op":"state_dump"}"#)).unwrap();
-        assert_eq!(
-            dump["state"]["unattended"]["error"],
-            "the actual TPM2 did not answer"
-        );
-        let listed: Value =
-            serde_json::from_str(&app.answer_console(r#"{"op":"actions_enumerate"}"#)).unwrap();
-        assert!(
-            listed.get("answer").is_some(),
-            "the recoverable console stays live: {listed}"
-        );
-    }
-
-    #[test]
-    fn a_changed_disk_identity_refuses_and_names_the_reviewed_target() {
-        let fake = Fake::succeeding();
-        let mut app = build_app(
-            &fake,
-            Protection {
-                tpm2: false,
-                secure_boot: false,
-                kernel_lockdown: false,
-                target_verified_boot: false,
-            },
-        );
-        let mut value = recipe(false);
-        value["disk"]["size_bytes"] = json!(41u64 * 1024 * 1024 * 1024);
-        let recipe = parse(&value);
-        let mut sink =
-            RecoveryDestination::File(tempfile::tempdir().unwrap().path().join("recovery-key"))
-                .open()
-                .unwrap();
-        let mut probe = Probe(ProtectionReport {
-            tpm2: false,
-            pin_defensible: false,
-            lockout_auth_set: false,
-            shared_with_windows: false,
-            target_verified_boot: false,
-        });
-
-        let error = execute(&mut app, &recipe, &mut probe, &mut sink).unwrap_err();
-        assert!(
-            error.contains("no longer matches the actual block device"),
-            "{error}"
-        );
-        assert!(error.contains("/dev/vdb"), "{error}");
-        assert!(fake.installs.lock().unwrap().is_empty());
-
-        app.note_unattended_error(error);
-        assert_eq!(app.console_state()["step"], "disk");
-        assert!(
-            app.console_state()["unattended"]["error"]
-                .as_str()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn malformed_or_incomplete_recipes_are_refused_without_guessing() {
-        for mutate in [
-            |value: &mut serde_json::Value| value["uid"] = json!(1000),
-            |value: &mut serde_json::Value| {
-                value["account"]["password"] = json!("also a password");
-            },
-            |value: &mut serde_json::Value| {
-                value["account"]["password_sha512_crypt"] = json!("not-a-hash");
-                value["account"].as_object_mut().unwrap().remove("password");
-            },
-            |value: &mut serde_json::Value| value["data_source"] = json!("this_computer"),
-            |value: &mut serde_json::Value| value["acknowledge_recovery_key"] = json!(false),
-            |value: &mut serde_json::Value| value["disk"]["method"] = json!("alongside"),
-            |value: &mut serde_json::Value| value["disk"]["partition_table"] = json!("dos"),
-            |value: &mut serde_json::Value| value["protection"]["kind"] = json!("auto"),
-            |value: &mut serde_json::Value| {
-                value.as_object_mut().unwrap().remove("protection");
-            },
-            |value: &mut serde_json::Value| value["schema"] = json!(2),
-        ] {
-            let mut value = recipe(true);
-            mutate(&mut value);
+            let delivered = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(delivered.trim(), KEY);
+            let state = app.console_state().to_string();
             assert!(
-                Recipe::parse(serde_json::to_vec(&value).unwrap().as_slice()).is_err(),
-                "accepted {value}"
+                !state.contains(&account_hash()),
+                "the hash reached state: {state}"
+            );
+            assert!(
+                !state.contains(DISK_SECRET),
+                "the disk secret reached state"
+            );
+            assert!(!state.contains(KEY), "the recovery key reached state");
+            assert_eq!(app.console_state()["unattended"]["active"], true);
+        }
+
+        phase without_protection_the_account_password_is_the_startup_secret;
+        {
+            let fake = Fake::succeeding();
+            let mut app = build_app(
+                &fake,
+                Protection {
+                    tpm2: false,
+                    secure_boot: false,
+                    kernel_lockdown: false,
+                    target_verified_boot: false,
+                },
+            );
+            let mut value = recipe(false);
+            value.as_object_mut().unwrap().remove("protection");
+            let recipe = parse(&value);
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("recovery-key");
+            let mut sink = RecoveryDestination::File(path.clone()).open().unwrap();
+            let mut probe = Probe(ProtectionReport {
+                tpm2: false,
+                pin_defensible: false,
+                lockout_auth_set: false,
+                shared_with_windows: false,
+                target_verified_boot: false,
+            });
+
+            execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
+
+            let installs = fake.installs.lock().unwrap().clone();
+            assert_eq!(installs.len(), 1);
+            let (_, _, password, options) = &installs[0];
+            assert_eq!(password, "ordinary typed password");
+            assert_eq!(options.pin.as_str(), "ordinary typed password");
+            assert!(!options.password_is_hash);
+            assert_eq!(app.install_state(), InstallState::Done);
+            assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), KEY);
+        }
+
+        phase tpm2_requires_the_actual_probe_and_uses_the_reviewed_pin;
+        {
+            let fake = Fake::succeeding();
+            let mut app = build_app(
+                &fake,
+                Protection {
+                    tpm2: true,
+                    secure_boot: true,
+                    kernel_lockdown: true,
+                    target_verified_boot: true,
+                },
+            );
+            let mut value = recipe(false);
+            value["protection"] = json!({"kind": "tpm2", "secret": PIN});
+            let recipe = parse(&value);
+            let mut sink =
+                RecoveryDestination::File(tempfile::tempdir().unwrap().path().join("recovery-key"))
+                    .open()
+                    .unwrap();
+            let mut probe = Probe(ProtectionReport {
+                tpm2: true,
+                pin_defensible: false,
+                lockout_auth_set: false,
+                shared_with_windows: false,
+                target_verified_boot: true,
+            });
+
+            execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
+            let installs = fake.installs.lock().unwrap().clone();
+            assert_eq!(installs.len(), 1);
+            assert_eq!(installs[0].3.pin.as_str(), PIN);
+            assert!(!installs[0].3.force_startup_passphrase);
+            assert!(!installs[0].3.password_is_hash);
+        }
+
+        phase an_explicit_passphrase_plan_survives_a_tpm_verified_target;
+        {
+            let fake = Fake::succeeding();
+            let mut app = build_app(
+                &fake,
+                Protection {
+                    tpm2: true,
+                    secure_boot: true,
+                    kernel_lockdown: true,
+                    target_verified_boot: true,
+                },
+            );
+            let recipe = parse(&recipe(false));
+            let mut sink =
+                RecoveryDestination::File(tempfile::tempdir().unwrap().path().join("recovery-key"))
+                    .open()
+                    .unwrap();
+            let mut probe = Probe(ProtectionReport {
+                tpm2: true,
+                pin_defensible: false,
+                lockout_auth_set: false,
+                shared_with_windows: false,
+                target_verified_boot: true,
+            });
+
+            execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
+            let installs = fake.installs.lock().unwrap().clone();
+            assert_eq!(installs.len(), 1);
+            assert_eq!(installs[0].3.pin.as_str(), DISK_SECRET);
+            assert!(installs[0].3.force_startup_passphrase);
+            assert_eq!(
+                app.console_state()["account"]["secret_policy"],
+                "passphrase"
             );
         }
     }
 
-    #[test]
-    fn invocation_reads_descriptors_and_never_takes_recipe_content_from_argv() {
-        assert!(
-            Invocation::from_args(Vec::<OsString>::new())
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            Invocation::from_args([OsString::from("--shots"), OsString::from("x")])
-                .unwrap()
-                .is_none()
-        );
-        let invocation = Invocation::from_args([
-            OsString::from("--unattended-fd"),
-            OsString::from("3"),
-            OsString::from("--unattended-recovery-fd"),
-            OsString::from("4"),
-        ])
-        .unwrap()
-        .unwrap();
-        assert_eq!(invocation.recipe, RecipeSource::Fd(3));
-        assert_eq!(invocation.recovery, RecoveryDestination::Fd(4));
-        for bad in [
-            vec!["--unattended-fd", "2"],
-            vec!["--unattended-fd", "3", "--unattended-file", "/x"],
-            vec!["--unattended-file", "relative.json"],
-            vec![
-                "--unattended-fd",
-                "3",
-                "--unattended-recovery-fd",
-                "4",
-                "--unattended-recovery-file",
-                "/x",
-            ],
-            vec!["--unattended-fd", "3", "--password", "secret"],
-        ] {
-            assert!(
-                Invocation::from_args(bad.iter().map(OsString::from)).is_err(),
-                "accepted {bad:?}"
+    tilo_test_env::scenario! {
+        fn an_unattended_install_refuses_before_any_mutation;
+
+        phase a_failed_hardware_probe_refuses_before_disk_mutation_and_leaves_the_wizard;
+        {
+            let fake = Fake::succeeding();
+            let mut app = build_app(
+                &fake,
+                Protection {
+                    tpm2: true,
+                    secure_boot: true,
+                    kernel_lockdown: true,
+                    target_verified_boot: true,
+                },
             );
+            let mut value = recipe(false);
+            value["protection"] = json!({"kind": "tpm2", "secret": PIN});
+            let recipe = parse(&value);
+            let mut sink =
+                RecoveryDestination::File(tempfile::tempdir().unwrap().path().join("recovery-key"))
+                    .open()
+                    .unwrap();
+            let error = execute(&mut app, &recipe, &mut Refuse, &mut sink).unwrap_err();
+            assert!(error.contains("actual TPM2"));
+            assert!(fake.installs.lock().unwrap().is_empty());
+
+            app.note_unattended_error(error);
+            let state = app.console_state();
+            assert_eq!(state["unattended"]["active"], true);
+            assert_eq!(
+                state["unattended"]["error"],
+                "the actual TPM2 did not answer"
+            );
+            assert_eq!(state["step"], "keyboard");
+            let dump: Value =
+                serde_json::from_str(&app.answer_console(r#"{"op":"state_dump"}"#)).unwrap();
+            assert_eq!(
+                dump["state"]["unattended"]["error"],
+                "the actual TPM2 did not answer"
+            );
+            let listed: Value =
+                serde_json::from_str(&app.answer_console(r#"{"op":"actions_enumerate"}"#)).unwrap();
+            assert!(
+                listed.get("answer").is_some(),
+                "the recoverable console stays live: {listed}"
+            );
+        }
+
+        phase a_changed_disk_identity_refuses_and_names_the_reviewed_target;
+        {
+            let fake = Fake::succeeding();
+            let mut app = build_app(
+                &fake,
+                Protection {
+                    tpm2: false,
+                    secure_boot: false,
+                    kernel_lockdown: false,
+                    target_verified_boot: false,
+                },
+            );
+            let mut value = recipe(false);
+            value["disk"]["size_bytes"] = json!(41u64 * 1024 * 1024 * 1024);
+            let recipe = parse(&value);
+            let mut sink =
+                RecoveryDestination::File(tempfile::tempdir().unwrap().path().join("recovery-key"))
+                    .open()
+                    .unwrap();
+            let mut probe = Probe(ProtectionReport {
+                tpm2: false,
+                pin_defensible: false,
+                lockout_auth_set: false,
+                shared_with_windows: false,
+                target_verified_boot: false,
+            });
+
+            let error = execute(&mut app, &recipe, &mut probe, &mut sink).unwrap_err();
+            assert!(
+                error.contains("no longer matches the actual block device"),
+                "{error}"
+            );
+            assert!(error.contains("/dev/vdb"), "{error}");
+            assert!(fake.installs.lock().unwrap().is_empty());
+
+            app.note_unattended_error(error);
+            assert_eq!(app.console_state()["step"], "disk");
+            assert!(
+                app.console_state()["unattended"]["error"]
+                    .as_str()
+                    .is_some()
+            );
+        }
+
+        phase malformed_or_incomplete_recipes_are_refused_without_guessing;
+        {
+            for mutate in [
+                |value: &mut serde_json::Value| value["uid"] = json!(1000),
+                |value: &mut serde_json::Value| {
+                    value["account"]["password"] = json!("also a password");
+                },
+                |value: &mut serde_json::Value| {
+                    value["account"]["password_sha512_crypt"] = json!("not-a-hash");
+                    value["account"].as_object_mut().unwrap().remove("password");
+                },
+                |value: &mut serde_json::Value| value["data_source"] = json!("this_computer"),
+                |value: &mut serde_json::Value| value["acknowledge_recovery_key"] = json!(false),
+                |value: &mut serde_json::Value| value["disk"]["method"] = json!("alongside"),
+                |value: &mut serde_json::Value| value["disk"]["partition_table"] = json!("dos"),
+                |value: &mut serde_json::Value| value["protection"]["kind"] = json!("auto"),
+                |value: &mut serde_json::Value| {
+                    value.as_object_mut().unwrap().remove("protection");
+                },
+                |value: &mut serde_json::Value| value["schema"] = json!(2),
+            ] {
+                let mut value = recipe(true);
+                mutate(&mut value);
+                assert!(
+                    Recipe::parse(serde_json::to_vec(&value).unwrap().as_slice()).is_err(),
+                    "accepted {value}"
+                );
+            }
+        }
+
+        phase a_console_bind_failure_is_a_clear_refusal_before_any_mutation;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let directory = tempfile::tempdir().unwrap();
+            let shared = directory.path().join("shared");
+            std::fs::create_dir(&shared).unwrap();
+            std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let endpoint =
+                imager_backend::destination::console::Endpoint::Socket(shared.join("installer.sock"));
+            let error = start_console(
+                crate::setup::destination::effects::PROVIDER,
+                vec![endpoint],
+                false,
+                None,
+            )
+            .err()
+            .expect("a shared socket directory must be refused, not served empty");
+            assert!(error.contains("No console socket is available"), "{error}");
+            assert!(
+                error.contains("installer.sock"),
+                "the failure names the path: {error}"
+            );
+            assert!(
+                error.contains("closed to everyone else") || error.contains("Permission denied"),
+                "the failure carries the bind reason: {error}"
+            );
+            assert!(
+                !shared.join("installer.sock").exists(),
+                "a refused bind must not leave a socket behind"
+            );
+
+            let error = start_console(
+                crate::setup::destination::effects::PROVIDER,
+                Vec::new(),
+                false,
+                None,
+            )
+            .err()
+            .expect("no endpoint and no terminal has no interactive continuation");
+            assert!(error.contains("No console socket is available"), "{error}");
+            assert!(error.contains("terminal"), "{error}");
         }
     }
 
-    #[test]
-    fn private_recipe_input_is_no_follow_and_owner_only() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("recipe.json");
-        std::fs::write(&path, serde_json::to_vec(&recipe(true)).unwrap()).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let error = RecipeSource::File(path.clone())
-            .read()
-            .err()
-            .expect("a shared recipe must be refused");
-        assert!(error.contains("readable by another account"), "{error}");
+    tilo_test_env::scenario! {
+        fn unattended_input_and_output_stay_private;
 
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(
-            RecipeSource::File(path.clone()).read().unwrap().schema,
-            SCHEMA
-        );
+        phase invocation_reads_descriptors_and_never_takes_recipe_content_from_argv;
+        {
+            assert!(
+                Invocation::from_args(Vec::<OsString>::new())
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                Invocation::from_args([OsString::from("--shots"), OsString::from("x")])
+                    .unwrap()
+                    .is_none()
+            );
+            let invocation = Invocation::from_args([
+                OsString::from("--unattended-fd"),
+                OsString::from("3"),
+                OsString::from("--unattended-recovery-fd"),
+                OsString::from("4"),
+            ])
+            .unwrap()
+            .unwrap();
+            assert_eq!(invocation.recipe, RecipeSource::Fd(3));
+            assert_eq!(invocation.recovery, RecoveryDestination::Fd(4));
+            for bad in [
+                vec!["--unattended-fd", "2"],
+                vec!["--unattended-fd", "3", "--unattended-file", "/x"],
+                vec!["--unattended-file", "relative.json"],
+                vec![
+                    "--unattended-fd",
+                    "3",
+                    "--unattended-recovery-fd",
+                    "4",
+                    "--unattended-recovery-file",
+                    "/x",
+                ],
+                vec!["--unattended-fd", "3", "--password", "secret"],
+            ] {
+                assert!(
+                    Invocation::from_args(bad.iter().map(OsString::from)).is_err(),
+                    "accepted {bad:?}"
+                );
+            }
+        }
 
-        let link = directory.path().join("recipe-link.json");
-        std::os::unix::fs::symlink(&path, &link).unwrap();
-        let error = RecipeSource::File(link)
-            .read()
-            .err()
-            .expect("a linked recipe must be refused");
-        assert!(error.contains("without following a link"), "{error}");
-    }
+        phase private_recipe_input_is_no_follow_and_owner_only;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("recipe.json");
+            std::fs::write(&path, serde_json::to_vec(&recipe(true)).unwrap()).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let error = RecipeSource::File(path.clone())
+                .read()
+                .err()
+                .expect("a shared recipe must be refused");
+            assert!(error.contains("readable by another account"), "{error}");
 
-    #[test]
-    fn recovery_output_refuses_to_overwrite_an_existing_path() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("recovery-key");
-        std::fs::write(&path, b"sentinel").unwrap();
-        let error = RecoveryDestination::File(path.clone())
-            .open()
-            .err()
-            .expect("an existing recovery-key path must be refused");
-        assert!(error.contains("could not be created privately"), "{error}");
-        assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
-    }
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(
+                RecipeSource::File(path.clone()).read().unwrap().schema,
+                SCHEMA
+            );
 
-    #[test]
-    fn sha512_crypt_accepts_the_canonical_shape_and_refuses_lookalikes() {
-        assert!(valid_sha512_crypt(&account_hash()));
-        assert!(valid_sha512_crypt(&format!(
-            "$6$rounds=5000$salt${}",
-            "A".repeat(86)
-        )));
-        for bad in [
-            "",
-            "$6$salt$short",
-            "$6$salt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "$5$salt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "$6$rounds=099$salt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "$6$salt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!",
-        ] {
-            assert!(!valid_sha512_crypt(bad), "accepted {bad}");
+            let link = directory.path().join("recipe-link.json");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            let error = RecipeSource::File(link)
+                .read()
+                .err()
+                .expect("a linked recipe must be refused");
+            assert!(error.contains("without following a link"), "{error}");
+        }
+
+        phase recovery_output_refuses_to_overwrite_an_existing_path;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("recovery-key");
+            std::fs::write(&path, b"sentinel").unwrap();
+            let error = RecoveryDestination::File(path.clone())
+                .open()
+                .err()
+                .expect("an existing recovery-key path must be refused");
+            assert!(error.contains("could not be created privately"), "{error}");
+            assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
+        }
+
+        phase sha512_crypt_accepts_the_canonical_shape_and_refuses_lookalikes;
+        {
+            assert!(valid_sha512_crypt(&account_hash()));
+            assert!(valid_sha512_crypt(&format!(
+                "$6$rounds=5000$salt${}",
+                "A".repeat(86)
+            )));
+            for bad in [
+                "",
+                "$6$salt$short",
+                "$6$salt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "$5$salt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "$6$rounds=099$salt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "$6$salt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!",
+            ] {
+                assert!(!valid_sha512_crypt(bad), "accepted {bad}");
+            }
+        }
+
+        phase recipe_errors_redact_every_secret_they_are_given;
+        {
+            let plaintext = parse(&recipe(false));
+            let message = format!(
+                "password {} disk {}",
+                "ordinary typed password", DISK_SECRET
+            );
+            let redacted = plaintext.redact(&message);
+            assert!(!redacted.contains("ordinary typed password"));
+            assert!(!redacted.contains(DISK_SECRET));
+            assert!(redacted.contains("[redacted]"));
+
+            let hashed = parse(&recipe(true));
+            let message = format!("hash {} disk {}", account_hash(), DISK_SECRET);
+            let redacted = hashed.redact(&message);
+            assert!(!redacted.contains(&account_hash()));
+            assert!(!redacted.contains(DISK_SECRET));
+            assert!(redacted.contains("[redacted]"));
         }
     }
 
@@ -1701,68 +1776,5 @@ mod tests {
                 .as_str()
                 .is_some_and(|error| !error.is_empty())
         );
-    }
-
-    #[test]
-    fn a_console_bind_failure_is_a_clear_refusal_before_any_mutation() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let directory = tempfile::tempdir().unwrap();
-        let shared = directory.path().join("shared");
-        std::fs::create_dir(&shared).unwrap();
-        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let endpoint =
-            imager_backend::destination::console::Endpoint::Socket(shared.join("installer.sock"));
-        let error = start_console(
-            crate::setup::destination::effects::PROVIDER,
-            vec![endpoint],
-            false,
-            None,
-        )
-        .err()
-        .expect("a shared socket directory must be refused, not served empty");
-        assert!(error.contains("No console socket is available"), "{error}");
-        assert!(
-            error.contains("installer.sock"),
-            "the failure names the path: {error}"
-        );
-        assert!(
-            error.contains("closed to everyone else") || error.contains("Permission denied"),
-            "the failure carries the bind reason: {error}"
-        );
-        assert!(
-            !shared.join("installer.sock").exists(),
-            "a refused bind must not leave a socket behind"
-        );
-
-        let error = start_console(
-            crate::setup::destination::effects::PROVIDER,
-            Vec::new(),
-            false,
-            None,
-        )
-        .err()
-        .expect("no endpoint and no terminal has no interactive continuation");
-        assert!(error.contains("No console socket is available"), "{error}");
-        assert!(error.contains("terminal"), "{error}");
-    }
-
-    #[test]
-    fn recipe_errors_redact_every_secret_they_are_given() {
-        let plaintext = parse(&recipe(false));
-        let message = format!(
-            "password {} disk {}",
-            "ordinary typed password", DISK_SECRET
-        );
-        let redacted = plaintext.redact(&message);
-        assert!(!redacted.contains("ordinary typed password"));
-        assert!(!redacted.contains(DISK_SECRET));
-        assert!(redacted.contains("[redacted]"));
-
-        let hashed = parse(&recipe(true));
-        let message = format!("hash {} disk {}", account_hash(), DISK_SECRET);
-        let redacted = hashed.redact(&message);
-        assert!(!redacted.contains(&account_hash()));
-        assert!(!redacted.contains(DISK_SECRET));
-        assert!(redacted.contains("[redacted]"));
     }
 }

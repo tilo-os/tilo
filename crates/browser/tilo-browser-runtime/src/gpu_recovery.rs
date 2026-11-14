@@ -102,48 +102,52 @@ pub fn device_lost(lived: Duration) -> bool {
 mod tests {
     use super::*;
 
-    // Catches a hybrid laptop whose browser hands the page the NVIDIA GPU:
-    // every device it made there was lost on its first frames, and the
-    // desktop stopped after three remakes on the same GPU.
-    #[test]
-    fn a_device_that_never_lasted_gives_way_to_the_other_gpu() {
-        let soon = Duration::from_millis(400);
-        assert_eq!(
-            power_after_loss(PowerPreference::LowPower, soon),
-            PowerPreference::HighPerformance
-        );
-        assert_eq!(
-            power_after_loss(PowerPreference::HighPerformance, soon),
-            PowerPreference::LowPower,
-            "and back, when the other cannot either"
-        );
-        assert_eq!(
-            power_after_loss(PowerPreference::HighPerformance, Duration::from_secs(600)),
-            PowerPreference::HighPerformance,
-            "a device that drew for minutes was reset: its GPU works"
-        );
-        assert_eq!(FIRST_POWER, PowerPreference::LowPower);
-    }
+    tilo_test_env::scenario! {
+        fn a_lost_gpu_is_recovered_or_let_go;
 
-    #[test]
-    fn a_lost_gpu_is_made_again_but_one_that_keeps_failing_is_let_go() {
-        let start = ui::time::now();
-        let at = |secs: u64| {
-            start
-                .checked_add(Duration::from_secs(secs))
-                .unwrap_or(start)
-        };
-        let mut remakes = GpuRemakes::default();
-        assert!(remakes.admit(at(0)), "a device lost once is made again");
-        assert!(remakes.admit(at(10)));
-        assert!(remakes.admit(at(20)));
-        assert!(
-            !remakes.admit(at(30)),
-            "a fourth loss within a minute stops the desktop"
-        );
-        assert!(
-            remakes.admit(at(70)),
-            "a minute after the first, a loss is made good again"
-        );
+        phase a_device_that_never_lasted_gives_way_to_the_other_gpu;
+        // Catches a hybrid laptop whose browser hands the page the NVIDIA GPU:
+        // every device it made there was lost on its first frames, and the
+        // desktop stopped after three remakes on the same GPU.
+        {
+            let soon = Duration::from_millis(400);
+            assert_eq!(
+                power_after_loss(PowerPreference::LowPower, soon),
+                PowerPreference::HighPerformance
+            );
+            assert_eq!(
+                power_after_loss(PowerPreference::HighPerformance, soon),
+                PowerPreference::LowPower,
+                "and back, when the other cannot either"
+            );
+            assert_eq!(
+                power_after_loss(PowerPreference::HighPerformance, Duration::from_secs(600)),
+                PowerPreference::HighPerformance,
+                "a device that drew for minutes was reset: its GPU works"
+            );
+            assert_eq!(FIRST_POWER, PowerPreference::LowPower);
+        }
+
+        phase a_lost_gpu_is_made_again_but_one_that_keeps_failing_is_let_go;
+        {
+            let start = ui::time::now();
+            let at = |secs: u64| {
+                start
+                    .checked_add(Duration::from_secs(secs))
+                    .unwrap_or(start)
+            };
+            let mut remakes = GpuRemakes::default();
+            assert!(remakes.admit(at(0)), "a device lost once is made again");
+            assert!(remakes.admit(at(10)));
+            assert!(remakes.admit(at(20)));
+            assert!(
+                !remakes.admit(at(30)),
+                "a fourth loss within a minute stops the desktop"
+            );
+            assert!(
+                remakes.admit(at(70)),
+                "a minute after the first, a loss is made good again"
+            );
+        }
     }
 }

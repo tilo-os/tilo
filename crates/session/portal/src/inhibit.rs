@@ -444,32 +444,36 @@ mod tests {
     use super::*;
     use crate::Published as _;
 
-    #[test]
-    fn a_hold_counts_until_released_and_only_for_its_flags() {
-        let inhibitions = Inhibitions::default();
-        assert!(inhibitions.hold("/r/1", "org.example.Player", IDLE, Some("Playing".into())));
-        assert!(!inhibitions.hold("/r/1", "org.example.Player", IDLE, None));
-        assert!(inhibitions.registry().is_inhibited_for(IDLE));
-        assert!(!inhibitions.registry().is_inhibited_for(LOGOUT));
-        let published = inhibitions.resources();
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0].label, "org.example.Player");
-        let ended = inhibitions.invoke(
-            &published,
-            &format!("{INHIBITION_PREFIX}/r/1"),
-            "end",
-            &Map::new(),
-        );
-        assert!(matches!(ended, Some(Ok(_))), "{ended:?}");
-        assert!(!inhibitions.registry().is_inhibited_for(IDLE));
-        assert!(inhibitions.held().is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn an_inhibition_counts_for_its_flags_and_carries_a_bounded_reason;
 
-    #[test]
-    fn reasons_are_bounded_plain_text() {
-        assert!(valid_reason("Playing a video"));
-        assert!(!valid_reason(""));
-        assert!(!valid_reason("a\nb"));
-        assert!(!valid_reason(&"a".repeat(513)));
+        phase a_hold_counts_until_released_and_only_for_its_flags;
+        {
+            let inhibitions = Inhibitions::default();
+            assert!(inhibitions.hold("/r/1", "org.example.Player", IDLE, Some("Playing".into())));
+            assert!(!inhibitions.hold("/r/1", "org.example.Player", IDLE, None));
+            assert!(inhibitions.registry().is_inhibited_for(IDLE));
+            assert!(!inhibitions.registry().is_inhibited_for(LOGOUT));
+            let published = inhibitions.resources();
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].label, "org.example.Player");
+            let ended = inhibitions.invoke(
+                &published,
+                &format!("{INHIBITION_PREFIX}/r/1"),
+                "end",
+                &Map::new(),
+            );
+            assert!(matches!(ended, Some(Ok(_))), "{ended:?}");
+            assert!(!inhibitions.registry().is_inhibited_for(IDLE));
+            assert!(inhibitions.held().is_empty());
+        }
+
+        phase reasons_are_bounded_plain_text;
+        {
+            assert!(valid_reason("Playing a video"));
+            assert!(!valid_reason(""));
+            assert!(!valid_reason("a\nb"));
+            assert!(!valid_reason(&"a".repeat(513)));
+        }
     }
 }

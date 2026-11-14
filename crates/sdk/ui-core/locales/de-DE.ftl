@@ -386,6 +386,9 @@ widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
 tree-rename-field = Umbenennen
+# A tree row's disclosure: what pressing the chevron does to the rows under it.
+tree-branch-expand = Ausklappen
+tree-branch-collapse = Einklappen
 
 # The show/hide control inside every password field.
 text-input-show-password = Passwort anzeigen
@@ -685,6 +688,9 @@ widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
 rich-text-reference-unreadable = Nicht mit dir geteilt
+rich-text-edit-not-kept = Deine letzte Änderung wurde nicht übernommen
+rich-text-too-long = Der eingefügte Text ist zu lang (höchstens { $limit }). Füge ihn in kleineren Stücken ein.
+rich-text-changed-while-typing = Dieser Absatz hat sich beim Tippen geändert. Deine Änderung wurde nicht übernommen.
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
@@ -749,9 +755,6 @@ display-arrangement-item = Bildschirm { $number }: { $name }
 display-arrangement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
 display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 
-device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
-device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
-device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
@@ -777,8 +780,8 @@ widget-documents-in-workspace = In diesem Arbeitsbereich
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
 record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.
 display-arrangement-offline = Offline
-display-arrangement-excluded = Nicht im Layout
-display-arrangement-offline-excluded = Offline, nicht in der Anordnung
+display-arrangement-apart = Abseits
+display-arrangement-offline-apart = Offline, abseits
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status }: { $name }
 
@@ -832,6 +835,9 @@ menu-ask-typed = Senden: { $text }
 send-to-name = Senden an
 # The same box opened to the one place reports go.
 send-to-report-name = Problem melden
+# The line over a window asked to point at what a report is about.
+send-to-point-hint = Klicke, was nicht funktioniert
+send-to-point-escape = Escape bricht ab
 send-to-new-agent = Neuer Agent
 send-to-recipients-name = Jemanden hinzufügen
 send-to-search-placeholder = Jemanden hinzufügen…
@@ -1044,6 +1050,8 @@ change-window-changed-more = Geändert von { $who }: mindestens { $count ->
    *[other] { $count } { $noun }
 }
 
+change-catch-up = Änderungen seit Ihrem letzten Blick
+
 # One step of an agent's task: the program it ran, what it answered, what it
 # changed and what it proposes.
 program-step-program = Programm, das der Agent ausgeführt hat
@@ -1119,7 +1127,7 @@ conversation-delivery-uncertain = Status unklar
 conversation-new-messages = Neue Nachrichten
 conversation-day-new = { $day }: Neue Nachrichten
 conversation-read-by = Bis hierher gelesen von { $names }
-conversation-jump-unread = Zu den ersten ungelesenen
+conversation-jump-unread = Zum Ungelesenen
 conversation-jump-present = Zum Neuesten
 conversation-earlier-unavailable = Frühere Nachrichten sind auf diesem Gerät nicht verfügbar
 conversation-attachment-open = Öffnen

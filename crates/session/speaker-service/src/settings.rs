@@ -923,52 +923,60 @@ fn start_calibration(
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_role_survives_the_settings_wire() {
-        for spec in [
-            SpeakerRoleSpec::Left,
-            SpeakerRoleSpec::Right,
-            SpeakerRoleSpec::Center,
-            SpeakerRoleSpec::Lfe,
-            SpeakerRoleSpec::SurroundLeft,
-            SpeakerRoleSpec::SurroundRight,
-            SpeakerRoleSpec::Room {
-                x_mm: -1200,
-                y_mm: 2400,
-                z_mm: 300,
-            },
-        ] {
-            assert_eq!(role_to_spec(role_from_spec(spec)), spec);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn what_settings_sends_is_checked_bounded_and_rate_limited;
+
+        phase every_role_survives_the_settings_wire;
+        {
+            for spec in [
+                SpeakerRoleSpec::Left,
+                SpeakerRoleSpec::Right,
+                SpeakerRoleSpec::Center,
+                SpeakerRoleSpec::Lfe,
+                SpeakerRoleSpec::SurroundLeft,
+                SpeakerRoleSpec::SurroundRight,
+                SpeakerRoleSpec::Room {
+                    x_mm: -1200,
+                    y_mm: 2400,
+                    z_mm: 300,
+                },
+            ] {
+                assert_eq!(role_to_spec(role_from_spec(spec)), spec);
+            }
         }
-    }
 
-    #[test]
-    fn member_specs_reject_node_shaped_outputs() {
-        let member = |output: &str| SpeakerMemberSpec {
-            device: "desk".into(),
-            output: output.into(),
-            role: SpeakerRoleSpec::Left,
-        };
-        assert!(parse_members(&[member(&"ab".repeat(16))]).is_ok());
-        assert!(parse_members(&[member("57")]).is_err());
-        assert!(parse_members(&[member(&"0".repeat(32))]).is_err());
-    }
+        phase member_specs_reject_node_shaped_outputs;
+        {
+            let member = |output: &str| SpeakerMemberSpec {
+                device: "desk".into(),
+                output: output.into(),
+                role: SpeakerRoleSpec::Left,
+            };
+            assert!(parse_members(&[member(&"ab".repeat(16))]).is_ok());
+            assert!(parse_members(&[member("57")]).is_err());
+            assert!(parse_members(&[member(&"0".repeat(32))]).is_err());
+        }
 
-    #[test]
-    fn identify_sounds_are_rate_limited() {
-        let now = Instant::now() + Duration::from_secs(3600);
-        assert!(admit_identify(now));
-        assert!(!admit_identify(now + Duration::from_millis(100)));
-        assert!(admit_identify(now + IDENTIFY_INTERVAL));
-    }
+        phase identify_sounds_are_rate_limited;
+        {
+            let now = Instant::now() + Duration::from_secs(3600);
+            assert!(admit_identify(now));
+            assert!(!admit_identify(now + Duration::from_millis(100)));
+            assert!(admit_identify(now + IDENTIFY_INTERVAL));
+        }
 
-    #[test]
-    fn reasons_are_bounded_for_the_wire() {
-        assert_eq!(
-            bounded_reason(String::new()),
-            "the speaker group didn't answer"
-        );
-        assert_eq!(bounded_reason("x".repeat(1000)).len(), 256);
+        phase reasons_are_bounded_for_the_wire;
+        {
+            assert_eq!(
+                bounded_reason(String::new()),
+                "the speaker group didn't answer"
+            );
+            assert_eq!(bounded_reason("x".repeat(1000)).len(), 256);
+        }
     }
 
     /// A desk leading a stereo pair with a shelf that has said yes.
@@ -1033,72 +1041,76 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_first_wait_answers_at_once_and_a_seen_view_waits() {
-        let revision = ViewRevision::new();
-        assert!(!revision.waited(), "nobody waits, so nothing is observed");
-        let first = answered(&mut Box::pin(revision.wait(0))).expect("a first wait answers");
-        let mut wait = Box::pin(revision.wait(first));
-        assert!(revision.waited(), "a pending wait is heard");
-        revision.note(&pair());
-        assert_eq!(
-            answered(&mut wait),
-            None,
-            "the first view served moves nothing"
-        );
-        revision.note(&pair());
-        revision.note(&pair());
-        assert_eq!(answered(&mut wait), None, "an unchanged view never wakes");
-        drop(wait);
-        assert!(!revision.waited(), "an answered wait stops the observing");
-    }
+    tilo_test_env::scenario! {
+        fn the_view_revision_moves_only_when_settings_would_see_a_change;
 
-    #[test]
-    fn every_change_settings_would_see_moves_the_revision() {
-        type Edit = fn(&mut SpeakerSnapshot);
-        let changes: [(&str, Edit); 7] = [
-            ("a device goes offline", |view| {
-                view.devices[1].online = false;
-            }),
-            ("a device comes online", |view| {
-                let mut kitchen = view.devices[1].clone();
-                kitchen.id = "kitchen".into();
-                view.devices.push(kitchen);
-            }),
-            ("a group is deleted", |view| view.groups.clear()),
-            ("a group is created", |view| {
-                let mut den = view.groups[0].clone();
-                den.id = "ef".repeat(16);
-                view.groups.push(den);
-            }),
-            ("a member is yet to answer", |view| {
-                view.groups[0].members[1].status = SpeakerMemberStatus::AwaitingConsent;
-            }),
-            ("a calibration measures", |view| {
-                view.calibrations[0].phase = CalibrationPhaseInfo::Measuring;
-            }),
-            ("a set starts playing", |view| {
-                view.groups[0].playback = Some(SpeakerPlaybackInfo::Playing);
-            }),
-        ];
-        let revision = ViewRevision::new();
-        let mut after = answered(&mut Box::pin(revision.wait(0))).expect("a first wait answers");
-        revision.note(&pair());
-        for (what, edit) in changes {
-            let mut wait = Box::pin(revision.wait(after));
-            let mut view = pair();
-            edit(&mut view);
-            revision.note(&view);
-            let change = answered(&mut wait).unwrap_or_else(|| panic!("{what}: Settings hears"));
-            assert_ne!(change, after, "{what}");
-            assert_ne!(change, 0, "{what}: never reads as a first wait");
-            after = change;
-
-            let mut back = Box::pin(revision.wait(after));
-            revision.note(&view);
-            assert_eq!(answered(&mut back), None, "{what}: heard once");
+        phase a_first_wait_answers_at_once_and_a_seen_view_waits;
+        {
+            let revision = ViewRevision::new();
+            assert!(!revision.waited(), "nobody waits, so nothing is observed");
+            let first = answered(&mut Box::pin(revision.wait(0))).expect("a first wait answers");
+            let mut wait = Box::pin(revision.wait(first));
+            assert!(revision.waited(), "a pending wait is heard");
             revision.note(&pair());
-            after = answered(&mut back).unwrap_or_else(|| panic!("{what}: and when it ends"));
+            assert_eq!(
+                answered(&mut wait),
+                None,
+                "the first view served moves nothing"
+            );
+            revision.note(&pair());
+            revision.note(&pair());
+            assert_eq!(answered(&mut wait), None, "an unchanged view never wakes");
+            drop(wait);
+            assert!(!revision.waited(), "an answered wait stops the observing");
+        }
+
+        phase every_change_settings_would_see_moves_the_revision;
+        {
+            type Edit = fn(&mut SpeakerSnapshot);
+            let changes: [(&str, Edit); 7] = [
+                ("a device goes offline", |view| {
+                    view.devices[1].online = false;
+                }),
+                ("a device comes online", |view| {
+                    let mut kitchen = view.devices[1].clone();
+                    kitchen.id = "kitchen".into();
+                    view.devices.push(kitchen);
+                }),
+                ("a group is deleted", |view| view.groups.clear()),
+                ("a group is created", |view| {
+                    let mut den = view.groups[0].clone();
+                    den.id = "ef".repeat(16);
+                    view.groups.push(den);
+                }),
+                ("a member is yet to answer", |view| {
+                    view.groups[0].members[1].status = SpeakerMemberStatus::AwaitingConsent;
+                }),
+                ("a calibration measures", |view| {
+                    view.calibrations[0].phase = CalibrationPhaseInfo::Measuring;
+                }),
+                ("a set starts playing", |view| {
+                    view.groups[0].playback = Some(SpeakerPlaybackInfo::Playing);
+                }),
+            ];
+            let revision = ViewRevision::new();
+            let mut after = answered(&mut Box::pin(revision.wait(0))).expect("a first wait answers");
+            revision.note(&pair());
+            for (what, edit) in changes {
+                let mut wait = Box::pin(revision.wait(after));
+                let mut view = pair();
+                edit(&mut view);
+                revision.note(&view);
+                let change = answered(&mut wait).unwrap_or_else(|| panic!("{what}: Settings hears"));
+                assert_ne!(change, after, "{what}");
+                assert_ne!(change, 0, "{what}: never reads as a first wait");
+                after = change;
+
+                let mut back = Box::pin(revision.wait(after));
+                revision.note(&view);
+                assert_eq!(answered(&mut back), None, "{what}: heard once");
+                revision.note(&pair());
+                after = answered(&mut back).unwrap_or_else(|| panic!("{what}: and when it ends"));
+            }
         }
     }
 }

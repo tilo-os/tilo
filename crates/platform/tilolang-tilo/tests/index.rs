@@ -282,114 +282,244 @@ fn maps_holding_items(replica: &Replica, root: &str) -> usize {
         .count()
 }
 
-/// Each replica adds the list's first item before the two meet: the record is made with the map
-/// its items go in, so both items go into it and both are the list's.
-#[test]
-fn an_item_each_replica_added_before_they_met_is_the_lists_on_both() {
-    let (mut ada, root, lock) = workspace();
-    let mut grace = ada.fork("grace", &[(TODO, &lock)]);
-    assert_eq!(
-        item_maps(&ada, &root).len(),
-        1,
-        "the record is made with the map its items go in"
-    );
-    let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
-    ada.apply(&ada_first);
-    let grace_first = plan(&grace, "add", json!({ "text": "grace's" }), &root);
-    grace.apply(&grace_first);
-    ada.sync_with(&mut grace);
-    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
-        assert_eq!(
-            items(replica, &root).len(),
-            2,
-            "{name}: both items are the list's"
-        );
-        assert_eq!(
-            maps_holding_items(replica, &root),
-            1,
-            "{name}: one map of items"
-        );
-        assert_eq!(
-            listed(&replica.host, &root),
-            items(replica, &root),
-            "{name}"
-        );
-        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
-    }
-}
+tilo_test_env::scenario! {
+    fn what_two_replicas_made_before_they_met_is_one;
 
-/// A record written before the platform made its map of items with it, two replicas that each
-/// added an item to it before they met, and a write on either side: both items read on both, and
-/// the record folds the two maps into one, wherever the write was made.
-#[test]
-fn a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one() {
-    for write_by in ["ada", "grace"] {
+    phase an_item_each_replica_added_before_they_met_is_the_lists_on_both;
+    // Each replica adds the list's first item before the two meet: the record is made with the map
+    // its items go in, so both items go into it and both are the list's.
+    {
         let (mut ada, root, lock) = workspace();
-        // The record as an earlier version of the platform left it: no map of items at all.
-        let held = tilolang_tilo::reads::resource_obj(&ada.doc, APP, &root).unwrap();
-        let items_key = tilolang_runtime::place::ITEMS_KEY;
-        {
-            use automerge::ReadDoc as _;
-            use automerge::transaction::Transactable as _;
-            assert!(ada.doc.get(&held, items_key).unwrap().is_some());
-            ada.doc.delete(&held, items_key).unwrap();
-            ada.doc.commit();
-        }
         let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+        assert_eq!(
+            item_maps(&ada, &root).len(),
+            1,
+            "the record is made with the map its items go in"
+        );
         let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
         ada.apply(&ada_first);
         let grace_first = plan(&grace, "add", json!({ "text": "grace's" }), &root);
         grace.apply(&grace_first);
         ada.sync_with(&mut grace);
-        assert_eq!(
-            maps_holding_items(&ada, &root),
-            2,
-            "{write_by}: each replica made a map of items"
-        );
         for (name, replica) in [("ada", &ada), ("grace", &grace)] {
             assert_eq!(
                 items(replica, &root).len(),
                 2,
-                "{write_by}: {name} reads both maps' items"
+                "{name}: both items are the list's"
             );
-            assert_eq!(
-                listed(&replica.host, &root),
-                items(replica, &root),
-                "{write_by}: {name}: the rows are the items"
-            );
-        }
-
-        // A write on one side folds the two maps into the one the record keeps, and both items
-        // stay the list's on both.
-        let writer = if write_by == "ada" {
-            &mut ada
-        } else {
-            &mut grace
-        };
-        let second = plan(writer, "add", json!({ "text": "later" }), &root);
-        writer.apply(&second);
-        ada.sync_with(&mut grace);
-        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
             assert_eq!(
                 maps_holding_items(replica, &root),
                 1,
-                "{write_by}: {name}: the record keeps one map of items"
-            );
-            assert_eq!(
-                items(replica, &root).len(),
-                3,
-                "{write_by}: {name}: every item is the list's"
+                "{name}: one map of items"
             );
             assert_eq!(
                 listed(&replica.host, &root),
                 items(replica, &root),
-                "{write_by}: {name}"
+                "{name}"
+            );
+            assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+        }
+    }
+
+    phase a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one;
+    // A record written before the platform made its map of items with it, two replicas that each
+    // added an item to it before they met, and a write on either side: both items read on both, and
+    // the record folds the two maps into one, wherever the write was made.
+    {
+        for write_by in ["ada", "grace"] {
+            let (mut ada, root, lock) = workspace();
+            // The record as an earlier version of the platform left it: no map of items at all.
+            let held = tilolang_tilo::reads::resource_obj(&ada.doc, APP, &root).unwrap();
+            let items_key = tilolang_runtime::place::ITEMS_KEY;
+            {
+                use automerge::ReadDoc as _;
+                use automerge::transaction::Transactable as _;
+                assert!(ada.doc.get(&held, items_key).unwrap().is_some());
+                ada.doc.delete(&held, items_key).unwrap();
+                ada.doc.commit();
+            }
+            let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+            let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
+            ada.apply(&ada_first);
+            let grace_first = plan(&grace, "add", json!({ "text": "grace's" }), &root);
+            grace.apply(&grace_first);
+            ada.sync_with(&mut grace);
+            assert_eq!(
+                maps_holding_items(&ada, &root),
+                2,
+                "{write_by}: each replica made a map of items"
+            );
+            for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+                assert_eq!(
+                    items(replica, &root).len(),
+                    2,
+                    "{write_by}: {name} reads both maps' items"
+                );
+                assert_eq!(
+                    listed(&replica.host, &root),
+                    items(replica, &root),
+                    "{write_by}: {name}: the rows are the items"
+                );
+            }
+
+            // A write on one side folds the two maps into the one the record keeps, and both items
+            // stay the list's on both.
+            let writer = if write_by == "ada" {
+                &mut ada
+            } else {
+                &mut grace
+            };
+            let second = plan(writer, "add", json!({ "text": "later" }), &root);
+            writer.apply(&second);
+            ada.sync_with(&mut grace);
+            for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+                assert_eq!(
+                    maps_holding_items(replica, &root),
+                    1,
+                    "{write_by}: {name}: the record keeps one map of items"
+                );
+                assert_eq!(
+                    items(replica, &root).len(),
+                    3,
+                    "{write_by}: {name}: every item is the list's"
+                );
+                assert_eq!(
+                    listed(&replica.host, &root),
+                    items(replica, &root),
+                    "{write_by}: {name}"
+                );
+                assert_eq!(
+                    kept(replica),
+                    anew(replica, &lock),
+                    "{write_by}: {name}: the index"
+                );
+            }
+        }
+    }
+
+    phase the_first_record_each_replica_made_of_a_new_workspace_is_the_apps_on_both;
+    // Each replica founds the workspace with the first record of the app it makes, before the two
+    // meet: each made the workspace's `tl` map and the app's map of its own. Both records are the
+    // app's on both, and the index holds what deriving it anew holds; the next write keeps one map
+    // of each, on both.
+    {
+        let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
+        let lock = packages[0].ids.clone();
+        let mut grace = Replica::new("grace", AutoCommit::new(), &[(TODO, &lock)]).0;
+        // Each device opens the app and makes its first record on it, offline.
+        ada.host.root_of(APP).unwrap();
+        ada.commit();
+        create(&mut ada, "ada-list");
+        grace.host.root_of(APP).unwrap();
+        grace.commit();
+        create(&mut grace, "grace-list");
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(
+                maps_holding(replica, &["tl"]),
+                1,
+                "{name}: a map of its own"
             );
             assert_eq!(
-                kept(replica),
-                anew(replica, &lock),
-                "{write_by}: {name}: the index"
+                maps_holding(replica, &["tl", APP]),
+                1,
+                "{name}: an app map of its own"
             );
+        }
+        ada.sync_with(&mut grace);
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(maps_holding(replica, &["tl"]), 2, "{name}: two maps met");
+            for id in ["ada-list", "grace-list"] {
+                assert!(
+                    tilolang_tilo::reads::resource_obj(&replica.doc, APP, id).is_some(),
+                    "{name}: {id} is one of the app's records"
+                );
+                assert!(
+                    replica.host.store().record(id).is_ok(),
+                    "{name}: {id} reads"
+                );
+            }
+            assert_eq!(
+                ids(replica).len(),
+                3,
+                "{name}: both lists and the app's root"
+            );
+            assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+        }
+
+        // A write on one side keeps one map of each, with both records in it, on both.
+        create(&mut grace, "later");
+        ada.sync_with(&mut grace);
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(maps_holding(replica, &["tl"]), 1, "{name}: one map");
+            assert_eq!(
+                maps_holding(replica, &["tl", APP]),
+                1,
+                "{name}: one app map"
+            );
+            let held = ids(replica);
+            for id in ["ada-list", "grace-list", "later"] {
+                assert!(held.iter().any(|held| held == id), "{name}: {id} stays");
+                assert!(replica.host.store().record(id).is_ok(), "{name}: {id}");
+            }
+            assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+        }
+    }
+
+    phase the_first_record_each_replica_made_of_a_new_app_is_the_apps_on_both;
+    // The same for the app's map alone: the workspace's `tl` map is one, and each replica makes
+    // the app's first record of its own, so the two app maps met.
+    {
+        let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, ""), (TODO, "")]);
+        let counter = packages[0].ids.clone();
+        let lock = packages[1].ids.clone();
+        // The workspace holds the counter's records; the todo app's map is made by the first record
+        // of it, which each device makes on its own.
+        ada.host.root_of(APP_COUNTER).unwrap();
+        ada.commit();
+        let mut grace = ada.fork("grace", &[(COUNTER, &counter), (TODO, &lock)]);
+        create(&mut ada, "ada-list");
+        create(&mut grace, "grace-list");
+        assert_eq!(maps_holding(&ada, &["tl"]), 1, "one workspace map");
+        assert_eq!(
+            maps_holding(&grace, &["tl"]),
+            1,
+            "one workspace map on grace's side too"
+        );
+        ada.sync_with(&mut grace);
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(maps_holding(replica, &["tl"]), 1, "{name}: one map");
+            assert_eq!(
+                maps_holding(replica, &["tl", APP]),
+                2,
+                "{name}: each replica made the app's map"
+            );
+            for id in ["ada-list", "grace-list"] {
+                assert!(
+                    tilolang_tilo::reads::resource_obj(&replica.doc, APP, id).is_some(),
+                    "{name}: {id} is one of the app's records"
+                );
+                assert!(
+                    replica.host.store().record(id).is_ok(),
+                    "{name}: {id} reads"
+                );
+            }
+            assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+        }
+
+        create(&mut ada, "later");
+        ada.sync_with(&mut grace);
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(
+                maps_holding(replica, &["tl", APP]),
+                1,
+                "{name}: the app's maps are one"
+            );
+            let held = ids(replica);
+            for id in ["ada-list", "grace-list", "later"] {
+                assert!(held.iter().any(|held| held == id), "{name}: {id} stays");
+                assert!(replica.host.store().record(id).is_ok(), "{name}: {id}");
+            }
+            assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
         }
     }
 }
@@ -643,108 +773,394 @@ fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
     assert_same(&ada, &lock, "after the redo");
 }
 
-#[test]
-fn what_the_store_writes_reads_back_before_the_record_holds_it() {
-    let (mut ada, root, lock) = workspace();
-    for step in 0..4 {
-        let action = plan(
-            &ada,
-            "add",
-            json!({ "text": format!("task {step}") }),
-            &root,
-        );
-        ada.apply(&action);
-    }
-    let meta = ada.host.packages()[0].meta.clone();
-    let items_field = field_id(&meta, "TodoList", "items");
-    let list_ty = meta
-        .types
-        .iter()
-        .find(|t| t.name == "TodoList")
-        .unwrap()
-        .id
-        .clone();
-    let item_ty = meta
-        .types
-        .iter()
-        .find(|t| t.name == "Item")
-        .unwrap()
-        .id
-        .clone();
-    let list = ResourceRef::root(&root, list_ty);
-    let listed = |replica: &Replica| -> Vec<String> {
-        let spec = tilolang_runtime::store::FieldSpec {
-            id: items_field.clone(),
-            kind: tilolang_runtime::meta::FieldKind::Collection,
-        };
-        tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
+tilo_test_env::scenario! {
+    fn a_kept_index_catches_up_with_its_record;
+
+    phase what_the_store_writes_reads_back_before_the_record_holds_it;
+    {
+        let (mut ada, root, lock) = workspace();
+        for step in 0..4 {
+            let action = plan(
+                &ada,
+                "add",
+                json!({ "text": format!("task {step}") }),
+                &root,
+            );
+            ada.apply(&action);
+        }
+        let meta = ada.host.packages()[0].meta.clone();
+        let items_field = field_id(&meta, "TodoList", "items");
+        let list_ty = meta
+            .types
+            .iter()
+            .find(|t| t.name == "TodoList")
             .unwrap()
-            .ids()
-    };
-    // Moved here, not yet committed: the store's listing has it first already.
-    let moved = items(&ada, &root).last().cloned().unwrap();
-    let move_first = meta
-        .actions
-        .iter()
-        .find(|a| a.name == "move_first")
-        .unwrap();
-    ada.host
-        .runtime()
-        .invoke_action(
-            &Principal::new("ada"),
-            (
-                move_first.id.as_str(),
-                vec![
-                    Value::resource(&list),
-                    Value::resource(&list.item(&moved, item_ty)),
-                ],
+            .id
+            .clone();
+        let item_ty = meta
+            .types
+            .iter()
+            .find(|t| t.name == "Item")
+            .unwrap()
+            .id
+            .clone();
+        let list = ResourceRef::root(&root, list_ty);
+        let listed = |replica: &Replica| -> Vec<String> {
+            let spec = tilolang_runtime::store::FieldSpec {
+                id: items_field.clone(),
+                kind: tilolang_runtime::meta::FieldKind::Collection,
+            };
+            tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
+                .unwrap()
+                .ids()
+        };
+        // Moved here, not yet committed: the store's listing has it first already.
+        let moved = items(&ada, &root).last().cloned().unwrap();
+        let move_first = meta
+            .actions
+            .iter()
+            .find(|a| a.name == "move_first")
+            .unwrap();
+        ada.host
+            .runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    move_first.id.as_str(),
+                    vec![
+                        Value::resource(&list),
+                        Value::resource(&list.item(&moved, item_ty)),
+                    ],
+                ),
+            )
+            .unwrap();
+        assert_eq!(listed(&ada).first(), Some(&moved));
+        ada.commit();
+        assert_eq!(listed(&ada).first(), Some(&moved));
+        assert_eq!(listed(&ada), items(&ada, &root));
+        assert_eq!(kept(&ada), anew(&ada, &lock));
+    }
+
+    phase an_index_file_is_shared_by_the_stores_that_open_it;
+    // An index file is open once in a process (redb holds it): a second store opening it shares the
+    // one open and reads what it reflects (nothing yet, while the first builds it) rather than
+    // emptying it, and an index of another schema does not empty it either. Closed by every store,
+    // the file opens again as it was kept.
+    {
+        let dir = TempDir::new("shared");
+        let path = tilolang_tilo::index::file_of(dir.path(), APP);
+        let Opened::Empty(first) = Index::open(&path, APP, "schema").unwrap() else {
+            panic!("a file made anew is empty");
+        };
+        let heads: tilolang_tilo::chunk::Stamps = std::iter::once((0, Vec::new())).collect();
+        first.write(|writer| writer.set_heads(&heads)).unwrap();
+        let Opened::Ready(second, reflected) = Index::open(&path, APP, "schema").unwrap() else {
+            panic!("a second store does not read what the first built");
+        };
+        assert_eq!(
+            reflected, heads,
+            "the second store reads what the first committed"
+        );
+        assert!(first.shared() && second.shared(), "both hold the one index");
+        assert!(
+            Arc::ptr_eq(&*first, &*second),
+            "the second store opened the file again"
+        );
+        assert!(
+            Index::open(&path, APP, "another schema").is_err(),
+            "an index of another schema emptied the one stores read"
+        );
+        drop((first, second));
+        assert!(
+            matches!(
+                Index::open(&path, APP, "schema").unwrap(),
+                Opened::Ready(..)
             ),
+            "closed, the file opens as it was kept"
+        );
+    }
+
+    phase an_index_stamped_with_older_heads_catches_up_with_the_record;
+    {
+        let (mut ada, root, lock) = workspace();
+        for step in 0..5 {
+            let action = plan(
+                &ada,
+                "add",
+                json!({ "text": format!("task {step}") }),
+                &root,
+            );
+            ada.apply(&action);
+        }
+        let dir = TempDir::new("stale");
+        let first = kept_in(dir.path(), &ada.doc, &lock);
+        // The host's own index and the package's.
+        assert_eq!(first.store().stats().builds, 2, "built the first time");
+        drop(first);
+
+        // The workspace moves on while no window keeps the index.
+        let mut rng = Rng(42);
+        for step in 0..20 {
+            random_change(&mut rng, &mut ada, &root, step);
+        }
+        let again = kept_in(dir.path(), &ada.doc, &lock);
+        let stats = again.store().stats();
+        assert_eq!(stats.builds, 0, "not built again");
+        // The host's own index and the package's.
+        assert_eq!(stats.catch_ups, 2, "caught up from its heads");
+        assert_eq!(
+            stats.catch_ups_in_frame, 2,
+            "a store with no frame catches up in its own time"
+        );
+        assert_eq!(
+            again.store().index_contents(APP).unwrap(),
+            anew(&ada, &lock)
+        );
+        drop(again);
+
+        // Opened again over the same record: nothing to catch up, nothing read of the record.
+        let third = kept_in(dir.path(), &ada.doc, &lock);
+        let stats = third.store().stats();
+        assert_eq!((stats.builds, stats.catch_ups), (0, 0));
+        assert_eq!(third.store().read_stats().doc.entries, 0);
+    }
+
+    phase what_the_store_writes_while_its_index_catches_up_reads_back_at_once;
+    // A write made while the index catches up off the frame reads back at once: the window reads
+    // the rows the index held while the rest is derived, and the store's own writes over them, so a
+    // record just made is never missing from what the window reads.
+    {
+        let (mut ada, root, lock) = workspace();
+        let dir = TempDir::new("catching-up");
+        drop(kept_in(dir.path(), &ada.doc, &lock));
+        // The workspace moves on while no window keeps the index.
+        for step in 0..3 {
+            let action = plan(
+                &ada,
+                "add",
+                json!({ "text": format!("task {step}") }),
+                &root,
+            );
+            ada.apply(&action);
+        }
+        let host = Host::open(
+            Opening {
+                record: Some(&ada.doc),
+                chunks: None,
+                index_dir: Some(dir.path().to_owned()),
+                device: None,
+                // A window with frames: what the record gained is derived off the frame.
+                wake: Some(Arc::new(|| {})),
+            },
+            Principal::new("ada"),
+            || None,
         )
         .unwrap();
-    assert_eq!(listed(&ada).first(), Some(&moved));
-    ada.commit();
-    assert_eq!(listed(&ada).first(), Some(&moved));
-    assert_eq!(listed(&ada), items(&ada, &root));
-    assert_eq!(kept(&ada), anew(&ada, &lock));
-}
+        host.load_builtin(TODO, &lock).unwrap();
+        assert!(!host.index_ready(), "the index catches up off the frame");
+        let meta = host.packages()[0].meta.clone();
+        let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
+        let spec = tilolang_runtime::store::FieldSpec {
+            id: field_id(&meta, "TodoList", "items"),
+            kind: tilolang_runtime::meta::FieldKind::Collection,
+        };
+        let listed = || {
+            tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
+                .unwrap()
+                .ids()
+        };
+        let before = listed();
+        let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
+        host.runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    add.id.as_str(),
+                    vec![Value::resource(&list), Value::text("written meanwhile")],
+                ),
+            )
+            .unwrap();
+        let written: Vec<String> = listed()
+            .into_iter()
+            .filter(|id| !before.contains(id))
+            .collect();
+        assert_eq!(
+            written.len(),
+            1,
+            "the item just written is listed while the index catches up"
+        );
+        host.wait_index();
+        assert!(host.index_ready());
+        let after = listed();
+        assert!(after.contains(&written[0]), "and once the index caught up");
+        assert_eq!(after.len(), 4, "beside the three the record gained");
+    }
 
-/// An index file is open once in a process (redb holds it): a second store opening it shares the
-/// one open and reads what it reflects (nothing yet, while the first builds it) rather than
-/// emptying it, and an index of another schema does not empty it either. Closed by every store,
-/// the file opens again as it was kept.
-#[test]
-fn an_index_file_is_shared_by_the_stores_that_open_it() {
-    let dir = TempDir::new("shared");
-    let path = tilolang_tilo::index::file_of(dir.path(), APP);
-    let Opened::Empty(first) = Index::open(&path, APP, "schema").unwrap() else {
-        panic!("a file made anew is empty");
-    };
-    let heads: tilolang_tilo::chunk::Stamps = std::iter::once((0, Vec::new())).collect();
-    first.write(|writer| writer.set_heads(&heads)).unwrap();
-    let Opened::Ready(second, reflected) = Index::open(&path, APP, "schema").unwrap() else {
-        panic!("a second store does not read what the first built");
-    };
-    assert_eq!(
-        reflected, heads,
-        "the second store reads what the first committed"
-    );
-    assert!(first.shared() && second.shared(), "both hold the one index");
-    assert!(
-        Arc::ptr_eq(&*first, &*second),
-        "the second store opened the file again"
-    );
-    assert!(
-        Index::open(&path, APP, "another schema").is_err(),
-        "an index of another schema emptied the one stores read"
-    );
-    drop((first, second));
-    assert!(
-        matches!(
-            Index::open(&path, APP, "schema").unwrap(),
-            Opened::Ready(..)
-        ),
-        "closed, the file opens as it was kept"
-    );
+    phase a_write_the_record_takes_while_its_index_catches_up_never_goes_missing;
+    // A write the record takes while the index still catches up off the frame reads back all along:
+    // the index does not hold it until its next step is taken in, and the overlay keeps it until
+    // then — once, never beside the row the index brings, and never after.
+    {
+        const WRITES: usize = 40;
+        let (mut ada, root, lock) = workspace();
+        let dir = TempDir::new("accepted-catching-up");
+        drop(kept_in(dir.path(), &ada.doc, &lock));
+        for step in 0..3 {
+            let action = plan(
+                &ada,
+                "add",
+                json!({ "text": format!("task {step}") }),
+                &root,
+            );
+            ada.apply(&action);
+        }
+        let host = Host::open(
+            Opening {
+                record: Some(&ada.doc),
+                chunks: None,
+                index_dir: Some(dir.path().to_owned()),
+                device: None,
+                wake: Some(Arc::new(|| {})),
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(TODO, &lock).unwrap();
+        assert!(!host.index_ready(), "the index catches up off the frame");
+        let meta = host.packages()[0].meta.clone();
+        let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
+        let spec = tilolang_runtime::store::FieldSpec {
+            id: field_id(&meta, "TodoList", "items"),
+            kind: tilolang_runtime::meta::FieldKind::Collection,
+        };
+        let listed = || {
+            tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
+                .unwrap()
+                .ids()
+        };
+        let before = listed();
+        let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
+        // Write after write, each taken by the record while the index's step is still being
+        // derived: no frame has taken that step in, so the index holds none of them.
+        let mut written: Vec<String> = Vec::new();
+        for step in 0..WRITES {
+            host.runtime()
+                .invoke_action(
+                    &Principal::new("ada"),
+                    (
+                        add.id.as_str(),
+                        vec![
+                            Value::resource(&list),
+                            Value::text(format!("accepted meanwhile {step}")),
+                        ],
+                    ),
+                )
+                .unwrap();
+            let new: Vec<String> = listed()
+                .into_iter()
+                .filter(|id| !before.contains(id) && !written.contains(id))
+                .collect();
+            assert_eq!(new.len(), 1, "the item just written is listed");
+            written.extend(new);
+            for committed in host.take_committed() {
+                ada.apply(&committed.action);
+            }
+            assert!(host.sync_from(&ada.doc));
+            assert!(!host.index_ready(), "the index still catches up");
+            let now = listed();
+            for id in &written {
+                assert_eq!(
+                    now.iter().filter(|listed| *listed == id).count(),
+                    1,
+                    "each write the record took is listed once while the index catches up"
+                );
+            }
+        }
+        assert!(
+            !host.store().overlay_empty(),
+            "the overlay keeps them meanwhile"
+        );
+        host.wait_index();
+        assert!(host.index_ready());
+        let after = listed();
+        for id in &written {
+            assert_eq!(
+                after.iter().filter(|listed| *listed == id).count(),
+                1,
+                "and once the index caught up"
+            );
+        }
+        assert_eq!(
+            after.len(),
+            3 + WRITES,
+            "beside the three the record gained"
+        );
+        assert!(
+            host.store().overlay_empty(),
+            "the index holds them, and the overlay no more"
+        );
+    }
+
+    phase a_corrupt_index_is_built_anew_and_never_read;
+    {
+        let (mut ada, root, lock) = workspace();
+        for text in ["milk", "eggs", "oat milk"] {
+            let action = plan(&ada, "add", json!({ "text": text }), &root);
+            ada.apply(&action);
+        }
+        let meta = ada.host.packages()[0].meta.clone();
+        let text_field = field_id(&meta, "Item", "text");
+        let item_ty = meta
+            .types
+            .iter()
+            .find(|t| t.name == "Item")
+            .unwrap()
+            .id
+            .clone();
+        let list_ty = meta
+            .types
+            .iter()
+            .find(|t| t.name == "TodoList")
+            .unwrap()
+            .id
+            .clone();
+        let oat = items(&ada, &root)[2].clone();
+        let at = ResourceRef::root(&root, list_ty).item(&oat, item_ty);
+
+        // A value whose bytes changed on disk.
+        let dir = TempDir::new("corrupt");
+        drop(kept_in(dir.path(), &ada.doc, &lock));
+        let file = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.to_string_lossy().contains("so.tilo.todo"))
+            .unwrap();
+        let mut bytes = std::fs::read(&file).unwrap();
+        let at_text = bytes
+            .windows(8)
+            .position(|window| window == b"oat milk")
+            .expect("the text is in the file");
+        bytes[at_text] = b'x';
+        std::fs::write(&file, &bytes).unwrap();
+
+        let host = kept_in(dir.path(), &ada.doc, &lock);
+        let read = || host.runtime().read(&at, &text_field).unwrap();
+        // Never what the damaged bytes say: the record answers while the index is not trusted.
+        assert_eq!(read(), Value::text("oat milk"));
+        host.wait_index();
+        assert!(host.index_ready());
+        assert_eq!(host.store().stats().builds, 1, "built anew");
+        assert_eq!(read(), Value::text("oat milk"));
+        assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+
+        // A file that is not an index at all.
+        drop(host);
+        std::fs::write(&file, b"not an index").unwrap();
+        let host = kept_in(dir.path(), &ada.doc, &lock);
+        assert_eq!(host.store().stats().builds, 1);
+        assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+    }
 }
 
 /// A directory of the test's own, removed when dropped.
@@ -779,6 +1195,7 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
             chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,
@@ -788,224 +1205,6 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
     host.wait_index();
     assert!(host.index_ready());
     host
-}
-
-#[test]
-fn an_index_stamped_with_older_heads_catches_up_with_the_record() {
-    let (mut ada, root, lock) = workspace();
-    for step in 0..5 {
-        let action = plan(
-            &ada,
-            "add",
-            json!({ "text": format!("task {step}") }),
-            &root,
-        );
-        ada.apply(&action);
-    }
-    let dir = TempDir::new("stale");
-    let first = kept_in(dir.path(), &ada.doc, &lock);
-    // The host's own index and the package's.
-    assert_eq!(first.store().stats().builds, 2, "built the first time");
-    drop(first);
-
-    // The workspace moves on while no window keeps the index.
-    let mut rng = Rng(42);
-    for step in 0..20 {
-        random_change(&mut rng, &mut ada, &root, step);
-    }
-    let again = kept_in(dir.path(), &ada.doc, &lock);
-    let stats = again.store().stats();
-    assert_eq!(stats.builds, 0, "not built again");
-    // The host's own index and the package's.
-    assert_eq!(stats.catch_ups, 2, "caught up from its heads");
-    assert_eq!(
-        again.store().index_contents(APP).unwrap(),
-        anew(&ada, &lock)
-    );
-    drop(again);
-
-    // Opened again over the same record: nothing to catch up, nothing read of the record.
-    let third = kept_in(dir.path(), &ada.doc, &lock);
-    let stats = third.store().stats();
-    assert_eq!((stats.builds, stats.catch_ups), (0, 0));
-    assert_eq!(third.store().read_stats().doc.entries, 0);
-}
-
-/// A write made while the index catches up off the frame reads back at once: the window reads
-/// the rows the index held while the rest is derived, and the store's own writes over them, so a
-/// record just made is never missing from what the window reads.
-#[test]
-fn what_the_store_writes_while_its_index_catches_up_reads_back_at_once() {
-    let (mut ada, root, lock) = workspace();
-    let dir = TempDir::new("catching-up");
-    drop(kept_in(dir.path(), &ada.doc, &lock));
-    // The workspace moves on while no window keeps the index.
-    for step in 0..3 {
-        let action = plan(
-            &ada,
-            "add",
-            json!({ "text": format!("task {step}") }),
-            &root,
-        );
-        ada.apply(&action);
-    }
-    let host = Host::open(
-        Opening {
-            record: Some(&ada.doc),
-            chunks: None,
-            index_dir: Some(dir.path().to_owned()),
-            device: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    // A window with frames: what the record gained is derived off the frame.
-    host.set_index_waker(Arc::new(|| {}));
-    host.load_builtin(TODO, &lock).unwrap();
-    assert!(!host.index_ready(), "the index catches up off the frame");
-    let meta = host.packages()[0].meta.clone();
-    let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
-    let spec = tilolang_runtime::store::FieldSpec {
-        id: field_id(&meta, "TodoList", "items"),
-        kind: tilolang_runtime::meta::FieldKind::Collection,
-    };
-    let listed = || {
-        tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
-            .unwrap()
-            .ids()
-    };
-    let before = listed();
-    let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
-    host.runtime()
-        .invoke_action(
-            &Principal::new("ada"),
-            (
-                add.id.as_str(),
-                vec![Value::resource(&list), Value::text("written meanwhile")],
-            ),
-        )
-        .unwrap();
-    let written: Vec<String> = listed()
-        .into_iter()
-        .filter(|id| !before.contains(id))
-        .collect();
-    assert_eq!(
-        written.len(),
-        1,
-        "the item just written is listed while the index catches up"
-    );
-    host.wait_index();
-    assert!(host.index_ready());
-    let after = listed();
-    assert!(after.contains(&written[0]), "and once the index caught up");
-    assert_eq!(after.len(), 4, "beside the three the record gained");
-}
-
-/// A write the record takes while the index still catches up off the frame reads back all along:
-/// the index does not hold it until its next step is taken in, and the overlay keeps it until
-/// then — once, never beside the row the index brings, and never after.
-#[test]
-fn a_write_the_record_takes_while_its_index_catches_up_never_goes_missing() {
-    const WRITES: usize = 40;
-    let (mut ada, root, lock) = workspace();
-    let dir = TempDir::new("accepted-catching-up");
-    drop(kept_in(dir.path(), &ada.doc, &lock));
-    for step in 0..3 {
-        let action = plan(
-            &ada,
-            "add",
-            json!({ "text": format!("task {step}") }),
-            &root,
-        );
-        ada.apply(&action);
-    }
-    let host = Host::open(
-        Opening {
-            record: Some(&ada.doc),
-            chunks: None,
-            index_dir: Some(dir.path().to_owned()),
-            device: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    host.set_index_waker(Arc::new(|| {}));
-    host.load_builtin(TODO, &lock).unwrap();
-    assert!(!host.index_ready(), "the index catches up off the frame");
-    let meta = host.packages()[0].meta.clone();
-    let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
-    let spec = tilolang_runtime::store::FieldSpec {
-        id: field_id(&meta, "TodoList", "items"),
-        kind: tilolang_runtime::meta::FieldKind::Collection,
-    };
-    let listed = || {
-        tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
-            .unwrap()
-            .ids()
-    };
-    let before = listed();
-    let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
-    // Write after write, each taken by the record while the index's step is still being
-    // derived: no frame has taken that step in, so the index holds none of them.
-    let mut written: Vec<String> = Vec::new();
-    for step in 0..WRITES {
-        host.runtime()
-            .invoke_action(
-                &Principal::new("ada"),
-                (
-                    add.id.as_str(),
-                    vec![
-                        Value::resource(&list),
-                        Value::text(format!("accepted meanwhile {step}")),
-                    ],
-                ),
-            )
-            .unwrap();
-        let new: Vec<String> = listed()
-            .into_iter()
-            .filter(|id| !before.contains(id) && !written.contains(id))
-            .collect();
-        assert_eq!(new.len(), 1, "the item just written is listed");
-        written.extend(new);
-        for committed in host.take_committed() {
-            ada.apply(&committed.action);
-        }
-        assert!(host.sync_from(&ada.doc));
-        assert!(!host.index_ready(), "the index still catches up");
-        let now = listed();
-        for id in &written {
-            assert_eq!(
-                now.iter().filter(|listed| *listed == id).count(),
-                1,
-                "each write the record took is listed once while the index catches up"
-            );
-        }
-    }
-    assert!(
-        !host.store().overlay_empty(),
-        "the overlay keeps them meanwhile"
-    );
-    host.wait_index();
-    assert!(host.index_ready());
-    let after = listed();
-    for id in &written {
-        assert_eq!(
-            after.iter().filter(|listed| *listed == id).count(),
-            1,
-            "and once the index caught up"
-        );
-    }
-    assert_eq!(
-        after.len(),
-        3 + WRITES,
-        "beside the three the record gained"
-    );
-    assert!(
-        host.store().overlay_empty(),
-        "the index holds them, and the overlay no more"
-    );
 }
 
 /// Every text `node` and the nodes inside it show.
@@ -1019,92 +1218,362 @@ fn texts_of(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
     }
 }
 
-#[test]
-fn a_store_without_the_record_opens_over_the_index_and_takes_the_record_later() {
-    let (mut ada, root, lock) = workspace();
-    for step in 0..5 {
-        let action = plan(
-            &ada,
-            "add",
-            json!({ "text": format!("task {step}") }),
-            &root,
-        );
-        ada.apply(&action);
-    }
-    let dir = TempDir::new("detached");
-    drop(kept_in(dir.path(), &ada.doc, &lock));
-    // A peer's change the index does not hold yet.
-    let action = plan(&ada, "add", json!({ "text": "late" }), &root);
-    ada.apply(&action);
+tilo_test_env::scenario! {
+    fn a_window_opens_over_its_index;
 
-    let host = Host::open(
-        Opening {
-            record: None,
-            chunks: None,
-            index_dir: Some(dir.path().to_owned()),
-            device: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    host.load_builtin(TODO, &lock).unwrap();
-    assert!(host.index_ready());
-    assert!(!host.store().has_record());
-    let mut view = host.open_main(APP).unwrap();
-    assert_eq!(host.store().read_stats().doc.entries, 0);
-    // The rows the index holds, before the record is had.
-    let shown = |view: &tilolang_runtime::ViewInstance| {
-        let mut texts = Vec::new();
-        texts_of(view.tree(), &mut texts);
-        texts
-    };
-    assert!(
-        shown(&view).contains(&"task 4".to_owned()),
-        "{:?}",
-        shown(&view)
-    );
-    assert!(!shown(&view).contains(&"late".to_owned()));
-    // The record arrives: the index catches up and the view shows what it holds.
-    host.sync_from(&ada.doc);
-    view.poll_patches().unwrap();
-    assert!(
-        shown(&view).contains(&"late".to_owned()),
-        "{:?}",
-        shown(&view)
-    );
-    assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+    phase a_store_without_the_record_opens_over_the_index_and_takes_the_record_later;
+    {
+        let (mut ada, root, lock) = workspace();
+        for step in 0..5 {
+            let action = plan(
+                &ada,
+                "add",
+                json!({ "text": format!("task {step}") }),
+                &root,
+            );
+            ada.apply(&action);
+        }
+        let dir = TempDir::new("detached");
+        drop(kept_in(dir.path(), &ada.doc, &lock));
+        // A peer's change the index does not hold yet.
+        let action = plan(&ada, "add", json!({ "text": "late" }), &root);
+        ada.apply(&action);
+
+        let host = Host::open(
+            Opening {
+                record: None,
+                chunks: None,
+                index_dir: Some(dir.path().to_owned()),
+                device: None,
+                wake: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(TODO, &lock).unwrap();
+        assert!(host.index_ready());
+        assert!(!host.store().has_record());
+        let mut view = host.open_main(APP).unwrap();
+        assert_eq!(host.store().read_stats().doc.entries, 0);
+        // The rows the index holds, before the record is had.
+        let shown = |view: &tilolang_runtime::ViewInstance| {
+            let mut texts = Vec::new();
+            texts_of(view.tree(), &mut texts);
+            texts
+        };
+        assert!(
+            shown(&view).contains(&"task 4".to_owned()),
+            "{:?}",
+            shown(&view)
+        );
+        assert!(!shown(&view).contains(&"late".to_owned()));
+        // The record arrives: the index catches up and the view shows what it holds.
+        host.sync_from(&ada.doc);
+        view.poll_patches().unwrap();
+        assert!(
+            shown(&view).contains(&"late".to_owned()),
+            "{:?}",
+            shown(&view)
+        );
+        assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+    }
+
+    phase a_window_opens_over_the_index_an_earlier_window_kept;
+    {
+        // The window that closed wrote its index to the disk as it ended: the next window of the
+        // workspace opens over it, which is read, and nothing is derived from the record again.
+        let (ada, root, lock) = workspace();
+        let dir = TempDir::new("kept-open");
+        let first = kept_in(dir.path(), &ada.doc, &lock);
+        drop(first);
+        let second = Host::open(
+            Opening {
+                record: Some(&ada.doc),
+                chunks: None,
+                index_dir: Some(dir.path().to_owned()),
+                device: None,
+                wake: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        second.load_builtin(TODO, &lock).unwrap();
+        assert!(
+            second.index_ready(),
+            "the second window reads the kept index"
+        );
+        assert_eq!(second.store().stats().builds, 0, "nothing is built anew");
+        assert_eq!(
+            second.store().index_contents(APP).unwrap(),
+            anew(&ada, &lock)
+        );
+        let _ = root;
+    }
+
+    phase a_window_over_the_record_alone_is_whole_when_the_run_chunk_holds_no_rows_it_reads;
+    {
+        // A window of another app in the workspace: the run chunk above the record holds the list's
+        // items, and nothing of what this window reads. Its index holds every row of its own, so it
+        // counts them whole rather than waiting for a chunk it never needs.
+        let (chunks, _root, _item, _lock) = run_chunk();
+        let counter = Replica::new("ada", AutoCommit::new(), &[(COUNTER, "")]).1[0]
+            .ids
+            .clone();
+        let dir = TempDir::new("other-apps-run");
+        let open = || {
+            Host::open(
+                Opening {
+                    record: chunks.first(),
+                    chunks: None,
+                    index_dir: Some(dir.path().to_owned()),
+                    device: None,
+                    wake: None,
+                },
+                Principal::new("ada"),
+                || None,
+            )
+            .unwrap()
+        };
+        let host = open();
+        host.load_builtin(COUNTER, &counter).unwrap();
+        host.wait_index();
+        assert!(host.index_ready(), "the counter's index is built");
+        assert_eq!(
+            host.store()
+                .held_chunks()
+                .into_iter()
+                .map(|(number, _, _)| number)
+                .collect::<Vec<ChunkNo>>(),
+            [chunk::FIRST],
+            "the window reads the record's own chunk"
+        );
+        assert!(
+            host.store().index_whole(),
+            "no app the window reads has a row in the run chunk: every count it answers is whole"
+        );
+        host.persist_index();
+        drop(host);
+
+        // Opened again over the record and the index it kept: the index is read, and covers what its
+        // window reads without a stamp of another app's chunk.
+        let again = open();
+        again.load_builtin(COUNTER, &counter).unwrap();
+        assert!(
+            again.index_ready(),
+            "the second window reads the kept index"
+        );
+        assert_eq!(again.store().stats().builds, 0, "nothing is built anew");
+        assert!(
+            again.store().index_whole(),
+            "the kept index covers every row the window reads"
+        );
+    }
+
+    phase a_window_over_the_record_alone_reads_the_run_chunk_that_holds_its_rows;
+    {
+        // The same record, the app whose rows the run chunk holds: the index does not cover it until
+        // the chunk is read, and says so. A store that can read the chunk reads it, and the item it
+        // holds is in the list.
+        let (chunks, root, item, lock) = run_chunk();
+        let behind = Host::open(
+            Opening {
+                record: chunks.first(),
+                chunks: None,
+                index_dir: None,
+                device: None,
+                wake: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        behind.load_builtin(TODO, &lock).unwrap();
+        behind.wait_index();
+        assert!(behind.index_ready(), "the index is built");
+        assert!(
+            !behind.store().index_whole(),
+            "the run chunk holds a row of the list, and the window has not read it"
+        );
+        drop(behind);
+
+        let host = Host::open(
+            Opening {
+                record: chunks.first(),
+                chunks: Some(&chunks),
+                index_dir: None,
+                device: None,
+                wake: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(TODO, &lock).unwrap();
+        host.wait_index();
+        assert!(
+            host.store().index_whole(),
+            "the chunk the run names is read: every row of the list is the index's"
+        );
+        assert_eq!(
+            listed(&host, &root),
+            [item],
+            "the item the run chunk holds is in the list"
+        );
+    }
+
+    phase a_window_whose_index_is_not_kept_builds_it_off_the_frame;
+    {
+        // A window with no storage, or one whose index file another window holds, opens over an
+        // index built in memory: the open does not wait for it, the frame after it is built shows
+        // what it holds.
+        let (ada, root, lock) = workspace();
+        let host = Host::open(
+            Opening {
+                record: Some(&ada.doc),
+                chunks: None,
+                index_dir: None,
+                device: None,
+                // What a window has before the app's package loads.
+                wake: Some(Arc::new(|| {})),
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(TODO, &lock).unwrap();
+        assert!(!host.index_ready(), "the open does not wait for the index");
+        assert!(
+            host.store().index_contents(APP).is_none(),
+            "nothing reads an index that is not built"
+        );
+        host.wait_index();
+        assert!(host.index_ready(), "the window's frame takes it in");
+        assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+        let _ = root;
+    }
+
+    phase a_window_opened_over_its_index_publishes_every_hit_and_each_commit_at_once;
+    {
+        let (mut ada, root, lock) = workspace();
+        for step in 0..5 {
+            let action = plan(
+                &ada,
+                "add",
+                json!({ "text": format!("task {step}") }),
+                &root,
+            );
+            ada.apply(&action);
+        }
+        let dir = TempDir::new("published");
+        drop(kept_in(dir.path(), &ada.doc, &lock));
+
+        // A window opens over the index it kept: every hit is read from it, nothing built first.
+        let host = Host::open(
+            Opening {
+                record: Some(&ada.doc),
+                chunks: None,
+                index_dir: Some(dir.path().to_owned()),
+                device: None,
+                wake: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(TODO, &lock).unwrap();
+        assert!(host.index_ready());
+        assert_eq!(
+            published(&host),
+            ["task 0", "task 1", "task 2", "task 3", "task 4"]
+        );
+        assert_eq!(
+            host.store().read_stats().doc.entries,
+            0,
+            "the record not walked"
+        );
+
+        // A change committed to the workspace is published as soon as the window has it.
+        let action = plan(&ada, "add", json!({ "text": "late arrival" }), &root);
+        ada.apply(&action);
+        host.sync_from(&ada.doc);
+        assert!(published(&host).contains(&"late arrival".to_owned()));
+        assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+    }
+
+    phase a_documents_newest_versions_are_read_a_page_at_a_time;
+    // A window's mark counts a page of the resources of its document, and says when there are
+    // more: what a workspace of any size reads of them, never all of it, and of each resource
+    // only its newest version.
+    {
+        let (mut ada, root, _lock) = workspace();
+        for step in 0..5 {
+            let action = plan(
+                &ada,
+                "add",
+                json!({ "text": format!("task {step}") }),
+                &root,
+            );
+            ada.apply(&action);
+        }
+        ada.commit();
+        let doc = ResourceRef::parse_id(&root, String::new()).unwrap().doc;
+        let store = ada.host.store();
+
+        let (page, more) = store.newest_page(&doc, 3).unwrap();
+        assert_eq!(page.len(), 3, "a page of them, not the document");
+        assert!(more, "the document holds more than the page");
+        let (all, more) = store.newest_page(&doc, 100).unwrap();
+        assert!(!more, "a page the document fits in holds it all");
+        assert!(all.len() > 3, "the document holds a list and its items");
+        for (resource, version) in &all {
+            assert_eq!(&version.resource, resource, "a version of what it names");
+            assert!(!version.change.is_empty(), "{resource} was changed");
+        }
+        // The newest version of an item is the one the page reads of it.
+        let item = ResourceRef::parse_id(&all[1].0, String::new()).unwrap();
+        assert_eq!(store.newest(&item).unwrap(), Some(all[1].1.clone()));
+    }
 }
 
+/// A window opened with a waker derives nothing of the workspace on the thread that opens it: the
+/// index is built on a worker, which wakes a frame to take it in.
 #[test]
-fn a_window_opens_over_the_index_an_earlier_window_kept() {
-    // The window that closed wrote its index to the disk as it ended: the next window of the
-    // workspace opens over it, which is read, and nothing is derived from the record again.
+fn a_window_opened_with_a_waker_reads_its_index_off_the_frame() {
     let (ada, root, lock) = workspace();
-    let dir = TempDir::new("kept-open");
-    let first = kept_in(dir.path(), &ada.doc, &lock);
-    drop(first);
-    let second = Host::open(
+    let woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wake = {
+        let woken = Arc::clone(&woken);
+        Arc::new(move || woken.store(true, std::sync::atomic::Ordering::Release))
+    };
+    let host = Host::open(
         Opening {
             record: Some(&ada.doc),
             chunks: None,
-            index_dir: Some(dir.path().to_owned()),
+            index_dir: None,
             device: None,
+            wake: Some(wake),
         },
         Principal::new("ada"),
         || None,
     )
     .unwrap();
-    second.load_builtin(TODO, &lock).unwrap();
-    assert!(
-        second.index_ready(),
-        "the second window reads the kept index"
-    );
-    assert_eq!(second.store().stats().builds, 0, "nothing is built anew");
     assert_eq!(
-        second.store().index_contents(APP).unwrap(),
-        anew(&ada, &lock)
+        host.store().stats().builds,
+        0,
+        "nothing of the workspace is derived on the frame that opens it"
     );
+    host.wait_index();
+    assert_eq!(host.store().stats().builds, 1, "the worker built the index");
+    assert!(
+        woken.load(std::sync::atomic::Ordering::Acquire),
+        "the frame was woken to take the index in"
+    );
+    assert!(host.index_ready());
+    host.load_builtin(TODO, &lock).unwrap();
+    host.wait_index();
+    assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
     let _ = root;
 }
 
@@ -1181,205 +1650,6 @@ fn run_chunk() -> (Chunks, String, String, String) {
     (chunks, root, item, lock)
 }
 
-#[test]
-fn a_window_over_the_record_alone_is_whole_when_the_run_chunk_holds_no_rows_it_reads() {
-    // A window of another app in the workspace: the run chunk above the record holds the list's
-    // items, and nothing of what this window reads. Its index holds every row of its own, so it
-    // counts them whole rather than waiting for a chunk it never needs.
-    let (chunks, _root, _item, _lock) = run_chunk();
-    let counter = Replica::new("ada", AutoCommit::new(), &[(COUNTER, "")]).1[0]
-        .ids
-        .clone();
-    let dir = TempDir::new("other-apps-run");
-    let open = || {
-        Host::open(
-            Opening {
-                record: chunks.first(),
-                chunks: None,
-                index_dir: Some(dir.path().to_owned()),
-                device: None,
-            },
-            Principal::new("ada"),
-            || None,
-        )
-        .unwrap()
-    };
-    let host = open();
-    host.load_builtin(COUNTER, &counter).unwrap();
-    host.wait_index();
-    assert!(host.index_ready(), "the counter's index is built");
-    assert_eq!(
-        host.store()
-            .held_chunks()
-            .into_iter()
-            .map(|(number, _, _)| number)
-            .collect::<Vec<ChunkNo>>(),
-        [chunk::FIRST],
-        "the window reads the record's own chunk"
-    );
-    assert!(
-        host.store().index_whole(),
-        "no app the window reads has a row in the run chunk: every count it answers is whole"
-    );
-    host.persist_index();
-    drop(host);
-
-    // Opened again over the record and the index it kept: the index is read, and covers what its
-    // window reads without a stamp of another app's chunk.
-    let again = open();
-    again.load_builtin(COUNTER, &counter).unwrap();
-    assert!(
-        again.index_ready(),
-        "the second window reads the kept index"
-    );
-    assert_eq!(again.store().stats().builds, 0, "nothing is built anew");
-    assert!(
-        again.store().index_whole(),
-        "the kept index covers every row the window reads"
-    );
-}
-
-#[test]
-fn a_window_over_the_record_alone_reads_the_run_chunk_that_holds_its_rows() {
-    // The same record, the app whose rows the run chunk holds: the index does not cover it until
-    // the chunk is read, and says so. A store that can read the chunk reads it, and the item it
-    // holds is in the list.
-    let (chunks, root, item, lock) = run_chunk();
-    let behind = Host::open(
-        Opening {
-            record: chunks.first(),
-            chunks: None,
-            index_dir: None,
-            device: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    behind.load_builtin(TODO, &lock).unwrap();
-    behind.wait_index();
-    assert!(behind.index_ready(), "the index is built");
-    assert!(
-        !behind.store().index_whole(),
-        "the run chunk holds a row of the list, and the window has not read it"
-    );
-    drop(behind);
-
-    let host = Host::open(
-        Opening {
-            record: chunks.first(),
-            chunks: Some(&chunks),
-            index_dir: None,
-            device: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    host.load_builtin(TODO, &lock).unwrap();
-    host.wait_index();
-    assert!(
-        host.store().index_whole(),
-        "the chunk the run names is read: every row of the list is the index's"
-    );
-    assert_eq!(
-        listed(&host, &root),
-        [item],
-        "the item the run chunk holds is in the list"
-    );
-}
-
-#[test]
-fn a_window_whose_index_is_not_kept_builds_it_off_the_frame() {
-    // A window with no storage, or one whose index file another window holds, opens over an
-    // index built in memory: the open does not wait for it, the frame after it is built shows
-    // what it holds.
-    let (ada, root, lock) = workspace();
-    let host = Host::open(
-        Opening {
-            record: Some(&ada.doc),
-            chunks: None,
-            index_dir: None,
-            device: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    // What an instance does before the app's package loads.
-    host.set_index_waker(Arc::new(|| {}));
-    host.load_builtin(TODO, &lock).unwrap();
-    assert!(!host.index_ready(), "the open does not wait for the index");
-    assert!(
-        host.store().index_contents(APP).is_none(),
-        "nothing reads an index that is not built"
-    );
-    host.wait_index();
-    assert!(host.index_ready(), "the window's frame takes it in");
-    assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
-    let _ = root;
-}
-
-#[test]
-fn a_corrupt_index_is_built_anew_and_never_read() {
-    let (mut ada, root, lock) = workspace();
-    for text in ["milk", "eggs", "oat milk"] {
-        let action = plan(&ada, "add", json!({ "text": text }), &root);
-        ada.apply(&action);
-    }
-    let meta = ada.host.packages()[0].meta.clone();
-    let text_field = field_id(&meta, "Item", "text");
-    let item_ty = meta
-        .types
-        .iter()
-        .find(|t| t.name == "Item")
-        .unwrap()
-        .id
-        .clone();
-    let list_ty = meta
-        .types
-        .iter()
-        .find(|t| t.name == "TodoList")
-        .unwrap()
-        .id
-        .clone();
-    let oat = items(&ada, &root)[2].clone();
-    let at = ResourceRef::root(&root, list_ty).item(&oat, item_ty);
-
-    // A value whose bytes changed on disk.
-    let dir = TempDir::new("corrupt");
-    drop(kept_in(dir.path(), &ada.doc, &lock));
-    let file = std::fs::read_dir(dir.path())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.to_string_lossy().contains("so.tilo.todo"))
-        .unwrap();
-    let mut bytes = std::fs::read(&file).unwrap();
-    let at_text = bytes
-        .windows(8)
-        .position(|window| window == b"oat milk")
-        .expect("the text is in the file");
-    bytes[at_text] = b'x';
-    std::fs::write(&file, &bytes).unwrap();
-
-    let host = kept_in(dir.path(), &ada.doc, &lock);
-    let read = || host.runtime().read(&at, &text_field).unwrap();
-    // Never what the damaged bytes say: the record answers while the index is not trusted.
-    assert_eq!(read(), Value::text("oat milk"));
-    host.wait_index();
-    assert!(host.index_ready());
-    assert_eq!(host.store().stats().builds, 1, "built anew");
-    assert_eq!(read(), Value::text("oat milk"));
-    assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
-
-    // A file that is not an index at all.
-    drop(host);
-    std::fs::write(&file, b"not an index").unwrap();
-    let host = kept_in(dir.path(), &ada.doc, &lock);
-    assert_eq!(host.store().stats().builds, 1);
-    assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
-}
-
 /// The titles of every todo-package hit a window publishes, sorted.
 fn published(host: &Host) -> Vec<String> {
     let mut out: Vec<String> = tilolang_tilo::search::every_hit(host)
@@ -1392,87 +1662,6 @@ fn published(host: &Host) -> Vec<String> {
         .collect();
     out.sort();
     out
-}
-
-#[test]
-fn a_window_opened_over_its_index_publishes_every_hit_and_each_commit_at_once() {
-    let (mut ada, root, lock) = workspace();
-    for step in 0..5 {
-        let action = plan(
-            &ada,
-            "add",
-            json!({ "text": format!("task {step}") }),
-            &root,
-        );
-        ada.apply(&action);
-    }
-    let dir = TempDir::new("published");
-    drop(kept_in(dir.path(), &ada.doc, &lock));
-
-    // A window opens over the index it kept: every hit is read from it, nothing built first.
-    let host = Host::open(
-        Opening {
-            record: Some(&ada.doc),
-            chunks: None,
-            index_dir: Some(dir.path().to_owned()),
-            device: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    host.load_builtin(TODO, &lock).unwrap();
-    assert!(host.index_ready());
-    assert_eq!(
-        published(&host),
-        ["task 0", "task 1", "task 2", "task 3", "task 4"]
-    );
-    assert_eq!(
-        host.store().read_stats().doc.entries,
-        0,
-        "the record not walked"
-    );
-
-    // A change committed to the workspace is published as soon as the window has it.
-    let action = plan(&ada, "add", json!({ "text": "late arrival" }), &root);
-    ada.apply(&action);
-    host.sync_from(&ada.doc);
-    assert!(published(&host).contains(&"late arrival".to_owned()));
-    assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
-}
-
-/// A window's mark counts a page of the resources of its document, and says when there are
-/// more: what a workspace of any size reads of them, never all of it, and of each resource
-/// only its newest version.
-#[test]
-fn a_documents_newest_versions_are_read_a_page_at_a_time() {
-    let (mut ada, root, _lock) = workspace();
-    for step in 0..5 {
-        let action = plan(
-            &ada,
-            "add",
-            json!({ "text": format!("task {step}") }),
-            &root,
-        );
-        ada.apply(&action);
-    }
-    ada.commit();
-    let doc = ResourceRef::parse_id(&root, String::new()).unwrap().doc;
-    let store = ada.host.store();
-
-    let (page, more) = store.newest_page(&doc, 3).unwrap();
-    assert_eq!(page.len(), 3, "a page of them, not the document");
-    assert!(more, "the document holds more than the page");
-    let (all, more) = store.newest_page(&doc, 100).unwrap();
-    assert!(!more, "a page the document fits in holds it all");
-    assert!(all.len() > 3, "the document holds a list and its items");
-    for (resource, version) in &all {
-        assert_eq!(&version.resource, resource, "a version of what it names");
-        assert!(!version.change.is_empty(), "{resource} was changed");
-    }
-    // The newest version of an item is the one the page reads of it.
-    let item = ResourceRef::parse_id(&all[1].0, String::new()).unwrap();
-    assert_eq!(store.newest(&item).unwrap(), Some(all[1].1.clone()));
 }
 
 /// How many maps the document keeps at `path`, counting only those that hold something: a fold
@@ -1515,130 +1704,4 @@ fn create(replica: &mut Replica, id: &str) {
         )
         .unwrap();
     replica.commit();
-}
-
-/// Each replica founds the workspace with the first record of the app it makes, before the two
-/// meet: each made the workspace's `tl` map and the app's map of its own. Both records are the
-/// app's on both, and the index holds what deriving it anew holds; the next write keeps one map
-/// of each, on both.
-#[test]
-fn the_first_record_each_replica_made_of_a_new_workspace_is_the_apps_on_both() {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
-    let lock = packages[0].ids.clone();
-    let mut grace = Replica::new("grace", AutoCommit::new(), &[(TODO, &lock)]).0;
-    // Each device opens the app and makes its first record on it, offline.
-    ada.host.root_of(APP).unwrap();
-    ada.commit();
-    create(&mut ada, "ada-list");
-    grace.host.root_of(APP).unwrap();
-    grace.commit();
-    create(&mut grace, "grace-list");
-    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
-        assert_eq!(
-            maps_holding(replica, &["tl"]),
-            1,
-            "{name}: a map of its own"
-        );
-        assert_eq!(
-            maps_holding(replica, &["tl", APP]),
-            1,
-            "{name}: an app map of its own"
-        );
-    }
-    ada.sync_with(&mut grace);
-    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
-        assert_eq!(maps_holding(replica, &["tl"]), 2, "{name}: two maps met");
-        for id in ["ada-list", "grace-list"] {
-            assert!(
-                tilolang_tilo::reads::resource_obj(&replica.doc, APP, id).is_some(),
-                "{name}: {id} is one of the app's records"
-            );
-            assert!(
-                replica.host.store().record(id).is_ok(),
-                "{name}: {id} reads"
-            );
-        }
-        assert_eq!(
-            ids(replica).len(),
-            3,
-            "{name}: both lists and the app's root"
-        );
-        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
-    }
-
-    // A write on one side keeps one map of each, with both records in it, on both.
-    create(&mut grace, "later");
-    ada.sync_with(&mut grace);
-    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
-        assert_eq!(maps_holding(replica, &["tl"]), 1, "{name}: one map");
-        assert_eq!(
-            maps_holding(replica, &["tl", APP]),
-            1,
-            "{name}: one app map"
-        );
-        let held = ids(replica);
-        for id in ["ada-list", "grace-list", "later"] {
-            assert!(held.iter().any(|held| held == id), "{name}: {id} stays");
-            assert!(replica.host.store().record(id).is_ok(), "{name}: {id}");
-        }
-        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
-    }
-}
-
-/// The same for the app's map alone: the workspace's `tl` map is one, and each replica makes
-/// the app's first record of its own, so the two app maps met.
-#[test]
-fn the_first_record_each_replica_made_of_a_new_app_is_the_apps_on_both() {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, ""), (TODO, "")]);
-    let counter = packages[0].ids.clone();
-    let lock = packages[1].ids.clone();
-    // The workspace holds the counter's records; the todo app's map is made by the first record
-    // of it, which each device makes on its own.
-    ada.host.root_of(APP_COUNTER).unwrap();
-    ada.commit();
-    let mut grace = ada.fork("grace", &[(COUNTER, &counter), (TODO, &lock)]);
-    create(&mut ada, "ada-list");
-    create(&mut grace, "grace-list");
-    assert_eq!(maps_holding(&ada, &["tl"]), 1, "one workspace map");
-    assert_eq!(
-        maps_holding(&grace, &["tl"]),
-        1,
-        "one workspace map on grace's side too"
-    );
-    ada.sync_with(&mut grace);
-    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
-        assert_eq!(maps_holding(replica, &["tl"]), 1, "{name}: one map");
-        assert_eq!(
-            maps_holding(replica, &["tl", APP]),
-            2,
-            "{name}: each replica made the app's map"
-        );
-        for id in ["ada-list", "grace-list"] {
-            assert!(
-                tilolang_tilo::reads::resource_obj(&replica.doc, APP, id).is_some(),
-                "{name}: {id} is one of the app's records"
-            );
-            assert!(
-                replica.host.store().record(id).is_ok(),
-                "{name}: {id} reads"
-            );
-        }
-        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
-    }
-
-    create(&mut ada, "later");
-    ada.sync_with(&mut grace);
-    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
-        assert_eq!(
-            maps_holding(replica, &["tl", APP]),
-            1,
-            "{name}: the app's maps are one"
-        );
-        let held = ids(replica);
-        for id in ["ada-list", "grace-list", "later"] {
-            assert!(held.iter().any(|held| held == id), "{name}: {id} stays");
-            assert!(replica.host.store().record(id).is_ok(), "{name}: {id}");
-        }
-        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
-    }
 }

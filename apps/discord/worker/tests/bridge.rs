@@ -61,25 +61,17 @@ impl BlobAccess for Blobs {
     }
 }
 
+/// The relay's device, certified to own the workspaces it governs: their
+/// records are the sealed channels a Lounge's are, and everything that reads
+/// or writes them — the bridge included — goes through their keys.
 fn governor() -> (SigningKey, DeviceCert) {
-    governor_with(DeviceCapabilities::host())
-}
-
-/// The same host certified to own the workspaces it governs: their records
-/// are the sealed channels a Lounge's are, and everything that reads or
-/// writes them — the bridge included — goes through their keys.
-fn governor_owning_workspaces() -> (SigningKey, DeviceCert) {
-    governor_with(tilo_user_identity::DeviceCapabilities::host())
-}
-
-fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&tilo_test_env::node_key());
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: "home".into(),
-        capabilities,
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -348,9 +340,6 @@ struct Setup {
     existing: bool,
     /// The workspace's Chat as a public workspace's opens: "Channels" with #general.
     workspace_seeded: bool,
-    /// The relay's device owns the workspace it governs, as a Lounge's host
-    /// does: its records are sealed channels, not documents in the clear.
-    sealed: bool,
     /// Messages Bo wrote before the bridge first ran: channel, text, when
     /// (Unix ms).
     history: &'static [(&'static str, &'static str, u64)],
@@ -395,6 +384,7 @@ struct Bridge {
     general: String,
     ada: String,
     _relay: tilo_relay::daemon::Relay,
+    _packet_relay: tilo_test_env::relay::Relay,
     _scratch: tempfile::TempDir,
 }
 
@@ -422,15 +412,16 @@ impl Bridge {
             fake.post_written_through(&webhook, channel, name, text, *at_ms);
         }
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = if setup.sealed {
-            governor_owning_workspaces()
-        } else {
-            governor()
-        };
+        let (key, cert) = governor();
         // The host decides what members and the bot change against the
         // surfaces of the apps it runs, as a workspace host does.
         let _ = AppCatalogue::native();
         tilo_relay::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
+        // The host takes a packet relay on this machine's loopback as its
+        // home. A host told to use no relay still waits out the whole relay
+        // probe before it opens its workspaces: five seconds in which nothing
+        // of the bridge runs.
+        let packet_relay = tilo_test_env::relay::relay().await;
         let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
             tilo_relay::RelayConfig {
                 state_root: scratch.path().join("relay"),
@@ -442,7 +433,7 @@ impl Bridge {
                 device_cert: cert.clone(),
                 revocations: RevocationList::new(),
             },
-            iroh::RelayMode::Disabled,
+            iroh::RelayMode::Custom(packet_relay.relays()),
         )
         .await
         .unwrap();
@@ -603,6 +594,7 @@ impl Bridge {
             general,
             ada,
             _relay: relay,
+            _packet_relay: packet_relay,
             _scratch: scratch,
         };
         (bridge, runner)
@@ -699,6 +691,13 @@ impl Bridge {
     }
 }
 
+/// A message crosses each way, each side showing who wrote it.
+///
+/// The host owns the workspace it governs, as a Lounge's does, so every
+/// record of its Chat is a sealed channel. The bridge runs on that host and
+/// reads and writes those records as the workspace's own member — through the
+/// membership and keys every member uses, no exception for it — and the
+/// message still crosses each way, written sealed from end to end.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
     let (bridge, mut runner) = Bridge::start().await;
@@ -715,9 +714,28 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
     .await;
     assert_eq!(sent["author"]["username"], "Ada", "{sent:#}");
     assert!(sent["webhook_id"].is_string(), "{sent:#}");
+    let state = bridge
+        .workspace
+        .workspaces
+        .state(&bridge.workspace.id)
+        .await
+        .expect("the workspace is held here");
+    assert!(
+        state.plaintext_routes().is_empty(),
+        "the workspace writes nothing in the clear: {:?}",
+        state.plaintext_routes()
+    );
+    assert!(
+        state
+            .sealed_routes()
+            .iter()
+            .any(|(app, record)| app == CHAT && !record.is_empty()),
+        "the chat's messages are a sealed channel: {:?}",
+        state.sealed_routes()
+    );
 
-    // Discord to Tilo: Bo's post lands in Chat under Bo's name, and the
-    // webhook echo of Ada's post comes back as nothing.
+    // Discord to Tilo: Bo's post lands in Chat sealed, under Bo's name, and
+    // the webhook echo of Ada's post comes back as nothing.
     let bo = User::new("3001", "Bo");
     bridge.fake.post(CHANNEL_GENERAL, &bo, "hello from Discord");
     settle(&mut runner, "Discord to Tilo", || async {
@@ -745,63 +763,6 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
             .count(),
         1,
         "the echo of Ada's post is not posted again: {texts:?}"
-    );
-}
-
-/// A Lounge's host owns the workspace it governs, so every record of its Chat
-/// is a sealed channel. The bridge runs on that host and reads and writes
-/// those records as the workspace's own member — through the membership and
-/// keys every member uses, no exception for it — and a message still crosses
-/// each way, written sealed from end to end.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_sealed_lounges_chat_crosses_the_bridge_both_ways() {
-    let (bridge, mut runner) = Bridge::start_with(Setup {
-        sealed: true,
-        ..Setup::default()
-    })
-    .await;
-
-    // Tilo to Discord: Ada's post reaches the webhook as Ada.
-    bridge.ada_says("sealed from Tilo").await;
-    let sent = settle(&mut runner, "Tilo to Discord", || async {
-        bridge.in_discord("sealed from Tilo")
-    })
-    .await;
-    assert_eq!(sent["author"]["username"], "Ada", "{sent:#}");
-    assert!(sent["webhook_id"].is_string(), "{sent:#}");
-    let state = bridge
-        .workspace
-        .workspaces
-        .state(&bridge.workspace.id)
-        .await
-        .expect("the workspace is held here");
-    assert!(
-        state.plaintext_routes().is_empty(),
-        "the workspace writes nothing in the clear: {:?}",
-        state.plaintext_routes()
-    );
-    assert!(
-        state
-            .sealed_routes()
-            .iter()
-            .any(|(app, record)| app == CHAT && !record.is_empty()),
-        "the chat's messages are a sealed channel: {:?}",
-        state.sealed_routes()
-    );
-
-    // Discord to Tilo: Bo's post lands in the chat sealed, under his name.
-    let bo = User::new("3001", "Bo");
-    bridge
-        .fake
-        .post(CHANNEL_GENERAL, &bo, "sealed from Discord");
-    settle(&mut runner, "Discord to Tilo", || async {
-        bridge.chat_message("sealed from Discord").await.map(drop)
-    })
-    .await;
-    assert_eq!(
-        bridge.workspace.bridged().await,
-        [("sealed from Discord".to_owned(), "Bo".to_owned())],
-        "Bo's message is bridged, under his name"
     );
 }
 

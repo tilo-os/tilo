@@ -53,63 +53,89 @@ fn encoded(resource: &ResourceSpec) -> EncodedAction {
     .unwrap()
 }
 
-#[test]
-fn receipt_request_is_bound_to_the_published_report_and_has_no_caller_heads() {
-    let (_, submission, resource) = submitted();
-    let operation = encoded(&resource);
-    validate(&resource, &operation.payload).unwrap();
-    let mut other = resource.clone();
-    other.id = tilo_actions::ResourceId::new(crate::testing::item(
-        "feedback",
-        "ffffffffffffffffffffffffffffffff",
-    ));
-    assert_eq!(
-        validate(&other, &operation.payload),
-        Err(SemanticReadError::InvalidRequest)
-    );
-    let ambiguous = serde_json::json!({"id":submission.id,"heads":[]});
-    assert_eq!(
-        validate(&resource, &serde_json::to_vec(&ambiguous).unwrap()),
-        Err(SemanticReadError::InvalidRequest)
-    );
-}
+tilo_test_env::scenario! {
+    /// What a receipt read is bound to: the published report, its committed basis and its reporter.
+    fn a_receipt_read_is_bound_to_its_report_basis_and_reporter;
 
-#[test]
-fn projection_uses_the_committed_basis_and_its_declared_result_contract() {
-    let (mut doc, submission, resource) = submitted();
-    let operation = encoded(&resource);
-    let heads = doc.base_heads();
-    // A later replacement cannot change what the earlier committed basis says.
-    let feedback = ui::tilo_resource::Slot::Key(&ROOT, "feedback");
-    feedback.remove(&mut doc).unwrap();
-    feedback.object(&mut doc, ObjType::Map).unwrap();
-    doc.commit();
-    let page = project(&doc, &heads, &operation.payload).unwrap();
-    let receipt: Receipt = serde_json::from_value(page.content.clone()).unwrap();
-    assert_eq!(receipt.id, submission.id);
-    assert_eq!(receipt.destination, submission.destination);
-    assert_eq!(receipt.digest, submission.digest().unwrap());
-    assert!(page.next_cursor.is_none());
-    assert!(project(&doc, &doc.base_heads(), &operation.payload).is_err());
-    let spec = resource
-        .actions
-        .iter()
-        .find(|spec| spec.id == "read-feedback-receipt")
-        .unwrap();
-    assert!(spec.contract.validate_declaration().is_empty());
-    spec.contract
-        .result
-        .validate(&tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({
-                "version":1,
-                "record":{"workspaceId":null,"appId":"so.tilo.chat","recordId":""},
-                "basis":{"heads":heads.iter().map(ToString::to_string).collect::<Vec<_>>()},
-                "content":page.content,
-                "nextCursor":null
-            })),
-            ..Default::default()
-        })
-        .unwrap();
+    phase receipt_request_is_bound_to_the_published_report_and_has_no_caller_heads;
+    {
+        let (_, submission, resource) = submitted();
+        let operation = encoded(&resource);
+        validate(&resource, &operation.payload).unwrap();
+        let mut other = resource.clone();
+        other.id = tilo_actions::ResourceId::new(crate::testing::item(
+            "feedback",
+            "ffffffffffffffffffffffffffffffff",
+        ));
+        assert_eq!(
+            validate(&other, &operation.payload),
+            Err(SemanticReadError::InvalidRequest)
+        );
+        let ambiguous = serde_json::json!({"id":submission.id,"heads":[]});
+        assert_eq!(
+            validate(&resource, &serde_json::to_vec(&ambiguous).unwrap()),
+            Err(SemanticReadError::InvalidRequest)
+        );
+    }
+
+    phase projection_uses_the_committed_basis_and_its_declared_result_contract;
+    {
+        let (mut doc, submission, resource) = submitted();
+        let operation = encoded(&resource);
+        let heads = doc.base_heads();
+        // A later replacement cannot change what the earlier committed basis says.
+        let feedback = ui::tilo_resource::Slot::Key(&ROOT, "feedback");
+        feedback.remove(&mut doc).unwrap();
+        feedback.object(&mut doc, ObjType::Map).unwrap();
+        doc.commit();
+        let page = project(&doc, &heads, &operation.payload).unwrap();
+        let receipt: Receipt = serde_json::from_value(page.content.clone()).unwrap();
+        assert_eq!(receipt.id, submission.id);
+        assert_eq!(receipt.destination, submission.destination);
+        assert_eq!(receipt.digest, submission.digest().unwrap());
+        assert!(page.next_cursor.is_none());
+        assert!(project(&doc, &doc.base_heads(), &operation.payload).is_err());
+        let spec = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == "read-feedback-receipt")
+            .unwrap();
+        assert!(spec.contract.validate_declaration().is_empty());
+        spec.contract
+            .result
+            .validate(&tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "version":1,
+                    "record":{"workspaceId":null,"appId":"so.tilo.chat","recordId":""},
+                    "basis":{"heads":heads.iter().map(ToString::to_string).collect::<Vec<_>>()},
+                    "content":page.content,
+                    "nextCursor":null
+                })),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+
+    phase canonical_read_requires_the_exact_attributed_reporter_when_requested;
+    {
+        let author = "a".repeat(64);
+        let (doc, submission, resource) = submitted_as(&author);
+        let request = |author: &str| {
+            serde_json::to_vec(&serde_json::json!({"id": submission.id, "expectedAuthor": author}))
+                .unwrap()
+        };
+        let payload = request(&author);
+        validate(&resource, &payload).unwrap();
+        assert!(project(&doc, &doc.base_heads(), &payload).is_ok());
+        assert_eq!(
+            project(&doc, &doc.base_heads(), &request(&"b".repeat(64))).err(),
+            Some(SemanticReadError::InvalidOwner)
+        );
+        assert_eq!(
+            validate(&resource, &request("visitor")),
+            Err(SemanticReadError::InvalidRequest)
+        );
+    }
 }
 
 fn fixture_submission(workspace: &str) -> Submission {
@@ -386,27 +412,6 @@ fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
     assert_eq!(
         value["content"]["triage"][2]["update"]["reference"],
         serde_json::to_value(reference).unwrap()
-    );
-}
-
-#[test]
-fn canonical_read_requires_the_exact_attributed_reporter_when_requested() {
-    let author = "a".repeat(64);
-    let (doc, submission, resource) = submitted_as(&author);
-    let request = |author: &str| {
-        serde_json::to_vec(&serde_json::json!({"id": submission.id, "expectedAuthor": author}))
-            .unwrap()
-    };
-    let payload = request(&author);
-    validate(&resource, &payload).unwrap();
-    assert!(project(&doc, &doc.base_heads(), &payload).is_ok());
-    assert_eq!(
-        project(&doc, &doc.base_heads(), &request(&"b".repeat(64))).err(),
-        Some(SemanticReadError::InvalidOwner)
-    );
-    assert_eq!(
-        validate(&resource, &request("visitor")),
-        Err(SemanticReadError::InvalidRequest)
     );
 }
 

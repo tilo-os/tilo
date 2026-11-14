@@ -20,8 +20,8 @@ use ui::time::{Duration, Instant};
 use ui::tokens::{EffectiveMotion, MotionSource};
 use ui::widget::{Button, ButtonFace, ButtonRole};
 
-use crate::collaborators::RosterRow;
 use crate::i18n::{t, t_args};
+use crate::people::RosterRow;
 
 /// How long "Stopped following" stays after the person's own input ended following.
 pub const STOPPED_FOR: Duration = Duration::from_secs(1);
@@ -520,82 +520,86 @@ mod tests {
         (bar, work_area, chip, stop, windows)
     }
 
-    /// The banner stands in the top bar and on nothing else: no window's content lies under it, at
-    /// a wide display or a phone's, and nothing of it reaches past the bar's ends either.
-    #[test]
-    fn the_pill_stands_on_no_window_content_at_any_width() {
-        for width in [1280.0, 390.0, 360.0] {
-            for following in [true, false] {
-                let (bar, _work_area, chip, stop, windows) = placed(width, following);
-                assert!(
-                    chip.width() > 0.0 && chip.height() > 0.0,
-                    "the banner stands at {width}: {chip:?}"
-                );
-                assert!(
-                    chip.x0 >= bar.x0
-                        && chip.x1 <= bar.x1
-                        && chip.y0 >= bar.y0
-                        && chip.y1 <= bar.y1,
-                    "inside the bar at {width} ({following}): {chip:?} in {bar:?}"
-                );
-                for window in &windows {
-                    assert_eq!(
-                        window.intersect(chip).area(),
-                        0.0,
-                        "covering no content at {width} ({following}): {chip:?} over {window:?}"
-                    );
-                    assert_eq!(
-                        window.intersect(stop).area(),
-                        0.0,
-                        "Stop covering no content at {width} ({following})"
-                    );
-                }
-                if following {
+    tilo_test_env::scenario! {
+        fn the_follow_banner_fits_the_bar_at_every_width;
+
+        phase the_pill_stands_on_no_window_content_at_any_width;
+        // The banner stands in the top bar and on nothing else: no window's content lies under it, at
+        // a wide display or a phone's, and nothing of it reaches past the bar's ends either.
+        {
+            for width in [1280.0, 390.0, 360.0] {
+                for following in [true, false] {
+                    let (bar, _work_area, chip, stop, windows) = placed(width, following);
                     assert!(
-                        stop.x1 <= chip.x1 && stop.x0 >= chip.x0,
-                        "Stop inside the banner at {width}"
+                        chip.width() > 0.0 && chip.height() > 0.0,
+                        "the banner stands at {width}: {chip:?}"
                     );
-                } else {
-                    assert!(stop.is_zero_area(), "no Stop while stopped at {width}");
+                    assert!(
+                        chip.x0 >= bar.x0
+                            && chip.x1 <= bar.x1
+                            && chip.y0 >= bar.y0
+                            && chip.y1 <= bar.y1,
+                        "inside the bar at {width} ({following}): {chip:?} in {bar:?}"
+                    );
+                    for window in &windows {
+                        assert_eq!(
+                            window.intersect(chip).area(),
+                            0.0,
+                            "covering no content at {width} ({following}): {chip:?} over {window:?}"
+                        );
+                        assert_eq!(
+                            window.intersect(stop).area(),
+                            0.0,
+                            "Stop covering no content at {width} ({following})"
+                        );
+                    }
+                    if following {
+                        assert!(
+                            stop.x1 <= chip.x1 && stop.x0 >= chip.x0,
+                            "Stop inside the banner at {width}"
+                        );
+                    } else {
+                        assert!(stop.is_zero_area(), "no Stop while stopped at {width}");
+                    }
                 }
             }
         }
-    }
 
-    /// Where the bar is a phone's, the banner folds into the middle lane's own width: their face
-    /// and Stop stand there, and the bar's people keep the room either side.
-    #[test]
-    fn a_phone_wide_bar_folds_the_banner_into_its_lane() {
-        for width in [390.0, 360.0, 320.0] {
-            let (bar, _work_area, chip, stop, _windows) = placed(width, true);
-            let lane = Rect::from_center_size(bar.center(), (lane_width(width), chip.height()));
-            assert!(folds(width), "a phone-wide bar folds at {width}");
-            assert!(
-                chip.width() <= lane.width() + 0.5,
-                "the folded banner fits the lane at {width}: {chip:?} in {lane:?}"
-            );
-            assert!(
-                chip.x0 >= lane.x0 - 0.5 && chip.x1 <= lane.x1 + 0.5,
-                "and stands in it at {width}: {chip:?} in {lane:?}"
-            );
-            assert!(
-                stop.x0 >= chip.x0 && stop.x1 <= chip.x1 && !stop.is_zero_area(),
-                "Stop stands in the folded banner at {width}"
-            );
+        phase a_phone_wide_bar_folds_the_banner_into_its_lane;
+        // Where the bar is a phone's, the banner folds into the middle lane's own width: their face
+        // and Stop stand there, and the bar's people keep the room either side.
+        {
+            for width in [390.0, 360.0, 320.0] {
+                let (bar, _work_area, chip, stop, _windows) = placed(width, true);
+                let lane = Rect::from_center_size(bar.center(), (lane_width(width), chip.height()));
+                assert!(folds(width), "a phone-wide bar folds at {width}");
+                assert!(
+                    chip.width() <= lane.width() + 0.5,
+                    "the folded banner fits the lane at {width}: {chip:?} in {lane:?}"
+                );
+                assert!(
+                    chip.x0 >= lane.x0 - 0.5 && chip.x1 <= lane.x1 + 0.5,
+                    "and stands in it at {width}: {chip:?} in {lane:?}"
+                );
+                assert!(
+                    stop.x0 >= chip.x0 && stop.x1 <= chip.x1 && !stop.is_zero_area(),
+                    "Stop stands in the folded banner at {width}"
+                );
+            }
         }
-    }
 
-    /// A display narrower than the words still keeps the banner inside its bar: it gives way to the
-    /// bar's width rather than reaching past it onto what the person reads.
-    #[test]
-    fn a_bar_narrower_than_its_words_keeps_them_inside_it() {
-        let (bar, _work_area, chip, _stop, windows) = placed(160.0, true);
-        assert!(
-            chip.x0 >= bar.x0 && chip.x1 <= bar.x1,
-            "{chip:?} in {bar:?}"
-        );
-        for window in &windows {
-            assert_eq!(window.intersect(chip).area(), 0.0);
+        phase a_bar_narrower_than_its_words_keeps_them_inside_it;
+        // A display narrower than the words still keeps the banner inside its bar: it gives way to the
+        // bar's width rather than reaching past it onto what the person reads.
+        {
+            let (bar, _work_area, chip, _stop, windows) = placed(160.0, true);
+            assert!(
+                chip.x0 >= bar.x0 && chip.x1 <= bar.x1,
+                "{chip:?} in {bar:?}"
+            );
+            for window in &windows {
+                assert_eq!(window.intersect(chip).area(), 0.0);
+            }
         }
     }
 }

@@ -70,7 +70,7 @@ fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManag
             permissions: ui::permissions::SharedPermissions::new(
                 ui::permissions::PermissionContext::permissive(),
             ),
-            author: ui::permissions::UserId(principal_id_for_root(env.cert.user_public_key)),
+            author: ui::permissions::UserId(person_id_for_root(env.cert.user_public_key)),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,
@@ -123,7 +123,7 @@ fn store_directory_page(
     let mut reply = facade
         .action_directory_request_queue()
         .try_query(
-            BrokerActor::person(principal_id_for_root(env.cert.user_public_key)),
+            BrokerActor::person(person_id_for_root(env.cert.user_public_key)),
             &env.route.cluster_id,
             query,
         )

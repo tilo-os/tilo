@@ -120,15 +120,38 @@ mod tests {
         "tilo session panic\n==================\ncontained: yes: the part restarts\n";
     const STOPPED: &str = "tilo computer stopped\n=====================\nreason:    panic\n";
 
-    #[test]
-    fn records_from_before_the_first_look_are_history() {
-        let dir = private_dir();
-        record(dir.path(), "2026-10-20-080000-7-freeze.log", "old");
-        assert_eq!(take_news(dir.path()), None);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join(NOTICED)).unwrap(),
-            "2026-10-20-080000-7-freeze.log"
-        );
+    tilo_test_env::scenario! {
+        fn take_news_tells_what_ended_the_session_since_the_last_look;
+
+        phase records_from_before_the_first_look_are_history;
+        {
+            let dir = private_dir();
+            record(dir.path(), "2026-10-20-080000-7-freeze.log", "old");
+            assert_eq!(take_news(dir.path()), None);
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join(NOTICED)).unwrap(),
+                "2026-10-20-080000-7-freeze.log"
+            );
+        }
+
+        phase the_computer_stopping_is_news_and_a_fault_is_not;
+        {
+            let dir = private_dir();
+            assert_eq!(take_news(dir.path()), None);
+            record(dir.path(), "2026-10-24-225201-4f00-stopped.log", STOPPED);
+            assert_eq!(
+                take_news(dir.path()).map(|news| news.ended),
+                Some(Ended::Stopped)
+            );
+            let fault = STOPPED.replace("panic", "oops");
+            record(dir.path(), "2026-10-25-225201-4f00-stopped.log", &fault);
+            assert_eq!(take_news(dir.path()), None, "the system ran on");
+        }
+
+        phase a_missing_directory_is_no_news;
+        {
+            assert_eq!(take_news(Path::new("/nonexistent/tilo/crashes")), None);
+        }
     }
 
     #[test]
@@ -158,24 +181,5 @@ mod tests {
         );
         record(dir.path(), "2026-10-25-100000-12.log", CONTAINED);
         assert_eq!(take_news(dir.path()), None, "a contained panic is no news");
-    }
-
-    #[test]
-    fn the_computer_stopping_is_news_and_a_fault_is_not() {
-        let dir = private_dir();
-        assert_eq!(take_news(dir.path()), None);
-        record(dir.path(), "2026-10-24-225201-4f00-stopped.log", STOPPED);
-        assert_eq!(
-            take_news(dir.path()).map(|news| news.ended),
-            Some(Ended::Stopped)
-        );
-        let fault = STOPPED.replace("panic", "oops");
-        record(dir.path(), "2026-10-25-225201-4f00-stopped.log", &fault);
-        assert_eq!(take_news(dir.path()), None, "the system ran on");
-    }
-
-    #[test]
-    fn a_missing_directory_is_no_news() {
-        assert_eq!(take_news(Path::new("/nonexistent/tilo/crashes")), None);
     }
 }

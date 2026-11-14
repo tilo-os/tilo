@@ -211,7 +211,7 @@ async fn revoked_by_someone_else(
 async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let (other_root, _) = UserIdentity::generate("Bob", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,

@@ -677,9 +677,7 @@ impl Notebook {
         });
         Ok(())
     }
-}
 
-impl Notebook {
     /// A verb on a tag needs a tag to act on: until the notebook has one,
     /// "Delete tag" is not offered, rather than offered asking for a tag
     /// there is none of.

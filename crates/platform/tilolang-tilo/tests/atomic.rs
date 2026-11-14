@@ -119,58 +119,62 @@ fn apply(host: &Host, doc: &mut AutoCommit, action: &DynAction) {
     host.sync_from(doc);
 }
 
-#[test]
-fn an_action_and_the_actions_it_calls_are_one_commit() {
-    let (host, mut doc, tally, meta) = workspace();
-    assert!(run(&host, &meta, "twice", &tally));
-    let committed = host.take_committed();
-    assert_eq!(committed.len(), 2, "a change per call");
-    let runs: Vec<Option<String>> = committed
-        .iter()
-        .map(|committed| committed.action.authorship.invocation.clone())
-        .collect();
-    assert_eq!(runs[0], runs[1], "both calls ran in the one action");
-    let run = runs[0].clone().expect("a run names its invocation");
+tilo_test_env::scenario! {
+    fn a_run_and_its_calls_commit_together_or_not_at_all;
 
-    let before = doc.get_heads();
-    for committed in &committed {
-        apply(&host, &mut doc, &committed.action);
+    phase an_action_and_the_actions_it_calls_are_one_commit;
+    {
+        let (host, mut doc, tally, meta) = workspace();
+        assert!(run(&host, &meta, "twice", &tally));
+        let committed = host.take_committed();
+        assert_eq!(committed.len(), 2, "a change per call");
+        let runs: Vec<Option<String>> = committed
+            .iter()
+            .map(|committed| committed.action.authorship.invocation.clone())
+            .collect();
+        assert_eq!(runs[0], runs[1], "both calls ran in the one action");
+        let run = runs[0].clone().expect("a run names its invocation");
+
+        let before = doc.get_heads();
+        for committed in &committed {
+            apply(&host, &mut doc, &committed.action);
+        }
+        let change = DocumentMutation::Incremental(doc.save_after(&before));
+        let commit = collab_types::WorkspaceCommit::of_mutation(
+            "workspace",
+            APP,
+            "tally",
+            &collab_types::CommitAuthor {
+                principal: Some("ada".to_owned()),
+                device: [1; 32],
+            },
+            &change,
+        )
+        .unwrap()
+        .expect("the calls are committed as one action");
+        assert_eq!(commit.parts.len(), 1, "one record, one part");
+        assert_eq!(commit.parts[0].changes.len(), 2, "both calls are in it");
+        assert_eq!(
+            commit.invocation,
+            Some(invocation_id(&run).0),
+            "the commit names the run the changes ran in"
+        );
     }
-    let change = DocumentMutation::Incremental(doc.save_after(&before));
-    let commit = collab_types::WorkspaceCommit::of_mutation(
-        "workspace",
-        APP,
-        "tally",
-        &collab_types::CommitAuthor {
-            principal: Some("ada".to_owned()),
-            device: [1; 32],
-        },
-        &change,
-    )
-    .unwrap()
-    .expect("the calls are committed as one action");
-    assert_eq!(commit.parts.len(), 1, "one record, one part");
-    assert_eq!(commit.parts[0].changes.len(), 2, "both calls are in it");
-    assert_eq!(
-        commit.invocation,
-        Some(invocation_id(&run).0),
-        "the commit names the run the changes ran in"
-    );
-}
 
-#[test]
-fn a_run_that_fails_after_its_calls_leaves_nothing() {
-    let (host, mut doc, tally, meta) = workspace();
-    let before = doc.get_heads();
-    assert!(!run(&host, &meta, "boom", &tally), "the action failed");
-    assert!(
-        host.take_committed().is_empty(),
-        "nothing of a run that failed anywhere is queued to commit"
-    );
-    assert_eq!(
-        doc.get_heads(),
-        before,
-        "and nothing of it is in the record"
-    );
-    assert_eq!(value(&host, &tally, &meta), 0);
+    phase a_run_that_fails_after_its_calls_leaves_nothing;
+    {
+        let (host, mut doc, tally, meta) = workspace();
+        let before = doc.get_heads();
+        assert!(!run(&host, &meta, "boom", &tally), "the action failed");
+        assert!(
+            host.take_committed().is_empty(),
+            "nothing of a run that failed anywhere is queued to commit"
+        );
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "and nothing of it is in the record"
+        );
+        assert_eq!(value(&host, &tally, &meta), 0);
+    }
 }

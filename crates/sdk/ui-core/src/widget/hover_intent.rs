@@ -304,226 +304,230 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_hull_covers_the_cone_toward_the_target_and_nothing_behind_it() {
-        let target = Rect::new(100.0, 0.0, 120.0, 20.0);
-        let apex = Point::new(0.0, 10.0);
-        assert!(in_aim_hull(Point::new(50.0, 10.0), apex, target));
-        assert!(in_aim_hull(Point::new(50.0, 6.0), apex, target));
-        assert!(in_aim_hull(Point::new(110.0, 5.0), apex, target));
-        assert!(
-            !in_aim_hull(Point::new(50.0, 30.0), apex, target),
-            "off the cone"
-        );
-        assert!(
-            !in_aim_hull(Point::new(-5.0, 10.0), apex, target),
-            "behind the apex"
-        );
-        assert!(
-            !in_aim_hull(Point::new(130.0, 10.0), apex, target),
-            "past the target"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_item_opens_on_a_dwell_and_never_on_the_way_to_a_control;
 
-    #[test]
-    fn an_item_opens_after_the_dwell_from_entry_however_the_pointer_moves_in_it() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        h.on_motion(&sample(Point::new(30.0, 10.0), Some(0), None, &[]), t0);
-        assert_eq!(h.open(), None);
-        assert_eq!(h.deadline(t0), Some(t0 + DWELL));
-        for step in 1..10_u32 {
-            let x = 10.0 + f64::from(step % 3) * 8.0;
-            let at = ms(t0, u64::from(step) * 10);
-            h.on_motion(&sample(Point::new(x, 10.0), Some(0), None, &[]), at);
-        }
-        h.settle(t0 + DWELL);
-        assert_eq!(h.open(), Some(0));
-        assert_eq!(
-            h.deadline(t0 + DWELL + SETTLE),
-            None,
-            "nothing left to wake for"
-        );
-    }
-
-    #[test]
-    fn a_sweep_across_items_opens_none_of_them() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        for step in 0..8_u64 {
-            let x = step as f64 * 30.0;
-            let under = [item(0), item(1)]
-                .into_iter()
-                .find(|i| x >= i.edge && x < i.edge + 100.0)
-                .map(|i| i.idx);
-            h.on_motion(
-                &sample(Point::new(x, 10.0), under, None, &[]),
-                ms(t0, step * 25),
-            );
-            assert_eq!(h.open(), None, "opened mid-sweep at x {x}");
-        }
-        h.on_motion(
-            &sample(Point::new(400.0, 200.0), None, None, &[]),
-            ms(t0, 300),
-        );
-        h.settle(ms(t0, 2000));
-        assert_eq!(h.open(), None);
-    }
-
-    #[test]
-    fn settling_on_a_control_never_opens_and_its_body_does() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        h.on_motion(
-            &sample(Point::new(85.0, 10.0), Some(0), None, &[CLOSE_0]),
-            t0,
-        );
-        h.settle(ms(t0, 10_000));
-        assert_eq!(h.open(), None, "opened under a pointer resting on the ×");
-        assert_eq!(h.deadline(ms(t0, 10_000)), None, "nothing to wake for");
-
-        let mut h = HoverIntent::default();
-        h.on_motion(
-            &sample(Point::new(60.0, 10.0), Some(0), None, &[CLOSE_0]),
-            t0,
-        );
-        h.settle(t0 + DWELL);
-        assert_eq!(h.open(), Some(0));
-    }
-
-    #[test]
-    fn crossing_the_close_control_in_transit_still_opens() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        // Leftward at 2 px/ms from item 1, through item 0's ×, onto its body.
-        let mut entered = None;
-        for (k, x) in [124.0, 108.0, 92.0, 76.0, 60.0, 44.0, 28.0]
-            .into_iter()
-            .enumerate()
+        phase the_hull_covers_the_cone_toward_the_target_and_nothing_behind_it;
         {
-            let at = ms(t0, u64::try_from(k).unwrap() * 8);
-            let under = if x < 100.0 {
-                Some(0)
-            } else if x >= 110.0 {
-                Some(1)
-            } else {
-                None
-            };
-            if under == Some(0) && entered.is_none() {
-                entered = Some(at);
-            }
-            let p = Point::new(x, 10.0);
-            h.on_motion(&sample(p, under, None, &[CLOSE_0]), at);
-            if CLOSE_0.contains(p) {
-                assert!(!h.settled(at), "crossing the × at speed is not hovering it");
-            }
+            let target = Rect::new(100.0, 0.0, 120.0, 20.0);
+            let apex = Point::new(0.0, 10.0);
+            assert!(in_aim_hull(Point::new(50.0, 10.0), apex, target));
+            assert!(in_aim_hull(Point::new(50.0, 6.0), apex, target));
+            assert!(in_aim_hull(Point::new(110.0, 5.0), apex, target));
+            assert!(
+                !in_aim_hull(Point::new(50.0, 30.0), apex, target),
+                "off the cone"
+            );
+            assert!(
+                !in_aim_hull(Point::new(-5.0, 10.0), apex, target),
+                "behind the apex"
+            );
+            assert!(
+                !in_aim_hull(Point::new(130.0, 10.0), apex, target),
+                "past the target"
+            );
         }
-        let entered = entered.unwrap();
-        h.settle(entered + DWELL);
-        assert_eq!(h.open(), Some(0), "the dwell counts from entry, × included");
-    }
 
-    #[test]
-    fn a_dwell_that_ends_inside_a_control_waits_for_the_pointer_to_leave() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        // Downward through the × at 0.1 px/ms, a sample every 10 ms.
-        let mut t = 0;
-        for y in 0..=19_u32 {
-            let p = Point::new(85.0, f64::from(y) * 1.0 + 0.5);
-            h.on_motion(&sample(p, Some(0), None, &[CLOSE_0]), ms(t0, t));
-            assert_eq!(h.open(), None, "opened with the pointer on the × at {t} ms");
-            t += 10;
+        phase an_item_opens_after_the_dwell_from_entry_however_the_pointer_moves_in_it;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            h.on_motion(&sample(Point::new(30.0, 10.0), Some(0), None, &[]), t0);
+            assert_eq!(h.open(), None);
+            assert_eq!(h.deadline(t0), Some(t0 + DWELL));
+            for step in 1..10_u32 {
+                let x = 10.0 + f64::from(step % 3) * 8.0;
+                let at = ms(t0, u64::from(step) * 10);
+                h.on_motion(&sample(Point::new(x, 10.0), Some(0), None, &[]), at);
+            }
+            h.settle(t0 + DWELL);
+            assert_eq!(h.open(), Some(0));
+            assert_eq!(
+                h.deadline(t0 + DWELL + SETTLE),
+                None,
+                "nothing left to wake for"
+            );
         }
-        h.on_motion(
-            &sample(Point::new(85.0, 21.0), Some(0), None, &[]),
-            ms(t0, t),
-        );
-        assert_eq!(h.open(), Some(0), "opens the moment the pointer is off it");
-    }
 
-    #[test]
-    fn decelerating_into_a_control_is_aim() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        let path = [(40.0, 0), (64.0, 8), (78.0, 16), (84.0, 24)];
-        for (x, t) in path {
+        phase a_sweep_across_items_opens_none_of_them;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            for step in 0..8_u64 {
+                let x = step as f64 * 30.0;
+                let under = [item(0), item(1)]
+                    .into_iter()
+                    .find(|i| x >= i.edge && x < i.edge + 100.0)
+                    .map(|i| i.idx);
+                h.on_motion(
+                    &sample(Point::new(x, 10.0), under, None, &[]),
+                    ms(t0, step * 25),
+                );
+                assert_eq!(h.open(), None, "opened mid-sweep at x {x}");
+            }
             h.on_motion(
-                &sample(Point::new(x, 10.0), Some(0), None, &[CLOSE_0]),
+                &sample(Point::new(400.0, 200.0), None, None, &[]),
+                ms(t0, 300),
+            );
+            h.settle(ms(t0, 2000));
+            assert_eq!(h.open(), None);
+        }
+
+        phase settling_on_a_control_never_opens_and_its_body_does;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            h.on_motion(
+                &sample(Point::new(85.0, 10.0), Some(0), None, &[CLOSE_0]),
+                t0,
+            );
+            h.settle(ms(t0, 10_000));
+            assert_eq!(h.open(), None, "opened under a pointer resting on the ×");
+            assert_eq!(h.deadline(ms(t0, 10_000)), None, "nothing to wake for");
+
+            let mut h = HoverIntent::default();
+            h.on_motion(
+                &sample(Point::new(60.0, 10.0), Some(0), None, &[CLOSE_0]),
+                t0,
+            );
+            h.settle(t0 + DWELL);
+            assert_eq!(h.open(), Some(0));
+        }
+
+        phase crossing_the_close_control_in_transit_still_opens;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            // Leftward at 2 px/ms from item 1, through item 0's ×, onto its body.
+            let mut entered = None;
+            for (k, x) in [124.0, 108.0, 92.0, 76.0, 60.0, 44.0, 28.0]
+                .into_iter()
+                .enumerate()
+            {
+                let at = ms(t0, u64::try_from(k).unwrap() * 8);
+                let under = if x < 100.0 {
+                    Some(0)
+                } else if x >= 110.0 {
+                    Some(1)
+                } else {
+                    None
+                };
+                if under == Some(0) && entered.is_none() {
+                    entered = Some(at);
+                }
+                let p = Point::new(x, 10.0);
+                h.on_motion(&sample(p, under, None, &[CLOSE_0]), at);
+                if CLOSE_0.contains(p) {
+                    assert!(!h.settled(at), "crossing the × at speed is not hovering it");
+                }
+            }
+            let entered = entered.unwrap();
+            h.settle(entered + DWELL);
+            assert_eq!(h.open(), Some(0), "the dwell counts from entry, × included");
+        }
+
+        phase a_dwell_that_ends_inside_a_control_waits_for_the_pointer_to_leave;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            // Downward through the × at 0.1 px/ms, a sample every 10 ms.
+            let mut t = 0;
+            for y in 0..=19_u32 {
+                let p = Point::new(85.0, f64::from(y) * 1.0 + 0.5);
+                h.on_motion(&sample(p, Some(0), None, &[CLOSE_0]), ms(t0, t));
+                assert_eq!(h.open(), None, "opened with the pointer on the × at {t} ms");
+                t += 10;
+            }
+            h.on_motion(
+                &sample(Point::new(85.0, 21.0), Some(0), None, &[]),
                 ms(t0, t),
             );
+            assert_eq!(h.open(), Some(0), "opens the moment the pointer is off it");
         }
-        assert!(
-            h.settled(ms(t0, 24)),
-            "3 px/ms, then 1.75, then 0.75: stopping"
-        );
-        // A pointer at a steady 3 px/ms through the same × is passing.
-        let mut h = HoverIntent::default();
-        for (k, x) in [40.0, 64.0, 88.0].into_iter().enumerate() {
-            let at = ms(t0, u64::try_from(k).unwrap() * 8);
-            h.on_motion(&sample(Point::new(x, 10.0), Some(0), None, &[CLOSE_0]), at);
-        }
-        assert!(!h.settled(ms(t0, 16)));
-        assert!(h.settled(ms(t0, 16) + SETTLE), "until it goes quiet");
-    }
 
-    #[test]
-    fn heading_for_the_close_control_across_the_body_does_not_open() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        // A slow approach: 1 px every 8 ms, from the leading edge to the ×.
-        let mut t = 0;
-        for x in 5..=85_u32 {
-            let p = Point::new(f64::from(x), 10.0);
-            h.on_motion(&sample(p, Some(0), None, &[CLOSE_0]), ms(t0, t));
-            assert_eq!(h.open(), None, "opened on the way to the × at x {x}");
-            t += 8;
+        phase decelerating_into_a_control_is_aim;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            let path = [(40.0, 0), (64.0, 8), (78.0, 16), (84.0, 24)];
+            for (x, t) in path {
+                h.on_motion(
+                    &sample(Point::new(x, 10.0), Some(0), None, &[CLOSE_0]),
+                    ms(t0, t),
+                );
+            }
+            assert!(
+                h.settled(ms(t0, 24)),
+                "3 px/ms, then 1.75, then 0.75: stopping"
+            );
+            // A pointer at a steady 3 px/ms through the same × is passing.
+            let mut h = HoverIntent::default();
+            for (k, x) in [40.0, 64.0, 88.0].into_iter().enumerate() {
+                let at = ms(t0, u64::try_from(k).unwrap() * 8);
+                h.on_motion(&sample(Point::new(x, 10.0), Some(0), None, &[CLOSE_0]), at);
+            }
+            assert!(!h.settled(ms(t0, 16)));
+            assert!(h.settled(ms(t0, 16) + SETTLE), "until it goes quiet");
         }
-        h.settle(ms(t0, t + 10_000));
-        assert_eq!(h.open(), None);
-    }
 
-    #[test]
-    fn stopping_on_the_body_after_heading_for_a_control_opens_once_the_hold_lapses() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        for (k, x) in [5.0, 15.0, 25.0, 35.0].into_iter().enumerate() {
-            let at = ms(t0, u64::try_from(k).unwrap() * 8);
-            h.on_motion(&sample(Point::new(x, 10.0), Some(0), None, &[CLOSE_0]), at);
+        phase heading_for_the_close_control_across_the_body_does_not_open;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            // A slow approach: 1 px every 8 ms, from the leading edge to the ×.
+            let mut t = 0;
+            for x in 5..=85_u32 {
+                let p = Point::new(f64::from(x), 10.0);
+                h.on_motion(&sample(p, Some(0), None, &[CLOSE_0]), ms(t0, t));
+                assert_eq!(h.open(), None, "opened on the way to the × at x {x}");
+                t += 8;
+            }
+            h.settle(ms(t0, t + 10_000));
+            assert_eq!(h.open(), None);
         }
-        let last = ms(t0, 24);
-        h.settle(last + DWELL);
-        assert_eq!(
-            h.open(),
-            None,
-            "a dwell is not enough after heading for the ×"
-        );
-        h.settle(last + AIM_HOLD);
-        assert_eq!(h.open(), Some(0));
-    }
 
-    #[test]
-    fn an_open_item_holds_while_the_pointer_rests_on_a_control_its_collapse_would_move() {
-        let t0 = crate::time::now();
-        let mut h = HoverIntent::default();
-        h.force_open(Some(0));
-        let close_1 = Rect::new(180.0, 0.0, 210.0, 20.0);
-        let controls = [close_1];
-        for (k, x) in [95.0, 105.0, 150.0, 195.0].into_iter().enumerate() {
-            let p = Point::new(x, 10.0);
-            let under = if x < 100.0 {
-                Some(0)
-            } else if x >= 110.0 {
-                Some(1)
-            } else {
-                None
-            };
-            let at = ms(t0, u64::try_from(k).unwrap() * 8);
-            h.on_motion(&sample(p, under, Some(0), &controls), at);
-            assert_eq!(h.open(), Some(0), "collapsed under the pointer at x {x}");
+        phase stopping_on_the_body_after_heading_for_a_control_opens_once_the_hold_lapses;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            for (k, x) in [5.0, 15.0, 25.0, 35.0].into_iter().enumerate() {
+                let at = ms(t0, u64::try_from(k).unwrap() * 8);
+                h.on_motion(&sample(Point::new(x, 10.0), Some(0), None, &[CLOSE_0]), at);
+            }
+            let last = ms(t0, 24);
+            h.settle(last + DWELL);
+            assert_eq!(
+                h.open(),
+                None,
+                "a dwell is not enough after heading for the ×"
+            );
+            h.settle(last + AIM_HOLD);
+            assert_eq!(h.open(), Some(0));
         }
-        h.settle(ms(t0, 60_000));
-        assert_eq!(h.open(), Some(0), "the × under the pointer must not move");
+
+        phase an_open_item_holds_while_the_pointer_rests_on_a_control_its_collapse_would_move;
+        {
+            let t0 = crate::time::now();
+            let mut h = HoverIntent::default();
+            h.force_open(Some(0));
+            let close_1 = Rect::new(180.0, 0.0, 210.0, 20.0);
+            let controls = [close_1];
+            for (k, x) in [95.0, 105.0, 150.0, 195.0].into_iter().enumerate() {
+                let p = Point::new(x, 10.0);
+                let under = if x < 100.0 {
+                    Some(0)
+                } else if x >= 110.0 {
+                    Some(1)
+                } else {
+                    None
+                };
+                let at = ms(t0, u64::try_from(k).unwrap() * 8);
+                h.on_motion(&sample(p, under, Some(0), &controls), at);
+                assert_eq!(h.open(), Some(0), "collapsed under the pointer at x {x}");
+            }
+            h.settle(ms(t0, 60_000));
+            assert_eq!(h.open(), Some(0), "the × under the pointer must not move");
+        }
     }
 
     const CORNER: Rect = Rect::new(1340.0, 820.0, 1600.0, 900.0);
@@ -540,122 +544,126 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn sweeping_along_an_edge_past_a_widget_is_transit_not_aim() {
-        // Down the right edge at a steady 2 px/ms, straight through the
-        // right widget's zone and on toward the bottom.
-        let path: Vec<(f64, f64)> = (0..40)
-            .map(|k| (1590.0, 100.0 + 16.0 * f64::from(k)))
-            .collect();
-        let mut aim = EdgeAim::default();
-        let aimed = feed(&mut aim, crate::time::now(), &path[..30]);
-        assert!(
-            aimed.iter().all(Option::is_none),
-            "passing over the right widget must not count as aim: {aimed:?}"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_pointer_aims_at_an_edge_widget_only_when_it_slows_toward_it;
 
-    #[test]
-    fn crossing_the_screen_past_a_corner_zone_is_transit() {
-        let path: Vec<(f64, f64)> = (0..12)
-            .map(|k| (1500.0 - 30.0 * f64::from(k), 860.0 - 10.0 * f64::from(k)))
-            .collect();
-        let mut aim = EdgeAim::default();
-        assert!(
-            feed(&mut aim, crate::time::now(), &path)
-                .iter()
-                .all(Option::is_none)
-        );
-    }
-
-    #[test]
-    fn slowing_toward_a_corner_widget_is_aim_before_the_pointer_arrives() {
-        let mut aim = EdgeAim::default();
-        let path = [(1000.0, 560.0), (1160.0, 656.0), (1280.0, 728.0)];
-        let aimed = feed(&mut aim, crate::time::now(), &path);
-        assert_eq!(aimed.last(), Some(&Some(0)), "{aimed:?}");
-        assert!(!CORNER.contains(Point::new(1280.0, 728.0)));
-    }
-
-    #[test]
-    fn a_throw_into_the_corner_aims_once_it_stops_at_the_edge() {
-        let mut aim = EdgeAim::default();
-        // Steady and fast (no deceleration to read), then pinned at the
-        // display's corner where the pointer cannot go further.
-        let path = [
-            (1300.0, 700.0),
-            (1400.0, 760.0),
-            (1500.0, 820.0),
-            (1599.0, 899.0),
-            (1599.0, 899.0),
-        ];
-        let aimed = feed(&mut aim, crate::time::now(), &path);
-        assert_eq!(aimed[..3], [None, None, None], "{aimed:?}");
-        assert!(aimed[3..].contains(&Some(0)), "{aimed:?}");
-    }
-
-    #[test]
-    fn a_pointer_resting_near_an_edge_aims_at_nothing() {
-        let mut aim = EdgeAim::default();
-        let t0 = crate::time::now();
-        for k in 0..6 {
-            assert_eq!(
-                aim.on_motion(Point::new(1560.0, 450.0), ms(t0, k * 8), &[RIGHT]),
-                None
+        phase sweeping_along_an_edge_past_a_widget_is_transit_not_aim;
+        {
+            // Down the right edge at a steady 2 px/ms, straight through the
+            // right widget's zone and on toward the bottom.
+            let path: Vec<(f64, f64)> = (0..40)
+                .map(|k| (1590.0, 100.0 + 16.0 * f64::from(k)))
+                .collect();
+            let mut aim = EdgeAim::default();
+            let aimed = feed(&mut aim, crate::time::now(), &path[..30]);
+            assert!(
+                aimed.iter().all(Option::is_none),
+                "passing over the right widget must not count as aim: {aimed:?}"
             );
         }
-        assert!(aim.settled(ms(t0, 100)));
-        assert_eq!(
-            aim.rested_in(ms(t0, 100), &[RIGHT]),
-            None,
-            "it never arrived"
-        );
-    }
 
-    #[test]
-    fn slowing_down_an_edge_toward_its_corner_is_not_yet_aim() {
-        let mut aim = EdgeAim::default();
-        let path = [(1590.0, 400.0), (1590.0, 560.0), (1590.0, 700.0)];
-        assert!(
-            feed(&mut aim, crate::time::now(), &path)
-                .iter()
-                .all(Option::is_none)
-        );
-    }
+        phase crossing_the_screen_past_a_corner_zone_is_transit;
+        {
+            let path: Vec<(f64, f64)> = (0..12)
+                .map(|k| (1500.0 - 30.0 * f64::from(k), 860.0 - 10.0 * f64::from(k)))
+                .collect();
+            let mut aim = EdgeAim::default();
+            assert!(
+                feed(&mut aim, crate::time::now(), &path)
+                    .iter()
+                    .all(Option::is_none)
+            );
+        }
 
-    #[test]
-    fn a_pointer_stopped_by_the_corner_has_rested_there() {
-        let t0 = crate::time::now();
-        let mut aim = EdgeAim::default();
-        let path = [(1300.0, 700.0), (1450.0, 790.0), (1599.0, 899.0)];
-        assert!(
-            feed(&mut aim, t0, &path).iter().all(Option::is_none),
-            "still fast"
-        );
-        assert_eq!(
-            aim.rested_in(ms(t0, 20), &[CORNER, RIGHT]),
-            None,
-            "not still yet"
-        );
-        assert_eq!(
-            aim.rested_in(ms(t0, 16) + SETTLE, &[CORNER, RIGHT]),
-            Some(0)
-        );
-    }
+        phase slowing_toward_a_corner_widget_is_aim_before_the_pointer_arrives;
+        {
+            let mut aim = EdgeAim::default();
+            let path = [(1000.0, 560.0), (1160.0, 656.0), (1280.0, 728.0)];
+            let aimed = feed(&mut aim, crate::time::now(), &path);
+            assert_eq!(aimed.last(), Some(&Some(0)), "{aimed:?}");
+            assert!(!CORNER.contains(Point::new(1280.0, 728.0)));
+        }
 
-    #[test]
-    fn heading_away_from_a_widget_while_slowing_is_not_aim() {
-        let mut aim = EdgeAim::default();
-        let path = [
-            (1500.0, 860.0),
-            (1300.0, 740.0),
-            (1160.0, 656.0),
-            (1070.0, 602.0),
-        ];
-        assert!(
-            feed(&mut aim, crate::time::now(), &path)
-                .iter()
-                .all(Option::is_none)
-        );
+        phase a_throw_into_the_corner_aims_once_it_stops_at_the_edge;
+        {
+            let mut aim = EdgeAim::default();
+            // Steady and fast (no deceleration to read), then pinned at the
+            // display's corner where the pointer cannot go further.
+            let path = [
+                (1300.0, 700.0),
+                (1400.0, 760.0),
+                (1500.0, 820.0),
+                (1599.0, 899.0),
+                (1599.0, 899.0),
+            ];
+            let aimed = feed(&mut aim, crate::time::now(), &path);
+            assert_eq!(aimed[..3], [None, None, None], "{aimed:?}");
+            assert!(aimed[3..].contains(&Some(0)), "{aimed:?}");
+        }
+
+        phase a_pointer_resting_near_an_edge_aims_at_nothing;
+        {
+            let mut aim = EdgeAim::default();
+            let t0 = crate::time::now();
+            for k in 0..6 {
+                assert_eq!(
+                    aim.on_motion(Point::new(1560.0, 450.0), ms(t0, k * 8), &[RIGHT]),
+                    None
+                );
+            }
+            assert!(aim.settled(ms(t0, 100)));
+            assert_eq!(
+                aim.rested_in(ms(t0, 100), &[RIGHT]),
+                None,
+                "it never arrived"
+            );
+        }
+
+        phase slowing_down_an_edge_toward_its_corner_is_not_yet_aim;
+        {
+            let mut aim = EdgeAim::default();
+            let path = [(1590.0, 400.0), (1590.0, 560.0), (1590.0, 700.0)];
+            assert!(
+                feed(&mut aim, crate::time::now(), &path)
+                    .iter()
+                    .all(Option::is_none)
+            );
+        }
+
+        phase a_pointer_stopped_by_the_corner_has_rested_there;
+        {
+            let t0 = crate::time::now();
+            let mut aim = EdgeAim::default();
+            let path = [(1300.0, 700.0), (1450.0, 790.0), (1599.0, 899.0)];
+            assert!(
+                feed(&mut aim, t0, &path).iter().all(Option::is_none),
+                "still fast"
+            );
+            assert_eq!(
+                aim.rested_in(ms(t0, 20), &[CORNER, RIGHT]),
+                None,
+                "not still yet"
+            );
+            assert_eq!(
+                aim.rested_in(ms(t0, 16) + SETTLE, &[CORNER, RIGHT]),
+                Some(0)
+            );
+        }
+
+        phase heading_away_from_a_widget_while_slowing_is_not_aim;
+        {
+            let mut aim = EdgeAim::default();
+            let path = [
+                (1500.0, 860.0),
+                (1300.0, 740.0),
+                (1160.0, 656.0),
+                (1070.0, 602.0),
+            ];
+            assert!(
+                feed(&mut aim, crate::time::now(), &path)
+                    .iter()
+                    .all(Option::is_none)
+            );
+        }
     }
 }

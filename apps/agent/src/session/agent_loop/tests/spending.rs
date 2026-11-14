@@ -31,72 +31,76 @@ fn charges(sent: &[CollabRequest]) -> Vec<u64> {
         .collect()
 }
 
-#[test]
-fn a_run_stops_at_its_keepers_limit_for_the_day_and_says_so() {
-    let mut f = fixture(
-        "write a paragraph about the ocean",
-        World::default(),
-        vec![
-            priced(
-                turn(
-                    &[invoke(
-                        "append-paragraph",
-                        &serde_json::json!({"text": "The ocean holds most of its life."}),
-                    )],
-                    8,
-                ),
-                3_000_000,
-            ),
-            turn(&[finish("Done.", true)], 8),
-        ],
-    );
-    f.run.spend = Some(runtime_collab::TaskRunSpend {
-        day: ui::clock::today().to_string(),
-        limit_micros: Some(5_000_000),
-        spent_micros: 4_000_000,
-    });
-    f.session.run_task(&f.run).unwrap();
+tilo_test_env::scenario! {
+    fn a_run_spends_within_its_keepers_limit_for_the_day;
 
-    assert_eq!(
-        f.script.bodies.lock().unwrap().len(),
-        1,
-        "the day's limit stops the next call before it is made"
-    );
-    let sent = f.sent.borrow();
-    assert_eq!(charges(&sent), vec![3_000_000], "the run's total, once");
-    assert_eq!(
-        terminal(&sent),
-        runtime_collab::TaskRunUpdate::Failed {
-            message: "agent-1 has used today's $5; ask its keeper to raise it".into()
-        }
-    );
-}
-
-#[test]
-fn a_run_without_a_limit_spends_unmetered() {
-    let mut f = fixture(
-        "write a paragraph about the ocean",
-        World::default(),
-        vec![
-            priced(
-                turn(
-                    &[invoke(
-                        "append-paragraph",
-                        &serde_json::json!({"text": "The ocean holds most of its life."}),
-                    )],
-                    8,
+    phase a_run_stops_at_its_keepers_limit_for_the_day_and_says_so;
+    {
+        let mut f = fixture(
+            "write a paragraph about the ocean",
+            World::default(),
+            vec![
+                priced(
+                    turn(
+                        &[invoke(
+                            "append-paragraph",
+                            &serde_json::json!({"text": "The ocean holds most of its life."}),
+                        )],
+                        8,
+                    ),
+                    3_000_000,
                 ),
-                3_000_000,
-            ),
-            turn(&[finish("Done.", true)], 8),
-        ],
-    );
-    f.run.spend = None;
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(
-        f.script.bodies.lock().unwrap().len(),
-        2,
-        "no limit, no stop"
-    );
-    assert!(charges(&f.sent.borrow()).is_empty(), "nothing to count");
+                turn(&[finish("Done.", true)], 8),
+            ],
+        );
+        f.run.spend = Some(runtime_collab::TaskRunSpend {
+            day: ui::clock::today().to_string(),
+            limit_micros: Some(5_000_000),
+            spent_micros: 4_000_000,
+        });
+        f.session.run_task(&f.run).unwrap();
+
+        assert_eq!(
+            f.script.bodies.lock().unwrap().len(),
+            1,
+            "the day's limit stops the next call before it is made"
+        );
+        let sent = f.sent.borrow();
+        assert_eq!(charges(&sent), vec![3_000_000], "the run's total, once");
+        assert_eq!(
+            terminal(&sent),
+            runtime_collab::TaskRunUpdate::Failed {
+                message: "agent-1 has used today's $5; ask its keeper to raise it".into()
+            }
+        );
+    }
+
+    phase a_run_without_a_limit_spends_unmetered;
+    {
+        let mut f = fixture(
+            "write a paragraph about the ocean",
+            World::default(),
+            vec![
+                priced(
+                    turn(
+                        &[invoke(
+                            "append-paragraph",
+                            &serde_json::json!({"text": "The ocean holds most of its life."}),
+                        )],
+                        8,
+                    ),
+                    3_000_000,
+                ),
+                turn(&[finish("Done.", true)], 8),
+            ],
+        );
+        f.run.spend = None;
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(
+            f.script.bodies.lock().unwrap().len(),
+            2,
+            "no limit, no stop"
+        );
+        assert!(charges(&f.sent.borrow()).is_empty(), "nothing to count");
+    }
 }

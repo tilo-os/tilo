@@ -47,7 +47,8 @@ pub(crate) fn still_allowed(
 )]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Scope, Subject};
+    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_action_policy::Grantee;
     use tilo_desktop_model::Workspace;
 
     fn desk(grant: CapOverride) -> DesktopTree {
@@ -61,10 +62,11 @@ mod tests {
 
     fn camera(app: &str) -> CapOverride {
         CapOverride::grant(
-            Subject::app(app),
+            Grantee::person("ada"),
             Scope::Device("camera".into()),
             Access::Read,
         )
+        .through(app)
     }
 
     #[test]

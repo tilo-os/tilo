@@ -40,15 +40,11 @@ pub struct IdentityProfile {
 }
 
 impl IdentityProfile {
-    /// Capability-model person id for this identity.
+    /// The person this identity is, as the workspace's governance names them: their key in
+    /// lowercase hex.
     #[must_use]
-    pub fn principal_id(&self) -> String {
-        match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(self.user_public_key),
-        ) {
-            collab_types::caps::Principal::Person(id) => id,
-            _ => self.id.clone(),
-        }
+    pub fn person_id(&self) -> String {
+        hex::encode(self.user_public_key)
     }
 }
 

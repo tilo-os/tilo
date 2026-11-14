@@ -154,9 +154,9 @@ fn a_lazy_card_for_someone_else_opens_with_what_is_said_of_them_now() {
         identity: "ada-root".into(),
         other: Some(OtherPerson {
             id: "ada-device".into(),
-            status: Some(crate::collaborators::RosterStatus {
+            status: Some(crate::people::RosterStatus {
                 text: text.into(),
-                source: crate::collaborators::LineSource::Observed,
+                source: crate::people::LineSource::Observed,
             }),
             ..OtherPerson::default()
         }),
@@ -550,7 +550,7 @@ fn someone_elses_card_stays_as_it_was_when_your_linked_accounts_arrive() {
     ui::i18n::I18nManager::init("en-US");
     let mut card = ProfileCard::new();
     card.toggle(
-        &ada(true, crate::collaborators::LineSource::Generated),
+        &ada(true, crate::people::LineSource::Generated),
         Rect::new(600.0, 300.0, 602.0, 302.0),
         Rect::new(0.0, 0.0, 1280.0, 720.0),
     );
@@ -684,14 +684,14 @@ fn toggling_again_closes() {
 
 const ADA_KEY: &str = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
 
-fn ada(can_message: bool, status: crate::collaborators::LineSource) -> ProfileModel {
+fn ada(can_message: bool, status: crate::people::LineSource) -> ProfileModel {
     ProfileModel {
         name: "Ada".into(),
         identity: "ada-device".into(),
         key: Some(ADA_KEY.into()),
         other: Some(OtherPerson {
             id: "ada-device".into(),
-            status: Some(crate::collaborators::RosterStatus {
+            status: Some(crate::people::RosterStatus {
                 text: "Reviewing the checklist".into(),
                 source: status,
             }),
@@ -835,9 +835,9 @@ fn claude(now: &str) -> ProfileModel {
         identity: "claude-run".into(),
         other: Some(OtherPerson {
             id: "claude-run".into(),
-            status: Some(crate::collaborators::RosterStatus {
+            status: Some(crate::people::RosterStatus {
                 text: now.into(),
-                source: crate::collaborators::LineSource::Observed,
+                source: crate::people::LineSource::Observed,
             }),
             place: None,
             presence: None,
@@ -903,7 +903,7 @@ fn your_own_card_is_never_built_again_from_what_is_said_of_someone_else() {
 
 #[test]
 fn someone_elses_card_says_who_they_are_and_offers_writing_and_following() {
-    let mut frame = framed_model(&ada(true, crate::collaborators::LineSource::Generated));
+    let mut frame = framed_model(&ada(true, crate::people::LineSource::Generated));
     let said = says(&mut frame);
     assert!(said.contains("Ada’s profile"), "{said}");
     assert!(said.contains("a6d40c19…a7c2"), "the id, short: {said}");
@@ -916,7 +916,7 @@ fn someone_elses_card_says_who_they_are_and_offers_writing_and_following() {
         Some(ProfileChoice::Message(ADA_KEY.into()))
     );
 
-    let mut frame = framed_model(&ada(false, crate::collaborators::LineSource::Written));
+    let mut frame = framed_model(&ada(false, crate::people::LineSource::Written));
     let said = says(&mut frame);
     assert!(said.contains("In their own words"), "{said}");
     assert!(
@@ -957,7 +957,7 @@ fn your_own_card_shows_your_id_and_your_pictures_buttons() {
 
 #[test]
 fn someone_elses_card_names_their_linked_accounts() {
-    let mut model = ada(true, crate::collaborators::LineSource::Written);
+    let mut model = ada(true, crate::people::LineSource::Written);
     let mut frame = framed_model(&model);
     assert!(!says(&mut frame).contains("Linked to"));
     if let Some(other) = &mut model.other {

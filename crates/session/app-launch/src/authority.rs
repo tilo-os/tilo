@@ -226,154 +226,158 @@ mod tests {
             == Answer::Allow
     }
 
-    #[test]
-    fn a_launch_hands_its_app_the_owners_authority_in_a_workspace_nobody_else_joined() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let authority = Authority::new();
-        let room = workspace(
-            directory.path(),
-            WorkspacePolicy::new("workspace-7", OWNER),
-            OWNER,
-        );
-        let file = authority
-            .publish(&room, APP)
-            .expect("published")
-            .expect("a projection to bind");
-        assert_eq!(
-            file.file_name().and_then(|name| name.to_str()),
-            Some("current.json")
-        );
-        assert!(
-            file.starts_with(directory.path().join("tilo").join("action-authority")),
-            "beside the grants in the session's runtime directory: {}",
-            file.display()
-        );
-        let read: AppActionAuthorityProjection = serde_json::from_slice(
-            &held::read(&file, MAX_PROJECTION_BYTES)
-                .expect("readable")
-                .expect("held"),
-        )
-        .expect("a projection");
-        assert_eq!(
-            (
-                read.room.as_str(),
-                read.app_id.as_str(),
-                read.person.as_str()
-            ),
-            ("workspace-7", APP, OWNER)
-        );
-        assert!(
-            read.policy
-                .grants
-                .iter()
-                .all(|grant| grant.node.overlaps(&read.app_node())),
-            "only the grants that can decide this app's actions reach it"
-        );
-        assert!(
-            may_add_notes(&file),
-            "the person who made the workspace may make a note in it"
-        );
-        let mode = {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::metadata(&file)
-                .expect("the file")
-                .permissions()
-                .mode()
-        };
-        assert_eq!(mode & 0o777, 0o600, "the person's authority is owner-only");
-        let parent = file.parent().expect("a directory");
-        let mode = {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::metadata(parent)
-                .expect("the directory")
-                .permissions()
-                .mode()
-        };
-        assert_eq!(mode & 0o777, 0o700, "as the launcher requires of the bind");
-    }
+    tilo_test_env::scenario! {
+        fn a_launch_binds_the_persons_authority_only_in_a_workspace_whose_policy_it_holds;
 
-    #[test]
-    fn a_member_takes_the_part_the_workspace_gives_them_and_a_viewer_is_offered_nothing() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let mut policy = WorkspacePolicy::new("workspace-7", OWNER);
-        policy.members.insert(MEMBER.into(), Role::Editor);
-        let editor = workspace(directory.path(), policy.clone(), MEMBER);
-        let authority = Authority::new();
-        let file = authority
-            .publish(&editor, APP)
-            .expect("published")
+        phase a_launch_hands_its_app_the_owners_authority_in_a_workspace_nobody_else_joined;
+        {
+            let directory = tempfile::tempdir().expect("a directory");
+            let authority = Authority::new();
+            let room = workspace(
+                directory.path(),
+                WorkspacePolicy::new("workspace-7", OWNER),
+                OWNER,
+            );
+            let file = authority
+                .publish(&room, APP)
+                .expect("published")
+                .expect("a projection to bind");
+            assert_eq!(
+                file.file_name().and_then(|name| name.to_str()),
+                Some("current.json")
+            );
+            assert!(
+                file.starts_with(directory.path().join("tilo").join("action-authority")),
+                "beside the grants in the session's runtime directory: {}",
+                file.display()
+            );
+            let read: AppActionAuthorityProjection = serde_json::from_slice(
+                &held::read(&file, MAX_PROJECTION_BYTES)
+                    .expect("readable")
+                    .expect("held"),
+            )
             .expect("a projection");
-        assert!(may_add_notes(&file), "an editor may make a note");
+            assert_eq!(
+                (
+                    read.workspace.as_str(),
+                    read.app_id.as_str(),
+                    read.person.as_str()
+                ),
+                ("workspace-7", APP, OWNER)
+            );
+            assert!(
+                read.policy
+                    .grants
+                    .iter()
+                    .all(|grant| grant.node.overlaps(&read.app_node())),
+                "only the grants that can decide this app's actions reach it"
+            );
+            assert!(
+                may_add_notes(&file),
+                "the person who made the workspace may make a note in it"
+            );
+            let mode = {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::metadata(&file)
+                    .expect("the file")
+                    .permissions()
+                    .mode()
+            };
+            assert_eq!(mode & 0o777, 0o600, "the person's authority is owner-only");
+            let parent = file.parent().expect("a directory");
+            let mode = {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::metadata(parent)
+                    .expect("the directory")
+                    .permissions()
+                    .mode()
+            };
+            assert_eq!(mode & 0o777, 0o700, "as the launcher requires of the bind");
+        }
 
-        policy.members.insert(MEMBER.into(), Role::Viewer);
-        let viewer = workspace(directory.path(), policy, MEMBER);
-        let authority = Authority::new();
-        let file = authority
-            .publish(&viewer, APP)
-            .expect("published")
-            .expect("a projection");
-        assert!(
-            !may_add_notes(&file),
-            "someone who may only look is offered no New note"
-        );
-    }
+        phase a_member_takes_the_part_the_workspace_gives_them_and_a_viewer_is_offered_nothing;
+        {
+            let directory = tempfile::tempdir().expect("a directory");
+            let mut policy = WorkspacePolicy::new("workspace-7", OWNER);
+            policy.members.insert(MEMBER.into(), Role::Editor);
+            let editor = workspace(directory.path(), policy.clone(), MEMBER);
+            let authority = Authority::new();
+            let file = authority
+                .publish(&editor, APP)
+                .expect("published")
+                .expect("a projection");
+            assert!(may_add_notes(&file), "an editor may make a note");
 
-    #[test]
-    fn a_policy_that_changed_is_published_over_and_one_that_did_not_is_kept() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let authority = Authority::new();
-        let mut policy = WorkspacePolicy::new("workspace-7", OWNER);
-        policy.members.insert(MEMBER.into(), Role::Editor);
-        let mut room = workspace(directory.path(), policy.clone(), MEMBER);
-        let file = authority
-            .publish(&room, APP)
-            .expect("published")
-            .expect("a projection");
-        assert!(may_add_notes(&file));
-        let kept = {
-            use std::os::unix::fs::MetadataExt as _;
-            std::fs::metadata(&file).expect("the file").ino()
-        };
-        // Nothing changed: the projection is not written again.
-        assert_eq!(
-            authority.publish(&room, APP).expect("published"),
-            Some(file.clone())
-        );
-        let inode = {
-            use std::os::unix::fs::MetadataExt as _;
-            std::fs::metadata(&file).expect("the file").ino()
-        };
-        assert_eq!(inode, kept, "an unchanged policy costs no write");
+            policy.members.insert(MEMBER.into(), Role::Viewer);
+            let viewer = workspace(directory.path(), policy, MEMBER);
+            let authority = Authority::new();
+            let file = authority
+                .publish(&viewer, APP)
+                .expect("published")
+                .expect("a projection");
+            assert!(
+                !may_add_notes(&file),
+                "someone who may only look is offered no New note"
+            );
+        }
 
-        // The workspace takes the member's part back: the app already running
-        // there hears the new authority.
-        policy.members.insert(MEMBER.into(), Role::Viewer);
-        room.policy = Some(policy);
-        assert_eq!(authority.workspaces(), vec!["workspace-7".to_owned()]);
-        authority.refresh(&room).expect("refreshed");
-        assert!(!may_add_notes(&file), "the app no longer may make a note");
-    }
+        phase a_policy_that_changed_is_published_over_and_one_that_did_not_is_kept;
+        {
+            let directory = tempfile::tempdir().expect("a directory");
+            let authority = Authority::new();
+            let mut policy = WorkspacePolicy::new("workspace-7", OWNER);
+            policy.members.insert(MEMBER.into(), Role::Editor);
+            let mut launched = workspace(directory.path(), policy.clone(), MEMBER);
+            let file = authority
+                .publish(&launched, APP)
+                .expect("published")
+                .expect("a projection");
+            assert!(may_add_notes(&file));
+            let kept = {
+                use std::os::unix::fs::MetadataExt as _;
+                std::fs::metadata(&file).expect("the file").ino()
+            };
+            // Nothing changed: the projection is not written again.
+            assert_eq!(
+                authority.publish(&launched, APP).expect("published"),
+                Some(file.clone())
+            );
+            let inode = {
+                use std::os::unix::fs::MetadataExt as _;
+                std::fs::metadata(&file).expect("the file").ino()
+            };
+            assert_eq!(inode, kept, "an unchanged policy costs no write");
 
-    #[test]
-    fn a_launch_outside_a_workspace_or_without_its_policy_binds_none() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let authority = Authority::new();
-        assert!(authority.is_empty());
-        let outside = Workspace::under(directory.path(), String::new());
-        assert_eq!(authority.publish(&outside, APP).expect("nothing"), None);
-        let held = Workspace::under(directory.path(), "workspace-7");
-        assert_eq!(
-            authority.publish(&held, APP).expect("nothing"),
-            None,
-            "a workspace whose policy this session does not hold gets the launcher's participation"
-        );
-        let mut foreign = held;
-        foreign.policy = Some(WorkspacePolicy::new("workspace-8", OWNER));
-        assert_eq!(
-            authority.publish(&foreign, APP).expect("nothing"),
-            None,
-            "a policy of another workspace decides nothing here"
-        );
-        assert!(authority.is_empty());
+            // The workspace takes the member's part back: the app already running
+            // there hears the new authority.
+            policy.members.insert(MEMBER.into(), Role::Viewer);
+            launched.policy = Some(policy);
+            assert_eq!(authority.workspaces(), vec!["workspace-7".to_owned()]);
+            authority.refresh(&launched).expect("refreshed");
+            assert!(!may_add_notes(&file), "the app no longer may make a note");
+        }
+
+        phase a_launch_outside_a_workspace_or_without_its_policy_binds_none;
+        {
+            let directory = tempfile::tempdir().expect("a directory");
+            let authority = Authority::new();
+            assert!(authority.is_empty());
+            let outside = Workspace::under(directory.path(), String::new());
+            assert_eq!(authority.publish(&outside, APP).expect("nothing"), None);
+            let held = Workspace::under(directory.path(), "workspace-7");
+            assert_eq!(
+                authority.publish(&held, APP).expect("nothing"),
+                None,
+                "a workspace whose policy this session does not hold gets the launcher's participation"
+            );
+            let mut foreign = held;
+            foreign.policy = Some(WorkspacePolicy::new("workspace-8", OWNER));
+            assert_eq!(
+                authority.publish(&foreign, APP).expect("nothing"),
+                None,
+                "a policy of another workspace decides nothing here"
+            );
+            assert!(authority.is_empty());
+        }
     }
 }

@@ -1109,231 +1109,239 @@ mod tests {
         schedule
     }
 
-    #[test]
-    fn a_lease_opened_while_the_reaper_sleeps_is_reaped_at_its_own_expiry() {
-        let root = tempfile::tempdir().unwrap();
-        let backend = EgressBackend::new(false, DomainState::Running);
-        // The reaper passed at 1000 and next refreshes status at 1030. A lease
-        // opened at 1001 with a 10 s lifetime must not wait for that refresh.
-        let schedule = after_clean_pass(1_000);
-        assert_eq!(STATUS_REFRESH_SECONDS, 30);
-        assert_eq!(schedule.next_pass, 1_030);
-        write_record(root.path(), "egress-windows_update-1001", 1_011);
+    tilo_test_env::scenario! {
+        fn the_reaper_detaches_expired_leases_and_knows_when_to_stop;
 
-        let scan = scan_lease_records(root.path()).unwrap();
-        assert_eq!(scan.expiries, [1_011]);
-        assert_eq!(schedule.on_wake(&scan, 1_010), Wake::Sleep);
-        assert_eq!(
-            schedule.on_wake(&scan, 1_011),
-            Wake::Pass { give_up: false }
-        );
+        phase a_lease_opened_while_the_reaper_sleeps_is_reaped_at_its_own_expiry;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let backend = EgressBackend::new(false, DomainState::Running);
+            // The reaper passed at 1000 and next refreshes status at 1030. A lease
+            // opened at 1001 with a 10 s lifetime must not wait for that refresh.
+            let schedule = after_clean_pass(1_000);
+            assert_eq!(STATUS_REFRESH_SECONDS, 30);
+            assert_eq!(schedule.next_pass, 1_030);
+            write_record(root.path(), "egress-windows_update-1001", 1_011);
 
-        let pass = reap_lease_records(&backend, &config(), root.path(), 1_011).unwrap();
-        assert!(pass.closed_any);
-        assert_eq!(backend.closed(), ["egress-windows_update-1001"]);
-        let mut schedule = schedule;
-        schedule.after_pass(&Ok(pass), 1_011);
-        assert_eq!(
-            schedule.on_wake(&scan_lease_records(root.path()).unwrap(), 1_011),
-            Wake::Idle
-        );
-    }
-
-    #[test]
-    fn a_live_lease_keeps_its_nic_and_its_record() {
-        let root = tempfile::tempdir().unwrap();
-        write_record(root.path(), "egress-windows_update-1000", 1_600);
-        let backend = EgressBackend::new(false, DomainState::Running);
-
-        let pass = reap_lease_records(&backend, &config(), root.path(), 1_599).unwrap();
-
-        assert_eq!(pass, ReapPass::default());
-        assert!(backend.closed().is_empty());
-        assert_eq!(entries(root.path()), 1);
-    }
-
-    #[test]
-    fn a_shut_off_domain_has_no_egress_nic_left_to_detach() {
-        let root = tempfile::tempdir().unwrap();
-        write_record(root.path(), "egress-windows_update-1000", 1_600);
-        // `detach-interface --live` fails for good on a domain that is not
-        // running, but its live-only NIC went with it.
-        let backend = EgressBackend::new(true, DomainState::ShutOff);
-
-        let pass = reap_lease_records(&backend, &config(), root.path(), 1_600).unwrap();
-
-        assert!(pass.closed_any);
-        assert!(pass.failed.is_empty());
-        assert_eq!(entries(root.path()), 0);
-    }
-
-    #[test]
-    fn a_detach_that_keeps_failing_backs_off_then_is_set_aside_and_the_reaper_stops() {
-        let root = tempfile::tempdir().unwrap();
-        let unretired = tempfile::tempdir().unwrap();
-        write_record(root.path(), "egress-windows_update-1000", 1_600);
-        let backend = EgressBackend::new(true, DomainState::Running);
-        let mut schedule = ReaperSchedule::default();
-        let mut now: u64 = 1_600;
-        let mut delays = Vec::new();
-        let mut passes: u32 = 0;
-
-        loop {
             let scan = scan_lease_records(root.path()).unwrap();
-            match schedule.on_wake(&scan, now) {
-                Wake::Idle => break,
-                Wake::Sleep => now = now.saturating_add(1),
-                Wake::Pass { give_up } => {
-                    passes = passes.saturating_add(1);
-                    let mut pass =
-                        reap_lease_records(&backend, &config(), root.path(), now).unwrap();
-                    assert_eq!(pass.failed.len(), 1, "the record stays until set aside");
-                    if give_up {
-                        set_aside(&pass.failed, unretired.path()).unwrap();
-                        pass.failed.clear();
+            assert_eq!(scan.expiries, [1_011]);
+            assert_eq!(schedule.on_wake(&scan, 1_010), Wake::Sleep);
+            assert_eq!(
+                schedule.on_wake(&scan, 1_011),
+                Wake::Pass { give_up: false }
+            );
+
+            let pass = reap_lease_records(&backend, &config(), root.path(), 1_011).unwrap();
+            assert!(pass.closed_any);
+            assert_eq!(backend.closed(), ["egress-windows_update-1001"]);
+            let mut schedule = schedule;
+            schedule.after_pass(&Ok(pass), 1_011);
+            assert_eq!(
+                schedule.on_wake(&scan_lease_records(root.path()).unwrap(), 1_011),
+                Wake::Idle
+            );
+        }
+
+        phase a_live_lease_keeps_its_nic_and_its_record;
+        {
+            let root = tempfile::tempdir().unwrap();
+            write_record(root.path(), "egress-windows_update-1000", 1_600);
+            let backend = EgressBackend::new(false, DomainState::Running);
+
+            let pass = reap_lease_records(&backend, &config(), root.path(), 1_599).unwrap();
+
+            assert_eq!(pass, ReapPass::default());
+            assert!(backend.closed().is_empty());
+            assert_eq!(entries(root.path()), 1);
+        }
+
+        phase a_shut_off_domain_has_no_egress_nic_left_to_detach;
+        {
+            let root = tempfile::tempdir().unwrap();
+            write_record(root.path(), "egress-windows_update-1000", 1_600);
+            // `detach-interface --live` fails for good on a domain that is not
+            // running, but its live-only NIC went with it.
+            let backend = EgressBackend::new(true, DomainState::ShutOff);
+
+            let pass = reap_lease_records(&backend, &config(), root.path(), 1_600).unwrap();
+
+            assert!(pass.closed_any);
+            assert!(pass.failed.is_empty());
+            assert_eq!(entries(root.path()), 0);
+        }
+
+        phase a_detach_that_keeps_failing_backs_off_then_is_set_aside_and_the_reaper_stops;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let unretired = tempfile::tempdir().unwrap();
+            write_record(root.path(), "egress-windows_update-1000", 1_600);
+            let backend = EgressBackend::new(true, DomainState::Running);
+            let mut schedule = ReaperSchedule::default();
+            let mut now: u64 = 1_600;
+            let mut delays = Vec::new();
+            let mut passes: u32 = 0;
+
+            loop {
+                let scan = scan_lease_records(root.path()).unwrap();
+                match schedule.on_wake(&scan, now) {
+                    Wake::Idle => break,
+                    Wake::Sleep => now = now.saturating_add(1),
+                    Wake::Pass { give_up } => {
+                        passes = passes.saturating_add(1);
+                        let mut pass =
+                            reap_lease_records(&backend, &config(), root.path(), now).unwrap();
+                        assert_eq!(pass.failed.len(), 1, "the record stays until set aside");
+                        if give_up {
+                            set_aside(&pass.failed, unretired.path()).unwrap();
+                            pass.failed.clear();
+                        }
+                        schedule.after_pass(&Ok(pass), now);
+                        delays.push(schedule.next_pass.saturating_sub(now));
                     }
-                    schedule.after_pass(&Ok(pass), now);
-                    delays.push(schedule.next_pass.saturating_sub(now));
                 }
+                assert!(now < 2_800, "the reaper never stopped");
             }
-            assert!(now < 2_800, "the reaper never stopped");
+
+            assert_eq!(
+                (
+                    REAP_RETRY_SECONDS,
+                    REAP_RETRY_MAX_SECONDS,
+                    REAP_GIVE_UP_SECONDS
+                ),
+                (5, 60, 600)
+            );
+            assert_eq!(delays[..5], [5, 10, 20, 40, 60]);
+            assert!(passes < 20, "{passes} passes polled the failing detach");
+            assert!(
+                now >= 2_200,
+                "gave up at {now}, before ten minutes of failures"
+            );
+            assert_eq!(entries(root.path()), 0);
+            assert!(
+                unretired
+                    .path()
+                    .join("egress-windows_update-1000.json")
+                    .exists()
+            );
+            assert!(
+                schedule.last_error.is_none(),
+                "setting the record aside ends the failure run"
+            );
         }
 
-        assert_eq!(
-            (
-                REAP_RETRY_SECONDS,
-                REAP_RETRY_MAX_SECONDS,
-                REAP_GIVE_UP_SECONDS
-            ),
-            (5, 60, 600)
-        );
-        assert_eq!(delays[..5], [5, 10, 20, 40, 60]);
-        assert!(passes < 20, "{passes} passes polled the failing detach");
-        assert!(
-            now >= 2_200,
-            "gave up at {now}, before ten minutes of failures"
-        );
-        assert_eq!(entries(root.path()), 0);
-        assert!(
-            unretired
-                .path()
-                .join("egress-windows_update-1000.json")
-                .exists()
-        );
-        assert!(
-            schedule.last_error.is_none(),
-            "setting the record aside ends the failure run"
-        );
-    }
+        phase a_set_aside_record_is_retried_without_a_schedule;
+        {
+            let unretired = tempfile::tempdir().unwrap();
+            write_record(unretired.path(), "egress-windows_update-1000", 1_600);
+            let backend = EgressBackend::new(false, DomainState::Running);
 
-    #[test]
-    fn a_set_aside_record_is_retried_without_a_schedule() {
-        let unretired = tempfile::tempdir().unwrap();
-        write_record(unretired.path(), "egress-windows_update-1000", 1_600);
-        let backend = EgressBackend::new(false, DomainState::Running);
+            // `reap_leases` passes `u64::MAX`: every set-aside record is expired.
+            let pass = reap_lease_records(&backend, &config(), unretired.path(), u64::MAX).unwrap();
 
-        // `reap_leases` passes `u64::MAX`: every set-aside record is expired.
-        let pass = reap_lease_records(&backend, &config(), unretired.path(), u64::MAX).unwrap();
-
-        assert!(pass.closed_any);
-        assert_eq!(backend.closed(), ["egress-windows_update-1000"]);
-        assert_eq!(entries(unretired.path()), 0);
-    }
-
-    #[test]
-    fn unreadable_records_fail_closed_and_debris_cannot_keep_the_reaper_alive() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(
-            root.path().join("egress-windows_update-1000.json"),
-            "{\"schema_version\":1",
-        )
-        .unwrap();
-        std::fs::write(root.path().join("notes"), "").unwrap();
-        std::fs::create_dir(root.path().join("egress-dir.json")).unwrap();
-        let backend = EgressBackend::new(false, DomainState::Running);
-        let schedule = after_clean_pass(999);
-        let scan = scan_lease_records(root.path()).unwrap();
-        assert_eq!(
-            scan,
-            LeaseScan {
-                entries: 3,
-                expiries: Vec::new(),
-            }
-        );
-
-        let pass = reap_lease_records(&backend, &config(), root.path(), 1_000).unwrap();
-
-        // The damaged record's expiry is unknown, so its NIC is detached now.
-        assert_eq!(backend.closed(), ["egress-unreadable-record"]);
-        assert!(pass.failed.is_empty());
-        assert_eq!(
-            schedule.on_wake(&scan_lease_records(root.path()).unwrap(), 1_000),
-            Wake::Idle
-        );
-    }
-
-    #[test]
-    fn records_without_an_appliance_are_dropped_and_the_reaper_goes_idle() {
-        let root = tempfile::tempdir().unwrap();
-        write_record(root.path(), "egress-windows_update-1000", 1_600);
-        std::fs::write(root.path().join("stray"), "").unwrap();
-
-        discard_records(root.path()).unwrap();
-
-        assert_eq!(
-            after_clean_pass(1_000).on_wake(&scan_lease_records(root.path()).unwrap(), 1_000),
-            Wake::Idle
-        );
-    }
-
-    #[test]
-    fn a_failed_pass_with_nothing_left_is_reported_not_retried() {
-        let root = tempfile::tempdir().unwrap();
-        let mut schedule = ReaperSchedule::default();
-        assert_eq!(
-            schedule.on_wake(&LeaseScan::default(), 1_000),
-            Wake::Pass { give_up: false },
-            "the first wake always runs a pass"
-        );
-        schedule.after_pass(&Err("cannot lock Windows controller".to_string()), 1_000);
-
-        assert_eq!(
-            schedule.on_wake(&scan_lease_records(root.path()).unwrap(), 1_000),
-            Wake::Idle
-        );
-        assert_eq!(
-            schedule.last_error.as_deref(),
-            Some("cannot lock Windows controller")
-        );
-    }
-
-    #[test]
-    fn every_lease_id_egress_open_creates_has_a_record_path() {
-        for purpose in [EgressPurpose::Activation, EgressPurpose::WindowsUpdate] {
-            // The ID `LibvirtBackend::open_egress` returns for this purpose.
-            let id = format!("egress-{}-1000", purpose.as_str());
-            assert!(lease_path(&id).is_ok(), "{id} has no lease record path");
+            assert!(pass.closed_any);
+            assert_eq!(backend.closed(), ["egress-windows_update-1000"]);
+            assert_eq!(entries(unretired.path()), 0);
         }
-        assert!(lease_path("egress-pending-42").is_ok());
-        assert!(lease_path("egress-../leases").is_err());
-        assert!(lease_path("egress-a/b").is_err());
-        assert!(lease_path("windows_update-1").is_err());
-    }
 
-    #[test]
-    fn lease_record_parses_what_egress_open_writes() {
-        let lease = parse_lease_record(
-            "{\"schema_version\":1,\"id\":\"egress-activation-7\",\"purpose\":\"activation\",\"expires_unix_seconds\":907}\n",
-        )
-        .unwrap();
-        assert_eq!(lease.id, "egress-activation-7");
-        assert_eq!(lease.purpose, EgressPurpose::Activation);
-        assert_eq!(lease.expires_unix_seconds, 907);
-        assert!(
-            parse_lease_record(
-                "{\"id\":\"egress-x\",\"purpose\":\"other\",\"expires_unix_seconds\":1}"
+        phase unreadable_records_fail_closed_and_debris_cannot_keep_the_reaper_alive;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(
+                root.path().join("egress-windows_update-1000.json"),
+                "{\"schema_version\":1",
             )
-            .is_err()
-        );
+            .unwrap();
+            std::fs::write(root.path().join("notes"), "").unwrap();
+            std::fs::create_dir(root.path().join("egress-dir.json")).unwrap();
+            let backend = EgressBackend::new(false, DomainState::Running);
+            let schedule = after_clean_pass(999);
+            let scan = scan_lease_records(root.path()).unwrap();
+            assert_eq!(
+                scan,
+                LeaseScan {
+                    entries: 3,
+                    expiries: Vec::new(),
+                }
+            );
+
+            let pass = reap_lease_records(&backend, &config(), root.path(), 1_000).unwrap();
+
+            // The damaged record's expiry is unknown, so its NIC is detached now.
+            assert_eq!(backend.closed(), ["egress-unreadable-record"]);
+            assert!(pass.failed.is_empty());
+            assert_eq!(
+                schedule.on_wake(&scan_lease_records(root.path()).unwrap(), 1_000),
+                Wake::Idle
+            );
+        }
+
+        phase records_without_an_appliance_are_dropped_and_the_reaper_goes_idle;
+        {
+            let root = tempfile::tempdir().unwrap();
+            write_record(root.path(), "egress-windows_update-1000", 1_600);
+            std::fs::write(root.path().join("stray"), "").unwrap();
+
+            discard_records(root.path()).unwrap();
+
+            assert_eq!(
+                after_clean_pass(1_000).on_wake(&scan_lease_records(root.path()).unwrap(), 1_000),
+                Wake::Idle
+            );
+        }
+
+        phase a_failed_pass_with_nothing_left_is_reported_not_retried;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut schedule = ReaperSchedule::default();
+            assert_eq!(
+                schedule.on_wake(&LeaseScan::default(), 1_000),
+                Wake::Pass { give_up: false },
+                "the first wake always runs a pass"
+            );
+            schedule.after_pass(&Err("cannot lock Windows controller".to_string()), 1_000);
+
+            assert_eq!(
+                schedule.on_wake(&scan_lease_records(root.path()).unwrap(), 1_000),
+                Wake::Idle
+            );
+            assert_eq!(
+                schedule.last_error.as_deref(),
+                Some("cannot lock Windows controller")
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_lease_record_is_what_egress_open_writes;
+
+        phase every_lease_id_egress_open_creates_has_a_record_path;
+        {
+            for purpose in [EgressPurpose::Activation, EgressPurpose::WindowsUpdate] {
+                // The ID `LibvirtBackend::open_egress` returns for this purpose.
+                let id = format!("egress-{}-1000", purpose.as_str());
+                assert!(lease_path(&id).is_ok(), "{id} has no lease record path");
+            }
+            assert!(lease_path("egress-pending-42").is_ok());
+            assert!(lease_path("egress-../leases").is_err());
+            assert!(lease_path("egress-a/b").is_err());
+            assert!(lease_path("windows_update-1").is_err());
+        }
+
+        phase lease_record_parses_what_egress_open_writes;
+        {
+            let lease = parse_lease_record(
+                "{\"schema_version\":1,\"id\":\"egress-activation-7\",\"purpose\":\"activation\",\"expires_unix_seconds\":907}\n",
+            )
+            .unwrap();
+            assert_eq!(lease.id, "egress-activation-7");
+            assert_eq!(lease.purpose, EgressPurpose::Activation);
+            assert_eq!(lease.expires_unix_seconds, 907);
+            assert!(
+                parse_lease_record(
+                    "{\"id\":\"egress-x\",\"purpose\":\"other\",\"expires_unix_seconds\":1}"
+                )
+                .is_err()
+            );
+        }
     }
 }

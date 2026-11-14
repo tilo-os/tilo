@@ -242,72 +242,112 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pane_links_preserve_query_and_fragment_compatibility() {
-        for uri in [
-            "settings://power?x=1",
-            "settings:power?x=1",
-            "settings://power#battery",
-            "settings://power?x=1#battery",
-        ] {
-            assert_eq!(
-                parse_settings_uri(uri),
-                Ok(NavigationEffect::OpenPane {
-                    pane: "power".into(),
-                }
-                .into()),
-                "{uri}"
-            );
-        }
-        for uri in [
-            "settings://nope?pane=power",
-            "settings://Power#battery",
-            "settings://?pane=power",
-            "settings://user@power?x=1",
-            "settings://power:443#battery",
-            "settings:///power?x=1",
-            "settings://models/u2net-subject?x=1",
-            "settings://models/u2net-subject#card",
-        ] {
-            assert!(parse_settings_uri(uri).is_err(), "{uri}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn settings_links_decode_to_panes_settings_and_models;
 
-    /// A fragment naming a setting on the linked page shows the setting; one
-    /// naming a setting elsewhere or nothing only opens the page.
-    #[test]
-    fn setting_links_show_their_setting() {
-        assert_eq!(
-            parse_settings_uri("settings://keyboard#keyboard.layout"),
-            Ok(NavigationEffect::ShowSetting {
-                setting: "keyboard.layout".into()
+        phase pane_links_preserve_query_and_fragment_compatibility;
+        {
+            for uri in [
+                "settings://power?x=1",
+                "settings:power?x=1",
+                "settings://power#battery",
+                "settings://power?x=1#battery",
+            ] {
+                assert_eq!(
+                    parse_settings_uri(uri),
+                    Ok(NavigationEffect::OpenPane {
+                        pane: "power".into(),
+                    }
+                    .into()),
+                    "{uri}"
+                );
             }
-            .into())
-        );
-        for setting in settings_store::index::SETTINGS {
+            for uri in [
+                "settings://nope?pane=power",
+                "settings://Power#battery",
+                "settings://?pane=power",
+                "settings://user@power?x=1",
+                "settings://power:443#battery",
+                "settings:///power?x=1",
+                "settings://models/u2net-subject?x=1",
+                "settings://models/u2net-subject#card",
+            ] {
+                assert!(parse_settings_uri(uri).is_err(), "{uri}");
+            }
+        }
+
+        phase setting_links_show_their_setting;
+        // A fragment naming a setting on the linked page shows the setting; one
+        // naming a setting elsewhere or nothing only opens the page.
+        {
             assert_eq!(
-                parse_settings_uri(&setting.link()),
+                parse_settings_uri("settings://keyboard#keyboard.layout"),
                 Ok(NavigationEffect::ShowSetting {
-                    setting: setting.id.into()
+                    setting: "keyboard.layout".into()
+                }
+                .into())
+            );
+            for setting in settings_store::index::SETTINGS {
+                assert_eq!(
+                    parse_settings_uri(&setting.link()),
+                    Ok(NavigationEffect::ShowSetting {
+                        setting: setting.id.into()
+                    }
+                    .into()),
+                    "{}",
+                    setting.link()
+                );
+                assert!(
+                    Category::from_slug(setting.page).is_some(),
+                    "{} is on a page Settings has",
+                    setting.id
+                );
+            }
+            assert_eq!(
+                parse_settings_uri("settings://power#keyboard.layout"),
+                Ok(NavigationEffect::OpenPane {
+                    pane: "power".into()
                 }
                 .into()),
-                "{}",
-                setting.link()
-            );
-            assert!(
-                Category::from_slug(setting.page).is_some(),
-                "{} is on a page Settings has",
-                setting.id
+                "a setting on another page does not move the link elsewhere"
             );
         }
-        assert_eq!(
-            parse_settings_uri("settings://power#keyboard.layout"),
-            Ok(NavigationEffect::OpenPane {
-                pane: "power".into()
-            }
-            .into()),
-            "a setting on another page does not move the link elsewhere"
-        );
+
+        phase settings_links_decode_to_what_they_show;
+        {
+            assert_eq!(
+                parse_settings_uri("settings://updates"),
+                Ok(NavigationEffect::OpenPane {
+                    pane: "updates".into()
+                }
+                .into())
+            );
+            assert_eq!(
+                parse_settings_uri("settings://models/u2net-subject"),
+                Ok(AgentModelsEffect::ShowLocalModel {
+                    model: "u2net-subject".into()
+                }
+                .into())
+            );
+            assert_eq!(
+                parse_settings_uri("settings://privacy/camera"),
+                Ok(NavigationEffect::OpenPane {
+                    pane: "permissions".into()
+                }
+                .into())
+            );
+            assert_eq!(
+                parse_settings_uri("settings://agent_models"),
+                Ok(NavigationEffect::OpenPane {
+                    pane: "agent_models".into()
+                }
+                .into())
+            );
+            assert!(parse_settings_uri("settings://models/").is_err());
+            assert!(parse_settings_uri("settings://models/U2NET?x=1").is_err());
+            assert!(parse_settings_uri("settings://nowhere").is_err());
+            assert!(parse_settings_uri("https://models/u2net-subject").is_err());
+        }
     }
 
     #[test]
@@ -321,41 +361,5 @@ mod tests {
             .map(|page| page.slug)
             .collect();
         assert_eq!(slugs, index);
-    }
-
-    #[test]
-    fn settings_links_decode_to_what_they_show() {
-        assert_eq!(
-            parse_settings_uri("settings://updates"),
-            Ok(NavigationEffect::OpenPane {
-                pane: "updates".into()
-            }
-            .into())
-        );
-        assert_eq!(
-            parse_settings_uri("settings://models/u2net-subject"),
-            Ok(AgentModelsEffect::ShowLocalModel {
-                model: "u2net-subject".into()
-            }
-            .into())
-        );
-        assert_eq!(
-            parse_settings_uri("settings://privacy/camera"),
-            Ok(NavigationEffect::OpenPane {
-                pane: "permissions".into()
-            }
-            .into())
-        );
-        assert_eq!(
-            parse_settings_uri("settings://agent_models"),
-            Ok(NavigationEffect::OpenPane {
-                pane: "agent_models".into()
-            }
-            .into())
-        );
-        assert!(parse_settings_uri("settings://models/").is_err());
-        assert!(parse_settings_uri("settings://models/U2NET?x=1").is_err());
-        assert!(parse_settings_uri("settings://nowhere").is_err());
-        assert!(parse_settings_uri("https://models/u2net-subject").is_err());
     }
 }

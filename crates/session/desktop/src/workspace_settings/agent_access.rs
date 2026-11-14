@@ -359,110 +359,114 @@ mod tests {
         tilo_action_policy::roles::agent_grants(&ws.policy.workspace, AGENT, OWNER, &[])
     }
 
-    #[test]
-    fn answers_follow_the_admission_until_set_here() {
-        let mut ws = ws();
-        let mail = AnswerScope::app(MAIL);
-        let read = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Read);
-        let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
-        assert_eq!((read.answer, read.explicit), (Answer::Allow, false));
-        assert_eq!((outside.answer, outside.explicit), (Answer::Ask, false));
+    tilo_test_env::scenario! {
+        fn an_agents_answers_follow_its_admission_until_set_here;
 
-        let edit = set_agent_answers(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            &[(mail.clone(), ActionKind::Outside, Some(Answer::Deny))],
-        );
-        assert_eq!(edit.granted.len(), 1);
-        let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
-        assert_eq!((outside.answer, outside.explicit), (Answer::Deny, true));
-        let notes = answer_at(
-            &ws,
-            AGENT,
-            &admission(&ws),
-            &AnswerScope::app("so.tilo.notes"),
-            ActionKind::Outside,
-        );
-        assert_eq!((notes.answer, notes.explicit), (Answer::Ask, false));
-    }
+        phase answers_follow_the_admission_until_set_here;
+        {
+            let mut ws = ws();
+            let mail = AnswerScope::app(MAIL);
+            let read = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Read);
+            let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
+            assert_eq!((read.answer, read.explicit), (Answer::Allow, false));
+            assert_eq!((outside.answer, outside.explicit), (Answer::Ask, false));
 
-    #[test]
-    fn setting_again_replaces_and_clearing_returns_to_the_admission() {
-        let mut ws = ws();
-        let mail = AnswerScope::app(MAIL);
-        let set = |ws: &mut Workspace, answer| {
-            set_agent_answers(
-                ws,
+            let edit = set_agent_answers(
+                &mut ws,
                 &OWNER.to_string(),
                 AGENT,
-                &[(mail.clone(), ActionKind::Undoable, answer)],
-            )
-        };
-        set(&mut ws, Some(Answer::Ask));
-        let edit = set(&mut ws, Some(Answer::Deny));
-        assert_eq!(edit.granted.len(), 1);
-        let held: Vec<_> = ws
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| agent_answers::is_answer(grant))
-            .collect();
-        assert_eq!(held.len(), 1, "one answer per scope and kind");
-        assert_eq!(held[0].answer, Answer::Deny);
-        let cleared = set(&mut ws, None);
-        assert_eq!((cleared.revoked.len(), cleared.granted.len()), (1, 0));
-        let cell = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Undoable);
-        assert_eq!((cell.answer, cell.explicit), (Answer::Allow, false));
-        // Nothing to clear: no edit.
-        assert!(set(&mut ws, None).is_empty());
-    }
+                &[(mail.clone(), ActionKind::Outside, Some(Answer::Deny))],
+            );
+            assert_eq!(edit.granted.len(), 1);
+            let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
+            assert_eq!((outside.answer, outside.explicit), (Answer::Deny, true));
+            let notes = answer_at(
+                &ws,
+                AGENT,
+                &admission(&ws),
+                &AnswerScope::app("so.tilo.notes"),
+                ActionKind::Outside,
+            );
+            assert_eq!((notes.answer, notes.explicit), (Answer::Ask, false));
+        }
 
-    #[test]
-    fn rows_list_the_apps_with_answers_and_exceptions_only_action_allows() {
-        let mut ws = ws();
-        let send = AnswerScope::action(MAIL, "mail.mailbox", "send_message");
-        let purge = AnswerScope::action(MAIL, "mail.mailbox", "purge");
-        set_agent_answers(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            &[
-                (send.clone(), ActionKind::Outside, Some(Answer::Allow)),
-                (purge, ActionKind::Undoable, Some(Answer::Deny)),
-            ],
-        );
-        let rows = agent_access_rows(&ws, AGENT, &admission(&ws), &super::super::NoAppDirectory);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].scope, AnswerScope::app(MAIL));
-        assert_eq!(rows[0].app, MAIL);
-        assert_eq!(rows[0].label, "Mail", "an app is named, not shown by id");
-        assert!(!rows[0].customised(), "an action's answer is not the app's");
-        let exceptions = agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory);
-        assert_eq!(exceptions.len(), 1, "a Deny is no exception to list");
-        assert_eq!(exceptions[0].scope, send);
-        assert_eq!(exceptions[0].kind, ActionKind::Outside);
-        assert_eq!(exceptions[0].label, "Send message in Mail");
-        let edit = set_agent_answers(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            &[(send, ActionKind::Outside, None)],
-        );
-        assert_eq!(edit.revoked.len(), 1);
-        assert!(agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory).is_empty());
-    }
+        phase setting_again_replaces_and_clearing_returns_to_the_admission;
+        {
+            let mut ws = ws();
+            let mail = AnswerScope::app(MAIL);
+            let set = |ws: &mut Workspace, answer| {
+                set_agent_answers(
+                    ws,
+                    &OWNER.to_string(),
+                    AGENT,
+                    &[(mail.clone(), ActionKind::Undoable, answer)],
+                )
+            };
+            set(&mut ws, Some(Answer::Ask));
+            let edit = set(&mut ws, Some(Answer::Deny));
+            assert_eq!(edit.granted.len(), 1);
+            let held: Vec<_> = ws
+                .policy
+                .grants
+                .iter()
+                .filter(|grant| agent_answers::is_answer(grant))
+                .collect();
+            assert_eq!(held.len(), 1, "one answer per scope and kind");
+            assert_eq!(held[0].answer, Answer::Deny);
+            let cleared = set(&mut ws, None);
+            assert_eq!((cleared.revoked.len(), cleared.granted.len()), (1, 0));
+            let cell = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Undoable);
+            assert_eq!((cell.answer, cell.explicit), (Answer::Allow, false));
+            // Nothing to clear: no edit.
+            assert!(set(&mut ws, None).is_empty());
+        }
 
-    #[test]
-    fn someone_who_may_not_govern_changes_nothing() {
-        let mut ws = ws();
-        let edit = set_agent_answers(
-            &mut ws,
-            &"stranger".to_string(),
-            AGENT,
-            &[(AnswerScope::app(MAIL), ActionKind::Read, Some(Answer::Deny))],
-        );
-        assert!(edit.is_empty());
-        assert!(!ws.policy.grants.iter().any(agent_answers::is_answer));
+        phase rows_list_the_apps_with_answers_and_exceptions_only_action_allows;
+        {
+            let mut ws = ws();
+            let send = AnswerScope::action(MAIL, "mail.mailbox", "send_message");
+            let purge = AnswerScope::action(MAIL, "mail.mailbox", "purge");
+            set_agent_answers(
+                &mut ws,
+                &OWNER.to_string(),
+                AGENT,
+                &[
+                    (send.clone(), ActionKind::Outside, Some(Answer::Allow)),
+                    (purge, ActionKind::Undoable, Some(Answer::Deny)),
+                ],
+            );
+            let rows = agent_access_rows(&ws, AGENT, &admission(&ws), &super::super::NoAppDirectory);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].scope, AnswerScope::app(MAIL));
+            assert_eq!(rows[0].app, MAIL);
+            assert_eq!(rows[0].label, "Mail", "an app is named, not shown by id");
+            assert!(!rows[0].customised(), "an action's answer is not the app's");
+            let exceptions = agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory);
+            assert_eq!(exceptions.len(), 1, "a Deny is no exception to list");
+            assert_eq!(exceptions[0].scope, send);
+            assert_eq!(exceptions[0].kind, ActionKind::Outside);
+            assert_eq!(exceptions[0].label, "Send message in Mail");
+            let edit = set_agent_answers(
+                &mut ws,
+                &OWNER.to_string(),
+                AGENT,
+                &[(send, ActionKind::Outside, None)],
+            );
+            assert_eq!(edit.revoked.len(), 1);
+            assert!(agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory).is_empty());
+        }
+
+        phase someone_who_may_not_govern_changes_nothing;
+        {
+            let mut ws = ws();
+            let edit = set_agent_answers(
+                &mut ws,
+                &"stranger".to_string(),
+                AGENT,
+                &[(AnswerScope::app(MAIL), ActionKind::Read, Some(Answer::Deny))],
+            );
+            assert!(edit.is_empty());
+            assert!(!ws.policy.grants.iter().any(agent_answers::is_answer));
+        }
     }
 }

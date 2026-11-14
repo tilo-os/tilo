@@ -1036,6 +1036,25 @@ pub fn parameter_signature(offer: &Offer) -> String {
     format!("{{{params}}}")
 }
 
+/// An operation as the model is told about it: `"<id> — <label>"` and the
+/// parameters it takes.
+pub fn operation_line(offer: &Offer) -> String {
+    let mut line = format!("{} — {}", offer.id(), offer.descriptor.action_label);
+    let signature = parameter_signature(offer);
+    if !signature.is_empty() {
+        line.push(' ');
+        line.push_str(&signature);
+    }
+    line
+}
+
+/// What a call's result says when the model ended the run without doing
+/// anything or writing a reply.
+pub const NOTHING_DONE_REPLY: &str = "Not finished: nothing in this run did anything, and no reply was \
+     written. Do the request now with invoke, then call `plan` with your reply — or, when \
+     the operations available cannot do it, call `plan` with done: false and say \
+     why in the reply.";
+
 /// The prefix of a host (non-Tilo) application's id in the catalogue.
 const HOST_APP_PREFIX: &str = "host:";
 

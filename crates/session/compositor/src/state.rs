@@ -276,6 +276,9 @@ pub struct State {
     /// What is offered every input before the desktop sees it, and takes what it answers `true` to.
     pub(crate) input_observer:
         Option<Arc<dyn Fn(crate::input::ObservedInput) -> bool + Send + Sync>>,
+    /// Whether the pointer waits out of sight at the edge it left this machine's screens by, while
+    /// the person's keyboard and pointer drive another of their devices.
+    pub(crate) pointer_parked: bool,
     /// Super alone, as the person presses and lets go of it: the desktop reads what it asked for
     /// on its own pass. `None` when nobody asks.
     pub(crate) super_tap: Option<Rc<RefCell<SuperTap>>>,
@@ -432,6 +435,7 @@ impl State {
             dnd: crate::dnd::Dnd::default(),
             display_changes: crate::display_change::DisplayChanges::default(),
             input_observer: None,
+            pointer_parked: false,
             super_tap: None,
             redraw: Vec::new(),
             loop_handle: None,
@@ -840,13 +844,20 @@ impl State {
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
         let now = Instant::now();
         self.remote_input.note_local(now);
-        // The person's own Ctrl+Alt+Escape gives back whatever a client holds — a locked pointer,
-        // the desktop's shortcuts — and otherwise cuts remote input. Its press goes no further
+        // The person's own Ctrl+Alt+Escape gives back whatever holds their keyboard and pointer —
+        // another of their devices this machine's input drives, a locked pointer, the desktop's
+        // shortcuts — and otherwise cuts remote input. Its press goes no further
         // either way: no window sees half a chord.
         if let InputEvent::Key { keycode, pressed } = event
             && self.remote_input.chord(keycode, pressed)
         {
-            if self.pointer_lock.is_engaged() || self.shortcut_inhibit.is_active() {
+            let observer_gave_back = self
+                .input_observer
+                .as_ref()
+                .is_some_and(|observer| observer(crate::input::ObservedInput::GiveBack));
+            if observer_gave_back {
+                tracing::info!("the chord took the keyboard and pointer back to this machine");
+            } else if self.pointer_lock.is_engaged() || self.shortcut_inhibit.is_active() {
                 self.release_pointer_lock();
                 self.suspend_shortcut_inhibit();
             } else if self.remote_input.cut() {

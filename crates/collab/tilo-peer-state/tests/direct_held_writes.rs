@@ -86,7 +86,7 @@ async fn hears(
 /// host keeps in the history its members catch up from.
 fn sealed(key: &SigningKey) -> NeighbourMsg {
     let keys = channel_crypto::ChannelGroup::create(
-        collab_types::document_channel_id(APP, WORKSPACE, RECORD),
+        collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
         channel_crypto::MemberKey::generate("owner").unwrap(),
     )
     .unwrap()
@@ -133,7 +133,7 @@ fn sealed(key: &SigningKey) -> NeighbourMsg {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::host());
+    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::member());
     let (b_key, b_cert) = device(&root, 3);
     // A third member, whose writes the host passes on to the second.
     let (c_key, c_cert) = device(&root, 4);
@@ -262,7 +262,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     let kept = sealed(&host_key);
     store
         .retain(
-            tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap(),
+            tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
             &Frame::of(&kept).unwrap(),
         )
         .unwrap();

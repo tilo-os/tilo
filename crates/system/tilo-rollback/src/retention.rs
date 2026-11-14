@@ -163,93 +163,103 @@ pub fn prune_is_safe(
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_retention_window_and_floor_only_move_forward() {
-        {
-            let p = plan_floor(10, 0, 3, None).unwrap();
-            assert_eq!(p.window_floor, 8);
-            assert_eq!(p.target_floor, 8);
-            assert!(p.advances());
-            assert_eq!(p.increments(), 8);
-        }
-        {
-            let p = plan_floor(10, 0, 1, None).unwrap();
-            assert_eq!(p.target_floor, 10);
-        }
-        {
-            assert_eq!(plan_floor(0, 0, 3, None).unwrap().target_floor, 0);
-            assert_eq!(plan_floor(1, 0, 3, None).unwrap().target_floor, 0);
-            assert_eq!(plan_floor(2, 0, 3, None).unwrap().target_floor, 0);
-            assert_eq!(plan_floor(3, 0, 3, None).unwrap().target_floor, 1);
-        }
-        {
-            let p = plan_floor(10, 9, 3, None).unwrap();
-            assert_eq!(p.window_floor, 8);
-            assert_eq!(p.target_floor, 9);
-            assert!(!p.advances());
-            assert_eq!(p.increments(), 0);
-        }
-        {
-            let p = plan_floor(10, 5, 3, Some(10)).unwrap();
-            assert_eq!(p.window_floor, 8);
-            assert_eq!(p.target_floor, 10);
-        }
-        {
-            let p = plan_floor(10, 0, 3, Some(2)).unwrap();
-            assert_eq!(p.target_floor, 8);
-        }
-        {
-            let e = plan_floor(10, 0, 3, Some(11)).unwrap_err().to_string();
-            assert!(e.contains("above the generation being confirmed"), "{e}");
-        }
-        {
-            let e = plan_floor(5, 6, 3, None).unwrap_err().to_string();
-            assert!(e.contains("already above the running generation"), "{e}");
-        }
-        {
-            assert!(plan_floor(5, 0, 0, None).is_err());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn retention_moves_forward_and_protects_staged_and_verified_keyslots;
 
-    #[test]
-    fn keep_and_drop_sets_protect_staged_and_verified_keyslots() {
+        phase the_retention_window_and_floor_only_move_forward;
         {
-            assert_eq!(keep_set(10, &[7, 8, 9, 10], 3), vec![10, 9, 8]);
-            assert_eq!(keep_set(10, &[], 3), vec![10]);
-            assert_eq!(keep_set(10, &[9], 3), vec![10, 9]);
+            {
+                let p = plan_floor(10, 0, 3, None).unwrap();
+                assert_eq!(p.window_floor, 8);
+                assert_eq!(p.target_floor, 8);
+                assert!(p.advances());
+                assert_eq!(p.increments(), 8);
+            }
+            {
+                let p = plan_floor(10, 0, 1, None).unwrap();
+                assert_eq!(p.target_floor, 10);
+            }
+            {
+                assert_eq!(plan_floor(0, 0, 3, None).unwrap().target_floor, 0);
+                assert_eq!(plan_floor(1, 0, 3, None).unwrap().target_floor, 0);
+                assert_eq!(plan_floor(2, 0, 3, None).unwrap().target_floor, 0);
+                assert_eq!(plan_floor(3, 0, 3, None).unwrap().target_floor, 1);
+            }
+            {
+                let p = plan_floor(10, 9, 3, None).unwrap();
+                assert_eq!(p.window_floor, 8);
+                assert_eq!(p.target_floor, 9);
+                assert!(!p.advances());
+                assert_eq!(p.increments(), 0);
+            }
+            {
+                let p = plan_floor(10, 5, 3, Some(10)).unwrap();
+                assert_eq!(p.window_floor, 8);
+                assert_eq!(p.target_floor, 10);
+            }
+            {
+                let p = plan_floor(10, 0, 3, Some(2)).unwrap();
+                assert_eq!(p.target_floor, 8);
+            }
+            {
+                let e = plan_floor(10, 0, 3, Some(11)).unwrap_err().to_string();
+                assert!(e.contains("above the generation being confirmed"), "{e}");
+            }
+            {
+                let e = plan_floor(5, 6, 3, None).unwrap_err().to_string();
+                assert!(e.contains("already above the running generation"), "{e}");
+            }
+            {
+                // A floor exactly at the running generation is a state to leave alone, not a refusal.
+                let p = plan_floor(5, 5, 3, None).unwrap();
+                assert_eq!(p.target_floor, 5);
+                assert!(!p.advances());
+            }
+            {
+                assert!(plan_floor(5, 0, 0, None).is_err());
+            }
         }
+
+        phase keep_and_drop_sets_protect_staged_and_verified_keyslots;
         {
-            // 11 is staged and sealed; confirming 10 must not remove it.
-            assert_eq!(keep_set(10, &[8, 9, 10, 11], 3), vec![11, 10, 9, 8]);
-            assert_eq!(drop_set(10, &[8, 9, 10, 11], 3), Vec::<u64>::new());
-        }
-        {
-            assert_eq!(keep_set(10, &[10, 11, 12], 3), vec![12, 11, 10]);
-            // 11 was superseded without ever booting.
-            assert_eq!(drop_set(10, &[10, 11, 12, 13], 3), vec![11]);
-        }
-        {
-            assert_eq!(drop_set(10, &[6, 7, 8, 9, 10], 3), vec![6, 7]);
-            assert_eq!(drop_set(10, &[9, 10], 3), Vec::<u64>::new());
-        }
-        {
-            assert!(
-                prune_is_safe(&[], &[], false).is_ok(),
-                "nothing to prune is always safe"
-            );
-            assert!(
-                prune_is_safe(&[7], &[10], false).is_err(),
-                "recovery key unverified"
-            );
-            assert!(
-                prune_is_safe(&[7], &[], true).is_err(),
-                "no verified survivor"
-            );
-            assert!(prune_is_safe(&[7], &[10], true).is_ok());
-            assert!(
-                prune_is_safe(&[7], &[7, 10], true).is_err(),
-                "contradictory sets"
-            );
+            {
+                assert_eq!(keep_set(10, &[7, 8, 9, 10], 3), vec![10, 9, 8]);
+                assert_eq!(keep_set(10, &[], 3), vec![10]);
+                assert_eq!(keep_set(10, &[9], 3), vec![10, 9]);
+            }
+            {
+                // 11 is staged and sealed; confirming 10 must not remove it.
+                assert_eq!(keep_set(10, &[8, 9, 10, 11], 3), vec![11, 10, 9, 8]);
+                assert_eq!(drop_set(10, &[8, 9, 10, 11], 3), Vec::<u64>::new());
+            }
+            {
+                assert_eq!(keep_set(10, &[10, 11, 12], 3), vec![12, 11, 10]);
+                // 11 was superseded without ever booting.
+                assert_eq!(drop_set(10, &[10, 11, 12, 13], 3), vec![11]);
+            }
+            {
+                assert_eq!(drop_set(10, &[6, 7, 8, 9, 10], 3), vec![6, 7]);
+                assert_eq!(drop_set(10, &[9, 10], 3), Vec::<u64>::new());
+            }
+            {
+                assert!(
+                    prune_is_safe(&[], &[], false).is_ok(),
+                    "nothing to prune is always safe"
+                );
+                assert!(
+                    prune_is_safe(&[7], &[10], false).is_err(),
+                    "recovery key unverified"
+                );
+                assert!(
+                    prune_is_safe(&[7], &[], true).is_err(),
+                    "no verified survivor"
+                );
+                assert!(prune_is_safe(&[7], &[10], true).is_ok());
+                assert!(
+                    prune_is_safe(&[7], &[7, 10], true).is_err(),
+                    "contradictory sets"
+                );
+            }
         }
     }
 }

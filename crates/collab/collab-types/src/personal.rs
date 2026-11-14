@@ -101,51 +101,56 @@ pub fn person_record_kind(record: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_person_record_names_its_kind() {
-        let record = person_record_id("terminal.history");
-        assert_eq!(record, "derived:terminal.history@tab:0000000000000000");
-        assert_eq!(person_record_kind(&record), Some("terminal.history"));
-        for other in [
-            "tab:000000000000005c",
-            "tab:0000000000000000",
-            "derived:a@b@tab:0000000000000000",
-            "derived:terminal.history@derived:default@tab:0000000000000000",
-            "derived:notes@tab:000000000000005c",
-        ] {
-            assert_eq!(person_record_kind(other), None, "{other}");
-        }
-    }
+    tilo_test_env::scenario! {
+        /// The record a person keeps for themselves: its kind and the store every device of theirs derives.
+        fn a_persons_record_and_store_are_their_own;
 
-    /// Every device of a person derives one cluster for their store, nobody
-    /// else's derives it, and it is not the workspace their records used to
-    /// be kept under.
-    #[test]
-    fn a_person_has_one_store_every_device_derives_and_nobody_else_shares() {
-        let ada = [7u8; 32];
-        let bob = [8u8; 32];
-        let cluster = personal_cluster(&ada);
-        assert_eq!(
-            cluster,
-            personal_cluster(&ada),
-            "every device derives the same cluster"
-        );
-        assert_ne!(
-            cluster,
-            personal_cluster(&bob),
-            "another person has another store"
-        );
-        assert!(!cluster.is_nil());
-        assert_eq!(cluster.get_version_num(), 8);
-        assert!(is_personal_cluster(&ada, &cluster));
-        assert!(!is_personal_cluster(&bob, &cluster));
-        assert_eq!(personal_cluster_of(&hex::encode(ada)), Some(cluster));
-        assert_eq!(personal_cluster_of("not a key"), None);
-        assert_eq!(personal_cluster_of(&hex::encode([1u8; 31])), None);
-        assert_ne!(
-            cluster,
-            retired_person_workspace(&ada),
-            "the store is not the room its records were kept in"
-        );
+        phase a_person_record_names_its_kind;
+        {
+            let record = person_record_id("terminal.history");
+            assert_eq!(record, "derived:terminal.history@tab:0000000000000000");
+            assert_eq!(person_record_kind(&record), Some("terminal.history"));
+            for other in [
+                "tab:000000000000005c",
+                "tab:0000000000000000",
+                "derived:a@b@tab:0000000000000000",
+                "derived:terminal.history@derived:default@tab:0000000000000000",
+                "derived:notes@tab:000000000000005c",
+            ] {
+                assert_eq!(person_record_kind(other), None, "{other}");
+            }
+        }
+
+        phase a_person_has_one_store_every_device_derives_and_nobody_else_shares;
+        // Every device of a person derives one cluster for their store, nobody
+        // else's derives it, and it is not the workspace their records used to
+        // be kept under.
+        {
+            let ada = [7u8; 32];
+            let bob = [8u8; 32];
+            let cluster = personal_cluster(&ada);
+            assert_eq!(
+                cluster,
+                personal_cluster(&ada),
+                "every device derives the same cluster"
+            );
+            assert_ne!(
+                cluster,
+                personal_cluster(&bob),
+                "another person has another store"
+            );
+            assert!(!cluster.is_nil());
+            assert_eq!(cluster.get_version_num(), 8);
+            assert!(is_personal_cluster(&ada, &cluster));
+            assert!(!is_personal_cluster(&bob, &cluster));
+            assert_eq!(personal_cluster_of(&hex::encode(ada)), Some(cluster));
+            assert_eq!(personal_cluster_of("not a key"), None);
+            assert_eq!(personal_cluster_of(&hex::encode([1u8; 31])), None);
+            assert_ne!(
+                cluster,
+                retired_person_workspace(&ada),
+                "the store is not the room its records were kept in"
+            );
+        }
     }
 }

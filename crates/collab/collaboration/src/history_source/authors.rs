@@ -501,22 +501,34 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_kind_of_actor_is_named_by_what_it_is_never_by_an_id() {
-        assert_eq!(actor_name("ada", &Reader), "Ada Lovelace");
-        assert_eq!(
-            actor_name("9f2c1a34b7", &Reader),
-            UNKNOWN_AUTHOR_NAME,
-            "a person nobody named is never shown by their key"
-        );
-        assert_eq!(actor_name("agent:scribe", &Reader), "Scribe");
-        assert_eq!(actor_name("shortcut:morning", &Reader), "Morning");
-        assert_eq!(actor_name("bot:status", &Reader), "Status");
-        assert_eq!(
-            actor_name("app:so.tilo.lang.today", &Reader),
-            "Today",
-            "an app is its own name, whole: never its id, never part of one"
-        );
+    tilo_test_env::scenario! {
+        /// Names read with no session's app names on this thread: neither case sets them.
+        fn actors_and_apps_are_named_in_words_never_by_an_id;
+
+        phase every_kind_of_actor_is_named_by_what_it_is_never_by_an_id;
+        {
+            assert_eq!(actor_name("ada", &Reader), "Ada Lovelace");
+            assert_eq!(
+                actor_name("9f2c1a34b7", &Reader),
+                UNKNOWN_AUTHOR_NAME,
+                "a person nobody named is never shown by their key"
+            );
+            assert_eq!(actor_name("agent:scribe", &Reader), "Scribe");
+            assert_eq!(actor_name("shortcut:morning", &Reader), "Morning");
+            assert_eq!(actor_name("bot:status", &Reader), "Status");
+            assert_eq!(
+                actor_name("app:so.tilo.lang.today", &Reader),
+                "Today",
+                "an app is its own name, whole: never its id, never part of one"
+            );
+        }
+
+        phase an_app_id_is_written_as_words_a_person_reads;
+        {
+            assert_eq!(app_words("so.tilo.lang.today"), "Today");
+            assert_eq!(app_words("so.tilo.file-explorer"), "File Explorer");
+            assert_eq!(app_words("org.gnome.TextEditor"), "Text Editor");
+        }
     }
 
     #[test]
@@ -550,12 +562,5 @@ mod tests {
             "Today",
             "with no session's names, the words its id makes"
         );
-    }
-
-    #[test]
-    fn an_app_id_is_written_as_words_a_person_reads() {
-        assert_eq!(app_words("so.tilo.lang.today"), "Today");
-        assert_eq!(app_words("so.tilo.file-explorer"), "File Explorer");
-        assert_eq!(app_words("org.gnome.TextEditor"), "Text Editor");
     }
 }

@@ -367,14 +367,28 @@ fn marked_share(app: &Framed<BooksApp>) -> f64 {
             tilo_cpu_raster::color::AlphaColor::from_rgba8(0, 0, 0, 255),
         );
     }
-    let px = |x: u32, y: u32| {
-        let i = (y as usize * w as usize + x as usize) * 4;
-        [pixels[i], pixels[i + 1], pixels[i + 2]]
-    };
+    // Every pixel of the region is counted under its colour, a run of one
+    // colour along a row at a time: a page is mostly long runs of its ground,
+    // and a map lookup for each pixel is most of this in an unoptimised build.
     let mut counts: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
+    let stride = w as usize * 4;
+    let columns = region.x as usize * 4..(region.x + region.width) as usize * 4;
     for y in region.y..region.y + region.height {
-        for x in region.x..region.x + region.width {
-            *counts.entry(px(x, y)).or_default() += 1;
+        let row = &pixels[y as usize * stride..][columns.clone()];
+        let (mut of, mut length) = ([0u8; 3], 0usize);
+        for pixel in row.chunks_exact(4) {
+            let colour = [pixel[0], pixel[1], pixel[2]];
+            if length > 0 && colour == of {
+                length += 1;
+                continue;
+            }
+            if length > 0 {
+                *counts.entry(of).or_default() += length;
+            }
+            (of, length) = (colour, 1);
+        }
+        if length > 0 {
+            *counts.entry(of).or_default() += length;
         }
     }
     let total: usize = counts.values().sum();

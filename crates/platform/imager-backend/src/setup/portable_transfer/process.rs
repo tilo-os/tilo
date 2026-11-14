@@ -349,115 +349,121 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stalled_actual_tar_is_terminated_without_success() {
-        let scratch = tempfile::tempdir().unwrap();
-        let source = scratch.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let contents = vec![37u8; 4 * 1024 * 1024];
-        std::fs::write(source.join("document"), &contents).unwrap();
-        let pin = PinnedDirectory::open_absolute(&source).unwrap();
-        let mut partial = Vec::new();
-        let (clock, time) = manual();
-        let limit = Duration::from_millis(100);
-        let result = execute_with_idle_limit(
-            &pin,
-            Mode::Create { sparse: false },
-            &[],
-            &AtomicBool::new(false),
-            IdleLimit { limit, clock },
-            |child, progress| {
-                let stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| changed("Archive output missing"))?;
-                let mut output = Flow {
-                    inner: stdout,
-                    progress,
-                };
-                let mut first = [0u8; 1024];
-                output.read_exact(&mut first)?;
-                partial.extend_from_slice(&first);
-                // Backpressure leaves the actual GNU tar child blocked in its
-                // pipe. Past the idle limit the real watchdog must terminate
-                // this stalled stream.
-                advance(&time, limit * 4);
-                tilo_test_env::wait_until("the watchdog to stop the stalled child", || {
-                    child.try_wait().ok().flatten().is_some()
-                });
-                io::copy(&mut output, &mut partial)?;
-                Ok(())
-            },
-        );
-        assert!(
-            result.is_err(),
-            "stalled child must not report a complete archive"
-        );
-        assert!(partial.len() < contents.len());
-        assert_eq!(std::fs::read(source.join("document")).unwrap(), contents);
-    }
+    tilo_test_env::scenario! {
+        /// The idle bound on the tar process a transfer streams through.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_actual_tar_is_bounded_by_idleness_not_by_duration;
 
-    #[test]
-    fn actual_tar_progress_outlives_idle_bound_without_losing_contents() {
-        let scratch = tempfile::tempdir().unwrap();
-        let source = scratch.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let contents = vec![37u8; 256 * 1024];
-        std::fs::write(source.join("document"), &contents).unwrap();
-        let pin = PinnedDirectory::open_absolute(&source).unwrap();
-        let idle = Duration::from_millis(250);
-        let (clock, time) = manual();
-        let began = clock.now();
-        let mut archive = SlowWriter {
-            written: Vec::new(),
-            clock: std::sync::Arc::clone(&time),
-            // io::copy reads up to 8 KiB at a time: eight writes per read.
-            per_write: idle / 20,
-        };
-        execute_with_idle_limit(
-            &pin,
-            Mode::Create { sparse: false },
-            &[],
-            &AtomicBool::new(false),
-            IdleLimit {
-                limit: idle,
-                clock: clock.clone(),
-            },
-            |child, progress| {
-                let stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| changed("Archive output missing"))?;
-                io::copy(
-                    &mut Flow {
+        phase stalled_actual_tar_is_terminated_without_success;
+        {
+            let scratch = tempfile::tempdir().unwrap();
+            let source = scratch.path().join("source");
+            std::fs::create_dir(&source).unwrap();
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let contents = vec![37u8; 4 * 1024 * 1024];
+            std::fs::write(source.join("document"), &contents).unwrap();
+            let pin = PinnedDirectory::open_absolute(&source).unwrap();
+            let mut partial = Vec::new();
+            let (clock, time) = manual();
+            let limit = Duration::from_millis(100);
+            let result = execute_with_idle_limit(
+                &pin,
+                Mode::Create { sparse: false },
+                &[],
+                &AtomicBool::new(false),
+                IdleLimit { limit, clock },
+                |child, progress| {
+                    let stdout = child
+                        .stdout
+                        .take()
+                        .ok_or_else(|| changed("Archive output missing"))?;
+                    let mut output = Flow {
                         inner: stdout,
                         progress,
-                    },
-                    &mut archive,
-                )?;
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert!(
-            clock.now().saturating_duration_since(began) > idle,
-            "actual export must exceed the old total-duration bound"
-        );
-        let target = scratch.path().join("target");
-        std::fs::create_dir(&target).unwrap();
-        let target = PinnedDirectory::open_absolute(&target).unwrap();
-        extract(
-            &target,
-            &mut io::Cursor::new(archive.written),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read(scratch.path().join("target/document")).unwrap(),
-            contents
-        );
-        assert_eq!(std::fs::read(source.join("document")).unwrap(), contents);
+                    };
+                    let mut first = [0u8; 1024];
+                    output.read_exact(&mut first)?;
+                    partial.extend_from_slice(&first);
+                    // Backpressure leaves the actual GNU tar child blocked in its
+                    // pipe. Past the idle limit the real watchdog must terminate
+                    // this stalled stream.
+                    advance(&time, limit * 4);
+                    tilo_test_env::wait_until("the watchdog to stop the stalled child", || {
+                        child.try_wait().ok().flatten().is_some()
+                    });
+                    io::copy(&mut output, &mut partial)?;
+                    Ok(())
+                },
+            );
+            assert!(
+                result.is_err(),
+                "stalled child must not report a complete archive"
+            );
+            assert!(partial.len() < contents.len());
+            assert_eq!(std::fs::read(source.join("document")).unwrap(), contents);
+        }
+
+        phase actual_tar_progress_outlives_idle_bound_without_losing_contents;
+        {
+            let scratch = tempfile::tempdir().unwrap();
+            let source = scratch.path().join("source");
+            std::fs::create_dir(&source).unwrap();
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let contents = vec![37u8; 256 * 1024];
+            std::fs::write(source.join("document"), &contents).unwrap();
+            let pin = PinnedDirectory::open_absolute(&source).unwrap();
+            let idle = Duration::from_millis(250);
+            let (clock, time) = manual();
+            let began = clock.now();
+            let mut archive = SlowWriter {
+                written: Vec::new(),
+                clock: std::sync::Arc::clone(&time),
+                // io::copy reads up to 8 KiB at a time: eight writes per read.
+                per_write: idle / 20,
+            };
+            execute_with_idle_limit(
+                &pin,
+                Mode::Create { sparse: false },
+                &[],
+                &AtomicBool::new(false),
+                IdleLimit {
+                    limit: idle,
+                    clock: clock.clone(),
+                },
+                |child, progress| {
+                    let stdout = child
+                        .stdout
+                        .take()
+                        .ok_or_else(|| changed("Archive output missing"))?;
+                    io::copy(
+                        &mut Flow {
+                            inner: stdout,
+                            progress,
+                        },
+                        &mut archive,
+                    )?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(
+                clock.now().saturating_duration_since(began) > idle,
+                "actual export must exceed the old total-duration bound"
+            );
+            let target = scratch.path().join("target");
+            std::fs::create_dir(&target).unwrap();
+            let target = PinnedDirectory::open_absolute(&target).unwrap();
+            extract(
+                &target,
+                &mut io::Cursor::new(archive.written),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(scratch.path().join("target/document")).unwrap(),
+                contents
+            );
+            assert_eq!(std::fs::read(source.join("document")).unwrap(), contents);
+        }
     }
 }

@@ -14,7 +14,7 @@
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -107,6 +107,17 @@ pub enum MembersCmd {
     /// The people in the workspace (-w), with their roles, and the
     /// invitations still open.
     Ls,
+    /// How the workspace (-w) shows you from now on: the name its member list
+    /// and the invitations you make say for you.
+    #[command(
+        after_help = "Example:\n  tilo members name \"Quinten Wolff\" -w jane-doe\n\n\
+                      Any device or key of yours sets it: the workspace knows you by it before a \
+                      browser of yours joins, and whoever you invite sees who asked them in."
+    )]
+    Name {
+        /// The name to go by, as your teammates will read it.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -132,11 +143,22 @@ pub enum WorkspacesCmd {
 
 #[derive(Subcommand)]
 pub enum FilesCmd {
-    /// Upload a file into a workspace: prints its reference, which actions
-    /// take (`pdf-viewer#import-pdf-content content=tilo.content:…`).
+    /// Upload files, or whole folders, into a workspace: each file lands in
+    /// the app that opens it, and prints that record's path.
+    #[command(
+        after_help = "A folder goes up whole, keeping its structure: `tilo files put notes/` \
+                      keeps `notes/2026/plan.md` called `2026/plan.md`. A file larger than one \
+                      request carries goes up in pieces, and a connection that fails resumes \
+                      where it stopped. `--store` puts the bytes only, with no record."
+    )]
     Put {
-        /// The file to upload, by its path here.
-        file: PathBuf,
+        /// The files and folders to upload, by their paths here.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Put the bytes only: print each `tilo.content:` reference, and
+        /// import nothing.
+        #[arg(long)]
+        store: bool,
     },
     /// Download a file of a workspace by its reference (an export's
     /// answer, `tilo.content:…`) into `--output`, or to standard output.
@@ -196,7 +218,7 @@ fn is_uuid(text: &str) -> bool {
 
 /// A name as `-w` matches it: letters and digits, lower case, words joined
 /// by `-` (`Applicant: Jane Doe` and `applicant-jane-doe` match).
-fn slug(name: &str) -> String {
+pub(crate) fn slug(name: &str) -> String {
     name.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
@@ -206,7 +228,7 @@ fn slug(name: &str) -> String {
 
 /// The workspace `named`: an id as it is, or the account's workspace of
 /// that name.
-async fn workspace_id(client: &Client, named: &str) -> Result<String> {
+pub(crate) async fn workspace_id(client: &Client, named: &str) -> Result<String> {
     if is_uuid(named) {
         return Ok(named.to_owned());
     }
@@ -457,41 +479,320 @@ pub fn files(reach: Reach<'_>, workspace: &str, cmd: FilesCmd) -> ExitCode {
         let client = Client::open(reach)?;
         let workspace = workspace_id(&client, workspace).await?;
         match cmd {
-            FilesCmd::Put { file } => {
-                let bytes =
-                    std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
-                let put = client.upload(&workspace, bytes).await?;
-                Ok(show(reach.json, &put, text(&put, "content")))
+            FilesCmd::Put { paths, store } => {
+                put_files(&client, &workspace, &paths, store, reach.json).await
             }
             FilesCmd::Get { content, output } => {
-                let bytes = client.content(&workspace, &content).await?;
-                write_content(reach.json, &content, &bytes, output.as_deref())
+                get_content(&client, &workspace, &content, output.as_deref(), reach.json).await
             }
         }
     })
 }
 
-fn write_content(
+/// One file to upload: where it is here, and the name it keeps in the
+/// workspace.
+struct Uploading {
+    path: PathBuf,
+    name: String,
+}
+
+/// Upload `paths` into `workspace`, each file landing in the app that opens
+/// its type, and print where each one landed.
+async fn put_files(
+    client: &Client,
+    workspace: &str,
+    paths: &[PathBuf],
+    store: bool,
     json: bool,
-    content: &str,
-    bytes: &[u8],
-    output: Option<&Path>,
 ) -> Result<ExitCode> {
-    match output {
-        Some(path) => {
-            std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"content": content, "size": bytes.len(), "file": path})
-                );
+    let mut files = Vec::new();
+    for path in paths {
+        files.extend(files_under(path)?);
+    }
+    if files.is_empty() {
+        bail!("nothing to upload: those paths hold no files");
+    }
+    // Every byte goes up before any of it is imported: an app that cannot
+    // take one file does not stop the rest of the folder.
+    let mut uploaded = Vec::new();
+    for file in &files {
+        let mut progress = Progress::new(&file.name);
+        let put = client
+            .upload_file(workspace, &file.path, &mut |done, size| {
+                progress.told(done, size);
+            })
+            .await
+            .with_context(|| format!("uploading {}", file.name))?;
+        progress.done();
+        uploaded.push((file, text(&put, "content").to_owned()));
+    }
+    let mut rows = Vec::new();
+    let mut failures = Vec::new();
+    for (file, content) in &uploaded {
+        let landed = if store {
+            Ok(None)
+        } else {
+            land(client, workspace, file, content).await
+        };
+        let record = match landed {
+            Ok(record) => record,
+            Err(why) => {
+                failures.push(format!("{}: {why:#}", file.name));
+                None
+            }
+        };
+        rows.push(json!({
+            "name": file.name,
+            "content": content,
+            "record": record.as_deref(),
+        }));
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows).unwrap_or_default()
+        );
+    } else {
+        for row in &rows {
+            let name = text(row, "name");
+            match (row.get("record").and_then(Value::as_str), store) {
+                (Some(record), _) => println!("{record}  {name}"),
+                (None, true) => println!("{}  {name}", text(row, "content")),
+                (None, false) => println!(
+                    "{}  {name}  (no app opened it: its bytes are in the workspace)",
+                    text(row, "content")
+                ),
             }
         }
-        None => std::io::stdout()
-            .write_all(bytes)
-            .context("writing to standard output")?,
+    }
+    if !failures.is_empty() {
+        bail!(
+            "{} of the {} files are in the workspace but no record holds them:\n  {}",
+            failures.len(),
+            rows.len(),
+            failures.join("\n  ")
+        );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Every file `path` names, with the names they keep in the workspace: a
+/// file is itself, and a folder is every file under it, named by its path
+/// from the folder's own place (`notes/2026/plan.md` from `notes/`).
+fn files_under(path: &Path) -> Result<Vec<Uploading>> {
+    let named = |path: &Path, name: String| Uploading {
+        path: path.to_owned(),
+        name,
+    };
+    let meta =
+        std::fs::symlink_metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    if meta.is_file() {
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        return Ok(vec![named(path, name)]);
+    }
+    if !meta.is_dir() {
+        bail!("{} is not a file or a folder", path.display());
+    }
+    let root = path.parent().unwrap_or_else(|| Path::new(""));
+    let mut found = Vec::new();
+    let mut walking = vec![path.to_owned()];
+    while let Some(dir) = walking.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .with_context(|| format!("reading the folder {}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.with_context(|| format!("reading the folder {}", dir.display()))?;
+            let kind = entry
+                .file_type()
+                .with_context(|| format!("reading {}", entry.path().display()))?;
+            if kind.is_dir() {
+                walking.push(entry.path());
+            } else if kind.is_file() {
+                let name = entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap_or(&entry.path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                found.push(named(&entry.path(), name));
+            }
+            // A link is left alone: it may name what is outside the folder,
+            // or name the folder again.
+        }
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(found)
+}
+
+/// Land `file` in the app that opens its type, and answer the record it
+/// landed in.
+///
+/// The app is the one the file's own bytes name ([`tilo_content_types::landing`]),
+/// and the file is opened in it as the workspace opens any file
+/// (`<app>#open content=…`): an app that keeps one document per record
+/// opens a record of its own for it, and one that keeps many files in a
+/// record takes it into the one it keeps. The record it answers is the one
+/// the person opens, and the one search finds, as `<app>@<record>`.
+async fn land(
+    client: &Client,
+    workspace: &str,
+    file: &Uploading,
+    content: &str,
+) -> Result<Option<String>> {
+    let head = read_head(&file.path)?;
+    let Some(landing) = tilo_content_types::landing(&head, &file.name) else {
+        return Ok(None);
+    };
+    let title = format!("Upload {}", file.name);
+    let args = json!({"content": content, "name": file.name});
+    let answer = client
+        .act(workspace, landing.app, "open", &args, &title)
+        .await?;
+    let provider = answer
+        .pointer("/result/provider")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("{} opened no record: {answer}", landing.app))?;
+    Ok(Some(format!("{}@{provider}", landing.app)))
+}
+
+/// The first bytes of the file at `path`: what it takes to tell what it is.
+fn read_head(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut head = vec![0_u8; tilo_content_types::HEAD_BYTES];
+    let mut read = 0;
+    while let Some(room) = head.get_mut(read..) {
+        if room.is_empty() {
+            break;
+        }
+        match file.read(room) {
+            Ok(0) => break,
+            Ok(bytes) => read = read.saturating_add(bytes),
+            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+    head.truncate(read);
+    Ok(head)
+}
+
+/// An upload's progress, as a person at a terminal sees it: the file's name,
+/// how much of it is there and how much of the whole that is. Everywhere
+/// else it says nothing, so a script's output stays what it asked for.
+struct Progress {
+    line: Option<String>,
+    said_at: Option<std::time::Instant>,
+}
+
+impl Progress {
+    fn new(name: &str) -> Self {
+        Self {
+            line: std::io::IsTerminal::is_terminal(&std::io::stderr()).then(|| name.to_owned()),
+            said_at: None,
+        }
+    }
+
+    fn told(&mut self, done: u64, size: u64) {
+        let Some(name) = &self.line else {
+            return;
+        };
+        // Throttled: a 300 MB file would otherwise repaint thousands of times.
+        let now = std::time::Instant::now();
+        let finished = done >= size;
+        if !finished
+            && self
+                .said_at
+                .is_some_and(|said| now.duration_since(said).as_millis() < 100)
+        {
+            return;
+        }
+        self.said_at = Some(now);
+        let percent = if size == 0 {
+            100
+        } else {
+            done.saturating_mul(100).checked_div(size).unwrap_or(0)
+        };
+        eprint!("\r{name}  {} of {}  ({percent}%)", bytes(done), bytes(size));
+        if finished {
+            eprintln!();
+        }
+    }
+
+    fn done(&mut self) {
+        self.line = None;
+    }
+}
+
+/// `bytes` as a person reads a size: "512 B", "3.4 MB".
+fn bytes(count: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = count;
+    let mut unit: usize = 0;
+    while size.checked_div(1024).is_some_and(|smaller| smaller > 0)
+        && unit.saturating_add(1) < units.len()
+    {
+        size = size.checked_div(1024).unwrap_or(0);
+        unit = unit.saturating_add(1);
+    }
+    if unit == 0 {
+        return format!("{count} B");
+    }
+    let tenths = count
+        .saturating_mul(10)
+        .checked_div(1024_u64.pow(u32::try_from(unit).unwrap_or(0)));
+    let tenths = tenths.unwrap_or(0);
+    let whole = tenths.checked_div(10).unwrap_or(0);
+    let part = tenths.checked_rem(10).unwrap_or(0);
+    format!("{whole}.{part} {}", units.get(unit).copied().unwrap_or("B"))
+}
+
+/// `tilo files get`: the bytes written where they were asked for, as they
+/// arrive.
+#[expect(
+    clippy::future_not_send,
+    reason = "the file or the terminal is this command's own, written on its one thread"
+)]
+async fn get_content(
+    client: &Client,
+    workspace: &str,
+    content: &str,
+    output: Option<&Path>,
+    json: bool,
+) -> Result<ExitCode> {
+    let mut progress = Progress::new("downloading");
+    let written = if let Some(path) = output {
+        let mut file =
+            std::fs::File::create(path).with_context(|| format!("writing {}", path.display()))?;
+        let written = client
+            .download(workspace, content, &mut file, &mut |done, total| {
+                progress.told(done, total.unwrap_or(done));
+            })
+            .await?;
+        drop(file);
+        if json {
+            println!(
+                "{}",
+                json!({"content": content, "size": written, "file": path})
+            );
+        }
+        written
+    } else {
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        client
+            .download(workspace, content, &mut out, &mut |done, total| {
+                progress.told(done, total.unwrap_or(done));
+            })
+            .await?
+    };
+    progress.done();
+    Ok(if written == 0 {
+        bail!("{content} is empty or the workspace no longer holds it")
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// `tilo members … -w <workspace>`: the workspace's people, and inviting one
@@ -523,6 +824,15 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                     let _ = write!(said, "\n{next}");
                 }
                 Ok(show(reach.json, &invited, &said))
+            }
+            MembersCmd::Name { name } => {
+                let named = client
+                    .post(
+                        &format!("/v1/workspaces/{workspace}/members/name"),
+                        &serde_json::json!({"name": name}),
+                    )
+                    .await?;
+                Ok(show(reach.json, &named, &members_text(&named)))
             }
         }
     })
@@ -804,10 +1114,46 @@ pub fn arguments(args: &[String]) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use std::sync::Arc;
 
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
+
+    /// A folder goes up whole, each file named by its path from the folder's
+    /// own place, in one order however the tree is walked; a file is itself.
+    #[test]
+    fn a_folder_keeps_its_structure_and_a_file_is_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("contracts");
+        std::fs::create_dir_all(root.join("2026/signed")).unwrap();
+        std::fs::write(root.join("nda.pdf"), b"%PDF-1.7").unwrap();
+        std::fs::write(root.join("2026/plan.md"), b"# plan").unwrap();
+        std::fs::write(root.join("2026/signed/nda.pdf"), b"%PDF-1.7").unwrap();
+        let names: Vec<String> = files_under(&root)
+            .unwrap()
+            .into_iter()
+            .map(|file| file.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "contracts/2026/plan.md",
+                "contracts/2026/signed/nda.pdf",
+                "contracts/nda.pdf"
+            ]
+        );
+        let one = files_under(&root.join("nda.pdf")).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].name, "nda.pdf");
+    }
+
+    /// Sizes read as a person says them.
+    #[test]
+    fn a_size_reads_in_the_unit_a_person_would_say() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(512), "512 B");
+        assert_eq!(bytes(1536), "1.5 KB");
+        assert_eq!(bytes(300 * 1024 * 1024), "300.0 MB");
+    }
 
     fn answer(request: &test_http::Request) -> Option<test_http::Reply> {
         let json_reply = |status: u16, body: Value| {
@@ -859,217 +1205,232 @@ mod tests {
         env
     }
 
-    /// `docs/developers/api.md`, with the headers it takes.
-    #[test]
-    fn the_hosted_commands_are_the_apis_routes() {
-        let _key = keyed();
-        let api_server = fake_api();
-        let url = api_server.url();
-        let reach = Reach {
-            api: Some(&url),
-            key_file: None,
-            json: false,
-        };
+    tilo_test_env::scenario! {
+        fn the_hosted_commands_call_the_api;
 
-        // A workspace is made as `POST /v1/workspaces`, once per idempotency key.
-        account(
-            reach,
-            AccountCmd::Workspaces(WorkspacesCmd::Create {
-                name: "Applicant: Jane Doe".into(),
-            }),
-        );
-        let made = api_server.drain_requests();
-        assert_eq!(made.len(), 1);
-        assert_eq!(made[0].method, "POST");
-        assert_eq!(made[0].target, "/v1/workspaces");
-        assert_eq!(made[0].header("authorization"), Some("Bearer tilo_sk_test"));
-        assert!(
-            made[0].header("idempotency-key").is_some(),
-            "a call that makes something names its invocation"
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&made[0].body).unwrap(),
-            json!({"name": "Applicant: Jane Doe"})
-        );
-
-        // A file goes in as one upload, and the reference it answers is what
-        // the command prints.
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("passport.png");
-        std::fs::write(&file, b"hello").unwrap();
-        files(reach, "applicant-jane-doe", FilesCmd::Put { file });
-        let put = api_server.drain_requests();
-        let upload = put.last().expect("the upload");
-        assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/uploads"));
-        assert_eq!(upload.method, "POST");
-        assert_eq!(upload.body, b"hello");
-        assert_eq!(
-            upload.header("content-type"),
-            Some("application/octet-stream")
-        );
-        assert!(upload.header("idempotency-key").is_some());
-
-        // An action is `POST …/resources/{path}/actions/{action}`: its
-        // arguments are the body, and its run is named.
-        act(reach, "applicant-jane-doe", "pdf-viewer#open", &[]);
-        let acted = api_server.drain_requests();
-        assert_eq!(
-            acted.len(),
-            2,
-            "the workspace is named by a read of the list, then the action runs"
-        );
-        let action = acted.last().expect("the action");
-        assert_eq!(
-            action.target,
-            format!("/v1/workspaces/{WORKSPACE}/resources/pdf-viewer/actions/open")
-        );
-        assert_eq!(action.header("prefer"), Some("wait=60"));
-        assert_eq!(action.header("tilo-run-title"), Some("pdf-viewer#open"));
-        assert!(
-            action
-                .header("tilo-run")
-                .is_some_and(|run| run == action.header("idempotency-key").unwrap_or_default()),
-            "one invocation, one run, one idempotency key"
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&action.body).unwrap(),
-            json!({})
-        );
-
-        // A file comes back by the reference, its bytes as they were.
-        let out = dir.path().join("passport.back");
-        files(
-            reach,
-            "applicant-jane-doe",
-            FilesCmd::Get {
-                content: "tilo.content:abc".into(),
-                output: Some(out.clone()),
-            },
-        );
-        assert_eq!(std::fs::read(&out).unwrap(), b"hello");
-        let got = api_server.drain_requests();
-        assert_eq!(
-            got.last().expect("the read").target,
-            format!("/v1/workspaces/{WORKSPACE}/content/tilo.content%3Aabc")
-        );
-    }
-
-    /// A host busy with the person's changes answers `429` and names the wait;
-    /// the same call is asked again under the id it first went with, so the
-    /// host runs one invocation however often it is retried.
-    #[test]
-    fn a_busy_host_is_asked_again_under_the_same_idempotency_key() {
-        let _key = keyed();
-        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = Arc::clone(&asked);
-        let api_server = test_http::Responder::handle(move |_request: &test_http::Request| {
-            let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
-            let reply = |status: u16, body: Value| {
-                Some(
-                    test_http::Reply::status(status)
-                        .header("content-type", "application/json")
-                        .body(body.to_string()),
-                )
-            };
-            if first {
-                reply(
-                    429,
-                    json!({"error": {"code": "rate_limited", "message": "busy",
-                        "retry_after_ms": 1}}),
-                )
-            } else {
-                reply(200, json!({"revoked": "grant-1"}))
-            }
-        });
-        let url = api_server.url();
-        keys(
-            Reach {
+        phase the_hosted_commands_are_the_apis_routes;
+        // `docs/developers/api.md`, with the headers it takes.
+        {
+            let _key = keyed();
+            let api_server = fake_api();
+            let url = api_server.url();
+            let reach = Reach {
                 api: Some(&url),
                 key_file: None,
                 json: false,
-            },
-            None,
-            KeysCmd::Revoke {
-                grant: "grant-1".into(),
-            },
-        );
-        let sent = api_server.drain_requests();
-        assert_eq!(sent.len(), 2, "the busy answer is retried, not reported");
-        assert_eq!(sent[1].target, "/v1/keys/grant-1");
-        assert_eq!(
-            sent[0].header("idempotency-key"),
-            sent[1].header("idempotency-key")
-        );
+            };
+
+            // A workspace is made as `POST /v1/workspaces`, once per idempotency key.
+            account(
+                reach,
+                AccountCmd::Workspaces(WorkspacesCmd::Create {
+                    name: "Applicant: Jane Doe".into(),
+                }),
+            );
+            let made = api_server.drain_requests();
+            assert_eq!(made.len(), 1);
+            assert_eq!(made[0].method, "POST");
+            assert_eq!(made[0].target, "/v1/workspaces");
+            assert_eq!(made[0].header("authorization"), Some("Bearer tilo_sk_test"));
+            assert!(
+                made[0].header("idempotency-key").is_some(),
+                "a call that makes something names its invocation"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&made[0].body).unwrap(),
+                json!({"name": "Applicant: Jane Doe"})
+            );
+
+            // A file goes in as one upload, and the reference it answers is what
+            // the command prints.
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("passport.png");
+            std::fs::write(&file, b"hello").unwrap();
+            files(
+                reach,
+                "applicant-jane-doe",
+                FilesCmd::Put {
+                    paths: vec![file],
+                    store: false,
+                },
+            );
+            let put = api_server.drain_requests();
+            let upload = put.last().expect("the upload");
+            assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/uploads"));
+            assert_eq!(upload.method, "POST");
+            assert_eq!(upload.body, b"hello");
+            assert_eq!(
+                upload.header("content-type"),
+                Some("application/octet-stream")
+            );
+            assert!(upload.header("idempotency-key").is_some());
+
+            // An action is `POST …/resources/{path}/actions/{action}`: its
+            // arguments are the body, and its run is named.
+            act(reach, "applicant-jane-doe", "pdf-viewer#open", &[]);
+            let acted = api_server.drain_requests();
+            assert_eq!(
+                acted.len(),
+                2,
+                "the workspace is named by a read of the list, then the action runs"
+            );
+            let action = acted.last().expect("the action");
+            assert_eq!(
+                action.target,
+                format!("/v1/workspaces/{WORKSPACE}/resources/pdf-viewer/actions/open")
+            );
+            assert_eq!(action.header("prefer"), Some("wait=60"));
+            assert_eq!(action.header("tilo-run-title"), Some("pdf-viewer#open"));
+            assert!(
+                action
+                    .header("tilo-run")
+                    .is_some_and(|run| run == action.header("idempotency-key").unwrap_or_default()),
+                "one invocation, one run, one idempotency key"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&action.body).unwrap(),
+                json!({})
+            );
+
+            // A file comes back by the reference, its bytes as they were.
+            let out = dir.path().join("passport.back");
+            files(
+                reach,
+                "applicant-jane-doe",
+                FilesCmd::Get {
+                    content: "tilo.content:abc".into(),
+                    output: Some(out.clone()),
+                },
+            );
+            assert_eq!(std::fs::read(&out).unwrap(), b"hello");
+            let got = api_server.drain_requests();
+            assert_eq!(
+                got.last().expect("the read").target,
+                format!("/v1/workspaces/{WORKSPACE}/content/tilo.content%3Aabc")
+            );
+        }
+
+        phase a_busy_host_is_asked_again_under_the_same_idempotency_key;
+        // A host busy with the person's changes answers `429` and names the wait;
+        // the same call is asked again under the id it first went with, so the
+        // host runs one invocation however often it is retried.
+        {
+            let _key = keyed();
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = Arc::clone(&asked);
+            let api_server = test_http::Responder::handle(move |_request: &test_http::Request| {
+                let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                let reply = |status: u16, body: Value| {
+                    Some(
+                        test_http::Reply::status(status)
+                            .header("content-type", "application/json")
+                            .body(body.to_string()),
+                    )
+                };
+                if first {
+                    reply(
+                        429,
+                        json!({"error": {"code": "rate_limited", "message": "busy",
+                            "retry_after_ms": 1}}),
+                    )
+                } else {
+                    reply(200, json!({"revoked": "grant-1"}))
+                }
+            });
+            let url = api_server.url();
+            keys(
+                Reach {
+                    api: Some(&url),
+                    key_file: None,
+                    json: false,
+                },
+                None,
+                KeysCmd::Revoke {
+                    grant: "grant-1".into(),
+                },
+            );
+            let sent = api_server.drain_requests();
+            assert_eq!(sent.len(), 2, "the busy answer is retried, not reported");
+            assert_eq!(sent[1].target, "/v1/keys/grant-1");
+            assert_eq!(
+                sent[0].header("idempotency-key"),
+                sent[1].header("idempotency-key")
+            );
+        }
     }
 
-    #[test]
-    fn options_are_json_where_they_parse() {
-        assert_eq!(
-            arguments(&[
-                "name=Jane Doe".into(),
-                "count=3".into(),
-                "ok=true".into(),
-                "edit={\"op\":\"set\"}".into()
-            ])
-            .unwrap(),
-            serde_json::json!({"name": "Jane Doe", "count": 3, "ok": true,
-                "edit": {"op": "set"}})
-        );
-        assert!(arguments(&["nothing".into()]).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn hosted_arguments_and_answers_read_as_a_person_wrote_them;
 
-    #[test]
-    fn a_workspace_is_named_by_its_words() {
-        assert_eq!(slug("Applicant: Jane Doe"), "applicant-jane-doe");
-        assert_eq!(slug("applicant-jane-doe"), "applicant-jane-doe");
-        assert!(is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
-        assert!(!is_uuid("jane-doe"));
-    }
+        phase options_are_json_where_they_parse;
+        {
+            assert_eq!(
+                arguments(&[
+                    "name=Jane Doe".into(),
+                    "count=3".into(),
+                    "ok=true".into(),
+                    "edit={\"op\":\"set\"}".into()
+                ])
+                .unwrap(),
+                serde_json::json!({"name": "Jane Doe", "count": 3, "ok": true,
+                    "edit": {"op": "set"}})
+            );
+            assert!(arguments(&["nothing".into()]).is_err());
+        }
 
-    #[test]
-    fn a_workspace_line_names_its_id_and_where_it_lives() {
-        let row = serde_json::json!({"id": "3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b",
-            "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"});
-        assert_eq!(
-            workspace_line(&row),
-            "Applicant: Jane Doe (id 3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b, on eu1.tilo.sh, \
+        phase a_workspace_is_named_by_its_words;
+        {
+            assert_eq!(slug("Applicant: Jane Doe"), "applicant-jane-doe");
+            assert_eq!(slug("applicant-jane-doe"), "applicant-jane-doe");
+            assert!(is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
+            assert!(!is_uuid("jane-doe"));
+        }
+
+        phase a_workspace_line_names_its_id_and_where_it_lives;
+        {
+            let row = serde_json::json!({"id": "3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b",
+                "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"});
+            assert_eq!(
+                workspace_line(&row),
+                "Applicant: Jane Doe (id 3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b, on eu1.tilo.sh, \
              owner)"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn an_action_answer_says_what_ran_and_where_it_is() {
-        let done = serde_json::json!({"status": "ok", "path": "notes#open",
-            "run": "run-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
-        assert_eq!(
-            action_text(&done),
-            "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
-        );
-        let pending = serde_json::json!({"status": "pending", "run": "run-2",
-            "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
-        assert_eq!(
-            action_text(&pending),
-            "pending run-2: it waits for you, at https://tilo.sh/approve/1 \
+        phase an_action_answer_says_what_ran_and_where_it_is;
+        {
+            let done = serde_json::json!({"status": "ok", "path": "notes#open",
+                "run": "run-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
+            assert_eq!(
+                action_text(&done),
+                "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
+            );
+            let pending = serde_json::json!({"status": "pending", "run": "run-2",
+                "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
+            assert_eq!(
+                action_text(&pending),
+                "pending run-2: it waits for you, at https://tilo.sh/approve/1 \
              (pdf-viewer#import-pdf-content)"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn the_people_of_a_workspace_are_a_line_each() {
-        let listed = serde_json::json!({
-            "members": [{"name": "Ada", "role": "owner", "owner": true, "administrator": true},
-                        {"name": "Rosa Ortiz", "role": "editor"}],
-            "invitations": [{"id": "inv-1", "role": "viewer", "status": "pending"}],
-        });
-        assert_eq!(
-            members_text(&listed),
-            "members:\n  Ada — owner, administrator\n  Rosa Ortiz — editor\n\
+        phase the_people_of_a_workspace_are_a_line_each;
+        {
+            let listed = serde_json::json!({
+                "members": [{"name": "Ada", "role": "owner", "owner": true, "administrator": true},
+                            {"name": "Rosa Ortiz", "role": "editor"}],
+                "invitations": [{"id": "inv-1", "role": "viewer", "status": "pending"}],
+            });
+            assert_eq!(
+                members_text(&listed),
+                "members:\n  Ada — owner, administrator\n  Rosa Ortiz — editor\n\
              invitations:\n  viewer invitation pending, inv-1"
-        );
-        let alone = serde_json::json!({"members": [], "invitations": []});
-        assert_eq!(
-            members_text(&alone),
-            "members:\n  nobody yet\ninvitations: none open"
-        );
+            );
+            let alone = serde_json::json!({"members": [], "invitations": []});
+            assert_eq!(
+                members_text(&alone),
+                "members:\n  nobody yet\ninvitations: none open"
+            );
+        }
     }
 }

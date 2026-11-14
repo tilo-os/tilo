@@ -78,6 +78,7 @@ fn a_report_asked_of_a_window_opens_the_box_about_what_it_picked() {
     assert!(
         app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
             to: vec![destination.clone()],
+            pointing: false,
         }])
     );
     let opened = take_open_send_box().expect("the box was asked for");

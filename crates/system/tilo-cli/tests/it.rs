@@ -113,3 +113,60 @@ fn a_new_identity_is_made_once() {
     assert_eq!(again, key);
     assert!(said.contains("already holds Ada's"), "{said}");
 }
+
+/// What `tilo mcp` may hold of its own while it waits for its agent: it is a thin bridge.
+const MCP_IDLE_KB: u64 = 6 * 1024;
+
+/// `tilo mcp` answers an agent's first calls and then idles small: a bridge between the agent
+/// and the person's workspace holds a few megabytes of its own (its private, anonymous memory;
+/// the program's own pages are shared and the kernel takes them back), however many cores the
+/// computer has, rather than a runtime's worth of threads and their heaps.
+#[cfg(target_os = "linux")]
+#[test]
+fn tilo_mcp_idles_small() {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let home = tempfile::tempdir().unwrap();
+    let mut mcp = Command::new(tilo_test_env::package_binary!("tilo"))
+        .arg("mcp")
+        .env("HOME", home.path())
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .env("XDG_DATA_HOME", home.path().join("data"))
+        .env("XDG_RUNTIME_DIR", home.path().join("run"))
+        .env_remove("TILO_DEVICE_DIR")
+        .env_remove(tilo_paths::login::AGENT_SOCKET_ENV)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn_locked()
+        .unwrap();
+    let mut input = mcp.stdin.take().unwrap();
+    let mut output = BufReader::new(mcp.stdout.take().unwrap());
+    for (id, request) in [
+        (1, r#""method":"initialize","params":{}"#),
+        (2, r#""method":"tools/list""#),
+        (3, r#""method":"tools/call","params":{"name":"tilo_ls"}"#),
+    ] {
+        writeln!(input, r#"{{"jsonrpc":"2.0","id":{id},{request}}}"#).unwrap();
+        let mut answer = String::new();
+        output.read_line(&mut answer).unwrap();
+        assert!(answer.contains(&format!(r#""id":{id}"#)), "{answer}");
+    }
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let status = std::fs::read_to_string(format!("/proc/{}/status", mcp.id())).unwrap();
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap()
+    };
+    let (own, program, threads) = (field("RssAnon:"), field("RssFile:"), field("Threads:"));
+    drop(input);
+    let _ = mcp.wait();
+    assert!(
+        own < MCP_IDLE_KB,
+        "tilo mcp holds {own} kB of its own (and {program} kB of its program) with {threads} \
+         threads, past {MCP_IDLE_KB} kB"
+    );
+}

@@ -880,182 +880,186 @@ mod tests {
         result
     }
 
-    #[test]
-    fn windows_review_projects_real_paths_and_progressively_discloses_them() {
-        let fixture = tempfile::tempdir().unwrap();
-        let root = fixture.path().join("Documents & local mail");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("archive.pst"), b"mail").unwrap();
-        std::fs::create_dir(root.join("saves")).unwrap();
-        std::fs::write(root.join("saves/game.dat"), b"save").unwrap();
-        std::fs::create_dir(root.join("mods")).unwrap();
-        std::fs::write(root.join("mods/unknown.bin"), b"mod").unwrap();
-        let mut preview = fixture_preview(&root, RootRole::Other);
-        let id = preview.belongings.windows.as_ref().unwrap().roots[0]
-            .source_id
-            .clone();
-        let projection = preview.windows_review_projection();
-        let groups = projection[0]["categories"].as_array().unwrap();
-        assert_eq!(groups.len(), 3);
-        let mail = groups
-            .iter()
-            .find(|group| group["category"] == "mail-archive")
-            .unwrap();
-        assert_eq!(mail["known_bytes"], 4);
-        assert_eq!(
-            mail["paths"][0]["path"],
-            root.join("archive.pst").to_str().unwrap()
-        );
-        assert_eq!(mail["paths"][0]["destination"], "source-0/archive.pst");
-        assert_eq!(mail["unavailable"], 0);
-        let before = texts(preview.windows_view().as_ref());
-        assert!(
-            !before
+    tilo_test_env::scenario! {
+        fn the_windows_review_shows_real_paths_and_opens_one_safely;
+
+        phase windows_review_projects_real_paths_and_progressively_discloses_them;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("Documents & local mail");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("archive.pst"), b"mail").unwrap();
+            std::fs::create_dir(root.join("saves")).unwrap();
+            std::fs::write(root.join("saves/game.dat"), b"save").unwrap();
+            std::fs::create_dir(root.join("mods")).unwrap();
+            std::fs::write(root.join("mods/unknown.bin"), b"mod").unwrap();
+            let mut preview = fixture_preview(&root, RootRole::Other);
+            let id = preview.belongings.windows.as_ref().unwrap().roots[0]
+                .source_id
+                .clone();
+            let projection = preview.windows_review_projection();
+            let groups = projection[0]["categories"].as_array().unwrap();
+            assert_eq!(groups.len(), 3);
+            let mail = groups
                 .iter()
-                .any(|label| label.contains(root.join("archive.pst").to_str().unwrap()))
-        );
-        preview
-            .apply(ShowWindowsCategory {
-                source_id: id.clone(),
-                category: "mail-archive".into(),
-                expanded: true,
-            })
-            .unwrap();
-        let after = texts(preview.windows_view().as_ref());
-        assert!(
-            after
-                .iter()
-                .any(|label| label.contains(mail["paths"][0]["path"].as_str().unwrap()))
-        );
-        let view = preview.windows_view();
-        let open =
-            super::super::visual_tests::control(view.as_ref(), "windows.root.0.open").unwrap();
-        assert_eq!(
-            open.accessibility().unwrap().name.as_deref(),
-            Some(t("installer-windows-open-source").as_str())
-        );
-        let resources = ui::widget::published_resources(open, &automerge::AutoCommit::new());
-        assert_eq!(
-            resources[0].actions[0].kind,
-            ui::tilo_actions::OperationKind::View
-        );
-        let declarations = InstallerPreviewEffect::declarations();
-        for id in ["open-windows-source", "show-windows-category"] {
-            assert!(preview.effect_page_admitted(id));
+                .find(|group| group["category"] == "mail-archive")
+                .unwrap();
+            assert_eq!(mail["known_bytes"], 4);
             assert_eq!(
-                declarations
-                    .iter()
-                    .find(|declaration| declaration.id == id)
-                    .unwrap()
-                    .kind,
-                ui::tilo_actions::OperationKind::View
+                mail["paths"][0]["path"],
+                root.join("archive.pst").to_str().unwrap()
             );
-            if id == "open-windows-source" {
-                let declaration = declarations
+            assert_eq!(mail["paths"][0]["destination"], "source-0/archive.pst");
+            assert_eq!(mail["unavailable"], 0);
+            let before = texts(preview.windows_view().as_ref());
+            assert!(
+                !before
                     .iter()
-                    .find(|declaration| declaration.id == id)
-                    .unwrap();
-                assert_eq!(declaration.params.len(), 1);
-                assert_eq!(declaration.params[0].name, "source_id");
-            }
-        }
-        assert!(
+                    .any(|label| label.contains(root.join("archive.pst").to_str().unwrap()))
+            );
             preview
                 .apply(ShowWindowsCategory {
-                    source_id: id,
-                    category: "absent".into(),
+                    source_id: id.clone(),
+                    category: "mail-archive".into(),
                     expanded: true,
                 })
-                .is_err()
-        );
-    }
+                .unwrap();
+            let after = texts(preview.windows_view().as_ref());
+            assert!(
+                after
+                    .iter()
+                    .any(|label| label.contains(mail["paths"][0]["path"].as_str().unwrap()))
+            );
+            let view = preview.windows_view();
+            let open =
+                super::super::visual_tests::control(view.as_ref(), "windows.root.0.open").unwrap();
+            assert_eq!(
+                open.accessibility().unwrap().name.as_deref(),
+                Some(t("installer-windows-open-source").as_str())
+            );
+            let resources = ui::widget::published_resources(open, &automerge::AutoCommit::new());
+            assert_eq!(
+                resources[0].actions[0].kind,
+                ui::tilo_actions::OperationKind::View
+            );
+            let declarations = InstallerPreviewEffect::declarations();
+            for id in ["open-windows-source", "show-windows-category"] {
+                assert!(preview.effect_page_admitted(id));
+                assert_eq!(
+                    declarations
+                        .iter()
+                        .find(|declaration| declaration.id == id)
+                        .unwrap()
+                        .kind,
+                    ui::tilo_actions::OperationKind::View
+                );
+                if id == "open-windows-source" {
+                    let declaration = declarations
+                        .iter()
+                        .find(|declaration| declaration.id == id)
+                        .unwrap();
+                    assert_eq!(declaration.params.len(), 1);
+                    assert_eq!(declaration.params[0].name, "source_id");
+                }
+            }
+            assert!(
+                preview
+                    .apply(ShowWindowsCategory {
+                        source_id: id,
+                        category: "absent".into(),
+                        expanded: true,
+                    })
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn windows_review_exposes_unavailable_entries_and_gaps_without_following_them() {
-        let fixture = tempfile::tempdir().unwrap();
-        let root = fixture.path().join("granted");
-        let outside = fixture.path().join("not-granted");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::create_dir(&outside).unwrap();
-        std::fs::write(outside.join("unique.txt"), b"private").unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("linked-folder")).unwrap();
-        let mut preview = fixture_preview(&root, RootRole::Other);
-        let projected = preview.windows_review_projection();
-        let group = &projected[0]["categories"][0];
-        assert_eq!(group["entries"], 1);
-        assert_eq!(group["known_bytes"], 0);
-        assert_eq!(group["unknown_sizes"], 1);
-        assert_eq!(group["unavailable"], 1);
-        assert!(group["paths"][0]["bytes"].is_null());
-        assert!(!projected.to_string().contains("unique.txt"));
-        assert_eq!(
-            projected[0]["gaps"][0],
-            root.join("linked-folder").to_str().unwrap()
-        );
-        let source_id = projected[0]["source_id"].as_str().unwrap().to_owned();
-        preview
-            .apply(ShowWindowsCategory {
-                source_id,
-                category: "gaps".into(),
-                expanded: true,
-            })
-            .unwrap();
-        assert!(
-            texts(preview.windows_view().as_ref())
-                .iter()
-                .any(|text| text.contains(root.join("linked-folder").to_str().unwrap()))
-        );
-    }
+        phase windows_review_exposes_unavailable_entries_and_gaps_without_following_them;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("granted");
+            let outside = fixture.path().join("not-granted");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::write(outside.join("unique.txt"), b"private").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("linked-folder")).unwrap();
+            let mut preview = fixture_preview(&root, RootRole::Other);
+            let projected = preview.windows_review_projection();
+            let group = &projected[0]["categories"][0];
+            assert_eq!(group["entries"], 1);
+            assert_eq!(group["known_bytes"], 0);
+            assert_eq!(group["unknown_sizes"], 1);
+            assert_eq!(group["unavailable"], 1);
+            assert!(group["paths"][0]["bytes"].is_null());
+            assert!(!projected.to_string().contains("unique.txt"));
+            assert_eq!(
+                projected[0]["gaps"][0],
+                root.join("linked-folder").to_str().unwrap()
+            );
+            let source_id = projected[0]["source_id"].as_str().unwrap().to_owned();
+            preview
+                .apply(ShowWindowsCategory {
+                    source_id,
+                    category: "gaps".into(),
+                    expanded: true,
+                })
+                .unwrap();
+            assert!(
+                texts(preview.windows_view().as_ref())
+                    .iter()
+                    .any(|text| text.contains(root.join("linked-folder").to_str().unwrap()))
+            );
+        }
 
-    #[test]
-    fn windows_open_uses_one_escaped_file_uri_and_rejects_paths_and_replaced_roots() {
-        OPENED.with(|opened| opened.borrow_mut().clear());
-        let fixture = tempfile::tempdir().unwrap();
-        let root = fixture.path().join("User's & mail #100% é");
-        std::fs::create_dir(&root).unwrap();
-        let mut preview = fixture_preview(&root, RootRole::Outlook);
-        assert!(std::ptr::fn_addr_eq(
-            Preparation::default().opener,
-            ui::portal::send_open_uri as fn(&str) -> ui::portal::LaunchChannel,
-        ));
-        let id = preview.belongings.windows.as_ref().unwrap().roots[0]
-            .source_id
-            .clone();
-        assert!(
+        phase windows_open_uses_one_escaped_file_uri_and_rejects_paths_and_replaced_roots;
+        {
+            OPENED.with(|opened| opened.borrow_mut().clear());
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("User's & mail #100% é");
+            std::fs::create_dir(&root).unwrap();
+            let mut preview = fixture_preview(&root, RootRole::Outlook);
+            assert!(std::ptr::fn_addr_eq(
+                Preparation::default().opener,
+                ui::portal::send_open_uri as fn(&str) -> ui::portal::LaunchChannel,
+            ));
+            let id = preview.belongings.windows.as_ref().unwrap().roots[0]
+                .source_id
+                .clone();
+            assert!(
+                preview
+                    .apply(OpenWindowsSource {
+                        source_id: root.to_string_lossy().into_owned()
+                    })
+                    .is_err()
+            );
             preview
                 .apply(OpenWindowsSource {
-                    source_id: root.to_string_lossy().into_owned()
+                    source_id: id.clone(),
                 })
-                .is_err()
-        );
-        preview
-            .apply(OpenWindowsSource {
-                source_id: id.clone(),
-            })
-            .unwrap();
-        assert!(
-            preview
-                .apply(OpenWindowsSource {
-                    source_id: id.clone()
-                })
-                .is_err()
-        );
-        preview.poll_windows();
-        OPENED.with(|opened| {
-            let calls = opened.borrow();
-            assert_eq!(calls.len(), 1);
-            let uri = url::Url::parse(&calls[0]).unwrap();
-            assert_eq!(uri.scheme(), "file");
-            assert_eq!(uri.to_file_path().unwrap(), root);
-            assert!(uri.query().is_none());
-            assert!(uri.fragment().is_none());
-            assert!(calls[0].contains("%23"));
-            assert!(calls[0].contains("%25"));
-        });
-        std::fs::rename(&root, fixture.path().join("original")).unwrap();
-        std::fs::create_dir(&root).unwrap();
-        assert!(preview.apply(OpenWindowsSource { source_id: id }).is_err());
-        OPENED.with(|opened| assert_eq!(opened.borrow().len(), 1));
+                .unwrap();
+            assert!(
+                preview
+                    .apply(OpenWindowsSource {
+                        source_id: id.clone()
+                    })
+                    .is_err()
+            );
+            preview.poll_windows();
+            OPENED.with(|opened| {
+                let calls = opened.borrow();
+                assert_eq!(calls.len(), 1);
+                let uri = url::Url::parse(&calls[0]).unwrap();
+                assert_eq!(uri.scheme(), "file");
+                assert_eq!(uri.to_file_path().unwrap(), root);
+                assert!(uri.query().is_none());
+                assert!(uri.fragment().is_none());
+                assert!(calls[0].contains("%23"));
+                assert!(calls[0].contains("%25"));
+            });
+            std::fs::rename(&root, fixture.path().join("original")).unwrap();
+            std::fs::create_dir(&root).unwrap();
+            assert!(preview.apply(OpenWindowsSource { source_id: id }).is_err());
+            OPENED.with(|opened| assert_eq!(opened.borrow().len(), 1));
+        }
     }
 
     #[test]
@@ -1193,57 +1197,61 @@ mod tests {
         );
     }
 
-    #[test]
-    fn windows_export_keeps_registry_account_identities_out_of_public_media_json() {
-        use imager_backend::account_transfer::{WindowsProfile, private_windows_hints};
-        let source = tempfile::tempdir().unwrap();
-        let destination = tempfile::tempdir().unwrap();
-        let selected = [SelectedRoot {
-            path: source.path().to_owned(),
-            role: RootRole::OneDrive,
-        }];
-        let profiles = [WindowsProfile {
-            root: source.path().to_owned(),
-            email: "private-export-fixture@example.org".into(),
-        }];
-        let hints = private_windows_hints(&selected, &profiles);
-        let inventory = Inventory::discover(&selected).unwrap();
-        export(&inventory, &hints, b"private-password", destination.path()).unwrap();
-        let root = std::fs::read_dir(destination.path())
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let public = std::fs::read_to_string(root.join("review.json")).unwrap();
-        assert!(!public.contains(&profiles[0].email));
-        assert!(!public.contains(source.path().to_str().unwrap()));
-        let receipt: serde_json::Value = serde_json::from_str(&public).unwrap();
-        let bytes = std::fs::read(root.join("account-hints.sealed")).unwrap();
-        assert!(
-            !bytes
-                .windows(profiles[0].email.len())
-                .any(|bytes| bytes == profiles[0].email.as_bytes())
-        );
-        let sealed = account_custody::hints::PasswordHints::from_bytes(&bytes).unwrap();
-        let opened = account_custody::hints::open_password(
-            b"private-password",
-            receipt["hint_binding"].as_str().unwrap(),
-            &sealed,
-        )
-        .unwrap();
-        assert_eq!(opened[0].email, profiles[0].email);
-    }
+    tilo_test_env::scenario! {
+        fn a_windows_export_leaves_identities_and_the_source_alone;
 
-    #[test]
-    fn windows_export_cannot_modify_a_retained_source() {
-        let fixture = tempfile::tempdir().unwrap();
-        let inventory = Inventory::discover(&[SelectedRoot {
-            path: fixture.path().to_owned(),
-            role: RootRole::Other,
-        }])
-        .unwrap();
-        assert!(export(&inventory, &[], b"private-password", fixture.path()).is_err());
-        assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 0);
+        phase windows_export_keeps_registry_account_identities_out_of_public_media_json;
+        {
+            use imager_backend::account_transfer::{WindowsProfile, private_windows_hints};
+            let source = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let selected = [SelectedRoot {
+                path: source.path().to_owned(),
+                role: RootRole::OneDrive,
+            }];
+            let profiles = [WindowsProfile {
+                root: source.path().to_owned(),
+                email: "private-export-fixture@example.org".into(),
+            }];
+            let hints = private_windows_hints(&selected, &profiles);
+            let inventory = Inventory::discover(&selected).unwrap();
+            export(&inventory, &hints, b"private-password", destination.path()).unwrap();
+            let root = std::fs::read_dir(destination.path())
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let public = std::fs::read_to_string(root.join("review.json")).unwrap();
+            assert!(!public.contains(&profiles[0].email));
+            assert!(!public.contains(source.path().to_str().unwrap()));
+            let receipt: serde_json::Value = serde_json::from_str(&public).unwrap();
+            let bytes = std::fs::read(root.join("account-hints.sealed")).unwrap();
+            assert!(
+                !bytes
+                    .windows(profiles[0].email.len())
+                    .any(|bytes| bytes == profiles[0].email.as_bytes())
+            );
+            let sealed = account_custody::hints::PasswordHints::from_bytes(&bytes).unwrap();
+            let opened = account_custody::hints::open_password(
+                b"private-password",
+                receipt["hint_binding"].as_str().unwrap(),
+                &sealed,
+            )
+            .unwrap();
+            assert_eq!(opened[0].email, profiles[0].email);
+        }
+
+        phase windows_export_cannot_modify_a_retained_source;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let inventory = Inventory::discover(&[SelectedRoot {
+                path: fixture.path().to_owned(),
+                role: RootRole::Other,
+            }])
+            .unwrap();
+            assert!(export(&inventory, &[], b"private-password", fixture.path()).is_err());
+            assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 0);
+        }
     }
 }

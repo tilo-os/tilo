@@ -233,119 +233,123 @@ impl tilo_formats::Words for Phrases {
 mod tests {
     use super::*;
 
-    /// A package's words read in the person's language (i18n.md): its translation where it has
-    /// one, its source language where it lacks one, a type's noun by count.
-    #[test]
-    fn a_packages_words_read_in_the_persons_language() {
-        let catalogues = [
-            (
-                "en-US".to_owned(),
-                "d-new = New note\nd-pin = Pin\nd-note = Note\n    .noun = { $count ->\n        [one] note\n       *[other] notes\n    }\n".to_owned(),
-            ),
-            (
-                "de-DE".to_owned(),
-                "d-new = Neue Notiz\nd-note = Notiz\n    .noun = { $count ->\n        [one] Notiz\n       *[other] Notizen\n    }\n".to_owned(),
-            ),
-        ];
-        let count = |n: &str| vec![("count".to_owned(), n.to_owned())];
-        let german = Phrases::new("de_DE.UTF-8");
-        german.add_package(&catalogues);
-        assert_eq!(german.say("d-new", &[]), "Neue Notiz");
-        assert_eq!(
-            german.say("d-pin", &[]),
-            "Pin",
-            "a word the translation lacks is the source's"
-        );
-        assert_eq!(german.say("d-note.noun", &count("1")), "Notiz");
-        assert_eq!(german.say("d-note.noun", &count("2")), "Notizen");
-        let english = Phrases::new("en-US");
-        english.add_package(&catalogues);
-        assert_eq!(english.say("d-new", &[]), "New note");
-        assert_eq!(english.say("d-note.noun", &count("2")), "notes");
-        assert_eq!(
-            english.say("d-gone", &[]),
-            "d-gone",
-            "no catalogue: the key, as a phrase is"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn phrases_read_in_the_language_of_the_person_the_session_and_the_package;
 
-    /// A window speaks the language its package ships: an English-only app reads English even
-    /// where the person's own language is German.
-    #[test]
-    fn a_windows_phrases_are_in_the_language_its_package_ships() {
-        let german_host = Phrases::new("de_DE.UTF-8");
-        assert_ne!(
-            german_host.say("tilolang-empty", &[]),
-            "Nothing here yet",
-            "the host's own language is German"
-        );
-        let english_only = german_host.for_window(None, &["en-US"]);
-        assert_eq!(english_only.locale(), "en-US");
-        assert_eq!(english_only.say("tilolang-empty", &[]), "Nothing here yet");
-        let both = german_host.for_window(None, &["en-US", "de-DE"]);
-        assert_eq!(both.locale(), "de-DE", "the person's, when it ships it");
-    }
-
-    /// The window reads in the language the person's session names, whatever language this host's
-    /// own process runs in: the host that draws a German window may well have started in the
-    /// source language, and the app's words still come from its German catalogue.
-    #[test]
-    fn a_windows_language_is_the_one_the_session_names() {
-        let english_host = Phrases::new("en-US");
-        let german = english_host.for_window(Some("de-DE"), &["en-US", "de-DE"]);
-        assert_eq!(german.locale(), "de-DE");
-        german.add_package(&[("de-DE".to_owned(), "d-clean = Morgenroutine\n".to_owned())]);
-        assert_eq!(german.say("d-clean", &[]), "Morgenroutine");
-        assert_ne!(
-            german.say("tilolang-empty", &[]),
-            "Nothing here yet",
-            "the frames' words follow the window too"
-        );
-        // A window whose package ships no German still reads the German the person types their
-        // dates in: the language they prefer is theirs, whatever the window speaks.
-        let english_only = english_host.for_window(Some("de-DE"), &["en-US"]);
-        assert_eq!(english_only.locale(), "en-US");
-        assert_eq!(english_only.language(), "de");
-        // A language the host's own catalogue has no translation for is the app's to speak: the
-        // window's language is the one chosen, never the host chrome's nearest one.
-        let portuguese = english_host.for_window(Some("pt-BR"), &["en-US", "pt-BR"]);
-        assert_eq!(portuguese.locale(), "pt-BR");
-        portuguese.add_package(&[("pt-BR".to_owned(), "d-clean = Limpeza matinal\n".to_owned())]);
-        assert_eq!(portuguese.say("d-clean", &[]), "Limpeza matinal");
-    }
-
-    #[test]
-    fn the_standard_librarys_phrases_read_in_the_persons_language() {
-        let english = Phrases::new("en-US");
-        for id in [
-            "tilolang-all",
-            "tilolang-empty",
-            "tilolang-empty-kind",
-            "tilolang-none-selected",
-            "tilolang-sort",
-            "tilolang-done",
-            "tilolang-no-date",
-            "tilolang-all-done",
-            "tilolang-all-caught-up",
-            "tilolang-add",
-        ] {
-            let kind = [("kind".to_owned(), "notes".to_owned())];
-            assert_ne!(english.say(id, &kind), id, "{id} has a phrase");
+        phase a_packages_words_read_in_the_persons_language;
+        // A package's words read in the person's language (i18n.md): its translation where it has
+        // one, its source language where it lacks one, a type's noun by count.
+        {
+            let catalogues = [
+                (
+                    "en-US".to_owned(),
+                    "d-new = New note\nd-pin = Pin\nd-note = Note\n    .noun = { $count ->\n        [one] note\n       *[other] notes\n    }\n".to_owned(),
+                ),
+                (
+                    "de-DE".to_owned(),
+                    "d-new = Neue Notiz\nd-note = Notiz\n    .noun = { $count ->\n        [one] Notiz\n       *[other] Notizen\n    }\n".to_owned(),
+                ),
+            ];
+            let count = |n: &str| vec![("count".to_owned(), n.to_owned())];
+            let german = Phrases::new("de_DE.UTF-8");
+            german.add_package(&catalogues);
+            assert_eq!(german.say("d-new", &[]), "Neue Notiz");
+            assert_eq!(
+                german.say("d-pin", &[]),
+                "Pin",
+                "a word the translation lacks is the source's"
+            );
+            assert_eq!(german.say("d-note.noun", &count("1")), "Notiz");
+            assert_eq!(german.say("d-note.noun", &count("2")), "Notizen");
+            let english = Phrases::new("en-US");
+            english.add_package(&catalogues);
+            assert_eq!(english.say("d-new", &[]), "New note");
+            assert_eq!(english.say("d-note.noun", &count("2")), "notes");
+            assert_eq!(
+                english.say("d-gone", &[]),
+                "d-gone",
+                "no catalogue: the key, as a phrase is"
+            );
         }
-        let german = Phrases::new("de_DE.UTF-8");
-        assert_ne!(
-            german.say("tilolang-empty", &[]),
-            english.say("tilolang-empty", &[]),
-            "German has its own"
-        );
-        assert_eq!(
-            german.say(
+
+        phase a_windows_phrases_are_in_the_language_its_package_ships;
+        // A window speaks the language its package ships: an English-only app reads English even
+        // where the person's own language is German.
+        {
+            let german_host = Phrases::new("de_DE.UTF-8");
+            assert_ne!(
+                german_host.say("tilolang-empty", &[]),
+                "Nothing here yet",
+                "the host's own language is German"
+            );
+            let english_only = german_host.for_window(None, &["en-US"]);
+            assert_eq!(english_only.locale(), "en-US");
+            assert_eq!(english_only.say("tilolang-empty", &[]), "Nothing here yet");
+            let both = german_host.for_window(None, &["en-US", "de-DE"]);
+            assert_eq!(both.locale(), "de-DE", "the person's, when it ships it");
+        }
+
+        phase a_windows_language_is_the_one_the_session_names;
+        // The window reads in the language the person's session names, whatever language this host's
+        // own process runs in: the host that draws a German window may well have started in the
+        // source language, and the app's words still come from its German catalogue.
+        {
+            let english_host = Phrases::new("en-US");
+            let german = english_host.for_window(Some("de-DE"), &["en-US", "de-DE"]);
+            assert_eq!(german.locale(), "de-DE");
+            german.add_package(&[("de-DE".to_owned(), "d-clean = Morgenroutine\n".to_owned())]);
+            assert_eq!(german.say("d-clean", &[]), "Morgenroutine");
+            assert_ne!(
+                german.say("tilolang-empty", &[]),
+                "Nothing here yet",
+                "the frames' words follow the window too"
+            );
+            // A window whose package ships no German still reads the German the person types their
+            // dates in: the language they prefer is theirs, whatever the window speaks.
+            let english_only = english_host.for_window(Some("de-DE"), &["en-US"]);
+            assert_eq!(english_only.locale(), "en-US");
+            assert_eq!(english_only.language(), "de");
+            // A language the host's own catalogue has no translation for is the app's to speak: the
+            // window's language is the one chosen, never the host chrome's nearest one.
+            let portuguese = english_host.for_window(Some("pt-BR"), &["en-US", "pt-BR"]);
+            assert_eq!(portuguese.locale(), "pt-BR");
+            portuguese.add_package(&[("pt-BR".to_owned(), "d-clean = Limpeza matinal\n".to_owned())]);
+            assert_eq!(portuguese.say("d-clean", &[]), "Limpeza matinal");
+        }
+
+        phase the_standard_librarys_phrases_read_in_the_persons_language;
+        {
+            let english = Phrases::new("en-US");
+            for id in [
+                "tilolang-all",
+                "tilolang-empty",
                 "tilolang-empty-kind",
-                &[("kind".to_owned(), "Notizen".to_owned())]
-            ),
-            "Noch keine Notizen",
-            "a list that finds nothing reads in the person's language"
-        );
-        assert_eq!(english.say("no-such-phrase", &[]), "no-such-phrase");
+                "tilolang-none-selected",
+                "tilolang-sort",
+                "tilolang-done",
+                "tilolang-no-date",
+                "tilolang-all-done",
+                "tilolang-all-caught-up",
+                "tilolang-add",
+            ] {
+                let kind = [("kind".to_owned(), "notes".to_owned())];
+                assert_ne!(english.say(id, &kind), id, "{id} has a phrase");
+            }
+            let german = Phrases::new("de_DE.UTF-8");
+            assert_ne!(
+                german.say("tilolang-empty", &[]),
+                english.say("tilolang-empty", &[]),
+                "German has its own"
+            );
+            assert_eq!(
+                german.say(
+                    "tilolang-empty-kind",
+                    &[("kind".to_owned(), "Notizen".to_owned())]
+                ),
+                "Noch keine Notizen",
+                "a list that finds nothing reads in the person's language"
+            );
+            assert_eq!(english.say("no-such-phrase", &[]), "no-such-phrase");
+        }
     }
 }

@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use crate::VoiceEvent;
 use tilo_relay_protocol::Envelope;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::voice::Showing;
 
 struct Joined {
@@ -35,13 +36,13 @@ struct Joined {
 /// The participations of this session, one per workspace at most.
 #[derive(Default)]
 pub(crate) struct Participations {
-    joined: HashMap<u64, Joined>,
+    joined: HashMap<WorkspaceId, Joined>,
 }
 
 impl Participations {
     /// Join `call` of `workspace_id`, leaving the workspace's previous call.
     /// Returns what to send, in order.
-    pub(crate) fn join(&mut self, workspace_id: u64, call: [u8; 32]) -> Vec<Envelope> {
+    pub(crate) fn join(&mut self, workspace_id: WorkspaceId, call: [u8; 32]) -> Vec<Envelope> {
         if self
             .joined
             .get(&workspace_id)
@@ -70,7 +71,7 @@ impl Participations {
 
     /// Show `showing` besides the voice in the call of `workspace_id` from
     /// now on: what to send, once the participation is granted.
-    pub(crate) fn show(&mut self, workspace_id: u64, showing: Showing) -> Option<Envelope> {
+    pub(crate) fn show(&mut self, workspace_id: WorkspaceId, showing: Showing) -> Option<Envelope> {
         let joined = self.joined.get_mut(&workspace_id)?;
         joined.showing = showing;
         Some(Envelope::VoiceShow {
@@ -81,7 +82,7 @@ impl Participations {
         })
     }
 
-    pub(crate) fn leave(&mut self, workspace_id: u64) -> Option<Envelope> {
+    pub(crate) fn leave(&mut self, workspace_id: WorkspaceId) -> Option<Envelope> {
         let joined = self.joined.remove(&workspace_id)?;
         Some(Envelope::VoiceLeave {
             workspace_id,
@@ -253,11 +254,13 @@ mod tests {
     use super::*;
     use tilo_relay_protocol::voice::{Directions, VoiceGrant};
 
-    const WORKSPACE: u64 = 7;
+    fn workspace() -> WorkspaceId {
+        WorkspaceId::from_u128(7)
+    }
 
     fn grant(call: [u8; 32], participation: [u8; 32]) -> Envelope {
         Envelope::VoiceGranted {
-            workspace_id: WORKSPACE,
+            workspace_id: workspace(),
             grant: Box::new(VoiceGrant {
                 call,
                 epoch: 1,
@@ -273,7 +276,7 @@ mod tests {
 
     fn refused(call: [u8; 32]) -> Envelope {
         Envelope::VoiceRefused {
-            workspace_id: WORKSPACE,
+            workspace_id: workspace(),
             call,
             reason: "the participation ended; join afresh".into(),
         }
@@ -283,7 +286,7 @@ mod tests {
     fn a_granted_participation_beats_and_resumes_with_its_id() {
         let mut calls = Participations::default();
         assert!(matches!(
-            calls.join(WORKSPACE, [1; 32]).as_slice(),
+            calls.join(workspace(), [1; 32]).as_slice(),
             [Envelope::VoiceJoin {
                 participation: None,
                 ..
@@ -303,7 +306,7 @@ mod tests {
             ));
         }
         assert!(matches!(
-            calls.leave(WORKSPACE),
+            calls.leave(workspace()),
             Some(Envelope::VoiceLeave {
                 participation: [9, ..],
                 ..
@@ -315,7 +318,7 @@ mod tests {
     #[test]
     fn a_forgotten_participation_joins_afresh_once_then_ends() {
         let mut calls = Participations::default();
-        calls.join(WORKSPACE, [1; 32]);
+        calls.join(workspace(), [1; 32]);
         calls.inbound(&grant([1; 32], [9; 32]));
         let (event, reply) = calls.inbound(&refused([1; 32])).unwrap();
         assert!(event.is_none());
@@ -349,7 +352,7 @@ mod tests {
     #[test]
     fn a_page_that_stood_still_joins_afresh_once_for_all_its_refused_beats() {
         let mut calls = Participations::default();
-        calls.join(WORKSPACE, [1; 32]);
+        calls.join(workspace(), [1; 32]);
         calls.inbound(&grant([1; 32], [9; 32]));
         // Three beats out at once; the host forgot the participation.
         for _ in 0..3 {
@@ -381,11 +384,11 @@ mod tests {
     #[test]
     fn joining_another_call_leaves_the_first() {
         let mut calls = Participations::default();
-        calls.join(WORKSPACE, [1; 32]);
+        calls.join(workspace(), [1; 32]);
         calls.inbound(&grant([1; 32], [9; 32]));
-        assert!(calls.join(WORKSPACE, [1; 32]).is_empty(), "already in it");
+        assert!(calls.join(workspace(), [1; 32]).is_empty(), "already in it");
         assert!(matches!(
-            calls.join(WORKSPACE, [2; 32]).as_slice(),
+            calls.join(workspace(), [2; 32]).as_slice(),
             [
                 Envelope::VoiceLeave { call: [1, ..], .. },
                 Envelope::VoiceJoin {

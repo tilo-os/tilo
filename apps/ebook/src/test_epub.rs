@@ -119,7 +119,8 @@ pub(crate) fn long_classic(count: usize, lines: usize) -> Vec<u8> {
     epub("The Test Odyssey", &borrowed)
 }
 
-fn stored_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+/// A ZIP archive holding `files` stored, each a name and its bytes.
+pub(crate) fn stored_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
     const DOS_DATE_1980_01_01: u16 = 0x21;
     let (mut out, mut central) = (Vec::new(), Vec::new());
     for (name, data) in files {
@@ -175,51 +176,55 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-#[test]
-fn a_generated_classic_parses_with_every_chapter() {
-    let bytes = long_classic(24, 6);
-    let book = crate::epub::parse_epub(&bytes, 0, "").expect("the generated EPUB parses");
-    assert_eq!(book.title, "The Test Odyssey");
-    assert_eq!(book.author, "Homer");
-    assert_eq!(book.chapters.len(), 24);
-    assert_eq!(book.chapters[23].title, "Book 24");
-    assert_eq!(
-        book.chapters[3].blocks.len(),
-        7,
-        "the heading and six paragraphs"
-    );
-    assert_eq!(book.id, crate::epub::content_id(&bytes));
-}
+tilo_test_env::scenario! {
+    fn generated_classics_parse_as_the_books_they_describe;
 
-#[test]
-fn a_generated_verse_classic_parses_stanzas_as_verse_at_prose_block_indices() {
-    use crate::model::Block;
+    phase a_generated_classic_parses_with_every_chapter;
+    {
+        let bytes = long_classic(24, 6);
+        let book = crate::epub::parse_epub(&bytes, 0, "").expect("the generated EPUB parses");
+        assert_eq!(book.title, "The Test Odyssey");
+        assert_eq!(book.author, "Homer");
+        assert_eq!(book.chapters.len(), 24);
+        assert_eq!(book.chapters[23].title, "Book 24");
+        assert_eq!(
+            book.chapters[3].blocks.len(),
+            7,
+            "the heading and six paragraphs"
+        );
+        assert_eq!(book.id, crate::epub::content_id(&bytes));
+    }
 
-    let book = crate::epub::parse_epub(&verse_classic(3), 0, "").expect("parses");
-    assert_eq!(book.chapters.len(), 5);
-    let preface = &book.chapters[1].blocks[1];
-    assert!(matches!(preface, Block::Paragraph { .. }), "{preface:?}");
-    assert!(
-        preface.spans().iter().any(|span| span.line_break),
-        "a prose <br/> breaks its line"
-    );
-    let book_one = &book.chapters[2];
-    assert_eq!(book_one.blocks.len(), 6, "{:#?}", book_one.blocks);
-    assert!(matches!(book_one.blocks[0], Block::Heading { .. }));
-    assert!(matches!(book_one.blocks[2], Block::Paragraph { .. }));
-    let Block::Verse { spans, quoted } = &book_one.blocks[3] else {
-        panic!("the first stanza is verse: {:?}", book_one.blocks[3]);
-    };
-    assert!(!quoted);
-    let breaks: Vec<u8> = spans
-        .iter()
-        .filter(|span| span.line_break)
-        .map(|span| span.line_indent)
-        .collect();
-    assert_eq!(breaks, [0, 1], "three lines, the last indented");
-    assert_eq!(
-        book_one.block_text(3),
-        "Book 1, stanza 1: tell me, O Muse, of that sagacious man who wandered far \
+    phase a_generated_verse_classic_parses_stanzas_as_verse_at_prose_block_indices;
+    {
+        use crate::model::Block;
+
+        let book = crate::epub::parse_epub(&verse_classic(3), 0, "").expect("parses");
+        assert_eq!(book.chapters.len(), 5);
+        let preface = &book.chapters[1].blocks[1];
+        assert!(matches!(preface, Block::Paragraph { .. }), "{preface:?}");
+        assert!(
+            preface.spans().iter().any(|span| span.line_break),
+            "a prose <br/> breaks its line"
+        );
+        let book_one = &book.chapters[2];
+        assert_eq!(book_one.blocks.len(), 6, "{:#?}", book_one.blocks);
+        assert!(matches!(book_one.blocks[0], Block::Heading { .. }));
+        assert!(matches!(book_one.blocks[2], Block::Paragraph { .. }));
+        let Block::Verse { spans, quoted } = &book_one.blocks[3] else {
+            panic!("the first stanza is verse: {:?}", book_one.blocks[3]);
+        };
+        assert!(!quoted);
+        let breaks: Vec<u8> = spans
+            .iter()
+            .filter(|span| span.line_break)
+            .map(|span| span.line_indent)
+            .collect();
+        assert_eq!(breaks, [0, 1], "three lines, the last indented");
+        assert_eq!(
+            book_one.block_text(3),
+            "Book 1, stanza 1: tell me, O Muse, of that sagacious man who wandered far \
          and visited the capitals of nations."
-    );
+        );
+    }
 }

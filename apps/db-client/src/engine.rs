@@ -451,44 +451,66 @@ pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sqlite_engine_introspects_and_executes() {
+    tilo_test_env::scenario! {
+        fn the_sqlite_engine_introspects_runs_and_cancels;
+
+        phase sqlite_engine_introspects_and_executes;
         {
-            let eng = SqliteEngine::open_sample().unwrap();
-            let schema = eng.introspect().unwrap();
-            assert_eq!(schema.schemas.len(), 1);
-            assert!(schema.table_count() >= 4, "got {}", schema.table_count());
-            let artists = schema.find_table("artists").expect("artists table");
-            assert!(artists.columns.iter().any(|c| c.primary_key));
+            {
+                let eng = SqliteEngine::open_sample().unwrap();
+                let schema = eng.introspect().unwrap();
+                assert_eq!(schema.schemas.len(), 1);
+                assert!(schema.table_count() >= 4, "got {}", schema.table_count());
+                let artists = schema.find_table("artists").expect("artists table");
+                assert!(artists.columns.iter().any(|c| c.primary_key));
+            }
+
+            {
+                let mut eng = SqliteEngine::open_sample().unwrap();
+                let r = eng
+                    .run("SELECT name FROM artists ORDER BY name LIMIT 3")
+                    .unwrap();
+                assert!(r.is_select);
+                assert_eq!(r.columns, vec!["name".to_string()]);
+                assert_eq!(r.rows.len(), 3);
+            }
+
+            {
+                let mut eng = SqliteEngine::open_sample().unwrap();
+                let r = eng
+                    .run("UPDATE tracks SET unit_price = unit_price WHERE 1=0")
+                    .unwrap();
+                assert!(!r.is_select);
+                assert_eq!(r.rows_affected, Some(0));
+            }
+
+            {
+                let eng = SqliteEngine::open_sample().unwrap();
+                let schema = eng.introspect().unwrap();
+                let albums = schema.find_table("albums").unwrap();
+                assert!(
+                    albums.foreign_keys.iter().any(|f| f.ref_table == "artists"),
+                    "albums should reference artists"
+                );
+            }
         }
 
+        phase sqlite_cancellation_before_the_statement_starts_still_stops_it;
         {
             let mut eng = SqliteEngine::open_sample().unwrap();
-            let r = eng
-                .run("SELECT name FROM artists ORDER BY name LIMIT 3")
-                .unwrap();
-            assert!(r.is_select);
-            assert_eq!(r.columns, vec!["name".to_string()]);
-            assert_eq!(r.rows.len(), 3);
-        }
-
-        {
-            let mut eng = SqliteEngine::open_sample().unwrap();
-            let r = eng
-                .run("UPDATE tracks SET unit_price = unit_price WHERE 1=0")
-                .unwrap();
-            assert!(!r.is_select);
-            assert_eq!(r.rows_affected, Some(0));
-        }
-
-        {
-            let eng = SqliteEngine::open_sample().unwrap();
-            let schema = eng.introspect().unwrap();
-            let albums = schema.find_table("albums").unwrap();
-            assert!(
-                albums.foreign_keys.iter().any(|f| f.ref_table == "artists"),
-                "albums should reference artists"
+            eng.cancellation_handle().request();
+            let result = eng.run(
+                "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000000) \
+             SELECT sum(x) FROM n",
             );
+            assert!(
+                result.is_err(),
+                "the cancelled query must stop, got {result:?}"
+            );
+
+            // The request belonged to that query only; the next one runs.
+            let next = eng.run("SELECT 1").unwrap();
+            assert_eq!(next.rows.len(), 1);
         }
     }
 
@@ -532,23 +554,5 @@ mod tests {
                 .sum();
             assert!(retained <= MAX_QUERY_RESULT_BYTES);
         }
-    }
-
-    #[test]
-    fn sqlite_cancellation_before_the_statement_starts_still_stops_it() {
-        let mut eng = SqliteEngine::open_sample().unwrap();
-        eng.cancellation_handle().request();
-        let result = eng.run(
-            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000000) \
-             SELECT sum(x) FROM n",
-        );
-        assert!(
-            result.is_err(),
-            "the cancelled query must stop, got {result:?}"
-        );
-
-        // The request belonged to that query only; the next one runs.
-        let next = eng.run("SELECT 1").unwrap();
-        assert_eq!(next.rows.len(), 1);
     }
 }

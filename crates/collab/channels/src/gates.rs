@@ -7,13 +7,13 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use collab_types::{ChannelId, EncryptionMetadata};
+use collab_types::{EncryptionMetadata, WorkspaceId};
 
 /// What a channel service registers its gates with: the ingress check of the host that admits an
 /// app's ops.
 pub trait ChannelGates: collab_types::signer::MaybeSendSync {
-    /// Enforce `gate` on every op of `channel` from now on.
-    fn register_channel_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate);
+    /// Enforce `gate` on every op of `workspace` from now on.
+    fn register_channel_gate(&self, workspace: WorkspaceId, gate: channel_crypto::ChannelGate);
 }
 
 /// The gates of a host that keeps none of its own: a service that registers into it refuses nothing
@@ -22,37 +22,26 @@ pub trait ChannelGates: collab_types::signer::MaybeSendSync {
 pub struct NoGates;
 
 impl ChannelGates for NoGates {
-    fn register_channel_gate(&self, _channel: ChannelId, _gate: channel_crypto::ChannelGate) {}
+    fn register_channel_gate(&self, _workspace: WorkspaceId, _gate: channel_crypto::ChannelGate) {}
 }
 
 /// The gate of every channel this device takes part in.
 #[derive(Default)]
-pub struct Gates(Mutex<HashMap<ChannelId, channel_crypto::ChannelGate>>);
+pub struct Gates(Mutex<HashMap<WorkspaceId, channel_crypto::ChannelGate>>);
 
 impl Gates {
     /// Install or refresh a channel's ingress gate.
-    pub fn register(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
+    pub fn register(&self, workspace: WorkspaceId, gate: channel_crypto::ChannelGate) {
         if let Ok(mut gates) = self.0.lock() {
-            gates.insert(channel, gate);
+            gates.insert(workspace, gate);
         }
     }
 
-    /// The gate governing `channel`, one of `workspace`'s channels: the unit's own when it has a
-    /// group of its own (a record whose readers the policy narrows, or one whose group was made
-    /// before key scopes), and the workspace's key scope's otherwise, since a unit seals under its
-    /// scope's keys while naming its own channel.
+    /// The gate governing every record of `workspace`: its group's.
     #[must_use]
-    pub fn gate_for(
-        &self,
-        workspace: &str,
-        channel: ChannelId,
-    ) -> Option<channel_crypto::ChannelGate> {
-        let gates = self.0.lock().ok()?;
-        gates.get(&channel).copied().or_else(|| {
-            gates
-                .get(&collab_types::workspace_scope(workspace))
-                .copied()
-        })
+    pub fn gate_for(&self, workspace: &str) -> Option<channel_crypto::ChannelGate> {
+        let workspace = WorkspaceId::parse(workspace)?;
+        self.0.lock().ok()?.get(&workspace).copied()
     }
 
     /// A route with no gate has not been opened encrypted on this device yet. Once its gate closes
@@ -63,35 +52,20 @@ impl Gates {
     pub fn allows_document(
         &self,
         workspace: &str,
-        channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.gate_for(workspace, channel)
-            .is_none_or(|gate| gate.accepts(encryption, channel))
-    }
-
-    /// The verdict on an op for `channel` from the gate governing it
-    /// ([`channel_crypto::admission`]). A broker holding every channel's governance state knows a
-    /// channel with no gate is one that is not encrypted.
-    #[must_use]
-    pub fn admission(
-        &self,
-        workspace: &str,
-        channel: ChannelId,
-        encryption: Option<&EncryptionMetadata>,
-    ) -> collab_types::inbound::OpAdmission {
-        channel_crypto::admission(self.gate_for(workspace, channel), true, channel, encryption)
+        self.gate_for(workspace)
+            .is_none_or(|gate| gate.accepts(encryption))
     }
 }
-
 impl ChannelGates for Gates {
-    fn register_channel_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
-        self.register(channel, gate);
+    fn register_channel_gate(&self, workspace: WorkspaceId, gate: channel_crypto::ChannelGate) {
+        self.register(workspace, gate);
     }
 }
 
 impl ChannelGates for std::sync::Arc<dyn ChannelGates> {
-    fn register_channel_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
-        (**self).register_channel_gate(channel, gate);
+    fn register_channel_gate(&self, workspace: WorkspaceId, gate: channel_crypto::ChannelGate) {
+        (**self).register_channel_gate(workspace, gate);
     }
 }

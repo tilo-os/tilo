@@ -547,62 +547,66 @@ mod tests {
         (watch, receiver)
     }
 
-    #[test]
-    fn an_armed_watch_wakes_once_and_an_unarmed_one_not_at_all() {
-        let (watch, woke) = watch();
-        announce();
-        assert!(woke.try_recv().is_err(), "not armed yet");
-        let armed_at = watch.arm();
-        announce();
-        announce();
-        tilo_test_env::recv("the armed watch to wake", &woke);
-        assert!(woke.try_recv().is_err(), "one wake per arming");
-        assert_ne!(epoch(), armed_at, "the epoch moved past the arming");
-    }
+    tilo_test_env::scenario! {
+        fn watches_and_announced_instants;
 
-    #[test]
-    fn a_change_announced_before_arming_shows_in_the_epoch() {
-        let (watch, _woke) = watch();
-        let checked_at = epoch();
-        announce();
-        assert_ne!(
-            watch.arm(),
-            checked_at,
-            "arming reports the change it will not wake for"
-        );
-    }
+        phase an_armed_watch_wakes_once_and_an_unarmed_one_not_at_all;
+        {
+            let (watch, woke) = watch();
+            announce();
+            assert!(woke.try_recv().is_err(), "not armed yet");
+            let armed_at = watch.arm();
+            announce();
+            announce();
+            tilo_test_env::recv("the armed watch to wake", &woke);
+            assert!(woke.try_recv().is_err(), "one wake per arming");
+            assert_ne!(epoch(), armed_at, "the epoch moved past the arming");
+        }
 
-    #[test]
-    fn a_dropped_watch_is_not_woken() {
-        let (watch, woke) = watch();
-        let _ = watch.arm();
-        drop(watch);
-        announce();
-        assert!(woke.try_recv().is_err());
-    }
+        phase a_change_announced_before_arming_shows_in_the_epoch;
+        {
+            let (watch, _woke) = watch();
+            let checked_at = epoch();
+            announce();
+            assert_ne!(
+                watch.arm(),
+                checked_at,
+                "arming reports the change it will not wake for"
+            );
+        }
 
-    #[test]
-    fn an_instant_is_announced_when_the_wall_clock_reaches_it() {
-        let (watch, woke) = watch();
-        let at = tilo_clock::unix_now_ns().saturating_add(300_000_000);
-        // Other tests announce too: wait until the announcement comes at or
-        // after the instant.
-        wake_at(at);
-        loop {
+        phase a_dropped_watch_is_not_woken;
+        {
+            let (watch, woke) = watch();
             let _ = watch.arm();
-            tilo_test_env::recv("the instant to be announced", &woke);
-            if tilo_clock::unix_now_ns() >= at {
-                break;
+            drop(watch);
+            announce();
+            assert!(woke.try_recv().is_err());
+        }
+
+        phase an_instant_is_announced_when_the_wall_clock_reaches_it;
+        {
+            let (watch, woke) = watch();
+            let at = tilo_clock::unix_now_ns().saturating_add(300_000_000);
+            // Other tests announce too: wait until the announcement comes at or
+            // after the instant.
+            wake_at(at);
+            loop {
+                let _ = watch.arm();
+                tilo_test_env::recv("the instant to be announced", &woke);
+                if tilo_clock::unix_now_ns() >= at {
+                    break;
+                }
             }
         }
-    }
 
-    #[test]
-    fn an_instant_already_past_is_announced_at_once() {
-        let (watch, woke) = watch();
-        let _ = watch.arm();
-        wake_at(tilo_clock::unix_now_ns().saturating_sub(1_000_000_000));
-        tilo_test_env::recv("the past instant to be announced", &woke);
+        phase an_instant_already_past_is_announced_at_once;
+        {
+            let (watch, woke) = watch();
+            let _ = watch.arm();
+            wake_at(tilo_clock::unix_now_ns().saturating_sub(1_000_000_000));
+            tilo_test_env::recv("the past instant to be announced", &woke);
+        }
     }
 
     #[cfg(target_os = "linux")]

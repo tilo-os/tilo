@@ -340,64 +340,69 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_current_sign_in_is_used_as_stored() {
-        let read = settle(
-            sign_in(3600, tilo_clock::unix_now()),
-            |_| panic!("nothing to renew"),
-            |_| panic!("nothing to save"),
-        )
-        .unwrap();
-        assert_eq!(
-            read.token.as_deref().map(String::as_str),
-            Some("hf_oauth_old")
-        );
-        assert_eq!(read.state, signed_in_as_ada());
-    }
+    tilo_test_env::scenario! {
+        /// The hub sign-in a request carries: current, due for renewal, or past renewing.
+        fn a_stored_sign_in_is_used_renewed_or_ended;
 
-    #[test]
-    fn a_due_sign_in_is_renewed_and_saved() {
-        let mut saved = None;
-        let read = settle(
-            sign_in(60, 1),
-            |old| {
-                let mut renewed = old.clone();
-                renewed.tokens.access_token = "hf_oauth_new".into();
-                Ok(renewed)
-            },
-            |renewed| {
-                saved = Some(renewed.tokens.access_token.clone());
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            read.token.as_deref().map(String::as_str),
-            Some("hf_oauth_new")
-        );
-        assert_eq!(saved.as_deref(), Some("hf_oauth_new"));
-        assert_eq!(read.state, signed_in_as_ada());
-    }
-
-    #[test]
-    fn a_sign_in_that_cannot_be_renewed_has_ended() {
-        let read = settle(
-            sign_in(60, 1),
-            |_| Err(OAuthError::InvalidGrant),
-            |_| panic!("nothing to save"),
-        )
-        .unwrap();
-        assert!(read.token.is_none());
-        assert!(
-            matches!(read.state, HubTokenState::Ended { ref account } if account.username == "ada")
-        );
-        assert!(
-            settle(
-                sign_in(60, 1),
-                |_| Err(OAuthError::Network("offline".into())),
+        phase a_current_sign_in_is_used_as_stored;
+        {
+            let read = settle(
+                sign_in(3600, tilo_clock::unix_now()),
+                |_| panic!("nothing to renew"),
                 |_| panic!("nothing to save"),
             )
-            .is_err()
-        );
+            .unwrap();
+            assert_eq!(
+                read.token.as_deref().map(String::as_str),
+                Some("hf_oauth_old")
+            );
+            assert_eq!(read.state, signed_in_as_ada());
+        }
+
+        phase a_due_sign_in_is_renewed_and_saved;
+        {
+            let mut saved = None;
+            let read = settle(
+                sign_in(60, 1),
+                |old| {
+                    let mut renewed = old.clone();
+                    renewed.tokens.access_token = "hf_oauth_new".into();
+                    Ok(renewed)
+                },
+                |renewed| {
+                    saved = Some(renewed.tokens.access_token.clone());
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                read.token.as_deref().map(String::as_str),
+                Some("hf_oauth_new")
+            );
+            assert_eq!(saved.as_deref(), Some("hf_oauth_new"));
+            assert_eq!(read.state, signed_in_as_ada());
+        }
+
+        phase a_sign_in_that_cannot_be_renewed_has_ended;
+        {
+            let read = settle(
+                sign_in(60, 1),
+                |_| Err(OAuthError::InvalidGrant),
+                |_| panic!("nothing to save"),
+            )
+            .unwrap();
+            assert!(read.token.is_none());
+            assert!(
+                matches!(read.state, HubTokenState::Ended { ref account } if account.username == "ada")
+            );
+            assert!(
+                settle(
+                    sign_in(60, 1),
+                    |_| Err(OAuthError::Network("offline".into())),
+                    |_| panic!("nothing to save"),
+                )
+                .is_err()
+            );
+        }
     }
 }

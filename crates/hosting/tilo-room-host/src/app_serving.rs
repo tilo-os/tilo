@@ -12,6 +12,7 @@
 //! which it answers itself (`crate::workspaces::GovernedPlane`).
 
 use tilo_actions::remote::{ActionHost, Caller, Pending, RemoteActionMessage};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Answers remote-action requests addressed to this host.
 ///
@@ -22,7 +23,7 @@ pub trait AppServingPlane: Send + Sync {
     /// never blocking the connection — or `None` when it needs no reply.
     fn serve(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>>;
@@ -34,7 +35,7 @@ pub trait AppServingPlane: Send + Sync {
     /// for it, and the default ignores it.
     fn serve_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &tilo_user_identity::DeviceCert,
         message: RemoteActionMessage,
@@ -80,14 +81,14 @@ pub trait AppServingPlane: Send + Sync {
     /// speaks for the runs it executes makes the run present there now, so an
     /// agent that connected and has not acted yet is already seen, waiting.
     /// Nothing by default.
-    fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
         let _ = (workspace_id, caller);
     }
 
     /// The workspace `workspace_id` was deleted: let go of whatever this
     /// plane holds for it (its app workers, what it found of the
     /// workspace). Nothing by default.
-    fn forget_workspace(&self, workspace_id: u64) {
+    fn forget_workspace(&self, workspace_id: WorkspaceId) {
         let _ = workspace_id;
     }
 
@@ -100,7 +101,7 @@ pub trait AppServingPlane: Send + Sync {
     /// runs there as the caller's. `None` serves it here, as before.
     fn route(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<Routing> {
@@ -114,7 +115,7 @@ pub trait AppServingPlane: Send + Sync {
     /// caller routes as before.
     fn route_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &tilo_user_identity::DeviceCert,
         message: &RemoteActionMessage,
@@ -131,7 +132,7 @@ pub trait AppServingPlane: Send + Sync {
     /// instead of refused — and `None` carries the answer on as it is.
     fn relayed(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         message: &RemoteActionMessage,
     ) -> Option<RemoteActionMessage> {
@@ -142,7 +143,7 @@ pub trait AppServingPlane: Send + Sync {
     /// Whether this plane waits on answers to frames of `workspace_id`: the
     /// host decodes what it forwards there for [`Self::relayed`], and reads
     /// the rest untouched.
-    fn tracks(&self, workspace_id: u64) -> bool {
+    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
         let _ = workspace_id;
         false
     }
@@ -196,7 +197,7 @@ impl Hand {
     /// own timeout.
     pub fn hand(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: ([u8; 32], [u8; 32]),
         to: [u8; 32],
         message: tilo_actions::remote::RemoteActionMessage,
@@ -212,7 +213,7 @@ impl Hand {
             };
             let Some(workspace) = workspaces.lock().await.get(&workspace_id).cloned() else {
                 tracing::warn!(
-                    workspace_id,
+                    workspace_id = %workspace_id,
                     "a frame was handed to a workspace this host has gone"
                 );
                 return;
@@ -227,7 +228,7 @@ impl Hand {
             };
             if !workspace.lock().await.route_directed(&to, stamped) {
                 tracing::warn!(
-                    workspace_id,
+                    workspace_id = %workspace_id,
                     device = %hex::encode(to),
                     "a frame this host handed over found no device to take it"
                 );
@@ -252,7 +253,7 @@ impl<H> ActionHostPlane<H> {
 impl<H: ActionHost + Clone + Send + Sync + 'static> AppServingPlane for ActionHostPlane<H> {
     fn serve(
         &self,
-        _workspace_id: u64,
+        _workspace_id: WorkspaceId,
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {

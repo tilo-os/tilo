@@ -160,6 +160,10 @@ impl ChangeMarkProps {
             .with_no_padding()
             .with_child(Box::new(column));
         let mut pair = button.with_popover(content);
+        // The catch-up is a surface of its own: read out, it says what it holds, never only the
+        // words of the control it hangs from.
+        pair.popover_mut()
+            .set_label(crate::i18n::widget_format("change-catch-up", &[]));
         pair.popover_mut().set_confined_to_viewport(true);
         pair.popover_mut()
             .set_max_width(f64::from(crate::tokens::Metrics::BASE.panel_width_list));
@@ -402,81 +406,87 @@ impl component::Described for ChangeMark {
 
 #[cfg(test)]
 mod tests {
-    /// A window's mark names one change in the singular and several in the type's plural: "Mia changed
-    /// one message", never "changed one messages".
-    #[test]
-    fn a_mark_names_one_change_in_the_singular() {
-        crate::i18n::I18nManager::register_widget_messages();
-        crate::i18n::I18nManager::set_locale("en-US");
-        let said = |count: usize| {
-            crate::i18n::widget_format(
-                "change-window-changed",
-                &[
-                    ("who", "Mia".into()),
-                    ("count", count.into()),
-                    ("noun", "messages".into()),
-                    ("one", "message".into()),
-                ],
-            )
-        };
-        assert_eq!(said(1), "Mia changed one message");
-        assert_eq!(said(3), "Mia changed 3 messages");
-    }
+    tilo_test_env::scenario! {
+        /// The sentence a window's change mark says, in English and in German.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_change_mark_words_its_sentence_in_each_language;
 
-    /// A window's mark of changes that only put items in says what is new and who put it there: "6 new
-    /// messages from Mia, Leo and Ada", never that they changed them.
-    #[test]
-    fn a_mark_of_new_items_says_what_is_new() {
-        crate::i18n::I18nManager::register_widget_messages();
-        crate::i18n::I18nManager::set_locale("en-US");
-        let said = |count: i64| {
-            crate::i18n::widget_format(
-                "change-window-new",
-                &[
-                    ("who", "Mia, Leo and Ada".into()),
-                    ("count", count.into()),
-                    ("noun", "messages".into()),
-                    ("one", "message".into()),
-                ],
-            )
-        };
-        assert_eq!(said(1), "One new message from Mia, Leo and Ada");
-        assert_eq!(said(6), "6 new messages from Mia, Leo and Ada");
-    }
+        // A window's mark names one change in the singular and several in the type's plural: "Mia changed
+        // one message", never "changed one messages".
+        phase a_mark_names_one_change_in_the_singular;
+        {
+            crate::i18n::I18nManager::register_widget_messages();
+            crate::i18n::I18nManager::set_locale("en-US");
+            let said = |count: usize| {
+                crate::i18n::widget_format(
+                    "change-window-changed",
+                    &[
+                        ("who", "Mia".into()),
+                        ("count", count.into()),
+                        ("noun", "messages".into()),
+                        ("one", "message".into()),
+                    ],
+                )
+            };
+            assert_eq!(said(1), "Mia changed one message");
+            assert_eq!(said(3), "Mia changed 3 messages");
+        }
 
-    /// German's perfect tense agrees with the person it names ("Mia hat …"), and a window's mark names
-    /// everyone who changed it ("Leo und Mia"), so its sentence names them without a verb after the
-    /// names: it reads right for one person and for several.
-    #[test]
-    fn a_german_mark_reads_right_for_several_names() {
-        let language = crate::i18n::speak_window_language(&[(
-            "de-DE".to_owned(),
-            "change-mark-probe = Probe".to_owned(),
-        )]);
-        assert_eq!(language, "de-DE");
-        let said = |who: &str, count: usize, more: bool| {
-            crate::i18n::widget_format(
-                if more {
-                    "change-window-changed-more"
-                } else {
-                    "change-window-changed"
-                },
-                &[
-                    ("who", who.into()),
-                    ("count", count.into()),
-                    ("noun", "Kommentare".into()),
-                    ("one", "Kommentar".into()),
-                ],
-            )
-        };
-        assert_eq!(said("Mia", 1, false), "Geändert von Mia: 1 Kommentar");
-        assert_eq!(
-            said("Leo und Mia", 5, false),
-            "Geändert von Leo und Mia: 5 Kommentare"
-        );
-        assert_eq!(
-            said("Leo und Mia", 5, true),
-            "Geändert von Leo und Mia: mindestens 5 Kommentare"
-        );
+        // A window's mark of changes that only put items in says what is new and who put it there: "6 new
+        // messages from Mia, Leo and Ada", never that they changed them.
+        phase a_mark_of_new_items_says_what_is_new;
+        {
+            crate::i18n::I18nManager::register_widget_messages();
+            crate::i18n::I18nManager::set_locale("en-US");
+            let said = |count: i64| {
+                crate::i18n::widget_format(
+                    "change-window-new",
+                    &[
+                        ("who", "Mia, Leo and Ada".into()),
+                        ("count", count.into()),
+                        ("noun", "messages".into()),
+                        ("one", "message".into()),
+                    ],
+                )
+            };
+            assert_eq!(said(1), "One new message from Mia, Leo and Ada");
+            assert_eq!(said(6), "6 new messages from Mia, Leo and Ada");
+        }
+
+        // German's perfect tense agrees with the person it names ("Mia hat …"), and a window's mark names
+        // everyone who changed it ("Leo und Mia"), so its sentence names them without a verb after the
+        // names: it reads right for one person and for several.
+        phase a_german_mark_reads_right_for_several_names;
+        {
+            let language = crate::i18n::speak_window_language(&[(
+                "de-DE".to_owned(),
+                "change-mark-probe = Probe".to_owned(),
+            )]);
+            assert_eq!(language, "de-DE");
+            let said = |who: &str, count: usize, more: bool| {
+                crate::i18n::widget_format(
+                    if more {
+                        "change-window-changed-more"
+                    } else {
+                        "change-window-changed"
+                    },
+                    &[
+                        ("who", who.into()),
+                        ("count", count.into()),
+                        ("noun", "Kommentare".into()),
+                        ("one", "Kommentar".into()),
+                    ],
+                )
+            };
+            assert_eq!(said("Mia", 1, false), "Geändert von Mia: 1 Kommentar");
+            assert_eq!(
+                said("Leo und Mia", 5, false),
+                "Geändert von Leo und Mia: 5 Kommentare"
+            );
+            assert_eq!(
+                said("Leo und Mia", 5, true),
+                "Geändert von Leo und Mia: mindestens 5 Kommentare"
+            );
+        }
     }
 }

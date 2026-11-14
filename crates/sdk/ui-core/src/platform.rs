@@ -391,149 +391,153 @@ impl HostShortcut {
 mod tests {
     use super::*;
 
-    /// A desktop chord from the shortcut table (Super+F) reads with its Super key, ahead of the others,
-    /// in the standard menu spelling.
-    #[test]
-    fn a_desktop_chord_shows_its_super_key_first() {
-        let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);
-        let linux = PlatformConventions::new(Platform::Linux);
-        assert_eq!(Shortcut::chord(["Super"], "f").label(linux), "Super+F");
-        assert_eq!(
-            Shortcut::chord(["Shift", "Super"], "pageup").label(linux),
-            "Super+Shift+Page Up"
-        );
-        assert!(Shortcut::from("Super+W").has_system());
-        assert!(!Shortcut::command("W").has_system());
-    }
+    tilo_test_env::scenario! {
+        fn shortcuts_are_labelled_and_listed_by_each_platforms_conventions;
 
-    #[test]
-    fn host_shortcuts_resolve_to_the_label_each_platform_shows() {
-        for platform in [Platform::MacOs, Platform::Windows, Platform::Linux] {
-            let conventions = PlatformConventions::new(platform);
-            for service in [
-                HostShortcut::Search,
-                HostShortcut::History,
-                HostShortcut::Undo,
-                HostShortcut::Redo,
-                HostShortcut::Sidebar,
+        phase a_desktop_chord_shows_its_super_key_first;
+        // A desktop chord from the shortcut table (Super+F) reads with its Super key, ahead of the others,
+        // in the standard menu spelling.
+        {
+            let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);
+            let linux = PlatformConventions::new(Platform::Linux);
+            assert_eq!(Shortcut::chord(["Super"], "f").label(linux), "Super+F");
+            assert_eq!(
+                Shortcut::chord(["Shift", "Super"], "pageup").label(linux),
+                "Super+Shift+Page Up"
+            );
+            assert!(Shortcut::from("Super+W").has_system());
+            assert!(!Shortcut::command("W").has_system());
+        }
+
+        phase host_shortcuts_resolve_to_the_label_each_platform_shows;
+        {
+            for platform in [Platform::MacOs, Platform::Windows, Platform::Linux] {
+                let conventions = PlatformConventions::new(platform);
+                for service in [
+                    HostShortcut::Search,
+                    HostShortcut::History,
+                    HostShortcut::Undo,
+                    HostShortcut::Redo,
+                    HostShortcut::Sidebar,
+                ] {
+                    let shortcut = service.shortcut(conventions);
+                    assert_eq!(
+                        HostShortcut::resolve(conventions, shortcut.key_name(), shortcut.has_shift()),
+                        Some(service),
+                        "{platform:?} {service:?}"
+                    );
+                }
+            }
+            let mac = PlatformConventions::new(Platform::MacOs);
+            let linux = PlatformConventions::new(Platform::Linux);
+            assert_eq!(HostShortcut::History.shortcut(mac).label(mac), "⌘Y");
+            assert_eq!(
+                HostShortcut::Sidebar.shortcut(linux).label(linux),
+                "Ctrl+Shift+L"
+            );
+            assert_eq!(
+                HostShortcut::History.shortcut(linux).label(linux),
+                "Ctrl+Shift+H"
+            );
+            assert_eq!(
+                HostShortcut::resolve(linux, "y", false),
+                Some(HostShortcut::Redo)
+            );
+            assert_eq!(
+                HostShortcut::resolve(linux, "h", false),
+                None,
+                "Ctrl+H stays with apps"
+            );
+            assert_eq!(
+                HostShortcut::resolve(mac, "y", false),
+                Some(HostShortcut::History)
+            );
+        }
+
+        phase a_shortcut_row_is_one_keycap_per_key;
+        // A reference sheet paints one drawn keycap per key: a chord is its modifiers and its key, never
+        // one cap holding a joined string.
+        {
+            let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);
+            let conventions = PlatformConventions::default();
+            assert_eq!(
+                spell_shortcut_keycaps("{cmd+shift:S}"),
+                Shortcut::command("S").shift().keycap_labels(conventions)
+            );
+            assert_eq!(
+                spell_shortcut_keycaps("{cmd:X}"),
+                Shortcut::command("X").keycap_labels(conventions)
+            );
+            assert_eq!(
+                spell_shortcut_keycaps("Page Up"),
+                ["Page Up"],
+                "a plain key name is one cap"
+            );
+        }
+
+        phase the_toolkits_own_actions_are_listed_on_their_own_chords;
+        {
+            let linux = PlatformConventions::new(Platform::Linux);
+            for (id, service) in [
+                ("undo", HostShortcut::Undo),
+                ("redo", HostShortcut::Redo),
+                ("history", HostShortcut::History),
             ] {
-                let shortcut = service.shortcut(conventions);
+                let shortcut = HostShortcut::of_action(id).expect(id);
+                assert_eq!(shortcut, service);
+                assert_eq!(shortcut.shortcut(linux), service.shortcut(linux));
+            }
+            assert_eq!(
+                HostShortcut::of_action("rename").map(|it| it.shortcut(linux)),
+                None,
+                "an app's own action declares its own shortcut"
+            );
+        }
+
+        phase shortcuts_modifiers_and_dialog_order_follow_each_platform_hig;
+        {
+            {
+                let shortcut = Shortcut::command("K").shift();
                 assert_eq!(
-                    HostShortcut::resolve(conventions, shortcut.key_name(), shortcut.has_shift()),
-                    Some(service),
-                    "{platform:?} {service:?}"
+                    shortcut.label(PlatformConventions::new(Platform::MacOs)),
+                    "⌘⇧K"
+                );
+                assert_eq!(
+                    shortcut.label(PlatformConventions::new(Platform::Windows)),
+                    "Ctrl+Shift+K"
+                );
+                assert_eq!(
+                    shortcut.label(PlatformConventions::new(Platform::Linux)),
+                    "Ctrl+Shift+K"
+                );
+                assert_eq!(
+                    shortcut.label(PlatformConventions::new(Platform::Android)),
+                    "Ctrl+Shift+K"
                 );
             }
-        }
-        let mac = PlatformConventions::new(Platform::MacOs);
-        let linux = PlatformConventions::new(Platform::Linux);
-        assert_eq!(HostShortcut::History.shortcut(mac).label(mac), "⌘Y");
-        assert_eq!(
-            HostShortcut::Sidebar.shortcut(linux).label(linux),
-            "Ctrl+Shift+L"
-        );
-        assert_eq!(
-            HostShortcut::History.shortcut(linux).label(linux),
-            "Ctrl+Shift+H"
-        );
-        assert_eq!(
-            HostShortcut::resolve(linux, "y", false),
-            Some(HostShortcut::Redo)
-        );
-        assert_eq!(
-            HostShortcut::resolve(linux, "h", false),
-            None,
-            "Ctrl+H stays with apps"
-        );
-        assert_eq!(
-            HostShortcut::resolve(mac, "y", false),
-            Some(HostShortcut::History)
-        );
-    }
 
-    /// A reference sheet paints one drawn keycap per key: a chord is its modifiers and its key, never
-    /// one cap holding a joined string.
-    #[test]
-    fn a_shortcut_row_is_one_keycap_per_key() {
-        let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);
-        let conventions = PlatformConventions::default();
-        assert_eq!(
-            spell_shortcut_keycaps("{cmd+shift:S}"),
-            Shortcut::command("S").shift().keycap_labels(conventions)
-        );
-        assert_eq!(
-            spell_shortcut_keycaps("{cmd:X}"),
-            Shortcut::command("X").keycap_labels(conventions)
-        );
-        assert_eq!(
-            spell_shortcut_keycaps("Page Up"),
-            ["Page Up"],
-            "a plain key name is one cap"
-        );
-    }
-
-    #[test]
-    fn the_toolkits_own_actions_are_listed_on_their_own_chords() {
-        let linux = PlatformConventions::new(Platform::Linux);
-        for (id, service) in [
-            ("undo", HostShortcut::Undo),
-            ("redo", HostShortcut::Redo),
-            ("history", HostShortcut::History),
-        ] {
-            let shortcut = HostShortcut::of_action(id).expect(id);
-            assert_eq!(shortcut, service);
-            assert_eq!(shortcut.shortcut(linux), service.shortcut(linux));
-        }
-        assert_eq!(
-            HostShortcut::of_action("rename").map(|it| it.shortcut(linux)),
-            None,
-            "an app's own action declares its own shortcut"
-        );
-    }
-
-    #[test]
-    fn shortcuts_modifiers_and_dialog_order_follow_each_platform_hig() {
-        {
-            let shortcut = Shortcut::command("K").shift();
-            assert_eq!(
-                shortcut.label(PlatformConventions::new(Platform::MacOs)),
-                "⌘⇧K"
-            );
-            assert_eq!(
-                shortcut.label(PlatformConventions::new(Platform::Windows)),
-                "Ctrl+Shift+K"
-            );
-            assert_eq!(
-                shortcut.label(PlatformConventions::new(Platform::Linux)),
-                "Ctrl+Shift+K"
-            );
-            assert_eq!(
-                shortcut.label(PlatformConventions::new(Platform::Android)),
-                "Ctrl+Shift+K"
-            );
-        }
-
-        {
-            let control = winit::keyboard::ModifiersState::CONTROL;
-            let command = winit::keyboard::ModifiersState::SUPER;
-            let mac = PlatformConventions::new(Platform::MacOs);
-            let windows = PlatformConventions::new(Platform::Windows);
-            assert!(mac.command_modifier_down(command));
-            assert!(!mac.command_modifier_down(control));
-            assert!(windows.command_modifier_down(control));
-            assert!(!windows.command_modifier_down(command));
-            assert_eq!(mac.dialog_action_order(), DialogActionOrder::PrimaryLast);
-            assert_eq!(
-                windows.dialog_action_order(),
-                DialogActionOrder::PrimaryFirst
-            );
-            let android = PlatformConventions::new(Platform::Android);
-            assert!(android.command_modifier_down(control));
-            assert!(!android.command_modifier_down(command));
-            assert_eq!(
-                android.dialog_action_order(),
-                DialogActionOrder::PrimaryLast
-            );
+            {
+                let control = winit::keyboard::ModifiersState::CONTROL;
+                let command = winit::keyboard::ModifiersState::SUPER;
+                let mac = PlatformConventions::new(Platform::MacOs);
+                let windows = PlatformConventions::new(Platform::Windows);
+                assert!(mac.command_modifier_down(command));
+                assert!(!mac.command_modifier_down(control));
+                assert!(windows.command_modifier_down(control));
+                assert!(!windows.command_modifier_down(command));
+                assert_eq!(mac.dialog_action_order(), DialogActionOrder::PrimaryLast);
+                assert_eq!(
+                    windows.dialog_action_order(),
+                    DialogActionOrder::PrimaryFirst
+                );
+                let android = PlatformConventions::new(Platform::Android);
+                assert!(android.command_modifier_down(control));
+                assert!(!android.command_modifier_down(command));
+                assert_eq!(
+                    android.dialog_action_order(),
+                    DialogActionOrder::PrimaryLast
+                );
+            }
         }
     }
 }

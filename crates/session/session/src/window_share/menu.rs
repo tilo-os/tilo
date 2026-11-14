@@ -59,7 +59,7 @@ pub(crate) fn reading_for_menus(
     let shares = Rc::clone(shares);
     let sync = sync.cloned();
     Rc::new(move |tab, workspace| {
-        sync.as_ref()?.workspace_topic(workspace)?;
+        sync.as_ref()?.workspace_of(workspace)?;
         // A menu is never asked for while the shares take their pass; were it, the window would
         // offer no share for that one reading rather than a wrong one.
         let shares = shares.try_borrow().ok()?;

@@ -183,49 +183,53 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_host_app_is_found_by_name_and_keyword_and_starts_through_the_host() {
-        let apps = HostApps::new(vec![editor()], &SearchPreferences::default());
-        for needle in ["text editor", "gedit"] {
-            let hits = apps.query(needle);
-            assert_eq!(hits.len(), 1, "{needle}");
-            assert_eq!(hits[0].target, launch("org.gnome.TextEditor.desktop"));
-            assert!(hits[0].score < MAX_PROVIDER_SCORE, "below a Tilo app");
+    tilo_test_env::scenario! {
+        fn a_host_app_is_found_says_where_it_came_from_and_can_be_left_out;
+
+        phase a_host_app_is_found_by_name_and_keyword_and_starts_through_the_host;
+        {
+            let apps = HostApps::new(vec![editor()], &SearchPreferences::default());
+            for needle in ["text editor", "gedit"] {
+                let hits = apps.query(needle);
+                assert_eq!(hits.len(), 1, "{needle}");
+                assert_eq!(hits[0].target, launch("org.gnome.TextEditor.desktop"));
+                assert!(hits[0].score < MAX_PROVIDER_SCORE, "below a Tilo app");
+            }
+            assert_eq!(launched("host:a.desktop"), Some("a.desktop"));
+            assert!(apps.query("").is_empty());
         }
-        assert_eq!(launched("host:a.desktop"), Some("a.desktop"));
-        assert!(apps.query("").is_empty());
-    }
 
-    /// Each row says what the machine's app is: a Flatpak or one of the
-    /// system's own, which also finds it when that is what the person types.
-    #[test]
-    fn a_host_app_says_where_it_came_from() {
-        let apps = HostApps::new(vec![chromium(), editor()], &SearchPreferences::default());
-        let row = apps
-            .query("chromium")
-            .into_iter()
-            .next()
-            .expect("the browser is found");
-        assert_eq!(row.subtitle.as_deref(), Some("Access the Internet"));
-        assert_eq!(row.facts, ["Flatpak".to_owned()]);
-        assert_eq!(
-            apps.query("text editor")[0].facts,
-            ["System".to_owned()],
-            "a distribution package"
-        );
-        let found = apps.query("flatpak");
-        let flatpaks: Vec<&str> = found.iter().map(|hit| hit.id.as_str()).collect();
-        assert_eq!(flatpaks, ["org.chromium.Chromium.desktop"]);
-    }
+        phase a_host_app_says_where_it_came_from;
+        // Each row says what the machine's app is: a Flatpak or one of the
+        // system's own, which also finds it when that is what the person types.
+        {
+            let apps = HostApps::new(vec![chromium(), editor()], &SearchPreferences::default());
+            let row = apps
+                .query("chromium")
+                .into_iter()
+                .next()
+                .expect("the browser is found");
+            assert_eq!(row.subtitle.as_deref(), Some("Access the Internet"));
+            assert_eq!(row.facts, ["Flatpak".to_owned()]);
+            assert_eq!(
+                apps.query("text editor")[0].facts,
+                ["System".to_owned()],
+                "a distribution package"
+            );
+            let found = apps.query("flatpak");
+            let flatpaks: Vec<&str> = found.iter().map(|hit| hit.id.as_str()).collect();
+            assert_eq!(flatpaks, ["org.chromium.Chromium.desktop"]);
+        }
 
-    #[test]
-    fn the_persons_switch_leaves_host_apps_out() {
-        let mut preferences = SearchPreferences::default();
-        preferences.set_enabled(HOST_APPS_SOURCE, false);
-        assert!(
-            HostApps::new(vec![editor()], &preferences)
-                .query("text")
-                .is_empty()
-        );
+        phase the_persons_switch_leaves_host_apps_out;
+        {
+            let mut preferences = SearchPreferences::default();
+            preferences.set_enabled(HOST_APPS_SOURCE, false);
+            assert!(
+                HostApps::new(vec![editor()], &preferences)
+                    .query("text")
+                    .is_empty()
+            );
+        }
     }
 }

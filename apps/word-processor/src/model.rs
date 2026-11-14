@@ -1059,130 +1059,135 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_comment_writes_its_thread_and_never_the_text() {
-        let (mut replica, block) = written("The budget doubled this year.", "ada");
-        let before = replica.heads();
-        replica
-            .apply(Document::ADD_COMMENT.with(document::AddComment {
-                block: block.clone(),
-                start: 4,
-                end: 10,
-                text: "By how much exactly?".parse().unwrap(),
-            }))
-            .unwrap();
-        let after = replica.heads();
-        let comments = match replica.doc().get(ROOT, "comments") {
-            Ok(Some((_, comments))) => comments,
-            other => panic!("the threads are stored: {other:?}"),
-        };
-        let patches = replica.doc_mut().diff(&before, &after);
-        assert!(!patches.is_empty());
-        for patch in &patches {
+    tilo_test_env::scenario! {
+        /// A comment: its thread in the record, its anchor in the text, and both in a saved file.
+        fn comments_are_threads_beside_the_text_they_follow;
+
+        phase a_comment_writes_its_thread_and_never_the_text;
+        {
+            let (mut replica, block) = written("The budget doubled this year.", "ada");
+            let before = replica.heads();
+            replica
+                .apply(Document::ADD_COMMENT.with(document::AddComment {
+                    block: block.clone(),
+                    start: 4,
+                    end: 10,
+                    text: "By how much exactly?".parse().unwrap(),
+                }))
+                .unwrap();
+            let after = replica.heads();
+            let comments = match replica.doc().get(ROOT, "comments") {
+                Ok(Some((_, comments))) => comments,
+                other => panic!("the threads are stored: {other:?}"),
+            };
+            let patches = replica.doc_mut().diff(&before, &after);
+            assert!(!patches.is_empty());
+            for patch in &patches {
+                assert!(
+                    patch.obj == comments || patch.path.iter().any(|(obj, _)| *obj == comments),
+                    "the comment wrote outside its thread: {patch:?}"
+                );
+            }
+            let threads = replica.state().unwrap().comment_views(replica.doc());
+            assert_eq!(threads.len(), 1);
+            assert_eq!(threads[0].range, Some((block, 4, 10)));
+            let published = replica.published().unwrap();
+            let thread = format!("{}/comments/{}", Document::KIND, threads[0].id);
+            let item = published
+                .children
+                .iter()
+                .find(|child| child.id.as_str() == thread)
+                .expect("the thread is published");
             assert!(
-                patch.obj == comments || patch.path.iter().any(|(obj, _)| *obj == comments),
-                "the comment wrote outside its thread: {patch:?}"
+                item.actions
+                    .iter()
+                    .any(|action| action.id == "reply-to-comment")
+            );
+            assert!(
+                item.actions
+                    .iter()
+                    .any(|action| action.id == "resolve-comment")
             );
         }
-        let threads = replica.state().unwrap().comment_views(replica.doc());
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].range, Some((block, 4, 10)));
-        let published = replica.published().unwrap();
-        let thread = format!("{}/comments/{}", Document::KIND, threads[0].id);
-        let item = published
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == thread)
-            .expect("the thread is published");
-        assert!(
-            item.actions
-                .iter()
-                .any(|action| action.id == "reply-to-comment")
-        );
-        assert!(
-            item.actions
-                .iter()
-                .any(|action| action.id == "resolve-comment")
-        );
-    }
 
-    #[test]
-    fn a_comment_follows_its_text_through_concurrent_edits() {
-        let (mut here, block) = written("Ship it on Friday.", "ada");
-        here.apply(Document::ADD_COMMENT.with(document::AddComment {
-            block: block.clone(),
-            start: 11,
-            end: 17,
-            text: "Friday is a holiday".parse().unwrap(),
-        }))
-        .unwrap();
-        let mut there = here.fork();
-        let typed = |at: usize, text: &str| {
-            Invoke::edit(&edit(&RichTextAction::SpliceText {
-                region: tilo_document::action::RegionKind::Body,
+        phase a_comment_follows_its_text_through_concurrent_edits;
+        {
+            let (mut here, block) = written("Ship it on Friday.", "ada");
+            here.apply(Document::ADD_COMMENT.with(document::AddComment {
                 block: block.clone(),
-                at,
-                del: 0,
-                ins: text.to_owned(),
+                start: 11,
+                end: 17,
+                text: "Friday is a holiday".parse().unwrap(),
             }))
-            .unwrap()
-        };
-        here.apply(typed(0, "Please ")).unwrap();
-        there.apply(typed(5, " the build")).unwrap();
-        here.sync_with(&mut there).unwrap();
-        let text = "Please Ship the build it on Friday.";
-        let start = text.find("Friday").unwrap();
-        for replica in [&here, &there] {
-            let threads = replica.state().unwrap().comment_views(replica.doc());
-            assert_eq!(threads[0].range, Some((block.clone(), start, start + 6)));
+            .unwrap();
+            let mut there = here.fork();
+            let typed = |at: usize, text: &str| {
+                Invoke::edit(&edit(&RichTextAction::SpliceText {
+                    region: tilo_document::action::RegionKind::Body,
+                    block: block.clone(),
+                    at,
+                    del: 0,
+                    ins: text.to_owned(),
+                }))
+                .unwrap()
+            };
+            here.apply(typed(0, "Please ")).unwrap();
+            there.apply(typed(5, " the build")).unwrap();
+            here.sync_with(&mut there).unwrap();
+            let text = "Please Ship the build it on Friday.";
+            let start = text.find("Friday").unwrap();
+            for replica in [&here, &there] {
+                let threads = replica.state().unwrap().comment_views(replica.doc());
+                assert_eq!(threads[0].range, Some((block.clone(), start, start + 6)));
+            }
         }
-    }
 
-    #[test]
-    fn a_file_keeps_the_comments_in_its_text_and_brings_them_back() {
-        let (mut replica, block) = written("Doors open at seven.", "ada");
-        replica
-            .apply(Document::ADD_COMMENT.with(document::AddComment {
-                block,
-                start: 14,
-                end: 19,
-                text: "Seven sharp?".parse().unwrap(),
-            }))
-            .unwrap();
-        let file = export_copy(replica.doc()).unwrap();
-        let bytes = crate::WpFormat::Docx
-            .export(file.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-
-        let mut reopened = Replica::<Document>::new();
-        let import = crate::import_action(
-            &bytes,
-            crate::WpFormat::Docx,
-            &tilo_content::ContentStore::memory(),
-        )
-        .unwrap();
-        reopened
-            .apply(Invoke::group([
-                Invoke::edit(&edit(&import)).unwrap(),
-                Document::ADOPT_COMMENTS.invoke(),
-            ]))
-            .unwrap();
-        let threads = reopened.state().unwrap().comment_views(reopened.doc());
-        assert_eq!(threads.len(), 1, "{threads:?}");
-        assert_eq!(threads[0].blocks[0].text, "Seven sharp?");
-        let (block, start, end) = threads[0].range.clone().expect("about some text");
-        let text =
-            tilo_doc::model::block_text(reopened.doc(), &open(reopened.doc()).unwrap(), &block)
+        phase a_file_keeps_the_comments_in_its_text_and_brings_them_back;
+        {
+            let (mut replica, block) = written("Doors open at seven.", "ada");
+            replica
+                .apply(Document::ADD_COMMENT.with(document::AddComment {
+                    block,
+                    start: 14,
+                    end: 19,
+                    text: "Seven sharp?".parse().unwrap(),
+                }))
                 .unwrap();
-        assert_eq!(
-            text.chars()
-                .skip(start)
-                .take(end - start)
-                .collect::<String>(),
-            "seven"
-        );
-        let snapshot = tilo_doc::model::materialize(reopened.doc(), &open(reopened.doc()).unwrap());
-        assert!(snapshot.comments.is_empty());
+            let file = export_copy(replica.doc()).unwrap();
+            let bytes = crate::WpFormat::Docx
+                .export(file.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+
+            let mut reopened = Replica::<Document>::new();
+            let import = crate::import_action(
+                &bytes,
+                crate::WpFormat::Docx,
+                &tilo_content::ContentStore::memory(),
+            )
+            .unwrap();
+            reopened
+                .apply(Invoke::group([
+                    Invoke::edit(&edit(&import)).unwrap(),
+                    Document::ADOPT_COMMENTS.invoke(),
+                ]))
+                .unwrap();
+            let threads = reopened.state().unwrap().comment_views(reopened.doc());
+            assert_eq!(threads.len(), 1, "{threads:?}");
+            assert_eq!(threads[0].blocks[0].text, "Seven sharp?");
+            let (block, start, end) = threads[0].range.clone().expect("about some text");
+            let text =
+                tilo_doc::model::block_text(reopened.doc(), &open(reopened.doc()).unwrap(), &block)
+                    .unwrap();
+            assert_eq!(
+                text.chars()
+                    .skip(start)
+                    .take(end - start)
+                    .collect::<String>(),
+                "seven"
+            );
+            let snapshot = tilo_doc::model::materialize(reopened.doc(), &open(reopened.doc()).unwrap());
+            assert!(snapshot.comments.is_empty());
+        }
     }
 }
 

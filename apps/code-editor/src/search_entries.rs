@@ -99,23 +99,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn symbol_extraction_keeps_exact_character_location() {
-        let symbols = symbols_in(
-            "test-file",
-            "src/main.rs",
-            "  pub fn crab() {}\nlet x = 1;\n",
-        );
-        assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].name, "crab");
-        assert_eq!((symbols[0].line, symbols[0].col), (0, 9));
-    }
+    tilo_test_env::scenario! {
+        fn symbol_search_extracts_finds_and_pages;
 
-    #[test]
-    fn symbol_search_finds_late_partial_and_unicode_matches() {
-        complete_projection_keeps_a_late_file_findable();
-        partial_matches_are_not_hidden_by_exact_file_names();
-        unicode_and_embedded_nul_grams_are_unambiguous();
+        phase symbol_extraction_keeps_exact_character_location;
+        {
+            let symbols = symbols_in(
+                "test-file",
+                "src/main.rs",
+                "  pub fn crab() {}\nlet x = 1;\n",
+            );
+            assert_eq!(symbols.len(), 1);
+            assert_eq!(symbols[0].name, "crab");
+            assert_eq!((symbols[0].line, symbols[0].col), (0, 9));
+        }
+
+        phase symbol_search_finds_late_partial_and_unicode_matches;
+        {
+            complete_projection_keeps_a_late_file_findable();
+            partial_matches_are_not_hidden_by_exact_file_names();
+            unicode_and_embedded_nul_grams_are_unambiguous();
+        }
+
+        phase symbol_search_pages_are_budgeted_and_restart_after_mutation;
+        {
+            pages_have_hard_inspection_budgets_and_reach_late_matches();
+            mutation_invalidates_a_stale_cursor_without_skipping_the_new_revision();
+        }
     }
 
     fn complete_projection_keeps_a_late_file_findable() {
@@ -153,12 +163,6 @@ mod tests {
         ]);
         assert_eq!(provider.search_limited("ÉCL", 10).len(), 1);
         assert_eq!(provider.search_limited("a\0b", 10).len(), 1);
-    }
-
-    #[test]
-    fn symbol_search_pages_are_budgeted_and_restart_after_mutation() {
-        pages_have_hard_inspection_budgets_and_reach_late_matches();
-        mutation_invalidates_a_stale_cursor_without_skipping_the_new_revision();
     }
 
     fn pages_have_hard_inspection_budgets_and_reach_late_matches() {

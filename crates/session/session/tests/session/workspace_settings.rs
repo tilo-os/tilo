@@ -402,6 +402,7 @@ fn app_here(session: &Session, app: &str) {
     let mut tree = session.handle().read(Clone::clone);
     let workspace = tree.active_workspace_mut().expect("a workspace in front");
     workspace.grant_app(
+        "ada",
         app,
         &tilo_desktop_model::Capability::Camera {
             scope: tilo_desktop_model::GRANT_SESSION,

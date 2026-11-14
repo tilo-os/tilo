@@ -294,7 +294,7 @@ fn open_profile_workspace(
     let workspace = ProfileWorkspace::open(root)?;
     let identity = tilo_identity_host::registry::identity_for_workspace(&workspace.workspace())?
         .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
-    let actor = identity.principal_id();
+    let actor = identity.person_id();
     stage("saving the workspace");
     workspace.adopt(&actor)?;
     Ok((workspace, identity, actor))
@@ -396,7 +396,7 @@ fn broker_services(
         launcher: Some(Arc::clone(parts.apps) as Arc<dyn LauncherServices>),
         app_action_access: Some(parts.apps.access_resolver()),
         app_resource_kinds: Some(parts.apps.resource_kinds_resolver()),
-        app_action_grants: Some(Arc::new(ProfileGrants {
+        workspace_grants: Some(Arc::new(ProfileGrants {
             workspace: Arc::clone(parts.workspace),
             apps: Arc::clone(parts.apps),
         })),
@@ -609,7 +609,7 @@ impl AdmittedRuntimeSession {
                 .unwrap_or_else(|| self.admission.caller())
         {
             tracing::warn!(
-                caller = ?caller.principal(),
+                caller = ?caller.acting(),
                 "a caller this run was not admitted for tried to act as it"
             );
             return Err(Refusal::Stranger);
@@ -705,7 +705,7 @@ impl RuntimeActionHost {
         else {
             return true;
         };
-        let tilo_actions::remote::CallerPrincipal::Person(actor) = caller.principal() else {
+        let Some(actor) = caller.acting().person_id() else {
             return false;
         };
         self.joined.action_workspace(actor, workspace).is_ok()
@@ -1281,7 +1281,7 @@ fn place_own_workspace(
                         as Arc<dyn tilo_room_host::app_serving::AppServingPlane>),
                     ..tilo_room_host::host::HostConfig::new(
                         profile.join(HOST_STORE),
-                        tilo_room_host::host::HostMode::Device,
+                        tilo_relay_protocol::WorkSetting::none(),
                     )
                 },
                 tilo_room_host::host::HostIdentity {

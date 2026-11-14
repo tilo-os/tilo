@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Acting, ActionKind, Answer, Authority, Context, Grant, TreePath, Verdict, WorkspacePolicy,
-    roles,
 };
+use tilo_clock::time::SystemTime;
 
 /// Who made a change and what they may do.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,19 +70,13 @@ impl Standing {
     }
 
     /// This standing's policy, with `acting` as who acts: `None` when the
-    /// acting is not for the person this standing is. The delegation a
-    /// person's own device gives its agent comes with it.
+    /// acting is not for the person this standing is. The grants the acting's
+    /// software carries are the caller's to give ([`Self::granted`]).
     #[must_use]
     pub fn as_acting(mut self, acting: Acting) -> Option<Self> {
-        let person = self.person_id()?.to_owned();
-        if acting.people().first().copied() != Some(person.as_str()) {
+        let person = self.person_id()?;
+        if acting.people().first().copied() != Some(person) {
             return None;
-        }
-        for node in acting.nodes() {
-            if let crate::Actor::Member(crate::MemberId::Agent(agent)) = &node.by {
-                let grants = roles::agent_grants(&self.policy.workspace, agent, &person, &[]);
-                self.granted.extend(grants);
-            }
         }
         self.acting = acting;
         Some(self)
@@ -158,5 +152,11 @@ impl Standing {
     #[must_use]
     pub fn answer(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Answer {
         self.verdict(node, kind, cx).answer
+    }
+
+    /// Whether this standing may take `kind` at `node` at `now`.
+    #[must_use]
+    pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
+        self.answer(node, kind, &Context::at_time(now)) == Answer::Allow
     }
 }

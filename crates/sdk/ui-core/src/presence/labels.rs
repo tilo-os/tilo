@@ -45,19 +45,12 @@ pub struct ParticipantLabels {
 }
 
 impl ParticipantLabels {
-    /// Resolve the numbers for `people`, each an `(id, name)` pair. Order
-    /// does not matter, and a repeated id counts once (its last name). A
-    /// blank name collides with nothing: it is shown as whatever stands in
-    /// for it.
-    #[must_use]
-    pub fn new<'a>(people: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
-        Self::by_joining(people.into_iter().map(|(id, name)| (id, name, None)))
-    }
-
-    /// [`Self::new`] for `people` as `(id, name, joined)`, `joined` being
+    /// Resolve the numbers for `people` as `(id, name, joined)`, `joined` being
     /// when the workspace admitted them (any unit every replica shares, such as
-    /// the admission's Unix time). Whoever joined first is numbered first;
-    /// those the workspace has no time for follow, by id.
+    /// the admission's Unix time). Order does not matter, and a repeated id
+    /// counts once (its last name). A blank name collides with nothing: it is
+    /// shown as whatever stands in for it. Whoever joined first is numbered
+    /// first; those the workspace has no time for follow, by id.
     #[must_use]
     pub fn by_joining<'a>(
         people: impl IntoIterator<Item = (&'a str, &'a str, Option<u64>)>,
@@ -138,85 +131,94 @@ pub fn name_key(name: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn unique_names_are_shown_as_they_are() {
-        let labels = ParticipantLabels::new([("a", "Ada"), ("b", "Bea")]);
-        assert!(labels.is_empty());
-        assert_eq!(labels.label("a", "Ada"), "Ada");
-        assert_eq!(labels.number("b"), None);
+    /// The numbers for `people`, none of them with a time the workspace admitted them.
+    fn labels_of<'a>(people: impl IntoIterator<Item = (&'a str, &'a str)>) -> ParticipantLabels {
+        ParticipantLabels::by_joining(people.into_iter().map(|(id, name)| (id, name, None)))
     }
 
-    #[test]
-    fn colliding_names_are_numbered_case_and_space_insensitively() {
-        let labels = ParticipantLabels::new([
-            ("peer-b", "ada  lovelace"),
-            ("peer-a", " Ada Lovelace"),
-            ("peer-c", "Bea"),
-        ]);
-        assert_eq!(labels.label("peer-a", " Ada Lovelace"), "Ada Lovelace (1)");
-        assert_eq!(labels.label("peer-b", "ada  lovelace"), "ada  lovelace (2)");
-        assert_eq!(labels.label("peer-c", "Bea"), "Bea");
-    }
+    tilo_test_env::scenario! {
+        fn participant_labels_number_only_the_names_that_collide;
 
-    #[test]
-    fn every_replica_numbers_alike_whatever_order_it_heard_people_in() {
-        let people = [("k3", "Sam"), ("k1", "Sam"), ("k2", "sam"), ("k4", "Kim")];
-        let first = ParticipantLabels::new(people);
-        let mut reversed = people;
-        reversed.reverse();
-        assert_eq!(first, ParticipantLabels::new(reversed));
-        let rotated = [people[2], people[3], people[0], people[1]];
-        assert_eq!(first, ParticipantLabels::new(rotated));
-        assert_eq!(first.number("k1"), Some(1));
-        assert_eq!(first.number("k2"), Some(2));
-        assert_eq!(first.number("k3"), Some(3));
-        assert_eq!(first.number("k4"), None);
-    }
+        phase unique_names_are_shown_as_they_are;
+        {
+            let labels = labels_of([("a", "Ada"), ("b", "Bea")]);
+            assert!(labels.is_empty());
+            assert_eq!(labels.label("a", "Ada"), "Ada");
+            assert_eq!(labels.number("b"), None);
+        }
 
-    #[test]
-    fn whoever_joined_first_keeps_their_number_when_a_namesake_arrives() {
-        let before =
-            ParticipantLabels::by_joining([("zz", "Alex", Some(10)), ("mm", "Alex", Some(20))]);
-        assert_eq!(before.number("zz"), Some(1));
-        assert_eq!(before.number("mm"), Some(2));
-        let after = ParticipantLabels::by_joining([
-            ("zz", "Alex", Some(10)),
-            ("mm", "Alex", Some(20)),
-            ("aa", "Alex", Some(30)),
-            ("bb", "Alex", None),
-        ]);
-        assert_eq!(after.number("zz"), Some(1), "an earlier member keeps (1)");
-        assert_eq!(after.number("mm"), Some(2));
-        assert_eq!(after.number("aa"), Some(3), "the newcomer takes the next");
-        assert_eq!(after.number("bb"), Some(4), "no join time sorts last");
-    }
+        phase colliding_names_are_numbered_case_and_space_insensitively;
+        {
+            let labels = labels_of([
+                ("peer-b", "ada  lovelace"),
+                ("peer-a", " Ada Lovelace"),
+                ("peer-c", "Bea"),
+            ]);
+            assert_eq!(labels.label("peer-a", " Ada Lovelace"), "Ada Lovelace (1)");
+            assert_eq!(labels.label("peer-b", "ada  lovelace"), "ada  lovelace (2)");
+            assert_eq!(labels.label("peer-c", "Bea"), "Bea");
+        }
 
-    #[test]
-    fn numbers_go_away_once_the_names_no_longer_collide() {
-        let colliding = ParticipantLabels::new([("a", "Ada"), ("b", "Ada")]);
-        assert_eq!(colliding.label("b", "Ada"), "Ada (2)");
-        let renamed = ParticipantLabels::new([("a", "Ada"), ("b", "Ada B")]);
-        assert!(renamed.is_empty());
-        assert_eq!(renamed.label("a", "Ada"), "Ada");
-        let departed = ParticipantLabels::new([("a", "Ada")]);
-        assert_eq!(departed.label("a", "Ada"), "Ada");
-    }
+        phase every_replica_numbers_alike_whatever_order_it_heard_people_in;
+        {
+            let people = [("k3", "Sam"), ("k1", "Sam"), ("k2", "sam"), ("k4", "Kim")];
+            let first = labels_of(people);
+            let mut reversed = people;
+            reversed.reverse();
+            assert_eq!(first, labels_of(reversed));
+            let rotated = [people[2], people[3], people[0], people[1]];
+            assert_eq!(first, labels_of(rotated));
+            assert_eq!(first.number("k1"), Some(1));
+            assert_eq!(first.number("k2"), Some(2));
+            assert_eq!(first.number("k3"), Some(3));
+            assert_eq!(first.number("k4"), None);
+        }
 
-    #[test]
-    fn a_newer_name_than_the_rosters_carries_no_stale_number() {
-        let labels = ParticipantLabels::new([("a", "Ada"), ("b", "Ada")]);
-        assert_eq!(labels.label("b", "Bea"), "Bea");
-    }
+        phase whoever_joined_first_keeps_their_number_when_a_namesake_arrives;
+        {
+            let before =
+                ParticipantLabels::by_joining([("zz", "Alex", Some(10)), ("mm", "Alex", Some(20))]);
+            assert_eq!(before.number("zz"), Some(1));
+            assert_eq!(before.number("mm"), Some(2));
+            let after = ParticipantLabels::by_joining([
+                ("zz", "Alex", Some(10)),
+                ("mm", "Alex", Some(20)),
+                ("aa", "Alex", Some(30)),
+                ("bb", "Alex", None),
+            ]);
+            assert_eq!(after.number("zz"), Some(1), "an earlier member keeps (1)");
+            assert_eq!(after.number("mm"), Some(2));
+            assert_eq!(after.number("aa"), Some(3), "the newcomer takes the next");
+            assert_eq!(after.number("bb"), Some(4), "no join time sorts last");
+        }
 
-    #[test]
-    fn blank_names_and_ids_collide_with_nothing() {
-        let labels = ParticipantLabels::new([("a", " "), ("b", ""), ("", "Ada"), ("c", "Ada")]);
-        assert!(labels.is_empty());
-    }
+        phase numbers_go_away_once_the_names_no_longer_collide;
+        {
+            let colliding = labels_of([("a", "Ada"), ("b", "Ada")]);
+            assert_eq!(colliding.label("b", "Ada"), "Ada (2)");
+            let renamed = labels_of([("a", "Ada"), ("b", "Ada B")]);
+            assert!(renamed.is_empty());
+            assert_eq!(renamed.label("a", "Ada"), "Ada");
+            let departed = labels_of([("a", "Ada")]);
+            assert_eq!(departed.label("a", "Ada"), "Ada");
+        }
 
-    #[test]
-    fn a_repeated_id_counts_once() {
-        let labels = ParticipantLabels::new([("a", "Ada"), ("a", "Ada")]);
-        assert!(labels.is_empty());
+        phase a_newer_name_than_the_rosters_carries_no_stale_number;
+        {
+            let labels = labels_of([("a", "Ada"), ("b", "Ada")]);
+            assert_eq!(labels.label("b", "Bea"), "Bea");
+        }
+
+        phase blank_names_and_ids_collide_with_nothing;
+        {
+            let labels = labels_of([("a", " "), ("b", ""), ("", "Ada"), ("c", "Ada")]);
+            assert!(labels.is_empty());
+        }
+
+        phase a_repeated_id_counts_once;
+        {
+            let labels = labels_of([("a", "Ada"), ("a", "Ada")]);
+            assert!(labels.is_empty());
+        }
     }
 }

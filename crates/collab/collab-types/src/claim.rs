@@ -490,121 +490,254 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_claim_names_the_verb_or_field_its_entry_names() {
-        let delete = ActionKey::new("so.tilo.snippets", "snippets.library", "delete");
-        let verb = Did::Verb(VerbCall::new(delete.clone(), []));
-        let mut entry = context(verb);
-        entry.item = Some(tilo_actions::ActionItem {
-            id: "s1".into(),
-            label: "Deploy".into(),
-        });
-        assert_eq!(
-            ClaimedAction::of(&entry).unwrap(),
-            ClaimedAction::Verb {
-                action: delete,
-                item: Some("s1".into())
-            }
-        );
-        let ClaimedAction::Edit { kind, path } =
-            ClaimedAction::of(&context(edit("favorite"))).unwrap()
-        else {
-            panic!("a field edit");
-        };
-        assert_eq!(kind, "snippets.library");
-        assert_eq!(path.last(), Some(&PathStep::Field("favorite".into())));
-        assert_eq!(
-            ClaimedAction::of(&context(Did::History(HistoryStep {
-                op: HistoryOp::Undo,
-                steps: 1,
-                of: None,
-            })))
-            .unwrap(),
-            ClaimedAction::History(HistoryOp::Undo)
-        );
-    }
+    tilo_test_env::scenario! {
+        /// How the changes an op carries are claimed from the entries written into them, each case on changes of its own.
+        fn a_change_is_claimed_for_the_action_its_entry_names;
 
-    #[test]
-    fn a_group_lists_each_distinct_member_and_refuses_what_it_cannot_list() {
-        let members = vec![edit("favorite"), edit("favorite"), edit("title")];
-        // Forty members, more than the entry keeps by value: every distinct
-        // action is still listed.
-        let group = Did::group(members.iter().cycle().take(40).cloned());
-        let ClaimedAction::Group(listed) = ClaimedAction::of(&context(group)).unwrap() else {
-            panic!("a group");
-        };
-        assert_eq!(listed.len(), 2, "each distinct member once");
-        let truncated = Did::Group(GroupOf {
-            members,
-            count: 40,
-            distinct: Vec::new(),
-        });
-        assert!(matches!(
-            ClaimedAction::of(&context(truncated)),
-            Err(ClaimError::GroupTooLarge { .. })
-        ));
-    }
-
-    #[test]
-    fn a_mutation_claims_each_change_and_a_snapshot_none() {
-        use automerge::transaction::{CommitOptions, Transactable};
-        let mut doc = automerge::AutoCommit::new();
-        let before = doc.get_heads();
-        for field in ["favorite", "title"] {
-            doc.put(automerge::ROOT, field, true).unwrap();
-            doc.commit_with(
-                CommitOptions::default()
-                    .with_message(context(edit(field)).change_message().unwrap()),
+        phase a_claim_names_the_verb_or_field_its_entry_names;
+        {
+            let delete = ActionKey::new("so.tilo.snippets", "snippets.library", "delete");
+            let verb = Did::Verb(VerbCall::new(delete.clone(), []));
+            let mut entry = context(verb);
+            entry.item = Some(tilo_actions::ActionItem {
+                id: "s1".into(),
+                label: "Deploy".into(),
+            });
+            assert_eq!(
+                ClaimedAction::of(&entry).unwrap(),
+                ClaimedAction::Verb {
+                    action: delete,
+                    item: Some("s1".into())
+                }
+            );
+            let ClaimedAction::Edit { kind, path } =
+                ClaimedAction::of(&context(edit("favorite"))).unwrap()
+            else {
+                panic!("a field edit");
+            };
+            assert_eq!(kind, "snippets.library");
+            assert_eq!(path.last(), Some(&PathStep::Field("favorite".into())));
+            assert_eq!(
+                ClaimedAction::of(&context(Did::History(HistoryStep {
+                    op: HistoryOp::Undo,
+                    steps: 1,
+                    of: None,
+                })))
+                .unwrap(),
+                ClaimedAction::History(HistoryOp::Undo)
             );
         }
-        let mutation = crate::op::DocumentMutation::Incremental(doc.save_after(&before));
-        let claims = mutation_claims(&mutation, record_unit).unwrap();
-        assert_eq!(claims.len(), 2);
-        let made: Vec<[u8; 32]> = doc
-            .get_changes(&before)
-            .iter()
-            .map(|change| change.hash().0)
-            .collect();
-        assert_eq!(
-            claims.iter().map(|claim| claim.change).collect::<Vec<_>>(),
-            made,
-            "one claim per change, in order"
-        );
-        assert!(claims.iter().all(|claim| claim.units == [Vec::new()]));
-        assert!(
-            mutation_claims(
-                &crate::op::DocumentMutation::Snapshot(doc.save()),
-                record_unit
-            )
-            .unwrap()
-            .is_empty()
-        );
-    }
 
-    #[test]
-    fn changes_parse_without_their_dependencies() {
-        use automerge::transaction::Transactable;
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "title", "a").unwrap();
-        doc.commit();
-        let before = doc.get_heads();
-        doc.put(automerge::ROOT, "title", "b").unwrap();
-        doc.commit();
-        let changes = parse_changes(&doc.save_after(&before)).unwrap();
-        assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].deps(), before.as_slice());
-    }
+        phase a_group_lists_each_distinct_member_and_refuses_what_it_cannot_list;
+        {
+            let members = vec![edit("favorite"), edit("favorite"), edit("title")];
+            // Forty members, more than the entry keeps by value: every distinct
+            // action is still listed.
+            let group = Did::group(members.iter().cycle().take(40).cloned());
+            let ClaimedAction::Group(listed) = ClaimedAction::of(&context(group)).unwrap() else {
+                panic!("a group");
+            };
+            assert_eq!(listed.len(), 2, "each distinct member once");
+            let truncated = Did::Group(GroupOf {
+                members,
+                count: 40,
+                distinct: Vec::new(),
+            });
+            assert!(matches!(
+                ClaimedAction::of(&context(truncated)),
+                Err(ClaimError::GroupTooLarge { .. })
+            ));
+        }
 
-    #[test]
-    fn a_change_without_an_entry_cannot_be_claimed() {
-        assert_eq!(
-            ChangeClaim::of_change([0; 32], None, Vec::new()),
-            Err(ClaimError::Unnamed)
-        );
-        assert_eq!(
-            ChangeClaim::of_change([0; 32], Some("free text"), Vec::new()),
-            Err(ClaimError::Unnamed)
-        );
+        phase a_mutation_claims_each_change_and_a_snapshot_none;
+        {
+            use automerge::transaction::{CommitOptions, Transactable};
+            let mut doc = automerge::AutoCommit::new();
+            let before = doc.get_heads();
+            for field in ["favorite", "title"] {
+                doc.put(automerge::ROOT, field, true).unwrap();
+                doc.commit_with(
+                    CommitOptions::default()
+                        .with_message(context(edit(field)).change_message().unwrap()),
+                );
+            }
+            let mutation = crate::op::DocumentMutation::Incremental(doc.save_after(&before));
+            let claims = mutation_claims(&mutation, record_unit).unwrap();
+            assert_eq!(claims.len(), 2);
+            let made: Vec<[u8; 32]> = doc
+                .get_changes(&before)
+                .iter()
+                .map(|change| change.hash().0)
+                .collect();
+            assert_eq!(
+                claims.iter().map(|claim| claim.change).collect::<Vec<_>>(),
+                made,
+                "one claim per change, in order"
+            );
+            assert!(claims.iter().all(|claim| claim.units == [Vec::new()]));
+            assert!(
+                mutation_claims(
+                    &crate::op::DocumentMutation::Snapshot(doc.save()),
+                    record_unit
+                )
+                .unwrap()
+                .is_empty()
+            );
+        }
+
+        phase changes_parse_without_their_dependencies;
+        {
+            use automerge::transaction::Transactable;
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "title", "a").unwrap();
+            doc.commit();
+            let before = doc.get_heads();
+            doc.put(automerge::ROOT, "title", "b").unwrap();
+            doc.commit();
+            let changes = parse_changes(&doc.save_after(&before)).unwrap();
+            assert_eq!(changes.len(), 1);
+            assert_eq!(changes[0].deps(), before.as_slice());
+        }
+
+        phase a_change_without_an_entry_cannot_be_claimed;
+        {
+            assert_eq!(
+                ChangeClaim::of_change([0; 32], None, Vec::new()),
+                Err(ClaimError::Unnamed)
+            );
+            assert_eq!(
+                ChangeClaim::of_change([0; 32], Some("free text"), Vec::new()),
+                Err(ClaimError::Unnamed)
+            );
+        }
+
+        phase every_change_an_op_carries_must_name_its_action;
+        // The origin check every signer runs: each change of a cleartext
+        // incremental op names its action and is claimed, in order.
+        {
+            use automerge::transaction::Transactable;
+            let (mutation, claims) = field_edit_mutation("note", "title", "a").unwrap();
+            assert_eq!(check_claimed(&op_of(&mutation)), Ok(()));
+            assert!(
+                check_claimed(&op_of(&mutation).with_claims(claims))
+                    .unwrap_err()
+                    .contains("carries claims"),
+                "a cleartext op names its actions in its changes only"
+            );
+            let mut raw = automerge::AutoCommit::new();
+            raw.put(automerge::ROOT, "title", "a").unwrap();
+            raw.commit();
+            let unnamed = crate::op::DocumentMutation::Incremental(raw.save_after(&[]));
+            let error = check_claimed(&op_of(&unnamed)).unwrap_err();
+            assert!(error.contains("names no action"), "{error}");
+            assert!(
+                error.contains("\"title\""),
+                "the producer is findable: {error}"
+            );
+            // Nothing to check: a snapshot, and bytes that are not changes.
+            let snapshot = crate::op::DocumentMutation::Snapshot(raw.save());
+            assert_eq!(check_claimed(&op_of(&snapshot)), Ok(()));
+            let junk = crate::op::DocumentMutation::Incremental(vec![1, 2, 3]);
+            assert_eq!(check_claimed(&op_of(&junk)), Ok(()));
+        }
+
+        phase a_compact_group_entry_claims_each_member_at_its_path;
+        // A grid gesture's entry, written as compactly as the history keeps it
+        // (a group action stating its members' shared path once, the members'
+        // paths left to that action), claims each member at its full path.
+        {
+            let path = vec![
+                PathStep::Field("sheets".into()),
+                PathStep::Item("s1".into()),
+                PathStep::Field("cells".into()),
+            ];
+            let member = |op| {
+                Did::Edit(FieldEdit {
+                    ty: "sheet".into(),
+                    field: "cells".into(),
+                    path: path.clone(),
+                    op,
+                    old: None,
+                    new: None,
+                    args: std::collections::BTreeMap::new(),
+                })
+            };
+            let mut entry =
+                ActionContext::for_resource("sheets.workbook", "sheets.workbook", "Workbook");
+            entry.what = Some(Did::group([
+                member(EditOp::InsertRow),
+                member(EditOp::SetCell),
+            ]));
+            entry.action = Some(tilo_actions::EncodedAction {
+                type_id: "sheets.workbook+group".into(),
+                payload: br#"{"at":5,"ops":[{"action":"field-edit","args":{"at":2,"id":"r2","op":"insert-row"}},{"action":"field-edit","args":{"column":"c0","op":"set-cell","row":"r2","value":{"raw":"2"}}}],"path":[{"field":"sheets"},{"item":"s1"},{"field":"cells"}]}"#.to_vec(),
+            });
+            let message = entry.change_message().unwrap();
+            assert_eq!(
+                tilo_actions::compact::decode(
+                    message
+                        .strip_prefix(tilo_actions::CHANGE_MESSAGE_PREFIX)
+                        .unwrap()
+                )
+                .unwrap()
+                .matches("\"s1\"")
+                .count(),
+                1,
+                "the path once: {message}"
+            );
+            let claim = ChangeClaim::of_change([1; 32], Some(&message), Vec::new()).unwrap();
+            assert_eq!(
+                claim.action,
+                ClaimedAction::Group(vec![ClaimedAction::Edit {
+                    kind: "sheets.workbook".into(),
+                    path,
+                }])
+            );
+        }
+
+        phase a_continuation_claims_from_its_payload;
+        // A continuation claims what its payload does: the field edit at its
+        // path, or the verb it names, of the record's own app and kind.
+        {
+            let edit = r#"tilo.cont/1 0123456789abcdef0123456789abcdef rows/r1/title {"op":{"action":"field-edit","args":{"op":"splice","path":[{"field":"rows"},{"item":"r1"},{"field":"title"}]}},"at":5}"#;
+            assert_eq!(
+                ChangeClaim::of_change([1; 32], Some(edit), Vec::new())
+                    .unwrap()
+                    .action,
+                ClaimedAction::Edit {
+                    kind: String::new(),
+                    path: vec![
+                        PathStep::Field("rows".into()),
+                        PathStep::Item("r1".into()),
+                        PathStep::Field("title".into()),
+                    ],
+                }
+            );
+            let verb = r#"tilo.cont/1 0123456789abcdef0123456789abcdef - {"op":{"action":"type-text","args":{}},"at":5}"#;
+            assert_eq!(
+                ChangeClaim::of_change([1; 32], Some(verb), Vec::new())
+                    .unwrap()
+                    .action,
+                ClaimedAction::Verb {
+                    action: ActionKey::new("", "", "type-text"),
+                    item: None,
+                }
+            );
+            assert_eq!(
+                ChangeClaim::of_change([1; 32], Some("tilo.cont/1 g - not json"), Vec::new()),
+                Err(ClaimError::Unnamed)
+            );
+            // An action of no record: where the message says it edits.
+            assert_eq!(
+                ChangeClaim::of_change([1; 32], Some(r#"tilo.cont/1 g body "a""#), Vec::new())
+                    .unwrap()
+                    .action,
+                ClaimedAction::Edit {
+                    kind: String::new(),
+                    path: vec![PathStep::Field("body".into())],
+                }
+            );
+        }
     }
 
     #[test]
@@ -651,36 +784,6 @@ mod tests {
         )
     }
 
-    /// The origin check every signer runs: each change of a cleartext
-    /// incremental op names its action and is claimed, in order.
-    #[test]
-    fn every_change_an_op_carries_must_name_its_action() {
-        use automerge::transaction::Transactable;
-        let (mutation, claims) = field_edit_mutation("note", "title", "a").unwrap();
-        assert_eq!(check_claimed(&op_of(&mutation)), Ok(()));
-        assert!(
-            check_claimed(&op_of(&mutation).with_claims(claims))
-                .unwrap_err()
-                .contains("carries claims"),
-            "a cleartext op names its actions in its changes only"
-        );
-        let mut raw = automerge::AutoCommit::new();
-        raw.put(automerge::ROOT, "title", "a").unwrap();
-        raw.commit();
-        let unnamed = crate::op::DocumentMutation::Incremental(raw.save_after(&[]));
-        let error = check_claimed(&op_of(&unnamed)).unwrap_err();
-        assert!(error.contains("names no action"), "{error}");
-        assert!(
-            error.contains("\"title\""),
-            "the producer is findable: {error}"
-        );
-        // Nothing to check: a snapshot, and bytes that are not changes.
-        let snapshot = crate::op::DocumentMutation::Snapshot(raw.save());
-        assert_eq!(check_claimed(&op_of(&snapshot)), Ok(()));
-        let junk = crate::op::DocumentMutation::Incremental(vec![1, 2, 3]);
-        assert_eq!(check_claimed(&op_of(&junk)), Ok(()));
-    }
-
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "not all claimed")]
@@ -692,103 +795,5 @@ mod tests {
         let unnamed = crate::op::DocumentMutation::Incremental(raw.save_after(&[]));
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let _ = crate::crypto::sign_op(&mut op_of(&unnamed), &key);
-    }
-
-    /// A grid gesture's entry, written as compactly as the history keeps it
-    /// (a group action stating its members' shared path once, the members'
-    /// paths left to that action), claims each member at its full path.
-    #[test]
-    fn a_compact_group_entry_claims_each_member_at_its_path() {
-        let path = vec![
-            PathStep::Field("sheets".into()),
-            PathStep::Item("s1".into()),
-            PathStep::Field("cells".into()),
-        ];
-        let member = |op| {
-            Did::Edit(FieldEdit {
-                ty: "sheet".into(),
-                field: "cells".into(),
-                path: path.clone(),
-                op,
-                old: None,
-                new: None,
-                args: std::collections::BTreeMap::new(),
-            })
-        };
-        let mut entry =
-            ActionContext::for_resource("sheets.workbook", "sheets.workbook", "Workbook");
-        entry.what = Some(Did::group([
-            member(EditOp::InsertRow),
-            member(EditOp::SetCell),
-        ]));
-        entry.action = Some(tilo_actions::EncodedAction {
-            type_id: "sheets.workbook+group".into(),
-            payload: br#"{"at":5,"ops":[{"action":"field-edit","args":{"at":2,"id":"r2","op":"insert-row"}},{"action":"field-edit","args":{"column":"c0","op":"set-cell","row":"r2","value":{"raw":"2"}}}],"path":[{"field":"sheets"},{"item":"s1"},{"field":"cells"}]}"#.to_vec(),
-        });
-        let message = entry.change_message().unwrap();
-        assert_eq!(
-            tilo_actions::compact::decode(
-                message
-                    .strip_prefix(tilo_actions::CHANGE_MESSAGE_PREFIX)
-                    .unwrap()
-            )
-            .unwrap()
-            .matches("\"s1\"")
-            .count(),
-            1,
-            "the path once: {message}"
-        );
-        let claim = ChangeClaim::of_change([1; 32], Some(&message), Vec::new()).unwrap();
-        assert_eq!(
-            claim.action,
-            ClaimedAction::Group(vec![ClaimedAction::Edit {
-                kind: "sheets.workbook".into(),
-                path,
-            }])
-        );
-    }
-
-    /// A continuation claims what its payload does: the field edit at its
-    /// path, or the verb it names, of the record's own app and kind.
-    #[test]
-    fn a_continuation_claims_from_its_payload() {
-        let edit = r#"tilo.cont/1 0123456789abcdef0123456789abcdef rows/r1/title {"op":{"action":"field-edit","args":{"op":"splice","path":[{"field":"rows"},{"item":"r1"},{"field":"title"}]}},"at":5}"#;
-        assert_eq!(
-            ChangeClaim::of_change([1; 32], Some(edit), Vec::new())
-                .unwrap()
-                .action,
-            ClaimedAction::Edit {
-                kind: String::new(),
-                path: vec![
-                    PathStep::Field("rows".into()),
-                    PathStep::Item("r1".into()),
-                    PathStep::Field("title".into()),
-                ],
-            }
-        );
-        let verb = r#"tilo.cont/1 0123456789abcdef0123456789abcdef - {"op":{"action":"type-text","args":{}},"at":5}"#;
-        assert_eq!(
-            ChangeClaim::of_change([1; 32], Some(verb), Vec::new())
-                .unwrap()
-                .action,
-            ClaimedAction::Verb {
-                action: ActionKey::new("", "", "type-text"),
-                item: None,
-            }
-        );
-        assert_eq!(
-            ChangeClaim::of_change([1; 32], Some("tilo.cont/1 g - not json"), Vec::new()),
-            Err(ClaimError::Unnamed)
-        );
-        // An action of no record: where the message says it edits.
-        assert_eq!(
-            ChangeClaim::of_change([1; 32], Some(r#"tilo.cont/1 g body "a""#), Vec::new())
-                .unwrap()
-                .action,
-            ClaimedAction::Edit {
-                kind: String::new(),
-                path: vec![PathStep::Field("body".into())],
-            }
-        );
     }
 }

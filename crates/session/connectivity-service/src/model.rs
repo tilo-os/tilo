@@ -451,8 +451,8 @@ impl From<&os_actions::bluez::DeviceInfo> for Accessory {
     }
 }
 
-impl From<&os_actions::NearbyBtDevice> for Nearby {
-    fn from(device: &os_actions::NearbyBtDevice) -> Self {
+impl From<&os_actions::bluez::DeviceInfo> for Nearby {
+    fn from(device: &os_actions::bluez::DeviceInfo) -> Self {
         Self {
             name: device.name.clone(),
             address: device.address.clone(),

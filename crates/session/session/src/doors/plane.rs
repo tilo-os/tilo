@@ -413,9 +413,7 @@ fn desk_authority(
 ) -> Result<std::sync::Arc<DeskAuthority>, Error> {
     let journal = match options.state.as_deref() {
         Some(state) => {
-            let mut path = crate::desk_doc::path(state).into_os_string();
-            path.push(".invocations");
-            let path = std::path::PathBuf::from(path);
+            let path = state.join("tilo").join("invocations.json");
             if let Some(directory) = path.parent() {
                 std::fs::create_dir_all(directory)?;
             }

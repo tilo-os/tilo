@@ -88,6 +88,7 @@ pub(crate) fn follow(wake: WakeHandle) -> Option<Said> {
 }
 
 fn watch(said: &Said, wake: &WakeHandle, heard: &mpsc::Receiver<Event>) {
+    ui::rt::off_ui_thread();
     let opened = match SessionResource::open(KEYBOARD) {
         Ok(opened) => opened,
         Err(error) => {

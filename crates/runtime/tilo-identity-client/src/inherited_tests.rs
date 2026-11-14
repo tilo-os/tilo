@@ -29,103 +29,107 @@ fn error_kind<T>(result: Result<T, NotAvailable>) -> io::ErrorKind {
     }
 }
 
-#[test]
-fn inherited_consumers_share_metadata_and_the_framing_lock_without_consuming_authority() {
-    let (app, mut host) = UnixStream::pair().unwrap();
-    assert_eq!(unsafe { libc::fcntl(app.as_raw_fd(), libc::F_SETFD, 0) }, 0);
-    let worker = std::thread::spawn(move || {
-        assert!(matches!(
-            read_frame(&mut host).unwrap(),
-            wire::Request::Metadata
-        ));
-        write_frame(&mut host, &metadata()).unwrap();
-        let mut messages = Vec::new();
-        for _ in 0..2 {
-            let wire::Request::Sign { action, message } = read_frame(&mut host).unwrap() else {
-                panic!("metadata must be exchanged only once");
-            };
-            assert_eq!(action, "document.save");
-            messages.push(message);
-            write_frame(&mut host, &wire::Response::Denied("revoked".into())).unwrap();
-        }
-        messages.sort();
-        assert_eq!(messages, [b"first".to_vec(), b"second".to_vec()]);
-    });
-    let first = inherited::connect_service(app.as_fd()).unwrap();
-    let second = inherited::connect_service(app.as_fd()).unwrap();
-    assert!(Arc::ptr_eq(&first, &second));
-    std::thread::scope(|scope| {
-        let one = scope.spawn(|| error_kind(first.sign_for("document.save", b"first")));
-        let two = scope.spawn(|| error_kind(second.sign_for("document.save", b"second")));
-        assert_eq!(one.join().unwrap(), io::ErrorKind::PermissionDenied);
-        assert_eq!(two.join().unwrap(), io::ErrorKind::PermissionDenied);
-    });
-    worker.join().unwrap();
-    drop((first, second));
-    let flags = unsafe { libc::fcntl(app.as_raw_fd(), libc::F_GETFD) };
-    assert!(flags >= 0);
-    assert_ne!(flags & libc::FD_CLOEXEC, 0);
-}
+tilo_test_env::scenario! {
+    fn inherited_service_connections;
 
-#[test]
-fn a_disconnected_service_is_not_replaced_with_another_identity() {
-    let (app, mut host) = UnixStream::pair().unwrap();
-    let worker = std::thread::spawn(move || {
-        assert!(matches!(
-            read_frame(&mut host).unwrap(),
-            wire::Request::Metadata
-        ));
-        write_frame(&mut host, &metadata()).unwrap();
-    });
-    let identity = inherited::connect_service(app.as_fd()).unwrap();
-    worker.join().unwrap();
-    for _ in 0..2 {
-        assert!(identity.sign_collaboration_join("room").is_err());
-        let reacquired = inherited::connect_service(app.as_fd()).unwrap();
-        assert!(Arc::ptr_eq(&identity, &reacquired));
-        assert_eq!(reacquired.metadata().signing_public_key(), [5; 32]);
+    phase inherited_consumers_share_metadata_and_the_framing_lock_without_consuming_authority;
+    {
+        let (app, mut host) = UnixStream::pair().unwrap();
+        assert_eq!(unsafe { libc::fcntl(app.as_raw_fd(), libc::F_SETFD, 0) }, 0);
+        let worker = std::thread::spawn(move || {
+            assert!(matches!(
+                read_frame(&mut host).unwrap(),
+                wire::Request::Metadata
+            ));
+            write_frame(&mut host, &metadata()).unwrap();
+            let mut messages = Vec::new();
+            for _ in 0..2 {
+                let wire::Request::Sign { action, message } = read_frame(&mut host).unwrap() else {
+                    panic!("metadata must be exchanged only once");
+                };
+                assert_eq!(action, "document.save");
+                messages.push(message);
+                write_frame(&mut host, &wire::Response::Denied("revoked".into())).unwrap();
+            }
+            messages.sort();
+            assert_eq!(messages, [b"first".to_vec(), b"second".to_vec()]);
+        });
+        let first = inherited::connect_service(app.as_fd()).unwrap();
+        let second = inherited::connect_service(app.as_fd()).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        std::thread::scope(|scope| {
+            let one = scope.spawn(|| error_kind(first.sign_for("document.save", b"first")));
+            let two = scope.spawn(|| error_kind(second.sign_for("document.save", b"second")));
+            assert_eq!(one.join().unwrap(), io::ErrorKind::PermissionDenied);
+            assert_eq!(two.join().unwrap(), io::ErrorKind::PermissionDenied);
+        });
+        worker.join().unwrap();
+        drop((first, second));
+        let flags = unsafe { libc::fcntl(app.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
     }
-}
 
-#[test]
-fn a_reused_descriptor_does_not_reuse_another_connections_identity() {
-    let (app, mut host) = UnixStream::pair().unwrap();
-    let first_worker = std::thread::spawn(move || {
-        assert!(matches!(
-            read_frame(&mut host).unwrap(),
-            wire::Request::Metadata
-        ));
-        write_frame(&mut host, &metadata()).unwrap();
-    });
-    let first = inherited::connect_service(app.as_fd()).unwrap();
-    first_worker.join().unwrap();
-    let (replacement, mut host) = UnixStream::pair().unwrap();
-    let second_worker = std::thread::spawn(move || {
-        assert!(matches!(
-            read_frame(&mut host).unwrap(),
-            wire::Request::Metadata
-        ));
-        let mut reply = metadata();
-        let wire::Response::Metadata {
-            ref mut signing_public_key,
-            ..
-        } = reply
-        else {
-            panic!("expected metadata fixture");
-        };
-        *signing_public_key = [9; 32];
-        write_frame(&mut host, &reply).unwrap();
-    });
-    // SAFETY: both sockets remain owned; dup2 replaces only app's live descriptor.
-    assert_eq!(
-        unsafe { libc::dup2(replacement.as_raw_fd(), app.as_raw_fd()) },
-        app.as_raw_fd()
-    );
-    let second = inherited::connect_service(app.as_fd()).unwrap();
-    assert!(!Arc::ptr_eq(&first, &second));
-    assert_eq!(first.metadata().signing_public_key(), [5; 32]);
-    assert_eq!(second.metadata().signing_public_key(), [9; 32]);
-    second_worker.join().unwrap();
+    phase a_disconnected_service_is_not_replaced_with_another_identity;
+    {
+        let (app, mut host) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || {
+            assert!(matches!(
+                read_frame(&mut host).unwrap(),
+                wire::Request::Metadata
+            ));
+            write_frame(&mut host, &metadata()).unwrap();
+        });
+        let identity = inherited::connect_service(app.as_fd()).unwrap();
+        worker.join().unwrap();
+        for _ in 0..2 {
+            assert!(identity.sign_collaboration_join("room").is_err());
+            let reacquired = inherited::connect_service(app.as_fd()).unwrap();
+            assert!(Arc::ptr_eq(&identity, &reacquired));
+            assert_eq!(reacquired.metadata().signing_public_key(), [5; 32]);
+        }
+    }
+
+    phase a_reused_descriptor_does_not_reuse_another_connections_identity;
+    {
+        let (app, mut host) = UnixStream::pair().unwrap();
+        let first_worker = std::thread::spawn(move || {
+            assert!(matches!(
+                read_frame(&mut host).unwrap(),
+                wire::Request::Metadata
+            ));
+            write_frame(&mut host, &metadata()).unwrap();
+        });
+        let first = inherited::connect_service(app.as_fd()).unwrap();
+        first_worker.join().unwrap();
+        let (replacement, mut host) = UnixStream::pair().unwrap();
+        let second_worker = std::thread::spawn(move || {
+            assert!(matches!(
+                read_frame(&mut host).unwrap(),
+                wire::Request::Metadata
+            ));
+            let mut reply = metadata();
+            let wire::Response::Metadata {
+                ref mut signing_public_key,
+                ..
+            } = reply
+            else {
+                panic!("expected metadata fixture");
+            };
+            *signing_public_key = [9; 32];
+            write_frame(&mut host, &reply).unwrap();
+        });
+        // SAFETY: both sockets remain owned; dup2 replaces only app's live descriptor.
+        assert_eq!(
+            unsafe { libc::dup2(replacement.as_raw_fd(), app.as_raw_fd()) },
+            app.as_raw_fd()
+        );
+        let second = inherited::connect_service(app.as_fd()).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(first.metadata().signing_public_key(), [5; 32]);
+        assert_eq!(second.metadata().signing_public_key(), [9; 32]);
+        second_worker.join().unwrap();
+    }
 }
 
 #[test]

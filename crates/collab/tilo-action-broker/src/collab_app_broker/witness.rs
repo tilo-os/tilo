@@ -35,6 +35,20 @@ pub(super) fn requires_store_witness(app: &str, action: &str) -> bool {
     app == "so.tilo.store" && matches!(action, "submit-report" | "appeal")
 }
 
+/// The id a consent question names `caller` by in `app_id`.
+fn asker_id(caller: &Caller) -> String {
+    let acting = caller.acting();
+    if let Some(agent) = acting.agent_id() {
+        agent.to_owned()
+    } else if let Some(app) = acting.app() {
+        app.to_string()
+    } else if let Some(bot) = acting.bot_id() {
+        format!("bot:{bot}")
+    } else {
+        acting.person_id().unwrap_or_default().to_owned()
+    }
+}
+
 /// The Store disclosure `request` puts to the person, signed as `caller`'s
 /// person or this device's in `workspace`.
 ///
@@ -320,17 +334,18 @@ impl AppBrokerState {
         request: &InvokeRequest,
     ) -> tilo_actions::remote::Pending<Result<ConfirmedInvocation, ActionHostError>> {
         use tilo_actions::remote::Pending;
-        let Some(person) = (match caller.principal() {
+        let Some(person) = (if let Some(id) = caller.acting().person_id() {
             // A direct caller cannot nominate another person to answer.
-            tilo_actions::remote::CallerPrincipal::Person(id) => Some(id.clone()),
-            _ => person
+            Some(id.to_owned())
+        } else {
+            person
                 .map(str::to_owned)
                 .or_else(|| caller.acting_for_person().map(str::to_owned))
                 .or_else(|| {
                     caller
                         .user_public_key()
-                        .map(|root| super::principal_id_for_root(*root))
-                }),
+                        .map(|root| super::person_id_for_root(*root))
+                })
         }) else {
             return Pending::ready(Err(ActionHostError::confirmation_required()));
         };
@@ -539,12 +554,7 @@ impl AppBrokerState {
                 )?;
                 Some((surface.route.clone(), shown))
             });
-        let asker = match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::Agent(agent) => agent.clone(),
-            tilo_actions::remote::CallerPrincipal::App(app) => app.clone(),
-            tilo_actions::remote::CallerPrincipal::Bot(bot) => format!("bot:{bot}"),
-            tilo_actions::remote::CallerPrincipal::Person(id) => id.clone(),
-        };
+        let asker = asker_id(caller);
         // Only the Store's typed external actions use this disclosure. A broken
         // payload or unavailable identity must not fall back to a generic prompt.
         let moderation = if requires_store_witness(&app_id, &address.action) {

@@ -686,23 +686,29 @@ fn load_param(art: &Artwork, layer: &str) -> Option<((f64, f64), f64)> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_tool_has_its_own_key() {
-        for tool in Tool::ALL {
-            assert_eq!(Tool::for_key(tool.shortcut()), Some(tool));
-        }
-        assert_eq!(Tool::for_key("B"), Some(Tool::Brush));
-        assert_eq!(Tool::for_key("bb"), None);
-        assert_eq!(Tool::for_key("z"), None);
-    }
+    tilo_test_env::scenario! {
+        /// The tool set and what the brush is loaded with.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_tool_has_its_own_key_and_a_chosen_pigment_is_the_paint;
 
-    #[test]
-    fn a_chosen_pigment_is_the_paint() {
-        let tools = Tools::default();
-        assert_eq!(tools.paint(), "#2b3f8f");
-        tools
-            .pigment
-            .set(Some(("burnt-sienna".into(), "#8a3c1e".into())));
-        assert_eq!(tools.paint(), "pigment:burnt-sienna");
+        phase every_tool_has_its_own_key;
+        {
+            for tool in Tool::ALL {
+                assert_eq!(Tool::for_key(tool.shortcut()), Some(tool));
+            }
+            assert_eq!(Tool::for_key("B"), Some(Tool::Brush));
+            assert_eq!(Tool::for_key("bb"), None);
+            assert_eq!(Tool::for_key("z"), None);
+        }
+
+        phase a_chosen_pigment_is_the_paint;
+        {
+            let tools = Tools::default();
+            assert_eq!(tools.paint(), "#2b3f8f");
+            tools
+                .pigment
+                .set(Some(("burnt-sienna".into(), "#8a3c1e".into())));
+            assert_eq!(tools.paint(), "pigment:burnt-sienna");
+        }
     }
 }

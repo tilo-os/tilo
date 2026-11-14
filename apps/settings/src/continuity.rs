@@ -3,32 +3,19 @@
 
 pub use settings_sections::continuity::*;
 
+/// Messages are named after the capability's key: `continuity-wifi-settings`
+/// and `continuity-wifi-settings-description`.
+fn message(capability: Capability, suffix: &str) -> String {
+    let key = capability.key().replace('_', "-");
+    crate::i18n::t(&format!("continuity-{key}{suffix}"))
+}
+
 pub fn label(capability: Capability) -> String {
-    crate::i18n::t(match capability {
-        Capability::Clipboard => "continuity-clipboard",
-        Capability::Notifications => "continuity-notifications",
-        Capability::WifiSettings => "continuity-wifi-settings",
-        Capability::Media => "continuity-media",
-        Capability::DisplayInput => "continuity-display-input",
-        Capability::FileTransfer => "continuity-file-transfer",
-        Capability::RealtimeSessions => "continuity-realtime-sessions",
-        Capability::TypedGamepad => "continuity-typed-gamepad",
-        Capability::AppContinuations => "continuity-app-continuations",
-    })
+    message(capability, "")
 }
 
 pub fn description(capability: Capability) -> String {
-    crate::i18n::t(match capability {
-        Capability::Clipboard => "continuity-clipboard-description",
-        Capability::Notifications => "continuity-notifications-description",
-        Capability::WifiSettings => "continuity-wifi-settings-description",
-        Capability::Media => "continuity-media-description",
-        Capability::DisplayInput => "continuity-display-input-description",
-        Capability::FileTransfer => "continuity-file-transfer-description",
-        Capability::RealtimeSessions => "continuity-realtime-sessions-description",
-        Capability::TypedGamepad => "continuity-typed-gamepad-description",
-        Capability::AppContinuations => "continuity-app-continuations-description",
-    })
+    message(capability, "-description")
 }
 
 pub fn summary(entry: &AuditEntry) -> String {

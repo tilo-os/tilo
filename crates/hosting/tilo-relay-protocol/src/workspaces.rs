@@ -16,20 +16,11 @@
 //! Redeeming an invitation is an entry on the device's session
 //! ([`crate::entering::Through::Invitation`]).
 
+use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
 
 /// What a member may do in a workspace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WorkspaceRole {
-    Viewer,
-    /// Reads and comments.
-    Commenter,
-    /// Reads and writes.
-    Editor,
-    /// Writes, moderates other people's content and removes or bans members
-    /// ranked below Moderator.
-    Moderator,
-}
+pub use collab_types::Role;
 
 /// A person governance records in a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +31,7 @@ pub struct WorkspaceMember {
     /// label.
     pub name: Option<String>,
     /// Their role.
-    pub role: WorkspaceRole,
+    pub role: Role,
     pub owner: bool,
     /// They were removed.
     pub removed: bool,
@@ -53,7 +44,7 @@ pub struct Workspace {
     #[serde(rename = "room")]
     pub workspace: String,
     /// The relay workspace carrying it.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     pub name: String,
     /// Its committed governance generation.
     pub generation: u64,
@@ -87,7 +78,7 @@ pub struct PreAdmission {
     /// The workspace's UUID.
     #[serde(rename = "room")]
     pub workspace: String,
-    pub role: WorkspaceRole,
+    pub role: Role,
     /// SHA-256 of the token the person presents.
     pub token_sha256: [u8; 32],
     /// Whom it is for, as the owner knows them (an email address); the
@@ -108,7 +99,7 @@ pub struct PreAdmission {
 struct PreAdmissionView<'a> {
     #[serde(rename = "room")]
     workspace: &'a str,
-    role: WorkspaceRole,
+    role: Role,
     token_sha256: &'a [u8; 32],
     label: &'a str,
     expires_at_ns: u64,
@@ -184,7 +175,7 @@ pub enum WorkspaceNotice {
         /// The pre-admission's label.
         label: String,
         /// Their role.
-        role: WorkspaceRole,
+        role: Role,
         at_ns: u64,
     },
     /// Someone reported the public workspace through its door
@@ -204,7 +195,7 @@ pub struct PendingInvite {
     /// Digest of the signed invitation.
     pub invite_id: [u8; 32],
     /// The role it grants.
-    pub role: WorkspaceRole,
+    pub role: Role,
     /// It stops being redeemable here.
     pub expires_at_ns: u64,
     /// The one person it names, when it names one: only a device of theirs
@@ -238,7 +229,7 @@ pub enum WorkspacesRequest {
         /// Caller-chosen idempotency key; never zero.
         request_id: [u8; 32],
         /// The role the invitation grants.
-        role: WorkspaceRole,
+        role: Role,
         /// It stops being redeemable here, at most 30 days ahead.
         expires_at_ns: u64,
         /// How the inviting person names themself; the invitation records
@@ -288,7 +279,7 @@ pub enum WorkspacesRequest {
         request_id: [u8; 32],
         /// The member.
         user_public_key: [u8; 32],
-        role: WorkspaceRole,
+        role: Role,
     },
     /// Remove a member and every device of theirs.
     Remove {
@@ -471,10 +462,10 @@ pub enum JoinReply {
         #[serde(rename = "room")]
         workspace: String,
         /// Its relay workspace.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         name: String,
         /// The role it grants.
-        role: WorkspaceRole,
+        role: Role,
         /// It stops being redeemable here.
         expires_at_ns: u64,
         /// Who sent it, when the invitation names them.
@@ -489,9 +480,9 @@ pub enum JoinReply {
         #[serde(rename = "room")]
         workspace: String,
         /// Its relay workspace.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         name: String,
-        role: WorkspaceRole,
+        role: Role,
     },
     /// Refused, and why.
     Refused(String),
@@ -623,63 +614,67 @@ pub struct WaitListEntry {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_mailed_invitation_is_on_the_door() {
-        let door = "https://tilo.example/";
-        assert!(invitation_on_door(
-            door,
-            "https://tilo.example/#/room?invite=signed-invitation"
-        ));
-        assert!(invitation_on_door(
-            door,
-            "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
-        ));
-        for elsewhere in [
-            "https://tilo.example/i/#",
-            "https://tilo.example/i/handle",
-            "https://tilo.example/i/handle#",
-            "https://tilo.example//i/handle#key",
-            "https://tilo.example/i/han dle#key",
-            "https://elsewhere.example/i/handle#key",
-        ] {
-            assert!(!invitation_on_door(door, elsewhere), "{elsewhere:?}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_mailed_invitation_has_a_link_on_the_door_and_one_address;
 
-    #[test]
-    fn a_contact_is_one_email_address_however_it_was_typed() {
-        assert_eq!(
-            contact_address("  Ada@Example.ORG "),
-            Ok("Ada@Example.ORG".to_owned())
-        );
-        assert_eq!(contact_key("Ada@Example.ORG"), "ada@example.org");
-        assert_eq!(mail_language("de-AT"), "de");
-        assert_eq!(mail_language("en-US"), "en");
-        assert_eq!(mail_language("fr"), "en");
-        assert_eq!(
-            contact_key(" ada@example.org"),
-            contact_key("ADA@example.org")
-        );
-        assert_eq!(
-            contact_address("ada+tilo@mail.example.co.uk"),
-            Ok("ada+tilo@mail.example.co.uk".to_owned())
-        );
-        for typed in [
-            "",
-            "ada",
-            "ada@",
-            "@example.org",
-            "ada@example",
-            "ada@example.",
-            "ada@.org",
-            "ada@@example.org",
-            "a da@example.org",
-            "ada@example.org, bob@example.org",
-            "Ada <ada@example.org>",
-        ] {
-            assert!(contact_address(typed).is_err(), "{typed:?}");
+        phase a_mailed_invitation_is_on_the_door;
+        {
+            let door = "https://tilo.example/";
+            assert!(invitation_on_door(
+                door,
+                "https://tilo.example/#/room?invite=signed-invitation"
+            ));
+            assert!(invitation_on_door(
+                door,
+                "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
+            ));
+            for elsewhere in [
+                "https://tilo.example/i/#",
+                "https://tilo.example/i/handle",
+                "https://tilo.example/i/handle#",
+                "https://tilo.example//i/handle#key",
+                "https://tilo.example/i/han dle#key",
+                "https://elsewhere.example/i/handle#key",
+            ] {
+                assert!(!invitation_on_door(door, elsewhere), "{elsewhere:?}");
+            }
         }
-        let long = format!("{}@example.org", "a".repeat(MAX_CONTACT_CHARS));
-        assert!(contact_address(&long).is_err());
+
+        phase a_contact_is_one_email_address_however_it_was_typed;
+        {
+            assert_eq!(
+                contact_address("  Ada@Example.ORG "),
+                Ok("Ada@Example.ORG".to_owned())
+            );
+            assert_eq!(contact_key("Ada@Example.ORG"), "ada@example.org");
+            assert_eq!(mail_language("de-AT"), "de");
+            assert_eq!(mail_language("en-US"), "en");
+            assert_eq!(mail_language("fr"), "en");
+            assert_eq!(
+                contact_key(" ada@example.org"),
+                contact_key("ADA@example.org")
+            );
+            assert_eq!(
+                contact_address("ada+tilo@mail.example.co.uk"),
+                Ok("ada+tilo@mail.example.co.uk".to_owned())
+            );
+            for typed in [
+                "",
+                "ada",
+                "ada@",
+                "@example.org",
+                "ada@example",
+                "ada@example.",
+                "ada@.org",
+                "ada@@example.org",
+                "a da@example.org",
+                "ada@example.org, bob@example.org",
+                "Ada <ada@example.org>",
+            ] {
+                assert!(contact_address(typed).is_err(), "{typed:?}");
+            }
+            let long = format!("{}@example.org", "a".repeat(MAX_CONTACT_CHARS));
+            assert!(contact_address(&long).is_err());
+        }
     }
 }

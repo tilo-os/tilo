@@ -751,44 +751,167 @@ impl Mailbox {
 mod tests {
     use super::*;
 
-    #[test]
-    fn account_credentials_are_never_serialized_or_debugged() {
-        let config = AccountConfig {
-            password: "private-mail-password".into(),
-            ..Default::default()
-        };
-        assert!(
-            !serde_json::to_string(&config)
-                .unwrap()
-                .contains("private-mail-password")
-        );
-        assert!(!format!("{config:?}").contains("private-mail-password"));
-    }
+    tilo_test_env::scenario! {
+        /// The mailbox model.
+        fn the_mailbox_model_keeps_secrets_recipients_threads_flags_and_search;
 
-    #[test]
-    fn a_written_recipient_reads_back_as_the_same_one() {
-        for name in [
-            "Ada Lovelace",
-            "Lovelace, Ada",
-            "Ada \"Countess\" Lovelace",
-            "Dr. Ada Lovelace",
-            "Ada (Analytical) Lovelace",
-            "Back\\slash",
-        ] {
-            let addr = Addr::new(name, "ada@analytical.example");
-            assert_eq!(
-                crate::transport::parse_addr_list(&addr.rfc5322()),
-                vec![addr.clone()],
-                "{name:?} written as {:?}",
-                addr.rfc5322()
+        phase account_credentials_are_never_serialized_or_debugged;
+        {
+            let config = AccountConfig {
+                password: "private-mail-password".into(),
+                ..Default::default()
+            };
+            assert!(
+                !serde_json::to_string(&config)
+                    .unwrap()
+                    .contains("private-mail-password")
             );
+            assert!(!format!("{config:?}").contains("private-mail-password"));
         }
-        let two = [
-            Addr::new("Lovelace, Ada", "ada@analytical.example"),
-            Addr::new("Babbage, Charles", "charles@engine.example"),
-        ];
-        let written = two.iter().map(Addr::rfc5322).collect::<Vec<_>>().join(", ");
-        assert_eq!(crate::transport::parse_addr_list(&written), two.to_vec());
+
+        phase a_written_recipient_reads_back_as_the_same_one;
+        {
+            for name in [
+                "Ada Lovelace",
+                "Lovelace, Ada",
+                "Ada \"Countess\" Lovelace",
+                "Dr. Ada Lovelace",
+                "Ada (Analytical) Lovelace",
+                "Back\\slash",
+            ] {
+                let addr = Addr::new(name, "ada@analytical.example");
+                assert_eq!(
+                    crate::transport::parse_addr_list(&addr.rfc5322()),
+                    vec![addr.clone()],
+                    "{name:?} written as {:?}",
+                    addr.rfc5322()
+                );
+            }
+            let two = [
+                Addr::new("Lovelace, Ada", "ada@analytical.example"),
+                Addr::new("Babbage, Charles", "charles@engine.example"),
+            ];
+            let written = two.iter().map(Addr::rfc5322).collect::<Vec<_>>().join(", ");
+            assert_eq!(crate::transport::parse_addr_list(&written), two.to_vec());
+        }
+
+        phase threads_follow_rfc_links_and_stay_stable;
+        {
+            {
+                assert_eq!(normalize_subject("Re: Re: Hello"), "Hello");
+                assert_eq!(normalize_subject("FWD: Fw: Plan"), "Plan");
+                assert_eq!(normalize_subject("Plain"), "Plain");
+            }
+
+            {
+                let mut mb = Mailbox::default();
+                let mut first = msg("Launch plan", 100, Folder::Inbox);
+                first.rfc_message_id = Some("launch-root@example.test".into());
+                let mut reply = msg("Re: Launch plan", 200, Folder::Inbox);
+                reply.rfc_message_id = Some("launch-reply@example.test".into());
+                reply.in_reply_to = Some("<launch-root@example.test>".into());
+                let mut unrelated = msg("Launch plan", 150, Folder::Inbox);
+                unrelated.rfc_message_id = Some("unrelated@example.test".into());
+                mb.insert(first);
+                mb.insert(reply);
+                mb.insert(unrelated);
+                let threads = mb.threads_in(Folder::Inbox);
+                assert_eq!(threads.len(), 2);
+                assert_eq!(threads[0].subject, "Launch plan");
+                assert_eq!(threads[0].message_ids.len(), 2);
+                assert_eq!(threads[0].id, "launch-root@example.test");
+                assert_eq!(threads[1].message_ids.len(), 1);
+                assert_eq!(threads[1].id, "unrelated@example.test");
+            }
+
+            {
+                let mut mb = Mailbox::default();
+                // C's raw mail held `References: <launch-root> <launch-middle>`;
+                let mut latest = msg("Re: Launch plan", 300, Folder::Inbox);
+                latest.rfc_message_id = Some("launch-latest@example.test".into());
+                latest.in_reply_to = Some("launch-root@example.test".into());
+                mb.insert(latest);
+                let before = mb.threads_in(Folder::Inbox);
+                assert_eq!(before[0].id, "launch-root@example.test");
+
+                let mut middle = msg("Re: Launch plan", 200, Folder::Inbox);
+                middle.rfc_message_id = Some("launch-middle@example.test".into());
+                middle.in_reply_to = Some("launch-root@example.test".into());
+                mb.insert(middle);
+                let after_middle = mb.threads_in(Folder::Inbox);
+                assert_eq!(after_middle.len(), 1);
+                assert_eq!(after_middle[0].id, "launch-root@example.test");
+
+                let mut root = msg("Launch plan", 100, Folder::Inbox);
+                root.rfc_message_id = Some("launch-root@example.test".into());
+                mb.insert(root);
+                let after = mb.threads_in(Folder::Inbox);
+                assert_eq!(after.len(), 1);
+                assert_eq!(after[0].id, "launch-root@example.test");
+                assert_eq!(after[0].message_ids.len(), 3);
+            }
+        }
+
+        phase folder_flags_track_unread_star_and_trash;
+        {
+            {
+                let mut mb = Mailbox::default();
+                let m = msg("Hi", 10, Folder::Inbox);
+                let id = m.id;
+                mb.insert(m);
+                assert_eq!(mb.unread_count(Folder::Inbox), 1);
+                mb.mark_read(id, true);
+                assert_eq!(mb.unread_count(Folder::Inbox), 0);
+            }
+
+            {
+                let mut mb = Mailbox::default();
+                let m = msg("Hi", 10, Folder::Inbox);
+                let id = m.id;
+                mb.insert(m);
+                assert_eq!(mb.count(Folder::Starred), 0);
+                assert!(mb.toggle_star(id));
+                assert_eq!(mb.count(Folder::Starred), 1);
+            }
+
+            {
+                let mut mb = Mailbox::default();
+                let m = msg("Hi", 10, Folder::Inbox);
+                let id = m.id;
+                mb.insert(m);
+                mb.delete(id);
+                assert_eq!(mb.get(id).unwrap().folder, Folder::Trash);
+                mb.delete(id);
+                assert!(mb.get(id).is_none());
+            }
+        }
+
+        phase mailbox_search_is_bounded_and_case_insensitive;
+        {
+            {
+                let mut mb = Mailbox::default();
+                for ts in 0..6 {
+                    mb.insert(msg("Release notes", ts, Folder::Inbox));
+                }
+
+                let page = mb.search_page("release", None, 4, 2);
+                assert_eq!(page.inspected, 2, "result bound ends work early");
+                assert_eq!(page.messages.len(), 2);
+                assert!(
+                    page.truncated,
+                    "remaining loaded matches are not enumerated"
+                );
+                assert!(
+                    page.messages[0].timestamp_min > page.messages[1].timestamp_min,
+                    "visible search rows remain newest-first"
+                );
+
+                let body_page = mb.search_page("second line", None, 3, 20);
+                assert_eq!(body_page.inspected, 3, "body inspection obeys its cap");
+                assert_eq!(body_page.messages.len(), 3);
+                assert!(body_page.truncated);
+            }
+        }
     }
 
     fn msg(subject: &str, ts: i64, folder: Folder) -> Message {
@@ -810,124 +933,6 @@ mod tests {
             labels: Vec::new(),
             account: String::new(),
             server: None,
-        }
-    }
-
-    #[test]
-    fn threads_follow_rfc_links_and_stay_stable() {
-        {
-            assert_eq!(normalize_subject("Re: Re: Hello"), "Hello");
-            assert_eq!(normalize_subject("FWD: Fw: Plan"), "Plan");
-            assert_eq!(normalize_subject("Plain"), "Plain");
-        }
-
-        {
-            let mut mb = Mailbox::default();
-            let mut first = msg("Launch plan", 100, Folder::Inbox);
-            first.rfc_message_id = Some("launch-root@example.test".into());
-            let mut reply = msg("Re: Launch plan", 200, Folder::Inbox);
-            reply.rfc_message_id = Some("launch-reply@example.test".into());
-            reply.in_reply_to = Some("<launch-root@example.test>".into());
-            let mut unrelated = msg("Launch plan", 150, Folder::Inbox);
-            unrelated.rfc_message_id = Some("unrelated@example.test".into());
-            mb.insert(first);
-            mb.insert(reply);
-            mb.insert(unrelated);
-            let threads = mb.threads_in(Folder::Inbox);
-            assert_eq!(threads.len(), 2);
-            assert_eq!(threads[0].subject, "Launch plan");
-            assert_eq!(threads[0].message_ids.len(), 2);
-            assert_eq!(threads[0].id, "launch-root@example.test");
-            assert_eq!(threads[1].message_ids.len(), 1);
-            assert_eq!(threads[1].id, "unrelated@example.test");
-        }
-
-        {
-            let mut mb = Mailbox::default();
-            // C's raw mail held `References: <launch-root> <launch-middle>`;
-            let mut latest = msg("Re: Launch plan", 300, Folder::Inbox);
-            latest.rfc_message_id = Some("launch-latest@example.test".into());
-            latest.in_reply_to = Some("launch-root@example.test".into());
-            mb.insert(latest);
-            let before = mb.threads_in(Folder::Inbox);
-            assert_eq!(before[0].id, "launch-root@example.test");
-
-            let mut middle = msg("Re: Launch plan", 200, Folder::Inbox);
-            middle.rfc_message_id = Some("launch-middle@example.test".into());
-            middle.in_reply_to = Some("launch-root@example.test".into());
-            mb.insert(middle);
-            let after_middle = mb.threads_in(Folder::Inbox);
-            assert_eq!(after_middle.len(), 1);
-            assert_eq!(after_middle[0].id, "launch-root@example.test");
-
-            let mut root = msg("Launch plan", 100, Folder::Inbox);
-            root.rfc_message_id = Some("launch-root@example.test".into());
-            mb.insert(root);
-            let after = mb.threads_in(Folder::Inbox);
-            assert_eq!(after.len(), 1);
-            assert_eq!(after[0].id, "launch-root@example.test");
-            assert_eq!(after[0].message_ids.len(), 3);
-        }
-    }
-
-    #[test]
-    fn folder_flags_track_unread_star_and_trash() {
-        {
-            let mut mb = Mailbox::default();
-            let m = msg("Hi", 10, Folder::Inbox);
-            let id = m.id;
-            mb.insert(m);
-            assert_eq!(mb.unread_count(Folder::Inbox), 1);
-            mb.mark_read(id, true);
-            assert_eq!(mb.unread_count(Folder::Inbox), 0);
-        }
-
-        {
-            let mut mb = Mailbox::default();
-            let m = msg("Hi", 10, Folder::Inbox);
-            let id = m.id;
-            mb.insert(m);
-            assert_eq!(mb.count(Folder::Starred), 0);
-            assert!(mb.toggle_star(id));
-            assert_eq!(mb.count(Folder::Starred), 1);
-        }
-
-        {
-            let mut mb = Mailbox::default();
-            let m = msg("Hi", 10, Folder::Inbox);
-            let id = m.id;
-            mb.insert(m);
-            mb.delete(id);
-            assert_eq!(mb.get(id).unwrap().folder, Folder::Trash);
-            mb.delete(id);
-            assert!(mb.get(id).is_none());
-        }
-    }
-
-    #[test]
-    fn mailbox_search_is_bounded_and_case_insensitive() {
-        {
-            let mut mb = Mailbox::default();
-            for ts in 0..6 {
-                mb.insert(msg("Release notes", ts, Folder::Inbox));
-            }
-
-            let page = mb.search_page("release", None, 4, 2);
-            assert_eq!(page.inspected, 2, "result bound ends work early");
-            assert_eq!(page.messages.len(), 2);
-            assert!(
-                page.truncated,
-                "remaining loaded matches are not enumerated"
-            );
-            assert!(
-                page.messages[0].timestamp_min > page.messages[1].timestamp_min,
-                "visible search rows remain newest-first"
-            );
-
-            let body_page = mb.search_page("second line", None, 3, 20);
-            assert_eq!(body_page.inspected, 3, "body inspection obeys its cap");
-            assert_eq!(body_page.messages.len(), 3);
-            assert!(body_page.truncated);
         }
     }
 }

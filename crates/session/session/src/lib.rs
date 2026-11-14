@@ -39,6 +39,8 @@ pub use error::Error;
         reason = "the roles that read this state land with their batches"
     )
 )]
+#[cfg(target_os = "linux")]
+pub(crate) use assembly::BoxAsk;
 pub(crate) use assembly::Shared;
 
 mod activity_provider;
@@ -151,7 +153,6 @@ pub mod conversations;
 mod desk;
 #[cfg(target_os = "linux")]
 mod desk_changes;
-pub mod desk_doc;
 #[cfg(target_os = "linux")]
 mod desk_resource;
 #[cfg(target_os = "linux")]
@@ -167,6 +168,7 @@ pub mod desktop_services;
 pub mod dev_rust_views;
 #[cfg(target_os = "linux")]
 mod device_actions;
+mod device_state;
 #[cfg(target_os = "linux")]
 mod devices;
 #[cfg(target_os = "linux")]
@@ -285,7 +287,11 @@ mod owner_session;
 #[cfg(target_os = "linux")]
 mod page_track;
 #[cfg(target_os = "linux")]
+mod pair_device;
+#[cfg(target_os = "linux")]
 mod pairing;
+#[cfg(target_os = "linux")]
+mod pairing_link;
 #[cfg(target_os = "linux")]
 mod panels;
 #[cfg(target_os = "linux")]
@@ -348,6 +354,8 @@ mod shared;
 mod shared_desktop;
 #[cfg(target_os = "linux")]
 mod shared_displays;
+#[cfg(target_os = "linux")]
+mod shared_input;
 #[cfg(target_os = "linux")]
 mod sheets;
 #[cfg(target_os = "linux")]

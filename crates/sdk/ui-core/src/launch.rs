@@ -1679,373 +1679,377 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
-    /// A capture is what asks for frames or measurements; a viewport alone is a size, and a live launch
-    /// takes one too.
-    #[test]
-    fn a_capture_is_what_writes_frames() {
-        let is_capture = |argv: &[&str]| {
-            super::capture::captures_frames(&parse_args(&strings(argv), &[], &[]).unwrap())
-        };
-        assert!(is_capture(&["app", "--shots", "/tmp/a.png"]));
-        assert!(is_capture(&["app", "--shots-dir", "/tmp/dir"]));
-        assert!(is_capture(&["app", "--responsive-matrix", "/tmp/m"]));
-        assert!(is_capture(&["app", "--first-frame"]));
-        assert!(!is_capture(&["app"]));
-        // A size without a capture is not a capture, and the parser says so
-        // rather than quietly opening a window the size of a phone.
-        assert!(matches!(
-            parse_args(&strings(&["app", "--viewport=390x844"]), &[], &[]),
-            Err(LaunchError::ShotsOnly(_))
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn the_command_line_is_parsed_into_what_the_launch_does;
 
-    /// `run_parsed` starts the renderer preparation thread (Windows and Linux) and the runtime
-    /// attachment exactly for these arguments.
-    #[test]
-    fn only_a_live_window_prepares_its_renderer_ahead() {
-        let live = parse_args(&strings(&["app"]), &[], &[]).unwrap();
-        assert!(opens_native_window(&live));
-        let capture = parse_args(&strings(&["app", "--shots=/tmp/shot.png"]), &[], &[]).unwrap();
-        assert!(!opens_native_window(&capture));
-    }
-
-    #[test]
-    fn cli_parses_every_common_mode_and_preference() {
+        phase a_capture_is_what_writes_frames;
+        // A capture is what asks for frames or measurements; a viewport alone is a size, and a live launch
+        // takes one too.
         {
-            let args = strings(&[
-                "app",
-                "--shots=/tmp/shot.png",
-                "--viewport",
-                "640X480",
-                "--scenario=wide",
-                "--empty",
-            ]);
-            let parsed = parse_args(&args, &["--empty"], &[]).unwrap();
-            assert_eq!(parsed.shots, Some(PathBuf::from("/tmp/shot.png")));
-            assert_eq!(parsed.viewport, Some((640, 480)));
-            assert_eq!(parsed.scenario.as_deref(), Some("wide"));
-            assert!(parsed.has("--empty"));
-            assert_eq!(
-                parsed.window,
-                crate::theme::WindowAppearance::default(),
-                "a capture without a shell is neutral"
-            );
+            let is_capture = |argv: &[&str]| {
+                super::capture::captures_frames(&parse_args(&strings(argv), &[], &[]).unwrap())
+            };
+            assert!(is_capture(&["app", "--shots", "/tmp/a.png"]));
+            assert!(is_capture(&["app", "--shots-dir", "/tmp/dir"]));
+            assert!(is_capture(&["app", "--responsive-matrix", "/tmp/m"]));
+            assert!(is_capture(&["app", "--first-frame"]));
+            assert!(!is_capture(&["app"]));
+            // A size without a capture is not a capture, and the parser says so
+            // rather than quietly opening a window the size of a phone.
+            assert!(matches!(
+                parse_args(&strings(&["app", "--viewport=390x844"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(_))
+            ));
         }
 
+        phase only_a_live_window_prepares_its_renderer_ahead;
+        // `run_parsed` starts the renderer preparation thread (Windows and Linux) and the runtime
+        // attachment exactly for these arguments.
         {
-            let args = strings(&[
-                "app",
-                "--shots=/tmp/shot.png",
-                "--workspace-hue=400",
-                "--your-colour",
-                "violet",
-            ]);
-            let parsed = parse_args(&args, &[], &[]).unwrap();
-            assert_eq!(
-                parsed.window,
-                crate::theme::WindowAppearance {
-                    workspace_hue: Some(40.0),
-                    your_colour: Some(crate::tokens::PresenceHue::Violet),
-                    corner_radius: None,
-                }
-            );
-            let theme = shot_theme(&LaunchArgs {
-                theme: Some("light".into()),
-                ..parsed
-            });
-            assert_eq!(theme.document.palette.hue, Some(40.0));
-            assert_eq!(theme.tokens.colors.you, crate::tokens::PresenceHue::Violet);
-            for bad in [
-                &["app", "--shots=/tmp/s.png", "--workspace-hue=warm"][..],
-                &["app", "--shots=/tmp/s.png", "--your-colour=chartreuse"][..],
-                &["app", "--workspace-hue=40"][..],
-            ] {
-                assert!(parse_args(&strings(bad), &[], &[]).is_err(), "{bad:?}");
-            }
+            let live = parse_args(&strings(&["app"]), &[], &[]).unwrap();
+            assert!(opens_native_window(&live));
+            let capture = parse_args(&strings(&["app", "--shots=/tmp/shot.png"]), &[], &[]).unwrap();
+            assert!(!opens_native_window(&capture));
         }
 
+        phase cli_parses_every_common_mode_and_preference;
         {
-            let parsed = parse_args(
-                &strings(&[
+            {
+                let args = strings(&[
                     "app",
-                    "--responsive-matrix=/tmp/matrix",
-                    "--pseudo-locale",
-                    "--text-scale=2",
+                    "--shots=/tmp/shot.png",
+                    "--viewport",
+                    "640X480",
                     "--scenario=wide",
-                ]),
-                &[],
-                &[],
-            )
-            .unwrap();
-            assert_eq!(parsed.responsive_matrix, Some(PathBuf::from("/tmp/matrix")));
-            assert!(parsed.pseudo_locale);
-            assert_eq!(parsed.text_scale, Some(2.0));
-            assert_eq!(parsed.scenario.as_deref(), Some("wide"));
-        }
+                    "--empty",
+                ]);
+                let parsed = parse_args(&args, &["--empty"], &[]).unwrap();
+                assert_eq!(parsed.shots, Some(PathBuf::from("/tmp/shot.png")));
+                assert_eq!(parsed.viewport, Some((640, 480)));
+                assert_eq!(parsed.scenario.as_deref(), Some("wide"));
+                assert!(parsed.has("--empty"));
+                assert_eq!(
+                    parsed.window,
+                    crate::theme::WindowAppearance::default(),
+                    "a capture without a shell is neutral"
+                );
+            }
 
-        {
-            let parsed = parse_args(
-                &strings(&[
+            {
+                let args = strings(&[
                     "app",
-                    "--shots=/tmp/s.png",
-                    "--device-scale=4",
-                    "--distinct-letters",
-                    "on",
-                ]),
-                &[],
-                &[],
-            )
-            .unwrap();
-            assert_eq!(parsed.device_scale, Some(4));
-            assert_eq!(parsed.distinct_letters, Some(true));
-            let theme = shot_theme(&LaunchArgs {
-                theme: Some("light".into()),
-                ..parsed.clone()
-            });
-            assert!(theme.tokens.typography.distinct_letters);
-            let off = shot_theme(&LaunchArgs {
-                distinct_letters: Some(false),
-                ..parsed
-            });
-            assert!(!off.tokens.typography.distinct_letters);
-            for bad in [
-                &["app", "--shots=/tmp/s.png", "--device-scale=0"][..],
-                &["app", "--shots=/tmp/s.png", "--device-scale=5"][..],
-                &["app", "--shots=/tmp/s.png", "--distinct-letters=yes"][..],
-            ] {
+                    "--shots=/tmp/shot.png",
+                    "--workspace-hue=400",
+                    "--your-colour",
+                    "violet",
+                ]);
+                let parsed = parse_args(&args, &[], &[]).unwrap();
+                assert_eq!(
+                    parsed.window,
+                    crate::theme::WindowAppearance {
+                        workspace_hue: Some(40.0),
+                        your_colour: Some(crate::tokens::PresenceHue::Violet),
+                        corner_radius: None,
+                    }
+                );
+                let theme = shot_theme(&LaunchArgs {
+                    theme: Some("light".into()),
+                    ..parsed
+                });
+                assert_eq!(theme.document.palette.hue, Some(40.0));
+                assert_eq!(theme.tokens.colors.you, crate::tokens::PresenceHue::Violet);
+                for bad in [
+                    &["app", "--shots=/tmp/s.png", "--workspace-hue=warm"][..],
+                    &["app", "--shots=/tmp/s.png", "--your-colour=chartreuse"][..],
+                    &["app", "--workspace-hue=40"][..],
+                ] {
+                    assert!(parse_args(&strings(bad), &[], &[]).is_err(), "{bad:?}");
+                }
+            }
+
+            {
+                let parsed = parse_args(
+                    &strings(&[
+                        "app",
+                        "--responsive-matrix=/tmp/matrix",
+                        "--pseudo-locale",
+                        "--text-scale=2",
+                        "--scenario=wide",
+                    ]),
+                    &[],
+                    &[],
+                )
+                .unwrap();
+                assert_eq!(parsed.responsive_matrix, Some(PathBuf::from("/tmp/matrix")));
+                assert!(parsed.pseudo_locale);
+                assert_eq!(parsed.text_scale, Some(2.0));
+                assert_eq!(parsed.scenario.as_deref(), Some("wide"));
+            }
+
+            {
+                let parsed = parse_args(
+                    &strings(&[
+                        "app",
+                        "--shots=/tmp/s.png",
+                        "--device-scale=4",
+                        "--distinct-letters",
+                        "on",
+                    ]),
+                    &[],
+                    &[],
+                )
+                .unwrap();
+                assert_eq!(parsed.device_scale, Some(4));
+                assert_eq!(parsed.distinct_letters, Some(true));
+                let theme = shot_theme(&LaunchArgs {
+                    theme: Some("light".into()),
+                    ..parsed.clone()
+                });
+                assert!(theme.tokens.typography.distinct_letters);
+                let off = shot_theme(&LaunchArgs {
+                    distinct_letters: Some(false),
+                    ..parsed
+                });
+                assert!(!off.tokens.typography.distinct_letters);
+                for bad in [
+                    &["app", "--shots=/tmp/s.png", "--device-scale=0"][..],
+                    &["app", "--shots=/tmp/s.png", "--device-scale=5"][..],
+                    &["app", "--shots=/tmp/s.png", "--distinct-letters=yes"][..],
+                ] {
+                    assert!(matches!(
+                        parse_args(&strings(bad), &[], &[]),
+                        Err(LaunchError::Scenario(_))
+                    ));
+                }
+                for live in [
+                    &["app", "--device-scale=2"][..],
+                    &["app", "--distinct-letters=on"][..],
+                ] {
+                    assert!(matches!(
+                        parse_args(&strings(live), &[], &[]),
+                        Err(LaunchError::ShotsOnly(_))
+                    ));
+                }
+            }
+
+            {
+                let parsed = parse_args(
+                    &strings(&["app", "--shots-dir", "/tmp/gallery", "--viewport=640x480"]),
+                    &[],
+                    &[],
+                )
+                .unwrap();
+                assert_eq!(parsed.shots_dir, Some(PathBuf::from("/tmp/gallery")));
+                assert_eq!(parsed.viewport, Some((640, 480)));
+                for conflicting in [
+                    &["app", "--shots-dir=/tmp/a", "--scenario=wide"][..],
+                    &["app", "--shots-dir=/tmp/a", "--shots=/tmp/b.png"][..],
+                ] {
+                    assert!(matches!(
+                        parse_args(&strings(conflicting), &[], &[]),
+                        Err(LaunchError::ConflictingModes)
+                    ));
+                }
+            }
+
+            {
+                let args = strings(&[
+                    "app",
+                    "--headless-drive",
+                    r#"{"viewport":[800,600],"actions":[{"key":"Enter"}]}"#,
+                ]);
+                let parsed = parse_args(&args, &[], &[]).unwrap();
+                let spec = parsed.headless.expect("headless spec");
+                assert_eq!(spec.viewport, Some((800, 600)));
+                assert_eq!(spec.actions.len(), 1);
+            }
+
+            {
+                let drive = |extra: &[&str]| {
+                    let mut args = vec!["app", "--headless-drive", r#"{"scenario":"wide"}"#];
+                    args.extend(extra);
+                    parse_args(&strings(&args), &[], &[])
+                };
+                assert_eq!(drive(&[]).unwrap().scenario.as_deref(), Some("wide"));
+                assert!(drive(&["--scenario=wide"]).is_ok());
                 assert!(matches!(
-                    parse_args(&strings(bad), &[], &[]),
+                    drive(&["--scenario=tall"]),
                     Err(LaunchError::Scenario(_))
                 ));
             }
-            for live in [
-                &["app", "--device-scale=2"][..],
-                &["app", "--distinct-letters=on"][..],
-            ] {
-                assert!(matches!(
-                    parse_args(&strings(live), &[], &[]),
-                    Err(LaunchError::ShotsOnly(_))
-                ));
-            }
-        }
 
-        {
-            let parsed = parse_args(
-                &strings(&["app", "--shots-dir", "/tmp/gallery", "--viewport=640x480"]),
-                &[],
-                &[],
-            )
-            .unwrap();
-            assert_eq!(parsed.shots_dir, Some(PathBuf::from("/tmp/gallery")));
-            assert_eq!(parsed.viewport, Some((640, 480)));
-            for conflicting in [
-                &["app", "--shots-dir=/tmp/a", "--scenario=wide"][..],
-                &["app", "--shots-dir=/tmp/a", "--shots=/tmp/b.png"][..],
-            ] {
+            {
+                let parsed = parse_args(
+                    &strings(&[
+                        "app",
+                        "--native-audit",
+                        "--viewport",
+                        "390x844",
+                        "--text-scale",
+                        "2",
+                        "--pseudo-locale",
+                    ]),
+                    &[],
+                    &[],
+                )
+                .unwrap();
+                assert!(parsed.native_audit);
+                assert_eq!(parsed.viewport, Some((390, 844)));
+                assert_eq!(parsed.text_scale, Some(2.0));
+                assert!(parsed.pseudo_locale);
+
                 assert!(matches!(
-                    parse_args(&strings(conflicting), &[], &[]),
+                    parse_args(
+                        &strings(&["app", "--native-audit", "--headless-drive", "{}"]),
+                        &[],
+                        &[]
+                    ),
                     Err(LaunchError::ConflictingModes)
                 ));
+                assert!(matches!(
+                    parse_args(
+                        &strings(&["app", "--native-audit", "--native-audit"]),
+                        &[],
+                        &[]
+                    ),
+                    Err(LaunchError::Duplicate(_))
+                ));
+            }
+
+            {
+                for (cli, environment, expected) in [
+                    (Some(2.0), Some("1.25"), 2.0),
+                    (None, Some("1.25"), 1.25),
+                    (None, None, 1.0),
+                    (None, Some("invalid"), 1.0),
+                ] {
+                    assert_eq!(shot_text_scale(cli, environment), expected);
+                }
+            }
+
+            {
+                for value in ["", "  ", "0", " false ", "FALSE"] {
+                    assert!(
+                        !motion_env_value_enabled(value),
+                        "{value:?} disables reduced motion"
+                    );
+                }
+                for value in ["1", "true", "yes"] {
+                    assert!(
+                        motion_env_value_enabled(value),
+                        "{value:?} enables reduced motion"
+                    );
+                }
             }
         }
 
+        phase cli_rejects_malformed_unknown_and_conflicting_arguments;
         {
-            let args = strings(&[
-                "app",
-                "--headless-drive",
-                r#"{"viewport":[800,600],"actions":[{"key":"Enter"}]}"#,
-            ]);
-            let parsed = parse_args(&args, &[], &[]).unwrap();
-            let spec = parsed.headless.expect("headless spec");
-            assert_eq!(spec.viewport, Some((800, 600)));
-            assert_eq!(spec.actions.len(), 1);
-        }
+            {
+                for value in ["wide", "800", "0x600", "800x0", "800xnope"] {
+                    let args = strings(&["app", "--viewport", value]);
+                    assert!(matches!(
+                        parse_args(&args, &[], &[]),
+                        Err(LaunchError::InvalidViewport(_))
+                    ));
+                }
+            }
 
-        {
-            let drive = |extra: &[&str]| {
-                let mut args = vec!["app", "--headless-drive", r#"{"scenario":"wide"}"#];
-                args.extend(extra);
-                parse_args(&strings(&args), &[], &[])
-            };
-            assert_eq!(drive(&[]).unwrap().scenario.as_deref(), Some("wide"));
-            assert!(drive(&["--scenario=wide"]).is_ok());
-            assert!(matches!(
-                drive(&["--scenario=tall"]),
-                Err(LaunchError::Scenario(_))
-            ));
-        }
+            {
+                for value in ["nope", "NaN", "0", "0.5", "2.1"] {
+                    let args = strings(&["app", "--text-scale", value]);
+                    assert!(matches!(
+                        parse_args(&args, &[], &[]),
+                        Err(LaunchError::InvalidTextScale(_))
+                    ));
+                }
+            }
 
-        {
-            let parsed = parse_args(
-                &strings(&[
+            {
+                assert!(matches!(
+                    parse_args(&strings(&["app", "--mystery"]), &[], &[]),
+                    Err(LaunchError::UnknownArgument(_))
+                ));
+                assert!(matches!(
+                    parse_args(&strings(&["app", "--shots"]), &[], &[]),
+                    Err(LaunchError::MissingValue(_))
+                ));
+                assert!(matches!(
+                    parse_args(&strings(&["app", "--scenario=a", "--scenario=b"]), &[], &[],),
+                    Err(LaunchError::Duplicate(_))
+                ));
+            }
+
+            {
+                let shot = parse_args(
+                    &strings(&["app", "--shots", "/tmp/a.png", "--history"]),
+                    &[],
+                    &[],
+                )
+                .unwrap();
+                assert!(shot.history);
+                assert!(matches!(
+                    parse_args(&strings(&["app", "--history"]), &[], &[]),
+                    Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
+                ));
+                let framed = strings(&["app", "--shots", "/tmp/a.png", "--window-bar"]);
+                assert!(parse_args(&framed, &[], &[]).unwrap().window_bar);
+                assert!(matches!(
+                    parse_args(&strings(&["app", "--window-bar"]), &[], &[]),
+                    Err(LaunchError::ShotsOnly(flag)) if flag == "--window-bar"
+                ));
+                let phone = parse_args(
+                    &strings(&["app", "--shots", "/tmp/a.png", "--touch"]),
+                    &[],
+                    &[],
+                )
+                .unwrap();
+                assert!(phone.touch, "a capture can be a touch-only window");
+                assert!(matches!(
+                    parse_args(&strings(&["app", "--touch"]), &[], &[]),
+                    Err(LaunchError::ShotsOnly(flag)) if flag == "--touch"
+                ));
+                let shot = parse_args(
+                    &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),
+                    &[],
+                    &[],
+                )
+                .unwrap();
+                assert_eq!(shot.search.as_deref(), Some("café"));
+                assert!(matches!(
+                    parse_args(&strings(&["app", "--search", "café"]), &[], &[]),
+                    Err(LaunchError::ShotsOnly(flag)) if flag == "--search"
+                ));
+            }
+
+            {
+                let both = strings(&["app", "--shots", "/tmp/a.png", "--headless-drive", "{}"]);
+                assert!(matches!(
+                    parse_args(&both, &[], &[]),
+                    Err(LaunchError::ConflictingModes)
+                ));
+                let matrix_and_shot = strings(&[
                     "app",
-                    "--native-audit",
-                    "--viewport",
-                    "390x844",
-                    "--text-scale",
-                    "2",
-                    "--pseudo-locale",
-                ]),
-                &[],
-                &[],
-            )
-            .unwrap();
-            assert!(parsed.native_audit);
-            assert_eq!(parsed.viewport, Some((390, 844)));
-            assert_eq!(parsed.text_scale, Some(2.0));
-            assert!(parsed.pseudo_locale);
-
-            assert!(matches!(
-                parse_args(
-                    &strings(&["app", "--native-audit", "--headless-drive", "{}"]),
-                    &[],
-                    &[]
-                ),
-                Err(LaunchError::ConflictingModes)
-            ));
-            assert!(matches!(
-                parse_args(
-                    &strings(&["app", "--native-audit", "--native-audit"]),
-                    &[],
-                    &[]
-                ),
-                Err(LaunchError::Duplicate(_))
-            ));
-        }
-
-        {
-            for (cli, environment, expected) in [
-                (Some(2.0), Some("1.25"), 2.0),
-                (None, Some("1.25"), 1.25),
-                (None, None, 1.0),
-                (None, Some("invalid"), 1.0),
-            ] {
-                assert_eq!(shot_text_scale(cli, environment), expected);
-            }
-        }
-
-        {
-            for value in ["", "  ", "0", " false ", "FALSE"] {
-                assert!(
-                    !motion_env_value_enabled(value),
-                    "{value:?} disables reduced motion"
-                );
-            }
-            for value in ["1", "true", "yes"] {
-                assert!(
-                    motion_env_value_enabled(value),
-                    "{value:?} enables reduced motion"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn cli_rejects_malformed_unknown_and_conflicting_arguments() {
-        {
-            for value in ["wide", "800", "0x600", "800x0", "800xnope"] {
-                let args = strings(&["app", "--viewport", value]);
+                    "--shots",
+                    "/tmp/a.png",
+                    "--responsive-matrix",
+                    "/tmp/matrix",
+                ]);
                 assert!(matches!(
-                    parse_args(&args, &[], &[]),
-                    Err(LaunchError::InvalidViewport(_))
+                    parse_args(&matrix_and_shot, &[], &[]),
+                    Err(LaunchError::ConflictingModes)
                 ));
-            }
-        }
 
-        {
-            for value in ["nope", "NaN", "0", "0.5", "2.1"] {
-                let args = strings(&["app", "--text-scale", value]);
-                assert!(matches!(
-                    parse_args(&args, &[], &[]),
-                    Err(LaunchError::InvalidTextScale(_))
-                ));
-            }
-        }
-
-        {
-            assert!(matches!(
-                parse_args(&strings(&["app", "--mystery"]), &[], &[]),
-                Err(LaunchError::UnknownArgument(_))
-            ));
-            assert!(matches!(
-                parse_args(&strings(&["app", "--shots"]), &[], &[]),
-                Err(LaunchError::MissingValue(_))
-            ));
-            assert!(matches!(
-                parse_args(&strings(&["app", "--scenario=a", "--scenario=b"]), &[], &[],),
-                Err(LaunchError::Duplicate(_))
-            ));
-        }
-
-        {
-            let shot = parse_args(
-                &strings(&["app", "--shots", "/tmp/a.png", "--history"]),
-                &[],
-                &[],
-            )
-            .unwrap();
-            assert!(shot.history);
-            assert!(matches!(
-                parse_args(&strings(&["app", "--history"]), &[], &[]),
-                Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
-            ));
-            let framed = strings(&["app", "--shots", "/tmp/a.png", "--window-bar"]);
-            assert!(parse_args(&framed, &[], &[]).unwrap().window_bar);
-            assert!(matches!(
-                parse_args(&strings(&["app", "--window-bar"]), &[], &[]),
-                Err(LaunchError::ShotsOnly(flag)) if flag == "--window-bar"
-            ));
-            let phone = parse_args(
-                &strings(&["app", "--shots", "/tmp/a.png", "--touch"]),
-                &[],
-                &[],
-            )
-            .unwrap();
-            assert!(phone.touch, "a capture can be a touch-only window");
-            assert!(matches!(
-                parse_args(&strings(&["app", "--touch"]), &[], &[]),
-                Err(LaunchError::ShotsOnly(flag)) if flag == "--touch"
-            ));
-            let shot = parse_args(
-                &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),
-                &[],
-                &[],
-            )
-            .unwrap();
-            assert_eq!(shot.search.as_deref(), Some("café"));
-            assert!(matches!(
-                parse_args(&strings(&["app", "--search", "café"]), &[], &[]),
-                Err(LaunchError::ShotsOnly(flag)) if flag == "--search"
-            ));
-        }
-
-        {
-            let both = strings(&["app", "--shots", "/tmp/a.png", "--headless-drive", "{}"]);
-            assert!(matches!(
-                parse_args(&both, &[], &[]),
-                Err(LaunchError::ConflictingModes)
-            ));
-            let matrix_and_shot = strings(&[
-                "app",
-                "--shots",
-                "/tmp/a.png",
-                "--responsive-matrix",
-                "/tmp/matrix",
-            ]);
-            assert!(matches!(
-                parse_args(&matrix_and_shot, &[], &[]),
-                Err(LaunchError::ConflictingModes)
-            ));
-
-            for option in [
-                strings(&["app", "--viewport=800x600"]),
-                strings(&["app", "--scenario=wide"]),
-                strings(&["app", "--empty"]),
-            ] {
-                assert!(matches!(
-                    parse_args(&option, &["--empty"], &[]),
-                    Err(LaunchError::ShotsOnly(_))
-                ));
+                for option in [
+                    strings(&["app", "--viewport=800x600"]),
+                    strings(&["app", "--scenario=wide"]),
+                    strings(&["app", "--empty"]),
+                ] {
+                    assert!(matches!(
+                        parse_args(&option, &["--empty"], &[]),
+                        Err(LaunchError::ShotsOnly(_))
+                    ));
+                }
             }
         }
     }

@@ -82,6 +82,8 @@ pub mod dispatcher;
 #[cfg(feature = "tilo-os")]
 pub(crate) mod input_sources;
 #[cfg(feature = "tilo-os")]
+pub(crate) mod installed;
+#[cfg(feature = "tilo-os")]
 pub mod keyboard_preview;
 #[cfg(feature = "tilo-os")]
 pub(crate) mod keyboard_watch;

@@ -14,10 +14,9 @@ use super::channel_key;
 use super::route_keys::Arrived;
 use super::{
     ActionCatalogue, ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest,
-    CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
-    DocumentPublicationError, DocumentPublicationReceipt, PresenceKey, PresencePayload,
-    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
-    Uuid, auto_hello_env, mpsc,
+    CollabTransport, CollaborationManager, DocumentMutation, DocumentPublicationError,
+    DocumentPublicationReceipt, Member, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
+    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
 };
 use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
@@ -4521,8 +4520,7 @@ async fn spawn_content_stream(
     let Ok(stream) = channel.subscribe_blobs().await else {
         return;
     };
-    super::record_content::ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""))
-        .serve();
+    super::record_content::ContentLane::of(&route).serve();
     let inbound_tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         while let Ok(event) = stream.read().await {
@@ -4676,7 +4674,7 @@ async fn spawn_op_stream(
     }
 }
 
-/// Bridge `channel`'s collaborator/permissions context stream into
+/// Bridge `channel`'s member/permissions context stream into
 /// [`CollabEvent::Context`] on `inbound_tx`.
 #[allow(
     clippy::future_not_send,
@@ -4768,9 +4766,9 @@ async fn spawn_context_stream(
                 // before delivering the new public context. Presentation changes
                 // alone must not cause a private contacts refresh.
                 let mut people: Vec<_> = context
-                    .collaborators
+                    .members
                     .iter()
-                    .map(|person| (person.id.clone(), person.is_agent, person.is_self))
+                    .map(|person| (person.id.clone(), !person.id.is_person(), person.is_self))
                     .collect();
                 people.compact_sort();
                 let mut permissions = context.permissions.clone();
@@ -4781,7 +4779,7 @@ async fn spawn_context_stream(
                 }
                 if !tx
                     .send_durable(CollabEvent::Context {
-                        collaborators: context.collaborators,
+                        members: context.members,
                         permissions: context.permissions,
                         apps: context.apps,
                     })
@@ -4794,7 +4792,7 @@ async fn spawn_context_stream(
             // that source must withdraw it rather than retain stale people.
             let _ = tx
                 .send_durable(CollabEvent::Context {
-                    collaborators: Vec::new(),
+                    members: Vec::new(),
                     permissions: Vec::new(),
                     apps: Vec::new(),
                 })
@@ -6910,7 +6908,7 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
     // Every variant must carry a decodable semantic `PresenceKey`.
     // An undecodable scope cannot truthfully identify a target. Drop
     // it instead of inventing a tab and making malformed presence
-    // look like a collaborator left some unrelated surface.
+    // look like a member left some unrelated surface.
     let key: PresenceKey = match postcard::from_bytes(&evt.key_bytes) {
         Ok(key) => key,
         Err(error) => {

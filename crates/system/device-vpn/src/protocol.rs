@@ -246,95 +246,6 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn requests_name_values_never_interfaces_or_commands() {
-        let line = serde_json::to_string(&Envelope {
-            protocol: PROTOCOL_VERSION,
-            request: Request::OpenClient { link: link() },
-        })
-        .unwrap();
-        assert!(line.contains(r#""op":"open_client""#));
-        assert!(line.contains(r#""kind":"all""#));
-        assert!(!line.contains("tilovpn0"));
-        let back: Envelope = serde_json::from_str(&line).unwrap();
-        assert_eq!(back.request, Request::OpenClient { link: link() });
-        assert!(
-            serde_json::from_str::<Envelope>(
-                r#"{"protocol":1,"request":{"op":"run","command":"sh"}}"#
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn every_client_value_is_bounded() {
-        assert_eq!(link().check(), Ok(()));
-        let bad = [
-            ClientLink {
-                address: net::GATEWAY,
-                ..link()
-            },
-            ClientLink {
-                address: Ipv4Addr::new(192, 168, 1, 2),
-                ..link()
-            },
-            ClientLink { mtu: 575, ..link() },
-            ClientLink {
-                mtu: 9000,
-                ..link()
-            },
-            ClientLink {
-                routes: Routes::Networks { networks: vec![] },
-                ..link()
-            },
-            ClientLink {
-                routes: Routes::Networks {
-                    networks: vec!["0.0.0.0/0".parse().unwrap()],
-                },
-                ..link()
-            },
-            ClientLink {
-                routes: Routes::Networks {
-                    networks: vec!["192.168.0.0/24".parse().unwrap(); MAX_NETWORKS + 1],
-                },
-                ..link()
-            },
-            ClientLink {
-                carrier: Carrier {
-                    udp_ports: vec![],
-                    relays: vec![],
-                },
-                ..link()
-            },
-            ClientLink {
-                carrier: Carrier {
-                    udp_ports: vec![0],
-                    relays: vec![],
-                },
-                ..link()
-            },
-            ClientLink {
-                carrier: Carrier {
-                    udp_ports: vec![1],
-                    relays: vec!["127.0.0.1".parse().unwrap()],
-                },
-                ..link()
-            },
-            ClientLink {
-                carrier: Carrier {
-                    udp_ports: vec![1],
-                    relays: vec!["100.100.64.9".parse().unwrap()],
-                },
-                ..link()
-            },
-        ];
-        for link in bad {
-            assert!(link.check().is_err(), "{link:?}");
-        }
-        assert!(ExitLink { mtu: 1280 }.check().is_ok());
-        assert!(ExitLink { mtu: 100 }.check().is_err());
-    }
-
     pub(crate) fn block() -> ProfileBlock {
         ProfileBlock {
             servers: vec![
@@ -345,59 +256,152 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn a_profile_block_names_server_addresses_and_a_switch_only() {
-        let line = serde_json::to_string(&Envelope {
-            protocol: PROTOCOL_VERSION,
-            request: Request::HoldProfileBlock { block: block() },
-        })
-        .unwrap();
-        assert!(line.contains(r#""op":"hold_profile_block""#));
-        let back: Envelope = serde_json::from_str(&line).unwrap();
-        assert_eq!(back.request, Request::HoldProfileBlock { block: block() });
-        assert!(
-            serde_json::from_str::<Envelope>(
-                r#"{"protocol":1,"request":{"op":"hold_profile_block","block":{"servers":[],"allow_local":false,"interface":"eth0"}}}"#
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json::from_str::<Envelope>(
-                r#"{"protocol":1,"request":{"op":"hold_profile_block","block":{"servers":["eth0"],"allow_local":false}}}"#
-            )
-            .is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn every_request_carries_bounded_values_and_nothing_else;
 
-    #[test]
-    fn every_profile_block_value_is_bounded() {
-        assert_eq!(block().check(), Ok(()));
-        let none = ProfileBlock {
-            servers: vec![],
-            allow_local: true,
-        };
-        assert_eq!(none.check(), Ok(()));
-        let bad = [
-            "127.0.0.1",
-            "0.0.0.0",
-            "224.0.0.1",
-            "255.255.255.255",
-            "::1",
-            "::",
-            "ff02::1",
-            "100.100.64.1",
-        ];
-        for server in bad {
-            let block = ProfileBlock {
-                servers: vec![server.parse().unwrap()],
+        phase requests_name_values_never_interfaces_or_commands;
+        {
+            let line = serde_json::to_string(&Envelope {
+                protocol: PROTOCOL_VERSION,
+                request: Request::OpenClient { link: link() },
+            })
+            .unwrap();
+            assert!(line.contains(r#""op":"open_client""#));
+            assert!(line.contains(r#""kind":"all""#));
+            assert!(!line.contains("tilovpn0"));
+            let back: Envelope = serde_json::from_str(&line).unwrap();
+            assert_eq!(back.request, Request::OpenClient { link: link() });
+            assert!(
+                serde_json::from_str::<Envelope>(
+                    r#"{"protocol":1,"request":{"op":"run","command":"sh"}}"#
+                )
+                .is_err()
+            );
+        }
+
+        phase every_client_value_is_bounded;
+        {
+            assert_eq!(link().check(), Ok(()));
+            let bad = [
+                ClientLink {
+                    address: net::GATEWAY,
+                    ..link()
+                },
+                ClientLink {
+                    address: Ipv4Addr::new(192, 168, 1, 2),
+                    ..link()
+                },
+                ClientLink { mtu: 575, ..link() },
+                ClientLink {
+                    mtu: 9000,
+                    ..link()
+                },
+                ClientLink {
+                    routes: Routes::Networks { networks: vec![] },
+                    ..link()
+                },
+                ClientLink {
+                    routes: Routes::Networks {
+                        networks: vec!["0.0.0.0/0".parse().unwrap()],
+                    },
+                    ..link()
+                },
+                ClientLink {
+                    routes: Routes::Networks {
+                        networks: vec!["192.168.0.0/24".parse().unwrap(); MAX_NETWORKS + 1],
+                    },
+                    ..link()
+                },
+                ClientLink {
+                    carrier: Carrier {
+                        udp_ports: vec![],
+                        relays: vec![],
+                    },
+                    ..link()
+                },
+                ClientLink {
+                    carrier: Carrier {
+                        udp_ports: vec![0],
+                        relays: vec![],
+                    },
+                    ..link()
+                },
+                ClientLink {
+                    carrier: Carrier {
+                        udp_ports: vec![1],
+                        relays: vec!["127.0.0.1".parse().unwrap()],
+                    },
+                    ..link()
+                },
+                ClientLink {
+                    carrier: Carrier {
+                        udp_ports: vec![1],
+                        relays: vec!["100.100.64.9".parse().unwrap()],
+                    },
+                    ..link()
+                },
+            ];
+            for link in bad {
+                assert!(link.check().is_err(), "{link:?}");
+            }
+            assert!(ExitLink { mtu: 1280 }.check().is_ok());
+            assert!(ExitLink { mtu: 100 }.check().is_err());
+        }
+
+        phase a_profile_block_names_server_addresses_and_a_switch_only;
+        {
+            let line = serde_json::to_string(&Envelope {
+                protocol: PROTOCOL_VERSION,
+                request: Request::HoldProfileBlock { block: block() },
+            })
+            .unwrap();
+            assert!(line.contains(r#""op":"hold_profile_block""#));
+            let back: Envelope = serde_json::from_str(&line).unwrap();
+            assert_eq!(back.request, Request::HoldProfileBlock { block: block() });
+            assert!(
+                serde_json::from_str::<Envelope>(
+                    r#"{"protocol":1,"request":{"op":"hold_profile_block","block":{"servers":[],"allow_local":false,"interface":"eth0"}}}"#
+                )
+                .is_err()
+            );
+            assert!(
+                serde_json::from_str::<Envelope>(
+                    r#"{"protocol":1,"request":{"op":"hold_profile_block","block":{"servers":["eth0"],"allow_local":false}}}"#
+                )
+                .is_err()
+            );
+        }
+
+        phase every_profile_block_value_is_bounded;
+        {
+            assert_eq!(block().check(), Ok(()));
+            let none = ProfileBlock {
+                servers: vec![],
+                allow_local: true,
+            };
+            assert_eq!(none.check(), Ok(()));
+            let bad = [
+                "127.0.0.1",
+                "0.0.0.0",
+                "224.0.0.1",
+                "255.255.255.255",
+                "::1",
+                "::",
+                "ff02::1",
+                "100.100.64.1",
+            ];
+            for server in bad {
+                let block = ProfileBlock {
+                    servers: vec![server.parse().unwrap()],
+                    allow_local: false,
+                };
+                assert!(block.check().is_err(), "{server}");
+            }
+            let many = ProfileBlock {
+                servers: vec!["198.51.100.7".parse().unwrap(); MAX_PROFILE_SERVERS + 1],
                 allow_local: false,
             };
-            assert!(block.check().is_err(), "{server}");
+            assert!(many.check().is_err());
         }
-        let many = ProfileBlock {
-            servers: vec!["198.51.100.7".parse().unwrap(); MAX_PROFILE_SERVERS + 1],
-            allow_local: false,
-        };
-        assert!(many.check().is_err());
     }
 }

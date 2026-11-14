@@ -242,69 +242,73 @@ pub fn kind_for(provider: crate::account_sources::Provider, label: &str) -> Opti
 mod tests {
     use super::*;
 
-    #[test]
-    fn cookie_counts_never_become_account_counts_and_unsupported_classes_stay_named() {
-        let mut profile = ProfileInventory::new(
-            "a".repeat(64),
-            BrowserKind::LibreWolf,
-            Installation::Flatpak,
-            "LibreWolf".into(),
-            "LibreWolf · Personal".into(),
-        );
-        profile.websites.cookies = Measure::Exact(91);
-        profile.websites.origins = Measure::Exact(12);
-        assert_eq!(profile.websites.accounts, Measure::Unsupported);
-        assert!(!profile.websites.account_evidence);
-        assert_eq!(
-            profile.capabilities.passwords,
-            Capability::Unsupported("browser-passwords-not-exported")
-        );
-        assert!(!profile.capabilities.passwords.exported());
-        assert_eq!(
-            profile.capabilities.sessions,
-            Capability::Limited("recognized-service-sessions-only")
-        );
-        assert!(profile.capabilities.sessions.exported());
-        assert!(!profile.incomplete());
-        profile.history = Measure::Unknown;
-        assert!(profile.incomplete());
-    }
+    tilo_test_env::scenario! {
+        fn browser_inventory_names_products_and_counts_truthfully;
 
-    #[test]
-    fn product_identity_is_separate_for_each_named_browser() {
-        for (provider, label, expected) in [
-            (
-                crate::account_sources::Provider::Chromium,
-                "Google Chrome",
-                BrowserKind::Chrome,
-            ),
-            (
-                crate::account_sources::Provider::Chromium,
-                "Chromium",
-                BrowserKind::Chromium,
-            ),
-            (
-                crate::account_sources::Provider::Chromium,
-                "Ungoogled Chromium",
-                BrowserKind::UngoogledChromium,
-            ),
-            (
-                crate::account_sources::Provider::Firefox,
-                "Firefox",
-                BrowserKind::Firefox,
-            ),
-            (
-                crate::account_sources::Provider::Firefox,
-                "LibreWolf",
+        phase cookie_counts_never_become_account_counts_and_unsupported_classes_stay_named;
+        {
+            let mut profile = ProfileInventory::new(
+                "a".repeat(64),
                 BrowserKind::LibreWolf,
-            ),
-        ] {
-            assert_eq!(kind_for(provider, label), Some(expected));
-            assert_eq!(expected.label(), label);
+                Installation::Flatpak,
+                "LibreWolf".into(),
+                "LibreWolf · Personal".into(),
+            );
+            profile.websites.cookies = Measure::Exact(91);
+            profile.websites.origins = Measure::Exact(12);
+            assert_eq!(profile.websites.accounts, Measure::Unsupported);
+            assert!(!profile.websites.account_evidence);
+            assert_eq!(
+                profile.capabilities.passwords,
+                Capability::Unsupported("browser-passwords-not-exported")
+            );
+            assert!(!profile.capabilities.passwords.exported());
+            assert_eq!(
+                profile.capabilities.sessions,
+                Capability::Limited("recognized-service-sessions-only")
+            );
+            assert!(profile.capabilities.sessions.exported());
+            assert!(!profile.incomplete());
+            profile.history = Measure::Unknown;
+            assert!(profile.incomplete());
         }
-        assert_eq!(
-            kind_for(crate::account_sources::Provider::Chromium, "Default"),
-            None
-        );
+
+        phase product_identity_is_separate_for_each_named_browser;
+        {
+            for (provider, label, expected) in [
+                (
+                    crate::account_sources::Provider::Chromium,
+                    "Google Chrome",
+                    BrowserKind::Chrome,
+                ),
+                (
+                    crate::account_sources::Provider::Chromium,
+                    "Chromium",
+                    BrowserKind::Chromium,
+                ),
+                (
+                    crate::account_sources::Provider::Chromium,
+                    "Ungoogled Chromium",
+                    BrowserKind::UngoogledChromium,
+                ),
+                (
+                    crate::account_sources::Provider::Firefox,
+                    "Firefox",
+                    BrowserKind::Firefox,
+                ),
+                (
+                    crate::account_sources::Provider::Firefox,
+                    "LibreWolf",
+                    BrowserKind::LibreWolf,
+                ),
+            ] {
+                assert_eq!(kind_for(provider, label), Some(expected));
+                assert_eq!(expected.label(), label);
+            }
+            assert_eq!(
+                kind_for(crate::account_sources::Provider::Chromium, "Default"),
+                None
+            );
+        }
     }
 }

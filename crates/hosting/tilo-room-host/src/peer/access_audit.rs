@@ -32,6 +32,7 @@ use tokio::time::Instant;
 use super::AgentRegistry;
 use crate::auth::AuthenticatedPeer;
 use tilo_lock::RwLockRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Audit cadence while a subscribed workspace's membership file is not watched:
 /// reading the disk is then the only way an external edit is seen, so it is
@@ -54,7 +55,7 @@ pub(super) struct AccessAudit {
     /// it is audited on [`AUDIT_BACKSTOP`] too.
     backstop: bool,
     /// The subscribed workspaces the last audit found change-notified.
-    watched: Vec<u64>,
+    watched: Vec<WorkspaceId>,
 }
 
 impl AccessAudit {
@@ -84,7 +85,7 @@ impl AccessAudit {
     }
 
     /// A workspace subscribed since the last audit is not known to be watched.
-    pub(super) fn cover(&mut self, subscribed: &[u64]) {
+    pub(super) fn cover(&mut self, subscribed: &[WorkspaceId]) {
         if subscribed
             .iter()
             .any(|workspace| !self.watched.contains(workspace))
@@ -99,7 +100,7 @@ impl AccessAudit {
         &mut self,
         peer: &AuthenticatedPeer,
         agents: &AgentRegistry,
-        subscribed: &[u64],
+        subscribed: &[WorkspaceId],
         watched: bool,
     ) {
         let now = Instant::now();
@@ -178,12 +179,12 @@ mod tests {
         let mut audit = AccessAudit::new(false);
         assert_eq!(audit.due().unwrap(), Instant::now() + UNWATCHED_AUDIT);
 
-        audit.audited(&peer, &agents, &[7], true);
-        audit.cover(&[7]);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
+        audit.cover(&[WorkspaceId::from_u128(7)]);
         assert_eq!(audit.due().unwrap(), Instant::now() + AUDIT_BACKSTOP);
 
         tokio::time::advance(Duration::from_secs(10)).await;
-        audit.cover(&[7]);
+        audit.cover(&[WorkspaceId::from_u128(7)]);
         assert!(audit.due().unwrap() > Instant::now());
     }
 
@@ -194,15 +195,15 @@ mod tests {
         let mut audit = AccessAudit::new(true);
         assert_eq!(audit.due(), Some(Instant::now() + UNWATCHED_AUDIT));
 
-        audit.audited(&peer, &agents, &[7], true);
-        audit.cover(&[7]);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
+        audit.cover(&[WorkspaceId::from_u128(7)]);
         assert_eq!(audit.due(), None, "nothing is due while nothing changes");
 
         audit.changed();
         assert_eq!(audit.due(), Some(Instant::now() + AUDIT_SETTLE));
 
         // An unwatched workspace is still read on the unwatched cadence.
-        audit.audited(&peer, &agents, &[7], false);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], false);
         assert_eq!(audit.due(), Some(Instant::now() + UNWATCHED_AUDIT));
     }
 
@@ -212,7 +213,7 @@ mod tests {
         let agents = AgentRegistry::default();
         let mut audit = AccessAudit::new(true);
         peer.cert.expires_at_ns = Some(in_secs(5));
-        audit.audited(&peer, &agents, &[7], true);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
         let due = audit.due().expect("the expiry is a deadline");
         assert!(due <= Instant::now() + Duration::from_secs(5) + AUDIT_SETTLE);
         assert!(due > Instant::now() + Duration::from_secs(4));
@@ -223,7 +224,7 @@ mod tests {
         let (_, peer) = peer();
         let agents = AgentRegistry::default();
         let mut audit = AccessAudit::new(false);
-        audit.audited(&peer, &agents, &[7], true);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
         audit.changed();
         assert_eq!(audit.due().unwrap(), Instant::now() + AUDIT_SETTLE);
         // A second change does not push the audit back.
@@ -241,13 +242,13 @@ mod tests {
         let agents = AgentRegistry::default();
         let mut audit = AccessAudit::new(false);
 
-        audit.audited(&peer, &agents, &[7], false);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], false);
         assert_eq!(audit.due().unwrap(), Instant::now() + UNWATCHED_AUDIT);
-        audit.cover(&[7]);
+        audit.cover(&[WorkspaceId::from_u128(7)]);
         assert_eq!(audit.due().unwrap(), Instant::now() + UNWATCHED_AUDIT);
 
-        audit.audited(&peer, &agents, &[7], true);
-        audit.cover(&[7, 8]);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
+        audit.cover(&[WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)]);
         assert_eq!(audit.due().unwrap(), Instant::now() + UNWATCHED_AUDIT);
     }
 
@@ -258,7 +259,7 @@ mod tests {
         let mut audit = AccessAudit::new(false);
 
         peer.cert.expires_at_ns = Some(in_secs(5));
-        audit.audited(&peer, &agents, &[7], true);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
         assert!(audit.due().unwrap() <= Instant::now() + Duration::from_secs(5) + AUDIT_SETTLE);
         assert!(audit.due().unwrap() > Instant::now() + Duration::from_secs(4));
 
@@ -271,7 +272,7 @@ mod tests {
             "Helper",
             [1, 2, 3],
             DelegateScope {
-                rooms: vec![uuid::Uuid::from_u128(7).to_string()],
+                workspaces: vec![WorkspaceId::from_u128(7)],
                 apps: Vec::new(),
             },
             1,
@@ -282,7 +283,7 @@ mod tests {
             .write()
             .unwrap()
             .insert(peer.device_public_key, Some(delegation));
-        audit.audited(&peer, &agents, &[7], true);
+        audit.audited(&peer, &agents, &[WorkspaceId::from_u128(7)], true);
         assert!(audit.due().unwrap() <= Instant::now() + Duration::from_secs(2) + AUDIT_SETTLE);
         assert!(audit.due().unwrap() > Instant::now() + Duration::from_secs(1));
 

@@ -172,22 +172,42 @@ fn workspace() -> (Replica, Vec<String>) {
     (replica, notes)
 }
 
-#[test]
-fn every_bodys_words_survive_the_type_change() {
-    let (later, notes) = workspace();
-    // What the old build left: each note's body as a text object.
-    let before = plain_bodies(&later.doc, &notes);
-    assert!(before.iter().any(|text| !text.is_empty()), "{before:?}");
+tilo_test_env::scenario! {
+    fn the_upgrade_turns_every_body_once;
 
-    later.host.migrate();
-    let committed = later.host.take_committed();
-    assert!(!committed.is_empty(), "the upgrade wrote the notes");
+    phase every_bodys_words_survive_the_type_change;
+    {
+        let (later, notes) = workspace();
+        // What the old build left: each note's body as a text object.
+        let before = plain_bodies(&later.doc, &notes);
+        assert!(before.iter().any(|text| !text.is_empty()), "{before:?}");
 
-    assert_eq!(
-        rich_bodies(&later, &notes),
-        before,
-        "every note's words survive"
-    );
+        later.host.migrate();
+        let committed = later.host.take_committed();
+        assert!(!committed.is_empty(), "the upgrade wrote the notes");
+
+        assert_eq!(
+            rich_bodies(&later, &notes),
+            before,
+            "every note's words survive"
+        );
+    }
+
+    phase an_upgrade_run_again_writes_nothing;
+    {
+        let (mut later, _) = workspace();
+        later.host.migrate();
+        let first = later.host.take_committed();
+        assert!(!first.is_empty(), "the first run wrote the notes");
+        for done in &first {
+            later.apply(&done.action);
+        }
+        assert_eq!(later.host.migrate(), 0);
+        assert!(
+            later.host.take_committed().is_empty(),
+            "a second run writes nothing"
+        );
+    }
 }
 
 #[test]
@@ -242,21 +262,5 @@ fn an_edit_after_the_upgrade_lands_as_a_rich_splice() {
         later.host.migrate(),
         0,
         "an edited note is not turned again"
-    );
-}
-
-#[test]
-fn an_upgrade_run_again_writes_nothing() {
-    let (mut later, _) = workspace();
-    later.host.migrate();
-    let first = later.host.take_committed();
-    assert!(!first.is_empty(), "the first run wrote the notes");
-    for done in &first {
-        later.apply(&done.action);
-    }
-    assert_eq!(later.host.migrate(), 0);
-    assert!(
-        later.host.take_committed().is_empty(),
-        "a second run writes nothing"
     );
 }

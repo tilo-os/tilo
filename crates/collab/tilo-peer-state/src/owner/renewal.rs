@@ -43,7 +43,7 @@ impl NativeWorkspaceOwner {
             return Err("the certificate does not renew this device's in the workspace".into());
         }
         if bootstrap.device_cert != *renewed
-            || bootstrap.room != workspace.to_string()
+            || bootstrap.workspace_id != workspace
             || bootstrap.host.user_public_key != candidate.owner()
         {
             return Err("the answer is not this workspace's renewal".into());

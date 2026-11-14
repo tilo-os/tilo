@@ -60,97 +60,101 @@ fn top_at(h: &FrameHarness, detent: SheetDetent) -> f64 {
     }
 }
 
-#[test]
-fn a_narrow_inspector_is_a_sheet_at_half_height_with_the_content_live_above_it() {
-    let _settled = crate::motion::testing::settled();
-    let (mut h, events) = sheet_open();
-    let g = geometry(&h);
-    assert_eq!(g.inspector, InspectorPlacement::Sheet);
-    assert_eq!(detent(&h), Some(SheetDetent::Half));
-    let panel = g.inspector_column;
-    assert!(
-        (panel.x0, panel.x1, panel.y1) == (0.0, f64::from(W), f64::from(H)),
-        "the sheet spans the window's foot: {panel:?}"
-    );
-    assert!(
-        (panel.height() - f64::from(H) / 2.0).abs() < f64::from(H) / 8.0,
-        "about half the window: {panel:?}"
-    );
-    let content = child_rect(&h, "content").expect("the content stands");
-    assert!(
-        content.y1 <= panel.y0 + 0.5,
-        "the content keeps the foot under the sheet clear: {content:?} {panel:?}"
-    );
-    let before = events.get();
-    h.click_at(f64::from(W) / 2.0, panel.y0 / 2.0);
-    settle(&mut h, W, H);
-    assert!(
-        events.get() > before,
-        "a press above the sheet is the content's"
-    );
-    assert!(
-        h.root::<NavShell>().is_inspector_open(),
-        "and it puts nothing away"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_narrow_inspector_is_a_sheet_that_steps_between_its_detents;
 
-/// A surface drawn on works as narrow as a grid of tiles: at 640 wide its
-/// inspector docks beside it and the surface stays in view, where a
-/// document's needs the reading column and rises as a sheet.
-#[test]
-fn a_canvas_keeps_its_inspector_beside_it_where_a_document_takes_a_sheet() {
-    let _settled = crate::motion::testing::settled();
-    for (kind, placement) in [
-        (ContentKind::Canvas, InspectorPlacement::Docked),
-        (ContentKind::Document, InspectorPlacement::Sheet),
-    ] {
-        let shell = NavShell::new()
-            .content_kind(kind)
-            .content(Probe::boxed("content").0)
-            .inspector(Probe::boxed("inspector").0);
-        let mut h = harness(shell, 640, 480, Theme::dark());
-        settle(&mut h, 640, 480);
-        h.root_mut::<NavShell>().open_inspector();
-        settle(&mut h, 640, 480);
-        assert_eq!(geometry(&h).inspector, placement, "{kind:?} at 640x480");
-        if kind == ContentKind::Canvas {
-            let g = geometry(&h);
-            let content = child_rect(&h, "content").expect("the content stands");
-            assert!(
-                content.width() > 0.0 && content.x1 <= g.inspector_column.x0 + 0.5,
-                "the surface stands beside the inspector: {content:?} {:?}",
-                g.inspector_column
-            );
+    // A surface drawn on works as narrow as a grid of tiles: at 640 wide its
+    // inspector docks beside it and the surface stays in view, where a
+    // document's needs the reading column and rises as a sheet.
+    phase a_canvas_keeps_its_inspector_beside_it_where_a_document_takes_a_sheet;
+    {
+        let _settled = crate::motion::testing::settled();
+        for (kind, placement) in [
+            (ContentKind::Canvas, InspectorPlacement::Docked),
+            (ContentKind::Document, InspectorPlacement::Sheet),
+        ] {
+            let shell = NavShell::new()
+                .content_kind(kind)
+                .content(Probe::boxed("content").0)
+                .inspector(Probe::boxed("inspector").0);
+            let mut h = harness(shell, 640, 480, Theme::dark());
+            settle(&mut h, 640, 480);
+            h.root_mut::<NavShell>().open_inspector();
+            settle(&mut h, 640, 480);
+            assert_eq!(geometry(&h).inspector, placement, "{kind:?} at 640x480");
+            if kind == ContentKind::Canvas {
+                let g = geometry(&h);
+                let content = child_rect(&h, "content").expect("the content stands");
+                assert!(
+                    content.width() > 0.0 && content.x1 <= g.inspector_column.x0 + 0.5,
+                    "the surface stands beside the inspector: {content:?} {:?}",
+                    g.inspector_column
+                );
+            }
         }
     }
-}
 
-/// A window too short for a half-height sheet to hold the inspector at its
-/// docked width opens it at the whole height, the content clear above it.
-#[test]
-fn a_short_window_opens_its_inspector_sheet_at_the_whole_height() {
-    let _settled = crate::motion::testing::settled();
-    let (w, h_px) = (W, 480);
-    let shell = NavShell::new()
-        .content(Probe::boxed("content").0)
-        .inspector(Probe::boxed("inspector").0);
-    let mut h = harness(shell, w, h_px, Theme::dark());
-    settle(&mut h, w, h_px);
-    h.root_mut::<NavShell>().open_inspector();
-    settle(&mut h, w, h_px);
-    let g = geometry(&h);
-    assert_eq!(g.inspector, InspectorPlacement::Sheet);
-    assert_eq!(detent(&h), Some(SheetDetent::Half));
-    let panel = g.inspector_column;
-    assert!(
-        (panel.y0 - g.sheet.area.y0).abs() < 0.5 && (panel.y1 - f64::from(h_px)).abs() < 0.5,
-        "half height is the whole height here: {panel:?} in {:?}",
-        g.sheet.area
-    );
-    assert!(
-        panel.height() / 2.0 < f64::from(crate::tokens::Metrics::BASE.inspector_width),
-        "the window is short for a half sheet: {panel:?}"
-    );
+    // A window too short for a half-height sheet to hold the inspector at its
+    // docked width opens it at the whole height, the content clear above it.
+    phase a_short_window_opens_its_inspector_sheet_at_the_whole_height;
+    {
+        let _settled = crate::motion::testing::settled();
+        let (w, h_px) = (W, 480);
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .inspector(Probe::boxed("inspector").0);
+        let mut h = harness(shell, w, h_px, Theme::dark());
+        settle(&mut h, w, h_px);
+        h.root_mut::<NavShell>().open_inspector();
+        settle(&mut h, w, h_px);
+        let g = geometry(&h);
+        assert_eq!(g.inspector, InspectorPlacement::Sheet);
+        assert_eq!(detent(&h), Some(SheetDetent::Half));
+        let panel = g.inspector_column;
+        assert!(
+            (panel.y0 - g.sheet.area.y0).abs() < 0.5 && (panel.y1 - f64::from(h_px)).abs() < 0.5,
+            "half height is the whole height here: {panel:?} in {:?}",
+            g.sheet.area
+        );
+        assert!(
+            panel.height() / 2.0 < f64::from(crate::tokens::Metrics::BASE.inspector_width),
+            "the window is short for a half sheet: {panel:?}"
+        );
+    }
+
+    phase a_narrow_inspector_is_a_sheet_at_half_height_with_the_content_live_above_it;
+    {
+        let _settled = crate::motion::testing::settled();
+        let (mut h, events) = sheet_open();
+        let g = geometry(&h);
+        assert_eq!(g.inspector, InspectorPlacement::Sheet);
+        assert_eq!(detent(&h), Some(SheetDetent::Half));
+        let panel = g.inspector_column;
+        assert!(
+            (panel.x0, panel.x1, panel.y1) == (0.0, f64::from(W), f64::from(H)),
+            "the sheet spans the window's foot: {panel:?}"
+        );
+        assert!(
+            (panel.height() - f64::from(H) / 2.0).abs() < f64::from(H) / 8.0,
+            "about half the window: {panel:?}"
+        );
+        let content = child_rect(&h, "content").expect("the content stands");
+        assert!(
+            content.y1 <= panel.y0 + 0.5,
+            "the content keeps the foot under the sheet clear: {content:?} {panel:?}"
+        );
+        let before = events.get();
+        h.click_at(f64::from(W) / 2.0, panel.y0 / 2.0);
+        settle(&mut h, W, H);
+        assert!(
+            events.get() > before,
+            "a press above the sheet is the content's"
+        );
+        assert!(
+            h.root::<NavShell>().is_inspector_open(),
+            "and it puts nothing away"
+        );
+    }
 }
 
 #[test]

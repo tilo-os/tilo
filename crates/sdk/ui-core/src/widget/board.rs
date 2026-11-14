@@ -762,80 +762,86 @@ mod tests {
         )
     }
 
-    /// A lane as tall as the pane it is in shows every card it has room for under its heading,
-    /// and the ones past that scroll in the view under it rather than being lost.
-    #[test]
-    fn a_lane_shows_every_card_it_has_room_for() {
-        let cards: Vec<(String, Element)> = (0..8)
-            .map(|index| (format!("card-{index}"), card()))
-            .collect();
-        let board = Board::new().lane("todo", Some(Box::new(Text::new("Todo"))), cards, None);
-        let host = harness(board);
-        let root = host.root::<Board>();
-        let shown = root.card_rects(0);
-        assert_eq!(
-            shown.len(),
-            8,
-            "eight 60 tall cards stand in a 600 tall pane under their heading, and are all shown"
-        );
-        let lane = root.lane_rects()[0];
-        for (index, rect) in shown.iter().enumerate() {
-            assert!(
-                rect.y0 >= lane.y0 && rect.y1 <= lane.y1,
-                "card {index} stands in its lane: {rect:?} in {lane:?}"
-            );
-            assert!(
-                rect.y0 > lane.y0,
-                "card {index} stands below the lane's heading"
-            );
-        }
-        assert!(
-            shown.windows(2).all(|pair| pair[0].y1 <= pair[1].y0),
-            "the cards are in order, one under the other"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The board widget: lanes, gutters and drops.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_board_lays_out_lanes_and_reports_drops;
 
-    /// The lanes stand left-aligned at their comfortable measure: the first a gutter in from
-    /// the leading edge, each the sibling gap from the last, and the room a wider pane leaves
-    /// open beside them at the trailing edge.
-    #[test]
-    fn a_board_keeps_a_gutter_at_both_ends_of_its_lanes() {
-        let theme = Theme::dark();
-        let lane = f64::from(Board::lane_width(&theme, 1280.0));
-        let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
-        let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
-        let pane = 1280u32;
-        let mut lanes = Board::new();
-        for key in ["todo", "doing", "done"] {
-            let header = Some(Box::new(Text::new(key)) as Element);
-            lanes = lanes.lane(key, header, vec![(format!("{key}-card"), card())], None);
-        }
-        let host =
-            crate::headless::FrameHarness::for_root(crate::State::new(), lanes, (pane, 600), theme);
-        let root = host.root::<Board>();
-        let rects = root.lane_rects();
-        assert_eq!(rects.len(), 3, "three lanes");
-        let board = root.get_rect();
-        assert!(
-            (rects[0].x0 - board.x0 - gutter).abs() < 1.0,
-            "the first lane stands a gutter in from the leading edge: {rects:?} in {board:?}"
-        );
-        for (index, rect) in rects.iter().enumerate() {
-            assert!(
-                (rect.width() - lane).abs() < 1.0,
-                "lane {index} keeps its comfortable measure: {rect:?}"
+        phase a_lane_shows_every_card_it_has_room_for;
+        // A lane as tall as the pane it is in shows every card it has room for under its heading,
+        // and the ones past that scroll in the view under it rather than being lost.
+        {
+            let cards: Vec<(String, Element)> = (0..8)
+                .map(|index| (format!("card-{index}"), card()))
+                .collect();
+            let board = Board::new().lane("todo", Some(Box::new(Text::new("Todo"))), cards, None);
+            let host = harness(board);
+            let root = host.root::<Board>();
+            let shown = root.card_rects(0);
+            assert_eq!(
+                shown.len(),
+                8,
+                "eight 60 tall cards stand in a 600 tall pane under their heading, and are all shown"
             );
-            if let Some(next) = rects.get(index + 1) {
+            let lane = root.lane_rects()[0];
+            for (index, rect) in shown.iter().enumerate() {
                 assert!(
-                    (next.x0 - rect.x1 - gap).abs() < 1.0,
-                    "lane {index} is a sibling gap from the next: {rects:?}"
+                    rect.y0 >= lane.y0 && rect.y1 <= lane.y1,
+                    "card {index} stands in its lane: {rect:?} in {lane:?}"
+                );
+                assert!(
+                    rect.y0 > lane.y0,
+                    "card {index} stands below the lane's heading"
                 );
             }
+            assert!(
+                shown.windows(2).all(|pair| pair[0].y1 <= pair[1].y0),
+                "the cards are in order, one under the other"
+            );
         }
-        assert!(
-            board.x1 - rects[2].x1 > gutter,
-            "a wider pane leaves its extra room open beside the lanes: {rects:?} in {board:?}"
-        );
+
+        phase a_board_keeps_a_gutter_at_both_ends_of_its_lanes;
+        // The lanes stand left-aligned at their comfortable measure: the first a gutter in from
+        // the leading edge, each the sibling gap from the last, and the room a wider pane leaves
+        // open beside them at the trailing edge.
+        {
+            let theme = Theme::dark();
+            let lane = f64::from(Board::lane_width(&theme, 1280.0));
+            let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+            let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
+            let pane = 1280u32;
+            let mut lanes = Board::new();
+            for key in ["todo", "doing", "done"] {
+                let header = Some(Box::new(Text::new(key)) as Element);
+                lanes = lanes.lane(key, header, vec![(format!("{key}-card"), card())], None);
+            }
+            let host =
+                crate::headless::FrameHarness::for_root(crate::State::new(), lanes, (pane, 600), theme);
+            let root = host.root::<Board>();
+            let rects = root.lane_rects();
+            assert_eq!(rects.len(), 3, "three lanes");
+            let board = root.get_rect();
+            assert!(
+                (rects[0].x0 - board.x0 - gutter).abs() < 1.0,
+                "the first lane stands a gutter in from the leading edge: {rects:?} in {board:?}"
+            );
+            for (index, rect) in rects.iter().enumerate() {
+                assert!(
+                    (rect.width() - lane).abs() < 1.0,
+                    "lane {index} keeps its comfortable measure: {rect:?}"
+                );
+                if let Some(next) = rects.get(index + 1) {
+                    assert!(
+                        (next.x0 - rect.x1 - gap).abs() < 1.0,
+                        "lane {index} is a sibling gap from the next: {rects:?}"
+                    );
+                }
+            }
+            assert!(
+                board.x1 - rects[2].x1 > gutter,
+                "a wider pane leaves its extra room open beside the lanes: {rects:?} in {board:?}"
+            );
+        }
     }
 
     #[test]

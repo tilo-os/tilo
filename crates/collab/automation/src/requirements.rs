@@ -105,108 +105,112 @@ mod tests {
         }
     }
 
-    #[test]
-    fn requirements_walk_nested_steps() {
-        let program = program(
-            vec![Step::new(
-                "branch",
-                StepKind::If {
-                    cond: Condition::Truthy(Binding::Literal(true.into())),
-                    then: vec![Step::new(
-                        "post",
-                        invoke("so.tilo.chat", "chat.workspace", "post"),
-                    )],
-                    otherwise: vec![Step::new(
-                        "each",
-                        StepKind::ForEach {
-                            items: Binding::Literal(serde_json::json!([])),
-                            item: "item".into(),
-                            body: vec![
-                                Step::new("send", invoke("so.tilo.mail", "mail.account", "send")),
-                                Step::new(
-                                    "sum",
-                                    StepKind::Ai {
-                                        prompt: "Condense".into(),
-                                        output: None,
-                                        input: Some(Binding::Var("item".into())),
-                                    },
-                                ),
-                            ],
-                        },
-                    )],
-                },
-            )],
-            vec![TriggerSpec::IncomingMessage {
-                app_id: Some("so.tilo.messages".into()),
-                from: None,
-            }],
-        );
-        let r = requirements(&program);
-        assert_eq!(
-            r.apps,
-            BTreeSet::from([
-                AGENT_APP_ID.to_owned(),
-                "so.tilo.chat".to_owned(),
-                "so.tilo.mail".to_owned(),
-                "so.tilo.messages".to_owned(),
-            ])
-        );
-        assert!(r.connectors.is_empty());
-        assert!(!r.appearance);
-        assert_eq!(r.triggers, BTreeSet::from(["incoming_message".to_owned()]));
-    }
+    tilo_test_env::scenario! {
+        fn requirements_name_what_a_shortcut_needs;
 
-    #[test]
-    fn a_nested_post_under_another_name_needs_the_appearance() {
-        let mut post = invoke("so.tilo.chat", "chat.workspace", "post");
-        if let StepKind::Invoke { appearance, .. } = &mut post {
-            *appearance = Some(Binding::Var("item/appearance".into()));
+        phase requirements_walk_nested_steps;
+        {
+            let program = program(
+                vec![Step::new(
+                    "branch",
+                    StepKind::If {
+                        cond: Condition::Truthy(Binding::Literal(true.into())),
+                        then: vec![Step::new(
+                            "post",
+                            invoke("so.tilo.chat", "chat.workspace", "post"),
+                        )],
+                        otherwise: vec![Step::new(
+                            "each",
+                            StepKind::ForEach {
+                                items: Binding::Literal(serde_json::json!([])),
+                                item: "item".into(),
+                                body: vec![
+                                    Step::new("send", invoke("so.tilo.mail", "mail.account", "send")),
+                                    Step::new(
+                                        "sum",
+                                        StepKind::Ai {
+                                            prompt: "Condense".into(),
+                                            output: None,
+                                            input: Some(Binding::Var("item".into())),
+                                        },
+                                    ),
+                                ],
+                            },
+                        )],
+                    },
+                )],
+                vec![TriggerSpec::IncomingMessage {
+                    app_id: Some("so.tilo.messages".into()),
+                    from: None,
+                }],
+            );
+            let r = requirements(&program);
+            assert_eq!(
+                r.apps,
+                BTreeSet::from([
+                    AGENT_APP_ID.to_owned(),
+                    "so.tilo.chat".to_owned(),
+                    "so.tilo.mail".to_owned(),
+                    "so.tilo.messages".to_owned(),
+                ])
+            );
+            assert!(r.connectors.is_empty());
+            assert!(!r.appearance);
+            assert_eq!(r.triggers, BTreeSet::from(["incoming_message".to_owned()]));
         }
-        let program = program(
-            vec![Step::new(
-                "each",
-                StepKind::ForEach {
-                    items: Binding::Literal(serde_json::json!([])),
-                    item: "item".into(),
-                    body: vec![Step::new("post", post)],
-                },
-            )],
-            Vec::new(),
-        );
-        assert!(requirements(&program).appearance);
-    }
 
-    #[test]
-    fn a_connector_is_never_counted_as_an_app() {
-        let program = program(
-            vec![
-                Step::new("post", invoke("so.tilo.chat", "chat.workspace", "post")),
-                Step::new(
-                    "relay",
-                    invoke("so.tilo.discord", "discord.guild", "send-message"),
-                ),
-            ],
-            vec![
-                TriggerSpec::Connector {
-                    app_id: "so.tilo.discord".into(),
-                    source: "message-created".into(),
-                    filter: serde_json::Map::new(),
-                },
-                TriggerSpec::RecordChanged {
-                    kind: "chat.workspace".into(),
-                    actions: vec!["post".into()],
-                    fields: Vec::new(),
-                    by: crate::ActorFilter::default(),
-                },
-            ],
-        );
-        let r = requirements(&program);
-        assert_eq!(r.apps, BTreeSet::from(["so.tilo.chat".to_owned()]));
-        assert_eq!(r.connectors, BTreeSet::from(["so.tilo.discord".to_owned()]));
-        assert!(!r.appearance);
-        assert_eq!(
-            r.triggers,
-            BTreeSet::from(["connector".to_owned(), "record_changed".to_owned()])
-        );
+        phase a_nested_post_under_another_name_needs_the_appearance;
+        {
+            let mut post = invoke("so.tilo.chat", "chat.workspace", "post");
+            if let StepKind::Invoke { appearance, .. } = &mut post {
+                *appearance = Some(Binding::Var("item/appearance".into()));
+            }
+            let program = program(
+                vec![Step::new(
+                    "each",
+                    StepKind::ForEach {
+                        items: Binding::Literal(serde_json::json!([])),
+                        item: "item".into(),
+                        body: vec![Step::new("post", post)],
+                    },
+                )],
+                Vec::new(),
+            );
+            assert!(requirements(&program).appearance);
+        }
+
+        phase a_connector_is_never_counted_as_an_app;
+        {
+            let program = program(
+                vec![
+                    Step::new("post", invoke("so.tilo.chat", "chat.workspace", "post")),
+                    Step::new(
+                        "relay",
+                        invoke("so.tilo.discord", "discord.guild", "send-message"),
+                    ),
+                ],
+                vec![
+                    TriggerSpec::Connector {
+                        app_id: "so.tilo.discord".into(),
+                        source: "message-created".into(),
+                        filter: serde_json::Map::new(),
+                    },
+                    TriggerSpec::RecordChanged {
+                        kind: "chat.workspace".into(),
+                        actions: vec!["post".into()],
+                        fields: Vec::new(),
+                        by: crate::ActorFilter::default(),
+                    },
+                ],
+            );
+            let r = requirements(&program);
+            assert_eq!(r.apps, BTreeSet::from(["so.tilo.chat".to_owned()]));
+            assert_eq!(r.connectors, BTreeSet::from(["so.tilo.discord".to_owned()]));
+            assert!(!r.appearance);
+            assert_eq!(
+                r.triggers,
+                BTreeSet::from(["connector".to_owned(), "record_changed".to_owned()])
+            );
+        }
     }
 }

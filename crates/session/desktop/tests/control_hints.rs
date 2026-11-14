@@ -288,12 +288,10 @@ fn busy_desk() -> DesktopTree {
     let mut tree = desk_tree(2);
     tree.workspaces[0].name = "Customer support and escalations for the whole team".into();
     for person in 0..6 {
-        tree.workspaces[0]
-            .collaborators
-            .push(tilo_desktop_model::Collaborator::new(
-                format!("person-{person}"),
-                format!("Person {person}"),
-            ));
+        tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed(
+            &format!("person-{person}"),
+            format!("Person {person}"),
+        ));
     }
     tree
 }

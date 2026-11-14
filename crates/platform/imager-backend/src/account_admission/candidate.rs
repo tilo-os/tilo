@@ -162,74 +162,80 @@ pub(super) fn admits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn missing_scope_is_not_an_installed_proof() {
-        assert!(
-            !Path::new(MARKER).exists(),
-            "test requires ordinary installed namespace"
-        );
-        assert!(!admits(2, &"a".repeat(64), None).unwrap());
-    }
-    #[test]
-    fn receiving_selection_cannot_substitute_person_binding_sdk_or_source_phase() {
-        let mut value = Admission {
-            schema: 1,
-            phase: "receiver".into(),
-            mount_namespace: 1,
-            pid_namespace: 2,
-            actor_path: "/usr/libexec/tilo-prepared-setup".into(),
-            actor_sha256: "a".repeat(64),
-            scope: Scope {
-                required_protocol: 2,
-                browser_package_hash: "b".repeat(64),
-                cef_runtime_root_hash: "c".repeat(64),
-                sdk_runtime_root_hash: "d".repeat(64),
-                receiving_route_qualification_sha256: "e".repeat(64),
-            },
-            identity_public_key: Some([7; 32]),
-            setup_binding: Some("native-binding".into()),
-        };
-        let sdk = "d".repeat(64);
-        assert!(
-            value
-                .check_selection(2, &sdk, Some((&[7; 32], "native-binding")))
-                .is_ok()
-        );
-        assert!(
-            value
-                .check_selection(2, &sdk, Some((&[8; 32], "native-binding")))
+    tilo_test_env::scenario! {
+        fn candidate_admission_binds_its_scope_and_selection;
+
+        phase missing_scope_is_not_an_installed_proof;
+        {
+            assert!(
+                !Path::new(MARKER).exists(),
+                "test requires ordinary installed namespace"
+            );
+            assert!(!admits(2, &"a".repeat(64), None).unwrap());
+        }
+
+        phase receiving_selection_cannot_substitute_person_binding_sdk_or_source_phase;
+        {
+            let mut value = Admission {
+                schema: 1,
+                phase: "receiver".into(),
+                mount_namespace: 1,
+                pid_namespace: 2,
+                actor_path: "/usr/libexec/tilo-prepared-setup".into(),
+                actor_sha256: "a".repeat(64),
+                scope: Scope {
+                    required_protocol: 2,
+                    browser_package_hash: "b".repeat(64),
+                    cef_runtime_root_hash: "c".repeat(64),
+                    sdk_runtime_root_hash: "d".repeat(64),
+                    receiving_route_qualification_sha256: "e".repeat(64),
+                },
+                identity_public_key: Some([7; 32]),
+                setup_binding: Some("native-binding".into()),
+            };
+            let sdk = "d".repeat(64);
+            assert!(
+                value
+                    .check_selection(2, &sdk, Some((&[7; 32], "native-binding")))
+                    .is_ok()
+            );
+            assert!(
+                value
+                    .check_selection(2, &sdk, Some((&[8; 32], "native-binding")))
+                    .is_err()
+            );
+            assert!(
+                value
+                    .check_selection(2, &sdk, Some((&[7; 32], "another-binding")))
+                    .is_err()
+            );
+            assert!(
+                value
+                    .check_selection(2, &"f".repeat(64), Some((&[7; 32], "native-binding")))
+                    .is_err()
+            );
+            assert!(
+                value
+                    .check_selection(1, &sdk, Some((&[7; 32], "native-binding")))
+                    .is_err()
+            );
+            assert!(value.check_selection(2, &sdk, None).is_err());
+            value.phase = "source".into();
+            assert!(
+                value
+                    .check_selection(2, &sdk, Some((&[7; 32], "native-binding")))
+                    .is_err()
+            );
+        }
+
+        phase scope_rejects_receipt_flags_and_unknown_fields;
+        {
+            assert!(
+                serde_json::from_value::<Scope>(serde_json::json!({
+                    "required_protocol": 2, "ready": true
+                }))
                 .is_err()
-        );
-        assert!(
-            value
-                .check_selection(2, &sdk, Some((&[7; 32], "another-binding")))
-                .is_err()
-        );
-        assert!(
-            value
-                .check_selection(2, &"f".repeat(64), Some((&[7; 32], "native-binding")))
-                .is_err()
-        );
-        assert!(
-            value
-                .check_selection(1, &sdk, Some((&[7; 32], "native-binding")))
-                .is_err()
-        );
-        assert!(value.check_selection(2, &sdk, None).is_err());
-        value.phase = "source".into();
-        assert!(
-            value
-                .check_selection(2, &sdk, Some((&[7; 32], "native-binding")))
-                .is_err()
-        );
-    }
-    #[test]
-    fn scope_rejects_receipt_flags_and_unknown_fields() {
-        assert!(
-            serde_json::from_value::<Scope>(serde_json::json!({
-                "required_protocol": 2, "ready": true
-            }))
-            .is_err()
-        );
+            );
+        }
     }
 }

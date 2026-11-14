@@ -159,61 +159,65 @@ mod tests {
     use super::*;
     use crate::scenario;
 
-    #[test]
-    fn a_fixture_writes_below_its_root_and_refuses_paths_outside_it() {
-        {
-            let fixture = Fixture::new().unwrap();
-            let root = fixture.root().to_path_buf();
-            let written = fixture.file("notes/today.md", "# today").unwrap();
-            assert_eq!(written, root.join("notes/today.md"));
-            assert_eq!(std::fs::read(&written).unwrap(), b"# today");
-            let listed = fixture
-                .files([("a/one", &b"1"[..]), ("b/two", &b"22"[..])])
-                .unwrap();
-            assert_eq!(listed, [root.join("a/one"), root.join("b/two")]);
-            let dir = fixture.dir("empty").unwrap();
-            assert!(dir.is_dir());
-            assert_eq!(fixture.data(), root.join("data"));
-        }
+    scenario! {
+        fn a_fixture_writes_its_own_tree_and_the_workspace_document;
 
+        phase a_fixture_writes_below_its_root_and_refuses_paths_outside_it;
         {
-            let fixture = Fixture::new().unwrap();
-            for path in ["/etc/passwd", "../outside", "a/../../outside"] {
-                let error = fixture.file(path, "x").unwrap_err();
-                assert_eq!(
-                    error.kind(),
-                    io::ErrorKind::InvalidInput,
-                    "{path} is refused, not written"
+            {
+                let fixture = Fixture::new().unwrap();
+                let root = fixture.root().to_path_buf();
+                let written = fixture.file("notes/today.md", "# today").unwrap();
+                assert_eq!(written, root.join("notes/today.md"));
+                assert_eq!(std::fs::read(&written).unwrap(), b"# today");
+                let listed = fixture
+                    .files([("a/one", &b"1"[..]), ("b/two", &b"22"[..])])
+                    .unwrap();
+                assert_eq!(listed, [root.join("a/one"), root.join("b/two")]);
+                let dir = fixture.dir("empty").unwrap();
+                assert!(dir.is_dir());
+                assert_eq!(fixture.data(), root.join("data"));
+            }
+
+            {
+                let fixture = Fixture::new().unwrap();
+                for path in ["/etc/passwd", "../outside", "a/../../outside"] {
+                    let error = fixture.file(path, "x").unwrap_err();
+                    assert_eq!(
+                        error.kind(),
+                        io::ErrorKind::InvalidInput,
+                        "{path} is refused, not written"
+                    );
+                }
+                assert!(
+                    !fixture.root().parent().unwrap().join("outside").exists(),
+                    "nothing was written above the root"
                 );
             }
-            assert!(
-                !fixture.root().parent().unwrap().join("outside").exists(),
-                "nothing was written above the root"
-            );
+
+            {
+                let fixture = Fixture::new().unwrap();
+                let root = fixture.root().to_path_buf();
+                fixture.file("kept.txt", "kept").unwrap();
+                fixture.release();
+                assert!(!root.exists(), "the tree is removed on release");
+            }
         }
 
+        phase a_workspace_document_is_a_document_the_desktop_opens;
         {
             let fixture = Fixture::new().unwrap();
-            let root = fixture.root().to_path_buf();
-            fixture.file("kept.txt", "kept").unwrap();
-            fixture.release();
-            assert!(!root.exists(), "the tree is removed on release");
+            let path = fixture.workspace(r#"{"name": "Studio"}"#).unwrap();
+            assert_eq!(path, fixture.data().join(WORKSPACE_DOCUMENT));
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                r#"{"type":"workspace","version":1,"entries":{"name": "Studio"}}"#
+            );
+            assert_eq!(
+                std::fs::read_to_string(fixture.workspace("{}").unwrap()).unwrap(),
+                r#"{"type":"workspace","version":1,"entries":{}}"#
+            );
         }
-    }
-
-    #[test]
-    fn a_workspace_document_is_a_document_the_desktop_opens() {
-        let fixture = Fixture::new().unwrap();
-        let path = fixture.workspace(r#"{"name": "Studio"}"#).unwrap();
-        assert_eq!(path, fixture.data().join(WORKSPACE_DOCUMENT));
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            r#"{"type":"workspace","version":1,"entries":{"name": "Studio"}}"#
-        );
-        assert_eq!(
-            std::fs::read_to_string(fixture.workspace("{}").unwrap()).unwrap(),
-            r#"{"type":"workspace","version":1,"entries":{}}"#
-        );
     }
 
     // The fixture hands out a directory and nothing else: two of them in one test see two trees.

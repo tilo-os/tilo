@@ -362,78 +362,82 @@ impl crate::resources::PublishesResources for ControlRow {
 mod tests {
     use super::*;
 
-    #[test]
-    fn control_rows_follow_one_shared_choice() {
-        let chosen = crate::LocalState::new("ink".to_owned());
-        let mut ink = ControlRow::new(crate::widget::Row::new())
-            .choosing(&chosen, "ink".to_owned())
-            .with_accessible_name("Ink");
-        let mut oil = ControlRow::new(crate::widget::Row::new())
-            .choosing_any(&chosen, vec!["oil".to_owned(), "oil-mask".to_owned()]);
-        assert!(ink.is_selected() && !oil.is_selected());
+    tilo_test_env::scenario! {
+        fn a_control_row_shares_its_choice_and_publishes_its_press;
 
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        assert!(Widget::perform_action(
-            &mut oil,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root
-        ));
-        assert_eq!(chosen.with(Clone::clone), "oil");
-        Widget::sync(&mut ink, &doc, &root);
-        assert!(!ink.is_selected() && oil.is_selected());
+        phase control_rows_follow_one_shared_choice;
+        {
+            let chosen = crate::LocalState::new("ink".to_owned());
+            let mut ink = ControlRow::new(crate::widget::Row::new())
+                .choosing(&chosen, "ink".to_owned())
+                .with_accessible_name("Ink");
+            let mut oil = ControlRow::new(crate::widget::Row::new())
+                .choosing_any(&chosen, vec!["oil".to_owned(), "oil-mask".to_owned()]);
+            assert!(ink.is_selected() && !oil.is_selected());
 
-        chosen.set("oil-mask".to_owned());
-        Widget::sync(&mut oil, &doc, &root);
-        assert!(oil.is_selected());
-        Widget::perform_action(
-            &mut oil,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root,
-        );
-        assert_eq!(chosen.with(Clone::clone), "oil-mask");
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            assert!(Widget::perform_action(
+                &mut oil,
+                &crate::a11y::Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root
+            ));
+            assert_eq!(chosen.with(Clone::clone), "oil");
+            Widget::sync(&mut ink, &doc, &root);
+            assert!(!ink.is_selected() && oil.is_selected());
 
-        let node = Widget::accessibility(&ink).expect("a list item");
-        assert_eq!(node.role, Role::ListItem);
-        assert_eq!(node.name.as_deref(), Some("Ink"));
-    }
+            chosen.set("oil-mask".to_owned());
+            Widget::sync(&mut oil, &doc, &root);
+            assert!(oil.is_selected());
+            Widget::perform_action(
+                &mut oil,
+                &crate::a11y::Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            assert_eq!(chosen.with(Clone::clone), "oil-mask");
 
-    #[test]
-    fn a_rows_press_is_a_published_view_action_a_script_reaches() {
-        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
-        let counted = std::rc::Rc::clone(&presses);
-        let mut row = ControlRow::new(crate::widget::Row::new())
-            .with_id("canvas-history-now")
-            .on_choose(Box::new(move || counted.set(counted.get() + 1)));
+            let node = Widget::accessibility(&ink).expect("a list item");
+            assert_eq!(node.role, Role::ListItem);
+            assert_eq!(node.name.as_deref(), Some("Ink"));
+        }
 
-        let published =
-            crate::resources::PublishesResources::resources(&row, &automerge::AutoCommit::new());
-        let resource = published.first().expect("the row publishes its press");
-        assert_eq!(resource.id.0, "tilo.control:canvas-history-now");
-        assert_eq!(resource.actions.len(), 1);
-        assert_eq!(resource.actions[0].kind, tilo_actions::OperationKind::View);
+        phase a_rows_press_is_a_published_view_action_a_script_reaches;
+        {
+            let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+            let counted = std::rc::Rc::clone(&presses);
+            let mut row = ControlRow::new(crate::widget::Row::new())
+                .with_id("canvas-history-now")
+                .on_choose(Box::new(move || counted.set(counted.get() + 1)));
 
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        assert!(Widget::perform_action(
-            &mut row,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root
-        ));
-        let invocation = crate::widget::controls::take_control_invocation(&mut row)
-            .expect("the press is the row's own published action");
-        assert_eq!(invocation.address.action, "invoke");
-        assert_eq!(
-            invocation.address.resource,
-            format!("tilo.control:{}", "canvas-history-now")
-        );
-        assert_eq!(presses.get(), 0, "the host runs it, not the press itself");
-        assert!(row.is_selected());
+            let published =
+                crate::resources::PublishesResources::resources(&row, &automerge::AutoCommit::new());
+            let resource = published.first().expect("the row publishes its press");
+            assert_eq!(resource.id.0, "tilo.control:canvas-history-now");
+            assert_eq!(resource.actions.len(), 1);
+            assert_eq!(resource.actions[0].kind, tilo_actions::OperationKind::View);
+
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            assert!(Widget::perform_action(
+                &mut row,
+                &crate::a11y::Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root
+            ));
+            let invocation = crate::widget::controls::take_control_invocation(&mut row)
+                .expect("the press is the row's own published action");
+            assert_eq!(invocation.address.action, "invoke");
+            assert_eq!(
+                invocation.address.resource,
+                format!("tilo.control:{}", "canvas-history-now")
+            );
+            assert_eq!(presses.get(), 0, "the host runs it, not the press itself");
+            assert!(row.is_selected());
+        }
     }
 }

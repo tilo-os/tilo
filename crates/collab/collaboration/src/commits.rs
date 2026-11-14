@@ -391,323 +391,333 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_part_retried_alone_completes_the_action_it_was_held_for() {
-        let (commit, first, second) = two_unit_action();
-        let state = BridgeState::new();
-        let mut peer = AutoCommit::new();
-        let part_a = publication(&commit, "tasks", "a", &first, 1);
-        assert!(
-            !deliver(&state, &part_a, "tasks", "a", &mut peer),
-            "the first part alone is not applied"
-        );
-        assert_eq!(state.commits().held_parts(), 1);
+    tilo_test_env::scenario! {
+        /// An action that wrote several units reaches a peer whole, each case on a bridge state and replicas of its own.
+        fn a_peer_shows_an_action_only_when_every_part_of_it_arrived;
 
-        // The publisher could not send the second part with the first, and
-        // sends it in a later pass under a commit naming it alone: the action
-        // it was part of is still one action, and completes.
-        let alone = WorkspaceCommit::of_units(
-            WORKSPACE,
-            &publisher(),
-            &[collab_types::UnitMutation {
-                app: "discussion",
-                record: "thread",
-                mutation: &mutation(&mut second.clone()),
-                document: None,
-            }],
-        )
-        .unwrap()
-        .remove(0)
-        .expect("the part's own commit");
-        let retried = publication(&alone, "discussion", "thread", &second, 2);
-        assert!(
-            deliver(&state, &retried, "discussion", "thread", &mut peer),
-            "the retried part completes the action"
-        );
-        assert!(peer.get(automerge::ROOT, "title").unwrap().is_some());
-        assert!(peer.get(automerge::ROOT, "body").unwrap().is_some());
-        assert_eq!(state.commits().held_parts(), 0);
-        assert_eq!(
-            state.commits().history(WORKSPACE).len(),
-            1,
-            "one action, one entry"
-        );
-    }
+        phase a_part_retried_alone_completes_the_action_it_was_held_for;
+        {
+            let (commit, first, second) = two_unit_action();
+            let state = BridgeState::new();
+            let mut peer = AutoCommit::new();
+            let part_a = publication(&commit, "tasks", "a", &first, 1);
+            assert!(
+                !deliver(&state, &part_a, "tasks", "a", &mut peer),
+                "the first part alone is not applied"
+            );
+            assert_eq!(state.commits().held_parts(), 1);
 
-    #[test]
-    fn a_peer_shows_nothing_of_an_action_until_every_part_of_it_arrives() {
-        let (commit, first, second) = two_unit_action();
-        let state = BridgeState::new();
-        let mut peer = AutoCommit::new();
-
-        let part_a = publication(&commit, "tasks", "a", &first, 1);
-        assert!(
-            !deliver(&state, &part_a, "tasks", "a", &mut peer),
-            "the first part alone is not applied"
-        );
-        assert_eq!(peer.get(automerge::ROOT, "title").unwrap(), None);
-        assert_eq!(peer.get(automerge::ROOT, "body").unwrap(), None);
-        assert_eq!(state.commits().held_parts(), 1);
-
-        let part_b = publication(&commit, "discussion", "thread", &second, 2);
-        assert!(
-            deliver(&state, &part_b, "discussion", "thread", &mut peer),
-            "the second part completes the action"
-        );
-        assert!(peer.get(automerge::ROOT, "title").unwrap().is_some());
-        assert!(peer.get(automerge::ROOT, "body").unwrap().is_some());
-        assert_eq!(state.commits().held_parts(), 0);
-
-        // The same part again is a re-delivery of an action already applied:
-        // it goes through on its own and changes nothing new.
-        assert!(deliver(&state, &part_a, "tasks", "a", &mut peer));
-    }
-
-    #[test]
-    fn restart_keeps_the_state_of_a_committed_action() {
-        let (commit, first, second) = two_unit_action();
-        let state = BridgeState::new();
-        let mut peer = AutoCommit::new();
-        deliver(
-            &state,
-            &publication(&commit, "tasks", "a", &first, 1),
-            "tasks",
-            "a",
-            &mut peer,
-        );
-        deliver(
-            &state,
-            &publication(&commit, "discussion", "thread", &second, 2),
-            "discussion",
-            "thread",
-            &mut peer,
-        );
-
-        let reloaded = AutoCommit::load(&peer.save()).unwrap();
-        assert!(reloaded.get(automerge::ROOT, "title").unwrap().is_some());
-        assert!(reloaded.get(automerge::ROOT, "body").unwrap().is_some());
-
-        // The commit itself is a durable record, and the same action reads
-        // the same after a restart.
-        let stored = commit.encode();
-        let reread = WorkspaceCommit::decode(&stored).unwrap();
-        assert_eq!(reread.id(), commit.id());
-        assert_eq!(reread.parts, commit.parts);
-    }
-
-    #[test]
-    fn one_history_query_names_the_action_with_its_author_time_and_both_units() {
-        let (commit, first, second) = two_unit_action();
-        let state = BridgeState::new();
-        let mut peer = AutoCommit::new();
-        deliver(
-            &state,
-            &publication(&commit, "tasks", "a", &first, 1),
-            "tasks",
-            "a",
-            &mut peer,
-        );
-        deliver(
-            &state,
-            &publication(&commit, "discussion", "thread", &second, 2),
-            "discussion",
-            "thread",
-            &mut peer,
-        );
-        let history = state.commits().history(WORKSPACE);
-        assert_eq!(history.len(), 1, "one action, one entry: {history:?}");
-        let action = &history[0];
-        assert_eq!(action.commit, commit.id());
-        assert_eq!(action.principal.as_deref(), Some("alice"));
-        assert_eq!(action.device, DEVICE);
-        assert_eq!(action.at_ms, commit.at_ms);
-        assert_eq!(
-            action.invocation,
-            Some(uuid::Uuid::from_u128(11)),
-            "the invocation every change of the action ran under"
-        );
-        assert_eq!(action.parts, commit.parts);
-        assert_eq!(action.parts.len(), 2);
-        assert_eq!(action.parts[0].changes, vec![commit.parts[0].changes[0]]);
-        assert!(state.commits().history("elsewhere").is_empty());
-    }
-
-    #[test]
-    fn a_peer_receiving_an_undo_reverts_both_units_together() {
-        let (commit, first, second) = two_unit_action();
-        let state = BridgeState::new();
-        let mut peer = AutoCommit::new();
-        for (app, record, doc, seq) in [
-            ("tasks", "a", &first, 1),
-            ("discussion", "thread", &second, 2),
-        ] {
-            deliver(
-                &state,
-                &publication(&commit, app, record, doc, seq),
-                app,
-                record,
-                &mut peer,
+            // The publisher could not send the second part with the first, and
+            // sends it in a later pass under a commit naming it alone: the action
+            // it was part of is still one action, and completes.
+            let alone = WorkspaceCommit::of_units(
+                WORKSPACE,
+                &publisher(),
+                &[collab_types::UnitMutation {
+                    app: "discussion",
+                    record: "thread",
+                    mutation: &mutation(&mut second.clone()),
+                    document: None,
+                }],
+            )
+            .unwrap()
+            .remove(0)
+            .expect("the part's own commit");
+            let retried = publication(&alone, "discussion", "thread", &second, 2);
+            assert!(
+                deliver(&state, &retried, "discussion", "thread", &mut peer),
+                "the retried part completes the action"
+            );
+            assert!(peer.get(automerge::ROOT, "title").unwrap().is_some());
+            assert!(peer.get(automerge::ROOT, "body").unwrap().is_some());
+            assert_eq!(state.commits().held_parts(), 0);
+            assert_eq!(
+                state.commits().history(WORKSPACE).len(),
+                1,
+                "one action, one entry"
             );
         }
 
-        // The undo of that action: a change on top of each unit, taking the
-        // value the action wrote back to what it was.
-        let undo_invocation = InvocationId(uuid::Uuid::from_u128(12));
-        let mut reverted_first = first.clone();
-        let mut reverted_second = second.clone();
-        let before_first = reverted_first.get_heads();
-        let before_second = reverted_second.get_heads();
-        rewrite(&mut reverted_first, "title", "undone", undo_invocation);
-        rewrite(&mut reverted_second, "body", "undone", undo_invocation);
-        let undo_first =
-            collab_types::DocumentMutation::Incremental(reverted_first.save_after(&before_first));
-        let undo_second =
-            collab_types::DocumentMutation::Incremental(reverted_second.save_after(&before_second));
-        let undo_commit = WorkspaceCommit::of_units(
-            WORKSPACE,
-            &publisher(),
-            &[
-                collab_types::UnitMutation {
-                    app: "tasks",
-                    record: "a",
-                    mutation: &undo_first,
-                    document: None,
-                },
-                collab_types::UnitMutation {
-                    app: "discussion",
-                    record: "thread",
-                    mutation: &undo_second,
-                    document: None,
-                },
-            ],
-        )
-        .unwrap()
-        .remove(0)
-        .unwrap();
+        phase a_peer_shows_nothing_of_an_action_until_every_part_of_it_arrives;
+        {
+            let (commit, first, second) = two_unit_action();
+            let state = BridgeState::new();
+            let mut peer = AutoCommit::new();
 
-        let undo_b = publication(&undo_commit, "discussion", "thread", &reverted_second, 3);
-        assert!(
-            !deliver(&state, &undo_b, "discussion", "thread", &mut peer),
-            "the undo's second part alone reverts nothing"
-        );
-        assert_eq!(
-            peer.get(automerge::ROOT, "title").unwrap().unwrap().0,
-            automerge::Value::from("child"),
-            "the first unit keeps what the action wrote"
-        );
-        assert_eq!(
-            peer.get(automerge::ROOT, "body").unwrap().unwrap().0,
-            automerge::Value::from("text")
-        );
-
-        let undo_a = publication(&undo_commit, "tasks", "a", &reverted_first, 4);
-        assert!(
-            deliver(&state, &undo_a, "tasks", "a", &mut peer),
-            "the undo completes and reverts the action"
-        );
-        assert_eq!(
-            peer.get(automerge::ROOT, "title").unwrap().unwrap().0,
-            automerge::Value::from("undone")
-        );
-        assert_eq!(
-            peer.get(automerge::ROOT, "body").unwrap().unwrap().0,
-            automerge::Value::from("undone")
-        );
-        assert_eq!(
-            state.commits().history(WORKSPACE).len(),
-            2,
-            "the action and its undo, one entry each"
-        );
-    }
-
-    #[test]
-    fn a_part_the_action_does_not_name_is_refused() {
-        let (commit, first, _) = two_unit_action();
-        let state = BridgeState::new();
-        let op = publication(&commit, "tasks", "a", &first, 1);
-        let claims: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
-        assert!(matches!(
-            gate(
-                &state,
-                WorkspaceCommit::of_envelope(&op).unwrap(),
-                &claims,
-                ("tasks", "elsewhere"),
-                event(&op)
-            ),
-            Delivery::Refused(_)
-        ));
-        assert!(matches!(
-            gate(
-                &state,
-                WorkspaceCommit::of_envelope(&op).unwrap(),
-                &[[0; 32]],
-                ("tasks", "a"),
-                event(&op)
-            ),
-            Delivery::Refused(_)
-        ));
-    }
-
-    #[test]
-    fn a_part_signed_by_another_device_is_refused() {
-        let (commit, first, _) = two_unit_action();
-        let frame = mutation(&mut first.clone())
-            .encode_frames()
-            .unwrap()
-            .remove(0);
-        let framed = commit.frame(&frame).unwrap();
-        let op = SignedOp::new_unsigned(
-            framed,
-            document_artifact_id("tasks", WORKSPACE, "a"),
-            Ed25519PublicKey::from_bytes([8; 32]),
-            AttestationId::new(),
-            OpKind::Change,
-            std::time::UNIX_EPOCH,
-            1,
-        );
-        assert_eq!(
-            WorkspaceCommit::of_envelope(&op),
-            Err(collab_types::CommitError::ForeignDevice)
-        );
-    }
-
-    #[test]
-    fn an_incomplete_action_does_not_grow_without_bound() {
-        let invocation = InvocationId::new();
-        let state = BridgeState::new();
-        let mut peer = AutoCommit::new();
-        let (first, first_change) = record("title", "child", invocation);
-        for index in 0..(MAX_HELD_COMMITS + 3) {
-            let commit = WorkspaceCommit::new(
-                WORKSPACE,
-                collab_types::CommitAuthor {
-                    principal: None,
-                    device: DEVICE,
-                },
-                u64::try_from(index).unwrap(),
-                None,
-                None,
-                vec![
-                    CommitPart {
-                        app: "tasks".to_owned(),
-                        record: "a".to_owned(),
-                        changes: vec![first_change],
-                    },
-                    CommitPart {
-                        app: "tasks".to_owned(),
-                        record: "b".to_owned(),
-                        changes: vec![[u8::try_from(index).unwrap(); 32]],
-                    },
-                ],
+            let part_a = publication(&commit, "tasks", "a", &first, 1);
+            assert!(
+                !deliver(&state, &part_a, "tasks", "a", &mut peer),
+                "the first part alone is not applied"
             );
+            assert_eq!(peer.get(automerge::ROOT, "title").unwrap(), None);
+            assert_eq!(peer.get(automerge::ROOT, "body").unwrap(), None);
+            assert_eq!(state.commits().held_parts(), 1);
+
+            let part_b = publication(&commit, "discussion", "thread", &second, 2);
+            assert!(
+                deliver(&state, &part_b, "discussion", "thread", &mut peer),
+                "the second part completes the action"
+            );
+            assert!(peer.get(automerge::ROOT, "title").unwrap().is_some());
+            assert!(peer.get(automerge::ROOT, "body").unwrap().is_some());
+            assert_eq!(state.commits().held_parts(), 0);
+
+            // The same part again is a re-delivery of an action already applied:
+            // it goes through on its own and changes nothing new.
+            assert!(deliver(&state, &part_a, "tasks", "a", &mut peer));
+        }
+
+        phase restart_keeps_the_state_of_a_committed_action;
+        {
+            let (commit, first, second) = two_unit_action();
+            let state = BridgeState::new();
+            let mut peer = AutoCommit::new();
             deliver(
                 &state,
-                &publication(&commit, "tasks", "a", &first, u64::try_from(index).unwrap()),
+                &publication(&commit, "tasks", "a", &first, 1),
                 "tasks",
                 "a",
                 &mut peer,
             );
+            deliver(
+                &state,
+                &publication(&commit, "discussion", "thread", &second, 2),
+                "discussion",
+                "thread",
+                &mut peer,
+            );
+
+            let reloaded = AutoCommit::load(&peer.save()).unwrap();
+            assert!(reloaded.get(automerge::ROOT, "title").unwrap().is_some());
+            assert!(reloaded.get(automerge::ROOT, "body").unwrap().is_some());
+
+            // The commit itself is a durable record, and the same action reads
+            // the same after a restart.
+            let stored = commit.encode();
+            let reread = WorkspaceCommit::decode(&stored).unwrap();
+            assert_eq!(reread.id(), commit.id());
+            assert_eq!(reread.parts, commit.parts);
         }
-        assert!(state.commits().held_parts() <= MAX_HELD_COMMITS);
+
+        phase one_history_query_names_the_action_with_its_author_time_and_both_units;
+        {
+            let (commit, first, second) = two_unit_action();
+            let state = BridgeState::new();
+            let mut peer = AutoCommit::new();
+            deliver(
+                &state,
+                &publication(&commit, "tasks", "a", &first, 1),
+                "tasks",
+                "a",
+                &mut peer,
+            );
+            deliver(
+                &state,
+                &publication(&commit, "discussion", "thread", &second, 2),
+                "discussion",
+                "thread",
+                &mut peer,
+            );
+            let history = state.commits().history(WORKSPACE);
+            assert_eq!(history.len(), 1, "one action, one entry: {history:?}");
+            let action = &history[0];
+            assert_eq!(action.commit, commit.id());
+            assert_eq!(action.principal.as_deref(), Some("alice"));
+            assert_eq!(action.device, DEVICE);
+            assert_eq!(action.at_ms, commit.at_ms);
+            assert_eq!(
+                action.invocation,
+                Some(uuid::Uuid::from_u128(11)),
+                "the invocation every change of the action ran under"
+            );
+            assert_eq!(action.parts, commit.parts);
+            assert_eq!(action.parts.len(), 2);
+            assert_eq!(action.parts[0].changes, vec![commit.parts[0].changes[0]]);
+            assert!(state.commits().history("elsewhere").is_empty());
+        }
+
+        phase a_peer_receiving_an_undo_reverts_both_units_together;
+        {
+            let (commit, first, second) = two_unit_action();
+            let state = BridgeState::new();
+            let mut peer = AutoCommit::new();
+            for (app, record, doc, seq) in [
+                ("tasks", "a", &first, 1),
+                ("discussion", "thread", &second, 2),
+            ] {
+                deliver(
+                    &state,
+                    &publication(&commit, app, record, doc, seq),
+                    app,
+                    record,
+                    &mut peer,
+                );
+            }
+
+            // The undo of that action: a change on top of each unit, taking the
+            // value the action wrote back to what it was.
+            let undo_invocation = InvocationId(uuid::Uuid::from_u128(12));
+            let mut reverted_first = first.clone();
+            let mut reverted_second = second.clone();
+            let before_first = reverted_first.get_heads();
+            let before_second = reverted_second.get_heads();
+            rewrite(&mut reverted_first, "title", "undone", undo_invocation);
+            rewrite(&mut reverted_second, "body", "undone", undo_invocation);
+            let undo_first =
+                collab_types::DocumentMutation::Incremental(reverted_first.save_after(&before_first));
+            let undo_second =
+                collab_types::DocumentMutation::Incremental(reverted_second.save_after(&before_second));
+            let undo_commit = WorkspaceCommit::of_units(
+                WORKSPACE,
+                &publisher(),
+                &[
+                    collab_types::UnitMutation {
+                        app: "tasks",
+                        record: "a",
+                        mutation: &undo_first,
+                        document: None,
+                    },
+                    collab_types::UnitMutation {
+                        app: "discussion",
+                        record: "thread",
+                        mutation: &undo_second,
+                        document: None,
+                    },
+                ],
+            )
+            .unwrap()
+            .remove(0)
+            .unwrap();
+
+            let undo_b = publication(&undo_commit, "discussion", "thread", &reverted_second, 3);
+            assert!(
+                !deliver(&state, &undo_b, "discussion", "thread", &mut peer),
+                "the undo's second part alone reverts nothing"
+            );
+            assert_eq!(
+                peer.get(automerge::ROOT, "title").unwrap().unwrap().0,
+                automerge::Value::from("child"),
+                "the first unit keeps what the action wrote"
+            );
+            assert_eq!(
+                peer.get(automerge::ROOT, "body").unwrap().unwrap().0,
+                automerge::Value::from("text")
+            );
+
+            let undo_a = publication(&undo_commit, "tasks", "a", &reverted_first, 4);
+            assert!(
+                deliver(&state, &undo_a, "tasks", "a", &mut peer),
+                "the undo completes and reverts the action"
+            );
+            assert_eq!(
+                peer.get(automerge::ROOT, "title").unwrap().unwrap().0,
+                automerge::Value::from("undone")
+            );
+            assert_eq!(
+                peer.get(automerge::ROOT, "body").unwrap().unwrap().0,
+                automerge::Value::from("undone")
+            );
+            assert_eq!(
+                state.commits().history(WORKSPACE).len(),
+                2,
+                "the action and its undo, one entry each"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// What the gate refuses and how much it holds, each case on a bridge state of its own.
+        fn a_part_outside_its_action_is_refused_and_held_parts_are_bounded;
+
+        phase a_part_the_action_does_not_name_is_refused;
+        {
+            let (commit, first, _) = two_unit_action();
+            let state = BridgeState::new();
+            let op = publication(&commit, "tasks", "a", &first, 1);
+            let claims: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
+            assert!(matches!(
+                gate(
+                    &state,
+                    WorkspaceCommit::of_envelope(&op).unwrap(),
+                    &claims,
+                    ("tasks", "elsewhere"),
+                    event(&op)
+                ),
+                Delivery::Refused(_)
+            ));
+            assert!(matches!(
+                gate(
+                    &state,
+                    WorkspaceCommit::of_envelope(&op).unwrap(),
+                    &[[0; 32]],
+                    ("tasks", "a"),
+                    event(&op)
+                ),
+                Delivery::Refused(_)
+            ));
+        }
+
+        phase a_part_signed_by_another_device_is_refused;
+        {
+            let (commit, first, _) = two_unit_action();
+            let frame = mutation(&mut first.clone())
+                .encode_frames()
+                .unwrap()
+                .remove(0);
+            let framed = commit.frame(&frame).unwrap();
+            let op = SignedOp::new_unsigned(
+                framed,
+                document_artifact_id("tasks", WORKSPACE, "a"),
+                Ed25519PublicKey::from_bytes([8; 32]),
+                AttestationId::new(),
+                OpKind::Change,
+                std::time::UNIX_EPOCH,
+                1,
+            );
+            assert_eq!(
+                WorkspaceCommit::of_envelope(&op),
+                Err(collab_types::CommitError::ForeignDevice)
+            );
+        }
+
+        phase an_incomplete_action_does_not_grow_without_bound;
+        {
+            let invocation = InvocationId::new();
+            let state = BridgeState::new();
+            let mut peer = AutoCommit::new();
+            let (first, first_change) = record("title", "child", invocation);
+            for index in 0..(MAX_HELD_COMMITS + 3) {
+                let commit = WorkspaceCommit::new(
+                    WORKSPACE,
+                    collab_types::CommitAuthor {
+                        principal: None,
+                        device: DEVICE,
+                    },
+                    u64::try_from(index).unwrap(),
+                    None,
+                    None,
+                    vec![
+                        CommitPart {
+                            app: "tasks".to_owned(),
+                            record: "a".to_owned(),
+                            changes: vec![first_change],
+                        },
+                        CommitPart {
+                            app: "tasks".to_owned(),
+                            record: "b".to_owned(),
+                            changes: vec![[u8::try_from(index).unwrap(); 32]],
+                        },
+                    ],
+                );
+                deliver(
+                    &state,
+                    &publication(&commit, "tasks", "a", &first, u64::try_from(index).unwrap()),
+                    "tasks",
+                    "a",
+                    &mut peer,
+                );
+            }
+            assert!(state.commits().held_parts() <= MAX_HELD_COMMITS);
+        }
     }
 }

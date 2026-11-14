@@ -157,45 +157,53 @@ mod tests {
         }
     }
 
-    #[test]
-    fn network_allows_requires_full_and_unmetered_primary() {
-        assert!(network_allows(&online(LinkKind::Wired, Some(false))));
-        assert!(network_allows(&online(LinkKind::Wifi, Some(false))));
-        assert!(
-            !network_allows(&online(LinkKind::Wired, Some(true))),
-            "a metered primary connection denies speculation"
-        );
-        assert!(
-            !network_allows(&online(LinkKind::Wifi, None)),
-            "unknown metering denies speculation"
-        );
-        assert!(
-            !network_allows(&NetworkState {
-                connectivity: NmConnectivity::Limited,
-                ..online(LinkKind::Wired, Some(false))
-            }),
-            "limited connectivity denies speculation"
-        );
-        assert!(
-            !network_allows(&NetworkState::unknown()),
-            "an unreadable NetworkManager denies speculation"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn speculation_needs_a_good_network_battery_and_storage;
 
-    #[test]
-    fn smart_monitor_policies_require_good_battery_and_storage() {
+        phase network_allows_requires_full_and_unmetered_primary;
         {
-            assert!(battery_allows(false, false, 0));
-            assert!(!battery_allows(true, false, 100));
-            assert!(!battery_allows(true, true, MIN_BATTERY_PERCENT - 1));
-            assert!(battery_allows(true, true, MIN_BATTERY_PERCENT));
+            assert!(network_allows(&online(LinkKind::Wired, Some(false))));
+            assert!(network_allows(&online(LinkKind::Wifi, Some(false))));
+            assert!(
+                !network_allows(&online(LinkKind::Wired, Some(true))),
+                "a metered primary connection denies speculation"
+            );
+            assert!(
+                !network_allows(&online(LinkKind::Wifi, None)),
+                "unknown metering denies speculation"
+            );
+            assert!(
+                !network_allows(&NetworkState {
+                    connectivity: NmConnectivity::Limited,
+                    ..online(LinkKind::Wired, Some(false))
+                }),
+                "limited connectivity denies speculation"
+            );
+            assert!(
+                !network_allows(&NetworkState::unknown()),
+                "an unreadable NetworkManager denies speculation"
+            );
         }
+
+        phase smart_monitor_policies_require_good_battery_and_storage;
         {
-            let gib = 1024_u64 * 1024 * 1024;
-            assert!(storage_values_allow(10 * gib, 2 * gib, 1));
-            assert!(!storage_values_allow(100 * gib, gib - 1, 1));
-            assert!(!storage_values_allow(100 * gib, 2 * gib, 1));
-            assert!(!storage_values_allow(0, 0, 4096));
+            {
+                assert!(battery_allows(false, false, 0));
+                assert!(!battery_allows(true, false, 100));
+                assert!(!battery_allows(true, true, MIN_BATTERY_PERCENT - 1));
+                assert!(battery_allows(true, true, MIN_BATTERY_PERCENT));
+            }
+            {
+                let gib = 1024_u64 * 1024 * 1024;
+                assert!(storage_values_allow(10 * gib, 2 * gib, 1));
+                assert!(!storage_values_allow(100 * gib, gib - 1, 1));
+                assert!(!storage_values_allow(100 * gib, 2 * gib, 1));
+                assert!(!storage_values_allow(0, 0, 4096));
+            }
         }
     }
 }

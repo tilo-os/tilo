@@ -60,6 +60,14 @@ fn handle(source: Arc<Store>, revalidate: Revalidate) -> AppSettingsHandle {
     AppSettingsServer::new(APP, source, revalidate).into()
 }
 
+fn handle_for(app: &str, source: &Arc<Store>) -> AppSettingsServer {
+    AppSettingsServer::new(
+        app,
+        Arc::clone(source) as Arc<dyn SettingsSource>,
+        admitted(),
+    )
+}
+
 fn run<F: std::future::Future>(future: F) -> F::Output {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -70,6 +78,28 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 
 fn view(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap()
+}
+
+/// The view without the person's dictionary an app always reads beside its own
+/// entries.
+fn settings_only(mut view: Value) -> Value {
+    let Some(document) = view.as_object_mut() else {
+        return view;
+    };
+    let Some(entries) = document
+        .get_mut("app_device_local")
+        .and_then(Value::as_object_mut)
+    else {
+        return view;
+    };
+    for entry in entries.values_mut().filter_map(Value::as_object_mut) {
+        entry.remove(settings_store::personal_dictionary::delivery::VIEW_KEY);
+    }
+    entries.retain(|_, entry| entry.as_object().is_some_and(|entry| !entry.is_empty()));
+    if entries.is_empty() {
+        document.remove("app_device_local");
+    }
+    view
 }
 
 #[test]
@@ -87,7 +117,7 @@ fn an_apps_write_reaches_the_person_record() {
             .await
             .unwrap();
         assert_eq!(
-            view(&written.document_json),
+            settings_only(view(&written.document_json)),
             json!({"app_personal": {APP: {"confirm_kill": false}}})
         );
     });
@@ -143,7 +173,7 @@ fn a_record_change_reaches_a_waiting_reader_and_others_do_not() {
     run(async {
         let first = settings.read(0).await.unwrap();
         assert_eq!(
-            view(&first.document_json),
+            settings_only(view(&first.document_json)),
             json!({"locale": {"region": "DE"}}),
             "another app's entry is not seen"
         );
@@ -258,141 +288,6 @@ fn display_runs_the_hosts_transaction_only_for_an_app_holding_display_authority(
     );
 }
 
-fn revocable_admission(allowed: Arc<AtomicBool>) -> Revalidate {
-    Arc::new(move || {
-        if allowed.load(Ordering::Acquire) {
-            Ok(())
-        } else {
-            Err("revoked".to_owned())
-        }
-    })
-}
-
-fn dictionary_handle(
-    app: &str,
-    source: Arc<dyn SettingsSource>,
-    permission: Revalidate,
-    owner: Option<[u8; 32]>,
-) -> AppSettingsHandle {
-    AppSettingsServer::new(app, source, permission)
-        .with_dictionary_owner(owner)
-        .into()
-}
-
-fn dictionary_snapshot(
-    reply: &runtime_collab::SettingsView,
-    app: &str,
-) -> settings_store::personal_dictionary::Snapshot {
-    let delivery: settings_store::personal_dictionary::host::Delivery = serde_json::from_value(
-        view(&reply.document_json)["app_device_local"][app]
-            [settings_store::personal_dictionary::host::VIEW_KEY]
-            .clone(),
-    )
-    .unwrap();
-    delivery.snapshot
-}
-
-/// Send one dictionary edit the way Settings' dictionary pane does, as the
-/// dictionary's owner at `revision`; true when the host took it.
-#[allow(
-    clippy::future_not_send,
-    reason = "the host answers each app on its single-threaded broker task"
-)]
-async fn edit(
-    handle: &AppSettingsHandle,
-    revision: u64,
-    edit: settings_store::personal_dictionary::Edit,
-) -> bool {
-    use settings_store::personal_dictionary::host;
-    let command = host::Command {
-        owner: [1; 32],
-        revision,
-        edit,
-    };
-    let values =
-        serde_json::to_vec(&json!({ "so.tilo.settings": { host::EDIT_KEY: command } })).unwrap();
-    handle
-        .update("app_device_local", &values, None)
-        .await
-        .is_ok()
-}
-
-#[test]
-fn personal_dictionary_follows_authenticated_settings_without_workspace_storage() {
-    use settings_store::personal_dictionary::{Edit, Service, Word, host};
-    let dir = tempfile::tempdir().unwrap();
-    let records = session(dir.path());
-    let service = Arc::new(Service::new(dir.path().join("dictionary")).unwrap());
-    let source: Arc<dyn SettingsSource> = Arc::new(host::Host::new(
-        records.clone(),
-        service,
-        Arc::new(|| Some([1; 32])),
-    ));
-    let allowed = Arc::new(AtomicBool::new(true));
-    let permission = revocable_admission(Arc::clone(&allowed));
-    let settings = dictionary_handle(
-        "so.tilo.settings",
-        source.clone(),
-        permission,
-        Some([1; 32]),
-    );
-    let osk = dictionary_handle("so.tilo.osk", source.clone(), admitted(), Some([1; 32]));
-    let dictation = dictionary_handle(
-        "so.tilo.dictation",
-        source.clone(),
-        admitted(),
-        Some([1; 32]),
-    );
-    let visitor = dictionary_handle("so.tilo.settings", source, admitted(), None);
-    let tilo = || Word::new("Tilo", None).unwrap();
-    run(async {
-        let before = osk.read(0).await.unwrap();
-        assert!(!edit(&visitor, 0, Edit::Add(tilo())).await);
-        assert!(edit(&settings, 0, Edit::Add(tilo())).await);
-        let after = osk.read(before.revision).await.unwrap();
-        assert!(after.revision > before.revision);
-        assert_eq!(
-            dictionary_snapshot(&after, "so.tilo.osk")
-                .hints("en")
-                .collect::<Vec<_>>(),
-            ["Tilo"]
-        );
-        let voice = dictation.read(0).await.unwrap();
-        assert_eq!(
-            dictionary_snapshot(&voice, "so.tilo.dictation"),
-            dictionary_snapshot(&after, "so.tilo.osk")
-        );
-        assert!(
-            view(&visitor.read(0).await.unwrap().document_json)
-                .get("app_device_local")
-                .is_none()
-        );
-        assert!(!edit(&settings, 0, Edit::Add(tilo())).await);
-        let replace = Edit::Replace {
-            old: tilo(),
-            new: Word::new("TiLo", None).unwrap(),
-        };
-        assert!(edit(&settings, 1, replace).await);
-        let edited = dictation.read(voice.revision).await.unwrap();
-        assert_eq!(
-            dictionary_snapshot(&edited, "so.tilo.dictation")
-                .hints("nl")
-                .collect::<Vec<_>>(),
-            ["TiLo"]
-        );
-        assert!(edit(&settings, 2, Edit::Remove(Word::new("TiLo", None).unwrap())).await);
-        assert!(
-            dictionary_snapshot(&osk.read(after.revision).await.unwrap(), "so.tilo.osk")
-                .words
-                .is_empty()
-        );
-        allowed.store(false, Ordering::Release);
-        assert!(settings.read(0).await.is_err());
-        assert!(!edit(&settings, 3, Edit::Reset).await);
-    });
-    assert!(records.load().is_empty());
-}
-
 #[test]
 fn the_settings_apps_write_over_its_channel_lands_in_the_sessions_settings() {
     use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
@@ -487,4 +382,122 @@ fn a_write_over_the_channel_keeps_the_action_that_made_it() {
     assert_eq!(contrast["action"], "appearance/high_contrast");
     assert!(contrast["principal"].is_null(), "{contrast}");
     assert!(entry("text_scale")["action"].is_null());
+}
+
+/// A word the word processor's spelling menu adds is the person's, not the
+/// app's: another app reads it as known, and no device-local entry keeps it.
+#[test]
+fn a_word_added_in_the_word_processor_is_known_in_another_app() {
+    use settings_store::personal_dictionary::delivery::{self, Command};
+    use settings_store::personal_dictionary::{Edit, Snapshot, snapshot_in};
+    let dir = tempfile::tempdir().unwrap();
+    let records = session(dir.path());
+    let word_processor: AppSettingsHandle = handle_for("so.tilo.word-processor", &records).into();
+    let notes: AppSettingsHandle = handle_for("so.tilo.notes", &records).into();
+    let dictionary = |app: &str, revision: u64, edit: Edit| {
+        serde_json::to_vec(&json!({
+            app: { delivery::EDIT_KEY: Command { revision, edit } }
+        }))
+        .unwrap()
+    };
+    let word =
+        || Edit::Add(settings_store::personal_dictionary::Word::new("qwordz", None).unwrap());
+    run(async {
+        let before = notes.read(0).await.unwrap();
+        let written = word_processor
+            .update(
+                "app_device_local",
+                &dictionary("so.tilo.word-processor", 0, word()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            view(&written.document_json)["app_device_local"]["so.tilo.word-processor"]
+                [delivery::VIEW_KEY]["revision"],
+            1
+        );
+        let after = notes.read(before.revision).await.unwrap();
+        let snapshot: Snapshot = serde_json::from_value(
+            view(&after.document_json)["app_device_local"]["so.tilo.notes"][delivery::VIEW_KEY]
+                .clone(),
+        )
+        .unwrap();
+        assert!(
+            snapshot.contains("qwordz", "en"),
+            "another app knows the person's word"
+        );
+        let stale = word_processor
+            .update(
+                "app_device_local",
+                &dictionary("so.tilo.word-processor", 0, word()),
+                None,
+            )
+            .await;
+        assert!(stale.is_err(), "an edit at an old revision is refused");
+        let reset = Edit::Reset;
+        assert!(
+            notes
+                .update(
+                    "app_device_local",
+                    &dictionary("so.tilo.notes", 1, reset),
+                    None
+                )
+                .await
+                .is_err(),
+            "an ordinary app adds words but cannot reset the dictionary"
+        );
+        assert!(
+            word_processor
+                .update(
+                    "app_device_local",
+                    serde_json::to_vec(&json!({
+                        "so.tilo.word-processor": { delivery::VIEW_KEY: serde_json::json!({}) }
+                    }))
+                    .unwrap()
+                    .as_slice(),
+                    None,
+                )
+                .await
+                .is_err(),
+            "an app cannot write the dictionary view"
+        );
+    });
+    assert!(
+        snapshot_in(records.as_ref()).contains("qwordz", "en"),
+        "the word is the person's, in their settings document"
+    );
+    assert!(
+        records.load().get("app_device_local").is_none(),
+        "no dictionary edit is kept in a device-local entry"
+    );
+}
+
+/// The settings app reaches the whole document, but the dictionary is edited
+/// through its own command and never as a section write.
+#[test]
+fn the_settings_app_cannot_write_the_dictionary_as_a_section() {
+    use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
+    let dir = tempfile::tempdir().unwrap();
+    let records = session(dir.path());
+    let settings: AppSettingsHandle = AppSettingsServer::new(
+        "so.tilo.settings",
+        Arc::clone(&records) as Arc<dyn SettingsSource>,
+        admitted(),
+    )
+    .with_reach(Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]))
+    .into();
+    run(async {
+        assert!(
+            settings
+                .update(
+                    settings_store::personal_dictionary::SECTION,
+                    br#"{"words": {"revision": 1, "words": []}}"#,
+                    None,
+                )
+                .await
+                .is_err()
+        );
+    });
+    assert!(records.load().get("personal_dictionary").is_none());
 }

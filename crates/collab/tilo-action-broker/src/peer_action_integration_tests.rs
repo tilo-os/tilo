@@ -60,9 +60,7 @@ async fn answered<T>(
                 PendingPoll::Waiting => {
                     // What the door asks a live directory is answered on this
                     // local set, as the shell's accept loop answers it.
-                    fixture
-                        .state
-                        .drain_action_directory_bridge(&fixture.directories);
+                    fixture.state.take_turn(&fixture.directories);
                     tokio::task::yield_now().await;
                 }
                 PendingPoll::Abandoned => return None,
@@ -460,7 +458,7 @@ fn a_recording_publisher_cannot_advertise_a_durable_invocation_host() {
         crate::test_support::WorkspaceSlot(71),
         "Explicit native peer",
     );
-    room.set_owner(principal_id_for_root(
+    room.set_owner(person_id_for_root(
         SigningKey::from_bytes(&[ROOT_SEED; 32])
             .verifying_key()
             .to_bytes(),

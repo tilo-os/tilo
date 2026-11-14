@@ -358,188 +358,193 @@ mod tests {
         list.iter().map(|name| (*name).to_owned()).collect()
     }
 
-    #[test]
-    fn every_message_survives_encoding() {
-        let messages = [
-            Message::Enter {
-                source: 7,
+    tilo_test_env::scenario! {
+        /// The XDND protocol: its messages on the wire and the formats it carries.
+        fn xdnd_messages_and_formats_follow_the_specification;
+
+        phase every_message_survives_encoding;
+        {
+            let messages = [
+                Message::Enter {
+                    source: 7,
+                    version: 5,
+                    more_types: false,
+                    types: vec![11, 12],
+                },
+                Message::Enter {
+                    source: 7,
+                    version: 4,
+                    more_types: true,
+                    types: vec![11, 12, 13],
+                },
+                Message::Position {
+                    source: 7,
+                    x: -20,
+                    y: 300,
+                    time: 99,
+                    action: ATOMS.action_move,
+                },
+                Message::Status {
+                    target: 8,
+                    accept: true,
+                    action: ATOMS.action_copy,
+                },
+                Message::Status {
+                    target: 8,
+                    accept: false,
+                    action: 0,
+                },
+                Message::Leave { source: 7 },
+                Message::Drop {
+                    source: 7,
+                    time: 1234,
+                },
+                Message::Finished {
+                    target: 8,
+                    success: true,
+                    action: ATOMS.action_copy,
+                },
+            ];
+            for message in messages {
+                let (kind, words) = message.encode(&ATOMS);
+                assert_eq!(Message::decode(kind, words, &ATOMS), Some(message));
+            }
+            assert_eq!(Message::decode(999, [0; 5], &ATOMS), None);
+        }
+
+        phase messages_have_the_layout_the_specification_gives;
+        {
+            let (kind, words) = Message::Enter {
+                source: 0x0040_0001,
                 version: 5,
-                more_types: false,
-                types: vec![11, 12],
-            },
-            Message::Enter {
-                source: 7,
-                version: 4,
                 more_types: true,
-                types: vec![11, 12, 13],
-            },
-            Message::Position {
-                source: 7,
-                x: -20,
-                y: 300,
-                time: 99,
-                action: ATOMS.action_move,
-            },
-            Message::Status {
-                target: 8,
+                types: vec![1, 2, 3, 4],
+            }
+            .encode(&ATOMS);
+            assert_eq!(kind, ATOMS.enter);
+            assert_eq!(words, [0x0040_0001, 0x0500_0001, 1, 2, 3]);
+
+            let (_, words) = Message::Position {
+                source: 1,
+                x: 10,
+                y: 20,
+                time: 5,
+                action: ATOMS.action_copy,
+            }
+            .encode(&ATOMS);
+            assert_eq!(words, [1, 0, (0xA << 16) | 0x14, 5, ATOMS.action_copy]);
+
+            let (_, words) = Message::Status {
+                target: 2,
                 accept: true,
                 action: ATOMS.action_copy,
-            },
-            Message::Status {
-                target: 8,
-                accept: false,
-                action: 0,
-            },
-            Message::Leave { source: 7 },
-            Message::Drop {
-                source: 7,
-                time: 1234,
-            },
-            Message::Finished {
-                target: 8,
-                success: true,
-                action: ATOMS.action_copy,
-            },
-        ];
-        for message in messages {
-            let (kind, words) = message.encode(&ATOMS);
-            assert_eq!(Message::decode(kind, words, &ATOMS), Some(message));
+            }
+            .encode(&ATOMS);
+            assert_eq!(words[1] & 1, 1, "accept bit");
+            assert_eq!(words[4], ATOMS.action_copy);
+
+            let (_, words) = Message::Drop {
+                source: 3,
+                time: 77,
+            }
+            .encode(&ATOMS);
+            assert_eq!(words, [3, 0, 77, 0, 0]);
         }
-        assert_eq!(Message::decode(999, [0; 5], &ATOMS), None);
-    }
 
-    #[test]
-    fn messages_have_the_layout_the_specification_gives() {
-        let (kind, words) = Message::Enter {
-            source: 0x0040_0001,
-            version: 5,
-            more_types: true,
-            types: vec![1, 2, 3, 4],
+        phase negative_root_positions_pack_and_unpack;
+        {
+            assert_eq!(unpack_point(pack_point(-1, -32768)), (-1, -32768));
+            assert_eq!(unpack_point(pack_point(1919, 1079)), (1919, 1079));
+            assert_eq!(root_coordinate(1e9), i16::MAX);
+            assert_eq!(root_coordinate(-3.6), -4);
         }
-        .encode(&ATOMS);
-        assert_eq!(kind, ATOMS.enter);
-        assert_eq!(words, [0x0040_0001, 0x0500_0001, 1, 2, 3]);
 
-        let (_, words) = Message::Position {
-            source: 1,
-            x: 10,
-            y: 20,
-            time: 5,
-            action: ATOMS.action_copy,
+        phase versions_below_three_are_refused_and_newer_ones_capped;
+        {
+            assert_eq!(negotiate(2), None);
+            assert_eq!(negotiate(3), Some(3));
+            assert_eq!(negotiate(5), Some(5));
+            assert_eq!(negotiate(7), Some(VERSION));
         }
-        .encode(&ATOMS);
-        assert_eq!(words, [1, 0, (0xA << 16) | 0x14, 5, ATOMS.action_copy]);
 
-        let (_, words) = Message::Status {
-            target: 2,
-            accept: true,
-            action: ATOMS.action_copy,
+        phase actions_map_both_ways;
+        {
+            for action in [Action::Copy, Action::Move, Action::Ask] {
+                assert_eq!(Action::of_atom(action.atom(&ATOMS), &ATOMS), action);
+            }
+            assert_eq!(Action::of_atom(ATOMS.action_private, &ATOMS), Action::Copy);
+            assert_eq!(Action::of_atom(0, &ATOMS), Action::None);
+            assert_eq!(Action::of_atom(12345, &ATOMS), Action::None);
+            assert_eq!(Action::Move.dnd(), DndAction::Move);
+            assert_eq!(
+                Action::preferred(DndAction::Move | DndAction::Copy),
+                Action::Copy
+            );
+            assert_eq!(
+                Action::preferred(DndAction::Move | DndAction::Ask),
+                Action::Move
+            );
+            assert_eq!(Action::preferred(DndAction::Ask), Action::Ask);
+            assert_eq!(Action::preferred(DndAction::empty()), Action::None);
         }
-        .encode(&ATOMS);
-        assert_eq!(words[1] & 1, 1, "accept bit");
-        assert_eq!(words[4], ATOMS.action_copy);
 
-        let (_, words) = Message::Drop {
-            source: 3,
-            time: 77,
+        phase file_lists_keep_their_name_and_text_gains_every_name;
+        {
+            let mimes = mimes_of_targets(&strings(&[
+                "TARGETS",
+                "text/uri-list",
+                "UTF8_STRING",
+                "application/vnd.portal.filetransfer",
+                "TIMESTAMP",
+            ]));
+            assert!(mimes.contains(&"text/uri-list".to_owned()));
+            assert!(mimes.contains(&PORTAL_FILES_MIME.to_owned()));
+            assert!(mimes.contains(&TEXT_MIME.to_owned()));
+            assert!(
+                !mimes
+                    .iter()
+                    .any(|mime| mime == "TARGETS" || mime == "TIMESTAMP")
+            );
+
+            let targets = targets_of_mimes(&strings(&["text/uri-list", "text/plain"]));
+            assert!(targets.contains(&"text/uri-list".to_owned()));
+            assert!(targets.contains(&"UTF8_STRING".to_owned()));
+            assert!(targets.contains(&"STRING".to_owned()));
         }
-        .encode(&ATOMS);
-        assert_eq!(words, [3, 0, 77, 0, 0]);
-    }
 
-    #[test]
-    fn negative_root_positions_pack_and_unpack() {
-        assert_eq!(unpack_point(pack_point(-1, -32768)), (-1, -32768));
-        assert_eq!(unpack_point(pack_point(1919, 1079)), (1919, 1079));
-        assert_eq!(root_coordinate(1e9), i16::MAX);
-        assert_eq!(root_coordinate(-3.6), -4);
-    }
-
-    #[test]
-    fn versions_below_three_are_refused_and_newer_ones_capped() {
-        assert_eq!(negotiate(2), None);
-        assert_eq!(negotiate(3), Some(3));
-        assert_eq!(negotiate(5), Some(5));
-        assert_eq!(negotiate(7), Some(VERSION));
-    }
-
-    #[test]
-    fn actions_map_both_ways() {
-        for action in [Action::Copy, Action::Move, Action::Ask] {
-            assert_eq!(Action::of_atom(action.atom(&ATOMS), &ATOMS), action);
+        phase requests_are_served_by_the_same_name_or_any_text_name;
+        {
+            let offered = strings(&["text/uri-list", "UTF8_STRING", "STRING"]);
+            assert_eq!(
+                pick_format("text/uri-list", &offered).as_deref(),
+                Some("text/uri-list")
+            );
+            assert_eq!(
+                pick_format(TEXT_MIME, &offered).as_deref(),
+                Some("UTF8_STRING")
+            );
+            assert_eq!(pick_format("image/png", &offered), None);
+            let wayland = strings(&["text/plain", TEXT_MIME]);
+            assert_eq!(
+                pick_format("UTF8_STRING", &wayland).as_deref(),
+                Some(TEXT_MIME)
+            );
         }
-        assert_eq!(Action::of_atom(ATOMS.action_private, &ATOMS), Action::Copy);
-        assert_eq!(Action::of_atom(0, &ATOMS), Action::None);
-        assert_eq!(Action::of_atom(12345, &ATOMS), Action::None);
-        assert_eq!(Action::Move.dnd(), DndAction::Move);
-        assert_eq!(
-            Action::preferred(DndAction::Move | DndAction::Copy),
-            Action::Copy
-        );
-        assert_eq!(
-            Action::preferred(DndAction::Move | DndAction::Ask),
-            Action::Move
-        );
-        assert_eq!(Action::preferred(DndAction::Ask), Action::Ask);
-        assert_eq!(Action::preferred(DndAction::empty()), Action::None);
-    }
 
-    #[test]
-    fn file_lists_keep_their_name_and_text_gains_every_name() {
-        let mimes = mimes_of_targets(&strings(&[
-            "TARGETS",
-            "text/uri-list",
-            "UTF8_STRING",
-            "application/vnd.portal.filetransfer",
-            "TIMESTAMP",
-        ]));
-        assert!(mimes.contains(&"text/uri-list".to_owned()));
-        assert!(mimes.contains(&PORTAL_FILES_MIME.to_owned()));
-        assert!(mimes.contains(&TEXT_MIME.to_owned()));
-        assert!(
-            !mimes
-                .iter()
-                .any(|mime| mime == "TARGETS" || mime == "TIMESTAMP")
-        );
-
-        let targets = targets_of_mimes(&strings(&["text/uri-list", "text/plain"]));
-        assert!(targets.contains(&"text/uri-list".to_owned()));
-        assert!(targets.contains(&"UTF8_STRING".to_owned()));
-        assert!(targets.contains(&"STRING".to_owned()));
-    }
-
-    #[test]
-    fn requests_are_served_by_the_same_name_or_any_text_name() {
-        let offered = strings(&["text/uri-list", "UTF8_STRING", "STRING"]);
-        assert_eq!(
-            pick_format("text/uri-list", &offered).as_deref(),
-            Some("text/uri-list")
-        );
-        assert_eq!(
-            pick_format(TEXT_MIME, &offered).as_deref(),
-            Some("UTF8_STRING")
-        );
-        assert_eq!(pick_format("image/png", &offered), None);
-        let wayland = strings(&["text/plain", TEXT_MIME]);
-        assert_eq!(
-            pick_format("UTF8_STRING", &wayland).as_deref(),
-            Some(TEXT_MIME)
-        );
-    }
-
-    #[test]
-    fn file_lists_are_read_ahead_first() {
-        let mimes = strings(&[
-            TEXT_MIME,
-            "text/plain",
-            "image/png",
-            "text/uri-list",
-            "application/x-other",
-        ]);
-        assert_eq!(
-            read_ahead(&mimes),
-            strings(&["text/uri-list", TEXT_MIME, "image/png"])
-        );
-        assert_eq!(read_ahead(&[]), Vec::<String>::new());
+        phase file_lists_are_read_ahead_first;
+        {
+            let mimes = strings(&[
+                TEXT_MIME,
+                "text/plain",
+                "image/png",
+                "text/uri-list",
+                "application/x-other",
+            ]);
+            assert_eq!(
+                read_ahead(&mimes),
+                strings(&["text/uri-list", TEXT_MIME, "image/png"])
+            );
+            assert_eq!(read_ahead(&[]), Vec::<String>::new());
+        }
     }
 }

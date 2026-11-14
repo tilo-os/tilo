@@ -194,6 +194,17 @@ impl Drop for InvokingScope {
     }
 }
 
+/// Where an envelope reads what the action did from.
+enum Before {
+    /// The document before the action applies: the description and the
+    /// compensation are read from it.
+    Doc,
+    /// The document with the action's writes as its open transaction: the
+    /// description is the one read before its first write, and it records no
+    /// compensation, which only the state before it could compute.
+    Written(Option<Box<Described>>),
+}
+
 /// Build an envelope for `action` at the doc's current heads, without
 /// applying — used by [`dispatch`] so a `ServerPreferred` action can be
 /// submitted before (or instead of) local apply.
@@ -203,8 +214,12 @@ fn envelope_for(
     encoded: EncodedAction,
     actor: Option<&[u8]>,
     context: Option<ActionContext>,
+    before: Before,
 ) -> Result<ActionEnvelope, ActionError> {
-    let base = doc.get_heads();
+    let base = match before {
+        Before::Doc => doc.get_heads(),
+        Before::Written(_) => doc.committed_heads(),
+    };
     // The action declares what it is; a context may only say a content
     // action is nobody's step this time (a record's first-run seed).
     let change = action.change_kind();
@@ -233,9 +248,12 @@ fn envelope_for(
     // resolved, else as the verb its encoded form names.
     let app = context.app.as_ref().map(|app| app.id.clone());
     // The value describes itself as it will apply: under its invoker.
-    let own = {
-        let _invoking = InvokingScope::enter(Some(context.clone()));
-        action.describe(doc)
+    let (own, written) = match before {
+        Before::Doc => {
+            let _invoking = InvokingScope::enter(Some(context.clone()));
+            (action.describe(doc), false)
+        }
+        Before::Written(described) => (described.map(|described| *described), true),
     };
     let described = own
         .or_else(|| context.described())
@@ -254,7 +272,11 @@ fn envelope_for(
     let committing = actor
         .clone()
         .map_or_else(|| ActorId::from(id.actor_bytes().to_vec()), ActorId::from);
-    let compensation = inverse_as(doc, action, committing);
+    let compensation = if written {
+        None
+    } else {
+        inverse_as(doc, action, committing)
+    };
     // Only what undo adds is bounded hard: the action itself is recorded
     // when it fits the budget, and travels in the envelope anyway.
     if let Some(compensation) = &compensation
@@ -357,15 +379,7 @@ fn apply_under_envelope(
         // The action produced ops: commit as the pinned actor's single
         // change under the pinned timestamp, content-addressed identical on
         // origin and every replaying replica.
-        let mut options = CommitOptions::default().with_time(env.timestamp);
-        if let Some(message) = env
-            .context
-            .as_ref()
-            .and_then(|context| entry_message(doc, &env.actor(), context))
-        {
-            options = options.with_message(message);
-        }
-        doc.commit_with(options);
+        commit_pinned(doc, env);
         doc.set_actor(prev_actor);
         crate::content::keep(env, content);
     } else {
@@ -375,6 +389,20 @@ fn apply_under_envelope(
         abort_pinned_change(doc, prev_actor);
     }
     Ok(())
+}
+
+/// Commit the doc's open transaction as `env`'s change: under its pinned
+/// time, with the message its context writes.
+fn commit_pinned(doc: &mut Doc, env: &ActionEnvelope) {
+    let mut options = CommitOptions::default().with_time(env.timestamp);
+    if let Some(message) = env
+        .context
+        .as_ref()
+        .and_then(|context| entry_message(doc, &env.actor(), context))
+    {
+        options = options.with_message(message);
+    }
+    doc.commit_with(options);
 }
 
 /// The message `context` is written with by `actor` on `doc`: as the
@@ -517,7 +545,7 @@ pub fn apply_local_by(
     encoded: EncodedAction,
     actor: Option<&[u8]>,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor, None)?;
+    let env = envelope_for(doc, action, encoded, actor, None, Before::Doc)?;
     apply_under_envelope(doc, action, &env, None)?;
     Ok(env)
 }
@@ -536,8 +564,48 @@ pub fn apply_local_with_context(
     actor: Option<&[u8]>,
     context: ActionContext,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor, Some(context))?;
+    let env = envelope_for(doc, action, encoded, actor, Some(context), Before::Doc)?;
     apply_under_envelope(doc, action, &env, None)?;
+    Ok(env)
+}
+
+/// Commit what `action` already wrote, the doc's open transaction under
+/// `actor`, as its change recorded with `context`, and return its replayable
+/// envelope: the change [`apply_local_with_context`] would have made, without
+/// applying it again. `described` is what the action said it does, read from
+/// the document before its first write.
+///
+/// The open transaction must hold the action's writes and nothing else,
+/// written as [`Action::apply`] writes them, and the action must record no
+/// compensation: a peer replays the action and checks that it makes exactly
+/// this change ([`verify_change`]).
+///
+/// # Errors
+///
+/// [`ActionError::Refused`] when the doc writes as another actor or holds no
+/// open writes, or the action is too large to record.
+pub fn commit_written(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    actor: &[u8],
+    context: ActionContext,
+    described: Option<Described>,
+) -> Result<ActionEnvelope, ActionError> {
+    if doc.get_actor().to_bytes() != actor || doc.pending_ops() == 0 {
+        return Err(ActionError::Refused(
+            "the document holds no writes of this actor to commit".into(),
+        ));
+    }
+    let env = envelope_for(
+        doc,
+        action,
+        encoded,
+        Some(actor),
+        Some(context),
+        Before::Written(described.map(Box::new)),
+    )?;
+    commit_pinned(doc, &env);
     Ok(env)
 }
 
@@ -840,13 +908,13 @@ fn dispatch_by_maybe_context(
     let context = context.map(|context| context.with_inferred_app(&encoded.type_id));
     match action.locus() {
         ExecutionLocus::ClientLocal => {
-            let env = envelope_for(doc, action, encoded, actor, context)?;
+            let env = envelope_for(doc, action, encoded, actor, context, Before::Doc)?;
             apply_under_envelope(doc, action, &env, None)?;
             transport.replicate(&env);
             Ok(Dispatched::AppliedLocal(env))
         }
         ExecutionLocus::ServerPreferred => {
-            let env = envelope_for(doc, action, encoded, actor, context)?;
+            let env = envelope_for(doc, action, encoded, actor, context, Before::Doc)?;
             match transport.submit_to_host(&env) {
                 HostDecision::AcceptedByHost => Ok(Dispatched::SubmittedToHost(env)),
                 HostDecision::Unavailable => Err(ActionError::Refused(

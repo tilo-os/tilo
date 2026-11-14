@@ -6,7 +6,7 @@
 use super::fixture::FixtureChrome;
 use super::*;
 use crate::chrome::AvatarAsk;
-use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceSlot};
 use ui::widget::DrawChild;
 
 /// This person, as their own avatar names them.
@@ -40,12 +40,17 @@ fn ask() -> AvatarAsk {
 fn tree(others: &[(&str, &str, bool)]) -> DesktopTree {
     let mut workspace = Workspace::new(WorkspaceSlot(1), "Studio");
     // The host lists this person among who is here too, as a roster of everyone does.
-    workspace.collaborators = std::iter::once(Collaborator::new(OWN, "Jo Doe"))
-        .chain(others.iter().map(|(id, name, agent)| {
-            let row = Collaborator::new(*id, *name);
-            if *agent { row.with_role("agent") } else { row }
-        }))
-        .collect();
+    workspace.members_here(
+        std::iter::once(Member::keyed(OWN, "Jo Doe")).chain(others.iter().map(
+            |(id, name, agent)| {
+                if *agent {
+                    Member::keyed(&format!("agent:{id}"), *name)
+                } else {
+                    Member::keyed(id, *name)
+                }
+            },
+        )),
+    );
     DesktopTree {
         active: workspace.slot,
         workspaces: vec![workspace],
@@ -313,7 +318,7 @@ fn the_right_end_shows_each_person_once_flush_and_in_one_icon_size() {
             "{name}: their avatar stands"
         );
         assert!(
-            !bar.collaborator_ids.iter().any(|id| id == OWN),
+            !bar.face_ids.iter().any(|id| id == OWN),
             "{name}: counted once"
         );
         // The faces open who is here: no second people button beside them.

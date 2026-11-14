@@ -381,40 +381,45 @@ mod tests {
 ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0 [vsyscall]
 ";
 
-    #[test]
-    fn mappings_are_classified_by_what_they_hold() {
-        let maps = parse_maps(MAPS);
-        assert_eq!(maps.len(), 14);
-        let classes: Vec<_> = maps
-            .iter()
-            .enumerate()
-            .map(|(i, m)| class_of(m, i.checked_sub(1).map(|j| &maps[j]), "/usr/bin/shell"))
-            .collect();
-        assert_eq!(
-            classes,
-            [
-                "binary",
-                "heap_main",
-                "heap_arenas",
-                "reserved",
-                "reserved",
-                "thread_stacks",
-                "gpu_memfd",
-                "fonts",
-                "gpu_driver_libs",
-                "libraries",
-                "anon_exec",
-                "anon_other",
-                "thread_stacks",
-                "kernel_pages",
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Reading /proc/self/maps.
+        fn proc_maps_lines_are_classified_and_their_paths_kept_whole;
 
-    #[test]
-    fn a_path_with_spaces_is_kept_whole() {
-        let maps = parse_maps("7f00-7f01 r--p 00000000 fd:00 1 /home/u/My Fonts/a b.otf\n");
-        assert_eq!(maps[0].path, "/home/u/My Fonts/a b.otf");
+        phase mappings_are_classified_by_what_they_hold;
+        {
+            let maps = parse_maps(MAPS);
+            assert_eq!(maps.len(), 14);
+            let classes: Vec<_> = maps
+                .iter()
+                .enumerate()
+                .map(|(i, m)| class_of(m, i.checked_sub(1).map(|j| &maps[j]), "/usr/bin/shell"))
+                .collect();
+            assert_eq!(
+                classes,
+                [
+                    "binary",
+                    "heap_main",
+                    "heap_arenas",
+                    "reserved",
+                    "reserved",
+                    "thread_stacks",
+                    "gpu_memfd",
+                    "fonts",
+                    "gpu_driver_libs",
+                    "libraries",
+                    "anon_exec",
+                    "anon_other",
+                    "thread_stacks",
+                    "kernel_pages",
+                ]
+            );
+        }
+
+        phase a_path_with_spaces_is_kept_whole;
+        {
+            let maps = parse_maps("7f00-7f01 r--p 00000000 fd:00 1 /home/u/My Fonts/a b.otf\n");
+            assert_eq!(maps[0].path, "/home/u/My Fonts/a b.otf");
+        }
     }
 
     /// The production path on this process: the report reads its own maps,

@@ -164,7 +164,7 @@ pub fn authority(
     let Some(looked) = looked(turn) else {
         return Err(Held::Waiting);
     };
-    if !same_person(&looked.author, person) {
+    if !crate::same_person(&looked.author, person) {
         return Err(Held::AnotherAuthor);
     }
     if !looked.participant {
@@ -174,16 +174,6 @@ pub fn authority(
         return Err(Held::Ended);
     }
     Ok(roles::agent_grants(workspace, agent, person, &looked.bound))
-}
-
-/// Whether two ids name the same person: a member's root, with or without the
-/// `person:` prefix grants carry.
-fn same_person(a: &str, b: &str) -> bool {
-    root_of(a) == root_of(b)
-}
-
-fn root_of(id: &str) -> &str {
-    id.strip_prefix("person:").unwrap_or(id)
 }
 
 /// The node an agent's turn decides an action at.
@@ -208,198 +198,202 @@ mod tests {
     const ADA: &str = "ada";
     const BOB: &str = "bob";
 
-    /// The turn's authority is the person's grants, capped at Editor and
-    /// narrowed by the record: Bob's message gives what Bob may do, Ada's
-    /// what Ada may.
-    #[test]
-    fn a_turn_gives_the_grants_of_the_person_whose_message_caused_it() {
-        let turn = Turn::new("chat/workspace/channels/1", "m1");
-        let bob = authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
-            Some(Looked::by(BOB))
-        })
-        .unwrap();
-        let ada = authority(WORKSPACE, "scribe", ADA, Some(&turn), |_| {
-            Some(Looked::by(ADA))
-        })
-        .unwrap();
-        let granted =
-            |grants: &[crate::Grant]| grants.first().map(|grant| grant.granted_by.clone());
-        assert_ne!(
-            granted(&bob),
-            granted(&ada),
-            "each turn carries its own person"
-        );
-        assert_eq!(
-            bob.first().map(|grant| grant.grantee.clone()),
-            Some(Grantee::agent("scribe")),
-            "the turn acts as the agent"
-        );
+    tilo_test_env::scenario! {
+        fn a_turn_acts_for_the_person_who_caused_it;
 
-        // The person's grants reach the turn: Ada may read, Bob was refused
-        // reading this app, and the turn follows them.
-        let node = node(WORKSPACE, "so.tilo.notes", "document");
-        let bob_refused = crate::Grant::new(
-            "bob-no-notes",
-            Grantee::person(BOB),
-            node.clone(),
-            crate::KindSet::ALL,
-            Answer::Deny,
-            Grantee::person("governor"),
-        );
-        let policy = {
-            let mut policy = crate::WorkspacePolicy::new(WORKSPACE, "governor");
-            policy.grants.push(bob_refused);
-            policy
-        };
-        let cx = Context::at_time(tilo_clock::wall());
-        let decision = |grants: &[crate::Grant]| {
-            let person = policy.party(BOB).with_grants(grants);
-            crate::Authority::person(person)
-                .decide(&node, ActionKind::Read, &cx)
-                .answer
-        };
-        assert_eq!(
-            decision(&bob),
-            Answer::Deny,
-            "Bob's message gives Bob's grants"
-        );
-    }
+        phase a_turn_gives_the_grants_of_the_person_whose_message_caused_it;
+        // The turn's authority is the person's grants, capped at Editor and
+        // narrowed by the record: Bob's message gives what Bob may do, Ada's
+        // what Ada may.
+        {
+            let turn = Turn::new("chat/workspace/channels/1", "m1");
+            let bob = authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
+                Some(Looked::by(BOB))
+            })
+            .unwrap();
+            let ada = authority(WORKSPACE, "scribe", ADA, Some(&turn), |_| {
+                Some(Looked::by(ADA))
+            })
+            .unwrap();
+            let granted =
+                |grants: &[crate::Grant]| grants.first().map(|grant| grant.granted_by.clone());
+            assert_ne!(
+                granted(&bob),
+                granted(&ada),
+                "each turn carries its own person"
+            );
+            assert_eq!(
+                bob.first().map(|grant| grant.grantee.clone()),
+                Some(Grantee::agent("scribe")),
+                "the turn acts as the agent"
+            );
 
-    /// Without a cause, or with a cause the agent does not take part in, an
-    /// op is refused; a cause that has not arrived is held, not refused.
-    #[test]
-    fn only_a_cause_the_agent_takes_part_in_admits_it() {
-        let turn = Turn::new("chat/workspace/channels/1", "m1");
-        let looked = Looked::by(BOB);
-        assert_eq!(
-            authority(WORKSPACE, "scribe", BOB, None, |_| Some(looked.clone())),
-            Err(Held::NoCause)
-        );
-        assert_eq!(
-            authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| None),
-            Err(Held::Waiting)
-        );
-        assert!(Held::Waiting.waits(), "a cause on its way is waited for");
-        assert_eq!(
-            authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
-                Some(looked.clone().apart())
-            }),
-            Err(Held::NotAParticipant)
-        );
-        assert_eq!(
-            authority(WORKSPACE, "scribe", ADA, Some(&turn), |_| Some(
-                looked.clone()
-            )),
-            Err(Held::AnotherAuthor)
-        );
-    }
-
-    /// A turn that ended takes no further action.
-    #[test]
-    fn a_turn_after_it_is_done_is_refused() {
-        let turn = Turn::new("chat/workspace/channels/1", "m1");
-        assert_eq!(
-            authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| Some(
-                Looked::by(BOB).ended()
-            )),
-            Err(Held::Ended)
-        );
-    }
-
-    /// An outside effect always asks: no bound and no person's grant makes it
-    /// run unasked.
-    #[test]
-    fn an_outside_action_asks_first() {
-        let turn = Turn::new("chat/workspace/channels/1", "m1");
-        let bound = authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
-            Some(Looked::by(BOB))
-        })
-        .unwrap();
-        let node = TreePath::workspace(WORKSPACE);
-        let cx = Context::at_time(tilo_clock::wall());
-        let party = Party::new(vec![Grantee::agent("scribe")], &bound);
-        assert_eq!(
-            party.decide(&node, ActionKind::Outside, &cx).answer,
-            Answer::Ask
-        );
-        assert_eq!(
-            party.decide(&node, ActionKind::Undoable, &cx).answer,
-            Answer::Allow
-        );
-        // The workspace's own settings and moderation are never an agent's.
-        assert_eq!(
-            party
-                .decide(
-                    &roles::governance_action(WORKSPACE, "grant"),
-                    ActionKind::Undoable,
-                    &cx
-                )
-                .answer,
-            Answer::Deny
-        );
-    }
-
-    /// A bound the record keeps narrows the turn; it never widens it.
-    #[test]
-    fn the_records_bound_narrows_the_turn() {
-        let turn = Turn::new("chat/workspace/channels/1", "m1");
-        let notes = node(WORKSPACE, "so.tilo.notes", "document");
-        let looked = Looked::by(BOB).bounded_by(vec![crate::Rule::new(
-            notes.clone(),
-            crate::KindSet::UNDOABLE,
-            Answer::Deny,
-        )]);
-        let bound = authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
-            Some(looked.clone())
-        })
-        .unwrap();
-        let cx = Context::at_time(tilo_clock::wall());
-        let party = Party::new(vec![Grantee::agent("scribe")], &bound);
-        assert_eq!(
-            party.decide(&notes, ActionKind::Undoable, &cx).answer,
-            Answer::Deny
-        );
-        assert_eq!(
-            party
-                .decide(
-                    &node(WORKSPACE, "so.tilo.tasks", "issue"),
-                    ActionKind::Undoable,
-                    &cx
-                )
-                .answer,
-            Answer::Allow,
-            "what the bound does not name stays as the turn allows"
-        );
-    }
-
-    #[test]
-    fn a_refusal_says_why() {
-        for held in [
-            Held::NoCause,
-            Held::Waiting,
-            Held::AnotherAuthor,
-            Held::NotAParticipant,
-            Held::Ended,
-        ] {
-            assert!(!held.reason().is_empty(), "{held:?} has a reason");
+            // The person's grants reach the turn: Ada may read, Bob was refused
+            // reading this app, and the turn follows them.
+            let node = node(WORKSPACE, "so.tilo.notes", "document");
+            let bob_refused = crate::Grant::new(
+                "bob-no-notes",
+                Grantee::person(BOB),
+                node.clone(),
+                crate::KindSet::ALL,
+                Answer::Deny,
+                Grantee::person("governor"),
+            );
+            let policy = {
+                let mut policy = crate::WorkspacePolicy::new(WORKSPACE, "governor");
+                policy.grants.push(bob_refused);
+                policy
+            };
+            let cx = Context::at_time(tilo_clock::wall());
+            let decision = |grants: &[crate::Grant]| {
+                let person = policy.party(BOB).with_grants(grants);
+                crate::Authority::person(person)
+                    .decide(&node, ActionKind::Read, &cx)
+                    .answer
+            };
+            assert_eq!(
+                decision(&bob),
+                Answer::Deny,
+                "Bob's message gives Bob's grants"
+            );
         }
-    }
 
-    #[test]
-    fn a_turn_reads_and_writes_as_its_parts() {
-        let turn = Turn::new("chat/workspace/channels/1", "m1");
-        let text = serde_json::to_string(&turn).unwrap();
-        assert_eq!(serde_json::from_str::<Turn>(&text).unwrap(), turn);
-    }
+        phase only_a_cause_the_agent_takes_part_in_admits_it;
+        // Without a cause, or with a cause the agent does not take part in, an
+        // op is refused; a cause that has not arrived is held, not refused.
+        {
+            let turn = Turn::new("chat/workspace/channels/1", "m1");
+            let looked = Looked::by(BOB);
+            assert_eq!(
+                authority(WORKSPACE, "scribe", BOB, None, |_| Some(looked.clone())),
+                Err(Held::NoCause)
+            );
+            assert_eq!(
+                authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| None),
+                Err(Held::Waiting)
+            );
+            assert!(Held::Waiting.waits(), "a cause on its way is waited for");
+            assert_eq!(
+                authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
+                    Some(looked.clone().apart())
+                }),
+                Err(Held::NotAParticipant)
+            );
+            assert_eq!(
+                authority(WORKSPACE, "scribe", ADA, Some(&turn), |_| Some(
+                    looked.clone()
+                )),
+                Err(Held::AnotherAuthor)
+            );
+        }
 
-    #[test]
-    fn the_grantee_of_a_turn_is_its_agent() {
-        assert_eq!(grantee("scribe"), Grantee::agent("scribe"));
-        assert_eq!(
-            super::node(WORKSPACE, "so.tilo.notes", "document"),
-            TreePath::workspace(WORKSPACE)
-                .app("so.tilo.notes")
-                .kind("document")
-        );
+        phase a_turn_after_it_is_done_is_refused;
+        // A turn that ended takes no further action.
+        {
+            let turn = Turn::new("chat/workspace/channels/1", "m1");
+            assert_eq!(
+                authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| Some(
+                    Looked::by(BOB).ended()
+                )),
+                Err(Held::Ended)
+            );
+        }
+
+        phase an_outside_action_asks_first;
+        // An outside effect always asks: no bound and no person's grant makes it
+        // run unasked.
+        {
+            let turn = Turn::new("chat/workspace/channels/1", "m1");
+            let bound = authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
+                Some(Looked::by(BOB))
+            })
+            .unwrap();
+            let node = TreePath::workspace(WORKSPACE);
+            let cx = Context::at_time(tilo_clock::wall());
+            let party = Party::new(vec![Grantee::agent("scribe")], &bound);
+            assert_eq!(
+                party.decide(&node, ActionKind::Outside, &cx).answer,
+                Answer::Ask
+            );
+            assert_eq!(
+                party.decide(&node, ActionKind::Undoable, &cx).answer,
+                Answer::Allow
+            );
+            // The workspace's own settings and moderation are never an agent's.
+            assert_eq!(
+                party
+                    .decide(
+                        &roles::governance_action(WORKSPACE, "grant"),
+                        ActionKind::Undoable,
+                        &cx
+                    )
+                    .answer,
+                Answer::Deny
+            );
+        }
+
+        phase the_records_bound_narrows_the_turn;
+        // A bound the record keeps narrows the turn; it never widens it.
+        {
+            let turn = Turn::new("chat/workspace/channels/1", "m1");
+            let notes = node(WORKSPACE, "so.tilo.notes", "document");
+            let looked = Looked::by(BOB).bounded_by(vec![crate::Rule::new(
+                notes.clone(),
+                crate::KindSet::UNDOABLE,
+                Answer::Deny,
+            )]);
+            let bound = authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
+                Some(looked.clone())
+            })
+            .unwrap();
+            let cx = Context::at_time(tilo_clock::wall());
+            let party = Party::new(vec![Grantee::agent("scribe")], &bound);
+            assert_eq!(
+                party.decide(&notes, ActionKind::Undoable, &cx).answer,
+                Answer::Deny
+            );
+            assert_eq!(
+                party
+                    .decide(
+                        &node(WORKSPACE, "so.tilo.tasks", "issue"),
+                        ActionKind::Undoable,
+                        &cx
+                    )
+                    .answer,
+                Answer::Allow,
+                "what the bound does not name stays as the turn allows"
+            );
+        }
+
+        phase a_refusal_says_why;
+        {
+            for held in [
+                Held::NoCause,
+                Held::Waiting,
+                Held::AnotherAuthor,
+                Held::NotAParticipant,
+                Held::Ended,
+            ] {
+                assert!(!held.reason().is_empty(), "{held:?} has a reason");
+            }
+        }
+
+        phase a_turn_reads_and_writes_as_its_parts;
+        {
+            let turn = Turn::new("chat/workspace/channels/1", "m1");
+            let text = serde_json::to_string(&turn).unwrap();
+            assert_eq!(serde_json::from_str::<Turn>(&text).unwrap(), turn);
+        }
+
+        phase the_grantee_of_a_turn_is_its_agent;
+        {
+            assert_eq!(grantee("scribe"), Grantee::agent("scribe"));
+            assert_eq!(
+                super::node(WORKSPACE, "so.tilo.notes", "document"),
+                TreePath::workspace(WORKSPACE)
+                    .app("so.tilo.notes")
+                    .kind("document")
+            );
+        }
     }
 }

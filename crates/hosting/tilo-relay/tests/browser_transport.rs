@@ -18,12 +18,12 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn certified_clients_use_only_the_injected_packet_relay() {
     let user = TestUser::fresh("browser transport test");
-    let host = user.enrol("host", DeviceCapabilities::host());
+    let host = user.enrol("host", DeviceCapabilities::member());
     let a = user.enrol("browser-a", DeviceCapabilities::member());
     let b = user.enrol("browser-b", DeviceCapabilities::member());
     let tmp = tempfile::tempdir().unwrap();
     let workspace_id =
-        tilo_relay::room_workspace_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        tilo_relay::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let config = RelayConfig {
         state_root: tmp.path().to_owned(),
         identity_root: tmp.path().join("identity"),
@@ -179,12 +179,10 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         .bind()
         .await
         .unwrap();
-    let outsider_client = RelayClient::connect_to_enrolled_home_peer(
+    let outsider_client = RelayClient::connect_to_pinned_host(
         outsider_endpoint,
         EndpointAddr::new(relay.node_addr().id)
             .with_relay_url(relay.node_addr().relay_urls().next().unwrap().clone()),
-        user.user_pk,
-        host.cert.device_public_key,
         outsider.cert,
         outsider.sk,
         RevocationList::new(),

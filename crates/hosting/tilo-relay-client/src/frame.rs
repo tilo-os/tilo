@@ -126,14 +126,17 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collab_types::WorkspaceId;
 
     #[tokio::test]
     async fn frames_are_length_prefixed_and_read_back_in_bounds() {
         // Envelopes round-trip behind the length prefix.
         for e in [
-            Envelope::Subscribe { workspace_id: 42 },
+            Envelope::Subscribe {
+                workspace_id: WorkspaceId::from_u128(42),
+            },
             Envelope::Delta {
-                workspace_id: 7,
+                workspace_id: WorkspaceId::from_u128(7),
                 author_device_public_key: [1u8; 32],
                 authored_at_ns: 1_234_567_890,
                 delta: vec![1, 2, 3, 4, 5],
@@ -149,13 +152,20 @@ mod tests {
 
         let mut wire = Vec::new();
         wire.extend_from_slice(&encode(&Envelope::Ping).unwrap());
-        wire.extend_from_slice(&encode(&Envelope::Subscribe { workspace_id: 1 }).unwrap());
+        wire.extend_from_slice(
+            &encode(&Envelope::Subscribe {
+                workspace_id: WorkspaceId::from_u128(1),
+            })
+            .unwrap(),
+        );
         wire.extend_from_slice(&encode(&Envelope::Pong).unwrap());
         let mut reader = FrameReader::new(std::io::Cursor::new(wire));
         assert_eq!(reader.read_next().await.unwrap().unwrap(), Envelope::Ping);
         assert_eq!(
             reader.read_next().await.unwrap().unwrap(),
-            Envelope::Subscribe { workspace_id: 1 }
+            Envelope::Subscribe {
+                workspace_id: WorkspaceId::from_u128(1)
+            }
         );
         assert_eq!(reader.read_next().await.unwrap().unwrap(), Envelope::Pong);
         assert!(reader.read_next().await.unwrap().is_none());

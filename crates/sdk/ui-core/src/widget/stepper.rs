@@ -921,46 +921,52 @@ mod tests {
 
     const STEPS: [&str; 4] = ["Choose image", "Choose drive", "Write", "Verify"];
 
-    #[test]
-    fn narrow_steppers_name_the_step_never_a_bare_number() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let face = StepperFace::new(&STEPS, 1);
-        assert!(!face.is_compact(&mut text, &theme, 900.0));
-        assert!(face.is_compact(&mut text, &theme, 260.0));
-        assert_eq!(face.position_text(), "Step 2 of 4");
-        assert!(
-            face.height(&mut text, &theme, 260.0) > face.height(&mut text, &theme, 900.0),
-            "the compact form stacks its two lines"
-        );
-        let lines = StepMetrics::line(&mut text, &StepMetrics::new(&theme).position)
-            + StepMetrics::line(&mut text, &StepMetrics::new(&theme).current);
-        assert!(
-            face.height(&mut text, &theme, 260.0) > lines,
-            "the compact form shows its progress under the two lines"
-        );
-        assert!(face.is_compact(&mut text, &Theme::dark().with_text_scale(2.0), 600.0));
-        let done = StepperFace::new(&STEPS, 9);
-        assert_eq!(done.position_text(), "Step 4 of 4");
-    }
+    tilo_test_env::scenario! {
+        /// A stepper's steps.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn steps_are_named_filled_and_checked;
 
-    #[test]
-    fn done_steps_are_filled_and_checked() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let paint = |current: usize, text: &mut TextRenderer| {
-            let mut scene = Scene::new();
-            StepperFace::new(&STEPS, current).paint(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, text, &theme),
-                Rect::new(0.0, 0.0, 900.0, 40.0),
+        phase narrow_steppers_name_the_step_never_a_bare_number;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let face = StepperFace::new(&STEPS, 1);
+            assert!(!face.is_compact(&mut text, &theme, 900.0));
+            assert!(face.is_compact(&mut text, &theme, 260.0));
+            assert_eq!(face.position_text(), "Step 2 of 4");
+            assert!(
+                face.height(&mut text, &theme, 260.0) > face.height(&mut text, &theme, 900.0),
+                "the compact form stacks its two lines"
             );
-            scene.encoding().resources.glyph_runs.len()
-        };
-        // A done step shows a check, not its number: two fewer number runs.
-        assert_eq!(paint(0, &mut text), paint(2, &mut text) + 2);
-        let stepper = Stepper::new(STEPS.iter().map(|s| (*s).to_owned()).collect()).current(2);
-        let node = Widget::accessibility(&stepper).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Write"));
-        assert_eq!(node.value.as_deref(), Some("Step 3 of 4"));
+            let lines = StepMetrics::line(&mut text, &StepMetrics::new(&theme).position)
+                + StepMetrics::line(&mut text, &StepMetrics::new(&theme).current);
+            assert!(
+                face.height(&mut text, &theme, 260.0) > lines,
+                "the compact form shows its progress under the two lines"
+            );
+            assert!(face.is_compact(&mut text, &Theme::dark().with_text_scale(2.0), 600.0));
+            let done = StepperFace::new(&STEPS, 9);
+            assert_eq!(done.position_text(), "Step 4 of 4");
+        }
+
+        phase done_steps_are_filled_and_checked;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let paint = |current: usize, text: &mut TextRenderer| {
+                let mut scene = Scene::new();
+                StepperFace::new(&STEPS, current).paint(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, text, &theme),
+                    Rect::new(0.0, 0.0, 900.0, 40.0),
+                );
+                scene.encoding().resources.glyph_runs.len()
+            };
+            // A done step shows a check, not its number: two fewer number runs.
+            assert_eq!(paint(0, &mut text), paint(2, &mut text) + 2);
+            let stepper = Stepper::new(STEPS.iter().map(|s| (*s).to_owned()).collect()).current(2);
+            let node = Widget::accessibility(&stepper).unwrap();
+            assert_eq!(node.name.as_deref(), Some("Write"));
+            assert_eq!(node.value.as_deref(), Some("Step 3 of 4"));
+        }
     }
 }

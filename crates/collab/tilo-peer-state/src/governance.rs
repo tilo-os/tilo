@@ -274,7 +274,7 @@ fn member_display_name<'a>(
 mod display_name_tests {
     use super::*;
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
+        InviteGrant, JoinChallenge, Role, WorkspaceId, issue_invitation, sign_join_proof,
         verify_join_proof,
     };
     use ed25519_dalek::SigningKey;
@@ -296,10 +296,9 @@ mod display_name_tests {
     fn grant(recipient: Option<[u8; 32]>, invitee_name: Option<&str>) -> InviteGrant {
         let authority = cert("owner");
         InviteGrant {
-            workspace_id: 7,
-            room: "room".into(),
+            workspace_id: WorkspaceId::from_u128(7),
             issuer: authority,
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [0; 16],
             recipient_user_public_key: recipient,
             invitee_name: invitee_name.map(Into::into),
@@ -392,10 +391,9 @@ mod display_name_tests {
         sign_device_cert(&mut guest_cert, &guest_root).unwrap();
         let signed = issue_invitation(
             InviteGrant {
-                workspace_id: 7,
-                room: peer.workspace_id().into(),
+                workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
                 issuer: peer.owner_certificates()[0].clone(),
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 nonce: [53; 16],
                 recipient_user_public_key: None,
                 invitee_name: Some("Guest Tester".into()),
@@ -443,16 +441,17 @@ mod display_name_tests {
             .find(|member| member.user_public_key == guest_cert.user_public_key)
             .expect("admitted guest is a governed member");
         assert_eq!(member.display_name.as_deref(), Some("Gina Guest"));
-        assert_eq!(member.role, MemberRole::Editor);
+        assert_eq!(member.role, Role::Editor);
     }
 }
 
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+    use crate::join::WorkspaceId;
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, issue_invitation,
-        sign_join_proof, verify_join_proof,
+        InviteGrant, JoinChallenge, Role, VerifiedRedemption, issue_invitation, sign_join_proof,
+        verify_join_proof,
     };
     use crate::{NeighbourMsg, StatePeer};
     use ed25519_dalek::SigningKey;
@@ -484,10 +483,9 @@ mod retention_tests {
     ) -> VerifiedRedemption {
         let signed = issue_invitation(
             InviteGrant {
-                workspace_id: 7,
-                room: peer.workspace_id().into(),
+                workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
                 issuer: peer.owner_certificates()[0].clone(),
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 nonce: [nonce; 16],
                 recipient_user_public_key: Some(cert.user_public_key),
                 invitee_name: Some("Guest".into()),

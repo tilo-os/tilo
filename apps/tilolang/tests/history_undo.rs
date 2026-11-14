@@ -517,6 +517,6 @@ impl Window for Hosted {
 
     fn read<R>(&mut self, read: impl FnOnce(&mut ui::tilo_resource::Doc) -> R) -> R {
         let hosted = self.host.instances_mut().next().expect("the instance runs");
-        read(&mut hosted.record().doc().clone())
+        read(&mut hosted.record().doc())
     }
 }

@@ -18,13 +18,13 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use tilo_action_policy::Standing;
+use tilo_action_policy::{Standing, same_person};
 use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_agent::{
-    OWNER, WorkspaceAgents as Record, same_person, workspace_agents as actions,
+    OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
 use tilo_desktop::authority::WorkspaceAuthority as _;
-use tilo_desktop::collaborators::PeopleNames;
+use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
 use tilo_desktop_model::{DesktopTree, UserId, Workspace};
 use tilo_desktop_surface::i18n::{t, t_args};
@@ -412,10 +412,10 @@ impl Agents {
             return open.record.clone();
         }
         drop(held);
-        let context = PermissionContext::from_standing(
-            &workspace_id,
-            Standing::person(workspace.policy.clone(), person.clone()),
-        )
+        let context = PermissionContext::from_standing(Standing::person(
+            workspace.policy.clone(),
+            person.clone(),
+        ))
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let records = self
             .records

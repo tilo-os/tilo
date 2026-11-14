@@ -36,6 +36,7 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

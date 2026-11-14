@@ -178,21 +178,24 @@ pub fn pack(dir: &str, inventory: &Path) -> Result<(), CliError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn remote_app_inspects_signed_payload_and_rejects_wrong_architecture_metadata() {
-        use tilo_app_package::{BlobSource, Manifest, SigningIdentity, pack};
-        let root = tempfile::tempdir().unwrap();
-        let payload = root.path().join("payload");
-        std::fs::create_dir_all(payload.join("bin")).unwrap();
-        let mut elf = vec![0; 64];
-        elf.get_mut(..6)
-            .unwrap()
-            .copy_from_slice(b"\x7fELF\x02\x01");
-        elf.get_mut(0x12..0x14)
-            .unwrap()
-            .copy_from_slice(&0xb7_u16.to_le_bytes());
-        std::fs::write(payload.join("bin/fixture"), elf).unwrap();
-        let source = r#"
+    tilo_test_env::scenario! {
+        fn the_remote_app_build_trusts_only_its_signed_payload;
+
+        phase remote_app_inspects_signed_payload_and_rejects_wrong_architecture_metadata;
+        {
+            use tilo_app_package::{BlobSource, Manifest, SigningIdentity, pack};
+            let root = tempfile::tempdir().unwrap();
+            let payload = root.path().join("payload");
+            std::fs::create_dir_all(payload.join("bin")).unwrap();
+            let mut elf = vec![0; 64];
+            elf.get_mut(..6)
+                .unwrap()
+                .copy_from_slice(b"\x7fELF\x02\x01");
+            elf.get_mut(0x12..0x14)
+                .unwrap()
+                .copy_from_slice(&0xb7_u16.to_le_bytes());
+            std::fs::write(payload.join("bin/fixture"), elf).unwrap();
+            let source = r#"
 [package]
 id = "so.tilo.fixture"
 version = "0.1.0"
@@ -214,60 +217,61 @@ mode = "off"
 bin = "bin/fixture"
 type = "gui"
 "#;
-        let identity = SigningIdentity::from_seed(&[23; 32]);
-        let make = |text: &str, path: &Path| {
-            let mut manifest = Manifest::from_toml_str(text).unwrap();
-            manifest.publisher.identity =
-                format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
-            let package = pack(&payload, &manifest, &identity).unwrap();
-            let file = std::fs::File::create(path).unwrap();
-            tilo_app_package::tapp::write(file, &package.meta, Some(&package as &dyn BlobSource))
-                .unwrap();
-        };
-        let good = root.path().join("good.tapp");
-        make(source, &good);
-        let packed = inspect(&good, "fixture", "all-source".into()).unwrap();
-        assert_eq!(packed.architecture, "aarch64");
-        assert_eq!(packed.runtime.as_deref(), Some("tilo-runtime/2026.07"));
-        assert!(packed.validate("fixture", "x86_64", "all-source").is_err());
-        let bad = root.path().join("wrong-isa.tapp");
-        make(
-            &source.replace("aarch64 = \"aarch64\"", "x86_64 = \"v3\""),
-            &bad,
-        );
-        assert!(inspect(&bad, "fixture", "all-source".into()).is_err());
-    }
+            let identity = SigningIdentity::from_seed(&[23; 32]);
+            let make = |text: &str, path: &Path| {
+                let mut manifest = Manifest::from_toml_str(text).unwrap();
+                manifest.publisher.identity =
+                    format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
+                let package = pack(&payload, &manifest, &identity).unwrap();
+                let file = std::fs::File::create(path).unwrap();
+                tilo_app_package::tapp::write(file, &package.meta, Some(&package as &dyn BlobSource))
+                    .unwrap();
+            };
+            let good = root.path().join("good.tapp");
+            make(source, &good);
+            let packed = inspect(&good, "fixture", "all-source".into()).unwrap();
+            assert_eq!(packed.architecture, "aarch64");
+            assert_eq!(packed.runtime.as_deref(), Some("tilo-runtime/2026.07"));
+            assert!(packed.validate("fixture", "x86_64", "all-source").is_err());
+            let bad = root.path().join("wrong-isa.tapp");
+            make(
+                &source.replace("aarch64 = \"aarch64\"", "x86_64 = \"v3\""),
+                &bad,
+            );
+            assert!(inspect(&bad, "fixture", "all-source".into()).is_err());
+        }
 
-    #[test]
-    fn remote_app_command_and_header_never_fall_back_or_accept_other_sources() {
-        assert!(remote_command(&[], "terminal", Path::new("inputs.json")).is_err());
-        let line = remote_command(
-            &["cargo-dropin".into(), "--on-builder".into()],
-            "terminal",
-            Path::new("inputs.json"),
-        )
-        .unwrap();
-        assert_eq!(line.program, "cargo-dropin");
-        assert_eq!(line.args.first().map(String::as_str), Some("--on-builder"));
-        assert!(
-            line.args
-                .windows(2)
-                .any(|pair| pair == ["--source-inventory", "inputs.json"])
-        );
-        let packed = PackedApp {
-            app: "terminal".into(),
-            architecture: "aarch64".into(),
-            package_id: "fixture".into(),
-            runtime: None,
-            source_digest: "source".into(),
-        };
-        assert!(packed.validate("terminal", "aarch64", "source").is_ok());
-        assert!(packed.validate("terminal", "x86_64", "source").is_err());
-        assert!(
-            packed
-                .validate("terminal", "aarch64", "different SDK")
-                .is_err()
-        );
-        assert!(packed.validate("notes", "aarch64", "source").is_err());
+        phase remote_app_command_and_header_never_fall_back_or_accept_other_sources;
+        {
+            assert!(remote_command(&[], "terminal", Path::new("inputs.json")).is_err());
+            let line = remote_command(
+                &["cargo-dropin".into(), "--on-builder".into()],
+                "terminal",
+                Path::new("inputs.json"),
+            )
+            .unwrap();
+            assert_eq!(line.program, "cargo-dropin");
+            assert_eq!(line.args.first().map(String::as_str), Some("--on-builder"));
+            assert!(
+                line.args
+                    .windows(2)
+                    .any(|pair| pair == ["--source-inventory", "inputs.json"])
+            );
+            let packed = PackedApp {
+                app: "terminal".into(),
+                architecture: "aarch64".into(),
+                package_id: "fixture".into(),
+                runtime: None,
+                source_digest: "source".into(),
+            };
+            assert!(packed.validate("terminal", "aarch64", "source").is_ok());
+            assert!(packed.validate("terminal", "x86_64", "source").is_err());
+            assert!(
+                packed
+                    .validate("terminal", "aarch64", "different SDK")
+                    .is_err()
+            );
+            assert!(packed.validate("notes", "aarch64", "source").is_err());
+        }
     }
 }

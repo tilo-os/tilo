@@ -202,8 +202,8 @@ impl OwnerCommitService for Native {
         })
     }
 }
-impl crate::services::AppActionGrants for Native {
-    fn may_grant(&self, _workspace: &str, _person: &str) -> bool {
+impl crate::services::WorkspaceGrants for Native {
+    fn may_record(&self, _workspace: &str, _person: &str) -> bool {
         self.granted.lock().unwrap().is_some()
     }
     fn record(
@@ -451,7 +451,7 @@ impl Fixture {
             Some(&config),
             HostServices {
                 launcher,
-                app_action_grants: Some(native.clone()),
+                workspace_grants: Some(native.clone()),
                 tracker_runs: Some(native.clone()),
                 agents: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
@@ -829,8 +829,8 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
             put_grant(
                 &f,
                 Grant::new(
-                    "other-task-denies-append",
-                    Grantee::task(other.clone()),
+                    format!("issue-answer:{other}:app:so.tilo.notes:undoable"),
+                    Grantee::agent("scribe"),
                     TreePath::workspace(workspace_id().to_string()).app("so.tilo.notes"),
                     KindSet::UNDOABLE,
                     Answer::Deny,
@@ -873,14 +873,14 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
                 )
             };
             for (id, resource, answer) in [
-                ("task-other-resource-only", "notes:other", Answer::Allow),
-                ("task-not-release", "notes:release", Answer::Deny),
+                ("other-resource-only", "notes:other", Answer::Allow),
+                ("not-release", "notes:release", Answer::Deny),
             ] {
                 put_grant(
                     &f,
                     Grant::new(
-                        id,
-                        Grantee::task(f.task.clone()),
+                        format!("issue-answer:{}:{id}", f.task),
+                        Grantee::agent("scribe"),
                         append(resource),
                         KindSet::UNDOABLE,
                         answer,
@@ -998,8 +998,8 @@ async fn a_native_run_is_held_to_its_issues_grants() {
             put_grant(
                 &f,
                 Grant::new(
-                    "task-no-append",
-                    Grantee::task(f.task.clone()),
+                    format!("issue-answer:{}:no-append", f.task),
+                    Grantee::agent("scribe"),
                     tilo_actions::action_node(
                         &TreePath::workspace(workspace_id().to_string()),
                         "so.tilo.notes",
@@ -1575,9 +1575,11 @@ async fn a_membership_change_whose_receipt_is_refused_does_not_leave_its_asker_w
                 .state
                 .invoke_workspace_membership(
                     &workspace,
-                    &WorkspaceMembershipCommand::GrantAppAuthorship {
-                        app: "so.tilo.terminal".into(),
-                    },
+                    &WorkspaceMembershipCommand::Settings(
+                        tilo_peer_state::workspace_membership::SettingsChange::Rename {
+                            name: "Studio".into(),
+                        },
+                    ),
                     &f.native.certificate,
                 )
                 .unwrap();
@@ -1624,11 +1626,15 @@ async fn grants_in_flight_survive_an_unrecorded_one_while_the_owner_opens() {
             let workspace = workspace_id().to_string();
             f.state.refresh_workspace_membership_services().unwrap();
             assert!(f.state.membership_published(&workspace));
-            let grant = |app: &str| {
+            let grant = |name: &str| {
                 f.state
                     .invoke_workspace_membership(
                         &workspace,
-                        &WorkspaceMembershipCommand::GrantAppAuthorship { app: app.into() },
+                        &WorkspaceMembershipCommand::Settings(
+                            tilo_peer_state::workspace_membership::SettingsChange::Rename {
+                                name: name.into(),
+                            },
+                        ),
                         &f.native.certificate,
                     )
                     .unwrap()
@@ -1636,17 +1642,12 @@ async fn grants_in_flight_survive_an_unrecorded_one_while_the_owner_opens() {
             f.native
                 .opening
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let first = grant("so.tilo.lang.notes");
+            let first = grant("Notes");
             let first = answer_of(&first).await;
             f.native
                 .opening
                 .store(false, std::sync::atomic::Ordering::SeqCst);
-            let queued = [
-                "so.tilo.lang.tasks",
-                "so.tilo.lang.chat",
-                "so.tilo.lang.board",
-            ]
-            .map(grant);
+            let queued = ["Tasks", "Chat", "Board"].map(grant);
             for job in &queued {
                 let answer = answer_of(job).await;
                 assert!(

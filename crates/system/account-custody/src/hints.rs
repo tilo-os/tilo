@@ -395,179 +395,160 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn legacy_hints_default_to_unknown_services_and_typed_sources_round_trip() {
-        let key = SymmetricKey::generate().unwrap();
-        let legacy = raw(
-            &key,
-            br#"{"hints":[{"provider":"google","email":"person@example.org","server":""}]}"#,
-        );
-        assert_eq!(
-            open(&key, SOURCE, &legacy).unwrap()[0].sources,
-            HintSources::default()
-        );
-        let mut hint = hint();
-        hint.sources = HintSources {
-            onedrive: true,
-            outlook: true,
-            google_web: false,
-        };
-        let sealed = seal(&key, SOURCE, &[hint.clone()]).unwrap();
-        assert_eq!(
-            open(&key, SOURCE, &sealed).unwrap()[0].sources,
-            hint.sources
-        );
-        let unknown = raw(&key, br#"{"hints":[{"provider":"google","email":"a","server":"","sources":{"token":"secret"}}]}"#);
-        assert!(open(&key, SOURCE, &unknown).is_err());
-    }
+    tilo_test_env::scenario! {
+        /// Account hints: their wire format, grouping, sealing and capacities.
+        fn sign_in_hints_round_trip_privately_within_their_bounds;
 
-    #[test]
-    fn grouping_combines_provenance_not_aliases_providers_or_unidentified_profiles() {
-        let mut files = hint();
-        files.sources.onedrive = true;
-        let mut mail = files.clone();
-        mail.sources = HintSources {
-            outlook: true,
-            ..Default::default()
-        };
-        let mut alias = files.clone();
-        alias.email = "private-person+work@example.org".into();
-        let mut other_provider = files.clone();
-        other_provider.provider = Provider::Google;
-        let mut other_server = files.clone();
-        other_server.server = "https://other.example.org".into();
-        let mut unknown = files.clone();
-        unknown.email.clear();
-        let grouped = group_hints(vec![
-            files,
-            mail,
-            alias,
-            other_provider,
-            other_server,
-            unknown.clone(),
-            unknown,
-        ]);
-        assert_eq!(grouped.len(), 6);
-        assert!(grouped[0].sources.onedrive && grouped[0].sources.outlook);
-    }
+        phase legacy_hints_default_to_unknown_services_and_typed_sources_round_trip;
+        {
+            let key = SymmetricKey::generate().unwrap();
+            let legacy = raw(
+                &key,
+                br#"{"hints":[{"provider":"google","email":"person@example.org","server":""}]}"#,
+            );
+            assert_eq!(
+                open(&key, SOURCE, &legacy).unwrap()[0].sources,
+                HintSources::default()
+            );
+            let mut hint = hint();
+            hint.sources = HintSources {
+                onedrive: true,
+                outlook: true,
+                google_web: false,
+            };
+            let sealed = seal(&key, SOURCE, &[hint.clone()]).unwrap();
+            assert_eq!(
+                open(&key, SOURCE, &sealed).unwrap()[0].sources,
+                hint.sources
+            );
+            let unknown = raw(&key, br#"{"hints":[{"provider":"google","email":"a","server":"","sources":{"token":"secret"}}]}"#);
+            assert!(open(&key, SOURCE, &unknown).is_err());
+        }
 
-    #[test]
-    fn password_media_round_trip_keeps_suggestions_private_and_bound() {
-        let sealed = seal_password(b"private-password", SOURCE, &[hint()]).unwrap();
-        assert!(
-            !sealed
-                .as_bytes()
-                .windows(hint().email.len())
-                .any(|bytes| bytes == hint().email.as_bytes())
-        );
-        let parsed = PasswordHints::from_bytes(sealed.as_bytes()).unwrap();
-        assert_eq!(
-            open_password(b"private-password", SOURCE, &parsed).unwrap()[0].email,
-            hint().email
-        );
-        assert!(open_password(b"wrong-password", SOURCE, &parsed).is_err());
-        assert!(open_password(b"private-password", "another-generation", &parsed).is_err());
-        assert!(SealedHints::from_bytes(sealed.as_bytes()).is_err());
-    }
+        phase grouping_combines_provenance_not_aliases_providers_or_unidentified_profiles;
+        {
+            let mut files = hint();
+            files.sources.onedrive = true;
+            let mut mail = files.clone();
+            mail.sources = HintSources {
+                outlook: true,
+                ..Default::default()
+            };
+            let mut alias = files.clone();
+            alias.email = "private-person+work@example.org".into();
+            let mut other_provider = files.clone();
+            other_provider.provider = Provider::Google;
+            let mut other_server = files.clone();
+            other_server.server = "https://other.example.org".into();
+            let mut unknown = files.clone();
+            unknown.email.clear();
+            let grouped = group_hints(vec![
+                files,
+                mail,
+                alias,
+                other_provider,
+                other_server,
+                unknown.clone(),
+                unknown,
+            ]);
+            assert_eq!(grouped.len(), 6);
+            assert!(grouped[0].sources.onedrive && grouped[0].sources.outlook);
+        }
 
-    #[test]
-    fn private_round_trip_is_bound_to_key_source_and_domain() {
-        let key = SymmetricKey::generate().unwrap();
-        let sealed = seal(&key, SOURCE, &[hint()]).unwrap();
-        for private in [hint().email, hint().server, SOURCE.into()] {
+        phase password_media_round_trip_keeps_suggestions_private_and_bound;
+        {
+            let sealed = seal_password(b"private-password", SOURCE, &[hint()]).unwrap();
             assert!(
                 !sealed
                     .as_bytes()
-                    .windows(private.len())
-                    .any(|w| w == private.as_bytes())
+                    .windows(hint().email.len())
+                    .any(|bytes| bytes == hint().email.as_bytes())
             );
+            let parsed = PasswordHints::from_bytes(sealed.as_bytes()).unwrap();
+            assert_eq!(
+                open_password(b"private-password", SOURCE, &parsed).unwrap()[0].email,
+                hint().email
+            );
+            assert!(open_password(b"wrong-password", SOURCE, &parsed).is_err());
+            assert!(open_password(b"private-password", "another-generation", &parsed).is_err());
+            assert!(SealedHints::from_bytes(sealed.as_bytes()).is_err());
         }
-        let copied = SealedHints::from_bytes(sealed.as_bytes()).unwrap();
-        let hints = open(&key, SOURCE, &copied).unwrap();
-        assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0].provider, Provider::Nextcloud);
-        assert_eq!(hints[0].email, hint().email);
-        assert_eq!(hints[0].server, hint().server);
-        assert!(open(&key, "selected-device/read-8", &sealed).is_err());
-        assert!(open(&SymmetricKey::generate().unwrap(), SOURCE, &sealed).is_err());
-        assert!(
-            envelope::open(
-                &key,
-                Context::new(Label::MigrationPackage, SOURCE.as_bytes()),
+
+        phase private_round_trip_is_bound_to_key_source_and_domain;
+        {
+            let key = SymmetricKey::generate().unwrap();
+            let sealed = seal(&key, SOURCE, &[hint()]).unwrap();
+            for private in [hint().email, hint().server, SOURCE.into()] {
+                assert!(
+                    !sealed
+                        .as_bytes()
+                        .windows(private.len())
+                        .any(|w| w == private.as_bytes())
+                );
+            }
+            let copied = SealedHints::from_bytes(sealed.as_bytes()).unwrap();
+            let hints = open(&key, SOURCE, &copied).unwrap();
+            assert_eq!(hints.len(), 1);
+            assert_eq!(hints[0].provider, Provider::Nextcloud);
+            assert_eq!(hints[0].email, hint().email);
+            assert_eq!(hints[0].server, hint().server);
+            assert!(open(&key, "selected-device/read-8", &sealed).is_err());
+            assert!(open(&SymmetricKey::generate().unwrap(), SOURCE, &sealed).is_err());
+            assert!(
+                envelope::open(
+                    &key,
+                    Context::new(Label::MigrationPackage, SOURCE.as_bytes()),
+                    sealed.as_bytes(),
+                )
+                .is_err()
+            );
+            assert_ne!(
                 sealed.as_bytes(),
-            )
-            .is_err()
-        );
-        assert_ne!(
-            sealed.as_bytes(),
-            seal(&key, SOURCE, &[hint()]).unwrap().as_bytes()
-        );
-        let mut tampered = sealed.as_bytes().to_vec();
-        *tampered.last_mut().unwrap() ^= 1;
-        assert!(open(&key, SOURCE, &SealedHints::from_bytes(&tampered).unwrap()).is_err());
-    }
-
-    #[test]
-    fn malformed_and_non_hint_payloads_are_rejected() {
-        let key = SymmetricKey::generate().unwrap();
-        for plaintext in [
-            br#"{"hints":[],"token":"secret"}"#.as_slice(),
-            br#"{"hints":[{"provider":"google","email":"a","server":"","password":"secret"}]}"#,
-            br#"{"hints":[],"hints":[]}"#,
-            br#"{"hints":[]} {}"#,
-            br#"{"hints":[{"provider":"unknown","email":"a","server":""}]}"#,
-            br#"{"hints":[{"provider":"google","email":"a\nb","server":""}]}"#,
-            b"not json",
-        ] {
-            assert!(open(&key, SOURCE, &raw(&key, plaintext)).is_err());
+                seal(&key, SOURCE, &[hint()]).unwrap().as_bytes()
+            );
+            let mut tampered = sealed.as_bytes().to_vec();
+            *tampered.last_mut().unwrap() ^= 1;
+            assert!(open(&key, SOURCE, &SealedHints::from_bytes(&tampered).unwrap()).is_err());
         }
-        assert!(SealedHints::from_bytes(b"plaintext").is_err());
-        assert!(SealedHints::from_bytes(&vec![0; MAX_SEALED_BYTES + 1]).is_err());
-        assert!(seal(&key, "", &[]).is_err());
-    }
 
-    #[test]
-    fn capacities_apply_to_both_sealing_and_authenticated_input() {
-        let key = SymmetricKey::generate().unwrap();
-        let mut hints = vec![hint(); MAX_HINTS];
-        hints[0].email = "x".repeat(MAX_FIELD_BYTES);
-        let sealed = seal(&key, SOURCE, &hints).unwrap();
-        assert_eq!(open(&key, SOURCE, &sealed).unwrap().len(), MAX_HINTS);
-        hints.push(hint());
-        assert!(seal(&key, SOURCE, &hints).is_err());
-        let wire = WireHints {
-            hints: hints
-                .iter()
-                .map(|h| WireHint {
-                    provider: h.provider.into(),
-                    email: h.email.clone(),
-                    server: h.server.clone(),
-                    sources: HintSources::default(),
-                })
-                .collect(),
-        };
-        assert!(
-            open(
-                &key,
-                SOURCE,
-                &raw(&key, &serde_json::to_vec(&wire).unwrap())
-            )
-            .is_err()
-        );
-        for (email, server) in [
-            ("x".repeat(MAX_FIELD_BYTES + 1), String::new()),
-            ("control\u{7f}".into(), String::new()),
-            (String::new(), "https://user:password@example.org".into()),
-            (String::new(), "https://example.org/?token=secret".into()),
-            (String::new(), "x".repeat(MAX_FIELD_BYTES + 1)),
-        ] {
+        phase malformed_and_non_hint_payloads_are_rejected;
+        {
+            let key = SymmetricKey::generate().unwrap();
+            for plaintext in [
+                br#"{"hints":[],"token":"secret"}"#.as_slice(),
+                br#"{"hints":[{"provider":"google","email":"a","server":"","password":"secret"}]}"#,
+                br#"{"hints":[],"hints":[]}"#,
+                br#"{"hints":[]} {}"#,
+                br#"{"hints":[{"provider":"unknown","email":"a","server":""}]}"#,
+                br#"{"hints":[{"provider":"google","email":"a\nb","server":""}]}"#,
+                b"not json",
+            ] {
+                assert!(open(&key, SOURCE, &raw(&key, plaintext)).is_err());
+            }
+            assert!(SealedHints::from_bytes(b"plaintext").is_err());
+            assert!(SealedHints::from_bytes(&vec![0; MAX_SEALED_BYTES + 1]).is_err());
+            assert!(seal(&key, "", &[]).is_err());
+        }
+
+        phase capacities_apply_to_both_sealing_and_authenticated_input;
+        {
+            let key = SymmetricKey::generate().unwrap();
+            let mut hints = vec![hint(); MAX_HINTS];
+            hints[0].email = "x".repeat(MAX_FIELD_BYTES);
+            let sealed = seal(&key, SOURCE, &hints).unwrap();
+            assert_eq!(open(&key, SOURCE, &sealed).unwrap().len(), MAX_HINTS);
+            hints.push(hint());
+            assert!(seal(&key, SOURCE, &hints).is_err());
             let wire = WireHints {
-                hints: vec![WireHint {
-                    provider: WireProvider::Google,
-                    email: email.clone(),
-                    server: server.clone(),
-                    sources: HintSources::default(),
-                }],
+                hints: hints
+                    .iter()
+                    .map(|h| WireHint {
+                        provider: h.provider.into(),
+                        email: h.email.clone(),
+                        server: h.server.clone(),
+                        sources: HintSources::default(),
+                    })
+                    .collect(),
             };
             assert!(
                 open(
@@ -577,19 +558,43 @@ mod tests {
                 )
                 .is_err()
             );
-            assert!(
-                seal(
-                    &key,
-                    SOURCE,
-                    &[AccountHint {
-                        provider: Provider::Google,
-                        email,
-                        server,
+            for (email, server) in [
+                ("x".repeat(MAX_FIELD_BYTES + 1), String::new()),
+                ("control\u{7f}".into(), String::new()),
+                (String::new(), "https://user:password@example.org".into()),
+                (String::new(), "https://example.org/?token=secret".into()),
+                (String::new(), "x".repeat(MAX_FIELD_BYTES + 1)),
+            ] {
+                let wire = WireHints {
+                    hints: vec![WireHint {
+                        provider: WireProvider::Google,
+                        email: email.clone(),
+                        server: server.clone(),
                         sources: HintSources::default(),
-                    }]
-                )
-                .is_err()
-            );
+                    }],
+                };
+                assert!(
+                    open(
+                        &key,
+                        SOURCE,
+                        &raw(&key, &serde_json::to_vec(&wire).unwrap())
+                    )
+                    .is_err()
+                );
+                assert!(
+                    seal(
+                        &key,
+                        SOURCE,
+                        &[AccountHint {
+                            provider: Provider::Google,
+                            email,
+                            server,
+                            sources: HintSources::default(),
+                        }]
+                    )
+                    .is_err()
+                );
+            }
         }
     }
 }

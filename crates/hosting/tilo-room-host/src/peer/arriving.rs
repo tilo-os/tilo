@@ -119,10 +119,11 @@ impl Arriving {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_relay_protocol::WorkspaceId;
 
     fn frame(n: u8) -> Arc<Envelope> {
         Arc::new(Envelope::Ready {
-            workspace_id: u64::from(n),
+            workspace_id: WorkspaceId::from_u128(u128::from(n)),
             pending_deltas: 0,
             records_when_opened: false,
         })

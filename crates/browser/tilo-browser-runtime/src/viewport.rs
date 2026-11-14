@@ -317,161 +317,369 @@ impl ViewportState {
 mod tests {
     use super::*;
 
-    // Catches a Retina 6K full-screen canvas reaching the renderer at 20 MP.
-    #[test]
-    fn large_canvases_render_a_bounded_backing_store_at_the_same_logical_size() {
-        let retina_6k = Viewport {
-            width: 6016,
-            height: 3384,
-            dpr: 2.0,
-        };
-        let bounded = retina_6k.bounded();
-        assert!(u64::from(bounded.width) * u64::from(bounded.height) <= MAX_SURFACE_PIXELS);
-        assert!(bounded.width <= MAX_SURFACE_SIDE && bounded.height <= MAX_SURFACE_SIDE);
-        let (lw, lh) = bounded.logical_size();
-        assert!(
-            lw.abs_diff(3008) <= 1 && lh.abs_diff(1692) <= 1,
-            "{lw}x{lh}"
-        );
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_canvas_is_bounded_to_what_the_surface_can_draw;
 
-        let zoomed = Viewport {
-            width: 2000,
-            height: 1000,
-            dpr: 4.0,
-        }
-        .bounded();
-        assert_eq!((zoomed.width, zoomed.height, zoomed.dpr), (1000, 500, 2.0));
-
-        let strip = Viewport {
-            width: 10000,
-            height: 200,
-            dpr: 1.0,
-        }
-        .bounded();
-        assert_eq!(strip.width, MAX_SURFACE_SIDE);
-
-        assert_eq!(INITIAL.bounded(), INITIAL);
-
-        let conservative = retina_6k.bounded_by(SurfaceCaps::CONSERVATIVE);
-        assert!(u64::from(conservative.width) * u64::from(conservative.height) <= 3024 * 1964);
-        assert!(conservative.width <= 3456);
-        let (lw, _) = conservative.logical_size();
-        assert!(lw.abs_diff(3008) <= 2, "{lw}");
-
-        // A MacBook's full-screen window keeps its Retina scale in Safari.
-        let macbook = Viewport {
-            width: 2880,
-            height: 1800,
-            dpr: 2.0,
-        }
-        .bounded_by(SurfaceCaps::CONSERVATIVE);
-        assert_eq!(
-            (macbook.width, macbook.height, macbook.dpr),
-            (2880, 1800, 2.0)
-        );
-    }
-
-    // Catches a 1440p window on a 2x display drawing at 1.5x and being
-    // stretched by the browser: the whole desktop looked soft on a 5K screen.
-    #[test]
-    fn a_big_window_on_a_retina_display_draws_at_full_device_resolution() {
-        let five_k = Viewport {
-            width: 5120,
-            height: 2880,
-            dpr: 2.0,
-        };
-        assert_eq!(five_k.bounded(), five_k);
-        let (lw, lh) = five_k.bounded().logical_size();
-        assert_eq!((lw, lh), (2560, 1440));
-
-        // A laptop's full-screen window too, as every 4K one before.
-        for observed in [
-            Viewport {
-                width: 3024,
-                height: 1964,
+        phase large_canvases_render_a_bounded_backing_store_at_the_same_logical_size;
+        // Catches a Retina 6K full-screen canvas reaching the renderer at 20 MP.
+        {
+            let retina_6k = Viewport {
+                width: 6016,
+                height: 3384,
                 dpr: 2.0,
-            },
-            Viewport {
-                width: 3840,
-                height: 2160,
-                dpr: 1.5,
-            },
-        ] {
-            assert_eq!(observed.bounded(), observed);
-        }
+            };
+            let bounded = retina_6k.bounded();
+            assert!(u64::from(bounded.width) * u64::from(bounded.height) <= MAX_SURFACE_PIXELS);
+            assert!(bounded.width <= MAX_SURFACE_SIDE && bounded.height <= MAX_SURFACE_SIDE);
+            let (lw, lh) = bounded.logical_size();
+            assert!(
+                lw.abs_diff(3008) <= 1 && lh.abs_diff(1692) <= 1,
+                "{lw}x{lh}"
+            );
 
-        // Past what vello draws in one pass (a 16-inch MacBook's 2560 x 1600
-        // at 2x is 260 bins), a frame draws just below the device scale
-        // rather than with holes; no extent, however tall or wide, does.
-        let sixteen_inch = Viewport {
-            width: 5120,
-            height: 3200,
-            dpr: 2.0,
-        }
-        .bounded();
-        assert!(sixteen_inch.dpr > 1.9, "{sixteen_inch:?}");
-        for (width, height) in [
-            (5120, 3200),
-            (6016, 3384),
-            (8000, 4000),
-            (4100, 4100),
-            (8192, 2100),
-            (10000, 200),
-            (300, 9000),
-        ] {
-            let bounded = Viewport {
-                width,
-                height,
-                dpr: 2.0,
+            let zoomed = Viewport {
+                width: 2000,
+                height: 1000,
+                dpr: 4.0,
             }
             .bounded();
-            assert!(
-                bounded.width.div_ceil(BIN_SIDE) * bounded.height.div_ceil(BIN_SIDE) <= MAX_BINS,
-                "{width}x{height} -> {bounded:?}"
+            assert_eq!((zoomed.width, zoomed.height, zoomed.dpr), (1000, 500, 2.0));
+
+            let strip = Viewport {
+                width: 10000,
+                height: 200,
+                dpr: 1.0,
+            }
+            .bounded();
+            assert_eq!(strip.width, MAX_SURFACE_SIDE);
+
+            assert_eq!(INITIAL.bounded(), INITIAL);
+
+            let conservative = retina_6k.bounded_by(SurfaceCaps::CONSERVATIVE);
+            assert!(u64::from(conservative.width) * u64::from(conservative.height) <= 3024 * 1964);
+            assert!(conservative.width <= 3456);
+            let (lw, _) = conservative.logical_size();
+            assert!(lw.abs_diff(3008) <= 2, "{lw}");
+
+            // A MacBook's full-screen window keeps its Retina scale in Safari.
+            let macbook = Viewport {
+                width: 2880,
+                height: 1800,
+                dpr: 2.0,
+            }
+            .bounded_by(SurfaceCaps::CONSERVATIVE);
+            assert_eq!(
+                (macbook.width, macbook.height, macbook.dpr),
+                (2880, 1800, 2.0)
             );
         }
 
-        // A GPU that failed at that size recovers one step smaller, at the
-        // same logical size; the smaller caps do not shrink further.
-        let reduced = SurfaceCaps::STANDARD.after_gpu_failure();
-        assert_eq!(reduced, SurfaceCaps::REDUCED);
-        let fallback = five_k.bounded_by(reduced);
-        assert!(u64::from(fallback.width) * u64::from(fallback.height) <= 3840 * 2160);
-        assert!(fallback.dpr < 2.0 && fallback.dpr > 1.4, "{fallback:?}");
-        let (lw, _) = fallback.logical_size();
-        assert!(lw.abs_diff(2560) <= 1, "{lw}");
-        assert_eq!(reduced.after_gpu_failure(), reduced);
-        assert_eq!(
-            SurfaceCaps::CONSERVATIVE.after_gpu_failure(),
-            SurfaceCaps::CONSERVATIVE
-        );
+        phase a_big_window_on_a_retina_display_draws_at_full_device_resolution;
+        // Catches a 1440p window on a 2x display drawing at 1.5x and being
+        // stretched by the browser: the whole desktop looked soft on a 5K screen.
+        {
+            let five_k = Viewport {
+                width: 5120,
+                height: 2880,
+                dpr: 2.0,
+            };
+            assert_eq!(five_k.bounded(), five_k);
+            let (lw, lh) = five_k.bounded().logical_size();
+            assert_eq!((lw, lh), (2560, 1440));
 
-        // A state stepped down mid-life requests the smaller frame next.
-        let mut state = ViewportState::new(five_k);
-        assert_eq!(state.requested(), five_k);
-        state.set_caps(reduced);
-        assert!(state.observe((five_k.width, five_k.height), five_k.dpr));
-        assert_eq!(state.requested(), fallback);
+            // A laptop's full-screen window too, as every 4K one before.
+            for observed in [
+                Viewport {
+                    width: 3024,
+                    height: 1964,
+                    dpr: 2.0,
+                },
+                Viewport {
+                    width: 3840,
+                    height: 2160,
+                    dpr: 1.5,
+                },
+            ] {
+                assert_eq!(observed.bounded(), observed);
+            }
+
+            // Past what vello draws in one pass (a 16-inch MacBook's 2560 x 1600
+            // at 2x is 260 bins), a frame draws just below the device scale
+            // rather than with holes; no extent, however tall or wide, does.
+            let sixteen_inch = Viewport {
+                width: 5120,
+                height: 3200,
+                dpr: 2.0,
+            }
+            .bounded();
+            assert!(sixteen_inch.dpr > 1.9, "{sixteen_inch:?}");
+            for (width, height) in [
+                (5120, 3200),
+                (6016, 3384),
+                (8000, 4000),
+                (4100, 4100),
+                (8192, 2100),
+                (10000, 200),
+                (300, 9000),
+            ] {
+                let bounded = Viewport {
+                    width,
+                    height,
+                    dpr: 2.0,
+                }
+                .bounded();
+                assert!(
+                    bounded.width.div_ceil(BIN_SIDE) * bounded.height.div_ceil(BIN_SIDE) <= MAX_BINS,
+                    "{width}x{height} -> {bounded:?}"
+                );
+            }
+
+            // A GPU that failed at that size recovers one step smaller, at the
+            // same logical size; the smaller caps do not shrink further.
+            let reduced = SurfaceCaps::STANDARD.after_gpu_failure();
+            assert_eq!(reduced, SurfaceCaps::REDUCED);
+            let fallback = five_k.bounded_by(reduced);
+            assert!(u64::from(fallback.width) * u64::from(fallback.height) <= 3840 * 2160);
+            assert!(fallback.dpr < 2.0 && fallback.dpr > 1.4, "{fallback:?}");
+            let (lw, _) = fallback.logical_size();
+            assert!(lw.abs_diff(2560) <= 1, "{lw}");
+            assert_eq!(reduced.after_gpu_failure(), reduced);
+            assert_eq!(
+                SurfaceCaps::CONSERVATIVE.after_gpu_failure(),
+                SurfaceCaps::CONSERVATIVE
+            );
+
+            // A state stepped down mid-life requests the smaller frame next.
+            let mut state = ViewportState::new(five_k);
+            assert_eq!(state.requested(), five_k);
+            state.set_caps(reduced);
+            assert!(state.observe((five_k.width, five_k.height), five_k.dpr));
+            assert_eq!(state.requested(), fallback);
+        }
     }
 
-    #[test]
-    fn pointer_input_on_a_bounded_canvas_maps_onto_the_rendered_frame() {
-        let observed = Viewport {
-            width: 8000,
-            height: 4000,
-            dpr: 2.0,
-        };
-        let mut state = ViewportState::new(observed);
-        state.did_present();
-        let applied = state.applied();
-        assert!(applied.width < observed.width);
-        let (x, y) = state.map_pointer(4000.0, 2000.0);
-        assert!((x / applied.dpr - 2000.0).abs() < 1.0, "{x}");
-        assert!((y / applied.dpr - 1000.0).abs() < 1.0, "{y}");
-        assert!(
-            !state.observe((observed.width, observed.height), observed.dpr),
-            "an unchanged extent is not a resize"
-        );
+    tilo_test_env::scenario! {
+        fn the_viewport_state_follows_resizes_and_outages_frame_by_frame;
+
+        phase pointer_input_on_a_bounded_canvas_maps_onto_the_rendered_frame;
+        {
+            let observed = Viewport {
+                width: 8000,
+                height: 4000,
+                dpr: 2.0,
+            };
+            let mut state = ViewportState::new(observed);
+            state.did_present();
+            let applied = state.applied();
+            assert!(applied.width < observed.width);
+            let (x, y) = state.map_pointer(4000.0, 2000.0);
+            assert!((x / applied.dpr - 2000.0).abs() < 1.0, "{x}");
+            assert!((y / applied.dpr - 1000.0).abs() < 1.0, "{y}");
+            assert!(
+                !state.observe((observed.width, observed.height), observed.dpr),
+                "an unchanged extent is not a resize"
+            );
+        }
+
+        phase resize_burst_applies_only_the_latest_viewport_at_redraw;
+        // Catches applying layout in resize dispatch instead of at the frame boundary.
+        {
+            let mut state = presented();
+            state.observe((900, 700), 1.0);
+            state.observe((1200, 900), 1.0);
+            assert_eq!(state.applied(), INITIAL);
+            assert!(state.needs_apply());
+            assert_eq!(state.requested().logical_size(), (1200, 900));
+            state.did_apply();
+            assert_eq!(
+                state.applied(),
+                Viewport {
+                    width: 1200,
+                    height: 900,
+                    dpr: 1.0
+                }
+            );
+            assert!(state.needs_present());
+            state.did_present();
+            assert!(!state.needs_present());
+        }
+
+        phase duplicate_notifications_do_not_schedule_or_reconfigure;
+        {
+            let mut state = presented();
+            assert!(!state.observe((800, 600), 1.0));
+            assert!(!state.needs_apply());
+            assert!(!state.needs_surface_resize(800, 600));
+            assert!(!state.needs_present());
+        }
+
+        phase a_density_change_alone_keeps_the_layout_box_and_moves_the_extent;
+        // Catches a phone's desk laid out at its Retina pixel width read as CSS
+        // pixels: a change of density alone draws the same box at the new one,
+        // and the frame follows the density.
+        {
+            let mut state = presented();
+            // The browser draws at 2 now, and winit still reports the extent it
+            // measured at 1: 800 x 600 CSS pixels.
+            assert!(state.observe((800, 600), 2.0));
+            assert_eq!(
+                state.requested(),
+                Viewport {
+                    width: 1600,
+                    height: 1200,
+                    dpr: 2.0
+                }
+            );
+            assert_eq!(state.requested().logical_size(), (800, 600), "the same box");
+            assert!(state.needs_apply());
+            assert!(state.needs_surface_resize(800, 600), "the frame follows");
+            state.did_apply();
+            assert!(state.needs_present());
+
+            // Back to 1: the box is the box, whatever extent was measured last.
+            assert!(state.observe((1600, 1200), 1.0));
+            assert_eq!(state.requested(), INITIAL);
+            // Input still lands where the frame drawn at 2 stands, until redraw.
+            assert_eq!(state.map_pointer(400.0, 300.0), (800.0, 600.0));
+
+            // A box that really changed is taken as reported, at its own density.
+            assert!(state.observe((1200, 900), 1.0));
+            assert_eq!(
+                state.requested(),
+                Viewport {
+                    width: 1200,
+                    height: 900,
+                    dpr: 1.0
+                }
+            );
+            assert!(!state.observe((1200, 900), 1.0), "the same report twice");
+
+            // A fractional density — browser zoom — scales the box too.
+            assert!(state.observe((1200, 900), 1.25));
+            assert_eq!(
+                state.requested(),
+                Viewport {
+                    width: 1500,
+                    height: 1125,
+                    dpr: 1.25
+                }
+            );
+            assert_eq!(state.requested().logical_size(), (1200, 900));
+        }
+
+        phase zero_size_stops_frame_scheduling_and_restore_keeps_the_last_frame;
+        {
+            let mut state = presented();
+            state.observe((0, 600), 1.0);
+            assert!(state.suspended());
+            assert!(!state.needs_present());
+            assert!(!state.needs_surface_resize(800, 600));
+            assert_eq!(state.applied(), INITIAL);
+            state.observe((800, 600), 1.0);
+            assert!(!state.suspended());
+            assert!(!state.needs_surface_resize(800, 600));
+            state.observe((1000, 600), 1.0);
+            assert!(state.needs_present());
+            assert!(state.needs_surface_resize(800, 600));
+        }
+
+        phase skipped_presentations_keep_latest_resize_pending_without_reconfigure_loop;
+        {
+            let mut state = presented();
+            state.observe((1000, 600), 1.0);
+            state.did_apply();
+            assert!(state.needs_present()); // Timeout: no acknowledgement.
+            assert!(!state.needs_surface_resize(1000, 600));
+            assert!(state.recover_outdated());
+            assert!(!state.recover_outdated()); // Repeated Outdated: same configured size.
+            assert!(state.needs_present());
+            state.observe((1200, 600), 1.0);
+            state.did_apply();
+            assert!(state.needs_surface_resize(1000, 600));
+            assert!(state.recover_outdated());
+            state.did_present();
+            assert!(!state.needs_present());
+            assert!(state.recover_outdated()); // A later independent outage can recover.
+        }
+
+        phase skipped_acquisition_preserves_displayed_dpr_layout_and_input_until_success;
+        {
+            let initial = Viewport {
+                width: 1000,
+                height: 750,
+                dpr: 1.25,
+            };
+            let mut state = ViewportState::new(initial);
+            state.did_present();
+            // Another display of twice the density, the box unchanged.
+            state.observe((1000, 750), 2.0);
+            assert!(state.needs_apply());
+            let mut frame_viewport = initial;
+            for _ in 0..3 {
+                // Timeout/Outdated/Occluded all skip acquisition. The production
+                // transaction must leave FrameHarness's layout and input scale alone.
+                let result = state
+                    .apply_for_acquired_texture(None::<()>, |viewport| {
+                        frame_viewport = viewport;
+                        Ok::<_, ()>(())
+                    })
+                    .unwrap();
+                assert!(result.is_none());
+                assert_eq!(frame_viewport, initial);
+                assert_eq!(state.applied(), initial);
+                // A pointer at the new extent's corner lands on the corner of the
+                // frame still shown.
+                assert_eq!(state.map_pointer(1600.0, 1200.0), (1000.0, 750.0));
+                assert_eq!(frame_viewport.logical_size(), (800, 600));
+                assert!(state.needs_present());
+            }
+            let result = state
+                .apply_for_acquired_texture(Some(()), |viewport| {
+                    frame_viewport = viewport;
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            assert!(result.is_some());
+            assert_eq!(frame_viewport.logical_size(), (800, 600));
+            assert_eq!(state.applied().dpr, 2.0);
+            assert_eq!(state.map_pointer(1600.0, 1200.0), (1600.0, 1200.0));
+            assert!(state.needs_present());
+            state.did_present();
+            assert!(!state.needs_present());
+        }
+
+        phase replacement_surface_requires_a_frame_and_can_recover_its_own_outage;
+        {
+            let mut state = presented();
+            assert!(state.recover_outdated());
+            state.surface_installed();
+            assert!(state.needs_present());
+            assert!(!state.needs_surface_resize(800, 600));
+            assert!(state.recover_outdated());
+            state.did_present();
+            assert!(!state.needs_present());
+        }
+
+        phase pointer_and_touch_follow_the_scaled_applied_frame_until_redraw;
+        {
+            let mut state = ViewportState::new(Viewport {
+                width: 1000,
+                height: 750,
+                dpr: 1.25,
+            });
+            state.did_present();
+            state.observe((1500, 1125), 1.25);
+            assert_eq!(state.map_pointer(750.0, 450.0), (500.0, 300.0));
+            assert_eq!(state.applied().logical_size(), (800, 600));
+            state.did_apply();
+            state.did_present();
+            assert_eq!(state.map_pointer(750.0, 450.0), (750.0, 450.0));
+            assert_eq!(state.applied().logical_size(), (1200, 900));
+        }
     }
     const INITIAL: Viewport = Viewport {
         width: 800,
@@ -482,201 +690,5 @@ mod tests {
         let mut state = ViewportState::new(INITIAL);
         state.did_present();
         state
-    }
-
-    // Catches applying layout in resize dispatch instead of at the frame boundary.
-    #[test]
-    fn resize_burst_applies_only_the_latest_viewport_at_redraw() {
-        let mut state = presented();
-        state.observe((900, 700), 1.0);
-        state.observe((1200, 900), 1.0);
-        assert_eq!(state.applied(), INITIAL);
-        assert!(state.needs_apply());
-        assert_eq!(state.requested().logical_size(), (1200, 900));
-        state.did_apply();
-        assert_eq!(
-            state.applied(),
-            Viewport {
-                width: 1200,
-                height: 900,
-                dpr: 1.0
-            }
-        );
-        assert!(state.needs_present());
-        state.did_present();
-        assert!(!state.needs_present());
-    }
-
-    #[test]
-    fn duplicate_notifications_do_not_schedule_or_reconfigure() {
-        let mut state = presented();
-        assert!(!state.observe((800, 600), 1.0));
-        assert!(!state.needs_apply());
-        assert!(!state.needs_surface_resize(800, 600));
-        assert!(!state.needs_present());
-    }
-
-    // Catches a phone's desk laid out at its Retina pixel width read as CSS
-    // pixels: a change of density alone draws the same box at the new one,
-    // and the frame follows the density.
-    #[test]
-    fn a_density_change_alone_keeps_the_layout_box_and_moves_the_extent() {
-        let mut state = presented();
-        // The browser draws at 2 now, and winit still reports the extent it
-        // measured at 1: 800 x 600 CSS pixels.
-        assert!(state.observe((800, 600), 2.0));
-        assert_eq!(
-            state.requested(),
-            Viewport {
-                width: 1600,
-                height: 1200,
-                dpr: 2.0
-            }
-        );
-        assert_eq!(state.requested().logical_size(), (800, 600), "the same box");
-        assert!(state.needs_apply());
-        assert!(state.needs_surface_resize(800, 600), "the frame follows");
-        state.did_apply();
-        assert!(state.needs_present());
-
-        // Back to 1: the box is the box, whatever extent was measured last.
-        assert!(state.observe((1600, 1200), 1.0));
-        assert_eq!(state.requested(), INITIAL);
-        // Input still lands where the frame drawn at 2 stands, until redraw.
-        assert_eq!(state.map_pointer(400.0, 300.0), (800.0, 600.0));
-
-        // A box that really changed is taken as reported, at its own density.
-        assert!(state.observe((1200, 900), 1.0));
-        assert_eq!(
-            state.requested(),
-            Viewport {
-                width: 1200,
-                height: 900,
-                dpr: 1.0
-            }
-        );
-        assert!(!state.observe((1200, 900), 1.0), "the same report twice");
-
-        // A fractional density — browser zoom — scales the box too.
-        assert!(state.observe((1200, 900), 1.25));
-        assert_eq!(
-            state.requested(),
-            Viewport {
-                width: 1500,
-                height: 1125,
-                dpr: 1.25
-            }
-        );
-        assert_eq!(state.requested().logical_size(), (1200, 900));
-    }
-
-    #[test]
-    fn zero_size_stops_frame_scheduling_and_restore_keeps_the_last_frame() {
-        let mut state = presented();
-        state.observe((0, 600), 1.0);
-        assert!(state.suspended());
-        assert!(!state.needs_present());
-        assert!(!state.needs_surface_resize(800, 600));
-        assert_eq!(state.applied(), INITIAL);
-        state.observe((800, 600), 1.0);
-        assert!(!state.suspended());
-        assert!(!state.needs_surface_resize(800, 600));
-        state.observe((1000, 600), 1.0);
-        assert!(state.needs_present());
-        assert!(state.needs_surface_resize(800, 600));
-    }
-
-    #[test]
-    fn skipped_presentations_keep_latest_resize_pending_without_reconfigure_loop() {
-        let mut state = presented();
-        state.observe((1000, 600), 1.0);
-        state.did_apply();
-        assert!(state.needs_present()); // Timeout: no acknowledgement.
-        assert!(!state.needs_surface_resize(1000, 600));
-        assert!(state.recover_outdated());
-        assert!(!state.recover_outdated()); // Repeated Outdated: same configured size.
-        assert!(state.needs_present());
-        state.observe((1200, 600), 1.0);
-        state.did_apply();
-        assert!(state.needs_surface_resize(1000, 600));
-        assert!(state.recover_outdated());
-        state.did_present();
-        assert!(!state.needs_present());
-        assert!(state.recover_outdated()); // A later independent outage can recover.
-    }
-
-    #[test]
-    fn skipped_acquisition_preserves_displayed_dpr_layout_and_input_until_success() {
-        let initial = Viewport {
-            width: 1000,
-            height: 750,
-            dpr: 1.25,
-        };
-        let mut state = ViewportState::new(initial);
-        state.did_present();
-        // Another display of twice the density, the box unchanged.
-        state.observe((1000, 750), 2.0);
-        assert!(state.needs_apply());
-        let mut frame_viewport = initial;
-        for _ in 0..3 {
-            // Timeout/Outdated/Occluded all skip acquisition. The production
-            // transaction must leave FrameHarness's layout and input scale alone.
-            let result = state
-                .apply_for_acquired_texture(None::<()>, |viewport| {
-                    frame_viewport = viewport;
-                    Ok::<_, ()>(())
-                })
-                .unwrap();
-            assert!(result.is_none());
-            assert_eq!(frame_viewport, initial);
-            assert_eq!(state.applied(), initial);
-            // A pointer at the new extent's corner lands on the corner of the
-            // frame still shown.
-            assert_eq!(state.map_pointer(1600.0, 1200.0), (1000.0, 750.0));
-            assert_eq!(frame_viewport.logical_size(), (800, 600));
-            assert!(state.needs_present());
-        }
-        let result = state
-            .apply_for_acquired_texture(Some(()), |viewport| {
-                frame_viewport = viewport;
-                Ok::<_, ()>(())
-            })
-            .unwrap();
-        assert!(result.is_some());
-        assert_eq!(frame_viewport.logical_size(), (800, 600));
-        assert_eq!(state.applied().dpr, 2.0);
-        assert_eq!(state.map_pointer(1600.0, 1200.0), (1600.0, 1200.0));
-        assert!(state.needs_present());
-        state.did_present();
-        assert!(!state.needs_present());
-    }
-
-    #[test]
-    fn replacement_surface_requires_a_frame_and_can_recover_its_own_outage() {
-        let mut state = presented();
-        assert!(state.recover_outdated());
-        state.surface_installed();
-        assert!(state.needs_present());
-        assert!(!state.needs_surface_resize(800, 600));
-        assert!(state.recover_outdated());
-        state.did_present();
-        assert!(!state.needs_present());
-    }
-
-    #[test]
-    fn pointer_and_touch_follow_the_scaled_applied_frame_until_redraw() {
-        let mut state = ViewportState::new(Viewport {
-            width: 1000,
-            height: 750,
-            dpr: 1.25,
-        });
-        state.did_present();
-        state.observe((1500, 1125), 1.25);
-        assert_eq!(state.map_pointer(750.0, 450.0), (500.0, 300.0));
-        assert_eq!(state.applied().logical_size(), (800, 600));
-        state.did_apply();
-        state.did_present();
-        assert_eq!(state.map_pointer(750.0, 450.0), (750.0, 450.0));
-        assert_eq!(state.applied().logical_size(), (1200, 900));
     }
 }

@@ -31,7 +31,6 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_network_actor::workspace_topic_id;
 use tilo_session::sync::{Client, Event, OwnPresence};
 use tilo_session::{AppActions, Options, Session};
 
@@ -89,7 +88,7 @@ fn desk() -> DesktopTree {
 /// One thing the other device said in the workspace.
 fn said(from: u8, msg: NeighbourMsg) -> Event {
     Event::Msg {
-        ws: workspace_topic_id(workspace_id()),
+        ws: workspace_id(),
         peer: device(from),
         msg: Box::new(msg),
     }

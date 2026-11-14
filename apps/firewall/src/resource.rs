@@ -386,89 +386,93 @@ mod tests {
             .find(|row| row["resource"] == "firewall.config" && row["action"] == id)
     }
 
-    /// A configuration from before a rule's match was stored as its variant and fields:
-    /// each match was one JSON string.
-    #[test]
-    fn rules_kept_with_json_matches_migrate_to_their_variants() {
-        use ui::tilo_resource::{Replica, Slot, evolution, read_key};
-        let mut replica = Replica::<Firewall>::new();
-        replica
-            .apply(Firewall::import_of(&sample_config()))
-            .unwrap();
-        let expected = replica.state().unwrap();
-        let doc = replica.doc_mut();
-        let root = ui::automerge::ROOT;
-        for (_, zone) in evolution::map_values(doc, &root, "zones").unwrap() {
-            for rule in evolution::collection_items(doc, &zone, "rules").unwrap() {
-                let matcher: crate::model::Matcher = read_key(doc, &rule, "matcher").unwrap();
-                let slot = Slot::Key(&rule, "matcher");
-                slot.remove(doc).unwrap();
-                slot.put_scalar(
-                    doc,
-                    ui::automerge::ScalarValue::Str(
-                        serde_json::to_string(&matcher).unwrap().into(),
-                    ),
-                )
-                .unwrap();
-            }
-        }
-        Slot::Key(&root, evolution::VERSION_KEY)
-            .remove(doc)
-            .unwrap();
-        doc.commit();
-        let mut old = doc.fork();
-        assert!(
-            evolution::read_checked::<Firewall>(&old).is_err(),
-            "unmigrated"
-        );
-        assert!(evolution::migrate::<Firewall>(&mut old).unwrap());
-        assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
-    }
+    tilo_test_env::scenario! {
+        fn rules_kept_in_older_forms_migrate_to_the_current_one;
 
-    /// A configuration of version 2 stored each rule's match with its fields flat beside
-    /// its variant's name.
-    #[test]
-    fn rules_kept_with_flat_matches_migrate_to_fields_stored_by_variant() {
-        use ui::automerge::{ObjType, ReadDoc as _, ScalarValue};
-        use ui::tilo_resource::{Model as _, Replica, Slot, evolution, read_key};
-        let mut replica = Replica::<Firewall>::new();
-        replica
-            .apply(Firewall::import_of(&sample_config()))
-            .unwrap();
-        let expected = replica.state().unwrap();
-        let doc = replica.doc_mut();
-        let root = ui::automerge::ROOT;
-        let mut flattened = Vec::new();
-        for (_, zone) in evolution::map_values(doc, &root, "zones").unwrap() {
-            for rule in evolution::collection_items(doc, &zone, "rules").unwrap() {
-                let matcher: crate::model::Matcher = read_key(doc, &rule, "matcher").unwrap();
-                Slot::Key(&rule, "matcher").remove(doc).unwrap();
-                let map = Slot::Key(&rule, "matcher")
-                    .object(doc, ObjType::Map)
+        phase rules_kept_with_json_matches_migrate_to_their_variants;
+        // A configuration from before a rule's match was stored as its variant and fields:
+        // each match was one JSON string.
+        {
+            use ui::tilo_resource::{Replica, Slot, evolution, read_key};
+            let mut replica = Replica::<Firewall>::new();
+            replica
+                .apply(Firewall::import_of(&sample_config()))
+                .unwrap();
+            let expected = replica.state().unwrap();
+            let doc = replica.doc_mut();
+            let root = ui::automerge::ROOT;
+            for (_, zone) in evolution::map_values(doc, &root, "zones").unwrap() {
+                for rule in evolution::collection_items(doc, &zone, "rules").unwrap() {
+                    let matcher: crate::model::Matcher = read_key(doc, &rule, "matcher").unwrap();
+                    let slot = Slot::Key(&rule, "matcher");
+                    slot.remove(doc).unwrap();
+                    slot.put_scalar(
+                        doc,
+                        ui::automerge::ScalarValue::Str(
+                            serde_json::to_string(&matcher).unwrap().into(),
+                        ),
+                    )
                     .unwrap();
-                evolution::fixture(doc, &map, &matcher.to_json()).unwrap();
-                flattened.push(rule);
+                }
             }
-        }
-        assert!(!flattened.is_empty(), "the sample has rules to migrate");
-        Slot::Key(&root, evolution::VERSION_KEY)
-            .put_scalar(doc, ScalarValue::Uint(2))
-            .unwrap();
-        doc.commit();
-        let mut old = doc.fork();
-        assert!(
-            evolution::read_checked::<Firewall>(&old).is_err(),
-            "unmigrated"
-        );
-        assert!(evolution::migrate::<Firewall>(&mut old).unwrap());
-        assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
-        for rule in flattened {
-            let (_, matcher) = old.get(&rule, "matcher").unwrap().unwrap();
+            Slot::Key(&root, evolution::VERSION_KEY)
+                .remove(doc)
+                .unwrap();
+            doc.commit();
+            let mut old = doc.fork();
             assert!(
-                old.keys(&matcher)
-                    .all(|key| key == "$variant" || key.starts_with("$field/")),
-                "a match's fields are stored by its variant"
+                evolution::read_checked::<Firewall>(&old).is_err(),
+                "unmigrated"
             );
+            assert!(evolution::migrate::<Firewall>(&mut old).unwrap());
+            assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
+        }
+
+        phase rules_kept_with_flat_matches_migrate_to_fields_stored_by_variant;
+        // A configuration of version 2 stored each rule's match with its fields flat beside
+        // its variant's name.
+        {
+            use ui::automerge::{ObjType, ReadDoc as _, ScalarValue};
+            use ui::tilo_resource::{Model as _, Replica, Slot, evolution, read_key};
+            let mut replica = Replica::<Firewall>::new();
+            replica
+                .apply(Firewall::import_of(&sample_config()))
+                .unwrap();
+            let expected = replica.state().unwrap();
+            let doc = replica.doc_mut();
+            let root = ui::automerge::ROOT;
+            let mut flattened = Vec::new();
+            for (_, zone) in evolution::map_values(doc, &root, "zones").unwrap() {
+                for rule in evolution::collection_items(doc, &zone, "rules").unwrap() {
+                    let matcher: crate::model::Matcher = read_key(doc, &rule, "matcher").unwrap();
+                    Slot::Key(&rule, "matcher").remove(doc).unwrap();
+                    let map = Slot::Key(&rule, "matcher")
+                        .object(doc, ObjType::Map)
+                        .unwrap();
+                    evolution::fixture(doc, &map, &matcher.to_json()).unwrap();
+                    flattened.push(rule);
+                }
+            }
+            assert!(!flattened.is_empty(), "the sample has rules to migrate");
+            Slot::Key(&root, evolution::VERSION_KEY)
+                .put_scalar(doc, ScalarValue::Uint(2))
+                .unwrap();
+            doc.commit();
+            let mut old = doc.fork();
+            assert!(
+                evolution::read_checked::<Firewall>(&old).is_err(),
+                "unmigrated"
+            );
+            assert!(evolution::migrate::<Firewall>(&mut old).unwrap());
+            assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
+            for rule in flattened {
+                let (_, matcher) = old.get(&rule, "matcher").unwrap().unwrap();
+                assert!(
+                    old.keys(&matcher)
+                        .all(|key| key == "$variant" || key.starts_with("$field/")),
+                    "a match's fields are stored by its variant"
+                );
+            }
         }
     }
 
@@ -625,85 +629,89 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
-    /// The record reads back as the canonical configuration, and an import removes the
-    /// members and rules firewalld no longer reports.
-    #[test]
-    fn the_record_round_trips_and_an_import_reconciles() {
-        let config = sample_config();
-        let replica = imported(&config);
-        assert_eq!(replica.state().unwrap().config(), config.canonical());
+    tilo_test_env::scenario! {
+        fn the_record_round_trips_reconciles_and_merges;
 
-        let zone_kind = config.default_zone;
-        let stale_rule = config.zone(zone_kind).unwrap().rules[0].id;
-        let mut probe = config.clone();
-        let zone = probe.zone_mut(zone_kind).unwrap();
-        zone.services.retain(|service| service != "ssh");
-        zone.interfaces.retain(|interface| interface != "eth0");
-        zone.rules.retain(|rule| rule.id != stale_rule);
-        let mut replica = replica;
-        replica.apply(Firewall::import_of(&probe)).unwrap();
-        let restored = replica.state().unwrap().config();
-        let zone = restored.zone(zone_kind).unwrap();
-        assert!(!zone.has_service("ssh"));
-        assert!(!zone.interfaces.iter().any(|interface| interface == "eth0"));
-        assert!(!zone.rules.iter().any(|rule| rule.id == stale_rule));
+        phase the_record_round_trips_and_an_import_reconciles;
+        // The record reads back as the canonical configuration, and an import removes the
+        // members and rules firewalld no longer reports.
+        {
+            let config = sample_config();
+            let replica = imported(&config);
+            assert_eq!(replica.state().unwrap().config(), config.canonical());
 
-        replica.apply(Firewall::import_of(&config)).unwrap();
-        let again = replica.state().unwrap().config();
-        assert!(
-            !again
-                .zone(zone_kind)
-                .unwrap()
-                .rules
-                .iter()
-                .any(|rule| rule.id == stale_rule)
-        );
-    }
+            let zone_kind = config.default_zone;
+            let stale_rule = config.zone(zone_kind).unwrap().rules[0].id;
+            let mut probe = config.clone();
+            let zone = probe.zone_mut(zone_kind).unwrap();
+            zone.services.retain(|service| service != "ssh");
+            zone.interfaces.retain(|interface| interface != "eth0");
+            zone.rules.retain(|rule| rule.id != stale_rule);
+            let mut replica = replica;
+            replica.apply(Firewall::import_of(&probe)).unwrap();
+            let restored = replica.state().unwrap().config();
+            let zone = restored.zone(zone_kind).unwrap();
+            assert!(!zone.has_service("ssh"));
+            assert!(!zone.interfaces.iter().any(|interface| interface == "eth0"));
+            assert!(!zone.rules.iter().any(|rule| rule.id == stale_rule));
 
-    /// Concurrent edits to independent fields, rules and services merge; a deletion wins
-    /// over a concurrent edit of the rule.
-    #[test]
-    fn concurrent_edits_merge_per_field_and_delete_wins() {
-        let config = sample_config();
-        let z = config.default_zone;
-        let ids: Vec<_> = config.zone(z).unwrap().rules.iter().map(|r| r.id).collect();
-        let rules = Firewall::paths().zones.key(z.name()).rules;
-        let rule = |id| rules.item(&Firewall::rule(id));
+            replica.apply(Firewall::import_of(&config)).unwrap();
+            let again = replica.state().unwrap().config();
+            assert!(
+                !again
+                    .zone(zone_kind)
+                    .unwrap()
+                    .rules
+                    .iter()
+                    .any(|rule| rule.id == stale_rule)
+            );
+        }
 
-        let mut a = imported(&config);
-        let mut b = a.fork();
-        edit(&mut a, &rule(ids[0]).source.replace("10.0.0.0/8")).unwrap();
-        edit(&mut b, &rule(ids[0]).enabled.set(false)).unwrap();
-        edit(&mut b, &rule(ids[1]).enabled.set(false)).unwrap();
-        let services = Firewall::paths().zones.key(z.name()).services;
-        edit(&mut a, &services.insert(&"https".to_owned())).unwrap();
-        edit(&mut b, &services.insert(&"dns".to_owned())).unwrap();
-        a.sync_with(&mut b).unwrap();
-        assert_eq!(a.state().unwrap(), b.state().unwrap());
-        let merged = a.state().unwrap().config();
-        let zone = merged.zone(z).unwrap();
-        let first = zone.rules.iter().find(|r| r.id == ids[0]).unwrap();
-        assert_eq!(first.source, "10.0.0.0/8");
-        assert!(!first.enabled);
-        assert!(!zone.rules.iter().find(|r| r.id == ids[1]).unwrap().enabled);
-        assert!(zone.has_service("https") && zone.has_service("dns"));
+        phase concurrent_edits_merge_per_field_and_delete_wins;
+        // Concurrent edits to independent fields, rules and services merge; a deletion wins
+        // over a concurrent edit of the rule.
+        {
+            let config = sample_config();
+            let z = config.default_zone;
+            let ids: Vec<_> = config.zone(z).unwrap().rules.iter().map(|r| r.id).collect();
+            let rules = Firewall::paths().zones.key(z.name()).rules;
+            let rule = |id| rules.item(&Firewall::rule(id));
 
-        let mut a = imported(&config);
-        let mut b = a.fork();
-        a.apply(Firewall::DELETE_RULE.with((z, Firewall::rule(ids[0]))))
-            .unwrap();
-        edit(&mut b, &rule(ids[0]).source.replace("192.168.1.0/24")).unwrap();
-        a.sync_with(&mut b).unwrap();
-        assert!(
-            !a.state()
-                .unwrap()
-                .config()
-                .zone(z)
-                .unwrap()
-                .rules
-                .iter()
-                .any(|r| r.id == ids[0])
-        );
+            let mut a = imported(&config);
+            let mut b = a.fork();
+            edit(&mut a, &rule(ids[0]).source.replace("10.0.0.0/8")).unwrap();
+            edit(&mut b, &rule(ids[0]).enabled.set(false)).unwrap();
+            edit(&mut b, &rule(ids[1]).enabled.set(false)).unwrap();
+            let services = Firewall::paths().zones.key(z.name()).services;
+            edit(&mut a, &services.insert(&"https".to_owned())).unwrap();
+            edit(&mut b, &services.insert(&"dns".to_owned())).unwrap();
+            a.sync_with(&mut b).unwrap();
+            assert_eq!(a.state().unwrap(), b.state().unwrap());
+            let merged = a.state().unwrap().config();
+            let zone = merged.zone(z).unwrap();
+            let first = zone.rules.iter().find(|r| r.id == ids[0]).unwrap();
+            assert_eq!(first.source, "10.0.0.0/8");
+            assert!(!first.enabled);
+            assert!(!zone.rules.iter().find(|r| r.id == ids[1]).unwrap().enabled);
+            assert!(zone.has_service("https") && zone.has_service("dns"));
+
+            let mut a = imported(&config);
+            let mut b = a.fork();
+            a.apply(Firewall::DELETE_RULE.with((z, Firewall::rule(ids[0]))))
+                .unwrap();
+            edit(&mut b, &rule(ids[0]).source.replace("192.168.1.0/24")).unwrap();
+            a.sync_with(&mut b).unwrap();
+            assert!(
+                !a.state()
+                    .unwrap()
+                    .config()
+                    .zone(z)
+                    .unwrap()
+                    .rules
+                    .iter()
+                    .any(|r| r.id == ids[0])
+            );
+        }
     }
 
     /// The stored configuration is held to what firewalld accepts, however it is changed;

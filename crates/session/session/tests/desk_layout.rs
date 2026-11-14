@@ -1,7 +1,7 @@
 //! The desk comes back after a login: its strips, its groups and their widths, the window that was
 //! in front — and the windows the person left open, each asked for again into the tab it was in. A
-//! window whose app is gone says so in its tab and closes; a desk this build cannot read starts
-//! empty and says where the person's own desk still is.
+//! window whose app is gone says so in its tab and closes. The desk is the workspaces' layouts, so
+//! what a session leaves is what the next one shows.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -19,13 +19,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_action_policy::Role;
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceSlot,
 };
 use tilo_desktop_policy::Window;
-use tilo_desktop_surface::notifications::NotificationSeverity;
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
@@ -39,22 +37,115 @@ const GONE: &str = "so.tilo.gone";
 /// What a test names a strip it renames.
 const RENAMED: &str = "Sketches";
 
-/// Where this device keeps what outlives a session.
-fn state_of(home: &tilo_test_env::TestHome) -> PathBuf {
-    home.state().to_path_buf()
+/// A device seated in a test's home: where it keeps its state, and the salt it numbers what it
+/// makes in.
+struct Seat {
+    state: PathBuf,
+    salt: u16,
 }
 
-/// The person at this device, whose desk its sessions open.
-const PERSON: &str = "ada";
+impl Seat {
+    /// The device of `home`, holding its workspaces.
+    fn in_home(home: &mut tilo_test_env::TestHome) -> Self {
+        let state = crate::common::seat_in(home);
+        let salt = session_keeping(&state, None)
+            .handle()
+            .read(|tree| tree.salt);
+        Self { state, salt }
+    }
 
-/// Write `tree` as the desk this device left, where the next session reads it: the document a
-/// session that ends keeps, written the way that session writes it.
-fn save_desk(state: &Path, tree: &DesktopTree) {
-    let desk = tilo_session_core::desk::Desk::new(automerge::AutoCommit::new(), PERSON, None);
-    desk.record_now(tree, tilo_clock::unix_now_i64(), &[], None);
-    let path = tilo_session_core::desk::path(state);
-    fs::create_dir_all(path.parent().expect("a tilo directory")).expect("the state directory");
-    fs::write(path, desk.document().save()).expect("the desk this device left");
+    /// What this device numbers `n` as.
+    fn id(&self, n: u64) -> u64 {
+        tilo_desktop_model::compose_id(self.salt, n)
+    }
+}
+
+/// `tree` with every strip, group and window numbered as `seat` numbers what it makes.
+fn salted(seat: &Seat, tree: &DesktopTree) -> DesktopTree {
+    let mut tree = tree.clone();
+    for strip in tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+    {
+        strip.id = StripId(seat.id(strip.id.0));
+        for group in &mut strip.window_groups {
+            group.id = seat.id(group.id);
+            group.active_tab = seat.id(group.active_tab);
+            for tab in &mut group.tabs {
+                tab.id = seat.id(tab.id);
+            }
+        }
+    }
+    tree.active_strip = tree
+        .active_strip
+        .iter()
+        .map(|(slot, strip)| (*slot, StripId(seat.id(strip.0))))
+        .collect();
+    tree.active_group = tree
+        .active_group
+        .iter()
+        .map(|(strip, group)| (StripId(seat.id(strip.0)), seat.id(*group)))
+        .collect();
+    tree
+}
+
+/// Leave `tree` as the desk a session on `seat` ends with, its ids numbered as `seat` numbers them
+/// ([`salted`]): the first of `tree`'s workspaces is the one the session opened, the others are
+/// put beside it, each is laid out as `tree` does, and a workspace's layout is written while it is
+/// in front. The slots the desk gave `tree`'s workspaces, in order.
+fn save_desk(seat: &Seat, tree: &DesktopTree) -> Vec<WorkspaceSlot> {
+    let tree = salted(seat, tree);
+    let mut session = session_keeping(&seat.state, None);
+    session.step(Duration::from_millis(1)).expect("step");
+    let mut desk = session.handle().read(Clone::clone);
+    for laid in tree.workspaces.iter().skip(desk.workspaces.len()) {
+        desk.workspaces.push(Workspace::create(laid.name.clone()));
+    }
+    let slots: Vec<WorkspaceSlot> = desk.workspaces.iter().map(|held| held.slot).collect();
+    for (index, laid) in tree.workspaces.iter().enumerate() {
+        let held = &mut desk.workspaces[index];
+        held.name.clone_from(&laid.name);
+        held.strips.clone_from(&laid.strips);
+        if let Some(strip) = tree.active_strip.get(&laid.slot) {
+            desk.active_strip.insert(slots[index], *strip);
+        }
+        for strip in &laid.strips {
+            if let Some(group) = tree.active_group.get(&strip.id) {
+                desk.active_group.insert(strip.id, *group);
+            }
+        }
+    }
+    for (index, laid) in tree.workspaces.iter().enumerate() {
+        if laid.tabs().next().is_none() {
+            continue;
+        }
+        // A workspace's layout is written while it is in front.
+        desk.active = slots[index];
+        session.handle().replace_tree(desk);
+        until(
+            &mut session,
+            "the workspace's layout is written",
+            |session| session.arrangement().borrow_mut().last_step().is_some(),
+        );
+        desk = session.handle().read(Clone::clone);
+    }
+    let front = tree
+        .workspaces
+        .iter()
+        .position(|held| held.slot == tree.active)
+        .unwrap_or_default();
+    desk.active = slots[front];
+    session.handle().replace_tree(desk);
+    session.step(Duration::from_millis(1)).expect("step");
+    slots
+}
+
+/// Run frames until the desk shows the windows its workspaces' layouts hold.
+fn laid_out(session: &mut Session) {
+    until(session, "the desk is laid out", |session| {
+        !tabs(session).is_empty()
+    });
 }
 
 fn tab(id: u64, label: &str, app: &str) -> Tab {
@@ -183,20 +274,6 @@ fn tabs(session: &Session) -> Vec<(TabId, GroupId)> {
     })
 }
 
-/// Every tab of the desk that stands for an app.
-fn app_tabs(session: &Session) -> Vec<TabId> {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .filter(|tab| matches!(tab.tile, TileContent::LocalApp { .. }))
-            .map(|tab| tab.id)
-            .collect()
-    })
-}
-
 /// What the tab `id` holds.
 fn tile_of(session: &Session, id: u64) -> Option<TileContent> {
     session.handle().read(|tree| {
@@ -295,12 +372,13 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 #[test]
 fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    save_desk(&state_of(&home), &wide_desk());
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let seat = Seat::in_home(&mut home);
+    let slots = save_desk(&seat, &wide_desk());
 
     // Nothing is asked of any app: this is the shape of the desk coming back.
-    let mut session = session_keeping(&state_of(&home), None);
-    session.step(Duration::from_millis(1)).expect("step");
+    let mut session = session_keeping(&seat.state, None);
+    laid_out(&mut session);
 
     let (workspaces, names, widths, maximized, front, strip_in_front) =
         session.handle().read(|tree| {
@@ -318,21 +396,21 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
                     .collect::<Vec<_>>(),
                 home.strips[0].window_groups[1].maximized,
                 tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab),
-                tree.active_strip.get(&WorkspaceSlot(1)).copied(),
+                tree.active_strip.get(&slots[0]).copied(),
             )
         });
     assert_eq!(workspaces, 2, "the workspace behind came back too");
     assert_eq!(names, ["Writing", "Reference"], "the strips, in order");
     assert_eq!(widths, [480, 333], "each group kept the width it had");
     assert!(maximized, "so did the group the person maximized");
-    assert_eq!(strip_in_front, Some(StripId(1)));
+    assert_eq!(strip_in_front, Some(StripId(seat.id(1))));
     assert_eq!(
         front,
-        Some(101u64),
+        Some(seat.id(101)),
         "the window that was in front is in front again"
     );
     assert_eq!(
-        tile_of(&session, 101),
+        tile_of(&session, seat.id(101)),
         Some(TileContent::LocalApp {
             app_id: PROBE.into(),
             label: "Build".into(),
@@ -347,13 +425,14 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
 #[test]
 fn a_restart_brings_back_the_desk_the_session_kept() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let state = state_of(&home);
-    save_desk(&state, &wide_desk());
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let seat = Seat::in_home(&mut home);
+    let state = seat.state.clone();
+    save_desk(&seat, &wide_desk());
 
     let kept = {
         let mut session = session_keeping(&state, None);
-        session.step(Duration::from_millis(1)).expect("step");
+        laid_out(&mut session);
         let mut tree = session.handle().read(Clone::clone);
         tree.workspaces[0].strips[0].name = RENAMED.into();
         session.handle().replace_tree(tree);
@@ -364,12 +443,12 @@ fn a_restart_brings_back_the_desk_the_session_kept() {
     drop(kept);
 
     assert!(
-        tilo_session_core::desk::path(&state).exists(),
-        "the desk is kept as its one document"
+        state.join("tilo").join("shown.json").exists(),
+        "the device keeps what it shows"
     );
 
     let mut next = session_keeping(&state, None);
-    next.step(Duration::from_millis(1)).expect("step");
+    laid_out(&mut next);
     let (name, width) = next.handle().read(|tree| {
         let strip = &tree.workspaces[0].strips[0];
         (strip.name.clone(), strip.window_groups[0].width.permille())
@@ -384,14 +463,20 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    save_desk(&state_of(&home), &one_window(PROBE, "Probe"));
+    let seat = Seat::in_home(&mut home);
+    save_desk(&seat, &one_window(PROBE, "Probe"));
 
     let mut session = session_keeping(
-        &state_of(&home),
+        &seat.state,
         Some(apps_at(&home, Some(launcher.path().to_owned()))),
     );
+    laid_out(&mut session);
     let before = tabs(&session);
-    assert_eq!(before, [(100u64, 10u64)], "the desk as it was left");
+    assert_eq!(
+        before,
+        [(seat.id(100), seat.id(10))],
+        "the desk as it was left"
+    );
 
     until(&mut session, "the app is asked for its window", |_| {
         started.exists()
@@ -403,7 +488,7 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
         .expect("the window maps");
     until(&mut session, "the window is in its tab", |session| {
         matches!(
-            tile_of(session, 100),
+            tile_of(session, seat.id(100)),
             Some(TileContent::Foreign { surface_id: 11, .. })
         )
     });
@@ -440,10 +525,11 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
         ),
     )
     .unwrap();
-    save_desk(&state_of(&home), &one_window(PROBE, "Probe"));
+    let seat = Seat::in_home(&mut home);
+    save_desk(&seat, &one_window(PROBE, "Probe"));
 
     let mut session = session_keeping(
-        &state_of(&home),
+        &seat.state,
         Some(apps_at(&home, Some(launcher.path().to_owned()))),
     );
     until(&mut session, "the app is asked for its window", |_| {
@@ -454,7 +540,7 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
         fs::read_to_string(&instances)
             .expect("the launcher recorded its start")
             .trim(),
-        "100",
+        seat.id(100).to_string(),
         "the app is told the tab its window takes"
     );
 }
@@ -477,7 +563,7 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let state = state_of(&home);
+    let state = Seat::in_home(&mut home).state;
 
     // The person opens the app from the desk, the compositor maps its window into the tab it made,
     // and the session stops with that window open.
@@ -549,8 +635,9 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let state = state_of(&home);
-    save_desk(&state, &one_window(PROBE, "Probe"));
+    let seat = Seat::in_home(&mut home);
+    let state = seat.state.clone();
+    save_desk(&seat, &one_window(PROBE, "Probe"));
 
     // The session starts on the desk, and the person — or an action reaching the app from somewhere
     // else — opens it before the restore has asked for its saved window: that launch starts the
@@ -582,11 +669,15 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
         .expect("the window maps");
     until(&mut session, "the window takes the saved tab", |session| {
         matches!(
-            tile_of(session, 100),
+            tile_of(session, seat.id(100)),
             Some(TileContent::Foreign { surface_id: 11, .. })
         )
     });
-    assert_eq!(tabs(&session), [(100, 10)], "one tab, not two");
+    assert_eq!(
+        tabs(&session),
+        [(seat.id(100), seat.id(10))],
+        "one tab, not two"
+    );
 }
 
 #[test]
@@ -595,8 +686,9 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
-    let state = state_of(&home);
-    save_desk(&state, &one_window(PROBE, "Probe"));
+    let seat = Seat::in_home(&mut home);
+    let state = seat.state.clone();
+    save_desk(&seat, &one_window(PROBE, "Probe"));
 
     // The restore asks for the saved window first, and the same app is asked for again while its
     // window is coming: a record names the process that already has the app's records, so no second
@@ -625,24 +717,29 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
         .expect("the window maps");
     until(&mut session, "the window takes the saved tab", |session| {
         matches!(
-            tile_of(session, 100),
+            tile_of(session, seat.id(100)),
             Some(TileContent::Foreign { surface_id: 11, .. })
         )
     });
-    assert_eq!(tabs(&session), [(100, 10)], "one tab, not two");
+    assert_eq!(
+        tabs(&session),
+        [(seat.id(100), seat.id(10))],
+        "one tab, not two"
+    );
 }
 
 #[test]
 fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    save_desk(&state_of(&home), &one_window(GONE, "Gone"));
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let seat = Seat::in_home(&mut home);
+    save_desk(&seat, &one_window(GONE, "Gone"));
 
-    let mut session = session_keeping(&state_of(&home), Some(apps_at(&home, None)));
+    let mut session = session_keeping(&seat.state, Some(apps_at(&home, None)));
     until(&mut session, "the tab says why it is empty", |session| {
-        note_of(session, 100).is_some_and(|note| !note.is_empty())
+        note_of(session, seat.id(100)).is_some_and(|note| !note.is_empty())
     });
-    let note = note_of(&session, 100).expect("the tab holds the app it was");
+    let note = note_of(&session, seat.id(100)).expect("the tab holds the app it was");
     assert!(
         note.contains("Gone"),
         "the tab names the app it holds: {note}"
@@ -664,7 +761,7 @@ fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     );
     assert_eq!(
         tabs(&session),
-        [(100u64, 10u64)],
+        [(seat.id(100), seat.id(10))],
         "nothing else on the desk changed"
     );
 
@@ -679,58 +776,6 @@ fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     });
 }
 
-#[test]
-fn a_desk_that_cannot_be_read_starts_empty_and_says_the_desk_is_still_there() {
-    let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let state = state_of(&home);
-    let path = tilo_session_core::desk::path(&state);
-    fs::create_dir_all(path.parent().expect("a tilo directory")).expect("the state directory");
-    fs::write(&path, "{ not a desk").expect("a desk file that cannot be read");
-
-    let mut session = session_keeping(&state, Some(apps_at(&home, None)));
-    session.step(Duration::from_millis(1)).expect("step");
-
-    assert!(
-        app_tabs(&session).is_empty(),
-        "the session starts on an empty desk: {:?}",
-        app_tabs(&session)
-    );
-    let shown = session.notifications().log().active().to_vec();
-    let about = shown
-        .iter()
-        .find(|notice| notice.title == "Your desk could not be read")
-        .unwrap_or_else(|| {
-            panic!(
-                "the person is told their desk could not be read: {:?}",
-                shown
-                    .iter()
-                    .map(|notice| (notice.title.clone(), notice.body.clone()))
-                    .collect::<Vec<_>>()
-            )
-        });
-    assert!(
-        about.body.contains("unchanged"),
-        "and that it is still there as it was: {}",
-        about.body
-    );
-    assert_eq!(
-        about.severity,
-        NotificationSeverity::Error,
-        "and is not one that fades before it is read"
-    );
-    assert!(
-        PathBuf::from(format!("{}.not-opened", path.display())).exists(),
-        "the reason is left beside the desk, for anyone not looking at the screen"
-    );
-    assert_eq!(
-        fs::read_to_string(&path).expect("the desk is still there"),
-        "{ not a desk",
-        "nothing is written over a desk this session did not open"
-    );
-}
-
-/// A desk with one empty strip in Home, and Away behind it.
 fn two_workspaces() -> DesktopTree {
     let mut away = Workspace::new(WorkspaceSlot(2), "Away");
     away.strips = vec![Strip::new(StripId(3), "Later")];
@@ -797,8 +842,9 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let state = state_of(&home);
-    save_desk(&state, &two_workspaces());
+    let seat = Seat::in_home(&mut home);
+    let state = seat.state.clone();
+    let slots = save_desk(&seat, &two_workspaces());
 
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
@@ -806,10 +852,7 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
     let (away, away_id) = session
         .handle()
         .read(|tree| {
-            let away = tree
-                .workspaces
-                .iter()
-                .find(|held| held.slot != WorkspaceSlot(1))?;
+            let away = tree.workspaces.iter().find(|held| held.slot != slots[0])?;
             Some((away.slot, away.id().to_string()))
         })
         .expect("a workspace to move it to");
@@ -860,27 +903,18 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let state = state_of(&home);
-    let mut desk = two_workspaces();
-    let away = desk
-        .workspaces
-        .iter_mut()
-        .find(|held| held.slot != WorkspaceSlot(1))
-        .expect("the workspace behind");
-    let away_id = away.id().to_string();
-    save_desk(&state, &desk);
-
+    let seat = Seat::in_home(&mut home);
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
-    // Someone else is in the workspace the person moves the window to: a workspace's people are its
-    // governance's, which this session reads onto its workspaces once it holds them, and the desk
-    // it starts from does not carry them.
+    let mut session = session_keeping(&seat.state, Some(Rc::clone(&apps)));
+    session.step(Duration::from_millis(1)).expect("step");
+    // Someone else is in the workspace the person moves the window to: it is another person's, and
+    // this device holds no governance of it.
+    let mut away = Workspace::create("Away");
+    away.set_owner("bb".repeat(32));
+    let away_id = away.id().to_string();
+    let slots = [session.handle().read(|tree| tree.active), away.slot];
     let mut desk = session.handle().read(Clone::clone);
-    desk.workspaces
-        .iter_mut()
-        .find(|held| held.slot == WorkspaceSlot(2))
-        .expect("the workspace behind")
-        .admit("bb".repeat(32), Role::Editor);
+    desk.workspaces.push(away);
     session.handle().replace_tree(desk);
     let window_tab = showing(&mut session, &apps, &started);
 
@@ -888,7 +922,7 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
         .handle()
         .choose_window_menu(
             window_tab,
-            &format!("{MOVE_TO_WORKSPACE}:{}", WorkspaceSlot(2).0),
+            &format!("{MOVE_TO_WORKSPACE}:{}", slots[1].0),
             None,
         )
         .expect("the person moves the window");
@@ -924,7 +958,7 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
     );
     assert_eq!(
         workspace_of(&session, window_tab),
-        Some(WorkspaceSlot(1)),
+        Some(slots[0]),
         "nothing moves until they answer"
     );
     assert_eq!(starts(&started), 1, "and nothing starts");
@@ -936,5 +970,5 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
         starts(&started) == 2
     });
     assert_eq!(handed(&arguments, "--workspace-id"), away_id);
-    assert_eq!(workspace_of(&session, window_tab), Some(WorkspaceSlot(2)));
+    assert_eq!(workspace_of(&session, window_tab), Some(slots[1]));
 }

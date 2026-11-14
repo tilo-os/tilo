@@ -569,32 +569,36 @@ pub fn rclone_supported(values: &BTreeMap<String, String>) -> bool {
 mod server_policy_tests {
     use super::safe_server;
 
-    #[test]
-    fn discovery_preserves_canonical_loopback_dav_endpoints() {
-        for server in [
-            "https://files.example.test/dav/",
-            "http://127.0.0.1:8080/dav/",
-            "http://[::1]:8080/dav/",
-            "http://localhost:8080/dav/",
-        ] {
-            assert_eq!(safe_server(server).as_deref(), Some(server));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn discovery_admits_only_canonical_dav_endpoints;
 
-    #[test]
-    fn discovery_still_refuses_remote_http_and_secret_bearing_endpoints() {
-        for server in [
-            "http://files.example.test/dav/",
-            "http://192.168.1.10/dav/",
-            "http://127.0.0.1.example.test/dav/",
-            "ftp://127.0.0.1/dav/",
-            "http://ada@127.0.0.1/dav/",
-            "http://ada:private@127.0.0.1/dav/", // Invalid credential-bearing URL example.
-            "http://127.0.0.1/dav/?token=private",
-            "http://127.0.0.1/dav/#private",
-            "https://files.example.test/dav/?token=private",
-        ] {
-            assert!(safe_server(server).is_none());
+        phase discovery_preserves_canonical_loopback_dav_endpoints;
+        {
+            for server in [
+                "https://files.example.test/dav/",
+                "http://127.0.0.1:8080/dav/",
+                "http://[::1]:8080/dav/",
+                "http://localhost:8080/dav/",
+            ] {
+                assert_eq!(safe_server(server).as_deref(), Some(server));
+            }
+        }
+
+        phase discovery_still_refuses_remote_http_and_secret_bearing_endpoints;
+        {
+            for server in [
+                "http://files.example.test/dav/",
+                "http://192.168.1.10/dav/",
+                "http://127.0.0.1.example.test/dav/",
+                "ftp://127.0.0.1/dav/",
+                "http://ada@127.0.0.1/dav/",
+                "http://ada:private@127.0.0.1/dav/", // Invalid credential-bearing URL example.
+                "http://127.0.0.1/dav/?token=private",
+                "http://127.0.0.1/dav/#private",
+                "https://files.example.test/dav/?token=private",
+            ] {
+                assert!(safe_server(server).is_none());
+            }
         }
     }
 }

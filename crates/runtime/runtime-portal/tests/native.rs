@@ -28,77 +28,169 @@ fn child_at(executable: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
-#[test]
-fn source_profile_host_lookup_keeps_installed_and_desktop_boundaries() {
-    let root = std::env::temp_dir().join(format!("tilo-host-profiles-{}", std::process::id()));
-    std::fs::create_dir(&root).unwrap();
-    std::fs::create_dir_all(root.join("target/thin-app")).unwrap();
-    std::fs::create_dir_all(root.join("target/debug")).unwrap();
-    std::fs::create_dir_all(root.join("crates/runtime/tilo-runtime")).unwrap();
-    let app = root.join("target/thin-app/ebook");
-    std::fs::copy(std::env::current_exe().unwrap(), &app).unwrap();
-    let host = root.join("target/debug/tilo-runtime");
-    std::fs::write(
-        &host,
-        "#!/bin/sh\nprintf 'SOURCE HOST\\n'; printf '%s\\n' \"$@\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
-    assert!(
-        !output.status.success(),
-        "unmarked directories are not a checkout"
-    );
-    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
-    std::fs::write(
-        root.join("crates/runtime/tilo-runtime/Cargo.toml"),
-        "[package]\n",
-    )
-    .unwrap();
-    let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains("SOURCE HOST\n--run-app\ndev.tilo.bootstrap-test")
-    );
-    let output = child_at(&app)
-        .env("PATH", &root)
-        .env("XDG_CURRENT_DESKTOP", "tilo")
-        .output_locked()
+tilo_test_env::scenario! {
+    fn host_lookup;
+
+    phase source_profile_host_lookup_keeps_installed_and_desktop_boundaries;
+    {
+        let root = std::env::temp_dir().join(format!("tilo-host-profiles-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(root.join("target/thin-app")).unwrap();
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::create_dir_all(root.join("crates/runtime/tilo-runtime")).unwrap();
+        let app = root.join("target/thin-app/ebook");
+        std::fs::copy(std::env::current_exe().unwrap(), &app).unwrap();
+        let host = root.join("target/debug/tilo-runtime");
+        std::fs::write(
+            &host,
+            "#!/bin/sh\nprintf 'SOURCE HOST\\n'; printf '%s\\n' \"$@\"\n",
+        )
         .unwrap();
-    assert!(
-        !output.status.success(),
-        "the desktop never selects the standalone host"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("cargo build --locked -p tilo-runtime --bin tilo-runtime-mcp")
-    );
-    std::fs::remove_file(&host).unwrap();
-    let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("cargo build --locked -p tilo-runtime")
-    );
-    std::fs::write(&host, "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::create_dir(root.join("bin")).unwrap();
-    let installed = root.join("bin/ebook");
-    std::fs::hard_link(&app, &installed).unwrap();
-    let output = child_at(&installed)
-        .env("PATH", &root)
-        .output_locked()
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
+        assert!(
+            !output.status.success(),
+            "unmarked directories are not a checkout"
+        );
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(
+            root.join("crates/runtime/tilo-runtime/Cargo.toml"),
+            "[package]\n",
+        )
         .unwrap();
-    assert!(
-        !output.status.success(),
-        "an installed app never searches Cargo profiles"
-    );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("beside the app or on PATH"));
-    std::fs::remove_dir_all(root).unwrap();
+        let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("SOURCE HOST\n--run-app\ndev.tilo.bootstrap-test")
+        );
+        let output = child_at(&app)
+            .env("PATH", &root)
+            .env("XDG_CURRENT_DESKTOP", "tilo")
+            .output_locked()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "the desktop never selects the standalone host"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("cargo build --locked -p tilo-runtime --bin tilo-runtime-mcp")
+        );
+        std::fs::remove_file(&host).unwrap();
+        let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("cargo build --locked -p tilo-runtime")
+        );
+        std::fs::write(&host, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::create_dir(root.join("bin")).unwrap();
+        let installed = root.join("bin/ebook");
+        std::fs::hard_link(&app, &installed).unwrap();
+        let output = child_at(&installed)
+            .env("PATH", &root)
+            .output_locked()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "an installed app never searches Cargo profiles"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("beside the app or on PATH"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    phase the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_inside_it;
+    {
+        let root = std::env::temp_dir().join(format!("tilo-host-choice-test-{}", std::process::id()));
+        let both = root.join("both");
+        let standalone_only = root.join("standalone-only");
+        for directory in [&both, &standalone_only] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let host = |directory: &std::path::Path, name: &str| {
+            let path = directory.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho HOST {name}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        };
+        host(&both, "tilo-runtime");
+        host(&both, "tilo-runtime-mcp");
+        host(&standalone_only, "tilo-runtime");
+        let explicit = host(&root, "explicit-host");
+        let run = |path: &std::path::Path, desktop: Option<&str>, binary: Option<&std::path::Path>| {
+            let mut command = child();
+            command.env("PATH", path);
+            if let Some(desktop) = desktop {
+                command.env("XDG_CURRENT_DESKTOP", desktop);
+            }
+            if let Some(binary) = binary {
+                command.env("TILO_RUNTIME_BINARY", binary);
+            }
+            command.output_locked().unwrap()
+        };
+        // The re-executed test prints libtest's progress before the host runs, with no line break
+        // between: the host's answer is read from where its marker stands, not from a line of its own.
+        let chose = |output: &std::process::Output| {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let (_, answer) = stdout.split_once("HOST ")?;
+            Some(answer.lines().next().unwrap_or_default().to_owned())
+        };
+        // A case that went wrong says what the child did, not only which case it was.
+        let why = |output: &std::process::Output| {
+            format!(
+                "status {:?}, out {:?}, err {:?}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        };
+
+        let foreign = run(&both, None, None);
+        assert_eq!(
+            chose(&foreign).as_deref(),
+            Some("tilo-runtime"),
+            "case foreign: {}",
+            why(&foreign)
+        );
+        let other_desktop = run(&both, Some("GNOME"), None);
+        assert_eq!(
+            chose(&other_desktop).as_deref(),
+            Some("tilo-runtime"),
+            "case GNOME: {}",
+            why(&other_desktop)
+        );
+        let tilo = run(&both, Some("tilo"), None);
+        assert_eq!(
+            chose(&tilo).as_deref(),
+            Some("tilo-runtime-mcp"),
+            "case tilo"
+        );
+        // ...and never a second authority beside it.
+        let missing = run(&standalone_only, Some("tilo"), None);
+        assert_eq!(
+            missing.status.code(),
+            Some(21),
+            "case tilo without its host"
+        );
+        assert!(
+            String::from_utf8_lossy(&missing.stderr).contains("tilo-runtime-mcp"),
+            "case tilo without its host"
+        );
+        for desktop in [None, Some("tilo")] {
+            let chosen = run(&both, desktop, Some(&explicit));
+            assert_eq!(
+                chose(&chosen).as_deref(),
+                Some("explicit-host"),
+                "case explicit {desktop:?}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 #[test]
 fn bootstrap_child() {
@@ -134,282 +226,199 @@ fn inherit(command: &mut Command, fds: Vec<std::os::fd::RawFd>) {
     }
 }
 
-#[test]
-fn invalid_inherited_connections_fail_closed() {
-    // A malformed inherited connection never starts another host.
-    let output = child()
-        .env("TILO_SVC_COLLAB_FD", "bad")
-        .env("TILO_RUNTIME_BINARY", "/must-not-run")
-        .output_locked()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(21), "case malformed");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("inherited"),
-        "case malformed"
-    );
+tilo_test_env::scenario! {
+    fn bootstrap_attachment;
 
+    phase invalid_inherited_connections_fail_closed;
     {
-        let (socket, _peer) = UnixStream::pair().unwrap();
-        let fd = socket.as_raw_fd();
-        let mut command = child();
-        command
-            .env("TILO_SVC_COLLAB_FD", fd.to_string())
-            .env("TILO_SVC_IDENTITY_FD", format!("0{fd}"));
-        inherit(&mut command, vec![fd]);
-        let output = command.output_locked().unwrap();
-        assert_eq!(output.status.code(), Some(21), "case aliased");
-    }
-
-    {
-        let (socket, _peer) = std::os::unix::net::UnixDatagram::pair().unwrap();
-        let (stream, _stream_peer) = UnixStream::pair().unwrap();
-        let fds = [socket.as_raw_fd(), stream.as_raw_fd()];
-        let mut command = child();
-        command
-            .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
-            .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
-        inherit(&mut command, fds.to_vec());
-        assert_eq!(
-            command.output_locked().unwrap().status.code(),
-            Some(21),
-            "case datagram"
-        );
-    }
-
-    // Current and unknown transfer provenance fail closed.
-    let mut current = Command::new("/bin/sh");
-    current
-        .args([
-            "-c",
-            "export TILO_RUNTIME_CONNECTION_OWNER_PID=$$; exec \"$@\"",
-            "provenance-test",
-        ])
-        .arg(std::env::current_exe().unwrap())
-        .args(["--exact", "bootstrap_child", "--nocapture"])
-        .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
-        .env("TILO_SVC_COLLAB_FD", "bad")
-        .env_remove("TILO_SVC_IDENTITY_FD")
-        .env("TILO_RUNTIME_STANDALONE", "1");
-    assert_eq!(
-        current.output_locked().unwrap().status.code(),
-        Some(21),
-        "case current provenance"
-    );
-    for owner in ["unknown", "0"] {
+        // A malformed inherited connection never starts another host.
         let output = child()
-            .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
-            .env("TILO_RUNTIME_STANDALONE", "1")
+            .env("TILO_SVC_COLLAB_FD", "bad")
+            .env("TILO_RUNTIME_BINARY", "/must-not-run")
             .output_locked()
             .unwrap();
-        assert_eq!(output.status.code(), Some(21), "case owner {owner}");
+        assert_eq!(output.status.code(), Some(21), "case malformed");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("inherited"),
-            "case owner {owner}"
+            "case malformed"
         );
-    }
-}
-#[test]
-fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
-    let output = child()
-        .env("TILO_RUNTIME_STANDALONE", "1")
-        .env("TILO_RUNTIME_BINARY", "/must-not-run")
-        .output_locked()
-        .unwrap();
-    assert!(output.status.success(), "case explicit standalone");
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("RETURNED"),
-        "case explicit standalone"
-    );
 
+        {
+            let (socket, _peer) = UnixStream::pair().unwrap();
+            let fd = socket.as_raw_fd();
+            let mut command = child();
+            command
+                .env("TILO_SVC_COLLAB_FD", fd.to_string())
+                .env("TILO_SVC_IDENTITY_FD", format!("0{fd}"));
+            inherit(&mut command, vec![fd]);
+            let output = command.output_locked().unwrap();
+            assert_eq!(output.status.code(), Some(21), "case aliased");
+        }
+
+        {
+            let (socket, _peer) = std::os::unix::net::UnixDatagram::pair().unwrap();
+            let (stream, _stream_peer) = UnixStream::pair().unwrap();
+            let fds = [socket.as_raw_fd(), stream.as_raw_fd()];
+            let mut command = child();
+            command
+                .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+                .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
+            inherit(&mut command, fds.to_vec());
+            assert_eq!(
+                command.output_locked().unwrap().status.code(),
+                Some(21),
+                "case datagram"
+            );
+        }
+
+        // Current and unknown transfer provenance fail closed.
+        let mut current = Command::new("/bin/sh");
+        current
+            .args([
+                "-c",
+                "export TILO_RUNTIME_CONNECTION_OWNER_PID=$$; exec \"$@\"",
+                "provenance-test",
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", "bootstrap_child", "--nocapture"])
+            .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
+            .env("TILO_SVC_COLLAB_FD", "bad")
+            .env_remove("TILO_SVC_IDENTITY_FD")
+            .env("TILO_RUNTIME_STANDALONE", "1");
+        assert_eq!(
+            current.output_locked().unwrap().status.code(),
+            Some(21),
+            "case current provenance"
+        );
+        for owner in ["unknown", "0"] {
+            let output = child()
+                .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
+                .env("TILO_RUNTIME_STANDALONE", "1")
+                .output_locked()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(21), "case owner {owner}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("inherited"),
+                "case owner {owner}"
+            );
+        }
+    }
+
+    phase bootstrap_attaches_standalone_inherited_or_through_the_host;
+    {
+        let output = child()
+            .env("TILO_RUNTIME_STANDALONE", "1")
+            .env("TILO_RUNTIME_BINARY", "/must-not-run")
+            .output_locked()
+            .unwrap();
+        assert!(output.status.success(), "case explicit standalone");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("RETURNED"),
+            "case explicit standalone"
+        );
+
+        {
+            let (a, _a_peer) = UnixStream::pair().unwrap();
+            let (b, _b_peer) = UnixStream::pair().unwrap();
+            let fds = [a.as_raw_fd(), b.as_raw_fd()];
+            let mut command = child();
+            command
+                .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+                .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
+                .env("TILO_RUNTIME_PROFILE", "relative-invalid")
+                .env("TILO_RUNTIME_BINARY", "/must-not-run");
+            inherit(&mut command, fds.to_vec());
+            let output = command.output_locked().unwrap();
+            assert!(
+                output.status.success(),
+                "case complete inherited: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // A launcher launch hands over only the services it has: an app that
+        // declares no collaboration service gets just its identity broker, and
+        // that is a complete inherited attachment, not a reason to start a host.
+        for service in ["TILO_SVC_IDENTITY_FD", "TILO_SVC_COLLAB_FD"] {
+            let (socket, _peer) = UnixStream::pair().unwrap();
+            let fd = socket.as_raw_fd();
+            let mut command = child();
+            command
+                .env(service, fd.to_string())
+                .env("TILO_RUNTIME_BINARY", "/must-not-run");
+            inherit(&mut command, vec![fd]);
+            let output = command.output_locked().unwrap();
+            assert!(
+                output.status.success(),
+                "case only {service}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    phase bootstrap_exec_keeps_arguments_and_hides_ancestor_descriptors;
+    {
+        {
+            let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let host = root.join("host");
+            std::fs::write(&host, "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n").unwrap();
+            std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = child()
+                .current_dir(&root)
+                .env("TILO_RUNTIME_BINARY", &host)
+                .output_locked()
+                .unwrap();
+            assert!(output.status.success(), "case host exec");
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                stdout.contains("--run-app\ndev.tilo.bootstrap-test\n--\n"),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains("--exact\nbootstrap_child\n--nocapture"),
+                "{stdout}"
+            );
+            assert!(stdout.contains(root.to_str().unwrap()));
+            assert!(!stdout.contains("RETURNED"));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    phase bootstrap_hides_ancestor_metadata_and_standalone_ignores_it;
     {
         let (a, _a_peer) = UnixStream::pair().unwrap();
         let (b, _b_peer) = UnixStream::pair().unwrap();
         let fds = [a.as_raw_fd(), b.as_raw_fd()];
         let mut command = child();
         command
+            .env("TILO_BOOTSTRAP_LOOKUP_ONLY", "1")
+            .env("TILO_WORKSPACE_ID", "ancestor-workspace")
+            .env(
+                "TILO_RUNTIME_CONNECTION_OWNER_PID",
+                std::process::id().to_string(),
+            )
             .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
-            .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
-            .env("TILO_RUNTIME_PROFILE", "relative-invalid")
-            .env("TILO_RUNTIME_BINARY", "/must-not-run");
+            .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
         inherit(&mut command, fds.to_vec());
-        let output = command.output_locked().unwrap();
         assert!(
-            output.status.success(),
-            "case complete inherited: {}",
-            String::from_utf8_lossy(&output.stderr)
+            command.status_locked().unwrap().success(),
+            "case ancestor hidden"
         );
-    }
 
-    // A launcher launch hands over only the services it has: an app that
-    // declares no collaboration service gets just its identity broker, and
-    // that is a complete inherited attachment, not a reason to start a host.
-    for service in ["TILO_SVC_IDENTITY_FD", "TILO_SVC_COLLAB_FD"] {
-        let (socket, _peer) = UnixStream::pair().unwrap();
-        let fd = socket.as_raw_fd();
-        let mut command = child();
-        command
-            .env(service, fd.to_string())
-            .env("TILO_RUNTIME_BINARY", "/must-not-run");
-        inherit(&mut command, vec![fd]);
-        let output = command.output_locked().unwrap();
-        assert!(
-            output.status.success(),
-            "case only {service}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-}
-
-#[test]
-fn bootstrap_exec_keeps_arguments_and_hides_ancestor_descriptors() {
-    {
-        let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let host = root.join("host");
-        std::fs::write(&host, "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n").unwrap();
-        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
         let output = child()
-            .current_dir(&root)
-            .env("TILO_RUNTIME_BINARY", &host)
+            .env(
+                "TILO_RUNTIME_CONNECTION_OWNER_PID",
+                std::process::id().to_string(),
+            )
+            .env("TILO_SVC_COLLAB_FD", "closed-ancestor-fd")
+            .env("TILO_RUNTIME_STANDALONE", "1")
             .output_locked()
             .unwrap();
-        assert!(output.status.success(), "case host exec");
-        let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(
-            stdout.contains("--run-app\ndev.tilo.bootstrap-test\n--\n"),
-            "{stdout}"
-        );
-        assert!(
-            stdout.contains("--exact\nbootstrap_child\n--nocapture"),
-            "{stdout}"
-        );
-        assert!(stdout.contains(root.to_str().unwrap()));
-        assert!(!stdout.contains("RETURNED"));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
-
-#[test]
-fn bootstrap_hides_ancestor_metadata_and_standalone_ignores_it() {
-    let (a, _a_peer) = UnixStream::pair().unwrap();
-    let (b, _b_peer) = UnixStream::pair().unwrap();
-    let fds = [a.as_raw_fd(), b.as_raw_fd()];
-    let mut command = child();
-    command
-        .env("TILO_BOOTSTRAP_LOOKUP_ONLY", "1")
-        .env("TILO_WORKSPACE_ID", "ancestor-workspace")
-        .env(
-            "TILO_RUNTIME_CONNECTION_OWNER_PID",
-            std::process::id().to_string(),
-        )
-        .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
-        .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
-    inherit(&mut command, fds.to_vec());
-    assert!(
-        command.status_locked().unwrap().success(),
-        "case ancestor hidden"
-    );
-
-    let output = child()
-        .env(
-            "TILO_RUNTIME_CONNECTION_OWNER_PID",
-            std::process::id().to_string(),
-        )
-        .env("TILO_SVC_COLLAB_FD", "closed-ancestor-fd")
-        .env("TILO_RUNTIME_STANDALONE", "1")
-        .output_locked()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "case standalone ignores ancestor: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_inside_it() {
-    let root = std::env::temp_dir().join(format!("tilo-host-choice-test-{}", std::process::id()));
-    let both = root.join("both");
-    let standalone_only = root.join("standalone-only");
-    for directory in [&both, &standalone_only] {
-        std::fs::create_dir_all(directory).unwrap();
-    }
-    let host = |directory: &std::path::Path, name: &str| {
-        let path = directory.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\necho HOST {name}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        path
-    };
-    host(&both, "tilo-runtime");
-    host(&both, "tilo-runtime-mcp");
-    host(&standalone_only, "tilo-runtime");
-    let explicit = host(&root, "explicit-host");
-    let run = |path: &std::path::Path, desktop: Option<&str>, binary: Option<&std::path::Path>| {
-        let mut command = child();
-        command.env("PATH", path);
-        if let Some(desktop) = desktop {
-            command.env("XDG_CURRENT_DESKTOP", desktop);
-        }
-        if let Some(binary) = binary {
-            command.env("TILO_RUNTIME_BINARY", binary);
-        }
-        command.output_locked().unwrap()
-    };
-    // The re-executed test prints libtest's progress before the host runs, with no line break
-    // between: the host's answer is read from where its marker stands, not from a line of its own.
-    let chose = |output: &std::process::Output| {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let (_, answer) = stdout.split_once("HOST ")?;
-        Some(answer.lines().next().unwrap_or_default().to_owned())
-    };
-    // A case that went wrong says what the child did, not only which case it was.
-    let why = |output: &std::process::Output| {
-        format!(
-            "status {:?}, out {:?}, err {:?}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
+            output.status.success(),
+            "case standalone ignores ancestor: {}",
             String::from_utf8_lossy(&output.stderr)
-        )
-    };
-
-    let foreign = run(&both, None, None);
-    assert_eq!(
-        chose(&foreign).as_deref(),
-        Some("tilo-runtime"),
-        "case foreign: {}",
-        why(&foreign)
-    );
-    let other_desktop = run(&both, Some("GNOME"), None);
-    assert_eq!(
-        chose(&other_desktop).as_deref(),
-        Some("tilo-runtime"),
-        "case GNOME: {}",
-        why(&other_desktop)
-    );
-    let tilo = run(&both, Some("tilo"), None);
-    assert_eq!(
-        chose(&tilo).as_deref(),
-        Some("tilo-runtime-mcp"),
-        "case tilo"
-    );
-    // ...and never a second authority beside it.
-    let missing = run(&standalone_only, Some("tilo"), None);
-    assert_eq!(
-        missing.status.code(),
-        Some(21),
-        "case tilo without its host"
-    );
-    assert!(
-        String::from_utf8_lossy(&missing.stderr).contains("tilo-runtime-mcp"),
-        "case tilo without its host"
-    );
-    for desktop in [None, Some("tilo")] {
-        let chosen = run(&both, desktop, Some(&explicit));
-        assert_eq!(
-            chose(&chosen).as_deref(),
-            Some("explicit-host"),
-            "case explicit {desktop:?}"
         );
     }
-    std::fs::remove_dir_all(root).unwrap();
 }

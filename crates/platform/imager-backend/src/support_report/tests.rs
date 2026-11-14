@@ -192,76 +192,93 @@ fn hybrid_laptop() -> tempfile::TempDir {
     root
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn fixture_laptop_reports_model_hybrid_graphics_and_component_evidence() {
-    let root = hybrid_laptop();
-    let report = linux::probe_root(root.path());
-    assert_eq!(report.identity.manufacturer.as_deref(), Some("Test Vendor"));
-    assert_eq!(report.identity.model.as_deref(), Some("Test Laptop 15"));
-    assert_eq!(report.identity.variant.as_deref(), Some("TESTBOARD"));
-    assert!(report.identity.is_specific());
-    assert_eq!(report.kernel.as_deref(), Some("7.2.7-test"));
-    assert_eq!(report.architecture.as_deref(), Some(std::env::consts::ARCH));
-    report.validate().unwrap();
+tilo_test_env::scenario! {
+    /// The support report of the fixture laptop.
+    /// Each phase was a test of its own and builds its own fixture.
+    #[cfg(target_os = "linux")]
+    fn the_linux_fixture_report_names_the_model_and_carries_no_identifiers;
 
-    let graphics = component(&report, ComponentKind::Graphics);
-    // A driver bound in the running system is not proof that the selected
-    // Tilo release ships that driver or firmware.
-    assert_eq!(graphics.state, SupportState::Unverified);
-    assert_eq!(graphics.applicability, Applicability::ObservationOnly);
-    assert!(matches!(
-        graphics.reason,
-        SupportReason::HybridGraphics { .. }
-    ));
-    assert!(
-        graphics
-            .evidence
-            .iter()
-            .any(|evidence| matches!(&evidence.fact, EvidenceFact::Device { driver: Some(driver), .. } if driver == "amdgpu"))
-    );
-    assert!(
-        graphics
-            .evidence
-            .iter()
-            .any(|evidence| matches!(&evidence.fact, EvidenceFact::Device { driver: Some(driver), .. } if driver == "nvidia"))
-    );
+    phase fixture_laptop_reports_model_hybrid_graphics_and_component_evidence;
+    {
+        let root = hybrid_laptop();
+        let report = linux::probe_root(root.path());
+        assert_eq!(report.identity.manufacturer.as_deref(), Some("Test Vendor"));
+        assert_eq!(report.identity.model.as_deref(), Some("Test Laptop 15"));
+        assert_eq!(report.identity.variant.as_deref(), Some("TESTBOARD"));
+        assert!(report.identity.is_specific());
+        assert_eq!(report.kernel.as_deref(), Some("7.2.7-test"));
+        assert_eq!(report.architecture.as_deref(), Some(std::env::consts::ARCH));
+        report.validate().unwrap();
 
-    let display = component(&report, ComponentKind::Display);
-    assert_eq!(display.state, SupportState::Unverified);
-    assert!(matches!(
-        display.reason,
-        SupportReason::DisplaysActive {
-            internal: 1,
-            external: 1,
-            ..
+        let graphics = component(&report, ComponentKind::Graphics);
+        // A driver bound in the running system is not proof that the selected
+        // Tilo release ships that driver or firmware.
+        assert_eq!(graphics.state, SupportState::Unverified);
+        assert_eq!(graphics.applicability, Applicability::ObservationOnly);
+        assert!(matches!(
+            graphics.reason,
+            SupportReason::HybridGraphics { .. }
+        ));
+        assert!(
+            graphics
+                .evidence
+                .iter()
+                .any(|evidence| matches!(&evidence.fact, EvidenceFact::Device { driver: Some(driver), .. } if driver == "amdgpu"))
+        );
+        assert!(
+            graphics
+                .evidence
+                .iter()
+                .any(|evidence| matches!(&evidence.fact, EvidenceFact::Device { driver: Some(driver), .. } if driver == "nvidia"))
+        );
+
+        let display = component(&report, ComponentKind::Display);
+        assert_eq!(display.state, SupportState::Unverified);
+        assert!(matches!(
+            display.reason,
+            SupportReason::DisplaysActive {
+                internal: 1,
+                external: 1,
+                ..
+            }
+        ));
+
+        for kind in [
+            ComponentKind::Wifi,
+            ComponentKind::Ethernet,
+            ComponentKind::Bluetooth,
+            ComponentKind::Audio,
+            ComponentKind::Microphone,
+            ComponentKind::Camera,
+            ComponentKind::Power,
+            ComponentKind::Acpi,
+            ComponentKind::Boot,
+            ComponentKind::Storage,
+            ComponentKind::Input,
+        ] {
+            let component = component(&report, kind);
+            assert_eq!(component.state, SupportState::Unverified, "{}", kind.key());
+            assert_eq!(component.applicability, Applicability::ObservationOnly);
         }
-    ));
-
-    for kind in [
-        ComponentKind::Wifi,
-        ComponentKind::Ethernet,
-        ComponentKind::Bluetooth,
-        ComponentKind::Audio,
-        ComponentKind::Microphone,
-        ComponentKind::Camera,
-        ComponentKind::Power,
-        ComponentKind::Acpi,
-        ComponentKind::Boot,
-        ComponentKind::Storage,
-        ComponentKind::Input,
-    ] {
-        let component = component(&report, kind);
-        assert_eq!(component.state, SupportState::Unverified, "{}", kind.key());
-        assert_eq!(component.applicability, Applicability::ObservationOnly);
+        let fingerprint = component(&report, ComponentKind::Fingerprint);
+        assert_eq!(fingerprint.state, SupportState::Limited);
+        assert!(fingerprint.present);
+        assert_eq!(fingerprint.remedy, Some(Remedy::PasswordSignIn));
+        assert!(!report.blocks_install());
+        assert_eq!(report.summary().supported, 0);
+        assert_eq!(report.summary().limited, 1);
     }
-    let fingerprint = component(&report, ComponentKind::Fingerprint);
-    assert_eq!(fingerprint.state, SupportState::Limited);
-    assert!(fingerprint.present);
-    assert_eq!(fingerprint.remedy, Some(Remedy::PasswordSignIn));
-    assert!(!report.blocks_install());
-    assert_eq!(report.summary().supported, 0);
-    assert_eq!(report.summary().limited, 1);
+
+    phase report_carries_no_device_serial_or_network_address;
+    {
+        let root = hybrid_laptop();
+        let report = linux::probe_root(root.path());
+        let json = String::from_utf8(report.to_json().unwrap()).unwrap();
+        for field in ["serial", "wwid", "mac", "MAC"] {
+            assert!(!json.contains(field), "{field} must not be published");
+        }
+        assert!(!json.contains("TESTBOARD/"));
+    }
 }
 
 fn component(report: &SupportReport, kind: ComponentKind) -> &ComponentSupport {
@@ -270,18 +287,6 @@ fn component(report: &SupportReport, kind: ComponentKind) -> &ComponentSupport {
         .iter()
         .find(|component| component.kind == kind)
         .unwrap()
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn report_carries_no_device_serial_or_network_address() {
-    let root = hybrid_laptop();
-    let report = linux::probe_root(root.path());
-    let json = String::from_utf8(report.to_json().unwrap()).unwrap();
-    for field in ["serial", "wwid", "mac", "MAC"] {
-        assert!(!json.contains(field), "{field} must not be published");
-    }
-    assert!(!json.contains("TESTBOARD/"));
 }
 
 fn observed_device(name: &str, driver: &str) -> Evidence {
@@ -316,168 +321,173 @@ fn report_with(components: Vec<ComponentSupport>) -> SupportReport {
     }
 }
 
-#[test]
-fn a_supported_component_requires_evidence_checked_against_the_release() {
-    let mut report = report_with(vec![ComponentSupport {
-        kind: ComponentKind::Graphics,
-        name: "Test graphics".into(),
-        present: true,
-        state: SupportState::Supported,
-        applicability: Applicability::ObservationOnly,
-        reason: SupportReason::DriverBound {
-            bindings: vec![DeviceBinding {
-                device: "Test graphics".into(),
-                driver: Some("test".into()),
+tilo_test_env::scenario! {
+    /// How a support report classifies a machine's components.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_support_report_classifies_components_by_checked_evidence;
+
+    phase a_supported_component_requires_evidence_checked_against_the_release;
+    {
+        let mut report = report_with(vec![ComponentSupport {
+            kind: ComponentKind::Graphics,
+            name: "Test graphics".into(),
+            present: true,
+            state: SupportState::Supported,
+            applicability: Applicability::ObservationOnly,
+            reason: SupportReason::DriverBound {
+                bindings: vec![DeviceBinding {
+                    device: "Test graphics".into(),
+                    driver: Some("test".into()),
+                }],
+            },
+            evidence: vec![observed_device("Test graphics", "test")],
+            remedy: None,
+        }]);
+        assert!(
+            report.validate().is_err(),
+            "an observation alone cannot claim release support"
+        );
+        report.components[0].applicability = Applicability::ReleaseVerified;
+        assert!(
+            report.validate().is_err(),
+            "observation evidence cannot become release evidence by relabelling"
+        );
+        report.components[0].evidence[0].scope = EvidenceScope::SelectedRelease;
+        report.validate().unwrap();
+
+        // A release-verified fact is the only evidence that may claim support.
+        let mut release_fact = report.clone();
+        release_fact.components[0].evidence = Vec::new();
+        assert!(release_fact.validate().is_err());
+    }
+
+    phase absent_optional_devices_do_not_block_but_absent_essentials_do;
+    {
+        let optional = |kind| ComponentSupport {
+            kind,
+            name: String::new(),
+            present: false,
+            state: SupportState::Unverified,
+            applicability: Applicability::Unknown,
+            reason: SupportReason::NotDetected,
+            evidence: Vec::new(),
+            remedy: Some(Remedy::Connect),
+        };
+        let essential = |kind| ComponentSupport {
+            kind,
+            name: String::new(),
+            present: false,
+            state: SupportState::Unsupported,
+            applicability: Applicability::ObservationOnly,
+            reason: SupportReason::NotDetected,
+            evidence: Vec::new(),
+            remedy: Some(Remedy::RunOnDestination),
+        };
+        let mut report = report_with(vec![
+            optional(ComponentKind::Wifi),
+            optional(ComponentKind::Bluetooth),
+            optional(ComponentKind::Camera),
+        ]);
+        report.validate().unwrap();
+        assert!(!report.blocks_install());
+        assert_eq!(report.summary().blocking, 0);
+        assert_eq!(report.attention().count(), 0);
+        assert_eq!(report.working().count(), 0);
+
+        report.components.push(essential(ComponentKind::Storage));
+        report.validate().unwrap();
+        assert!(report.blocks_install());
+        assert_eq!(report.summary().blocking, 1);
+    }
+
+    phase imported_report_is_relabelled_and_requires_specific_identity_and_evidence;
+    {
+        let report = report_with(vec![ComponentSupport {
+            kind: ComponentKind::Graphics,
+            name: "Test graphics".into(),
+            present: true,
+            state: SupportState::Unverified,
+            applicability: Applicability::ObservationOnly,
+            reason: SupportReason::DriverBound {
+                bindings: vec![DeviceBinding {
+                    device: "Test graphics".into(),
+                    driver: Some("test".into()),
+                }],
+            },
+            evidence: vec![observed_device("Test graphics", "test")],
+            remedy: None,
+        }]);
+        let bytes = report.to_json().unwrap();
+        let imported = SupportReport::import_json(&bytes).unwrap();
+        assert_eq!(imported.identity.source, ReportSource::Imported);
+        assert!(imported.validate().is_ok());
+
+        let mut unspecific = report;
+        unspecific.identity.variant = None;
+        unspecific.identity.board = None;
+        unspecific.identity.sku = None;
+        assert!(unspecific.validate().is_err());
+        assert!(SupportReport::declared_model("Test Vendor", "Test Laptop", "").is_err());
+        let declared = SupportReport::declared_model("Test Vendor", "Test Laptop", "Board 1").unwrap();
+        assert_eq!(declared.identity.source, ReportSource::DeclaredModel);
+        assert!(declared.components.is_empty());
+        assert!(!declared.blocks_install());
+        assert_eq!(declared.architecture, None);
+        let detailed = SupportReport::declared_model_with(
+            "Test Vendor",
+            "Test Laptop",
+            "Board 1",
+            Some("TESTBOARD"),
+            Some("SKU-1"),
+        )
+        .unwrap();
+        assert_eq!(detailed.identity.board.as_deref(), Some("TESTBOARD"));
+        assert_eq!(detailed.identity.sku.as_deref(), Some("SKU-1"));
+        assert!(detailed.identity.is_specific());
+
+        // A report from an older schema is refused rather than interpreted.
+        let mut older: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        older["schema"] = serde_json::json!("tilo.hardware-report.v1");
+        assert!(SupportReport::import_json(&serde_json::to_vec(&older).unwrap()).is_err());
+    }
+
+    phase declared_model_is_not_component_evidence;
+    {
+        let declared = SupportReport::declared_model_with(
+            "Test Vendor",
+            "Test Laptop",
+            "",
+            Some("TESTBOARD"),
+            None,
+        )
+        .unwrap();
+        assert!(declared.components.is_empty());
+        assert_eq!(declared.summary().supported, 0);
+        assert_eq!(declared.summary().unverified, 0);
+        assert!(!declared.blocks_install());
+    }
+
+    phase a_device_without_a_driver_is_limited_not_supported;
+    {
+        let raw = RawReport {
+            identity: RawIdentity::default(),
+            architecture: Some("x86_64".into()),
+            wifi: vec![RawNetwork {
+                name: "wlan0".into(),
+                driver: None,
+                firmware: None,
             }],
-        },
-        evidence: vec![observed_device("Test graphics", "test")],
-        remedy: None,
-    }]);
-    assert!(
-        report.validate().is_err(),
-        "an observation alone cannot claim release support"
-    );
-    report.components[0].applicability = Applicability::ReleaseVerified;
-    assert!(
-        report.validate().is_err(),
-        "observation evidence cannot become release evidence by relabelling"
-    );
-    report.components[0].evidence[0].scope = EvidenceScope::SelectedRelease;
-    report.validate().unwrap();
+            ..RawReport::default()
+        };
+        let report = assemble(raw);
+        let wifi = component(&report, ComponentKind::Wifi);
+        assert_eq!(wifi.state, SupportState::Limited);
+        assert!(matches!(wifi.reason, SupportReason::DriverMissing { .. }));
+    }
 
-    // A release-verified fact is the only evidence that may claim support.
-    let mut release_fact = report.clone();
-    release_fact.components[0].evidence = Vec::new();
-    assert!(release_fact.validate().is_err());
-}
-
-#[test]
-fn absent_optional_devices_do_not_block_but_absent_essentials_do() {
-    let optional = |kind| ComponentSupport {
-        kind,
-        name: String::new(),
-        present: false,
-        state: SupportState::Unverified,
-        applicability: Applicability::Unknown,
-        reason: SupportReason::NotDetected,
-        evidence: Vec::new(),
-        remedy: Some(Remedy::Connect),
-    };
-    let essential = |kind| ComponentSupport {
-        kind,
-        name: String::new(),
-        present: false,
-        state: SupportState::Unsupported,
-        applicability: Applicability::ObservationOnly,
-        reason: SupportReason::NotDetected,
-        evidence: Vec::new(),
-        remedy: Some(Remedy::RunOnDestination),
-    };
-    let mut report = report_with(vec![
-        optional(ComponentKind::Wifi),
-        optional(ComponentKind::Bluetooth),
-        optional(ComponentKind::Camera),
-    ]);
-    report.validate().unwrap();
-    assert!(!report.blocks_install());
-    assert_eq!(report.summary().blocking, 0);
-    assert_eq!(report.attention().count(), 0);
-    assert_eq!(report.working().count(), 0);
-
-    report.components.push(essential(ComponentKind::Storage));
-    report.validate().unwrap();
-    assert!(report.blocks_install());
-    assert_eq!(report.summary().blocking, 1);
-}
-
-#[test]
-fn imported_report_is_relabelled_and_requires_specific_identity_and_evidence() {
-    let report = report_with(vec![ComponentSupport {
-        kind: ComponentKind::Graphics,
-        name: "Test graphics".into(),
-        present: true,
-        state: SupportState::Unverified,
-        applicability: Applicability::ObservationOnly,
-        reason: SupportReason::DriverBound {
-            bindings: vec![DeviceBinding {
-                device: "Test graphics".into(),
-                driver: Some("test".into()),
-            }],
-        },
-        evidence: vec![observed_device("Test graphics", "test")],
-        remedy: None,
-    }]);
-    let bytes = report.to_json().unwrap();
-    let imported = SupportReport::import_json(&bytes).unwrap();
-    assert_eq!(imported.identity.source, ReportSource::Imported);
-    assert!(imported.validate().is_ok());
-
-    let mut unspecific = report;
-    unspecific.identity.variant = None;
-    unspecific.identity.board = None;
-    unspecific.identity.sku = None;
-    assert!(unspecific.validate().is_err());
-    assert!(SupportReport::declared_model("Test Vendor", "Test Laptop", "").is_err());
-    let declared = SupportReport::declared_model("Test Vendor", "Test Laptop", "Board 1").unwrap();
-    assert_eq!(declared.identity.source, ReportSource::DeclaredModel);
-    assert!(declared.components.is_empty());
-    assert!(!declared.blocks_install());
-    assert_eq!(declared.architecture, None);
-    let detailed = SupportReport::declared_model_with(
-        "Test Vendor",
-        "Test Laptop",
-        "Board 1",
-        Some("TESTBOARD"),
-        Some("SKU-1"),
-    )
-    .unwrap();
-    assert_eq!(detailed.identity.board.as_deref(), Some("TESTBOARD"));
-    assert_eq!(detailed.identity.sku.as_deref(), Some("SKU-1"));
-    assert!(detailed.identity.is_specific());
-
-    // A report from an older schema is refused rather than interpreted.
-    let mut older: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    older["schema"] = serde_json::json!("tilo.hardware-report.v1");
-    assert!(SupportReport::import_json(&serde_json::to_vec(&older).unwrap()).is_err());
-}
-
-#[test]
-fn declared_model_is_not_component_evidence() {
-    let declared = SupportReport::declared_model_with(
-        "Test Vendor",
-        "Test Laptop",
-        "",
-        Some("TESTBOARD"),
-        None,
-    )
-    .unwrap();
-    assert!(declared.components.is_empty());
-    assert_eq!(declared.summary().supported, 0);
-    assert_eq!(declared.summary().unverified, 0);
-    assert!(!declared.blocks_install());
-}
-
-#[test]
-fn a_device_without_a_driver_is_limited_not_supported() {
-    let raw = RawReport {
-        identity: RawIdentity::default(),
-        architecture: Some("x86_64".into()),
-        wifi: vec![RawNetwork {
-            name: "wlan0".into(),
-            driver: None,
-            firmware: None,
-        }],
-        ..RawReport::default()
-    };
-    let report = assemble(raw);
-    let wifi = component(&report, ComponentKind::Wifi);
-    assert_eq!(wifi.state, SupportState::Limited);
-    assert!(matches!(wifi.reason, SupportReason::DriverMissing { .. }));
-}
-
-#[test]
-fn windows_observation_parses_actual_model_drivers_and_optional_devices() {
-    let json = r#"{
+    phase windows_observation_parses_actual_model_drivers_and_optional_devices;
+    {
+        let json = r#"{
       "manufacturer":"Test Vendor","model":"Test Laptop 15","sku":"SKU-1",
       "biosVendor":"Test Firmware","biosVersion":"1.2.3","biosDate":"01/01/2026",
       "boardVendor":"Test Vendor","boardProduct":"TESTBOARD","boardVersion":"1.0",
@@ -512,37 +522,38 @@ fn windows_observation_parses_actual_model_drivers_and_optional_devices() {
         {"deviceId":"USB\\VID_1234&PID_0002","provider":"Test Vendor","version":"3.0.0"}
       ]
     }"#;
-    let raw = windows_json::parse(json).unwrap();
-    let report = raw.into_report();
-    assert_eq!(report.identity.manufacturer.as_deref(), Some("Test Vendor"));
-    assert_eq!(report.identity.model.as_deref(), Some("Test Laptop 15"));
-    assert_eq!(report.identity.variant.as_deref(), Some("TESTBOARD"));
-    assert_eq!(
-        report.kernel.as_deref(),
-        Some("Microsoft Windows NT 10.0.26100.0")
-    );
-    report.validate().unwrap();
-    // Windows device-manager drivers are evidence about Windows, not about
-    // the Tilo release; every observed component stays not verified.
-    for kind in [
-        ComponentKind::Graphics,
-        ComponentKind::Wifi,
-        ComponentKind::Bluetooth,
-        ComponentKind::Camera,
-        ComponentKind::Boot,
-    ] {
+        let raw = windows_json::parse(json).unwrap();
+        let report = raw.into_report();
+        assert_eq!(report.identity.manufacturer.as_deref(), Some("Test Vendor"));
+        assert_eq!(report.identity.model.as_deref(), Some("Test Laptop 15"));
+        assert_eq!(report.identity.variant.as_deref(), Some("TESTBOARD"));
         assert_eq!(
-            component(&report, kind).state,
-            SupportState::Unverified,
-            "{}",
-            kind.key()
+            report.kernel.as_deref(),
+            Some("Microsoft Windows NT 10.0.26100.0")
         );
+        report.validate().unwrap();
+        // Windows device-manager drivers are evidence about Windows, not about
+        // the Tilo release; every observed component stays not verified.
+        for kind in [
+            ComponentKind::Graphics,
+            ComponentKind::Wifi,
+            ComponentKind::Bluetooth,
+            ComponentKind::Camera,
+            ComponentKind::Boot,
+        ] {
+            assert_eq!(
+                component(&report, kind).state,
+                SupportState::Unverified,
+                "{}",
+                kind.key()
+            );
+        }
+        assert_eq!(
+            component(&report, ComponentKind::Fingerprint).state,
+            SupportState::Limited
+        );
+        assert!(!report.blocks_install());
     }
-    assert_eq!(
-        component(&report, ComponentKind::Fingerprint).state,
-        SupportState::Limited
-    );
-    assert!(!report.blocks_install());
 }
 
 #[cfg(target_os = "linux")]
@@ -556,85 +567,89 @@ fn boot_chain_root(board: Option<&str>) -> tempfile::TempDir {
     root
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_generic_image_says_which_architecture_it_starts_on_and_that_it_starts() {
-    let root = boot_chain_root(None);
-    let report = linux::probe_root(root.path());
-    let boot = component(&report, ComponentKind::Boot);
-    // A generic image carries no board profile, so the firmware alone
-    // describes the machine and the boot chain is not in question.
-    assert_ne!(boot.state, SupportState::Unsupported);
-    assert!(matches!(
-        &boot.reason,
-        SupportReason::StartsHere { board: None, .. }
-    ));
-    assert!(boot.evidence.iter().any(|evidence| matches!(
-        &evidence.fact,
-        EvidenceFact::Architecture { name } if name == std::env::consts::ARCH
-    )));
-    // The jump to a virtual machine is a fact, not a verdict: it is never a
-    // reason to refuse an install.
-    report.validate().unwrap();
-}
+tilo_test_env::scenario! {
+    /// What a support report says about an image and the machine's architecture.
+    /// Each phase was a test of its own and builds its own fixture.
+    #[cfg(target_os = "linux")]
+    fn a_report_says_whether_an_image_can_start_on_this_architecture;
 
-#[cfg(target_os = "linux")]
-#[test]
-fn an_image_built_for_another_architecture_cannot_start_here() {
-    let other = if std::env::consts::ARCH == "aarch64" {
-        "x86_64"
-    } else {
-        "aarch64"
-    };
-    let root = boot_chain_root(Some(&format!(
-        "{{\"schema_version\": 1, \"id\": \"other-board\", \"architecture\": \"{other}\", \"devicetree\": null}}"
-    )));
-    let report = linux::probe_root(root.path());
-    let boot = component(&report, ComponentKind::Boot);
-    assert_eq!(boot.state, SupportState::Unsupported);
-    assert!(matches!(
-        &boot.reason,
-        SupportReason::OtherArchitecture { architecture, running }
-            if architecture == other && running == std::env::consts::ARCH
-    ));
-    assert_eq!(boot.remedy, Some(Remedy::RunOnDestination));
-    // The boot chain is essential, so this is what stops the install.
-    assert!(ComponentKind::Boot.critical());
-}
+    phase a_generic_image_says_which_architecture_it_starts_on_and_that_it_starts;
+    {
+        let root = boot_chain_root(None);
+        let report = linux::probe_root(root.path());
+        let boot = component(&report, ComponentKind::Boot);
+        // A generic image carries no board profile, so the firmware alone
+        // describes the machine and the boot chain is not in question.
+        assert_ne!(boot.state, SupportState::Unsupported);
+        assert!(matches!(
+            &boot.reason,
+            SupportReason::StartsHere { board: None, .. }
+        ));
+        assert!(boot.evidence.iter().any(|evidence| matches!(
+            &evidence.fact,
+            EvidenceFact::Architecture { name } if name == std::env::consts::ARCH
+        )));
+        // The jump to a virtual machine is a fact, not a verdict: it is never a
+        // reason to refuse an install.
+        report.validate().unwrap();
+    }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn an_arm64_image_without_a_device_tree_cannot_describe_its_board() {
-    // The reason must exist for the architecture it describes, so it is
-    // built directly rather than through a host that is not ARM64.
-    let component = ComponentSupport {
-        kind: ComponentKind::Boot,
-        name: String::new(),
-        present: true,
-        state: SupportState::Unsupported,
-        applicability: Applicability::ObservationOnly,
-        reason: SupportReason::BoardWithoutDevicetree {
-            board: "unlisted-board".into(),
-            architecture: "aarch64".into(),
-        },
-        evidence: Vec::new(),
-        remedy: Some(Remedy::RunOnDestination),
-    };
-    let report = SupportReport {
-        schema: REPORT_SCHEMA.into(),
-        identity: DestinationIdentity {
-            source: ReportSource::LocalScan,
-            manufacturer: Some("Test Vendor".into()),
-            model: Some("Test Laptop 15".into()),
-            variant: Some("TESTBOARD".into()),
-            board: None,
-            sku: None,
-            firmware: None,
-        },
-        kernel: None,
-        architecture: Some("aarch64".into()),
-        components: vec![component],
-    };
-    report.validate().unwrap();
-    assert!(report.blocks_install());
+    phase an_image_built_for_another_architecture_cannot_start_here;
+    {
+        let other = if std::env::consts::ARCH == "aarch64" {
+            "x86_64"
+        } else {
+            "aarch64"
+        };
+        let root = boot_chain_root(Some(&format!(
+            "{{\"schema_version\": 1, \"id\": \"other-board\", \"architecture\": \"{other}\", \"devicetree\": null}}"
+        )));
+        let report = linux::probe_root(root.path());
+        let boot = component(&report, ComponentKind::Boot);
+        assert_eq!(boot.state, SupportState::Unsupported);
+        assert!(matches!(
+            &boot.reason,
+            SupportReason::OtherArchitecture { architecture, running }
+                if architecture == other && running == std::env::consts::ARCH
+        ));
+        assert_eq!(boot.remedy, Some(Remedy::RunOnDestination));
+        // The boot chain is essential, so this is what stops the install.
+        assert!(ComponentKind::Boot.critical());
+    }
+
+    phase an_arm64_image_without_a_device_tree_cannot_describe_its_board;
+    {
+        // The reason must exist for the architecture it describes, so it is
+        // built directly rather than through a host that is not ARM64.
+        let component = ComponentSupport {
+            kind: ComponentKind::Boot,
+            name: String::new(),
+            present: true,
+            state: SupportState::Unsupported,
+            applicability: Applicability::ObservationOnly,
+            reason: SupportReason::BoardWithoutDevicetree {
+                board: "unlisted-board".into(),
+                architecture: "aarch64".into(),
+            },
+            evidence: Vec::new(),
+            remedy: Some(Remedy::RunOnDestination),
+        };
+        let report = SupportReport {
+            schema: REPORT_SCHEMA.into(),
+            identity: DestinationIdentity {
+                source: ReportSource::LocalScan,
+                manufacturer: Some("Test Vendor".into()),
+                model: Some("Test Laptop 15".into()),
+                variant: Some("TESTBOARD".into()),
+                board: None,
+                sku: None,
+                firmware: None,
+            },
+            kernel: None,
+            architecture: Some("aarch64".into()),
+            components: vec![component],
+        };
+        report.validate().unwrap();
+        assert!(report.blocks_install());
+    }
 }

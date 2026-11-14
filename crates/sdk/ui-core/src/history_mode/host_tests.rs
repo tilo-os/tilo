@@ -298,13 +298,10 @@ fn replacing_admitted_history_controls_reports_structure_dirty() {
     assert!(!history.take_structure_dirty());
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn every_input_enters_the_same_history_canvas_without_live_effects() {
-    // phase: managed_history_button_opens_real_activity_without_invoking_live_effects
+tilo_test_env::scenario! {
+    fn every_input_enters_the_same_history_canvas_without_live_effects;
+
+    phase managed_history_button_opens_real_activity_without_invoking_live_effects;
     {
         let effects = Rc::new(Cell::new(0));
         let probe = effects.clone();
@@ -336,7 +333,8 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         assert_eq!(effects.get(), 0);
         assert_eq!(driver.state_mut().doc.get_heads(), before);
     }
-    // phase: pointer_selection_draws_pinned_domain_canvas_and_back_returns_live
+
+    phase pointer_selection_draws_pinned_domain_canvas_and_back_returns_live;
     {
         let (mut driver, target, before) = versioned_driver((900, 650));
         driver.click_named("history-open").unwrap();
@@ -383,7 +381,8 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         assert!(driver.targets().contains_key("live-effect"));
         assert!(!driver.targets().contains_key("history-preview"));
     }
-    // phase: accessible_activation_uses_the_same_canvas_and_narrow_activity_navigation
+
+    phase accessible_activation_uses_the_same_canvas_and_narrow_activity_navigation;
     {
         let (mut driver, target, before) = versioned_driver((390, 650));
         driver.click_named("history-open").unwrap();
@@ -423,7 +422,8 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         assert!(!driver.targets().contains_key("history-preview"));
         assert_eq!(driver.state_mut().doc.get_heads(), before);
     }
-    // phase: keyboard_enters_activity_and_selects_the_same_domain_canvas
+
+    phase keyboard_enters_activity_and_selects_the_same_domain_canvas;
     {
         let (mut driver, target, _) = versioned_driver((900, 650));
         driver
@@ -460,7 +460,8 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         driver.key("Enter");
         assert!(driver.targets().contains_key("live-effect"));
     }
-    // phase: exported_accessibility_activation_preserves_pending_edits_through_back_live
+
+    phase exported_accessibility_activation_preserves_pending_edits_through_back_live;
     {
         let (mut driver, target, _) = versioned_driver((900, 650));
         driver

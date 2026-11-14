@@ -616,363 +616,367 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn time_left_is_energy_over_the_rate_it_flows_at() {
-        let draining = tree(&[(
-            "BAT0",
-            &[
-                ("type", "Battery\n"),
-                ("status", "Discharging\n"),
-                ("energy_now", "30000000\n"),
-                ("energy_full", "60000000\n"),
-                ("power_now", "10000000\n"),
-            ],
-        )]);
-        assert_eq!(time_in(draining.path()), Some(BatteryTime::ToEmpty(180)));
-        let charging = tree(&[(
-            "BAT0",
-            &[
-                ("type", "Battery\n"),
-                ("status", "Charging\n"),
-                ("charge_now", "2000000\n"),
-                ("charge_full", "4000000\n"),
-                ("current_now", "1000000\n"),
-            ],
-        )]);
-        assert_eq!(time_in(charging.path()), Some(BatteryTime::ToFull(120)));
-        let resting = tree(&[(
-            "BAT0",
-            &[
-                ("type", "Battery\n"),
-                ("status", "Full\n"),
-                ("energy_now", "60000000\n"),
-                ("energy_full", "60000000\n"),
-                ("power_now", "0\n"),
-            ],
-        )]);
-        assert_eq!(time_in(resting.path()), None, "no rate, no estimate");
-    }
+    tilo_test_env::scenario! {
+        fn sysfs_batteries_report_level_health_time_and_capabilities;
 
-    #[test]
-    fn sysfs_supplies_report_absence_mains_and_percentage_sources() {
+        phase time_left_is_energy_over_the_rate_it_flows_at;
         {
-            let snap = snapshot_in(Path::new("/definitely/not/a/path"));
-            assert!(!snap.present);
-            assert_eq!(snap.state, BatteryState::Unknown);
-        }
-        {
-            let t = tree(&[("AC", &[("type", "Mains\n"), ("online", "1\n")])]);
-            assert!(!snapshot_in(t.path()).present);
-            assert!(!on_battery_in(t.path()));
-        }
-        {
-            let t = tree(&[(
+            let draining = tree(&[(
                 "BAT0",
                 &[
                     ("type", "Battery\n"),
                     ("status", "Discharging\n"),
-                    ("energy_now", "21000000\n"),
-                    ("energy_full", "50000000\n"),
+                    ("energy_now", "30000000\n"),
+                    ("energy_full", "60000000\n"),
+                    ("power_now", "10000000\n"),
                 ],
             )]);
-            let snap = snapshot_in(t.path());
-            assert!(snap.present);
-            assert_eq!(snap.percent, 42, "21 of 50 Wh");
-            assert_eq!(snap.state, BatteryState::Discharging);
-        }
-        {
-            let t = tree(&[(
+            assert_eq!(time_in(draining.path()), Some(BatteryTime::ToEmpty(180)));
+            let charging = tree(&[(
                 "BAT0",
                 &[
                     ("type", "Battery\n"),
                     ("status", "Charging\n"),
-                    ("charge_now", "3000000\n"),
+                    ("charge_now", "2000000\n"),
                     ("charge_full", "4000000\n"),
+                    ("current_now", "1000000\n"),
                 ],
             )]);
-            let snap = snapshot_in(t.path());
-            assert_eq!(snap.percent, 75);
-            assert_eq!(snap.state, BatteryState::Charging);
-        }
-        {
-            let t = tree(&[(
+            assert_eq!(time_in(charging.path()), Some(BatteryTime::ToFull(120)));
+            let resting = tree(&[(
                 "BAT0",
                 &[
                     ("type", "Battery\n"),
                     ("status", "Full\n"),
-                    ("capacity", "97\n"),
+                    ("energy_now", "60000000\n"),
+                    ("energy_full", "60000000\n"),
+                    ("power_now", "0\n"),
                 ],
             )]);
-            let snap = snapshot_in(t.path());
-            assert_eq!(snap.percent, 97);
-            assert_eq!(snap.state, BatteryState::Full);
+            assert_eq!(time_in(resting.path()), None, "no rate, no estimate");
         }
-    }
 
-    #[test]
-    fn multiple_packs_aggregate_by_energy_and_composite_state() {
+        phase sysfs_supplies_report_absence_mains_and_percentage_sources;
         {
-            // 10/10 Wh full + 0/40 Wh empty is 20 % of the machine's energy, not the 50 % a
-            // naive mean of the two percentages would report.
-            let t = tree(&[
-                (
+            {
+                let snap = snapshot_in(Path::new("/definitely/not/a/path"));
+                assert!(!snap.present);
+                assert_eq!(snap.state, BatteryState::Unknown);
+            }
+            {
+                let t = tree(&[("AC", &[("type", "Mains\n"), ("online", "1\n")])]);
+                assert!(!snapshot_in(t.path()).present);
+                assert!(!on_battery_in(t.path()));
+            }
+            {
+                let t = tree(&[(
+                    "BAT0",
+                    &[
+                        ("type", "Battery\n"),
+                        ("status", "Discharging\n"),
+                        ("energy_now", "21000000\n"),
+                        ("energy_full", "50000000\n"),
+                    ],
+                )]);
+                let snap = snapshot_in(t.path());
+                assert!(snap.present);
+                assert_eq!(snap.percent, 42, "21 of 50 Wh");
+                assert_eq!(snap.state, BatteryState::Discharging);
+            }
+            {
+                let t = tree(&[(
+                    "BAT0",
+                    &[
+                        ("type", "Battery\n"),
+                        ("status", "Charging\n"),
+                        ("charge_now", "3000000\n"),
+                        ("charge_full", "4000000\n"),
+                    ],
+                )]);
+                let snap = snapshot_in(t.path());
+                assert_eq!(snap.percent, 75);
+                assert_eq!(snap.state, BatteryState::Charging);
+            }
+            {
+                let t = tree(&[(
                     "BAT0",
                     &[
                         ("type", "Battery\n"),
                         ("status", "Full\n"),
-                        ("energy_now", "10000000\n"),
-                        ("energy_full", "10000000\n"),
+                        ("capacity", "97\n"),
                     ],
-                ),
-                (
-                    "BAT1",
-                    &[
-                        ("type", "Battery\n"),
-                        ("status", "Discharging\n"),
-                        ("energy_now", "0\n"),
-                        ("energy_full", "40000000\n"),
-                    ],
-                ),
-            ]);
-            let snap = snapshot_in(t.path());
-            assert_eq!(snap.percent, 20);
-            assert_eq!(
-                snap.state,
-                BatteryState::Discharging,
-                "one pack draining means the machine is draining"
-            );
+                )]);
+                let snap = snapshot_in(t.path());
+                assert_eq!(snap.percent, 97);
+                assert_eq!(snap.state, BatteryState::Full);
+            }
         }
-        {
-            let t = tree(&[
-                (
-                    "BAT0",
-                    &[
-                        ("type", "Battery\n"),
-                        ("present", "1\n"),
-                        ("status", "Discharging\n"),
-                        ("energy_now", "5000000\n"),
-                        ("energy_full", "10000000\n"),
-                    ],
-                ),
-                (
-                    "BAT1",
-                    &[
-                        ("type", "Battery\n"),
-                        ("present", "0\n"),
-                        ("status", "Unknown\n"),
-                        ("energy_now", "0\n"),
-                        ("energy_full", "90000000\n"),
-                    ],
-                ),
-            ]);
-            let snap = snapshot_in(t.path());
-            assert_eq!(snap.percent, 50, "the removed pack contributes nothing");
-        }
-        {
-            assert_eq!(
-                composite_state(&[BatteryState::Discharging, BatteryState::Charging]),
-                BatteryState::Charging
-            );
-        }
-        {
-            let t = tree(&[
-                ("AC", &[("type", "Mains\n"), ("online", "0\n")]),
-                (
-                    "BAT0",
-                    &[
-                        ("type", "Battery\n"),
-                        ("status", "Discharging\n"),
-                        ("capacity", "55\n"),
-                    ],
-                ),
-            ]);
-            assert!(on_battery_in(t.path()));
-        }
-    }
 
-    #[test]
-    fn battery_health_and_charge_caps_follow_the_kernel_contract() {
+        phase multiple_packs_aggregate_by_energy_and_composite_state;
         {
-            let dir = tempfile::tempdir().unwrap();
-            for (name, value) in [
-                ("capacity", "61"),
-                ("status", "Discharging"),
-                ("energy_full", "40000000"),
-                ("energy_full_design", "50000000"),
-            ] {
-                fs::write(dir.path().join(name), value).unwrap();
+            {
+                // 10/10 Wh full + 0/40 Wh empty is 20 % of the machine's energy, not the 50 % a
+                // naive mean of the two percentages would report.
+                let t = tree(&[
+                    (
+                        "BAT0",
+                        &[
+                            ("type", "Battery\n"),
+                            ("status", "Full\n"),
+                            ("energy_now", "10000000\n"),
+                            ("energy_full", "10000000\n"),
+                        ],
+                    ),
+                    (
+                        "BAT1",
+                        &[
+                            ("type", "Battery\n"),
+                            ("status", "Discharging\n"),
+                            ("energy_now", "0\n"),
+                            ("energy_full", "40000000\n"),
+                        ],
+                    ),
+                ]);
+                let snap = snapshot_in(t.path());
+                assert_eq!(snap.percent, 20);
+                assert_eq!(
+                    snap.state,
+                    BatteryState::Discharging,
+                    "one pack draining means the machine is draining"
+                );
             }
-            let info = BatteryInfo::from_battery_dir(dir.path(), false);
-            assert_eq!(info.health_percent(), Some(80));
-            assert_eq!(info.summary(), "61% · On battery");
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            for (name, value) in [
-                ("status", "Not charging"),
-                ("energy_now", "53950000"),
-                ("energy_full", "56160000"),
-            ] {
-                fs::write(dir.path().join(name), value).unwrap();
+            {
+                let t = tree(&[
+                    (
+                        "BAT0",
+                        &[
+                            ("type", "Battery\n"),
+                            ("present", "1\n"),
+                            ("status", "Discharging\n"),
+                            ("energy_now", "5000000\n"),
+                            ("energy_full", "10000000\n"),
+                        ],
+                    ),
+                    (
+                        "BAT1",
+                        &[
+                            ("type", "Battery\n"),
+                            ("present", "0\n"),
+                            ("status", "Unknown\n"),
+                            ("energy_now", "0\n"),
+                            ("energy_full", "90000000\n"),
+                        ],
+                    ),
+                ]);
+                let snap = snapshot_in(t.path());
+                assert_eq!(snap.percent, 50, "the removed pack contributes nothing");
             }
-            let info = BatteryInfo::from_battery_dir(dir.path(), true);
-            assert_eq!(info.capacity, 96);
-            assert_eq!(info.summary(), "96% · Plugged in, not charging");
+            {
+                assert_eq!(
+                    composite_state(&[BatteryState::Discharging, BatteryState::Charging]),
+                    BatteryState::Charging
+                );
+            }
+            {
+                let t = tree(&[
+                    ("AC", &[("type", "Mains\n"), ("online", "0\n")]),
+                    (
+                        "BAT0",
+                        &[
+                            ("type", "Battery\n"),
+                            ("status", "Discharging\n"),
+                            ("capacity", "55\n"),
+                        ],
+                    ),
+                ]);
+                assert!(on_battery_in(t.path()));
+            }
         }
+
+        phase battery_health_and_charge_caps_follow_the_kernel_contract;
         {
-            let dir = tempfile::tempdir().unwrap();
-            fs::write(dir.path().join("charge_stop_threshold"), "80\n").unwrap();
-            let info = BatteryInfo::from_battery_dir(dir.path(), true);
-            assert_eq!(info.charge_limit, Some(80));
+            {
+                let dir = tempfile::tempdir().unwrap();
+                for (name, value) in [
+                    ("capacity", "61"),
+                    ("status", "Discharging"),
+                    ("energy_full", "40000000"),
+                    ("energy_full_design", "50000000"),
+                ] {
+                    fs::write(dir.path().join(name), value).unwrap();
+                }
+                let info = BatteryInfo::from_battery_dir(dir.path(), false);
+                assert_eq!(info.health_percent(), Some(80));
+                assert_eq!(info.summary(), "61% · On battery");
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                for (name, value) in [
+                    ("status", "Not charging"),
+                    ("energy_now", "53950000"),
+                    ("energy_full", "56160000"),
+                ] {
+                    fs::write(dir.path().join(name), value).unwrap();
+                }
+                let info = BatteryInfo::from_battery_dir(dir.path(), true);
+                assert_eq!(info.capacity, 96);
+                assert_eq!(info.summary(), "96% · Plugged in, not charging");
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                fs::write(dir.path().join("charge_stop_threshold"), "80\n").unwrap();
+                let info = BatteryInfo::from_battery_dir(dir.path(), true);
+                assert_eq!(info.charge_limit, Some(80));
+            }
+            {
+                let root = tempfile::tempdir().unwrap();
+                let path = root
+                    .path()
+                    .join("devices/platform/VPC2004:00/conservation_mode");
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, "1\n").unwrap();
+                let cap = charge_capability_from(root.path()).unwrap();
+                assert_eq!(cap.backend, ChargeCapBackend::ConservationMode);
+                assert_eq!(cap.current, 60);
+                assert_eq!(cap.choices, vec![60, 100]);
+            }
         }
+
+        phase time_left_and_to_full_follow_the_drivers_rate;
+        // Time left and time to full come from the level now and the rate the driver
+        // reports, in matching units, signed or not; a battery that is neither draining
+        // nor charging has neither.
+        {
+            let read = |files: &[(&str, &str)], on_ac: bool| {
+                let dir = tempfile::tempdir().unwrap();
+                for (name, value) in files {
+                    fs::write(dir.path().join(name), value).unwrap();
+                }
+                BatteryInfo::from_battery_dir(dir.path(), on_ac)
+            };
+            let draining = read(
+                &[
+                    ("status", "Discharging"),
+                    ("energy_now", "30000000"),
+                    ("energy_full", "60000000"),
+                    ("power_now", "10000000"),
+                ],
+                false,
+            );
+            assert_eq!(
+                draining.time_to_empty(),
+                Some(Duration::from_secs(3 * 3600))
+            );
+            assert_eq!(draining.time_to_full(), None);
+            let charging = read(
+                &[
+                    ("status", "Charging"),
+                    ("charge_now", "2000000"),
+                    ("charge_full", "4000000"),
+                    ("current_now", "-1000000"),
+                    ("charge_control_end_threshold", "80"),
+                ],
+                true,
+            );
+            assert_eq!(
+                charging.time_to_full(),
+                Some(Duration::from_secs(72 * 60)),
+                "to the 80 % limit at 1 A"
+            );
+            assert_eq!(charging.time_to_empty(), None);
+            let idle = read(&[("status", "Not charging"), ("energy_now", "1")], true);
+            assert_eq!((idle.time_to_empty(), idle.time_to_full()), (None, None));
+            let unknown_rate = read(&[("status", "Discharging"), ("energy_now", "1")], false);
+            assert_eq!(unknown_rate.time_to_empty(), None);
+        }
+
+        phase a_battmgr_battery_shows_its_level_its_wear_and_no_cap;
+        // Qualcomm's battmgr (Snapdragon laptops) publishes no `capacity`, only energy
+        // now, full and design, and a stop threshold of 0 while none is set: the level
+        // is computed, the worn pack's health shows its loss in watt hours, and charging
+        // is not capped.
         {
             let root = tempfile::tempdir().unwrap();
-            let path = root
-                .path()
-                .join("devices/platform/VPC2004:00/conservation_mode");
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, "1\n").unwrap();
-            let cap = charge_capability_from(root.path()).unwrap();
-            assert_eq!(cap.backend, ChargeCapBackend::ConservationMode);
-            assert_eq!(cap.current, 60);
-            assert_eq!(cap.choices, vec![60, 100]);
-        }
-    }
-
-    /// Time left and time to full come from the level now and the rate the driver
-    /// reports, in matching units, signed or not; a battery that is neither draining
-    /// nor charging has neither.
-    #[test]
-    fn time_left_and_to_full_follow_the_drivers_rate() {
-        let read = |files: &[(&str, &str)], on_ac: bool| {
-            let dir = tempfile::tempdir().unwrap();
-            for (name, value) in files {
-                fs::write(dir.path().join(name), value).unwrap();
-            }
-            BatteryInfo::from_battery_dir(dir.path(), on_ac)
-        };
-        let draining = read(
-            &[
-                ("status", "Discharging"),
-                ("energy_now", "30000000"),
-                ("energy_full", "60000000"),
-                ("power_now", "10000000"),
-            ],
-            false,
-        );
-        assert_eq!(
-            draining.time_to_empty(),
-            Some(Duration::from_secs(3 * 3600))
-        );
-        assert_eq!(draining.time_to_full(), None);
-        let charging = read(
-            &[
-                ("status", "Charging"),
-                ("charge_now", "2000000"),
-                ("charge_full", "4000000"),
-                ("current_now", "-1000000"),
-                ("charge_control_end_threshold", "80"),
-            ],
-            true,
-        );
-        assert_eq!(
-            charging.time_to_full(),
-            Some(Duration::from_secs(72 * 60)),
-            "to the 80 % limit at 1 A"
-        );
-        assert_eq!(charging.time_to_empty(), None);
-        let idle = read(&[("status", "Not charging"), ("energy_now", "1")], true);
-        assert_eq!((idle.time_to_empty(), idle.time_to_full()), (None, None));
-        let unknown_rate = read(&[("status", "Discharging"), ("energy_now", "1")], false);
-        assert_eq!(unknown_rate.time_to_empty(), None);
-    }
-
-    /// Qualcomm's battmgr (Snapdragon laptops) publishes no `capacity`, only energy
-    /// now, full and design, and a stop threshold of 0 while none is set: the level
-    /// is computed, the worn pack's health shows its loss in watt hours, and charging
-    /// is not capped.
-    #[test]
-    fn a_battmgr_battery_shows_its_level_its_wear_and_no_cap() {
-        let root = tempfile::tempdir().unwrap();
-        let battery = root.path().join("class/power_supply/qcom-battmgr-bat");
-        fs::create_dir_all(&battery).unwrap();
-        for (name, value) in [
-            ("type", "Battery"),
-            ("status", "Discharging"),
-            ("energy_now", "28980000"),
-            ("energy_full", "44600000"),
-            ("energy_full_design", "70000000"),
-            ("power_now", "-19401000"),
-            ("cycle_count", "334"),
-            ("charge_full", ""),
-            ("charge_full_design", ""),
-            ("charge_control_end_threshold", "0"),
-            ("charge_control_start_threshold", "0"),
-        ] {
-            fs::write(battery.join(name), format!("{value}\n")).unwrap();
-        }
-        let info = BatteryInfo::from_battery_dir(&battery, false);
-        assert_eq!(info.capacity, 65);
-        assert_eq!(info.cycle_count, Some(334));
-        assert_eq!(info.health_percent(), Some(64));
-        assert_eq!(info.full_and_design_wh(), Some((44.6, 70.0)));
-        assert_eq!(info.charge_limit, None, "0 is no threshold, not a 0 % cap");
-        assert!(info.time_to_empty().is_some());
-
-        let cap = charge_capability_from(root.path()).unwrap();
-        assert_eq!(cap.current, 100, "charging to full");
-        assert!(cap.choices.contains(&cap.current));
-
-        let charge_counted = tempfile::tempdir().unwrap();
-        for (name, value) in [
-            ("charge_full", "3000000"),
-            ("charge_full_design", "4000000"),
-        ] {
-            fs::write(charge_counted.path().join(name), value).unwrap();
-        }
-        let info = BatteryInfo::from_battery_dir(charge_counted.path(), true);
-        assert_eq!(info.unit, CapacityUnit::Charge);
-        assert_eq!(info.health_percent(), Some(75));
-        assert_eq!(info.full_and_design_wh(), None);
-    }
-
-    #[test]
-    fn battery_capabilities_are_per_device_and_enumerate_every_supply() {
-        {
-            let root = tempfile::tempdir().unwrap();
-            let battery = root.path().join("class/power_supply/CMB1");
+            let battery = root.path().join("class/power_supply/qcom-battmgr-bat");
             fs::create_dir_all(&battery).unwrap();
-            fs::write(battery.join("type"), "Battery\n").unwrap();
-            fs::write(battery.join("charge_control_end_threshold"), "85\n").unwrap();
-            fs::write(battery.join("charge_control_start_threshold"), "80\n").unwrap();
+            for (name, value) in [
+                ("type", "Battery"),
+                ("status", "Discharging"),
+                ("energy_now", "28980000"),
+                ("energy_full", "44600000"),
+                ("energy_full_design", "70000000"),
+                ("power_now", "-19401000"),
+                ("cycle_count", "334"),
+                ("charge_full", ""),
+                ("charge_full_design", ""),
+                ("charge_control_end_threshold", "0"),
+                ("charge_control_start_threshold", "0"),
+            ] {
+                fs::write(battery.join(name), format!("{value}\n")).unwrap();
+            }
+            let info = BatteryInfo::from_battery_dir(&battery, false);
+            assert_eq!(info.capacity, 65);
+            assert_eq!(info.cycle_count, Some(334));
+            assert_eq!(info.health_percent(), Some(64));
+            assert_eq!(info.full_and_design_wh(), Some((44.6, 70.0)));
+            assert_eq!(info.charge_limit, None, "0 is no threshold, not a 0 % cap");
+            assert!(info.time_to_empty().is_some());
+
             let cap = charge_capability_from(root.path()).unwrap();
-            assert_eq!(cap.current, 85);
-            assert_eq!(cap.backend, ChargeCapBackend::PowerSupply);
-            assert!(cap.supports_start_threshold);
-            assert!(cap.choices.contains(&85));
+            assert_eq!(cap.current, 100, "charging to full");
+            assert!(cap.choices.contains(&cap.current));
+
+            let charge_counted = tempfile::tempdir().unwrap();
+            for (name, value) in [
+                ("charge_full", "3000000"),
+                ("charge_full_design", "4000000"),
+            ] {
+                fs::write(charge_counted.path().join(name), value).unwrap();
+            }
+            let info = BatteryInfo::from_battery_dir(charge_counted.path(), true);
+            assert_eq!(info.unit, CapacityUnit::Charge);
+            assert_eq!(info.health_percent(), Some(75));
+            assert_eq!(info.full_and_design_wh(), None);
         }
+
+        phase battery_capabilities_are_per_device_and_enumerate_every_supply;
         {
-            let root = tempfile::tempdir().unwrap();
-            for (name, limit) in [("BAT-main", "80"), ("CMB-aux", "90")] {
-                let battery = root.path().join("class/power_supply").join(name);
+            {
+                let root = tempfile::tempdir().unwrap();
+                let battery = root.path().join("class/power_supply/CMB1");
                 fs::create_dir_all(&battery).unwrap();
                 fs::write(battery.join("type"), "Battery\n").unwrap();
-                fs::write(battery.join("charge_control_end_threshold"), limit).unwrap();
+                fs::write(battery.join("charge_control_end_threshold"), "85\n").unwrap();
+                fs::write(battery.join("charge_control_start_threshold"), "80\n").unwrap();
+                let cap = charge_capability_from(root.path()).unwrap();
+                assert_eq!(cap.current, 85);
+                assert_eq!(cap.backend, ChargeCapBackend::PowerSupply);
+                assert!(cap.supports_start_threshold);
+                assert!(cap.choices.contains(&85));
             }
-            assert!(charge_capability_from(root.path()).is_none());
-        }
-        {
-            let root = tempfile::tempdir().unwrap();
-            for (id, kind, cap) in [("BAT1", "Battery", "70"), ("ups0", "UPS", "95")] {
-                let p = root.path().join(id);
-                fs::create_dir_all(&p).unwrap();
-                fs::write(p.join("type"), kind).unwrap();
-                fs::write(p.join("capacity"), cap).unwrap();
-                fs::write(p.join("status"), "Discharging").unwrap();
+            {
+                let root = tempfile::tempdir().unwrap();
+                for (name, limit) in [("BAT-main", "80"), ("CMB-aux", "90")] {
+                    let battery = root.path().join("class/power_supply").join(name);
+                    fs::create_dir_all(&battery).unwrap();
+                    fs::write(battery.join("type"), "Battery\n").unwrap();
+                    fs::write(battery.join("charge_control_end_threshold"), limit).unwrap();
+                }
+                assert!(charge_capability_from(root.path()).is_none());
             }
-            let d = power_devices_from(root.path());
-            assert_eq!(d.len(), 2);
-            assert_eq!(d[1].kind, PowerSupplyKind::Ups);
+            {
+                let root = tempfile::tempdir().unwrap();
+                for (id, kind, cap) in [("BAT1", "Battery", "70"), ("ups0", "UPS", "95")] {
+                    let p = root.path().join(id);
+                    fs::create_dir_all(&p).unwrap();
+                    fs::write(p.join("type"), kind).unwrap();
+                    fs::write(p.join("capacity"), cap).unwrap();
+                    fs::write(p.join("status"), "Discharging").unwrap();
+                }
+                let d = power_devices_from(root.path());
+                assert_eq!(d.len(), 2);
+                assert_eq!(d[1].kind, PowerSupplyKind::Ups);
+            }
         }
     }
 }

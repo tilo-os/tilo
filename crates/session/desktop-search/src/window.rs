@@ -316,84 +316,182 @@ mod tests {
         WindowSearch::new(notebook(), vec![Box::new(Notes)]).query(needle)
     }
 
-    #[test]
-    fn unasked_a_window_lists_what_it_holds_then_what_it_can_do() {
-        let hits = search("");
-        let rows: Vec<(&ResourceKind, &str, Option<&str>)> = hits
-            .iter()
-            .map(|hit| (&hit.kind, hit.title.as_str(), hit.subtitle.as_deref()))
-            .collect();
-        assert_eq!(
-            rows,
-            [
-                (&ResourceKind::Note, "Groceries", Some("Edited today")),
-                (&ResourceKind::Note, "Trip plan", Some("Edited yesterday")),
-                (&ResourceKind::Action, "New note", None),
-                (&ResourceKind::Action, "Bold", None),
-            ],
-            "the notes as the app lists them, then the notebook's own actions; \
+    tilo_test_env::scenario! {
+        fn a_windows_search_lists_what_it_holds_and_what_a_person_can_run;
+
+        phase unasked_a_window_lists_what_it_holds_then_what_it_can_do;
+        {
+            let hits = search("");
+            let rows: Vec<(&ResourceKind, &str, Option<&str>)> = hits
+                .iter()
+                .map(|hit| (&hit.kind, hit.title.as_str(), hit.subtitle.as_deref()))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    (&ResourceKind::Note, "Groceries", Some("Edited today")),
+                    (&ResourceKind::Note, "Trip plan", Some("Edited yesterday")),
+                    (&ResourceKind::Action, "New note", None),
+                    (&ResourceKind::Action, "Bold", None),
+                ],
+                "the notes as the app lists them, then the notebook's own actions; \
              never the opening of a hit, an action once per note, nor a control's mirror"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn what_it_holds_opens_through_the_windows_open_at_it() {
-        let hits = search("groc");
-        let Some(Target::Action(target)) = hits
-            .iter()
-            .find(|hit| hit.title == "Groceries" && hit.kind == ResourceKind::Note)
-            .map(|hit| &hit.target)
-        else {
-            panic!("the note is found by its name: {hits:?}");
-        };
-        assert_eq!(
-            target.address(),
-            tilo_actions::ActionAddress::new("notes.notebook", "open")
-        );
-        assert_eq!(target.preset, Some(("anchor".into(), "page:1".into())));
-    }
+        phase what_it_holds_opens_through_the_windows_open_at_it;
+        {
+            let hits = search("groc");
+            let Some(Target::Action(target)) = hits
+                .iter()
+                .find(|hit| hit.title == "Groceries" && hit.kind == ResourceKind::Note)
+                .map(|hit| &hit.target)
+            else {
+                panic!("the note is found by its name: {hits:?}");
+            };
+            assert_eq!(
+                target.address(),
+                tilo_actions::ActionAddress::new("notes.notebook", "open")
+            );
+            assert_eq!(target.preset, Some(("anchor".into(), "page:1".into())));
+        }
 
-    #[test]
-    fn an_items_action_answers_to_the_item_and_names_it_only_where_needed() {
-        let hits = search("trip");
-        let actions: Vec<(&str, Option<&str>)> = hits
-            .iter()
-            .filter(|hit| hit.kind == ResourceKind::Action)
-            .map(|hit| (hit.title.as_str(), hit.subtitle.as_deref()))
-            .collect();
-        assert_eq!(actions, [("Rename note", Some("Trip plan"))]);
-    }
+        phase an_items_action_answers_to_the_item_and_names_it_only_where_needed;
+        {
+            let hits = search("trip");
+            let actions: Vec<(&str, Option<&str>)> = hits
+                .iter()
+                .filter(|hit| hit.kind == ResourceKind::Action)
+                .map(|hit| (hit.title.as_str(), hit.subtitle.as_deref()))
+                .collect();
+            assert_eq!(actions, [("Rename note", Some("Trip plan"))]);
+        }
 
-    #[test]
-    fn an_action_wears_its_own_icon() {
-        let hits = search("");
-        let icon = |title: &str| {
-            hits.iter()
-                .find(|hit| hit.title == title)
-                .map(|hit| hit.icon)
-        };
-        assert_eq!(icon("New note"), Some(Some(ui::icons::Icon::FilePlus)));
-        assert_eq!(icon("Bold"), Some(None), "one without wears its app's");
-    }
+        phase an_action_wears_its_own_icon;
+        {
+            let hits = search("");
+            let icon = |title: &str| {
+                hits.iter()
+                    .find(|hit| hit.title == title)
+                    .map(|hit| hit.icon)
+            };
+            assert_eq!(icon("New note"), Some(Some(ui::icons::Icon::FilePlus)));
+            assert_eq!(icon("Bold"), Some(None), "one without wears its app's");
+        }
 
-    #[test]
-    fn actions_on_the_selection_lead_the_others() {
-        let mut actions: Vec<Hit> = search("")
-            .into_iter()
-            .filter(|hit| hit.kind == ResourceKind::Action)
-            .collect();
-        selection_first(&mut actions);
-        let titles: Vec<&str> = actions.iter().map(|hit| hit.title.as_str()).collect();
-        assert_eq!(titles, ["Bold", "New note"]);
-    }
+        phase actions_on_the_selection_lead_the_others;
+        {
+            let mut actions: Vec<Hit> = search("")
+                .into_iter()
+                .filter(|hit| hit.kind == ResourceKind::Action)
+                .collect();
+            selection_first(&mut actions);
+            let titles: Vec<&str> = actions.iter().map(|hit| hit.title.as_str()).collect();
+            assert_eq!(titles, ["Bold", "New note"]);
+        }
 
-    #[test]
-    fn the_windows_own_name_finds_none_of_its_actions() {
-        let hits = search("notebook");
-        assert!(
-            !hits.iter().any(|hit| hit.kind == ResourceKind::Action),
-            "every action of the window is the notebook's: {hits:?}"
-        );
+        phase the_windows_own_name_finds_none_of_its_actions;
+        {
+            let hits = search("notebook");
+            assert!(
+                !hits.iter().any(|hit| hit.kind == ResourceKind::Action),
+                "every action of the window is the notebook's: {hits:?}"
+            );
+        }
+
+        phase only_what_can_run_now_is_listed;
+        {
+            assert_eq!(
+                action_titles(folder(None), ""),
+                ["Refresh folder", "Add to Favorites", "New folder"],
+                "with nothing selected: no action on the selection, one side of the \
+             favourite toggle, nothing asking more than one line, nothing for agents"
+            );
+            for needle in ["remove", "favorites", "rename", "trash", "copy", "select"] {
+                let titles = action_titles(folder(None), needle);
+                assert!(
+                    titles.iter().all(|title| title == "Add to Favorites"),
+                    "{needle:?} finds nothing that cannot run now: {titles:?}"
+                );
+            }
+        }
+
+        phase actions_on_the_selection_name_it_and_lead;
+        {
+            assert_eq!(
+                action_titles(folder(Some("report.pdf")), ""),
+                [
+                    "Rename \u{201c}report.pdf\u{201d}",
+                    "Move \u{201c}report.pdf\u{201d} to Trash",
+                    "Refresh folder",
+                    "Add to Favorites",
+                    "New folder",
+                ]
+            );
+        }
+
+        phase agent_only_actions_never_reach_a_persons_search;
+        {
+            for needle in ["", "rename", "replace", "range", "files"] {
+                let hits = WindowSearch::new(folder(Some("report.pdf")), Vec::new()).query(needle);
+                for hit in &hits {
+                    let Target::Action(target) = &hit.target else {
+                        continue;
+                    };
+                    assert!(
+                        target.spec.reaches_people(),
+                        "{needle:?} lists {:?}, which is for agents",
+                        hit.title
+                    );
+                }
+            }
+            // On an item too: an item's action for agents does not answer to
+            // the item's name.
+            let mut notebook = notebook();
+            notebook[0].children[0] = notebook[0].children[0].clone().with_action(
+                action("read-body", "Read note body").for_audience(tilo_actions::Audience::Agents),
+            );
+            let titles: Vec<String> = WindowSearch::new(notebook, vec![Box::new(Notes)])
+                .query("groceries")
+                .into_iter()
+                .filter(|hit| hit.kind == ResourceKind::Action)
+                .map(|hit| hit.title)
+                .collect();
+            assert_eq!(titles, ["Rename note"]);
+        }
+
+        phase what_the_window_holds_keeps_the_apps_order;
+        {
+            let titles: Vec<String> = WindowSearch::new(notebook(), vec![Box::new(Arranged)])
+                .query("")
+                .into_iter()
+                .filter(|hit| hit.kind == ResourceKind::Note)
+                .map(|hit| hit.title)
+                .collect();
+            assert_eq!(
+                titles,
+                ["Trip plan", "Groceries"],
+                "as the app arranged them"
+            );
+        }
+
+        phase rows_never_read_as_ids;
+        {
+            for needle in ["", "n", "page", "notes"] {
+                for hit in search(needle) {
+                    let row = tilo_actions::ListedRow {
+                        title: hit.title.clone(),
+                        subtitle: hit.subtitle.clone(),
+                    };
+                    assert!(
+                        tilo_actions::listed_row_problems(&row).is_empty()
+                            && !hit.title.contains(':')
+                            && !hit.title.contains('.'),
+                        "{needle:?}: {row:?}"
+                    );
+                }
+            }
+        }
     }
 
     fn unavailable(mut spec: ActionSpec, code: &str) -> ActionSpec {
@@ -495,67 +593,6 @@ mod tests {
         hits.into_iter().map(|hit| hit.title).collect()
     }
 
-    #[test]
-    fn only_what_can_run_now_is_listed() {
-        assert_eq!(
-            action_titles(folder(None), ""),
-            ["Refresh folder", "Add to Favorites", "New folder"],
-            "with nothing selected: no action on the selection, one side of the \
-             favourite toggle, nothing asking more than one line, nothing for agents"
-        );
-        for needle in ["remove", "favorites", "rename", "trash", "copy", "select"] {
-            let titles = action_titles(folder(None), needle);
-            assert!(
-                titles.iter().all(|title| title == "Add to Favorites"),
-                "{needle:?} finds nothing that cannot run now: {titles:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn actions_on_the_selection_name_it_and_lead() {
-        assert_eq!(
-            action_titles(folder(Some("report.pdf")), ""),
-            [
-                "Rename \u{201c}report.pdf\u{201d}",
-                "Move \u{201c}report.pdf\u{201d} to Trash",
-                "Refresh folder",
-                "Add to Favorites",
-                "New folder",
-            ]
-        );
-    }
-
-    #[test]
-    fn agent_only_actions_never_reach_a_persons_search() {
-        for needle in ["", "rename", "replace", "range", "files"] {
-            let hits = WindowSearch::new(folder(Some("report.pdf")), Vec::new()).query(needle);
-            for hit in &hits {
-                let Target::Action(target) = &hit.target else {
-                    continue;
-                };
-                assert!(
-                    target.spec.reaches_people(),
-                    "{needle:?} lists {:?}, which is for agents",
-                    hit.title
-                );
-            }
-        }
-        // On an item too: an item's action for agents does not answer to
-        // the item's name.
-        let mut notebook = notebook();
-        notebook[0].children[0] = notebook[0].children[0].clone().with_action(
-            action("read-body", "Read note body").for_audience(tilo_actions::Audience::Agents),
-        );
-        let titles: Vec<String> = WindowSearch::new(notebook, vec![Box::new(Notes)])
-            .query("groceries")
-            .into_iter()
-            .filter(|hit| hit.kind == ResourceKind::Action)
-            .map(|hit| hit.title)
-            .collect();
-        assert_eq!(titles, ["Rename note"]);
-    }
-
     /// A notebook whose own search lists its notes in the order the app
     /// keeps them, which is not their alphabetical order.
     struct Arranged;
@@ -571,39 +608,6 @@ mod tests {
         }
         fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
             Some(tilo_actions::ActionAddress::new("notes.notebook", "open"))
-        }
-    }
-
-    #[test]
-    fn what_the_window_holds_keeps_the_apps_order() {
-        let titles: Vec<String> = WindowSearch::new(notebook(), vec![Box::new(Arranged)])
-            .query("")
-            .into_iter()
-            .filter(|hit| hit.kind == ResourceKind::Note)
-            .map(|hit| hit.title)
-            .collect();
-        assert_eq!(
-            titles,
-            ["Trip plan", "Groceries"],
-            "as the app arranged them"
-        );
-    }
-
-    #[test]
-    fn rows_never_read_as_ids() {
-        for needle in ["", "n", "page", "notes"] {
-            for hit in search(needle) {
-                let row = tilo_actions::ListedRow {
-                    title: hit.title.clone(),
-                    subtitle: hit.subtitle.clone(),
-                };
-                assert!(
-                    tilo_actions::listed_row_problems(&row).is_empty()
-                        && !hit.title.contains(':')
-                        && !hit.title.contains('.'),
-                    "{needle:?}: {row:?}"
-                );
-            }
         }
     }
 }

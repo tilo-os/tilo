@@ -461,7 +461,10 @@ impl<M: ListModel> VirtualList<M> {
     pub(super) fn forget_tree(&mut self) {
         self.tree_rows.clear();
         self.tree_hidden.clear();
-        self.first_level_branch = None;
+        // `first_level_branch` stays: it is what the tree showed of its own first level, and the
+        // rows read next say it again in this frame. Forgetting it would take the column the
+        // chevron hangs in as unknown for a pass, and every row of the tree would stand a step
+        // over and back whenever the model changed — a rename moving the whole page tree.
         if let Some(marks) = &self.tree {
             marks.depth.borrow_mut().clear();
             marks.branches.borrow_mut().clear();

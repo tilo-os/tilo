@@ -34,7 +34,8 @@ pub(super) fn title_cut_with_room(needs: f64, has: f64, free: f64) -> bool {
 
 /// What is wrong with one header row, as the shell laid it out: a title cut off while an action in
 /// the row kept a label it could have shown as its icon, a title cut off with room standing empty
-/// beside it, or a row that kept its menu but not the app's primary action.
+/// beside it, a title cut to an ellipsis alone, or a row that kept its menu but not the app's
+/// primary action.
 pub(super) fn header_row_problem(row: &ui::widget::HeaderRowLayout) -> Option<String> {
     let needs = f64::from(row.title_needs);
     let has = f64::from(row.title_has);
@@ -42,6 +43,16 @@ pub(super) fn header_row_problem(row: &ui::widget::HeaderRowLayout) -> Option<St
     if !row.primary_shown {
         return Some(format!(
             "the {} column's row keeps its menu but not its primary action",
+            row.column
+        ));
+    }
+    // A title cut shorter than its first letter and an ellipsis says nothing: the column reads
+    // as an ellipsis alone, and no room standing empty beside it is needed to tell it from
+    // another window's.
+    if !row.title_opens {
+        return Some(format!(
+            "the {} column's title reads as an ellipsis alone: it has {has:.0} of the {needs:.0} \
+             it says",
             row.column
         ));
     }

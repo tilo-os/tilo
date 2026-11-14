@@ -12,7 +12,7 @@
 use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
-use crate::mention::{Mention, Participant};
+use crate::mention::Mention;
 
 /// The plain text of `blocks`: one line per paragraph.
 pub fn plain_text(blocks: &[BlockContent]) -> String {
@@ -50,7 +50,7 @@ pub fn legacy(id: &str, text: &str, mentions: &[Mention]) -> Vec<BlockContent> {
 /// Who `blocks` mention: every mention mark, at its byte offset in
 /// [`plain_text`], and every `@name` typed by hand that no mark covers,
 /// resolved against `participants` as a hand-typed mention always was.
-pub fn mentions(blocks: &[BlockContent], participants: &[Participant]) -> Vec<Mention> {
+pub fn mentions(blocks: &[BlockContent], participants: &[crate::record::Person]) -> Vec<Mention> {
     let mut found = Vec::new();
     let mut offset = 0usize;
     for block in blocks {
@@ -60,9 +60,9 @@ pub fn mentions(blocks: &[BlockContent], participants: &[Participant]) -> Vec<Me
                     user: user.clone(),
                     start: offset.saturating_add(span.range.start),
                     len: span.range.len(),
-                    is_agent: participants
-                        .iter()
-                        .any(|participant| participant.id == *user && participant.is_agent),
+                    is_agent: participants.iter().any(|participant| {
+                        participant.id.0 == user.as_str() && participant.is_agent()
+                    }),
                 });
             }
         }
@@ -85,55 +85,62 @@ pub fn mentions(blocks: &[BlockContent], participants: &[Participant]) -> Vec<Me
 mod tests {
     use super::*;
 
-    fn ada() -> Participant {
-        Participant {
-            id: "u-ada".into(),
+    fn ada() -> crate::record::Person {
+        crate::record::Person {
+            id: ui::tilo_resource::Atom("u-ada".into()),
             name: "Ada".into(),
-            is_agent: false,
+            ..crate::record::Person::default()
         }
     }
 
-    #[test]
-    fn a_body_reads_back_as_plain_text_and_its_mentions() {
-        let mut first = BlockContent::paragraph("a", "hi @Ada");
-        first.marks = vec![MarkSpan::new(3..7, Mark::Mention("u-ada".into()))];
-        let second = BlockContent::paragraph("b", "and @Ada again");
-        let blocks = [first, second];
-        assert_eq!(plain_text(&blocks), "hi @Ada\nand @Ada again");
-        let found = mentions(&blocks, &[ada()]);
-        assert_eq!(found.len(), 2, "{found:?}");
-        assert_eq!((found[0].start, found[0].len), (3, 4));
-        assert_eq!(found[0].slice(&plain_text(&blocks)), "@Ada");
-        assert_eq!(
-            found[1].slice(&plain_text(&blocks)),
-            "@Ada",
-            "typed by hand"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A message body read back, as it is written now and as an old message kept it.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn a_body_reads_as_text_and_mentions_new_or_old;
 
-    #[test]
-    fn an_old_message_shows_its_text_with_its_mentions_marked() {
-        let text = "ping @Ada\nsecond line";
-        let mentions = [Mention {
-            user: "u-ada".into(),
-            start: 5,
-            len: 4,
-            is_agent: false,
-        }];
-        let blocks = legacy("m1", text, &mentions);
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, text);
-        assert_eq!(
-            blocks[0].marks,
-            [MarkSpan::new(5..9, Mark::Mention("u-ada".into()))]
-        );
-        let stale = [Mention {
-            start: 90,
-            ..mentions[0].clone()
-        }];
-        assert!(
-            legacy("m1", text, &stale)[0].marks.is_empty(),
-            "a stale offset is skipped"
-        );
+        phase a_body_reads_back_as_plain_text_and_its_mentions;
+        {
+            let mut first = BlockContent::paragraph("a", "hi @Ada");
+            first.marks = vec![MarkSpan::new(3..7, Mark::Mention("u-ada".into()))];
+            let second = BlockContent::paragraph("b", "and @Ada again");
+            let blocks = [first, second];
+            assert_eq!(plain_text(&blocks), "hi @Ada\nand @Ada again");
+            let found = mentions(&blocks, &[ada()]);
+            assert_eq!(found.len(), 2, "{found:?}");
+            assert_eq!((found[0].start, found[0].len), (3, 4));
+            assert_eq!(found[0].slice(&plain_text(&blocks)), "@Ada");
+            assert_eq!(
+                found[1].slice(&plain_text(&blocks)),
+                "@Ada",
+                "typed by hand"
+            );
+        }
+
+        phase an_old_message_shows_its_text_with_its_mentions_marked;
+        {
+            let text = "ping @Ada\nsecond line";
+            let mentions = [Mention {
+                user: "u-ada".into(),
+                start: 5,
+                len: 4,
+                is_agent: false,
+            }];
+            let blocks = legacy("m1", text, &mentions);
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].text, text);
+            assert_eq!(
+                blocks[0].marks,
+                [MarkSpan::new(5..9, Mark::Mention("u-ada".into()))]
+            );
+            let stale = [Mention {
+                start: 90,
+                ..mentions[0].clone()
+            }];
+            assert!(
+                legacy("m1", text, &stale)[0].marks.is_empty(),
+                "a stale offset is skipped"
+            );
+        }
     }
 }

@@ -160,23 +160,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_widget_answers_only_the_capabilities_it_declares() {
-        let mut probe = Probe {
-            name: "a".to_owned(),
-        };
-        let widget: &mut dyn Widget = &mut probe;
-        assert_eq!(
-            capability::<dyn Greeting>(widget).map(Greeting::greet),
-            Some("hello a".to_owned())
-        );
-        assert!(capability::<dyn Unrelated>(widget).is_none());
-        assert!(capability_mut::<dyn Unrelated>(widget).is_none());
-        capability_mut::<dyn Greeting>(widget)
-            .expect("declared")
-            .rename("b");
-        assert_eq!(probe.greet(), "hello b");
-    }
     struct Wrapper {
         inner: Probe,
     }
@@ -189,23 +172,47 @@ mod tests {
         }
     }
 
-    #[test]
-    fn excluded_capabilities_forward_shared_and_mutable_requests_to_the_inner_widget() {
-        let mut wrapper = Wrapper {
-            inner: Probe {
+    tilo_test_env::scenario! {
+        /// Widget capabilities: declared, excluded and forwarded.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn capabilities_are_answered_as_declared_or_forwarded;
+
+        phase a_widget_answers_only_the_capabilities_it_declares;
+        {
+            let mut probe = Probe {
                 name: "a".to_owned(),
-            },
-        };
-        let widget: &mut dyn Widget = &mut wrapper;
-        assert!(capability::<dyn Unrelated>(widget).is_none());
-        assert!(capability_mut::<dyn Unrelated>(widget).is_none());
-        assert_eq!(
-            capability::<dyn Greeting>(widget).map(Greeting::greet),
-            Some("hello a".to_owned())
-        );
-        capability_mut::<dyn Greeting>(widget)
-            .expect("forwarded")
-            .rename("b");
-        assert_eq!(wrapper.inner.greet(), "hello b");
+            };
+            let widget: &mut dyn Widget = &mut probe;
+            assert_eq!(
+                capability::<dyn Greeting>(widget).map(Greeting::greet),
+                Some("hello a".to_owned())
+            );
+            assert!(capability::<dyn Unrelated>(widget).is_none());
+            assert!(capability_mut::<dyn Unrelated>(widget).is_none());
+            capability_mut::<dyn Greeting>(widget)
+                .expect("declared")
+                .rename("b");
+            assert_eq!(probe.greet(), "hello b");
+        }
+
+        phase excluded_capabilities_forward_shared_and_mutable_requests_to_the_inner_widget;
+        {
+            let mut wrapper = Wrapper {
+                inner: Probe {
+                    name: "a".to_owned(),
+                },
+            };
+            let widget: &mut dyn Widget = &mut wrapper;
+            assert!(capability::<dyn Unrelated>(widget).is_none());
+            assert!(capability_mut::<dyn Unrelated>(widget).is_none());
+            assert_eq!(
+                capability::<dyn Greeting>(widget).map(Greeting::greet),
+                Some("hello a".to_owned())
+            );
+            capability_mut::<dyn Greeting>(widget)
+                .expect("forwarded")
+                .rename("b");
+            assert_eq!(wrapper.inner.greet(), "hello b");
+        }
     }
 }

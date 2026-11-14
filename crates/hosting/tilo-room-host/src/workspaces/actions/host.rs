@@ -20,7 +20,7 @@ use serde_json::Value;
 use tilo_action_policy::roles;
 use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_session::workspaces::{
     ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM,
     DETACH_HOST, ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM,
@@ -36,6 +36,7 @@ use super::{
 use crate::host_authority::HostOperation;
 use crate::workspaces::authority::WorkspaceOp;
 use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
+use tilo_relay_protocol::WorkspaceId;
 
 /// The host's own operations.
 pub(super) const HOST: Publisher = Publisher {
@@ -49,8 +50,6 @@ const LABEL: &str = "Workspaces";
 /// How long the invitation a device entering a workspace, or its person's
 /// own, redeems stays redeemable when it does not say.
 const OWN_INVITATION_SECONDS: u64 = 600;
-/// What a person's own workspace is called when they do not say.
-const OWN_WORKSPACE_NAME: &str = "My workspace";
 
 /// The part a person takes in a workspace of their own, as a listing names
 /// it: they made it and administer it.
@@ -303,7 +302,12 @@ fn create_own_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "name",
             ParamType::Text,
-            "The new workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Naming one makes another; omitting it answers the first you made.",
+            "The new workspace's name, 1 to 80 printable characters. Naming one makes another; omitting it answers the first you made.",
+        ),
+        ActionParam::optional(
+            "language",
+            ParamType::Text,
+            "The language a workspace you do not name is named in, as a tag such as `de-DE`; English when omitted.",
         ),
         ActionParam::optional(
             "room",
@@ -463,7 +467,7 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 let own = IssueInvitationRequest {
                     request_id,
-                    role: MemberRole::Editor,
+                    role: Role::Editor,
                     recipient_user_public_key: Some(device.user_public_key),
                     invitee_name: None,
                     expires_at_ns: expiry(now, seconds),
@@ -599,7 +603,7 @@ impl Workspaces {
                     continue;
                 };
                 if let Ok(mut one) = self.listing_of(&workspace).await {
-                    one.role = Some(super::role_name(role).to_owned());
+                    one.role = Some(role.key().to_owned());
                     listed.push(one);
                 }
             }
@@ -633,6 +637,7 @@ impl Workspaces {
     ) -> Result<Value, ActionHostError> {
         let person = device.user_public_key;
         let name = args.text("name")?;
+        let language = args.text("language")?;
         let moving = args.text("room")?;
         let seconds = args
             .integer("expires_in_seconds")?
@@ -698,10 +703,11 @@ impl Workspaces {
             // door: they hear the door's own refusal, with its wait list.
             return Err(refused(&self.not_let_in().await.to_reason()));
         } else {
-            // Another one: there is no bound on how many a person keeps.
-            let name = name.unwrap_or(OWN_WORKSPACE_NAME);
+            // Another one: there is no bound on how many a person keeps, and
+            // one they did not name is named in their language.
+            let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
             let summary = self
-                .create_workspace(name, moving)
+                .create_workspace(&name, moving)
                 .await
                 .map_err(|error| refused(&error))?;
             own.record(&person, &summary.workspace)
@@ -718,7 +724,7 @@ impl Workspaces {
         self.invite_own_person(
             summary,
             person,
-            MemberRole::Editor,
+            Role::Editor,
             request_id,
             expiry(now, seconds),
         )
@@ -746,7 +752,7 @@ impl Workspaces {
         self.invite_own_person(
             summary,
             device.user_public_key,
-            MemberRole::Editor,
+            Role::Editor,
             request_id,
             expires_at_ns,
         )
@@ -756,7 +762,7 @@ impl Workspaces {
     /// The role `person` holds in `workspace` now, a member it has not
     /// removed; `None` for anyone else, and for a workspace not governed
     /// here.
-    async fn role_of(&self, workspace: &str, person: [u8; 32], now: u64) -> Option<MemberRole> {
+    async fn role_of(&self, workspace: &str, person: [u8; 32], now: u64) -> Option<Role> {
         let governed = self.workspace(workspace).await.ok()?;
         let governed = governed.lock().await;
         governed
@@ -775,7 +781,7 @@ impl Workspaces {
         &self,
         summary: WorkspaceSummary,
         person: [u8; 32],
-        role: MemberRole,
+        role: Role,
         request_id: [u8; 32],
         expires_at_ns: u64,
     ) -> Result<Value, ActionHostError> {
@@ -841,9 +847,8 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 let request = crate::hosted::HostWorkspaceRequest {
                     workspace: args.required_text("room")?.to_owned(),
-                    workspace_id: args
-                        .integer("workspace_id")?
-                        .ok_or_else(|| invalid("`workspace_id` is required"))?,
+                    workspace_id: WorkspaceId::parse(args.required_text("workspace_id")?)
+                        .ok_or_else(|| invalid("`workspace_id` is a workspace id"))?,
                     governor_hint: crate::hosted::decode_hex(args.required_text("governor_hint")?)
                         .map_err(|error| invalid(format!("`governor_hint`: {error}")))?,
                     bootstrap: crate::hosted::decode_hex(args.required_text("bootstrap")?)

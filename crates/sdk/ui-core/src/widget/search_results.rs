@@ -1996,33 +1996,360 @@ mod tests {
             .collect()
     }
 
-    /// A count on a heading is news: a group of one row saying "1" restates the row standing
-    /// under it, so the heading names the group alone; a group of several says how many, and a
-    /// group the card cut short says how many it has in all.
-    #[test]
-    fn a_group_heading_counts_only_where_the_number_says_something() {
-        let mut view = SearchResultsView::new();
-        view.set_results(vec![SearchResult::new("Web", "Tilo", "w:1")]);
-        assert_eq!(heading_counts(&view), vec![None], "one row counts nothing");
+    tilo_test_env::scenario! {
+        /// The results panel: its groups and size, its activation and its rows.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn results_group_fit_activate_and_draw;
 
-        view.set_results(vec![
-            SearchResult::new("Mail", "Invoice", "m:1"),
-            SearchResult::new("Mail", "Receipt", "m:2"),
-        ]);
-        assert_eq!(heading_counts(&view), vec![Some(2)], "two rows say so");
+        phase a_group_heading_counts_only_where_the_number_says_something;
+        // A count on a heading is news: a group of one row saying "1" restates the row standing
+        // under it, so the heading names the group alone; a group of several says how many, and a
+        // group the card cut short says how many it has in all.
+        {
+            let mut view = SearchResultsView::new();
+            view.set_results(vec![SearchResult::new("Web", "Tilo", "w:1")]);
+            assert_eq!(heading_counts(&view), vec![None], "one row counts nothing");
 
-        view.set_groups(vec![SearchGroup {
-            total: Some(46),
-            ..SearchGroup::new("Files", vec![SearchResult::new("Files", "plan.pdf", "f:1")])
-        }]);
-        assert_eq!(
-            heading_counts(&view),
-            vec![Some(46)],
-            "a group the card cut short says how many it has"
-        );
+            view.set_results(vec![
+                SearchResult::new("Mail", "Invoice", "m:1"),
+                SearchResult::new("Mail", "Receipt", "m:2"),
+            ]);
+            assert_eq!(heading_counts(&view), vec![Some(2)], "two rows say so");
 
-        view.set_groups(vec![]);
-        assert!(heading_counts(&view).is_empty());
+            view.set_groups(vec![SearchGroup {
+                total: Some(46),
+                ..SearchGroup::new("Files", vec![SearchResult::new("Files", "plan.pdf", "f:1")])
+            }]);
+            assert_eq!(
+                heading_counts(&view),
+                vec![Some(46)],
+                "a group the card cut short says how many it has"
+            );
+
+            view.set_groups(vec![]);
+            assert!(heading_counts(&view).is_empty());
+        }
+
+        phase a_fitted_list_keeps_the_preview_band_its_room;
+        // A fitted list counts the preview band as part of itself: an owner
+        // sizing the list to the rows alone would put the band over the last
+        // row, which then never shows.
+        {
+            let mut v = SearchResultsView::new();
+            v.set_results(
+                (0..10)
+                    .map(|n| {
+                        SearchResult::new("Feeds", format!("Feed {n}"), format!("f:{n}"))
+                            .with_preview(SearchPreview::titled("Feed").fact("1 unread"))
+                    })
+                    .collect(),
+            );
+            v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
+            let band = v.preview_band();
+            assert!(band > 0.0);
+            let third = laid(&v, 2).y1 - v.rect.y0;
+            let cap = third + PAD + band;
+            let fitted = v.fitted_height(cap);
+            assert!(
+                (fitted - cap).abs() < 0.01,
+                "the fitted list keeps its padding and the band's room: {fitted} for {cap}"
+            );
+            v.set_rect(Rect::new(0.0, 0.0, 360.0, fitted));
+            assert!(
+                laid(&v, 2).y1 <= v.rect.y1 - band - PAD + 0.01,
+                "the last fitted row is not clipped at the card's foot"
+            );
+            assert!(v.list_rect().y1 <= v.rect.y1, "the band stays in the card");
+        }
+
+        phase rows_past_the_cards_bound_scroll_under_a_fixed_preview;
+        // More rows than the window has room for scroll inside the card: it
+        // stops at its bound, the cursor's row is brought into view, a click
+        // lands only on rows that show, and the preview band stays put.
+        {
+            let mut v = SearchResultsView::new();
+            v.set_results(
+                (0..30)
+                    .map(|n| {
+                        SearchResult::new("Feeds", format!("Feed {n}"), format!("f:{n}"))
+                            .with_preview(SearchPreview::titled(format!("Feed {n}")).fact("1 unread"))
+                    })
+                    .collect(),
+            );
+            let full = v.desired_height();
+            v.set_max_height(Some(300.0));
+            assert_eq!(v.desired_height(), 300.0, "the card stops at its bound");
+            assert!(full > 300.0);
+            v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
+            let band = v.preview_band();
+            assert!(band > 0.0);
+            let list = v.list_rect();
+            assert_eq!(list.y1, 300.0 - band, "the band keeps the card's foot");
+            assert_eq!(v.row_at(Point::new(100.0, list.y1 + 1.0)), None);
+
+            v.move_up();
+            v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
+            assert_eq!(v.list.rows().last().and_then(Row::flat), Some(29));
+            let last = laid(&v, 29);
+            assert!(last.y1 <= v.list_rect().y1 && last.y0 >= v.list_rect().y0);
+            assert_eq!(v.row_at(last.center()), Some(29));
+            assert_eq!(v.list_rect().y1, list.y1, "the band never moves");
+
+            assert!(v.scroll_by(-10_000.0));
+            assert!(!v.scroll_by(-10.0));
+            assert_eq!(v.row_at(laid(&v, 0).center()), Some(0));
+        }
+
+        phase a_long_empty_line_wraps_inside_a_narrow_card;
+        // Why a confirmation asks is a sentence, and a window may be narrow:
+        // the line wraps inside the card and still fits its empty band.
+        {
+            let theme = Theme::dark();
+            let mut view = SearchResultsView::new().with_empty_text(
+                "This workspace asks before \u{201c}Save\u{201d} reaches outside it, and you decide: confirm to go ahead.",
+            );
+            view.set_rect(Rect::new(10.0, 0.0, 250.0, EMPTY_H));
+            let (x, width, style) = view.empty_frame(&theme);
+            assert!(x >= view.rect.x0 && x + f64::from(width) <= view.rect.x1);
+            let mut text = TextRenderer::new();
+            let (wrapped_width, wrapped_height) =
+                text.measure_style(&view.empty_text, Some(width), &style);
+            let (_, line) = text.measure_style("Ag", None, &style);
+            assert!(wrapped_width <= width + 0.5, "{wrapped_width} > {width}");
+            assert!(wrapped_height > line * 1.5, "the sentence wraps");
+            assert!(f64::from(wrapped_height) <= EMPTY_H, "{wrapped_height}");
+        }
+
+        phase result_groups_index_preview_and_size_the_panel;
+        {
+            {
+                let mut v = view_from("");
+                assert_eq!(v.len(), 3, "two contacts + one app");
+                v.set_cursor(99);
+                assert_eq!(v.cursor(), v.len() - 1, "cursor clamps into range");
+                v.set_groups(vec![SearchGroup::new(
+                    "Apps",
+                    vec![SearchResult::new("Apps", "Calculator", "app:calc")],
+                )]);
+                assert_eq!(v.cursor(), 0);
+            }
+
+            {
+                let mut view = SearchResultsView::new();
+                view.set_results(vec![
+                    SearchResult::new("Notes", "Design notes", "open")
+                        .with_subtitle("Edited today")
+                        .with_preview("A bounded note excerpt"),
+                    SearchResult::new("Notes", "Plain note", "plain"),
+                ]);
+                let with_preview = view.desired_height();
+                view.set_cursor(1);
+                assert_eq!(
+                    view.desired_height(),
+                    with_preview,
+                    "selection never changes result geometry"
+                );
+                let access = Widget::accessibility(&view).expect("result list semantics");
+                assert!(
+                    access.children[0]
+                        .description
+                        .as_deref()
+                        .is_some_and(|description| description.contains("bounded note excerpt"))
+                );
+            }
+
+            {
+                let mut view = SearchResultsView::new();
+                view.set_results(vec![
+                    SearchResult::new("Notes", "Design notes", "open").with_preview("An excerpt"),
+                ]);
+                let body_only = view.desired_height();
+                view.set_results(vec![
+                    SearchResult::new("Notes", "Design notes", "open").with_preview("An excerpt"),
+                    SearchResult::new("Feeds", "Rust Blog", "feed").with_preview(
+                        crate::search::SearchPreview::titled("Rust Blog")
+                            .fact("blog.rust-lang.org")
+                            .fact("1 unread")
+                            .line("Announcing Rust 1.96.1")
+                            .line("A new era for the borrow checker"),
+                    ),
+                ]);
+                let structured = view.desired_height();
+                assert!(
+                    structured > body_only + view.bands.one_line,
+                    "a heading, facts and items take more room than an excerpt: \
+                 {structured} vs {body_only}"
+                );
+                view.set_cursor(1);
+                assert_eq!(view.desired_height(), structured, "the band never moves");
+                let access = Widget::accessibility(&view).expect("result list semantics");
+                assert!(access.children[1].description.as_deref().is_some_and(|d| {
+                    d.contains("blog.rust-lang.org. 1 unread") && d.contains("Announcing Rust")
+                }));
+            }
+
+            {
+                let mut v = SearchResultsView::new().with_empty_text("Nothing here");
+                v.set_groups(vec![]);
+                v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
+                assert!(v.is_empty());
+                assert_eq!(v.selected(), None);
+                let access = Widget::accessibility(&v).expect("empty result list semantics");
+                assert_eq!(access.children.len(), 1);
+                assert_eq!(access.children[0].role, crate::a11y::Role::StaticText);
+                assert_eq!(access.children[0].name.as_deref(), Some("Nothing here"));
+                assert_eq!(
+                    access.children[0].live,
+                    Some(crate::a11y::Politeness::Polite),
+                    "empty results remain a polite live announcement"
+                );
+                v.activate_selected();
+                assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
+            }
+
+            {
+                let empty = SearchResultsView::new().desired_height();
+                let full = view_from("").desired_height();
+                assert!(
+                    full > empty,
+                    "populated overlay is taller than the empty state"
+                );
+            }
+        }
+
+        phase results_activate_from_keyboard_and_pointer;
+        {
+            {
+                let mut v = view_from("");
+
+                let key = |k: NamedKey| {
+                    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                        Key::Named(k),
+                        None,
+                        ElementState::Pressed,
+                    ))
+                };
+
+                assert_eq!(v.cursor(), 0);
+                let handled = dispatch(&mut v, &key(NamedKey::ArrowDown));
+                assert!(handled, "arrow-down consumed");
+                assert_eq!(v.cursor(), 1);
+                v.set_cursor(0);
+                dispatch(&mut v, &key(NamedKey::ArrowUp));
+                assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
+
+                v.set_cursor(0);
+                dispatch(&mut v, &key(NamedKey::Enter));
+                assert_eq!(
+                    v.take_activated().as_deref(),
+                    Some("c:alice"),
+                    "enter fires the selected action-id"
+                );
+                assert_eq!(v.take_activated(), None, "activation drains after one read");
+            }
+
+            {
+                let mut v = view_from("");
+                assert_eq!(v.len(), 3);
+                let target = laid(&v, 2).center();
+
+                let mut handled = dispatch(
+                    &mut v,
+                    &crate::synthetic_input::cursor_moved(target.x, target.y),
+                );
+                handled |= dispatch(&mut v, &crate::synthetic_input::mouse_press());
+                assert!(handled, "row click consumed");
+                assert_eq!(
+                    v.cursor(),
+                    2,
+                    "click moves the highlight to the clicked row"
+                );
+                assert_eq!(
+                    v.take_activated().as_deref(),
+                    Some("app:calc"),
+                    "click fires that row's action-id"
+                );
+            }
+        }
+
+        phase hits_draw_as_what_they_are_and_a_loading_row_ends_the_list;
+        {
+            let theme = Theme::dark();
+            let mut view = SearchResultsView::new();
+            view.bands = RowBands::resolve(&theme);
+            view.set_results(vec![
+                SearchResult::new("Mail", "Invoice", "m:1").with_row(
+                    SearchRow::message("Ada Lovelace", "Invoice")
+                        .snippet("Attached is the March invoice")
+                        .date("Tue")
+                        .unread(true),
+                ),
+                SearchResult::new("Videos", "Talk", "v:1").with_row(
+                    SearchRow::media("Talk")
+                        .byline("Rust Conf")
+                        .duration("41:12"),
+                ),
+                SearchResult::new("Code", "parse", "f:1").with_row(
+                    SearchRow::file_hit("src/lib.rs", "    fn parse(input: &str)")
+                        .line(12)
+                        .matched(7..12),
+                ),
+                SearchResult::new("Apps", "Calculator", "app:calc"),
+            ]);
+            let heights: Vec<f64> = view
+                .groups()
+                .iter()
+                .flat_map(|group| &group.results)
+                .map(|hit| view.row_height(hit))
+                .collect();
+            assert!(heights[0] > heights[2], "a message has three lines");
+            assert!(
+                heights[1] >= thumbnail_size(&theme).1,
+                "a video row holds its thumbnail"
+            );
+            assert!(heights[2] > heights[3], "a file hit has two lines");
+
+            let before = view.desired_height();
+            view.set_loading(true);
+            assert!(
+                view.desired_height() > before,
+                "the loading row takes a row"
+            );
+            view.set_rect(Rect::new(0.0, 0.0, 480.0, view.desired_height()));
+            assert!(
+                view.list
+                    .rows()
+                    .iter()
+                    .any(|row| matches!(row, Row::Loading(_))),
+                "the loading line ends the list"
+            );
+
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            view.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            assert!(!scene.encoding().is_empty());
+
+            let node = view.accessibility().unwrap();
+            let first = &node.children[0];
+            assert!(
+                first
+                    .description
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with("Unread, Ada Lovelace, Invoice")),
+                "a reader hears the row in its own order: {:?}",
+                first.description
+            );
+            assert_eq!(
+                node.children.last().and_then(|n| n.name.as_deref()),
+                Some("Searching…")
+            );
+        }
     }
 
     fn view_from(query: &str) -> SearchResultsView {
@@ -2041,326 +2368,5 @@ mod tests {
         v.set_groups(reg.query_grouped(query));
         v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
         v
-    }
-
-    /// A fitted list counts the preview band as part of itself: an owner
-    /// sizing the list to the rows alone would put the band over the last
-    /// row, which then never shows.
-    #[test]
-    fn a_fitted_list_keeps_the_preview_band_its_room() {
-        let mut v = SearchResultsView::new();
-        v.set_results(
-            (0..10)
-                .map(|n| {
-                    SearchResult::new("Feeds", format!("Feed {n}"), format!("f:{n}"))
-                        .with_preview(SearchPreview::titled("Feed").fact("1 unread"))
-                })
-                .collect(),
-        );
-        v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
-        let band = v.preview_band();
-        assert!(band > 0.0);
-        let third = laid(&v, 2).y1 - v.rect.y0;
-        let cap = third + PAD + band;
-        let fitted = v.fitted_height(cap);
-        assert!(
-            (fitted - cap).abs() < 0.01,
-            "the fitted list keeps its padding and the band's room: {fitted} for {cap}"
-        );
-        v.set_rect(Rect::new(0.0, 0.0, 360.0, fitted));
-        assert!(
-            laid(&v, 2).y1 <= v.rect.y1 - band - PAD + 0.01,
-            "the last fitted row is not clipped at the card's foot"
-        );
-        assert!(v.list_rect().y1 <= v.rect.y1, "the band stays in the card");
-    }
-
-    /// More rows than the window has room for scroll inside the card: it
-    /// stops at its bound, the cursor's row is brought into view, a click
-    /// lands only on rows that show, and the preview band stays put.
-    #[test]
-    fn rows_past_the_cards_bound_scroll_under_a_fixed_preview() {
-        let mut v = SearchResultsView::new();
-        v.set_results(
-            (0..30)
-                .map(|n| {
-                    SearchResult::new("Feeds", format!("Feed {n}"), format!("f:{n}"))
-                        .with_preview(SearchPreview::titled(format!("Feed {n}")).fact("1 unread"))
-                })
-                .collect(),
-        );
-        let full = v.desired_height();
-        v.set_max_height(Some(300.0));
-        assert_eq!(v.desired_height(), 300.0, "the card stops at its bound");
-        assert!(full > 300.0);
-        v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
-        let band = v.preview_band();
-        assert!(band > 0.0);
-        let list = v.list_rect();
-        assert_eq!(list.y1, 300.0 - band, "the band keeps the card's foot");
-        assert_eq!(v.row_at(Point::new(100.0, list.y1 + 1.0)), None);
-
-        v.move_up();
-        v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
-        assert_eq!(v.list.rows().last().and_then(Row::flat), Some(29));
-        let last = laid(&v, 29);
-        assert!(last.y1 <= v.list_rect().y1 && last.y0 >= v.list_rect().y0);
-        assert_eq!(v.row_at(last.center()), Some(29));
-        assert_eq!(v.list_rect().y1, list.y1, "the band never moves");
-
-        assert!(v.scroll_by(-10_000.0));
-        assert!(!v.scroll_by(-10.0));
-        assert_eq!(v.row_at(laid(&v, 0).center()), Some(0));
-    }
-
-    /// Why a confirmation asks is a sentence, and a window may be narrow:
-    /// the line wraps inside the card and still fits its empty band.
-    #[test]
-    fn a_long_empty_line_wraps_inside_a_narrow_card() {
-        let theme = Theme::dark();
-        let mut view = SearchResultsView::new().with_empty_text(
-            "This workspace asks before \u{201c}Save\u{201d} reaches outside it, and you decide: confirm to go ahead.",
-        );
-        view.set_rect(Rect::new(10.0, 0.0, 250.0, EMPTY_H));
-        let (x, width, style) = view.empty_frame(&theme);
-        assert!(x >= view.rect.x0 && x + f64::from(width) <= view.rect.x1);
-        let mut text = TextRenderer::new();
-        let (wrapped_width, wrapped_height) =
-            text.measure_style(&view.empty_text, Some(width), &style);
-        let (_, line) = text.measure_style("Ag", None, &style);
-        assert!(wrapped_width <= width + 0.5, "{wrapped_width} > {width}");
-        assert!(wrapped_height > line * 1.5, "the sentence wraps");
-        assert!(f64::from(wrapped_height) <= EMPTY_H, "{wrapped_height}");
-    }
-
-    #[test]
-    fn result_groups_index_preview_and_size_the_panel() {
-        {
-            let mut v = view_from("");
-            assert_eq!(v.len(), 3, "two contacts + one app");
-            v.set_cursor(99);
-            assert_eq!(v.cursor(), v.len() - 1, "cursor clamps into range");
-            v.set_groups(vec![SearchGroup::new(
-                "Apps",
-                vec![SearchResult::new("Apps", "Calculator", "app:calc")],
-            )]);
-            assert_eq!(v.cursor(), 0);
-        }
-
-        {
-            let mut view = SearchResultsView::new();
-            view.set_results(vec![
-                SearchResult::new("Notes", "Design notes", "open")
-                    .with_subtitle("Edited today")
-                    .with_preview("A bounded note excerpt"),
-                SearchResult::new("Notes", "Plain note", "plain"),
-            ]);
-            let with_preview = view.desired_height();
-            view.set_cursor(1);
-            assert_eq!(
-                view.desired_height(),
-                with_preview,
-                "selection never changes result geometry"
-            );
-            let access = Widget::accessibility(&view).expect("result list semantics");
-            assert!(
-                access.children[0]
-                    .description
-                    .as_deref()
-                    .is_some_and(|description| description.contains("bounded note excerpt"))
-            );
-        }
-
-        {
-            let mut view = SearchResultsView::new();
-            view.set_results(vec![
-                SearchResult::new("Notes", "Design notes", "open").with_preview("An excerpt"),
-            ]);
-            let body_only = view.desired_height();
-            view.set_results(vec![
-                SearchResult::new("Notes", "Design notes", "open").with_preview("An excerpt"),
-                SearchResult::new("Feeds", "Rust Blog", "feed").with_preview(
-                    crate::search::SearchPreview::titled("Rust Blog")
-                        .fact("blog.rust-lang.org")
-                        .fact("1 unread")
-                        .line("Announcing Rust 1.96.1")
-                        .line("A new era for the borrow checker"),
-                ),
-            ]);
-            let structured = view.desired_height();
-            assert!(
-                structured > body_only + view.bands.one_line,
-                "a heading, facts and items take more room than an excerpt: \
-                 {structured} vs {body_only}"
-            );
-            view.set_cursor(1);
-            assert_eq!(view.desired_height(), structured, "the band never moves");
-            let access = Widget::accessibility(&view).expect("result list semantics");
-            assert!(access.children[1].description.as_deref().is_some_and(|d| {
-                d.contains("blog.rust-lang.org. 1 unread") && d.contains("Announcing Rust")
-            }));
-        }
-
-        {
-            let mut v = SearchResultsView::new().with_empty_text("Nothing here");
-            v.set_groups(vec![]);
-            v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
-            assert!(v.is_empty());
-            assert_eq!(v.selected(), None);
-            let access = Widget::accessibility(&v).expect("empty result list semantics");
-            assert_eq!(access.children.len(), 1);
-            assert_eq!(access.children[0].role, crate::a11y::Role::StaticText);
-            assert_eq!(access.children[0].name.as_deref(), Some("Nothing here"));
-            assert_eq!(
-                access.children[0].live,
-                Some(crate::a11y::Politeness::Polite),
-                "empty results remain a polite live announcement"
-            );
-            v.activate_selected();
-            assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
-        }
-
-        {
-            let empty = SearchResultsView::new().desired_height();
-            let full = view_from("").desired_height();
-            assert!(
-                full > empty,
-                "populated overlay is taller than the empty state"
-            );
-        }
-    }
-
-    #[test]
-    fn results_activate_from_keyboard_and_pointer() {
-        {
-            let mut v = view_from("");
-
-            let key = |k: NamedKey| {
-                crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-                    Key::Named(k),
-                    None,
-                    ElementState::Pressed,
-                ))
-            };
-
-            assert_eq!(v.cursor(), 0);
-            let handled = dispatch(&mut v, &key(NamedKey::ArrowDown));
-            assert!(handled, "arrow-down consumed");
-            assert_eq!(v.cursor(), 1);
-            v.set_cursor(0);
-            dispatch(&mut v, &key(NamedKey::ArrowUp));
-            assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
-
-            v.set_cursor(0);
-            dispatch(&mut v, &key(NamedKey::Enter));
-            assert_eq!(
-                v.take_activated().as_deref(),
-                Some("c:alice"),
-                "enter fires the selected action-id"
-            );
-            assert_eq!(v.take_activated(), None, "activation drains after one read");
-        }
-
-        {
-            let mut v = view_from("");
-            assert_eq!(v.len(), 3);
-            let target = laid(&v, 2).center();
-
-            let mut handled = dispatch(
-                &mut v,
-                &crate::synthetic_input::cursor_moved(target.x, target.y),
-            );
-            handled |= dispatch(&mut v, &crate::synthetic_input::mouse_press());
-            assert!(handled, "row click consumed");
-            assert_eq!(
-                v.cursor(),
-                2,
-                "click moves the highlight to the clicked row"
-            );
-            assert_eq!(
-                v.take_activated().as_deref(),
-                Some("app:calc"),
-                "click fires that row's action-id"
-            );
-        }
-    }
-
-    #[test]
-    fn hits_draw_as_what_they_are_and_a_loading_row_ends_the_list() {
-        let theme = Theme::dark();
-        let mut view = SearchResultsView::new();
-        view.bands = RowBands::resolve(&theme);
-        view.set_results(vec![
-            SearchResult::new("Mail", "Invoice", "m:1").with_row(
-                SearchRow::message("Ada Lovelace", "Invoice")
-                    .snippet("Attached is the March invoice")
-                    .date("Tue")
-                    .unread(true),
-            ),
-            SearchResult::new("Videos", "Talk", "v:1").with_row(
-                SearchRow::media("Talk")
-                    .byline("Rust Conf")
-                    .duration("41:12"),
-            ),
-            SearchResult::new("Code", "parse", "f:1").with_row(
-                SearchRow::file_hit("src/lib.rs", "    fn parse(input: &str)")
-                    .line(12)
-                    .matched(7..12),
-            ),
-            SearchResult::new("Apps", "Calculator", "app:calc"),
-        ]);
-        let heights: Vec<f64> = view
-            .groups()
-            .iter()
-            .flat_map(|group| &group.results)
-            .map(|hit| view.row_height(hit))
-            .collect();
-        assert!(heights[0] > heights[2], "a message has three lines");
-        assert!(
-            heights[1] >= thumbnail_size(&theme).1,
-            "a video row holds its thumbnail"
-        );
-        assert!(heights[2] > heights[3], "a file hit has two lines");
-
-        let before = view.desired_height();
-        view.set_loading(true);
-        assert!(
-            view.desired_height() > before,
-            "the loading row takes a row"
-        );
-        view.set_rect(Rect::new(0.0, 0.0, 480.0, view.desired_height()));
-        assert!(
-            view.list
-                .rows()
-                .iter()
-                .any(|row| matches!(row, Row::Loading(_))),
-            "the loading line ends the list"
-        );
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        view.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        assert!(!scene.encoding().is_empty());
-
-        let node = view.accessibility().unwrap();
-        let first = &node.children[0];
-        assert!(
-            first
-                .description
-                .as_deref()
-                .is_some_and(|text| text.starts_with("Unread, Ada Lovelace, Invoice")),
-            "a reader hears the row in its own order: {:?}",
-            first.description
-        );
-        assert_eq!(
-            node.children.last().and_then(|n| n.name.as_deref()),
-            Some("Searching…")
-        );
     }
 }

@@ -1,5 +1,7 @@
 //! What the command's tests share: the packages they build, copied into a scratch directory.
 
+#![allow(clippy::unwrap_used, reason = "test assertions")]
+
 use std::path::{Path, PathBuf};
 
 /// The packages `apps/tl`.
@@ -10,7 +12,6 @@ pub fn packages() -> PathBuf {
 /// The packages `names` stand on: each one, and every package beside it that it `use`s, however
 /// deep, as the `use` lines of its `.tl` files name them — the directories a build of `names`
 /// reads.
-#[allow(dead_code, reason = "not every test binary copies packages")]
 pub fn with_used(names: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut todo: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();

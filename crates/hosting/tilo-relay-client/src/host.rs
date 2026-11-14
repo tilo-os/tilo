@@ -182,7 +182,7 @@ impl Host {
 /// members, which its host writes to the connection at once. From QUIC's
 /// default window (14,720 bytes, RFC 9002) slow start doubles it every round
 /// trip, so that half megabyte took six round trips, every one a wait the
-/// visitor sees; from 256 KiB it takes two. The same default paced the
+/// visitor sees; from 768 KiB it takes one. The same default paced the
 /// device's own first flight, its hello, to a packet every 65 ms at a 400 ms
 /// round trip, behind the handshake's own frames. A page reaches its host
 /// through the host's packet relay, whose TCP connection paces what the
@@ -190,7 +190,7 @@ impl Host {
 /// devices also dial directly, is paced over the round trip, so the window
 /// goes out as a steady stream rather than one burst.
 #[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
-pub const INITIAL_WINDOW: u64 = 256 * 1024;
+pub const INITIAL_WINDOW: u64 = 768 * 1024;
 
 /// The QUIC transport of an endpoint that sends a workspace's replay or
 /// reaches its host through the relay: iroh's, starting from

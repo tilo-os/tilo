@@ -134,7 +134,6 @@ fn assert_same_log(known: &mut AutoCommit, full: &mut AutoCommit) {
     assert_eq!(known.save(), full.save());
 }
 
-#[test]
 fn a_load_with_known_hashes_builds_the_document_a_full_load_builds() {
     for mut source in [collaborated(), appended(300)] {
         let bytes = source.save();
@@ -163,7 +162,6 @@ fn a_load_with_known_hashes_builds_the_document_a_full_load_builds() {
     }
 }
 
-#[test]
 fn appended_chunks_after_the_hinted_document_still_load() {
     let mut doc = appended(50);
     let mut bytes = doc.save();
@@ -178,7 +176,6 @@ fn appended_chunks_after_the_hinted_document_still_load() {
     assert_same_log(&mut known, &mut full);
 }
 
-#[test]
 fn hashes_that_cannot_stand_for_the_changes_are_ignored() {
     let mut source = appended(20);
     let bytes = source.save();
@@ -215,4 +212,26 @@ fn hashes_that_cannot_stand_for_the_changes_are_ignored() {
     let mut loaded = load_known(&bytes, &wrong_root);
     assert_eq!(hashes_of(&loaded).first(), Some(&foreign));
     assert_eq!(loaded.get_heads(), source.get_heads());
+}
+
+#[test]
+fn known_change_hashes_load_the_log_a_full_load_builds_or_are_ignored() {
+    let cases: [(&str, fn()); 3] = [
+        (
+            "a load with known hashes builds the document a full load builds",
+            a_load_with_known_hashes_builds_the_document_a_full_load_builds,
+        ),
+        (
+            "appended chunks after the hinted document still load",
+            appended_chunks_after_the_hinted_document_still_load,
+        ),
+        (
+            "hashes that cannot stand for the changes are ignored",
+            hashes_that_cannot_stand_for_the_changes_are_ignored,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
 }

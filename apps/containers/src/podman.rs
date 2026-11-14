@@ -752,111 +752,116 @@ mod tests {
         );
     }
 
-    #[test]
-    fn streamed_process_result_follows_every_stdout_and_stderr_line() {
-        let mut command = Command::new("sh");
-        command.args([
-            "-c",
-            "i=0; while [ $i -lt 200 ]; do echo out-$i; echo err-$i >&2; i=$((i+1)); done",
-        ]);
-        let (tx, rx) = std::sync::mpsc::channel();
-        stream_prepared(command, &tx, &never_stopped());
-        drop(tx);
-        let messages: Vec<_> = rx.into_iter().collect();
-        assert!(matches!(messages.last(), Some(StreamMsg::Done)));
-        let lines: Vec<_> = messages
-            .iter()
-            .filter_map(|message| match message {
-                StreamMsg::Line(line) => Some(line.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(lines.len(), 400);
-        for index in 0..200 {
-            assert!(lines.contains(&format!("out-{index}").as_str()));
-            assert!(lines.contains(&format!("err-{index}").as_str()));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_streamed_process_reports_its_lines_its_failure_and_its_stop;
 
-    #[test]
-    fn streamed_process_failure_is_terminal_after_its_diagnostics() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "echo engine-disconnected >&2; exit 1"]);
-        let (tx, rx) = std::sync::mpsc::channel();
-        stream_prepared(command, &tx, &never_stopped());
-        drop(tx);
-        let messages: Vec<_> = rx.into_iter().collect();
-        assert!(
-            matches!(messages.first(), Some(StreamMsg::Line(line)) if line == "engine-disconnected")
-        );
-        assert!(matches!(messages.last(), Some(StreamMsg::Failed(_))));
+        phase streamed_process_result_follows_every_stdout_and_stderr_line;
+        {
+            let mut command = Command::new("sh");
+            command.args([
+                "-c",
+                "i=0; while [ $i -lt 200 ]; do echo out-$i; echo err-$i >&2; i=$((i+1)); done",
+            ]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            stream_prepared(command, &tx, &never_stopped());
+            drop(tx);
+            let messages: Vec<_> = rx.into_iter().collect();
+            assert!(matches!(messages.last(), Some(StreamMsg::Done)));
+            let lines: Vec<_> = messages
+                .iter()
+                .filter_map(|message| match message {
+                    StreamMsg::Line(line) => Some(line.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(lines.len(), 400);
+            for index in 0..200 {
+                assert!(lines.contains(&format!("out-{index}").as_str()));
+                assert!(lines.contains(&format!("err-{index}").as_str()));
+            }
+        }
+
+        phase streamed_process_failure_is_terminal_after_its_diagnostics;
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "echo engine-disconnected >&2; exit 1"]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            stream_prepared(command, &tx, &never_stopped());
+            drop(tx);
+            let messages: Vec<_> = rx.into_iter().collect();
+            assert!(
+                matches!(messages.first(), Some(StreamMsg::Line(line)) if line == "engine-disconnected")
+            );
+            assert!(matches!(messages.last(), Some(StreamMsg::Failed(_))));
+        }
+
+        phase a_stopped_stream_kills_its_process_and_says_so;
+        // Stop ends the engine's process rather than only hiding its output: the
+        // stream closes as stopped, and the command does not run to the end.
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "echo first; sleep 30; echo never"]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let stop = never_stopped();
+            let asked = std::sync::Arc::clone(&stop);
+            let worker = std::thread::spawn(move || stream_prepared(command, &tx, &asked));
+            // The first line says the process is running.
+            let first = rx.recv().expect("a line");
+            assert!(matches!(first, StreamMsg::Line(_)));
+            stop.store(true, std::sync::atomic::Ordering::Release);
+            let started = std::time::Instant::now();
+            let last = rx.recv().expect("the end");
+            assert!(matches!(last, StreamMsg::Stopped), "{last:?}");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            worker.join().unwrap();
+        }
     }
 
     fn never_stopped() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
     }
 
-    /// Stop ends the engine's process rather than only hiding its output: the
-    /// stream closes as stopped, and the command does not run to the end.
-    #[test]
-    fn a_stopped_stream_kills_its_process_and_says_so() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "echo first; sleep 30; echo never"]);
-        let (tx, rx) = std::sync::mpsc::channel();
-        let stop = never_stopped();
-        let asked = std::sync::Arc::clone(&stop);
-        let worker = std::thread::spawn(move || stream_prepared(command, &tx, &asked));
-        // The first line says the process is running.
-        let first = rx.recv().expect("a line");
-        assert!(matches!(first, StreamMsg::Line(_)));
-        stop.store(true, std::sync::atomic::Ordering::Release);
-        let started = std::time::Instant::now();
-        let last = rx.recv().expect("the end");
-        assert!(matches!(last, StreamMsg::Stopped), "{last:?}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        worker.join().unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn podman_output_parsing_and_destructive_flags;
 
-    #[test]
-    fn actual_podman_null_ports_preserve_the_container_collection() {
-        // Podman emits null for a container without published ports, alongside
-        // mapped containers in the same response. One such row must not make
-        // the entire live collection appear offline.
-        let rows: Vec<PsEntry> = serde_json::from_str(
-            r#"[{"Id":"unmapped","Names":["worker"],"Ports":null},
+        phase actual_podman_null_ports_preserve_the_container_collection;
+        {
+            // Podman emits null for a container without published ports, alongside
+            // mapped containers in the same response. One such row must not make
+            // the entire live collection appear offline.
+            let rows: Vec<PsEntry> = serde_json::from_str(
+                r#"[{"Id":"unmapped","Names":["worker"],"Ports":null},
                 {"Id":"mapped","Names":["service"],"Ports":[
                     {"host_port":8080,"container_port":80,"protocol":"tcp"}]}]"#,
-        )
-        .unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].id, "unmapped");
-        assert!(rows[0].ports.is_none());
-        let mapped = rows[1].ports.as_ref().unwrap();
-        assert_eq!(mapped.len(), 1);
-        assert_eq!(mapped[0].host_port, 8080);
-        assert_eq!(mapped[0].container_port, 80);
-        assert_eq!(mapped[0].protocol, "tcp");
-    }
+            )
+            .unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].id, "unmapped");
+            assert!(rows[0].ports.is_none());
+            let mapped = rows[1].ports.as_ref().unwrap();
+            assert_eq!(mapped.len(), 1);
+            assert_eq!(mapped[0].host_port, 8080);
+            assert_eq!(mapped[0].container_port, 80);
+            assert_eq!(mapped[0].protocol, "tcp");
+        }
 
-    #[test]
-    fn image_usage_preserves_the_engine_container_count() {
-        let images = parse_images(
-            br#"[
+        phase image_usage_preserves_the_engine_container_count;
+        {
+            let images = parse_images(
+                br#"[
                 {"Id":"unused", "Names":["example/unused:latest"], "Containers":0},
                 {"Id":"single", "Names":["example/single:latest"], "Containers":1},
                 {"Id":"shared", "Names":["example/shared:latest"], "Containers":3}
             ]"#,
-        )
-        .unwrap();
-        for (id, expected) in [("unused", 0), ("single", 1), ("shared", 3)] {
-            let image = images.iter().find(|image| image.id == id).unwrap();
-            assert_eq!(image.in_use_by, expected, "usage of {id}");
+            )
+            .unwrap();
+            for (id, expected) in [("unused", 0), ("single", 1), ("shared", 3)] {
+                let image = images.iter().find(|image| image.id == id).unwrap();
+                assert_eq!(image.in_use_by, expected, "usage of {id}");
+            }
         }
-    }
 
-    #[test]
-    fn podman_output_parsing_and_destructive_flags() {
-        // --- phase: parse_size_handles_units ---
+        phase parse_size_handles_units;
         {
             assert_eq!(parse_size("512B"), 512);
             assert_eq!(parse_size("2KiB"), 2048);
@@ -865,20 +870,20 @@ mod tests {
             assert_eq!(parse_size(""), 0);
         }
 
-        // --- phase: parse_mem_usage_splits_used_and_limit ---
+        phase parse_mem_usage_splits_used_and_limit;
         {
             let (used, limit) = parse_mem_usage("18.0MB / 256MB");
             assert_eq!(used, 18 * 1024 * 1024);
             assert_eq!(limit, 256 * 1024 * 1024);
         }
 
-        // --- phase: parse_percent_strips_sign ---
+        phase parse_percent_strips_sign;
         {
             assert_eq!(parse_percent("12.5%"), 12.5);
             assert_eq!(parse_percent("0.00%"), 0.0);
         }
 
-        // --- phase: split_reference_separates_tag ---
+        phase split_reference_separates_tag;
         {
             assert_eq!(
                 split_reference("docker.io/library/nginx:1.27"),
@@ -891,7 +896,7 @@ mod tests {
             );
         }
 
-        // --- phase: destructive_actions_flagged ---
+        phase destructive_actions_flagged;
         {
             assert!(Action::Remove.is_destructive());
             assert!(!Action::Stop.is_destructive());

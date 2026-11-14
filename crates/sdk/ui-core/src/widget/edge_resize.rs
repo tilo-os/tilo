@@ -313,309 +313,315 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_seam_belongs_to_the_window_you_are_in_else_half_to_each() {
+    tilo_test_env::scenario! {
+        /// Resizing by an edge.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_edge_drag_moves_the_grabbed_edge_within_its_limits;
+
+        phase the_seam_belongs_to_the_window_you_are_in_else_half_to_each;
         {
-            let s = seam(false, false);
-            assert_eq!(seam_owner(&s, 594.0), LEFT_TRAILING, "inside the left grip");
-            assert_eq!(seam_owner(&s, 603.9), LEFT_TRAILING, "left half of the gap");
-            assert_eq!(
-                seam_owner(&s, 604.0),
-                RIGHT_LEADING,
-                "right half of the gap"
-            );
-            assert_eq!(
-                seam_owner(&s, 613.0),
-                RIGHT_LEADING,
-                "inside the right grip"
-            );
-        }
-        {
-            let files_on_the_right = seam(false, true);
-            for x in [594.0, 600.0, 603.0, 604.0, 613.0] {
-                assert_eq!(seam_owner(&files_on_the_right, x), RIGHT_LEADING, "x = {x}");
+            {
+                let s = seam(false, false);
+                assert_eq!(seam_owner(&s, 594.0), LEFT_TRAILING, "inside the left grip");
+                assert_eq!(seam_owner(&s, 603.9), LEFT_TRAILING, "left half of the gap");
+                assert_eq!(
+                    seam_owner(&s, 604.0),
+                    RIGHT_LEADING,
+                    "right half of the gap"
+                );
+                assert_eq!(
+                    seam_owner(&s, 613.0),
+                    RIGHT_LEADING,
+                    "inside the right grip"
+                );
             }
-            let files_on_the_left = seam(true, false);
-            for x in [594.0, 604.0, 607.0, 613.0] {
-                assert_eq!(seam_owner(&files_on_the_left, x), LEFT_TRAILING, "x = {x}");
+            {
+                let files_on_the_right = seam(false, true);
+                for x in [594.0, 600.0, 603.0, 604.0, 613.0] {
+                    assert_eq!(seam_owner(&files_on_the_right, x), RIGHT_LEADING, "x = {x}");
+                }
+                let files_on_the_left = seam(true, false);
+                for x in [594.0, 604.0, 607.0, 613.0] {
+                    assert_eq!(seam_owner(&files_on_the_left, x), LEFT_TRAILING, "x = {x}");
+                }
             }
-        }
-        {
-            assert_eq!(LEFT_TRAILING.across(5), Some(4));
-            assert_eq!(RIGHT_LEADING.across(5), Some(3));
-            let first = EdgeGrab {
-                group: 0,
-                edge: WindowEdge::Leading,
-            };
-            assert_eq!(first.across(5), None, "the strip's start is no seam");
-            let last = EdgeGrab {
-                group: 4,
-                edge: WindowEdge::Trailing,
-            };
-            assert_eq!(last.across(5), None, "nor is its end");
-        }
-    }
-
-    #[test]
-    fn a_plain_drag_resizes_only_the_grabbed_window_and_holds_its_opposite_edge() {
-        {
-            let drag = EdgeDrag {
-                edge: WindowEdge::Trailing,
-                grabbed: window(1, 500.0),
-                zero_sum_with: None,
-            };
-            assert_eq!(drag.mode(), ResizeMode::Push);
-            let r = drag.resize(40.0);
-            assert_eq!(r.width, 540.0, "1:1 with the pointer");
-            assert_eq!(r.other_width, None, "no other window changes size");
-            assert_eq!(r.pan, 0.0, "the leading edge is laid out where it was");
-            assert_eq!(drag.resize(-40.0).width, 460.0);
-        }
-        {
-            let drag = EdgeDrag {
-                edge: WindowEdge::Leading,
-                grabbed: window(2, 500.0),
-                zero_sum_with: None,
-            };
-            let r = drag.resize(-40.0);
-            assert_eq!(r.width, 540.0, "dragged left by 40, 40 wider");
-            assert_eq!(r.other_width, None, "the terminal keeps its width");
-            assert_eq!(
-                r.pan, 40.0,
-                "the strip pans by the growth, so the right edge stays put"
-            );
-            let r = drag.resize(40.0);
-            assert_eq!((r.width, r.pan), (460.0, -40.0), "and narrows the same way");
-        }
-    }
-
-    #[test]
-    fn shift_drag_trades_width_between_the_two_windows_at_the_seam_only() {
-        {
-            let drag = EdgeDrag {
-                edge: WindowEdge::Trailing,
-                grabbed: window(1, 500.0),
-                zero_sum_with: Some(window(2, 700.0)),
-            };
-            assert_eq!(drag.mode(), ResizeMode::ZeroSum);
-            let r = drag.resize(60.0);
-            assert_eq!((r.width, r.other_width), (560.0, Some(640.0)));
-            assert_eq!(r.width + r.other_width.unwrap(), 1200.0, "zero-sum");
-            assert_eq!(r.pan, 0.0, "both outer edges stay put");
-        }
-        {
-            let drag = EdgeDrag {
-                edge: WindowEdge::Leading,
-                grabbed: window(2, 700.0),
-                zero_sum_with: Some(window(1, 500.0)),
-            };
-            let r = drag.resize(-60.0);
-            assert_eq!((r.width, r.other_width), (760.0, Some(440.0)));
-            assert_eq!(r.pan, 0.0);
-        }
-    }
-
-    #[test]
-    fn a_limit_stops_the_edge_and_nothing_else_makes_up_for_it() {
-        let app = WidthLimits {
-            min: 320.0,
-            max: f64::INFINITY,
-        };
-        {
-            let drag = EdgeDrag {
-                edge: WindowEdge::Leading,
-                grabbed: DraggedWindow {
-                    group: 1,
-                    width: 400.0,
-                    limits: app,
-                },
-                zero_sum_with: None,
-            };
-            let r = drag.resize(500.0);
-            assert_eq!(r.width, 320.0, "the app's real minimum, not the floor");
-            assert_eq!(r.pan, -80.0, "the right edge still holds");
-        }
-        {
-            let drag = EdgeDrag {
-                edge: WindowEdge::Trailing,
-                grabbed: window(1, 500.0),
-                zero_sum_with: Some(DraggedWindow {
-                    group: 2,
-                    width: 400.0,
-                    limits: app,
-                }),
-            };
-            let r = drag.resize(300.0);
-            assert_eq!(
-                (r.width, r.other_width),
-                (580.0, Some(320.0)),
-                "the neighbour bottoms out, so the seam stops"
-            );
-            let r = drag.resize(-1000.0);
-            assert_eq!((r.width, r.other_width), (160.0, Some(740.0)));
-        }
-        {
-            let drag = EdgeDrag {
-                edge: WindowEdge::Trailing,
-                grabbed: DraggedWindow {
+            {
+                assert_eq!(LEFT_TRAILING.across(5), Some(4));
+                assert_eq!(RIGHT_LEADING.across(5), Some(3));
+                let first = EdgeGrab {
                     group: 0,
-                    width: 500.0,
-                    limits: WidthLimits {
-                        min: 160.0,
-                        max: 640.0,
+                    edge: WindowEdge::Leading,
+                };
+                assert_eq!(first.across(5), None, "the strip's start is no seam");
+                let last = EdgeGrab {
+                    group: 4,
+                    edge: WindowEdge::Trailing,
+                };
+                assert_eq!(last.across(5), None, "nor is its end");
+            }
+        }
+
+        phase a_plain_drag_resizes_only_the_grabbed_window_and_holds_its_opposite_edge;
+        {
+            {
+                let drag = EdgeDrag {
+                    edge: WindowEdge::Trailing,
+                    grabbed: window(1, 500.0),
+                    zero_sum_with: None,
+                };
+                assert_eq!(drag.mode(), ResizeMode::Push);
+                let r = drag.resize(40.0);
+                assert_eq!(r.width, 540.0, "1:1 with the pointer");
+                assert_eq!(r.other_width, None, "no other window changes size");
+                assert_eq!(r.pan, 0.0, "the leading edge is laid out where it was");
+                assert_eq!(drag.resize(-40.0).width, 460.0);
+            }
+            {
+                let drag = EdgeDrag {
+                    edge: WindowEdge::Leading,
+                    grabbed: window(2, 500.0),
+                    zero_sum_with: None,
+                };
+                let r = drag.resize(-40.0);
+                assert_eq!(r.width, 540.0, "dragged left by 40, 40 wider");
+                assert_eq!(r.other_width, None, "the terminal keeps its width");
+                assert_eq!(
+                    r.pan, 40.0,
+                    "the strip pans by the growth, so the right edge stays put"
+                );
+                let r = drag.resize(40.0);
+                assert_eq!((r.width, r.pan), (460.0, -40.0), "and narrows the same way");
+            }
+        }
+
+        phase shift_drag_trades_width_between_the_two_windows_at_the_seam_only;
+        {
+            {
+                let drag = EdgeDrag {
+                    edge: WindowEdge::Trailing,
+                    grabbed: window(1, 500.0),
+                    zero_sum_with: Some(window(2, 700.0)),
+                };
+                assert_eq!(drag.mode(), ResizeMode::ZeroSum);
+                let r = drag.resize(60.0);
+                assert_eq!((r.width, r.other_width), (560.0, Some(640.0)));
+                assert_eq!(r.width + r.other_width.unwrap(), 1200.0, "zero-sum");
+                assert_eq!(r.pan, 0.0, "both outer edges stay put");
+            }
+            {
+                let drag = EdgeDrag {
+                    edge: WindowEdge::Leading,
+                    grabbed: window(2, 700.0),
+                    zero_sum_with: Some(window(1, 500.0)),
+                };
+                let r = drag.resize(-60.0);
+                assert_eq!((r.width, r.other_width), (760.0, Some(440.0)));
+                assert_eq!(r.pan, 0.0);
+            }
+        }
+
+        phase a_limit_stops_the_edge_and_nothing_else_makes_up_for_it;
+        {
+            let app = WidthLimits {
+                min: 320.0,
+                max: f64::INFINITY,
+            };
+            {
+                let drag = EdgeDrag {
+                    edge: WindowEdge::Leading,
+                    grabbed: DraggedWindow {
+                        group: 1,
+                        width: 400.0,
+                        limits: app,
                     },
-                },
-                zero_sum_with: None,
-            };
-            assert_eq!(drag.resize(400.0).width, 640.0);
+                    zero_sum_with: None,
+                };
+                let r = drag.resize(500.0);
+                assert_eq!(r.width, 320.0, "the app's real minimum, not the floor");
+                assert_eq!(r.pan, -80.0, "the right edge still holds");
+            }
+            {
+                let drag = EdgeDrag {
+                    edge: WindowEdge::Trailing,
+                    grabbed: window(1, 500.0),
+                    zero_sum_with: Some(DraggedWindow {
+                        group: 2,
+                        width: 400.0,
+                        limits: app,
+                    }),
+                };
+                let r = drag.resize(300.0);
+                assert_eq!(
+                    (r.width, r.other_width),
+                    (580.0, Some(320.0)),
+                    "the neighbour bottoms out, so the seam stops"
+                );
+                let r = drag.resize(-1000.0);
+                assert_eq!((r.width, r.other_width), (160.0, Some(740.0)));
+            }
+            {
+                let drag = EdgeDrag {
+                    edge: WindowEdge::Trailing,
+                    grabbed: DraggedWindow {
+                        group: 0,
+                        width: 500.0,
+                        limits: WidthLimits {
+                            min: 160.0,
+                            max: 640.0,
+                        },
+                    },
+                    zero_sum_with: None,
+                };
+                assert_eq!(drag.resize(400.0).width, 640.0);
+            }
+            {
+                let drag = EdgeDrag {
+                    edge: WindowEdge::Trailing,
+                    grabbed: window(0, 500.0),
+                    zero_sum_with: None,
+                };
+                assert_eq!(drag.resize(100_000.0).width, 100_500.0);
+            }
         }
-        {
-            let drag = EdgeDrag {
-                edge: WindowEdge::Trailing,
-                grabbed: window(0, 500.0),
-                zero_sum_with: None,
-            };
-            assert_eq!(drag.resize(100_000.0).width, 100_500.0);
-        }
-    }
 
-    #[test]
-    fn one_axis_moves_its_grabbed_side_and_holds_the_other() {
-        let free = f64::INFINITY;
+        phase one_axis_moves_its_grabbed_side_and_holds_the_other;
         {
-            assert_eq!(
-                dragged_span(100.0, 600.0, WindowEdge::Trailing, 40.0, 280.0, free),
-                (100.0, 640.0)
-            );
-            assert_eq!(
-                dragged_span(100.0, 600.0, WindowEdge::Leading, -40.0, 280.0, free),
-                (60.0, 600.0),
-                "a leading edge dragged left grows the span leftwards"
-            );
-            assert_eq!(
-                dragged_span(100.0, 600.0, WindowEdge::Leading, 40.0, 280.0, free),
-                (140.0, 600.0)
-            );
+            let free = f64::INFINITY;
+            {
+                assert_eq!(
+                    dragged_span(100.0, 600.0, WindowEdge::Trailing, 40.0, 280.0, free),
+                    (100.0, 640.0)
+                );
+                assert_eq!(
+                    dragged_span(100.0, 600.0, WindowEdge::Leading, -40.0, 280.0, free),
+                    (60.0, 600.0),
+                    "a leading edge dragged left grows the span leftwards"
+                );
+                assert_eq!(
+                    dragged_span(100.0, 600.0, WindowEdge::Leading, 40.0, 280.0, free),
+                    (140.0, 600.0)
+                );
+            }
+            {
+                // The minimum stops the grabbed side; the opposite one never moves
+                // to make up for it.
+                assert_eq!(
+                    dragged_span(100.0, 600.0, WindowEdge::Trailing, -1000.0, 280.0, free),
+                    (100.0, 380.0)
+                );
+                assert_eq!(
+                    dragged_span(100.0, 600.0, WindowEdge::Leading, 1000.0, 280.0, free),
+                    (320.0, 600.0)
+                );
+                // A maximum stops the span just the same: the far side stays put
+                // and only the grabbed side stops short.
+                assert_eq!(
+                    dragged_span(100.0, 600.0, WindowEdge::Trailing, 100.0, 280.0, 700.0),
+                    (100.0, 700.0),
+                    "the span reaches its maximum and no further"
+                );
+                assert_eq!(
+                    dragged_span(100.0, 600.0, WindowEdge::Trailing, 500.0, 280.0, 700.0),
+                    (100.0, 800.0)
+                );
+                assert_eq!(
+                    dragged_span(100.0, 600.0, WindowEdge::Leading, -500.0, 280.0, 700.0),
+                    (-100.0, 600.0)
+                );
+            }
         }
-        {
-            // The minimum stops the grabbed side; the opposite one never moves
-            // to make up for it.
-            assert_eq!(
-                dragged_span(100.0, 600.0, WindowEdge::Trailing, -1000.0, 280.0, free),
-                (100.0, 380.0)
-            );
-            assert_eq!(
-                dragged_span(100.0, 600.0, WindowEdge::Leading, 1000.0, 280.0, free),
-                (320.0, 600.0)
-            );
-            // A maximum stops the span just the same: the far side stays put
-            // and only the grabbed side stops short.
-            assert_eq!(
-                dragged_span(100.0, 600.0, WindowEdge::Trailing, 100.0, 280.0, 700.0),
-                (100.0, 700.0),
-                "the span reaches its maximum and no further"
-            );
-            assert_eq!(
-                dragged_span(100.0, 600.0, WindowEdge::Trailing, 500.0, 280.0, 700.0),
-                (100.0, 800.0)
-            );
-            assert_eq!(
-                dragged_span(100.0, 600.0, WindowEdge::Leading, -500.0, 280.0, 700.0),
-                (-100.0, 600.0)
-            );
-        }
-    }
 
-    #[test]
-    fn a_free_rects_grabbable_edges_are_its_sides_its_bottom_and_its_corners() {
-        let rect = Rect::new(100.0, 100.0, 500.0, 400.0);
-        let grip = 8.0;
-        let bar = 40.0;
-        let at = |x: f64, y: f64| RectEdge::at(rect, Point::new(x, y), grip, bar);
-        assert_eq!(
-            at(494.0, 300.0),
-            Some(RectEdge {
+        phase a_free_rects_grabbable_edges_are_its_sides_its_bottom_and_its_corners;
+        {
+            let rect = Rect::new(100.0, 100.0, 500.0, 400.0);
+            let grip = 8.0;
+            let bar = 40.0;
+            let at = |x: f64, y: f64| RectEdge::at(rect, Point::new(x, y), grip, bar);
+            assert_eq!(
+                at(494.0, 300.0),
+                Some(RectEdge {
+                    x: Some(WindowEdge::Trailing),
+                    y: None
+                })
+            );
+            assert_eq!(
+                at(106.0, 300.0),
+                Some(RectEdge {
+                    x: Some(WindowEdge::Leading),
+                    y: None
+                })
+            );
+            assert_eq!(
+                at(300.0, 396.0),
+                Some(RectEdge {
+                    x: None,
+                    y: Some(WindowEdge::Trailing)
+                })
+            );
+            assert_eq!(
+                at(494.0, 396.0),
+                Some(RectEdge {
+                    x: Some(WindowEdge::Trailing),
+                    y: Some(WindowEdge::Trailing)
+                }),
+                "a corner moves both axes"
+            );
+            assert_eq!(
+                at(106.0, 396.0),
+                Some(RectEdge {
+                    x: Some(WindowEdge::Leading),
+                    y: Some(WindowEdge::Trailing)
+                })
+            );
+            assert_eq!(at(300.0, 300.0), None, "the middle grabs nothing");
+            assert_eq!(
+                at(106.0, 110.0),
+                None,
+                "the title bar owns the top: no side edge there"
+            );
+        }
+
+        phase a_free_rects_edge_drag_keeps_far_sides_still_and_stops_at_the_minimum;
+        {
+            let rect = Rect::new(100.0, 100.0, 500.0, 400.0);
+            let minimum = vello::kurbo::Size::new(280.0, 200.0);
+            let right = RectEdge {
                 x: Some(WindowEdge::Trailing),
-                y: None
-            })
-        );
-        assert_eq!(
-            at(106.0, 300.0),
-            Some(RectEdge {
+                y: None,
+            };
+            assert_eq!(
+                right.resize(rect, vello::kurbo::Vec2::new(40.0, -70.0), minimum),
+                Rect::new(100.0, 100.0, 540.0, 400.0),
+                "the leading edge and the whole height hold still"
+            );
+            assert_eq!(
+                right.resize(rect, vello::kurbo::Vec2::new(-1000.0, 0.0), minimum),
+                Rect::new(100.0, 100.0, 380.0, 400.0)
+            );
+            let left = RectEdge {
                 x: Some(WindowEdge::Leading),
-                y: None
-            })
-        );
-        assert_eq!(
-            at(300.0, 396.0),
-            Some(RectEdge {
-                x: None,
-                y: Some(WindowEdge::Trailing)
-            })
-        );
-        assert_eq!(
-            at(494.0, 396.0),
-            Some(RectEdge {
-                x: Some(WindowEdge::Trailing),
-                y: Some(WindowEdge::Trailing)
-            }),
-            "a corner moves both axes"
-        );
-        assert_eq!(
-            at(106.0, 396.0),
-            Some(RectEdge {
+                y: None,
+            };
+            assert_eq!(
+                left.resize(rect, vello::kurbo::Vec2::new(-60.0, 0.0), minimum),
+                Rect::new(40.0, 100.0, 500.0, 400.0)
+            );
+            assert_eq!(
+                left.resize(rect, vello::kurbo::Vec2::new(1000.0, 0.0), minimum),
+                Rect::new(220.0, 100.0, 500.0, 400.0)
+            );
+            let corner = RectEdge {
                 x: Some(WindowEdge::Leading),
-                y: Some(WindowEdge::Trailing)
-            })
-        );
-        assert_eq!(at(300.0, 300.0), None, "the middle grabs nothing");
-        assert_eq!(
-            at(106.0, 110.0),
-            None,
-            "the title bar owns the top: no side edge there"
-        );
-    }
-
-    #[test]
-    fn a_free_rects_edge_drag_keeps_far_sides_still_and_stops_at_the_minimum() {
-        let rect = Rect::new(100.0, 100.0, 500.0, 400.0);
-        let minimum = vello::kurbo::Size::new(280.0, 200.0);
-        let right = RectEdge {
-            x: Some(WindowEdge::Trailing),
-            y: None,
-        };
-        assert_eq!(
-            right.resize(rect, vello::kurbo::Vec2::new(40.0, -70.0), minimum),
-            Rect::new(100.0, 100.0, 540.0, 400.0),
-            "the leading edge and the whole height hold still"
-        );
-        assert_eq!(
-            right.resize(rect, vello::kurbo::Vec2::new(-1000.0, 0.0), minimum),
-            Rect::new(100.0, 100.0, 380.0, 400.0)
-        );
-        let left = RectEdge {
-            x: Some(WindowEdge::Leading),
-            y: None,
-        };
-        assert_eq!(
-            left.resize(rect, vello::kurbo::Vec2::new(-60.0, 0.0), minimum),
-            Rect::new(40.0, 100.0, 500.0, 400.0)
-        );
-        assert_eq!(
-            left.resize(rect, vello::kurbo::Vec2::new(1000.0, 0.0), minimum),
-            Rect::new(220.0, 100.0, 500.0, 400.0)
-        );
-        let corner = RectEdge {
-            x: Some(WindowEdge::Leading),
-            y: Some(WindowEdge::Trailing),
-        };
-        assert_eq!(
-            corner.resize(rect, vello::kurbo::Vec2::new(-20.0, 30.0), minimum),
-            Rect::new(80.0, 100.0, 500.0, 430.0)
-        );
-        assert_eq!(
-            corner.resize(rect, vello::kurbo::Vec2::new(0.0, -1000.0), minimum),
-            Rect::new(100.0, 100.0, 500.0, 300.0)
-        );
+                y: Some(WindowEdge::Trailing),
+            };
+            assert_eq!(
+                corner.resize(rect, vello::kurbo::Vec2::new(-20.0, 30.0), minimum),
+                Rect::new(80.0, 100.0, 500.0, 430.0)
+            );
+            assert_eq!(
+                corner.resize(rect, vello::kurbo::Vec2::new(0.0, -1000.0), minimum),
+                Rect::new(100.0, 100.0, 500.0, 300.0)
+            );
+        }
     }
 }

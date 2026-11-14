@@ -164,63 +164,67 @@ mod tests {
     use super::*;
     use std::{io::Read, os::unix::net::UnixStream};
 
-    #[test]
-    fn deadline_interrupts_the_actual_blocked_transport() {
-        let (mut stream, mut peer) = UnixStream::pair().unwrap();
-        let held = stream.try_clone().unwrap();
-        // The peer never writes, so only the deadline can end the read.
-        let (ended, end) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+    tilo_test_env::scenario! {
+        fn deadline_guard_shuts_down_the_exact_transport;
+
+        phase deadline_interrupts_the_actual_blocked_transport;
+        {
+            let (mut stream, mut peer) = UnixStream::pair().unwrap();
+            let held = stream.try_clone().unwrap();
+            // The peer never writes, so only the deadline can end the read.
+            let (ended, end) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let error = with_proof_deadline_at(
+                    &held,
+                    &AtomicBool::new(false),
+                    Instant::now() + Duration::from_millis(50),
+                    || {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte)
+                    },
+                )
+                .unwrap_err();
+                let _ = ended.send(error.kind());
+            });
+            assert_eq!(
+                tilo_test_env::recv("the deadline to interrupt the read", &end),
+                io::ErrorKind::TimedOut
+            );
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        }
+
+        phase preexisting_cancellation_shuts_down_before_running_exchange;
+        {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
             let error = with_proof_deadline_at(
-                &held,
-                &AtomicBool::new(false),
-                Instant::now() + Duration::from_millis(50),
-                || {
-                    let mut byte = [0];
-                    stream.read_exact(&mut byte)
-                },
+                &stream,
+                &AtomicBool::new(true),
+                Instant::now() + tilo_test_env::hang_bound(),
+                || -> io::Result<()> { panic!("cancelled exchange must not run") },
             )
             .unwrap_err();
-            let _ = ended.send(error.kind());
-        });
-        assert_eq!(
-            tilo_test_env::recv("the deadline to interrupt the read", &end),
-            io::ErrorKind::TimedOut
-        );
-        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
-    }
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        }
 
-    #[test]
-    fn preexisting_cancellation_shuts_down_before_running_exchange() {
-        let (stream, mut peer) = UnixStream::pair().unwrap();
-        let error = with_proof_deadline_at(
-            &stream,
-            &AtomicBool::new(true),
-            Instant::now() + tilo_test_env::hang_bound(),
-            || -> io::Result<()> { panic!("cancelled exchange must not run") },
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
-    }
-
-    #[test]
-    fn exchange_error_revokes_the_exact_transport() {
-        let (stream, mut peer) = UnixStream::pair().unwrap();
-        let error = with_proof_deadline_at(
-            &stream,
-            &AtomicBool::new(false),
-            Instant::now() + tilo_test_env::hang_bound(),
-            || -> io::Result<()> { Err(io::ErrorKind::PermissionDenied.into()) },
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        phase exchange_error_revokes_the_exact_transport;
+        {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
+            let error = with_proof_deadline_at(
+                &stream,
+                &AtomicBool::new(false),
+                Instant::now() + tilo_test_env::hang_bound(),
+                || -> io::Result<()> { Err(io::ErrorKind::PermissionDenied.into()) },
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        }
     }
 }

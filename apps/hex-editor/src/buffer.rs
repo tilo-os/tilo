@@ -509,64 +509,68 @@ impl Model for ByteBuffer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn edits_of_a_value_match_the_edits_at_its_path() {
-        let file: Vec<u8> = (0..2 * PAGE + 7).map(|i| (i % 251) as u8).collect();
-        let mut buffer = ByteBuffer::of(&file);
-        let mut expected = file;
-        buffer
-            .edit(&BufferEdit::Insert {
-                offset: PAGE + 2,
-                bytes: Hex(vec![1, 2]),
-            })
-            .unwrap();
-        expected.splice(PAGE + 2..PAGE + 2, [1, 2]);
-        buffer
-            .edit(&BufferEdit::Delete {
-                offset: 1,
-                len: PAGE,
-            })
-            .unwrap();
-        expected.drain(1..=PAGE);
-        buffer
-            .edit(&BufferEdit::Overwrite {
-                offset: 0,
-                bytes: Hex(vec![9]),
-            })
-            .unwrap();
-        expected[0] = 9;
-        assert_eq!(buffer, expected);
-        assert!(
+    tilo_test_env::scenario! {
+        fn a_buffer_edit_applies_to_a_value_and_travels_as_hex;
+
+        phase edits_of_a_value_match_the_edits_at_its_path;
+        {
+            let file: Vec<u8> = (0..2 * PAGE + 7).map(|i| (i % 251) as u8).collect();
+            let mut buffer = ByteBuffer::of(&file);
+            let mut expected = file;
+            buffer
+                .edit(&BufferEdit::Insert {
+                    offset: PAGE + 2,
+                    bytes: Hex(vec![1, 2]),
+                })
+                .unwrap();
+            expected.splice(PAGE + 2..PAGE + 2, [1, 2]);
+            buffer
+                .edit(&BufferEdit::Delete {
+                    offset: 1,
+                    len: PAGE,
+                })
+                .unwrap();
+            expected.drain(1..=PAGE);
             buffer
                 .edit(&BufferEdit::Overwrite {
-                    offset: expected.len(),
-                    bytes: Hex(vec![1]),
+                    offset: 0,
+                    bytes: Hex(vec![9]),
                 })
-                .is_err()
-        );
-    }
+                .unwrap();
+            expected[0] = 9;
+            assert_eq!(buffer, expected);
+            assert!(
+                buffer
+                    .edit(&BufferEdit::Overwrite {
+                        offset: expected.len(),
+                        bytes: Hex(vec![1]),
+                    })
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn bytes_travel_as_hexadecimal_text() {
-        let edit = BufferEdit::Overwrite {
-            offset: 2,
-            bytes: Hex(vec![0xde, 0xad]),
-        };
-        let json = serde_json::to_value(&edit).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({"Overwrite": {"offset": 2, "bytes": "dead"}})
-        );
-        let parsed: BufferEdit = serde_json::from_value(
-            serde_json::json!({"Insert": {"offset": 0, "bytes": "DE-AD be ef"}}),
-        )
-        .unwrap();
-        assert_eq!(
-            parsed,
-            BufferEdit::Insert {
-                offset: 0,
-                bytes: Hex(vec![0xde, 0xad, 0xbe, 0xef])
-            }
-        );
+        phase bytes_travel_as_hexadecimal_text;
+        {
+            let edit = BufferEdit::Overwrite {
+                offset: 2,
+                bytes: Hex(vec![0xde, 0xad]),
+            };
+            let json = serde_json::to_value(&edit).unwrap();
+            assert_eq!(
+                json,
+                serde_json::json!({"Overwrite": {"offset": 2, "bytes": "dead"}})
+            );
+            let parsed: BufferEdit = serde_json::from_value(
+                serde_json::json!({"Insert": {"offset": 0, "bytes": "DE-AD be ef"}}),
+            )
+            .unwrap();
+            assert_eq!(
+                parsed,
+                BufferEdit::Insert {
+                    offset: 0,
+                    bytes: Hex(vec![0xde, 0xad, 0xbe, 0xef])
+                }
+            );
+        }
     }
 }

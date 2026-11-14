@@ -1030,500 +1030,504 @@ mod tests {
             })
     }
 
-    #[test]
-    fn ordinary_native_window_uses_service_clipboard_and_retains_original_caller() {
-        use std::os::fd::AsRawFd as _;
-        let home = tilo_test_env::TestHome::new().unwrap();
-        let (service, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_SVC_COLLAB_FD", service.as_raw_fd().to_string());
-        env.set(
-            "TILO_RUNTIME_CONNECTION_OWNER_PID",
-            std::process::id().to_string(),
-        );
-        env.set("TILO_USER_HOME", home.home());
-        let files = FileExplorerWidget::new();
-        assert!(matches!(
-            files.state().services,
-            super::super::FileServices::Legacy
-        ));
-        assert!(files.state().hosted_clipboard());
-        let invocation = InvocationId(uuid::Uuid::new_v4());
-        assert!(matches!(
-            files
-                .state()
-                .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
-                .unwrap(),
-            Ran::Pending
-        ));
-        let (id, command) = request(&files, invocation);
-        assert!(matches!(command, Command::Snapshot));
-        assert!(matches!(
-            reply(&files, id, Ok(Reply::Snapshot { offer: None })),
-            Some(Ok(Completion::Snapshot(None)))
-        ));
-        drop(service);
-        assert!(runtime_portal::service_fd("collab").is_none());
-        assert!(
-            files.state().hosted_clipboard(),
-            "service loss must never select pathname fallback"
-        );
-        assert!(matches!(
-            files
-                .state()
-                .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
-                .unwrap(),
-            Ran::Pending
-        ));
-        let (_, command) = request(&files, invocation);
-        assert!(matches!(command, Command::Snapshot));
-        assert!(files.state().clipboard.is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn native_clipboard_copies_capture_exact_objects_and_never_fall_back;
 
-    #[test]
-    fn native_row_copy_preserves_selection_and_captures_only_the_requested_object() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("requested");
-        let other = root.path().join("selected");
-        std::fs::write(&target, b"row").unwrap();
-        std::fs::write(&other, b"selection").unwrap();
-        let files = files(root.path());
-        files.state().select_entry(&other).unwrap();
-        let entry = files
-            .state()
-            .entries
-            .iter()
-            .find(|entry| entry.path == target)
-            .unwrap()
-            .clone();
-        let row = FilesState::entry_resource_id(&entry);
-        let observed = entry.observed.unwrap();
-        let invocation = InvocationId(uuid::Uuid::new_v4());
-        assert!(matches!(
-            files
+        phase ordinary_native_window_uses_service_clipboard_and_retains_original_caller;
+        {
+            use std::os::fd::AsRawFd as _;
+            let home = tilo_test_env::TestHome::new().unwrap();
+            let (service, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_SVC_COLLAB_FD", service.as_raw_fd().to_string());
+            env.set(
+                "TILO_RUNTIME_CONNECTION_OWNER_PID",
+                std::process::id().to_string(),
+            );
+            env.set("TILO_USER_HOME", home.home());
+            let files = FileExplorerWidget::new();
+            assert!(matches!(
+                files.state().services,
+                super::super::FileServices::Legacy
+            ));
+            assert!(files.state().hosted_clipboard());
+            let invocation = InvocationId(uuid::Uuid::new_v4());
+            assert!(matches!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
+                    .unwrap(),
+                Ran::Pending
+            ));
+            let (id, command) = request(&files, invocation);
+            assert!(matches!(command, Command::Snapshot));
+            assert!(matches!(
+                reply(&files, id, Ok(Reply::Snapshot { offer: None })),
+                Some(Ok(Completion::Snapshot(None)))
+            ));
+            drop(service);
+            assert!(runtime_portal::service_fd("collab").is_none());
+            assert!(
+                files.state().hosted_clipboard(),
+                "service loss must never select pathname fallback"
+            );
+            assert!(matches!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
+                    .unwrap(),
+                Ran::Pending
+            ));
+            let (_, command) = request(&files, invocation);
+            assert!(matches!(command, Command::Snapshot));
+            assert!(files.state().clipboard.is_empty());
+        }
+
+        phase native_row_copy_preserves_selection_and_captures_only_the_requested_object;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("requested");
+            let other = root.path().join("selected");
+            std::fs::write(&target, b"row").unwrap();
+            std::fs::write(&other, b"selection").unwrap();
+            let files = files(root.path());
+            files.state().select_entry(&other).unwrap();
+            let entry = files
                 .state()
-                .run_effect_for(FilesEffect::Copy { entry: row }, Some(invocation))
-                .unwrap(),
-            Ran::Pending
-        ));
-        assert_eq!(files.state().selected_paths(), vec![other]);
-        let (
-            _,
-            Command::Capture {
+                .entries
+                .iter()
+                .find(|entry| entry.path == target)
+                .unwrap()
+                .clone();
+            let row = FilesState::entry_resource_id(&entry);
+            let observed = entry.observed.unwrap();
+            let invocation = InvocationId(uuid::Uuid::new_v4());
+            assert!(matches!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::Copy { entry: row }, Some(invocation))
+                    .unwrap(),
+                Ran::Pending
+            ));
+            assert_eq!(files.state().selected_paths(), vec![other]);
+            let (
+                _,
+                Command::Capture {
+                    sources,
+                    destination,
+                },
+            ) = request(&files, invocation)
+            else {
+                panic!("row Copy must retain before publishing");
+            };
+            assert_eq!(sources.len(), 1);
+            assert!(destination.is_none());
+            assert_eq!(
+                sources[0].path,
+                host_fs::names::unix_path_bytes(&target).unwrap()
+            );
+            assert_eq!(sources[0].expected.device, observed.device());
+            assert_eq!(sources[0].expected.inode, observed.inode());
+        }
+
+        phase native_row_copy_refuses_name_reuse_without_changing_selection;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("requested");
+            let other = root.path().join("selected");
+            std::fs::write(&target, b"shown").unwrap();
+            std::fs::write(&other, b"selection").unwrap();
+            let files = files(root.path());
+            files.state().select_entry(&other).unwrap();
+            let entry = files
+                .state()
+                .entries
+                .iter()
+                .find(|entry| entry.path == target)
+                .unwrap()
+                .clone();
+            let row = FilesState::entry_resource_id(&entry);
+            std::fs::rename(&target, root.path().join("old")).unwrap();
+            std::fs::write(&target, b"replacement").unwrap();
+            let invocation = InvocationId(uuid::Uuid::new_v4());
+            assert!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::Copy { entry: row }, Some(invocation))
+                    .is_err()
+            );
+            assert_eq!(files.state().selected_paths(), vec![other]);
+            assert!(files.state().local_clipboard.take_request().is_none());
+            assert_eq!(std::fs::read(target).unwrap(), b"replacement");
+        }
+
+        phase a_large_selection_copies_by_name_in_bounded_commands;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let names: Vec<String> = (0..600)
+                .map(|i| format!("{}{i:03}", "n".repeat(180)))
+                .collect();
+            for name in &names {
+                std::fs::write(root.path().join(name), b"x").unwrap();
+            }
+            let files = files(root.path());
+            files.state().run_effect(FilesEffect::SelectAll).unwrap();
+            let invocation = InvocationId(uuid::Uuid::new_v4());
+            assert!(matches!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::CopySelection, Some(invocation))
+                    .unwrap(),
+                Ran::Pending
+            ));
+            let mut tickets = Vec::new();
+            let mut seen = 0;
+            let publish_id = loop {
+                let (id, command) = request(&files, invocation);
+                match command {
+                    Command::CaptureNamed { folder, entries } => {
+                        assert_eq!(
+                            folder.path,
+                            host_fs::names::unix_path_bytes(root.path()).unwrap()
+                        );
+                        assert!(
+                            serde_json::to_vec(&Command::CaptureNamed {
+                                folder,
+                                entries: entries.clone()
+                            })
+                            .unwrap()
+                            .len()
+                                <= file_clipboard::MAX_WIRE_BYTES
+                        );
+                        seen += entries.len();
+                        let ticket = uuid::Uuid::new_v4().to_string();
+                        tickets.push(ticket.clone());
+                        assert!(
+                            reply(
+                                &files,
+                                id,
+                                Ok(Reply::CapturedNamed {
+                                    ticket,
+                                    count: entries.len()
+                                })
+                            )
+                            .is_none()
+                        );
+                    }
+                    Command::Publish { sources, cut } => {
+                        assert!(!cut);
+                        assert_eq!(sources, tickets);
+                        break id;
+                    }
+                    other => panic!("unexpected {other:?}"),
+                }
+            };
+            assert_eq!(seen, 600);
+            assert!(tickets.len() > 1, "the wire bound splits the names");
+            let offer = Offer {
+                id: uuid::Uuid::new_v4().to_string(),
+                count: 600,
+                cut: false,
+            };
+            assert!(
+                reply(
+                    &files,
+                    publish_id,
+                    Ok(Reply::Published {
+                        offer: offer.clone()
+                    })
+                )
+                .is_none()
+            );
+            let (release_id, command) = request(&files, invocation);
+            assert_eq!(command, Command::Release { tickets });
+            assert_eq!(
+                reply(&files, release_id, Ok(Reply::Released)),
+                Some(Ok(Completion::Published(offer)))
+            );
+        }
+
+        phase selected_native_copy_keeps_its_descriptor_until_capture_and_waits_for_release;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("selected");
+            std::fs::write(&target, b"original").unwrap();
+            let files = files(root.path());
+            files.state().run_effect(FilesEffect::SelectAll).unwrap();
+            let retained = files.state().shown_selection.objects[&target]
+                .1
+                .clone()
+                .unwrap();
+            let original = retained.observed();
+            std::fs::rename(&target, root.path().join("old")).unwrap();
+            std::fs::write(&target, b"replacement").unwrap();
+            let invocation = InvocationId(uuid::Uuid::new_v4());
+            let ran = files
+                .state()
+                .run_effect_for(FilesEffect::CopySelection, Some(invocation));
+            assert!(matches!(ran.unwrap(), Ran::Pending));
+            let (capture_id, command) = request(&files, invocation);
+            let Command::Capture {
                 sources,
                 destination,
-            },
-        ) = request(&files, invocation)
-        else {
-            panic!("row Copy must retain before publishing");
-        };
-        assert_eq!(sources.len(), 1);
-        assert!(destination.is_none());
-        assert_eq!(
-            sources[0].path,
-            host_fs::names::unix_path_bytes(&target).unwrap()
-        );
-        assert_eq!(sources[0].expected.device, observed.device());
-        assert_eq!(sources[0].expected.inode, observed.inode());
-    }
-
-    #[test]
-    fn native_row_copy_refuses_name_reuse_without_changing_selection() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("requested");
-        let other = root.path().join("selected");
-        std::fs::write(&target, b"shown").unwrap();
-        std::fs::write(&other, b"selection").unwrap();
-        let files = files(root.path());
-        files.state().select_entry(&other).unwrap();
-        let entry = files
-            .state()
-            .entries
-            .iter()
-            .find(|entry| entry.path == target)
-            .unwrap()
-            .clone();
-        let row = FilesState::entry_resource_id(&entry);
-        std::fs::rename(&target, root.path().join("old")).unwrap();
-        std::fs::write(&target, b"replacement").unwrap();
-        let invocation = InvocationId(uuid::Uuid::new_v4());
-        assert!(
-            files
-                .state()
-                .run_effect_for(FilesEffect::Copy { entry: row }, Some(invocation))
-                .is_err()
-        );
-        assert_eq!(files.state().selected_paths(), vec![other]);
-        assert!(files.state().local_clipboard.take_request().is_none());
-        assert_eq!(std::fs::read(target).unwrap(), b"replacement");
-    }
-
-    #[test]
-    fn a_large_selection_copies_by_name_in_bounded_commands() {
-        let root = tempfile::tempdir().unwrap();
-        let names: Vec<String> = (0..600)
-            .map(|i| format!("{}{i:03}", "n".repeat(180)))
-            .collect();
-        for name in &names {
-            std::fs::write(root.path().join(name), b"x").unwrap();
-        }
-        let files = files(root.path());
-        files.state().run_effect(FilesEffect::SelectAll).unwrap();
-        let invocation = InvocationId(uuid::Uuid::new_v4());
-        assert!(matches!(
-            files
-                .state()
-                .run_effect_for(FilesEffect::CopySelection, Some(invocation))
-                .unwrap(),
-            Ran::Pending
-        ));
-        let mut tickets = Vec::new();
-        let mut seen = 0;
-        let publish_id = loop {
-            let (id, command) = request(&files, invocation);
-            match command {
-                Command::CaptureNamed { folder, entries } => {
-                    assert_eq!(
-                        folder.path,
-                        host_fs::names::unix_path_bytes(root.path()).unwrap()
-                    );
-                    assert!(
-                        serde_json::to_vec(&Command::CaptureNamed {
-                            folder,
-                            entries: entries.clone()
-                        })
-                        .unwrap()
-                        .len()
-                            <= file_clipboard::MAX_WIRE_BYTES
-                    );
-                    seen += entries.len();
-                    let ticket = uuid::Uuid::new_v4().to_string();
-                    tickets.push(ticket.clone());
-                    assert!(
-                        reply(
-                            &files,
-                            id,
-                            Ok(Reply::CapturedNamed {
-                                ticket,
-                                count: entries.len()
-                            })
-                        )
-                        .is_none()
-                    );
-                }
-                Command::Publish { sources, cut } => {
-                    assert!(!cut);
-                    assert_eq!(sources, tickets);
-                    break id;
-                }
-                other => panic!("unexpected {other:?}"),
-            }
-        };
-        assert_eq!(seen, 600);
-        assert!(tickets.len() > 1, "the wire bound splits the names");
-        let offer = Offer {
-            id: uuid::Uuid::new_v4().to_string(),
-            count: 600,
-            cut: false,
-        };
-        assert!(
-            reply(
-                &files,
-                publish_id,
-                Ok(Reply::Published {
-                    offer: offer.clone()
-                })
-            )
-            .is_none()
-        );
-        let (release_id, command) = request(&files, invocation);
-        assert_eq!(command, Command::Release { tickets });
-        assert_eq!(
-            reply(&files, release_id, Ok(Reply::Released)),
-            Some(Ok(Completion::Published(offer)))
-        );
-    }
-
-    #[test]
-    fn selected_native_copy_keeps_its_descriptor_until_capture_and_waits_for_release() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("selected");
-        std::fs::write(&target, b"original").unwrap();
-        let files = files(root.path());
-        files.state().run_effect(FilesEffect::SelectAll).unwrap();
-        let retained = files.state().shown_selection.objects[&target]
-            .1
-            .clone()
-            .unwrap();
-        let original = retained.observed();
-        std::fs::rename(&target, root.path().join("old")).unwrap();
-        std::fs::write(&target, b"replacement").unwrap();
-        let invocation = InvocationId(uuid::Uuid::new_v4());
-        let ran = files
-            .state()
-            .run_effect_for(FilesEffect::CopySelection, Some(invocation));
-        assert!(matches!(ran.unwrap(), Ran::Pending));
-        let (capture_id, command) = request(&files, invocation);
-        let Command::Capture {
-            sources,
-            destination,
-        } = command
-        else {
-            panic!("capture first")
-        };
-        assert_eq!(sources.len(), 1);
-        assert!(destination.is_none());
-        assert_eq!(sources[0].descriptor, retained.descriptor().unwrap());
-        assert_eq!(sources[0].expected.device, original.device());
-        assert_eq!(sources[0].expected.inode, original.inode());
-        assert_eq!(
-            sources[0].path,
-            host_fs::names::unix_path_bytes(&target).unwrap()
-        );
-        let destination = tempfile::tempdir().unwrap();
-        files.state().navigate(destination.path().into());
-        assert_eq!(
-            Arc::strong_count(&retained),
-            2,
-            "job holds the source after navigation"
-        );
-        let ticket = uuid::Uuid::new_v4().to_string();
-        assert!(reply(&files, capture_id + 1, Ok(Reply::Released)).is_none());
-        assert!(files.state().local_clipboard.busy());
-        assert!(
-            reply(
-                &files,
-                capture_id,
-                Ok(Reply::Captured {
+            } = command
+            else {
+                panic!("capture first")
+            };
+            assert_eq!(sources.len(), 1);
+            assert!(destination.is_none());
+            assert_eq!(sources[0].descriptor, retained.descriptor().unwrap());
+            assert_eq!(sources[0].expected.device, original.device());
+            assert_eq!(sources[0].expected.inode, original.inode());
+            assert_eq!(
+                sources[0].path,
+                host_fs::names::unix_path_bytes(&target).unwrap()
+            );
+            let destination = tempfile::tempdir().unwrap();
+            files.state().navigate(destination.path().into());
+            assert_eq!(
+                Arc::strong_count(&retained),
+                2,
+                "job holds the source after navigation"
+            );
+            let ticket = uuid::Uuid::new_v4().to_string();
+            assert!(reply(&files, capture_id + 1, Ok(Reply::Released)).is_none());
+            assert!(files.state().local_clipboard.busy());
+            assert!(
+                reply(
+                    &files,
+                    capture_id,
+                    Ok(Reply::Captured {
+                        sources: vec![ticket.clone()],
+                        destination: None
+                    })
+                )
+                .is_none()
+            );
+            assert_eq!(
+                Arc::strong_count(&retained),
+                1,
+                "host capture acknowledgement releases the local loan"
+            );
+            let (publish_id, command) = request(&files, invocation);
+            assert_eq!(
+                command,
+                Command::Publish {
                     sources: vec![ticket.clone()],
-                    destination: None
-                })
-            )
-            .is_none()
-        );
-        assert_eq!(
-            Arc::strong_count(&retained),
-            1,
-            "host capture acknowledgement releases the local loan"
-        );
-        let (publish_id, command) = request(&files, invocation);
-        assert_eq!(
-            command,
-            Command::Publish {
-                sources: vec![ticket.clone()],
-                cut: false
-            }
-        );
-        let offer = Offer {
-            id: uuid::Uuid::new_v4().to_string(),
-            count: 1,
-            cut: false,
-        };
-        assert!(
-            reply(
-                &files,
-                publish_id,
-                Ok(Reply::Published {
-                    offer: offer.clone()
-                })
-            )
-            .is_none()
-        );
-        let (release_id, command) = request(&files, invocation);
-        assert_eq!(
-            command,
-            Command::Release {
-                tickets: vec![ticket]
-            }
-        );
-        assert_eq!(
-            reply(&files, release_id, Ok(Reply::Released)),
-            Some(Ok(Completion::Published(offer)))
-        );
-        assert!(!files.state().local_clipboard.busy());
-        assert!(
-            files.state().clipboard.is_empty(),
-            "native publication never fills the legacy path clipboard"
-        );
-    }
+                    cut: false
+                }
+            );
+            let offer = Offer {
+                id: uuid::Uuid::new_v4().to_string(),
+                count: 1,
+                cut: false,
+            };
+            assert!(
+                reply(
+                    &files,
+                    publish_id,
+                    Ok(Reply::Published {
+                        offer: offer.clone()
+                    })
+                )
+                .is_none()
+            );
+            let (release_id, command) = request(&files, invocation);
+            assert_eq!(
+                command,
+                Command::Release {
+                    tickets: vec![ticket]
+                }
+            );
+            assert_eq!(
+                reply(&files, release_id, Ok(Reply::Released)),
+                Some(Ok(Completion::Published(offer)))
+            );
+            assert!(!files.state().local_clipboard.busy());
+            assert!(
+                files.state().clipboard.is_empty(),
+                "native publication never fills the legacy path clipboard"
+            );
+        }
 
-    #[test]
-    fn native_copy_refuses_stale_selection_missing_caller_and_host_failure_without_fallback() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("selected");
-        std::fs::write(&target, b"shown").unwrap();
-        let files = files(root.path());
-        std::fs::rename(&target, root.path().join("old")).unwrap();
-        std::fs::write(&target, b"replacement").unwrap();
-        files.state().run_effect(FilesEffect::SelectAll).unwrap();
-        let invocation = InvocationId(uuid::Uuid::new_v4());
-        assert!(
+        phase native_copy_refuses_stale_selection_missing_caller_and_host_failure_without_fallback;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("selected");
+            std::fs::write(&target, b"shown").unwrap();
+            let files = files(root.path());
+            std::fs::rename(&target, root.path().join("old")).unwrap();
+            std::fs::write(&target, b"replacement").unwrap();
+            files.state().run_effect(FilesEffect::SelectAll).unwrap();
+            let invocation = InvocationId(uuid::Uuid::new_v4());
+            assert!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::CopySelection, Some(invocation))
+                    .is_err()
+            );
+            assert!(files.state().local_clipboard.take_request().is_none());
+            files
+                .state()
+                .run_effect(FilesEffect::ClearSelection)
+                .unwrap();
+            files.state().refresh();
+            files.state().run_effect(FilesEffect::SelectAll).unwrap();
+            assert!(
+                files
+                    .state()
+                    .run_effect(FilesEffect::CopySelection)
+                    .is_err()
+            );
+            assert!(files.state().local_clipboard.take_request().is_none());
+            assert!(matches!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::CutSelection, Some(invocation))
+                    .unwrap(),
+                Ran::Pending
+            ));
+            let (id, _) = request(&files, invocation);
+            assert_eq!(
+                reply(&files, id, Err("source grant revoked".into())),
+                Some(Err("source grant revoked".into()))
+            );
+            assert!(files.state().clipboard.is_empty());
+            assert!(!files.state().local_clipboard.busy());
+            assert!(files.state().local_clipboard.take_request().is_none());
+        }
+
+        phase native_copy_timeout_refuses_success_and_cannot_retarget_a_late_reply;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("selected"), b"shown").unwrap();
+            let files = files(root.path());
+            files.state().run_effect(FilesEffect::SelectAll).unwrap();
+            let invocation = InvocationId(uuid::Uuid::new_v4());
             files
                 .state()
                 .run_effect_for(FilesEffect::CopySelection, Some(invocation))
-                .is_err()
-        );
-        assert!(files.state().local_clipboard.take_request().is_none());
-        files
-            .state()
-            .run_effect(FilesEffect::ClearSelection)
-            .unwrap();
-        files.state().refresh();
-        files.state().run_effect(FilesEffect::SelectAll).unwrap();
-        assert!(
-            files
-                .state()
-                .run_effect(FilesEffect::CopySelection)
-                .is_err()
-        );
-        assert!(files.state().local_clipboard.take_request().is_none());
-        assert!(matches!(
+                .unwrap();
+            let (id, _) = request(&files, invocation);
+            assert!(
+                files
+                    .state()
+                    .local_clipboard
+                    .timeout(ui::time::now())
+                    .is_none()
+            );
+            assert!(matches!(
+                files
+                    .state()
+                    .local_clipboard
+                    .timeout(ui::time::now() + Duration::from_secs(21)),
+                Some(Err(_))
+            ));
+            assert!(
+                reply(
+                    &files,
+                    id,
+                    Ok(Reply::Captured {
+                        sources: vec![uuid::Uuid::new_v4().to_string()],
+                        destination: None
+                    })
+                )
+                .is_none()
+            );
+            assert!(!files.state().local_clipboard.busy());
+            assert!(files.state().local_clipboard.take_request().is_none());
+        }
+
+        phase native_publication_failure_releases_captured_tickets_before_answering;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("selected"), b"shown").unwrap();
+            let files = files(root.path());
+            files.state().run_effect(FilesEffect::SelectAll).unwrap();
+            let invocation = InvocationId::new();
             files
                 .state()
                 .run_effect_for(FilesEffect::CutSelection, Some(invocation))
-                .unwrap(),
-            Ran::Pending
-        ));
-        let (id, _) = request(&files, invocation);
-        assert_eq!(
-            reply(&files, id, Err("source grant revoked".into())),
-            Some(Err("source grant revoked".into()))
-        );
-        assert!(files.state().clipboard.is_empty());
-        assert!(!files.state().local_clipboard.busy());
-        assert!(files.state().local_clipboard.take_request().is_none());
-    }
-
-    #[test]
-    fn native_copy_timeout_refuses_success_and_cannot_retarget_a_late_reply() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("selected"), b"shown").unwrap();
-        let files = files(root.path());
-        files.state().run_effect(FilesEffect::SelectAll).unwrap();
-        let invocation = InvocationId(uuid::Uuid::new_v4());
-        files
-            .state()
-            .run_effect_for(FilesEffect::CopySelection, Some(invocation))
-            .unwrap();
-        let (id, _) = request(&files, invocation);
-        assert!(
-            files
-                .state()
-                .local_clipboard
-                .timeout(ui::time::now())
+                .unwrap();
+            let (capture, _) = request(&files, invocation);
+            let ticket = uuid::Uuid::new_v4().to_string();
+            assert!(
+                reply(
+                    &files,
+                    capture,
+                    Ok(Reply::Captured {
+                        sources: vec![ticket.clone()],
+                        destination: None
+                    })
+                )
                 .is_none()
-        );
-        assert!(matches!(
-            files
-                .state()
-                .local_clipboard
-                .timeout(ui::time::now() + Duration::from_secs(21)),
-            Some(Err(_))
-        ));
-        assert!(
-            reply(
-                &files,
-                id,
-                Ok(Reply::Captured {
-                    sources: vec![uuid::Uuid::new_v4().to_string()],
-                    destination: None
-                })
-            )
-            .is_none()
-        );
-        assert!(!files.state().local_clipboard.busy());
-        assert!(files.state().local_clipboard.take_request().is_none());
-    }
-
-    #[test]
-    fn native_publication_failure_releases_captured_tickets_before_answering() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("selected"), b"shown").unwrap();
-        let files = files(root.path());
-        files.state().run_effect(FilesEffect::SelectAll).unwrap();
-        let invocation = InvocationId::new();
-        files
-            .state()
-            .run_effect_for(FilesEffect::CutSelection, Some(invocation))
-            .unwrap();
-        let (capture, _) = request(&files, invocation);
-        let ticket = uuid::Uuid::new_v4().to_string();
-        assert!(
-            reply(
-                &files,
-                capture,
-                Ok(Reply::Captured {
+            );
+            let (publish, command) = request(&files, invocation);
+            assert_eq!(
+                command,
+                Command::Publish {
                     sources: vec![ticket.clone()],
-                    destination: None
-                })
-            )
-            .is_none()
-        );
-        let (publish, command) = request(&files, invocation);
-        assert_eq!(
-            command,
-            Command::Publish {
-                sources: vec![ticket.clone()],
-                cut: true
-            }
-        );
-        assert!(
-            reply(
-                &files,
-                publish,
-                Err("Cut requires a current write grant".into())
-            )
-            .is_none()
-        );
-        let (release, command) = request(&files, invocation);
-        assert_eq!(
-            command,
-            Command::Release {
-                tickets: vec![ticket]
-            }
-        );
-        assert_eq!(
-            reply(&files, release, Ok(Reply::Released)),
-            Some(Err("Cut requires a current write grant".into()))
-        );
-        assert!(files.state().clipboard.is_empty());
-        assert!(!files.state().local_clipboard.busy());
-    }
-
-    #[test]
-    fn native_clipboard_inspection_uses_its_current_caller_and_absence_never_falls_back() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("selected"), b"shown").unwrap();
-        let files = files(root.path());
-        let invocation = InvocationId::new();
-        assert!(matches!(
-            files
-                .state()
-                .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
-                .unwrap(),
-            Ran::Pending
-        ));
-        let (id, command) = request(&files, invocation);
-        assert_eq!(command, Command::Snapshot);
-        assert_eq!(
-            reply(&files, id, Ok(Reply::Snapshot { offer: None })),
-            Some(Ok(Completion::Snapshot(None)))
-        );
-        {
-            let mut state = files.state();
-            let super::super::FileServices::Hosted(services) = &mut state.services else {
-                panic!("host services")
-            };
-            services.local_clipboard = false;
+                    cut: true
+                }
+            );
+            assert!(
+                reply(
+                    &files,
+                    publish,
+                    Err("Cut requires a current write grant".into())
+                )
+                .is_none()
+            );
+            let (release, command) = request(&files, invocation);
+            assert_eq!(
+                command,
+                Command::Release {
+                    tickets: vec![ticket]
+                }
+            );
+            assert_eq!(
+                reply(&files, release, Ok(Reply::Released)),
+                Some(Err("Cut requires a current write grant".into()))
+            );
+            assert!(files.state().clipboard.is_empty());
+            assert!(!files.state().local_clipboard.busy());
         }
-        files.state().run_effect(FilesEffect::SelectAll).unwrap();
-        assert!(
-            files
-                .state()
-                .run_effect_for(FilesEffect::CopySelection, Some(invocation))
-                .is_err()
-        );
-        assert!(files.state().local_clipboard.take_request().is_none());
-        assert!(files.state().clipboard.is_empty());
+
+        phase native_clipboard_inspection_uses_its_current_caller_and_absence_never_falls_back;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("selected"), b"shown").unwrap();
+            let files = files(root.path());
+            let invocation = InvocationId::new();
+            assert!(matches!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
+                    .unwrap(),
+                Ran::Pending
+            ));
+            let (id, command) = request(&files, invocation);
+            assert_eq!(command, Command::Snapshot);
+            assert_eq!(
+                reply(&files, id, Ok(Reply::Snapshot { offer: None })),
+                Some(Ok(Completion::Snapshot(None)))
+            );
+            {
+                let mut state = files.state();
+                let super::super::FileServices::Hosted(services) = &mut state.services else {
+                    panic!("host services")
+                };
+                services.local_clipboard = false;
+            }
+            files.state().run_effect(FilesEffect::SelectAll).unwrap();
+            assert!(
+                files
+                    .state()
+                    .run_effect_for(FilesEffect::CopySelection, Some(invocation))
+                    .is_err()
+            );
+            assert!(files.state().local_clipboard.take_request().is_none());
+            assert!(files.state().clipboard.is_empty());
+        }
     }
 }

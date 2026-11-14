@@ -7,91 +7,98 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 #[path = "managed/tree.rs"]
 mod tree;
 
-#[cfg(target_os = "linux")]
-#[test]
-fn managed_kernel_identity_tracks_exact_child_lifetime() {
-    use launcher::managed::ProcessIdentity;
-    use std::{
-        io::Write,
-        process::{Command, Stdio},
-    };
-    struct Reap(std::process::Child);
-    impl Drop for Reap {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let mut owned = Reap(
-        Command::new("/bin/sh")
-            .args(["-c", "read -r line"])
-            .stdin(Stdio::piped())
-            .spawn_locked()
-            .expect("real child required"),
-    );
-    let other = Reap(
-        Command::new("/bin/sh")
-            .args(["-c", "read -r line"])
-            .stdin(Stdio::piped())
-            .spawn_locked()
-            .expect("independent child required"),
-    );
-    let owned_identity =
-        ProcessIdentity::read(owned.0.id()).expect("Linux process start identity required");
-    let other_identity = ProcessIdentity::read(other.0.id()).unwrap();
-    assert_ne!(owned_identity, other_identity);
-    assert!(owned_identity.is_current());
-    let wrong_start = ProcessIdentity {
-        pid: owned_identity.pid,
-        start: owned_identity.start + 1,
-    };
-    assert!(!wrong_start.is_current());
-    owned
-        .0
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(b"done\n")
-        .unwrap();
-    assert!(owned.0.wait().unwrap().success());
-    assert!(!owned_identity.is_current());
-    assert!(
-        other_identity.is_current(),
-        "owned reap must not affect another launch"
-    );
-}
+tilo_test_env::scenario! {
+    #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn managed_kernel_prerequisites_hold_on_this_machine;
 
-#[cfg(target_os = "linux")]
-#[test]
-fn managed_linux_namespace_prerequisites_are_mandatory() {
-    let bwrap =
-        std::env::var_os("TILO_MANAGED_TEST_BWRAP").unwrap_or_else(|| "/usr/bin/bwrap".into());
-    let result = std::process::Command::new(bwrap)
-        .args([
-            "--unshare-all",
-            "--die-with-parent",
-            "--ro-bind",
-            "/usr",
-            "/usr",
-            "--symlink",
-            "usr/lib",
-            "/lib",
-            "--symlink",
-            "usr/lib64",
-            "/lib64",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "/usr/bin/true",
-        ])
-        .output_locked()
-        .expect("bwrap is required for explicit managed Linux qualification");
-    assert!(
-        result.status.success(),
-        "user/PID/mount namespaces required: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    phase managed_kernel_identity_tracks_exact_child_lifetime;
+    {
+        use launcher::managed::ProcessIdentity;
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+        };
+        struct Reap(std::process::Child);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut owned = Reap(
+            Command::new("/bin/sh")
+                .args(["-c", "read -r line"])
+                .stdin(Stdio::piped())
+                .spawn_locked()
+                .expect("real child required"),
+        );
+        let other = Reap(
+            Command::new("/bin/sh")
+                .args(["-c", "read -r line"])
+                .stdin(Stdio::piped())
+                .spawn_locked()
+                .expect("independent child required"),
+        );
+        let owned_identity =
+            ProcessIdentity::read(owned.0.id()).expect("Linux process start identity required");
+        let other_identity = ProcessIdentity::read(other.0.id()).unwrap();
+        assert_ne!(owned_identity, other_identity);
+        assert!(owned_identity.is_current());
+        let wrong_start = ProcessIdentity {
+            pid: owned_identity.pid,
+            start: owned_identity.start + 1,
+        };
+        assert!(!wrong_start.is_current());
+        owned
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"done\n")
+            .unwrap();
+        assert!(owned.0.wait().unwrap().success());
+        assert!(!owned_identity.is_current());
+        assert!(
+            other_identity.is_current(),
+            "owned reap must not affect another launch"
+        );
+    }
+
+    phase managed_linux_namespace_prerequisites_are_mandatory;
+    {
+        let bwrap =
+            std::env::var_os("TILO_MANAGED_TEST_BWRAP").unwrap_or_else(|| "/usr/bin/bwrap".into());
+        let result = std::process::Command::new(bwrap)
+            .args([
+                "--unshare-all",
+                "--die-with-parent",
+                "--ro-bind",
+                "/usr",
+                "/usr",
+                "--symlink",
+                "usr/lib",
+                "/lib",
+                "--symlink",
+                "usr/lib64",
+                "/lib64",
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "/usr/bin/true",
+            ])
+            .output_locked()
+            .expect("bwrap is required for explicit managed Linux qualification");
+        assert!(
+            result.status.success(),
+            "user/PID/mount namespaces required: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

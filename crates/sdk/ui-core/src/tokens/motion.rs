@@ -357,54 +357,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reduced_motion_lands_movement_at_once_and_keeps_a_short_fade() {
-        let tokens = Motion::default();
-        let fast = tokens.durations.fast();
-        let base = tokens.durations.base();
-        let on = EffectiveMotion::new(tokens, false);
-        assert!(on.moves() && on.loops() && !on.reduced());
-        assert_eq!(on.movement(base), base);
-        assert_eq!(on.fade(base), base);
-        assert_eq!(on.base(), base);
-        assert_eq!(on.replacement_fade(), Duration::ZERO);
-
-        let reduced = EffectiveMotion::new(tokens, true);
-        assert!(!reduced.moves() && !reduced.loops() && reduced.reduced());
-        assert_eq!(reduced.movement(base), Duration::ZERO);
-        assert_eq!(reduced.slow(), Duration::ZERO);
-        assert_eq!(reduced.fade(base), fast, "a fade is capped at fast");
-        assert_eq!(
-            reduced.fade(Duration::from_millis(50)),
-            Duration::from_millis(50)
-        );
-        assert_eq!(reduced.replacement_fade(), fast);
-    }
-
-    #[test]
-    fn a_still_theme_neither_moves_nor_fades_and_eased_never_overshoots() {
-        let still = EffectiveMotion::new(
-            Motion {
-                still: true,
-                ..Motion::default()
-            },
-            false,
-        );
-        let base = Motion::default().durations.base();
-        assert!(!still.moves() && !still.loops() && still.reduced() && still.still());
-        assert_eq!(still.movement(base), Duration::ZERO);
-        assert_eq!(still.fade(base), Duration::ZERO);
-        assert_eq!(still.replacement_fade(), Duration::ZERO);
-
-        let eased = Motion::default().eased();
-        for spring in [eased.springs.snappy, eased.springs.bouncy] {
-            let zeta = spring.damping / (2.0 * (spring.stiffness * spring.mass).sqrt());
-            assert!((zeta - 1.0).abs() < 1e-4, "ζ = {zeta}");
-        }
-        let slow = Motion::default().with_duration_scale(2.0);
-        assert_eq!(slow.durations.base_ms, 420);
-    }
-
-    #[test]
     fn motion_springs_have_their_documented_damping() {
         // phase: durations_expose_std_duration_helpers
         {
@@ -476,18 +428,72 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shortcuts_land_at_once_and_keep_only_a_fast_context_cue() {
-        let motion = Motion::default();
-        let base = motion.durations.base();
-        let slow = motion.durations.slow();
-        for source in [MotionSource::Keyboard, MotionSource::Action] {
-            assert_eq!(motion.result(source, base), Duration::ZERO, "{source:?}");
-            assert_eq!(motion.context(source, slow), motion.durations.fast());
+    tilo_test_env::scenario! {
+        /// How long a motion takes under reduced motion, a still theme and each input.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn effective_motion_follows_reduction_stillness_and_input;
+
+        phase reduced_motion_lands_movement_at_once_and_keeps_a_short_fade;
+        {
+            let tokens = Motion::default();
+            let fast = tokens.durations.fast();
+            let base = tokens.durations.base();
+            let on = EffectiveMotion::new(tokens, false);
+            assert!(on.moves() && on.loops() && !on.reduced());
+            assert_eq!(on.movement(base), base);
+            assert_eq!(on.fade(base), base);
+            assert_eq!(on.base(), base);
+            assert_eq!(on.replacement_fade(), Duration::ZERO);
+
+            let reduced = EffectiveMotion::new(tokens, true);
+            assert!(!reduced.moves() && !reduced.loops() && reduced.reduced());
+            assert_eq!(reduced.movement(base), Duration::ZERO);
+            assert_eq!(reduced.slow(), Duration::ZERO);
+            assert_eq!(reduced.fade(base), fast, "a fade is capped at fast");
+            assert_eq!(
+                reduced.fade(Duration::from_millis(50)),
+                Duration::from_millis(50)
+            );
+            assert_eq!(reduced.replacement_fade(), fast);
         }
-        for source in [MotionSource::Pointer, MotionSource::Gesture] {
-            assert_eq!(motion.result(source, base), base, "{source:?}");
-            assert_eq!(motion.context(source, slow), slow, "{source:?}");
+
+        phase a_still_theme_neither_moves_nor_fades_and_eased_never_overshoots;
+        {
+            let still = EffectiveMotion::new(
+                Motion {
+                    still: true,
+                    ..Motion::default()
+                },
+                false,
+            );
+            let base = Motion::default().durations.base();
+            assert!(!still.moves() && !still.loops() && still.reduced() && still.still());
+            assert_eq!(still.movement(base), Duration::ZERO);
+            assert_eq!(still.fade(base), Duration::ZERO);
+            assert_eq!(still.replacement_fade(), Duration::ZERO);
+
+            let eased = Motion::default().eased();
+            for spring in [eased.springs.snappy, eased.springs.bouncy] {
+                let zeta = spring.damping / (2.0 * (spring.stiffness * spring.mass).sqrt());
+                assert!((zeta - 1.0).abs() < 1e-4, "ζ = {zeta}");
+            }
+            let slow = Motion::default().with_duration_scale(2.0);
+            assert_eq!(slow.durations.base_ms, 420);
+        }
+
+        phase shortcuts_land_at_once_and_keep_only_a_fast_context_cue;
+        {
+            let motion = Motion::default();
+            let base = motion.durations.base();
+            let slow = motion.durations.slow();
+            for source in [MotionSource::Keyboard, MotionSource::Action] {
+                assert_eq!(motion.result(source, base), Duration::ZERO, "{source:?}");
+                assert_eq!(motion.context(source, slow), motion.durations.fast());
+            }
+            for source in [MotionSource::Pointer, MotionSource::Gesture] {
+                assert_eq!(motion.result(source, base), base, "{source:?}");
+                assert_eq!(motion.context(source, slow), slow, "{source:?}");
+            }
         }
     }
 

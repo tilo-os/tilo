@@ -1,8 +1,8 @@
 //! The peer's one in-memory representation.
 use super::{
-    AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, ChannelState, DeviceCert,
-    ExactAdmissions, GovernedIdentity, NeighbourMsg, RedemptionReceipt, RevocationList, Role,
-    Route, StatePeer, SystemTime, VecDeque, VerifiedCertificate, err, now_ns, workspace,
+    AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, DeviceCert, ExactAdmissions,
+    GovernedIdentity, InboundState, NeighbourMsg, RedemptionReceipt, RevocationList, Role, Route,
+    StatePeer, SystemTime, VecDeque, VerifiedCertificate, err, now_ns, workspace,
 };
 use crate::shared::Shared;
 use std::sync::{Arc, OnceLock};
@@ -20,7 +20,7 @@ pub(super) use roster::restore_legacy as restore_certificate_roster;
 
 pub(super) struct PeerDocument {
     pub(super) doc: CachedDocument,
-    pub(super) channel: ChannelState,
+    pub(super) channel: InboundState,
     pub(super) encryption_required: bool,
     /// The highest write of each writer, by its hex key, that this record's
     /// content carries: the watermarks of a governed checkpoint, and every

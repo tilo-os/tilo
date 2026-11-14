@@ -140,36 +140,40 @@ fn keep(content: &ContentStore, path: &std::path::Path) -> Result<Rendered, Stri
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_range_is_checked_against_the_timeline() {
-        let project = crate::seed::sample_project();
-        let (_, last) = {
-            let mut whole = project.clone();
-            whole.clear_marks();
-            whole.export_range()
-        };
-        let part = ranged(&project, Some(1.0), Some(2.0)).unwrap();
-        assert_eq!(part.export_range(), (1.0, 2.0));
-        let tail = ranged(&project, Some(1.0), Some(last + 10.0)).unwrap();
-        assert_eq!(tail.export_range(), (1.0, last));
-        assert!(ranged(&project, Some(last), None).is_err());
-        assert!(ranged(&project, Some(2.0), Some(1.0)).is_err());
-        assert!(ranged(&project, Some(f64::NAN), None).is_err());
-        assert!(ranged(&Project::new("Empty"), None, None).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_render_request_is_checked_before_it_renders;
 
-    #[test]
-    fn formats_and_sizes_are_named_as_published() {
-        let request = |format: &str, size: &str| RenderRequest {
-            start: None,
-            end: None,
-            format: Some(format.into()),
-            size: Some(size.into()),
-        };
-        let chosen = settings(&request("webm", "720p")).unwrap();
-        assert_eq!(chosen.container, Container::WebM);
-        assert_eq!(chosen.resolution, Resolution::P720);
-        assert!(settings(&request("avi", "720p")).is_err());
-        assert!(settings(&request("mp4", "480p")).is_err());
+        phase a_range_is_checked_against_the_timeline;
+        {
+            let project = crate::seed::sample_project();
+            let (_, last) = {
+                let mut whole = project.clone();
+                whole.clear_marks();
+                whole.export_range()
+            };
+            let part = ranged(&project, Some(1.0), Some(2.0)).unwrap();
+            assert_eq!(part.export_range(), (1.0, 2.0));
+            let tail = ranged(&project, Some(1.0), Some(last + 10.0)).unwrap();
+            assert_eq!(tail.export_range(), (1.0, last));
+            assert!(ranged(&project, Some(last), None).is_err());
+            assert!(ranged(&project, Some(2.0), Some(1.0)).is_err());
+            assert!(ranged(&project, Some(f64::NAN), None).is_err());
+            assert!(ranged(&Project::new("Empty"), None, None).is_err());
+        }
+
+        phase formats_and_sizes_are_named_as_published;
+        {
+            let request = |format: &str, size: &str| RenderRequest {
+                start: None,
+                end: None,
+                format: Some(format.into()),
+                size: Some(size.into()),
+            };
+            let chosen = settings(&request("webm", "720p")).unwrap();
+            assert_eq!(chosen.container, Container::WebM);
+            assert_eq!(chosen.resolution, Resolution::P720);
+            assert!(settings(&request("avi", "720p")).is_err());
+            assert!(settings(&request("mp4", "480p")).is_err());
+        }
     }
 }

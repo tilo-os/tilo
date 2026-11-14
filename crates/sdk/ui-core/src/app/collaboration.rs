@@ -541,7 +541,6 @@ impl App {
             return false;
         };
         let mutation = match crate::app::document_routes::decode_routed_mutation(
-            route,
             payload,
             decrypted_payload,
         ) {
@@ -840,10 +839,7 @@ impl App {
     fn lanes_on_route(
         route: &crate::collaboration::RouteSpec,
     ) -> Vec<std::sync::Arc<crate::collaboration::record_content::ContentLane>> {
-        crate::collaboration::record_content::ContentLane::on_route(
-            &route.app_id,
-            route.record.as_deref().unwrap_or(""),
-        )
+        crate::collaboration::record_content::ContentLane::on_route(route)
     }
 
     /// Send what the window's record content store queued on the record's
@@ -941,12 +937,8 @@ impl App {
             CollabEvent::LocalDocumentActionReported { request_id, result } => {
                 self.observe_local_input_capture(request_id, result);
             }
-            CollabEvent::Context {
-                collaborators,
-                apps,
-                ..
-            } => {
-                self.apply_collab_context(collaborators);
+            CollabEvent::Context { members, apps, .. } => {
+                self.apply_collab_context(members);
                 // What each app installed here is called: the same feed names the people in it.
                 crate::history_source::set_installed_apps(apps);
             }
@@ -1269,56 +1261,47 @@ impl App {
     /// The self row carries the address others use for this participant (so
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
-    fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Collaborator>) {
-        let current = collaborators
+    fn apply_collab_context(&mut self, members: Vec<crate::collaboration::Member>) {
+        let current = members
             .iter()
-            .map(|participant| crate::permissions::UserId(participant.id.clone()))
+            .map(|participant| crate::permissions::UserId(participant.id.key()))
             .collect::<std::collections::HashSet<_>>();
         for departed in self.collaboration.context_participants.difference(&current) {
             self.presence_ctx.unregister_peer(&departed.0);
         }
-        for participant in &collaborators {
+        for participant in &members {
             self.presence_ctx.set_participant_kind(
-                crate::permissions::UserId(participant.id.clone()),
-                participant.is_agent,
+                crate::permissions::UserId(participant.id.key()),
+                !participant.id.is_person(),
             );
             self.presence_ctx.set_joined_at(
-                crate::permissions::UserId(participant.id.clone()),
+                crate::permissions::UserId(participant.id.key()),
                 participant.joined_at,
             );
         }
-        if let Some(me) = collaborators.iter().find(|c| c.is_self) {
+        if let Some(me) = members.iter().find(|c| c.is_self) {
             self.presence_ctx
-                .set_self_participant(crate::permissions::UserId(me.id.clone()), me.name.clone());
-            // The colour the member list says this person wears, when it says
-            // one: the same one every other app and desk paints them in. A
-            // member list that leaves its own row out still gets it from the
-            // colour the person chose here.
-            if let Some(hue) = me.colour.or_else(crate::local_identity::own_colour) {
-                self.presence_ctx
-                    .set_presence_hue(crate::permissions::UserId(me.id.clone()), hue);
-            }
+                .set_self_participant(crate::permissions::UserId(me.id.key()), me.name.clone());
+            self.presence_ctx
+                .set_presence_hue(crate::permissions::UserId(me.id.key()), me.colour);
         } else {
             self.presence_ctx.clear_self_participant();
         }
         // Filtered to others: letting the self row through would put the
         // local user in every list built from presence.
-        for c in collaborators.into_iter().filter(|c| !c.is_self) {
+        for c in members.into_iter().filter(|c| !c.is_self) {
+            let user = crate::permissions::UserId(c.id.key());
             // Relabel only — the roster doesn't say where a peer's pointer
             // is, so it must not mint one at the origin.
             self.presence_ctx
-                .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
-            // The colour they wear everywhere, once the workspace has heard it.
-            if let Some(hue) = c.colour {
-                self.presence_ctx
-                    .set_presence_hue(crate::permissions::UserId(c.id.clone()), hue);
-            }
+                .set_display_name(user.clone(), c.name.clone());
+            self.presence_ctx.set_presence_hue(user.clone(), c.colour);
             self.presence_ctx.set_participant_kind(
-                crate::permissions::UserId(c.id),
-                if c.is_agent {
-                    crate::presence::ParticipantKind::Agent
-                } else {
+                user,
+                if c.id.is_person() {
                     crate::presence::ParticipantKind::Person
+                } else {
+                    crate::presence::ParticipantKind::Agent
                 },
             );
         }

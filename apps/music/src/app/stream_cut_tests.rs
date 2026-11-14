@@ -1,45 +1,267 @@
 use super::stream_cut::{StreamCut, StreamCutAction, stream_cut_action};
 use super::*;
 
+/// The length of the song the rows below are cut from.
+const SONG: u64 = 382_000;
+
+/// One stop of a stream: how it stopped, where, the song's known length, where it was last
+/// resumed, and what follows.
+type CutRow = (
+    StreamCut,
+    u64,
+    u64,
+    Option<u64>,
+    StreamCutAction,
+    &'static str,
+);
+
+const CUT_ROWS: &[CutRow] = &[
+    (
+        StreamCut::Ended,
+        60_000,
+        SONG,
+        None,
+        StreamCutAction::Resume(60_000),
+        "an end of stream a minute into a six-minute song is a cut",
+    ),
+    (
+        StreamCut::Failed,
+        60_000,
+        SONG,
+        None,
+        StreamCutAction::Resume(60_000),
+        "so is a refused range there",
+    ),
+    (
+        StreamCut::Ended,
+        SONG - 1_000,
+        SONG,
+        None,
+        StreamCutAction::Accept,
+        "an end of stream at the song's end is its end",
+    ),
+    (
+        StreamCut::Ended,
+        60_000,
+        0,
+        None,
+        StreamCutAction::Accept,
+        "with no known length there is nothing to say it was cut",
+    ),
+    (
+        StreamCut::Failed,
+        0,
+        SONG,
+        None,
+        StreamCutAction::Accept,
+        "a stream that never played is a start failure, reported as one",
+    ),
+    (
+        StreamCut::Ended,
+        61_000,
+        SONG,
+        Some(60_000),
+        StreamCutAction::GiveUp,
+        "cut again where it was resumed: the source will not serve it",
+    ),
+    (
+        StreamCut::Ended,
+        120_000,
+        SONG,
+        Some(60_000),
+        StreamCutAction::Resume(120_000),
+        "a later cut, after real progress, is resumed again",
+    ),
+    // The edges of the rules above.
+    (
+        StreamCut::Ended,
+        SONG - 5_000,
+        SONG,
+        None,
+        StreamCutAction::Accept,
+        "five seconds short of the end still counts as played through",
+    ),
+    (
+        StreamCut::Ended,
+        SONG - 5_001,
+        SONG,
+        None,
+        StreamCutAction::Resume(SONG - 5_001),
+        "a millisecond more than that short is a cut",
+    ),
+    (
+        StreamCut::Ended,
+        SONG + 1_000,
+        SONG,
+        None,
+        StreamCutAction::Accept,
+        "an end of stream past the known length is the end",
+    ),
+    (
+        StreamCut::Failed,
+        SONG - 1_000,
+        SONG,
+        None,
+        StreamCutAction::Resume(SONG - 1_000),
+        "a failure is never the song's end, however near the end it comes",
+    ),
+    (
+        StreamCut::Failed,
+        60_000,
+        0,
+        None,
+        StreamCutAction::Resume(60_000),
+        "an unknown length excuses an end of stream, not a failure",
+    ),
+    (
+        StreamCut::Ended,
+        0,
+        SONG,
+        None,
+        StreamCutAction::Accept,
+        "an end of stream before anything played is not resumed either",
+    ),
+    (
+        StreamCut::Failed,
+        0,
+        SONG,
+        Some(60_000),
+        StreamCutAction::Accept,
+        "nothing played is a start failure even after an earlier resume",
+    ),
+    (
+        StreamCut::Failed,
+        61_000,
+        SONG,
+        Some(60_000),
+        StreamCutAction::GiveUp,
+        "a failure where it was resumed gives up as an end of stream there does",
+    ),
+    (
+        StreamCut::Ended,
+        60_000,
+        SONG,
+        Some(60_000),
+        StreamCutAction::GiveUp,
+        "cut at the very spot it was resumed from",
+    ),
+    (
+        StreamCut::Ended,
+        64_999,
+        SONG,
+        Some(60_000),
+        StreamCutAction::GiveUp,
+        "a millisecond short of five seconds of progress is no progress",
+    ),
+    (
+        StreamCut::Ended,
+        65_000,
+        SONG,
+        Some(60_000),
+        StreamCutAction::Resume(65_000),
+        "five seconds past the last resume is progress",
+    ),
+    (
+        StreamCut::Ended,
+        30_000,
+        SONG,
+        Some(60_000),
+        StreamCutAction::GiveUp,
+        "a cut before the spot of the last resume is no progress past it",
+    ),
+    (
+        StreamCut::Ended,
+        u64::MAX - 1,
+        u64::MAX,
+        None,
+        StreamCutAction::Accept,
+        "the slack saturates at the largest position instead of wrapping to a small one",
+    ),
+    (
+        StreamCut::Failed,
+        u64::MAX - 1,
+        0,
+        Some(u64::MAX - 1),
+        StreamCutAction::GiveUp,
+        "the progress a resume needs saturates too",
+    ),
+    // Where two rules meet: which one decides.
+    (
+        StreamCut::Failed,
+        120_000,
+        SONG,
+        Some(60_000),
+        StreamCutAction::Resume(120_000),
+        "a failure after real progress is resumed again, as an end of stream is",
+    ),
+    (
+        StreamCut::Failed,
+        65_000,
+        SONG,
+        Some(60_000),
+        StreamCutAction::Resume(65_000),
+        "five seconds past the last resume is progress for a failure too",
+    ),
+    (
+        StreamCut::Ended,
+        SONG - 500,
+        SONG,
+        Some(SONG - 5_001),
+        StreamCutAction::Accept,
+        "the song's end just after a resume near it is its end, not a second cut",
+    ),
+    (
+        StreamCut::Failed,
+        SONG - 500,
+        SONG,
+        Some(SONG - 1_000),
+        StreamCutAction::GiveUp,
+        "a failure just after a resume gives up, however near the end it comes",
+    ),
+    (
+        StreamCut::Ended,
+        61_000,
+        0,
+        Some(60_000),
+        StreamCutAction::Accept,
+        "an unknown length excuses an end of stream after a resume as well",
+    ),
+    (
+        StreamCut::Failed,
+        1,
+        SONG,
+        None,
+        StreamCutAction::Resume(1),
+        "one millisecond played is a stream that started",
+    ),
+    (
+        StreamCut::Ended,
+        1_000,
+        4_000,
+        None,
+        StreamCutAction::Accept,
+        "a song shorter than the slack ends wherever its stream does",
+    ),
+    (
+        StreamCut::Failed,
+        1_000,
+        4_000,
+        None,
+        StreamCutAction::Resume(1_000),
+        "and its failure is still a cut",
+    ),
+];
+
 #[test]
 fn a_stream_cut_short_resumes_once_per_spot() {
-    use StreamCutAction::{Accept, GiveUp, Resume};
-    let song = 382_000;
-    assert_eq!(
-        stream_cut_action(StreamCut::Ended, 60_000, song, None),
-        Resume(60_000),
-        "an end of stream a minute into a six-minute song is a cut"
-    );
-    assert_eq!(
-        stream_cut_action(StreamCut::Failed, 60_000, song, None),
-        Resume(60_000),
-        "so is a refused range there"
-    );
-    assert_eq!(
-        stream_cut_action(StreamCut::Ended, song - 1_000, song, None),
-        Accept,
-        "an end of stream at the song's end is its end"
-    );
-    assert_eq!(
-        stream_cut_action(StreamCut::Ended, 60_000, 0, None),
-        Accept,
-        "with no known length there is nothing to say it was cut"
-    );
-    assert_eq!(
-        stream_cut_action(StreamCut::Failed, 0, song, None),
-        Accept,
-        "a stream that never played is a start failure, reported as one"
-    );
-    assert_eq!(
-        stream_cut_action(StreamCut::Ended, 61_000, song, Some(60_000)),
-        GiveUp,
-        "cut again where it was resumed: the source will not serve it"
-    );
-    assert_eq!(
-        stream_cut_action(StreamCut::Ended, 120_000, song, Some(60_000)),
-        Resume(120_000),
-        "a later cut, after real progress, is resumed again"
-    );
+    for &(cut, position_ms, duration_ms, last_resume_ms, expected, why) in CUT_ROWS {
+        assert_eq!(
+            stream_cut_action(cut, position_ms, duration_ms, last_resume_ms),
+            expected,
+            "{why}: {cut:?} at {position_ms} ms of {duration_ms} ms, last resumed at \
+             {last_resume_ms:?}"
+        );
+    }
 }
 
 const BYTES_PER_SECOND: usize = 16_000;

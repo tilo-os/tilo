@@ -282,93 +282,97 @@ mod tests {
         }
     }
 
-    #[test]
-    fn requirement_flags_round_trip_through_contract_tags() {
-        let spec =
-            ActionSpec::immediate_encoded("x", "X", ExecutionLocus::ClientLocal, encoded("x"))
-                .requires(ContextRequirement::Selection)
-                .requires(ContextRequirement::Selection)
-                .requires(ContextRequirement::Caret)
-                .participant_view();
-        assert_eq!(
-            spec.contract.requirements(),
-            vec![ContextRequirement::Caret, ContextRequirement::Selection]
-        );
-        assert!(spec.contract.is_participant_view());
-        assert_eq!(spec.contract.tags.len(), 3, "tags are not duplicated");
-        assert!(matches!(
-            ContextRequirement::Selection.refusal(),
-            DoorError::Unavailable { ref code, .. } if code == "needs-selection"
-        ));
-        let json = serde_json::to_value(&spec.contract).unwrap();
-        let back: ActionContract = serde_json::from_value(json).unwrap();
-        assert_eq!(back.requirements(), spec.contract.requirements());
-    }
+    tilo_test_env::scenario! {
+        fn a_schema_is_stable_and_per_invoker;
 
-    #[test]
-    fn schema_is_stable_across_caret_moves_and_selection() {
-        let before = provider("b1", false);
-        let after = provider("b7", true);
-        let participant = crate::ParticipantId::new("agent-task:t").unwrap();
-        // The participant's own trees differ (caret-derived ids, selection).
-        assert_ne!(
-            door::survey(&before.resources_for(Some(&participant))).len(),
-            door::survey(&after.resources_for(Some(&participant))).len()
-        );
-        let schema = catalogue_schema(&door::survey(&schema_tree()));
-        // Every operation a participant can reach has an entry in the schema,
-        // whatever its caret: grants checked against the schema cover it.
-        for provider in [&before, &after] {
-            for entry in
-                catalogue_schema(&door::survey(&provider.resources_for(Some(&participant))))
-            {
-                assert!(
-                    schema
-                        .iter()
-                        .any(|schema| schema.resource_kind == entry.resource_kind
-                            && schema.action == entry.action
-                            && schema.contract == entry.contract),
-                    "{} {} missing from schema",
-                    entry.resource_kind,
-                    entry.action
-                );
+        phase requirement_flags_round_trip_through_contract_tags;
+        {
+            let spec =
+                ActionSpec::immediate_encoded("x", "X", ExecutionLocus::ClientLocal, encoded("x"))
+                    .requires(ContextRequirement::Selection)
+                    .requires(ContextRequirement::Selection)
+                    .requires(ContextRequirement::Caret)
+                    .participant_view();
+            assert_eq!(
+                spec.contract.requirements(),
+                vec![ContextRequirement::Caret, ContextRequirement::Selection]
+            );
+            assert!(spec.contract.is_participant_view());
+            assert_eq!(spec.contract.tags.len(), 3, "tags are not duplicated");
+            assert!(matches!(
+                ContextRequirement::Selection.refusal(),
+                DoorError::Unavailable { ref code, .. } if code == "needs-selection"
+            ));
+            let json = serde_json::to_value(&spec.contract).unwrap();
+            let back: ActionContract = serde_json::from_value(json).unwrap();
+            assert_eq!(back.requirements(), spec.contract.requirements());
+        }
+
+        phase schema_is_stable_across_caret_moves_and_selection;
+        {
+            let before = provider("b1", false);
+            let after = provider("b7", true);
+            let participant = crate::ParticipantId::new("agent-task:t").unwrap();
+            // The participant's own trees differ (caret-derived ids, selection).
+            assert_ne!(
+                door::survey(&before.resources_for(Some(&participant))).len(),
+                door::survey(&after.resources_for(Some(&participant))).len()
+            );
+            let schema = catalogue_schema(&door::survey(&schema_tree()));
+            // Every operation a participant can reach has an entry in the schema,
+            // whatever its caret: grants checked against the schema cover it.
+            for provider in [&before, &after] {
+                for entry in
+                    catalogue_schema(&door::survey(&provider.resources_for(Some(&participant))))
+                {
+                    assert!(
+                        schema
+                            .iter()
+                            .any(|schema| schema.resource_kind == entry.resource_kind
+                                && schema.action == entry.action
+                                && schema.contract == entry.contract),
+                        "{} {} missing from schema",
+                        entry.resource_kind,
+                        entry.action
+                    );
+                }
             }
         }
-    }
 
-    #[test]
-    fn schema_ignores_volatile_ids_labels_and_order() {
-        let a = door::survey(&tree("b1", false, false));
-        let mut b = door::survey(&tree("b99", false, false));
-        b.reverse();
-        for descriptor in &mut b {
-            descriptor.resource_label = "Renamed".into();
+        phase schema_ignores_volatile_ids_labels_and_order;
+        {
+            let a = door::survey(&tree("b1", false, false));
+            let mut b = door::survey(&tree("b99", false, false));
+            b.reverse();
+            for descriptor in &mut b {
+                descriptor.resource_label = "Renamed".into();
+            }
+            assert_eq!(catalogue_schema(&a), catalogue_schema(&b));
         }
-        assert_eq!(catalogue_schema(&a), catalogue_schema(&b));
-    }
 
-    #[test]
-    fn resolution_is_per_invoker() {
-        let provider = provider("b7", true);
-        let agent = crate::ParticipantId::new("agent-task:t").unwrap();
-        let address = door::ActionAddress::new("doc", "type-text");
-        let agent_tree = provider.resources_for(Some(&agent));
-        let own_tree = provider.resources_for(None);
-        assert_eq!(
-            door::encode(&agent_tree, &address, None).unwrap().payload,
-            b"type@b7".to_vec()
-        );
-        assert_eq!(
-            door::encode(&own_tree, &address, None).unwrap().payload,
-            b"type@b1".to_vec()
-        );
-        // Selection-scoped ops exist only in the tree of the participant
-        // that has a selection.
-        let bold = door::ActionAddress::new("doc", "toggle-mark");
-        assert!(door::resolve(&agent_tree, &bold).is_some());
-        assert!(door::resolve(&own_tree, &bold).is_none());
-        // An unknown participant gets no tree at all, not the default view.
-        let stranger = crate::ParticipantId::new("agent-task:other").unwrap();
-        assert!(provider.resources_for(Some(&stranger)).is_empty());
+        phase resolution_is_per_invoker;
+        {
+            let provider = provider("b7", true);
+            let agent = crate::ParticipantId::new("agent-task:t").unwrap();
+            let address = door::ActionAddress::new("doc", "type-text");
+            let agent_tree = provider.resources_for(Some(&agent));
+            let own_tree = provider.resources_for(None);
+            assert_eq!(
+                door::encode(&agent_tree, &address, None).unwrap().payload,
+                b"type@b7".to_vec()
+            );
+            assert_eq!(
+                door::encode(&own_tree, &address, None).unwrap().payload,
+                b"type@b1".to_vec()
+            );
+            // Selection-scoped ops exist only in the tree of the participant
+            // that has a selection.
+            let bold = door::ActionAddress::new("doc", "toggle-mark");
+            assert!(door::resolve(&agent_tree, &bold).is_some());
+            assert!(door::resolve(&own_tree, &bold).is_none());
+            // An unknown participant gets no tree at all, not the default view.
+            let stranger = crate::ParticipantId::new("agent-task:other").unwrap();
+            assert!(provider.resources_for(Some(&stranger)).is_empty());
+        }
     }
 }

@@ -93,13 +93,10 @@ impl Workspace for DeskWorkspace {
         engine
             .invitable_roles(&self.in_front().unwrap_or_default())
             .into_iter()
-            .map(|role| {
-                let role = role.into();
-                sheet::Role {
-                    key: tilo_desktop_model::role_id(role).to_owned(),
-                    label: domain::role_label(role),
-                    brings: domain::role_capability_preview(role),
-                }
+            .map(|role| sheet::Role {
+                key: role.key().to_owned(),
+                label: domain::role_label(role),
+                brings: domain::role_capability_preview(role),
             })
             .collect()
     }
@@ -150,7 +147,7 @@ impl Workspace for DeskWorkspace {
             .map(|invite| {
                 sheet::pending(
                     &hex::encode(invite.invite_id),
-                    &domain::role_label(invite.role.into()),
+                    &domain::role_label(invite.role),
                     invite.invitee_name.as_deref(),
                     invite.recipient_user_public_key.is_some(),
                     invite.expires_at_ns,

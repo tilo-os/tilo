@@ -1473,8 +1473,15 @@ impl Widget for Section {
 
     fn disclosing(&self) -> Option<crate::widget::Disclosing> {
         let shifts = self.follower_shifts()?;
-        Some(crate::widget::Disclosing::Grows(
-            shifts.last().copied().unwrap_or(0.0),
+        let gaps = &self.gaps;
+        Some(crate::widget::Disclosing::of_column(
+            &shifts,
+            self.parts
+                .children
+                .iter()
+                .take(self.shown())
+                .map(|child| &**child),
+            |index| gaps.get(index).copied().unwrap_or(0.0),
         ))
     }
 

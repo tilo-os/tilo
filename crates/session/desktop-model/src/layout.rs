@@ -404,85 +404,89 @@ mod tab_name_tests {
         }
     }
 
-    #[test]
-    fn a_name_replaces_the_shown_title_and_keeps_the_windows_own() {
-        let mut tab = terminal("~/src");
-        assert!(tab.rename("  Build  "));
-        assert_eq!(tab.title, "Build");
-        assert_eq!(tab.app_title.as_deref(), Some("~/src"));
-        assert!(tab.is_named());
-        assert!(tab.rename("Deploy"));
-        assert_eq!(tab.title, "Deploy");
-        assert_eq!(tab.app_title.as_deref(), Some("~/src"));
-        assert!(!tab.rename("Deploy"), "the same name again is no change");
-    }
+    tilo_test_env::scenario! {
+        fn a_tabs_name_and_its_windows_title;
 
-    #[test]
-    fn a_window_title_while_named_updates_only_the_windows_own() {
-        let mut tab = terminal("~/src");
-        tab.rename("Build");
-        assert!(tab.set_window_title("cargo build"));
-        assert_eq!(tab.title, "Build");
-        assert_eq!(tab.app_title.as_deref(), Some("cargo build"));
-    }
+        phase a_name_replaces_the_shown_title_and_keeps_the_windows_own;
+        {
+            let mut tab = terminal("~/src");
+            assert!(tab.rename("  Build  "));
+            assert_eq!(tab.title, "Build");
+            assert_eq!(tab.app_title.as_deref(), Some("~/src"));
+            assert!(tab.is_named());
+            assert!(tab.rename("Deploy"));
+            assert_eq!(tab.title, "Deploy");
+            assert_eq!(tab.app_title.as_deref(), Some("~/src"));
+            assert!(!tab.rename("Deploy"), "the same name again is no change");
+        }
 
-    #[test]
-    fn clearing_the_name_shows_the_latest_window_title() {
-        let mut tab = terminal("~/src");
-        tab.rename("Build");
-        tab.set_window_title("cargo test");
-        assert!(tab.rename("   "));
-        assert_eq!(tab.title, "cargo test");
-        assert_eq!(tab.app_title, None);
-        assert!(!tab.is_named());
-        assert!(!tab.rename(""), "a tab with no name has none to clear");
-        assert!(tab.set_window_title("~"));
-        assert_eq!(tab.title, "~");
-    }
+        phase a_window_title_while_named_updates_only_the_windows_own;
+        {
+            let mut tab = terminal("~/src");
+            tab.rename("Build");
+            assert!(tab.set_window_title("cargo build"));
+            assert_eq!(tab.title, "Build");
+            assert_eq!(tab.app_title.as_deref(), Some("cargo build"));
+        }
 
-    #[test]
-    fn the_same_window_title_again_is_no_change() {
-        let mut tab = terminal("~/src");
-        assert!(!tab.set_window_title("~/src"));
-        tab.rename("Build");
-        tab.set_window_title("vim");
-        assert!(!tab.set_window_title("vim"));
-        assert_eq!(tab.title, "Build");
-    }
+        phase clearing_the_name_shows_the_latest_window_title;
+        {
+            let mut tab = terminal("~/src");
+            tab.rename("Build");
+            tab.set_window_title("cargo test");
+            assert!(tab.rename("   "));
+            assert_eq!(tab.title, "cargo test");
+            assert_eq!(tab.app_title, None);
+            assert!(!tab.is_named());
+            assert!(!tab.rename(""), "a tab with no name has none to clear");
+            assert!(tab.set_window_title("~"));
+            assert_eq!(tab.title, "~");
+        }
 
-    #[test]
-    fn a_window_that_names_nothing_keeps_the_name_it_has() {
-        let mut tab = terminal("Notes");
-        assert!(!tab.set_window_title(""));
-        assert_eq!(tab.title, "Notes");
-        assert!(!tab.set_window_title("   "), "blank is blank");
-        assert_eq!(tab.title, "Notes");
-        // Also while a person's name stands: their name stays, and the
-        // window's own name it goes back to is the last one it gave.
-        tab.rename("Read later");
-        tab.set_window_title("Garden plan");
-        assert!(!tab.set_window_title(""));
-        assert!(tab.rename(""));
-        assert_eq!(tab.title, "Garden plan");
-    }
+        phase the_same_window_title_again_is_no_change;
+        {
+            let mut tab = terminal("~/src");
+            assert!(!tab.set_window_title("~/src"));
+            tab.rename("Build");
+            tab.set_window_title("vim");
+            assert!(!tab.set_window_title("vim"));
+            assert_eq!(tab.title, "Build");
+        }
 
-    #[test]
-    fn a_tab_without_a_name_is_stored_as_before() {
-        let json = serde_json::to_value(terminal("~/src")).expect("serialises");
-        assert!(json.get("app_title").is_none());
-        let old: Tab = serde_json::from_value(serde_json::json!({
-            "id": 7,
-            "title": "~/src",
-            "tile": { "Foreign": { "app_id": "Alacritty", "surface_id": 3 } },
-        }))
-        .expect("a tab stored before names reads back");
-        assert_eq!(old.app_title, None);
-        let mut named = terminal("~/src");
-        named.rename("Build");
-        let back: Tab = serde_json::from_value(serde_json::to_value(&named).expect("serialises"))
-            .expect("reads back");
-        assert_eq!(back.title, "Build");
-        assert_eq!(back.app_title.as_deref(), Some("~/src"));
+        phase a_window_that_names_nothing_keeps_the_name_it_has;
+        {
+            let mut tab = terminal("Notes");
+            assert!(!tab.set_window_title(""));
+            assert_eq!(tab.title, "Notes");
+            assert!(!tab.set_window_title("   "), "blank is blank");
+            assert_eq!(tab.title, "Notes");
+            // Also while a person's name stands: their name stays, and the
+            // window's own name it goes back to is the last one it gave.
+            tab.rename("Read later");
+            tab.set_window_title("Garden plan");
+            assert!(!tab.set_window_title(""));
+            assert!(tab.rename(""));
+            assert_eq!(tab.title, "Garden plan");
+        }
+
+        phase a_tab_without_a_name_is_stored_as_before;
+        {
+            let json = serde_json::to_value(terminal("~/src")).expect("serialises");
+            assert!(json.get("app_title").is_none());
+            let old: Tab = serde_json::from_value(serde_json::json!({
+                "id": 7,
+                "title": "~/src",
+                "tile": { "Foreign": { "app_id": "Alacritty", "surface_id": 3 } },
+            }))
+            .expect("a tab stored before names reads back");
+            assert_eq!(old.app_title, None);
+            let mut named = terminal("~/src");
+            named.rename("Build");
+            let back: Tab = serde_json::from_value(serde_json::to_value(&named).expect("serialises"))
+                .expect("reads back");
+            assert_eq!(back.title, "Build");
+            assert_eq!(back.app_title.as_deref(), Some("~/src"));
+        }
     }
 }
 
@@ -490,49 +494,53 @@ mod tab_name_tests {
 mod tile_record_tests {
     use super::*;
 
-    #[test]
-    fn a_tile_written_as_the_shells_activity_window_reads_as_the_activity_apps() {
-        let read: TileContent = serde_json::from_str("\"WorkspaceActivity\"").unwrap();
-        assert_eq!(
-            read,
-            TileContent::LocalApp {
-                app_id: tilo_actions::remote::workspace_activity::APP_ID.into(),
-                label: "Activity".into(),
-                note: String::new(),
-            }
-        );
-    }
+    tilo_test_env::scenario! {
+        fn tiles_read_back_as_written;
 
-    #[test]
-    fn every_tile_reads_back_as_written() {
-        let tiles = [
-            TileContent::Stub {
-                kind: AppKind::Terminal,
-                label: "Shell".into(),
-            },
-            TileContent::Foreign {
-                app_id: "Alacritty".into(),
-                surface_id: 3,
-            },
-            TileContent::LocalApp {
-                app_id: "so.tilo.notes".into(),
-                label: "Notes".into(),
-                note: String::new(),
-            },
-            TileContent::HostedWindow {
-                app_id: "xterm".into(),
-                label: "xterm".into(),
-                host: "ab12".into(),
-                host_label: "Desk".into(),
-            },
-        ];
-        for tile in tiles {
-            let written = serde_json::to_string(&tile).unwrap();
+        phase a_tile_written_as_the_shells_activity_window_reads_as_the_activity_apps;
+        {
+            let read: TileContent = serde_json::from_str("\"WorkspaceActivity\"").unwrap();
             assert_eq!(
-                serde_json::from_str::<TileContent>(&written).unwrap(),
-                tile,
-                "{written}"
+                read,
+                TileContent::LocalApp {
+                    app_id: tilo_actions::remote::workspace_activity::APP_ID.into(),
+                    label: "Activity".into(),
+                    note: String::new(),
+                }
             );
+        }
+
+        phase every_tile_reads_back_as_written;
+        {
+            let tiles = [
+                TileContent::Stub {
+                    kind: AppKind::Terminal,
+                    label: "Shell".into(),
+                },
+                TileContent::Foreign {
+                    app_id: "Alacritty".into(),
+                    surface_id: 3,
+                },
+                TileContent::LocalApp {
+                    app_id: "so.tilo.notes".into(),
+                    label: "Notes".into(),
+                    note: String::new(),
+                },
+                TileContent::HostedWindow {
+                    app_id: "xterm".into(),
+                    label: "xterm".into(),
+                    host: "ab12".into(),
+                    host_label: "Desk".into(),
+                },
+            ];
+            for tile in tiles {
+                let written = serde_json::to_string(&tile).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<TileContent>(&written).unwrap(),
+                    tile,
+                    "{written}"
+                );
+            }
         }
     }
 }

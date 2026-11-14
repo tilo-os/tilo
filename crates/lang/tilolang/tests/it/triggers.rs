@@ -57,75 +57,80 @@ const TYPES: &str = r"type Task {
 action ring(t: Task) { }
 ";
 
-#[test]
-fn a_trigger_says_what_it_runs_and_when() {
-    let compiled = compile(SOURCE);
-    let meta = &compiled.meta;
-    assert_eq!(meta.triggers.len(), 2, "{:#?}", meta.triggers);
+tilo_test_env::scenario! {
+    /// Triggers, and what the metadata says of them.
+    fn a_trigger_says_which_action_runs_and_when;
 
-    let often = meta.triggers.iter().find(|t| t.name == "often").unwrap();
-    let ring = meta.actions.iter().find(|a| a.name == "ring").unwrap();
-    let task = meta.types.iter().find(|t| t.name == "Task").unwrap();
-    assert_eq!(often.action, ring.id, "the action it runs");
-    assert_eq!(often.ty, task.id, "the records it runs for");
-    assert_eq!(often.args, vec![TriggerArgMeta::Subject]);
-    assert_eq!(often.when, TriggerWhenMeta::Every(30 * 60));
+    phase a_trigger_says_what_it_runs_and_when;
+    {
+        let compiled = compile(SOURCE);
+        let meta = &compiled.meta;
+        assert_eq!(meta.triggers.len(), 2, "{:#?}", meta.triggers);
 
-    let due = meta.triggers.iter().find(|t| t.name == "due").unwrap();
-    let at = task.fields.iter().find(|f| f.name == "at").unwrap();
-    assert_eq!(due.when, TriggerWhenMeta::At(at.id.clone()));
-    assert_eq!(due.args, vec![TriggerArgMeta::Subject]);
-}
+        let often = meta.triggers.iter().find(|t| t.name == "often").unwrap();
+        let ring = meta.actions.iter().find(|a| a.name == "ring").unwrap();
+        let task = meta.types.iter().find(|t| t.name == "Task").unwrap();
+        assert_eq!(often.action, ring.id, "the action it runs");
+        assert_eq!(often.ty, task.id, "the records it runs for");
+        assert_eq!(often.args, vec![TriggerArgMeta::Subject]);
+        assert_eq!(often.when, TriggerWhenMeta::Every(30 * 60));
 
-#[test]
-fn a_trigger_runs_one_of_the_packages_actions_and_a_record_of_it() {
-    says(
-        "type Task { title: Text }\naction ring(t: Task) { }\ntrigger x(t: Task) every 30m: missing(t)\n",
-        "E134",
-        "declares no action `missing`",
-    );
-    says(
-        "type Task { title: Text }\naction ring(t: Task) { }\ntrigger x(t: Text) every 30m: ring(t)\n",
-        "E131",
-        "records of a type of this package",
-    );
-}
+        let due = meta.triggers.iter().find(|t| t.name == "due").unwrap();
+        let at = task.fields.iter().find(|f| f.name == "at").unwrap();
+        assert_eq!(due.when, TriggerWhenMeta::At(at.id.clone()));
+        assert_eq!(due.args, vec![TriggerArgMeta::Subject]);
+    }
 
-#[test]
-fn a_trigger_at_a_field_reads_a_time_the_record_holds() {
-    says(
-        // `title` is text, not a time.
-        &format!("{TYPES}\ntrigger x(t: Task) at t.title: ring(t)\n"),
-        "E133",
-        "is not a time",
-    );
-    says(
-        &format!("{TYPES}\ntrigger x(t: Task) at 30m: ring(t)\n"),
-        "E133",
-        "`at` reads the time",
-    );
-    says(
-        "type Task { title: Text }\naction ring(t: Task) { }\ntrigger x(t: Task) every 0m: ring(t)\n",
-        "E132",
-        "above zero",
-    );
-    says(
-        &format!("{TYPES}\ntrigger x(t: Task, u: Task) every 30m: ring(t)\n"),
-        "E003",
-        "runs for one record",
-    );
-}
+    phase a_trigger_runs_one_of_the_packages_actions_and_a_record_of_it;
+    {
+        says(
+            "type Task { title: Text }\naction ring(t: Task) { }\ntrigger x(t: Task) every 30m: missing(t)\n",
+            "E134",
+            "declares no action `missing`",
+        );
+        says(
+            "type Task { title: Text }\naction ring(t: Task) { }\ntrigger x(t: Text) every 30m: ring(t)\n",
+            "E131",
+            "records of a type of this package",
+        );
+    }
 
-#[test]
-fn a_trigger_hands_its_action_only_the_record_or_a_root() {
-    says(
-        "type Task { at: Option<Time> = .none }\naction ring(t: Task, at: Time) { }\ntrigger x(t: Task) at t.at: ring(t, at: \"2026-10-27T10:00:00Z\")\n",
-        "E135",
-        "makes no other argument",
-    );
-    says(
-        "type Task { at: Option<Time> = .none }\naction ring(t: Task, at: Time) { }\ntrigger x(t: Task) at t.at: ring(t)\n",
-        "E135",
-        "no argument and the action has no default",
-    );
+    phase a_trigger_at_a_field_reads_a_time_the_record_holds;
+    {
+        says(
+            // `title` is text, not a time.
+            &format!("{TYPES}\ntrigger x(t: Task) at t.title: ring(t)\n"),
+            "E133",
+            "is not a time",
+        );
+        says(
+            &format!("{TYPES}\ntrigger x(t: Task) at 30m: ring(t)\n"),
+            "E133",
+            "`at` reads the time",
+        );
+        says(
+            "type Task { title: Text }\naction ring(t: Task) { }\ntrigger x(t: Task) every 0m: ring(t)\n",
+            "E132",
+            "above zero",
+        );
+        says(
+            &format!("{TYPES}\ntrigger x(t: Task, u: Task) every 30m: ring(t)\n"),
+            "E003",
+            "runs for one record",
+        );
+    }
+
+    phase a_trigger_hands_its_action_only_the_record_or_a_root;
+    {
+        says(
+            "type Task { at: Option<Time> = .none }\naction ring(t: Task, at: Time) { }\ntrigger x(t: Task) at t.at: ring(t, at: \"2026-10-27T10:00:00Z\")\n",
+            "E135",
+            "makes no other argument",
+        );
+        says(
+            "type Task { at: Option<Time> = .none }\naction ring(t: Task, at: Time) { }\ntrigger x(t: Task) at t.at: ring(t)\n",
+            "E135",
+            "no argument and the action has no default",
+        );
+    }
 }

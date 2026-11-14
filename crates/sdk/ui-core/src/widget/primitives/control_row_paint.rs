@@ -73,37 +73,41 @@ pub fn paint_severity_rail(
 mod tests {
     use super::*;
 
-    #[test]
-    fn hover_is_more_prominent_than_rest_on_one_ramp() {
-        let theme = Theme::dark();
-        let rest = control_fill(&theme, false);
-        let hovered = control_fill(&theme, true);
-        assert!(
-            crate::chrome::lightness_step(hovered, theme.tokens.colors.surfaces.base)
-                > crate::chrome::lightness_step(rest, theme.tokens.colors.surfaces.base),
-            "hover lifts above rest"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_control_row_paints_rest_hover_and_focus;
 
-    #[test]
-    fn a_control_paints_its_fill_and_a_focused_one_rings() {
-        let theme = Theme::dark();
-        let rect = Rect::new(0.0, 0.0, 320.0, 44.0);
-        let tags = |focused: bool| {
-            let mut scene = Scene::new();
-            paint_control_row(&mut scene, Affine::IDENTITY, &theme, rect, false, focused);
-            scene.encoding().draw_tags.len()
-        };
-        let plain = tags(false);
-        crate::focus_visible::note(&crate::synthetic_input::keyboard_input(
-            crate::synthetic_input::key_event(
-                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-                None,
-                winit::event::ElementState::Pressed,
-            ),
-        ));
-        let ringed = tags(true);
-        assert!(plain >= 2, "the fill and its edge");
-        assert!(ringed > plain, "a focused control adds the ring");
+        phase hover_is_more_prominent_than_rest_on_one_ramp;
+        {
+            let theme = Theme::dark();
+            let rest = control_fill(&theme, false);
+            let hovered = control_fill(&theme, true);
+            assert!(
+                crate::chrome::lightness_step(hovered, theme.tokens.colors.surfaces.base)
+                    > crate::chrome::lightness_step(rest, theme.tokens.colors.surfaces.base),
+                "hover lifts above rest"
+            );
+        }
+
+        phase a_control_paints_its_fill_and_a_focused_one_rings;
+        {
+            let theme = Theme::dark();
+            let rect = Rect::new(0.0, 0.0, 320.0, 44.0);
+            let tags = |focused: bool| {
+                let mut scene = Scene::new();
+                paint_control_row(&mut scene, Affine::IDENTITY, &theme, rect, false, focused);
+                scene.encoding().draw_tags.len()
+            };
+            let plain = tags(false);
+            crate::focus_visible::note(&crate::synthetic_input::keyboard_input(
+                crate::synthetic_input::key_event(
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                    None,
+                    winit::event::ElementState::Pressed,
+                ),
+            ));
+            let ringed = tags(true);
+            assert!(plain >= 2, "the fill and its edge");
+            assert!(ringed > plain, "a focused control adds the ring");
+        }
     }
 }

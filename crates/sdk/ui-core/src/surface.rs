@@ -1118,224 +1118,230 @@ pub fn control_face(
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_edge_fade_is_one_gradient_inside_its_edge_band() {
-        let ground = Theme::dark().tokens.colors.surfaces.content;
-        for edge in [
-            ContentEdge::Top,
-            ContentEdge::Bottom,
-            ContentEdge::Leading,
-            ContentEdge::Trailing,
-        ] {
+    tilo_test_env::scenario! {
+        /// Edge fades, separators and derived edges.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn edges_are_crisp_and_register_on_every_surface;
+
+        phase an_edge_fade_is_one_gradient_inside_its_edge_band;
+        {
+            let ground = Theme::dark().tokens.colors.surfaces.content;
+            for edge in [
+                ContentEdge::Top,
+                ContentEdge::Bottom,
+                ContentEdge::Leading,
+                ContentEdge::Trailing,
+            ] {
+                let mut scene = Scene::new();
+                content_edge_fade(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    Rect::new(0.0, 0.0, 300.0, 200.0),
+                    edge,
+                    ground,
+                );
+                let tags = &scene.encoding().draw_tags;
+                assert_eq!(tags.len(), 1, "{edge:?}");
+                assert!(
+                    tags[0] == vello_encoding::DrawTag::LINEAR_GRADIENT,
+                    "{edge:?}"
+                );
+            }
             let mut scene = Scene::new();
             content_edge_fade(
                 &mut scene,
                 Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 300.0, 200.0),
-                edge,
+                Rect::ZERO,
+                ContentEdge::Top,
                 ground,
             );
-            let tags = &scene.encoding().draw_tags;
-            assert_eq!(tags.len(), 1, "{edge:?}");
+            assert!(scene.encoding().draw_tags.is_empty());
+        }
+
+        phase a_vertical_separator_is_one_crisp_column;
+        {
+            let mut scene = Scene::new();
+            let surface = Theme::light().tokens.colors.surfaces.content;
+            vertical_separator(&mut scene, Affine::IDENTITY, 100.3, 0.0, 50.0, 4.0, surface);
+            assert_eq!(scene.encoding().draw_tags.len(), 1);
+            let mut empty = Scene::new();
+            vertical_separator(&mut empty, Affine::IDENTITY, 10.0, 0.0, 6.0, 4.0, surface);
             assert!(
-                tags[0] == vello_encoding::DrawTag::LINEAR_GRADIENT,
-                "{edge:?}"
+                empty.encoding().draw_tags.is_empty(),
+                "inset past its length"
+            );
+            assert_eq!(
+                crate::paint::snap_rect(Rect::new(0.4, 1.6, 10.5, 9.49)),
+                Rect::new(0.0, 2.0, 11.0, 9.0)
             );
         }
-        let mut scene = Scene::new();
-        content_edge_fade(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::ZERO,
-            ContentEdge::Top,
-            ground,
-        );
-        assert!(scene.encoding().draw_tags.is_empty());
-    }
 
-    #[test]
-    fn a_vertical_separator_is_one_crisp_column() {
-        let mut scene = Scene::new();
-        let surface = Theme::light().tokens.colors.surfaces.content;
-        vertical_separator(&mut scene, Affine::IDENTITY, 100.3, 0.0, 50.0, 4.0, surface);
-        assert_eq!(scene.encoding().draw_tags.len(), 1);
-        let mut empty = Scene::new();
-        vertical_separator(&mut empty, Affine::IDENTITY, 10.0, 0.0, 6.0, 4.0, surface);
-        assert!(
-            empty.encoding().draw_tags.is_empty(),
-            "inset past its length"
-        );
-        assert_eq!(
-            crate::paint::snap_rect(Rect::new(0.4, 1.6, 10.5, 9.49)),
-            Rect::new(0.0, 2.0, 11.0, 9.0)
-        );
-    }
-
-    #[test]
-    fn edges_and_chips_register_on_every_preset_surface() {
+        phase edges_and_chips_register_on_every_preset_surface;
         {
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let s = &theme.tokens.colors.surfaces;
-                for (name, ground) in [
-                    ("base", s.base),
-                    ("raised", s.raised),
-                    ("overlay", s.overlay),
-                    ("panel_ground", crate::chrome::shell::panel_ground(&theme)),
-                ] {
-                    let edge = edge_on(ground);
-                    let moved = edge_delta(edge, ground);
+            {
+                for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                    let s = &theme.tokens.colors.surfaces;
+                    for (name, ground) in [
+                        ("base", s.base),
+                        ("raised", s.raised),
+                        ("overlay", s.overlay),
+                        ("panel_ground", crate::chrome::shell::panel_ground(&theme)),
+                    ] {
+                        let edge = edge_on(ground);
+                        let moved = edge_delta(edge, ground);
+                        assert!(
+                            moved >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                            "{name} edge on {:?} moved only {moved:.4} ({edge:?})",
+                            theme.name
+                        );
+                    }
+                }
+                // The declared border is what vanished on the dark preset: derived must
+                // register there where declared does not.
+                let dark = Theme::dark();
+                let raised = dark.tokens.colors.surfaces.raised;
+                let declared = edge_delta(dark.tokens.colors.border_standard, raised);
+                let derived = edge_delta(edge_on(raised), raised);
+                assert!(
+                    declared < crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "dark border_standard on raised was the invisible edge ({declared:.4}); if this \
+             changed, the ratchet's rationale needs revisiting"
+                );
+                assert!(
+                    derived > declared,
+                    "derived {derived:.4} vs declared {declared:.4}"
+                );
+            }
+
+            {
+                // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
+                let grey = Color::from_rgb8(0x80, 0x80, 0x80);
+                assert_eq!(
+                    edge_on(grey),
+                    Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0])
+                );
+            }
+
+            {
+                // A 16 % accent wash over the light panel is still a light surface.
+                for theme in [Theme::light(), Theme::dark()] {
+                    let ground = theme.tokens.colors.surfaces.raised;
+                    let wash = theme.tokens.colors.text_primary.with_alpha(0.16);
+                    let seen = crate::tokens::colors::composite(wash, ground);
+                    let derived = edge_on(seen);
                     assert!(
-                        moved >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                        "{name} edge on {:?} moved only {moved:.4} ({edge:?})",
+                        edge_delta(derived, seen) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "card_on edge must register on the seen surface"
+                    );
+                    let naive = edge_on(wash);
+                    assert!(
+                        edge_delta(derived, seen) >= edge_delta(naive, seen),
+                        "composited derivation must never register worse than the naive one"
+                    );
+                }
+            }
+
+            {
+                let whole = separator_rect(10.0, 200.0, 100.0, 12.0).expect("rule");
+                assert_eq!((whole.x0, whole.x1), (22.0, 188.0));
+                assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
+                let half = separator_rect(0.0, 50.0, 99.5, 0.0).expect("rule");
+                assert_eq!((half.y0, half.y1), (99.0, 100.0));
+                assert!(
+                    separator_rect(0.0, 20.0, 5.0, 12.0).is_none(),
+                    "insets that meet paint nothing"
+                );
+            }
+
+            {
+                // The memo must be transparent: the same surface asked twice (and many
+                // distinct surfaces cycling through the slots) always yields exactly what the
+                // ladder derives.
+                let theme = Theme::dark();
+                let surfaces = [
+                    theme.tokens.colors.surfaces.base,
+                    theme.tokens.colors.surfaces.raised,
+                    theme.tokens.colors.surfaces.overlay,
+                    theme.tokens.colors.lift(0.35),
+                    theme.tokens.colors.lift(0.5),
+                    Theme::light().tokens.colors.surfaces.base,
+                    Theme::light().tokens.colors.surfaces.raised,
+                    Theme::high_contrast().tokens.colors.surfaces.base,
+                    Theme::high_contrast().tokens.colors.surfaces.raised,
+                    Color::from_rgb8(120, 60, 200),
+                    Color::from_rgb8(255, 255, 255),
+                    Color::from_rgb8(0, 0, 0),
+                ];
+                for _ in 0..3 {
+                    for surface in surfaces {
+                        assert_eq!(edge_on(surface), derive_edge_on(surface));
+                    }
+                }
+            }
+
+            {
+                for (name, theme) in [
+                    ("dark", Theme::dark()),
+                    ("light", Theme::light()),
+                    ("high-contrast", Theme::high_contrast()),
+                ] {
+                    let ground = crate::chrome::panel_ground(&theme);
+                    let border = crate::chrome::panel_border(&theme);
+                    if theme.tokens.colors.palette.high_contrast {
+                        assert!(
+                            edge_delta(border, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                            "{name}: the panel border must register on the panel ground"
+                        );
+                    } else {
+                        assert_eq!(border, theme.tokens.elevation.floating_edge, "{name}");
+                        assert!(edge_delta(border, ground) > 0.005, "{name}: it registers");
+                    }
+                }
+                let mut scene = Scene::new();
+                panel(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    Rect::new(10.0, 10.0, 10.0, 40.0),
+                    8.0,
+                    &Theme::dark(),
+                );
+                assert!(
+                    scene.encoding().is_empty(),
+                    "an empty panel encodes no draw ops"
+                );
+            }
+
+            {
+                let rect = Rect::new(10.0, 20.0, 110.0, 60.0);
+                let outline = edge_outline(rect, 12.0);
+                assert_eq!(outline.rect(), Rect::new(10.5, 20.5, 109.5, 59.5));
+                assert!((outline.radii().top_left - 11.5).abs() < 1e-9);
+                // A radius under half a pixel does not go negative.
+                assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
+            }
+
+            {
+                for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                    let quiet = crate::widget::ChipStyle::Neutral.colors(
+                        &theme,
+                        theme.tokens.colors.surfaces.content,
+                        false,
+                        false,
+                    );
+                    let edge = quiet.edge.expect("quiet chip has an edge");
+                    assert_eq!(
+                        edge,
+                        edge_on(quiet.fill),
+                        "{}: edge derives from the fill",
                         theme.name
                     );
-                }
-            }
-            // The declared border is what vanished on the dark preset: derived must
-            // register there where declared does not.
-            let dark = Theme::dark();
-            let raised = dark.tokens.colors.surfaces.raised;
-            let declared = edge_delta(dark.tokens.colors.border_standard, raised);
-            let derived = edge_delta(edge_on(raised), raised);
-            assert!(
-                declared < crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                "dark border_standard on raised was the invisible edge ({declared:.4}); if this \
-             changed, the ratchet's rationale needs revisiting"
-            );
-            assert!(
-                derived > declared,
-                "derived {derived:.4} vs declared {declared:.4}"
-            );
-        }
-
-        {
-            // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
-            let grey = Color::from_rgb8(0x80, 0x80, 0x80);
-            assert_eq!(
-                edge_on(grey),
-                Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0])
-            );
-        }
-
-        {
-            // A 16 % accent wash over the light panel is still a light surface.
-            for theme in [Theme::light(), Theme::dark()] {
-                let ground = theme.tokens.colors.surfaces.raised;
-                let wash = theme.tokens.colors.text_primary.with_alpha(0.16);
-                let seen = crate::tokens::colors::composite(wash, ground);
-                let derived = edge_on(seen);
-                assert!(
-                    edge_delta(derived, seen) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "card_on edge must register on the seen surface"
-                );
-                let naive = edge_on(wash);
-                assert!(
-                    edge_delta(derived, seen) >= edge_delta(naive, seen),
-                    "composited derivation must never register worse than the naive one"
-                );
-            }
-        }
-
-        {
-            let whole = separator_rect(10.0, 200.0, 100.0, 12.0).expect("rule");
-            assert_eq!((whole.x0, whole.x1), (22.0, 188.0));
-            assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
-            let half = separator_rect(0.0, 50.0, 99.5, 0.0).expect("rule");
-            assert_eq!((half.y0, half.y1), (99.0, 100.0));
-            assert!(
-                separator_rect(0.0, 20.0, 5.0, 12.0).is_none(),
-                "insets that meet paint nothing"
-            );
-        }
-
-        {
-            // The memo must be transparent: the same surface asked twice (and many
-            // distinct surfaces cycling through the slots) always yields exactly what the
-            // ladder derives.
-            let theme = Theme::dark();
-            let surfaces = [
-                theme.tokens.colors.surfaces.base,
-                theme.tokens.colors.surfaces.raised,
-                theme.tokens.colors.surfaces.overlay,
-                theme.tokens.colors.lift(0.35),
-                theme.tokens.colors.lift(0.5),
-                Theme::light().tokens.colors.surfaces.base,
-                Theme::light().tokens.colors.surfaces.raised,
-                Theme::high_contrast().tokens.colors.surfaces.base,
-                Theme::high_contrast().tokens.colors.surfaces.raised,
-                Color::from_rgb8(120, 60, 200),
-                Color::from_rgb8(255, 255, 255),
-                Color::from_rgb8(0, 0, 0),
-            ];
-            for _ in 0..3 {
-                for surface in surfaces {
-                    assert_eq!(edge_on(surface), derive_edge_on(surface));
-                }
-            }
-        }
-
-        {
-            for (name, theme) in [
-                ("dark", Theme::dark()),
-                ("light", Theme::light()),
-                ("high-contrast", Theme::high_contrast()),
-            ] {
-                let ground = crate::chrome::panel_ground(&theme);
-                let border = crate::chrome::panel_border(&theme);
-                if theme.tokens.colors.palette.high_contrast {
                     assert!(
-                        edge_delta(border, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                        "{name}: the panel border must register on the panel ground"
+                        edge_delta(edge, quiet.fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{}: quiet chip edge moved only {:.4}",
+                        theme.name,
+                        edge_delta(edge, quiet.fill)
                     );
-                } else {
-                    assert_eq!(border, theme.tokens.elevation.floating_edge, "{name}");
-                    assert!(edge_delta(border, ground) > 0.005, "{name}: it registers");
                 }
-            }
-            let mut scene = Scene::new();
-            panel(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(10.0, 10.0, 10.0, 40.0),
-                8.0,
-                &Theme::dark(),
-            );
-            assert!(
-                scene.encoding().is_empty(),
-                "an empty panel encodes no draw ops"
-            );
-        }
-
-        {
-            let rect = Rect::new(10.0, 20.0, 110.0, 60.0);
-            let outline = edge_outline(rect, 12.0);
-            assert_eq!(outline.rect(), Rect::new(10.5, 20.5, 109.5, 59.5));
-            assert!((outline.radii().top_left - 11.5).abs() < 1e-9);
-            // A radius under half a pixel does not go negative.
-            assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
-        }
-
-        {
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let quiet = crate::widget::ChipStyle::Neutral.colors(
-                    &theme,
-                    theme.tokens.colors.surfaces.content,
-                    false,
-                    false,
-                );
-                let edge = quiet.edge.expect("quiet chip has an edge");
-                assert_eq!(
-                    edge,
-                    edge_on(quiet.fill),
-                    "{}: edge derives from the fill",
-                    theme.name
-                );
-                assert!(
-                    edge_delta(edge, quiet.fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}: quiet chip edge moved only {:.4}",
-                    theme.name,
-                    edge_delta(edge, quiet.fill)
-                );
             }
         }
     }

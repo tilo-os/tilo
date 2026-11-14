@@ -197,37 +197,41 @@ fn hex_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn urlsplit_matches_python() {
-        let split = urlsplit("HTTPS://User:pw@Example.ORG:443/a/../b?q#f").unwrap();
-        assert_eq!(split.scheme, "https");
-        assert_eq!(split.username(), Some("User"));
-        assert_eq!(split.password(), Some("pw"));
-        assert_eq!(split.hostname().as_deref(), Some("example.org"));
-        assert_eq!(split.port(), Ok(Some(443)));
-        assert_eq!(
-            (
-                split.path.as_str(),
-                split.query.as_str(),
-                split.fragment.as_str()
-            ),
-            ("/a/../b", "q", "f")
-        );
-        let bare = urlsplit("https://h/x?").unwrap();
-        assert_eq!(
-            (bare.query.as_str(), bare.username(), bare.port()),
-            ("", None, Ok(None))
-        );
-        assert!(urlsplit("https://h:x/").unwrap().port().is_err());
-        assert!(urlsplit("https://h:65536/").unwrap().port().is_err());
-        assert_eq!(urlsplit("https://h:/").unwrap().port(), Ok(None));
-        assert!(urlsplit("https://[h/").is_err());
-        assert_eq!(urlsplit("https://@h/").unwrap().username(), Some(""));
-    }
+    tilo_test_env::scenario! {
+        fn urls_and_text_are_read_as_python_reads_them;
 
-    #[test]
-    fn text_slices_and_unquotes_like_python() {
-        assert_eq!(truncate("héllo", 2), "hé");
-        assert_eq!(unquote("/a/%2e%2E/%zz%C3%A9"), "/a/../%zzé");
+        phase urlsplit_matches_python;
+        {
+            let split = urlsplit("HTTPS://User:pw@Example.ORG:443/a/../b?q#f").unwrap();
+            assert_eq!(split.scheme, "https");
+            assert_eq!(split.username(), Some("User"));
+            assert_eq!(split.password(), Some("pw"));
+            assert_eq!(split.hostname().as_deref(), Some("example.org"));
+            assert_eq!(split.port(), Ok(Some(443)));
+            assert_eq!(
+                (
+                    split.path.as_str(),
+                    split.query.as_str(),
+                    split.fragment.as_str()
+                ),
+                ("/a/../b", "q", "f")
+            );
+            let bare = urlsplit("https://h/x?").unwrap();
+            assert_eq!(
+                (bare.query.as_str(), bare.username(), bare.port()),
+                ("", None, Ok(None))
+            );
+            assert!(urlsplit("https://h:x/").unwrap().port().is_err());
+            assert!(urlsplit("https://h:65536/").unwrap().port().is_err());
+            assert_eq!(urlsplit("https://h:/").unwrap().port(), Ok(None));
+            assert!(urlsplit("https://[h/").is_err());
+            assert_eq!(urlsplit("https://@h/").unwrap().username(), Some(""));
+        }
+
+        phase text_slices_and_unquotes_like_python;
+        {
+            assert_eq!(truncate("héllo", 2), "hé");
+            assert_eq!(unquote("/a/%2e%2E/%zz%C3%A9"), "/a/../%zzé");
+        }
     }
 }

@@ -9,7 +9,6 @@ glyph-icon 1 apps/imager/src/app.rs
 glyph-icon 3 apps/logs/src/journal.rs
 glyph-icon 2 apps/settings/src/panes/updates.rs
 glyph-icon 1 apps/video-editor/src/app.rs
-glyph-join 1 apps/agent/src/session/agent_loop.rs
 glyph-join 1 apps/agent/src/surface.rs
 glyph-join 1 apps/browser/src/browser_widget/library.rs
 glyph-join 1 apps/calendar/src/model.rs
@@ -101,7 +100,7 @@ hand-text 1 crates/session/desktop/src/strip_switcher.rs
 hand-text 2 crates/session/desktop/src/window_switcher.rs
 own-scroll 1 crates/session/desktop-surface/src/surface.rs
 own-scroll 3 crates/session/desktop-surface/src/surface/paging.rs
-own-scroll 5 crates/session/desktop/src/collaborators.rs
+own-scroll 5 crates/session/desktop/src/people.rs
 own-scroll 5 crates/session/desktop/src/overview_panel.rs
 own-scroll 2 crates/session/desktop/src/overview_panel/input.rs
 own-scroll 6 crates/session/desktop/src/overview_panel/layout.rs

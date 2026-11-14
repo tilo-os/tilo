@@ -2462,24 +2462,169 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn the_plain_part_separates_paragraphs_by_a_blank_line() {
-        let block = |kind: BlockKind, text: &str| BlockContent {
-            kind,
-            ..BlockContent::paragraph(text, text)
-        };
-        let blocks = [
-            block(BlockKind::Paragraph, "Hi Ada,"),
-            block(BlockKind::Paragraph, "The plan:"),
-            block(BlockKind::Bullet { indent: 0 }, "website"),
-            block(BlockKind::Bullet { indent: 0 }, "press kit"),
-            block(BlockKind::Quote, "one"),
-            block(BlockKind::Quote, "two"),
-        ];
-        assert_eq!(
-            plain_of(&blocks),
-            "Hi Ada,\n\nThe plan:\n\n• website\n• press kit\n\n> one\n> two"
-        );
+    tilo_test_env::scenario! {
+        /// What the composer writes: the plain part, the reply quote and the formats a draft keeps.
+        fn the_composer_writes_paragraphs_quotes_and_formats_that_round_trip;
+
+        phase the_plain_part_separates_paragraphs_by_a_blank_line;
+        {
+            let block = |kind: BlockKind, text: &str| BlockContent {
+                kind,
+                ..BlockContent::paragraph(text, text)
+            };
+            let blocks = [
+                block(BlockKind::Paragraph, "Hi Ada,"),
+                block(BlockKind::Paragraph, "The plan:"),
+                block(BlockKind::Bullet { indent: 0 }, "website"),
+                block(BlockKind::Bullet { indent: 0 }, "press kit"),
+                block(BlockKind::Quote, "one"),
+                block(BlockKind::Quote, "two"),
+            ];
+            assert_eq!(
+                plain_of(&blocks),
+                "Hi Ada,\n\nThe plan:\n\n• website\n• press kit\n\n> one\n> two"
+            );
+        }
+
+        phase a_reply_quote_keeps_its_blank_lines_inside_the_quote;
+        {
+            let mut w = win();
+            let mut doc = crate::resource::TestMail::doc();
+            w.set_focus(Field::Body);
+            w.start_body(DraftBodySeed::text(
+                "\n\nOn Jun 30, Maya wrote:\n> Lunch at noon?\n>\n> Maya",
+            ));
+            w.to.set_text("maya@example.com");
+            let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
+            let html = d.html_body.expect("an HTML part");
+            assert!(
+                !html.contains("&gt;"),
+                "a quoted blank line is part of the quote, not a `>` paragraph: {html}"
+            );
+            let quoted: Vec<&str> = d
+                .body
+                .lines()
+                .skip_while(|line| !line.ends_with("wrote:"))
+                .skip(1)
+                .map(str::trim_end)
+                .collect();
+            assert_eq!(
+                quoted,
+                ["> Lunch at noon?", ">", "> Maya"],
+                "every quoted line, the blank one too, reads as quoted once: {:?}",
+                d.body
+            );
+        }
+
+        phase composer_formats_and_drafts_round_trip_content;
+        {
+            {
+                let mut w = win();
+                let mut doc = crate::resource::TestMail::doc();
+                w.set_focus(Field::Body);
+                w.start_body(DraftBodySeed::text("Hello world"));
+                w.sync(&doc, &automerge::ROOT);
+                assert!(
+                    draft_body_object(&doc, None).is_none(),
+                    "projection leaves a pending draft body unwritten"
+                );
+                w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                assert!(
+                    draft_body_object(&doc, None).is_some(),
+                    "settlement authors the pending draft body"
+                );
+                w.sync(&doc, &automerge::ROOT);
+                w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                w.sync(&doc, &automerge::ROOT);
+                w.toggle_format();
+                assert_eq!(w.format(), ComposeFormat::Text);
+                assert!(w.plain_body.value().contains("Hello world"));
+                w.toggle_format();
+                assert_eq!(w.format(), ComposeFormat::Html);
+                assert_eq!(
+                    w.to_draft(&mut ui::widget::Edits::lend(&mut doc)).body,
+                    "Hello world"
+                );
+            }
+
+            {
+                let mut w = win();
+                let mut doc = crate::resource::TestMail::doc();
+                w.set_focus(Field::Body);
+                w.start_body(DraftBodySeed::text("Body\n> quoted"));
+                w.to.set_text("a@b.example");
+                let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
+                let html = d.html_body.expect("an HTML part");
+                assert!(html.contains("<p>Body</p>"), "got: {html}");
+                assert!(html.contains("<blockquote>"), "got: {html}");
+                assert_eq!(d.body, "Body\n> quoted");
+                assert_eq!(d.to, "a@b.example");
+            }
+
+            {
+                let mut w = win();
+                let mut doc = crate::resource::TestMail::doc();
+                w.open_with_draft(&Draft {
+                    body: "Plan\nship it".into(),
+                    html_body: Some("<h2>Plan</h2><ul><li><b>ship</b> it</li></ul>".into()),
+                    ..Draft::default()
+                });
+                let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
+                assert_eq!(d.body, "Plan\n\n• ship it");
+                let html = d.html_body.unwrap();
+                assert!(html.contains("<h2>Plan</h2>"), "got: {html}");
+                assert!(html.contains("<strong>ship</strong>"), "got: {html}");
+            }
+
+            {
+                let mut w = ComposeWindow::new(ComposeFormat::Text);
+                w.open_blank();
+                w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+                w.plain_body.set_text("Just text");
+                let d = w.to_draft(&mut ui::widget::Edits::lend(
+                    &mut crate::resource::TestMail::doc(),
+                ));
+                assert!(d.html_body.is_none());
+                assert_eq!(d.body, "Just text");
+            }
+
+            {
+                let mut w = ComposeWindow::new(ComposeFormat::Text);
+                w.open_blank();
+                w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+                w.set_focus(Field::Body);
+
+                let m = winit::event::Modifiers::default();
+                let mut doc = crate::resource::TestMail::doc();
+                let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+                let node = taffy::NodeId::new(0);
+                let mut send = |ev: &WindowEvent| {
+                    w.handle_event(
+                        ev,
+                        &mut ComposeEventContext {
+                            scale_factor: 1.0,
+                            modifiers: m,
+                            state: ui::widget::Edits::lend(&mut doc),
+                            path: &automerge::ROOT,
+                            node_id: node,
+                            taffy: &taffy,
+                        },
+                    );
+                };
+                send(&key(Key::Character(SmolStr::new("H")), Some("H")));
+                send(&key(Key::Character(SmolStr::new("i")), Some("i")));
+                send(&key(Key::Named(NamedKey::Enter), None));
+                send(&key(Key::Character(SmolStr::new("t")), Some("t")));
+                send(&key(Key::Character(SmolStr::new("w")), Some("w")));
+                send(&key(Key::Character(SmolStr::new("o")), Some("o")));
+
+                assert_eq!(
+                    w.to_draft(&mut ui::widget::Edits::lend(&mut doc)).body,
+                    "Hi\ntwo",
+                    "Enter split the body across two lines"
+                );
+            }
+        }
     }
 
     fn win() -> ComposeWindow {
@@ -2490,281 +2635,237 @@ mod tests {
         w
     }
 
-    #[test]
-    fn composer_metrics_follow_the_theme_and_grow_with_the_text() {
-        for scale in [1.0_f32, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(scale);
-            let m = ComposeMetrics::measure(&mut text, &theme);
-            assert_eq!(m.control_h, ControlSize::Regular.height(&theme));
-            let mut w = ComposeWindow::new(ComposeFormat::Html);
-            w.open_blank();
-            w.metrics = m;
-            w.layout(Rect::new(0.0, 0.0, 1280.0, 900.0));
-            let to = hit_rect(&w, ComposeHit::FieldTo);
-            let subject = hit_rect(&w, ComposeHit::FieldSubject);
-            let send = hit_rect(&w, ComposeHit::Send);
-            let discard = hit_rect(&w, ComposeHit::Discard);
-            assert_eq!(to.height(), m.control_h);
-            assert!(
-                subject.y0 >= to.y1,
-                "the subject row starts under the To row"
-            );
-            assert!(
-                to.x0 >= w.rect.x0 + m.label_w,
-                "the fields clear their labels"
-            );
-            assert_eq!(send.width(), m.send_w, "Send holds its label");
-            assert!(discard.x1 < send.x0, "Discard stands apart at the start");
-            assert!(
-                w.hit_rect(ComposeHit::SaveDraft).is_none(),
-                "a draft keeps itself; there is no button for it"
-            );
-            assert_eq!(send.height(), m.control_h);
-            let body = hit_rect(&w, ComposeHit::Body);
-            assert!(
-                body.height() > 100.0,
-                "a body remains at {scale}×: {body:?}"
-            );
+    tilo_test_env::scenario! {
+        /// The composer window: its metrics, its place in the window and the input it owns.
+        fn the_composer_window_measures_places_and_keeps_its_input;
+
+        phase composer_metrics_follow_the_theme_and_grow_with_the_text;
+        {
+            for scale in [1.0_f32, 2.0] {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut text = TextRenderer::new();
+                text.set_text_scale(scale);
+                let m = ComposeMetrics::measure(&mut text, &theme);
+                assert_eq!(m.control_h, ControlSize::Regular.height(&theme));
+                let mut w = ComposeWindow::new(ComposeFormat::Html);
+                w.open_blank();
+                w.metrics = m;
+                w.layout(Rect::new(0.0, 0.0, 1280.0, 900.0));
+                let to = hit_rect(&w, ComposeHit::FieldTo);
+                let subject = hit_rect(&w, ComposeHit::FieldSubject);
+                let send = hit_rect(&w, ComposeHit::Send);
+                let discard = hit_rect(&w, ComposeHit::Discard);
+                assert_eq!(to.height(), m.control_h);
+                assert!(
+                    subject.y0 >= to.y1,
+                    "the subject row starts under the To row"
+                );
+                assert!(
+                    to.x0 >= w.rect.x0 + m.label_w,
+                    "the fields clear their labels"
+                );
+                assert_eq!(send.width(), m.send_w, "Send holds its label");
+                assert!(discard.x1 < send.x0, "Discard stands apart at the start");
+                assert!(
+                    w.hit_rect(ComposeHit::SaveDraft).is_none(),
+                    "a draft keeps itself; there is no button for it"
+                );
+                assert_eq!(send.height(), m.control_h);
+                let body = hit_rect(&w, ComposeHit::Body);
+                assert!(
+                    body.height() > 100.0,
+                    "a body remains at {scale}×: {body:?}"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn a_reply_quote_keeps_its_blank_lines_inside_the_quote() {
-        let mut w = win();
-        let mut doc = crate::resource::TestMail::doc();
-        w.set_focus(Field::Body);
-        w.start_body(DraftBodySeed::text(
-            "\n\nOn Jun 30, Maya wrote:\n> Lunch at noon?\n>\n> Maya",
-        ));
-        w.to.set_text("maya@example.com");
-        let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
-        let html = d.html_body.expect("an HTML part");
-        assert!(
-            !html.contains("&gt;"),
-            "a quoted blank line is part of the quote, not a `>` paragraph: {html}"
-        );
-        let quoted: Vec<&str> = d
-            .body
-            .lines()
-            .skip_while(|line| !line.ends_with("wrote:"))
-            .skip(1)
-            .map(str::trim_end)
-            .collect();
-        assert_eq!(
-            quoted,
-            ["> Lunch at noon?", ">", "> Maya"],
-            "every quoted line, the blank one too, reads as quoted once: {:?}",
-            d.body
-        );
-    }
-
-    #[test]
-    fn composer_formats_and_drafts_round_trip_content() {
+        phase ctrl_enter_sends_from_any_field;
         {
             let mut w = win();
-            let mut doc = crate::resource::TestMail::doc();
-            w.set_focus(Field::Body);
-            w.start_body(DraftBodySeed::text("Hello world"));
-            w.sync(&doc, &automerge::ROOT);
-            assert!(
-                draft_body_object(&doc, None).is_none(),
-                "projection leaves a pending draft body unwritten"
-            );
-            w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            assert!(
-                draft_body_object(&doc, None).is_some(),
-                "settlement authors the pending draft body"
-            );
-            w.sync(&doc, &automerge::ROOT);
-            w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            w.sync(&doc, &automerge::ROOT);
-            w.toggle_format();
-            assert_eq!(w.format(), ComposeFormat::Text);
-            assert!(w.plain_body.value().contains("Hello world"));
-            w.toggle_format();
-            assert_eq!(w.format(), ComposeFormat::Html);
-            assert_eq!(
-                w.to_draft(&mut ui::widget::Edits::lend(&mut doc)).body,
-                "Hello world"
-            );
-        }
-
-        {
-            let mut w = win();
-            let mut doc = crate::resource::TestMail::doc();
-            w.set_focus(Field::Body);
-            w.start_body(DraftBodySeed::text("Body\n> quoted"));
-            w.to.set_text("a@b.example");
-            let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
-            let html = d.html_body.expect("an HTML part");
-            assert!(html.contains("<p>Body</p>"), "got: {html}");
-            assert!(html.contains("<blockquote>"), "got: {html}");
-            assert_eq!(d.body, "Body\n> quoted");
-            assert_eq!(d.to, "a@b.example");
-        }
-
-        {
-            let mut w = win();
-            let mut doc = crate::resource::TestMail::doc();
-            w.open_with_draft(&Draft {
-                body: "Plan\nship it".into(),
-                html_body: Some("<h2>Plan</h2><ul><li><b>ship</b> it</li></ul>".into()),
-                ..Draft::default()
-            });
-            let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
-            assert_eq!(d.body, "Plan\n\n• ship it");
-            let html = d.html_body.unwrap();
-            assert!(html.contains("<h2>Plan</h2>"), "got: {html}");
-            assert!(html.contains("<strong>ship</strong>"), "got: {html}");
-        }
-
-        {
-            let mut w = ComposeWindow::new(ComposeFormat::Text);
-            w.open_blank();
-            w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-            w.plain_body.set_text("Just text");
-            let d = w.to_draft(&mut ui::widget::Edits::lend(
-                &mut crate::resource::TestMail::doc(),
-            ));
-            assert!(d.html_body.is_none());
-            assert_eq!(d.body, "Just text");
-        }
-
-        {
-            let mut w = ComposeWindow::new(ComposeFormat::Text);
-            w.open_blank();
-            w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-            w.set_focus(Field::Body);
-
-            let m = winit::event::Modifiers::default();
+            w.set_has_account(true);
+            w.to.set_text("ana@example.org");
             let mut doc = crate::resource::TestMail::doc();
             let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
             let node = taffy::NodeId::new(0);
-            let mut send = |ev: &WindowEvent| {
-                w.handle_event(
-                    ev,
-                    &mut ComposeEventContext {
-                        scale_factor: 1.0,
-                        modifiers: m,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
+            let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let plain = winit::event::Modifiers::default();
+            let enter = key(Key::Named(NamedKey::Enter), None);
+            for field in [Field::Body, Field::Subject] {
+                w.set_focus(field);
+                let mut press = |modifiers| {
+                    w.handle_event(
+                        &enter,
+                        &mut ComposeEventContext {
+                            scale_factor: 1.0,
+                            modifiers,
+                            state: ui::widget::Edits::lend(&mut doc),
+                            path: &automerge::ROOT,
+                            node_id: node,
+                            taffy: &taffy,
+                        },
+                    )
+                    .1
+                };
+                assert!(
+                    matches!(press(ctrl), ComposeAction::Send),
+                    "{field:?}: Ctrl+Enter sends"
                 );
-            };
-            send(&key(Key::Character(SmolStr::new("H")), Some("H")));
-            send(&key(Key::Character(SmolStr::new("i")), Some("i")));
-            send(&key(Key::Named(NamedKey::Enter), None));
-            send(&key(Key::Character(SmolStr::new("t")), Some("t")));
-            send(&key(Key::Character(SmolStr::new("w")), Some("w")));
-            send(&key(Key::Character(SmolStr::new("o")), Some("o")));
-
-            assert_eq!(
-                w.to_draft(&mut ui::widget::Edits::lend(&mut doc)).body,
-                "Hi\ntwo",
-                "Enter split the body across two lines"
-            );
+                assert!(
+                    !matches!(press(plain), ComposeAction::Send),
+                    "{field:?}: Enter alone does not"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn ctrl_enter_sends_from_any_field() {
-        let mut w = win();
-        w.set_has_account(true);
-        w.to.set_text("ana@example.org");
-        let mut doc = crate::resource::TestMail::doc();
-        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let node = taffy::NodeId::new(0);
-        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let plain = winit::event::Modifiers::default();
-        let enter = key(Key::Named(NamedKey::Enter), None);
-        for field in [Field::Body, Field::Subject] {
-            w.set_focus(field);
-            let mut press = |modifiers| {
-                w.handle_event(
-                    &enter,
+        phase composer_window_moves_resizes_docks_and_owns_its_input;
+        {
+            {
+                let mut w = win();
+                let before = w.window_rect();
+                w.rect = Rect::new(
+                    5000.0,
+                    5000.0,
+                    5000.0 + before.width(),
+                    5000.0 + before.height(),
+                );
+                w.clamp_into_bounds();
+                let r = w.window_rect();
+                assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
+                assert!(r.y0 < 800.0, "window stayed reachable vertically");
+                assert_eq!(r.width(), before.width(), "clamping does not resize");
+            }
+
+            {
+                let mut w = win();
+                let start = w.window_rect();
+                w.apply_drag(
+                    Drag::Resize {
+                        edge: Edge::BottomRight,
+                        start,
+                        from: Point::new(start.x1, start.y1),
+                    },
+                    Point::new(start.x0, start.y0),
+                );
+                let r = w.window_rect();
+                assert!(r.width() >= w.metrics.min_w - 0.5);
+                assert!(r.height() >= w.metrics.min_h - 0.5);
+            }
+
+            {
+                let mut w = win();
+                // The compose widget never accepts a typed path; its root owns the
+                // host portal and returns a descriptor-only staged attachment later.
+                let attach = hit_rect(&w, ComposeHit::Attach);
+                let (consumed, action) = press_at(&mut w, attach.center());
+                assert!(consumed);
+                assert_eq!(action, ComposeAction::RequestAttachment);
+                assert!(
+                    w.attachments.is_empty(),
+                    "no host path or fabricated attachment is staged"
+                );
+            }
+
+            {
+                let mut w = win();
+                w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
+                let modifiers = winit::event::Modifiers::default();
+                let mut doc = crate::resource::TestMail::doc();
+                let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+                let press = ui::synthetic_input::mouse_press();
+                let (consumed, action) = w.handle_event(
+                    &press,
                     &mut ComposeEventContext {
                         scale_factor: 1.0,
                         modifiers,
                         state: ui::widget::Edits::lend(&mut doc),
                         path: &automerge::ROOT,
-                        node_id: node,
+                        node_id: taffy::NodeId::new(0),
                         taffy: &taffy,
                     },
-                )
-                .1
-            };
+                );
+                assert!(
+                    consumed,
+                    "clicks outside the modal window must be swallowed, not fall through"
+                );
+                assert_eq!(
+                    action,
+                    ComposeAction::None,
+                    "outside click does not close (explicit Discard only)"
+                );
+                assert!(w.open, "window stays open");
+            }
+        }
+
+        phase compact_compose_is_a_full_window_page_and_keeps_send_reachable;
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                for bounds in [
+                    Rect::new(0.0, 0.0, 360.0, 800.0),
+                    Rect::new(0.0, 0.0, 800.0, 360.0),
+                ] {
+                    let mut window = win();
+                    window.theme = theme.clone();
+                    window.layout(bounds);
+                    let mut scene = Scene::new();
+                    let mut text = TextRenderer::new();
+                    window.draw(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut text,
+                        &theme,
+                        &PresenceCtx::empty(),
+                    );
+                    assert_eq!(window.window_rect(), bounds);
+                    assert!(window.body_rect().height() > 0.0);
+                    for target in [ComposeHit::Send, ComposeHit::Discard] {
+                        assert!(
+                            bounds.contains_rect(hit_rect(&window, target)),
+                            "{target:?} remains reachable"
+                        );
+                    }
+                    // A page fills the window, so the window bar names and
+                    // closes it: the composer draws no bar of its own, on any
+                    // presentation.
+                    assert!(
+                        window.hit_rect(ComposeHit::Close).is_none(),
+                        "the page draws no title bar: the window bar closes it"
+                    );
+                    assert!(window.resize_edge_at(bounds.center()).is_none());
+                    assert!(
+                        window
+                            .resize_edge_at(Point::new(bounds.x1 - 1.0, bounds.y1 - 1.0))
+                            .is_none()
+                    );
+                }
+            }
+        }
+
+        phase in_the_message_column_the_list_keeps_its_clicks_and_keys;
+        {
+            let mut w = win();
+            assert_eq!(w.dock(), DockState::Pane);
+            let column = Rect::new(620.0, 56.0, 1280.0, 800.0);
+            w.set_pane(Some(column));
+            w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            assert!(w.in_pane());
             assert!(
-                matches!(press(ctrl), ComposeAction::Send),
-                "{field:?}: Ctrl+Enter sends"
+                w.hit_rect(ComposeHit::Close).is_none(),
+                "in the column the window bar names and closes the message"
             );
+            assert!(!w.is_modal(), "the list beside it stays usable");
+            assert_eq!(w.window_rect(), column, "it takes the message column");
             assert!(
-                !matches!(press(plain), ComposeAction::Send),
-                "{field:?}: Enter alone does not"
+                w.resize_edge_at(Point::new(column.x0 + 1.0, column.y0 + 100.0))
+                    .is_none(),
+                "a column does not resize"
             );
-        }
-    }
-
-    #[test]
-    fn composer_window_moves_resizes_docks_and_owns_its_input() {
-        {
-            let mut w = win();
-            let before = w.window_rect();
-            w.rect = Rect::new(
-                5000.0,
-                5000.0,
-                5000.0 + before.width(),
-                5000.0 + before.height(),
-            );
-            w.clamp_into_bounds();
-            let r = w.window_rect();
-            assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
-            assert!(r.y0 < 800.0, "window stayed reachable vertically");
-            assert_eq!(r.width(), before.width(), "clamping does not resize");
-        }
-
-        {
-            let mut w = win();
-            let start = w.window_rect();
-            w.apply_drag(
-                Drag::Resize {
-                    edge: Edge::BottomRight,
-                    start,
-                    from: Point::new(start.x1, start.y1),
-                },
-                Point::new(start.x0, start.y0),
-            );
-            let r = w.window_rect();
-            assert!(r.width() >= w.metrics.min_w - 0.5);
-            assert!(r.height() >= w.metrics.min_h - 0.5);
-        }
-
-        {
-            let mut w = win();
-            // The compose widget never accepts a typed path; its root owns the
-            // host portal and returns a descriptor-only staged attachment later.
-            let attach = hit_rect(&w, ComposeHit::Attach);
-            let (consumed, action) = press_at(&mut w, attach.center());
-            assert!(consumed);
-            assert_eq!(action, ComposeAction::RequestAttachment);
-            assert!(
-                w.attachments.is_empty(),
-                "no host path or fabricated attachment is staged"
-            );
-        }
-
-        {
-            let mut w = win();
-            w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
+            let (consumed, _) = press_at(&mut w, Point::new(100.0, 300.0));
+            assert!(!consumed, "a click on the list goes to the list");
             let modifiers = winit::event::Modifiers::default();
             let mut doc = crate::resource::TestMail::doc();
             let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-            let press = ui::synthetic_input::mouse_press();
-            let (consumed, action) = w.handle_event(
-                &press,
+            let (consumed, _) = w.handle_event(
+                &key(Key::Character("j".into()), Some("j")),
                 &mut ComposeEventContext {
                     scale_factor: 1.0,
                     modifiers,
@@ -2774,102 +2875,11 @@ mod tests {
                     taffy: &taffy,
                 },
             );
-            assert!(
-                consumed,
-                "clicks outside the modal window must be swallowed, not fall through"
-            );
-            assert_eq!(
-                action,
-                ComposeAction::None,
-                "outside click does not close (explicit Discard only)"
-            );
-            assert!(w.open, "window stays open");
+            assert!(!consumed, "and the keys with it");
+            let subject = hit_rect(&w, ComposeHit::FieldSubject);
+            let (consumed, _) = press_at(&mut w, subject.center());
+            assert!(consumed, "a click back into the message takes them again");
         }
-    }
-
-    #[test]
-    fn compact_compose_is_a_full_window_page_and_keeps_send_reachable() {
-        for theme in [Theme::dark(), Theme::light()] {
-            for bounds in [
-                Rect::new(0.0, 0.0, 360.0, 800.0),
-                Rect::new(0.0, 0.0, 800.0, 360.0),
-            ] {
-                let mut window = win();
-                window.theme = theme.clone();
-                window.layout(bounds);
-                let mut scene = Scene::new();
-                let mut text = TextRenderer::new();
-                window.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                assert_eq!(window.window_rect(), bounds);
-                assert!(window.body_rect().height() > 0.0);
-                for target in [ComposeHit::Send, ComposeHit::Discard] {
-                    assert!(
-                        bounds.contains_rect(hit_rect(&window, target)),
-                        "{target:?} remains reachable"
-                    );
-                }
-                // A page fills the window, so the window bar names and
-                // closes it: the composer draws no bar of its own, on any
-                // presentation.
-                assert!(
-                    window.hit_rect(ComposeHit::Close).is_none(),
-                    "the page draws no title bar: the window bar closes it"
-                );
-                assert!(window.resize_edge_at(bounds.center()).is_none());
-                assert!(
-                    window
-                        .resize_edge_at(Point::new(bounds.x1 - 1.0, bounds.y1 - 1.0))
-                        .is_none()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn in_the_message_column_the_list_keeps_its_clicks_and_keys() {
-        let mut w = win();
-        assert_eq!(w.dock(), DockState::Pane);
-        let column = Rect::new(620.0, 56.0, 1280.0, 800.0);
-        w.set_pane(Some(column));
-        w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        assert!(w.in_pane());
-        assert!(
-            w.hit_rect(ComposeHit::Close).is_none(),
-            "in the column the window bar names and closes the message"
-        );
-        assert!(!w.is_modal(), "the list beside it stays usable");
-        assert_eq!(w.window_rect(), column, "it takes the message column");
-        assert!(
-            w.resize_edge_at(Point::new(column.x0 + 1.0, column.y0 + 100.0))
-                .is_none(),
-            "a column does not resize"
-        );
-        let (consumed, _) = press_at(&mut w, Point::new(100.0, 300.0));
-        assert!(!consumed, "a click on the list goes to the list");
-        let modifiers = winit::event::Modifiers::default();
-        let mut doc = crate::resource::TestMail::doc();
-        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let (consumed, _) = w.handle_event(
-            &key(Key::Character("j".into()), Some("j")),
-            &mut ComposeEventContext {
-                scale_factor: 1.0,
-                modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                node_id: taffy::NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
-        assert!(!consumed, "and the keys with it");
-        let subject = hit_rect(&w, ComposeHit::FieldSubject);
-        let (consumed, _) = press_at(&mut w, subject.center());
-        assert!(consumed, "a click back into the message takes them again");
     }
 
     fn press_at(w: &mut ComposeWindow, p: Point) -> (bool, ComposeAction) {

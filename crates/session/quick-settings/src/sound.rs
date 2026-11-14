@@ -198,145 +198,149 @@ mod tests {
         facts.iter().map(|fact| fact.text.as_str()).collect()
     }
 
-    /// A screen's output is named by the screen it plays through and its
-    /// port, said as two facts; every other output keeps its own name as
-    /// one, and a name that only looks bracketed is left whole.
-    #[test]
-    fn a_screen_output_is_named_by_its_monitor_and_port() {
-        assert_eq!(
-            said(&output_facts(
-                "AD106M High Definition Audio Controller Digitales Stereo (HDMI) [LG ULTRAGEAR+]"
-            )),
-            ["LG ULTRAGEAR+", "HDMI"]
-        );
-        assert_eq!(
-            said(&output_facts(
-                "Ryzen HD Audio Controller Digitales Stereo (DisplayPort) [Studio Display]"
-            )),
-            ["Studio Display", "DisplayPort"]
-        );
-        assert_eq!(
-            said(&output_facts(
-                "Ryzen HD Audio Controller Digitales Stereo [Studio Display]"
-            )),
-            ["Studio Display"]
-        );
-        assert_eq!(
-            said(&output_facts("Ryzen HD Audio Controller Analoges Stereo")),
-            ["Ryzen HD Audio Controller Analoges Stereo"]
-        );
-        assert_eq!(said(&output_facts("USB Headset")), ["USB Headset"]);
-        assert_eq!(said(&output_facts("Not [closed")), ["Not [closed"]);
-        assert_eq!(said(&output_facts("Empty []")), ["Empty []"]);
-    }
+    tilo_test_env::scenario! {
+        fn the_sound_services_reading_becomes_the_panels;
 
-    #[test]
-    fn the_services_reading_is_the_panels() {
-        let mut qs = QuickSettingsState::unread();
-        land(&mut qs, &sound());
-        assert!(qs.volume_available);
-        assert_eq!(qs.volume_level(), 0.25);
-        assert!(qs.volume_muted());
-        assert_eq!(
-            qs.sound_outputs,
-            [
-                SoundOutput {
-                    node: 40,
-                    name: "Speakers".into(),
-                    current: true,
-                },
-                SoundOutput {
-                    node: 41,
-                    name: "Headphones".into(),
-                    current: false,
-                },
-            ]
-        );
-        assert!(
-            qs.microphone
-                .as_ref()
-                .is_some_and(|microphone| microphone.muted),
-            "the microphone's state answers its key on screen"
-        );
-        assert_eq!(
-            qs.microphone,
-            Some(SoundInput {
-                node: 50,
-                name: "Microphone".into(),
-                level: 0.5,
-                muted: true,
-            }),
-            "the microphone the service records from, with its level"
-        );
-        assert_eq!(
-            qs.sound_streams,
-            [SoundStream {
-                node: 60,
-                label: "Music".into(),
-                plays: Some("Clair de lune".into()),
-                playback: true,
-                target: Some(41),
-                level: 0.3,
-                muted: false,
-            }],
-            "the application's stream, and what it plays as its own fact"
-        );
-        assert_eq!(
-            qs.status.media,
-            [os_actions::ActiveMediaUse {
-                client_id: 61,
-                pid: 6100,
-                app_id: "so.tilo.meet".into(),
-                label: "Meet".into(),
-                binary: "/usr/bin/meet".into(),
-                kind: os_actions::MediaKind::Microphone,
-            }],
-            "who is recording, named as the service attributes it"
-        );
-    }
+        phase a_screen_output_is_named_by_its_monitor_and_port;
+        // A screen's output is named by the screen it plays through and its
+        // port, said as two facts; every other output keeps its own name as
+        // one, and a name that only looks bracketed is left whole.
+        {
+            assert_eq!(
+                said(&output_facts(
+                    "AD106M High Definition Audio Controller Digitales Stereo (HDMI) [LG ULTRAGEAR+]"
+                )),
+                ["LG ULTRAGEAR+", "HDMI"]
+            );
+            assert_eq!(
+                said(&output_facts(
+                    "Ryzen HD Audio Controller Digitales Stereo (DisplayPort) [Studio Display]"
+                )),
+                ["Studio Display", "DisplayPort"]
+            );
+            assert_eq!(
+                said(&output_facts(
+                    "Ryzen HD Audio Controller Digitales Stereo [Studio Display]"
+                )),
+                ["Studio Display"]
+            );
+            assert_eq!(
+                said(&output_facts("Ryzen HD Audio Controller Analoges Stereo")),
+                ["Ryzen HD Audio Controller Analoges Stereo"]
+            );
+            assert_eq!(said(&output_facts("USB Headset")), ["USB Headset"]);
+            assert_eq!(said(&output_facts("Not [closed")), ["Not [closed"]);
+            assert_eq!(said(&output_facts("Empty []")), ["Empty []"]);
+        }
 
-    /// The session's own software sink carries no device's name, so the
-    /// panel says it in the person's language; a device keeps the short name
-    /// it gives itself.
-    #[test]
-    fn an_output_is_named_in_the_persons_language() {
-        let mut sound = sound();
-        sound.outputs[0].name = media::audio::SESSION_SINK.into();
-        sound.outputs[0].label = "Session output".into();
-        let mut qs = QuickSettingsState::unread();
-        land(&mut qs, &sound);
-        assert_eq!(
-            qs.sound_outputs[0].name,
-            t("qs-sound-session-output"),
-            "the session's sink is Tilo's to name"
-        );
-        assert_eq!(
-            qs.sound_outputs[1].name, "Headphones",
-            "a device is named as it names itself"
-        );
-    }
+        phase the_services_reading_is_the_panels;
+        {
+            let mut qs = QuickSettingsState::unread();
+            land(&mut qs, &sound());
+            assert!(qs.volume_available);
+            assert_eq!(qs.volume_level(), 0.25);
+            assert!(qs.volume_muted());
+            assert_eq!(
+                qs.sound_outputs,
+                [
+                    SoundOutput {
+                        node: 40,
+                        name: "Speakers".into(),
+                        current: true,
+                    },
+                    SoundOutput {
+                        node: 41,
+                        name: "Headphones".into(),
+                        current: false,
+                    },
+                ]
+            );
+            assert!(
+                qs.microphone
+                    .as_ref()
+                    .is_some_and(|microphone| microphone.muted),
+                "the microphone's state answers its key on screen"
+            );
+            assert_eq!(
+                qs.microphone,
+                Some(SoundInput {
+                    node: 50,
+                    name: "Microphone".into(),
+                    level: 0.5,
+                    muted: true,
+                }),
+                "the microphone the service records from, with its level"
+            );
+            assert_eq!(
+                qs.sound_streams,
+                [SoundStream {
+                    node: 60,
+                    label: "Music".into(),
+                    plays: Some("Clair de lune".into()),
+                    playback: true,
+                    target: Some(41),
+                    level: 0.3,
+                    muted: false,
+                }],
+                "the application's stream, and what it plays as its own fact"
+            );
+            assert_eq!(
+                qs.status.media,
+                [os_actions::ActiveMediaUse {
+                    client_id: 61,
+                    pid: 6100,
+                    app_id: "so.tilo.meet".into(),
+                    label: "Meet".into(),
+                    binary: "/usr/bin/meet".into(),
+                    kind: os_actions::MediaKind::Microphone,
+                }],
+                "who is recording, named as the service attributes it"
+            );
+        }
 
-    #[test]
-    fn a_machine_without_an_output_offers_no_sound_control() {
-        let mut qs = QuickSettingsState::unread();
-        land(&mut qs, &Sound::default());
-        assert!(!qs.volume_available);
-        assert_eq!(qs.status.volume, None);
-        assert!(qs.sound_outputs.is_empty());
-        assert_eq!(qs.microphone, None, "nothing records");
-        assert!(qs.sound_streams.is_empty(), "nothing plays");
-        assert!(qs.status.media.is_empty(), "and nothing uses the camera");
-    }
+        phase an_output_is_named_in_the_persons_language;
+        // The session's own software sink carries no device's name, so the
+        // panel says it in the person's language; a device keeps the short name
+        // it gives itself.
+        {
+            let mut sound = sound();
+            sound.outputs[0].name = media::audio::SESSION_SINK.into();
+            sound.outputs[0].label = "Session output".into();
+            let mut qs = QuickSettingsState::unread();
+            land(&mut qs, &sound);
+            assert_eq!(
+                qs.sound_outputs[0].name,
+                t("qs-sound-session-output"),
+                "the session's sink is Tilo's to name"
+            );
+            assert_eq!(
+                qs.sound_outputs[1].name, "Headphones",
+                "a device is named as it names itself"
+            );
+        }
 
-    #[test]
-    fn a_microphone_the_service_names_nothing_is_still_the_microphone() {
-        let mut reading = sound();
-        reading.inputs.clear();
-        let mut qs = QuickSettingsState::unread();
-        land(&mut qs, &reading);
-        assert_eq!(
-            qs.microphone.map(|microphone| microphone.name),
-            Some("Microphone".into())
-        );
+        phase a_machine_without_an_output_offers_no_sound_control;
+        {
+            let mut qs = QuickSettingsState::unread();
+            land(&mut qs, &Sound::default());
+            assert!(!qs.volume_available);
+            assert_eq!(qs.status.volume, None);
+            assert!(qs.sound_outputs.is_empty());
+            assert_eq!(qs.microphone, None, "nothing records");
+            assert!(qs.sound_streams.is_empty(), "nothing plays");
+            assert!(qs.status.media.is_empty(), "and nothing uses the camera");
+        }
+
+        phase a_microphone_the_service_names_nothing_is_still_the_microphone;
+        {
+            let mut reading = sound();
+            reading.inputs.clear();
+            let mut qs = QuickSettingsState::unread();
+            land(&mut qs, &reading);
+            assert_eq!(
+                qs.microphone.map(|microphone| microphone.name),
+                Some("Microphone".into())
+            );
+        }
     }
 }

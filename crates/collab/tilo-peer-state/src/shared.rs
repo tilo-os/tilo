@@ -3,7 +3,7 @@
 //!
 //! Every admission decides in a copy of the whole peer and installs the copy
 //! only once every check passed. A long-running workspace holds hundreds of
-//! certificates and records, each record with its channel state: copying
+//! certificates and records, each record with its inbound state: copying
 //! all of that per write made every write cost the size of the workspace. Behind
 //! `Shared`, a copy costs a pointer per part, and a write copies only the
 //! parts it changes.

@@ -35,10 +35,7 @@ fn a_member_whose_part_does_not_let_them_invite_is_refused() {
     let (site, _ada, bob, _ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
     let mut bob_laptop = bob.device("Bob's laptop");
     bob_laptop.install_files();
-    let invitation = site.invite(
-        bob.public,
-        tilo_relay_protocol::workspaces::WorkspaceRole::Viewer,
-    );
+    let invitation = site.invite(bob.public, tilo_relay_protocol::workspaces::Role::Viewer);
     bob_laptop.join(&invitation);
     bob_laptop.wait_holding(&site.workspace);
     site.wait_for_member(bob.public);
@@ -89,11 +86,10 @@ fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through()
             laptop.diagnostic()
         )
     });
-    let hint =
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::from_transport_hint(
-            &join.grant().transport[0],
-        )
-        .expect("the invitation names its host's address");
+    let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
+        &join.grant().transport[0],
+    )
+    .expect("the invitation names its host's address");
     let relay = test_relay::loopback_url();
     assert!(
         hint.endpoint_addr

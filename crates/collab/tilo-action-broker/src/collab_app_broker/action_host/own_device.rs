@@ -9,8 +9,7 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, CallerPrincipal, InvocationReceipt, InvokeRequest, Reservation,
-    own_device,
+    ActionHostError, Caller, InvocationReceipt, InvokeRequest, Reservation, own_device,
 };
 
 use super::super::AppBrokerState;
@@ -23,10 +22,9 @@ pub(super) fn is_person_here(
     caller: &Caller,
     origin: Option<&super::super::published_invocation::InvocationCaller>,
 ) -> bool {
-    matches!(caller.principal(), CallerPrincipal::Person(_))
+    caller.acting().is_person()
         && super::super::host_steps::is_local_host_caller(caller, origin)
         && caller.acting_for_person().is_none()
-        && caller.shortcut().is_none()
         && !caller.is_foreign_device()
 }
 
@@ -671,7 +669,7 @@ mod tests {
             assert!(
                 invoked(&state, &caller, &fresh).is_err(),
                 "{:?} must not reach another device",
-                caller.principal()
+                caller.acting()
             );
         }
         assert!(network.sent.lock().unwrap().is_empty(), "nothing was sent");
@@ -771,9 +769,9 @@ mod tests {
         assert_eq!(
             state
                 .app_door(&person, SETTINGS, &own)
-                .map(|caller| caller.principal().clone())
+                .map(|caller| caller.acting().clone())
                 .ok(),
-            Some(person.principal().clone())
+            Some(person.acting().clone())
         );
         let other = RemoteActionMessage::Invoke(request(&invocation("so.tilo.notes")));
         assert!(state.app_door(&person, SETTINGS, &other).is_err());

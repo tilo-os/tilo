@@ -1,11 +1,12 @@
 // Included into `app::tests`; typing goes through the framework's live path.
 
-/// Switching to Graph 2D and typing without a Tab first writes the function:
-/// the mode press, the press on the formula and the keystrokes all go through
-/// the host.
-#[test]
-fn typing_in_the_2d_graph_mode_enters_the_function() {
-    // phase typing_after_switching_to_graph_2d
+tilo_test_env::scenario! {
+    /// Switching to Graph 2D and typing without a Tab first writes the function:
+    /// the mode press, the press on the formula and the keystrokes all go through
+    /// the host.
+    fn typing_in_the_2d_graph_mode_enters_the_function;
+
+    phase typing_after_switching_to_graph_2d;
     {
         let mut app = hosted();
         press_mode(&mut app, Mode::Graph2d);
@@ -22,7 +23,8 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
             "typing in the 2D graph mode enters the function"
         );
     }
-    // phase typing_after_pressing_the_formula
+
+    phase typing_after_pressing_the_formula;
     {
         let mut app = hosted();
         press_mode(&mut app, Mode::Graph2d);
@@ -46,7 +48,8 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
             "the formula shows what was typed"
         );
     }
-    // phase typing_after_switching_to_graph_3d
+
+    phase typing_after_switching_to_graph_3d;
     {
         let mut app = hosted();
         press_mode(&mut app, Mode::Graph3d);
@@ -74,7 +77,8 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
             "typing in the 3D graph mode enters the surface: {starter:?} became {typed:?}"
         );
     }
-    // phase typing_as_soon_as_the_window_opens
+
+    phase typing_as_soon_as_the_window_opens;
     {
         let mut app = hosted();
         app.harness().send(&WindowEvent::Focused(true));
@@ -82,7 +86,8 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
         app.settle();
         assert_eq!(calculator(&mut app).1.value.as_deref(), Some("6*7"));
     }
-    // phase switching_to_calculator_mode_takes_typing_too
+
+    phase switching_to_calculator_mode_takes_typing_too;
     {
         let mut app = hosted();
         press_mode(&mut app, Mode::Calc);

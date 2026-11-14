@@ -408,7 +408,7 @@ d-wz5iufcx = Reason
     .doc = Why it failed, in the app's own words; empty while it does better.
 
 d-m3of3jpo = Arrangement ref
-    .doc = A resource a query found: its address, the name it goes by, and its kind — the same three words a place's record is named by.
+    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's record is named by.
     .noun = { $count ->
         [one] arrangement ref
        *[other] arrangement refs
@@ -777,14 +777,11 @@ d-rfgelicn = Showing
 
 d-p4owlmpg = Always
 
-d-sscc6gs3 = Shown while no window overlaps it; it hides when a window would cover it
-    .doc = Shown while no window overlaps it; it hides when a window would cover it.
+d-sscc6gs3 = While no window covers it
 
-d-v2eyzsgr = Hidden until the pointer bumps the screen edge it rides
-    .doc = Hidden until the pointer bumps the screen edge it rides.
+d-v2eyzsgr = At the screen's edge
 
-d-62fazfo4 = Hidden after the pointer has not been over it for a moment, shown when it returns
-    .doc = Hidden after the pointer has not been over it for a moment, shown when it returns.
+d-62fazfo4 = After a moment
 
 d-v3z2zasp = Size
     .doc = How large the parts are.
@@ -1079,6 +1076,21 @@ d-tnecawb6-index = Index
 
 d-tnecawb6-title = Title
 
+d-bmd7xmln = A query place
+    .doc = Adds a place showing a search for `text` to `strip`, with the two matches the notes app answered, and returns the place's key: the state a place stands in until the person chooses one of the resources it found (shell.md §8).
+
+d-bmd7xmln-strip = Strip
+
+d-bmd7xmln-text = Text
+
+d-yd725hjw = A installed apps
+    .doc = The applications installed on this device, as the launcher lists them: the ones the desk's shots and its layouts show.
+
+d-5o2gn6hf = A style settings
+    .doc = A desk of one note in the style named, with that place in front, and the style's own settings open over it: what a person sees who opens them from the bar's style menu.
+
+d-5o2gn6hf-style = Style
+
 d-u6kdedav = Query show
     .doc = Show `found` in the place `place` while it shows a query: the same place, now the found resource (shell.md §8).
 
@@ -1092,7 +1104,7 @@ d-4vtnv5px = Query retry
 d-4vtnv5px-place = Place
 
 d-mtt6d3af = Tab it here
-    .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip — how a person drags one window's bar onto another's to make its tabs, and the same arranging action the window's menu's "Move into … as a tab" runs.
+    .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags one window's bar onto another's to make its tabs, and the window's menu's "Move into … as a tab" runs the same arranging action.
 
 d-mtt6d3af-v = V
 
@@ -1281,6 +1293,11 @@ d-ebrt7kdg = Preview dock
 d-grqdyggg = Shell settings
     .w-top-bar = Top bar
     .w-show-the-top-bar = Show the top bar
+    .w-edge = Edge
+    .w-fit = Fit
+    .w-material = Material
+    .w-when-it-shows = When it shows
+    .w-size = Size
     .w-dock = Dock
     .w-show-the-dock = Show the dock
 
@@ -1446,12 +1463,9 @@ d-p5wzoqr5 = Window controls
     .w-maximize = Maximize
     .w-close = Close
 
-d-6bfcv6wf = Window actions
-    .w-window-actions = Window actions
-
 d-z4vc77e6 = Place controls
+    .w-this-window = This window
     .w-pin-place = Pin place
-    .w-move-to-row = Move to row
     .w-close = Close
 
 d-oyjbbzbk = Place content
@@ -1467,11 +1481,20 @@ d-pjkvdmwk = Show style settings~present
 d-vseev2rl = Style panel
     .w-settings-for = Settings for { $style_title }
     .w-close = Close
+
+d-gncm64rz = Style sheet
+    .w-settings-for = Settings for { $style_title }
+    .w-close = Close
+
+d-mmqndkio = Style settings body
     .w-comes-from-and-its-settings-are = { $style_label } comes from { $package }, and its settings are its package's own.
 
 d-g476xvac = Desktop style settings
     .w-show-the-top-bar = Show the top bar
     .w-show-the-dock = Show the dock
+    .w-dock-edge = Dock edge
+    .w-dock-size = Dock size
+    .w-when-the-dock-shows = When the dock shows
 
 d-e3tczbcu = Strips style settings
     .w-show-the-tabs-of-a-strip = Show the tabs of a strip
@@ -1505,7 +1528,7 @@ d-6izhhsie = Desktop frame
 d-fabwkpdf = Frame classic
 
 d-efc4bnyi = Frame buttons
-    .w-move-to-row = Move to row
+    .w-this-window = This window
     .w-close = Close
 
 d-u55srubm = Action bar

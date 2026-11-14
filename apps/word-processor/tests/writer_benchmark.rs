@@ -702,17 +702,12 @@ fn pdf_formats(
     Ok(format!("drawn: {}", seen.join(", ")))
 }
 
-#[test]
-fn writer_agent_benchmark_qualifies_against_the_reference() {
-    let mut receipt = Receipt::default();
-    let scratch = tempfile::tempdir().unwrap();
-    let scratch_path = scratch.path().to_owned();
-
-    let mut typed = typed_arm(&mut receipt);
-    let typed_frame = typed.harness().render_rgba();
-    keep_frame(&mut typed, "typed-arm");
+fn differs_from_a_blank_document(
+    typed_frame: &[u8],
+    receipt: &mut Receipt,
+) -> Result<String, String> {
     let blank_frame = open().harness().render_rgba();
-    let drawn = frame_difference(&blank_frame, &typed_frame).and_then(|share| {
+    frame_difference(&blank_frame, typed_frame).and_then(|share| {
         receipt.measure("editor_drawn_share", share);
         if share >= MIN_DRAWN {
             Ok(format!(
@@ -725,7 +720,31 @@ fn writer_agent_benchmark_qualifies_against_the_reference() {
                 share * 100.0
             ))
         }
-    });
+    })
+}
+
+/// The frame of the page the plan draws without its italic: what the control for
+/// [`same_picture`] compares with the frame of the page the whole plan drew.
+fn frame_missing_one_format() -> Vec<u8> {
+    let mut unformatted = open();
+    let without_italic: Vec<_> = plan()
+        .into_iter()
+        .filter(|(id, arguments)| !(*id == "set-format" && arguments["name"] == "em"))
+        .collect();
+    assert!(run(&mut unformatted, &without_italic).is_empty());
+    unformatted.harness().render_rgba()
+}
+
+#[test]
+fn writer_agent_benchmark_qualifies_against_the_reference() {
+    let mut receipt = Receipt::default();
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_path = scratch.path().to_owned();
+
+    let mut typed = typed_arm(&mut receipt);
+    let typed_frame = typed.harness().render_rgba();
+    keep_frame(&mut typed, "typed-arm");
+    let drawn = differs_from_a_blank_document(&typed_frame, &mut receipt);
     receipt.record("visual.editor_draws_the_document", drawn);
 
     let mut input = input_arm(&mut receipt);
@@ -809,6 +828,18 @@ fn writer_agent_benchmark_qualifies_against_the_reference() {
         .map(|q| format!("{}: {}", q.id, q.observed))
         .collect();
     assert!(failed.is_empty(), "unqualified:\n{}", failed.join("\n"));
+    // The control for `same_picture`, not a qualification: it runs once the receipt is written
+    // and the benchmark has its verdict, and measures into a receipt of its own.
+    let missing_a_format = same_picture(
+        "difference",
+        &typed_frame,
+        &frame_missing_one_format(),
+        &mut Receipt::default(),
+    );
+    assert!(
+        missing_a_format.is_err(),
+        "a page missing one format is the same picture: {missing_a_format:?}"
+    );
 }
 
 #[test]
@@ -830,22 +861,136 @@ fn a_document_that_misses_the_reference_is_not_qualified() {
     );
 }
 
-#[test]
-fn a_page_missing_one_format_is_not_the_same_picture() {
-    let mut whole = open();
-    assert!(run(&mut whole, &plan()).is_empty());
-    let mut unformatted = open();
-    let without_italic: Vec<_> = plan()
-        .into_iter()
-        .filter(|(id, arguments)| !(*id == "set-format" && arguments["name"] == "em"))
-        .collect();
-    assert!(run(&mut unformatted, &without_italic).is_empty());
-    let mut receipt = Receipt::default();
-    let verdict = same_picture(
-        "difference",
-        &whole.harness().render_rgba(),
-        &unformatted.harness().render_rgba(),
-        &mut receipt,
-    );
-    assert!(verdict.is_err(), "{verdict:?}");
+tilo_test_env::scenario! {
+    /// The benchmark's two graders on inputs at and past their limits; each phase is a table of rows.
+    fn the_graders_hold_at_their_boundaries;
+
+    phase frames_are_the_same_picture_up_to_the_tolerance_and_the_allowed_share;
+    {
+        fn frame(pixels: usize, differing: usize, by: u8) -> Vec<u8> {
+            (0..pixels)
+                .flat_map(|pixel| [0, if pixel < differing { by } else { 0 }, 0, 255])
+                .collect()
+        }
+        let past = PIXEL_TOLERANCE.saturating_add(1);
+        // Two frames, the share of their pixels that differ when they can be compared, and
+        // whether they are the same picture.
+        let rows = [
+            ("no pixels", Vec::new(), Vec::new(), None, false),
+            ("two sizes", frame(2, 0, 0), frame(1, 0, 0), None, false),
+            (
+                "one frame twice",
+                frame(2, 0, 0),
+                frame(2, 0, 0),
+                Some(0.0),
+                true,
+            ),
+            (
+                "every pixel at the tolerance",
+                frame(2, 0, 0),
+                frame(2, 2, PIXEL_TOLERANCE),
+                Some(0.0),
+                true,
+            ),
+            (
+                "one pixel of two past the tolerance",
+                frame(2, 0, 0),
+                frame(2, 1, past),
+                Some(0.5),
+                false,
+            ),
+            (
+                "one pixel of two past the tolerance, darker",
+                frame(2, 1, past),
+                frame(2, 0, 0),
+                Some(0.5),
+                false,
+            ),
+            (
+                "every pixel as far as a channel goes",
+                frame(2, 0, 0),
+                frame(2, 2, u8::MAX),
+                Some(1.0),
+                false,
+            ),
+            (
+                "one pixel in ten thousand",
+                frame(10_000, 0, 0),
+                frame(10_000, 1, past),
+                Some(MAX_FRAME_DIFFERENCE),
+                true,
+            ),
+            (
+                "two pixels in ten thousand",
+                frame(10_000, 0, 0),
+                frame(10_000, 2, past),
+                Some(0.0002),
+                false,
+            ),
+        ];
+        for (row, left, right, share, same) in rows {
+            let mut receipt = Receipt::default();
+            let verdict = same_picture("difference", &left, &right, &mut receipt);
+            assert_eq!(verdict.is_ok(), same, "{row}: {verdict:?}");
+            assert_eq!(
+                receipt
+                    .measurements
+                    .get("difference")
+                    .and_then(serde_json::Value::as_f64),
+                share,
+                "{row}"
+            );
+        }
+    }
+
+    phase text_is_in_order_only_with_every_paragraph_after_the_one_before;
+    {
+        let page = |order: &[usize], between: &str| {
+            order
+                .iter()
+                .map(|&block| REFERENCE[block].text)
+                .collect::<Vec<_>>()
+                .join(between)
+        };
+        let report = page(&[0, 1, 2, 3, 4, 5], "\n");
+        let rows = [
+            ("the report", report.clone(), true),
+            (
+                "nothing between its paragraphs",
+                page(&[0, 1, 2, 3, 4, 5], ""),
+                true,
+            ),
+            (
+                "every word on a line of its own",
+                report.replace(' ', "\n"),
+                true,
+            ),
+            ("a page number under it", format!("{report}\n1"), true),
+            ("an empty page", String::new(), false),
+            (
+                "its first paragraph missing",
+                page(&[1, 2, 3, 4, 5], "\n"),
+                false,
+            ),
+            (
+                "its last paragraph missing",
+                page(&[0, 1, 2, 3, 4], "\n"),
+                false,
+            ),
+            (
+                "two paragraphs swapped",
+                page(&[0, 1, 2, 4, 3, 5], "\n"),
+                false,
+            ),
+            (
+                "the title only after the rest",
+                page(&[1, 2, 3, 4, 5, 0], "\n"),
+                false,
+            ),
+        ];
+        for (row, text, in_order) in rows {
+            let verdict = text_in_order(&text);
+            assert_eq!(verdict.is_ok(), in_order, "{row}: {verdict:?}");
+        }
+    }
 }

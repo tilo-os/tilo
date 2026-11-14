@@ -40,18 +40,20 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{ActionReplayWindow, DeviceAction, PlaneFrame, SignedDeviceAction};
-use neighbour_wire::offer::{Answer, Query, Route, State, Work};
+use neighbour_wire::offer::{Answer, Decline, Query, Route, Work};
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_action_policy::{Actor, MemberId};
 use tilo_actions::remote::{
     ActionHost, Caller, InvocationReceipt, InvocationState, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::{Whose, WorkspaceId};
 use web_time::SystemTime;
 
 /// ALPN of the device-to-device action plane.
@@ -241,14 +243,14 @@ impl ActionHost for NoActions {
 /// app is not installed, so it never claims work it cannot run.
 pub trait Offering: Send + Sync {
     /// What this device says of running `offer`'s route on `offer`'s work,
-    /// asked by the device `from`: its own state and which of the job's
-    /// inputs it already holds, never another device's.
+    /// `whose` it is, asked by the device `from`: its own state and which of
+    /// the job's inputs it already holds, never another device's.
     ///
     /// An answer that takes the work remembers the offer under `from` and
     /// [`Query::request_id`], which is the invocation it would run: the
     /// invocation that follows names it, so the work run is the work this
     /// device answered for, for the device that asked.
-    fn report(&self, from: [u8; 32], offer: &Query) -> Answer;
+    fn report(&self, from: [u8; 32], whose: &Whose, offer: &Query) -> Answer;
 }
 
 /// A device's action plane: it serves the requests other devices of its
@@ -548,39 +550,35 @@ impl ActionPlane {
 
     /// Answer one offer: what this device says of itself, or `None` when
     /// nothing is to be said — this device does not hold the workspace, it is
-    /// not a member of it, or the device that asked is not.
+    /// not a member of it, or the device that asked is not. Whose work it is,
+    /// as the workspace's roster says, is the device's work setting's to weigh.
     async fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
         let now = tilo_clock::wall();
         let device = self.device();
-        let (admits_asker, is_member) = self
+        let (asker, own) = self
             .read_workspace(&query.workspace, |peer| {
                 (
-                    peer.permissions(remote, now).is_ok(),
-                    peer.permissions(device, now).is_ok(),
+                    peer.permissions(remote, now)
+                        .ok()
+                        .and_then(|asker| asker.person_id().map(str::to_owned)),
+                    peer.permissions(device, now)
+                        .ok()
+                        .and_then(|own| own.person_id().map(str::to_owned)),
                 )
             })
             .await?;
-        // An offer is answered as a member device: one the workspace's
-        // roster no longer holds offers nothing, as it may act nowhere in it.
-        if !admits_asker || !is_member {
-            return None;
-        }
+        // An offer is answered as a member device, to one: a device the
+        // workspace's roster does not hold is told nothing about this one.
+        let (asker, own) = (asker?, own?);
         let Some(offering) = self.0.offering.lock_recover().clone() else {
-            return Some(Answer {
-                state: State {
-                    online: true,
-                    holds_workspace: true,
-                    ..State::unreachable()
-                },
-                holds: Vec::new(),
-            });
+            return Some(Answer::declining(Decline::AppNotInstalled));
         };
-        let mut answer = offering.report(remote, query);
-        // What the plane knows better than the device's own report.
-        answer.state.requester = false;
-        answer.state.online = true;
-        answer.state.holds_workspace = true;
-        answer.state.latency_ms = 0;
+        let whose = Whose {
+            asker,
+            own,
+            workspace: WorkspaceId::parse(&query.workspace),
+        };
+        let mut answer = offering.report(remote, &whose, query);
         // Only the inputs the job named, so no answer carries more than the
         // question did.
         answer
@@ -650,19 +648,19 @@ impl ActionPlane {
         let certificate = certificate.ok_or(ActionHostError::NotPermitted)?;
         // The device is its own principal when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
-        let caller = match authority.delegate.map(|delegation| delegation.grantee()) {
-            Some(tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Agent(
-                agent,
-            ))) => Caller::delegated_agent(agent, certificate.user_public_key, source),
-            Some(tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(
-                installation,
-            ))) => Caller::bot(installation, certificate.user_public_key, source),
+        let caller = match &authority.acting.by {
+            Actor::Member(MemberId::Agent(agent)) => {
+                Caller::delegated_agent(agent.clone(), certificate.user_public_key, source)
+            }
+            Actor::Member(MemberId::Bot(installation)) => {
+                Caller::bot(installation.clone(), certificate.user_public_key, source)
+            }
             _ => Caller::authenticated(certificate.user_public_key, source),
         };
         Ok((
             caller
                 .in_workspace(action.workspace.clone())
-                .from_foreign_device(authority.foreign),
+                .from_foreign_device(authority.acting.foreign_device),
             action.workspace.clone(),
         ))
     }
@@ -776,7 +774,7 @@ impl ActionPlane {
 
     /// Spend one of `caller`'s changes, or say the caller has none left.
     fn spend(&self, caller: &Caller) -> Result<(), tilo_actions::remote::ActionHostError> {
-        let CallerPrincipalKey::Person(person) = CallerPrincipalKey::of(caller) else {
+        let Some(person) = caller.user_public_key().copied() else {
             return Ok(());
         };
         let now = tilo_clock::now();
@@ -868,20 +866,6 @@ impl ProtocolHandler for ActionPlane {
     }
 }
 
-/// The person a caller acts for, when it acts for one.
-enum CallerPrincipalKey {
-    Person([u8; 32]),
-    Other,
-}
-
-impl CallerPrincipalKey {
-    fn of(caller: &Caller) -> Self {
-        caller
-            .user_public_key()
-            .map_or(Self::Other, |person| Self::Person(*person))
-    }
-}
-
 #[derive(Clone, Copy)]
 struct Bucket {
     changes: f64,
@@ -962,13 +946,9 @@ async fn await_answer<T: Send + 'static>(
     }
 }
 
-/// What a device that never answered is taken to have said: it is not
-/// there, and it holds none of the job's inputs.
+/// What a device that never answered is taken to have said.
 fn away() -> Answer {
-    Answer {
-        state: State::unreachable(),
-        holds: Vec::new(),
-    }
+    Answer::away()
 }
 
 /// One other device, as an [`ActionHost`]: its actions through the same
@@ -1136,7 +1116,10 @@ impl Device {
         let Some(mut heard) = heard.await else {
             return away();
         };
-        heard.state.latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+        // The round trip is the requester's own measurement, not the device's.
+        if let Ok(rank) = &mut heard.verdict {
+            rank.latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+        }
         heard
     }
 

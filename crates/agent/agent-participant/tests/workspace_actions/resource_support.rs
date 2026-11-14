@@ -1,6 +1,6 @@
 //! Certified admission for resource fixtures; no owner-only workspace entry.
 use super::{Browser, Device, Host, Hosted, RevocationList, ready, start_peer};
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_session_client::{Cmd, Outbox};
 
@@ -10,7 +10,7 @@ pub(super) async fn open_admitted_peer(
     host: &Device,
     cluster_id: &str,
 ) -> Browser {
-    let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
+    let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
     let peer = start_peer(
         Host::at(hosted.relay.node_addr()),
         device.cert.clone(),
@@ -28,7 +28,7 @@ pub(super) async fn admit_person(
     host: &Device,
     workspace: &str,
     device: &Device,
-    role: MemberRole,
+    role: Role,
 ) {
     let invitation = hosted
         .relay

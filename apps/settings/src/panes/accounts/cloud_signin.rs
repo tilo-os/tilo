@@ -1308,126 +1308,130 @@ mod service_choice_tests {
         )
     }
 
-    #[test]
-    fn service_choices_validate_and_default_to_files_sync() {
-        let google = flow(AccountKind::GoogleDrive, None);
-        assert!(google.selected_services().files);
-        assert!(!google.selected_services().mail);
-        assert_eq!(google.selected_services().mode, FilesMode::Sync);
-        assert!(
-            google
-                .select_services(false, false, FilesMode::Sync)
-                .is_err()
-        );
-        google
-            .select_services(false, true, FilesMode::Import)
-            .unwrap();
-        assert!(!google.selected_services().files);
-        assert!(google.selected_services().mail);
-        let dropbox = flow(AccountKind::Dropbox, None);
-        assert!(
-            dropbox
-                .select_services(true, true, FilesMode::Sync)
-                .is_err()
-        );
-        assert!(
-            dropbox
-                .select_services(false, false, FilesMode::Sync)
-                .is_err()
-        );
-        dropbox
-            .select_services(true, false, FilesMode::Import)
-            .unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn a_sign_in_flow_keeps_its_service_choices_safe;
 
-    #[test]
-    fn reauthentication_retains_import_and_linked_mail_and_refuses_unsafe_transition() {
-        let mut account = accounts::Account::new("drive", "google-drive");
-        account.config = serde_json::json!({
-            "files_mode": "import", "mail_account_id": "ada@example.org", "kept": true
-        });
-        let google = flow(AccountKind::GoogleDrive, Some(&account));
-        assert_eq!(google.selected_services().mode, FilesMode::Import);
-        assert!(google.selected_services().mail);
-        assert_eq!(google.selected_services().config["kept"], true);
-        assert_eq!(
-            google.selected_services().expected_mail.as_deref(),
-            Some("ada@example.org")
-        );
-        assert!(
+        phase service_choices_validate_and_default_to_files_sync;
+        {
+            let google = flow(AccountKind::GoogleDrive, None);
+            assert!(google.selected_services().files);
+            assert!(!google.selected_services().mail);
+            assert_eq!(google.selected_services().mode, FilesMode::Sync);
+            assert!(
+                google
+                    .select_services(false, false, FilesMode::Sync)
+                    .is_err()
+            );
             google
+                .select_services(false, true, FilesMode::Import)
+                .unwrap();
+            assert!(!google.selected_services().files);
+            assert!(google.selected_services().mail);
+            let dropbox = flow(AccountKind::Dropbox, None);
+            assert!(
+                dropbox
+                    .select_services(true, true, FilesMode::Sync)
+                    .is_err()
+            );
+            assert!(
+                dropbox
+                    .select_services(false, false, FilesMode::Sync)
+                    .is_err()
+            );
+            dropbox
                 .select_services(true, false, FilesMode::Import)
-                .is_err()
-        );
-        google
-            .select_services(true, true, FilesMode::Import)
-            .unwrap();
-        account.config = serde_json::json!({});
-        let legacy = flow(AccountKind::GoogleDrive, Some(&account));
-        assert_eq!(legacy.selected_services().mode, FilesMode::Sync);
-        legacy
-            .select_services(true, false, FilesMode::Import)
-            .unwrap();
-        // Selection is not permission to discard queued writes: submit must
-        // first acquire a daemon freeze, even for legacy Sync metadata.
-        assert!(legacy.preparation.is_none());
-    }
+                .unwrap();
+        }
 
-    #[test]
-    fn mail_only_completion_never_resolves_drive_and_validates_identity() {
-        let server = test_http::Responder::start(vec![
-            test_http::Reply::status(200)
-                .header("Content-Type", "application/json")
-                .body(r#"{"emailAddress":"ada@example.org"}"#),
-            test_http::Reply::status(200)
-                .header("Content-Type", "application/json")
-                .body(r#"{"emailAddress":"other@example.org"}"#),
-        ]);
-        let custodian = Custodian::for_root(None)
-            .with_gmail_profile_endpoint(format!("{}/profile", server.url()));
-        // Only a mail scope: resolving a Drive mount would reject these tokens.
-        let tokens = account_custody::TokenSet {
-            scope: Some("https://mail.google.com/".into()),
-            ..Default::default()
-        };
-        let mut google = flow(AccountKind::GoogleDrive, None);
-        google
-            .select_services(false, true, FilesMode::Sync)
-            .unwrap();
-        google.expected_mail = Some("ada@example.org".into());
-        let completed = oauth_completed(
-            &custodian,
-            OAuthCloud::GoogleDrive,
-            AccountKind::GoogleDrive,
-            None,
-            "Google".into(),
-            &tokens,
-            google.selected_services(),
-        )
-        .unwrap();
-        let Outcome::Completed(completed) = completed else {
-            panic!("sign-in did not complete")
-        };
-        assert_eq!(completed.kind, AccountKind::Mail);
-        assert!(completed.mail.is_none());
-        assert!(
-            completed
-                .config
-                .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
-                .is_none()
-        );
-        assert_eq!(completed.config["email"], "ada@example.org");
-        assert!(
-            oauth_completed(
+        phase reauthentication_retains_import_and_linked_mail_and_refuses_unsafe_transition;
+        {
+            let mut account = accounts::Account::new("drive", "google-drive");
+            account.config = serde_json::json!({
+                "files_mode": "import", "mail_account_id": "ada@example.org", "kept": true
+            });
+            let google = flow(AccountKind::GoogleDrive, Some(&account));
+            assert_eq!(google.selected_services().mode, FilesMode::Import);
+            assert!(google.selected_services().mail);
+            assert_eq!(google.selected_services().config["kept"], true);
+            assert_eq!(
+                google.selected_services().expected_mail.as_deref(),
+                Some("ada@example.org")
+            );
+            assert!(
+                google
+                    .select_services(true, false, FilesMode::Import)
+                    .is_err()
+            );
+            google
+                .select_services(true, true, FilesMode::Import)
+                .unwrap();
+            account.config = serde_json::json!({});
+            let legacy = flow(AccountKind::GoogleDrive, Some(&account));
+            assert_eq!(legacy.selected_services().mode, FilesMode::Sync);
+            legacy
+                .select_services(true, false, FilesMode::Import)
+                .unwrap();
+            // Selection is not permission to discard queued writes: submit must
+            // first acquire a daemon freeze, even for legacy Sync metadata.
+            assert!(legacy.preparation.is_none());
+        }
+
+        phase mail_only_completion_never_resolves_drive_and_validates_identity;
+        {
+            let server = test_http::Responder::start(vec![
+                test_http::Reply::status(200)
+                    .header("Content-Type", "application/json")
+                    .body(r#"{"emailAddress":"ada@example.org"}"#),
+                test_http::Reply::status(200)
+                    .header("Content-Type", "application/json")
+                    .body(r#"{"emailAddress":"other@example.org"}"#),
+            ]);
+            let custodian = Custodian::for_root(None)
+                .with_gmail_profile_endpoint(format!("{}/profile", server.url()));
+            // Only a mail scope: resolving a Drive mount would reject these tokens.
+            let tokens = account_custody::TokenSet {
+                scope: Some("https://mail.google.com/".into()),
+                ..Default::default()
+            };
+            let mut google = flow(AccountKind::GoogleDrive, None);
+            google
+                .select_services(false, true, FilesMode::Sync)
+                .unwrap();
+            google.expected_mail = Some("ada@example.org".into());
+            let completed = oauth_completed(
                 &custodian,
                 OAuthCloud::GoogleDrive,
                 AccountKind::GoogleDrive,
                 None,
                 "Google".into(),
                 &tokens,
-                google.selected_services()
+                google.selected_services(),
             )
-            .is_err()
-        );
+            .unwrap();
+            let Outcome::Completed(completed) = completed else {
+                panic!("sign-in did not complete")
+            };
+            assert_eq!(completed.kind, AccountKind::Mail);
+            assert!(completed.mail.is_none());
+            assert!(
+                completed
+                    .config
+                    .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
+                    .is_none()
+            );
+            assert_eq!(completed.config["email"], "ada@example.org");
+            assert!(
+                oauth_completed(
+                    &custodian,
+                    OAuthCloud::GoogleDrive,
+                    AccountKind::GoogleDrive,
+                    None,
+                    "Google".into(),
+                    &tokens,
+                    google.selected_services()
+                )
+                .is_err()
+            );
+        }
     }
 }

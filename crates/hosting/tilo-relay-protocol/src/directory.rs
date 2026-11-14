@@ -38,7 +38,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::workspaces::WorkspaceRole;
+use crate::workspaces::Role;
 
 /// The directory of a host, below its API prefix.
 pub const DIRECTORY_PATH: &str = "/directory";
@@ -94,7 +94,7 @@ pub struct Listing {
     /// What the workspace is, in a sentence or two.
     pub description: String,
     /// The role everyone who joins through the directory gets.
-    pub default_role: WorkspaceRole,
+    pub default_role: Role,
 }
 
 /// Why a listing cannot be published.
@@ -118,7 +118,10 @@ impl Listing {
         {
             return Err(ListingError::Description);
         }
-        if self.default_role == WorkspaceRole::Moderator {
+        if !matches!(
+            self.default_role,
+            Role::Viewer | Role::Commenter | Role::Editor
+        ) {
             return Err(ListingError::Role);
         }
         Ok(Self {
@@ -150,7 +153,7 @@ pub struct DirectoryEntry {
     #[serde(default)]
     pub description: String,
     /// The role people who join get.
-    pub default_role: WorkspaceRole,
+    pub default_role: Role,
     /// Its door, relative to the directory's address (or absolute).
     pub door: String,
     #[serde(default)]
@@ -406,7 +409,7 @@ mod tests {
             workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
             name: "Coffee".into(),
             description: String::new(),
-            default_role: WorkspaceRole::Commenter,
+            default_role: Role::Commenter,
             door: door_path("6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71"),
             here: Vec::new(),
             here_count: 0,
@@ -416,109 +419,118 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_door_route_names_its_room_and_step() {
-        let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-        assert_eq!(
-            door_route(&format!("/{}errors", door_path(workspace))),
-            Some((workspace, "errors"))
-        );
-        assert_eq!(
-            door_route(&format!("/directory/{workspace}/report")),
-            Some((workspace, "report"))
-        );
-        assert_eq!(door_route("/directory"), None);
-        assert_eq!(door_route("/directory//report"), None);
-        assert_eq!(
-            door_route(&format!("/directory/{workspace}/report/more")),
-            None
-        );
-        assert_eq!(door_route("/rooms"), None);
+    tilo_test_env::scenario! {
+        fn a_door_names_its_steps_and_reads_its_pages_error_reports;
+
+        phase a_door_route_names_its_room_and_step;
+        {
+            let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+            assert_eq!(
+                door_route(&format!("/{}errors", door_path(workspace))),
+                Some((workspace, "errors"))
+            );
+            assert_eq!(
+                door_route(&format!("/directory/{workspace}/report")),
+                Some((workspace, "report"))
+            );
+            assert_eq!(door_route("/directory"), None);
+            assert_eq!(door_route("/directory//report"), None);
+            assert_eq!(
+                door_route(&format!("/directory/{workspace}/report/more")),
+                None
+            );
+            assert_eq!(door_route("/rooms"), None);
+        }
+
+        phase a_page_error_report_is_what_the_page_sends;
+        {
+            let body = serde_json::json!({
+                "kind": "error", "message": "x is not a function", "source": "https://site.example/v/1/page.js",
+                "line": 12, "column": 4, "stack": "at page.js:12", "page": "/", "build": "1.2.3",
+            })
+            .to_string();
+            let error = PageError::parse(body.as_bytes()).unwrap();
+            assert_eq!(error.kind(), "error");
+            assert_eq!(error.line, 12);
+            assert_eq!(error.build, "1.2.3");
+            // A report without the optional parts is still a report.
+            let rejection =
+                PageError::parse(br#"{"kind": "unhandledrejection", "message": "gone"}"#).unwrap();
+            assert_eq!(rejection.kind(), "unhandledrejection");
+            assert_eq!(rejection.source, "");
+            // A kind this version does not know is logged as one, not refused.
+            assert_eq!(
+                PageError::parse(br#"{"kind": "console", "message": "hi"}"#)
+                    .unwrap()
+                    .kind(),
+                "other"
+            );
+            assert!(PageError::parse(b"not json").is_err());
+            assert!(PageError::parse(&vec![b' '; MAX_PAGE_ERROR_BYTES + 1]).is_err());
+        }
     }
 
-    #[test]
-    fn a_listing_is_text_and_hands_out_no_moderators() {
-        let listing = Listing {
-            description: "  A place for coffee.\nAnd tea.  ".into(),
-            default_role: WorkspaceRole::Commenter,
-        };
-        assert_eq!(
-            listing.checked().map(|listing| listing.description),
-            Ok("A place for coffee.\nAnd tea.".to_owned())
-        );
-        let moderators = Listing {
-            description: String::new(),
-            default_role: WorkspaceRole::Moderator,
-        };
-        assert_eq!(moderators.checked(), Err(ListingError::Role));
-        let long = Listing {
-            description: "x".repeat(MAX_DESCRIPTION_CHARS + 1),
-            default_role: WorkspaceRole::Viewer,
-        };
-        assert_eq!(long.checked(), Err(ListingError::Description));
-        let control = Listing {
-            description: "bell\u{7}".into(),
-            default_role: WorkspaceRole::Viewer,
-        };
-        assert_eq!(control.checked(), Err(ListingError::Description));
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn a_directory_lists_workspaces_as_text_activity_and_camel_case_json;
 
-    #[test]
-    fn activity_says_who_is_here_before_how_recent() {
-        const DAY_MS: u64 = 24 * 60 * 60 * 1000;
-        let now = 100 * DAY_MS;
-        let mut listed = entry();
-        assert_eq!(listed.activity(now), Activity::Quiet);
-        listed.last_active_ms = Some(now - DAY_MS / 2);
-        assert_eq!(listed.activity(now), Activity::ActiveToday);
-        listed.last_active_ms = Some(now - 3 * DAY_MS);
-        assert_eq!(listed.activity(now), Activity::ActiveThisWeek);
-        listed.last_active_ms = Some(now - 30 * DAY_MS);
-        assert_eq!(listed.activity(now), Activity::Quiet);
-        listed.here_count = 4;
-        assert_eq!(listed.activity(now), Activity::HereNow(4));
-    }
+        phase a_listing_is_text_and_hands_out_no_moderators;
+        {
+            let listing = Listing {
+                description: "  A place for coffee.\nAnd tea.  ".into(),
+                default_role: Role::Commenter,
+            };
+            assert_eq!(
+                listing.checked().map(|listing| listing.description),
+                Ok("A place for coffee.\nAnd tea.".to_owned())
+            );
+            let moderators = Listing {
+                description: String::new(),
+                default_role: Role::Moderator,
+            };
+            assert_eq!(moderators.checked(), Err(ListingError::Role));
+            let long = Listing {
+                description: "x".repeat(MAX_DESCRIPTION_CHARS + 1),
+                default_role: Role::Viewer,
+            };
+            assert_eq!(long.checked(), Err(ListingError::Description));
+            let control = Listing {
+                description: "bell\u{7}".into(),
+                default_role: Role::Viewer,
+            };
+            assert_eq!(control.checked(), Err(ListingError::Description));
+        }
 
-    #[test]
-    fn a_page_error_report_is_what_the_page_sends() {
-        let body = serde_json::json!({
-            "kind": "error", "message": "x is not a function", "source": "https://site.example/v/1/page.js",
-            "line": 12, "column": 4, "stack": "at page.js:12", "page": "/", "build": "1.2.3",
-        })
-        .to_string();
-        let error = PageError::parse(body.as_bytes()).unwrap();
-        assert_eq!(error.kind(), "error");
-        assert_eq!(error.line, 12);
-        assert_eq!(error.build, "1.2.3");
-        // A report without the optional parts is still a report.
-        let rejection =
-            PageError::parse(br#"{"kind": "unhandledrejection", "message": "gone"}"#).unwrap();
-        assert_eq!(rejection.kind(), "unhandledrejection");
-        assert_eq!(rejection.source, "");
-        // A kind this version does not know is logged as one, not refused.
-        assert_eq!(
-            PageError::parse(br#"{"kind": "console", "message": "hi"}"#)
-                .unwrap()
-                .kind(),
-            "other"
-        );
-        assert!(PageError::parse(b"not json").is_err());
-        assert!(PageError::parse(&vec![b' '; MAX_PAGE_ERROR_BYTES + 1]).is_err());
-    }
+        phase activity_says_who_is_here_before_how_recent;
+        {
+            const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+            let now = 100 * DAY_MS;
+            let mut listed = entry();
+            assert_eq!(listed.activity(now), Activity::Quiet);
+            listed.last_active_ms = Some(now - DAY_MS / 2);
+            assert_eq!(listed.activity(now), Activity::ActiveToday);
+            listed.last_active_ms = Some(now - 3 * DAY_MS);
+            assert_eq!(listed.activity(now), Activity::ActiveThisWeek);
+            listed.last_active_ms = Some(now - 30 * DAY_MS);
+            assert_eq!(listed.activity(now), Activity::Quiet);
+            listed.here_count = 4;
+            assert_eq!(listed.activity(now), Activity::HereNow(4));
+        }
 
-    #[test]
-    fn the_wire_is_camel_case_json_with_optional_fields() {
-        let page: DirectoryPage = serde_json::from_value(serde_json::json!({
-            "workspaces": [{
-                "room": "r", "name": "Coffee", "defaultRole": "Editor", "door": "https://tilo.sh/",
-                "community": true, "hereCount": 12
-            }]
-        }))
-        .unwrap();
-        let listed = &page.workspaces[0];
-        assert!(listed.community);
-        assert_eq!(listed.default_role, WorkspaceRole::Editor);
-        assert_eq!(listed.here_count, 12);
-        assert!(listed.here.is_empty());
+        phase the_wire_is_camel_case_json_with_optional_fields;
+        {
+            let page: DirectoryPage = serde_json::from_value(serde_json::json!({
+                "workspaces": [{
+                    "room": "r", "name": "Coffee", "defaultRole": "editor", "door": "https://tilo.sh/",
+                    "community": true, "hereCount": 12
+                }]
+            }))
+            .unwrap();
+            let listed = &page.workspaces[0];
+            assert!(listed.community);
+            assert_eq!(listed.default_role, Role::Editor);
+            assert_eq!(listed.here_count, 12);
+            assert!(listed.here.is_empty());
+        }
     }
 }

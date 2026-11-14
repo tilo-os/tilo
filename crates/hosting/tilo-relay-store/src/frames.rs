@@ -10,6 +10,7 @@ use std::{
     path::Path,
 };
 use tilo_relay_client::coedit::CoeditPayload;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::transport::{self, Envelope};
 
 fn invalid(message: &str) -> StoreError {
@@ -30,7 +31,7 @@ pub fn framed_envelope(bytes: &[u8]) -> Option<(Envelope, &[u8])> {
 /// Validate EVERY enclosing representation before granting proof authority.
 /// Authentication happens at ingress, not in this disk decoder.
 #[must_use]
-pub fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
+pub fn payload(bytes: &[u8], workspace: WorkspaceId) -> Option<([u8; 32], CoeditPayload)> {
     let (
         Envelope::Delta {
             workspace_id,
@@ -51,7 +52,7 @@ pub fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)
 
 /// The co-edit body of a retained frame of `workspace`.
 #[must_use]
-pub fn body_of(bytes: &[u8], workspace: u64) -> Option<Vec<u8>> {
+pub fn body_of(bytes: &[u8], workspace: WorkspaceId) -> Option<Vec<u8>> {
     match payload(bytes, workspace)?.1 {
         CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. } => {
             Some(body)

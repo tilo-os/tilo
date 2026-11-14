@@ -132,28 +132,74 @@ mod tests {
         }
     }
 
-    #[test]
-    fn connected_service_stops_and_joins_after_peer_disconnect() {
-        for iteration in 0..128 {
+    tilo_test_env::scenario! {
+        fn a_connected_service_stops_and_joins;
+
+        phase connected_service_stops_and_joins_after_peer_disconnect;
+        {
+            for iteration in 0..128 {
+                let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
+                let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+                assert!(client.list().unwrap().is_empty());
+                drop(client);
+                assert_eq!(
+                    service.shutdown(),
+                    Ok(()),
+                    "owned driver iteration {iteration}"
+                );
+            }
+        }
+
+        phase connected_service_stops_and_joins_with_a_live_idle_peer;
+        {
             let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
             let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
             assert!(client.list().unwrap().is_empty());
+            assert_eq!(service.shutdown(), Ok(()));
+            drop(client);
+        }
+
+        phase connected_service_shutdown_still_reports_driver_panics;
+        {
+            let (service, fd) = ConnectedService::start(PanickingHost).unwrap();
+            let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+            assert!(client.list().is_err());
             drop(client);
             assert_eq!(
                 service.shutdown(),
-                Ok(()),
-                "owned driver iteration {iteration}"
+                Err("app-host test service panicked".into())
             );
         }
-    }
 
-    #[test]
-    fn connected_service_stops_and_joins_with_a_live_idle_peer() {
-        let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
-        let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
-        assert!(client.list().unwrap().is_empty());
-        assert_eq!(service.shutdown(), Ok(()));
-        drop(client);
+        phase connected_service_shutdown_cancels_an_entered_server_call;
+        {
+            let (entered, observed) = std::sync::mpsc::sync_channel(1);
+            let canceled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let waiter = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let (service, fd) = ConnectedService::start(PendingHost {
+                entered,
+                canceled: std::sync::Arc::clone(&canceled),
+                waiter: std::sync::Arc::clone(&waiter),
+            })
+            .unwrap();
+            let client = std::thread::spawn(move || {
+                crate::client::BlockingClient::from_connected_fd(fd)
+                    .unwrap()
+                    .list()
+            });
+            tilo_test_env::recv("the server call to be entered", &observed);
+            assert_eq!(service.shutdown(), Ok(()));
+            // Like the Store fixture, release the saved task waker after joining.
+            drop(waiter.lock().unwrap().take());
+            assert!(
+                client.join().unwrap().is_err(),
+                "pending RPC reports disconnect"
+            );
+            assert!(
+                canceled.load(std::sync::atomic::Ordering::SeqCst),
+                "the real entered service future is retired by shutdown"
+            );
+        }
     }
 
     #[test]
@@ -241,18 +287,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn connected_service_shutdown_still_reports_driver_panics() {
-        let (service, fd) = ConnectedService::start(PanickingHost).unwrap();
-        let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
-        assert!(client.list().is_err());
-        drop(client);
-        assert_eq!(
-            service.shutdown(),
-            Err("app-host test service panicked".into())
-        );
-    }
-
     struct PendingCall(std::sync::Arc<std::sync::atomic::AtomicBool>);
     impl Drop for PendingCall {
         fn drop(&mut self) {
@@ -285,35 +319,5 @@ mod tests {
                 Ok(Answer::Done)
             }
         }
-    }
-
-    #[test]
-    fn connected_service_shutdown_cancels_an_entered_server_call() {
-        let (entered, observed) = std::sync::mpsc::sync_channel(1);
-        let canceled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let waiter = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let (service, fd) = ConnectedService::start(PendingHost {
-            entered,
-            canceled: std::sync::Arc::clone(&canceled),
-            waiter: std::sync::Arc::clone(&waiter),
-        })
-        .unwrap();
-        let client = std::thread::spawn(move || {
-            crate::client::BlockingClient::from_connected_fd(fd)
-                .unwrap()
-                .list()
-        });
-        tilo_test_env::recv("the server call to be entered", &observed);
-        assert_eq!(service.shutdown(), Ok(()));
-        // Like the Store fixture, release the saved task waker after joining.
-        drop(waiter.lock().unwrap().take());
-        assert!(
-            client.join().unwrap().is_err(),
-            "pending RPC reports disconnect"
-        );
-        assert!(
-            canceled.load(std::sync::atomic::Ordering::SeqCst),
-            "the real entered service future is retired by shutdown"
-        );
     }
 }

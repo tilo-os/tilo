@@ -128,6 +128,16 @@ impl PageSlide {
     }
 }
 
+impl PageSlide {
+    /// Where the page it shows is drawn: its box, and past its foot what follows a band on its
+    /// way in the page.
+    fn shown_rect(&self) -> Rect {
+        let grows = crate::widget::Widget::disclosing(self).map_or(0.0, |moving| moving.reach(0.0));
+        self.rect
+            .with_size((self.rect.width(), self.rect.height() + grows))
+    }
+}
+
 fn level_of(level: usize) -> f64 {
     f64::from(u32::try_from(level).unwrap_or(u32::MAX))
 }
@@ -248,7 +258,7 @@ impl Decorator for PageSlide {
         let moving = self.depth.is_moving(now);
         let depth = self.depth.get(now);
         let width = self.rect.width();
-        let clip = self.rect;
+        let clip = self.shown_rect();
         if moving {
             if let Some(leaving) = &mut self.leaving {
                 let pose = Drill::pose(level_of(leaving.level) - depth, width, motion);
@@ -284,6 +294,15 @@ impl Decorator for PageSlide {
         self.depth.is_moving(crate::motion::frame_now()) || self.page.needs_animation_frame()
     }
 
+    /// A band opening or closing in the page it shows moves what follows the slide, as one in a
+    /// column would; a page on its way in or out moves nothing past it.
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        self.leaving
+            .is_none()
+            .then(|| self.page.disclosing())
+            .flatten()
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self.leaving.is_some()
@@ -305,7 +324,7 @@ impl Decorator for PageSlide {
     fn paint_bounds(&self) -> Rect {
         match &self.leaving {
             Some(leaving) => self.rect.union(leaving.rect),
-            None => self.rect,
+            None => self.shown_rect(),
         }
     }
 

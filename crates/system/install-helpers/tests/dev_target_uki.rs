@@ -361,383 +361,261 @@ fn refused<T: std::fmt::Debug>(result: Result<T>, message: &str) {
     );
 }
 
-#[test]
-fn runtime_profile_and_pinned_dtb_fail_closed() {
-    let fixture = Fixture::new();
-    assert_eq!(
-        image_inputs(&fixture, &fixture.image).unwrap().dtb,
-        Some(fixture.dtb.clone())
-    );
-    let mut changed = dtb();
-    *changed.last_mut().unwrap() = b'X';
-    fs::write(&fixture.dtb, changed).unwrap();
-    refused(image_inputs(&fixture, &fixture.image), "pinned SHA-256");
-}
+tilo_test_env::scenario! {
+    fn the_split_boot_converts_to_a_sealed_uki;
 
-#[test]
-fn conversion_preserves_ci_identity_and_boot_bytes() {
-    let fixture = Fixture::new();
-    assert_eq!(fixture.promote().unwrap(), digest());
-    assert_eq!(fixture.builds.get(), 1);
-    let origin = fs::read_to_string(&fixture.origin).unwrap();
-    assert_eq!(
-        origin,
-        format!(
-            "[origin]\ncontainer-image-reference = ostree-unverified-image:docker://{ORIGIN}\n\n\
+    phase runtime_profile_and_pinned_dtb_fail_closed;
+    {
+        let fixture = Fixture::new();
+        assert_eq!(
+            image_inputs(&fixture, &fixture.image).unwrap().dtb,
+            Some(fixture.dtb.clone())
+        );
+        let mut changed = dtb();
+        *changed.last_mut().unwrap() = b'X';
+        fs::write(&fixture.dtb, changed).unwrap();
+        refused(image_inputs(&fixture, &fixture.image), "pinned SHA-256");
+    }
+
+    phase conversion_preserves_ci_identity_and_boot_bytes;
+    {
+        let fixture = Fixture::new();
+        assert_eq!(fixture.promote().unwrap(), digest());
+        assert_eq!(fixture.builds.get(), 1);
+        let origin = fs::read_to_string(&fixture.origin).unwrap();
+        assert_eq!(
+            origin,
+            format!(
+                "[origin]\ncontainer-image-reference = ostree-unverified-image:docker://{ORIGIN}\n\n\
              [image]\nmanifest_digest = {MANIFEST}\n\n\
              [boot]\nboot_type = uki\ndigest = {}\n\n",
-            sha256(&[KERNEL, INITRD].concat())
-        )
-    );
-    let entry = fs::read_to_string(&fixture.entry).unwrap();
-    assert_eq!(
-        entry,
-        format!(
-            "title Tilo\nversion {0}\nsort-key bootc-tilo-0\nefi /EFI/Linux/bootc/bootc_composefs-{0}.efi\n",
-            digest()
-        )
-    );
-    assert_eq!(fs::read(fixture.kdir.join("vmlinuz")).unwrap(), KERNEL);
-    assert!(!fixture.image.join("boot").exists());
-    assert_eq!(
-        fs::metadata(fixture.uki_path())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o644
-    );
-    // The scratch directory on the ESP is gone.
-    let leftovers: Vec<_> = fs::read_dir(&fixture.esp)
-        .unwrap()
-        .filter(|e| {
-            e.as_ref()
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("tilo-dev-target-")
-        })
-        .collect();
-    assert!(leftovers.is_empty());
-}
-
-#[test]
-fn sealed_ci_target_projection_retains_origin_and_loader() {
-    let fixture = Fixture::new();
-    let digest = digest();
-    let words = format!("root=tilo-auto composefs={digest}");
-    let sealed = [words.as_bytes(), b"\0"].concat();
-    let dtb = dtb();
-    let original = pe(&[
-        (".linux", KERNEL),
-        (".initrd", INITRD),
-        (".cmdline", &sealed),
-        (".dtb", &dtb),
-    ]);
-    write(&fixture.image.join("boot/EFI/Linux/7.2.7.efi"), &original);
-    write(&fixture.uki_path(), &original);
-    let origin = fs::read_to_string(&fixture.origin)
-        .unwrap()
-        .replace("boot_type=bls", "boot_type=uki");
-    fs::write(&fixture.origin, origin).unwrap();
-    fs::write(
-        &fixture.entry,
-        format!(
-            "title Tilo\nversion {digest}\nsort-key bootc-tilo-0\nefi /EFI/Linux/bootc/bootc_composefs-{digest}.efi\n"
-        ),
-    )
-    .unwrap();
-    let (old_origin, old_entry) = (
-        fs::read(&fixture.origin).unwrap(),
-        fs::read(&fixture.entry).unwrap(),
-    );
-    fixture.no_build();
-    fixture.ukify.set(false);
-    assert_eq!(fixture.promote().unwrap(), digest);
-    assert_eq!(
-        fixture.builds.get(),
-        0,
-        "a sealed projection runs no constructor"
-    );
-    assert_eq!(fs::read(&fixture.origin).unwrap(), old_origin);
-    assert_eq!(fs::read(&fixture.entry).unwrap(), old_entry);
-    assert_eq!(
-        fs::read(fixture.image.join("boot/EFI/Linux/7.2.7.efi")).unwrap(),
-        original
-    );
-    let installed = fs::read(fixture.uki_path()).unwrap();
-    assert_eq!(
-        sections(&fixture.uki_path())[".cmdline"],
-        format!("{words} {MOUNT}").as_bytes()
-    );
-    // Nothing but the command line's bytes and its virtual size changed.
-    let room = tilo_esp_write::uki::find_cmdline_room(&original).unwrap();
-    let mut unchanged = installed;
-    let raw = room.raw_offset..room.raw_offset + room.raw_size;
-    unchanged[raw.clone()].copy_from_slice(&original[raw]);
-    let size = room.header + 8..room.header + 12;
-    unchanged[size.clone()].copy_from_slice(&original[size]);
-    assert_eq!(unchanged, original);
-
-    // A full command-line section refuses growth without touching the
-    // installed UKI, origin or loader; no constructor fallback is allowed.
-    let full = format!("{words} x={}", "z".repeat(512 - words.len() - 3));
-    let full = pe(&[
-        (".linux", KERNEL),
-        (".initrd", INITRD),
-        (".cmdline", full.as_bytes()),
-        (".dtb", &dtb),
-    ]);
-    fs::write(fixture.uki_path(), &full).unwrap();
-    refused(fixture.promote(), "only 512 are available");
-    assert_eq!(fs::read(fixture.uki_path()).unwrap(), full);
-    assert_eq!(fs::read(&fixture.origin).unwrap(), old_origin);
-    assert_eq!(fs::read(&fixture.entry).unwrap(), old_entry);
-}
-
-#[test]
-fn split_constructor_missing_fails_during_image_preflight() {
-    let fixture = Fixture::new();
-    fixture.ukify.set(false);
-    refused(
-        image_inputs(&fixture, &fixture.image),
-        "runtime ukify constructor before installation",
-    );
-    assert!(!fixture.uki_path().exists());
-}
-
-#[test]
-fn runner_built_uki_installs_without_a_live_constructor() {
-    let fixture = Fixture::new();
-    let transported = fixture.runner_uki(&[]);
-    let original = fs::read(&transported).unwrap();
-    assert_eq!(
-        sections(&transported)[".cmdline"],
-        [placeholder().as_bytes(), b"\0"].concat()
-    );
-    fixture.no_build();
-    fixture.ukify.set(false);
-    image_inputs(&fixture, &fixture.image).unwrap();
-    assert_eq!(fixture.promote().unwrap(), digest());
-    assert_eq!(fixture.builds.get(), 0, "the live medium has no ukify");
-    let installed = sections(&fixture.uki_path());
-    assert_eq!(installed[".linux"], KERNEL);
-    assert_eq!(installed[".initrd"], INITRD);
-    assert_eq!(installed[".dtb"], dtb());
-    assert_eq!(
-        installed[".cmdline"],
-        format!("composefs={} root=tilo-auto quiet {MOUNT}", digest()).as_bytes()
-    );
-    let origin = fs::read_to_string(&fixture.origin).unwrap();
-    assert!(origin.contains("boot_type = uki"));
-    assert!(origin.contains(&format!("manifest_digest = {MANIFEST}")));
-    assert!(
-        fs::read_to_string(&fixture.entry)
-            .unwrap()
-            .contains(&format!(
-                "efi /EFI/Linux/bootc/bootc_composefs-{}.efi",
+                sha256(&[KERNEL, INITRD].concat())
+            )
+        );
+        let entry = fs::read_to_string(&fixture.entry).unwrap();
+        assert_eq!(
+            entry,
+            format!(
+                "title Tilo\nversion {0}\nsort-key bootc-tilo-0\nefi /EFI/Linux/bootc/bootc_composefs-{0}.efi\n",
                 digest()
-            ))
-    );
-    assert_eq!(fs::read(&transported).unwrap(), original);
-}
-
-#[test]
-fn runner_built_uki_must_carry_the_selected_payload_and_room() {
-    let fixture = Fixture::new();
-    let (entry, origin) = (
-        fs::read(&fixture.entry).unwrap(),
-        fs::read(&fixture.origin).unwrap(),
-    );
-    let other_dtb = vec![b'x'; dtb().len()];
-    fixture.ukify.set(false);
-    for (changes, message) in [
-        (
-            vec![(".linux", &b"other image kernel"[..])],
-            "split kernel payload",
-        ),
-        (vec![(".dtb", &other_dtb[..])], "pinned hardware DTB"),
-        (
-            vec![(".cmdline", &b"root=tilo-auto\0"[..])],
-            "reserved command-line room",
-        ),
-    ] {
-        let transported = fixture.runner_uki(&changes);
-        refused(fixture.promote(), message);
-        assert_eq!(fixture.builds.get(), 0);
-        assert_eq!(fs::read(&fixture.entry).unwrap(), entry);
-        assert_eq!(fs::read(&fixture.origin).unwrap(), origin);
-        assert!(!fixture.uki_path().exists());
-        fs::remove_dir_all(transported.parent().unwrap()).unwrap();
+            )
+        );
+        assert_eq!(fs::read(fixture.kdir.join("vmlinuz")).unwrap(), KERNEL);
+        assert!(!fixture.image.join("boot").exists());
+        assert_eq!(
+            fs::metadata(fixture.uki_path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+        // The scratch directory on the ESP is gone.
+        let leftovers: Vec<_> = fs::read_dir(&fixture.esp)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("tilo-dev-target-")
+            })
+            .collect();
+        assert!(leftovers.is_empty());
     }
-}
 
-#[test]
-fn runner_built_uki_refuses_a_command_line_beyond_its_room() {
-    let fixture = Fixture::new();
-    let short = format!("{CMDLINE_ROOM}=x");
-    fixture.runner_uki(&[(".cmdline", short.as_bytes())]);
-    fixture.ukify.set(false);
-    let entry = fs::read_to_string(&fixture.entry).unwrap();
-    fs::write(
-        &fixture.entry,
-        entry.replace(
-            " tilo.install",
-            &format!(" x={} tilo.install", "y".repeat(600)),
-        ),
-    )
-    .unwrap();
-    refused(fixture.promote(), "reserved 512");
-    assert!(!fixture.uki_path().exists());
-}
-
-#[test]
-fn runner_built_uki_beside_a_sealed_image_uki_is_ambiguous() {
-    let fixture = Fixture::new();
-    fixture.runner_uki(&[]);
-    write(
-        &fixture.image.join("boot/EFI/Linux/7.2.7.efi"),
-        &pe(&[
+    phase sealed_ci_target_projection_retains_origin_and_loader;
+    {
+        let fixture = Fixture::new();
+        let digest = digest();
+        let words = format!("root=tilo-auto composefs={digest}");
+        let sealed = [words.as_bytes(), b"\0"].concat();
+        let dtb = dtb();
+        let original = pe(&[
             (".linux", KERNEL),
             (".initrd", INITRD),
-            (".cmdline", b"x\0"),
-            (".dtb", &dtb()),
-        ]),
-    );
-    refused(
-        image_inputs(&fixture, &fixture.image),
-        "both a sealed and a transported UKI",
-    );
-}
+            (".cmdline", &sealed),
+            (".dtb", &dtb),
+        ]);
+        write(&fixture.image.join("boot/EFI/Linux/7.2.7.efi"), &original);
+        write(&fixture.uki_path(), &original);
+        let origin = fs::read_to_string(&fixture.origin)
+            .unwrap()
+            .replace("boot_type=bls", "boot_type=uki");
+        fs::write(&fixture.origin, origin).unwrap();
+        fs::write(
+            &fixture.entry,
+            format!(
+                "title Tilo\nversion {digest}\nsort-key bootc-tilo-0\nefi /EFI/Linux/bootc/bootc_composefs-{digest}.efi\n"
+            ),
+        )
+        .unwrap();
+        let (old_origin, old_entry) = (
+            fs::read(&fixture.origin).unwrap(),
+            fs::read(&fixture.entry).unwrap(),
+        );
+        fixture.no_build();
+        fixture.ukify.set(false);
+        assert_eq!(fixture.promote().unwrap(), digest);
+        assert_eq!(
+            fixture.builds.get(),
+            0,
+            "a sealed projection runs no constructor"
+        );
+        assert_eq!(fs::read(&fixture.origin).unwrap(), old_origin);
+        assert_eq!(fs::read(&fixture.entry).unwrap(), old_entry);
+        assert_eq!(
+            fs::read(fixture.image.join("boot/EFI/Linux/7.2.7.efi")).unwrap(),
+            original
+        );
+        let installed = fs::read(fixture.uki_path()).unwrap();
+        assert_eq!(
+            sections(&fixture.uki_path())[".cmdline"],
+            format!("{words} {MOUNT}").as_bytes()
+        );
+        // Nothing but the command line's bytes and its virtual size changed.
+        let room = tilo_esp_write::uki::find_cmdline_room(&original).unwrap();
+        let mut unchanged = installed;
+        let raw = room.raw_offset..room.raw_offset + room.raw_size;
+        unchanged[raw.clone()].copy_from_slice(&original[raw]);
+        let size = room.header + 8..room.header + 12;
+        unchanged[size.clone()].copy_from_slice(&original[size]);
+        assert_eq!(unchanged, original);
 
-#[test]
-fn wrong_payload_or_ci_manifest_fails_before_mutation() {
-    let digest = digest();
-    for variant in [
-        "payload",
-        "manifest",
-        "composefs",
-        "ambiguous-kernel",
-        "unsafe-bls",
-        "other-root",
-        "second-bootc-root",
-        "no-update-origin",
-    ] {
-        let mut fixture = Fixture::new();
-        let entry = fs::read_to_string(&fixture.entry).unwrap();
-        let origin = fs::read(&fixture.origin).unwrap();
-        match variant {
-            "payload" => fs::write(
-                fixture
-                    .esp
-                    .join(format!("EFI/Linux/bootc_composefs-{digest}/vmlinuz")),
-                b"other image kernel",
-            )
-            .unwrap(),
-            "manifest" => fixture.selected.target_digest = format!("sha256:{}", "c".repeat(64)),
-            "no-update-origin" => fixture.selected.update_origin = None,
-            "composefs" => fs::write(
-                &fixture.entry,
-                entry.replace(
-                    &format!("composefs={digest}"),
-                    &format!("composefs={}", "c".repeat(128)),
-                ),
-            )
-            .unwrap(),
-            // Only bootc's own UUID root is dropped; any other root stays fatal.
-            "other-root" => fs::write(
-                &fixture.entry,
-                entry.replace(" quiet", " root=/dev/vda3 quiet"),
-            )
-            .unwrap(),
-            "second-bootc-root" => fs::write(
-                &fixture.entry,
-                entry.replace(" quiet", &format!(" root=UUID={BOOT_UUID} quiet")),
-            )
-            .unwrap(),
-            "ambiguous-kernel" => {
-                fs::create_dir(fixture.image.join("usr/lib/modules/other")).unwrap();
-            }
-            _ => fs::write(
-                &fixture.entry,
-                entry.replace("linux /EFI/", "linux /../EFI/"),
-            )
-            .unwrap(),
-        }
-        assert!(fixture.promote().is_err(), "{variant} was admitted");
-        assert_eq!(fixture.builds.get(), 0, "{variant}");
-        assert_eq!(fs::read(&fixture.origin).unwrap(), origin, "{variant}");
-        assert!(!fixture.uki_path().exists(), "{variant}");
+        // A full command-line section refuses growth without touching the
+        // installed UKI, origin or loader; no constructor fallback is allowed.
+        let full = format!("{words} x={}", "z".repeat(512 - words.len() - 3));
+        let full = pe(&[
+            (".linux", KERNEL),
+            (".initrd", INITRD),
+            (".cmdline", full.as_bytes()),
+            (".dtb", &dtb),
+        ]);
+        fs::write(fixture.uki_path(), &full).unwrap();
+        refused(fixture.promote(), "only 512 are available");
+        assert_eq!(fs::read(fixture.uki_path()).unwrap(), full);
+        assert_eq!(fs::read(&fixture.origin).unwrap(), old_origin);
+        assert_eq!(fs::read(&fixture.entry).unwrap(), old_entry);
+    }
+
+    phase split_constructor_missing_fails_during_image_preflight;
+    {
+        let fixture = Fixture::new();
+        fixture.ukify.set(false);
+        refused(
+            image_inputs(&fixture, &fixture.image),
+            "runtime ukify constructor before installation",
+        );
+        assert!(!fixture.uki_path().exists());
     }
 }
 
-#[test]
-fn unrelated_mount_survives_and_conflicting_boot_mount_fails_before_writes() {
-    let fixture = Fixture::new();
-    let original = fs::read_to_string(&fixture.entry).unwrap();
-    let unrelated = "systemd.mount-extra=LABEL=DATA:/srv:ext4:ro";
-    fs::write(
-        &fixture.entry,
-        format!("{} {unrelated}\n", original.trim_end_matches('\n')),
-    )
-    .unwrap();
-    fixture.promote().unwrap();
-    let cmdline = String::from_utf8(sections(&fixture.uki_path())[".cmdline"].clone()).unwrap();
-    assert!(cmdline.split(' ').any(|w| w == unrelated), "{cmdline}");
+tilo_test_env::scenario! {
+    fn a_runner_built_uki_is_installed_or_refused;
 
-    // A fresh split-kernel fixture keeps the mount guard apart from the
-    // completed transition's already-existing UKI guard.
-    let fixture = Fixture::new();
-    fs::write(
-        &fixture.entry,
-        format!(
-            "{} systemd.mount-extra=LABEL=OTHER:/boot:ext4:rw\n",
-            original.trim_end_matches('\n')
-        ),
-    )
-    .unwrap();
-    let (origin, entry) = (
-        fs::read(&fixture.origin).unwrap(),
-        fs::read(&fixture.entry).unwrap(),
-    );
-    refused(fixture.promote(), "conflicting /boot");
-    assert_eq!(fixture.builds.get(), 0);
-    assert_eq!(fs::read(&fixture.origin).unwrap(), origin);
-    assert_eq!(fs::read(&fixture.entry).unwrap(), entry);
-    assert!(!fixture.uki_path().exists());
-}
+    phase runner_built_uki_installs_without_a_live_constructor;
+    {
+        let fixture = Fixture::new();
+        let transported = fixture.runner_uki(&[]);
+        let original = fs::read(&transported).unwrap();
+        assert_eq!(
+            sections(&transported)[".cmdline"],
+            [placeholder().as_bytes(), b"\0"].concat()
+        );
+        fixture.no_build();
+        fixture.ukify.set(false);
+        image_inputs(&fixture, &fixture.image).unwrap();
+        assert_eq!(fixture.promote().unwrap(), digest());
+        assert_eq!(fixture.builds.get(), 0, "the live medium has no ukify");
+        let installed = sections(&fixture.uki_path());
+        assert_eq!(installed[".linux"], KERNEL);
+        assert_eq!(installed[".initrd"], INITRD);
+        assert_eq!(installed[".dtb"], dtb());
+        assert_eq!(
+            installed[".cmdline"],
+            format!("composefs={} root=tilo-auto quiet {MOUNT}", digest()).as_bytes()
+        );
+        let origin = fs::read_to_string(&fixture.origin).unwrap();
+        assert!(origin.contains("boot_type = uki"));
+        assert!(origin.contains(&format!("manifest_digest = {MANIFEST}")));
+        assert!(
+            fs::read_to_string(&fixture.entry)
+                .unwrap()
+                .contains(&format!(
+                    "efi /EFI/Linux/bootc/bootc_composefs-{}.efi",
+                    digest()
+                ))
+        );
+        assert_eq!(fs::read(&transported).unwrap(), original);
+    }
 
-#[test]
-fn empty_efi_is_not_admitted_as_a_sealed_image() {
-    let fixture = Fixture::new();
-    write(&fixture.image.join("boot/EFI/Linux/7.2.7.efi"), b"");
-    refused(
-        image_inputs(&fixture, &fixture.image),
-        "missing target boot input",
-    );
-}
+    phase runner_built_uki_must_carry_the_selected_payload_and_room;
+    {
+        let fixture = Fixture::new();
+        let (entry, origin) = (
+            fs::read(&fixture.entry).unwrap(),
+            fs::read(&fixture.origin).unwrap(),
+        );
+        let other_dtb = vec![b'x'; dtb().len()];
+        fixture.ukify.set(false);
+        for (changes, message) in [
+            (
+                vec![(".linux", &b"other image kernel"[..])],
+                "split kernel payload",
+            ),
+            (vec![(".dtb", &other_dtb[..])], "pinned hardware DTB"),
+            (
+                vec![(".cmdline", &b"root=tilo-auto\0"[..])],
+                "reserved command-line room",
+            ),
+        ] {
+            let transported = fixture.runner_uki(&changes);
+            refused(fixture.promote(), message);
+            assert_eq!(fixture.builds.get(), 0);
+            assert_eq!(fs::read(&fixture.entry).unwrap(), entry);
+            assert_eq!(fs::read(&fixture.origin).unwrap(), origin);
+            assert!(!fixture.uki_path().exists());
+            fs::remove_dir_all(transported.parent().unwrap()).unwrap();
+        }
+    }
 
-#[test]
-fn ukify_wrong_dtb_is_rejected_before_boot_metadata_changes() {
-    let fixture = Fixture::new();
-    let (entry, origin) = (
-        fs::read(&fixture.entry).unwrap(),
-        fs::read(&fixture.origin).unwrap(),
-    );
-    *fixture.build.borrow_mut() = Some(Box::new(|fixture: &Fixture, argv: &[&str]| {
-        fixture.ukify_build(argv)?;
-        let output = argv[argv.iter().position(|a| *a == "--output").unwrap() + 1];
-        let data = fs::read(output).unwrap();
-        let at = data.windows(dtb().len()).position(|w| w == dtb()).unwrap();
-        let mut changed = data;
-        changed[at..at + 40].fill(b'x');
-        fs::write(output, changed).unwrap();
-        Ok(String::new())
-    }));
-    refused(fixture.promote(), "hardware DTB");
-    assert_eq!(fs::read(&fixture.entry).unwrap(), entry);
-    assert_eq!(fs::read(&fixture.origin).unwrap(), origin);
-    assert!(!fixture.uki_path().exists());
+    phase runner_built_uki_refuses_a_command_line_beyond_its_room;
+    {
+        let fixture = Fixture::new();
+        let short = format!("{CMDLINE_ROOM}=x");
+        fixture.runner_uki(&[(".cmdline", short.as_bytes())]);
+        fixture.ukify.set(false);
+        let entry = fs::read_to_string(&fixture.entry).unwrap();
+        fs::write(
+            &fixture.entry,
+            entry.replace(
+                " tilo.install",
+                &format!(" x={} tilo.install", "y".repeat(600)),
+            ),
+        )
+        .unwrap();
+        refused(fixture.promote(), "reserved 512");
+        assert!(!fixture.uki_path().exists());
+    }
+
+    phase runner_built_uki_beside_a_sealed_image_uki_is_ambiguous;
+    {
+        let fixture = Fixture::new();
+        fixture.runner_uki(&[]);
+        write(
+            &fixture.image.join("boot/EFI/Linux/7.2.7.efi"),
+            &pe(&[
+                (".linux", KERNEL),
+                (".initrd", INITRD),
+                (".cmdline", b"x\0"),
+                (".dtb", &dtb()),
+            ]),
+        );
+        refused(
+            image_inputs(&fixture, &fixture.image),
+            "both a sealed and a transported UKI",
+        );
+    }
 }
 
 /// The VM gate, with this process modelled as root on a machine without the
@@ -758,33 +636,167 @@ impl Host for Root {
     }
 }
 
-#[test]
-fn unsigned_route_requires_real_vm_gate() {
-    let host = Root(Fixture::new());
-    refused(gate(&host), "development installer VM");
-    assert_eq!(host.0.builds.get(), 0);
-}
+tilo_test_env::scenario! {
+    fn the_dev_target_uki_refuses_before_it_changes_anything;
 
-#[test]
-fn the_shipped_command_refuses_outside_the_development_vm() {
-    let fixture = Fixture::new();
-    let binary = tilo_test_env::package_binary!("tilo-installer-offline-target");
-    let output = Command::new(&binary)
-        .args(["dev-target-uki", "validate-image", "--image-root"])
-        .arg(&fixture.image)
-        .output_locked()
+    phase wrong_payload_or_ci_manifest_fails_before_mutation;
+    {
+        let digest = digest();
+        for variant in [
+            "payload",
+            "manifest",
+            "composefs",
+            "ambiguous-kernel",
+            "unsafe-bls",
+            "other-root",
+            "second-bootc-root",
+            "no-update-origin",
+        ] {
+            let mut fixture = Fixture::new();
+            let entry = fs::read_to_string(&fixture.entry).unwrap();
+            let origin = fs::read(&fixture.origin).unwrap();
+            match variant {
+                "payload" => fs::write(
+                    fixture
+                        .esp
+                        .join(format!("EFI/Linux/bootc_composefs-{digest}/vmlinuz")),
+                    b"other image kernel",
+                )
+                .unwrap(),
+                "manifest" => fixture.selected.target_digest = format!("sha256:{}", "c".repeat(64)),
+                "no-update-origin" => fixture.selected.update_origin = None,
+                "composefs" => fs::write(
+                    &fixture.entry,
+                    entry.replace(
+                        &format!("composefs={digest}"),
+                        &format!("composefs={}", "c".repeat(128)),
+                    ),
+                )
+                .unwrap(),
+                // Only bootc's own UUID root is dropped; any other root stays fatal.
+                "other-root" => fs::write(
+                    &fixture.entry,
+                    entry.replace(" quiet", " root=/dev/vda3 quiet"),
+                )
+                .unwrap(),
+                "second-bootc-root" => fs::write(
+                    &fixture.entry,
+                    entry.replace(" quiet", &format!(" root=UUID={BOOT_UUID} quiet")),
+                )
+                .unwrap(),
+                "ambiguous-kernel" => {
+                    fs::create_dir(fixture.image.join("usr/lib/modules/other")).unwrap();
+                }
+                _ => fs::write(
+                    &fixture.entry,
+                    entry.replace("linux /EFI/", "linux /../EFI/"),
+                )
+                .unwrap(),
+            }
+            assert!(fixture.promote().is_err(), "{variant} was admitted");
+            assert_eq!(fixture.builds.get(), 0, "{variant}");
+            assert_eq!(fs::read(&fixture.origin).unwrap(), origin, "{variant}");
+            assert!(!fixture.uki_path().exists(), "{variant}");
+        }
+    }
+
+    phase unrelated_mount_survives_and_conflicting_boot_mount_fails_before_writes;
+    {
+        let fixture = Fixture::new();
+        let original = fs::read_to_string(&fixture.entry).unwrap();
+        let unrelated = "systemd.mount-extra=LABEL=DATA:/srv:ext4:ro";
+        fs::write(
+            &fixture.entry,
+            format!("{} {unrelated}\n", original.trim_end_matches('\n')),
+        )
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "development target UKI: unsigned target UKI requires the development installer VM\n"
-    );
-    let output = Command::new(binary)
-        .args(["dev-target-uki", "rebuild", "--image-root", "/"])
-        .output_locked()
+        fixture.promote().unwrap();
+        let cmdline = String::from_utf8(sections(&fixture.uki_path())[".cmdline"].clone()).unwrap();
+        assert!(cmdline.split(' ').any(|w| w == unrelated), "{cmdline}");
+
+        // A fresh split-kernel fixture keeps the mount guard apart from the
+        // completed transition's already-existing UKI guard.
+        let fixture = Fixture::new();
+        fs::write(
+            &fixture.entry,
+            format!(
+                "{} systemd.mount-extra=LABEL=OTHER:/boot:ext4:rw\n",
+                original.trim_end_matches('\n')
+            ),
+        )
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains(
-        "argument command: invalid choice: 'rebuild' (choose from 'validate-image', 'promote')"
-    ));
+        let (origin, entry) = (
+            fs::read(&fixture.origin).unwrap(),
+            fs::read(&fixture.entry).unwrap(),
+        );
+        refused(fixture.promote(), "conflicting /boot");
+        assert_eq!(fixture.builds.get(), 0);
+        assert_eq!(fs::read(&fixture.origin).unwrap(), origin);
+        assert_eq!(fs::read(&fixture.entry).unwrap(), entry);
+        assert!(!fixture.uki_path().exists());
+    }
+
+    phase empty_efi_is_not_admitted_as_a_sealed_image;
+    {
+        let fixture = Fixture::new();
+        write(&fixture.image.join("boot/EFI/Linux/7.2.7.efi"), b"");
+        refused(
+            image_inputs(&fixture, &fixture.image),
+            "missing target boot input",
+        );
+    }
+
+    phase ukify_wrong_dtb_is_rejected_before_boot_metadata_changes;
+    {
+        let fixture = Fixture::new();
+        let (entry, origin) = (
+            fs::read(&fixture.entry).unwrap(),
+            fs::read(&fixture.origin).unwrap(),
+        );
+        *fixture.build.borrow_mut() = Some(Box::new(|fixture: &Fixture, argv: &[&str]| {
+            fixture.ukify_build(argv)?;
+            let output = argv[argv.iter().position(|a| *a == "--output").unwrap() + 1];
+            let data = fs::read(output).unwrap();
+            let at = data.windows(dtb().len()).position(|w| w == dtb()).unwrap();
+            let mut changed = data;
+            changed[at..at + 40].fill(b'x');
+            fs::write(output, changed).unwrap();
+            Ok(String::new())
+        }));
+        refused(fixture.promote(), "hardware DTB");
+        assert_eq!(fs::read(&fixture.entry).unwrap(), entry);
+        assert_eq!(fs::read(&fixture.origin).unwrap(), origin);
+        assert!(!fixture.uki_path().exists());
+    }
+
+    phase unsigned_route_requires_real_vm_gate;
+    {
+        let host = Root(Fixture::new());
+        refused(gate(&host), "development installer VM");
+        assert_eq!(host.0.builds.get(), 0);
+    }
+
+    phase the_shipped_command_refuses_outside_the_development_vm;
+    {
+        let fixture = Fixture::new();
+        let binary = tilo_test_env::package_binary!("tilo-installer-offline-target");
+        let output = Command::new(&binary)
+            .args(["dev-target-uki", "validate-image", "--image-root"])
+            .arg(&fixture.image)
+            .output_locked()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "development target UKI: unsigned target UKI requires the development installer VM\n"
+        );
+        let output = Command::new(binary)
+            .args(["dev-target-uki", "rebuild", "--image-root", "/"])
+            .output_locked()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(
+            "argument command: invalid choice: 'rebuild' (choose from 'validate-image', 'promote')"
+        ));
+    }
 }

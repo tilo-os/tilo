@@ -3,13 +3,14 @@
 
 use super::SystemTime;
 use super::facades::PeerWorkspace;
+use crate::join::WorkspaceId;
 use crate::join::task_delegation::TaskDelegation;
 
 impl PeerWorkspace<'_> {
     /// Whether `agent_id` is still admitted to the workspace. A check of existing
     /// capabilities, never a grant.
     ///
-    /// A collaborator is admitted by its live grant on the workspace. A task agent
+    /// A member is admitted by its live grant on the workspace. A task agent
     /// is admitted by the task delegation its run carries (`delegation`, as
     /// `TaskDelegation::encode` wrote it): it verifies as a chain from the
     /// workspace's device list, whose certificate for the signing device is
@@ -53,7 +54,12 @@ impl PeerWorkspace<'_> {
                 return Err("the delegating person is not a member".into());
             }
             return task
-                .verify(cert.as_ref(), &self.peer.core.workspace, super::now_ns(now))
+                .verify(
+                    cert.as_ref(),
+                    WorkspaceId::parse(&self.peer.core.workspace)
+                        .ok_or("the workspace is not a workspace id")?,
+                    super::now_ns(now),
+                )
                 .map_err(|error| format!("the task delegation is refused: {error}"));
         }
         if !super::agent_is_member(&policy, agent_id, now) {

@@ -56,109 +56,118 @@ fn unchanged(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-#[test]
-fn actual_selected_reader_decrypts_external_v10_v11_vectors_without_source_writes() {
-    for (host, encrypted, service, host_only) in [
-        (".slack.com", V10, Service::Slack, false),
-        ("discord.com", V11, Service::Discord, true),
-    ] {
-        let (directory, _connection, grant) = fixture(host, encrypted);
-        assert_eq!(
-            read_selected(&grant, service).unwrap_err(),
-            SourceError::UnsupportedEncryption
-        );
+tilo_test_env::scenario! {
+    /// The Linux Chromium cookie reader.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn the_chromium_cookie_reader_decrypts_known_vectors_and_refuses_changed_or_foreign_input;
+
+    phase actual_selected_reader_decrypts_external_v10_v11_vectors_without_source_writes;
+    {
+        for (host, encrypted, service, host_only) in [
+            (".slack.com", V10, Service::Slack, false),
+            ("discord.com", V11, Service::Discord, true),
+        ] {
+            let (directory, _connection, grant) = fixture(host, encrypted);
+            assert_eq!(
+                read_selected(&grant, service).unwrap_err(),
+                SourceError::UnsupportedEncryption
+            );
+            let adapter = synthetic_adapter(&grant);
+            let grant = grant.with_chromium_decryptor(Arc::new(adapter)).unwrap();
+            let before = unchanged(directory.path());
+            let captured = read_selected(&grant, service).unwrap();
+            assert_eq!(captured.cookies.len(), 1);
+            assert_eq!(captured.cookies[0].value, VALUE);
+            assert_eq!(captured.cookies[0].host_only, host_only);
+            assert_eq!(captured.cookies[0].expires_unix_seconds, None);
+            assert_eq!(unchanged(directory.path()), before);
+            assert!(!format!("{captured:?}").contains(VALUE));
+        }
+    }
+
+    phase actual_reader_refuses_changed_raw_host_partition_and_dual_values;
+    {
+        let (_directory, connection, grant) = fixture("discord.com", V11);
         let adapter = synthetic_adapter(&grant);
         let grant = grant.with_chromium_decryptor(Arc::new(adapter)).unwrap();
-        let before = unchanged(directory.path());
-        let captured = read_selected(&grant, service).unwrap();
-        assert_eq!(captured.cookies.len(), 1);
-        assert_eq!(captured.cookies[0].value, VALUE);
-        assert_eq!(captured.cookies[0].host_only, host_only);
-        assert_eq!(captured.cookies[0].expires_unix_seconds, None);
-        assert_eq!(unchanged(directory.path()), before);
-        assert!(!format!("{captured:?}").contains(VALUE));
+        connection
+            .execute_batch("UPDATE cookies SET host_key='.discord.com' WHERE name='selected';")
+            .unwrap();
+        assert_eq!(
+            read_selected(&grant, Service::Discord).unwrap_err(),
+            SourceError::UnsupportedEncryption
+        );
+        connection.execute_batch("UPDATE cookies SET host_key='discord.com',top_frame_site_key='https://other.example' WHERE name='selected';").unwrap();
+        assert_eq!(
+            read_selected(&grant, Service::Discord).unwrap_err(),
+            SourceError::UnsupportedPartition
+        );
+        connection.execute_batch("UPDATE cookies SET top_frame_site_key='',value='conflicting plaintext' WHERE name='selected';").unwrap();
+        assert_eq!(
+            read_selected(&grant, Service::Discord).unwrap_err(),
+            SourceError::InvalidCookies
+        );
     }
-}
-#[test]
-fn actual_reader_refuses_changed_raw_host_partition_and_dual_values() {
-    let (_directory, connection, grant) = fixture("discord.com", V11);
-    let adapter = synthetic_adapter(&grant);
-    let grant = grant.with_chromium_decryptor(Arc::new(adapter)).unwrap();
-    connection
-        .execute_batch("UPDATE cookies SET host_key='.discord.com' WHERE name='selected';")
-        .unwrap();
-    assert_eq!(
-        read_selected(&grant, Service::Discord).unwrap_err(),
-        SourceError::UnsupportedEncryption
-    );
-    connection.execute_batch("UPDATE cookies SET host_key='discord.com',top_frame_site_key='https://other.example' WHERE name='selected';").unwrap();
-    assert_eq!(
-        read_selected(&grant, Service::Discord).unwrap_err(),
-        SourceError::UnsupportedPartition
-    );
-    connection.execute_batch("UPDATE cookies SET top_frame_site_key='',value='conflicting plaintext' WHERE name='selected';").unwrap();
-    assert_eq!(
-        read_selected(&grant, Service::Discord).unwrap_err(),
-        SourceError::InvalidCookies
-    );
-}
-#[test]
-fn actual_reader_recognizes_prior_schema_and_refuses_foreign_profile_authority() {
-    let (_directory, connection, grant) = fixture("discord.com", V11_23);
-    connection
-        .execute_batch("UPDATE meta SET value='23';")
-        .unwrap();
-    let adapter = synthetic_adapter(&grant);
-    let grant = grant.with_chromium_decryptor(Arc::new(adapter)).unwrap();
-    assert_eq!(
-        read_selected(&grant, Service::Discord).unwrap().cookies[0].value,
-        VALUE
-    );
-    let (_foreign, _db, other) = fixture("discord.com", V11);
-    let foreign_adapter = synthetic_adapter(&other);
-    assert!(
-        grant
-            .with_chromium_decryptor(Arc::new(foreign_adapter))
+
+    phase actual_reader_recognizes_prior_schema_and_refuses_foreign_profile_authority;
+    {
+        let (_directory, connection, grant) = fixture("discord.com", V11_23);
+        connection
+            .execute_batch("UPDATE meta SET value='23';")
+            .unwrap();
+        let adapter = synthetic_adapter(&grant);
+        let grant = grant.with_chromium_decryptor(Arc::new(adapter)).unwrap();
+        assert_eq!(
+            read_selected(&grant, Service::Discord).unwrap().cookies[0].value,
+            VALUE
+        );
+        let (_foreign, _db, other) = fixture("discord.com", V11);
+        let foreign_adapter = synthetic_adapter(&other);
+        assert!(
+            grant
+                .with_chromium_decryptor(Arc::new(foreign_adapter))
+                .is_err()
+        );
+    }
+
+    phase external_vectors_refuse_wrong_keys_truncation_unknown_prefixes_and_host_hashes;
+    {
+        let (_directory, _connection, grant) = fixture("discord.com", V11);
+        let adapter = synthetic_adapter(&grant);
+        let encrypted = hex::decode(V11).unwrap();
+        assert_eq!(
+            &*adapter.decrypt("discord.com", 24, &encrypted).unwrap(),
+            VALUE
+        );
+        assert!(adapter.decrypt(".discord.com", 24, &encrypted).is_err());
+        assert!(
+            adapter
+                .decrypt("discord.com", 24, &encrypted[..encrypted.len() - 1])
+                .is_err()
+        );
+        let mut unknown = encrypted.clone();
+        unknown[..3].copy_from_slice(b"v20");
+        assert_eq!(
+            adapter.decrypt("discord.com", 24, &unknown).unwrap_err(),
+            SourceError::UnsupportedEncryption
+        );
+        assert!(
+            decode(
+                &derive(b"wrong-owner-password"),
+                &encrypted[3..],
+                "discord.com",
+                24
+            )
             .is_err()
-    );
-}
-#[test]
-fn external_vectors_refuse_wrong_keys_truncation_unknown_prefixes_and_host_hashes() {
-    let (_directory, _connection, grant) = fixture("discord.com", V11);
-    let adapter = synthetic_adapter(&grant);
-    let encrypted = hex::decode(V11).unwrap();
-    assert_eq!(
-        &*adapter.decrypt("discord.com", 24, &encrypted).unwrap(),
-        VALUE
-    );
-    assert!(adapter.decrypt(".discord.com", 24, &encrypted).is_err());
-    assert!(
-        adapter
-            .decrypt("discord.com", 24, &encrypted[..encrypted.len() - 1])
+        );
+        assert!(
+            decode(
+                &derive(b"synthetic-owner-password"),
+                &encrypted[3..],
+                "discord.com",
+                25
+            )
             .is_err()
-    );
-    let mut unknown = encrypted.clone();
-    unknown[..3].copy_from_slice(b"v20");
-    assert_eq!(
-        adapter.decrypt("discord.com", 24, &unknown).unwrap_err(),
-        SourceError::UnsupportedEncryption
-    );
-    assert!(
-        decode(
-            &derive(b"wrong-owner-password"),
-            &encrypted[3..],
-            "discord.com",
-            24
-        )
-        .is_err()
-    );
-    assert!(
-        decode(
-            &derive(b"synthetic-owner-password"),
-            &encrypted[3..],
-            "discord.com",
-            25
-        )
-        .is_err()
-    );
+        );
+    }
 }

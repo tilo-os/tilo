@@ -34,7 +34,6 @@ fn origin(key: &SigningKey) -> TransportOrigin {
 /// `key`'s sealed write number `seq` to the seeded record.
 fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> NeighbourMsg {
     let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-    let channel = collab_types::document_channel_id(APP, peer.workspace_id(), RECORD);
     let mut envelope = SignedOp::new_unsigned_with_encryption(
         ciphertext.to_vec(),
         collab_types::document_artifact_id(APP, peer.workspace_id(), RECORD),
@@ -43,7 +42,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> Ne
         OpKind::Change,
         peer_time(),
         seq,
-        collab_types::EncryptionMetadata::mls_application(1, channel),
+        collab_types::EncryptionMetadata::mls_application(1),
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {

@@ -10,7 +10,7 @@ fields = [
   { path = "pages", type = { collection = { named = "Page" } }, stored = "collection" },
   { path = "pages.*.title", type = "text", label = true, readonly = true },
   { path = "pages.*.parent", type = { option = "text" }, readonly = true },
-  { path = "pages.*.body", type = "rich_text", ops = "sha256:aceedec5a9b08d74" },
+  { path = "pages.*.body", type = "rich_text", ops = "sha256:fb8a205aa13d03f2" },
   { path = "pages.*.tags", type = { set = "text" } },
   { path = "pages.*.creator", type = { option = "text" }, readonly = true },
   { path = "pages.*.reactions", type = "reactions" },

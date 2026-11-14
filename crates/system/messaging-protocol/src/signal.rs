@@ -288,27 +288,130 @@ mod tests {
                 "isExpirationUpdate":false,"isEndSession":false,"isProfileKeyUpdate":false,"hasProfileKey":true}}}})
     }
 
-    #[test]
-    fn plain_text_never_flattens_another_envelope_kind() {
-        for kind in [
-            "editMessage",
-            "storyMessage",
-            "syncMessage",
-            "callMessage",
-            "receiptMessage",
-            "typingMessage",
-        ] {
-            for value in [json!({}), json!([]), json!(false), json!("unexpected")] {
+    tilo_test_env::scenario! {
+        /// `incoming`: which receive notifications decode as plain text, and for whom.
+        fn incoming_frames;
+
+        phase plain_text_never_flattens_another_envelope_kind;
+        {
+            for kind in [
+                "editMessage",
+                "storyMessage",
+                "syncMessage",
+                "callMessage",
+                "receiptMessage",
+                "typingMessage",
+            ] {
+                for value in [json!({}), json!([]), json!(false), json!("unexpected")] {
+                    let mut event = notification("account-a");
+                    event["params"]["envelope"][kind] = value;
+                    assert!(matches!(
+                        incoming(&serde_json::to_vec(&event).unwrap(), "account-a"),
+                        Err(Error::Unsupported)
+                    ));
+                }
                 let mut event = notification("account-a");
-                event["params"]["envelope"][kind] = value;
+                event["params"]["envelope"][kind] = Value::Null;
+                assert!(incoming(&serde_json::to_vec(&event).unwrap(), "account-a").is_ok());
+            }
+        }
+
+        phase subscription_and_direct_notifications_keep_account_and_sender_identity;
+        {
+            let direct = notification(ACI);
+            let mut subscription = direct.clone();
+            subscription["params"] = json!({"subscription":0,"result":direct["params"]});
+            let a = incoming(&serde_json::to_vec(&direct).unwrap(), ACI).unwrap();
+            let b = incoming(&serde_json::to_vec(&subscription).unwrap(), ACI).unwrap();
+            assert!(a.id == b.id);
+            assert_eq!(a.text.as_str(), "hello");
+            assert!(matches!(
+                incoming(&serde_json::to_vec(&direct).unwrap(), "other"),
+                Err(Error::WrongAccount)
+            ));
+            let other = incoming(
+                &serde_json::to_vec(&notification("other")).unwrap(),
+                "other",
+            )
+            .unwrap();
+            assert!(a.id != other.id);
+            assert!(!format!("{a:?}").contains("hello"));
+        }
+
+        phase signal_cli_0148_plain_text_metadata_keeps_exact_incoming_identity;
+        {
+            // JsonDataMessage v0.14.8 serializes these Boolean flags even when
+            // false; hasProfileKey is metadata, not a profile-key update or grant.
+            for has_profile_key in [false, true] {
+                let mut event = notification(ACI);
+                event["params"]["envelope"]["dataMessage"] = json!({
+                    "timestamp":42, "message":"hello", "expiresInSeconds":0,
+                    "isExpirationUpdate":false, "viewOnce":false,
+                    "isEndSession":false, "isProfileKeyUpdate":false,
+                    "hasProfileKey":has_profile_key
+                });
+                let parsed = incoming(&serde_json::to_vec(&event).unwrap(), ACI).unwrap();
+                assert_eq!(parsed.text.as_str(), "hello");
+                assert_eq!(parsed.id.account, ACI);
+                assert_eq!(parsed.id.sender_aci, ACI);
+                assert_eq!(parsed.id.timestamp, 42);
                 assert!(matches!(
-                    incoming(&serde_json::to_vec(&event).unwrap(), "account-a"),
+                    incoming(&serde_json::to_vec(&event).unwrap(), "other"),
+                    Err(Error::WrongAccount)
+                ));
+            }
+        }
+
+        phase plain_text_metadata_never_admits_control_events_or_malformed_flags;
+        {
+            for field in ["isExpirationUpdate", "isEndSession", "isProfileKeyUpdate"] {
+                for value in [json!(true), json!(null), json!(0), json!("false")] {
+                    let mut event = notification(ACI);
+                    event["params"]["envelope"]["dataMessage"][field] = value;
+                    assert!(matches!(
+                        incoming(&serde_json::to_vec(&event).unwrap(), ACI),
+                        Err(Error::Unsupported)
+                    ));
+                }
+            }
+            for value in [json!(null), json!(0), json!("true")] {
+                let mut event = notification(ACI);
+                event["params"]["envelope"]["dataMessage"]["hasProfileKey"] = value;
+                assert!(matches!(
+                    incoming(&serde_json::to_vec(&event).unwrap(), ACI),
                     Err(Error::Unsupported)
                 ));
             }
-            let mut event = notification("account-a");
-            event["params"]["envelope"][kind] = Value::Null;
-            assert!(incoming(&serde_json::to_vec(&event).unwrap(), "account-a").is_ok());
+        }
+
+        phase unsupported_messages_are_not_silently_flattened_or_misrouted;
+        {
+            for (field, value) in [
+                ("groupInfo", json!({"groupId":"group"})),
+                ("viewOnce", json!(true)),
+                ("expiresInSeconds", json!(60)),
+                ("attachments", json!([{"id":"photo"}])),
+            ] {
+                let mut notification = notification(ACI);
+                notification["params"]["envelope"]["dataMessage"][field] = value;
+                assert!(matches!(
+                    incoming(&serde_json::to_vec(&notification).unwrap(), ACI),
+                    Err(Error::Unsupported)
+                ));
+            }
+            let too_big = vec![b' '; MAX_FRAME_BYTES + 1];
+            assert!(matches!(incoming(&too_big, ACI), Err(Error::FrameTooLarge)));
+            assert!(matches!(incoming(b"{}\n{}", ACI), Err(Error::InvalidFrame)));
+        }
+
+        phase a_display_name_cannot_be_used_as_the_authenticated_sender_aci;
+        {
+            let mut event = notification(ACI);
+            event["params"]["envelope"]["sourceUuid"] = json!("Alice");
+            assert!(matches!(
+                incoming(&serde_json::to_vec(&event).unwrap(), ACI),
+                Err(Error::InvalidIdentity)
+            ));
         }
     }
 
@@ -340,104 +443,6 @@ mod tests {
             acknowledgment(br#"{"jsonrpc":"2.0","id":"op-1","result":{}}"#, "op-1"),
             Err(Error::InvalidFrame)
         );
-    }
-
-    #[test]
-    fn subscription_and_direct_notifications_keep_account_and_sender_identity() {
-        let direct = notification(ACI);
-        let mut subscription = direct.clone();
-        subscription["params"] = json!({"subscription":0,"result":direct["params"]});
-        let a = incoming(&serde_json::to_vec(&direct).unwrap(), ACI).unwrap();
-        let b = incoming(&serde_json::to_vec(&subscription).unwrap(), ACI).unwrap();
-        assert!(a.id == b.id);
-        assert_eq!(a.text.as_str(), "hello");
-        assert!(matches!(
-            incoming(&serde_json::to_vec(&direct).unwrap(), "other"),
-            Err(Error::WrongAccount)
-        ));
-        let other = incoming(
-            &serde_json::to_vec(&notification("other")).unwrap(),
-            "other",
-        )
-        .unwrap();
-        assert!(a.id != other.id);
-        assert!(!format!("{a:?}").contains("hello"));
-    }
-
-    #[test]
-    fn signal_cli_0148_plain_text_metadata_keeps_exact_incoming_identity() {
-        // JsonDataMessage v0.14.8 serializes these Boolean flags even when
-        // false; hasProfileKey is metadata, not a profile-key update or grant.
-        for has_profile_key in [false, true] {
-            let mut event = notification(ACI);
-            event["params"]["envelope"]["dataMessage"] = json!({
-                "timestamp":42, "message":"hello", "expiresInSeconds":0,
-                "isExpirationUpdate":false, "viewOnce":false,
-                "isEndSession":false, "isProfileKeyUpdate":false,
-                "hasProfileKey":has_profile_key
-            });
-            let parsed = incoming(&serde_json::to_vec(&event).unwrap(), ACI).unwrap();
-            assert_eq!(parsed.text.as_str(), "hello");
-            assert_eq!(parsed.id.account, ACI);
-            assert_eq!(parsed.id.sender_aci, ACI);
-            assert_eq!(parsed.id.timestamp, 42);
-            assert!(matches!(
-                incoming(&serde_json::to_vec(&event).unwrap(), "other"),
-                Err(Error::WrongAccount)
-            ));
-        }
-    }
-
-    #[test]
-    fn plain_text_metadata_never_admits_control_events_or_malformed_flags() {
-        for field in ["isExpirationUpdate", "isEndSession", "isProfileKeyUpdate"] {
-            for value in [json!(true), json!(null), json!(0), json!("false")] {
-                let mut event = notification(ACI);
-                event["params"]["envelope"]["dataMessage"][field] = value;
-                assert!(matches!(
-                    incoming(&serde_json::to_vec(&event).unwrap(), ACI),
-                    Err(Error::Unsupported)
-                ));
-            }
-        }
-        for value in [json!(null), json!(0), json!("true")] {
-            let mut event = notification(ACI);
-            event["params"]["envelope"]["dataMessage"]["hasProfileKey"] = value;
-            assert!(matches!(
-                incoming(&serde_json::to_vec(&event).unwrap(), ACI),
-                Err(Error::Unsupported)
-            ));
-        }
-    }
-
-    #[test]
-    fn unsupported_messages_are_not_silently_flattened_or_misrouted() {
-        for (field, value) in [
-            ("groupInfo", json!({"groupId":"group"})),
-            ("viewOnce", json!(true)),
-            ("expiresInSeconds", json!(60)),
-            ("attachments", json!([{"id":"photo"}])),
-        ] {
-            let mut notification = notification(ACI);
-            notification["params"]["envelope"]["dataMessage"][field] = value;
-            assert!(matches!(
-                incoming(&serde_json::to_vec(&notification).unwrap(), ACI),
-                Err(Error::Unsupported)
-            ));
-        }
-        let too_big = vec![b' '; MAX_FRAME_BYTES + 1];
-        assert!(matches!(incoming(&too_big, ACI), Err(Error::FrameTooLarge)));
-        assert!(matches!(incoming(b"{}\n{}", ACI), Err(Error::InvalidFrame)));
-    }
-
-    #[test]
-    fn a_display_name_cannot_be_used_as_the_authenticated_sender_aci() {
-        let mut event = notification(ACI);
-        event["params"]["envelope"]["sourceUuid"] = json!("Alice");
-        assert!(matches!(
-            incoming(&serde_json::to_vec(&event).unwrap(), ACI),
-            Err(Error::InvalidIdentity)
-        ));
     }
 
     #[test]

@@ -2177,116 +2177,120 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pump_does_not_clone_fabric_when_idle() {
-        let network = CountingLink::default();
-        let state = Mutex::new(RemoteAudioState::default());
-        for _ in 0..100 {
+    tilo_test_env::scenario! {
+        fn routes_are_bound_to_what_this_device_verified;
+
+        phase pump_does_not_clone_fabric_when_idle;
+        {
+            let network = CountingLink::default();
+            let state = Mutex::new(RemoteAudioState::default());
+            for _ in 0..100 {
+                pump_state(&state, &network, true, None);
+            }
+            assert_eq!(
+                network.reads(),
+                (0, 0),
+                "an idle pump does not look at the fabric"
+            );
+            assert_eq!(network.sent.get(), 0, "an idle pump sends nothing");
+
+            // A live notice needs the online set, read in place.
+            state.lock().unwrap().interrupted.insert(
+                [9; 16],
+                InterruptedRoute {
+                    peer: DeviceId::new("peer").unwrap(),
+                    label: "Music".into(),
+                    inbound: false,
+                    at: Instant::now(),
+                },
+            );
             pump_state(&state, &network, true, None);
+            assert_eq!(network.reads(), (0, 1), "borrowed, never cloned");
+            assert_eq!(state.lock().unwrap().interrupted.len(), 1);
         }
-        assert_eq!(
-            network.reads(),
-            (0, 0),
-            "an idle pump does not look at the fabric"
-        );
-        assert_eq!(network.sent.get(), 0, "an idle pump sends nothing");
 
-        // A live notice needs the online set, read in place.
-        state.lock().unwrap().interrupted.insert(
-            [9; 16],
-            InterruptedRoute {
-                peer: DeviceId::new("peer").unwrap(),
+        phase foreign_capabilities_cannot_feed_an_inbound_route;
+        {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let authorization = [7; 16];
+            assert!(frame_matches(
+                &source,
+                &target,
+                authorization,
+                &source,
+                &target,
+                authorization,
+            ));
+            assert!(!frame_matches(
+                &source,
+                &target,
+                authorization,
+                &DeviceId::new("other").unwrap(),
+                &target,
+                authorization,
+            ));
+            assert!(!frame_matches(
+                &source,
+                &target,
+                authorization,
+                &source,
+                &DeviceId::new("other").unwrap(),
+                authorization,
+            ));
+            assert!(!frame_matches(
+                &source,
+                &target,
+                authorization,
+                &source,
+                &target,
+                [9; 16],
+            ));
+        }
+
+        phase application_routes_are_bound_to_the_locally_verified_focus;
+        {
+            let focus = binding("surface-1");
+            let selection = LocalAudioSelection::Application {
+                serial: 42,
                 label: "Music".into(),
-                inbound: false,
-                at: Instant::now(),
-            },
-        );
-        pump_state(&state, &network, true, None);
-        assert_eq!(network.reads(), (0, 1), "borrowed, never cloned");
-        assert_eq!(state.lock().unwrap().interrupted.len(), 1);
-    }
+                focus: focus.clone(),
+            };
+            assert!(selection_focus_valid(&selection, Some(&focus)));
+            let other = PhysicalGamepadBinding {
+                session_id: "surface-2".into(),
+                ..focus
+            };
+            assert!(!selection_focus_valid(&selection, Some(&other)));
+            assert!(!selection_focus_valid(&selection, None));
+        }
 
-    #[test]
-    fn foreign_capabilities_cannot_feed_an_inbound_route() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let authorization = [7; 16];
-        assert!(frame_matches(
-            &source,
-            &target,
-            authorization,
-            &source,
-            &target,
-            authorization,
-        ));
-        assert!(!frame_matches(
-            &source,
-            &target,
-            authorization,
-            &DeviceId::new("other").unwrap(),
-            &target,
-            authorization,
-        ));
-        assert!(!frame_matches(
-            &source,
-            &target,
-            authorization,
-            &source,
-            &DeviceId::new("other").unwrap(),
-            authorization,
-        ));
-        assert!(!frame_matches(
-            &source,
-            &target,
-            authorization,
-            &source,
-            &target,
-            [9; 16],
-        ));
-    }
+        phase picker_tokens_survive_refresh_only_while_the_source_binding_exists;
+        {
+            let focus = binding("surface-1");
+            let application = LocalAudioSelection::Application {
+                serial: 42,
+                label: "Music".into(),
+                focus,
+            };
+            let desired = vec![LocalAudioSelection::System, application.clone()];
+            let mut state = RemoteAudioState::default();
+            let first = reconcile_source_tokens(&mut state, desired.clone());
+            let refreshed = reconcile_source_tokens(&mut state, desired);
+            assert_eq!(first, refreshed);
+            assert_eq!(state.source_tokens.len(), 2);
 
-    #[test]
-    fn application_routes_are_bound_to_the_locally_verified_focus() {
-        let focus = binding("surface-1");
-        let selection = LocalAudioSelection::Application {
-            serial: 42,
-            label: "Music".into(),
-            focus: focus.clone(),
-        };
-        assert!(selection_focus_valid(&selection, Some(&focus)));
-        let other = PhysicalGamepadBinding {
-            session_id: "surface-2".into(),
-            ..focus
-        };
-        assert!(!selection_focus_valid(&selection, Some(&other)));
-        assert!(!selection_focus_valid(&selection, None));
-    }
-
-    #[test]
-    fn picker_tokens_survive_refresh_only_while_the_source_binding_exists() {
-        let focus = binding("surface-1");
-        let application = LocalAudioSelection::Application {
-            serial: 42,
-            label: "Music".into(),
-            focus,
-        };
-        let desired = vec![LocalAudioSelection::System, application.clone()];
-        let mut state = RemoteAudioState::default();
-        let first = reconcile_source_tokens(&mut state, desired.clone());
-        let refreshed = reconcile_source_tokens(&mut state, desired);
-        assert_eq!(first, refreshed);
-        assert_eq!(state.source_tokens.len(), 2);
-
-        let without_application =
-            reconcile_source_tokens(&mut state, vec![LocalAudioSelection::System]);
-        assert_eq!(without_application.len(), 1);
-        assert_eq!(state.source_tokens.len(), 1);
-        assert!(
-            !state
-                .source_tokens
-                .values()
-                .any(|source| source == &application)
-        );
+            let without_application =
+                reconcile_source_tokens(&mut state, vec![LocalAudioSelection::System]);
+            assert_eq!(without_application.len(), 1);
+            assert_eq!(state.source_tokens.len(), 1);
+            assert!(
+                !state
+                    .source_tokens
+                    .values()
+                    .any(|source| source == &application)
+            );
+        }
     }
 
     #[derive(Default)]
@@ -2389,489 +2393,522 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn frames_are_scheduled_one_group_latency_after_capture() {
-        let (media_ts, presentation_ns) = frame_schedule(START_FRAME).unwrap();
-        assert_eq!(media_ts, 4_800_000);
-        assert_eq!(
-            presentation_ns,
-            100_000_000_000 + REMOTE_AUDIO_GROUP_LATENCY_NS
-        );
-        assert_eq!(frame_schedule(-1), None);
-    }
+    tilo_test_env::scenario! {
+        fn inbound_frames_play_at_their_presentation_time_on_each_members_channel;
 
-    #[test]
-    fn jittered_lost_and_reordered_frames_play_continuously_at_their_presentation_time() {
-        const FRAMES: i64 = 40;
-        const LOST: i64 = 7;
-        const DUPLICATED: i64 = 10;
-        let level = |index: i64| 0.1 + 0.02 * (index % 20) as f32;
-        let streams = FakeStreams::default();
-        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
-        let (config, mut source) = streams.take();
-        assert_eq!(config.channels, 2);
-
-        // Each frame leaves once its last sample is captured and crosses the
-        // network in 2–12 ms; frame 3 is overtaken by frame 4, frame 7 never
-        // arrives and frame 10 arrives twice.
-        let mut arrivals = Vec::new();
-        for index in 0..FRAMES {
-            if index == LOST {
-                continue;
-            }
-            let sent = sample_ns(START_FRAME + (index + 1) * FRAME_SAMPLES) - SOURCE_AHEAD_NS;
-            let transit = if index == 3 {
-                30_000_000
-            } else {
-                2_000_000 + (index * 7 % 11) * 1_000_000
-            };
-            arrivals.push((sent + transit, index));
-            if index == DUPLICATED {
-                arrivals.push((sent + transit + 3_000_000, index));
-            }
-        }
-        arrivals.sort_unstable();
-
-        // The device pulls 10 ms blocks, each presented when it is rendered.
-        let block = 480_usize;
-        let block_ns = 10_000_000;
-        let start = arrivals[0].0;
-        let end = local_playout_ns(START_FRAME + (FRAMES + 1) * FRAME_SAMPLES);
-        let mut output = Vec::new();
-        let mut delivered = 0;
-        let mut now = start;
-        while now < end {
-            while delivered < arrivals.len() && arrivals[delivered].0 <= now {
-                let index = arrivals[delivered].1;
-                let pcm = level_pcm(level(index), -level(index));
-                deliver(&playback, index, &pcm, Some(source_clock()));
-                delivered += 1;
-            }
-            let mut out = vec![0.0; block * 2];
-            source.render(now, &mut out);
-            output.extend(out);
-            now += block_ns;
+        phase frames_are_scheduled_one_group_latency_after_capture;
+        {
+            let (media_ts, presentation_ns) = frame_schedule(START_FRAME).unwrap();
+            assert_eq!(media_ts, 4_800_000);
+            assert_eq!(
+                presentation_ns,
+                100_000_000_000 + REMOTE_AUDIO_GROUP_LATENCY_NS
+            );
+            assert_eq!(frame_schedule(-1), None);
         }
 
-        let stats = *playback.shared.lock().playout.stats();
-        assert_eq!(stats.duplicates, 1);
-        assert_eq!(
-            stats.late, 0,
-            "every frame arrived within the group latency"
-        );
-        let at = |local_ns: i64| {
-            let index =
-                usize::try_from(((local_ns - start) * RATE + 500_000_000) / 1_000_000_000).unwrap();
-            (output[index * 2], output[index * 2 + 1])
-        };
-        for index in 1..FRAMES - 1 {
-            let first = START_FRAME + index * FRAME_SAMPLES;
-            if index == LOST {
-                let (left, right) = at(local_playout_ns(first + FRAME_SAMPLES / 2));
-                assert!(
-                    left.abs() < 0.01 && right.abs() < 0.01,
-                    "the lost frame is silent"
-                );
-                continue;
-            }
-            if (LOST - 1..=LOST + 1).contains(&index) {
-                continue;
-            }
-            // Away from the frame edges, where the resampler rings between
-            // levels, every sample is the frame's level at its scheduled time.
-            for offset in (64..FRAME_SAMPLES - 64).step_by(32) {
-                let (left, right) = at(local_playout_ns(first + offset));
-                assert!(
-                    (left - level(index)).abs() < 0.005 && (right + level(index)).abs() < 0.005,
-                    "frame {index} sample {offset}: ({left}, {right})"
-                );
-            }
-        }
-    }
+        phase jittered_lost_and_reordered_frames_play_continuously_at_their_presentation_time;
+        {
+            const FRAMES: i64 = 40;
+            const LOST: i64 = 7;
+            const DUPLICATED: i64 = 10;
+            let level = |index: i64| 0.1 + 0.02 * (index % 20) as f32;
+            let streams = FakeStreams::default();
+            let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
+            let (config, mut source) = streams.take();
+            assert_eq!(config.channels, 2);
 
-    #[test]
-    fn a_route_plays_silence_until_the_source_clock_is_known() {
-        let streams = FakeStreams::default();
-        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
-        let (_, mut source) = streams.take();
-        let pcm = level_pcm(0.4, 0.4);
-        for index in 0..3 {
-            assert_eq!(deliver(&playback, index, &pcm, None), PushOutcome::Queued);
-        }
-        let mut out = vec![1.0; 960];
-        source.render(local_playout_ns(START_FRAME + FRAME_SAMPLES), &mut out);
-        assert!(out.iter().all(|sample| sample.abs() < f32::EPSILON));
-
-        deliver(&playback, 3, &pcm, Some(source_clock()));
-        let mut out = vec![0.0; 960];
-        source.render(
-            local_playout_ns(START_FRAME + 3 * FRAME_SAMPLES + 100),
-            &mut out,
-        );
-        assert!(
-            (out[400] - 0.4).abs() < 0.005,
-            "plays once the clock is known"
-        );
-    }
-
-    #[test]
-    fn each_route_plays_its_own_channel_role() {
-        let streams = FakeStreams::default();
-        let left = start_playback(&streams, "Left speaker", ChannelRole::Left).unwrap();
-        let right = start_playback(&streams, "Right speaker", ChannelRole::Right).unwrap();
-        let (left_config, mut left_source) = streams.take();
-        let (right_config, mut right_source) = streams.take();
-        assert_eq!((left_config.channels, right_config.channels), (1, 1));
-        let pcm = level_pcm(0.3, -0.2);
-        for playback in [&left, &right] {
-            for index in 0..3 {
-                deliver(playback, index, &pcm, Some(source_clock()));
-            }
-        }
-        let now = local_playout_ns(START_FRAME + FRAME_SAMPLES);
-        let mut left_out = vec![0.0; 480];
-        let mut right_out = vec![0.0; 480];
-        left_source.render(now, &mut left_out);
-        right_source.render(now, &mut right_out);
-        assert!((left_out[240] - 0.3).abs() < 0.005, "{}", left_out[240]);
-        assert!((right_out[240] + 0.2).abs() < 0.005, "{}", right_out[240]);
-    }
-
-    #[test]
-    fn a_group_member_plays_on_its_output_with_its_calibration() {
-        let streams = FakeStreams::default();
-        let group = GroupPlayback {
-            sink_serial: 77,
-            role: ChannelRole::Left,
-            trim_ns: 0,
-            gain_db: -6.0,
-            eq: Vec::new(),
-        };
-        let playback = start_group_playback(&streams, "Speaker group", &group).unwrap();
-        let (config, mut source) = streams.take();
-        assert_eq!(
-            config.target_serial,
-            Some(77),
-            "pinned to the member's output"
-        );
-        assert_eq!(config.channels, 1);
-        let pcm = level_pcm(0.4, -0.2);
-        for index in 0..3 {
-            deliver(&playback, index, &pcm, Some(source_clock()));
-        }
-        let mut out = vec![0.0; 480];
-        source.render(local_playout_ns(START_FRAME + FRAME_SAMPLES), &mut out);
-        let expected = 0.4 * 10.0_f32.powf(-6.0 / 20.0);
-        assert!((out[240] - expected).abs() < 0.005, "{}", out[240]);
-    }
-
-    #[test]
-    fn the_room_eq_cuts_only_its_band() {
-        let group = GroupPlayback {
-            sink_serial: 1,
-            role: ChannelRole::Mono,
-            trim_ns: 0,
-            gain_db: 0.0,
-            eq: vec![media::calibration::EqBand {
-                center_hz: 60.0,
-                gain_db: -12.0,
-                q: 2.0,
-            }],
-        };
-        let level = |hz: f64| {
-            let mut filter = PostFilter::new(&group);
-            let mut peak = 0.0_f32;
-            for index in 0..48_000_u32 {
-                let phase = std::f64::consts::TAU * hz * f64::from(index) / 48_000.0;
-                let mut sample = [phase.sin() as f32 * 0.5];
-                filter.apply(&mut sample);
-                if index > 24_000 {
-                    peak = peak.max(sample[0].abs());
+            // Each frame leaves once its last sample is captured and crosses the
+            // network in 2–12 ms; frame 3 is overtaken by frame 4, frame 7 never
+            // arrives and frame 10 arrives twice.
+            let mut arrivals = Vec::new();
+            for index in 0..FRAMES {
+                if index == LOST {
+                    continue;
+                }
+                let sent = sample_ns(START_FRAME + (index + 1) * FRAME_SAMPLES) - SOURCE_AHEAD_NS;
+                let transit = if index == 3 {
+                    30_000_000
+                } else {
+                    2_000_000 + (index * 7 % 11) * 1_000_000
+                };
+                arrivals.push((sent + transit, index));
+                if index == DUPLICATED {
+                    arrivals.push((sent + transit + 3_000_000, index));
                 }
             }
-            peak
-        };
-        assert!(level(60.0) < 0.2, "the room mode is cut: {}", level(60.0));
-        assert!(
-            (level(2_000.0) - 0.5).abs() < 0.02,
-            "the midrange is untouched"
-        );
-    }
+            arrivals.sort_unstable();
 
-    #[test]
-    fn a_route_switches_role_and_keeps_its_clock() {
-        let streams = FakeStreams::default();
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let mut route = inbound(&source, &target, Instant::now());
-        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
-        playback.shared.lock().clock = Some(source_clock());
-        route.playback = Some(playback);
-        let state = Mutex::new(RemoteAudioState::default());
-        state.lock().unwrap().inbound.insert([1; 16], route);
-
-        set_role_with(&state, &streams, [1; 16], ChannelRole::Left).unwrap();
-        let guard = state.lock().unwrap();
-        let playback = guard.inbound[&[1; 16]].playback.as_ref().unwrap();
-        let role = playback.role;
-        let shared = playback.shared.clone();
-        drop(guard);
-        let playout = shared.lock();
-        let playout_role = playout.playout.config().role;
-        let clock = playout.clock;
-        drop(playout);
-        assert_eq!(role, ChannelRole::Left);
-        assert_eq!(playout_role, ChannelRole::Left);
-        assert_eq!(clock, Some(source_clock()));
-        let channels = streams
-            .opened
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(config, _)| config.channels)
-            .collect::<Vec<_>>();
-        assert_eq!(channels, vec![2, 1], "a one-sided role plays mono");
-        set_role_with(&state, &streams, [1; 16], ChannelRole::Left).unwrap();
-        assert_eq!(
-            streams.opened.lock().unwrap().len(),
-            2,
-            "choosing the current role changes nothing"
-        );
-        assert!(set_role_with(&state, &streams, [9; 16], ChannelRole::Right).is_err());
-    }
-
-    #[test]
-    fn a_failed_playback_stream_rejects_frames_so_the_route_is_interrupted() {
-        let streams = FakeStreams {
-            failing: true,
-            ..FakeStreams::default()
-        };
-        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
-        let pcm = level_pcm(0.1, 0.1);
-        let (media_ts, presentation_ns) = frame_schedule(START_FRAME).unwrap();
-        let outcome = ingest_frame(
-            &playback,
-            &ReceivedFrame {
-                sequence: 1,
-                media_ts,
-                presentation_ns,
-                pcm_s16le: &pcm,
-            },
-            Some(source_clock()),
-        );
-        assert_eq!(outcome, Err("the device was unplugged".into()));
-    }
-
-    #[test]
-    fn a_silent_inbound_link_is_interrupted_and_surfaced() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        let mut route = inbound(&source, &target, now);
-        route.last_heard = before(
-            now,
-            PEER_SILENCE_TIMEOUT.saturating_add(Duration::from_millis(1)),
-        );
-        state.inbound.insert([4; 16], route);
-        state
-            .inbound
-            .insert([6; 16], inbound(&source, &target, now));
-
-        let egress = reconcile_lifecycle(
-            &mut state,
-            true,
-            &BTreeSet::from([source.clone()]),
-            None,
-            now,
-        );
-
-        assert_eq!(
-            state.inbound.keys().copied().collect::<Vec<_>>(),
-            vec![[6; 16]]
-        );
-        assert_eq!(egress.len(), 1);
-        assert_eq!(
-            egress[0].action,
-            PersonalFabricAction::RemoteAudioStop {
-                session_id: [4; 16],
-                authorization: [5; 16],
+            // The device pulls 10 ms blocks, each presented when it is rendered.
+            let block = 480_usize;
+            let block_ns = 10_000_000;
+            let start = arrivals[0].0;
+            let end = local_playout_ns(START_FRAME + (FRAMES + 1) * FRAME_SAMPLES);
+            let mut output = Vec::new();
+            let mut delivered = 0;
+            let mut now = start;
+            while now < end {
+                while delivered < arrivals.len() && arrivals[delivered].0 <= now {
+                    let index = arrivals[delivered].1;
+                    let pcm = level_pcm(level(index), -level(index));
+                    deliver(&playback, index, &pcm, Some(source_clock()));
+                    delivered += 1;
+                }
+                let mut out = vec![0.0; block * 2];
+                source.render(now, &mut out);
+                output.extend(out);
+                now += block_ns;
             }
-        );
-        let routes = route_views(&state, true);
-        let interrupted = routes
-            .iter()
-            .find(|route| route.session_id == [4; 16])
-            .unwrap();
-        assert_eq!(interrupted.phase, RemoteAudioPhase::Interrupted);
-        assert!(interrupted.inbound);
-        assert_eq!(interrupted.peer, source);
-        assert!(
-            route_views(&state, false)
-                .iter()
-                .all(|route| route.phase != RemoteAudioPhase::Interrupted),
-            "active route counts exclude interrupted notices"
-        );
-    }
 
-    #[test]
-    fn a_paused_but_alive_route_is_neither_interrupted_nor_expired() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        let mut route = inbound(&source, &target, now);
-        // No audio for a minute, but the source's keepalives keep arriving.
-        route.last_audio = before(now, Duration::from_secs(60));
-        state.inbound.insert([4; 16], route);
-        let mut outgoing = outbound(&target, LocalAudioSelection::System, Some([9; 16]), now);
-        outgoing.last_audio = before(now, Duration::from_secs(60));
-        state.outbound.insert([7; 16], outgoing);
-
-        let egress = reconcile_lifecycle(
-            &mut state,
-            true,
-            &BTreeSet::from([source, target]),
-            None,
-            now,
-        );
-        assert!(egress.is_empty());
-        assert!(state.inbound.contains_key(&[4; 16]));
-        assert!(state.outbound.contains_key(&[7; 16]));
-        assert!(state.interrupted.is_empty());
-    }
-
-    #[test]
-    fn active_routes_outlive_the_idle_window_while_audio_flows() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let approved_long_ago = before(
-            now,
-            IDLE_SESSION_TTL.saturating_add(Duration::from_secs(60)),
-        );
-        let mut state = RemoteAudioState::default();
-        let mut streaming = inbound(&source, &target, approved_long_ago);
-        streaming.last_audio = now;
-        streaming.last_heard = now;
-        state.inbound.insert([1; 16], streaming);
-        let mut idle = inbound(&source, &target, approved_long_ago);
-        idle.last_heard = now;
-        state.inbound.insert([2; 16], idle);
-
-        let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([source]), None, now);
-        assert_eq!(
-            state.inbound.keys().copied().collect::<Vec<_>>(),
-            vec![[1; 16]]
-        );
-        assert_eq!(egress.len(), 1, "the idle route still expires");
-        assert!(
-            state.interrupted.is_empty(),
-            "expiry is not an interruption"
-        );
-    }
-
-    #[test]
-    fn a_source_without_target_keepalives_is_interrupted() {
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        let mut route = outbound(&target, LocalAudioSelection::System, Some([9; 16]), now);
-        route.last_heard = before(
-            now,
-            PEER_SILENCE_TIMEOUT.saturating_add(Duration::from_millis(1)),
-        );
-        state.outbound.insert([1; 16], route);
-        // Awaiting consent has no keepalives yet and must not time out early.
-        let mut awaiting = outbound(&target, LocalAudioSelection::System, None, now);
-        awaiting.last_heard = before(now, Duration::from_secs(10));
-        state.outbound.insert([2; 16], awaiting);
-
-        let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([target]), None, now);
-        assert_eq!(
-            state.outbound.keys().copied().collect::<Vec<_>>(),
-            vec![[2; 16]]
-        );
-        assert_eq!(egress.len(), 1);
-        assert_eq!(
-            state.interrupted.get(&[1; 16]).map(|notice| notice.inbound),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn interrupted_notices_expire_and_stay_bounded() {
-        let peer = DeviceId::new("peer").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        let notice = |age_secs: u64| InterruptedRoute {
-            peer: peer.clone(),
-            label: "Music".into(),
-            inbound: true,
-            at: before(now, Duration::from_secs(age_secs)),
-        };
-        for (id, age) in [(1, 20), (2, 19), (3, 18), (4, 17), (5, 16)] {
-            record_interruption(&mut state, [id; 16], notice(age));
+            let stats = *playback.shared.lock().playout.stats();
+            assert_eq!(stats.duplicates, 1);
+            assert_eq!(
+                stats.late, 0,
+                "every frame arrived within the group latency"
+            );
+            let at = |local_ns: i64| {
+                let index =
+                    usize::try_from(((local_ns - start) * RATE + 500_000_000) / 1_000_000_000).unwrap();
+                (output[index * 2], output[index * 2 + 1])
+            };
+            for index in 1..FRAMES - 1 {
+                let first = START_FRAME + index * FRAME_SAMPLES;
+                if index == LOST {
+                    let (left, right) = at(local_playout_ns(first + FRAME_SAMPLES / 2));
+                    assert!(
+                        left.abs() < 0.01 && right.abs() < 0.01,
+                        "the lost frame is silent"
+                    );
+                    continue;
+                }
+                if (LOST - 1..=LOST + 1).contains(&index) {
+                    continue;
+                }
+                // Away from the frame edges, where the resampler rings between
+                // levels, every sample is the frame's level at its scheduled time.
+                for offset in (64..FRAME_SAMPLES - 64).step_by(32) {
+                    let (left, right) = at(local_playout_ns(first + offset));
+                    assert!(
+                        (left - level(index)).abs() < 0.005 && (right + level(index)).abs() < 0.005,
+                        "frame {index} sample {offset}: ({left}, {right})"
+                    );
+                }
+            }
         }
-        assert_eq!(state.interrupted.len(), MAX_REMOTE_AUDIO_SESSIONS);
-        assert!(
-            !state.interrupted.contains_key(&[1; 16]),
-            "the oldest notice made room"
-        );
 
-        record_interruption(&mut state, [9; 16], notice(0));
-        let later = now.checked_add(Duration::from_secs(20)).unwrap();
-        reconcile_lifecycle(&mut state, true, &BTreeSet::new(), None, later);
-        assert_eq!(
-            state.interrupted.keys().copied().collect::<Vec<_>>(),
-            vec![[9; 16]],
-            "only notices inside the window remain"
-        );
-        reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, later);
-        assert!(state.interrupted.is_empty(), "disabling clears notices");
+        phase a_route_plays_silence_until_the_source_clock_is_known;
+        {
+            let streams = FakeStreams::default();
+            let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
+            let (_, mut source) = streams.take();
+            let pcm = level_pcm(0.4, 0.4);
+            for index in 0..3 {
+                assert_eq!(deliver(&playback, index, &pcm, None), PushOutcome::Queued);
+            }
+            let mut out = vec![1.0; 960];
+            source.render(local_playout_ns(START_FRAME + FRAME_SAMPLES), &mut out);
+            assert!(out.iter().all(|sample| sample.abs() < f32::EPSILON));
+
+            deliver(&playback, 3, &pcm, Some(source_clock()));
+            let mut out = vec![0.0; 960];
+            source.render(
+                local_playout_ns(START_FRAME + 3 * FRAME_SAMPLES + 100),
+                &mut out,
+            );
+            assert!(
+                (out[400] - 0.4).abs() < 0.005,
+                "plays once the clock is known"
+            );
+        }
+
+        phase each_route_plays_its_own_channel_role;
+        {
+            let streams = FakeStreams::default();
+            let left = start_playback(&streams, "Left speaker", ChannelRole::Left).unwrap();
+            let right = start_playback(&streams, "Right speaker", ChannelRole::Right).unwrap();
+            let (left_config, mut left_source) = streams.take();
+            let (right_config, mut right_source) = streams.take();
+            assert_eq!((left_config.channels, right_config.channels), (1, 1));
+            let pcm = level_pcm(0.3, -0.2);
+            for playback in [&left, &right] {
+                for index in 0..3 {
+                    deliver(playback, index, &pcm, Some(source_clock()));
+                }
+            }
+            let now = local_playout_ns(START_FRAME + FRAME_SAMPLES);
+            let mut left_out = vec![0.0; 480];
+            let mut right_out = vec![0.0; 480];
+            left_source.render(now, &mut left_out);
+            right_source.render(now, &mut right_out);
+            assert!((left_out[240] - 0.3).abs() < 0.005, "{}", left_out[240]);
+            assert!((right_out[240] + 0.2).abs() < 0.005, "{}", right_out[240]);
+        }
+
+        phase a_group_member_plays_on_its_output_with_its_calibration;
+        {
+            let streams = FakeStreams::default();
+            let group = GroupPlayback {
+                sink_serial: 77,
+                role: ChannelRole::Left,
+                trim_ns: 0,
+                gain_db: -6.0,
+                eq: Vec::new(),
+            };
+            let playback = start_group_playback(&streams, "Speaker group", &group).unwrap();
+            let (config, mut source) = streams.take();
+            assert_eq!(
+                config.target_serial,
+                Some(77),
+                "pinned to the member's output"
+            );
+            assert_eq!(config.channels, 1);
+            let pcm = level_pcm(0.4, -0.2);
+            for index in 0..3 {
+                deliver(&playback, index, &pcm, Some(source_clock()));
+            }
+            let mut out = vec![0.0; 480];
+            source.render(local_playout_ns(START_FRAME + FRAME_SAMPLES), &mut out);
+            let expected = 0.4 * 10.0_f32.powf(-6.0 / 20.0);
+            assert!((out[240] - expected).abs() < 0.005, "{}", out[240]);
+        }
+
+        phase the_room_eq_cuts_only_its_band;
+        {
+            let group = GroupPlayback {
+                sink_serial: 1,
+                role: ChannelRole::Mono,
+                trim_ns: 0,
+                gain_db: 0.0,
+                eq: vec![media::calibration::EqBand {
+                    center_hz: 60.0,
+                    gain_db: -12.0,
+                    q: 2.0,
+                }],
+            };
+            let level = |hz: f64| {
+                let mut filter = PostFilter::new(&group);
+                let mut peak = 0.0_f32;
+                for index in 0..48_000_u32 {
+                    let phase = std::f64::consts::TAU * hz * f64::from(index) / 48_000.0;
+                    let mut sample = [phase.sin() as f32 * 0.5];
+                    filter.apply(&mut sample);
+                    if index > 24_000 {
+                        peak = peak.max(sample[0].abs());
+                    }
+                }
+                peak
+            };
+            assert!(level(60.0) < 0.2, "the room mode is cut: {}", level(60.0));
+            assert!(
+                (level(2_000.0) - 0.5).abs() < 0.02,
+                "the midrange is untouched"
+            );
+        }
+
+        phase a_route_switches_role_and_keeps_its_clock;
+        {
+            let streams = FakeStreams::default();
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let mut route = inbound(&source, &target, Instant::now());
+            let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
+            playback.shared.lock().clock = Some(source_clock());
+            route.playback = Some(playback);
+            let state = Mutex::new(RemoteAudioState::default());
+            state.lock().unwrap().inbound.insert([1; 16], route);
+
+            set_role_with(&state, &streams, [1; 16], ChannelRole::Left).unwrap();
+            let guard = state.lock().unwrap();
+            let playback = guard.inbound[&[1; 16]].playback.as_ref().unwrap();
+            let role = playback.role;
+            let shared = playback.shared.clone();
+            drop(guard);
+            let playout = shared.lock();
+            let playout_role = playout.playout.config().role;
+            let clock = playout.clock;
+            drop(playout);
+            assert_eq!(role, ChannelRole::Left);
+            assert_eq!(playout_role, ChannelRole::Left);
+            assert_eq!(clock, Some(source_clock()));
+            let channels = streams
+                .opened
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(config, _)| config.channels)
+                .collect::<Vec<_>>();
+            assert_eq!(channels, vec![2, 1], "a one-sided role plays mono");
+            set_role_with(&state, &streams, [1; 16], ChannelRole::Left).unwrap();
+            assert_eq!(
+                streams.opened.lock().unwrap().len(),
+                2,
+                "choosing the current role changes nothing"
+            );
+            assert!(set_role_with(&state, &streams, [9; 16], ChannelRole::Right).is_err());
+        }
+
+        phase a_failed_playback_stream_rejects_frames_so_the_route_is_interrupted;
+        {
+            let streams = FakeStreams {
+                failing: true,
+                ..FakeStreams::default()
+            };
+            let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
+            let pcm = level_pcm(0.1, 0.1);
+            let (media_ts, presentation_ns) = frame_schedule(START_FRAME).unwrap();
+            let outcome = ingest_frame(
+                &playback,
+                &ReceivedFrame {
+                    sequence: 1,
+                    media_ts,
+                    presentation_ns,
+                    pcm_s16le: &pcm,
+                },
+                Some(source_clock()),
+            );
+            assert_eq!(outcome, Err("the device was unplugged".into()));
+        }
     }
 
-    #[test]
-    fn keepalives_flow_both_ways_once_per_interval() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let due = before(now, KEEPALIVE_INTERVAL);
-        let mut state = RemoteAudioState::default();
-        state.outbound.insert(
-            [1; 16],
-            outbound(&target, LocalAudioSelection::System, Some([9; 16]), due),
-        );
-        state.outbound.insert(
-            [2; 16],
-            outbound(&target, LocalAudioSelection::System, None, due),
-        );
-        state
-            .inbound
-            .insert([3; 16], inbound(&source, &target, due));
+    tilo_test_env::scenario! {
+        fn a_route_shows_whether_it_is_alive_interrupted_or_waiting_for_a_clock;
 
-        let egress = due_keepalives(&mut state, now);
-        assert_eq!(egress.len(), 2, "no keepalive before consent");
-        assert!(egress.iter().any(|message| {
-            message.target == target
-                && message.outbound_session == Some([1; 16])
-                && message.action
-                    == PersonalFabricAction::RemoteAudioKeepalive {
-                        session_id: [1; 16],
-                        authorization: [9; 16],
-                        playout: None,
-                    }
-        }));
-        assert!(egress.iter().any(|message| {
-            message.target == source
-                && message.action
-                    == PersonalFabricAction::RemoteAudioKeepalive {
-                        session_id: [3; 16],
-                        authorization: [5; 16],
-                        playout: Some(ClockSyncState::Ready),
-                    }
-        }));
-        assert!(due_keepalives(&mut state, now).is_empty());
+        phase a_silent_inbound_link_is_interrupted_and_surfaced;
+        {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            let mut route = inbound(&source, &target, now);
+            route.last_heard = before(
+                now,
+                PEER_SILENCE_TIMEOUT.saturating_add(Duration::from_millis(1)),
+            );
+            state.inbound.insert([4; 16], route);
+            state
+                .inbound
+                .insert([6; 16], inbound(&source, &target, now));
+
+            let egress = reconcile_lifecycle(
+                &mut state,
+                true,
+                &BTreeSet::from([source.clone()]),
+                None,
+                now,
+            );
+
+            assert_eq!(
+                state.inbound.keys().copied().collect::<Vec<_>>(),
+                vec![[6; 16]]
+            );
+            assert_eq!(egress.len(), 1);
+            assert_eq!(
+                egress[0].action,
+                PersonalFabricAction::RemoteAudioStop {
+                    session_id: [4; 16],
+                    authorization: [5; 16],
+                }
+            );
+            let routes = route_views(&state, true);
+            let interrupted = routes
+                .iter()
+                .find(|route| route.session_id == [4; 16])
+                .unwrap();
+            assert_eq!(interrupted.phase, RemoteAudioPhase::Interrupted);
+            assert!(interrupted.inbound);
+            assert_eq!(interrupted.peer, source);
+            assert!(
+                route_views(&state, false)
+                    .iter()
+                    .all(|route| route.phase != RemoteAudioPhase::Interrupted),
+                "active route counts exclude interrupted notices"
+            );
+        }
+
+        phase a_paused_but_alive_route_is_neither_interrupted_nor_expired;
+        {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            let mut route = inbound(&source, &target, now);
+            // No audio for a minute, but the source's keepalives keep arriving.
+            route.last_audio = before(now, Duration::from_secs(60));
+            state.inbound.insert([4; 16], route);
+            let mut outgoing = outbound(&target, LocalAudioSelection::System, Some([9; 16]), now);
+            outgoing.last_audio = before(now, Duration::from_secs(60));
+            state.outbound.insert([7; 16], outgoing);
+
+            let egress = reconcile_lifecycle(
+                &mut state,
+                true,
+                &BTreeSet::from([source, target]),
+                None,
+                now,
+            );
+            assert!(egress.is_empty());
+            assert!(state.inbound.contains_key(&[4; 16]));
+            assert!(state.outbound.contains_key(&[7; 16]));
+            assert!(state.interrupted.is_empty());
+        }
+
+        phase active_routes_outlive_the_idle_window_while_audio_flows;
+        {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let approved_long_ago = before(
+                now,
+                IDLE_SESSION_TTL.saturating_add(Duration::from_secs(60)),
+            );
+            let mut state = RemoteAudioState::default();
+            let mut streaming = inbound(&source, &target, approved_long_ago);
+            streaming.last_audio = now;
+            streaming.last_heard = now;
+            state.inbound.insert([1; 16], streaming);
+            let mut idle = inbound(&source, &target, approved_long_ago);
+            idle.last_heard = now;
+            state.inbound.insert([2; 16], idle);
+
+            let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([source]), None, now);
+            assert_eq!(
+                state.inbound.keys().copied().collect::<Vec<_>>(),
+                vec![[1; 16]]
+            );
+            assert_eq!(egress.len(), 1, "the idle route still expires");
+            assert!(
+                state.interrupted.is_empty(),
+                "expiry is not an interruption"
+            );
+        }
+
+        phase a_source_without_target_keepalives_is_interrupted;
+        {
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            let mut route = outbound(&target, LocalAudioSelection::System, Some([9; 16]), now);
+            route.last_heard = before(
+                now,
+                PEER_SILENCE_TIMEOUT.saturating_add(Duration::from_millis(1)),
+            );
+            state.outbound.insert([1; 16], route);
+            // Awaiting consent has no keepalives yet and must not time out early.
+            let mut awaiting = outbound(&target, LocalAudioSelection::System, None, now);
+            awaiting.last_heard = before(now, Duration::from_secs(10));
+            state.outbound.insert([2; 16], awaiting);
+
+            let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([target]), None, now);
+            assert_eq!(
+                state.outbound.keys().copied().collect::<Vec<_>>(),
+                vec![[2; 16]]
+            );
+            assert_eq!(egress.len(), 1);
+            assert_eq!(
+                state.interrupted.get(&[1; 16]).map(|notice| notice.inbound),
+                Some(false)
+            );
+        }
+
+        phase interrupted_notices_expire_and_stay_bounded;
+        {
+            let peer = DeviceId::new("peer").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            let notice = |age_secs: u64| InterruptedRoute {
+                peer: peer.clone(),
+                label: "Music".into(),
+                inbound: true,
+                at: before(now, Duration::from_secs(age_secs)),
+            };
+            for (id, age) in [(1, 20), (2, 19), (3, 18), (4, 17), (5, 16)] {
+                record_interruption(&mut state, [id; 16], notice(age));
+            }
+            assert_eq!(state.interrupted.len(), MAX_REMOTE_AUDIO_SESSIONS);
+            assert!(
+                !state.interrupted.contains_key(&[1; 16]),
+                "the oldest notice made room"
+            );
+
+            record_interruption(&mut state, [9; 16], notice(0));
+            let later = now.checked_add(Duration::from_secs(20)).unwrap();
+            reconcile_lifecycle(&mut state, true, &BTreeSet::new(), None, later);
+            assert_eq!(
+                state.interrupted.keys().copied().collect::<Vec<_>>(),
+                vec![[9; 16]],
+                "only notices inside the window remain"
+            );
+            reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, later);
+            assert!(state.interrupted.is_empty(), "disabling clears notices");
+        }
+
+        phase keepalives_flow_both_ways_once_per_interval;
+        {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let due = before(now, KEEPALIVE_INTERVAL);
+            let mut state = RemoteAudioState::default();
+            state.outbound.insert(
+                [1; 16],
+                outbound(&target, LocalAudioSelection::System, Some([9; 16]), due),
+            );
+            state.outbound.insert(
+                [2; 16],
+                outbound(&target, LocalAudioSelection::System, None, due),
+            );
+            state
+                .inbound
+                .insert([3; 16], inbound(&source, &target, due));
+
+            let egress = due_keepalives(&mut state, now);
+            assert_eq!(egress.len(), 2, "no keepalive before consent");
+            assert!(egress.iter().any(|message| {
+                message.target == target
+                    && message.outbound_session == Some([1; 16])
+                    && message.action
+                        == PersonalFabricAction::RemoteAudioKeepalive {
+                            session_id: [1; 16],
+                            authorization: [9; 16],
+                            playout: None,
+                        }
+            }));
+            assert!(egress.iter().any(|message| {
+                message.target == source
+                    && message.action
+                        == PersonalFabricAction::RemoteAudioKeepalive {
+                            session_id: [3; 16],
+                            authorization: [5; 16],
+                            playout: Some(ClockSyncState::Ready),
+                        }
+            }));
+            assert!(due_keepalives(&mut state, now).is_empty());
+        }
+
+        phase an_approved_route_shows_the_players_clock_instead_of_streaming_silence;
+        {
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            state.outbound.insert(
+                [1; 16],
+                outbound(&target, LocalAudioSelection::System, Some([9; 16]), now),
+            );
+            let phase = |state: &RemoteAudioState| route_views(state, false)[0].phase;
+            assert_eq!(
+                phase(&state),
+                RemoteAudioPhase::SyncingClock,
+                "nothing is known to play before the target reports its clock"
+            );
+            let route = state.outbound.get_mut(&[1; 16]).unwrap();
+            route.peer_playout = Some(ClockSyncState::Failed(ClockSyncFailure::NoReply));
+            assert_eq!(
+                phase(&state),
+                RemoteAudioPhase::ClockFailed(ClockSyncFailure::NoReply)
+            );
+            state.outbound.get_mut(&[1; 16]).unwrap().peer_playout = Some(ClockSyncState::Ready);
+            assert_eq!(phase(&state), RemoteAudioPhase::Streaming);
+        }
     }
 
     #[test]
@@ -2912,49 +2949,69 @@ mod tests {
         assert_eq!(phase(&state), RemoteAudioPhase::Streaming);
     }
 
-    #[test]
-    fn an_approved_route_shows_the_players_clock_instead_of_streaming_silence() {
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        state.outbound.insert(
-            [1; 16],
-            outbound(&target, LocalAudioSelection::System, Some([9; 16]), now),
-        );
-        let phase = |state: &RemoteAudioState| route_views(state, false)[0].phase;
-        assert_eq!(
-            phase(&state),
-            RemoteAudioPhase::SyncingClock,
-            "nothing is known to play before the target reports its clock"
-        );
-        let route = state.outbound.get_mut(&[1; 16]).unwrap();
-        route.peer_playout = Some(ClockSyncState::Failed(ClockSyncFailure::NoReply));
-        assert_eq!(
-            phase(&state),
-            RemoteAudioPhase::ClockFailed(ClockSyncFailure::NoReply)
-        );
-        state.outbound.get_mut(&[1; 16]).unwrap().peer_playout = Some(ClockSyncState::Ready);
-        assert_eq!(phase(&state), RemoteAudioPhase::Streaming);
-    }
+    tilo_test_env::scenario! {
+        fn captured_audio_is_framed_continuously_and_bounded_when_the_transport_is_full;
 
-    #[test]
-    fn a_full_transport_queue_drops_the_frame_but_keeps_the_route() {
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        state.outbound.insert(
-            [1; 16],
-            outbound(&target, LocalAudioSelection::System, Some([4; 16]), now),
-        );
+        phase a_full_transport_queue_drops_the_frame_but_keeps_the_route;
+        {
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            state.outbound.insert(
+                [1; 16],
+                outbound(&target, LocalAudioSelection::System, Some([4; 16]), now),
+            );
 
-        apply_send_failure(
-            &mut state,
-            Some([1; 16]),
-            &PersonalFabricSendError::Backpressure,
-            now,
-        );
-        assert!(state.outbound.contains_key(&[1; 16]));
-        assert!(state.interrupted.is_empty());
+            apply_send_failure(
+                &mut state,
+                Some([1; 16]),
+                &PersonalFabricSendError::Backpressure,
+                now,
+            );
+            assert!(state.outbound.contains_key(&[1; 16]));
+            assert!(state.interrupted.is_empty());
+        }
+
+        phase contiguous_capture_is_framed_with_continuous_timestamps;
+        {
+            let mut pending = PendingAudio::default();
+            pending.push(chunk(1_000, 700, 1));
+            assert_eq!(pending.next_frame(), None, "less than a frame waits");
+            pending.push(chunk(1_700, 700, 2));
+            let (first, pcm) = pending.next_frame().unwrap();
+            assert_eq!(first, 1_000);
+            assert_eq!(pcm.len(), MAX_REMOTE_AUDIO_FRAME_BYTES);
+            assert_eq!(pending.next_frame(), None);
+            pending.push(chunk(2_400, 520, 3));
+            assert_eq!(pending.next_frame().map(|(first, _)| first), Some(1_960));
+        }
+
+        phase a_capture_gap_sends_the_run_before_it_short_and_restarts_at_the_new_timestamp;
+        {
+            let mut pending = PendingAudio::default();
+            pending.push(chunk(1_000, 1_200, 1));
+            pending.push(chunk(5_000, 960, 2));
+            let frames = std::iter::from_fn(|| pending.next_frame())
+                .map(|(first, pcm)| (first, pcm.len() / REMOTE_AUDIO_SAMPLE_FRAME_BYTES, pcm[0]))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                frames,
+                vec![(1_000, 960, 1), (1_960, 240, 1), (5_000, 960, 2)]
+            );
+        }
+
+        phase pending_audio_keeps_only_the_newest_bounded_audio;
+        {
+            let frames = MAX_PENDING_PCM_BYTES / REMOTE_AUDIO_SAMPLE_FRAME_BYTES;
+            let offset = i64::try_from(frames).unwrap();
+            let mut pending = PendingAudio::default();
+            pending.push(chunk(0, frames, 1));
+            pending.push(chunk(offset, frames, 2));
+            assert_eq!(pending.len(), MAX_PENDING_PCM_BYTES);
+            let (first, pcm) = pending.next_frame().unwrap();
+            assert_eq!(first, offset, "the dropped audio's timestamps went with it");
+            assert!(pcm.iter().all(|byte| *byte == 2));
+        }
     }
 
     fn chunk(first_frame: i64, frames: usize, byte: u8) -> CaptureChunk {
@@ -2964,249 +3021,212 @@ mod tests {
         }
     }
 
-    #[test]
-    fn contiguous_capture_is_framed_with_continuous_timestamps() {
-        let mut pending = PendingAudio::default();
-        pending.push(chunk(1_000, 700, 1));
-        assert_eq!(pending.next_frame(), None, "less than a frame waits");
-        pending.push(chunk(1_700, 700, 2));
-        let (first, pcm) = pending.next_frame().unwrap();
-        assert_eq!(first, 1_000);
-        assert_eq!(pcm.len(), MAX_REMOTE_AUDIO_FRAME_BYTES);
-        assert_eq!(pending.next_frame(), None);
-        pending.push(chunk(2_400, 520, 3));
-        assert_eq!(pending.next_frame().map(|(first, _)| first), Some(1_960));
-    }
+    tilo_test_env::scenario! {
+        fn a_lost_permission_peer_or_stream_revokes_only_its_own_routes;
 
-    #[test]
-    fn a_capture_gap_sends_the_run_before_it_short_and_restarts_at_the_new_timestamp() {
-        let mut pending = PendingAudio::default();
-        pending.push(chunk(1_000, 1_200, 1));
-        pending.push(chunk(5_000, 960, 2));
-        let frames = std::iter::from_fn(|| pending.next_frame())
-            .map(|(first, pcm)| (first, pcm.len() / REMOTE_AUDIO_SAMPLE_FRAME_BYTES, pcm[0]))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            frames,
-            vec![(1_000, 960, 1), (1_960, 240, 1), (5_000, 960, 2)]
-        );
-    }
-
-    #[test]
-    fn pending_audio_keeps_only_the_newest_bounded_audio() {
-        let frames = MAX_PENDING_PCM_BYTES / REMOTE_AUDIO_SAMPLE_FRAME_BYTES;
-        let offset = i64::try_from(frames).unwrap();
-        let mut pending = PendingAudio::default();
-        pending.push(chunk(0, frames, 1));
-        pending.push(chunk(offset, frames, 2));
-        assert_eq!(pending.len(), MAX_PENDING_PCM_BYTES);
-        let (first, pcm) = pending.next_frame().unwrap();
-        assert_eq!(first, offset, "the dropped audio's timestamps went with it");
-        assert!(pcm.iter().all(|byte| *byte == 2));
-    }
-
-    #[test]
-    fn policy_disable_revokes_pending_and_outbound_routes() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        state.pending.insert(
-            [1; 16],
-            PendingInbound {
-                source: source.clone(),
-                target: target.clone(),
-                label: "Music".into(),
-                received: now,
-            },
-        );
-        state.outbound.insert(
-            [2; 16],
-            outbound(&target, LocalAudioSelection::System, Some([3; 16]), now),
-        );
-        state
-            .inbound
-            .insert([4; 16], inbound(&source, &target, now));
-
-        let egress = reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, now);
-        assert!(state.pending.is_empty());
-        assert!(state.outbound.is_empty());
-        assert!(state.inbound.is_empty());
-        assert_eq!(egress.len(), 3);
-        assert!(egress.iter().any(|message| {
-            message.target == source
-                && message.action
-                    == PersonalFabricAction::RemoteAudioDecision {
-                        session_id: [1; 16],
-                        accepted: false,
-                        authorization: None,
-                    }
-        }));
-        assert!(egress.iter().any(|message| {
-            message.target == target
-                && message.action
-                    == PersonalFabricAction::RemoteAudioStop {
-                        session_id: [2; 16],
-                        authorization: [3; 16],
-                    }
-        }));
-        assert!(egress.iter().any(|message| {
-            message.target == source
-                && message.action
-                    == PersonalFabricAction::RemoteAudioStop {
-                        session_id: [4; 16],
-                        authorization: [5; 16],
-                    }
-        }));
-    }
-
-    #[test]
-    fn peer_and_focus_loss_revoke_only_the_exact_routes() {
-        let gone = DeviceId::new("gone").unwrap();
-        let online_peer = DeviceId::new("online").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        state.outbound.insert(
-            [1; 16],
-            outbound(&gone, LocalAudioSelection::System, Some([7; 16]), now),
-        );
-        state.outbound.insert(
-            [2; 16],
-            outbound(
-                &online_peer,
-                LocalAudioSelection::Application {
-                    serial: 42,
-                    label: "Music".into(),
-                    focus: binding("old-focus"),
-                },
-                None,
-                now,
-            ),
-        );
-        state.outbound.insert(
-            [3; 16],
-            outbound(&online_peer, LocalAudioSelection::System, None, now),
-        );
-        let online = BTreeSet::from([online_peer]);
-
-        let egress =
-            reconcile_lifecycle(&mut state, true, &online, Some(&binding("new-focus")), now);
-        assert_eq!(
-            state.outbound.keys().copied().collect::<Vec<_>>(),
-            vec![[3; 16]]
-        );
-        assert_eq!(egress.len(), 2);
-        assert!(
-            egress
-                .iter()
-                .any(|message| message.outbound_session == Some([1; 16]))
-        );
-        assert!(
-            egress
-                .iter()
-                .any(|message| message.outbound_session == Some([2; 16]))
-        );
-    }
-
-    #[test]
-    fn stale_consent_is_denied_and_fresh_consent_remains() {
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        for (id, received) in [
-            (
-                [1; 16],
-                now.checked_sub(PENDING_TTL)
-                    .and_then(|stale| stale.checked_sub(Duration::from_millis(1)))
-                    .unwrap(),
-            ),
-            ([2; 16], now),
-        ] {
+        phase policy_disable_revokes_pending_and_outbound_routes;
+        {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
             state.pending.insert(
-                id,
+                [1; 16],
                 PendingInbound {
                     source: source.clone(),
                     target: target.clone(),
                     label: "Music".into(),
-                    received,
+                    received: now,
                 },
             );
+            state.outbound.insert(
+                [2; 16],
+                outbound(&target, LocalAudioSelection::System, Some([3; 16]), now),
+            );
+            state
+                .inbound
+                .insert([4; 16], inbound(&source, &target, now));
+
+            let egress = reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, now);
+            assert!(state.pending.is_empty());
+            assert!(state.outbound.is_empty());
+            assert!(state.inbound.is_empty());
+            assert_eq!(egress.len(), 3);
+            assert!(egress.iter().any(|message| {
+                message.target == source
+                    && message.action
+                        == PersonalFabricAction::RemoteAudioDecision {
+                            session_id: [1; 16],
+                            accepted: false,
+                            authorization: None,
+                        }
+            }));
+            assert!(egress.iter().any(|message| {
+                message.target == target
+                    && message.action
+                        == PersonalFabricAction::RemoteAudioStop {
+                            session_id: [2; 16],
+                            authorization: [3; 16],
+                        }
+            }));
+            assert!(egress.iter().any(|message| {
+                message.target == source
+                    && message.action
+                        == PersonalFabricAction::RemoteAudioStop {
+                            session_id: [4; 16],
+                            authorization: [5; 16],
+                        }
+            }));
         }
-        let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([source]), None, now);
-        assert_eq!(
-            state.pending.keys().copied().collect::<Vec<_>>(),
-            vec![[2; 16]]
-        );
-        assert_eq!(egress.len(), 1);
-        assert_eq!(
-            egress[0].action,
-            PersonalFabricAction::RemoteAudioDecision {
-                session_id: [1; 16],
-                accepted: false,
-                authorization: None,
+
+        phase peer_and_focus_loss_revoke_only_the_exact_routes;
+        {
+            let gone = DeviceId::new("gone").unwrap();
+            let online_peer = DeviceId::new("online").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            state.outbound.insert(
+                [1; 16],
+                outbound(&gone, LocalAudioSelection::System, Some([7; 16]), now),
+            );
+            state.outbound.insert(
+                [2; 16],
+                outbound(
+                    &online_peer,
+                    LocalAudioSelection::Application {
+                        serial: 42,
+                        label: "Music".into(),
+                        focus: binding("old-focus"),
+                    },
+                    None,
+                    now,
+                ),
+            );
+            state.outbound.insert(
+                [3; 16],
+                outbound(&online_peer, LocalAudioSelection::System, None, now),
+            );
+            let online = BTreeSet::from([online_peer]);
+
+            let egress =
+                reconcile_lifecycle(&mut state, true, &online, Some(&binding("new-focus")), now);
+            assert_eq!(
+                state.outbound.keys().copied().collect::<Vec<_>>(),
+                vec![[3; 16]]
+            );
+            assert_eq!(egress.len(), 2);
+            assert!(
+                egress
+                    .iter()
+                    .any(|message| message.outbound_session == Some([1; 16]))
+            );
+            assert!(
+                egress
+                    .iter()
+                    .any(|message| message.outbound_session == Some([2; 16]))
+            );
+        }
+
+        phase stale_consent_is_denied_and_fresh_consent_remains;
+        {
+            let source = DeviceId::new("source").unwrap();
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            for (id, received) in [
+                (
+                    [1; 16],
+                    now.checked_sub(PENDING_TTL)
+                        .and_then(|stale| stale.checked_sub(Duration::from_millis(1)))
+                        .unwrap(),
+                ),
+                ([2; 16], now),
+            ] {
+                state.pending.insert(
+                    id,
+                    PendingInbound {
+                        source: source.clone(),
+                        target: target.clone(),
+                        label: "Music".into(),
+                        received,
+                    },
+                );
             }
-        );
-    }
+            let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([source]), None, now);
+            assert_eq!(
+                state.pending.keys().copied().collect::<Vec<_>>(),
+                vec![[2; 16]]
+            );
+            assert_eq!(egress.len(), 1);
+            assert_eq!(
+                egress[0].action,
+                PersonalFabricAction::RemoteAudioDecision {
+                    session_id: [1; 16],
+                    accepted: false,
+                    authorization: None,
+                }
+            );
+        }
 
-    #[test]
-    fn transport_failure_interrupts_only_its_exact_route() {
-        let target = DeviceId::new("target").unwrap();
-        let now = Instant::now();
-        let mut state = RemoteAudioState::default();
-        state.outbound.insert(
-            [1; 16],
-            outbound(&target, LocalAudioSelection::System, Some([4; 16]), now),
-        );
-        state.outbound.insert(
-            [2; 16],
-            outbound(&target, LocalAudioSelection::System, Some([5; 16]), now),
-        );
+        phase transport_failure_interrupts_only_its_exact_route;
+        {
+            let target = DeviceId::new("target").unwrap();
+            let now = Instant::now();
+            let mut state = RemoteAudioState::default();
+            state.outbound.insert(
+                [1; 16],
+                outbound(&target, LocalAudioSelection::System, Some([4; 16]), now),
+            );
+            state.outbound.insert(
+                [2; 16],
+                outbound(&target, LocalAudioSelection::System, Some([5; 16]), now),
+            );
 
-        apply_send_failure(
-            &mut state,
-            Some([1; 16]),
-            &PersonalFabricSendError::Rejected("personal fabric transport is closed".into()),
-            now,
-        );
-        assert!(!state.outbound.contains_key(&[1; 16]));
-        assert!(state.outbound.contains_key(&[2; 16]));
-        assert_eq!(
-            route_views(&state, true)
-                .iter()
-                .find(|route| route.session_id == [1; 16])
-                .map(|route| route.phase),
-            Some(RemoteAudioPhase::Interrupted)
-        );
-    }
+            apply_send_failure(
+                &mut state,
+                Some([1; 16]),
+                &PersonalFabricSendError::Rejected("personal fabric transport is closed".into()),
+                now,
+            );
+            assert!(!state.outbound.contains_key(&[1; 16]));
+            assert!(state.outbound.contains_key(&[2; 16]));
+            assert_eq!(
+                route_views(&state, true)
+                    .iter()
+                    .find(|route| route.session_id == [1; 16])
+                    .map(|route| route.phase),
+                Some(RemoteAudioPhase::Interrupted)
+            );
+        }
 
-    #[test]
-    fn capture_failure_stops_the_exact_authorized_peer_route() {
-        let target = DeviceId::new("target").unwrap();
-        let mut state = RemoteAudioState::default();
-        state.outbound.insert(
-            [1; 16],
-            outbound(
-                &target,
-                LocalAudioSelection::System,
-                Some([9; 16]),
-                Instant::now(),
-            ),
-        );
-        let mut egress = Vec::new();
+        phase capture_failure_stops_the_exact_authorized_peer_route;
+        {
+            let target = DeviceId::new("target").unwrap();
+            let mut state = RemoteAudioState::default();
+            state.outbound.insert(
+                [1; 16],
+                outbound(
+                    &target,
+                    LocalAudioSelection::System,
+                    Some([9; 16]),
+                    Instant::now(),
+                ),
+            );
+            let mut egress = Vec::new();
 
-        terminate_capture_failure(&mut state, [1; 16], &mut egress);
+            terminate_capture_failure(&mut state, [1; 16], &mut egress);
 
-        assert!(state.outbound.is_empty());
-        assert_eq!(egress.len(), 1);
-        assert_eq!(egress[0].target, target);
-        assert_eq!(egress[0].outbound_session, Some([1; 16]));
-        assert_eq!(
-            egress[0].action,
-            PersonalFabricAction::RemoteAudioStop {
-                session_id: [1; 16],
-                authorization: [9; 16],
-            }
-        );
+            assert!(state.outbound.is_empty());
+            assert_eq!(egress.len(), 1);
+            assert_eq!(egress[0].target, target);
+            assert_eq!(egress[0].outbound_session, Some([1; 16]));
+            assert_eq!(
+                egress[0].action,
+                PersonalFabricAction::RemoteAudioStop {
+                    session_id: [1; 16],
+                    authorization: [9; 16],
+                }
+            );
+        }
     }
 }

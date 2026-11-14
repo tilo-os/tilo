@@ -278,49 +278,53 @@ mod tests {
     use super::*;
     use crate::reply::reply;
 
-    #[test]
-    fn interactive_asks_checked_skips_and_otherwise_access_decides() {
-        let with = |pairs: &[(&str, bool)]| {
-            pairs
-                .iter()
-                .map(|(key, value)| ((*key).to_owned(), OwnedValue::from(*value)))
-                .collect::<HashMap<_, _>>()
-        };
-        assert_eq!(decision(&with(&[("interactive", true)])), Decision::Ask);
-        assert_eq!(
-            decision(&with(&[
-                ("interactive", true),
-                ("permission_store_checked", true)
-            ])),
-            Decision::Ask,
-            "an interactive screenshot is always the person's"
-        );
-        assert_eq!(
-            decision(&with(&[("permission_store_checked", true)])),
-            Decision::Granted
-        );
-        assert_eq!(decision(&HashMap::new()), Decision::Access);
-    }
+    tilo_test_env::scenario! {
+        fn screenshot_options_decide_whether_to_ask_and_what_to_capture;
 
-    #[test]
-    fn the_target_option_names_what_to_capture_and_only_what_is_offered() {
-        let with = |target: u32| HashMap::from([("target".to_owned(), OwnedValue::from(target))]);
-        let offered = CaptureTarget::Screen.bit() | CaptureTarget::ActiveWindow.bit();
-        assert_eq!(target(&HashMap::new(), offered), Ok(CaptureTarget::Screen));
-        assert_eq!(target(&with(1), offered), Ok(CaptureTarget::Screen));
-        assert_eq!(target(&with(8), offered), Ok(CaptureTarget::ActiveWindow));
-        // A bit this session does not offer is refused, as is one that
-        // stands for no target at all.
-        assert_eq!(target(&with(2), offered), Err(Ended::Failed));
-        assert_eq!(target(&with(4), offered), Err(Ended::Failed));
-        assert_eq!(target(&with(16), offered), Err(Ended::Failed));
-        assert_eq!(target(&with(0), offered), Err(Ended::Failed));
-        // A session that takes what the person picks or draws answers all
-        // four.
-        let every = offered | CaptureTarget::Window.bit() | CaptureTarget::Area.bit();
-        assert_eq!(target(&with(2), every), Ok(CaptureTarget::Window));
-        assert_eq!(target(&with(4), every), Ok(CaptureTarget::Area));
-        assert_eq!(target(&with(16), every), Err(Ended::Failed));
+        phase interactive_asks_checked_skips_and_otherwise_access_decides;
+        {
+            let with = |pairs: &[(&str, bool)]| {
+                pairs
+                    .iter()
+                    .map(|(key, value)| ((*key).to_owned(), OwnedValue::from(*value)))
+                    .collect::<HashMap<_, _>>()
+            };
+            assert_eq!(decision(&with(&[("interactive", true)])), Decision::Ask);
+            assert_eq!(
+                decision(&with(&[
+                    ("interactive", true),
+                    ("permission_store_checked", true)
+                ])),
+                Decision::Ask,
+                "an interactive screenshot is always the person's"
+            );
+            assert_eq!(
+                decision(&with(&[("permission_store_checked", true)])),
+                Decision::Granted
+            );
+            assert_eq!(decision(&HashMap::new()), Decision::Access);
+        }
+
+        phase the_target_option_names_what_to_capture_and_only_what_is_offered;
+        {
+            let with = |target: u32| HashMap::from([("target".to_owned(), OwnedValue::from(target))]);
+            let offered = CaptureTarget::Screen.bit() | CaptureTarget::ActiveWindow.bit();
+            assert_eq!(target(&HashMap::new(), offered), Ok(CaptureTarget::Screen));
+            assert_eq!(target(&with(1), offered), Ok(CaptureTarget::Screen));
+            assert_eq!(target(&with(8), offered), Ok(CaptureTarget::ActiveWindow));
+            // A bit this session does not offer is refused, as is one that
+            // stands for no target at all.
+            assert_eq!(target(&with(2), offered), Err(Ended::Failed));
+            assert_eq!(target(&with(4), offered), Err(Ended::Failed));
+            assert_eq!(target(&with(16), offered), Err(Ended::Failed));
+            assert_eq!(target(&with(0), offered), Err(Ended::Failed));
+            // A session that takes what the person picks or draws answers all
+            // four.
+            let every = offered | CaptureTarget::Window.bit() | CaptureTarget::Area.bit();
+            assert_eq!(target(&with(2), every), Ok(CaptureTarget::Window));
+            assert_eq!(target(&with(4), every), Ok(CaptureTarget::Area));
+            assert_eq!(target(&with(16), every), Err(Ended::Failed));
+        }
     }
 
     /// A session that answers a screenshot with `answer` rather than

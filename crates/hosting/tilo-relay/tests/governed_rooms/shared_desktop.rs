@@ -14,6 +14,7 @@ use tilo_relay::workspaces::SetMemberRoleRequest;
 use tilo_relay::{CoeditPayload, RelayClient};
 
 use super::*;
+use tilo_relay::WorkspaceId;
 
 /// The windows of a one-strip desktop: `(tab, group, who opened it)`, in
 /// order, each tab in its own group unless two share one.
@@ -183,7 +184,7 @@ async fn ada_page_probe(relay: &Relay, device: &TestDevice, room: &str) -> Neigh
 }
 
 /// `device`'s page session in the room's workspace: connected, subscribed.
-async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: u64) -> RelayClient {
+async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) -> RelayClient {
     let client = RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
@@ -206,7 +207,7 @@ async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: u64) -> R
 pub(super) async fn commit(
     client: &RelayClient,
     device: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     message: &NeighbourMsg,
 ) -> Result<u64, String> {
     let (channel, _) = neighbour_wire::retention(message, false).unwrap();
@@ -257,7 +258,7 @@ async fn admit(
     owner: &TestDevice,
     room: &str,
     (person, device): (&TestUser, &TestDevice),
-    role: MemberRole,
+    role: Role,
     request: u8,
 ) {
     let invitation = invite(relay, owner, room, role, person.user_pk).await;
@@ -286,7 +287,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     let ada = TestUser::fresh("Ada");
     let ben = TestUser::fresh("Ben");
     let mo = TestUser::fresh("Mo");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let ada_browser = ada.enrol("ada-browser", DeviceCapabilities::member());
     let ben_browser = ben.enrol("ben-browser", DeviceCapabilities::member());
@@ -303,7 +304,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         &laptop,
         &room.workspace,
         (&ada, &ada_browser),
-        MemberRole::Editor,
+        Role::Editor,
         31,
     )
     .await;
@@ -312,7 +313,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         &laptop,
         &room.workspace,
         (&ben, &ben_browser),
-        MemberRole::Editor,
+        Role::Editor,
         32,
     )
     .await;
@@ -321,7 +322,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         &laptop,
         &room.workspace,
         (&mo, &mo_browser),
-        MemberRole::Editor,
+        Role::Editor,
         33,
     )
     .await;
@@ -330,7 +331,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         &laptop,
         &room.workspace,
         (&cy, &cy_laptop),
-        MemberRole::Editor,
+        Role::Editor,
         35,
     )
     .await;
@@ -348,7 +349,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
             SetMemberRoleRequest {
                 request_id: [34; 32],
                 user_public_key: mo.user_pk,
-                role: MemberRole::Moderator,
+                role: Role::Moderator,
             },
         )
         .await
@@ -509,7 +510,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
 async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
     let alice = TestUser::fresh("Alice");
     let ada = TestUser::fresh("Ada");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let ada_browser = ada.enrol("ada-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -520,7 +521,7 @@ async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
         &laptop,
         &room.workspace,
         (&ada, &ada_browser),
-        MemberRole::Editor,
+        Role::Editor,
         41,
     )
     .await;

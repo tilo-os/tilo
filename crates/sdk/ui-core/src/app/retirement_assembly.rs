@@ -76,6 +76,8 @@ pub(super) struct AppAssemblyValues {
     pub bindings: Option<crate::bound_dispatch::BoundNodeMap>,
     pub component_close_reports: Option<Vec<crate::application::ComponentCloseReport>>,
     pub close_admission: Option<crate::close_admission::Admission>,
+    #[cfg(feature = "native")]
+    pub report_pointing: Option<Option<super::report_point::Pointing>>,
     pub needs_sync: Option<bool>,
     pub theme: Option<Theme>,
     pub debug_mode: Option<bool>,
@@ -177,6 +179,10 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     assembly.values.bindings = Some(crate::bound_dispatch::BoundNodeMap::new());
     assembly.values.component_close_reports = Some(vec![]);
     assembly.values.close_admission = Some(crate::close_admission::Admission::default());
+    #[cfg(feature = "native")]
+    {
+        assembly.values.report_pointing = Some(None);
+    }
     assembly.values.needs_sync = Some(true);
     assembly.values.theme = Some(configured_theme.clone());
     assembly.values.debug_mode = Some((inputs.debug_mode)());
@@ -253,6 +259,8 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         bindings: Some(bindings),
         component_close_reports: Some(component_close_reports),
         close_admission: Some(close_admission),
+        #[cfg(feature = "native")]
+            report_pointing: Some(report_pointing),
         needs_sync: Some(needs_sync),
         theme: Some(theme),
         debug_mode: Some(debug_mode),
@@ -321,6 +329,8 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         bindings,
         component_close_reports,
         close_admission,
+        #[cfg(feature = "native")]
+        report_pointing,
         needs_sync,
         theme,
         debug_mode,

@@ -977,34 +977,6 @@ mod tests {
     }
 
     #[test]
-    fn the_drift_loop_absorbs_an_output_device_running_off_its_clock() {
-        let mapping = LinearClockMapping {
-            offset_ns: -77_000_000,
-            skew_ppm: -300.0,
-        };
-        let run = simulate(
-            ChannelRole::Left,
-            &mut |_| mapping,
-            CLEAN_JITTER,
-            150.0,
-            8.0,
-            (250.0, 440.0),
-        );
-        assert_eq!(run.stats.skips + run.stats.inserts, 0);
-        assert!(
-            (run.stats.ratio - (1.0 + 300e-6 - 150e-6)).abs() < 50e-6,
-            "{}",
-            run.stats.ratio
-        );
-        let converged = &run.errors_ns[run.errors_ns.len() / 2..];
-        assert!(converged.iter().all(|e| e.abs() < 200_000));
-        let (output, times) = tail(&run, 1, 2.0);
-        let (error_s, thd_db) = fit_tone(&output, &times, &mapping, 250.0);
-        assert!(error_s.abs() < 0.001, "error {error_s} s");
-        assert!(thd_db < -90.0, "THD+N {thd_db} dB");
-    }
-
-    #[test]
     fn loss_and_late_frames_never_stall_playout() {
         let mapping = LinearClockMapping {
             offset_ns: 42,
@@ -1115,94 +1087,130 @@ mod tests {
         2.0 * s.hypot(c) / signal.len() as f64
     }
 
-    #[test]
-    fn channel_roles_select_and_mix_the_stereo_source() {
-        let left = render_role(ChannelRole::Left, 440.0, 660.0);
-        assert!((amplitude(&left, 440.0) - 0.5).abs() < 0.01);
-        assert!(amplitude(&left, 660.0) < 0.001);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn sync_playout_drift_roles_and_queue;
 
-        let right = render_role(ChannelRole::Right, 440.0, 660.0);
-        assert!(amplitude(&right, 440.0) < 0.001);
-        assert!((amplitude(&right, 660.0) - 0.5).abs() < 0.01);
-
-        for role in [ChannelRole::Mono, ChannelRole::Center] {
-            let mid = render_role(role, 440.0, 660.0);
-            assert!((amplitude(&mid, 440.0) - 0.25).abs() < 0.01);
-            assert!((amplitude(&mid, 660.0) - 0.25).abs() < 0.01);
+        phase the_drift_loop_absorbs_an_output_device_running_off_its_clock;
+        {
+            let mapping = LinearClockMapping {
+                offset_ns: -77_000_000,
+                skew_ppm: -300.0,
+            };
+            let run = simulate(
+                ChannelRole::Left,
+                &mut |_| mapping,
+                CLEAN_JITTER,
+                150.0,
+                8.0,
+                (250.0, 440.0),
+            );
+            assert_eq!(run.stats.skips + run.stats.inserts, 0);
+            assert!(
+                (run.stats.ratio - (1.0 + 300e-6 - 150e-6)).abs() < 50e-6,
+                "{}",
+                run.stats.ratio
+            );
+            let converged = &run.errors_ns[run.errors_ns.len() / 2..];
+            assert!(converged.iter().all(|e| e.abs() < 200_000));
+            let (output, times) = tail(&run, 1, 2.0);
+            let (error_s, thd_db) = fit_tone(&output, &times, &mapping, 250.0);
+            assert!(error_s.abs() < 0.001, "error {error_s} s");
+            assert!(thd_db < -90.0, "THD+N {thd_db} dB");
         }
 
-        let stereo = render_role(ChannelRole::Stereo, 440.0, 660.0);
-        let l: Vec<f32> = stereo.iter().copied().step_by(2).collect();
-        let r: Vec<f32> = stereo.iter().copied().skip(1).step_by(2).collect();
-        assert!((amplitude(&l, 440.0) - 0.5).abs() < 0.01);
-        assert!(amplitude(&l, 660.0) < 0.001);
-        assert!((amplitude(&r, 660.0) - 0.5).abs() < 0.01);
+        phase channel_roles_select_and_mix_the_stereo_source;
+        {
+            let left = render_role(ChannelRole::Left, 440.0, 660.0);
+            assert!((amplitude(&left, 440.0) - 0.5).abs() < 0.01);
+            assert!(amplitude(&left, 660.0) < 0.001);
 
-        let lfe = render_role(ChannelRole::Lfe, 40.0, 2_000.0);
-        let settled = &lfe[RATE as usize / 8..];
-        assert!(amplitude(settled, 40.0) > 0.24);
-        assert!(20.0 * (amplitude(settled, 2_000.0) / 0.25).log10() < -60.0);
-    }
+            let right = render_role(ChannelRole::Right, 440.0, 660.0);
+            assert!(amplitude(&right, 440.0) < 0.001);
+            assert!((amplitude(&right, 660.0) - 0.5).abs() < 0.01);
 
-    #[test]
-    fn push_classifies_duplicates_late_and_malformed_frames() {
-        let mapping = LinearClockMapping::default();
-        let mut playout = SyncPlayout::new(PlayoutConfig::new(RATE, LATENCY_NS, ChannelRole::Mono));
-        let frame = |seq: u64, media_ts: i64| AudioFrame {
-            seq,
-            media_ts,
-            channels: 1,
-            payload: Payload::I16(vec![1_000; FRAME]),
-        };
-        assert_eq!(playout.push(&frame(1, 4_800)), PushOutcome::Queued);
-        assert_eq!(playout.push(&frame(1, 4_800)), PushOutcome::Duplicate);
-        assert_eq!(
-            playout.push(&AudioFrame {
-                channels: 2,
-                payload: Payload::I16(vec![0; 3]),
-                ..frame(2, 0)
-            }),
-            PushOutcome::Malformed
-        );
-        let mut out = vec![0.0; BLOCK];
-        // Playout at 0.2 s: sample 9 600 is due, so a frame at 0 is late.
-        playout.render(&mapping, LATENCY_NS + NS_PER_SEC / 5, &mut out);
-        assert_eq!(playout.push(&frame(3, 0)), PushOutcome::Late);
-        assert_eq!(playout.push(&frame(4, 9_600 + 2_400)), PushOutcome::Queued);
-        let stats = playout.stats();
-        assert_eq!(
-            (stats.queued, stats.duplicates, stats.late, stats.malformed),
-            (2, 1, 1, 1)
-        );
-        assert_eq!(stats.last_seq, Some(4));
-    }
+            for role in [ChannelRole::Mono, ChannelRole::Center] {
+                let mid = render_role(role, 440.0, 660.0);
+                assert!((amplitude(&mid, 440.0) - 0.25).abs() < 0.01);
+                assert!((amplitude(&mid, 660.0) - 0.25).abs() < 0.01);
+            }
 
-    #[test]
-    fn capacity_discards_the_oldest_frames() {
-        let mut config = PlayoutConfig::new(RATE, LATENCY_NS, ChannelRole::Mono);
-        config.capacity_ns = 100_000_000;
-        let mut playout = SyncPlayout::new(config);
-        for i in 0..100 {
-            playout.push(&AudioFrame {
-                seq: i,
-                media_ts: i as i64 * FRAME as i64,
+            let stereo = render_role(ChannelRole::Stereo, 440.0, 660.0);
+            let l: Vec<f32> = stereo.iter().copied().step_by(2).collect();
+            let r: Vec<f32> = stereo.iter().copied().skip(1).step_by(2).collect();
+            assert!((amplitude(&l, 440.0) - 0.5).abs() < 0.01);
+            assert!(amplitude(&l, 660.0) < 0.001);
+            assert!((amplitude(&r, 660.0) - 0.5).abs() < 0.01);
+
+            let lfe = render_role(ChannelRole::Lfe, 40.0, 2_000.0);
+            let settled = &lfe[RATE as usize / 8..];
+            assert!(amplitude(settled, 40.0) > 0.24);
+            assert!(20.0 * (amplitude(settled, 2_000.0) / 0.25).log10() < -60.0);
+        }
+
+        phase push_classifies_duplicates_late_and_malformed_frames;
+        {
+            let mapping = LinearClockMapping::default();
+            let mut playout = SyncPlayout::new(PlayoutConfig::new(RATE, LATENCY_NS, ChannelRole::Mono));
+            let frame = |seq: u64, media_ts: i64| AudioFrame {
+                seq,
+                media_ts,
                 channels: 1,
-                payload: Payload::F32(vec![0.0; FRAME]),
-            });
+                payload: Payload::I16(vec![1_000; FRAME]),
+            };
+            assert_eq!(playout.push(&frame(1, 4_800)), PushOutcome::Queued);
+            assert_eq!(playout.push(&frame(1, 4_800)), PushOutcome::Duplicate);
+            assert_eq!(
+                playout.push(&AudioFrame {
+                    channels: 2,
+                    payload: Payload::I16(vec![0; 3]),
+                    ..frame(2, 0)
+                }),
+                PushOutcome::Malformed
+            );
+            let mut out = vec![0.0; BLOCK];
+            // Playout at 0.2 s: sample 9 600 is due, so a frame at 0 is late.
+            playout.render(&mapping, LATENCY_NS + NS_PER_SEC / 5, &mut out);
+            assert_eq!(playout.push(&frame(3, 0)), PushOutcome::Late);
+            assert_eq!(playout.push(&frame(4, 9_600 + 2_400)), PushOutcome::Queued);
+            let stats = playout.stats();
+            assert_eq!(
+                (stats.queued, stats.duplicates, stats.late, stats.malformed),
+                (2, 1, 1, 1)
+            );
+            assert_eq!(stats.last_seq, Some(4));
         }
-        assert!(playout.buffered_ns() <= 100_000_000);
-        assert!(playout.stats().overflowed > 0);
-    }
 
-    #[test]
-    fn linear_mapping_round_trips() {
-        let mapping = LinearClockMapping {
-            offset_ns: -3_000_000_123,
-            skew_ppm: 287.5,
-        };
-        for leader in [0, 1, 123_456_789_012, 9_000_000_000_000_000] {
-            let local = mapping.leader_to_local_ns(leader);
-            assert!((mapping.local_to_leader_ns(local) - leader).abs() <= 1);
+        phase capacity_discards_the_oldest_frames;
+        {
+            let mut config = PlayoutConfig::new(RATE, LATENCY_NS, ChannelRole::Mono);
+            config.capacity_ns = 100_000_000;
+            let mut playout = SyncPlayout::new(config);
+            for i in 0..100 {
+                playout.push(&AudioFrame {
+                    seq: i,
+                    media_ts: i as i64 * FRAME as i64,
+                    channels: 1,
+                    payload: Payload::F32(vec![0.0; FRAME]),
+                });
+            }
+            assert!(playout.buffered_ns() <= 100_000_000);
+            assert!(playout.stats().overflowed > 0);
+        }
+
+        phase linear_mapping_round_trips;
+        {
+            let mapping = LinearClockMapping {
+                offset_ns: -3_000_000_123,
+                skew_ppm: 287.5,
+            };
+            for leader in [0, 1, 123_456_789_012, 9_000_000_000_000_000] {
+                let local = mapping.leader_to_local_ns(leader);
+                assert!((mapping.local_to_leader_ns(local) - leader).abs() <= 1);
+            }
         }
     }
 }

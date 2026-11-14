@@ -75,6 +75,7 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/de
 # ~/.config/tilo/state.json and render them read-only, instead of a hand-mirrored
 # copy that could drift from the enforced shape.
 collab-types = { path = "../../crates/collab/collab-types" }
+tilo-action-policy = { path = "../../crates/collab/action-policy" }
 # The Tilo action model: every setting mutation is a serializable, replayable
 # `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }

@@ -772,6 +772,7 @@ mod tests {
 
     /// No piece stands on a cover, and none overlaps another.
     fn apart(
+        name: &str,
         pieces: &[Rectangle<i32, smithay::utils::Physical>],
         covers: &[Rectangle<i32, smithay::utils::Physical>],
     ) {
@@ -779,54 +780,89 @@ mod tests {
             for cover in covers {
                 assert!(
                     piece.intersection(*cover).is_none(),
-                    "{piece:?} stands on {cover:?}"
+                    "{name}: {piece:?} stands on {cover:?}"
                 );
             }
             for other in pieces {
                 assert!(
                     piece == other || piece.intersection(*other).is_none(),
-                    "{piece:?} overlaps {other:?}"
+                    "{name}: {piece:?} overlaps {other:?}"
                 );
             }
         }
     }
 
+    /// A window, what covers it, the area of it left showing, and the pieces left where a row pins
+    /// them.
     #[test]
-    fn a_cover_in_the_middle_leaves_the_rest_of_the_window() {
-        let bounds = rect(0, 0, 100, 100);
-        let covers = [rect(20, 30, 40, 20)];
-        let pieces = outside(bounds, &covers);
-        assert_eq!(
-            area(&pieces),
-            10_000 - 800,
-            "everything but the cover: {pieces:?}"
-        );
-        apart(&pieces, &covers);
-    }
-
-    #[test]
-    fn covers_overlapping_the_edges_take_only_what_they_cover() {
-        let bounds = rect(10, 10, 60, 40);
-        let covers = [rect(0, 0, 30, 30), rect(50, 40, 100, 100)];
-        let pieces = outside(bounds, &covers);
-        let covered = 20 * 20 + 20 * 10;
-        assert_eq!(
-            area(&pieces),
-            60 * 40 - covered,
-            "the parts of the covers inside the window: {pieces:?}"
-        );
-        apart(&pieces, &covers);
-    }
-
-    #[test]
-    fn a_cover_over_everything_leaves_nothing() {
-        assert!(outside(rect(0, 0, 50, 50), &[rect(-10, -10, 100, 100)]).is_empty());
-    }
-
-    #[test]
-    fn a_cover_beside_the_window_takes_nothing() {
-        let bounds = rect(0, 0, 50, 50);
-        let pieces = outside(bounds, &[rect(50, 0, 10, 10)]);
-        assert_eq!(pieces, vec![bounds]);
+    fn covers_take_out_of_a_window_exactly_what_they_cover() {
+        let rows = [
+            (
+                "a cover in the middle leaves the rest of the window",
+                rect(0, 0, 100, 100),
+                vec![rect(20, 30, 40, 20)],
+                10_000 - 800,
+                None,
+            ),
+            (
+                // The parts of the covers inside the window are 20 by 20 and 20 by 10.
+                "covers overlapping the edges take only what they cover",
+                rect(10, 10, 60, 40),
+                vec![rect(0, 0, 30, 30), rect(50, 40, 100, 100)],
+                60 * 40 - (20 * 20 + 20 * 10),
+                None,
+            ),
+            (
+                "a cover over everything leaves nothing",
+                rect(0, 0, 50, 50),
+                vec![rect(-10, -10, 100, 100)],
+                0,
+                Some(Vec::new()),
+            ),
+            (
+                "a cover beside the window takes nothing",
+                rect(0, 0, 50, 50),
+                vec![rect(50, 0, 10, 10)],
+                50 * 50,
+                Some(vec![rect(0, 0, 50, 50)]),
+            ),
+            (
+                "no cover at all leaves the window whole",
+                rect(0, 0, 50, 50),
+                Vec::new(),
+                50 * 50,
+                Some(vec![rect(0, 0, 50, 50)]),
+            ),
+            (
+                "a cover exactly the window leaves nothing",
+                rect(5, 5, 20, 10),
+                vec![rect(5, 5, 20, 10)],
+                0,
+                Some(Vec::new()),
+            ),
+            (
+                "the same cover twice takes its area once",
+                rect(0, 0, 100, 100),
+                vec![rect(20, 30, 40, 20), rect(20, 30, 40, 20)],
+                10_000 - 800,
+                None,
+            ),
+            (
+                // Nothing is left beside a cover as wide as the window, not even an empty piece.
+                "a band across the window leaves the piece above it and the piece below",
+                rect(0, 0, 100, 100),
+                vec![rect(-5, 40, 200, 20)],
+                10_000 - 2_000,
+                Some(vec![rect(0, 0, 100, 40), rect(0, 60, 100, 40)]),
+            ),
+        ];
+        for (name, bounds, covers, left, pinned) in rows {
+            let pieces = outside(bounds, &covers);
+            assert_eq!(area(&pieces), left, "{name}: what is left is {pieces:?}");
+            apart(name, &pieces, &covers);
+            if let Some(pinned) = pinned {
+                assert_eq!(pieces, pinned, "{name}");
+            }
+        }
     }
 }

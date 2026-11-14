@@ -384,6 +384,9 @@ pub(crate) fn spawn_render_thread_deferred(
             let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
             let presentation = crate::presentation_feedback::Observer::from_env(window.clone());
+            // Each frame is presented through its window ([`FramePresentation::window`]), which
+            // then shows only the frame's own pixels of its swapchain buffer.
+            let crops = window.as_deref().is_some_and(tilo_presentation::crops_frames);
             let mut gpu_trace = presentation
                 .as_ref()
                 .and_then(crate::presentation_feedback::Observer::worker_id)
@@ -539,9 +542,11 @@ pub(crate) fn spawn_render_thread_deferred(
                 // Resize on the worker so main never touches wgpu state after
                 // spawn — simpler than an explicit Resize variant, and keeps
                 // every wgpu call on the thread that owns the surface.
-                if surface.config.width != width || surface.config.height != height {
+                if surface.target_texture.width() != width
+                    || surface.target_texture.height() != height
+                {
                     if let Err(err) =
-                        resize_surface_checked(&render_cx, &mut surface, width, height)
+                        resize_surface_checked(&render_cx, &mut surface, width, height, crops)
                     {
                         tracing::warn!(%err, "drawing surface is gone; stopping the render thread");
                         note_surface_loss(format!(
@@ -912,6 +917,7 @@ fn resize_surface_checked(
     surface: &mut RenderSurface<'static>,
     width: u32,
     height: u32,
+    crops: bool,
 ) -> Result<(), String> {
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         return Err("render device index out of range".to_string());
@@ -919,7 +925,7 @@ fn resize_surface_checked(
     let scope = device_handle
         .device
         .push_error_scope(vello::wgpu::ErrorFilter::Validation);
-    render_cx.resize_surface(surface, width, height);
+    render_cx.resize_surface(surface, width, height, crops);
     match pollster::block_on(scope.pop()) {
         Some(err) => Err(err.to_string()),
         None => Ok(()),

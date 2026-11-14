@@ -406,233 +406,237 @@ mod tests {
         })
     }
 
-    #[test]
-    fn debian_raw_build_is_found_with_its_store_and_smm() {
-        let present = files(
-            "/d",
-            &[
-                "OVMF_CODE_4M.fd",
-                "OVMF_CODE_4M.secboot.fd",
-                "OVMF_VARS_4M.fd",
-                "OVMF_VARS_4M.ms.fd",
-            ],
-        );
-        let r = request(Arch::X86_64, "/d");
-        assert_eq!(
-            pick(&r, &present).unwrap(),
-            (
-                "OVMF_CODE_4M.secboot.fd".into(),
-                "OVMF_VARS_4M.fd".into(),
-                "raw",
-                false,
-                true
-            )
-        );
-        assert!(
-            pick(
-                &Request {
-                    tpm: true,
-                    ..r.clone()
-                },
-                &present
-            )
-            .is_err()
-        );
-        assert_eq!(
-            pick(&Request { s3: true, ..r }, &present).unwrap(),
-            (
-                "OVMF_CODE_4M.fd".into(),
-                "OVMF_VARS_4M.fd".into(),
-                "raw",
-                false,
-                false
-            )
-        );
-    }
+    tilo_test_env::scenario! {
+        fn firmware_is_resolved_for_each_layout_and_request;
 
-    #[test]
-    fn fedora_measuring_build_wins_and_s3_drops_smm() {
-        let mut present = files(
-            "/f",
-            &[
-                "OVMF_CODE_4M.secboot.qcow2",
-                "OVMF_VARS_4M.qcow2",
-                "OVMF_CODE_4M.fd",
-            ],
-        );
-        let r = request(Arch::X86_64, "/f");
-        assert_eq!(
-            pick(&r, &present).unwrap(),
-            (
-                "OVMF_CODE_4M.secboot.qcow2".into(),
-                "OVMF_VARS_4M.qcow2".into(),
-                "qcow2",
-                true,
-                true
-            )
-        );
-        present.insert(PathBuf::from("/f/OVMF_CODE_4M.qcow2"));
-        assert_eq!(
-            pick(
+        phase debian_raw_build_is_found_with_its_store_and_smm;
+        {
+            let present = files(
+                "/d",
+                &[
+                    "OVMF_CODE_4M.fd",
+                    "OVMF_CODE_4M.secboot.fd",
+                    "OVMF_VARS_4M.fd",
+                    "OVMF_VARS_4M.ms.fd",
+                ],
+            );
+            let r = request(Arch::X86_64, "/d");
+            assert_eq!(
+                pick(&r, &present).unwrap(),
+                (
+                    "OVMF_CODE_4M.secboot.fd".into(),
+                    "OVMF_VARS_4M.fd".into(),
+                    "raw",
+                    false,
+                    true
+                )
+            );
+            assert!(
+                pick(
+                    &Request {
+                        tpm: true,
+                        ..r.clone()
+                    },
+                    &present
+                )
+                .is_err()
+            );
+            assert_eq!(
+                pick(&Request { s3: true, ..r }, &present).unwrap(),
+                (
+                    "OVMF_CODE_4M.fd".into(),
+                    "OVMF_VARS_4M.fd".into(),
+                    "raw",
+                    false,
+                    false
+                )
+            );
+        }
+
+        phase fedora_measuring_build_wins_and_s3_drops_smm;
+        {
+            let mut present = files(
+                "/f",
+                &[
+                    "OVMF_CODE_4M.secboot.qcow2",
+                    "OVMF_VARS_4M.qcow2",
+                    "OVMF_CODE_4M.fd",
+                ],
+            );
+            let r = request(Arch::X86_64, "/f");
+            assert_eq!(
+                pick(&r, &present).unwrap(),
+                (
+                    "OVMF_CODE_4M.secboot.qcow2".into(),
+                    "OVMF_VARS_4M.qcow2".into(),
+                    "qcow2",
+                    true,
+                    true
+                )
+            );
+            present.insert(PathBuf::from("/f/OVMF_CODE_4M.qcow2"));
+            assert_eq!(
+                pick(
+                    &Request {
+                        s3: true,
+                        ..r.clone()
+                    },
+                    &present
+                )
+                .unwrap(),
+                (
+                    "OVMF_CODE_4M.qcow2".into(),
+                    "OVMF_VARS_4M.qcow2".into(),
+                    "qcow2",
+                    true,
+                    false
+                )
+            );
+            assert!(
+                pick(
+                    &Request {
+                        tpm: true,
+                        ..r.clone()
+                    },
+                    &present
+                )
+                .is_ok()
+            );
+            assert!(
+                pick(
+                    &Request {
+                        keys: Keys::Microsoft,
+                        ..r
+                    },
+                    &present
+                )
+                .is_err()
+            );
+        }
+
+        phase s3_refuses_smm_only_firmware_and_nothing_found_stops;
+        {
+            let present = files("/s", &["OVMF_CODE_4M.secboot.fd", "OVMF_VARS_4M.fd"]);
+            assert!(
+                pick(
+                    &Request {
+                        s3: true,
+                        ..request(Arch::X86_64, "/s")
+                    },
+                    &present
+                )
+                .is_err()
+            );
+            assert!(pick(&request(Arch::X86_64, "/empty"), &BTreeSet::new()).is_err());
+        }
+
+        phase two_megabyte_build_refuses_a_tpm;
+        {
+            let present = files("/o", &["OVMF_CODE.fd", "OVMF_VARS.fd"]);
+            let r = request(Arch::X86_64, "/o");
+            assert_eq!(
+                pick(&r, &present).unwrap(),
+                (
+                    "OVMF_CODE.fd".into(),
+                    "OVMF_VARS.fd".into(),
+                    "raw",
+                    false,
+                    false
+                )
+            );
+            let error = pick(&Request { tpm: true, ..r }, &present).unwrap_err();
+            assert!(error.detail.contains("2 MB"), "{error:?}");
+        }
+
+        phase arm_firmware_matches_both_package_layouts_and_takes_a_tpm_unmeasured;
+        {
+            let fedora = files("/a", &["QEMU_EFI-pflash.raw", "vars-template-pflash.raw"]);
+            let debian = files("/a", &["AAVMF_CODE.fd", "AAVMF_VARS.fd"]);
+            let r = request(Arch::Aarch64, "/a");
+            assert_eq!(
+                pick(&r, &fedora).unwrap(),
+                (
+                    "QEMU_EFI-pflash.raw".into(),
+                    "vars-template-pflash.raw".into(),
+                    "raw",
+                    false,
+                    false
+                )
+            );
+            assert_eq!(
+                pick(&r, &debian).unwrap(),
+                (
+                    "AAVMF_CODE.fd".into(),
+                    "AAVMF_VARS.fd".into(),
+                    "raw",
+                    false,
+                    false
+                )
+            );
+            let with_tpm = resolve(&Request { tpm: true, ..r }, &|p| fedora.contains(p)).unwrap();
+            assert!(
+                !with_tpm.measures,
+                "an AAVMF build is never taken to measure"
+            );
+            assert!(
+                with_tpm
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("not PCR-bound")),
+                "{:?}",
+                with_tpm.notes
+            );
+        }
+
+        phase secboot_keeps_the_pristine_store_and_a_prepared_store_must_exist;
+        {
+            let present = files("/f", &["OVMF_CODE_4M.secboot.qcow2", "OVMF_VARS_4M.qcow2"]);
+            let r = request(Arch::X86_64, "/f");
+            let firmware = resolve(
                 &Request {
-                    s3: true,
+                    secboot: true,
                     ..r.clone()
                 },
-                &present
+                &|p| present.contains(p),
             )
-            .unwrap(),
-            (
-                "OVMF_CODE_4M.qcow2".into(),
-                "OVMF_VARS_4M.qcow2".into(),
-                "qcow2",
-                true,
-                false
-            )
-        );
-        assert!(
-            pick(
+            .unwrap();
+            assert_eq!(firmware.keys, Keys::Persist);
+            assert_eq!(
+                firmware.varstore_path(Path::new("/run")),
+                Path::new("/run/vars-qcow2-persist.img")
+            );
+            let error = resolve(
                 &Request {
-                    tpm: true,
-                    ..r.clone()
-                },
-                &present
-            )
-            .is_ok()
-        );
-        assert!(
-            pick(
-                &Request {
-                    keys: Keys::Microsoft,
+                    keys: Keys::Store("/nowhere/vars.qcow2".into()),
                     ..r
                 },
-                &present
+                &|p| present.contains(p),
             )
-            .is_err()
-        );
-    }
+            .unwrap_err();
+            assert!(error.remedy.contains("tilo-secureboot enroll"), "{error:?}");
+        }
 
-    #[test]
-    fn s3_refuses_smm_only_firmware_and_nothing_found_stops() {
-        let present = files("/s", &["OVMF_CODE_4M.secboot.fd", "OVMF_VARS_4M.fd"]);
-        assert!(
-            pick(
-                &Request {
-                    s3: true,
-                    ..request(Arch::X86_64, "/s")
-                },
-                &present
-            )
-            .is_err()
-        );
-        assert!(pick(&request(Arch::X86_64, "/empty"), &BTreeSet::new()).is_err());
-    }
-
-    #[test]
-    fn two_megabyte_build_refuses_a_tpm() {
-        let present = files("/o", &["OVMF_CODE.fd", "OVMF_VARS.fd"]);
-        let r = request(Arch::X86_64, "/o");
-        assert_eq!(
-            pick(&r, &present).unwrap(),
-            (
-                "OVMF_CODE.fd".into(),
-                "OVMF_VARS.fd".into(),
-                "raw",
-                false,
-                false
-            )
-        );
-        let error = pick(&Request { tpm: true, ..r }, &present).unwrap_err();
-        assert!(error.detail.contains("2 MB"), "{error:?}");
-    }
-
-    #[test]
-    fn arm_firmware_matches_both_package_layouts_and_takes_a_tpm_unmeasured() {
-        let fedora = files("/a", &["QEMU_EFI-pflash.raw", "vars-template-pflash.raw"]);
-        let debian = files("/a", &["AAVMF_CODE.fd", "AAVMF_VARS.fd"]);
-        let r = request(Arch::Aarch64, "/a");
-        assert_eq!(
-            pick(&r, &fedora).unwrap(),
-            (
-                "QEMU_EFI-pflash.raw".into(),
-                "vars-template-pflash.raw".into(),
-                "raw",
-                false,
-                false
-            )
-        );
-        assert_eq!(
-            pick(&r, &debian).unwrap(),
-            (
-                "AAVMF_CODE.fd".into(),
-                "AAVMF_VARS.fd".into(),
-                "raw",
-                false,
-                false
-            )
-        );
-        let with_tpm = resolve(&Request { tpm: true, ..r }, &|p| fedora.contains(p)).unwrap();
-        assert!(
-            !with_tpm.measures,
-            "an AAVMF build is never taken to measure"
-        );
-        assert!(
-            with_tpm
-                .notes
-                .iter()
-                .any(|note| note.contains("not PCR-bound")),
-            "{:?}",
-            with_tpm.notes
-        );
-    }
-
-    #[test]
-    fn secboot_keeps_the_pristine_store_and_a_prepared_store_must_exist() {
-        let present = files("/f", &["OVMF_CODE_4M.secboot.qcow2", "OVMF_VARS_4M.qcow2"]);
-        let r = request(Arch::X86_64, "/f");
-        let firmware = resolve(
-            &Request {
-                secboot: true,
-                ..r.clone()
-            },
-            &|p| present.contains(p),
-        )
-        .unwrap();
-        assert_eq!(firmware.keys, Keys::Persist);
-        assert_eq!(
-            firmware.varstore_path(Path::new("/run")),
-            Path::new("/run/vars-qcow2-persist.img")
-        );
-        let error = resolve(
-            &Request {
-                keys: Keys::Store("/nowhere/vars.qcow2".into()),
-                ..r
-            },
-            &|p| present.contains(p),
-        )
-        .unwrap_err();
-        assert!(error.remedy.contains("tilo-secureboot enroll"), "{error:?}");
-    }
-
-    #[test]
-    fn default_store_is_reseeded_unless_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let template = dir.path().join("OVMF_VARS_4M.qcow2");
-        std::fs::write(&template, b"template").unwrap();
-        let firmware = Firmware {
-            code: dir.path().join("OVMF_CODE_4M.secboot.qcow2"),
-            vars: template,
-            format: "qcow2",
-            keys: Keys::None,
-            measures: true,
-            smm: true,
-            notes: Vec::new(),
-        };
-        let run = dir.path().join("run");
-        let store = firmware.seed_varstore(&run, false).unwrap();
-        std::fs::write(&store, b"enrolled").unwrap();
-        firmware.seed_varstore(&run, true).unwrap();
-        assert_eq!(std::fs::read(&store).unwrap(), b"enrolled");
-        firmware.seed_varstore(&run, false).unwrap();
-        assert_eq!(std::fs::read(&store).unwrap(), b"template");
+        phase default_store_is_reseeded_unless_kept;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let template = dir.path().join("OVMF_VARS_4M.qcow2");
+            std::fs::write(&template, b"template").unwrap();
+            let firmware = Firmware {
+                code: dir.path().join("OVMF_CODE_4M.secboot.qcow2"),
+                vars: template,
+                format: "qcow2",
+                keys: Keys::None,
+                measures: true,
+                smm: true,
+                notes: Vec::new(),
+            };
+            let run = dir.path().join("run");
+            let store = firmware.seed_varstore(&run, false).unwrap();
+            std::fs::write(&store, b"enrolled").unwrap();
+            firmware.seed_varstore(&run, true).unwrap();
+            assert_eq!(std::fs::read(&store).unwrap(), b"enrolled");
+            firmware.seed_varstore(&run, false).unwrap();
+            assert_eq!(std::fs::read(&store).unwrap(), b"template");
+        }
     }
 }

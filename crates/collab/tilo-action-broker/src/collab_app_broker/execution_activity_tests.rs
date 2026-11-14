@@ -139,7 +139,7 @@ async fn only_admitted_execution_and_validated_terminal_emit_activity() {
     let accepted = events.try_recv().unwrap();
     assert_eq!(accepted.execution, caller.execution_id().unwrap());
     assert_eq!(accepted.invocation, request.invocation);
-    assert_eq!(accepted.principal, "a1".repeat(32));
+    assert_eq!(accepted.actor, "a1".repeat(32));
     assert_eq!(accepted.peer_id, 7);
     assert_eq!(accepted.route.record_id, "record-a");
     assert_eq!(accepted.address, request.target.address);

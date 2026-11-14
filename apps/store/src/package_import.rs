@@ -300,21 +300,84 @@ type = "gui"
         (bytes, item)
     }
 
-    #[test]
-    fn package_import_offered_full_and_thin_preserve_actual_offer_size() {
-        let (bytes, item) = catalogue_fixture();
-        let full = review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
-        let decoded = tilo_app_package::tapp::read(bytes.as_slice(), &mut DiscardBlobs).unwrap();
-        assert!(
-            decoded.is_complete(),
-            "the offered archive carries all payloads"
-        );
-        let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None).unwrap();
-        assert!(thin.len() < bytes.len());
-        let thin_review = review(thin, std::slice::from_ref(&item)).unwrap();
-        assert_eq!(thin_review.expected, full.expected);
-        assert_eq!(full.expected.size_bytes, bytes.len() as u64);
-        assert_eq!(full.expected.package_root, decoded.meta.id);
+    tilo_test_env::scenario! {
+        fn a_package_import_is_reviewed_against_its_offer;
+
+        phase package_import_offered_full_and_thin_preserve_actual_offer_size;
+        {
+            let (bytes, item) = catalogue_fixture();
+            let full = review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
+            let decoded = tilo_app_package::tapp::read(bytes.as_slice(), &mut DiscardBlobs).unwrap();
+            assert!(
+                decoded.is_complete(),
+                "the offered archive carries all payloads"
+            );
+            let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None).unwrap();
+            assert!(thin.len() < bytes.len());
+            let thin_review = review(thin, std::slice::from_ref(&item)).unwrap();
+            assert_eq!(thin_review.expected, full.expected);
+            assert_eq!(full.expected.size_bytes, bytes.len() as u64);
+            assert_eq!(full.expected.package_root, decoded.meta.id);
+        }
+
+        phase import_matches_all_independent_offer_fields_and_preserves_bytes;
+        {
+            let (bytes, item) = signed_fixture();
+            let reviewed = review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
+            assert_eq!(&*reviewed.bytes, &bytes);
+            assert_eq!(reviewed.expected.app_id, item.id);
+            assert_eq!(reviewed.expected.version, "1.0.0");
+            let decoded = tilo_app_package::tapp::read(bytes.as_slice(), &mut DiscardBlobs).unwrap();
+            let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None).unwrap();
+            assert_eq!(reviewed.expected.size_bytes, thin.len() as u64);
+            let thin_review = review(thin, std::slice::from_ref(&item)).unwrap();
+            assert_eq!(thin_review.expected, reviewed.expected);
+            assert_eq!(reviewed.registry, "Independent registry");
+            for changed in 0..6 {
+                let mut wrong = item.clone();
+                match changed {
+                    0 => wrong.id = "so.tilo.other".into(),
+                    1 => wrong.versions[0].version = "2.0.0".into(),
+                    2 => wrong.versions[0].root_hash_hex = Some("00".repeat(32)),
+                    3 => wrong.versions[0].size_bytes = 0,
+                    4 => wrong.publisher_pubkey_hex = Some("11".repeat(32)),
+                    _ => wrong.trust = StoreTrust::ConfiguredRemote,
+                }
+                assert!(review(bytes.clone(), &[wrong]).is_err(), "field {changed}");
+            }
+            let mut oversized_offer = item;
+            oversized_offer.versions[0].size_bytes = tilo_app_package::MAX_APP_TAPP_BYTES + 1;
+            assert!(review(bytes.clone(), &[oversized_offer]).is_err());
+            assert!(
+                review(bytes, &[]).is_err(),
+                "archive key does not authorize itself"
+            );
+        }
+
+        phase import_rejects_actual_corrupt_payload_and_unavailable_handoffs;
+        {
+            let (mut bytes, item) = signed_fixture();
+            let pos = bytes
+                .windows(b"#!/bin/true\nimport-fixture\n".len())
+                .position(|s| s == b"#!/bin/true\nimport-fixture\n")
+                .unwrap();
+            bytes[pos] ^= 1;
+            assert!(
+                review(bytes, &[item]).is_err(),
+                "real archive payload corruption"
+            );
+            assert!(review(vec![], &[]).is_err());
+            let dir = tempfile::tempdir().unwrap();
+            assert!(Input::Path(dir.path().join("missing.tapp")).read().is_err());
+            assert!(
+                Input::Content(
+                    ui::framework::content::ContentStore::memory(),
+                    "ab".repeat(32)
+                )
+                .read()
+                .is_err()
+            );
+        }
     }
 
     pub(crate) fn signed_fixture() -> (Vec<u8>, StoreItem) {
@@ -381,64 +444,5 @@ type = "gui"
             installed: crate::InstalledState::Not,
         };
         (bytes, item)
-    }
-
-    #[test]
-    fn import_matches_all_independent_offer_fields_and_preserves_bytes() {
-        let (bytes, item) = signed_fixture();
-        let reviewed = review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
-        assert_eq!(&*reviewed.bytes, &bytes);
-        assert_eq!(reviewed.expected.app_id, item.id);
-        assert_eq!(reviewed.expected.version, "1.0.0");
-        let decoded = tilo_app_package::tapp::read(bytes.as_slice(), &mut DiscardBlobs).unwrap();
-        let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None).unwrap();
-        assert_eq!(reviewed.expected.size_bytes, thin.len() as u64);
-        let thin_review = review(thin, std::slice::from_ref(&item)).unwrap();
-        assert_eq!(thin_review.expected, reviewed.expected);
-        assert_eq!(reviewed.registry, "Independent registry");
-        for changed in 0..6 {
-            let mut wrong = item.clone();
-            match changed {
-                0 => wrong.id = "so.tilo.other".into(),
-                1 => wrong.versions[0].version = "2.0.0".into(),
-                2 => wrong.versions[0].root_hash_hex = Some("00".repeat(32)),
-                3 => wrong.versions[0].size_bytes = 0,
-                4 => wrong.publisher_pubkey_hex = Some("11".repeat(32)),
-                _ => wrong.trust = StoreTrust::ConfiguredRemote,
-            }
-            assert!(review(bytes.clone(), &[wrong]).is_err(), "field {changed}");
-        }
-        let mut oversized_offer = item;
-        oversized_offer.versions[0].size_bytes = tilo_app_package::MAX_APP_TAPP_BYTES + 1;
-        assert!(review(bytes.clone(), &[oversized_offer]).is_err());
-        assert!(
-            review(bytes, &[]).is_err(),
-            "archive key does not authorize itself"
-        );
-    }
-
-    #[test]
-    fn import_rejects_actual_corrupt_payload_and_unavailable_handoffs() {
-        let (mut bytes, item) = signed_fixture();
-        let pos = bytes
-            .windows(b"#!/bin/true\nimport-fixture\n".len())
-            .position(|s| s == b"#!/bin/true\nimport-fixture\n")
-            .unwrap();
-        bytes[pos] ^= 1;
-        assert!(
-            review(bytes, &[item]).is_err(),
-            "real archive payload corruption"
-        );
-        assert!(review(vec![], &[]).is_err());
-        let dir = tempfile::tempdir().unwrap();
-        assert!(Input::Path(dir.path().join("missing.tapp")).read().is_err());
-        assert!(
-            Input::Content(
-                ui::framework::content::ContentStore::memory(),
-                "ab".repeat(32)
-            )
-            .read()
-            .is_err()
-        );
     }
 }

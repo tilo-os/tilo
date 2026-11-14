@@ -139,40 +139,47 @@ mod tests {
         p
     }
 
-    #[test]
-    fn listings_offer_only_their_kind_and_flag_videos() {
-        // Phase: video_extension_detection.
-        {
-            assert!(is_video_name("demo.MP4"));
-            assert!(is_video_name("capture.webm"));
-            assert!(!is_video_name("photo.png"));
-        }
-        // Phase: list_attachments_includes_generic_files.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("notes.md"), b"portable shared bytes").unwrap();
+    tilo_test_env::scenario! {
+        /// What the attachment picker lists.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn the_attachment_listing_offers_files_one_level_deep;
 
-            let entries = list_attachments(dir.path());
-            assert_eq!(entries.len(), 1);
-            assert_eq!(entries[0].name, "notes.md");
-            assert!(!entries[0].is_video);
-        }
-    }
+        phase listings_offer_only_their_kind_and_flag_videos;
+        {
+            // Phase: video_extension_detection.
+            {
+                assert!(is_video_name("demo.MP4"));
+                assert!(is_video_name("capture.webm"));
+                assert!(!is_video_name("photo.png"));
+            }
+            // Phase: list_attachments_includes_generic_files.
+            {
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::write(dir.path().join("notes.md"), b"portable shared bytes").unwrap();
 
-    #[test]
-    fn listing_descends_one_level_and_tolerates_missing_paths() {
-        // Phase: descends_one_subdirectory_level.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let sub = dir.path().join("designs");
-            std::fs::create_dir(&sub).unwrap();
-            write_png(&sub, "nested.png", 64, 64);
-            let entries = list_attachments(dir.path());
-            assert!(entries.iter().any(|e| e.name == "nested.png"));
+                let entries = list_attachments(dir.path());
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].name, "notes.md");
+                assert!(!entries[0].is_video);
+            }
         }
-        // Phase: missing_directory_is_empty_not_a_panic.
+
+        phase listing_descends_one_level_and_tolerates_missing_paths;
         {
-            assert!(list_attachments(Path::new("/definitely/not/here/at/all")).is_empty());
+            // Phase: descends_one_subdirectory_level.
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let sub = dir.path().join("designs");
+                std::fs::create_dir(&sub).unwrap();
+                write_png(&sub, "nested.png", 64, 64);
+                let entries = list_attachments(dir.path());
+                assert!(entries.iter().any(|e| e.name == "nested.png"));
+            }
+            // Phase: missing_directory_is_empty_not_a_panic.
+            {
+                assert!(list_attachments(Path::new("/definitely/not/here/at/all")).is_empty());
+            }
         }
     }
 }

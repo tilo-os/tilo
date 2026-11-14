@@ -1,7 +1,7 @@
 //! The frames a store device holds for its workspaces.
 //!
 //! Every frame is one immutable file under
-//! `workspaces/<workspace>/<channel>/<author>/<seq>.<class>`, written with a
+//! `workspaces/<workspace>/<record>/<author>/<seq>.<class>`, written with a
 //! crash-safe replace, so a store that restarts reads back exactly what it
 //! acknowledged and nothing half-written. The index the store answers
 //! replay from is rebuilt by reading those files at [`Store::open`]; the
@@ -13,6 +13,7 @@
 //! operator asks for ([`Store::compact`]). Nothing is retired because it
 //! looks old.
 
+use crate::join::WorkspaceId;
 pub use crate::retained::{Frame, Lineage, Refusal};
 use collab_types::ContentRetention;
 use neighbour_wire::NeighbourMsg;
@@ -143,7 +144,7 @@ impl std::fmt::Debug for Store {
 
 struct Held {
     bytes: u64,
-    workspaces: BTreeMap<u64, Workspace>,
+    workspaces: BTreeMap<WorkspaceId, Workspace>,
 }
 
 #[derive(Default)]
@@ -213,7 +214,7 @@ impl Store {
     /// number the store holds there: what a member asks about and what a
     /// diagnostic shows.
     #[must_use]
-    pub fn lineages(&self, workspace: u64) -> Vec<(Lineage, u64, u64)> {
+    pub fn lineages(&self, workspace: WorkspaceId) -> Vec<(Lineage, u64, u64)> {
         let held = self.held.lock_recover();
         held.workspaces
             .get(&workspace)
@@ -239,7 +240,7 @@ impl Store {
     ///
     /// Returns an error when the frame cannot be written. The store is
     /// unchanged then.
-    pub fn retain(&self, workspace: u64, frame: &Frame) -> Result<Retained, StoreError> {
+    pub fn retain(&self, workspace: WorkspaceId, frame: &Frame) -> Result<Retained, StoreError> {
         self.retain_from(workspace, frame, false)
     }
 
@@ -249,14 +250,18 @@ impl Store {
     /// # Errors
     ///
     /// As [`Self::retain`].
-    pub fn retain_from_link(&self, workspace: u64, frame: &Frame) -> Result<Retained, StoreError> {
+    pub fn retain_from_link(
+        &self,
+        workspace: WorkspaceId,
+        frame: &Frame,
+    ) -> Result<Retained, StoreError> {
         self.retain_from(workspace, frame, true)
     }
 
     /// Whether the store's first copy of `frame` came over one of the device's
     /// links since the store opened.
     #[must_use]
-    pub fn taken_from_link(&self, workspace: u64, frame: &Frame) -> bool {
+    pub fn taken_from_link(&self, workspace: WorkspaceId, frame: &Frame) -> bool {
         self.held
             .lock_recover()
             .workspaces
@@ -268,7 +273,7 @@ impl Store {
 
     fn retain_from(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         frame: &Frame,
         from_link: bool,
     ) -> Result<Retained, StoreError> {
@@ -316,7 +321,7 @@ impl Store {
     /// Returns an error when a stored frame cannot be read back.
     pub fn replay(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         cursors: &[Cursor],
         budget: Budget,
     ) -> Result<Replay, StoreError> {
@@ -404,7 +409,7 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when a frame cannot be removed.
-    pub fn compact(&self, workspace: u64, before_ns: u64) -> Result<Retired, StoreError> {
+    pub fn compact(&self, workspace: WorkspaceId, before_ns: u64) -> Result<Retired, StoreError> {
         let mut held = self.held.lock_recover();
         let mut retired = Retired::default();
         let Some(stored) = held.workspaces.get(&workspace) else {
@@ -436,18 +441,18 @@ impl Store {
     }
 
     /// Every stored frame, as [`Store::open`] reads it.
-    fn stored(&self) -> Result<Vec<(u64, Frame, u64)>, StoreError> {
+    fn stored(&self) -> Result<Vec<(WorkspaceId, Frame, u64)>, StoreError> {
         let mut found = Vec::new();
         for workspace in directories(&self.root.join(WORKSPACES))? {
             let Some(workspace) = workspace
                 .file_name()
                 .and_then(|name| name.to_str())
-                .and_then(|name| u64::from_str_radix(name, 16).ok())
+                .and_then(WorkspaceId::parse)
             else {
                 continue;
             };
-            for channel in directories(&workspace_dir(&self.root, workspace))? {
-                for author in directories(&channel)? {
+            for record in directories(&workspace_dir(&self.root, workspace))? {
+                for author in directories(&record)? {
                     for file in files(&author)? {
                         let bytes = fs::read(&file)?;
                         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
@@ -473,7 +478,7 @@ impl Store {
 
     fn frame_at(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         lineage: Lineage,
         entry: Entry,
     ) -> Result<NeighbourMsg, StoreError> {
@@ -487,11 +492,10 @@ impl Store {
 /// history: what it asks a store to continue from.
 #[must_use]
 pub fn cursors(peer: &crate::StatePeer) -> Vec<Cursor> {
-    let workspace = peer.workspace_id().to_owned();
     peer.replay_floors()
         .into_iter()
         .map(|(app, record, author, seq)| Cursor {
-            lineage: Lineage::of(&app, &workspace, &record, author),
+            lineage: Lineage::of(&app, &record, author),
             after_seq: seq,
         })
         .collect()
@@ -562,13 +566,13 @@ pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
 
 const WORKSPACES: &str = "workspaces";
 
-fn workspace_dir(root: &Path, workspace: u64) -> PathBuf {
-    root.join(WORKSPACES).join(format!("{workspace:016x}"))
+fn workspace_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
+    root.join(WORKSPACES).join(workspace.to_string())
 }
 
 fn frame_path(
     root: &Path,
-    workspace: u64,
+    workspace: WorkspaceId,
     lineage: Lineage,
     seq: u64,
     retention: ContentRetention,
@@ -578,7 +582,7 @@ fn frame_path(
         ContentRetention::Delta => "d",
     };
     workspace_dir(root, workspace)
-        .join(hex::encode(lineage.channel))
+        .join(hex::encode(lineage.record))
         .join(hex::encode(lineage.author))
         .join(format!("{seq:016x}.{class}"))
 }
@@ -619,7 +623,7 @@ fn files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-fn add(held: &mut Held, workspace: u64, frame: &Frame, bytes: u64, from_link: bool) {
+fn add(held: &mut Held, workspace: WorkspaceId, frame: &Frame, bytes: u64, from_link: bool) {
     let entry = Entry {
         seq: frame.seq,
         bytes,
@@ -638,7 +642,7 @@ fn add(held: &mut Held, workspace: u64, frame: &Frame, bytes: u64, from_link: bo
 /// Remove every frame of `lineage` before `seq` and report what went.
 fn retire_before(
     root: &Path,
-    workspace: u64,
+    workspace: WorkspaceId,
     lineage: Lineage,
     seq: u64,
     held: &mut Held,
@@ -666,7 +670,7 @@ fn retire_before(
 
 fn retire(
     root: &Path,
-    workspace: u64,
+    workspace: WorkspaceId,
     lineage: Lineage,
     entry: Entry,
     held: &mut Held,
@@ -766,15 +770,16 @@ mod tests {
 
     use super::*;
     use collab_types::{
-        ArtifactId, AttestationId, ChannelId, Ed25519PublicKey, EncryptionMetadata, OpKind,
-        SignedOp, sign_op,
+        ArtifactId, AttestationId, Ed25519PublicKey, EncryptionMetadata, OpKind, SignedOp, sign_op,
     };
     use ed25519_dalek::SigningKey;
     use neighbour_wire::peer_handle;
     use std::time::Duration;
     use web_time::{SystemTime, UNIX_EPOCH};
 
-    const WORKSPACE: u64 = 7;
+    fn workspace() -> WorkspaceId {
+        WorkspaceId::from_u128(7)
+    }
     const APP: &str = "test.app";
     const CLUSTER: &str = "workspace";
     const RECORD: &str = "tab:1";
@@ -789,7 +794,7 @@ mod tests {
 
     /// A sealed document frame by `key`, with whatever ciphertext a store
     /// never opens.
-    fn frame(key: &SigningKey, channel: ChannelId, seq: u64, retention: ContentRetention) -> Frame {
+    fn frame(key: &SigningKey, seq: u64, retention: ContentRetention) -> Frame {
         let mut op = SignedOp::new_unsigned(
             vec![seq as u8; 64],
             ArtifactId::new(),
@@ -799,7 +804,7 @@ mod tests {
             at(seq),
             seq,
         );
-        op.encryption = Some(EncryptionMetadata::content_key(1, channel, retention));
+        op.encryption = Some(EncryptionMetadata::content_key(1, retention));
         sign_op(&mut op, key).unwrap();
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(&key.verifying_key().to_bytes()),
@@ -825,38 +830,37 @@ mod tests {
     fn replay_continues_after_a_cursor() {
         let (_dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         let frames: Vec<Frame> = (1..=3)
-            .map(|seq| frame(&key, channel, seq, ContentRetention::Delta))
+            .map(|seq| frame(&key, seq, ContentRetention::Delta))
             .collect();
         for frame in &frames {
-            assert_eq!(store.retain(WORKSPACE, frame).unwrap(), Retained::New);
+            assert_eq!(store.retain(workspace(), frame).unwrap(), Retained::New);
         }
         let lineage = frames[0].lineage;
         assert_eq!(
-            store.lineages(WORKSPACE),
+            store.lineages(workspace()),
             vec![(lineage, 1, 3)],
             "one lineage holds the three frames"
         );
 
-        let all = store.replay(WORKSPACE, &[], Budget::default()).unwrap();
+        let all = store.replay(workspace(), &[], Budget::default()).unwrap();
         assert_eq!(all.frames.len(), 3);
         assert!(all.floors.is_empty(), "nothing was retired");
         assert!(!all.more);
 
         let later = store
-            .replay(WORKSPACE, &[cursor(lineage, 2)], Budget::default())
+            .replay(workspace(), &[cursor(lineage, 2)], Budget::default())
             .unwrap();
         assert_eq!(later.frames, vec![frames[2].message.clone()]);
 
         assert_eq!(
-            store.retain(WORKSPACE, &frames[2]).unwrap(),
+            store.retain(workspace(), &frames[2]).unwrap(),
             Retained::Duplicate,
             "the same frame is kept once"
         );
         assert!(
             store
-                .replay(WORKSPACE + 1, &[], Budget::default())
+                .replay(WorkspaceId::from_u128(8), &[], Budget::default())
                 .unwrap()
                 .frames
                 .is_empty()
@@ -866,35 +870,28 @@ mod tests {
     #[test]
     fn a_checkpoint_retires_only_its_own_lineage() {
         let (_dir, store) = open();
-        let channel = ChannelId::new();
         let author = device(2);
         let other = device(3);
         for seq in 1..=2 {
             store
-                .retain(
-                    WORKSPACE,
-                    &frame(&author, channel, seq, ContentRetention::Delta),
-                )
+                .retain(workspace(), &frame(&author, seq, ContentRetention::Delta))
                 .unwrap();
         }
-        let theirs = frame(&other, channel, 1, ContentRetention::Delta);
-        store.retain(WORKSPACE, &theirs).unwrap();
-        let checkpoint = frame(&author, channel, 3, ContentRetention::Checkpoint);
-        store.retain(WORKSPACE, &checkpoint).unwrap();
+        let theirs = frame(&other, 1, ContentRetention::Delta);
+        store.retain(workspace(), &theirs).unwrap();
+        let checkpoint = frame(&author, 3, ContentRetention::Checkpoint);
+        store.retain(workspace(), &checkpoint).unwrap();
         store
-            .retain(
-                WORKSPACE,
-                &frame(&author, channel, 4, ContentRetention::Delta),
-            )
+            .retain(workspace(), &frame(&author, 4, ContentRetention::Delta))
             .unwrap();
 
-        let lineages = store.lineages(WORKSPACE);
+        let lineages = store.lineages(workspace());
         assert_eq!(
             lineages,
             vec![(checkpoint.lineage, 3, 4), (theirs.lineage, 1, 1)],
             "the checkpoint retired the author's earlier frames and nothing else"
         );
-        let replay = store.replay(WORKSPACE, &[], Budget::default()).unwrap();
+        let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
         let seqs: Vec<u64> = replay
             .frames
             .iter()
@@ -917,21 +914,20 @@ mod tests {
     #[test]
     fn replay_sends_a_records_baseline_before_its_changes() {
         let (_dir, store) = open();
-        let channel = ChannelId::new();
         let (mut founder, mut editor) = (device(2), device(3));
-        if frame(&editor, channel, 2, ContentRetention::Delta).lineage
-            > frame(&founder, channel, 1, ContentRetention::Checkpoint).lineage
+        if frame(&editor, 2, ContentRetention::Delta).lineage
+            > frame(&founder, 1, ContentRetention::Checkpoint).lineage
         {
             // The editor's line sorts first, as a line sent whole once did.
             std::mem::swap(&mut founder, &mut editor);
         }
-        let baseline = frame(&founder, channel, 1, ContentRetention::Checkpoint);
-        let edit = frame(&editor, channel, 2, ContentRetention::Delta);
+        let baseline = frame(&founder, 1, ContentRetention::Checkpoint);
+        let edit = frame(&editor, 2, ContentRetention::Delta);
         assert!(edit.lineage < baseline.lineage);
-        store.retain(WORKSPACE, &edit).unwrap();
-        store.retain(WORKSPACE, &baseline).unwrap();
+        store.retain(workspace(), &edit).unwrap();
+        store.retain(workspace(), &baseline).unwrap();
 
-        let replay = store.replay(WORKSPACE, &[], Budget::default()).unwrap();
+        let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
         assert_eq!(replay.frames, vec![baseline.message, edit.message]);
     }
 
@@ -939,26 +935,22 @@ mod tests {
     fn replay_reports_a_floor_it_cannot_continue_from() {
         let (_dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         for seq in 1..=5 {
             store
-                .retain(
-                    WORKSPACE,
-                    &frame(&key, channel, seq, ContentRetention::Delta),
-                )
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
                 .unwrap();
         }
         let lineage = store
-            .replay(WORKSPACE, &[], Budget::default())
+            .replay(workspace(), &[], Budget::default())
             .unwrap()
             .frames[0]
             .clone();
         let lineage = Frame::of(&lineage).unwrap().lineage;
-        let retired = store.compact(WORKSPACE, 4).unwrap();
+        let retired = store.compact(workspace(), 4).unwrap();
         assert_eq!(retired.frames, 3, "the three oldest frames went");
 
         let early = store
-            .replay(WORKSPACE, &[cursor(lineage, 1)], Budget::default())
+            .replay(workspace(), &[cursor(lineage, 1)], Budget::default())
             .unwrap();
         assert_eq!(
             early.floors,
@@ -978,12 +970,11 @@ mod tests {
     fn replay_stops_at_its_budget_and_says_more() {
         let (_dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         let frames: Vec<Frame> = (1..=5)
-            .map(|seq| frame(&key, channel, seq, ContentRetention::Delta))
+            .map(|seq| frame(&key, seq, ContentRetention::Delta))
             .collect();
         for frame in &frames {
-            store.retain(WORKSPACE, frame).unwrap();
+            store.retain(workspace(), frame).unwrap();
         }
         let budget = Budget {
             max_frames: 2,
@@ -992,7 +983,7 @@ mod tests {
         let mut cursors = Vec::new();
         let mut rounds = 0;
         loop {
-            let replay = store.replay(WORKSPACE, &cursors, budget).unwrap();
+            let replay = store.replay(workspace(), &cursors, budget).unwrap();
             advance(&mut cursors, &replay.frames);
             rounds += 1;
             if !replay.more {
@@ -1007,21 +998,17 @@ mod tests {
     fn a_bounded_appetite_retires_the_oldest_and_keeps_a_checkpoint() {
         let (dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         for seq in 1..=2 {
             store
-                .retain(
-                    WORKSPACE,
-                    &frame(&key, channel, seq, ContentRetention::Delta),
-                )
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
                 .unwrap();
         }
-        let checkpoint = frame(&key, channel, 3, ContentRetention::Checkpoint);
-        store.retain(WORKSPACE, &checkpoint).unwrap();
+        let checkpoint = frame(&key, 3, ContentRetention::Checkpoint);
+        store.retain(workspace(), &checkpoint).unwrap();
         let size = store.bytes();
         let path = frame_path(
             dir.path(),
-            WORKSPACE,
+            workspace(),
             checkpoint.lineage,
             checkpoint.seq,
             checkpoint.retention,
@@ -1035,7 +1022,7 @@ mod tests {
         let reopened = Store::open(dir.path(), Appetite::Bounded { max_bytes: kept }).unwrap();
         assert_eq!(reopened.bytes(), kept);
         assert_eq!(
-            reopened.lineages(WORKSPACE),
+            reopened.lineages(workspace()),
             vec![(checkpoint.lineage, 3, 3)]
         );
         assert!(fs::read(&path).is_ok());
@@ -1045,21 +1032,17 @@ mod tests {
     fn compaction_retires_the_frames_a_time_covers() {
         let (_dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         for seq in 1..=3 {
             store
-                .retain(
-                    WORKSPACE,
-                    &frame(&key, channel, seq, ContentRetention::Delta),
-                )
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
                 .unwrap();
         }
-        let retired = store.compact(WORKSPACE, 3).unwrap();
+        let retired = store.compact(workspace(), 3).unwrap();
         assert_eq!(retired.frames, 2);
         assert!(retired.bytes > 0);
-        assert_eq!(store.lineages(WORKSPACE).len(), 1);
+        assert_eq!(store.lineages(workspace()).len(), 1);
         assert_eq!(
-            store.compact(WORKSPACE + 1, u64::MAX).unwrap(),
+            store.compact(WorkspaceId::from_u128(8), u64::MAX).unwrap(),
             Retired::default()
         );
     }
@@ -1068,19 +1051,20 @@ mod tests {
     fn reopening_reads_back_what_the_store_acknowledged() {
         let (dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         let frames: Vec<Frame> = (1..=3)
-            .map(|seq| frame(&key, channel, seq, ContentRetention::Delta))
+            .map(|seq| frame(&key, seq, ContentRetention::Delta))
             .collect();
         for frame in &frames {
-            store.retain(WORKSPACE, frame).unwrap();
+            store.retain(workspace(), frame).unwrap();
         }
         let bytes = store.bytes();
         drop(store);
 
         let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
         assert_eq!(reopened.bytes(), bytes);
-        let replay = reopened.replay(WORKSPACE, &[], Budget::default()).unwrap();
+        let replay = reopened
+            .replay(workspace(), &[], Budget::default())
+            .unwrap();
         assert_eq!(replay.frames.len(), 3);
     }
 
@@ -1088,12 +1072,11 @@ mod tests {
     fn a_file_that_is_not_a_frame_is_not_served() {
         let (dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
-        let frame = frame(&key, channel, 1, ContentRetention::Delta);
-        store.retain(WORKSPACE, &frame).unwrap();
+        let frame = frame(&key, 1, ContentRetention::Delta);
+        store.retain(workspace(), &frame).unwrap();
         let stray = frame_path(
             dir.path(),
-            WORKSPACE,
+            workspace(),
             frame.lineage,
             2,
             ContentRetention::Delta,
@@ -1102,7 +1085,9 @@ mod tests {
         drop(store);
 
         let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-        let replay = reopened.replay(WORKSPACE, &[], Budget::default()).unwrap();
+        let replay = reopened
+            .replay(workspace(), &[], Budget::default())
+            .unwrap();
         assert_eq!(replay.frames.len(), 1, "the stray file is skipped");
         assert!(stray.exists(), "and left on disk for an operator");
     }
@@ -1110,7 +1095,6 @@ mod tests {
     #[test]
     fn only_signed_sealed_document_frames_are_kept() {
         let key = device(2);
-        let channel = ChannelId::new();
         assert_eq!(
             Frame::of(&NeighbourMsg::Heartbeat { peer: 0, ts: 0 }),
             Err(Refusal::NotADocument)
@@ -1125,11 +1109,7 @@ mod tests {
             at(1),
             1,
         );
-        unsigned.encryption = Some(EncryptionMetadata::content_key(
-            1,
-            channel,
-            ContentRetention::Delta,
-        ));
+        unsigned.encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
         let message = NeighbourMsg::AppDocument {
             peer: 0,
             app_id: APP.into(),
@@ -1167,7 +1147,7 @@ mod tests {
             at(1),
             1,
         );
-        mls.encryption = Some(EncryptionMetadata::mls_application(1, channel));
+        mls.encryption = Some(EncryptionMetadata::mls_application(1));
         sign_op(&mut mls, &key).unwrap();
         let message = NeighbourMsg::AppDocument {
             peer: 0,

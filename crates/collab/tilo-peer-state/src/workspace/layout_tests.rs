@@ -1,7 +1,8 @@
 //! A governance stored in the layout before this one comes up as this
 //! layout, each value reading back as it held.
 use super::*;
-use crate::join::{InviteGrant, MemberRole, VerifiedRedemption};
+use crate::join::WorkspaceId;
+use crate::join::{InviteGrant, Role, VerifiedRedemption};
 use crate::state::invitation_ledger::{self, Piece};
 use crate::{NeighbourMsg, StatePeer};
 use automerge::ReadDoc as _;
@@ -30,7 +31,7 @@ struct ReceiptJson {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
     request_id: [u8; 32],
-    role: MemberRole,
+    role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     invitation: Option<String>,
 }
@@ -129,10 +130,9 @@ pub(crate) fn door_redemption(
     .unwrap();
     let signed = crate::join::issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer,
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [nonce; 16],
             recipient_user_public_key: Some(cert.user_public_key),
             invitee_name: Some(format!("Guest {nonce}")),

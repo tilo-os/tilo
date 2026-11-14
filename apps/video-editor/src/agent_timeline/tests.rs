@@ -564,18 +564,45 @@ fn the_timeline_reads_whole_or_by_item_and_exports_as_the_same_json() {
     assert_eq!(kept, whole);
 }
 
-#[test]
-fn colours_and_alignments_are_read_as_people_write_them() {
-    assert_eq!(colour_named("white").unwrap(), [1.0, 1.0, 1.0, 1.0]);
-    assert_eq!(colour_named("#f00").unwrap(), [1.0, 0.0, 0.0, 1.0]);
-    assert_eq!(colour_hex(colour_named("#ffcc0080").unwrap()), "#ffcc0080");
-    assert!(colour_named("#12345").is_err());
-    assert_eq!(align_named("Centre").unwrap(), TextAlign::Center);
-    assert!(transition_named("spin").is_err());
-    assert_eq!(
-        content_media_id(&"ab".repeat(32)),
-        content_media_id(&"AB".repeat(32))
-    );
+tilo_test_env::scenario! {
+    fn an_agents_words_and_bare_facts_are_read_without_an_editor;
+
+    phase colours_and_alignments_are_read_as_people_write_them;
+    {
+        assert_eq!(colour_named("white").unwrap(), [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(colour_named("#f00").unwrap(), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(colour_hex(colour_named("#ffcc0080").unwrap()), "#ffcc0080");
+        assert!(colour_named("#12345").is_err());
+        assert_eq!(align_named("Centre").unwrap(), TextAlign::Center);
+        assert!(transition_named("spin").is_err());
+        assert_eq!(
+            content_media_id(&"ab".repeat(32)),
+            content_media_id(&"AB".repeat(32))
+        );
+    }
+
+    phase a_start_is_read_only_after_a_name;
+    {
+        assert_eq!(with_start("shot-b.mp4@3"), Some(("shot-b.mp4", 3.0)));
+        assert_eq!(with_start("shot-b.mp4 @ 2.5s"), Some(("shot-b.mp4", 2.5)));
+        assert_eq!(with_start("Shot B AT 4 s"), Some(("Shot B", 4.0)));
+        assert_eq!(with_start("Lunch at the harbour"), None);
+        assert_eq!(with_start("@3"), None);
+        assert_eq!(with_start("shot.mp4@-1"), None);
+        assert_eq!(folded("  Harbour\n  DAYS "), "harbour days");
+    }
+
+    phase an_empty_project_reads_no_length_and_a_marked_range_is_read;
+    {
+        let mut project = Project::new("cut");
+        assert_eq!(facts_json(&project)["project"]["duration"], 0.0);
+        assert!(facts_json(&project).get("render_range").is_none());
+        project.set_mark_in(1.0);
+        assert_eq!(
+            facts_json(&project)["render_range"],
+            json!({ "start": 1.0, "end": 1.0 })
+        );
+    }
 }
 
 #[test]
@@ -805,17 +832,6 @@ fn a_picture_and_its_linked_sound_are_named_as_one_placement() {
     assert_eq!(state.clip(sound).unwrap().start, 2.0);
 }
 
-#[test]
-fn a_start_is_read_only_after_a_name() {
-    assert_eq!(with_start("shot-b.mp4@3"), Some(("shot-b.mp4", 3.0)));
-    assert_eq!(with_start("shot-b.mp4 @ 2.5s"), Some(("shot-b.mp4", 2.5)));
-    assert_eq!(with_start("Shot B AT 4 s"), Some(("Shot B", 4.0)));
-    assert_eq!(with_start("Lunch at the harbour"), None);
-    assert_eq!(with_start("@3"), None);
-    assert_eq!(with_start("shot.mp4@-1"), None);
-    assert_eq!(folded("  Harbour\n  DAYS "), "harbour days");
-}
-
 /// A past version reads with the title it held, and History draws it with
 /// the editor's own view, read-only.
 #[test]
@@ -959,17 +975,5 @@ fn the_facts_are_the_timeline_read_without_ids() {
             "gaps": [{ "track": "V1", "from": 3.0, "to": 3.333 }],
             "markers": [],
         })
-    );
-}
-
-#[test]
-fn an_empty_project_reads_no_length_and_a_marked_range_is_read() {
-    let mut project = Project::new("cut");
-    assert_eq!(facts_json(&project)["project"]["duration"], 0.0);
-    assert!(facts_json(&project).get("render_range").is_none());
-    project.set_mark_in(1.0);
-    assert_eq!(
-        facts_json(&project)["render_range"],
-        json!({ "start": 1.0, "end": 1.0 })
     );
 }

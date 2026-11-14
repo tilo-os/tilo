@@ -601,111 +601,115 @@ mod tests {
         true
     }
 
-    #[test]
-    fn one_changed_prop_is_one_patch() {
-        let a = node("root", vec![text("a", 1), text("b", 1)]);
-        let b = node("root", vec![text("a", 1), text("b", 2)]);
-        let p = diff(&a, &b, &same);
-        assert_eq!(
-            p,
-            vec![Patch::SetProp {
-                path: vec!["root".into(), "b".into()],
-                name: "text".into(),
-                value: Some(Value::Int(2)),
-            }]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_view_tree_is_found_and_patched_by_key;
 
-    #[test]
-    fn inserts_removes_and_moves_are_keyed() {
-        let a = node("r", vec![text("a", 1), text("b", 1), text("c", 1)]);
-        let b = node("r", vec![text("c", 1), text("a", 1), text("d", 1)]);
-        let p = diff(&a, &b, &same);
-        assert!(p.contains(&Patch::Remove {
-            parent: vec!["r".into()],
-            key: "b".into(),
-            at: None,
-        }));
-        assert!(
-            p.iter()
-                .any(|x| matches!(x, Patch::Insert { index: 2, .. }))
-        );
-        assert!(
-            p.iter()
-                .any(|x| matches!(x, Patch::Move { key, to: 0, .. } if key == "c"))
-        );
-        assert!(!p.iter().any(|x| matches!(x, Patch::SetProp { .. })));
-    }
+        phase one_changed_prop_is_one_patch;
+        {
+            let a = node("root", vec![text("a", 1), text("b", 1)]);
+            let b = node("root", vec![text("a", 1), text("b", 2)]);
+            let p = diff(&a, &b, &same);
+            assert_eq!(
+                p,
+                vec![Patch::SetProp {
+                    path: vec!["root".into(), "b".into()],
+                    name: "text".into(),
+                    value: Some(Value::Int(2)),
+                }]
+            );
+        }
 
-    #[test]
-    fn find_by_key_and_path() {
-        let t = node("r", vec![node("x", vec![text("t", 1)])]);
-        assert!(t.find("t").is_some());
-        assert!(t.find("r/x/t").is_some());
-        assert!(t.find("nope").is_none());
-    }
-
-    /// A list whose rows are built as it is shown: what stands beside its rows — the slot a
-    /// host fills with rows of its own, such as the items someone removed that the person has
-    /// not seen go — is no row, so it is inserted and removed as any other child, while the
-    /// rows are the ones its steps name.
-    #[test]
-    fn a_lists_slot_stands_beside_its_rows() {
-        let list = |children: Vec<UiNode>| {
-            let mut node = node("list", children);
-            node.kind = "ui.VirtualList".into();
-            node
-        };
-        let slot = || {
-            let mut slot = node("list~slot-removed", vec![text("gone", 1)]);
-            slot.kind = "slot".into();
-            slot
-        };
-        let mut lists = VirtualLists::new();
-        lists.insert("list".into(), RowsChange::Steps(Vec::new()));
-        let path = vec!["root".to_owned(), "list".to_owned()];
-
-        // The item someone else removed appears beside the rows.
-        let before = node("root", vec![list(vec![text("row", 1)])]);
-        let after = node("root", vec![list(vec![text("row", 1), slot()])]);
-        let p = diff_with(&before, &after, &same, &lists);
-        assert!(
-            p.contains(&Patch::Insert {
-                parent: path.clone(),
-                index: 1,
-                node: slot(),
-            }),
-            "the slot stands after the rows: {p:?}"
-        );
-
-        // The person has seen it go: it leaves, with the rows as they were.
-        let p = diff_with(&after, &before, &same, &lists);
-        assert!(
-            p.contains(&Patch::Remove {
-                parent: path,
-                key: "list~slot-removed".into(),
+        phase inserts_removes_and_moves_are_keyed;
+        {
+            let a = node("r", vec![text("a", 1), text("b", 1), text("c", 1)]);
+            let b = node("r", vec![text("c", 1), text("a", 1), text("d", 1)]);
+            let p = diff(&a, &b, &same);
+            assert!(p.contains(&Patch::Remove {
+                parent: vec!["r".into()],
+                key: "b".into(),
                 at: None,
-            }),
-            "the slot leaves: {p:?}"
-        );
-        assert!(
-            !p.iter()
-                .any(|patch| matches!(patch, Patch::Remove { at: Some(_), .. })),
-            "no row leaves: {p:?}"
-        );
+            }));
+            assert!(
+                p.iter()
+                    .any(|x| matches!(x, Patch::Insert { index: 2, .. }))
+            );
+            assert!(
+                p.iter()
+                    .any(|x| matches!(x, Patch::Move { key, to: 0, .. } if key == "c"))
+            );
+            assert!(!p.iter().any(|x| matches!(x, Patch::SetProp { .. })));
+        }
 
-        // A row the list built is its step's to insert, once.
-        let mut lists = VirtualLists::new();
-        lists.insert(
-            "list".into(),
-            RowsChange::Steps(vec![RowStep::Insert(0, Box::new(text("new", 1)))]),
-        );
-        let fresh = node("root", vec![list(vec![text("new", 1)])]);
-        let p = diff_with(&before, &fresh, &same, &lists);
-        let inserted = p
-            .iter()
-            .filter(|patch| matches!(patch, Patch::Insert { .. }))
-            .count();
-        assert_eq!(inserted, 1, "the row is one insert: {p:?}");
+        phase find_by_key_and_path;
+        {
+            let t = node("r", vec![node("x", vec![text("t", 1)])]);
+            assert!(t.find("t").is_some());
+            assert!(t.find("r/x/t").is_some());
+            assert!(t.find("nope").is_none());
+        }
+
+        phase a_lists_slot_stands_beside_its_rows;
+        // A list whose rows are built as it is shown: what stands beside its rows — the slot a
+        // host fills with rows of its own, such as the items someone removed that the person has
+        // not seen go — is no row, so it is inserted and removed as any other child, while the
+        // rows are the ones its steps name.
+        {
+            let list = |children: Vec<UiNode>| {
+                let mut node = node("list", children);
+                node.kind = "ui.VirtualList".into();
+                node
+            };
+            let slot = || {
+                let mut slot = node("list~slot-removed", vec![text("gone", 1)]);
+                slot.kind = "slot".into();
+                slot
+            };
+            let mut lists = VirtualLists::new();
+            lists.insert("list".into(), RowsChange::Steps(Vec::new()));
+            let path = vec!["root".to_owned(), "list".to_owned()];
+
+            // The item someone else removed appears beside the rows.
+            let before = node("root", vec![list(vec![text("row", 1)])]);
+            let after = node("root", vec![list(vec![text("row", 1), slot()])]);
+            let p = diff_with(&before, &after, &same, &lists);
+            assert!(
+                p.contains(&Patch::Insert {
+                    parent: path.clone(),
+                    index: 1,
+                    node: slot(),
+                }),
+                "the slot stands after the rows: {p:?}"
+            );
+
+            // The person has seen it go: it leaves, with the rows as they were.
+            let p = diff_with(&after, &before, &same, &lists);
+            assert!(
+                p.contains(&Patch::Remove {
+                    parent: path,
+                    key: "list~slot-removed".into(),
+                    at: None,
+                }),
+                "the slot leaves: {p:?}"
+            );
+            assert!(
+                !p.iter()
+                    .any(|patch| matches!(patch, Patch::Remove { at: Some(_), .. })),
+                "no row leaves: {p:?}"
+            );
+
+            // A row the list built is its step's to insert, once.
+            let mut lists = VirtualLists::new();
+            lists.insert(
+                "list".into(),
+                RowsChange::Steps(vec![RowStep::Insert(0, Box::new(text("new", 1)))]),
+            );
+            let fresh = node("root", vec![list(vec![text("new", 1)])]);
+            let p = diff_with(&before, &fresh, &same, &lists);
+            let inserted = p
+                .iter()
+                .filter(|patch| matches!(patch, Patch::Insert { .. }))
+                .count();
+            assert_eq!(inserted, 1, "the row is one insert: {p:?}");
+        }
     }
 }

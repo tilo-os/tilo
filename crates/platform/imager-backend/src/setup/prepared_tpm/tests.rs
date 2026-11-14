@@ -225,14 +225,79 @@ fn authority(public: &Path) -> Vec<u8> {
     std::fs::read(public).unwrap()
 }
 
-#[test]
-fn the_helper_reader_refuses_an_oversized_request_before_any_tpm_operation() {
-    let input = vec![b' '; MAX_SEAL_INPUT + 1];
-    let mut output = Vec::new();
-    let error = seal_from_reader(&input[..], &mut output)
-        .expect_err("the root helper must not grow its heap to the caller's pipe");
-    assert!(error.to_string().contains("exceeds its bound"));
-    assert!(output.is_empty());
+tilo_test_env::scenario! {
+    /// The privileged seal helper.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn the_tpm_seal_helper_refuses_oversized_requests_and_unbound_targets;
+
+    phase the_helper_reader_refuses_an_oversized_request_before_any_tpm_operation;
+    {
+        let input = vec![b' '; MAX_SEAL_INPUT + 1];
+        let mut output = Vec::new();
+        let error = seal_from_reader(&input[..], &mut output)
+            .expect_err("the root helper must not grow its heap to the caller's pipe");
+        assert!(error.to_string().contains("exceeds its bound"));
+        assert!(output.is_empty());
+    }
+
+    phase the_helper_refuses_a_target_or_package_the_release_authority_did_not_bind;
+    {
+        let fixture = Fixture::new();
+        let (target, public) = fixture.target(6);
+        let secret = generate_secret().unwrap();
+        let package_bytes = b"the exact canonical prepared package";
+        let package = fixture.private_package("caller-package", package_bytes, 0o600);
+        let digest: [u8; 32] = sha256(package_bytes);
+        let request = |generation: u64, uki: [u8; 32], package_sha256: [u8; 32]| {
+            serde_json::to_vec(&serde_json::json!({
+                "generation": generation,
+                "target_uki_sha256": uki,
+                "target_bundle_path": fixture.bundle(generation).to_str().unwrap(),
+                "package_path": package.to_str().unwrap(),
+                "source_public_key": vec![4u8; 32],
+                "package_sha256": package_sha256,
+                "secret": secret.as_str(),
+            }))
+            .unwrap()
+        };
+        let mut output = Vec::new();
+        assert!(
+            seal_from_json_with(
+                &request(target.generation() + 1, target.target_uki_sha256(), digest),
+                &mut output,
+                &authority(&public),
+                caller_uid(),
+                &fixture.runner,
+                &fixture.ws(),
+            )
+            .is_err(),
+            "a caller-chosen generation cannot replace the reviewed target"
+        );
+        assert!(
+            seal_from_json_with(
+                &request(target.generation(), [9; 32], digest),
+                &mut output,
+                &authority(&public),
+                caller_uid(),
+                &fixture.runner,
+                &fixture.ws(),
+            )
+            .is_err(),
+            "a caller-chosen UKI cannot replace the reviewed target"
+        );
+        assert!(
+            seal_from_json_with(
+                &request(target.generation(), target.target_uki_sha256(), [8; 32]),
+                &mut output,
+                &authority(&public),
+                caller_uid(),
+                &fixture.runner,
+                &fixture.ws(),
+            )
+            .is_err(),
+            "the package digest must be the bytes the helper hashes"
+        );
+    }
 }
 
 #[test]
@@ -397,65 +462,6 @@ fn the_privileged_seal_helper_accepts_json_on_stdin_and_outputs_only_the_public_
 }
 
 #[test]
-fn the_helper_refuses_a_target_or_package_the_release_authority_did_not_bind() {
-    let fixture = Fixture::new();
-    let (target, public) = fixture.target(6);
-    let secret = generate_secret().unwrap();
-    let package_bytes = b"the exact canonical prepared package";
-    let package = fixture.private_package("caller-package", package_bytes, 0o600);
-    let digest: [u8; 32] = sha256(package_bytes);
-    let request = |generation: u64, uki: [u8; 32], package_sha256: [u8; 32]| {
-        serde_json::to_vec(&serde_json::json!({
-            "generation": generation,
-            "target_uki_sha256": uki,
-            "target_bundle_path": fixture.bundle(generation).to_str().unwrap(),
-            "package_path": package.to_str().unwrap(),
-            "source_public_key": vec![4u8; 32],
-            "package_sha256": package_sha256,
-            "secret": secret.as_str(),
-        }))
-        .unwrap()
-    };
-    let mut output = Vec::new();
-    assert!(
-        seal_from_json_with(
-            &request(target.generation() + 1, target.target_uki_sha256(), digest),
-            &mut output,
-            &authority(&public),
-            caller_uid(),
-            &fixture.runner,
-            &fixture.ws(),
-        )
-        .is_err(),
-        "a caller-chosen generation cannot replace the reviewed target"
-    );
-    assert!(
-        seal_from_json_with(
-            &request(target.generation(), [9; 32], digest),
-            &mut output,
-            &authority(&public),
-            caller_uid(),
-            &fixture.runner,
-            &fixture.ws(),
-        )
-        .is_err(),
-        "a caller-chosen UKI cannot replace the reviewed target"
-    );
-    assert!(
-        seal_from_json_with(
-            &request(target.generation(), target.target_uki_sha256(), [8; 32]),
-            &mut output,
-            &authority(&public),
-            caller_uid(),
-            &fixture.runner,
-            &fixture.ws(),
-        )
-        .is_err(),
-        "the package digest must be the bytes the helper hashes"
-    );
-}
-
-#[test]
 fn the_helper_refuses_a_package_the_original_caller_does_not_privately_own() {
     let fixture = Fixture::new();
     let (target, public) = fixture.target(6);
@@ -536,24 +542,56 @@ fn the_helper_refuses_a_package_the_original_caller_does_not_privately_own() {
     );
 }
 
-#[test]
-fn a_target_bundle_is_reviewed_from_its_signed_files_without_a_live_image() {
-    let fixture = Fixture::new();
-    let (target, public) = fixture.target(17);
-    let bundle = fixture.bundle(17);
-    let reviewed =
-        review_bundle(&bundle, &authority(&public)).expect("the signed bundle is a target policy");
-    assert_eq!(reviewed.generation(), target.generation());
-    assert_eq!(reviewed.target_uki_sha256(), target.target_uki_sha256());
+tilo_test_env::scenario! {
+    /// A target bundle and the prediction it is reviewed against.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_target_bundle_is_reviewed_from_signed_files_and_a_forged_prediction_is_refused;
 
-    assert!(
-        review_bundle(&bundle, PINNED_RELEASE_AUTHORITY_PEM.as_bytes()).is_err(),
-        "a bundle signed by another authority must not be accepted by the pinned helper"
-    );
-    assert!(
-        review_bundle(&fixture.scratch.path().join("missing"), &authority(&public)).is_err(),
-        "a missing bundle is a refusal, not an empty policy"
-    );
+    phase a_target_bundle_is_reviewed_from_its_signed_files_without_a_live_image;
+    {
+        let fixture = Fixture::new();
+        let (target, public) = fixture.target(17);
+        let bundle = fixture.bundle(17);
+        let reviewed =
+            review_bundle(&bundle, &authority(&public)).expect("the signed bundle is a target policy");
+        assert_eq!(reviewed.generation(), target.generation());
+        assert_eq!(reviewed.target_uki_sha256(), target.target_uki_sha256());
+
+        assert!(
+            review_bundle(&bundle, PINNED_RELEASE_AUTHORITY_PEM.as_bytes()).is_err(),
+            "a bundle signed by another authority must not be accepted by the pinned helper"
+        );
+        assert!(
+            review_bundle(&fixture.scratch.path().join("missing"), &authority(&public)).is_err(),
+            "a missing bundle is a refusal, not an empty policy"
+        );
+    }
+
+    phase a_forged_prediction_under_the_real_authority_digest_is_refused;
+    {
+        let fixture = Fixture::new();
+        let (mut target, public) = fixture.target(9);
+        target.approved_policy = b64(&[3; 32]);
+        target.signature = b64(&vec![4; 256]);
+        let secret = generate_secret().unwrap();
+        let error = seal(
+            &fixture.runner,
+            &fixture.ws(),
+            &SealRequest {
+                target: &target,
+                source_public_key: [7; 32],
+                package_sha256: [8; 32],
+                receiver_uid: RECEIVER_UID,
+                secret: secret.as_bytes(),
+            },
+            &authority(&public),
+        )
+        .expect_err("the release authority did not sign this prediction");
+        assert!(
+            error.to_string().contains("prediction") || error.to_string().contains("signature"),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 #[test]
@@ -627,32 +665,6 @@ fn the_helper_reviews_the_callers_held_bundle_and_never_the_callers_authority() 
         )
         .is_err(),
         "a target bundle directory readable by others is refused"
-    );
-}
-
-#[test]
-fn a_forged_prediction_under_the_real_authority_digest_is_refused() {
-    let fixture = Fixture::new();
-    let (mut target, public) = fixture.target(9);
-    target.approved_policy = b64(&[3; 32]);
-    target.signature = b64(&vec![4; 256]);
-    let secret = generate_secret().unwrap();
-    let error = seal(
-        &fixture.runner,
-        &fixture.ws(),
-        &SealRequest {
-            target: &target,
-            source_public_key: [7; 32],
-            package_sha256: [8; 32],
-            receiver_uid: RECEIVER_UID,
-            secret: secret.as_bytes(),
-        },
-        &authority(&public),
-    )
-    .expect_err("the release authority did not sign this prediction");
-    assert!(
-        error.to_string().contains("prediction") || error.to_string().contains("signature"),
-        "unexpected error: {error}"
     );
 }
 

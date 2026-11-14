@@ -621,28 +621,47 @@ mod tests {
         height: 480,
     };
 
-    #[test]
-    fn requests_survive_the_wire_and_nothing_else_parses() {
-        for request in [
-            Request::Camera {
-                width: 640,
-                height: 480,
-            },
-            Request::Microphone {
-                sample_rate: 48_000,
-            },
-        ] {
-            assert_eq!(Request::decode(&request.encode()), Some(request));
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_brokers_wire_carries_only_whole_requests_and_bounded_records;
+
+        phase requests_survive_the_wire_and_nothing_else_parses;
+        {
+            for request in [
+                Request::Camera {
+                    width: 640,
+                    height: 480,
+                },
+                Request::Microphone {
+                    sample_rate: 48_000,
+                },
+            ] {
+                assert_eq!(Request::decode(&request.encode()), Some(request));
+            }
+            for bad in [
+                "",
+                "camera",
+                "camera 1",
+                "screen 1 2",
+                "microphone 1 2",
+                "camera x y",
+            ] {
+                assert_eq!(Request::decode(bad), None, "{bad}");
+            }
         }
-        for bad in [
-            "",
-            "camera",
-            "camera 1",
-            "screen 1 2",
-            "microphone 1 2",
-            "camera x y",
-        ] {
-            assert_eq!(Request::decode(bad), None, "{bad}");
+
+        phase records_are_bounded_and_checked;
+        {
+            let (mut a, mut b) = UnixStream::pair().unwrap();
+            a.write_all(&header(3, 2, 2, 3).unwrap()).unwrap();
+            a.write_all(&[0; 3]).unwrap();
+            assert!(read_record(&mut b).is_err(), "a frame of the wrong size");
+            a.write_all(&header(2, 0, 0, MAX_REASON as usize + 1).unwrap())
+                .unwrap();
+            assert!(read_record(&mut b).is_err(), "an oversized reason");
         }
     }
 
@@ -674,102 +693,106 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_undeclared_or_denied_device_is_refused_and_nothing_streams() {
-        let undeclared = host(vec![DeviceKind::Microphone], true);
-        let mut camera = undeclared.client.camera(&CAMERA).unwrap();
-        until(|| Some(camera.state()).filter(|s| *s != CaptureState::Starting));
-        assert_eq!(
-            camera.state(),
-            CaptureState::Failed(CaptureError::PermissionDenied)
-        );
-        assert!(camera.take_latest().is_none());
-        assert_eq!(
-            undeclared
-                .grants
-                .decision("r", "so.tilo.video", DeviceKind::Camera),
-            None,
-            "an undeclared device was recorded"
-        );
+    tilo_test_env::scenario! {
+        fn the_broker_streams_nothing_the_person_did_not_allow;
 
-        let denied = host(vec![DeviceKind::Camera], false);
-        let mut camera = denied.client.camera(&CAMERA).unwrap();
-        until(|| Some(camera.state()).filter(|s| *s != CaptureState::Starting));
-        assert_eq!(
-            camera.state(),
-            CaptureState::Failed(CaptureError::PermissionDenied)
-        );
-        assert_eq!(
-            denied
-                .grants
-                .decision("r", "so.tilo.video", DeviceKind::Camera),
-            Some(Decision::Deny)
-        );
-    }
-
-    #[test]
-    fn the_persons_answer_wakes_an_app_that_sleeps_until_then() {
-        for allow in [true, false] {
-            let dir = tempfile::tempdir().unwrap();
-            let grants = Arc::new(DeviceGrants::open(&dir.path().join("grants")).unwrap());
-            let (asked_tx, asked_rx) = std::sync::mpsc::channel::<()>();
-            let (answer_tx, answer_rx) = std::sync::mpsc::channel::<bool>();
-            let prompt = Mutex::new((asked_tx, answer_rx));
-            let (app, runtime) = UnixDatagram::pair().unwrap();
-            let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
-                grants,
-                workspace: "r".into(),
-                app: "so.tilo.camera".into(),
-                declared: vec![DeviceKind::Camera],
-                consent: move |_| {
-                    let prompt = prompt.lock_recover();
-                    let _ = prompt.0.send(());
-                    Ok(prompt.1.recv().unwrap_or(false))
-                },
-            });
-            let sources: Arc<dyn Sources> = Arc::new(synthetic::Devices);
-            std::thread::spawn(move || serve(&runtime, &policy, &sources));
-            let client = Client::new(app);
-
-            let mut camera = client.camera(&CAMERA).unwrap();
-            let (woke_tx, woke_rx) = std::sync::mpsc::channel::<()>();
-            let woke_tx = Mutex::new(woke_tx);
-            assert!(
-                camera.notify(move || {
-                    let _ = woke_tx.lock_recover().send(());
-                }),
-                "the broker says when its state changes"
-            );
-            tilo_test_env::recv("the host to ask the person", &asked_rx);
-            // The prompt is held open until the answer below is sent.
-            assert_eq!(camera.state(), CaptureState::Starting);
-            assert!(
-                woke_rx.try_recv().is_err(),
-                "nothing wakes the app while the prompt is open"
-            );
-
-            answer_tx.send(allow).unwrap();
-            tilo_test_env::recv("the answer to wake the app", &woke_rx);
-            let expected = if allow {
-                CaptureState::Live
-            } else {
+        phase an_undeclared_or_denied_device_is_refused_and_nothing_streams;
+        {
+            let undeclared = host(vec![DeviceKind::Microphone], true);
+            let mut camera = undeclared.client.camera(&CAMERA).unwrap();
+            until(|| Some(camera.state()).filter(|s| *s != CaptureState::Starting));
+            assert_eq!(
+                camera.state(),
                 CaptureState::Failed(CaptureError::PermissionDenied)
-            };
-            assert_eq!(camera.state(), expected, "allow: {allow}");
-        }
-    }
+            );
+            assert!(camera.take_latest().is_none());
+            assert_eq!(
+                undeclared
+                    .grants
+                    .decision("r", "so.tilo.video", DeviceKind::Camera),
+                None,
+                "an undeclared device was recorded"
+            );
 
-    #[test]
-    fn revoking_ends_a_running_capture() {
-        let host = host(vec![DeviceKind::Camera], true);
-        let mut camera = host.client.camera(&CAMERA).unwrap();
-        until(|| camera.take_latest());
-        assert!(
-            host.grants
-                .revoke("r", "so.tilo.video", DeviceKind::Camera)
-                .unwrap()
-        );
-        until(|| Some(camera.state()).filter(|s| *s == CaptureState::Ended));
+            let denied = host(vec![DeviceKind::Camera], false);
+            let mut camera = denied.client.camera(&CAMERA).unwrap();
+            until(|| Some(camera.state()).filter(|s| *s != CaptureState::Starting));
+            assert_eq!(
+                camera.state(),
+                CaptureState::Failed(CaptureError::PermissionDenied)
+            );
+            assert_eq!(
+                denied
+                    .grants
+                    .decision("r", "so.tilo.video", DeviceKind::Camera),
+                Some(Decision::Deny)
+            );
+        }
+
+        phase the_persons_answer_wakes_an_app_that_sleeps_until_then;
+        {
+            for allow in [true, false] {
+                let dir = tempfile::tempdir().unwrap();
+                let grants = Arc::new(DeviceGrants::open(&dir.path().join("grants")).unwrap());
+                let (asked_tx, asked_rx) = std::sync::mpsc::channel::<()>();
+                let (answer_tx, answer_rx) = std::sync::mpsc::channel::<bool>();
+                let prompt = Mutex::new((asked_tx, answer_rx));
+                let (app, runtime) = UnixDatagram::pair().unwrap();
+                let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
+                    grants,
+                    workspace: "r".into(),
+                    app: "so.tilo.camera".into(),
+                    declared: vec![DeviceKind::Camera],
+                    consent: move |_| {
+                        let prompt = prompt.lock_recover();
+                        let _ = prompt.0.send(());
+                        Ok(prompt.1.recv().unwrap_or(false))
+                    },
+                });
+                let sources: Arc<dyn Sources> = Arc::new(synthetic::Devices);
+                std::thread::spawn(move || serve(&runtime, &policy, &sources));
+                let client = Client::new(app);
+
+                let mut camera = client.camera(&CAMERA).unwrap();
+                let (woke_tx, woke_rx) = std::sync::mpsc::channel::<()>();
+                let woke_tx = Mutex::new(woke_tx);
+                assert!(
+                    camera.notify(move || {
+                        let _ = woke_tx.lock_recover().send(());
+                    }),
+                    "the broker says when its state changes"
+                );
+                tilo_test_env::recv("the host to ask the person", &asked_rx);
+                // The prompt is held open until the answer below is sent.
+                assert_eq!(camera.state(), CaptureState::Starting);
+                assert!(
+                    woke_rx.try_recv().is_err(),
+                    "nothing wakes the app while the prompt is open"
+                );
+
+                answer_tx.send(allow).unwrap();
+                tilo_test_env::recv("the answer to wake the app", &woke_rx);
+                let expected = if allow {
+                    CaptureState::Live
+                } else {
+                    CaptureState::Failed(CaptureError::PermissionDenied)
+                };
+                assert_eq!(camera.state(), expected, "allow: {allow}");
+            }
+        }
+
+        phase revoking_ends_a_running_capture;
+        {
+            let host = host(vec![DeviceKind::Camera], true);
+            let mut camera = host.client.camera(&CAMERA).unwrap();
+            until(|| camera.take_latest());
+            assert!(
+                host.grants
+                    .revoke("r", "so.tilo.video", DeviceKind::Camera)
+                    .unwrap()
+            );
+            until(|| Some(camera.state()).filter(|s| *s == CaptureState::Ended));
+        }
     }
 
     #[cfg(all(native_camera, native_microphone))]
@@ -810,16 +833,5 @@ mod tests {
             samples += until(|| Some(microphone.read().len()).filter(|n| *n > 0));
         }
         assert!(microphone.sample_rate() > 0);
-    }
-
-    #[test]
-    fn records_are_bounded_and_checked() {
-        let (mut a, mut b) = UnixStream::pair().unwrap();
-        a.write_all(&header(3, 2, 2, 3).unwrap()).unwrap();
-        a.write_all(&[0; 3]).unwrap();
-        assert!(read_record(&mut b).is_err(), "a frame of the wrong size");
-        a.write_all(&header(2, 0, 0, MAX_REASON as usize + 1).unwrap())
-            .unwrap();
-        assert!(read_record(&mut b).is_err(), "an oversized reason");
     }
 }

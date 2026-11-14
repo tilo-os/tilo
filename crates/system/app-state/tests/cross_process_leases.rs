@@ -108,7 +108,8 @@ fn a_second_window_writes_beside_the_first_without_taking_its_author() {
     );
     let mut first_doc = first_owner.new_document();
     first_doc.put(automerge::ROOT, "window", "first").unwrap();
-    let first = DocWriter::start_new(&first_owner, &mut first_doc).unwrap();
+    first_doc.commit();
+    let first = DocWriter::start_new(&first_owner, &first_doc).unwrap();
     first.try_flush().unwrap();
     let author = first_owner.actor();
 
@@ -121,7 +122,8 @@ fn a_second_window_writes_beside_the_first_without_taking_its_author() {
     assert_ne!(second_owner.actor(), author, "its actor is its own");
     let mut second_doc = second_owner.new_document();
     second_doc.put(automerge::ROOT, "window", "second").unwrap();
-    let second = DocWriter::start_new(&second_owner, &mut second_doc).unwrap();
+    second_doc.commit();
+    let second = DocWriter::start_new(&second_owner, &second_doc).unwrap();
     second.try_flush().unwrap();
 
     // The first window is undisturbed: it holds its own value and still the

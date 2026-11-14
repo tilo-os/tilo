@@ -5,6 +5,7 @@
 //! the change it made flowing back to the person's window.
 
 use tilo_app::collaboration::DocumentMutation;
+use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
 use tilo_app::permissions::{KindSet, PermissionContext, TreePath};
 use tilo_app::prelude::*;
@@ -26,7 +27,7 @@ fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> Attached
     let definition = definition::<TallyApp>();
     AttachedView::open(
         definition,
-        "test-workspace",
+        TEST_WORKSPACE,
         RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
         AGENT,
@@ -183,7 +184,7 @@ fn an_agent_acting_for_a_person_is_recorded_as_such() {
         .acting_for("ada");
     let mut view = AttachedView::open_for(
         definition,
-        "test-workspace",
+        TEST_WORKSPACE,
         RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
         &agent,
@@ -367,7 +368,7 @@ fn a_view_that_writes_as_it_opens_a_joined_record_is_refused() {
     let open = |created| {
         AttachedView::open(
             definition,
-            "test-workspace",
+            TEST_WORKSPACE,
             RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
             app.read_document(|doc| doc.clone().save()),
             AGENT,
@@ -513,7 +514,7 @@ fn an_action_answers_once_the_work_it_caused_has_landed() {
     let definition = definition::<LedgerApp>();
     let mut view = AttachedView::open(
         definition,
-        "test-workspace",
+        TEST_WORKSPACE,
         RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
         AGENT,
@@ -561,7 +562,7 @@ fn two_pages_of_one_profile_write_one_record_without_sharing_a_sequence() {
     let open = || {
         AttachedView::open(
             definition,
-            "test-workspace",
+            TEST_WORKSPACE,
             RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
             saved.clone(),
             AGENT,

@@ -381,149 +381,153 @@ mod tests {
         (service, sent)
     }
 
-    #[test]
-    fn the_reading_says_what_plays_where_how_and_where_its_sound_can_go() {
-        let (mut service, sent) = service();
-        assert!(
-            service.media().players.is_empty(),
-            "nothing plays on a bus this client has not seen"
-        );
-        sent.send(Event::Players {
-            players: vec![player("music", Status::Playing)],
-        })
-        .unwrap();
-        assert!(service.poll());
-        let media = serde_json::from_value::<Media>(service.read(MEDIA).unwrap()).unwrap();
-        let one = &media.players[0];
-        assert_eq!(one.identity, "music");
-        assert!(one.playing);
-        assert_eq!(one.position_ms, 72_500, "where the playhead was");
-        assert_eq!(one.duration_ms, Some(300_000), "how long what plays is");
-        assert!(
-            (one.rate - 1.0).abs() < f64::EPSILON,
-            "how fast the playhead moves: {}",
-            one.rate
-        );
-        assert!(one.can_seek);
-        assert_eq!(
-            one.url.as_deref(),
-            Some("https://media.example/blue.flac"),
-            "the source another device continues"
-        );
-        assert_eq!(
-            media.outputs,
-            [Output {
-                token: "sound-output:41".into(),
-                label: "Speakers".into(),
-                current: true,
-            }],
-            "where the card offers to play it"
-        );
-        assert!(
-            !service
-                .published(&player("music", Status::Playing))
-                .can_previous
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_media_service_reads_players_and_takes_a_handoff;
 
-    #[test]
-    fn the_cover_a_player_names_is_part_of_the_reading() {
-        let (mut service, sent) = service();
-        let mut named = player("music", Status::Playing);
-        named.art_url = Some("file:///home/alice/cover.png".into());
-        sent.send(Event::Players {
-            players: vec![named],
-        })
-        .unwrap();
-        assert!(service.poll());
-        assert!(
-            service.media().players[0].art.is_none(),
-            "no cover decoded yet"
-        );
-        let image = ArtworkImage {
-            width: 1,
-            height: 1,
-            rgba: "AAAA/w==".into(),
-        };
-        sent.send(Event::Artwork {
-            url: "file:///home/alice/cover.png".into(),
-            image: Some(image.clone()),
-        })
-        .unwrap();
-        assert!(service.poll(), "the cover changed the reading");
-        assert_eq!(service.media().players[0].art, Some(image));
-    }
+        phase the_reading_says_what_plays_where_how_and_where_its_sound_can_go;
+        {
+            let (mut service, sent) = service();
+            assert!(
+                service.media().players.is_empty(),
+                "nothing plays on a bus this client has not seen"
+            );
+            sent.send(Event::Players {
+                players: vec![player("music", Status::Playing)],
+            })
+            .unwrap();
+            assert!(service.poll());
+            let media = serde_json::from_value::<Media>(service.read(MEDIA).unwrap()).unwrap();
+            let one = &media.players[0];
+            assert_eq!(one.identity, "music");
+            assert!(one.playing);
+            assert_eq!(one.position_ms, 72_500, "where the playhead was");
+            assert_eq!(one.duration_ms, Some(300_000), "how long what plays is");
+            assert!(
+                (one.rate - 1.0).abs() < f64::EPSILON,
+                "how fast the playhead moves: {}",
+                one.rate
+            );
+            assert!(one.can_seek);
+            assert_eq!(
+                one.url.as_deref(),
+                Some("https://media.example/blue.flac"),
+                "the source another device continues"
+            );
+            assert_eq!(
+                media.outputs,
+                [Output {
+                    token: "sound-output:41".into(),
+                    label: "Speakers".into(),
+                    current: true,
+                }],
+                "where the card offers to play it"
+            );
+            assert!(
+                !service
+                    .published(&player("music", Status::Playing))
+                    .can_previous
+            );
+        }
 
-    #[test]
-    fn the_media_resource_offers_a_seek_and_the_handoff() {
-        let (mut service, sent) = service();
-        sent.send(Event::Players {
-            players: vec![player("music", Status::Playing)],
-        })
-        .unwrap();
-        service.poll();
-        let actions: Vec<String> = service.resources()[0]
-            .actions
-            .iter()
-            .map(|spec| spec.id.clone())
-            .collect();
-        assert!(
-            actions.iter().any(|action| action == "seek"),
-            "the card takes the playhead to a point: {actions:?}"
-        );
-        assert!(
-            actions.iter().any(|action| action == "resume"),
-            "and continues what another device hands over: {actions:?}"
-        );
-        assert!(
-            actions.iter().any(|action| action == "stop"),
-            "and stops: {actions:?}"
-        );
-    }
+        phase the_cover_a_player_names_is_part_of_the_reading;
+        {
+            let (mut service, sent) = service();
+            let mut named = player("music", Status::Playing);
+            named.art_url = Some("file:///home/alice/cover.png".into());
+            sent.send(Event::Players {
+                players: vec![named],
+            })
+            .unwrap();
+            assert!(service.poll());
+            assert!(
+                service.media().players[0].art.is_none(),
+                "no cover decoded yet"
+            );
+            let image = ArtworkImage {
+                width: 1,
+                height: 1,
+                rgba: "AAAA/w==".into(),
+            };
+            sent.send(Event::Artwork {
+                url: "file:///home/alice/cover.png".into(),
+                image: Some(image.clone()),
+            })
+            .unwrap();
+            assert!(service.poll(), "the cover changed the reading");
+            assert_eq!(service.media().players[0].art, Some(image));
+        }
 
-    #[test]
-    fn the_session_asks_to_continue_what_another_device_hands_over() {
-        let (mut service, _) = service();
-        let args = |request: &str, source: Option<&str>| {
-            let mut args = serde_json::Map::new();
-            args.insert("request".into(), request.into());
-            args.insert("app".into(), "so.tilo.music".into());
-            if let Some(source) = source {
-                args.insert("url".into(), source.into());
-            }
-            args.insert("position_ms".into(), 83_000.into());
-            args.insert("playing".into(), true.into());
-            args
-        };
-        service
-            .invoke(
-                MEDIA,
-                "resume",
-                &args(
-                    "00112233445566778899aabbccddeeff",
-                    Some("https://media.example/clair.flac"),
-                ),
-            )
-            .expect("a stream this device can open");
-        assert!(
+        phase the_media_resource_offers_a_seek_and_the_handoff;
+        {
+            let (mut service, sent) = service();
+            sent.send(Event::Players {
+                players: vec![player("music", Status::Playing)],
+            })
+            .unwrap();
+            service.poll();
+            let actions: Vec<String> = service.resources()[0]
+                .actions
+                .iter()
+                .map(|spec| spec.id.clone())
+                .collect();
+            assert!(
+                actions.iter().any(|action| action == "seek"),
+                "the card takes the playhead to a point: {actions:?}"
+            );
+            assert!(
+                actions.iter().any(|action| action == "resume"),
+                "and continues what another device hands over: {actions:?}"
+            );
+            assert!(
+                actions.iter().any(|action| action == "stop"),
+                "and stops: {actions:?}"
+            );
+        }
+
+        phase the_session_asks_to_continue_what_another_device_hands_over;
+        {
+            let (mut service, _) = service();
+            let args = |request: &str, source: Option<&str>| {
+                let mut args = serde_json::Map::new();
+                args.insert("request".into(), request.into());
+                args.insert("app".into(), "so.tilo.music".into());
+                if let Some(source) = source {
+                    args.insert("url".into(), source.into());
+                }
+                args.insert("position_ms".into(), 83_000.into());
+                args.insert("playing".into(), true.into());
+                args
+            };
             service
                 .invoke(
                     MEDIA,
                     "resume",
-                    &args("not-hex", Some("https://media.example/clair.flac"))
+                    &args(
+                        "00112233445566778899aabbccddeeff",
+                        Some("https://media.example/clair.flac"),
+                    ),
                 )
-                .is_err(),
-            "a request must be 32 hex digits"
-        );
-        assert!(
-            service
-                .invoke(
-                    MEDIA,
-                    "resume",
-                    &args("00112233445566778899aabbccddeeff", None)
-                )
-                .is_err(),
-            "a handoff names the source it continues"
-        );
+                .expect("a stream this device can open");
+            assert!(
+                service
+                    .invoke(
+                        MEDIA,
+                        "resume",
+                        &args("not-hex", Some("https://media.example/clair.flac"))
+                    )
+                    .is_err(),
+                "a request must be 32 hex digits"
+            );
+            assert!(
+                service
+                    .invoke(
+                        MEDIA,
+                        "resume",
+                        &args("00112233445566778899aabbccddeeff", None)
+                    )
+                    .is_err(),
+                "a handoff names the source it continues"
+            );
+        }
     }
 }

@@ -93,7 +93,6 @@ fn person() -> Person {
         .complete_enrollment(
             &profile.id,
             &token,
-            tilo_identity_host::enrollment::DeviceRole::Personal,
             other_device.verifying_key().to_bytes(),
             "The phone",
             now,
@@ -115,12 +114,7 @@ fn person() -> Person {
 
 /// The person `root` certifies, as a workspace names its owner.
 fn principal(root: &[u8; 32]) -> String {
-    match collab_types::caps::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(*root),
-    ) {
-        collab_types::caps::Principal::Person(id) => id,
-        other => panic!("{other:?} is not a person"),
-    }
+    hex::encode(root)
 }
 
 /// What an app presents to join `route` 's channel: the certificate, and the device's proof that it

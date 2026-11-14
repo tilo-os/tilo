@@ -33,6 +33,7 @@ pub struct Continuity {
     wifi_settings: Arc<AtomicBool>,
     file_transfer: Arc<AtomicBool>,
     notifications: Arc<AtomicBool>,
+    display_input: Arc<AtomicBool>,
 }
 
 impl Continuity {
@@ -57,6 +58,14 @@ impl Continuity {
         ] {
             switch.store(enabled && on(facet.key()), Ordering::Relaxed);
         }
+        // This device takes the keyboard and pointer of the person's other devices only with
+        // Display & input on and its automatic grants left on, as Settings words both.
+        self.display_input.store(
+            enabled
+                && on(ContinuityCapability::DisplayInput.key())
+                && on("automatic_display_input"),
+            Ordering::Relaxed,
+        );
     }
 
     fn media_permitted(&self) -> bool {
@@ -69,6 +78,11 @@ impl Continuity {
 
     fn notifications_permitted(&self) -> bool {
         self.notifications.load(Ordering::Relaxed)
+    }
+
+    /// Whether the person's other devices may drive this one's keyboard and pointer.
+    pub(crate) fn display_input_permitted(&self) -> bool {
+        self.display_input.load(Ordering::Relaxed)
     }
 
     /// Whether the person lets files they send move to their other devices.
@@ -92,6 +106,9 @@ pub(crate) struct SessionFabric {
     nearby: Mutex<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
     /// Where this device's fabric is kept for its next run, if anywhere.
     kept: Option<std::path::PathBuf>,
+    /// The endpoints heard on this device's local network, of which the person's devices are
+    /// reachable without a relay.
+    lan: tilo_endpoint_reachability::Nearby,
 }
 
 impl std::fmt::Debug for SessionFabric {
@@ -110,6 +127,7 @@ impl SessionFabric {
         device_signing_key: ed25519_dalek::SigningKey,
         continuity: Continuity,
         kept: Option<std::path::PathBuf>,
+        lan: tilo_endpoint_reachability::Nearby,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime: Arc::new(Mutex::new(runtime)),
@@ -119,6 +137,7 @@ impl SessionFabric {
             continuity,
             nearby: Mutex::new(None),
             kept,
+            lan,
         })
     }
 
@@ -129,7 +148,9 @@ impl SessionFabric {
 
     /// One of the person's devices proved itself on its session with this one. What it proves is
     /// the grant to tell it this device's fabric, so it is told at once: both sides announce on the
-    /// session's start and neither has to ask first.
+    /// session's start and neither has to ask first. Two devices can bring up a connection each and
+    /// keep one of them, so what either said on the other is lost: each asks the other for its
+    /// fabric again, and the answer comes whether or not anything changed.
     pub(crate) fn sibling(
         &self,
         peer: EndpointId,
@@ -140,6 +161,7 @@ impl SessionFabric {
             .lock_recover()
             .sibling(peer, certs, revocations);
         self.announce(false);
+        self.publish(Some(peer), PersonalFabricPayload::Request);
     }
 
     /// The session with one of the person's devices ended: it is no longer here, and what it said
@@ -320,6 +342,11 @@ impl FabricLink for SessionFabric {
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
         self.runtime.lock_recover().online_device_ids()
+    }
+
+    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
+        let heard = self.lan.heard();
+        self.runtime.lock_recover().nearby_device_ids(&heard)
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
@@ -534,20 +561,20 @@ impl crate::Session {
                 self.shared.notifications.borrow_mut().answered(&envelope.action);
             }
             // Nothing on this session holds a media offer, and what the person's devices send each
-            // other that no service here carries — placement, input, accessories, files, calls,
+            // other that no service here carries — accessories, files, calls,
             // displays, wake — is dropped rather than half-acted on. The speaker services and the
             // certification above answer for theirs; the rest reach here only when their own
             // preconditions refuse.
             PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
             | PersonalFabricAction::MediaCancelled { .. }
-            | PersonalFabricAction::SetDisplayPlacement { .. }
-            | PersonalFabricAction::SetDisplayPlacementChecked { .. }
+            // The person's keyboard and pointer between their devices, while this session takes
+            // part in no fabric that could carry them.
+            | PersonalFabricAction::InputLeaseAsk
             | PersonalFabricAction::InputLeaseGranted { .. }
             | PersonalFabricAction::InputLeaseRevoked { .. }
             | PersonalFabricAction::Input { .. }
-            | PersonalFabricAction::SpatialInputProtocol { .. }
-            | PersonalFabricAction::SpatialInputSequenced { .. }
+            | PersonalFabricAction::DragCarried { .. }
             | PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
             // A Nearby Send reaches no session here: the client that carries one hands its offer,
@@ -585,6 +612,10 @@ impl crate::Session {
             | PersonalFabricAction::RetiredDeviceHealthProbe
             | PersonalFabricAction::RetiredDeviceHealthReport
             | PersonalFabricAction::RetiredTethering
+            | PersonalFabricAction::RetiredSetDisplayPlacement
+            | PersonalFabricAction::RetiredSetDisplayPlacementChecked
+            | PersonalFabricAction::RetiredSpatialInputProtocol
+            | PersonalFabricAction::RetiredSpatialInputSequenced
             // A clock probe is answered where its frame arrived and a report measured from there,
             // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
@@ -594,7 +625,7 @@ impl crate::Session {
             | PersonalFabricAction::WakeProbe { .. }
             | PersonalFabricAction::WakeProbeReply { .. }
             | PersonalFabricAction::WindowViews { .. }
-            | PersonalFabricAction::ShowTab { .. }
+            | PersonalFabricAction::RetiredShowTab
             // The device-certification exchange answered above, for the other door's preconditions.
             | PersonalFabricAction::CertifyAsk { .. }
             | PersonalFabricAction::CertifyAnswer { .. }
@@ -620,7 +651,8 @@ impl crate::Session {
     }
 
     /// Whether one of this session's services took `envelope` 's action: a Bluetooth accessory's
-    /// move, a device to wake, a certification, a speaker service's. What they did not take is the
+    /// move, a device to wake, a certification, a speaker service's, the person's keyboard and
+    /// pointer. What they did not take is the
     /// session's own.
     fn service_took(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
         self.shared
@@ -633,6 +665,11 @@ impl crate::Session {
             || crate::certification::handle_action(fabric, envelope)
             || tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
+            || self
+                .shared
+                .keyboard_and_pointer
+                .as_ref()
+                .is_some_and(|shared_input| shared_input.route(envelope))
     }
 
     /// Show the notification another of the person's devices projected,

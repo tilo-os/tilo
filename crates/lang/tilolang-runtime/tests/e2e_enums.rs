@@ -170,67 +170,106 @@ view drawing(c: Canvas) {
         assert!(!texts(&v).contains(&"was a dot".to_owned()));
     }
 
-    #[test]
-    fn a_bound_state_value_is_each_persons_own() {
-        let store = AmStore::new();
-        let (rt, app, canvas) = setup(&store);
-        let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
-        let open = |who: &Principal| {
-            rt.open_view(who, &app.view("drawing"), vec![Value::resource(&canvas)])
-                .unwrap()
-        };
-        let (mut va, mut vb) = (open(&ada), open(&bo));
-        let before = rt.history(&canvas.doc).unwrap().len();
-        let inputs = |v: &tilolang_runtime::ViewInstance| -> Vec<String> {
-            of_kind(v.tree(), "ui.TextInput")
-                .into_iter()
-                .map(|i| i.key.clone())
-                .collect()
-        };
-        let numbers = |v: &tilolang_runtime::ViewInstance| -> Vec<String> {
-            of_kind(v.tree(), "ui.NumberInput")
-                .into_iter()
-                .map(|i| i.key.clone())
-                .collect()
-        };
-        let query = inputs(&va)[0].clone();
-        let zoom = numbers(&va)[0].clone();
-        assert_eq!(va.bound_value(&query), Some(Value::text("")));
-        assert_eq!(
-            va.bound_value(&zoom),
-            Some(Value::Float(1.0)),
-            "the default shows"
-        );
+    tilo_test_env::scenario! {
+        fn bound_state_and_drafts_follow_each_press_and_keystroke;
 
-        assert_eq!(
-            va.edit(&query, &Value::text("red")).unwrap(),
-            EditOutcome::Applied
-        );
-        assert_eq!(
-            va.edit(&zoom, &Value::text("3")).unwrap(),
-            EditOutcome::Applied,
-            "a number typed as text"
-        );
-        assert!(va.edit(&zoom, &Value::text("big")).is_err());
-        va.poll_patches().unwrap();
-        vb.poll_patches().unwrap();
-        assert_eq!(texts(&va).last().unwrap(), "red at 3");
-        assert_eq!(
-            texts(&vb).last().unwrap(),
-            " at 1",
-            "Bo's window shows his own zoom, and his own view state"
-        );
-        assert_eq!(vb.bound_value(&inputs(&vb)[0]), Some(Value::text("")));
-        assert_eq!(
-            vb.bound_value(&numbers(&vb)[0]),
-            Some(Value::Float(1.0)),
-            "Bo reads the window value's default, not Ada's"
-        );
-        assert_eq!(
-            rt.history(&canvas.doc).unwrap().len(),
-            before,
-            "view state is not resource state"
-        );
+        phase a_bound_state_value_is_each_persons_own;
+        {
+            let store = AmStore::new();
+            let (rt, app, canvas) = setup(&store);
+            let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
+            let open = |who: &Principal| {
+                rt.open_view(who, &app.view("drawing"), vec![Value::resource(&canvas)])
+                    .unwrap()
+            };
+            let (mut va, mut vb) = (open(&ada), open(&bo));
+            let before = rt.history(&canvas.doc).unwrap().len();
+            let inputs = |v: &tilolang_runtime::ViewInstance| -> Vec<String> {
+                of_kind(v.tree(), "ui.TextInput")
+                    .into_iter()
+                    .map(|i| i.key.clone())
+                    .collect()
+            };
+            let numbers = |v: &tilolang_runtime::ViewInstance| -> Vec<String> {
+                of_kind(v.tree(), "ui.NumberInput")
+                    .into_iter()
+                    .map(|i| i.key.clone())
+                    .collect()
+            };
+            let query = inputs(&va)[0].clone();
+            let zoom = numbers(&va)[0].clone();
+            assert_eq!(va.bound_value(&query), Some(Value::text("")));
+            assert_eq!(
+                va.bound_value(&zoom),
+                Some(Value::Float(1.0)),
+                "the default shows"
+            );
+
+            assert_eq!(
+                va.edit(&query, &Value::text("red")).unwrap(),
+                EditOutcome::Applied
+            );
+            assert_eq!(
+                va.edit(&zoom, &Value::text("3")).unwrap(),
+                EditOutcome::Applied,
+                "a number typed as text"
+            );
+            assert!(va.edit(&zoom, &Value::text("big")).is_err());
+            va.poll_patches().unwrap();
+            vb.poll_patches().unwrap();
+            assert_eq!(texts(&va).last().unwrap(), "red at 3");
+            assert_eq!(
+                texts(&vb).last().unwrap(),
+                " at 1",
+                "Bo's window shows his own zoom, and his own view state"
+            );
+            assert_eq!(vb.bound_value(&inputs(&vb)[0]), Some(Value::text("")));
+            assert_eq!(
+                vb.bound_value(&numbers(&vb)[0]),
+                Some(Value::Float(1.0)),
+                "Bo reads the window value's default, not Ada's"
+            );
+            assert_eq!(
+                rt.history(&canvas.doc).unwrap().len(),
+                before,
+                "view state is not resource state"
+            );
+        }
+
+        phase a_toggle_pressed_twice_before_the_view_draws_again_toggles_twice;
+        // An argument computed from view state is evaluated when the control is pressed, on the
+        // view state as it is then: a second press before the view draws again sees the first.
+        {
+            let (_rt, _app, _talk, mut view) = pressed();
+            let (toggle, more) = (button(&view, "Toggle"), button(&view, "More"));
+            assert_eq!(texts(&view)[..2], ["shut", "0 more"]);
+            view.press(&toggle).unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(texts(&view)[0], "open");
+            // Both presses arrive in one frame: the view has not drawn between them.
+            view.press(&toggle).unwrap();
+            view.press(&toggle).unwrap();
+            view.press(&more).unwrap();
+            view.press(&more).unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(texts(&view)[..2], ["open", "2 more"]);
+            view.press(&toggle).unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(texts(&view)[0], "shut");
+        }
+
+        phase an_argument_computed_from_a_draft_sends_the_last_keystroke;
+        {
+            let (rt, _app, talk, mut view) = pressed();
+            let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+            let send = button(&view, "Send");
+            view.edit(&draft, &Value::text("on my wa")).unwrap();
+            view.poll_patches().unwrap();
+            // The last keystroke and the press arrive together: the view has not drawn since.
+            view.edit(&draft, &Value::text("on my way")).unwrap();
+            view.press(&send).unwrap();
+            assert_eq!(rt.read(&talk, "said").unwrap(), Value::text("on my way!"));
+        }
     }
 
     const PRESSED: &str = r#"app so.tilo.pressed "Pressed"
@@ -280,40 +319,5 @@ view talk(t: Talk) {
             .unwrap_or_else(|| panic!("no button `{label}` in\n{}", dump(view.tree())))
             .key
             .clone()
-    }
-
-    // An argument computed from view state is evaluated when the control is pressed, on the
-    // view state as it is then: a second press before the view draws again sees the first.
-    #[test]
-    fn a_toggle_pressed_twice_before_the_view_draws_again_toggles_twice() {
-        let (_rt, _app, _talk, mut view) = pressed();
-        let (toggle, more) = (button(&view, "Toggle"), button(&view, "More"));
-        assert_eq!(texts(&view)[..2], ["shut", "0 more"]);
-        view.press(&toggle).unwrap();
-        view.poll_patches().unwrap();
-        assert_eq!(texts(&view)[0], "open");
-        // Both presses arrive in one frame: the view has not drawn between them.
-        view.press(&toggle).unwrap();
-        view.press(&toggle).unwrap();
-        view.press(&more).unwrap();
-        view.press(&more).unwrap();
-        view.poll_patches().unwrap();
-        assert_eq!(texts(&view)[..2], ["open", "2 more"]);
-        view.press(&toggle).unwrap();
-        view.poll_patches().unwrap();
-        assert_eq!(texts(&view)[0], "shut");
-    }
-
-    #[test]
-    fn an_argument_computed_from_a_draft_sends_the_last_keystroke() {
-        let (rt, _app, talk, mut view) = pressed();
-        let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
-        let send = button(&view, "Send");
-        view.edit(&draft, &Value::text("on my wa")).unwrap();
-        view.poll_patches().unwrap();
-        // The last keystroke and the press arrive together: the view has not drawn since.
-        view.edit(&draft, &Value::text("on my way")).unwrap();
-        view.press(&send).unwrap();
-        assert_eq!(rt.read(&talk, "said").unwrap(), Value::text("on my way!"));
     }
 }

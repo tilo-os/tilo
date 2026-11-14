@@ -358,167 +358,171 @@ mod tests {
         account
     }
 
-    /// The IMAP probe signs in over verified TLS, reports rejected credentials,
-    /// refuses bad greetings and untrusted certificates, and never sends a
-    /// login carrying control characters.
-    #[test]
-    fn email_probe_authenticates_and_refuses_untrusted_servers() {
-        // (case, greeting, LOGIN reply, password, trust the server certificate,
-        //  expected result, substrings the server must see in LOGIN (None:
-        //  nothing may be sent))
-        type ImapCase = (
-            &'static str,
-            &'static str,
-            &'static str,
-            &'static str,
-            bool,
-            Result<String, String>,
-            Option<&'static [&'static str]>,
-        );
-        let served: [ImapCase; 4] = [
-            (
-                "tls sign-in succeeds",
-                "* OK [CAPABILITY IMAP4rev1] ready\r\n",
-                "TAG OK LOGIN completed\r\n",
-                "app-password",
-                true,
-                Ok("IMAP sign-in succeeded".into()),
-                Some(&[" LOGIN ", "\"ada@example.test\"", "\"app-password\""]),
-            ),
-            (
-                "rejected credential",
-                "* OK ready\r\n",
-                "TAG NO [AUTHENTICATIONFAILED] Invalid credentials\r\n",
-                "wrong",
-                true,
-                Err("IMAP server rejected the saved credential".into()),
-                Some(&[]),
-            ),
-            (
-                "non-OK greeting sends no credential",
-                "* BYE too busy\r\n",
-                "",
-                "app-password",
-                true,
-                Err("server did not provide a valid IMAP greeting".into()),
-                None,
-            ),
-            (
-                "untrusted certificate",
-                "* OK ready\r\n",
-                "",
-                "app-password",
-                false,
-                Err("could not establish the secure IMAP connection".into()),
-                Some(&[]),
-            ),
-        ];
-        for (case, greeting, reply, password, trusted, want, login_must_contain) in served {
-            let (port, roots, worker) = imap_server(greeting, reply);
-            let roots = if trusted {
-                roots
-            } else {
-                rustls::RootCertStore::empty()
-            };
+    tilo_test_env::scenario! {
+        fn account_probes_sign_in_to_real_servers_and_refuse_the_rest;
+
+        phase email_probe_authenticates_and_refuses_untrusted_servers;
+        // The IMAP probe signs in over verified TLS, reports rejected credentials,
+        // refuses bad greetings and untrusted certificates, and never sends a
+        // login carrying control characters.
+        {
+            // (case, greeting, LOGIN reply, password, trust the server certificate,
+            //  expected result, substrings the server must see in LOGIN (None:
+            //  nothing may be sent))
+            type ImapCase = (
+                &'static str,
+                &'static str,
+                &'static str,
+                &'static str,
+                bool,
+                Result<String, String>,
+                Option<&'static [&'static str]>,
+            );
+            let served: [ImapCase; 4] = [
+                (
+                    "tls sign-in succeeds",
+                    "* OK [CAPABILITY IMAP4rev1] ready\r\n",
+                    "TAG OK LOGIN completed\r\n",
+                    "app-password",
+                    true,
+                    Ok("IMAP sign-in succeeded".into()),
+                    Some(&[" LOGIN ", "\"ada@example.test\"", "\"app-password\""]),
+                ),
+                (
+                    "rejected credential",
+                    "* OK ready\r\n",
+                    "TAG NO [AUTHENTICATIONFAILED] Invalid credentials\r\n",
+                    "wrong",
+                    true,
+                    Err("IMAP server rejected the saved credential".into()),
+                    Some(&[]),
+                ),
+                (
+                    "non-OK greeting sends no credential",
+                    "* BYE too busy\r\n",
+                    "",
+                    "app-password",
+                    true,
+                    Err("server did not provide a valid IMAP greeting".into()),
+                    None,
+                ),
+                (
+                    "untrusted certificate",
+                    "* OK ready\r\n",
+                    "",
+                    "app-password",
+                    false,
+                    Err("could not establish the secure IMAP connection".into()),
+                    Some(&[]),
+                ),
+            ];
+            for (case, greeting, reply, password, trusted, want, login_must_contain) in served {
+                let (port, roots, worker) = imap_server(greeting, reply);
+                let roots = if trusted {
+                    roots
+                } else {
+                    rustls::RootCertStore::empty()
+                };
+                assert_eq!(
+                    LiveAccountTester::email_with_roots(
+                        &email_account(port),
+                        &accounts::Secret::password(password),
+                        roots,
+                    ),
+                    want,
+                    "case {case}"
+                );
+                if !trusted {
+                    // The handshake fails on the server side too; its worker is not joined.
+                    drop(worker);
+                    continue;
+                }
+                let login = worker.join().expect("server worker");
+                match login_must_contain {
+                    Some(parts) => {
+                        for part in parts {
+                            assert!(login.contains(part), "case {case}: {login}");
+                        }
+                    }
+                    None => assert!(
+                        login.is_empty(),
+                        "case {case}: no credential after a refused greeting"
+                    ),
+                }
+            }
+
             assert_eq!(
                 LiveAccountTester::email_with_roots(
-                    &email_account(port),
-                    &accounts::Secret::password(password),
-                    roots,
+                    &email_account(9),
+                    &accounts::Secret::password("pass\r\nA1 DELETE INBOX"),
+                    rustls::RootCertStore::empty(),
                 ),
-                want,
-                "case {case}"
+                Err("login contains unsupported control characters".into())
             );
-            if !trusted {
-                // The handshake fails on the server side too; its worker is not joined.
-                drop(worker);
-                continue;
-            }
-            let login = worker.join().expect("server worker");
-            match login_must_contain {
-                Some(parts) => {
-                    for part in parts {
-                        assert!(login.contains(part), "case {case}: {login}");
-                    }
-                }
-                None => assert!(
-                    login.is_empty(),
-                    "case {case}: no credential after a refused greeting"
-                ),
-            }
         }
 
-        assert_eq!(
-            LiveAccountTester::email_with_roots(
-                &email_account(9),
-                &accounts::Secret::password("pass\r\nA1 DELETE INBOX"),
-                rustls::RootCertStore::empty(),
-            ),
-            Err("login contains unsupported control characters".into())
-        );
-    }
+        phase a_calendar_account_without_selected_collections_is_not_connected;
+        {
+            let server = Responder::silent();
+            let mut account = accounts::Account::new("empty-calendar", "caldav");
+            account.config = serde_json::json!({
+                "server_url": format!("http://localhost:{}/dav/", server.port()),
+                "username": "ada", "calendars": []
+            });
+            assert!(
+                LiveAccountTester
+                    .test(&account, &accounts::Secret::password("secret"))
+                    .unwrap_err()
+                    .contains("Choose calendars")
+            );
+            server.assert_untouched();
+        }
 
-    #[test]
-    fn a_calendar_account_without_selected_collections_is_not_connected() {
-        let server = Responder::silent();
-        let mut account = accounts::Account::new("empty-calendar", "caldav");
-        account.config = serde_json::json!({
-            "server_url": format!("http://localhost:{}/dav/", server.port()),
-            "username": "ada", "calendars": []
-        });
-        assert!(
-            LiveAccountTester
-                .test(&account, &accounts::Secret::password("secret"))
-                .unwrap_err()
-                .contains("Choose calendars")
-        );
-        server.assert_untouched();
+        phase dav_probe_authenticates_and_never_replays_credentials;
+        // The DAV probe signs in with PROPFIND, reports rejection, and never
+        // replays authorization to a redirect target.
+        {
+            let server = Responder::start(vec![Reply::status(207).body(
+                r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/</d:href></d:response></d:multistatus>"#,
+            )]);
+            let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
+            assert_eq!(
+                LiveAccountTester::dav(&account, &accounts::Secret::password("secret")),
+                Ok("Server accepted the signed-in DAV request".into())
+            );
+            let request = server.next_request();
+            assert_eq!(request.method, "PROPFIND");
+            assert_eq!(request.header("depth"), Some("0"));
+            assert!(request.body_text().contains("<D:resourcetype/>"));
+
+            let server = Responder::start(vec![Reply::status(401)]);
+            let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
+            assert_eq!(
+                LiveAccountTester::dav(&account, &accounts::Secret::password("wrong")),
+                Err("server rejected the saved credential".into())
+            );
+
+            // A redirect is reported, not followed with the credential.
+            let target = Responder::silent();
+            let target_url = format!("http://localhost:{}/stolen", target.port());
+            let redirect = Responder::start(vec![Reply::status(302).header("Location", &target_url)]);
+            let account = dav_account(&format!("http://localhost:{}/dav", redirect.port()));
+            let result = LiveAccountTester::dav(&account, &accounts::Secret::password("secret"));
+            assert_eq!(result, Err("server returned HTTP 302".into()));
+            let first_request = redirect.next_request();
+            assert!(
+                first_request
+                    .header("authorization")
+                    .is_some_and(|value| value.starts_with("Basic ")),
+                "the configured endpoint itself is authenticated"
+            );
+            target.assert_untouched();
+        }
     }
 
     fn dav_account(url: &str) -> accounts::Account {
         let mut account = accounts::Account::new("dav", "webdav");
         account.config = serde_json::json!({"base_url": url, "username": "ada"});
         account
-    }
-
-    /// The DAV probe signs in with PROPFIND, reports rejection, and never
-    /// replays authorization to a redirect target.
-    #[test]
-    fn dav_probe_authenticates_and_never_replays_credentials() {
-        let server = Responder::start(vec![Reply::status(207).body(
-            r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/</d:href></d:response></d:multistatus>"#,
-        )]);
-        let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
-        assert_eq!(
-            LiveAccountTester::dav(&account, &accounts::Secret::password("secret")),
-            Ok("Server accepted the signed-in DAV request".into())
-        );
-        let request = server.next_request();
-        assert_eq!(request.method, "PROPFIND");
-        assert_eq!(request.header("depth"), Some("0"));
-        assert!(request.body_text().contains("<D:resourcetype/>"));
-
-        let server = Responder::start(vec![Reply::status(401)]);
-        let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
-        assert_eq!(
-            LiveAccountTester::dav(&account, &accounts::Secret::password("wrong")),
-            Err("server rejected the saved credential".into())
-        );
-
-        // A redirect is reported, not followed with the credential.
-        let target = Responder::silent();
-        let target_url = format!("http://localhost:{}/stolen", target.port());
-        let redirect = Responder::start(vec![Reply::status(302).header("Location", &target_url)]);
-        let account = dav_account(&format!("http://localhost:{}/dav", redirect.port()));
-        let result = LiveAccountTester::dav(&account, &accounts::Secret::password("secret"));
-        assert_eq!(result, Err("server returned HTTP 302".into()));
-        let first_request = redirect.next_request();
-        assert!(
-            first_request
-                .header("authorization")
-                .is_some_and(|value| value.starts_with("Basic ")),
-            "the configured endpoint itself is authenticated"
-        );
-        target.assert_untouched();
     }
 }

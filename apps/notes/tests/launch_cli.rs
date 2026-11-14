@@ -20,12 +20,7 @@ fn drive(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("TILO_") || key.to_string_lossy().starts_with("QUICK_")
-        {
-            command.env_remove(key);
-        }
-    }
+    tilo_test_env::launch_env(&mut command);
     for key in [
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
@@ -160,10 +155,11 @@ fn a_launch_opens_the_workspaces_notebook() {
         None,
         &temp.path().join("dump.json"),
     );
-    let workspace = data
-        .join("so.tilo.notes")
-        .join("workspaces")
-        .join("personal");
+    let workspace = std::fs::read_dir(data.join("so.tilo.notes").join("workspaces"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .next()
+        .expect("the launch kept the workspace's notebook");
     assert!(workspace.join("state.automerge").is_file(), "{workspace:?}");
     assert!(
         !workspace.join("documents").exists(),

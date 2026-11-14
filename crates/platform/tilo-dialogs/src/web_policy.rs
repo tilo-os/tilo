@@ -58,40 +58,44 @@ pub fn accept_attribute<'a>(
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_web_and_composing_schemes_open() {
-        for uri in [
-            "https://tilo.so/docs",
-            "HTTP://example.com",
-            "mailto:ada@example.com",
-            "tel:+15551234",
-        ] {
-            assert_eq!(openable_uri(uri), Ok(()), "{uri}");
-        }
-        for uri in [
-            "javascript:alert(1)",
-            " JavaScript:alert(1)",
-            "data:text/html,<script>",
-            "blob:https://console/1",
-            "file:///etc/passwd",
-            "settings:display",
-            "relative/path",
-            "https://example.com/\u{0}x",
-        ] {
-            assert!(openable_uri(uri).is_err(), "{uri}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_web_page_opens_only_safe_schemes_and_lists_what_its_picker_accepts;
 
-    #[test]
-    fn accept_lists_extensions_and_types_or_admits_everything() {
-        assert_eq!(
-            accept_attribute(["*.png", "*.tar.gz"], ["image/png"]),
-            ".png,.tar.gz,image/png"
-        );
-        assert_eq!(accept_attribute([], []), "");
-        assert_eq!(accept_attribute(["*.md", "*"], []), "", "All files");
-        assert_eq!(accept_attribute(["Makefile"], []), "");
-        assert_eq!(accept_attribute(["*.[ch]"], []), "");
-        assert_eq!(accept_attribute([], ["text/*"]), "text/*");
+        phase only_web_and_composing_schemes_open;
+        {
+            for uri in [
+                "https://tilo.so/docs",
+                "HTTP://example.com",
+                "mailto:ada@example.com",
+                "tel:+15551234",
+            ] {
+                assert_eq!(openable_uri(uri), Ok(()), "{uri}");
+            }
+            for uri in [
+                "javascript:alert(1)",
+                " JavaScript:alert(1)",
+                "data:text/html,<script>",
+                "blob:https://console/1",
+                "file:///etc/passwd",
+                "settings:display",
+                "relative/path",
+                "https://example.com/\u{0}x",
+            ] {
+                assert!(openable_uri(uri).is_err(), "{uri}");
+            }
+        }
+
+        phase accept_lists_extensions_and_types_or_admits_everything;
+        {
+            assert_eq!(
+                accept_attribute(["*.png", "*.tar.gz"], ["image/png"]),
+                ".png,.tar.gz,image/png"
+            );
+            assert_eq!(accept_attribute([], []), "");
+            assert_eq!(accept_attribute(["*.md", "*"], []), "", "All files");
+            assert_eq!(accept_attribute(["Makefile"], []), "");
+            assert_eq!(accept_attribute(["*.[ch]"], []), "");
+            assert_eq!(accept_attribute([], ["text/*"]), "text/*");
+        }
     }
 }

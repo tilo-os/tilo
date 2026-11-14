@@ -2,13 +2,14 @@
 //! workspaces it hosts, so both sides attach where they share one.
 
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Handle the dialer's hello: record it as a host attached to every
 /// workspace both host.
 pub(super) async fn handle_host_hello(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    hosted_workspaces: Vec<u64>,
+    hosted_workspaces: Vec<WorkspaceId>,
 ) -> Result<Option<Envelope>, PeerError> {
     // Only a host of this host's own person attaches: a device of another
     // person never does.
@@ -20,7 +21,7 @@ pub(super) async fn handle_host_hello(
     // `Subscribe` (which it is about to send for each intersection id), the
     // existing subscriber path enrols it and the fan-out filter takes care
     // of the rest.
-    let mut hosted_here: Vec<u64> = Vec::new();
+    let mut hosted_here: Vec<WorkspaceId> = Vec::new();
     let mut governed = Vec::new();
     let wsmap = session.workspaces.lock().await;
     for id in &hosted_workspaces {

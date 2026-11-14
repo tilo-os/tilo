@@ -4,9 +4,7 @@ async fn canonical_pending<T>(
 ) -> T {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        workspace
-            .state
-            .drain_action_directory_bridge(&workspace.directories);
+        workspace.state.take_turn(&workspace.directories);
         if let tilo_actions::remote::PendingPoll::Ready(value) = pending.poll_ready() {
             return value;
         }
@@ -111,9 +109,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                     appearance: None,
                 };
                 let pending = host.invoke(&caller, request);
-                workspace
-                    .state
-                    .drain_action_directory_bridge(&workspace.directories);
+                workspace.state.take_turn(&workspace.directories);
                 assert_eq!(entered_rx.recv().await, Some("resolve"));
                 let replacement_stream = if change == "stream" {
                     Some(worker.handle.subscribe_stable_invocations().await.unwrap())

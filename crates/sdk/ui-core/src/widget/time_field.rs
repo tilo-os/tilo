@@ -189,55 +189,59 @@ mod tests {
         morning()
     }
 
-    #[test]
-    fn adding_a_time_starts_in_the_morning_and_removing_it_reports_none() {
-        let reported: Rc<Cell<Option<Option<NaiveTime>>>> = Rc::default();
-        let seen = Rc::clone(&reported);
-        let mut field = TimeField::new("at", None).on_change(move |value| {
-            seen.set(Some(value));
-        });
-        assert_eq!(field.value(), None);
-        field.picked.set(Some(Some(nine())));
-        assert!(field.take_pick());
-        assert_eq!(field.value(), Some(nine()));
-        assert_eq!(reported.take(), Some(Some(nine())));
-        field.picked.set(Some(None));
-        assert!(field.take_pick());
-        assert_eq!(field.value(), None);
-        assert_eq!(reported.take(), Some(None));
-    }
+    tilo_test_env::scenario! {
+        fn a_time_field_holds_reports_and_follows_its_time;
 
-    #[test]
-    fn a_time_from_elsewhere_is_shown_without_being_reported() {
-        let reported: Rc<Cell<bool>> = Rc::default();
-        let seen = Rc::clone(&reported);
-        let mut field = TimeField::new("at", None).on_change(move |_| seen.set(true));
-        field.set_value(NaiveTime::from_hms_opt(14, 30, 0));
-        assert_eq!(field.value(), NaiveTime::from_hms_opt(14, 30, 0));
-        assert!(!field.take_pick());
-        assert!(!reported.get());
-    }
+        phase adding_a_time_starts_in_the_morning_and_removing_it_reports_none;
+        {
+            let reported: Rc<Cell<Option<Option<NaiveTime>>>> = Rc::default();
+            let seen = Rc::clone(&reported);
+            let mut field = TimeField::new("at", None).on_change(move |value| {
+                seen.set(Some(value));
+            });
+            assert_eq!(field.value(), None);
+            field.picked.set(Some(Some(nine())));
+            assert!(field.take_pick());
+            assert_eq!(field.value(), Some(nine()));
+            assert_eq!(reported.take(), Some(Some(nine())));
+            field.picked.set(Some(None));
+            assert!(field.take_pick());
+            assert_eq!(field.value(), None);
+            assert_eq!(reported.take(), Some(None));
+        }
 
-    #[test]
-    fn a_bound_time_shows_the_time_of_day_it_holds() {
-        let state = crate::LocalState::new("09:00".to_owned());
-        let mut field = TimeField::from_state("at", &state);
-        assert_eq!(field.value(), Some(nine()));
-        state.set(String::new());
-        Decorator::sync(&mut field, &(), &());
-        assert!(Decorator::update(&mut field, &(), &()));
-        assert_eq!(
-            field.value(),
-            None,
-            "a time cleared elsewhere shows as none"
-        );
-        state.set("14:30".to_owned());
-        Decorator::sync(&mut field, &(), &());
-        assert!(Decorator::update(&mut field, &(), &()));
-        assert_eq!(
-            field.value(),
-            NaiveTime::from_hms_opt(14, 30, 0),
-            "a time set elsewhere shows in place"
-        );
+        phase a_time_from_elsewhere_is_shown_without_being_reported;
+        {
+            let reported: Rc<Cell<bool>> = Rc::default();
+            let seen = Rc::clone(&reported);
+            let mut field = TimeField::new("at", None).on_change(move |_| seen.set(true));
+            field.set_value(NaiveTime::from_hms_opt(14, 30, 0));
+            assert_eq!(field.value(), NaiveTime::from_hms_opt(14, 30, 0));
+            assert!(!field.take_pick());
+            assert!(!reported.get());
+        }
+
+        phase a_bound_time_shows_the_time_of_day_it_holds;
+        {
+            let state = crate::LocalState::new("09:00".to_owned());
+            let mut field = TimeField::from_state("at", &state);
+            assert_eq!(field.value(), Some(nine()));
+            state.set(String::new());
+            Decorator::sync(&mut field, &(), &());
+            assert!(Decorator::update(&mut field, &(), &()));
+            assert_eq!(
+                field.value(),
+                None,
+                "a time cleared elsewhere shows as none"
+            );
+            state.set("14:30".to_owned());
+            Decorator::sync(&mut field, &(), &());
+            assert!(Decorator::update(&mut field, &(), &()));
+            assert_eq!(
+                field.value(),
+                NaiveTime::from_hms_opt(14, 30, 0),
+                "a time set elsewhere shows in place"
+            );
+        }
     }
 }

@@ -9,9 +9,6 @@
 //!
 //! Nothing here decides what an app may reach: the catalogue the provider
 //! publishes is the authority, and a resource it does not publish is refused.
-//! A resource whose reading is the person's own declares it
-//! ([`Granted`]), and then the broker decides the reading where the
-//! resource sits from the workspace's grants, as it decides its actions.
 
 use std::fmt;
 
@@ -30,19 +27,6 @@ pub struct Caller {
 /// A resource's reading as the wire carries it: the services' revision it was
 /// read at, and the reading as JSON; `None` when no service publishes it.
 pub type Reading = (u64, Option<Vec<u8>>);
-
-/// What a resource declares of its reading when the workspace's grants decide who
-/// reads it ([`Readers::Granted`](tilo_actions::Readers::Granted)): the app
-/// publishing it and its kind. The resource is read at the node those name,
-/// exactly where its actions are decided.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Granted {
-    /// The app the resource belongs to: the session's own for a resource no
-    /// app published.
-    pub publisher: String,
-    /// The kind of resource, as its node names it.
-    pub kind: String,
-}
 
 /// One watch a connection asked for, as [`PublishedResources::watch`] minted
 /// it.
@@ -79,13 +63,6 @@ impl fmt::Display for ResourceWatch {
 pub trait PublishedResources: Send + Sync {
     /// `resource` as it reads now, answered on the session's next pass.
     fn snapshot(&self, caller: &Caller, resource: &str) -> oneshot::Receiver<Reading>;
-
-    /// Where the workspace's grants decide `resource`'s reading, when its
-    /// publisher declares it theirs ([`Granted`]); `None` for a resource
-    /// everyone who reaches the door reads.
-    fn granted(&self, _resource: &str) -> Option<Granted> {
-        None
-    }
 
     /// `resource`'s reading now and each time it changes, delivered to
     /// `sink` until [`Self::unwatch`] or until `sink` closes.

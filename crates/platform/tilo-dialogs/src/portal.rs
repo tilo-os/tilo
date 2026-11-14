@@ -862,58 +862,236 @@ mod tests {
         PathBuf::from(s)
     }
 
-    #[test]
-    fn writable_directory_is_explicit_and_preserves_directory_shape() {
-        let read = PickRequest::directory("Read folder", "Choose");
-        let write = PickRequest::writable_directory("Import into folder", "Import here");
-        assert!(!read.is_writable_directory());
-        assert!(write.is_writable_directory());
-        assert!(write.is_directory());
-        assert!(!write.is_open());
-        assert!(!write.is_multiple());
-        assert_eq!(write.suggested_name(), None);
-        assert_eq!(write.accept_label(), "Import here");
+    tilo_test_env::scenario! {
+        fn a_request_records_what_the_app_asked_for_and_an_outcome_what_was_picked;
+
+        phase writable_directory_is_explicit_and_preserves_directory_shape;
+        {
+            let read = PickRequest::directory("Read folder", "Choose");
+            let write = PickRequest::writable_directory("Import into folder", "Import here");
+            assert!(!read.is_writable_directory());
+            assert!(write.is_writable_directory());
+            assert!(write.is_directory());
+            assert!(!write.is_open());
+            assert!(!write.is_multiple());
+            assert_eq!(write.suggested_name(), None);
+            assert_eq!(write.accept_label(), "Import here");
+        }
+
+        phase directory_request_is_single_select_and_has_no_filename;
+        {
+            let request = PickRequest::directory("Choose folder", "Choose");
+            assert!(!request.is_multiple());
+            assert_eq!(request.suggested_name(), None);
+            assert!(matches!(request.kind, PickKind::Directory));
+        }
+
+        phase directory_hint_preserves_the_requested_folder_without_granting_it;
+        {
+            let home = local_path("/Users/you/Recognized home");
+            let request =
+                PickRequest::directory("Allow this folder", "Allow").initial_directory(home.clone());
+            assert_eq!(request.directory_hint(), Some(home.as_path()));
+            assert!(request.is_directory());
+            assert_eq!(request.suggested_name(), None);
+            assert_eq!(
+                PickRequest::directory("Choose", "Allow").directory_hint(),
+                None
+            );
+        }
+
+        phase launch_request_records_open_and_reveal_without_changing_the_path;
+        {
+            let open = LaunchRequest::open("/tmp/archive.zip");
+            assert_eq!(open.path, Path::new("/tmp/archive.zip"));
+            assert_eq!(open.kind, LaunchKind::Open);
+            let reveal = LaunchRequest::reveal("/tmp/archive.zip");
+            assert_eq!(reveal.path, Path::new("/tmp/archive.zip"));
+            assert_eq!(reveal.kind, LaunchKind::Reveal);
+        }
+
+        phase outcome_path_accessor_reports_only_a_real_pick;
+        {
+            assert_eq!(
+                PortalOutcome::Opened(PathBuf::from("/tmp/a")).path(),
+                Some(Path::new("/tmp/a"))
+            );
+            assert_eq!(PortalOutcome::Cancelled.path(), None);
+            assert_eq!(PortalOutcome::Failed("x".into()).path(), None);
+        }
+
+        phase builder_records_the_per_app_delta;
+        {
+            let r = PickRequest::open("Insert image", "Insert")
+                .thread_name("wp-portal-open")
+                .filter(
+                    FileFilter::new("Images")
+                        .glob("*.png")
+                        .mimetype("image/png"),
+                )
+                .all_files();
+            assert_eq!(r.title(), "Insert image");
+            assert!(!r.is_multiple());
+            assert_eq!(r.filters.len(), 2);
+            assert_eq!(r.filters[0].name(), "Images");
+            assert_eq!(r.filters[0].globs, ["*.png"]);
+            assert_eq!(r.filters[0].mimetypes, ["image/png"]);
+            assert_eq!(
+                r.filters[1],
+                FileFilter::all_files(),
+                "escape hatch is last"
+            );
+            assert_eq!(r.thread_name, "wp-portal-open");
+
+            assert!(PickRequest::open_multiple("Import contacts", "Import").is_multiple());
+            let s = PickRequest::save("Export contacts", "Export", "contacts.vcf");
+            assert!(!s.is_multiple());
+            assert_eq!(
+                s.kind,
+                PickKind::Save {
+                    suggested_name: "contacts.vcf".into()
+                }
+            );
+        }
     }
 
-    #[test]
-    fn directory_request_is_single_select_and_has_no_filename() {
-        let request = PickRequest::directory("Choose folder", "Choose");
-        assert!(!request.is_multiple());
-        assert_eq!(request.suggested_name(), None);
-        assert!(matches!(request.kind, PickKind::Directory));
-    }
+    tilo_test_env::scenario! {
+        fn a_file_uri_becomes_a_local_path_only_when_it_names_one;
 
-    #[test]
-    fn directory_hint_preserves_the_requested_folder_without_granting_it() {
-        let home = local_path("/Users/you/Recognized home");
-        let request =
-            PickRequest::directory("Allow this folder", "Allow").initial_directory(home.clone());
-        assert_eq!(request.directory_hint(), Some(home.as_path()));
-        assert!(request.is_directory());
-        assert_eq!(request.suggested_name(), None);
-        assert_eq!(
-            PickRequest::directory("Choose", "Allow").directory_hint(),
-            None
-        );
-    }
+        phase rejects_a_uri_that_names_a_remote_host;
+        {
+            let uri = u("file://evil-host.example.com/etc/passwd");
 
-    #[test]
-    fn rejects_a_uri_that_names_a_remote_host() {
-        let uri = u("file://evil-host.example.com/etc/passwd");
+            assert_eq!(
+                to_local_path(&uri),
+                None,
+                "a foreign host is not a local path"
+            );
+            assert!(
+                matches!(
+                    map_uri(std::slice::from_ref(&uri)),
+                    PortalOutcome::Failed(_)
+                ),
+                "a foreign-host URI must not become an openable path"
+            );
+            assert!(matches!(map_uris(&[uri]), MultiOutcome::Failed(_)));
+        }
 
-        assert_eq!(
-            to_local_path(&uri),
-            None,
-            "a foreign host is not a local path"
-        );
-        assert!(
-            matches!(
-                map_uri(std::slice::from_ref(&uri)),
+        phase a_rejected_host_never_yields_a_relative_path;
+        {
+            for s in [
+                "file://evil-host.example.com/etc/passwd",
+                "file://192.0.2.1/srv/secret",
+                "https://example.com/remote.png",
+                "smb://fileserver/share/doc.odt",
+            ] {
+                let out = map_uri(&[u(s)]);
+                if let PortalOutcome::Opened(p) = &out {
+                    panic!("{s} was accepted as {p:?}");
+                }
+                assert!(matches!(out, PortalOutcome::Failed(_)), "{s} must fail");
+            }
+        }
+
+        phase localhost_is_the_local_machine;
+        {
+            assert_eq!(
+                map_uri(&[u("file://localhost/home/alice/a.mkv")]),
+                PortalOutcome::Opened(local_path("/home/alice/a.mkv"))
+            );
+        }
+
+        phase percent_escapes_in_filenames_are_decoded;
+        {
+            assert_eq!(
+                map_uri(&[u("file:///home/alice/My%20Clip.mp4")]),
+                PortalOutcome::Opened(local_path("/home/alice/My Clip.mp4"))
+            );
+            assert_eq!(
+                map_uri(&[u("file:///home/alice/%C3%A9t%C3%A9%20caf%C3%A9.mp3")]),
+                PortalOutcome::Opened(local_path("/home/alice/été café.mp3"))
+            );
+            assert_eq!(
+                map_uri(&[u("file:///home/alice/a%23b%3Fc%25d.txt")]),
+                PortalOutcome::Opened(local_path("/home/alice/a#b?c%d.txt"))
+            );
+        }
+
+        phase a_plus_in_a_path_stays_a_plus;
+        {
+            assert_eq!(
+                map_uri(&[u("file:///home/alice/my+song.mp3")]),
+                PortalOutcome::Opened(local_path("/home/alice/my+song.mp3"))
+            );
+        }
+
+        phase an_escaped_separator_does_not_become_a_new_path_component;
+        {
+            assert_eq!(
+                to_local_path(&u("file:///home/alice/a%2Fb.txt")),
+                None,
+                "an escaped separator must not add a path component"
+            );
+            assert!(matches!(
+                map_uri(&[u("file:///home/alice/a%2Fb.txt")]),
                 PortalOutcome::Failed(_)
-            ),
-            "a foreign-host URI must not become an openable path"
-        );
-        assert!(matches!(map_uris(&[uri]), MultiOutcome::Failed(_)));
+            ));
+        }
+
+        phase a_parent_hop_hidden_inside_one_segment_is_rejected;
+        {
+            for s in [
+                "file:///home/alice/%2E%2E%2F%2E%2E%2Fetc/shadow",
+                "file:///var/workspace/%2E%2E%2Fetc/shadow",
+            ] {
+                assert_eq!(to_local_path(&u(s)), None, "{s} must not resolve");
+                assert!(matches!(map_uri(&[u(s)]), PortalOutcome::Failed(_)), "{s}");
+            }
+        }
+
+        phase a_dot_dot_segment_is_resolved_by_uri_normalisation_not_smuggled;
+        {
+            let uri = u("file:///home/alice/%2E%2E/%2E%2E/etc/shadow");
+            assert_eq!(
+                to_local_path(&uri),
+                Some(local_path("/etc/shadow")),
+                "the URI normalises on parse"
+            );
+            assert_eq!(to_local_path(&uri), Some(local_path("/etc/shadow")));
+        }
+
+        phase ordinary_nested_paths_still_resolve;
+        {
+            for (uri, want) in [
+                ("file:///a.txt", "/a.txt"),
+                (
+                    "file:///home/alice/Documents/report.pdf",
+                    "/home/alice/Documents/report.pdf",
+                ),
+                (
+                    "file:///var/workspace/deep/er/still/x.odp",
+                    "/var/workspace/deep/er/still/x.odp",
+                ),
+                (
+                    "file:///home/alice/dot.name.with.dots.tar.gz",
+                    "/home/alice/dot.name.with.dots.tar.gz",
+                ),
+            ] {
+                assert_eq!(
+                    to_local_path(&u(uri)),
+                    Some(local_path(want)),
+                    "{uri} must resolve normally"
+                );
+            }
+        }
+
+        phase workspace_paths_resolve_through_the_fuse_mount;
+        {
+            assert_eq!(
+                map_uri(&[u("file:///var/workspace/media/a.mkv")]),
+                PortalOutcome::Opened(local_path("/var/workspace/media/a.mkv"))
+            );
+        }
     }
 
     #[cfg(windows)]
@@ -938,224 +1116,107 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_rejected_host_never_yields_a_relative_path() {
-        for s in [
-            "file://evil-host.example.com/etc/passwd",
-            "file://192.0.2.1/srv/secret",
-            "https://example.com/remote.png",
-            "smb://fileserver/share/doc.odt",
-        ] {
-            let out = map_uri(&[u(s)]);
-            if let PortalOutcome::Opened(p) = &out {
-                panic!("{s} was accepted as {p:?}");
-            }
-            assert!(matches!(out, PortalOutcome::Failed(_)), "{s} must fail");
+    tilo_test_env::scenario! {
+        fn a_selection_maps_to_the_local_files_it_names;
+
+        phase empty_is_cancel;
+        {
+            assert_eq!(map_uri(&[]), PortalOutcome::Cancelled);
+            assert_eq!(map_uris(&[]), MultiOutcome::Cancelled);
         }
-    }
 
-    #[test]
-    fn localhost_is_the_local_machine() {
-        assert_eq!(
-            map_uri(&[u("file://localhost/home/alice/a.mkv")]),
-            PortalOutcome::Opened(local_path("/home/alice/a.mkv"))
-        );
-    }
-
-    #[test]
-    fn percent_escapes_in_filenames_are_decoded() {
-        assert_eq!(
-            map_uri(&[u("file:///home/alice/My%20Clip.mp4")]),
-            PortalOutcome::Opened(local_path("/home/alice/My Clip.mp4"))
-        );
-        assert_eq!(
-            map_uri(&[u("file:///home/alice/%C3%A9t%C3%A9%20caf%C3%A9.mp3")]),
-            PortalOutcome::Opened(local_path("/home/alice/été café.mp3"))
-        );
-        assert_eq!(
-            map_uri(&[u("file:///home/alice/a%23b%3Fc%25d.txt")]),
-            PortalOutcome::Opened(local_path("/home/alice/a#b?c%d.txt"))
-        );
-    }
-
-    #[test]
-    fn a_plus_in_a_path_stays_a_plus() {
-        assert_eq!(
-            map_uri(&[u("file:///home/alice/my+song.mp3")]),
-            PortalOutcome::Opened(local_path("/home/alice/my+song.mp3"))
-        );
-    }
-
-    #[test]
-    fn an_escaped_separator_does_not_become_a_new_path_component() {
-        assert_eq!(
-            to_local_path(&u("file:///home/alice/a%2Fb.txt")),
-            None,
-            "an escaped separator must not add a path component"
-        );
-        assert!(matches!(
-            map_uri(&[u("file:///home/alice/a%2Fb.txt")]),
-            PortalOutcome::Failed(_)
-        ));
-    }
-
-    #[test]
-    fn a_parent_hop_hidden_inside_one_segment_is_rejected() {
-        for s in [
-            "file:///home/alice/%2E%2E%2F%2E%2E%2Fetc/shadow",
-            "file:///var/workspace/%2E%2E%2Fetc/shadow",
-        ] {
-            assert_eq!(to_local_path(&u(s)), None, "{s} must not resolve");
-            assert!(matches!(map_uri(&[u(s)]), PortalOutcome::Failed(_)), "{s}");
-        }
-    }
-
-    #[test]
-    fn a_dot_dot_segment_is_resolved_by_uri_normalisation_not_smuggled() {
-        let uri = u("file:///home/alice/%2E%2E/%2E%2E/etc/shadow");
-        assert_eq!(
-            to_local_path(&uri),
-            Some(local_path("/etc/shadow")),
-            "the URI normalises on parse"
-        );
-        assert_eq!(to_local_path(&uri), Some(local_path("/etc/shadow")));
-    }
-
-    #[test]
-    fn ordinary_nested_paths_still_resolve() {
-        for (uri, want) in [
-            ("file:///a.txt", "/a.txt"),
-            (
-                "file:///home/alice/Documents/report.pdf",
-                "/home/alice/Documents/report.pdf",
-            ),
-            (
-                "file:///var/workspace/deep/er/still/x.odp",
-                "/var/workspace/deep/er/still/x.odp",
-            ),
-            (
-                "file:///home/alice/dot.name.with.dots.tar.gz",
-                "/home/alice/dot.name.with.dots.tar.gz",
-            ),
-        ] {
+        phase single_takes_the_first_local_file;
+        {
+            let uris = [
+                u("file:///home/alice/photo.png"),
+                u("file:///home/alice/other.png"),
+            ];
             assert_eq!(
-                to_local_path(&u(uri)),
-                Some(local_path(want)),
-                "{uri} must resolve normally"
+                map_uri(&uris),
+                PortalOutcome::Opened(local_path("/home/alice/photo.png"))
             );
         }
+
+        phase multi_collects_every_local_file;
+        {
+            let uris = [
+                u("file:///home/alice/work.vcf"),
+                u("file:///home/alice/family.vcard"),
+            ];
+            assert_eq!(
+                map_uris(&uris),
+                MultiOutcome::Selected(vec![
+                    local_path("/home/alice/work.vcf"),
+                    local_path("/home/alice/family.vcard"),
+                ])
+            );
+        }
+
+        phase multi_skips_remote_but_keeps_local;
+        {
+            let uris = [
+                u("https://example.com/remote.vcf"),
+                u("file:///home/alice/local.vcf"),
+            ];
+            assert_eq!(
+                map_uris(&uris),
+                MultiOutcome::Selected(vec![local_path("/home/alice/local.vcf")]),
+                "a mixed multi-selection keeps the files the user can actually read"
+            );
+        }
+
+        phase multi_all_remote_is_failure;
+        {
+            assert!(matches!(
+                map_uris(&[
+                    u("https://example.com/a.vcf"),
+                    u("https://example.com/b.vcf")
+                ]),
+                MultiOutcome::Failed(_)
+            ));
+        }
     }
 
-    #[test]
-    fn empty_is_cancel() {
-        assert_eq!(map_uri(&[]), PortalOutcome::Cancelled);
-        assert_eq!(map_uris(&[]), MultiOutcome::Cancelled);
-    }
+    tilo_test_env::scenario! {
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        fn descriptor_open_holds_the_file_it_opened_and_refuses_a_directory;
 
-    #[test]
-    fn single_takes_the_first_local_file() {
-        let uris = [
-            u("file:///home/alice/photo.png"),
-            u("file:///home/alice/other.png"),
-        ];
-        assert_eq!(
-            map_uri(&uris),
-            PortalOutcome::Opened(local_path("/home/alice/photo.png"))
-        );
-    }
+        phase descriptor_open_retains_the_opened_file_and_a_separate_display_name;
+        {
+            use std::io::{Read, Write};
 
-    #[test]
-    fn multi_collects_every_local_file() {
-        let uris = [
-            u("file:///home/alice/work.vcf"),
-            u("file:///home/alice/family.vcard"),
-        ];
-        assert_eq!(
-            map_uris(&uris),
-            MultiOutcome::Selected(vec![
-                local_path("/home/alice/work.vcf"),
-                local_path("/home/alice/family.vcard"),
-            ])
-        );
-    }
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("original-installer.msi");
+            let mut source = File::create(&path).unwrap();
+            source.write_all(b"installer bytes").unwrap();
+            source.flush().unwrap();
+            let uri = url::Url::from_file_path(&path).unwrap();
 
-    #[test]
-    fn multi_skips_remote_but_keeps_local() {
-        let uris = [
-            u("https://example.com/remote.vcf"),
-            u("file:///home/alice/local.vcf"),
-        ];
-        assert_eq!(
-            map_uris(&uris),
-            MultiOutcome::Selected(vec![local_path("/home/alice/local.vcf")]),
-            "a mixed multi-selection keeps the files the user can actually read"
-        );
-    }
+            let opened = match open_selected_uri(&uri) {
+                OpenFileOutcome::Opened(opened) => opened,
+                OpenFileOutcome::Cancelled | OpenFileOutcome::Failed(_) => {
+                    panic!("regular temporary file must open")
+                }
+            };
+            assert_eq!(opened.display_name(), "original-installer.msi");
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, b"replacement bytes").unwrap();
+            let mut contents = String::new();
+            let mut file = opened.into_file();
+            file.read_to_string(&mut contents).unwrap();
+            assert_eq!(contents, "installer bytes");
+        }
 
-    #[test]
-    fn multi_all_remote_is_failure() {
-        assert!(matches!(
-            map_uris(&[
-                u("https://example.com/a.vcf"),
-                u("https://example.com/b.vcf")
-            ]),
-            MultiOutcome::Failed(_)
-        ));
-    }
+        phase descriptor_open_refuses_a_non_regular_file;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let uri = url::Url::from_file_path(dir.path()).unwrap();
 
-    #[test]
-    fn workspace_paths_resolve_through_the_fuse_mount() {
-        assert_eq!(
-            map_uri(&[u("file:///var/workspace/media/a.mkv")]),
-            PortalOutcome::Opened(local_path("/var/workspace/media/a.mkv"))
-        );
-    }
-
-    #[test]
-    fn launch_request_records_open_and_reveal_without_changing_the_path() {
-        let open = LaunchRequest::open("/tmp/archive.zip");
-        assert_eq!(open.path, Path::new("/tmp/archive.zip"));
-        assert_eq!(open.kind, LaunchKind::Open);
-        let reveal = LaunchRequest::reveal("/tmp/archive.zip");
-        assert_eq!(reveal.path, Path::new("/tmp/archive.zip"));
-        assert_eq!(reveal.kind, LaunchKind::Reveal);
-    }
-
-    #[test]
-    fn outcome_path_accessor_reports_only_a_real_pick() {
-        assert_eq!(
-            PortalOutcome::Opened(PathBuf::from("/tmp/a")).path(),
-            Some(Path::new("/tmp/a"))
-        );
-        assert_eq!(PortalOutcome::Cancelled.path(), None);
-        assert_eq!(PortalOutcome::Failed("x".into()).path(), None);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    #[test]
-    fn descriptor_open_retains_the_opened_file_and_a_separate_display_name() {
-        use std::io::{Read, Write};
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("original-installer.msi");
-        let mut source = File::create(&path).unwrap();
-        source.write_all(b"installer bytes").unwrap();
-        source.flush().unwrap();
-        let uri = url::Url::from_file_path(&path).unwrap();
-
-        let opened = match open_selected_uri(&uri) {
-            OpenFileOutcome::Opened(opened) => opened,
-            OpenFileOutcome::Cancelled | OpenFileOutcome::Failed(_) => {
-                panic!("regular temporary file must open")
-            }
-        };
-        assert_eq!(opened.display_name(), "original-installer.msi");
-        std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, b"replacement bytes").unwrap();
-        let mut contents = String::new();
-        let mut file = opened.into_file();
-        file.read_to_string(&mut contents).unwrap();
-        assert_eq!(contents, "installer bytes");
+            assert!(matches!(
+                open_selected_uri(&uri),
+                OpenFileOutcome::Failed(_)
+            ));
+        }
     }
 
     #[cfg(unix)]
@@ -1174,52 +1235,6 @@ mod tests {
             open_selected_uri(&uri),
             OpenFileOutcome::Failed(_)
         ));
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    #[test]
-    fn descriptor_open_refuses_a_non_regular_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let uri = url::Url::from_file_path(dir.path()).unwrap();
-
-        assert!(matches!(
-            open_selected_uri(&uri),
-            OpenFileOutcome::Failed(_)
-        ));
-    }
-
-    #[test]
-    fn builder_records_the_per_app_delta() {
-        let r = PickRequest::open("Insert image", "Insert")
-            .thread_name("wp-portal-open")
-            .filter(
-                FileFilter::new("Images")
-                    .glob("*.png")
-                    .mimetype("image/png"),
-            )
-            .all_files();
-        assert_eq!(r.title(), "Insert image");
-        assert!(!r.is_multiple());
-        assert_eq!(r.filters.len(), 2);
-        assert_eq!(r.filters[0].name(), "Images");
-        assert_eq!(r.filters[0].globs, ["*.png"]);
-        assert_eq!(r.filters[0].mimetypes, ["image/png"]);
-        assert_eq!(
-            r.filters[1],
-            FileFilter::all_files(),
-            "escape hatch is last"
-        );
-        assert_eq!(r.thread_name, "wp-portal-open");
-
-        assert!(PickRequest::open_multiple("Import contacts", "Import").is_multiple());
-        let s = PickRequest::save("Export contacts", "Export", "contacts.vcf");
-        assert!(!s.is_multiple());
-        assert_eq!(
-            s.kind,
-            PickKind::Save {
-                suggested_name: "contacts.vcf".into()
-            }
-        );
     }
 }
 #[cfg(any(test, feature = "test-support"))]

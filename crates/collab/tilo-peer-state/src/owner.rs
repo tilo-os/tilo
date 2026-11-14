@@ -92,25 +92,26 @@ pub fn hosted_by(hint: &crate::join::TransportHint, device: &[u8; 32]) -> bool {
     &hint.host.device_public_key == device
 }
 
-/// Check `hint` as the address of `device`'s own host of `room`, the
-/// workspace `workspace_id`: the host signed it, and it names the workspace it
-/// keeps and the device that signed it.
+/// Check `hint` as the address of `device`'s own host of `workspace_id`: the
+/// host signed it, and it names the workspace it keeps and the device that
+/// signed it.
 pub(crate) fn validate_host_hint(
     hint: &crate::join::TransportHint,
-    room: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     device: &DeviceCert,
 ) -> Result<(), String> {
     if !hosted_by(hint, &device.device_public_key) {
         return Err("the workspace's host hint is not this device's own".into());
     }
-    let (payload, _) = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::
-        authenticate_transport_hint(hint)
+    let (payload, _) =
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
+            hint,
+        )
         .map_err(|error| error.to_string())?;
-    if payload.room != room || payload.workspace_id != workspace_id {
+    if payload.workspace_id != workspace_id {
         return Err("the workspace's host hint names another workspace".into());
     }
-    if payload.host_device_certificate != *device {
+    if payload.device_certificate != *device {
         return Err("the workspace's host hint is not the host's own signed address".into());
     }
     Ok(())
@@ -215,100 +216,49 @@ pub struct NativeCommittedView {
     /// This device's live replica, shared with the workspace's direct links.
     replica: Replica,
     record: record::StoredWorkspace,
-    /// Who reads each channel, as [`Self::channel_readers`] and
-    /// [`Self::unit_scope`] last answered.
-    readers: Arc<std::sync::Mutex<ChannelReaders>>,
+    /// Who holds the workspace's keys, as [`Self::key_holders`] last
+    /// answered and for which instant.
+    holders: Arc<std::sync::Mutex<Option<KeyHolders>>>,
     /// What the view's publication changes for the workspace's other devices
     /// ([`security_digest`]), taken once: it reads every member's identity,
     /// and the next publication compares against it.
     security: Arc<std::sync::OnceLock<[u8; 32]>>,
 }
-/// A channel asked about, and the route of its record when the asker knows it.
-type ChannelAsked = (collab_types::ChannelId, Option<collab_types::ChannelRoute>);
-/// Who reads the channels and records asked about at one instant, as a view's
-/// governance decides it: the view never changes, so neither do they.
-#[derive(Default)]
-struct ChannelReaders {
-    at_ns: u64,
-    readers: std::collections::HashMap<ChannelAsked, Option<std::collections::BTreeSet<[u8; 32]>>>,
-    scopes: std::collections::HashMap<collab_types::ChannelRoute, collab_types::ChannelId>,
-}
-impl ChannelReaders {
-    /// The answers held for `at_ns`, dropping those of any other instant.
-    fn at(&mut self, at_ns: u64) -> &mut Self {
-        if self.at_ns != at_ns {
-            self.readers.clear();
-            self.scopes.clear();
-            self.at_ns = at_ns;
-        }
-        self
-    }
-}
+/// The devices holding a workspace's keys, and the instant (ns) they were
+/// asked for.
+type KeyHolders = (u64, std::collections::BTreeSet<[u8; 32]>);
 impl NativeCommittedView {
     fn new(peer: StatePeer, record: record::StoredWorkspace) -> Self {
         Self {
             replica: Replica::new(peer.clone()),
             peer,
             record,
-            readers: Arc::default(),
+            holders: Arc::default(),
             security: Arc::default(),
         }
     }
-    /// The devices that may read `channel` at `now`
-    /// (as its governance's `channel_readers` decides it), once for each
-    /// channel and instant: a page asks again for every frame its channels
-    /// take in, thousands while it arrives in a workspace of hundreds of
-    /// people, and the answer cannot change while the view and the instant
-    /// stay the same.
+    /// The devices that hold the workspace's keys at `now` (as its
+    /// governance's `key_holders` decides it), once for each instant: a page
+    /// asks again for every frame its group takes in, thousands while it
+    /// arrives in a workspace of hundreds of people, and the answer cannot
+    /// change while the view and the instant stay the same.
     ///
     /// # Errors
     /// The view's governance cannot be read.
-    pub fn channel_readers(
+    pub fn key_holders(
         &self,
         now: web_time::SystemTime,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-    ) -> Result<Option<std::collections::BTreeSet<[u8; 32]>>, String> {
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, String> {
         use tilo_lock::MutexRecover as _;
         let at_ns = crate::state::now_ns(now);
-        let key = (channel, route.cloned());
-        if let Some(answer) = self.readers.lock_recover().at(at_ns).readers.get(&key) {
-            return Ok(answer.clone());
+        if let Some((at, holders)) = &*self.holders.lock_recover()
+            && *at == at_ns
+        {
+            return Ok(holders.clone());
         }
-        let answer = self
-            .peer
-            .governance()
-            .channel_readers(now, channel, route)?;
-        self.readers
-            .lock_recover()
-            .at(at_ns)
-            .readers
-            .insert(key, answer.clone());
-        Ok(answer)
-    }
-    /// The key scope `route`'s record seals under at `now` (as its
-    /// governance's `unit_scope` decides it), once for each record and
-    /// instant, as [`Self::channel_readers`] is.
-    ///
-    /// # Errors
-    /// The view's governance cannot be read.
-    pub fn unit_scope(
-        &self,
-        now: web_time::SystemTime,
-        route: &collab_types::ChannelRoute,
-    ) -> Result<collab_types::ChannelId, String> {
-        use tilo_lock::MutexRecover as _;
-        let at_ns = crate::state::now_ns(now);
-        if let Some(scope) = self.readers.lock_recover().at(at_ns).scopes.get(route) {
-            return Ok(*scope);
-        }
-        let scope = self.peer.governance().unit_scope(now, route)?;
-        self.readers
-            .lock_recover()
-            .at(at_ns)
-            .scopes
-            .insert(route.clone(), scope);
-        Ok(scope)
+        let holders = self.peer.governance().key_holders(now)?;
+        *self.holders.lock_recover() = Some((at_ns, holders.clone()));
+        Ok(holders)
     }
     /// The replica as the record published it.
     #[must_use]
@@ -357,6 +307,11 @@ impl NativeCommittedView {
     pub fn hosted_here(&self) -> bool {
         self.record.hosted_here()
     }
+    /// Whether this device created the workspace, and so founds its MLS group.
+    #[must_use]
+    pub fn founded_here(&self) -> bool {
+        self.peer.governance().founder() == Some(self.device().device_public_key)
+    }
     /// Whether this device entered a workspace that existed before it: it
     /// redeemed an invitation, or a host vouched for it as a further device of
     /// its person. What the workspace holds reaches it from the workspace's
@@ -379,11 +334,10 @@ impl NativeCommittedView {
     pub fn device(&self) -> &DeviceCert {
         &self.record.device
     }
-    /// The workspace's id in this device's record: the partition its changes
-    /// live in, as the relay names it.
+    /// The workspace this device's record holds.
     #[must_use]
-    pub fn workspace_id(&self) -> u64 {
-        self.record.workspace_id
+    pub fn workspace_id(&self) -> WorkspaceId {
+        self.record.workspace
     }
     #[must_use]
     pub fn generation(&self) -> u64 {
@@ -1109,7 +1063,7 @@ impl NativeWorkspaceOwner {
             replica: replica.clone(),
             peer: published,
             record,
-            readers: Arc::default(),
+            holders: Arc::default(),
             security,
         });
         let continuity = candidate.continuity();

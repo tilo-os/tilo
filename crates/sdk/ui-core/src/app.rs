@@ -44,6 +44,10 @@ mod follow_ups;
 mod handoff;
 mod held_answers;
 mod host_commands;
+#[cfg(feature = "native")]
+mod report_point;
+#[cfg(all(feature = "native", test))]
+mod report_point_tests;
 
 mod model_lifecycle;
 mod participants;
@@ -488,6 +492,10 @@ pub struct App {
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     close_admission: crate::close_admission::Admission,
+    /// A window asked for the thing a report is about, until the person points
+    /// at it or leaves ([`report_point::Pointing`]).
+    #[cfg(feature = "native")]
+    report_pointing: Option<report_point::Pointing>,
     needs_sync: bool,
     pub theme: Theme,
     pub debug_mode: bool,
@@ -849,6 +857,11 @@ impl App {
         if let Some(route) = inputs.collab_manager.requested_primary_route()
             && !binding.matches_route(route)
         {
+            tracing::warn!(
+                requested = ?route,
+                opened = %binding.checkout.id.as_str(),
+                "application binding does not match: the collaboration route asked for is not the record the window opened"
+            );
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
@@ -1770,6 +1783,12 @@ impl App {
         if crate::host_appearance::session_document_owns_appearance() {
             return false;
         }
+        // The host's light or dark is also what an appearance the person left open draws with
+        // from now on, so the theme applied here and any "in use" the app shows are one reading.
+        crate::theme::install_host_scheme(
+            host.scheme
+                .map(|scheme| scheme == crate::host_appearance::Scheme::Dark),
+        );
         let _entry = self.enter_wake_scope();
         let mut base_theme = crate::host_appearance::theme(host);
         base_theme.caret_width = self.accessibility.base_theme.caret_width;
@@ -1914,6 +1933,10 @@ impl App {
 
     #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
+        if self.report_pointing.is_some() {
+            // The window is waiting for the person to point at a thing.
+            return Some(CursorIcon::Crosshair);
+        }
         self.tree().cursor_pick_at(point).icon()
     }
 }

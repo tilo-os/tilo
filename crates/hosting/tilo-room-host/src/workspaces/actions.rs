@@ -55,17 +55,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
-    CatalogueQuery, CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, agent_door, host_account,
-    workspace_governance_resource,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
+    WORKSPACE_GOVERNANCE_PROVIDER, agent_door, host_account, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
 };
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_protocol::voice::{CallOperation, Directions};
 use tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER;
 use tilo_user_identity::DeviceCert;
@@ -80,6 +79,7 @@ use super::{
 };
 use crate::app_serving::AppServingPlane;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Listing the invitations still redeemable: part of inviting.
 pub(crate) const INVITATIONS: &str = "invitation.list";
@@ -88,6 +88,11 @@ pub(crate) const CANCEL_INVITATION: &str = "invitation.cancel";
 /// The people in the workspace and their roles: what whoever invites sees
 /// before and after inviting.
 pub(crate) const MEMBERS: &str = "member.list";
+/// The calling person's own name in the workspace: what its member list and
+/// the invitations they make show for them, from any of their devices or
+/// keys. Every member names themself, so it is no governance action and no
+/// grant gates it.
+pub(crate) const NAME: &str = "member.name";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -143,7 +148,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 15] = [
+const VERBS: [Verb; 16] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -171,6 +176,15 @@ const VERBS: [Verb; 15] = [
         gate: governance::INVITE,
         kind: ActionKind::Read,
         params: Vec::new,
+    },
+    Verb {
+        id: NAME,
+        label: "Name yourself",
+        // Nothing gates it: what a person is called in a workspace is theirs,
+        // not a grant's. Whoever asks names themselves, or is refused.
+        gate: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: name_params,
     },
     Verb {
         id: governance::UNBAN,
@@ -320,6 +334,14 @@ fn invitation_params() -> Vec<ActionParam> {
         "invite",
         ParamType::Text,
         "The invitation's id, 64 hex characters, as listing invitations reports it.",
+    )]
+}
+
+fn name_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "name",
+        ParamType::Text,
+        "How the workspace shows you from now on, in its member list and on the invitations you make.",
     )]
 }
 
@@ -715,19 +737,16 @@ impl Args {
         }
     }
 
-    fn role(&self) -> Result<MemberRole, ActionHostError> {
+    fn role(&self) -> Result<Role, ActionHostError> {
         self.role_at("role")
     }
 
     /// The role the argument `name` names.
-    fn role_at(&self, name: &str) -> Result<MemberRole, ActionHostError> {
-        match self.required_text(name)? {
-            "viewer" => Ok(MemberRole::Viewer),
-            "commenter" => Ok(MemberRole::Commenter),
-            "editor" => Ok(MemberRole::Editor),
-            "moderator" => Ok(MemberRole::Moderator),
-            other => Err(invalid(format!("no role `{other}`"))),
-        }
+    fn role_at(&self, name: &str) -> Result<Role, ActionHostError> {
+        let text = self.required_text(name)?;
+        Role::parse(text)
+            .filter(|role| role.assignable())
+            .ok_or_else(|| invalid(format!("no role `{text}`")))
     }
 
     fn directions(&self) -> Result<Directions, ActionHostError> {
@@ -770,20 +789,11 @@ impl Args {
     }
 }
 
-const fn role_name(role: MemberRole) -> &'static str {
-    match role {
-        MemberRole::Viewer => "viewer",
-        MemberRole::Commenter => "commenter",
-        MemberRole::Editor => "editor",
-        MemberRole::Moderator => "moderator",
-    }
-}
-
 /// A pending invitation, as listing invitations reports it.
 fn pending_json(invitation: &super::PendingInvitation) -> Value {
     json!({
         "invite": hex::encode(invitation.invite_id),
-        "role": role_name(invitation.role),
+        "role": invitation.role.key(),
         "recipient": invitation.recipient_user_public_key.map(hex::encode),
         "invitee_name": invitation.invitee_name,
         "expires_at_ns": invitation.expires_at_ns,
@@ -806,7 +816,7 @@ type Governed = Arc<AsyncMutex<GovernedWorkspace>>;
 /// Whether `caller` is a person acting themselves: an agent or a bot
 /// governs nothing and holds no workspace's business of its own.
 fn speaks_for_themselves(caller: &Caller) -> bool {
-    matches!(caller.principal(), CallerPrincipal::Person(_))
+    caller.acting().is_person()
 }
 
 /// Whether `caller` asks the host's own operations as the person
@@ -817,7 +827,7 @@ fn asks_as_person(caller: &Caller, certificate: &DeviceCert) -> bool {
     speaks_for_themselves(caller)
         || (certificate.capabilities.agent.is_some()
             && caller.is_session_delegated()
-            && matches!(caller.principal(), CallerPrincipal::Agent(_)))
+            && caller.acting().is_agent())
 }
 
 /// Whether `caller` is the person's server key `certificate` certifies,
@@ -869,7 +879,7 @@ impl Workspaces {
     /// and a server key only invites (`authority::server_key_invites`).
     async fn governed_by(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
     ) -> Option<(Governed, DeviceCert)> {
         let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
@@ -908,7 +918,7 @@ impl Workspaces {
     /// person's.
     async fn catalogue(
         &self,
-        workspace_id: Option<u64>,
+        workspace_id: Option<WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         query: &CatalogueQuery,
@@ -934,6 +944,12 @@ impl Workspaces {
                 .iter()
                 .chain(confirmed)
                 .filter(|verb| {
+                    // A verb with no gate is the caller's own business (naming
+                    // themselves), which every person has and an agent's grant
+                    // does not.
+                    if verb.gate.is_empty() {
+                        return speaks_for_themselves(caller);
+                    }
                     self.permits(
                         &device,
                         Some(&workspace),
@@ -960,7 +976,7 @@ impl Workspaces {
     /// the host itself (`None`).
     async fn invoke(
         &self,
-        workspace_id: Option<u64>,
+        workspace_id: Option<WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
@@ -1053,7 +1069,7 @@ impl Workspaces {
     /// through the workspace method its wire door calls.
     async fn governance_invoke(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
@@ -1065,14 +1081,17 @@ impl Workspaces {
             .ok_or(ActionHostError::UnknownAction)?;
         let workspace = {
             let workspace = governed.lock().await;
-            // Unknown and forbidden are the same answer.
+            // Unknown and forbidden are the same answer. A verb with no gate
+            // is the caller's own business, which its run decides: naming
+            // themselves, in [`NAME`]'s case, and nobody else.
             if address.resource != workspace_governance_resource(workspace.workspace())
-                || !self.permits(
-                    &device,
-                    Some(&workspace),
-                    WorkspaceOp::Govern(gate),
-                    tilo_clock::unix_now_ns(),
-                )
+                || (!gate.is_empty()
+                    && !self.permits(
+                        &device,
+                        Some(&workspace),
+                        WorkspaceOp::Govern(gate),
+                        tilo_clock::unix_now_ns(),
+                    ))
             {
                 return Err(ActionHostError::UnknownAction);
             }
@@ -1098,7 +1117,7 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionHostError> {
         match action {
-            governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS => {
+            governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS | NAME => {
                 self.governance_invitations(action, call).await
             }
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
@@ -1127,22 +1146,20 @@ impl Workspaces {
             Some(listing) => json!({
                 "public": true,
                 "description": listing.description,
-                "default_role": role_name(super::pages::member_role(listing.default_role)),
+                "default_role": listing.default_role.key(),
             }),
             None => json!({ "public": false }),
         };
         match action {
             PUBLISH => {
-                let default_role = match args.required_text("default_role")? {
-                    "viewer" => tilo_relay_protocol::workspaces::WorkspaceRole::Viewer,
-                    "commenter" => tilo_relay_protocol::workspaces::WorkspaceRole::Commenter,
-                    "editor" => tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
-                    other => {
-                        return Err(invalid(format!(
-                            "a public workspace hands out viewer, commenter or editor, not `{other}`"
-                        )));
-                    }
-                };
+                let text = args.required_text("default_role")?;
+                let default_role = Role::parse(text)
+                    .filter(|role| matches!(role, Role::Viewer | Role::Commenter | Role::Editor))
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "a public workspace hands out viewer, commenter or editor, not `{text}`"
+                        ))
+                    })?;
                 let listing = tilo_relay_protocol::directory::Listing {
                     description: args.text("description")?.unwrap_or_default().to_owned(),
                     default_role,
@@ -1343,12 +1360,23 @@ impl Workspaces {
                         json!({
                             "person": hex::encode(member.user_public_key),
                             "name": member.display_name,
-                            "role": role_name(member.role),
+                            "role": member.role.key(),
                             "owner": member.user_public_key == owner,
                             "administrator": member.administrator,
                         })
                     })
                     .collect())
+            }
+            NAME => {
+                self.name_self(
+                    workspace,
+                    device,
+                    args.required_text("name")?,
+                    tilo_clock::unix_now_ns(),
+                )
+                .await
+                .map_err(|error| refused(&error))?;
+                Ok(json!({}))
             }
             CANCEL_INVITATION => {
                 self.cancel(
@@ -1468,7 +1496,7 @@ impl HostWorkspaceActions {
     #[must_use]
     pub(crate) fn in_workspace(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     ) -> impl ActionHost + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
@@ -1483,7 +1511,7 @@ impl HostWorkspaceActions {
     #[must_use]
     pub(crate) fn in_workspace_as(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         certificate: &DeviceCert,
     ) -> impl ActionHost + Clone + Send + 'static {
         InWorkspace {
@@ -1611,7 +1639,7 @@ impl HostWorkspaceActions {
 #[derive(Clone)]
 struct InWorkspace {
     host: HostWorkspaceActions,
-    workspace_id: Option<u64>,
+    workspace_id: Option<WorkspaceId>,
     /// The caller's device certificate, as the transport verified it.
     certificate: Option<DeviceCert>,
 }
@@ -1822,7 +1850,7 @@ impl GovernedPlane {
     /// one was verified.
     fn route_certified_by(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         message: &RemoteActionMessage,
@@ -1854,7 +1882,7 @@ impl AppServingPlane for GovernedPlane {
 
     fn serve(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
@@ -1870,7 +1898,7 @@ impl AppServingPlane for GovernedPlane {
 
     fn serve_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &DeviceCert,
         message: RemoteActionMessage,
@@ -1901,7 +1929,7 @@ impl AppServingPlane for GovernedPlane {
 
     fn route(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
@@ -1910,7 +1938,7 @@ impl AppServingPlane for GovernedPlane {
 
     fn route_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &DeviceCert,
         message: &RemoteActionMessage,
@@ -1920,20 +1948,20 @@ impl AppServingPlane for GovernedPlane {
 
     fn relayed(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         message: &RemoteActionMessage,
     ) -> Option<RemoteActionMessage> {
         self.apps.as_ref()?.relayed(workspace_id, from, message)
     }
 
-    fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
         if let Some(apps) = self.apps.as_ref() {
             apps.run_arrived(workspace_id, caller);
         }
     }
 
-    fn tracks(&self, workspace_id: u64) -> bool {
+    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
         self.apps
             .as_ref()
             .is_some_and(|apps| apps.tracks(workspace_id))

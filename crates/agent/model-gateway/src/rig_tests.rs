@@ -19,66 +19,71 @@ fn request() -> neutral::ModelRequest {
     }
 }
 
-#[test]
-fn neutral_history_preserves_tool_ids_names_and_typed_arguments() {
-    let mut ask = request();
-    ask.messages.extend([
-        neutral::Message {
-            role: neutral::Role::Assistant,
-            content: vec![neutral::Content::ToolCall(neutral::ToolCall {
-                id: "call_1".into(),
-                name: "lookup".into(),
-                input: json!({"count":2,"enabled":false}),
-                extra_content: None,
-            })],
-        },
-        neutral::Message {
+tilo_test_env::scenario! {
+    /// The neutral request as the provider client's history.
+    fn neutral_history_is_converted_exactly_or_refused_locally;
+
+    phase neutral_history_preserves_tool_ids_names_and_typed_arguments;
+    {
+        let mut ask = request();
+        ask.messages.extend([
+            neutral::Message {
+                role: neutral::Role::Assistant,
+                content: vec![neutral::Content::ToolCall(neutral::ToolCall {
+                    id: "call_1".into(),
+                    name: "lookup".into(),
+                    input: json!({"count":2,"enabled":false}),
+                    extra_content: None,
+                })],
+            },
+            neutral::Message {
+                role: neutral::Role::Tool,
+                content: vec![neutral::Content::ToolResult(neutral::ToolResult {
+                    call_id: "call_1".into(),
+                    content: "result".into(),
+                    is_error: true,
+                })],
+            },
+        ]);
+        let converted = neutral_request(ask).unwrap();
+        let message::Message::Assistant(turn) = &converted.chat_history[2] else {
+            panic!()
+        };
+        let message::AssistantContent::ToolCall(call) = &turn.content[0] else {
+            panic!()
+        };
+        assert_eq!(call.id.to_string(), "call_1");
+        assert_eq!(call.function.arguments["count"], 2);
+        assert_eq!(call.function.arguments["enabled"], false);
+        let message::Message::User { content } = &converted.chat_history[3] else {
+            panic!()
+        };
+        let message::UserContent::ToolResult(result) = &content[0] else {
+            panic!()
+        };
+        assert_eq!(result.name.to_string(), "lookup");
+        assert!(result.is_error);
+    }
+
+    phase mismatched_tool_results_and_wrong_role_content_are_refused_locally;
+    {
+        let mut ask = request();
+        ask.messages.push(neutral::Message {
             role: neutral::Role::Tool,
             content: vec![neutral::Content::ToolResult(neutral::ToolResult {
-                call_id: "call_1".into(),
+                call_id: "unanswered".into(),
                 content: "result".into(),
-                is_error: true,
+                is_error: false,
             })],
-        },
-    ]);
-    let converted = neutral_request(ask).unwrap();
-    let message::Message::Assistant(turn) = &converted.chat_history[2] else {
-        panic!()
-    };
-    let message::AssistantContent::ToolCall(call) = &turn.content[0] else {
-        panic!()
-    };
-    assert_eq!(call.id.to_string(), "call_1");
-    assert_eq!(call.function.arguments["count"], 2);
-    assert_eq!(call.function.arguments["enabled"], false);
-    let message::Message::User { content } = &converted.chat_history[3] else {
-        panic!()
-    };
-    let message::UserContent::ToolResult(result) = &content[0] else {
-        panic!()
-    };
-    assert_eq!(result.name.to_string(), "lookup");
-    assert!(result.is_error);
-}
-
-#[test]
-fn mismatched_tool_results_and_wrong_role_content_are_refused_locally() {
-    let mut ask = request();
-    ask.messages.push(neutral::Message {
-        role: neutral::Role::Tool,
-        content: vec![neutral::Content::ToolResult(neutral::ToolResult {
-            call_id: "unanswered".into(),
-            content: "result".into(),
-            is_error: false,
-        })],
-    });
-    assert!(neutral_request(ask).is_err());
-    let mut ask = request();
-    ask.messages[0].content.push(neutral::Content::Image {
-        media_type: "image/png".into(),
-        base64: "AAAA".into(),
-    });
-    assert!(neutral_request(ask).is_err());
+        });
+        assert!(neutral_request(ask).is_err());
+        let mut ask = request();
+        ask.messages[0].content.push(neutral::Content::Image {
+            media_type: "image/png".into(),
+            base64: "AAAA".into(),
+        });
+        assert!(neutral_request(ask).is_err());
+    }
 }
 
 /// An Anthropic stream that stops after its tool block until the gateway has

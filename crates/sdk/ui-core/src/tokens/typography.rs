@@ -537,192 +537,204 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ui_roles_descend_monotonically() {
-        let typography = Typography::default();
-        let order = [
-            TextRole::Display,
-            TextRole::LargeTitle,
-            TextRole::Title,
-            TextRole::Heading,
-            TextRole::Subheading,
-            TextRole::Label,
-            TextRole::Caption,
-        ];
-        for pair in order.windows(2) {
-            let (a, b) = (typography.style(pair[0]), typography.style(pair[1]));
-            assert!(
-                a.size > b.size || (a.size == b.size && a.weight.to_u16() > b.weight.to_u16()),
-                "{:?} must outrank {:?}",
-                pair[0],
-                pair[1]
-            );
-        }
-        let (sub, body) = (
-            typography.style(TextRole::Subheading),
-            typography.style(TextRole::Body),
-        );
-        assert_eq!(sub.size, body.size);
-        assert!(sub.weight.to_u16() > body.weight.to_u16());
-        assert!(body.size > typography.style(TextRole::Label).size);
-    }
+    tilo_test_env::scenario! {
+        /// The faces a theme names and the figures a kind decides.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn faces_and_figures_are_chosen_by_name_and_kind;
 
-    #[test]
-    fn theme_text_is_resolved_once_through_both_scales() {
-        let theme = Theme::dark().with_ui_scale(1.25).with_text_scale(1.5);
-        for role in TextRole::ALL {
-            let style = theme.text(role);
-            let one_x = Theme::dark().text(role);
-            assert!(
-                (style.size - one_x.size * 1.25 * 1.5).abs() < 1e-4,
-                "{role:?}: {} must be {} × 1.25 × 1.5",
-                style.size,
-                one_x.size
-            );
+        phase custom_theme_families_apply_to_every_role;
+        {
+            let mut theme = Theme::dark();
+            theme.tokens.typography.sans_family = "Inter".into();
+            theme.tokens.typography.serif_family = "Literata".into();
+            theme.tokens.typography.mono_family = "Iosevka".into();
+            for role in TextRole::ALL {
+                let expected = match role {
+                    TextRole::Reading => "Literata",
+                    TextRole::Code => "Iosevka",
+                    _ => "Inter",
+                };
+                assert_eq!(
+                    theme.text(role).family,
+                    FontChoice::Named(expected.into()),
+                    "{role:?}"
+                );
+            }
         }
-        let strong = theme.text(TextRole::Body).strong();
-        assert_eq!(strong.size, theme.text(TextRole::Body).size);
-        assert_eq!(strong.weight, TextWeight::Semibold);
-        assert_eq!(strong.scaling, TextScaling::Resolved);
-    }
 
-    #[test]
-    fn custom_theme_families_apply_to_every_role() {
-        let mut theme = Theme::dark();
-        theme.tokens.typography.sans_family = "Inter".into();
-        theme.tokens.typography.serif_family = "Literata".into();
-        theme.tokens.typography.mono_family = "Iosevka".into();
-        for role in TextRole::ALL {
-            let expected = match role {
-                TextRole::Reading => "Literata",
-                TextRole::Code => "Iosevka",
-                _ => "Inter",
-            };
+        phase built_in_faces_are_chosen_by_name_and_reported_back_by_name;
+        {
+            let mut typography = Typography::default();
+            assert_eq!(typography.face_name(), "Default");
+            typography.set_face("Hyperlegible");
             assert_eq!(
-                theme.text(role).family,
-                FontChoice::Named(expected.into()),
-                "{role:?}"
+                typography.sans_family,
+                crate::text_render::UI_HYPERLEGIBLE_FAMILY
             );
-        }
-    }
-
-    #[test]
-    fn built_in_faces_are_chosen_by_name_and_reported_back_by_name() {
-        let mut typography = Typography::default();
-        assert_eq!(typography.face_name(), "Default");
-        typography.set_face("Hyperlegible");
-        assert_eq!(
-            typography.sans_family,
-            crate::text_render::UI_HYPERLEGIBLE_FAMILY
-        );
-        assert_eq!(typography.face_name(), "Hyperlegible");
-        assert_eq!(
-            typography.style(TextRole::Body).family,
-            FontChoice::Named(crate::text_render::UI_HYPERLEGIBLE_FAMILY.into())
-        );
-        assert_eq!(
-            typography.style(TextRole::Reading).family,
-            FontChoice::Named(crate::text_render::UI_SERIF_FAMILY.into())
-        );
-        typography.set_face(" Inter ");
-        assert_eq!(typography.sans_family, "Inter");
-        assert_eq!(typography.face_name(), "Inter");
-        assert_eq!(
-            UiFace::from_name("atkinson hyperlegible next"),
-            Some(UiFace::Hyperlegible)
-        );
-        let mut document = crate::theme::Preset::Dark.document();
-        document.type_.face = "Hyperlegible".into();
-        let spec_theme = Theme::from_document(&document).unwrap();
-        assert_eq!(spec_theme.tokens.typography.face_name(), "Hyperlegible");
-    }
-
-    #[test]
-    fn reading_faces_are_chosen_by_name_in_the_theme_s_type_role() {
-        let mut typography = Typography::default();
-        assert_eq!(typography.reading_face_name(), "New Computer Modern");
-        for face in ReadingFace::ALL {
-            typography.set_reading_face(face.name());
-            assert_eq!(typography.serif_family, face.family());
-            assert_eq!(typography.reading_face_name(), face.name());
-            assert_eq!(
-                typography.style(TextRole::Reading).family,
-                FontChoice::Named(face.family().into())
-            );
+            assert_eq!(typography.face_name(), "Hyperlegible");
             assert_eq!(
                 typography.style(TextRole::Body).family,
-                FontChoice::Named(crate::text_render::UI_SANS_FAMILY.into())
+                FontChoice::Named(crate::text_render::UI_HYPERLEGIBLE_FAMILY.into())
+            );
+            assert_eq!(
+                typography.style(TextRole::Reading).family,
+                FontChoice::Named(crate::text_render::UI_SERIF_FAMILY.into())
+            );
+            typography.set_face(" Inter ");
+            assert_eq!(typography.sans_family, "Inter");
+            assert_eq!(typography.face_name(), "Inter");
+            assert_eq!(
+                UiFace::from_name("atkinson hyperlegible next"),
+                Some(UiFace::Hyperlegible)
+            );
+            let mut document = crate::theme::Preset::Dark.document();
+            document.type_.face = "Hyperlegible".into();
+            let spec_theme = Theme::from_document(&document).unwrap();
+            assert_eq!(spec_theme.tokens.typography.face_name(), "Hyperlegible");
+        }
+
+        phase reading_faces_are_chosen_by_name_in_the_theme_s_type_role;
+        {
+            let mut typography = Typography::default();
+            assert_eq!(typography.reading_face_name(), "New Computer Modern");
+            for face in ReadingFace::ALL {
+                typography.set_reading_face(face.name());
+                assert_eq!(typography.serif_family, face.family());
+                assert_eq!(typography.reading_face_name(), face.name());
+                assert_eq!(
+                    typography.style(TextRole::Reading).family,
+                    FontChoice::Named(face.family().into())
+                );
+                assert_eq!(
+                    typography.style(TextRole::Body).family,
+                    FontChoice::Named(crate::text_render::UI_SANS_FAMILY.into())
+                );
+            }
+            assert_eq!(
+                ReadingFace::from_name(" default "),
+                Some(ReadingFace::Default)
+            );
+            assert_eq!(
+                ReadingFace::from_name("libertinus serif"),
+                Some(ReadingFace::Libertinus)
+            );
+            typography.set_reading_face("Charis SIL");
+            assert_eq!(typography.reading_face_name(), "Charis SIL");
+
+            let mut document = crate::theme::Preset::Light.document();
+            assert_eq!(document.type_.reading, "New Computer Modern");
+            document.type_.reading = "Literata".into();
+            let theme = Theme::from_document(&document).unwrap();
+            assert_eq!(theme.tokens.typography.reading_face_name(), "Literata");
+        }
+
+        phase reading_figures_are_old_style_until_a_kind_decides_them;
+        {
+            let reading = Typography::default().style(TextRole::Reading);
+            let tags = |style: &TextStyle| -> Vec<[u8; 4]> {
+                style.font_features.iter().map(|f| f.tag.0).collect()
+            };
+            assert_eq!(tags(&reading), [*b"pnum", *b"onum"]);
+            assert!(tags(&reading.clone().numeric()).is_empty());
+            assert!(tags(&reading.with_kind(TextKind::Secret)).is_empty());
+            assert!(tags(&Typography::default().style(TextRole::Body)).is_empty());
+        }
+
+        phase numeric_is_a_kind_not_a_feature_list;
+        {
+            let style = Typography::default().style(TextRole::Caption).numeric();
+            assert_eq!(style.kind, TextKind::Numeric);
+            assert!(style.font_features.is_empty());
+            let code = Typography::default()
+                .style(TextRole::Body)
+                .with_kind(TextKind::Code);
+            assert_eq!(code.family, FontChoice::Monospace);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The text roles: their order, scale, ground and heading level.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn roles_descend_and_carry_their_scale_ground_and_level;
+
+        phase ui_roles_descend_monotonically;
+        {
+            let typography = Typography::default();
+            let order = [
+                TextRole::Display,
+                TextRole::LargeTitle,
+                TextRole::Title,
+                TextRole::Heading,
+                TextRole::Subheading,
+                TextRole::Label,
+                TextRole::Caption,
+            ];
+            for pair in order.windows(2) {
+                let (a, b) = (typography.style(pair[0]), typography.style(pair[1]));
+                assert!(
+                    a.size > b.size || (a.size == b.size && a.weight.to_u16() > b.weight.to_u16()),
+                    "{:?} must outrank {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            let (sub, body) = (
+                typography.style(TextRole::Subheading),
+                typography.style(TextRole::Body),
+            );
+            assert_eq!(sub.size, body.size);
+            assert!(sub.weight.to_u16() > body.weight.to_u16());
+            assert!(body.size > typography.style(TextRole::Label).size);
+        }
+
+        phase theme_text_is_resolved_once_through_both_scales;
+        {
+            let theme = Theme::dark().with_ui_scale(1.25).with_text_scale(1.5);
+            for role in TextRole::ALL {
+                let style = theme.text(role);
+                let one_x = Theme::dark().text(role);
+                assert!(
+                    (style.size - one_x.size * 1.25 * 1.5).abs() < 1e-4,
+                    "{role:?}: {} must be {} × 1.25 × 1.5",
+                    style.size,
+                    one_x.size
+                );
+            }
+            let strong = theme.text(TextRole::Body).strong();
+            assert_eq!(strong.size, theme.text(TextRole::Body).size);
+            assert_eq!(strong.weight, TextWeight::Semibold);
+            assert_eq!(strong.scaling, TextScaling::Resolved);
+        }
+
+        phase roles_carry_the_ground_their_theme_sets_them_on;
+        {
+            assert_eq!(
+                Theme::light().text(TextRole::Reading).ground,
+                TextGround::Light
+            );
+            assert_eq!(
+                Theme::dark().text(TextRole::Reading).ground,
+                TextGround::Dark
+            );
+            assert_eq!(Theme::dark().text(TextRole::Body).ground, TextGround::Dark);
+            let paper = vello::peniko::Color::from_rgb8(0xF4, 0xEC, 0xD8);
+            assert_eq!(
+                Theme::dark()
+                    .on_ground(paper)
+                    .text(TextRole::Reading)
+                    .ground,
+                TextGround::Light
             );
         }
-        assert_eq!(
-            ReadingFace::from_name(" default "),
-            Some(ReadingFace::Default)
-        );
-        assert_eq!(
-            ReadingFace::from_name("libertinus serif"),
-            Some(ReadingFace::Libertinus)
-        );
-        typography.set_reading_face("Charis SIL");
-        assert_eq!(typography.reading_face_name(), "Charis SIL");
 
-        let mut document = crate::theme::Preset::Light.document();
-        assert_eq!(document.type_.reading, "New Computer Modern");
-        document.type_.reading = "Literata".into();
-        let theme = Theme::from_document(&document).unwrap();
-        assert_eq!(theme.tokens.typography.reading_face_name(), "Literata");
-    }
-
-    #[test]
-    fn roles_carry_the_ground_their_theme_sets_them_on() {
-        assert_eq!(
-            Theme::light().text(TextRole::Reading).ground,
-            TextGround::Light
-        );
-        assert_eq!(
-            Theme::dark().text(TextRole::Reading).ground,
-            TextGround::Dark
-        );
-        assert_eq!(Theme::dark().text(TextRole::Body).ground, TextGround::Dark);
-        let paper = vello::peniko::Color::from_rgb8(0xF4, 0xEC, 0xD8);
-        assert_eq!(
-            Theme::dark()
-                .on_ground(paper)
-                .text(TextRole::Reading)
-                .ground,
-            TextGround::Light
-        );
-    }
-
-    #[test]
-    fn reading_figures_are_old_style_until_a_kind_decides_them() {
-        let reading = Typography::default().style(TextRole::Reading);
-        let tags = |style: &TextStyle| -> Vec<[u8; 4]> {
-            style.font_features.iter().map(|f| f.tag.0).collect()
-        };
-        assert_eq!(tags(&reading), [*b"pnum", *b"onum"]);
-        assert!(tags(&reading.clone().numeric()).is_empty());
-        assert!(tags(&reading.with_kind(TextKind::Secret)).is_empty());
-        assert!(tags(&Typography::default().style(TextRole::Body)).is_empty());
-    }
-
-    #[test]
-    fn numeric_is_a_kind_not_a_feature_list() {
-        let style = Typography::default().style(TextRole::Caption).numeric();
-        assert_eq!(style.kind, TextKind::Numeric);
-        assert!(style.font_features.is_empty());
-        let code = Typography::default()
-            .style(TextRole::Body)
-            .with_kind(TextKind::Code);
-        assert_eq!(code.family, FontChoice::Monospace);
-    }
-
-    #[test]
-    fn heading_levels_follow_the_role() {
-        assert_eq!(TextRole::LargeTitle.heading_level(), Some(1));
-        assert_eq!(TextRole::Title.heading_level(), Some(1));
-        assert_eq!(TextRole::Heading.heading_level(), Some(2));
-        assert_eq!(TextRole::Subheading.heading_level(), Some(3));
-        assert_eq!(TextRole::Display.heading_level(), None);
-        assert_eq!(TextRole::Body.heading_level(), None);
+        phase heading_levels_follow_the_role;
+        {
+            assert_eq!(TextRole::LargeTitle.heading_level(), Some(1));
+            assert_eq!(TextRole::Title.heading_level(), Some(1));
+            assert_eq!(TextRole::Heading.heading_level(), Some(2));
+            assert_eq!(TextRole::Subheading.heading_level(), Some(3));
+            assert_eq!(TextRole::Display.heading_level(), None);
+            assert_eq!(TextRole::Body.heading_level(), None);
+        }
     }
 }

@@ -18,10 +18,10 @@ use ui_core::record::RecordId;
 use tilo_resource::Resource;
 
 use super::app::{ResourceApp, definition, prepare_on, role_permissions};
-use super::headless::{AUTHOR, INSTANCE, TEST_WORKSPACE, operation, profile_directory, surface_of};
+use super::headless::{AUTHOR, INSTANCE, operation, profile_directory, surface_of};
 use super::root::ResourceRoot;
 
-pub use super::headless::{HeadlessApp, HostedApp, surface_in};
+pub use super::headless::{DATA_DIR_WORKSPACE, HeadlessApp, HostedApp, TEST_WORKSPACE, surface_in};
 
 /// The hang bound and bounded waits a test uses, re-exported from the
 /// toolkit's `test-support` so an app's tests reach them through `ui`
@@ -146,30 +146,81 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
     let profile = profile_directory().map_err(operation)?;
-    let mut host = ApplicationHost::with_store(
+    let host = ApplicationHost::with_store(
         std::rc::Rc::new(app_state::FsStore::with_debounce(
             profile.path().join("state"),
             debounce,
         )),
         "test-device".into(),
-        "test-workspace",
+        TEST_WORKSPACE,
         UserId(AUTHOR.into()),
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
+    let mut app = live_window::<A>(host, profile.path())?;
+    let seen = drive(&mut app);
+    app.close_components();
+    Ok(seen)
+}
+
+/// The live window `A` opens on `host`, mounted as a real window is: the
+/// component, with the content store the host lends every window, so an
+/// action past the history budget keeps its large parts there rather than
+/// being refused.
+fn live_window<A: ResourceApp>(
+    mut host: ApplicationHost,
+    directory: &std::path::Path,
+) -> Result<ui_core::App, LaunchError> {
+    let (component, _, inputs) = live_window_component::<A>(&mut host, directory)?;
+    ui_core::App::from_component(component, inputs)
+}
+
+/// [`live_window`] as the harness a test reads what a window publishes and
+/// shows through: the component, the content store it was lent and what the
+/// host hands a window's runtime.
+fn live_window_component<A: ResourceApp>(
+    host: &mut ApplicationHost,
+    directory: &std::path::Path,
+) -> Result<
+    (
+        ui_core::application::AppComponent,
+        tilo_content::ContentStore,
+        ComponentRunnerInputs,
+    ),
+    LaunchError,
+> {
     let definition = definition::<A>();
-    let prepared = prepare_on(
-        &mut host,
+    let mut prepared = prepare_on(
+        host,
         definition,
         INSTANCE,
         None,
         ComponentRunnerInputs::from_native_process(),
     )?;
+    let content = super::headless::window_content(directory);
+    prepared.context.provide_content(content.clone());
     let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-    let mut app = ui_core::App::from_component(component, prepared.runner_inputs)?;
-    let seen = drive(&mut app);
-    app.close_components();
-    Ok(seen)
+    Ok((component, content, prepared.runner_inputs))
+}
+
+/// The live window `A` opens on a host that keeps its records in `workspace`,
+/// mounted as a real one is: what it shows and publishes, read through
+/// [`FrameHarness`], and the content store the host lent it.
+pub fn live_window_in_workspace<A: ResourceApp>(
+    workspace: &str,
+) -> Result<(FrameHarness, tilo_content::ContentStore), LaunchError> {
+    let profile = profile_directory().map_err(operation)?;
+    let mut host = ApplicationHost::new(
+        profile.path().join("state"),
+        "test-device".into(),
+        workspace,
+        UserId(AUTHOR.into()),
+        role_permissions(AUTHOR, Role::Owner),
+        tilo_actions::ActionContext::default(),
+    )?;
+    let (component, content, inputs) = live_window_component::<A>(&mut host, profile.path())?;
+    let harness = FrameHarness::from_component(component, (1024, 768), inputs)?;
+    Ok((harness, content))
 }
 
 /// The record window `instance` of `A` kept in the test workspace while `A` kept
@@ -208,24 +259,15 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
 ) -> Result<T, LaunchError> {
     let profile = profile_directory().map_err(operation)?;
-    let mut host = ApplicationHost::new(
+    let host = ApplicationHost::new(
         profile.path().join("state"),
         "test-device".into(),
-        "test-workspace",
+        TEST_WORKSPACE,
         UserId(AUTHOR.into()),
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
-    let definition = definition::<A>();
-    let prepared = prepare_on(
-        &mut host,
-        definition,
-        INSTANCE,
-        None,
-        ComponentRunnerInputs::from_native_process(),
-    )?;
-    let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-    let app = ui_core::App::from_component(component, prepared.runner_inputs)?;
+    let app = live_window::<A>(host, profile.path())?;
     let mut tile = ui_core::app::EmbeddedApp::new(app, |_| {})?;
     let seen = drive(&mut tile);
     tile.app_mut().close_components();

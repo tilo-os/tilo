@@ -16,6 +16,22 @@ use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::overlays::Overlays;
 use tilo_desktop_surface::DesktopHandle;
 
+/// What the shell's send keys asked of the window in front: the box it opens,
+/// and whom the box starts addressed to.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BoxAsk {
+    /// Ask an agent about what the window has picked: a box addressed to the
+    /// new agent it makes.
+    Agent,
+    /// Say something to the people here: a box addressed to them.
+    People,
+    /// Report a problem: the window lights what is under the pointer first, and
+    /// the box opens about what the person points at, to the one place this
+    /// computer sends reports.
+    Report,
+}
+
 /// Where each published part stood when search last read it: the part's
 /// place in the door and its revision ([`Doors::revision`]).
 ///
@@ -62,16 +78,12 @@ pub(crate) struct Shared {
     pub(crate) drives: Option<Rc<crate::drives::Drives>>,
     /// What the desk and the chrome asked of the session.
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    /// Whether the shell's send key was pressed, waiting for the pass that
-    /// asks the window in front to open its box. The key can arrive while the
-    /// desk is between two of its own frames, so the window it was over is
-    /// named then, by the desk, and never at the keypress.
-    pub(crate) send_from: Cell<bool>,
-    /// Whether the shell's "report a problem" was asked for, waiting for the
-    /// pass that asks the window in front to open its box to the one place
-    /// this computer sends reports; and where that place is, when this
-    /// computer is told.
-    pub(crate) report_from: Cell<bool>,
+    /// What the shell's send keys asked for, waiting for the pass that asks
+    /// the window in front to open its box. A key can arrive while the desk is
+    /// between two of its own frames, so the window it was over is named then,
+    /// by the desk, and never at the keypress.
+    #[cfg(target_os = "linux")]
+    pub(crate) box_ask: Cell<Option<BoxAsk>>,
     #[cfg(target_os = "linux")]
     pub(crate) feedback: Option<crate::feedback::Destination>,
     /// Where the chrome takes intents the session raises.
@@ -191,6 +203,9 @@ pub(crate) struct Shared {
     /// The wakes this session takes part in.
     #[cfg(target_os = "linux")]
     pub(crate) waking: Rc<crate::wake::Wake>,
+    /// This device's share of the person's one keyboard and pointer, while it is on their fabric.
+    #[cfg(target_os = "linux")]
+    pub(crate) keyboard_and_pointer: Option<std::sync::Arc<crate::shared_input::SharedInput>>,
     pub(crate) wake_handle: tilo_service::Wake,
     /// What plays, as the desk's music widget shows it.
     pub(crate) music: tilo_desktop::desk_widgets::DeskMusic,
@@ -231,6 +246,11 @@ pub(crate) struct Shared {
     /// from, and what it made in this opening.
     pub(crate) invite: Option<tilo_sheets::invite::InviteSeat>,
     pub(crate) inviting: crate::invite::Invite,
+    /// Adding a device: the sheet the link a new device becomes one of the person's is shown in,
+    /// and the link it shows, renewed as it runs out.
+    pub(crate) pair_device: Option<tilo_sheets::pair_device::AddDeviceSeat>,
+    #[cfg(target_os = "linux")]
+    pub(crate) adding: crate::pair_device::Adding,
     /// The question deleting a workspace asks, and the workspace it is about.
     #[cfg(target_os = "linux")]
     pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceSeat>,
@@ -321,7 +341,7 @@ pub(crate) struct Shared {
     /// device that shows a workspace puts on its own desk, and what this one
     /// writes back.
     #[cfg(target_os = "linux")]
-    pub(crate) desktops: crate::shared_desktop::SharedDesktops,
+    pub(crate) desktops: Rc<crate::shared_desktop::SharedDesktops>,
     /// What each window this session runs shows, read from the broker every
     /// pass: the desk's reading of it, and the record noted beside the window
     /// in its workspace's layout.

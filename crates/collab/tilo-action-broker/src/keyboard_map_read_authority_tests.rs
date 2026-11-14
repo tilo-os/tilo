@@ -116,7 +116,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 checkout: RecordCheckout::new(record.clone(), definition.record_kind.clone()),
                 reveal: None,
             };
-            let principal = principal_id_for_root(env.cert.user_public_key);
+            let principal = person_id_for_root(env.cert.user_public_key);
             let permissions = ui::permissions::SharedPermissions::new(
                 ui::permissions::PermissionContext::permissive(),
             );

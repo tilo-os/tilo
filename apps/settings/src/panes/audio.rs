@@ -368,6 +368,7 @@ struct SessionSound(ui::collaboration::SessionResource);
 
 impl SessionSound {
     fn open() -> Result<Self, String> {
+        crate::device_read::off_ui_thread();
         ui::collaboration::SessionResource::open(SOUND).map(Self)
     }
 }
@@ -1705,104 +1706,186 @@ mod tests {
         assert_eq!(output.as_deref(), Some("Headphones"));
     }
 
-    #[test]
-    fn a_change_takes_the_resources_action() {
-        let sounds = Arc::new(RecordingSound::default());
-        let mut model = published(Arc::clone(&sounds) as Arc<dyn SoundResource>);
-        model.sound.hardware.push(Card {
-            node: 7,
-            label: "Headset".into(),
-            profile: Some(1),
-            profiles: vec![
-                Profile {
-                    index: 1,
-                    label: "High Fidelity".into(),
-                    available: true,
-                },
-                Profile {
-                    index: 2,
-                    label: "Headset microphone".into(),
-                    available: true,
-                },
-                Profile {
-                    index: 3,
-                    label: "Off".into(),
-                    available: false,
-                },
-            ],
-        });
+    tilo_test_env::scenario! {
+        fn the_sound_model_follows_readings_and_takes_the_resources_actions;
 
-        for effect in [
-            AudioEffect::SetOutputVolume { volume: 0.30 },
-            AudioEffect::SetOutputMuted { muted: true },
-            AudioEffect::SetInputVolume { volume: 0.40 },
-            AudioEffect::SetDeviceProfile {
-                device: 7,
-                profile: "Headset microphone".into(),
-            },
-            AudioEffect::RouteStream {
-                stream: 84,
-                device: "Speakers".into(),
-            },
-            AudioEffect::RouteStream {
-                stream: 84,
-                device: FOLLOW_DEFAULT.into(),
-            },
-            AudioEffect::SetStreamVolume {
-                stream: 90,
-                volume: 0.30,
-            },
-            AudioEffect::SetStreamMuted {
-                stream: 95,
-                muted: true,
-            },
-        ] {
-            model.apply(&effect).unwrap();
+        phase a_change_takes_the_resources_action;
+        {
+            let sounds = Arc::new(RecordingSound::default());
+            let mut model = published(Arc::clone(&sounds) as Arc<dyn SoundResource>);
+            model.sound.hardware.push(Card {
+                node: 7,
+                label: "Headset".into(),
+                profile: Some(1),
+                profiles: vec![
+                    Profile {
+                        index: 1,
+                        label: "High Fidelity".into(),
+                        available: true,
+                    },
+                    Profile {
+                        index: 2,
+                        label: "Headset microphone".into(),
+                        available: true,
+                    },
+                    Profile {
+                        index: 3,
+                        label: "Off".into(),
+                        available: false,
+                    },
+                ],
+            });
+
+            for effect in [
+                AudioEffect::SetOutputVolume { volume: 0.30 },
+                AudioEffect::SetOutputMuted { muted: true },
+                AudioEffect::SetInputVolume { volume: 0.40 },
+                AudioEffect::SetDeviceProfile {
+                    device: 7,
+                    profile: "Headset microphone".into(),
+                },
+                AudioEffect::RouteStream {
+                    stream: 84,
+                    device: "Speakers".into(),
+                },
+                AudioEffect::RouteStream {
+                    stream: 84,
+                    device: FOLLOW_DEFAULT.into(),
+                },
+                AudioEffect::SetStreamVolume {
+                    stream: 90,
+                    volume: 0.30,
+                },
+                AudioEffect::SetStreamMuted {
+                    stream: 95,
+                    muted: true,
+                },
+            ] {
+                model.apply(&effect).unwrap();
+            }
+
+            let level = |arguments: serde_json::Value| {
+                arguments["level"].as_f64().expect("a level is a number")
+            };
+            assert!((level(sounds.arguments("set-volume")) - 0.30).abs() < 0.001);
+            assert_eq!(sounds.arguments("set-muted")["muted"], true);
+            assert!((level(sounds.arguments("set-input-volume")) - 0.40).abs() < 0.001);
+            let profile = sounds.arguments("set-profile");
+            assert_eq!(
+                (profile["device"].clone(), profile["profile"].clone()),
+                (7.into(), 2.into())
+            );
+            assert_eq!(
+                sounds
+                    .taken()
+                    .iter()
+                    .filter(|(id, _)| id == "route-stream")
+                    .map(|(_, arguments)| (arguments["stream"].clone(), arguments["device"].clone()))
+                    .collect::<Vec<_>>(),
+                vec![(84.into(), 51.into()), (84.into(), serde_json::Value::Null)],
+                "a stream goes to the device it was given, or follows the default"
+            );
+            let volume = sounds.arguments("set-stream-volume");
+            assert_eq!(volume["stream"], 90);
+            assert_eq!(sounds.arguments("set-stream-muted")["muted"], true);
+            assert!((model.volume - 0.30).abs() < 0.001);
+            assert!(model.muted);
+            assert!((model.input_volume - 0.40).abs() < 0.001);
+
+            assert!(
+                model
+                    .apply(&AudioEffect::SelectOutput {
+                        device: "Not here".into()
+                    })
+                    .is_err()
+            );
+            assert!(
+                model
+                    .apply(&AudioEffect::SetStreamMuted {
+                        stream: 999,
+                        muted: true
+                    })
+                    .is_err()
+            );
         }
 
-        let level = |arguments: serde_json::Value| {
-            arguments["level"].as_f64().expect("a level is a number")
-        };
-        assert!((level(sounds.arguments("set-volume")) - 0.30).abs() < 0.001);
-        assert_eq!(sounds.arguments("set-muted")["muted"], true);
-        assert!((level(sounds.arguments("set-input-volume")) - 0.40).abs() < 0.001);
-        let profile = sounds.arguments("set-profile");
-        assert_eq!(
-            (profile["device"].clone(), profile["profile"].clone()),
-            (7.into(), 2.into())
-        );
-        assert_eq!(
-            sounds
-                .taken()
-                .iter()
-                .filter(|(id, _)| id == "route-stream")
-                .map(|(_, arguments)| (arguments["stream"].clone(), arguments["device"].clone()))
-                .collect::<Vec<_>>(),
-            vec![(84.into(), 51.into()), (84.into(), serde_json::Value::Null)],
-            "a stream goes to the device it was given, or follows the default"
-        );
-        let volume = sounds.arguments("set-stream-volume");
-        assert_eq!(volume["stream"], 90);
-        assert_eq!(sounds.arguments("set-stream-muted")["muted"], true);
-        assert!((model.volume - 0.30).abs() < 0.001);
-        assert!(model.muted);
-        assert!((model.input_volume - 0.40).abs() < 0.001);
+        phase a_stream_names_the_device_it_plays_on;
+        {
+            let model = published(Arc::new(RecordingSound::default()));
+            let label = |node: u32| {
+                let stream = model.stream(node).expect("the reading lists it");
+                model.stream_target_label(stream)
+            };
+            assert_eq!(label(90), follow_shown(), "on the output in use");
+            assert_eq!(label(84), "Headphones", "linked away from it");
+            assert_eq!(
+                label(95),
+                follow_shown(),
+                "a recording stream on the input in use"
+            );
+        }
 
-        assert!(
+        phase a_remembered_device_is_put_in_use_again;
+        {
+            let mut model = published(Arc::new(RecordingSound::default()));
+            let remembered = AudioDevicePrefs {
+                output_device: Some("Headphones".into()),
+                input_device: Some("USB Microphone".into()),
+            };
+            model.sound.inputs.push(device(54, "USB Microphone", false));
+            let sounds = RecordingSound::default();
+            restore_choice(&sounds, &model.sound, &remembered);
+            let taken = sounds.taken();
+            assert_eq!(taken[0].0, "route-output");
+            assert_eq!(taken[0].1["node"], 91);
+            assert_eq!(taken[1].0, "select-input");
+            assert_eq!(taken[1].1["node"], 54);
+
+            let chosen = AudioDevicePrefs {
+                output_device: Some("Speakers".into()),
+                ..AudioDevicePrefs::default()
+            };
+            let sounds = RecordingSound::default();
+            restore_choice(&sounds, &model.sound, &chosen);
+            assert!(sounds.taken().is_empty());
+        }
+
+        phase a_test_captures_the_output_the_reading_names;
+        {
+            let runtime = Arc::new(RecordingRuntime {
+                calls: Mutex::new(Vec::new()),
+                drops: Arc::new(AtomicUsize::new(0)),
+            });
+            let mut model = published(Arc::new(RecordingSound::default()));
+            model.runtime = runtime.clone();
             model
-                .apply(&AudioEffect::SelectOutput {
-                    device: "Not here".into()
+                .apply(&AudioEffect::TestSpeaker {
+                    channel: "left".into(),
                 })
-                .is_err()
-        );
-        assert!(
-            model
-                .apply(&AudioEffect::SetStreamMuted {
-                    stream: 999,
-                    muted: true
-                })
-                .is_err()
-        );
+                .unwrap();
+            model.apply(&AudioEffect::ToggleMicrophoneTest).unwrap();
+            assert_eq!(
+                runtime.calls.lock().unwrap().as_slice(),
+                ["test(speakers,true)", "meter(built-in-microphone)"]
+            );
+        }
+
+        phase a_reading_that_is_not_a_sound_is_an_error_until_the_next;
+        {
+            let sounds = Arc::new(RecordingSound::default());
+            let mut model = published(Arc::clone(&sounds) as Arc<dyn SoundResource>);
+            sounds.publish_unreadable();
+            assert!(model.poll());
+            assert!(model.volume_error.is_some());
+            assert!(model.devices_error.is_some());
+
+            let reading = AudioModel::sample(crate::sections::Sections::default()).sound;
+            sounds.publish(&reading);
+            assert!(model.poll());
+            assert!(model.volume_error.is_none());
+            assert!(model.devices_error.is_none());
+            assert!(model.input_error.is_none());
+        }
     }
 
     #[test]
@@ -1839,47 +1922,6 @@ mod tests {
             }))
             .is_err()
         );
-    }
-
-    #[test]
-    fn a_stream_names_the_device_it_plays_on() {
-        let model = published(Arc::new(RecordingSound::default()));
-        let label = |node: u32| {
-            let stream = model.stream(node).expect("the reading lists it");
-            model.stream_target_label(stream)
-        };
-        assert_eq!(label(90), follow_shown(), "on the output in use");
-        assert_eq!(label(84), "Headphones", "linked away from it");
-        assert_eq!(
-            label(95),
-            follow_shown(),
-            "a recording stream on the input in use"
-        );
-    }
-
-    #[test]
-    fn a_remembered_device_is_put_in_use_again() {
-        let mut model = published(Arc::new(RecordingSound::default()));
-        let remembered = AudioDevicePrefs {
-            output_device: Some("Headphones".into()),
-            input_device: Some("USB Microphone".into()),
-        };
-        model.sound.inputs.push(device(54, "USB Microphone", false));
-        let sounds = RecordingSound::default();
-        restore_choice(&sounds, &model.sound, &remembered);
-        let taken = sounds.taken();
-        assert_eq!(taken[0].0, "route-output");
-        assert_eq!(taken[0].1["node"], 91);
-        assert_eq!(taken[1].0, "select-input");
-        assert_eq!(taken[1].1["node"], 54);
-
-        let chosen = AudioDevicePrefs {
-            output_device: Some("Speakers".into()),
-            ..AudioDevicePrefs::default()
-        };
-        let sounds = RecordingSound::default();
-        restore_choice(&sounds, &model.sound, &chosen);
-        assert!(sounds.taken().is_empty());
     }
 
     struct FakeSession {
@@ -1970,26 +2012,6 @@ mod tests {
     }
 
     #[test]
-    fn a_test_captures_the_output_the_reading_names() {
-        let runtime = Arc::new(RecordingRuntime {
-            calls: Mutex::new(Vec::new()),
-            drops: Arc::new(AtomicUsize::new(0)),
-        });
-        let mut model = published(Arc::new(RecordingSound::default()));
-        model.runtime = runtime.clone();
-        model
-            .apply(&AudioEffect::TestSpeaker {
-                channel: "left".into(),
-            })
-            .unwrap();
-        model.apply(&AudioEffect::ToggleMicrophoneTest).unwrap();
-        assert_eq!(
-            runtime.calls.lock().unwrap().as_slice(),
-            ["test(speakers,true)", "meter(built-in-microphone)"]
-        );
-    }
-
-    #[test]
     fn unreadable_levels_are_shown_as_errors() {
         let mut app = on_sound();
         let error = "wpctl: Could not connect to PipeWire";
@@ -2012,23 +2034,6 @@ mod tests {
             !text.contains(&t("sound-apps-empty")),
             "no list of apps that only looks silent: {text}"
         );
-    }
-
-    #[test]
-    fn a_reading_that_is_not_a_sound_is_an_error_until_the_next() {
-        let sounds = Arc::new(RecordingSound::default());
-        let mut model = published(Arc::clone(&sounds) as Arc<dyn SoundResource>);
-        sounds.publish_unreadable();
-        assert!(model.poll());
-        assert!(model.volume_error.is_some());
-        assert!(model.devices_error.is_some());
-
-        let reading = AudioModel::sample(crate::sections::Sections::default()).sound;
-        sounds.publish(&reading);
-        assert!(model.poll());
-        assert!(model.volume_error.is_none());
-        assert!(model.devices_error.is_none());
-        assert!(model.input_error.is_none());
     }
 
     #[derive(Default)]

@@ -821,125 +821,206 @@ fn frame_error(error: wire_frame::FrameError) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn private_frames_refuse_oversize_before_allocating_and_truncated_input() {
-        let mut input = (REQUEST_BOUND as u32 + 1).to_be_bytes().as_slice().to_vec();
-        assert!(read_frame(&mut input.as_slice(), REQUEST_BOUND).is_err());
-        input = vec![0, 0, 0, 2, 1];
-        assert!(read_frame(&mut input.as_slice(), REQUEST_BOUND).is_err());
-        assert!(write_frame(&mut Vec::new(), &[0; 4], 3).is_err());
-    }
-    #[test]
-    fn worker_commands_have_no_source_or_output_path_authority() {
-        let input = br#"{"schema":1,"operation":"01951e63-767d-7625-839e-a6be33ebec18","custody":null,"command":{"action":"review","source":"/other-home"}}"#;
-        assert!(serde_json::from_slice::<Request>(input).is_err());
-        let input = br#"{"schema":1,"operation":"01951e63-767d-7625-839e-a6be33ebec18","custody":null,"command":{"action":"review"},"output":"/other-volume"}"#;
-        assert!(serde_json::from_slice::<Request>(input).is_err());
-    }
-    #[test]
-    fn worker_protocol_rejects_old_requests_before_source_or_media_admission() {
-        let mut request = Request {
-            schema: 1,
-            operation: uuid::Uuid::new_v4().to_string(),
-            custody: None,
-            command: Command::Review,
-        };
-        assert_eq!(
-            request.validate_protocol().unwrap_err().kind(),
-            io::ErrorKind::Unsupported
-        );
-        request.schema = WORKER_PROTOCOL;
-        request.validate_protocol().unwrap();
-    }
-    #[test]
-    fn progress_is_bound_monotonic_and_cannot_replace_final_reply() {
-        let command = Command::Export {
-            export_operation: "package-operation".into(),
-            setup_binding: "binding".into(),
-            password: Secret::new(Zeroizing::new(b"private secret".to_vec())),
-        };
-        let mut exchange = Exchange::new("capture-operation", &command);
-        let progress = ArchiveProgress {
-            phase: ArchivePhase::Archiving,
-            completed: 12,
-            total: None,
-        };
-        assert!(
-            exchange
-                .progress("another-capture", "package-operation", progress)
-                .is_err()
-        );
-        assert!(
-            exchange
-                .progress("capture-operation", "another-package", progress)
-                .is_err()
-        );
-        exchange
-            .progress("capture-operation", "package-operation", progress)
-            .unwrap();
-        assert!(
-            exchange
-                .progress(
-                    "capture-operation",
-                    "package-operation",
-                    ArchiveProgress {
-                        completed: 11,
-                        ..progress
-                    }
-                )
-                .is_err()
-        );
-        assert!(
-            exchange
-                .progress(
-                    "capture-operation",
-                    "package-operation",
-                    ArchiveProgress {
-                        total: Some(100),
-                        ..progress
-                    }
-                )
-                .is_err()
-        );
-        exchange
-            .finish("capture-operation", Some("package-operation"))
-            .unwrap();
-        assert!(
+    tilo_test_env::scenario! {
+        /// The capture worker's protocol: frames, commands, progress and review replies.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_capture_worker_protocol_is_bounded_closed_and_cannot_be_confused;
+
+        phase private_frames_refuse_oversize_before_allocating_and_truncated_input;
+        {
+            let mut input = (REQUEST_BOUND as u32 + 1).to_be_bytes().as_slice().to_vec();
+            assert!(read_frame(&mut input.as_slice(), REQUEST_BOUND).is_err());
+            input = vec![0, 0, 0, 2, 1];
+            assert!(read_frame(&mut input.as_slice(), REQUEST_BOUND).is_err());
+            assert!(write_frame(&mut Vec::new(), &[0; 4], 3).is_err());
+        }
+
+        phase worker_commands_have_no_source_or_output_path_authority;
+        {
+            let input = br#"{"schema":1,"operation":"01951e63-767d-7625-839e-a6be33ebec18","custody":null,"command":{"action":"review","source":"/other-home"}}"#;
+            assert!(serde_json::from_slice::<Request>(input).is_err());
+            let input = br#"{"schema":1,"operation":"01951e63-767d-7625-839e-a6be33ebec18","custody":null,"command":{"action":"review"},"output":"/other-volume"}"#;
+            assert!(serde_json::from_slice::<Request>(input).is_err());
+        }
+
+        phase worker_protocol_rejects_old_requests_before_source_or_media_admission;
+        {
+            let mut request = Request {
+                schema: 1,
+                operation: uuid::Uuid::new_v4().to_string(),
+                custody: None,
+                command: Command::Review,
+            };
+            assert_eq!(
+                request.validate_protocol().unwrap_err().kind(),
+                io::ErrorKind::Unsupported
+            );
+            request.schema = WORKER_PROTOCOL;
+            request.validate_protocol().unwrap();
+        }
+
+        phase progress_is_bound_monotonic_and_cannot_replace_final_reply;
+        {
+            let command = Command::Export {
+                export_operation: "package-operation".into(),
+                setup_binding: "binding".into(),
+                password: Secret::new(Zeroizing::new(b"private secret".to_vec())),
+            };
+            let mut exchange = Exchange::new("capture-operation", &command);
+            let progress = ArchiveProgress {
+                phase: ArchivePhase::Archiving,
+                completed: 12,
+                total: None,
+            };
+            assert!(
+                exchange
+                    .progress("another-capture", "package-operation", progress)
+                    .is_err()
+            );
+            assert!(
+                exchange
+                    .progress("capture-operation", "another-package", progress)
+                    .is_err()
+            );
             exchange
                 .progress("capture-operation", "package-operation", progress)
-                .is_err()
-        );
-        assert!(
+                .unwrap();
+            assert!(
+                exchange
+                    .progress(
+                        "capture-operation",
+                        "package-operation",
+                        ArchiveProgress {
+                            completed: 11,
+                            ..progress
+                        }
+                    )
+                    .is_err()
+            );
+            assert!(
+                exchange
+                    .progress(
+                        "capture-operation",
+                        "package-operation",
+                        ArchiveProgress {
+                            total: Some(100),
+                            ..progress
+                        }
+                    )
+                    .is_err()
+            );
             exchange
                 .finish("capture-operation", Some("package-operation"))
-                .is_err()
-        );
-        let bytes = serde_json::to_vec(&Frame::Progress {
-            operation: "capture-operation".into(),
-            export_operation: "package-operation".into(),
-            progress,
-        })
-        .unwrap();
-        assert!(!String::from_utf8(bytes).unwrap().contains("private secret"));
-    }
-    #[test]
-    fn review_cannot_claim_archive_progress_or_a_package_reply() {
-        let mut exchange = Exchange::new("capture", &Command::Review);
-        assert!(
-            exchange
-                .progress(
-                    "capture",
-                    "package",
-                    ArchiveProgress {
-                        phase: ArchivePhase::VerifyingSource,
-                        completed: 0,
-                        total: None
-                    }
-                )
-                .is_err()
-        );
-        assert!(exchange.finish("capture", Some("package")).is_err());
-        exchange.finish("capture", None).unwrap();
+                .unwrap();
+            assert!(
+                exchange
+                    .progress("capture-operation", "package-operation", progress)
+                    .is_err()
+            );
+            assert!(
+                exchange
+                    .finish("capture-operation", Some("package-operation"))
+                    .is_err()
+            );
+            let bytes = serde_json::to_vec(&Frame::Progress {
+                operation: "capture-operation".into(),
+                export_operation: "package-operation".into(),
+                progress,
+            })
+            .unwrap();
+            assert!(!String::from_utf8(bytes).unwrap().contains("private secret"));
+        }
+
+        phase review_cannot_claim_archive_progress_or_a_package_reply;
+        {
+            let mut exchange = Exchange::new("capture", &Command::Review);
+            assert!(
+                exchange
+                    .progress(
+                        "capture",
+                        "package",
+                        ArchiveProgress {
+                            phase: ArchivePhase::VerifyingSource,
+                            completed: 0,
+                            total: None
+                        }
+                    )
+                    .is_err()
+            );
+            assert!(exchange.finish("capture", Some("package")).is_err());
+            exchange.finish("capture", None).unwrap();
+        }
+
+        phase original_review_is_distinct_and_refused_by_actual_normal_capture_route;
+        {
+            let request = original_review_request();
+            request.validate_protocol().unwrap();
+            assert_eq!(
+                request.require_capture_route().unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            let encoded = serde_json::to_value(&request).unwrap();
+            assert_eq!(encoded["command"]["action"], "review-original");
+            assert!(encoded.get("source").is_none());
+            assert!(encoded["command"].get("password").is_none());
+            assert!(encoded["command"].get("output").is_none());
+            let mut snapshot_claim = encoded.clone();
+            snapshot_claim["custody"] = serde_json::json!({"preparation":{
+                "relative":crate::setup::migration_store::NativePath::encode(
+                    std::path::Path::new(".local/state/tilo/installer/preparations")),
+                "stable":[1,448,1000,1001]},"settings_lock":null});
+            let snapshot_request = serde_json::from_value::<Request>(snapshot_claim).unwrap();
+            assert!(snapshot_request.validate_protocol().is_err());
+            let mut mismatch = encoded.clone();
+            mismatch["operation"] = uuid::Uuid::new_v4().to_string().into();
+            assert!(
+                serde_json::from_value::<Request>(mismatch)
+                    .unwrap()
+                    .validate_protocol()
+                    .is_err()
+            );
+            let mut invented_output = encoded;
+            invented_output["command"]["output"] = "/other-volume".into();
+            assert!(serde_json::from_value::<Request>(invented_output).is_err());
+        }
+
+        phase original_review_cannot_report_export_progress_or_become_an_export_command;
+        {
+            let request = original_review_request();
+            let mut exchange = Exchange::new(&request.operation, &request.command);
+            assert!(
+                exchange
+                    .progress(
+                        &request.operation,
+                        "invented-output",
+                        ArchiveProgress {
+                            phase: ArchivePhase::Archiving,
+                            completed: 1,
+                            total: None,
+                        }
+                    )
+                    .is_err()
+            );
+            assert!(
+                exchange
+                    .finish(&request.operation, Some("invented-output"))
+                    .is_err()
+            );
+            exchange.finish(&request.operation, None).unwrap();
+            let mut attempted = serde_json::to_value(&request).unwrap();
+            attempted["command"]["action"] = "export".into();
+            attempted["command"]["export_operation"] = uuid::Uuid::new_v4().to_string().into();
+            attempted["command"]["setup_binding"] = "binding".into();
+            attempted["command"]["password"] = serde_json::json!([1, 2, 3]);
+            assert!(serde_json::from_value::<Request>(attempted).is_err());
+            let normal = Request {
+                schema: WORKER_PROTOCOL,
+                operation: uuid::Uuid::new_v4().to_string(),
+                custody: None,
+                command: Command::Review,
+            };
+            normal.require_capture_route().unwrap();
+        }
     }
     fn original_review_request() -> Request {
         let operation = uuid::Uuid::new_v4().to_string();
@@ -954,74 +1035,5 @@ mod tests {
             }}
         }))
         .unwrap()
-    }
-    #[test]
-    fn original_review_is_distinct_and_refused_by_actual_normal_capture_route() {
-        let request = original_review_request();
-        request.validate_protocol().unwrap();
-        assert_eq!(
-            request.require_capture_route().unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        let encoded = serde_json::to_value(&request).unwrap();
-        assert_eq!(encoded["command"]["action"], "review-original");
-        assert!(encoded.get("source").is_none());
-        assert!(encoded["command"].get("password").is_none());
-        assert!(encoded["command"].get("output").is_none());
-        let mut snapshot_claim = encoded.clone();
-        snapshot_claim["custody"] = serde_json::json!({"preparation":{
-            "relative":crate::setup::migration_store::NativePath::encode(
-                std::path::Path::new(".local/state/tilo/installer/preparations")),
-            "stable":[1,448,1000,1001]},"settings_lock":null});
-        let snapshot_request = serde_json::from_value::<Request>(snapshot_claim).unwrap();
-        assert!(snapshot_request.validate_protocol().is_err());
-        let mut mismatch = encoded.clone();
-        mismatch["operation"] = uuid::Uuid::new_v4().to_string().into();
-        assert!(
-            serde_json::from_value::<Request>(mismatch)
-                .unwrap()
-                .validate_protocol()
-                .is_err()
-        );
-        let mut invented_output = encoded;
-        invented_output["command"]["output"] = "/other-volume".into();
-        assert!(serde_json::from_value::<Request>(invented_output).is_err());
-    }
-    #[test]
-    fn original_review_cannot_report_export_progress_or_become_an_export_command() {
-        let request = original_review_request();
-        let mut exchange = Exchange::new(&request.operation, &request.command);
-        assert!(
-            exchange
-                .progress(
-                    &request.operation,
-                    "invented-output",
-                    ArchiveProgress {
-                        phase: ArchivePhase::Archiving,
-                        completed: 1,
-                        total: None,
-                    }
-                )
-                .is_err()
-        );
-        assert!(
-            exchange
-                .finish(&request.operation, Some("invented-output"))
-                .is_err()
-        );
-        exchange.finish(&request.operation, None).unwrap();
-        let mut attempted = serde_json::to_value(&request).unwrap();
-        attempted["command"]["action"] = "export".into();
-        attempted["command"]["export_operation"] = uuid::Uuid::new_v4().to_string().into();
-        attempted["command"]["setup_binding"] = "binding".into();
-        attempted["command"]["password"] = serde_json::json!([1, 2, 3]);
-        assert!(serde_json::from_value::<Request>(attempted).is_err());
-        let normal = Request {
-            schema: WORKER_PROTOCOL,
-            operation: uuid::Uuid::new_v4().to_string(),
-            custody: None,
-            command: Command::Review,
-        };
-        normal.require_capture_route().unwrap();
     }
 }

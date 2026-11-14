@@ -465,7 +465,7 @@ impl WordProcessorEffect {
             }
         };
         let within_limits = |text: &str| {
-            if text.chars().count() > crate::actions::MAX_ACTION_TEXT_CHARS {
+            if text.len() > crate::actions::MAX_ACTION_TEXT_BYTES {
                 Err(EditingError::Invalid("text is too long".into()))
             } else {
                 Ok(())

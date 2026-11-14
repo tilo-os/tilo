@@ -107,172 +107,176 @@ view two(r: Workspace) {
         }
     }
 
-    #[test]
-    fn the_workspaces_members_are_its_people_and_agents_with_their_kind_and_role() {
-        let (rt, app, open, _) = setup();
-        rt.set_members(membership(), None);
-        let v = rt
-            .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
-            .unwrap();
-        assert_eq!(
-            texts(&v, "in "),
-            [
-                "in ada person owner",
-                "in bo person editor",
-                "in agent:planner agent no role",
-            ]
-        );
-        assert_eq!(
-            texts(&v, "reads "),
-            ["reads ada", "reads bo", "reads agent:planner"],
-            "without grants that narrow it, every member reads the workspace's resources"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn members_are_read_from_the_workspace_and_its_conversations;
 
-    #[test]
-    fn members_of_a_resource_are_those_its_grants_let_read_it() {
-        let (rt, app, open, private) = setup();
-        let hidden = private.clone();
-        rt.set_members(
-            membership(),
-            Some(Rc::new(move |who: &Principal, r: &ResourceRef| {
-                *r != hidden || who.0 == "ada"
-            })),
-        );
-        let on = |r: &ResourceRef| {
-            rt.open_view(&ada(), &app.view("workspace"), vec![Value::resource(r)])
-                .unwrap()
-        };
-        assert_eq!(texts(&on(&open), "reads ").len(), 3);
-        assert_eq!(texts(&on(&private), "reads "), ["reads ada"]);
-        assert_eq!(
-            people(&on(&private), "people"),
-            ["ada"],
-            "the drawer offers only who can read what the mention lands in"
-        );
-    }
-
-    #[test]
-    fn a_view_follows_membership_as_it_changes() {
-        let (rt, app, open, _) = setup();
-        rt.set_members(membership()[..1].to_vec(), None);
-        let mut v = rt
-            .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
-            .unwrap();
-        assert_eq!(texts(&v, "in "), ["in ada person owner"]);
-        rt.set_members(membership(), None);
-        v.poll_patches().unwrap();
-        assert_eq!(texts(&v, "in ").len(), 3, "a member admitted shows at once");
-        assert_eq!(people(&v, "people"), ["ada", "bo", "agent:planner"]);
-        let mut changed = membership();
-        changed.remove(1);
-        if let Some(ada) = changed.first_mut() {
-            ada.role = Some("editor".to_owned());
+        phase the_workspaces_members_are_its_people_and_agents_with_their_kind_and_role;
+        {
+            let (rt, app, open, _) = setup();
+            rt.set_members(membership(), None);
+            let v = rt
+                .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
+                .unwrap();
+            assert_eq!(
+                texts(&v, "in "),
+                [
+                    "in ada person owner",
+                    "in bo person editor",
+                    "in agent:planner agent no role",
+                ]
+            );
+            assert_eq!(
+                texts(&v, "reads "),
+                ["reads ada", "reads bo", "reads agent:planner"],
+                "without grants that narrow it, every member reads the workspace's resources"
+            );
         }
-        rt.set_members(changed, None);
-        v.poll_patches().unwrap();
-        assert_eq!(
-            texts(&v, "in "),
-            ["in ada person editor", "in agent:planner agent no role"],
-            "a removal and a role change show at once"
-        );
-    }
 
-    #[test]
-    fn the_drawer_offers_the_conversations_people_newest_first() {
-        let (rt, app, open, _) = setup();
-        rt.set_members(membership(), None);
-        let write = app.action("write");
-        let mut v = rt
-            .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
-            .unwrap();
-        for who in [bo(), planner(), ada(), bo()] {
+        phase members_of_a_resource_are_those_its_grants_let_read_it;
+        {
+            let (rt, app, open, private) = setup();
+            let hidden = private.clone();
+            rt.set_members(
+                membership(),
+                Some(Rc::new(move |who: &Principal, r: &ResourceRef| {
+                    *r != hidden || who.0 == "ada"
+                })),
+            );
+            let on = |r: &ResourceRef| {
+                rt.open_view(&ada(), &app.view("workspace"), vec![Value::resource(r)])
+                    .unwrap()
+            };
+            assert_eq!(texts(&on(&open), "reads ").len(), 3);
+            assert_eq!(texts(&on(&private), "reads "), ["reads ada"]);
+            assert_eq!(
+                people(&on(&private), "people"),
+                ["ada"],
+                "the drawer offers only who can read what the mention lands in"
+            );
+        }
+
+        phase a_view_follows_membership_as_it_changes;
+        {
+            let (rt, app, open, _) = setup();
+            rt.set_members(membership()[..1].to_vec(), None);
+            let mut v = rt
+                .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
+                .unwrap();
+            assert_eq!(texts(&v, "in "), ["in ada person owner"]);
+            rt.set_members(membership(), None);
+            v.poll_patches().unwrap();
+            assert_eq!(texts(&v, "in ").len(), 3, "a member admitted shows at once");
+            assert_eq!(people(&v, "people"), ["ada", "bo", "agent:planner"]);
+            let mut changed = membership();
+            changed.remove(1);
+            if let Some(ada) = changed.first_mut() {
+                ada.role = Some("editor".to_owned());
+            }
+            rt.set_members(changed, None);
+            v.poll_patches().unwrap();
+            assert_eq!(
+                texts(&v, "in "),
+                ["in ada person editor", "in agent:planner agent no role"],
+                "a removal and a role change show at once"
+            );
+        }
+
+        phase the_drawer_offers_the_conversations_people_newest_first;
+        {
+            let (rt, app, open, _) = setup();
+            rt.set_members(membership(), None);
+            let write = app.action("write");
+            let mut v = rt
+                .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
+                .unwrap();
+            for who in [bo(), planner(), ada(), bo()] {
+                rt.invoke_action(
+                    &who,
+                    (
+                        write.as_str(),
+                        vec![Value::resource(&open), Value::text("hello")],
+                    ),
+                )
+                .unwrap();
+            }
+            v.poll_patches().unwrap();
+            let speakers = people(&v, "speakers");
+            assert_eq!(
+                speakers.get(..3),
+                Some(
+                    &[
+                        "bo".to_owned(),
+                        "ada".to_owned(),
+                        "agent:planner".to_owned()
+                    ][..]
+                ),
+                "newest first, each once: {speakers:?}"
+            );
+            assert_eq!(
+                people(&v, "people"),
+                ["ada", "bo", "agent:planner"],
+                "and the members under them"
+            );
+        }
+
+        phase the_drawer_offers_as_many_people_as_the_view_asks_for;
+        {
+            let (rt, app, open, _) = setup();
+            rt.set_members(membership(), None);
+            let write = app.action("write");
+            for who in [ada(), bo(), planner()] {
+                rt.invoke_action(
+                    &who,
+                    (
+                        write.as_str(),
+                        vec![Value::resource(&open), Value::text("hello")],
+                    ),
+                )
+                .unwrap();
+            }
+            let v = rt
+                .open_view(&ada(), &app.view("two"), vec![Value::resource(&open)])
+                .unwrap();
+            assert_eq!(
+                people(&v, "speakers"),
+                ["agent:planner", "bo"],
+                "the two newest, though three spoke"
+            );
+        }
+
+        phase who_spoke_is_read_from_a_bounded_window_of_the_conversations_items;
+        {
+            let (rt, app, open, _) = setup();
+            rt.set_members(membership(), None);
+            let write = app.action("write");
+            let mut v = rt
+                .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
+                .unwrap();
             rt.invoke_action(
-                &who,
+                &bo(),
                 (
                     write.as_str(),
-                    vec![Value::resource(&open), Value::text("hello")],
+                    vec![Value::resource(&open), Value::text("the first word")],
                 ),
             )
             .unwrap();
-        }
-        v.poll_patches().unwrap();
-        let speakers = people(&v, "speakers");
-        assert_eq!(
-            speakers.get(..3),
-            Some(
-                &[
-                    "bo".to_owned(),
-                    "ada".to_owned(),
-                    "agent:planner".to_owned()
-                ][..]
-            ),
-            "newest first, each once: {speakers:?}"
-        );
-        assert_eq!(
-            people(&v, "people"),
-            ["ada", "bo", "agent:planner"],
-            "and the members under them"
-        );
-    }
-
-    #[test]
-    fn the_drawer_offers_as_many_people_as_the_view_asks_for() {
-        let (rt, app, open, _) = setup();
-        rt.set_members(membership(), None);
-        let write = app.action("write");
-        for who in [ada(), bo(), planner()] {
-            rt.invoke_action(
-                &who,
-                (
-                    write.as_str(),
-                    vec![Value::resource(&open), Value::text("hello")],
-                ),
-            )
-            .unwrap();
-        }
-        let v = rt
-            .open_view(&ada(), &app.view("two"), vec![Value::resource(&open)])
-            .unwrap();
-        assert_eq!(
-            people(&v, "speakers"),
-            ["agent:planner", "bo"],
-            "the two newest, though three spoke"
-        );
-    }
-
-    #[test]
-    fn who_spoke_is_read_from_a_bounded_window_of_the_conversations_items() {
-        let (rt, app, open, _) = setup();
-        rt.set_members(membership(), None);
-        let write = app.action("write");
-        let mut v = rt
-            .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
-            .unwrap();
-        rt.invoke_action(
-            &bo(),
-            (
-                write.as_str(),
-                vec![Value::resource(&open), Value::text("the first word")],
-            ),
-        )
-        .unwrap();
-        for _ in 0..60 {
-            rt.invoke_action(
-                &ada(),
-                (
-                    write.as_str(),
-                    vec![Value::resource(&open), Value::text("and on")],
-                ),
-            )
-            .unwrap();
-        }
-        v.poll_patches().unwrap();
-        assert_eq!(
-            people(&v, "speakers"),
-            ["ada"],
-            "who spoke longer ago than the last items is a member like any other: the drawer's \
+            for _ in 0..60 {
+                rt.invoke_action(
+                    &ada(),
+                    (
+                        write.as_str(),
+                        vec![Value::resource(&open), Value::text("and on")],
+                    ),
+                )
+                .unwrap();
+            }
+            v.poll_patches().unwrap();
+            assert_eq!(
+                people(&v, "speakers"),
+                ["ada"],
+                "who spoke longer ago than the last items is a member like any other: the drawer's \
              cost is the window, never the length of the conversation"
-        );
+            );
+        }
     }
 }

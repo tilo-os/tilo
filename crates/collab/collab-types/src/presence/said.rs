@@ -148,33 +148,38 @@ impl Presence {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_frame_round_trips() {
-        let presence = Presence::desktop(
-            "0f8fad5b-d9cb-469f-a165-70867728950e",
-            Payload::Status {
-                text: "Reviewing".into(),
-                automatic: false,
-            },
-        );
-        let bytes = presence.encode().unwrap();
-        assert_eq!(Presence::decode(&bytes), Some(presence.clone()));
-        assert_eq!(Presence::decode(&[bytes, vec![0]].concat()), None);
-        assert_eq!(presence.app, DESKTOP_APP);
-    }
+    tilo_test_env::scenario! {
+        /// What a participant said, as a presence frame.
+        fn a_said_frame_round_trips_with_the_tile_its_pointer_names;
 
-    #[test]
-    fn a_pointer_names_the_tile_it_was_measured_on() {
-        let presence = Presence::pointing("w1", 7, 12.5, -3.0);
-        assert_eq!(
-            presence.key,
-            PresenceKey::Pointer {
-                space: crate::presence::PointerSpace::Tile {
-                    workspace: "w1".into(),
-                    tab: 7,
+        phase a_frame_round_trips;
+        {
+            let presence = Presence::desktop(
+                "0f8fad5b-d9cb-469f-a165-70867728950e",
+                Payload::Status {
+                    text: "Reviewing".into(),
+                    automatic: false,
                 },
-            }
-        );
-        assert_eq!(presence.payload, Payload::Pointer { x: 12.5, y: -3.0 });
+            );
+            let bytes = presence.encode().unwrap();
+            assert_eq!(Presence::decode(&bytes), Some(presence.clone()));
+            assert_eq!(Presence::decode(&[bytes, vec![0]].concat()), None);
+            assert_eq!(presence.app, DESKTOP_APP);
+        }
+
+        phase a_pointer_names_the_tile_it_was_measured_on;
+        {
+            let presence = Presence::pointing("w1", 7, 12.5, -3.0);
+            assert_eq!(
+                presence.key,
+                PresenceKey::Pointer {
+                    space: crate::presence::PointerSpace::Tile {
+                        workspace: "w1".into(),
+                        tab: 7,
+                    },
+                }
+            );
+            assert_eq!(presence.payload, Payload::Pointer { x: 12.5, y: -3.0 });
+        }
     }
 }

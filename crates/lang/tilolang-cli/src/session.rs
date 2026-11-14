@@ -397,33 +397,37 @@ pub(crate) fn read_trimmed(path: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_app_is_offered_by_its_applications_row_alone() {
-        let answer = serde_json::json!({"actions": [
-            {"provider": "app-actions", "id": "so.tilo.lang.counter"},
-            {"provider": "applications", "id": "so.tilo.lang.counter.other"},
-        ]});
-        assert!(!offers(&answer, "so.tilo.lang.counter"));
-        let answer = serde_json::json!({"actions": [
-            {"provider": "applications", "id": "so.tilo.lang.counter"},
-        ]});
-        assert!(offers(&answer, "so.tilo.lang.counter"));
-    }
+    tilo_test_env::scenario! {
+        fn a_session_names_its_apps_and_its_build;
 
-    #[test]
-    fn the_build_is_the_one_the_environment_names_else_the_checkouts() {
-        let repo = Path::new("/src/tilo");
-        assert_eq!(
-            build_dir_from(repo, None),
-            Path::new("/src/tilo/target/nested-session")
-        );
-        assert_eq!(
-            build_dir_from(repo, Some("".into())),
-            Path::new("/src/tilo/target/nested-session")
-        );
-        assert_eq!(
-            build_dir_from(repo, Some("/work/shared/current".into())),
-            Path::new("/work/shared/current")
-        );
+        phase an_app_is_offered_by_its_applications_row_alone;
+        {
+            let answer = serde_json::json!({"actions": [
+                {"provider": "app-actions", "id": "so.tilo.lang.counter"},
+                {"provider": "applications", "id": "so.tilo.lang.counter.other"},
+            ]});
+            assert!(!offers(&answer, "so.tilo.lang.counter"));
+            let answer = serde_json::json!({"actions": [
+                {"provider": "applications", "id": "so.tilo.lang.counter"},
+            ]});
+            assert!(offers(&answer, "so.tilo.lang.counter"));
+        }
+
+        phase the_build_is_the_one_the_environment_names_else_the_checkouts;
+        {
+            let repo = Path::new("/src/tilo");
+            assert_eq!(
+                build_dir_from(repo, None),
+                Path::new("/src/tilo/target/nested-session")
+            );
+            assert_eq!(
+                build_dir_from(repo, Some("".into())),
+                Path::new("/src/tilo/target/nested-session")
+            );
+            assert_eq!(
+                build_dir_from(repo, Some("/work/shared/current".into())),
+                Path::new("/work/shared/current")
+            );
+        }
     }
 }

@@ -118,81 +118,88 @@ pub fn watch_sees_every_change(dir: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn native_regular_file_query_preserves_non_file_and_missing_refusals() {
-        let root = tempfile::tempdir().expect("temporary native directory");
-        assert!(!super::is_regular_file(root.path()).expect("directory metadata"));
-        let path = root.path().join("file");
-        assert_eq!(
-            super::is_regular_file(&path)
-                .expect_err("missing file")
-                .kind(),
-            std::io::ErrorKind::NotFound
-        );
-        std::fs::write(&path, b"held").expect("native file");
-        assert!(super::is_regular_file(&path).expect("regular file metadata"));
+    tilo_test_env::scenario! {
+        fn native_queries_and_directory_creation_keep_their_refusals;
+
+        phase native_regular_file_query_preserves_non_file_and_missing_refusals;
+        {
+            let root = tempfile::tempdir().expect("temporary native directory");
+            assert!(!super::is_regular_file(root.path()).expect("directory metadata"));
+            let path = root.path().join("file");
+            assert_eq!(
+                super::is_regular_file(&path)
+                    .expect_err("missing file")
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
+            std::fs::write(&path, b"held").expect("native file");
+            assert!(super::is_regular_file(&path).expect("regular file metadata"));
+        }
+
+        phase native_directory_creation_preserves_recursive_and_failure_contracts;
+        {
+            let root = tempfile::tempdir().expect("temporary native directory");
+            let nested = root.path().join("parent/child");
+            super::create_dir_all(&nested).expect("recursive creation");
+            super::create_dir_all(&nested).expect("existing directory remains valid");
+            assert!(nested.is_dir());
+            let file = root.path().join("file");
+            std::fs::write(&file, b"held").expect("native file");
+            let requested = file.join("child");
+            let expected = std::fs::create_dir_all(&requested).expect_err("file is not a directory");
+            let actual = super::create_dir_all(&requested).expect_err("same native refusal");
+            assert_eq!(actual.kind(), expected.kind());
+            assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+            assert_eq!(std::fs::read(file).expect("original file remains"), b"held");
+        }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn native_regular_file_query_rejects_matching_and_dangling_symlinks() {
-        let root = tempfile::tempdir().expect("temporary native directory");
-        let target = root.path().join("file");
-        let alias = root.path().join("alias");
-        std::fs::write(&target, b"held").expect("native file");
-        std::os::unix::fs::symlink(&target, &alias).expect("symlink fixture");
-        assert!(!super::is_regular_file(&alias).expect("symlink metadata"));
-        std::fs::remove_file(&target).expect("remove owned fixture target");
-        assert!(!super::is_regular_file(&alias).expect("dangling symlink metadata"));
-    }
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn links_and_blocks_are_read_from_the_file_itself;
 
-    #[test]
-    fn native_directory_creation_preserves_recursive_and_failure_contracts() {
-        let root = tempfile::tempdir().expect("temporary native directory");
-        let nested = root.path().join("parent/child");
-        super::create_dir_all(&nested).expect("recursive creation");
-        super::create_dir_all(&nested).expect("existing directory remains valid");
-        assert!(nested.is_dir());
-        let file = root.path().join("file");
-        std::fs::write(&file, b"held").expect("native file");
-        let requested = file.join("child");
-        let expected = std::fs::create_dir_all(&requested).expect_err("file is not a directory");
-        let actual = super::create_dir_all(&requested).expect_err("same native refusal");
-        assert_eq!(actual.kind(), expected.kind());
-        assert_eq!(actual.raw_os_error(), expected.raw_os_error());
-        assert_eq!(std::fs::read(file).expect("original file remains"), b"held");
-    }
+        phase native_regular_file_query_rejects_matching_and_dangling_symlinks;
+        {
+            let root = tempfile::tempdir().expect("temporary native directory");
+            let target = root.path().join("file");
+            let alias = root.path().join("alias");
+            std::fs::write(&target, b"held").expect("native file");
+            std::os::unix::fs::symlink(&target, &alias).expect("symlink fixture");
+            assert!(!super::is_regular_file(&alias).expect("symlink metadata"));
+            std::fs::remove_file(&target).expect("remove owned fixture target");
+            assert!(!super::is_regular_file(&alias).expect("dangling symlink metadata"));
+        }
 
-    #[test]
-    #[cfg(unix)]
-    fn a_file_counts_its_blocks_and_a_hard_link_names_the_same_file() {
-        let root = tempfile::tempdir().expect("temporary native directory");
-        let sparse = root.path().join("disk.img");
-        std::fs::File::create(&sparse)
-            .and_then(|file| file.set_len(1_073_741_824))
-            .expect("sparse file");
-        let sparse = std::fs::metadata(&sparse).expect("sparse metadata");
-        assert!(
-            super::on_disk(&sparse) < 1_048_576,
-            "an empty 1 GiB file holds no GiB of blocks"
-        );
-        assert_eq!(super::linked_identity(&sparse), None, "one name");
+        phase a_file_counts_its_blocks_and_a_hard_link_names_the_same_file;
+        {
+            let root = tempfile::tempdir().expect("temporary native directory");
+            let sparse = root.path().join("disk.img");
+            std::fs::File::create(&sparse)
+                .and_then(|file| file.set_len(1_073_741_824))
+                .expect("sparse file");
+            let sparse = std::fs::metadata(&sparse).expect("sparse metadata");
+            assert!(
+                super::on_disk(&sparse) < 1_048_576,
+                "an empty 1 GiB file holds no GiB of blocks"
+            );
+            assert_eq!(super::linked_identity(&sparse), None, "one name");
 
-        let first = root.path().join("first");
-        let second = root.path().join("second");
-        // Bytes no filesystem compresses away.
-        let bytes: Vec<u8> = (0..8192_u32)
-            .map(|i| i.wrapping_mul(2_654_435_761).to_le_bytes()[3])
-            .collect();
-        std::fs::write(&first, bytes).expect("native file");
-        std::fs::hard_link(&first, &second).expect("hard link");
-        let first = std::fs::metadata(&first).expect("first name");
-        let second = std::fs::metadata(&second).expect("second name");
-        assert!(super::on_disk(&first) > 0, "written bytes take blocks");
-        assert!(super::linked_identity(&first).is_some());
-        assert_eq!(
-            super::linked_identity(&first),
-            super::linked_identity(&second)
-        );
+            let first = root.path().join("first");
+            let second = root.path().join("second");
+            // Bytes no filesystem compresses away.
+            let bytes: Vec<u8> = (0..8192_u32)
+                .map(|i| i.wrapping_mul(2_654_435_761).to_le_bytes()[3])
+                .collect();
+            std::fs::write(&first, bytes).expect("native file");
+            std::fs::hard_link(&first, &second).expect("hard link");
+            let first = std::fs::metadata(&first).expect("first name");
+            let second = std::fs::metadata(&second).expect("second name");
+            assert!(super::on_disk(&first) > 0, "written bytes take blocks");
+            assert!(super::linked_identity(&first).is_some());
+            assert_eq!(
+                super::linked_identity(&first),
+                super::linked_identity(&second)
+            );
+        }
     }
 }

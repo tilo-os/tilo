@@ -1375,6 +1375,7 @@ mod tests {
     use super::*;
 
     fn init() {
+        crate::test_gst::shared_registry();
         gst::init().expect("GStreamer initialises in the test environment");
     }
 

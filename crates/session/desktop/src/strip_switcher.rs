@@ -136,24 +136,23 @@ impl SwitcherModel {
         let Some(workspace) = desktop.active_workspace() else {
             return Self::default();
         };
-        let people: Vec<(StripId, Person)> =
-            crate::collaborators::collaborator_roster_rows(desktop, local_user)
-                .into_iter()
-                .filter(|row| !row.invited && !row.own_device && row.id != own_id)
-                .filter(|row| row.id != local_user)
-                .filter_map(|row| {
-                    let strip = strip_of(desktop, &row.id)?;
-                    Some((
-                        strip,
-                        Person {
-                            id: row.id,
-                            label: row.label,
-                            color: row.color,
-                            is_agent: row.is_agent,
-                        },
-                    ))
-                })
-                .collect();
+        let people: Vec<(StripId, Person)> = crate::people::roster_rows(desktop, local_user)
+            .into_iter()
+            .filter(|row| row.id != own_id)
+            .filter(|row| row.id != local_user)
+            .filter_map(|row| {
+                let strip = strip_of(desktop, &row.id)?;
+                Some((
+                    strip,
+                    Person {
+                        id: row.id,
+                        label: row.label,
+                        color: row.color,
+                        is_agent: row.is_agent,
+                    },
+                ))
+            })
+            .collect();
         let several = workspace.strips.len() > 1;
         let strips: Vec<StripEntry> = workspace
             .strips
@@ -196,11 +195,10 @@ impl SwitcherModel {
 fn strip_of(desktop: &DesktopTree, participant_id: &str) -> Option<StripId> {
     let workspace = desktop.active_workspace()?;
     let tab = workspace
-        .collaborators
+        .present
         .iter()
-        .chain(&desktop.collaborators)
-        .find(|participant| participant.id == participant_id)?
-        .active_tab?;
+        .find(|here| here.device == participant_id)?
+        .tab?;
     workspace
         .strips
         .iter()
@@ -1701,340 +1699,356 @@ mod tests {
         t
     }
 
-    #[test]
-    fn a_pointer_coming_to_rest_on_the_ribbon_opens_the_labels() {
-        let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
-        let t0 = Instant::now();
-        let end = glide(
-            &mut s,
-            zone,
-            Point::new(1200.0, 460.0),
-            Point::new(1590.0, zone.center().y),
-            t0,
-        );
-        let opened = s.is_open() || s.settle(end + ms(60), zone) && s.is_open();
-        assert!(opened, "aiming at the ribbon and stopping there opens it");
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_strip_switcher_opens_its_labels_for_a_resting_pointer;
 
-    #[test]
-    fn a_pointer_passing_over_the_ribbon_does_not_open_it() {
-        let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
-        let mut t = Instant::now();
-        for k in 0..30 {
-            t += ms(8);
-            s.pointer_moved(Point::new(1590.0, 200.0 + 25.0 * f64::from(k)), t, zone);
-            assert!(!s.is_open(), "transit is not aim (sample {k})");
+        phase a_pointer_coming_to_rest_on_the_ribbon_opens_the_labels;
+        {
+            let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
+            let t0 = Instant::now();
+            let end = glide(
+                &mut s,
+                zone,
+                Point::new(1200.0, 460.0),
+                Point::new(1590.0, zone.center().y),
+                t0,
+            );
+            let opened = s.is_open() || s.settle(end + ms(60), zone) && s.is_open();
+            assert!(opened, "aiming at the ribbon and stopping there opens it");
         }
-        // It ends far below the band, so resting there is not resting on it.
-        assert!(!s.settle(t + ms(200), zone));
-        assert!(!s.is_open());
-    }
 
-    #[test]
-    fn each_label_sits_level_with_its_mark_and_new_strip_under_the_last() {
-        let (s, _) = switcher(&["Lounge", "Research", "Design"]);
-        let r = ribbon(3, 0);
-        let mut x1 = None;
-        for i in 0..3 {
-            let label = s.layout().label_rect(Row::Strip(i)).unwrap();
-            let row = s.layout().row_rect(Row::Strip(i)).unwrap();
-            let seg = r.segment_rect(i).unwrap();
-            let hit = r.hit_rect(i).unwrap();
+        phase a_pointer_passing_over_the_ribbon_does_not_open_it;
+        {
+            let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
+            let mut t = Instant::now();
+            for k in 0..30 {
+                t += ms(8);
+                s.pointer_moved(Point::new(1590.0, 200.0 + 25.0 * f64::from(k)), t, zone);
+                assert!(!s.is_open(), "transit is not aim (sample {k})");
+            }
+            // It ends far below the band, so resting there is not resting on it.
+            assert!(!s.settle(t + ms(200), zone));
+            assert!(!s.is_open());
+        }
+
+        phase each_label_sits_level_with_its_mark_and_new_strip_under_the_last;
+        {
+            let (s, _) = switcher(&["Lounge", "Research", "Design"]);
+            let r = ribbon(3, 0);
+            let mut x1 = None;
+            for i in 0..3 {
+                let label = s.layout().label_rect(Row::Strip(i)).unwrap();
+                let row = s.layout().row_rect(Row::Strip(i)).unwrap();
+                let seg = r.segment_rect(i).unwrap();
+                let hit = r.hit_rect(i).unwrap();
+                assert!(
+                    (label.center().y - seg.center().y).abs() < 0.5,
+                    "label {i} is level with its mark"
+                );
+                assert!(label.x1 < seg.x0, "label {i} stands beside its mark");
+                assert_eq!(
+                    (row.y0, row.y1, row.x1),
+                    (hit.y0, hit.y1, CONTENT.x1),
+                    "label {i}'s pointer row tiles with the marks"
+                );
+                assert!(x1.is_none_or(|x| x == label.x1), "right edges aligned");
+                x1 = Some(label.x1);
+            }
+            let last = s.layout().label_rect(Row::Strip(2)).unwrap();
+            let new = s.layout().label_rect(Row::NewStrip).unwrap();
+            assert!(new.y0 >= last.y1, "New strip is under the last strip");
+        }
+
+        phase the_labels_are_this_workspaces_strips_and_new_strip_only;
+        // The switcher has one job: it lists this workspace's strips and makes new ones, and nothing
+        // about workspaces.
+        {
+            let (mut s, _) = switcher(&["Lounge", "Research"]);
+            s.open_at(Instant::now(), false);
+            let rows: Vec<Row> = s.layout().labels.iter().map(|(row, _)| *row).collect();
+            assert_eq!(rows, [Row::Strip(0), Row::Strip(1), Row::NewStrip]);
+            let a11y = s.accessibility().expect("open labels are published");
+            let names: Vec<String> = a11y
+                .children
+                .iter()
+                .filter_map(|n| n.name.clone())
+                .collect();
+            assert!(names.iter().any(|n| n == "Lounge"));
+            assert!(names.iter().any(|n| n == "New strip"));
             assert!(
-                (label.center().y - seg.center().y).abs() < 0.5,
-                "label {i} is level with its mark"
+                !names.iter().any(|n| n.contains("orkspace")),
+                "no workspaces here: {names:?}"
             );
-            assert!(label.x1 < seg.x0, "label {i} stands beside its mark");
-            assert_eq!(
-                (row.y0, row.y1, row.x1),
-                (hit.y0, hit.y1, CONTENT.x1),
-                "label {i}'s pointer row tiles with the marks"
-            );
-            assert!(x1.is_none_or(|x| x == label.x1), "right edges aligned");
-            x1 = Some(label.x1);
         }
-        let last = s.layout().label_rect(Row::Strip(2)).unwrap();
-        let new = s.layout().label_rect(Row::NewStrip).unwrap();
-        assert!(new.y0 >= last.y1, "New strip is under the last strip");
+
+        phase whoever_may_not_add_a_strip_is_offered_none;
+        // Someone the workspace does not let add a strip (a viewer, a public workspace's visitor) is
+        // offered none.
+        {
+            let (mut s, _) = switcher(&["Lounge", "Research"]);
+            s.set_model(SwitcherModel {
+                can_add: false,
+                ..model(&["Lounge", "Research"])
+            });
+            s.open_at(Instant::now(), false);
+            let rows: Vec<Row> = s.layout().labels.iter().map(|(row, _)| *row).collect();
+            assert_eq!(rows, [Row::Strip(0), Row::Strip(1)]);
+            assert_eq!(s.rows_in_order(), rows);
+        }
+
+        phase a_switcher_without_a_model_yet_offers_a_new_strip;
+        // A switcher that has no model from its host yet still offers a new strip: only an explicit
+        // refusal takes the row away.
+        {
+            let (mut s, _) = switcher(&["Lounge"]);
+            s.set_model(SwitcherModel::default());
+            s.open_at(Instant::now(), false);
+            assert_eq!(s.rows_in_order(), [Row::NewStrip]);
+        }
+
+        phase leaving_the_labels_closes_them;
+        {
+            let (mut s, zone) = switcher(&["Lounge", "Research"]);
+            let now = Instant::now();
+            s.open_at(now, false);
+            let label = s.layout().label_rect(Row::Strip(0)).unwrap();
+            s.pointer_moved(label.center(), now + ms(8), zone);
+            assert!(s.is_open());
+            s.pointer_moved(
+                Point::new(label.x0 - 120.0, label.center().y),
+                now + ms(16),
+                zone,
+            );
+            assert!(!s.is_open(), "the pointer moved away");
+        }
     }
 
-    /// The switcher has one job: it lists this workspace's strips and makes new ones, and nothing
-    /// about workspaces.
-    #[test]
-    fn the_labels_are_this_workspaces_strips_and_new_strip_only() {
-        let (mut s, _) = switcher(&["Lounge", "Research"]);
-        s.open_at(Instant::now(), false);
-        let rows: Vec<Row> = s.layout().labels.iter().map(|(row, _)| *row).collect();
-        assert_eq!(rows, [Row::Strip(0), Row::Strip(1), Row::NewStrip]);
-        let a11y = s.accessibility().expect("open labels are published");
-        let names: Vec<String> = a11y
-            .children
-            .iter()
-            .filter_map(|n| n.name.clone())
-            .collect();
-        assert!(names.iter().any(|n| n == "Lounge"));
-        assert!(names.iter().any(|n| n == "New strip"));
-        assert!(
-            !names.iter().any(|n| n.contains("orkspace")),
-            "no workspaces here: {names:?}"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_strip_switchers_labels_switch_rename_and_add_strips;
 
-    /// Someone the workspace does not let add a strip (a viewer, a public workspace's visitor) is
-    /// offered none.
-    #[test]
-    fn whoever_may_not_add_a_strip_is_offered_none() {
-        let (mut s, _) = switcher(&["Lounge", "Research"]);
-        s.set_model(SwitcherModel {
-            can_add: false,
-            ..model(&["Lounge", "Research"])
-        });
-        s.open_at(Instant::now(), false);
-        let rows: Vec<Row> = s.layout().labels.iter().map(|(row, _)| *row).collect();
-        assert_eq!(rows, [Row::Strip(0), Row::Strip(1)]);
-        assert_eq!(s.rows_in_order(), rows);
-    }
+        phase a_click_on_a_label_switches_to_its_strip;
+        {
+            let (mut s, _) = switcher(&["Lounge", "Research"]);
+            let now = Instant::now();
+            s.open_at(now, false);
+            let p = s.layout().label_rect(Row::Strip(1)).unwrap().center();
+            assert_eq!(
+                s.press(p, now),
+                Press::Command(Command::Focus(StripId(101)))
+            );
+            // Between two short labels, left of them, is not a label.
+            let label = s.layout().label_rect(Row::Strip(1)).unwrap();
+            let left = Point::new(label.x0 - 40.0, label.center().y);
+            assert_eq!(s.press(left, now + ms(800)), Press::Outside);
+        }
 
-    /// A switcher that has no model from its host yet still offers a new strip: only an explicit
-    /// refusal takes the row away.
-    #[test]
-    fn a_switcher_without_a_model_yet_offers_a_new_strip() {
-        let (mut s, _) = switcher(&["Lounge"]);
-        s.set_model(SwitcherModel::default());
-        s.open_at(Instant::now(), false);
-        assert_eq!(s.rows_in_order(), [Row::NewStrip]);
-    }
+        phase new_strip_makes_a_strip_and_puts_its_name_in_place_and_pins_the_labels;
+        // No text field in a surface that hover alone keeps up: naming pins the labels, so the pointer
+        // wandering off does not drop the name.
+        {
+            let (mut s, zone) = switcher(&["Lounge"]);
+            let now = Instant::now();
+            s.open_at(now, false);
+            let new = s.layout().label_rect(Row::NewStrip).unwrap().center();
+            assert_eq!(
+                s.press(new, now),
+                Press::Command(Command::Create("Strip 2".into())),
+                "a click makes the strip at once"
+            );
+            // The host makes it and moves to it; the model lists it.
+            let mut m = model(&["Lounge", "Strip 2"]);
+            m.focused = 1;
+            s.set_model(m);
+            s.place(&ribbon(2, 1));
+            assert!(s.is_naming() && s.takes_keys(), "its name is in place");
+            assert_eq!(s.naming_text(), Some("Strip 2"), "selected, to type over");
+            let field = s.layout().label_rect(Row::Strip(1)).unwrap();
+            assert_eq!(field.width(), FIELD_W, "the label grows into the field");
+            // The pointer leaves: the field stays.
+            s.pointer_moved(Point::new(200.0, 400.0), now + ms(30), zone);
+            assert!(s.is_open() && s.is_naming(), "naming pins the labels");
+            typed(&mut s, "Games");
+            assert_eq!(
+                enter(&mut s),
+                KeyAnswer::Command(Command::Rename(StripId(101), "Games".into()))
+            );
+            assert!(!s.is_naming());
+            s.pointer_moved(Point::new(210.0, 400.0), now + ms(60), zone);
+            assert!(!s.is_open());
+        }
 
-    #[test]
-    fn leaving_the_labels_closes_them() {
-        let (mut s, zone) = switcher(&["Lounge", "Research"]);
-        let now = Instant::now();
-        s.open_at(now, false);
-        let label = s.layout().label_rect(Row::Strip(0)).unwrap();
-        s.pointer_moved(label.center(), now + ms(8), zone);
-        assert!(s.is_open());
-        s.pointer_moved(
-            Point::new(label.x0 - 120.0, label.center().y),
-            now + ms(16),
-            zone,
-        );
-        assert!(!s.is_open(), "the pointer moved away");
-    }
+        phase a_double_click_renames_and_an_empty_or_unchanged_name_does_nothing;
+        {
+            let (mut s, _) = switcher(&["main", "Research"]);
+            let t0 = Instant::now();
+            s.open_at(t0, false);
+            let label = s.layout().label_rect(Row::Strip(0)).unwrap().center();
+            assert_eq!(
+                s.press(label, t0),
+                Press::Command(Command::Focus(StripId(100)))
+            );
+            assert_eq!(s.press(label, t0 + ms(150)), Press::Consumed);
+            assert_eq!(s.naming_text(), Some("main"), "the old name, selected");
+            typed(&mut s, "Lounge");
+            assert_eq!(
+                enter(&mut s),
+                KeyAnswer::Command(Command::Rename(StripId(100), "Lounge".into()))
+            );
+            let other = s.layout().label_rect(Row::Strip(1)).unwrap().center();
+            s.press(other, t0 + ms(1000));
+            s.press(other, t0 + ms(1100));
+            assert_eq!(enter(&mut s), KeyAnswer::Consumed);
+            s.press(other, t0 + ms(2000));
+            s.press(other, t0 + ms(2100));
+            s.key(&Key::Named(NamedKey::Backspace), ModifiersState::empty());
+            assert_eq!(s.naming_text(), Some(""));
+            assert_eq!(enter(&mut s), KeyAnswer::Consumed);
+            // Two presses far apart are two switches, not a rename.
+            s.press(other, t0 + ms(3000));
+            s.press(other, t0 + ms(4000));
+            assert!(!s.is_naming());
+            // A strip another device writes is not renamed here.
+            let mut m = model(&["Theirs"]);
+            m.strips[0].renamable = false;
+            s.set_model(m);
+            s.place(&ribbon(1, 0));
+            let theirs = s.layout().label_rect(Row::Strip(0)).unwrap().center();
+            s.press(theirs, t0 + ms(5000));
+            s.press(theirs, t0 + ms(5100));
+            assert!(!s.is_naming());
+        }
 
-    #[test]
-    fn a_click_on_a_label_switches_to_its_strip() {
-        let (mut s, _) = switcher(&["Lounge", "Research"]);
-        let now = Instant::now();
-        s.open_at(now, false);
-        let p = s.layout().label_rect(Row::Strip(1)).unwrap().center();
-        assert_eq!(
-            s.press(p, now),
-            Press::Command(Command::Focus(StripId(101)))
-        );
-        // Between two short labels, left of them, is not a label.
-        let label = s.layout().label_rect(Row::Strip(1)).unwrap();
-        let left = Point::new(label.x0 - 40.0, label.center().y);
-        assert_eq!(s.press(left, now + ms(800)), Press::Outside);
-    }
+        phase the_wheel_over_the_ribbon_or_its_labels_moves_a_strip_per_notch;
+        {
+            let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
+            let t0 = Instant::now();
+            let on = zone.center();
+            assert_eq!(
+                s.scroll(on, MouseScrollDelta::LineDelta(0.0, -1.0), t0, zone),
+                Some(Command::Step(1)),
+                "a notch toward the person: the strip below"
+            );
+            assert_eq!(
+                s.scroll(on, MouseScrollDelta::LineDelta(0.0, 1.0), t0 + ms(50), zone),
+                Some(Command::Step(-1)),
+                "away: the strip above"
+            );
+            let px = |y: f64| MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y));
+            let t1 = t0 + ms(1000);
+            assert_eq!(s.scroll(on, px(-15.0), t1, zone), None);
+            assert_eq!(s.scroll(on, px(-15.0), t1 + ms(10), zone), None);
+            assert_eq!(
+                s.scroll(on, px(-15.0), t1 + ms(20), zone),
+                Some(Command::Step(1))
+            );
+            assert_eq!(
+                s.scroll(
+                    Point::new(400.0, 400.0),
+                    MouseScrollDelta::LineDelta(0.0, -1.0),
+                    t1 + ms(900),
+                    zone
+                ),
+                None
+            );
+            s.open_at(t1, false);
+            let label = s.layout().label_rect(Row::Strip(0)).unwrap();
+            assert_eq!(
+                s.scroll(
+                    label.center(),
+                    MouseScrollDelta::LineDelta(0.0, -1.0),
+                    t1 + ms(2000),
+                    zone
+                ),
+                Some(Command::Step(1))
+            );
+        }
 
-    /// No text field in a surface that hover alone keeps up: naming pins the labels, so the pointer
-    /// wandering off does not drop the name.
-    #[test]
-    fn new_strip_makes_a_strip_and_puts_its_name_in_place_and_pins_the_labels() {
-        let (mut s, zone) = switcher(&["Lounge"]);
-        let now = Instant::now();
-        s.open_at(now, false);
-        let new = s.layout().label_rect(Row::NewStrip).unwrap().center();
-        assert_eq!(
-            s.press(new, now),
-            Press::Command(Command::Create("Strip 2".into())),
-            "a click makes the strip at once"
-        );
-        // The host makes it and moves to it; the model lists it.
-        let mut m = model(&["Lounge", "Strip 2"]);
-        m.focused = 1;
-        s.set_model(m);
-        s.place(&ribbon(2, 1));
-        assert!(s.is_naming() && s.takes_keys(), "its name is in place");
-        assert_eq!(s.naming_text(), Some("Strip 2"), "selected, to type over");
-        let field = s.layout().label_rect(Row::Strip(1)).unwrap();
-        assert_eq!(field.width(), FIELD_W, "the label grows into the field");
-        // The pointer leaves: the field stays.
-        s.pointer_moved(Point::new(200.0, 400.0), now + ms(30), zone);
-        assert!(s.is_open() && s.is_naming(), "naming pins the labels");
-        typed(&mut s, "Games");
-        assert_eq!(
-            enter(&mut s),
-            KeyAnswer::Command(Command::Rename(StripId(101), "Games".into()))
-        );
-        assert!(!s.is_naming());
-        s.pointer_moved(Point::new(210.0, 400.0), now + ms(60), zone);
-        assert!(!s.is_open());
-    }
+        phase the_keyboard_walks_the_labels_and_takes_one;
+        {
+            let (mut s, _) = switcher(&["Lounge", "Research"]);
+            s.toggle_from_keyboard(Instant::now());
+            assert!(s.is_open() && s.takes_keys());
+            assert_eq!(s.selected(), Some(Row::Strip(0)));
+            let none = ModifiersState::empty();
+            s.key(&Key::Named(NamedKey::ArrowDown), none);
+            assert_eq!(s.selected(), Some(Row::Strip(1)));
+            assert_eq!(
+                enter(&mut s),
+                KeyAnswer::Command(Command::Focus(StripId(101)))
+            );
+            assert!(
+                !s.is_open(),
+                "a choice closes labels opened by the keyboard"
+            );
 
-    #[test]
-    fn a_double_click_renames_and_an_empty_or_unchanged_name_does_nothing() {
-        let (mut s, _) = switcher(&["main", "Research"]);
-        let t0 = Instant::now();
-        s.open_at(t0, false);
-        let label = s.layout().label_rect(Row::Strip(0)).unwrap().center();
-        assert_eq!(
-            s.press(label, t0),
-            Press::Command(Command::Focus(StripId(100)))
-        );
-        assert_eq!(s.press(label, t0 + ms(150)), Press::Consumed);
-        assert_eq!(s.naming_text(), Some("main"), "the old name, selected");
-        typed(&mut s, "Lounge");
-        assert_eq!(
-            enter(&mut s),
-            KeyAnswer::Command(Command::Rename(StripId(100), "Lounge".into()))
-        );
-        let other = s.layout().label_rect(Row::Strip(1)).unwrap().center();
-        s.press(other, t0 + ms(1000));
-        s.press(other, t0 + ms(1100));
-        assert_eq!(enter(&mut s), KeyAnswer::Consumed);
-        s.press(other, t0 + ms(2000));
-        s.press(other, t0 + ms(2100));
-        s.key(&Key::Named(NamedKey::Backspace), ModifiersState::empty());
-        assert_eq!(s.naming_text(), Some(""));
-        assert_eq!(enter(&mut s), KeyAnswer::Consumed);
-        // Two presses far apart are two switches, not a rename.
-        s.press(other, t0 + ms(3000));
-        s.press(other, t0 + ms(4000));
-        assert!(!s.is_naming());
-        // A strip another device writes is not renamed here.
-        let mut m = model(&["Theirs"]);
-        m.strips[0].renamable = false;
-        s.set_model(m);
-        s.place(&ribbon(1, 0));
-        let theirs = s.layout().label_rect(Row::Strip(0)).unwrap().center();
-        s.press(theirs, t0 + ms(5000));
-        s.press(theirs, t0 + ms(5100));
-        assert!(!s.is_naming());
-    }
+            s.toggle_from_keyboard(Instant::now());
+            s.key(&Key::Named(NamedKey::F2), none);
+            assert!(s.is_naming());
+            assert_eq!(
+                s.key(&Key::Named(NamedKey::Escape), none),
+                KeyAnswer::Consumed
+            );
+            assert!(
+                !s.is_naming() && s.is_open(),
+                "Escape leaves the name first"
+            );
+            s.key(&Key::Named(NamedKey::End), none);
+            assert_eq!(s.selected(), Some(Row::NewStrip));
+            assert_eq!(
+                enter(&mut s),
+                KeyAnswer::Command(Command::Create("Strip 3".into()))
+            );
+            assert!(s.is_open(), "the new strip's name comes next");
+            assert_eq!(
+                s.key(&Key::Named(NamedKey::Escape), none),
+                KeyAnswer::Consumed
+            );
+            assert!(!s.is_open());
+        }
 
-    #[test]
-    fn the_wheel_over_the_ribbon_or_its_labels_moves_a_strip_per_notch() {
-        let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
-        let t0 = Instant::now();
-        let on = zone.center();
-        assert_eq!(
-            s.scroll(on, MouseScrollDelta::LineDelta(0.0, -1.0), t0, zone),
-            Some(Command::Step(1)),
-            "a notch toward the person: the strip below"
-        );
-        assert_eq!(
-            s.scroll(on, MouseScrollDelta::LineDelta(0.0, 1.0), t0 + ms(50), zone),
-            Some(Command::Step(-1)),
-            "away: the strip above"
-        );
-        let px = |y: f64| MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y));
-        let t1 = t0 + ms(1000);
-        assert_eq!(s.scroll(on, px(-15.0), t1, zone), None);
-        assert_eq!(s.scroll(on, px(-15.0), t1 + ms(10), zone), None);
-        assert_eq!(
-            s.scroll(on, px(-15.0), t1 + ms(20), zone),
-            Some(Command::Step(1))
-        );
-        assert_eq!(
-            s.scroll(
-                Point::new(400.0, 400.0),
-                MouseScrollDelta::LineDelta(0.0, -1.0),
-                t1 + ms(900),
-                zone
-            ),
-            None
-        );
-        s.open_at(t1, false);
-        let label = s.layout().label_rect(Row::Strip(0)).unwrap();
-        assert_eq!(
-            s.scroll(
-                label.center(),
-                MouseScrollDelta::LineDelta(0.0, -1.0),
-                t1 + ms(2000),
-                zone
-            ),
-            Some(Command::Step(1))
-        );
-    }
+        phase labels_light_only_once_the_pointer_settles;
+        {
+            let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
+            let t0 = Instant::now();
+            s.open_at(t0, false);
+            let r0 = s.layout().label_rect(Row::Strip(0)).unwrap();
+            let r2 = s.layout().label_rect(Row::Strip(2)).unwrap();
+            // Crossing label 0 quickly on the way to label 2.
+            s.pointer_moved(Point::new(r0.center().x, r0.y0 - 4.0), t0 + ms(8), zone);
+            s.pointer_moved(r0.center(), t0 + ms(16), zone);
+            assert_eq!(s.hover(), None, "in transit over label 0");
+            s.pointer_moved(r2.center(), t0 + ms(24), zone);
+            assert!(s.deadline(t0 + ms(24), zone).is_some(), "wakes to light it");
+            s.settle(t0 + ms(100), zone);
+            assert_eq!(s.hover(), Some(Target::Row(Row::Strip(2))));
+            assert_eq!(s.lit_strip(), Some(2), "and its mark lights with it");
+        }
 
-    #[test]
-    fn the_keyboard_walks_the_labels_and_takes_one() {
-        let (mut s, _) = switcher(&["Lounge", "Research"]);
-        s.toggle_from_keyboard(Instant::now());
-        assert!(s.is_open() && s.takes_keys());
-        assert_eq!(s.selected(), Some(Row::Strip(0)));
-        let none = ModifiersState::empty();
-        s.key(&Key::Named(NamedKey::ArrowDown), none);
-        assert_eq!(s.selected(), Some(Row::Strip(1)));
-        assert_eq!(
-            enter(&mut s),
-            KeyAnswer::Command(Command::Focus(StripId(101)))
-        );
-        assert!(
-            !s.is_open(),
-            "a choice closes labels opened by the keyboard"
-        );
-
-        s.toggle_from_keyboard(Instant::now());
-        s.key(&Key::Named(NamedKey::F2), none);
-        assert!(s.is_naming());
-        assert_eq!(
-            s.key(&Key::Named(NamedKey::Escape), none),
-            KeyAnswer::Consumed
-        );
-        assert!(
-            !s.is_naming() && s.is_open(),
-            "Escape leaves the name first"
-        );
-        s.key(&Key::Named(NamedKey::End), none);
-        assert_eq!(s.selected(), Some(Row::NewStrip));
-        assert_eq!(
-            enter(&mut s),
-            KeyAnswer::Command(Command::Create("Strip 3".into()))
-        );
-        assert!(s.is_open(), "the new strip's name comes next");
-        assert_eq!(
-            s.key(&Key::Named(NamedKey::Escape), none),
-            KeyAnswer::Consumed
-        );
-        assert!(!s.is_open());
-    }
-
-    #[test]
-    fn labels_light_only_once_the_pointer_settles() {
-        let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
-        let t0 = Instant::now();
-        s.open_at(t0, false);
-        let r0 = s.layout().label_rect(Row::Strip(0)).unwrap();
-        let r2 = s.layout().label_rect(Row::Strip(2)).unwrap();
-        // Crossing label 0 quickly on the way to label 2.
-        s.pointer_moved(Point::new(r0.center().x, r0.y0 - 4.0), t0 + ms(8), zone);
-        s.pointer_moved(r0.center(), t0 + ms(16), zone);
-        assert_eq!(s.hover(), None, "in transit over label 0");
-        s.pointer_moved(r2.center(), t0 + ms(24), zone);
-        assert!(s.deadline(t0 + ms(24), zone).is_some(), "wakes to light it");
-        s.settle(t0 + ms(100), zone);
-        assert_eq!(s.hover(), Some(Target::Row(Row::Strip(2))));
-        assert_eq!(s.lit_strip(), Some(2), "and its mark lights with it");
-    }
-
-    #[test]
-    fn semantic_targets_activate_like_presses() {
-        let (mut s, _) = switcher(&["Lounge", "Research"]);
-        s.open_at(Instant::now(), false);
-        let name = StripSwitcher::target_name(Target::Row(Row::Strip(1)));
-        assert_eq!(
-            s.activate_target(&name),
-            Some(Press::Command(Command::Focus(StripId(101))))
-        );
-        assert_eq!(
-            s.activate_target(&StripSwitcher::rename_target_name(0)),
-            Some(Press::Consumed)
-        );
-        assert!(s.is_naming());
-        assert_eq!(s.activate_target("palette:query"), None);
-        let a11y = s.accessibility().expect("open labels are published");
-        assert!(a11y.children.len() >= 5);
+        phase semantic_targets_activate_like_presses;
+        {
+            let (mut s, _) = switcher(&["Lounge", "Research"]);
+            s.open_at(Instant::now(), false);
+            let name = StripSwitcher::target_name(Target::Row(Row::Strip(1)));
+            assert_eq!(
+                s.activate_target(&name),
+                Some(Press::Command(Command::Focus(StripId(101))))
+            );
+            assert_eq!(
+                s.activate_target(&StripSwitcher::rename_target_name(0)),
+                Some(Press::Consumed)
+            );
+            assert!(s.is_naming());
+            assert_eq!(s.activate_target("palette:query"), None);
+            let a11y = s.accessibility().expect("open labels are published");
+            assert!(a11y.children.len() >= 5);
+        }
     }
 }

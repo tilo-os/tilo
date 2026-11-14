@@ -16,9 +16,10 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-use tilo_session_client::{Cmd, Event, Link, Outbox, VoiceEvent};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox, VoiceEvent};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
+use collab_types::WorkspaceId;
 use collab_types::scope::Scope;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use serde_json::{Value, json};
@@ -41,7 +42,7 @@ const TICK: Duration = Duration::from_millis(20);
 const HEARTBEAT_TICKS: u64 = 250;
 /// The workspace scope's content keys, as its members derive them: what seals
 /// every frame the page and the native device exchange.
-fn channel_keys(channel: collab_types::ChannelId) -> ChannelContentKeys {
+fn channel_keys(channel: collab_types::WorkspaceId) -> ChannelContentKeys {
     ChannelGroup::create(channel, MemberKey::generate("alice").unwrap())
         .unwrap()
         .content_keys()
@@ -124,12 +125,13 @@ fn call_operation(body: &[u8]) -> Option<CallOperation> {
 struct Page {
     workspace: String,
     peer: Link,
+    heard: Events,
 }
 
 impl Page {
     fn events(&self) -> Value {
         let events: Vec<Value> = self
-            .peer
+            .heard
             .drain()
             .into_iter()
             .filter_map(|event| match event {
@@ -270,7 +272,7 @@ impl Native {
     fn step(
         &mut self,
         client: &tilo_relay::RelayClient,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         call: [u8; 32],
         participation: [u8; 32],
     ) {
@@ -316,21 +318,23 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     let governed = crate::call::GovernedCall::start().await;
     let (_, bob_device) = governed.invite("bob-browser").await;
     let page_device = bob_device.cert.device_public_key;
+    let peer = crate::support::start_peer(
+        governed.iroh(),
+        bob_device.cert,
+        governed.host.cert.clone(),
+        bob_device.key,
+    );
     let page = Arc::new(Page {
         workspace: governed.cluster_id.clone(),
-        peer: crate::support::start_peer(
-            governed.iroh(),
-            bob_device.cert,
-            governed.host.cert.clone(),
-            bob_device.key,
-        ),
+        heard: peer.events(),
+        peer,
     });
     page.peer.send(Cmd::Join(governed.workspace_id)).unwrap();
     crate::support::ready(&[&page.peer]).await;
 
     // The plane's frames are sealed with the workspace scope's keys; the page
     // holds them as a workspace member, and so does the device it calls.
-    let keys = channel_keys(collab_types::ChannelId::new());
+    let keys = channel_keys(collab_types::WorkspaceId::new());
     page.peer
         .send(Cmd::InstallChannelKeys(
             plane_route(&governed.cluster_id),

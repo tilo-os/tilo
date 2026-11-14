@@ -97,15 +97,17 @@ impl Span {
 mod tests {
     use super::*;
 
-    #[test]
-    fn resource_traces_are_free_when_disabled_and_survive_serialisation() {
-        // phase: disabled_spans_have_no_clock_or_record
+    tilo_test_env::scenario! {
+        fn resource_traces_are_free_when_disabled_and_survive_serialisation;
+
+        phase disabled_spans_have_no_clock_or_record;
         {
             let span = Span::with_enabled(Stage::ResourceCache, 9, 3, false);
             assert!(span.start.is_none());
             assert!(span.into_row(CacheResult::Hit).is_none());
         }
-        // phase: cache_results_and_generations_survive_serialization
+
+        phase cache_results_and_generations_survive_serialization;
         {
             for (stage, stage_name, result, result_name) in [
                 (

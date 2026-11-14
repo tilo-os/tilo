@@ -483,97 +483,103 @@ mod tests {
         drop(inventory);
         drop(scratch);
     }
-    #[test]
-    fn original_omission_refuses_arbitrary_private_paths_and_duplicate_claims() {
-        let temporary = tempfile::tempdir().unwrap();
-        let home = temporary.path().join("home");
-        fs::create_dir(&home).unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("HOME", &home);
-        environment.set("XDG_STATE_HOME", home.join(".local/state"));
-        let namespace = home.join(".local/state/tilo/installer/preparations");
-        fs::create_dir_all(&namespace).unwrap();
-        fs::set_permissions(&namespace, fs::Permissions::from_mode(0o700)).unwrap();
-        let proof = OriginalPreparation::review(&home)
-            .unwrap()
-            .unwrap()
-            .validate_original(&home, rustix::process::getuid().as_raw())
-            .unwrap()
-            .remove(0);
-        assert!(OriginalOmission::validate_shapes(&[proof.clone(), proof.clone()]).is_err());
-        let mut forged = serde_json::to_value(&proof).unwrap();
-        forged["relative"] =
-            serde_json::to_value(NativePath::encode(Path::new(".hidden/private"))).unwrap();
-        let forged: OriginalOmission = serde_json::from_value(forged).unwrap();
-        assert!(forged.validate_shape().is_err());
-        let mut forged = proof;
-        forged.facts.0 += 1;
-        assert!(
-            OriginalOmission::validate_set(
-                &[forged],
-                &File::open(home).unwrap(),
-                rustix::process::getuid().as_raw(),
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn preparation_outside_selected_home_is_not_an_omission() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        fs::create_dir(&home).unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("HOME", &home);
-        environment.set("XDG_STATE_HOME", temp.path().join("outside"));
-        assert!(OriginalPreparation::review(&home).unwrap().is_none());
-    }
-    #[test]
-    fn original_capture_leaves_out_the_setups_settings_lock_by_its_registered_identity() {
-        let temporary = tempfile::tempdir().unwrap();
-        let home = temporary.path().canonicalize().unwrap().join("home");
-        fs::create_dir(&home).unwrap();
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("HOME", &home);
-        environment.set("XDG_STATE_HOME", home.join(".local/state"));
-        environment.set("XDG_CONFIG_HOME", home.join(".config"));
-        let namespace = home.join(".local/state/tilo/installer/preparations");
-        fs::create_dir_all(&namespace).unwrap();
-        fs::set_permissions(&namespace, fs::Permissions::from_mode(0o700)).unwrap();
-        // The setup held its settings profile in this Home; its lock stays.
-        let records =
-            tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-        fs::create_dir_all(records.dir()).unwrap();
-        let [lock, _] = records.runtime_files();
-        fs::write(&lock, b"").unwrap();
-        fs::write(records.dir().join("person.automerge"), b"real settings").unwrap();
-        fs::write(home.join("document"), b"real document").unwrap();
-        let proofs = OriginalPreparation::review(&home)
-            .unwrap()
-            .unwrap()
-            .validate_original(&home, rustix::process::getuid().as_raw())
-            .unwrap();
-        assert_eq!(proofs.len(), 2);
-        // The reader resolves nothing from its own environment.
-        environment.set("XDG_CONFIG_HOME", temporary.path().join("elsewhere"));
-        let pin = PinnedDirectory::open_absolute(&home).unwrap();
-        let inventory = SourceInventory::capture_original_home(&pin, &proofs).unwrap();
-        let relative = lock.strip_prefix(&home).unwrap();
-        assert!(inventory.facts.get(relative).unwrap().is_none());
-        assert_eq!(
-            inventory.summary().unwrap().files,
-            2,
-            "the document and settings"
-        );
-        // Only the settings lock's own place may be claimed.
-        let mut forged = serde_json::to_value(&proofs[1]).unwrap();
-        forged["relative"] =
-            serde_json::to_value(NativePath::encode(Path::new("document"))).unwrap();
-        let forged: OriginalOmission = serde_json::from_value(forged).unwrap();
-        assert!(forged.validate_shape().is_err());
-        // A different file in its place is Home data again.
-        fs::write(records.dir().join("replacement"), b"").unwrap();
-        fs::rename(records.dir().join("replacement"), &lock).unwrap();
-        assert!(SourceInventory::capture_original_home(&pin, &proofs).is_err());
+    tilo_test_env::scenario! {
+        fn original_omissions_are_admitted_only_by_registered_identity;
+
+        phase original_omission_refuses_arbitrary_private_paths_and_duplicate_claims;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let home = temporary.path().join("home");
+            fs::create_dir(&home).unwrap();
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.set("HOME", &home);
+            environment.set("XDG_STATE_HOME", home.join(".local/state"));
+            let namespace = home.join(".local/state/tilo/installer/preparations");
+            fs::create_dir_all(&namespace).unwrap();
+            fs::set_permissions(&namespace, fs::Permissions::from_mode(0o700)).unwrap();
+            let proof = OriginalPreparation::review(&home)
+                .unwrap()
+                .unwrap()
+                .validate_original(&home, rustix::process::getuid().as_raw())
+                .unwrap()
+                .remove(0);
+            assert!(OriginalOmission::validate_shapes(&[proof.clone(), proof.clone()]).is_err());
+            let mut forged = serde_json::to_value(&proof).unwrap();
+            forged["relative"] =
+                serde_json::to_value(NativePath::encode(Path::new(".hidden/private"))).unwrap();
+            let forged: OriginalOmission = serde_json::from_value(forged).unwrap();
+            assert!(forged.validate_shape().is_err());
+            let mut forged = proof;
+            forged.facts.0 += 1;
+            assert!(
+                OriginalOmission::validate_set(
+                    &[forged],
+                    &File::open(home).unwrap(),
+                    rustix::process::getuid().as_raw(),
+                )
+                .is_err()
+            );
+        }
+
+        phase preparation_outside_selected_home_is_not_an_omission;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let home = temp.path().join("home");
+            fs::create_dir(&home).unwrap();
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.set("HOME", &home);
+            environment.set("XDG_STATE_HOME", temp.path().join("outside"));
+            assert!(OriginalPreparation::review(&home).unwrap().is_none());
+        }
+
+        phase original_capture_leaves_out_the_setups_settings_lock_by_its_registered_identity;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let home = temporary.path().canonicalize().unwrap().join("home");
+            fs::create_dir(&home).unwrap();
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.set("HOME", &home);
+            environment.set("XDG_STATE_HOME", home.join(".local/state"));
+            environment.set("XDG_CONFIG_HOME", home.join(".config"));
+            let namespace = home.join(".local/state/tilo/installer/preparations");
+            fs::create_dir_all(&namespace).unwrap();
+            fs::set_permissions(&namespace, fs::Permissions::from_mode(0o700)).unwrap();
+            // The setup held its settings profile in this Home; its lock stays.
+            let records =
+                tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
+            fs::create_dir_all(records.dir()).unwrap();
+            let [lock, _] = records.runtime_files();
+            fs::write(&lock, b"").unwrap();
+            fs::write(records.dir().join("person.automerge"), b"real settings").unwrap();
+            fs::write(home.join("document"), b"real document").unwrap();
+            let proofs = OriginalPreparation::review(&home)
+                .unwrap()
+                .unwrap()
+                .validate_original(&home, rustix::process::getuid().as_raw())
+                .unwrap();
+            assert_eq!(proofs.len(), 2);
+            // The reader resolves nothing from its own environment.
+            environment.set("XDG_CONFIG_HOME", temporary.path().join("elsewhere"));
+            let pin = PinnedDirectory::open_absolute(&home).unwrap();
+            let inventory = SourceInventory::capture_original_home(&pin, &proofs).unwrap();
+            let relative = lock.strip_prefix(&home).unwrap();
+            assert!(inventory.facts.get(relative).unwrap().is_none());
+            assert_eq!(
+                inventory.summary().unwrap().files,
+                2,
+                "the document and settings"
+            );
+            // Only the settings lock's own place may be claimed.
+            let mut forged = serde_json::to_value(&proofs[1]).unwrap();
+            forged["relative"] =
+                serde_json::to_value(NativePath::encode(Path::new("document"))).unwrap();
+            let forged: OriginalOmission = serde_json::from_value(forged).unwrap();
+            assert!(forged.validate_shape().is_err());
+            // A different file in its place is Home data again.
+            fs::write(records.dir().join("replacement"), b"").unwrap();
+            fs::rename(records.dir().join("replacement"), &lock).unwrap();
+            assert!(SourceInventory::capture_original_home(&pin, &proofs).is_err());
+        }
     }
 }

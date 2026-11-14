@@ -521,6 +521,10 @@ impl App {
             ssh_port: forwarded_port::select(registry, &source.hypervisor, None)?,
             uuid: source_uuid.is_none().then_some(uuid),
             nic_mac: Some(mac),
+            // A NIC of its own on the host network, unless its source has that turned off.
+            lan: (adapter.joins_lan() && source.lan.as_deref() != Some(crate::lan::OFF))
+                .then(|| crate::lan::new_mac(|mac| super::lan_taken(registry, mac)))
+                .or_else(|| source.lan.clone().filter(|lan| lan == crate::lan::OFF)),
             branched_from: Some(src.to_owned()),
             awaits_host: Some(src.to_owned()),
             template: source_uuid.map_or_else(|| source.template.clone(), |_| Some(src.to_owned())),

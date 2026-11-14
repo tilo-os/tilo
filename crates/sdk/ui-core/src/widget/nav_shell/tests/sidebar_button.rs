@@ -39,9 +39,39 @@ fn three_clicks(shell: NavShell, width: u32, placement: SidebarPlacement) -> boo
     first
 }
 
-#[test]
-fn the_bars_sidebar_button_flips_a_docked_sidebar() {
-    assert!(three_clicks(mail_shell(), 1280, SidebarPlacement::Docked));
+tilo_test_env::scenario! {
+    fn the_bar_s_sidebar_button_flips_the_sidebar_and_keeps_the_way_back;
+
+    phase hiding_a_sidebar_screen_returns_to_the_screen_in_front;
+    {
+        let mut h = harness(mail_shell(), 560, 800, Theme::dark());
+        h.present_in_window_bar();
+        settle(&mut h, 560, 800);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+        h.root_mut::<NavShell>().show(NavPane::Sidebar);
+        settle(&mut h, 560, 800);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+        assert!(
+            h.root_mut::<NavShell>()
+                .window_toolbar_event(&crate::window_toolbar::ToolbarEvent::ToggleSidebar)
+        );
+        settle(&mut h, 560, 800);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    }
+
+    phase agreement_needs_the_bar_the_shell_and_the_frame;
+    {
+        let state = |bar, shell, frame| SidebarShown { bar, shell, frame };
+        assert_eq!(state(true, true, true).agreed(), Some(true));
+        assert_eq!(state(false, false, false).agreed(), Some(false));
+        assert_eq!(state(true, false, false).agreed(), None);
+        assert_eq!(state(false, false, true).agreed(), None);
+    }
+
+    phase the_bars_sidebar_button_flips_a_docked_sidebar;
+    {
+        assert!(three_clicks(mail_shell(), 1280, SidebarPlacement::Docked));
+    }
 }
 
 /// A narrow window shows one screen at a time: the list the window opened on is a place, with
@@ -108,38 +138,12 @@ fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
 }
 
 #[test]
-fn hiding_a_sidebar_screen_returns_to_the_screen_in_front() {
-    let mut h = harness(mail_shell(), 560, 800, Theme::dark());
-    h.present_in_window_bar();
-    settle(&mut h, 560, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    h.root_mut::<NavShell>().show(NavPane::Sidebar);
-    settle(&mut h, 560, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
-    assert!(
-        h.root_mut::<NavShell>()
-            .window_toolbar_event(&crate::window_toolbar::ToolbarEvent::ToggleSidebar)
-    );
-    settle(&mut h, 560, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-}
-
-#[test]
 fn the_bars_sidebar_button_flips_a_sidebar_drawer() {
     let shell = NavShell::new()
         .content_kind(ContentKind::Document)
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0);
     assert!(!three_clicks(shell, 400, SidebarPlacement::Drawer));
-}
-
-#[test]
-fn agreement_needs_the_bar_the_shell_and_the_frame() {
-    let state = |bar, shell, frame| SidebarShown { bar, shell, frame };
-    assert_eq!(state(true, true, true).agreed(), Some(true));
-    assert_eq!(state(false, false, false).agreed(), Some(false));
-    assert_eq!(state(true, false, false).agreed(), None);
-    assert_eq!(state(false, false, true).agreed(), None);
 }
 
 /// A narrow window whose sidebar is its places — a page beside the sections it has: the places

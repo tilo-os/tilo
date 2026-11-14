@@ -1486,10 +1486,17 @@ impl TextInput {
         self
     }
 
+    /// Where a value the field is handed, rather than typed into, puts the caret: after it, where
+    /// typing goes on, unless the field is only read, where the value is shown from its start —
+    /// a caret at the end would drag the view to a link's meaningless tail.
+    fn caret_for_value(&self) -> usize {
+        if self.read_only { 0 } else { self.text.len() }
+    }
+
     #[must_use]
     pub fn with_initial_value(mut self, s: &str) -> Self {
         self.text = s.to_string();
-        self.core.set_caret(self.text.len());
+        self.core.set_caret(self.caret_for_value());
         self.dirty = false;
         self.last_notified_text.clone_from(&self.text);
         self.publish_local_state();
@@ -1508,7 +1515,7 @@ impl TextInput {
         }
         self.text = s.to_string();
         self.core.collapse();
-        self.core.set_caret(self.text.len());
+        self.core.set_caret(self.caret_for_value());
         self.clamp_to_text();
         self.scroll_x = 0.0;
         self.dirty = false;
@@ -3854,6 +3861,14 @@ impl TextInput {
             self.pending_paste = None;
             self.drop_shaped_layouts();
             self.layout_dirty = true;
+            if read_only && !self.is_focused {
+                // A value set while the field was still editable sat its caret at the end: shown
+                // for reading it starts at the beginning, where the person reads it. A field the
+                // person is in keeps its caret, so a lock that lifts puts them back where they
+                // were typing.
+                self.core.set_caret(0);
+                self.scroll_x = 0.0;
+            }
         }
     }
 
@@ -5308,11 +5323,7 @@ impl Widget for TextInput {
         let text_size = self.effective_font_size();
         let line_height =
             f64::from(text_size * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO);
-        let padding_x = if self.plain {
-            0.0
-        } else {
-            f64::from(theme.padding_standard)
-        };
+        let padding_x = self.text_padding_x(theme);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
 
         // `char_x_positions` remains as a compatibility/readback surface, but
@@ -5335,7 +5346,7 @@ impl Widget for TextInput {
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
         let content_w = f64::from(total_w).max(cursor_x_offset);
-        self.update_single_line_scroll(cursor_x_offset, content_w, padding_x, theme.caret_width);
+        self.update_single_line_scroll(cursor_x_offset, content_w, theme);
         self.hand_line_to_host(
             text_renderer,
             transform,
@@ -5345,14 +5356,19 @@ impl Widget for TextInput {
             text_y,
         );
 
-        // Text never runs under the show/hide control.
-        let text_clip = if self.has_reveal_control() {
-            let mut clip = self.rect;
-            clip.x1 = (clip.x1 - RevealToggle::width_for(clip.height())).max(clip.x0);
-            RoundedRect::from_rect(clip, f64::from(theme.tokens.radii.control))
-        } else {
-            shape
-        };
+        // The text shows only in the room its scroll keeps the caret in: inside the field's inset
+        // on both edges, never under the show/hide control or the trailing accessory.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "sums of a few on-screen insets, far inside f64's range"
+        )]
+        let text_clip = Rect::new(
+            self.rect.x0 + padding_x,
+            self.rect.y0,
+            (self.rect.x0 + padding_x + self.text_room(theme) + theme.caret_width)
+                .min(self.rect.x1),
+            self.rect.y1,
+        );
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
@@ -5360,22 +5376,6 @@ impl Widget for TextInput {
             transform,
             &text_clip,
         );
-        // The text never runs under the trailing accessory.
-        let accessory = self.accessory_room();
-        if accessory > 0.0 {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                transform,
-                &Rect::new(
-                    self.rect.x0,
-                    self.rect.y0,
-                    self.rect.x1 - accessory,
-                    self.rect.y1,
-                ),
-            );
-        }
 
         let own_text = !self.host_shows_text;
         if own_text {
@@ -5388,7 +5388,6 @@ impl Widget for TextInput {
         self.draw_single_line_text(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &display,
-            padding_x,
         );
         #[cfg(test)]
         drop(glyph_probe);
@@ -5400,9 +5399,6 @@ impl Widget for TextInput {
             self.draw_single_line_caret(scene, transform, theme);
         }
 
-        if accessory > 0.0 {
-            scene.pop_layer();
-        }
         scene.pop_layer();
         if self.has_reveal_control() {
             self.refresh_reveal_control();

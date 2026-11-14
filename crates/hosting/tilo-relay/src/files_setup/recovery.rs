@@ -5,6 +5,7 @@ use super::{
     Context, IdentityPaths, Path, PathBuf, Result, WorkspaceAuthority, WorkspaceAuthorityEnvelope,
     capabilities, existing_person, new_cache, require_files_access,
 };
+use collab_types::WorkspaceId;
 use std::sync::{Arc, RwLock};
 
 #[derive(clap::Args, Debug)]
@@ -20,7 +21,7 @@ pub(crate) struct JoinOptions {
     #[arg(long)]
     pub service: String,
     #[arg(long)]
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     #[arg(long)]
     pub files_workspace_id: uuid::Uuid,
     #[arg(long)]

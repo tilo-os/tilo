@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use tilo_actions::remote::Caller;
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
-use tilo_actions::remote::{Caller, CallerPrincipal};
-use ui::permissions::{ActionKind, Actor, Answer, PermissionContext, Standing, TreePath};
+use ui::permissions::{Acting, ActionKind, Answer, PermissionContext, Standing, TreePath};
 use ui::record::{RecordId, RecordStore};
 
 use tilo_feedback::{
@@ -67,7 +67,7 @@ impl Enrollment {
             owner: caller(owner),
             reporter: caller(reporter),
             permissions: PermissionContext::new(
-                Actor::person(standing.person_id().unwrap_or_default()).in_workspace(workspace),
+                Acting::person(standing.person_id().unwrap_or_default()),
                 serde_json::from_value(admission.sandbox.clone())?,
                 standing,
             )
@@ -97,7 +97,7 @@ impl Enrollment {
             return Err(Error::ReceiptMismatch);
         }
         let identity = |caller: &Caller| -> Result<Identity, Error> {
-            let CallerPrincipal::Person(person) = caller.principal() else {
+            let Some(person) = caller.acting().person_id() else {
                 return Err(Error::Invalid("certified person required"));
             };
             let user = *caller.user_public_key().ok_or(Error::ReceiptMismatch)?;

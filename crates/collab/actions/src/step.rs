@@ -356,133 +356,137 @@ mod tests {
         }
     }
 
-    /// A step's kind is its action's own declaration where it names one, and
-    /// the part of the record it acts on where it does not.
-    #[test]
-    fn a_steps_kind_is_declared_else_read_from_the_part_it_acts_on() {
-        let text = InteractionAnchor::Text {
-            region: "text".into(),
-            ranges: vec![InteractionTextRange {
-                block: "note".into(),
-                start: 0,
-                end: 0,
-            }],
-        };
-        let created = interaction(Some(StepKind::Create), InteractionAnchor::Resource, "Tasks");
-        assert_eq!(Step::of_interaction(&created).kind, StepKind::Create);
-        let written = interaction(None, text, "Trip plan");
-        let writing = Step::of_interaction(&written);
-        assert_eq!(writing.kind, StepKind::Write);
-        assert_eq!(writing.message(), (WRITING, Some(("record", "Trip plan"))));
-        let items = InteractionAnchor::ListItems {
-            ids: vec!["issue-1".into()],
-        };
-        assert_eq!(
-            Step::of_interaction(&interaction(None, items, "Book the ferry")).kind,
-            StepKind::Edit,
-            "an item's own step changes that item"
-        );
-        assert_eq!(
-            Step::of_interaction(&interaction(None, InteractionAnchor::Resource, "Issues")).kind,
-            StepKind::Work
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_step_names_its_kind_and_record;
 
-    /// A declared kind says the record, and the app where nothing is named
-    /// yet; a kind with no name says only what it is.
-    #[test]
-    fn a_step_names_its_record_or_says_only_what_it_is() {
-        let made = interaction(
-            Some(StepKind::Create),
-            InteractionAnchor::Resource,
-            "Issues",
-        );
-        let created = Step::of_interaction(&made).in_app(Some(" Tasks "));
-        assert_eq!(created.message(), (CREATING, Some(("record", "Issues"))));
-        // A create whose declaration names the collection it adds to says what
-        // it makes: the record's kind and that collection.
-        let mut declaring = made.clone();
-        declaring.action.creates = Some(" issues ".into());
-        assert_eq!(
-            Step::of_interaction(&declaring).makes,
-            Some(("tasks.tracker", "issues")),
-            "what it makes, named by the record's kind and its collection"
-        );
-        assert_eq!(created.makes, None, "a create that names none makes none");
-        assert_eq!(
-            Step::new(StepKind::Create, None)
-                .in_app(Some("Tasks"))
-                .message(),
-            (CREATING, Some(("record", "Tasks")))
-        );
-        assert_eq!(
-            Step::new(StepKind::Delete, None).message(),
-            (WORKING_ALONE, None)
-        );
-        assert_eq!(
-            Step::new(StepKind::Run, Some("Terminal")).running(Some("cargo build")),
-            Step {
-                kind: StepKind::Run,
-                record: Some("Terminal"),
-                app: None,
-                command: Some("cargo build"),
-                makes: None,
+        phase a_steps_kind_is_declared_else_read_from_the_part_it_acts_on;
+        // A step's kind is its action's own declaration where it names one, and
+        // the part of the record it acts on where it does not.
+        {
+            let text = InteractionAnchor::Text {
+                region: "text".into(),
+                ranges: vec![InteractionTextRange {
+                    block: "note".into(),
+                    start: 0,
+                    end: 0,
+                }],
+            };
+            let created = interaction(Some(StepKind::Create), InteractionAnchor::Resource, "Tasks");
+            assert_eq!(Step::of_interaction(&created).kind, StepKind::Create);
+            let written = interaction(None, text, "Trip plan");
+            let writing = Step::of_interaction(&written);
+            assert_eq!(writing.kind, StepKind::Write);
+            assert_eq!(writing.message(), (WRITING, Some(("record", "Trip plan"))));
+            let items = InteractionAnchor::ListItems {
+                ids: vec!["issue-1".into()],
+            };
+            assert_eq!(
+                Step::of_interaction(&interaction(None, items, "Book the ferry")).kind,
+                StepKind::Edit,
+                "an item's own step changes that item"
+            );
+            assert_eq!(
+                Step::of_interaction(&interaction(None, InteractionAnchor::Resource, "Issues")).kind,
+                StepKind::Work
+            );
+        }
+
+        phase a_step_names_its_record_or_says_only_what_it_is;
+        // A declared kind says the record, and the app where nothing is named
+        // yet; a kind with no name says only what it is.
+        {
+            let made = interaction(
+                Some(StepKind::Create),
+                InteractionAnchor::Resource,
+                "Issues",
+            );
+            let created = Step::of_interaction(&made).in_app(Some(" Tasks "));
+            assert_eq!(created.message(), (CREATING, Some(("record", "Issues"))));
+            // A create whose declaration names the collection it adds to says what
+            // it makes: the record's kind and that collection.
+            let mut declaring = made.clone();
+            declaring.action.creates = Some(" issues ".into());
+            assert_eq!(
+                Step::of_interaction(&declaring).makes,
+                Some(("tasks.tracker", "issues")),
+                "what it makes, named by the record's kind and its collection"
+            );
+            assert_eq!(created.makes, None, "a create that names none makes none");
+            assert_eq!(
+                Step::new(StepKind::Create, None)
+                    .in_app(Some("Tasks"))
+                    .message(),
+                (CREATING, Some(("record", "Tasks")))
+            );
+            assert_eq!(
+                Step::new(StepKind::Delete, None).message(),
+                (WORKING_ALONE, None)
+            );
+            assert_eq!(
+                Step::new(StepKind::Run, Some("Terminal")).running(Some("cargo build")),
+                Step {
+                    kind: StepKind::Run,
+                    record: Some("Terminal"),
+                    app: None,
+                    command: Some("cargo build"),
+                    makes: None,
+                }
+            );
+            assert_eq!(
+                Step::new(StepKind::Run, Some("Terminal")).message(),
+                (RUNNING_IN, Some(("record", "Terminal")))
+            );
+        }
+
+        phase a_committed_change_names_its_kind_as_it_declared_it;
+        // A committed change names its kind by what it declared: the operation of
+        // a field edit, the platform's make, the command a verb runs.
+        {
+            for (op, kind) in [
+                (EditOp::Splice, StepKind::Write),
+                (EditOp::Replace, StepKind::Write),
+                (EditOp::Insert, StepKind::Create),
+                (EditOp::Remove, StepKind::Delete),
+                (EditOp::MoveTo, StepKind::Move),
+                (EditOp::Set, StepKind::Edit),
+            ] {
+                assert_eq!(StepKind::of_edit(op), kind, "{op:?}");
             }
-        );
-        assert_eq!(
-            Step::new(StepKind::Run, Some("Terminal")).message(),
-            (RUNNING_IN, Some(("record", "Terminal")))
-        );
-    }
-
-    /// A committed change names its kind by what it declared: the operation of
-    /// a field edit, the platform's make, the command a verb runs.
-    #[test]
-    fn a_committed_change_names_its_kind_as_it_declared_it() {
-        for (op, kind) in [
-            (EditOp::Splice, StepKind::Write),
-            (EditOp::Replace, StepKind::Write),
-            (EditOp::Insert, StepKind::Create),
-            (EditOp::Remove, StepKind::Delete),
-            (EditOp::MoveTo, StepKind::Move),
-            (EditOp::Set, StepKind::Edit),
-        ] {
-            assert_eq!(StepKind::of_edit(op), kind, "{op:?}");
+            let made = Did::verb(
+                crate::ActionKey::new("so.tilo.notes", "notes.note", CREATE_ACTION),
+                std::iter::empty::<(String, crate::Scalar)>(),
+            );
+            assert_eq!(StepKind::of_did(&made), Some(StepKind::Create));
+            let command = Did::verb(
+                crate::ActionKey::new("so.tilo.terminal", "terminal.session", "run"),
+                [(
+                    "command".to_owned(),
+                    crate::Scalar::from_json(&serde_json::json!("cargo build")).unwrap(),
+                )],
+            );
+            assert_eq!(StepKind::of_did(&command), Some(StepKind::Run));
+            let renamed = Did::verb(
+                crate::ActionKey::new("so.tilo.notes", "notes.note", "rename"),
+                std::iter::empty::<(String, crate::Scalar)>(),
+            );
+            assert_eq!(StepKind::of_did(&renamed), None);
         }
-        let made = Did::verb(
-            crate::ActionKey::new("so.tilo.notes", "notes.note", CREATE_ACTION),
-            std::iter::empty::<(String, crate::Scalar)>(),
-        );
-        assert_eq!(StepKind::of_did(&made), Some(StepKind::Create));
-        let command = Did::verb(
-            crate::ActionKey::new("so.tilo.terminal", "terminal.session", "run"),
-            [(
-                "command".to_owned(),
-                crate::Scalar::from_json(&serde_json::json!("cargo build")).unwrap(),
-            )],
-        );
-        assert_eq!(StepKind::of_did(&command), Some(StepKind::Run));
-        let renamed = Did::verb(
-            crate::ActionKey::new("so.tilo.notes", "notes.note", "rename"),
-            std::iter::empty::<(String, crate::Scalar)>(),
-        );
-        assert_eq!(StepKind::of_did(&renamed), None);
-    }
 
-    #[test]
-    fn a_kind_reads_back_from_its_word() {
-        for kind in [
-            StepKind::Create,
-            StepKind::Write,
-            StepKind::Edit,
-            StepKind::Delete,
-            StepKind::Move,
-            StepKind::Read,
-            StepKind::Run,
-            StepKind::Work,
-        ] {
-            assert_eq!(StepKind::of_word(kind.word()), Some(kind));
+        phase a_kind_reads_back_from_its_word;
+        {
+            for kind in [
+                StepKind::Create,
+                StepKind::Write,
+                StepKind::Edit,
+                StepKind::Delete,
+                StepKind::Move,
+                StepKind::Read,
+                StepKind::Run,
+                StepKind::Work,
+            ] {
+                assert_eq!(StepKind::of_word(kind.word()), Some(kind));
+            }
+            assert_eq!(StepKind::of_word("writing"), None);
         }
-        assert_eq!(StepKind::of_word("writing"), None);
     }
 }

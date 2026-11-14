@@ -73,89 +73,94 @@ mod tests {
     ) -> Vec<Box<dyn SearchProvider>> {
         ui::search::capability::search_providers(app.harness().root_widget())
     }
-    #[test]
-    fn search_finds_names_usernames_and_sites_but_never_secrets() {
-        let metadata = format!("{:?}", entries(&crate::demo::full_items()));
-        for secret in ["Harbor-Lights-2019", "4821-7730", "harbourlights"] {
-            assert!(
-                !metadata.contains(secret),
-                "full records never publish secret metadata"
-            );
-        }
-        let mut app =
-            ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::capture(None)
-                .unwrap();
-        let providers = providers(&mut app);
-        assert_eq!(
-            providers.len(),
-            1,
-            "the framework owns exactly one search source"
-        );
-        let provider = &providers[0];
-        for query in ["Northstar", "ada@example.com", "bank.example"] {
-            assert!(
-                provider
-                    .search(query)
-                    .iter()
-                    .any(|hit| hit.title == "Northstar Bank"),
-                "{query} finds the login"
-            );
-        }
-        for secret in ["Harbor-Lights-2019", "4821-7730", "harbourlights"] {
-            assert!(
-                provider.search(secret).is_empty(),
-                "{secret} must not be searchable"
-            );
-        }
-        assert!(
-            entries(&crate::demo::full_items())
-                .iter()
-                .all(|entry| entry.secret),
-            "every vault entry is secret-bearing, so the system index gates it on the lock"
-        );
-        let hit = provider
-            .search("Northstar")
-            .into_iter()
-            .next()
-            .expect("a hit");
-        assert_eq!(
-            hit.action_id,
-            crate::actions::item_resource_id("demo-bank"),
-            "a hit is anchored at the item's row"
-        );
-    }
-    #[test]
-    fn only_a_window_on_the_vault_reports_its_lock() {
-        assert_eq!(
-            crate::PasswordsWindow::demo().core().secrets_unlocked(),
-            None
-        );
-        let closed = crate::vault::Core::with_model(crate::PasswordsModel::closed());
-        assert_eq!(
-            closed.secrets_unlocked(),
-            None,
-            "a past version says nothing"
-        );
-        let home = tempfile::tempdir().unwrap();
-        let open = crate::vault::Core::with_model(crate::PasswordsModel::open_in(home.path()));
-        assert_eq!(open.secrets_unlocked(), Some(open.recovery_error.is_none()));
-    }
+    tilo_test_env::scenario! {
+        fn vault_search_reads_metadata_and_never_a_secret;
 
-    #[test]
-    fn kind_facet_narrows_hits() {
-        let mut app =
-            ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::capture(None)
-                .unwrap();
-        let providers = providers(&mut app);
-        let provider = &providers[0];
-        let facets = SearchProvider::facets(provider.as_ref());
-        let page = provider.search_page(
-            &ui::search::SearchQuery::parse("kind:wifi", &facets),
-            None,
-            100,
-            100,
-        );
-        let titles: Vec<_> = page.results.iter().map(|hit| hit.title.as_str()).collect();
-        assert_eq!(titles, ["Home Wi-Fi"]);
+        phase search_finds_names_usernames_and_sites_but_never_secrets;
+        {
+            let metadata = format!("{:?}", entries(&crate::demo::full_items()));
+            for secret in ["Harbor-Lights-2019", "4821-7730", "harbourlights"] {
+                assert!(
+                    !metadata.contains(secret),
+                    "full records never publish secret metadata"
+                );
+            }
+            let mut app =
+                ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::capture(None)
+                    .unwrap();
+            let providers = providers(&mut app);
+            assert_eq!(
+                providers.len(),
+                1,
+                "the framework owns exactly one search source"
+            );
+            let provider = &providers[0];
+            for query in ["Northstar", "ada@example.com", "bank.example"] {
+                assert!(
+                    provider
+                        .search(query)
+                        .iter()
+                        .any(|hit| hit.title == "Northstar Bank"),
+                    "{query} finds the login"
+                );
+            }
+            for secret in ["Harbor-Lights-2019", "4821-7730", "harbourlights"] {
+                assert!(
+                    provider.search(secret).is_empty(),
+                    "{secret} must not be searchable"
+                );
+            }
+            assert!(
+                entries(&crate::demo::full_items())
+                    .iter()
+                    .all(|entry| entry.secret),
+                "every vault entry is secret-bearing, so the system index gates it on the lock"
+            );
+            let hit = provider
+                .search("Northstar")
+                .into_iter()
+                .next()
+                .expect("a hit");
+            assert_eq!(
+                hit.action_id,
+                crate::actions::item_resource_id("demo-bank"),
+                "a hit is anchored at the item's row"
+            );
+        }
+
+        phase only_a_window_on_the_vault_reports_its_lock;
+        {
+            assert_eq!(
+                crate::PasswordsWindow::demo().core().secrets_unlocked(),
+                None
+            );
+            let closed = crate::vault::Core::with_model(crate::PasswordsModel::closed());
+            assert_eq!(
+                closed.secrets_unlocked(),
+                None,
+                "a past version says nothing"
+            );
+            let home = tempfile::tempdir().unwrap();
+            let open = crate::vault::Core::with_model(crate::PasswordsModel::open_in(home.path()));
+            assert_eq!(open.secrets_unlocked(), Some(open.recovery_error.is_none()));
+        }
+
+        phase kind_facet_narrows_hits;
+        {
+            let mut app =
+                ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::capture(None)
+                    .unwrap();
+            let providers = providers(&mut app);
+            let provider = &providers[0];
+            let facets = SearchProvider::facets(provider.as_ref());
+            let page = provider.search_page(
+                &ui::search::SearchQuery::parse("kind:wifi", &facets),
+                None,
+                100,
+                100,
+            );
+            let titles: Vec<_> = page.results.iter().map(|hit| hit.title.as_str()).collect();
+            assert_eq!(titles, ["Home Wi-Fi"]);
+        }
     }
 }

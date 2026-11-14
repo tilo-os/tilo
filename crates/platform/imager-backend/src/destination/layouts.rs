@@ -268,116 +268,120 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    #[test]
-    fn layout_dataset_is_complete_unique_and_well_formed() {
+    tilo_test_env::scenario! {
+        fn keyboard_layouts_are_well_formed_and_resolve;
+
+        phase layout_dataset_is_complete_unique_and_well_formed;
         {
-            assert!(
-                LAYOUTS.len() >= 15,
-                "curated set should have ~15-25 layouts, got {}",
-                LAYOUTS.len()
-            );
-        }
-        {
-            let ids: Vec<_> = LAYOUTS.iter().map(|l| l.id).collect();
-            assert_eq!(ids, install_profile_model::KEYBOARDS);
-        }
-        {
-            for l in LAYOUTS {
-                for (r, expected) in ROW_LENS.iter().enumerate() {
+            {
+                assert!(
+                    LAYOUTS.len() >= 15,
+                    "curated set should have ~15-25 layouts, got {}",
+                    LAYOUTS.len()
+                );
+            }
+            {
+                let ids: Vec<_> = LAYOUTS.iter().map(|l| l.id).collect();
+                assert_eq!(ids, install_profile_model::KEYBOARDS);
+            }
+            {
+                for l in LAYOUTS {
+                    for (r, expected) in ROW_LENS.iter().enumerate() {
+                        assert_eq!(
+                            l.rows[r].len(),
+                            *expected,
+                            "{} row {} has {} keys, expected {}",
+                            l.id,
+                            r,
+                            l.rows[r].len(),
+                            expected
+                        );
+                    }
                     assert_eq!(
-                        l.rows[r].len(),
-                        *expected,
-                        "{} row {} has {} keys, expected {}",
+                        l.number_shift.len(),
+                        ROW_LENS[0],
+                        "{} number_shift has {} entries, expected {}",
                         l.id,
-                        r,
-                        l.rows[r].len(),
-                        expected
+                        l.number_shift.len(),
+                        ROW_LENS[0]
                     );
                 }
-                assert_eq!(
-                    l.number_shift.len(),
-                    ROW_LENS[0],
-                    "{} number_shift has {} entries, expected {}",
-                    l.id,
-                    l.number_shift.len(),
-                    ROW_LENS[0]
-                );
             }
-        }
-        {
-            let mut ids = HashSet::new();
-            let mut names = HashSet::new();
-            for l in LAYOUTS {
-                assert!(ids.insert(l.id), "duplicate id {}", l.id);
-                assert!(
-                    names.insert(l.display_name),
-                    "duplicate name {}",
-                    l.display_name
-                );
+            {
+                let mut ids = HashSet::new();
+                let mut names = HashSet::new();
+                for l in LAYOUTS {
+                    assert!(ids.insert(l.id), "duplicate id {}", l.id);
+                    assert!(
+                        names.insert(l.display_name),
+                        "duplicate name {}",
+                        l.display_name
+                    );
+                }
             }
-        }
-        {
-            for l in LAYOUTS {
-                assert!(!l.xkb_layout.is_empty(), "{} has empty xkb_layout", l.id);
-                assert!(
-                    !l.display_name.is_empty(),
-                    "{} has empty display_name",
-                    l.id
-                );
-                if let Some(v) = l.xkb_variant {
-                    assert!(!v.is_empty(), "{} has empty (Some) xkb_variant", l.id);
+            {
+                for l in LAYOUTS {
+                    assert!(!l.xkb_layout.is_empty(), "{} has empty xkb_layout", l.id);
+                    assert!(
+                        !l.display_name.is_empty(),
+                        "{} has empty display_name",
+                        l.id
+                    );
+                    if let Some(v) = l.xkb_variant {
+                        assert!(!v.is_empty(), "{} has empty (Some) xkb_variant", l.id);
+                    }
+                }
+            }
+            {
+                for id in ["us", "de", "fr", "gb", "es", "dvorak", "colemak"] {
+                    assert!(
+                        LAYOUTS.iter().any(|l| l.id == id),
+                        "required layout '{id}' missing"
+                    );
                 }
             }
         }
-        {
-            for id in ["us", "de", "fr", "gb", "es", "dvorak", "colemak"] {
-                assert!(
-                    LAYOUTS.iter().any(|l| l.id == id),
-                    "required layout '{id}' missing"
-                );
-            }
-        }
-    }
 
-    #[test]
-    fn layout_lookup_default_and_variants_resolve_to_real_xkb_layouts() {
+        phase layout_lookup_default_and_variants_resolve_to_real_xkb_layouts;
         {
-            let d = default_layout();
-            assert_eq!(d.id, "us");
-            assert_eq!(d.xkb_layout, "us");
-            assert!(d.xkb_variant.is_none());
-            assert_eq!(d.display_name, DEFAULT_DISPLAY_NAME);
-            assert_eq!(d.rows[1][0], "q", "US top row starts with q");
-        }
-        {
-            for l in LAYOUTS {
-                let got = by_display_name(l.display_name).expect("found");
-                assert_eq!(got.id, l.id);
+            {
+                let d = default_layout();
+                assert_eq!(d.id, "us");
+                assert_eq!(d.xkb_layout, "us");
+                assert!(d.xkb_variant.is_none());
+                assert_eq!(d.display_name, DEFAULT_DISPLAY_NAME);
+                assert_eq!(d.rows[1][0], "q", "US top row starts with q");
             }
-            assert!(by_display_name("Klingon").is_none());
-        }
-        {
-            // Dvorak and Colemak are us-variants, not their own xkb layout.
-            let dv = by_display_name("Dvorak").unwrap();
-            assert_eq!(dv.xkb_layout, "us");
-            assert_eq!(dv.xkb_variant, Some("dvorak"));
-            assert_eq!(dv.variant_or_empty(), "dvorak");
-            let us = by_display_name("English (US)").unwrap();
-            assert_eq!(us.variant_or_empty(), "");
-        }
-        {
-            let de = by_display_name("German (QWERTZ)").unwrap();
-            assert_eq!(
-                de.rows[1][5], "z",
-                "QWERTZ swaps y/z (position 6 of top row)"
-            );
-            assert_eq!(de.rows[3][0], "y", "QWERTZ bottom row starts with y");
-            let fr = by_display_name("French (AZERTY)").unwrap();
-            assert_eq!(fr.rows[1][0], "a", "AZERTY top row starts with a");
-            assert_eq!(fr.rows[1][1], "z", "AZERTY second key is z");
-            let dv = by_display_name("Dvorak").unwrap();
-            assert_eq!(dv.rows[2][0], "a");
-            assert_eq!(dv.rows[2][1], "o", "Dvorak home row: a o e u i …");
+            {
+                for l in LAYOUTS {
+                    let got = by_display_name(l.display_name).expect("found");
+                    assert_eq!(got.id, l.id);
+                }
+                assert!(by_display_name("Klingon").is_none());
+            }
+            {
+                // Dvorak and Colemak are us-variants, not their own xkb layout.
+                let dv = by_display_name("Dvorak").unwrap();
+                assert_eq!(dv.xkb_layout, "us");
+                assert_eq!(dv.xkb_variant, Some("dvorak"));
+                assert_eq!(dv.variant_or_empty(), "dvorak");
+                let us = by_display_name("English (US)").unwrap();
+                assert_eq!(us.variant_or_empty(), "");
+            }
+            {
+                let de = by_display_name("German (QWERTZ)").unwrap();
+                assert_eq!(
+                    de.rows[1][5], "z",
+                    "QWERTZ swaps y/z (position 6 of top row)"
+                );
+                assert_eq!(de.rows[3][0], "y", "QWERTZ bottom row starts with y");
+                let fr = by_display_name("French (AZERTY)").unwrap();
+                assert_eq!(fr.rows[1][0], "a", "AZERTY top row starts with a");
+                assert_eq!(fr.rows[1][1], "z", "AZERTY second key is z");
+                let dv = by_display_name("Dvorak").unwrap();
+                assert_eq!(dv.rows[2][0], "a");
+                assert_eq!(dv.rows[2][1], "o", "Dvorak home row: a o e u i …");
+            }
         }
     }
 }

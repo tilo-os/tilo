@@ -23,6 +23,7 @@ pub mod host;
 pub mod hypervisor;
 pub mod image;
 pub mod imageup;
+pub mod lan;
 mod local_layer;
 pub mod qemu;
 pub mod reach;

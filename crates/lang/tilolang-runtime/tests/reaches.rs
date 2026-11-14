@@ -196,167 +196,175 @@ action unpin(item: DockItem) {
             .collect()
     }
 
-    /// A view whose root reads a field of another root through a function call runs again when
-    /// that field changes, and its patches show the other preset.
-    #[test]
-    fn a_root_field_read_through_a_function_call_reaches_the_view() {
-        let d = Desk::new();
-        let mut view = d.view("desk_view");
-        assert_eq!(texts(&view), ["the strips"]);
-        d.call(
-            "apply",
-            vec![Value::resource(&d.shell()), d.pick("Preset", "desktop")],
-        );
-        assert!(view.is_stale(), "the shell's preset moved");
-        let patches = view.poll_patches().unwrap();
-        assert!(!patches.is_empty(), "the screen changes: {patches:?}");
-        assert_eq!(texts(&view), ["the desktop"]);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_changed_field_reaches_the_views_that_read_it;
 
-    /// The same read inside a `match` arm.
-    #[test]
-    fn a_root_field_read_inside_a_match_reaches_the_view() {
-        let d = Desk::new();
-        let mut view = d.view("shown");
-        assert_eq!(texts(&view), ["the strips"]);
-        d.call(
-            "apply",
-            vec![Value::resource(&d.shell()), d.pick("Preset", "spaces")],
-        );
-        let patches = view.poll_patches().unwrap();
-        assert!(!patches.is_empty(), "the screen changes: {patches:?}");
-        assert_eq!(texts(&view), ["the spaces"]);
-    }
+        phase a_root_field_read_through_a_function_call_reaches_the_view;
+        // A view whose root reads a field of another root through a function call runs again when
+        // that field changes, and its patches show the other preset.
+        {
+            let d = Desk::new();
+            let mut view = d.view("desk_view");
+            assert_eq!(texts(&view), ["the strips"]);
+            d.call(
+                "apply",
+                vec![Value::resource(&d.shell()), d.pick("Preset", "desktop")],
+            );
+            assert!(view.is_stale(), "the shell's preset moved");
+            let patches = view.poll_patches().unwrap();
+            assert!(!patches.is_empty(), "the screen changes: {patches:?}");
+            assert_eq!(texts(&view), ["the desktop"]);
+        }
 
-    /// `is_stale` and what there is to run agree: a view that says it is stale patches
-    /// something, and a view with nothing to patch says it is not stale.
-    #[test]
-    fn a_stale_view_always_has_something_to_run() {
-        let d = Desk::new();
-        let mut view = d.view("desk_view");
-        let _ = view.poll_patches().unwrap();
-        assert!(!view.is_stale(), "at rest the view is not stale");
-        assert!(view.poll_patches().unwrap().is_empty());
-        d.call(
-            "apply",
-            vec![Value::resource(&d.shell()), d.pick("Preset", "frames")],
-        );
-        assert!(view.is_stale());
-        let patches = view.poll_patches().unwrap();
-        assert!(
-            !patches.is_empty(),
-            "stale before the poll, nothing after: the view had something to run"
-        );
-        assert!(!view.is_stale(), "and it is at rest again");
-    }
+        phase a_root_field_read_inside_a_match_reaches_the_view;
+        // The same read inside a `match` arm.
+        {
+            let d = Desk::new();
+            let mut view = d.view("shown");
+            assert_eq!(texts(&view), ["the strips"]);
+            d.call(
+                "apply",
+                vec![Value::resource(&d.shell()), d.pick("Preset", "spaces")],
+            );
+            let patches = view.poll_patches().unwrap();
+            assert!(!patches.is_empty(), "the screen changes: {patches:?}");
+            assert_eq!(texts(&view), ["the spaces"]);
+        }
 
-    /// A change another connection made reaches the view as one the person made here does.
-    #[test]
-    fn a_field_changed_by_another_connection_reaches_the_view() {
-        let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
-        let app = App::compile(SOURCE, &[]);
-        let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).unwrap();
-        app.load(&rt_a);
-        let _shell = rt_a.create_root("Shell").unwrap();
-        let arrangement = rt_a.create_root("Arrangement").unwrap();
-        let mut view = rt_a
-            .open_view(
+        phase a_stale_view_always_has_something_to_run;
+        // `is_stale` and what there is to run agree: a view that says it is stale patches
+        // something, and a view with nothing to patch says it is not stale.
+        {
+            let d = Desk::new();
+            let mut view = d.view("desk_view");
+            let _ = view.poll_patches().unwrap();
+            assert!(!view.is_stale(), "at rest the view is not stale");
+            assert!(view.poll_patches().unwrap().is_empty());
+            d.call(
+                "apply",
+                vec![Value::resource(&d.shell()), d.pick("Preset", "frames")],
+            );
+            assert!(view.is_stale());
+            let patches = view.poll_patches().unwrap();
+            assert!(
+                !patches.is_empty(),
+                "stale before the poll, nothing after: the view had something to run"
+            );
+            assert!(!view.is_stale(), "and it is at rest again");
+        }
+
+        phase a_field_changed_by_another_connection_reaches_the_view;
+        // A change another connection made reaches the view as one the person made here does.
+        {
+            let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
+            let app = App::compile(SOURCE, &[]);
+            let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).unwrap();
+            app.load(&rt_a);
+            let _shell = rt_a.create_root("Shell").unwrap();
+            let arrangement = rt_a.create_root("Arrangement").unwrap();
+            let mut view = rt_a
+                .open_view(
+                    &me(),
+                    &app.view("desk_view"),
+                    vec![Value::resource(&arrangement)],
+                )
+                .unwrap();
+            assert_eq!(texts(&view), ["the strips"]);
+
+            // Another connection, over a store of its own, changes the shell's record.
+            let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
+            app.load(&rt_b);
+            rt_b.create_root("Shell").unwrap();
+            let ty = app
+                .compiled
+                .meta
+                .named_roots
+                .iter()
+                .find(|root| root.name == "shell")
+                .map(|root| root.ty.clone())
+                .expect("the package names its shell root");
+            let shell_b = ResourceRef::root(format!("root-{ty}"), ty);
+            let apply = app.action("apply");
+            let desktop = Value::Enum(tilolang_runtime::EnumValue {
+                ty: app.compiled.ids.get("Preset").unwrap().to_owned(),
+                variant: app.compiled.ids.get("Preset.desktop").unwrap().to_owned(),
+                fields: std::collections::BTreeMap::new(),
+            });
+            rt_b.invoke_action(
                 &me(),
-                &app.view("desk_view"),
-                vec![Value::resource(&arrangement)],
+                (apply.as_str(), vec![Value::resource(&shell_b), desktop]),
             )
             .unwrap();
-        assert_eq!(texts(&view), ["the strips"]);
 
-        // Another connection, over a store of its own, changes the shell's record.
-        let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
-        app.load(&rt_b);
-        rt_b.create_root("Shell").unwrap();
-        let ty = app
-            .compiled
-            .meta
-            .named_roots
-            .iter()
-            .find(|root| root.name == "shell")
-            .map(|root| root.ty.clone())
-            .expect("the package names its shell root");
-        let shell_b = ResourceRef::root(format!("root-{ty}"), ty);
-        let apply = app.action("apply");
-        let desktop = Value::Enum(tilolang_runtime::EnumValue {
-            ty: app.compiled.ids.get("Preset").unwrap().to_owned(),
-            variant: app.compiled.ids.get("Preset.desktop").unwrap().to_owned(),
-            fields: std::collections::BTreeMap::new(),
-        });
-        rt_b.invoke_action(
-            &me(),
-            (apply.as_str(), vec![Value::resource(&shell_b), desktop]),
-        )
-        .unwrap();
+            // The change reaches this connection.
+            store_a.sync_with(&mut store_b).unwrap();
+            assert!(
+                view.is_stale(),
+                "the other connection's change reached the view"
+            );
+            let patches = view.poll_patches().unwrap();
+            assert!(!patches.is_empty(), "the screen changes: {patches:?}");
+            assert_eq!(texts(&view), ["the desktop"]);
+        }
 
-        // The change reaches this connection.
-        store_a.sync_with(&mut store_b).unwrap();
-        assert!(
-            view.is_stale(),
-            "the other connection's change reached the view"
-        );
-        let patches = view.poll_patches().unwrap();
-        assert!(!patches.is_empty(), "the screen changes: {patches:?}");
-        assert_eq!(texts(&view), ["the desktop"]);
-    }
+        phase a_record_built_in_a_view_reaches_a_views_record_parameter;
+        // A view that builds a record and hands it to another view's record parameter draws it,
+        // as the shell's dock hands its running items to its tiles.
+        {
+            let d = Desk::new();
+            let view = d.view("dock_run");
+            assert_eq!(texts(&view), ["App 0", "App 1"]);
+        }
 
-    /// A view that builds a record and hands it to another view's record parameter draws it,
-    /// as the shell's dock hands its running items to its tiles.
-    #[test]
-    fn a_record_built_in_a_view_reaches_a_views_record_parameter() {
-        let d = Desk::new();
-        let view = d.view("dock_run");
-        assert_eq!(texts(&view), ["App 0", "App 1"]);
-    }
+        phase only_the_boundaries_that_read_the_field_run;
+        // Only the boundaries that read the changed field run: the screen reads `preset` through
+        // `is_traditional`, so it runs once and the desk view around it stands.
+        {
+            let d = Desk::new();
+            let mut view = d.view("desk_view");
+            let opened = view.stats();
+            assert_eq!(
+                opened.renders,
+                u64::try_from(opened.boundaries).unwrap(),
+                "every boundary ran at the open"
+            );
+            d.call(
+                "apply",
+                vec![Value::resource(&d.shell()), d.pick("Preset", "frames")],
+            );
+            let patches = view.poll_patches().unwrap();
+            assert_eq!(
+                view.stats().renders - opened.renders,
+                1,
+                "the screen read the field and runs once, and nothing else runs: {:?}",
+                view.stats()
+            );
+            assert!(
+                !patches.is_empty(),
+                "the screen draws the frames: {patches:?}"
+            );
+            assert_eq!(texts(&view), ["the frames"]);
+        }
 
-    /// Only the boundaries that read the changed field run: the screen reads `preset` through
-    /// `is_traditional`, so it runs once and the desk view around it stands.
-    #[test]
-    fn only_the_boundaries_that_read_the_field_run() {
-        let d = Desk::new();
-        let mut view = d.view("desk_view");
-        let opened = view.stats();
-        assert_eq!(
-            opened.renders,
-            u64::try_from(opened.boundaries).unwrap(),
-            "every boundary ran at the open"
-        );
-        d.call(
-            "apply",
-            vec![Value::resource(&d.shell()), d.pick("Preset", "frames")],
-        );
-        let patches = view.poll_patches().unwrap();
-        assert_eq!(
-            view.stats().renders - opened.renders,
-            1,
-            "the screen read the field and runs once, and nothing else runs: {:?}",
-            view.stats()
-        );
-        assert!(
-            !patches.is_empty(),
-            "the screen draws the frames: {patches:?}"
-        );
-        assert_eq!(texts(&view), ["the frames"]);
-    }
-
-    /// A record a view builds names no resource, so an action, whose changes must land in one,
-    /// refuses it rather than change a copy that is dropped.
-    #[test]
-    fn an_action_refuses_a_record_a_view_built() {
-        let desk = Desk::new();
-        let built = Value::Rec(tilolang_runtime::RecordInit {
-            ty: desk.app.compiled.ids.get("DockItem").unwrap().to_owned(),
-            fields: std::collections::BTreeMap::new(),
-        });
-        let unpin = desk.app.action("unpin");
-        let refused = desk.rt.invoke_action(&me(), (unpin.as_str(), vec![built]));
-        assert!(
-            refused.is_err(),
-            "an action took a record no resource holds: {refused:?}"
-        );
+        phase an_action_refuses_a_record_a_view_built;
+        // A record a view builds names no resource, so an action, whose changes must land in one,
+        // refuses it rather than change a copy that is dropped.
+        {
+            let desk = Desk::new();
+            let built = Value::Rec(tilolang_runtime::RecordInit {
+                ty: desk.app.compiled.ids.get("DockItem").unwrap().to_owned(),
+                fields: std::collections::BTreeMap::new(),
+            });
+            let unpin = desk.app.action("unpin");
+            let refused = desk.rt.invoke_action(&me(), (unpin.as_str(), vec![built]));
+            assert!(
+                refused.is_err(),
+                "an action took a record no resource holds: {refused:?}"
+            );
+        }
     }
 }

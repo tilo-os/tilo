@@ -5,10 +5,11 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use tilo_actions::policy::MemberId;
 use ui::tilo_resource::{Id, Identified, Resource};
 
 use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, User};
-use crate::record::{Chat, Conversation, Participant};
+use crate::record::{Chat, Conversation};
 
 /// What the workspace calls each of its agents, by the bare id its actor carries
 /// (`agent:<id>`): the answer of the workspace's own record of its agents.
@@ -117,16 +118,16 @@ impl Chat {
         }
         let mut listed: std::collections::HashSet<Id> = std::collections::HashSet::new();
         for person in &self.people {
-            if person.agent || person.id.0 == me {
+            if person.is_agent() || person.id.0 == me {
                 continue;
             }
             let pair = [
-                Participant::person(me.to_owned()),
-                Participant::person(person.id.0.clone()),
+                MemberId::person(me.to_owned()),
+                MemberId::person(person.id.0.clone()),
             ];
             let id = Chat::direct_id(pair.clone());
             if !self.channels.contains(&id) && listed.insert(id.clone()) {
-                push(&id, pair.iter().map(Participant::key).collect(), None);
+                push(&id, pair.iter().map(MemberId::key).collect(), None);
             }
         }
         // A conversation written to by its id alone (one with an agent that a send opened) is
@@ -141,14 +142,10 @@ impl Chat {
             };
             if participants
                 .iter()
-                .any(|participant| participant.id() == me)
+                .any(|participant| participant.is_person() && participant.id() == me)
             {
                 listed.insert(id.clone());
-                push(
-                    id,
-                    participants.iter().map(Participant::key).collect(),
-                    None,
-                );
+                push(id, participants.iter().map(MemberId::key).collect(), None);
             }
         }
         direct.sort_by(|left, right| {
@@ -187,18 +184,19 @@ impl Chat {
         let named: Vec<String> = participants
             .iter()
             .map(|participant| {
-                let agent_name = match participant {
-                    Participant::Agent(agent) => agents
-                        .get(agent)
+                let agent_name = if participant.is_person() {
+                    None
+                } else {
+                    agents
+                        .get(participant.id())
                         .map(|name| name.trim().to_owned())
-                        .filter(|name| !name.is_empty()),
-                    Participant::Person(_) => None,
+                        .filter(|name| !name.is_empty())
                 };
                 agent_name
                     .or_else(|| {
                         self.people
                             .iter()
-                            .find(|person| person.id.0 == participant.id())
+                            .find(|person| person.id.0 == participant.key())
                             .map(|person| person.name.trim().to_owned())
                             .filter(|name| !name.is_empty())
                     })
@@ -226,7 +224,7 @@ impl Chat {
                 initials: person.initials.clone(),
                 color_idx: usize::try_from(person.color).unwrap_or_default(),
                 status: person.status,
-                is_agent: person.agent,
+                is_agent: person.is_agent(),
             })
             .collect()
     }

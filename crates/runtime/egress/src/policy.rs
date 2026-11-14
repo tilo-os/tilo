@@ -51,135 +51,139 @@ mod tests {
         EgressPolicy::from_grants(grants.iter().copied())
     }
 
-    #[test]
-    fn exact_hosts_match_only_themselves_and_domains_match_below() {
-        let p = policy(&["github.com", "*.crates.io", ".fedoraproject.org"]);
-        assert_eq!(p.allows("github.com"), Some(Allowed::Exact));
-        assert_eq!(p.allows("GitHub.COM."), Some(Allowed::Exact));
-        assert_eq!(p.allows("api.github.com"), None, "an exact grant is exact");
-        assert_eq!(p.allows("evilgithub.com"), None);
-        assert_eq!(p.allows("static.crates.io"), Some(Allowed::Domain));
-        assert_eq!(p.allows("a.b.crates.io"), Some(Allowed::Domain));
-        assert_eq!(
-            p.allows("crates.io"),
-            Some(Allowed::Exact),
-            "a domain grant covers the domain's own name"
-        );
-        assert_eq!(
-            p.allows("notcrates.io"),
-            None,
-            "a suffix is not a subdomain"
-        );
-        assert_eq!(p.allows("mirrors.fedoraproject.org"), Some(Allowed::Domain));
-        assert_eq!(p.allows("io"), None);
-        assert_eq!(p.allows(""), None);
-    }
+    tilo_test_env::scenario! {
+        fn egress_policy;
 
-    #[test]
-    fn a_star_is_everything_and_nothing_is_nothing() {
-        assert_eq!(policy(&["github.com", "*"]), EgressPolicy::Any);
-        assert_eq!(
-            policy(&["*"]).allows("anything.example"),
-            Some(Allowed::Any)
-        );
-        let none = policy(&[]);
-        assert_eq!(none, EgressPolicy::none());
-        assert!(!none.reaches_anything());
-        assert_eq!(none.allows("example.com"), None);
-    }
-
-    #[test]
-    fn addresses_and_junk_are_not_hosts() {
-        for bad in [
-            "",
-            "*",
-            "*.",
-            "1.1.1.1",
-            "::1",
-            "[::1]",
-            "a b.com",
-            "-x.com",
-            "x..com",
-            "exa$mple.com",
-        ] {
-            assert!(HostPattern::parse(bad).is_err(), "{bad:?} parsed");
-        }
-        // A bad grant narrows, it never widens.
-        assert_eq!(policy(&["1.1.1.1"]), EgressPolicy::none());
-        assert_eq!(
-            HostPattern::parse("*.Example.com.").unwrap().to_string(),
-            ".example.com"
-        );
-    }
-
-    #[test]
-    fn narrowing_is_detected() {
-        let wide = policy(&["*.example.com", "github.com"]);
-        let narrow = policy(&["api.example.com"]);
-        assert!(narrow.within(&wide));
-        assert!(!wide.within(&narrow));
-        assert!(wide.within(&EgressPolicy::Any));
-        assert!(!EgressPolicy::Any.within(&wide));
-        assert!(EgressPolicy::none().within(&narrow));
-        assert!(policy(&["example.com"]).within(&policy(&[".example.com"])));
-        assert!(!policy(&[".example.com"]).within(&policy(&["example.com"])));
-    }
-
-    #[test]
-    fn local_and_special_addresses_are_not_admitted_from_a_domain() {
-        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
-        for never in [
-            "0.0.0.0",
-            "127.0.0.1",
-            "169.254.169.254",
-            "224.0.0.1",
-            "255.255.255.255",
-            "::",
-            "::1",
-            "fe80::1",
-            "ff02::1",
-            "::ffff:169.254.169.254",
-        ] {
-            assert!(!admissible(ip(never), Allowed::Exact), "{never}");
-            assert!(!admissible(ip(never), Allowed::Any), "{never}");
-        }
-        for local in [
-            "10.1.2.3",
-            "192.168.1.1",
-            "172.16.0.1",
-            "100.64.0.1",
-            "fd00::1",
-        ] {
-            assert!(admissible(ip(local), Allowed::Exact), "{local}");
-            assert!(!admissible(ip(local), Allowed::Domain), "{local}");
-        }
-        for global in ["140.82.112.3", "2606:4700::1111"] {
-            assert!(admissible(ip(global), Allowed::Domain), "{global}");
-        }
-    }
-
-    #[test]
-    fn environment_egress_answers_every_shared_vector() {
-        let vectors = include_str!("../../../collab/collab-types/tests/net_host_vectors.txt");
-        let rows: Vec<(&str, &str, bool)> = vectors
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(
-                |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
-                    [grant, host, "yes"] => (grant, host, true),
-                    [grant, host, "no"] => (grant, host, false),
-                    _ => panic!("malformed vector line {line:?}"),
-                },
-            )
-            .collect();
-        assert!(rows.len() > 20, "the vector file was read: {rows:?}");
-        for (grant, host, covered) in rows {
+        phase exact_hosts_match_only_themselves_and_domains_match_below;
+        {
+            let p = policy(&["github.com", "*.crates.io", ".fedoraproject.org"]);
+            assert_eq!(p.allows("github.com"), Some(Allowed::Exact));
+            assert_eq!(p.allows("GitHub.COM."), Some(Allowed::Exact));
+            assert_eq!(p.allows("api.github.com"), None, "an exact grant is exact");
+            assert_eq!(p.allows("evilgithub.com"), None);
+            assert_eq!(p.allows("static.crates.io"), Some(Allowed::Domain));
+            assert_eq!(p.allows("a.b.crates.io"), Some(Allowed::Domain));
             assert_eq!(
-                policy(&[grant]).allows(host).is_some(),
-                covered,
-                "an environment granted {grant:?} asking for {host:?}"
+                p.allows("crates.io"),
+                Some(Allowed::Exact),
+                "a domain grant covers the domain's own name"
             );
+            assert_eq!(
+                p.allows("notcrates.io"),
+                None,
+                "a suffix is not a subdomain"
+            );
+            assert_eq!(p.allows("mirrors.fedoraproject.org"), Some(Allowed::Domain));
+            assert_eq!(p.allows("io"), None);
+            assert_eq!(p.allows(""), None);
+        }
+
+        phase a_star_is_everything_and_nothing_is_nothing;
+        {
+            assert_eq!(policy(&["github.com", "*"]), EgressPolicy::Any);
+            assert_eq!(
+                policy(&["*"]).allows("anything.example"),
+                Some(Allowed::Any)
+            );
+            let none = policy(&[]);
+            assert_eq!(none, EgressPolicy::none());
+            assert!(!none.reaches_anything());
+            assert_eq!(none.allows("example.com"), None);
+        }
+
+        phase addresses_and_junk_are_not_hosts;
+        {
+            for bad in [
+                "",
+                "*",
+                "*.",
+                "1.1.1.1",
+                "::1",
+                "[::1]",
+                "a b.com",
+                "-x.com",
+                "x..com",
+                "exa$mple.com",
+            ] {
+                assert!(HostPattern::parse(bad).is_err(), "{bad:?} parsed");
+            }
+            // A bad grant narrows, it never widens.
+            assert_eq!(policy(&["1.1.1.1"]), EgressPolicy::none());
+            assert_eq!(
+                HostPattern::parse("*.Example.com.").unwrap().to_string(),
+                ".example.com"
+            );
+        }
+
+        phase narrowing_is_detected;
+        {
+            let wide = policy(&["*.example.com", "github.com"]);
+            let narrow = policy(&["api.example.com"]);
+            assert!(narrow.within(&wide));
+            assert!(!wide.within(&narrow));
+            assert!(wide.within(&EgressPolicy::Any));
+            assert!(!EgressPolicy::Any.within(&wide));
+            assert!(EgressPolicy::none().within(&narrow));
+            assert!(policy(&["example.com"]).within(&policy(&[".example.com"])));
+            assert!(!policy(&[".example.com"]).within(&policy(&["example.com"])));
+        }
+
+        phase local_and_special_addresses_are_not_admitted_from_a_domain;
+        {
+            let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+            for never in [
+                "0.0.0.0",
+                "127.0.0.1",
+                "169.254.169.254",
+                "224.0.0.1",
+                "255.255.255.255",
+                "::",
+                "::1",
+                "fe80::1",
+                "ff02::1",
+                "::ffff:169.254.169.254",
+            ] {
+                assert!(!admissible(ip(never), Allowed::Exact), "{never}");
+                assert!(!admissible(ip(never), Allowed::Any), "{never}");
+            }
+            for local in [
+                "10.1.2.3",
+                "192.168.1.1",
+                "172.16.0.1",
+                "100.64.0.1",
+                "fd00::1",
+            ] {
+                assert!(admissible(ip(local), Allowed::Exact), "{local}");
+                assert!(!admissible(ip(local), Allowed::Domain), "{local}");
+            }
+            for global in ["140.82.112.3", "2606:4700::1111"] {
+                assert!(admissible(ip(global), Allowed::Domain), "{global}");
+            }
+        }
+
+        phase environment_egress_answers_every_shared_vector;
+        {
+            let vectors = include_str!("../../../collab/collab-types/tests/net_host_vectors.txt");
+            let rows: Vec<(&str, &str, bool)> = vectors
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(
+                    |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
+                        [grant, host, "yes"] => (grant, host, true),
+                        [grant, host, "no"] => (grant, host, false),
+                        _ => panic!("malformed vector line {line:?}"),
+                    },
+                )
+                .collect();
+            assert!(rows.len() > 20, "the vector file was read: {rows:?}");
+            for (grant, host, covered) in rows {
+                assert_eq!(
+                    policy(&[grant]).allows(host).is_some(),
+                    covered,
+                    "an environment granted {grant:?} asking for {host:?}"
+                );
+            }
         }
     }
 }

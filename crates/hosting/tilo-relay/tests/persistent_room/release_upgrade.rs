@@ -6,7 +6,7 @@
 //! itself: what it reads is what the release wrote.
 
 use super::*;
-use tilo_relay_protocol::workspaces::{WorkspaceRole, WorkspacesReply, WorkspacesRequest};
+use tilo_relay_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
 use tilo_session_client::Event;
 
 /// What the release's seed wrote beside its state, `seed.json`.
@@ -14,7 +14,6 @@ use tilo_session_client::Event;
 struct Seed {
     release: String,
     workspace: String,
-    workspace_id: u64,
     declared_owner: Person,
     declared_moderator: Person,
     members: Vec<Person>,
@@ -46,6 +45,11 @@ struct Own {
 struct Person {
     seed: u8,
     name: String,
+}
+
+/// The workspace's id, as the release's own `seed.json` names it.
+fn workspace_id(seed: &Seed) -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::parse(&seed.workspace).expect("the seed names a workspace")
 }
 
 impl Person {
@@ -107,7 +111,6 @@ fn started_or_why(room: &mut Workspace) -> Started {
         }) = room.events.recv_timeout(Duration::from_millis(200))
         {
             return Started {
-                id: tilo_relay::room_workspace_id(&workspace).unwrap(),
                 plain: bound_address(&plain_origin),
                 workspace,
             };
@@ -132,12 +135,14 @@ async fn back_in(
     let (host, host_cert, _) = chat_route(plain, &seed.workspace).await;
     let (key, cert) = person.device();
     let link = page(host, key, cert, &host_cert);
-    link.send(Cmd::Join(seed.workspace_id)).unwrap();
-    let workspace_id = seed.workspace_id;
+    let workspace_id = workspace_id(seed);
+    let events = link.events();
+    link.send(Cmd::Join(workspace_id)).unwrap();
     wait_for(
         &format!("{} to be back in the Lounge", person.name),
         || {
-            link.drain()
+            events
+                .drain()
                 .iter()
                 .any(|event| matches!(event, Event::HostReady { ws, .. } if *ws == workspace_id))
                 .then_some(())
@@ -200,7 +205,7 @@ fn the_lounge_a_release_kept_starts_with_everything_in_it() {
         "the Lounge {} kept is the one that opens",
         seed.release
     );
-    assert_eq!(started.id, seed.workspace_id);
+    assert_eq!(started.workspace, seed.workspace);
     let plain = started.plain;
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
@@ -238,7 +243,7 @@ async fn listed_as_it_was(plain: std::net::SocketAddr, seed: &Seed) {
         lounge.description,
         "The Tilo community: chat, notes and a shared desktop"
     );
-    assert_eq!(lounge.default_role, WorkspaceRole::Editor);
+    assert_eq!(lounge.default_role, Role::Editor);
     // Everyone the release had: its owner, the owner and moderator the
     // operator declared, and the people who came in through the door. (The
     // release's own directory counted `listed_members` of them.)
@@ -262,7 +267,7 @@ async fn listed_as_it_was(plain: std::net::SocketAddr, seed: &Seed) {
             )
         });
     assert_eq!(own.description, seed.own_workspace.description);
-    assert_eq!(own.default_role, WorkspaceRole::Viewer);
+    assert_eq!(own.default_role, Role::Viewer);
 }
 
 /// The owner the operator declared lists the Lounge and its people at their
@@ -296,9 +301,9 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
             .role
     };
     role_of(&seed.declared_owner);
-    assert_eq!(role_of(&seed.declared_moderator), WorkspaceRole::Moderator);
+    assert_eq!(role_of(&seed.declared_moderator), Role::Moderator);
     for member in &seed.members {
-        assert_eq!(role_of(member), WorkspaceRole::Editor, "{}", member.name);
+        assert_eq!(role_of(member), Role::Editor, "{}", member.name);
     }
 
     let WorkspacesReply::Pending(pending) = administer(
@@ -323,7 +328,7 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
         WorkspacesRequest::Invite {
             workspace: seed.workspace.clone(),
             request_id: rand::random(),
-            role: WorkspaceRole::Editor,
+            role: Role::Editor,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
             inviter_name: Some(seed.declared_owner.name.clone()),
             wait_list_entry: None,
@@ -386,9 +391,11 @@ async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Se
     let (host, host_cert, route) = chat_route(plain, &seed.workspace).await;
     let (key, cert) = reader.device();
     let link = page(host, key, cert, &host_cert);
-    link.send(Cmd::Join(seed.workspace_id)).unwrap();
+    let workspace_id = workspace_id(seed);
+    let events = link.events();
+    link.send(Cmd::Join(workspace_id)).unwrap();
     link.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let chat = reads_the_chat(&link, seed.workspace_id, &route).await;
+    let chat = reads_the_chat(&link, &events, workspace_id, &route).await;
     let channels = {
         use tilo_resource::Resource as _;
         chat::Chat::read(&chat).map(|chat| {
@@ -427,7 +434,8 @@ async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Se
 /// landed: what the host sent, read whether or not this build's Chat reads it.
 async fn reads_the_chat(
     link: &tilo_session_client::Link,
-    workspace_id: u64,
+    events: &tilo_session_client::Events,
+    workspace_id: tilo_relay_protocol::WorkspaceId,
     route: &tilo_peer_state::document_frame::DocumentRoute,
 ) -> automerge::AutoCommit {
     let mut ready = false;
@@ -435,7 +443,7 @@ async fn reads_the_chat(
     wait_for(
         "the chat to land",
         || {
-            for event in link.drain() {
+            for event in events.drain() {
                 match &event {
                     Event::HostReady { ws, .. } if *ws == workspace_id => ready = true,
                     Event::Landed { route: landed, .. } if landed == route => {

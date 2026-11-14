@@ -268,50 +268,54 @@ pub fn reserved(trigger: &Trigger, table: &ShortcutConfig) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn triggers_are_canonical_physical_and_need_a_modifier() {
-        let trigger = Trigger::parse("Shift + Ctrl + k").expect("a chord");
-        assert_eq!(trigger.canonical, "CTRL+SHIFT+KEYK");
-        assert_eq!(trigger.keycode, 37);
-        let ctrl = Modifiers {
-            ctrl: true,
-            ..Modifiers::default()
-        };
-        let ctrl_shift = Modifiers {
-            shift: true,
-            ..ctrl
-        };
-        assert!(trigger.matches(37, ctrl_shift));
-        assert!(!trigger.matches(37, ctrl));
-        assert_eq!(trigger.display(), "Ctrl + Shift + K");
-        assert_eq!(Trigger::parse(&trigger.display()), Some(trigger));
-        assert!(Trigger::parse("k").is_none());
-        assert!(Trigger::parse("Ctrl+Ctrl+K").is_none());
-        assert!(Trigger::parse("Ctrl+K+J").is_none());
-        assert!(Trigger::parse("Ctrl+PrintScreen").is_none());
-        assert_eq!(
-            Trigger::parse("LOGO+space").map(|t| t.display()).as_deref(),
-            Some("Super + Space")
-        );
-        assert_eq!(
-            Trigger::parse("Alt+F12").map(|t| t.display()).as_deref(),
-            Some("Alt + F12")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn shortcut_triggers_are_canonical_and_the_desktops_own_are_reserved;
 
-    #[test]
-    fn the_desktops_chords_and_conventions_are_reserved() {
-        let table = ShortcutConfig::default();
-        assert!(reserved(&Trigger::parse("Ctrl+K").expect("chord"), &table));
-        assert!(!reserved(
-            &Trigger::parse("Ctrl+Shift+Alt+F9").expect("chord"),
-            &table
-        ));
-        let taken = table
-            .bindings
-            .values()
-            .find_map(table_trigger)
-            .expect("the default table binds chords");
-        assert!(reserved(&taken, &table));
+        phase triggers_are_canonical_physical_and_need_a_modifier;
+        {
+            let trigger = Trigger::parse("Shift + Ctrl + k").expect("a chord");
+            assert_eq!(trigger.canonical, "CTRL+SHIFT+KEYK");
+            assert_eq!(trigger.keycode, 37);
+            let ctrl = Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            };
+            let ctrl_shift = Modifiers {
+                shift: true,
+                ..ctrl
+            };
+            assert!(trigger.matches(37, ctrl_shift));
+            assert!(!trigger.matches(37, ctrl));
+            assert_eq!(trigger.display(), "Ctrl + Shift + K");
+            assert_eq!(Trigger::parse(&trigger.display()), Some(trigger));
+            assert!(Trigger::parse("k").is_none());
+            assert!(Trigger::parse("Ctrl+Ctrl+K").is_none());
+            assert!(Trigger::parse("Ctrl+K+J").is_none());
+            assert!(Trigger::parse("Ctrl+PrintScreen").is_none());
+            assert_eq!(
+                Trigger::parse("LOGO+space").map(|t| t.display()).as_deref(),
+                Some("Super + Space")
+            );
+            assert_eq!(
+                Trigger::parse("Alt+F12").map(|t| t.display()).as_deref(),
+                Some("Alt + F12")
+            );
+        }
+
+        phase the_desktops_chords_and_conventions_are_reserved;
+        {
+            let table = ShortcutConfig::default();
+            assert!(reserved(&Trigger::parse("Ctrl+K").expect("chord"), &table));
+            assert!(!reserved(
+                &Trigger::parse("Ctrl+Shift+Alt+F9").expect("chord"),
+                &table
+            ));
+            let taken = table
+                .bindings
+                .values()
+                .find_map(table_trigger)
+                .expect("the default table binds chords");
+            assert!(reserved(&taken, &table));
+        }
     }
 }

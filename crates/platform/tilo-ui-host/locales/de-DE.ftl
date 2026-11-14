@@ -46,6 +46,11 @@ tilolang-marked-seen = { $count ->
     [one] 1 Änderung als gesehen markiert
    *[other] { $count } Änderungen als gesehen markiert
 }
+# Die Personen, die ein Element seit dem letzten Hinsehen geändert haben, wie ein Satz sie nennt
+# ("Scout und Bo"); ab drei zählen die Gesichter daneben den Rest.
+tilolang-names-two = { $first } und { $second }
+tilolang-names-three = { $first }, { $second } und { $third }
+tilolang-names-more = { $first }, { $second } und { $count } weitere
 
 tilolang-invocation-pending = Wartet
 tilolang-invocation-done = Erledigt

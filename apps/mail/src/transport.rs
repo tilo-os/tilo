@@ -285,194 +285,198 @@ pub fn mime_from_filename(name: &str) -> &'static str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn outgoing_mime_does_not_disclose_blind_recipients() {
-        let draft = Draft {
-            to: "visible@example.test".into(),
-            cc: "copy@example.test".into(),
-            bcc: "Hidden Person <hidden@example.test>".into(),
-            body: "Private recipient list".into(),
-            ..Default::default()
-        };
-        let bytes = build_mime(
-            &tilo_content::ContentStore::memory(),
-            &Addr::bare("sender@example.test"),
-            &draft,
-        )
-        .unwrap();
-        let parsed = MessageParser::default().parse(&bytes).unwrap();
-        assert!(parsed.bcc().is_none());
-        assert!(!String::from_utf8_lossy(&bytes).contains("hidden@example.test"));
-        assert_eq!(
-            parsed.to().unwrap().first().unwrap().address(),
-            Some("visible@example.test")
-        );
-        assert_eq!(
-            parsed.cc().unwrap().first().unwrap().address(),
-            Some("copy@example.test")
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Building and parsing MIME.
+        fn mime_is_built_and_parsed_without_losing_or_disclosing_recipients;
 
-    #[test]
-    fn mime_build_parses_addresses_and_embeds_verified_attachments() {
+        phase outgoing_mime_does_not_disclose_blind_recipients;
         {
-            let v = parse_addr_list("Ada Lovelace <ada@x.example>, bob@y.example");
-            assert_eq!(v.len(), 2);
-            assert_eq!(v[0].name.as_deref(), Some("Ada Lovelace"));
-            assert_eq!(v[0].email, "ada@x.example");
-            assert_eq!(v[1].email, "bob@y.example");
-            assert!(v[1].name.is_none());
-        }
-
-        {
-            let content = tilo_content::ContentStore::memory();
-            let attachment = crate::attachment_store::stage_bytes(
-                &content,
-                b"%PDF-1.4 report body",
-                "report.pdf",
+            let draft = Draft {
+                to: "visible@example.test".into(),
+                cc: "copy@example.test".into(),
+                bcc: "Hidden Person <hidden@example.test>".into(),
+                body: "Private recipient list".into(),
+                ..Default::default()
+            };
+            let bytes = build_mime(
+                &tilo_content::ContentStore::memory(),
+                &Addr::bare("sender@example.test"),
+                &draft,
             )
             .unwrap();
-            let from = Addr::new("Me", "me@example.test");
-            let draft = Draft {
-                to: "you@there.example".into(),
-                subject: "Hello".into(),
-                body: "Body text here.".into(),
-                attachments: vec![attachment],
-                ..Default::default()
-            };
-            let bytes = build_mime(&content, &from, &draft).unwrap();
-            let text = String::from_utf8_lossy(&bytes);
-            assert!(text.contains("Subject: Hello"));
-            assert!(text.to_ascii_lowercase().contains("multipart/mixed"));
-            assert!(text.contains("me@example.test"));
-        }
-
-        {
-            let content = tilo_content::ContentStore::memory();
-            // Prove the two libraries interoperate: build a message, parse it
-            // back, and confirm the headers survive.
-            let from = Addr::new("Ada", "ada@analytical.example");
-            let draft = Draft {
-                to: "you@example.test".into(),
-                subject: "Notes from the Analytical Engine".into(),
-                body: "The Engine weaves algebraic patterns.".into(),
-                ..Default::default()
-            };
-            let bytes = build_mime(&content, &from, &draft).unwrap();
-            let msg = parse_eml(&bytes, 1000, Folder::Inbox).unwrap();
-            assert_eq!(msg.subject, "Notes from the Analytical Engine");
-            assert_eq!(msg.from.email, "ada@analytical.example");
-            assert!(msg.body.contains("algebraic patterns"));
-        }
-
-        {
-            let content = tilo_content::ContentStore::memory();
-            let attachment = crate::attachment_store::stage_bytes(
-                &content,
-                b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02",
-                "report.txt",
-            )
-            .unwrap();
-            let from = Addr::new("Me", "me@example.test");
-            let draft = Draft {
-                to: "you@there.example".into(),
-                subject: "Files".into(),
-                body: "See attached.".into(),
-                attachments: vec![attachment],
-                ..Default::default()
-            };
-            let bytes = build_mime(&content, &from, &draft).unwrap();
-            let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
-            assert_eq!(parsed.attachments.len(), 1);
-            assert_eq!(parsed.attachments[0].filename, "report.txt");
+            let parsed = MessageParser::default().parse(&bytes).unwrap();
+            assert!(parsed.bcc().is_none());
+            assert!(!String::from_utf8_lossy(&bytes).contains("hidden@example.test"));
             assert_eq!(
-                parsed.attachments[0].content,
-                b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02"
+                parsed.to().unwrap().first().unwrap().address(),
+                Some("visible@example.test")
+            );
+            assert_eq!(
+                parsed.cc().unwrap().first().unwrap().address(),
+                Some("copy@example.test")
             );
         }
 
+        phase mime_build_parses_addresses_and_embeds_verified_attachments;
         {
-            let content = tilo_content::ContentStore::memory();
-            let draft = Draft {
-                to: "guest@example.com".into(),
-                subject: "Invitation".into(),
-                body: "See attached.".into(),
-                calendar_ics: Some("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n".into()),
-                ..Default::default()
-            };
-            let bytes = build_mime(&content, &Addr::new("Me", "me@example.com"), &draft).unwrap();
-            let wire = String::from_utf8_lossy(&bytes);
-            assert!(wire.contains("text/calendar; method=REQUEST"), "{wire}");
+            {
+                let v = parse_addr_list("Ada Lovelace <ada@x.example>, bob@y.example");
+                assert_eq!(v.len(), 2);
+                assert_eq!(v[0].name.as_deref(), Some("Ada Lovelace"));
+                assert_eq!(v[0].email, "ada@x.example");
+                assert_eq!(v[1].email, "bob@y.example");
+                assert!(v[1].name.is_none());
+            }
+
+            {
+                let content = tilo_content::ContentStore::memory();
+                let attachment = crate::attachment_store::stage_bytes(
+                    &content,
+                    b"%PDF-1.4 report body",
+                    "report.pdf",
+                )
+                .unwrap();
+                let from = Addr::new("Me", "me@example.test");
+                let draft = Draft {
+                    to: "you@there.example".into(),
+                    subject: "Hello".into(),
+                    body: "Body text here.".into(),
+                    attachments: vec![attachment],
+                    ..Default::default()
+                };
+                let bytes = build_mime(&content, &from, &draft).unwrap();
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(text.contains("Subject: Hello"));
+                assert!(text.to_ascii_lowercase().contains("multipart/mixed"));
+                assert!(text.contains("me@example.test"));
+            }
+
+            {
+                let content = tilo_content::ContentStore::memory();
+                // Prove the two libraries interoperate: build a message, parse it
+                // back, and confirm the headers survive.
+                let from = Addr::new("Ada", "ada@analytical.example");
+                let draft = Draft {
+                    to: "you@example.test".into(),
+                    subject: "Notes from the Analytical Engine".into(),
+                    body: "The Engine weaves algebraic patterns.".into(),
+                    ..Default::default()
+                };
+                let bytes = build_mime(&content, &from, &draft).unwrap();
+                let msg = parse_eml(&bytes, 1000, Folder::Inbox).unwrap();
+                assert_eq!(msg.subject, "Notes from the Analytical Engine");
+                assert_eq!(msg.from.email, "ada@analytical.example");
+                assert!(msg.body.contains("algebraic patterns"));
+            }
+
+            {
+                let content = tilo_content::ContentStore::memory();
+                let attachment = crate::attachment_store::stage_bytes(
+                    &content,
+                    b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02",
+                    "report.txt",
+                )
+                .unwrap();
+                let from = Addr::new("Me", "me@example.test");
+                let draft = Draft {
+                    to: "you@there.example".into(),
+                    subject: "Files".into(),
+                    body: "See attached.".into(),
+                    attachments: vec![attachment],
+                    ..Default::default()
+                };
+                let bytes = build_mime(&content, &from, &draft).unwrap();
+                let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
+                assert_eq!(parsed.attachments.len(), 1);
+                assert_eq!(parsed.attachments[0].filename, "report.txt");
+                assert_eq!(
+                    parsed.attachments[0].content,
+                    b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02"
+                );
+            }
+
+            {
+                let content = tilo_content::ContentStore::memory();
+                let draft = Draft {
+                    to: "guest@example.com".into(),
+                    subject: "Invitation".into(),
+                    body: "See attached.".into(),
+                    calendar_ics: Some("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n".into()),
+                    ..Default::default()
+                };
+                let bytes = build_mime(&content, &Addr::new("Me", "me@example.com"), &draft).unwrap();
+                let wire = String::from_utf8_lossy(&bytes);
+                assert!(wire.contains("text/calendar; method=REQUEST"), "{wire}");
+            }
+
+            {
+                let content = tilo_content::ContentStore::memory();
+                // A missing blob must not be silently omitted from an otherwise
+                // successful-looking send.
+                let draft = Draft {
+                    to: "you@there.example".into(),
+                    subject: "Nope".into(),
+                    body: "b".into(),
+                    attachments: vec![crate::model::DraftAttachment {
+                        content_id: format!("mail-attachment:blake3:{}", "0".repeat(64)),
+                        filename: "missing.txt".into(),
+                        mime: "text/plain".into(),
+                        size: 12,
+                    }],
+                    ..Default::default()
+                };
+                assert!(build_mime(&content, &Addr::new("Me", "me@x.example"), &draft).is_err());
+            }
         }
 
+        phase parsed_messages_dedupe_and_keep_rfc_thread_linkage;
         {
-            let content = tilo_content::ContentStore::memory();
-            // A missing blob must not be silently omitted from an otherwise
-            // successful-looking send.
-            let draft = Draft {
-                to: "you@there.example".into(),
-                subject: "Nope".into(),
-                body: "b".into(),
-                attachments: vec![crate::model::DraftAttachment {
-                    content_id: format!("mail-attachment:blake3:{}", "0".repeat(64)),
-                    filename: "missing.txt".into(),
-                    mime: "text/plain".into(),
-                    size: 12,
-                }],
-                ..Default::default()
-            };
-            assert!(build_mime(&content, &Addr::new("Me", "me@x.example"), &draft).is_err());
-        }
-    }
-
-    #[test]
-    fn parsed_messages_dedupe_and_keep_rfc_thread_linkage() {
-        {
-            // The confirmed defect: a re-fetch minted a fresh UUID per parse, so
-            // the same server message piled up as N copies in the mailbox and the
-            // reader drew its header once per copy. A stable id keyed on the
-            // Message-ID must collapse them to one.
-            let raw = b"From: Ada <ada@x.example>\r\n\
+            {
+                // The confirmed defect: a re-fetch minted a fresh UUID per parse, so
+                // the same server message piled up as N copies in the mailbox and the
+                // reader drew its header once per copy. A stable id keyed on the
+                // Message-ID must collapse them to one.
+                let raw = b"From: Ada <ada@x.example>\r\n\
     To: you@example.test\r\n\
     Subject: Re: Launch\r\n\
     Message-ID: <thread-42@x.example>\r\n\
     \r\n\
     Body of the message.\r\n";
-            let a = parse_eml(raw, 1000, Folder::Inbox).unwrap();
-            let b = parse_eml(raw, 2000, Folder::Inbox).unwrap();
-            assert_eq!(a.id, b.id, "same Message-ID → same local id across fetches");
+                let a = parse_eml(raw, 1000, Folder::Inbox).unwrap();
+                let b = parse_eml(raw, 2000, Folder::Inbox).unwrap();
+                assert_eq!(a.id, b.id, "same Message-ID → same local id across fetches");
 
-            let mut mb = crate::model::Mailbox::default();
-            mb.insert(a);
-            mb.insert(b);
-            assert_eq!(
-                mb.messages_in(Folder::Inbox).len(),
-                1,
-                "re-inserting the same server message must not duplicate it"
-            );
-        }
+                let mut mb = crate::model::Mailbox::default();
+                mb.insert(a);
+                mb.insert(b);
+                assert_eq!(
+                    mb.messages_in(Folder::Inbox).len(),
+                    1,
+                    "re-inserting the same server message must not duplicate it"
+                );
+            }
 
-        {
-            let raw = b"From: Ada <ada@x.example>\r\n\
+            {
+                let raw = b"From: Ada <ada@x.example>\r\n\
     To: you@example.test\r\n\
     Subject: Re: Launch\r\n\
     Message-ID: <thread-reply@x.example>\r\n\
     In-Reply-To: <thread-root@x.example>\r\n\
     \r\n\
     Reply body.\r\n";
-            let message = parse_eml(raw, 1000, Folder::Inbox).expect("valid message");
-            assert_eq!(
-                message.rfc_message_id.as_deref(),
-                Some("thread-reply@x.example")
-            );
-            assert_eq!(
-                message.in_reply_to.as_deref(),
-                Some("thread-root@x.example")
-            );
-        }
+                let message = parse_eml(raw, 1000, Folder::Inbox).expect("valid message");
+                assert_eq!(
+                    message.rfc_message_id.as_deref(),
+                    Some("thread-reply@x.example")
+                );
+                assert_eq!(
+                    message.in_reply_to.as_deref(),
+                    Some("thread-root@x.example")
+                );
+            }
 
-        {
-            let raw = b"From: Ada <ada@x.example>\r\n\
+            {
+                let raw = b"From: Ada <ada@x.example>\r\n\
     To: you@example.test\r\n\
     Subject: Re: Launch\r\n\
     Message-ID: <thread-latest@x.example>\r\n\
@@ -480,40 +484,40 @@ mod tests {
     In-Reply-To: <thread-middle@x.example>\r\n\
     \r\n\
     Latest reply.\r\n";
-            let message = parse_eml(raw, 1000, Folder::Inbox).expect("valid message");
-            assert_eq!(
-                message.in_reply_to.as_deref(),
-                Some("thread-root@x.example")
-            );
+                let message = parse_eml(raw, 1000, Folder::Inbox).expect("valid message");
+                assert_eq!(
+                    message.in_reply_to.as_deref(),
+                    Some("thread-root@x.example")
+                );
+            }
+
+            {
+                // No Message-ID → a random id, so two genuinely-separate mails without
+                // the header don't collapse into one.
+                let raw = b"From: a@x.example\r\nSubject: No id\r\n\r\nHi\r\n";
+                let a = parse_eml(raw, 1000, Folder::Inbox).unwrap();
+                let b = parse_eml(raw, 1000, Folder::Inbox).unwrap();
+                assert_ne!(a.id, b.id, "absent Message-ID falls back to a unique id");
+            }
         }
 
+        phase parse_eml_extracts_html_and_hydrated_attachments;
         {
-            // No Message-ID → a random id, so two genuinely-separate mails without
-            // the header don't collapse into one.
-            let raw = b"From: a@x.example\r\nSubject: No id\r\n\r\nHi\r\n";
-            let a = parse_eml(raw, 1000, Folder::Inbox).unwrap();
-            let b = parse_eml(raw, 1000, Folder::Inbox).unwrap();
-            assert_ne!(a.id, b.id, "absent Message-ID falls back to a unique id");
-        }
-    }
-
-    #[test]
-    fn parse_eml_extracts_html_and_hydrated_attachments() {
-        {
-            let raw = b"From: a@x.example\r\n\
+            {
+                let raw = b"From: a@x.example\r\n\
     Subject: Rich\r\n\
     Message-ID: <html-1@x.example>\r\n\
     Content-Type: text/html; charset=utf-8\r\n\
     \r\n\
     <html><body><h1>Hi</h1><p>Rich <b>content</b>.</p></body></html>\r\n";
-            let msg = parse_eml(raw, 1000, Folder::Inbox).unwrap();
-            assert!(msg.html_body.is_some(), "an HTML mail keeps its html part");
-            assert!(msg.html_body.as_deref().unwrap().contains("<h1>"));
-            assert!(msg.body.to_ascii_lowercase().contains("hi"));
-        }
+                let msg = parse_eml(raw, 1000, Folder::Inbox).unwrap();
+                assert!(msg.html_body.is_some(), "an HTML mail keeps its html part");
+                assert!(msg.html_body.as_deref().unwrap().contains("<h1>"));
+                assert!(msg.body.to_ascii_lowercase().contains("hi"));
+            }
 
-        {
-            let raw = b"From: A <a@x.example>\r\n\
+            {
+                let raw = b"From: A <a@x.example>\r\n\
     To: b@y.example\r\n\
     Subject: With file\r\n\
     MIME-Version: 1.0\r\n\
@@ -529,18 +533,18 @@ mod tests {
     \r\n\
     %PDF-1.4 real body\r\n\
     --BOUND--\r\n";
-            let msg = parse_eml(raw, 42, Folder::Inbox).unwrap();
-            let att = &msg.attachments[0];
-            assert!(
-                att.is_downloadable(),
-                "parsed attachment should carry its bytes"
-            );
-            assert!(att.content.starts_with(b"%PDF-1.4 real body"));
-            assert_eq!(att.size, att.content.len() as u64);
-        }
+                let msg = parse_eml(raw, 42, Folder::Inbox).unwrap();
+                let att = &msg.attachments[0];
+                assert!(
+                    att.is_downloadable(),
+                    "parsed attachment should carry its bytes"
+                );
+                assert!(att.content.starts_with(b"%PDF-1.4 real body"));
+                assert_eq!(att.size, att.content.len() as u64);
+            }
 
-        {
-            let raw = b"From: A <a@x.example>\r\n\
+            {
+                let raw = b"From: A <a@x.example>\r\n\
     To: b@y.example\r\n\
     Subject: With file\r\n\
     MIME-Version: 1.0\r\n\
@@ -556,41 +560,42 @@ mod tests {
     \r\n\
     %PDF-1.4 fake\r\n\
     --BOUND--\r\n";
-            let msg = parse_eml(raw, 42, Folder::Inbox).unwrap();
-            assert_eq!(msg.attachments.len(), 1);
-            assert_eq!(msg.attachments[0].filename, "spec.pdf");
-            assert_eq!(msg.attachments[0].mime, "application/pdf");
-            assert!(msg.body.contains("See attached"));
+                let msg = parse_eml(raw, 42, Folder::Inbox).unwrap();
+                assert_eq!(msg.attachments.len(), 1);
+                assert_eq!(msg.attachments[0].filename, "spec.pdf");
+                assert_eq!(msg.attachments[0].mime, "application/pdf");
+                assert!(msg.body.contains("See attached"));
+            }
         }
-    }
 
-    #[test]
-    fn fetched_messages_overlay_flags_and_prefer_internaldate() {
+        phase fetched_messages_overlay_flags_and_prefer_internaldate;
         {
-            // A real fetched blob: the \Seen/\Flagged state comes from IMAP FLAGS,
-            // and with no INTERNALDATE the timestamp falls back to the Date header.
-            let raw = b"From: A <a@x.example>\r\n\
+            {
+                // A real fetched blob: the \Seen/\Flagged state comes from IMAP FLAGS,
+                // and with no INTERNALDATE the timestamp falls back to the Date header.
+                let raw = b"From: A <a@x.example>\r\n\
     To: b@y.example\r\n\
     Subject: Fetched\r\n\
     Date: Thu, 01 Jan 1970 00:30:00 +0000\r\n\
     \r\n\
     Hello from the server.\r\n";
-            let msg = parse_fetched(raw, Folder::Inbox, true, true, None, 999).unwrap();
-            assert!(msg.read, "\\Seen maps to read");
-            assert!(msg.starred, "\\Flagged maps to starred");
-            assert_eq!(
-                msg.timestamp_min, 30,
-                "Date header (00:30 UTC) → 30 minutes"
-            );
-            assert_eq!(msg.subject, "Fetched");
-        }
+                let msg = parse_fetched(raw, Folder::Inbox, true, true, None, 999).unwrap();
+                assert!(msg.read, "\\Seen maps to read");
+                assert!(msg.starred, "\\Flagged maps to starred");
+                assert_eq!(
+                    msg.timestamp_min, 30,
+                    "Date header (00:30 UTC) → 30 minutes"
+                );
+                assert_eq!(msg.subject, "Fetched");
+            }
 
-        {
-            let raw = b"From: a@x.example\r\nSubject: S\r\nDate: Thu, 01 Jan 1970 00:30:00 +0000\r\n\r\nbody\r\n";
-            let msg = parse_fetched(raw, Folder::Sent, false, false, Some(120), 999).unwrap();
-            assert_eq!(msg.timestamp_min, 120);
-            assert!(!msg.read && !msg.starred);
-            assert_eq!(msg.folder, Folder::Sent);
+            {
+                let raw = b"From: a@x.example\r\nSubject: S\r\nDate: Thu, 01 Jan 1970 00:30:00 +0000\r\n\r\nbody\r\n";
+                let msg = parse_fetched(raw, Folder::Sent, false, false, Some(120), 999).unwrap();
+                assert_eq!(msg.timestamp_min, 120);
+                assert!(!msg.read && !msg.starred);
+                assert_eq!(msg.folder, Folder::Sent);
+            }
         }
     }
 }

@@ -2,19 +2,6 @@
 
 use super::*;
 
-#[test]
-fn versioned_imports_must_resolve_and_weak_imports_remain_optional() {
-    let rows = "Symbol table '.dynsym' contains 5 entries:\n 1: 0 0 FUNC GLOBAL DEFAULT UND required@GLIBC_2.34 (2)\n 2: 1 8 FUNC GLOBAL DEFAULT 10 required@@GLIBC_2.34\n 3: 0 0 NOTYPE WEAK DEFAULT UND optional\n 4: 1 8 FUNC GLOBAL DEFAULT 10 other@@GLIBC_2.33\n";
-    let mut exports = BTreeSet::new();
-    let mut imports = BTreeSet::new();
-    parse_symbols(rows.as_bytes(), &mut exports, &mut imports).unwrap();
-    assert_eq!(imports, BTreeSet::from(["required@GLIBC_2.34".to_owned()]));
-    assert!(imports.is_subset(&exports));
-    assert!(exports.contains("required"));
-    assert!(!exports.contains("required@GLIBC_2.35"));
-    assert!(parse_symbols("unobservable".as_bytes(), &mut exports, &mut imports).is_err());
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 fn actual_elf_identity_and_symbols_are_observed_without_running_the_subject() {
@@ -122,12 +109,29 @@ fn verified_snapshot_cannot_follow_later_mutation_of_the_selected_sdk() {
     assert!(verified_snapshot(&selected, &bundle, std::env::consts::ARCH).is_err());
 }
 
-#[test]
-fn ambiguous_and_oversized_symbol_names_fail_observation() {
-    let mut exports = BTreeSet::new();
-    let mut imports = BTreeSet::new();
-    let ambiguous = "Symbol table '.dynsym' contains 1 entry:\n 1: 0 0 FUNC GLOBAL DEFAULT UND name with-space\n";
-    assert!(parse_symbols(ambiguous.as_bytes(), &mut exports, &mut imports).is_err());
-    let oversized = "x".repeat(16 * 1024 + 1);
-    assert!(parse_symbols(oversized.as_bytes(), &mut exports, &mut imports).is_err());
+tilo_test_env::scenario! {
+    fn symbol_tables_are_parsed_strictly;
+
+    phase versioned_imports_must_resolve_and_weak_imports_remain_optional;
+    {
+        let rows = "Symbol table '.dynsym' contains 5 entries:\n 1: 0 0 FUNC GLOBAL DEFAULT UND required@GLIBC_2.34 (2)\n 2: 1 8 FUNC GLOBAL DEFAULT 10 required@@GLIBC_2.34\n 3: 0 0 NOTYPE WEAK DEFAULT UND optional\n 4: 1 8 FUNC GLOBAL DEFAULT 10 other@@GLIBC_2.33\n";
+        let mut exports = BTreeSet::new();
+        let mut imports = BTreeSet::new();
+        parse_symbols(rows.as_bytes(), &mut exports, &mut imports).unwrap();
+        assert_eq!(imports, BTreeSet::from(["required@GLIBC_2.34".to_owned()]));
+        assert!(imports.is_subset(&exports));
+        assert!(exports.contains("required"));
+        assert!(!exports.contains("required@GLIBC_2.35"));
+        assert!(parse_symbols("unobservable".as_bytes(), &mut exports, &mut imports).is_err());
+    }
+
+    phase ambiguous_and_oversized_symbol_names_fail_observation;
+    {
+        let mut exports = BTreeSet::new();
+        let mut imports = BTreeSet::new();
+        let ambiguous = "Symbol table '.dynsym' contains 1 entry:\n 1: 0 0 FUNC GLOBAL DEFAULT UND name with-space\n";
+        assert!(parse_symbols(ambiguous.as_bytes(), &mut exports, &mut imports).is_err());
+        let oversized = "x".repeat(16 * 1024 + 1);
+        assert!(parse_symbols(oversized.as_bytes(), &mut exports, &mut imports).is_err());
+    }
 }

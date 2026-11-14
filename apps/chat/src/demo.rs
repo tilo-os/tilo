@@ -357,7 +357,6 @@ pub fn demo(me: &str) -> Chat {
             initials: initials.to_owned(),
             color,
             status,
-            agent: false,
         });
     }
     for (id, name) in [

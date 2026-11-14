@@ -26,6 +26,7 @@ use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, start_host, wait_for};
+use tilo_relay_protocol::WorkspaceId;
 
 const VIDEO: &str = "so.tilo.video-editor";
 
@@ -85,7 +86,7 @@ fn delegate_to_ed(
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: vec![VIDEO.into()],
         },
         now,
@@ -100,7 +101,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
     let host_device = enrol(
         &root,
         "home-server",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_host(
@@ -110,7 +111,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
+    crate::support::place(&host.relay, &host_device.cert).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
     let delegation = delegate_to_ed(&root, &agent_device);
     host.relay
@@ -274,13 +275,12 @@ impl Planner for Coordinated {
 /// fresh agent, and there is no second check. The item's agent itself is
 /// not checked.
 /// An agent, Ed, granted the video editor and planning with `planner`, in a
-/// workspace on a host of its own, admitted: the host, a laptop taking part, the host's
-/// state, the agent and its steering.
+/// workspace on a host of its own, admitted: the host, the host's state, the
+/// agent and its steering.
 async fn ed_planning_with(
     planner: Box<dyn Planner>,
 ) -> (
     crate::support::TestHost,
-    crate::participant::Participant,
     tempfile::TempDir,
     AgentParticipant,
     Arc<AgentControl>,
@@ -289,7 +289,7 @@ async fn ed_planning_with(
     let host_device = enrol(
         &root,
         "home-server",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_host(
@@ -299,7 +299,7 @@ async fn ed_planning_with(
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let laptop = crate::participant::Participant::start(&host.relay, &root).await;
+    crate::support::place(&host.relay, &host_device.cert).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
     let now = tilo_clock::unix_now_ns();
     let delegation = Delegation::sign(
@@ -311,7 +311,7 @@ async fn ed_planning_with(
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: vec![VIDEO.into()],
         },
         now,
@@ -348,18 +348,17 @@ async fn ed_planning_with(
     })
     .await;
 
-    (host, laptop, state, agent, control)
+    (host, state, agent, control)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinator_s_check_sees_the_facts_and_adds_one_fix() {
     let asked: Asked = Arc::new(Mutex::new(Vec::new()));
-    let (host, _laptop, _state, mut agent, control) =
-        Box::pin(ed_planning_with(Box::new(Coordinated {
-            asked: Arc::clone(&asked),
-            obligations: tilo_agent_participant::Obligations::default(),
-        })))
-        .await;
+    let (host, _state, mut agent, control) = Box::pin(ed_planning_with(Box::new(Coordinated {
+        asked: Arc::clone(&asked),
+        obligations: tilo_agent_participant::Obligations::default(),
+    })))
+    .await;
 
     control
         .message("Cut the promo at 1280x720 in the video editor")

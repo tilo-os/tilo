@@ -55,7 +55,7 @@ impl SdkCertifiedIdentity for AccessThenKeysIdentity {
 fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
     let app_id = "so.tilo.test";
     let cluster = Uuid::new_v4();
-    let channel = collab_types::document_channel_id(app_id, &cluster.to_string(), "");
+    let channel = collab_types::WorkspaceId::parse(&cluster.to_string()).unwrap();
     let group = channel_crypto::ChannelGroup::create(
         channel,
         channel_crypto::MemberKey::generate("device").unwrap(),

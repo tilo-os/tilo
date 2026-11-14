@@ -118,100 +118,105 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_panel_touch_stays_on_the_panel_beside_a_monitor() {
-        let outputs = [
-            geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Transform::Normal),
-            geometry(
-                "HDMI-A-1",
-                "HDMI-A-1",
-                (1920, 0),
-                (2560, 1440),
-                Transform::Normal,
-            ),
-        ];
-        let panel = touch_output_for_name(outputs, Some("eDP-1")).expect("bound panel");
-        assert_eq!(calibrate_touch_position(panel, 0.0, 0.0), (0.0, 0.0));
-        assert_eq!(
-            calibrate_touch_position(panel, 1.0, 1.0),
-            (1919.0, 1079.0),
-            "the panel corner remains inside eDP-1, not on HDMI's first pixel"
-        );
-        assert_eq!(calibrate_touch_position(panel, 0.5, 0.5), (959.5, 539.5));
-    }
+    tilo_test_env::scenario! {
+        /// Which output a touch panel's touches land on.
+        fn a_touch_panel_maps_to_its_own_output;
 
-    #[test]
-    fn a_named_output_is_used_wherever_it_sits_in_the_layout() {
-        let outputs = [
-            geometry("eDP-1", "eDP-1", (0, 360), (1920, 1080), Transform::Normal),
-            geometry("DP-1", "DP-1", (1920, 0), (2560, 1440), Transform::Normal),
-        ];
-        let dock = touch_output_for_name(outputs, Some("DP-1")).expect("bound dock");
-        assert_eq!(calibrate_touch_position(dock, 0.0, 0.0), (1920.0, 0.0));
-        assert_eq!(calibrate_touch_position(dock, 1.0, 1.0), (4479.0, 1439.0));
-    }
+        phase a_panel_touch_stays_on_the_panel_beside_a_monitor;
+        {
+            let outputs = [
+                geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Transform::Normal),
+                geometry(
+                    "HDMI-A-1",
+                    "HDMI-A-1",
+                    (1920, 0),
+                    (2560, 1440),
+                    Transform::Normal,
+                ),
+            ];
+            let panel = touch_output_for_name(outputs, Some("eDP-1")).expect("bound panel");
+            assert_eq!(calibrate_touch_position(panel, 0.0, 0.0), (0.0, 0.0));
+            assert_eq!(
+                calibrate_touch_position(panel, 1.0, 1.0),
+                (1919.0, 1079.0),
+                "the panel corner remains inside eDP-1, not on HDMI's first pixel"
+            );
+            assert_eq!(calibrate_touch_position(panel, 0.5, 0.5), (959.5, 539.5));
+        }
 
-    #[test]
-    fn a_missing_output_falls_back_to_the_primary_and_an_unnamed_one_to_the_panel() {
-        let after_unplug = [geometry(
-            "HDMI-A-1",
-            "HDMI-A-1",
-            (0, 0),
-            (2560, 1440),
-            Transform::Normal,
-        )];
-        let fallback = touch_output_for_name(after_unplug, Some("eDP-1")).expect("primary");
-        assert_eq!(fallback.connector_name, "HDMI-A-1");
-        assert_eq!(
-            calibrate_touch_position(fallback, 0.5, 0.5),
-            (1279.5, 719.5)
-        );
+        phase a_named_output_is_used_wherever_it_sits_in_the_layout;
+        {
+            let outputs = [
+                geometry("eDP-1", "eDP-1", (0, 360), (1920, 1080), Transform::Normal),
+                geometry("DP-1", "DP-1", (1920, 0), (2560, 1440), Transform::Normal),
+            ];
+            let dock = touch_output_for_name(outputs, Some("DP-1")).expect("bound dock");
+            assert_eq!(calibrate_touch_position(dock, 0.0, 0.0), (1920.0, 0.0));
+            assert_eq!(calibrate_touch_position(dock, 1.0, 1.0), (4479.0, 1439.0));
+        }
 
-        let docked = [
-            geometry(
+        phase a_missing_output_falls_back_to_the_primary_and_an_unnamed_one_to_the_panel;
+        {
+            let after_unplug = [geometry(
                 "HDMI-A-1",
                 "HDMI-A-1",
                 (0, 0),
                 (2560, 1440),
                 Transform::Normal,
-            ),
-            geometry("eDP-1", "eDP-1", (2560, 0), (2944, 1840), Transform::Normal),
-        ];
-        let panel = touch_output_for_name(docked, None).expect("built-in panel");
-        assert_eq!(panel.connector_name, "eDP-1");
-        assert_eq!(calibrate_touch_position(panel, 0.0, 0.0), (2560.0, 0.0));
-    }
+            )];
+            let fallback = touch_output_for_name(after_unplug, Some("eDP-1")).expect("primary");
+            assert_eq!(fallback.connector_name, "HDMI-A-1");
+            assert_eq!(
+                calibrate_touch_position(fallback, 0.5, 0.5),
+                (1279.5, 719.5)
+            );
 
-    #[test]
-    fn a_connector_name_two_gpus_share_never_picks_one_by_order() {
-        let outputs = [
-            geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Transform::Normal),
-            geometry(
-                "HDMI-A-1",
-                "card1/HDMI-A-1",
-                (1920, 0),
-                (2560, 1440),
-                Transform::Normal,
-            ),
-            geometry(
-                "HDMI-A-1",
-                "card2/HDMI-A-1",
-                (4480, 0),
-                (2560, 1440),
-                Transform::Normal,
-            ),
-        ];
-        let fallback = touch_output_for_name(outputs, Some("HDMI-A-1")).expect("primary");
-        assert_eq!(fallback.key, "eDP-1");
-        let qualified = touch_output_for_name(outputs, Some("card2/HDMI-A-1")).expect("qualified");
-        assert_eq!(qualified.position, (4480, 0));
-    }
+            let docked = [
+                geometry(
+                    "HDMI-A-1",
+                    "HDMI-A-1",
+                    (0, 0),
+                    (2560, 1440),
+                    Transform::Normal,
+                ),
+                geometry("eDP-1", "eDP-1", (2560, 0), (2944, 1840), Transform::Normal),
+            ];
+            let panel = touch_output_for_name(docked, None).expect("built-in panel");
+            assert_eq!(panel.connector_name, "eDP-1");
+            assert_eq!(calibrate_touch_position(panel, 0.0, 0.0), (2560.0, 0.0));
+        }
 
-    #[test]
-    fn a_rotated_panel_maps_its_physical_corner_to_the_turned_one() {
-        let output = geometry("eDP-1", "eDP-1", (100, 50), (1080, 1920), Transform::_90);
-        // The panel's physical top-left is the turned picture's bottom-left.
-        assert_eq!(calibrate_touch_position(output, 0.0, 0.0), (100.0, 1969.0));
-        assert_eq!(calibrate_touch_position(output, 0.0, 1.0), (1179.0, 1969.0));
+        phase a_connector_name_two_gpus_share_never_picks_one_by_order;
+        {
+            let outputs = [
+                geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Transform::Normal),
+                geometry(
+                    "HDMI-A-1",
+                    "card1/HDMI-A-1",
+                    (1920, 0),
+                    (2560, 1440),
+                    Transform::Normal,
+                ),
+                geometry(
+                    "HDMI-A-1",
+                    "card2/HDMI-A-1",
+                    (4480, 0),
+                    (2560, 1440),
+                    Transform::Normal,
+                ),
+            ];
+            let fallback = touch_output_for_name(outputs, Some("HDMI-A-1")).expect("primary");
+            assert_eq!(fallback.key, "eDP-1");
+            let qualified = touch_output_for_name(outputs, Some("card2/HDMI-A-1")).expect("qualified");
+            assert_eq!(qualified.position, (4480, 0));
+        }
+
+        phase a_rotated_panel_maps_its_physical_corner_to_the_turned_one;
+        {
+            let output = geometry("eDP-1", "eDP-1", (100, 50), (1080, 1920), Transform::_90);
+            // The panel's physical top-left is the turned picture's bottom-left.
+            assert_eq!(calibrate_touch_position(output, 0.0, 0.0), (100.0, 1969.0));
+            assert_eq!(calibrate_touch_position(output, 0.0, 1.0), (1179.0, 1969.0));
+        }
     }
 }

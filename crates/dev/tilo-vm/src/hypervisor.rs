@@ -318,6 +318,18 @@ pub trait Hypervisor {
     fn query_uuid(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<String> {
         None
     }
+    /// Whether the VM is on a network the host's other VMs are on ([`crate::lan`]): `Ok` when
+    /// it is, else why not.
+    fn host_network(&self, _entry: &VmEntry) -> Result<(), String> {
+        Err(format!(
+            "the {} adapter's VMs reach out from this host but not each other",
+            self.name()
+        ))
+    }
+    /// Whether this adapter puts its VMs on [`crate::lan`]'s network.
+    fn joins_lan(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -509,8 +521,9 @@ pub fn domain_xml_with_uuid(
     };
     let e = quick_xml::escape::escape;
     let uuid = uuid.or(vm.entry.uuid.as_deref());
+    let lan = crate::lan::mac(vm.entry);
     Ok(format!(
-        "<domain type='{domain_type}'>
+        "<domain type='{domain_type}'{namespace}>
   <name>{name}</name>{uuid}
   <memory unit='MiB'>{memory}</memory>
   <vcpu>{cpus}</vcpu>
@@ -548,9 +561,11 @@ pub fn domain_xml_with_uuid(
     <graphics type='spice' autoport='yes'/>{gl}
     <video>{video}</video>
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
-  </devices>
+  </devices>{lan}
 </domain>
 ",
+        namespace = if lan.is_some() { crate::lan::QEMU_NAMESPACE } else { "" },
+        lan = lan.map_or_else(String::new, crate::lan::domain_commandline),
         name = e(vm.name),
         uuid = uuid.map_or_else(String::new, |u| format!("\n  <uuid>{}</uuid>", e(u))),
         system = uuid.map_or_else(String::new, |u| format!(
@@ -714,6 +729,16 @@ impl Hypervisor for Libvirt {
 
     fn branching(&self) -> Branching {
         Branching::Backing
+    }
+
+    fn host_network(&self, entry: &VmEntry) -> Result<(), String> {
+        crate::lan::mac(entry).map(|_| ()).ok_or_else(|| {
+            "its NIC on tilo-vm's host network is off (`lan = \"off\"` in vms.toml)".to_owned()
+        })
+    }
+
+    fn joins_lan(&self) -> bool {
+        true
     }
 
     fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
@@ -1076,6 +1101,11 @@ impl Hypervisor for Utm {
 
     fn branching(&self) -> Branching {
         Branching::Clone
+    }
+
+    fn host_network(&self, _entry: &VmEntry) -> Result<(), String> {
+        // UTM's default shared network (vmnet) puts its VMs on one subnet of the host.
+        Ok(())
     }
 
     fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
@@ -1598,20 +1628,89 @@ impl Hypervisor for HyperV {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_utm_vm_is_found_in_macos_dhcp_leases_by_its_mac() {
-        let leases = "{\n\tname=fedora\n\tip_address=192.168.64.7\n\thw_address=1,6a:1c:ad:58:e4:14\n\tidentifier=1,6a:1c:ad:58:e4:14\n\tlease=0x6acedea9\n}\n{\n\tip_address=192.168.64.2\n\thw_address=1,6a:1c:ad:58:e4:14\n\tlease=0x6acedea8\n}\n{\n\tip_address=192.168.64.3\n\thw_address=1,2:0:0:0:0:1\n}\n";
-        assert_eq!(
-            super::leased_address(leases, "6A:1C:AD:58:E4:14").as_deref(),
-            Some("192.168.64.7"),
-            "the newest lease of that MAC"
-        );
-        assert_eq!(
-            super::leased_address(leases, "02:00:00:00:00:01").as_deref(),
-            Some("192.168.64.3"),
-            "octets without leading zeros match"
-        );
-        assert_eq!(super::leased_address(leases, "02:00:00:00:00:02"), None);
+    tilo_test_env::scenario! {
+        fn utm_vms_are_imported_and_found_without_guessing;
+
+        phase a_utm_vm_is_found_in_macos_dhcp_leases_by_its_mac;
+        {
+            let leases = "{\n\tname=fedora\n\tip_address=192.168.64.7\n\thw_address=1,6a:1c:ad:58:e4:14\n\tidentifier=1,6a:1c:ad:58:e4:14\n\tlease=0x6acedea9\n}\n{\n\tip_address=192.168.64.2\n\thw_address=1,6a:1c:ad:58:e4:14\n\tlease=0x6acedea8\n}\n{\n\tip_address=192.168.64.3\n\thw_address=1,2:0:0:0:0:1\n}\n";
+            assert_eq!(
+                super::leased_address(leases, "6A:1C:AD:58:E4:14").as_deref(),
+                Some("192.168.64.7"),
+                "the newest lease of that MAC"
+            );
+            assert_eq!(
+                super::leased_address(leases, "02:00:00:00:00:01").as_deref(),
+                Some("192.168.64.3"),
+                "octets without leading zeros match"
+            );
+            assert_eq!(super::leased_address(leases, "02:00:00:00:00:02"), None);
+        }
+
+        phase utm_import_uses_native_scripting_with_escaped_inputs_and_requested_resources;
+        {
+            let mut runner = fake("");
+            utm_import_template(
+                &mut runner,
+                ("Tilo Dev (\"test\")", "/images/a\\b\"c.qcow2"),
+                (8192, 4),
+            )
+            .unwrap();
+            assert_eq!(runner.0.len(), 1);
+            let command = &runner.0[0];
+            assert_eq!(command.program, "osascript");
+            assert_eq!(
+                command.args,
+                [
+                    "-e",
+                    r#"set diskFile to POSIX file "/images/a\\b\"c.qcow2""#,
+                    "-e",
+                    "tell application \"UTM\"",
+                    "-e",
+                    r#"make new virtual machine with properties {backend:qemu, configuration:{name:"Tilo Dev (\"test\")", architecture:"aarch64", memory:8192, cpu cores:4, hypervisor:true, uefi:true, drives:{{interface:virtio, source:diskFile}}}}"#,
+                    "-e",
+                    "end tell",
+                ]
+            );
+        }
+
+        phase utm_import_reports_native_automation_refusal;
+        {
+            let mut runner = fake("");
+            runner.1.success = false;
+            runner.1.stderr = "Not authorized to send Apple events to UTM".into();
+            let error = utm_import_template(
+                &mut runner,
+                ("Tilo Dev (test)", "/images/dev.qcow2"),
+                (UTM_MEMORY_MB, UTM_CPUS),
+            )
+            .unwrap_err();
+            assert!(matches!(error, CliError::Unreachable { .. }));
+            assert!(error.to_string().contains(&runner.1.stderr));
+            assert!(runner.0[0].args[5].contains("memory:16384, cpu cores:8"));
+        }
+
+        phase utm_explicit_ssh_does_not_query_the_hypervisor_or_host_leases;
+        {
+            let entry = VmEntry {
+                ssh: Some("developer@192.0.2.4:2222".into()),
+                ..entry()
+            };
+            let mut runner = fake("");
+            let endpoint = Utm
+                .ssh_endpoint(
+                    &Vm {
+                        name: "dev",
+                        entry: &entry,
+                    },
+                    &mut runner,
+                )
+                .unwrap();
+            assert_eq!(endpoint.user, "developer");
+            assert_eq!(endpoint.host, "192.0.2.4");
+            assert_eq!(endpoint.port, 2222);
+            assert!(runner.0.is_empty());
+        }
     }
 
     use super::*;
@@ -1631,19 +1730,174 @@ mod tests {
         }
     }
 
-    #[test]
-    fn whpx_monitor_keeps_command_arguments_in_a_literal() {
-        let entry = entry();
-        let vm = Vm {
-            name: "dev",
-            entry: &entry,
-        };
-        let command = Whpx
-            .control(&vm, &["help '; throw 'injected'; #".into()])
-            .expect("WHPX monitor is supported");
-        let script = command.args.last().expect("PowerShell script");
-        assert!(script.contains("'command-line'='help ''; throw ''injected''; #'"));
-        assert!(Whpx.capabilities().control.is_some());
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn whpx_runs_qemu_with_its_own_defaults;
+
+        phase whpx_monitor_keeps_command_arguments_in_a_literal;
+        {
+            let entry = entry();
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            let command = Whpx
+                .control(&vm, &["help '; throw 'injected'; #".into()])
+                .expect("WHPX monitor is supported");
+            let script = command.args.last().expect("PowerShell script");
+            assert!(script.contains("'command-line'='help ''; throw ''injected''; #'"));
+            assert!(Whpx.capabilities().control.is_some());
+        }
+
+        phase whpx_defaults_to_fast_memory_without_changing_explicit_or_other_vms;
+        {
+            let memory = |entry: &VmEntry| Vm { name: "dev", entry }.memory();
+            let mut entry = entry();
+            entry.hypervisor = "whpx".into();
+            entry.memory_mb = None;
+            assert_eq!(memory(&entry), 3072);
+
+            entry.memory_mb = Some(8192);
+            assert_eq!(memory(&entry), 8192);
+
+            entry.hypervisor = "libvirt".into();
+            entry.memory_mb = None;
+            assert_eq!(memory(&entry), 8192);
+        }
+
+        phase whpx_runs_a_fresh_accelerated_child_with_its_esp_binding;
+        {
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let key = temp.path().join("vm_key");
+                std::fs::write(format!("{}.pub", key.display()), KEY).unwrap();
+                let entry = VmEntry {
+                    disk: Some(r"C:\vms\dev.qcow2".into()),
+                    image: Some(r"C:\images\base.qcow2".into()),
+                    qemu_img: Some(r"C:\msys64\clangarm64\bin\qemu-img.exe".into()),
+                    qemu_system: Some(r"C:\msys64\clangarm64\bin\qemu-system-aarch64.exe".into()),
+                    firmware_code: Some(r"C:\msys64\clangarm64\share\qemu\edk2-aarch64-code.fd".into()),
+                    firmware_vars: Some(r"C:\msys64\clangarm64\share\qemu\edk2-arm-vars.fd".into()),
+                    key: Some(key.display().to_string()),
+                    ..entry()
+                };
+                let vm = Vm {
+                    name: "dev",
+                    entry: &entry,
+                };
+                let create = Whpx.create(&vm, KEY).unwrap();
+                assert_eq!(create.len(), 2);
+                assert_eq!(create[0].program, entry.qemu_img.clone().unwrap());
+                assert!(create[0].args.contains(&"-b".into()));
+                assert!(create[1].args.last().unwrap().contains("vars.fd"));
+                let args = Whpx::qemu_args(&vm);
+                assert!(args.windows(2).any(|p| p == ["-accel", "whpx"]));
+                assert!(args.windows(2).any(|p| p == ["-cpu", "host"]));
+                assert!(
+                    args.iter()
+                        .any(|a| a.contains("pci-serial,chardev=tilo-ttyS0"))
+                );
+                assert!(args.iter().any(|a| a == "vnc=127.0.0.1:223"));
+                assert!(!args.iter().any(|a| a.contains("tcg")));
+                let start = Whpx.start(&vm);
+                assert!(
+                    start[0]
+                        .args
+                        .last()
+                        .unwrap()
+                        .contains("io.systemd.credential.binary")
+                );
+                assert!(start[0].args.last().unwrap().contains("15GB"));
+                assert!(!start[0].args.last().unwrap().contains("-RedirectStandard"));
+                assert!(start[0].args.last().unwrap().contains("ttyS0.log"));
+                assert!(
+                    Whpx.stop(&vm)[0]
+                        .args
+                        .last()
+                        .unwrap()
+                        .contains("system_powerdown")
+                );
+                assert!(
+                    Whpx.stop(&vm)[0]
+                        .args
+                        .last()
+                        .unwrap()
+                        .contains("$r.ReadLine()")
+                );
+                assert_eq!(Whpx.ssh_endpoint(&vm, &mut fake("")).unwrap().port, 2223);
+            }
+
+            {
+                let entry = VmEntry {
+                    disk: Some(r"C:\vms\dev.qcow2".into()),
+                    boot_esp: Some(r"C:\vms\override.raw".into()),
+                    headless: true,
+                    direct_kernel: Some(crate::config::DirectKernel {
+                        kernel: r"C:\bundle\Image".into(),
+                        initrd: r"C:\bundle\initrd".into(),
+                        cmdline: "root=tilo-auto composefs=abc".into(),
+                        loader_partuuid: Some("fcdfc623-0563-4f91-9db8-f2b87b98b3ce".into()),
+                        kver: "7.2.5".into(),
+                    }),
+                    ..entry()
+                };
+                let args = Whpx::qemu_args(&Vm {
+                    name: "dev",
+                    entry: &entry,
+                });
+                assert!(
+                    args.windows(2)
+                        .any(|p| p == ["-kernel", r"C:\bundle\Image"])
+                );
+                assert!(
+                    args.windows(2)
+                        .any(|p| p == ["-initrd", r"C:\bundle\initrd"])
+                );
+                assert!(args.windows(2).any(|p| p == [
+                    "-append",
+                    "root=tilo-auto composefs=abc systemd.setenv=TILO_ROOT_LOADER_PARTUUID=fcdfc623-0563-4f91-9db8-f2b87b98b3ce"
+                ]));
+                assert!(args.windows(2).any(|p| p == ["-display", "none"]));
+                assert!(
+                    !args
+                        .iter()
+                        .any(|a| a.contains("pflash") || a.contains("bootesp"))
+                );
+                assert!(
+                    !args
+                        .iter()
+                        .any(|a| a.contains("virtio-gpu") || a.contains("usb-"))
+                );
+                assert!(!args.iter().any(|a| a.contains("vnc=")));
+                assert!(Whpx.capabilities().direct_kernel);
+
+                let temp = tempfile::tempdir().unwrap();
+                let key = temp.path().join("direct_key");
+                std::fs::write(format!("{}.pub", key.display()), format!("{KEY}\n")).unwrap();
+                let keyed = VmEntry {
+                    key: Some(key.display().to_string()),
+                    ..entry
+                };
+                let keyed_vm = Vm {
+                    name: "dev",
+                    entry: &keyed,
+                };
+                let keyed_args = Whpx::qemu_args(&keyed_vm);
+                let cmdline = keyed_args
+                    .windows(2)
+                    .find(|pair| pair[0] == "-append")
+                    .map(|pair| pair[1].as_str())
+                    .unwrap();
+                assert!(
+                    cmdline.contains(&sshkey::kernel_credential(KEY)),
+                    "{cmdline}"
+                );
+                assert!(!Whpx.start(&keyed_vm)[0].display().contains("-smbios"));
+            }
+        }
     }
 
     fn fake(stdout: &str) -> Fake {
@@ -1658,71 +1912,6 @@ mod tests {
         )
     }
 
-    #[test]
-    fn utm_import_uses_native_scripting_with_escaped_inputs_and_requested_resources() {
-        let mut runner = fake("");
-        utm_import_template(
-            &mut runner,
-            ("Tilo Dev (\"test\")", "/images/a\\b\"c.qcow2"),
-            (8192, 4),
-        )
-        .unwrap();
-        assert_eq!(runner.0.len(), 1);
-        let command = &runner.0[0];
-        assert_eq!(command.program, "osascript");
-        assert_eq!(
-            command.args,
-            [
-                "-e",
-                r#"set diskFile to POSIX file "/images/a\\b\"c.qcow2""#,
-                "-e",
-                "tell application \"UTM\"",
-                "-e",
-                r#"make new virtual machine with properties {backend:qemu, configuration:{name:"Tilo Dev (\"test\")", architecture:"aarch64", memory:8192, cpu cores:4, hypervisor:true, uefi:true, drives:{{interface:virtio, source:diskFile}}}}"#,
-                "-e",
-                "end tell",
-            ]
-        );
-    }
-
-    #[test]
-    fn utm_import_reports_native_automation_refusal() {
-        let mut runner = fake("");
-        runner.1.success = false;
-        runner.1.stderr = "Not authorized to send Apple events to UTM".into();
-        let error = utm_import_template(
-            &mut runner,
-            ("Tilo Dev (test)", "/images/dev.qcow2"),
-            (UTM_MEMORY_MB, UTM_CPUS),
-        )
-        .unwrap_err();
-        assert!(matches!(error, CliError::Unreachable { .. }));
-        assert!(error.to_string().contains(&runner.1.stderr));
-        assert!(runner.0[0].args[5].contains("memory:16384, cpu cores:8"));
-    }
-
-    #[test]
-    fn utm_explicit_ssh_does_not_query_the_hypervisor_or_host_leases() {
-        let entry = VmEntry {
-            ssh: Some("developer@192.0.2.4:2222".into()),
-            ..entry()
-        };
-        let mut runner = fake("");
-        let endpoint = Utm
-            .ssh_endpoint(
-                &Vm {
-                    name: "dev",
-                    entry: &entry,
-                },
-                &mut runner,
-            )
-            .unwrap();
-        assert_eq!(endpoint.user, "developer");
-        assert_eq!(endpoint.host, "192.0.2.4");
-        assert_eq!(endpoint.port, 2222);
-        assert!(runner.0.is_empty());
-    }
-
     fn entry() -> VmEntry {
         VmEntry {
             hypervisor: String::new(),
@@ -1735,263 +1924,116 @@ mod tests {
         }
     }
 
-    #[test]
-    fn whpx_defaults_to_fast_memory_without_changing_explicit_or_other_vms() {
-        let memory = |entry: &VmEntry| Vm { name: "dev", entry }.memory();
-        let mut entry = entry();
-        entry.hypervisor = "whpx".into();
-        entry.memory_mb = None;
-        assert_eq!(memory(&entry), 3072);
+    tilo_test_env::scenario! {
+        fn qemu_vms_are_driven_through_the_registered_script;
 
-        entry.memory_mb = Some(8192);
-        assert_eq!(memory(&entry), 8192);
-
-        entry.hypervisor = "libvirt".into();
-        entry.memory_mb = None;
-        assert_eq!(memory(&entry), 8192);
-    }
-
-    #[test]
-    fn qemu_start_uses_registered_fixture_without_changing_runtime_control() {
-        let mut entry = VmEntry {
-            hypervisor: "qemu".into(),
-            memory_mb: Some(3072),
-            cpus: Some(3),
-            emulated: true,
-            arch: Some("aarch64".into()),
-            resolution: Some("1920x1080".into()),
-            ..entry()
-        };
-        let start = |entry: &VmEntry| Qemu.start(&Vm { name: "dev", entry })[0].display();
-        assert_eq!(
-            start(&entry),
-            "TILO_SSH_PORT=2223 TILO_MEM=3072 TILO_SMP=3 TILO_ACCEL=tcg TILO_VM_ARCH=aarch64 TILO_XRES=1920 TILO_YRES=1080 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
-        );
-        entry.gl = true;
-        assert!(start(&entry).contains("boot --gl --disk"));
-        entry.emulated = false;
-        assert!(!start(&entry).contains("TILO_ACCEL="));
-        entry.memory_mb = None;
-        entry.cpus = None;
-        assert!(start(&entry).contains("TILO_MEM=8192 TILO_SMP=4"));
-        for invalid in ["invalid", "0x1080", "1920x0", "1920x1080x2"] {
-            entry.resolution = Some(invalid.into());
-            let command = start(&entry);
-            assert!(!command.contains("TILO_XRES="), "{invalid}");
-            assert!(!command.contains("TILO_YRES="), "{invalid}");
-        }
-        assert_eq!(
-            Qemu.stop(&Vm {
-                name: "dev",
-                entry: &entry
-            })[0]
-                .display(),
-            "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
-        );
-    }
-
-    #[test]
-    fn qemu_running_observes_script_status_for_shutdown_and_start() {
-        let entry = entry();
-        let vm = Vm {
-            name: "dev",
-            entry: &entry,
-        };
-        for (status, expected) in [
-            ("stopped\n", Some(false)),
-            ("running (pid 42)\n", Some(true)),
-            ("unavailable", None),
-        ] {
-            let mut runner = fake(status);
-            assert_eq!(Qemu.running(&vm, &mut runner), expected);
-            assert_eq!(
-                runner.0[0].display(),
-                "TILO_SSH_PORT=2223 bash os/dev/vm.sh status"
-            );
-        }
-        let mut runner = fake("stopped");
-        runner.1.success = false;
-        assert_eq!(Qemu.running(&vm, &mut runner), None);
-        assert_eq!(
-            Qemu.stop(&vm)[0].display(),
-            "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
-        );
-    }
-
-    #[test]
-    fn qemu_start_passes_registered_public_key_to_boot_script() {
-        let entry = VmEntry {
-            key: Some("/private keys/reference_ed25519".into()),
-            ..entry()
-        };
-        let command = Qemu
-            .start(&Vm {
-                name: "dev",
-                entry: &entry,
-            })
-            .remove(0);
-        assert!(command.env.contains(&(
-            "TILO_VM_ROOT_KEY_FILE".into(),
-            "/private keys/reference_ed25519.pub".into(),
-        )));
-        assert_eq!(
-            Qemu.capabilities().credentials,
-            Libvirt.capabilities().credentials
-        );
-    }
-
-    #[test]
-    fn qemu_screenshot_keeps_monitor_runtime_and_passes_destination_as_data() {
-        let entry = entry();
-        let vm = Vm {
-            name: "dev",
-            entry: &entry,
-        };
-        let destination = Path::new("/evidence/checkpoint 'one'.png");
-        let command = Qemu.screenshot(&vm, destination).unwrap();
-        assert_eq!(command.program, "bash");
-        assert_eq!(command.args[0], "-c");
-        assert_eq!(
-            command.args[1],
-            "image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\""
-        );
-        assert_eq!(command.args[2], "tilo-vm-shot");
-        assert_eq!(command.args[3], destination.display().to_string());
-        assert_eq!(command.env, vec![("TILO_SSH_PORT".into(), "2223".into())]);
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn whpx_runs_a_fresh_accelerated_child_with_its_esp_binding() {
+        phase qemu_start_uses_registered_fixture_without_changing_runtime_control;
         {
-            let temp = tempfile::tempdir().unwrap();
-            let key = temp.path().join("vm_key");
-            std::fs::write(format!("{}.pub", key.display()), KEY).unwrap();
-            let entry = VmEntry {
-                disk: Some(r"C:\vms\dev.qcow2".into()),
-                image: Some(r"C:\images\base.qcow2".into()),
-                qemu_img: Some(r"C:\msys64\clangarm64\bin\qemu-img.exe".into()),
-                qemu_system: Some(r"C:\msys64\clangarm64\bin\qemu-system-aarch64.exe".into()),
-                firmware_code: Some(r"C:\msys64\clangarm64\share\qemu\edk2-aarch64-code.fd".into()),
-                firmware_vars: Some(r"C:\msys64\clangarm64\share\qemu\edk2-arm-vars.fd".into()),
-                key: Some(key.display().to_string()),
+            let mut entry = VmEntry {
+                hypervisor: "qemu".into(),
+                memory_mb: Some(3072),
+                cpus: Some(3),
+                emulated: true,
+                arch: Some("aarch64".into()),
+                resolution: Some("1920x1080".into()),
                 ..entry()
             };
+            let start = |entry: &VmEntry| Qemu.start(&Vm { name: "dev", entry })[0].display();
+            assert_eq!(
+                start(&entry),
+                "TILO_SSH_PORT=2223 TILO_MEM=3072 TILO_SMP=3 TILO_ACCEL=tcg TILO_VM_ARCH=aarch64 TILO_XRES=1920 TILO_YRES=1080 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
+            );
+            entry.gl = true;
+            assert!(start(&entry).contains("boot --gl --disk"));
+            entry.emulated = false;
+            assert!(!start(&entry).contains("TILO_ACCEL="));
+            entry.memory_mb = None;
+            entry.cpus = None;
+            assert!(start(&entry).contains("TILO_MEM=8192 TILO_SMP=4"));
+            for invalid in ["invalid", "0x1080", "1920x0", "1920x1080x2"] {
+                entry.resolution = Some(invalid.into());
+                let command = start(&entry);
+                assert!(!command.contains("TILO_XRES="), "{invalid}");
+                assert!(!command.contains("TILO_YRES="), "{invalid}");
+            }
+            assert_eq!(
+                Qemu.stop(&Vm {
+                    name: "dev",
+                    entry: &entry
+                })[0]
+                    .display(),
+                "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
+            );
+        }
+
+        phase qemu_running_observes_script_status_for_shutdown_and_start;
+        {
+            let entry = entry();
             let vm = Vm {
                 name: "dev",
                 entry: &entry,
             };
-            let create = Whpx.create(&vm, KEY).unwrap();
-            assert_eq!(create.len(), 2);
-            assert_eq!(create[0].program, entry.qemu_img.clone().unwrap());
-            assert!(create[0].args.contains(&"-b".into()));
-            assert!(create[1].args.last().unwrap().contains("vars.fd"));
-            let args = Whpx::qemu_args(&vm);
-            assert!(args.windows(2).any(|p| p == ["-accel", "whpx"]));
-            assert!(args.windows(2).any(|p| p == ["-cpu", "host"]));
-            assert!(
-                args.iter()
-                    .any(|a| a.contains("pci-serial,chardev=tilo-ttyS0"))
+            for (status, expected) in [
+                ("stopped\n", Some(false)),
+                ("running (pid 42)\n", Some(true)),
+                ("unavailable", None),
+            ] {
+                let mut runner = fake(status);
+                assert_eq!(Qemu.running(&vm, &mut runner), expected);
+                assert_eq!(
+                    runner.0[0].display(),
+                    "TILO_SSH_PORT=2223 bash os/dev/vm.sh status"
+                );
+            }
+            let mut runner = fake("stopped");
+            runner.1.success = false;
+            assert_eq!(Qemu.running(&vm, &mut runner), None);
+            assert_eq!(
+                Qemu.stop(&vm)[0].display(),
+                "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
             );
-            assert!(args.iter().any(|a| a == "vnc=127.0.0.1:223"));
-            assert!(!args.iter().any(|a| a.contains("tcg")));
-            let start = Whpx.start(&vm);
-            assert!(
-                start[0]
-                    .args
-                    .last()
-                    .unwrap()
-                    .contains("io.systemd.credential.binary")
-            );
-            assert!(start[0].args.last().unwrap().contains("15GB"));
-            assert!(!start[0].args.last().unwrap().contains("-RedirectStandard"));
-            assert!(start[0].args.last().unwrap().contains("ttyS0.log"));
-            assert!(
-                Whpx.stop(&vm)[0]
-                    .args
-                    .last()
-                    .unwrap()
-                    .contains("system_powerdown")
-            );
-            assert!(
-                Whpx.stop(&vm)[0]
-                    .args
-                    .last()
-                    .unwrap()
-                    .contains("$r.ReadLine()")
-            );
-            assert_eq!(Whpx.ssh_endpoint(&vm, &mut fake("")).unwrap().port, 2223);
         }
 
+        phase qemu_start_passes_registered_public_key_to_boot_script;
         {
             let entry = VmEntry {
-                disk: Some(r"C:\vms\dev.qcow2".into()),
-                boot_esp: Some(r"C:\vms\override.raw".into()),
-                headless: true,
-                direct_kernel: Some(crate::config::DirectKernel {
-                    kernel: r"C:\bundle\Image".into(),
-                    initrd: r"C:\bundle\initrd".into(),
-                    cmdline: "root=tilo-auto composefs=abc".into(),
-                    loader_partuuid: Some("fcdfc623-0563-4f91-9db8-f2b87b98b3ce".into()),
-                    kver: "7.2.5".into(),
-                }),
+                key: Some("/private keys/reference_ed25519".into()),
                 ..entry()
             };
-            let args = Whpx::qemu_args(&Vm {
+            let command = Qemu
+                .start(&Vm {
+                    name: "dev",
+                    entry: &entry,
+                })
+                .remove(0);
+            assert!(command.env.contains(&(
+                "TILO_VM_ROOT_KEY_FILE".into(),
+                "/private keys/reference_ed25519.pub".into(),
+            )));
+            assert_eq!(
+                Qemu.capabilities().credentials,
+                Libvirt.capabilities().credentials
+            );
+        }
+
+        phase qemu_screenshot_keeps_monitor_runtime_and_passes_destination_as_data;
+        {
+            let entry = entry();
+            let vm = Vm {
                 name: "dev",
                 entry: &entry,
-            });
-            assert!(
-                args.windows(2)
-                    .any(|p| p == ["-kernel", r"C:\bundle\Image"])
-            );
-            assert!(
-                args.windows(2)
-                    .any(|p| p == ["-initrd", r"C:\bundle\initrd"])
-            );
-            assert!(args.windows(2).any(|p| p == [
-                "-append",
-                "root=tilo-auto composefs=abc systemd.setenv=TILO_ROOT_LOADER_PARTUUID=fcdfc623-0563-4f91-9db8-f2b87b98b3ce"
-            ]));
-            assert!(args.windows(2).any(|p| p == ["-display", "none"]));
-            assert!(
-                !args
-                    .iter()
-                    .any(|a| a.contains("pflash") || a.contains("bootesp"))
-            );
-            assert!(
-                !args
-                    .iter()
-                    .any(|a| a.contains("virtio-gpu") || a.contains("usb-"))
-            );
-            assert!(!args.iter().any(|a| a.contains("vnc=")));
-            assert!(Whpx.capabilities().direct_kernel);
-
-            let temp = tempfile::tempdir().unwrap();
-            let key = temp.path().join("direct_key");
-            std::fs::write(format!("{}.pub", key.display()), format!("{KEY}\n")).unwrap();
-            let keyed = VmEntry {
-                key: Some(key.display().to_string()),
-                ..entry
             };
-            let keyed_vm = Vm {
-                name: "dev",
-                entry: &keyed,
-            };
-            let keyed_args = Whpx::qemu_args(&keyed_vm);
-            let cmdline = keyed_args
-                .windows(2)
-                .find(|pair| pair[0] == "-append")
-                .map(|pair| pair[1].as_str())
-                .unwrap();
-            assert!(
-                cmdline.contains(&sshkey::kernel_credential(KEY)),
-                "{cmdline}"
+            let destination = Path::new("/evidence/checkpoint 'one'.png");
+            let command = Qemu.screenshot(&vm, destination).unwrap();
+            assert_eq!(command.program, "bash");
+            assert_eq!(command.args[0], "-c");
+            assert_eq!(
+                command.args[1],
+                "image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\""
             );
-            assert!(!Whpx.start(&keyed_vm)[0].display().contains("-smbios"));
+            assert_eq!(command.args[2], "tilo-vm-shot");
+            assert_eq!(command.args[3], destination.display().to_string());
+            assert_eq!(command.env, vec![("TILO_SSH_PORT".into(), "2223".into())]);
         }
     }
 
@@ -1999,359 +2041,427 @@ mod tests {
         domain_xml(&Vm { name: "dev", entry }, KEY).unwrap()
     }
 
-    #[test]
-    fn libvirt_domain_xml_matches_the_architecture_and_escapes_values() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn libvirt_domains_are_defined_from_the_entry;
+
+        phase libvirt_domain_xml_matches_the_architecture_and_escapes_values;
         {
-            let entry = VmEntry {
-                arch: Some("x86_64".into()),
-                ..entry()
-            };
-            let xml = vm_xml(&entry);
-            for part in [
-                "<domain type='kvm'>",
-                "<name>dev</name>",
-                "<memory unit='MiB'>4096</memory>",
-                "<vcpu>2</vcpu>",
-                "<os firmware='efi'>",
-                "<type arch='x86_64' machine='q35'>hvm</type>",
-                "<feature enabled='no' name='secure-boot'/>",
-                "<smbios mode='sysinfo'/>",
-                "<features><acpi/><apic/></features>",
-                "<cpu mode='host-passthrough'/>",
-                "<driver name='qemu' type='qcow2' discard='unmap'/>",
-                "<source file='/vms/dev.qcow2'/>",
-                "<target dev='vda' bus='virtio'/>",
-                "<backend type='passt'/>",
-                "<portForward proto='tcp'><range start='2223' to='22'/></portForward>",
-                "<serial type='pty'/>",
-                "<graphics type='spice' autoport='yes'/>",
-                "<video><model type='virtio'/></video>",
-                "<rng model='virtio'>",
-            ] {
-                assert!(xml.contains(part), "no {part} in\n{xml}");
+            {
+                let entry = VmEntry {
+                    arch: Some("x86_64".into()),
+                    ..entry()
+                };
+                let xml = vm_xml(&entry);
+                for part in [
+                    "<domain type='kvm'>",
+                    "<name>dev</name>",
+                    "<memory unit='MiB'>4096</memory>",
+                    "<vcpu>2</vcpu>",
+                    "<os firmware='efi'>",
+                    "<type arch='x86_64' machine='q35'>hvm</type>",
+                    "<feature enabled='no' name='secure-boot'/>",
+                    "<smbios mode='sysinfo'/>",
+                    "<features><acpi/><apic/></features>",
+                    "<cpu mode='host-passthrough'/>",
+                    "<driver name='qemu' type='qcow2' discard='unmap'/>",
+                    "<source file='/vms/dev.qcow2'/>",
+                    "<target dev='vda' bus='virtio'/>",
+                    "<backend type='passt'/>",
+                    "<portForward proto='tcp'><range start='2223' to='22'/></portForward>",
+                    "<serial type='pty'/>",
+                    "<graphics type='spice' autoport='yes'/>",
+                    "<video><model type='virtio'/></video>",
+                    "<rng model='virtio'>",
+                ] {
+                    assert!(xml.contains(part), "no {part} in\n{xml}");
+                }
+                assert!(
+                    xml.contains(&format!(
+                        "<entry>io.systemd.credential.binary:ssh.authorized_keys.root={}</entry>",
+                        sshkey::encoded(KEY)
+                    )),
+                    "{xml}"
+                );
+                assert!(!xml.contains("machine='virt'"), "{xml}");
             }
-            assert!(
-                xml.contains(&format!(
-                    "<entry>io.systemd.credential.binary:ssh.authorized_keys.root={}</entry>",
-                    sshkey::encoded(KEY)
-                )),
-                "{xml}"
-            );
-            assert!(!xml.contains("machine='virt'"), "{xml}");
+
+            {
+                let entry = VmEntry {
+                    arch: Some("aarch64".into()),
+                    ..entry()
+                };
+                let xml = vm_xml(&entry);
+                assert!(xml.contains("<domain type='kvm'>"), "{xml}");
+                assert!(
+                    xml.contains("<type arch='aarch64' machine='virt'>hvm</type>"),
+                    "{xml}"
+                );
+                assert!(xml.contains("<os firmware='efi'>"), "{xml}");
+                assert!(xml.contains("<features><acpi/></features>"), "{xml}");
+                assert!(!xml.contains("<apic/>"), "{xml}");
+                assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
+                assert!(
+                    xml.contains("<controller type='usb' model='qemu-xhci'/>"),
+                    "{xml}"
+                );
+            }
+
+            {
+                let entry = VmEntry {
+                    arch: Some("aarch64".into()),
+                    emulated: true,
+                    ..entry()
+                };
+                let xml = vm_xml(&entry);
+                assert!(xml.starts_with("<domain type='qemu'>"), "{xml}");
+                assert!(xml.contains("<cpu mode='maximum'/>"), "{xml}");
+                assert!(!xml.contains("host-passthrough"), "{xml}");
+                assert!(xml.contains("machine='virt'"), "{xml}");
+            }
+
+            {
+                let entry = VmEntry {
+                    arch: Some("x86_64".into()),
+                    disk: Some("/vms/it's <a> & \"b\".qcow2".into()),
+                    ..entry()
+                };
+                let xml = domain_xml(
+                    &Vm {
+                        name: "a&b<c>",
+                        entry: &entry,
+                    },
+                    KEY,
+                )
+                .unwrap();
+                assert!(xml.contains("<name>a&amp;b&lt;c&gt;</name>"), "{xml}");
+                assert!(
+                    xml.contains("<source file='/vms/it&apos;s &lt;a&gt; &amp; &quot;b&quot;.qcow2'/>"),
+                    "{xml}"
+                );
+            }
         }
 
+        phase libvirt_defines_boots_and_removes_vms_beside_their_disks;
         {
-            let entry = VmEntry {
-                arch: Some("aarch64".into()),
-                ..entry()
-            };
-            let xml = vm_xml(&entry);
-            assert!(xml.contains("<domain type='kvm'>"), "{xml}");
-            assert!(
-                xml.contains("<type arch='aarch64' machine='virt'>hvm</type>"),
-                "{xml}"
-            );
-            assert!(xml.contains("<os firmware='efi'>"), "{xml}");
-            assert!(xml.contains("<features><acpi/></features>"), "{xml}");
-            assert!(!xml.contains("<apic/>"), "{xml}");
-            assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
-            assert!(
-                xml.contains("<controller type='usb' model='qemu-xhci'/>"),
-                "{xml}"
-            );
-        }
-
-        {
-            let entry = VmEntry {
-                arch: Some("aarch64".into()),
-                emulated: true,
-                ..entry()
-            };
-            let xml = vm_xml(&entry);
-            assert!(xml.starts_with("<domain type='qemu'>"), "{xml}");
-            assert!(xml.contains("<cpu mode='maximum'/>"), "{xml}");
-            assert!(!xml.contains("host-passthrough"), "{xml}");
-            assert!(xml.contains("machine='virt'"), "{xml}");
-        }
-
-        {
-            let entry = VmEntry {
-                arch: Some("x86_64".into()),
-                disk: Some("/vms/it's <a> & \"b\".qcow2".into()),
-                ..entry()
-            };
-            let xml = domain_xml(
-                &Vm {
-                    name: "a&b<c>",
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let disk = dir.path().join("dev.qcow2").display().to_string();
+                let entry = VmEntry {
+                    disk: Some(disk.clone()),
+                    ..entry()
+                };
+                let vm = Vm {
+                    name: "dev",
                     entry: &entry,
+                };
+                let create = Libvirt.create(&vm, KEY).unwrap();
+                let displayed: Vec<String> = create.iter().map(CommandLine::display).collect();
+                assert_eq!(
+                    displayed,
+                    [
+                        format!("qemu-img create -f qcow2 -F qcow2 -b /img/tilo-vm.qcow2 {disk}"),
+                        format!("virsh --connect qemu:///session define {disk}.xml"),
+                    ]
+                );
+                let written = std::fs::read_to_string(format!("{disk}.xml")).unwrap();
+                assert_eq!(written, domain_xml(&vm, KEY).unwrap());
+                assert!(displayed.iter().all(|c| !c.contains("virt-install")));
+            }
+
+            {
+                let entry = entry();
+                let vm = Vm {
+                    name: "dev",
+                    entry: &entry,
+                };
+                assert_eq!(
+                    Libvirt.start(&vm)[0].display(),
+                    "virsh --connect qemu:///session start dev"
+                );
+                assert_eq!(
+                    Libvirt.destroy(&vm)[0].display(),
+                    "virsh --connect qemu:///session undefine dev --nvram"
+                );
+                assert_eq!(
+                    Libvirt
+                        .screenshot(&vm, Path::new("/tmp/s.png"))
+                        .unwrap()
+                        .display(),
+                    "virsh --connect qemu:///session screenshot dev /tmp/s.png"
+                );
+                let endpoint = Libvirt.ssh_endpoint(&vm, &mut fake("")).unwrap();
+                assert_eq!((endpoint.host.as_str(), endpoint.port), ("127.0.0.1", 2223));
+                let mut runner = fake("other\ndev\n\n");
+                assert_eq!(Libvirt.running(&vm, &mut runner), Some(true));
+                assert_eq!(
+                    runner.0[0].display(),
+                    "virsh --connect qemu:///session list --name --state-running"
+                );
+                assert_eq!(Libvirt.running(&vm, &mut fake("dev2\n")), Some(false));
+                assert_eq!(Utm.running(&vm, &mut fake("")), None);
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let disk = dir.path().join("dev.qcow2").display().to_string();
+                let entry = VmEntry {
+                    image: Some("/img/disk.raw".into()),
+                    image_format: Some("raw".into()),
+                    disk: Some(disk.clone()),
+                    ..entry()
+                };
+                let vm = Vm {
+                    name: "dev",
+                    entry: &entry,
+                };
+                assert_eq!(
+                    Libvirt.create(&vm, KEY).unwrap()[0].display(),
+                    format!("qemu-img create -f qcow2 -F raw -b /img/disk.raw {disk}")
+                );
+                assert!(domain_xml(&vm, KEY).unwrap().contains("type='qcow2'"));
+            }
+
+            {
+                let with_esp = VmEntry {
+                    disk: Some(r"C:\vms\dev.qcow2".into()),
+                    boot_esp: Some(r"C:\esp\override.raw".into()),
+                    firmware_code: Some("code.fd".into()),
+                    ..entry()
+                };
+                let vm = Vm {
+                    name: "dev",
+                    entry: &with_esp,
+                };
+                let args = Whpx::qemu_args(&vm);
+                let esp = args
+                    .iter()
+                    .position(|a| a.contains("id=bootesp"))
+                    .expect("ESP drive");
+                assert!(args[esp].contains("readonly=on"), "{}", args[esp]);
+                assert!(args[esp].contains("format=raw"), "{}", args[esp]);
+                assert!(args[esp].ends_with(r"override.raw"), "{}", args[esp]);
+                assert!(
+                    args.iter()
+                        .any(|a| a == "virtio-blk-pci,drive=bootesp,bootindex=0")
+                );
+                assert!(
+                    args.iter()
+                        .any(|a| a == "virtio-blk-pci,drive=osdisk,bootindex=1")
+                );
+                let without = VmEntry {
+                    boot_esp: None,
+                    ..with_esp.clone()
+                };
+                assert!(
+                    !Whpx::qemu_args(&Vm {
+                        name: "dev",
+                        entry: &without
+                    })
+                    .iter()
+                    .any(|a| a.contains("bootesp"))
+                );
+
+                let xml = domain_xml(&vm, KEY).unwrap();
+                let esp_disk = xml.split("<disk").nth(2).expect("second disk");
+                assert!(esp_disk.contains("<readonly/>"), "{xml}");
+                assert!(esp_disk.contains("<boot order='1'/>"), "{xml}");
+                assert!(esp_disk.contains("type='raw'"), "{xml}");
+                let os_disk = xml.split("<disk").nth(1).unwrap();
+                assert!(os_disk.contains("<boot order='2'/>"), "{xml}");
+                assert!(!vm_xml(&entry()).contains("<boot order="));
+
+                for name in ["libvirt", "whpx", "qemu", "utm", "hyperv"] {
+                    let supported = adapter(name).unwrap().capabilities().boot_esp;
+                    assert_eq!(supported, matches!(name, "libvirt" | "whpx"), "{name}");
+                }
+            }
+
+            {
+                let entry = entry();
+                let vm = Vm {
+                    name: "dev",
+                    entry: &entry,
+                };
+                assert_eq!(
+                    Libvirt
+                        .destroy(&vm)
+                        .iter()
+                        .map(CommandLine::display)
+                        .collect::<Vec<_>>(),
+                    ["virsh --connect qemu:///session undefine dev --nvram"]
+                );
+                assert!(Whpx.destroy(&vm).is_empty());
+                assert!(
+                    Whpx.power_off(&vm)
+                        .unwrap()
+                        .args
+                        .last()
+                        .unwrap()
+                        .contains("quit")
+                );
+                assert!(
+                    HyperV.destroy(&vm)[0]
+                        .args
+                        .last()
+                        .unwrap()
+                        .contains("Remove-VM")
+                );
+                assert!(
+                    HyperV
+                        .power_off(&vm)
+                        .unwrap()
+                        .args
+                        .last()
+                        .unwrap()
+                        .contains("-TurnOff")
+                );
+                assert_eq!(Utm.destroy(&vm)[0].display(), "utmctl delete dev");
+                for name in ["libvirt", "qemu", "utm", "hyperv", "whpx"] {
+                    assert!(adapter(name).unwrap().power_off(&vm).is_some(), "{name}");
+                }
+                let files = vm_files("/vms/dev.qcow2");
+                for file in [
+                    "/vms/dev.qcow2",
+                    "/vms/dev.qcow2.xml",
+                    "/vms/dev.qcow2.vars.fd",
+                    "/vms/dev.qcow2.pid",
+                    "/vms/dev.qcow2.ttyS0.log",
+                    "/vms/dev.qcow2.uart.log",
+                ] {
+                    assert!(files.iter().any(|f| f == file), "{file} in {files:?}");
+                }
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let disk = dir.path().join("dev.qcow2").display().to_string();
+                let mut entry = VmEntry {
+                    disk: Some(disk.clone()),
+                    ..entry()
+                };
+                let vm = Vm {
+                    name: "dev",
+                    entry: &entry,
+                };
+                let plain = domain_xml(&vm, KEY).unwrap();
+                assert!(!plain.contains("<kernel>"), "{plain}");
+                entry.direct_kernel = Some(crate::config::DirectKernel {
+                    kernel: "/c/tilo-kernel/direct/dev/vmlinuz".into(),
+                    initrd: "/c/tilo-kernel/direct/dev/initrd.img".into(),
+                    cmdline: "root=UUID=1 ro console=ttyS0 a<b".into(),
+                    loader_partuuid: None,
+                    kver: "7.2.5+dev".into(),
+                });
+                let vm = Vm {
+                    name: "dev",
+                    entry: &entry,
+                };
+                let xml = domain_xml(&vm, KEY).unwrap();
+                let os = xml
+                    .split_once("<os ")
+                    .and_then(|(_, rest)| rest.split_once("</os>"))
+                    .map(|(os, _)| os)
+                    .unwrap();
+                assert!(
+                    os.contains("<kernel>/c/tilo-kernel/direct/dev/vmlinuz</kernel>"),
+                    "{os}"
+                );
+                assert!(
+                    os.contains("<initrd>/c/tilo-kernel/direct/dev/initrd.img</initrd>"),
+                    "{os}"
+                );
+                assert!(
+                    os.contains("<cmdline>root=UUID=1 ro console=ttyS0 a&lt;b</cmdline>"),
+                    "{os}"
+                );
+                let mut runner = fake("e7482d68-86d0-43dc-8f53-fc6b508ea038\n");
+                let commands = Libvirt.redefine(&vm, KEY, &mut runner).unwrap();
+                assert_eq!(
+                    runner.0[0].display(),
+                    "virsh --connect qemu:///session domuuid dev"
+                );
+                assert_eq!(
+                    commands[0].display(),
+                    format!("virsh --connect qemu:///session define {disk}.xml")
+                );
+                let written = std::fs::read_to_string(format!("{disk}.xml")).unwrap();
+                assert!(written.contains("<kernel>"), "{written}");
+                assert!(
+                    written.contains("<uuid>e7482d68-86d0-43dc-8f53-fc6b508ea038</uuid>"),
+                    "{written}"
+                );
+                assert_eq!(
+                    Libvirt.power_off(&vm).unwrap().display(),
+                    "virsh --connect qemu:///session destroy dev"
+                );
+            }
+        }
+
+        phase libvirt_video_has_the_requested_heads_and_first_mode;
+        {
+            let plain = domain_xml(
+                &Vm {
+                    name: "dev",
+                    entry: &entry(),
                 },
                 KEY,
             )
             .unwrap();
-            assert!(xml.contains("<name>a&amp;b&lt;c&gt;</name>"), "{xml}");
             assert!(
-                xml.contains("<source file='/vms/it&apos;s &lt;a&gt; &amp; &quot;b&quot;.qcow2'/>"),
+                plain.contains("<video><model type='virtio'/></video>"),
+                "{plain}"
+            );
+            let dual = VmEntry {
+                heads: Some(2),
+                resolution: Some("5120x2880".into()),
+                ..entry()
+            };
+            let xml = domain_xml(
+                &Vm {
+                    name: "dev",
+                    entry: &dual,
+                },
+                KEY,
+            )
+            .unwrap();
+            assert!(
+                xml.contains(
+                    "<video><model type='virtio' heads='2'><resolution x='5120' y='2880'/></model></video>"
+                ),
                 "{xml}"
             );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn libvirt_defines_boots_and_removes_vms_beside_their_disks() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let disk = dir.path().join("dev.qcow2").display().to_string();
-            let entry = VmEntry {
-                disk: Some(disk.clone()),
+            assert!(
+                !xml.contains("egl-headless") && !xml.contains("accel3d"),
+                "{xml}"
+            );
+            let gl = VmEntry {
+                gl: true,
+                resolution: Some("5120x2880".into()),
                 ..entry()
             };
-            let vm = Vm {
-                name: "dev",
-                entry: &entry,
-            };
-            let create = Libvirt.create(&vm, KEY).unwrap();
-            let displayed: Vec<String> = create.iter().map(CommandLine::display).collect();
-            assert_eq!(
-                displayed,
-                [
-                    format!("qemu-img create -f qcow2 -F qcow2 -b /img/tilo-vm.qcow2 {disk}"),
-                    format!("virsh --connect qemu:///session define {disk}.xml"),
-                ]
-            );
-            let written = std::fs::read_to_string(format!("{disk}.xml")).unwrap();
-            assert_eq!(written, domain_xml(&vm, KEY).unwrap());
-            assert!(displayed.iter().all(|c| !c.contains("virt-install")));
-        }
-
-        {
-            let entry = entry();
-            let vm = Vm {
-                name: "dev",
-                entry: &entry,
-            };
-            assert_eq!(
-                Libvirt.start(&vm)[0].display(),
-                "virsh --connect qemu:///session start dev"
-            );
-            assert_eq!(
-                Libvirt.destroy(&vm)[0].display(),
-                "virsh --connect qemu:///session undefine dev --nvram"
-            );
-            assert_eq!(
-                Libvirt
-                    .screenshot(&vm, Path::new("/tmp/s.png"))
-                    .unwrap()
-                    .display(),
-                "virsh --connect qemu:///session screenshot dev /tmp/s.png"
-            );
-            let endpoint = Libvirt.ssh_endpoint(&vm, &mut fake("")).unwrap();
-            assert_eq!((endpoint.host.as_str(), endpoint.port), ("127.0.0.1", 2223));
-            let mut runner = fake("other\ndev\n\n");
-            assert_eq!(Libvirt.running(&vm, &mut runner), Some(true));
-            assert_eq!(
-                runner.0[0].display(),
-                "virsh --connect qemu:///session list --name --state-running"
-            );
-            assert_eq!(Libvirt.running(&vm, &mut fake("dev2\n")), Some(false));
-            assert_eq!(Utm.running(&vm, &mut fake("")), None);
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let disk = dir.path().join("dev.qcow2").display().to_string();
-            let entry = VmEntry {
-                image: Some("/img/disk.raw".into()),
-                image_format: Some("raw".into()),
-                disk: Some(disk.clone()),
-                ..entry()
-            };
-            let vm = Vm {
-                name: "dev",
-                entry: &entry,
-            };
-            assert_eq!(
-                Libvirt.create(&vm, KEY).unwrap()[0].display(),
-                format!("qemu-img create -f qcow2 -F raw -b /img/disk.raw {disk}")
-            );
-            assert!(domain_xml(&vm, KEY).unwrap().contains("type='qcow2'"));
-        }
-
-        {
-            let with_esp = VmEntry {
-                disk: Some(r"C:\vms\dev.qcow2".into()),
-                boot_esp: Some(r"C:\esp\override.raw".into()),
-                firmware_code: Some("code.fd".into()),
-                ..entry()
-            };
-            let vm = Vm {
-                name: "dev",
-                entry: &with_esp,
-            };
-            let args = Whpx::qemu_args(&vm);
-            let esp = args
-                .iter()
-                .position(|a| a.contains("id=bootesp"))
-                .expect("ESP drive");
-            assert!(args[esp].contains("readonly=on"), "{}", args[esp]);
-            assert!(args[esp].contains("format=raw"), "{}", args[esp]);
-            assert!(args[esp].ends_with(r"override.raw"), "{}", args[esp]);
-            assert!(
-                args.iter()
-                    .any(|a| a == "virtio-blk-pci,drive=bootesp,bootindex=0")
-            );
-            assert!(
-                args.iter()
-                    .any(|a| a == "virtio-blk-pci,drive=osdisk,bootindex=1")
-            );
-            let without = VmEntry {
-                boot_esp: None,
-                ..with_esp.clone()
-            };
-            assert!(
-                !Whpx::qemu_args(&Vm {
+            let xml = domain_xml(
+                &Vm {
                     name: "dev",
-                    entry: &without
-                })
-                .iter()
-                .any(|a| a.contains("bootesp"))
-            );
-
-            let xml = domain_xml(&vm, KEY).unwrap();
-            let esp_disk = xml.split("<disk").nth(2).expect("second disk");
-            assert!(esp_disk.contains("<readonly/>"), "{xml}");
-            assert!(esp_disk.contains("<boot order='1'/>"), "{xml}");
-            assert!(esp_disk.contains("type='raw'"), "{xml}");
-            let os_disk = xml.split("<disk").nth(1).unwrap();
-            assert!(os_disk.contains("<boot order='2'/>"), "{xml}");
-            assert!(!vm_xml(&entry()).contains("<boot order="));
-
-            for name in ["libvirt", "whpx", "qemu", "utm", "hyperv"] {
-                let supported = adapter(name).unwrap().capabilities().boot_esp;
-                assert_eq!(supported, matches!(name, "libvirt" | "whpx"), "{name}");
-            }
-        }
-
-        {
-            let entry = entry();
-            let vm = Vm {
-                name: "dev",
-                entry: &entry,
-            };
-            assert_eq!(
-                Libvirt
-                    .destroy(&vm)
-                    .iter()
-                    .map(CommandLine::display)
-                    .collect::<Vec<_>>(),
-                ["virsh --connect qemu:///session undefine dev --nvram"]
-            );
-            assert!(Whpx.destroy(&vm).is_empty());
+                    entry: &gl,
+                },
+                KEY,
+            )
+            .unwrap();
             assert!(
-                Whpx.power_off(&vm)
-                    .unwrap()
-                    .args
-                    .last()
-                    .unwrap()
-                    .contains("quit")
+                xml.contains(
+                    "<graphics type='spice' autoport='yes'/>\n    <graphics type='egl-headless'/>"
+                ),
+                "{xml}"
             );
             assert!(
-                HyperV.destroy(&vm)[0]
-                    .args
-                    .last()
-                    .unwrap()
-                    .contains("Remove-VM")
-            );
-            assert!(
-                HyperV
-                    .power_off(&vm)
-                    .unwrap()
-                    .args
-                    .last()
-                    .unwrap()
-                    .contains("-TurnOff")
-            );
-            assert_eq!(Utm.destroy(&vm)[0].display(), "utmctl delete dev");
-            for name in ["libvirt", "qemu", "utm", "hyperv", "whpx"] {
-                assert!(adapter(name).unwrap().power_off(&vm).is_some(), "{name}");
-            }
-            let files = vm_files("/vms/dev.qcow2");
-            for file in [
-                "/vms/dev.qcow2",
-                "/vms/dev.qcow2.xml",
-                "/vms/dev.qcow2.vars.fd",
-                "/vms/dev.qcow2.pid",
-                "/vms/dev.qcow2.ttyS0.log",
-                "/vms/dev.qcow2.uart.log",
-            ] {
-                assert!(files.iter().any(|f| f == file), "{file} in {files:?}");
-            }
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let disk = dir.path().join("dev.qcow2").display().to_string();
-            let mut entry = VmEntry {
-                disk: Some(disk.clone()),
-                ..entry()
-            };
-            let vm = Vm {
-                name: "dev",
-                entry: &entry,
-            };
-            let plain = domain_xml(&vm, KEY).unwrap();
-            assert!(!plain.contains("<kernel>"), "{plain}");
-            entry.direct_kernel = Some(crate::config::DirectKernel {
-                kernel: "/c/tilo-kernel/direct/dev/vmlinuz".into(),
-                initrd: "/c/tilo-kernel/direct/dev/initrd.img".into(),
-                cmdline: "root=UUID=1 ro console=ttyS0 a<b".into(),
-                loader_partuuid: None,
-                kver: "7.2.5+dev".into(),
-            });
-            let vm = Vm {
-                name: "dev",
-                entry: &entry,
-            };
-            let xml = domain_xml(&vm, KEY).unwrap();
-            let os = xml
-                .split_once("<os ")
-                .and_then(|(_, rest)| rest.split_once("</os>"))
-                .map(|(os, _)| os)
-                .unwrap();
-            assert!(
-                os.contains("<kernel>/c/tilo-kernel/direct/dev/vmlinuz</kernel>"),
-                "{os}"
-            );
-            assert!(
-                os.contains("<initrd>/c/tilo-kernel/direct/dev/initrd.img</initrd>"),
-                "{os}"
-            );
-            assert!(
-                os.contains("<cmdline>root=UUID=1 ro console=ttyS0 a&lt;b</cmdline>"),
-                "{os}"
-            );
-            let mut runner = fake("e7482d68-86d0-43dc-8f53-fc6b508ea038\n");
-            let commands = Libvirt.redefine(&vm, KEY, &mut runner).unwrap();
-            assert_eq!(
-                runner.0[0].display(),
-                "virsh --connect qemu:///session domuuid dev"
-            );
-            assert_eq!(
-                commands[0].display(),
-                format!("virsh --connect qemu:///session define {disk}.xml")
-            );
-            let written = std::fs::read_to_string(format!("{disk}.xml")).unwrap();
-            assert!(written.contains("<kernel>"), "{written}");
-            assert!(
-                written.contains("<uuid>e7482d68-86d0-43dc-8f53-fc6b508ea038</uuid>"),
-                "{written}"
-            );
-            assert_eq!(
-                Libvirt.power_off(&vm).unwrap().display(),
-                "virsh --connect qemu:///session destroy dev"
+                xml.contains(
+                    "<video><model type='virtio'><acceleration accel3d='yes'/><resolution x='5120' y='2880'/></model></video>"
+                ),
+                "{xml}"
             );
         }
     }
@@ -2565,69 +2675,5 @@ mod tests {
 
     fn entry_without_template() -> VmEntry {
         entry()
-    }
-
-    #[test]
-    fn libvirt_video_has_the_requested_heads_and_first_mode() {
-        let plain = domain_xml(
-            &Vm {
-                name: "dev",
-                entry: &entry(),
-            },
-            KEY,
-        )
-        .unwrap();
-        assert!(
-            plain.contains("<video><model type='virtio'/></video>"),
-            "{plain}"
-        );
-        let dual = VmEntry {
-            heads: Some(2),
-            resolution: Some("5120x2880".into()),
-            ..entry()
-        };
-        let xml = domain_xml(
-            &Vm {
-                name: "dev",
-                entry: &dual,
-            },
-            KEY,
-        )
-        .unwrap();
-        assert!(
-            xml.contains(
-                "<video><model type='virtio' heads='2'><resolution x='5120' y='2880'/></model></video>"
-            ),
-            "{xml}"
-        );
-        assert!(
-            !xml.contains("egl-headless") && !xml.contains("accel3d"),
-            "{xml}"
-        );
-        let gl = VmEntry {
-            gl: true,
-            resolution: Some("5120x2880".into()),
-            ..entry()
-        };
-        let xml = domain_xml(
-            &Vm {
-                name: "dev",
-                entry: &gl,
-            },
-            KEY,
-        )
-        .unwrap();
-        assert!(
-            xml.contains(
-                "<graphics type='spice' autoport='yes'/>\n    <graphics type='egl-headless'/>"
-            ),
-            "{xml}"
-        );
-        assert!(
-            xml.contains(
-                "<video><model type='virtio'><acceleration accel3d='yes'/><resolution x='5120' y='2880'/></model></video>"
-            ),
-            "{xml}"
-        );
     }
 }

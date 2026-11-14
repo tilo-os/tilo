@@ -8,6 +8,7 @@ use super::{
 };
 use crate::member_limits::Standing;
 use crate::workspace_access::WorkspaceOperation;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Spends `peer`'s budget for one change as its `standing` is, unless the
 /// relay's own user sent it: the host device and the bots a host-held root
@@ -83,7 +84,7 @@ pub(super) async fn over_storage(
 pub(super) async fn handle_commit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
     let admission = admit_commit(peer, session, subscribed, env).await?;
@@ -107,7 +108,7 @@ pub(super) async fn handle_commit(
 pub(super) async fn handle_commit_run(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     commits: Vec<Envelope>,
 ) -> Result<Vec<Option<Envelope>>, PeerError> {
     let mut admitted = Vec::with_capacity(commits.len());
@@ -148,7 +149,7 @@ enum CommitAdmission {
 /// A commit queued with its workspace's owner, not yet durable.
 struct AdmittedCommit {
     ws: SharedWorkspace,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     op: [u8; 16],
     author: [u8; 32],
     digest: [u8; 32],
@@ -167,7 +168,7 @@ struct AdmittedCommit {
 async fn admit_commit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     env: Envelope,
 ) -> Result<CommitAdmission, PeerError> {
     let Envelope::Commit {
@@ -400,7 +401,7 @@ async fn claim(
 /// The answer to a resent commit the ledger already holds: its original
 /// host order, or a refusal when the same operation id carries other content.
 fn resent_commit(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     admitted: crate::store::CommitRecord,
     digest: [u8; 32],
 ) -> Envelope {
@@ -412,7 +413,7 @@ fn resent_commit(
         };
     }
     tracing::debug!(
-        workspace_id,
+        workspace_id = %workspace_id,
         seq = admitted.seq,
         "resent commit answered from the ledger"
     );

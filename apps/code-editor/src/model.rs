@@ -1004,34 +1004,81 @@ impl Session {
 mod tests {
     use super::*;
 
-    #[test]
-    fn language_from_extension() {
-        assert_eq!(Language::from_path("main.rs"), Language::Rust);
-        assert_eq!(Language::from_path("Cargo.toml"), Language::Toml);
-        assert_eq!(Language::from_path("README.md"), Language::Markdown);
-        assert_eq!(Language::from_path("Cargo.lock"), Language::Toml);
-        assert_eq!(Language::from_path("mystery.xyz"), Language::PlainText);
+    tilo_test_env::scenario! {
+        fn a_language_is_read_from_a_files_path;
+
+        phase language_from_extension;
+        {
+            assert_eq!(Language::from_path("main.rs"), Language::Rust);
+            assert_eq!(Language::from_path("Cargo.toml"), Language::Toml);
+            assert_eq!(Language::from_path("README.md"), Language::Markdown);
+            assert_eq!(Language::from_path("Cargo.lock"), Language::Toml);
+            assert_eq!(Language::from_path("mystery.xyz"), Language::PlainText);
+        }
+
+        phase a_language_is_read_from_the_last_extension_whatever_its_case;
+        {
+            for (name, language) in [
+                ("MAIN.RS", Language::Rust),
+                ("Notes.MD", Language::Markdown),
+                ("types.d.ts", Language::TypeScript),
+                ("main.rs.bak", Language::PlainText),
+                ("archive.tar.gz", Language::PlainText),
+                (".gitignore", Language::PlainText),
+                ("LICENSE", Language::PlainText),
+            ] {
+                assert_eq!(Language::from_path(name), language, "{name}");
+            }
+        }
+
+        phase hardware_source_and_header_paths_select_their_dialect;
+        {
+            for name in ["mac.v", "rtl/defines.vh", "RTL/MAC.V", "include/DEFINES.VH"] {
+                assert_eq!(Language::from_path(name), Language::Verilog, "{name}");
+            }
+            for name in ["mac.sv", "rtl/types.svh", "RTL/MAC.SV", "include/TYPES.SVH"] {
+                assert_eq!(Language::from_path(name), Language::SystemVerilog, "{name}");
+            }
+            for language in [Language::Verilog, Language::SystemVerilog] {
+                assert_eq!(language.line_comment(), Some("//"));
+            }
+        }
     }
 
-    #[test]
-    fn hardware_source_and_header_paths_select_their_dialect() {
-        for name in ["mac.v", "rtl/defines.vh", "RTL/MAC.V", "include/DEFINES.VH"] {
-            assert_eq!(Language::from_path(name), Language::Verilog, "{name}");
-        }
-        for name in ["mac.sv", "rtl/types.svh", "RTL/MAC.SV", "include/TYPES.SVH"] {
-            assert_eq!(Language::from_path(name), Language::SystemVerilog, "{name}");
-        }
-        for language in [Language::Verilog, Language::SystemVerilog] {
-            assert_eq!(language.line_comment(), Some("//"));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_project_model_orders_its_tree_shows_one_file_and_reads_disk_on_demand;
 
-    #[test]
-    fn in_memory_tree_orders_expands_and_adopts_document_ids() {
-        tree_visible_rows_respect_expansion();
-        folders_sort_before_files();
-        adopt_file_tracks_a_document_buffer_and_advances_the_allocator();
-        durable_tree_ids_project_across_different_local_arena_layouts();
+        phase in_memory_tree_orders_expands_and_adopts_document_ids;
+        {
+            tree_visible_rows_respect_expansion();
+            folders_sort_before_files();
+            adopt_file_tracks_a_document_buffer_and_advances_the_allocator();
+            durable_tree_ids_project_across_different_local_arena_layouts();
+        }
+
+        phase a_session_shows_one_file_and_compares_dirty_state;
+        {
+            opening_another_file_replaces_the_shown_one();
+            dirty_is_a_comparison_with_disk_not_a_sticky_flag();
+        }
+
+        phase disk_projection_is_lazy_and_reads_files_on_demand;
+        {
+            from_dir_projects_the_real_top_level_only();
+            expanding_a_folder_reads_its_children_on_demand();
+            load_children_is_idempotent();
+            reveal_path_walks_a_never_expanded_tree_down_to_the_file();
+            file_seed_reads_the_real_bytes_and_reports_a_stamp();
+            an_unreadable_file_surfaces_its_error_instead_of_an_empty_buffer();
+            the_sample_project_is_not_disk_backed_but_a_real_one_is();
+        }
+
+        phase opening_a_path_roots_single_files_and_rejects_missing_or_non_directories;
+        {
+            opening_a_single_file_gives_a_project_rooted_at_its_folder();
+            opening_a_missing_path_fails_rather_than_opening_an_empty_project();
+            a_file_is_not_a_project_directory();
+        }
     }
 
     fn tree_visible_rows_respect_expansion() {
@@ -1065,12 +1112,6 @@ mod tests {
         assert_ne!(next, orphan);
         p.adopt_file(orphan, "different.txt");
         assert_eq!(p.get(orphan).unwrap().name, "untitled-7.txt");
-    }
-
-    #[test]
-    fn a_session_shows_one_file_and_compares_dirty_state() {
-        opening_another_file_replaces_the_shown_one();
-        dirty_is_a_comparison_with_disk_not_a_sticky_flag();
     }
 
     fn opening_another_file_replaces_the_shown_one() {
@@ -1115,17 +1156,6 @@ mod tests {
             .into_iter()
             .map(|id| p.get(id).unwrap().name.clone())
             .collect()
-    }
-
-    #[test]
-    fn disk_projection_is_lazy_and_reads_files_on_demand() {
-        from_dir_projects_the_real_top_level_only();
-        expanding_a_folder_reads_its_children_on_demand();
-        load_children_is_idempotent();
-        reveal_path_walks_a_never_expanded_tree_down_to_the_file();
-        file_seed_reads_the_real_bytes_and_reports_a_stamp();
-        an_unreadable_file_surfaces_its_error_instead_of_an_empty_buffer();
-        the_sample_project_is_not_disk_backed_but_a_real_one_is();
     }
 
     fn from_dir_projects_the_real_top_level_only() {
@@ -1206,13 +1236,6 @@ mod tests {
             p.file_seed(node),
             Err(crate::disk::LoadError::NotText)
         ));
-    }
-
-    #[test]
-    fn opening_a_path_roots_single_files_and_rejects_missing_or_non_directories() {
-        opening_a_single_file_gives_a_project_rooted_at_its_folder();
-        opening_a_missing_path_fails_rather_than_opening_an_empty_project();
-        a_file_is_not_a_project_directory();
     }
 
     fn opening_a_single_file_gives_a_project_rooted_at_its_folder() {

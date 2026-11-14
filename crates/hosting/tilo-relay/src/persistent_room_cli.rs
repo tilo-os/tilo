@@ -27,7 +27,7 @@ use tilo_relay::web::WebHandle;
 use tilo_relay::workspaces::{WaitListed, Workspaces};
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
@@ -42,9 +42,6 @@ use bots::{offer_sign_in, start_bots};
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
 /// How often unconfirmed addresses left at the door are let go.
 const WAIT_LIST_SWEEP_SECS: u64 = 60;
-/// `--author-app none`: the workspace authors nothing and is read-only.
-const NO_AUTHORED_APPS: &str = "none";
-
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PersistentArgs {
     /// Run one persistent public workspace with this name instead of a
@@ -142,7 +139,7 @@ pub struct PersistentArgs {
         requires = "listing_description",
         value_parser = parse_role
     )]
-    pub default_role: Option<WorkspaceRole>,
+    pub default_role: Option<Role>,
     /// Take people by invitation: an unlisted workspace's door lets nobody new
     /// in, and members may invite someone with an invitation of their own,
     /// which they let in. Settled at every start. A listed workspace lets anyone
@@ -194,15 +191,6 @@ pub struct PersistentArgs {
     /// An app authored into the workspace at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
-    /// An app the workspace's members write through: it authors the workspace's
-    /// content, so a member whose role lets them change the workspace (a guest
-    /// is an Editor) can talk in its Chat; repeatable. Settled at every
-    /// start: an app named here no longer stops authoring the workspace.
-    /// Naming none authors every first-party app and every seeded one, since a
-    /// workspace's app list is its policy and a public workspace offers its
-    /// members every app; `none` authors none, and the workspace is read-only.
-    #[arg(long = "author-app", value_name = "APP_ID")]
-    pub author_apps: Vec<String>,
     /// What to install at the workspace's first start, approved by the workspace's
     /// root, with its inputs (`<source> key=value …`); repeatable. The source
     /// is a bot directory entry, or a program file on this host, which the
@@ -444,13 +432,11 @@ fn input_value(text: &str) -> serde_json::Value {
 
 /// `--default-role`: `viewer`, `commenter` or `editor`. A moderator is chosen,
 /// never handed out at the door.
-fn parse_role(role: &str) -> Result<WorkspaceRole, String> {
-    match role {
-        "viewer" => Ok(WorkspaceRole::Viewer),
-        "commenter" => Ok(WorkspaceRole::Commenter),
-        "editor" => Ok(WorkspaceRole::Editor),
-        other => Err(format!(
-            "{other:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
+fn parse_role(role: &str) -> Result<Role, String> {
+    match Role::parse(role) {
+        Some(role) if matches!(role, Role::Viewer | Role::Commenter | Role::Editor) => Ok(role),
+        _ => Err(format!(
+            "{role:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
         )),
     }
 }
@@ -809,12 +795,15 @@ async fn answer_wait_list_command(
 /// its governance holds them by their root as a member with every governance
 /// action, so the door lets them in even when it takes people by invitation,
 /// and a key of theirs lists the workspace, enters it and invites before any
-/// device of theirs has joined. Answers what the operator hears.
+/// device of theirs has joined. `name`, when the operator's declaration
+/// carries one, is how the workspace names them until they rename themselves.
+/// Answers what the operator hears.
 async fn declare_owner(
     workspaces: &Workspaces,
     workspace: &str,
     host: &DeviceCert,
     key: &str,
+    name: Option<&str>,
 ) -> String {
     let Some(user) = hex32(key) else {
         return OperatorEvent::OwnerRefused {
@@ -829,6 +818,7 @@ async fn declare_owner(
             host,
             request_id(b"owner", &user, tilo_clock::unix_now_ns()),
             user,
+            name,
         )
         .await
     {
@@ -969,35 +959,6 @@ pub(crate) async fn settle_strips(
         .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
 }
 
-/// The apps the workspace's members write through: the ones `--author-app`
-/// names, or, naming none, every first-party app, every seeded one, and the
-/// workspace's own shared desktop.
-fn authored_apps(args: &PersistentArgs) -> Vec<String> {
-    if args.author_apps.is_empty() {
-        let mut apps: Vec<String> = tilo_desktop_model::first_party::FIRST_PARTY_APPS
-            .iter()
-            .map(|app| (*app).to_owned())
-            .collect();
-        // The shared desktop is the workspace's own record rather than some
-        // package's: every member writes the desk its windows are on, so the
-        // workspace's host lets it author, as it lets the first-party apps
-        // author the records their windows show.
-        apps.push(tilo_desktop_model::ownership::DESKTOP_APP.to_owned());
-        for app in &args.seed_apps {
-            if !apps.contains(app) {
-                apps.push(app.clone());
-            }
-        }
-        return apps;
-    }
-    // No app's id is `none`: the flag says the workspace is read-only.
-    args.author_apps
-        .iter()
-        .filter(|app| app.as_str() != NO_AUTHORED_APPS)
-        .cloned()
-        .collect()
-}
-
 /// Refound each `APP/RECORD` the operator named, once per start that names it:
 /// a record whose retained history lost the base its deltas were written over
 /// is published again as the workspace's next checkpoint of it, and what its
@@ -1040,27 +1001,6 @@ async fn refound_records(
         );
         write_json(&done_at, &done)?;
     }
-    Ok(())
-}
-
-/// Make exactly the operator's `apps` authors of the workspace, so its members
-/// write through them, and take authorship back from an app this host made
-/// an author at an earlier start and no longer names (kept in `authored`).
-pub(crate) async fn settle_app_authorship(
-    workspaces: &Workspaces,
-    workspace: &str,
-    cert: &DeviceCert,
-    apps: &[String],
-    authored: &Path,
-) -> anyhow::Result<()> {
-    let earlier: BTreeSet<String> = read_json(authored)?;
-    let apps: BTreeSet<String> = apps.iter().cloned().collect();
-    let withdrawn: BTreeSet<String> = earlier.difference(&apps).cloned().collect();
-    workspaces
-        .settle_app_authorship(workspace, cert, &apps, &withdrawn)
-        .await
-        .map_err(|error| anyhow::anyhow!("let members write through {apps:?}: {error}"))?;
-    write_json(authored, &apps)?;
     Ok(())
 }
 
@@ -1181,7 +1121,7 @@ async fn settle_listing(
             host_cert,
             Listing {
                 description: description.clone(),
-                default_role: persistent.default_role.unwrap_or(WorkspaceRole::Viewer),
+                default_role: persistent.default_role.unwrap_or(Role::Viewer),
             },
         )
         .await
@@ -1282,7 +1222,7 @@ pub(crate) async fn run(
         &root,
         &host,
         &format!("{name} workspace host"),
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     )?;
     let config = tilo_relay::RelayConfig {
         state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
@@ -1399,17 +1339,6 @@ pub(crate) async fn run(
         settled(
             &workspace,
             settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await,
-        );
-        settled(
-            &workspace,
-            settle_app_authorship(
-                &workspaces,
-                &workspace,
-                &host_cert,
-                &authored_apps(&persistent),
-                &state.join("authored-apps.json"),
-            )
-            .await,
         );
         // A record the operator named whose retained history lost the base its
         // deltas were written over: founded again from what the workspace still
@@ -1760,12 +1689,16 @@ async fn answer_operator_socket(context: &PersistentRoom, stream: tokio::net::Un
     let answer = match reading.read_line(&mut line).await {
         Ok(0) => return,
         Ok(_) => match OperatorCommand::from_line(&line) {
-            Ok(OperatorCommand::DeclareOwner { user_public_key }) => {
+            Ok(OperatorCommand::DeclareOwner {
+                user_public_key,
+                name,
+            }) => {
                 declare_owner(
                     &context.workspaces,
                     &context.workspace,
                     &context.host_cert,
                     &user_public_key,
+                    name.as_deref(),
                 )
                 .await
             }
@@ -1855,7 +1788,10 @@ async fn serve_operator(
                 // An invitation the door mailed itself is acknowledged here:
                 // nothing else in the workspace hears of it.
                 Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
-                Some(Ok(OperatorCommand::DeclareOwner { user_public_key })) => {
+                Some(Ok(OperatorCommand::DeclareOwner {
+                    user_public_key,
+                    name,
+                })) => {
                     println!(
                         "{}",
                         declare_owner(
@@ -1863,6 +1799,7 @@ async fn serve_operator(
                             &context.workspace,
                             &context.host_cert,
                             &user_public_key,
+                            name.as_deref(),
                         )
                         .await
                     );
@@ -1887,34 +1824,6 @@ mod tests {
     use tilo_user_identity::DeviceCapabilities;
     const NS_PER_SEC: u64 = 1_000_000_000;
 
-    #[test]
-    fn the_workspace_is_named_after_the_room_capitalized() {
-        assert_eq!(workspace_name("plaza"), "Plaza");
-        assert_eq!(workspace_name(""), "");
-    }
-
-    #[test]
-    fn the_workspace_authors_every_first_party_app_unless_it_names_apps() {
-        let mut args = PersistentArgs {
-            seed_apps: vec!["so.tilo.chat".into()],
-            ..PersistentArgs::default()
-        };
-        let every = authored_apps(&args);
-        for app in tilo_desktop_model::first_party::FIRST_PARTY_APPS {
-            assert!(every.iter().any(|named| named.as_str() == *app), "{app}");
-        }
-        assert!(every.iter().any(|app| app == "so.tilo.chat"));
-        assert_eq!(
-            every.len(),
-            every.iter().collect::<BTreeSet<_>>().len(),
-            "an app is named once"
-        );
-        args.author_apps = vec!["so.tilo.chat".into()];
-        assert_eq!(authored_apps(&args), ["so.tilo.chat"]);
-        args.author_apps = vec![NO_AUTHORED_APPS.into()];
-        assert!(authored_apps(&args).is_empty(), "a read-only workspace");
-    }
-
     fn store() -> tilo_secrets::SecretStore {
         tilo_secrets::SecretStore::memory(SECRET_APP)
     }
@@ -1922,12 +1831,18 @@ mod tests {
     fn member(key: u8, administrator: bool) -> tilo_peer_state::GovernedMember {
         tilo_peer_state::GovernedMember {
             user_public_key: [key; 32],
-            role: tilo_peer_state::join::MemberRole::Editor,
+            role: tilo_peer_state::join::Role::Editor,
             display_name: None,
             active_device_keys: Vec::new(),
             removed: false,
             administrator,
         }
+    }
+
+    #[test]
+    fn the_workspace_is_named_after_the_room_capitalized() {
+        assert_eq!(workspace_name("plaza"), "Plaza");
+        assert_eq!(workspace_name(""), "");
     }
 
     #[test]
@@ -2026,7 +1941,7 @@ mod tests {
     async fn a_fresh_workspace_seeds_its_apps_and_keeps_them() {
         let dir = tempfile::tempdir().unwrap();
         let (relay, workspaces, host_cert) =
-            host_with(dir.path(), tilo_user_identity::DeviceCapabilities::host()).await;
+            host_with(dir.path(), tilo_user_identity::DeviceCapabilities::member()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let apps = ["so.tilo.notes", "so.tilo.chat"];
         let first = seeded(dir.path(), &host_cert, &workspaces, &workspace, &apps).await;
@@ -2045,7 +1960,7 @@ mod tests {
     /// The relay of [`plaza`] started on `dir`, as every start signs its
     /// certificate afresh.
     async fn host(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert) {
-        host_with(dir, DeviceCapabilities::host()).await
+        host_with(dir, DeviceCapabilities::member()).await
     }
 
     /// [`host`] whose certificate carries `capabilities`: the host of a
@@ -2125,7 +2040,7 @@ mod tests {
         let relay_state = tilo_relay_protocol::metrics::room_relay_root(&state);
         let root = SigningKey::from_bytes(&[0x11; 32]);
         let host = SigningKey::from_bytes(&[0x22; 32]);
-        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
+        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::member()).unwrap();
         let leaked = SigningKey::from_bytes(&[0x33; 32]);
         let leaked_cert = enrol(&root, &leaked, "leaked", DeviceCapabilities::member()).unwrap();
         let sibling = SigningKey::from_bytes(&[0x44; 32]);
@@ -2206,7 +2121,7 @@ mod tests {
                 WorkspacesRequest::Invite {
                     workspace: workspace.to_owned(),
                     request_id: rand::random(),
-                    role: WorkspaceRole::Editor,
+                    role: Role::Editor,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3600 * NS_PER_SEC),
                     inviter_name: Some("Member".into()),
                     wait_list_entry: None,
@@ -2266,7 +2181,7 @@ mod tests {
                 &host_cert,
                 Listing {
                     description: "A plaza".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -2292,6 +2207,7 @@ mod tests {
             &workspace,
             &host_cert,
             &hex::encode(owner.1.user_public_key),
+            None,
         )
         .await;
         assert!(answered.contains("owner_declared"), "{answered}");
@@ -2336,7 +2252,7 @@ mod tests {
             "the declared owner governs the workspace once their device is in"
         );
         // What the operator cannot declare is nothing at all.
-        let refused = declare_owner(&workspaces, &workspace, &host_cert, "Ada").await;
+        let refused = declare_owner(&workspaces, &workspace, &host_cert, "Ada", None).await;
         assert!(refused.contains("owner_refused"), "{refused}");
         relay.shutdown().await;
     }
@@ -2367,7 +2283,7 @@ mod tests {
                 &host_cert,
                 Listing {
                     description: "A plaza".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -2453,7 +2369,7 @@ mod tests {
                 &host_cert,
                 Listing {
                     description: "A plaza".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -2473,7 +2389,13 @@ mod tests {
             assert!(walk_in(&workspaces, person, issued.signed_invitation, &token).await);
         }
         workspaces
-            .set_member_administrator(&workspace, &host_cert, [1; 32], people[0].1.user_public_key)
+            .set_member_administrator(
+                &workspace,
+                &host_cert,
+                [1; 32],
+                people[0].1.user_public_key,
+                None,
+            )
             .await
             .unwrap();
         workspaces
@@ -2483,7 +2405,7 @@ mod tests {
                 tilo_relay_session::workspaces::SetMemberRoleRequest {
                     request_id: [2; 32],
                     user_public_key: people[1].1.user_public_key,
-                    role: tilo_peer_state::join::MemberRole::Moderator,
+                    role: tilo_peer_state::join::Role::Moderator,
                 },
             )
             .await

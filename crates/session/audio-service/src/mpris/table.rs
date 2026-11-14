@@ -464,325 +464,330 @@ mod tests {
         }
     }
 
-    #[test]
-    fn appear_change_vanish_updates_the_players() {
-        let now = Instant::now();
-        let mut table = PlayerTable::default();
-        let applied = table.apply(
-            appeared(PLAYER, OWNER, Some("so.tilo.browser"), "Playing"),
-            now,
-        );
-        assert!(applied.changed);
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn the_player_table_follows_the_bus;
 
-        let players = table.players(now);
-        assert_eq!(players.len(), 1);
-        assert_eq!(players[0].bus_name, PLAYER);
-        assert_eq!(players[0].unique_name, OWNER);
-        assert_eq!(players[0].status, Status::Playing);
-        assert_eq!(players[0].position_us, 4_000_000);
-        assert_eq!(
-            players[0].url.as_deref(),
-            Some("https://media.example/film.mp4")
-        );
-        assert_eq!(table.playing(), [PLAYER]);
-
-        let applied = table.apply(
-            changed(OWNER, "PlaybackStatus", value("Paused".to_string())),
-            now,
-        );
-        assert_eq!(
-            applied,
-            Applied {
-                changed: true,
-                position_stale: true,
-            },
-            "a status change is applied and asks for one fresh playhead"
-        );
-        assert_eq!(table.players(now)[0].status, Status::Paused);
-        assert!(table.playing().is_empty());
-
-        let elsewhere = table.apply(
-            changed(":1.99", "PlaybackStatus", value("Playing".to_string())),
-            now,
-        );
-        assert!(
-            !elsewhere.changed,
-            "a connection may only change its own players"
-        );
-        assert_eq!(table.players(now)[0].status, Status::Paused);
-
-        assert!(
-            table
-                .apply(
-                    PlayerEvent::Vanished {
-                        bus_name: PLAYER.into()
-                    },
-                    now
-                )
-                .changed
-        );
-        assert!(table.players(now).is_empty());
-    }
-
-    #[test]
-    fn position_extrapolates_and_seeked_resets() {
-        let start = Instant::now();
-        let mut table = PlayerTable::default();
-        table.apply(appeared(PLAYER, OWNER, None, "Playing"), start);
-        let later = start + Duration::from_secs(2);
-        let at = |table: &PlayerTable, when| table.players(when)[0].position_us;
-        assert_eq!(
-            at(&table, later),
-            6_000_000,
-            "a playing track advances between signals"
-        );
-
-        table.apply(
-            PlayerEvent::Seeked {
-                unique_name: OWNER.into(),
-                position_us: 1_000_000,
-            },
-            later,
-        );
-        assert_eq!(at(&table, later), 1_000_000);
-        assert_eq!(at(&table, later + Duration::from_secs(1)), 2_000_000);
-
-        table.apply(changed(OWNER, "Rate", value(2.0_f64)), later);
-        assert!((table.players(later)[0].rate - 2.0).abs() < f64::EPSILON);
-        assert_eq!(
-            at(&table, later + Duration::from_secs(1)),
-            3_000_000,
-            "the playhead advances at the signalled rate"
-        );
-
-        table.apply(
-            changed(OWNER, "PlaybackStatus", value("Paused".to_string())),
-            later + Duration::from_secs(1),
-        );
-        assert_eq!(
-            at(&table, later + Duration::from_secs(60)),
-            3_000_000,
-            "pausing freezes the playhead where it was"
-        );
-        assert_eq!(table.players(later)[0].length_us, Some(9_000_000));
-    }
-
-    #[test]
-    fn players_are_verified_once_per_owner() {
-        let now = Instant::now();
-        let mut table = PlayerTable::default();
-        table.apply(appeared(PLAYER, OWNER, None, "Playing"), now);
-        assert_eq!(table.players(now)[0].package_id, None);
-        assert_eq!(table.players(now)[0].pid, Some(4242));
-        assert!(table.players_of("so.tilo.browser").is_empty());
-
-        assert!(
-            !table.verify(PLAYER, ":1.7", "so.tilo.browser".into()),
-            "a verification for an earlier owner is discarded"
-        );
-        assert!(table.verify(PLAYER, OWNER, "so.tilo.browser".into()));
-        assert_eq!(
-            table.players(now)[0].package_id.as_deref(),
-            Some("so.tilo.browser")
-        );
-        assert_eq!(
-            table.players_of("so.tilo.browser"),
-            [(
-                PLAYER.to_string(),
-                Some("https://media.example/film.mp4".to_string())
-            )]
-        );
-
-        table.apply(appeared(PLAYER, ":1.43", None, "Playing"), now);
-        assert_eq!(
-            table.players(now)[0].package_id,
-            None,
-            "a new owner of the same name is verified afresh"
-        );
-    }
-
-    #[test]
-    fn players_read_metadata_and_only_local_artwork() {
-        let now = Instant::now();
-        let mut table = PlayerTable::default();
-        let track = zbus::zvariant::ObjectPath::try_from("/org/tilo/track/7").unwrap();
-        table.apply(
-            PlayerEvent::Appeared {
-                bus_name: "org.mpris.MediaPlayer2.music".into(),
-                unique_name: ":1.1".into(),
-                pid: None,
-                package_id: None,
-                properties: HashMap::from([
-                    ("Identity".to_string(), value(" Music ".to_string())),
-                    ("PlaybackStatus".to_string(), value("Playing".to_string())),
-                    ("CanSeek".to_string(), value(true)),
-                    ("CanGoPrevious".to_string(), value(true)),
-                    (
-                        "Metadata".to_string(),
-                        value(HashMap::from([
-                            ("xesam:title".to_string(), value("Song".to_string())),
-                            (
-                                "xesam:artist".to_string(),
-                                value(vec!["One".to_string(), "Two".to_string()]),
-                            ),
-                            ("mpris:length".to_string(), value(180_000_000_u64)),
-                            ("mpris:trackid".to_string(), value(track)),
-                            (
-                                "mpris:artUrl".to_string(),
-                                value("file:///home/me/Music/cover%20art.png".to_string()),
-                            ),
-                        ])),
-                    ),
-                ]),
-            },
-            now,
-        );
-        table.apply(
-            PlayerEvent::Appeared {
-                bus_name: "org.mpris.MediaPlayer2.web".into(),
-                unique_name: ":1.2".into(),
-                pid: None,
-                package_id: None,
-                properties: HashMap::from([
-                    ("PlaybackStatus".to_string(), value("Paused".to_string())),
-                    (
-                        "Metadata".to_string(),
-                        value(HashMap::from([(
-                            "mpris:artUrl".to_string(),
-                            value("https://tracker.example/cover.jpg".to_string()),
-                        )])),
-                    ),
-                ]),
-            },
-            now,
-        );
-        table.apply(
-            appeared("org.mpris.MediaPlayer2.odd", ":1.3", None, "Buffering"),
-            now,
-        );
-        let players = table.players(now);
-        assert_eq!(
-            players.len(),
-            2,
-            "a player with no transport state is left out"
-        );
-        let music = &players[0];
-        assert_eq!(music.identity.as_deref(), Some("Music"));
-        assert_eq!(music.title.as_deref(), Some("Song"));
-        assert_eq!(music.artist.as_deref(), Some("One, Two"));
-        assert_eq!(music.length_us, Some(180_000_000));
-        assert_eq!(music.track_id.as_deref(), Some("/org/tilo/track/7"));
-        assert!(music.can_seek && music.can_go_previous && !music.can_go_next);
-        assert_eq!(
-            music.art_url.as_deref(),
-            Some("file:///home/me/Music/cover%20art.png")
-        );
-        let web = &players[1];
-        assert_eq!(web.art_url, None, "remote artwork is never fetched");
-        assert_eq!(web.identity, None);
-        assert_eq!(web.length_us, None);
-    }
-
-    #[test]
-    fn active_player_prefers_playing() {
-        let now = Instant::now();
-        let mut table = PlayerTable::default();
-        assert_eq!(table.active_player(), None);
-        table.apply(
-            appeared("org.mpris.MediaPlayer2.a", ":1.1", None, "Paused"),
-            now,
-        );
-        assert_eq!(
-            table.active_player(),
-            Some(("org.mpris.MediaPlayer2.a".to_string(), false))
-        );
-        table.apply(
-            appeared("org.mpris.MediaPlayer2.b", ":1.2", None, "Playing"),
-            now,
-        );
-        assert_eq!(
-            table.active_player(),
-            Some(("org.mpris.MediaPlayer2.b".to_string(), true))
-        );
-    }
-
-    #[test]
-    fn transport_keys_address_the_player_that_last_played() {
-        let now = Instant::now();
-        let mut table = PlayerTable::default();
-        let (browser, music) = (
-            "org.mpris.MediaPlayer2.chromium",
-            "org.mpris.MediaPlayer2.music",
-        );
-        table.apply(appeared(browser, ":1.1", None, "Paused"), now);
-        table.apply(appeared(music, ":1.2", None, "Playing"), now);
-        table.apply(
-            changed(":1.2", "PlaybackStatus", value("Paused".to_string())),
-            now,
-        );
-        assert_eq!(
-            table.active_player(),
-            Some((music.to_string(), false)),
-            "play resumes the music just paused, not the browser that sorts first"
-        );
-
-        table.apply(
-            changed(":1.1", "PlaybackStatus", value("Playing".to_string())),
-            now,
-        );
-        table.apply(
-            changed(":1.2", "PlaybackStatus", value("Playing".to_string())),
-            now,
-        );
-        assert_eq!(
-            table.active_player(),
-            Some((music.to_string(), true)),
-            "of two playing, pause stops the one started last"
-        );
-
-        let opened = "org.mpris.MediaPlayer2.video";
-        table.apply(
-            changed(":1.2", "PlaybackStatus", value("Paused".to_string())),
-            now,
-        );
-        table.apply(
-            changed(":1.1", "PlaybackStatus", value("Paused".to_string())),
-            now,
-        );
-        table.apply(appeared(opened, ":1.3", None, "Stopped"), now);
-        assert_eq!(
-            table.active_player(),
-            Some((browser.to_string(), false)),
-            "a player that only opened does not take the keys from one that played"
-        );
-    }
-
-    #[test]
-    fn the_table_tracks_only_mpris_names_and_only_so_many() {
-        let now = Instant::now();
-        let mut table = PlayerTable::default();
-        assert!(
-            !table
-                .apply(
-                    appeared("org.example.NotAPlayer", ":1.1", None, "Playing"),
-                    now
-                )
-                .changed
-        );
-        for index in 0..=MAX_TRACKED_PLAYERS {
-            table.apply(
-                appeared(
-                    &format!("{MPRIS_PREFIX}p{index:03}"),
-                    ":1.1",
-                    None,
-                    "Paused",
-                ),
+        phase appear_change_vanish_updates_the_players;
+        {
+            let now = Instant::now();
+            let mut table = PlayerTable::default();
+            let applied = table.apply(
+                appeared(PLAYER, OWNER, Some("so.tilo.browser"), "Playing"),
                 now,
             );
+            assert!(applied.changed);
+
+            let players = table.players(now);
+            assert_eq!(players.len(), 1);
+            assert_eq!(players[0].bus_name, PLAYER);
+            assert_eq!(players[0].unique_name, OWNER);
+            assert_eq!(players[0].status, Status::Playing);
+            assert_eq!(players[0].position_us, 4_000_000);
+            assert_eq!(
+                players[0].url.as_deref(),
+                Some("https://media.example/film.mp4")
+            );
+            assert_eq!(table.playing(), [PLAYER]);
+
+            let applied = table.apply(
+                changed(OWNER, "PlaybackStatus", value("Paused".to_string())),
+                now,
+            );
+            assert_eq!(
+                applied,
+                Applied {
+                    changed: true,
+                    position_stale: true,
+                },
+                "a status change is applied and asks for one fresh playhead"
+            );
+            assert_eq!(table.players(now)[0].status, Status::Paused);
+            assert!(table.playing().is_empty());
+
+            let elsewhere = table.apply(
+                changed(":1.99", "PlaybackStatus", value("Playing".to_string())),
+                now,
+            );
+            assert!(
+                !elsewhere.changed,
+                "a connection may only change its own players"
+            );
+            assert_eq!(table.players(now)[0].status, Status::Paused);
+
+            assert!(
+                table
+                    .apply(
+                        PlayerEvent::Vanished {
+                            bus_name: PLAYER.into()
+                        },
+                        now
+                    )
+                    .changed
+            );
+            assert!(table.players(now).is_empty());
         }
-        assert_eq!(table.len(), MAX_TRACKED_PLAYERS);
-        assert_eq!(table.players(now).len(), MAX_PLAYERS);
-        assert!(table.admits(&format!("{MPRIS_PREFIX}p000")));
-        assert!(!table.admits(&format!("{MPRIS_PREFIX}late")));
+
+        phase position_extrapolates_and_seeked_resets;
+        {
+            let start = Instant::now();
+            let mut table = PlayerTable::default();
+            table.apply(appeared(PLAYER, OWNER, None, "Playing"), start);
+            let later = start + Duration::from_secs(2);
+            let at = |table: &PlayerTable, when| table.players(when)[0].position_us;
+            assert_eq!(
+                at(&table, later),
+                6_000_000,
+                "a playing track advances between signals"
+            );
+
+            table.apply(
+                PlayerEvent::Seeked {
+                    unique_name: OWNER.into(),
+                    position_us: 1_000_000,
+                },
+                later,
+            );
+            assert_eq!(at(&table, later), 1_000_000);
+            assert_eq!(at(&table, later + Duration::from_secs(1)), 2_000_000);
+
+            table.apply(changed(OWNER, "Rate", value(2.0_f64)), later);
+            assert!((table.players(later)[0].rate - 2.0).abs() < f64::EPSILON);
+            assert_eq!(
+                at(&table, later + Duration::from_secs(1)),
+                3_000_000,
+                "the playhead advances at the signalled rate"
+            );
+
+            table.apply(
+                changed(OWNER, "PlaybackStatus", value("Paused".to_string())),
+                later + Duration::from_secs(1),
+            );
+            assert_eq!(
+                at(&table, later + Duration::from_secs(60)),
+                3_000_000,
+                "pausing freezes the playhead where it was"
+            );
+            assert_eq!(table.players(later)[0].length_us, Some(9_000_000));
+        }
+
+        phase players_are_verified_once_per_owner;
+        {
+            let now = Instant::now();
+            let mut table = PlayerTable::default();
+            table.apply(appeared(PLAYER, OWNER, None, "Playing"), now);
+            assert_eq!(table.players(now)[0].package_id, None);
+            assert_eq!(table.players(now)[0].pid, Some(4242));
+            assert!(table.players_of("so.tilo.browser").is_empty());
+
+            assert!(
+                !table.verify(PLAYER, ":1.7", "so.tilo.browser".into()),
+                "a verification for an earlier owner is discarded"
+            );
+            assert!(table.verify(PLAYER, OWNER, "so.tilo.browser".into()));
+            assert_eq!(
+                table.players(now)[0].package_id.as_deref(),
+                Some("so.tilo.browser")
+            );
+            assert_eq!(
+                table.players_of("so.tilo.browser"),
+                [(
+                    PLAYER.to_string(),
+                    Some("https://media.example/film.mp4".to_string())
+                )]
+            );
+
+            table.apply(appeared(PLAYER, ":1.43", None, "Playing"), now);
+            assert_eq!(
+                table.players(now)[0].package_id,
+                None,
+                "a new owner of the same name is verified afresh"
+            );
+        }
+
+        phase players_read_metadata_and_only_local_artwork;
+        {
+            let now = Instant::now();
+            let mut table = PlayerTable::default();
+            let track = zbus::zvariant::ObjectPath::try_from("/org/tilo/track/7").unwrap();
+            table.apply(
+                PlayerEvent::Appeared {
+                    bus_name: "org.mpris.MediaPlayer2.music".into(),
+                    unique_name: ":1.1".into(),
+                    pid: None,
+                    package_id: None,
+                    properties: HashMap::from([
+                        ("Identity".to_string(), value(" Music ".to_string())),
+                        ("PlaybackStatus".to_string(), value("Playing".to_string())),
+                        ("CanSeek".to_string(), value(true)),
+                        ("CanGoPrevious".to_string(), value(true)),
+                        (
+                            "Metadata".to_string(),
+                            value(HashMap::from([
+                                ("xesam:title".to_string(), value("Song".to_string())),
+                                (
+                                    "xesam:artist".to_string(),
+                                    value(vec!["One".to_string(), "Two".to_string()]),
+                                ),
+                                ("mpris:length".to_string(), value(180_000_000_u64)),
+                                ("mpris:trackid".to_string(), value(track)),
+                                (
+                                    "mpris:artUrl".to_string(),
+                                    value("file:///home/me/Music/cover%20art.png".to_string()),
+                                ),
+                            ])),
+                        ),
+                    ]),
+                },
+                now,
+            );
+            table.apply(
+                PlayerEvent::Appeared {
+                    bus_name: "org.mpris.MediaPlayer2.web".into(),
+                    unique_name: ":1.2".into(),
+                    pid: None,
+                    package_id: None,
+                    properties: HashMap::from([
+                        ("PlaybackStatus".to_string(), value("Paused".to_string())),
+                        (
+                            "Metadata".to_string(),
+                            value(HashMap::from([(
+                                "mpris:artUrl".to_string(),
+                                value("https://tracker.example/cover.jpg".to_string()),
+                            )])),
+                        ),
+                    ]),
+                },
+                now,
+            );
+            table.apply(
+                appeared("org.mpris.MediaPlayer2.odd", ":1.3", None, "Buffering"),
+                now,
+            );
+            let players = table.players(now);
+            assert_eq!(
+                players.len(),
+                2,
+                "a player with no transport state is left out"
+            );
+            let music = &players[0];
+            assert_eq!(music.identity.as_deref(), Some("Music"));
+            assert_eq!(music.title.as_deref(), Some("Song"));
+            assert_eq!(music.artist.as_deref(), Some("One, Two"));
+            assert_eq!(music.length_us, Some(180_000_000));
+            assert_eq!(music.track_id.as_deref(), Some("/org/tilo/track/7"));
+            assert!(music.can_seek && music.can_go_previous && !music.can_go_next);
+            assert_eq!(
+                music.art_url.as_deref(),
+                Some("file:///home/me/Music/cover%20art.png")
+            );
+            let web = &players[1];
+            assert_eq!(web.art_url, None, "remote artwork is never fetched");
+            assert_eq!(web.identity, None);
+            assert_eq!(web.length_us, None);
+        }
+
+        phase active_player_prefers_playing;
+        {
+            let now = Instant::now();
+            let mut table = PlayerTable::default();
+            assert_eq!(table.active_player(), None);
+            table.apply(
+                appeared("org.mpris.MediaPlayer2.a", ":1.1", None, "Paused"),
+                now,
+            );
+            assert_eq!(
+                table.active_player(),
+                Some(("org.mpris.MediaPlayer2.a".to_string(), false))
+            );
+            table.apply(
+                appeared("org.mpris.MediaPlayer2.b", ":1.2", None, "Playing"),
+                now,
+            );
+            assert_eq!(
+                table.active_player(),
+                Some(("org.mpris.MediaPlayer2.b".to_string(), true))
+            );
+        }
+
+        phase transport_keys_address_the_player_that_last_played;
+        {
+            let now = Instant::now();
+            let mut table = PlayerTable::default();
+            let (browser, music) = (
+                "org.mpris.MediaPlayer2.chromium",
+                "org.mpris.MediaPlayer2.music",
+            );
+            table.apply(appeared(browser, ":1.1", None, "Paused"), now);
+            table.apply(appeared(music, ":1.2", None, "Playing"), now);
+            table.apply(
+                changed(":1.2", "PlaybackStatus", value("Paused".to_string())),
+                now,
+            );
+            assert_eq!(
+                table.active_player(),
+                Some((music.to_string(), false)),
+                "play resumes the music just paused, not the browser that sorts first"
+            );
+
+            table.apply(
+                changed(":1.1", "PlaybackStatus", value("Playing".to_string())),
+                now,
+            );
+            table.apply(
+                changed(":1.2", "PlaybackStatus", value("Playing".to_string())),
+                now,
+            );
+            assert_eq!(
+                table.active_player(),
+                Some((music.to_string(), true)),
+                "of two playing, pause stops the one started last"
+            );
+
+            let opened = "org.mpris.MediaPlayer2.video";
+            table.apply(
+                changed(":1.2", "PlaybackStatus", value("Paused".to_string())),
+                now,
+            );
+            table.apply(
+                changed(":1.1", "PlaybackStatus", value("Paused".to_string())),
+                now,
+            );
+            table.apply(appeared(opened, ":1.3", None, "Stopped"), now);
+            assert_eq!(
+                table.active_player(),
+                Some((browser.to_string(), false)),
+                "a player that only opened does not take the keys from one that played"
+            );
+        }
+
+        phase the_table_tracks_only_mpris_names_and_only_so_many;
+        {
+            let now = Instant::now();
+            let mut table = PlayerTable::default();
+            assert!(
+                !table
+                    .apply(
+                        appeared("org.example.NotAPlayer", ":1.1", None, "Playing"),
+                        now
+                    )
+                    .changed
+            );
+            for index in 0..=MAX_TRACKED_PLAYERS {
+                table.apply(
+                    appeared(
+                        &format!("{MPRIS_PREFIX}p{index:03}"),
+                        ":1.1",
+                        None,
+                        "Paused",
+                    ),
+                    now,
+                );
+            }
+            assert_eq!(table.len(), MAX_TRACKED_PLAYERS);
+            assert_eq!(table.players(now).len(), MAX_PLAYERS);
+            assert!(table.admits(&format!("{MPRIS_PREFIX}p000")));
+            assert!(!table.admits(&format!("{MPRIS_PREFIX}late")));
+        }
     }
 }

@@ -113,6 +113,10 @@ type Arguments<I> =
 #[derive(Clone)]
 pub struct ActionBinding<I> {
     address: ActionAddress,
+    /// The kind of record the action acts on, as the resource publishes it: what
+    /// the control's identity names instead of the one resource, which the
+    /// window's business is ([`Self::identity`]).
+    kind: String,
     spec: ActionSpec,
     arguments: Arguments<I>,
 }
@@ -159,6 +163,7 @@ impl<I> ActionBinding<I> {
             })?;
         Ok(Self {
             address: ActionAddress::new(resource.id.0.clone(), spec.id.clone()),
+            kind: resource.kind.clone(),
             // Always retain the spec from the resource, even if a caller
             // passed an independently-created spec with the same id.
             spec: exported.clone(),
@@ -185,6 +190,21 @@ impl<I> ActionBinding<I> {
         &self.address
     }
 
+    /// What a control bound to it does, as a window publishes it: the kind of
+    /// record it acts on, the one resource it acts on, and the id the app
+    /// declares the action by ([`ActionAddress::naming`]) — so the row's
+    /// Complete names that row, and what a person presses and what a caller
+    /// names at the door are one thing.
+    #[must_use]
+    pub fn identity(&self) -> ActionAddress {
+        let declared = if self.spec.declared.is_empty() {
+            self.address.action.as_str()
+        } else {
+            self.spec.declared.as_str()
+        };
+        ActionAddress::on(self.kind.as_str(), self.address.resource.as_str(), declared)
+    }
+
     /// The same binding for a control whose value `J` maps to this one's
     /// input: a field that reports each edit for a binding that takes the text.
     #[must_use]
@@ -195,6 +215,7 @@ impl<I> ActionBinding<I> {
         let arguments = self.arguments;
         ActionBinding {
             address: self.address,
+            kind: self.kind,
             spec: self.spec,
             arguments: Arc::new(move |input| arguments(map(input))),
         }
@@ -652,24 +673,6 @@ impl ResourceSemanticIdentity {
     }
 }
 
-/// Who may read a resource's reading.
-///
-/// A reading says what the device or the app holds right now, so a resource
-/// of the person's own — the clipboard's copies, a screen's content — is not
-/// every caller's to read. Declaring a reading [`Granted`](Self::Granted)
-/// puts it under the same permission model the resource's actions already
-/// have: the session decides it where the resource sits, from the workspace's
-/// grants, and a caller the workspace does not grant it to is refused.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Readers {
-    /// Anyone who reaches the session's door: what a resource is unless it
-    /// says otherwise.
-    #[default]
-    Everyone,
-    /// Only a caller the workspace grants reading this resource.
-    Granted,
-}
-
 pub use crate::noun::{Noun, ResourceType, in_words, plural, singular};
 
 /// Whether `kind` names a control the window already draws, or an
@@ -718,8 +721,6 @@ pub struct ResourceSpec {
     /// Explicit presentations of this resource. Actions remain invocation
     /// mechanisms; only entries in this collection are resource views.
     pub views: Vec<ResourceViewSpec>,
-    /// Who may read the reading this resource publishes.
-    pub readers: Readers,
     /// What it is, as people name it, when its type says ([`ResourceType`]).
     pub resource_type: Option<ResourceType>,
 }
@@ -737,7 +738,6 @@ impl ResourceSpec {
             children: Vec::new(),
             actions: Vec::new(),
             views: Vec::new(),
-            readers: Readers::Everyone,
         }
     }
 
@@ -770,15 +770,6 @@ impl ResourceSpec {
     #[must_use]
     pub fn with_view(mut self, view: ResourceViewSpec) -> Self {
         self.views.push(view);
-        self
-    }
-
-    /// Publish this resource's reading only to callers the workspace grants it to
-    /// ([`Readers::Granted`]): what the person's own state needs, when it is
-    /// theirs alone.
-    #[must_use]
-    pub fn with_granted_reading(mut self) -> Self {
-        self.readers = Readers::Granted;
         self
     }
 
@@ -2728,7 +2719,7 @@ fn primary_argument(params: &[ActionParam], text: &str) -> Vec<(String, ArgValue
 fn parse_argument(name: &str, ty: ParamType, text: &str) -> Vec<(String, ArgValue)> {
     let parsed = match ty {
         ParamType::Text => Some(ArgValue::Text(text.to_string())),
-        ParamType::Integer => text.trim().parse::<i64>().ok().map(ArgValue::Integer),
+        ParamType::Integer => text.trim().parse::<i128>().ok().map(ArgValue::Integer),
         ParamType::Number => text.trim().parse::<f64>().ok().map(ArgValue::Number),
         ParamType::Boolean => match text.trim() {
             "true" | "yes" | "on" => Some(ArgValue::Boolean(true)),

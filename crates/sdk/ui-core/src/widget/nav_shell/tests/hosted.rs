@@ -34,20 +34,205 @@ fn hosted() -> (FrameHarness, NavFeed, WindowBarLink) {
     (h, feed, link)
 }
 
-/// The app shows its places through the feed; a row the person chooses
-/// comes back to the app as that place's id.
-#[test]
-fn the_feed_shows_the_apps_places_and_hands_back_the_persons_choice() {
-    let (mut h, feed, _) = hosted();
-    let list = h
-        .root::<NavShell>()
-        .sidebar_ref::<NavList>()
-        .expect("the sidebar is the list");
-    assert_eq!(list.selected_id().as_deref(), Some("home"));
-    let row = list.row_rect("trending").expect("the app's place is a row");
-    h.click_at(row.center().x, row.center().y);
-    assert_eq!(feed.take_chosen(), vec!["trending".to_owned()]);
-    assert!(feed.take_chosen().is_empty(), "each choice comes back once");
+tilo_test_env::scenario! {
+    fn a_hosted_shell_shares_its_places_and_toggle_with_the_window_bar;
+
+    // A narrow window whose toolbar is the window bar's slots opens on its
+    // list, as one with a header row does: the list fills the window, and Back
+    // from an opened item comes back to it.
+    phase a_narrow_window_with_its_toolbar_in_the_bar_opens_on_its_list;
+    {
+        let shell = NavShell::new()
+            .sidebar(Probe::boxed("sidebar").0)
+            .overview(Probe::boxed("overview").0)
+            .content(Probe::boxed("content").0)
+            .with_window_toolbar();
+        let mut h = harness(shell, 560, 800, Theme::dark());
+        settle(&mut h, 560, 800);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+        let list = child_rect(&h, "overview").expect("the list is a column");
+        assert!(
+            list.width() >= 500.0 && list.height() > 0.0,
+            "the list fills the window: {list:?}"
+        );
+        h.root_mut::<NavShell>().show(NavPane::Content);
+        settle(&mut h, 560, 800);
+        assert!(h.root_mut::<NavShell>().back());
+        settle(&mut h, 560, 800);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+        let list = child_rect(&h, "overview").expect("the list is a column");
+        assert!(list.width() >= 500.0, "back on the list: {list:?}");
+    }
+
+    // A phone-wide (420 px) window whose bar holds the sidebar's toggle opens on its top-level
+    // page with nowhere to go back to: the toggle reaches the sidebar, and no Back stands beside
+    // it, in the bar or in the shell.
+    phase a_top_level_page_has_no_back_beside_the_bars_toggle;
+    {
+        const NARROW: u32 = 420;
+        let shell = NavShell::new()
+            .content_kind(ContentKind::List)
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .with_window_toolbar();
+        let mut h = harness(shell, NARROW, H, Theme::dark());
+        settle(&mut h, NARROW, H);
+        let g = geometry(&h);
+        assert_eq!(g.sidebar, SidebarPlacement::Screen);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+        assert_eq!(g.back_column, None, "Back goes nowhere");
+        assert_eq!(g.back, Rect::ZERO);
+        assert!(!shows_back_part(&h), "no Back part");
+        assert!(!h.root::<NavShell>().can_go_back());
+        assert!(!bar_back(&h), "no Back in the bar");
+        let toolbar = h.root::<NavShell>().window_toolbar();
+        assert_eq!(toolbar.sidebar, Some(false), "the toggle is the bar's");
+        assert!(
+            h.root_mut::<NavShell>()
+                .window_toolbar_event(&ToolbarEvent::ToggleSidebar)
+        );
+        settle(&mut h, NARROW, H);
+        assert_eq!(
+            h.root::<NavShell>().front_pane(),
+            NavPane::Sidebar,
+            "the toggle reaches the sidebar"
+        );
+        assert!(
+            bar_back(&h),
+            "the places' screen offers the way back to the place it covered"
+        );
+        assert_eq!(
+            h.root::<NavShell>().window_toolbar().sidebar,
+            None,
+            "and the toggle stands aside for it"
+        );
+    }
+
+    // With a list beside its content, the list is the top-level page: no Back
+    // on it, and Back in the bar once an item is open, which comes back to the
+    // list.
+    phase back_shows_once_there_is_somewhere_to_go_back_to;
+    {
+        const NARROW: u32 = 420;
+        let shell = NavShell::new()
+            .sidebar(Probe::boxed("sidebar").0)
+            .overview(Probe::boxed("overview").0)
+            .content(Probe::boxed("content").0)
+            .with_window_toolbar();
+        let mut h = harness(shell, NARROW, H, Theme::dark());
+        settle(&mut h, NARROW, H);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+        assert!(!bar_back(&h), "the list is the top-level page");
+        assert!(!shows_back_part(&h));
+
+        h.root_mut::<NavShell>().show(NavPane::Content);
+        settle(&mut h, NARROW, H);
+        assert!(bar_back(&h), "an open item goes back to the list");
+        assert!(!shows_back_part(&h), "Back is the bar's alone");
+        assert!(
+            h.root_mut::<NavShell>()
+                .window_toolbar_event(&ToolbarEvent::Action {
+                    id: crate::widget::nav_shell::window_toolbar::WINDOW_BACK.into()
+                })
+        );
+        settle(&mut h, NARROW, H);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+        assert!(!bar_back(&h));
+    }
+
+    // A phone-wide (420 px) push stack whose app keeps the sidebar's toggle in
+    // the window's bar (Passwords, Files) has no header row: the toggle stands
+    // in the bar's corner, and Back beside it while there is somewhere to go
+    // back to.
+    phase a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it;
+    {
+        const NARROW: u32 = 420;
+        let no_row = |h: &FrameHarness, at: &str, back_room: bool| {
+            let g = geometry(h);
+            assert_eq!(g.header_height, 0.0, "{at}: no header row");
+            assert!(
+                g.headers.iter().all(|header| *header == Rect::ZERO),
+                "{at}: no header in any column"
+            );
+            assert_eq!(shows_back_part(h), back_room, "{at}: a Back of its own");
+        };
+        let mut shell = NavShell::new()
+            .content_kind(ContentKind::Page)
+            .sidebar(Probe::boxed("sidebar").0)
+            .overview(Probe::boxed("overview").0)
+            .content(Probe::boxed("content").0);
+        shell.set_sidebar_toggle_in_window_bar(true);
+        let mut h = harness(shell, NARROW, H, Theme::dark());
+        settle(&mut h, NARROW, H);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+        no_row(&h, "the list", false);
+        let list = child_rect(&h, "overview").expect("the list shows");
+        assert!(list.y0.abs() < 1e-9, "the list starts right under the bar");
+
+        h.root_mut::<NavShell>().show(NavPane::Content);
+        settle(&mut h, NARROW, H);
+        no_row(&h, "an open item", true);
+        assert!(h.root::<NavShell>().can_go_back());
+        let item = child_rect(&h, "content").expect("the item shows");
+        assert!(item.y0.abs() < 1e-9, "the item starts right under the bar");
+        assert!(h.root_mut::<NavShell>().back());
+        settle(&mut h, NARROW, H);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+
+        let mut shell = NavShell::new()
+            .content_kind(ContentKind::List)
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .content_header("", Vec::new());
+        shell.set_sidebar_toggle_in_window_bar(true);
+        let mut h = harness(shell, NARROW, H, Theme::dark());
+        settle(&mut h, NARROW, H);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+        no_row(&h, "the folder", false);
+    }
+
+    // A narrow window on its list still settles the content it put away, so
+    // what the content takes up shows in the list on screen.
+    phase a_narrow_window_on_its_list_still_settles_the_content_behind_it;
+    {
+        let feed = NavFeed::new();
+        let shell = NavShell::new()
+            .with_window_toolbar()
+            .content_kind(ContentKind::Reading)
+            .sidebar(Box::new(
+                NavList::new(Vec::new()).with_id("places").fed_by(&feed),
+            ))
+            .content(Box::new(SettleShower {
+                feed: feed.clone(),
+                rect: Rect::ZERO,
+            }));
+        feed.show(places(), Some("home".into()));
+        let mut h = harness(shell, 480, 800, Theme::dark());
+        settle(&mut h, 480, 800);
+        assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+        h.root_mut::<NavShell>().show(NavPane::Sidebar);
+        settle(&mut h, 480, 800);
+        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+        let list = h.root::<NavShell>().sidebar_ref::<NavList>();
+        assert!(list.and_then(|list| list.row_rect("later")).is_some());
+    }
+
+    // The app shows its places through the feed; a row the person chooses
+    // comes back to the app as that place's id.
+    phase the_feed_shows_the_apps_places_and_hands_back_the_persons_choice;
+    {
+        let (mut h, feed, _) = hosted();
+        let list = h
+            .root::<NavShell>()
+            .sidebar_ref::<NavList>()
+            .expect("the sidebar is the list");
+        assert_eq!(list.selected_id().as_deref(), Some("home"));
+        let row = list.row_rect("trending").expect("the app's place is a row");
+        h.click_at(row.center().x, row.center().y);
+        assert_eq!(feed.take_chosen(), vec!["trending".to_owned()]);
+        assert!(feed.take_chosen().is_empty(), "each choice comes back once");
+    }
 }
 
 /// The shell's own buttons are the app's slots in the window's bar: the sidebar's toggle shows
@@ -67,33 +252,6 @@ fn the_link_puts_the_shells_toggle_in_the_apps_window_bar() {
     assert!(h.root::<NavShell>().is_sidebar_open());
 }
 
-/// A narrow window whose toolbar is the window bar's slots opens on its
-/// list, as one with a header row does: the list fills the window, and Back
-/// from an opened item comes back to it.
-#[test]
-fn a_narrow_window_with_its_toolbar_in_the_bar_opens_on_its_list() {
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0)
-        .with_window_toolbar();
-    let mut h = harness(shell, 560, 800, Theme::dark());
-    settle(&mut h, 560, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    let list = child_rect(&h, "overview").expect("the list is a column");
-    assert!(
-        list.width() >= 500.0 && list.height() > 0.0,
-        "the list fills the window: {list:?}"
-    );
-    h.root_mut::<NavShell>().show(NavPane::Content);
-    settle(&mut h, 560, 800);
-    assert!(h.root_mut::<NavShell>().back());
-    settle(&mut h, 560, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    let list = child_rect(&h, "overview").expect("the list is a column");
-    assert!(list.width() >= 500.0, "back on the list: {list:?}");
-}
-
 fn shows_back_part(h: &FrameHarness) -> bool {
     h.root::<NavShell>()
         .part(Part::Back)
@@ -106,133 +264,6 @@ fn bar_back(h: &FrameHarness) -> bool {
         .leading
         .iter()
         .any(|action| action.id == crate::widget::nav_shell::window_toolbar::WINDOW_BACK)
-}
-
-/// A phone-wide (420 px) window whose bar holds the sidebar's toggle opens on its top-level
-/// page with nowhere to go back to: the toggle reaches the sidebar, and no Back stands beside
-/// it, in the bar or in the shell.
-#[test]
-fn a_top_level_page_has_no_back_beside_the_bars_toggle() {
-    const NARROW: u32 = 420;
-    let shell = NavShell::new()
-        .content_kind(ContentKind::List)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
-        .with_window_toolbar();
-    let mut h = harness(shell, NARROW, H, Theme::dark());
-    settle(&mut h, NARROW, H);
-    let g = geometry(&h);
-    assert_eq!(g.sidebar, SidebarPlacement::Screen);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-    assert_eq!(g.back_column, None, "Back goes nowhere");
-    assert_eq!(g.back, Rect::ZERO);
-    assert!(!shows_back_part(&h), "no Back part");
-    assert!(!h.root::<NavShell>().can_go_back());
-    assert!(!bar_back(&h), "no Back in the bar");
-    let toolbar = h.root::<NavShell>().window_toolbar();
-    assert_eq!(toolbar.sidebar, Some(false), "the toggle is the bar's");
-    assert!(
-        h.root_mut::<NavShell>()
-            .window_toolbar_event(&ToolbarEvent::ToggleSidebar)
-    );
-    settle(&mut h, NARROW, H);
-    assert_eq!(
-        h.root::<NavShell>().front_pane(),
-        NavPane::Sidebar,
-        "the toggle reaches the sidebar"
-    );
-    assert!(
-        bar_back(&h),
-        "the places' screen offers the way back to the place it covered"
-    );
-    assert_eq!(
-        h.root::<NavShell>().window_toolbar().sidebar,
-        None,
-        "and the toggle stands aside for it"
-    );
-}
-
-/// With a list beside its content, the list is the top-level page: no Back
-/// on it, and Back in the bar once an item is open, which comes back to the
-/// list.
-#[test]
-fn back_shows_once_there_is_somewhere_to_go_back_to() {
-    const NARROW: u32 = 420;
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0)
-        .with_window_toolbar();
-    let mut h = harness(shell, NARROW, H, Theme::dark());
-    settle(&mut h, NARROW, H);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    assert!(!bar_back(&h), "the list is the top-level page");
-    assert!(!shows_back_part(&h));
-
-    h.root_mut::<NavShell>().show(NavPane::Content);
-    settle(&mut h, NARROW, H);
-    assert!(bar_back(&h), "an open item goes back to the list");
-    assert!(!shows_back_part(&h), "Back is the bar's alone");
-    assert!(
-        h.root_mut::<NavShell>()
-            .window_toolbar_event(&ToolbarEvent::Action {
-                id: crate::widget::nav_shell::window_toolbar::WINDOW_BACK.into()
-            })
-    );
-    settle(&mut h, NARROW, H);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    assert!(!bar_back(&h));
-}
-
-/// A phone-wide (420 px) push stack whose app keeps the sidebar's toggle in
-/// the window's bar (Passwords, Files) has no header row: the toggle stands
-/// in the bar's corner, and Back beside it while there is somewhere to go
-/// back to.
-#[test]
-fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
-    const NARROW: u32 = 420;
-    let no_row = |h: &FrameHarness, at: &str, back_room: bool| {
-        let g = geometry(h);
-        assert_eq!(g.header_height, 0.0, "{at}: no header row");
-        assert!(
-            g.headers.iter().all(|header| *header == Rect::ZERO),
-            "{at}: no header in any column"
-        );
-        assert_eq!(shows_back_part(h), back_room, "{at}: a Back of its own");
-    };
-    let mut shell = NavShell::new()
-        .content_kind(ContentKind::Page)
-        .sidebar(Probe::boxed("sidebar").0)
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0);
-    shell.set_sidebar_toggle_in_window_bar(true);
-    let mut h = harness(shell, NARROW, H, Theme::dark());
-    settle(&mut h, NARROW, H);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    no_row(&h, "the list", false);
-    let list = child_rect(&h, "overview").expect("the list shows");
-    assert!(list.y0.abs() < 1e-9, "the list starts right under the bar");
-
-    h.root_mut::<NavShell>().show(NavPane::Content);
-    settle(&mut h, NARROW, H);
-    no_row(&h, "an open item", true);
-    assert!(h.root::<NavShell>().can_go_back());
-    let item = child_rect(&h, "content").expect("the item shows");
-    assert!(item.y0.abs() < 1e-9, "the item starts right under the bar");
-    assert!(h.root_mut::<NavShell>().back());
-    settle(&mut h, NARROW, H);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-
-    let mut shell = NavShell::new()
-        .content_kind(ContentKind::List)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
-        .content_header("", Vec::new());
-    shell.set_sidebar_toggle_in_window_bar(true);
-    let mut h = harness(shell, NARROW, H, Theme::dark());
-    settle(&mut h, NARROW, H);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-    no_row(&h, "the folder", false);
 }
 
 struct SettleShower {
@@ -273,33 +304,6 @@ impl Widget for SettleShower {
     fn name(&self) -> &'static str {
         "SettleShower"
     }
-}
-
-/// A narrow window on its list still settles the content it put away, so
-/// what the content takes up shows in the list on screen.
-#[test]
-fn a_narrow_window_on_its_list_still_settles_the_content_behind_it() {
-    let feed = NavFeed::new();
-    let shell = NavShell::new()
-        .with_window_toolbar()
-        .content_kind(ContentKind::Reading)
-        .sidebar(Box::new(
-            NavList::new(Vec::new()).with_id("places").fed_by(&feed),
-        ))
-        .content(Box::new(SettleShower {
-            feed: feed.clone(),
-            rect: Rect::ZERO,
-        }));
-    feed.show(places(), Some("home".into()));
-    let mut h = harness(shell, 480, 800, Theme::dark());
-    settle(&mut h, 480, 800);
-    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-    h.root_mut::<NavShell>().show(NavPane::Sidebar);
-    settle(&mut h, 480, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
-    let list = h.root::<NavShell>().sidebar_ref::<NavList>();
-    assert!(list.and_then(|list| list.row_rect("later")).is_some());
 }
 
 /// A choice the app does not take (a call it joins, not a place it opens)

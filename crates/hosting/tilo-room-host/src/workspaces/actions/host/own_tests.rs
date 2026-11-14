@@ -15,7 +15,7 @@ use tilo_actions::remote::host_account::{self, HostAccount, Reason};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_relay_session::workspaces::{
     CREATE_OWN_ROOM, CreatedWorkspace, DELETE_ROOM, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
@@ -88,7 +88,7 @@ async fn let_in(workspaces: &Workspaces, home: &str, person: [u8; 32]) -> Vec<u8
             workspaces.serving_certificate(),
             IssueInvitationRequest {
                 request_id: rand::random(),
-                role: MemberRole::Viewer,
+                role: Role::Viewer,
                 recipient_user_public_key: Some(person),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
@@ -145,7 +145,7 @@ async fn standing(
     workspaces: &Workspaces,
     workspace: &str,
     person: [u8; 32],
-) -> Option<(MemberRole, bool)> {
+) -> Option<(Role, bool)> {
     workspaces
         .list()
         .await
@@ -216,7 +216,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
         tilo_clock::unix_now_ns(),
     )
     .unwrap();
-    assert_eq!(invitation.grant().role, MemberRole::Editor);
+    assert_eq!(invitation.grant().role, Role::Editor);
     assert!(
         decode_and_verify_invitation(
             &issued.signed_invitation,
@@ -236,7 +236,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
             guest.user_public_key
         )
         .await,
-        Some((MemberRole::Editor, true))
+        Some((Role::Editor, true))
     );
 
     // Asking again without a name answers the same workspace, with a new
@@ -281,6 +281,20 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let theirs = create_own(&host, &stranger, json!({})).await.unwrap();
     assert_eq!(theirs.workspace.name, "My workspace");
     assert_ne!(theirs.workspace.workspace, created.workspace.workspace);
+
+    // One who reads German founds theirs in German, and it keeps the name it
+    // was founded under however they ask after that.
+    let (_, german) = guest_device();
+    let_in(workspaces, &home, german.user_public_key).await;
+    let ihr = create_own(&host, &german, json!({"language": "de-DE"}))
+        .await
+        .unwrap();
+    assert_eq!(ihr.workspace.name, "Mein Arbeitsbereich");
+    let wieder = create_own(&host, &german, json!({"language": "en-US"}))
+        .await
+        .unwrap();
+    assert_eq!(wieder.workspace.workspace, ihr.workspace.workspace);
+    assert_eq!(wieder.workspace.name, "Mein Arbeitsbereich");
     relay.shutdown().await;
 }
 
@@ -302,7 +316,9 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     let (_, guest) = guest_device();
     let_in(&workspaces, &home, guest.user_public_key).await;
     let mut made = Vec::new();
-    let mut last = std::time::Duration::ZERO;
+    // What a create costs once a person keeps hundreds: their last few, not
+    // one sample, which a loaded runner's disk makes slow on its own.
+    let mut last = std::collections::VecDeque::new();
     for number in 0..HUNDREDS {
         let started = std::time::Instant::now();
         let created = create_own(
@@ -312,7 +328,10 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         )
         .await
         .unwrap();
-        last = started.elapsed();
+        last.push_back(started.elapsed());
+        if last.len() > 10 {
+            last.pop_front();
+        }
         made.push(created.workspace.workspace);
     }
     assert_eq!(
@@ -320,7 +339,13 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         made,
         "there is no bound on how many workspaces of their own a person keeps"
     );
-    assert!(last < QUICK, "the {HUNDREDS}th workspace took {last:?}");
+    let mut typical: Vec<_> = last.iter().copied().collect();
+    typical.sort_unstable();
+    let typical = typical.get(typical.len() / 2).copied().unwrap_or_default();
+    assert!(
+        typical < QUICK,
+        "the {HUNDREDS}th workspace took {typical:?}"
+    );
     // Their listing names every one, in the time their own take.
     let mut ask = own_request(json!({}));
     ask.target.address.action = tilo_relay_session::workspaces::LIST_ROOMS.into();
@@ -358,8 +383,9 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         Some(HUNDREDS)
     );
     eprintln!(
-        "{HUNDREDS} workspaces of their own: the last made in {last:?}, listed in {listing:?}, read in {read:?}, whose-names file {} bytes",
-        std::fs::metadata(&index).unwrap().len()
+        "{HUNDREDS} workspaces of their own: made in {typical:?} (median of the last {last_len}), listed in {listing:?}, read in {read:?}, whose-names file {} bytes",
+        std::fs::metadata(&index).unwrap().len(),
+        last_len = last.len()
     );
     relay.shutdown().await;
 }
@@ -646,7 +672,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
             root.verifying_key().to_bytes()
         )
         .await,
-        Some((MemberRole::Editor, true)),
+        Some((Role::Editor, true)),
         "its person is a member, who administers their own workspace"
     );
     // A key the grant mints for that workspace alone redeems the person's
@@ -968,7 +994,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let rosa_person = rosa.verifying_key().to_bytes();
     assert_eq!(
         standing(workspaces, &workspace.workspace, rosa_person).await,
-        Some((MemberRole::Editor, false))
+        Some((Role::Editor, false))
     );
 
     // Her own server key enters the workspace as her, at the role she holds.
@@ -979,7 +1005,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     join(workspaces, &entering, &reviewer).await;
     assert_eq!(
         standing(workspaces, &workspace.workspace, rosa_person).await,
-        Some((MemberRole::Editor, false))
+        Some((Role::Editor, false))
     );
     // She administers nothing there, so her key invites nobody into it.
     let by_rosa = govern(
@@ -1306,7 +1332,7 @@ async fn gated_host() -> (
     tilo_user_identity::DeviceCert,
     tempfile::TempDir,
 ) {
-    use tilo_relay_protocol::workspaces::WorkspaceRole;
+    use tilo_relay_protocol::workspaces::Role;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -1326,7 +1352,7 @@ async fn gated_host() -> (
             &owner,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: WorkspaceRole::Editor,
+                default_role: Role::Editor,
             },
         )
         .await
@@ -1382,7 +1408,7 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_door() {
             &owner,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -1581,7 +1607,7 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
 /// key of theirs, as before, though the site never let them in: entering
 /// what they were invited into is no workspace of their own.
 #[tokio::test]
-async fn an_invited_collaborator_enters_what_they_were_invited_into() {
+async fn an_invited_member_enters_what_they_were_invited_into() {
     let (host, workspaces, lounge, stranger, _state) = gated_host().await;
     let (_, ada) = guest_device();
     let invitation = let_in(&workspaces, &lounge, ada.user_public_key).await;
@@ -1596,7 +1622,7 @@ async fn an_invited_collaborator_enters_what_they_were_invited_into() {
             &ada,
             IssueInvitationRequest {
                 request_id: rand::random(),
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: Some(stranger.user_public_key),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
@@ -1650,7 +1676,7 @@ async fn subscribe(
     workspace: &str,
     device: &DeviceCert,
 ) -> Result<(), crate::workspace_access::DenyReason> {
-    let id = tilo_relay_protocol::room_workspace_id(workspace).unwrap();
+    let id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
     let runtime = workspaces
         .inner
         .host
@@ -1764,6 +1790,7 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
             workspaces.serving_certificate(),
             rand::random(),
             ada_person,
+            None,
         )
         .await
         .unwrap();

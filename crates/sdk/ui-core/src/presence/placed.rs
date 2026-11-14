@@ -37,10 +37,10 @@ impl PresenceCtx {
         let is_agent = placed.agent || self.is_agent(&placed.user);
         // An agent's tag carries the agent mark, so its name stands alone.
         let known = if is_agent {
-            self.names.get(&placed.user).cloned()
+            super::stored(&self.names, &placed.user).cloned()
         } else {
-            self.names
-                .contains_key(&placed.user)
+            super::stored(&self.names, &placed.user)
+                .is_some()
                 .then(|| self.display_name(&placed.user))
         };
         let name = known
@@ -86,65 +86,69 @@ mod tests {
         }
     }
 
-    /// The pointer wears the colour and name presence gives the person, so
-    /// it reads as the same person as their avatar.
-    #[test]
-    fn a_placed_pointer_wears_the_persons_colour_and_name() {
-        let mut presence = PresenceCtx::empty();
-        let ada = UserId("ada-device".into());
-        presence.set_display_name(ada.clone(), "Ada");
-        presence.set_color_override(ada.clone(), "#38b8f6");
-        let cursor = presence.placed_cursor(placed("ada-device"));
-        assert_eq!(
-            cursor.label, "Ada",
-            "a person's activity is not theirs to show"
-        );
-        assert_eq!(cursor.color, Color::from_rgb8(0x38, 0xb8, 0xf6));
-        assert_eq!(cursor.pos, (40.0, 50.0));
-        assert!(!cursor.is_agent);
-    }
+    tilo_test_env::scenario! {
+        fn a_placed_pointer_is_named_and_coloured_as_presence_says;
 
-    #[test]
-    fn an_agent_says_what_it_does_and_an_unnamed_member_is_not_a_raw_key() {
-        let mut presence = PresenceCtx::empty();
-        let bot = UserId("bot".into());
-        presence.set_display_name(bot.clone(), "Scribe");
-        presence.set_participant_kind(&bot, true);
-        let cursor = presence.placed_cursor(placed("bot"));
-        assert_eq!(cursor.label, "Scribe · Reading the notes");
-        assert!(cursor.is_agent);
+        phase a_placed_pointer_wears_the_persons_colour_and_name;
+        // The pointer wears the colour and name presence gives the person, so
+        // it reads as the same person as their avatar.
+        {
+            let mut presence = PresenceCtx::empty();
+            let ada = UserId("ada-device".into());
+            presence.set_display_name(ada.clone(), "Ada");
+            presence.set_color_override(ada.clone(), "#38b8f6");
+            let cursor = presence.placed_cursor(placed("ada-device"));
+            assert_eq!(
+                cursor.label, "Ada",
+                "a person's activity is not theirs to show"
+            );
+            assert_eq!(cursor.color, Color::from_rgb8(0x38, 0xb8, 0xf6));
+            assert_eq!(cursor.pos, (40.0, 50.0));
+            assert!(!cursor.is_agent);
+        }
 
-        let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let stranger = presence.placed_cursor(placed(key));
-        assert_eq!(stranger.label, "Guest", "a person nobody named is a guest");
-        let keyed = presence.placed_cursor(PlacedPointer {
-            name: Some(key.into()),
-            ..placed(key)
-        });
-        assert_eq!(keyed.label, "Guest", "a key their presence says is no name");
-        let named = presence.placed_cursor(PlacedPointer {
-            name: Some("Ada".into()),
-            agent: true,
-            ..placed(key)
-        });
-        assert_eq!(
-            named.label, "Ada · Reading the notes",
-            "until the workspace names them, by their own presence"
-        );
-        assert!(named.is_agent);
-        assert_eq!(
-            stranger.color,
-            {
-                let (r, g, b) = super::super::user_color(key);
-                Color::from_rgb8(r, g, b)
-            },
-            "without a colour from the workspace, the identity's own"
-        );
-        presence.set_display_name(UserId(key.into()), key);
-        assert_eq!(
-            presence.display_name(&UserId(key.into())),
-            "Guest",
-            "nor is a key the roster says"
-        );
+        phase an_agent_says_what_it_does_and_an_unnamed_member_is_not_a_raw_key;
+        {
+            let mut presence = PresenceCtx::empty();
+            let bot = UserId("bot".into());
+            presence.set_display_name(bot.clone(), "Scribe");
+            presence.set_participant_kind(&bot, true);
+            let cursor = presence.placed_cursor(placed("bot"));
+            assert_eq!(cursor.label, "Scribe · Reading the notes");
+            assert!(cursor.is_agent);
+
+            let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            let stranger = presence.placed_cursor(placed(key));
+            assert_eq!(stranger.label, "Guest", "a person nobody named is a guest");
+            let keyed = presence.placed_cursor(PlacedPointer {
+                name: Some(key.into()),
+                ..placed(key)
+            });
+            assert_eq!(keyed.label, "Guest", "a key their presence says is no name");
+            let named = presence.placed_cursor(PlacedPointer {
+                name: Some("Ada".into()),
+                agent: true,
+                ..placed(key)
+            });
+            assert_eq!(
+                named.label, "Ada · Reading the notes",
+                "until the workspace names them, by their own presence"
+            );
+            assert!(named.is_agent);
+            assert_eq!(
+                stranger.color,
+                {
+                    let (r, g, b) = super::super::user_color(key);
+                    Color::from_rgb8(r, g, b)
+                },
+                "without a colour from the workspace, the identity's own"
+            );
+            presence.set_display_name(UserId(key.into()), key);
+            assert_eq!(
+                presence.display_name(&UserId(key.into())),
+                "Guest",
+                "nor is a key the roster says"
+            );
+        }
     }
 }

@@ -383,51 +383,55 @@ pub fn autostart_file(directory: &Path, app: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    #[test]
-    fn running_apps_are_bounded_and_change_only_when_they_do() {
-        let states = AppStates::default();
-        assert!(states.set([
-            ("org.example.A".to_owned(), ACTIVE),
-            ("bad\n".to_owned(), RUNNING)
-        ]));
-        assert_eq!(
-            states.all(),
-            BTreeMap::from([("org.example.A".to_owned(), ACTIVE)])
-        );
-        assert!(!states.set([("org.example.A".to_owned(), ACTIVE)]));
-        assert!(
-            states.set([("org.example.A".to_owned(), 7)]),
-            "an unknown state is dropped"
-        );
-        assert!(states.all().is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn background_apps_and_autostart_entries_keep_to_what_is_installed_and_running;
 
-    #[test]
-    fn an_autostart_entry_runs_the_installed_program_never_the_apps() {
-        let dir = tempfile::tempdir().unwrap();
-        let autostart = Autostart::at(dir.path().to_path_buf());
-        let entry = desktop_entry::entry::parse(
-            "[Desktop Entry]\nType=Application\nName=Chat\n\
+        phase running_apps_are_bounded_and_change_only_when_they_do;
+        {
+            let states = AppStates::default();
+            assert!(states.set([
+                ("org.example.A".to_owned(), ACTIVE),
+                ("bad\n".to_owned(), RUNNING)
+            ]));
+            assert_eq!(
+                states.all(),
+                BTreeMap::from([("org.example.A".to_owned(), ACTIVE)])
+            );
+            assert!(!states.set([("org.example.A".to_owned(), ACTIVE)]));
+            assert!(
+                states.set([("org.example.A".to_owned(), 7)]),
+                "an unknown state is dropped"
+            );
+            assert!(states.all().is_empty());
+        }
+
+        phase an_autostart_entry_runs_the_installed_program_never_the_apps;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let autostart = Autostart::at(dir.path().to_path_buf());
+            let entry = desktop_entry::entry::parse(
+                "[Desktop Entry]\nType=Application\nName=Chat\n\
              Exec=/usr/bin/flatpak run --branch=stable org.example.Chat %U\n",
-            "org.example.Chat",
-            Path::new("/var/lib/flatpak/exports/share/applications/org.example.Chat.desktop"),
-            &[],
-        )
-        .unwrap();
-        let commandline =
-            arguments(&["/tmp/evil".into(), "--hidden".into(), "50% $HOME".into()]).unwrap();
-        autostart.enable(&entry, &commandline).unwrap();
-        let text = std::fs::read_to_string(autostart_file(dir.path(), "org.example.Chat")).unwrap();
-        assert!(text.contains(
-            "Exec=/usr/bin/flatpak run --branch=stable org.example.Chat --hidden \"50%% \\\\$HOME\"\n"
-        ), "{text}");
-        assert!(!text.contains("/tmp/evil"));
-        assert_eq!(autostart.apps(), ["org.example.Chat"]);
-        assert!(autostart.disable("org.example.Chat"));
-        assert!(autostart.apps().is_empty());
-        assert!(
-            !autostart.disable("../../.bashrc"),
-            "an id that is no file name"
-        );
+                "org.example.Chat",
+                Path::new("/var/lib/flatpak/exports/share/applications/org.example.Chat.desktop"),
+                &[],
+            )
+            .unwrap();
+            let commandline =
+                arguments(&["/tmp/evil".into(), "--hidden".into(), "50% $HOME".into()]).unwrap();
+            autostart.enable(&entry, &commandline).unwrap();
+            let text = std::fs::read_to_string(autostart_file(dir.path(), "org.example.Chat")).unwrap();
+            assert!(text.contains(
+                "Exec=/usr/bin/flatpak run --branch=stable org.example.Chat --hidden \"50%% \\\\$HOME\"\n"
+            ), "{text}");
+            assert!(!text.contains("/tmp/evil"));
+            assert_eq!(autostart.apps(), ["org.example.Chat"]);
+            assert!(autostart.disable("org.example.Chat"));
+            assert!(autostart.apps().is_empty());
+            assert!(
+                !autostart.disable("../../.bashrc"),
+                "an id that is no file name"
+            );
+        }
     }
 }

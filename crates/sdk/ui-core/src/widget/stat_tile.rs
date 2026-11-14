@@ -932,53 +932,142 @@ mod tests {
     use super::*;
     use crate::headless::FrameHarness;
 
-    #[test]
-    fn tile_height_comes_from_its_lines_and_follows_the_text_scale() {
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark();
-        let plain = StatTileFace::new("Protected", "1.2").unit("TB");
-        let full = plain
-            .change("4% this week", Trend::Up)
-            .sparkline(&[1.0, 3.0, 2.0, 5.0]);
-        let h = plain.height(&mut text, &theme);
-        assert!(full.height(&mut text, &theme) > h);
-        assert!(
-            plain.hero().height(&mut text, &theme) > h,
-            "Display is taller"
-        );
-        assert!(plain.height(&mut text, &Theme::dark().with_text_scale(2.0)) > h * 1.8);
-    }
+    tilo_test_env::scenario! {
+        /// A stat tile laid out without a host.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_stat_tile_sizes_elides_activates_and_reads;
 
-    #[test]
-    fn a_tile_is_not_a_card() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        let face = StatTileFace::new("Snapshots", "128");
-        face.paint(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            Rect::new(0.0, 0.0, 200.0, 80.0),
-        );
-        let fills_before_text = scene.encoding().draw_tags.len();
-        let mut toned = Scene::new();
-        face.tone(Tone::Danger).paint(
-            &mut PaintCtx::new(&mut toned, Affine::IDENTITY, &mut text, &theme),
-            Rect::new(0.0, 0.0, 200.0, 80.0),
-        );
-        assert_eq!(
-            toned.encoding().draw_tags.len(),
-            fills_before_text + 1,
-            "a tone adds only the ticker"
-        );
-    }
+        phase tile_height_comes_from_its_lines_and_follows_the_text_scale;
+        {
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let plain = StatTileFace::new("Protected", "1.2").unit("TB");
+            let full = plain
+                .change("4% this week", Trend::Up)
+                .sparkline(&[1.0, 3.0, 2.0, 5.0]);
+            let h = plain.height(&mut text, &theme);
+            assert!(full.height(&mut text, &theme) > h);
+            assert!(
+                plain.hero().height(&mut text, &theme) > h,
+                "Display is taller"
+            );
+            assert!(plain.height(&mut text, &Theme::dark().with_text_scale(2.0)) > h * 1.8);
+        }
 
-    #[test]
-    fn a_long_value_elides_inside_the_tile() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let m = TileMetrics::new(&theme);
-        let shown = text.elide_to_width_style("1,284,000,000,000", 80.0, &m.value);
-        assert!(shown.ends_with('…'));
+        phase a_tile_is_not_a_card;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            let face = StatTileFace::new("Snapshots", "128");
+            face.paint(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(0.0, 0.0, 200.0, 80.0),
+            );
+            let fills_before_text = scene.encoding().draw_tags.len();
+            let mut toned = Scene::new();
+            face.tone(Tone::Danger).paint(
+                &mut PaintCtx::new(&mut toned, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(0.0, 0.0, 200.0, 80.0),
+            );
+            assert_eq!(
+                toned.encoding().draw_tags.len(),
+                fills_before_text + 1,
+                "a tone adds only the ticker"
+            );
+        }
+
+        phase a_long_value_elides_inside_the_tile;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let m = TileMetrics::new(&theme);
+            let shown = text.elide_to_width_style("1,284,000,000,000", 80.0, &m.value);
+            assert!(shown.ends_with('…'));
+        }
+
+        phase a_rebuilt_group_starts_with_the_columns_of_its_width;
+        // A group built again (the window's tree rebuilt) starts with the
+        // columns of the width it was laid out at, so its first solve is its
+        // height: a scroll view around it never sees the tiles stacked, an
+        // overflow that is not there.
+        {
+            let theme = Theme::dark();
+            let mut group = StatGroup::new(
+                ["Allowed services", "Allow rules", "Deny rules"]
+                    .into_iter()
+                    .map(|l| Box::new(StatTile::new(l, "3")) as Element)
+                    .collect(),
+            );
+            let columns = |group: &mut StatGroup| {
+                let mut taffy = TaffyTree::new();
+                let node = group.build_layout(&mut taffy, &theme, &mut HashMap::new());
+                taffy
+                    .style(node)
+                    .map(|style| style.grid_template_columns.len())
+                    .unwrap_or_default()
+            };
+            assert_eq!(columns(&mut group), 1, "no width yet: one flexible column");
+            group.rect = Rect::new(0.0, 0.0, 1000.0, 80.0);
+            assert_eq!(group.columns_for_width(1000.0), 3);
+            assert_eq!(columns(&mut group), 3, "laid out 1000 wide: all in one row");
+        }
+
+        phase a_pressable_tile_activates_and_speaks_its_value;
+        {
+            let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+            let counter = hits.clone();
+            let mut tile = StatTile::new("CPU", "42")
+                .unit("%")
+                .change("3% in the last minute", Trend::Down)
+                .on_view("cpu", move || counter.set(counter.get() + 1));
+            let node = Widget::accessibility(&tile).unwrap();
+            assert_eq!(node.name.as_deref(), Some("CPU"));
+            assert_eq!(
+                node.value.as_deref(),
+                Some("42 %, down 3% in the last minute")
+            );
+            let mut doc = automerge::AutoCommit::new();
+            assert!(Widget::perform_action(
+                &mut tile,
+                &crate::a11y::Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+            assert_eq!(hits.get(), 0, "the press waits to be answered");
+            assert_eq!(crate::testing::answer_controls(&mut tile), 1);
+            assert_eq!(hits.get(), 1);
+        }
+
+        phase a_note_is_read_with_the_value_and_tiles_update_in_place;
+        {
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let plain = StatTileFace::new("Used", "1.2").unit("TB");
+            let noted = plain.note("of 2 TB");
+            assert!(noted.height(&mut text, &theme) > plain.height(&mut text, &theme));
+            let node = noted.accessibility(Rect::new(0.0, 0.0, 200.0, 80.0));
+            assert_eq!(node.name.as_deref(), Some("Used"));
+            assert_eq!(node.value.as_deref(), Some("1.2 TB of 2 TB"));
+            assert!(node.bounds.is_some());
+
+            let mut group = StatGroup::new(vec![
+                Box::new(StatTile::new("Download", "0")),
+                Box::new(StatTile::new("Upload", "0")),
+            ]);
+            group.tile_mut(1).expect("a stat tile").set_value("48");
+            assert_eq!(
+                Widget::accessibility(group.tile_mut(1).unwrap())
+                    .unwrap()
+                    .value
+                    .as_deref(),
+                Some("48")
+            );
+            group.set_tiles(vec![Box::new(StatTile::new("Ping", "12").unit("ms"))]);
+            assert!(group.take_structure_dirty());
+            assert!(group.tile_mut(1).is_none());
+        }
     }
 
     #[test]
@@ -1011,60 +1100,6 @@ mod tests {
         assert_eq!(ys[2], ys[3]);
     }
 
-    /// A group built again (the window's tree rebuilt) starts with the
-    /// columns of the width it was laid out at, so its first solve is its
-    /// height: a scroll view around it never sees the tiles stacked, an
-    /// overflow that is not there.
-    #[test]
-    fn a_rebuilt_group_starts_with_the_columns_of_its_width() {
-        let theme = Theme::dark();
-        let mut group = StatGroup::new(
-            ["Allowed services", "Allow rules", "Deny rules"]
-                .into_iter()
-                .map(|l| Box::new(StatTile::new(l, "3")) as Element)
-                .collect(),
-        );
-        let columns = |group: &mut StatGroup| {
-            let mut taffy = TaffyTree::new();
-            let node = group.build_layout(&mut taffy, &theme, &mut HashMap::new());
-            taffy
-                .style(node)
-                .map(|style| style.grid_template_columns.len())
-                .unwrap_or_default()
-        };
-        assert_eq!(columns(&mut group), 1, "no width yet: one flexible column");
-        group.rect = Rect::new(0.0, 0.0, 1000.0, 80.0);
-        assert_eq!(group.columns_for_width(1000.0), 3);
-        assert_eq!(columns(&mut group), 3, "laid out 1000 wide: all in one row");
-    }
-
-    #[test]
-    fn a_pressable_tile_activates_and_speaks_its_value() {
-        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
-        let counter = hits.clone();
-        let mut tile = StatTile::new("CPU", "42")
-            .unit("%")
-            .change("3% in the last minute", Trend::Down)
-            .on_view("cpu", move || counter.set(counter.get() + 1));
-        let node = Widget::accessibility(&tile).unwrap();
-        assert_eq!(node.name.as_deref(), Some("CPU"));
-        assert_eq!(
-            node.value.as_deref(),
-            Some("42 %, down 3% in the last minute")
-        );
-        let mut doc = automerge::AutoCommit::new();
-        assert!(Widget::perform_action(
-            &mut tile,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT
-        ));
-        assert_eq!(hits.get(), 0, "the press waits to be answered");
-        assert_eq!(crate::testing::answer_controls(&mut tile), 1);
-        assert_eq!(hits.get(), 1);
-    }
-
     #[test]
     fn a_detail_tile_is_admitted_for_pointer_and_assistive_activation() {
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1083,34 +1118,5 @@ mod tests {
             .perform_named("cpu.detail", &crate::a11y::Action::Activate)
             .unwrap();
         assert_eq!(calls.get(), 2);
-    }
-
-    #[test]
-    fn a_note_is_read_with_the_value_and_tiles_update_in_place() {
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark();
-        let plain = StatTileFace::new("Used", "1.2").unit("TB");
-        let noted = plain.note("of 2 TB");
-        assert!(noted.height(&mut text, &theme) > plain.height(&mut text, &theme));
-        let node = noted.accessibility(Rect::new(0.0, 0.0, 200.0, 80.0));
-        assert_eq!(node.name.as_deref(), Some("Used"));
-        assert_eq!(node.value.as_deref(), Some("1.2 TB of 2 TB"));
-        assert!(node.bounds.is_some());
-
-        let mut group = StatGroup::new(vec![
-            Box::new(StatTile::new("Download", "0")),
-            Box::new(StatTile::new("Upload", "0")),
-        ]);
-        group.tile_mut(1).expect("a stat tile").set_value("48");
-        assert_eq!(
-            Widget::accessibility(group.tile_mut(1).unwrap())
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("48")
-        );
-        group.set_tiles(vec![Box::new(StatTile::new("Ping", "12").unit("ms"))]);
-        assert!(group.take_structure_dirty());
-        assert!(group.tile_mut(1).is_none());
     }
 }

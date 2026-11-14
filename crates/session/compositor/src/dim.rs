@@ -195,103 +195,112 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dimming_lowers_the_backlight_to_a_fraction_of_the_current_level_and_restores_it() {
-        let backlight = FakeBacklight::at(0.8);
-        let mut dimmer = ScreenDimmer::new(&backlight);
-        dimmer.dim();
-        let lowered = backlight.level.borrow().unwrap();
-        assert!((lowered - 0.8 * DIM_FRACTION).abs() < 1e-6);
-        assert_eq!(dimmer.overlay_alpha(), None, "a backlight needs no overlay");
+    tilo_test_env::scenario! {
+        /// Dimming an idle display.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
+        fn dimming_lowers_the_backlight_and_restores_what_it_saved;
 
-        dimmer.dim();
-        assert_eq!(
-            backlight.writes.borrow().len(),
-            1,
-            "dimming twice keeps the saved level"
-        );
+        phase dimming_lowers_the_backlight_to_a_fraction_of_the_current_level_and_restores_it;
+        {
+            let backlight = FakeBacklight::at(0.8);
+            let mut dimmer = ScreenDimmer::new(&backlight);
+            dimmer.dim();
+            let lowered = backlight.level.borrow().unwrap();
+            assert!((lowered - 0.8 * DIM_FRACTION).abs() < 1e-6);
+            assert_eq!(dimmer.overlay_alpha(), None, "a backlight needs no overlay");
 
-        dimmer.restore();
-        assert_eq!(*backlight.level.borrow(), Some(0.8));
-        dimmer.restore();
-        assert_eq!(
-            backlight.writes.borrow().len(),
-            2,
-            "restoring twice writes once"
-        );
-    }
+            dimmer.dim();
+            assert_eq!(
+                backlight.writes.borrow().len(),
+                1,
+                "dimming twice keeps the saved level"
+            );
 
-    #[test]
-    fn without_a_backlight_the_overlay_dims_instead() {
-        let backlight = FakeBacklight::default();
-        let mut dimmer = ScreenDimmer::new(&backlight);
-        assert_eq!(dimmer.overlay_alpha(), None);
-        dimmer.dim();
-        assert_eq!(dimmer.overlay_alpha(), Some(OVERLAY_ALPHA));
-        dimmer.restore();
-        assert_eq!(dimmer.overlay_alpha(), None);
-        assert!(backlight.writes.borrow().is_empty());
-    }
+            dimmer.restore();
+            assert_eq!(*backlight.level.borrow(), Some(0.8));
+            dimmer.restore();
+            assert_eq!(
+                backlight.writes.borrow().len(),
+                2,
+                "restoring twice writes once"
+            );
+        }
 
-    #[test]
-    fn a_failed_restore_keeps_the_saved_level_for_the_next_one() {
-        let backlight = FakeBacklight::at(0.8);
-        let mut dimmer = ScreenDimmer::new(&backlight);
-        dimmer.dim();
-        backlight.refuses.set(true);
-        dimmer.restore();
-        dimmer.dim();
-        backlight.refuses.set(false);
-        dimmer.restore();
-        assert_eq!(*backlight.level.borrow(), Some(0.8));
-    }
+        phase without_a_backlight_the_overlay_dims_instead;
+        {
+            let backlight = FakeBacklight::default();
+            let mut dimmer = ScreenDimmer::new(&backlight);
+            assert_eq!(dimmer.overlay_alpha(), None);
+            dimmer.dim();
+            assert_eq!(dimmer.overlay_alpha(), Some(OVERLAY_ALPHA));
+            dimmer.restore();
+            assert_eq!(dimmer.overlay_alpha(), None);
+            assert!(backlight.writes.borrow().is_empty());
+        }
 
-    #[test]
-    fn a_refused_restore_leaves_the_session_dimmed_for_the_next_input() {
-        use crate::idle::{IdleConfig, SessionTransition};
-        use std::time::{Duration, Instant};
-        let backlight = FakeBacklight::at(0.8);
-        let mut dimmer = ScreenDimmer::new(&backlight);
-        let start = Instant::now();
-        let mut session = SessionManager::new(
-            IdleConfig {
-                blank_timeout: Some(Duration::from_secs(600)),
-                lock_timeout: None,
-                suspend_timeout: None,
-            },
-            start,
-        );
-        let mut apply = |transitions: Vec<SessionTransition>, session: &mut SessionManager| {
-            for transition in transitions {
-                match transition {
-                    SessionTransition::Dimmed => dimmer.dim(),
-                    SessionTransition::Undimmed => dimmer.restore(),
-                    _ => {}
+        phase a_failed_restore_keeps_the_saved_level_for_the_next_one;
+        {
+            let backlight = FakeBacklight::at(0.8);
+            let mut dimmer = ScreenDimmer::new(&backlight);
+            dimmer.dim();
+            backlight.refuses.set(true);
+            dimmer.restore();
+            dimmer.dim();
+            backlight.refuses.set(false);
+            dimmer.restore();
+            assert_eq!(*backlight.level.borrow(), Some(0.8));
+        }
+
+        phase a_refused_restore_leaves_the_session_dimmed_for_the_next_input;
+        {
+            use crate::idle::{IdleConfig, SessionTransition};
+            use std::time::{Duration, Instant};
+            let backlight = FakeBacklight::at(0.8);
+            let mut dimmer = ScreenDimmer::new(&backlight);
+            let start = Instant::now();
+            let mut session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: Some(Duration::from_secs(600)),
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                start,
+            );
+            let mut apply = |transitions: Vec<SessionTransition>, session: &mut SessionManager| {
+                for transition in transitions {
+                    match transition {
+                        SessionTransition::Dimmed => dimmer.dim(),
+                        SessionTransition::Undimmed => dimmer.restore(),
+                        _ => {}
+                    }
                 }
-            }
-            dimmer.keep_session_truthful(session);
-        };
-        let at = |seconds| start + Duration::from_secs(seconds);
-        apply(session.tick(at(590)), &mut session);
-        assert!(session.is_dimmed());
-        backlight.refuses.set(true);
-        apply(session.note_activity(at(591)), &mut session);
-        assert!(
-            session.is_dimmed(),
-            "a dim that could not be lifted is still the display's state"
-        );
-        backlight.refuses.set(false);
-        apply(session.note_activity(at(592)), &mut session);
-        assert_eq!(*backlight.level.borrow(), Some(0.8));
-        assert!(!session.is_dimmed());
-    }
+                dimmer.keep_session_truthful(session);
+            };
+            let at = |seconds| start + Duration::from_secs(seconds);
+            apply(session.tick(at(590)), &mut session);
+            assert!(session.is_dimmed());
+            backlight.refuses.set(true);
+            apply(session.note_activity(at(591)), &mut session);
+            assert!(
+                session.is_dimmed(),
+                "a dim that could not be lifted is still the display's state"
+            );
+            backlight.refuses.set(false);
+            apply(session.note_activity(at(592)), &mut session);
+            assert_eq!(*backlight.level.borrow(), Some(0.8));
+            assert!(!session.is_dimmed());
+        }
 
-    #[test]
-    fn dropping_a_dimmed_session_restores_the_backlight() {
-        let backlight = FakeBacklight::at(0.6);
-        let mut dimmer = ScreenDimmer::new(&backlight);
-        dimmer.dim();
-        drop(dimmer);
-        assert_eq!(*backlight.level.borrow(), Some(0.6));
+        phase dropping_a_dimmed_session_restores_the_backlight;
+        {
+            let backlight = FakeBacklight::at(0.6);
+            let mut dimmer = ScreenDimmer::new(&backlight);
+            dimmer.dim();
+            drop(dimmer);
+            assert_eq!(*backlight.level.borrow(), Some(0.6));
+        }
     }
 }

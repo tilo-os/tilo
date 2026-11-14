@@ -531,51 +531,132 @@ impl CompletionList {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_emoji_token_is_detected_at_the_start_in_the_middle_and_after_punctuation() {
-        assert_eq!(
-            emoji_query_at_caret(":smi", 4),
-            Some(EmojiQuery {
-                start: 0,
-                end: 4,
-                query: "smi".into()
-            })
-        );
-        assert_eq!(
-            emoji_query_at_caret("hi :smi there", 7),
-            Some(EmojiQuery {
-                start: 3,
-                end: 7,
-                query: "smi".into()
-            })
-        );
-        assert_eq!(
-            emoji_query_at_caret("(:smi", 5),
-            Some(EmojiQuery {
-                start: 1,
-                end: 5,
-                query: "smi".into()
-            })
-        );
-        assert_eq!(
-            emoji_query_at_caret(":thumbs_up:", 10),
-            Some(EmojiQuery {
-                start: 0,
-                end: 11,
-                query: "thumbs_up".into()
-            }),
-            "a caret before the closing colon replaces the whole token"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Completion tokens and the list they open.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn tokens_are_detected_listed_accepted_and_dismissed;
 
-    #[test]
-    fn a_colon_inside_a_word_url_or_time_is_not_an_emoji_token() {
-        assert_eq!(emoji_query_at_caret("a:smi", 5), None);
-        assert_eq!(emoji_query_at_caret("10:30", 5), None);
-        assert_eq!(emoji_query_at_caret("https://example", 15), None);
-        assert_eq!(emoji_query_at_caret(":smile:", 7), None, "already closed");
-        assert_eq!(emoji_query_at_caret(":smi le", 7), None, "a space ends it");
-        assert_eq!(emoji_query_at_caret(":", 1), None);
+        phase an_emoji_token_is_detected_at_the_start_in_the_middle_and_after_punctuation;
+        {
+            assert_eq!(
+                emoji_query_at_caret(":smi", 4),
+                Some(EmojiQuery {
+                    start: 0,
+                    end: 4,
+                    query: "smi".into()
+                })
+            );
+            assert_eq!(
+                emoji_query_at_caret("hi :smi there", 7),
+                Some(EmojiQuery {
+                    start: 3,
+                    end: 7,
+                    query: "smi".into()
+                })
+            );
+            assert_eq!(
+                emoji_query_at_caret("(:smi", 5),
+                Some(EmojiQuery {
+                    start: 1,
+                    end: 5,
+                    query: "smi".into()
+                })
+            );
+            assert_eq!(
+                emoji_query_at_caret(":thumbs_up:", 10),
+                Some(EmojiQuery {
+                    start: 0,
+                    end: 11,
+                    query: "thumbs_up".into()
+                }),
+                "a caret before the closing colon replaces the whole token"
+            );
+        }
+
+        phase a_colon_inside_a_word_url_or_time_is_not_an_emoji_token;
+        {
+            assert_eq!(emoji_query_at_caret("a:smi", 5), None);
+            assert_eq!(emoji_query_at_caret("10:30", 5), None);
+            assert_eq!(emoji_query_at_caret("https://example", 15), None);
+            assert_eq!(emoji_query_at_caret(":smile:", 7), None, "already closed");
+            assert_eq!(emoji_query_at_caret(":smi le", 7), None, "a space ends it");
+            assert_eq!(emoji_query_at_caret(":", 1), None);
+        }
+
+        phase the_one_list_offers_the_catalogues_emoji_and_the_rosters_people;
+        {
+            let mut list = CompletionList::default();
+            let roster = ada();
+            assert!(list.follow(":piz", 4, &roster, TextCompletion::ALL));
+            assert!(list.is_open());
+            assert!(
+                list.rows().iter().any(|row| row.value == "🍕"),
+                "the catalogue names pizza"
+            );
+            assert!(list.follow("hi @ad", 6, &roster, TextCompletion::ALL));
+            assert!(list.is_open());
+            assert_eq!(
+                list.rows().first().map(|row| row.value.as_str()),
+                Some("@Ada Lovelace"),
+                "accepting puts the name the mention resolves to"
+            );
+        }
+
+        phase escape_dismisses_this_token_and_a_new_one_opens_again;
+        {
+            let mut list = CompletionList::default();
+            let roster = ada();
+            assert!(list.follow("hi @ad", 6, &roster, TextCompletion::ALL));
+            assert_eq!(
+                list.handle_key(&Key::Named(winit::keyboard::NamedKey::Escape)),
+                CompletionKey::Handled
+            );
+            assert!(!list.is_open());
+            list.follow("hi @ada", 7, &roster, TextCompletion::ALL);
+            assert!(!list.is_open(), "the dismissed @ stays closed");
+            list.follow("hi @ad @a", 9, &roster, TextCompletion::ALL);
+            assert!(list.is_open(), "a new @ opens it again");
+        }
+
+        phase accepting_the_armed_row_replaces_the_token;
+        {
+            let mut list = CompletionList::default();
+            let roster = ada();
+            list.follow("hi @ad", 6, &roster, TextCompletion::ALL);
+            list.handle_key(&Key::Named(winit::keyboard::NamedKey::ArrowDown));
+            assert!(matches!(
+                list.handle_key(&Key::Named(winit::keyboard::NamedKey::Enter)),
+                CompletionKey::Accept(_)
+            ));
+        }
+
+        phase a_mention_token_grows_across_a_name_and_stops_at_an_email;
+        {
+            assert_eq!(
+                mention_picker::query_at_caret("@ad", 3),
+                Some(mention_picker::MentionQuery {
+                    start: 0,
+                    query: "ad".into()
+                })
+            );
+            assert_eq!(
+                mention_picker::query_at_caret("hi, @ada lovelace", 17),
+                Some(mention_picker::MentionQuery {
+                    start: 4,
+                    query: "ada lovelace".into()
+                })
+            );
+            assert_eq!(
+                mention_picker::query_at_caret("(@ad", 4),
+                Some(mention_picker::MentionQuery {
+                    start: 1,
+                    query: "ad".into()
+                }),
+                "after punctuation opens a mention"
+            );
+            assert_eq!(mention_picker::query_at_caret("a@b", 3), None, "an email");
+            assert_eq!(mention_picker::query_at_caret("me@example", 10), None);
+        }
     }
 
     fn ada() -> Vec<MentionCandidate> {
@@ -585,80 +666,5 @@ mod tests {
             false,
             crate::tokens::PresenceHue::of_identity("u_ada"),
         )]
-    }
-
-    #[test]
-    fn the_one_list_offers_the_catalogues_emoji_and_the_rosters_people() {
-        let mut list = CompletionList::default();
-        let roster = ada();
-        assert!(list.follow(":piz", 4, &roster, TextCompletion::ALL));
-        assert!(list.is_open());
-        assert!(
-            list.rows().iter().any(|row| row.value == "🍕"),
-            "the catalogue names pizza"
-        );
-        assert!(list.follow("hi @ad", 6, &roster, TextCompletion::ALL));
-        assert!(list.is_open());
-        assert_eq!(
-            list.rows().first().map(|row| row.value.as_str()),
-            Some("@Ada Lovelace"),
-            "accepting puts the name the mention resolves to"
-        );
-    }
-
-    #[test]
-    fn escape_dismisses_this_token_and_a_new_one_opens_again() {
-        let mut list = CompletionList::default();
-        let roster = ada();
-        assert!(list.follow("hi @ad", 6, &roster, TextCompletion::ALL));
-        assert_eq!(
-            list.handle_key(&Key::Named(winit::keyboard::NamedKey::Escape)),
-            CompletionKey::Handled
-        );
-        assert!(!list.is_open());
-        list.follow("hi @ada", 7, &roster, TextCompletion::ALL);
-        assert!(!list.is_open(), "the dismissed @ stays closed");
-        list.follow("hi @ad @a", 9, &roster, TextCompletion::ALL);
-        assert!(list.is_open(), "a new @ opens it again");
-    }
-
-    #[test]
-    fn accepting_the_armed_row_replaces_the_token() {
-        let mut list = CompletionList::default();
-        let roster = ada();
-        list.follow("hi @ad", 6, &roster, TextCompletion::ALL);
-        list.handle_key(&Key::Named(winit::keyboard::NamedKey::ArrowDown));
-        assert!(matches!(
-            list.handle_key(&Key::Named(winit::keyboard::NamedKey::Enter)),
-            CompletionKey::Accept(_)
-        ));
-    }
-
-    #[test]
-    fn a_mention_token_grows_across_a_name_and_stops_at_an_email() {
-        assert_eq!(
-            mention_picker::query_at_caret("@ad", 3),
-            Some(mention_picker::MentionQuery {
-                start: 0,
-                query: "ad".into()
-            })
-        );
-        assert_eq!(
-            mention_picker::query_at_caret("hi, @ada lovelace", 17),
-            Some(mention_picker::MentionQuery {
-                start: 4,
-                query: "ada lovelace".into()
-            })
-        );
-        assert_eq!(
-            mention_picker::query_at_caret("(@ad", 4),
-            Some(mention_picker::MentionQuery {
-                start: 1,
-                query: "ad".into()
-            }),
-            "after punctuation opens a mention"
-        );
-        assert_eq!(mention_picker::query_at_caret("a@b", 3), None, "an email");
-        assert_eq!(mention_picker::query_at_caret("me@example", 10), None);
     }
 }

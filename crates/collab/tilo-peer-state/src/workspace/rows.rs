@@ -100,7 +100,7 @@ impl GovernanceRow {
     /// which [`GovernanceRow::digest`] reads as the operations it holds.
     fn keys(self) -> &'static [&'static str] {
         match self {
-            Self::Owner => &["owner"],
+            Self::Owner => &["owner", crate::state::seed::FOUNDER],
             Self::Membership => &["invitation_receipts_v1", "invitation_parts_v1"],
             Self::Sandbox => &["sandbox"],
             Self::Identities => &["peers", "peer_identities_v1"],

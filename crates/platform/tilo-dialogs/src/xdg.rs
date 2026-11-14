@@ -282,48 +282,52 @@ mod tests {
     use super::*;
     use crate::FilePicker;
 
-    #[test]
-    fn directory_requests_never_become_regular_file_descriptors() {
-        for request in [
-            PickRequest::directory("Read folder", "Choose"),
-            PickRequest::writable_directory("Import into folder", "Import here"),
-        ] {
-            let result = PortalFilePicker
-                .open_file(request)
-                .recv_timeout(tilo_test_env::hang_bound())
-                .unwrap();
-            assert!(matches!(result, OpenFileOutcome::Failed(reason)
-                if reason.contains("single-file Open")));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_portal_picker_refuses_a_bad_request_before_any_desktop_traffic;
 
-    /// Portal requests run on the app runtime, never on the thread that asks,
-    /// and their outcome wakes the asking event loop. A relative path fails
-    /// before any D-Bus traffic, so this needs no desktop session.
-    #[test]
-    fn launch_outcome_arrives_from_the_app_runtime_and_wakes_the_event_loop() {
-        std::thread::Builder::new()
-            .name("ui-event-loop".into())
-            .spawn(|| {
-                tilo_rt::mark_ui_thread();
-                let mut scope = tilo_rt::wake::WakeScope::new();
-                let (woke, wakes) = std::sync::mpsc::channel();
-                scope
-                    .bind(move |event| {
-                        let _ = woke.send(event);
-                    })
+        phase directory_requests_never_become_regular_file_descriptors;
+        {
+            for request in [
+                PickRequest::directory("Read folder", "Choose"),
+                PickRequest::writable_directory("Import into folder", "Import here"),
+            ] {
+                let result = PortalFilePicker
+                    .open_file(request)
+                    .recv_timeout(tilo_test_env::hang_bound())
                     .unwrap();
-                let _entry = scope.enter();
-                let outcomes = PortalFilePicker.launch(LaunchRequest::open("relative/file.txt"));
-                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                assert!(scope.accepts(&event));
-                assert!(matches!(
-                    outcomes.try_recv().unwrap(),
-                    LaunchOutcome::Failed(reason) if reason.contains("absolute")
-                ));
-            })
-            .unwrap()
-            .join()
-            .unwrap();
+                assert!(matches!(result, OpenFileOutcome::Failed(reason)
+                    if reason.contains("single-file Open")));
+            }
+        }
+
+        phase launch_outcome_arrives_from_the_app_runtime_and_wakes_the_event_loop;
+        // Portal requests run on the app runtime, never on the thread that asks,
+        // and their outcome wakes the asking event loop. A relative path fails
+        // before any D-Bus traffic, so this needs no desktop session.
+        {
+            std::thread::Builder::new()
+                .name("ui-event-loop".into())
+                .spawn(|| {
+                    tilo_rt::mark_ui_thread();
+                    let mut scope = tilo_rt::wake::WakeScope::new();
+                    let (woke, wakes) = std::sync::mpsc::channel();
+                    scope
+                        .bind(move |event| {
+                            let _ = woke.send(event);
+                        })
+                        .unwrap();
+                    let _entry = scope.enter();
+                    let outcomes = PortalFilePicker.launch(LaunchRequest::open("relative/file.txt"));
+                    let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+                    assert!(scope.accepts(&event));
+                    assert!(matches!(
+                        outcomes.try_recv().unwrap(),
+                        LaunchOutcome::Failed(reason) if reason.contains("absolute")
+                    ));
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+        }
     }
 }

@@ -27,6 +27,7 @@ pub mod host;
 #[doc(hidden)]
 pub mod host_authority;
 mod hosted;
+mod i18n;
 pub mod member_limits;
 #[doc(hidden)]
 pub mod membership_watch;
@@ -68,6 +69,6 @@ use client::RelayClient;
 use coedit::AttributedPresence;
 #[cfg(all(test, feature = "agents"))]
 use coedit::CoeditPayload;
-use tilo_relay_protocol::{room_workspace_id, room_workspace_id_matches};
+
 #[cfg(all(test, feature = "agents"))]
 use transport::Envelope;

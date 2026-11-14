@@ -363,31 +363,38 @@ impl InstalledScratchIdentity {
 #[cfg(test)]
 mod tests {
     use super::{Filesystem, SourceVolume, extent, overlaps};
-    #[test]
-    fn partition_byte_extent_refuses_overflow_and_outside_disk() {
-        let mut volume = SourceVolume {
-            disk_guid: String::new(),
-            disk_bytes: 16384,
-            sector_bytes: 4096,
-            partition_guid: String::new(),
-            first_lba: 1,
-            last_lba: 2,
-            filesystem_uuid: String::new(),
-            filesystem: Filesystem::Ext4,
-        };
-        assert_eq!(extent(&volume).unwrap(), (4096, 12288));
-        volume.last_lba = 4;
-        assert!(extent(&volume).is_err());
-        volume.first_lba = u64::MAX;
-        volume.last_lba = u64::MAX;
-        volume.disk_bytes = u64::MAX;
-        assert!(extent(&volume).is_err());
-    }
-    #[test]
-    fn partition_collision_uses_half_open_byte_ranges_not_parent_disk_equality() {
-        assert!(!overlaps((4096, 8192), (8192, 12288)));
-        assert!(overlaps((4096, 8192), (8191, 12288)));
-        assert!(overlaps((4096, 8192), (0, 16384)));
-        assert!(!overlaps((4096, 8192), (0, 4096)));
+    tilo_test_env::scenario! {
+        /// The byte extents of the installed scratch partition.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn installed_scratch_partition_extents_are_checked_as_half_open_byte_ranges;
+
+        phase partition_byte_extent_refuses_overflow_and_outside_disk;
+        {
+            let mut volume = SourceVolume {
+                disk_guid: String::new(),
+                disk_bytes: 16384,
+                sector_bytes: 4096,
+                partition_guid: String::new(),
+                first_lba: 1,
+                last_lba: 2,
+                filesystem_uuid: String::new(),
+                filesystem: Filesystem::Ext4,
+            };
+            assert_eq!(extent(&volume).unwrap(), (4096, 12288));
+            volume.last_lba = 4;
+            assert!(extent(&volume).is_err());
+            volume.first_lba = u64::MAX;
+            volume.last_lba = u64::MAX;
+            volume.disk_bytes = u64::MAX;
+            assert!(extent(&volume).is_err());
+        }
+
+        phase partition_collision_uses_half_open_byte_ranges_not_parent_disk_equality;
+        {
+            assert!(!overlaps((4096, 8192), (8192, 12288)));
+            assert!(overlaps((4096, 8192), (8191, 12288)));
+            assert!(overlaps((4096, 8192), (0, 16384)));
+            assert!(!overlaps((4096, 8192), (0, 4096)));
+        }
     }
 }

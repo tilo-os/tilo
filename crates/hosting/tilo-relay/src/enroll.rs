@@ -15,8 +15,9 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
 use tilo_identity_host::certification_ceremony::pairing_code;
 use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
-use tilo_identity_host::enrollment::{Certifier, DeviceRole, NonceStore, Redemption};
+use tilo_identity_host::enrollment::{Certifier, NonceStore, Redemption};
 use tilo_relay::HomePeerRegistration;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert,
     verify_device_cert_at, verify_enrollment_token,
@@ -135,7 +136,7 @@ enum Command {
         #[arg(long, default_value = "/var/lib/tilo/fs-capabilities.json")]
         acl: PathBuf,
         #[arg(long = "relay-workspace-id")]
-        relay_workspace_ids: Vec<u64>,
+        relay_workspace_ids: Vec<WorkspaceId>,
         #[arg(long)]
         expected_device: Option<String>,
         #[arg(long)]
@@ -200,8 +201,8 @@ enum OutOfBand {
         device: String,
         #[arg(long, default_value = "Tilo device")]
         label: String,
-        /// own, admit, host, read-all or admin (administer the person's
-        /// other devices over their device-admin route); repeatable.
+        /// own, admit or admin (administer the person's other devices over
+        /// their device-admin route); repeatable.
         #[arg(long = "capability", value_name = "CAPABILITY")]
         capabilities: Vec<String>,
         #[arg(long)]
@@ -243,17 +244,6 @@ struct RevokeArgs {
 enum EnrollmentKind {
     HomePeer,
     PersonalDevice,
-}
-
-impl EnrollmentKind {
-    /// The role a token for this kind admits, with its one capability set and
-    /// shape check.
-    const fn role(self) -> DeviceRole {
-        match self {
-            Self::HomePeer => DeviceRole::Host,
-            Self::PersonalDevice => DeviceRole::Personal,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1052,7 +1042,7 @@ fn register_home_peer(
     identity_root: &std::path::Path,
     cert: &DeviceCert,
     relay_service_node_id: [u8; 32],
-    relay_workspace_ids: &[u64],
+    relay_workspace_ids: &[WorkspaceId],
     relay_endpoint: Option<iroh_base::EndpointAddr>,
 ) -> anyhow::Result<()> {
     if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
@@ -1556,15 +1546,8 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
     validate_requester(requester_lease)?;
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
     verify_enrollment_token(&token, now_ns()?).context("verify enrollment token")?;
-    if !kind.role().admits(&token.capabilities) {
-        match kind {
-            EnrollmentKind::HomePeer => {
-                bail!("enrollment token does not grant home-server capabilities")
-            }
-            EnrollmentKind::PersonalDevice => {
-                bail!("enrollment token grants the wrong device role")
-            }
-        }
+    if !token.capabilities.can_own_workspaces {
+        bail!("enrollment token does not admit a device");
     }
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
@@ -1839,7 +1822,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
                     continue;
                 };
                 if verify_enrollment_token(&token, now_ns()?).is_err()
-                    || !kind.role().admits(&token.capabilities)
+                    || !token.capabilities.can_own_workspaces
                 {
                     continue;
                 }
@@ -1964,7 +1947,7 @@ struct ApprovalOptions<'a> {
     timeout: u64,
     workspace_cache: &'a std::path::Path,
     acl: &'a std::path::Path,
-    relay_workspace_ids: &'a [u64],
+    relay_workspace_ids: &'a [WorkspaceId],
     expected_device: Option<&'a str>,
     expected_service: Option<&'a str>,
     kind: EnrollmentKind,
@@ -1999,7 +1982,7 @@ struct ApprovalIdentity {
     /// This device's certificate, the issuer of the tokens it mints.
     issuer_cert: DeviceCert,
     user_public_key: [u8; 32],
-    relay_workspace_ids: Vec<u64>,
+    relay_workspace_ids: Vec<WorkspaceId>,
 }
 
 struct SelectedNearby {
@@ -2117,7 +2100,7 @@ fn handle_solicitation(
         let expires_at_ns = now.saturating_add(5 * 60 * 1_000_000_000);
         let token_text = tilo_identity_host::enrollment::mint_token(
             identity.user_public_key,
-            kind.role().capabilities(),
+            DeviceCapabilities::member(),
             issued_at_ns,
             expires_at_ns,
             &identity.device,
@@ -2165,7 +2148,7 @@ fn valid_pending_request(
         && token.user_public_key == identity.user_public_key
         && token.issuer_device_public_key == identity.device.verifying_key().to_bytes()
         && request.kind == kind
-        && kind.role().admits(&token.capabilities)
+        && token.capabilities.can_own_workspaces
         && !wrong_selection)
 }
 
@@ -2267,7 +2250,7 @@ fn approval_projection(
                         .join(ticket.workspace_id().to_string()),
                     capability_json,
                     authority: Some(authority),
-                    principals: Vec::new(),
+                    members: Vec::new(),
                     relay_workspace_ids,
                 }],
             };
@@ -2368,7 +2351,6 @@ fn redeem_pending(
         &NonceStore::under(options.identity_root),
         &Redemption {
             token: &pending.token,
-            role: options.kind.role(),
             device_public_key: pending.request.device_public_key,
             label: &pending.request.label,
             now_ns: now,
@@ -2570,11 +2552,9 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         match capability.as_str() {
             "own" => granted.can_own_workspaces = true,
             "admit" => granted.can_admit_devices = true,
-            "host" => granted.can_act_as_host = true,
-            "read-all" => granted.can_read_all_workspaces = true,
             "admin" => granted.can_administer_devices = true,
             other => {
-                bail!("unknown capability {other}: expected own, admit, host, read-all or admin")
+                bail!("unknown capability {other}: expected own, admit or admin")
             }
         }
     }

@@ -254,8 +254,36 @@ fn report(label: &str, samples: &[FrameSample]) {
     }
 }
 
+/// Every knob `measure_sustained_scroll` reads: the five of its own body,
+/// the device scale `drive_scroll` draws at and the frame-by-frame trace
+/// `report` prints. With any of them set it is asked for a measurement and
+/// runs; with none it would be `sustained_scroll_never_waits_on_rendering`
+/// again.
+const SUSTAINED_SCROLL_KNOBS: [&str; 7] = [
+    "PDF_SCROLL_FILE",
+    "PDF_SCROLL_GPU",
+    "PDF_SCROLL_SIZE",
+    "PDF_SCROLL_SPEED",
+    "PDF_SCROLL_FRAMES",
+    "PDF_SCROLL_SCALE",
+    "PDF_SCROLL_TRACE",
+];
+
 #[test]
 fn measure_sustained_scroll() {
+    // With no knob set this is `sustained_scroll_never_waits_on_rendering`
+    // again, frame for frame: the same 24 heavy pages, window, 300 frames
+    // and speed, reported by the same line. That test runs and checks it.
+    if SUSTAINED_SCROLL_KNOBS
+        .iter()
+        .all(|knob| std::env::var_os(knob).is_none())
+    {
+        eprintln!(
+            "SCROLL nothing to measure beyond sustained_scroll_never_waits_on_rendering, \
+             which reports this scroll: set one of {SUSTAINED_SCROLL_KNOBS:?}"
+        );
+        return;
+    }
     let dir = tempfile::tempdir().expect("temp dir");
     let path = std::env::var_os("PDF_SCROLL_FILE")
         .map_or_else(|| heavy_pdf(dir.path(), 24), std::path::PathBuf::from);
@@ -351,21 +379,25 @@ impl ui::app::AppSurface for Window {
 
 fn covered(rects: &[vello::kurbo::Rect], (w, h): (u32, u32)) -> f64 {
     let window = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
-    let mut rows = vec![vec![false; w as usize]; h as usize];
+    // One cell a pixel, counted when a rectangle first covers it: the cells
+    // covered at the end, without walking the whole window after each frame.
+    let mut cells = vec![false; w as usize * h as usize];
+    let mut count = 0_usize;
     for rect in rects {
         let rect = rect.intersect(window).expand();
         let (x0, x1) = (rect.x0 as usize, rect.x1 as usize);
-        for row in rows
-            .iter_mut()
+        for row in cells
+            .chunks_exact_mut((w as usize).max(1))
             .take(rect.y1 as usize)
             .skip(rect.y0 as usize)
         {
-            if let Some(cells) = row.get_mut(x0..x1) {
-                cells.fill(true);
+            if let Some(span) = row.get_mut(x0..x1) {
+                count += span.iter().filter(|cell| !**cell).count();
+                span.fill(true);
             }
         }
     }
-    rows.iter().flatten().filter(|cell| **cell).count() as f64
+    count as f64
 }
 
 #[test]
@@ -977,13 +1009,13 @@ const MAX_DRAWS: usize = 512;
 
 #[test]
 fn measure_zoom() {
+    if std::env::var_os("PDF_SCROLL_ZOOM").is_none() {
+        return;
+    }
     let dir = tempfile::tempdir().expect("temp dir");
     let path = std::env::var_os("PDF_SCROLL_FILE")
         .map_or_else(|| heavy_pdf(dir.path(), 6), std::path::PathBuf::from);
     let top = crate::tiles::TILE_MIN_PAGE_PX / 612.0 * 1.6;
-    if std::env::var_os("PDF_SCROLL_ZOOM").is_none() {
-        return;
-    }
     if let Some(samples) = drive_zoom(&path, (1280, 800), top) {
         eprintln!("{}", zoom_report(&samples));
     }

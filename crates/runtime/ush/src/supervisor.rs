@@ -1753,358 +1753,533 @@ mod tests {
         child.wait().unwrap();
     }
 
-    #[test]
-    fn guest_exit_and_failed_handoff_reap_the_exact_child() {
-        let root = tempfile::tempdir().unwrap();
-        let store = Store::at(root.path().join("store"));
-        store.ensure().unwrap();
-        for fails in [false, true] {
-            let (mut client, mut server) = UnixStream::pair().unwrap();
+    tilo_test_env::scenario! {
+        /// A session's end: the guest, the terminal's connection and the lease, whichever goes first.
+        fn a_session_ends_and_its_guest_is_reaped_however_it_ends;
+
+        phase guest_exit_and_failed_handoff_reap_the_exact_child;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::at(root.path().join("store"));
+            store.ensure().unwrap();
+            for fails in [false, true] {
+                let (mut client, mut server) = UnixStream::pair().unwrap();
+                let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let transport = SessionTransport {
+                    stream: &server.try_clone().unwrap(),
+                    persistent: true,
+                    active: active.clone(),
+                };
+                let (master, slave) = open_pty(80, 24).unwrap();
+                let child = spawn_on_pty(
+                    std::process::Command::new(if fails { "cat" } else { "true" }),
+                    &slave,
+                )
+                .unwrap();
+                let pid = child.id();
+                drop(slave);
+                if fails {
+                    client.shutdown(std::net::Shutdown::Both).unwrap();
+                }
+                let handed = hand_off_session(
+                    &transport,
+                    &mut server,
+                    &store,
+                    &ServeResponse::Session {
+                        session: "exact".into(),
+                        environment: "default".into(),
+                        runs: false,
+                        editor_protocol: None,
+                    },
+                    master,
+                    child,
+                    None,
+                    || None,
+                );
+                if fails {
+                    assert!(handed.is_err());
+                } else {
+                    handed.unwrap();
+                    let (_, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
+                    assert_eq!(rights.len(), 2);
+                    let mut lease = UnixStream::from(rights.pop().unwrap());
+                    lease
+                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                        .unwrap();
+                    assert_eq!(
+                        lease.read(&mut [0u8; 1]).unwrap(),
+                        0,
+                        "guest exit must close only its session lease"
+                    );
+                    client.write_all(b"control").unwrap();
+                    let mut bytes = [0u8; 7];
+                    server.read_exact(&mut bytes).unwrap();
+                    assert_eq!(&bytes, b"control");
+                }
+                tilo_test_env::wait_until("the session to be reaped", || {
+                    active.load(std::sync::atomic::Ordering::Acquire) == 0
+                });
+                assert!(
+                    !Path::new(&format!("/proc/{pid}")).exists(),
+                    "the exact child must be reaped"
+                );
+            }
+        }
+
+        phase persistent_session_leases_cancel_and_reap_without_closing_control;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::at(root.path().join("store"));
+            store.ensure().unwrap();
+            let (client, mut server) = UnixStream::pair().unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let transport = SessionTransport {
                 stream: &server.try_clone().unwrap(),
                 persistent: true,
                 active: active.clone(),
             };
-            let (master, slave) = open_pty(80, 24).unwrap();
-            let child = spawn_on_pty(
-                std::process::Command::new(if fails { "cat" } else { "true" }),
-                &slave,
-            )
-            .unwrap();
-            let pid = child.id();
-            drop(slave);
-            if fails {
-                client.shutdown(std::net::Shutdown::Both).unwrap();
+            for index in 0..13 {
+                let environment = if index % 2 == 0 { "default" } else { "host" };
+                let (master, slave) = open_pty(80, 24).unwrap();
+                let child = spawn_on_pty(std::process::Command::new("cat"), &slave).unwrap();
+                let pid = child.id();
+                drop(slave);
+                let id = uuid::Uuid::new_v4().simple().to_string();
+                hand_off_session(
+                    &transport,
+                    &mut server,
+                    &store,
+                    &ServeResponse::Session {
+                        session: id.clone(),
+                        environment: environment.into(),
+                        runs: false,
+                        editor_protocol: None,
+                    },
+                    master,
+                    child,
+                    None,
+                    || None,
+                )
+                .unwrap();
+                let (bytes, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
+                let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(response["session"], id);
+                assert_eq!(response["environment"], environment);
+                assert_eq!(response["protocol"], SERVICE_PROTOCOL);
+                assert_eq!(rights.len(), 2);
+                // Terminal holds the lease as a `SessionLifetime`, whose drop
+                // shuts the connection down even while a reader's duplicate of
+                // it is still open.
+                let lease = runtime_portal::pending_connection::SessionLifetime::new(UnixStream::from(
+                    rights.pop().unwrap(),
+                ));
+                let reader_clone = lease.clone_for_reader().unwrap();
+                let terminal = std::fs::File::from(rights.pop().unwrap());
+                assert_eq!(unsafe { libc::isatty(terminal.as_raw_fd()) }, 1);
+                drop(lease);
+                tilo_test_env::wait_until("the session to be reaped", || {
+                    active.load(std::sync::atomic::Ordering::Acquire) == 0
+                });
+                assert!(
+                    !Path::new(&format!("/proc/{pid}")).exists(),
+                    "session child must be reaped"
+                );
+                drop(reader_clone);
+                drop(terminal);
+                (&client).write_all(b"live").unwrap();
+                let mut bytes = [0u8; 4];
+                server.read_exact(&mut bytes).unwrap();
+                assert_eq!(
+                    &bytes, b"live",
+                    "session cancellation must not consume control"
+                );
             }
-            let handed = hand_off_session(
-                &transport,
-                &mut server,
-                &store,
+        }
+
+        phase the_session_ends_when_the_guest_or_the_terminal_does;
+        {
+            {
+                let (supervisor_end, _terminal_end) = UnixStream::pair().expect("socket pair");
+                let mut child = std::process::Command::new("true")
+                    .spawn_locked()
+                    .expect("spawn guest");
+                assert_eq!(
+                    wait_for_guest_or_terminal(&supervisor_end, &child),
+                    LifetimeEnd::GuestExited,
+                    "an exited guest must end the session while Terminal still holds its end"
+                );
+                assert!(child.wait().expect("reap guest").success());
+            }
+            {
+                let (supervisor_end, terminal_end) = UnixStream::pair().expect("socket pair");
+                let mut child = std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn_locked()
+                    .expect("spawn guest");
+                drop(terminal_end);
+                assert_eq!(
+                    wait_for_guest_or_terminal(&supervisor_end, &child),
+                    LifetimeEnd::TerminalClosed
+                );
+                assert!(child.try_wait().expect("guest status").is_none());
+                child.kill().expect("stop guest");
+                let _ = child.wait();
+            }
+        }
+
+        phase a_sessions_lease_tells_a_terminal_that_asked_how_it_ended;
+        // A served session's lease tells a terminal that asked how it ended: a
+        // shell that exited, or a guest that was never set up.
+        {
+            for (end, line, report) in [
+                (GuestEnd::Exited, Some(r#"{"ended":"exited"}"#), true),
+                (
+                    GuestEnd::SetupFailed("no image".into()),
+                    Some(r#"{"ended":"failed","reason":"no image"}"#),
+                    true,
+                ),
+                (GuestEnd::Exited, None, false),
+            ] {
+                let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
+                let child = std::process::Command::new("true")
+                    .spawn_locked()
+                    .expect("spawn the guest");
+                let watch = EndWatch {
+                    ended: std::thread::spawn(move || end),
+                    report,
+                };
+                let termination = finish_session(&supervisor, child, Some(watch));
+                let mut read = String::new();
+                (&terminal)
+                    .read_to_string(&mut read)
+                    .expect("the lease closes after the report");
+                if let Some(line) = line {
+                    assert!(
+                        termination.starts_with("exit") || termination.starts_with("not set up"),
+                        "{termination}"
+                    );
+                    assert_eq!(read.trim_end(), line);
+                } else {
+                    assert!(termination.starts_with("exit"), "{termination}");
+                    assert!(
+                        read.is_empty(),
+                        "a terminal that did not ask is told nothing"
+                    );
+                }
+            }
+        }
+
+        phase cancelling_a_terminal_connection_kills_and_reaps_its_guest_with_clones_open;
+        {
+            let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
+            let _reader_clone = terminal.try_clone().expect("reader lifetime clone");
+            let child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn_locked()
+                .expect("spawn guest");
+            let pid = libc::pid_t::try_from(child.id()).expect("guest pid");
+            terminal
+                .shutdown(std::net::Shutdown::Both)
+                .expect("cancel pending or accepted session");
+            let termination = finish_session(&supervisor, child, None);
+            assert!(
+                termination.starts_with("terminal closed; exit"),
+                "{termination}"
+            );
+            // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+            let mut status = 0;
+            assert_eq!(
+                unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+                -1,
+                "production teardown must reap the child, not leave a zombie"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+        }
+
+        phase failed_descriptor_handoff_kills_and_reaps_the_unclaimed_child;
+        {
+            let (mut supervisor, terminal) = UnixStream::pair().expect("socket pair");
+            terminal
+                .shutdown(std::net::Shutdown::Both)
+                .expect("cancel before reply");
+            let (master, _slave) = open_pty(80, 24).expect("PTY");
+            let child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn_locked()
+                .expect("spawn guest or bridge");
+            let pid = libc::pid_t::try_from(child.id()).expect("child pid");
+            let handed = reply(
+                &mut supervisor,
                 &ServeResponse::Session {
-                    session: "exact".into(),
+                    session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     environment: "default".into(),
                     runs: false,
                     editor_protocol: None,
                 },
-                master,
-                child,
-                None,
-                || None,
+                Some(master.as_fd()),
             );
-            if fails {
-                assert!(handed.is_err());
-            } else {
-                handed.unwrap();
-                let (_, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
-                assert_eq!(rights.len(), 2);
-                let mut lease = UnixStream::from(rights.pop().unwrap());
-                lease
-                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                    .unwrap();
-                assert_eq!(
-                    lease.read(&mut [0u8; 1]).unwrap(),
-                    0,
-                    "guest exit must close only its session lease"
-                );
-                client.write_all(b"control").unwrap();
-                let mut bytes = [0u8; 7];
-                server.read_exact(&mut bytes).unwrap();
-                assert_eq!(&bytes, b"control");
-            }
-            tilo_test_env::wait_until("the session to be reaped", || {
-                active.load(std::sync::atomic::Ordering::Acquire) == 0
-            });
             assert!(
-                !Path::new(&format!("/proc/{pid}")).exists(),
-                "the exact child must be reaped"
+                handed.is_err(),
+                "the cancelled terminal cannot accept a descriptor"
             );
-        }
-    }
-
-    #[test]
-    fn persistent_session_leases_cancel_and_reap_without_closing_control() {
-        let root = tempfile::tempdir().unwrap();
-        let store = Store::at(root.path().join("store"));
-        store.ensure().unwrap();
-        let (client, mut server) = UnixStream::pair().unwrap();
-        client
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let transport = SessionTransport {
-            stream: &server.try_clone().unwrap(),
-            persistent: true,
-            active: active.clone(),
-        };
-        for index in 0..13 {
-            let environment = if index % 2 == 0 { "default" } else { "host" };
-            let (master, slave) = open_pty(80, 24).unwrap();
-            let child = spawn_on_pty(std::process::Command::new("cat"), &slave).unwrap();
-            let pid = child.id();
-            drop(slave);
-            let id = uuid::Uuid::new_v4().simple().to_string();
-            hand_off_session(
-                &transport,
-                &mut server,
-                &store,
-                &ServeResponse::Session {
-                    session: id.clone(),
-                    environment: environment.into(),
-                    runs: false,
-                    editor_protocol: None,
-                },
-                master,
-                child,
-                None,
-                || None,
-            )
-            .unwrap();
-            let (bytes, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
-            let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(response["session"], id);
-            assert_eq!(response["environment"], environment);
-            assert_eq!(response["protocol"], SERVICE_PROTOCOL);
-            assert_eq!(rights.len(), 2);
-            // Terminal holds the lease as a `SessionLifetime`, whose drop
-            // shuts the connection down even while a reader's duplicate of
-            // it is still open.
-            let lease = runtime_portal::pending_connection::SessionLifetime::new(UnixStream::from(
-                rights.pop().unwrap(),
-            ));
-            let reader_clone = lease.clone_for_reader().unwrap();
-            let terminal = std::fs::File::from(rights.pop().unwrap());
-            assert_eq!(unsafe { libc::isatty(terminal.as_raw_fd()) }, 1);
-            drop(lease);
-            tilo_test_env::wait_until("the session to be reaped", || {
-                active.load(std::sync::atomic::Ordering::Acquire) == 0
-            });
-            assert!(
-                !Path::new(&format!("/proc/{pid}")).exists(),
-                "session child must be reaped"
-            );
-            drop(reader_clone);
-            drop(terminal);
-            (&client).write_all(b"live").unwrap();
-            let mut bytes = [0u8; 4];
-            server.read_exact(&mut bytes).unwrap();
+            // The pending guard owns the child until a handoff is accepted.
+            drop(PendingSessionChild(Some(child)));
+            // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+            let mut status = 0;
             assert_eq!(
-                &bytes, b"live",
-                "session cancellation must not consume control"
+                unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+                -1,
+                "the production failed-handoff path must reap the child"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
             );
         }
     }
 
-    #[test]
-    fn persistent_control_negotiates_before_open_and_preserves_the_authenticated_caller() {
-        let root = tempfile::tempdir().unwrap();
-        let store = Store::at(root.path().join("store"));
-        store.ensure().unwrap();
-        let (mut client, server) = UnixStream::pair().unwrap();
-        client
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        client
-            .set_write_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let worker = std::thread::spawn(move || serve_one(&server, &store, Path::new("/")));
-        client
-            .write_all(&crate::host::encode_handoff("so.tilo.unrelated").unwrap())
-            .unwrap();
-        client
-            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
-            .unwrap();
-        let mut reader = BufReader::new(client.try_clone().unwrap());
-        let mut hello = String::new();
-        reader.read_line(&mut hello).unwrap();
-        let accepted = serde_json::from_str::<serde_json::Value>(&hello).unwrap();
-        let mut denied = Vec::new();
-        if accepted["result"] == "ready" {
-            for index in 0..13 {
-                let requested_by = if index % 2 == 0 { "person" } else { "agent" };
-                let request = serde_json::json!({
-                    "op": "open-session", "target": {"kind": "host"},
-                    "requested_by": requested_by
-                });
-                writeln!(client, "{request}").unwrap();
-                let mut response = String::new();
-                reader.read_line(&mut response).unwrap();
-                denied.push(serde_json::from_str::<serde_json::Value>(&response).unwrap());
+    tilo_test_env::scenario! {
+        /// The service socket's requests and replies.
+        fn the_service_protocol_names_targets_and_keeps_its_wire_form;
+
+        phase persistent_control_negotiates_before_open_and_preserves_the_authenticated_caller;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::at(root.path().join("store"));
+            store.ensure().unwrap();
+            let (mut client, server) = UnixStream::pair().unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            client
+                .set_write_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let worker = std::thread::spawn(move || serve_one(&server, &store, Path::new("/")));
+            client
+                .write_all(&crate::host::encode_handoff("so.tilo.unrelated").unwrap())
+                .unwrap();
+            client
+                .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
+                .unwrap();
+            let mut reader = BufReader::new(client.try_clone().unwrap());
+            let mut hello = String::new();
+            reader.read_line(&mut hello).unwrap();
+            let accepted = serde_json::from_str::<serde_json::Value>(&hello).unwrap();
+            let mut denied = Vec::new();
+            if accepted["result"] == "ready" {
+                for index in 0..13 {
+                    let requested_by = if index % 2 == 0 { "person" } else { "agent" };
+                    let request = serde_json::json!({
+                        "op": "open-session", "target": {"kind": "host"},
+                        "requested_by": requested_by
+                    });
+                    writeln!(client, "{request}").unwrap();
+                    let mut response = String::new();
+                    reader.read_line(&mut response).unwrap();
+                    denied.push(serde_json::from_str::<serde_json::Value>(&response).unwrap());
+                }
+                client.write_all(b"not-json\n").unwrap();
+                let mut malformed = String::new();
+                reader.read_line(&mut malformed).unwrap();
+                let refusal: serde_json::Value = serde_json::from_str(&malformed).unwrap();
+                assert_eq!(refusal["result"], "denied");
+                assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
             }
-            client.write_all(b"not-json\n").unwrap();
-            let mut malformed = String::new();
-            reader.read_line(&mut malformed).unwrap();
-            let refusal: serde_json::Value = serde_json::from_str(&malformed).unwrap();
-            assert_eq!(refusal["result"], "denied");
-            assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
-        }
-        drop(reader);
-        drop(client);
-        worker.join().unwrap().unwrap();
-        assert_eq!(accepted["result"], "ready", "{accepted}");
-        assert_eq!(accepted["protocol"], 2);
-        assert_eq!(denied.len(), 13);
-        for refusal in denied {
-            assert_eq!(refusal["result"], "denied", "{refusal}");
-        }
-    }
-
-    #[test]
-    fn the_session_ends_when_the_guest_or_the_terminal_does() {
-        {
-            let (supervisor_end, _terminal_end) = UnixStream::pair().expect("socket pair");
-            let mut child = std::process::Command::new("true")
-                .spawn_locked()
-                .expect("spawn guest");
-            assert_eq!(
-                wait_for_guest_or_terminal(&supervisor_end, &child),
-                LifetimeEnd::GuestExited,
-                "an exited guest must end the session while Terminal still holds its end"
-            );
-            assert!(child.wait().expect("reap guest").success());
-        }
-        {
-            let (supervisor_end, terminal_end) = UnixStream::pair().expect("socket pair");
-            let mut child = std::process::Command::new("sleep")
-                .arg("30")
-                .spawn_locked()
-                .expect("spawn guest");
-            drop(terminal_end);
-            assert_eq!(
-                wait_for_guest_or_terminal(&supervisor_end, &child),
-                LifetimeEnd::TerminalClosed
-            );
-            assert!(child.try_wait().expect("guest status").is_none());
-            child.kill().expect("stop guest");
-            let _ = child.wait();
-        }
-    }
-
-    // A served session's lease tells a terminal that asked how it ended: a
-    // shell that exited, or a guest that was never set up.
-    #[test]
-    fn a_sessions_lease_tells_a_terminal_that_asked_how_it_ended() {
-        for (end, line, report) in [
-            (GuestEnd::Exited, Some(r#"{"ended":"exited"}"#), true),
-            (
-                GuestEnd::SetupFailed("no image".into()),
-                Some(r#"{"ended":"failed","reason":"no image"}"#),
-                true,
-            ),
-            (GuestEnd::Exited, None, false),
-        ] {
-            let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
-            let child = std::process::Command::new("true")
-                .spawn_locked()
-                .expect("spawn the guest");
-            let watch = EndWatch {
-                ended: std::thread::spawn(move || end),
-                report,
-            };
-            let termination = finish_session(&supervisor, child, Some(watch));
-            let mut read = String::new();
-            (&terminal)
-                .read_to_string(&mut read)
-                .expect("the lease closes after the report");
-            if let Some(line) = line {
-                assert!(
-                    termination.starts_with("exit") || termination.starts_with("not set up"),
-                    "{termination}"
-                );
-                assert_eq!(read.trim_end(), line);
-            } else {
-                assert!(termination.starts_with("exit"), "{termination}");
-                assert!(
-                    read.is_empty(),
-                    "a terminal that did not ask is told nothing"
-                );
+            drop(reader);
+            drop(client);
+            worker.join().unwrap().unwrap();
+            assert_eq!(accepted["result"], "ready", "{accepted}");
+            assert_eq!(accepted["protocol"], 2);
+            assert_eq!(denied.len(), 13);
+            for refusal in denied {
+                assert_eq!(refusal["result"], "denied", "{refusal}");
             }
         }
-    }
 
-    #[test]
-    fn cancelling_a_terminal_connection_kills_and_reaps_its_guest_with_clones_open() {
-        let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
-        let _reader_clone = terminal.try_clone().expect("reader lifetime clone");
-        let child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn_locked()
-            .expect("spawn guest");
-        let pid = libc::pid_t::try_from(child.id()).expect("guest pid");
-        terminal
-            .shutdown(std::net::Shutdown::Both)
-            .expect("cancel pending or accepted session");
-        let termination = finish_session(&supervisor, child, None);
-        assert!(
-            termination.starts_with("terminal closed; exit"),
-            "{termination}"
-        );
-        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
-        let mut status = 0;
-        assert_eq!(
-            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
-            -1,
-            "production teardown must reap the child, not leave a zombie"
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ECHILD)
-        );
-    }
-
-    #[test]
-    fn failed_descriptor_handoff_kills_and_reaps_the_unclaimed_child() {
-        let (mut supervisor, terminal) = UnixStream::pair().expect("socket pair");
-        terminal
-            .shutdown(std::net::Shutdown::Both)
-            .expect("cancel before reply");
-        let (master, _slave) = open_pty(80, 24).expect("PTY");
-        let child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn_locked()
-            .expect("spawn guest or bridge");
-        let pid = libc::pid_t::try_from(child.id()).expect("child pid");
-        let handed = reply(
-            &mut supervisor,
-            &ServeResponse::Session {
+        phase a_session_reply_keeps_its_wire_form;
+        {
+            let reply = ServeResponse::Session {
                 session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 environment: "default".into(),
-                runs: false,
+                runs: true,
                 editor_protocol: None,
-            },
-            Some(master.as_fd()),
-        );
-        assert!(
-            handed.is_err(),
-            "the cancelled terminal cannot accept a descriptor"
-        );
-        // The pending guard owns the child until a handoff is accepted.
-        drop(PendingSessionChild(Some(child)));
-        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
-        let mut status = 0;
-        assert_eq!(
-            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
-            -1,
-            "the production failed-handoff path must reap the child"
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ECHILD)
-        );
-    }
+            };
+            assert_eq!(
+                serde_json::to_string(&reply).unwrap(),
+                "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}"
+            );
+        }
 
-    #[test]
-    fn a_session_reply_keeps_its_wire_form() {
-        let reply = ServeResponse::Session {
-            session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            environment: "default".into(),
-            runs: true,
-            editor_protocol: None,
-        };
-        assert_eq!(
-            serde_json::to_string(&reply).unwrap(),
-            "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}"
-        );
+        phase serve_builds_environments_and_refuses_the_host_target;
+        {
+            assert_eq!(decide_serve(&open(Target::default_environment())), Ok(None));
+            assert_eq!(
+                decide_serve(&open(Target::Environment {
+                    record: Some("work".into()),
+                })),
+                Ok(Some("work".into()))
+            );
+            let err = decide_serve(&open(Target::Host)).unwrap_err();
+            assert!(err.starts_with("not available"), "{err}");
+
+            let host: ServeRequest = serde_json::from_str(
+                r#"{"op":"open-session","target":{"kind":"host"},"requested_by":"agent"}"#,
+            )
+            .unwrap();
+            assert!(matches!(
+                host,
+                ServeRequest::OpenSession {
+                    target: Target::Host,
+                    requested_by: crate::host::RequestedBy::Agent,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                open(Target::Host),
+                ServeRequest::OpenSession {
+                    requested_by: crate::host::RequestedBy::Person,
+                    ..
+                }
+            ));
+            let refused: ServeResponse =
+                serde_json::from_str(r#"{"result":"host-not-allowed","reason":"ask"}"#).unwrap();
+            assert_eq!(
+                refused,
+                ServeResponse::HostNotAllowed {
+                    reason: "ask".into()
+                }
+            );
+            let err = decide_serve(&open(Target::Environment {
+                record: Some("../../etc".into()),
+            }))
+            .unwrap_err();
+            assert!(err.contains("does not name"), "{err}");
+        }
+
+        phase a_session_request_names_its_target_and_may_name_a_program;
+        {
+            let shell: ServeRequest =
+                serde_json::from_str(r#"{"op":"open-session","target":{"kind":"environment"}}"#)
+                    .unwrap();
+            assert!(matches!(
+                shell,
+                ServeRequest::OpenSession { ref target, ref command, .. }
+                    if *target == Target::default_environment() && command.is_empty()
+            ));
+            let program: ServeRequest = serde_json::from_str(
+                r#"{"op":"open-session","target":{"kind":"environment","record":"work"},"command":["htop","-d","5"]}"#,
+            )
+            .unwrap();
+            assert!(matches!(
+                program,
+                ServeRequest::OpenSession { ref command, .. } if command == &["htop", "-d", "5"]
+            ));
+            assert_eq!(decide_serve(&program).unwrap(), Some("work".into()));
+        }
+
+        phase the_environment_directory_lists_creates_and_renames_records;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().join("ush"));
+            store.ensure().unwrap();
+            let records = Records::at(store.records_root());
+            let mut default = Environment::new(
+                tilo_environment::DEFAULT_NAME,
+                "2026.10",
+                tilo_environment::host_arch(),
+                &PackageId::from_bytes([1; 32]),
+            );
+            default.tools.clear();
+            records.create(DEFAULT_RECORD, &default).unwrap();
+
+            let listed = directory(&ServeRequest::ListEnvironments, &store).unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].key, DEFAULT_RECORD);
+
+            let created = directory(
+                &ServeRequest::CreateEnvironment {
+                    name: " Writing ".into(),
+                },
+                &store,
+            )
+            .unwrap();
+            let writing = created
+                .iter()
+                .find(|entry| entry.key != DEFAULT_RECORD)
+                .expect("the new environment is listed");
+            assert_eq!(writing.name, "Writing");
+            assert!(writing.tools.is_empty() && writing.grants.is_empty());
+            assert_eq!(
+                records.load(&writing.key).unwrap().unwrap().runtime,
+                default.runtime,
+                "a new environment starts on the default environment's runtime"
+            );
+
+            let renamed = directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "rename".into(),
+                    args: serde_json::json!({"name": "Prose"}),
+                },
+                &store,
+            )
+            .unwrap();
+            assert!(renamed.iter().any(|entry| entry.name == "Prose"));
+
+            let granted_dir = dir.path().join("src");
+            std::fs::create_dir_all(&granted_dir).unwrap();
+            let granted = directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "grant-dir".into(),
+                    args: serde_json::json!({"path": granted_dir.display().to_string(), "write": true}),
+                },
+                &store,
+            )
+            .unwrap();
+            let entry = granted.iter().find(|e| e.key == writing.key).unwrap();
+            assert_eq!(
+                entry.grants,
+                vec![(granted_dir.display().to_string(), true)]
+            );
+            assert!(
+                directory(
+                    &ServeRequest::EnvironmentAction {
+                        record: writing.key.clone(),
+                        action: "grant-dir".into(),
+                        args: serde_json::json!({"path": "/usr", "write": true}),
+                    },
+                    &store,
+                )
+                .is_err(),
+                "the record's own rules still refuse what the guest builds itself"
+            );
+            assert!(
+                directory(
+                    &ServeRequest::EnvironmentAction {
+                        record: writing.key.clone(),
+                        action: "set-runtime".into(),
+                        args: serde_json::Value::Null,
+                    },
+                    &store,
+                )
+                .is_err(),
+                "only the actions an app may ask for here are applied"
+            );
+            assert!(
+                directory(
+                    &ServeRequest::CreateEnvironment { name: "  ".into() },
+                    &store
+                )
+                .is_err()
+            );
+        }
     }
 
     fn open(target: Target) -> ServeRequest {
@@ -2119,73 +2294,6 @@ mod tests {
             editor_protocol: None,
             end_report: false,
         }
-    }
-
-    #[test]
-    fn serve_builds_environments_and_refuses_the_host_target() {
-        assert_eq!(decide_serve(&open(Target::default_environment())), Ok(None));
-        assert_eq!(
-            decide_serve(&open(Target::Environment {
-                record: Some("work".into()),
-            })),
-            Ok(Some("work".into()))
-        );
-        let err = decide_serve(&open(Target::Host)).unwrap_err();
-        assert!(err.starts_with("not available"), "{err}");
-
-        let host: ServeRequest = serde_json::from_str(
-            r#"{"op":"open-session","target":{"kind":"host"},"requested_by":"agent"}"#,
-        )
-        .unwrap();
-        assert!(matches!(
-            host,
-            ServeRequest::OpenSession {
-                target: Target::Host,
-                requested_by: crate::host::RequestedBy::Agent,
-                ..
-            }
-        ));
-        assert!(matches!(
-            open(Target::Host),
-            ServeRequest::OpenSession {
-                requested_by: crate::host::RequestedBy::Person,
-                ..
-            }
-        ));
-        let refused: ServeResponse =
-            serde_json::from_str(r#"{"result":"host-not-allowed","reason":"ask"}"#).unwrap();
-        assert_eq!(
-            refused,
-            ServeResponse::HostNotAllowed {
-                reason: "ask".into()
-            }
-        );
-        let err = decide_serve(&open(Target::Environment {
-            record: Some("../../etc".into()),
-        }))
-        .unwrap_err();
-        assert!(err.contains("does not name"), "{err}");
-    }
-
-    #[test]
-    fn a_session_request_names_its_target_and_may_name_a_program() {
-        let shell: ServeRequest =
-            serde_json::from_str(r#"{"op":"open-session","target":{"kind":"environment"}}"#)
-                .unwrap();
-        assert!(matches!(
-            shell,
-            ServeRequest::OpenSession { ref target, ref command, .. }
-                if *target == Target::default_environment() && command.is_empty()
-        ));
-        let program: ServeRequest = serde_json::from_str(
-            r#"{"op":"open-session","target":{"kind":"environment","record":"work"},"command":["htop","-d","5"]}"#,
-        )
-        .unwrap();
-        assert!(matches!(
-            program,
-            ServeRequest::OpenSession { ref command, .. } if command == &["htop", "-d", "5"]
-        ));
-        assert_eq!(decide_serve(&program).unwrap(), Some("work".into()));
     }
 
     struct FixtureImages(PathBuf);
@@ -2230,104 +2338,6 @@ mod tests {
             Arc::new(FixtureImages(images)),
             Arc::new(tilo_environment::NoToolBuilder),
         )
-    }
-
-    #[test]
-    fn the_environment_directory_lists_creates_and_renames_records() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-        store.ensure().unwrap();
-        let records = Records::at(store.records_root());
-        let mut default = Environment::new(
-            tilo_environment::DEFAULT_NAME,
-            "2026.10",
-            tilo_environment::host_arch(),
-            &PackageId::from_bytes([1; 32]),
-        );
-        default.tools.clear();
-        records.create(DEFAULT_RECORD, &default).unwrap();
-
-        let listed = directory(&ServeRequest::ListEnvironments, &store).unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].key, DEFAULT_RECORD);
-
-        let created = directory(
-            &ServeRequest::CreateEnvironment {
-                name: " Writing ".into(),
-            },
-            &store,
-        )
-        .unwrap();
-        let writing = created
-            .iter()
-            .find(|entry| entry.key != DEFAULT_RECORD)
-            .expect("the new environment is listed");
-        assert_eq!(writing.name, "Writing");
-        assert!(writing.tools.is_empty() && writing.grants.is_empty());
-        assert_eq!(
-            records.load(&writing.key).unwrap().unwrap().runtime,
-            default.runtime,
-            "a new environment starts on the default environment's runtime"
-        );
-
-        let renamed = directory(
-            &ServeRequest::EnvironmentAction {
-                record: writing.key.clone(),
-                action: "rename".into(),
-                args: serde_json::json!({"name": "Prose"}),
-            },
-            &store,
-        )
-        .unwrap();
-        assert!(renamed.iter().any(|entry| entry.name == "Prose"));
-
-        let granted_dir = dir.path().join("src");
-        std::fs::create_dir_all(&granted_dir).unwrap();
-        let granted = directory(
-            &ServeRequest::EnvironmentAction {
-                record: writing.key.clone(),
-                action: "grant-dir".into(),
-                args: serde_json::json!({"path": granted_dir.display().to_string(), "write": true}),
-            },
-            &store,
-        )
-        .unwrap();
-        let entry = granted.iter().find(|e| e.key == writing.key).unwrap();
-        assert_eq!(
-            entry.grants,
-            vec![(granted_dir.display().to_string(), true)]
-        );
-        assert!(
-            directory(
-                &ServeRequest::EnvironmentAction {
-                    record: writing.key.clone(),
-                    action: "grant-dir".into(),
-                    args: serde_json::json!({"path": "/usr", "write": true}),
-                },
-                &store,
-            )
-            .is_err(),
-            "the record's own rules still refuse what the guest builds itself"
-        );
-        assert!(
-            directory(
-                &ServeRequest::EnvironmentAction {
-                    record: writing.key.clone(),
-                    action: "set-runtime".into(),
-                    args: serde_json::Value::Null,
-                },
-                &store,
-            )
-            .is_err(),
-            "only the actions an app may ask for here are applied"
-        );
-        assert!(
-            directory(
-                &ServeRequest::CreateEnvironment { name: "  ".into() },
-                &store
-            )
-            .is_err()
-        );
     }
 
     #[test]
@@ -2608,108 +2618,113 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tool_without_an_image_here_is_built_here_and_recorded() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut session = session_in(dir.path());
-        session.builder = Arc::new(BuildsTwo);
-        session.resolve().unwrap();
-        let other = if tilo_environment::host_arch() == "x86_64" {
-            "aarch64"
-        } else {
-            "x86_64"
-        };
-        add_tool(&session, "pandoc", other, 5);
+    tilo_test_env::scenario! {
+        /// What a session is given before its guest starts.
+        fn a_session_is_set_up_with_its_tools_home_and_pty;
 
-        let resolved = session.resolve().unwrap();
-        assert!(
-            resolved.images[0].0.contains("pandoc"),
-            "{:?}",
-            resolved.images
-        );
-        let tool = &resolved.environment.tools[0];
-        assert_eq!(
-            tool.image(tilo_environment::host_arch()).unwrap(),
-            Some(PackageId::from_bytes([2; 32])),
-            "the image built here is recorded next to the other architecture's"
-        );
-        assert_eq!(
-            tool.image(other).unwrap(),
-            Some(PackageId::from_bytes([5; 32]))
-        );
-    }
-
-    #[test]
-    fn a_tool_that_cannot_be_used_or_built_stops_the_session_with_the_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        let session = session_in(dir.path());
-        session.resolve().unwrap();
-        let arch = tilo_environment::host_arch();
-        add_tool(&session, "gone", arch, 7);
-        let err = session.resolve().unwrap_err().to_string();
-        assert!(
-            err.contains("is not here") && err.contains("not available"),
-            "{err}"
-        );
-
-        session
-            .records()
-            .apply(
-                DEFAULT_RECORD,
-                Environment::REMOVE_TOOL.with(vec!["gone".into()]),
-            )
-            .unwrap();
-        add_tool(&session, "elsewhere", arch, 9);
-        let err = session.resolve().unwrap_err().to_string();
-        assert!(err.contains("another runtime"), "{err}");
-
-        let mut named = session_in(dir.path());
-        named.opts.environment = Some("work".into());
-        let err = named.resolve().unwrap_err().to_string();
-        assert!(err.contains("no environment"), "{err}");
-    }
-
-    #[test]
-    fn the_guest_home_is_seeded_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        seed_guest_home(&home).unwrap();
-        let rc = home.join(".bashrc");
-        assert!(rc.is_file());
-        std::fs::write(&rc, b"# edited by the user\n").unwrap();
-        seed_guest_home(&home).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&rc).unwrap(),
-            "# edited by the user\n"
-        );
-    }
-
-    #[test]
-    fn a_pty_opens_at_the_requested_size_and_survives_the_socket() {
+        phase a_tool_without_an_image_here_is_built_here_and_recorded;
         {
-            let (master, _slave) = open_pty(120, 40).unwrap();
-            let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-            let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
-            assert_eq!(rc, 0);
-            assert_eq!((size.ws_col, size.ws_row), (120, 40));
+            let dir = tempfile::tempdir().unwrap();
+            let mut session = session_in(dir.path());
+            session.builder = Arc::new(BuildsTwo);
+            session.resolve().unwrap();
+            let other = if tilo_environment::host_arch() == "x86_64" {
+                "aarch64"
+            } else {
+                "x86_64"
+            };
+            add_tool(&session, "pandoc", other, 5);
+
+            let resolved = session.resolve().unwrap();
+            assert!(
+                resolved.images[0].0.contains("pandoc"),
+                "{:?}",
+                resolved.images
+            );
+            let tool = &resolved.environment.tools[0];
+            assert_eq!(
+                tool.image(tilo_environment::host_arch()).unwrap(),
+                Some(PackageId::from_bytes([2; 32])),
+                "the image built here is recorded next to the other architecture's"
+            );
+            assert_eq!(
+                tool.image(other).unwrap(),
+                Some(PackageId::from_bytes([5; 32]))
+            );
         }
+
+        phase a_tool_that_cannot_be_used_or_built_stops_the_session_with_the_reason;
         {
-            let (a, b) = UnixStream::pair().unwrap();
-            let (master, mut slave) = open_pty(80, 24).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let session = session_in(dir.path());
+            session.resolve().unwrap();
+            let arch = tilo_environment::host_arch();
+            add_tool(&session, "gone", arch, 7);
+            let err = session.resolve().unwrap_err().to_string();
+            assert!(
+                err.contains("is not here") && err.contains("not available"),
+                "{err}"
+            );
 
-            send_with_fd(&a, b"{\"result\":\"session\"}\n", &master).unwrap();
-            let (payload, fd) = recv_with_fd(&b).unwrap();
-            assert!(String::from_utf8_lossy(&payload).contains("session"));
-            let fd = fd.expect("no descriptor arrived");
+            session
+                .records()
+                .apply(
+                    DEFAULT_RECORD,
+                    Environment::REMOVE_TOOL.with(vec!["gone".into()]),
+                )
+                .unwrap();
+            add_tool(&session, "elsewhere", arch, 9);
+            let err = session.resolve().unwrap_err().to_string();
+            assert!(err.contains("another runtime"), "{err}");
 
-            // Write on the slave, read it back through the received master. If the
-            // descriptor were not the same terminal this would block or fail.
-            slave.write_all(b"hello\n").unwrap();
-            slave.flush().unwrap();
-            let mut buf = [0u8; 32];
-            let n = std::fs::File::from(fd).read(&mut buf).unwrap();
-            assert!(n > 0, "nothing came back through the received descriptor");
-            assert!(String::from_utf8_lossy(&buf[..n]).contains("hello"));
+            let mut named = session_in(dir.path());
+            named.opts.environment = Some("work".into());
+            let err = named.resolve().unwrap_err().to_string();
+            assert!(err.contains("no environment"), "{err}");
+        }
+
+        phase the_guest_home_is_seeded_once;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            seed_guest_home(&home).unwrap();
+            let rc = home.join(".bashrc");
+            assert!(rc.is_file());
+            std::fs::write(&rc, b"# edited by the user\n").unwrap();
+            seed_guest_home(&home).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&rc).unwrap(),
+                "# edited by the user\n"
+            );
+        }
+
+        phase a_pty_opens_at_the_requested_size_and_survives_the_socket;
+        {
+            {
+                let (master, _slave) = open_pty(120, 40).unwrap();
+                let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+                let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
+                assert_eq!(rc, 0);
+                assert_eq!((size.ws_col, size.ws_row), (120, 40));
+            }
+            {
+                let (a, b) = UnixStream::pair().unwrap();
+                let (master, mut slave) = open_pty(80, 24).unwrap();
+
+                send_with_fd(&a, b"{\"result\":\"session\"}\n", &master).unwrap();
+                let (payload, fd) = recv_with_fd(&b).unwrap();
+                assert!(String::from_utf8_lossy(&payload).contains("session"));
+                let fd = fd.expect("no descriptor arrived");
+
+                // Write on the slave, read it back through the received master. If the
+                // descriptor were not the same terminal this would block or fail.
+                slave.write_all(b"hello\n").unwrap();
+                slave.flush().unwrap();
+                let mut buf = [0u8; 32];
+                let n = std::fs::File::from(fd).read(&mut buf).unwrap();
+                assert!(n > 0, "nothing came back through the received descriptor");
+                assert!(String::from_utf8_lossy(&buf[..n]).contains("hello"));
+            }
         }
     }
 }

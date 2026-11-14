@@ -257,9 +257,12 @@ fn arrow_pixels(side: u32) -> Vec<u8> {
 }
 
 impl State {
-    /// What the pointer shows now: a hosted surface under it chooses its shape, else the focused
-    /// client.
+    /// What the pointer shows now: nothing while it is parked, else a hosted surface under it
+    /// chooses its shape, else the focused client.
     fn cursor_status(&self) -> CursorImageStatus {
+        if self.pointer_parked {
+            return CursorImageStatus::Hidden;
+        }
         match self.host_under_pointer() {
             Some(host) => CursorImageStatus::Named(host.cursor()),
             None => self.cursor.status.clone(),
@@ -435,13 +438,167 @@ mod tests {
     use smithay::backend::renderer::pixman::PixmanRenderer;
     use smithay::utils::Buffer;
 
-    #[test]
-    fn cursors_grow_with_the_output_scale() {
-        assert_eq!(cursor_pixels(24, 1.0), 24);
-        assert_eq!(cursor_pixels(24, 1.5), 36);
-        assert_eq!(cursor_pixels(24, 2.0), 48);
-        assert_eq!(cursor_pixels(24, f64::NAN), 24);
-        assert_eq!(cursor_pixels(24, 0.0), 24);
+    tilo_test_env::scenario! {
+        /// The pointer: its size at every scale, what the cursor plane holds, its theme and its
+        /// fallback.
+        fn the_pointer_is_drawn_at_the_persons_size_and_theme;
+
+        phase cursors_grow_with_the_output_scale;
+        {
+            assert_eq!(cursor_pixels(24, 1.0), 24);
+            assert_eq!(cursor_pixels(24, 1.5), 36);
+            assert_eq!(cursor_pixels(24, 2.0), 48);
+            assert_eq!(cursor_pixels(24, f64::NAN), 24);
+            assert_eq!(cursor_pixels(24, 0.0), 24);
+        }
+
+        phase the_cursor_plane_holds_the_whole_pointer_at_forty_eight_pixels;
+        // The hardware cursor plane's buffer holds the whole pointer at the person's size on a 2
+        // display: the arrow's bright bottom-right pixel is there, and the image fills exactly 48 by
+        // 48 pixels of the plane.
+        // This is what a 2 display showed wrong: the element's `src` was 24 of the image's pixels over
+        // a 48-pixel box, so the plane held a doubled top-left quarter — the pointer twice the size,
+        // its lower half cut off.
+        {
+            let mut renderer = PixmanRenderer::new().expect("pixman");
+            let image = image_at(2.0);
+            let element = element_of(&mut renderer, &image, 2.0);
+            let plane = cursor_plane_pixels(&mut renderer, &element, 2.0, 64);
+            let pixel = |x: u32, y: u32| plane[usize::try_from(y * 64 + x).unwrap()];
+            assert_eq!(
+                pixel(46, 46),
+                [0xff, 0x00, 0xff, 0xff],
+                "the pointer's own last corner pixel is in the plane: a crop ends short of it"
+            );
+            assert_eq!(
+                pixel(1, 1),
+                [0x00, 0x00, 0x00, 0xff],
+                "and its first, at one to one"
+            );
+            let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
+            assert_eq!(
+                occupied_last,
+                Some(47),
+                "the image fills the plane's 48 rows, the person's 24 logical pixels \
+             at 2: a doubled pointer ran to the plane's edge at 63"
+            );
+        }
+
+        phase the_cursor_plane_holds_the_whole_pointer_at_twenty_four_pixels;
+        // At 1 the plane holds the pointer whole too, at its 24 pixels.
+        {
+            let mut renderer = PixmanRenderer::new().expect("pixman");
+            let image = image_at(1.0);
+            let element = element_of(&mut renderer, &image, 1.0);
+            let plane = cursor_plane_pixels(&mut renderer, &element, 1.0, 64);
+            let pixel = |x: u32, y: u32| plane[usize::try_from(y * 64 + x).unwrap()];
+            assert_eq!(
+                pixel(22, 22),
+                [0xff, 0x00, 0xff, 0xff],
+                "the last corner pixel"
+            );
+            let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
+            assert_eq!(
+                occupied_last,
+                Some(23),
+                "the pointer's 24 pixels, uncropped"
+            );
+        }
+
+        phase the_cursor_plane_holds_the_whole_pointer_at_a_fractional_scale;
+        // A fractional scale holds the pointer whole as well: the buffer says
+        // the nearest whole scale, the element states the size the person set,
+        // and the plane is handed all of the image's pixels.
+        {
+            let mut renderer = PixmanRenderer::new().expect("pixman");
+            for (scale, pixels) in [(1.25_f64, 30_u32), (1.5, 36), (2.5, 60)] {
+                let image = image_at(scale);
+                let element = element_of(&mut renderer, &image, scale);
+                let plane = cursor_plane_pixels(&mut renderer, &element, scale, 64);
+                let pixel = |x: u32, y: u32| plane[usize::try_from(y * 64 + x).unwrap()];
+                let last = pixels - 2;
+                assert_eq!(
+                    pixel(last, last),
+                    [0xff, 0x00, 0xff, 0xff],
+                    "at {scale} the pointer's last pixel is in the plane, not a crop of it"
+                );
+                let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
+                assert_eq!(
+                    occupied_last,
+                    Some(pixels - 1),
+                    "at {scale} the plane holds exactly the image's pixels"
+                );
+            }
+        }
+
+        phase the_pointer_is_the_persons_size_in_logical_pixels_at_every_scale;
+        // The drawn pointer covers the person's 24 logical pixels at every scale, whatever scale its
+        // image was loaded at.
+        {
+            for scale in [1.0, 1.25, 1.5, 2.0, 2.5, 3.0] {
+                let pixels = cursor_pixels(24, scale);
+                let image = Image {
+                    buffer: MemoryRenderBuffer::from_slice(
+                        &arrow_pixels(pixels),
+                        Fourcc::Abgr8888,
+                        (
+                            i32::try_from(pixels).unwrap(),
+                            i32::try_from(pixels).unwrap(),
+                        ),
+                        buffer_scale(scale),
+                        Transform::Normal,
+                        None,
+                    ),
+                    size: Size::from((
+                        i32::try_from(pixels).unwrap(),
+                        i32::try_from(pixels).unwrap(),
+                    )),
+                    hotspot: Point::from((0, 0)),
+                    buffer_scale: buffer_scale(scale),
+                };
+                let logical = image.logical_size(scale);
+                let shown = logical.to_f64().to_physical(scale);
+                assert!(
+                    (f64::from(logical.w) - 24.0).abs() <= 1.0
+                        && (f64::from(logical.h) - 24.0).abs() <= 1.0,
+                    "at {scale} the pointer covers the person's 24 logical pixels: it \
+                 covers {logical:?}, which shows at {shown:?}"
+                );
+            }
+        }
+
+        phase the_pointer_draws_the_theme_the_person_chose;
+        // The person's theme is the one the pointer is drawn from, and the one Xwayland's clients are
+        // told; until they choose one, the environment's is (`default` when it names none). Neither
+        // has to be installed here: a theme the machine lacks draws the plain arrow.
+        {
+            let mut cursor = Cursor::new();
+            let environment = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".to_owned());
+            assert_eq!(cursor.theme_name(), environment);
+            cursor.set_theme("Bibata-Modern-Ice");
+            assert_eq!(cursor.theme_name(), "Bibata-Modern-Ice");
+            cursor.set_theme("Adwaita");
+            assert_eq!(cursor.theme_name(), "Adwaita");
+            // A theme the person drew back to the environment's.
+            cursor.set_theme("");
+            assert_eq!(cursor.theme_name(), environment);
+        }
+
+        phase the_fallback_arrow_points_at_the_top_left;
+        {
+            let side = 16;
+            let rgba = arrow_pixels(side);
+            assert_eq!(rgba.len(), 16 * 16 * 4);
+            let pixel = |x: usize, y: usize| {
+                let at = (y * 16 + x) * 4;
+                rgba.get(at..at + 4).map(<[u8]>::to_vec)
+            };
+            // The point is opaque, the far top right is clear, the middle of the bottom-left half is
+            // white.
+            assert_eq!(pixel(0, 0), Some(vec![0, 0, 0, 255]));
+            assert_eq!(pixel(15, 0), Some(vec![0, 0, 0, 0]));
+            assert_eq!(pixel(2, 10), Some(vec![255, 255, 255, 255]));
+        }
     }
 
     /// The box the pointer's element draws into, in the output's physical pixels, from the elements
@@ -576,153 +733,5 @@ mod tests {
             .chunks_exact(4)
             .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
             .collect()
-    }
-
-    /// The hardware cursor plane's buffer holds the whole pointer at the person's size on a 2
-    /// display: the arrow's bright bottom-right pixel is there, and the image fills exactly 48 by
-    /// 48 pixels of the plane.
-    /// This is what a 2 display showed wrong: the element's `src` was 24 of the image's pixels over
-    /// a 48-pixel box, so the plane held a doubled top-left quarter — the pointer twice the size,
-    /// its lower half cut off.
-    #[test]
-    fn the_cursor_plane_holds_the_whole_pointer_at_forty_eight_pixels() {
-        let mut renderer = PixmanRenderer::new().expect("pixman");
-        let image = image_at(2.0);
-        let element = element_of(&mut renderer, &image, 2.0);
-        let plane = cursor_plane_pixels(&mut renderer, &element, 2.0, 64);
-        let pixel = |x: u32, y: u32| plane[usize::try_from(y * 64 + x).unwrap()];
-        assert_eq!(
-            pixel(46, 46),
-            [0xff, 0x00, 0xff, 0xff],
-            "the pointer's own last corner pixel is in the plane: a crop ends short of it"
-        );
-        assert_eq!(
-            pixel(1, 1),
-            [0x00, 0x00, 0x00, 0xff],
-            "and its first, at one to one"
-        );
-        let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
-        assert_eq!(
-            occupied_last,
-            Some(47),
-            "the image fills the plane's 48 rows, the person's 24 logical pixels \
-             at 2: a doubled pointer ran to the plane's edge at 63"
-        );
-    }
-
-    /// At 1 the plane holds the pointer whole too, at its 24 pixels.
-    #[test]
-    fn the_cursor_plane_holds_the_whole_pointer_at_twenty_four_pixels() {
-        let mut renderer = PixmanRenderer::new().expect("pixman");
-        let image = image_at(1.0);
-        let element = element_of(&mut renderer, &image, 1.0);
-        let plane = cursor_plane_pixels(&mut renderer, &element, 1.0, 64);
-        let pixel = |x: u32, y: u32| plane[usize::try_from(y * 64 + x).unwrap()];
-        assert_eq!(
-            pixel(22, 22),
-            [0xff, 0x00, 0xff, 0xff],
-            "the last corner pixel"
-        );
-        let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
-        assert_eq!(
-            occupied_last,
-            Some(23),
-            "the pointer's 24 pixels, uncropped"
-        );
-    }
-
-    /// A fractional scale holds the pointer whole as well: the buffer says
-    /// the nearest whole scale, the element states the size the person set,
-    /// and the plane is handed all of the image's pixels.
-    #[test]
-    fn the_cursor_plane_holds_the_whole_pointer_at_a_fractional_scale() {
-        let mut renderer = PixmanRenderer::new().expect("pixman");
-        for (scale, pixels) in [(1.25_f64, 30_u32), (1.5, 36), (2.5, 60)] {
-            let image = image_at(scale);
-            let element = element_of(&mut renderer, &image, scale);
-            let plane = cursor_plane_pixels(&mut renderer, &element, scale, 64);
-            let pixel = |x: u32, y: u32| plane[usize::try_from(y * 64 + x).unwrap()];
-            let last = pixels - 2;
-            assert_eq!(
-                pixel(last, last),
-                [0xff, 0x00, 0xff, 0xff],
-                "at {scale} the pointer's last pixel is in the plane, not a crop of it"
-            );
-            let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
-            assert_eq!(
-                occupied_last,
-                Some(pixels - 1),
-                "at {scale} the plane holds exactly the image's pixels"
-            );
-        }
-    }
-
-    /// The drawn pointer covers the person's 24 logical pixels at every scale, whatever scale its
-    /// image was loaded at.
-    #[test]
-    fn the_pointer_is_the_persons_size_in_logical_pixels_at_every_scale() {
-        for scale in [1.0, 1.25, 1.5, 2.0, 2.5, 3.0] {
-            let pixels = cursor_pixels(24, scale);
-            let image = Image {
-                buffer: MemoryRenderBuffer::from_slice(
-                    &arrow_pixels(pixels),
-                    Fourcc::Abgr8888,
-                    (
-                        i32::try_from(pixels).unwrap(),
-                        i32::try_from(pixels).unwrap(),
-                    ),
-                    buffer_scale(scale),
-                    Transform::Normal,
-                    None,
-                ),
-                size: Size::from((
-                    i32::try_from(pixels).unwrap(),
-                    i32::try_from(pixels).unwrap(),
-                )),
-                hotspot: Point::from((0, 0)),
-                buffer_scale: buffer_scale(scale),
-            };
-            let logical = image.logical_size(scale);
-            let shown = logical.to_f64().to_physical(scale);
-            assert!(
-                (f64::from(logical.w) - 24.0).abs() <= 1.0
-                    && (f64::from(logical.h) - 24.0).abs() <= 1.0,
-                "at {scale} the pointer covers the person's 24 logical pixels: it \
-                 covers {logical:?}, which shows at {shown:?}"
-            );
-        }
-    }
-
-    /// The person's theme is the one the pointer is drawn from, and the one Xwayland's clients are
-    /// told; until they choose one, the environment's is (`default` when it names none). Neither
-    /// has to be installed here: a theme the machine lacks draws the plain arrow.
-    #[test]
-    fn the_pointer_draws_the_theme_the_person_chose() {
-        let mut cursor = Cursor::new();
-        let environment = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".to_owned());
-        assert_eq!(cursor.theme_name(), environment);
-        cursor.set_theme("Bibata-Modern-Ice");
-        assert_eq!(cursor.theme_name(), "Bibata-Modern-Ice");
-        cursor.set_theme("Adwaita");
-        assert_eq!(cursor.theme_name(), "Adwaita");
-        // A theme the person drew back to the environment's.
-        cursor.set_theme("");
-        assert_eq!(cursor.theme_name(), environment);
-    }
-
-    #[test]
-    fn the_fallback_arrow_points_at_the_top_left() {
-        let side = 16;
-        let rgba = arrow_pixels(side);
-        assert_eq!(rgba.len(), 16 * 16 * 4);
-        let pixel = |x: usize, y: usize| {
-            let at = (y * 16 + x) * 4;
-            rgba.get(at..at + 4).map(<[u8]>::to_vec)
-        };
-        // The point is opaque, the far top right is clear, the middle of the bottom-left half is
-        // white.
-        assert_eq!(pixel(0, 0), Some(vec![0, 0, 0, 255]));
-        assert_eq!(pixel(15, 0), Some(vec![0, 0, 0, 0]));
-        assert_eq!(pixel(2, 10), Some(vec![255, 255, 255, 255]));
     }
 }

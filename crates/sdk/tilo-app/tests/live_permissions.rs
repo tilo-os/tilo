@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use tilo_app::widget::TaffyTreeExt;
 
+use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::permissions::{KindSet, PermissionContext, TreePath, policy};
 use tilo_app::prelude::*;
 
@@ -355,7 +356,7 @@ fn a_commenters_typed_edit_needs_what_its_value_needs() {
     );
     let mut view = tilo_app::framework::AttachedView::open(
         definition,
-        "test-workspace",
+        TEST_WORKSPACE,
         tilo_app::record::RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
         "scribe",

@@ -127,21 +127,9 @@ impl ErasedRead {
     }
 }
 
-/// Mark a call that reaches the device or a service — a command, a D-Bus
-/// call, a walk of a large tree — and so may take seconds. In a debug build
-/// it panics on the UI thread: a pane that makes the window wait on the
-/// device fails its tests and a development build, instead of freezing the
-/// window on a slow device. The stand-ins a test reads mark their calls
-/// too, so a test that opens a pane on the UI thread proves it reads
-/// nothing there.
-#[track_caller]
-pub fn off_ui_thread() {
-    debug_assert!(
-        !ui::rt::is_ui_thread(),
-        "Settings reached the device on the UI thread; read it off the UI thread \
-         (crate::device_read::Reading, DeviceRead or an effect job)"
-    );
-}
+/// Mark a call that reaches the device or a service, read with [`DeviceRead`], [`Reading`] or an
+/// effect job. The stand-ins a test reads mark their calls too.
+pub use ui::rt::off_ui_thread;
 
 /// What an area last read of the device, read again off the UI thread.
 ///
@@ -403,28 +391,32 @@ fn erased_job(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_started_read_runs_off_the_calling_thread_once() {
-        let read = DeviceRead::default();
-        let caller = std::thread::current().id();
-        assert!(read.start(move || std::thread::current().id() != caller));
-        assert!(!read.start(|| false), "one read at a time");
-        tilo_test_env::wait_until("the read to finish", || read.is_finished());
-        assert_eq!(read.take(), Some(true), "the read ran on another thread");
-        assert_eq!(read.take(), None, "a result is adopted once");
-    }
+    tilo_test_env::scenario! {
+        fn a_device_read_runs_once_off_the_calling_thread;
 
-    #[test]
-    fn taking_a_running_read_waits_for_it() {
-        let read = DeviceRead::default();
-        let (release, gate) = std::sync::mpsc::channel::<()>();
-        assert!(read.start(move || {
-            let _ = gate.recv();
-            7
-        }));
-        assert!(!read.is_finished(), "the read is held at its gate");
-        release.send(()).unwrap();
-        assert_eq!(read.take(), Some(7));
-        assert!(read.is_finished(), "nothing is left on its way");
+        phase a_started_read_runs_off_the_calling_thread_once;
+        {
+            let read = DeviceRead::default();
+            let caller = std::thread::current().id();
+            assert!(read.start(move || std::thread::current().id() != caller));
+            assert!(!read.start(|| false), "one read at a time");
+            tilo_test_env::wait_until("the read to finish", || read.is_finished());
+            assert_eq!(read.take(), Some(true), "the read ran on another thread");
+            assert_eq!(read.take(), None, "a result is adopted once");
+        }
+
+        phase taking_a_running_read_waits_for_it;
+        {
+            let read = DeviceRead::default();
+            let (release, gate) = std::sync::mpsc::channel::<()>();
+            assert!(read.start(move || {
+                let _ = gate.recv();
+                7
+            }));
+            assert!(!read.is_finished(), "the read is held at its gate");
+            release.send(()).unwrap();
+            assert_eq!(read.take(), Some(7));
+            assert!(read.is_finished(), "nothing is left on its way");
+        }
     }
 }

@@ -39,6 +39,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::device::{Entering, door_entry};
 use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
@@ -150,7 +151,7 @@ struct Work {
 /// since the heads it read last where it read before, until both read whole.
 async fn guest_takes_in(
     page: &Link,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     chat: &DocumentRoute,
     part: &DocumentRoute,
 ) -> Work {
@@ -161,6 +162,7 @@ async fn guest_takes_in(
     let landed_before = *page.engine().arrivals().watching().borrow();
     let opened = Instant::now();
     page.send(Cmd::Join(workspace_id)).unwrap();
+    let events = page.events();
     for route in [chat, part] {
         page.send(Cmd::OpenRoute(route.clone())).unwrap();
     }
@@ -173,7 +175,7 @@ async fn guest_takes_in(
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let mut landed = std::collections::BTreeSet::new();
-        for event in page.drain() {
+        for event in events.drain() {
             match event {
                 Event::Landed { route, .. } if route == *chat || route == *part => {
                     landed.insert(route.record.clone());
@@ -248,7 +250,7 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
@@ -260,7 +262,7 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

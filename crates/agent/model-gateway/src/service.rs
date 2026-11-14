@@ -3008,149 +3008,154 @@ mod tests {
         }
     }
 
-    #[test]
-    fn existing_user_profile_requires_explicit_original_endpoint_migration() {
-        let root = tempfile::tempdir().unwrap();
-        let settings = settings_store::profile(root.path());
-        let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
-        profile.endpoint = "https://original.example/v1".into();
-        let config = ProviderConfig {
-            profiles: vec![profile.clone()],
-            default_profile: Some(profile.id.clone()),
-            ..Default::default()
-        };
-        config.save_in(&settings).unwrap();
-        let store = ServiceCredentials::open_in(root.path());
-        assert_eq!(
-            credential_status_in(&store, &profile).unwrap(),
-            crate::CredentialStatus::Missing
-        );
-        assert!(migrate_key_in(&store, &profile, &profile.endpoint).is_err());
-        let legacy = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
-        let mut vault = accounts::SecretVault::open_in(root.path());
-        vault.put(&legacy, &accounts::Secret::password("old-key"));
-        vault.try_save().unwrap();
-        let mut loaded = ProviderConfig::load_in(&settings).profiles.remove(0);
-        assert_eq!(
-            credential_status_in(&store, &loaded).unwrap(),
-            crate::CredentialStatus::MigrationRequired
-        );
-        assert!(
-            resolve_key_in(&store, &loaded)
-                .unwrap_err()
-                .message
-                .contains("migration required")
-        );
+    tilo_test_env::scenario! {
+        /// Migrating and removing a legacy API key, each case in a settings root of its own.
+        fn a_legacy_key_migrates_only_explicitly_and_is_never_lost_or_overreached;
 
-        assert_eq!(
-            resolve_key_in(&store, &loaded).unwrap_err().kind,
-            ErrorKind::Authentication
-        );
+        phase existing_user_profile_requires_explicit_original_endpoint_migration;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let settings = settings_store::profile(root.path());
+            let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+            profile.endpoint = "https://original.example/v1".into();
+            let config = ProviderConfig {
+                profiles: vec![profile.clone()],
+                default_profile: Some(profile.id.clone()),
+                ..Default::default()
+            };
+            config.save_in(&settings).unwrap();
+            let store = ServiceCredentials::open_in(root.path());
+            assert_eq!(
+                credential_status_in(&store, &profile).unwrap(),
+                crate::CredentialStatus::Missing
+            );
+            assert!(migrate_key_in(&store, &profile, &profile.endpoint).is_err());
+            let legacy = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
+            let mut vault = accounts::SecretVault::open_in(root.path());
+            vault.put(&legacy, &accounts::Secret::password("old-key"));
+            vault.try_save().unwrap();
+            let mut loaded = ProviderConfig::load_in(&settings).profiles.remove(0);
+            assert_eq!(
+                credential_status_in(&store, &loaded).unwrap(),
+                crate::CredentialStatus::MigrationRequired
+            );
+            assert!(
+                resolve_key_in(&store, &loaded)
+                    .unwrap_err()
+                    .message
+                    .contains("migration required")
+            );
 
-        // Editing the profile must not give its new origin custody of the old key.
-        loaded.endpoint = "https://edited.example/v1".into();
-        assert_eq!(
-            credential_status_in(&store, &loaded).unwrap(),
-            crate::CredentialStatus::MigrationRequired
-        );
-        assert!(migrate_key_in(&store, &loaded, "https://original.example/v1").is_err());
-        assert!(
-            accounts::SecretVault::open_in(root.path())
-                .get(&legacy)
-                .is_some()
-        );
-        assert!(resolve_key_in(&store, &loaded).is_err());
+            assert_eq!(
+                resolve_key_in(&store, &loaded).unwrap_err().kind,
+                ErrorKind::Authentication
+            );
 
-        loaded.endpoint = "https://original.example/v1".into();
-        migrate_key_in(&store, &loaded, "https://original.example/v1").unwrap();
-        assert_eq!(
-            credential_status_in(&store, &loaded).unwrap(),
-            crate::CredentialStatus::Configured
-        );
-        assert_eq!(resolve_key_in(&store, &loaded).unwrap().as_str(), "old-key");
-        assert!(
-            accounts::SecretVault::open_in(root.path())
-                .get(&legacy)
-                .is_none()
-        );
-        migrate_key_in(&store, &loaded, "https://original.example/v1").unwrap();
-        loaded.endpoint = "https://edited.example/v1".into();
-        assert_eq!(
-            resolve_key_in(&store, &loaded).unwrap_err().kind,
-            ErrorKind::PermissionDenied
-        );
-    }
+            // Editing the profile must not give its new origin custody of the old key.
+            loaded.endpoint = "https://edited.example/v1".into();
+            assert_eq!(
+                credential_status_in(&store, &loaded).unwrap(),
+                crate::CredentialStatus::MigrationRequired
+            );
+            assert!(migrate_key_in(&store, &loaded, "https://original.example/v1").is_err());
+            assert!(
+                accounts::SecretVault::open_in(root.path())
+                    .get(&legacy)
+                    .is_some()
+            );
+            assert!(resolve_key_in(&store, &loaded).is_err());
 
-    #[test]
-    fn failed_migration_keeps_the_legacy_key_durable() {
-        let root = tempfile::tempdir().unwrap();
-        let store = ServiceCredentials::open_in(root.path());
-        let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        let legacy = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
-        let mut vault = accounts::SecretVault::open_in(root.path());
-        vault.put(&legacy, &accounts::Secret::password("old-key"));
-        vault.try_save().unwrap();
-        let lock = accounts::vault_dir_in(root.path()).join("vault.lock");
-        std::fs::remove_file(&lock).unwrap();
-        std::fs::create_dir(&lock).unwrap();
-        assert!(migrate_key_in(&store, &profile, &profile.endpoint).is_err());
-        assert_eq!(
-            credential_status_in(&store, &profile).unwrap(),
-            crate::CredentialStatus::MigrationRequired
-        );
-        assert_eq!(
-            accounts::SecretVault::open_in(root.path())
-                .get(&legacy)
-                .unwrap()
-                .password,
-            "old-key"
-        );
-        let (reference, authorization) = credential_binding(&profile).unwrap();
-        assert!(!store.status(&reference, &authorization).unwrap());
-    }
+            loaded.endpoint = "https://original.example/v1".into();
+            migrate_key_in(&store, &loaded, "https://original.example/v1").unwrap();
+            assert_eq!(
+                credential_status_in(&store, &loaded).unwrap(),
+                crate::CredentialStatus::Configured
+            );
+            assert_eq!(resolve_key_in(&store, &loaded).unwrap().as_str(), "old-key");
+            assert!(
+                accounts::SecretVault::open_in(root.path())
+                    .get(&legacy)
+                    .is_none()
+            );
+            migrate_key_in(&store, &loaded, "https://original.example/v1").unwrap();
+            loaded.endpoint = "https://edited.example/v1".into();
+            assert_eq!(
+                resolve_key_in(&store, &loaded).unwrap_err().kind,
+                ErrorKind::PermissionDenied
+            );
+        }
 
-    #[test]
-    fn selected_legacy_removal_does_not_touch_bound_or_other_profile_keys() {
-        let root = tempfile::tempdir().unwrap();
-        let store = ServiceCredentials::open_in(root.path());
-        let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        profile.endpoint = "https://original.example".into();
-        let (reference, authorization) = credential_binding(&profile).unwrap();
-        store
-            .store(&reference, &authorization, "bound-key")
-            .unwrap();
-        let mut vault = accounts::SecretVault::open_in(root.path());
-        let selected = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
-        let other = accounts::AccountId::new("agent-provider-other");
-        vault.put(&selected, &accounts::Secret::password("old-key"));
-        vault.put(&other, &accounts::Secret::password("other-key"));
-        vault.try_save().unwrap();
-        profile.endpoint = "https://edited.example".into();
-        store.remove_legacy_agent_provider(&profile.id).unwrap();
-        assert!(!store.legacy_agent_provider_status(&profile.id).unwrap());
-        assert!(store.legacy_agent_provider_status("other").unwrap());
-        assert_eq!(
+        phase failed_migration_keeps_the_legacy_key_durable;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = ServiceCredentials::open_in(root.path());
+            let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            let legacy = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
+            let mut vault = accounts::SecretVault::open_in(root.path());
+            vault.put(&legacy, &accounts::Secret::password("old-key"));
+            vault.try_save().unwrap();
+            let lock = accounts::vault_dir_in(root.path()).join("vault.lock");
+            std::fs::remove_file(&lock).unwrap();
+            std::fs::create_dir(&lock).unwrap();
+            assert!(migrate_key_in(&store, &profile, &profile.endpoint).is_err());
+            assert_eq!(
+                credential_status_in(&store, &profile).unwrap(),
+                crate::CredentialStatus::MigrationRequired
+            );
+            assert_eq!(
+                accounts::SecretVault::open_in(root.path())
+                    .get(&legacy)
+                    .unwrap()
+                    .password,
+                "old-key"
+            );
+            let (reference, authorization) = credential_binding(&profile).unwrap();
+            assert!(!store.status(&reference, &authorization).unwrap());
+        }
+
+        phase selected_legacy_removal_does_not_touch_bound_or_other_profile_keys;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = ServiceCredentials::open_in(root.path());
+            let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            profile.endpoint = "https://original.example".into();
+            let (reference, authorization) = credential_binding(&profile).unwrap();
             store
-                .resolve(&reference, &authorization)
-                .unwrap()
-                .unwrap()
-                .as_str(),
-            "bound-key"
-        );
-        assert!(store.remove_legacy_agent_provider("../other").is_err());
+                .store(&reference, &authorization, "bound-key")
+                .unwrap();
+            let mut vault = accounts::SecretVault::open_in(root.path());
+            let selected = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
+            let other = accounts::AccountId::new("agent-provider-other");
+            vault.put(&selected, &accounts::Secret::password("old-key"));
+            vault.put(&other, &accounts::Secret::password("other-key"));
+            vault.try_save().unwrap();
+            profile.endpoint = "https://edited.example".into();
+            store.remove_legacy_agent_provider(&profile.id).unwrap();
+            assert!(!store.legacy_agent_provider_status(&profile.id).unwrap());
+            assert!(store.legacy_agent_provider_status("other").unwrap());
+            assert_eq!(
+                store
+                    .resolve(&reference, &authorization)
+                    .unwrap()
+                    .unwrap()
+                    .as_str(),
+                "bound-key"
+            );
+            assert!(store.remove_legacy_agent_provider("../other").is_err());
 
-        // Explicit adoption of a leftover legacy entry preserves the bound
-        // replacement while durably cleaning up the obsolete copy.
-        let mut vault = accounts::SecretVault::open_in(root.path());
-        vault.put(&selected, &accounts::Secret::password("obsolete-key"));
-        vault.try_save().unwrap();
-        profile.endpoint = "https://original.example".into();
-        migrate_key_in(&store, &profile, &profile.endpoint).unwrap();
-        assert!(!store.legacy_agent_provider_status(&profile.id).unwrap());
-        assert_eq!(
-            resolve_key_in(&store, &profile).unwrap().as_str(),
-            "bound-key"
-        );
+            // Explicit adoption of a leftover legacy entry preserves the bound
+            // replacement while durably cleaning up the obsolete copy.
+            let mut vault = accounts::SecretVault::open_in(root.path());
+            vault.put(&selected, &accounts::Secret::password("obsolete-key"));
+            vault.try_save().unwrap();
+            profile.endpoint = "https://original.example".into();
+            migrate_key_in(&store, &profile, &profile.endpoint).unwrap();
+            assert!(!store.legacy_agent_provider_status(&profile.id).unwrap());
+            assert_eq!(
+                resolve_key_in(&store, &profile).unwrap().as_str(),
+                "bound-key"
+            );
+        }
     }
 
     #[test]
@@ -3177,12 +3182,14 @@ mod tests {
         }
     }
 
-    /// The launcher handoff bytes are pinned; local vision input is closed and bounded, never routes to
-    /// a LAN or hosted endpoint, requires an immutable model revision, and uses a fixed prompt with no
-    /// identity request; local face input is bounded and never requests identity.
-    #[test]
-    fn local_vision_is_pinned_bounded_local_and_never_asks_identity() {
-        // Phase: launcher_handoff_bytes_are_pinned.
+    tilo_test_env::scenario! {
+        /// The launcher handoff bytes are pinned; local vision input is closed and bounded, never
+        /// routes to a LAN or hosted endpoint, requires an immutable model revision, and uses a
+        /// fixed prompt with no identity request; local face input is bounded and never requests
+        /// identity.
+        fn local_vision_is_pinned_bounded_local_and_never_asks_identity;
+
+        phase launcher_handoff_bytes_are_pinned;
         // The launcher's handoff: a little-endian `u32` length, then JSON.
         {
             use std::io::Write as _;
@@ -3200,7 +3207,7 @@ mod tests {
             assert_eq!(handoff.unwrap().app_id, AGENT_APP);
         }
 
-        // Phase: local_vision_input_is_closed_and_bounded.
+        phase local_vision_input_is_closed_and_bounded;
         {
             assert!(validate_vision_image(&vision_image()).is_ok());
             let mut foreign = vision_image();
@@ -3214,7 +3221,7 @@ mod tests {
             assert!(validate_vision_image(&bad_hash).is_err());
         }
 
-        // Phase: local_vision_prompt_is_fixed_and_contains_no_identity_request.
+        phase local_vision_prompt_is_fixed_and_contains_no_identity_request;
         {
             let body = local_vision_body("vision-model", &vision_image());
             let encoded = body.to_string();
@@ -3224,7 +3231,7 @@ mod tests {
             assert_eq!(body["model"], "vision-model");
         }
 
-        // Phase: local_face_input_is_bounded_and_prompt_never_requests_identity.
+        phase local_face_input_is_bounded_and_prompt_never_requests_identity;
         {
             let face = FaceImage {
                 photo_id: "photos.photo:one".into(),
@@ -3253,75 +3260,80 @@ mod tests {
         }
     }
 
-    #[test]
-    fn transform_requests_are_bounded_before_any_provider_is_asked() {
-        assert!(validate_transform(&ask("text")).is_ok());
-        let huge = "x".repeat(crate::MAX_TRANSFORM_INPUT_BYTES + 1);
-        assert!(validate_transform(&ask(&huge)).is_err());
-        assert!(validate_transform(&ask("  ")).is_err());
-        let mut greedy = ask("text");
-        greedy.max_output_tokens = crate::MAX_TRANSFORM_OUTPUT_TOKENS + 1;
-        assert!(validate_transform(&greedy).is_err());
-        let mut rushed = ask("text");
-        rushed.timeout = Duration::ZERO;
-        assert!(validate_transform(&rushed).is_err());
-    }
+    tilo_test_env::scenario! {
+        /// The Transform verb: its bounds, its bodies, its answers and who may ask.
+        fn a_transform_is_one_bounded_tool_free_text_turn_for_the_agent_alone;
 
-    #[test]
-    fn transform_bodies_carry_no_tools_in_either_dialect() {
-        for protocol in [
-            ProviderProtocol::Anthropic,
-            ProviderProtocol::OpenAiCompatible,
-        ] {
-            let profile = agent_provider_config::ProviderProfile::hosted(protocol);
-            let body = transform_body(&profile, "model-x", &ask("the input"));
-            assert_eq!(body["model"], "model-x");
-            assert_eq!(body["max_tokens"], 512);
-            assert!(body.get("tools").is_none());
-            assert!(body.to_string().contains("the input"));
+        phase transform_requests_are_bounded_before_any_provider_is_asked;
+        {
+            assert!(validate_transform(&ask("text")).is_ok());
+            let huge = "x".repeat(crate::MAX_TRANSFORM_INPUT_BYTES + 1);
+            assert!(validate_transform(&ask(&huge)).is_err());
+            assert!(validate_transform(&ask("  ")).is_err());
+            let mut greedy = ask("text");
+            greedy.max_output_tokens = crate::MAX_TRANSFORM_OUTPUT_TOKENS + 1;
+            assert!(validate_transform(&greedy).is_err());
+            let mut rushed = ask("text");
+            rushed.timeout = Duration::ZERO;
+            assert!(validate_transform(&rushed).is_err());
         }
-    }
 
-    #[test]
-    fn transform_answers_are_the_text_and_never_a_refusal_or_a_fragment() {
-        let anthropic_profile =
-            agent_provider_config::ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        let openai_profile =
-            agent_provider_config::ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
-        let anthropic =
-            r#"{"stop_reason":"end_turn","content":[{"type":"text","text":"{\"result\":1}"}]}"#;
-        assert_eq!(
-            transform_answer(&anthropic_profile, anthropic).unwrap(),
-            r#"{"result":1}"#
-        );
-        let refused = r#"{"stop_reason":"refusal","content":[]}"#;
-        assert!(transform_answer(&anthropic_profile, refused).is_err());
-        let cut = r#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"{"}]}"#;
-        assert!(transform_answer(&anthropic_profile, cut).is_err());
-        let openai = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}"#;
-        assert_eq!(transform_answer(&openai_profile, openai).unwrap(), "{}");
-        let truncated = r#"{"choices":[{"finish_reason":"length","message":{"content":"{"}}]}"#;
-        assert!(transform_answer(&openai_profile, truncated).is_err());
-    }
+        phase transform_bodies_carry_no_tools_in_either_dialect;
+        {
+            for protocol in [
+                ProviderProtocol::Anthropic,
+                ProviderProtocol::OpenAiCompatible,
+            ] {
+                let profile = agent_provider_config::ProviderProfile::hosted(protocol);
+                let body = transform_body(&profile, "model-x", &ask("the input"));
+                assert_eq!(body["model"], "model-x");
+                assert_eq!(body["max_tokens"], 512);
+                assert!(body.get("tools").is_none());
+                assert!(body.to_string().contains("the input"));
+            }
+        }
 
-    #[test]
-    fn only_the_agent_may_transform() {
-        let http = provider_client().unwrap();
-        let request = || Request::Transform {
-            profile_id: "hosted".into(),
-            model_id: "model".into(),
-            instructions: "Answer.".into(),
-            input: "text".into(),
-            max_output_tokens: 16,
-            timeout_ms: 1000,
-        };
-        for caller in [PHOTOS_APP, SETTINGS_APP] {
-            let response = tilo_rt::block_on(handle(caller, request(), &http)).unwrap();
-            assert!(!response.ok, "{caller}");
+        phase transform_answers_are_the_text_and_never_a_refusal_or_a_fragment;
+        {
+            let anthropic_profile =
+                agent_provider_config::ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            let openai_profile =
+                agent_provider_config::ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+            let anthropic =
+                r#"{"stop_reason":"end_turn","content":[{"type":"text","text":"{\"result\":1}"}]}"#;
             assert_eq!(
-                response.error.as_deref(),
-                Some("only tilo-agent may run transforms through the model gateway")
+                transform_answer(&anthropic_profile, anthropic).unwrap(),
+                r#"{"result":1}"#
             );
+            let refused = r#"{"stop_reason":"refusal","content":[]}"#;
+            assert!(transform_answer(&anthropic_profile, refused).is_err());
+            let cut = r#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"{"}]}"#;
+            assert!(transform_answer(&anthropic_profile, cut).is_err());
+            let openai = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}"#;
+            assert_eq!(transform_answer(&openai_profile, openai).unwrap(), "{}");
+            let truncated = r#"{"choices":[{"finish_reason":"length","message":{"content":"{"}}]}"#;
+            assert!(transform_answer(&openai_profile, truncated).is_err());
+        }
+
+        phase only_the_agent_may_transform;
+        {
+            let http = provider_client().unwrap();
+            let request = || Request::Transform {
+                profile_id: "hosted".into(),
+                model_id: "model".into(),
+                instructions: "Answer.".into(),
+                input: "text".into(),
+                max_output_tokens: 16,
+                timeout_ms: 1000,
+            };
+            for caller in [PHOTOS_APP, SETTINGS_APP] {
+                let response = tilo_rt::block_on(handle(caller, request(), &http)).unwrap();
+                assert!(!response.ok, "{caller}");
+                assert_eq!(
+                    response.error.as_deref(),
+                    Some("only tilo-agent may run transforms through the model gateway")
+                );
+            }
         }
     }
 
@@ -3374,12 +3386,13 @@ mod tests {
         (result, fake.into_inner())
     }
 
-    /// Transient provider failures are retried at the gateway, settled ones are not, Retry-After and
-    /// transient statuses are classified on the HTTP side, and retries never consume room needed for an
-    /// answer.
-    #[test]
-    fn the_gateway_retries_only_transient_failures_within_the_answer_budget() {
-        // Phase: transient_provider_failures_are_retried_at_the_gateway.
+    tilo_test_env::scenario! {
+        /// Transient provider failures are retried at the gateway, settled ones are not,
+        /// Retry-After and transient statuses are classified on the HTTP side, and retries never
+        /// consume room needed for an answer.
+        fn the_gateway_retries_only_transient_failures_within_the_answer_budget;
+
+        phase transient_provider_failures_are_retried_at_the_gateway;
         {
             let (result, fake) = run_retries(
                 Duration::from_secs(20),
@@ -3393,7 +3406,7 @@ mod tests {
             );
         }
 
-        // Phase: settled_provider_failures_are_not_retried.
+        phase settled_provider_failures_are_not_retried;
         {
             for status in [400, 401, 403, 404, 422] {
                 let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
@@ -3403,7 +3416,7 @@ mod tests {
             }
         }
 
-        // Phase: retry_after_and_transient_statuses_are_classified_on_the_http_side.
+        phase retry_after_and_transient_statuses_are_classified_on_the_http_side;
         {
             for status in [408, 429, 500, 502, 503, 504, 529] {
                 assert_eq!(again_after(status, None), Again::Soon(None));
@@ -3415,7 +3428,7 @@ mod tests {
             assert_eq!(again_after(401, Some("1")), Again::Never);
         }
 
-        // Phase: retries_never_consume_room_needed_for_an_answer.
+        phase retries_never_consume_room_needed_for_an_answer;
         {
             let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
             assert!(result.is_err());
@@ -3440,289 +3453,294 @@ mod tests {
         }
     }
 
-    #[test]
-    fn outbound_model_limits_are_explicit_bounded_and_protocol_aware() {
-        for protocol in [
-            ProviderProtocol::OpenAiCompatible,
-            ProviderProtocol::Anthropic,
-        ] {
-            let mut profile = ProviderProfile::hosted(protocol);
-            let mut model = agent_provider_config::ModelDescriptor::new("bounded");
-            model.request_limits = Some(agent_provider_config::ModelRequestLimits {
-                max_output_tokens: 512,
-                runtime_context_tokens: Some(4096),
+    tilo_test_env::scenario! {
+        /// The request body the gateway sends for a Plan, per protocol.
+        fn the_outbound_body_is_the_gateways_own_in_every_dialect;
+
+        phase outbound_model_limits_are_explicit_bounded_and_protocol_aware;
+        {
+            for protocol in [
+                ProviderProtocol::OpenAiCompatible,
+                ProviderProtocol::Anthropic,
+            ] {
+                let mut profile = ProviderProfile::hosted(protocol);
+                let mut model = agent_provider_config::ModelDescriptor::new("bounded");
+                model.request_limits = Some(agent_provider_config::ModelRequestLimits {
+                    max_output_tokens: 512,
+                    runtime_context_tokens: Some(4096),
+                    plan_timeout_ms: None,
+                });
+                profile.models = vec![model, agent_provider_config::ModelDescriptor::new("legacy")];
+                profile.omit_params = vec!["max_tokens".into(), "max_completion_tokens".into()];
+                for body in [
+                    serde_json::json!({}),
+                    serde_json::json!({"max_tokens":4096}),
+                    serde_json::json!({"max_completion_tokens":4096}),
+                    serde_json::json!({"max_tokens":4096,"max_completion_tokens":4096}),
+                ] {
+                    let outbound = outbound_body(&profile, "bounded", body, false, false).unwrap();
+                    let key = if protocol == ProviderProtocol::Anthropic {
+                        "max_tokens"
+                    } else {
+                        "max_completion_tokens"
+                    };
+                    assert_eq!(
+                        outbound
+                            .get("max_tokens")
+                            .or_else(|| outbound.get("max_completion_tokens")),
+                        Some(&serde_json::json!(512))
+                    );
+                    // The OpenAI caller's existing token field is preserved unless
+                    // the profile explicitly chooses one; Anthropic has one field.
+                    if protocol == ProviderProtocol::Anthropic {
+                        assert_eq!(outbound[key], 512);
+                    }
+                    assert!(
+                        !(outbound.get("max_tokens").is_some()
+                            && outbound.get("max_completion_tokens").is_some())
+                    );
+                }
+                for bad in [
+                    serde_json::json!({"max_tokens":false}),
+                    serde_json::json!({"max_tokens":0}),
+                    serde_json::json!({"max_tokens":-1}),
+                    serde_json::json!({"max_tokens":1.5}),
+                    serde_json::json!({"max_tokens":64,"max_completion_tokens":512}),
+                ] {
+                    assert!(outbound_body(&profile, "bounded", bad.clone(), false, false).is_err());
+                    assert!(outbound_body(&profile, "legacy", bad, false, false).is_ok());
+                }
+                profile.omit_params.clear();
+                assert_eq!(
+                    outbound_body(
+                        &profile,
+                        "legacy",
+                        serde_json::json!({"max_tokens":4096}),
+                        false,
+                        false
+                    )
+                    .unwrap()["max_tokens"],
+                    4096
+                );
+            }
+        }
+
+        phase a_vertex_plan_keeps_its_fields_and_refuses_a_trailing_model_turn;
+        // The request a Google Vertex AI profile sends: the checked model id
+        // under its publisher, every field the endpoint accepts left in place
+        // (each verified against Vertex AI's OpenAI-compatible endpoint), and a
+        // conversation ending with the model's own turn refused locally.
+        {
+            let vertex = agent_provider_config::ProviderProfile::google_vertex(
+                "tilo-509618",
+                "global",
+                "gemini-4-argon",
+            );
+            let caller = serde_json::json!({
+                "model": "anything",
+                "max_completion_tokens": 4096,
+                "parallel_tool_calls": false,
+                "tool_choice": "required",
+                "tools": [{"type": "function", "function": {"name": "plan", "parameters": {"type": "object"}}}],
+                "messages": [
+                    {"role": "system", "content": "s"},
+                    {"role": "user", "content": "u"}
+                ]
+            });
+            let sent = outbound_body(
+                &vertex,
+                "google/gemini-4-argon",
+                caller.clone(),
+                true,
+                false,
+            )
+            .unwrap();
+            assert_eq!(sent["model"], "google/gemini-4-argon");
+            assert_eq!(sent["stream"], true);
+            assert_eq!(
+                sent["stream_options"],
+                serde_json::json!({"include_usage": true})
+            );
+            assert_eq!(sent["max_completion_tokens"], 4096);
+            assert_eq!(sent["parallel_tool_calls"], false);
+            assert_eq!(sent["tool_choice"], "required");
+            let mut prefill = caller;
+            prefill["messages"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({"role": "assistant", "content": "Hel"}));
+            let refused = outbound_body(
+                &vertex,
+                "google/gemini-4-argon",
+                prefill.clone(),
+                false,
+                false,
+            )
+            .unwrap_err();
+            assert!(refused.contains("Vertex AI"), "{refused}");
+            // Other providers accept a prefill; nothing changes for them.
+            assert!(outbound_body(&hosted_openai(), "vendor/model-a", prefill, false, false).is_ok());
+        }
+
+        phase a_responses_body_names_its_limit_and_reasoning_and_keeps_nothing;
+        {
+            let mut openai = hosted_openai();
+            openai.token_limit_param =
+                Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
+            let caller = serde_json::json!({
+                "model": "other", "input": [], "max_output_tokens": 64, "stream": true,
+                "stream_options": {"include_usage": true}, "reasoning_effort": "low",
+                "include": ["reasoning.encrypted_content", "message.output_text.logprobs"]
+            });
+            let body = outbound_body(&openai, "vendor/model-a", caller.clone(), false, true).unwrap();
+            assert_eq!(body["model"], "vendor/model-a");
+            assert_eq!(body["max_output_tokens"], 64);
+            assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
+            assert_eq!(body["store"], false);
+            assert_eq!(
+                body["include"],
+                serde_json::json!([
+                    "message.output_text.logprobs",
+                    "reasoning.encrypted_content"
+                ])
+            );
+            for chat_only in [
+                "max_completion_tokens",
+                "max_tokens",
+                "reasoning_effort",
+                "stream",
+                "stream_options",
+            ] {
+                assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
+            }
+            assert_eq!(
+                outbound_body(&openai, "vendor/model-a", caller.clone(), true, true).unwrap()["stream"],
+                true
+            );
+
+            // A model that does not reason is not asked for reasoning ciphertext.
+            let mut plain = openai.clone();
+            plain.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
+            let body = outbound_body(&plain, "vendor/model-a", caller.clone(), false, true).unwrap();
+            assert!(body.get("reasoning").is_none(), "{body}");
+            assert_eq!(
+                body["include"],
+                serde_json::json!(["message.output_text.logprobs"])
+            );
+            let mut none = openai.clone();
+            none.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
+            let body =
+                outbound_body(&none, "vendor/model-a", serde_json::json!({}), false, true).unwrap();
+            assert_eq!(body["reasoning"], serde_json::json!({"effort": "none"}));
+            assert!(body.get("include").is_none(), "{body}");
+
+            // The model's own output policy caps the Responses limit.
+            let mut capped = openai;
+            capped.models[0].request_limits = Some(agent_provider_config::ModelRequestLimits {
+                max_output_tokens: 32,
+                runtime_context_tokens: None,
                 plan_timeout_ms: None,
             });
-            profile.models = vec![model, agent_provider_config::ModelDescriptor::new("legacy")];
-            profile.omit_params = vec!["max_tokens".into(), "max_completion_tokens".into()];
-            for body in [
-                serde_json::json!({}),
-                serde_json::json!({"max_tokens":4096}),
-                serde_json::json!({"max_completion_tokens":4096}),
-                serde_json::json!({"max_tokens":4096,"max_completion_tokens":4096}),
-            ] {
-                let outbound = outbound_body(&profile, "bounded", body, false, false).unwrap();
-                let key = if protocol == ProviderProtocol::Anthropic {
-                    "max_tokens"
-                } else {
-                    "max_completion_tokens"
-                };
-                assert_eq!(
-                    outbound
-                        .get("max_tokens")
-                        .or_else(|| outbound.get("max_completion_tokens")),
-                    Some(&serde_json::json!(512))
-                );
-                // The OpenAI caller's existing token field is preserved unless
-                // the profile explicitly chooses one; Anthropic has one field.
-                if protocol == ProviderProtocol::Anthropic {
-                    assert_eq!(outbound[key], 512);
-                }
-                assert!(
-                    !(outbound.get("max_tokens").is_some()
-                        && outbound.get("max_completion_tokens").is_some())
-                );
-            }
-            for bad in [
-                serde_json::json!({"max_tokens":false}),
-                serde_json::json!({"max_tokens":0}),
-                serde_json::json!({"max_tokens":-1}),
-                serde_json::json!({"max_tokens":1.5}),
-                serde_json::json!({"max_tokens":64,"max_completion_tokens":512}),
-            ] {
-                assert!(outbound_body(&profile, "bounded", bad.clone(), false, false).is_err());
-                assert!(outbound_body(&profile, "legacy", bad, false, false).is_ok());
-            }
-            profile.omit_params.clear();
-            assert_eq!(
+            let body = outbound_body(&capped, "vendor/model-a", caller, false, true).unwrap();
+            assert_eq!(body["max_output_tokens"], 32);
+            assert!(body.get("max_completion_tokens").is_none(), "{body}");
+        }
+
+        phase outbound_body_is_owned_by_the_gateway;
+        {
+            let caller = serde_json::json!({
+                "model": "other/model", "max_completion_tokens": 64, "stream": true,
+                "stream_options": {"include_usage": true}, "reasoning_effort": "high", "messages": []
+            });
+            // An unconfigured profile: only the model, and the caller's stream, change.
+            let body = outbound_body(
+                &hosted_openai(),
+                "vendor/model-a",
+                caller.clone(),
+                false,
+                false,
+            )
+            .unwrap();
+            assert_eq!(body["model"], "vendor/model-a");
+            assert_eq!(body["max_completion_tokens"], 64);
+            assert_eq!(body["reasoning_effort"], "high");
+            assert!(body.get("stream").is_none() && body.get("stream_options").is_none());
+
+            let streamed = outbound_body(
+                &hosted_openai(),
+                "vendor/model-a",
+                caller.clone(),
+                true,
+                false,
+            )
+            .unwrap();
+            assert_eq!(streamed["stream"], true);
+            assert_eq!(streamed["stream_options"]["include_usage"], true);
+
+            // OpenRouter-style: `max_tokens` and the reasoning object.
+            let mut router = hosted_openai();
+            router.token_limit_param = Some(agent_provider_config::TokenLimitParam::MaxTokens);
+            router.reasoning = Some(reasoning(ReasoningParam::ReasoningObject, "low"));
+            let body = outbound_body(&router, "vendor/model-a", caller.clone(), false, false).unwrap();
+            assert_eq!(body["max_tokens"], 64);
+            assert!(body.get("max_completion_tokens").is_none());
+            assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
+            assert!(body.get("reasoning_effort").is_none());
+
+            // OpenAI-style: `max_completion_tokens` and top-level effort.
+            let mut openai = hosted_openai();
+            openai.token_limit_param =
+                Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
+            openai.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
+            let legacy = serde_json::json!({"max_tokens": 9, "reasoning": {"effort": "high"}});
+            let body = outbound_body(&openai, "vendor/model-a", legacy, false, false).unwrap();
+            assert_eq!(body["max_completion_tokens"], 9);
+            assert!(body.get("max_tokens").is_none() && body.get("reasoning").is_none());
+            assert_eq!(body["reasoning_effort"], "none");
+
+            // Cerebras-style: fields the provider rejects are stripped last,
+            // including the gateway's own stream_options.
+            let mut strict = hosted_openai();
+            strict.omit_params = vec!["stream_options".into(), "parallel_tool_calls".into()];
+            let with_extras = serde_json::json!({"parallel_tool_calls": false, "messages": []});
+            let body = outbound_body(&strict, "vendor/model-a", with_extras, true, false).unwrap();
+            assert_eq!(body["stream"], true);
+            assert!(body.get("stream_options").is_none() && body.get("parallel_tool_calls").is_none());
+
+            // `none` strips every reasoning field.
+            let mut omit = hosted_openai();
+            omit.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
+            let body = outbound_body(&omit, "vendor/model-a", caller, false, false).unwrap();
+            assert!(body.get("reasoning_effort").is_none() && body.get("reasoning").is_none());
+
+            let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            anthropic.models = vec![agent_provider_config::ModelDescriptor::new("claude-x")];
+            anthropic.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "low"));
+            anthropic.token_limit_param =
+                Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
+            let caller = serde_json::json!({"model": "other", "max_tokens": 9, "stream": true});
+            let body = outbound_body(&anthropic, "claude-x", caller.clone(), false, false).unwrap();
+            assert_eq!(body["model"], "claude-x");
+            assert_eq!(body["max_tokens"], 9);
+            assert!(body.get("stream").is_none() && body.get("reasoning_effort").is_none());
+            // A streamed Anthropic Plan asks for the event stream, and nothing
+            // of the OpenAI-compatible stream options.
+            let streamed = outbound_body(&anthropic, "claude-x", caller, true, false).unwrap();
+            assert_eq!(streamed["stream"], true);
+            assert!(streamed.get("stream_options").is_none());
+            assert!(streamed.get("reasoning_effort").is_none());
+
+            assert!(
                 outbound_body(
-                    &profile,
-                    "legacy",
-                    serde_json::json!({"max_tokens":4096}),
+                    &hosted_openai(),
+                    "vendor/model-a",
+                    serde_json::json!([]),
                     false,
                     false
                 )
-                .unwrap()["max_tokens"],
-                4096
+                .is_err()
             );
         }
-    }
-
-    /// The request a Google Vertex AI profile sends: the checked model id
-    /// under its publisher, every field the endpoint accepts left in place
-    /// (each verified against Vertex AI's OpenAI-compatible endpoint), and a
-    /// conversation ending with the model's own turn refused locally.
-    #[test]
-    fn a_vertex_plan_keeps_its_fields_and_refuses_a_trailing_model_turn() {
-        let vertex = agent_provider_config::ProviderProfile::google_vertex(
-            "tilo-509618",
-            "global",
-            "gemini-4-argon",
-        );
-        let caller = serde_json::json!({
-            "model": "anything",
-            "max_completion_tokens": 4096,
-            "parallel_tool_calls": false,
-            "tool_choice": "required",
-            "tools": [{"type": "function", "function": {"name": "plan", "parameters": {"type": "object"}}}],
-            "messages": [
-                {"role": "system", "content": "s"},
-                {"role": "user", "content": "u"}
-            ]
-        });
-        let sent = outbound_body(
-            &vertex,
-            "google/gemini-4-argon",
-            caller.clone(),
-            true,
-            false,
-        )
-        .unwrap();
-        assert_eq!(sent["model"], "google/gemini-4-argon");
-        assert_eq!(sent["stream"], true);
-        assert_eq!(
-            sent["stream_options"],
-            serde_json::json!({"include_usage": true})
-        );
-        assert_eq!(sent["max_completion_tokens"], 4096);
-        assert_eq!(sent["parallel_tool_calls"], false);
-        assert_eq!(sent["tool_choice"], "required");
-        let mut prefill = caller;
-        prefill["messages"]
-            .as_array_mut()
-            .unwrap()
-            .push(serde_json::json!({"role": "assistant", "content": "Hel"}));
-        let refused = outbound_body(
-            &vertex,
-            "google/gemini-4-argon",
-            prefill.clone(),
-            false,
-            false,
-        )
-        .unwrap_err();
-        assert!(refused.contains("Vertex AI"), "{refused}");
-        // Other providers accept a prefill; nothing changes for them.
-        assert!(outbound_body(&hosted_openai(), "vendor/model-a", prefill, false, false).is_ok());
-    }
-
-    #[test]
-    fn a_responses_body_names_its_limit_and_reasoning_and_keeps_nothing() {
-        let mut openai = hosted_openai();
-        openai.token_limit_param =
-            Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
-        let caller = serde_json::json!({
-            "model": "other", "input": [], "max_output_tokens": 64, "stream": true,
-            "stream_options": {"include_usage": true}, "reasoning_effort": "low",
-            "include": ["reasoning.encrypted_content", "message.output_text.logprobs"]
-        });
-        let body = outbound_body(&openai, "vendor/model-a", caller.clone(), false, true).unwrap();
-        assert_eq!(body["model"], "vendor/model-a");
-        assert_eq!(body["max_output_tokens"], 64);
-        assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
-        assert_eq!(body["store"], false);
-        assert_eq!(
-            body["include"],
-            serde_json::json!([
-                "message.output_text.logprobs",
-                "reasoning.encrypted_content"
-            ])
-        );
-        for chat_only in [
-            "max_completion_tokens",
-            "max_tokens",
-            "reasoning_effort",
-            "stream",
-            "stream_options",
-        ] {
-            assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
-        }
-        assert_eq!(
-            outbound_body(&openai, "vendor/model-a", caller.clone(), true, true).unwrap()["stream"],
-            true
-        );
-
-        // A model that does not reason is not asked for reasoning ciphertext.
-        let mut plain = openai.clone();
-        plain.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
-        let body = outbound_body(&plain, "vendor/model-a", caller.clone(), false, true).unwrap();
-        assert!(body.get("reasoning").is_none(), "{body}");
-        assert_eq!(
-            body["include"],
-            serde_json::json!(["message.output_text.logprobs"])
-        );
-        let mut none = openai.clone();
-        none.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
-        let body =
-            outbound_body(&none, "vendor/model-a", serde_json::json!({}), false, true).unwrap();
-        assert_eq!(body["reasoning"], serde_json::json!({"effort": "none"}));
-        assert!(body.get("include").is_none(), "{body}");
-
-        // The model's own output policy caps the Responses limit.
-        let mut capped = openai;
-        capped.models[0].request_limits = Some(agent_provider_config::ModelRequestLimits {
-            max_output_tokens: 32,
-            runtime_context_tokens: None,
-            plan_timeout_ms: None,
-        });
-        let body = outbound_body(&capped, "vendor/model-a", caller, false, true).unwrap();
-        assert_eq!(body["max_output_tokens"], 32);
-        assert!(body.get("max_completion_tokens").is_none(), "{body}");
-    }
-
-    #[test]
-    fn outbound_body_is_owned_by_the_gateway() {
-        let caller = serde_json::json!({
-            "model": "other/model", "max_completion_tokens": 64, "stream": true,
-            "stream_options": {"include_usage": true}, "reasoning_effort": "high", "messages": []
-        });
-        // An unconfigured profile: only the model, and the caller's stream, change.
-        let body = outbound_body(
-            &hosted_openai(),
-            "vendor/model-a",
-            caller.clone(),
-            false,
-            false,
-        )
-        .unwrap();
-        assert_eq!(body["model"], "vendor/model-a");
-        assert_eq!(body["max_completion_tokens"], 64);
-        assert_eq!(body["reasoning_effort"], "high");
-        assert!(body.get("stream").is_none() && body.get("stream_options").is_none());
-
-        let streamed = outbound_body(
-            &hosted_openai(),
-            "vendor/model-a",
-            caller.clone(),
-            true,
-            false,
-        )
-        .unwrap();
-        assert_eq!(streamed["stream"], true);
-        assert_eq!(streamed["stream_options"]["include_usage"], true);
-
-        // OpenRouter-style: `max_tokens` and the reasoning object.
-        let mut router = hosted_openai();
-        router.token_limit_param = Some(agent_provider_config::TokenLimitParam::MaxTokens);
-        router.reasoning = Some(reasoning(ReasoningParam::ReasoningObject, "low"));
-        let body = outbound_body(&router, "vendor/model-a", caller.clone(), false, false).unwrap();
-        assert_eq!(body["max_tokens"], 64);
-        assert!(body.get("max_completion_tokens").is_none());
-        assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
-        assert!(body.get("reasoning_effort").is_none());
-
-        // OpenAI-style: `max_completion_tokens` and top-level effort.
-        let mut openai = hosted_openai();
-        openai.token_limit_param =
-            Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
-        openai.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
-        let legacy = serde_json::json!({"max_tokens": 9, "reasoning": {"effort": "high"}});
-        let body = outbound_body(&openai, "vendor/model-a", legacy, false, false).unwrap();
-        assert_eq!(body["max_completion_tokens"], 9);
-        assert!(body.get("max_tokens").is_none() && body.get("reasoning").is_none());
-        assert_eq!(body["reasoning_effort"], "none");
-
-        // Cerebras-style: fields the provider rejects are stripped last,
-        // including the gateway's own stream_options.
-        let mut strict = hosted_openai();
-        strict.omit_params = vec!["stream_options".into(), "parallel_tool_calls".into()];
-        let with_extras = serde_json::json!({"parallel_tool_calls": false, "messages": []});
-        let body = outbound_body(&strict, "vendor/model-a", with_extras, true, false).unwrap();
-        assert_eq!(body["stream"], true);
-        assert!(body.get("stream_options").is_none() && body.get("parallel_tool_calls").is_none());
-
-        // `none` strips every reasoning field.
-        let mut omit = hosted_openai();
-        omit.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
-        let body = outbound_body(&omit, "vendor/model-a", caller, false, false).unwrap();
-        assert!(body.get("reasoning_effort").is_none() && body.get("reasoning").is_none());
-
-        let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        anthropic.models = vec![agent_provider_config::ModelDescriptor::new("claude-x")];
-        anthropic.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "low"));
-        anthropic.token_limit_param =
-            Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
-        let caller = serde_json::json!({"model": "other", "max_tokens": 9, "stream": true});
-        let body = outbound_body(&anthropic, "claude-x", caller.clone(), false, false).unwrap();
-        assert_eq!(body["model"], "claude-x");
-        assert_eq!(body["max_tokens"], 9);
-        assert!(body.get("stream").is_none() && body.get("reasoning_effort").is_none());
-        // A streamed Anthropic Plan asks for the event stream, and nothing
-        // of the OpenAI-compatible stream options.
-        let streamed = outbound_body(&anthropic, "claude-x", caller, true, false).unwrap();
-        assert_eq!(streamed["stream"], true);
-        assert!(streamed.get("stream_options").is_none());
-        assert!(streamed.get("reasoning_effort").is_none());
-
-        assert!(
-            outbound_body(
-                &hosted_openai(),
-                "vendor/model-a",
-                serde_json::json!([]),
-                false,
-                false
-            )
-            .is_err()
-        );
     }
 
     /// The real accept loop on its own runtime, serving `listener` (peer
@@ -3785,28 +3803,74 @@ mod tests {
         );
     }
 
-    #[test]
-    fn one_idle_or_stalled_client_never_blocks_another() {
-        // A handoff no test outlives: the silent connection stays pending
-        // for the whole test, so the others are answered beside it.
-        let path = serve_test_socket(tilo_test_env::hang_bound().saturating_mul(2));
-        // A connection that never sends its handoff, and one that sent it and
-        // then went idle (the agent's normal, process-long channel).
-        let silent = UnixStream::connect(&path).unwrap();
-        let mut idle = settings_client(&path);
-        let mut active = settings_client(&path);
-        for _ in 0..3 {
-            unauthorized_round_trip(&mut active);
+    tilo_test_env::scenario! {
+        /// The accept loop beside a client that says nothing, each case on a socket and server of its own.
+        fn a_silent_or_stalled_client_never_holds_up_another;
+
+        phase one_idle_or_stalled_client_never_blocks_another;
+        {
+            // A handoff no test outlives: the silent connection stays pending
+            // for the whole test, so the others are answered beside it.
+            let path = serve_test_socket(tilo_test_env::hang_bound().saturating_mul(2));
+            // A connection that never sends its handoff, and one that sent it and
+            // then went idle (the agent's normal, process-long channel).
+            let silent = UnixStream::connect(&path).unwrap();
+            let mut idle = settings_client(&path);
+            let mut active = settings_client(&path);
+            for _ in 0..3 {
+                unauthorized_round_trip(&mut active);
+            }
+            // ...while the idle authenticated channel stays usable.
+            unauthorized_round_trip(&mut idle);
+            silent.set_nonblocking(true).unwrap();
+            assert_eq!(
+                (&silent).read(&mut [0_u8; 1]).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "the silent connection was still waiting for its handoff"
+            );
+            let _ = fs::remove_file(&path);
         }
-        // ...while the idle authenticated channel stays usable.
-        unauthorized_round_trip(&mut idle);
-        silent.set_nonblocking(true).unwrap();
-        assert_eq!(
-            (&silent).read(&mut [0_u8; 1]).unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock,
-            "the silent connection was still waiting for its handoff"
-        );
-        let _ = fs::remove_file(&path);
+
+        phase a_stalled_client_does_not_hold_up_another;
+        {
+            use std::io::Write as _;
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("gateway.sock");
+            serve_in_background(UnixListener::bind(&path).unwrap(), 1);
+
+            // Connected first, then silent partway through its authentication.
+            let mut stalled = UnixStream::connect(&path).unwrap();
+            stalled.write_all(&[0x20]).unwrap();
+
+            let mut client = UnixStream::connect(&path).unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let handoff =
+                serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": AGENT_APP })).unwrap();
+            client
+                .write_all(&u32::try_from(handoff.len()).unwrap().to_le_bytes())
+                .unwrap();
+            client.write_all(&handoff).unwrap();
+            write_frame(
+                &mut client,
+                &Frame {
+                    version: RPC_VERSION,
+                    value: Request::SecretStatus {
+                        profile_id: "hosted".into(),
+                    },
+                },
+            )
+            .unwrap();
+            let response: Response = read_frame(&mut client).unwrap();
+            assert!(!response.ok);
+            assert_eq!(
+                response.error.as_deref(),
+                Some("caller is not authorized for this gateway operation")
+            );
+            drop(stalled);
+        }
     }
 
     #[test]
@@ -3824,47 +3888,6 @@ mod tests {
             "closed before its handoff time"
         );
         let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn a_stalled_client_does_not_hold_up_another() {
-        use std::io::Write as _;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("gateway.sock");
-        serve_in_background(UnixListener::bind(&path).unwrap(), 1);
-
-        // Connected first, then silent partway through its authentication.
-        let mut stalled = UnixStream::connect(&path).unwrap();
-        stalled.write_all(&[0x20]).unwrap();
-
-        let mut client = UnixStream::connect(&path).unwrap();
-        client
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let handoff =
-            serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": AGENT_APP })).unwrap();
-        client
-            .write_all(&u32::try_from(handoff.len()).unwrap().to_le_bytes())
-            .unwrap();
-        client.write_all(&handoff).unwrap();
-        write_frame(
-            &mut client,
-            &Frame {
-                version: RPC_VERSION,
-                value: Request::SecretStatus {
-                    profile_id: "hosted".into(),
-                },
-            },
-        )
-        .unwrap();
-        let response: Response = read_frame(&mut client).unwrap();
-        assert!(!response.ok);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("caller is not authorized for this gateway operation")
-        );
-        drop(stalled);
     }
 }
 

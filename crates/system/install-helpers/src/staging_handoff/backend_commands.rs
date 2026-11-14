@@ -509,33 +509,37 @@ pub fn run(command: &str, args: &[OsString]) -> Outcome {
 mod tests {
     use super::*;
 
-    #[test]
-    fn machine_info_replaces_only_the_pretty_hostname() {
-        assert_eq!(
-            machine_info(
-                "CHASSIS=laptop\n  PRETTY_HOSTNAME=old\r\nICON_NAME=computer",
-                "Ada's \"$HOME\" `x` \\"
-            ),
-            "CHASSIS=laptop\nICON_NAME=computer\n\
-             PRETTY_HOSTNAME=\"Ada's \\\"\\$HOME\\\" \\`x\\` \\\\\"\n"
-        );
-        assert_eq!(machine_info("", "Desk"), "PRETTY_HOSTNAME=\"Desk\"\n");
-    }
+    tilo_test_env::scenario! {
+        fn the_device_label_is_checked_and_written_to_machine_info;
 
-    #[test]
-    fn device_labels_are_bounded_and_printable() {
-        for good in ["", "Ada's laptop", "Café ☕", &"x".repeat(64)] {
-            assert!(check_device_label(OsStr::new(good)).is_ok(), "{good}");
+        phase machine_info_replaces_only_the_pretty_hostname;
+        {
+            assert_eq!(
+                machine_info(
+                    "CHASSIS=laptop\n  PRETTY_HOSTNAME=old\r\nICON_NAME=computer",
+                    "Ada's \"$HOME\" `x` \\"
+                ),
+                "CHASSIS=laptop\nICON_NAME=computer\n\
+             PRETTY_HOSTNAME=\"Ada's \\\"\\$HOME\\\" \\`x\\` \\\\\"\n"
+            );
+            assert_eq!(machine_info("", "Desk"), "PRETTY_HOSTNAME=\"Desk\"\n");
         }
-        for bad in [
-            "a\nb",
-            "tab\t",
-            "del\u{7f}",
-            "c1\u{85}",
-            &"x".repeat(65),
-            &"é".repeat(33),
-        ] {
-            assert!(check_device_label(OsStr::new(bad)).is_err(), "{bad:?}");
+
+        phase device_labels_are_bounded_and_printable;
+        {
+            for good in ["", "Ada's laptop", "Café ☕", &"x".repeat(64)] {
+                assert!(check_device_label(OsStr::new(good)).is_ok(), "{good}");
+            }
+            for bad in [
+                "a\nb",
+                "tab\t",
+                "del\u{7f}",
+                "c1\u{85}",
+                &"x".repeat(65),
+                &"é".repeat(33),
+            ] {
+                assert!(check_device_label(OsStr::new(bad)).is_err(), "{bad:?}");
+            }
         }
     }
 }

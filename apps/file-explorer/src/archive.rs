@@ -378,95 +378,99 @@ mod tests {
         assert_eq!(entries[0].path, Path::new("selected.txt"));
     }
 
-    #[test]
-    fn creating_zip_preserves_neighbours_and_occupied_output() {
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("notes.txt");
-        fs::write(&source, b"notes").unwrap();
-        let output = temp.path().join("bundle.zip");
-        let neighbour = temp.path().join("bundle.zip.part");
-        fs::write(&neighbour, b"unrelated draft").unwrap();
-        create_zip(std::slice::from_ref(&source), &output).unwrap();
-        assert_eq!(fs::read(&neighbour).unwrap(), b"unrelated draft");
-        let original = fs::read(&output).unwrap();
-        fs::write(&source, b"changed").unwrap();
-        assert!(create_zip(&[source], &output).is_err());
-        assert_eq!(fs::read(&output).unwrap(), original);
-        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
-    }
+    tilo_test_env::scenario! {
+        fn archives_are_created_listed_and_extracted_beside_their_neighbours;
 
-    #[test]
-    fn archive_paths_listings_and_index() {
-        let temp = tempfile::tempdir().unwrap();
-        let archive = temp.path().join("bundle.zip");
-        fs::write(&archive, b"").unwrap();
-        assert_eq!(location(&archive), Some((archive.clone(), PathBuf::new())));
-        assert_eq!(
-            location(&archive.join("Photos/Trips")),
-            Some((archive.clone(), PathBuf::from("Photos/Trips")))
-        );
-        assert_eq!(location(&temp.path().join("ordinary")), None);
-        assert!(
-            location(&temp.path().join("game.tar.xz")).is_none(),
-            "missing file"
-        );
+        phase creating_zip_preserves_neighbours_and_occupied_output;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("notes.txt");
+            fs::write(&source, b"notes").unwrap();
+            let output = temp.path().join("bundle.zip");
+            let neighbour = temp.path().join("bundle.zip.part");
+            fs::write(&neighbour, b"unrelated draft").unwrap();
+            create_zip(std::slice::from_ref(&source), &output).unwrap();
+            assert_eq!(fs::read(&neighbour).unwrap(), b"unrelated draft");
+            let original = fs::read(&output).unwrap();
+            fs::write(&source, b"changed").unwrap();
+            assert!(create_zip(&[source], &output).is_err());
+            assert_eq!(fs::read(&output).unwrap(), original);
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
+        }
 
-        let source = temp.path().join("source");
-        fs::create_dir_all(source.join("Photos")).unwrap();
-        fs::write(source.join("Photos/one.jpg"), b"one").unwrap();
-        fs::write(source.join("root.txt"), b"root").unwrap();
-        fs::remove_file(&archive).unwrap();
-        create_zip(&[source.join("Photos"), source.join("root.txt")], &archive).unwrap();
-        let root = list_directory(&archive, Path::new("")).unwrap();
-        assert_eq!(root.len(), 2);
-        assert!(
-            root.iter()
-                .any(|entry| entry.path == Path::new("Photos") && entry.kind == Kind::Directory)
-        );
-        assert!(cached(&archive).is_some(), "browsing keeps the entries");
-        let photos = list_directory(&archive, Path::new("Photos")).unwrap();
-        assert_eq!(photos.len(), 1);
-        assert_eq!(photos[0].path, Path::new("Photos/one.jpg"));
-        assert!(is_directory(&archive, Path::new("Photos")).unwrap());
-        assert!(!is_directory(&archive, Path::new("root.txt")).unwrap());
+        phase archive_paths_listings_and_index;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let archive = temp.path().join("bundle.zip");
+            fs::write(&archive, b"").unwrap();
+            assert_eq!(location(&archive), Some((archive.clone(), PathBuf::new())));
+            assert_eq!(
+                location(&archive.join("Photos/Trips")),
+                Some((archive.clone(), PathBuf::from("Photos/Trips")))
+            );
+            assert_eq!(location(&temp.path().join("ordinary")), None);
+            assert!(
+                location(&temp.path().join("game.tar.xz")).is_none(),
+                "missing file"
+            );
 
-        fs::remove_file(&archive).unwrap();
-        create_zip(&[source.join("root.txt")], &archive).unwrap();
-        assert_eq!(list_directory(&archive, Path::new("")).unwrap().len(), 1);
-    }
+            let source = temp.path().join("source");
+            fs::create_dir_all(source.join("Photos")).unwrap();
+            fs::write(source.join("Photos/one.jpg"), b"one").unwrap();
+            fs::write(source.join("root.txt"), b"root").unwrap();
+            fs::remove_file(&archive).unwrap();
+            create_zip(&[source.join("Photos"), source.join("root.txt")], &archive).unwrap();
+            let root = list_directory(&archive, Path::new("")).unwrap();
+            assert_eq!(root.len(), 2);
+            assert!(
+                root.iter()
+                    .any(|entry| entry.path == Path::new("Photos") && entry.kind == Kind::Directory)
+            );
+            assert!(cached(&archive).is_some(), "browsing keeps the entries");
+            let photos = list_directory(&archive, Path::new("Photos")).unwrap();
+            assert_eq!(photos.len(), 1);
+            assert_eq!(photos[0].path, Path::new("Photos/one.jpg"));
+            assert!(is_directory(&archive, Path::new("Photos")).unwrap());
+            assert!(!is_directory(&archive, Path::new("root.txt")).unwrap());
 
-    #[test]
-    fn an_extraction_takes_the_archives_own_folder_or_its_name() {
-        let temp = tempfile::tempdir().unwrap();
-        let folder = temp.path().join("Project");
-        fs::create_dir(&folder).unwrap();
-        fs::write(folder.join("a.txt"), b"a").unwrap();
-        let loose = temp.path().join("loose.txt");
-        fs::write(&loose, b"l").unwrap();
+            fs::remove_file(&archive).unwrap();
+            create_zip(&[source.join("root.txt")], &archive).unwrap();
+            assert_eq!(list_directory(&archive, Path::new("")).unwrap().len(), 1);
+        }
 
-        let one = temp.path().join("one.tar.zst");
-        create(std::slice::from_ref(&folder), &one, Packing::TarZst, &()).unwrap();
-        assert_eq!(likely_name(&one), "Project");
-        let staging = extract(&one, temp.path(), &()).unwrap();
-        let (result, own) = staging.result().unwrap();
-        assert!(own);
-        assert_eq!(result.file_name().unwrap(), "Project");
-        drop(staging);
+        phase an_extraction_takes_the_archives_own_folder_or_its_name;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let folder = temp.path().join("Project");
+            fs::create_dir(&folder).unwrap();
+            fs::write(folder.join("a.txt"), b"a").unwrap();
+            let loose = temp.path().join("loose.txt");
+            fs::write(&loose, b"l").unwrap();
 
-        let many = temp.path().join("many.zip");
-        create_zip(&[folder, loose], &many).unwrap();
-        assert_eq!(likely_name(&many), "many");
-        let staging = extract(&many, temp.path(), &()).unwrap();
-        assert!(!staging.result().unwrap().1);
-        drop(staging);
-        assert!(
-            fs::read_dir(temp.path()).unwrap().all(|entry| !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".tilo-extract")),
-            "a dropped staging folder leaves nothing"
-        );
-        assert_eq!(stem(Path::new("/x/game_2.1.tar.xz")), "game_2.1");
+            let one = temp.path().join("one.tar.zst");
+            create(std::slice::from_ref(&folder), &one, Packing::TarZst, &()).unwrap();
+            assert_eq!(likely_name(&one), "Project");
+            let staging = extract(&one, temp.path(), &()).unwrap();
+            let (result, own) = staging.result().unwrap();
+            assert!(own);
+            assert_eq!(result.file_name().unwrap(), "Project");
+            drop(staging);
+
+            let many = temp.path().join("many.zip");
+            create_zip(&[folder, loose], &many).unwrap();
+            assert_eq!(likely_name(&many), "many");
+            let staging = extract(&many, temp.path(), &()).unwrap();
+            assert!(!staging.result().unwrap().1);
+            drop(staging);
+            assert!(
+                fs::read_dir(temp.path()).unwrap().all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tilo-extract")),
+                "a dropped staging folder leaves nothing"
+            );
+            assert_eq!(stem(Path::new("/x/game_2.1.tar.xz")), "game_2.1");
+        }
     }
 }

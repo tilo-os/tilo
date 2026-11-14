@@ -118,7 +118,9 @@ pub fn status_of(code: &str) -> StatusCode {
             StatusCode::NOT_FOUND
         }
         "method_not_allowed" => StatusCode::METHOD_NOT_ALLOWED,
-        "idempotency_conflict" | "surface_changed" => StatusCode::CONFLICT,
+        "idempotency_conflict" | "surface_changed" | "offset_mismatch" | "upload_complete" => {
+            StatusCode::CONFLICT
+        }
         "too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
         "unavailable" => StatusCode::SERVICE_UNAVAILABLE,

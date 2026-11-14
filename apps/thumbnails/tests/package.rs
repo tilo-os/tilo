@@ -166,17 +166,53 @@ fn entrypoint(package: &Unpacked) -> PathBuf {
     package.payload.join(Path::new(bin))
 }
 
-#[test]
-fn the_signed_package_offers_the_entrypoint_a_compute_worker_runs() {
-    let package = packaged();
-    let manifest = read_manifest(&package.manifest).expect("the signed manifest reads");
-    assert_eq!(manifest.package_id, PACKAGE);
-    assert_eq!(manifest.cli_commands, vec![ENTRYPOINT.to_string()]);
-    assert_eq!(manifest.entrypoint.cli_bin(), Some("bin/thumbnail-batch"));
-    assert_eq!(manifest.kind, "service");
-    assert_eq!(manifest.sandbox.net.mode, "off");
-    assert!(manifest.sandbox.services.is_empty());
-    assert!(entrypoint(&package).is_file());
+tilo_test_env::scenario! {
+    fn the_signed_package_offers_its_entrypoint_and_names_a_non_image;
+
+    phase the_signed_package_offers_the_entrypoint_a_compute_worker_runs;
+    {
+        let package = packaged();
+        let manifest = read_manifest(&package.manifest).expect("the signed manifest reads");
+        assert_eq!(manifest.package_id, PACKAGE);
+        assert_eq!(manifest.cli_commands, vec![ENTRYPOINT.to_string()]);
+        assert_eq!(manifest.entrypoint.cli_bin(), Some("bin/thumbnail-batch"));
+        assert_eq!(manifest.kind, "service");
+        assert_eq!(manifest.sandbox.net.mode, "off");
+        assert!(manifest.sandbox.services.is_empty());
+        assert!(entrypoint(&package).is_file());
+    }
+
+    phase the_packaged_entrypoint_names_a_non_image_and_still_writes_the_rest;
+    {
+        let package = packaged();
+        let bad = b"not a picture".to_vec();
+        let inputs = vec![picture(32, 32, 9, image::ImageFormat::Png), bad.clone()];
+        let made = thumbnail_batch(&inputs);
+        assert!(made[0].is_ok());
+        let failure = made[1].as_ref().unwrap_err();
+        assert_eq!(failure.digest, *blake3::hash(&bad).as_bytes());
+        let (output, written) = run_job(&package, &inputs);
+        assert!(output.status.success(), "the job still completes");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&hex::encode(failure.digest)),
+            "the worker names the content it could not read: {stderr}"
+        );
+        assert!(
+            !stderr.contains("input 1"),
+            "the failure is never a position: {stderr}"
+        );
+        assert_eq!(
+            written.len(),
+            1,
+            "the good picture still gets its thumbnail"
+        );
+        assert_eq!(
+            written.get(&output_name(0)),
+            made[0].as_ref().ok(),
+            "the good picture's thumbnail is the local batch's"
+        );
+    }
 }
 
 #[test]
@@ -206,37 +242,5 @@ fn the_packaged_entrypoint_writes_the_thumbnails_the_requester_would_make() {
     assert_eq!(
         written, expected,
         "the worker's thumbnails are byte-identical to the local batch"
-    );
-}
-
-#[test]
-fn the_packaged_entrypoint_names_a_non_image_and_still_writes_the_rest() {
-    let package = packaged();
-    let bad = b"not a picture".to_vec();
-    let inputs = vec![picture(32, 32, 9, image::ImageFormat::Png), bad.clone()];
-    let made = thumbnail_batch(&inputs);
-    assert!(made[0].is_ok());
-    let failure = made[1].as_ref().unwrap_err();
-    assert_eq!(failure.digest, *blake3::hash(&bad).as_bytes());
-    let (output, written) = run_job(&package, &inputs);
-    assert!(output.status.success(), "the job still completes");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(&hex::encode(failure.digest)),
-        "the worker names the content it could not read: {stderr}"
-    );
-    assert!(
-        !stderr.contains("input 1"),
-        "the failure is never a position: {stderr}"
-    );
-    assert_eq!(
-        written.len(),
-        1,
-        "the good picture still gets its thumbnail"
-    );
-    assert_eq!(
-        written.get(&output_name(0)),
-        made[0].as_ref().ok(),
-        "the good picture's thumbnail is the local batch's"
     );
 }

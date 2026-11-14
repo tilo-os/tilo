@@ -83,9 +83,21 @@ impl App {
                     .into_iter()
                     .filter(|action| described.supports_action(action.accesskit()))
                     .collect();
-            // A control that answers nothing is still listed where it says what it does: a field
-            // edits a record without answering a press, and the person reaches it by a point.
-            if actions.is_empty() && identity.is_none() {
+            // A control is what a person operates, whatever it currently answers: a role a press
+            // reaches (a button with nothing to send yet is still the person's Send), a field that
+            // takes what is typed into it, or anything else that answers an assistive technology.
+            // A control that answers no press is still listed where it says what it does: a field
+            // edits a record without one, and the person reaches it by a point.
+            let operable = crate::a11y::pressable_role(described.role())
+                || [
+                    crate::accesskit::Action::Click,
+                    crate::accesskit::Action::ShowContextMenu,
+                    crate::accesskit::Action::Focus,
+                    crate::accesskit::Action::SetValue,
+                ]
+                .into_iter()
+                .any(|action| described.supports_action(action));
+            if !operable && identity.is_none() {
                 continue;
             }
             targets.push(WindowTarget {

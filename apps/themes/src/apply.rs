@@ -26,15 +26,18 @@ impl SettingsSchema for AppearanceChoice {
 }
 
 impl AppearanceChoice {
-    /// Whether the system shows `reference` (a preset id or `custom:<id>`), a theme of the
-    /// polarity `dark`: it is the theme chosen for that polarity, and the mode shows that
-    /// polarity or follows the time of day (then both chosen themes are in use, each for
-    /// its part of the day).
+    /// Whether the surfaces draw `reference` (a preset id or `custom:<id>`), a theme of the
+    /// polarity `dark`: the theme chosen for that polarity, while the appearance in force draws
+    /// that polarity.
+    ///
+    /// The polarity is [`ui::theme::drawn`]'s, the answer [`ui::Theme::configured_from`] draws
+    /// with — so a page that draws light with nothing chosen shows Light in use, not the Dark a
+    /// computer running Tilo starts with, and Automatic in use is both themes on such a computer
+    /// and the one the browser answers on a page.
     #[must_use]
     pub fn shows(&self, reference: &str, dark: bool) -> bool {
-        let mode = self.mode.as_deref();
-        let polarity_shown =
-            mode.is_some_and(ui::theme::is_automatic_mode) || dark == (mode != Some("light"));
+        let drawn = ui::theme::drawn(self.mode.as_deref(), ui::theme::host_scheme());
+        let polarity_shown = if dark { drawn.dark() } else { drawn.light() };
         let chosen = if dark {
             self.dark_theme.as_deref().unwrap_or(Preset::Dark.id())
         } else {
@@ -154,6 +157,47 @@ mod tests {
         let custom = choice(Some("dark"), Some("custom:ember"), None);
         assert!(custom.shows("custom:ember", true));
         assert!(!custom.shows("dark", true));
+    }
+
+    /// The page the person is looking at draws its browser's light or dark while they have chosen
+    /// nothing, or while they chose Automatic; a computer running Tilo draws Dark and follows the
+    /// day/night schedule there instead. The card saying "In use" must be the theme drawn.
+    #[test]
+    fn in_use_is_the_theme_the_surfaces_draw() {
+        let unset = AppearanceChoice::default();
+        {
+            let _page = ui::theme::scoped_host_scheme(Some(false));
+            assert!(
+                unset.shows("light", false),
+                "a page on a light system draws Light, so Light is in use"
+            );
+            assert!(
+                !unset.shows("dark", true),
+                "and Dark is drawn nowhere, so it is not in use"
+            );
+        }
+        {
+            let _page = ui::theme::scoped_host_scheme(Some(true));
+            assert!(unset.shows("dark", true), "a dark browser draws Dark");
+            assert!(!unset.shows("light", false));
+        }
+        let automatic = AppearanceChoice {
+            mode: Some(ui::theme::AUTOMATIC_MODE.to_owned()),
+            dark_theme: Some("dark-soft".to_owned()),
+            light_theme: None,
+        };
+        {
+            let _page = ui::theme::scoped_host_scheme(Some(false));
+            assert!(
+                automatic.shows("light", false),
+                "a page's Automatic is the browser's light"
+            );
+            assert!(!automatic.shows("dark-soft", true));
+        }
+        let _computer = ui::theme::scoped_host_scheme(None);
+        assert!(automatic.shows("dark-soft", true), "by night");
+        assert!(automatic.shows("light", false), "and by day");
+        assert!(unset.shows("dark", true), "a computer starts dark");
     }
 
     #[test]

@@ -446,147 +446,151 @@ mod tests {
         t
     }
 
-    #[test]
-    fn keyframe_interpolation_modes_evaluate_correctly() {
-        {
-            assert_eq!(ParamTrack::new(Param::Opacity).sample(3.0), None);
-        }
-        {
-            let t = track(&[(1.0, 0.0), (3.0, 1.0)]);
-            assert_eq!(t.sample(0.0), Some(0.0), "before the first key it holds");
-            assert_eq!(t.sample(1.0), Some(0.0));
-            assert!(
-                (t.sample(2.0).unwrap() - 0.5).abs() < 1e-9,
-                "midpoint is the mean"
-            );
-            assert!((t.sample(2.5).unwrap() - 0.75).abs() < 1e-9);
-            assert_eq!(t.sample(3.0), Some(1.0));
-            assert_eq!(t.sample(99.0), Some(1.0), "after the last key it holds");
-        }
-        {
-            let mut t = ParamTrack::new(Param::Opacity);
-            t.set_key(0.0, 0.2, Interp::Hold);
-            t.set_key(2.0, 0.9, Interp::Linear);
-            assert_eq!(t.sample(1.0), Some(0.2), "held right up to the next key");
-            assert_eq!(t.sample(1.999), Some(0.2));
-            assert_eq!(t.sample(2.0), Some(0.9), "and jumps on it");
-        }
-        {
-            let mut t = ParamTrack::new(Param::Opacity);
-            t.set_key(0.0, 0.0, Interp::Ease);
-            t.set_key(1.0, 1.0, Interp::Linear);
-            let early = t.sample(0.1).unwrap();
-            let mid = t.sample(0.5).unwrap();
-            let late = t.sample(0.9).unwrap();
-            assert!(early < 0.1, "eased start moves slower than linear: {early}");
-            assert!((mid - 0.5).abs() < 1e-9, "symmetric at the midpoint");
-            assert!(late > 0.9, "eased end has already caught up: {late}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn keyframes_interpolate_edit_and_merge;
 
-    #[test]
-    fn keyframe_editing_and_slicing_preserve_values() {
+        phase keyframe_interpolation_modes_evaluate_correctly;
         {
-            let mut t = track(&[(1.0, 0.0)]);
-            t.set_key(1.0, 0.7, Interp::Linear);
-            assert_eq!(t.keys.len(), 1);
-            assert_eq!(t.sample(1.0), Some(0.7));
-        }
-        {
-            let t = track(&[(5.0, 1.0), (1.0, 0.0), (3.0, 0.5)]);
-            let times: Vec<f64> = t.keys.iter().map(|k| k.t).collect();
-            assert_eq!(times, vec![1.0, 3.0, 5.0]);
-            assert!((t.sample(2.0).unwrap() - 0.25).abs() < 1e-9);
-        }
-        {
-            let mut t = track(&[(1.0, 0.0), (3.0, 1.0)]);
-            assert!(!t.remove_key_near(2.0, 0.1), "nothing is that close");
-            assert!(t.remove_key_near(3.05, 0.2));
-            assert_eq!(t.keys.len(), 1);
-        }
-        {
-            // Ramp 0 → 1 over 4 seconds; slice the middle two seconds.
-            let t = track(&[(0.0, 0.0), (4.0, 1.0)]);
-            let s = t.sliced(1.0, 3.0);
-            assert!(
-                (s.sample(0.0).unwrap() - 0.25).abs() < 1e-9,
-                "left edge keeps its value"
-            );
-            assert!(
-                (s.sample(2.0).unwrap() - 0.75).abs() < 1e-9,
-                "right edge too"
-            );
-            assert!((s.sample(1.0).unwrap() - 0.5).abs() < 1e-9);
-        }
-        {
-            let t = track(&[(0.0, 0.0), (2.0, 1.0), (4.0, 0.0)]);
-            let s = t.sliced(1.0, 4.0);
-            // The interior key at t=2 lands at 1 in the slice, still at 1.0.
-            assert!((s.sample(1.0).unwrap() - 1.0).abs() < 1e-9);
-        }
-    }
-
-    #[test]
-    fn animation_tracks_report_merge_and_round_trip_names() {
-        {
-            let mut a = ClipAnimation::default();
-            assert!(a.is_empty());
-            assert_eq!(a.sample(Param::Opacity, 1.0), None);
-            a.ensure(Param::Opacity).set_key(0.0, 0.5, Interp::Linear);
-            assert!(!a.is_empty());
-            assert!(a.is_animated(Param::Opacity));
-            assert!(!a.is_animated(Param::Volume));
-            assert_eq!(a.animated_params(), vec![Param::Opacity]);
-            a.clear(Param::Opacity);
-            assert!(!a.is_animated(Param::Opacity));
-        }
-        {
-            let [first, second, third] = [1, 2, 3].map(uuid::Uuid::from_u128);
-            let mut animation = ClipAnimation::default();
-            animation
-                .ensure(Param::EffectAmount(first))
-                .set_key(0.0, 0.2, Interp::Linear);
-            animation
-                .ensure(Param::EffectAmount(second))
-                .set_key(0.0, 0.8, Interp::Linear);
-            animation
-                .ensure(Param::EffectAmount(third))
-                .set_key(0.0, 0.4, Interp::Linear);
-            animation
-                .ensure(Param::Opacity)
-                .set_key(0.0, 0.6, Interp::Linear);
-
-            animation.forget_effect(second);
-            assert_eq!(animation.sample(Param::EffectAmount(first), 0.0), Some(0.2));
-            assert_eq!(animation.sample(Param::EffectAmount(second), 0.0), None);
-            assert_eq!(animation.sample(Param::EffectAmount(third), 0.0), Some(0.4));
-            assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
-
-            animation.clear_effect_slots();
-            assert_eq!(animation.sample(Param::EffectAmount(first), 0.0), None);
-            assert_eq!(animation.sample(Param::EffectAmount(third), 0.0), None);
-            assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
-        }
-        {
-            let mut a = ClipAnimation::default();
-            a.ensure(Param::Opacity).set_key(1.0, 0.0, Interp::Linear);
-            a.ensure(Param::Opacity).set_key(3.0, 1.0, Interp::Linear);
-            a.ensure(Param::ScaleX).set_key(1.0, 1.0, Interp::Linear);
-            a.ensure(Param::ScaleX).set_key(2.0, 2.0, Interp::Linear);
-            assert_eq!(a.key_times(), vec![1.0, 2.0, 3.0]);
-        }
-        {
-            for p in Param::SIMPLE {
-                assert_eq!(Param::from_name(&p.as_str()), Some(p), "{p:?}");
+            {
+                assert_eq!(ParamTrack::new(Param::Opacity).sample(3.0), None);
             }
-            let e = Param::EffectAmount(uuid::Uuid::from_u128(3));
-            assert_eq!(Param::from_name(&e.as_str()), Some(e));
-            assert_eq!(Param::from_name("effect3"), None);
-            assert_eq!(Param::from_name("nonsense"), None);
+            {
+                let t = track(&[(1.0, 0.0), (3.0, 1.0)]);
+                assert_eq!(t.sample(0.0), Some(0.0), "before the first key it holds");
+                assert_eq!(t.sample(1.0), Some(0.0));
+                assert!(
+                    (t.sample(2.0).unwrap() - 0.5).abs() < 1e-9,
+                    "midpoint is the mean"
+                );
+                assert!((t.sample(2.5).unwrap() - 0.75).abs() < 1e-9);
+                assert_eq!(t.sample(3.0), Some(1.0));
+                assert_eq!(t.sample(99.0), Some(1.0), "after the last key it holds");
+            }
+            {
+                let mut t = ParamTrack::new(Param::Opacity);
+                t.set_key(0.0, 0.2, Interp::Hold);
+                t.set_key(2.0, 0.9, Interp::Linear);
+                assert_eq!(t.sample(1.0), Some(0.2), "held right up to the next key");
+                assert_eq!(t.sample(1.999), Some(0.2));
+                assert_eq!(t.sample(2.0), Some(0.9), "and jumps on it");
+            }
+            {
+                let mut t = ParamTrack::new(Param::Opacity);
+                t.set_key(0.0, 0.0, Interp::Ease);
+                t.set_key(1.0, 1.0, Interp::Linear);
+                let early = t.sample(0.1).unwrap();
+                let mid = t.sample(0.5).unwrap();
+                let late = t.sample(0.9).unwrap();
+                assert!(early < 0.1, "eased start moves slower than linear: {early}");
+                assert!((mid - 0.5).abs() < 1e-9, "symmetric at the midpoint");
+                assert!(late > 0.9, "eased end has already caught up: {late}");
+            }
         }
+
+        phase keyframe_editing_and_slicing_preserve_values;
         {
-            for i in Interp::ALL {
-                assert_eq!(Interp::from_name(i.as_str()), i);
+            {
+                let mut t = track(&[(1.0, 0.0)]);
+                t.set_key(1.0, 0.7, Interp::Linear);
+                assert_eq!(t.keys.len(), 1);
+                assert_eq!(t.sample(1.0), Some(0.7));
+            }
+            {
+                let t = track(&[(5.0, 1.0), (1.0, 0.0), (3.0, 0.5)]);
+                let times: Vec<f64> = t.keys.iter().map(|k| k.t).collect();
+                assert_eq!(times, vec![1.0, 3.0, 5.0]);
+                assert!((t.sample(2.0).unwrap() - 0.25).abs() < 1e-9);
+            }
+            {
+                let mut t = track(&[(1.0, 0.0), (3.0, 1.0)]);
+                assert!(!t.remove_key_near(2.0, 0.1), "nothing is that close");
+                assert!(t.remove_key_near(3.05, 0.2));
+                assert_eq!(t.keys.len(), 1);
+            }
+            {
+                // Ramp 0 → 1 over 4 seconds; slice the middle two seconds.
+                let t = track(&[(0.0, 0.0), (4.0, 1.0)]);
+                let s = t.sliced(1.0, 3.0);
+                assert!(
+                    (s.sample(0.0).unwrap() - 0.25).abs() < 1e-9,
+                    "left edge keeps its value"
+                );
+                assert!(
+                    (s.sample(2.0).unwrap() - 0.75).abs() < 1e-9,
+                    "right edge too"
+                );
+                assert!((s.sample(1.0).unwrap() - 0.5).abs() < 1e-9);
+            }
+            {
+                let t = track(&[(0.0, 0.0), (2.0, 1.0), (4.0, 0.0)]);
+                let s = t.sliced(1.0, 4.0);
+                // The interior key at t=2 lands at 1 in the slice, still at 1.0.
+                assert!((s.sample(1.0).unwrap() - 1.0).abs() < 1e-9);
+            }
+        }
+
+        phase animation_tracks_report_merge_and_round_trip_names;
+        {
+            {
+                let mut a = ClipAnimation::default();
+                assert!(a.is_empty());
+                assert_eq!(a.sample(Param::Opacity, 1.0), None);
+                a.ensure(Param::Opacity).set_key(0.0, 0.5, Interp::Linear);
+                assert!(!a.is_empty());
+                assert!(a.is_animated(Param::Opacity));
+                assert!(!a.is_animated(Param::Volume));
+                assert_eq!(a.animated_params(), vec![Param::Opacity]);
+                a.clear(Param::Opacity);
+                assert!(!a.is_animated(Param::Opacity));
+            }
+            {
+                let [first, second, third] = [1, 2, 3].map(uuid::Uuid::from_u128);
+                let mut animation = ClipAnimation::default();
+                animation
+                    .ensure(Param::EffectAmount(first))
+                    .set_key(0.0, 0.2, Interp::Linear);
+                animation
+                    .ensure(Param::EffectAmount(second))
+                    .set_key(0.0, 0.8, Interp::Linear);
+                animation
+                    .ensure(Param::EffectAmount(third))
+                    .set_key(0.0, 0.4, Interp::Linear);
+                animation
+                    .ensure(Param::Opacity)
+                    .set_key(0.0, 0.6, Interp::Linear);
+
+                animation.forget_effect(second);
+                assert_eq!(animation.sample(Param::EffectAmount(first), 0.0), Some(0.2));
+                assert_eq!(animation.sample(Param::EffectAmount(second), 0.0), None);
+                assert_eq!(animation.sample(Param::EffectAmount(third), 0.0), Some(0.4));
+                assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
+
+                animation.clear_effect_slots();
+                assert_eq!(animation.sample(Param::EffectAmount(first), 0.0), None);
+                assert_eq!(animation.sample(Param::EffectAmount(third), 0.0), None);
+                assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
+            }
+            {
+                let mut a = ClipAnimation::default();
+                a.ensure(Param::Opacity).set_key(1.0, 0.0, Interp::Linear);
+                a.ensure(Param::Opacity).set_key(3.0, 1.0, Interp::Linear);
+                a.ensure(Param::ScaleX).set_key(1.0, 1.0, Interp::Linear);
+                a.ensure(Param::ScaleX).set_key(2.0, 2.0, Interp::Linear);
+                assert_eq!(a.key_times(), vec![1.0, 2.0, 3.0]);
+            }
+            {
+                for p in Param::SIMPLE {
+                    assert_eq!(Param::from_name(&p.as_str()), Some(p), "{p:?}");
+                }
+                let e = Param::EffectAmount(uuid::Uuid::from_u128(3));
+                assert_eq!(Param::from_name(&e.as_str()), Some(e));
+                assert_eq!(Param::from_name("effect3"), None);
+                assert_eq!(Param::from_name("nonsense"), None);
+            }
+            {
+                for i in Interp::ALL {
+                    assert_eq!(Interp::from_name(i.as_str()), i);
+                }
             }
         }
     }

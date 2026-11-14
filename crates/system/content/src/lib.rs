@@ -279,6 +279,14 @@ pub trait ContentBackend: Send + Sync {
 
     fn has(&self, hash: &str) -> bool;
 
+    /// The length of the content at `hash`, when the store knows it without
+    /// reading the bytes: what a reader serving one piece of a large file
+    /// asks before it seeks there.
+    fn size(&self, hash: &str) -> Option<u64> {
+        let _ = hash;
+        None
+    }
+
     /// Where the content at `hash` has got to. A backend that can fetch from elsewhere reports
     /// [`ContentState::Pending`] while it does, and may start fetching when asked.
     fn state(&self, hash: &str) -> ContentState {
@@ -729,6 +737,49 @@ impl ContentStore {
                 .ok()
                 .map(|reader| Box::new(reader) as ContentReader),
         }
+    }
+
+    /// The length of the content `reference` names, when the store knows it
+    /// without reading it. `None` for sealed content, whose file holds the
+    /// ciphertext and not the bytes the reference names.
+    pub fn size(&self, reference: &str) -> Option<u64> {
+        let parsed = ContentRef::parse(reference);
+        parsed
+            .as_ref()
+            .and_then(ContentRef::key)
+            .is_none()
+            .then(|| self.backend.size(&address_of(reference)))
+            .flatten()
+    }
+
+    /// `length` bytes of the content `reference` names, from `offset`: the
+    /// bytes read, and the content's length. Reads only what it answers, so
+    /// serving one piece of a large file does not read the file.
+    ///
+    /// # Errors
+    /// The content is not here, or cannot be read.
+    pub fn read_range(
+        &self,
+        reference: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<(u64, Vec<u8>), ContentError> {
+        let missing = || ContentError::InvalidHash(reference.to_owned());
+        let size = self.size(reference).ok_or_else(missing)?;
+        let mut reader = self.open(reference).ok_or_else(missing)?;
+        let unreadable = |error: std::io::Error| ContentError::Io(error.to_string());
+        // Skipping is a seek where the reader has one.
+        std::io::copy(
+            &mut reader.by_ref().take(offset.min(size)),
+            &mut std::io::sink(),
+        )
+        .map_err(unreadable)?;
+        let mut bytes = Vec::new();
+        reader
+            .take(length.min(size.saturating_sub(offset)))
+            .read_to_end(&mut bytes)
+            .map_err(unreadable)?;
+        Ok((size, bytes))
     }
 
     pub fn has(&self, reference: &str) -> bool {

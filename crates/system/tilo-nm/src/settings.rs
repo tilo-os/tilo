@@ -407,119 +407,123 @@ impl Settings {
 mod tests {
     use super::*;
 
-    #[test]
-    fn missing_properties_read_as_networkmanagers_defaults() {
-        let settings = Settings::default();
-        assert!(settings.autoconnect(), "autoconnect is on by default");
-        assert_eq!(settings.metered(), 0);
-        assert_eq!(settings.timestamp(), None);
-        assert!(settings.dns(IpFamily::V4).is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn connection_settings_read_and_write_networkmanagers_forms;
 
-    #[test]
-    fn addresses_gateways_and_name_servers_round_trip() {
-        let mut settings = Settings::default();
-        settings.set("ipv4", "addresses", vec![vec![1_u32, 24, 0]]);
-        settings
-            .set_addresses(
-                IpFamily::V4,
-                &["192.0.2.10/24".into(), "198.51.100.1".into()],
-            )
-            .unwrap();
-        assert_eq!(
-            settings.get("ipv4", "addresses"),
-            None,
-            "no stale numeric copy"
-        );
-        assert_eq!(
-            settings.addresses(IpFamily::V4),
-            ["192.0.2.10/24", "198.51.100.1/32"]
-        );
-        settings
-            .set_gateway(IpFamily::V4, Some("192.0.2.1"))
-            .unwrap();
-        assert_eq!(settings.gateway(IpFamily::V4).as_deref(), Some("192.0.2.1"));
-        settings
-            .set_dns(IpFamily::V4, &["1.1.1.1".into(), "9.9.9.9".into()])
-            .unwrap();
-        assert_eq!(settings.dns(IpFamily::V4), ["1.1.1.1", "9.9.9.9"]);
-        settings
-            .set_dns(IpFamily::V6, &["2001:db8::53".into()])
-            .unwrap();
-        assert_eq!(settings.dns(IpFamily::V6), ["2001:db8::53"]);
-        settings.set("ipv4", "dns-data", vec!["8.8.8.8".to_owned()]);
-        assert_eq!(
-            settings.dns(IpFamily::V4),
-            ["8.8.8.8"],
-            "the text form wins"
-        );
+        phase missing_properties_read_as_networkmanagers_defaults;
+        {
+            let settings = Settings::default();
+            assert!(settings.autoconnect(), "autoconnect is on by default");
+            assert_eq!(settings.metered(), 0);
+            assert_eq!(settings.timestamp(), None);
+            assert!(settings.dns(IpFamily::V4).is_empty());
+        }
 
-        assert!(
+        phase addresses_gateways_and_name_servers_round_trip;
+        {
+            let mut settings = Settings::default();
+            settings.set("ipv4", "addresses", vec![vec![1_u32, 24, 0]]);
             settings
-                .set_addresses(IpFamily::V4, &["2001:db8::1/64".into()])
-                .is_err()
-        );
-        assert!(
+                .set_addresses(
+                    IpFamily::V4,
+                    &["192.0.2.10/24".into(), "198.51.100.1".into()],
+                )
+                .unwrap();
+            assert_eq!(
+                settings.get("ipv4", "addresses"),
+                None,
+                "no stale numeric copy"
+            );
+            assert_eq!(
+                settings.addresses(IpFamily::V4),
+                ["192.0.2.10/24", "198.51.100.1/32"]
+            );
             settings
-                .set_addresses(IpFamily::V4, &["10.0.0.1/33".into()])
-                .is_err()
-        );
-        assert!(
+                .set_gateway(IpFamily::V4, Some("192.0.2.1"))
+                .unwrap();
+            assert_eq!(settings.gateway(IpFamily::V4).as_deref(), Some("192.0.2.1"));
             settings
-                .set_gateway(IpFamily::V6, Some("10.0.0.1"))
-                .is_err()
-        );
-        assert!(settings.set_dns(IpFamily::V4, &["::1".into()]).is_err());
-        settings.set_addresses(IpFamily::V4, &[]).unwrap();
-        assert!(settings.addresses(IpFamily::V4).is_empty());
-    }
+                .set_dns(IpFamily::V4, &["1.1.1.1".into(), "9.9.9.9".into()])
+                .unwrap();
+            assert_eq!(settings.dns(IpFamily::V4), ["1.1.1.1", "9.9.9.9"]);
+            settings
+                .set_dns(IpFamily::V6, &["2001:db8::53".into()])
+                .unwrap();
+            assert_eq!(settings.dns(IpFamily::V6), ["2001:db8::53"]);
+            settings.set("ipv4", "dns-data", vec!["8.8.8.8".to_owned()]);
+            assert_eq!(
+                settings.dns(IpFamily::V4),
+                ["8.8.8.8"],
+                "the text form wins"
+            );
 
-    #[test]
-    fn certificate_paths_are_file_uris_ending_in_nul() {
-        let mut settings = Settings::default();
-        settings.set_path("802-1x", "ca-cert", "/etc/pki/campus.pem");
-        assert_eq!(
-            settings.bytes("802-1x", "ca-cert"),
-            b"file:///etc/pki/campus.pem\0"
-        );
-        assert_eq!(
-            settings.path("802-1x", "ca-cert").as_deref(),
-            Some("/etc/pki/campus.pem")
-        );
-        settings.set_path("802-1x", "ca-cert", "");
-        assert_eq!(settings.path("802-1x", "ca-cert"), None);
-    }
+            assert!(
+                settings
+                    .set_addresses(IpFamily::V4, &["2001:db8::1/64".into()])
+                    .is_err()
+            );
+            assert!(
+                settings
+                    .set_addresses(IpFamily::V4, &["10.0.0.1/33".into()])
+                    .is_err()
+            );
+            assert!(
+                settings
+                    .set_gateway(IpFamily::V6, Some("10.0.0.1"))
+                    .is_err()
+            );
+            assert!(settings.set_dns(IpFamily::V4, &["::1".into()]).is_err());
+            settings.set_addresses(IpFamily::V4, &[]).unwrap();
+            assert!(settings.addresses(IpFamily::V4).is_empty());
+        }
 
-    #[test]
-    fn a_wireguard_peer_is_changed_in_place_keeping_what_else_it_holds() {
-        let mut settings = Settings::default();
-        let mut first = Setting::new();
-        first.insert(
-            "public-key".into(),
-            OwnedValue::try_from(Value::from("AAA=")).unwrap(),
-        );
-        first.insert("preshared-key-flags".into(), OwnedValue::from(1_u32));
-        settings.set("wireguard", "peers", vec![first]);
-        settings.set_wireguard_peer(&WireGuardPeer {
-            public_key: "AAA=".into(),
-            endpoint: Some("home.example:51820".into()),
-            allowed_ips: vec!["0.0.0.0/0".into(), "::/0".into()],
-            keepalive: None,
-            preshared_key: None,
-        });
-        let peers = settings.wireguard_peers();
-        assert_eq!(
-            peers,
-            [WireGuardPeer {
+        phase certificate_paths_are_file_uris_ending_in_nul;
+        {
+            let mut settings = Settings::default();
+            settings.set_path("802-1x", "ca-cert", "/etc/pki/campus.pem");
+            assert_eq!(
+                settings.bytes("802-1x", "ca-cert"),
+                b"file:///etc/pki/campus.pem\0"
+            );
+            assert_eq!(
+                settings.path("802-1x", "ca-cert").as_deref(),
+                Some("/etc/pki/campus.pem")
+            );
+            settings.set_path("802-1x", "ca-cert", "");
+            assert_eq!(settings.path("802-1x", "ca-cert"), None);
+        }
+
+        phase a_wireguard_peer_is_changed_in_place_keeping_what_else_it_holds;
+        {
+            let mut settings = Settings::default();
+            let mut first = Setting::new();
+            first.insert(
+                "public-key".into(),
+                OwnedValue::try_from(Value::from("AAA=")).unwrap(),
+            );
+            first.insert("preshared-key-flags".into(), OwnedValue::from(1_u32));
+            settings.set("wireguard", "peers", vec![first]);
+            settings.set_wireguard_peer(&WireGuardPeer {
                 public_key: "AAA=".into(),
                 endpoint: Some("home.example:51820".into()),
                 allowed_ips: vec!["0.0.0.0/0".into(), "::/0".into()],
                 keepalive: None,
                 preshared_key: None,
-            }]
-        );
-        let raw = settings.dicts("wireguard", "peers");
-        assert_eq!(raw.len(), 1);
-        assert!(raw[0].contains_key("preshared-key-flags"));
+            });
+            let peers = settings.wireguard_peers();
+            assert_eq!(
+                peers,
+                [WireGuardPeer {
+                    public_key: "AAA=".into(),
+                    endpoint: Some("home.example:51820".into()),
+                    allowed_ips: vec!["0.0.0.0/0".into(), "::/0".into()],
+                    keepalive: None,
+                    preshared_key: None,
+                }]
+            );
+            let raw = settings.dicts("wireguard", "peers");
+            assert_eq!(raw.len(), 1);
+            assert!(raw[0].contains_key("preshared-key-flags"));
+        }
     }
 }

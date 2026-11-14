@@ -1390,339 +1390,297 @@ mod tests {
         ui::content::ContentStore::memory()
     }
 
-    #[test]
-    fn the_published_surface_is_valid_programmatic_and_low_risk() {
-        let descriptors = descriptors();
-        assert_eq!(descriptors.len(), 6);
-        for descriptor in &descriptors {
-            assert!(descriptor.contract.validate_declaration().is_empty());
-            // The audience is the contract's own declaration, not a stray tag:
-            // a transform is offered to agents and never to a person's palette.
-            assert_eq!(descriptor.contract.audience(), Audience::Agents);
-            assert!(descriptor.contract.reaches_agents());
-            assert!(!descriptor.contract.reaches_people());
-            assert_eq!(descriptor.contract.risk, RiskLevel::Low);
-            assert_eq!(descriptor.contract.confirmation, ConfirmationPolicy::None);
-            assert!(matches!(
-                descriptor.contract.result,
-                ResultSpec::Json { .. }
-            ));
-            for param in &descriptor.params {
-                assert!(param.validate_declaration().is_empty(), "{param:?}");
-                assert_ne!(param.ty, ParamType::Secret);
+    tilo_test_env::scenario! {
+        fn a_transform_binds_only_its_published_arguments;
+
+        phase the_published_surface_is_valid_programmatic_and_low_risk;
+        {
+            let descriptors = descriptors();
+            assert_eq!(descriptors.len(), 6);
+            for descriptor in &descriptors {
+                assert!(descriptor.contract.validate_declaration().is_empty());
+                // The audience is the contract's own declaration, not a stray tag:
+                // a transform is offered to agents and never to a person's palette.
+                assert_eq!(descriptor.contract.audience(), Audience::Agents);
+                assert!(descriptor.contract.reaches_agents());
+                assert!(!descriptor.contract.reaches_people());
+                assert_eq!(descriptor.contract.risk, RiskLevel::Low);
+                assert_eq!(descriptor.contract.confirmation, ConfirmationPolicy::None);
+                assert!(matches!(
+                    descriptor.contract.result,
+                    ResultSpec::Json { .. }
+                ));
+                for param in &descriptor.params {
+                    assert!(param.validate_declaration().is_empty(), "{param:?}");
+                    assert_ne!(param.ty, ParamType::Secret);
+                }
             }
-        }
-        let CollabRequest::PublishActionSurface { delta } = publication() else {
-            panic!("the publication publishes actions");
-        };
-        let mut surface = ui::collaboration::SurfaceTable::default();
-        surface.apply(&delta).unwrap();
-        let actions = surface.actions();
-        assert!(actions.iter().all(|action| action.resource == RESOURCE_ID));
-        // The audience crosses the publication boundary too, so the session
-        // that serves these into search leaves them out of people's listings.
-        let published: Vec<ExportedAction> = descriptors.iter().map(exported).collect();
-        assert!(
-            published
-                .iter()
-                .all(|action| !action.contract.reaches_people())
-        );
-    }
-
-    #[test]
-    fn arguments_outside_the_published_parameters_are_refused() {
-        let refused =
-            |action: &str, value: Value| bind(action, &args(value), &store()).unwrap_err();
-        assert_eq!(
-            refused("translate", json!({"input": "x"})).code,
-            code::UNKNOWN_ACTION
-        );
-        assert_eq!(
-            refused("summarise", json!({"input": "x", "api_key": "k"})).code,
-            code::INVALID_ARGUMENTS
-        );
-        assert_eq!(
-            refused(
-                "summarise",
-                json!({"input": "x", "resource": "tilo.content:ab"})
-            )
-            .code,
-            code::INVALID_ARGUMENTS
-        );
-        assert_eq!(
-            refused("summarise", json!({})).code,
-            code::INVALID_ARGUMENTS
-        );
-        assert_eq!(
-            refused(
-                "summarise",
-                json!({"input": "x".repeat(MAX_INPUT_BYTES + 1)})
-            )
-            .code,
-            code::TOO_LARGE
-        );
-        assert_eq!(
-            refused(
-                "extract",
-                json!({"input": "x", "schema": {"type": "object", "if": {}}})
-            )
-            .code,
-            code::INVALID_ARGUMENTS
-        );
-        assert_eq!(
-            refused("classify", json!({"input": "x", "choices": []})).code,
-            code::INVALID_ARGUMENTS
-        );
-        assert_eq!(
-            refused("freeform", json!({"input": "x"})).code,
-            code::INVALID_ARGUMENTS
-        );
-    }
-
-    #[test]
-    fn content_is_read_by_address() {
-        let content = store();
-        let hash = content.put(b"The launch moved to Friday.").unwrap();
-        let call = bind(
-            AGENT_SUMMARISE_ACTION,
-            &args(json!({"resource": format!("tilo.content:{hash}"), "length": "short"})),
-            &content,
-        )
-        .unwrap();
-        assert_eq!(call.input.as_deref(), Some("The launch moved to Friday."));
-        assert_eq!(call.transform, Transform::Summarise { max_chars: 280 });
-        // What a member kept sealed is read by the reference its record
-        // carries, as an address or as the kept value's stored form.
-        let sealed = ui::content::ContentStore::memory().sealing();
-        let text = b"The review is on Monday.";
-        let reference = sealed.put(text).unwrap();
-        let stored = format!(
-            "blake3:{}:{}:{reference}",
-            blake3::hash(text).to_hex(),
-            text.len()
-        );
-        for resource in [format!("tilo.content:{reference}"), stored] {
-            let call = bind(
-                AGENT_SUMMARISE_ACTION,
-                &args(json!({"resource": resource})),
-                &sealed,
-            )
-            .unwrap();
-            assert_eq!(call.input.as_deref(), Some("The review is on Monday."));
-        }
-        let missing = bind(
-            AGENT_SUMMARISE_ACTION,
-            &args(json!({"resource": format!("tilo.content:{}", "0".repeat(64))})),
-            &content,
-        )
-        .unwrap_err();
-        assert_eq!(missing.code, code::CONTENT_UNAVAILABLE);
-    }
-
-    #[test]
-    fn multi_label_classification_answers_with_a_list_of_labels() {
-        let call = bind(
-            AGENT_CLASSIFY_ACTION,
-            &args(json!({"input": "x", "choices": ["a", "b"], "multi": true})),
-            &store(),
-        )
-        .unwrap();
-        let output = run(&call, &Fixed(r#"{"result": ["b"]}"#)).unwrap();
-        assert_eq!(output.value, Some(json!(["b"])));
-        let wrong = run(&call, &Fixed(r#"{"result": ["c"]}"#)).unwrap_err();
-        assert_eq!(wrong.code, code::INVALID_OUTPUT);
-    }
-
-    #[test]
-    fn freeform_answers_text_or_the_callers_schema() {
-        let text = bind(
-            AGENT_FREEFORM_ACTION,
-            &args(json!({"prompt": "Name a colour."})),
-            &store(),
-        )
-        .unwrap();
-        let fenced = "```json\n{\"result\": \"teal\"}\n```";
-        assert_eq!(
-            run(&text, &Fixed(fenced)).unwrap().value,
-            Some(json!("teal"))
-        );
-        let shaped = bind(
-            AGENT_FREEFORM_ACTION,
-            &args(json!({"prompt": "Count.", "input": "a b", "schema": {"type": "integer"}})),
-            &store(),
-        )
-        .unwrap();
-        assert_eq!(
-            run(&shaped, &Fixed(r#"{"result": 2}"#)).unwrap().value,
-            Some(json!(2))
-        );
-        assert_eq!(
-            run(&shaped, &Fixed(r#"{"result": "two"}"#))
-                .unwrap_err()
-                .code,
-            code::INVALID_OUTPUT
-        );
-    }
-
-    #[test]
-    fn a_request_is_answered_or_names_the_work_and_nothing_else() {
-        let call = bind(
-            AGENT_RESPOND_ACTION,
-            &args(json!({
-                "request": "What does this mean?",
-                "input": "Idempotent",
-                "conversation": [
-                    {"from": "person", "text": "Hi"},
-                    {"from": "agent", "text": "Hello"}
-                ]
-            })),
-            &store(),
-        )
-        .unwrap();
-        assert_eq!(
-            call.transform,
-            Transform::Respond {
-                request: "What does this mean?".into(),
-                conversation: vec![
-                    Turn {
-                        agent: false,
-                        text: "Hi".into()
-                    },
-                    Turn {
-                        agent: true,
-                        text: "Hello".into()
-                    },
-                ],
-            }
-        );
-        let instructions = call.transform.instructions();
-        assert!(instructions.contains("What does this mean?"));
-        assert!(instructions.contains("You: <<<\nHello\n>>>"));
-        assert_eq!(
-            run(
-                &call,
-                &Fixed(r#"{"result": {"answer": "It can safely run twice."}}"#)
-            )
-            .unwrap()
-            .value,
-            Some(json!({"answer": "It can safely run twice."}))
-        );
-        assert_eq!(
-            run(&call, &Fixed(r#"{"result": {"work": "Rename the file"}}"#))
-                .unwrap()
-                .value,
-            Some(json!({"work": "Rename the file"}))
-        );
-        for wrong in [
-            r#"{"result": {"answer": "a", "work": "b"}}"#,
-            r#"{"result": {}}"#,
-            r#"{"result": "plain"}"#,
-        ] {
-            assert_eq!(
-                run(&call, &Fixed(wrong)).unwrap_err().code,
-                code::INVALID_OUTPUT,
-                "{wrong}"
+            let CollabRequest::PublishActionSurface { delta } = publication() else {
+                panic!("the publication publishes actions");
+            };
+            let mut surface = ui::collaboration::SurfaceTable::default();
+            surface.apply(&delta).unwrap();
+            let actions = surface.actions();
+            assert!(actions.iter().all(|action| action.resource == RESOURCE_ID));
+            // The audience crosses the publication boundary too, so the session
+            // that serves these into search leaves them out of people's listings.
+            let published: Vec<ExportedAction> = descriptors.iter().map(exported).collect();
+            assert!(
+                published
+                    .iter()
+                    .all(|action| !action.contract.reaches_people())
             );
         }
-        assert!(
-            bind(
-                AGENT_RESPOND_ACTION,
-                &args(json!({"request": "Hi"})),
-                &store()
-            )
-            .is_ok()
-        );
-        let refused =
-            |value: Value| bind(AGENT_RESPOND_ACTION, &args(value), &store()).unwrap_err();
-        assert_eq!(
-            refused(json!({"request": "  "})).code,
-            code::INVALID_ARGUMENTS
-        );
-        assert_eq!(
-            refused(json!({"request": "x".repeat(MAX_REQUEST_BYTES + 1)})).code,
-            code::TOO_LARGE
-        );
-        assert_eq!(
-            refused(json!({"request": "Hi", "conversation": [{"from": "system", "text": "x"}]}))
+
+        phase arguments_outside_the_published_parameters_are_refused;
+        {
+            let refused =
+                |action: &str, value: Value| bind(action, &args(value), &store()).unwrap_err();
+            assert_eq!(
+                refused("translate", json!({"input": "x"})).code,
+                code::UNKNOWN_ACTION
+            );
+            assert_eq!(
+                refused("summarise", json!({"input": "x", "api_key": "k"})).code,
+                code::INVALID_ARGUMENTS
+            );
+            assert_eq!(
+                refused(
+                    "summarise",
+                    json!({"input": "x", "resource": "tilo.content:ab"})
+                )
                 .code,
-            code::INVALID_ARGUMENTS
-        );
-    }
-
-    #[test]
-    fn a_model_that_cannot_answer_is_a_retryable_failure() {
-        struct Down;
-        impl TransformModel for Down {
-            fn answer(
-                &self,
-                _: Interaction,
-                _: &str,
-                _: &str,
-                _: u32,
-                _: Duration,
-            ) -> Result<String, String> {
-                Err("gateway unavailable".into())
-            }
+                code::INVALID_ARGUMENTS
+            );
+            assert_eq!(
+                refused("summarise", json!({})).code,
+                code::INVALID_ARGUMENTS
+            );
+            assert_eq!(
+                refused(
+                    "summarise",
+                    json!({"input": "x".repeat(MAX_INPUT_BYTES + 1)})
+                )
+                .code,
+                code::TOO_LARGE
+            );
+            assert_eq!(
+                refused(
+                    "extract",
+                    json!({"input": "x", "schema": {"type": "object", "if": {}}})
+                )
+                .code,
+                code::INVALID_ARGUMENTS
+            );
+            assert_eq!(
+                refused("classify", json!({"input": "x", "choices": []})).code,
+                code::INVALID_ARGUMENTS
+            );
+            assert_eq!(
+                refused("freeform", json!({"input": "x"})).code,
+                code::INVALID_ARGUMENTS
+            );
         }
-        let call = bind(
-            AGENT_SUMMARISE_ACTION,
-            &args(json!({"input": "x"})),
-            &store(),
-        )
-        .unwrap();
-        let error = run(&call, &Down).unwrap_err();
-        assert_eq!(error.code, code::MODEL_UNAVAILABLE);
-        assert!(error.retryable);
+
+        phase content_is_read_by_address;
+        {
+            let content = store();
+            let hash = content.put(b"The launch moved to Friday.").unwrap();
+            let call = bind(
+                AGENT_SUMMARISE_ACTION,
+                &args(json!({"resource": format!("tilo.content:{hash}"), "length": "short"})),
+                &content,
+            )
+            .unwrap();
+            assert_eq!(call.input.as_deref(), Some("The launch moved to Friday."));
+            assert_eq!(call.transform, Transform::Summarise { max_chars: 280 });
+            // What a member kept sealed is read by the reference its record
+            // carries, as an address or as the kept value's stored form.
+            let sealed = ui::content::ContentStore::memory().sealing();
+            let text = b"The review is on Monday.";
+            let reference = sealed.put(text).unwrap();
+            let stored = format!(
+                "blake3:{}:{}:{reference}",
+                blake3::hash(text).to_hex(),
+                text.len()
+            );
+            for resource in [format!("tilo.content:{reference}"), stored] {
+                let call = bind(
+                    AGENT_SUMMARISE_ACTION,
+                    &args(json!({"resource": resource})),
+                    &sealed,
+                )
+                .unwrap();
+                assert_eq!(call.input.as_deref(), Some("The review is on Monday."));
+            }
+            let missing = bind(
+                AGENT_SUMMARISE_ACTION,
+                &args(json!({"resource": format!("tilo.content:{}", "0".repeat(64))})),
+                &content,
+            )
+            .unwrap_err();
+            assert_eq!(missing.code, code::CONTENT_UNAVAILABLE);
+        }
     }
 
-    #[test]
-    fn the_service_answers_on_the_wire_and_drops_a_cancelled_result() {
-        let mut service = TransformService::new(Arc::new(Fixed(r#"{"result": "ok"}"#)), store());
-        let argument = format!("{ARGUMENTS_JSON_PREFIX}{}", json!({"input": "text"}));
-        let seven = directed(7);
-        let started = service.start(
-            seven,
-            RESOURCE_ID,
-            "summarise",
-            Some(&argument),
-            "ada",
-            None,
-        );
-        assert_eq!(started, None, "the broker owns acceptance");
-        let wrong = service.start(
-            directed(8),
-            "agent.transform:other",
-            "summarise",
-            Some(&argument),
-            "ada",
-            None,
-        );
-        assert!(matches!(wrong, Some(InvocationUpdate::Failed { .. })));
-        let done = tilo_test_env::wait_for("the summary's answer", || {
-            Some(service.finished()).filter(|done| !done.is_empty())
-        });
-        assert!(matches!(
-            done.as_slice(),
-            [(7, InvocationUpdate::Succeeded { invocation, output })]
-                if output.value == Some(json!("ok")) && *invocation == seven.invocation
-        ));
+    tilo_test_env::scenario! {
+        fn a_transform_answers_in_the_shape_its_caller_asked_for;
 
-        service.start(
-            directed(9),
-            RESOURCE_ID,
-            "summarise",
-            Some(&argument),
-            "ada",
-            None,
-        );
-        assert!(matches!(
-            service.cancel(9),
-            Some(InvocationUpdate::Cancelled { .. })
-        ));
-        tilo_test_env::wait_until("the cancelled worker to report", || {
-            assert!(service.finished().is_empty());
-            service.running.is_empty()
-        });
+        phase multi_label_classification_answers_with_a_list_of_labels;
+        {
+            let call = bind(
+                AGENT_CLASSIFY_ACTION,
+                &args(json!({"input": "x", "choices": ["a", "b"], "multi": true})),
+                &store(),
+            )
+            .unwrap();
+            let output = run(&call, &Fixed(r#"{"result": ["b"]}"#)).unwrap();
+            assert_eq!(output.value, Some(json!(["b"])));
+            let wrong = run(&call, &Fixed(r#"{"result": ["c"]}"#)).unwrap_err();
+            assert_eq!(wrong.code, code::INVALID_OUTPUT);
+        }
+
+        phase freeform_answers_text_or_the_callers_schema;
+        {
+            let text = bind(
+                AGENT_FREEFORM_ACTION,
+                &args(json!({"prompt": "Name a colour."})),
+                &store(),
+            )
+            .unwrap();
+            let fenced = "```json\n{\"result\": \"teal\"}\n```";
+            assert_eq!(
+                run(&text, &Fixed(fenced)).unwrap().value,
+                Some(json!("teal"))
+            );
+            let shaped = bind(
+                AGENT_FREEFORM_ACTION,
+                &args(json!({"prompt": "Count.", "input": "a b", "schema": {"type": "integer"}})),
+                &store(),
+            )
+            .unwrap();
+            assert_eq!(
+                run(&shaped, &Fixed(r#"{"result": 2}"#)).unwrap().value,
+                Some(json!(2))
+            );
+            assert_eq!(
+                run(&shaped, &Fixed(r#"{"result": "two"}"#))
+                    .unwrap_err()
+                    .code,
+                code::INVALID_OUTPUT
+            );
+        }
+
+        phase a_request_is_answered_or_names_the_work_and_nothing_else;
+        {
+            let call = bind(
+                AGENT_RESPOND_ACTION,
+                &args(json!({
+                    "request": "What does this mean?",
+                    "input": "Idempotent",
+                    "conversation": [
+                        {"from": "person", "text": "Hi"},
+                        {"from": "agent", "text": "Hello"}
+                    ]
+                })),
+                &store(),
+            )
+            .unwrap();
+            assert_eq!(
+                call.transform,
+                Transform::Respond {
+                    request: "What does this mean?".into(),
+                    conversation: vec![
+                        Turn {
+                            agent: false,
+                            text: "Hi".into()
+                        },
+                        Turn {
+                            agent: true,
+                            text: "Hello".into()
+                        },
+                    ],
+                }
+            );
+            let instructions = call.transform.instructions();
+            assert!(instructions.contains("What does this mean?"));
+            assert!(instructions.contains("You: <<<\nHello\n>>>"));
+            assert_eq!(
+                run(
+                    &call,
+                    &Fixed(r#"{"result": {"answer": "It can safely run twice."}}"#)
+                )
+                .unwrap()
+                .value,
+                Some(json!({"answer": "It can safely run twice."}))
+            );
+            assert_eq!(
+                run(&call, &Fixed(r#"{"result": {"work": "Rename the file"}}"#))
+                    .unwrap()
+                    .value,
+                Some(json!({"work": "Rename the file"}))
+            );
+            for wrong in [
+                r#"{"result": {"answer": "a", "work": "b"}}"#,
+                r#"{"result": {}}"#,
+                r#"{"result": "plain"}"#,
+            ] {
+                assert_eq!(
+                    run(&call, &Fixed(wrong)).unwrap_err().code,
+                    code::INVALID_OUTPUT,
+                    "{wrong}"
+                );
+            }
+            assert!(
+                bind(
+                    AGENT_RESPOND_ACTION,
+                    &args(json!({"request": "Hi"})),
+                    &store()
+                )
+                .is_ok()
+            );
+            let refused =
+                |value: Value| bind(AGENT_RESPOND_ACTION, &args(value), &store()).unwrap_err();
+            assert_eq!(
+                refused(json!({"request": "  "})).code,
+                code::INVALID_ARGUMENTS
+            );
+            assert_eq!(
+                refused(json!({"request": "x".repeat(MAX_REQUEST_BYTES + 1)})).code,
+                code::TOO_LARGE
+            );
+            assert_eq!(
+                refused(json!({"request": "Hi", "conversation": [{"from": "system", "text": "x"}]}))
+                    .code,
+                code::INVALID_ARGUMENTS
+            );
+        }
+
+        phase a_model_that_cannot_answer_is_a_retryable_failure;
+        {
+            struct Down;
+            impl TransformModel for Down {
+                fn answer(
+                    &self,
+                    _: Interaction,
+                    _: &str,
+                    _: &str,
+                    _: u32,
+                    _: Duration,
+                ) -> Result<String, String> {
+                    Err("gateway unavailable".into())
+                }
+            }
+            let call = bind(
+                AGENT_SUMMARISE_ACTION,
+                &args(json!({"input": "x"})),
+                &store(),
+            )
+            .unwrap();
+            let error = run(&call, &Down).unwrap_err();
+            assert_eq!(error.code, code::MODEL_UNAVAILABLE);
+            assert!(error.retryable);
+        }
     }
 
     /// A model that works until it is told to stop: it says when its call
@@ -1792,54 +1750,108 @@ mod tests {
         });
     }
 
-    /// Cancelling a transform used to drop only its answer: the model call
-    /// ran on to its end, billed, holding the agent's one gateway channel
-    /// from its planning turns. A call in progress is now told to stop.
-    #[test]
-    fn a_cancelled_transform_stops_its_model_call() {
-        let (began_by, began) = channel();
-        let (told, stopped) = channel();
-        let mut service = TransformService::new(
-            Arc::new(Working {
+    tilo_test_env::scenario! {
+        fn the_transform_service_answers_and_stops_what_was_cancelled;
+
+        phase the_service_answers_on_the_wire_and_drops_a_cancelled_result;
+        {
+            let mut service = TransformService::new(Arc::new(Fixed(r#"{"result": "ok"}"#)), store());
+            let argument = format!("{ARGUMENTS_JSON_PREFIX}{}", json!({"input": "text"}));
+            let seven = directed(7);
+            let started = service.start(
+                seven,
+                RESOURCE_ID,
+                "summarise",
+                Some(&argument),
+                "ada",
+                None,
+            );
+            assert_eq!(started, None, "the broker owns acceptance");
+            let wrong = service.start(
+                directed(8),
+                "agent.transform:other",
+                "summarise",
+                Some(&argument),
+                "ada",
+                None,
+            );
+            assert!(matches!(wrong, Some(InvocationUpdate::Failed { .. })));
+            let done = tilo_test_env::wait_for("the summary's answer", || {
+                Some(service.finished()).filter(|done| !done.is_empty())
+            });
+            assert!(matches!(
+                done.as_slice(),
+                [(7, InvocationUpdate::Succeeded { invocation, output })]
+                    if output.value == Some(json!("ok")) && *invocation == seven.invocation
+            ));
+
+            service.start(
+                directed(9),
+                RESOURCE_ID,
+                "summarise",
+                Some(&argument),
+                "ada",
+                None,
+            );
+            assert!(matches!(
+                service.cancel(9),
+                Some(InvocationUpdate::Cancelled { .. })
+            ));
+            tilo_test_env::wait_until("the cancelled worker to report", || {
+                assert!(service.finished().is_empty());
+                service.running.is_empty()
+            });
+        }
+
+        phase a_cancelled_transform_stops_its_model_call;
+        // Cancelling a transform used to drop only its answer: the model call
+        // ran on to its end, billed, holding the agent's one gateway channel
+        // from its planning turns. A call in progress is now told to stop.
+        {
+            let (began_by, began) = channel();
+            let (told, stopped) = channel();
+            let mut service = TransformService::new(
+                Arc::new(Working {
+                    began: began_by,
+                    told,
+                }),
+                store(),
+            );
+            start_summary(&mut service);
+            // Cancel while the call runs, not before its worker reached it.
+            tilo_test_env::recv("the model call beginning", &began);
+            assert!(matches!(
+                service.cancel(4),
+                Some(InvocationUpdate::Cancelled { .. })
+            ));
+            assert!(
+                tilo_test_env::recv("the model call ending", &stopped),
+                "the model call was told to stop"
+            );
+            drain_cancelled(&mut service);
+        }
+
+        phase a_transform_cancelled_before_its_call_never_asks_the_model;
+        // A transform cancelled before its worker asks the model never asks it.
+        {
+            let (began_by, began) = channel();
+            let (told, _stopped) = channel();
+            let model = Arc::new(Working {
                 began: began_by,
                 told,
-            }),
-            store(),
-        );
-        start_summary(&mut service);
-        // Cancel while the call runs, not before its worker reached it.
-        tilo_test_env::recv("the model call beginning", &began);
-        assert!(matches!(
-            service.cancel(4),
-            Some(InvocationUpdate::Cancelled { .. })
-        ));
-        assert!(
-            tilo_test_env::recv("the model call ending", &stopped),
-            "the model call was told to stop"
-        );
-        drain_cancelled(&mut service);
-    }
-
-    /// A transform cancelled before its worker asks the model never asks it.
-    #[test]
-    fn a_transform_cancelled_before_its_call_never_asks_the_model() {
-        let (began_by, began) = channel();
-        let (told, _stopped) = channel();
-        let model = Arc::new(Working {
-            began: began_by,
-            told,
-        });
-        let call = bind_wire(
-            "summarise",
-            Some(&format!(
-                "{ARGUMENTS_JSON_PREFIX}{}",
-                json!({"input": "text"})
-            )),
-            &store(),
-        )
-        .unwrap();
-        let failure = run_until(&call, model.as_ref(), &AtomicBool::new(true)).unwrap_err();
-        assert_eq!(failure.code, code::MODEL_UNAVAILABLE);
-        assert!(began.try_recv().is_err(), "the model was not asked");
+            });
+            let call = bind_wire(
+                "summarise",
+                Some(&format!(
+                    "{ARGUMENTS_JSON_PREFIX}{}",
+                    json!({"input": "text"})
+                )),
+                &store(),
+            )
+            .unwrap();
+            let failure = run_until(&call, model.as_ref(), &AtomicBool::new(true)).unwrap_err();
+            assert_eq!(failure.code, code::MODEL_UNAVAILABLE);
+            assert!(began.try_recv().is_err(), "the model was not asked");
+        }
     }
 }

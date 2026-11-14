@@ -116,181 +116,190 @@ fn is_value_error<T: std::fmt::Debug>(result: &Result<T>) -> bool {
     matches!(result, Err(Error::Value(_)))
 }
 
-#[test]
-fn exact_signature_source_generation_and_freshness_select_immutable_digest() {
-    let registry = Releases::new();
-    let successor = registry.select(1).unwrap();
-    assert_eq!(
-        successor,
-        Successor {
-            exact: format!("{REPOSITORY}@{}", digest()),
-            generation: 2,
-            source: source(),
-            expires: NOW + 1000,
-        }
-    );
-    let calls = registry.calls.borrow();
-    assert_eq!(
-        calls[0].last().unwrap(),
-        "docker://code.tilo.so/tilo/tilo:lenovo-83ed-latest"
-    );
-    assert_eq!(
-        calls[calls.len() - 2].last().unwrap(),
-        "code.tilo.so/tilo/tilo:lenovo-83ed-gen2"
-    );
-    assert_eq!(
-        calls[calls.len() - 1].last().unwrap(),
-        &format!("code.tilo.so/tilo/tilo:lenovo-83ed-{}", source())
-    );
-    for call in &calls[1..4] {
-        assert_eq!(call.last().unwrap(), &format!("{REPOSITORY}@{}", digest()));
-    }
-    // Every cosign call names the pinned verifier and key.
-    for call in &calls[1..] {
+tilo_test_env::scenario! {
+    /// `select` and the documents it verifies.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn a_successor_is_selected_only_through_exact_signed_fresh_provenance;
+
+    phase exact_signature_source_generation_and_freshness_select_immutable_digest;
+    {
+        let registry = Releases::new();
+        let successor = registry.select(1).unwrap();
         assert_eq!(
-            &call[..4],
-            [
-                "/usr/libexec/tilo-cosign",
-                call[1].as_str(),
-                "--key",
-                "/usr/share/tilo/cosign.pub"
-            ]
+            successor,
+            Successor {
+                exact: format!("{REPOSITORY}@{}", digest()),
+                generation: 2,
+                source: source(),
+                expires: NOW + 1000,
+            }
         );
-    }
-}
-
-#[test]
-fn wrong_profile_architecture_digest_source_and_ambiguous_provenance_refuse() {
-    let (original, _, _) = documents();
-    let mutations: Vec<Mutation> = vec![
-        Box::new(|p| {
-            p["buildDefinition"]["externalParameters"]["hardwareProfile"] = json!("foreign");
-        }),
-        Box::new(|p| p["buildDefinition"]["externalParameters"]["architecture"] = json!("x86_64")),
-        Box::new(|p| {
-            p["buildDefinition"]["internalParameters"]["expectedReleaseDigest"] =
-                json!(format!("sha256:{}", "f".repeat(64)));
-        }),
-        Box::new(|p| p["buildDefinition"]["externalParameters"]["generation"] = json!(true)),
-        Box::new(|p| p["buildDefinition"]["externalParameters"]["generation"] = json!(2.0)),
-        Box::new(|p| p["buildDefinition"]["externalParameters"]["generation"] = json!(0)),
-        Box::new(|p| {
-            p["buildDefinition"]["resolvedDependencies"]
-                .as_array_mut()
-                .unwrap()
-                .push(
-                    json!({"uri": format!("git+ssh://code.tilo.so/tilo/tilo@{}", "f".repeat(40))}),
-                );
-        }),
-        Box::new(|p| {
-            p["buildDefinition"]["resolvedDependencies"]
-                .as_array_mut()
-                .unwrap()
-                .remove(1);
-        }),
-        Box::new(|p| p["runDetails"]["byproducts"] = json!([])),
-        Box::new(|p| {
-            p["buildDefinition"]["externalParameters"]["hardwareDefinitionSha256"] = json!("");
-        }),
-        Box::new(|p| p["buildDefinition"]["externalParameters"]["children"] = json!(null)),
-        Box::new(|p| p["runDetails"]["builder"] = json!({"id": "https://example.invalid/builder"})),
-    ];
-    for (index, mutation) in mutations.iter().enumerate() {
-        let mut predicate = original.clone();
-        mutation(&mut predicate);
-        let result = provenance(&envelope(&predicate, SLSA), &digest());
-        assert!(is_value_error(&result), "mutation {index}: {result:?}");
-    }
-    let rows: Vec<Value> = serde_json::from_str(&envelope(&original, SLSA)).unwrap();
-    let doubled = json!([rows[0], rows[0]]).to_string();
-    assert!(is_value_error(&provenance(&doubled, &digest())));
-    assert_eq!(
-        provenance(&envelope(&original, SLSA), &digest()).unwrap(),
-        (source(), 2)
-    );
-    // One JSON document per line is read as well.
-    let lines = format!("{}\n\n{}\n", rows[0], json!({"payload": "!!"}));
-    assert_eq!(provenance(&lines, &digest()).unwrap(), (source(), 2));
-}
-
-#[test]
-fn expiry_repository_source_generation_and_oversized_lifetime_refuse() {
-    let (_, original, _) = documents();
-    for (key, value) in [
-        ("repository", json!("registry.tilo.so/tilo/tilo")),
-        ("sourceRevision", json!("f".repeat(40))),
-        ("generation", json!(3)),
-        ("expiresAt", json!(NOW)),
-        ("issuedAt", json!(NOW + 1)),
-        ("expiresAt", json!(NOW + 604_801)),
-        ("generation", json!(true)),
-        ("expiresAt", json!(NOW - 100 + 299)),
-    ] {
-        let mut predicate = original.clone();
-        predicate[key] = value;
-        let result = freshness(
-            &envelope(&predicate, FRESHNESS),
-            &digest(),
-            &source(),
-            2,
-            NOW,
+        let calls = registry.calls.borrow();
+        assert_eq!(
+            calls[0].last().unwrap(),
+            "docker://code.tilo.so/tilo/tilo:lenovo-83ed-latest"
         );
-        assert!(is_value_error(&result), "{key}: {result:?}");
+        assert_eq!(
+            calls[calls.len() - 2].last().unwrap(),
+            "code.tilo.so/tilo/tilo:lenovo-83ed-gen2"
+        );
+        assert_eq!(
+            calls[calls.len() - 1].last().unwrap(),
+            &format!("code.tilo.so/tilo/tilo:lenovo-83ed-{}", source())
+        );
+        for call in &calls[1..4] {
+            assert_eq!(call.last().unwrap(), &format!("{REPOSITORY}@{}", digest()));
+        }
+        // Every cosign call names the pinned verifier and key.
+        for call in &calls[1..] {
+            assert_eq!(
+                &call[..4],
+                [
+                    "/usr/libexec/tilo-cosign",
+                    call[1].as_str(),
+                    "--key",
+                    "/usr/share/tilo/cosign.pub"
+                ]
+            );
+        }
     }
-    let mut extra = original.clone();
-    extra["note"] = json!("x");
-    assert!(is_value_error(&freshness(
-        &envelope(&extra, FRESHNESS),
-        &digest(),
-        &source(),
-        2,
-        NOW
-    )));
-    assert_eq!(
-        freshness(
-            &envelope(&original, FRESHNESS),
+
+    phase wrong_profile_architecture_digest_source_and_ambiguous_provenance_refuse;
+    {
+        let (original, _, _) = documents();
+        let mutations: Vec<Mutation> = vec![
+            Box::new(|p| {
+                p["buildDefinition"]["externalParameters"]["hardwareProfile"] = json!("foreign");
+            }),
+            Box::new(|p| p["buildDefinition"]["externalParameters"]["architecture"] = json!("x86_64")),
+            Box::new(|p| {
+                p["buildDefinition"]["internalParameters"]["expectedReleaseDigest"] =
+                    json!(format!("sha256:{}", "f".repeat(64)));
+            }),
+            Box::new(|p| p["buildDefinition"]["externalParameters"]["generation"] = json!(true)),
+            Box::new(|p| p["buildDefinition"]["externalParameters"]["generation"] = json!(2.0)),
+            Box::new(|p| p["buildDefinition"]["externalParameters"]["generation"] = json!(0)),
+            Box::new(|p| {
+                p["buildDefinition"]["resolvedDependencies"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(
+                        json!({"uri": format!("git+ssh://code.tilo.so/tilo/tilo@{}", "f".repeat(40))}),
+                    );
+            }),
+            Box::new(|p| {
+                p["buildDefinition"]["resolvedDependencies"]
+                    .as_array_mut()
+                    .unwrap()
+                    .remove(1);
+            }),
+            Box::new(|p| p["runDetails"]["byproducts"] = json!([])),
+            Box::new(|p| {
+                p["buildDefinition"]["externalParameters"]["hardwareDefinitionSha256"] = json!("");
+            }),
+            Box::new(|p| p["buildDefinition"]["externalParameters"]["children"] = json!(null)),
+            Box::new(|p| p["runDetails"]["builder"] = json!({"id": "https://example.invalid/builder"})),
+        ];
+        for (index, mutation) in mutations.iter().enumerate() {
+            let mut predicate = original.clone();
+            mutation(&mut predicate);
+            let result = provenance(&envelope(&predicate, SLSA), &digest());
+            assert!(is_value_error(&result), "mutation {index}: {result:?}");
+        }
+        let rows: Vec<Value> = serde_json::from_str(&envelope(&original, SLSA)).unwrap();
+        let doubled = json!([rows[0], rows[0]]).to_string();
+        assert!(is_value_error(&provenance(&doubled, &digest())));
+        assert_eq!(
+            provenance(&envelope(&original, SLSA), &digest()).unwrap(),
+            (source(), 2)
+        );
+        // One JSON document per line is read as well.
+        let lines = format!("{}\n\n{}\n", rows[0], json!({"payload": "!!"}));
+        assert_eq!(provenance(&lines, &digest()).unwrap(), (source(), 2));
+    }
+
+    phase expiry_repository_source_generation_and_oversized_lifetime_refuse;
+    {
+        let (_, original, _) = documents();
+        for (key, value) in [
+            ("repository", json!("registry.tilo.so/tilo/tilo")),
+            ("sourceRevision", json!("f".repeat(40))),
+            ("generation", json!(3)),
+            ("expiresAt", json!(NOW)),
+            ("issuedAt", json!(NOW + 1)),
+            ("expiresAt", json!(NOW + 604_801)),
+            ("generation", json!(true)),
+            ("expiresAt", json!(NOW - 100 + 299)),
+        ] {
+            let mut predicate = original.clone();
+            predicate[key] = value;
+            let result = freshness(
+                &envelope(&predicate, FRESHNESS),
+                &digest(),
+                &source(),
+                2,
+                NOW,
+            );
+            assert!(is_value_error(&result), "{key}: {result:?}");
+        }
+        let mut extra = original.clone();
+        extra["note"] = json!("x");
+        assert!(is_value_error(&freshness(
+            &envelope(&extra, FRESHNESS),
             &digest(),
             &source(),
             2,
             NOW
-        )
-        .unwrap(),
-        NOW + 1000
-    );
-}
+        )));
+        assert_eq!(
+            freshness(
+                &envelope(&original, FRESHNESS),
+                &digest(),
+                &source(),
+                2,
+                NOW
+            )
+            .unwrap(),
+            NOW + 1000
+        );
+    }
 
-#[test]
-fn monotonic_release_counter_bound_and_signature_refusal() {
-    let registry = Releases::new();
-    assert!(is_value_error(&registry.select(3)));
-    let mut registry = Releases::new();
-    registry.provenance["buildDefinition"]["externalParameters"]["generation"] = json!(66);
-    assert!(is_value_error(&registry.select(1)));
-    let (_, _, signed) = documents();
-    let foreign_digest = signed.replace(&digest(), &format!("sha256:{}", "f".repeat(64)));
-    assert!(is_value_error(&signature(&foreign_digest, &digest())));
-    let foreign_repository = signed.replace(REPOSITORY, "foreign/repository");
-    assert!(is_value_error(&signature(&foreign_repository, &digest())));
-    assert!(signature(&signed, &digest()).is_ok());
-    assert!(signature("", &digest()).is_err());
-    assert!(signature("[1]", &digest()).is_err());
-}
+    phase monotonic_release_counter_bound_and_signature_refusal;
+    {
+        let registry = Releases::new();
+        assert!(is_value_error(&registry.select(3)));
+        let mut registry = Releases::new();
+        registry.provenance["buildDefinition"]["externalParameters"]["generation"] = json!(66);
+        assert!(is_value_error(&registry.select(1)));
+        let (_, _, signed) = documents();
+        let foreign_digest = signed.replace(&digest(), &format!("sha256:{}", "f".repeat(64)));
+        assert!(is_value_error(&signature(&foreign_digest, &digest())));
+        let foreign_repository = signed.replace(REPOSITORY, "foreign/repository");
+        assert!(is_value_error(&signature(&foreign_repository, &digest())));
+        assert!(signature(&signed, &digest()).is_ok());
+        assert!(signature("", &digest()).is_err());
+        assert!(signature("[1]", &digest()).is_err());
+    }
 
-#[test]
-fn successor_hint_must_be_an_exact_digest() {
-    for hint in [
-        "latest",
-        "sha256:abc",
-        &format!("sha256:{}", "A".repeat(64)),
-    ] {
-        let answer = |args: &[&str]| -> Result<String> {
-            assert_eq!(
-                args[0], "/usr/bin/skopeo",
-                "nothing is verified for a bad hint"
-            );
-            Ok(format!("{hint}\n"))
-        };
-        assert!(is_value_error(&select(1, NOW, &answer)), "{hint}");
+    phase successor_hint_must_be_an_exact_digest;
+    {
+        for hint in [
+            "latest",
+            "sha256:abc",
+            &format!("sha256:{}", "A".repeat(64)),
+        ] {
+            let answer = |args: &[&str]| -> Result<String> {
+                assert_eq!(
+                    args[0], "/usr/bin/skopeo",
+                    "nothing is verified for a bad hint"
+                );
+                Ok(format!("{hint}\n"))
+            };
+            assert!(is_value_error(&select(1, NOW, &answer)), "{hint}");
+        }
     }
 }
 
@@ -298,52 +307,57 @@ fn sh(script: &str, timeout: Duration, max_output: usize) -> Result<String> {
     command::run(&["/bin/sh", "-c", script], &[], timeout, max_output)
 }
 
-#[test]
-fn child_output_deadline_and_failure_are_real_bounded_refusals() {
-    let long = Duration::from_secs(20);
-    let too_much = sh("head -c 4096 /dev/zero | tr '\\0' x", long, 1024);
-    assert!(
-        matches!(&too_much, Err(Error::Value(m)) if m.contains("exceeds its bound")),
-        "{too_much:?}"
-    );
-    let noisy = sh("head -c 4096 /dev/zero | tr '\\0' x >&2", long, 1024);
-    assert!(
-        matches!(&noisy, Err(Error::Value(m)) if m.contains("exceeds its bound")),
-        "{noisy:?}"
-    );
-    let slow = sh("sleep 1", Duration::from_millis(20), MAX_OUTPUT);
-    assert!(slow.is_err(), "{slow:?}");
-    let refused = sh("exit 7", long, MAX_OUTPUT);
-    assert!(
-        matches!(&refused, Err(Error::Value(m)) if m == "sh refused release verification (exit 7)"),
-        "{refused:?}"
-    );
-    assert_eq!(
-        sh("echo ready; echo noise >&2", long, MAX_OUTPUT).unwrap(),
-        "ready\n"
-    );
-    let missing = command::run(&["/nonexistent/tilo-cosign"], &[], long, MAX_OUTPUT);
-    assert!(matches!(missing, Err(Error::Os(_))));
-}
+tilo_test_env::scenario! {
+    /// `command::run`.
+    fn verification_commands_are_bounded_and_killed_at_their_deadline;
 
-#[test]
-fn a_timed_out_child_is_killed() {
-    let work = tempfile::tempdir().unwrap();
-    let pid_file = work.path().join("pid");
-    // The verifier would run for an hour unless the deadline ends it.
-    let script = format!("echo $$ > {}; exec sleep 3600", pid_file.display());
-    assert!(sh(&script, Duration::from_millis(50), MAX_OUTPUT).is_err());
-    // A verifier the deadline caught before it wrote its pid never ran.
-    if let Some(pid) = fs::read_to_string(&pid_file)
-        .ok()
-        .and_then(|pid| pid.trim().parse::<u32>().ok())
+    phase child_output_deadline_and_failure_are_real_bounded_refusals;
     {
-        tilo_test_env::wait_until("the timed-out verifier to die", || {
-            fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
-                stat.rsplit_once(") ")
-                    .is_some_and(|(_, rest)| rest.starts_with('Z'))
-            })
-        });
+        let long = Duration::from_secs(20);
+        let too_much = sh("head -c 4096 /dev/zero | tr '\\0' x", long, 1024);
+        assert!(
+            matches!(&too_much, Err(Error::Value(m)) if m.contains("exceeds its bound")),
+            "{too_much:?}"
+        );
+        let noisy = sh("head -c 4096 /dev/zero | tr '\\0' x >&2", long, 1024);
+        assert!(
+            matches!(&noisy, Err(Error::Value(m)) if m.contains("exceeds its bound")),
+            "{noisy:?}"
+        );
+        let slow = sh("sleep 1", Duration::from_millis(20), MAX_OUTPUT);
+        assert!(slow.is_err(), "{slow:?}");
+        let refused = sh("exit 7", long, MAX_OUTPUT);
+        assert!(
+            matches!(&refused, Err(Error::Value(m)) if m == "sh refused release verification (exit 7)"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            sh("echo ready; echo noise >&2", long, MAX_OUTPUT).unwrap(),
+            "ready\n"
+        );
+        let missing = command::run(&["/nonexistent/tilo-cosign"], &[], long, MAX_OUTPUT);
+        assert!(matches!(missing, Err(Error::Os(_))));
+    }
+
+    phase a_timed_out_child_is_killed;
+    {
+        let work = tempfile::tempdir().unwrap();
+        let pid_file = work.path().join("pid");
+        // The verifier would run for an hour unless the deadline ends it.
+        let script = format!("echo $$ > {}; exec sleep 3600", pid_file.display());
+        assert!(sh(&script, Duration::from_millis(50), MAX_OUTPUT).is_err());
+        // A verifier the deadline caught before it wrote its pid never ran.
+        if let Some(pid) = fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+        {
+            tilo_test_env::wait_until("the timed-out verifier to die", || {
+                fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+                    stat.rsplit_once(") ")
+                        .is_some_and(|(_, rest)| rest.starts_with('Z'))
+                })
+            });
+        }
     }
 }
 

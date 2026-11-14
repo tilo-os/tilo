@@ -131,7 +131,8 @@ jobs:
                 [str(item) for item in violations],
                 [
                     "paths block 1 generated closure is not current: run "
-                    "tools/policy/check_workflow_package_paths.py --write <package> <workflow>"
+                    "tools/policy/check_workflow_package_paths.py --edges normal --write "
+                    "<package> <workflow>"
                 ],
             )
         with self.subTest(phase='a directory glob kept by hand outside the region is reported'):

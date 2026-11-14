@@ -317,7 +317,6 @@ chat-message-pinned-marker = Pinned
 chat-message-sending = Sending…
 chat-empty-title = No messages yet
 chat-empty-title-read-only = Nothing has been said here yet
-chat-jump-latest = Jump to latest
 chat-jump-latest-message = Jump to latest message
 chat-right-flap = Show people or thread
 chat-typing-one = { $name } is typing…

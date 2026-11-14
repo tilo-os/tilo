@@ -102,95 +102,99 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_layout_becomes_windows_in_the_unit_square() {
-        let screen = Screen::from_layout(&MemberLayout {
-            size: [1440, 852],
-            windows: vec![
-                MemberWindow {
-                    focused: true,
-                    ..window("so.tilo.notes", "0123456789abcdef", [0, 0, 5000, 10_000])
-                },
-                window(
-                    "so.tilo.chat",
-                    "fedcba9876543210",
-                    [5000, 2500, 10_000, 7500],
-                ),
-            ],
-        })
-        .unwrap();
-        assert_eq!(screen.size, (1440.0, 852.0));
-        assert_eq!(
-            screen.windows,
-            vec![
-                ScreenWindow {
-                    app: "so.tilo.notes".into(),
-                    record: [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
-                    rect: Rect::new(0.0, 0.0, 0.5, 1.0),
-                    focused: true,
-                    name: None,
-                },
-                ScreenWindow {
-                    app: "so.tilo.chat".into(),
-                    record: [0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10],
-                    rect: Rect::new(0.5, 0.25, 1.0, 0.75),
-                    focused: false,
-                    name: None,
-                },
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_shared_screens_layout_becomes_windows_in_the_unit_square;
 
-    /// A viewer names the windows whose records it holds, and every other window by its app.
-    #[test]
-    fn a_screen_is_named_by_the_records_the_viewer_holds() {
-        let layout = MemberLayout {
-            size: [1440, 852],
-            windows: vec![
-                window("so.tilo.notes", "0123456789abcdef", [0, 0, 5000, 10_000]),
-                window(
-                    "so.tilo.chat",
-                    "fedcba9876543210",
-                    [5000, 0, 10_000, 10_000],
-                ),
-            ],
-        };
-        let screen = Screen::of(&layout, |app, record| {
-            (record == "0123456789abcdef")
-                .then(|| "Plans".to_owned())
-                .or_else(|| Some(app.to_owned()))
-        })
-        .unwrap();
-        let names: Vec<&str> = screen
-            .windows
-            .iter()
-            .filter_map(|window| window.name.as_deref())
-            .collect();
-        assert_eq!(names, vec!["Plans", "so.tilo.chat"]);
-    }
+        phase a_layout_becomes_windows_in_the_unit_square;
+        {
+            let screen = Screen::from_layout(&MemberLayout {
+                size: [1440, 852],
+                windows: vec![
+                    MemberWindow {
+                        focused: true,
+                        ..window("so.tilo.notes", "0123456789abcdef", [0, 0, 5000, 10_000])
+                    },
+                    window(
+                        "so.tilo.chat",
+                        "fedcba9876543210",
+                        [5000, 2500, 10_000, 7500],
+                    ),
+                ],
+            })
+            .unwrap();
+            assert_eq!(screen.size, (1440.0, 852.0));
+            assert_eq!(
+                screen.windows,
+                vec![
+                    ScreenWindow {
+                        app: "so.tilo.notes".into(),
+                        record: [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
+                        rect: Rect::new(0.0, 0.0, 0.5, 1.0),
+                        focused: true,
+                        name: None,
+                    },
+                    ScreenWindow {
+                        app: "so.tilo.chat".into(),
+                        record: [0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10],
+                        rect: Rect::new(0.5, 0.25, 1.0, 0.75),
+                        focused: false,
+                        name: None,
+                    },
+                ]
+            );
+        }
 
-    #[test]
-    fn malformed_windows_are_left_out_and_a_sizeless_screen_is_none() {
-        let screen = Screen::from_layout(&MemberLayout {
-            size: [100, 100],
-            windows: vec![
-                window("", "0123456789abcdef", [0, 0, 1, 1]),
-                window("a", "not hex", [0, 0, 1, 1]),
-                window("a", "0123", [0, 0, 1, 1]),
-                window("a", "0123456789abcdef", [5, 0, 1, 1]),
-                window("a", "0123456789abcdef", [0, 0, 10_001, 1]),
-                window("ok", "0123456789abcdef", [0, 0, 1, 1]),
-            ],
-        })
-        .unwrap();
-        assert_eq!(screen.windows.len(), 1);
-        assert_eq!(screen.windows[0].app, "ok");
-        assert_eq!(
-            Screen::from_layout(&MemberLayout {
-                size: [0, 10],
-                windows: Vec::new()
-            }),
-            None
-        );
+        phase a_screen_is_named_by_the_records_the_viewer_holds;
+        // A viewer names the windows whose records it holds, and every other window by its app.
+        {
+            let layout = MemberLayout {
+                size: [1440, 852],
+                windows: vec![
+                    window("so.tilo.notes", "0123456789abcdef", [0, 0, 5000, 10_000]),
+                    window(
+                        "so.tilo.chat",
+                        "fedcba9876543210",
+                        [5000, 0, 10_000, 10_000],
+                    ),
+                ],
+            };
+            let screen = Screen::of(&layout, |app, record| {
+                (record == "0123456789abcdef")
+                    .then(|| "Plans".to_owned())
+                    .or_else(|| Some(app.to_owned()))
+            })
+            .unwrap();
+            let names: Vec<&str> = screen
+                .windows
+                .iter()
+                .filter_map(|window| window.name.as_deref())
+                .collect();
+            assert_eq!(names, vec!["Plans", "so.tilo.chat"]);
+        }
+
+        phase malformed_windows_are_left_out_and_a_sizeless_screen_is_none;
+        {
+            let screen = Screen::from_layout(&MemberLayout {
+                size: [100, 100],
+                windows: vec![
+                    window("", "0123456789abcdef", [0, 0, 1, 1]),
+                    window("a", "not hex", [0, 0, 1, 1]),
+                    window("a", "0123", [0, 0, 1, 1]),
+                    window("a", "0123456789abcdef", [5, 0, 1, 1]),
+                    window("a", "0123456789abcdef", [0, 0, 10_001, 1]),
+                    window("ok", "0123456789abcdef", [0, 0, 1, 1]),
+                ],
+            })
+            .unwrap();
+            assert_eq!(screen.windows.len(), 1);
+            assert_eq!(screen.windows[0].app, "ok");
+            assert_eq!(
+                Screen::from_layout(&MemberLayout {
+                    size: [0, 10],
+                    windows: Vec::new()
+                }),
+                None
+            );
+        }
     }
 }

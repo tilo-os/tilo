@@ -815,9 +815,10 @@ mod tests {
 
     use tilo_test_env::hang_bound;
 
-    #[test]
-    fn auth_resolution_reads_saved_secrets_and_default_keys() {
-        eprintln!("phase resolve_auth_password_uses_the_saved_password");
+    tilo_test_env::scenario! {
+        fn auth_resolution_reads_saved_secrets_and_default_keys;
+
+        phase resolve_auth_password_uses_the_saved_password;
         {
             match resolve_auth(false, Some("hunter2".into()), &[]).unwrap() {
                 SshAuth::Password(p) => assert_eq!(p, "hunter2"),
@@ -825,12 +826,12 @@ mod tests {
             }
         }
 
-        eprintln!("phase resolve_auth_password_missing_is_error");
+        phase resolve_auth_password_missing_is_error;
         {
             assert!(resolve_auth(false, None, &[]).is_err());
         }
 
-        eprintln!("phase resolve_auth_key_uses_the_first_existing_default");
+        phase resolve_auth_key_uses_the_first_existing_default;
         {
             let directory =
                 std::env::temp_dir().join(format!("tilo-remote-keys-{}", uuid::Uuid::new_v4()));
@@ -852,7 +853,7 @@ mod tests {
             fs::remove_dir_all(&directory).unwrap();
         }
 
-        eprintln!("phase default_key_paths_are_under_dot_ssh");
+        phase default_key_paths_are_under_dot_ssh;
         {
             let paths = default_key_paths();
             assert!(paths.iter().any(|p| p.ends_with(".ssh/id_ed25519")));
@@ -869,9 +870,10 @@ mod tests {
         (store, directory)
     }
 
-    #[test]
-    fn known_hosts_store_fails_closed_until_exactly_trusted() {
-        eprintln!("phase device_private_known_hosts_fails_closed_until_an_exact_key_is_trusted");
+    tilo_test_env::scenario! {
+        fn known_hosts_store_fails_closed_until_exactly_trusted;
+
+        phase device_private_known_hosts_fails_closed_until_an_exact_key_is_trusted;
         {
             let (store, directory) = test_known_hosts();
             let first = HostKeyIdentity {
@@ -925,7 +927,7 @@ mod tests {
             assert!(!forget_host_key(&store, "host.example", 2222).unwrap());
         }
 
-        eprintln!("phase corrupt_known_hosts_store_fails_closed");
+        phase corrupt_known_hosts_store_fails_closed;
         {
             let (store, directory) = test_known_hosts();
             ui::storage::SettingsSection::named("app_device_local")

@@ -97,52 +97,58 @@ fn thread(count: usize) -> Vec<ConversationLine> {
 /// this many rows of any text scale the tokens allow.
 const MOST_ROWS_IN_VIEW: usize = 60;
 
-#[test]
-fn a_steady_frame_measures_nothing_and_paints_only_what_is_in_view() {
-    for count in [40_usize, 400] {
-        let mut frames = Frames::of(thread(count));
-        let steady = frames.frames(30);
-        let work = frames.list.work();
-        eprintln!(
-            "conversation-frame {}",
-            serde_json::json!({
-                "lines": count,
-                "profile": if cfg!(debug_assertions) { "test-debug" } else { "optimized" },
-                "frame_us": steady.as_micros(),
-                "total_height": frames.height,
-                "measured": work.measured,
-                "reused": work.reused,
-                "painted": work.painted,
-                "culled": work.culled,
-            })
-        );
-        assert_eq!(
-            work.measured, 0,
-            "a frame that changed nothing measures nothing: {work:?}"
-        );
-        assert_eq!(work.reused, count, "every line keeps its measurement");
-        assert!(
-            work.painted <= MOST_ROWS_IN_VIEW,
-            "a frame paints what is on screen, not the thread: {work:?}"
-        );
-        assert_eq!(
-            work.painted + work.culled,
-            count + count.div_ceil(50),
-            "every row — a line or a day divider — is either painted or culled: {work:?}"
-        );
-    }
-}
+tilo_test_env::scenario! {
+    /// The cost of a steady frame of the conversation list.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_list_frame_costs_what_is_in_view;
 
-#[test]
-fn a_ten_times_longer_thread_costs_the_same_frame() {
-    let mut short = Frames::of(thread(40));
-    let mut long = Frames::of(thread(400));
-    short.frames(10);
-    long.frames(10);
-    let short_work = short.list.work();
-    let long_work = long.list.work();
-    assert_eq!(short_work.measured, long_work.measured);
-    assert_eq!(short_work.reused, 40);
-    assert_eq!(long_work.reused, 400);
-    assert_eq!(short_work.painted, long_work.painted);
+    phase a_steady_frame_measures_nothing_and_paints_only_what_is_in_view;
+    {
+        for count in [40_usize, 400] {
+            let mut frames = Frames::of(thread(count));
+            let steady = frames.frames(30);
+            let work = frames.list.work();
+            eprintln!(
+                "conversation-frame {}",
+                serde_json::json!({
+                    "lines": count,
+                    "profile": if cfg!(debug_assertions) { "test-debug" } else { "optimized" },
+                    "frame_us": steady.as_micros(),
+                    "total_height": frames.height,
+                    "measured": work.measured,
+                    "reused": work.reused,
+                    "painted": work.painted,
+                    "culled": work.culled,
+                })
+            );
+            assert_eq!(
+                work.measured, 0,
+                "a frame that changed nothing measures nothing: {work:?}"
+            );
+            assert_eq!(work.reused, count, "every line keeps its measurement");
+            assert!(
+                work.painted <= MOST_ROWS_IN_VIEW,
+                "a frame paints what is on screen, not the thread: {work:?}"
+            );
+            assert_eq!(
+                work.painted + work.culled,
+                count + count.div_ceil(50),
+                "every row — a line or a day divider — is either painted or culled: {work:?}"
+            );
+        }
+    }
+
+    phase a_ten_times_longer_thread_costs_the_same_frame;
+    {
+        let mut short = Frames::of(thread(40));
+        let mut long = Frames::of(thread(400));
+        short.frames(10);
+        long.frames(10);
+        let short_work = short.list.work();
+        let long_work = long.list.work();
+        assert_eq!(short_work.measured, long_work.measured);
+        assert_eq!(short_work.reused, 40);
+        assert_eq!(long_work.reused, 400);
+        assert_eq!(short_work.painted, long_work.painted);
+    }
 }

@@ -50,6 +50,7 @@ impl SessionResource {
     /// No session is connected, it does not answer in time, or no service
     /// publishes `resource`.
     pub fn open(resource: &str) -> Result<Self, String> {
+        tilo_rt::off_ui_thread();
         let (watched, first) = Self::watch(resource, None)?;
         match first.recv_timeout(PUBLISHED_OPEN_TIMEOUT) {
             Ok(Ok(reading)) => {
@@ -171,6 +172,7 @@ impl SessionResource {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
+        tilo_rt::off_ui_thread();
         let sender = PUBLISHED_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()

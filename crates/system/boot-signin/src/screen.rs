@@ -178,75 +178,80 @@ printf 'plymouth %s\n' "$*" >>"$(dirname "$0")/asked"
         fs::read_to_string(dir.join(name)).unwrap_or_default()
     }
 
-    #[test]
-    fn the_list_is_a_typed_question() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let mut screen = screen(dir.path(), false);
-        fs::write(dir.path().join("answers"), "7\n2\n").unwrap();
-        assert_eq!(screen.pick(&people(), 0), Pick::Person(1));
-        let asked = read(dir.path(), "asked");
-        assert!(
-            asked.contains("--echo=yes --timeout=0 --id=tilo-signin-person:root Who is signing in? Type 1 for Anna, 2 for Ben, or leave it empty for other ways to sign in"),
-            "{asked}"
-        );
-        fs::write(dir.path().join("answers"), "\n").unwrap();
-        assert_eq!(screen.pick(&people(), 0), Pick::OtherWays);
-    }
+    tilo_test_env::scenario! {
+        /// `ConsoleScreen`.
+        fn the_console_screen_asks_through_the_password_agents;
 
-    #[test]
-    fn the_field_is_asked_through_the_password_agents() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let mut screen = screen(dir.path(), false);
-        fs::write(dir.path().join("answers"), "123456\n\n<cancel>\n").unwrap();
-        let anna = people().remove(0);
-        let wrong = Note::Wrong {
-            secret: SecretKind::Pin,
-            tries_left: Some(4),
-        };
-        let prompt = Prompt {
-            person: &anna,
-            note: wrong,
-            several: false,
-        };
-        assert!(
-            matches!(screen.ask(&prompt), Entry::Secret(secret) if secret.as_str() == "123456")
-        );
-        assert!(matches!(screen.ask(&prompt), Entry::Empty));
-        assert!(matches!(screen.ask(&prompt), Entry::Unavailable));
-        assert_eq!(
-            read(dir.path(), "asked").lines().next(),
-            Some(
-                "-n --echo=masked --timeout=0 --id=tilo-signin:root Incorrect PIN. 4 tries left. PIN for Anna, or leave it empty for other ways to sign in"
-            )
-        );
-    }
+        phase the_list_is_a_typed_question;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let mut screen = screen(dir.path(), false);
+            fs::write(dir.path().join("answers"), "7\n2\n").unwrap();
+            assert_eq!(screen.pick(&people(), 0), Pick::Person(1));
+            let asked = read(dir.path(), "asked");
+            assert!(
+                asked.contains("--echo=yes --timeout=0 --id=tilo-signin-person:root Who is signing in? Type 1 for Anna, 2 for Ben, or leave it empty for other ways to sign in"),
+                "{asked}"
+            );
+            fs::write(dir.path().join("answers"), "\n").unwrap();
+            assert_eq!(screen.pick(&people(), 0), Pick::OtherWays);
+        }
 
-    #[test]
-    fn plymouth_ends_before_the_first_question() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let mut screen = screen(dir.path(), true);
-        fs::write(dir.path().join("answers"), "2\n123456\n").unwrap();
-        assert_eq!(screen.pick(&people(), 0), Pick::Person(1));
-        let ben = people().remove(1);
-        let prompt = Prompt {
-            person: &ben,
-            note: Note::None,
-            several: true,
-        };
-        assert!(matches!(screen.ask(&prompt), Entry::Secret(_)));
-        let asked = read(dir.path(), "asked");
-        let asked: Vec<&str> = asked.lines().collect();
-        assert_eq!(asked.len(), 3, "{asked:?}");
-        assert_eq!(asked.first(), Some(&"plymouth quit"), "{asked:?}");
-        assert!(
-            asked
-                .iter()
-                .skip(1)
-                .all(|line| !line.starts_with("plymouth")),
-            "Plymouth is told to quit once: {asked:?}"
-        );
+        phase the_field_is_asked_through_the_password_agents;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let mut screen = screen(dir.path(), false);
+            fs::write(dir.path().join("answers"), "123456\n\n<cancel>\n").unwrap();
+            let anna = people().remove(0);
+            let wrong = Note::Wrong {
+                secret: SecretKind::Pin,
+                tries_left: Some(4),
+            };
+            let prompt = Prompt {
+                person: &anna,
+                note: wrong,
+                several: false,
+            };
+            assert!(
+                matches!(screen.ask(&prompt), Entry::Secret(secret) if secret.as_str() == "123456")
+            );
+            assert!(matches!(screen.ask(&prompt), Entry::Empty));
+            assert!(matches!(screen.ask(&prompt), Entry::Unavailable));
+            assert_eq!(
+                read(dir.path(), "asked").lines().next(),
+                Some(
+                    "-n --echo=masked --timeout=0 --id=tilo-signin:root Incorrect PIN. 4 tries left. PIN for Anna, or leave it empty for other ways to sign in"
+                )
+            );
+        }
+
+        phase plymouth_ends_before_the_first_question;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let mut screen = screen(dir.path(), true);
+            fs::write(dir.path().join("answers"), "2\n123456\n").unwrap();
+            assert_eq!(screen.pick(&people(), 0), Pick::Person(1));
+            let ben = people().remove(1);
+            let prompt = Prompt {
+                person: &ben,
+                note: Note::None,
+                several: true,
+            };
+            assert!(matches!(screen.ask(&prompt), Entry::Secret(_)));
+            let asked = read(dir.path(), "asked");
+            let asked: Vec<&str> = asked.lines().collect();
+            assert_eq!(asked.len(), 3, "{asked:?}");
+            assert_eq!(asked.first(), Some(&"plymouth quit"), "{asked:?}");
+            assert!(
+                asked
+                    .iter()
+                    .skip(1)
+                    .all(|line| !line.starts_with("plymouth")),
+                "Plymouth is told to quit once: {asked:?}"
+            );
+        }
     }
 }

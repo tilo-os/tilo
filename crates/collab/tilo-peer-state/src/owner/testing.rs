@@ -18,7 +18,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{collections::BTreeMap, time::SystemTime};
 use tilo_automation::Shortcut;
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 pub mod governor;
@@ -41,15 +41,14 @@ pub fn own_host_hint(
     certificate: &DeviceCert,
     key: &SigningKey,
 ) -> join::TransportHint {
-    let room = workspace.to_string();
-    IrohWorkspaceHostHintV1 {
+    WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        workspace_id: join::room_workspace_id(&room).unwrap(),
-        room,
+        holds_keys: true,
+        runs_work: false,
+        workspace_id: workspace,
         endpoint_addr: endpoint,
-        host_user_public_key: certificate.user_public_key,
-        host_device_certificate: certificate.clone(),
+        user_public_key: certificate.user_public_key,
+        device_certificate: certificate.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(key)
@@ -164,7 +163,7 @@ pub fn enroll_into(
     request_id[..8].copy_from_slice(&certificate.device_public_key[..8]);
     let invitation = governor.issue(
         vec![hint.clone()],
-        join::MemberRole::Editor,
+        join::Role::Editor,
         Some(certificate.user_public_key),
         None,
         now_ns.checked_add(60_000_000_000).unwrap(),
@@ -259,7 +258,7 @@ struct Seeded {
     governor_key: SigningKey,
     governor: DeviceCert,
     device: DeviceCert,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     hint: join::TransportHint,
     verified: join::VerifiedJoin,
     proof: join::JoinProof,
@@ -287,17 +286,17 @@ fn seeded(now: SystemTime) -> Seeded {
     );
     let device_key = member_key();
     let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
-    let workspace_id = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
+    let workspace_id = WorkspaceId::parse(WORKSPACE).unwrap();
+    let hint = WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: WORKSPACE.into(),
+        holds_keys: true,
+        runs_work: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
-        host_user_public_key: governor.user_public_key,
-        host_device_certificate: governor.clone(),
+        user_public_key: governor.user_public_key,
+        device_certificate: governor.clone(),
         packet_relay_url: "https://relay.invalid".into(),
     }
     .transport_hint(&governor_key)
@@ -305,9 +304,8 @@ fn seeded(now: SystemTime) -> Seeded {
     let signed = join::issue_invitation(
         join::InviteGrant {
             workspace_id,
-            room: WORKSPACE.into(),
             issuer: governor.clone(),
-            role: join::MemberRole::Editor,
+            role: join::Role::Editor,
             nonce: [65; 16],
             recipient_user_public_key: Some(device.user_public_key),
             invitee_name: Some("Member".into()),
@@ -457,8 +455,7 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
         version: 1,
         invite_id: verified.invite_id(),
         device_cert: device.clone(),
-        role: join::MemberRole::Editor,
-        room: WORKSPACE.into(),
+        role: join::Role::Editor,
         workspace_id,
         host: governor.clone(),
         certified_roster: peer.certificates(),
@@ -526,15 +523,14 @@ pub fn late_admission_at(now: SystemTime) -> LateAdmission {
             .unwrap()
     );
     let admitting = NeighbourMsg::SyncResp {
+        room: peer.workspace_id().to_owned(),
         changes: peer.workspace_changes_since(&before),
-        room: WORKSPACE.into(),
     };
     let bootstrap = join::JoinBootstrap {
         version: 1,
         invite_id: verified.invite_id(),
         device_cert: device,
-        role: join::MemberRole::Editor,
-        room: WORKSPACE.into(),
+        role: join::Role::Editor,
         workspace_id,
         host: governor.clone(),
         certified_roster: peer.certificates(),

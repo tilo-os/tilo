@@ -573,7 +573,7 @@ pub fn selected_principal_id_prompt(workspace: &str) -> io::Result<Option<String
     let registry = store.load_reconciled_prompt()?;
     Ok(registry
         .for_workspace(workspace, device_cert().as_ref())
-        .map(|profile| profile.principal_id()))
+        .map(|profile| profile.person_id()))
 }
 
 /// The identity this device presents in `workspace`, for shell chrome, apps
@@ -666,56 +666,60 @@ mod tests {
         .expect("write");
     }
 
-    /// The identity service answers every launch from the cached read; it
-    /// reconciles in memory and leaves saving to provisioning.
-    #[test]
-    fn the_per_launch_read_never_writes_the_identity_directory() {
-        let dir = temp_dir("read-only");
-        write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 8));
-        #[cfg(unix)]
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("mode");
-        let entries = || {
-            let mut names: Vec<_> = fs::read_dir(&dir)
-                .expect("list")
-                .map(|entry| entry.expect("entry").file_name())
-                .collect();
-            names.sort();
-            let meta = fs::metadata(&dir).expect("dir");
-            (names, meta.modified().expect("mtime"), meta.permissions())
-        };
-        let before = entries();
-        let store = IdentityRegistryStore::at(&dir);
-        let registry = store.load_reconciled_cached().expect("read");
-        let selected = registry
-            .for_workspace("workspace-a", None)
-            .expect("default");
-        assert_eq!(selected.display_name, "Alice");
-        assert_eq!(entries(), before);
-        assert!(!store.registry_path().exists());
-        fs::remove_dir_all(dir).expect("cleanup");
-    }
+    tilo_test_env::scenario! {
+        fn reading_the_registry_for_a_launch;
 
-    /// The launch path's read answers from the worker a session armed at
-    /// startup, even while the directory cannot be looked at.
-    #[test]
-    fn a_watched_identity_directory_answers_the_cached_read_from_the_worker() {
-        let dir = temp_dir("watched-cached");
-        write_record(&dir.join("alice.json"), &record("Alice", 41));
-        let store = IdentityRegistryStore::at(&dir);
-        let reconciles = || RECONCILES_ON_THIS_THREAD.with(std::cell::Cell::get);
-        let armed = store.load_reconciled_prompt().expect("arm");
-        assert_eq!(armed.identities.len(), 1);
-        let after_arming = reconciles();
-        // The worker keeps the answer after the directory is gone; a read
-        // that looked at the disk itself would have to fail.
-        fs::remove_dir_all(&dir).expect("cleanup");
-        let cached = store.load_reconciled_cached().expect("from the worker");
-        assert_eq!(cached.identities.len(), 1);
-        assert_eq!(
-            reconciles(),
-            after_arming,
-            "the caller's thread never read the disk"
-        );
+        phase the_per_launch_read_never_writes_the_identity_directory;
+        // The identity service answers every launch from the cached read; it
+        // reconciles in memory and leaves saving to provisioning.
+        {
+            let dir = temp_dir("read-only");
+            write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 8));
+            #[cfg(unix)]
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("mode");
+            let entries = || {
+                let mut names: Vec<_> = fs::read_dir(&dir)
+                    .expect("list")
+                    .map(|entry| entry.expect("entry").file_name())
+                    .collect();
+                names.sort();
+                let meta = fs::metadata(&dir).expect("dir");
+                (names, meta.modified().expect("mtime"), meta.permissions())
+            };
+            let before = entries();
+            let store = IdentityRegistryStore::at(&dir);
+            let registry = store.load_reconciled_cached().expect("read");
+            let selected = registry
+                .for_workspace("workspace-a", None)
+                .expect("default");
+            assert_eq!(selected.display_name, "Alice");
+            assert_eq!(entries(), before);
+            assert!(!store.registry_path().exists());
+            fs::remove_dir_all(dir).expect("cleanup");
+        }
+
+        phase a_watched_identity_directory_answers_the_cached_read_from_the_worker;
+        // The launch path's read answers from the worker a session armed at
+        // startup, even while the directory cannot be looked at.
+        {
+            let dir = temp_dir("watched-cached");
+            write_record(&dir.join("alice.json"), &record("Alice", 41));
+            let store = IdentityRegistryStore::at(&dir);
+            let reconciles = || RECONCILES_ON_THIS_THREAD.with(std::cell::Cell::get);
+            let armed = store.load_reconciled_prompt().expect("arm");
+            assert_eq!(armed.identities.len(), 1);
+            let after_arming = reconciles();
+            // The worker keeps the answer after the directory is gone; a read
+            // that looked at the disk itself would have to fail.
+            fs::remove_dir_all(&dir).expect("cleanup");
+            let cached = store.load_reconciled_cached().expect("from the worker");
+            assert_eq!(cached.identities.len(), 1);
+            assert_eq!(
+                reconciles(),
+                after_arming,
+                "the caller's thread never read the disk"
+            );
+        }
     }
 
     #[test]
@@ -749,93 +753,193 @@ mod tests {
         fs::remove_dir_all(dir).expect("cleanup");
     }
 
-    /// A personal cluster is the cluster of the identity its id derives
-    /// from, whatever else this login holds.
-    #[test]
-    fn a_personal_cluster_is_the_cluster_of_the_identity_it_derives_from() {
-        let dir = temp_dir("personal-cluster");
-        write_record(&dir.join("alice.json"), &record("Alice", 51));
-        write_record(&dir.join("bob.json"), &record("Bob", 52));
-        let store = IdentityRegistryStore::at(&dir);
-        let registry = store.load_reconciled().expect("read");
-        let person = |name: &str| {
-            registry
-                .identities
-                .values()
-                .find(|profile| profile.display_name == name)
-                .expect(name)
-        };
-        let alice = person("Alice");
-        let workspace = collab_types::personal_cluster(&alice.user_public_key).to_string();
-        let resolving = registry
-            .for_workspace(&workspace, None)
-            .expect("Alice's cluster");
-        assert_eq!(
-            resolving.display_name, "Alice",
-            "the personal cluster maps to the identity it derives from"
-        );
-        // A workspace no identity derives is answered by the identity this
-        // login marked active.
-        let other = collab_types::personal_cluster(&[0x5a; 32]).to_string();
-        let resolving = registry
-            .for_workspace(&other, None)
-            .expect("the active identity");
-        assert_eq!(
-            registry.default_identity.as_deref(),
-            Some(resolving.id.as_str())
-        );
-        fs::remove_dir_all(dir).expect("cleanup");
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn what_the_registry_reconciles;
 
-    #[test]
-    fn identity_registry_migrates_and_bounds_legacy_imports() {
+        phase a_personal_cluster_is_the_cluster_of_the_identity_it_derives_from;
+        // A personal cluster is the cluster of the identity its id derives
+        // from, whatever else this login holds.
         {
-            let dir = temp_dir("legacy");
-            write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 7));
+            let dir = temp_dir("personal-cluster");
+            write_record(&dir.join("alice.json"), &record("Alice", 51));
+            write_record(&dir.join("bob.json"), &record("Bob", 52));
             let store = IdentityRegistryStore::at(&dir);
-            let registry = store.load_reconciled().expect("migrate");
-            let selected = registry
-                .for_workspace("workspace-a", None)
-                .expect("default");
-            assert_eq!(selected.display_name, "Alice");
-            assert_eq!(selected.record_path, dir.join(LEGACY_PRIMARY_FILE));
-            assert!(store.registry_path().exists());
-            fs::remove_dir_all(dir).expect("cleanup");
-        }
-        {
-            let dir = temp_dir("binding");
-            let alice_path = dir.join("alice-source.json");
-            let bob_path = dir.join("bob-source.json");
-            write_record(&alice_path, &record("Alice", 11));
-            write_record(&bob_path, &record("Bob", 12));
-            let store = IdentityRegistryStore::at(&dir);
-            let alice = store.import(&alice_path).expect("import alice");
-            let bob = store.import(&bob_path).expect("import bob");
-            let registry = store.load().expect("load");
-            // Two people's records here, and the workspace answers with the
-            // identity this login marked active, never with a per-workspace
-            // choice.
-            assert_eq!(registry.identities.len(), 2);
-            assert_eq!(
+            let registry = store.load_reconciled().expect("read");
+            let person = |name: &str| {
                 registry
-                    .for_workspace("workspace-a", None)
-                    .map(|profile| profile.id),
-                registry.default_identity,
-                "a workspace is answered by the identity this device is"
+                    .identities
+                    .values()
+                    .find(|profile| profile.display_name == name)
+                    .expect(name)
+            };
+            let alice = person("Alice");
+            let workspace = collab_types::personal_cluster(&alice.user_public_key).to_string();
+            let resolving = registry
+                .for_workspace(&workspace, None)
+                .expect("Alice's cluster");
+            assert_eq!(
+                resolving.display_name, "Alice",
+                "the personal cluster maps to the identity it derives from"
             );
-            assert_ne!(alice.id, bob.id);
+            // A workspace no identity derives is answered by the identity this
+            // login marked active.
+            let other = collab_types::personal_cluster(&[0x5a; 32]).to_string();
+            let resolving = registry
+                .for_workspace(&other, None)
+                .expect("the active identity");
+            assert_eq!(
+                registry.default_identity.as_deref(),
+                Some(resolving.id.as_str())
+            );
             fs::remove_dir_all(dir).expect("cleanup");
         }
+
+        phase identity_registry_migrates_and_bounds_legacy_imports;
         {
-            let dir = temp_dir("oversized-import");
-            let source = dir.join("oversized.json");
-            let file = fs::File::create(&source).expect("source");
-            file.set_len(MAX_IMPORTED_IDENTITY_BYTES + 1)
-                .expect("sparse oversized record");
-            let store = IdentityRegistryStore::at(dir.join("managed"));
-            let error = store.import(&source).expect_err("oversized import");
-            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-            fs::remove_dir_all(dir).expect("cleanup");
+            {
+                let dir = temp_dir("legacy");
+                write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 7));
+                let store = IdentityRegistryStore::at(&dir);
+                let registry = store.load_reconciled().expect("migrate");
+                let selected = registry
+                    .for_workspace("workspace-a", None)
+                    .expect("default");
+                assert_eq!(selected.display_name, "Alice");
+                assert_eq!(selected.record_path, dir.join(LEGACY_PRIMARY_FILE));
+                assert!(store.registry_path().exists());
+                fs::remove_dir_all(dir).expect("cleanup");
+            }
+            {
+                let dir = temp_dir("binding");
+                let alice_path = dir.join("alice-source.json");
+                let bob_path = dir.join("bob-source.json");
+                write_record(&alice_path, &record("Alice", 11));
+                write_record(&bob_path, &record("Bob", 12));
+                let store = IdentityRegistryStore::at(&dir);
+                let alice = store.import(&alice_path).expect("import alice");
+                let bob = store.import(&bob_path).expect("import bob");
+                let registry = store.load().expect("load");
+                // Two people's records here, and the workspace answers with the
+                // identity this login marked active, never with a per-workspace
+                // choice.
+                assert_eq!(registry.identities.len(), 2);
+                assert_eq!(
+                    registry
+                        .for_workspace("workspace-a", None)
+                        .map(|profile| profile.id),
+                    registry.default_identity,
+                    "a workspace is answered by the identity this device is"
+                );
+                assert_ne!(alice.id, bob.id);
+                fs::remove_dir_all(dir).expect("cleanup");
+            }
+            {
+                let dir = temp_dir("oversized-import");
+                let source = dir.join("oversized.json");
+                let file = fs::File::create(&source).expect("source");
+                file.set_len(MAX_IMPORTED_IDENTITY_BYTES + 1)
+                    .expect("sparse oversized record");
+                let store = IdentityRegistryStore::at(dir.join("managed"));
+                let error = store.import(&source).expect_err("oversized import");
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                fs::remove_dir_all(dir).expect("cleanup");
+            }
+        }
+
+        phase recovery_words_restore_a_minted_identity_on_another_computer;
+        {
+            use tilo_identity_ceremony::IdentityRecord;
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            let original = tempfile::tempdir().expect("original");
+            crate::provisioning::create_primary_identity(
+                original.path(),
+                "Ada",
+                [1, 2, 3],
+                crate::provisioning::IdentityStorage::Files,
+            )
+            .expect("mint");
+            let minted =
+                runtime_identity::load_from_path(original.path().join("primary.json")).expect("minted");
+            let words =
+                runtime_identity::recovery_words(original.path().join("primary.json")).expect("words");
+            assert_eq!(
+                IdentityRegistryStore::at(original.path())
+                    .recovery_expected_identity()
+                    .expect("expected"),
+                Some(minted.group_public_key())
+            );
+
+            // Written down as a numbered list, in capitals.
+            let written: String = words
+                .split(' ')
+                .enumerate()
+                .map(|(at, word)| format!("{}. {}\n", at + 1, word.to_uppercase()))
+                .collect::<Vec<_>>()
+                .concat();
+            let fresh = tempfile::tempdir().expect("fresh");
+            let store = IdentityRegistryStore::at(fresh.path().join("identity"));
+            assert_eq!(store.recovery_expected_identity().expect("none yet"), None);
+            let profile = store
+                .import_recovery_words(&written, "Ada again")
+                .expect("restore");
+            assert_eq!(profile.id, hex::encode(minted.group_public_key()));
+            assert_eq!(profile.display_name, "Ada again");
+            assert_eq!(
+                store.load().expect("saved").identities.get(&profile.id),
+                Some(&profile)
+            );
+            // The record is one every reader of the identity directory accepts:
+            // the ceremony's own decoder sees secured public metadata, and the
+            // runtime loader signs as the original.
+            let record =
+                IdentityRecord::from_json_bytes(&fs::read(&profile.record_path).expect("read"))
+                    .expect("ceremony decodes");
+            assert_eq!(record.public_key().as_bytes(), &minted.group_public_key());
+            assert!(record.secret_ref.is_some());
+            assert!(record.threshold_identity.secret_bytes.is_empty());
+            let restored =
+                runtime_identity::load_from_path(profile.record_path.clone()).expect("restored");
+            assert_eq!(
+                restored.sign(b"same person").unwrap(),
+                minted.sign(b"same person").unwrap()
+            );
+            assert_eq!(
+                store.import_recovery_words(&words, "").expect("again"),
+                profile
+            );
+
+            // Once this computer has that identity, someone else's words are
+            // refused with a reason the screen can say as it is.
+            let runtime_id = profile
+                .record_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .expect("id");
+            runtime_identity::set_active_identity(store.identity_dir(), runtime_id).expect("active");
+            let other = tempfile::tempdir().expect("other");
+            crate::provisioning::create_primary_identity(
+                other.path(),
+                "Eve",
+                [4, 5, 6],
+                crate::provisioning::IdentityStorage::Files,
+            )
+            .expect("mint other");
+            let other_words =
+                runtime_identity::recovery_words(other.path().join("primary.json")).expect("words");
+            let refused = store
+                .import_recovery_words(&other_words, "Eve")
+                .expect_err("another identity");
+            assert!(matches!(
+                runtime_identity::recovery_words_error(&refused),
+                Some(runtime_identity::RecoveryWordsError::DifferentIdentity { expected, .. })
+                    if expected == minted.group_public_key()
+            ));
+            assert_eq!(store.load().expect("saved").identities.len(), 1);
         }
     }
 
@@ -852,97 +956,5 @@ mod tests {
         let store = IdentityRegistryStore::at(dir.join("managed"));
         assert!(store.import(&link).is_err());
         fs::remove_dir_all(dir).expect("cleanup");
-    }
-
-    #[test]
-    fn recovery_words_restore_a_minted_identity_on_another_computer() {
-        use tilo_identity_ceremony::IdentityRecord;
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let original = tempfile::tempdir().expect("original");
-        crate::provisioning::create_primary_identity(
-            original.path(),
-            "Ada",
-            [1, 2, 3],
-            crate::provisioning::IdentityStorage::Files,
-        )
-        .expect("mint");
-        let minted =
-            runtime_identity::load_from_path(original.path().join("primary.json")).expect("minted");
-        let words =
-            runtime_identity::recovery_words(original.path().join("primary.json")).expect("words");
-        assert_eq!(
-            IdentityRegistryStore::at(original.path())
-                .recovery_expected_identity()
-                .expect("expected"),
-            Some(minted.group_public_key())
-        );
-
-        // Written down as a numbered list, in capitals.
-        let written: String = words
-            .split(' ')
-            .enumerate()
-            .map(|(at, word)| format!("{}. {}\n", at + 1, word.to_uppercase()))
-            .collect::<Vec<_>>()
-            .concat();
-        let fresh = tempfile::tempdir().expect("fresh");
-        let store = IdentityRegistryStore::at(fresh.path().join("identity"));
-        assert_eq!(store.recovery_expected_identity().expect("none yet"), None);
-        let profile = store
-            .import_recovery_words(&written, "Ada again")
-            .expect("restore");
-        assert_eq!(profile.id, hex::encode(minted.group_public_key()));
-        assert_eq!(profile.display_name, "Ada again");
-        assert_eq!(
-            store.load().expect("saved").identities.get(&profile.id),
-            Some(&profile)
-        );
-        // The record is one every reader of the identity directory accepts:
-        // the ceremony's own decoder sees secured public metadata, and the
-        // runtime loader signs as the original.
-        let record =
-            IdentityRecord::from_json_bytes(&fs::read(&profile.record_path).expect("read"))
-                .expect("ceremony decodes");
-        assert_eq!(record.public_key().as_bytes(), &minted.group_public_key());
-        assert!(record.secret_ref.is_some());
-        assert!(record.threshold_identity.secret_bytes.is_empty());
-        let restored =
-            runtime_identity::load_from_path(profile.record_path.clone()).expect("restored");
-        assert_eq!(
-            restored.sign(b"same person").unwrap(),
-            minted.sign(b"same person").unwrap()
-        );
-        assert_eq!(
-            store.import_recovery_words(&words, "").expect("again"),
-            profile
-        );
-
-        // Once this computer has that identity, someone else's words are
-        // refused with a reason the screen can say as it is.
-        let runtime_id = profile
-            .record_path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .expect("id");
-        runtime_identity::set_active_identity(store.identity_dir(), runtime_id).expect("active");
-        let other = tempfile::tempdir().expect("other");
-        crate::provisioning::create_primary_identity(
-            other.path(),
-            "Eve",
-            [4, 5, 6],
-            crate::provisioning::IdentityStorage::Files,
-        )
-        .expect("mint other");
-        let other_words =
-            runtime_identity::recovery_words(other.path().join("primary.json")).expect("words");
-        let refused = store
-            .import_recovery_words(&other_words, "Eve")
-            .expect_err("another identity");
-        assert!(matches!(
-            runtime_identity::recovery_words_error(&refused),
-            Some(runtime_identity::RecoveryWordsError::DifferentIdentity { expected, .. })
-                if expected == minted.group_public_key()
-        ));
-        assert_eq!(store.load().expect("saved").identities.len(), 1);
     }
 }

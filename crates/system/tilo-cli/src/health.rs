@@ -176,76 +176,80 @@ mod tests {
         vec![PathBuf::from("/dev/dri/renderD128")]
     }
 
-    #[test]
-    fn a_machine_without_render_nodes_has_no_gpu_to_miss() {
-        let verdict = assess(&[], None);
-        assert_eq!(verdict["status"], "no-gpu");
-    }
+    tilo_test_env::scenario! {
+        fn the_gpu_check_reads_render_nodes_and_the_session;
 
-    #[test]
-    fn render_nodes_without_a_gpu_behind_them_are_no_gpu() {
-        let record = json!({
-            "node": null,
-            "dmabuf_device": null,
-            "nodes_without_gpu": {
-                "/dev/dri/renderD128": "virtio GPU without 3D acceleration"
-            },
-            "problems": [],
-            "app_adapters": {
-                "so.tilo.notes": "window adapter \"llvmpipe (LLVM 22.1.0, 128 bits)\" type=Cpu backend=Vulkan driver=\"llvmpipe\""
-            }
-        });
-        let verdict = assess(&nodes(), Some(&record));
-        assert_eq!(verdict["status"], "no-gpu", "{verdict}");
+        phase a_machine_without_render_nodes_has_no_gpu_to_miss;
+        {
+            let verdict = assess(&[], None);
+            assert_eq!(verdict["status"], "no-gpu");
+        }
 
-        // A second node the compositor did not set aside is a GPU the session must use.
-        let both = [
-            PathBuf::from("/dev/dri/renderD128"),
-            PathBuf::from("/dev/dri/renderD129"),
-        ];
-        let verdict = assess(&both, Some(&record));
-        assert_eq!(verdict["status"], "degraded", "{verdict}");
-    }
+        phase render_nodes_without_a_gpu_behind_them_are_no_gpu;
+        {
+            let record = json!({
+                "node": null,
+                "dmabuf_device": null,
+                "nodes_without_gpu": {
+                    "/dev/dri/renderD128": "virtio GPU without 3D acceleration"
+                },
+                "problems": [],
+                "app_adapters": {
+                    "so.tilo.notes": "window adapter \"llvmpipe (LLVM 22.1.0, 128 bits)\" type=Cpu backend=Vulkan driver=\"llvmpipe\""
+                }
+            });
+            let verdict = assess(&nodes(), Some(&record));
+            assert_eq!(verdict["status"], "no-gpu", "{verdict}");
 
-    #[test]
-    fn a_healthy_session_is_ok() {
-        let record = json!({
-            "node": "/dev/dri/renderD128",
-            "driver": "msm_dpu",
-            "vulkan_device": "Turnip Adreno (TM) X1-85",
-            "dmabuf_device": "/dev/dri/renderD128",
-            "problems": [],
-            "app_adapters": {
-                "so.tilo.file-explorer": "window adapter \"Turnip Adreno (TM) X1-85\" type=IntegratedGpu backend=Vulkan driver=\"turnip Mesa driver\""
-            }
-        });
-        let verdict = assess(&nodes(), Some(&record));
-        assert_eq!(verdict["status"], "ok", "{verdict}");
-    }
+            // A second node the compositor did not set aside is a GPU the session must use.
+            let both = [
+                PathBuf::from("/dev/dri/renderD128"),
+                PathBuf::from("/dev/dri/renderD129"),
+            ];
+            let verdict = assess(&both, Some(&record));
+            assert_eq!(verdict["status"], "degraded", "{verdict}");
+        }
 
-    #[test]
-    fn a_cpu_adapter_or_a_missing_dmabuf_global_is_degraded() {
-        let record = json!({
-            "node": "/dev/dri/renderD128",
-            "dmabuf_device": null,
-            "problems": [],
-            "app_adapters": {
-                "so.tilo.notes": "window adapter \"llvmpipe (LLVM 22.1.0, 128 bits)\" type=Cpu backend=Vulkan driver=\"llvmpipe\""
-            }
-        });
-        let verdict = assess(&nodes(), Some(&record));
-        assert_eq!(verdict["status"], "degraded");
-        let problems = verdict["problems"].to_string();
-        assert!(problems.contains("zwp_linux_dmabuf_v1"), "{problems}");
-        assert!(
-            problems.contains("so.tilo.notes renders on a CPU adapter"),
-            "{problems}"
-        );
+        phase a_healthy_session_is_ok;
+        {
+            let record = json!({
+                "node": "/dev/dri/renderD128",
+                "driver": "msm_dpu",
+                "vulkan_device": "Turnip Adreno (TM) X1-85",
+                "dmabuf_device": "/dev/dri/renderD128",
+                "problems": [],
+                "app_adapters": {
+                    "so.tilo.file-explorer": "window adapter \"Turnip Adreno (TM) X1-85\" type=IntegratedGpu backend=Vulkan driver=\"turnip Mesa driver\""
+                }
+            });
+            let verdict = assess(&nodes(), Some(&record));
+            assert_eq!(verdict["status"], "ok", "{verdict}");
+        }
 
-        let verdict = assess(&nodes(), None);
-        assert_eq!(
-            verdict["status"], "degraded",
-            "no session record is not health"
-        );
+        phase a_cpu_adapter_or_a_missing_dmabuf_global_is_degraded;
+        {
+            let record = json!({
+                "node": "/dev/dri/renderD128",
+                "dmabuf_device": null,
+                "problems": [],
+                "app_adapters": {
+                    "so.tilo.notes": "window adapter \"llvmpipe (LLVM 22.1.0, 128 bits)\" type=Cpu backend=Vulkan driver=\"llvmpipe\""
+                }
+            });
+            let verdict = assess(&nodes(), Some(&record));
+            assert_eq!(verdict["status"], "degraded");
+            let problems = verdict["problems"].to_string();
+            assert!(problems.contains("zwp_linux_dmabuf_v1"), "{problems}");
+            assert!(
+                problems.contains("so.tilo.notes renders on a CPU adapter"),
+                "{problems}"
+            );
+
+            let verdict = assess(&nodes(), None);
+            assert_eq!(
+                verdict["status"], "degraded",
+                "no session record is not health"
+            );
+        }
     }
 }

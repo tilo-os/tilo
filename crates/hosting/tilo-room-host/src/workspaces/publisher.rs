@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::workspace_records::{HostCommit, Reservation, WorkspaceRecords};
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// One change to admit: its position in the workspace's publication (none for a
 /// channel change, which is not republished), the commit, and its
@@ -36,7 +37,7 @@ pub(super) struct Publication {
 impl Publication {
     pub(super) fn new(
         records: &WorkspaceRecords,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         position: Option<usize>,
         commit: HostCommit,
     ) -> Self {
@@ -160,7 +161,7 @@ impl WorkspacePublisher {
         &self,
         records: &WorkspaceRecords,
         workspace: &str,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         epoch: Epoch,
         publications: Vec<Publication>,
     ) {
@@ -250,7 +251,7 @@ async fn run(
     mut queue: mpsc::UnboundedReceiver<Batch>,
     records: WorkspaceRecords,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     shared: Arc<Shared>,
 ) {
     while let Some(Batch {

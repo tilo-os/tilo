@@ -34,99 +34,103 @@ pub(super) fn reviewed_nextcloud(config: serde_json::Value) -> (tempfile::TempDi
     (root, pane)
 }
 
-#[test]
-fn new_setup_selects_all_but_an_existing_selection_is_authoritative() {
-    for (config, expected) in [
-        (serde_json::json!({}), [true, true]),
-        (serde_json::json!({"calendars": []}), [false, false]),
-        (
-            serde_json::json!({"calendars": [{"id": "https://cloud.example/cal/a/"}]}),
-            [true, false],
-        ),
-    ] {
-        let (_root, pane) = reviewed_nextcloud(config);
+tilo_test_env::scenario! {
+    fn a_calendar_review_commits_only_what_was_reviewed;
+
+    phase new_setup_selects_all_but_an_existing_selection_is_authoritative;
+    {
+        for (config, expected) in [
+            (serde_json::json!({}), [true, true]),
+            (serde_json::json!({"calendars": []}), [false, false]),
+            (
+                serde_json::json!({"calendars": [{"id": "https://cloud.example/cal/a/"}]}),
+                [true, false],
+            ),
+        ] {
+            let (_root, pane) = reviewed_nextcloud(config);
+            assert_eq!(
+                pane.calendar_choices
+                    .iter()
+                    .map(|(_, selected)| *selected)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    phase changed_private_signin_account_type_target_and_scopes_cannot_commit_review;
+    {
+        for change in [
+            "credential",
+            "type",
+            "server_url",
+            "username",
+            "use_files",
+            "use_calendar",
+            "removed",
+        ] {
+            let (_root, mut pane) = reviewed_nextcloud(serde_json::json!({
+                "server_url": "https://cloud.example/", "username": "ada", "use_files": true, "use_calendar": false
+            }));
+            let root = pane.account_root.clone();
+            let id = accounts::AccountId::from("cloud");
+            if change == "credential" {
+                let mut vault = root.vault();
+                vault.put(
+                    &id,
+                    &accounts::Secret::password("replacement-private-password"),
+                );
+                vault.try_save().unwrap();
+            } else {
+                let mut store = root.store();
+                let mut account = store.get(&id).unwrap().clone();
+                match change {
+                    "type" => account.type_id = "caldav".into(),
+                    "removed" => {
+                        store.remove(&id);
+                    }
+                    field => account.config[field] = "changed".into(),
+                }
+                if change != "removed" {
+                    store.upsert(account);
+                }
+                root.save_store(&store).unwrap();
+            }
+            let before = root.store().get(&id).cloned();
+            let secret = root.vault().get(&id);
+            pane.save_calendar_selection();
+            pane.settle_lane();
+            assert!(pane.form_error.is_some(), "{change}");
+            assert_eq!(root.store().get(&id), before.as_ref(), "{change}");
+            assert_eq!(root.vault().get(&id), secret, "{change}");
+        }
+    }
+
+    phase canceled_review_cannot_save_even_with_a_late_result;
+    {
+        let (_root, mut pane) = reviewed_nextcloud(serde_json::json!({}));
+        let before = pane
+            .account_root
+            .store()
+            .get(&accounts::AccountId::from("cloud"))
+            .cloned();
+        pane.cancel_form();
+        assert!(
+            pane.stage_calendar_choices(vec![tilo_dav::discovery::CalendarCollection {
+                href: "https://cloud.example/cal/a/".into(),
+                name: "A".into(),
+                read_only: false
+            }])
+            .is_err()
+        );
+        pane.save_calendar_selection();
         assert_eq!(
-            pane.calendar_choices
-                .iter()
-                .map(|(_, selected)| *selected)
-                .collect::<Vec<_>>(),
-            expected
+            pane.account_root
+                .store()
+                .get(&accounts::AccountId::from("cloud")),
+            before.as_ref()
         );
     }
-}
-
-#[test]
-fn changed_private_signin_account_type_target_and_scopes_cannot_commit_review() {
-    for change in [
-        "credential",
-        "type",
-        "server_url",
-        "username",
-        "use_files",
-        "use_calendar",
-        "removed",
-    ] {
-        let (_root, mut pane) = reviewed_nextcloud(serde_json::json!({
-            "server_url": "https://cloud.example/", "username": "ada", "use_files": true, "use_calendar": false
-        }));
-        let root = pane.account_root.clone();
-        let id = accounts::AccountId::from("cloud");
-        if change == "credential" {
-            let mut vault = root.vault();
-            vault.put(
-                &id,
-                &accounts::Secret::password("replacement-private-password"),
-            );
-            vault.try_save().unwrap();
-        } else {
-            let mut store = root.store();
-            let mut account = store.get(&id).unwrap().clone();
-            match change {
-                "type" => account.type_id = "caldav".into(),
-                "removed" => {
-                    store.remove(&id);
-                }
-                field => account.config[field] = "changed".into(),
-            }
-            if change != "removed" {
-                store.upsert(account);
-            }
-            root.save_store(&store).unwrap();
-        }
-        let before = root.store().get(&id).cloned();
-        let secret = root.vault().get(&id);
-        pane.save_calendar_selection();
-        pane.settle_lane();
-        assert!(pane.form_error.is_some(), "{change}");
-        assert_eq!(root.store().get(&id), before.as_ref(), "{change}");
-        assert_eq!(root.vault().get(&id), secret, "{change}");
-    }
-}
-
-#[test]
-fn canceled_review_cannot_save_even_with_a_late_result() {
-    let (_root, mut pane) = reviewed_nextcloud(serde_json::json!({}));
-    let before = pane
-        .account_root
-        .store()
-        .get(&accounts::AccountId::from("cloud"))
-        .cloned();
-    pane.cancel_form();
-    assert!(
-        pane.stage_calendar_choices(vec![tilo_dav::discovery::CalendarCollection {
-            href: "https://cloud.example/cal/a/".into(),
-            name: "A".into(),
-            read_only: false
-        }])
-        .is_err()
-    );
-    pane.save_calendar_selection();
-    assert_eq!(
-        pane.account_root
-            .store()
-            .get(&accounts::AccountId::from("cloud")),
-        before.as_ref()
-    );
 }
 use test_http::{Reply, Responder};
 use ui::framework::testing::TestApp;

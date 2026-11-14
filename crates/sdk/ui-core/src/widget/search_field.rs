@@ -1507,278 +1507,307 @@ mod tests {
         scene
     }
 
-    #[test]
-    fn the_field_is_a_control_with_its_text_inside_the_gutters() {
-        let theme = Theme::dark();
-        let mut sf = SearchField::new();
-        let _ = lay_out(&mut sf, 320.0);
-        assert!((sf.get_rect().width() - 320.0).abs() < 1.0, "fills its row");
-        assert!(
-            (sf.get_rect().height() - ControlSize::Regular.height(&theme)).abs() < 0.5,
-            "a regular control's height"
-        );
-        let input = sf.input.get_rect();
-        assert!(input.x0 >= sf.get_rect().x0 + ICON_GUTTER - 0.5);
+    tilo_test_env::scenario! {
+        /// A search field: its layout, its controls, where a query goes, and how it is read.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_search_field_lays_out_clears_escalates_and_is_named;
 
-        let mut filter = SearchField::filter();
-        let _ = lay_out(&mut filter, 320.0);
-        assert!(
-            filter.input.get_rect().x1 <= filter.get_rect().x1 - CLEAR_GUTTER - 60.0,
-            "a filter reserves the count slot before any count is known"
-        );
-    }
-
-    #[test]
-    fn clear_appears_with_text_and_empties_the_query() {
-        let mut sf = SearchField::new();
-        let _ = lay_out(&mut sf, 320.0);
-        assert_eq!(
-            sf.clear_rect(),
-            Rect::ZERO,
-            "empty query has no clear button"
-        );
-        sf.input.set_text("query text");
-        let (taffy, node) = lay_out(&mut sf, 320.0);
-        let target = sf.clear_rect().center();
-        assert!(target.x > 0.0);
-        let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
-        assert!(handled);
-        assert!(sf.is_empty());
-        assert_eq!(sf.take_dirty().as_deref(), Some(""));
-        assert_eq!(sf.take_dirty(), None);
-    }
-
-    #[test]
-    fn a_narrow_idle_field_is_an_icon_button_that_focuses_the_field() {
-        let mut sf = SearchField::filter();
-        let (taffy, node) = lay_out(&mut sf, 90.0);
-        assert!(sf.collapsed(&Theme::dark()));
-        draw(&mut sf);
-        let _ = ctx_event(&mut sf, &taffy, node, &move_to(Point::new(10.0, 10.0)));
-        let (_, focus) = ctx_event(&mut sf, &taffy, node, &mouse_press());
-        let input_node = taffy.children(node).unwrap()[0];
-        assert_eq!(focus, Some(input_node), "the icon button focuses the field");
-        sf.input.set_focus(true);
-        assert!(
-            !sf.collapsed(&Theme::dark()),
-            "a focused field is a field again"
-        );
-
-        let mut wide = SearchField::filter();
-        let _ = lay_out(&mut wide, 400.0);
-        assert!(!wide.collapsed(&Theme::dark()));
-    }
-
-    #[test]
-    fn enter_and_search_everywhere_escalate_the_query_to_platform_search() {
-        use crate::widget::controls::take_control_invocation;
-
-        let mut plain = SearchField::new();
-        plain.input.set_text("x");
-        assert!(!plain.escalate(), "the palette's own field never escalates");
-        assert!(take_control_invocation(&mut plain).is_none());
-
-        let mut sf =
-            SearchField::filter().escalates_within(ScopeDecl::new("folder:inbox", "Inbox"));
-        sf.input.set_text("invoice");
-        sf.input.set_focus(true);
-        let (taffy, node) = lay_out(&mut sf, 360.0);
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &key(NamedKey::Enter));
-        assert!(handled);
-        let invocation = take_control_invocation(&mut sf).expect("Enter escalates");
-        let request = SearchRequest::from_invocation(&invocation).expect("a search request");
-        assert_eq!(request.query.as_deref(), Some("invoice"));
-        assert_eq!(request.part().map(|s| s.label.as_str()), Some("Inbox"));
-        assert!(
-            take_control_invocation(&mut sf).is_none(),
-            "one request per Enter"
-        );
-
-        sf.set_count(Some(FilterCount::new(0, 12)));
-        sf.input.set_focus(false);
-        let (taffy, node) = lay_out(&mut sf, 360.0);
-        assert_ne!(sf.escalate_rect, Rect::ZERO, "Search everywhere shows");
-        let target = sf.escalate_rect.center();
-        let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
-        assert!(handled);
-        assert!(take_control_invocation(&mut sf).is_some());
-        sf.set_count(Some(FilterCount::new(3, 12)));
-        lay_out(&mut sf, 360.0);
-        assert_eq!(sf.escalate_rect, Rect::ZERO, "a count shows instead");
-    }
-
-    #[test]
-    fn the_scope_token_is_removed_by_its_cross_or_backspace() {
-        let mut sf = SearchField::new();
-        let _ = lay_out(&mut sf, 400.0);
-        sf.set_scope_token(Some("Only Inbox".into()));
-        let (taffy, node) = lay_out(&mut sf, 400.0);
-        assert!(sf.scope_token_rect.width() > 0.0);
-        assert!(
-            sf.input.get_rect().x0 >= sf.scope_token_rect.x1,
-            "the text starts after the token"
-        );
-        sf.input.set_focus(true);
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &key(NamedKey::Backspace));
-        assert!(handled);
-        assert!(sf.take_scope_cleared());
-        assert!(sf.scope_token().is_none());
-
-        sf.set_scope_token(Some("Only Inbox".into()));
-        lay_out(&mut sf, 400.0);
-        let target = sf.scope_token_rect.center();
-        let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
-        assert!(handled);
-        assert!(sf.take_scope_cleared());
-    }
-
-    /// The layout places every control a field can show: a frame read before
-    /// it is drawn — a test, assistive technology, a press on a window that
-    /// has laid out and has not yet painted — finds the scope token, the
-    /// count, "Search everywhere" and the clear button inside the field,
-    /// rather than at the window's origin, where a control nothing placed
-    /// stands.
-    #[test]
-    fn the_layout_places_the_controls_without_a_paint() {
-        let mut sf = SearchField::filter();
-        sf.set_scope_token(Some("Only Inbox".into()));
-        sf.input.set_text("zzz");
-        sf.set_count(Some(FilterCount::new(0, 12)));
-        // Laid out, never drawn.
-        let _ = lay_out(&mut sf, 420.0);
-        let field = sf.get_rect();
-        for (what, control) in [
-            ("the scope token", sf.scope_token_rect),
-            ("the count", sf.count_rect),
-            ("Search everywhere", sf.escalate_face),
-        ] {
+        phase the_field_is_a_control_with_its_text_inside_the_gutters;
+        {
+            let theme = Theme::dark();
+            let mut sf = SearchField::new();
+            let _ = lay_out(&mut sf, 320.0);
+            assert!((sf.get_rect().width() - 320.0).abs() < 1.0, "fills its row");
             assert!(
-                !control.is_zero_area(),
-                "{what} stands where the layout put it: {control:?}"
+                (sf.get_rect().height() - ControlSize::Regular.height(&theme)).abs() < 0.5,
+                "a regular control's height"
             );
+            let input = sf.input.get_rect();
+            assert!(input.x0 >= sf.get_rect().x0 + ICON_GUTTER - 0.5);
+
+            let mut filter = SearchField::filter();
+            let _ = lay_out(&mut filter, 320.0);
             assert!(
-                field.contains(control.center()),
-                "{what} {control:?} stands inside the field {field:?}"
+                filter.input.get_rect().x1 <= filter.get_rect().x1 - CLEAR_GUTTER - 60.0,
+                "a filter reserves the count slot before any count is known"
             );
         }
-        assert!(
-            !sf.escalate_rect.is_zero_area(),
-            "Search everywhere is a whole target: {:?}",
-            sf.escalate_rect
-        );
-        let clear = clear_icon_rect(field);
-        assert!(
-            !sf.clear_rect.is_zero_area() && field.contains(clear.center()),
-            "the clear button stands in the field: {:?}",
-            sf.clear_rect
-        );
-        let text = sf.input.get_rect();
-        assert!(
-            text.x0 >= sf.scope_token_rect.x1 - 0.5,
-            "the text starts after the token: {text:?} against {:?}",
-            sf.scope_token_rect
-        );
-        assert!(
-            text.x1 <= clear.x0 + 0.5,
-            "and ends before the clear button: {text:?} against {clear:?}"
-        );
-    }
 
-    /// The type the person chose — a face whose look-alike letters are told
-    /// apart, at a larger text scale — is the type the layout places the
-    /// controls in: the scope token is as wide as its words measured in that
-    /// type, and wider than the default type would make it.
-    #[test]
-    fn a_themed_field_places_its_controls_in_the_themes_type() {
-        let mut theme = Theme::light().with_text_scale(1.5);
-        theme.tokens.typography.distinct_letters = true;
-        theme
-            .tokens
-            .typography
-            .set_face(crate::tokens::UiFace::Hyperlegible.name());
-        let mut sf = SearchField::new();
-        sf.set_scope_token(Some("Only Inbox".into()));
-        let (taffy, node) = lay_out_in(&mut sf, 460.0, &theme);
-        let field = crate::widget::layout_rect(&taffy, node, Point::ZERO);
+        phase clear_appears_with_text_and_empties_the_query;
+        {
+            let mut sf = SearchField::new();
+            let _ = lay_out(&mut sf, 320.0);
+            assert_eq!(
+                sf.clear_rect(),
+                Rect::ZERO,
+                "empty query has no clear button"
+            );
+            sf.input.set_text("query text");
+            let (taffy, node) = lay_out(&mut sf, 320.0);
+            let target = sf.clear_rect().center();
+            assert!(target.x > 0.0);
+            let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
+            let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
+            assert!(handled);
+            assert!(sf.is_empty());
+            assert_eq!(sf.take_dirty().as_deref(), Some(""));
+            assert_eq!(sf.take_dirty(), None);
+        }
 
-        // The same measurement, taken the way a caller outside the layout takes
-        // it: in the theme's own type.
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        text.apply_typography(&theme.tokens.typography);
-        let lead = crate::widget::ChipLead::Glyph(Icon::ChevronLeft);
-        let natural =
-            crate::widget::ChipFace::intrinsic_width("Only Inbox", lead, true, &mut text, &theme);
-        let height = ControlSize::Small.height(&theme) - 6.0;
-        let expected = natural.min((field.width() * 0.5).max(height));
-        assert!(
-            (sf.scope_token_rect.width() - expected).abs() <= 0.5,
-            "the token is as wide as its words in the theme's type: {:?} against {expected}",
-            sf.scope_token_rect
-        );
+        phase a_narrow_idle_field_is_an_icon_button_that_focuses_the_field;
+        {
+            let mut sf = SearchField::filter();
+            let (taffy, node) = lay_out(&mut sf, 90.0);
+            assert!(sf.collapsed(&Theme::dark()));
+            draw(&mut sf);
+            let _ = ctx_event(&mut sf, &taffy, node, &move_to(Point::new(10.0, 10.0)));
+            let (_, focus) = ctx_event(&mut sf, &taffy, node, &mouse_press());
+            let input_node = taffy.children(node).unwrap()[0];
+            assert_eq!(focus, Some(input_node), "the icon button focuses the field");
+            sf.input.set_focus(true);
+            assert!(
+                !sf.collapsed(&Theme::dark()),
+                "a focused field is a field again"
+            );
 
-        let plain = Theme::light();
-        text.set_text_scale(plain.text_scale);
-        text.apply_typography(&plain.tokens.typography);
-        let default_natural =
-            crate::widget::ChipFace::intrinsic_width("Only Inbox", lead, true, &mut text, &plain);
-        assert!(
-            sf.scope_token_rect.width()
-                > default_natural.min((field.width() * 0.5).max(height)) + 1.0,
-            "the token is placed in the theme's larger type, not the default's"
-        );
-        assert!(
-            !sf.scope_token_rect.is_zero_area()
-                && field.contains(sf.scope_token_rect.center())
-                && sf.input.get_rect().x0 >= sf.scope_token_rect.x1 - 0.5,
-            "the token and the text after it stand in the field"
-        );
-    }
+            let mut wide = SearchField::filter();
+            let _ = lay_out(&mut wide, 400.0);
+            assert!(!wide.collapsed(&Theme::dark()));
+        }
 
-    #[test]
-    fn the_placeholder_stays_while_focused_and_empty() {
-        let mut sf = SearchField::filter().with_placeholder("Filter containers");
-        let _ = lay_out(&mut sf, 320.0);
-        sf.input.set_focus(true);
-        assert!(sf.input.shows_placeholder());
-        sf.input.set_text("a");
-        assert!(!sf.input.shows_placeholder());
-    }
+        phase enter_and_search_everywhere_escalate_the_query_to_platform_search;
+        {
+            use crate::widget::controls::take_control_invocation;
 
-    #[test]
-    fn accessibility_names_the_field_and_reads_its_count() {
-        use crate::a11y::Role;
-        let mut sf = SearchField::filter();
-        sf.input.set_text("abc");
-        sf.set_count(Some(FilterCount::new(2, 9)));
-        let node = Widget::accessibility(&sf).expect("a11y");
-        assert_eq!(node.role, Role::TextInput);
-        assert_eq!(node.value.as_deref(), Some("abc"));
-        assert_eq!(node.name.as_deref(), Some("Filter"));
-        assert!(
-            node.description
-                .as_deref()
-                .is_some_and(|d| d.contains("2 of 9"))
-        );
-    }
+            let mut plain = SearchField::new();
+            plain.input.set_text("x");
+            assert!(!plain.escalate(), "the palette's own field never escalates");
+            assert!(take_control_invocation(&mut plain).is_none());
 
-    #[test]
-    fn a_count_with_nothing_matching_says_no_matches() {
-        assert_eq!(FilterCount::new(0, 0).label(), "No matches");
-        assert_eq!(FilterCount::new(0, 120).label(), "No matches");
-        assert_eq!(FilterCount::new(1, 52).label(), "1 of 52");
-        let mut sf = SearchField::filter();
-        sf.input.set_text("zzz");
-        sf.set_count(Some(FilterCount::new(0, 0)));
-        let node = Widget::accessibility(&sf).expect("a11y");
-        assert!(
-            node.description
-                .as_deref()
-                .is_some_and(|d| d.contains("No matches"))
-        );
+            let mut sf =
+                SearchField::filter().escalates_within(ScopeDecl::new("folder:inbox", "Inbox"));
+            sf.input.set_text("invoice");
+            sf.input.set_focus(true);
+            let (taffy, node) = lay_out(&mut sf, 360.0);
+            let (handled, _) = ctx_event(&mut sf, &taffy, node, &key(NamedKey::Enter));
+            assert!(handled);
+            let invocation = take_control_invocation(&mut sf).expect("Enter escalates");
+            let request = SearchRequest::from_invocation(&invocation).expect("a search request");
+            assert_eq!(request.query.as_deref(), Some("invoice"));
+            assert_eq!(request.part().map(|s| s.label.as_str()), Some("Inbox"));
+            assert!(
+                take_control_invocation(&mut sf).is_none(),
+                "one request per Enter"
+            );
+
+            sf.set_count(Some(FilterCount::new(0, 12)));
+            sf.input.set_focus(false);
+            let (taffy, node) = lay_out(&mut sf, 360.0);
+            assert_ne!(sf.escalate_rect, Rect::ZERO, "Search everywhere shows");
+            let target = sf.escalate_rect.center();
+            let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
+            let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
+            assert!(handled);
+            assert!(take_control_invocation(&mut sf).is_some());
+            sf.set_count(Some(FilterCount::new(3, 12)));
+            lay_out(&mut sf, 360.0);
+            assert_eq!(sf.escalate_rect, Rect::ZERO, "a count shows instead");
+        }
+
+        phase the_scope_token_is_removed_by_its_cross_or_backspace;
+        {
+            let mut sf = SearchField::new();
+            let _ = lay_out(&mut sf, 400.0);
+            sf.set_scope_token(Some("Only Inbox".into()));
+            let (taffy, node) = lay_out(&mut sf, 400.0);
+            assert!(sf.scope_token_rect.width() > 0.0);
+            assert!(
+                sf.input.get_rect().x0 >= sf.scope_token_rect.x1,
+                "the text starts after the token"
+            );
+            sf.input.set_focus(true);
+            let (handled, _) = ctx_event(&mut sf, &taffy, node, &key(NamedKey::Backspace));
+            assert!(handled);
+            assert!(sf.take_scope_cleared());
+            assert!(sf.scope_token().is_none());
+
+            sf.set_scope_token(Some("Only Inbox".into()));
+            lay_out(&mut sf, 400.0);
+            let target = sf.scope_token_rect.center();
+            let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
+            let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
+            assert!(handled);
+            assert!(sf.take_scope_cleared());
+        }
+
+        phase the_layout_places_the_controls_without_a_paint;
+        // The layout places every control a field can show: a frame read before
+        // it is drawn — a test, assistive technology, a press on a window that
+        // has laid out and has not yet painted — finds the scope token, the
+        // count, "Search everywhere" and the clear button inside the field,
+        // rather than at the window's origin, where a control nothing placed
+        // stands.
+        {
+            let mut sf = SearchField::filter();
+            sf.set_scope_token(Some("Only Inbox".into()));
+            sf.input.set_text("zzz");
+            sf.set_count(Some(FilterCount::new(0, 12)));
+            // Laid out, never drawn.
+            let _ = lay_out(&mut sf, 420.0);
+            let field = sf.get_rect();
+            for (what, control) in [
+                ("the scope token", sf.scope_token_rect),
+                ("the count", sf.count_rect),
+                ("Search everywhere", sf.escalate_face),
+            ] {
+                assert!(
+                    !control.is_zero_area(),
+                    "{what} stands where the layout put it: {control:?}"
+                );
+                assert!(
+                    field.contains(control.center()),
+                    "{what} {control:?} stands inside the field {field:?}"
+                );
+            }
+            assert!(
+                !sf.escalate_rect.is_zero_area(),
+                "Search everywhere is a whole target: {:?}",
+                sf.escalate_rect
+            );
+            let clear = clear_icon_rect(field);
+            assert!(
+                !sf.clear_rect.is_zero_area() && field.contains(clear.center()),
+                "the clear button stands in the field: {:?}",
+                sf.clear_rect
+            );
+            let text = sf.input.get_rect();
+            assert!(
+                text.x0 >= sf.scope_token_rect.x1 - 0.5,
+                "the text starts after the token: {text:?} against {:?}",
+                sf.scope_token_rect
+            );
+            assert!(
+                text.x1 <= clear.x0 + 0.5,
+                "and ends before the clear button: {text:?} against {clear:?}"
+            );
+        }
+
+        phase a_themed_field_places_its_controls_in_the_themes_type;
+        // The type the person chose — a face whose look-alike letters are told
+        // apart, at a larger text scale — is the type the layout places the
+        // controls in: the scope token is as wide as its words measured in that
+        // type, and wider than the default type would make it.
+        {
+            let mut theme = Theme::light().with_text_scale(1.5);
+            theme.tokens.typography.distinct_letters = true;
+            theme
+                .tokens
+                .typography
+                .set_face(crate::tokens::UiFace::Hyperlegible.name());
+            let mut sf = SearchField::new();
+            sf.set_scope_token(Some("Only Inbox".into()));
+            let (taffy, node) = lay_out_in(&mut sf, 460.0, &theme);
+            let field = crate::widget::layout_rect(&taffy, node, Point::ZERO);
+
+            // The same measurement, taken the way a caller outside the layout takes
+            // it: in the theme's own type.
+            let mut text = TextRenderer::new();
+            text.set_text_scale(theme.text_scale);
+            text.apply_typography(&theme.tokens.typography);
+            let lead = crate::widget::ChipLead::Glyph(Icon::ChevronLeft);
+            let natural =
+                crate::widget::ChipFace::intrinsic_width("Only Inbox", lead, true, &mut text, &theme);
+            let height = ControlSize::Small.height(&theme) - 6.0;
+            let expected = natural.min((field.width() * 0.5).max(height));
+            assert!(
+                (sf.scope_token_rect.width() - expected).abs() <= 0.5,
+                "the token is as wide as its words in the theme's type: {:?} against {expected}",
+                sf.scope_token_rect
+            );
+
+            let plain = Theme::light();
+            text.set_text_scale(plain.text_scale);
+            text.apply_typography(&plain.tokens.typography);
+            let default_natural =
+                crate::widget::ChipFace::intrinsic_width("Only Inbox", lead, true, &mut text, &plain);
+            assert!(
+                sf.scope_token_rect.width()
+                    > default_natural.min((field.width() * 0.5).max(height)) + 1.0,
+                "the token is placed in the theme's larger type, not the default's"
+            );
+            assert!(
+                !sf.scope_token_rect.is_zero_area()
+                    && field.contains(sf.scope_token_rect.center())
+                    && sf.input.get_rect().x0 >= sf.scope_token_rect.x1 - 0.5,
+                "the token and the text after it stand in the field"
+            );
+        }
+
+        phase the_placeholder_stays_while_focused_and_empty;
+        {
+            let mut sf = SearchField::filter().with_placeholder("Filter containers");
+            let _ = lay_out(&mut sf, 320.0);
+            sf.input.set_focus(true);
+            assert!(sf.input.shows_placeholder());
+            sf.input.set_text("a");
+            assert!(!sf.input.shows_placeholder());
+        }
+
+        phase accessibility_names_the_field_and_reads_its_count;
+        {
+            use crate::a11y::Role;
+            let mut sf = SearchField::filter();
+            sf.input.set_text("abc");
+            sf.set_count(Some(FilterCount::new(2, 9)));
+            let node = Widget::accessibility(&sf).expect("a11y");
+            assert_eq!(node.role, Role::TextInput);
+            assert_eq!(node.value.as_deref(), Some("abc"));
+            assert_eq!(node.name.as_deref(), Some("Filter"));
+            assert!(
+                node.description
+                    .as_deref()
+                    .is_some_and(|d| d.contains("2 of 9"))
+            );
+        }
+
+        phase a_count_with_nothing_matching_says_no_matches;
+        {
+            assert_eq!(FilterCount::new(0, 0).label(), "No matches");
+            assert_eq!(FilterCount::new(0, 120).label(), "No matches");
+            assert_eq!(FilterCount::new(1, 52).label(), "1 of 52");
+            let mut sf = SearchField::filter();
+            sf.input.set_text("zzz");
+            sf.set_count(Some(FilterCount::new(0, 0)));
+            let node = Widget::accessibility(&sf).expect("a11y");
+            assert!(
+                node.description
+                    .as_deref()
+                    .is_some_and(|d| d.contains("No matches"))
+            );
+        }
+
+        phase a_filter_field_narrows_a_filterable_view_and_escalates_to_its_scope;
+        {
+            let mut rows = Rows {
+                all: vec!["ada", "alan", "grace"],
+                query: String::new(),
+            };
+            let mut sf = SearchField::filter();
+            sf.input.set_text("a");
+            sync_filter(&mut sf, &mut rows);
+            assert_eq!(rows.query, "a");
+            assert_eq!(sf.count(), Some(FilterCount::new(3, 3)));
+            assert_eq!(
+                sf.escalation,
+                Some(SearchRequest::within(ScopeDecl::new(
+                    "list:people",
+                    "People"
+                )))
+            );
+            sf.input.set_text("");
+            sync_filter(&mut sf, &mut rows);
+            assert_eq!(sf.count(), None, "an empty filter shows no count");
+        }
     }
 
     struct Rows {
@@ -1809,28 +1838,5 @@ mod tests {
         fn name(&self) -> &'static str {
             "rows"
         }
-    }
-
-    #[test]
-    fn a_filter_field_narrows_a_filterable_view_and_escalates_to_its_scope() {
-        let mut rows = Rows {
-            all: vec!["ada", "alan", "grace"],
-            query: String::new(),
-        };
-        let mut sf = SearchField::filter();
-        sf.input.set_text("a");
-        sync_filter(&mut sf, &mut rows);
-        assert_eq!(rows.query, "a");
-        assert_eq!(sf.count(), Some(FilterCount::new(3, 3)));
-        assert_eq!(
-            sf.escalation,
-            Some(SearchRequest::within(ScopeDecl::new(
-                "list:people",
-                "People"
-            )))
-        );
-        sf.input.set_text("");
-        sync_filter(&mut sf, &mut rows);
-        assert_eq!(sf.count(), None, "an empty filter shows no count");
     }
 }

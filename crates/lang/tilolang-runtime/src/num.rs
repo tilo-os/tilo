@@ -107,33 +107,37 @@ pub fn int_to_float(n: i64) -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "each case is a value the rounding must give exactly, not one near another"
-    )]
-    fn rounding_keeps_the_places_it_is_given() {
-        assert_eq!(round_to(2.5, 0), 3.0);
-        assert_eq!(round_to(-2.5, 0), -3.0, "halves go away from zero");
-        assert_eq!(round_to(1.2345, 2), 1.23);
-        assert_eq!(round_to(1.2355, 3), 1.236);
-        assert_eq!(floor_to(1.239, 2), 1.23);
-        assert_eq!(ceil_to(1.231, 2), 1.24);
-        assert_eq!(
-            round_to(1.5, 99),
-            1.5,
-            "the places stop at what a double holds"
-        );
-        assert_eq!(round_whole(2.5), 3);
-        assert_eq!(floor_whole(-2.5), -3);
-        assert_eq!(ceil_whole(-2.5), -2);
-        assert_eq!(round_whole(f64::NAN), 0);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::float_cmp,
+            reason = "each case is a value the rounding must give exactly, not one near another"
+        )]
+        fn numbers_round_and_round_trip_exactly;
 
-    #[test]
-    fn float_counters_round_trip() {
-        assert_eq!(float_to_counter(1.5), Some(1_500_000));
-        assert!((counter_to_float(1_500_000) - 1.5).abs() < 1e-9);
-        assert_eq!(float_to_counter(f64::NAN), None);
+        phase rounding_keeps_the_places_it_is_given;
+        {
+            assert_eq!(round_to(2.5, 0), 3.0);
+            assert_eq!(round_to(-2.5, 0), -3.0, "halves go away from zero");
+            assert_eq!(round_to(1.2345, 2), 1.23);
+            assert_eq!(round_to(1.2355, 3), 1.236);
+            assert_eq!(floor_to(1.239, 2), 1.23);
+            assert_eq!(ceil_to(1.231, 2), 1.24);
+            assert_eq!(
+                round_to(1.5, 99),
+                1.5,
+                "the places stop at what a double holds"
+            );
+            assert_eq!(round_whole(2.5), 3);
+            assert_eq!(floor_whole(-2.5), -3);
+            assert_eq!(ceil_whole(-2.5), -2);
+            assert_eq!(round_whole(f64::NAN), 0);
+        }
+
+        phase float_counters_round_trip;
+        {
+            assert_eq!(float_to_counter(1.5), Some(1_500_000));
+            assert!((counter_to_float(1_500_000) - 1.5).abs() < 1e-9);
+            assert_eq!(float_to_counter(f64::NAN), None);
+        }
     }
 }

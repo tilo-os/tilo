@@ -257,25 +257,31 @@ mod tests {
             .expect("the spec is exported")
     }
 
-    #[test]
-    fn a_chosen_entry_queues_its_bound_action() {
-        let mut menu = RowMenu::new("device.more", "More for Headphones")
-            .action("Rename", binding())
-            .destructive("Forget", binding());
-        assert_eq!(menu.labels(), ["Rename", "Forget"]);
-        menu.chosen.set(Some(1));
-        assert!(menu.has_pending_control_invocation());
-        assert!(menu.take_control_invocation().is_some());
-        assert!(menu.take_control_invocation().is_none());
-    }
+    tilo_test_env::scenario! {
+        /// A row menu's entries.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_row_menu_entry_queues_its_action_or_is_disabled;
 
-    #[test]
-    fn an_entry_the_surface_does_not_offer_is_disabled() {
-        let mut menu =
-            RowMenu::new("device.more", "More for Headphones").action("Rename", binding());
-        menu.refresh_control_action_availability(&HashSet::new());
-        assert!(!menu.menu.menu_mut().items()[0].is_enabled());
-        menu.chosen.set(Some(0));
-        assert!(menu.take_control_invocation().is_none());
+        phase a_chosen_entry_queues_its_bound_action;
+        {
+            let mut menu = RowMenu::new("device.more", "More for Headphones")
+                .action("Rename", binding())
+                .destructive("Forget", binding());
+            assert_eq!(menu.labels(), ["Rename", "Forget"]);
+            menu.chosen.set(Some(1));
+            assert!(menu.has_pending_control_invocation());
+            assert!(menu.take_control_invocation().is_some());
+            assert!(menu.take_control_invocation().is_none());
+        }
+
+        phase an_entry_the_surface_does_not_offer_is_disabled;
+        {
+            let mut menu =
+                RowMenu::new("device.more", "More for Headphones").action("Rename", binding());
+            menu.refresh_control_action_availability(&HashSet::new());
+            assert!(!menu.menu.menu_mut().items()[0].is_enabled());
+            menu.chosen.set(Some(0));
+            assert!(menu.take_control_invocation().is_none());
+        }
     }
 }

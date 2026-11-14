@@ -393,125 +393,407 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_tilo_server_imports_in_two_rounds_then_finishes() {
-        let mut guild = tilo_server();
-        let empty = WorkspaceChat::default();
-        let first = plan(&guild, &empty);
-        assert_eq!(
-            first.categories,
-            [CategoryItem {
-                name: "chat".into(),
-                discord: "d_chat".into()
-            }]
-        );
-        let names: Vec<_> = first
-            .channels
-            .iter()
-            .map(|c| (c.name.as_str(), c.category.as_deref()))
-            .collect();
-        assert_eq!(
-            names,
-            [("goal", None), ("roadmap", None), ("progress", None)],
-            "channels in chat wait for it"
-        );
-        assert!(first.finish.is_empty());
+    tilo_test_env::scenario! {
+        fn a_server_is_imported_and_adopted_into_the_workspace;
 
-        guild
-            .map
-            .push(discord(MappedKind::Category, "k_chat", "d_chat"));
-        for (tilo, d) in [
-            ("c_goal", "d_goal"),
-            ("c_roadmap", "d_roadmap"),
-            ("c_progress", "d_progress"),
-        ] {
-            guild.map.push(discord(MappedKind::Channel, tilo, d));
-        }
-        let second = plan(&guild, &empty);
-        let rest: Vec<_> = second
-            .channels
-            .iter()
-            .map(|c| (c.name.as_str(), c.category.as_deref(), c.kind.as_str()))
-            .collect();
-        assert_eq!(
-            rest,
-            [
-                ("general", Some("k_chat"), "text"),
-                ("voice", Some("k_chat"), "voice")
-            ]
-        );
-
-        guild
-            .map
-            .push(discord(MappedKind::Channel, "c_general", "d_general"));
-        guild
-            .map
-            .push(discord(MappedKind::Channel, "c_voice", "d_voice"));
-        let last = plan(&guild, &empty);
-        assert_eq!(last.finish.len(), 1);
-        assert!(last.categories.is_empty() && last.channels.is_empty());
-    }
-
-    #[test]
-    fn existing_tilo_channels_are_adopted() {
-        let ws = WorkspaceChat {
-            busy: Vec::new(),
-            categories: vec![],
-            channels: vec![Channel {
-                id: "c_seed".into(),
-                name: "Goal".into(),
-                ..Channel::default()
-            }],
-        };
-        let p = plan(&tilo_server(), &ws);
-        assert_eq!(
-            p.adopt,
-            [AdoptItem {
-                kind: MappedKind::Channel,
-                tilo: "c_seed".into(),
-                discord: "d_goal".into()
-            }]
-        );
-        assert!(p.channels.iter().all(|c| c.name != "goal"));
-    }
-
-    #[test]
-    fn once_adopted_only_what_discord_makes_later_is_imported() {
-        let mut guild = tilo_server();
-        guild.ownership = Ownership::Adopted;
-        for (kind, tilo, d) in [
-            (MappedKind::Category, "k_chat", "d_chat"),
-            (MappedKind::Channel, "c_goal", "d_goal"),
-            (MappedKind::Channel, "c_roadmap", "d_roadmap"),
-            (MappedKind::Channel, "c_progress", "d_progress"),
-            (MappedKind::Channel, "c_voice", "d_voice"),
-            (MappedKind::Channel, "c_general", "d_general"),
-        ] {
-            guild.map.push(discord(kind, tilo, d));
-        }
-        assert_eq!(
-            plan(&guild, &WorkspaceChat::default()),
-            ImportPlan::default(),
-            "no second finish"
-        );
-        guild
-            .channels
-            .push(dchan("d_new", ChannelKind::Text, "new", Some("d_chat"), 2));
-        guild
-            .channels
-            .push(dchan("d_gone", ChannelKind::Text, "gone", None, 3));
-        guild.discord_only.insert("d_gone".into());
-        let later = plan(&guild, &WorkspaceChat::default());
-        assert_eq!(
-            later
+        phase the_tilo_server_imports_in_two_rounds_then_finishes;
+        {
+            let mut guild = tilo_server();
+            let empty = WorkspaceChat::default();
+            let first = plan(&guild, &empty);
+            assert_eq!(
+                first.categories,
+                [CategoryItem {
+                    name: "chat".into(),
+                    discord: "d_chat".into()
+                }]
+            );
+            let names: Vec<_> = first
                 .channels
                 .iter()
                 .map(|c| (c.name.as_str(), c.category.as_deref()))
-                .collect::<Vec<_>>(),
-            [("new", Some("k_chat"))],
-            "a channel kept in Discord only is not imported again"
-        );
-        assert!(later.finish.is_empty());
+                .collect();
+            assert_eq!(
+                names,
+                [("goal", None), ("roadmap", None), ("progress", None)],
+                "channels in chat wait for it"
+            );
+            assert!(first.finish.is_empty());
+
+            guild
+                .map
+                .push(discord(MappedKind::Category, "k_chat", "d_chat"));
+            for (tilo, d) in [
+                ("c_goal", "d_goal"),
+                ("c_roadmap", "d_roadmap"),
+                ("c_progress", "d_progress"),
+            ] {
+                guild.map.push(discord(MappedKind::Channel, tilo, d));
+            }
+            let second = plan(&guild, &empty);
+            let rest: Vec<_> = second
+                .channels
+                .iter()
+                .map(|c| (c.name.as_str(), c.category.as_deref(), c.kind.as_str()))
+                .collect();
+            assert_eq!(
+                rest,
+                [
+                    ("general", Some("k_chat"), "text"),
+                    ("voice", Some("k_chat"), "voice")
+                ]
+            );
+
+            guild
+                .map
+                .push(discord(MappedKind::Channel, "c_general", "d_general"));
+            guild
+                .map
+                .push(discord(MappedKind::Channel, "c_voice", "d_voice"));
+            let last = plan(&guild, &empty);
+            assert_eq!(last.finish.len(), 1);
+            assert!(last.categories.is_empty() && last.channels.is_empty());
+        }
+
+        phase existing_tilo_channels_are_adopted;
+        {
+            let ws = WorkspaceChat {
+                busy: Vec::new(),
+                categories: vec![],
+                channels: vec![Channel {
+                    id: "c_seed".into(),
+                    name: "Goal".into(),
+                    ..Channel::default()
+                }],
+            };
+            let p = plan(&tilo_server(), &ws);
+            assert_eq!(
+                p.adopt,
+                [AdoptItem {
+                    kind: MappedKind::Channel,
+                    tilo: "c_seed".into(),
+                    discord: "d_goal".into()
+                }]
+            );
+            assert!(p.channels.iter().all(|c| c.name != "goal"));
+        }
+
+        phase once_adopted_only_what_discord_makes_later_is_imported;
+        {
+            let mut guild = tilo_server();
+            guild.ownership = Ownership::Adopted;
+            for (kind, tilo, d) in [
+                (MappedKind::Category, "k_chat", "d_chat"),
+                (MappedKind::Channel, "c_goal", "d_goal"),
+                (MappedKind::Channel, "c_roadmap", "d_roadmap"),
+                (MappedKind::Channel, "c_progress", "d_progress"),
+                (MappedKind::Channel, "c_voice", "d_voice"),
+                (MappedKind::Channel, "c_general", "d_general"),
+            ] {
+                guild.map.push(discord(kind, tilo, d));
+            }
+            assert_eq!(
+                plan(&guild, &WorkspaceChat::default()),
+                ImportPlan::default(),
+                "no second finish"
+            );
+            guild
+                .channels
+                .push(dchan("d_new", ChannelKind::Text, "new", Some("d_chat"), 2));
+            guild
+                .channels
+                .push(dchan("d_gone", ChannelKind::Text, "gone", None, 3));
+            guild.discord_only.insert("d_gone".into());
+            let later = plan(&guild, &WorkspaceChat::default());
+            assert_eq!(
+                later
+                    .channels
+                    .iter()
+                    .map(|c| (c.name.as_str(), c.category.as_deref()))
+                    .collect::<Vec<_>>(),
+                [("new", Some("k_chat"))],
+                "a channel kept in Discord only is not imported again"
+            );
+            assert!(later.finish.is_empty());
+        }
+
+        phase an_existing_server_is_adopted_by_name_within_its_categories;
+        {
+            let mut guild = existing_server();
+            let ws = seeded();
+            let first = plan(&guild, &ws);
+            assert_eq!(
+                first.adopt,
+                [AdoptItem {
+                    kind: MappedKind::Category,
+                    tilo: "k_seeded".into(),
+                    discord: "d_channels".into()
+                }]
+            );
+            assert_eq!(
+                first
+                    .categories
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["chat"]
+            );
+            for item in first.adopt {
+                guild
+                    .map
+                    .push(discord(item.kind, &item.tilo, &item.discord));
+            }
+            guild
+                .map
+                .push(discord(MappedKind::Category, "k_chat", "d_chat"));
+
+            let second = plan(&guild, &ws);
+            assert_eq!(
+                second.adopt,
+                [AdoptItem {
+                    kind: MappedKind::Channel,
+                    tilo: "c_general".into(),
+                    discord: "d_general".into()
+                }],
+                "#general is joined with the one Tilo had, not doubled"
+            );
+            assert_eq!(
+                second
+                    .channels
+                    .iter()
+                    .map(|c| (c.name.as_str(), c.category.as_deref(), c.kind.as_str()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("goal", None, "text"),
+                    ("roadmap", None, "text"),
+                    ("progress", None, "text"),
+                    ("voice", Some("k_seeded"), "voice"),
+                ]
+            );
+            for item in second.adopt {
+                guild
+                    .map
+                    .push(discord(item.kind, &item.tilo, &item.discord));
+            }
+            for c in second.channels {
+                guild.map.push(discord(
+                    MappedKind::Channel,
+                    &format!("c_{}", c.name),
+                    &c.discord,
+                ));
+            }
+
+            let last = plan(&guild, &ws);
+            assert_eq!(
+                last.finish,
+                [FinishItem {
+                    tilo_only: vec!["c_help".into(), "c_show".into()]
+                }],
+                "Tilo's own #help and #show-and-tell stay Tilo's"
+            );
+        }
+
+        phase the_workspaces_starting_channel_becomes_the_servers_of_that_name;
+        // The live workspace: its chat opened with `Channels › #general`, and the
+        // server keeps its `#general` under `chat`.
+        {
+            let mut guild = tilo_server();
+            let ws = WorkspaceChat {
+                busy: Vec::new(),
+                categories: vec![crate::tilo::Category {
+                    id: "k_seeded".into(),
+                    name: "Channels".into(),
+                }],
+                channels: vec![Channel {
+                    id: "c_general".into(),
+                    name: "general".into(),
+                    category: Some("k_seeded".into()),
+                    ..Channel::default()
+                }],
+            };
+            let first = plan(&guild, &ws);
+            assert!(first.adopt.is_empty(), "Channels has no counterpart");
+            for c in &first.channels {
+                guild.map.push(discord(
+                    MappedKind::Channel,
+                    &format!("c_{}", c.name),
+                    &c.discord,
+                ));
+            }
+            guild
+                .map
+                .push(discord(MappedKind::Category, "k_chat", "d_chat"));
+
+            let second = plan(&guild, &ws);
+            assert_eq!(
+                second.adopt,
+                [AdoptItem {
+                    kind: MappedKind::Channel,
+                    tilo: "c_general".into(),
+                    discord: "d_general".into()
+                }],
+                "one #general, bridged"
+            );
+            assert_eq!(
+                second.file,
+                [FileItem {
+                    channel: "c_general".into(),
+                    category: Some("k_chat".into()),
+                }],
+                "it moves under chat, as in Discord"
+            );
+            assert_eq!(
+                second.drop_categories,
+                ["k_seeded"],
+                "Channels would list nothing"
+            );
+            assert_eq!(
+                second
+                    .channels
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["voice"]
+            );
+            guild
+                .map
+                .push(discord(MappedKind::Channel, "c_general", "d_general"));
+            guild
+                .map
+                .push(discord(MappedKind::Channel, "c_voice", "d_voice"));
+            let filed = WorkspaceChat {
+                busy: Vec::new(),
+                categories: vec![crate::tilo::Category {
+                    id: "k_chat".into(),
+                    name: "chat".into(),
+                }],
+                channels: vec![Channel {
+                    id: "c_general".into(),
+                    name: "general".into(),
+                    category: Some("k_chat".into()),
+                    ..Channel::default()
+                }],
+            };
+            let last = plan(&guild, &filed);
+            assert!(last.file.is_empty() && last.drop_categories.is_empty());
+            assert_eq!(
+                last.finish,
+                [FinishItem { tilo_only: vec![] }],
+                "nothing is left Tilo's own"
+            );
+        }
+
+        phase the_workspaces_unused_channels_go_once_the_server_is_joined;
+        // The workspace as Chat opens it, `#chat` and `#voice`, its seeded
+        // `#general` already joined and moved: once every Discord channel is
+        // joined, `#chat`, empty and the server's nowhere, goes, while a
+        // channel someone wrote in stays Tilo's own.
+        {
+            let mut guild = tilo_server();
+            for (kind, tilo, d) in [
+                (MappedKind::Category, "k_chat", "d_chat"),
+                (MappedKind::Channel, "c_goal", "d_goal"),
+                (MappedKind::Channel, "c_roadmap", "d_roadmap"),
+                (MappedKind::Channel, "c_progress", "d_progress"),
+                (MappedKind::Channel, "c_voice", "d_voice"),
+                (MappedKind::Channel, "c_general", "d_general"),
+            ] {
+                guild.map.push(discord(kind, tilo, d));
+            }
+            let channel = |id: &str, name: &str, category: Option<&str>| Channel {
+                id: id.into(),
+                name: name.into(),
+                category: category.map(Into::into),
+                ..Channel::default()
+            };
+            let workspace = WorkspaceChat {
+                categories: vec![
+                    crate::tilo::Category {
+                        id: "k_chat".into(),
+                        name: "chat".into(),
+                    },
+                    crate::tilo::Category {
+                        id: "k_mine".into(),
+                        name: "mine".into(),
+                    },
+                ],
+                channels: vec![
+                    channel("c_chat", "chat", None),
+                    channel("c_onto", "onto", None),
+                    channel("c_quiet", "quiet", Some("k_mine")),
+                    channel("c_general", "general", Some("k_chat")),
+                    Channel {
+                        voice: true,
+                        ..channel("c_voice", "voice", Some("k_chat"))
+                    },
+                ],
+                busy: vec!["c_general".into(), "c_onto".into()],
+            };
+            let last = plan(&guild, &workspace);
+            assert_eq!(last.drop_channels, ["c_chat", "c_quiet"]);
+            assert_eq!(last.drop_categories, ["k_mine"], "mine would list nothing");
+            assert_eq!(
+                last.finish,
+                [FinishItem {
+                    tilo_only: vec!["c_onto".into()]
+                }],
+                "what someone wrote in stays the workspace's own"
+            );
+
+            guild.ownership = Ownership::Adopted;
+            assert!(
+                plan(&guild, &workspace).drop_channels.is_empty(),
+                "an adopted workspace's channels are never removed for being empty"
+            );
+        }
+
+        phase a_channel_is_joined_once_and_not_away_from_a_joined_category;
+        // A channel whose category the server is joining waits for that
+        // category's own channel of the name, and two of Discord's never
+        // join the same one.
+        {
+            let mut guild = existing_server();
+            guild
+                .channels
+                .push(dchan("d_help", ChannelKind::Text, "help", None, 3));
+            guild.channels.push(dchan(
+                "d_help_2",
+                ChannelKind::Text,
+                "help",
+                Some("d_chat"),
+                0,
+            ));
+            let ws = seeded();
+            let first = plan(&guild, &ws);
+            assert!(
+                first.adopt.iter().all(|a| a.kind == MappedKind::Category),
+                "Channels is about to be joined, so its #help is not taken: {:?}",
+                first.adopt
+            );
+            assert!(first.channels.iter().any(|c| c.discord == "d_help"));
+
+            let mut ws = ws;
+            ws.categories.clear();
+            for c in &mut ws.channels {
+                c.category = None;
+            }
+            let mut guild = existing_server();
+            guild
+                .channels
+                .push(dchan("d_help", ChannelKind::Text, "help", None, 3));
+            guild
+                .channels
+                .push(dchan("d_help_2", ChannelKind::Text, "help", None, 4));
+            let once = plan(&guild, &ws);
+            let helps: Vec<_> = once
+                .adopt
+                .iter()
+                .filter(|a| a.tilo == "c_help")
+                .map(|a| a.discord.as_str())
+                .collect();
+            assert_eq!(helps, ["d_help"]);
+            assert!(once.channels.iter().any(|c| c.discord == "d_help_2"));
+        }
     }
 
     /// The real server when its bridge first ran, into a Chat its workspace had
@@ -566,283 +848,5 @@ mod tests {
                 channel("c_show", "show-and-tell"),
             ],
         }
-    }
-
-    #[test]
-    fn an_existing_server_is_adopted_by_name_within_its_categories() {
-        let mut guild = existing_server();
-        let ws = seeded();
-        let first = plan(&guild, &ws);
-        assert_eq!(
-            first.adopt,
-            [AdoptItem {
-                kind: MappedKind::Category,
-                tilo: "k_seeded".into(),
-                discord: "d_channels".into()
-            }]
-        );
-        assert_eq!(
-            first
-                .categories
-                .iter()
-                .map(|c| c.name.as_str())
-                .collect::<Vec<_>>(),
-            ["chat"]
-        );
-        for item in first.adopt {
-            guild
-                .map
-                .push(discord(item.kind, &item.tilo, &item.discord));
-        }
-        guild
-            .map
-            .push(discord(MappedKind::Category, "k_chat", "d_chat"));
-
-        let second = plan(&guild, &ws);
-        assert_eq!(
-            second.adopt,
-            [AdoptItem {
-                kind: MappedKind::Channel,
-                tilo: "c_general".into(),
-                discord: "d_general".into()
-            }],
-            "#general is joined with the one Tilo had, not doubled"
-        );
-        assert_eq!(
-            second
-                .channels
-                .iter()
-                .map(|c| (c.name.as_str(), c.category.as_deref(), c.kind.as_str()))
-                .collect::<Vec<_>>(),
-            [
-                ("goal", None, "text"),
-                ("roadmap", None, "text"),
-                ("progress", None, "text"),
-                ("voice", Some("k_seeded"), "voice"),
-            ]
-        );
-        for item in second.adopt {
-            guild
-                .map
-                .push(discord(item.kind, &item.tilo, &item.discord));
-        }
-        for c in second.channels {
-            guild.map.push(discord(
-                MappedKind::Channel,
-                &format!("c_{}", c.name),
-                &c.discord,
-            ));
-        }
-
-        let last = plan(&guild, &ws);
-        assert_eq!(
-            last.finish,
-            [FinishItem {
-                tilo_only: vec!["c_help".into(), "c_show".into()]
-            }],
-            "Tilo's own #help and #show-and-tell stay Tilo's"
-        );
-    }
-
-    /// The live workspace: its chat opened with `Channels › #general`, and the
-    /// server keeps its `#general` under `chat`.
-    #[test]
-    fn the_workspaces_starting_channel_becomes_the_servers_of_that_name() {
-        let mut guild = tilo_server();
-        let ws = WorkspaceChat {
-            busy: Vec::new(),
-            categories: vec![crate::tilo::Category {
-                id: "k_seeded".into(),
-                name: "Channels".into(),
-            }],
-            channels: vec![Channel {
-                id: "c_general".into(),
-                name: "general".into(),
-                category: Some("k_seeded".into()),
-                ..Channel::default()
-            }],
-        };
-        let first = plan(&guild, &ws);
-        assert!(first.adopt.is_empty(), "Channels has no counterpart");
-        for c in &first.channels {
-            guild.map.push(discord(
-                MappedKind::Channel,
-                &format!("c_{}", c.name),
-                &c.discord,
-            ));
-        }
-        guild
-            .map
-            .push(discord(MappedKind::Category, "k_chat", "d_chat"));
-
-        let second = plan(&guild, &ws);
-        assert_eq!(
-            second.adopt,
-            [AdoptItem {
-                kind: MappedKind::Channel,
-                tilo: "c_general".into(),
-                discord: "d_general".into()
-            }],
-            "one #general, bridged"
-        );
-        assert_eq!(
-            second.file,
-            [FileItem {
-                channel: "c_general".into(),
-                category: Some("k_chat".into()),
-            }],
-            "it moves under chat, as in Discord"
-        );
-        assert_eq!(
-            second.drop_categories,
-            ["k_seeded"],
-            "Channels would list nothing"
-        );
-        assert_eq!(
-            second
-                .channels
-                .iter()
-                .map(|c| c.name.as_str())
-                .collect::<Vec<_>>(),
-            ["voice"]
-        );
-        guild
-            .map
-            .push(discord(MappedKind::Channel, "c_general", "d_general"));
-        guild
-            .map
-            .push(discord(MappedKind::Channel, "c_voice", "d_voice"));
-        let filed = WorkspaceChat {
-            busy: Vec::new(),
-            categories: vec![crate::tilo::Category {
-                id: "k_chat".into(),
-                name: "chat".into(),
-            }],
-            channels: vec![Channel {
-                id: "c_general".into(),
-                name: "general".into(),
-                category: Some("k_chat".into()),
-                ..Channel::default()
-            }],
-        };
-        let last = plan(&guild, &filed);
-        assert!(last.file.is_empty() && last.drop_categories.is_empty());
-        assert_eq!(
-            last.finish,
-            [FinishItem { tilo_only: vec![] }],
-            "nothing is left Tilo's own"
-        );
-    }
-
-    /// The workspace as Chat opens it, `#chat` and `#voice`, its seeded
-    /// `#general` already joined and moved: once every Discord channel is
-    /// joined, `#chat`, empty and the server's nowhere, goes, while a
-    /// channel someone wrote in stays Tilo's own.
-    #[test]
-    fn the_workspaces_unused_channels_go_once_the_server_is_joined() {
-        let mut guild = tilo_server();
-        for (kind, tilo, d) in [
-            (MappedKind::Category, "k_chat", "d_chat"),
-            (MappedKind::Channel, "c_goal", "d_goal"),
-            (MappedKind::Channel, "c_roadmap", "d_roadmap"),
-            (MappedKind::Channel, "c_progress", "d_progress"),
-            (MappedKind::Channel, "c_voice", "d_voice"),
-            (MappedKind::Channel, "c_general", "d_general"),
-        ] {
-            guild.map.push(discord(kind, tilo, d));
-        }
-        let channel = |id: &str, name: &str, category: Option<&str>| Channel {
-            id: id.into(),
-            name: name.into(),
-            category: category.map(Into::into),
-            ..Channel::default()
-        };
-        let workspace = WorkspaceChat {
-            categories: vec![
-                crate::tilo::Category {
-                    id: "k_chat".into(),
-                    name: "chat".into(),
-                },
-                crate::tilo::Category {
-                    id: "k_mine".into(),
-                    name: "mine".into(),
-                },
-            ],
-            channels: vec![
-                channel("c_chat", "chat", None),
-                channel("c_onto", "onto", None),
-                channel("c_quiet", "quiet", Some("k_mine")),
-                channel("c_general", "general", Some("k_chat")),
-                Channel {
-                    voice: true,
-                    ..channel("c_voice", "voice", Some("k_chat"))
-                },
-            ],
-            busy: vec!["c_general".into(), "c_onto".into()],
-        };
-        let last = plan(&guild, &workspace);
-        assert_eq!(last.drop_channels, ["c_chat", "c_quiet"]);
-        assert_eq!(last.drop_categories, ["k_mine"], "mine would list nothing");
-        assert_eq!(
-            last.finish,
-            [FinishItem {
-                tilo_only: vec!["c_onto".into()]
-            }],
-            "what someone wrote in stays the workspace's own"
-        );
-
-        guild.ownership = Ownership::Adopted;
-        assert!(
-            plan(&guild, &workspace).drop_channels.is_empty(),
-            "an adopted workspace's channels are never removed for being empty"
-        );
-    }
-
-    /// A channel whose category the server is joining waits for that
-    /// category's own channel of the name, and two of Discord's never
-    /// join the same one.
-    #[test]
-    fn a_channel_is_joined_once_and_not_away_from_a_joined_category() {
-        let mut guild = existing_server();
-        guild
-            .channels
-            .push(dchan("d_help", ChannelKind::Text, "help", None, 3));
-        guild.channels.push(dchan(
-            "d_help_2",
-            ChannelKind::Text,
-            "help",
-            Some("d_chat"),
-            0,
-        ));
-        let ws = seeded();
-        let first = plan(&guild, &ws);
-        assert!(
-            first.adopt.iter().all(|a| a.kind == MappedKind::Category),
-            "Channels is about to be joined, so its #help is not taken: {:?}",
-            first.adopt
-        );
-        assert!(first.channels.iter().any(|c| c.discord == "d_help"));
-
-        let mut ws = ws;
-        ws.categories.clear();
-        for c in &mut ws.channels {
-            c.category = None;
-        }
-        let mut guild = existing_server();
-        guild
-            .channels
-            .push(dchan("d_help", ChannelKind::Text, "help", None, 3));
-        guild
-            .channels
-            .push(dchan("d_help_2", ChannelKind::Text, "help", None, 4));
-        let once = plan(&guild, &ws);
-        let helps: Vec<_> = once
-            .adopt
-            .iter()
-            .filter(|a| a.tilo == "c_help")
-            .map(|a| a.discord.as_str())
-            .collect();
-        assert_eq!(helps, ["d_help"]);
-        assert!(once.channels.iter().any(|c| c.discord == "d_help_2"));
     }
 }

@@ -308,52 +308,6 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
 mod tests {
     use super::*;
 
-    /// Up to the most faces show; past it the badge takes the last face's
-    /// place and counts everyone it stands for.
-    #[test]
-    fn a_stack_shows_its_faces_then_counts_the_rest() {
-        let bar = FaceStack::BAR;
-        assert_eq!(bar.split(0), (0, 0));
-        assert_eq!(bar.split(4), (4, 0));
-        assert_eq!(bar.split(5), (3, 2));
-        assert_eq!(bar.split(16), (3, 13));
-        assert_eq!(bar.width(0), 0.0);
-        let one = bar.width(1);
-        assert!(
-            (bar.width(2) - one - bar.step()).abs() < 1e-9,
-            "each face stands one step past the one before"
-        );
-        assert!(bar.step() < one, "neighbours overlap");
-        assert_eq!(
-            bar.width(4),
-            bar.width(16),
-            "the badge takes the fourth place"
-        );
-    }
-
-    /// A group on a control's face shows three faces and a badge past them: four people are
-    /// three faces and "+1", and the faces stay inside the control they stand on.
-    #[test]
-    fn a_group_shows_three_faces_then_counts_the_rest() {
-        let in_face = FaceStack::in_face(24.0);
-        assert_eq!(in_face.group(0), (0, 0));
-        assert_eq!(in_face.group(1), (1, 0));
-        assert_eq!(in_face.group(3), (3, 0));
-        assert_eq!(in_face.group(4), (3, 1));
-        assert_eq!(in_face.group(9), (3, 6));
-        assert_eq!(
-            in_face.group_width(9),
-            in_face.width_of(3, 6),
-            "the badge is a face of its own past the three"
-        );
-        assert!(in_face.group_width(9) > in_face.group_width(3));
-        // The ring and the ground around it stand within the face it sits on.
-        assert!(
-            in_face.side / 2.0 + Face::REACH <= 24.0 / 2.0,
-            "a face fits the control it stands on"
-        );
-    }
-
     /// A face in a stack wears the same initials as the person's own
     /// avatar: two visitors who share a first word ("Eager Dolphin",
     /// "Eager Badger") paint apart, and the letters are the first and last
@@ -490,60 +444,110 @@ mod tests {
         }
     }
 
-    /// A face in a stack keeps both its initials: the ground of the face drawn over it starts past
-    /// them, never across them. Two letters at the initials' size are what a face wears
-    /// (`initials_for_name`), so the measured "CC" is the widest a face can show.
-    #[test]
-    fn a_stacked_face_keeps_its_initials_whole() {
-        for (label, stack) in [
-            ("bar", FaceStack::BAR),
-            ("window", FaceStack::WINDOW),
-            ("small", FaceStack::SMALL),
-            ("in a control", FaceStack::in_face(24.0)),
-        ] {
-            let theme = crate::theme::Theme::dark();
-            let mut tr = crate::text_render::TextRenderer::new();
-            let style = crate::widget::avatar::initials_style(&theme, stack.side);
-            let (advance, _) = tr.measure_style("CC", None, &style);
-            let initials_right = stack.side / 2.0 + f64::from(advance) / 2.0;
-            // Where the next face's ground begins, from the step the stack stands by.
-            let covered_from = stack.step() - Face::REACH;
+    tilo_test_env::scenario! {
+        fn a_face_stack_counts_overlaps_and_keeps_its_initials;
+
+        phase a_stack_shows_its_faces_then_counts_the_rest;
+        // Up to the most faces show; past it the badge takes the last face's
+        // place and counts everyone it stands for.
+        {
+            let bar = FaceStack::BAR;
+            assert_eq!(bar.split(0), (0, 0));
+            assert_eq!(bar.split(4), (4, 0));
+            assert_eq!(bar.split(5), (3, 2));
+            assert_eq!(bar.split(16), (3, 13));
+            assert_eq!(bar.width(0), 0.0);
+            let one = bar.width(1);
             assert!(
-                covered_from > initials_right,
-                "{label}: the next face covers from {covered_from:.2} of {:.0} px, initials end at \
-                 {initials_right:.2}",
-                stack.side
+                (bar.width(2) - one - bar.step()).abs() < 1e-9,
+                "each face stands one step past the one before"
             );
-            // And it is the rule that decides the step for every stack the desktop draws, not the
-            // overlap each was handed: an overlap alone stands closer than the letters are wide.
-            let outer = stack.side + 2.0 * (RING + GAP);
-            let plain = outer - stack.overlap;
-            let rule = Face::REACH
-                + stack.side / 2.0
-                + stack.side * INITIALS_SPAN / 2.0
-                + INITIALS_CLEARANCE;
-            assert!(
-                plain <= rule,
-                "{label}: an overlap of {:.1} stands wider than the letters need",
-                stack.overlap
-            );
-            assert!(
-                (stack.step() - rule.max(plain)).abs() < 1e-9,
-                "{label}: the step is the rule's, not the overlap's"
+            assert!(bar.step() < one, "neighbours overlap");
+            assert_eq!(
+                bar.width(4),
+                bar.width(16),
+                "the badge takes the fourth place"
             );
         }
-    }
 
-    /// The overlap still reads as a stack: each face stands nearer than its whole width, and the
-    /// bar's four faces fit the room a bar gives them.
-    #[test]
-    fn stacked_faces_still_overlap_and_fit_a_bar() {
-        let bar = FaceStack::BAR;
-        let outer = bar.side + 2.0 * (RING + GAP);
-        assert!(bar.step() < outer, "neighbours overlap");
-        assert!(
-            bar.width(4) < 4.0 * outer,
-            "four faces stand narrower than four rings"
-        );
+        phase a_group_shows_three_faces_then_counts_the_rest;
+        // A group on a control's face shows three faces and a badge past them: four people are
+        // three faces and "+1", and the faces stay inside the control they stand on.
+        {
+            let in_face = FaceStack::in_face(24.0);
+            assert_eq!(in_face.group(0), (0, 0));
+            assert_eq!(in_face.group(1), (1, 0));
+            assert_eq!(in_face.group(3), (3, 0));
+            assert_eq!(in_face.group(4), (3, 1));
+            assert_eq!(in_face.group(9), (3, 6));
+            assert_eq!(
+                in_face.group_width(9),
+                in_face.width_of(3, 6),
+                "the badge is a face of its own past the three"
+            );
+            assert!(in_face.group_width(9) > in_face.group_width(3));
+            // The ring and the ground around it stand within the face it sits on.
+            assert!(
+                in_face.side / 2.0 + Face::REACH <= 24.0 / 2.0,
+                "a face fits the control it stands on"
+            );
+        }
+
+        phase a_stacked_face_keeps_its_initials_whole;
+        // A face in a stack keeps both its initials: the ground of the face drawn over it starts past
+        // them, never across them. Two letters at the initials' size are what a face wears
+        // (`initials_for_name`), so the measured "CC" is the widest a face can show.
+        {
+            for (label, stack) in [
+                ("bar", FaceStack::BAR),
+                ("window", FaceStack::WINDOW),
+                ("small", FaceStack::SMALL),
+                ("in a control", FaceStack::in_face(24.0)),
+            ] {
+                let theme = crate::theme::Theme::dark();
+                let mut tr = crate::text_render::TextRenderer::new();
+                let style = crate::widget::avatar::initials_style(&theme, stack.side);
+                let (advance, _) = tr.measure_style("CC", None, &style);
+                let initials_right = stack.side / 2.0 + f64::from(advance) / 2.0;
+                // Where the next face's ground begins, from the step the stack stands by.
+                let covered_from = stack.step() - Face::REACH;
+                assert!(
+                    covered_from > initials_right,
+                    "{label}: the next face covers from {covered_from:.2} of {:.0} px, initials end at \
+                 {initials_right:.2}",
+                    stack.side
+                );
+                // And it is the rule that decides the step for every stack the desktop draws, not the
+                // overlap each was handed: an overlap alone stands closer than the letters are wide.
+                let outer = stack.side + 2.0 * (RING + GAP);
+                let plain = outer - stack.overlap;
+                let rule = Face::REACH
+                    + stack.side / 2.0
+                    + stack.side * INITIALS_SPAN / 2.0
+                    + INITIALS_CLEARANCE;
+                assert!(
+                    plain <= rule,
+                    "{label}: an overlap of {:.1} stands wider than the letters need",
+                    stack.overlap
+                );
+                assert!(
+                    (stack.step() - rule.max(plain)).abs() < 1e-9,
+                    "{label}: the step is the rule's, not the overlap's"
+                );
+            }
+        }
+
+        phase stacked_faces_still_overlap_and_fit_a_bar;
+        // The overlap still reads as a stack: each face stands nearer than its whole width, and the
+        // bar's four faces fit the room a bar gives them.
+        {
+            let bar = FaceStack::BAR;
+            let outer = bar.side + 2.0 * (RING + GAP);
+            assert!(bar.step() < outer, "neighbours overlap");
+            assert!(
+                bar.width(4) < 4.0 * outer,
+                "four faces stand narrower than four rings"
+            );
+        }
     }
 }

@@ -25,7 +25,7 @@ use crate::common::people::{
     Device, show, titles_at, titles_on, two_people_at_a_site, wait_shown, waited, windows,
 };
 use serde_json::{Value, json};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 /// The app whose window the people here open on their desks: a note, as a package's window is one.
 const NOTES: &str = "so.tilo.notes";
@@ -138,7 +138,7 @@ fn a_window_a_member_opens_stays_while_another_member_changes_the_desk() {
 
     // Bob may no longer write: what he opens now never reaches the workspace, and Ada's next change
     // reaches his device all the same.
-    site.set_role(bob.public, WorkspaceRole::Viewer);
+    site.set_role(bob.public, Role::Viewer);
     let _bob_draft = bob_laptop.window(NOTES, "Bob's draft");
     waited("Bob's draft on his desk", &site, &[&bob_laptop], || {
         titles_on(&bob_laptop, &site).contains(&"Bob's draft".to_owned())
@@ -198,7 +198,7 @@ fn a_member_reads_where_their_refused_change_is_not() {
 
     // Ada takes Bob's write permission away: the workspace still lets him read what it holds, and
     // refuses what he writes.
-    site.set_role(bob.public, WorkspaceRole::Viewer);
+    site.set_role(bob.public, Role::Viewer);
     let before = windows(&site);
     let refused_note = bob_laptop.window(NOTES, "Bob's notes");
     let refused_at = std::time::Instant::now();
@@ -259,7 +259,7 @@ fn a_member_reads_where_their_refused_change_is_not() {
     });
 
     // Ada lets Bob write again: his change lands, and the verdict goes.
-    site.set_role(bob.public, WorkspaceRole::Editor);
+    site.set_role(bob.public, Role::Editor);
     let _admitted_note = bob_laptop.window(NOTES, "Bob's notes, again");
     waited(
         "Bob's next change at the site",

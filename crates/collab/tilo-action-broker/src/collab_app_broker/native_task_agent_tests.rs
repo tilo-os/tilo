@@ -35,7 +35,7 @@ fn mint(
         device.user_public_key,
         agent_key.verifying_key().to_bytes(),
         TASK_ISSUE,
-        workspace_id().to_string(),
+        workspace_id(),
         issued,
         expires,
     )

@@ -922,18 +922,22 @@ fn checkpoint_with_stage(_kind: CheckpointKind, _stage: &Stage) -> io::Result<()
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_staging_file_is_a_hidden_sibling_component() {
-        let target = OsStr::new("state.automerge");
-        let first = stage_name(target, 1);
-        assert!(first.as_bytes().starts_with(b".state.automerge."));
-        assert!(first.as_bytes().ends_with(b".tmp"));
-        validate_component(&first).unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn staging_names_are_hidden_siblings_and_differ_per_write;
 
-    #[test]
-    fn two_writes_do_not_share_a_staging_name() {
-        let target = OsStr::new("state.automerge");
-        assert_ne!(stage_name(target, 1), stage_name(target, 2));
+        phase the_staging_file_is_a_hidden_sibling_component;
+        {
+            let target = OsStr::new("state.automerge");
+            let first = stage_name(target, 1);
+            assert!(first.as_bytes().starts_with(b".state.automerge."));
+            assert!(first.as_bytes().ends_with(b".tmp"));
+            validate_component(&first).unwrap();
+        }
+
+        phase two_writes_do_not_share_a_staging_name;
+        {
+            let target = OsStr::new("state.automerge");
+            assert_ne!(stage_name(target, 1), stage_name(target, 2));
+        }
     }
 }

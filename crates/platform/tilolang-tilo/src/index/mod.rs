@@ -273,7 +273,7 @@ thread_local! {
 }
 
 /// Mark the calling thread as reading off the frame (a build or a first publication on a
-/// thread of its own): what it reads is not counted as the frame's reads. The corruption a read
+/// worker thread): what it reads is not counted as the frame's reads. The corruption a read
 /// finds is reported all the same.
 pub(crate) fn read_off_frame() {
     OFF_FRAME.with(|off| off.set(true));

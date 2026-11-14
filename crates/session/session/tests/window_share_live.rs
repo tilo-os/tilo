@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 use crate::common::people::{
     Device, Person, Site, log_sessions_at, share_the_fleet, two_devices_of_one_person,
@@ -1021,13 +1021,12 @@ fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
 fn three_devices_of_one_person() -> (Site, Person, Device, Device, Device) {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
     let tablet = ada.device("Ada's tablet");
     share_the_fleet(&ada, &[&laptop, &phone, &tablet]);
     for device in [&mut laptop, &mut phone] {
-        let invitation = site.invite(ada.public, WorkspaceRole::Editor);
+        let invitation = site.invite(ada.public, Role::Editor);
         device.join(&invitation);
         device.wait_holding(&site.workspace);
     }
@@ -1056,7 +1055,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
         &mut window,
         &[],
     );
-    let invitation = site.invite(ada.public, WorkspaceRole::Editor);
+    let invitation = site.invite(ada.public, Role::Editor);
     tablet.join(&invitation);
     tablet.wait_holding(&site.workspace);
     let all = [&laptop, &phone, &tablet];

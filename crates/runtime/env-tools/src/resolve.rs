@@ -191,54 +191,57 @@ After this operation, 207 MiB extra will be used (install 207 MiB, remove 0 B).
 Operation aborted by the user.
 ";
 
-    #[test]
-    fn a_transaction_table_resolves_to_normalized_nevras() {
-        let r = parse_assumeno(PANDOC_JQ).unwrap();
-        assert_eq!(
-            r.install,
-            [
-                "jq-1.8.1-3.fc44.x86_64",
-                "numactl-libs-2.0.19-4.fc44.x86_64",
-                "oniguruma-6.9.10-4.fc44.x86_64",
-                "pandoc-cli-3.7.0.2-40.fc44.x86_64",
-                "pandoc-common-3.7.0.2-39.fc44.noarch",
-            ]
-        );
-        assert!(r.already_installed.is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn dnf_and_rpm_output;
 
-    #[test]
-    fn the_summary_section_is_not_a_package() {
-        // " Installing:         5 packages" is indented under "Transaction
-        // Summary:", which is not an adding section.
-        let r = parse_assumeno(PANDOC_JQ).unwrap();
-        assert!(!r.install.iter().any(|n| n.contains("packages")));
-    }
+        phase a_transaction_table_resolves_to_normalized_nevras;
+        {
+            let r = parse_assumeno(PANDOC_JQ).unwrap();
+            assert_eq!(
+                r.install,
+                [
+                    "jq-1.8.1-3.fc44.x86_64",
+                    "numactl-libs-2.0.19-4.fc44.x86_64",
+                    "oniguruma-6.9.10-4.fc44.x86_64",
+                    "pandoc-cli-3.7.0.2-40.fc44.x86_64",
+                    "pandoc-common-3.7.0.2-39.fc44.noarch",
+                ]
+            );
+            assert!(r.already_installed.is_empty());
+        }
 
-    #[test]
-    fn already_installed_names_are_reported_not_installed() {
-        let out = "\
+        phase the_summary_section_is_not_a_package;
+        {
+            // " Installing:         5 packages" is indented under "Transaction
+            // Summary:", which is not an adding section.
+            let r = parse_assumeno(PANDOC_JQ).unwrap();
+            assert!(!r.install.iter().any(|n| n.contains("packages")));
+        }
+
+        phase already_installed_names_are_reported_not_installed;
+        {
+            let out = "\
 Package \"bash-5.3.0-2.fc44.x86_64\" is already installed.
 
 Nothing to do.
 ";
-        let r = parse_assumeno(out).unwrap();
-        assert!(r.install.is_empty());
-        assert_eq!(r.already_installed, ["bash-5.3.0-2.fc44.x86_64"]);
-    }
+            let r = parse_assumeno(out).unwrap();
+            assert!(r.install.is_empty());
+            assert_eq!(r.already_installed, ["bash-5.3.0-2.fc44.x86_64"]);
+        }
 
-    #[test]
-    fn unknown_names_fail() {
-        let out = "Failed to resolve the transaction:\nNo match for argument: nosuchpkg\n";
-        assert_eq!(
-            parse_assumeno(out),
-            Err(ResolveError::NoMatch(vec!["nosuchpkg".into()]))
-        );
-    }
+        phase unknown_names_fail;
+        {
+            let out = "Failed to resolve the transaction:\nNo match for argument: nosuchpkg\n";
+            assert_eq!(
+                parse_assumeno(out),
+                Err(ResolveError::NoMatch(vec!["nosuchpkg".into()]))
+            );
+        }
 
-    #[test]
-    fn upgrades_of_runtime_packages_are_refused() {
-        let out = "\
+        phase upgrades_of_runtime_packages_are_refused;
+        {
+            let out = "\
 Package        Arch   Version           Repository      Size
 Upgrading:
  glibc         x86_64 0:2.43-5.fc44     updates      6.6 MiB
@@ -246,38 +249,39 @@ Upgrading:
 Installing:
  tree          x86_64 0:2.2.1-4.fc44    fedora     121.4 KiB
 ";
-        match parse_assumeno(out) {
-            Err(ResolveError::ChangesRuntime { section, packages }) => {
-                assert_eq!(section, "Upgrading");
-                assert_eq!(packages, ["glibc-2.43-5.fc44.x86_64"]);
+            match parse_assumeno(out) {
+                Err(ResolveError::ChangesRuntime { section, packages }) => {
+                    assert_eq!(section, "Upgrading");
+                    assert_eq!(packages, ["glibc-2.43-5.fc44.x86_64"]);
+                }
+                other => panic!("{other:?}"),
             }
-            other => panic!("{other:?}"),
         }
-    }
 
-    #[test]
-    fn dependency_problems_fail_with_dnfs_explanation() {
-        let out = "\
+        phase dependency_problems_fail_with_dnfs_explanation;
+        {
+            let out = "\
 Failed to resolve the transaction:
 Problem: conflicting requests
   - nothing provides libfoo.so.1()(64bit) needed by bar-1-1.fc44.x86_64
 ";
-        assert!(matches!(
-            parse_assumeno(out),
-            Err(ResolveError::Unsolvable(text)) if text.contains("libfoo")
-        ));
-    }
+            assert!(matches!(
+                parse_assumeno(out),
+                Err(ResolveError::Unsolvable(text)) if text.contains("libfoo")
+            ));
+        }
 
-    #[test]
-    fn rpm_lists_drop_keys_and_normalize() {
-        let out =
-            "bash-5.3.0-2.fc44.x86_64\ngpg-pubkey-abc-def\nvim-enhanced-2:9.1-1.fc44.x86_64\n\n";
-        assert_eq!(
-            parse_rpm_list(out),
-            [
-                "bash-5.3.0-2.fc44.x86_64",
-                "vim-enhanced-2:9.1-1.fc44.x86_64"
-            ]
-        );
+        phase rpm_lists_drop_keys_and_normalize;
+        {
+            let out =
+                "bash-5.3.0-2.fc44.x86_64\ngpg-pubkey-abc-def\nvim-enhanced-2:9.1-1.fc44.x86_64\n\n";
+            assert_eq!(
+                parse_rpm_list(out),
+                [
+                    "bash-5.3.0-2.fc44.x86_64",
+                    "vim-enhanced-2:9.1-1.fc44.x86_64"
+                ]
+            );
+        }
     }
 }

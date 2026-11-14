@@ -465,86 +465,157 @@ mod tests {
     use automerge::AutoCommit;
     use winit::event::{ElementState, MouseButton};
 
-    #[test]
-    fn link_opens_its_url_by_pointer_and_keyboard() {
-        fn native_opener_rejects_nul_without_truncating_the_url() {
-            let error = try_os_open("https://example.invalid/\0unexpected").unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    tilo_test_env::scenario! {
+        fn a_link_opens_runs_and_describes_itself;
+
+        phase link_opens_its_url_by_pointer_and_keyboard;
+        {
+            fn native_opener_rejects_nul_without_truncating_the_url() {
+                let error = try_os_open("https://example.invalid/\0unexpected").unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            }
+
+            fn click_opens_url_through_the_opener_with_the_right_url() {
+                let (services, recorder) = crate::host::HostServices::recording();
+                let _host = crate::host::enter(&services);
+                let work = crate::background::Pumped::new();
+                let _work = work.background().enter();
+                let mut link = Link::new("https://example.com/page");
+                let (tree, node) = laid_out(&mut link);
+
+                let device = winit::event::DeviceId::dummy();
+                let mut sender = crate::testing::Dispatch::new().layout(&tree, node);
+                let mut dispatch = |link: &mut Link, ev: WindowEvent| {
+                    sender.send(link, &ev);
+                };
+
+                dispatch(
+                    &mut link,
+                    WindowEvent::CursorMoved {
+                        device_id: device,
+                        position: (10.0, 10.0).into(),
+                    },
+                );
+                dispatch(
+                    &mut link,
+                    WindowEvent::MouseInput {
+                        device_id: device,
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    },
+                );
+                assert!(
+                    recorder.opened_uris().is_empty(),
+                    "does not open until release"
+                );
+                dispatch(
+                    &mut link,
+                    WindowEvent::MouseInput {
+                        device_id: device,
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                    },
+                );
+                work.run_pending();
+
+                assert_eq!(
+                    recorder.opened_uris(),
+                    ["https://example.com/page"],
+                    "opened exactly the link's URL on release"
+                );
+                assert_eq!(link.last_activated(), Some("https://example.com/page"));
+            }
+
+            fn keyboard_activate_opens_url() {
+                let (services, recorder) = crate::host::HostServices::recording();
+                let work = crate::background::Pumped::new();
+                let _work = work.background().enter();
+                let mut link = Link::new("https://w3.org");
+                let mut doc = AutoCommit::new();
+                let handled = crate::host::scoped(&services, || {
+                    link.perform_action(
+                        &crate::a11y::Action::Activate,
+                        &[],
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                    )
+                });
+                assert!(handled, "Activate is handled");
+                work.run_pending();
+                assert_eq!(recorder.opened_uris(), ["https://w3.org"]);
+            }
+
+            native_opener_rejects_nul_without_truncating_the_url();
+            click_opens_url_through_the_opener_with_the_right_url();
+            keyboard_activate_opens_url();
         }
 
-        fn click_opens_url_through_the_opener_with_the_right_url() {
-            let (services, recorder) = crate::host::HostServices::recording();
-            let _host = crate::host::enter(&services);
-            let work = crate::background::Pumped::new();
-            let _work = work.background().enter();
-            let mut link = Link::new("https://example.com/page");
-            let (tree, node) = laid_out(&mut link);
+        phase link_semantics_cursor_and_default_label;
+        {
+            fn renders_as_a_link_in_the_accessibility_tree() {
+                use crate::a11y::Role;
+                let link = Link::new("https://turing.org.uk").with_label("Turing");
+                let node = Widget::accessibility(&link).expect("a link is not presentational");
+                assert_eq!(node.role, Role::Link);
+                assert_eq!(
+                    node.name.as_deref(),
+                    Some("Turing"),
+                    "the visible label is the accessible name"
+                );
+                assert_eq!(
+                    node.value.as_deref(),
+                    Some("https://turing.org.uk"),
+                    "the URL is the accessible value"
+                );
+                assert!(node.state.focusable, "a link is keyboard-focusable");
+            }
 
-            let device = winit::event::DeviceId::dummy();
-            let mut sender = crate::testing::Dispatch::new().layout(&tree, node);
-            let mut dispatch = |link: &mut Link, ev: WindowEvent| {
-                sender.send(link, &ev);
-            };
+            fn hovered_link_requests_the_pointer_cursor() {
+                let mut link = Link::new("https://example.com");
+                let _ = laid_out(&mut link);
+                assert_eq!(
+                    Widget::cursor_shape(&link, Point::new(10.0, 10.0)),
+                    Some(winit::window::CursorIcon::Pointer),
+                    "pointer over the link asks for the pointing-hand cursor",
+                );
+                assert_eq!(
+                    Widget::cursor_shape(&link, Point::new(500.0, 500.0)),
+                    None,
+                    "off the link, no cursor claim",
+                );
+            }
 
-            dispatch(
-                &mut link,
-                WindowEvent::CursorMoved {
-                    device_id: device,
-                    position: (10.0, 10.0).into(),
-                },
-            );
-            dispatch(
-                &mut link,
-                WindowEvent::MouseInput {
-                    device_id: device,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
-            assert!(
-                recorder.opened_uris().is_empty(),
-                "does not open until release"
-            );
-            dispatch(
-                &mut link,
-                WindowEvent::MouseInput {
-                    device_id: device,
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-            );
-            work.run_pending();
+            fn default_label_is_the_url() {
+                let link = Link::new("https://example.com");
+                assert_eq!(link.label(), "https://example.com");
+                assert_eq!(link.url(), "https://example.com");
+            }
 
-            assert_eq!(
-                recorder.opened_uris(),
-                ["https://example.com/page"],
-                "opened exactly the link's URL on release"
-            );
-            assert_eq!(link.last_activated(), Some("https://example.com/page"));
+            renders_as_a_link_in_the_accessibility_tree();
+            hovered_link_requests_the_pointer_cursor();
+            default_label_is_the_url();
         }
 
-        fn keyboard_activate_opens_url() {
-            let (services, recorder) = crate::host::HostServices::recording();
-            let work = crate::background::Pumped::new();
-            let _work = work.background().enter();
-            let mut link = Link::new("https://w3.org");
-            let mut doc = AutoCommit::new();
-            let handled = crate::host::scoped(&services, || {
-                link.perform_action(
-                    &crate::a11y::Action::Activate,
-                    &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
+        phase an_action_link_runs_its_action_instead_of_opening;
+        {
+            let resource = tilo_actions::ResourceSpec::new("app:1", "app", "App").with_action(
+                tilo_actions::ActionSpec::operation(
+                    "search",
+                    "Search everywhere",
+                    tilo_actions::OperationKind::View,
+                    "test.search",
+                    &(),
                 )
-            });
-            assert!(handled, "Activate is handled");
-            work.run_pending();
-            assert_eq!(recorder.opened_uris(), ["https://w3.org"]);
+                .unwrap(),
+            );
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "search").unwrap();
+            let mut link = Link::action("Search everywhere", binding);
+            link.activate();
+            assert!(link.last_activated().is_none(), "no URL opened");
+            assert!(crate::widget::controls::take_control_invocation(&mut link).is_some());
+            let node = Widget::accessibility(&link).expect("semantics");
+            assert_eq!(node.value, None);
         }
-
-        native_opener_rejects_nul_without_truncating_the_url();
-        click_opens_url_through_the_opener_with_the_right_url();
-        keyboard_activate_opens_url();
     }
 
     fn laid_out(link: &mut Link) -> (TaffyTree<()>, NodeId) {
@@ -563,71 +634,5 @@ mod tests {
         link.apply_layout(&tree, node, Point::ZERO);
         link.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 20.0));
         (tree, node)
-    }
-
-    #[test]
-    fn link_semantics_cursor_and_default_label() {
-        fn renders_as_a_link_in_the_accessibility_tree() {
-            use crate::a11y::Role;
-            let link = Link::new("https://turing.org.uk").with_label("Turing");
-            let node = Widget::accessibility(&link).expect("a link is not presentational");
-            assert_eq!(node.role, Role::Link);
-            assert_eq!(
-                node.name.as_deref(),
-                Some("Turing"),
-                "the visible label is the accessible name"
-            );
-            assert_eq!(
-                node.value.as_deref(),
-                Some("https://turing.org.uk"),
-                "the URL is the accessible value"
-            );
-            assert!(node.state.focusable, "a link is keyboard-focusable");
-        }
-
-        fn hovered_link_requests_the_pointer_cursor() {
-            let mut link = Link::new("https://example.com");
-            let _ = laid_out(&mut link);
-            assert_eq!(
-                Widget::cursor_shape(&link, Point::new(10.0, 10.0)),
-                Some(winit::window::CursorIcon::Pointer),
-                "pointer over the link asks for the pointing-hand cursor",
-            );
-            assert_eq!(
-                Widget::cursor_shape(&link, Point::new(500.0, 500.0)),
-                None,
-                "off the link, no cursor claim",
-            );
-        }
-
-        fn default_label_is_the_url() {
-            let link = Link::new("https://example.com");
-            assert_eq!(link.label(), "https://example.com");
-            assert_eq!(link.url(), "https://example.com");
-        }
-
-        renders_as_a_link_in_the_accessibility_tree();
-        hovered_link_requests_the_pointer_cursor();
-        default_label_is_the_url();
-    }
-    #[test]
-    fn an_action_link_runs_its_action_instead_of_opening() {
-        let resource = tilo_actions::ResourceSpec::new("app:1", "app", "App").with_action(
-            tilo_actions::ActionSpec::operation(
-                "search",
-                "Search everywhere",
-                tilo_actions::OperationKind::View,
-                "test.search",
-                &(),
-            )
-            .unwrap(),
-        );
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "search").unwrap();
-        let mut link = Link::action("Search everywhere", binding);
-        link.activate();
-        assert!(link.last_activated().is_none(), "no URL opened");
-        assert!(crate::widget::controls::take_control_invocation(&mut link).is_some());
-        let node = Widget::accessibility(&link).expect("semantics");
-        assert_eq!(node.value, None);
     }
 }

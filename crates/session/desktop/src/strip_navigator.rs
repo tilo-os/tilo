@@ -823,300 +823,308 @@ mod tests {
         (nav, frame)
     }
 
-    /// The ribbon says which strip of how many, the rail which window of the strip and which are on
-    /// screen.
-    #[test]
-    fn it_reads_the_strips_and_the_shown_strips_windows() {
-        let (nav, frame) = navigator(&tree(), Instant::now());
-        assert_eq!((frame.ribbon.count, frame.ribbon.focused), (2, 0));
-        assert_eq!(frame.rail.count, 3);
-        assert_eq!(frame.rail.visible, vec![0]);
-        let removable: Vec<bool> = nav
-            .switcher()
-            .model()
-            .strips
-            .iter()
-            .map(|s| s.removable)
-            .collect();
-        assert_eq!(removable, vec![false, true], "only an empty strip may go");
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_strip_navigator_reads_shows_and_controls_the_strips;
 
-    /// A workspace with one strip has nothing to switch to, so the ribbon stays off and no bare
-    /// mark stands on the content's edge; a second strip brings it back.
-    #[test]
-    fn one_strip_offers_no_ribbon_and_a_second_one_does() {
-        let mut alone = tree();
-        alone.workspaces[0].strips.truncate(1);
-        let one = frame(&alone, &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);
-        assert!(!one.ribbon_offered, "nothing to switch to");
-        assert_eq!(one.zone(), Rect::ZERO, "and nothing to rest on");
-        assert!(one.switcher_offered, "though its labels still open");
-        assert!(one.rail_offered, "the strip's windows still show");
-
-        let two = frame(&tree(), &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);
-        assert!(
-            two.ribbon_offered,
-            "a second strip gives the ribbon its job"
-        );
-        assert!(two.zone().x1 > CONTENT.x1 - 1.0, "it stands on the edge");
-    }
-
-    /// Hidden at rest; a strip or window change shows the ribbon and rail,
-    /// which fade once it stops; the pointer on them holds them up.
-    #[test]
-    fn a_strip_or_window_change_shows_where_you_are() {
-        let t0 = Instant::now();
-        let mut tree = tree();
-        let (mut nav, frame0) = navigator(&tree, t0);
-        assert_eq!(
-            nav.indicator_alpha_at(&frame0, t0, false),
-            0.0,
-            "not at rest"
-        );
-
-        let t1 = t0 + Duration::from_millis(30);
-        tree.active_group.insert(StripId(10), 2);
-        let shown = [(1002, Rect::new(40.0, 60.0, 600.0, 780.0))];
-        let moved = frame(&tree, &shown, 400.0);
-        nav.observe(&moved, t1);
-        assert_eq!(
-            nav.indicator_alpha_at(&moved, t1, false),
-            1.0,
-            "a window change shows it"
-        );
-        assert_eq!(moved.rail.focused, 1);
-
-        let later = t1 + Duration::from_secs(10);
-        nav.observe(&moved, later);
-        assert_eq!(
-            nav.indicator_alpha_at(&moved, later, false),
-            0.0,
-            "and it fades"
-        );
-
-        let mark = moved.ribbon.segment_rect(0).unwrap().center();
-        nav.pointer_moved(&moved, mark, later);
-        let much_later = later + Duration::from_secs(10);
-        assert_eq!(
-            nav.indicator_alpha_at(&moved, much_later, false),
-            1.0,
-            "the pointer on the ribbon holds it up"
-        );
-        nav.pointer_left(much_later);
-
-        let t2 = much_later + Duration::from_secs(10);
-        tree.active_strip.insert(WorkspaceSlot(1), StripId(11));
-        let other = frame(&tree, &[], 0.0);
-        nav.observe(&other, t2);
-        assert_eq!(
-            nav.indicator_alpha_at(&other, t2, false),
-            1.0,
-            "a strip change shows it"
-        );
-        assert_eq!(other.ribbon.focused, 1);
-        let covered = StripFrame::of_tree(&tree, CONTENT, (&[], 0.0), true);
-        assert_eq!(
-            nav.indicator_alpha_at(&covered, t2, false),
-            0.0,
-            "nothing while covered"
-        );
-    }
-
-    /// A press on a ribbon mark opens the labels, pinned, and one on a label then goes to its
-    /// strip; one on a rail segment goes to its window; elsewhere the press is not the navigator's.
-    #[test]
-    fn the_ribbon_and_rail_are_controls() {
-        let t0 = Instant::now();
-        let tree = tree();
-        let (mut nav, frame) = navigator(&tree, t0);
-        let mark = frame.ribbon.segment_rect(1).unwrap().center();
-        assert_eq!(nav.press(&frame, mark, t0), Some(None));
-        assert!(nav.release());
-        assert!(nav.is_open(), "a tap on the ribbon opens the labels");
-        let label = nav
-            .switcher()
-            .layout()
-            .label_rect(crate::strip_switcher::Row::Strip(1))
-            .unwrap()
-            .center();
-        assert_eq!(
-            nav.press(&frame, label, t0),
-            Some(Some(StripNavigation::Strip(Command::Focus(StripId(11)))))
-        );
-        assert!(nav.release());
-        assert!(!nav.is_open(), "the choice closes labels a tap opened");
-        let segment = frame.rail.segment_rect(2).unwrap().center();
-        assert_eq!(
-            nav.press(&frame, segment, t0),
-            Some(Some(StripNavigation::Window {
-                strip: StripId(10),
-                group: 3
-            }))
-        );
-        assert_eq!(nav.press(&frame, Point::new(640.0, 400.0), t0), None);
-        let covered = StripFrame::of_tree(&tree, CONTENT, (&[], 0.0), true);
-        assert_eq!(
-            nav.press(&covered, mark, t0),
-            None,
-            "nothing is taken while covered"
-        );
-    }
-
-    /// The labels open for choosing; Delete removes an empty strip, through the command the host
-    /// applies.
-    #[test]
-    fn the_labels_list_switch_and_remove_strips() {
-        let t0 = Instant::now();
-        let (mut nav, frame) = navigator(&tree(), t0);
-        nav.open_for_choosing(&frame, t0);
-        assert!(nav.takes_keys());
-        let none = ModifiersState::empty();
-        let down = Key::Named(winit::keyboard::NamedKey::ArrowDown);
-        assert_eq!(nav.key(&frame, &down, none), None);
-        let delete = Key::Named(winit::keyboard::NamedKey::Delete);
-        assert_eq!(
-            nav.key(&frame, &delete, none),
-            Some(StripNavigation::Strip(Command::Remove(StripId(11))))
-        );
-        // A strip with windows is not offered for removal.
-        let up = Key::Named(winit::keyboard::NamedKey::ArrowUp);
-        nav.key(&frame, &up, none);
-        assert_eq!(nav.key(&frame, &delete, none), None);
-        let enter = Key::Named(winit::keyboard::NamedKey::Enter);
-        assert_eq!(
-            nav.key(&frame, &enter, none),
-            Some(StripNavigation::Strip(Command::Focus(StripId(10))))
-        );
-    }
-
-    #[test]
-    fn long_press_reaches_the_strip_actions_and_tap_takes_them() {
-        use crate::strip_switcher::Row;
-        let t0 = Instant::now();
-        let (mut nav, frame) = navigator(&tree(), t0);
-        let mark = frame.ribbon.segment_rect(1).unwrap().center();
-        // No pointer ever rests anywhere: a long-press on the ribbon opens the labels and puts that
-        // strip's actions beside its label.
-        assert_eq!(nav.secondary_press(&frame, mark, t0), Some(None));
-        assert!(nav.release());
-        assert!(nav.is_open() && nav.takes_keys());
-        assert_eq!(nav.switcher().armed(), Some(1));
-        let rects = nav.test_rects(&frame);
-        let named = |name: &str| {
-            rects
+        phase it_reads_the_strips_and_the_shown_strips_windows;
+        // The ribbon says which strip of how many, the rail which window of the strip and which are on
+        // screen.
+        {
+            let (nav, frame) = navigator(&tree(), Instant::now());
+            assert_eq!((frame.ribbon.count, frame.ribbon.focused), (2, 0));
+            assert_eq!(frame.rail.count, 3);
+            assert_eq!(frame.rail.visible, vec![0]);
+            let removable: Vec<bool> = nav
+                .switcher()
+                .model()
+                .strips
                 .iter()
-                .find(|(n, _)| n == name)
-                .map_or_else(|| panic!("{name} in {rects:?}"), |(_, r)| *r)
-        };
-        let rename = named("strip_switcher.rename.2");
-        let remove = named("strip_switcher.remove.2");
-        let label = nav.switcher().layout().label_rect(Row::Strip(1)).unwrap();
-        for action in [rename, remove] {
-            assert!(action.x1 <= label.x0, "beside the label: {action:?}");
-            assert!((action.center().y - label.center().y).abs() < 0.5);
+                .map(|s| s.removable)
+                .collect();
+            assert_eq!(removable, vec![false, true], "only an empty strip may go");
         }
-        // A tap takes Remove: the empty strip goes.
-        assert_eq!(
-            nav.press(&frame, remove.center(), t0),
-            Some(Some(StripNavigation::Strip(Command::Remove(StripId(11)))))
-        );
-        assert!(nav.release());
-        // A long-press on a label, then a tap on Rename: its name is in place for typing.
-        nav.secondary_press(&frame, label.center(), t0);
-        let rename = nav
-            .test_rects(&frame)
-            .into_iter()
-            .find(|(n, _)| n == "strip_switcher.rename.2")
-            .map(|(_, r)| r)
-            .unwrap();
-        assert_eq!(nav.press(&frame, rename.center(), t0), Some(None));
-        assert!(nav.switcher().is_naming());
-        // A strip with windows offers Rename only: nothing is lost.
-        let main = nav.switcher().layout().label_rect(Row::Strip(0)).unwrap();
-        nav.secondary_press(&frame, main.center(), t0);
-        let offered: Vec<String> = nav.test_rects(&frame).into_iter().map(|(n, _)| n).collect();
-        assert!(offered.iter().any(|n| n == "strip_switcher.rename.1"));
-        assert!(!offered.iter().any(|n| n == "strip_switcher.remove.1"));
-        // Escape puts the actions away first, then the labels.
-        let escape = Key::Named(winit::keyboard::NamedKey::Escape);
-        nav.key(&frame, &escape, ModifiersState::empty());
-        assert_eq!(nav.switcher().armed(), None);
-        assert!(nav.is_open());
-        nav.key(&frame, &escape, ModifiersState::empty());
-        assert!(!nav.is_open());
-        // New strip, from the workspace menu or a tap on its label, makes the strip and puts its
-        // name in place.
-        assert_eq!(
-            nav.new_strip(&frame, t0),
-            Some(StripNavigation::Strip(Command::Create("Strip 3".into())))
-        );
-        assert!(nav.is_open() && nav.takes_keys());
-    }
 
-    /// The ribbon and rail fading in or out repaint where they paint, parts of the page's scene of
-    /// their own: a frame of the fade is not a repaint of the whole page.
-    #[test]
-    fn a_fading_indicator_repaints_where_it_painted() {
-        let t0 = Instant::now();
-        let (mut nav, _) = navigator(&tree(), t0);
-        // The strip panned to its second window: the indicators show, hold, then fade.
-        let frame = frame(
-            &tree(),
-            &[(1002, Rect::new(40.0, 60.0, 600.0, 780.0))],
-            640.0,
-        );
-        nav.observe(&frame, t0);
-        let theme = ui::Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut drawn = |nav: &mut StripNavigator, at| {
-            let mut scene = Scene::new();
-            let recording = ui::scene_parts::Recording::begin();
-            ui::scene_parts::track(&scene);
-            nav.draw(&frame, &mut scene, Affine::IDENTITY, &mut text, &theme, at);
-            let parts = recording.finish().of(&scene).expect("well nested parts");
-            (scene, parts)
-        };
-        let indicators = [nav.ribbon_bounds(&frame), nav.rail_bounds(&frame)]
-            .into_iter()
-            .flatten()
-            .map(|rect| rect.inflate(40.0, 40.0))
-            .collect::<Vec<_>>();
-        let (mut before, mut before_parts) = drawn(&mut nav, t0);
-        let mut faded = 0;
-        for step in 1..400 {
-            let at = t0 + ui::time::Duration::from_millis(16 * step);
-            let (after, after_parts) = drawn(&mut nav, at);
-            if !after.encoding_eq(&before) {
-                let damage = ui::scene_parts::damage(&before, &before_parts, &after, &after_parts)
-                    .expect("the frames compare part by part");
-                assert!(
-                    !damage.is_empty(),
-                    "a changed frame damages where it changed"
-                );
-                for rect in &damage {
-                    assert!(
-                        indicators.iter().any(|near| near.contains_rect(*rect)),
-                        "{rect:?} is beyond the ribbon and rail {indicators:?}"
-                    );
-                }
-                faded += 1;
+        phase one_strip_offers_no_ribbon_and_a_second_one_does;
+        // A workspace with one strip has nothing to switch to, so the ribbon stays off and no bare
+        // mark stands on the content's edge; a second strip brings it back.
+        {
+            let mut alone = tree();
+            alone.workspaces[0].strips.truncate(1);
+            let one = frame(&alone, &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);
+            assert!(!one.ribbon_offered, "nothing to switch to");
+            assert_eq!(one.zone(), Rect::ZERO, "and nothing to rest on");
+            assert!(one.switcher_offered, "though its labels still open");
+            assert!(one.rail_offered, "the strip's windows still show");
+
+            let two = frame(&tree(), &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);
+            assert!(
+                two.ribbon_offered,
+                "a second strip gives the ribbon its job"
+            );
+            assert!(two.zone().x1 > CONTENT.x1 - 1.0, "it stands on the edge");
+        }
+
+        phase a_strip_or_window_change_shows_where_you_are;
+        // Hidden at rest; a strip or window change shows the ribbon and rail,
+        // which fade once it stops; the pointer on them holds them up.
+        {
+            let t0 = Instant::now();
+            let mut tree = tree();
+            let (mut nav, frame0) = navigator(&tree, t0);
+            assert_eq!(
+                nav.indicator_alpha_at(&frame0, t0, false),
+                0.0,
+                "not at rest"
+            );
+
+            let t1 = t0 + Duration::from_millis(30);
+            tree.active_group.insert(StripId(10), 2);
+            let shown = [(1002, Rect::new(40.0, 60.0, 600.0, 780.0))];
+            let moved = frame(&tree, &shown, 400.0);
+            nav.observe(&moved, t1);
+            assert_eq!(
+                nav.indicator_alpha_at(&moved, t1, false),
+                1.0,
+                "a window change shows it"
+            );
+            assert_eq!(moved.rail.focused, 1);
+
+            let later = t1 + Duration::from_secs(10);
+            nav.observe(&moved, later);
+            assert_eq!(
+                nav.indicator_alpha_at(&moved, later, false),
+                0.0,
+                "and it fades"
+            );
+
+            let mark = moved.ribbon.segment_rect(0).unwrap().center();
+            nav.pointer_moved(&moved, mark, later);
+            let much_later = later + Duration::from_secs(10);
+            assert_eq!(
+                nav.indicator_alpha_at(&moved, much_later, false),
+                1.0,
+                "the pointer on the ribbon holds it up"
+            );
+            nav.pointer_left(much_later);
+
+            let t2 = much_later + Duration::from_secs(10);
+            tree.active_strip.insert(WorkspaceSlot(1), StripId(11));
+            let other = frame(&tree, &[], 0.0);
+            nav.observe(&other, t2);
+            assert_eq!(
+                nav.indicator_alpha_at(&other, t2, false),
+                1.0,
+                "a strip change shows it"
+            );
+            assert_eq!(other.ribbon.focused, 1);
+            let covered = StripFrame::of_tree(&tree, CONTENT, (&[], 0.0), true);
+            assert_eq!(
+                nav.indicator_alpha_at(&covered, t2, false),
+                0.0,
+                "nothing while covered"
+            );
+        }
+
+        phase the_ribbon_and_rail_are_controls;
+        // A press on a ribbon mark opens the labels, pinned, and one on a label then goes to its
+        // strip; one on a rail segment goes to its window; elsewhere the press is not the navigator's.
+        {
+            let t0 = Instant::now();
+            let tree = tree();
+            let (mut nav, frame) = navigator(&tree, t0);
+            let mark = frame.ribbon.segment_rect(1).unwrap().center();
+            assert_eq!(nav.press(&frame, mark, t0), Some(None));
+            assert!(nav.release());
+            assert!(nav.is_open(), "a tap on the ribbon opens the labels");
+            let label = nav
+                .switcher()
+                .layout()
+                .label_rect(crate::strip_switcher::Row::Strip(1))
+                .unwrap()
+                .center();
+            assert_eq!(
+                nav.press(&frame, label, t0),
+                Some(Some(StripNavigation::Strip(Command::Focus(StripId(11)))))
+            );
+            assert!(nav.release());
+            assert!(!nav.is_open(), "the choice closes labels a tap opened");
+            let segment = frame.rail.segment_rect(2).unwrap().center();
+            assert_eq!(
+                nav.press(&frame, segment, t0),
+                Some(Some(StripNavigation::Window {
+                    strip: StripId(10),
+                    group: 3
+                }))
+            );
+            assert_eq!(nav.press(&frame, Point::new(640.0, 400.0), t0), None);
+            let covered = StripFrame::of_tree(&tree, CONTENT, (&[], 0.0), true);
+            assert_eq!(
+                nav.press(&covered, mark, t0),
+                None,
+                "nothing is taken while covered"
+            );
+        }
+
+        phase the_labels_list_switch_and_remove_strips;
+        // The labels open for choosing; Delete removes an empty strip, through the command the host
+        // applies.
+        {
+            let t0 = Instant::now();
+            let (mut nav, frame) = navigator(&tree(), t0);
+            nav.open_for_choosing(&frame, t0);
+            assert!(nav.takes_keys());
+            let none = ModifiersState::empty();
+            let down = Key::Named(winit::keyboard::NamedKey::ArrowDown);
+            assert_eq!(nav.key(&frame, &down, none), None);
+            let delete = Key::Named(winit::keyboard::NamedKey::Delete);
+            assert_eq!(
+                nav.key(&frame, &delete, none),
+                Some(StripNavigation::Strip(Command::Remove(StripId(11))))
+            );
+            // A strip with windows is not offered for removal.
+            let up = Key::Named(winit::keyboard::NamedKey::ArrowUp);
+            nav.key(&frame, &up, none);
+            assert_eq!(nav.key(&frame, &delete, none), None);
+            let enter = Key::Named(winit::keyboard::NamedKey::Enter);
+            assert_eq!(
+                nav.key(&frame, &enter, none),
+                Some(StripNavigation::Strip(Command::Focus(StripId(10))))
+            );
+        }
+
+        phase long_press_reaches_the_strip_actions_and_tap_takes_them;
+        {
+            use crate::strip_switcher::Row;
+            let t0 = Instant::now();
+            let (mut nav, frame) = navigator(&tree(), t0);
+            let mark = frame.ribbon.segment_rect(1).unwrap().center();
+            // No pointer ever rests anywhere: a long-press on the ribbon opens the labels and puts that
+            // strip's actions beside its label.
+            assert_eq!(nav.secondary_press(&frame, mark, t0), Some(None));
+            assert!(nav.release());
+            assert!(nav.is_open() && nav.takes_keys());
+            assert_eq!(nav.switcher().armed(), Some(1));
+            let rects = nav.test_rects(&frame);
+            let named = |name: &str| {
+                rects
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map_or_else(|| panic!("{name} in {rects:?}"), |(_, r)| *r)
+            };
+            let rename = named("strip_switcher.rename.2");
+            let remove = named("strip_switcher.remove.2");
+            let label = nav.switcher().layout().label_rect(Row::Strip(1)).unwrap();
+            for action in [rename, remove] {
+                assert!(action.x1 <= label.x0, "beside the label: {action:?}");
+                assert!((action.center().y - label.center().y).abs() < 0.5);
             }
-            (before, before_parts) = (after, after_parts);
+            // A tap takes Remove: the empty strip goes.
+            assert_eq!(
+                nav.press(&frame, remove.center(), t0),
+                Some(Some(StripNavigation::Strip(Command::Remove(StripId(11)))))
+            );
+            assert!(nav.release());
+            // A long-press on a label, then a tap on Rename: its name is in place for typing.
+            nav.secondary_press(&frame, label.center(), t0);
+            let rename = nav
+                .test_rects(&frame)
+                .into_iter()
+                .find(|(n, _)| n == "strip_switcher.rename.2")
+                .map(|(_, r)| r)
+                .unwrap();
+            assert_eq!(nav.press(&frame, rename.center(), t0), Some(None));
+            assert!(nav.switcher().is_naming());
+            // A strip with windows offers Rename only: nothing is lost.
+            let main = nav.switcher().layout().label_rect(Row::Strip(0)).unwrap();
+            nav.secondary_press(&frame, main.center(), t0);
+            let offered: Vec<String> = nav.test_rects(&frame).into_iter().map(|(n, _)| n).collect();
+            assert!(offered.iter().any(|n| n == "strip_switcher.rename.1"));
+            assert!(!offered.iter().any(|n| n == "strip_switcher.remove.1"));
+            // Escape puts the actions away first, then the labels.
+            let escape = Key::Named(winit::keyboard::NamedKey::Escape);
+            nav.key(&frame, &escape, ModifiersState::empty());
+            assert_eq!(nav.switcher().armed(), None);
+            assert!(nav.is_open());
+            nav.key(&frame, &escape, ModifiersState::empty());
+            assert!(!nav.is_open());
+            // New strip, from the workspace menu or a tap on its label, makes the strip and puts its
+            // name in place.
+            assert_eq!(
+                nav.new_strip(&frame, t0),
+                Some(StripNavigation::Strip(Command::Create("Strip 3".into())))
+            );
+            assert!(nav.is_open() && nav.takes_keys());
         }
-        assert!(faded > 1, "the indicators faded");
-    }
 
-    /// Who is on a strip shows in its label only: the ribbon at rest paints its marks and nothing
-    /// beside them.
-    #[test]
-    fn the_ribbon_at_rest_paints_no_faces() {
-        let t0 = Instant::now();
-        let (nav, frame) = navigator(&tree(), t0);
-        let ribbon = nav.ribbon_bounds(&frame).unwrap();
-        let first = frame.ribbon.segment_rect(0).unwrap();
-        assert!(
-            ribbon.x0 >= first.x0 - 1.0 - 1e-6,
-            "nothing reaches left of the marks: {ribbon:?} vs {first:?}"
-        );
+        phase a_fading_indicator_repaints_where_it_painted;
+        // The ribbon and rail fading in or out repaint where they paint, parts of the page's scene of
+        // their own: a frame of the fade is not a repaint of the whole page.
+        {
+            let t0 = Instant::now();
+            let (mut nav, _) = navigator(&tree(), t0);
+            // The strip panned to its second window: the indicators show, hold, then fade.
+            let frame = frame(
+                &tree(),
+                &[(1002, Rect::new(40.0, 60.0, 600.0, 780.0))],
+                640.0,
+            );
+            nav.observe(&frame, t0);
+            let theme = ui::Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut drawn = |nav: &mut StripNavigator, at| {
+                let mut scene = Scene::new();
+                let recording = ui::scene_parts::Recording::begin();
+                ui::scene_parts::track(&scene);
+                nav.draw(&frame, &mut scene, Affine::IDENTITY, &mut text, &theme, at);
+                let parts = recording.finish().of(&scene).expect("well nested parts");
+                (scene, parts)
+            };
+            let indicators = [nav.ribbon_bounds(&frame), nav.rail_bounds(&frame)]
+                .into_iter()
+                .flatten()
+                .map(|rect| rect.inflate(40.0, 40.0))
+                .collect::<Vec<_>>();
+            let (mut before, mut before_parts) = drawn(&mut nav, t0);
+            let mut faded = 0;
+            for step in 1..400 {
+                let at = t0 + ui::time::Duration::from_millis(16 * step);
+                let (after, after_parts) = drawn(&mut nav, at);
+                if !after.encoding_eq(&before) {
+                    let damage = ui::scene_parts::damage(&before, &before_parts, &after, &after_parts)
+                        .expect("the frames compare part by part");
+                    assert!(
+                        !damage.is_empty(),
+                        "a changed frame damages where it changed"
+                    );
+                    for rect in &damage {
+                        assert!(
+                            indicators.iter().any(|near| near.contains_rect(*rect)),
+                            "{rect:?} is beyond the ribbon and rail {indicators:?}"
+                        );
+                    }
+                    faded += 1;
+                }
+                (before, before_parts) = (after, after_parts);
+            }
+            assert!(faded > 1, "the indicators faded");
+        }
+
+        phase the_ribbon_at_rest_paints_no_faces;
+        // Who is on a strip shows in its label only: the ribbon at rest paints its marks and nothing
+        // beside them.
+        {
+            let t0 = Instant::now();
+            let (nav, frame) = navigator(&tree(), t0);
+            let ribbon = nav.ribbon_bounds(&frame).unwrap();
+            let first = frame.ribbon.segment_rect(0).unwrap();
+            assert!(
+                ribbon.x0 >= first.x0 - 1.0 - 1e-6,
+                "nothing reaches left of the marks: {ribbon:?} vs {first:?}"
+            );
+        }
     }
 }

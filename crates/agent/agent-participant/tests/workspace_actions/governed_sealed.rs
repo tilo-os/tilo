@@ -17,24 +17,23 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, application_open_target,
 };
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     Browser, DeviceCapabilities, DocumentRoute, SHEETS, enrol, record_provider, request,
     sheet_named, sheet_names, start,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 /// The retained bodies `author` wrote to `route`, and whether each is sealed
 /// on the route's channel.
 async fn retained_by(
     hosted: &super::Hosted,
-    workspace: u64,
+    workspace: WorkspaceId,
     route: &DocumentRoute,
     author: [u8; 32],
 ) -> Vec<bool> {
-    let channel =
-        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
     hosted
         .relay
         .workspace_records()
@@ -50,12 +49,9 @@ async fn retained_by(
                     record_id,
                     envelope,
                     ..
-                }) if app_id == route.app_id && record_id == route.record => Some(
-                    envelope
-                        .encryption
-                        .as_ref()
-                        .is_some_and(|metadata| metadata.channel == channel),
-                ),
+                }) if app_id == route.app_id && record_id == route.record => {
+                    Some(envelope.encryption.as_ref().is_some())
+                }
                 _ => None,
             },
         )
@@ -66,7 +62,7 @@ async fn retained_by(
 /// `route`, then return whether each is sealed on the route's channel.
 async fn until_retained(
     hosted: &super::Hosted,
-    workspace: u64,
+    workspace: WorkspaceId,
     route: &DocumentRoute,
     author: [u8; 32],
     count: usize,
@@ -116,7 +112,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let host = enrol(
         &owner,
         "node",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
@@ -135,7 +131,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         &host,
         &workspace.workspace,
         &member_device,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
     let mut page =

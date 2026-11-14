@@ -887,23 +887,46 @@ mod tests {
     }
 
     #[test]
-    fn malformed_markup_still_nests_the_way_a_reader_expects() {
-        let doc = Document::parse(
-            "<ul><li>one<li>two <b>bold</ul><p>a<p>b</div><p>c &amp; d &copy; &#x41;&#66;",
-        );
-        assert_eq!(texts(&doc, "li"), ["one", "two bold"]);
-        assert_eq!(texts(&doc, "p"), ["a", "b", "c & d \u{a9} AB"]);
-        assert_eq!(texts(&doc, "ul > li > b"), ["bold"]);
-    }
-
-    #[test]
-    fn scripts_and_comments_are_never_markup_or_text() {
-        let doc = Document::parse(
-            "<div id=x><!-- <p>no</p> --><script>if (a < b) { x = '</div>'; }</script>\
-             <style>p{}</style>yes</div><p>after</p>",
-        );
-        assert_eq!(texts(&doc, "#x"), ["yes"]);
-        assert_eq!(texts(&doc, "p"), ["after"]);
+    fn markup_parses_and_selects_the_way_a_reader_expects() {
+        /// A selector and the text of each element it matches, in document order.
+        type Selection = (&'static str, &'static [&'static str]);
+        /// The old test's name, the markup, and what its selectors match.
+        type Row = (&'static str, &'static str, &'static [Selection]);
+        const ROWS: &[Row] = &[
+            (
+                "malformed_markup_still_nests_the_way_a_reader_expects",
+                "<ul><li>one<li>two <b>bold</ul><p>a<p>b</div><p>c &amp; d &copy; &#x41;&#66;",
+                &[
+                    ("li", &["one", "two bold"]),
+                    ("p", &["a", "b", "c & d \u{a9} AB"]),
+                    ("ul > li > b", &["bold"]),
+                ],
+            ),
+            (
+                "scripts_and_comments_are_never_markup_or_text",
+                "<div id=x><!-- <p>no</p> --><script>if (a < b) { x = '</div>'; }</script>\
+                 <style>p{}</style>yes</div><p>after</p>",
+                &[("#x", &["yes"]), ("p", &["after"])],
+            ),
+            (
+                "combinators_and_lists_match_like_css",
+                "<main><div class=snippet data-pos=1><span class=title>A</span></div>\
+                 <div class='snippet standalone' data-pos=2><span class=title>B</span></div>\
+                 <section><div class=snippet data-pos=3><span class=title>C</span></div></section></main>\
+                 <div class=snippet data-pos=4><span class=title>D</span></div>",
+                &[
+                    ("main .snippet[data-pos]:not(.standalone)", &["A", "C"]),
+                    ("main > .snippet .title", &["A", "B"]),
+                    ("section .title, main > div:first-child", &["A", "C"]),
+                ],
+            ),
+        ];
+        for &(row, html, selections) in ROWS {
+            let doc = Document::parse(html);
+            for &(selector, expected) in selections {
+                assert_eq!(texts(&doc, selector), expected, "{row}: {selector}");
+            }
+        }
     }
 
     #[test]
@@ -916,25 +939,6 @@ mod tests {
         assert_eq!(doc.attr(a, "hidden"), Some(""));
         assert!(sel("a.k.l[data-pos='3'][hidden]").matches(&doc, a));
         assert!(!sel("a:not(.l)").matches(&doc, a));
-    }
-
-    #[test]
-    fn combinators_and_lists_match_like_css() {
-        let doc = Document::parse(
-            "<main><div class=snippet data-pos=1><span class=title>A</span></div>\
-             <div class='snippet standalone' data-pos=2><span class=title>B</span></div>\
-             <section><div class=snippet data-pos=3><span class=title>C</span></div></section></main>\
-             <div class=snippet data-pos=4><span class=title>D</span></div>",
-        );
-        assert_eq!(
-            texts(&doc, "main .snippet[data-pos]:not(.standalone)"),
-            ["A", "C"]
-        );
-        assert_eq!(texts(&doc, "main > .snippet .title"), ["A", "B"]);
-        assert_eq!(
-            texts(&doc, "section .title, main > div:first-child"),
-            ["A", "C"]
-        );
     }
 
     #[test]

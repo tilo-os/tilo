@@ -106,80 +106,6 @@ fn run_over(model: &dyn TransformModel) -> (usize, usize) {
     (right, total)
 }
 
-#[test]
-fn the_evaluation_set_covers_both_decisions_and_is_well_formed() {
-    let cases = cases();
-    assert!(
-        cases.len() >= 20,
-        "the set is too small to say anything about accuracy: {} cases",
-        cases.len()
-    );
-    let mut one_shot = 0;
-    let mut task = 0;
-    let mut instructions: Vec<&str> = Vec::new();
-    for case in &cases {
-        match case.expected.as_str() {
-            "one-shot" => one_shot += 1,
-            "task" => task += 1,
-            other => panic!("`{other}` is not a decision: {}", case.instruction),
-        }
-        assert!(!case.instruction.trim().is_empty());
-        assert!(!case.app.trim().is_empty());
-        instructions.push(&case.instruction);
-    }
-    // One side decided by habit is not a set: both have to be present in
-    // numbers, so neither can be right by answering everything one way.
-    assert!(one_shot >= 5, "only {one_shot} one-shot instructions");
-    assert!(task >= 5, "only {task} task instructions");
-    instructions.sort_unstable();
-    let unique = instructions.len();
-    instructions.dedup();
-    assert_eq!(instructions.len(), unique, "the set repeats an instruction");
-}
-
-#[test]
-fn a_perfect_recording_scores_every_case_and_a_fixed_one_does_not() {
-    let (right, total) = run_over(&Decides("as expected"));
-    assert_eq!(
-        (right, total),
-        (total, total),
-        "a correct decision per case"
-    );
-
-    let (right, total) = run_over(&Decides("one-shot"));
-    assert_eq!(total, cases().len());
-    assert!(
-        right < total,
-        "answering everything one way scored {right}/{total}: the set cannot tell the \
-         decisions apart"
-    );
-}
-
-/// The decision holds the composer, so its budget is a distinct, short one,
-/// and the model is not asked for a transform's output on top of it.
-#[test]
-fn a_requests_decision_has_its_own_short_budget() {
-    assert!(
-        RESPOND_TIMEOUT < TIMEOUT,
-        "a decision's budget ({RESPOND_TIMEOUT:?}) is not shorter than a transform's \
-         ({TIMEOUT:?})"
-    );
-    assert!(
-        RESPOND_TIMEOUT <= Duration::from_secs(10),
-        "a decision may take {RESPOND_TIMEOUT:?}, which is long enough that the person \
-         reads it as a stall"
-    );
-    let content = ui::content::ContentStore::memory();
-    let arguments = Map::from_iter([("request".into(), "Summarise this".into())]);
-    let call = transform::bind(AGENT_RESPOND_ACTION, &arguments, &content).unwrap();
-    assert_eq!(call.transform.budget(), RESPOND_TIMEOUT);
-    assert!(call.transform.max_output_tokens() < 2048);
-
-    let summarise = Map::from_iter([("input".into(), "some text".into())]);
-    let call = transform::bind("summarise", &summarise, &content).unwrap();
-    assert_eq!(call.transform.budget(), TIMEOUT);
-}
-
 /// A decision that runs past its budget fails as timed out rather than
 /// holding the composer until a transform's own budget. The model is stopped
 /// by the deadline it is handed, as the gateway stops a real call.
@@ -199,18 +125,96 @@ impl TransformModel for Slow {
     }
 }
 
-#[test]
-fn a_slow_decision_is_given_only_the_decisions_budget() {
-    let seen = Arc::new(Mutex::new(None));
-    let content = ui::content::ContentStore::memory();
-    let arguments = Map::from_iter([("request".into(), "Rewrite this".into())]);
-    let call = transform::bind(AGENT_RESPOND_ACTION, &arguments, &content).unwrap();
-    let error =
-        transform::run_until(&call, &Slow(Arc::clone(&seen)), &AtomicBool::new(false)).unwrap_err();
-    assert_eq!(error.code, transform::code::MODEL_UNAVAILABLE);
-    let left = seen.lock().unwrap().unwrap();
-    assert!(
-        left <= RESPOND_TIMEOUT,
-        "the model was given {left:?}, more than the decision's {RESPOND_TIMEOUT:?}"
-    );
+tilo_test_env::scenario! {
+    fn the_instruction_mode_evaluation_scores_decisions_within_their_budgets;
+
+    phase the_evaluation_set_covers_both_decisions_and_is_well_formed;
+    {
+        let cases = cases();
+        assert!(
+            cases.len() >= 20,
+            "the set is too small to say anything about accuracy: {} cases",
+            cases.len()
+        );
+        let mut one_shot = 0;
+        let mut task = 0;
+        let mut instructions: Vec<&str> = Vec::new();
+        for case in &cases {
+            match case.expected.as_str() {
+                "one-shot" => one_shot += 1,
+                "task" => task += 1,
+                other => panic!("`{other}` is not a decision: {}", case.instruction),
+            }
+            assert!(!case.instruction.trim().is_empty());
+            assert!(!case.app.trim().is_empty());
+            instructions.push(&case.instruction);
+        }
+        // One side decided by habit is not a set: both have to be present in
+        // numbers, so neither can be right by answering everything one way.
+        assert!(one_shot >= 5, "only {one_shot} one-shot instructions");
+        assert!(task >= 5, "only {task} task instructions");
+        instructions.sort_unstable();
+        let unique = instructions.len();
+        instructions.dedup();
+        assert_eq!(instructions.len(), unique, "the set repeats an instruction");
+    }
+
+    phase a_perfect_recording_scores_every_case_and_a_fixed_one_does_not;
+    {
+        let (right, total) = run_over(&Decides("as expected"));
+        assert_eq!(
+            (right, total),
+            (total, total),
+            "a correct decision per case"
+        );
+
+        let (right, total) = run_over(&Decides("one-shot"));
+        assert_eq!(total, cases().len());
+        assert!(
+            right < total,
+            "answering everything one way scored {right}/{total}: the set cannot tell the \
+         decisions apart"
+        );
+    }
+
+    phase a_requests_decision_has_its_own_short_budget;
+    // The decision holds the composer, so its budget is a distinct, short one,
+    // and the model is not asked for a transform's output on top of it.
+    {
+        assert!(
+            RESPOND_TIMEOUT < TIMEOUT,
+            "a decision's budget ({RESPOND_TIMEOUT:?}) is not shorter than a transform's \
+         ({TIMEOUT:?})"
+        );
+        assert!(
+            RESPOND_TIMEOUT <= Duration::from_secs(10),
+            "a decision may take {RESPOND_TIMEOUT:?}, which is long enough that the person \
+         reads it as a stall"
+        );
+        let content = ui::content::ContentStore::memory();
+        let arguments = Map::from_iter([("request".into(), "Summarise this".into())]);
+        let call = transform::bind(AGENT_RESPOND_ACTION, &arguments, &content).unwrap();
+        assert_eq!(call.transform.budget(), RESPOND_TIMEOUT);
+        assert!(call.transform.max_output_tokens() < 2048);
+
+        let summarise = Map::from_iter([("input".into(), "some text".into())]);
+        let call = transform::bind("summarise", &summarise, &content).unwrap();
+        assert_eq!(call.transform.budget(), TIMEOUT);
+    }
+
+    phase a_slow_decision_is_given_only_the_decisions_budget;
+    {
+        let seen = Arc::new(Mutex::new(None));
+        let content = ui::content::ContentStore::memory();
+        let arguments = Map::from_iter([("request".into(), "Rewrite this".into())]);
+        let call = transform::bind(AGENT_RESPOND_ACTION, &arguments, &content).unwrap();
+        let error =
+            transform::run_until(&call, &Slow(Arc::clone(&seen)), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(error.code, transform::code::MODEL_UNAVAILABLE);
+        let left = seen.lock().unwrap().unwrap();
+        assert!(
+            left <= RESPOND_TIMEOUT,
+            "the model was given {left:?}, more than the decision's {RESPOND_TIMEOUT:?}"
+        );
+    }
 }

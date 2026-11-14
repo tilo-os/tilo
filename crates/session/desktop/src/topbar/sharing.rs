@@ -15,8 +15,8 @@ impl TopBarChrome {
 
     /// Where the others' faces (or the sharing indicator) were last drawn,
     /// for anchoring who is here; zero when neither is shown.
-    pub fn collaborators_rect(&self) -> Rect {
-        self.control_rect(Self::CONTROL_COLLABORATORS)
+    pub fn roster_rect(&self) -> Rect {
+        self.control_rect(Self::CONTROL_PEOPLE)
     }
 
     /// What the own avatar is called to assistive technology.
@@ -41,18 +41,13 @@ impl TopBarChrome {
             .iter()
             .enumerate()
             .filter_map(|(drawn, &index)| {
-                let name = self.collaborator_names.get(index)?;
-                let name = if self
-                    .collaborator_agents
-                    .get(index)
-                    .copied()
-                    .unwrap_or(false)
-                {
+                let name = self.face_names.get(index)?;
+                let name = if self.face_agents.get(index).copied().unwrap_or(false) {
                     t_args("topbar-face-agent", &[("name", name.as_str().into())])
                 } else {
                     name.clone()
                 };
-                let id = self.collaborator_ids.get(index).map_or("", String::as_str);
+                let id = self.face_ids.get(index).map_or("", String::as_str);
                 let mut face = AccessNode::new(Role::Button)
                     .with_name(name)
                     .with_action_target(format!("{}{id}", Self::FACE_TARGET))
@@ -63,11 +58,11 @@ impl TopBarChrome {
                 Some(face)
             })
             .collect();
-        if self.collaborator_overflow > 0 {
+        if self.face_overflow > 0 {
             let mut more = AccessNode::new(Role::StaticText)
                 .with_name(t_args(
                     "topbar-faces-more",
-                    &[("count", self.collaborator_overflow.into())],
+                    &[("count", self.face_overflow.into())],
                 ))
                 .with_hashed_key("topbar-faces-more");
             if !self.people_count_rect.is_zero_area() {
@@ -100,12 +95,12 @@ impl TopBarChrome {
         let mut anyone_in_call = false;
         let since = *self.call_since.get_or_insert(now);
         self.face_looks = self
-            .collaborator_ids
+            .face_ids
             .iter()
             .enumerate()
             .map(|(index, id)| {
                 let user = ui::permissions::UserId(id.clone());
-                let said = self.collaborator_presence.get(index).copied().flatten();
+                let said = self.face_presence.get(index).copied().flatten();
                 let in_call =
                     said.map_or_else(|| presence.call_of(&user).is_some(), |(_, call)| call);
                 anyone_in_call |= in_call;
@@ -127,8 +122,8 @@ impl TopBarChrome {
         }
     }
 
-    pub fn collaborator_initials(&self) -> &[char] {
-        &self.collaborator_initials
+    pub fn face_initials(&self) -> &[char] {
+        &self.face_initials
     }
 
     /// Whether the workspace pill names the strip shown.
@@ -136,12 +131,12 @@ impl TopBarChrome {
         self.strip_name().is_some()
     }
 
-    pub fn collaborator_colors(&self) -> &[Color] {
-        &self.collaborator_colors
+    pub fn face_colors(&self) -> &[Color] {
+        &self.face_colors
     }
 
-    pub fn collaborator_overflow(&self) -> usize {
-        self.collaborator_overflow
+    pub fn face_overflow(&self) -> usize {
+        self.face_overflow
     }
 
     /// Pinned so a future revert to the old four-rect quad fails loudly instead of silently
@@ -150,9 +145,9 @@ impl TopBarChrome {
         ui::icons::Icon::LayoutGrid
     }
 
-    pub(super) fn collaborators_visible(&self) -> bool {
-        !self.collaborator_initials.is_empty()
-            || self.collaborator_overflow > 0
+    pub(super) fn roster_visible(&self) -> bool {
+        !self.face_initials.is_empty()
+            || self.face_overflow > 0
             || self.watching() > 0
             || self.sharing_summary().0 > 0
     }
@@ -196,7 +191,7 @@ impl TopBarChrome {
     }
 
     /// Named viewers for disclosure prose. A transport id is joined to the active workspace's live
-    /// roster through `Collaborator::session` ; a viewer no row carries goes by what its share says
+    /// roster through the presence session ; a viewer no row carries goes by what its share says
     /// the workspace calls it, and one nothing names is said in words. A handle or a key means
     /// nothing to a person and is never shown as a name.
     pub(super) fn sharing_viewers(&self) -> Vec<(u64, String, Option<bool>, bool)> {
@@ -221,20 +216,22 @@ impl TopBarChrome {
         let tree = chrome.tree();
         let mut viewers = Vec::new();
         for (peer, can_control, name) in authority {
-            if let Some((workspace, participant)) = tree.workspaces.iter().find_map(|workspace| {
-                workspace
-                    .collaborators
+            if let Some(member) = tree.workspaces.iter().find_map(|workspace| {
+                let here = workspace
+                    .present
                     .iter()
-                    .find(|person| person.session == Some(peer))
-                    .map(|participant| (workspace, participant))
+                    .find(|here| here.session == Some(peer))?;
+                workspace
+                    .members
+                    .iter()
+                    .find(|member| member.id == here.member)
             }) {
-                let is_agent = workspace.policy.grants.iter().any(|grant| {
-                    grant.grantee.agent_id().is_some_and(|id| {
-                        id.eq_ignore_ascii_case(&participant.id)
-                            || id.eq_ignore_ascii_case(&participant.name)
-                    })
-                });
-                viewers.push((peer, participant.name.clone(), Some(is_agent), can_control));
+                viewers.push((
+                    peer,
+                    member.name.clone(),
+                    Some(!member.id.is_person()),
+                    can_control,
+                ));
             } else {
                 let name = ui::presence::shown_name(name)
                     .map_or_else(|| t("topbar-sharing-unnamed-viewer"), str::to_owned);
@@ -431,7 +428,7 @@ impl TopBarChrome {
             .hovered(false)
             .focused(
                 self.focus_ring_visible()
-                    && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_PEOPLE),
             )
     }
 

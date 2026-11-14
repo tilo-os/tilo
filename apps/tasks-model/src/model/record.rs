@@ -191,6 +191,9 @@ impl Tracker {
         #[param("Its description, in markdown")] body: Option<String>,
         #[param("Where it starts; Backlog without")] status: Option<Status>,
         #[param("person:<id> or agent:<id>")] assignee: Option<String>,
+        #[param("The page it is read at elsewhere, when it was written from one")] url: Option<
+            String,
+        >,
     ) -> Result<(), Refusal> {
         self.check_parent(parent.as_ref())?;
         let author = author(cx)?;
@@ -201,6 +204,9 @@ impl Tracker {
             body: RichText::from_markdown(body.unwrap_or_default()),
             status: status.unwrap_or_default(),
             assignee: assignee.map(tilo_resource::Atom),
+            url: url
+                .map(|url| url.trim().to_owned())
+                .filter(|url| !url.is_empty()),
             parent,
             author,
             created_ms: cx.now_ms(),

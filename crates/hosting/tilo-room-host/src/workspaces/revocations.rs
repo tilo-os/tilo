@@ -196,6 +196,7 @@ fn crosses_roots(entry: &RevocationEntry, certificates: &[DeviceCert]) -> bool {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
+    use tilo_relay_protocol::WorkspaceId;
     use tilo_user_identity::{
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
         sign_revocation_entry,
@@ -528,7 +529,7 @@ mod tests {
     /// as the host holds it.
     async fn retain_hello(
         workspaces: &super::Workspaces,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: &tilo_user_identity::DeviceCert,
         revoked: &RevocationEntry,
     ) -> crate::workspace::SharedWorkspace {

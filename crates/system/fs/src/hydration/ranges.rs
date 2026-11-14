@@ -685,36 +685,40 @@ mod tests {
         )
     }
 
-    #[test]
-    fn wants_cover_the_range_in_whole_groups_per_chunk() {
-        let m = manifest(&[100_000, 50_000, 70_000]);
-        let wants = chunk_wants(&m, &[99_000..101_000]);
-        assert_eq!(wants.len(), 2);
-        assert_eq!(
-            (wants[0].index, wants[0].within.clone()),
-            (0, 98_304..100_000)
-        );
-        assert_eq!((wants[1].index, wants[1].within.clone()), (1, 0..16_384));
-        let wants = chunk_wants(&m, &[0..10, 60_000..60_010]);
-        assert_eq!(wants.len(), 1);
-        assert_eq!(wants[0].within, 0..65_536);
-        let split = requests(chunk_wants(&m, &[0..220_000]), 120_000);
-        assert_eq!(split.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 2]);
-    }
+    tilo_test_env::scenario! {
+        fn ranged_hydration_wants_whole_groups_and_hands_each_range_out_once;
 
-    #[test]
-    fn flights_hand_out_each_range_once() {
-        let flights = Flights::default();
-        let content = Hash::from([1; 32]);
-        let (a, wait) = flights.claim(content, &[0..100]);
-        assert_eq!(a, vec![0..100]);
-        assert!(wait.is_none());
-        let (b, wait) = flights.claim(content, &[50..150]);
-        assert_eq!(b, vec![100..150]);
-        assert!(wait.is_some(), "50..100 is someone else's");
-        flights.release(content, &a);
-        let (c, _) = flights.claim(content, &[0..150]);
-        assert_eq!(c, vec![0..100]);
+        phase wants_cover_the_range_in_whole_groups_per_chunk;
+        {
+            let m = manifest(&[100_000, 50_000, 70_000]);
+            let wants = chunk_wants(&m, &[99_000..101_000]);
+            assert_eq!(wants.len(), 2);
+            assert_eq!(
+                (wants[0].index, wants[0].within.clone()),
+                (0, 98_304..100_000)
+            );
+            assert_eq!((wants[1].index, wants[1].within.clone()), (1, 0..16_384));
+            let wants = chunk_wants(&m, &[0..10, 60_000..60_010]);
+            assert_eq!(wants.len(), 1);
+            assert_eq!(wants[0].within, 0..65_536);
+            let split = requests(chunk_wants(&m, &[0..220_000]), 120_000);
+            assert_eq!(split.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 2]);
+        }
+
+        phase flights_hand_out_each_range_once;
+        {
+            let flights = Flights::default();
+            let content = Hash::from([1; 32]);
+            let (a, wait) = flights.claim(content, &[0..100]);
+            assert_eq!(a, vec![0..100]);
+            assert!(wait.is_none());
+            let (b, wait) = flights.claim(content, &[50..150]);
+            assert_eq!(b, vec![100..150]);
+            assert!(wait.is_some(), "50..100 is someone else's");
+            flights.release(content, &a);
+            let (c, _) = flights.claim(content, &[0..150]);
+            assert_eq!(c, vec![0..100]);
+        }
     }
 
     #[tokio::test]

@@ -254,69 +254,73 @@ fn fallback_catalog() -> Vec<CatalogEntry> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn input_source_catalog_parses_layouts_variants_and_references() {
-        let cases: [(&str, &[u8], &str, &str); 2] = [
-            (
-                "standard shape",
-                br"<xkbConfigRegistry><layoutList><layout><configItem>
+    tilo_test_env::scenario! {
+        fn the_input_source_catalogue_lists_layouts_and_installed_engines;
+
+        phase input_source_catalog_parses_layouts_variants_and_references;
+        {
+            let cases: [(&str, &[u8], &str, &str); 2] = [
+                (
+                    "standard shape",
+                    br"<xkbConfigRegistry><layoutList><layout><configItem>
             <name>us</name><description>English (US)</description>
           </configItem><variantList><variant><configItem>
             <name>dvorak</name><description>Dvorak</description>
           </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>",
-                "English (US)",
-                "English (US) — Dvorak",
-            ),
-            (
-                "entity and character references",
-                br"<xkbConfigRegistry><layoutList><layout><configItem>
+                    "English (US)",
+                    "English (US) — Dvorak",
+                ),
+                (
+                    "entity and character references",
+                    br"<xkbConfigRegistry><layoutList><layout><configItem>
             <name>us</name><description>English (US) &amp; &lt;intl&gt; &#x1F600;</description>
           </configItem><variantList><variant><configItem>
             <name>dvorak</name><description>Dvorak &amp;&#32;more</description>
           </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>",
-                "English (US) & <intl> \u{1F600}",
-                "English (US) & <intl> \u{1F600} — Dvorak & more",
-            ),
-        ];
-        for (case, xml, base, variant) in cases {
-            let entries = parse_catalog(&mut Reader::from_reader(xml)).unwrap();
+                    "English (US) & <intl> \u{1F600}",
+                    "English (US) & <intl> \u{1F600} — Dvorak & more",
+                ),
+            ];
+            for (case, xml, base, variant) in cases {
+                let entries = parse_catalog(&mut Reader::from_reader(xml)).unwrap();
+                assert_eq!(
+                    entries,
+                    [
+                        CatalogEntry {
+                            id: "us".into(),
+                            label: base.into(),
+                        },
+                        CatalogEntry {
+                            id: "us:dvorak".into(),
+                            label: variant.into(),
+                        },
+                    ],
+                    "case {case}"
+                );
+            }
+
+            assert!(installed_catalog().iter().any(|entry| entry.id == "us"));
+        }
+
+        phase installed_input_method_engines_are_offered_as_sources;
+        {
+            let entries = input_method_entries(|engine| {
+                engine != settings_store::hardware::InputMethodEngine::Anthy
+            });
             assert_eq!(
                 entries,
                 [
                     CatalogEntry {
-                        id: "us".into(),
-                        label: base.into(),
+                        id: "ime/rime".into(),
+                        label: "Chinese (Simplified) — Rime".into(),
                     },
                     CatalogEntry {
-                        id: "us:dvorak".into(),
-                        label: variant.into(),
+                        id: "ime/hangul".into(),
+                        label: "Korean — Hangul".into(),
                     },
                 ],
-                "case {case}"
+                "an engine the image lacks is not offered"
             );
         }
-
-        assert!(installed_catalog().iter().any(|entry| entry.id == "us"));
-    }
-
-    #[test]
-    fn installed_input_method_engines_are_offered_as_sources() {
-        let entries = input_method_entries(|engine| {
-            engine != settings_store::hardware::InputMethodEngine::Anthy
-        });
-        assert_eq!(
-            entries,
-            [
-                CatalogEntry {
-                    id: "ime/rime".into(),
-                    label: "Chinese (Simplified) — Rime".into(),
-                },
-                CatalogEntry {
-                    id: "ime/hangul".into(),
-                    label: "Korean — Hangul".into(),
-                },
-            ],
-            "an engine the image lacks is not offered"
-        );
     }
 }

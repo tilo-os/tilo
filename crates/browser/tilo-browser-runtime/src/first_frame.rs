@@ -189,60 +189,68 @@ mod tests {
         assert_eq!(watch.tick(GpuStep::Pipelines, 1, true).stalled, Some(false));
     }
 
-    // Catches a compile that keeps finishing pipelines being called stalled.
-    #[test]
-    fn each_pipeline_compiled_is_progress() {
-        let mut watch = Watch::new(TICK);
-        for built in 0..10 {
-            let ticks = run(&mut watch, 50, GpuStep::Pipelines, built);
-            assert!(ticks.iter().all(|t| t.stalled.is_none()), "{built}");
+    tilo_test_env::scenario! {
+        fn the_first_frames_watch_reads_progress_steps_and_hidden_time;
+
+        phase each_pipeline_compiled_is_progress;
+        // Catches a compile that keeps finishing pipelines being called stalled.
+        {
+            let mut watch = Watch::new(TICK);
+            for built in 0..10 {
+                let ticks = run(&mut watch, 50, GpuStep::Pipelines, built);
+                assert!(ticks.iter().all(|t| t.stalled.is_none()), "{built}");
+            }
+        }
+
+        phase hidden_time_does_not_count;
+        // Catches the time a background tab spends hidden counting as a stall.
+        {
+            let mut watch = Watch::new(TICK);
+            for _ in 0..600 {
+                let tick = watch.tick(GpuStep::Device, 0, false);
+                assert!(tick.stalled.is_none());
+            }
+            let ticks = run(&mut watch, 59, GpuStep::Device, 0);
+            assert!(ticks.iter().all(|t| t.stalled.is_none()));
+        }
+
+        phase a_new_step_is_said_once;
+        {
+            let mut watch = Watch::new(TICK);
+            assert!(watch.tick(GpuStep::Device, 0, true).step_changed);
+            assert!(!watch.tick(GpuStep::Device, 0, true).step_changed);
+            assert!(watch.tick(GpuStep::Pipelines, 0, true).step_changed);
+            assert!(!watch.tick(GpuStep::Pipelines, 1, true).step_changed);
         }
     }
 
-    // Catches the time a background tab spends hidden counting as a stall.
-    #[test]
-    fn hidden_time_does_not_count() {
-        let mut watch = Watch::new(TICK);
-        for _ in 0..600 {
-            let tick = watch.tick(GpuStep::Device, 0, false);
-            assert!(tick.stalled.is_none());
+    tilo_test_env::scenario! {
+        fn the_first_frames_driver_draws_only_while_redraws_are_missing;
+
+        phase a_first_frame_whose_redraws_do_not_arrive_is_drawn_anyway;
+        // Catches a visible page waiting forever on a first frame whose
+        // redraws (animation frames) stopped arriving.
+        {
+            let mut driver = Driver::default();
+            assert_eq!(driver.tick(0, 0, true, true), Drive::Draw);
+            assert_eq!(driver.tick(0, 0, true, true), Drive::Draw);
+            // Out, but no redraw has arrived yet: keep drawing what is asked for.
+            assert_eq!(driver.tick(0, 1, true, true), Drive::Draw);
+            assert_eq!(driver.tick(0, 1, true, false), Drive::Wait);
+            // Redraws arrive again: they draw from now on.
+            assert_eq!(driver.tick(1, 1, true, true), Drive::Done);
         }
-        let ticks = run(&mut watch, 59, GpuStep::Device, 0);
-        assert!(ticks.iter().all(|t| t.stalled.is_none()));
-    }
 
-    #[test]
-    fn a_new_step_is_said_once() {
-        let mut watch = Watch::new(TICK);
-        assert!(watch.tick(GpuStep::Device, 0, true).step_changed);
-        assert!(!watch.tick(GpuStep::Device, 0, true).step_changed);
-        assert!(watch.tick(GpuStep::Pipelines, 0, true).step_changed);
-        assert!(!watch.tick(GpuStep::Pipelines, 1, true).step_changed);
-    }
-
-    // Catches a visible page waiting forever on a first frame whose
-    // redraws (animation frames) stopped arriving.
-    #[test]
-    fn a_first_frame_whose_redraws_do_not_arrive_is_drawn_anyway() {
-        let mut driver = Driver::default();
-        assert_eq!(driver.tick(0, 0, true, true), Drive::Draw);
-        assert_eq!(driver.tick(0, 0, true, true), Drive::Draw);
-        // Out, but no redraw has arrived yet: keep drawing what is asked for.
-        assert_eq!(driver.tick(0, 1, true, true), Drive::Draw);
-        assert_eq!(driver.tick(0, 1, true, false), Drive::Wait);
-        // Redraws arrive again: they draw from now on.
-        assert_eq!(driver.tick(1, 1, true, true), Drive::Done);
-    }
-
-    // Catches the timer drawing beside redraws that arrive, or drawing a
-    // hidden page whose animation frames pause on purpose.
-    #[test]
-    fn arriving_redraws_and_hidden_pages_are_left_alone() {
-        let mut driver = Driver::default();
-        assert_eq!(driver.tick(1, 0, true, true), Drive::Wait);
-        assert_eq!(driver.tick(2, 0, true, true), Drive::Wait);
-        assert_eq!(driver.tick(2, 0, false, true), Drive::Wait);
-        assert_eq!(driver.tick(2, 0, true, true), Drive::Draw);
-        assert_eq!(driver.tick(2, 1, true, true), Drive::Done);
+        phase arriving_redraws_and_hidden_pages_are_left_alone;
+        // Catches the timer drawing beside redraws that arrive, or drawing a
+        // hidden page whose animation frames pause on purpose.
+        {
+            let mut driver = Driver::default();
+            assert_eq!(driver.tick(1, 0, true, true), Drive::Wait);
+            assert_eq!(driver.tick(2, 0, true, true), Drive::Wait);
+            assert_eq!(driver.tick(2, 0, false, true), Drive::Wait);
+            assert_eq!(driver.tick(2, 0, true, true), Drive::Draw);
+            assert_eq!(driver.tick(2, 1, true, true), Drive::Done);
+        }
     }
 }

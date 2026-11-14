@@ -1,31 +1,15 @@
 //! `tilolang layout-check` through its library: a fixture app whose views are each laid out
-//! wrong in one way is caught for every kind of problem, at the view that is wrong; and the
-//! shipped apps show no problem their allow-list (`tests/layout_check/allowed`) does not
-//! already name, so a new one fails here.
+//! wrong in one way is caught for every kind of problem, at the view that is wrong. The shipped
+//! apps are laid out by the `layout-check` t checks, which read the allow-list
+//! (`tests/layout_check/allowed`) and keep every size's dump and shots.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tilolang_cli::layout_check::{self, Kind, Options};
 
-fn manifest() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-}
-
-/// Every app in `apps/tl`: a package directory with an `app.tl`, so an app added there is checked
-/// without being named here.
-fn apps() -> std::io::Result<Vec<PathBuf>> {
-    let root = manifest().join("../../../apps/tl");
-    let mut dirs = Vec::new();
-    for entry in std::fs::read_dir(&root)? {
-        let dir = entry?.path();
-        if dir.join("app.tl").is_file() {
-            dirs.push(dir);
-        }
-    }
-    dirs.sort();
-    Ok(dirs)
-}
+use crate::manifest;
 
 #[test]
 fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
@@ -110,8 +94,10 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // No window in this fixture opens an item into its row, so no document stands beside
             // the rows of the list it opened from.
             | Kind::ItemShownTwice
-            // The fixture's cards each hold what they are given, so none stands empty.
+            // The fixture's cards each hold what they are given, so none stands empty, and no
+            // panel of it gives its title a body the title alone fills.
             | Kind::EmptySurface
+            | Kind::HeaderOnly
             // No window in this fixture docks a bar at the foot of a page column, and none lines
             // its edges with a card or a notice, nor stands one against another.
             | Kind::DockedColumn
@@ -138,9 +124,11 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // phone's screen.
             | Kind::ChevronOffLine
             | Kind::IndentedBody
-            // Its lists group no rows under headings of their own, so none heads its rows.
+            // Its lists group no rows under headings of their own, so none heads its rows, and
+            // none floats a way back over them.
             | Kind::RepeatedGroupTitle
             | Kind::HuggingRow
+            | Kind::ClippedPill
             | Kind::RepeatedDayFact => "(no view)",
         };
         assert_eq!(
@@ -271,11 +259,33 @@ fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
     );
 }
 
+/// The frames one layout may take: the layout itself, and one more for each change the app
+/// answers it with.
+const FRAMES_PER_LAYOUT: u64 = 30;
+
+/// The layout nodes one layout may build: every node of the tree the frame rebuilds, 142 of them
+/// for a board of lanes and cards.
+const NODES_PER_LAYOUT: u64 = 180;
+
+/// The text shaped outside the renderer's cache, per layout: these strings are the same on every
+/// layout, so the cache holds all of them after the first, and only a stage's own words are shaped
+/// again: 10 a layout for the board.
+const SHAPED_PER_LAYOUT: u64 = 14;
+
+/// One check of the board fixture, read for what it found and then for what it cost.
+///
 /// A board's lanes are as tall as the page they are in: a lane holding as many cards as the pane
 /// shows draws every one of them under its heading, and a lane holding more keeps them all inside
 /// the view that scrolls them.
+///
+/// What a layout costs is held in the toolkit's own units rather than in time: a check lays every
+/// view of an app out from every scenario, at every size, display scale and text scale, and what it
+/// spends per layout is what makes a run fast or slow. Wall time says nothing on a machine other
+/// work shares, so this holds a layout to the frames the toolkit lays out, the layout nodes it
+/// builds and the text it shapes outside the cache — counters that the same sources give the
+/// same numbers on any machine, in any build profile.
 #[test]
-fn a_board_lane_draws_every_card_it_has_room_for() {
+fn a_board_lane_draws_every_card_it_has_room_for_and_a_layout_costs_no_more_work_than_it_did() {
     let report = layout_check::check(&Options {
         dirs: vec![manifest().join("tests/layout_check/board")],
         ..Options::default()
@@ -291,6 +301,33 @@ fn a_board_lane_draws_every_card_it_has_room_for() {
         report.findings.is_empty(),
         "no lane loses the cards it has room for:\n{}",
         layout_check::render(&report)
+    );
+
+    // What that same check cost, a layout.
+    let layouts = u64::try_from(report.layouts).expect("layouts fit");
+    assert!(
+        layouts >= 40,
+        "every layout of the app runs, not {layouts} of them"
+    );
+    let per_layout = |count: u64| count / layouts;
+    let work = report.work;
+    assert!(
+        per_layout(work.frames) <= FRAMES_PER_LAYOUT,
+        "a layout costs at most {FRAMES_PER_LAYOUT} frames, not {} ({} frames over {layouts} layouts)",
+        per_layout(work.frames),
+        work.frames
+    );
+    assert!(
+        per_layout(work.nodes) <= NODES_PER_LAYOUT,
+        "a layout builds at most {NODES_PER_LAYOUT} layout nodes, not {} ({} nodes over {layouts} layouts)",
+        per_layout(work.nodes),
+        work.nodes
+    );
+    assert!(
+        per_layout(work.shaped) <= SHAPED_PER_LAYOUT,
+        "a layout shapes at most {SHAPED_PER_LAYOUT} runs outside the cache, not {} ({} over {layouts} layouts)",
+        per_layout(work.shaped),
+        work.shaped
     );
 }
 
@@ -359,6 +396,42 @@ fn a_view_that_is_one_branch_is_reached_whether_or_not_it_draws() {
     );
 }
 
+/// Held strictly, an allow-list line whose finding no longer shows fails the run: a fixed problem
+/// whose line stays behind reads to the next person as a problem still there.
+#[test]
+fn a_strict_run_fails_on_an_allow_list_line_that_no_longer_shows() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let allow = scratch.path().join("allowed");
+    std::fs::write(&allow, "overlap nowhere › view [Row]\n").expect("the allow-list writes");
+    let run = |strict: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tilolang"));
+        command
+            .arg("layout-check")
+            .arg(manifest().join("tests/layout_check/branches"))
+            .arg("--allow")
+            .arg(&allow);
+        if strict {
+            command.arg("--strict");
+        }
+        command.output_locked().expect("the check runs")
+    };
+    let lenient = run(false);
+    assert!(
+        lenient.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lenient.stderr)
+    );
+    let strict = run(true);
+    assert!(!strict.status.success(), "a stale line fails a strict run");
+    assert!(
+        String::from_utf8_lossy(&strict.stdout).contains("take it out"),
+        "the run says which line to take out: {}",
+        String::from_utf8_lossy(&strict.stdout)
+    );
+}
+
 #[test]
 fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scale() {
     let scales = layout_check::layouts()
@@ -376,30 +449,6 @@ fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scal
     assert!(
         report.findings.is_empty(),
         "every edge stands on a device pixel:\n{}",
-        layout_check::render(&report)
-    );
-}
-
-#[test]
-fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
-    let report = layout_check::check(&Options {
-        dirs: apps().expect("apps/tl reads"),
-        allow: Some(manifest().join("tests/layout_check/allowed")),
-        ..Options::default()
-    })
-    .expect("the apps lay out");
-    assert!(
-        report.layouts > 0 && apps().expect("apps/tl reads").len() >= 8,
-        "every app in apps/tl is checked"
-    );
-    assert!(
-        report.unreached.is_empty(),
-        "every view is laid out: a scenario reaches each, or the system shows it:\n{}",
-        layout_check::render(&report)
-    );
-    assert!(
-        report.new_findings().next().is_none() && report.stale.is_empty(),
-        "new layout problems, or allowed ones gone (take them out of the allow-list):\n{}",
         layout_check::render(&report)
     );
 }
@@ -441,16 +490,19 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
 fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    for (app, shows) in [
+    for (app, shown) in [
         // Notes is a tree and the note it opens: at this width the tree is the window's first
-        // screen and a row of it pushes the note in front, with the way back to the tree.
-        ("notes", ", then a note_editor in front at 390×844"),
+        // screen and a row of it pushes the note in front, with the way back to the tree. One run
+        // of the check dumps both pages.
         (
             "notes",
-            ", then Back pressed, then a note_editor in front at 390×844",
+            &[
+                ", then a note_editor in front at 390×844",
+                ", then Back pressed, then a note_editor in front at 390×844",
+            ][..],
         ),
         // A board keeps no detail of its own: the card a finger taps is the page that shows.
-        ("board", "then a card_page in front at 390×844"),
+        ("board", &["then a card_page in front at 390×844"][..]),
     ] {
         let dir = manifest().join("../../../apps/tl").join(app);
         let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
@@ -466,11 +518,13 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
             doc.lines().last().unwrap_or_default()
         );
         let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
-        assert!(
-            headers.iter().any(|header| header.contains(shows)),
-            "a phone window shows what `{shows}` names in {app}:\n{}",
-            headers.join("\n")
-        );
+        for &shows in shown {
+            assert!(
+                headers.iter().any(|header| header.contains(shows)),
+                "a phone window shows what `{shows}` names in {app}:\n{}",
+                headers.join("\n")
+            );
+        }
     }
 }
 
@@ -523,6 +577,51 @@ fn a_run_presses_a_rows_box_by_its_own_words() {
     );
 }
 
+/// A run over every app asks for the frames a finding came from (`--dump-findings`), and a run
+/// narrowed to a view can still ask for every frame (`--dump`): a page holding the layout of
+/// every frame of every view is too big to keep.
+#[test]
+fn a_dump_of_findings_holds_the_frames_a_finding_came_from() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+    use tilolang_cli::layout_check::Dump;
+
+    assert!(Dump::Findings((390, 844)).prints((390, 844), true));
+    assert!(!Dump::Findings((390, 844)).prints((390, 844), false));
+    assert!(Dump::Every((390, 844)).prints((390, 844), false));
+    assert!(!Dump::Every((390, 844)).prints((320, 568), true));
+
+    let frames = |scope: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+            .arg("layout-check")
+            .arg(manifest().join("tests/layout_check/broken"))
+            .arg(manifest().join("tests/layout_check/layered"))
+            .args([scope, "390x844"])
+            .output_locked()
+            .expect("the check runs");
+        assert!(
+            !output.status.success(),
+            "the fixture whose views are broken still fails the run"
+        );
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .filter(|line| line.starts_with("== ") && line.ends_with("— the frame"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let every = frames("--dump");
+    let found = frames("--dump-findings");
+    assert!(!every.is_empty(), "the run reads frames of both apps");
+    assert!(
+        found.len() < every.len(),
+        "the frames a finding came from are kept, not every frame:\n{found:#?}\nof {}",
+        every.len()
+    );
+    assert!(
+        found.iter().all(|header| every.contains(header)),
+        "the frames a finding came from are frames the run read"
+    );
+}
+
 #[test]
 fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
     let dir = manifest().join("../../../apps/tl/gallery");
@@ -544,4 +643,225 @@ fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
     })
     .expect("the gallery lays out, every component of it built");
     assert!(report.layouts > 0, "the gallery is laid out");
+}
+
+/// An allow-list names one finding a line: blank lines and what follows a `#` are no finding, an
+/// id named twice is allowed once, and a list that is not there is an error naming it, never an
+/// empty list.
+#[test]
+fn an_allow_list_is_one_finding_a_line_past_its_comments_and_blank_lines() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = scratch.path().join("allowed");
+    let rows: [(&str, &str, &[&str]); 8] = [
+        ("an empty file", "", &[]),
+        (
+            "blank lines and comments alone",
+            "\n   \n# known\n  # and this\n",
+            &[],
+        ),
+        (
+            "one finding",
+            "overflow:tasks:list\n",
+            &["overflow:tasks:list"],
+        ),
+        (
+            "no line end after the last finding",
+            "overflow:tasks:list",
+            &["overflow:tasks:list"],
+        ),
+        (
+            "room around a finding and a comment after it",
+            "  overflow:tasks:list \t# since the board\n",
+            &["overflow:tasks:list"],
+        ),
+        ("a comment that holds a second #", "a # b # c\n", &["a"]),
+        ("a finding named twice", "b\na\nb\n", &["a", "b"]),
+        ("line ends of another system", "a\r\nb\r\n", &["a", "b"]),
+    ];
+    for (row, text, ids) in rows {
+        std::fs::write(&path, text).expect("the list writes");
+        let read = layout_check::read_allow(&path)
+            .unwrap_or_else(|error| panic!("{row}: the list reads: {error}"));
+        let read: Vec<&str> = read.iter().map(String::as_str).collect();
+        assert_eq!(read, ids, "{row}");
+    }
+    let missing = scratch.path().join("no such list");
+    let refused =
+        layout_check::read_allow(&missing).expect_err("a list that is not there is no empty list");
+    assert!(
+        refused.starts_with(&missing.display().to_string()),
+        "the error names the list: {refused}"
+    );
+}
+
+/// A run the command cannot read is refused before anything is laid out, saying what was wrong
+/// with it: a `--dump` size that is no size, a flag left without its value, a flag it does not
+/// have.
+#[test]
+fn a_run_the_command_cannot_read_is_refused_with_what_is_wrong_with_it() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    let rows: [(&[&str], &str); 9] = [
+        (
+            &["--dump", "390"],
+            "--dump 390: a window size such as 390x844",
+        ),
+        (&["--dump", ""], "--dump : a window size such as 390x844"),
+        (
+            &["--dump", "x844"],
+            "--dump x844: a window size such as 390x844",
+        ),
+        (
+            &["--dump", "390x"],
+            "--dump 390x: a window size such as 390x844",
+        ),
+        (
+            &["--dump", "-390x844"],
+            "--dump -390x844: a window size such as 390x844",
+        ),
+        (
+            &["--dump", "390x844x2"],
+            "--dump 390x844x2: a window size such as 390x844",
+        ),
+        (&["--dump"], "--dump needs a value"),
+        (&["--dump", "390x844", "--press"], "--press needs a value"),
+        (&["--no-such-flag"], "unknown option --no-such-flag"),
+    ];
+    for (args, said) in rows {
+        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+            .arg("layout-check")
+            .args(args)
+            .output_locked()
+            .expect("the command runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?} is refused as a run that cannot be read: {stderr}"
+        );
+        assert!(
+            stderr.contains(said),
+            "{args:?} says what is wrong with it ({said}): {stderr}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{args:?} lays nothing out: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+/// The allow-list holds in both directions. A finding it names is allowed and no longer fails the
+/// run, one it does not name stays new, and an id it names that no finding has is called stale, so
+/// the list never keeps a problem that is gone.
+#[test]
+fn an_allow_list_allows_the_findings_it_names_and_says_which_of_them_are_gone() {
+    let broken = manifest().join("tests/layout_check/broken");
+    let unlisted = layout_check::check(&Options {
+        dirs: vec![broken.clone()],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        unlisted.stale.is_empty() && unlisted.findings.iter().all(|finding| !finding.allowed),
+        "a run with no allow-list allows nothing and calls nothing stale:\n{}",
+        layout_check::render(&unlisted)
+    );
+    let ids: BTreeSet<&str> = unlisted
+        .findings
+        .iter()
+        .map(|finding| finding.id.as_str())
+        .collect();
+    assert!(
+        ids.len() >= 2,
+        "the fixture breaks in more than one way: {ids:?}"
+    );
+    let named = *ids.first().expect("a finding");
+    let gone = "overflow layoutbroken › no_such_view [Text]";
+    assert!(!ids.contains(gone), "no finding is `{gone}`: {ids:?}");
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let list = scratch.path().join("allowed");
+    std::fs::write(
+        &list,
+        format!("# one that shows, one that is gone\n{named}\n{gone}\n"),
+    )
+    .expect("the list writes");
+    let report = layout_check::check(&Options {
+        dirs: vec![broken],
+        allow: Some(list),
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    let said = layout_check::render(&report);
+    for finding in &report.findings {
+        assert_eq!(
+            finding.allowed,
+            finding.id == named,
+            "the list allows `{named}` and nothing else, and `{}` is judged otherwise:\n{said}",
+            finding.id
+        );
+    }
+    assert!(
+        report.findings.iter().any(|finding| finding.allowed),
+        "the finding the list names still shows, allowed:\n{said}"
+    );
+    let new: BTreeSet<&str> = report
+        .new_findings()
+        .map(|finding| finding.id.as_str())
+        .collect();
+    let mut unnamed = ids.clone();
+    unnamed.remove(named);
+    assert_eq!(
+        new, unnamed,
+        "every finding the list does not name is still new:\n{said}"
+    );
+    assert_eq!(
+        report.stale,
+        [gone],
+        "the id no finding has is the one stale id:\n{said}"
+    );
+    assert!(
+        said.contains(&format!("allowed {named}: ")),
+        "the report marks the finding it allows:\n{said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "note: the allow-list names `{gone}`, which no longer shows: take it out"
+        )),
+        "the report says which id to take out of the list:\n{said}"
+    );
+}
+
+/// A state the run cannot stage stops it at the first window, saying what is wrong with it and
+/// which unit it stopped: one written without a value, and one no view of the app declares.
+#[test]
+fn a_state_with_no_value_or_that_no_view_declares_is_refused_at_the_unit_it_stops() {
+    let rows = [
+        (
+            "place",
+            "--state place names no value: write `--state place=Task.today`",
+        ),
+        (
+            "place=Sample.first",
+            "--state place=Sample.first: no view of `so.tilo.lang.layoutbroken` declares the state \
+             `place`",
+        ),
+    ];
+    for (state, said) in rows {
+        let refused = layout_check::check(&Options {
+            dirs: vec![manifest().join("tests/layout_check/broken")],
+            states: vec![state.to_owned()],
+            ..Options::default()
+        })
+        .expect_err("a run that stages a state no window can take is refused");
+        assert!(
+            refused.contains(said),
+            "`--state {state}` says what is wrong with it: {refused}"
+        );
+        assert!(
+            refused.starts_with("layoutbroken: the scenario `a sample` "),
+            "`--state {state}` names the unit it stopped: {refused}"
+        );
+    }
 }

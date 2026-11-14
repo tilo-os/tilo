@@ -17,6 +17,7 @@ use crate::workspaces::fixtures::test_host_taking_part;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 pub(super) const APP: &str = "so.tilo.notes";
@@ -98,7 +99,7 @@ pub(super) struct Lounge {
     pub(super) relay: crate::workspaces::fixtures::TestHost,
     pub(super) workspaces: Workspaces,
     pub(super) workspace: String,
-    pub(super) workspace_id: u64,
+    pub(super) workspace_id: WorkspaceId,
     pub(super) governor: DeviceCert,
     pub(super) governor_key: ed25519_dalek::SigningKey,
     pub(super) member_key: ed25519_dalek::SigningKey,
@@ -114,7 +115,7 @@ pub(super) async fn lounge() -> Lounge {
 /// `capacity` frames it did not read yet; `0` keeps the link's own.
 async fn lounge_reading(capacity: usize) -> Lounge {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     if capacity > 0 {
@@ -265,14 +266,21 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
 
 /// Every write of `record` the relay retains for `workspace_id`, in replay
 /// order: what a newcomer is sent.
+///
+/// Read once the workspace's store settled every write its owner took before
+/// the call ([`crate::workspace_records::WorkspaceRecords::retained_settled`]),
+/// as a newcomer's replay is captured in the owner's order. The node's own copy
+/// holds a write as soon as the node is handed it, before the store does: a
+/// read made beside the owner, the moment the node follows a write, can come
+/// before the store holds that write.
 async fn retained_writes(
     relay: &crate::workspaces::fixtures::TestHost,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     record: &str,
 ) -> Vec<SignedOp> {
     relay
         .workspace_records()
-        .retained(workspace_id)
+        .retained_settled(workspace_id)
         .await
         .unwrap()
         .into_iter()
@@ -295,7 +303,7 @@ pub(super) async fn subscribed_member(
     relay: &crate::workspaces::fixtures::TestHost,
     key: &ed25519_dalek::SigningKey,
     cert: DeviceCert,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> crate::RelayClient {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
@@ -325,7 +333,7 @@ pub(super) async fn subscribed_member(
 /// Send `delta`, `member`'s write, to the host `client` reaches.
 fn send_members_delta(
     client: &crate::RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     member: &ed25519_dalek::SigningKey,
     delta: &crate::CoeditPayload,
 ) {
@@ -344,7 +352,7 @@ fn send_members_delta(
 /// as the member's own writes travel.
 fn send_sealed(
     client: &crate::RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     key: &ed25519_dalek::SigningKey,
     message: &NeighbourMsg,
 ) {
@@ -366,7 +374,7 @@ pub(super) fn seal_and_send_title(
     member: &SealingMember,
     client: &crate::RelayClient,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     key: &ed25519_dalek::SigningKey,
     line: &str,
 ) {
@@ -726,7 +734,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
     const CHAT: &str = "so.tilo.chat";
     const LOBBY: &str = "lobby";
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -796,7 +804,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
 /// What the relay retains of `record`, once it retains a write `wanted`.
 async fn retained_once(
     relay: &crate::workspaces::fixtures::TestHost,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     record: &str,
     wanted: impl Fn(&SignedOp) -> bool + Send + Sync,
 ) -> Vec<SignedOp> {
@@ -818,7 +826,7 @@ async fn retained_once(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_of_a_sealed_room_is_sealed_from_its_first_write() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -852,7 +860,7 @@ async fn a_record_of_a_sealed_room_is_sealed_from_its_first_write() {
 async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     const LEGACY: &str = "legacy";
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -928,7 +936,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
     use super::super::tests::{door_join, guest_device};
     const NOTE: &str = "tab:0000000000000001";
     let dir = tempfile::tempdir().unwrap();
-    let (key, ada) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, ada) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &ada).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -1065,7 +1073,7 @@ fn retained_files(
 async fn state_root(
     workspaces: &Workspaces,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> std::path::PathBuf {
     workspaces
         .workspace(workspace)
@@ -1363,9 +1371,16 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
         doc.put(ROOT, "offline", "two").unwrap();
     });
 
-    // The damage, and the repair, while that device is away.
+    // The damage, and the repair, while that device is away. The damage is
+    // done to the store's files, so it waits for the store to hold the
+    // member's writes the node already follows.
     let channel = neighbour_wire::app_document_channel(APP, RECORD);
     let root = state_root(&workspaces, &workspace, workspace_id).await;
+    relay
+        .workspace_records()
+        .retained_settled(workspace_id)
+        .await
+        .expect("the workspace's store settles");
     lose_the_records_base(&root, &channel, &governor);
     workspaces
         .refound_record(&workspace, APP, RECORD)
@@ -1409,7 +1424,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -1434,7 +1449,7 @@ async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     .expect("the member catches up with the node")
     .unwrap();
 
-    let channel = collab_types::workspace_scope(&created.workspace);
+    let channel = collab_types::WorkspaceId::parse(&created.workspace).unwrap();
     let request =
         collab_types::MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 1, &key).unwrap();
     workspaces
@@ -2262,7 +2277,7 @@ async fn readers_that_fell_behind_read_every_write_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The host after the restart holds the channel keys the one before it took part with.
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
@@ -2368,7 +2383,7 @@ async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
@@ -2444,7 +2459,7 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
 
 /// What the relay sends `page` when it opens `record`: how many frames, before
 /// it says the record was sent whole.
-async fn opened_frames(page: &crate::RelayClient, workspace_id: u64, record: &str) -> u32 {
+async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, record: &str) -> u32 {
     let channel = neighbour_wire::app_document_channel(APP, record);
     page.send(crate::Envelope::OpenRecord {
         workspace_id,
@@ -2687,7 +2702,7 @@ async fn a_write_built_on_a_change_its_writer_never_sent_is_folded_away() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The relay after the restart holds the channel keys the one before it took part with.
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(

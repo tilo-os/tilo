@@ -234,56 +234,60 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_answer_the_audit_asked_for() {
-        close(convert(40.0, &temperature("°C"), &temperature("°F")), 104.0);
-        close(convert(104.0, &temperature("°F"), &temperature("°C")), 40.0);
-        close(convert(0.0, &temperature("°C"), &temperature("K")), 273.15);
-        close(
-            convert(-40.0, &temperature("°C"), &temperature("°F")),
-            -40.0,
-        );
-    }
+    tilo_test_env::scenario! {
+        fn quantities_convert_between_their_units_and_are_well_formed;
 
-    #[test]
-    fn lengths_masses_and_speeds_convert_both_ways() {
-        close(convert(1.0, &length("km"), &length("mi")), 0.621_371_192);
-        close(convert(1.0, &length("mi"), &length("km")), 1.609_344);
-        close(convert(5.0, &length("ft"), &length("m")), 1.524);
-        close(convert(1.0, &length("in"), &length("cm")), 2.54);
-        let kg = *MASS.iter().find(|u| u.symbol == "kg").expect("kg");
-        let lb = *MASS.iter().find(|u| u.symbol == "lb").expect("lb");
-        close(convert(1.0, &kg, &lb), 2.204_622_622);
-        close(convert(100.0, &SPEED[1], &SPEED[0]), 27.777_777_778);
-    }
+        phase the_answer_the_audit_asked_for;
+        {
+            close(convert(40.0, &temperature("°C"), &temperature("°F")), 104.0);
+            close(convert(104.0, &temperature("°F"), &temperature("°C")), 40.0);
+            close(convert(0.0, &temperature("°C"), &temperature("K")), 273.15);
+            close(
+                convert(-40.0, &temperature("°C"), &temperature("°F")),
+                -40.0,
+            );
+        }
 
-    #[test]
-    fn converting_to_the_same_unit_changes_nothing() {
-        for dimension in DIMENSIONS {
-            for unit in dimension.units() {
-                close(convert(12.5, unit, unit), 12.5);
+        phase lengths_masses_and_speeds_convert_both_ways;
+        {
+            close(convert(1.0, &length("km"), &length("mi")), 0.621_371_192);
+            close(convert(1.0, &length("mi"), &length("km")), 1.609_344);
+            close(convert(5.0, &length("ft"), &length("m")), 1.524);
+            close(convert(1.0, &length("in"), &length("cm")), 2.54);
+            let kg = *MASS.iter().find(|u| u.symbol == "kg").expect("kg");
+            let lb = *MASS.iter().find(|u| u.symbol == "lb").expect("lb");
+            close(convert(1.0, &kg, &lb), 2.204_622_622);
+            close(convert(100.0, &SPEED[1], &SPEED[0]), 27.777_777_778);
+        }
+
+        phase converting_to_the_same_unit_changes_nothing;
+        {
+            for dimension in DIMENSIONS {
+                for unit in dimension.units() {
+                    close(convert(12.5, unit, unit), 12.5);
+                }
             }
         }
-    }
 
-    #[test]
-    fn every_default_pair_names_two_units_of_its_own_quantity() {
-        for dimension in DIMENSIONS {
-            let units = dimension.units();
-            let (from, to) = dimension.default_pair();
-            assert!(from < units.len() && to < units.len(), "{dimension:?}");
-            assert_ne!(from, to, "{dimension:?}");
+        phase every_default_pair_names_two_units_of_its_own_quantity;
+        {
+            for dimension in DIMENSIONS {
+                let units = dimension.units();
+                let (from, to) = dimension.default_pair();
+                assert!(from < units.len() && to < units.len(), "{dimension:?}");
+                assert_ne!(from, to, "{dimension:?}");
+            }
         }
-    }
 
-    #[test]
-    fn every_quantity_has_a_name_and_a_slug_of_its_own() {
-        let mut slugs: Vec<&str> = DIMENSIONS.iter().map(|d| d.slug()).collect();
-        let count = slugs.len();
-        slugs.sort_unstable();
-        slugs.dedup();
-        assert_eq!(slugs.len(), count, "every slug is distinct");
-        assert!(DIMENSIONS.iter().all(|d| !d.label().is_empty()));
+        phase every_quantity_has_a_name_and_a_slug_of_its_own;
+        {
+            let mut slugs: Vec<&str> = DIMENSIONS.iter().map(|d| d.slug()).collect();
+            let count = slugs.len();
+            slugs.sort_unstable();
+            slugs.dedup();
+            assert_eq!(slugs.len(), count, "every slug is distinct");
+            assert!(DIMENSIONS.iter().all(|d| !d.label().is_empty()));
+        }
     }
 }
 

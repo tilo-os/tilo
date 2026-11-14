@@ -669,62 +669,69 @@ mod tests {
         )
     }
 
-    /// At every width no label overlaps another label or a node, and every
-    /// label stays inside the chart; a label is dropped (the tooltip still
-    /// names it) rather than collide.
-    #[test]
-    fn node_labels_never_collide_at_any_width() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let style = SankeyMarks::label_style(&theme);
-        for width in [200.0, 260.0, 360.0, 520.0, 900.0] {
-            let mut chart = product_flow();
-            chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 220.0);
-            chart.marks.measure_label_reserve(&mut tr, &theme);
-            let (nodes, _) = chart.marks.geometry();
-            let labels: Vec<Rect> = chart
-                .marks
-                .label_layout(&nodes, &mut tr, &theme)
-                .into_iter()
-                .map(|(_, label, origin, _)| {
-                    let (w, h) = tr.measure_style(&label, None, &style);
-                    Rect::from_origin_size(origin, (f64::from(w), f64::from(h)))
-                })
-                .collect();
-            for (i, a) in labels.iter().enumerate() {
-                assert!(
-                    a.x1 <= chart.marks.frame.rect.x1 + 0.5,
-                    "{width}: {a:?} leaves the chart"
-                );
-                for b in labels.iter().skip(i + 1) {
-                    assert!(a.intersect(*b).is_zero_area(), "{width}: {a:?} hits {b:?}");
-                }
-                for node in &nodes {
+    tilo_test_env::scenario! {
+        /// A sankey's labels and links.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn sankey_labels_stay_apart_and_bad_links_are_ignored;
+
+        phase node_labels_never_collide_at_any_width;
+        // At every width no label overlaps another label or a node, and every
+        // label stays inside the chart; a label is dropped (the tooltip still
+        // names it) rather than collide.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let style = SankeyMarks::label_style(&theme);
+            for width in [200.0, 260.0, 360.0, 520.0, 900.0] {
+                let mut chart = product_flow();
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 220.0);
+                chart.marks.measure_label_reserve(&mut tr, &theme);
+                let (nodes, _) = chart.marks.geometry();
+                let labels: Vec<Rect> = chart
+                    .marks
+                    .label_layout(&nodes, &mut tr, &theme)
+                    .into_iter()
+                    .map(|(_, label, origin, _)| {
+                        let (w, h) = tr.measure_style(&label, None, &style);
+                        Rect::from_origin_size(origin, (f64::from(w), f64::from(h)))
+                    })
+                    .collect();
+                for (i, a) in labels.iter().enumerate() {
                     assert!(
-                        a.intersect(node.rect).is_zero_area(),
-                        "{width}: {a:?} covers a node {:?}",
-                        node.rect
+                        a.x1 <= chart.marks.frame.rect.x1 + 0.5,
+                        "{width}: {a:?} leaves the chart"
+                    );
+                    for b in labels.iter().skip(i + 1) {
+                        assert!(a.intersect(*b).is_zero_area(), "{width}: {a:?} hits {b:?}");
+                    }
+                    for node in &nodes {
+                        assert!(
+                            a.intersect(node.rect).is_zero_area(),
+                            "{width}: {a:?} covers a node {:?}",
+                            node.rect
+                        );
+                    }
+                }
+                if width >= 520.0 {
+                    assert_eq!(
+                        labels.len(),
+                        5,
+                        "{width}: every node is named when there is room"
                     );
                 }
             }
-            if width >= 520.0 {
-                assert_eq!(
-                    labels.len(),
-                    5,
-                    "{width}: every node is named when there is room"
-                );
-            }
         }
-    }
-    #[test]
-    fn invalid_and_dangling_links_are_ignored() {
-        let chart = SankeyChart::new(
-            vec![ChartNode::new("a", "A")],
-            vec![
-                ChartLink::new("bad", "a", "missing", 2.0),
-                ChartLink::new("self", "a", "a", 1.0),
-            ],
-        );
-        assert!(chart.marks.resolved_links().is_empty());
+
+        phase invalid_and_dangling_links_are_ignored;
+        {
+            let chart = SankeyChart::new(
+                vec![ChartNode::new("a", "A")],
+                vec![
+                    ChartLink::new("bad", "a", "missing", 2.0),
+                    ChartLink::new("self", "a", "a", 1.0),
+                ],
+            );
+            assert!(chart.marks.resolved_links().is_empty());
+        }
     }
 }

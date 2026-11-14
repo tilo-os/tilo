@@ -141,72 +141,128 @@ fn word(red: u32, green: u32, blue: u32) -> u32 {
     (red << 20) | (green << 10) | blue
 }
 
-#[test]
-fn an_hdr_window_keeps_its_own_colour_beside_an_sdr_one() {
-    let mut compositor = headless(Box::new(SideBySide::default()));
-    // What an HDR video player commits: a 10-bit buffer of linear light,
-    // described as such.
-    let mut player = window_client(&mut compositor, "player");
-    let _described = attach_description(
-        &mut compositor,
-        &mut player,
-        Primaries::Srgb,
-        TransferFunction::ExtLinear,
-    );
-    player.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(512, 256, 768));
-    map(&mut compositor, &mut player, "player");
-    // An ordinary window beside it, which also says its content is sRGB.
-    let mut editor = window_client(&mut compositor, "editor");
-    let _sdr = attach_description(
-        &mut compositor,
-        &mut editor,
-        Primaries::Srgb,
-        TransferFunction::ExtSrgb,
-    );
-    editor.show(200, 100, [255, 0, 0, 255]);
-    map(&mut compositor, &mut editor, "editor");
+tilo_test_env::scenario! {
+    /// An HDR window on an SDR display.
+    fn an_hdr_window_is_shown_in_its_own_colour_and_volume;
 
-    let (player_window, player_rect) = window_of(&compositor, "player");
-    let (editor_window, editor_rect) = window_of(&compositor, "editor");
-    assert_eq!(player_rect, (0, 100, 200, 100));
-    assert_eq!(editor_rect, (320, 100, 200, 100));
+    phase an_hdr_window_keeps_its_own_colour_beside_an_sdr_one;
+    {
+        let mut compositor = headless(Box::new(SideBySide::default()));
+        // What an HDR video player commits: a 10-bit buffer of linear light,
+        // described as such.
+        let mut player = window_client(&mut compositor, "player");
+        let _described = attach_description(
+            &mut compositor,
+            &mut player,
+            Primaries::Srgb,
+            TransferFunction::ExtLinear,
+        );
+        player.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(512, 256, 768));
+        map(&mut compositor, &mut player, "player");
+        // An ordinary window beside it, which also says its content is sRGB.
+        let mut editor = window_client(&mut compositor, "editor");
+        let _sdr = attach_description(
+            &mut compositor,
+            &mut editor,
+            Primaries::Srgb,
+            TransferFunction::ExtSrgb,
+        );
+        editor.show(200, 100, [255, 0, 0, 255]);
+        map(&mut compositor, &mut editor, "editor");
 
-    // The compositor keeps what the client said the surface carries.
-    let (colour, _) = compositor
-        .window_color(player_window)
-        .expect("the described colour");
-    assert_eq!(colour.transfer, TransferCharacteristics::Linear);
-    let (editor_colour, _) = compositor
-        .window_color(editor_window)
-        .expect("the described colour");
-    assert_eq!(editor_colour.transfer, TransferCharacteristics::Srgb);
+        let (player_window, player_rect) = window_of(&compositor, "player");
+        let (editor_window, editor_rect) = window_of(&compositor, "editor");
+        assert_eq!(player_rect, (0, 100, 200, 100));
+        assert_eq!(editor_rect, (320, 100, 200, 100));
 
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        // The compositor keeps what the client said the surface carries.
+        let (colour, _) = compositor
+            .window_color(player_window)
+            .expect("the described colour");
+        assert_eq!(colour.transfer, TransferCharacteristics::Linear);
+        let (editor_colour, _) = compositor
+            .window_color(editor_window)
+            .expect("the described colour");
+        assert_eq!(editor_colour.transfer, TransferCharacteristics::Srgb);
 
-    // Linear light 0.5, 0.25, 0.75 is drawn as that light, not as the bytes that carry it.
-    let signal = [512.0 / 1023.0, 256.0 / 1023.0, 768.0 / 1023.0];
-    let expected = tonemap_rgb_signal_to_srgb8(signal, colour, HdrTonemapConfig::default());
-    let shown = frame.pixel(100, 150).expect("inside the player");
-    assert_eq!(
-        &shown[..3],
-        &expected,
-        "the described surface shows its signal"
-    );
-    assert_eq!(shown[3], 255);
-    assert_ne!(
-        expected,
-        [128, 64, 191],
-        "the buffer's bytes would show as something else, so the description was used"
-    );
+        compositor.draw_frame().expect("a frame");
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
 
-    // The ordinary window keeps its own colour, and the desktop is still the desktop.
-    assert_eq!(
-        frame.pixel(420, 150),
-        Some([255, 0, 0, 255]),
-        "the SDR window is untouched"
-    );
-    assert_eq!(frame.pixel(10, 400), Some(BACKGROUND));
+        // Linear light 0.5, 0.25, 0.75 is drawn as that light, not as the bytes that carry it.
+        let signal = [512.0 / 1023.0, 256.0 / 1023.0, 768.0 / 1023.0];
+        let expected = tonemap_rgb_signal_to_srgb8(signal, colour, HdrTonemapConfig::default());
+        let shown = frame.pixel(100, 150).expect("inside the player");
+        assert_eq!(
+            &shown[..3],
+            &expected,
+            "the described surface shows its signal"
+        );
+        assert_eq!(shown[3], 255);
+        assert_ne!(
+            expected,
+            [128, 64, 191],
+            "the buffer's bytes would show as something else, so the description was used"
+        );
+
+        // The ordinary window keeps its own colour, and the desktop is still the desktop.
+        assert_eq!(
+            frame.pixel(420, 150),
+            Some([255, 0, 0, 255]),
+            "the SDR window is untouched"
+        );
+        assert_eq!(frame.pixel(10, 400), Some(BACKGROUND));
+    }
+
+    phase a_film_is_tone_mapped_with_the_volume_it_was_mastered_for;
+    {
+        let mut compositor = headless(Box::new(SideBySide::default()));
+        // The same PQ light, mastered two ways: a bright cinema master and the HDR10 baseline. Each
+        // player says which one its content is.
+        let mut cinema = window_client(&mut compositor, "cinema");
+        let _cinema_colour = attach_mastered(&mut compositor, &mut cinema, 500, 4000);
+        cinema.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(768, 768, 768));
+        map(&mut compositor, &mut cinema, "cinema");
+        let mut baseline = window_client(&mut compositor, "baseline");
+        let _baseline_colour = attach_mastered(&mut compositor, &mut baseline, 500, 1000);
+        baseline.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(768, 768, 768));
+        map(&mut compositor, &mut baseline, "baseline");
+
+        compositor.draw_frame().expect("a frame");
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+
+        // Each window's rendition is the tone map of its own mastering volume.
+        let shown = |app_id: &str, at: (i32, i32)| {
+            let (id, _) = window_of(&compositor, app_id);
+            let (colour, metadata) = compositor.window_color(id).expect("the described colour");
+            let metadata = metadata.expect("the volume the content was mastered in");
+            let expected = tonemap_rgb_signal_to_srgb8(
+                [768.0 / 1023.0; 3],
+                colour,
+                HdrTonemapConfig::from_metadata(Some(metadata)),
+            );
+            let pixel = frame
+                .pixel(u32::try_from(at.0).unwrap(), u32::try_from(at.1).unwrap())
+                .expect("inside the window");
+            assert_eq!(&pixel[..3], &expected, "{app_id} shows its own volume");
+            (pixel[..3] != [0, 0, 0]).then_some(pixel).expect("drawn")
+        };
+        let cinema_shown = shown("cinema", (100, 150));
+        let baseline_shown = shown("baseline", (420, 150));
+        assert_ne!(
+            cinema_shown, baseline_shown,
+            "a master made for 4000 cd/m² compresses differently from one made for 1000"
+        );
+        let (cinema_id, _) = window_of(&compositor, "cinema");
+        let (_, cinema_volume) = compositor.window_color(cinema_id).expect("colour");
+        assert_eq!(
+            cinema_volume
+                .expect("metadata")
+                .mastering
+                .max_display_mastering_luminance,
+            40_000_000,
+            "4000 cd/m² in 1/10000 units"
+        );
+    }
 }
 
 #[test]
@@ -230,55 +286,4 @@ fn a_ten_bit_window_that_says_nothing_shows_the_bytes_it_holds() {
             "the buffer is drawn as it is: {shown:?}"
         );
     }
-}
-
-#[test]
-fn a_film_is_tone_mapped_with_the_volume_it_was_mastered_for() {
-    let mut compositor = headless(Box::new(SideBySide::default()));
-    // The same PQ light, mastered two ways: a bright cinema master and the HDR10 baseline. Each
-    // player says which one its content is.
-    let mut cinema = window_client(&mut compositor, "cinema");
-    let _cinema_colour = attach_mastered(&mut compositor, &mut cinema, 500, 4000);
-    cinema.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(768, 768, 768));
-    map(&mut compositor, &mut cinema, "cinema");
-    let mut baseline = window_client(&mut compositor, "baseline");
-    let _baseline_colour = attach_mastered(&mut compositor, &mut baseline, 500, 1000);
-    baseline.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(768, 768, 768));
-    map(&mut compositor, &mut baseline, "baseline");
-
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-
-    // Each window's rendition is the tone map of its own mastering volume.
-    let shown = |app_id: &str, at: (i32, i32)| {
-        let (id, _) = window_of(&compositor, app_id);
-        let (colour, metadata) = compositor.window_color(id).expect("the described colour");
-        let metadata = metadata.expect("the volume the content was mastered in");
-        let expected = tonemap_rgb_signal_to_srgb8(
-            [768.0 / 1023.0; 3],
-            colour,
-            HdrTonemapConfig::from_metadata(Some(metadata)),
-        );
-        let pixel = frame
-            .pixel(u32::try_from(at.0).unwrap(), u32::try_from(at.1).unwrap())
-            .expect("inside the window");
-        assert_eq!(&pixel[..3], &expected, "{app_id} shows its own volume");
-        (pixel[..3] != [0, 0, 0]).then_some(pixel).expect("drawn")
-    };
-    let cinema_shown = shown("cinema", (100, 150));
-    let baseline_shown = shown("baseline", (420, 150));
-    assert_ne!(
-        cinema_shown, baseline_shown,
-        "a master made for 4000 cd/m² compresses differently from one made for 1000"
-    );
-    let (cinema_id, _) = window_of(&compositor, "cinema");
-    let (_, cinema_volume) = compositor.window_color(cinema_id).expect("colour");
-    assert_eq!(
-        cinema_volume
-            .expect("metadata")
-            .mastering
-            .max_display_mastering_luminance,
-        40_000_000,
-        "4000 cd/m² in 1/10000 units"
-    );
 }

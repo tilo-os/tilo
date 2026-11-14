@@ -62,12 +62,8 @@ fn origin(key: &SigningKey) -> TransportOrigin {
     TransportOrigin::RelayDelta(key.verifying_key().to_bytes())
 }
 
-fn metadata(peer: &StatePeer, epoch: u64) -> EncryptionMetadata {
-    EncryptionMetadata::content_key(
-        epoch,
-        collab_types::document_channel_id(APP, peer.workspace_id(), RECORD),
-        collab_types::ContentRetention::Delta,
-    )
+fn metadata(epoch: u64) -> EncryptionMetadata {
+    EncryptionMetadata::content_key(epoch, collab_types::ContentRetention::Delta)
 }
 
 fn sealed(peer: &StatePeer, key: &SigningKey, at: SystemTime, ciphertext: &[u8]) -> NeighbourMsg {
@@ -80,7 +76,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, at: SystemTime, ciphertext: &[u8])
         OpKind::Change,
         at,
         1,
-        metadata(peer, 1),
+        metadata(1),
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
@@ -254,7 +250,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
 fn a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed() {
     let mut fixture = fixture();
     let later = expired(fixture.now);
-    let current = metadata(&fixture.member, 2);
+    let current = metadata(2);
     let renewal = fixture
         .renew(
             &fixture.write.clone(),
@@ -266,21 +262,6 @@ fn a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed() {
     assert_eq!(envelope(&renewal).encryption, Some(current));
     assert_eq!(envelope(&renewal).payload, b"resealed under epoch 2");
     collab_types::verify_op(envelope(&renewal)).unwrap();
-
-    let before = fixture.member.durable().unwrap();
-    let mut foreign = metadata(&fixture.member, 2);
-    foreign.channel = collab_types::ChannelId::new();
-    assert!(
-        fixture
-            .renew(
-                &fixture.write.clone(),
-                &mut |_| Ok((foreign, b"another channel".to_vec())),
-                expired(later)
-            )
-            .is_err(),
-        "a renewal cannot move to another channel"
-    );
-    assert_eq!(fixture.member.durable().unwrap(), before);
 }
 
 #[test]

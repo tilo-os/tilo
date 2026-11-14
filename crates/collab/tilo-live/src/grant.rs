@@ -187,73 +187,77 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn a_grant_round_trips() {
-        let grant = grant();
-        assert_eq!(Native::parse(&grant.encode()), Some(grant));
-    }
+    tilo_test_env::scenario! {
+        fn a_native_grant_parses_only_whole_and_in_its_own_version;
 
-    #[test]
-    fn a_delegated_transport_rides_beside_the_certificate() {
-        let mut delegated = grant();
-        delegated.delegation = vec![5; 200];
-        assert_eq!(Native::parse(&delegated.encode()), Some(delegated));
-    }
+        phase a_grant_round_trips;
+        {
+            let grant = grant();
+            assert_eq!(Native::parse(&grant.encode()), Some(grant));
+        }
 
-    #[test]
-    fn the_version_is_the_first_byte_and_no_other_version_parses() {
-        let mut bytes = grant().encode();
-        assert_eq!(bytes[0], NATIVE);
-        bytes[0] = 3;
-        assert_eq!(Native::parse(&bytes), None);
-        bytes[0] = 1;
-        assert_eq!(
-            Native::parse(&bytes),
-            None,
-            "version 1 carried no delegation"
-        );
-    }
+        phase a_delegated_transport_rides_beside_the_certificate;
+        {
+            let mut delegated = grant();
+            delegated.delegation = vec![5; 200];
+            assert_eq!(Native::parse(&delegated.encode()), Some(delegated));
+        }
 
-    #[test]
-    fn a_truncated_or_trailing_grant_parses_as_nothing() {
-        let bytes = grant().encode();
-        for cut in 1..bytes.len() {
+        phase the_version_is_the_first_byte_and_no_other_version_parses;
+        {
+            let mut bytes = grant().encode();
+            assert_eq!(bytes[0], NATIVE);
+            bytes[0] = 3;
+            assert_eq!(Native::parse(&bytes), None);
+            bytes[0] = 1;
             assert_eq!(
-                Native::parse(&bytes[..cut]),
+                Native::parse(&bytes),
                 None,
-                "a grant cut to {cut} bytes"
+                "version 1 carried no delegation"
             );
         }
-        let mut longer = bytes;
-        longer.push(0);
-        assert_eq!(Native::parse(&longer), None);
-    }
 
-    #[test]
-    fn a_scope_that_does_not_fit_is_refused() {
-        let long = "s".repeat(MAX_SCOPE_BYTES + 1);
-        assert!(Native::new([0; 16], &long, 0, vec![1], Vec::new()).is_err());
-        assert!(Native::new([0; 16], "", 0, vec![1], Vec::new()).is_err());
-        assert!(Native::new([0; 16], "workspace", 0, Vec::new(), Vec::new()).is_err());
-        assert!(
-            Native::new(
-                [0; 16],
-                "workspace",
-                0,
-                vec![1; MAX_CERTIFICATE_BYTES + 1],
-                Vec::new()
-            )
-            .is_err()
-        );
-        assert!(
-            Native::new(
-                [0; 16],
-                "workspace",
-                0,
-                vec![1],
-                vec![1; MAX_DELEGATION_BYTES + 1]
-            )
-            .is_err()
-        );
+        phase a_truncated_or_trailing_grant_parses_as_nothing;
+        {
+            let bytes = grant().encode();
+            for cut in 1..bytes.len() {
+                assert_eq!(
+                    Native::parse(&bytes[..cut]),
+                    None,
+                    "a grant cut to {cut} bytes"
+                );
+            }
+            let mut longer = bytes;
+            longer.push(0);
+            assert_eq!(Native::parse(&longer), None);
+        }
+
+        phase a_scope_that_does_not_fit_is_refused;
+        {
+            let long = "s".repeat(MAX_SCOPE_BYTES + 1);
+            assert!(Native::new([0; 16], &long, 0, vec![1], Vec::new()).is_err());
+            assert!(Native::new([0; 16], "", 0, vec![1], Vec::new()).is_err());
+            assert!(Native::new([0; 16], "workspace", 0, Vec::new(), Vec::new()).is_err());
+            assert!(
+                Native::new(
+                    [0; 16],
+                    "workspace",
+                    0,
+                    vec![1; MAX_CERTIFICATE_BYTES + 1],
+                    Vec::new()
+                )
+                .is_err()
+            );
+            assert!(
+                Native::new(
+                    [0; 16],
+                    "workspace",
+                    0,
+                    vec![1],
+                    vec![1; MAX_DELEGATION_BYTES + 1]
+                )
+                .is_err()
+            );
+        }
     }
 }

@@ -15,7 +15,7 @@ use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
     RemoteActionMessage, RemoteActionTarget,
 };
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay_session::workspaces::{
     ATTACH_HOST, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM, DETACH_HOST, ENTER_ROOM,
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_REVOCATIONS,
@@ -27,6 +27,7 @@ use super::super::tests::{caller, settled};
 use super::super::{GovernedPlane, HostWorkspaceActions};
 use crate::app_serving::AppServingPlane as _;
 use crate::workspaces::tests::{governor, guest_device, test_host};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Another device of the relay's own person: the one `governor` certifies
 /// the relay for.
@@ -147,7 +148,7 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
         .into_iter()
         .find(|pending| pending.invite_id == first.invite_id)
         .expect("the first invitation is pending");
-    assert_eq!(pending.role, MemberRole::Commenter);
+    assert_eq!(pending.role, Role::Commenter);
     assert_eq!(
         pending.recipient_user_public_key,
         Some(guest.user_public_key)
@@ -277,7 +278,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     // Without the certificate the transport verified, the host's operations
     // are not there at all.
     let unverified = settled(
-        host.in_workspace(7)
+        host.in_workspace(WorkspaceId::from_u128(7))
             .invoke(&caller(&laptop), host_request(LIST_ROOMS, json!({}))),
     )
     .await;

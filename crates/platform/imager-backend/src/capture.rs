@@ -97,35 +97,39 @@ fn failure(message: &'static str) -> std::io::Error {
 mod tests {
     use super::*;
 
-    #[test]
-    fn platform_support_is_typed_and_preserves_io_kind() {
-        if cfg!(target_os = "linux") {
-            supported().unwrap();
-        } else {
-            assert!(matches!(supported(), Err(Error::Unsupported)));
-        }
-        let error = std::io::Error::from(Error::Unsupported);
-        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-    }
+    tilo_test_env::scenario! {
+        fn capture_support_and_status_keep_their_wire_contract;
 
-    #[test]
-    fn status_wire_shape_remains_bounded_and_path_free() {
-        let status = Status {
-            operation: "0f273186-e49a-4f14-8507-e13c6c16925a".into(),
-            state: State::Ready,
-            expires_unix: Some(123),
-        };
-        let bytes = serde_json::to_vec(&status).unwrap();
-        assert_eq!(
-            bytes,
-            br#"{"operation":"0f273186-e49a-4f14-8507-e13c6c16925a","state":"ready","expires_unix":123}"#
-        );
-        assert_eq!(serde_json::from_slice::<Status>(&bytes).unwrap(), status);
-        assert!(
-            serde_json::from_str::<Status>(
-                r#"{"operation":"x","state":"ready","expires_unix":null,"snapshot":"/private"}"#
-            )
-            .is_err()
-        );
+        phase platform_support_is_typed_and_preserves_io_kind;
+        {
+            if cfg!(target_os = "linux") {
+                supported().unwrap();
+            } else {
+                assert!(matches!(supported(), Err(Error::Unsupported)));
+            }
+            let error = std::io::Error::from(Error::Unsupported);
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+
+        phase status_wire_shape_remains_bounded_and_path_free;
+        {
+            let status = Status {
+                operation: "0f273186-e49a-4f14-8507-e13c6c16925a".into(),
+                state: State::Ready,
+                expires_unix: Some(123),
+            };
+            let bytes = serde_json::to_vec(&status).unwrap();
+            assert_eq!(
+                bytes,
+                br#"{"operation":"0f273186-e49a-4f14-8507-e13c6c16925a","state":"ready","expires_unix":123}"#
+            );
+            assert_eq!(serde_json::from_slice::<Status>(&bytes).unwrap(), status);
+            assert!(
+                serde_json::from_str::<Status>(
+                    r#"{"operation":"x","state":"ready","expires_unix":null,"snapshot":"/private"}"#
+                )
+                .is_err()
+            );
+        }
     }
 }

@@ -124,62 +124,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_run_without_a_model_says_so_once_and_names_the_door() {
-        let plan = Planner::Words {
-            reason: Words::NoModel,
-        };
-        assert!(plan.announcing().contains("No model is set up"));
-        assert!(plan.announcing().contains("Agent models"));
-        let unmatched = unmatched(
-            &plan,
-            "That could mean reveal message or copy link. Which one?",
-        );
-        assert!(
-            unmatched.contains("no model is set up"),
-            "the missing model is said plainly: {unmatched}"
-        );
-        assert!(unmatched.contains("Agent models"));
-        assert!(
-            !unmatched.contains("That could mean"),
-            "the reply does not list actions the words came nearest: {unmatched}"
-        );
-        assert!(
-            !unmatched.contains("permission"),
-            "a missing model never reads as a missing permission: {unmatched}"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_run_says_how_it_was_planned;
 
-    #[test]
-    fn a_run_asked_to_plan_without_a_model_does_not_blame_a_missing_one() {
-        let plan = Planner::Words {
-            reason: Words::Asked,
-        };
-        assert!(!plan.announcing().contains("No model is set up"));
-        assert!(
-            !unmatched(
+        phase a_run_without_a_model_says_so_once_and_names_the_door;
+        {
+            let plan = Planner::Words {
+                reason: Words::NoModel,
+            };
+            assert!(plan.announcing().contains("No model is set up"));
+            assert!(plan.announcing().contains("Agent models"));
+            let unmatched = unmatched(
                 &plan,
-                "No published action carries the words of the request."
-            )
-            .contains("Agent models")
-        );
-    }
+                "That could mean reveal message or copy link. Which one?",
+            );
+            assert!(
+                unmatched.contains("no model is set up"),
+                "the missing model is said plainly: {unmatched}"
+            );
+            assert!(unmatched.contains("Agent models"));
+            assert!(
+                !unmatched.contains("That could mean"),
+                "the reply does not list actions the words came nearest: {unmatched}"
+            );
+            assert!(
+                !unmatched.contains("permission"),
+                "a missing model never reads as a missing permission: {unmatched}"
+            );
+        }
 
-    #[test]
-    fn an_outcome_says_whether_a_model_produced_it() {
-        // A model-planned run's result is the model's own reply: the agent
-        // writes no line in its place.
-        assert_eq!(finished(&model(), 2), None);
-        assert_eq!(
-            finished(
-                &Planner::Words {
-                    reason: Words::NoModel
-                },
-                1
-            )
-            .as_deref(),
-            Some("Done: one action matched to the request's words, without a model.")
-        );
+        phase a_run_asked_to_plan_without_a_model_does_not_blame_a_missing_one;
+        {
+            let plan = Planner::Words {
+                reason: Words::Asked,
+            };
+            assert!(!plan.announcing().contains("No model is set up"));
+            assert!(
+                !unmatched(
+                    &plan,
+                    "No published action carries the words of the request."
+                )
+                .contains("Agent models")
+            );
+        }
+
+        phase an_outcome_says_whether_a_model_produced_it;
+        {
+            // A model-planned run's result is the model's own reply: the agent
+            // writes no line in its place.
+            assert_eq!(finished(&model(), 2), None);
+            assert_eq!(
+                finished(
+                    &Planner::Words {
+                        reason: Words::NoModel
+                    },
+                    1
+                )
+                .as_deref(),
+                Some("Done: one action matched to the request's words, without a model.")
+            );
+        }
     }
 
     /// A run on a German desktop says all of it in German, and names the

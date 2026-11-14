@@ -79,7 +79,7 @@ impl ChatPart {
                     let sender = IndexPerson {
                         name: String::new(),
                         anchor: item_resource_id::<Chat>("people", &Id::from_raw(author.clone())),
-                        agent: author.starts_with("agent:"),
+                        agent: crate::views::is_agent(&author),
                         identity: author,
                     };
                     let place = IndexPerson {

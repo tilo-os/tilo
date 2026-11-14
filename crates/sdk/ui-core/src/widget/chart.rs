@@ -960,246 +960,258 @@ mod tests {
             .count()
     }
 
-    #[test]
-    fn map_point_projects_and_clamps_values_with_floored_ceilings() {
-        fn map_point_projects_value_to_pixels() {
-            let plot = Rect::new(0.0, 0.0, 100.0, 50.0);
-            // n = 3 samples, ceil = 10.
-            let top = map_point(plot, 0, 3, 10.0, TrendRange::up_to(10.0));
-            let bottom = map_point(plot, 2, 3, 0.0, TrendRange::up_to(10.0));
-            let mid = map_point(plot, 1, 3, 5.0, TrendRange::up_to(10.0));
-            assert!((top.y - plot.y0).abs() < 1e-6, "max sits at plot top");
-            assert!(
-                (bottom.y - plot.y1).abs() < 1e-6,
-                "zero sits at the baseline"
-            );
-            assert!((mid.y - 25.0).abs() < 1e-6, "half value lands mid-plot");
-            // x marches evenly: dx = 100/(3-1) = 50.
-            assert!((top.x - 0.0).abs() < 1e-6);
-            assert!((mid.x - 50.0).abs() < 1e-6);
-            assert!((bottom.x - 100.0).abs() < 1e-6);
+    tilo_test_env::scenario! {
+        /// The chart's own arithmetic: projection, the rolling series, the fitted range and the spline.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn chart_helpers_project_fit_and_interpolate;
+
+        phase map_point_projects_and_clamps_values_with_floored_ceilings;
+        {
+            fn map_point_projects_value_to_pixels() {
+                let plot = Rect::new(0.0, 0.0, 100.0, 50.0);
+                // n = 3 samples, ceil = 10.
+                let top = map_point(plot, 0, 3, 10.0, TrendRange::up_to(10.0));
+                let bottom = map_point(plot, 2, 3, 0.0, TrendRange::up_to(10.0));
+                let mid = map_point(plot, 1, 3, 5.0, TrendRange::up_to(10.0));
+                assert!((top.y - plot.y0).abs() < 1e-6, "max sits at plot top");
+                assert!(
+                    (bottom.y - plot.y1).abs() < 1e-6,
+                    "zero sits at the baseline"
+                );
+                assert!((mid.y - 25.0).abs() < 1e-6, "half value lands mid-plot");
+                // x marches evenly: dx = 100/(3-1) = 50.
+                assert!((top.x - 0.0).abs() < 1e-6);
+                assert!((mid.x - 50.0).abs() < 1e-6);
+                assert!((bottom.x - 100.0).abs() < 1e-6);
+            }
+
+            /// Values above `ceil` clamp to the plot top rather than escaping it.
+            fn map_point_clamps_overshoot() {
+                let plot = Rect::new(0.0, 0.0, 10.0, 10.0);
+                let p = map_point(plot, 0, 2, 999.0, TrendRange::up_to(1.0));
+                assert!((p.y - plot.y0).abs() < 1e-6, "overshoot clamps to the top");
+            }
+
+            /// `ceiling` floors away from zero so an all-zero series never divides
+            /// by ~0 in the projection.
+            fn chart_ceiling_floors_away_from_zero() {
+                let chart = Chart::new(vec![Series::new(vec![0.0, 0.0], Color::WHITE)]);
+                assert!(chart.ceiling() >= 1e-3);
+                let pinned = Chart::new(vec![]).with_max(42.0);
+                assert_eq!(pinned.ceiling(), 42.0);
+            }
+
+            map_point_projects_value_to_pixels();
+            map_point_clamps_overshoot();
+            chart_ceiling_floors_away_from_zero();
         }
 
-        /// Values above `ceil` clamp to the plot top rather than escaping it.
-        fn map_point_clamps_overshoot() {
-            let plot = Rect::new(0.0, 0.0, 10.0, 10.0);
-            let p = map_point(plot, 0, 2, 999.0, TrendRange::up_to(1.0));
-            assert!((p.y - plot.y0).abs() < 1e-6, "overshoot clamps to the top");
+        phase rolling_series_caps_and_keeps_newest;
+        {
+            let mut series = RollingSeries::new(3);
+            for sample in [1.0, 2.0, 3.0, 4.0] {
+                series.push(sample);
+            }
+            assert_eq!(series.as_slice(), &[2.0, 3.0, 4.0]);
+            assert_eq!(series.last(), 4.0);
+            assert_eq!(series.max(), 4.0);
+            assert_eq!(series.mean(), 3.0);
+            let seeded = RollingSeries::from_samples(2, [5.0, 6.0, 7.0]);
+            assert_eq!(seeded.as_slice(), &[6.0, 7.0]);
+            let mut none = RollingSeries::new(0);
+            none.push(1.0);
+            assert!(none.is_empty());
         }
 
-        /// `ceiling` floors away from zero so an all-zero series never divides
-        /// by ~0 in the projection.
-        fn chart_ceiling_floors_away_from_zero() {
-            let chart = Chart::new(vec![Series::new(vec![0.0, 0.0], Color::WHITE)]);
-            assert!(chart.ceiling() >= 1e-3);
-            let pinned = Chart::new(vec![]).with_max(42.0);
-            assert_eq!(pinned.ceiling(), 42.0);
+        // A flat series widens around its value so it sits mid-band, and a
+        // fitted range spans the data exactly otherwise.
+        phase fitted_range_centres_a_flat_series;
+        {
+            let flat = TrendRange::fit(&[12.0_f64, 12.0]);
+            assert!((flat.fraction(12.0) - 0.5).abs() < 1e-9);
+            let span = TrendRange::fit(&[2.0_f32, 8.0, 5.0]);
+            assert_eq!((span.lo, span.hi), (2.0, 8.0));
+            assert_eq!(TrendRange::fit::<f64>(&[]), TrendRange::up_to(1.0));
         }
 
-        map_point_projects_value_to_pixels();
-        map_point_clamps_overshoot();
-        chart_ceiling_floors_away_from_zero();
+        phase catmull_rom_passes_through_every_sample;
+        {
+            let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
+            let data = [3.0_f64, 9.0, 1.0, 6.0];
+            let points = Sparkline::points(rect, &data, TrendRange::fit(&data));
+            let path = trend_path(&points, TrendCurve::CatmullRom);
+            let ends: Vec<Point> = path
+                .elements()
+                .iter()
+                .filter_map(|el| el.end_point())
+                .collect();
+            assert_eq!(ends, points);
+        }
     }
 
-    #[test]
-    fn chart_paints_grid_series_fills_and_sparklines() {
-        fn area_fill_adds_a_color_tag() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let data = vec![1.0_f32, 3.0, 2.0, 5.0, 4.0];
-            let series = vec![Series::new(data, theme.tokens.colors.intent.accent)];
+    tilo_test_env::scenario! {
+        /// What a chart paints.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_chart_paints_its_grid_series_and_trend_marks;
 
+        phase chart_paints_grid_series_fills_and_sparklines;
+        {
+            fn area_fill_adds_a_color_tag() {
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let data = vec![1.0_f32, 3.0, 2.0, 5.0, 4.0];
+                let series = vec![Series::new(data, theme.tokens.colors.intent.accent)];
+
+                let mut plain = Scene::new();
+                Chart::draw_at(
+                    &mut PaintCtx::new(&mut plain, Affine::IDENTITY, &mut tr, &theme),
+                    Rect::new(0.0, 0.0, 200.0, 120.0),
+                    &series,
+                    5.0,
+                    false,
+                    ChartLabels::default(),
+                );
+                let mut filled = Scene::new();
+                Chart::draw_at(
+                    &mut PaintCtx::new(&mut filled, Affine::IDENTITY, &mut tr, &theme),
+                    Rect::new(0.0, 0.0, 200.0, 120.0),
+                    &series,
+                    5.0,
+                    true,
+                    ChartLabels::default(),
+                );
+                assert!(
+                    count_color_tags(&filled) > count_color_tags(&plain),
+                    "area fill must add at least one COLOR fill (plain={}, filled={})",
+                    count_color_tags(&plain),
+                    count_color_tags(&filled),
+                );
+            }
+
+            /// The grid emits exactly `GRID_DIVISIONS + 1` stroke rules, so a chart
+            /// with no series still paints its grid (proves grid is independent of
+            /// the data path). We assert the chart paints *something* and a
+            /// data-bearing chart paints strictly more.
+            fn chart_paints_grid_then_series() {
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let empty: Vec<Series> = vec![];
+                let mut grid_only = Scene::new();
+                Chart::draw_at(
+                    &mut PaintCtx::new(&mut grid_only, Affine::IDENTITY, &mut tr, &theme),
+                    Rect::new(0.0, 0.0, 200.0, 120.0),
+                    &empty,
+                    1.0,
+                    false,
+                    ChartLabels::default(),
+                );
+                let grid_tags = count_color_tags(&grid_only);
+                assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
+
+                let series = vec![Series::new(
+                    vec![1.0, 2.0, 3.0],
+                    theme.tokens.colors.intent.accent,
+                )];
+                let mut with_line = Scene::new();
+                Chart::draw_at(
+                    &mut PaintCtx::new(&mut with_line, Affine::IDENTITY, &mut tr, &theme),
+                    Rect::new(0.0, 0.0, 200.0, 120.0),
+                    &series,
+                    3.0,
+                    false,
+                    ChartLabels::default(),
+                );
+                assert!(
+                    count_color_tags(&with_line) > grid_tags,
+                    "series line adds fills"
+                );
+            }
+
+            /// A single-point series is skipped (no line drawn) — a sparkline or
+            /// chart line needs at least two points to interpolate.
+            fn sparkline_needs_two_points() {
+                let theme = Theme::dark();
+                let mut one = Scene::new();
+                Sparkline::draw_at(
+                    &mut one,
+                    Affine::IDENTITY,
+                    Rect::new(0.0, 0.0, 64.0, 20.0),
+                    &[5.0],
+                    5.0,
+                    theme.tokens.colors.intent.accent,
+                );
+                assert_eq!(count_color_tags(&one), 0, "single point draws nothing");
+
+                let mut many = Scene::new();
+                Sparkline::draw_at(
+                    &mut many,
+                    Affine::IDENTITY,
+                    Rect::new(0.0, 0.0, 64.0, 20.0),
+                    &[5.0, 3.0, 7.0],
+                    7.0,
+                    theme.tokens.colors.intent.accent,
+                );
+                assert!(count_color_tags(&many) >= 2, "area + line both paint");
+            }
+
+            area_fill_adds_a_color_tag();
+            chart_paints_grid_then_series();
+            sparkline_needs_two_points();
+        }
+
+        // Markers and the leading dot each add fills on top of line and area.
+        phase trend_marks_add_fills;
+        {
+            let rect = Rect::new(0.0, 0.0, 64.0, 20.0);
+            let data = [1.0_f64, 4.0, 2.0];
+            let range = TrendRange::up_to(4.0);
             let mut plain = Scene::new();
-            Chart::draw_at(
-                &mut PaintCtx::new(&mut plain, Affine::IDENTITY, &mut tr, &theme),
-                Rect::new(0.0, 0.0, 200.0, 120.0),
-                &series,
-                5.0,
-                false,
-                ChartLabels::default(),
+            Sparkline::paint(
+                &mut plain,
+                Affine::IDENTITY,
+                rect,
+                &data,
+                range,
+                Color::WHITE,
+                &TrendStyle::SPARKLINE,
             );
-            let mut filled = Scene::new();
-            Chart::draw_at(
-                &mut PaintCtx::new(&mut filled, Affine::IDENTITY, &mut tr, &theme),
-                Rect::new(0.0, 0.0, 200.0, 120.0),
-                &series,
-                5.0,
-                true,
-                ChartLabels::default(),
+            let mut marked = Scene::new();
+            Sparkline::paint(
+                &mut marked,
+                Affine::IDENTITY,
+                rect,
+                &data,
+                range,
+                Color::WHITE,
+                &TrendStyle::SPARKLINE
+                    .with_markers(2.0)
+                    .with_leading_dot(3.0)
+                    .with_fill(TrendFill::Gradient {
+                        top: 0.3,
+                        bottom: 0.0,
+                    }),
             );
-            assert!(
-                count_color_tags(&filled) > count_color_tags(&plain),
-                "area fill must add at least one COLOR fill (plain={}, filled={})",
-                count_color_tags(&plain),
-                count_color_tags(&filled),
-            );
+            assert_eq!(count_color_tags(&plain), 2, "area + line");
+            assert_eq!(count_color_tags(&marked), 5);
         }
 
-        /// The grid emits exactly `GRID_DIVISIONS + 1` stroke rules, so a chart
-        /// with no series still paints its grid (proves grid is independent of
-        /// the data path). We assert the chart paints *something* and a
-        /// data-bearing chart paints strictly more.
-        fn chart_paints_grid_then_series() {
+        // A header-less chart still paints its grid over the whole rect, and an
+        // empty series list paints only that grid.
+        phase headerless_chart_paints_grid_for_empty_series;
+        {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
-            let empty: Vec<Series> = vec![];
-            let mut grid_only = Scene::new();
-            Chart::draw_at(
-                &mut PaintCtx::new(&mut grid_only, Affine::IDENTITY, &mut tr, &theme),
-                Rect::new(0.0, 0.0, 200.0, 120.0),
-                &empty,
-                1.0,
-                false,
+            let mut scene = Scene::new();
+            let style = ChartStyle::default().without_header().with_grid(3, None);
+            Chart::draw_styled(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                Rect::new(0.0, 0.0, 200.0, 10.0),
+                &[],
+                TrendRange::up_to(1.0),
                 ChartLabels::default(),
+                &style,
             );
-            let grid_tags = count_color_tags(&grid_only);
-            assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
-
-            let series = vec![Series::new(
-                vec![1.0, 2.0, 3.0],
-                theme.tokens.colors.intent.accent,
-            )];
-            let mut with_line = Scene::new();
-            Chart::draw_at(
-                &mut PaintCtx::new(&mut with_line, Affine::IDENTITY, &mut tr, &theme),
-                Rect::new(0.0, 0.0, 200.0, 120.0),
-                &series,
-                3.0,
-                false,
-                ChartLabels::default(),
-            );
-            assert!(
-                count_color_tags(&with_line) > grid_tags,
-                "series line adds fills"
-            );
+            assert_eq!(count_color_tags(&scene), 4, "three divisions, four rules");
         }
-
-        /// A single-point series is skipped (no line drawn) — a sparkline or
-        /// chart line needs at least two points to interpolate.
-        fn sparkline_needs_two_points() {
-            let theme = Theme::dark();
-            let mut one = Scene::new();
-            Sparkline::draw_at(
-                &mut one,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 64.0, 20.0),
-                &[5.0],
-                5.0,
-                theme.tokens.colors.intent.accent,
-            );
-            assert_eq!(count_color_tags(&one), 0, "single point draws nothing");
-
-            let mut many = Scene::new();
-            Sparkline::draw_at(
-                &mut many,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 64.0, 20.0),
-                &[5.0, 3.0, 7.0],
-                7.0,
-                theme.tokens.colors.intent.accent,
-            );
-            assert!(count_color_tags(&many) >= 2, "area + line both paint");
-        }
-
-        area_fill_adds_a_color_tag();
-        chart_paints_grid_then_series();
-        sparkline_needs_two_points();
-    }
-
-    #[test]
-    fn rolling_series_caps_and_keeps_newest() {
-        let mut series = RollingSeries::new(3);
-        for sample in [1.0, 2.0, 3.0, 4.0] {
-            series.push(sample);
-        }
-        assert_eq!(series.as_slice(), &[2.0, 3.0, 4.0]);
-        assert_eq!(series.last(), 4.0);
-        assert_eq!(series.max(), 4.0);
-        assert_eq!(series.mean(), 3.0);
-        let seeded = RollingSeries::from_samples(2, [5.0, 6.0, 7.0]);
-        assert_eq!(seeded.as_slice(), &[6.0, 7.0]);
-        let mut none = RollingSeries::new(0);
-        none.push(1.0);
-        assert!(none.is_empty());
-    }
-
-    /// A flat series widens around its value so it sits mid-band, and a
-    /// fitted range spans the data exactly otherwise.
-    #[test]
-    fn fitted_range_centres_a_flat_series() {
-        let flat = TrendRange::fit(&[12.0_f64, 12.0]);
-        assert!((flat.fraction(12.0) - 0.5).abs() < 1e-9);
-        let span = TrendRange::fit(&[2.0_f32, 8.0, 5.0]);
-        assert_eq!((span.lo, span.hi), (2.0, 8.0));
-        assert_eq!(TrendRange::fit::<f64>(&[]), TrendRange::up_to(1.0));
-    }
-
-    #[test]
-    fn catmull_rom_passes_through_every_sample() {
-        let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
-        let data = [3.0_f64, 9.0, 1.0, 6.0];
-        let points = Sparkline::points(rect, &data, TrendRange::fit(&data));
-        let path = trend_path(&points, TrendCurve::CatmullRom);
-        let ends: Vec<Point> = path
-            .elements()
-            .iter()
-            .filter_map(|el| el.end_point())
-            .collect();
-        assert_eq!(ends, points);
-    }
-
-    /// Markers and the leading dot each add fills on top of line and area.
-    #[test]
-    fn trend_marks_add_fills() {
-        let rect = Rect::new(0.0, 0.0, 64.0, 20.0);
-        let data = [1.0_f64, 4.0, 2.0];
-        let range = TrendRange::up_to(4.0);
-        let mut plain = Scene::new();
-        Sparkline::paint(
-            &mut plain,
-            Affine::IDENTITY,
-            rect,
-            &data,
-            range,
-            Color::WHITE,
-            &TrendStyle::SPARKLINE,
-        );
-        let mut marked = Scene::new();
-        Sparkline::paint(
-            &mut marked,
-            Affine::IDENTITY,
-            rect,
-            &data,
-            range,
-            Color::WHITE,
-            &TrendStyle::SPARKLINE
-                .with_markers(2.0)
-                .with_leading_dot(3.0)
-                .with_fill(TrendFill::Gradient {
-                    top: 0.3,
-                    bottom: 0.0,
-                }),
-        );
-        assert_eq!(count_color_tags(&plain), 2, "area + line");
-        assert_eq!(count_color_tags(&marked), 5);
-    }
-
-    /// A header-less chart still paints its grid over the whole rect, and an
-    /// empty series list paints only that grid.
-    #[test]
-    fn headerless_chart_paints_grid_for_empty_series() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let style = ChartStyle::default().without_header().with_grid(3, None);
-        Chart::draw_styled(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-            Rect::new(0.0, 0.0, 200.0, 10.0),
-            &[],
-            TrendRange::up_to(1.0),
-            ChartLabels::default(),
-            &style,
-        );
-        assert_eq!(count_color_tags(&scene), 4, "three divisions, four rules");
     }
 }

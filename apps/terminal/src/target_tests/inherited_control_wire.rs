@@ -203,77 +203,81 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
     drop(environment);
 }
 
-#[test]
-fn an_old_supervisor_is_refused_before_any_session_open_or_local_fallback() {
-    let (client, mut server) = UnixStream::pair().unwrap();
-    let peer = std::thread::spawn(move || {
-        server
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let mut reader = BufReader::new(server.try_clone().unwrap());
-        assert_eq!(read_json(&mut reader)["op"], "hello");
-        server
-            .write_all(b"{\"result\":\"denied\",\"reason\":\"unknown operation\"}\n")
-            .unwrap();
-        let mut byte = [0u8; 1];
-        assert_eq!(
-            reader.read(&mut byte).unwrap(),
-            0,
-            "no OpenSession follows unsupported negotiation"
-        );
-    });
-    let answer = crate::inner::ush_backend_on(
-        &client,
-        &[],
-        &SessionTarget::default(),
-        Requester::Person,
-        None,
-        None,
-    );
-    assert!(matches!(answer, Err(crate::OpenError::Unavailable(_))));
-    drop(client);
-    peer.join().unwrap();
-}
+tilo_test_env::scenario! {
+    fn a_supervisors_bad_answer_opens_no_session;
 
-#[test]
-fn an_invalid_session_reply_closes_both_received_rights() {
-    let (client, mut server) = UnixStream::pair().unwrap();
-    let peer = std::thread::spawn(move || {
-        let mut reader = BufReader::new(server.try_clone().unwrap());
-        assert_eq!(read_json(&mut reader)["op"], "hello");
-        server
-            .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
-            .unwrap();
-        assert_eq!(read_json(&mut reader)["op"], "open-session");
-        let (mut master_peer, master) = UnixStream::pair().unwrap();
-        let (mut lease_peer, lease) = UnixStream::pair().unwrap();
-        for peer in [&master_peer, &lease_peer] {
-            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+    phase an_old_supervisor_is_refused_before_any_session_open_or_local_fallback;
+    {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let peer = std::thread::spawn(move || {
+            server
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
-        }
-        runtime_portal::fd_transport::send_with_fds(
-            &server,
-            b"{\"result\":\"session\",\"protocol\":1}\n",
-            &[master.as_fd(), lease.as_fd()],
-        )
-        .unwrap();
-        drop(master);
-        drop(lease);
-        for peer in [&mut master_peer, &mut lease_peer] {
-            assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
-        }
-    });
-    assert!(matches!(
-        crate::inner::ush_backend_on(
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            assert_eq!(read_json(&mut reader)["op"], "hello");
+            server
+                .write_all(b"{\"result\":\"denied\",\"reason\":\"unknown operation\"}\n")
+                .unwrap();
+            let mut byte = [0u8; 1];
+            assert_eq!(
+                reader.read(&mut byte).unwrap(),
+                0,
+                "no OpenSession follows unsupported negotiation"
+            );
+        });
+        let answer = crate::inner::ush_backend_on(
             &client,
             &[],
             &SessionTarget::default(),
             Requester::Person,
             None,
-            None
-        ),
-        Err(crate::OpenError::Failed(_))
-    ));
-    drop(client);
-    peer.join().unwrap();
+            None,
+        );
+        assert!(matches!(answer, Err(crate::OpenError::Unavailable(_))));
+        drop(client);
+        peer.join().unwrap();
+    }
+
+    phase an_invalid_session_reply_closes_both_received_rights;
+    {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let peer = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            assert_eq!(read_json(&mut reader)["op"], "hello");
+            server
+                .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
+                .unwrap();
+            assert_eq!(read_json(&mut reader)["op"], "open-session");
+            let (mut master_peer, master) = UnixStream::pair().unwrap();
+            let (mut lease_peer, lease) = UnixStream::pair().unwrap();
+            for peer in [&master_peer, &lease_peer] {
+                peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+            }
+            runtime_portal::fd_transport::send_with_fds(
+                &server,
+                b"{\"result\":\"session\",\"protocol\":1}\n",
+                &[master.as_fd(), lease.as_fd()],
+            )
+            .unwrap();
+            drop(master);
+            drop(lease);
+            for peer in [&mut master_peer, &mut lease_peer] {
+                assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
+            }
+        });
+        assert!(matches!(
+            crate::inner::ush_backend_on(
+                &client,
+                &[],
+                &SessionTarget::default(),
+                Requester::Person,
+                None,
+                None
+            ),
+            Err(crate::OpenError::Failed(_))
+        ));
+        drop(client);
+        peer.join().unwrap();
+    }
 }

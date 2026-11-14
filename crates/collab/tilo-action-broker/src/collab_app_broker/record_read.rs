@@ -19,8 +19,8 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CallerPrincipal, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS,
-    RecordAddress, RecordChange, RecordChanges, RecordCopy, RecordReads, RecordWake,
+    ActionHostError, Caller, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS, RecordAddress,
+    RecordChange, RecordChanges, RecordCopy, RecordReads, RecordWake,
 };
 
 use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
@@ -89,8 +89,8 @@ impl RecordChanges for BrokerRecordChanges {
             .state
             .upgrade()
             .ok_or_else(|| unavailable("the broker stopped".into()))?;
-        let (Some((person, workspace)), CallerPrincipal::Agent(agent)) =
-            (task_person(caller), caller.principal())
+        let (Some((person, workspace)), Some(agent)) =
+            (task_person(caller), caller.acting().agent_id())
         else {
             return Err(ActionHostError::Refused {
                 reason: RECORD_READS_FOR_TASKS.into(),
@@ -227,7 +227,7 @@ const RECORD_READ_ACTION: &str = "read";
 /// The person an agent task acts for, when `caller` is one: an agent the host admitted as a
 /// member acting for its person, confined to a workspace.
 fn task_person(caller: &Caller) -> Option<(&str, &str)> {
-    if !matches!(caller.principal(), CallerPrincipal::Agent(_)) || caller.is_session_delegated() {
+    if !caller.acting().is_agent() || caller.is_session_delegated() {
         return None;
     }
     Some((caller.acting_for_person()?, caller.workspace()?))
@@ -237,11 +237,11 @@ fn task_person(caller: &Caller) -> Option<(&str, &str)> {
 /// the person themself reading their own workspace's records (a view of them, a test), or an
 /// app on their device reading another app's records for them, as the workspace grants it.
 fn reader(caller: &Caller) -> Option<(&str, &str)> {
-    match caller.principal() {
-        CallerPrincipal::Person(person) if !caller.is_session_delegated() => {
-            Some((person.as_str(), caller.workspace()?))
-        }
-        CallerPrincipal::App(_) => Some((caller.acting_for_person()?, caller.workspace()?)),
+    if caller.acting().app().is_some() {
+        return Some((caller.acting_for_person()?, caller.workspace()?));
+    }
+    match caller.acting().person_id() {
+        Some(person) if !caller.is_session_delegated() => Some((person, caller.workspace()?)),
         _ => task_person(caller),
     }
 }

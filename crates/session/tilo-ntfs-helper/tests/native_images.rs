@@ -91,110 +91,114 @@ fn native_probe_classifies_each_image_without_mutating_it() {
     assert_eq!(before, Sha256::digest(fs::read(&path).unwrap()));
 }
 
-/// The clean, generation, upcase and ACL images report native identity,
-/// content and security facts. Probing is read-only (see `probe`), so each
-/// report is produced once and shared by the checks below.
-#[test]
-fn native_images_report_identity_content_and_security_facts() {
-    let facts = |report: &serde_json::Value| report["facts"].as_array().expect("facts").clone();
-    let clean = probe("clean").unwrap();
-    let generation = probe("generation").unwrap();
-    let upcase = probe("upcase").unwrap();
+tilo_test_env::scenario! {
+    fn probing_reports_the_native_facts_each_image_holds;
 
-    // The clean image returns serial, root generation and content metadata.
-    assert_eq!(clean["status"], 0, "{clean}");
-    assert_eq!(clean["diagnostic_only"], true);
-    let f = facts(&clean);
-    assert!(
-        f.iter()
-            .any(|v| v["kind"] == "volume" && v["serial"] == "1122334455667788")
-    );
-    assert!(
-        f.iter().any(|v| v["kind"] == "entry"
+    phase native_images_report_identity_content_and_security_facts;
+    // The clean, generation, upcase and ACL images report native identity,
+    // content and security facts. Probing is read-only (see `probe`), so each
+    // report is produced once and shared by the checks below.
+    {
+        let facts = |report: &serde_json::Value| report["facts"].as_array().expect("facts").clone();
+        let clean = probe("clean").unwrap();
+        let generation = probe("generation").unwrap();
+        let upcase = probe("upcase").unwrap();
+
+        // The clean image returns serial, root generation and content metadata.
+        assert_eq!(clean["status"], 0, "{clean}");
+        assert_eq!(clean["diagnostic_only"], true);
+        let f = facts(&clean);
+        assert!(
+            f.iter()
+                .any(|v| v["kind"] == "volume" && v["serial"] == "1122334455667788")
+        );
+        assert!(
+            f.iter().any(|v| v["kind"] == "entry"
+                && v["record"] == 5
+                && v["sequence"].as_u64().unwrap() > 0)
+        );
+        assert!(
+            f.iter().any(|v| v["kind"] == "chunk"
+                && v["hex"] == "436f6e6e6563746564204e54465320666978747572650a")
+        );
+
+        // An MFT generation change changes identity.
+        assert_eq!(generation["status"], 0, "{generation}");
+        assert!(
+            facts(&generation)
+                .iter()
+                .any(|v| v["kind"] == "entry" && v["record"] == 5 && v["sequence"] == 42)
+        );
+
+        // Upcase keys follow the volume table.
+        assert_eq!(upcase["status"], 0, "{upcase}");
+        assert!(facts(&upcase).iter().any(|v| v["kind"] == "entry"
+            && v["name"] == "e4002e00740078007400"
+            && v["key"] == "d6002e00540058005400"));
+
+        // Identity binds the root sequence and the native upcase digest.
+        assert!(
+            clean["native_identity"]["volume"].is_string(),
+            "missing native identity"
+        );
+        assert_eq!(
+            clean["native_identity"]["volume"],
+            generation["native_identity"]["volume"]
+        );
+        assert_ne!(
+            clean["native_identity"]["root"],
+            generation["native_identity"]["root"]
+        );
+        assert_ne!(
+            clean["native_identity"]["upcase_sha256"],
+            upcase["native_identity"]["upcase_sha256"]
+        );
+
+        // Security descriptors have native provenance.
+        assert!(
+            f.iter()
+                .any(|v| v["kind"] == "security" && v["record"] == 5 && v["source"] == "attribute")
+        );
+        let acl = probe("acl").unwrap();
+        assert!(
+            facts(&acl)
+                .iter()
+                .any(|v| v["kind"] == "security" && v["record"] == 64 && v["source"] == "sds")
+        );
+
+        // A folder identity rejects a regular-file MFT locator.
+        let report: tilo_ntfs_helper::protocol::Report = serde_json::from_value(clean).unwrap();
+        assert!(tilo_ntfs_helper::protocol::identity(&report, 64).is_err());
+    }
+
+    phase native_metadata_images_report_streams_reparse_and_hardlinks;
+    // Named directory streams, reparse points and hard-link resident attributes
+    // are reported as distinct native facts.
+    {
+        let facts = |report: &serde_json::Value| report["facts"].as_array().expect("facts").clone();
+        let r = probe("metadata").unwrap();
+        assert_eq!(r["status"], 0, "{r}");
+        let f = facts(&r);
+        assert!(f.iter().any(|v| v["kind"] == "attribute"
+            && v["type"] == 128
             && v["record"] == 5
-            && v["sequence"].as_u64().unwrap() > 0)
-    );
-    assert!(
-        f.iter().any(|v| v["kind"] == "chunk"
-            && v["hex"] == "436f6e6e6563746564204e54465320666978747572650a")
-    );
+            && v["name"] == "640069007200"));
+        assert!(
+            f.iter()
+                .any(|v| v["kind"] == "attribute" && v["type"] == 192)
+        );
 
-    // An MFT generation change changes identity.
-    assert_eq!(generation["status"], 0, "{generation}");
-    assert!(
-        facts(&generation)
-            .iter()
-            .any(|v| v["kind"] == "entry" && v["record"] == 5 && v["sequence"] == 42)
-    );
-
-    // Upcase keys follow the volume table.
-    assert_eq!(upcase["status"], 0, "{upcase}");
-    assert!(facts(&upcase).iter().any(|v| v["kind"] == "entry"
-        && v["name"] == "e4002e00740078007400"
-        && v["key"] == "d6002e00540058005400"));
-
-    // Identity binds the root sequence and the native upcase digest.
-    assert!(
-        clean["native_identity"]["volume"].is_string(),
-        "missing native identity"
-    );
-    assert_eq!(
-        clean["native_identity"]["volume"],
-        generation["native_identity"]["volume"]
-    );
-    assert_ne!(
-        clean["native_identity"]["root"],
-        generation["native_identity"]["root"]
-    );
-    assert_ne!(
-        clean["native_identity"]["upcase_sha256"],
-        upcase["native_identity"]["upcase_sha256"]
-    );
-
-    // Security descriptors have native provenance.
-    assert!(
-        f.iter()
-            .any(|v| v["kind"] == "security" && v["record"] == 5 && v["source"] == "attribute")
-    );
-    let acl = probe("acl").unwrap();
-    assert!(
-        facts(&acl)
-            .iter()
-            .any(|v| v["kind"] == "security" && v["record"] == 64 && v["source"] == "sds")
-    );
-
-    // A folder identity rejects a regular-file MFT locator.
-    let report: tilo_ntfs_helper::protocol::Report = serde_json::from_value(clean).unwrap();
-    assert!(tilo_ntfs_helper::protocol::identity(&report, 64).is_err());
-}
-
-/// Named directory streams, reparse points and hard-link resident attributes
-/// are reported as distinct native facts.
-#[test]
-fn native_metadata_images_report_streams_reparse_and_hardlinks() {
-    let facts = |report: &serde_json::Value| report["facts"].as_array().expect("facts").clone();
-    let r = probe("metadata").unwrap();
-    assert_eq!(r["status"], 0, "{r}");
-    let f = facts(&r);
-    assert!(f.iter().any(|v| v["kind"] == "attribute"
-        && v["type"] == 128
-        && v["record"] == 5
-        && v["name"] == "640069007200"));
-    assert!(
-        f.iter()
-            .any(|v| v["kind"] == "attribute" && v["type"] == 192)
-    );
-
-    let r = probe("hardlink").unwrap();
-    assert_eq!(r["status"], 0, "{r}");
-    assert!(facts(&r).iter().any(|v| {
-        v["kind"] == "chunk"
-            && v["attribute"] == 48
-            && v["record"] == 64
-            && v["hex"]
-                .as_str()
-                .is_some_and(|s| s.ends_with("7300650063006f006e006400"))
-    }));
+        let r = probe("hardlink").unwrap();
+        assert_eq!(r["status"], 0, "{r}");
+        assert!(facts(&r).iter().any(|v| {
+            v["kind"] == "chunk"
+                && v["attribute"] == 48
+                && v["record"] == 64
+                && v["hex"]
+                    .as_str()
+                    .is_some_and(|s| s.ends_with("7300650063006f006e006400"))
+        }));
+    }
 }
 fn restart_refuses(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let report = probe(name)?;

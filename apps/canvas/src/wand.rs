@@ -468,163 +468,169 @@ mod tests {
         (n % 1000) as f64 / 1000.0
     }
 
-    #[test]
-    fn a_flood_stays_inside_its_colour() {
-        // Two columns of in-cells joined at the bottom, and an island.
-        let (width, height) = (7, 5);
-        let inside = |index: usize| {
-            let (x, y) = (index % width, index / width);
-            x == 1 || x == 3 || y == 4 || (x == 6 && y == 0)
-        };
-        let mut cells = vec![false; width * height];
-        flood(&mut cells, (width, height), (1, 0), inside);
-        assert!(cells[3], "the other column joins through the bottom row");
-        assert!(cells[4 * width + 6], "the bottom row is reached");
-        assert!(!cells[6], "the island is not");
-        assert!(!cells[width], "nor a cell between the columns");
-    }
+    tilo_test_env::scenario! {
+        /// What the magic wand finds in a picture.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn the_wand_follows_colour_as_far_as_its_edges_tolerance_and_bounds;
 
-    #[test]
-    fn a_gradient_does_not_carry_the_wand_over_a_crisp_edge() {
-        // A sky fading slowly from blue to a paler blue, over a hill whose
-        // green-blue is within the tolerance of the sky above it but meets
-        // it in a crisp line.
-        let (width, height) = (120, 100);
-        let rgba = picture(width, height, |_, y| {
-            if y < 60 {
-                let t = y as f64 / 60.0;
-                [(90.0 + 30.0 * t) as u8, (140.0 + 20.0 * t) as u8, 210]
-            } else {
-                [112, 168, 196]
-            }
-        });
-        let region = found(&rgba, (width, height), &at((60, 10)));
-        assert!(
-            region.contains(Point::new(60.0, 50.0)),
-            "the sky fills down to the hill"
-        );
-        assert!(
-            !region.contains(Point::new(60.0, 75.0)),
-            "the hill is not the sky"
-        );
-        let bounds = region.bounds().unwrap_or_default();
-        assert!(
-            (bounds.y1 - 60.0).abs() < 1.5,
-            "stops at the hill's line: {bounds:?}"
-        );
-    }
-
-    #[test]
-    fn a_faint_but_crisp_edge_stops_the_wand() {
-        // A misty hill against the pale foot of a sky, a step a person
-        // barely sees but does see, its slanting edge anti-aliased. From
-        // the hill the wand takes the hill, not the sky.
-        let (width, height) = (160, 120);
-        let sky = |y: f64| {
-            let t = y / 140.0;
-            [58.0 + 106.0 * t, 111.0 + 87.0 * t, 196.0 + 32.0 * t]
-        };
-        let rgba = picture(width, height, |x, y| {
-            let (x, y) = (x as f64 + 0.5, y as f64 + 0.5);
-            let hill = (y - (60.0 + 0.2 * x) + 0.5).clamp(0.0, 1.0);
-            let above = sky(y);
-            let below = [147.0, 185.0, 214.0];
-            let mix = |channel: usize| {
-                (above[channel] * (1.0 - hill) + below[channel] * hill).round() as u8
+        phase a_flood_stays_inside_its_colour;
+        {
+            // Two columns of in-cells joined at the bottom, and an island.
+            let (width, height) = (7, 5);
+            let inside = |index: usize| {
+                let (x, y) = (index % width, index / width);
+                x == 1 || x == 3 || y == 4 || (x == 6 && y == 0)
             };
-            [mix(0), mix(1), mix(2)]
-        });
-        let region = found(&rgba, (width, height), &at((80, 110)));
-        assert!(region.contains(Point::new(80.0, 100.0)));
-        assert!(!region.contains(Point::new(80.0, 60.0)), "the sky is left");
-        assert!(!region.contains(Point::new(150.0, 20.0)), "the sky is left");
-    }
+            let mut cells = vec![false; width * height];
+            flood(&mut cells, (width, height), (1, 0), inside);
+            assert!(cells[3], "the other column joins through the bottom row");
+            assert!(cells[4 * width + 6], "the bottom row is reached");
+            assert!(!cells[6], "the island is not");
+            assert!(!cells[width], "nor a cell between the columns");
+        }
 
-    #[test]
-    fn a_gradient_is_followed_only_as_far_as_the_tolerance() {
-        // Black to white across 200 pixels: the wand at the dark end takes
-        // the dark part, not the whole ramp.
-        let (width, height) = (200, 20);
-        let rgba = picture(width, height, |x, _| {
-            let v = (x as f64 / 199.0 * 255.0) as u8;
-            [v, v, v]
-        });
-        let region = found(&rgba, (width, height), &at((5, 10)));
-        let bounds = region.bounds().unwrap_or_default();
-        assert!(bounds.x1 > 10.0 && bounds.x1 < 120.0, "{bounds:?}");
-    }
+        phase a_gradient_does_not_carry_the_wand_over_a_crisp_edge;
+        {
+            // A sky fading slowly from blue to a paler blue, over a hill whose
+            // green-blue is within the tolerance of the sky above it but meets
+            // it in a crisp line.
+            let (width, height) = (120, 100);
+            let rgba = picture(width, height, |_, y| {
+                if y < 60 {
+                    let t = y as f64 / 60.0;
+                    [(90.0 + 30.0 * t) as u8, (140.0 + 20.0 * t) as u8, 210]
+                } else {
+                    [112, 168, 196]
+                }
+            });
+            let region = found(&rgba, (width, height), &at((60, 10)));
+            assert!(
+                region.contains(Point::new(60.0, 50.0)),
+                "the sky fills down to the hill"
+            );
+            assert!(
+                !region.contains(Point::new(60.0, 75.0)),
+                "the hill is not the sky"
+            );
+            let bounds = region.bounds().unwrap_or_default();
+            assert!(
+                (bounds.y1 - 60.0).abs() < 1.5,
+                "stops at the hill's line: {bounds:?}"
+            );
+        }
 
-    #[test]
-    fn a_textured_fill_is_found_whole() {
-        // A red disc painted with a rough grain on a light ground.
-        let (width, height) = (100, 100);
-        let rgba = picture(width, height, |x, y| {
-            let inside = (x as f64 + 0.5 - 50.0).hypot(y as f64 + 0.5 - 50.0) <= 35.0;
-            let grain = (noise(x, y) - 0.5) * 70.0;
-            if inside {
-                [
-                    (190.0 + grain) as u8,
-                    (50.0 + grain * 0.6) as u8,
-                    (40.0 + grain * 0.5) as u8,
-                ]
-            } else {
-                [244, 239, 227]
-            }
-        });
-        let region = found(&rgba, (width, height), &at((50, 50)));
-        let disc = std::f64::consts::PI * 35.0 * 35.0;
-        assert!(
-            (region.area() - disc).abs() / disc < 0.05,
-            "{} against {disc}",
-            region.area()
-        );
-        assert!(!region.contains(Point::new(5.0, 5.0)));
-    }
+        phase a_faint_but_crisp_edge_stops_the_wand;
+        {
+            // A misty hill against the pale foot of a sky, a step a person
+            // barely sees but does see, its slanting edge anti-aliased. From
+            // the hill the wand takes the hill, not the sky.
+            let (width, height) = (160, 120);
+            let sky = |y: f64| {
+                let t = y / 140.0;
+                [58.0 + 106.0 * t, 111.0 + 87.0 * t, 196.0 + 32.0 * t]
+            };
+            let rgba = picture(width, height, |x, y| {
+                let (x, y) = (x as f64 + 0.5, y as f64 + 0.5);
+                let hill = (y - (60.0 + 0.2 * x) + 0.5).clamp(0.0, 1.0);
+                let above = sky(y);
+                let below = [147.0, 185.0, 214.0];
+                let mix = |channel: usize| {
+                    (above[channel] * (1.0 - hill) + below[channel] * hill).round() as u8
+                };
+                [mix(0), mix(1), mix(2)]
+            });
+            let region = found(&rgba, (width, height), &at((80, 110)));
+            assert!(region.contains(Point::new(80.0, 100.0)));
+            assert!(!region.contains(Point::new(80.0, 60.0)), "the sky is left");
+            assert!(!region.contains(Point::new(150.0, 20.0)), "the sky is left");
+        }
 
-    #[test]
-    fn an_anti_aliased_edge_is_traced_between_pixels() {
-        // A dark half-plane whose edge runs at x = 30.3, anti-aliased.
-        let (width, height) = (60, 40);
-        let edge = 30.3;
-        let rgba = picture(width, height, |x, _| {
-            let cover = (edge - x as f64).clamp(0.0, 1.0);
-            let v = (20.0 * cover + 230.0 * (1.0 - cover)).round() as u8;
-            [v, v, v]
-        });
-        let region = found(&rgba, (width, height), &at((10, 20)));
-        let bounds = region.bounds().unwrap_or_default();
-        assert!(
-            (bounds.x1 - edge).abs() < 0.15,
-            "edge at {} for {edge}",
-            bounds.x1
-        );
-    }
+        phase a_gradient_is_followed_only_as_far_as_the_tolerance;
+        {
+            // Black to white across 200 pixels: the wand at the dark end takes
+            // the dark part, not the whole ramp.
+            let (width, height) = (200, 20);
+            let rgba = picture(width, height, |x, _| {
+                let v = (x as f64 / 199.0 * 255.0) as u8;
+                [v, v, v]
+            });
+            let region = found(&rgba, (width, height), &at((5, 10)));
+            let bounds = region.bounds().unwrap_or_default();
+            assert!(bounds.x1 > 10.0 && bounds.x1 < 120.0, "{bounds:?}");
+        }
 
-    #[test]
-    fn the_wand_stays_in_what_it_may_find() {
-        // Two blue squares joined by a blue band; only the left square and
-        // the band are allowed (what is selected, when the wand subtracts).
-        let (width, height) = (90, 40);
-        let blue = |x: usize, y: usize| !(30..60).contains(&x) || (15..25).contains(&y);
-        let rgba = picture(width, height, |x, y| {
-            if blue(x, y) {
-                [40, 80, 200]
-            } else {
-                [250, 250, 250]
-            }
-        });
-        let allowed: Vec<bool> = (0..width * height)
-            .map(|index| index % width < 30)
-            .collect();
-        let wand = Wand {
-            allowed: Some(&allowed),
-            ..at((10, 10))
-        };
-        let region = found(&rgba, (width, height), &wand);
-        assert!(region.contains(Point::new(10.0, 30.0)));
-        assert!(
-            !region.contains(Point::new(75.0, 10.0)),
-            "the right square is left alone"
-        );
+        phase a_textured_fill_is_found_whole;
+        {
+            // A red disc painted with a rough grain on a light ground.
+            let (width, height) = (100, 100);
+            let rgba = picture(width, height, |x, y| {
+                let inside = (x as f64 + 0.5 - 50.0).hypot(y as f64 + 0.5 - 50.0) <= 35.0;
+                let grain = (noise(x, y) - 0.5) * 70.0;
+                if inside {
+                    [
+                        (190.0 + grain) as u8,
+                        (50.0 + grain * 0.6) as u8,
+                        (40.0 + grain * 0.5) as u8,
+                    ]
+                } else {
+                    [244, 239, 227]
+                }
+            });
+            let region = found(&rgba, (width, height), &at((50, 50)));
+            let disc = std::f64::consts::PI * 35.0 * 35.0;
+            assert!(
+                (region.area() - disc).abs() / disc < 0.05,
+                "{} against {disc}",
+                region.area()
+            );
+            assert!(!region.contains(Point::new(5.0, 5.0)));
+        }
+
+        phase an_anti_aliased_edge_is_traced_between_pixels;
+        {
+            // A dark half-plane whose edge runs at x = 30.3, anti-aliased.
+            let (width, height) = (60, 40);
+            let edge = 30.3;
+            let rgba = picture(width, height, |x, _| {
+                let cover = (edge - x as f64).clamp(0.0, 1.0);
+                let v = (20.0 * cover + 230.0 * (1.0 - cover)).round() as u8;
+                [v, v, v]
+            });
+            let region = found(&rgba, (width, height), &at((10, 20)));
+            let bounds = region.bounds().unwrap_or_default();
+            assert!(
+                (bounds.x1 - edge).abs() < 0.15,
+                "edge at {} for {edge}",
+                bounds.x1
+            );
+        }
+
+        phase the_wand_stays_in_what_it_may_find;
+        {
+            // Two blue squares joined by a blue band; only the left square and
+            // the band are allowed (what is selected, when the wand subtracts).
+            let (width, height) = (90, 40);
+            let blue = |x: usize, y: usize| !(30..60).contains(&x) || (15..25).contains(&y);
+            let rgba = picture(width, height, |x, y| {
+                if blue(x, y) {
+                    [40, 80, 200]
+                } else {
+                    [250, 250, 250]
+                }
+            });
+            let allowed: Vec<bool> = (0..width * height)
+                .map(|index| index % width < 30)
+                .collect();
+            let wand = Wand {
+                allowed: Some(&allowed),
+                ..at((10, 10))
+            };
+            let region = found(&rgba, (width, height), &wand);
+            assert!(region.contains(Point::new(10.0, 30.0)));
+            assert!(
+                !region.contains(Point::new(75.0, 10.0)),
+                "the right square is left alone"
+            );
+        }
     }
 }

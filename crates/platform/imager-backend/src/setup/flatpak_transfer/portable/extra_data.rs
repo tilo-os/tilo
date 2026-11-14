@@ -315,46 +315,53 @@ mod tests {
         fs::write(&detached, payload.data()).unwrap();
         (root, hash, detached)
     }
-    #[test]
-    fn retained_raw_extra_data_checks_signed_big_endian_sizes_and_hashes() {
-        let (root, hash, detached) = fixture();
-        let before = fs::read(&detached).unwrap();
-        assert_eq!(
-            verify(root.path(), &hash, None)
-                .unwrap()
-                .staging_bytes()
-                .unwrap(),
-            8192 + 2 * b"retained original proprietary download".len() as u64
-        );
-        assert_eq!(fs::read(&detached).unwrap(), before);
-        let mut data = b"retained original proprietary download".to_vec();
-        *data.first_mut().unwrap() ^= 1;
-        let bad = HashMap::from([(
-            "xa.extra-data".to_owned(),
-            vec![(b"download.bin\0".to_vec(), data.clone())].to_variant(),
-        )])
-        .to_variant();
-        fs::write(&detached, bad.data()).unwrap();
-        assert!(verify(root.path(), &hash, None).is_err());
-        fs::remove_file(&detached).unwrap();
-        assert!(verify(root.path(), &hash, None).is_err());
-    }
-    #[test]
-    fn untrusted_binary_extra_data_refuses_type_confusion_and_changed_commit() {
-        let (root, hash, detached) = fixture();
-        let wrong =
-            HashMap::from([("xa.extra-data".to_owned(), "wrong type".to_variant())]).to_variant();
-        fs::write(&detached, wrong.data()).unwrap();
-        assert!(verify(root.path(), &hash, None).is_err());
-        let (prefix, suffix) = hash.split_at(2);
-        fs::write(
-            root.path()
-                .join("objects")
-                .join(prefix)
-                .join(format!("{suffix}.commit")),
-            b"changed commit",
-        )
-        .unwrap();
-        assert!(verify(root.path(), &hash, None).is_err());
+    tilo_test_env::scenario! {
+        /// Extra data carried with a portable Flatpak export.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn extra_data_is_checked_against_its_signed_sizes_hashes_and_commit;
+
+        phase retained_raw_extra_data_checks_signed_big_endian_sizes_and_hashes;
+        {
+            let (root, hash, detached) = fixture();
+            let before = fs::read(&detached).unwrap();
+            assert_eq!(
+                verify(root.path(), &hash, None)
+                    .unwrap()
+                    .staging_bytes()
+                    .unwrap(),
+                8192 + 2 * b"retained original proprietary download".len() as u64
+            );
+            assert_eq!(fs::read(&detached).unwrap(), before);
+            let mut data = b"retained original proprietary download".to_vec();
+            *data.first_mut().unwrap() ^= 1;
+            let bad = HashMap::from([(
+                "xa.extra-data".to_owned(),
+                vec![(b"download.bin\0".to_vec(), data.clone())].to_variant(),
+            )])
+            .to_variant();
+            fs::write(&detached, bad.data()).unwrap();
+            assert!(verify(root.path(), &hash, None).is_err());
+            fs::remove_file(&detached).unwrap();
+            assert!(verify(root.path(), &hash, None).is_err());
+        }
+
+        phase untrusted_binary_extra_data_refuses_type_confusion_and_changed_commit;
+        {
+            let (root, hash, detached) = fixture();
+            let wrong =
+                HashMap::from([("xa.extra-data".to_owned(), "wrong type".to_variant())]).to_variant();
+            fs::write(&detached, wrong.data()).unwrap();
+            assert!(verify(root.path(), &hash, None).is_err());
+            let (prefix, suffix) = hash.split_at(2);
+            fs::write(
+                root.path()
+                    .join("objects")
+                    .join(prefix)
+                    .join(format!("{suffix}.commit")),
+                b"changed commit",
+            )
+            .unwrap();
+            assert!(verify(root.path(), &hash, None).is_err());
+        }
     }
 }

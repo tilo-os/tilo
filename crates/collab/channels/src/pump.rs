@@ -161,7 +161,7 @@ mod tests {
     use crate::gates::Gates;
     use crate::testing::{Announcements, Directory, Endpoint, Policy, Workspace, key};
     use channel_crypto::VaultKey;
-    use collab_types::ChannelId;
+
     use neighbour_wire::NeighbourMsg;
     use std::path::Path;
     use std::sync::atomic::AtomicUsize;
@@ -203,9 +203,7 @@ mod tests {
                 signer: std::sync::Arc::new(key(1)),
                 role: crate::Role::Participant,
             },
-            Box::new(Directory {
-                policy: Policy::default(),
-            }),
+            Box::new(Directory::new(Policy::default())),
             Arc::new(Gates::default()),
         )
         .unwrap();
@@ -307,7 +305,6 @@ mod tests {
     fn live_member() -> (ChannelEncryption, Endpoint) {
         let workspace = Arc::new(Workspace::default());
         let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
         let policy = Policy::readers([1, 2]);
         *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::new(
             std::sync::atomic::AtomicU64::new(1),
@@ -321,9 +318,7 @@ mod tests {
                     signer: std::sync::Arc::new(key(seed)),
                     role: crate::Role::Participant,
                 },
-                Box::new(Directory {
-                    policy: policy.clone(),
-                }),
+                Box::new(Directory::new(policy.clone())),
                 Arc::new(Gates::default()),
             )
             .unwrap();
@@ -332,18 +327,15 @@ mod tests {
         let (mut owner, owner_endpoint) = open(0, 1, owner_dir.path());
         let (mut member, member_endpoint) = open(1, 2, member_dir.path());
         let mut now = Instant::now();
-        owner.access(workspace_id, channel, now);
-        member.access(workspace_id, channel, now);
+        owner.access(workspace_id, now);
+        member.access(workspace_id, now);
         for _ in 0..40 {
             now = now.checked_add(Duration::from_millis(250)).unwrap();
             owner.pump(&owner_endpoint, now, 1_000);
             member.pump(&member_endpoint, now, 1_000);
         }
         assert!(
-            matches!(
-                member.access(workspace_id, channel, now),
-                ChannelAccess::Ready(_)
-            ),
+            matches!(member.access(workspace_id, now), ChannelAccess::Ready(_)),
             "the member joined the channel"
         );
         assert_eq!(

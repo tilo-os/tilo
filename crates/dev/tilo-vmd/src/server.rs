@@ -133,56 +133,60 @@ mod tests {
     use crate::apply::RecordingApply;
     use tilo_vm_protocol::BaseInfo;
 
-    #[test]
-    fn enrollment_semantic_rpc_refuses_a_session_without_actual_owner_authority() {
-        let root = tempfile::tempdir().unwrap();
-        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut apply = RecordingApply::with_login("fixture-account");
-        apply.mirror = Some(mirror.clone());
-        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-        let hello = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":tilo_vm_protocol::PROTOCOL_VERSION,"client_version":"fixture"}});
-        assert!(handle_line(&mut daemon, &hello.to_string()).error.is_none());
-        let args = serde_json::json!({"passphrase":"private-fixture-answer","confirm":true});
-        let line = serde_json::json!({"op":"actions_invoke","provider":"device-unlock","id":"enroll@device-unlock","args":args}).to_string();
-        let envelope = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"device.actions","params":{"line":line}});
-        let response = handle_line(&mut daemon, &envelope.to_string());
-        assert!(response.error.is_some());
-        assert!(
-            !serde_json::to_string(&response)
-                .unwrap()
-                .contains("private-fixture-answer")
-        );
-        assert!(
-            mirror
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|entry| !entry.contains("private-fixture-answer")
-                    && !entry.contains("enroll_device_unlock"))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn rpc_errors_never_carry_private_arguments;
 
-    #[test]
-    fn malformed_private_arguments_are_not_reflected_in_rpc_errors() {
-        let root = tempfile::tempdir().unwrap();
-        let mut daemon = Daemon::new(
-            root.path(),
-            Box::new(RecordingApply::default()),
-            None,
-            BaseInfo::default(),
-        );
-        for line in [
-            r#"{"jsonrpc":"2.0","id":12,"method":"device.unlock.enrol","params":{"passphrase":"private-fixture-answer","allow_unsealed":"private-fixture-answer"}}"#,
-            r#"{"jsonrpc":"2.0","id":12,"method":"device.actions","params":{"line":false,"private-fixture-answer":1}}"#,
-        ] {
-            let response = handle_line(&mut daemon, line);
-            assert_eq!(response.id, 12);
+        phase enrollment_semantic_rpc_refuses_a_session_without_actual_owner_authority;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut apply = RecordingApply::with_login("fixture-account");
+            apply.mirror = Some(mirror.clone());
+            let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+            let hello = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":tilo_vm_protocol::PROTOCOL_VERSION,"client_version":"fixture"}});
+            assert!(handle_line(&mut daemon, &hello.to_string()).error.is_none());
+            let args = serde_json::json!({"passphrase":"private-fixture-answer","confirm":true});
+            let line = serde_json::json!({"op":"actions_invoke","provider":"device-unlock","id":"enroll@device-unlock","args":args}).to_string();
+            let envelope = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"device.actions","params":{"line":line}});
+            let response = handle_line(&mut daemon, &envelope.to_string());
             assert!(response.error.is_some());
             assert!(
                 !serde_json::to_string(&response)
                     .unwrap()
                     .contains("private-fixture-answer")
             );
+            assert!(
+                mirror
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| !entry.contains("private-fixture-answer")
+                        && !entry.contains("enroll_device_unlock"))
+            );
+        }
+
+        phase malformed_private_arguments_are_not_reflected_in_rpc_errors;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut daemon = Daemon::new(
+                root.path(),
+                Box::new(RecordingApply::default()),
+                None,
+                BaseInfo::default(),
+            );
+            for line in [
+                r#"{"jsonrpc":"2.0","id":12,"method":"device.unlock.enrol","params":{"passphrase":"private-fixture-answer","allow_unsealed":"private-fixture-answer"}}"#,
+                r#"{"jsonrpc":"2.0","id":12,"method":"device.actions","params":{"line":false,"private-fixture-answer":1}}"#,
+            ] {
+                let response = handle_line(&mut daemon, line);
+                assert_eq!(response.id, 12);
+                assert!(response.error.is_some());
+                assert!(
+                    !serde_json::to_string(&response)
+                        .unwrap()
+                        .contains("private-fixture-answer")
+                );
+            }
         }
     }
 }
@@ -209,65 +213,70 @@ mod binary_tests {
             tilo_vm_protocol::BaseInfo::default(),
         )
     }
-    #[test]
-    fn binary_bad_hash_cancel_and_disconnect_remove_partial_uploads() {
-        for mode in ["hash", "cancel", "disconnect", "oversize"] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut daemon = daemon(dir.path());
-            let mut bytes = input();
-            let mut body = Vec::new();
-            let mut encoder = tilo_vm_protocol::binary::Encoder::new(&mut body);
-            encoder.write_all(&vec![19; 2 << 20]).unwrap();
-            if mode == "cancel" {
-                encoder.cancel().unwrap();
-            } else {
-                encoder.finish().unwrap();
-            }
-            if mode == "hash" {
-                *body.last_mut().unwrap() ^= 1;
-            }
-            if mode == "disconnect" {
-                body.truncate(body.len().saturating_sub(10));
-            }
-            if mode == "oversize" {
-                body = u32::MAX.saturating_sub(1).to_be_bytes().to_vec();
-            }
-            bytes.extend(body);
-            if matches!(mode, "hash" | "cancel") {
-                bytes.extend(
-                    b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"layer.list\",\"params\":{}}\n",
+    tilo_test_env::scenario! {
+        fn binary_uploads_leave_nothing_partial_and_need_the_hello;
+
+        phase binary_bad_hash_cancel_and_disconnect_remove_partial_uploads;
+        {
+            for mode in ["hash", "cancel", "disconnect", "oversize"] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut daemon = daemon(dir.path());
+                let mut bytes = input();
+                let mut body = Vec::new();
+                let mut encoder = tilo_vm_protocol::binary::Encoder::new(&mut body);
+                encoder.write_all(&vec![19; 2 << 20]).unwrap();
+                if mode == "cancel" {
+                    encoder.cancel().unwrap();
+                } else {
+                    encoder.finish().unwrap();
+                }
+                if mode == "hash" {
+                    *body.last_mut().unwrap() ^= 1;
+                }
+                if mode == "disconnect" {
+                    body.truncate(body.len().saturating_sub(10));
+                }
+                if mode == "oversize" {
+                    body = u32::MAX.saturating_sub(1).to_be_bytes().to_vec();
+                }
+                bytes.extend(body);
+                if matches!(mode, "hash" | "cancel") {
+                    bytes.extend(
+                        b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"layer.list\",\"params\":{}}\n",
+                    );
+                }
+                let mut output = Vec::new();
+                let result = serve(&mut daemon, bytes.as_slice(), &mut output);
+                assert_eq!(
+                    std::fs::read_dir(dir.path().join("uploads"))
+                        .unwrap()
+                        .count(),
+                    0
                 );
-            }
-            let mut output = Vec::new();
-            let result = serve(&mut daemon, bytes.as_slice(), &mut output);
-            assert_eq!(
-                std::fs::read_dir(dir.path().join("uploads"))
-                    .unwrap()
-                    .count(),
-                0
-            );
-            if matches!(mode, "hash" | "cancel") {
-                result.unwrap();
-                let responses: Vec<ResponseEnvelope> = output
-                    .split(|byte| *byte == b'\n')
-                    .filter(|line| !line.is_empty())
-                    .map(|line| serde_json::from_slice(line).unwrap())
-                    .collect();
-                assert_eq!(responses.len(), 4);
-                assert!(responses[2].error.is_some());
-                assert_eq!(responses[3].id, 3);
-            } else {
-                assert!(result.is_err());
+                if matches!(mode, "hash" | "cancel") {
+                    result.unwrap();
+                    let responses: Vec<ResponseEnvelope> = output
+                        .split(|byte| *byte == b'\n')
+                        .filter(|line| !line.is_empty())
+                        .map(|line| serde_json::from_slice(line).unwrap())
+                        .collect();
+                    assert_eq!(responses.len(), 4);
+                    assert!(responses[2].error.is_some());
+                    assert_eq!(responses[3].id, 3);
+                } else {
+                    assert!(result.is_err());
+                }
             }
         }
-    }
-    #[test]
-    fn binary_upgrade_still_requires_the_matching_hello() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut daemon = daemon(dir.path());
-        let request =
-            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"layer.upload.binary\",\"params\":{}}";
-        assert!(handle_line(&mut daemon, request).error.is_some());
-        assert!(!dir.path().join("uploads").exists());
+
+        phase binary_upgrade_still_requires_the_matching_hello;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut daemon = daemon(dir.path());
+            let request =
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"layer.upload.binary\",\"params\":{}}";
+            assert!(handle_line(&mut daemon, request).error.is_some());
+            assert!(!dir.path().join("uploads").exists());
+        }
     }
 }

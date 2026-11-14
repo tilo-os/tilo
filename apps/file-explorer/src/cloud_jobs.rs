@@ -329,69 +329,73 @@ pub(crate) fn fixture_consent(op: &FileOp) -> tilo_cloud_files::ImportConsent {
 mod tests {
     use super::*;
 
-    #[test]
-    fn two_jobs_isolate_cancellation_and_progress() {
-        let first = uuid::Uuid::new_v4().to_string();
-        let second = uuid::Uuid::new_v4().to_string();
-        let ready = std::sync::Barrier::new(2);
-        std::thread::scope(|scope| {
-            let worker = scope.spawn(|| {
-                run_job(&first, |cancelled, report| {
+    tilo_test_env::scenario! {
+        fn cloud_jobs_keep_cancellation_and_progress_to_themselves;
+
+        phase two_jobs_isolate_cancellation_and_progress;
+        {
+            let first = uuid::Uuid::new_v4().to_string();
+            let second = uuid::Uuid::new_v4().to_string();
+            let ready = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    run_job(&first, |cancelled, report| {
+                        report(TransferProgress {
+                            bytes: 11,
+                            ..Default::default()
+                        });
+                        ready.wait();
+                        ready.wait();
+                        assert!(cancelled.load(Ordering::Acquire));
+                        Settled::Failed {
+                            reason: "cancelled".into(),
+                            partial: vec![],
+                        }
+                    })
+                });
+                ready.wait();
+                let result = run_job(&second, |cancelled, report| {
                     report(TransferProgress {
-                        bytes: 11,
+                        bytes: 29,
                         ..Default::default()
                     });
-                    ready.wait();
-                    ready.wait();
-                    assert!(cancelled.load(Ordering::Acquire));
-                    Settled::Failed {
-                        reason: "cancelled".into(),
-                        partial: vec![],
-                    }
-                })
-            });
-            ready.wait();
-            let result = run_job(&second, |cancelled, report| {
-                report(TransferProgress {
-                    bytes: 29,
-                    ..Default::default()
+                    cancel(&first);
+                    assert!(!cancelled.load(Ordering::Acquire));
+                    assert_eq!(snapshot(&first).bytes, 11);
+                    assert_eq!(snapshot(&second).bytes, 29);
+                    Settled::Done(vec![])
                 });
-                cancel(&first);
-                assert!(!cancelled.load(Ordering::Acquire));
-                assert_eq!(snapshot(&first).bytes, 11);
-                assert_eq!(snapshot(&second).bytes, 29);
-                Settled::Done(vec![])
+                assert!(result.is_done());
+                ready.wait();
+                assert!(!worker.join().unwrap().is_done());
             });
-            assert!(result.is_done());
-            ready.wait();
-            assert!(!worker.join().unwrap().is_done());
-        });
-        assert_eq!(snapshot(&first).phase, "cancelled");
-        assert_eq!(snapshot(&second).phase, "done");
-        assert_eq!(snapshot(&first).bytes, 11);
-        assert_eq!(snapshot(&second).bytes, 29);
-    }
+            assert_eq!(snapshot(&first).phase, "cancelled");
+            assert_eq!(snapshot(&second).phase, "done");
+            assert_eq!(snapshot(&first).bytes, 11);
+            assert_eq!(snapshot(&second).bytes, 29);
+        }
 
-    #[test]
-    fn cancellation_before_start_is_not_reset() {
-        let root = tempfile::tempdir().unwrap();
-        let folder = root.path().display().to_string();
-        let job_id = uuid::Uuid::new_v4().to_string();
-        let op = FileOp::CloudImport {
-            job_id: job_id.clone(),
-            account: "account".into(),
-            entries: vec![],
-            destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty())
-                .unwrap(),
-            folder,
-        };
-        register(&job_id);
-        cancel(&job_id);
-        let outcome = run(&op, fixture_consent(&op));
-        assert_eq!(outcome.reason(), Some("cloud import cancelled"));
-        assert!(outcome.result().is_empty());
-        assert_eq!(snapshot(&job_id).phase, "cancelled");
-        assert!(!run(&op, fixture_consent(&op)).is_done());
-        assert_eq!(snapshot(&job_id).phase, "cancelled");
+        phase cancellation_before_start_is_not_reset;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let folder = root.path().display().to_string();
+            let job_id = uuid::Uuid::new_v4().to_string();
+            let op = FileOp::CloudImport {
+                job_id: job_id.clone(),
+                account: "account".into(),
+                entries: vec![],
+                destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty())
+                    .unwrap(),
+                folder,
+            };
+            register(&job_id);
+            cancel(&job_id);
+            let outcome = run(&op, fixture_consent(&op));
+            assert_eq!(outcome.reason(), Some("cloud import cancelled"));
+            assert!(outcome.result().is_empty());
+            assert_eq!(snapshot(&job_id).phase, "cancelled");
+            assert!(!run(&op, fixture_consent(&op)).is_done());
+            assert_eq!(snapshot(&job_id).phase, "cancelled");
+        }
     }
 }

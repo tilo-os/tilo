@@ -90,138 +90,146 @@ mod tests {
         }
     }
 
-    #[test]
-    fn each_place_publishes_its_verbs_and_its_row_offers_its_effects() {
-        let published = seeded().published().unwrap();
-        let root_actions: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(root_actions.contains(&"save-location"), "{root_actions:?}");
-        let places: Vec<_> = published
-            .children
-            .iter()
-            .filter(|child| child.kind == "weather.locations.places")
-            .collect();
-        assert_eq!(places.len(), crate::sample::sample_model().locations.len());
-        for place in &places {
-            for verb in ["use-as-default", "move-to-top", "remove"] {
-                assert!(
-                    place.actions.iter().any(|action| action.id == verb),
-                    "{verb} on {}",
-                    place.id.as_str()
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn the_places_record_publishes_changes_and_converges;
+
+        phase each_place_publishes_its_verbs_and_its_row_offers_its_effects;
+        {
+            let published = seeded().published().unwrap();
+            let root_actions: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(root_actions.contains(&"save-location"), "{root_actions:?}");
+            let places: Vec<_> = published
+                .children
+                .iter()
+                .filter(|child| child.kind == "weather.locations.places")
+                .collect();
+            assert_eq!(places.len(), crate::sample::sample_model().locations.len());
+            for place in &places {
+                for verb in ["use-as-default", "move-to-top", "remove"] {
+                    assert!(
+                        place.actions.iter().any(|action| action.id == verb),
+                        "{verb} on {}",
+                        place.id.as_str()
+                    );
+                }
+            }
+
+            let place = seeded().state().unwrap().model().locations.remove(1);
+            let row = location_row(&place).into_resource();
+            assert_eq!(row.id.as_str(), location_resource_id(place.id));
+            assert!(
+                places.iter().any(|child| child.id == row.id),
+                "the row joins its place"
+            );
+            for (id, effect) in [
+                (
+                    "open",
+                    WeatherEffect::OpenLocation {
+                        location: place.id.to_string(),
+                    },
+                ),
+                (
+                    "refresh",
+                    WeatherEffect::RefreshLocation {
+                        location: place.id.to_string(),
+                    },
+                ),
+            ] {
+                let spec = row.actions.iter().find(|action| action.id == id).unwrap();
+                assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);
+                let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+                assert_eq!(
+                    WeatherEffect::from_payload(&encoded.payload).unwrap(),
+                    effect
                 );
             }
         }
 
-        let place = seeded().state().unwrap().model().locations.remove(1);
-        let row = location_row(&place).into_resource();
-        assert_eq!(row.id.as_str(), location_resource_id(place.id));
-        assert!(
-            places.iter().any(|child| child.id == row.id),
-            "the row joins its place"
-        );
-        for (id, effect) in [
-            (
-                "open",
-                WeatherEffect::OpenLocation {
-                    location: place.id.to_string(),
-                },
-            ),
-            (
-                "refresh",
-                WeatherEffect::RefreshLocation {
-                    location: place.id.to_string(),
-                },
-            ),
-        ] {
-            let spec = row.actions.iter().find(|action| action.id == id).unwrap();
-            assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);
-            let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+        phase the_verbs_change_the_places_and_refuse_what_cannot_be;
+        {
+            let mut replica = seeded();
+            let count = replica.state().unwrap().places.len();
+            replica
+                .apply(
+                    Weather::SAVE_LOCATION.with((details("Auckland", -36.8485, 174.7633), Some(true))),
+                )
+                .unwrap();
+            let state = replica.state().unwrap();
+            assert_eq!(state.places.len(), count + 1);
+            assert_eq!(state.model().selected_location().unwrap().name, "Auckland");
+            let first = state.model().locations[0].clone();
+            replica
+                .apply(Weather::SAVE_LOCATION.with((
+                    details("Again", first.latitude + 0.01, first.longitude),
+                    Some(false),
+                )))
+                .unwrap();
             assert_eq!(
-                WeatherEffect::from_payload(&encoded.payload).unwrap(),
-                effect
+                replica.state().unwrap().places.len(),
+                count + 1,
+                "a place near a saved one is that place"
             );
+            assert!(
+                replica
+                    .apply(Weather::SAVE_LOCATION.with((details("Nowhere", 120.0, 0.0), None)))
+                    .is_err(),
+                "coordinates off the globe are refused"
+            );
+            assert!(
+                replica
+                    .apply(Weather::MOVE_TO_TOP.with(Weather::item(first.id)))
+                    .is_err(),
+                "the first place is already on top"
+            );
+            let second = Weather::item(nth_id(1));
+            replica
+                .apply(Weather::MOVE_TO_TOP.with(second.clone()))
+                .unwrap();
+            assert_eq!(replica.state().unwrap().model().locations[0].id, nth_id(1));
+            replica
+                .apply(Weather::USE_AS_DEFAULT.with(second.clone()))
+                .unwrap();
+            replica
+                .apply_confirmed(Weather::REMOVE.with(second))
+                .unwrap();
+            let state = replica.state().unwrap();
+            assert!(
+                state.default_place.0.is_empty(),
+                "removing the default forgets it"
+            );
+            assert_eq!(state.places.len(), count);
         }
-    }
 
-    #[test]
-    fn the_verbs_change_the_places_and_refuse_what_cannot_be() {
-        let mut replica = seeded();
-        let count = replica.state().unwrap().places.len();
-        replica
-            .apply(
-                Weather::SAVE_LOCATION.with((details("Auckland", -36.8485, 174.7633), Some(true))),
-            )
-            .unwrap();
-        let state = replica.state().unwrap();
-        assert_eq!(state.places.len(), count + 1);
-        assert_eq!(state.model().selected_location().unwrap().name, "Auckland");
-        let first = state.model().locations[0].clone();
-        replica
-            .apply(Weather::SAVE_LOCATION.with((
-                details("Again", first.latitude + 0.01, first.longitude),
-                Some(false),
-            )))
-            .unwrap();
-        assert_eq!(
-            replica.state().unwrap().places.len(),
-            count + 1,
-            "a place near a saved one is that place"
-        );
-        assert!(
-            replica
-                .apply(Weather::SAVE_LOCATION.with((details("Nowhere", 120.0, 0.0), None)))
-                .is_err(),
-            "coordinates off the globe are refused"
-        );
-        assert!(
-            replica
-                .apply(Weather::MOVE_TO_TOP.with(Weather::item(first.id)))
-                .is_err(),
-            "the first place is already on top"
-        );
-        let second = Weather::item(nth_id(1));
-        replica
-            .apply(Weather::MOVE_TO_TOP.with(second.clone()))
-            .unwrap();
-        assert_eq!(replica.state().unwrap().model().locations[0].id, nth_id(1));
-        replica
-            .apply(Weather::USE_AS_DEFAULT.with(second.clone()))
-            .unwrap();
-        replica
-            .apply_confirmed(Weather::REMOVE.with(second))
-            .unwrap();
-        let state = replica.state().unwrap();
-        assert!(
-            state.default_place.0.is_empty(),
-            "removing the default forgets it"
-        );
-        assert_eq!(state.places.len(), count);
-    }
-
-    #[test]
-    fn saved_places_converge() {
-        let mut left = seeded();
-        let mut right = left.fork();
-        left.apply(Weather::SAVE_LOCATION.with((details("Berlin", 52.52, 13.405), None)))
-            .unwrap();
-        right
-            .apply(Weather::SAVE_LOCATION.with((details("Tokyo", 35.6762, 139.6503), None)))
-            .unwrap();
-        let places = Weather::paths().places;
-        left.apply(Invoke::edit(&places.move_to(&Weather::item(nth_id(3)), 0)).unwrap())
-            .unwrap();
-        right
-            .apply(Invoke::edit(&places.move_to(&Weather::item(nth_id(2)), 1)).unwrap())
-            .unwrap();
-        left.sync_with(&mut right).unwrap();
-        assert_eq!(left.state().unwrap(), right.state().unwrap());
-        let names: Vec<String> = left
-            .state()
-            .unwrap()
-            .model()
-            .locations
-            .into_iter()
-            .map(|location| location.name)
-            .collect();
-        assert!(names.contains(&"Berlin".to_owned()) && names.contains(&"Tokyo".to_owned()));
+        phase saved_places_converge;
+        {
+            let mut left = seeded();
+            let mut right = left.fork();
+            left.apply(Weather::SAVE_LOCATION.with((details("Berlin", 52.52, 13.405), None)))
+                .unwrap();
+            right
+                .apply(Weather::SAVE_LOCATION.with((details("Tokyo", 35.6762, 139.6503), None)))
+                .unwrap();
+            let places = Weather::paths().places;
+            left.apply(Invoke::edit(&places.move_to(&Weather::item(nth_id(3)), 0)).unwrap())
+                .unwrap();
+            right
+                .apply(Invoke::edit(&places.move_to(&Weather::item(nth_id(2)), 1)).unwrap())
+                .unwrap();
+            left.sync_with(&mut right).unwrap();
+            assert_eq!(left.state().unwrap(), right.state().unwrap());
+            let names: Vec<String> = left
+                .state()
+                .unwrap()
+                .model()
+                .locations
+                .into_iter()
+                .map(|location| location.name)
+                .collect();
+            assert!(names.contains(&"Berlin".to_owned()) && names.contains(&"Tokyo".to_owned()));
+        }
     }
 }

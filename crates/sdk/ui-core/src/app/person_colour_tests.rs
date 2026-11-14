@@ -62,14 +62,10 @@ fn a_person_who_chose_none_keeps_the_colour_their_identity_derives() {
 fn an_app_paints_a_person_in_the_colour_the_member_list_announces() {
     let _settings = settings(serde_json::json!({}));
     let mut app = app();
-    app.apply_collab_context(vec![crate::collaboration::Collaborator {
-        id: "bo".into(),
-        name: "Bo".into(),
-        colour: Some(PresenceHue::Teal),
-        is_agent: false,
-        is_self: false,
-        joined_at: None,
-    }]);
+    app.apply_collab_context(vec![collab_types::Member::of_person(
+        &collab_types::Person::new("bo", "Bo").wearing(PresenceHue::Teal),
+        None,
+    )]);
     assert_eq!(app.presence_ctx.hue_of("bo"), PresenceHue::Teal);
     assert_eq!(
         app.presence_ctx.color_for(&UserId("bo".into())),

@@ -211,7 +211,16 @@ pub struct DocumentApp {
     /// Where this device got the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<AppKind>,
+    /// The app's own icon as PNG bytes, [`DOCUMENT_APP_ARTWORK_PX`] square, where it has one:
+    /// the session reads the icon themes an app in its sandbox cannot. Its glyph stands in
+    /// without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork: Option<Vec<u8>>,
 }
+
+/// The edge, in device pixels, of the artwork [`DocumentApp::artwork`] carries: a menu row's icon
+/// on a display of up to three times the density.
+pub const DOCUMENT_APP_ARTWORK_PX: u32 = 48;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriveEntry {
@@ -594,257 +603,261 @@ mod tests {
         shell.join().unwrap();
     }
 
-    #[test]
-    fn tool_intents_name_only_typed_routes_never_executables() {
-        {
-            let json = serde_json::to_value(ToolIntent::Vpn {
-                route: VpnRoute::Profile,
-                profile: Some("Work VPN".into()),
-            })
-            .unwrap();
-            assert_eq!(json["tool"], "vpn");
-            assert!(json.get("program").is_none());
-            assert!(json.get("package_id").is_none());
-            assert!(json.get("argv").is_none());
-        }
-        {
-            assert!(
-                ToolIntent::Vpn {
-                    route: VpnRoute::Profile,
-                    profile: None
-                }
-                .validate()
-                .is_err()
-            );
-            assert!(
-                ToolIntent::Vpn {
-                    route: VpnRoute::Profile,
-                    profile: Some("bad\nname".into())
-                }
-                .validate()
-                .is_err()
-            );
-        }
-        {
-            let intent = ToolIntent::Firewall {
-                route: FirewallRoute::Rules,
-            };
-            assert_eq!(intent.package_id(), Some("so.tilo.firewall"));
-            let json = serde_json::to_value(intent).unwrap();
-            assert_eq!(json["tool"], "firewall");
-            assert_eq!(json["route"], "rules");
-            assert!(json.get("program").is_none());
-        }
-        {
-            let intent = ToolIntent::WorkspaceSettings {
-                route: WorkspaceSettingsRoute::PrivacySecurity,
-            };
-            assert_eq!(intent.package_id(), None);
-            let json = serde_json::to_value(intent).unwrap();
-            assert_eq!(json["tool"], "workspace_settings");
-            assert_eq!(json["route"], "privacy_security");
-            assert!(json.get("program").is_none());
-            assert!(json.get("package_id").is_none());
-        }
-        {
-            let intent = ToolIntent::IdentityBackup;
-            assert_eq!(intent.package_id(), None);
-            assert!(intent.validate().is_ok());
-            let json = serde_json::to_value(intent).unwrap();
-            assert_eq!(json["tool"], "identity_backup");
-            assert!(json.get("program").is_none());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn intents_are_typed_routes;
 
-    #[test]
-    fn document_intents_name_an_app_and_a_bounded_path() {
-        let path = "/home/you/notes.pdf";
-        let open = ToolIntent::OpenDocument {
-            path: path.into(),
-            app: None,
-        };
-        assert!(open.validate().is_ok());
-        assert_eq!(
-            open.package_id(),
-            None,
-            "the shell routes a document, no package opens it"
-        );
-        assert_eq!(
-            serde_json::to_value(&open).unwrap(),
-            serde_json::json!({ "tool": "open_document", "path": path })
-        );
-        let chosen = ToolIntent::OpenDocument {
-            path: path.into(),
-            app: Some("so.tilo.pdf-viewer".into()),
-        };
-        assert!(chosen.validate().is_ok());
-        assert_eq!(
-            serde_json::to_value(&chosen).unwrap()["app"],
-            "so.tilo.pdf-viewer"
-        );
-        let listed = ToolIntent::DocumentApps { path: path.into() };
-        assert!(listed.validate().is_ok());
-        assert_eq!(
-            serde_json::to_value(&listed).unwrap(),
-            serde_json::json!({ "tool": "document_apps", "path": path })
-        );
-        for bad in [
-            String::new(),
-            "relative.pdf".to_string(),
-            "/a\nb".to_string(),
-            format!("/{}", "a".repeat(MAX_PATH_BYTES)),
-        ] {
-            assert!(
-                ToolIntent::OpenDocument {
-                    path: bad.clone(),
-                    app: None
-                }
-                .validate()
-                .is_err(),
-                "{bad:?}"
-            );
-            assert!(
-                ToolIntent::DocumentApps { path: bad }.validate().is_err(),
-                "a listing is bounded like an open"
-            );
-        }
-        assert!(
-            ToolIntent::OpenDocument {
-                path: path.into(),
-                app: Some("a\nb".into())
+        phase tool_intents_name_only_typed_routes_never_executables;
+        {
+            {
+                let json = serde_json::to_value(ToolIntent::Vpn {
+                    route: VpnRoute::Profile,
+                    profile: Some("Work VPN".into()),
+                })
+                .unwrap();
+                assert_eq!(json["tool"], "vpn");
+                assert!(json.get("program").is_none());
+                assert!(json.get("package_id").is_none());
+                assert!(json.get("argv").is_none());
             }
-            .validate()
-            .is_err()
-        );
-        let reply: ToolReply = serde_json::from_str(
-            r#"{"accepted":true,"message":"listed","documents":[
-                {"id":"so.tilo.pdf-viewer","name":"PDF Viewer","is_default":true},
-                {"id":"org.gnome.Evince.desktop","name":"Evince","is_default":false}]}"#,
-        )
-        .unwrap();
-        assert_eq!(reply.documents.len(), 2);
-        assert!(reply.documents[0].is_default);
-        assert!(reply.applications.is_empty(), "a list is not another list");
-    }
-
-    #[test]
-    fn drive_intents_are_shell_routes_with_a_bounded_id() {
-        let open = ToolIntent::OpenDrive {
-            drive: "nvme0n1p3:1".into(),
-        };
-        assert!(open.validate().is_ok());
-        assert_eq!(
-            open.package_id(),
-            None,
-            "the shell asks, no package opens it"
-        );
-        assert_eq!(
-            serde_json::to_value(&open).unwrap(),
-            serde_json::json!({ "tool": "open_drive", "drive": "nvme0n1p3:1" })
-        );
-        for bad in ["", "../sda", "sda 1", &"a".repeat(MAX_DRIVE_ID_BYTES + 1)] {
-            assert!(
-                ToolIntent::OpenDrive { drive: bad.into() }
+            {
+                assert!(
+                    ToolIntent::Vpn {
+                        route: VpnRoute::Profile,
+                        profile: None
+                    }
                     .validate()
-                    .is_err(),
-                "{bad:?}"
-            );
+                    .is_err()
+                );
+                assert!(
+                    ToolIntent::Vpn {
+                        route: VpnRoute::Profile,
+                        profile: Some("bad\nname".into())
+                    }
+                    .validate()
+                    .is_err()
+                );
+            }
+            {
+                let intent = ToolIntent::Firewall {
+                    route: FirewallRoute::Rules,
+                };
+                assert_eq!(intent.package_id(), Some("so.tilo.firewall"));
+                let json = serde_json::to_value(intent).unwrap();
+                assert_eq!(json["tool"], "firewall");
+                assert_eq!(json["route"], "rules");
+                assert!(json.get("program").is_none());
+            }
+            {
+                let intent = ToolIntent::WorkspaceSettings {
+                    route: WorkspaceSettingsRoute::PrivacySecurity,
+                };
+                assert_eq!(intent.package_id(), None);
+                let json = serde_json::to_value(intent).unwrap();
+                assert_eq!(json["tool"], "workspace_settings");
+                assert_eq!(json["route"], "privacy_security");
+                assert!(json.get("program").is_none());
+                assert!(json.get("package_id").is_none());
+            }
+            {
+                let intent = ToolIntent::IdentityBackup;
+                assert_eq!(intent.package_id(), None);
+                assert!(intent.validate().is_ok());
+                let json = serde_json::to_value(intent).unwrap();
+                assert_eq!(json["tool"], "identity_backup");
+                assert!(json.get("program").is_none());
+            }
         }
-        assert!(ToolIntent::Drives.validate().is_ok());
-        let reply: ToolReply =
-            serde_json::from_str(r#"{"accepted":true,"message":"opened"}"#).unwrap();
-        assert!(
-            reply.drives.is_empty(),
-            "replies without a list still parse"
-        );
-    }
 
-    #[test]
-    fn terminal_intents_carry_typed_operands_and_build_fixed_commands() {
+        phase document_intents_name_an_app_and_a_bounded_path;
         {
-            let intent = ToolIntent::Terminal { directory: None };
-            assert!(intent.validate().is_ok());
-            assert_eq!(intent.package_id(), Some("so.tilo.terminal"));
-            assert_eq!(intent.terminal_argv(), None);
-            let json = serde_json::to_value(&intent).unwrap();
-            assert_eq!(json, serde_json::json!({ "tool": "terminal" }));
-        }
-        {
-            let directory = "/home/u/it's \"odd\"; rm -rf ~";
-            let intent = ToolIntent::Terminal {
-                directory: Some(directory.into()),
+            let path = "/home/you/notes.pdf";
+            let open = ToolIntent::OpenDocument {
+                path: path.into(),
+                app: None,
             };
-            assert!(intent.validate().is_ok());
-            let argv = intent.terminal_argv().unwrap();
-            assert_eq!(argv[..2], ["sh", "-c"]);
-            assert!(!argv[2].contains(directory));
-            assert_eq!(argv[3], "sh");
-            assert_eq!(argv[4], directory);
-            assert_eq!(argv.len(), 5);
-        }
-        {
+            assert!(open.validate().is_ok());
+            assert_eq!(
+                open.package_id(),
+                None,
+                "the shell routes a document, no package opens it"
+            );
+            assert_eq!(
+                serde_json::to_value(&open).unwrap(),
+                serde_json::json!({ "tool": "open_document", "path": path })
+            );
+            let chosen = ToolIntent::OpenDocument {
+                path: path.into(),
+                app: Some("so.tilo.pdf-viewer".into()),
+            };
+            assert!(chosen.validate().is_ok());
+            assert_eq!(
+                serde_json::to_value(&chosen).unwrap()["app"],
+                "so.tilo.pdf-viewer"
+            );
+            let listed = ToolIntent::DocumentApps { path: path.into() };
+            assert!(listed.validate().is_ok());
+            assert_eq!(
+                serde_json::to_value(&listed).unwrap(),
+                serde_json::json!({ "tool": "document_apps", "path": path })
+            );
             for bad in [
-                "relative/dir".to_string(),
                 String::new(),
-                "/tmp/a\nb".to_string(),
-                "/tmp/a\0b".to_string(),
+                "relative.pdf".to_string(),
+                "/a\nb".to_string(),
                 format!("/{}", "a".repeat(MAX_PATH_BYTES)),
             ] {
                 assert!(
-                    ToolIntent::Terminal {
-                        directory: Some(bad.clone())
+                    ToolIntent::OpenDocument {
+                        path: bad.clone(),
+                        app: None
                     }
                     .validate()
                     .is_err(),
+                    "{bad:?}"
+                );
+                assert!(
+                    ToolIntent::DocumentApps { path: bad }.validate().is_err(),
+                    "a listing is bounded like an open"
+                );
+            }
+            assert!(
+                ToolIntent::OpenDocument {
+                    path: path.into(),
+                    app: Some("a\nb".into())
+                }
+                .validate()
+                .is_err()
+            );
+            let reply: ToolReply = serde_json::from_str(
+                r#"{"accepted":true,"message":"listed","documents":[
+                {"id":"so.tilo.pdf-viewer","name":"PDF Viewer","is_default":true},
+                {"id":"org.gnome.Evince.desktop","name":"Evince","is_default":false}]}"#,
+            )
+            .unwrap();
+            assert_eq!(reply.documents.len(), 2);
+            assert!(reply.documents[0].is_default);
+            assert!(reply.applications.is_empty(), "a list is not another list");
+        }
+
+        phase drive_intents_are_shell_routes_with_a_bounded_id;
+        {
+            let open = ToolIntent::OpenDrive {
+                drive: "nvme0n1p3:1".into(),
+            };
+            assert!(open.validate().is_ok());
+            assert_eq!(
+                open.package_id(),
+                None,
+                "the shell asks, no package opens it"
+            );
+            assert_eq!(
+                serde_json::to_value(&open).unwrap(),
+                serde_json::json!({ "tool": "open_drive", "drive": "nvme0n1p3:1" })
+            );
+            for bad in ["", "../sda", "sda 1", &"a".repeat(MAX_DRIVE_ID_BYTES + 1)] {
+                assert!(
+                    ToolIntent::OpenDrive { drive: bad.into() }
+                        .validate()
+                        .is_err(),
                     "{bad:?}"
                 );
             }
-        }
-        {
-            let podman = ToolIntent::ContainerShell {
-                container: "web-1.prod_a".into(),
-                engine: ContainerEngine::Podman,
-            };
-            assert!(podman.validate().is_ok());
-            assert_eq!(podman.package_id(), Some("so.tilo.terminal"));
-            assert_eq!(
-                podman.terminal_argv().unwrap(),
-                ["podman", "exec", "-it", "web-1.prod_a", "/bin/sh"]
+            assert!(ToolIntent::Drives.validate().is_ok());
+            let reply: ToolReply =
+                serde_json::from_str(r#"{"accepted":true,"message":"opened"}"#).unwrap();
+            assert!(
+                reply.drives.is_empty(),
+                "replies without a list still parse"
             );
-            let distrobox = ToolIntent::ContainerShell {
-                container: "fedora".into(),
-                engine: ContainerEngine::Distrobox,
-            };
-            assert_eq!(
-                distrobox.terminal_argv().unwrap(),
-                ["distrobox", "enter", "fedora"]
-            );
-            let json = serde_json::to_value(&distrobox).unwrap();
-            assert_eq!(json["tool"], "container_shell");
-            assert_eq!(json["engine"], "distrobox");
-            assert!(json.get("argv").is_none());
         }
+
+        phase terminal_intents_carry_typed_operands_and_build_fixed_commands;
         {
-            for bad in [
-                String::new(),
-                "--privileged".to_string(),
-                "-x".to_string(),
-                "a b".to_string(),
-                "a;b".to_string(),
-                "a/b".to_string(),
-                "a\nb".to_string(),
-                "é".to_string(),
-                "a".repeat(MAX_CONTAINER_NAME_BYTES + 1),
-            ] {
-                assert!(
-                    ToolIntent::ContainerShell {
-                        container: bad.clone(),
-                        engine: ContainerEngine::Podman,
-                    }
-                    .validate()
-                    .is_err(),
-                    "{bad:?}"
+            {
+                let intent = ToolIntent::Terminal { directory: None };
+                assert!(intent.validate().is_ok());
+                assert_eq!(intent.package_id(), Some("so.tilo.terminal"));
+                assert_eq!(intent.terminal_argv(), None);
+                let json = serde_json::to_value(&intent).unwrap();
+                assert_eq!(json, serde_json::json!({ "tool": "terminal" }));
+            }
+            {
+                let directory = "/home/u/it's \"odd\"; rm -rf ~";
+                let intent = ToolIntent::Terminal {
+                    directory: Some(directory.into()),
+                };
+                assert!(intent.validate().is_ok());
+                let argv = intent.terminal_argv().unwrap();
+                assert_eq!(argv[..2], ["sh", "-c"]);
+                assert!(!argv[2].contains(directory));
+                assert_eq!(argv[3], "sh");
+                assert_eq!(argv[4], directory);
+                assert_eq!(argv.len(), 5);
+            }
+            {
+                for bad in [
+                    "relative/dir".to_string(),
+                    String::new(),
+                    "/tmp/a\nb".to_string(),
+                    "/tmp/a\0b".to_string(),
+                    format!("/{}", "a".repeat(MAX_PATH_BYTES)),
+                ] {
+                    assert!(
+                        ToolIntent::Terminal {
+                            directory: Some(bad.clone())
+                        }
+                        .validate()
+                        .is_err(),
+                        "{bad:?}"
+                    );
+                }
+            }
+            {
+                let podman = ToolIntent::ContainerShell {
+                    container: "web-1.prod_a".into(),
+                    engine: ContainerEngine::Podman,
+                };
+                assert!(podman.validate().is_ok());
+                assert_eq!(podman.package_id(), Some("so.tilo.terminal"));
+                assert_eq!(
+                    podman.terminal_argv().unwrap(),
+                    ["podman", "exec", "-it", "web-1.prod_a", "/bin/sh"]
                 );
+                let distrobox = ToolIntent::ContainerShell {
+                    container: "fedora".into(),
+                    engine: ContainerEngine::Distrobox,
+                };
+                assert_eq!(
+                    distrobox.terminal_argv().unwrap(),
+                    ["distrobox", "enter", "fedora"]
+                );
+                let json = serde_json::to_value(&distrobox).unwrap();
+                assert_eq!(json["tool"], "container_shell");
+                assert_eq!(json["engine"], "distrobox");
+                assert!(json.get("argv").is_none());
+            }
+            {
+                for bad in [
+                    String::new(),
+                    "--privileged".to_string(),
+                    "-x".to_string(),
+                    "a b".to_string(),
+                    "a;b".to_string(),
+                    "a/b".to_string(),
+                    "a\nb".to_string(),
+                    "é".to_string(),
+                    "a".repeat(MAX_CONTAINER_NAME_BYTES + 1),
+                ] {
+                    assert!(
+                        ToolIntent::ContainerShell {
+                            container: bad.clone(),
+                            engine: ContainerEngine::Podman,
+                        }
+                        .validate()
+                        .is_err(),
+                        "{bad:?}"
+                    );
+                }
             }
         }
     }

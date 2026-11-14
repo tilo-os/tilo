@@ -234,65 +234,69 @@ mod tests {
         EffectiveMotion::new(Motion::default(), reduced)
     }
 
-    #[test]
-    fn a_pull_past_an_end_gives_less_and_less_and_springs_back_when_let_go() {
-        let start = crate::time::now();
-        with_monotonic_time(start, || {
-            let mut band = RubberBand::new();
-            band.pull(Vec2::new(0.0, -40.0), VIEW, motion(false), start);
-            let first = band.give(start, 1.0).y;
-            assert!(
-                first < 0.0 && first > -40.0,
-                "the start gives, less than the hand: {first}"
-            );
-            band.pull(Vec2::new(0.0, -40.0), VIEW, motion(false), start);
-            let second = band.give(start, 1.0).y - first;
-            assert!(
-                second < 0.0 && second > first,
-                "it stiffens: {first} then {second}"
-            );
-            band.release(Vec2::ZERO, VIEW, motion(false), start);
-            assert!(band.is_moving(start));
-            let later = start + Duration::from_secs(1);
-            assert!(!band.is_moving(later));
-            assert_eq!(band.give(later, 1.0), Vec2::ZERO);
-        });
-    }
+    tilo_test_env::scenario! {
+        fn a_rubber_band_gives_takes_in_and_springs_back;
 
-    #[test]
-    fn moving_back_takes_the_give_in_before_the_content_moves() {
-        let start = crate::time::now();
-        with_monotonic_time(start, || {
-            let mut band = RubberBand::new();
-            band.pull(Vec2::new(0.0, 30.0), VIEW, motion(false), start);
-            let left = band.take_in(Vec2::new(0.0, -20.0), VIEW, motion(false), start);
-            assert_eq!(left, Vec2::ZERO, "all of it went into the give");
-            assert!(band.give(start, 1.0).y > 0.0);
-            let left = band.take_in(Vec2::new(0.0, -20.0), VIEW, motion(false), start);
-            assert_eq!(left, Vec2::new(0.0, -10.0), "the rest moves the content");
-            assert_eq!(band.give(start, 1.0), Vec2::ZERO);
-        });
-    }
+        phase a_pull_past_an_end_gives_less_and_less_and_springs_back_when_let_go;
+        {
+            let start = crate::time::now();
+            with_monotonic_time(start, || {
+                let mut band = RubberBand::new();
+                band.pull(Vec2::new(0.0, -40.0), VIEW, motion(false), start);
+                let first = band.give(start, 1.0).y;
+                assert!(
+                    first < 0.0 && first > -40.0,
+                    "the start gives, less than the hand: {first}"
+                );
+                band.pull(Vec2::new(0.0, -40.0), VIEW, motion(false), start);
+                let second = band.give(start, 1.0).y - first;
+                assert!(
+                    second < 0.0 && second > first,
+                    "it stiffens: {first} then {second}"
+                );
+                band.release(Vec2::ZERO, VIEW, motion(false), start);
+                assert!(band.is_moving(start));
+                let later = start + Duration::from_secs(1);
+                assert!(!band.is_moving(later));
+                assert_eq!(band.give(later, 1.0), Vec2::ZERO);
+            });
+        }
 
-    #[test]
-    fn under_reduced_motion_the_content_stops_at_its_ends() {
-        let start = crate::time::now();
-        with_monotonic_time(start, || {
-            let mut band = RubberBand::new();
-            band.pull(Vec2::new(0.0, -80.0), VIEW, motion(true), start);
-            assert_eq!(band.give(start, 1.0), Vec2::ZERO);
-            assert!(!band.is_stretched(start));
-        });
-    }
+        phase moving_back_takes_the_give_in_before_the_content_moves;
+        {
+            let start = crate::time::now();
+            with_monotonic_time(start, || {
+                let mut band = RubberBand::new();
+                band.pull(Vec2::new(0.0, 30.0), VIEW, motion(false), start);
+                let left = band.take_in(Vec2::new(0.0, -20.0), VIEW, motion(false), start);
+                assert_eq!(left, Vec2::ZERO, "all of it went into the give");
+                assert!(band.give(start, 1.0).y > 0.0);
+                let left = band.take_in(Vec2::new(0.0, -20.0), VIEW, motion(false), start);
+                assert_eq!(left, Vec2::new(0.0, -10.0), "the rest moves the content");
+                assert_eq!(band.give(start, 1.0), Vec2::ZERO);
+            });
+        }
 
-    #[test]
-    fn the_give_steps_in_whole_device_pixels() {
-        let start = crate::time::now();
-        with_monotonic_time(start, || {
-            let mut band = RubberBand::new();
-            band.pull(Vec2::new(0.0, 13.3), VIEW, motion(false), start);
-            let give = band.give(start, 2.0).y * 2.0;
-            assert_eq!(give, give.round());
-        });
+        phase under_reduced_motion_the_content_stops_at_its_ends;
+        {
+            let start = crate::time::now();
+            with_monotonic_time(start, || {
+                let mut band = RubberBand::new();
+                band.pull(Vec2::new(0.0, -80.0), VIEW, motion(true), start);
+                assert_eq!(band.give(start, 1.0), Vec2::ZERO);
+                assert!(!band.is_stretched(start));
+            });
+        }
+
+        phase the_give_steps_in_whole_device_pixels;
+        {
+            let start = crate::time::now();
+            with_monotonic_time(start, || {
+                let mut band = RubberBand::new();
+                band.pull(Vec2::new(0.0, 13.3), VIEW, motion(false), start);
+                let give = band.give(start, 2.0).y * 2.0;
+                assert_eq!(give, give.round());
+            });
+        }
     }
 }

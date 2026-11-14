@@ -1,8 +1,8 @@
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
-use super::{StatePeer, SystemTime};
+use super::{StatePeer, SystemTime, person_of};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Change, Grantee, TreePath, roles};
+use tilo_action_policy::{Change, Grantee, Role, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -89,10 +89,11 @@ impl StatePeer {
         let workspace = self.core.workspace.clone();
         match change {
             Change::AddMember { person: who, role } | Change::SetRole { person: who, role } => {
-                let role = super::member_role_from_role(*role)
-                    .ok_or("the owner's role is not given through membership")?;
+                if *role == Role::Owner {
+                    return Err("the owner's role is not given through membership".into());
+                }
                 self.governance_mut()
-                    .set_member_role(person(who)?, role, key, now)
+                    .set_member_role(person(who)?, *role, key, now)
             }
             Change::RemoveMember { person: who } => {
                 self.governance_mut().remove_member(person(who)?, key, now)
@@ -166,7 +167,7 @@ impl StatePeer {
         let device = hex::encode(caller.device_public_key);
         let grants = crate::workspace::share::share_grants(
             &member.policy,
-            (&member.person, &device, &authority, &cx),
+            (person_of(&member)?, &device, &authority, &cx),
             share,
             node,
             access,
@@ -195,7 +196,7 @@ impl StatePeer {
         let cx = tilo_action_policy::Context::at_time(now);
         let ended = crate::workspace::share::ended_by(
             &member.policy,
-            (&member.person, &authority, &cx),
+            (person_of(&member)?, &authority, &cx),
             share,
         );
         if ended.is_empty() {
@@ -222,9 +223,9 @@ impl StatePeer {
             WorkspaceMembershipCommand::Revoke { grant } => Change::Revoke(grant.clone()),
             _ => return Err("not a governance grant command".into()),
         };
-        let mut checked = member.policy.clone();
+        let mut checked = (*member.policy).clone();
         checked
-            .apply(&member.person, &authority, change, &cx, false)
+            .apply(person_of(&member)?, &authority, change, &cx, false)
             .map_err(|refusal| refusal.to_string())?;
         match command {
             WorkspaceMembershipCommand::Grant { grant } => {
@@ -245,6 +246,17 @@ impl StatePeer {
     }
 }
 impl PeerWorkspace<'_> {
+    /// The workspace's own document as this device holds it: its governance, and the layout the
+    /// workspace keeps at its root, whole.
+    #[must_use]
+    pub fn document(self) -> Option<Vec<u8>> {
+        self.peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .map(crate::cached_document::CachedDocument::saved)
+    }
+
     /// Check that this admitted device may grant in the workspace now.
     pub fn check_workspace_administration(
         self,
@@ -330,47 +342,6 @@ impl PeerWorkspaceMut<'_> {
         }
         if let WorkspaceMembershipCommand::Unshare { share } = command {
             return self.peer.apply_unshare(caller, share, key, now);
-        }
-        self.peer
-            .apply_administered_command(caller, command, key, now)
-    }
-}
-
-impl StatePeer {
-    /// Apply a command only the workspace's administrators may give: letting a
-    /// person author apps.
-    fn apply_administered_command(
-        &mut self,
-        caller: &DeviceCert,
-        command: &WorkspaceMembershipCommand,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.workspace()
-            .check_workspace_administration(caller.device_public_key, now)?;
-        let member = self.membership(caller.device_public_key, now)?;
-        if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
-            let grant =
-                roles::app_authorship(&self.core.workspace, app, Grantee::person(member.person));
-            if self
-                .require_governance_action(key, roles::governance::GRANT, now)
-                .is_ok()
-            {
-                return self
-                    .governance_mut()
-                    .put_governed_grants(&[grant], key, now);
-            }
-            // Anyone else gives it as a grant of their own, as every
-            // receiver admits it from them (`workspace::membership`).
-            if member.policy.grants.iter().any(|held| held.id == grant.id) {
-                return Ok(false);
-            }
-            return self.apply_governance_grant_command(
-                caller,
-                &WorkspaceMembershipCommand::Grant { grant },
-                key,
-                now,
-            );
         }
         Ok(false)
     }

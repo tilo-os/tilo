@@ -134,57 +134,61 @@ mod tests {
         row
     }
 
-    #[test]
-    fn a_private_view_hides_every_agent_action_on_its_resource_and_below() {
-        let mut page = row(
-            "page",
-            vec![effect("read"), view("stop", &[]), effect("click")],
-        );
-        page.children.push(row("frame", vec![effect("frame-read")]));
-        let hidden = hidden_from_agents(&app(vec![page]));
-        let addresses: Vec<&str> = hidden.iter().map(|v| v.address.as_str()).collect();
-        assert_eq!(
-            addresses,
-            ["page\u{1f}read", "page\u{1f}click", "frame\u{1f}frame-read"]
-        );
-        assert!(hidden[0].reason.contains("`stop`"), "{}", hidden[0].reason);
-    }
+    tilo_test_env::scenario! {
+        fn a_private_disclosure_hides_agent_actions_below_it;
 
-    #[test]
-    fn a_resource_without_a_private_disclosure_hides_nothing() {
-        let resources = app(vec![
-            // No view: its actions stand in its place.
-            row("page", vec![effect("read"), effect("click")]),
-            // A document read discloses under the caller's own policy.
-            row(
-                "document",
-                vec![
-                    view("ui", &[]),
-                    view("read-document", &[crate::DOCUMENT_READ_TAG]),
-                    effect("edit"),
-                ],
-            ),
-            row(
-                "mine",
-                vec![view("look", &[crate::PARTICIPANT_VIEW_TAG]), effect("act")],
-            ),
-            // Only private views: nothing an agent could take is hidden.
-            row("panel", vec![view("show-panel", &[])]),
-            // A window's own view first, then a read of the record (History's
-            // review): the read discloses it under the caller's own policy.
-            row(
-                "session",
-                vec![
-                    view("show-history", &[]),
-                    view("review", &[crate::RECORD_READ_TAG]),
-                    effect("run"),
-                ],
-            ),
-        ]);
-        assert_eq!(hidden_from_agents(&resources), []);
-        // The app's own root is the app's: an agent addresses it by name.
-        let mut root = row("app", vec![view("show", &[]), effect("act")]);
-        root.children.clear();
-        assert_eq!(hidden_from_agents(&[root]), []);
+        phase a_private_view_hides_every_agent_action_on_its_resource_and_below;
+        {
+            let mut page = row(
+                "page",
+                vec![effect("read"), view("stop", &[]), effect("click")],
+            );
+            page.children.push(row("frame", vec![effect("frame-read")]));
+            let hidden = hidden_from_agents(&app(vec![page]));
+            let addresses: Vec<&str> = hidden.iter().map(|v| v.address.as_str()).collect();
+            assert_eq!(
+                addresses,
+                ["page\u{1f}read", "page\u{1f}click", "frame\u{1f}frame-read"]
+            );
+            assert!(hidden[0].reason.contains("`stop`"), "{}", hidden[0].reason);
+        }
+
+        phase a_resource_without_a_private_disclosure_hides_nothing;
+        {
+            let resources = app(vec![
+                // No view: its actions stand in its place.
+                row("page", vec![effect("read"), effect("click")]),
+                // A document read discloses under the caller's own policy.
+                row(
+                    "document",
+                    vec![
+                        view("ui", &[]),
+                        view("read-document", &[crate::DOCUMENT_READ_TAG]),
+                        effect("edit"),
+                    ],
+                ),
+                row(
+                    "mine",
+                    vec![view("look", &[crate::PARTICIPANT_VIEW_TAG]), effect("act")],
+                ),
+                // Only private views: nothing an agent could take is hidden.
+                row("panel", vec![view("show-panel", &[])]),
+                // A window's own view first, then a read of the record (History's
+                // review): the read discloses it under the caller's own policy.
+                row(
+                    "session",
+                    vec![
+                        view("show-history", &[]),
+                        view("review", &[crate::RECORD_READ_TAG]),
+                        effect("run"),
+                    ],
+                ),
+            ]);
+            assert_eq!(hidden_from_agents(&resources), []);
+            // The app's own root is the app's: an agent addresses it by name.
+            let mut root = row("app", vec![view("show", &[]), effect("act")]);
+            root.children.clear();
+            assert_eq!(hidden_from_agents(&[root]), []);
+        }
     }
 }

@@ -468,51 +468,55 @@ mod tests {
         run
     }
 
-    #[test]
-    fn a_runs_task_id_names_the_conversations_message_it_answers() {
-        let cause = validate(&run("chat.workspace/channels/launch/messages/asked")).unwrap();
-        assert_eq!(cause.conversation, "launch");
-        assert_eq!(cause.message, "asked");
-        let address = "chat.workspace/channels/launch/messages/asked";
-        assert_eq!(Cause::of(&run(address)).unwrap(), cause);
-    }
+    tilo_test_env::scenario! {
+        fn a_run_is_bound_to_the_conversation_message_it_answers;
 
-    #[test]
-    fn a_run_that_answers_no_conversations_message_is_refused() {
-        for task_id in [
-            "tasks.tracker/issues/42",
-            "chat.workspace/channels/launch",
-            "chat.workspace/channels//messages/asked",
-            "chat.workspace/channels/launch/messages/",
-            "conversation/messages/asked",
-        ] {
-            assert!(
-                validate(&run(task_id)).is_err(),
-                "{task_id} names no message of a conversation"
-            );
+        phase a_runs_task_id_names_the_conversations_message_it_answers;
+        {
+            let cause = validate(&run("chat.workspace/channels/launch/messages/asked")).unwrap();
+            assert_eq!(cause.conversation, "launch");
+            assert_eq!(cause.message, "asked");
+            let address = "chat.workspace/channels/launch/messages/asked";
+            assert_eq!(Cause::of(&run(address)).unwrap(), cause);
         }
-    }
 
-    #[test]
-    fn a_run_whose_context_does_not_bind_its_turn_is_refused() {
-        let mut unbound = run("chat.workspace/channels/launch/messages/asked");
-        unbound.action_context = Value::Null;
-        assert!(validate(&unbound).is_err());
-        let mut other_group = run("chat.workspace/channels/launch/messages/asked");
-        other_group.action_context = serde_json::to_value(
-            tilo_actions::ActionContext::default()
-                .with_purpose(other_group.title.as_str())
-                .with_group("another-run", other_group.title.as_str(), "task"),
-        )
-        .unwrap();
-        assert!(validate(&other_group).is_err());
-        let mut wrong_purpose = run("chat.workspace/channels/launch/messages/asked");
-        wrong_purpose.action_context = serde_json::to_value(
-            tilo_actions::ActionContext::default()
-                .with_purpose("something else")
-                .with_group(wrong_purpose.group(), wrong_purpose.title.as_str(), "task"),
-        )
-        .unwrap();
-        assert!(validate(&wrong_purpose).is_err());
+        phase a_run_that_answers_no_conversations_message_is_refused;
+        {
+            for task_id in [
+                "tasks.tracker/issues/42",
+                "chat.workspace/channels/launch",
+                "chat.workspace/channels//messages/asked",
+                "chat.workspace/channels/launch/messages/",
+                "conversation/messages/asked",
+            ] {
+                assert!(
+                    validate(&run(task_id)).is_err(),
+                    "{task_id} names no message of a conversation"
+                );
+            }
+        }
+
+        phase a_run_whose_context_does_not_bind_its_turn_is_refused;
+        {
+            let mut unbound = run("chat.workspace/channels/launch/messages/asked");
+            unbound.action_context = Value::Null;
+            assert!(validate(&unbound).is_err());
+            let mut other_group = run("chat.workspace/channels/launch/messages/asked");
+            other_group.action_context = serde_json::to_value(
+                tilo_actions::ActionContext::default()
+                    .with_purpose(other_group.title.as_str())
+                    .with_group("another-run", other_group.title.as_str(), "task"),
+            )
+            .unwrap();
+            assert!(validate(&other_group).is_err());
+            let mut wrong_purpose = run("chat.workspace/channels/launch/messages/asked");
+            wrong_purpose.action_context = serde_json::to_value(
+                tilo_actions::ActionContext::default()
+                    .with_purpose("something else")
+                    .with_group(wrong_purpose.group(), wrong_purpose.title.as_str(), "task"),
+            )
+            .unwrap();
+            assert!(validate(&wrong_purpose).is_err());
+        }
     }
 }

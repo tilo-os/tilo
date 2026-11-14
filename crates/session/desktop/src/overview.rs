@@ -2,7 +2,7 @@
 //!
 //! The overview is the one desktop surface that deliberately reveals the
 //! complete layout hierarchy: workspace -> strip -> window group -> tab.
-//! It also attaches present collaborators to the tab they are looking at.
+//! It also attaches present members to the tab they are looking at.
 //! Permissions and the full sharing inventory belong to workspace settings;
 //! keeping them out of this projection lets the overview remain a spatial
 //! explanation instead of becoming a second settings screen.
@@ -11,11 +11,10 @@
 //! settings name what a share covers, an app's artwork) comes through
 //! [`OverviewHost`].
 
-use collab_types::caps::{Access, Effect, Principal, Scope, Subject};
+use collab_types::MemberId;
+use collab_types::caps::{Access, Effect, Scope};
 use collab_types::role::Role as CapRole;
-use tilo_desktop_model::{
-    Collaborator, DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceSlot,
-};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceSlot};
 use tilo_sort::CompactSort as _;
 
 use crate::i18n::{t, t_args};
@@ -128,7 +127,7 @@ pub struct OverviewTab {
     pub is_active: bool,
     /// The application the tab shows, drawn by its mark.
     pub app: WindowApp,
-    /// Present collaborators whose published focus points at this tab. The local person is
+    /// Members here whose published focus points at this tab. The local person is
     /// deliberately absent: an untouched solo workspace should look like a desktop, not a
     /// collaboration dashboard.
     pub people: Vec<WorkspacePerson>,
@@ -218,19 +217,12 @@ impl WorkspaceCard {
 
 /// Falls back to the principal itself rather than a placeholder — a row labelled "Unknown" tells
 /// the reader nothing, while the raw subject is both true and the value a revoke would name.
-fn display_name(id: &UserId, ws: &Workspace, tree: &DesktopTree) -> String {
-    known_collaborator(id, ws, tree).map_or_else(|| id.clone(), |c| c.name.clone())
-}
-
-fn known_collaborator<'a>(
-    id: &UserId,
-    ws: &'a Workspace,
-    tree: &'a DesktopTree,
-) -> Option<&'a Collaborator> {
-    ws.collaborators
+fn display_name(id: &UserId, ws: &Workspace, _tree: &DesktopTree) -> String {
+    let wanted = MemberId::person(id.clone());
+    ws.members
         .iter()
-        .chain(tree.collaborators.iter())
-        .find(|c| &c.id == id)
+        .find(|member| member.id == wanted)
+        .map_or_else(|| id.clone(), |member| member.name.clone())
 }
 
 /// Everyone who may be in `ws` at unix time `now` , and whether they are here now.
@@ -247,7 +239,7 @@ pub fn workspace_people(
         .map(|(id, role)| {
             // Being the local user isn't evidence of being in *this*
             // workspace — you're only in the one you're looking at. These are
-            // two independent conditions (are-you-a-listed-collaborator,
+            // two independent conditions (are-you-a-listed-member,
             // are-you-the-local-user-in-the-active-workspace), not a mixed-up
             // field pairing, despite the superficial `a == b && c == d`
             // shape.
@@ -255,7 +247,10 @@ pub fn workspace_people(
                 clippy::suspicious_operation_groupings,
                 reason = "id == me and ws.id == tree.active are independent identity checks, not a swapped field pair"
             )]
-            let present = ws.collaborators.iter().any(|c| c.id == id)
+            let present = ws
+                .present
+                .iter()
+                .any(|here| here.member == MemberId::person(id.clone()))
                 || (id == me && ws.slot == tree.active);
             WorkspacePerson {
                 name: display_name(&id, ws, tree),
@@ -320,18 +315,23 @@ pub fn workspace_shares(
         if !cap.is_live_at(Some(now)) || cap.effect != Effect::Grant {
             continue;
         }
-        let holder = match &cap.subject {
-            Subject::Principal(Principal::Person(p)) => p.clone(),
-            // Resolving the durable name here stops one holder appearing twice on the same share.
-            Subject::User(key) => match Principal::person_from_key(*key) {
-                Principal::Person(p) => p,
-                _ => continue,
-            },
-            Subject::Principal(_) => continue,
+        let Some(holder) = cap.grantee.person_id() else {
+            continue;
+        };
+        // A capability an app holds names that app in the scope, not a second holder.
+        let what = match &cap.app {
+            Some(app) => t_args(
+                "overview-shared-in-app",
+                &[
+                    ("scope", host.scope_label(&cap.scope).into()),
+                    ("app", app.as_str().into()),
+                ],
+            ),
+            None => host.scope_label(&cap.scope),
         };
         share(
-            host.scope_label(&cap.scope),
-            display_name(&holder, ws, tree),
+            what,
+            display_name(&holder.to_owned(), ws, tree),
             cap.access == Access::Write,
         );
     }
@@ -402,11 +402,10 @@ fn overview_strips(
                                     .filter(|person| {
                                         !person.is_you
                                             && person.present
-                                            && ws
-                                                .collaborators
-                                                .iter()
-                                                .find(|collaborator| collaborator.id == person.id)
-                                                .is_some_and(|c| c.active_tab == Some(tab.id))
+                                            && ws.present.iter().any(|here| {
+                                                here.member == MemberId::person(person.id.clone())
+                                                    && here.tab == Some(tab.id)
+                                            })
                                     })
                                     .cloned()
                                     .collect(),
@@ -555,53 +554,57 @@ mod press_tests {
     use super::*;
     use vello::kurbo::Point;
 
-    #[test]
-    fn a_press_is_a_tap_until_it_travels_past_the_slop() {
-        let start = Point::new(100.0, 100.0);
-        let mut click = OverviewPress::new(PressSource::Mouse, Some(7), start);
-        click.moved(Point::new(102.0, 100.0));
-        assert!(!click.is_dragging());
-        assert_eq!(
-            click.release(Point::new(102.0, 101.0)),
-            PressEnd::Tap {
-                tab: Some(7),
-                at: Point::new(102.0, 101.0)
-            }
-        );
+    tilo_test_env::scenario! {
+        fn a_press_on_the_overview_is_a_tap_until_it_drags;
 
-        let mut drag = OverviewPress::new(PressSource::Mouse, Some(7), start);
-        drag.moved(Point::new(140.0, 180.0));
-        assert!(drag.is_dragging());
-        drag.moved(start);
-        assert!(drag.is_dragging(), "coming back does not undo a drag");
-        assert_eq!(drag.release(start), PressEnd::Drop { tab: 7, at: start });
-    }
+        phase a_press_is_a_tap_until_it_travels_past_the_slop;
+        {
+            let start = Point::new(100.0, 100.0);
+            let mut click = OverviewPress::new(PressSource::Mouse, Some(7), start);
+            click.moved(Point::new(102.0, 100.0));
+            assert!(!click.is_dragging());
+            assert_eq!(
+                click.release(Point::new(102.0, 101.0)),
+                PressEnd::Tap {
+                    tab: Some(7),
+                    at: Point::new(102.0, 101.0)
+                }
+            );
 
-    #[test]
-    fn a_finger_gets_the_wider_touch_slop() {
-        let start = Point::new(0.0, 0.0);
-        let wobble = Point::new(10.0, 0.0);
-        let mut finger = OverviewPress::new(PressSource::Touch(3), Some(7), start);
-        finger.moved(wobble);
-        assert!(!finger.is_dragging(), "a finger's wobble is still a tap");
-        let mut mouse = OverviewPress::new(PressSource::Mouse, Some(7), start);
-        mouse.moved(wobble);
-        assert!(mouse.is_dragging());
-    }
+            let mut drag = OverviewPress::new(PressSource::Mouse, Some(7), start);
+            drag.moved(Point::new(140.0, 180.0));
+            assert!(drag.is_dragging());
+            drag.moved(start);
+            assert!(drag.is_dragging(), "coming back does not undo a drag");
+            assert_eq!(drag.release(start), PressEnd::Drop { tab: 7, at: start });
+        }
 
-    #[test]
-    fn a_drag_that_carries_nothing_does_nothing() {
-        let start = Point::new(0.0, 0.0);
-        let press = OverviewPress::new(PressSource::Touch(1), None, start);
-        assert_eq!(press.release(Point::new(90.0, 0.0)), PressEnd::Nothing);
-        let press = OverviewPress::new(PressSource::Touch(1), None, start);
-        assert_eq!(
-            press.release(start),
-            PressEnd::Tap {
-                tab: None,
-                at: start
-            }
-        );
+        phase a_finger_gets_the_wider_touch_slop;
+        {
+            let start = Point::new(0.0, 0.0);
+            let wobble = Point::new(10.0, 0.0);
+            let mut finger = OverviewPress::new(PressSource::Touch(3), Some(7), start);
+            finger.moved(wobble);
+            assert!(!finger.is_dragging(), "a finger's wobble is still a tap");
+            let mut mouse = OverviewPress::new(PressSource::Mouse, Some(7), start);
+            mouse.moved(wobble);
+            assert!(mouse.is_dragging());
+        }
+
+        phase a_drag_that_carries_nothing_does_nothing;
+        {
+            let start = Point::new(0.0, 0.0);
+            let press = OverviewPress::new(PressSource::Touch(1), None, start);
+            assert_eq!(press.release(Point::new(90.0, 0.0)), PressEnd::Nothing);
+            let press = OverviewPress::new(PressSource::Touch(1), None, start);
+            assert_eq!(
+                press.release(start),
+                PressEnd::Tap {
+                    tab: None,
+                    at: start
+                }
+            );
+        }
     }
 }
 
@@ -610,6 +613,7 @@ mod workspace_tests {
     use super::*;
     use collab_types::caps::{CapOverride, Expiry};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tilo_action_policy::Grantee;
     use tilo_desktop_model::{AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth};
 
     const ME: &str = "me";
@@ -676,7 +680,7 @@ mod workspace_tests {
         fn a_member_makes_the_workspace_read_as_shared_with_them() {
             let mut w = ws("Design");
             w.admit("ada", collab_types::Role::Editor);
-            w.collaborators.push(Collaborator::new("ada", "Ada"));
+            w.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
             let tree = tree_with(vec![w]);
             let card = &workspace_cards(&tree)[0];
             assert!(!card.is_private());
@@ -688,7 +692,7 @@ mod workspace_tests {
         fn a_file_grant_is_a_share_and_not_a_membership() {
             let mut w = ws("Design");
             w.sandbox.push(CapOverride::grant(
-                Subject::person("ada"),
+                Grantee::person("ada"),
                 Scope::FsPath("/var/workspace/brief".to_string()),
                 Access::Read,
             ));
@@ -711,7 +715,7 @@ mod workspace_tests {
             let mut w = ws("Design");
             for who in ["ada", "bob"] {
                 w.sandbox.push(CapOverride::grant(
-                    Subject::person(who),
+                    Grantee::person(who),
                     Scope::FsPath("/var/workspace/brief".to_string()),
                     Access::Read,
                 ));
@@ -729,7 +733,7 @@ mod workspace_tests {
         fn write_grants_are_marked_writable() {
             let mut w = ws("Design");
             w.sandbox.push(CapOverride::grant(
-                Subject::person("ada"),
+                Grantee::person("ada"),
                 Scope::FsPath("/var/workspace/brief".to_string()),
                 Access::Write,
             ));
@@ -754,7 +758,7 @@ mod workspace_tests {
             );
             w.sandbox.push(
                 CapOverride::grant(
-                    Subject::person("ada"),
+                    Grantee::person("ada"),
                     Scope::FsPath("/var/workspace/brief".to_string()),
                     Access::Read,
                 )
@@ -797,7 +801,7 @@ mod workspace_tests {
                 w.admit(who, collab_types::Role::Editor);
             }
             // Only Ada actually showed up.
-            w.collaborators.push(Collaborator::new("ada", "Ada"));
+            w.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
             let tree = tree_with(vec![w]);
             let card = &workspace_cards(&tree)[0];
             assert_eq!(card.people.len(), 3, "you + two members");
@@ -887,13 +891,17 @@ mod workspace_tests {
             );
         }
 
-        fn collaborator_focus_is_attached_to_the_tab_not_the_workspace_header() {
+        fn a_members_focus_is_attached_to_the_tab_not_the_workspace_header() {
             let mut w = ws("Design");
             let strip_id = StripId(fresh_id());
             let tab_id = 71;
             w.admit("ada", collab_types::Role::Editor);
-            w.collaborators
-                .push(Collaborator::with_active_tab("ada", "Ada", tab_id));
+            let ada = tilo_desktop_model::Member::keyed("ada", "Ada");
+            w.member_here(ada.clone());
+            w.place_presence(tilo_desktop_model::Present {
+                tab: Some(tab_id),
+                ..tilo_desktop_model::Present::of(ada.id)
+            });
             w.strips = vec![Strip {
                 id: strip_id,
                 name: String::new(),
@@ -932,6 +940,6 @@ mod workspace_tests {
         presence_is_who_is_here_now_not_who_is_a_member();
         a_workspace_you_are_not_in_does_not_report_you_as_here();
         spatial_projection_preserves_strip_group_and_tab_nesting();
-        collaborator_focus_is_attached_to_the_tab_not_the_workspace_header();
+        a_members_focus_is_attached_to_the_tab_not_the_workspace_header();
     }
 }

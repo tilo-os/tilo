@@ -27,7 +27,7 @@ mod view;
 use std::collections::BTreeSet;
 
 use tilo_relay_protocol::directory::{Activity, DirectoryEntry, DirectoryPage};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 pub use client::{
     Granted, Person, SiteEntry, SiteWorkspace, Way, client, door_workspace, fetch_directory,
@@ -103,7 +103,7 @@ pub fn home_listing(site: &url::Url, home: &SiteWorkspace) -> Listed {
             workspace: String::new(),
             name: home.name.clone(),
             description: String::new(),
-            default_role: WorkspaceRole::Editor,
+            default_role: Role::Editor,
             door: home
                 .admission
                 .as_ref()
@@ -170,7 +170,7 @@ mod tests {
             workspace: workspace.into(),
             name: name.into(),
             description: format!("All about {name}"),
-            default_role: WorkspaceRole::Commenter,
+            default_role: Role::Commenter,
             door: door_path(workspace),
             here: Vec::new(),
             here_count: 0,

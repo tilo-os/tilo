@@ -1704,64 +1704,114 @@ fn joining_a_secure_network_asks_with_the_password_prompt() {
     );
 }
 
-#[test]
-fn a_known_network_joins_without_asking() {
-    let fake = Arc::new(FakeNetwork::default());
-    *fake.networks.lock().unwrap() = networks();
-    *fake.profiles.lock().unwrap() = vec![saved("library-uuid", "Library", 1)];
-    let mut model = model(&fake);
-    run(
-        &mut model,
-        NetworkEffect::ConnectNetwork {
-            ssid: "Library".into(),
-            password: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        fake.changes.lock().unwrap().as_slice(),
-        ["connect Library -"]
-    );
-    assert!(fake.continuity.lock().unwrap().is_empty());
-    assert!(model.asking.is_none());
-}
+tilo_test_env::scenario! {
+    fn joining_and_switching_reach_the_network_service;
 
-#[test]
-fn a_shared_password_or_an_open_network_joins_directly() {
-    let fake = Arc::new(FakeNetwork::default());
-    *fake.networks.lock().unwrap() = networks();
-    *fake.shared_password.lock().unwrap() = Some("from-phone".into());
-    let mut model = model(&fake);
-    run(
-        &mut model,
-        NetworkEffect::ConnectNetwork {
-            ssid: "Office_5G".into(),
-            password: None,
-        },
-    )
-    .unwrap();
-    run(
-        &mut model,
-        NetworkEffect::ConnectNetwork {
-            ssid: "Cafe_Guest".into(),
-            password: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        fake.changes.lock().unwrap().as_slice(),
-        ["connect Office_5G from-phone", "connect Cafe_Guest -"]
-    );
-    assert!(model.asking.is_none());
-    assert!(
-        model
-            .begin(NetworkEffect::ConnectNetwork {
-                ssid: "Elsewhere".into(),
+    phase a_known_network_joins_without_asking;
+    {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        *fake.profiles.lock().unwrap() = vec![saved("library-uuid", "Library", 1)];
+        let mut model = model(&fake);
+        run(
+            &mut model,
+            NetworkEffect::ConnectNetwork {
+                ssid: "Library".into(),
                 password: None,
-            })
-            .is_err(),
-        "a network out of range is refused"
-    );
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            ["connect Library -"]
+        );
+        assert!(fake.continuity.lock().unwrap().is_empty());
+        assert!(model.asking.is_none());
+    }
+
+    phase a_shared_password_or_an_open_network_joins_directly;
+    {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        *fake.shared_password.lock().unwrap() = Some("from-phone".into());
+        let mut model = model(&fake);
+        run(
+            &mut model,
+            NetworkEffect::ConnectNetwork {
+                ssid: "Office_5G".into(),
+                password: None,
+            },
+        )
+        .unwrap();
+        run(
+            &mut model,
+            NetworkEffect::ConnectNetwork {
+                ssid: "Cafe_Guest".into(),
+                password: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            ["connect Office_5G from-phone", "connect Cafe_Guest -"]
+        );
+        assert!(model.asking.is_none());
+        assert!(
+            model
+                .begin(NetworkEffect::ConnectNetwork {
+                    ssid: "Elsewhere".into(),
+                    password: None,
+                })
+                .is_err(),
+            "a network out of range is refused"
+        );
+    }
+
+    phase a_refused_switch_is_put_back;
+    {
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        run(&mut model, NetworkEffect::SetAirplaneMode { on: true }).unwrap();
+        assert!(model.radios.airplane_mode);
+
+        *fake.refuse.lock().unwrap() = Some("rfkill is blocked".into());
+        let refused = run(&mut model, NetworkEffect::SetAirplaneMode { on: false });
+        assert!(refused.unwrap_err().contains("rfkill is blocked"));
+        assert!(model.radios.airplane_mode, "the switch is put back");
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            ["Airplane true", "Airplane false"]
+        );
+    }
+
+    phase the_hotspot_starts_from_its_form;
+    {
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        *model.hotspot_password.lock().unwrap() = "short".into();
+        assert!(
+            model
+                .begin(NetworkEffect::StartHotspot {
+                    name: None,
+                    password: None,
+                    band: None,
+                })
+                .is_err()
+        );
+        *model.hotspot_password.lock().unwrap() = "long enough secret".into();
+        model.hotspot_name.set("Kitchen".into());
+        run(
+            &mut model,
+            NetworkEffect::StartHotspot {
+                name: None,
+                password: None,
+                band: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(fake.changes.lock().unwrap().as_slice(), ["hotspot Kitchen"]);
+        assert!(model.radios.hotspot_active);
+    }
 }
 
 #[test]
@@ -1784,23 +1834,6 @@ fn a_hidden_network_is_joined_from_the_password_prompt() {
     );
 }
 
-#[test]
-fn a_refused_switch_is_put_back() {
-    let fake = Arc::new(FakeNetwork::default());
-    let mut model = model(&fake);
-    run(&mut model, NetworkEffect::SetAirplaneMode { on: true }).unwrap();
-    assert!(model.radios.airplane_mode);
-
-    *fake.refuse.lock().unwrap() = Some("rfkill is blocked".into());
-    let refused = run(&mut model, NetworkEffect::SetAirplaneMode { on: false });
-    assert!(refused.unwrap_err().contains("rfkill is blocked"));
-    assert!(model.radios.airplane_mode, "the switch is put back");
-    assert_eq!(
-        fake.changes.lock().unwrap().as_slice(),
-        ["Airplane true", "Airplane false"]
-    );
-}
-
 fn work_vpn() -> VpnInfo {
     VpnInfo {
         name: "Work".into(),
@@ -1811,34 +1844,231 @@ fn work_vpn() -> VpnInfo {
     }
 }
 
-#[test]
-fn networks_saved_profiles_and_vpns_are_rows() {
-    let fake = Arc::new(FakeNetwork::default());
-    *fake.networks.lock().unwrap() = networks();
-    *fake.vpns.lock().unwrap() = vec![work_vpn()];
-    *fake.profiles.lock().unwrap() = vec![
-        saved("1234-abcd", "Hotel_Lisbon", 1),
-        SavedNetworkProfile {
-            uuid: "wired-uuid".into(),
-            name: "Wired connection 1".into(),
-            kind: "802-3-ethernet".into(),
-            autoconnect: true,
-            last_used: None,
-        },
-    ];
-    let profile = tempfile::tempdir().unwrap().keep();
-    let cx = crate::area::AreaContext::in_profile(profile);
-    let area = NetworkArea::new(&cx);
-    let _ = area.model.set(Rc::new(RefCell::new(model(&fake))));
-    let ids: Vec<String> = area.rows().iter().map(|row| row.id().to_owned()).collect();
-    for id in [
-        "network.wifi:Home_Network",
-        "network.wifi:Office_5G",
-        "network.wifi:Hotel_Lisbon",
-        "settings.network-profile:wired-uuid",
-        "vpn.connection:b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
-    ] {
-        assert!(ids.iter().any(|row| row == id), "{id} in {ids:?}");
+tilo_test_env::scenario! {
+    fn the_network_model_shows_what_the_device_reports;
+
+    phase networks_saved_profiles_and_vpns_are_rows;
+    {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        *fake.vpns.lock().unwrap() = vec![work_vpn()];
+        *fake.profiles.lock().unwrap() = vec![
+            saved("1234-abcd", "Hotel_Lisbon", 1),
+            SavedNetworkProfile {
+                uuid: "wired-uuid".into(),
+                name: "Wired connection 1".into(),
+                kind: "802-3-ethernet".into(),
+                autoconnect: true,
+                last_used: None,
+            },
+        ];
+        let profile = tempfile::tempdir().unwrap().keep();
+        let cx = crate::area::AreaContext::in_profile(profile);
+        let area = NetworkArea::new(&cx);
+        let _ = area.model.set(Rc::new(RefCell::new(model(&fake))));
+        let ids: Vec<String> = area.rows().iter().map(|row| row.id().to_owned()).collect();
+        for id in [
+            "network.wifi:Home_Network",
+            "network.wifi:Office_5G",
+            "network.wifi:Hotel_Lisbon",
+            "settings.network-profile:wired-uuid",
+            "vpn.connection:b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+        ] {
+            assert!(ids.iter().any(|row| row == id), "{id} in {ids:?}");
+        }
+    }
+
+    phase a_radio_either_source_sees_is_offered;
+    {
+        use crate::radios::Present;
+
+        let profile = tempfile::tempdir().unwrap();
+        let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
+        let area = NetworkArea::new(&cx);
+        assert!(
+            area.statuses().is_empty(),
+            "radios not read offer everything"
+        );
+        assert!(!area.is_open(), "the networks were not read");
+
+        cx.radios.set(Present::ALL);
+        assert!(
+            area.statuses().is_empty(),
+            "with every radio nothing changes"
+        );
+
+        let reported = os_actions::RadioState {
+            wwan_available: true,
+            ..os_actions::RadioState::default()
+        };
+        cx.radios.set(Present::NONE);
+        assert_eq!(
+            NetworkRadios::of(&cx.radios, Some(&reported)),
+            NetworkRadios {
+                wifi: Some(false),
+                wwan: Some(true),
+            }
+        );
+        assert_eq!(
+            NetworkRadios::of(&crate::radios::Radios::unread(), None),
+            NetworkRadios::default(),
+            "neither has said"
+        );
+    }
+
+    phase a_change_the_device_reports_shows_while_network_is_open;
+    {
+        let fake = Arc::new(FakeNetwork::default());
+        fake.vpns.lock().unwrap().push(work_vpn());
+        fake.follows
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut network = model(&fake);
+        network.scanned_at = Some(ui::time::now());
+        assert_eq!(network.vpn_summary(), t("net-vpn-off"));
+        let snapshots = fake
+            .snapshot_reads
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let status_reads = || fake.status_reads.load(std::sync::atomic::Ordering::Relaxed);
+        // Poll as the window does until the pane shows `summary`; whether a
+        // poll asked the pane to show something new.
+        let poll_until = |network: &mut NetworkModel, summary: &str| {
+            let deadline = tilo_test_env::hang_deadline();
+            let mut recomposed = false;
+            while network.vpn_summary() != summary {
+                recomposed |= network.poll();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the device was never read again"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            recomposed
+        };
+
+        fake.vpns.lock().unwrap()[0].active = true;
+        let following = network.follow();
+        let changed = fake
+            .follower
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the device is followed while the pane shows it");
+        assert!(poll_until(&mut network, "Work"), "the pane shows it");
+        assert_eq!(status_reads(), 1, "showing the page reads the status once");
+
+        fake.vpns.lock().unwrap()[0].active = false;
+        changed();
+        assert!(
+            poll_until(&mut network, &t("net-vpn-off")),
+            "the pane shows the change"
+        );
+        assert_eq!(status_reads(), 2, "one change, one status read");
+        assert_eq!(
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            snapshots,
+            "a reported change does not read every profile's settings again"
+        );
+
+        drop(following);
+        changed();
+        network.poll();
+        assert!(network.snapshot.is_none(), "a closed pane reads nothing");
+        assert_eq!(status_reads(), 2);
+    }
+
+    phase a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open;
+    {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.profiles.lock().unwrap() = vec![saved("home-uuid", "Home_Network", 300)];
+        fake.follows
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut network = model(&fake);
+        network.scanned_at = Some(ui::time::now());
+        let _following = network.follow();
+        let changed = fake
+            .follower
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the device is followed while the pane shows it");
+        let saved_names = |network: &NetworkModel| -> Vec<String> {
+            network
+                .saved_wifi()
+                .map(|profile| profile.name.clone())
+                .collect()
+        };
+        let poll_until = |network: &mut NetworkModel, names: &[&str]| {
+            let deadline = tilo_test_env::hang_deadline();
+            while saved_names(network) != names || network.snapshot.is_some() {
+                network.poll();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the saved networks were never read again: {:?}",
+                    saved_names(network)
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        network.poll();
+        poll_until(&mut network, &["Home_Network"]);
+        let whole_reads = || {
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        let before = whole_reads();
+
+        fake.profiles
+            .lock()
+            .unwrap()
+            .push(saved("cafe-uuid", "Cafe", 400));
+        fake.settings.lock().unwrap().insert(
+            "cafe-uuid".into(),
+            os_actions::ConnectionProfileSettings::default(),
+        );
+        changed();
+        poll_until(&mut network, &["Home_Network", "Cafe"]);
+        assert_eq!(
+            whole_reads(),
+            before + 1,
+            "a new profile reads everything once"
+        );
+        assert!(
+            network.wifi_profile("Cafe").is_ok(),
+            "the new network's settings are read with it"
+        );
+
+        fake.profiles
+            .lock()
+            .unwrap()
+            .retain(|profile| profile.uuid != "home-uuid");
+        changed();
+        poll_until(&mut network, &["Cafe"]);
+        assert_eq!(
+            whole_reads(),
+            before + 2,
+            "a profile gone reads everything once"
+        );
+
+        // A change that leaves the profiles as they are reads only the status.
+        changed();
+        let statuses = fake.status_reads.load(std::sync::atomic::Ordering::Relaxed);
+        let deadline = tilo_test_env::hang_deadline();
+        while fake.status_reads.load(std::sync::atomic::Ordering::Relaxed) == statuses
+            || network.snapshot.is_some()
+        {
+            network.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the status was never read"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            whole_reads(),
+            before + 2,
+            "the same profiles read only the status"
+        );
     }
 }
 
@@ -1940,35 +2170,6 @@ fn supported_network_wake_is_named_and_routes_through_the_worker() {
     );
 }
 
-#[test]
-fn the_hotspot_starts_from_its_form() {
-    let fake = Arc::new(FakeNetwork::default());
-    let mut model = model(&fake);
-    *model.hotspot_password.lock().unwrap() = "short".into();
-    assert!(
-        model
-            .begin(NetworkEffect::StartHotspot {
-                name: None,
-                password: None,
-                band: None,
-            })
-            .is_err()
-    );
-    *model.hotspot_password.lock().unwrap() = "long enough secret".into();
-    model.hotspot_name.set("Kitchen".into());
-    run(
-        &mut model,
-        NetworkEffect::StartHotspot {
-            name: None,
-            password: None,
-            band: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(fake.changes.lock().unwrap().as_slice(), ["hotspot Kitchen"]);
-    assert!(model.radios.hotspot_active);
-}
-
 const WIREGUARD_FILE: &str = "\
 [Interface]
 PrivateKey = aGVsbG8=
@@ -1996,79 +2197,202 @@ fn import(model: &mut NetworkModel, path: std::path::PathBuf, kind: Option<&'sta
     settle(model);
 }
 
-#[test]
-fn vpn_files_are_checked_and_imported() {
-    let fake = Arc::new(FakeNetwork::default());
-    let mut model = model(&fake);
-    let files = tempfile::tempdir().unwrap();
-    let write = |name: &str, text: &str| {
-        let path = files.path().join(name);
-        std::fs::write(&path, text).unwrap();
-        path
-    };
-    import(&mut model, write("home.conf", WIREGUARD_FILE), None);
-    import(
-        &mut model,
-        write("work.ovpn", OPENVPN_FILE),
-        Some("openvpn"),
-    );
-    assert_eq!(
-        fake.created.lock().unwrap().as_slice(),
-        ["wireguard home.conf", "openvpn work.ovpn"]
-    );
-    assert_eq!(model.notice.as_deref(), Some(t("net-vpn-created").as_str()));
-    assert_eq!(
-        model.page_key().as_deref(),
-        Some("vpn:c0ffee00-0000-4000-8000-000000000001"),
-        "the new VPN's page opens"
-    );
+tilo_test_env::scenario! {
+    fn vpns_are_imported_and_opened_through_settings_effects;
 
-    import(
-        &mut model,
-        write("broken.conf", "[Peer]\nEndpoint = x:1\n"),
-        None,
-    );
-    assert!(
-        model
-            .notice
-            .as_deref()
-            .is_some_and(|notice| notice.contains("Interface.PrivateKey")),
-        "{:?}",
-        model.notice
-    );
-    import(
-        &mut model,
-        write("nocheck.ovpn", "client\nremote a 1\n"),
-        None,
-    );
-    assert!(
-        model
-            .notice
-            .as_deref()
-            .is_some_and(|notice| notice.contains("cannot be checked")),
-        "{:?}",
-        model.notice
-    );
-    import(
-        &mut model,
-        write("home2.conf", WIREGUARD_FILE),
-        Some("openvpn"),
-    );
-    assert_eq!(
-        model.notice.as_deref(),
-        Some(
-            t_args(
-                "net-vpn-create-err",
-                &[("error", t("net-vpn-file-wrong-kind").into())]
+    phase vpn_files_are_checked_and_imported;
+    {
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        let files = tempfile::tempdir().unwrap();
+        let write = |name: &str, text: &str| {
+            let path = files.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        import(&mut model, write("home.conf", WIREGUARD_FILE), None);
+        import(
+            &mut model,
+            write("work.ovpn", OPENVPN_FILE),
+            Some("openvpn"),
+        );
+        assert_eq!(
+            fake.created.lock().unwrap().as_slice(),
+            ["wireguard home.conf", "openvpn work.ovpn"]
+        );
+        assert_eq!(model.notice.as_deref(), Some(t("net-vpn-created").as_str()));
+        assert_eq!(
+            model.page_key().as_deref(),
+            Some("vpn:c0ffee00-0000-4000-8000-000000000001"),
+            "the new VPN's page opens"
+        );
+
+        import(
+            &mut model,
+            write("broken.conf", "[Peer]\nEndpoint = x:1\n"),
+            None,
+        );
+        assert!(
+            model
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("Interface.PrivateKey")),
+            "{:?}",
+            model.notice
+        );
+        import(
+            &mut model,
+            write("nocheck.ovpn", "client\nremote a 1\n"),
+            None,
+        );
+        assert!(
+            model
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("cannot be checked")),
+            "{:?}",
+            model.notice
+        );
+        import(
+            &mut model,
+            write("home2.conf", WIREGUARD_FILE),
+            Some("openvpn"),
+        );
+        assert_eq!(
+            model.notice.as_deref(),
+            Some(
+                t_args(
+                    "net-vpn-create-err",
+                    &[("error", t("net-vpn-file-wrong-kind").into())]
+                )
+                .as_str()
             )
-            .as_str()
+        );
+        assert_eq!(
+            fake.created.lock().unwrap().len(),
+            2,
+            "nothing refused was set up"
+        );
+    }
+
+    phase the_vpn_apps_actions_resolve_in_settings;
+    {
+        for (id, arguments, expected) in [
+            (
+                "import-wireguard",
+                serde_json::json!({}),
+                VpnEffect::ImportWireguard,
+            ),
+            (
+                "import-openvpn",
+                serde_json::json!({}),
+                VpnEffect::ImportOpenvpn,
+            ),
+            (
+                "connect",
+                serde_json::json!({"connection": "Work"}),
+                VpnEffect::Connect {
+                    connection: "Work".into(),
+                },
+            ),
+            (
+                "disconnect",
+                serde_json::json!({"connection": "Work"}),
+                VpnEffect::Disconnect {
+                    connection: "Work".into(),
+                },
+            ),
+            (
+                "delete-connection",
+                serde_json::json!({"connection": "Work"}),
+                VpnEffect::DeleteConnection {
+                    connection: "Work".into(),
+                },
+            ),
+        ] {
+            let decoded = SettingsEffect::decode(id, arguments.as_object().unwrap())
+                .unwrap_or_else(|error| panic!("{id} resolves: {error}"));
+            assert_eq!(decoded, SettingsEffect::from(expected), "{id}");
+        }
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.vpns.lock().unwrap() = vec![work_vpn()];
+        let mut model = model(&fake);
+        run_vpn(
+            &mut model,
+            VpnEffect::Connect {
+                connection: "Work".into(),
+            },
         )
-    );
-    assert_eq!(
-        fake.created.lock().unwrap().len(),
-        2,
-        "nothing refused was set up"
-    );
+        .unwrap();
+        run_vpn(
+            &mut model,
+            VpnEffect::Disconnect {
+                connection: "Work".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fake.changes.lock().unwrap().as_slice(),
+            ["vpn Work true", "vpn Work false"]
+        );
+    }
+
+    phase the_vpn_tool_opens_settings_where_it_asks;
+    {
+        use os_actions::{ToolIntent, VpnRoute};
+        let effect = |route, profile: Option<&str>| {
+            crate::resource::tool_effect(&ToolIntent::Vpn {
+                route,
+                profile: profile.map(str::to_owned),
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            effect(VpnRoute::Overview, None),
+            SettingsEffect::from(VpnEffect::ShowVpns)
+        );
+        assert_eq!(
+            effect(VpnRoute::Profile, Some("Work")),
+            SettingsEffect::from(VpnEffect::ShowVpnProfile {
+                connection: "Work".into()
+            })
+        );
+        assert_eq!(
+            effect(VpnRoute::Import, None),
+            SettingsEffect::from(VpnEffect::ImportVpnFile)
+        );
+        assert_eq!(
+            ToolIntent::Vpn {
+                route: VpnRoute::Overview,
+                profile: None
+            }
+            .package_id(),
+            Some("so.tilo.settings")
+        );
+
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.vpns.lock().unwrap() = vec![work_vpn()];
+        let profile = tempfile::tempdir().unwrap().keep();
+        let mut model = NetworkModel::with_service(
+            Reach::of(&crate::area::AreaContext::in_profile(profile)),
+            Arc::clone(&fake) as Arc<dyn NetworkService>,
+        );
+        run_vpn(
+            &mut model,
+            VpnEffect::ShowVpnProfile {
+                connection: "Work".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(model.page_key().as_deref(), Some(super::vpn::PAGE_VPN));
+        let snapshot = fake.snapshot(true);
+        let _ = model.adopt_snapshot(snapshot);
+        model.poll_background();
+        assert_eq!(
+            model.page_key(),
+            Some(super::vpn::profile_page_key(&work_vpn().uuid))
+        );
+    }
 }
 
 #[test]
@@ -2271,68 +2595,6 @@ fn a_plugin_vpn_is_called_by_its_protocol() {
     assert!(model.vpn.settings.is_empty(), "no profile was read for it");
 }
 
-#[test]
-fn the_vpn_apps_actions_resolve_in_settings() {
-    for (id, arguments, expected) in [
-        (
-            "import-wireguard",
-            serde_json::json!({}),
-            VpnEffect::ImportWireguard,
-        ),
-        (
-            "import-openvpn",
-            serde_json::json!({}),
-            VpnEffect::ImportOpenvpn,
-        ),
-        (
-            "connect",
-            serde_json::json!({"connection": "Work"}),
-            VpnEffect::Connect {
-                connection: "Work".into(),
-            },
-        ),
-        (
-            "disconnect",
-            serde_json::json!({"connection": "Work"}),
-            VpnEffect::Disconnect {
-                connection: "Work".into(),
-            },
-        ),
-        (
-            "delete-connection",
-            serde_json::json!({"connection": "Work"}),
-            VpnEffect::DeleteConnection {
-                connection: "Work".into(),
-            },
-        ),
-    ] {
-        let decoded = SettingsEffect::decode(id, arguments.as_object().unwrap())
-            .unwrap_or_else(|error| panic!("{id} resolves: {error}"));
-        assert_eq!(decoded, SettingsEffect::from(expected), "{id}");
-    }
-    let fake = Arc::new(FakeNetwork::default());
-    *fake.vpns.lock().unwrap() = vec![work_vpn()];
-    let mut model = model(&fake);
-    run_vpn(
-        &mut model,
-        VpnEffect::Connect {
-            connection: "Work".into(),
-        },
-    )
-    .unwrap();
-    run_vpn(
-        &mut model,
-        VpnEffect::Disconnect {
-            connection: "Work".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        fake.changes.lock().unwrap().as_slice(),
-        ["vpn Work true", "vpn Work false"]
-    );
-}
-
 fn published(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
     id: &str,
@@ -2416,44 +2678,6 @@ fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
 }
 
 #[test]
-fn a_radio_either_source_sees_is_offered() {
-    use crate::radios::Present;
-
-    let profile = tempfile::tempdir().unwrap();
-    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
-    let area = NetworkArea::new(&cx);
-    assert!(
-        area.statuses().is_empty(),
-        "radios not read offer everything"
-    );
-    assert!(!area.is_open(), "the networks were not read");
-
-    cx.radios.set(Present::ALL);
-    assert!(
-        area.statuses().is_empty(),
-        "with every radio nothing changes"
-    );
-
-    let reported = os_actions::RadioState {
-        wwan_available: true,
-        ..os_actions::RadioState::default()
-    };
-    cx.radios.set(Present::NONE);
-    assert_eq!(
-        NetworkRadios::of(&cx.radios, Some(&reported)),
-        NetworkRadios {
-            wifi: Some(false),
-            wwan: Some(true),
-        }
-    );
-    assert_eq!(
-        NetworkRadios::of(&crate::radios::Radios::unread(), None),
-        NetworkRadios::default(),
-        "neither has said"
-    );
-}
-
-#[test]
 fn ipv6_settings_apply_from_their_form() {
     let fake = Arc::new(FakeNetwork::default());
     *fake.profiles.lock().unwrap() = vec![saved("home-uuid", "Home_Network", 1)];
@@ -2484,218 +2708,6 @@ fn ipv6_settings_apply_from_their_form() {
             gateway: None,
             dns: Vec::new(),
         })
-    );
-}
-
-#[test]
-fn the_vpn_tool_opens_settings_where_it_asks() {
-    use os_actions::{ToolIntent, VpnRoute};
-    let effect = |route, profile: Option<&str>| {
-        crate::resource::tool_effect(&ToolIntent::Vpn {
-            route,
-            profile: profile.map(str::to_owned),
-        })
-        .unwrap()
-    };
-    assert_eq!(
-        effect(VpnRoute::Overview, None),
-        SettingsEffect::from(VpnEffect::ShowVpns)
-    );
-    assert_eq!(
-        effect(VpnRoute::Profile, Some("Work")),
-        SettingsEffect::from(VpnEffect::ShowVpnProfile {
-            connection: "Work".into()
-        })
-    );
-    assert_eq!(
-        effect(VpnRoute::Import, None),
-        SettingsEffect::from(VpnEffect::ImportVpnFile)
-    );
-    assert_eq!(
-        ToolIntent::Vpn {
-            route: VpnRoute::Overview,
-            profile: None
-        }
-        .package_id(),
-        Some("so.tilo.settings")
-    );
-
-    let fake = Arc::new(FakeNetwork::default());
-    *fake.vpns.lock().unwrap() = vec![work_vpn()];
-    let profile = tempfile::tempdir().unwrap().keep();
-    let mut model = NetworkModel::with_service(
-        Reach::of(&crate::area::AreaContext::in_profile(profile)),
-        Arc::clone(&fake) as Arc<dyn NetworkService>,
-    );
-    run_vpn(
-        &mut model,
-        VpnEffect::ShowVpnProfile {
-            connection: "Work".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(model.page_key().as_deref(), Some(super::vpn::PAGE_VPN));
-    let snapshot = fake.snapshot(true);
-    let _ = model.adopt_snapshot(snapshot);
-    model.poll_background();
-    assert_eq!(
-        model.page_key(),
-        Some(super::vpn::profile_page_key(&work_vpn().uuid))
-    );
-}
-
-#[test]
-fn a_change_the_device_reports_shows_while_network_is_open() {
-    let fake = Arc::new(FakeNetwork::default());
-    fake.vpns.lock().unwrap().push(work_vpn());
-    fake.follows
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut network = model(&fake);
-    network.scanned_at = Some(ui::time::now());
-    assert_eq!(network.vpn_summary(), t("net-vpn-off"));
-    let snapshots = fake
-        .snapshot_reads
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let status_reads = || fake.status_reads.load(std::sync::atomic::Ordering::Relaxed);
-    // Poll as the window does until the pane shows `summary`; whether a
-    // poll asked the pane to show something new.
-    let poll_until = |network: &mut NetworkModel, summary: &str| {
-        let deadline = tilo_test_env::hang_deadline();
-        let mut recomposed = false;
-        while network.vpn_summary() != summary {
-            recomposed |= network.poll();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the device was never read again"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        recomposed
-    };
-
-    fake.vpns.lock().unwrap()[0].active = true;
-    let following = network.follow();
-    let changed = fake
-        .follower
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("the device is followed while the pane shows it");
-    assert!(poll_until(&mut network, "Work"), "the pane shows it");
-    assert_eq!(status_reads(), 1, "showing the page reads the status once");
-
-    fake.vpns.lock().unwrap()[0].active = false;
-    changed();
-    assert!(
-        poll_until(&mut network, &t("net-vpn-off")),
-        "the pane shows the change"
-    );
-    assert_eq!(status_reads(), 2, "one change, one status read");
-    assert_eq!(
-        fake.snapshot_reads
-            .load(std::sync::atomic::Ordering::Relaxed),
-        snapshots,
-        "a reported change does not read every profile's settings again"
-    );
-
-    drop(following);
-    changed();
-    network.poll();
-    assert!(network.snapshot.is_none(), "a closed pane reads nothing");
-    assert_eq!(status_reads(), 2);
-}
-
-#[test]
-fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
-    let fake = Arc::new(FakeNetwork::default());
-    *fake.profiles.lock().unwrap() = vec![saved("home-uuid", "Home_Network", 300)];
-    fake.follows
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut network = model(&fake);
-    network.scanned_at = Some(ui::time::now());
-    let _following = network.follow();
-    let changed = fake
-        .follower
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("the device is followed while the pane shows it");
-    let saved_names = |network: &NetworkModel| -> Vec<String> {
-        network
-            .saved_wifi()
-            .map(|profile| profile.name.clone())
-            .collect()
-    };
-    let poll_until = |network: &mut NetworkModel, names: &[&str]| {
-        let deadline = tilo_test_env::hang_deadline();
-        while saved_names(network) != names || network.snapshot.is_some() {
-            network.poll();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the saved networks were never read again: {:?}",
-                saved_names(network)
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    };
-    network.poll();
-    poll_until(&mut network, &["Home_Network"]);
-    let whole_reads = || {
-        fake.snapshot_reads
-            .load(std::sync::atomic::Ordering::Relaxed)
-    };
-    let before = whole_reads();
-
-    fake.profiles
-        .lock()
-        .unwrap()
-        .push(saved("cafe-uuid", "Cafe", 400));
-    fake.settings.lock().unwrap().insert(
-        "cafe-uuid".into(),
-        os_actions::ConnectionProfileSettings::default(),
-    );
-    changed();
-    poll_until(&mut network, &["Home_Network", "Cafe"]);
-    assert_eq!(
-        whole_reads(),
-        before + 1,
-        "a new profile reads everything once"
-    );
-    assert!(
-        network.wifi_profile("Cafe").is_ok(),
-        "the new network's settings are read with it"
-    );
-
-    fake.profiles
-        .lock()
-        .unwrap()
-        .retain(|profile| profile.uuid != "home-uuid");
-    changed();
-    poll_until(&mut network, &["Cafe"]);
-    assert_eq!(
-        whole_reads(),
-        before + 2,
-        "a profile gone reads everything once"
-    );
-
-    // A change that leaves the profiles as they are reads only the status.
-    changed();
-    let statuses = fake.status_reads.load(std::sync::atomic::Ordering::Relaxed);
-    let deadline = tilo_test_env::hang_deadline();
-    while fake.status_reads.load(std::sync::atomic::Ordering::Relaxed) == statuses
-        || network.snapshot.is_some()
-    {
-        network.poll();
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the status was never read"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert_eq!(
-        whole_reads(),
-        before + 2,
-        "the same profiles read only the status"
     );
 }
 

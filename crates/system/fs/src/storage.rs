@@ -883,86 +883,260 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn local_bytes_are_split_by_what_losing_the_device_costs() {
-        let held = |facts: FileFacts| FileFacts {
-            local_bytes: 10,
-            ..facts
-        };
-        let cases = [
-            (FileFacts::default(), None),
-            (held(FileFacts::default()), Some(Holding::OnlyHere)),
-            (
-                held(FileFacts {
-                    pinned: true,
-                    ..FileFacts::default()
-                }),
-                Some(Holding::OnlyHere),
-            ),
-            (
-                held(FileFacts {
-                    acknowledged: true,
-                    ..FileFacts::default()
-                }),
-                Some(Holding::Replicated),
-            ),
-            (
-                held(FileFacts {
-                    fetched: true,
-                    ..FileFacts::default()
-                }),
-                Some(Holding::Replicated),
-            ),
-            (
-                held(FileFacts {
-                    cached: true,
-                    ..FileFacts::default()
-                }),
-                Some(Holding::Cache),
-            ),
-            (
-                held(FileFacts {
-                    cached: true,
-                    pinned: true,
-                    ..FileFacts::default()
-                }),
-                Some(Holding::Pinned),
-            ),
-            (
-                held(FileFacts {
-                    acknowledged: true,
-                    pinned: true,
-                    ..FileFacts::default()
-                }),
-                Some(Holding::Pinned),
-            ),
-            (
-                held(FileFacts {
-                    acknowledged: true,
-                    cached: true,
-                    pinned: true,
-                    unsaved: true,
-                    ..FileFacts::default()
-                }),
-                Some(Holding::OnlyHere),
-            ),
-        ];
-        let mut split = ResidencySplit::default();
-        for (facts, holding) in cases {
-            assert_eq!(classify(&facts), holding, "{facts:?}");
-            add_to(&mut split, &facts);
-        }
-        assert_eq!(
-            split,
-            ResidencySplit {
-                pinned_bytes: 20,
-                replicated_bytes: 20,
-                only_here_bytes: 30,
-                only_here_files: 3,
-                cache_bytes: 10,
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each phase keeps one former test's body verbatim"
+        )]
+        fn storage_is_attributed_and_reclaimed_fail_closed;
+
+        phase local_bytes_are_split_by_what_losing_the_device_costs;
+        {
+            let held = |facts: FileFacts| FileFacts {
+                local_bytes: 10,
+                ..facts
+            };
+            let cases = [
+                (FileFacts::default(), None),
+                (held(FileFacts::default()), Some(Holding::OnlyHere)),
+                (
+                    held(FileFacts {
+                        pinned: true,
+                        ..FileFacts::default()
+                    }),
+                    Some(Holding::OnlyHere),
+                ),
+                (
+                    held(FileFacts {
+                        acknowledged: true,
+                        ..FileFacts::default()
+                    }),
+                    Some(Holding::Replicated),
+                ),
+                (
+                    held(FileFacts {
+                        fetched: true,
+                        ..FileFacts::default()
+                    }),
+                    Some(Holding::Replicated),
+                ),
+                (
+                    held(FileFacts {
+                        cached: true,
+                        ..FileFacts::default()
+                    }),
+                    Some(Holding::Cache),
+                ),
+                (
+                    held(FileFacts {
+                        cached: true,
+                        pinned: true,
+                        ..FileFacts::default()
+                    }),
+                    Some(Holding::Pinned),
+                ),
+                (
+                    held(FileFacts {
+                        acknowledged: true,
+                        pinned: true,
+                        ..FileFacts::default()
+                    }),
+                    Some(Holding::Pinned),
+                ),
+                (
+                    held(FileFacts {
+                        acknowledged: true,
+                        cached: true,
+                        pinned: true,
+                        unsaved: true,
+                        ..FileFacts::default()
+                    }),
+                    Some(Holding::OnlyHere),
+                ),
+            ];
+            let mut split = ResidencySplit::default();
+            for (facts, holding) in cases {
+                assert_eq!(classify(&facts), holding, "{facts:?}");
+                add_to(&mut split, &facts);
             }
-        );
-        assert_eq!(split.total_bytes(), 80);
+            assert_eq!(
+                split,
+                ResidencySplit {
+                    pinned_bytes: 20,
+                    replicated_bytes: 20,
+                    only_here_bytes: 30,
+                    only_here_files: 3,
+                    cache_bytes: 10,
+                }
+            );
+            assert_eq!(split.total_bytes(), 80);
+        }
+
+        phase storage_attribution_and_candidates_fail_closed;
+        {
+            {
+                assert_eq!(
+                    app_from_path("/apps/org.tilo.Notes/a"),
+                    Some("org.tilo.Notes".into())
+                );
+                assert_eq!(app_from_path("/personal/notes"), None);
+                assert_eq!(app_from_path("/apps"), None);
+            }
+            {
+                let record = fs_protocol::FileRecordId::new();
+                let missing_parent = fs_protocol::FileRecordId::new();
+                let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
+                row.parent = Some(missing_parent);
+                assert!(pinned_in_snapshot(&[row], record));
+            }
+            {
+                let record_id = fs_protocol::FileRecordId::new();
+                let logical = vec![LogicalFile {
+                    identity: "candidate".into(),
+                    inode: 7,
+                    path: "/candidate".into(),
+                    logical_bytes: 1,
+                    hash: Some(Hash::from([1; 32])),
+                    record_id,
+                    mtime: 0,
+                }];
+                let mut dirty = HashSet::new();
+                dirty.insert(7);
+                let mut record =
+                    RecordAvailability::new(record_id, crate::availability::RecordKind::File);
+                record.current_version = Some(fs_protocol::FileVersionId::new());
+                assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
+            }
+        }
+
+        phase reclamation_tokens_and_leases_block_racing_mutation;
+        {
+            {
+                let file = SyncedFileState {
+                    workspace: "work".into(),
+                    app: None,
+                    logical_path: "/a".into(),
+                    identity: "stable-node".into(),
+                    inode: 9,
+                    version: "version-a".into(),
+                    logical_bytes: 1,
+                    hydrated_bytes: 1,
+                    remote_only: false,
+                    dirty: false,
+                    pinned: false,
+                    in_flight: false,
+                    remotely_durable: true,
+                    reclaimable_bytes: 1,
+                };
+                let selection = EvictionSelection::from(&file);
+                assert_eq!(selection.identity, file.identity);
+                assert_eq!(selection.inode, file.inode);
+                assert_eq!(selection.version, file.version);
+            }
+            {
+                let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
+                let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
+                let expected = Hash::from([7; 32]);
+                let inode = namespace
+                    .lock()
+                    .unwrap()
+                    .create_file(ROOT_INO, "report.txt", Some(&expected), 1, 1)
+                    .unwrap();
+                let (identity, record_id) = {
+                    let namespace = namespace.lock().unwrap();
+                    (
+                        namespace.id_for_ino(inode).unwrap().to_owned(),
+                        namespace.record_id_for(inode).unwrap(),
+                    )
+                };
+                assert!(
+                    validate_live_eviction_token(
+                        &mut namespace.lock().unwrap(),
+                        &dirty.lock().unwrap(),
+                        &identity,
+                        inode,
+                        record_id,
+                        expected,
+                    )
+                    .is_ok()
+                );
+
+                let replacement = Hash::from([8; 32]);
+                assert!(
+                    namespace
+                        .lock()
+                        .unwrap()
+                        .set_content(inode, Some(&replacement), 1, 2)
+                );
+                assert!(
+                    validate_live_eviction_token(
+                        &mut namespace.lock().unwrap(),
+                        &dirty.lock().unwrap(),
+                        &identity,
+                        inode,
+                        record_id,
+                        expected,
+                    )
+                    .is_err()
+                );
+
+                assert!(
+                    namespace
+                        .lock()
+                        .unwrap()
+                        .set_content(inode, Some(&expected), 1, 3)
+                );
+                dirty.lock().unwrap().insert(inode, Vec::new());
+                assert!(
+                    validate_live_eviction_token(
+                        &mut namespace.lock().unwrap(),
+                        &dirty.lock().unwrap(),
+                        &identity,
+                        inode,
+                        record_id,
+                        expected,
+                    )
+                    .is_err()
+                );
+            }
+            {
+                let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
+                let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
+                let expected = Hash::from([9; 32]);
+                let inode = namespace
+                    .lock()
+                    .unwrap()
+                    .create_file(ROOT_INO, "lease.txt", Some(&expected), 1, 1)
+                    .unwrap();
+                let (identity, record_id) = {
+                    let namespace = namespace.lock().unwrap();
+                    (
+                        namespace.id_for_ino(inode).unwrap().to_owned(),
+                        namespace.record_id_for(inode).unwrap(),
+                    )
+                };
+
+                let dirty_lease = dirty.lock().unwrap();
+                let mut namespace_lease = namespace.lock().unwrap();
+                assert!(
+                    validate_live_eviction_token(
+                        &mut namespace_lease,
+                        &dirty_lease,
+                        &identity,
+                        inode,
+                        record_id,
+                        expected,
+                    )
+                    .is_ok()
+                );
+                assert!(namespace.try_lock().is_err());
+                assert!(dirty.try_lock().is_err());
+                drop(namespace_lease);
+                drop(dirty_lease);
+                assert!(namespace.try_lock().is_ok());
+                assert!(dirty.try_lock().is_ok());
+            }
+        }
     }
 
     #[test]
@@ -1087,175 +1261,5 @@ mod tests {
         assert!(!summary.workspaces[0].kept_here);
 
         endpoint.close().await;
-    }
-
-    #[test]
-    fn storage_attribution_and_candidates_fail_closed() {
-        {
-            assert_eq!(
-                app_from_path("/apps/org.tilo.Notes/a"),
-                Some("org.tilo.Notes".into())
-            );
-            assert_eq!(app_from_path("/personal/notes"), None);
-            assert_eq!(app_from_path("/apps"), None);
-        }
-        {
-            let record = fs_protocol::FileRecordId::new();
-            let missing_parent = fs_protocol::FileRecordId::new();
-            let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
-            row.parent = Some(missing_parent);
-            assert!(pinned_in_snapshot(&[row], record));
-        }
-        {
-            let record_id = fs_protocol::FileRecordId::new();
-            let logical = vec![LogicalFile {
-                identity: "candidate".into(),
-                inode: 7,
-                path: "/candidate".into(),
-                logical_bytes: 1,
-                hash: Some(Hash::from([1; 32])),
-                record_id,
-                mtime: 0,
-            }];
-            let mut dirty = HashSet::new();
-            dirty.insert(7);
-            let mut record =
-                RecordAvailability::new(record_id, crate::availability::RecordKind::File);
-            record.current_version = Some(fs_protocol::FileVersionId::new());
-            assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn reclamation_tokens_and_leases_block_racing_mutation() {
-        {
-            let file = SyncedFileState {
-                workspace: "work".into(),
-                app: None,
-                logical_path: "/a".into(),
-                identity: "stable-node".into(),
-                inode: 9,
-                version: "version-a".into(),
-                logical_bytes: 1,
-                hydrated_bytes: 1,
-                remote_only: false,
-                dirty: false,
-                pinned: false,
-                in_flight: false,
-                remotely_durable: true,
-                reclaimable_bytes: 1,
-            };
-            let selection = EvictionSelection::from(&file);
-            assert_eq!(selection.identity, file.identity);
-            assert_eq!(selection.inode, file.inode);
-            assert_eq!(selection.version, file.version);
-        }
-        {
-            let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
-            let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
-            let expected = Hash::from([7; 32]);
-            let inode = namespace
-                .lock()
-                .unwrap()
-                .create_file(ROOT_INO, "report.txt", Some(&expected), 1, 1)
-                .unwrap();
-            let (identity, record_id) = {
-                let namespace = namespace.lock().unwrap();
-                (
-                    namespace.id_for_ino(inode).unwrap().to_owned(),
-                    namespace.record_id_for(inode).unwrap(),
-                )
-            };
-            assert!(
-                validate_live_eviction_token(
-                    &mut namespace.lock().unwrap(),
-                    &dirty.lock().unwrap(),
-                    &identity,
-                    inode,
-                    record_id,
-                    expected,
-                )
-                .is_ok()
-            );
-
-            let replacement = Hash::from([8; 32]);
-            assert!(
-                namespace
-                    .lock()
-                    .unwrap()
-                    .set_content(inode, Some(&replacement), 1, 2)
-            );
-            assert!(
-                validate_live_eviction_token(
-                    &mut namespace.lock().unwrap(),
-                    &dirty.lock().unwrap(),
-                    &identity,
-                    inode,
-                    record_id,
-                    expected,
-                )
-                .is_err()
-            );
-
-            assert!(
-                namespace
-                    .lock()
-                    .unwrap()
-                    .set_content(inode, Some(&expected), 1, 3)
-            );
-            dirty.lock().unwrap().insert(inode, Vec::new());
-            assert!(
-                validate_live_eviction_token(
-                    &mut namespace.lock().unwrap(),
-                    &dirty.lock().unwrap(),
-                    &identity,
-                    inode,
-                    record_id,
-                    expected,
-                )
-                .is_err()
-            );
-        }
-        {
-            let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
-            let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
-            let expected = Hash::from([9; 32]);
-            let inode = namespace
-                .lock()
-                .unwrap()
-                .create_file(ROOT_INO, "lease.txt", Some(&expected), 1, 1)
-                .unwrap();
-            let (identity, record_id) = {
-                let namespace = namespace.lock().unwrap();
-                (
-                    namespace.id_for_ino(inode).unwrap().to_owned(),
-                    namespace.record_id_for(inode).unwrap(),
-                )
-            };
-
-            let dirty_lease = dirty.lock().unwrap();
-            let mut namespace_lease = namespace.lock().unwrap();
-            assert!(
-                validate_live_eviction_token(
-                    &mut namespace_lease,
-                    &dirty_lease,
-                    &identity,
-                    inode,
-                    record_id,
-                    expected,
-                )
-                .is_ok()
-            );
-            assert!(namespace.try_lock().is_err());
-            assert!(dirty.try_lock().is_err());
-            drop(namespace_lease);
-            drop(dirty_lease);
-            assert!(namespace.try_lock().is_ok());
-            assert!(dirty.try_lock().is_ok());
-        }
     }
 }

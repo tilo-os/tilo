@@ -78,36 +78,41 @@ pub fn parse(text: &str) -> Option<(i64, &'static str)> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_duration_reads_as_an_amount_of_a_unit() {
-        assert_eq!(super::parse("-7d"), Some((-7, "d")));
-        assert_eq!(super::parse("5m"), Some((5, "m")));
-        assert_eq!(super::parse("+2w"), Some((2, "w")));
-        assert_eq!(super::parse("7"), None);
-        assert_eq!(super::parse("d"), None);
-        assert_eq!(super::parse("7x"), None);
-        assert_eq!(super::seconds(-7, "d"), Some(-604_800));
-    }
+    tilo_test_env::scenario! {
+        /// A duration and a length of time, read from the text that writes them.
+        fn durations_and_lengths_of_time_read_as_written;
 
-    #[test]
-    fn a_length_of_time_reads_as_the_parts_it_is_written_in() {
-        assert_eq!(super::secs("90m"), Some(5400));
-        assert_eq!(super::secs("2h 30m"), Some(9000));
-        assert_eq!(super::secs("1d 2h"), Some(93_600));
-        assert_eq!(super::secs("-2h 30m"), Some(-9000));
-        assert_eq!(super::secs("+2h 30m"), Some(9000));
-        assert_eq!(super::secs("45 m"), None);
-        assert_eq!(super::secs("hour"), None);
-        assert_eq!(super::secs(""), None);
-    }
+        phase a_duration_reads_as_an_amount_of_a_unit;
+        {
+            assert_eq!(super::parse("-7d"), Some((-7, "d")));
+            assert_eq!(super::parse("5m"), Some((5, "m")));
+            assert_eq!(super::parse("+2w"), Some((2, "w")));
+            assert_eq!(super::parse("7"), None);
+            assert_eq!(super::parse("d"), None);
+            assert_eq!(super::parse("7x"), None);
+            assert_eq!(super::seconds(-7, "d"), Some(-604_800));
+        }
 
-    #[test]
-    fn a_length_of_time_reads_in_the_largest_unit_that_divides_it() {
-        assert_eq!(super::text(90), "90s");
-        assert_eq!(super::text(1800), "30m");
-        assert_eq!(super::text(-7200), "-2h");
-        assert_eq!(super::text(259_200), "3d");
-        assert_eq!(super::text(604_800), "1w");
-        assert_eq!(super::text(0), "0s");
+        phase a_length_of_time_reads_as_the_parts_it_is_written_in;
+        {
+            assert_eq!(super::secs("90m"), Some(5400));
+            assert_eq!(super::secs("2h 30m"), Some(9000));
+            assert_eq!(super::secs("1d 2h"), Some(93_600));
+            assert_eq!(super::secs("-2h 30m"), Some(-9000));
+            assert_eq!(super::secs("+2h 30m"), Some(9000));
+            assert_eq!(super::secs("45 m"), None);
+            assert_eq!(super::secs("hour"), None);
+            assert_eq!(super::secs(""), None);
+        }
+
+        phase a_length_of_time_reads_in_the_largest_unit_that_divides_it;
+        {
+            assert_eq!(super::text(90), "90s");
+            assert_eq!(super::text(1800), "30m");
+            assert_eq!(super::text(-7200), "-2h");
+            assert_eq!(super::text(259_200), "3d");
+            assert_eq!(super::text(604_800), "1w");
+            assert_eq!(super::text(0), "0s");
+        }
     }
 }

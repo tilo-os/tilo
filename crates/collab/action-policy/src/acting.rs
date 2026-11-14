@@ -44,21 +44,25 @@ impl<'a> Authority<'a> {
         let mut people: usize = 0;
         let mut person_parts = Vec::new();
         let mut others = Vec::new();
-        // The work an acting was caused by: grants naming that issue decide for
-        // every node of the tree, as the agent's own do.
-        let work = acting.cause.as_ref().map(|cause| {
-            (
-                Grantee::task(cause.as_str().to_owned()),
-                policy.task_grants(cause.as_str()).collect::<Vec<_>>(),
-            )
-        });
+        // An automation acts with its owner's party: the tree names it for the
+        // person it runs for, and its steps are that person's grants. One that
+        // runs for nobody allows nothing.
+        let owned = !acting.acted_for.is_empty();
+        // The answers a person gave for the work that caused the acting (its
+        // issue) decide for the whole tree, as the agent's own do.
+        let answers: Vec<&Grant> = match &acting.cause {
+            Some(cause) => crate::issue_answers(&policy.grants, cause.as_str()).collect(),
+            None => Vec::new(),
+        };
         for node in acting.nodes() {
             match &node.by {
                 Actor::Member(member) => match member {
                     MemberId::Person(person) => {
                         people = people.saturating_add(1);
-                        let party =
-                            with_work(policy.party(person).with_grants(granted), work.as_ref());
+                        let party = policy
+                            .party(person)
+                            .with_grants(granted)
+                            .with_grants(answers.iter().copied());
                         person_parts.push(if node.foreign_device {
                             party.capped(crate::Cap::FOREIGN_DEVICE)
                         } else {
@@ -66,15 +70,14 @@ impl<'a> Authority<'a> {
                         });
                     }
                     MemberId::Agent(_) | MemberId::Bot(_) => {
-                        others.push(with_work(
-                            software_party(member, policy, granted),
-                            work.as_ref(),
-                        ));
+                        others.push(
+                            software_party(member, policy, granted)
+                                .with_grants(answers.iter().copied()),
+                        );
                     }
                 },
-                Actor::Automation(id) => {
-                    others.push(with_work(automation_party(id, granted), work.as_ref()));
-                }
+                Actor::Automation(_) if owned => {}
+                Actor::Automation(_) => others.push(Party::default()),
             }
         }
         let mut parts = person_parts.into_iter().chain(others);
@@ -85,16 +88,6 @@ impl<'a> Authority<'a> {
             app: acting.app.as_ref(),
             app_kinds: None,
         }
-    }
-}
-
-/// `party`, where the work an acting was caused by names `work` too.
-fn with_work<'a>(party: Party<'a>, work: Option<&(Grantee, Vec<&'a Grant>)>) -> Party<'a> {
-    match work {
-        Some((task, grants)) => party
-            .also_as(task.clone())
-            .with_grants(grants.iter().copied()),
-        None => party,
     }
 }
 
@@ -115,11 +108,6 @@ fn software_party<'a>(
     granted: &'a [Grant],
 ) -> Party<'a> {
     policy.party_of(granted_to(member)).with_grants(granted)
-}
-
-/// An automation's own grants: the steps the people it runs for gave it.
-fn automation_party<'a>(id: &crate::AutomationId, granted: &'a [Grant]) -> Party<'a> {
-    Party::new(vec![Grantee::shortcut(id.as_str().to_owned())], granted)
 }
 
 /// One invocation, as admission weighs it.
@@ -206,7 +194,10 @@ pub fn admit_invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Acting, ActionKind, Answer, Context, Grant, KindSet, Role, Verdict, roles};
+    use crate::{
+        Acting, ActionKind, Answer, Context, Grant, ISSUE_ANSWER_PREFIX, KindSet, Role, Verdict,
+        roles,
+    };
 
     const WORKSPACE: &str = "w";
 
@@ -232,179 +223,227 @@ mod tests {
             .answer
     }
 
-    #[test]
-    fn a_person_is_decided_by_their_grants_and_their_roles() {
-        let policy = policy();
-        assert_eq!(
-            answer(
-                &Acting::person("editor"),
-                &policy,
-                &[],
-                ActionKind::Undoable
-            ),
-            Answer::Allow
-        );
-        assert_eq!(
-            answer(
-                &Acting::person("viewer"),
-                &policy,
-                &[],
-                ActionKind::Undoable
-            ),
-            Answer::Deny
-        );
-    }
+    tilo_test_env::scenario! {
+        fn whoever_acts_is_decided_by_every_party_it_acts_for;
 
-    #[test]
-    fn every_person_in_the_tree_has_to_allow_it() {
-        let policy = policy();
-        // What the agent's turn gives it: reading and changing the workspace.
-        let turn = [Grant::new(
-            "turn:scribe:0",
-            Grantee::agent("scribe"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Grantee::person("editor"),
-        )];
-        let agent_for_editor_and_owner = Acting::agent("scribe")
-            .acting_for(Acting::person("editor"))
-            .acting_for(Acting::person("owner"));
-        assert_eq!(
-            answer(
-                &agent_for_editor_and_owner,
-                &policy,
-                &turn,
-                ActionKind::Undoable
-            ),
-            Answer::Allow
-        );
-        let agent_for_a_viewer = agent_for_editor_and_owner.acting_for(Acting::person("viewer"));
-        assert_eq!(
-            answer(&agent_for_a_viewer, &policy, &turn, ActionKind::Undoable),
-            Answer::Deny,
-            "the viewer's grants decide too"
-        );
-    }
+        phase a_person_is_decided_by_their_grants_and_their_roles;
+        {
+            let policy = policy();
+            assert_eq!(
+                answer(
+                    &Acting::person("editor"),
+                    &policy,
+                    &[],
+                    ActionKind::Undoable
+                ),
+                Answer::Allow
+            );
+            assert_eq!(
+                answer(
+                    &Acting::person("viewer"),
+                    &policy,
+                    &[],
+                    ActionKind::Undoable
+                ),
+                Answer::Deny
+            );
+        }
 
-    #[test]
-    fn an_agent_needs_its_own_grants_as_well_as_its_persons() {
-        let mut policy = policy();
-        policy.grants.push(Grant::new(
-            "scribe-may-edit",
-            Grantee::agent("scribe"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Grantee::person("owner"),
-        ));
-        let acting = Acting::agent("scribe").acting_for(Acting::person("editor"));
-        assert_eq!(
-            answer(&acting, &policy, &[], ActionKind::Undoable),
-            Answer::Allow
-        );
-        let unbounded = Acting::agent("other").acting_for(Acting::person("editor"));
-        assert_eq!(
-            answer(&unbounded, &policy, &[], ActionKind::Undoable),
-            Answer::Deny,
-            "an agent with no grants of its own does nothing"
-        );
-    }
+        phase every_person_in_the_tree_has_to_allow_it;
+        {
+            let policy = policy();
+            // What the agent's turn gives it: reading and changing the workspace.
+            let turn = [Grant::new(
+                "turn:scribe:0",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person("editor"),
+            )];
+            let agent_for_editor_and_owner = Acting::agent("scribe")
+                .acting_for(Acting::person("editor"))
+                .acting_for(Acting::person("owner"));
+            assert_eq!(
+                answer(
+                    &agent_for_editor_and_owner,
+                    &policy,
+                    &turn,
+                    ActionKind::Undoable
+                ),
+                Answer::Allow
+            );
+            let agent_for_a_viewer = agent_for_editor_and_owner.acting_for(Acting::person("viewer"));
+            assert_eq!(
+                answer(&agent_for_a_viewer, &policy, &turn, ActionKind::Undoable),
+                Answer::Deny,
+                "the viewer's grants decide too"
+            );
+        }
 
-    #[test]
-    fn an_automation_under_an_agent_is_bounded_by_what_its_person_gave_it() {
-        let policy = policy();
-        let automation = Acting::automation("1")
-            .acting_for(Acting::agent("scribe").acting_for(Acting::person("editor")));
-        let turn = [Grant::new(
-            "turn:scribe:0",
-            Grantee::agent("scribe"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Grantee::person("editor"),
-        )];
-        assert_eq!(
-            answer(&automation, &policy, &turn, ActionKind::Undoable),
-            Answer::Deny,
-            "the steps an automation was given decide what it may do, and here it was given none"
-        );
-        let given = [Grant::new(
-            "automation-1:0",
-            Grantee::shortcut("1"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Grantee::person("editor"),
-        )];
-        let mut granted = turn.to_vec();
-        granted.extend(given);
-        assert_eq!(
-            answer(&automation, &policy, &granted, ActionKind::Undoable),
-            Answer::Allow
-        );
-    }
+        phase an_agent_needs_its_own_grants_as_well_as_its_persons;
+        {
+            let mut policy = policy();
+            policy.grants.push(Grant::new(
+                "scribe-may-edit",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person("owner"),
+            ));
+            let acting = Acting::agent("scribe").acting_for(Acting::person("editor"));
+            assert_eq!(
+                answer(&acting, &policy, &[], ActionKind::Undoable),
+                Answer::Allow
+            );
+            let unbounded = Acting::agent("other").acting_for(Acting::person("editor"));
+            assert_eq!(
+                answer(&unbounded, &policy, &[], ActionKind::Undoable),
+                Answer::Deny,
+                "an agent with no grants of its own does nothing"
+            );
+        }
 
-    #[test]
-    fn a_device_that_is_not_theirs_governs_nothing_and_asks_before_reaching_out() {
-        let policy = policy();
-        let foreign = Acting::person("owner").on_foreign_device(true);
-        assert_eq!(
-            answer(&foreign, &policy, &[], ActionKind::Outside),
-            Answer::Ask
-        );
-        let invite = roles::governance_action(WORKSPACE, roles::governance::INVITE);
-        let verdict: Verdict<'_> = Authority::of_acting(&foreign, &policy, &[]).decide(
-            &invite,
-            roles::GOVERNANCE_KIND,
-            &Context::at_secs(1),
-        );
-        assert_eq!(verdict.answer, Answer::Deny, "never governs a workspace");
-        assert_eq!(
-            answer(&Acting::person("owner"), &policy, &[], ActionKind::Undoable),
-            Answer::Allow
-        );
-    }
+        phase an_issues_answers_decide_the_work_it_caused_and_no_other;
+        {
+            let issue = "tasks.tracker/issues/release";
+            let mut policy = policy();
+            policy.grants.push(Grant::new(
+                "scribe-asks",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Ask,
+                Grantee::person("owner"),
+            ));
+            policy.grants.push(Grant::new(
+                format!("{ISSUE_ANSWER_PREFIX}{issue}:app:so.tilo.notes:undoable"),
+                Grantee::agent("scribe"),
+                app(),
+                KindSet::UNDOABLE,
+                Answer::Allow,
+                Grantee::person("owner"),
+            ));
+            let run = Acting::agent("scribe")
+                .acting_for(Acting::person("editor"))
+                .caused_by(issue);
+            assert_eq!(
+                answer(&run, &policy, &[], ActionKind::Undoable),
+                Answer::Allow,
+                "the person's answer for the issue decides its work"
+            );
+            let another = Acting::agent("scribe")
+                .acting_for(Acting::person("editor"))
+                .caused_by("tasks.tracker/issues/other");
+            assert_eq!(
+                answer(&another, &policy, &[], ActionKind::Undoable),
+                Answer::Ask,
+                "another issue's answers decide nothing here"
+            );
+        }
 
-    #[test]
-    fn an_app_reaches_only_the_kinds_it_declares_in_its_own_node() {
-        let policy = policy();
-        let acting = Acting::person("editor").in_app("so.tilo.notes");
-        let kinds = ["notes.note".to_owned()];
-        let answer = |node: TreePath| {
-            Authority::of_acting(&acting, &policy, &[])
-                .in_app(&kinds)
-                .decide(&node, ActionKind::Undoable, &Context::at_secs(1))
-                .answer
-        };
-        let own = TreePath::workspace(WORKSPACE).app("so.tilo.notes");
-        assert_eq!(answer(own.clone().kind("notes.note")), Answer::Allow);
-        assert_eq!(
-            answer(own.kind("notes.book")),
-            Answer::Deny,
-            "a kind the app does not declare is out of its reach"
-        );
-        assert_eq!(
-            answer(
-                TreePath::workspace(WORKSPACE)
-                    .app("so.tilo.chat")
-                    .kind("chat.messages")
-            ),
-            Answer::Allow,
-            "in another app's node the person's own grants decide"
-        );
-    }
+        phase an_automation_acts_with_its_owners_party_bounded_by_its_steps;
+        {
+            let policy = policy();
+            let automation = Acting::automation("1")
+                .acting_for(Acting::agent("scribe").acting_for(Acting::person("editor")));
+            let turn = [Grant::new(
+                "turn:scribe:0",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person("editor"),
+            )];
+            assert_eq!(
+                answer(&automation, &policy, &turn, ActionKind::Undoable),
+                Answer::Allow,
+                "the tree's people and software decide; the automation is its owner's"
+            );
+            // A step it was given may narrow what it does there.
+            let mut granted = turn.to_vec();
+            granted.push(Grant::new(
+                "automation-1:outside",
+                Grantee::person("editor"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::OUTSIDE,
+                Answer::Deny,
+                Grantee::person("editor"),
+            ));
+            assert_eq!(
+                answer(&automation, &policy, &granted, ActionKind::Outside),
+                Answer::Deny
+            );
+            let homeless = Acting::automation("1");
+            assert_eq!(
+                answer(&homeless, &policy, &turn, ActionKind::Undoable),
+                Answer::Deny,
+                "an automation that runs for nobody allows nothing"
+            );
+        }
 
-    #[test]
-    fn a_tree_asks_the_person_unless_someone_acts_for_them() {
-        let person = Acting::person("editor");
-        assert!(person.asker(true).reachable);
-        assert!(!person.asker(true).delegated);
-        let agent = Acting::agent("scribe").acting_for(Acting::person("editor"));
-        assert!(agent.asker(true).delegated);
-        assert!(
-            !agent.asker(false).reachable,
-            "with nobody to ask, an ask refuses"
-        );
+        phase a_device_that_is_not_theirs_governs_nothing_and_asks_before_reaching_out;
+        {
+            let policy = policy();
+            let foreign = Acting::person("owner").on_foreign_device(true);
+            assert_eq!(
+                answer(&foreign, &policy, &[], ActionKind::Outside),
+                Answer::Ask
+            );
+            let invite = roles::governance_action(WORKSPACE, roles::governance::INVITE);
+            let verdict: Verdict<'_> = Authority::of_acting(&foreign, &policy, &[]).decide(
+                &invite,
+                roles::GOVERNANCE_KIND,
+                &Context::at_secs(1),
+            );
+            assert_eq!(verdict.answer, Answer::Deny, "never governs a workspace");
+            assert_eq!(
+                answer(&Acting::person("owner"), &policy, &[], ActionKind::Undoable),
+                Answer::Allow
+            );
+        }
+
+        phase an_app_reaches_only_the_kinds_it_declares_in_its_own_node;
+        {
+            let policy = policy();
+            let acting = Acting::person("editor").in_app("so.tilo.notes");
+            let kinds = ["notes.note".to_owned()];
+            let answer = |node: TreePath| {
+                Authority::of_acting(&acting, &policy, &[])
+                    .in_app(&kinds)
+                    .decide(&node, ActionKind::Undoable, &Context::at_secs(1))
+                    .answer
+            };
+            let own = TreePath::workspace(WORKSPACE).app("so.tilo.notes");
+            assert_eq!(answer(own.clone().kind("notes.note")), Answer::Allow);
+            assert_eq!(
+                answer(own.kind("notes.book")),
+                Answer::Deny,
+                "a kind the app does not declare is out of its reach"
+            );
+            assert_eq!(
+                answer(
+                    TreePath::workspace(WORKSPACE)
+                        .app("so.tilo.chat")
+                        .kind("chat.messages")
+                ),
+                Answer::Allow,
+                "in another app's node the person's own grants decide"
+            );
+        }
+
+        phase a_tree_asks_the_person_unless_someone_acts_for_them;
+        {
+            let person = Acting::person("editor");
+            assert!(person.asker(true).reachable);
+            assert!(!person.asker(true).delegated);
+            let agent = Acting::agent("scribe").acting_for(Acting::person("editor"));
+            assert!(agent.asker(true).delegated);
+            assert!(
+                !agent.asker(false).reachable,
+                "with nobody to ask, an ask refuses"
+            );
+        }
     }
 }

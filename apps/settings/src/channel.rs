@@ -125,38 +125,42 @@ fn open<T: 'static>(value: Erased) -> Option<T> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn values_arrive_typed_and_in_order() {
-        let (sender, receiver) = channel::<Result<u32, String>>();
-        let other = sender.clone();
-        sender.send(Ok(1)).ok();
-        other.send(Err("two".into())).ok();
-        assert_eq!(receiver.try_recv(), Ok(Ok(1)));
-        assert_eq!(receiver.recv(), Ok(Err("two".into())));
-        assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
-        drop(sender);
-        assert_eq!(
-            receiver.try_recv(),
-            Err(TryRecvError::Empty),
-            "a clone still holds the channel open"
-        );
-        drop(other);
-        assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
-    }
+    tilo_test_env::scenario! {
+        fn a_typed_channel_delivers_in_order_and_reports_its_ends;
 
-    #[test]
-    fn a_bounded_channel_reports_its_receiver_gone() {
-        let (sender, receiver) = sync_channel::<String>(1);
-        assert_eq!(sender.send("one".into()), Ok(()));
-        assert_eq!(
-            receiver.recv_timeout(Duration::from_millis(1)),
-            Ok("one".to_string())
-        );
-        assert_eq!(
-            receiver.recv_timeout(Duration::from_millis(1)),
-            Err(RecvTimeoutError::Timeout)
-        );
-        drop(receiver);
-        assert_eq!(sender.send("two".into()), Err(Disconnected));
+        phase values_arrive_typed_and_in_order;
+        {
+            let (sender, receiver) = channel::<Result<u32, String>>();
+            let other = sender.clone();
+            sender.send(Ok(1)).ok();
+            other.send(Err("two".into())).ok();
+            assert_eq!(receiver.try_recv(), Ok(Ok(1)));
+            assert_eq!(receiver.recv(), Ok(Err("two".into())));
+            assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
+            drop(sender);
+            assert_eq!(
+                receiver.try_recv(),
+                Err(TryRecvError::Empty),
+                "a clone still holds the channel open"
+            );
+            drop(other);
+            assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+        }
+
+        phase a_bounded_channel_reports_its_receiver_gone;
+        {
+            let (sender, receiver) = sync_channel::<String>(1);
+            assert_eq!(sender.send("one".into()), Ok(()));
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_millis(1)),
+                Ok("one".to_string())
+            );
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_millis(1)),
+                Err(RecvTimeoutError::Timeout)
+            );
+            drop(receiver);
+            assert_eq!(sender.send("two".into()), Err(Disconnected));
+        }
     }
 }

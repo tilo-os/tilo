@@ -606,8 +606,7 @@ async fn open(
         return Err(Issue::Unavailable);
     };
     let workspace_id = WorkspaceId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
-    let channel = collab_types::document_channel_id(&target.app, &target.workspace, &target.record);
-    let (access, keys) = call_keys(sources, workspace_id, channel)?;
+    let (access, keys) = call_keys(sources, workspace_id)?;
     let roster = admitted(sources, &target.workspace);
     let own = *endpoint.id().as_bytes();
     let video = pictures::Video::new(own);
@@ -625,7 +624,6 @@ async fn open(
         own,
         access,
         workspace_id,
-        channel,
         workspace: target.workspace.clone(),
         admitted: sources.roster.clone(),
         current: Mutex::new(current),
@@ -666,7 +664,6 @@ async fn open(
 fn call_keys(
     sources: &Sources,
     workspace_id: WorkspaceId,
-    channel: collab_types::ChannelId,
 ) -> Result<
     (
         tilo_channels::ChannelKeyAccess,
@@ -679,7 +676,7 @@ fn call_keys(
         .as_ref()
         .and_then(tilo_channels::ChannelKeyProvider::get)
         .ok_or(Issue::Unavailable)?;
-    let keys = match access.access(workspace_id, channel).0 {
+    let keys = match access.access(workspace_id).0 {
         tilo_channels::ChannelAccess::Ready(keys) => Some(keys),
         tilo_channels::ChannelAccess::Waiting => None,
         _ => return Err(Issue::Unavailable),
@@ -822,7 +819,6 @@ struct Shared {
     access: tilo_channels::ChannelKeyAccess,
     /// The workspace id the channel's keys and governance are read by.
     workspace_id: WorkspaceId,
-    channel: collab_types::ChannelId,
     workspace: String,
     /// The workspace's admitted devices, re-read while the call lasts.
     admitted: Option<Admitted>,
@@ -1257,7 +1253,7 @@ impl Shared {
             .admitted
             .as_ref()
             .map(|admitted| LiveRoster::new(admitted(&self.workspace)));
-        let (granted, _) = self.access.access(self.workspace_id, self.channel);
+        let (granted, _) = self.access.access(self.workspace_id);
         let keys = match granted {
             tilo_channels::ChannelAccess::Ready(keys) => Some(keys),
             // Keys still on their way keep a joining call joining.

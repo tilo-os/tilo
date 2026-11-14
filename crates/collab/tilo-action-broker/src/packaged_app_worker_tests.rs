@@ -125,7 +125,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             const APP_PEER: u64 = 905;
             let env = Environment::new();
             let mut services = env.membership.services();
-            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
@@ -151,7 +151,6 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                 .get(APP_PEER, &env.route)
                 .cloned()
                 .expect("the launched app is the worker of its own route");
-            assert!(worker.host_scope.is_none());
             let registration = worker
                 .worker_registration
                 .expect("registered for the app its launcher vouched for");
@@ -168,9 +167,8 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             )))
             .await
             .unwrap();
-            let person = tilo_action_policy::Grantee::person(principal_id_for_root(
-                env.cert.user_public_key,
-            ));
+            let person =
+                tilo_action_policy::Grantee::person(person_id_for_root(env.cert.user_public_key));
             let grant = tilo_action_policy::Grant::new(
                 "the-person-edits",
                 person.clone(),
@@ -253,15 +251,14 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
             const RECORDS: usize = 6;
             let env = Environment::new();
             let mut services = env.membership.services();
-            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
             }));
             let rig = Rig::with_services(&env, services).await;
-            let person = tilo_action_policy::Grantee::person(principal_id_for_root(
-                env.cert.user_public_key,
-            ));
+            let person =
+                tilo_action_policy::Grantee::person(person_id_for_root(env.cert.user_public_key));
             let grant = tilo_action_policy::Grant::new(
                 "the-person-edits",
                 person.clone(),
@@ -563,7 +560,7 @@ async fn a_renamed_app_keeps_the_record_of_the_id_it_had_before() {
             let mut earlier = tilo_action_policy::EarlierIds::new();
             earlier.insert(RENAMED, [env.route.app_id.clone()]);
             let mut services = env.membership.services();
-            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(RenamedHere {
                 launched: LaunchedHere {
                     app: RENAMED.to_owned(),

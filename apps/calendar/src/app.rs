@@ -297,7 +297,7 @@ impl CalendarApp {
     #[cfg(test)]
     pub(crate) fn new_demo() -> Self {
         let mut app = Self::new_detached();
-        app.model = crate::model::seed_demo(app.today);
+        app.model = tests::demo_calendar(app.today);
         app.configured = AccountStore::sample();
         app.sample_accounts = true;
         app.show_accounts();

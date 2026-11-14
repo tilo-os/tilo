@@ -7,10 +7,8 @@
 //
 // `passkey` creates an identity, unlocks it with its passkey, its recovery
 // key and a PRF output the page asserted itself, adds a second passkey on
-// another authenticator, proves a person this browser kept before the
-// envelope moved into the runtime still opens (`legacy-root-record.json`),
-// then prints `{envelope, recoveryKey}` and one hex signature per hex
-// message read from stdin, until stdin closes.
+// another authenticator, then prints `{envelope, recoveryKey}` and one hex
+// signature per hex message read from stdin, until stdin closes.
 //
 // `node` creates an identity, prints `{origin, userPublicKey}`, then answers
 // one JSON request per stdin line until stdin closes:
@@ -21,7 +19,6 @@
 //     (certificates canonical, hex)              -> what installNodeCertificate resolves to
 // Any failure is answered as {"error": "...", "code": "..."}.
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {launch, serve} from '../../../../../tools/web/chrome.mjs';
@@ -30,9 +27,6 @@ import {pageBundle} from '../../../../../tools/web/page-bundle.mjs';
 const mode = process.argv[2];
 if (!['passkey', 'node'].includes(mode)) throw new Error('usage: page-driver.mjs passkey|node');
 const web = fileURLToPath(new URL('../../../../browser/tilo-browser-runtime/web/', import.meta.url));
-const legacy = JSON.parse(readFileSync(fileURLToPath(new URL('./legacy-root-record.json', import.meta.url)), 'utf8'));
-/** `text`, base64url, as the bytes it names. */
-const bytes = text => Array.from(Buffer.from(text.replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
 const base64 = hex => Buffer.from(hex, 'hex').toString('base64');
 /** Bytes in a page expression. */
 const array = values => `Uint8Array.from(${JSON.stringify(values)})`;
@@ -149,28 +143,6 @@ try {
       const key = await crypto.subtle.importKey('raw', id.unhex(made.userPublicKey), {name: 'Ed25519'}, false, ['verify']);
       return {same: again?.userPublicKey === made.userPublicKey, signs: await crypto.subtle.verify({name: 'Ed25519'}, key, await again.sign(message), message)};
     `), {same: true, signs: true}, 'a person made on a first visit is the same person on the next load');
-
-    // A person this browser kept while the page held the root: the record
-    // its IndexedDB holds (the root wrapped under the page's own AES-GCM
-    // key) still opens, and its envelope still opens with its recovery key.
-    assert.deepEqual(await run(`
-      const record = {
-        rootPublicKey: ${JSON.stringify(legacy.rootPublicKey)},
-        held: {
-          key: await crypto.subtle.importKey('raw', ${array(bytes(legacy.held.key))}, {name: 'AES-GCM'}, false, ['wrapKey', 'unwrapKey']),
-          nonce: ${array(bytes(legacy.held.nonce))},
-          wrapped: ${array(bytes(legacy.held.wrapped))},
-        },
-        envelope: ${JSON.stringify(legacy.envelope)},
-      };
-      const identity = await id.browserIdentity({storage: {get: async () => record, put: async () => {}, delete: async () => {}}, persist: null});
-      const message = new TextEncoder().encode('probe');
-      const key = await crypto.subtle.importKey('raw', id.unhex(record.envelope.root_public_key), {name: 'Ed25519'}, false, ['verify']);
-      const verifies = await crypto.subtle.verify({name: 'Ed25519'}, key, await identity.sign(message), message);
-      const opened = await id.unlockIdentity(record.envelope, {recoveryKey: ${JSON.stringify(legacy.recoveryKey)}});
-      return {verifies, userPublicKey: identity.userPublicKey, kept: identity.kept, recoveryKey: opened.userPublicKey};
-    `), {verifies: true, userPublicKey: legacy.rootPublicKey, kept: true, recoveryKey: legacy.rootPublicKey},
-      'a person this browser kept before the runtime holds the root still opens');
 
     process.stdout.write(`${JSON.stringify({envelope, recoveryKey: created.recoveryKey})}\n`);
     for await (const line of createInterface({input: process.stdin})) {

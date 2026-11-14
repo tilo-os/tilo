@@ -64,68 +64,73 @@ mod tests {
     use crate::protocol::{Bytes, FromWorker, Outcome, ToWorker};
     use std::io::BufReader;
 
-    #[test]
-    fn frames_round_trip_one_per_line() {
-        let mut out = Vec::new();
-        write_frame(
-            &mut out,
-            &ToWorker::Perform {
-                request: 7,
-                op: serde_json::json!({"op": "send"}),
-            },
-        )
-        .unwrap();
-        write_frame(
-            &mut out,
-            &ToWorker::Blob {
-                blake3: "ab".into(),
-                bytes: Bytes(vec![0, 1, 255]),
-            },
-        )
-        .unwrap();
-        assert_eq!(std::io::BufRead::lines(out.as_slice()).count(), 2);
-        assert_eq!(out.last(), Some(&b'\n'));
-        let mut input = BufReader::new(out.as_slice());
-        let first: ToWorker = read_frame(&mut input).unwrap().unwrap();
-        assert!(matches!(first, ToWorker::Perform { request: 7, .. }));
-        let second: ToWorker = read_frame(&mut input).unwrap().unwrap();
-        let ToWorker::Blob { bytes, .. } = second else {
-            panic!("a blob")
-        };
-        assert_eq!(bytes.0, vec![0, 1, 255]);
-        assert!(
-            read_frame::<_, ToWorker>(&mut input).unwrap().is_none(),
-            "end of stream"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The synchronous framing of the worker protocol: one JSON line a frame.
+        fn worker_frames_are_bounded_tagged_lines_that_never_print_a_secret;
 
-    #[test]
-    fn an_oversized_frame_is_an_error_not_an_allocation() {
-        let line = vec![b'x'; MAX_FRAME_BYTES + 2];
-        let mut input = BufReader::new(line.as_slice());
-        assert!(read_frame::<_, FromWorker>(&mut input).is_err());
-    }
+        phase frames_round_trip_one_per_line;
+        {
+            let mut out = Vec::new();
+            write_frame(
+                &mut out,
+                &ToWorker::Perform {
+                    request: 7,
+                    op: serde_json::json!({"op": "send"}),
+                },
+            )
+            .unwrap();
+            write_frame(
+                &mut out,
+                &ToWorker::Blob {
+                    blake3: "ab".into(),
+                    bytes: Bytes(vec![0, 1, 255]),
+                },
+            )
+            .unwrap();
+            assert_eq!(std::io::BufRead::lines(out.as_slice()).count(), 2);
+            assert_eq!(out.last(), Some(&b'\n'));
+            let mut input = BufReader::new(out.as_slice());
+            let first: ToWorker = read_frame(&mut input).unwrap().unwrap();
+            assert!(matches!(first, ToWorker::Perform { request: 7, .. }));
+            let second: ToWorker = read_frame(&mut input).unwrap().unwrap();
+            let ToWorker::Blob { bytes, .. } = second else {
+                panic!("a blob")
+            };
+            assert_eq!(bytes.0, vec![0, 1, 255]);
+            assert!(
+                read_frame::<_, ToWorker>(&mut input).unwrap().is_none(),
+                "end of stream"
+            );
+        }
 
-    #[test]
-    fn outcomes_are_tagged() {
-        let value = serde_json::to_value(Outcome::Refused {
-            reason: "Missing Permissions".into(),
-        })
-        .unwrap();
-        assert_eq!(
-            value,
-            serde_json::json!({"outcome": "refused", "reason": "Missing Permissions"})
-        );
-    }
+        phase an_oversized_frame_is_an_error_not_an_allocation;
+        {
+            let line = vec![b'x'; MAX_FRAME_BYTES + 2];
+            let mut input = BufReader::new(line.as_slice());
+            assert!(read_frame::<_, FromWorker>(&mut input).is_err());
+        }
 
-    #[test]
-    fn secret_bytes_never_print() {
-        let secret = ToWorker::Secret {
-            purpose: "bot-token".into(),
-            item: "default".into(),
-            bytes: Some(Bytes(b"hunter2".to_vec())),
-        };
-        assert!(!format!("{secret:?}").contains("hunter2"));
+        phase outcomes_are_tagged;
+        {
+            let value = serde_json::to_value(Outcome::Refused {
+                reason: "Missing Permissions".into(),
+            })
+            .unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"outcome": "refused", "reason": "Missing Permissions"})
+            );
+        }
+
+        phase secret_bytes_never_print;
+        {
+            let secret = ToWorker::Secret {
+                purpose: "bot-token".into(),
+                item: "default".into(),
+                bytes: Some(Bytes(b"hunter2".to_vec())),
+            };
+            assert!(!format!("{secret:?}").contains("hunter2"));
+        }
     }
 
     #[tokio::test]

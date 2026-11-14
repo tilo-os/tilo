@@ -550,107 +550,111 @@ mod tests {
         stage.contiguous().unwrap().into_owned()
     }
 
-    #[test]
-    fn concurrent_memory_stages_share_one_budget_and_charge_document_copies() {
-        let budget = Arc::new(MemoryBudget::default());
-        let stages = std::thread::scope(|scope| {
-            let workers: [_; 3] = std::array::from_fn(|_| {
-                let budget = Arc::clone(&budget);
-                scope.spawn(move || {
-                    let mut stage = WriteStage::over(None, 0, None, budget).unwrap();
-                    let result = stage.set_len(super::super::MAX_STAGED_FILE_BYTES);
-                    (stage, result)
-                })
+    tilo_test_env::scenario! {
+        fn a_write_stage_is_budgeted_bounded_and_tracks_its_ranges;
+
+        phase concurrent_memory_stages_share_one_budget_and_charge_document_copies;
+        {
+            let budget = Arc::new(MemoryBudget::default());
+            let stages = std::thread::scope(|scope| {
+                let workers: [_; 3] = std::array::from_fn(|_| {
+                    let budget = Arc::clone(&budget);
+                    scope.spawn(move || {
+                        let mut stage = WriteStage::over(None, 0, None, budget).unwrap();
+                        let result = stage.set_len(super::super::MAX_STAGED_FILE_BYTES);
+                        (stage, result)
+                    })
+                });
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().unwrap())
+                    .collect::<Vec<_>>()
             });
-            workers
-                .into_iter()
-                .map(|worker| worker.join().unwrap())
-                .collect::<Vec<_>>()
-        });
-        assert_eq!(
-            stages.iter().filter(|(_, result)| result.is_ok()).count(),
-            2
-        );
-        let failure = stages
-            .iter()
-            .find_map(|(_, result)| result.as_ref().err())
-            .unwrap();
-        assert_eq!(failure.raw_os_error(), Some(libc::ENOSPC));
-        assert_eq!(
-            budget.reserved.load(Ordering::Acquire),
-            super::super::MAX_STAGED_TOTAL_BYTES
-        );
-        assert_eq!(
-            WriteStage::complete(b"document export", None, Arc::clone(&budget))
-                .err()
-                .unwrap()
-                .raw_os_error(),
-            Some(libc::ENOSPC),
-        );
-        drop(stages);
-        assert_eq!(budget.reserved.load(Ordering::Acquire), 0);
-        let mut document = WriteStage::complete(b"export", None, budget).unwrap();
-        assert_eq!(bytes_of(&mut document), b"export");
-    }
+            assert_eq!(
+                stages.iter().filter(|(_, result)| result.is_ok()).count(),
+                2
+            );
+            let failure = stages
+                .iter()
+                .find_map(|(_, result)| result.as_ref().err())
+                .unwrap();
+            assert_eq!(failure.raw_os_error(), Some(libc::ENOSPC));
+            assert_eq!(
+                budget.reserved.load(Ordering::Acquire),
+                super::super::MAX_STAGED_TOTAL_BYTES
+            );
+            assert_eq!(
+                WriteStage::complete(b"document export", None, Arc::clone(&budget))
+                    .err()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::ENOSPC),
+            );
+            drop(stages);
+            assert_eq!(budget.reserved.load(Ordering::Acquire), 0);
+            let mut document = WriteStage::complete(b"export", None, budget).unwrap();
+            assert_eq!(bytes_of(&mut document), b"export");
+        }
 
-    #[test]
-    fn filling_or_writing_a_huge_memory_base_fails_before_allocating() {
-        let budget = Arc::new(MemoryBudget::default());
-        let mut stage = WriteStage::over(
-            Some(Hash::from([3; 32])),
-            super::super::MAX_STAGED_FILE_BYTES.saturating_add(1),
-            None,
-            Arc::clone(&budget),
-        )
-        .unwrap();
-        assert_eq!(
-            stage.write(0, b"x").unwrap_err().raw_os_error(),
-            Some(libc::EFBIG)
-        );
-        assert_eq!(
-            stage.fill(0, b"x").unwrap_err().raw_os_error(),
-            Some(libc::EFBIG)
-        );
-        assert_eq!(budget.reserved.load(Ordering::Acquire), 0);
-        stage.set_len(1).unwrap();
-        stage.fill(0, b"x").unwrap();
-        assert_eq!(bytes_of(&mut stage), b"x");
-    }
-
-    #[test]
-    fn a_stage_tracks_written_holes_truncation_and_base_ranges_in_both_backings() {
-        let dir = tempfile::tempdir().unwrap();
-        for file_backed in [false, true] {
-            let base = Hash::from([3; 32]);
+        phase filling_or_writing_a_huge_memory_base_fails_before_allocating;
+        {
+            let budget = Arc::new(MemoryBudget::default());
             let mut stage = WriteStage::over(
-                Some(base),
-                10,
-                file_backed.then(|| dir.path()),
-                Arc::new(MemoryBudget::default()),
+                Some(Hash::from([3; 32])),
+                super::super::MAX_STAGED_FILE_BYTES.saturating_add(1),
+                None,
+                Arc::clone(&budget),
             )
             .unwrap();
-            assert_eq!(stage.is_file_backed(), file_backed);
-            assert_eq!(stage.gaps(), vec![0..10]);
-            stage.write(4, b"ab").unwrap();
-            assert_eq!(stage.gaps(), vec![0..4, 6..10]);
-            // An append past the end leaves a zero hole that is not the base's.
-            stage.write(12, b"Z").unwrap();
-            assert_eq!(stage.len(), 13);
-            assert_eq!(stage.gaps(), vec![0..4, 6..10]);
-            // A truncation drops the base's tail for good; growing again reads zeros.
-            stage.set_len(8).unwrap();
-            stage.set_len(11).unwrap();
-            assert_eq!(stage.gaps(), vec![0..4, 6..8]);
-            let StagedRead::Missing(missing) = stage.read(0, 100).unwrap() else {
-                panic!("base ranges are missing");
-            };
-            assert_eq!(missing.gaps, vec![0..4, 6..8]);
-            assert_eq!(missing.bytes.len(), 11);
-            assert!(stage.source().is_err(), "an incomplete stage never commits");
-            stage.write(0, b"W").unwrap();
-            stage.fill(0, b"basebase").unwrap();
-            assert!(stage.is_complete());
-            assert_eq!(bytes_of(&mut stage), b"Waseabse\0\0\0");
+            assert_eq!(
+                stage.write(0, b"x").unwrap_err().raw_os_error(),
+                Some(libc::EFBIG)
+            );
+            assert_eq!(
+                stage.fill(0, b"x").unwrap_err().raw_os_error(),
+                Some(libc::EFBIG)
+            );
+            assert_eq!(budget.reserved.load(Ordering::Acquire), 0);
+            stage.set_len(1).unwrap();
+            stage.fill(0, b"x").unwrap();
+            assert_eq!(bytes_of(&mut stage), b"x");
+        }
+
+        phase a_stage_tracks_written_holes_truncation_and_base_ranges_in_both_backings;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            for file_backed in [false, true] {
+                let base = Hash::from([3; 32]);
+                let mut stage = WriteStage::over(
+                    Some(base),
+                    10,
+                    file_backed.then(|| dir.path()),
+                    Arc::new(MemoryBudget::default()),
+                )
+                .unwrap();
+                assert_eq!(stage.is_file_backed(), file_backed);
+                assert_eq!(stage.gaps(), vec![0..10]);
+                stage.write(4, b"ab").unwrap();
+                assert_eq!(stage.gaps(), vec![0..4, 6..10]);
+                // An append past the end leaves a zero hole that is not the base's.
+                stage.write(12, b"Z").unwrap();
+                assert_eq!(stage.len(), 13);
+                assert_eq!(stage.gaps(), vec![0..4, 6..10]);
+                // A truncation drops the base's tail for good; growing again reads zeros.
+                stage.set_len(8).unwrap();
+                stage.set_len(11).unwrap();
+                assert_eq!(stage.gaps(), vec![0..4, 6..8]);
+                let StagedRead::Missing(missing) = stage.read(0, 100).unwrap() else {
+                    panic!("base ranges are missing");
+                };
+                assert_eq!(missing.gaps, vec![0..4, 6..8]);
+                assert_eq!(missing.bytes.len(), 11);
+                assert!(stage.source().is_err(), "an incomplete stage never commits");
+                stage.write(0, b"W").unwrap();
+                stage.fill(0, b"basebase").unwrap();
+                assert!(stage.is_complete());
+                assert_eq!(bytes_of(&mut stage), b"Waseabse\0\0\0");
+            }
         }
     }
 }

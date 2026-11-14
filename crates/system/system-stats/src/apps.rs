@@ -138,89 +138,93 @@ mod tests {
     use super::*;
     use crate::protocol::Refusal;
 
-    #[test]
-    fn apps_are_found_by_their_cgroup_and_nothing_else_is_an_app() {
-        let base = "/user.slice/user-1000.slice/user@1000.service/app.slice";
-        for (path, app) in [
-            (
-                format!("{base}/app-tilo-so.tilo.notes-4242.scope"),
-                Some("so.tilo.notes"),
-            ),
-            (
-                format!("{base}/app-tilo-so.tilo.my\\x2dapp-7.scope/sub"),
-                Some("so.tilo.my-app"),
-            ),
-            (
-                format!("{base}/app-gnome-org.mozilla.firefox-5512.scope"),
-                Some("org.mozilla.firefox"),
-            ),
-            (
-                format!("{base}/app-flatpak-com.spotify.Client@1a2b.service"),
-                Some("com.spotify.Client"),
-            ),
-            (
-                format!("{base}/app-org.gnome.Terminal.service"),
-                Some("org.gnome.Terminal"),
-            ),
-            (
-                "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service"
-                    .to_owned(),
-                None,
-            ),
-            (
-                "/user.slice/user-1000.slice/session-3.scope".to_owned(),
-                None,
-            ),
-            ("/system.slice/sshd.service".to_owned(), None),
-            ("/init.scope".to_owned(), None),
-        ] {
-            assert_eq!(app_of_cgroup(&path).as_deref(), app, "{path}");
-        }
-        assert_eq!(
-            unified_path("1:name=systemd:/x\n0::/user.slice/a.scope\n"),
-            Some("/user.slice/a.scope")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn apps_are_told_by_their_cgroup_and_only_the_persons_own_end;
 
-    #[test]
-    fn only_the_persons_own_apps_may_be_ended() {
-        let policy = EndPolicy::for_user(1000, 77);
-        let app = format!("{}/app-tilo-so.tilo.notes-9.scope", policy.app_root);
-        assert_eq!(policy.check(500, 1000, Some(&app), false), Ok(()));
-        assert_eq!(
-            policy.check(500, 0, Some(&app), false),
-            Err(Refusal::NotYours),
-            "another user's process"
-        );
-        assert_eq!(
-            policy.check(500, 1001, Some(&app), false),
-            Err(Refusal::NotYours)
-        );
-        for path in [
-            "/system.slice/sshd.service",
-            "/user.slice/user-1000.slice/session-3.scope",
-            "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service",
-            "/user.slice/user-1000.slice/user@1000.service/app.slice2/x.scope",
-        ] {
+        phase apps_are_found_by_their_cgroup_and_nothing_else_is_an_app;
+        {
+            let base = "/user.slice/user-1000.slice/user@1000.service/app.slice";
+            for (path, app) in [
+                (
+                    format!("{base}/app-tilo-so.tilo.notes-4242.scope"),
+                    Some("so.tilo.notes"),
+                ),
+                (
+                    format!("{base}/app-tilo-so.tilo.my\\x2dapp-7.scope/sub"),
+                    Some("so.tilo.my-app"),
+                ),
+                (
+                    format!("{base}/app-gnome-org.mozilla.firefox-5512.scope"),
+                    Some("org.mozilla.firefox"),
+                ),
+                (
+                    format!("{base}/app-flatpak-com.spotify.Client@1a2b.service"),
+                    Some("com.spotify.Client"),
+                ),
+                (
+                    format!("{base}/app-org.gnome.Terminal.service"),
+                    Some("org.gnome.Terminal"),
+                ),
+                (
+                    "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service"
+                        .to_owned(),
+                    None,
+                ),
+                (
+                    "/user.slice/user-1000.slice/session-3.scope".to_owned(),
+                    None,
+                ),
+                ("/system.slice/sshd.service".to_owned(), None),
+                ("/init.scope".to_owned(), None),
+            ] {
+                assert_eq!(app_of_cgroup(&path).as_deref(), app, "{path}");
+            }
             assert_eq!(
-                policy.check(500, 1000, Some(path), false),
-                Err(Refusal::NotAnApp),
-                "{path}"
+                unified_path("1:name=systemd:/x\n0::/user.slice/a.scope\n"),
+                Some("/user.slice/a.scope")
             );
         }
-        assert_eq!(policy.check(500, 1000, None, false), Err(Refusal::NotAnApp));
-        assert_eq!(
-            policy.check(77, 1000, Some(&app), false),
-            Err(Refusal::NotAnApp),
-            "never the service itself"
-        );
-        assert_eq!(
-            policy.check(1, 1000, Some(&app), false),
-            Err(Refusal::NotAnApp)
-        );
-        assert_eq!(
-            policy.check(500, 1000, Some(&app), true),
-            Err(Refusal::NotAnApp)
-        );
+
+        phase only_the_persons_own_apps_may_be_ended;
+        {
+            let policy = EndPolicy::for_user(1000, 77);
+            let app = format!("{}/app-tilo-so.tilo.notes-9.scope", policy.app_root);
+            assert_eq!(policy.check(500, 1000, Some(&app), false), Ok(()));
+            assert_eq!(
+                policy.check(500, 0, Some(&app), false),
+                Err(Refusal::NotYours),
+                "another user's process"
+            );
+            assert_eq!(
+                policy.check(500, 1001, Some(&app), false),
+                Err(Refusal::NotYours)
+            );
+            for path in [
+                "/system.slice/sshd.service",
+                "/user.slice/user-1000.slice/session-3.scope",
+                "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service",
+                "/user.slice/user-1000.slice/user@1000.service/app.slice2/x.scope",
+            ] {
+                assert_eq!(
+                    policy.check(500, 1000, Some(path), false),
+                    Err(Refusal::NotAnApp),
+                    "{path}"
+                );
+            }
+            assert_eq!(policy.check(500, 1000, None, false), Err(Refusal::NotAnApp));
+            assert_eq!(
+                policy.check(77, 1000, Some(&app), false),
+                Err(Refusal::NotAnApp),
+                "never the service itself"
+            );
+            assert_eq!(
+                policy.check(1, 1000, Some(&app), false),
+                Err(Refusal::NotAnApp)
+            );
+            assert_eq!(
+                policy.check(500, 1000, Some(&app), true),
+                Err(Refusal::NotAnApp)
+            );
+        }
     }
 }

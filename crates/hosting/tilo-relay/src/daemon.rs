@@ -5,7 +5,7 @@
 //! Also exposes the `Relay` struct so integration tests can spin up
 //! two relays in the same process and let them merge.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +30,7 @@ use crate::transport::{
     HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_relay_protocol::WorkspaceId;
 
 #[derive(serde::Deserialize)]
 struct FullReplicaStatusProof {
@@ -498,29 +499,23 @@ impl Relay {
         validate_additional_protocols(&additional_protocols)?;
         import_home_peer(&mut cfg)?;
         validate_relay_identity(&identity)?;
-        if !cfg.device_role.can_serve() {
+        if cfg.work.takes_nothing() {
             return Err(RelayError::Identity(
-                "tilo-relay requires an always-on-server or hybrid device role".into(),
+                "a device that takes no work serves no workspace".into(),
             ));
         }
-        // A certificate authorises a service, but it cannot make a service
-        // exist. The composite process starts relay + filesystem planes; live
+        // The composite process starts relay + filesystem planes; live
         // workspace control uses relay's non-retained presence plane, and app
         // serving needs a plane supplied by an embedding process.
         let mut available_services = crate::mesh::ServiceCapabilities::home_peer();
         available_services.app_serving = app_serving.is_some();
-        cfg.services = cfg
-            .services
-            .authorized_by(&identity.device_cert.capabilities)
-            .limited_to(&available_services);
+        cfg.services = cfg.services.limited_to(&available_services);
         let app_serving = app_serving.filter(|_| cfg.services.app_serving);
         // Reject unavailable local backends before binding endpoints, publishing
         // capabilities or starting background tasks.
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
-            role: cfg.device_role,
             services: cfg.services.clone(),
-            replication: BTreeMap::new(),
             filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
@@ -586,7 +581,7 @@ impl Relay {
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
-                mode: crate::host::HostMode::CertifiedHost,
+                work: cfg.work.clone(),
                 trust_policy: cfg.trust_policy.clone(),
                 member_limits: cfg.member_limits,
                 max_workspace_grants: cfg.max_workspace_grants,
@@ -740,7 +735,7 @@ impl Relay {
     /// out to it rather than queued. There is no way to learn a peer has
     /// gone before its close arrives, so anything that depends on the
     /// departure having been noticed has to ask.
-    pub async fn is_subscribed(&self, workspace_id: u64, device: &[u8; 32]) -> bool {
+    pub async fn is_subscribed(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
         self.sessions.is_subscribed(workspace_id, device).await
     }
 
@@ -860,7 +855,7 @@ impl Relay {
     /// replacement fails.
     pub async fn replace_governed_workspace_access(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pinned: bool,
         access: tilo_peer_state::GovernedAccess,
         state_root: PathBuf,
@@ -932,16 +927,13 @@ impl Relay {
 /// backs.
 fn home_peer_relay_workspaces(
     workspace: &fs::full_replica::HomePeerBundle,
-) -> Result<(fs::Ticket, Vec<u64>), RelayError> {
+) -> Result<(fs::Ticket, Vec<WorkspaceId>), RelayError> {
     let ticket = fs::Ticket::decode(&workspace.ticket)
         .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
     let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
         // Bundles exported before workspace bindings existed have one stable
         // fallback shard. New enrollment always writes explicit ids.
-        vec![
-            crate::room_workspace_id(&ticket.workspace_id().to_string())
-                .map_err(|error| RelayError::Identity(format!("invalid workspace id: {error}")))?,
-        ]
+        vec![crate::WorkspaceId::from(ticket.workspace_id())]
     } else {
         workspace.relay_workspace_ids.clone()
     };
@@ -1242,9 +1234,9 @@ fn push_background_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: J
 
 fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
     crate::host::validate_host_device_identity(identity)?;
-    if !identity.device_cert.capabilities.can_act_as_host {
+    if !identity.device_cert.capabilities.can_own_workspaces {
         return Err(RelayError::Identity(
-            "device certificate is not host-capable".into(),
+            "the certificate is not a device of the person".into(),
         ));
     }
     Ok(())
@@ -1576,17 +1568,17 @@ mod tests {
     fn startup_validation_and_room_authority_admit_only_signed_hosts() {
         // Phase `valid_host_identity_passes_startup_validation`.
         {
-            validate_relay_identity(&identity(DeviceCapabilities::host())).unwrap();
+            validate_relay_identity(&identity(DeviceCapabilities::member())).unwrap();
         }
-        // Phase `ordinary_device_cannot_start_a_relay`.
+        // Phase `an_agent_grant_cannot_start_a_relay`.
         {
             let error =
-                validate_relay_identity(&identity(DeviceCapabilities::member())).unwrap_err();
-            assert!(error.to_string().contains("not host-capable"));
+                validate_relay_identity(&identity(DeviceCapabilities::nothing())).unwrap_err();
+            assert!(error.to_string().contains("not a device"));
         }
         // Phase `mismatched_device_key_is_rejected_at_startup`.
         {
-            let mut relay = identity(DeviceCapabilities::host());
+            let mut relay = identity(DeviceCapabilities::member());
             relay.device_signing_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let error = validate_relay_identity(&relay).unwrap_err();
             assert!(error.to_string().contains("does not match"));
@@ -1607,8 +1599,8 @@ mod tests {
                     cache_dir: temp.path().join("cache"),
                     capability_json: "[]".into(),
                     authority: None,
-                    principals: Vec::new(),
-                    relay_workspace_ids: vec![42],
+                    members: Vec::new(),
+                    relay_workspace_ids: vec![WorkspaceId::from_u128(42)],
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
@@ -1713,7 +1705,7 @@ mod tests {
                     services: crate::mesh::ServiceCapabilities::personal_server(),
                     ..RelayConfig::default()
                 },
-                identity(DeviceCapabilities::host()),
+                identity(DeviceCapabilities::member()),
             )
             .await
             .unwrap();
@@ -1731,7 +1723,7 @@ mod tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let status_path = temp.path().join("full-replica.json");
-            let relay_identity = identity(DeviceCapabilities::host());
+            let relay_identity = identity(DeviceCapabilities::member());
             let filesystem_endpoint = EndpointAddr::new(
                 iroh::SecretKey::from_bytes(&relay_identity.device_signing_key.to_bytes()).public(),
             )
@@ -1747,7 +1739,6 @@ mod tests {
                 RelayConfig {
                     state_root: temp.path().join("relay-state"),
                     full_replica_status: status_path.clone(),
-                    device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
                     ..RelayConfig::default()
                 },
@@ -1775,7 +1766,7 @@ mod tests {
                 user_public_key: user.public_key,
                 device_public_key: host.public_key,
                 device_label: host.label,
-                capabilities: DeviceCapabilities::host(),
+                capabilities: DeviceCapabilities::member(),
                 issued_at_ns: 4,
                 expires_at_ns: None,
                 signature: [0; 64],
@@ -1814,22 +1805,22 @@ mod tests {
             status.filesystem_endpoints.push(filesystem.clone());
             let status_clock = publish_status(&status_path, &status);
             let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
-            let workspace_topic = [29; 32];
+            let workspace = [29; 32];
             let bundle_path = temp.path().join("home-peer.toml");
             let bundle = fs::full_replica::HomePeerSet {
                 status_file: status_path.clone(),
                 workspaces: vec![fs::full_replica::HomePeerBundle {
                     ticket: fs::Ticket {
                         node: owner_endpoint.clone(),
-                        workspace: workspace_topic,
+                        workspace,
                     }
                     .encode()
                     .unwrap(),
                     cache_dir: temp.path().join("replica"),
                     capability_json: "[]".into(),
                     authority: None,
-                    principals: Vec::new(),
-                    relay_workspace_ids: vec![0],
+                    members: Vec::new(),
+                    relay_workspace_ids: vec![WorkspaceId::from_u128(0)],
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
@@ -1838,7 +1829,6 @@ mod tests {
                     state_root: temp.path().join("relay"),
                     full_replica_status: status_path.clone(),
                     home_peer_bundle: bundle_path,
-                    device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
                     // The relay runs its own packet relay on this machine's loopback, as the
                     // tests' hosts do: nothing here reaches number 0.
@@ -1864,7 +1854,7 @@ mod tests {
             let discovered = crate::client::RelayClient::discover_content_endpoint(
                 &client_endpoint,
                 relay.node_addr(),
-                0,
+                WorkspaceId::from_u128(0),
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -1878,7 +1868,7 @@ mod tests {
             let registration = crate::client::RelayClient::discover_content_peer(
                 &client_endpoint,
                 relay.node_addr(),
-                0,
+                WorkspaceId::from_u128(0),
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -1891,11 +1881,11 @@ mod tests {
             assert_ne!(owner_endpoint, filesystem);
             assert_eq!(advertised_ticket.node, owner_endpoint);
             assert_ne!(advertised_ticket.node, registration.endpoint);
-            assert_eq!(advertised_ticket.workspace, workspace_topic);
+            assert_eq!(advertised_ticket.workspace, workspace);
             let auto_bound = crate::client::RelayClient::discover_content_peer(
                 &client_endpoint,
                 relay.node_addr(),
-                99,
+                WorkspaceId::from_u128(99),
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -1905,13 +1895,20 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(auto_bound.endpoint, filesystem);
-            assert!(relay.sessions.workspaces.lock().await.contains_key(&99));
+            assert!(
+                relay
+                    .sessions
+                    .workspaces
+                    .lock()
+                    .await
+                    .contains_key(&WorkspaceId::from_u128(99))
+            );
             let wrong_device = [0x55; 32];
             assert!(
                 crate::client::RelayClient::discover_content_endpoint(
                     &client_endpoint,
                     relay.node_addr(),
-                    0,
+                    WorkspaceId::from_u128(0),
                     user.public_key,
                     wrong_device,
                     // The client certificate remains valid; only the enrolled host

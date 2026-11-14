@@ -210,7 +210,13 @@ enum Window {
 impl Window {
     /// The frame harness over `hosted`.
     fn in_harness(hosted: HostedWindow) -> Self {
-        let harness = FrameHarness::new(ui::State::new(), Box::new(hosted), VIEWPORT);
+        Self::in_harness_sized(hosted, VIEWPORT)
+    }
+
+    /// The frame harness over `hosted`, in a window `viewport` logical pixels: a phone's width,
+    /// where a window is drawn at its narrowest.
+    fn in_harness_sized(hosted: HostedWindow, viewport: (u32, u32)) -> Self {
+        let harness = FrameHarness::new(ui::State::new(), Box::new(hosted), viewport);
         Self::Harness(Box::new(harness))
     }
 
@@ -404,6 +410,8 @@ struct Session {
     woken: Arc<Woken>,
     /// The broker's end of the instance's connection.
     broker: Box<dyn std::any::Any>,
+    /// The invocations the test has delivered, numbered: each is answered by its own id.
+    invoked: u64,
 }
 
 /// Whether `host`'s instance reads the workspace's indexes: until then it shows the platform's
@@ -427,6 +435,16 @@ impl Session {
         Self::new(NOTES, "ada", |_| {})
     }
 
+    /// `person` at a harness window of the app `app` drawn `viewport` logical pixels wide and
+    /// tall, settled: a window at the width a phone gives it.
+    fn in_window(app: &str, person: &str, viewport: (u32, u32)) -> Self {
+        let mut session = Self::opened_in_language(app, person, "en-US", |hosted| {
+            Window::in_harness_sized(hosted, viewport)
+        });
+        session.settle();
+        session
+    }
+
     /// A person at a Tasks window the live `App` runs.
     fn live_tasks() -> Self {
         Self::open(TASKS, "ada", Window::live)
@@ -435,6 +453,21 @@ impl Session {
     /// A person at a Notes window the live `App` runs.
     fn live_notes() -> Self {
         Self::open(NOTES, "ada", Window::live)
+    }
+
+    /// A person at a Today window the live `App` runs, the workspace having Tasks and Notes
+    /// installed as the apps of their own records it reads.
+    fn today(window: impl FnOnce(HostedWindow) -> Window) -> Self {
+        let route = RouteSpec::app(TODAY, uuid::Uuid::new_v4());
+        let mut spec =
+            Spec::new(TODAY, route.cluster_id.to_string(), 1, "ada").in_language("en-US");
+        for app in [TASKS, NOTES] {
+            spec.installed.insert(app.to_owned(), app.to_owned());
+        }
+        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+        let mut session = Self::brokered_as(&route, spec, chunks, None, window);
+        session.settle();
+        session
     }
 
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
@@ -522,6 +555,19 @@ impl Session {
         storage: Option<std::path::PathBuf>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language(language);
+        Self::brokered_as(route, spec, chunks, storage, window)
+    }
+
+    /// [`Self::brokered`] of the instance `spec` names, as the session named it: whose window reads
+    /// the other apps installed here, each read from its own record.
+    fn brokered_as(
+        route: &RouteSpec,
+        spec: Spec,
+        chunks: tilolang_tilo::chunk::Chunks,
+        storage: Option<std::path::PathBuf>,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
@@ -530,7 +576,6 @@ impl Session {
             joined: None,
         });
         let wire = (Box::new(inbox) as Box<dyn std::any::Any>, sent);
-        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language(language);
         Self::launch(manager, route, spec, chunks, storage, wire, window)
     }
 
@@ -623,6 +668,7 @@ impl Session {
             sent,
             woken,
             broker,
+            invoked: 1,
         }
     }
 
@@ -721,28 +767,43 @@ impl Session {
             .is_some_and(|host| host.store().settled())
     }
 
+    /// The window's hosted instance.
+    fn instance(&self) -> &tilolang_host::hosted::Hosted {
+        self.host.instances().next().expect("the window's instance")
+    }
+
+    /// The host of the window's instance: its runtime and its store.
+    fn instance_host(&self) -> tilolang_tilo::host::Host {
+        self.instance()
+            .instance()
+            .host()
+            .expect("the instance's store")
+    }
+
     /// How many indexes the window's instance built from its record: none when it opens over
     /// the ones an earlier run of the app kept.
     fn builds(&self) -> u64 {
-        let hosted = self.host.instances().next().expect("the window's instance");
-        let host = hosted.instance().host().expect("the instance's store");
-        host.store().stats().builds
+        self.instance_host().store().stats().builds
     }
 
     /// How many indexes the window's instance brought up to date from the heads they were
     /// stamped with: a chunk caught up after the index was built, rather than built over.
     fn catch_ups(&self) -> u64 {
+        self.instance_host().store().stats().catch_ups
+    }
+
+    /// How many of those the window's store derived on its own frames: none, for a window whose
+    /// catch-up a worker does and whose frame is woken to take it in.
+    fn catch_ups_in_frame(&self) -> u64 {
         let hosted = self.host.instances().next().expect("the window's instance");
         let host = hosted.instance().host().expect("the instance's store");
-        host.store().stats().catch_ups
+        host.store().stats().catch_ups_in_frame
     }
 
     /// Hand the window's store every chunk of `chunks`, as a replica that joined each chunk's
     /// route holds them: what a window that reads only the chunks it shows is compared with.
     fn held_every_chunk(&self, chunks: &tilolang_tilo::chunk::Chunks) {
-        let hosted = self.host.instances().next().expect("the window's instance");
-        let host = hosted.instance().host().expect("the instance's store");
-        host.sync(chunks);
+        self.instance_host().sync(chunks);
     }
 
     fn hosted(&mut self) -> &HostedWindow {
@@ -1015,14 +1076,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
     for change in changes.lock().unwrap().iter() {
         workspace.load_incoming(change).unwrap();
     }
-    let mut record = session
-        .host
-        .instances()
-        .next()
-        .unwrap()
-        .record()
-        .doc()
-        .clone();
+    let mut record = session.host.instances().next().unwrap().record().doc();
     assert_eq!(
         workspace.get_heads(),
         record.get_heads(),
@@ -1948,17 +2002,56 @@ fn entry(session: &mut Session) -> String {
 /// The record's heads: what the app has written, as its changes name it.
 fn heads(session: &Session) -> Vec<String> {
     session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
+        .instance()
         .record()
         .doc()
-        .clone()
         .get_heads()
         .into_iter()
         .map(|head| format!("{head:?}"))
         .collect()
+}
+
+/// How many changes the window's record holds: what the window wrote into the workspace.
+fn changes(session: &Session) -> usize {
+    let doc = session.instance().record().doc();
+    doc.committed_document().get_changes(&[]).len()
+}
+
+/// Replay the action each change `doc` holds past `from` records, as a peer taking it does:
+/// every change comes out the same, to the byte. How many recorded an action.
+fn replayed(
+    doc: &mut automerge::AutoCommit,
+    from: &[automerge::ChangeHash],
+    host: &tilolang_tilo::host::Host,
+) -> usize {
+    let mut registry = ui::tilo_actions::ActionRegistry::new();
+    tilolang_tilo::history::register(&mut registry);
+    let arrived: Vec<_> = doc
+        .get_changes(from)
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    let mut reproduced = 0;
+    for change in arrived {
+        let verified =
+            host.with_schemas(|| ui::tilo_actions::verify_change(doc, change, &registry));
+        match verified {
+            Ok(ui::tilo_actions::Verified::Reproduced) => reproduced += 1,
+            Ok(ui::tilo_actions::Verified::NothingRecorded) => {}
+            other => panic!("a peer replaying a change gets another one: {other:?}"),
+        }
+    }
+    reproduced
+}
+
+/// The store of the window's instance.
+fn store(session: &Session) -> tilolang_tilo::store::TiloStore {
+    session.instance_host().store().clone()
+}
+
+/// The window's record: the workspace as this device holds it.
+fn record(session: &Session) -> tilolang_tilo::chunk::Chunks {
+    session.instance().record().chunks()
 }
 
 /// The texts a view's tree shows: every text and every person it names.
@@ -2763,14 +2856,7 @@ fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
 /// record's chunks.
 fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
     use tilolang_tilo::DynValue;
-    let chunks = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .record()
-        .chunks()
-        .clone();
+    let chunks = session.instance().record().chunks();
     let Some(record) = chunks.first() else {
         return false;
     };
@@ -2798,4 +2884,132 @@ fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
                 _ => false,
             })
         })
+}
+
+/// A person at Chat in a window 320 px wide (a phone's), with a channel `design` holding
+/// `messages` messages `bo` wrote while they were away: nothing of it is theirs, so all of it
+/// waits to be read. The channel is open, at its newest message.
+fn chat_at_a_phones_width(messages: usize) -> Session {
+    let mut session = Session::in_window(CHAT, "ada", (320, 568));
+    let new_channel = session.identity_doing("Conversations", "new_channel");
+    let channel = match session.invoke_doing(&new_channel, &serde_json::json!({ "name": "design" }))
+    {
+        ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => output
+            .resources
+            .into_iter()
+            .next()
+            .expect("the channel it made"),
+        other => panic!("the channel was made: {other:?}"),
+    };
+    // Sending is the app's own: an action of no one record, given the conversation it writes in.
+    let send = ui::tilo_actions::ActionAddress::new(
+        format!("tl.{CHAT}"),
+        session.doing("TextChannel", "send").1,
+    )
+    .encode();
+    let to = serde_json::json!({
+        "app": CHAT,
+        "kind": session.kind("TextChannel"),
+        "id": channel,
+        "label": "",
+    });
+    for said in 0..messages {
+        let written = session.invoke_as(
+            "bo",
+            &send,
+            &serde_json::json!({ "to": to, "body": format!("Message {said}") }),
+        );
+        assert!(
+            matches!(
+                written,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+            ),
+            "bo's message was written: {written:?}"
+        );
+    }
+    let (x, y) = shown_at(&mut session, "design");
+    session.window.click_at(x, y);
+    session.settle();
+    session
+}
+
+/// What the way back over a conversation is in a window drawn at a phone's width: a control
+/// saying the words the pill shows, standing where the pill is drawn, which a reader, an agent or
+/// a keyboard takes to the first message the person has not seen.
+#[test]
+fn a_conversations_way_back_is_a_control_that_goes_to_the_first_message_unread() {
+    use ui::widget::conversation::Jump;
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = chat_at_a_phones_width(40);
+    let words = Jump::Unread.label();
+    let pill = session
+        .window
+        .harness()
+        .a11y_node_named(&words)
+        .unwrap_or_else(|| {
+            panic!(
+                "the window offers the way back: {:?}",
+                session
+                    .controls()
+                    .into_iter()
+                    .map(|control| control.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    let shown = session
+        .window
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == pill)
+        .and_then(|(_, node)| node.bounds())
+        .expect("the way back stands where it is drawn");
+    assert!(
+        shown.x0 >= 0.0 && shown.x1 <= 320.0 && shown.y0 > 0.0 && shown.y1 <= 568.0,
+        "the way back stands inside the window: {shown:?}"
+    );
+    assert!(
+        shown.x1 - shown.x0 > 80.0,
+        "its words are whole at 320 px: {shown:?}"
+    );
+    assert!(
+        session
+            .controls()
+            .iter()
+            .any(|control| control.name == words),
+        "the window's controls name the way back: {:?}",
+        session
+            .controls()
+            .into_iter()
+            .map(|control| control.name)
+            .collect::<Vec<_>>()
+    );
+
+    // An agent presses it by its node, as a reader takes it, and the person is where reading
+    // starts again.
+    session
+        .window
+        .harness()
+        .perform_a11y_action(pill, &ui::a11y::Action::Activate)
+        .expect("the way back takes the press");
+    session.settle();
+    assert!(
+        session.window.harness().a11y_node_named(&words).is_none(),
+        "taken, the way back offers nothing more"
+    );
+    let first = session
+        .window
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            let name = node.label()?;
+            name.contains("Message 0").then(|| node.bounds()).flatten()
+        })
+        .expect("the first message is read in the window");
+    assert!(
+        first.y0 >= 0.0 && first.y1 <= 568.0,
+        "the way back went to the first message unread: {first:?}"
+    );
 }

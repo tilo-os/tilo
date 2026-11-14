@@ -139,122 +139,127 @@ fn presentation_state_stays_local() {
     }
 }
 
-/// A window with no account is the person's whole way into Mail: it must name
-/// the account route, in the language the person reads, and activating that
-/// named control must reach Settings' External Accounts — the same door the
-/// pill and the window bar's Add account take.
-#[test]
-fn a_fresh_window_offers_adding_an_account() {
-    fn route_named(node: &ui::a11y::AccessNode, action: &str) -> Option<String> {
-        if node.action_target.as_deref() == Some(action) && node.role == ui::a11y::Role::Button {
-            return node.name.clone();
+tilo_test_env::scenario! {
+    /// The window in English and in German; each case puts the language back.
+    fn a_window_names_its_routes_and_notices_in_the_persons_language;
+
+    // A window with no account is the person's whole way into Mail: it must name
+    // the account route, in the language the person reads, and activating that
+    // named control must reach Settings' External Accounts — the same door the
+    // pill and the window bar's Add account take.
+    phase a_fresh_window_offers_adding_an_account;
+    {
+        fn route_named(node: &ui::a11y::AccessNode, action: &str) -> Option<String> {
+            if node.action_target.as_deref() == Some(action) && node.role == ui::a11y::Role::Button {
+                return node.name.clone();
+            }
+            node.children
+                .iter()
+                .find_map(|child| route_named(child, action))
         }
-        node.children
-            .iter()
-            .find_map(|child| route_named(child, action))
+
+        let mut mail = MailApp::new_first_run();
+        let mut doc = crate::resource::TestMail::doc();
+        mail.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        mail.sync(&doc, &automerge::ROOT);
+        mail.layout_for_test(1100.0, 780.0);
+        let window = mail
+            .accessibility()
+            .expect("a fresh Mail window has semantics");
+        assert_eq!(
+            route_named(&window, ACCOUNT_ROUTE).as_deref(),
+            Some("Open External accounts"),
+            "the window's own tree names the account route, not only its page"
+        );
+        assert!(
+            mail.perform_semantic_action(
+                ACCOUNT_ROUTE,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ),
+            "the named control activates"
+        );
+        assert_eq!(
+            mail.opened_links,
+            ["settings://external_accounts"],
+            "and takes the person where an account is added"
+        );
+
+        // The same window read in German names the route in German.
+        crate::i18n::CATALOG.set_locale("de-DE");
+        let mut german = MailApp::new_first_run();
+        german.layout_for_test(1100.0, 780.0);
+        let window = german
+            .accessibility()
+            .expect("a fresh Mail window has semantics");
+        assert_eq!(
+            route_named(&window, ACCOUNT_ROUTE).as_deref(),
+            Some("Externe Konten öffnen"),
+        );
+        crate::i18n::CATALOG.set_locale("en-US");
     }
 
-    let mut mail = MailApp::new_first_run();
-    let mut doc = crate::resource::TestMail::doc();
-    mail.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-    mail.sync(&doc, &automerge::ROOT);
-    mail.layout_for_test(1100.0, 780.0);
-    let window = mail
-        .accessibility()
-        .expect("a fresh Mail window has semantics");
-    assert_eq!(
-        route_named(&window, ACCOUNT_ROUTE).as_deref(),
-        Some("Open External accounts"),
-        "the window's own tree names the account route, not only its page"
-    );
-    assert!(
-        mail.perform_semantic_action(
-            ACCOUNT_ROUTE,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ),
-        "the named control activates"
-    );
-    assert_eq!(
-        mail.opened_links,
-        ["settings://external_accounts"],
-        "and takes the person where an account is added"
-    );
+    // A German Mail says its notices in German, and every notice still reads the
+    // way it was chosen: translating the words never turns a failure into a
+    // success.
+    phase a_german_window_says_its_notices_in_german;
+    {
+        let _german = GermanWindow::new();
 
-    // The same window read in German names the route in German.
-    crate::i18n::CATALOG.set_locale("de-DE");
-    let mut german = MailApp::new_first_run();
-    german.layout_for_test(1100.0, 780.0);
-    let window = german
-        .accessibility()
-        .expect("a fresh Mail window has semantics");
-    assert_eq!(
-        route_named(&window, ACCOUNT_ROUTE).as_deref(),
-        Some("Externe Konten öffnen"),
-    );
-    crate::i18n::CATALOG.set_locale("en-US");
-}
+        // A check that fails stays said in the list, and a German window says it
+        // in German: the account it names is the one that could not be reached,
+        // and the way out is offered there too.
+        let unreachable = crate::notice::sync_failure(&crate::state::SyncFailure {
+            account: "anna@example.test".into(),
+            cause: crate::state::SyncCause::Unreachable,
+        });
+        assert_eq!(unreachable.title, "anna@example.test ist nicht erreichbar");
+        assert_eq!(
+            unreachable
+                .action
+                .as_ref()
+                .map(|offer| offer.label.as_str()),
+            Some("Erneut versuchen")
+        );
 
-/// A German Mail says its notices in German, and every notice still reads the
-/// way it was chosen: translating the words never turns a failure into a
-/// success.
-#[test]
-fn a_german_window_says_its_notices_in_german() {
-    let _german = GermanWindow::new();
+        let refused = crate::notice::sync_failure(&crate::state::SyncFailure {
+            account: "anna@example.test".into(),
+            cause: crate::state::SyncCause::SignedOut,
+        });
+        assert_eq!(
+            refused.title,
+            "Anmeldung bei anna@example.test nicht möglich"
+        );
+        assert_eq!(
+            refused.action.as_ref().map(|offer| offer.label.as_str()),
+            Some("Kontoeinstellungen öffnen"),
+            "a sign-in failure leads to the account that has to change"
+        );
+        assert_eq!(
+            refused.message.as_deref(),
+            Some("Prüfe das Passwort in den Einstellungen unter Externe Konten.")
+        );
 
-    // A check that fails stays said in the list, and a German window says it
-    // in German: the account it names is the one that could not be reached,
-    // and the way out is offered there too.
-    let unreachable = crate::notice::sync_failure(&crate::state::SyncFailure {
-        account: "anna@example.test".into(),
-        cause: crate::state::SyncCause::Unreachable,
-    });
-    assert_eq!(unreachable.title, "anna@example.test ist nicht erreichbar");
-    assert_eq!(
-        unreachable
-            .action
-            .as_ref()
-            .map(|offer| offer.label.as_str()),
-        Some("Erneut versuchen")
-    );
+        // A send that fails is still a notice that fades, and it reads in German.
+        let send = engine_error_text("send", "connection reset");
+        assert_eq!(
+            send.text,
+            "Die Nachricht ließ sich nicht senden: connection reset"
+        );
 
-    let refused = crate::notice::sync_failure(&crate::state::SyncFailure {
-        account: "anna@example.test".into(),
-        cause: crate::state::SyncCause::SignedOut,
-    });
-    assert_eq!(
-        refused.title,
-        "Anmeldung bei anna@example.test nicht möglich"
-    );
-    assert_eq!(
-        refused.action.as_ref().map(|offer| offer.label.as_str()),
-        Some("Kontoeinstellungen öffnen"),
-        "a sign-in failure leads to the account that has to change"
-    );
-    assert_eq!(
-        refused.message.as_deref(),
-        Some("Prüfe das Passwort in den Einstellungen unter Externe Konten.")
-    );
+        let (mut app, _doc) = app();
+        app.shared.borrow_mut().status = Some(Notice::warning(CATALOG.t("mail-status-message-gone")));
+        app.show_status();
+        assert_eq!(
+            app.nav.toast_text(),
+            Some("Diese Nachricht ist nicht mehr da")
+        );
 
-    // A send that fails is still a notice that fades, and it reads in German.
-    let send = engine_error_text("send", "connection reset");
-    assert_eq!(
-        send.text,
-        "Die Nachricht ließ sich nicht senden: connection reset"
-    );
-
-    let (mut app, _doc) = app();
-    app.shared.borrow_mut().status = Some(Notice::warning(CATALOG.t("mail-status-message-gone")));
-    app.show_status();
-    assert_eq!(
-        app.nav.toast_text(),
-        Some("Diese Nachricht ist nicht mehr da")
-    );
-
-    // The words a person moves a message with follow the same language.
-    assert_eq!(
-        crate::state::moved_to(Folder::Inbox),
-        "Eine Nachricht nach Posteingang verschoben"
-    );
+        // The words a person moves a message with follow the same language.
+        assert_eq!(
+            crate::state::moved_to(Folder::Inbox),
+            "Eine Nachricht nach Posteingang verschoben"
+        );
+    }
 }

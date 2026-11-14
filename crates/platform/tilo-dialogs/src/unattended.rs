@@ -91,40 +91,44 @@ mod tests {
         SaveDirectoryPicker::new(directory.to_path_buf(), crate::unavailable_picker()).unwrap()
     }
 
-    #[test]
-    fn the_unattended_picker_keeps_the_picker_contract() {
-        let directory = tempfile::tempdir().unwrap();
-        crate::conformance::check_picker_contract(&picker(directory.path()));
-        assert!(SaveDirectoryPicker::new("out".into(), crate::unavailable_picker()).is_none());
-    }
+    tilo_test_env::scenario! {
+        fn the_unattended_picker_saves_into_its_directory_and_refuses_the_rest;
 
-    #[test]
-    fn a_save_lands_in_the_directory_under_a_free_name_and_an_open_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
-        let picker = picker(directory.path());
-        let save = |name: &str| picker.pick(PickRequest::save("Save", "Save", name)).recv();
-        assert!(matches!(
-            save("note.md"),
-            Ok(PortalOutcome::Opened(path)) if path == directory.path().join("note.md")
-        ));
-        std::fs::write(directory.path().join("note.md"), b"").unwrap();
-        assert!(matches!(
-            save("../note.md"),
-            Ok(PortalOutcome::Opened(path)) if path == directory.path().join("note-2.md")
-        ));
-        assert!(matches!(
-            save(""),
-            Ok(PortalOutcome::Opened(path)) if path == directory.path().join("untitled")
-        ));
-        assert!(matches!(
-            picker.pick(PickRequest::open("Open", "Open")).recv(),
-            Ok(PortalOutcome::Failed(_))
-        ));
-        assert!(matches!(
-            picker
-                .pick(PickRequest::directory("Folder", "Choose"))
-                .recv(),
-            Ok(PortalOutcome::Failed(_))
-        ));
+        phase the_unattended_picker_keeps_the_picker_contract;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            crate::conformance::check_picker_contract(&picker(directory.path()));
+            assert!(SaveDirectoryPicker::new("out".into(), crate::unavailable_picker()).is_none());
+        }
+
+        phase a_save_lands_in_the_directory_under_a_free_name_and_an_open_is_refused;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let picker = picker(directory.path());
+            let save = |name: &str| picker.pick(PickRequest::save("Save", "Save", name)).recv();
+            assert!(matches!(
+                save("note.md"),
+                Ok(PortalOutcome::Opened(path)) if path == directory.path().join("note.md")
+            ));
+            std::fs::write(directory.path().join("note.md"), b"").unwrap();
+            assert!(matches!(
+                save("../note.md"),
+                Ok(PortalOutcome::Opened(path)) if path == directory.path().join("note-2.md")
+            ));
+            assert!(matches!(
+                save(""),
+                Ok(PortalOutcome::Opened(path)) if path == directory.path().join("untitled")
+            ));
+            assert!(matches!(
+                picker.pick(PickRequest::open("Open", "Open")).recv(),
+                Ok(PortalOutcome::Failed(_))
+            ));
+            assert!(matches!(
+                picker
+                    .pick(PickRequest::directory("Folder", "Choose"))
+                    .recv(),
+                Ok(PortalOutcome::Failed(_))
+            ));
+        }
     }
 }

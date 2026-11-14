@@ -121,52 +121,61 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ctrl_alt_escape_cuts_remote_input_and_nothing_else_does() {
-        let now = Instant::now();
-        let mut firewall = Firewall::default();
-        assert!(firewall.admits(now, false));
-        // Escape alone, and Ctrl+Alt with another key, are the window's.
-        press(&mut firewall, &[keycode::ESCAPE]);
-        press(&mut firewall, &[keycode::LEFT_CTRL, keycode::LEFT_ALT, 30]);
-        assert!(!firewall.is_cut(), "neither chord cuts");
-        // The chord cuts, and its Escape never reaches the window.
-        assert!(
-            !firewall.chord(keycode::LEFT_CTRL, true),
-            "the modifiers alone are the window's"
-        );
-        assert!(!firewall.chord(keycode::RIGHT_ALT, true));
-        assert!(
-            firewall.chord(keycode::ESCAPE, true),
-            "the completing press is the chord's"
-        );
-        // The compositor decides what the chord means; cutting is one answer.
-        firewall.cut();
-        assert!(firewall.is_cut());
-        assert!(!firewall.admits(now + PHYSICAL_PRIORITY, false));
-        assert_eq!(
-            firewall.refusal(now + PHYSICAL_PRIORITY, false),
-            Some("cut")
-        );
-        // It stays cut until the person allows it again.
-        firewall.chord(keycode::ESCAPE, false);
-        firewall.allow();
-        assert!(firewall.admits(now + PHYSICAL_PRIORITY, false));
-    }
+    tilo_test_env::scenario! {
+        /// The firewall in front of remote input.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
+        fn remote_input_yields_to_the_person_and_to_the_cut_chord;
 
-    #[test]
-    fn the_persons_own_input_holds_remote_input_back_and_a_lock_refuses_it() {
-        let now = Instant::now();
-        let mut firewall = Firewall::default();
-        firewall.note_local(now);
-        assert!(!firewall.admits(now, false));
-        assert!(!firewall.admits(now + Duration::from_millis(1), false));
-        assert!(firewall.admits(now + PHYSICAL_PRIORITY, false));
-        assert!(!firewall.admits(now + PHYSICAL_PRIORITY, true));
-        assert_eq!(
-            firewall.refusal(now + PHYSICAL_PRIORITY, true),
-            Some("session-locked")
-        );
-        assert_eq!(firewall.refusal(now + PHYSICAL_PRIORITY, false), None);
+        phase ctrl_alt_escape_cuts_remote_input_and_nothing_else_does;
+        {
+            let now = Instant::now();
+            let mut firewall = Firewall::default();
+            assert!(firewall.admits(now, false));
+            // Escape alone, and Ctrl+Alt with another key, are the window's.
+            press(&mut firewall, &[keycode::ESCAPE]);
+            press(&mut firewall, &[keycode::LEFT_CTRL, keycode::LEFT_ALT, 30]);
+            assert!(!firewall.is_cut(), "neither chord cuts");
+            // The chord cuts, and its Escape never reaches the window.
+            assert!(
+                !firewall.chord(keycode::LEFT_CTRL, true),
+                "the modifiers alone are the window's"
+            );
+            assert!(!firewall.chord(keycode::RIGHT_ALT, true));
+            assert!(
+                firewall.chord(keycode::ESCAPE, true),
+                "the completing press is the chord's"
+            );
+            // The compositor decides what the chord means; cutting is one answer.
+            firewall.cut();
+            assert!(firewall.is_cut());
+            assert!(!firewall.admits(now + PHYSICAL_PRIORITY, false));
+            assert_eq!(
+                firewall.refusal(now + PHYSICAL_PRIORITY, false),
+                Some("cut")
+            );
+            // It stays cut until the person allows it again.
+            firewall.chord(keycode::ESCAPE, false);
+            firewall.allow();
+            assert!(firewall.admits(now + PHYSICAL_PRIORITY, false));
+        }
+
+        phase the_persons_own_input_holds_remote_input_back_and_a_lock_refuses_it;
+        {
+            let now = Instant::now();
+            let mut firewall = Firewall::default();
+            firewall.note_local(now);
+            assert!(!firewall.admits(now, false));
+            assert!(!firewall.admits(now + Duration::from_millis(1), false));
+            assert!(firewall.admits(now + PHYSICAL_PRIORITY, false));
+            assert!(!firewall.admits(now + PHYSICAL_PRIORITY, true));
+            assert_eq!(
+                firewall.refusal(now + PHYSICAL_PRIORITY, true),
+                Some("session-locked")
+            );
+            assert_eq!(firewall.refusal(now + PHYSICAL_PRIORITY, false), None);
+        }
     }
 }

@@ -110,42 +110,47 @@ mod tests {
     use automerge::AutoCommit;
     use tilo_automerge::ApplyIncoming as _;
 
-    #[test]
-    fn a_bolded_block_answers_bold() {
-        let mut source = crate::model::testing::empty().unwrap();
-        let line = source.insert_block(None, "paragraph");
-        source.splice_text(&line, 0, 0, "Deadline: October 15");
-        let mut doc = AutoCommit::load(&source.save()).unwrap();
-        let before = doc.get_heads();
-        let mut edited = crate::model::reopen(doc.clone()).unwrap();
-        edited.add_mark(&line, 0, 20, "strong", true);
-        doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())
-            .unwrap();
-        let after = doc.get_heads();
-        let changes = doc.diff(&before, &after);
-        assert_eq!(
-            summary(&doc, &changes),
-            format!("1 changed:\n**Deadline: October 15** {{#{line}}}\n")
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `summary`, what an edit answers its caller with.
+        fn a_change_summary_answers_with_the_blocks_that_changed;
 
-    #[test]
-    fn a_long_block_answers_with_its_start() {
-        let mut source = crate::model::testing::empty().unwrap();
-        let short = source.insert_block(None, "paragraph");
-        source.splice_text(&short, 0, 0, "short");
-        let mut doc = AutoCommit::load(&source.save()).unwrap();
-        let before = doc.get_heads();
-        let mut edited = crate::model::reopen(doc.clone()).unwrap();
-        let long = edited.insert_block(Some(&short), "paragraph");
-        edited.splice_text(&long, 0, 0, &"a".repeat(MAX_BLOCK_CHARS + 40));
-        doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())
-            .unwrap();
-        let after = doc.get_heads();
-        let changes = doc.diff(&before, &after);
-        assert_eq!(
-            summary(&doc, &changes),
-            format!("1 changed:\n{}… {{#{long}}}\n", "a".repeat(MAX_BLOCK_CHARS))
-        );
+        phase a_bolded_block_answers_bold;
+        {
+            let mut source = crate::model::testing::empty().unwrap();
+            let line = source.insert_block(None, "paragraph");
+            source.splice_text(&line, 0, 0, "Deadline: October 15");
+            let mut doc = AutoCommit::load(&source.save()).unwrap();
+            let before = doc.get_heads();
+            let mut edited = crate::model::reopen(doc.clone()).unwrap();
+            edited.add_mark(&line, 0, 20, "strong", true);
+            doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())
+                .unwrap();
+            let after = doc.get_heads();
+            let changes = doc.diff(&before, &after);
+            assert_eq!(
+                summary(&doc, &changes),
+                format!("1 changed:\n**Deadline: October 15** {{#{line}}}\n")
+            );
+        }
+
+        phase a_long_block_answers_with_its_start;
+        {
+            let mut source = crate::model::testing::empty().unwrap();
+            let short = source.insert_block(None, "paragraph");
+            source.splice_text(&short, 0, 0, "short");
+            let mut doc = AutoCommit::load(&source.save()).unwrap();
+            let before = doc.get_heads();
+            let mut edited = crate::model::reopen(doc.clone()).unwrap();
+            let long = edited.insert_block(Some(&short), "paragraph");
+            edited.splice_text(&long, 0, 0, &"a".repeat(MAX_BLOCK_CHARS + 40));
+            doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())
+                .unwrap();
+            let after = doc.get_heads();
+            let changes = doc.diff(&before, &after);
+            assert_eq!(
+                summary(&doc, &changes),
+                format!("1 changed:\n{}… {{#{long}}}\n", "a".repeat(MAX_BLOCK_CHARS))
+            );
+        }
     }
 }

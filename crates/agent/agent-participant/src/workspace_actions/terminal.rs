@@ -50,6 +50,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{Job, Needs, Shared, Worker, caller_context, invoke_arguments, take_all};
 use crate::participant::actions::record_of;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Terminal's app id: its session records are what the host runs.
 pub const TERMINAL_APP: &str = "so.tilo.terminal";
@@ -121,7 +122,7 @@ pub struct ShellRan {
 
 /// A run that ended, for the worker to record.
 pub(super) struct Ended {
-    pub(super) workspace_id: u64,
+    pub(super) workspace_id: WorkspaceId,
     pub(super) invocation: InvocationId,
     pub(super) route: DocumentRoute,
     pub(super) request: InvokeRequest,
@@ -198,7 +199,7 @@ impl Worker {
     /// runs, answering it accepted; `None` for any other request.
     pub(super) fn start_terminal_run(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<InvocationReceipt> {
@@ -312,7 +313,7 @@ impl Worker {
     )]
     fn terminal_admitted(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
         route: &DocumentRoute,
@@ -397,7 +398,7 @@ impl Worker {
     /// here: `None` for any other request.
     pub(super) fn terminal(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<InvocationReceipt> {
@@ -463,7 +464,7 @@ impl Worker {
     /// for any other request.
     pub(super) fn stop_terminal_runs(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<InvocationReceipt> {

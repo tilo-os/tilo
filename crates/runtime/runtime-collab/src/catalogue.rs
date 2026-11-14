@@ -445,152 +445,160 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_follower_holds_what_the_broker_offers_after_every_change() {
-        let mut publication = CataloguePublication::default();
-        let mut held = ActionCatalogue::default();
-        for surfaces in [
-            vec![window(1, 3, 0), window(2, 2, 0)],
-            vec![window(1, 4, 1), window(2, 2, 0)],
-            vec![window(1, 4, 1), window(3, 1, 0)],
-            vec![],
-            vec![window(2, 5, 5)],
-        ] {
-            held.apply(&publication.next(&rows(&surfaces))).unwrap();
-            assert_eq!(held.surfaces(), surfaces.as_slice());
-        }
-        assert!(publication.next(&rows(&[window(2, 5, 5)])).is_empty());
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_action_catalogue;
 
-    #[test]
-    fn unread_changes_composed_equal_the_changes_applied_in_turn() {
-        let mut publication = CataloguePublication::default();
-        let first = publication.next(&rows(&[window(1, 3, 0), window(2, 1, 0)]));
-        let (mut stepwise, mut composed) = (ActionCatalogue::default(), ActionCatalogue::default());
-        stepwise.apply(&first).unwrap();
-        composed.apply(&first).unwrap();
-        let mut pending = CatalogueChange::default();
-        for surfaces in [
-            vec![window(1, 4, 2)],
-            vec![window(2, 2, 0), window(1, 4, 2)],
-            vec![window(1, 1, 0)],
-        ] {
-            let change = publication.next(&rows(&surfaces));
-            stepwise.apply(&change).unwrap();
-            pending = if pending.revision == 0 {
-                change
-            } else {
-                pending.then(change)
-            };
-        }
-        composed.apply(&pending).unwrap();
-        assert_eq!(composed.surfaces(), stepwise.surfaces());
-        let before_the_gap = stepwise.surfaces().to_vec();
-
-        let _skipped = publication.next(&rows(&[window(1, 2, 0)]));
-        let next = publication.next(&rows(&[window(1, 3, 0)]));
-        assert!(
-            stepwise.apply(&next).is_err(),
-            "a change that does not follow"
-        );
-        assert_eq!(
-            stepwise.surfaces(),
-            before_the_gap,
-            "a change that does not apply leaves the last good catalogue"
-        );
-    }
-
-    /// A follower that cannot apply a change keeps what it held and asks for
-    /// the whole catalogue, which arrives as a reset and replaces it.
-    #[test]
-    fn a_change_that_does_not_apply_keeps_the_last_good_catalogue() {
-        let mut publication = CataloguePublication::default();
-        let mut held = ActionCatalogue::default();
-        held.apply(&publication.next(&rows(&[window(1, 3, 0)])))
-            .unwrap();
-        let last_good = held.surfaces().to_vec();
-
-        let _skipped = publication.next(&rows(&[window(1, 4, 0)]));
-        let gap = publication.next(&rows(&[window(1, 5, 0)]));
-        assert!(held.apply(&gap).is_err(), "the revision gap");
-        assert_eq!(held.surfaces(), last_good, "no empty window");
-
-        let mut unknown = CatalogueChange::snapshot(&[window(2, 2, 0)]);
-        unknown.templates.clear();
-        assert!(
-            held.apply(&unknown).is_err(),
-            "a template it was never sent"
-        );
-        assert_eq!(held.surfaces(), last_good, "no empty window");
-
-        let fresh = CatalogueChange::snapshot(&[window(2, 2, 0)]);
-        assert!(fresh.reset, "the whole catalogue is asked for as a reset");
-        held.apply(&fresh).unwrap();
-        assert_eq!(held.surfaces(), [window(2, 2, 0)], "restored whole");
-    }
-
-    /// A second window of an app offers the shapes the first one does: it
-    /// costs its resources alone, also when the surface that brought the
-    /// shapes is gone before the follower reads the changes.
-    #[test]
-    fn a_second_window_costs_its_resources_alone() {
-        let mut publication = CataloguePublication::default();
-        let mut held = ActionCatalogue::default();
-        held.apply(&publication.next(&rows(&[window(1, 3, 0)])))
-            .unwrap();
-        let second = publication.next(&rows(&[window(1, 3, 0), window(2, 3, 0)]));
-        assert!(second.shapes.is_empty() && second.templates.is_empty());
-        assert!(second.surfaces.iter().all(|surface| {
-            surface.delta.shapes.is_empty() && surface.delta.templates.is_empty()
-        }));
-        let first_gone = publication.next(&rows(&[window(2, 3, 0)]));
-        let third = publication.next(&rows(&[window(3, 2, 0)]));
-        held.apply(&second.then(first_gone).then(third)).unwrap();
-        assert_eq!(held.surfaces(), [window(3, 2, 0)]);
-
-        let mut publication = CataloguePublication::default();
-        let mut held = ActionCatalogue::default();
-        held.apply(&publication.next(&[])).unwrap();
-        let brought = publication.next(&rows(&[window(1, 3, 0)]));
-        let replaced = publication.next(&rows(&[window(2, 3, 0)]));
-        held.apply(&brought.then(replaced)).unwrap();
-        assert_eq!(held.surfaces(), [window(2, 3, 0)]);
-    }
-
-    /// Actions whose words name the resource they are on share one shape,
-    /// and read back as they were published.
-    #[test]
-    fn words_naming_the_resource_share_one_shape() {
-        let named = |messages| {
-            let mut surface = window(1, messages, 0);
-            for action in &mut surface.actions {
-                action.action_label = format!("{} {}", action.action, action.resource_label);
-                action.description = Some(format!("\u{1}L {}\u{1}", action.resource_label));
+        phase a_follower_holds_what_the_broker_offers_after_every_change;
+        {
+            let mut publication = CataloguePublication::default();
+            let mut held = ActionCatalogue::default();
+            for surfaces in [
+                vec![window(1, 3, 0), window(2, 2, 0)],
+                vec![window(1, 4, 1), window(2, 2, 0)],
+                vec![window(1, 4, 1), window(3, 1, 0)],
+                vec![],
+                vec![window(2, 5, 5)],
+            ] {
+                held.apply(&publication.next(&rows(&surfaces))).unwrap();
+                assert_eq!(held.surfaces(), surfaces.as_slice());
             }
-            surface
-        };
-        let change = CataloguePublication::default().next(&rows(&[named(5)]));
-        assert_eq!(change.shapes.len(), 4);
-        let mut held = ActionCatalogue::default();
-        held.apply(&change).unwrap();
-        assert_eq!(held.surfaces(), [named(5)]);
-    }
+            assert!(publication.next(&rows(&[window(2, 5, 5)])).is_empty());
+        }
 
-    /// A whole catalogue is sent once, each action shape in it once; a
-    /// change of one message carries that message alone.
-    #[test]
-    fn a_change_of_one_message_carries_that_message() {
-        let before = [window(1, 200, 0), window(2, 60, 0)];
-        let whole: usize = before
-            .iter()
-            .map(|surface| serde_json::to_string(&surface.actions).unwrap().len())
-            .sum();
-        let mut publication = CataloguePublication::default();
-        let bytes = |change: CatalogueChange| serde_json::to_string(&change).unwrap().len();
-        let snapshot = bytes(publication.next(&rows(&before)));
-        let change = bytes(publication.next(&rows(&[window(1, 200, 1), window(2, 60, 0)])));
-        eprintln!("catalogue bytes: whole {whole}, snapshot {snapshot}, one message {change}");
-        assert!(snapshot * 3 < whole);
-        assert!(change < 1_000);
+        phase unread_changes_composed_equal_the_changes_applied_in_turn;
+        {
+            let mut publication = CataloguePublication::default();
+            let first = publication.next(&rows(&[window(1, 3, 0), window(2, 1, 0)]));
+            let (mut stepwise, mut composed) = (ActionCatalogue::default(), ActionCatalogue::default());
+            stepwise.apply(&first).unwrap();
+            composed.apply(&first).unwrap();
+            let mut pending = CatalogueChange::default();
+            for surfaces in [
+                vec![window(1, 4, 2)],
+                vec![window(2, 2, 0), window(1, 4, 2)],
+                vec![window(1, 1, 0)],
+            ] {
+                let change = publication.next(&rows(&surfaces));
+                stepwise.apply(&change).unwrap();
+                pending = if pending.revision == 0 {
+                    change
+                } else {
+                    pending.then(change)
+                };
+            }
+            composed.apply(&pending).unwrap();
+            assert_eq!(composed.surfaces(), stepwise.surfaces());
+            let before_the_gap = stepwise.surfaces().to_vec();
+
+            let _skipped = publication.next(&rows(&[window(1, 2, 0)]));
+            let next = publication.next(&rows(&[window(1, 3, 0)]));
+            assert!(
+                stepwise.apply(&next).is_err(),
+                "a change that does not follow"
+            );
+            assert_eq!(
+                stepwise.surfaces(),
+                before_the_gap,
+                "a change that does not apply leaves the last good catalogue"
+            );
+        }
+
+        phase a_change_that_does_not_apply_keeps_the_last_good_catalogue;
+        // A follower that cannot apply a change keeps what it held and asks for
+        // the whole catalogue, which arrives as a reset and replaces it.
+        {
+            let mut publication = CataloguePublication::default();
+            let mut held = ActionCatalogue::default();
+            held.apply(&publication.next(&rows(&[window(1, 3, 0)])))
+                .unwrap();
+            let last_good = held.surfaces().to_vec();
+
+            let _skipped = publication.next(&rows(&[window(1, 4, 0)]));
+            let gap = publication.next(&rows(&[window(1, 5, 0)]));
+            assert!(held.apply(&gap).is_err(), "the revision gap");
+            assert_eq!(held.surfaces(), last_good, "no empty window");
+
+            let mut unknown = CatalogueChange::snapshot(&[window(2, 2, 0)]);
+            unknown.templates.clear();
+            assert!(
+                held.apply(&unknown).is_err(),
+                "a template it was never sent"
+            );
+            assert_eq!(held.surfaces(), last_good, "no empty window");
+
+            let fresh = CatalogueChange::snapshot(&[window(2, 2, 0)]);
+            assert!(fresh.reset, "the whole catalogue is asked for as a reset");
+            held.apply(&fresh).unwrap();
+            assert_eq!(held.surfaces(), [window(2, 2, 0)], "restored whole");
+        }
+
+        phase a_second_window_costs_its_resources_alone;
+        // A second window of an app offers the shapes the first one does: it
+        // costs its resources alone, also when the surface that brought the
+        // shapes is gone before the follower reads the changes.
+        {
+            let mut publication = CataloguePublication::default();
+            let mut held = ActionCatalogue::default();
+            held.apply(&publication.next(&rows(&[window(1, 3, 0)])))
+                .unwrap();
+            let second = publication.next(&rows(&[window(1, 3, 0), window(2, 3, 0)]));
+            assert!(second.shapes.is_empty() && second.templates.is_empty());
+            assert!(second.surfaces.iter().all(|surface| {
+                surface.delta.shapes.is_empty() && surface.delta.templates.is_empty()
+            }));
+            let first_gone = publication.next(&rows(&[window(2, 3, 0)]));
+            let third = publication.next(&rows(&[window(3, 2, 0)]));
+            held.apply(&second.then(first_gone).then(third)).unwrap();
+            assert_eq!(held.surfaces(), [window(3, 2, 0)]);
+
+            let mut publication = CataloguePublication::default();
+            let mut held = ActionCatalogue::default();
+            held.apply(&publication.next(&[])).unwrap();
+            let brought = publication.next(&rows(&[window(1, 3, 0)]));
+            let replaced = publication.next(&rows(&[window(2, 3, 0)]));
+            held.apply(&brought.then(replaced)).unwrap();
+            assert_eq!(held.surfaces(), [window(2, 3, 0)]);
+        }
+
+        phase words_naming_the_resource_share_one_shape;
+        // Actions whose words name the resource they are on share one shape,
+        // and read back as they were published.
+        {
+            let named = |messages| {
+                let mut surface = window(1, messages, 0);
+                for action in &mut surface.actions {
+                    action.action_label = format!("{} {}", action.action, action.resource_label);
+                    action.description = Some(format!("\u{1}L {}\u{1}", action.resource_label));
+                }
+                surface
+            };
+            let change = CataloguePublication::default().next(&rows(&[named(5)]));
+            assert_eq!(change.shapes.len(), 4);
+            let mut held = ActionCatalogue::default();
+            held.apply(&change).unwrap();
+            assert_eq!(held.surfaces(), [named(5)]);
+        }
+
+        phase a_change_of_one_message_carries_that_message;
+        // A whole catalogue is sent once, each action shape in it once; a
+        // change of one message carries that message alone.
+        {
+            let before = [window(1, 200, 0), window(2, 60, 0)];
+            let whole: usize = before
+                .iter()
+                .map(|surface| serde_json::to_string(&surface.actions).unwrap().len())
+                .sum();
+            let mut publication = CataloguePublication::default();
+            let bytes = |change: CatalogueChange| serde_json::to_string(&change).unwrap().len();
+            let snapshot = bytes(publication.next(&rows(&before)));
+            let change = bytes(publication.next(&rows(&[window(1, 200, 1), window(2, 60, 0)])));
+            eprintln!("catalogue bytes: whole {whole}, snapshot {snapshot}, one message {change}");
+            assert!(snapshot * 3 < whole);
+            assert!(change < 1_000);
+        }
     }
 }

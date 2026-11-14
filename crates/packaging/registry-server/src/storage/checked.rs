@@ -189,55 +189,59 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn a_file_is_checked_once_until_it_is_replaced() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("object");
-        let files = CheckedFiles::settling_for(Duration::ZERO);
-        assert_eq!(read(&files, &path), None);
-        assert_eq!(files.checks(), 0, "a missing file is never checked");
+    tilo_test_env::scenario! {
+        fn checked_files_are_rechecked_when_they_change;
 
-        std::fs::write(&path, b"first").unwrap();
-        for _ in 0..3 {
-            assert_eq!(read(&files, &path).as_deref(), Some(&b"first"[..]));
+        phase a_file_is_checked_once_until_it_is_replaced;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("object");
+            let files = CheckedFiles::settling_for(Duration::ZERO);
+            assert_eq!(read(&files, &path), None);
+            assert_eq!(files.checks(), 0, "a missing file is never checked");
+
+            std::fs::write(&path, b"first").unwrap();
+            for _ in 0..3 {
+                assert_eq!(read(&files, &path).as_deref(), Some(&b"first"[..]));
+            }
+            assert_eq!(files.checks(), 1);
+
+            // Replaced the way every object is written: a new file renamed over it.
+            let next = dir.path().join("object.tmp");
+            std::fs::write(&next, b"second").unwrap();
+            std::fs::rename(&next, &path).unwrap();
+            assert_eq!(read(&files, &path).as_deref(), Some(&b"second"[..]));
+            assert_eq!(files.checks(), 2);
         }
-        assert_eq!(files.checks(), 1);
 
-        // Replaced the way every object is written: a new file renamed over it.
-        let next = dir.path().join("object.tmp");
-        std::fs::write(&next, b"second").unwrap();
-        std::fs::rename(&next, &path).unwrap();
-        assert_eq!(read(&files, &path).as_deref(), Some(&b"second"[..]));
-        assert_eq!(files.checks(), 2);
-    }
-
-    #[test]
-    fn a_file_changed_within_the_settle_time_is_checked_on_every_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("object");
-        std::fs::write(&path, b"fresh").unwrap();
-        let files = CheckedFiles::default();
-        for _ in 0..3 {
-            read(&files, &path);
+        phase a_file_changed_within_the_settle_time_is_checked_on_every_read;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("object");
+            std::fs::write(&path, b"fresh").unwrap();
+            let files = CheckedFiles::default();
+            for _ in 0..3 {
+                read(&files, &path);
+            }
+            assert_eq!(files.checks(), 3);
         }
-        assert_eq!(files.checks(), 3);
-    }
 
-    #[test]
-    fn a_file_that_fails_its_check_is_checked_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("object");
-        std::fs::write(&path, b"bytes").unwrap();
-        let files = CheckedFiles::settling_for(Duration::ZERO);
-        for _ in 0..2 {
-            let refused = files.read(
-                &path,
-                "object",
-                |stamp| Ok(stamp.len()),
-                |_| Err(StorageError::Parse("does not match its name".into())),
-            );
-            assert!(refused.is_err());
+        phase a_file_that_fails_its_check_is_checked_again;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("object");
+            std::fs::write(&path, b"bytes").unwrap();
+            let files = CheckedFiles::settling_for(Duration::ZERO);
+            for _ in 0..2 {
+                let refused = files.read(
+                    &path,
+                    "object",
+                    |stamp| Ok(stamp.len()),
+                    |_| Err(StorageError::Parse("does not match its name".into())),
+                );
+                assert!(refused.is_err());
+            }
+            assert_eq!(files.checks(), 2);
         }
-        assert_eq!(files.checks(), 2);
     }
 }

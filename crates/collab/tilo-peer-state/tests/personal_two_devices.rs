@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::common::{addr, device, device_with, localhost_endpoint};
+use crate::common::{addr, device, localhost_endpoint};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -17,7 +17,7 @@ use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use std::time::Duration;
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync, RefusalReason};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationReason};
 use ui::permissions::UserId;
 use ui::record::RecordKind;
 use ui::record::person::PersonRecords;
@@ -130,11 +130,6 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
             .iter()
             .any(|cert| cert.device_public_key == c_key.verifying_key().to_bytes())
     }));
-
-    // A store node holds none of the person's documents: it cannot even open
-    // a store on their identity.
-    let (_, node_cert) = device_with(&root, 4, DeviceCapabilities::host());
-    assert!(PersonalStore::open(root_key, node_cert, now).is_err());
 
     link.abort();
     a_router.shutdown().await.unwrap();

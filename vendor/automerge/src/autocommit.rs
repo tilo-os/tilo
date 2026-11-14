@@ -413,6 +413,22 @@ impl AutoCommit {
             .unwrap_or_else(|| self.doc.get_heads())
     }
 
+    /// TILO(committed-save): save the committed document
+    /// ([`Self::committed_document`]) without closing an open transaction.
+    /// The op set already holds that transaction's ops, so
+    /// `committed_document().save()` would store them without their change;
+    /// with a transaction open this saves a copy it is rolled back from.
+    pub fn save_committed(&self) -> Vec<u8> {
+        match &self.transaction {
+            None => self.doc.save(),
+            Some((_, tx)) => {
+                let mut doc = self.doc.clone();
+                tx.clone().rollback(&mut doc);
+                doc.save()
+            }
+        }
+    }
+
     /// A copy of the committed document ([`Self::committed_document`]) as it
     /// was at `heads`: what [`Self::fork_at`] makes, read from `&self`.
     pub fn committed_fork_at(&self, heads: &[ChangeHash]) -> Result<Self, AutomergeError> {

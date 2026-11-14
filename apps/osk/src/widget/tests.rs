@@ -5,56 +5,276 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use ui::widget::DrawChild;
 
-#[test]
-fn contextual_tools_retire_semantic_targets_and_cannot_use_custom_callbacks() {
-    let invoked = Rc::new(RefCell::new(Vec::new()));
-    let received = Rc::clone(&invoked);
-    let mut osk = OskWidget::new();
-    osk.set_context_handler(Box::new(move |generation, slot| {
-        received.borrow_mut().push((generation, slot));
-        Ok(())
-    }));
-    osk.on_toolbar = Some(Box::new(|_| {
-        panic!("context must use its authenticated route")
-    }));
-    let item = |generation| {
-        OskToolbarItem::new(
-            "bold",
+tilo_test_env::scenario! {
+    fn purposes_pick_the_layout_the_tools_and_the_names_spoken;
+
+    phase contextual_tools_retire_semantic_targets_and_cannot_use_custom_callbacks;
+    {
+        let invoked = Rc::new(RefCell::new(Vec::new()));
+        let received = Rc::clone(&invoked);
+        let mut osk = OskWidget::new();
+        osk.set_context_handler(Box::new(move |generation, slot| {
+            received.borrow_mut().push((generation, slot));
+            Ok(())
+        }));
+        osk.on_toolbar = Some(Box::new(|_| {
+            panic!("context must use its authenticated route")
+        }));
+        let item = |generation| {
+            OskToolbarItem::new(
+                "bold",
+                None,
+                "Bold",
+                OskToolbarAction::Contextual {
+                    generation,
+                    slot: 7,
+                },
+            )
+        };
+        osk.set_context_toolbar(10, vec![item(10)]);
+        lay_out(&mut osk, 390.0, 312.0);
+        let target = "osk:context:10:7:Bold";
+        let activate = |osk: &mut OskWidget, target: &str| {
+            osk.perform_semantic_action(
+                target,
+                &AccessibilityAction::Activate,
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                &automerge::ROOT,
+            )
+        };
+        assert!(activate(&mut osk, target));
+        assert_eq!(*invoked.borrow(), vec![(10, 7)]);
+        assert!(!activate(&mut osk, "osk:tool:0:Bold"));
+        osk.set_context_toolbar(11, vec![item(11)]);
+        assert!(!activate(&mut osk, target));
+        osk.context_result(10, 7, false, "stale failure".into());
+        assert!(osk.context_error.is_none());
+        osk.context_result(11, 7, false, "Permission denied".into());
+        assert_eq!(osk.context_error.as_deref(), Some("Permission denied"));
+        assert!(!osk.activate_suggestion(0));
+        osk.set_purpose(InputPurpose::Password);
+        assert!(osk.context_generation.is_none());
+        osk.set_context_toolbar(12, vec![item(12)]);
+        assert!(osk.context_generation.is_none());
+        assert!(!activate(&mut osk, "osk:context:12:7:Bold"));
+        assert_eq!(*invoked.borrow(), vec![(10, 7)]);
+    }
+
+    phase initial_purpose_selects_matching_layout_and_names_round_trip;
+    {
+        eprintln!("phase with_purpose_starts_on_the_matching_layout");
+        {
+            let osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
+                .with_purpose(InputPurpose::Pin);
+            assert_eq!(osk.purpose(), InputPurpose::Pin);
+            assert_eq!(osk.active_layout_name(), "pin");
+        }
+
+        eprintln!("phase numeric_purpose_types_digits_and_has_no_letters");
+        {
+            let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
+            osk.set_purpose(InputPurpose::Number);
+            lay_out(&mut osk, 800.0, 360.0);
+            assert!(osk.activate_label("1"));
+            assert!(osk.activate_label("2"));
+            assert!(osk.activate_label("3"));
+            assert_eq!(osk.pending_text(), "123");
+            assert!(!osk.activate_label("Shift"), "no Shift on the number pad");
+        }
+
+        eprintln!("phase input_purpose_name_round_trips");
+        {
+            use InputPurpose::*;
+            for p in [
+                Text, Number, Decimal, Telephone, Url, Email, Pin, Password, Date, Time,
+            ] {
+                let name = input_purpose_name(p);
+                assert_eq!(
+                    input_purpose_from_name(name),
+                    Some(p),
+                    "{p:?} should round-trip through its name {name:?}"
+                );
+            }
+        }
+    }
+
+    phase the_terminal_row_speaks_its_latches_and_retires_on_field_change;
+    {
+        let mut osk = OskWidget::new();
+        osk.set_purpose(crate::imclient::purpose_from_wire(
+            crate::imclient::content_purpose::TERMINAL,
+        ));
+        lay_out(&mut osk, 390.0, 360.0);
+        let ids: Vec<&str> = osk.toolbar.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "esc", "tab", "ctrl", "alt", "left", "down", "up", "right", "dismiss"
+            ]
+        );
+        let ctrl_name = |osk: &OskWidget| {
+            let index = osk
+                .toolbar
+                .iter()
+                .position(|item| item.id == "ctrl")
+                .unwrap();
+            let target = osk.toolbar[index].semantic_target(index);
+            osk.accessibility()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.action_target.as_deref() == Some(target.as_str()))
+                .unwrap()
+                .name
+                .unwrap()
+        };
+        let target = {
+            let index = osk
+                .toolbar
+                .iter()
+                .position(|item| item.id == "ctrl")
+                .unwrap();
+            osk.toolbar[index].semantic_target(index)
+        };
+        assert_eq!(ctrl_name(&osk), "Ctrl");
+        assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
+        assert_eq!(ctrl_name(&osk), "Ctrl, held for the next key");
+        assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
+        assert_eq!(ctrl_name(&osk), "Ctrl, locked");
+        assert!(
+            osk.take_output().is_empty(),
+            "a modifier alone sends nothing"
+        );
+
+        osk.set_purpose(InputPurpose::Password);
+        lay_out(&mut osk, 390.0, 360.0);
+        assert_eq!(osk.modifier_latches(), ModifierLatches::default());
+        assert!(!osk.toolbar.iter().any(OskToolbarItem::is_key));
+        osk.activate_label("c");
+        assert!(
+            osk.take_output()
+                .iter()
+                .all(|output| !matches!(output, OskOutput::Key(_))),
+            "a lock does not outlive the terminal field"
+        );
+    }
+
+    phase editing_keys_have_spoken_names_and_shift_announces_its_state;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let names = |osk: &OskWidget| {
+            osk.accessibility()
+                .unwrap()
+                .children
+                .iter()
+                .map(|node| node.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let spoken = names(&osk);
+        for name in [
+            "Backspace",
+            "Enter",
+            "Space",
+            "Shift, off",
+            "Switch to symbols",
+            "Move caret left",
+            "Move caret right",
+        ] {
+            assert!(
+                spoken.iter().any(|spoken| spoken.as_deref() == Some(name)),
+                "missing spoken control: {name}"
+            );
+        }
+        let shift_target = osk
+            .accessibility()
+            .unwrap()
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Shift, off"))
+            .unwrap()
+            .action_target
+            .unwrap();
+        assert!(semantic(
+            &mut osk,
+            &shift_target,
+            &AccessibilityAction::Activate
+        ));
+        assert!(
+            names(&osk)
+                .iter()
+                .any(|name| name.as_deref() == Some("Shift, next letter uppercase"))
+        );
+        assert!(semantic(
+            &mut osk,
+            &shift_target,
+            &AccessibilityAction::Activate
+        ));
+        assert!(
+            names(&osk)
+                .iter()
+                .any(|name| name.as_deref() == Some("Caps lock, on"))
+        );
+    }
+
+    phase a_parked_keyboard_is_one_strip_and_asks_for_a_strip_of_a_surface;
+    // Parking puts the keys away and keeps the strip that brings them back,
+    // and telling the window to shrink is what gives the screen back: the
+    // keys are not painted over a panel that is now the app's.
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        assert!(osk.keys_up());
+        assert!(
+            osk.key_geometry()
+                .iter()
+                .any(|(_, rect)| rect.height() > 0.0)
+        );
+        assert_eq!(
+            osk.preferred_window_size(),
             None,
-            "Bold",
-            OskToolbarAction::Contextual {
-                generation,
-                slot: 7,
-            },
-        )
-    };
-    osk.set_context_toolbar(10, vec![item(10)]);
-    lay_out(&mut osk, 390.0, 312.0);
-    let target = "osk:context:10:7:Bold";
-    let activate = |osk: &mut OskWidget, target: &str| {
-        osk.perform_semantic_action(
-            target,
-            &AccessibilityAction::Activate,
-            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
-            &automerge::ROOT,
-        )
-    };
-    assert!(activate(&mut osk, target));
-    assert_eq!(*invoked.borrow(), vec![(10, 7)]);
-    assert!(!activate(&mut osk, "osk:tool:0:Bold"));
-    osk.set_context_toolbar(11, vec![item(11)]);
-    assert!(!activate(&mut osk, target));
-    osk.context_result(10, 7, false, "stale failure".into());
-    assert!(osk.context_error.is_none());
-    osk.context_result(11, 7, false, "Permission denied".into());
-    assert_eq!(osk.context_error.as_deref(), Some("Permission denied"));
-    assert!(!osk.activate_suggestion(0));
-    osk.set_purpose(InputPurpose::Password);
-    assert!(osk.context_generation.is_none());
-    osk.set_context_toolbar(12, vec![item(12)]);
-    assert!(osk.context_generation.is_none());
-    assert!(!activate(&mut osk, "osk:context:12:7:Bold"));
-    assert_eq!(*invoked.borrow(), vec![(10, 7)]);
+            "a keyboard with its keys up fills the panel it was given"
+        );
+
+        let park = osk
+            .toolbar_items()
+            .iter()
+            .position(|item| item.action == OskToolbarAction::Park)
+            .expect("the toolbar can put the keys away");
+        osk.activate_tool(park);
+        assert!(osk.is_parked());
+        assert!(!osk.keys_up());
+        lay_out(&mut osk, 720.0, 96.0);
+        assert!(
+            osk.key_geometry()
+                .iter()
+                .all(|(_, rect)| rect.height() <= 0.0),
+            "no key is left to tap"
+        );
+        let (width, height) = osk
+            .preferred_window_size()
+            .expect("a parked keyboard says how small its surface may be");
+        assert_eq!(width, 720.0);
+        assert!(
+            height < 96.0,
+            "the strip is one toolbar row: {height} of a 96-pixel panel"
+        );
+
+        let unpark = osk
+            .toolbar_items()
+            .iter()
+            .position(|item| item.action == OskToolbarAction::Unpark)
+            .expect("the strip says how to come back");
+        osk.activate_tool(unpark);
+        assert!(!osk.is_parked());
+        lay_out(&mut osk, 720.0, 360.0);
+        assert_eq!(osk.preferred_window_size(), None);
+        assert!(
+            osk.key_geometry()
+                .iter()
+                .any(|(_, rect)| rect.height() > 0.0)
+        );
+    }
 }
 
 #[test]
@@ -161,37 +381,104 @@ fn commit(s: &str) -> OskOutput {
     OskOutput::Commit(s.into())
 }
 
-#[test]
-fn typed_word_composes_as_preedit_and_commits_at_space() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 800.0, 360.0);
-    osk.activate_label("h");
-    osk.activate_label("i");
-    osk.activate_label("space");
-    osk.activate_label("m");
-    assert_eq!(
-        osk.take_output(),
-        vec![pre("h"), pre("hi"), commit("hi "), pre("m")]
-    );
-    assert_eq!(osk.pending_text(), "hi m");
+tilo_test_env::scenario! {
+    fn typed_words_compose_correct_and_commit;
+
+    phase typed_word_composes_as_preedit_and_commits_at_space;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 800.0, 360.0);
+        osk.activate_label("h");
+        osk.activate_label("i");
+        osk.activate_label("space");
+        osk.activate_label("m");
+        assert_eq!(
+            osk.take_output(),
+            vec![pre("h"), pre("hi"), commit("hi "), pre("m")]
+        );
+        assert_eq!(osk.pending_text(), "hi m");
+    }
+
+    phase space_autocorrects_a_non_word_and_offers_it_as_typed;
+    {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "the ");
+        assert_eq!(osk.suggestions()[0].word, "\u{201c}teh\u{201d}");
+        type_word(&mut osk, "tge");
+        osk.apply_action(KeyAction::Char(",".into()));
+        assert_eq!(osk.pending_text(), "the the,");
+    }
+
+    phase words_the_user_has_typed_are_never_corrected;
+    {
+        let mut predictor = Predictor::english();
+        predictor.learn_transition(None, "teh");
+        let mut osk = OskWidget::new().with_predictor(predictor);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    phase enter_commits_the_word_before_the_return_key;
+    {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("g".into()));
+        osk.apply_action(KeyAction::Char("o".into()));
+        osk.apply_action(KeyAction::Enter);
+        osk.apply_action(KeyAction::Enter);
+        assert_eq!(
+            osk.take_output(),
+            vec![
+                pre("g"),
+                pre("go"),
+                commit("go"),
+                OskOutput::key(Symbol::Return),
+                OskOutput::key(Symbol::Return),
+            ]
+        );
+        assert_eq!(osk.pending_text(), "go\n\n");
+    }
+
+    phase auto_capitalization_shifts_at_sentence_starts;
+    {
+        let mut osk = OskWidget::new();
+        osk.follow_input_method(ImTransition {
+            hints_changed: Some(content_hint::AUTO_CAPITALIZATION),
+            ..ImTransition::default()
+        });
+        assert_eq!(osk.shift_state(), ShiftState::Shift);
+        lay_out(&mut osk, 800.0, 360.0);
+        for label in ["h", "i", ".", "space", "o", "k", "space"] {
+            osk.activate_label(label);
+        }
+        assert_eq!(osk.pending_text(), "Hi. Ok ");
+        assert_eq!(osk.shift_state(), ShiftState::Off);
+
+        osk.set_content_hints(content_hint::AUTO_CAPITALIZATION | content_hint::LOWERCASE);
+        osk.follow_input_method(field_changed());
+        assert_eq!(osk.shift_state(), ShiftState::Off);
+    }
+
+    phase field_change_drops_the_composition;
+    {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("h".into()));
+        osk.follow_input_method(field_changed());
+        assert_eq!(osk.current_word(), "");
+        osk.apply_action(KeyAction::Backspace);
+        assert_eq!(
+            osk.take_output().last(),
+            Some(&OskOutput::key(Symbol::BackSpace))
+        );
+    }
 }
 
 fn type_word(osk: &mut OskWidget, word: &str) {
     for c in word.chars() {
         osk.apply_action(KeyAction::Char(c.to_string()));
     }
-}
-
-#[test]
-fn space_autocorrects_a_non_word_and_offers_it_as_typed() {
-    let mut osk = OskWidget::new();
-    type_word(&mut osk, "teh");
-    osk.apply_action(KeyAction::Space);
-    assert_eq!(osk.pending_text(), "the ");
-    assert_eq!(osk.suggestions()[0].word, "\u{201c}teh\u{201d}");
-    type_word(&mut osk, "tge");
-    osk.apply_action(KeyAction::Char(",".into()));
-    assert_eq!(osk.pending_text(), "the the,");
 }
 
 #[test]
@@ -228,31 +515,117 @@ fn as_typed_chip_reverts_a_correction() {
     assert_eq!(osk.pending_text(), "teh ");
 }
 
-#[test]
-fn words_the_user_has_typed_are_never_corrected() {
-    let mut predictor = Predictor::english();
-    predictor.learn_transition(None, "teh");
-    let mut osk = OskWidget::new().with_predictor(predictor);
-    type_word(&mut osk, "teh");
-    osk.apply_action(KeyAction::Space);
-    assert_eq!(osk.pending_text(), "teh ");
-}
+tilo_test_env::scenario! {
+    fn secret_and_verbatim_fields_are_typed_as_they_are;
 
-#[test]
-fn password_fields_are_never_autocorrected() {
-    let mut osk = OskWidget::new().with_purpose(InputPurpose::Password);
-    type_word(&mut osk, "teh");
-    osk.apply_action(KeyAction::Space);
-    assert_eq!(osk.pending_text(), "teh ");
-}
+    phase password_fields_are_never_autocorrected;
+    {
+        let mut osk = OskWidget::new().with_purpose(InputPurpose::Password);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
+    }
 
-#[test]
-fn sensitive_text_fields_are_never_autocorrected() {
-    let mut osk = OskWidget::new();
-    osk.set_content_hints(content_hint::SENSITIVE_DATA);
-    type_word(&mut osk, "teh");
-    osk.apply_action(KeyAction::Space);
-    assert_eq!(osk.pending_text(), "teh ");
+    phase sensitive_text_fields_are_never_autocorrected;
+    {
+        let mut osk = OskWidget::new();
+        osk.set_content_hints(content_hint::SENSITIVE_DATA);
+        type_word(&mut osk, "teh");
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    phase sensitive_hint_is_secret_in_any_purpose;
+    {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("a".into()));
+        osk.set_content_hints(content_hint::SENSITIVE_DATA);
+        assert!(osk.is_secret_field());
+        assert_eq!(osk.current_word(), "");
+        assert_eq!(osk.take_output().last(), Some(&pre("")));
+        assert!(osk.suggestions().is_empty());
+        let before = osk.predictor.learned_context_count();
+        osk.apply_action(KeyAction::Char("b".into()));
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.predictor.learned_context_count(), before);
+    }
+
+    phase blur_clears_typed_text_traces;
+    {
+        let mut osk = OskWidget::new();
+        osk.set_purpose(InputPurpose::Password);
+        osk.apply_action(KeyAction::Char("s".into()));
+        osk.follow_input_method(field_changed());
+        assert_eq!(osk.pending_text(), "");
+        assert!(osk.take_output().is_empty());
+        assert!(osk.take_key_actions().is_empty());
+    }
+
+    phase accessible_password_backspace_edits_committed_text;
+    {
+        let mut osk = OskWidget::new().with_purpose(InputPurpose::Password);
+        lay_out(&mut osk, 720.0, 360.0);
+        let names = named_nodes(&osk);
+        let (_, letter) = names
+            .iter()
+            .find(|(name, _)| name == "a")
+            .expect("letter key");
+        let (_, backspace) = names
+            .iter()
+            .find(|(name, _)| name == "Backspace")
+            .expect("editing key");
+        assert!(activate(&mut osk, letter));
+        assert_eq!(osk.take_output(), vec![commit("a")]);
+        assert_eq!(osk.pending_text(), "a");
+        assert!(activate(&mut osk, backspace));
+        assert_eq!(osk.take_output(), vec![OskOutput::key(Symbol::BackSpace)]);
+        assert_eq!(osk.pending_text(), "");
+        assert!(
+            osk.current_word().is_empty(),
+            "secret text is never composed"
+        );
+    }
+
+    phase password_fields_get_no_emoji_suggestions_or_recents;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.set_purpose(InputPurpose::Password);
+        type_word(&mut osk, "pizza");
+        assert!(osk.suggestions().iter().all(|s| !s.emoji));
+        osk.set_purpose(InputPurpose::Text);
+        osk.set_content_hints(content_hint::SENSITIVE_DATA);
+        type_word(&mut osk, "pizza");
+        assert!(osk.suggestions().is_empty());
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        assert!(
+            osk.emoji_recents().is_empty(),
+            "a secret field leaves no recents"
+        );
+    }
+
+    phase verbatim_fields_ignore_personal_and_language_touch_bias;
+    {
+        for purpose in [
+            InputPurpose::Email,
+            InputPurpose::Url,
+            InputPurpose::Password,
+        ] {
+            let mut osk = OskWidget::new();
+            osk.set_purpose(purpose);
+            lay_out(&mut osk, 720.0, 360.0);
+            let (e_id, e) = key_rect(&osk, "e");
+            let (_, r) = key_rect(&osk, "r");
+            for _ in 0..20 {
+                osk.touch_model
+                    .learn('r', Point::new(r.x0 + 1.0, r.center().y), r);
+            }
+            let touch = Point::new(e.x1 - 1.0, e.center().y);
+            assert_eq!(osk.resolve_letter_tap(e_id, Some(touch)), e_id);
+        }
+    }
 }
 
 #[test]
@@ -266,26 +639,6 @@ fn punctuation_commits_the_word_with_it() {
         osk.take_output(),
         vec![pre("o"), pre("ok"), commit("ok,"), commit(".")]
     );
-}
-
-#[test]
-fn enter_commits_the_word_before_the_return_key() {
-    let mut osk = OskWidget::new();
-    osk.apply_action(KeyAction::Char("g".into()));
-    osk.apply_action(KeyAction::Char("o".into()));
-    osk.apply_action(KeyAction::Enter);
-    osk.apply_action(KeyAction::Enter);
-    assert_eq!(
-        osk.take_output(),
-        vec![
-            pre("g"),
-            pre("go"),
-            commit("go"),
-            OskOutput::key(Symbol::Return),
-            OskOutput::key(Symbol::Return),
-        ]
-    );
-    assert_eq!(osk.pending_text(), "go\n\n");
 }
 
 #[test]
@@ -312,56 +665,6 @@ fn backspace_edits_the_preedit_then_becomes_a_key() {
         ]
     );
     assert_eq!(osk.pending_text(), "at");
-}
-
-#[test]
-fn shift_uppercases_next_letter_then_resets() {
-    let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    lay_out(&mut osk, 800.0, 360.0);
-    assert_eq!(osk.shift_state(), ShiftState::Off);
-    osk.activate_label("Shift");
-    assert_eq!(osk.shift_state(), ShiftState::Shift);
-    osk.activate_label("a"); // -> "A", one-shot shift resets
-    osk.activate_label("b"); // -> "b"
-    assert_eq!(osk.pending_text(), "Ab");
-    assert_eq!(osk.shift_state(), ShiftState::Off);
-}
-
-#[test]
-fn caps_lock_is_sticky() {
-    let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    lay_out(&mut osk, 800.0, 360.0);
-    osk.activate_label("Shift"); // Off -> Shift
-    osk.activate_label("Shift"); // Shift -> CapsLock
-    assert_eq!(osk.shift_state(), ShiftState::CapsLock);
-    osk.activate_label("a");
-    osk.activate_label("b");
-    assert_eq!(osk.pending_text(), "AB");
-    assert_eq!(osk.shift_state(), ShiftState::CapsLock, "caps stays on");
-}
-
-#[test]
-fn symbols_toggle_switches_layer() {
-    let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    lay_out(&mut osk, 800.0, 360.0);
-    assert_eq!(osk.active_layout_name(), "qwerty");
-    assert!(!osk.showing_symbols());
-    osk.activate_label("?123");
-    assert!(osk.showing_symbols());
-    assert_eq!(osk.active_layout_name(), "symbols");
-    // Re-layout (host would after structure_dirty) and type a digit.
-    lay_out(&mut osk, 800.0, 360.0);
-    assert!(osk.activate_label("1"));
-    assert_eq!(osk.pending_text(), "1");
-}
-
-#[test]
-fn toggle_raises_structure_dirty() {
-    let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    lay_out(&mut osk, 800.0, 360.0);
-    osk.activate_label("?123");
-    assert!(osk.take_structure_dirty());
-    assert!(!osk.take_structure_dirty(), "flag is rising-edge");
 }
 
 #[test]
@@ -655,44 +958,6 @@ fn purpose_changes_swap_layouts_and_clear_stale_state() {
         // Moving to a number pad must drop the now-meaningless shift state.
         osk.set_purpose(InputPurpose::Number);
         assert_eq!(osk.shift_state(), ShiftState::Off);
-    }
-}
-
-#[test]
-fn initial_purpose_selects_matching_layout_and_names_round_trip() {
-    eprintln!("phase with_purpose_starts_on_the_matching_layout");
-    {
-        let osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
-            .with_purpose(InputPurpose::Pin);
-        assert_eq!(osk.purpose(), InputPurpose::Pin);
-        assert_eq!(osk.active_layout_name(), "pin");
-    }
-
-    eprintln!("phase numeric_purpose_types_digits_and_has_no_letters");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        osk.set_purpose(InputPurpose::Number);
-        lay_out(&mut osk, 800.0, 360.0);
-        assert!(osk.activate_label("1"));
-        assert!(osk.activate_label("2"));
-        assert!(osk.activate_label("3"));
-        assert_eq!(osk.pending_text(), "123");
-        assert!(!osk.activate_label("Shift"), "no Shift on the number pad");
-    }
-
-    eprintln!("phase input_purpose_name_round_trips");
-    {
-        use InputPurpose::*;
-        for p in [
-            Text, Number, Decimal, Telephone, Url, Email, Pin, Password, Date, Time,
-        ] {
-            let name = input_purpose_name(p);
-            assert_eq!(
-                input_purpose_from_name(name),
-                Some(p),
-                "{p:?} should round-trip through its name {name:?}"
-            );
-        }
     }
 }
 
@@ -996,74 +1261,190 @@ fn swipes_and_suggestion_chips_edit_the_current_word() {
     }
 }
 
-#[test]
-fn chip_corrects_a_swiped_word_in_place() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let path = path_through(&osk, "quick");
-    assert!(osk.swipe(&path));
-    let chips: Vec<String> = osk.suggestions().iter().map(|s| s.word.clone()).collect();
-    assert!(chips.len() > 1, "swipe offers alternatives: {chips:?}");
-    osk.take_output();
-    assert!(osk.activate_suggestion(1));
-    assert_eq!(osk.take_output(), vec![pre(&chips[1])]);
-    assert_eq!(osk.pending_text(), chips[1]);
-    assert_eq!(osk.suggestions().len(), chips.len());
-}
+tilo_test_env::scenario! {
+    fn swiped_words_are_corrected_replaced_and_cancelled;
 
-#[test]
-fn next_swipe_commits_the_previous_word_with_a_space() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let first = path_through(&osk, "quick");
-    let second = path_through(&osk, "the");
-    assert!(osk.swipe(&first));
-    let swiped = osk.current_word().to_string();
-    assert!(osk.swipe(&second));
-    let out = osk.take_output();
-    assert_eq!(out.len(), 3, "{out:?}");
-    assert_eq!(out[1], commit(&format!("{swiped} ")));
-    assert!(matches!(&out[2], OskOutput::SetPreedit(w) if !w.is_empty()));
-}
+    phase chip_corrects_a_swiped_word_in_place;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let path = path_through(&osk, "quick");
+        assert!(osk.swipe(&path));
+        let chips: Vec<String> = osk.suggestions().iter().map(|s| s.word.clone()).collect();
+        assert!(chips.len() > 1, "swipe offers alternatives: {chips:?}");
+        osk.take_output();
+        assert!(osk.activate_suggestion(1));
+        assert_eq!(osk.take_output(), vec![pre(&chips[1])]);
+        assert_eq!(osk.pending_text(), chips[1]);
+        assert_eq!(osk.suggestions().len(), chips.len());
+    }
 
-#[test]
-fn typing_after_a_swipe_starts_a_new_word() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let path = path_through(&osk, "quick");
-    assert!(osk.swipe(&path));
-    let swiped = osk.current_word().to_string();
-    osk.take_output();
-    osk.apply_action(KeyAction::Char("a".into()));
-    assert_eq!(
-        osk.take_output(),
-        vec![commit(&format!("{swiped} ")), pre("a")]
-    );
-}
+    phase next_swipe_commits_the_previous_word_with_a_space;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let first = path_through(&osk, "quick");
+        let second = path_through(&osk, "the");
+        assert!(osk.swipe(&first));
+        let swiped = osk.current_word().to_string();
+        assert!(osk.swipe(&second));
+        let out = osk.take_output();
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(out[1], commit(&format!("{swiped} ")));
+        assert!(matches!(&out[2], OskOutput::SetPreedit(w) if !w.is_empty()));
+    }
 
-#[test]
-fn backspace_removes_a_swiped_word_whole() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let path = path_through(&osk, "quick");
-    assert!(osk.swipe(&path));
-    osk.take_output();
-    osk.apply_action(KeyAction::Backspace);
-    assert_eq!(osk.take_output(), vec![pre("")]);
-    assert_eq!(osk.pending_text(), "");
-}
+    phase typing_after_a_swipe_starts_a_new_word;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let path = path_through(&osk, "quick");
+        assert!(osk.swipe(&path));
+        let swiped = osk.current_word().to_string();
+        osk.take_output();
+        osk.apply_action(KeyAction::Char("a".into()));
+        assert_eq!(
+            osk.take_output(),
+            vec![commit(&format!("{swiped} ")), pre("a")]
+        );
+    }
 
-#[test]
-fn swipe_replaces_a_partly_typed_word() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    osk.apply_action(KeyAction::Char("x".into()));
-    let path = path_through(&osk, "quick");
-    assert!(osk.swipe(&path));
-    let out = osk.take_output();
-    assert_eq!(out[0], pre("x"));
-    assert_eq!(out.len(), 2, "no commit of the replaced prefix: {out:?}");
-    assert_eq!(osk.pending_text(), osk.current_word());
+    phase backspace_removes_a_swiped_word_whole;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let path = path_through(&osk, "quick");
+        assert!(osk.swipe(&path));
+        osk.take_output();
+        osk.apply_action(KeyAction::Backspace);
+        assert_eq!(osk.take_output(), vec![pre("")]);
+        assert_eq!(osk.pending_text(), "");
+    }
+
+    phase swipe_replaces_a_partly_typed_word;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.apply_action(KeyAction::Char("x".into()));
+        let path = path_through(&osk, "quick");
+        assert!(osk.swipe(&path));
+        let out = osk.take_output();
+        assert_eq!(out[0], pre("x"));
+        assert_eq!(out.len(), 2, "no commit of the replaced prefix: {out:?}");
+        assert_eq!(osk.pending_text(), osk.current_word());
+    }
+
+    phase swipe_correction_preserves_the_phrase_and_the_next_gesture;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        touch_swipe(&mut osk, 1, "the");
+        assert_eq!(osk.current_word(), "the");
+        touch_swipe(&mut osk, 2, "quick");
+        assert_eq!(osk.current_word(), "quick");
+        assert_eq!(osk.pending_text(), "the quick");
+        let (index, candidate) = osk
+            .suggestions
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| candidate.word != "quick")
+            .expect("alternate candidate");
+        let correction = candidate.word.clone();
+        let target = format!("osk:suggestion:{index}:{correction}");
+        assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
+        assert_eq!(osk.pending_text(), format!("the {correction}"));
+        assert_eq!(osk.current_word(), correction);
+        assert!(osk.word_from_swipe);
+        osk.take_output();
+        touch_swipe(&mut osk, 3, "brown");
+        assert_eq!(
+            osk.take_output(),
+            vec![commit(&format!("{correction} ")), pre(osk.current_word()),]
+        );
+        assert!(!osk.current_word().is_empty());
+        assert_eq!(
+            osk.pending_text(),
+            format!("the {correction} {}", osk.current_word())
+        );
+        assert!(
+            osk.active_swipe_path().is_empty(),
+            "release clears the trail"
+        );
+    }
+
+    phase swipe_typing_obeys_sentence_capitalization_and_caps_lock;
+    {
+        let mut osk = OskWidget::new();
+        osk.set_content_hints(content_hint::AUTO_CAPITALIZATION);
+        lay_out(&mut osk, 720.0, 360.0);
+        touch_swipe(&mut osk, 1, "the");
+        assert_eq!(osk.current_word(), "The");
+        assert_eq!(osk.shift_state(), ShiftState::Off);
+        assert!(
+            osk.suggestions
+                .iter()
+                .all(|s| s.emoji || s.word.chars().next().unwrap().is_uppercase())
+        );
+        touch_swipe(&mut osk, 2, "quick");
+        assert_eq!(osk.pending_text(), "The quick");
+        osk.apply_action(KeyAction::Char(".".into()));
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.shift_state(), ShiftState::Shift);
+        touch_swipe(&mut osk, 3, "the");
+        assert_eq!(osk.current_word(), "The");
+        osk.apply_action(KeyAction::Shift);
+        osk.apply_action(KeyAction::Shift);
+        assert_eq!(osk.shift_state(), ShiftState::CapsLock);
+        touch_swipe(&mut osk, 4, "quick");
+        assert_eq!(osk.current_word(), "QUICK");
+        assert_eq!(osk.shift_state(), ShiftState::CapsLock);
+        assert_eq!(case_swipe_word("été", ShiftState::Shift), "Été");
+    }
+
+    phase gesture_feedback_is_transient_solo_and_never_secret;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let path = path_through(&osk, "quick");
+        finger(&mut osk, 1, TouchPhase::Started, path[0]);
+        for &point in path.iter().skip(1) {
+            finger(&mut osk, 1, TouchPhase::Moved, point);
+        }
+        assert_eq!(osk.active_swipe_path(), path);
+        let last = *path.last().unwrap();
+        osk.reset_composition();
+        assert!(osk.active_swipe_path().is_empty());
+        finger(&mut osk, 1, TouchPhase::Ended, last);
+        assert!(osk.pending_text().is_empty());
+        osk.set_purpose(InputPurpose::Password);
+        finger(&mut osk, 2, TouchPhase::Started, path[0]);
+        for &point in path.iter().skip(1) {
+            finger(&mut osk, 2, TouchPhase::Moved, point);
+        }
+        assert!(
+            osk.active_swipe_path().is_empty(),
+            "secret contacts have no trace"
+        );
+        finger(&mut osk, 2, TouchPhase::Cancelled, last);
+        assert!(osk.take_output().is_empty());
+    }
+
+    phase field_change_cancels_a_pointer_swipe_and_release;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let (id, rect) = key_rect(&osk, "e");
+        osk.pressed_key = Some(id);
+        osk.hovered_key = Some(id);
+        osk.pointer = Some(rect.center());
+        osk.gesture_path = Some(vec![rect.center()]);
+        osk.begin_hold(id, None, Instant::now());
+        osk.reset_composition();
+        osk.pointer_released(&mut false);
+        assert!(osk.pending_text().is_empty());
+        assert!(osk.take_output().is_empty());
+        assert_eq!(osk.next_wake_deadline(), None);
+    }
 }
 
 #[test]
@@ -1094,90 +1475,23 @@ fn password_field_never_composes_suggests_or_learns() {
 }
 
 #[test]
-fn sensitive_hint_is_secret_in_any_purpose() {
-    let mut osk = OskWidget::new();
-    osk.apply_action(KeyAction::Char("a".into()));
-    osk.set_content_hints(content_hint::SENSITIVE_DATA);
-    assert!(osk.is_secret_field());
-    assert_eq!(osk.current_word(), "");
-    assert_eq!(osk.take_output().last(), Some(&pre("")));
-    assert!(osk.suggestions().is_empty());
-    let before = osk.predictor.learned_context_count();
-    osk.apply_action(KeyAction::Char("b".into()));
-    osk.apply_action(KeyAction::Space);
-    assert_eq!(osk.predictor.learned_context_count(), before);
-}
-
-#[test]
-fn blur_clears_typed_text_traces() {
-    let mut osk = OskWidget::new();
-    osk.set_purpose(InputPurpose::Password);
-    osk.apply_action(KeyAction::Char("s".into()));
-    osk.follow_input_method(field_changed());
-    assert_eq!(osk.pending_text(), "");
-    assert!(osk.take_output().is_empty());
-    assert!(osk.take_key_actions().is_empty());
-}
-
-#[test]
-fn auto_capitalization_shifts_at_sentence_starts() {
-    let mut osk = OskWidget::new();
-    osk.follow_input_method(ImTransition {
-        hints_changed: Some(content_hint::AUTO_CAPITALIZATION),
-        ..ImTransition::default()
-    });
-    assert_eq!(osk.shift_state(), ShiftState::Shift);
-    lay_out(&mut osk, 800.0, 360.0);
-    for label in ["h", "i", ".", "space", "o", "k", "space"] {
-        osk.activate_label(label);
-    }
-    assert_eq!(osk.pending_text(), "Hi. Ok ");
-    assert_eq!(osk.shift_state(), ShiftState::Off);
-
-    osk.set_content_hints(content_hint::AUTO_CAPITALIZATION | content_hint::LOWERCASE);
-    osk.follow_input_method(field_changed());
-    assert_eq!(osk.shift_state(), ShiftState::Off);
-}
-
-#[test]
-fn field_change_drops_the_composition() {
-    let mut osk = OskWidget::new();
-    osk.apply_action(KeyAction::Char("h".into()));
-    osk.follow_input_method(field_changed());
-    assert_eq!(osk.current_word(), "");
-    osk.apply_action(KeyAction::Backspace);
-    assert_eq!(
-        osk.take_output().last(),
-        Some(&OskOutput::key(Symbol::BackSpace))
-    );
-}
-
-#[test]
 fn visibility_defaults_toggle_and_collapse_height() {
+    // Each default is read from a keyboard as it was built, through `&self`,
+    // before anything touches it; the same two keyboards are laid out after.
     eprintln!("phase keyboard_is_visible_by_default");
-    {
-        assert!(
-            OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).is_visible()
-        );
-    }
+    let mut visible = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
+    assert!(visible.is_visible());
 
     eprintln!("phase hidden_builder_starts_invisible");
-    {
-        assert!(
-            !OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
-                .hidden()
-                .is_visible()
-        );
-    }
+    let mut hidden =
+        OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
+    assert!(!hidden.is_visible());
 
     eprintln!("phase hidden_keyboard_takes_zero_height");
     {
-        let mut visible = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
         lay_out(&mut visible, 720.0, 360.0);
         assert!(visible.get_rect().height() > 0.0);
 
-        let mut hidden =
-            OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
         lay_out(&mut hidden, 720.0, 360.0);
         assert_eq!(hidden.get_rect().height(), 0.0);
     }
@@ -1314,50 +1628,119 @@ fn named_nodes(osk: &OskWidget) -> Vec<(String, String)> {
         .collect()
 }
 
-#[test]
-fn accessible_password_backspace_edits_committed_text() {
-    let mut osk = OskWidget::new().with_purpose(InputPurpose::Password);
-    lay_out(&mut osk, 720.0, 360.0);
-    let names = named_nodes(&osk);
-    let (_, letter) = names
-        .iter()
-        .find(|(name, _)| name == "a")
-        .expect("letter key");
-    let (_, backspace) = names
-        .iter()
-        .find(|(name, _)| name == "Backspace")
-        .expect("editing key");
-    assert!(activate(&mut osk, letter));
-    assert_eq!(osk.take_output(), vec![commit("a")]);
-    assert_eq!(osk.pending_text(), "a");
-    assert!(activate(&mut osk, backspace));
-    assert_eq!(osk.take_output(), vec![OskOutput::key(Symbol::BackSpace)]);
-    assert_eq!(osk.pending_text(), "");
-    assert!(
-        osk.current_word().is_empty(),
-        "secret text is never composed"
-    );
-}
+tilo_test_env::scenario! {
+    fn the_emoji_panel_opens_picks_names_and_remembers;
 
-#[test]
-fn emoji_key_opens_the_panel_in_place_of_the_keys() {
-    let mut osk = OskWidget::new();
-    open_panel(&mut osk);
-    assert!(osk.key_geometry().is_empty(), "the grid replaces the keys");
-    assert!(
-        osk.suggestion_geometry().is_empty(),
-        "the search field replaces the strip"
-    );
-    assert!(
-        !osk.claims_raw_touch(osk.rect.center()),
-        "the grid takes taps and drags"
-    );
-    let names = named_nodes(&osk);
-    assert!(names.iter().any(|(n, _)| n == &i18n::t("osk-emoji-search")));
-    assert!(names.iter().any(|(_, t)| t == "osk:emoji-group:0"));
-    assert!(activate(&mut osk, "osk:emoji-letters"));
-    assert_eq!(osk.emoji_panel().mode(), PanelMode::Closed);
-    assert!(!osk.key_geometry().is_empty(), "the keys are back");
+    phase emoji_key_opens_the_panel_in_place_of_the_keys;
+    {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        assert!(osk.key_geometry().is_empty(), "the grid replaces the keys");
+        assert!(
+            osk.suggestion_geometry().is_empty(),
+            "the search field replaces the strip"
+        );
+        assert!(
+            !osk.claims_raw_touch(osk.rect.center()),
+            "the grid takes taps and drags"
+        );
+        let names = named_nodes(&osk);
+        assert!(names.iter().any(|(n, _)| n == &i18n::t("osk-emoji-search")));
+        assert!(names.iter().any(|(_, t)| t == "osk:emoji-group:0"));
+        assert!(activate(&mut osk, "osk:emoji-letters"));
+        assert_eq!(osk.emoji_panel().mode(), PanelMode::Closed);
+        assert!(!osk.key_geometry().is_empty(), "the keys are back");
+    }
+
+    phase picking_an_emoji_commits_it_after_the_composing_word;
+    {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "hi");
+        let _ = osk.take_output();
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        assert_eq!(osk.take_output(), vec![commit("hi"), commit(&first)]);
+        assert_eq!(osk.emoji_recents(), [first]);
+        assert_eq!(
+            osk.emoji_panel().mode(),
+            PanelMode::Browse,
+            "the panel stays for more"
+        );
+    }
+
+    phase recents_lead_the_grid;
+    {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        assert!(activate(&mut osk, "osk:emoji-group:3"));
+        let second = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[1].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{second}")));
+        let names = named_nodes(&osk);
+        let first_emoji = names
+            .iter()
+            .find(|(_, t)| t.starts_with("osk:emoji:"))
+            .map(|(_, t)| t.clone());
+        assert_eq!(first_emoji, Some(format!("osk:emoji:{second}")));
+    }
+
+    phase emoji_without_tones_open_no_tone_row;
+    {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(!semantic(
+            &mut osk,
+            &format!("osk:emoji:{first}"),
+            &AccessibilityAction::ShowContextMenu,
+        ));
+    }
+
+    phase emoji_chips_are_named_for_the_emoji;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        type_word(&mut osk, "pizza");
+        lay_out(&mut osk, 720.0, 360.0);
+        let expected = i18n::t_args("osk-emoji-insert", &[("name", "pizza".into())]);
+        assert!(named_nodes(&osk).iter().any(|(n, _)| n == &expected));
+    }
+
+    phase recents_follow_the_personalization_preference;
+    {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        assert_eq!(osk.emoji_recents().len(), 1);
+        osk.clear_personalization();
+        assert!(osk.emoji_recents().is_empty());
+        osk.set_personalization_enabled(false);
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        assert!(osk.emoji_recents().is_empty());
+    }
+
+    phase picked_emoji_are_saved_as_preferences_and_presented_back;
+    {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        let edits = osk.take_preference_edits();
+        assert_eq!(edits, [SetPreference::EmojiRecents(vec![first.clone()])]);
+        assert!(osk.take_preference_edits().is_empty(), "taken once");
+
+        let mut restarted = OskWidget::new();
+        restarted.present_preferences(&crate::resource::OskPreferences {
+            emoji_recents: vec![first.clone()],
+            ..crate::resource::OskPreferences::default()
+        });
+        assert_eq!(restarted.emoji_recents(), [first]);
+        assert!(
+            restarted.take_preference_edits().is_empty(),
+            "presenting saved preferences saves nothing"
+        );
+    }
 }
 
 #[test]
@@ -1370,38 +1753,6 @@ fn emoji_key_is_named_for_assistive_tech() {
             .iter()
             .any(|(n, t)| n == &i18n::t("osk-emoji-key") && t.starts_with("osk:key:"))
     );
-}
-
-#[test]
-fn picking_an_emoji_commits_it_after_the_composing_word() {
-    let mut osk = OskWidget::new();
-    type_word(&mut osk, "hi");
-    let _ = osk.take_output();
-    open_panel(&mut osk);
-    let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
-    assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
-    assert_eq!(osk.take_output(), vec![commit("hi"), commit(&first)]);
-    assert_eq!(osk.emoji_recents(), [first]);
-    assert_eq!(
-        osk.emoji_panel().mode(),
-        PanelMode::Browse,
-        "the panel stays for more"
-    );
-}
-
-#[test]
-fn recents_lead_the_grid() {
-    let mut osk = OskWidget::new();
-    open_panel(&mut osk);
-    assert!(activate(&mut osk, "osk:emoji-group:3"));
-    let second = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[1].clone();
-    assert!(activate(&mut osk, &format!("osk:emoji:{second}")));
-    let names = named_nodes(&osk);
-    let first_emoji = names
-        .iter()
-        .find(|(_, t)| t.starts_with("osk:emoji:"))
-        .map(|(_, t)| t.clone());
-    assert_eq!(first_emoji, Some(format!("osk:emoji:{second}")));
 }
 
 #[test]
@@ -1461,18 +1812,6 @@ fn long_press_offers_skin_tones_and_commits_the_toned_form() {
 }
 
 #[test]
-fn emoji_without_tones_open_no_tone_row() {
-    let mut osk = OskWidget::new();
-    open_panel(&mut osk);
-    let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
-    assert!(!semantic(
-        &mut osk,
-        &format!("osk:emoji:{first}"),
-        &AccessibilityAction::ShowContextMenu,
-    ));
-}
-
-#[test]
 fn a_word_that_names_an_emoji_offers_it_and_the_chip_commits_it() {
     let mut osk = OskWidget::new();
     lay_out(&mut osk, 720.0, 360.0);
@@ -1488,72 +1827,6 @@ fn a_word_that_names_an_emoji_offers_it_and_the_chip_commits_it() {
     assert_eq!(osk.take_output(), vec![commit("pizza "), commit("🍕 ")]);
     assert_eq!(osk.pending_text(), "pizza 🍕 ");
     assert_eq!(osk.emoji_recents(), ["🍕".to_owned()]);
-}
-
-#[test]
-fn emoji_chips_are_named_for_the_emoji() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    type_word(&mut osk, "pizza");
-    lay_out(&mut osk, 720.0, 360.0);
-    let expected = i18n::t_args("osk-emoji-insert", &[("name", "pizza".into())]);
-    assert!(named_nodes(&osk).iter().any(|(n, _)| n == &expected));
-}
-
-#[test]
-fn password_fields_get_no_emoji_suggestions_or_recents() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    osk.set_purpose(InputPurpose::Password);
-    type_word(&mut osk, "pizza");
-    assert!(osk.suggestions().iter().all(|s| !s.emoji));
-    osk.set_purpose(InputPurpose::Text);
-    osk.set_content_hints(content_hint::SENSITIVE_DATA);
-    type_word(&mut osk, "pizza");
-    assert!(osk.suggestions().is_empty());
-    open_panel(&mut osk);
-    let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
-    assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
-    assert!(
-        osk.emoji_recents().is_empty(),
-        "a secret field leaves no recents"
-    );
-}
-
-#[test]
-fn recents_follow_the_personalization_preference() {
-    let mut osk = OskWidget::new();
-    open_panel(&mut osk);
-    let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
-    assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
-    assert_eq!(osk.emoji_recents().len(), 1);
-    osk.clear_personalization();
-    assert!(osk.emoji_recents().is_empty());
-    osk.set_personalization_enabled(false);
-    assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
-    assert!(osk.emoji_recents().is_empty());
-}
-
-#[test]
-fn picked_emoji_are_saved_as_preferences_and_presented_back() {
-    let mut osk = OskWidget::new();
-    open_panel(&mut osk);
-    let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
-    assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
-    let edits = osk.take_preference_edits();
-    assert_eq!(edits, [SetPreference::EmojiRecents(vec![first.clone()])]);
-    assert!(osk.take_preference_edits().is_empty(), "taken once");
-
-    let mut restarted = OskWidget::new();
-    restarted.present_preferences(&crate::resource::OskPreferences {
-        emoji_recents: vec![first.clone()],
-        ..crate::resource::OskPreferences::default()
-    });
-    assert_eq!(restarted.emoji_recents(), [first]);
-    assert!(
-        restarted.take_preference_edits().is_empty(),
-        "presenting saved preferences saves nothing"
-    );
 }
 
 #[test]
@@ -1622,101 +1895,6 @@ fn touch_swipe(osk: &mut OskWidget, id: u64, word: &str) {
 }
 
 #[test]
-fn swipe_correction_preserves_the_phrase_and_the_next_gesture() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    touch_swipe(&mut osk, 1, "the");
-    assert_eq!(osk.current_word(), "the");
-    touch_swipe(&mut osk, 2, "quick");
-    assert_eq!(osk.current_word(), "quick");
-    assert_eq!(osk.pending_text(), "the quick");
-    let (index, candidate) = osk
-        .suggestions
-        .iter()
-        .enumerate()
-        .find(|(_, candidate)| candidate.word != "quick")
-        .expect("alternate candidate");
-    let correction = candidate.word.clone();
-    let target = format!("osk:suggestion:{index}:{correction}");
-    assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
-    assert_eq!(osk.pending_text(), format!("the {correction}"));
-    assert_eq!(osk.current_word(), correction);
-    assert!(osk.word_from_swipe);
-    osk.take_output();
-    touch_swipe(&mut osk, 3, "brown");
-    assert_eq!(
-        osk.take_output(),
-        vec![commit(&format!("{correction} ")), pre(osk.current_word()),]
-    );
-    assert!(!osk.current_word().is_empty());
-    assert_eq!(
-        osk.pending_text(),
-        format!("the {correction} {}", osk.current_word())
-    );
-    assert!(
-        osk.active_swipe_path().is_empty(),
-        "release clears the trail"
-    );
-}
-
-#[test]
-fn swipe_typing_obeys_sentence_capitalization_and_caps_lock() {
-    let mut osk = OskWidget::new();
-    osk.set_content_hints(content_hint::AUTO_CAPITALIZATION);
-    lay_out(&mut osk, 720.0, 360.0);
-    touch_swipe(&mut osk, 1, "the");
-    assert_eq!(osk.current_word(), "The");
-    assert_eq!(osk.shift_state(), ShiftState::Off);
-    assert!(
-        osk.suggestions
-            .iter()
-            .all(|s| s.emoji || s.word.chars().next().unwrap().is_uppercase())
-    );
-    touch_swipe(&mut osk, 2, "quick");
-    assert_eq!(osk.pending_text(), "The quick");
-    osk.apply_action(KeyAction::Char(".".into()));
-    osk.apply_action(KeyAction::Space);
-    assert_eq!(osk.shift_state(), ShiftState::Shift);
-    touch_swipe(&mut osk, 3, "the");
-    assert_eq!(osk.current_word(), "The");
-    osk.apply_action(KeyAction::Shift);
-    osk.apply_action(KeyAction::Shift);
-    assert_eq!(osk.shift_state(), ShiftState::CapsLock);
-    touch_swipe(&mut osk, 4, "quick");
-    assert_eq!(osk.current_word(), "QUICK");
-    assert_eq!(osk.shift_state(), ShiftState::CapsLock);
-    assert_eq!(case_swipe_word("été", ShiftState::Shift), "Été");
-}
-
-#[test]
-fn gesture_feedback_is_transient_solo_and_never_secret() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let path = path_through(&osk, "quick");
-    finger(&mut osk, 1, TouchPhase::Started, path[0]);
-    for &point in path.iter().skip(1) {
-        finger(&mut osk, 1, TouchPhase::Moved, point);
-    }
-    assert_eq!(osk.active_swipe_path(), path);
-    let last = *path.last().unwrap();
-    osk.reset_composition();
-    assert!(osk.active_swipe_path().is_empty());
-    finger(&mut osk, 1, TouchPhase::Ended, last);
-    assert!(osk.pending_text().is_empty());
-    osk.set_purpose(InputPurpose::Password);
-    finger(&mut osk, 2, TouchPhase::Started, path[0]);
-    for &point in path.iter().skip(1) {
-        finger(&mut osk, 2, TouchPhase::Moved, point);
-    }
-    assert!(
-        osk.active_swipe_path().is_empty(),
-        "secret contacts have no trace"
-    );
-    finger(&mut osk, 2, TouchPhase::Cancelled, last);
-    assert!(osk.take_output().is_empty());
-}
-
-#[test]
 fn secret_touch_typing_never_adapts_the_touch_model() {
     for (purpose, hints) in [
         (InputPurpose::Password, 0),
@@ -1739,88 +1917,6 @@ fn secret_touch_typing_never_adapts_the_touch_model() {
         );
         assert!(osk.suggestions().is_empty());
     }
-}
-
-#[test]
-fn verbatim_fields_ignore_personal_and_language_touch_bias() {
-    for purpose in [
-        InputPurpose::Email,
-        InputPurpose::Url,
-        InputPurpose::Password,
-    ] {
-        let mut osk = OskWidget::new();
-        osk.set_purpose(purpose);
-        lay_out(&mut osk, 720.0, 360.0);
-        let (e_id, e) = key_rect(&osk, "e");
-        let (_, r) = key_rect(&osk, "r");
-        for _ in 0..20 {
-            osk.touch_model
-                .learn('r', Point::new(r.x0 + 1.0, r.center().y), r);
-        }
-        let touch = Point::new(e.x1 - 1.0, e.center().y);
-        assert_eq!(osk.resolve_letter_tap(e_id, Some(touch)), e_id);
-    }
-}
-
-#[test]
-fn the_terminal_row_speaks_its_latches_and_retires_on_field_change() {
-    let mut osk = OskWidget::new();
-    osk.set_purpose(crate::imclient::purpose_from_wire(
-        crate::imclient::content_purpose::TERMINAL,
-    ));
-    lay_out(&mut osk, 390.0, 360.0);
-    let ids: Vec<&str> = osk.toolbar.iter().map(|item| item.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        [
-            "esc", "tab", "ctrl", "alt", "left", "down", "up", "right", "dismiss"
-        ]
-    );
-    let ctrl_name = |osk: &OskWidget| {
-        let index = osk
-            .toolbar
-            .iter()
-            .position(|item| item.id == "ctrl")
-            .unwrap();
-        let target = osk.toolbar[index].semantic_target(index);
-        osk.accessibility()
-            .unwrap()
-            .children
-            .into_iter()
-            .find(|node| node.action_target.as_deref() == Some(target.as_str()))
-            .unwrap()
-            .name
-            .unwrap()
-    };
-    let target = {
-        let index = osk
-            .toolbar
-            .iter()
-            .position(|item| item.id == "ctrl")
-            .unwrap();
-        osk.toolbar[index].semantic_target(index)
-    };
-    assert_eq!(ctrl_name(&osk), "Ctrl");
-    assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
-    assert_eq!(ctrl_name(&osk), "Ctrl, held for the next key");
-    assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
-    assert_eq!(ctrl_name(&osk), "Ctrl, locked");
-    assert!(
-        osk.take_output().is_empty(),
-        "a modifier alone sends nothing"
-    );
-
-    osk.set_purpose(InputPurpose::Password);
-    lay_out(&mut osk, 390.0, 360.0);
-    assert_eq!(osk.modifier_latches(), ModifierLatches::default());
-    assert!(!osk.toolbar.iter().any(OskToolbarItem::is_key));
-    osk.activate_label("c");
-    assert!(
-        osk.take_output()
-            .iter()
-            .all(|output| !matches!(output, OskOutput::Key(_))),
-        "a lock does not outlive the terminal field"
-    );
 }
 
 #[test]
@@ -1866,142 +1962,125 @@ fn semantic_toolbar_edits_the_focused_field_and_hides_without_stale_contacts() {
     assert!(osk.take_output().is_empty());
 }
 
-#[test]
-fn editing_keys_have_spoken_names_and_shift_announces_its_state() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let names = |osk: &OskWidget| {
-        osk.accessibility()
+tilo_test_env::scenario! {
+    fn holds_and_long_presses_repeat_offer_accents_and_cancel;
+
+    phase hiding_cancels_a_held_backspace_before_its_deadline;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.apply_action(KeyAction::Char("keep".into()));
+        let backspace = osk
+            .key_geom
+            .iter()
+            .find(|(id, _)| {
+                osk.current_layout()
+                    .key(*id)
+                    .is_some_and(|key| key.action == KeyAction::Backspace)
+            })
             .unwrap()
-            .children
-            .iter()
-            .map(|node| node.name.clone())
-            .collect::<Vec<_>>()
-    };
-    let spoken = names(&osk);
-    for name in [
-        "Backspace",
-        "Enter",
-        "Space",
-        "Shift, off",
-        "Switch to symbols",
-        "Move caret left",
-        "Move caret right",
-    ] {
-        assert!(
-            spoken.iter().any(|spoken| spoken.as_deref() == Some(name)),
-            "missing spoken control: {name}"
-        );
+            .1
+            .center();
+        finger(&mut osk, 1, TouchPhase::Started, backspace);
+        let deadline = osk.next_wake_deadline().expect("repeat armed");
+        osk.set_visible(false);
+        assert_eq!(osk.next_wake_deadline(), None);
+        osk.poll_hold(deadline);
+        osk.set_visible(true);
+        finger(&mut osk, 1, TouchPhase::Ended, backspace);
+        assert_eq!(osk.pending_text(), "keep");
     }
-    let shift_target = osk
-        .accessibility()
-        .unwrap()
-        .children
-        .into_iter()
-        .find(|node| node.name.as_deref() == Some("Shift, off"))
-        .unwrap()
-        .action_target
-        .unwrap();
-    assert!(semantic(
-        &mut osk,
-        &shift_target,
-        &AccessibilityAction::Activate
-    ));
-    assert!(
-        names(&osk)
-            .iter()
-            .any(|name| name.as_deref() == Some("Shift, next letter uppercase"))
-    );
-    assert!(semantic(
-        &mut osk,
-        &shift_target,
-        &AccessibilityAction::Activate
-    ));
-    assert!(
-        names(&osk)
-            .iter()
-            .any(|name| name.as_deref() == Some("Caps lock, on"))
-    );
-}
 
-#[test]
-fn hiding_cancels_a_held_backspace_before_its_deadline() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    osk.apply_action(KeyAction::Char("keep".into()));
-    let backspace = osk
-        .key_geom
-        .iter()
-        .find(|(id, _)| {
-            osk.current_layout()
-                .key(*id)
-                .is_some_and(|key| key.action == KeyAction::Backspace)
-        })
-        .unwrap()
-        .1
-        .center();
-    finger(&mut osk, 1, TouchPhase::Started, backspace);
-    let deadline = osk.next_wake_deadline().expect("repeat armed");
-    osk.set_visible(false);
-    assert_eq!(osk.next_wake_deadline(), None);
-    osk.poll_hold(deadline);
-    osk.set_visible(true);
-    finger(&mut osk, 1, TouchPhase::Ended, backspace);
-    assert_eq!(osk.pending_text(), "keep");
-}
+    phase lifting_selects_the_accent_at_the_final_contact_position;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let (_, e) = key_rect(&osk, "e");
+        finger(&mut osk, 1, TouchPhase::Started, e.center());
+        osk.poll_hold(osk.next_wake_deadline().unwrap());
+        let accent = osk.alternates.as_ref().unwrap().1.cells[1].center();
+        finger(&mut osk, 1, TouchPhase::Ended, accent);
+        assert_eq!(osk.pending_text(), "é");
+    }
 
-#[test]
-fn field_change_cancels_a_pointer_swipe_and_release() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let (id, rect) = key_rect(&osk, "e");
-    osk.pressed_key = Some(id);
-    osk.hovered_key = Some(id);
-    osk.pointer = Some(rect.center());
-    osk.gesture_path = Some(vec![rect.center()]);
-    osk.begin_hold(id, None, Instant::now());
-    osk.reset_composition();
-    osk.pointer_released(&mut false);
-    assert!(osk.pending_text().is_empty());
-    assert!(osk.take_output().is_empty());
-    assert_eq!(osk.next_wake_deadline(), None);
-}
+    phase long_press_offers_accents_and_slide_picks_one;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let (_, e) = key_rect(&osk, "e");
+        finger(&mut osk, 1, TouchPhase::Started, e.center());
+        let deadline = osk
+            .next_wake_deadline()
+            .expect("a letter with accents arms a long press");
+        osk.poll_hold(deadline.checked_sub(Duration::from_millis(1)).unwrap());
+        assert!(osk.alternates.is_none(), "nothing before the delay");
+        osk.poll_hold(deadline);
+        let cells = osk.alternates.as_ref().unwrap().1.cells.clone();
+        assert_eq!(osk.alternates.as_ref().unwrap().1.chosen(), Some("e"));
+        assert!(
+            cells
+                .iter()
+                .all(|c| c.y1 <= e.y0 && osk.content_rect.contains(c.origin()))
+        );
+        finger(&mut osk, 1, TouchPhase::Moved, cells[1].center());
+        finger(&mut osk, 1, TouchPhase::Ended, cells[1].center());
+        assert_eq!(osk.pending_text(), "é");
+        assert!(osk.alternates.is_none());
+    }
 
-#[test]
-fn lifting_selects_the_accent_at_the_final_contact_position() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let (_, e) = key_rect(&osk, "e");
-    finger(&mut osk, 1, TouchPhase::Started, e.center());
-    osk.poll_hold(osk.next_wake_deadline().unwrap());
-    let accent = osk.alternates.as_ref().unwrap().1.cells[1].center();
-    finger(&mut osk, 1, TouchPhase::Ended, accent);
-    assert_eq!(osk.pending_text(), "é");
-}
+    phase french_accents_come_in_the_order_french_uses_them;
+    {
+        let mut osk = OskWidget::new().with_active_layout("azerty");
+        lay_out(&mut osk, 390.0, 312.0);
+        assert_eq!(osk.language(), Language::French);
+        for (key, leading) in [
+            ("e", &["e", "é", "è", "ê", "ë"][..]),
+            ("a", &["a", "à", "â"][..]),
+            ("u", &["u", "ù", "û"][..]),
+            ("o", &["o", "ô", "œ"][..]),
+            ("c", &["c", "ç"][..]),
+        ] {
+            let options = long_press_options(&mut osk, key);
+            assert_eq!(&options[..leading.len()], leading, "{options:?}");
+        }
+        let all: Vec<String> = ["e", "a", "c", "u", "o", "i", "y"]
+            .into_iter()
+            .flat_map(|k| long_press_options(&mut osk, k))
+            .collect();
+        for form in [
+            "é", "è", "ê", "ë", "à", "â", "ç", "ù", "û", "ü", "ô", "œ", "î", "ï", "ÿ",
+        ] {
+            assert!(all.iter().any(|f| f == form), "{form} missing");
+        }
+    }
 
-#[test]
-fn long_press_offers_accents_and_slide_picks_one() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let (_, e) = key_rect(&osk, "e");
-    finger(&mut osk, 1, TouchPhase::Started, e.center());
-    let deadline = osk
-        .next_wake_deadline()
-        .expect("a letter with accents arms a long press");
-    osk.poll_hold(deadline.checked_sub(Duration::from_millis(1)).unwrap());
-    assert!(osk.alternates.is_none(), "nothing before the delay");
-    osk.poll_hold(deadline);
-    let cells = osk.alternates.as_ref().unwrap().1.cells.clone();
-    assert_eq!(osk.alternates.as_ref().unwrap().1.chosen(), Some("e"));
-    assert!(
-        cells
-            .iter()
-            .all(|c| c.y1 <= e.y0 && osk.content_rect.contains(c.origin()))
-    );
-    finger(&mut osk, 1, TouchPhase::Moved, cells[1].center());
-    finger(&mut osk, 1, TouchPhase::Ended, cells[1].center());
-    assert_eq!(osk.pending_text(), "é");
-    assert!(osk.alternates.is_none());
+    phase a_quick_tap_opens_nothing_and_types_the_letter;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let (_, e) = key_rect(&osk, "e");
+        finger(&mut osk, 1, TouchPhase::Started, e.center());
+        finger(&mut osk, 1, TouchPhase::Ended, e.center());
+        assert!(osk.hold.is_none() && osk.next_wake_deadline().is_none());
+        assert_eq!(osk.pending_text(), "e");
+    }
+
+    phase held_backspace_repeats_and_its_release_adds_nothing;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.apply_action(KeyAction::Char(".".into()));
+        type_word(&mut osk, "hello");
+        let (_, bs) = key_rect(&osk, "Backspace");
+        finger(&mut osk, 1, TouchPhase::Started, bs.center());
+        let mut now = Instant::now() + REPEAT_DELAY;
+        for _ in 0..3 {
+            osk.poll_hold(now);
+            now += REPEAT_INTERVAL;
+        }
+        finger(&mut osk, 1, TouchPhase::Ended, bs.center());
+        assert_eq!(osk.pending_text(), ".he");
+    }
 }
 
 fn long_press_options(osk: &mut OskWidget, label: &str) -> Vec<String> {
@@ -2041,32 +2120,6 @@ fn french_elisions_compose_as_prefix_plus_word() {
         osk.apply_action(KeyAction::Char(c.into()));
     }
     assert_eq!(osk.current_word(), "");
-}
-
-#[test]
-fn french_accents_come_in_the_order_french_uses_them() {
-    let mut osk = OskWidget::new().with_active_layout("azerty");
-    lay_out(&mut osk, 390.0, 312.0);
-    assert_eq!(osk.language(), Language::French);
-    for (key, leading) in [
-        ("e", &["e", "é", "è", "ê", "ë"][..]),
-        ("a", &["a", "à", "â"][..]),
-        ("u", &["u", "ù", "û"][..]),
-        ("o", &["o", "ô", "œ"][..]),
-        ("c", &["c", "ç"][..]),
-    ] {
-        let options = long_press_options(&mut osk, key);
-        assert_eq!(&options[..leading.len()], leading, "{options:?}");
-    }
-    let all: Vec<String> = ["e", "a", "c", "u", "o", "i", "y"]
-        .into_iter()
-        .flat_map(|k| long_press_options(&mut osk, k))
-        .collect();
-    for form in [
-        "é", "è", "ê", "ë", "à", "â", "ç", "ù", "û", "ü", "ô", "œ", "î", "ï", "ÿ",
-    ] {
-        assert!(all.iter().any(|f| f == form), "{form} missing");
-    }
 }
 
 #[test]
@@ -2122,72 +2175,95 @@ fn a_long_press_released_without_sliding_types_the_letter_once() {
     assert_eq!(osk.pending_text(), "e");
 }
 
-#[test]
-fn a_quick_tap_opens_nothing_and_types_the_letter() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    let (_, e) = key_rect(&osk, "e");
-    finger(&mut osk, 1, TouchPhase::Started, e.center());
-    finger(&mut osk, 1, TouchPhase::Ended, e.center());
-    assert!(osk.hold.is_none() && osk.next_wake_deadline().is_none());
-    assert_eq!(osk.pending_text(), "e");
-}
+tilo_test_env::scenario! {
+    fn the_space_bar_previews_and_hit_areas_stay_with_the_drawn_keys;
 
-#[test]
-fn held_backspace_repeats_and_its_release_adds_nothing() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    osk.apply_action(KeyAction::Char(".".into()));
-    type_word(&mut osk, "hello");
-    let (_, bs) = key_rect(&osk, "Backspace");
-    finger(&mut osk, 1, TouchPhase::Started, bs.center());
-    let mut now = Instant::now() + REPEAT_DELAY;
-    for _ in 0..3 {
-        osk.poll_hold(now);
-        now += REPEAT_INTERVAL;
+    phase dragging_the_space_bar_moves_the_caret_instead_of_typing;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        type_word(&mut osk, "hello");
+        osk.take_output();
+        let (_, space) = key_rect(&osk, "space");
+        let c = space.center();
+        let step = osk.key_scale() * CURSOR_STEP;
+        finger(&mut osk, 1, TouchPhase::Started, c);
+        finger(&mut osk, 1, TouchPhase::Moved, Point::new(c.x - 3.0, c.y));
+        assert!(!osk.cursor_drag_active());
+        // Just past the threshold, so rounding in the key's centre cannot
+        // leave it short.
+        let start = c.x - osk.key_scale() * CURSOR_START - 1.0;
+        finger(&mut osk, 1, TouchPhase::Moved, Point::new(start, c.y));
+        finger(
+            &mut osk,
+            1,
+            TouchPhase::Moved,
+            Point::new(start - 3.5 * step, c.y),
+        );
+        finger(
+            &mut osk,
+            1,
+            TouchPhase::Ended,
+            Point::new(start - 3.5 * step, c.y),
+        );
+        assert_eq!(
+            osk.take_output(),
+            vec![
+                commit("hello"),
+                OskOutput::key(Symbol::Left),
+                OskOutput::key(Symbol::Left),
+                OskOutput::key(Symbol::Left),
+            ],
+            "the word commits as typed, the caret steps left, no space"
+        );
     }
-    finger(&mut osk, 1, TouchPhase::Ended, bs.center());
-    assert_eq!(osk.pending_text(), ".he");
-}
 
-#[test]
-fn dragging_the_space_bar_moves_the_caret_instead_of_typing() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    type_word(&mut osk, "hello");
-    osk.take_output();
-    let (_, space) = key_rect(&osk, "space");
-    let c = space.center();
-    let step = osk.key_scale() * CURSOR_STEP;
-    finger(&mut osk, 1, TouchPhase::Started, c);
-    finger(&mut osk, 1, TouchPhase::Moved, Point::new(c.x - 3.0, c.y));
-    assert!(!osk.cursor_drag_active());
-    // Just past the threshold, so rounding in the key's centre cannot
-    // leave it short.
-    let start = c.x - osk.key_scale() * CURSOR_START - 1.0;
-    finger(&mut osk, 1, TouchPhase::Moved, Point::new(start, c.y));
-    finger(
-        &mut osk,
-        1,
-        TouchPhase::Moved,
-        Point::new(start - 3.5 * step, c.y),
-    );
-    finger(
-        &mut osk,
-        1,
-        TouchPhase::Ended,
-        Point::new(start - 3.5 * step, c.y),
-    );
-    assert_eq!(
-        osk.take_output(),
-        vec![
-            commit("hello"),
-            OskOutput::key(Symbol::Left),
-            OskOutput::key(Symbol::Left),
-            OskOutput::key(Symbol::Left),
-        ],
-        "the word commits as typed, the caret steps left, no space"
-    );
+    phase previews_stay_inside_the_keyboard_at_its_edges;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 390.0, 312.0);
+        for label in ["q", "p", "a", "l", "z", "m"] {
+            let (_, rect) = key_rect(&osk, label);
+            let bubble = crate::presentation::preview_rect(rect, osk.content_rect);
+            assert!(
+                bubble.x0 >= osk.content_rect.x0 && bubble.x1 <= osk.content_rect.x1,
+                "{label} preview spills out: {bubble:?}"
+            );
+            assert!(bubble.y0 >= osk.content_rect.y0);
+        }
+    }
+
+    phase hit_areas_move_with_context_but_the_drawn_keys_never_do;
+    {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 390.0, 312.0);
+        let before = osk.key_geometry().to_vec();
+        let start = osk.hit_cells(2.0);
+        type_word(&mut osk, "th");
+        lay_out(&mut osk, 390.0, 312.0);
+        assert_eq!(
+            osk.key_geometry(),
+            before.as_slice(),
+            "context never moves a key"
+        );
+        let th = osk.hit_cells(2.0);
+        let (e, _) = key_rect(&osk, "e");
+        let (r, rr) = key_rect(&osk, "r");
+        let e_after_th = th.iter().filter(|c| c.key == e).count();
+        let e_at_start = start.iter().filter(|c| c.key == e).count();
+        assert!(e_after_th > e_at_start, "'e' grows after 'th'");
+        assert!(
+            th.iter().any(|c| c.drawn == r && c.key == e),
+            "the r/e border goes to 'e' after 'th'"
+        );
+        let core = crate::touch_model::core_zone(rr, crate::touch_model::CORE_FRACTION);
+        assert!(
+            th.iter()
+                .filter(|c| core.contains(c.rect.center()))
+                .all(|c| c.key == r),
+            "r's core zone stays r's"
+        );
+    }
 }
 
 #[test]
@@ -2203,110 +2279,4 @@ fn a_touch_down_previews_its_character_but_never_in_a_password() {
     assert_eq!(osk.preview_key(&[space]), None, "only characters preview");
     osk.set_purpose(InputPurpose::Password);
     assert_eq!(osk.preview_key(&[g]), None);
-}
-
-#[test]
-fn previews_stay_inside_the_keyboard_at_its_edges() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 390.0, 312.0);
-    for label in ["q", "p", "a", "l", "z", "m"] {
-        let (_, rect) = key_rect(&osk, label);
-        let bubble = crate::presentation::preview_rect(rect, osk.content_rect);
-        assert!(
-            bubble.x0 >= osk.content_rect.x0 && bubble.x1 <= osk.content_rect.x1,
-            "{label} preview spills out: {bubble:?}"
-        );
-        assert!(bubble.y0 >= osk.content_rect.y0);
-    }
-}
-
-#[test]
-fn hit_areas_move_with_context_but_the_drawn_keys_never_do() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 390.0, 312.0);
-    let before = osk.key_geometry().to_vec();
-    let start = osk.hit_cells(2.0);
-    type_word(&mut osk, "th");
-    lay_out(&mut osk, 390.0, 312.0);
-    assert_eq!(
-        osk.key_geometry(),
-        before.as_slice(),
-        "context never moves a key"
-    );
-    let th = osk.hit_cells(2.0);
-    let (e, _) = key_rect(&osk, "e");
-    let (r, rr) = key_rect(&osk, "r");
-    let e_after_th = th.iter().filter(|c| c.key == e).count();
-    let e_at_start = start.iter().filter(|c| c.key == e).count();
-    assert!(e_after_th > e_at_start, "'e' grows after 'th'");
-    assert!(
-        th.iter().any(|c| c.drawn == r && c.key == e),
-        "the r/e border goes to 'e' after 'th'"
-    );
-    let core = crate::touch_model::core_zone(rr, crate::touch_model::CORE_FRACTION);
-    assert!(
-        th.iter()
-            .filter(|c| core.contains(c.rect.center()))
-            .all(|c| c.key == r),
-        "r's core zone stays r's"
-    );
-}
-
-/// Parking puts the keys away and keeps the strip that brings them back,
-/// and telling the window to shrink is what gives the screen back: the
-/// keys are not painted over a panel that is now the app's.
-#[test]
-fn a_parked_keyboard_is_one_strip_and_asks_for_a_strip_of_a_surface() {
-    let mut osk = OskWidget::new();
-    lay_out(&mut osk, 720.0, 360.0);
-    assert!(osk.keys_up());
-    assert!(
-        osk.key_geometry()
-            .iter()
-            .any(|(_, rect)| rect.height() > 0.0)
-    );
-    assert_eq!(
-        osk.preferred_window_size(),
-        None,
-        "a keyboard with its keys up fills the panel it was given"
-    );
-
-    let park = osk
-        .toolbar_items()
-        .iter()
-        .position(|item| item.action == OskToolbarAction::Park)
-        .expect("the toolbar can put the keys away");
-    osk.activate_tool(park);
-    assert!(osk.is_parked());
-    assert!(!osk.keys_up());
-    lay_out(&mut osk, 720.0, 96.0);
-    assert!(
-        osk.key_geometry()
-            .iter()
-            .all(|(_, rect)| rect.height() <= 0.0),
-        "no key is left to tap"
-    );
-    let (width, height) = osk
-        .preferred_window_size()
-        .expect("a parked keyboard says how small its surface may be");
-    assert_eq!(width, 720.0);
-    assert!(
-        height < 96.0,
-        "the strip is one toolbar row: {height} of a 96-pixel panel"
-    );
-
-    let unpark = osk
-        .toolbar_items()
-        .iter()
-        .position(|item| item.action == OskToolbarAction::Unpark)
-        .expect("the strip says how to come back");
-    osk.activate_tool(unpark);
-    assert!(!osk.is_parked());
-    lay_out(&mut osk, 720.0, 360.0);
-    assert_eq!(osk.preferred_window_size(), None);
-    assert!(
-        osk.key_geometry()
-            .iter()
-            .any(|(_, rect)| rect.height() > 0.0)
-    );
 }

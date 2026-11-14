@@ -209,21 +209,13 @@ async fn admit_directory_invoke(
     fixture: &LocalDirectoryFixture,
     request: &tilo_actions::remote::InvokeRequest,
 ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError> {
-    use tilo_actions::remote::{Caller, PendingPoll};
+    use tilo_actions::remote::Caller;
     let caller = Caller::local_person("fixture-owner")
         .in_workspace(fixture.cluster_id.clone())
         .in_new_execution();
-    let mut pending = fixture.state.action_invoke(&caller, None, None, request);
-    tilo_test_env::within("bounded directory admission", async {
-        loop {
-            drain_directory_bridge(fixture).await;
-            if let PendingPoll::Ready(result) = pending.poll_ready() {
-                break result;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
+    fixture
+        .drive(fixture.state.action_invoke(&caller, None, None, request))
+        .await
 }
 
 /// An invoke naming no revision asks the directory's owner to resolve the
@@ -385,8 +377,11 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
         .run_until(async {
             use runtime_collab::{SHAPE_ID_BYTES, SurfaceDelta, SurfaceResource};
             use signed_worker::{OriginalWorkspace, directory_state};
-            let workspace =
-                OriginalWorkspace::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
+            let workspace = OriginalWorkspace::new(
+                tilo_user_identity::DeviceCapabilities::member(),
+                None,
+                None,
+            );
             let (worker, _authorize) = workspace.join_worker(905).await;
             let handle = &worker.handle;
             let mut base = directory_state("original-r1")

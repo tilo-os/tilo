@@ -824,32 +824,116 @@ mod tests {
         // none to spend.
         assert_eq!(started.elapsed(), Duration::ZERO);
     }
-    #[test]
-    fn staging_a_capture_ends_the_owner_s_bounded_wait() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let budget = ByteBudget::new();
-        let read = runtime.block_on(one_chunk_capture(&budget));
-        let reads = Reads::default();
-        let ready = reads.pending("route").unwrap();
-        let seen = reads.progress();
-        let waiter = {
-            let reads = reads.clone();
-            std::thread::spawn(move || reads.wait_progress(seen, tilo_test_env::hang_bound()))
-        };
-        reads.stage("route", &ready, read).unwrap();
-        assert!(waiter.join().unwrap(), "staging woke the waiting owner");
-        assert!(reads.initial("route").is_some());
-    }
-    #[test]
-    fn a_wait_after_the_change_it_watches_for_returns_at_once() {
-        let reads = Reads::default();
-        let seen = reads.progress();
-        reads.legacy("route").unwrap();
-        assert!(reads.wait_progress(seen, tilo_test_env::hang_bound()));
-        assert!(reads.publishable("route"));
+    tilo_test_env::scenario! {
+        /// The committed reads a manager holds by route, each case on reads of its own.
+        fn reads_track_each_routes_capture_generation_and_progress;
+
+        phase staging_a_capture_ends_the_owner_s_bounded_wait;
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let budget = ByteBudget::new();
+            let read = runtime.block_on(one_chunk_capture(&budget));
+            let reads = Reads::default();
+            let ready = reads.pending("route").unwrap();
+            let seen = reads.progress();
+            let waiter = {
+                let reads = reads.clone();
+                std::thread::spawn(move || reads.wait_progress(seen, tilo_test_env::hang_bound()))
+            };
+            reads.stage("route", &ready, read).unwrap();
+            assert!(waiter.join().unwrap(), "staging woke the waiting owner");
+            assert!(reads.initial("route").is_some());
+        }
+
+        phase a_wait_after_the_change_it_watches_for_returns_at_once;
+        {
+            let reads = Reads::default();
+            let seen = reads.progress();
+            reads.legacy("route").unwrap();
+            assert!(reads.wait_progress(seen, tilo_test_env::hang_bound()));
+            assert!(reads.publishable("route"));
+        }
+
+        phase committed_document_publication_waits_for_owner_and_old_ack_cannot_reopen;
+        {
+            let reads = Reads::default();
+            assert!(!reads.publishable("route"));
+            let old = reads.pending("route").unwrap();
+            let current = reads.pending("route").unwrap();
+            old.store(true, Ordering::Release);
+            assert!(!reads.publishable("route"));
+            current.store(true, Ordering::Release);
+            assert!(reads.publishable("route"));
+            reads.pending("route").unwrap();
+            assert!(!reads.publishable("route"));
+            reads.legacy("legacy").unwrap();
+            assert!(reads.publishable("legacy"));
+        }
+
+        phase native_private_binding_cannot_open_document_or_survive_route_downgrade;
+        {
+            let reads = Reads::default();
+            assert!(reads.bind_private_window("route", Some(42)).is_err());
+            assert!(reads.joining("route"));
+            assert!(reads.bind_private_window("route", Some(42)).is_err());
+            let old = reads.pending("route").unwrap();
+            reads.bind_private_window("route", Some(42)).unwrap();
+            assert_eq!(reads.private_window("route"), Some(42));
+            assert!(
+                !reads.publishable("route"),
+                "a window binding cannot acknowledge a document"
+            );
+            let current = reads.pending("route").unwrap();
+            assert_eq!(
+                reads.private_window("route"),
+                Some(42),
+                "document refresh retains the original launch binding"
+            );
+            old.store(true, Ordering::Release);
+            assert!(!reads.publishable("route"));
+            current.store(true, Ordering::Release);
+            assert!(reads.publishable("route"));
+            reads.bind_private_window("route", None).unwrap();
+            assert_eq!(reads.private_window("route"), None);
+            reads.legacy("route").unwrap();
+            assert!(reads.bind_private_window("route", Some(42)).is_err());
+            assert_eq!(reads.private_window("route"), None);
+        }
+
+        phase committed_document_replacing_route_discards_staged_capture;
+        {
+            let reads = Reads::default();
+            let ready = reads.pending("route").unwrap();
+            let read = CommittedDocument::for_test(vec![1], None);
+            reads.stage("route", &ready, read.clone()).unwrap();
+            assert!(reads.unapplied("route").is_some());
+            read.applied();
+            assert!(
+                reads.unapplied("route").is_none(),
+                "acknowledged capture must not merge again"
+            );
+            read.merged.store(false, Ordering::Release);
+            reads.pending("route").unwrap();
+            assert!(
+                reads.unapplied("route").is_none(),
+                "replaced capture must not reach the owner"
+            );
+            assert!(
+                reads.initial("route").is_none(),
+                "old generation must not hydrate the replacement"
+            );
+            assert!(
+                read.with_mutation(|_| ()).is_err(),
+                "queued old captures cannot be merged after replacement"
+            );
+            assert!(
+                reads.stage("route", &ready, read).is_err(),
+                "old worker cannot restage after replacement"
+            );
+        }
     }
     #[tokio::test]
     async fn committed_document_downgrade_excludes_unapplied_owner_handoff() {
@@ -1150,82 +1234,6 @@ mod tests {
                     .is_some()
             );
         }
-    }
-    #[test]
-    fn committed_document_publication_waits_for_owner_and_old_ack_cannot_reopen() {
-        let reads = Reads::default();
-        assert!(!reads.publishable("route"));
-        let old = reads.pending("route").unwrap();
-        let current = reads.pending("route").unwrap();
-        old.store(true, Ordering::Release);
-        assert!(!reads.publishable("route"));
-        current.store(true, Ordering::Release);
-        assert!(reads.publishable("route"));
-        reads.pending("route").unwrap();
-        assert!(!reads.publishable("route"));
-        reads.legacy("legacy").unwrap();
-        assert!(reads.publishable("legacy"));
-    }
-    #[test]
-    fn native_private_binding_cannot_open_document_or_survive_route_downgrade() {
-        let reads = Reads::default();
-        assert!(reads.bind_private_window("route", Some(42)).is_err());
-        assert!(reads.joining("route"));
-        assert!(reads.bind_private_window("route", Some(42)).is_err());
-        let old = reads.pending("route").unwrap();
-        reads.bind_private_window("route", Some(42)).unwrap();
-        assert_eq!(reads.private_window("route"), Some(42));
-        assert!(
-            !reads.publishable("route"),
-            "a window binding cannot acknowledge a document"
-        );
-        let current = reads.pending("route").unwrap();
-        assert_eq!(
-            reads.private_window("route"),
-            Some(42),
-            "document refresh retains the original launch binding"
-        );
-        old.store(true, Ordering::Release);
-        assert!(!reads.publishable("route"));
-        current.store(true, Ordering::Release);
-        assert!(reads.publishable("route"));
-        reads.bind_private_window("route", None).unwrap();
-        assert_eq!(reads.private_window("route"), None);
-        reads.legacy("route").unwrap();
-        assert!(reads.bind_private_window("route", Some(42)).is_err());
-        assert_eq!(reads.private_window("route"), None);
-    }
-
-    #[test]
-    fn committed_document_replacing_route_discards_staged_capture() {
-        let reads = Reads::default();
-        let ready = reads.pending("route").unwrap();
-        let read = CommittedDocument::for_test(vec![1], None);
-        reads.stage("route", &ready, read.clone()).unwrap();
-        assert!(reads.unapplied("route").is_some());
-        read.applied();
-        assert!(
-            reads.unapplied("route").is_none(),
-            "acknowledged capture must not merge again"
-        );
-        read.merged.store(false, Ordering::Release);
-        reads.pending("route").unwrap();
-        assert!(
-            reads.unapplied("route").is_none(),
-            "replaced capture must not reach the owner"
-        );
-        assert!(
-            reads.initial("route").is_none(),
-            "old generation must not hydrate the replacement"
-        );
-        assert!(
-            read.with_mutation(|_| ()).is_err(),
-            "queued old captures cannot be merged after replacement"
-        );
-        assert!(
-            reads.stage("route", &ready, read).is_err(),
-            "old worker cannot restage after replacement"
-        );
     }
     #[tokio::test]
     async fn committed_document_allocation_refusal_acknowledges_received_token() {

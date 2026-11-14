@@ -294,62 +294,66 @@ mod tests {
         vec![("files.entry".into(), "files.entry:0123".into())]
     }
 
-    #[test]
-    fn a_file_is_offered_the_shortcuts_that_run_on_files_only() {
-        let menu = fetched();
-        let offered: Vec<&str> = menu
-            .offered_on(&file())
-            .into_iter()
-            .map(ShortcutOffer::label)
-            .collect();
-        assert_eq!(offered, ["Archive"]);
-        assert!(
-            menu.offered_on(&[("files.record".into(), "files.record:1".into())])
-                .is_empty()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn file_shortcuts_are_offered_and_bound_to_the_file;
 
-    #[test]
-    fn running_a_shortcut_on_a_file_binds_the_file_to_its_first_input() {
-        let mut menu = fetched();
-        assert!(menu.run("shortcuts.shortcut:reschedule", &file()).is_err());
-        assert_eq!(
-            menu.run("shortcuts.shortcut:archive", &file()),
-            Ok("Archive".into())
-        );
-        let requests = menu.take_requests();
-        let [
-            CollabRequest::RemoteAction {
-                message: RemoteActionMessage::Invoke(request),
-            },
-        ] = requests.as_slice()
-        else {
-            panic!("one invocation: {requests:?}");
-        };
-        assert_eq!(request.target.provider, "workspace:room");
-        assert_eq!(
-            request.target.address,
-            tilo_automation::shortcut_run_address("archive")
-        );
-        assert_eq!(
-            request.argument,
-            InvokeArgument::Json(
-                serde_json::json!({ "file": "files.entry:0123" })
-                    .as_object()
-                    .cloned()
-                    .expect("an object")
-            )
-        );
-        assert_eq!(
-            menu.handle_event(&CollabEvent::RemoteAction {
-                message: RemoteActionMessage::Receipt(InvocationReceipt {
-                    invocation: request.invocation,
-                    status: ReceiptStatus::Accepted,
+        phase a_file_is_offered_the_shortcuts_that_run_on_files_only;
+        {
+            let menu = fetched();
+            let offered: Vec<&str> = menu
+                .offered_on(&file())
+                .into_iter()
+                .map(ShortcutOffer::label)
+                .collect();
+            assert_eq!(offered, ["Archive"]);
+            assert!(
+                menu.offered_on(&[("files.record".into(), "files.record:1".into())])
+                    .is_empty()
+            );
+        }
+
+        phase running_a_shortcut_on_a_file_binds_the_file_to_its_first_input;
+        {
+            let mut menu = fetched();
+            assert!(menu.run("shortcuts.shortcut:reschedule", &file()).is_err());
+            assert_eq!(
+                menu.run("shortcuts.shortcut:archive", &file()),
+                Ok("Archive".into())
+            );
+            let requests = menu.take_requests();
+            let [
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(request),
+                },
+            ] = requests.as_slice()
+            else {
+                panic!("one invocation: {requests:?}");
+            };
+            assert_eq!(request.target.provider, "workspace:room");
+            assert_eq!(
+                request.target.address,
+                tilo_automation::shortcut_run_address("archive")
+            );
+            assert_eq!(
+                request.argument,
+                InvokeArgument::Json(
+                    serde_json::json!({ "file": "files.entry:0123" })
+                        .as_object()
+                        .cloned()
+                        .expect("an object")
+                )
+            );
+            assert_eq!(
+                menu.handle_event(&CollabEvent::RemoteAction {
+                    message: RemoteActionMessage::Receipt(InvocationReceipt {
+                        invocation: request.invocation,
+                        status: ReceiptStatus::Accepted,
+                    }),
                 }),
-            }),
-            Some(ShortcutOutcome::Started {
-                label: "Archive".into()
-            })
-        );
+                Some(ShortcutOutcome::Started {
+                    label: "Archive".into()
+                })
+            );
+        }
     }
 }

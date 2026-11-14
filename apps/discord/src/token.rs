@@ -65,27 +65,31 @@ mod tests {
 
     const SHAPED: &str = "MTA4NzY1NDMyMTA5ODc2NTQzMg.GxYzAb.abcdefghijklmnopqrstuvwxyz0123456789AB";
 
-    #[test]
-    fn a_token_is_stored_under_the_host_purpose() {
-        let store = SecretStore::memory(crate::APP_ID);
-        assert!(!token_present(&store));
-        store_token(&store, &format!("  {SHAPED}\n")).unwrap();
-        assert!(token_present(&store));
-        let stored = store
-            .item(TOKEN_PURPOSE, TOKEN_ITEM)
-            .get_blocking()
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.expose(), SHAPED.as_bytes(), "trimmed");
-    }
+    tilo_test_env::scenario! {
+        fn the_bots_token_is_stored_only_when_it_is_one;
 
-    #[test]
-    fn a_malformed_token_is_refused_without_echoing_it() {
-        let store = SecretStore::memory(crate::APP_ID);
-        let error = store_token(&store, "not-a-token-secret-value").unwrap_err();
-        assert!(!error.to_string().contains("secret-value"));
-        assert!(!token_present(&store));
-        assert!(!valid_token_shape("a.b"));
-        assert!(valid_token_shape(SHAPED));
+        phase a_token_is_stored_under_the_host_purpose;
+        {
+            let store = SecretStore::memory(crate::APP_ID);
+            assert!(!token_present(&store));
+            store_token(&store, &format!("  {SHAPED}\n")).unwrap();
+            assert!(token_present(&store));
+            let stored = store
+                .item(TOKEN_PURPOSE, TOKEN_ITEM)
+                .get_blocking()
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.expose(), SHAPED.as_bytes(), "trimmed");
+        }
+
+        phase a_malformed_token_is_refused_without_echoing_it;
+        {
+            let store = SecretStore::memory(crate::APP_ID);
+            let error = store_token(&store, "not-a-token-secret-value").unwrap_err();
+            assert!(!error.to_string().contains("secret-value"));
+            assert!(!token_present(&store));
+            assert!(!valid_token_shape("a.b"));
+            assert!(valid_token_shape(SHAPED));
+        }
     }
 }

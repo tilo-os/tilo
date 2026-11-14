@@ -162,60 +162,64 @@ impl Notice {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_notice_waits_with_its_button_and_acting_takes_it_down() {
-        ui::attention::clear();
-        let mut notice = Notice::default();
-        notice.show("Moved 2 items to Trash", "", Some(NoticeAction::Undo));
-        notice.publish();
-        let waiting = ui::attention::items();
-        assert_eq!(waiting.len(), 1, "the change waits");
-        assert_eq!(waiting[0].title(), "Moved 2 items to Trash");
-        assert_eq!(waiting[0].owner().name, "Files");
-        assert_eq!(waiting[0].action().label, t_undo());
-        assert!(notice.offers_undo());
-        let acted = ui::attention::take(waiting[0].id()).expect("it waits on a verb");
-        assert_eq!(notice.pressed(&acted), Some(NoticeAction::Undo));
-        assert_eq!(notice.line(), None, "acting on it takes it down");
-        assert_eq!(
-            notice.pressed(&acted),
-            None,
-            "a second press asks for nothing"
-        );
-        assert!(ui::attention::items().is_empty());
+    tilo_test_env::scenario! {
+        fn a_notice_waits_acts_once_and_records_outcomes;
+
+        phase a_notice_waits_with_its_button_and_acting_takes_it_down;
+        {
+            ui::attention::clear();
+            let mut notice = Notice::default();
+            notice.show("Moved 2 items to Trash", "", Some(NoticeAction::Undo));
+            notice.publish();
+            let waiting = ui::attention::items();
+            assert_eq!(waiting.len(), 1, "the change waits");
+            assert_eq!(waiting[0].title(), "Moved 2 items to Trash");
+            assert_eq!(waiting[0].owner().name, "Files");
+            assert_eq!(waiting[0].action().label, t_undo());
+            assert!(notice.offers_undo());
+            let acted = ui::attention::take(waiting[0].id()).expect("it waits on a verb");
+            assert_eq!(notice.pressed(&acted), Some(NoticeAction::Undo));
+            assert_eq!(notice.line(), None, "acting on it takes it down");
+            assert_eq!(
+                notice.pressed(&acted),
+                None,
+                "a second press asks for nothing"
+            );
+            assert!(ui::attention::items().is_empty());
+        }
+
+        phase an_outcome_with_nothing_to_do_is_recorded;
+        // An outcome with nothing to do about it is recorded, not thrown at the
+        // window: it does not expire, and it asks nobody.
+        {
+            ui::attention::clear();
+            ui::attention::clear_ledger();
+            let mut notice = Notice::default();
+            notice.show("Couldn’t open “a.pdf”", "No app opens PDF files", None);
+            notice.publish();
+            assert!(ui::attention::items().is_empty(), "nothing to act on");
+            assert!(
+                ui::attention::entries()
+                    .iter()
+                    .any(|entry| entry.what().contains("Couldn’t open")),
+                "the ledger keeps it"
+            );
+        }
+
+        phase one_outcome_is_recorded_once;
+        {
+            ui::attention::clear();
+            ui::attention::clear_ledger();
+            let mut notice = Notice::default();
+            notice.show("Copied 3 files", "", None);
+            notice.publish();
+            notice.publish();
+            notice.publish();
+            assert_eq!(ui::attention::entries().len(), 1);
+        }
     }
 
     fn t_undo() -> String {
         crate::i18n::t("files-notice-undo")
-    }
-
-    /// An outcome with nothing to do about it is recorded, not thrown at the
-    /// window: it does not expire, and it asks nobody.
-    #[test]
-    fn an_outcome_with_nothing_to_do_is_recorded() {
-        ui::attention::clear();
-        ui::attention::clear_ledger();
-        let mut notice = Notice::default();
-        notice.show("Couldn’t open “a.pdf”", "No app opens PDF files", None);
-        notice.publish();
-        assert!(ui::attention::items().is_empty(), "nothing to act on");
-        assert!(
-            ui::attention::entries()
-                .iter()
-                .any(|entry| entry.what().contains("Couldn’t open")),
-            "the ledger keeps it"
-        );
-    }
-
-    #[test]
-    fn one_outcome_is_recorded_once() {
-        ui::attention::clear();
-        ui::attention::clear_ledger();
-        let mut notice = Notice::default();
-        notice.show("Copied 3 files", "", None);
-        notice.publish();
-        notice.publish();
-        notice.publish();
-        assert_eq!(ui::attention::entries().len(), 1);
     }
 }

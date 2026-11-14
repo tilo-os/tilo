@@ -263,68 +263,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_short_value_is_shown_whole() {
-        let mut pages = Pages::new();
-        let value = json!({"title": "Notes", "count": 3});
-        assert_eq!(pages.first_page(&value), (value, None));
-    }
-
-    /// A long text is shown a page at a time and every character is reached
-    /// exactly once, multi-byte ones included.
-    #[test]
-    fn a_long_text_is_read_page_by_page_to_its_end() {
-        let mut pages = Pages::new();
-        let text: String = (0..PAGE_CHARS * 2 + 10)
-            .map(|i| if i % 7 == 0 { 'é' } else { 'a' })
-            .collect();
-        let (first, continues) = pages.first_page(&Value::String(text.clone()));
-        let continues = continues.expect("a long text continues");
-        let mut read = first.as_str().unwrap().to_owned();
-        assert_eq!(read.chars().count(), PAGE_CHARS);
-        let mut from = continues["from"].clone();
-        let id = continues["result"].clone();
-        while let Some(at) = from.as_u64() {
-            let page: Value =
-                serde_json::from_str(&pages.read(&json!({"result": id, "from": at}))).unwrap();
-            read.push_str(page["text"].as_str().unwrap());
-            from = page["next"].clone();
-        }
-        assert_eq!(read, text);
-    }
-
-    /// Only the long field of an object is paged; the rest stays JSON.
-    #[test]
-    fn an_objects_long_field_is_paged_and_the_rest_kept_whole() {
-        let mut pages = Pages::new();
-        let markdown = "word ".repeat(PAGE_CHARS);
-        let value = json!({"markdown": markdown, "nextCursor": "c2", "blocks": 40});
-        let (first, continues) = pages.first_page(&value);
-        assert_eq!(first["nextCursor"], "c2");
-        assert_eq!(first["blocks"], 40);
-        let continues = continues.unwrap();
-        assert_eq!(continues["field"], "markdown");
-        let shown = first["markdown"].as_str().unwrap().chars().count();
-        assert_eq!(continues["from"], json!(shown));
-        assert!(first.to_string().chars().count() <= PAGE_CHARS + 64);
-        let page: Value = serde_json::from_str(
-            &pages.read(&json!({"result": continues["result"], "from": shown})),
-        )
-        .unwrap();
-        assert!(markdown[shown..].starts_with(page["text"].as_str().unwrap()));
-    }
-
-    /// A long structure with no dominant text is paged as its JSON text.
-    #[test]
-    fn a_long_structure_is_paged_as_json_text() {
-        let mut pages = Pages::new();
-        let rows: Vec<Value> = (0..2000).map(|i| json!({"row": i, "name": "x"})).collect();
-        let value = Value::Array(rows);
-        let (first, continues) = pages.first_page(&value);
-        assert!(first.as_str().unwrap().starts_with("[{"));
-        assert_eq!(continues.unwrap()["total"], json!(value.to_string().len()));
-    }
-
-    #[test]
     fn an_unknown_result_names_the_kept_ones() {
         let mut pages = Pages::new();
         assert!(
@@ -340,34 +278,100 @@ mod tests {
         );
     }
 
-    /// Results are kept by size: many small ones stay readable, and only
-    /// past the size bound is the oldest forgotten.
-    #[test]
-    fn only_the_latest_results_are_kept() {
-        let mut pages = Pages::new();
-        for _ in 0..200 {
-            pages.first_page(&Value::String("x".repeat(PAGE_CHARS + 1)));
+    tilo_test_env::scenario! {
+        fn a_long_result_is_read_in_pages;
+
+        phase a_short_value_is_shown_whole;
+        {
+            let mut pages = Pages::new();
+            let value = json!({"title": "Notes", "count": 3});
+            assert_eq!(pages.first_page(&value), (value, None));
         }
-        assert!(
-            pages
-                .read(&json!({"result": "r1", "from": 0}))
-                .contains("\"text\""),
-            "two hundred short results are all kept"
-        );
-        let whole = MOST_KEPT_TOTAL_CHARS / MOST_KEPT_CHARS;
-        for _ in 0..=whole {
-            pages.first_page(&Value::String("x".repeat(MOST_KEPT_CHARS)));
+
+        phase a_long_text_is_read_page_by_page_to_its_end;
+        // A long text is shown a page at a time and every character is reached
+        // exactly once, multi-byte ones included.
+        {
+            let mut pages = Pages::new();
+            let text: String = (0..PAGE_CHARS * 2 + 10)
+                .map(|i| if i % 7 == 0 { 'é' } else { 'a' })
+                .collect();
+            let (first, continues) = pages.first_page(&Value::String(text.clone()));
+            let continues = continues.expect("a long text continues");
+            let mut read = first.as_str().unwrap().to_owned();
+            assert_eq!(read.chars().count(), PAGE_CHARS);
+            let mut from = continues["from"].clone();
+            let id = continues["result"].clone();
+            while let Some(at) = from.as_u64() {
+                let page: Value =
+                    serde_json::from_str(&pages.read(&json!({"result": id, "from": at}))).unwrap();
+                read.push_str(page["text"].as_str().unwrap());
+                from = page["next"].clone();
+            }
+            assert_eq!(read, text);
         }
-        assert!(
-            pages
-                .read(&json!({"result": "r1", "from": 0}))
-                .contains("no result")
-        );
-        let last = format!("r{}", 200 + whole + 1);
-        assert!(
-            pages
-                .read(&json!({"result": last, "from": 0}))
-                .contains("\"text\"")
-        );
+
+        phase an_objects_long_field_is_paged_and_the_rest_kept_whole;
+        // Only the long field of an object is paged; the rest stays JSON.
+        {
+            let mut pages = Pages::new();
+            let markdown = "word ".repeat(PAGE_CHARS);
+            let value = json!({"markdown": markdown, "nextCursor": "c2", "blocks": 40});
+            let (first, continues) = pages.first_page(&value);
+            assert_eq!(first["nextCursor"], "c2");
+            assert_eq!(first["blocks"], 40);
+            let continues = continues.unwrap();
+            assert_eq!(continues["field"], "markdown");
+            let shown = first["markdown"].as_str().unwrap().chars().count();
+            assert_eq!(continues["from"], json!(shown));
+            assert!(first.to_string().chars().count() <= PAGE_CHARS + 64);
+            let page: Value = serde_json::from_str(
+                &pages.read(&json!({"result": continues["result"], "from": shown})),
+            )
+            .unwrap();
+            assert!(markdown[shown..].starts_with(page["text"].as_str().unwrap()));
+        }
+
+        phase a_long_structure_is_paged_as_json_text;
+        // A long structure with no dominant text is paged as its JSON text.
+        {
+            let mut pages = Pages::new();
+            let rows: Vec<Value> = (0..2000).map(|i| json!({"row": i, "name": "x"})).collect();
+            let value = Value::Array(rows);
+            let (first, continues) = pages.first_page(&value);
+            assert!(first.as_str().unwrap().starts_with("[{"));
+            assert_eq!(continues.unwrap()["total"], json!(value.to_string().len()));
+        }
+
+        phase only_the_latest_results_are_kept;
+        // Results are kept by size: many small ones stay readable, and only
+        // past the size bound is the oldest forgotten.
+        {
+            let mut pages = Pages::new();
+            for _ in 0..200 {
+                pages.first_page(&Value::String("x".repeat(PAGE_CHARS + 1)));
+            }
+            assert!(
+                pages
+                    .read(&json!({"result": "r1", "from": 0}))
+                    .contains("\"text\""),
+                "two hundred short results are all kept"
+            );
+            let whole = MOST_KEPT_TOTAL_CHARS / MOST_KEPT_CHARS;
+            for _ in 0..=whole {
+                pages.first_page(&Value::String("x".repeat(MOST_KEPT_CHARS)));
+            }
+            assert!(
+                pages
+                    .read(&json!({"result": "r1", "from": 0}))
+                    .contains("no result")
+            );
+            let last = format!("r{}", 200 + whole + 1);
+            assert!(
+                pages
+                    .read(&json!({"result": last, "from": 0}))
+                    .contains("\"text\"")
+            );
+        }
     }
 }

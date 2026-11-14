@@ -42,7 +42,7 @@ impl TiloStore {
                 "the workspace record cannot be loaded".into(),
             ));
         };
-        let moved = inner.attach_document(chunk::FIRST, &record);
+        let moved = inner.attach_document(chunk::FIRST, record);
         drop(inner);
         if moved {
             self.changing().notify_all();
@@ -69,6 +69,15 @@ impl TiloStore {
             if inner.chunks.mirror(chunk).is_some() {
                 return Ok(());
             }
+            // A chunk its holder handed over and the store has not read yet: read now.
+            if let Some(doc) = inner.chunks.unpark(chunk) {
+                drop(inner);
+                let moved = self.mutate().attach_document(chunk, doc);
+                if moved {
+                    self.changing().notify_all();
+                }
+                return Ok(());
+            }
             // Which chunks exist is what the record's manifest says: without it there is no
             // telling a chunk it names from one a write will start.
             if !inner.chunks.has_record() {
@@ -86,7 +95,16 @@ impl TiloStore {
                     "the chunk {chunk} is not here yet"
                 )));
             }
-            inner.chunk_loader.take()
+            let loader = inner.chunk_loader.take();
+            if loader.is_none() && inner.adopted {
+                // The holder handed over every chunk it has: one it did not is not on this
+                // device yet, and is waited on as one a source cannot give.
+                inner.waited.insert(chunk);
+                return Err(StoreError::Backend(format!(
+                    "the chunk {chunk} is not here yet"
+                )));
+            }
+            loader
         };
         let Some(mut loader) = loader else {
             // Nothing to load it with: what reads into the chunk says so where it reads it, and
@@ -102,7 +120,7 @@ impl TiloStore {
                 "the chunk {chunk} cannot be loaded"
             )));
         };
-        let moved = inner.attach_document(chunk, &doc);
+        let moved = inner.attach_document(chunk, doc);
         drop(inner);
         if moved {
             self.changing().notify_all();
@@ -175,7 +193,7 @@ impl TiloStore {
 /// that has no way to load it is the whole workspace of its own, and writes where its manifest
 /// places; one that can is told to load it first, never to write over it.
 pub(super) fn unloaded(inner: &Inner, chunk: ChunkNo) -> bool {
-    inner.chunk_loader.is_some()
+    inner.can_load()
         && inner.chunks.mirror(chunk).is_none()
         && inner.chunks.placement().chunks().contains(&chunk)
 }

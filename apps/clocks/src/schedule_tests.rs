@@ -41,243 +41,6 @@ fn ring(clocks: &Clocks, delivery: &mut Delivery, when: DateTime<Local>) -> Tick
     tick(clocks, delivery, utc, local)
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn alarms_ring_once_per_device_and_survive_restarts() {
-    // Phase: a new alarm for a past time waits until tomorrow; a one-shot
-    // alarm turns off once it rang.
-    {
-        let (mut clocks, id) = with_alarm(lunch(&[]));
-        let mut delivery = Delivery::default();
-        assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 1, 0))
-                .due
-                .is_empty(),
-            "past time: nothing due at arming"
-        );
-        assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 16, 11, 59, 59))
-                .due
-                .is_empty(),
-            "past time: nothing due a second before tomorrow's deadline"
-        );
-        let rang = ring(&clocks, &mut delivery, local(2026, 1, 16, 12, 0, 0));
-        assert!(
-            matches!(rang.due.as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch"),
-            "past time: rings at tomorrow's deadline"
-        );
-        assert_eq!(
-            rang.finished_alarms,
-            vec![id.clone()],
-            "past time: a one-shot alarm turns off"
-        );
-        assert_eq!(
-            ring(&clocks, &mut delivery, local(2026, 1, 16, 12, 0, 0)),
-            Tick::default(),
-            "past time: rings only once, even before the turn-off arrives"
-        );
-        clocks.alarms.get_mut(&id).unwrap().enabled = false;
-        assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 17, 12, 0, 0))
-                .due
-                .is_empty(),
-            "past time: an alarm turned off stays quiet"
-        );
-    }
-
-    // Phase: a pending alarm survives a restart on another day.
-    {
-        let (clocks, _) = with_alarm(lunch(&[]));
-        let mut delivery = Delivery::default();
-        assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
-                .due
-                .is_empty(),
-            "restart: nothing due at arming"
-        );
-        let mut reopened = restarted(&delivery);
-        assert!(
-            matches!(
-                ring(&clocks, &mut reopened, local(2026, 1, 16, 8, 0, 0)).due.as_slice(),
-                [DueEvent::Alarm { scheduled_for, .. }]
-                    if *scheduled_for == local(2026, 1, 15, 12, 0, 0).with_timezone(&Utc)
-            ),
-            "restart: the missed alarm rings after reopening"
-        );
-        assert_eq!(
-            reopened.alarms["alarm1"].last_rung,
-            Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()),
-            "restart: records the scheduled date"
-        );
-    }
-
-    // Phase: a recurring alarm catches up once and arms the next weekday.
-    {
-        let (clocks, _) = with_alarm(lunch(&[WeekdayKey::Thu]));
-        let mut delivery = Delivery::default();
-        assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
-                .due
-                .is_empty(),
-            "recurring: nothing due at arming"
-        );
-        let reopened_at = local(2026, 1, 23, 8, 0, 0);
-        let rang = ring(&clocks, &mut delivery, reopened_at);
-        assert!(
-            matches!(rang.due.as_slice(), [DueEvent::Alarm { scheduled_for, .. }]
-                if *scheduled_for == local(2026, 1, 15, 12, 0, 0).with_timezone(&Utc)),
-            "recurring: exactly one catch-up for the first missed occurrence"
-        );
-        assert!(
-            rang.finished_alarms.is_empty(),
-            "recurring: a repeating alarm stays on"
-        );
-        assert_eq!(
-            delivery.alarms["alarm1"].next_due_ms,
-            Some(local_ms(2026, 1, 29, 12, 0, 0)),
-            "recurring: next Thursday after the reopen"
-        );
-        let mut reopened = restarted(&delivery);
-        assert!(
-            ring(&clocks, &mut reopened, reopened_at).due.is_empty(),
-            "recurring: the reopened ledger does not repeat the catch-up"
-        );
-        let next = local(2026, 1, 29, 12, 0, 0);
-        assert_eq!(
-            ring(&clocks, &mut reopened, next).due.len(),
-            1,
-            "recurring: rings on the armed weekday"
-        );
-        assert!(
-            ring(&clocks, &mut reopened, next).due.is_empty(),
-            "recurring: rings only once on that weekday"
-        );
-    }
-
-    // Phase: turning an alarm off and on again (here, or on another device
-    // while this one was closed) discards the deadline armed before.
-    {
-        let (mut clocks, id) = with_alarm(lunch(&[]));
-        let mut delivery = Delivery::default();
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
-        let alarm = clocks.alarms.get_mut(&id).unwrap();
-        alarm.enabled_at_ms = local_ms(2026, 1, 15, 12, 0, 30);
-        assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 1, 0))
-                .due
-                .is_empty(),
-            "toggle: the stale deadline does not ring"
-        );
-        assert_eq!(
-            delivery.alarms["alarm1"].next_due_ms,
-            Some(local_ms(2026, 1, 16, 12, 0, 0)),
-            "toggle: re-armed for tomorrow"
-        );
-        clocks.alarms.get_mut(&id).unwrap().enabled = false;
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 2, 0));
-        assert!(
-            delivery.alarms.is_empty(),
-            "toggle: an alarm turned off holds no deadline"
-        );
-    }
-
-    // Phase: an alarm moved to another time on another device is armed
-    // afresh, and a removed alarm leaves the ledger.
-    {
-        let (mut clocks, id) = with_alarm(lunch(&[]));
-        let mut delivery = Delivery::default();
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
-        clocks.alarms.get_mut(&id).unwrap().hour = 13;
-        assert!(
-            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 30, 0))
-                .due
-                .is_empty(),
-            "moved: the old time does not ring"
-        );
-        assert_eq!(
-            delivery.alarms["alarm1"].next_due_ms,
-            Some(local_ms(2026, 1, 15, 13, 0, 0)),
-            "moved: armed for the new time"
-        );
-        clocks.alarms.remove(&id);
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 31, 0));
-        assert!(delivery.alarms.is_empty(), "removed: ledger entry dropped");
-    }
-}
-
-#[test]
-fn next_occurrence_honors_time_weekdays_history_and_dst() {
-    // Case: keeps the requested time after today's occurrence.
-    assert_eq!(
-        next_occurrence(&lunch(&[]), None, local(2026, 1, 15, 12, 1, 0)),
-        Some(local(2026, 1, 16, 12, 0, 0)),
-        "case after-todays-occurrence"
-    );
-
-    // Case: does not repeat a rung date after a clock rollback.
-    let after = local(2026, 1, 15, 11, 0, 0);
-    assert_eq!(
-        next_occurrence(&lunch(&[WeekdayKey::Thu]), Some(after.date_naive()), after),
-        Some(local(2026, 1, 22, 12, 0, 0)),
-        "case clock-rollback"
-    );
-
-    // Case: resolves DST gaps and never repeats the autumn hour.
-    let zone = chrono_tz::Europe::Berlin;
-    let wake = Alarm {
-        label: "Wake".into(),
-        hour: 2,
-        minute: 30,
-        enabled: true,
-        ..Alarm::default()
-    };
-    let spring = zone.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap();
-    assert_eq!(
-        next_occurrence_in(&wake, None, &spring),
-        Some(zone.with_ymd_and_hms(2026, 3, 29, 3, 0, 0).unwrap()),
-        "case dst-spring-gap"
-    );
-    let autumn = zone.with_ymd_and_hms(2026, 10, 25, 1, 0, 0).unwrap();
-    let first = next_occurrence_in(&wake, None, &autumn).unwrap();
-    assert_eq!(
-        first.with_timezone(&Utc),
-        Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap(),
-        "case dst-autumn-first-occurrence"
-    );
-    assert_eq!(
-        next_occurrence_in(&wake, None, &first),
-        Some(zone.with_ymd_and_hms(2026, 10, 26, 2, 30, 0).unwrap()),
-        "case dst-autumn-no-repeat"
-    );
-
-    // Case: honors turned-off and weekday settings.
-    let after = Utc.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
-    let mut weekend = Alarm {
-        label: "Weekend".into(),
-        hour: 12,
-        repeat: repeat_mask(&[WeekdayKey::Sat].into_iter().collect()),
-        ..Alarm::default()
-    };
-    assert_eq!(
-        next_occurrence_in(&weekend, None, &after),
-        None,
-        "case disabled"
-    );
-    weekend.enabled = true;
-    assert_eq!(
-        next_occurrence_in(&weekend, None, &after),
-        Some(Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap()),
-        "case weekday-only"
-    );
-    assert_eq!(
-        weekend.local_time(),
-        NaiveTime::from_hms_opt(12, 0, 0).unwrap()
-    );
-}
-
 fn running_timer(label: &str, ends_at: DateTime<Utc>) -> Timer {
     Timer {
         label: label.into(),
@@ -462,92 +225,333 @@ fn shell_activity_shows_the_floating_clock_first() {
     }
 }
 
-#[test]
-fn completed_one_shot_does_not_rearm_if_shared_settings_remain_enabled() {
-    let (clocks, _) = with_alarm(lunch(&[]));
-    let mut delivery = Delivery::default();
-    assert!(
-        ring(&clocks, &mut delivery, local(2026, 4, 14, 11, 0, 0))
-            .due
-            .is_empty()
-    );
-    assert_eq!(
-        ring(&clocks, &mut delivery, local(2026, 4, 14, 12, 0, 0))
-            .due
-            .len(),
-        1
-    );
-    assert!(
-        ring(
-            &clocks,
-            &mut restarted(&delivery),
-            local(2026, 4, 15, 12, 0, 0)
-        )
-        .due
-        .is_empty(),
-        "a read-only collaborator still delivers a one-shot only once per device"
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn an_alarm_rings_once_at_each_occurrence_it_is_due;
 
-#[test]
-fn snoozing_rings_the_same_alarm_once_more_and_survives_a_restart() {
-    let (clocks, id) = with_alarm(lunch(&[]));
-    let mut delivery = Delivery::default();
-    let noon = local(2026, 1, 15, 12, 0, 0);
-    assert!(
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
-            .due
-            .is_empty()
-    );
-    assert_eq!(ring(&clocks, &mut delivery, noon).due.len(), 1);
-    let alarm = clocks.alarms.get(&id).unwrap();
-    snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
-    assert!(
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 4, 59))
+    phase alarms_ring_once_per_device_and_survive_restarts;
+    {
+        // Phase: a new alarm for a past time waits until tomorrow; a one-shot
+        // alarm turns off once it rang.
+        {
+            let (mut clocks, id) = with_alarm(lunch(&[]));
+            let mut delivery = Delivery::default();
+            assert!(
+                ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 1, 0))
+                    .due
+                    .is_empty(),
+                "past time: nothing due at arming"
+            );
+            assert!(
+                ring(&clocks, &mut delivery, local(2026, 1, 16, 11, 59, 59))
+                    .due
+                    .is_empty(),
+                "past time: nothing due a second before tomorrow's deadline"
+            );
+            let rang = ring(&clocks, &mut delivery, local(2026, 1, 16, 12, 0, 0));
+            assert!(
+                matches!(rang.due.as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch"),
+                "past time: rings at tomorrow's deadline"
+            );
+            assert_eq!(
+                rang.finished_alarms,
+                vec![id.clone()],
+                "past time: a one-shot alarm turns off"
+            );
+            assert_eq!(
+                ring(&clocks, &mut delivery, local(2026, 1, 16, 12, 0, 0)),
+                Tick::default(),
+                "past time: rings only once, even before the turn-off arrives"
+            );
+            clocks.alarms.get_mut(&id).unwrap().enabled = false;
+            assert!(
+                ring(&clocks, &mut delivery, local(2026, 1, 17, 12, 0, 0))
+                    .due
+                    .is_empty(),
+                "past time: an alarm turned off stays quiet"
+            );
+        }
+
+        // Phase: a pending alarm survives a restart on another day.
+        {
+            let (clocks, _) = with_alarm(lunch(&[]));
+            let mut delivery = Delivery::default();
+            assert!(
+                ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
+                    .due
+                    .is_empty(),
+                "restart: nothing due at arming"
+            );
+            let mut reopened = restarted(&delivery);
+            assert!(
+                matches!(
+                    ring(&clocks, &mut reopened, local(2026, 1, 16, 8, 0, 0)).due.as_slice(),
+                    [DueEvent::Alarm { scheduled_for, .. }]
+                        if *scheduled_for == local(2026, 1, 15, 12, 0, 0).with_timezone(&Utc)
+                ),
+                "restart: the missed alarm rings after reopening"
+            );
+            assert_eq!(
+                reopened.alarms["alarm1"].last_rung,
+                Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()),
+                "restart: records the scheduled date"
+            );
+        }
+
+        // Phase: a recurring alarm catches up once and arms the next weekday.
+        {
+            let (clocks, _) = with_alarm(lunch(&[WeekdayKey::Thu]));
+            let mut delivery = Delivery::default();
+            assert!(
+                ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
+                    .due
+                    .is_empty(),
+                "recurring: nothing due at arming"
+            );
+            let reopened_at = local(2026, 1, 23, 8, 0, 0);
+            let rang = ring(&clocks, &mut delivery, reopened_at);
+            assert!(
+                matches!(rang.due.as_slice(), [DueEvent::Alarm { scheduled_for, .. }]
+                    if *scheduled_for == local(2026, 1, 15, 12, 0, 0).with_timezone(&Utc)),
+                "recurring: exactly one catch-up for the first missed occurrence"
+            );
+            assert!(
+                rang.finished_alarms.is_empty(),
+                "recurring: a repeating alarm stays on"
+            );
+            assert_eq!(
+                delivery.alarms["alarm1"].next_due_ms,
+                Some(local_ms(2026, 1, 29, 12, 0, 0)),
+                "recurring: next Thursday after the reopen"
+            );
+            let mut reopened = restarted(&delivery);
+            assert!(
+                ring(&clocks, &mut reopened, reopened_at).due.is_empty(),
+                "recurring: the reopened ledger does not repeat the catch-up"
+            );
+            let next = local(2026, 1, 29, 12, 0, 0);
+            assert_eq!(
+                ring(&clocks, &mut reopened, next).due.len(),
+                1,
+                "recurring: rings on the armed weekday"
+            );
+            assert!(
+                ring(&clocks, &mut reopened, next).due.is_empty(),
+                "recurring: rings only once on that weekday"
+            );
+        }
+
+        // Phase: turning an alarm off and on again (here, or on another device
+        // while this one was closed) discards the deadline armed before.
+        {
+            let (mut clocks, id) = with_alarm(lunch(&[]));
+            let mut delivery = Delivery::default();
+            ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
+            let alarm = clocks.alarms.get_mut(&id).unwrap();
+            alarm.enabled_at_ms = local_ms(2026, 1, 15, 12, 0, 30);
+            assert!(
+                ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 1, 0))
+                    .due
+                    .is_empty(),
+                "toggle: the stale deadline does not ring"
+            );
+            assert_eq!(
+                delivery.alarms["alarm1"].next_due_ms,
+                Some(local_ms(2026, 1, 16, 12, 0, 0)),
+                "toggle: re-armed for tomorrow"
+            );
+            clocks.alarms.get_mut(&id).unwrap().enabled = false;
+            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 2, 0));
+            assert!(
+                delivery.alarms.is_empty(),
+                "toggle: an alarm turned off holds no deadline"
+            );
+        }
+
+        // Phase: an alarm moved to another time on another device is armed
+        // afresh, and a removed alarm leaves the ledger.
+        {
+            let (mut clocks, id) = with_alarm(lunch(&[]));
+            let mut delivery = Delivery::default();
+            ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
+            clocks.alarms.get_mut(&id).unwrap().hour = 13;
+            assert!(
+                ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 30, 0))
+                    .due
+                    .is_empty(),
+                "moved: the old time does not ring"
+            );
+            assert_eq!(
+                delivery.alarms["alarm1"].next_due_ms,
+                Some(local_ms(2026, 1, 15, 13, 0, 0)),
+                "moved: armed for the new time"
+            );
+            clocks.alarms.remove(&id);
+            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 31, 0));
+            assert!(delivery.alarms.is_empty(), "removed: ledger entry dropped");
+        }
+    }
+
+    phase next_occurrence_honors_time_weekdays_history_and_dst;
+    {
+        // Case: keeps the requested time after today's occurrence.
+        assert_eq!(
+            next_occurrence(&lunch(&[]), None, local(2026, 1, 15, 12, 1, 0)),
+            Some(local(2026, 1, 16, 12, 0, 0)),
+            "case after-todays-occurrence"
+        );
+
+        // Case: does not repeat a rung date after a clock rollback.
+        let after = local(2026, 1, 15, 11, 0, 0);
+        assert_eq!(
+            next_occurrence(&lunch(&[WeekdayKey::Thu]), Some(after.date_naive()), after),
+            Some(local(2026, 1, 22, 12, 0, 0)),
+            "case clock-rollback"
+        );
+
+        // Case: resolves DST gaps and never repeats the autumn hour.
+        let zone = chrono_tz::Europe::Berlin;
+        let wake = Alarm {
+            label: "Wake".into(),
+            hour: 2,
+            minute: 30,
+            enabled: true,
+            ..Alarm::default()
+        };
+        let spring = zone.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap();
+        assert_eq!(
+            next_occurrence_in(&wake, None, &spring),
+            Some(zone.with_ymd_and_hms(2026, 3, 29, 3, 0, 0).unwrap()),
+            "case dst-spring-gap"
+        );
+        let autumn = zone.with_ymd_and_hms(2026, 10, 25, 1, 0, 0).unwrap();
+        let first = next_occurrence_in(&wake, None, &autumn).unwrap();
+        assert_eq!(
+            first.with_timezone(&Utc),
+            Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap(),
+            "case dst-autumn-first-occurrence"
+        );
+        assert_eq!(
+            next_occurrence_in(&wake, None, &first),
+            Some(zone.with_ymd_and_hms(2026, 10, 26, 2, 30, 0).unwrap()),
+            "case dst-autumn-no-repeat"
+        );
+
+        // Case: honors turned-off and weekday settings.
+        let after = Utc.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let mut weekend = Alarm {
+            label: "Weekend".into(),
+            hour: 12,
+            repeat: repeat_mask(&[WeekdayKey::Sat].into_iter().collect()),
+            ..Alarm::default()
+        };
+        assert_eq!(
+            next_occurrence_in(&weekend, None, &after),
+            None,
+            "case disabled"
+        );
+        weekend.enabled = true;
+        assert_eq!(
+            next_occurrence_in(&weekend, None, &after),
+            Some(Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap()),
+            "case weekday-only"
+        );
+        assert_eq!(
+            weekend.local_time(),
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap()
+        );
+    }
+
+    phase completed_one_shot_does_not_rearm_if_shared_settings_remain_enabled;
+    {
+        let (clocks, _) = with_alarm(lunch(&[]));
+        let mut delivery = Delivery::default();
+        assert!(
+            ring(&clocks, &mut delivery, local(2026, 4, 14, 11, 0, 0))
+                .due
+                .is_empty()
+        );
+        assert_eq!(
+            ring(&clocks, &mut delivery, local(2026, 4, 14, 12, 0, 0))
+                .due
+                .len(),
+            1
+        );
+        assert!(
+            ring(
+                &clocks,
+                &mut restarted(&delivery),
+                local(2026, 4, 15, 12, 0, 0)
+            )
             .due
             .is_empty(),
-        "a snooze waits its five minutes"
-    );
-    let mut reopened = restarted(&delivery);
-    let again = ring(&clocks, &mut reopened, local(2026, 1, 15, 12, 5, 0));
-    assert!(
-        matches!(again.due.as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch"),
-        "a snooze rings once after being kept across a restart"
-    );
-    assert!(
-        ring(&clocks, &mut reopened, local(2026, 1, 15, 12, 5, 1))
-            .due
-            .is_empty(),
-        "the snoozed occurrence rings once"
-    );
-}
+            "a read-only collaborator still delivers a one-shot only once per device"
+        );
+    }
 
-#[test]
-fn editing_or_removing_an_alarm_cancels_its_snooze() {
-    let (mut clocks, id) = with_alarm(lunch(&[]));
-    let mut delivery = Delivery::default();
-    let noon = local(2026, 1, 15, 12, 0, 0);
-    ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
-    ring(&clocks, &mut delivery, noon);
-    let alarm = clocks.alarms.get(&id).unwrap();
-    snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+    phase snoozing_rings_the_same_alarm_once_more_and_survives_a_restart;
+    {
+        let (clocks, id) = with_alarm(lunch(&[]));
+        let mut delivery = Delivery::default();
+        let noon = local(2026, 1, 15, 12, 0, 0);
+        assert!(
+            ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
+                .due
+                .is_empty()
+        );
+        assert_eq!(ring(&clocks, &mut delivery, noon).due.len(), 1);
+        let alarm = clocks.alarms.get(&id).unwrap();
+        snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+        assert!(
+            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 4, 59))
+                .due
+                .is_empty(),
+            "a snooze waits its five minutes"
+        );
+        let mut reopened = restarted(&delivery);
+        let again = ring(&clocks, &mut reopened, local(2026, 1, 15, 12, 5, 0));
+        assert!(
+            matches!(again.due.as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch"),
+            "a snooze rings once after being kept across a restart"
+        );
+        assert!(
+            ring(&clocks, &mut reopened, local(2026, 1, 15, 12, 5, 1))
+                .due
+                .is_empty(),
+            "the snoozed occurrence rings once"
+        );
+    }
 
-    let alarm = clocks.alarms.get_mut(&id).unwrap();
-    alarm.minute = 30;
-    assert!(
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 5, 0))
-            .due
-            .is_empty(),
-        "moving the alarm cancels the occurrence snoozed under the old time"
-    );
+    phase editing_or_removing_an_alarm_cancels_its_snooze;
+    {
+        let (mut clocks, id) = with_alarm(lunch(&[]));
+        let mut delivery = Delivery::default();
+        let noon = local(2026, 1, 15, 12, 0, 0);
+        ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
+        ring(&clocks, &mut delivery, noon);
+        let alarm = clocks.alarms.get(&id).unwrap();
+        snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
 
-    let alarm = clocks.alarms.get(&id).unwrap();
-    snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
-    clocks.alarms.remove(&id);
-    assert!(
-        ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 5, 0))
-            .due
-            .is_empty(),
-        "a deleted alarm has no snooze"
-    );
+        let alarm = clocks.alarms.get_mut(&id).unwrap();
+        alarm.minute = 30;
+        assert!(
+            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 5, 0))
+                .due
+                .is_empty(),
+            "moving the alarm cancels the occurrence snoozed under the old time"
+        );
+
+        let alarm = clocks.alarms.get(&id).unwrap();
+        snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+        clocks.alarms.remove(&id);
+        assert!(
+            ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 5, 0))
+                .due
+                .is_empty(),
+            "a deleted alarm has no snooze"
+        );
+    }
 }

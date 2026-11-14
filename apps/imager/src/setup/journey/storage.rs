@@ -212,41 +212,45 @@ pub(super) fn requirements(target_bytes: u64) -> plan::Requirements {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn admission_refuses_shortage_and_modified_review_geometry() {
-        let mut storage = Storage::default();
-        storage.stage();
-        assert!(storage.admit().is_ok());
-        storage
-            .plan
-            .as_mut()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .target_extent
-            .first_lba += 2048;
-        assert!(storage.admit().is_err());
-        storage.set_application_minimum(600 << 30);
-        assert!(matches!(
-            storage.admit(),
-            Err(plan::PlanError::InsufficientSpace { .. })
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn storage_admits_only_the_reviewed_plan_above_the_application_minimum;
 
-    #[test]
-    fn production_planner_and_size_control_enforce_application_lower_bound() {
-        let mut storage = Storage::default();
-        storage.set_application_minimum(180 << 30);
-        storage.stage();
-        let (minimum, _) = storage.bounds.unwrap();
-        assert_eq!(minimum, 180);
-        assert!(storage.selected() >= minimum);
-        assert!(storage.set_size(179).is_err());
-        let plan = storage.plan.as_ref().unwrap().as_ref().unwrap();
-        assert!(plan.target_extent.lbas() * plan.basis.disk.sector_bytes >= 180 << 30);
-        assert_eq!(
-            storage.application_estimate(),
-            Some((180 << 30) - staging::MIN_TARGET_BYTES)
-        );
+        phase admission_refuses_shortage_and_modified_review_geometry;
+        {
+            let mut storage = Storage::default();
+            storage.stage();
+            assert!(storage.admit().is_ok());
+            storage
+                .plan
+                .as_mut()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .target_extent
+                .first_lba += 2048;
+            assert!(storage.admit().is_err());
+            storage.set_application_minimum(600 << 30);
+            assert!(matches!(
+                storage.admit(),
+                Err(plan::PlanError::InsufficientSpace { .. })
+            ));
+        }
+
+        phase production_planner_and_size_control_enforce_application_lower_bound;
+        {
+            let mut storage = Storage::default();
+            storage.set_application_minimum(180 << 30);
+            storage.stage();
+            let (minimum, _) = storage.bounds.unwrap();
+            assert_eq!(minimum, 180);
+            assert!(storage.selected() >= minimum);
+            assert!(storage.set_size(179).is_err());
+            let plan = storage.plan.as_ref().unwrap().as_ref().unwrap();
+            assert!(plan.target_extent.lbas() * plan.basis.disk.sector_bytes >= 180 << 30);
+            assert_eq!(
+                storage.application_estimate(),
+                Some((180 << 30) - staging::MIN_TARGET_BYTES)
+            );
+        }
     }
 }

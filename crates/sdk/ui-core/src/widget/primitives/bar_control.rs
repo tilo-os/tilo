@@ -353,38 +353,42 @@ impl IconButton {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_bar_control_is_plain_at_rest_and_lifts_on_hover_and_while_open() {
-        let theme = Theme::dark();
-        let ground = theme.tokens.colors.surfaces.base;
-        let face = BarControlFace::new("Workspace").label("Studio");
-        assert_eq!(face.fill(&theme, ground), None, "plain at rest");
-        let hover = face.hovered(true).fill(&theme, ground);
-        let open = face.open(true).fill(&theme, ground);
-        assert!(hover.is_some() && open.is_some());
-        let step = |c: Option<Color>| crate::chrome::lightness_step(c.unwrap_or(ground), ground);
-        assert!(step(open) > step(hover), "open holds the whole lift");
-        assert!((BarControlFace::height(&theme) - 28.0).abs() < 1e-6);
-    }
+    tilo_test_env::scenario! {
+        fn a_bar_control_is_plain_square_or_labelled_and_named;
 
-    #[test]
-    fn an_icon_bar_control_is_square_and_a_labelled_one_hugs_its_label() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let icon = BarControlFace::new("Quick settings").icon(Icon::Settings);
-        assert!((icon.width(&mut text, &theme) - 28.0).abs() < 1e-6);
-        let short = BarControlFace::new("Workspace").label("Studio");
-        let long = BarControlFace::new("Workspace").label("Studio for collaborators");
-        assert!(long.width(&mut text, &theme) > short.width(&mut text, &theme));
-        let chevron = short.trailing(Icon::ChevronDown);
-        assert!(chevron.width(&mut text, &theme) > short.width(&mut text, &theme));
-    }
+        phase a_bar_control_is_plain_at_rest_and_lifts_on_hover_and_while_open;
+        {
+            let theme = Theme::dark();
+            let ground = theme.tokens.colors.surfaces.base;
+            let face = BarControlFace::new("Workspace").label("Studio");
+            assert_eq!(face.fill(&theme, ground), None, "plain at rest");
+            let hover = face.hovered(true).fill(&theme, ground);
+            let open = face.open(true).fill(&theme, ground);
+            assert!(hover.is_some() && open.is_some());
+            let step = |c: Option<Color>| crate::chrome::lightness_step(c.unwrap_or(ground), ground);
+            assert!(step(open) > step(hover), "open holds the whole lift");
+            assert!((BarControlFace::height(&theme) - 28.0).abs() < 1e-6);
+        }
 
-    #[test]
-    fn an_icon_button_carries_its_name_as_tooltip_and_accessible_name() {
-        use crate::widget::Widget;
-        let button = IconButton::small("close", Icon::X, "Close window");
-        let node = button.accessibility().expect("a button is accessible");
-        assert_eq!(node.name.as_deref(), Some("Close window"));
+        phase an_icon_bar_control_is_square_and_a_labelled_one_hugs_its_label;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let icon = BarControlFace::new("Quick settings").icon(Icon::Settings);
+            assert!((icon.width(&mut text, &theme) - 28.0).abs() < 1e-6);
+            let short = BarControlFace::new("Workspace").label("Studio");
+            let long = BarControlFace::new("Workspace").label("Studio for collaborators");
+            assert!(long.width(&mut text, &theme) > short.width(&mut text, &theme));
+            let chevron = short.trailing(Icon::ChevronDown);
+            assert!(chevron.width(&mut text, &theme) > short.width(&mut text, &theme));
+        }
+
+        phase an_icon_button_carries_its_name_as_tooltip_and_accessible_name;
+        {
+            use crate::widget::Widget;
+            let button = IconButton::small("close", Icon::X, "Close window");
+            let node = button.accessibility().expect("a button is accessible");
+            assert_eq!(node.name.as_deref(), Some("Close window"));
+        }
     }
 }

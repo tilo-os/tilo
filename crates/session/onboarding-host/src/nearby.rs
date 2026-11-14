@@ -762,60 +762,224 @@ mod tests {
         path
     }
 
-    #[test]
-    fn a_complete_status_joins_without_waiting_for_the_helper_to_exit() {
-        let fixture = fixture();
-        let record = joined_record(&fixture, [7; 32]);
-        let status = serde_json::json!({
-            "state": "complete",
-            "verification_code": "123456",
-            "identity": hex::encode([7; 32]),
-            "record_path": record,
-        });
-        // The helper keeps running after reporting: completion must not
-        // wait for its exit or parse anything it prints.
-        let script = format!("printf '%s' '{status}' > \"$1\"; exec sleep infinity");
-        let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-        assert_eq!(
-            poll_until_over(&mut pairing),
-            NearbyEvent::Joined(MintedIdentity {
-                fingerprint: hex::encode([7; 32]),
-                path: record,
-            })
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_pairing_ends_as_its_helper_reports_and_names_why_it_failed;
 
-    #[test]
-    fn a_status_naming_another_identity_is_invalid() {
-        let fixture = fixture();
-        let record = joined_record(&fixture, [7; 32]);
-        let status = serde_json::json!({
-            "state": "complete",
-            "identity": hex::encode([8; 32]),
-            "record_path": record,
-        });
-        let script = format!("printf '%s' '{status}' > \"$1\"");
-        let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-        assert_eq!(
-            poll_until_over(&mut pairing),
-            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-        );
-    }
+        phase a_complete_status_joins_without_waiting_for_the_helper_to_exit;
+        {
+            let fixture = fixture();
+            let record = joined_record(&fixture, [7; 32]);
+            let status = serde_json::json!({
+                "state": "complete",
+                "verification_code": "123456",
+                "identity": hex::encode([7; 32]),
+                "record_path": record,
+            });
+            // The helper keeps running after reporting: completion must not
+            // wait for its exit or parse anything it prints.
+            let script = format!("printf '%s' '{status}' > \"$1\"; exec sleep infinity");
+            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Joined(MintedIdentity {
+                    fingerprint: hex::encode([7; 32]),
+                    path: record,
+                })
+            );
+        }
 
-    #[test]
-    fn a_selected_identity_joins_without_a_status() {
-        let fixture = fixture();
-        let record = joined_record(&fixture, [9; 32]);
-        runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
-            .expect("select joined identity");
-        let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-        assert_eq!(
-            poll_until_over(&mut pairing),
-            NearbyEvent::Joined(MintedIdentity {
-                fingerprint: hex::encode([9; 32]),
-                path: record,
-            })
-        );
+        phase a_status_naming_another_identity_is_invalid;
+        {
+            let fixture = fixture();
+            let record = joined_record(&fixture, [7; 32]);
+            let status = serde_json::json!({
+                "state": "complete",
+                "identity": hex::encode([8; 32]),
+                "record_path": record,
+            });
+            let script = format!("printf '%s' '{status}' > \"$1\"");
+            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+            );
+        }
+
+        phase a_selected_identity_joins_without_a_status;
+        {
+            let fixture = fixture();
+            let record = joined_record(&fixture, [9; 32]);
+            runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+                .expect("select joined identity");
+            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Joined(MintedIdentity {
+                    fingerprint: hex::encode([9; 32]),
+                    path: record,
+                })
+            );
+        }
+
+        phase a_refused_commit_reports_permission_denied;
+        {
+            let fixture = fixture();
+            let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)","cause":"permission_denied"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
+            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+            let NearbyEvent::Failed(failure) = poll_until_over(&mut pairing) else {
+                panic!("the refused commit is a failure");
+            };
+            assert_eq!(
+                failure,
+                NearbyFailure {
+                    cause: NearbyCause::PermissionDenied,
+                    detail: Some("Permission denied (os error 13)".into()),
+                }
+            );
+            assert!(failure.title().contains("Permission denied"), "{failure:?}");
+        }
+
+        phase an_unparsed_error_is_reported_verbatim_and_recorded;
+        {
+            let fixture = fixture();
+            let script = r#"echo "Error: Not authorized" >&2; exit 127"#;
+            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+            let expected = NearbyFailure {
+                cause: NearbyCause::Unknown,
+                detail: Some("Not authorized".into()),
+            };
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Failed(expected.clone())
+            );
+            assert_eq!(
+                read_progress(&fixture.status),
+                NearbyProgress::Failed(expected)
+            );
+        }
+
+        phase a_worker_holding_stderr_does_not_delay_the_failure;
+        {
+            let fixture = fixture();
+            // The leader reports and exits while a worker it started keeps
+            // the inherited stderr open for longer than the test waits, so
+            // a report that waited on the pipe never comes.
+            let script = format!(
+                r#"(sleep {}) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#,
+                tilo_test_env::hang_bound()
+                    .as_secs()
+                    .saturating_mul(2)
+                    .max(600)
+            );
+            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Failed(NearbyFailure {
+                    cause: NearbyCause::PermissionDenied,
+                    detail: Some("Permission denied (os error 13)".into()),
+                })
+            );
+        }
+
+        phase a_helper_exiting_without_an_identity_is_invalid;
+        {
+            let fixture = fixture();
+            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+            );
+        }
+
+        phase each_failure_cause_reaches_the_screen_in_its_own_words;
+        {
+            // The helper names the cause in its status file.
+            for (name, cause) in [
+                ("permission_denied", NearbyCause::PermissionDenied),
+                ("storage_full", NearbyCause::StorageFull),
+                ("read_only", NearbyCause::ReadOnly),
+                ("unreachable", NearbyCause::Unreachable),
+                ("timed_out", NearbyCause::TimedOut),
+                ("unknown", NearbyCause::Unknown),
+            ] {
+                assert_eq!(NearbyCause::from_status(name), Some(cause));
+                assert_eq!(cause.status_name(), name);
+            }
+            // A reason known only as text still carries its operating-system
+            // error.
+            for (text, cause) in [
+                (
+                    "Permission denied (os error 13)",
+                    NearbyCause::PermissionDenied,
+                ),
+                (
+                    "write commit: Operation not permitted (os error 1)",
+                    NearbyCause::PermissionDenied,
+                ),
+                (
+                    "No space left on device (os error 28)",
+                    NearbyCause::StorageFull,
+                ),
+                ("Read-only file system (os error 30)", NearbyCause::ReadOnly),
+                (
+                    "Network is unreachable (os error 101)",
+                    NearbyCause::Unreachable,
+                ),
+                ("Not authorized", NearbyCause::Unknown),
+                ("Invalid argument (os error 22)", NearbyCause::Unknown),
+            ] {
+                assert_eq!(NearbyCause::from_text(text), cause, "{text}");
+            }
+            let fixture = fixture();
+            std::fs::write(
+                &fixture.status,
+                r#"{"state":"failed","error":"Permission denied (os error 13)"}"#,
+            )
+            .expect("status");
+            assert_eq!(
+                read_progress(&fixture.status),
+                NearbyProgress::Failed(NearbyFailure {
+                    cause: NearbyCause::PermissionDenied,
+                    detail: Some("Permission denied (os error 13)".into()),
+                })
+            );
+
+            // Every cause the person can act on has its own title; only a reason
+            // nothing more is known about uses the general one.
+            let general = NearbyFailure::new(NearbyCause::Unknown).title();
+            let specific = [
+                NearbyCause::PermissionDenied,
+                NearbyCause::StorageFull,
+                NearbyCause::ReadOnly,
+                NearbyCause::Unreachable,
+                NearbyCause::TimedOut,
+                NearbyCause::InvalidIdentity,
+                NearbyCause::NotStarted,
+            ];
+            let mut titles = std::collections::BTreeSet::new();
+            for cause in specific {
+                let title = NearbyFailure::new(cause).title();
+                assert_ne!(title, general, "{cause:?} is reported generically");
+                assert!(
+                    titles.insert(title),
+                    "{cause:?} shares another cause's title"
+                );
+            }
+            let denied = NearbyFailure::from_detail("Permission denied (os error 13)".into());
+            assert!(
+                denied.title().contains("Permission denied"),
+                "{}",
+                denied.title()
+            );
+            assert!(
+                denied.message().contains("Permission denied (os error 13)"),
+                "the helper's words stay available: {}",
+                denied.message()
+            );
+            let unknown = NearbyFailure::from_detail("Not authorized".into());
+            assert_eq!(unknown.title(), general);
+            assert!(unknown.message().contains("Not authorized"));
+        }
     }
 
     /// The selection lands while the helper is still committing: the
@@ -854,43 +1018,6 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_commit_reports_permission_denied() {
-        let fixture = fixture();
-        let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)","cause":"permission_denied"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
-        let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-        let NearbyEvent::Failed(failure) = poll_until_over(&mut pairing) else {
-            panic!("the refused commit is a failure");
-        };
-        assert_eq!(
-            failure,
-            NearbyFailure {
-                cause: NearbyCause::PermissionDenied,
-                detail: Some("Permission denied (os error 13)".into()),
-            }
-        );
-        assert!(failure.title().contains("Permission denied"), "{failure:?}");
-    }
-
-    #[test]
-    fn an_unparsed_error_is_reported_verbatim_and_recorded() {
-        let fixture = fixture();
-        let script = r#"echo "Error: Not authorized" >&2; exit 127"#;
-        let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-        let expected = NearbyFailure {
-            cause: NearbyCause::Unknown,
-            detail: Some("Not authorized".into()),
-        };
-        assert_eq!(
-            poll_until_over(&mut pairing),
-            NearbyEvent::Failed(expected.clone())
-        );
-        assert_eq!(
-            read_progress(&fixture.status),
-            NearbyProgress::Failed(expected)
-        );
-    }
-
-    #[test]
     fn a_stuck_helper_times_out_after_showing_its_code() {
         let fixture = fixture();
         let script = r#"printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"; trap '' TERM; while :; do sleep 1; done"#;
@@ -916,118 +1043,88 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_worker_holding_stderr_does_not_delay_the_failure() {
-        let fixture = fixture();
-        // The leader reports and exits while a worker it started keeps
-        // the inherited stderr open for longer than the test waits, so
-        // a report that waited on the pipe never comes.
-        let script = format!(
-            r#"(sleep {}) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#,
-            tilo_test_env::hang_bound()
-                .as_secs()
-                .saturating_mul(2)
-                .max(600)
-        );
-        let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-        assert_eq!(
-            poll_until_over(&mut pairing),
-            NearbyEvent::Failed(NearbyFailure {
-                cause: NearbyCause::PermissionDenied,
-                detail: Some("Permission denied (os error 13)".into()),
-            })
-        );
-    }
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn a_pairing_polled_on_the_loop_never_waits_for_the_disk;
 
-    #[test]
-    fn a_helper_exiting_without_an_identity_is_invalid() {
-        let fixture = fixture();
-        let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-        assert_eq!(
-            poll_until_over(&mut pairing),
-            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-        );
-    }
-
-    /// The onboarding view polls the pairing from the compositor's loop;
-    /// recording a failed attempt must not wait for the disk there.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn recording_a_failed_pairing_never_waits_for_the_disk() {
-        let fixture = fixture();
-        let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-        let event = tilo_test_env::disk_sync::on_a_thread_that_cannot_sync(|| {
-            poll_until_over(&mut pairing)
-        });
-        assert_eq!(
-            event,
-            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-        );
-        assert!(
-            matches!(read_progress(&fixture.status), NearbyProgress::Failed(_)),
-            "the failure is recorded for the screen"
-        );
-        let mode = std::fs::metadata(&fixture.status)
-            .expect("status")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-
-    /// The onboarding view polls the pairing from the compositor's loop,
-    /// four times a second; the helper's status file is read by the
-    /// watcher, never by a poll. While the file holds every reader up (a
-    /// FIFO nobody writes yet), each poll returns at once, and the code the
-    /// helper then writes reaches the screen through the watcher.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn polling_a_pairing_never_reads_its_status_file_on_the_loop() {
-        let fixture = fixture();
-        let mut pairing = helper(&fixture, "exec sleep infinity", PROCESS_BOUND);
-        // Spawning removed any old status; the helper's file is now one
-        // whose bytes have not arrived.
-        let status = tilo_test_env::disk_sync::blocking_source(
-            &fixture.identity_dir,
-            ".nearby-enrollment-status.json",
-        );
-        assert_eq!(status, fixture.status);
-        for _ in 0..3 {
-            let (event, blocked) = std::thread::scope(|scope| {
-                let poll = scope.spawn(|| pairing.poll(Instant::now()));
-                let deadline = tilo_test_env::hang_deadline();
-                while !poll.is_finished() && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                let blocked = !poll.is_finished();
-                if blocked {
-                    // Let the stuck read go, so the test fails instead of
-                    // hanging.
-                    std::fs::write(&status, b"{}").expect("release the read");
-                }
-                (poll.join().expect("the poll finished"), blocked)
+        phase recording_a_failed_pairing_never_waits_for_the_disk;
+        // The onboarding view polls the pairing from the compositor's loop;
+        // recording a failed attempt must not wait for the disk there.
+        {
+            let fixture = fixture();
+            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
+            let event = tilo_test_env::disk_sync::on_a_thread_that_cannot_sync(|| {
+                poll_until_over(&mut pairing)
             });
-            assert!(!blocked, "a poll read the status file on the loop");
-            assert_eq!(event, NearbyEvent::Idle);
-            std::thread::sleep(Duration::from_millis(20));
+            assert_eq!(
+                event,
+                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+            );
+            assert!(
+                matches!(read_progress(&fixture.status), NearbyProgress::Failed(_)),
+                "the failure is recorded for the screen"
+            );
+            let mode = std::fs::metadata(&fixture.status)
+                .expect("status")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
         }
 
-        std::fs::write(
-            &status,
-            br#"{"state":"waiting_for_approval","verification_code":"424242"}"#,
-        )
-        .expect("the watcher reads the status");
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            match pairing.poll(Instant::now()) {
-                NearbyEvent::Idle => {}
-                NearbyEvent::Code(code) => {
-                    assert_eq!(code, "424242");
-                    break;
-                }
-                event => panic!("the pairing ended: {event:?}"),
+        phase polling_a_pairing_never_reads_its_status_file_on_the_loop;
+        // The onboarding view polls the pairing from the compositor's loop,
+        // four times a second; the helper's status file is read by the
+        // watcher, never by a poll. While the file holds every reader up (a
+        // FIFO nobody writes yet), each poll returns at once, and the code the
+        // helper then writes reaches the screen through the watcher.
+        {
+            let fixture = fixture();
+            let mut pairing = helper(&fixture, "exec sleep infinity", PROCESS_BOUND);
+            // Spawning removed any old status; the helper's file is now one
+            // whose bytes have not arrived.
+            let status = tilo_test_env::disk_sync::blocking_source(
+                &fixture.identity_dir,
+                ".nearby-enrollment-status.json",
+            );
+            assert_eq!(status, fixture.status);
+            for _ in 0..3 {
+                let (event, blocked) = std::thread::scope(|scope| {
+                    let poll = scope.spawn(|| pairing.poll(Instant::now()));
+                    let deadline = tilo_test_env::hang_deadline();
+                    while !poll.is_finished() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    let blocked = !poll.is_finished();
+                    if blocked {
+                        // Let the stuck read go, so the test fails instead of
+                        // hanging.
+                        std::fs::write(&status, b"{}").expect("release the read");
+                    }
+                    (poll.join().expect("the poll finished"), blocked)
+                });
+                assert!(!blocked, "a poll read the status file on the loop");
+                assert_eq!(event, NearbyEvent::Idle);
+                std::thread::sleep(Duration::from_millis(20));
             }
-            assert!(Instant::now() < deadline, "the code never arrived");
-            std::thread::sleep(Duration::from_millis(20));
+
+            std::fs::write(
+                &status,
+                br#"{"state":"waiting_for_approval","verification_code":"424242"}"#,
+            )
+            .expect("the watcher reads the status");
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                match pairing.poll(Instant::now()) {
+                    NearbyEvent::Idle => {}
+                    NearbyEvent::Code(code) => {
+                        assert_eq!(code, "424242");
+                        break;
+                    }
+                    event => panic!("the pairing ended: {event:?}"),
+                }
+                assert!(Instant::now() < deadline, "the code never arrived");
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 
@@ -1057,209 +1154,127 @@ mod tests {
         (release, thread)
     }
 
-    #[test]
-    fn pairing_final_look_has_a_bounded_grace() {
-        for exited in [false, true] {
-            let fixture = fixture();
-            // A helper that is still running ends only when the attempt
-            // stops it: a fixed sleep can end by itself on a loaded machine,
-            // and then the attempt reads as one that exited.
-            let mut pairing = helper(
-                &fixture,
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_pairings_final_look_is_bounded_and_takes_only_what_its_watcher_verified;
+
+        phase pairing_final_look_has_a_bounded_grace;
+        {
+            for exited in [false, true] {
+                let fixture = fixture();
+                // A helper that is still running ends only when the attempt
+                // stops it: a fixed sleep can end by itself on a loaded machine,
+                // and then the attempt reads as one that exited.
+                let mut pairing = helper(
+                    &fixture,
+                    if exited {
+                        "exit 7"
+                    } else {
+                        "exec sleep infinity"
+                    },
+                    PROCESS_BOUND,
+                );
+                let (release, watcher) = gate_status_watcher(&mut pairing, &fixture);
                 if exited {
-                    "exit 7"
-                } else {
-                    "exec sleep infinity"
-                },
-                PROCESS_BOUND,
-            );
-            let (release, watcher) = gate_status_watcher(&mut pairing, &fixture);
-            if exited {
-                pairing.child.as_mut().expect("child").wait().expect("exit");
-            }
-            // Even an identity already on disk cannot be accepted until the
-            // watcher verifies it. The reader remains gated throughout.
-            joined_record(&fixture, [7; 32]);
-            runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
-                .expect("active identity");
-            let now = if exited {
-                Instant::now()
-            } else {
-                pairing.deadline
-            };
-            assert_eq!(pairing.poll(now), NearbyEvent::Idle);
-            assert_eq!(
-                pairing.poll(
-                    (now + FINAL_LOOK_GRACE)
-                        .checked_sub(Duration::from_millis(1))
-                        .expect("instant before grace expires"),
-                ),
-                NearbyEvent::Idle
-            );
-            assert_eq!(
-                pairing.poll(now + FINAL_LOOK_GRACE),
-                NearbyEvent::Failed(NearbyFailure::new(if exited {
-                    NearbyCause::Ended
-                } else {
-                    NearbyCause::TimedOut
-                }))
-            );
-            drop(pairing);
-            drop(release);
-            watcher.join().expect("watcher stopped");
-        }
-    }
-
-    #[test]
-    fn pairing_final_look_accepts_only_a_verified_late_active_identity() {
-        for valid in [false, true] {
-            let fixture = fixture();
-            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-            let (release, watcher) = gate_status_watcher(&mut pairing, &fixture);
-            pairing.child.as_mut().expect("child").wait().expect("exit");
-            // Hold the polling clock within grace while the real worker runs;
-            // scheduling delay is not the timeout behavior this test proves.
-            let now = Instant::now();
-            assert_eq!(pairing.poll(now), NearbyEvent::Idle);
-            let record = joined_record(&fixture, [7; 32]);
-            runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
-                .expect("active identity");
-            if !valid {
-                std::fs::write(&record, b"{}").expect("invalid record");
-            }
-            release.send(()).expect("release reader during grace");
-            assert_eq!(
-                poll_until_over_at(&mut pairing, Some(now)),
-                if valid {
-                    NearbyEvent::Joined(MintedIdentity {
-                        fingerprint: hex::encode([7; 32]),
-                        path: record,
-                    })
-                } else {
-                    NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+                    pairing.child.as_mut().expect("child").wait().expect("exit");
                 }
-            );
-            drop(pairing);
-            watcher.join().expect("watcher stopped");
-        }
-    }
-
-    #[test]
-    fn pairing_lost_watcher_never_falls_back_to_disk_reads() {
-        for lost in 0..3 {
-            let fixture = fixture();
-            let mut pairing = helper(&fixture, "exit 7", PROCESS_BOUND);
-            pairing.child.as_mut().expect("child").wait().expect("exit");
-            let (wakes, woken) = mpsc::channel();
-            let (sent, reads) = mpsc::channel();
-            pairing.watcher = Some(StatusWatcher { wakes, reads });
-            match lost {
-                0 => pairing.watcher = None,
-                1 => drop(sent),
-                _ => drop(woken),
+                // Even an identity already on disk cannot be accepted until the
+                // watcher verifies it. The reader remains gated throughout.
+                joined_record(&fixture, [7; 32]);
+                runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+                    .expect("active identity");
+                let now = if exited {
+                    Instant::now()
+                } else {
+                    pairing.deadline
+                };
+                assert_eq!(pairing.poll(now), NearbyEvent::Idle);
+                assert_eq!(
+                    pairing.poll(
+                        (now + FINAL_LOOK_GRACE)
+                            .checked_sub(Duration::from_millis(1))
+                            .expect("instant before grace expires"),
+                    ),
+                    NearbyEvent::Idle
+                );
+                assert_eq!(
+                    pairing.poll(now + FINAL_LOOK_GRACE),
+                    NearbyEvent::Failed(NearbyFailure::new(if exited {
+                        NearbyCause::Ended
+                    } else {
+                        NearbyCause::TimedOut
+                    }))
+                );
+                drop(pairing);
+                drop(release);
+                watcher.join().expect("watcher stopped");
             }
-            // A synchronous final read would incorrectly find and accept
-            // this identity instead of preserving the cached helper error.
-            joined_record(&fixture, [7; 32]);
-            runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
-                .expect("active identity");
-            let failure = NearbyFailure::new(NearbyCause::PermissionDenied);
-            pairing.status.progress = NearbyProgress::Failed(failure.clone());
-            assert_eq!(
-                pairing.poll(Instant::now()),
-                NearbyEvent::Failed(failure),
-                "lost watcher case {lost}"
-            );
         }
-    }
 
-    #[test]
-    fn each_failure_cause_reaches_the_screen_in_its_own_words() {
-        // The helper names the cause in its status file.
-        for (name, cause) in [
-            ("permission_denied", NearbyCause::PermissionDenied),
-            ("storage_full", NearbyCause::StorageFull),
-            ("read_only", NearbyCause::ReadOnly),
-            ("unreachable", NearbyCause::Unreachable),
-            ("timed_out", NearbyCause::TimedOut),
-            ("unknown", NearbyCause::Unknown),
-        ] {
-            assert_eq!(NearbyCause::from_status(name), Some(cause));
-            assert_eq!(cause.status_name(), name);
+        phase pairing_final_look_accepts_only_a_verified_late_active_identity;
+        {
+            for valid in [false, true] {
+                let fixture = fixture();
+                let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
+                let (release, watcher) = gate_status_watcher(&mut pairing, &fixture);
+                pairing.child.as_mut().expect("child").wait().expect("exit");
+                // Hold the polling clock within grace while the real worker runs;
+                // scheduling delay is not the timeout behavior this test proves.
+                let now = Instant::now();
+                assert_eq!(pairing.poll(now), NearbyEvent::Idle);
+                let record = joined_record(&fixture, [7; 32]);
+                runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+                    .expect("active identity");
+                if !valid {
+                    std::fs::write(&record, b"{}").expect("invalid record");
+                }
+                release.send(()).expect("release reader during grace");
+                assert_eq!(
+                    poll_until_over_at(&mut pairing, Some(now)),
+                    if valid {
+                        NearbyEvent::Joined(MintedIdentity {
+                            fingerprint: hex::encode([7; 32]),
+                            path: record,
+                        })
+                    } else {
+                        NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+                    }
+                );
+                drop(pairing);
+                watcher.join().expect("watcher stopped");
+            }
         }
-        // A reason known only as text still carries its operating-system
-        // error.
-        for (text, cause) in [
-            (
-                "Permission denied (os error 13)",
-                NearbyCause::PermissionDenied,
-            ),
-            (
-                "write commit: Operation not permitted (os error 1)",
-                NearbyCause::PermissionDenied,
-            ),
-            (
-                "No space left on device (os error 28)",
-                NearbyCause::StorageFull,
-            ),
-            ("Read-only file system (os error 30)", NearbyCause::ReadOnly),
-            (
-                "Network is unreachable (os error 101)",
-                NearbyCause::Unreachable,
-            ),
-            ("Not authorized", NearbyCause::Unknown),
-            ("Invalid argument (os error 22)", NearbyCause::Unknown),
-        ] {
-            assert_eq!(NearbyCause::from_text(text), cause, "{text}");
-        }
-        let fixture = fixture();
-        std::fs::write(
-            &fixture.status,
-            r#"{"state":"failed","error":"Permission denied (os error 13)"}"#,
-        )
-        .expect("status");
-        assert_eq!(
-            read_progress(&fixture.status),
-            NearbyProgress::Failed(NearbyFailure {
-                cause: NearbyCause::PermissionDenied,
-                detail: Some("Permission denied (os error 13)".into()),
-            })
-        );
 
-        // Every cause the person can act on has its own title; only a reason
-        // nothing more is known about uses the general one.
-        let general = NearbyFailure::new(NearbyCause::Unknown).title();
-        let specific = [
-            NearbyCause::PermissionDenied,
-            NearbyCause::StorageFull,
-            NearbyCause::ReadOnly,
-            NearbyCause::Unreachable,
-            NearbyCause::TimedOut,
-            NearbyCause::InvalidIdentity,
-            NearbyCause::NotStarted,
-        ];
-        let mut titles = std::collections::BTreeSet::new();
-        for cause in specific {
-            let title = NearbyFailure::new(cause).title();
-            assert_ne!(title, general, "{cause:?} is reported generically");
-            assert!(
-                titles.insert(title),
-                "{cause:?} shares another cause's title"
-            );
+        phase pairing_lost_watcher_never_falls_back_to_disk_reads;
+        {
+            for lost in 0..3 {
+                let fixture = fixture();
+                let mut pairing = helper(&fixture, "exit 7", PROCESS_BOUND);
+                pairing.child.as_mut().expect("child").wait().expect("exit");
+                let (wakes, woken) = mpsc::channel();
+                let (sent, reads) = mpsc::channel();
+                pairing.watcher = Some(StatusWatcher { wakes, reads });
+                match lost {
+                    0 => pairing.watcher = None,
+                    1 => drop(sent),
+                    _ => drop(woken),
+                }
+                // A synchronous final read would incorrectly find and accept
+                // this identity instead of preserving the cached helper error.
+                joined_record(&fixture, [7; 32]);
+                runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+                    .expect("active identity");
+                let failure = NearbyFailure::new(NearbyCause::PermissionDenied);
+                pairing.status.progress = NearbyProgress::Failed(failure.clone());
+                assert_eq!(
+                    pairing.poll(Instant::now()),
+                    NearbyEvent::Failed(failure),
+                    "lost watcher case {lost}"
+                );
+            }
         }
-        let denied = NearbyFailure::from_detail("Permission denied (os error 13)".into());
-        assert!(
-            denied.title().contains("Permission denied"),
-            "{}",
-            denied.title()
-        );
-        assert!(
-            denied.message().contains("Permission denied (os error 13)"),
-            "the helper's words stay available: {}",
-            denied.message()
-        );
-        let unknown = NearbyFailure::from_detail("Not authorized".into());
-        assert_eq!(unknown.title(), general);
-        assert!(unknown.message().contains("Not authorized"));
     }
 }

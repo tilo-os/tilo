@@ -48,6 +48,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tilo_relay_protocol::WorkspaceId;
 
 #[cfg(test)]
 pub(crate) use tilo_relay_store::thread_fsyncs;
@@ -153,7 +154,7 @@ pub struct RetainOutcome {
 #[derive(Clone)]
 pub struct WorkspaceStore {
     root: PathBuf,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     pinned: bool,
     /// Shared by every handle on `root`: the captures whose retained frames
     /// are listed but not yet pinned, and the collections that wait for
@@ -198,7 +199,11 @@ impl WorkspaceStore {
     ///
     /// Returns an error if any of the workspace's on-disk directories
     /// can't be created.
-    pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
+    pub fn open(
+        state_root: &Path,
+        workspace_id: WorkspaceId,
+        pinned: bool,
+    ) -> Result<Self, StoreError> {
         Self::open_with_payloads(
             state_root,
             workspace_id,
@@ -216,7 +221,7 @@ impl WorkspaceStore {
     /// The same as [`Self::open`].
     pub fn open_with_payloads(
         state_root: &Path,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pinned: bool,
         payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
     ) -> Result<Self, StoreError> {
@@ -251,7 +256,7 @@ impl WorkspaceStore {
         &self.root
     }
 
-    pub fn workspace_id(&self) -> u64 {
+    pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
 
@@ -566,7 +571,7 @@ mod tests {
     #[test]
     fn commit_ledger_round_trips_and_ignores_a_torn_tail() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), true).unwrap();
         let record = |n: u8| CommitRecord {
             author: [n; 32],
             op: [n; 16],
@@ -595,26 +600,26 @@ mod tests {
     fn store_persists_layout_snapshots_logs_and_per_peer_pending_queues() {
         {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), true).unwrap();
             assert!(store.root().is_dir());
             assert!(store.root().join("pending").is_dir());
         }
         {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), true).unwrap();
             assert!(store.load_snapshot().unwrap().is_none());
             store.save_snapshot(b"HELLO").unwrap();
             assert_eq!(store.load_snapshot().unwrap().unwrap(), b"HELLO");
         }
         {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             store.save_snapshot(b"HELLO").unwrap();
             assert!(store.load_snapshot().unwrap().is_none());
         }
         {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             let peer = [3u8; 32];
             store.enqueue_pending(&peer, 100, b"one").unwrap();
             store.enqueue_pending(&peer, 200, b"two").unwrap();
@@ -630,7 +635,7 @@ mod tests {
         }
         {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 8, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(8), false).unwrap();
             let peer = [4u8; 32];
             store.enqueue_pending(&peer, 100, b"one").unwrap();
 
@@ -644,7 +649,7 @@ mod tests {
         }
         {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             store.enqueue_pending(&[1u8; 32], 100, b"a").unwrap();
             store.enqueue_pending(&[2u8; 32], 200, b"b").unwrap();
             let out1 = store.drain_pending(&[1u8; 32]).unwrap();
@@ -728,7 +733,7 @@ mod tests {
     #[test]
     fn governed_access_is_one_authoritative_device_and_root_record() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), true).unwrap();
         store
             .save_governed_access(&GovernedAccessRecord {
                 member_devices: vec![[1; 32]],
@@ -772,7 +777,7 @@ mod tests {
             }
         };
         crate::transport::encode(&crate::transport::Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [author; 32],
             authored_at_ns: 1,
             delta: payload.encode().unwrap(),
@@ -784,7 +789,7 @@ mod tests {
     #[test]
     fn retained_replacement_preserves_other_publishers_channels_and_unproven_history() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let a1 = retained(1, 9, true, 1);
         let a2 = retained(1, 9, true, 2);
         let b = retained(2, 9, true, 1);
@@ -806,7 +811,7 @@ mod tests {
     #[test]
     fn retry_of_current_checkpoint_does_not_erase_later_tail() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let cp = retained(1, 9, true, 1);
         let tail = retained(1, 9, false, 1);
         store.retain_checkpoint(&[9; 32], &cp).unwrap();

@@ -366,7 +366,7 @@ impl AppBrokerState {
     /// ([`tilo_action_policy::Verdict::spent`]), through the host that
     /// records the workspace's grants.
     pub(super) fn spend_once_grants(&self, workspace: &str, spent: &[tilo_action_policy::GrantId]) {
-        let Some(grants) = self.services.app_action_grants.as_ref() else {
+        let Some(grants) = self.services.workspace_grants.as_ref() else {
             return;
         };
         for grant in spent {
@@ -467,7 +467,7 @@ impl AppBrokerState {
                     return Err("original local caller does not match invocation workspace".into());
                 }
                 let expected = current.agent_id.as_ref().map_or_else(
-                    || super::principal_id_for_root(certificate.user_public_key),
+                    || super::person_id_for_root(certificate.user_public_key),
                     |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
                 );
                 if actor.id == expected && actor.is_agent == current.agent_id.is_some() {

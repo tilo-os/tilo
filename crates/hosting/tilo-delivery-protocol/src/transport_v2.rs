@@ -13,6 +13,7 @@
     missing_docs,
     reason = "wire frame types, described as a whole by the module documentation above"
 )]
+use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
 use tilo_relay_client::frame::FrameError;
 use tilo_relay_protocol::transport::{Envelope, MAX_FRAME_BYTES};
@@ -66,7 +67,7 @@ pub enum EnvelopeV2 {
     /// signature. [`SessionReader`] returns it as that `State` value, so
     /// nothing past the session boundary sees this variant.
     UnsignedDelta {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author_device_public_key: [u8; 32],
         authored_at_ns: u64,
         #[serde(with = "serde_bytes")]
@@ -76,7 +77,7 @@ pub enum EnvelopeV2 {
     /// presence slots ([`PresenceItem`]). [`SessionReader`] returns one
     /// `State(Envelope::RetiredPresence)` per item, in order.
     PresenceBatch {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         items: Vec<PresenceItem>,
     },
     /// An [`Self::UnsignedDelta`] payload coded against the session's delta
@@ -321,14 +322,14 @@ pub fn state_payload(env: &Envelope) -> Result<Vec<u8>, postcard::Error> {
 
 /// [`EnvelopeV2::UnsignedDelta`]'s payload, borrowing the delta.
 fn unsigned_delta_payload(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author_device_public_key: &[u8; 32],
     authored_at_ns: u64,
     delta: &[u8],
 ) -> Result<Vec<u8>, postcard::Error> {
     #[derive(serde::Serialize)]
     struct Fields<'a> {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author_device_public_key: &'a [u8; 32],
         authored_at_ns: u64,
         #[serde(with = "serde_bytes")]
@@ -374,7 +375,7 @@ mod tests {
 
     fn keystroke(signature: [u8; 64]) -> Envelope {
         Envelope::Delta {
-            workspace_id: 300,
+            workspace_id: WorkspaceId::from_u128(300),
             author_device_public_key: [5; 32],
             authored_at_ns: 1_800_000_000_000_000_000,
             delta: vec![0xab; 425],
@@ -430,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn a_large_unsigned_delta_takes_the_state_bound() {
         let large = Envelope::Delta {
-            workspace_id: 1,
+            workspace_id: WorkspaceId::from_u128(1),
             author_device_public_key: [1; 32],
             authored_at_ns: 1,
             delta: vec![0; 128 * 1024],
@@ -460,15 +461,15 @@ mod tests {
         let first = vec![presence_item(&pointer(1)), presence_item(b"heartbeat")];
         let second = vec![presence_item(&pointer(2))];
         let wire = [
-            encode_presence_batch(300, &first).unwrap(),
+            encode_presence_batch(WorkspaceId::from_u128(300), &first).unwrap(),
             encode_state(&Envelope::Ping).unwrap(),
-            encode_presence_batch(300, &second).unwrap(),
+            encode_presence_batch(WorkspaceId::from_u128(300), &second).unwrap(),
         ]
         .concat();
         let mut reader = SessionReader::new(std::io::Cursor::new(wire));
         let presence = |payload: &[u8]| {
             Some(EnvelopeV2::State(Envelope::RetiredPresence {
-                workspace_id: 300,
+                workspace_id: WorkspaceId::from_u128(300),
                 payload: payload.to_vec(),
             }))
         };
@@ -487,7 +488,7 @@ mod tests {
         let mut encoder = DeltaEncoder::default();
         let keystrokes: Vec<Envelope> = (0..5u8)
             .map(|n| Envelope::Delta {
-                workspace_id: 300,
+                workspace_id: WorkspaceId::from_u128(300),
                 author_device_public_key: [5; 32],
                 authored_at_ns: 1_800_000_000_000_000_000 + u64::from(n),
                 delta: [vec![0xab; 300], vec![n; 4], vec![0xcd; 100]].concat(),
@@ -550,7 +551,7 @@ mod tests {
             keep_suffix: 0,
             middle: Vec::new(),
         };
-        let wire = encode_presence_batch(1, &[bad]).unwrap();
+        let wire = encode_presence_batch(WorkspaceId::from_u128(1), &[bad]).unwrap();
         let mut reader = SessionReader::new(std::io::Cursor::new(wire));
         assert!(matches!(
             reader.read_next().await,
@@ -586,7 +587,7 @@ mod tests {
         assert!(!EnvelopeV2::State(Envelope::Ping).is_retired());
         assert!(
             !EnvelopeV2::UnsignedDelta {
-                workspace_id: 1,
+                workspace_id: WorkspaceId::from_u128(1),
                 author_device_public_key: [0; 32],
                 authored_at_ns: 1,
                 delta: Vec::new(),
@@ -612,7 +613,7 @@ mod tests {
         ));
         assert_eq!(reader.payload.len(), 0);
         let state = EnvelopeV2::State(Envelope::RetiredPresence {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             payload: vec![0; 64 * 1024],
         });
         let mut reader = SessionReader::new(std::io::Cursor::new(encode(&state).unwrap()));
@@ -625,7 +626,7 @@ mod tests {
         let (mut writer, read) = tokio::io::duplex(1024);
         let mut reader = SessionReader::new(read);
         let frame = EnvelopeV2::State(Envelope::RetiredPresence {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             payload: vec![9; 32],
         });
         let wire = encode(&frame).unwrap();

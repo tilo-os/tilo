@@ -88,13 +88,18 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
     shares: usize,
 ) -> Vec<String> {
     // The published tree costs a walk of the whole window, and a long list
-    // publishes thousands of actions: the walk resolves each against the
-    // tree as the last invocation that ran left it. One that answered with
-    // an error changed nothing to resolve against; the door resolves every
-    // invocation afresh itself, and the answers that depend on the tree
-    // (no such action, a confirmation phrase) are checked against a fresh
-    // one, so a tree kept across errors decides nothing alone.
+    // publishes thousands of actions: the walk resolves each against a tree
+    // it read earlier, and reads it again only where that tree decides
+    // something. The door resolves every invocation afresh itself, so an
+    // action the kept tree still names is asked whatever became of it: one
+    // that answered with an error changed nothing to resolve against, and
+    // the answers that depend on the tree (no such action, a confirmation
+    // phrase) are checked against a fresh one. Only an action the kept tree
+    // no longer names is left unasked, and that is decided on a tree read
+    // since the last invocation ran (`ran`): what ran may have withdrawn
+    // rows the walk has yet to ask, or published them again.
     let mut resources = app.harness().resources();
+    let mut ran = false;
     let surveyed = tilo_actions::door::survey(&resources);
     let mut unreachable = Vec::new();
     let mut resource_ordinals = std::collections::HashMap::new();
@@ -108,6 +113,10 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
     for descriptor in ours {
         let address = descriptor.address.clone();
         let arguments = sample_arguments(&descriptor);
+        if ran && tilo_actions::door::resolve(&resources, &address).is_none() {
+            resources = app.harness().resources();
+            ran = false;
+        }
         let Some(spec) = tilo_actions::door::resolve(&resources, &address) else {
             continue;
         };
@@ -118,6 +127,7 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
         if matches!(answer, Err(tilo_actions::DoorError::ConfirmationRequired)) {
             // The phrase may name what an earlier invocation renamed.
             resources = app.harness().resources();
+            ran = false;
             let Some(spec) = tilo_actions::door::resolve(&resources, &address) else {
                 continue;
             };
@@ -127,15 +137,18 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
                 .invoke_action(&address, &arguments, true, phrase.as_deref());
         }
         match answer {
-            // What it ran may have withdrawn rows the walk has yet to ask.
-            Ok(_) => resources = app.harness().resources(),
+            // What it ran may have withdrawn rows the walk has yet to ask:
+            // the tree is read again before it leaves one unasked.
+            Ok(_) => ran = true,
             // The invocation first takes the work still pending in the
             // window, as a real input event does: an earlier action's
-            // withdrawal of this row (a file it closed) may land only then.
-            // A row no longer published was withdrawn, not left without a
-            // handler.
+            // withdrawal of this row (a file it closed) may land only then,
+            // and so may the withdrawal by an action that ran since the tree
+            // was read. A row no longer published was withdrawn, not left
+            // without a handler.
             Err(error) if error.code() == "unknown_action" => {
                 resources = app.harness().resources();
+                ran = false;
                 if tilo_actions::door::resolve(&resources, &address).is_some() {
                     unreachable.push(format!("{} {}: {error}", address.resource, address.action));
                 }

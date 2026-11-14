@@ -205,6 +205,14 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
         },
         "peers": presence(desk),
         "sharing": shares_shown(desk),
+        // The person's keyboard and pointer across their devices: where the pointer is here, the
+        // device it drives, and what the devices driving this one sent.
+        "shared_input": desk.shared_input.map_or_else(
+            || json!({"pointer": [desk.pointer.0, desk.pointer.1], "pointer_shown": desk.pointer_shown}),
+            |shared_input| shared_input.inspection(desk.pointer, desk.pointer_shown),
+        ),
+        // The text on the clipboard, as the history last read it.
+        "clipboard": desk.clipboard.text(),
     }})
 }
 

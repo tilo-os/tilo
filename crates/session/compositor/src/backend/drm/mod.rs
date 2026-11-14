@@ -2033,44 +2033,49 @@ fn pointer_extent(state: &State) -> smithay::utils::Size<i32, smithay::utils::Lo
 mod tests {
     use super::*;
 
-    #[test]
-    fn variable_refresh_follows_a_fullscreen_window_where_allowed_and_capable() {
-        assert!(vrr_wanted(true, true, true));
-        assert!(
-            !vrr_wanted(true, true, false),
-            "the desktop keeps a fixed rate"
-        );
-        assert!(!vrr_wanted(true, false, true), "the person turned it off");
-        assert!(!vrr_wanted(false, true, true), "the display cannot");
-    }
+    tilo_test_env::scenario! {
+        /// The backend's own small decisions.
+        fn the_backend_allows_variable_refresh_retries_a_busy_crtc_and_names_connectors;
 
-    #[test]
-    fn a_crtc_that_is_still_committing_is_asked_again_later_not_failed() {
-        for busy in [
-            libc::EBUSY,
-            libc::EAGAIN,
-            libc::EINTR,
-            libc::EACCES,
-            libc::EPERM,
-        ] {
+        phase variable_refresh_follows_a_fullscreen_window_where_allowed_and_capable;
+        {
+            assert!(vrr_wanted(true, true, true));
             assert!(
-                retry_later(&std::io::Error::from_raw_os_error(busy)),
-                "{busy} is the crtc holding the commit before this one"
+                !vrr_wanted(true, true, false),
+                "the desktop keeps a fixed rate"
             );
+            assert!(!vrr_wanted(true, false, true), "the person turned it off");
+            assert!(!vrr_wanted(false, true, true), "the display cannot");
         }
-        for refused in [libc::EINVAL, libc::ENODEV, libc::EIO] {
-            assert!(
-                !retry_later(&std::io::Error::from_raw_os_error(refused)),
-                "{refused} is the crtc refusing the frame for good"
-            );
-        }
-    }
 
-    #[test]
-    fn a_connector_name_another_gpu_has_is_qualified_by_its_card() {
-        let taken = HashSet::from(["HDMI-A-1".to_owned()]);
-        let card = Path::new("/dev/dri/card1");
-        assert_eq!(output_name(card, "DP-1", &taken), "DP-1");
-        assert_eq!(output_name(card, "HDMI-A-1", &taken), "card1/HDMI-A-1");
+        phase a_crtc_that_is_still_committing_is_asked_again_later_not_failed;
+        {
+            for busy in [
+                libc::EBUSY,
+                libc::EAGAIN,
+                libc::EINTR,
+                libc::EACCES,
+                libc::EPERM,
+            ] {
+                assert!(
+                    retry_later(&std::io::Error::from_raw_os_error(busy)),
+                    "{busy} is the crtc holding the commit before this one"
+                );
+            }
+            for refused in [libc::EINVAL, libc::ENODEV, libc::EIO] {
+                assert!(
+                    !retry_later(&std::io::Error::from_raw_os_error(refused)),
+                    "{refused} is the crtc refusing the frame for good"
+                );
+            }
+        }
+
+        phase a_connector_name_another_gpu_has_is_qualified_by_its_card;
+        {
+            let taken = HashSet::from(["HDMI-A-1".to_owned()]);
+            let card = Path::new("/dev/dri/card1");
+            assert_eq!(output_name(card, "DP-1", &taken), "DP-1");
+            assert_eq!(output_name(card, "HDMI-A-1", &taken), "card1/HDMI-A-1");
+        }
     }
 }

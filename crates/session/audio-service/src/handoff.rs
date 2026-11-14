@@ -250,64 +250,68 @@ mod tests {
         report(&player(locator), 4_000_000, &[browser()])
     }
 
-    #[test]
-    fn a_verified_player_becomes_a_portable_stable_app_report() {
-        let first = report_of("https://media.example/film.mp4").unwrap();
-        assert_eq!(
-            Some(&first),
-            report_of("https://media.example/film.mp4").as_ref(),
-            "session identity must be stable"
-        );
-        assert_eq!(first.session.app_id, "so.tilo.browser");
-        assert_eq!(first.session.position_ms, 4_000);
-        assert_eq!(first.session.duration_ms, Some(9_000));
-        assert!(first.session.has_video);
-        assert!(matches!(
-            first.source,
-            HandoffSource::RemoteStream { ref url } if url == "https://media.example/film.mp4"
-        ));
-        assert_eq!(
-            first.controller_bus_name.as_deref(),
-            Some("org.mpris.MediaPlayer2.browser")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_player_is_reported_for_handoff_only_when_verified_and_portable;
 
-    #[test]
-    fn unverified_ambiguous_or_stopped_players_are_not_advertised() {
-        let observed = player("https://media.example/film.mp4");
-        assert!(report(&observed, 0, &[browser(), browser()]).is_none());
-        let stopped = Player {
-            status: Status::Stopped,
-            ..observed.clone()
-        };
-        assert!(report(&stopped, 0, &[browser()]).is_none());
-        let unverified = Player {
-            package_id: None,
-            ..observed
-        };
-        assert!(report(&unverified, 0, &[browser()]).is_none());
-    }
+        phase a_verified_player_becomes_a_portable_stable_app_report;
+        {
+            let first = report_of("https://media.example/film.mp4").unwrap();
+            assert_eq!(
+                Some(&first),
+                report_of("https://media.example/film.mp4").as_ref(),
+                "session identity must be stable"
+            );
+            assert_eq!(first.session.app_id, "so.tilo.browser");
+            assert_eq!(first.session.position_ms, 4_000);
+            assert_eq!(first.session.duration_ms, Some(9_000));
+            assert!(first.session.has_video);
+            assert!(matches!(
+                first.source,
+                HandoffSource::RemoteStream { ref url } if url == "https://media.example/film.mp4"
+            ));
+            assert_eq!(
+                first.controller_bus_name.as_deref(),
+                Some("org.mpris.MediaPlayer2.browser")
+            );
+        }
 
-    #[test]
-    fn local_paths_stay_in_the_private_transfer_source() {
-        let report = report_of("file:///home/alice/Videos/My%20Film.mp4").unwrap();
-        assert!(matches!(
-            report.source,
-            HandoffSource::LocalFile { ref path }
-                if path == &PathBuf::from("/home/alice/Videos/My Film.mp4")
-        ));
-        assert!(!format!("{:?}", report.session).contains("/home/alice"));
-    }
+        phase unverified_ambiguous_or_stopped_players_are_not_advertised;
+        {
+            let observed = player("https://media.example/film.mp4");
+            assert!(report(&observed, 0, &[browser(), browser()]).is_none());
+            let stopped = Player {
+                status: Status::Stopped,
+                ..observed.clone()
+            };
+            assert!(report(&stopped, 0, &[browser()]).is_none());
+            let unverified = Player {
+                package_id: None,
+                ..observed
+            };
+            assert!(report(&unverified, 0, &[browser()]).is_none());
+        }
 
-    #[test]
-    fn unsafe_or_nonportable_urls_are_rejected() {
-        for locator in [
-            "https://alice:secret@media.example/film.mp4",
-            "https://media.example/film.mp4?access_token=secret",
-            "blob:https://media.example/ephemeral",
-            "file://server/share/film.mp4",
-        ] {
-            assert!(report_of(locator).is_none(), "{locator}");
+        phase local_paths_stay_in_the_private_transfer_source;
+        {
+            let report = report_of("file:///home/alice/Videos/My%20Film.mp4").unwrap();
+            assert!(matches!(
+                report.source,
+                HandoffSource::LocalFile { ref path }
+                    if path == &PathBuf::from("/home/alice/Videos/My Film.mp4")
+            ));
+            assert!(!format!("{:?}", report.session).contains("/home/alice"));
+        }
+
+        phase unsafe_or_nonportable_urls_are_rejected;
+        {
+            for locator in [
+                "https://alice:secret@media.example/film.mp4",
+                "https://media.example/film.mp4?access_token=secret",
+                "blob:https://media.example/ephemeral",
+                "file://server/share/film.mp4",
+            ] {
+                assert!(report_of(locator).is_none(), "{locator}");
+            }
         }
     }
 

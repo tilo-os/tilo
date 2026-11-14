@@ -43,30 +43,34 @@ fn profile_validation_preserves_canonical_wire_and_rejects_secrets() {
     wire["password"] = serde_json::json!("never transported");
     assert!(serde_json::from_value::<PublicInstallProfile>(wire).is_err());
 }
-#[cfg(target_os = "linux")]
-#[test]
-fn completed_capacity_refuses_out_of_bounds_and_overflow() {
-    use super::capacity::*;
-    assert_eq!(
-        completed_setup_ciphertext_reservation(48, 100).unwrap(),
-        48 + 32 * 1024
-    );
-    assert!(completed_setup_ciphertext_reservation(47, 100).is_err());
-    assert!(completed_setup_ciphertext_reservation(101, 100).is_err());
-    assert!(completed_setup_ciphertext_reservation(u64::MAX, u64::MAX).is_err());
-    assert!(completed_setup_write_reservation(u64::MAX).is_err());
-}
-#[cfg(target_os = "linux")]
-#[test]
-fn installed_lease_refuses_noncanonical_operation_and_relative_namespace() {
-    use super::installed_namespace::InstalledRecordLease;
-    use std::path::Path;
-    assert!(InstalledRecordLease::open(Path::new("/"), "../record").is_err());
-    assert!(
-        InstalledRecordLease::open(
-            Path::new("relative"),
-            "00000000-0000-4000-8000-000000000001"
-        )
-        .is_err()
-    );
+tilo_test_env::scenario! {
+    #[cfg(target_os = "linux")]
+    fn completed_capacity_and_installed_lease_refuse_out_of_contract_input;
+
+    phase completed_capacity_refuses_out_of_bounds_and_overflow;
+    {
+        use super::capacity::*;
+        assert_eq!(
+            completed_setup_ciphertext_reservation(48, 100).unwrap(),
+            48 + 32 * 1024
+        );
+        assert!(completed_setup_ciphertext_reservation(47, 100).is_err());
+        assert!(completed_setup_ciphertext_reservation(101, 100).is_err());
+        assert!(completed_setup_ciphertext_reservation(u64::MAX, u64::MAX).is_err());
+        assert!(completed_setup_write_reservation(u64::MAX).is_err());
+    }
+
+    phase installed_lease_refuses_noncanonical_operation_and_relative_namespace;
+    {
+        use super::installed_namespace::InstalledRecordLease;
+        use std::path::Path;
+        assert!(InstalledRecordLease::open(Path::new("/"), "../record").is_err());
+        assert!(
+            InstalledRecordLease::open(
+                Path::new("relative"),
+                "00000000-0000-4000-8000-000000000001"
+            )
+            .is_err()
+        );
+    }
 }

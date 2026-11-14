@@ -5,6 +5,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::Change;
 
 mod editor;
+use crate::join::WorkspaceId;
 use editor::owner_signs;
 pub(crate) use editor::{other_owner, seeded_editor};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -43,12 +44,11 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.role, expected.role);
         assert_eq!(
             serde_json::to_vec(&actual.policy).unwrap(),
             serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.person, expected.person);
+        assert_eq!(actual.person_id(), expected.person_id());
     }
     assert!(
         crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
@@ -65,12 +65,11 @@ fn admitted_immutable_certificate_does_not_repeat_signature_checks_per_permissio
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.role, expected.role);
         assert_eq!(
             serde_json::to_vec(&actual.policy).unwrap(),
             serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.person, expected.person);
+        assert_eq!(actual.person_id(), expected.person_id());
     }
     assert_eq!(
         crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
@@ -166,7 +165,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     )
     .unwrap();
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().role,
+        peer.role(&cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
     let workspace_node = TreePath::workspace(workspace_id);
@@ -195,8 +194,8 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     peer.receive(
         cert.device_public_key,
         NeighbourMsg::SyncResp {
-            room: workspace_id.into(),
             changes,
+            room: peer.workspace_id().to_owned(),
         },
         now,
     )
@@ -206,7 +205,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
         Err(MembershipError::NoMembership)
     ));
     assert_eq!(
-        old.permissions(cert.device_public_key, now).unwrap().role,
+        old.role(&cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
 }
@@ -378,7 +377,7 @@ pub(crate) fn add_member_with(
     root_seed: u8,
     device_seed: u8,
 ) -> (SigningKey, DeviceCert, [u8; 32]) {
-    use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
+    use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
     let root = SigningKey::from_bytes(&[root_seed; 32]);
     let device = SigningKey::from_bytes(&[device_seed; 32]);
     let mut cert = DeviceCert {
@@ -405,10 +404,9 @@ pub(crate) fn add_member_with(
         .unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: owner,
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [device_seed.wrapping_add(1); 16],
             recipient_user_public_key: Some(cert.user_public_key),
             invitee_name: Some(format!("Editor {root_seed}")),
@@ -486,8 +484,7 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
 )]
 fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access() {
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
-        verify_join_proof,
+        InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof, verify_join_proof,
     };
 
     let (mut peer, authority_key, other_owner_device, _, now) = seeded();
@@ -512,10 +509,9 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     sign_device_cert(&mut guest_cert, &guest_root).unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [43; 16],
             recipient_user_public_key: Some(guest_cert.user_public_key),
             invitee_name: Some("Independent guest".into()),
@@ -564,9 +560,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(guest_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
     let access = peer.governance().governed_access(now).unwrap();
@@ -704,17 +698,14 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .governance_mut()
             .set_member_role(
                 guest_cert.user_public_key,
-                MemberRole::Commenter,
+                Role::Commenter,
                 &authority_key,
                 now
             )
             .unwrap()
     );
     assert_eq!(
-        restored
-            .permissions(guest_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        restored.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Commenter
     );
     assert!(
@@ -722,23 +713,20 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .governance_mut()
             .set_member_role(
                 guest_cert.user_public_key,
-                MemberRole::Viewer,
+                Role::Viewer,
                 &authority_key,
                 now
             )
             .unwrap()
     );
     assert_eq!(
-        restored
-            .permissions(guest_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        restored.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Viewer
     );
     restored
         .governance()
         .membership_challenge(
-            7,
+            WorkspaceId::parse(restored.workspace_id()).unwrap(),
             &restored.owner_certificates()[0],
             &guest_cert,
             [49; 32],
@@ -762,7 +750,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .governance()
             .membership_challenge(
-                7,
+                WorkspaceId::parse(restored.workspace_id()).unwrap(),
                 &restored.owner_certificates()[0],
                 &guest_cert,
                 [51; 32],
@@ -802,7 +790,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
 #[test]
 fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, decode_and_verify_invitation, issue_invitation,
+        InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
         sign_join_proof, verify_join_proof,
     };
     let (base, authority_key, _, _, now) = seeded();
@@ -814,10 +802,9 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
         .unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 10,
-            room: base.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
             issuer: base.owner_certificates()[0].clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [70; 16],
             recipient_user_public_key: None,
             invitee_name: None,
@@ -907,7 +894,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
 )]
 fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore() {
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, decode_and_verify_invitation, issue_invitation,
+        InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
         sign_join_proof, verify_join_proof,
     };
     let (mut base, authority_key, delegate_key, _, now) = seeded();
@@ -960,10 +947,9 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     };
     sign_device_cert(&mut guest, &guest_root).unwrap();
     let grant = |nonce, issuer| InviteGrant {
-        workspace_id: 11,
-        room: base.workspace_id().into(),
+        workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
         issuer,
-        role: MemberRole::Editor,
+        role: Role::Editor,
         nonce: [nonce; 16],
         recipient_user_public_key: Some(guest.user_public_key),
         invitee_name: None,
@@ -1169,7 +1155,7 @@ fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first(
         user_public_key: [98; 32],
         device_public_key,
         request_id,
-        role: crate::join::MemberRole::Viewer,
+        role: crate::join::Role::Viewer,
     };
     let ledgered = |receipt| crate::state::LedgerReceipt {
         receipt,
@@ -1568,18 +1554,8 @@ fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
         .bootstrap_messages(&a, now)
         .unwrap();
     let mut encrypted = messages[1].clone();
-    if let NeighbourMsg::AppDocument {
-        envelope,
-        app_id,
-        cluster_id,
-        record_id,
-        ..
-    } = &mut encrypted
-    {
-        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
-            1,
-            collab_types::document_channel_id(app_id, cluster_id, record_id),
-        ));
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut encrypted {
+        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(1));
         envelope.payload = vec![1, 2, 3];
         collab_types::sign_op(envelope, &a).unwrap();
     }
@@ -1853,18 +1829,8 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
                 .unwrap();
         }
         let mut encrypted = messages[1].clone();
-        if let NeighbourMsg::AppDocument {
-            envelope,
-            app_id,
-            cluster_id,
-            record_id,
-            ..
-        } = &mut encrypted
-        {
-            envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
-                1,
-                collab_types::document_channel_id(app_id, cluster_id, record_id),
-            ));
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut encrypted {
+            envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(1));
             envelope.payload = vec![1, 2, 3];
             collab_types::sign_op(envelope, &a).unwrap();
         }
@@ -2528,8 +2494,7 @@ fn guest_redemption(
     now: SystemTime,
 ) -> crate::join::VerifiedRedemption {
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
-        verify_join_proof,
+        InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof, verify_join_proof,
     };
     let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -2539,10 +2504,9 @@ fn guest_redemption(
         .unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [nonce; 16],
             recipient_user_public_key: Some(guest_cert.user_public_key),
             invitee_name: Some("Guest".into()),
@@ -2634,9 +2598,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(guest_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
 }
@@ -2671,7 +2633,7 @@ fn admission_records_when_a_member_joined_and_a_role_change_keeps_it() {
     let later = now + Duration::from_secs(60);
     assert!(
         peer.governance_mut()
-            .set_member_role(root, crate::join::MemberRole::Viewer, &authority_key, later)
+            .set_member_role(root, crate::join::Role::Viewer, &authority_key, later)
             .unwrap()
     );
     assert_eq!(joined(&peer), Some(at_ms), "a role change keeps it");
@@ -2781,8 +2743,7 @@ fn admitted_guest(
     now: SystemTime,
 ) -> (SigningKey, DeviceCert) {
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
-        verify_join_proof,
+        InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof, verify_join_proof,
     };
     let now_ns = ns_since_epoch(now);
     let root = SigningKey::from_bytes(&[61; 32]);
@@ -2800,10 +2761,9 @@ fn admitted_guest(
     sign_device_cert(&mut cert, &root).unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [63; 16],
             recipient_user_public_key: Some(cert.user_public_key),
             invitee_name: Some("Guest".into()),

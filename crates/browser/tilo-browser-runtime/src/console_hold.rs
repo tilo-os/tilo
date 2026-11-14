@@ -96,26 +96,30 @@ mod tests {
         assert_eq!((hold, step), (ConsoleHold::Holding, Step::Rest));
     }
 
-    #[test]
-    fn opening_something_from_the_console_leaves_it_for_the_desktop_for_good() {
-        let (hold, step) = ConsoleHold::Holding.step(Front::Other {
-            fullscreen: Some(3_u8),
-        });
-        assert_eq!(
-            (hold, step),
-            (ConsoleHold::Released, Step::Release(Some(3)))
-        );
-        // Back on Console's window, the page stays the desktop the person chose.
-        let (hold, step) = hold.step(Front::Console {
-            group: 3,
-            fullscreen: false,
-        });
-        assert_eq!((hold, step), (ConsoleHold::Released, Step::Rest));
-    }
+    tilo_test_env::scenario! {
+        fn leaving_the_console_releases_the_desktop;
 
-    #[test]
-    fn closing_the_console_leaves_the_desktop() {
-        let (hold, step) = ConsoleHold::Holding.step(Front::<u8>::Nothing);
-        assert_eq!((hold, step), (ConsoleHold::Released, Step::Release(None)));
+        phase opening_something_from_the_console_leaves_it_for_the_desktop_for_good;
+        {
+            let (hold, step) = ConsoleHold::Holding.step(Front::Other {
+                fullscreen: Some(3_u8),
+            });
+            assert_eq!(
+                (hold, step),
+                (ConsoleHold::Released, Step::Release(Some(3)))
+            );
+            // Back on Console's window, the page stays the desktop the person chose.
+            let (hold, step) = hold.step(Front::Console {
+                group: 3,
+                fullscreen: false,
+            });
+            assert_eq!((hold, step), (ConsoleHold::Released, Step::Rest));
+        }
+
+        phase closing_the_console_leaves_the_desktop;
+        {
+            let (hold, step) = ConsoleHold::Holding.step(Front::<u8>::Nothing);
+            assert_eq!((hold, step), (ConsoleHold::Released, Step::Release(None)));
+        }
     }
 }

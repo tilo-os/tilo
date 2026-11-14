@@ -1,11 +1,15 @@
 """tools/with-test-environment.sh gives every test run the same isolated environment."""
 from __future__ import annotations
 
+from collections import Counter
 import json
 import re
 import os
 from pathlib import Path
+import pwd
+import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -16,6 +20,51 @@ RUNNER = ROOT / "tools/cargo-runner.sh"
 HELPER = ROOT / "tools/desktop-isolation.sh"
 SETUP = ROOT / "tools/test-env-setup.sh"
 DUMP = "import json, os; print(json.dumps(dict(os.environ)))"
+# Programs a wrapper could start to decide or to prepare something.
+RECORDED = ("bash", "sh", "env", "dirname", "basename", "id", "uname", "awk", "sed", "sort",
+            "cut", "getent", "stat", "find", "mktemp", "mkdir", "chmod", "chown", "rm",
+            "setpriv", "flock")
+
+
+def recorders(directory: Path, *more: str) -> tuple[Path, Path]:
+    """A PATH entry whose programs each note their name in a file and then run the real one:
+    RECORDED's, and any `more`."""
+    programs, started = directory / "recorders", directory / "started"
+    programs.mkdir()
+    started.touch()
+    for name in (*RECORDED, *more):
+        real = shutil.which(name)
+        if real is not None:
+            (programs / name).write_text(f'#!/bin/sh\necho {name} >>"{started}"\nexec "{real}" "$@"\n')
+            (programs / name).chmod(0o755)
+    return programs, started
+
+
+def handover_user() -> pwd.struct_passwd | None:
+    """The image's test user, where this suite is itself a job that hands tests over to one.
+
+    That is a job that starts as root in an image naming its test user (TILO_TEST_USER). An
+    ordinary account hands nothing over, and neither does a root that may not change owners
+    (a job sandbox with one user id), whose image names no test user for that reason.
+    """
+    name = os.environ.get("TILO_TEST_USER")
+    if os.geteuid() != 0 or not name:
+        return None
+    return pwd.getpwnam(name)
+
+
+def default_mode() -> str:
+    """The mode of a directory made with no mode named, as `stat -c %a` prints it."""
+    mask = os.umask(0)
+    os.umask(mask)
+    return f"{0o777 & ~mask:o}"
+
+
+def old_bash() -> bool:
+    """Whether bash cannot tell its own variables from the environment's (before 5)."""
+    major = subprocess.run(["bash", "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True,
+                           text=True, check=True).stdout
+    return int(major) < 5
 
 
 class TestEnvironmentTests(unittest.TestCase):
@@ -104,6 +153,22 @@ class TestEnvironmentTests(unittest.TestCase):
                         {**private, "PULSE_SERVER": "unix:/run/user/1000/pulse/native"}):
             env = json.loads(self.run_wrapped("python3", "-c", DUMP, **desktop).stdout)
             self.assertNotIn("PULSE_SERVER", env)
+
+    def test_the_kernel_is_not_what_the_environment_says_it_is(self) -> None:
+        # bash's OSTYPE answers without a `uname`, but only bash's own: an environment that
+        # brings one names another machine's kernel, and would take lavapipe from a Linux run
+        # or leave a macOS run with the login Keychain.
+        linux = os.uname().sysname == "Linux"
+        result = self.run_wrapped("python3", "-c", DUMP,
+                                  OSTYPE="darwin25" if linux else "linux-gnu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = json.loads(result.stdout)
+        if linux:
+            self.assertIn("VK_DRIVER_FILES", env)
+            self.assertNotIn("TILO_IDENTITY_FILE_SECRETS", env)
+        else:
+            self.assertEqual(env["TILO_IDENTITY_FILE_SECRETS"], "1")
+            self.assertNotIn("VK_DRIVER_FILES", env)
 
 
 class TestEnvironmentSetupTests(unittest.TestCase):
@@ -223,13 +288,23 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 f"the {profile} profile builds the page bundle its page tests run against",
             )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
-        self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
+        self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
+                                 "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"], "as-root": ["root"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
+        # The two steps that take work run for the packages whose code can use them, never
+        # for every test: a setup script runs once per nextest run, and a suite is over a
+        # thousand of those. tools/tests/test_setup_filters.py holds each filter to the code.
+        costly = {setup: filter_ for filter_, setup in rules.items()
+                  if setup in ("font-catalog", "headless-audio")}
+        self.assertEqual(set(costly), {"font-catalog", "headless-audio"})
+        for filter_ in costly.values():
+            self.assertNotIn("all()", filter_)
+            del rules[filter_]
         # `ci` inherits `default`'s rules, so it names only what it adds.
-        self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
+        self.assertEqual(rules, {"all()": "test-runtime",
                                  "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
                                  "test(device_branch::))": "chat-siblings",
                                  "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
@@ -253,15 +328,143 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(env["TILO_REQUIRE_MEDIA"], "1")
         self.assertTrue(env["TILO_TEST_CACHE_DIR"].endswith("/.cache/tilo/test-env"))
-        # The font catalog the frames are set in, where the runs that render find it.
+        # The font catalog the frames are set in, where the runs that render find it, and the
+        # audio endpoint: promised to every test here, and prepared by steps of their own for
+        # the packages that can use them, so a test that needs one where it was not prepared
+        # fails and does not skip.
         self.assertTrue(env["TILO_FONT_ASSET_CACHE"].endswith("/font-artifacts"))
         self.assertEqual(env["TILO_REQUIRE_FONTS"], "1")
+        self.assertEqual(env["TILO_REQUIRE_AUDIO"], "1")
         if driver.exists():
             self.assertEqual(env["VK_DRIVER_FILES"], str(driver))
             self.assertEqual(env["WGPU_ADAPTER_NAME"], "llvmpipe")
+            # One shader cache for the run's test processes, kept with the
+            # fixtures: each has a fresh HOME, and would compile every shader
+            # again there.
+            self.assertEqual(env["MESA_SHADER_CACHE_DIR"],
+                             env["TILO_TEST_CACHE_DIR"] + "/mesa-shader-cache")
         else:
             self.assertNotIn("VK_DRIVER_FILES", env)
+            self.assertNotIn("MESA_SHADER_CACHE_DIR", env)
             self.assertEqual(env["TILO_REQUIRE_GPU"], "0")
+
+    def test_runtime_starts_no_interpreter_and_no_other_shell(self) -> None:
+        # Every job of a run pays for this step, and a suite is well over a thousand jobs (a
+        # package's test binary, or a shard of one), each on a core of its own: a Python start
+        # here was a quarter of a second of every one of them. The step reads and decides in
+        # its own shell, and starts a program only for the driver's architecture and, once,
+        # for the fixture cache's directory.
+        driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, log = recorders(work, "python3")
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "NEXTEST_ENV": str(work / "env"),
+                   "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
+            for expected in (Counter(uname=1, mkdir=1), Counter(uname=1)):
+                # The shell is named, so the recorders see only what the step itself starts.
+                result = subprocess.run([shutil.which("bash"), str(SETUP), "runtime"], env=env,
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                started = Counter(log.read_text().split())
+                log.write_text("")
+                for program in ("python3", "bash", "sh", "env"):
+                    self.assertEqual(started[program], 0, started)
+                if handover_user() is None:
+                    # Where the tests run as another user, looking that user up starts more.
+                    self.assertEqual(started, expected)
+
+    def mapped(self, manifest: str) -> tuple[list[str], list[str]]:
+        """The capabilities the runtime step requires for MANIFEST as the shell reads it, and
+        the ones tools/ci/capability_filter.py reads there."""
+        driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp) / "tree"
+            (tree / "tools/ci").mkdir(parents=True)
+            (tree / ".config").mkdir()
+            for name in ("test-env-setup.sh", "as-test-user.sh", "ci/capability_filter.py"):
+                shutil.copy(ROOT / "tools" / name, tree / "tools" / name)
+            (tree / ".config/nextest-capabilities.toml").write_text(manifest)
+            env_file = Path(tmp) / "env"
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp,
+                   "NEXTEST_ENV": str(env_file), "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
+            result = subprocess.run(["bash", str(tree / "tools/test-env-setup.sh"), "runtime"],
+                                    env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            promised = {"TILO_REQUIRE_GPU", "TILO_REQUIRE_MEDIA", "TILO_REQUIRE_FONTS",
+                        "TILO_REQUIRE_AUDIO"}
+            shell = [line.split("=", 1)[0] for line in env_file.read_text().splitlines()
+                     if line.startswith("TILO_REQUIRE_") and line.split("=", 1)[0] not in promised]
+            tool = subprocess.run(
+                [sys.executable, str(tree / "tools/ci/capability_filter.py"), "--require-variables"],
+                capture_output=True, text=True, check=True).stdout
+            return shell, [line.split("=", 1)[0] for line in tool.splitlines()]
+
+    def test_the_shell_reads_the_mapped_capabilities_as_the_manifest_tool_does(self) -> None:
+        # The runtime step reads the manifest itself, where it used to ask the tool. The two
+        # readings are one list: of this tree's manifest, and of one written to tell them
+        # apart (a capability not mapped, keys in either order, a key of the same name in a
+        # test group's table and in a table that is no capability, a last line without its
+        # newline).
+        shell, tool = self.mapped((ROOT / ".config/nextest-capabilities.toml").read_text())
+        self.assertEqual(shell, tool)
+        self.assertTrue(tool, "the manifest maps a capability")
+        shell, tool = self.mapped(
+            '# Capabilities.\n'
+            '[capabilities.One]\n'
+            'variable = "TILO_REQUIRE_ONE"  # the first\n'
+            'mapped = true\n'
+            '\n'
+            '[[capabilities.One.tests]]\n'
+            'probe = "one"\n'
+            'variable = "TILO_REQUIRE_A_GROUPS_KEY"\n'
+            'mapped = true\n'
+            'filter = "package(one)"\n'
+            '\n'
+            '[capabilities.Two]\n'
+            'variable = "TILO_REQUIRE_TWO"\n'
+            'mapped = false\n'
+            '\n'
+            '  [capabilities.Three]\n'
+            '  mapped   =   true\n'
+            '  variable="TILO_REQUIRE_THREE"\n'
+            '\n'
+            '[capabilities.Four]\n'
+            'variable = "TILO_REQUIRE_FOUR"\n'
+            '\n'
+            '[elsewhere]\n'
+            'variable = "TILO_REQUIRE_ELSEWHERE"\n'
+            'mapped = true\n'
+            '\n'
+            '[capabilities.Five]\n'
+            'variable = "TILO_REQUIRE_FIVE"\n'
+            'mapped = true')
+        self.assertEqual(tool, ["TILO_REQUIRE_ONE", "TILO_REQUIRE_THREE", "TILO_REQUIRE_FIVE"])
+        self.assertEqual(shell, tool)
+
+    def test_fonts_prepares_the_catalog_where_the_runtime_says_it_is(self) -> None:
+        # The catalog is a step of its own, which nextest runs for the packages that can
+        # read one; the runtime step every test gets names the same place and promises it.
+        driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
+        with tempfile.TemporaryDirectory() as directory:
+            provided = {}
+            for step in ("runtime", "fonts"):
+                env_file = Path(directory) / f"env-{step}"
+                env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory,
+                       "NEXTEST_ENV": str(env_file),
+                       "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
+                result = subprocess.run(["bash", str(SETUP), step], env=env,
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                provided[step] = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+                cache = Path(provided[step]["TILO_FONT_ASSET_CACHE"])
+                if step == "runtime":
+                    self.assertFalse((cache / "catalogs").exists(), "the runtime prepares none")
+            self.assertEqual(provided["fonts"], {"TILO_FONT_ASSET_CACHE": str(cache)})
+            self.assertEqual(provided["runtime"]["TILO_FONT_ASSET_CACHE"], str(cache))
+            (catalog,) = (cache / "catalogs").glob("*-fixtures")
+            self.assertEqual((catalog / "manifest.toml").read_bytes(),
+                             (ROOT / "crates/sdk/ui-core/assets/fonts/manifest.toml").read_bytes())
 
     def test_a_missing_renderer_fails_where_it_is_promised(self) -> None:
         if Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json").exists():
@@ -361,6 +564,148 @@ class CargoRunnerTests(unittest.TestCase):
             self.assertNotIn("TILO_TEST_ENVIRONMENT", env)
             self.assertEqual(env["WAYLAND_DISPLAY"], "wayland-0")
 
+    def build_tree(self, work: Path, test: str) -> tuple[Path, Path]:
+        """A build directory as cargo leaves one, with TEST as a test binary in it."""
+        # The test user reaches the tree through this directory.
+        work.chmod(0o755)
+        target = work / "target"
+        (target / "debug/deps").mkdir(parents=True)
+        (target / "debug/review").mkdir()
+        (target / "tmp").mkdir()
+        (target / ".rustc_info.json").write_text("{}")
+        binary = target / "debug/deps/suite-0123456789abcdef"
+        binary.write_text(f"#!/bin/sh\n{test}\n")
+        binary.chmod(0o755)
+        return target, binary
+
+    def start(self, binary: Path, *arguments: str, **extra: str) -> subprocess.CompletedProcess[str]:
+        """Start BINARY as cargo does, in a run that named its Vulkan driver as CI's profile does."""
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent-developer-home",
+               "VK_DRIVER_FILES": "/nonexistent-driver.json", **extra}
+        # The shell is named, so the recorders see only what the runner itself starts.
+        return subprocess.run([shutil.which("bash"), str(RUNNER), str(binary), *arguments], env=env,
+                              capture_output=True, text=True, check=False)
+
+    def started(self, log: Path) -> Counter[str]:
+        programs = Counter(log.read_text().split())
+        log.write_text("")
+        return programs
+
+    def test_a_test_start_is_one_shell_and_what_makes_and_removes_its_environment(self) -> None:
+        # A suite starts a process per test: every program a start runs, tens of thousands
+        # of runs pay. The runner decides in its own shell and starts only what changes the
+        # machine: the environment's directories, their mode and their removal.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            _, binary = self.build_tree(work, 'echo "$TILO_TEST_ENVIRONMENT"')
+            programs, log = recorders(work)
+            path = f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}"
+            result = self.start(binary, PATH=path)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(Path(result.stdout.strip()).exists(), "the environment is removed")
+            expected = Counter(mktemp=1, mkdir=1, chmod=1, rm=1)
+            if old_bash():
+                # A bash that cannot vouch for its own OSTYPE asks, once.
+                expected["uname"] = 1
+            self.assertEqual(self.started(log), expected)
+
+    def test_a_start_inside_an_intact_environment_starts_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            _, binary = self.build_tree(work, 'echo "$HOME"')
+            programs, log = recorders(work)
+            root = work / "environment"
+            (root / "runtime").mkdir(parents=True)
+            result = self.start(
+                binary, PATH=f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                TILO_TEST_ENVIRONMENT=str(root), HOME=f"{root}/home",
+                XDG_RUNTIME_DIR=f"{root}/runtime",
+                DBUS_SESSION_BUS_ADDRESS=f"unix:path={root}/no-session-bus",
+                DBUS_SYSTEM_BUS_ADDRESS=f"unix:path={root}/no-system-bus")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), f"{root}/home", "the environment is kept")
+            self.assertEqual(self.started(log), Counter())
+            self.assertTrue(root.exists(), "an environment the start did not make is not its to remove")
+
+    def test_the_build_directory_is_found_from_a_relative_path_and_from_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            target, binary = self.build_tree(work, 'echo "$TILO_TEST_ENVIRONMENT"')
+            result = subprocess.run(
+                [str(RUNNER), "debug/deps/" + binary.name], cwd=target, capture_output=True,
+                text=True, check=False,
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent"})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.startswith("/tmp/tilo-test-env."), result.stdout)
+            # Test binaries run away from their build directory (an archive of them) too.
+            (target / ".rustc_info.json").unlink()
+            result = self.start(binary)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.startswith("/tmp/tilo-test-env."), result.stdout)
+
+    def test_started_as_root_a_test_runs_as_the_test_user_in_a_tree_that_is_its_own(self) -> None:
+        user = handover_user()
+        if user is None:
+            self.skipTest("only a job that starts as root in an image naming its test user hands over")
+        # What the test is: who it runs as, whose its environment is, and that it can write
+        # beside the build's output and into the build directory's tmp, which root made.
+        report = ('set -e; id -u; stat -c "%u %a" "$TILO_TEST_ENVIRONMENT" "$HOME" "$XDG_RUNTIME_DIR"; '
+                  ': >"$1/debug/review/written"; : >"$1/tmp/written"; echo "$TILO_TEST_ENVIRONMENT"')
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            target, binary = self.build_tree(work, report)
+            programs, log = recorders(work)
+            path = f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}"
+            mine = [str(user.pw_uid), f"{user.pw_uid} 700", f"{user.pw_uid} {default_mode()}",
+                    f"{user.pw_uid} 700"]
+
+            result = self.start(binary, str(target), PATH=path, TILO_TEST_USER=user.pw_name)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = result.stdout.splitlines()
+            self.assertEqual(lines[:4], mine)
+            self.assertFalse(Path(lines[4]).exists(), "the environment is removed")
+            self.assertTrue((target / f".handed-to-{user.pw_name}").exists(), "the job's mark")
+            for made in (target, target / "debug/review", target / "tmp", binary):
+                self.assertEqual(made.stat().st_uid, user.pw_uid, made)
+            # The first start of a job walks the tree, under the lock its other starts wait on.
+            cold = self.started(log)
+            self.assertEqual(cold, Counter(flock=1, chown=2, mktemp=1, mkdir=1, chmod=1, setpriv=1, rm=1))
+
+            # Every later start finds the mark, and a tmp that is the test user's already: it
+            # hands over the environment it made, and nothing else.
+            result = self.start(binary, str(target), PATH=path, TILO_TEST_USER=user.pw_name)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.started(log), Counter(chown=1, mktemp=1, mkdir=1, chmod=1, setpriv=1, rm=1))
+
+            # A build as root makes the tmp again after the job's walk: it goes over again.
+            shutil.rmtree(target / "tmp")
+            (target / "tmp").mkdir()
+            self.assertEqual((target / "tmp").stat().st_uid, 0)
+            result = self.start(binary, str(target), PATH=path, TILO_TEST_USER=user.pw_name)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((target / "tmp").stat().st_uid, user.pw_uid)
+            self.assertEqual(self.started(log)["chown"], 2)
+
+            # A shell told another user id by its environment still knows it started as root.
+            result = self.start(binary, str(target), PATH=path, TILO_TEST_USER=user.pw_name,
+                                EUID=str(user.pw_uid), UID=str(user.pw_uid))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines()[:4], mine)
+
+    def test_a_test_that_says_it_needs_root_stays_root(self) -> None:
+        user = handover_user()
+        if user is None:
+            self.skipTest("only a job that starts as root in an image naming its test user hands over")
+        report = 'id -u; stat -c "%u %a" "$TILO_TEST_ENVIRONMENT" "$HOME" "$XDG_RUNTIME_DIR"'
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            target, binary = self.build_tree(work, report)
+            result = self.start(binary, TILO_TEST_USER=user.pw_name, TILO_TEST_AS_ROOT="1")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["0", "0 700", f"0 {default_mode()}", "0 700"])
+            self.assertEqual(target.stat().st_uid, 0, "the tree stays root's")
+            self.assertEqual(list(target.glob(".handed-to-*")), [])
+
 
 class DesktopIsolationHelperTests(unittest.TestCase):
     """tools/desktop-isolation.sh stages packaged scripts away from the host."""
@@ -428,6 +773,48 @@ class TestUserTests(unittest.TestCase):
             result = self.run_helper("--own-tree", str(tree))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((tree.stat().st_uid, tree.stat().st_gid), owner)
+            result = self.run_helper("--own", str(tree))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((tree.stat().st_uid, tree.stat().st_gid), owner)
+
+    def test_who_started_the_job_is_not_what_the_environment_says(self) -> None:
+        # bash's EUID answers without an `id`, but only bash's own. One the environment brings
+        # would make root of an ordinary account, or an ordinary account of root, whose tests
+        # would then run as root.
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/")}
+        helper = ["bash", str(ROOT / "tools/as-test-user.sh"), "id", "-u"]
+        if os.geteuid() != 0:
+            # Told it is root, an ordinary account still runs the command as itself.
+            result = subprocess.run(helper, env=env | {"TILO_TEST_USER": "no-such-test-user",
+                                                       "EUID": "0", "UID": "0"},
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(os.geteuid()))
+            return
+        # Told it is an ordinary account, root still hands the command over: it runs as the
+        # test user, or not at all where this root may not become another user.
+        user = handover_user()
+        name = user.pw_name if user else "nobody"
+        result = subprocess.run(helper, env=env | {"TILO_TEST_USER": name, "EUID": "4242", "UID": "4242"},
+                                capture_output=True, text=True, check=False)
+        self.assertNotEqual(result.stdout.strip(), "0", "the command ran as root")
+        if user is not None:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(user.pw_uid))
+
+    def test_the_helpers_read_into_a_shell_only_define_their_functions(self) -> None:
+        # tools/cargo-runner.sh reads both into its own shell: they must start nothing there,
+        # and leave the shell's arguments alone.
+        script = ('set -euo pipefail; source "$0/tools/with-test-environment.sh"; '
+                  'echo "$# $1 ${TILO_TEST_ENVIRONMENT:-none} [$tilo_test_user]"; '
+                  'declare -F tilo_test_environment_enter tilo_test_user_exec tilo_test_user_own_tree')
+        result = subprocess.run(["bash", "-c", script, str(ROOT), "--check"], capture_output=True,
+                                text=True, check=False,
+                                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [
+            "1 --check none []", "tilo_test_environment_enter", "tilo_test_user_exec",
+            "tilo_test_user_own_tree"])
 
 
 if __name__ == "__main__":

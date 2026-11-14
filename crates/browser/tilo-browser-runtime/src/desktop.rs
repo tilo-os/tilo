@@ -243,9 +243,7 @@ impl LateFeedback {
         shared: &Shared,
         startup: tilo_feedback_transport::Startup,
     ) -> Result<(), String> {
-        if startup.reporter().principal()
-            != &tilo_actions::remote::CallerPrincipal::Person(self.author.clone())
-        {
+        if startup.reporter().acting().person_id() != Some(self.author.as_str()) {
             return Err("feedback reporter does not own this profile".into());
         }
         if shared.feedback.borrow().is_some() {
@@ -384,6 +382,9 @@ pub(crate) struct Shared {
     /// someone no longer among them made is released, anyone's here to
     /// close ([`tilo_desktop_model::ownership::released`]).
     pub members: Rc<RefCell<Option<std::collections::BTreeSet<String>>>>,
+    /// When the workspace admitted each of its people, once heard, by their person (root key,
+    /// hex): who shares a name is numbered in this order here, as in the workspace's roster.
+    pub joined: Rc<RefCell<std::collections::BTreeMap<String, u64>>>,
     /// The person's accounts with the services this workspace is connected to,
     /// read from the connectors' workspace records by the workspace's host
     /// ([`RecordActions`]).
@@ -1748,7 +1749,7 @@ fn take_up_feedback(
 fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -> Shared {
     let requests = crate::shell::HostRequests::default();
     let host = inputs.peer.and_then(|peer| {
-        let workspace = crate::peer::workspace_number(&inputs.workspace).ok()?;
+        let workspace = crate::peer::workspace_id(&inputs.workspace).ok()?;
         crate::peer_sync::actions_of(peer, workspace)
     });
     let record_actions = RecordActions::new(

@@ -51,6 +51,8 @@ use shown::ListShown;
 #[path = "virtual_list_tree.rs"]
 mod tree;
 pub use tree::{TREE_INDENT, TreeMarks, TreeMove, TreeRow};
+#[path = "virtual_list_html_tree.rs"]
+mod html_tree;
 #[path = "virtual_list_menu.rs"]
 mod menu;
 use menu::RowMenus;
@@ -63,7 +65,7 @@ mod jump;
 mod reordering;
 use edit::{RenameCallback, RenameField};
 #[path = "virtual_list_lift.rs"]
-mod lift;
+pub(super) mod lift;
 #[path = "virtual_list_press.rs"]
 mod press;
 #[path = "virtual_list_row_group.rs"]
@@ -398,8 +400,13 @@ pub struct VirtualList<M: ListModel> {
     unread: Option<String>,
     jump_hovered: bool,
     jump_pressed: bool,
+    /// Whether the pill is the control the keyboard or a reader is on, rather than a row: the way
+    /// back is pressed with Return or Space, as it is with a pointer.
+    jump_focused: bool,
     pill_height: f64,
-    pill_width: f64,
+    /// The pill's width for each way back ([`crate::widget::conversation::Jump::slot`]): the words
+    /// measured at the face they are drawn in, so a narrow list shows them whole.
+    pill_widths: [f64; crate::widget::conversation::JUMPS],
     names_item: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<M::Key>>>>,
     groups: Groups,
     tail_title: Option<String>,
@@ -552,8 +559,9 @@ impl<M: ListModel> VirtualList<M> {
             unread: None,
             jump_hovered: false,
             jump_pressed: false,
+            jump_focused: false,
             pill_height: 0.0,
-            pill_width: 0.0,
+            pill_widths: [0.0; crate::widget::conversation::JUMPS],
             names_item: std::cell::RefCell::new(None),
             groups: Groups::default(),
             tail_title: None,
@@ -869,6 +877,7 @@ impl<M: ListModel> VirtualList<M> {
     pub fn focus_row(&mut self, key: M::Key) {
         self.focused_group = None;
         self.focused_key = Some(key);
+        self.jump_focused = false;
     }
 
     fn focused_row_node(&self) -> Option<NodeId> {
@@ -1164,6 +1173,16 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     fn on_key(&mut self, key: &Key, toggle: bool, extend: bool) -> bool {
+        // The pill, while it is the control the keyboard is on: the way back is taken by Return
+        // or Space, and any other key goes back to the rows.
+        if self.jump_focused {
+            self.jump_focused = false;
+            match key {
+                Key::Named(NamedKey::Enter | NamedKey::Space) => return self.press_pill(),
+                Key::Named(NamedKey::Escape) => return true,
+                _ => {}
+            }
+        }
         let count = self.model.len();
         if count == 0 {
             return false;
@@ -1444,6 +1463,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         if !chosen.is_empty() {
             cx.choose_children(&chosen);
         }
+        if self.tree.is_some() {
+            let theme = cx.theme().clone();
+            let rows = std::mem::take(&mut cx.composed.children);
+            cx.composed.children = self.tree_html_rows(rows, &theme);
+        }
     }
 
     crate::provides!(
@@ -1569,13 +1593,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.settle_lead();
         self.pill_height =
             crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme);
-        self.pill_width = f64::from(
-            theme
-                .tokens
-                .typography
-                .size(crate::tokens::TextRole::Caption),
-        ) * 24.0
-            + f64::from(theme.tokens.spacing.s4) * 6.0;
+        // A pill floats over the rows it covers, so its width is the one its words need: measured
+        // here, where the face's theme is known, so a list laid out and never drawn offers the
+        // words whole.
+        self.pill_widths = crate::text_render::with_layout_renderer(theme, |text| {
+            crate::widget::conversation::Jump::ALL.map(|jump| jump.width(text, theme))
+        });
+        // A way back the list no longer offers holds no seat: what was the keyboard's is gone.
+        self.jump_focused &= self.jump().is_some();
         self.motion = self.feel.over(theme.motion());
         self.groups.theme(theme, self.interaction);
         if let Some(edges) = self.edges.as_mut() {
@@ -1816,7 +1841,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             } => self.pressed_row.take(),
             _ => None,
         };
-        if !taking_press && !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
+        if !taking_press
+            && !self.drag_scroll.is_tracking()
+            && !self.reorder.is_tracking()
+            && self.pointer_reaches_rows(event, ctx)
+        {
             let reached = self.rows_reached(event);
             if let Some(rows) = self.mounted.get_mut(reached) {
                 crate::widget::route_to_mounted(
@@ -2183,6 +2212,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             || self.reorder.is_active()
             || self.model.needs_poll()
             || self.rename_animating()
+            || self.menu_needs_animation_frame()
             || self
                 .mounted
                 .iter()
@@ -2274,7 +2304,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn traps_focus(&self) -> bool {
-        self.context_menu_is_open()
+        self.menu_traps_focus()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -2321,6 +2351,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         Some(crate::widget::LayoutInfo::List(crate::widget::ListLayout {
             heads_rows: groups::group_of(&self.model, 0, self.tail_title.as_deref()).is_some(),
             lead: crate::num::f32_of_f64(self.viewport.edges().0),
+            pill: self.pill_layout(),
         }))
     }
 

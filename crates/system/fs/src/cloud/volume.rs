@@ -2263,27 +2263,31 @@ mod tests {
     const BASE: Duration = Duration::from_secs(30);
     const MAX: Duration = Duration::from_secs(600);
 
-    #[test]
-    fn idle_waits_double_from_the_poll_interval_up_to_the_cap() {
-        let waits: Vec<u64> = (0..8)
-            .map(|passes| idle_wait(passes, BASE, MAX, 0).as_secs())
-            .collect();
-        assert_eq!(waits, [30, 60, 120, 240, 480, 600, 600, 600]);
-        assert_eq!(idle_wait(u32::MAX, BASE, MAX, 0), MAX);
-    }
+    tilo_test_env::scenario! {
+        fn idle_waits_back_off_within_their_bounds;
 
-    #[test]
-    fn idle_wait_jitter_is_bounded_and_never_undercuts_the_poll_interval() {
-        assert_eq!(idle_wait(2, BASE, MAX, 100), Duration::from_secs(132));
-        assert_eq!(idle_wait(2, BASE, MAX, -100), Duration::from_secs(108));
-        assert_eq!(idle_wait(2, BASE, MAX, 5000), Duration::from_secs(132));
-        assert_eq!(idle_wait(2, BASE, MAX, -5000), Duration::from_secs(108));
-        assert_eq!(idle_wait(0, BASE, MAX, -100), BASE);
-        assert_eq!(idle_wait(9, BASE, MAX, 100), MAX);
-        assert_eq!(idle_wait(3, BASE, Duration::from_secs(5), 0), BASE);
-        for _ in 0..1000 {
-            let jitter = idle_jitter();
-            assert!((-IDLE_JITTER_PERMILLE..=IDLE_JITTER_PERMILLE).contains(&jitter));
+        phase idle_waits_double_from_the_poll_interval_up_to_the_cap;
+        {
+            let waits: Vec<u64> = (0..8)
+                .map(|passes| idle_wait(passes, BASE, MAX, 0).as_secs())
+                .collect();
+            assert_eq!(waits, [30, 60, 120, 240, 480, 600, 600, 600]);
+            assert_eq!(idle_wait(u32::MAX, BASE, MAX, 0), MAX);
+        }
+
+        phase idle_wait_jitter_is_bounded_and_never_undercuts_the_poll_interval;
+        {
+            assert_eq!(idle_wait(2, BASE, MAX, 100), Duration::from_secs(132));
+            assert_eq!(idle_wait(2, BASE, MAX, -100), Duration::from_secs(108));
+            assert_eq!(idle_wait(2, BASE, MAX, 5000), Duration::from_secs(132));
+            assert_eq!(idle_wait(2, BASE, MAX, -5000), Duration::from_secs(108));
+            assert_eq!(idle_wait(0, BASE, MAX, -100), BASE);
+            assert_eq!(idle_wait(9, BASE, MAX, 100), MAX);
+            assert_eq!(idle_wait(3, BASE, Duration::from_secs(5), 0), BASE);
+            for _ in 0..1000 {
+                let jitter = idle_jitter();
+                assert!((-IDLE_JITTER_PERMILLE..=IDLE_JITTER_PERMILLE).contains(&jitter));
+            }
         }
     }
 }

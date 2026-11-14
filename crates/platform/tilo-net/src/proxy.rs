@@ -299,87 +299,91 @@ mod tests {
         Url::parse(s).unwrap()
     }
 
-    #[test]
-    fn a_request_routes_through_the_endpoint() {
-        let mut headers = HeaderMap::new();
-        headers.insert("accept", HeaderValue::from_static("application/json"));
-        headers.insert("user-agent", HeaderValue::from_static("Tilo"));
-        headers.insert("cookie", HeaderValue::from_static("a=1"));
-        let proxy = Proxy {
-            endpoint: url("https://cloud.example/_tilo/net/fetch"),
-            session: Some("ab12".into()),
-        };
-        let (routed, sent) = route(
-            &proxy,
-            &url("https://api.example/v1/items?page=2&q=a b"),
-            &headers,
-        )
-        .unwrap();
-        assert_eq!(
-            routed.as_str(),
-            "https://cloud.example/_tilo/net/fetch?url=https%3A%2F%2Fapi.example%2Fv1%2Fitems%3Fpage%3D2%26q%3Da%2520b"
-        );
-        let target: String = routed
-            .query_pairs()
-            .find(|(k, _)| k == "url")
-            .map(|(_, v)| v.into_owned())
+    tilo_test_env::scenario! {
+        fn the_fetch_proxy_wraps_a_request_and_unwraps_its_answer;
+
+        phase a_request_routes_through_the_endpoint;
+        {
+            let mut headers = HeaderMap::new();
+            headers.insert("accept", HeaderValue::from_static("application/json"));
+            headers.insert("user-agent", HeaderValue::from_static("Tilo"));
+            headers.insert("cookie", HeaderValue::from_static("a=1"));
+            let proxy = Proxy {
+                endpoint: url("https://cloud.example/_tilo/net/fetch"),
+                session: Some("ab12".into()),
+            };
+            let (routed, sent) = route(
+                &proxy,
+                &url("https://api.example/v1/items?page=2&q=a b"),
+                &headers,
+            )
             .unwrap();
-        assert_eq!(target, "https://api.example/v1/items?page=2&q=a%20b");
-        assert_eq!(sent[MARKER_HEADER], VERSION);
-        assert_eq!(sent[SESSION_HEADER], "ab12");
-        assert_eq!(sent["accept"], "application/json");
-        assert_eq!(sent["x-tilo-forward-user-agent"], "Tilo");
-        assert_eq!(sent["x-tilo-forward-cookie"], "a=1");
-        assert!(!sent.contains_key("user-agent"));
-    }
-
-    #[test]
-    fn a_response_unwraps_to_the_target_view() {
-        let mut headers = HeaderMap::new();
-        headers.insert("content-type", HeaderValue::from_static("text/xml"));
-        headers.insert(
-            FINAL_URL_HEADER,
-            HeaderValue::from_static("https://api.example/moved"),
-        );
-        headers.append("x-tilo-forward-set-cookie", HeaderValue::from_static("s=1"));
-        headers.append(
-            "x-tilo-forward-www-authenticate",
-            HeaderValue::from_static("Basic realm=\"api\""),
-        );
-        let (unwrapped, final_url) =
-            unwrap_response(&url("https://api.example/"), &headers, String::new).unwrap();
-        assert_eq!(final_url.as_str(), "https://api.example/moved");
-        assert_eq!(unwrapped["set-cookie"], "s=1");
-        assert_eq!(unwrapped["www-authenticate"], "Basic realm=\"api\"");
-        assert_eq!(unwrapped["content-type"], "text/xml");
-        assert!(!unwrapped.contains_key(FINAL_URL_HEADER));
-    }
-
-    #[test]
-    fn a_proxy_failure_is_an_error_not_a_response() {
-        let mut headers = HeaderMap::new();
-        headers.insert(ERROR_HEADER, HeaderValue::from_static("blocked"));
-        let failed = unwrap_response(&url("http://10.0.0.1/"), &headers, || {
-            "private address".into()
-        });
-        assert_eq!(failed, Err(NetError::Blocked("private address".into())));
-        for failure in [
-            ProxyFailure::BadRequest,
-            ProxyFailure::Blocked,
-            ProxyFailure::Unreachable,
-            ProxyFailure::Timeout,
-            ProxyFailure::TooLarge,
-            ProxyFailure::Unauthorized,
-            ProxyFailure::RateLimited,
-            ProxyFailure::OverBudget,
-        ] {
-            assert_eq!(ProxyFailure::from_code(failure.code()), Some(failure));
+            assert_eq!(
+                routed.as_str(),
+                "https://cloud.example/_tilo/net/fetch?url=https%3A%2F%2Fapi.example%2Fv1%2Fitems%3Fpage%3D2%26q%3Da%2520b"
+            );
+            let target: String = routed
+                .query_pairs()
+                .find(|(k, _)| k == "url")
+                .map(|(_, v)| v.into_owned())
+                .unwrap();
+            assert_eq!(target, "https://api.example/v1/items?page=2&q=a%20b");
+            assert_eq!(sent[MARKER_HEADER], VERSION);
+            assert_eq!(sent[SESSION_HEADER], "ab12");
+            assert_eq!(sent["accept"], "application/json");
+            assert_eq!(sent["x-tilo-forward-user-agent"], "Tilo");
+            assert_eq!(sent["x-tilo-forward-cookie"], "a=1");
+            assert!(!sent.contains_key("user-agent"));
         }
-    }
 
-    #[test]
-    fn configure_refuses_non_http_endpoints() {
-        assert!(configure(Some(url("ftp://x/"))).is_err());
-        assert_eq!(endpoint(), None);
+        phase a_response_unwraps_to_the_target_view;
+        {
+            let mut headers = HeaderMap::new();
+            headers.insert("content-type", HeaderValue::from_static("text/xml"));
+            headers.insert(
+                FINAL_URL_HEADER,
+                HeaderValue::from_static("https://api.example/moved"),
+            );
+            headers.append("x-tilo-forward-set-cookie", HeaderValue::from_static("s=1"));
+            headers.append(
+                "x-tilo-forward-www-authenticate",
+                HeaderValue::from_static("Basic realm=\"api\""),
+            );
+            let (unwrapped, final_url) =
+                unwrap_response(&url("https://api.example/"), &headers, String::new).unwrap();
+            assert_eq!(final_url.as_str(), "https://api.example/moved");
+            assert_eq!(unwrapped["set-cookie"], "s=1");
+            assert_eq!(unwrapped["www-authenticate"], "Basic realm=\"api\"");
+            assert_eq!(unwrapped["content-type"], "text/xml");
+            assert!(!unwrapped.contains_key(FINAL_URL_HEADER));
+        }
+
+        phase a_proxy_failure_is_an_error_not_a_response;
+        {
+            let mut headers = HeaderMap::new();
+            headers.insert(ERROR_HEADER, HeaderValue::from_static("blocked"));
+            let failed = unwrap_response(&url("http://10.0.0.1/"), &headers, || {
+                "private address".into()
+            });
+            assert_eq!(failed, Err(NetError::Blocked("private address".into())));
+            for failure in [
+                ProxyFailure::BadRequest,
+                ProxyFailure::Blocked,
+                ProxyFailure::Unreachable,
+                ProxyFailure::Timeout,
+                ProxyFailure::TooLarge,
+                ProxyFailure::Unauthorized,
+                ProxyFailure::RateLimited,
+                ProxyFailure::OverBudget,
+            ] {
+                assert_eq!(ProxyFailure::from_code(failure.code()), Some(failure));
+            }
+        }
+
+        phase configure_refuses_non_http_endpoints;
+        {
+            assert!(configure(Some(url("ftp://x/"))).is_err());
+            assert_eq!(endpoint(), None);
+        }
     }
 }

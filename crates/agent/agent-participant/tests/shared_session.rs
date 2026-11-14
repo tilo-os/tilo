@@ -69,6 +69,7 @@ use tilo_user_identity::{
 
 use crate::common::catalogue;
 use crate::support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Plans the task `gated` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
@@ -321,7 +322,7 @@ fn body(app: &impl crate::common::Body) -> String {
 async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = crate::support::scratch_dir();
 
@@ -341,7 +342,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
+    crate::support::place(&host.relay, &host_device.cert).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.
@@ -374,7 +375,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "Writer helper",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: vec![SCRATCHPAD.into()],
         },
         now,
@@ -501,7 +502,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     agent
         .peer()
         .send(Cmd::Join(
-            tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap(),
+            tilo_relay_protocol::WorkspaceId::parse(OTHER_WORKSPACE).unwrap(),
         ))
         .unwrap();
     wait_for(

@@ -599,128 +599,134 @@ mod tests {
     use super::*;
     use ui::vello::kurbo::Shape as _;
 
-    #[test]
-    fn path_data_round_trips_through_anchors() {
-        let path =
-            BezPath::from_svg("M10,10 C20,0 40,0 50,10 L50,50 Z M100,100 Q120,80 140,100").unwrap();
-        let outline = Outline::from_path(&path);
-        assert_eq!(outline.contours.len(), 2);
-        let first = &outline.contours[0];
-        assert!(first.closed);
-        assert_eq!(first.anchors.len(), 3);
-        assert_eq!(first.anchors[0].after, Some(Point::new(20.0, 0.0)));
-        assert_eq!(first.anchors[1].before, Some(Point::new(40.0, 0.0)));
-        let again = outline.to_path();
-        assert!((again.bounding_box().area() - path.bounding_box().area()).abs() < 1.0);
-    }
+    tilo_test_env::scenario! {
+        /// A path's outline: read from path data, edited point by point, drawn by the pen.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn an_outline_keeps_its_shape_as_it_is_read_edited_and_drawn;
 
-    #[test]
-    fn a_closing_curve_onto_the_first_anchor_merges_with_it() {
-        let path = BezPath::from_svg("M0,0 L10,0 C10,10 0,10 0,0 Z").unwrap();
-        let outline = Outline::from_path(&path);
-        assert_eq!(outline.contours[0].anchors.len(), 2);
-        assert_eq!(
-            outline.contours[0].anchors[0].before,
-            Some(Point::new(0.0, 10.0))
-        );
-    }
+        phase path_data_round_trips_through_anchors;
+        {
+            let path =
+                BezPath::from_svg("M10,10 C20,0 40,0 50,10 L50,50 Z M100,100 Q120,80 140,100").unwrap();
+            let outline = Outline::from_path(&path);
+            assert_eq!(outline.contours.len(), 2);
+            let first = &outline.contours[0];
+            assert!(first.closed);
+            assert_eq!(first.anchors.len(), 3);
+            assert_eq!(first.anchors[0].after, Some(Point::new(20.0, 0.0)));
+            assert_eq!(first.anchors[1].before, Some(Point::new(40.0, 0.0)));
+            let again = outline.to_path();
+            assert!((again.bounding_box().area() - path.bounding_box().area()).abs() < 1.0);
+        }
 
-    #[test]
-    fn moving_a_smooth_handle_turns_its_twin() {
-        let mut outline = Outline::from_path(
-            &BezPath::from_svg("M0,0 C0,-10 40,-10 50,0 C60,10 100,10 100,0").unwrap(),
-        );
-        let middle = PointRef {
-            contour: 0,
-            anchor: 1,
-            part: Part::After,
-        };
-        assert!(outline.contours[0].anchors[1].smooth());
-        outline.set(middle, Point::new(50.0, 20.0));
-        let anchor = outline.contours[0].anchors[1];
-        let before = anchor.before.unwrap();
-        assert!(
-            (before.x - 50.0).abs() < 1e-9 && before.y < 0.0,
-            "{before:?}"
-        );
-        outline.set(
-            PointRef {
-                part: Part::Anchor,
-                ..middle
-            },
-            Point::new(60.0, 0.0),
-        );
-        assert_eq!(
-            outline.contours[0].anchors[1].after,
-            Some(Point::new(60.0, 20.0))
-        );
-    }
+        phase a_closing_curve_onto_the_first_anchor_merges_with_it;
+        {
+            let path = BezPath::from_svg("M0,0 L10,0 C10,10 0,10 0,0 Z").unwrap();
+            let outline = Outline::from_path(&path);
+            assert_eq!(outline.contours[0].anchors.len(), 2);
+            assert_eq!(
+                outline.contours[0].anchors[0].before,
+                Some(Point::new(0.0, 10.0))
+            );
+        }
 
-    #[test]
-    fn inserting_on_a_curve_keeps_its_shape() {
-        let path = BezPath::from_svg("M0,0 C0,-40 100,-40 100,0").unwrap();
-        let mut outline = Outline::from_path(&path);
-        let before =
-            CubicBez::new((0.0, 0.0), (0.0, -40.0), (100.0, -40.0), (100.0, 0.0)).eval(0.5);
-        let inserted = outline.insert_near(before, 2.0).unwrap();
-        assert_eq!(inserted.anchor, 1);
-        let at = outline.get(inserted).unwrap();
-        assert!(at.distance(before) < 1.0, "{at:?} {before:?}");
-        let area = |path: &BezPath| path.bounding_box().area();
-        assert!((area(&outline.to_path()) - area(&path)).abs() < 1.0);
-    }
-
-    #[test]
-    fn the_pen_places_corners_pulls_curves_and_closes() {
-        let mut pen = PenDraft::default();
-        assert_eq!(pen.press(Point::new(0.0, 0.0), 5.0), PenStep::Placed);
-        pen.release();
-        assert_eq!(pen.press(Point::new(100.0, 0.0), 5.0), PenStep::Placed);
-        pen.pull(Point::new(120.0, 20.0));
-        pen.release();
-        let smooth = pen.contour.anchors[1];
-        assert_eq!(smooth.after, Some(Point::new(120.0, 20.0)));
-        assert_eq!(smooth.before, Some(Point::new(80.0, -20.0)));
-        pen.press(Point::new(50.0, 80.0), 5.0);
-        pen.release();
-        assert_eq!(pen.press(Point::new(2.0, 1.0), 5.0), PenStep::Closed);
-        pen.release();
-        let Some(Shape::Path { d }) = pen.shape() else {
-            panic!("a path")
-        };
-        assert!(d.ends_with('Z'), "{d}");
-        assert!(d.contains('C'), "{d}");
-    }
-
-    #[test]
-    fn polygons_stay_polygons_while_straight() {
-        let shape = Shape::Polygon {
-            points: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
-        };
-        let mut outline = Outline::of_shape(&shape).unwrap();
-        outline.set(
-            PointRef {
+        phase moving_a_smooth_handle_turns_its_twin;
+        {
+            let mut outline = Outline::from_path(
+                &BezPath::from_svg("M0,0 C0,-10 40,-10 50,0 C60,10 100,10 100,0").unwrap(),
+            );
+            let middle = PointRef {
                 contour: 0,
                 anchor: 1,
-                part: Part::Anchor,
-            },
-            Point::new(20.0, 0.0),
-        );
-        assert_eq!(
-            outline.to_shape(&shape),
-            Shape::Polygon {
-                points: vec![[0.0, 0.0], [20.0, 0.0], [10.0, 10.0]]
-            }
-        );
-        outline.toggle_smooth(0, 1);
-        assert_eq!(outline.to_shape(&shape).kind(), "path");
-    }
+                part: Part::After,
+            };
+            assert!(outline.contours[0].anchors[1].smooth());
+            outline.set(middle, Point::new(50.0, 20.0));
+            let anchor = outline.contours[0].anchors[1];
+            let before = anchor.before.unwrap();
+            assert!(
+                (before.x - 50.0).abs() < 1e-9 && before.y < 0.0,
+                "{before:?}"
+            );
+            outline.set(
+                PointRef {
+                    part: Part::Anchor,
+                    ..middle
+                },
+                Point::new(60.0, 0.0),
+            );
+            assert_eq!(
+                outline.contours[0].anchors[1].after,
+                Some(Point::new(60.0, 20.0))
+            );
+        }
 
-    #[test]
-    fn lines_snap_to_eighths_of_a_turn() {
-        let snapped = constrain_45(Point::ZERO, Point::new(100.0, 8.0));
-        assert!((snapped.y).abs() < 1e-9 && (snapped.x - 100.0).abs() < 1e-9);
-        let diagonal = constrain_45(Point::ZERO, Point::new(100.0, 90.0));
-        assert!((diagonal.x - diagonal.y).abs() < 1e-9);
+        phase inserting_on_a_curve_keeps_its_shape;
+        {
+            let path = BezPath::from_svg("M0,0 C0,-40 100,-40 100,0").unwrap();
+            let mut outline = Outline::from_path(&path);
+            let before =
+                CubicBez::new((0.0, 0.0), (0.0, -40.0), (100.0, -40.0), (100.0, 0.0)).eval(0.5);
+            let inserted = outline.insert_near(before, 2.0).unwrap();
+            assert_eq!(inserted.anchor, 1);
+            let at = outline.get(inserted).unwrap();
+            assert!(at.distance(before) < 1.0, "{at:?} {before:?}");
+            let area = |path: &BezPath| path.bounding_box().area();
+            assert!((area(&outline.to_path()) - area(&path)).abs() < 1.0);
+        }
+
+        phase the_pen_places_corners_pulls_curves_and_closes;
+        {
+            let mut pen = PenDraft::default();
+            assert_eq!(pen.press(Point::new(0.0, 0.0), 5.0), PenStep::Placed);
+            pen.release();
+            assert_eq!(pen.press(Point::new(100.0, 0.0), 5.0), PenStep::Placed);
+            pen.pull(Point::new(120.0, 20.0));
+            pen.release();
+            let smooth = pen.contour.anchors[1];
+            assert_eq!(smooth.after, Some(Point::new(120.0, 20.0)));
+            assert_eq!(smooth.before, Some(Point::new(80.0, -20.0)));
+            pen.press(Point::new(50.0, 80.0), 5.0);
+            pen.release();
+            assert_eq!(pen.press(Point::new(2.0, 1.0), 5.0), PenStep::Closed);
+            pen.release();
+            let Some(Shape::Path { d }) = pen.shape() else {
+                panic!("a path")
+            };
+            assert!(d.ends_with('Z'), "{d}");
+            assert!(d.contains('C'), "{d}");
+        }
+
+        phase polygons_stay_polygons_while_straight;
+        {
+            let shape = Shape::Polygon {
+                points: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+            };
+            let mut outline = Outline::of_shape(&shape).unwrap();
+            outline.set(
+                PointRef {
+                    contour: 0,
+                    anchor: 1,
+                    part: Part::Anchor,
+                },
+                Point::new(20.0, 0.0),
+            );
+            assert_eq!(
+                outline.to_shape(&shape),
+                Shape::Polygon {
+                    points: vec![[0.0, 0.0], [20.0, 0.0], [10.0, 10.0]]
+                }
+            );
+            outline.toggle_smooth(0, 1);
+            assert_eq!(outline.to_shape(&shape).kind(), "path");
+        }
+
+        phase lines_snap_to_eighths_of_a_turn;
+        {
+            let snapped = constrain_45(Point::ZERO, Point::new(100.0, 8.0));
+            assert!((snapped.y).abs() < 1e-9 && (snapped.x - 100.0).abs() < 1e-9);
+            let diagonal = constrain_45(Point::ZERO, Point::new(100.0, 90.0));
+            assert!((diagonal.x - diagonal.y).abs() < 1e-9);
+        }
     }
 }

@@ -493,56 +493,60 @@ async fn saved_agent_owned_secrets_are_kept_and_deleted_with_the_connection() {
     );
 }
 
-#[test]
-fn vpn_secrets_come_from_hints_and_go_back_under_vpn_secrets() {
-    let request = request_for(
-        vpn_connection(),
-        "vpn",
-        &["password", "x-vpn-message:Use your one-time code"],
-    );
-    assert_eq!(request.fields.len(), 1);
-    assert_eq!(request.fields[0].key, "password");
-    assert!(
-        request
-            .detail
-            .contains(&Line::from("Use your one-time code")),
-        "the plugin's message, as it came: {:?}",
-        request.detail
-    );
-    assert!(
-        !request.remember_default,
-        "a VPN secret is remembered by choice"
-    );
-    let mut secrets = SettingSecrets::default();
-    secrets.insert("password", "123456");
-    let reply = request.response(&secrets);
-    let vpn = reply.get("vpn").expect("vpn setting");
-    let inner = HashMap::<String, String>::try_from(
-        vpn.get("secrets")
-            .expect("secrets")
-            .try_clone()
-            .expect("clone"),
-    )
-    .expect("a{ss}");
-    assert_eq!(inner.get("password").map(String::as_str), Some("123456"));
-}
+tilo_test_env::scenario! {
+    fn a_request_is_worded_for_the_secret_networkmanager_asks;
 
-#[test]
-fn a_sim_pin_is_asked_as_a_pin() {
-    let request = request_for(gsm_connection(), "gsm", &["pin"]);
-    assert_eq!(request.title, Message::new("portal-network-sim-pin-title"));
-    assert_eq!(request.fields[0].key, "pin");
-    assert!(request.fields[0].masked);
-    assert_eq!(request.kind, RequestKind::SimPin);
-    // The SIM counts wrong PINs; a remembered one is never offered.
-    assert!(!request.remember_default);
-}
+    phase vpn_secrets_come_from_hints_and_go_back_under_vpn_secrets;
+    {
+        let request = request_for(
+            vpn_connection(),
+            "vpn",
+            &["password", "x-vpn-message:Use your one-time code"],
+        );
+        assert_eq!(request.fields.len(), 1);
+        assert_eq!(request.fields[0].key, "password");
+        assert!(
+            request
+                .detail
+                .contains(&Line::from("Use your one-time code")),
+            "the plugin's message, as it came: {:?}",
+            request.detail
+        );
+        assert!(
+            !request.remember_default,
+            "a VPN secret is remembered by choice"
+        );
+        let mut secrets = SettingSecrets::default();
+        secrets.insert("password", "123456");
+        let reply = request.response(&secrets);
+        let vpn = reply.get("vpn").expect("vpn setting");
+        let inner = HashMap::<String, String>::try_from(
+            vpn.get("secrets")
+                .expect("secrets")
+                .try_clone()
+                .expect("clone"),
+        )
+        .expect("a{ss}");
+        assert_eq!(inner.get("password").map(String::as_str), Some("123456"));
+    }
 
-#[test]
-fn a_mobile_password_is_asked_as_connection_secrets() {
-    let request = request_for(gsm_connection(), "gsm", &["password"]);
-    assert_eq!(request.kind, RequestKind::Secrets);
-    assert_eq!(request.title, Message::new("portal-network-mobile-title"));
+    phase a_sim_pin_is_asked_as_a_pin;
+    {
+        let request = request_for(gsm_connection(), "gsm", &["pin"]);
+        assert_eq!(request.title, Message::new("portal-network-sim-pin-title"));
+        assert_eq!(request.fields[0].key, "pin");
+        assert!(request.fields[0].masked);
+        assert_eq!(request.kind, RequestKind::SimPin);
+        // The SIM counts wrong PINs; a remembered one is never offered.
+        assert!(!request.remember_default);
+    }
+
+    phase a_mobile_password_is_asked_as_connection_secrets;
+    {
+        let request = request_for(gsm_connection(), "gsm", &["password"]);
+        assert_eq!(request.kind, RequestKind::Secrets);
+        assert_eq!(request.title, Message::new("portal-network-mobile-title"));
+    }
 }
 
 /// The shell's catalogue is checked against [`MESSAGE_KEYS`]; a key the

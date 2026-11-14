@@ -690,76 +690,80 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::Affine;
 
-    #[test]
-    fn commit_rows_are_one_height_and_follow_the_text_scale() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let one = Metrics::measure(&mut text, &theme);
-        let two = Metrics::measure(&mut text, &Theme::dark().with_text_scale(2.0));
-        assert!(two.row_h > one.row_h);
+    tilo_test_env::scenario! {
+        fn commit_rows_keep_one_height_and_fit_the_list;
 
-        let (mut model, _) = crate::sample::model();
-        let layout = crate::graph::layout(&mut model.commits);
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let out = paint_list(
-            &mut ctx,
-            Rect::new(0.0, 0.0, 340.0, 2000.0),
-            &ListInput {
-                model: &model,
-                layout: &layout,
-                selected: 0,
-                scroll: 0.0,
-                pointer: None,
-            },
-        );
-        assert_eq!(out.rows.len(), model.commits.len());
-        for pair in out.rows.windows(2) {
-            let [(_, a), (_, b)] = pair else { continue };
-            assert!((a.height() - b.height()).abs() < 0.01);
-            assert!((b.y0 - a.y1).abs() < 0.01, "rows stack edge to edge");
-        }
-    }
+        phase commit_rows_are_one_height_and_follow_the_text_scale;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let one = Metrics::measure(&mut text, &theme);
+            let two = Metrics::measure(&mut text, &Theme::dark().with_text_scale(2.0));
+            assert!(two.row_h > one.row_h);
 
-    /// At the list's width, docked or as a drawer, the bundled sample shows
-    /// every summary, author and ref whole: nothing in the shipped
-    /// repository is elided.
-    #[test]
-    fn the_sample_rows_fit_the_list_whole() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let m = Metrics::measure(&mut text, &theme);
-        let (mut model, _) = crate::sample::model();
-        let layout = crate::graph::layout(&mut model.commits);
-        let width = f64::from(theme.tokens.metrics.overview_width);
-        let area = Rect::new(0.0, 0.0, width, 800.0);
-        let left = text_left(area, layout.lanes, &m, &theme);
-        let room = area.x1 - m.inset - m.pad_x - left;
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let width_of = |text: &mut TextRenderer, s: &str, style: &TextStyle| {
-            f64::from(text.measure_style(s, None, style).0)
-        };
-        let body = theme.text(TextRole::Body);
-        let caption = theme.text(TextRole::Caption);
-        let meta = theme.text(TextRole::Caption).numeric();
-        for commit in &model.commits {
-            assert!(
-                width_of(&mut text, &commit.summary, &body) <= room,
-                "{:?} fits its line",
-                commit.summary
+            let (mut model, _) = crate::sample::model();
+            let layout = crate::graph::layout(&mut model.commits);
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            let out = paint_list(
+                &mut ctx,
+                Rect::new(0.0, 0.0, 340.0, 2000.0),
+                &ListInput {
+                    model: &model,
+                    layout: &layout,
+                    selected: 0,
+                    scroll: 0.0,
+                    pointer: None,
+                },
             );
-            let line2 = width_of(&mut text, &commit.author_name, &caption)
-                + gap
-                + width_of(&mut text, &age(commit.time), &meta);
-            assert!(line2 <= room, "{:?}: author and age fit", commit.summary);
-            let mut line3 = width_of(&mut text, short_id(&commit.id), &hash_style(&theme));
-            for label in shown_refs(&commit.refs) {
-                let lead = ref_lead(&theme, label, &model.head);
-                line3 +=
-                    gap + ChipFace::intrinsic_width(&label.name, lead, false, &mut text, &theme);
+            assert_eq!(out.rows.len(), model.commits.len());
+            for pair in out.rows.windows(2) {
+                let [(_, a), (_, b)] = pair else { continue };
+                assert!((a.height() - b.height()).abs() < 0.01);
+                assert!((b.y0 - a.y1).abs() < 0.01, "rows stack edge to edge");
             }
-            assert!(line3 <= room, "{:?}: hash and refs fit", commit.summary);
+        }
+
+        phase the_sample_rows_fit_the_list_whole;
+        // At the list's width, docked or as a drawer, the bundled sample shows
+        // every summary, author and ref whole: nothing in the shipped
+        // repository is elided.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let m = Metrics::measure(&mut text, &theme);
+            let (mut model, _) = crate::sample::model();
+            let layout = crate::graph::layout(&mut model.commits);
+            let width = f64::from(theme.tokens.metrics.overview_width);
+            let area = Rect::new(0.0, 0.0, width, 800.0);
+            let left = text_left(area, layout.lanes, &m, &theme);
+            let room = area.x1 - m.inset - m.pad_x - left;
+            let gap = f64::from(theme.tokens.spacing.s2);
+            let width_of = |text: &mut TextRenderer, s: &str, style: &TextStyle| {
+                f64::from(text.measure_style(s, None, style).0)
+            };
+            let body = theme.text(TextRole::Body);
+            let caption = theme.text(TextRole::Caption);
+            let meta = theme.text(TextRole::Caption).numeric();
+            for commit in &model.commits {
+                assert!(
+                    width_of(&mut text, &commit.summary, &body) <= room,
+                    "{:?} fits its line",
+                    commit.summary
+                );
+                let line2 = width_of(&mut text, &commit.author_name, &caption)
+                    + gap
+                    + width_of(&mut text, &age(commit.time), &meta);
+                assert!(line2 <= room, "{:?}: author and age fit", commit.summary);
+                let mut line3 = width_of(&mut text, short_id(&commit.id), &hash_style(&theme));
+                for label in shown_refs(&commit.refs) {
+                    let lead = ref_lead(&theme, label, &model.head);
+                    line3 +=
+                        gap + ChipFace::intrinsic_width(&label.name, lead, false, &mut text, &theme);
+                }
+                assert!(line3 <= room, "{:?}: hash and refs fit", commit.summary);
+            }
         }
     }
 

@@ -268,67 +268,71 @@ mod tests {
         EffectiveMotion::new(crate::tokens::Motion::default(), true)
     }
 
-    #[test]
-    fn the_card_arrives_with_a_small_overshoot_and_settles() {
-        let peak = (0..800)
-            .map(|ms| Beckon::arrival(Duration::from_millis(ms), on()).scale)
-            .fold(0.0_f64, f64::max);
-        assert!(peak > 1.02 && peak < 1.1, "overshoot {peak}");
-        let late = Beckon::arrival(Duration::from_millis(1500), on());
-        assert!((late.scale - 1.0).abs() < 0.01);
-        assert!((late.opacity - 1.0).abs() < 0.01);
-        assert!(late.pulse.is_none(), "the pulse happens once");
-        assert!(
-            Beckon::arrival(Duration::from_millis(300), on())
-                .pulse
-                .is_some()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_beckon_arrives_loops_completes_and_only_fades_when_reduced;
 
-    #[test]
-    fn reduced_motion_only_fades() {
-        for ms in [0, 40, 90, 400] {
-            let a = Beckon::arrival(Duration::from_millis(ms), reduced());
-            assert!((a.scale - 1.0).abs() < f64::EPSILON);
-            assert!(a.approach.abs() < f64::EPSILON);
-            assert!(a.pulse.is_none());
-        }
-        assert!(
-            (Beckon::gesture_phase(Duration::from_millis(1234), reduced()) - Beckon::RESTING_PHASE)
-                .abs()
-                < f64::EPSILON
-        );
-        let c = Beckon::completion(Duration::from_millis(500), reduced()).unwrap();
-        assert!(c.drift.abs() < f64::EPSILON && c.fold.abs() < f64::EPSILON);
-    }
-
-    /// The picture shows its gesture a few times, comes to rest where its last loop stops, and then
-    /// asks for no frames.
-    #[test]
-    fn the_picture_loops_a_few_times_then_rests() {
-        let shown = crate::time::now();
-        let at = |secs: f64| Duration::from_secs_f64(secs);
-        let period = Beckon::GESTURE_PERIOD.as_secs_f64();
-        assert!(Beckon::next_frame(shown, shown + at(period * 1.5), on()).is_some());
-        let end = period * (f64::from(Beckon::GESTURE_LOOPS - 1) + Beckon::RESTING_PHASE);
-        let before = Beckon::gesture_phase(at(end - 0.001), on());
-        assert!((before - Beckon::RESTING_PHASE).abs() < 0.01, "{before}");
-        for secs in [end, end + 1.0, end + 60.0] {
+        phase the_card_arrives_with_a_small_overshoot_and_settles;
+        {
+            let peak = (0..800)
+                .map(|ms| Beckon::arrival(Duration::from_millis(ms), on()).scale)
+                .fold(0.0_f64, f64::max);
+            assert!(peak > 1.02 && peak < 1.1, "overshoot {peak}");
+            let late = Beckon::arrival(Duration::from_millis(1500), on());
+            assert!((late.scale - 1.0).abs() < 0.01);
+            assert!((late.opacity - 1.0).abs() < 0.01);
+            assert!(late.pulse.is_none(), "the pulse happens once");
             assert!(
-                (Beckon::gesture_phase(at(secs), on()) - Beckon::RESTING_PHASE).abs()
+                Beckon::arrival(Duration::from_millis(300), on())
+                    .pulse
+                    .is_some()
+            );
+        }
+
+        phase reduced_motion_only_fades;
+        {
+            for ms in [0, 40, 90, 400] {
+                let a = Beckon::arrival(Duration::from_millis(ms), reduced());
+                assert!((a.scale - 1.0).abs() < f64::EPSILON);
+                assert!(a.approach.abs() < f64::EPSILON);
+                assert!(a.pulse.is_none());
+            }
+            assert!(
+                (Beckon::gesture_phase(Duration::from_millis(1234), reduced()) - Beckon::RESTING_PHASE)
+                    .abs()
                     < f64::EPSILON
             );
-            assert!(Beckon::next_frame(shown, shown + at(secs), on()).is_none());
+            let c = Beckon::completion(Duration::from_millis(500), reduced()).unwrap();
+            assert!(c.drift.abs() < f64::EPSILON && c.fold.abs() < f64::EPSILON);
         }
-    }
 
-    #[test]
-    fn completion_checks_then_folds_then_drifts_then_ends() {
-        let at = |ms| Beckon::completion(Duration::from_millis(ms), on()).unwrap();
-        assert!(at(300).check > 0.8 && at(300).fold < f64::EPSILON);
-        assert!(at(800).fold > 0.5 && at(800).drift < f64::EPSILON);
-        assert!(at(1250).drift > 0.6);
-        assert!(at(1500).landing.is_some());
-        assert!(Beckon::completion(Beckon::COMPLETION, on()).is_none());
+        phase the_picture_loops_a_few_times_then_rests;
+        // The picture shows its gesture a few times, comes to rest where its last loop stops, and then
+        // asks for no frames.
+        {
+            let shown = crate::time::now();
+            let at = |secs: f64| Duration::from_secs_f64(secs);
+            let period = Beckon::GESTURE_PERIOD.as_secs_f64();
+            assert!(Beckon::next_frame(shown, shown + at(period * 1.5), on()).is_some());
+            let end = period * (f64::from(Beckon::GESTURE_LOOPS - 1) + Beckon::RESTING_PHASE);
+            let before = Beckon::gesture_phase(at(end - 0.001), on());
+            assert!((before - Beckon::RESTING_PHASE).abs() < 0.01, "{before}");
+            for secs in [end, end + 1.0, end + 60.0] {
+                assert!(
+                    (Beckon::gesture_phase(at(secs), on()) - Beckon::RESTING_PHASE).abs()
+                        < f64::EPSILON
+                );
+                assert!(Beckon::next_frame(shown, shown + at(secs), on()).is_none());
+            }
+        }
+
+        phase completion_checks_then_folds_then_drifts_then_ends;
+        {
+            let at = |ms| Beckon::completion(Duration::from_millis(ms), on()).unwrap();
+            assert!(at(300).check > 0.8 && at(300).fold < f64::EPSILON);
+            assert!(at(800).fold > 0.5 && at(800).drift < f64::EPSILON);
+            assert!(at(1250).drift > 0.6);
+            assert!(at(1500).landing.is_some());
+            assert!(Beckon::completion(Beckon::COMPLETION, on()).is_none());
+        }
     }
 }

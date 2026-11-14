@@ -1,7 +1,7 @@
 //! Who is here: the roster the bar's faces open, and every other person's pointer where they are
 //! working. The roster can also be kept on screen, waiting at an edge of the desk with a mirror of
 //! each person's screen beside their row, pressed to follow them.
-//! The roster reads the desk's collaborators, which the collaboration plane writes each frame
+//! The roster reads the desk's member rows and presence, which the collaboration plane writes each frame
 //! ([`crate::sync`]): the one feed the bar's faces and the launcher's Happening now list read too.
 //! Everyone's pointer is the plane's tile pointer, drawn over the tile of the tab they are on, in
 //! their own colour.
@@ -13,13 +13,10 @@ use std::rc::Rc;
 use settings_store::desk_widgets::{PEOPLE_OVERLAY, PeopleOverlayPrefs};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::collaborators::{
-    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RosterRow,
-    collaborator_roster_rows_named,
-};
 use tilo_desktop::desk_edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
 use tilo_desktop::launchpad::LaunchpadAppAction;
+use tilo_desktop::people::{PeopleHit, PeopleModel, PeopleOverlay, RosterRow, roster_rows_named};
 use tilo_desktop::profile_card::{
     LazyProfileCard, OtherPerson, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
@@ -64,6 +61,8 @@ pub enum PeopleAsk {
     /// Show how an agent or a computer of theirs connects: Console's Connect place, where the
     /// commands that add Tilo to an agent are.
     ConnectAgent,
+    /// Add another of their own devices: the session's sheet with the link its camera reads.
+    PairDevice,
     /// Do the host action this person's own card offers, as the palette and a banner hand theirs
     /// back: the choice the ask on their avatar waits for is answered here too.
     HostAction(String),
@@ -203,7 +202,7 @@ impl Pinned {
 /// What the panel shows and where it stands, kept at rest between frames.
 #[derive(Default)]
 struct Shown {
-    overlay: CollaboratorsOverlay,
+    overlay: PeopleOverlay,
     rows: Vec<RosterRow>,
     /// Each person's screen as their presence says it, by roster id, `None` for someone who keeps
     /// where they are to themselves.
@@ -263,9 +262,9 @@ impl Shown {
     }
 
     /// Whether the desk is a phone's: the roster opens as a sheet at its foot and is never kept on
-    /// screen, where it would stand over the one window there is ([`tilo_desktop::collaborators::is_sheet`]).
+    /// screen, where it would stand over the one window there is ([`tilo_desktop::people::is_sheet`]).
     fn sheet(&self) -> bool {
-        tilo_desktop::collaborators::is_sheet(self.area)
+        tilo_desktop::people::is_sheet(self.area)
     }
 }
 
@@ -554,7 +553,7 @@ pub struct Given {
     pub handle: DesktopHandle,
     /// Who is here, when this session takes part in the collaboration plane.
     pub sync: Option<Rc<crate::sync::Client>>,
-    /// Who is here, written into a copy of the desk's tree as its collaborators: what the bar's
+    /// Who is here, written into a copy of the desk's tree as its members and their presence: what the bar's
     /// faces are drawn from, so the roster they open lists the same people. A host that hears
     /// some of them on a track of its own (the runs a workspace's host speaks for) writes them
     /// in here as it does for the bar.
@@ -647,7 +646,7 @@ struct Panel {
     /// names the root key they are here by.
     seated: String,
     sync: Option<Rc<crate::sync::Client>>,
-    /// Who is here, written into the desk's collaborators as the bar's faces read them
+    /// Who is here, written into the desk's member rows as the bar's faces read them
     /// ([`Given::here`]).
     here: Rc<dyn Fn(&mut DesktopTree)>,
     /// What each window of the desk shows, by its tab: where a person's record stands, so the
@@ -841,7 +840,7 @@ impl Panel {
                     row.working_app
                         .as_deref()
                         .map(|app| self.app_called(app))
-                        .map(|app| tilo_desktop::collaborators::in_app(&app))
+                        .map(|app| tilo_desktop::people::in_app(&app))
                 } else {
                     row.activity.clone()
                 },
@@ -961,7 +960,6 @@ impl Panel {
         match id {
             "identities" => Some("settings://users"),
             "identity-backup" => Some("settings://about"),
-            "pair-device" => Some("settings://devices_sync"),
             DEVICES_ACCESS => Some("settings://devices_access"),
             _ => None,
         }
@@ -1043,7 +1041,11 @@ impl Panel {
                     self.asks.borrow_mut().push(PeopleAsk::Colour(id));
                 }
                 ProfileChoice::Action(id) => {
-                    if let Some(link) = Self::own_settings_link(&id) {
+                    // Another of their devices: the code its camera reads is the session's own
+                    // sheet, beside the card they pressed.
+                    if id == "pair-device" {
+                        self.asks.borrow_mut().push(PeopleAsk::PairDevice);
+                    } else if let Some(link) = Self::own_settings_link(&id) {
                         self.asks
                             .borrow_mut()
                             .push(PeopleAsk::Settings(link.to_owned()));
@@ -1073,7 +1075,7 @@ impl Panel {
         }
     }
 
-    /// Read who is here, as the plane wrote them into the desk's collaborators this frame: the
+    /// Read who is here, as the plane wrote them into the desk's member rows this frame: the
     /// roster, each person's screen with its windows named by the records this desk shows, and the
     /// workspace it is of: the panel's title, kept on screen or opened from the bar.
     fn read_roster(&self, shown: &mut Shown) {
@@ -1084,7 +1086,7 @@ impl Panel {
         let windows = (self.notes)();
         let mut tree = self.handle.read(Clone::clone);
         (self.here)(&mut tree);
-        let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
+        let (rows, _) = roster_rows_named(&tree, &own, None);
         let workspace = tree.active_workspace().map_or_else(
             || tilo_desktop_surface::names::workspace(""),
             |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
@@ -1147,14 +1149,14 @@ impl Panel {
     }
 
     /// Act on what a press or a key on the roster meant.
-    fn follow(&mut self, hit: CollaboratorsHit, shown: &mut Shown) {
+    fn follow(&mut self, hit: PeopleHit, shown: &mut Shown) {
         match hit {
-            CollaboratorsHit::Dismiss => {
+            PeopleHit::Dismiss => {
                 shown.close();
                 self.profile.close();
                 self.open.set(false);
             }
-            CollaboratorsHit::ToggleDetails(index) => {
+            PeopleHit::ToggleDetails(index) => {
                 let id = shown.rows.get(index).map(|row| row.id.clone());
                 shown.expanded = shown
                     .expanded
@@ -1162,17 +1164,17 @@ impl Panel {
                     .filter(|open| Some(open) != id.as_ref())
                     .or(id);
             }
-            CollaboratorsHit::Follow(index) => {
+            PeopleHit::Follow(index) => {
                 if let Some(id) = shown.rows.get(index).map(|row| row.id.clone()) {
                     self.follow_person(&id, true);
                 }
             }
-            CollaboratorsHit::Unfollow(index) => {
+            PeopleHit::Unfollow(index) => {
                 if let Some(id) = shown.rows.get(index).map(|row| row.id.clone()) {
                     self.follow_person(&id, false);
                 }
             }
-            CollaboratorsHit::Wave(index) => {
+            PeopleHit::Wave(index) => {
                 let Some(id) = shown.rows.get(index).map(|row| row.id.clone()) else {
                     return;
                 };
@@ -1183,7 +1185,7 @@ impl Panel {
             }
             // The window software works in: brought forward, so what it is on stands in front of
             // this person.
-            CollaboratorsHit::OpenTab(index) => {
+            PeopleHit::OpenTab(index) => {
                 let tab = shown
                     .rows
                     .get(index)
@@ -1199,7 +1201,7 @@ impl Panel {
                 }
             }
             // Their recent changes, where this workspace's history has them.
-            CollaboratorsHit::OpenChanges(index) | CollaboratorsHit::OpenChange(index, _) => {
+            PeopleHit::OpenChanges(index) | PeopleHit::OpenChange(index, _) => {
                 let Some(author) = shown.rows.get(index).map(|row| row.id.clone()) else {
                     return;
                 };
@@ -1207,12 +1209,12 @@ impl Panel {
             }
             // Inviting from here is the bar's own invite: the roster offers its footer only while
             // the person may hand out a link into this workspace.
-            CollaboratorsHit::Invite => {
+            PeopleHit::Invite => {
                 self.intents.borrow_mut().push(ChromeIntent::Invite);
             }
             // Keeping the roster on screen moves it out of the bar to an edge of the desk; pressed
             // where it stands, it goes back into the bar.
-            CollaboratorsHit::Pin => {
+            PeopleHit::Pin => {
                 if shown.pinned.is_some() {
                     let edge = shown
                         .pinned
@@ -1228,7 +1230,7 @@ impl Panel {
             }
             // No call to join from here (a call is Chat's, in an app window),
             // and nothing else to do: the roster kept the press.
-            CollaboratorsHit::JoinCall(_) | CollaboratorsHit::Absorb => {}
+            PeopleHit::JoinCall(_) | PeopleHit::Absorb => {}
         }
     }
 
@@ -1558,7 +1560,7 @@ impl Panel {
             .as_ref()
             .filter(|(_, at)| at.elapsed() < WAVE_SHOWN)
             .and_then(|(_, at)| at.checked_add(WAVE_SHOWN));
-        let model = CollaboratorsModel {
+        let model = PeopleModel {
             host: shown.area,
             workspace: &workspace,
             rows: &rows,
@@ -2006,7 +2008,7 @@ impl Widget for Panel {
             return;
         };
         // A press away from the roster takes the card with it.
-        if matches!(hit, CollaboratorsHit::Dismiss) {
+        if matches!(hit, PeopleHit::Dismiss) {
             self.profile.close();
         }
         // Kept on screen, a press on its header drags it to another edge: a card's own press is

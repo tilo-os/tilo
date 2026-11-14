@@ -128,9 +128,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn narratives_summarise_work_and_refuse_ungrounded_claims() {
-        // phase: deterministic_copy_summarizes_work_instead_of_repeating_a_glance_label
+    tilo_test_env::scenario! {
+        fn narratives_summarise_work_and_refuse_ungrounded_claims;
+
+        phase deterministic_copy_summarizes_work_instead_of_repeating_a_glance_label;
         {
             let digest = ActivityDigest {
                 briefs: vec![
@@ -146,7 +147,8 @@ mod tests {
                 "Work centered on Onboard Sarah and Write Q3 financial report."
             );
         }
-        // phase: refuses_ungrounded_generated_claims
+
+        phase refuses_ungrounded_generated_claims;
         {
             let request = NarrativeRequest {
                 deterministic_text: "Ada updated the brief".into(),

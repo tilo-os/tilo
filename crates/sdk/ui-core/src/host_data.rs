@@ -79,26 +79,30 @@ pub fn fail(name: &str, reason: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_request_is_handed_to_the_host_once_and_answered() {
-        let name = "test/answered.bin";
-        assert_eq!(request(name), Status::Pending);
-        assert_eq!(request(name), Status::Pending);
-        assert_eq!(take_requests().iter().filter(|n| *n == name).count(), 1);
-        assert!(
-            !take_requests().iter().any(|n| n == name),
-            "handed over once"
-        );
-        install(name, vec![1, 2, 3]);
-        assert_eq!(request(name), Status::Ready(Arc::from(&[1u8, 2, 3][..])));
-    }
+    tilo_test_env::scenario! {
+        fn a_request_is_handed_over_once_and_keeps_its_answer;
 
-    #[test]
-    fn a_failure_stays_failed() {
-        let name = "test/failed.bin";
-        let _ = request(name);
-        fail(name, "HTTP 404");
-        assert_eq!(request(name), Status::Failed("HTTP 404".into()));
-        assert!(!take_requests().iter().any(|n| n == name));
+        phase a_request_is_handed_to_the_host_once_and_answered;
+        {
+            let name = "test/answered.bin";
+            assert_eq!(request(name), Status::Pending);
+            assert_eq!(request(name), Status::Pending);
+            assert_eq!(take_requests().iter().filter(|n| *n == name).count(), 1);
+            assert!(
+                !take_requests().iter().any(|n| n == name),
+                "handed over once"
+            );
+            install(name, vec![1, 2, 3]);
+            assert_eq!(request(name), Status::Ready(Arc::from(&[1u8, 2, 3][..])));
+        }
+
+        phase a_failure_stays_failed;
+        {
+            let name = "test/failed.bin";
+            let _ = request(name);
+            fail(name, "HTTP 404");
+            assert_eq!(request(name), Status::Failed("HTTP 404".into()));
+            assert!(!take_requests().iter().any(|n| n == name));
+        }
     }
 }

@@ -3666,84 +3666,156 @@ mod tests {
         }
     }
 
-    /// A chord the rest of the system reserves is not a zoom here: the
-    /// command key rides only on its own, and Alt never zooms (`APP-canvas-01`).
-    #[test]
-    fn only_the_zoom_keys_zoom() {
-        for (keys, zooms) in [
-            ("=", true),
-            ("Shift+=", true),
-            ("-", true),
-            ("Ctrl+=", true),
-            ("Ctrl+-", true),
-            ("Ctrl+Shift+=", false),
-            ("Alt+=", false),
-            ("Ctrl+Alt+=", false),
-        ] {
-            let mut surface = surface_with_marks();
-            let before = surface.zoom();
-            for (key, modifiers) in parse(keys) {
-                surface.key(&key, None, modifiers);
+    tilo_test_env::scenario! {
+        /// The keys the canvas answers.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn the_canvas_answers_its_listed_keys_and_zooms_only_on_the_zoom_keys;
+
+        phase only_the_zoom_keys_zoom;
+        // A chord the rest of the system reserves is not a zoom here: the
+        // command key rides only on its own, and Alt never zooms (`APP-canvas-01`).
+        {
+            for (keys, zooms) in [
+                ("=", true),
+                ("Shift+=", true),
+                ("-", true),
+                ("Ctrl+=", true),
+                ("Ctrl+-", true),
+                ("Ctrl+Shift+=", false),
+                ("Alt+=", false),
+                ("Ctrl+Alt+=", false),
+            ] {
+                let mut surface = surface_with_marks();
+                let before = surface.zoom();
+                for (key, modifiers) in parse(keys) {
+                    surface.key(&key, None, modifiers);
+                }
+                let moved = (surface.zoom() - before).abs() > 1e-9;
+                assert_eq!(moved, zooms, "{keys} zooming is {moved}, expected {zooms}");
             }
-            let moved = (surface.zoom() - before).abs() > 1e-9;
-            assert_eq!(moved, zooms, "{keys} zooming is {moved}, expected {zooms}");
+        }
+
+        phase every_shortcut_the_overview_lists_does_something;
+        {
+            let mut doc = ui::tilo_resource::Doc::new();
+            for action in crate::sample::shapes() {
+                Artwork::apply_to(&mut doc, action);
+            }
+            let art = Artwork::from_doc(&doc).unwrap();
+            let first = art.marks.first().unwrap().id.clone();
+            let mut listed: Vec<String> = GROUPS
+                .iter()
+                .flat_map(|group| {
+                    group
+                        .shortcuts
+                        .iter()
+                        .map(|shortcut| shortcut.keys.to_owned())
+                })
+                .collect();
+            listed.extend(tools().into_iter().map(|(keys, _)| keys));
+            let mut checked = 0;
+            for keys in listed.iter().filter(|keys| !elsewhere(keys)) {
+                for (key, modifiers) in parse(keys) {
+                    let mut surface = CanvasSurface::new(Tools::default());
+                    surface.art = Rc::new(art.clone());
+                    surface.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+                    surface.selection = vec![first.clone()];
+                    // Grouping takes two marks; ungrouping, a group.
+                    if keys == "Enter" {
+                        let editable = art
+                            .marks
+                            .iter()
+                            .find(|mark| {
+                                !matches!(mark.shape, Shape::Rect { .. } | Shape::Ellipse { .. })
+                            })
+                            .unwrap();
+                        surface.selection = vec![editable.id.clone()];
+                    } else if keys == "Ctrl+G" {
+                        surface.selection = edit::everything(&art);
+                    } else if keys == "Ctrl+Shift+G" {
+                        let mut grouped = doc.clone();
+                        let group = edit::group(&art, &edit::everything(&art)).unwrap();
+                        Artwork::apply_to(&mut grouped, group);
+                        surface.art = Rc::new(Artwork::from_doc(&grouped).unwrap());
+                    }
+                    if keys == "Ctrl+V" {
+                        ui::clipboard_copy(&edit::copy(&art, &surface.selection).unwrap());
+                    }
+                    let text = match &key {
+                        Key::Character(text) => Some(text.to_string()),
+                        _ => None,
+                    };
+                    assert!(
+                        surface.key(&key, text.as_deref(), modifiers),
+                        "{keys} is listed but the canvas does nothing with it"
+                    );
+                    checked += 1;
+                }
+            }
+            assert!(checked > 30, "only {checked} keys were checked");
         }
     }
 
-    #[test]
-    fn a_participant_that_joined_is_published_where_it_selected() {
-        let mut surface = surface_with_marks();
-        let task = participant("agent-task:paint");
-        assert!(
-            ui::collaboration::participants::Participants::join_participant(&mut surface, &task)
-        );
-        surface.landed(&task, &selection(1, 3));
-        let doc = ui::tilo_resource::Doc::new();
-        let presence =
-            ui::collaboration::participants::Participants::participant_presence(&surface, &doc);
-        let [one] = presence.as_slice() else {
-            panic!("one participant's presence, got {presence:?}");
-        };
-        assert_eq!(one.participant, task);
-        assert_eq!(one.key, peer_presence_key());
-        assert_eq!(
-            one.payload,
-            ui::PresencePayload::Selection { start: 1, end: 3 }
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A participant's place on the canvas, as its presence publishes it.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_participant_is_presenced_only_while_it_is_joined;
 
-    #[test]
-    fn a_participant_this_canvas_never_joined_is_not_placed_or_presenced() {
-        let mut surface = surface_with_marks();
-        let stranger = participant("agent-task:stranger");
-        surface.landed(&stranger, &selection(0, 2));
-        assert!(!surface.participants.contains(&stranger));
-        let doc = ui::tilo_resource::Doc::new();
-        assert!(
-            ui::collaboration::participants::Participants::participant_presence(&surface, &doc)
+        phase a_participant_that_joined_is_published_where_it_selected;
+        {
+            let mut surface = surface_with_marks();
+            let task = participant("agent-task:paint");
+            assert!(
+                ui::collaboration::participants::Participants::join_participant(&mut surface, &task)
+            );
+            surface.landed(&task, &selection(1, 3));
+            let doc = ui::tilo_resource::Doc::new();
+            let presence =
+                ui::collaboration::participants::Participants::participant_presence(&surface, &doc);
+            let [one] = presence.as_slice() else {
+                panic!("one participant's presence, got {presence:?}");
+            };
+            assert_eq!(one.participant, task);
+            assert_eq!(one.key, peer_presence_key());
+            assert_eq!(
+                one.payload,
+                ui::PresencePayload::Selection { start: 1, end: 3 }
+            );
+        }
+
+        phase a_participant_this_canvas_never_joined_is_not_placed_or_presenced;
+        {
+            let mut surface = surface_with_marks();
+            let stranger = participant("agent-task:stranger");
+            surface.landed(&stranger, &selection(0, 2));
+            assert!(!surface.participants.contains(&stranger));
+            let doc = ui::tilo_resource::Doc::new();
+            assert!(
+                ui::collaboration::participants::Participants::participant_presence(&surface, &doc)
+                    .is_empty(),
+                "a binding that was never joined is not presence"
+            );
+        }
+
+        phase a_participant_that_left_is_not_presenced_and_cannot_be_placed_again;
+        {
+            let mut surface = surface_with_marks();
+            let task = participant("agent-task:gone");
+            assert!(
+                ui::collaboration::participants::Participants::join_participant(&mut surface, &task)
+            );
+            surface.landed(&task, &selection(0, 2));
+            ui::collaboration::participants::Participants::leave_participant(&mut surface, &task);
+            surface.landed(&task, &selection(2, 4));
+            assert!(
+                ui::collaboration::participants::Participants::participant_presence(
+                    &surface,
+                    &ui::tilo_resource::Doc::new()
+                )
                 .is_empty(),
-            "a binding that was never joined is not presence"
-        );
-    }
-
-    #[test]
-    fn a_participant_that_left_is_not_presenced_and_cannot_be_placed_again() {
-        let mut surface = surface_with_marks();
-        let task = participant("agent-task:gone");
-        assert!(
-            ui::collaboration::participants::Participants::join_participant(&mut surface, &task)
-        );
-        surface.landed(&task, &selection(0, 2));
-        ui::collaboration::participants::Participants::leave_participant(&mut surface, &task);
-        surface.landed(&task, &selection(2, 4));
-        assert!(
-            ui::collaboration::participants::Participants::participant_presence(
-                &surface,
-                &ui::tilo_resource::Doc::new()
-            )
-            .is_empty(),
-            "the view it left does not come back"
-        );
+                "the view it left does not come back"
+            );
+        }
     }
 
     #[test]
@@ -3827,65 +3899,5 @@ mod tests {
             "Escape" => vec![(Key::Named(NamedKey::Escape), modifiers)],
             other => vec![(character(&shifted(&other.to_lowercase())), modifiers)],
         }
-    }
-
-    #[test]
-    fn every_shortcut_the_overview_lists_does_something() {
-        let mut doc = ui::tilo_resource::Doc::new();
-        for action in crate::sample::shapes() {
-            Artwork::apply_to(&mut doc, action);
-        }
-        let art = Artwork::from_doc(&doc).unwrap();
-        let first = art.marks.first().unwrap().id.clone();
-        let mut listed: Vec<String> = GROUPS
-            .iter()
-            .flat_map(|group| {
-                group
-                    .shortcuts
-                    .iter()
-                    .map(|shortcut| shortcut.keys.to_owned())
-            })
-            .collect();
-        listed.extend(tools().into_iter().map(|(keys, _)| keys));
-        let mut checked = 0;
-        for keys in listed.iter().filter(|keys| !elsewhere(keys)) {
-            for (key, modifiers) in parse(keys) {
-                let mut surface = CanvasSurface::new(Tools::default());
-                surface.art = Rc::new(art.clone());
-                surface.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-                surface.selection = vec![first.clone()];
-                // Grouping takes two marks; ungrouping, a group.
-                if keys == "Enter" {
-                    let editable = art
-                        .marks
-                        .iter()
-                        .find(|mark| {
-                            !matches!(mark.shape, Shape::Rect { .. } | Shape::Ellipse { .. })
-                        })
-                        .unwrap();
-                    surface.selection = vec![editable.id.clone()];
-                } else if keys == "Ctrl+G" {
-                    surface.selection = edit::everything(&art);
-                } else if keys == "Ctrl+Shift+G" {
-                    let mut grouped = doc.clone();
-                    let group = edit::group(&art, &edit::everything(&art)).unwrap();
-                    Artwork::apply_to(&mut grouped, group);
-                    surface.art = Rc::new(Artwork::from_doc(&grouped).unwrap());
-                }
-                if keys == "Ctrl+V" {
-                    ui::clipboard_copy(&edit::copy(&art, &surface.selection).unwrap());
-                }
-                let text = match &key {
-                    Key::Character(text) => Some(text.to_string()),
-                    _ => None,
-                };
-                assert!(
-                    surface.key(&key, text.as_deref(), modifiers),
-                    "{keys} is listed but the canvas does nothing with it"
-                );
-                checked += 1;
-            }
-        }
-        assert!(checked > 30, "only {checked} keys were checked");
     }
 }

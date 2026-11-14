@@ -90,159 +90,165 @@ fn style(art: &Artwork) -> &Style {
     &art.mark(TREE).unwrap().style
 }
 
-#[test]
-fn a_fill_and_an_opacity_changed_at_once_both_survive() {
-    let art = merged(
-        drawn(rect()),
-        |ours| {
-            edit(
-                ours,
-                EditMarks {
-                    fill: Some("#cc2222".into()),
-                    ..EditMarks::default()
-                },
-            );
-        },
-        |theirs| {
-            edit(
-                theirs,
-                EditMarks {
-                    opacity: Some(0.4),
-                    ..EditMarks::default()
-                },
-            );
-        },
-    );
-    assert_eq!(style(&art).fill.as_deref(), Some("#cc2222"));
-    assert_eq!(style(&art).opacity, Some(0.4));
-}
+tilo_test_env::scenario! {
+    /// Two replicas changing one mark, layer or ground at once, then merging.
+    /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+    fn two_edits_made_at_once_keep_each_field_or_one_whole_value;
 
-#[test]
-fn two_colours_picked_at_once_are_one_of_them() {
-    let art = merged(
-        drawn(rect()),
-        |ours| {
-            edit(
-                ours,
-                EditMarks {
-                    fill: Some("#cc2222".into()),
-                    ..EditMarks::default()
-                },
-            );
-        },
-        |theirs| {
-            edit(
-                theirs,
-                EditMarks {
-                    fill: Some("#2222cc".into()),
-                    ..EditMarks::default()
-                },
-            );
-        },
-    );
-    let fill = style(&art).fill.as_deref();
-    assert!(
-        [Some("#cc2222"), Some("#2222cc")].contains(&fill),
-        "one of the two colours, not a mix: {fill:?}"
-    );
-}
+    phase a_fill_and_an_opacity_changed_at_once_both_survive;
+    {
+        let art = merged(
+            drawn(rect()),
+            |ours| {
+                edit(
+                    ours,
+                    EditMarks {
+                        fill: Some("#cc2222".into()),
+                        ..EditMarks::default()
+                    },
+                );
+            },
+            |theirs| {
+                edit(
+                    theirs,
+                    EditMarks {
+                        opacity: Some(0.4),
+                        ..EditMarks::default()
+                    },
+                );
+            },
+        );
+        assert_eq!(style(&art).fill.as_deref(), Some("#cc2222"));
+        assert_eq!(style(&art).opacity, Some(0.4));
+    }
 
-#[test]
-fn two_qualities_of_one_adjustment_changed_at_once_both_survive() {
-    let mut start = drawn(rect());
-    // The adjustments exist before both change them: two people creating an
-    // absent record at once choose one of their records.
-    edit(
-        &mut start,
-        EditMarks {
+    phase two_colours_picked_at_once_are_one_of_them;
+    {
+        let art = merged(
+            drawn(rect()),
+            |ours| {
+                edit(
+                    ours,
+                    EditMarks {
+                        fill: Some("#cc2222".into()),
+                        ..EditMarks::default()
+                    },
+                );
+            },
+            |theirs| {
+                edit(
+                    theirs,
+                    EditMarks {
+                        fill: Some("#2222cc".into()),
+                        ..EditMarks::default()
+                    },
+                );
+            },
+        );
+        let fill = style(&art).fill.as_deref();
+        assert!(
+            [Some("#cc2222"), Some("#2222cc")].contains(&fill),
+            "one of the two colours, not a mix: {fill:?}"
+        );
+    }
+
+    phase two_qualities_of_one_adjustment_changed_at_once_both_survive;
+    {
+        let mut start = drawn(rect());
+        // The adjustments exist before both change them: two people creating an
+        // absent record at once choose one of their records.
+        edit(
+            &mut start,
+            EditMarks {
+                adjust: Some(Adjust {
+                    contrast: Some(0.1),
+                    ..Adjust::default()
+                }),
+                ..EditMarks::default()
+            },
+        );
+        let adjust = |exposure, saturation| EditMarks {
             adjust: Some(Adjust {
-                contrast: Some(0.1),
+                exposure,
+                saturation,
                 ..Adjust::default()
             }),
             ..EditMarks::default()
-        },
-    );
-    let adjust = |exposure, saturation| EditMarks {
-        adjust: Some(Adjust {
-            exposure,
-            saturation,
-            ..Adjust::default()
-        }),
-        ..EditMarks::default()
-    };
-    let art = merged(
-        start,
-        |ours| edit(ours, adjust(Some(0.8), None)),
-        |theirs| edit(theirs, adjust(None, Some(-0.5))),
-    );
-    let adjust = style(&art).adjust.clone().unwrap();
-    assert_eq!(adjust.exposure, Some(0.8));
-    assert_eq!(adjust.saturation, Some(-0.5));
-    assert_eq!(adjust.contrast, Some(0.1));
-}
+        };
+        let art = merged(
+            start,
+            |ours| edit(ours, adjust(Some(0.8), None)),
+            |theirs| edit(theirs, adjust(None, Some(-0.5))),
+        );
+        let adjust = style(&art).adjust.clone().unwrap();
+        assert_eq!(adjust.exposure, Some(0.8));
+        assert_eq!(adjust.saturation, Some(-0.5));
+        assert_eq!(adjust.contrast, Some(0.1));
+    }
 
-#[test]
-fn a_texts_position_and_its_width_changed_at_once_both_survive() {
-    let reshape = |shape| EditMarks {
-        shape: Some(Taught(shape)),
-        ..EditMarks::default()
-    };
-    let art = merged(
-        drawn(text(10.0, None)),
-        |ours| edit(ours, reshape(text(90.0, None))),
-        |theirs| edit(theirs, reshape(text(10.0, Some(300.0)))),
-    );
-    assert_eq!(art.mark(TREE).unwrap().shape, text(90.0, Some(300.0)));
-}
+    phase a_texts_position_and_its_width_changed_at_once_both_survive;
+    {
+        let reshape = |shape| EditMarks {
+            shape: Some(Taught(shape)),
+            ..EditMarks::default()
+        };
+        let art = merged(
+            drawn(text(10.0, None)),
+            |ours| edit(ours, reshape(text(90.0, None))),
+            |theirs| edit(theirs, reshape(text(10.0, Some(300.0)))),
+        );
+        assert_eq!(art.mark(TREE).unwrap().shape, text(90.0, Some(300.0)));
+    }
 
-#[test]
-fn two_outlines_drawn_at_once_are_one_of_them() {
-    let polygon = |points: &[[f64; 2]]| EditMarks {
-        shape: Some(Taught(Shape::Polygon {
-            points: points.to_vec(),
-        })),
-        ..EditMarks::default()
-    };
-    let ours = [[0.0, 0.0], [100.0, 0.0], [50.0, 80.0]];
-    let theirs = [[10.0, 10.0], [90.0, 10.0], [90.0, 90.0], [10.0, 90.0]];
-    let art = merged(
-        drawn(Shape::Polygon {
-            points: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-        }),
-        |replica| edit(replica, polygon(&ours)),
-        |replica| edit(replica, polygon(&theirs)),
-    );
-    let Shape::Polygon { points } = &art.mark(TREE).unwrap().shape else {
-        panic!("still a polygon");
-    };
-    assert!(
-        points.as_slice() == ours || points.as_slice() == theirs,
-        "one of the two outlines, not a mix: {points:?}"
-    );
-}
+    phase two_outlines_drawn_at_once_are_one_of_them;
+    {
+        let polygon = |points: &[[f64; 2]]| EditMarks {
+            shape: Some(Taught(Shape::Polygon {
+                points: points.to_vec(),
+            })),
+            ..EditMarks::default()
+        };
+        let ours = [[0.0, 0.0], [100.0, 0.0], [50.0, 80.0]];
+        let theirs = [[10.0, 10.0], [90.0, 10.0], [90.0, 90.0], [10.0, 90.0]];
+        let art = merged(
+            drawn(Shape::Polygon {
+                points: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            }),
+            |replica| edit(replica, polygon(&ours)),
+            |replica| edit(replica, polygon(&theirs)),
+        );
+        let Shape::Polygon { points } = &art.mark(TREE).unwrap().shape else {
+            panic!("still a polygon");
+        };
+        assert!(
+            points.as_slice() == ours || points.as_slice() == theirs,
+            "one of the two outlines, not a mix: {points:?}"
+        );
+    }
 
-#[test]
-fn a_grounds_texture_and_colour_changed_at_once_both_survive() {
-    let art = merged(
-        drawn(rect()),
-        |ours| {
-            ours.apply(Artwork::SET_ARTWORK.with(SetArtwork {
-                texture: Some("linen".into()),
-                ..SetArtwork::default()
-            }))
-            .unwrap();
-        },
-        |theirs| {
-            theirs
-                .apply(Artwork::SET_ARTWORK.with(SetArtwork {
-                    ground_colour: Some("#202020".into()),
+    phase a_grounds_texture_and_colour_changed_at_once_both_survive;
+    {
+        let art = merged(
+            drawn(rect()),
+            |ours| {
+                ours.apply(Artwork::SET_ARTWORK.with(SetArtwork {
+                    texture: Some("linen".into()),
                     ..SetArtwork::default()
                 }))
                 .unwrap();
-        },
-    );
-    assert_eq!(art.ground.texture, "linen");
-    assert_eq!(art.ground.colour, "#202020");
+            },
+            |theirs| {
+                theirs
+                    .apply(Artwork::SET_ARTWORK.with(SetArtwork {
+                        ground_colour: Some("#202020".into()),
+                        ..SetArtwork::default()
+                    }))
+                    .unwrap();
+            },
+        );
+        assert_eq!(art.ground.texture, "linen");
+        assert_eq!(art.ground.colour, "#202020");
+    }
 }
 
 /// Store `value` under `key` of `obj` as one JSON string, as version 1 did.

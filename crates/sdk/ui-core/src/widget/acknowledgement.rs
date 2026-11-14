@@ -329,59 +329,65 @@ mod tests {
         start + Duration::from_millis(ms)
     }
 
-    #[test]
-    fn an_acknowledgement_holds_then_fades_then_goes() {
-        let start = crate::time::now();
-        let ack = Acknowledgement::new("Link copied", start);
-        assert!(ack.is_live(start));
-        assert!((ack.alpha_at(at(start, 100), false) - 1.0).abs() < f32::EPSILON);
-        assert!(!ack.fading_at(at(start, 100), false));
-        let fading = at(start, 1_400);
-        assert!(ack.fading_at(fading, false));
-        let alpha = ack.alpha_at(fading, false);
-        assert!(alpha > 0.0 && alpha < 1.0, "half way out: {alpha}");
-        assert!(!ack.is_live(at(start, 1_500)));
-        assert!(ack.alpha_at(at(start, 1_600), false) <= 0.0);
-    }
+    tilo_test_env::scenario! {
+        /// The acknowledgement as a value: its hold, its fade, the wakes it asks for and its announcement.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_acknowledgement_holds_fades_wakes_and_is_announced;
 
-    #[test]
-    fn reduced_motion_shows_it_whole_until_it_goes() {
-        let start = crate::time::now();
-        let ack = Acknowledgement::new("Link copied", start);
-        assert!((ack.alpha_at(at(start, 1_400), true) - 1.0).abs() < f32::EPSILON);
-        assert!(!ack.fading_at(at(start, 1_400), true));
-        assert_eq!(
-            ack.next_wake_at(at(start, 100), true),
-            Some(at(start, 1_500))
-        );
-    }
+        phase an_acknowledgement_holds_then_fades_then_goes;
+        {
+            let start = crate::time::now();
+            let ack = Acknowledgement::new("Link copied", start);
+            assert!(ack.is_live(start));
+            assert!((ack.alpha_at(at(start, 100), false) - 1.0).abs() < f32::EPSILON);
+            assert!(!ack.fading_at(at(start, 100), false));
+            let fading = at(start, 1_400);
+            assert!(ack.fading_at(fading, false));
+            let alpha = ack.alpha_at(fading, false);
+            assert!(alpha > 0.0 && alpha < 1.0, "half way out: {alpha}");
+            assert!(!ack.is_live(at(start, 1_500)));
+            assert!(ack.alpha_at(at(start, 1_600), false) <= 0.0);
+        }
 
-    #[test]
-    fn the_host_wakes_for_the_fade_and_for_the_end() {
-        let start = crate::time::now();
-        let ack = Acknowledgement::new("Link copied", start);
-        assert_eq!(
-            ack.next_wake_at(start, false),
-            Some(
-                start + ACKNOWLEDGEMENT_HOLD
-                    - crate::motion::Transient::exit_time(
-                        crate::motion::Transient::CONFIRMATION,
-                        motion_for(false),
-                    )
-            )
-        );
-        assert_eq!(
-            ack.next_wake_at(at(start, 1_300), false),
-            Some(start + ACKNOWLEDGEMENT_HOLD)
-        );
-        assert_eq!(ack.next_wake_at(at(start, 1_500), false), None);
-    }
+        phase reduced_motion_shows_it_whole_until_it_goes;
+        {
+            let start = crate::time::now();
+            let ack = Acknowledgement::new("Link copied", start);
+            assert!((ack.alpha_at(at(start, 1_400), true) - 1.0).abs() < f32::EPSILON);
+            assert!(!ack.fading_at(at(start, 1_400), true));
+            assert_eq!(
+                ack.next_wake_at(at(start, 100), true),
+                Some(at(start, 1_500))
+            );
+        }
 
-    #[test]
-    fn it_is_a_polite_status_with_its_words() {
-        let ack = Acknowledgement::new("Link copied", crate::time::now());
-        let node = ack.accessibility();
-        assert_eq!(node.live, Some(Politeness::Polite));
-        assert_eq!(node.value.as_deref(), Some("Link copied"));
+        phase the_host_wakes_for_the_fade_and_for_the_end;
+        {
+            let start = crate::time::now();
+            let ack = Acknowledgement::new("Link copied", start);
+            assert_eq!(
+                ack.next_wake_at(start, false),
+                Some(
+                    start + ACKNOWLEDGEMENT_HOLD
+                        - crate::motion::Transient::exit_time(
+                            crate::motion::Transient::CONFIRMATION,
+                            motion_for(false),
+                        )
+                )
+            );
+            assert_eq!(
+                ack.next_wake_at(at(start, 1_300), false),
+                Some(start + ACKNOWLEDGEMENT_HOLD)
+            );
+            assert_eq!(ack.next_wake_at(at(start, 1_500), false), None);
+        }
+
+        phase it_is_a_polite_status_with_its_words;
+        {
+            let ack = Acknowledgement::new("Link copied", crate::time::now());
+            let node = ack.accessibility();
+            assert_eq!(node.live, Some(Politeness::Polite));
+            assert_eq!(node.value.as_deref(), Some("Link copied"));
+        }
     }
 }

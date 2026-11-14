@@ -8,9 +8,13 @@
 /// (windows, strips, canvas places) is the shell's own arrangement beside it.
 /// The edge of the screen a part rides.
 enum Edge {
+    /// Top
     top
+    /// Bottom
     bottom
+    /// Left
     left
+    /// Right
     right
 }
 
@@ -30,19 +34,29 @@ enum Finish {
 
 /// When a bar or dock shows.
 enum Showing {
+    /// Always
     always
-    /// Shown while no window overlaps it; it hides when a window would cover it.
+    /// While no window covers it
+    ///
+    /// It hides while a window would cover it, and comes back when that window goes.
     no_overlap
-    /// Hidden until the pointer bumps the screen edge it rides.
+    /// At the screen's edge
+    ///
+    /// Hidden until the pointer bumps the edge it rides.
     edge_reveal
-    /// Hidden after the pointer has not been over it for a moment, shown when it returns.
+    /// After a moment
+    ///
+    /// Hidden once the pointer has not been over it for a while.
     auto_hide
 }
 
 /// How large the parts are.
 enum Size {
+    /// Small
     small
+    /// Regular
     regular
+    /// Large
     large
 }
 

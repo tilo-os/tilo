@@ -302,7 +302,7 @@ fn window(
 /// The window reads what its record holds: the record's chunk, then the chunks above it, a
 /// frame at a time, and derives them off the frame until its index covers the record.
 fn catch_up(window: &mut Window) {
-    window.instance.sync_chunks(window.workspace.chunks());
+    window.workspace.sync_instance(&mut window.instance);
     window.instance.update();
     if let Some(host) = window.instance.host() {
         host.wait_index();
@@ -437,12 +437,12 @@ fn a_hundred_thousand_cards_open_and_list_across_their_chunks() {
         "tl.test",
     );
     let per = usize::try_from(chunk::ITEMS).unwrap();
-    let numbers: Vec<ChunkNo> = record.chunks().numbers().collect();
+    let numbers: Vec<ChunkNo> = record.read(|chunks| chunks.numbers().collect());
     assert_eq!(numbers.len(), 100_000usize.div_ceil(per));
     assert_eq!(numbers.first(), Some(&0));
     assert!(numbers.windows(2).all(|pair| pair[1] == pair[0] + 1));
     assert_eq!(
-        record.chunks().placement().chunks().len(),
+        record.read(|chunks| chunks.placement().chunks().len()),
         numbers.len() - 1,
         "the manifest names every chunk above the record"
     );
@@ -451,12 +451,13 @@ fn a_hundred_thousand_cards_open_and_list_across_their_chunks() {
     // were given, and each is read from the chunk its run holds.
     let schema = board_schema(&meta);
     let field = field_id(&meta, "Board", "left");
-    let found = Items::across(record.chunks(), BOARD_APP, &root, &schema).resolve(&schema);
+    let found =
+        record.read(|chunks| Items::across(chunks, BOARD_APP, &root, &schema).resolve(&schema));
     assert_eq!(inserted.len(), 100_000);
     assert_eq!(found.items(None, &field), inserted);
     let held: Vec<usize> = numbers
         .iter()
-        .map(|number| held_in(record.chunks(), *number, &root, &schema))
+        .map(|number| record.read(|chunks| held_in(chunks, *number, &root, &schema)))
         .collect();
     assert_eq!(held.len(), numbers.len(), "every card is in one chunk");
     assert_eq!(held.iter().sum::<usize>(), inserted.len());
@@ -1014,6 +1015,7 @@ fn opened(docs: &mut Docs, dir: &Path, ids: &str, sent: bool) -> (Host, Rc<RefCe
             chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,
@@ -1353,14 +1355,14 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
 
     // Opened again from the same copies, with no change from anyone: the chunk comes with the
     // record, and the card is where it was written.
-    let reopened = opened_from_disk(&route, &documents, "ada");
+    let mut reopened = opened_from_disk(&route, &documents, "ada");
     assert!(
         reopened.chunk(2).is_some(),
         "the chunk's own copy was opened with the record"
     );
-    assert_eq!(held_in(reopened.chunks(), 2, &root, &schema), 1);
+    assert_eq!(held_in(&reopened.chunks(), 2, &root, &schema), 1);
     assert_eq!(
-        Items::across(reopened.chunks(), BOARD_APP, &root, &schema)
+        Items::across(&reopened.chunks(), BOARD_APP, &root, &schema)
             .resolve(&schema)
             .items(None, &field),
         vec![card.clone()]
@@ -1386,7 +1388,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
         Rc::new(Alone),
         Box::new(app_end),
     );
-    instance.sync_chunks(reopened.chunks());
+    reopened.sync_instance(&mut instance);
     instance.update();
     assert_eq!(left(&instance.host().unwrap(), &root, &field), [card]);
 }

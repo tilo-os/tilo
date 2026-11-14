@@ -795,6 +795,9 @@ impl App {
     /// Build the layout of whatever the window presents, and check the map
     /// it registered against the live tree at once.
     pub(super) fn build_history_presentation(&mut self) {
+        // A rebuild outside a layout pass (a press that changes the page) is in a window that
+        // has shown its tree: what it builds arrives on its motion, as it would in a pass.
+        let _window = crate::motion::laying_out_window(self.layout.root_node.is_some());
         self.build_presentation_layout();
         self.admit_layout_maps();
     }

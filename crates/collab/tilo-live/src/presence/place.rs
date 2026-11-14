@@ -69,27 +69,31 @@ pub fn tile(tiles: &[Tile], tab: u64) -> Option<Tile> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_pointer_is_said_in_the_pixels_of_the_tile_it_is_over() {
-        let tiles = [
-            Tile::new(3, 100.0, 50.0, 400.0, 300.0),
-            Tile::new(4, 500.0, 0.0, 100.0, 100.0),
-        ];
-        assert_eq!(anchor(&tiles, (150.0, 80.0)), Some((3, 50.0, 30.0)));
-        assert_eq!(anchor(&tiles, (550.0, 10.0)), Some((4, 50.0, 10.0)));
-        assert_eq!(anchor(&tiles, (0.0, 0.0)), None, "over no tile");
-        assert_eq!(
-            anchor(&tiles, (500.0, 0.0)).map(|(tab, _, _)| tab),
-            Some(4),
-            "an edge belongs to the tile it opens"
-        );
-        assert_eq!(tile(&tiles, 4), Some(tiles[1]));
-        assert_eq!(tile(&tiles, 5), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_point_is_placed_by_the_tile_it_is_over;
 
-    #[test]
-    fn a_point_on_a_tile_lands_where_the_tile_stands() {
-        let over = Tile::new(7, 20.0, 30.0, 100.0, 100.0);
-        assert_eq!(over.point((5.0, 6.0)), (25.0, 36.0));
+        phase a_pointer_is_said_in_the_pixels_of_the_tile_it_is_over;
+        {
+            let tiles = [
+                Tile::new(3, 100.0, 50.0, 400.0, 300.0),
+                Tile::new(4, 500.0, 0.0, 100.0, 100.0),
+            ];
+            assert_eq!(anchor(&tiles, (150.0, 80.0)), Some((3, 50.0, 30.0)));
+            assert_eq!(anchor(&tiles, (550.0, 10.0)), Some((4, 50.0, 10.0)));
+            assert_eq!(anchor(&tiles, (0.0, 0.0)), None, "over no tile");
+            assert_eq!(
+                anchor(&tiles, (500.0, 0.0)).map(|(tab, _, _)| tab),
+                Some(4),
+                "an edge belongs to the tile it opens"
+            );
+            assert_eq!(tile(&tiles, 4), Some(tiles[1]));
+            assert_eq!(tile(&tiles, 5), None);
+        }
+
+        phase a_point_on_a_tile_lands_where_the_tile_stands;
+        {
+            let over = Tile::new(7, 20.0, 30.0, 100.0, 100.0);
+            assert_eq!(over.point((5.0, 6.0)), (25.0, 36.0));
+        }
     }
 }

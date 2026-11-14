@@ -808,76 +808,80 @@ impl Drop for PcmSink {
 mod tests {
     use super::*;
 
-    #[test]
-    fn spotify_metadata_refusal_classifies_only_bounded_provider_codes() {
-        use librespot::core::http_client::HttpClientError;
-        let status = "403".parse().unwrap();
-        for (body, expected) in [
-            (
-                br#"{"error":"insufficient_scope","error_description":"fixture-private-token"}"#
-                    .as_slice(),
-                "insufficient_scope",
-            ),
-            (
-                br#"{"error":{"reason":"PREMIUM_REQUIRED","message":"fixture-private-token"}}"#
-                    .as_slice(),
-                "PREMIUM_REQUIRED",
-            ),
-            (
-                br#"{"error":"fixture-private-token","access_token":"fixture-private-token"}"#
-                    .as_slice(),
-                "unclassified-json",
-            ),
-            (
-                br#"{"error":{"message":"fixture-private-token"}}"#.as_slice(),
-                "unclassified-json",
-            ),
-            (
-                b"<html>fixture-private-token</html>".as_slice(),
-                "non-json-body",
-            ),
-            (b"".as_slice(), "empty-body"),
-        ] {
-            let source = HttpClientError::from_status_body(status, body);
-            assert_eq!(source.reason(), Some(expected));
-            let error: librespot::core::Error = source.into();
-            assert_eq!(
-                error.kind,
-                librespot::core::error::ErrorKind::PermissionDenied
-            );
-            let public = playback_metadata_error(&error);
-            assert!(public.contains(expected));
-            assert!(public.contains("HTTP 403"));
-            assert!(!format!("{error:?} {error} {public}").contains("fixture-private-token"));
+    tilo_test_env::scenario! {
+        fn playback_metadata_errors_name_the_providers_status_and_no_secret;
+
+        phase spotify_metadata_refusal_classifies_only_bounded_provider_codes;
+        {
+            use librespot::core::http_client::HttpClientError;
+            let status = "403".parse().unwrap();
+            for (body, expected) in [
+                (
+                    br#"{"error":"insufficient_scope","error_description":"fixture-private-token"}"#
+                        .as_slice(),
+                    "insufficient_scope",
+                ),
+                (
+                    br#"{"error":{"reason":"PREMIUM_REQUIRED","message":"fixture-private-token"}}"#
+                        .as_slice(),
+                    "PREMIUM_REQUIRED",
+                ),
+                (
+                    br#"{"error":"fixture-private-token","access_token":"fixture-private-token"}"#
+                        .as_slice(),
+                    "unclassified-json",
+                ),
+                (
+                    br#"{"error":{"message":"fixture-private-token"}}"#.as_slice(),
+                    "unclassified-json",
+                ),
+                (
+                    b"<html>fixture-private-token</html>".as_slice(),
+                    "non-json-body",
+                ),
+                (b"".as_slice(), "empty-body"),
+            ] {
+                let source = HttpClientError::from_status_body(status, body);
+                assert_eq!(source.reason(), Some(expected));
+                let error: librespot::core::Error = source.into();
+                assert_eq!(
+                    error.kind,
+                    librespot::core::error::ErrorKind::PermissionDenied
+                );
+                let public = playback_metadata_error(&error);
+                assert!(public.contains(expected));
+                assert!(public.contains("HTTP 403"));
+                assert!(!format!("{error:?} {error} {public}").contains("fixture-private-token"));
+            }
+            let oversized = vec![b'x'; 8193];
+            let error = HttpClientError::from_status_body(status, &oversized);
+            assert_eq!(error.reason(), Some("body-limit-exceeded"));
         }
-        let oversized = vec![b'x'; 8193];
-        let error = HttpClientError::from_status_body(status, &oversized);
-        assert_eq!(error.reason(), Some("body-limit-exceeded"));
-    }
 
-    #[test]
-    fn playback_metadata_failure_preserves_provider_status_without_secret_sources() {
-        use librespot::core::http_client::HttpClientError;
+        phase playback_metadata_failure_preserves_provider_status_without_secret_sources;
+        {
+            use librespot::core::http_client::HttpClientError;
 
-        for status in ["401", "402", "403"] {
-            let error = HttpClientError::StatusCode(status.parse().unwrap()).into();
+            for status in ["401", "402", "403"] {
+                let error = HttpClientError::StatusCode(status.parse().unwrap()).into();
+                assert_eq!(
+                    playback_metadata_error(&error),
+                    format!("Spotify refused the playback metadata request (HTTP {status})")
+                );
+            }
+            let error = librespot::core::Error::permission_denied(
+                "private bearer and request URL must not enter collaborative state",
+            );
             assert_eq!(
                 playback_metadata_error(&error),
-                format!("Spotify refused the playback metadata request (HTTP {status})")
+                "Spotify playback metadata request failed (PermissionDenied)"
+            );
+            let error = std::io::Error::from_raw_os_error(13).into();
+            assert_eq!(
+                playback_metadata_error(&error),
+                "Spotify playback metadata transport failed (PermissionDenied, OS error Some(13))"
             );
         }
-        let error = librespot::core::Error::permission_denied(
-            "private bearer and request URL must not enter collaborative state",
-        );
-        assert_eq!(
-            playback_metadata_error(&error),
-            "Spotify playback metadata request failed (PermissionDenied)"
-        );
-        let error = std::io::Error::from_raw_os_error(13).into();
-        assert_eq!(
-            playback_metadata_error(&error),
-            "Spotify playback metadata transport failed (PermissionDenied, OS error Some(13))"
-        );
     }
 
     fn eligibility_output() -> Output {
@@ -944,55 +948,59 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn native_eligibility_wait_is_cancellable_without_output() {
-        tilo_rt::block_on(async {
-            let session = Session::new(SessionConfig::default(), None);
-            let cancel = Arc::new(AtomicBool::new(false));
-            let frames = Arc::new(AtomicU64::new(0));
-            let cancelled = cancel.clone();
-            let update = tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                cancelled.store(true, Ordering::Release);
-            });
-            let sink = verified_sink(
-                &session,
-                &cancel,
-                &eligibility_output(),
-                &frames,
-                tilo_test_env::hang_bound(),
-            )
-            .await
-            .unwrap();
-            update.await.unwrap();
-            assert!(sink.is_none());
-            assert_eq!(frames.load(Ordering::Acquire), 0);
-            session.shutdown();
-        })
-        .unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn native_output_without_confirmed_premium_is_cancelled_or_refused;
 
-    #[test]
-    fn native_output_rejects_non_premium_and_unknown_product_types() {
-        tilo_rt::block_on(async {
-            for product in ["free", "open", "", "premium-like"] {
+        phase native_eligibility_wait_is_cancellable_without_output;
+        {
+            tilo_rt::block_on(async {
                 let session = Session::new(SessionConfig::default(), None);
-                session.set_user_attribute("type", product);
+                let cancel = Arc::new(AtomicBool::new(false));
                 let frames = Arc::new(AtomicU64::new(0));
-                let result = verified_sink(
+                let cancelled = cancel.clone();
+                let update = tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    cancelled.store(true, Ordering::Release);
+                });
+                let sink = verified_sink(
                     &session,
-                    &AtomicBool::new(false),
+                    &cancel,
                     &eligibility_output(),
                     &frames,
                     tilo_test_env::hang_bound(),
                 )
-                .await;
-                assert!(result.is_err(), "{product:?} must not authorize audio");
-                assert!(session.is_invalid());
+                .await
+                .unwrap();
+                update.await.unwrap();
+                assert!(sink.is_none());
                 assert_eq!(frames.load(Ordering::Acquire), 0);
-            }
-        })
-        .unwrap();
+                session.shutdown();
+            })
+            .unwrap();
+        }
+
+        phase native_output_rejects_non_premium_and_unknown_product_types;
+        {
+            tilo_rt::block_on(async {
+                for product in ["free", "open", "", "premium-like"] {
+                    let session = Session::new(SessionConfig::default(), None);
+                    session.set_user_attribute("type", product);
+                    let frames = Arc::new(AtomicU64::new(0));
+                    let result = verified_sink(
+                        &session,
+                        &AtomicBool::new(false),
+                        &eligibility_output(),
+                        &frames,
+                        tilo_test_env::hang_bound(),
+                    )
+                    .await;
+                    assert!(result.is_err(), "{product:?} must not authorize audio");
+                    assert!(session.is_invalid());
+                    assert_eq!(frames.load(Ordering::Acquire), 0);
+                }
+            })
+            .unwrap();
+        }
     }
 
     #[test]
@@ -1068,70 +1076,74 @@ mod tests {
         }
     }
 
-    #[test]
-    fn spotify_preload_follows_the_latest_valid_local_queue_and_does_not_flood_commands() {
-        let (commands, mut receiver) = tokio::sync::mpsc::channel(16);
-        let native = NativeAudio {
-            commands,
-            cancel: Arc::new(AtomicBool::new(false)),
-            status: Arc::new(Mutex::new(Status::default())),
-            frames: Arc::new(AtomicU64::new(0)),
-            started: Mutex::new(tilo_clock::now()),
-            requested_play: AtomicBool::new(false),
-            next: Arc::new(Mutex::new(None)),
-        };
-        let first = "spotify:track:1234567890123456789012";
-        native.prepare_next(Some(first));
-        assert!(matches!(receiver.try_recv().unwrap(), Command::Preload(uri) if uri == first));
-        for _ in 0..100 {
-            native.prepare_next(Some(first));
-        }
-        assert!(receiver.try_recv().is_err());
-        native.prepare_next(Some("spotify:track:abcdefghijklmnopqrstuv"));
-        assert!(
-            matches!(receiver.try_recv().unwrap(), Command::Preload(uri) if uri.ends_with("abcdefghijklmnopqrstuv"))
-        );
-        native.prepare_next(Some("spotify:track:../wrong"));
-        assert!(native.next.lock().unwrap().is_none());
-        assert!(receiver.try_recv().is_err());
-        native.prepare_next(Some(first));
-        native.prepare_next(None);
-        assert!(
-            native.next.lock().unwrap().is_none(),
-            "queue removal wins before end of track"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn native_audio_bounds_its_commands_and_counts_only_an_observed_sink;
 
-    #[test]
-    fn spotify_audio_confirmation_rejects_an_unobserved_or_fake_system_sink() {
-        let (commands, _receiver) = tokio::sync::mpsc::channel(1);
-        let status = Arc::new(Mutex::new(Status {
-            playing: true,
-            ..Default::default()
-        }));
-        let native = NativeAudio {
-            commands,
-            status: status.clone(),
-            frames: Arc::new(AtomicU64::new(10)),
-            cancel: Arc::new(AtomicBool::new(false)),
-            started: Mutex::new(tilo_clock::now()),
-            requested_play: AtomicBool::new(false),
-            next: Arc::new(Mutex::new(None)),
-        };
-        assert_eq!(native.frames(), 0);
-        assert!(!native.playing());
-        status.lock().unwrap().sink = Some("fakesink".into());
-        assert_eq!(native.frames(), 0);
-        status.lock().unwrap().sink = Some("pulsesink".into());
-        assert_eq!(native.frames(), 10);
-        assert!(native.playing());
-        native.play();
-        native.pause();
-        assert!(
-            native.pump(),
-            "bounded commands must report refusal rather than fabricate success"
-        );
-        assert!(native.error().unwrap().contains("command queue"));
+        phase spotify_preload_follows_the_latest_valid_local_queue_and_does_not_flood_commands;
+        {
+            let (commands, mut receiver) = tokio::sync::mpsc::channel(16);
+            let native = NativeAudio {
+                commands,
+                cancel: Arc::new(AtomicBool::new(false)),
+                status: Arc::new(Mutex::new(Status::default())),
+                frames: Arc::new(AtomicU64::new(0)),
+                started: Mutex::new(tilo_clock::now()),
+                requested_play: AtomicBool::new(false),
+                next: Arc::new(Mutex::new(None)),
+            };
+            let first = "spotify:track:1234567890123456789012";
+            native.prepare_next(Some(first));
+            assert!(matches!(receiver.try_recv().unwrap(), Command::Preload(uri) if uri == first));
+            for _ in 0..100 {
+                native.prepare_next(Some(first));
+            }
+            assert!(receiver.try_recv().is_err());
+            native.prepare_next(Some("spotify:track:abcdefghijklmnopqrstuv"));
+            assert!(
+                matches!(receiver.try_recv().unwrap(), Command::Preload(uri) if uri.ends_with("abcdefghijklmnopqrstuv"))
+            );
+            native.prepare_next(Some("spotify:track:../wrong"));
+            assert!(native.next.lock().unwrap().is_none());
+            assert!(receiver.try_recv().is_err());
+            native.prepare_next(Some(first));
+            native.prepare_next(None);
+            assert!(
+                native.next.lock().unwrap().is_none(),
+                "queue removal wins before end of track"
+            );
+        }
+
+        phase spotify_audio_confirmation_rejects_an_unobserved_or_fake_system_sink;
+        {
+            let (commands, _receiver) = tokio::sync::mpsc::channel(1);
+            let status = Arc::new(Mutex::new(Status {
+                playing: true,
+                ..Default::default()
+            }));
+            let native = NativeAudio {
+                commands,
+                status: status.clone(),
+                frames: Arc::new(AtomicU64::new(10)),
+                cancel: Arc::new(AtomicBool::new(false)),
+                started: Mutex::new(tilo_clock::now()),
+                requested_play: AtomicBool::new(false),
+                next: Arc::new(Mutex::new(None)),
+            };
+            assert_eq!(native.frames(), 0);
+            assert!(!native.playing());
+            status.lock().unwrap().sink = Some("fakesink".into());
+            assert_eq!(native.frames(), 0);
+            status.lock().unwrap().sink = Some("pulsesink".into());
+            assert_eq!(native.frames(), 10);
+            assert!(native.playing());
+            native.play();
+            native.pause();
+            assert!(
+                native.pump(),
+                "bounded commands must report refusal rather than fabricate success"
+            );
+            assert!(native.error().unwrap().contains("command queue"));
+        }
     }
     #[test]
     fn external_oauth_bearer_never_uses_stored_credential_login5() {

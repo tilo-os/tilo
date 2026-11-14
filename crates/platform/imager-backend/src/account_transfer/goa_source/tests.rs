@@ -167,233 +167,158 @@ fn reseal_refresh_and_remove(
     assert!(AccountStore::load_in(&source.root).get(id).is_some());
 }
 
-#[test]
-fn goa_original_registration_refreshes_verifies_identity_and_root_and_retries_without_source_writes()
- {
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temporary = tempfile::tempdir().unwrap();
-    let (roots, selected, path) = source(temporary.path(), CONFIG);
-    assert!(selected.can_import_credentials);
-    let projection = serde_json::to_string(&super::super::discover(&roots)).unwrap();
-    for secret in [
-        "original-goa-secret",
-        "source-goa-refresh",
-        "old-source-access",
-        "discard-password",
-    ] {
-        assert!(!projection.contains(secret));
-    }
-    let before = std::fs::metadata(&path).unwrap();
-    let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-    issuer.require_client_secret("original-goa-secret");
-    issuer.accept_refresh_token("source-goa-refresh");
-    let (api, worker) = api_server(vec![
-        (
-            "/oauth2/v2/userinfo",
-            serde_json::json!({"email":"person@example.test"}),
-        ),
-        (
-            "/drive/v3/files/root",
-            serde_json::json!({"id":"actual-drive-root"}),
-        ),
-    ]);
-    // The guided account stage has a home but no destination .config yet.
-    let stage = temporary.path().join("guided-stage");
-    std::fs::create_dir(&stage).unwrap();
-    std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let target = stage.join(".config/tilo");
-    assert!(!target.parent().unwrap().exists());
-    let mut connector = connector(&target, &issuer);
-    connector.goa_api = Some(api);
-    let keychain = FixtureKeychain::original();
-    let id = connector
-        .import_goa_with(&roots, &selected, &keychain)
-        .unwrap();
-    worker.join().unwrap();
-    assert_eq!(issuer.refreshes(), 1);
-    assert_eq!(
-        connector
-            .import_goa_with(&roots, &selected, &keychain)
-            .unwrap(),
-        id
-    );
-    assert_eq!(issuer.refreshes(), 1);
-    assert_eq!(keychain.calls.get(), 2);
-    let store = AccountStore::load_in(&target);
-    let account = store.get(&id).unwrap();
-    assert_eq!(account.type_id.as_str(), OAuthCloud::GoogleDrive.type_id());
-    assert_eq!(account.config["source_goa_identity"], "person@example.test");
-    assert!(
-        account
-            .config
-            .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
-            .is_some()
-    );
-    let public = std::fs::read_to_string(accounts::store_path_in(&target)).unwrap();
-    assert!(!public.contains("original-goa-secret"));
-    assert!(!public.contains("source-goa-refresh"));
-    let private = SecretVault::open_read_only_in(&target).get(&id).unwrap();
-    let credentials = keychain
-        .read(
-            &definitions(CONFIG, true).remove(0),
-            &std::fs::File::open(&roots.config).unwrap(),
+tilo_test_env::scenario! {
+    fn goa_refuses_changed_sources_and_unproven_identities;
+
+    phase goa_wrong_and_changed_reviewed_source_refuse_before_keychain_or_destination;
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        let (roots, mut selected, path) = source(temporary.path(), CONFIG);
+        let target = temporary.path().join("target");
+        let connector = Connector::new(target.clone());
+        let keychain = FixtureKeychain::original();
+        let original_path = selected.profile.clone();
+        selected.profile = temporary.path().join("other/accounts.conf");
+        assert_eq!(
+            connector.import_goa_with(&roots, &selected, &keychain),
+            Err(ConnectionError::InvalidConfiguration)
+        );
+        selected.profile = original_path;
+        std::fs::write(
+            &path,
+            CONFIG.replace("person@example.test", "different@example.test"),
         )
         .unwrap();
-    let tokens =
-        super::super::goa_variant::parse(&Zeroizing::new(credentials.secret.expose().to_vec()))
-            .unwrap();
-    let original =
-        original_registration(&definitions(CONFIG, true).remove(0), &credentials, &tokens).unwrap();
-    assert!(account_custody::imported_oauth_matches(&private, &original));
-    reseal_refresh_and_remove(temporary.path(), &connector, &id, &issuer);
-    assert_original_requests(&issuer);
-    let after = std::fs::metadata(&path).unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG);
-    assert_eq!(after.permissions().mode(), before.permissions().mode());
-    assert_eq!(after.modified().unwrap(), before.modified().unwrap());
-}
+        assert_eq!(
+            connector.import_goa_with(&roots, &selected, &keychain),
+            Err(ConnectionError::AccountMissing)
+        );
+        assert_eq!(keychain.calls.get(), 0);
+        assert!(!target.exists());
+    }
 
-#[test]
-fn goa_wrong_and_changed_reviewed_source_refuse_before_keychain_or_destination() {
-    let temporary = tempfile::tempdir().unwrap();
-    let (roots, mut selected, path) = source(temporary.path(), CONFIG);
-    let target = temporary.path().join("target");
-    let connector = Connector::new(target.clone());
-    let keychain = FixtureKeychain::original();
-    let original_path = selected.profile.clone();
-    selected.profile = temporary.path().join("other/accounts.conf");
-    assert_eq!(
-        connector.import_goa_with(&roots, &selected, &keychain),
-        Err(ConnectionError::InvalidConfiguration)
-    );
-    selected.profile = original_path;
-    std::fs::write(
-        &path,
-        CONFIG.replace("person@example.test", "different@example.test"),
-    )
-    .unwrap();
-    assert_eq!(
-        connector.import_goa_with(&roots, &selected, &keychain),
-        Err(ConnectionError::AccountMissing)
-    );
-    assert_eq!(keychain.calls.get(), 0);
-    assert!(!target.exists());
-}
-
-#[test]
-fn goa_source_change_during_keychain_read_refuses_before_refresh() {
-    let temporary = tempfile::tempdir().unwrap();
-    let (roots, selected, path) = source(temporary.path(), CONFIG);
-    let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-    issuer.accept_refresh_token("source-goa-refresh");
-    let target = temporary.path().join("target");
-    let connector = connector(&target, &issuer);
-    let mut keychain = FixtureKeychain::original();
-    keychain.change = Some((path, CONFIG.replace("Personal files", "Changed files")));
-    assert_eq!(
-        connector.import_goa_with(&roots, &selected, &keychain),
-        Err(ConnectionError::AccountMissing)
-    );
-    assert_eq!(keychain.calls.get(), 1);
-    assert_eq!(issuer.refreshes(), 0);
-    assert!(!target.exists());
-}
-
-#[test]
-fn goa_missing_or_mismatched_runtime_registration_has_no_fabricated_fallback() {
-    let temporary = tempfile::tempdir().unwrap();
-    let (roots, selected, _) = source(temporary.path(), CONFIG);
-    let target = temporary.path().join("target");
-    let connector = Connector::new(target.clone());
-    let mut keychain = FixtureKeychain::original();
-    keychain.client = Some("different-runtime-client");
-    assert_eq!(
-        connector.import_goa_with(&roots, &selected, &keychain),
-        Err(ConnectionError::AccountMissing)
-    );
-    assert!(!target.exists());
-    let without_override = CONFIG
-        .lines()
-        .filter(|line| !line.starts_with("OAuth2Client"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let (roots, selected, _) = source(temporary.path(), &without_override);
-    keychain.client = None;
-    assert_eq!(
-        connector.import_goa_with(&roots, &selected, &keychain),
-        Err(ConnectionError::CredentialUnavailable)
-    );
-    assert!(!target.exists());
-}
-
-#[test]
-fn goa_refreshed_remote_identity_mismatch_prevents_persistence() {
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temporary = tempfile::tempdir().unwrap();
-    let (roots, selected, path) = source(temporary.path(), CONFIG);
-    let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-    issuer.require_client_secret("original-goa-secret");
-    issuer.accept_refresh_token("source-goa-refresh");
-    let (api, worker) = api_server(vec![(
-        "/oauth2/v2/userinfo",
-        serde_json::json!({"email":"another@example.test"}),
-    )]);
-    let target = temporary.path().join("target");
-    let mut connector = connector(&target, &issuer);
-    connector.goa_api = Some(api);
-    assert_eq!(
-        connector.import_goa_with(&roots, &selected, &FixtureKeychain::original()),
-        Err(ConnectionError::AccountMissing)
-    );
-    worker.join().unwrap();
-    assert_eq!(issuer.refreshes(), 1);
-    assert!(!accounts::store_path_in(&target).exists());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), CONFIG);
-}
-
-#[test]
-fn goa_identity_alone_does_not_prove_access_to_files() {
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temporary = tempfile::tempdir().unwrap();
-    let (roots, selected, path) = source(temporary.path(), CONFIG);
-    let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-    issuer.require_client_secret("original-goa-secret");
-    issuer.accept_refresh_token("source-goa-refresh");
-    let (api, worker) = api_server(vec![
-        (
-            "/oauth2/v2/userinfo",
-            serde_json::json!({"email":"person@example.test"}),
-        ),
-        ("/drive/v3/files/root", serde_json::json!({})),
-    ]);
-    let target = temporary.path().join("target");
-    let mut connector = connector(&target, &issuer);
-    connector.goa_api = Some(api);
-    assert_eq!(
-        connector.import_goa_with(&roots, &selected, &FixtureKeychain::original()),
-        Err(ConnectionError::CredentialUnavailable)
-    );
-    worker.join().unwrap();
-    assert_eq!(issuer.refreshes(), 1);
-    assert!(!accounts::store_path_in(&target).exists());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), CONFIG);
-}
-
-#[test]
-fn goa_runtime_defaults_and_explicit_config_fallback_preserve_actual_original_registration() {
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let without_overrides = CONFIG
-        .lines()
-        .filter(|line| !line.starts_with("OAuth2Client"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for (contents, runtime_registration) in [(without_overrides.as_str(), true), (CONFIG, false)] {
+    phase goa_source_change_during_keychain_read_refuses_before_refresh;
+    {
         let temporary = tempfile::tempdir().unwrap();
-        let (roots, selected, path) = source(temporary.path(), contents);
+        let (roots, selected, path) = source(temporary.path(), CONFIG);
+        let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
+        issuer.accept_refresh_token("source-goa-refresh");
+        let target = temporary.path().join("target");
+        let connector = connector(&target, &issuer);
+        let mut keychain = FixtureKeychain::original();
+        keychain.change = Some((path, CONFIG.replace("Personal files", "Changed files")));
+        assert_eq!(
+            connector.import_goa_with(&roots, &selected, &keychain),
+            Err(ConnectionError::AccountMissing)
+        );
+        assert_eq!(keychain.calls.get(), 1);
+        assert_eq!(issuer.refreshes(), 0);
+        assert!(!target.exists());
+    }
+
+    phase goa_missing_or_mismatched_runtime_registration_has_no_fabricated_fallback;
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        let (roots, selected, _) = source(temporary.path(), CONFIG);
+        let target = temporary.path().join("target");
+        let connector = Connector::new(target.clone());
+        let mut keychain = FixtureKeychain::original();
+        keychain.client = Some("different-runtime-client");
+        assert_eq!(
+            connector.import_goa_with(&roots, &selected, &keychain),
+            Err(ConnectionError::AccountMissing)
+        );
+        assert!(!target.exists());
+        let without_override = CONFIG
+            .lines()
+            .filter(|line| !line.starts_with("OAuth2Client"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (roots, selected, _) = source(temporary.path(), &without_override);
+        keychain.client = None;
+        assert_eq!(
+            connector.import_goa_with(&roots, &selected, &keychain),
+            Err(ConnectionError::CredentialUnavailable)
+        );
+        assert!(!target.exists());
+    }
+
+    phase goa_refreshed_remote_identity_mismatch_prevents_persistence;
+    {
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temporary = tempfile::tempdir().unwrap();
+        let (roots, selected, path) = source(temporary.path(), CONFIG);
+        let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
+        issuer.require_client_secret("original-goa-secret");
+        issuer.accept_refresh_token("source-goa-refresh");
+        let (api, worker) = api_server(vec![(
+            "/oauth2/v2/userinfo",
+            serde_json::json!({"email":"another@example.test"}),
+        )]);
+        let target = temporary.path().join("target");
+        let mut connector = connector(&target, &issuer);
+        connector.goa_api = Some(api);
+        assert_eq!(
+            connector.import_goa_with(&roots, &selected, &FixtureKeychain::original()),
+            Err(ConnectionError::AccountMissing)
+        );
+        worker.join().unwrap();
+        assert_eq!(issuer.refreshes(), 1);
+        assert!(!accounts::store_path_in(&target).exists());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), CONFIG);
+    }
+
+    phase goa_identity_alone_does_not_prove_access_to_files;
+    {
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temporary = tempfile::tempdir().unwrap();
+        let (roots, selected, path) = source(temporary.path(), CONFIG);
+        let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
+        issuer.require_client_secret("original-goa-secret");
+        issuer.accept_refresh_token("source-goa-refresh");
+        let (api, worker) = api_server(vec![
+            (
+                "/oauth2/v2/userinfo",
+                serde_json::json!({"email":"person@example.test"}),
+            ),
+            ("/drive/v3/files/root", serde_json::json!({})),
+        ]);
+        let target = temporary.path().join("target");
+        let mut connector = connector(&target, &issuer);
+        connector.goa_api = Some(api);
+        assert_eq!(
+            connector.import_goa_with(&roots, &selected, &FixtureKeychain::original()),
+            Err(ConnectionError::CredentialUnavailable)
+        );
+        worker.join().unwrap();
+        assert_eq!(issuer.refreshes(), 1);
+        assert!(!accounts::store_path_in(&target).exists());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), CONFIG);
+    }
+}
+
+tilo_test_env::scenario! {
+    fn goa_original_registration_is_refreshed_under_its_own_grant;
+
+    phase goa_original_registration_refreshes_verifies_identity_and_root_and_retries_without_source_writes;
+    {
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temporary = tempfile::tempdir().unwrap();
+        let (roots, selected, path) = source(temporary.path(), CONFIG);
+        assert!(selected.can_import_credentials);
+        let projection = serde_json::to_string(&super::super::discover(&roots)).unwrap();
+        for secret in [
+            "original-goa-secret",
+            "source-goa-refresh",
+            "old-source-access",
+            "discard-password",
+        ] {
+            assert!(!projection.contains(secret));
+        }
+        let before = std::fs::metadata(&path).unwrap();
         let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
         issuer.require_client_secret("original-goa-secret");
         issuer.accept_refresh_token("source-goa-refresh");
@@ -404,128 +329,214 @@ fn goa_runtime_defaults_and_explicit_config_fallback_preserve_actual_original_re
             ),
             (
                 "/drive/v3/files/root",
-                serde_json::json!({"id":"actual-root"}),
+                serde_json::json!({"id":"actual-drive-root"}),
             ),
         ]);
-        let target = temporary.path().join("target");
+        // The guided account stage has a home but no destination .config yet.
+        let stage = temporary.path().join("guided-stage");
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let target = stage.join(".config/tilo");
+        assert!(!target.parent().unwrap().exists());
         let mut connector = connector(&target, &issuer);
         connector.goa_api = Some(api);
-        let mut keychain = FixtureKeychain::original();
-        if !runtime_registration {
-            keychain.client = None;
-        }
+        let keychain = FixtureKeychain::original();
         let id = connector
             .import_goa_with(&roots, &selected, &keychain)
             .unwrap();
         worker.join().unwrap();
         assert_eq!(issuer.refreshes(), 1);
+        assert_eq!(
+            connector
+                .import_goa_with(&roots, &selected, &keychain)
+                .unwrap(),
+            id
+        );
+        assert_eq!(issuer.refreshes(), 1);
+        assert_eq!(keychain.calls.get(), 2);
+        let store = AccountStore::load_in(&target);
+        let account = store.get(&id).unwrap();
+        assert_eq!(account.type_id.as_str(), OAuthCloud::GoogleDrive.type_id());
+        assert_eq!(account.config["source_goa_identity"], "person@example.test");
+        assert!(
+            account
+                .config
+                .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
+                .is_some()
+        );
+        let public = std::fs::read_to_string(accounts::store_path_in(&target)).unwrap();
+        assert!(!public.contains("original-goa-secret"));
+        assert!(!public.contains("source-goa-refresh"));
+        let private = SecretVault::open_read_only_in(&target).get(&id).unwrap();
+        let credentials = keychain
+            .read(
+                &definitions(CONFIG, true).remove(0),
+                &std::fs::File::open(&roots.config).unwrap(),
+            )
+            .unwrap();
+        let tokens =
+            super::super::goa_variant::parse(&Zeroizing::new(credentials.secret.expose().to_vec()))
+                .unwrap();
+        let original =
+            original_registration(&definitions(CONFIG, true).remove(0), &credentials, &tokens).unwrap();
+        assert!(account_custody::imported_oauth_matches(&private, &original));
+        reseal_refresh_and_remove(temporary.path(), &connector, &id, &issuer);
         assert_original_requests(&issuer);
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG);
+        assert_eq!(after.permissions().mode(), before.permissions().mode());
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+    }
+
+    phase goa_runtime_defaults_and_explicit_config_fallback_preserve_actual_original_registration;
+    {
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let without_overrides = CONFIG
+            .lines()
+            .filter(|line| !line.starts_with("OAuth2Client"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (contents, runtime_registration) in [(without_overrides.as_str(), true), (CONFIG, false)] {
+            let temporary = tempfile::tempdir().unwrap();
+            let (roots, selected, path) = source(temporary.path(), contents);
+            let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
+            issuer.require_client_secret("original-goa-secret");
+            issuer.accept_refresh_token("source-goa-refresh");
+            let (api, worker) = api_server(vec![
+                (
+                    "/oauth2/v2/userinfo",
+                    serde_json::json!({"email":"person@example.test"}),
+                ),
+                (
+                    "/drive/v3/files/root",
+                    serde_json::json!({"id":"actual-root"}),
+                ),
+            ]);
+            let target = temporary.path().join("target");
+            let mut connector = connector(&target, &issuer);
+            connector.goa_api = Some(api);
+            let mut keychain = FixtureKeychain::original();
+            if !runtime_registration {
+                keychain.client = None;
+            }
+            let id = connector
+                .import_goa_with(&roots, &selected, &keychain)
+                .unwrap();
+            worker.join().unwrap();
+            assert_eq!(issuer.refreshes(), 1);
+            assert_original_requests(&issuer);
+            assert!(SecretVault::open_read_only_in(&target).get(&id).is_some());
+            assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
+        }
+    }
+
+    phase goa_onedrive_uses_original_runtime_grant_and_canonical_storage_consumer;
+    {
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temporary = tempfile::tempdir().unwrap();
+        let contents = CONFIG.replace("Provider=google", "Provider=ms_graph");
+        let (roots, selected, path) = source(temporary.path(), &contents);
+        assert_eq!(selected.provider, Provider::Microsoft);
+        let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
+        issuer.require_client_secret("original-goa-secret");
+        issuer.accept_refresh_token("source-goa-refresh");
+        let (api, worker) = api_server(vec![
+            (
+                "/v1.0/me",
+                serde_json::json!({"mail":"person@example.test"}),
+            ),
+            (
+                "/graph/me/drive?$select=id,driveType",
+                serde_json::json!({"id":"selected-drive","driveType":"personal"}),
+            ),
+            (
+                "/graph/drives/selected-drive/root?$select=id",
+                serde_json::json!({"id":"selected-root"}),
+            ),
+        ]);
+        let target = temporary.path().join("target");
+        let custodian = account_custody::Custodian::for_root(Some(target.clone()))
+            .with_provider(OAuthCloud::OneDrive, issuer.provider(), "different-tilo-client")
+            .with_storage_config(OAuthCloud::OneDrive, serde_json::json!({
+                "api":format!("{api}/graph/"), "drive":"Me", "root":"DriveRoot", "upload_chunk":10485760
+            }));
+        let mut connector = Connector::with_custodian(target.clone(), custodian);
+        connector.goa_api = Some(api);
+        let id = connector
+            .import_goa_with(&roots, &selected, &FixtureKeychain::original())
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(issuer.refreshes(), 1);
+        assert_original_requests(&issuer);
+        let store = AccountStore::load_in(&target);
+        let account = store.get(&id).unwrap();
+        assert_eq!(account.type_id.as_str(), OAuthCloud::OneDrive.type_id());
+        let mount = &account.config[accounts::cloud_types::MOUNT_CONFIG_KEY];
+        assert_eq!(mount["drive_id"], "selected-drive");
+        assert_eq!(mount["drive_root"], "selected-root");
+        assert_eq!(mount["root"], "selected-root");
         assert!(SecretVault::open_read_only_in(&target).get(&id).is_some());
         assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
     }
 }
 
-#[test]
-fn goa_onedrive_uses_original_runtime_grant_and_canonical_storage_consumer() {
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temporary = tempfile::tempdir().unwrap();
-    let contents = CONFIG.replace("Provider=google", "Provider=ms_graph");
-    let (roots, selected, path) = source(temporary.path(), &contents);
-    assert_eq!(selected.provider, Provider::Microsoft);
-    let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-    issuer.require_client_secret("original-goa-secret");
-    issuer.accept_refresh_token("source-goa-refresh");
-    let (api, worker) = api_server(vec![
-        (
-            "/v1.0/me",
-            serde_json::json!({"mail":"person@example.test"}),
-        ),
-        (
-            "/graph/me/drive?$select=id,driveType",
-            serde_json::json!({"id":"selected-drive","driveType":"personal"}),
-        ),
-        (
-            "/graph/drives/selected-drive/root?$select=id",
-            serde_json::json!({"id":"selected-root"}),
-        ),
-    ]);
-    let target = temporary.path().join("target");
-    let custodian = account_custody::Custodian::for_root(Some(target.clone()))
-        .with_provider(OAuthCloud::OneDrive, issuer.provider(), "different-tilo-client")
-        .with_storage_config(OAuthCloud::OneDrive, serde_json::json!({
-            "api":format!("{api}/graph/"), "drive":"Me", "root":"DriveRoot", "upload_chunk":10485760
-        }));
-    let mut connector = Connector::with_custodian(target.clone(), custodian);
-    connector.goa_api = Some(api);
-    let id = connector
-        .import_goa_with(&roots, &selected, &FixtureKeychain::original())
-        .unwrap();
-    worker.join().unwrap();
-    assert_eq!(issuer.refreshes(), 1);
-    assert_original_requests(&issuer);
-    let store = AccountStore::load_in(&target);
-    let account = store.get(&id).unwrap();
-    assert_eq!(account.type_id.as_str(), OAuthCloud::OneDrive.type_id());
-    let mount = &account.config[accounts::cloud_types::MOUNT_CONFIG_KEY];
-    assert_eq!(mount["drive_id"], "selected-drive");
-    assert_eq!(mount["drive_root"], "selected-root");
-    assert_eq!(mount["root"], "selected-root");
-    assert!(SecretVault::open_read_only_in(&target).get(&id).is_some());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
-}
+tilo_test_env::scenario! {
+    fn goa_discovery_keeps_accounts_distinct_and_unextracted;
 
-#[test]
-fn goa_discovery_preserves_distinct_accounts_and_refuses_unrecognized_issuer_overrides() {
-    let temporary = tempfile::tempdir().unwrap();
-    let contents = format!(
-        "{CONFIG}\n{}",
-        CONFIG
-            .replace("account_1", "account_2")
-            .replace("person@example.test", "other@example.test")
-    );
-    let (roots, _, _) = source(temporary.path(), &contents);
-    let inventory = super::super::discover(&roots);
-    assert_eq!(inventory.candidates.len(), 2);
-    assert_ne!(inventory.candidates[0].id, inventory.candidates[1].id);
-    assert!(
-        inventory
-            .candidates
-            .iter()
-            .all(|candidate| candidate.can_import_credentials)
-    );
-    let (_, selected, _) = source(
-        temporary.path(),
-        &format!("{CONFIG}OAuth2TokenUri=https://foreign.example.test/token\n"),
-    );
-    assert!(!selected.can_import_credentials);
-    let keychain = FixtureKeychain::original();
-    let connector = Connector::new(temporary.path().join("target"));
-    assert_eq!(
-        connector.import_goa_with(&roots, &selected, &keychain),
-        Err(ConnectionError::InvalidConfiguration)
-    );
-    assert_eq!(keychain.calls.get(), 0);
-}
-
-#[test]
-fn goa_mail_only_or_disabled_files_remain_connectable_metadata_without_extraction() {
-    let temporary = tempfile::tempdir().unwrap();
-    for config in [
-        CONFIG.replace("FilesEnabled=true", "FilesEnabled=false"),
-        CONFIG.replace("FilesEnabled=true\n", ""),
-    ] {
-        let (roots, selected, _) = source(temporary.path(), &config);
-        assert_eq!(selected.provider, Provider::Google);
+    phase goa_discovery_preserves_distinct_accounts_and_refuses_unrecognized_issuer_overrides;
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        let contents = format!(
+            "{CONFIG}\n{}",
+            CONFIG
+                .replace("account_1", "account_2")
+                .replace("person@example.test", "other@example.test")
+        );
+        let (roots, _, _) = source(temporary.path(), &contents);
+        let inventory = super::super::discover(&roots);
+        assert_eq!(inventory.candidates.len(), 2);
+        assert_ne!(inventory.candidates[0].id, inventory.candidates[1].id);
+        assert!(
+            inventory
+                .candidates
+                .iter()
+                .all(|candidate| candidate.can_import_credentials)
+        );
+        let (_, selected, _) = source(
+            temporary.path(),
+            &format!("{CONFIG}OAuth2TokenUri=https://foreign.example.test/token\n"),
+        );
         assert!(!selected.can_import_credentials);
         let keychain = FixtureKeychain::original();
+        let connector = Connector::new(temporary.path().join("target"));
         assert_eq!(
-            Connector::new(temporary.path().join("target"))
-                .import_goa_with(&roots, &selected, &keychain),
+            connector.import_goa_with(&roots, &selected, &keychain),
             Err(ConnectionError::InvalidConfiguration)
         );
         assert_eq!(keychain.calls.get(), 0);
-        assert!(!temporary.path().join("target").exists());
+    }
+
+    phase goa_mail_only_or_disabled_files_remain_connectable_metadata_without_extraction;
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        for config in [
+            CONFIG.replace("FilesEnabled=true", "FilesEnabled=false"),
+            CONFIG.replace("FilesEnabled=true\n", ""),
+        ] {
+            let (roots, selected, _) = source(temporary.path(), &config);
+            assert_eq!(selected.provider, Provider::Google);
+            assert!(!selected.can_import_credentials);
+            let keychain = FixtureKeychain::original();
+            assert_eq!(
+                Connector::new(temporary.path().join("target"))
+                    .import_goa_with(&roots, &selected, &keychain),
+                Err(ConnectionError::InvalidConfiguration)
+            );
+            assert_eq!(keychain.calls.get(), 0);
+            assert!(!temporary.path().join("target").exists());
+        }
     }
 }
 

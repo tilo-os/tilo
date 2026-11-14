@@ -51,6 +51,11 @@ pub trait FabricLink {
     fn device_fabric(&self) -> DeviceFabric;
     /// The devices with a live session right now.
     fn online_device_ids(&self) -> BTreeSet<DeviceId>;
+    /// The person's other devices heard on this device's local network now,
+    /// so reachable without a relay.
+    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
+        BTreeSet::new()
+    }
     /// This device's fabric id and label, once it has a certified identity.
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)>;
     /// The device this session's fabric knows to speak from `endpoint`, when
@@ -177,6 +182,10 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
         (**self).online_device_ids()
+    }
+
+    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
+        (**self).nearby_device_ids()
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {

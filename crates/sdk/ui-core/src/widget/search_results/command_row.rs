@@ -467,66 +467,72 @@ pub(super) fn elide_middle(
 mod tests {
     use super::*;
 
-    /// A row that says the query back — "Search the web for book a table", "Send to Ada: book a
-    /// table" — is found by nothing: marking its words marks the person's own sentence, so it
-    /// sets off no span of them, while a row the query really matched keeps its marks.
-    #[test]
-    fn a_row_that_restates_the_query_sets_nothing_off_in_it() {
-        let echo = CommandRow {
-            echoes_query: true,
-            ..CommandRow::default()
-        };
-        assert!(
-            marked_spans(
-                &echo,
-                "book a table for two",
-                "Send to Assistant: book a table for two",
-                tilo_search::FieldWeight::TITLE,
-            )
-            .is_empty(),
-            "an echo sets off nothing"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// What a command row sets off in its text.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_command_row_sets_off_its_matched_words;
 
-    #[test]
-    fn matched_words_are_located_in_the_row_and_prose_is_cut_at_its_end() {
-        let title = tilo_search::FieldWeight::TITLE;
-        let row = CommandRow::default();
-        assert_eq!(
-            marked_spans(&row, "dark the", "Use the dark theme", title),
-            vec![4..7, 8..12],
-            "each query word, merged and in order"
-        );
-        assert!(marked_spans(&row, "dark the", "Brightness", title).is_empty());
-        assert!(
-            marked_spans(
-                &row,
-                "pi",
-                "Insert it where you're typing",
-                tilo_search::FieldWeight::SUBTITLE
-            )
-            .is_empty(),
-            "two letters inside a word of a description are no match"
-        );
-        assert_eq!(marked_spans(&row, "pi", "Pixel Editor", title), vec![0..2]);
+        phase a_row_that_restates_the_query_sets_nothing_off_in_it;
+        // A row that says the query back — "Search the web for book a table", "Send to Ada: book a
+        // table" — is found by nothing: marking its words marks the person's own sentence, so it
+        // sets off no span of them, while a row the query really matched keeps its marks.
+        {
+            let echo = CommandRow {
+                echoes_query: true,
+                ..CommandRow::default()
+            };
+            assert!(
+                marked_spans(
+                    &echo,
+                    "book a table for two",
+                    "Send to Assistant: book a table for two",
+                    tilo_search::FieldWeight::TITLE,
+                )
+                .is_empty(),
+                "an echo sets off nothing"
+            );
+        }
 
-        let theme = Theme::dark();
-        let style = theme.text(TextRole::Caption);
-        let mut tr = TextRenderer::new();
-        let prose = "Request one-session microphone access for the focused field, or finish the current recording.";
-        let width = f64::from(tr.measure_style(prose, None, &style).0) / 2.0;
-        let cut = tr.elide_to_width_style(prose, f32_of_f64(width), &style);
-        assert!(
-            cut.starts_with("Request one-session"),
-            "prose keeps its start: {cut}"
-        );
-        assert!(cut.ends_with('\u{2026}'));
-        let path = "~/src/tilo/crates/sdk/ui-core/src/action_palette/host.rs";
-        let width = f64::from(tr.measure_style(path, None, &style).0) / 2.0;
-        let cut = elide_middle(&mut tr, path, &style, width);
-        assert!(
-            cut.starts_with("~/") && cut.ends_with("host.rs"),
-            "a path keeps both ends: {cut}"
-        );
+        phase matched_words_are_located_in_the_row_and_prose_is_cut_at_its_end;
+        {
+            let title = tilo_search::FieldWeight::TITLE;
+            let row = CommandRow::default();
+            assert_eq!(
+                marked_spans(&row, "dark the", "Use the dark theme", title),
+                vec![4..7, 8..12],
+                "each query word, merged and in order"
+            );
+            assert!(marked_spans(&row, "dark the", "Brightness", title).is_empty());
+            assert!(
+                marked_spans(
+                    &row,
+                    "pi",
+                    "Insert it where you're typing",
+                    tilo_search::FieldWeight::SUBTITLE
+                )
+                .is_empty(),
+                "two letters inside a word of a description are no match"
+            );
+            assert_eq!(marked_spans(&row, "pi", "Pixel Editor", title), vec![0..2]);
+
+            let theme = Theme::dark();
+            let style = theme.text(TextRole::Caption);
+            let mut tr = TextRenderer::new();
+            let prose = "Request one-session microphone access for the focused field, or finish the current recording.";
+            let width = f64::from(tr.measure_style(prose, None, &style).0) / 2.0;
+            let cut = tr.elide_to_width_style(prose, f32_of_f64(width), &style);
+            assert!(
+                cut.starts_with("Request one-session"),
+                "prose keeps its start: {cut}"
+            );
+            assert!(cut.ends_with('\u{2026}'));
+            let path = "~/src/tilo/crates/sdk/ui-core/src/action_palette/host.rs";
+            let width = f64::from(tr.measure_style(path, None, &style).0) / 2.0;
+            let cut = elide_middle(&mut tr, path, &style, width);
+            assert!(
+                cut.starts_with("~/") && cut.ends_with("host.rs"),
+                "a path keeps both ends: {cut}"
+            );
+        }
     }
 }

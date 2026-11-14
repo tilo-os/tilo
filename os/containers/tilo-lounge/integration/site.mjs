@@ -6,7 +6,10 @@
 // relay's shelf for the page's own request for the invitation (the web entry
 // image's `TILO_WEB_SHELF`).
 //
-// usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]
+// usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]
+// SHELF_ORIGIN is the relay's plain listener, which is where a deployment's
+// ingress hands what it terminates TLS for: the shelf needs no certificate of
+// its own there.
 // HOST_INFO is the line `tilo-relay page-host` prints for the workspace's
 // host, which the web entry image hands its page from TILO_WEB_HOME_HOST_INFO
 // so the page dials that host as named; an empty HOST_INFO is only for a site
@@ -17,12 +20,13 @@
 // a problem.
 // Prints {"url": "https://127.0.0.1:<port>"} once it listens.
 import {readFileSync, statSync, existsSync} from 'node:fs';
-import {createServer, request as httpsRequest} from 'node:https';
+import {createServer} from 'node:https';
+import {request as plainRequest} from 'node:http';
 import {extname, join, normalize} from 'node:path';
 
-const [site, cert, key, origin, name, admission, port, info, feedback = ''] = process.argv.slice(2);
-if (!site || !cert || !key || !origin || !name || !admission || !port || info === undefined) {
-  console.error('usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]');
+const [site, cert, key, origin, shelfOrigin, name, admission, port, info, feedback = ''] = process.argv.slice(2);
+if (!site || !cert || !key || !origin || !shelfOrigin || !name || !admission || !port || info === undefined) {
+  console.error('usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]');
   process.exit(2);
 }
 
@@ -66,13 +70,14 @@ const serve = (response, file) => {
   response.end(body);
 };
 
-/** Hand `request` to the relay at `origin` under the path it serves the
- * shelf at, and its answer back as it came. */
+/** Hand `request` to the relay at `shelfOrigin` under the path it serves the
+ * shelf at, and its answer back as it came. That is the plain listener an
+ * ingress forwards to once it terminated TLS, so this hop is the deployment's
+ * own and no certificate stands on it. */
 const shelf = (request, response) => {
   const path = new URL(request.url, 'https://x').pathname;
-  const upstream = httpsRequest(`${origin}${path}`, {
+  const upstream = plainRequest(`${shelfOrigin}${path}`, {
     method: request.method,
-    rejectUnauthorized: false,
     headers: {...request.headers, host: new URL(origin).host},
   }, answer => {
     response.writeHead(answer.statusCode ?? 502, answer.headers);

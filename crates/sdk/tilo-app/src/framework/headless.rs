@@ -5,9 +5,12 @@
 //! surface it publishes, `--bench` captures its fixtures, and `--data-dir`
 //! and `--shots` open it on a profile of their own.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
 
+use tilo_lock::MutexRecover as _;
 use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::application::{
     ApplicationHost, Capture, ComponentRunnerInputs, HostContext, OpenFile, PlaybackHandoff,
@@ -22,15 +25,16 @@ pub(super) const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
 
 use super::app::{
-    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, hand_launch, prepare_on,
-    role_permissions, settle_launch,
+    ResourceApp, definition, hand_launch, prepare_on, role_permissions, settle_launch,
 };
 use super::launch::LaunchInput;
 use super::root::ResourceRoot;
 
 pub(super) const INSTANCE: u64 = 7;
-/// The workspace a test opens the app in unless it names one.
-pub(super) const TEST_WORKSPACE: &str = "test-workspace";
+/// The workspace a test opens the app in unless it names one. A workspace is
+/// named by a UUID: a record kept in one has a route to travel on only then,
+/// and what its window stores is sealed for that workspace's members.
+pub const TEST_WORKSPACE: &str = "5b1f7c0e-2a84-4d63-9f51-0c8e7a4b6d92";
 /// The device a test app runs on unless it names another.
 const TEST_DEVICE: &str = "test-device";
 
@@ -97,18 +101,60 @@ pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::Con
     )
 }
 
+/// The instance a `--data-dir` profile mounts.
+pub(crate) const DATA_DIR_INSTANCE: u64 = 0;
+/// The workspace a `--data-dir` profile keeps its records in. A workspace is
+/// named by a UUID, so the records kept in it have a route to travel on.
+pub const DATA_DIR_WORKSPACE: &str = "a7d3e1f4-6b28-4c05-9e3a-71f2b8c4d590";
+
+/// The host of an explicit `--data-dir` profile: one personal workspace in
+/// that directory. Tools that seed or inspect such a profile open it the same
+/// way the app does.
+pub(crate) fn data_dir_host(
+    directory: &std::path::Path,
+    author: &UserId,
+    permissions: SharedPermissions,
+) -> Result<ApplicationHost, LaunchError> {
+    ApplicationHost::new(
+        data_dir_root(directory),
+        "local-device".into(),
+        DATA_DIR_WORKSPACE,
+        author.clone(),
+        permissions,
+        tilo_actions::ActionContext::default(),
+    )
+}
+
+/// Hold `workspace`'s content secret on the route of `context`'s record, as a
+/// host that keeps the workspace itself does: what the window stores is then
+/// sealed once for that workspace, so the same bytes stored twice are one item
+/// under one reference. A workspace whose keys come from the collaboration
+/// plane holds its members' secret instead, once they arrive
+/// (`collaboration::broker_key_fetch`).
+///
+/// # Errors
+/// A record with no route ([`super::app::record_route`]).
+pub(super) fn hold_workspace_keys(
+    context: &HostContext,
+    workspace: &str,
+) -> Result<(), LaunchError> {
+    let route = super::app::record_route(context)?;
+    ui_core::collaboration::record_content::ContentLane::of(&route)
+        .hold_secret(workspace_secret(workspace));
+    Ok(())
+}
+
 /// The content secret of `workspace`'s members, which every window of it in
-/// this process holds.
+/// this process holds: a workspace this device keeps itself — a profile of its
+/// own, a launch outside every workspace — has no other member to take one
+/// from.
 fn workspace_secret(workspace: &str) -> Option<tilo_seal::SymmetricKey> {
-    static SECRETS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, tilo_seal::SymmetricKey>>,
-    > = std::sync::OnceLock::new();
+    static SECRETS: OnceLock<Mutex<HashMap<String, tilo_seal::SymmetricKey>>> = OnceLock::new();
     let generated = tilo_seal::SymmetricKey::generate().ok()?;
     Some(
         SECRETS
-            .get_or_init(Default::default)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_init(Mutex::default)
+            .lock_recover()
             .entry(workspace.to_owned())
             .or_insert(generated)
             .clone(),
@@ -116,11 +162,12 @@ fn workspace_secret(workspace: &str) -> Option<tilo_seal::SymmetricKey> {
 }
 
 impl Profile {
-    /// The workspace the app opens in, on a temporary profile.
-    fn workspace(&self) -> Option<&str> {
+    /// The workspace the app opens in: the profile's own, or the one a
+    /// `--data-dir` profile is kept in.
+    fn workspace(&self) -> &str {
         match self {
-            Self::Temporary(_, workspace, _) | Self::Window(_, workspace, ..) => Some(workspace),
-            Self::DataDir(_) => None,
+            Self::Temporary(_, workspace, _) | Self::Window(_, workspace, ..) => workspace,
+            Self::DataDir(_) => DATA_DIR_WORKSPACE,
         }
     }
 
@@ -147,12 +194,17 @@ impl Profile {
     fn content(&self) -> tilo_content::ContentStore {
         match self {
             Self::Temporary(directory, ..) | Self::Window(directory, ..) => {
-                super::app::profile_content(directory.path())
+                window_content(directory.path())
             }
-            Self::DataDir(directory) => data_dir_content(directory),
+            Self::DataDir(directory) => data_dir_content(directory).for_one_workspace(),
         }
-        .for_one_workspace()
     }
+}
+
+/// The content store of the temporary profile `directory`, as a window of it
+/// holds it: one workspace's, named by plain address.
+pub(super) fn window_content(directory: &std::path::Path) -> tilo_content::ContentStore {
+    super::app::profile_content(directory).for_one_workspace()
 }
 
 /// One framework app mounted headlessly: a test, a fixture seeder or an
@@ -231,7 +283,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app as its owner opens it on a fresh private profile, in `workspace`:
     /// one of several windows of the app in one process, each in a workspace of
-    /// its own.
+    /// its own. A workspace is named by a UUID, so a record kept in it has a
+    /// route to travel on.
     pub fn in_workspace(workspace: &str) -> Result<Self, LaunchError> {
         Self::fresh(workspace, Role::Owner, AUTHOR)
     }
@@ -2159,15 +2212,7 @@ fn open_app(
         (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
     };
     let checkout = prepared.context.record().clone();
-    // The harness holds the workspace's keys, as the record's route does on a
-    // device: what the app stores is sealed under its members' secret.
-    if let Some(workspace) = profile.workspace() {
-        ui_core::collaboration::record_content::ContentLane::of(
-            opening.id,
-            super::app::record_wire(&checkout.id),
-        )
-        .hold_secret(workspace_secret(workspace));
-    }
+    hold_workspace_keys(&prepared.context, profile.workspace())?;
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     if private {
@@ -2252,7 +2297,7 @@ fn private_launch(
         };
         Profile::Temporary(
             Rc::new(profile_directory().map_err(operation)?),
-            "private".into(),
+            TEST_WORKSPACE.to_owned(),
             device,
         )
     } else {

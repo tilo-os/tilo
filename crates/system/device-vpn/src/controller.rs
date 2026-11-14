@@ -198,133 +198,141 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_lost_tunnel_keeps_blocking_with_the_kill_switch() {
-        let after = after_end(&Ended::Lost("path".into()), true, 1);
-        assert!(after.keep_link, "the link and its block stay");
-        assert_eq!(after.state, ClientState::Reconnecting { blocking: true });
-        assert_eq!(after.retry, Some(Duration::from_secs(1)));
-        assert!(!after.clear_through);
-    }
+    tilo_test_env::scenario! {
+        fn what_follows_a_tunnel_that_ended_or_would_not_dial;
 
-    #[test]
-    fn a_lost_tunnel_lets_traffic_out_without_the_kill_switch() {
-        let after = after_end(&Ended::Lost("path".into()), false, 1);
-        assert!(!after.keep_link, "the link goes, traffic goes out directly");
-        assert_eq!(after.state, ClientState::Reconnecting { blocking: false });
-    }
+        phase a_lost_tunnel_keeps_blocking_with_the_kill_switch;
+        {
+            let after = after_end(&Ended::Lost("path".into()), true, 1);
+            assert!(after.keep_link, "the link and its block stay");
+            assert_eq!(after.state, ClientState::Reconnecting { blocking: true });
+            assert_eq!(after.retry, Some(Duration::from_secs(1)));
+            assert!(!after.clear_through);
+        }
 
-    #[test]
-    fn redialling_keeps_blocking_until_the_tunnel_is_back() {
-        let unreachable = ClientError::Unreachable("no path".into());
-        let after = after_failed_dial(&unreachable, true, true, 3);
-        assert!(after.keep_link);
-        assert_eq!(after.state, ClientState::Reconnecting { blocking: true });
-        assert_eq!(after.retry, Some(Duration::from_secs(4)));
-        let first = after_failed_dial(&unreachable, false, true, 1);
-        assert!(!first.keep_link);
-        assert_eq!(first.state, ClientState::Connecting);
-    }
+        phase a_lost_tunnel_lets_traffic_out_without_the_kill_switch;
+        {
+            let after = after_end(&Ended::Lost("path".into()), false, 1);
+            assert!(!after.keep_link, "the link goes, traffic goes out directly");
+            assert_eq!(after.state, ClientState::Reconnecting { blocking: false });
+        }
 
-    #[test]
-    fn being_stopped_from_the_other_device_releases_the_block_and_the_choice() {
-        for kill_switch in [false, true] {
-            let after = after_end(&Ended::Refused(Refusal::Stopped), kill_switch, 1);
-            assert!(!after.keep_link);
-            assert!(after.clear_through);
-            assert_eq!(after.retry, None);
+        phase redialling_keeps_blocking_until_the_tunnel_is_back;
+        {
+            let unreachable = ClientError::Unreachable("no path".into());
+            let after = after_failed_dial(&unreachable, true, true, 3);
+            assert!(after.keep_link);
+            assert_eq!(after.state, ClientState::Reconnecting { blocking: true });
+            assert_eq!(after.retry, Some(Duration::from_secs(4)));
+            let first = after_failed_dial(&unreachable, false, true, 1);
+            assert!(!first.keep_link);
+            assert_eq!(first.state, ClientState::Connecting);
+        }
+
+        phase being_stopped_from_the_other_device_releases_the_block_and_the_choice;
+        {
+            for kill_switch in [false, true] {
+                let after = after_end(&Ended::Refused(Refusal::Stopped), kill_switch, 1);
+                assert!(!after.keep_link);
+                assert!(after.clear_through);
+                assert_eq!(after.retry, None);
+            }
+        }
+
+        phase the_exit_turned_off_keeps_the_block_and_says_why;
+        {
+            let after = after_end(&Ended::Refused(Refusal::ExitOff), true, 1);
+            assert!(after.keep_link);
+            assert_eq!(
+                after.state,
+                ClientState::Refused {
+                    reason: ShownRefusal::ExitOff
+                }
+            );
+            assert_eq!(after.retry, Some(REFUSED_RETRY));
+            let open = after_end(&Ended::Refused(Refusal::ExitOff), false, 1);
+            assert!(!open.keep_link);
+        }
+
+        phase another_persons_device_is_shown_as_such;
+        {
+            let after = after_failed_dial(&ClientError::Refused(Refusal::NotYours), false, false, 1);
+            assert_eq!(
+                after.state,
+                ClientState::Refused {
+                    reason: ShownRefusal::NotYours
+                }
+            );
+            assert!(!after.clear_through);
+        }
+
+        phase retries_back_off_to_a_minute;
+        {
+            assert_eq!(backoff(1), Duration::from_secs(1));
+            assert_eq!(backoff(2), Duration::from_secs(2));
+            assert_eq!(backoff(7), Duration::from_secs(60));
+            assert_eq!(backoff(u32::MAX), MAX_RETRY);
         }
     }
 
-    #[test]
-    fn the_exit_turned_off_keeps_the_block_and_says_why() {
-        let after = after_end(&Ended::Refused(Refusal::ExitOff), true, 1);
-        assert!(after.keep_link);
-        assert_eq!(
-            after.state,
-            ClientState::Refused {
-                reason: ShownRefusal::ExitOff
-            }
-        );
-        assert_eq!(after.retry, Some(REFUSED_RETRY));
-        let open = after_end(&Ended::Refused(Refusal::ExitOff), false, 1);
-        assert!(!open.keep_link);
-    }
+    tilo_test_env::scenario! {
+        fn a_choice_becomes_a_link_through_the_device_it_names;
 
-    #[test]
-    fn another_persons_device_is_shown_as_such() {
-        let after = after_failed_dial(&ClientError::Refused(Refusal::NotYours), false, false, 1);
-        assert_eq!(
-            after.state,
-            ClientState::Refused {
-                reason: ShownRefusal::NotYours
-            }
-        );
-        assert!(!after.clear_through);
-    }
+        phase turning_the_route_off_or_choosing_another_device_drops_the_link;
+        {
+            assert!(link_must_go(Some(&want(true)), None));
+            let elsewhere = Want {
+                device: [8; 32],
+                ..want(true)
+            };
+            assert!(link_must_go(Some(&want(true)), Some(&elsewhere)));
+            // Changing the kill switch keeps blocking until the new link is up.
+            assert!(!link_must_go(Some(&want(true)), Some(&want(false))));
+            assert!(!link_must_go(None, None));
+        }
 
-    #[test]
-    fn turning_the_route_off_or_choosing_another_device_drops_the_link() {
-        assert!(link_must_go(Some(&want(true)), None));
-        let elsewhere = Want {
-            device: [8; 32],
-            ..want(true)
-        };
-        assert!(link_must_go(Some(&want(true)), Some(&elsewhere)));
-        // Changing the kill switch keeps blocking until the new link is up.
-        assert!(!link_must_go(Some(&want(true)), Some(&want(false))));
-        assert!(!link_must_go(None, None));
-    }
+        phase home_network_routes_take_what_the_exit_offers;
+        {
+            let offer = Offer {
+                gateway: crate::net::GATEWAY,
+                address: Some("100.100.64.2".parse().unwrap()),
+                mtu: 1400,
+                home_networks: vec!["192.168.1.0/24".parse().unwrap()],
+            };
+            let carrier = Carrier {
+                udp_ports: vec![40_000],
+                relays: vec![],
+            };
+            let home = Want {
+                routes: Routes::HomeNetwork,
+                ..want(false)
+            };
+            let link = link_for(
+                &home,
+                "100.100.64.2".parse().unwrap(),
+                1280,
+                &offer,
+                carrier.clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                link.routes,
+                LinkRoutes::Networks {
+                    networks: vec!["192.168.1.0/24".parse().unwrap()]
+                }
+            );
+            let bare = Offer {
+                home_networks: vec![],
+                ..offer
+            };
+            assert!(link_for(&home, "100.100.64.2".parse().unwrap(), 1280, &bare, carrier).is_err());
+        }
 
-    #[test]
-    fn retries_back_off_to_a_minute() {
-        assert_eq!(backoff(1), Duration::from_secs(1));
-        assert_eq!(backoff(2), Duration::from_secs(2));
-        assert_eq!(backoff(7), Duration::from_secs(60));
-        assert_eq!(backoff(u32::MAX), MAX_RETRY);
-    }
-
-    #[test]
-    fn home_network_routes_take_what_the_exit_offers() {
-        let offer = Offer {
-            gateway: crate::net::GATEWAY,
-            address: Some("100.100.64.2".parse().unwrap()),
-            mtu: 1400,
-            home_networks: vec!["192.168.1.0/24".parse().unwrap()],
-        };
-        let carrier = Carrier {
-            udp_ports: vec![40_000],
-            relays: vec![],
-        };
-        let home = Want {
-            routes: Routes::HomeNetwork,
-            ..want(false)
-        };
-        let link = link_for(
-            &home,
-            "100.100.64.2".parse().unwrap(),
-            1280,
-            &offer,
-            carrier.clone(),
-        )
-        .unwrap();
-        assert_eq!(
-            link.routes,
-            LinkRoutes::Networks {
-                networks: vec!["192.168.1.0/24".parse().unwrap()]
-            }
-        );
-        let bare = Offer {
-            home_networks: vec![],
-            ..offer
-        };
-        assert!(link_for(&home, "100.100.64.2".parse().unwrap(), 1280, &bare, carrier).is_err());
-    }
-
-    #[test]
-    fn a_choice_names_a_device_by_its_full_id() {
-        let through = Through::device(hex::encode([9_u8; 32]));
-        assert_eq!(Want::of(&through).map(|want| want.device), Some([9; 32]));
-        assert_eq!(Want::of(&Through::device("abc")), None);
+        phase a_choice_names_a_device_by_its_full_id;
+        {
+            let through = Through::device(hex::encode([9_u8; 32]));
+            assert_eq!(Want::of(&through).map(|want| want.device), Some([9; 32]));
+            assert_eq!(Want::of(&Through::device("abc")), None);
+        }
     }
 }

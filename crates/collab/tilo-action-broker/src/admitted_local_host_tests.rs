@@ -108,7 +108,6 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                 if member_worker {
                     let workers = rig.state.host_workers.lock().unwrap();
                     let admitted = workers.only(903).unwrap();
-                    assert!(admitted.host_scope.is_none());
                     assert!(admitted.worker_registration.is_some());
                 }
                 if !directory {
@@ -128,7 +127,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                 let request = local_host_request(directory);
                 let mut events = rig.state.subscribe_execution_activity();
                 let pending = host.invoke(&caller, request.clone());
-                rig.state.drain_action_directory_bridge(&rig.directories);
+                rig.state.take_turn(&rig.directories);
                 let receipt = local_host_answer(pending).await.unwrap();
                 assert_eq!(receipt.invocation, request.invocation);
                 let event = events.try_recv().unwrap();
@@ -201,7 +200,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                     .certified_local_action_host(&other_device, &evidence)
                     .is_err()
             );
-            let keyless = tilo_actions::remote::Caller::local_person(principal_id_for_root(
+            let keyless = tilo_actions::remote::Caller::local_person(person_id_for_root(
                 env.cert.user_public_key,
             ))
             .in_workspace(&env.route.cluster_id)
@@ -270,7 +269,7 @@ async fn certified_local_host_directory_wait_cannot_refresh_original_authority()
                     "clock" => env.origin.invalidate(),
                     _ => unreachable!(),
                 }
-                rig.state.drain_action_directory_bridge(&rig.directories);
+                rig.state.take_turn(&rig.directories);
                 assert!(
                     local_host_answer(pending).await.is_err(),
                     "{lapse} cannot rebind queued work"
@@ -410,7 +409,7 @@ async fn retired_execution_cannot_receive_a_queued_directory_query() {
                 tilo_actions::remote::PendingPoll::Waiting
             ));
             caller.retire_execution();
-            rig.state.drain_action_directory_bridge(&rig.directories);
+            rig.state.take_turn(&rig.directories);
             let error = local_host_answer(answer).await.unwrap_err();
             assert!(error.to_string().contains("execution session ended"));
             no_delivery(&rig).await;

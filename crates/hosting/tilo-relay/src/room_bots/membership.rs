@@ -18,6 +18,7 @@ use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::installed::InstalledBot;
+use crate::WorkspaceId;
 use crate::workspaces::Workspaces;
 
 /// How long a bot's delegation lasts.
@@ -108,7 +109,10 @@ impl HostRootCertifier {
             bot.name.clone(),
             color,
             DelegateScope {
-                rooms: vec![workspace.to_owned()],
+                workspaces: vec![
+                    WorkspaceId::parse(workspace)
+                        .ok_or_else(|| "the bot's workspace is not a workspace id".to_string())?,
+                ],
                 apps: Vec::new(),
             },
             now_ns,

@@ -2,6 +2,7 @@
 //! and withdrawn only through governed changes, and never acting beyond
 //! their installer or their grant.
 
+use crate::join::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
 
@@ -68,7 +69,7 @@ pub(super) fn bot_delegation(
         "Discord Bridge",
         [88, 101, 242],
         DelegateScope {
-            rooms: vec![workspace.into()],
+            workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
             apps: vec![],
         },
         ns(now.checked_sub(Duration::from_secs(1)).unwrap()),
@@ -842,7 +843,9 @@ fn the_owner_asks_for_a_directory_bot_and_takes_the_request_back() {
         governor
             .permissions(owner_device.device_public_key, now)
             .unwrap()
-            .person,
+            .person_id()
+            .unwrap()
+            .to_owned(),
         "the request names who asked"
     );
     assert_eq!(

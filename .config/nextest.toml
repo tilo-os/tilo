@@ -32,13 +32,21 @@ path = "junit.xml"
 
 # The ci profile's test environment, set up by nextest itself on the machine
 # that runs the tests, wherever cargo runs them (a CI container, a developer
-# machine, a remote builder): lavapipe, PDFium, the shared fixture cache, the
-# TILO_REQUIRE_* capabilities the image promises and a private audio endpoint
-# for the run's lifetime; the native NTFS images only for a run that selects a
-# test reading them. tools/test-env-setup.sh describes each step; every test
-# binary also runs in tools/with-test-environment.sh (tools/cargo-runner.sh).
+# machine, a remote builder). Every test gets `test-runtime`: lavapipe, PDFium,
+# the shared fixture cache and the TILO_REQUIRE_* capabilities the image
+# promises, the font catalog and the audio endpoint among them. A setup script
+# runs once per nextest run, and a suite is over a thousand runs (a package's
+# test binary, or one shard of it), so that one starts no interpreter and
+# prepares nothing. What takes work runs for the packages that can use it: the
+# pinned font catalog, and a private audio endpoint for the run's lifetime;
+# the native NTFS images only for a run that selects a test reading them.
+# tools/test-env-setup.sh describes each step; every test binary also runs in
+# tools/with-test-environment.sh (tools/cargo-runner.sh).
 [scripts.setup.test-runtime]
 command = ["bash", "tools/test-env-setup.sh", "runtime"]
+
+[scripts.setup.font-catalog]
+command = ["bash", "tools/test-env-setup.sh", "fonts"]
 
 [scripts.setup.headless-audio]
 command = ["bash", "tools/test-env-setup.sh", "audio"]
@@ -136,17 +144,38 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::) or test(shared_input::a_window_lifted))"
 setup = "chat-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "all()"
-setup = ["test-runtime", "headless-audio"]
+setup = "test-runtime"
+
+# The two steps that take work, for the packages whose code can use what they
+# prepare. `rdeps(NAME)` is NAME and every package that depends on it, which
+# nextest reads from the build's own dependency graph: a package that starts
+# depending on one of these is served without an edit here. The names are read
+# from the code (tools/ci/setup_filters.py prints both filters, and
+# tools/tests/test_setup_filters.py fails while these are not they): the font
+# catalog's one reader, the crate that owns it; and each package whose sources
+# name an audio endpoint, with its dependents where that is library code.
+# `test-runtime` promises both to every test (TILO_REQUIRE_FONTS,
+# TILO_REQUIRE_AUDIO), so a test that needs one in a package left out here
+# fails, saying so, and never skips.
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "rdeps(tilo-font-catalog)"
+setup = "font-catalog"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))"
+filter = "rdeps(compat-service) or rdeps(music) or rdeps(tilo-capture) or rdeps(tilo-media) or rdeps(tilo-projector) or rdeps(tilo-spotify) or rdeps(tilo-tts) or package(tilo-session-client) or package(tilo-test-env)"
+setup = "headless-audio"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::) or test(shared_input::a_window_lifted))"
 setup = "chat-siblings"
 
 # Tasks' own package, which the closed-app test starts without a window, and the launcher the
@@ -240,14 +269,6 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
-# Every app's every view laid out at every window size, display scale and text
-# size: each window is laid out on a core of its own, so the sweep takes the
-# runner's CPUs rather than sharing them with the tests beside it.
-[[profile.default.overrides]]
-filter = 'package(tilolang-cli) and test(=the_apps_show_no_layout_problem_their_allow_list_does_not_name)'
-threads-required = "num-cpus"
-priority = 100
-
 # Each app gate seeds a workspace of a thousand items and one of ten thousand and
 # runs the open, the filter and the changes over both: 42 s of CPU a gate on a quiet
 # machine, and a loaded one reached the eight-minute suite-wide bound without a
@@ -291,7 +312,7 @@ filter = 'package(tilo-session-client) and binary(it) and test(compaction::)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/::real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
 priority = 50
 
 # A lock starts the lock screen app, which draws under llvmpipe: beside the

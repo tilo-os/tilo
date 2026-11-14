@@ -253,76 +253,81 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_file_menu_maps_rows_to_choices_at_every_scale() {
+    tilo_test_env::scenario! {
+        /// The File menu: its rows, and the question before a template replaces words.
+        fn the_file_menu_answers_with_a_choice_or_asks_first;
+
+        phase the_file_menu_maps_rows_to_choices_at_every_scale;
         {
-            let mut menu = FileMenu::default();
-            open(&mut menu, false);
-            let labels = menu.labels();
-            for key in ["file-menu-open", "file-menu-save", "file-menu-save-as"] {
-                assert!(labels.contains(&t(key).as_str()), "{key} is offered");
+            {
+                let mut menu = FileMenu::default();
+                open(&mut menu, false);
+                let labels = menu.labels();
+                for key in ["file-menu-open", "file-menu-save", "file-menu-save-as"] {
+                    assert!(labels.contains(&t(key).as_str()), "{key} is offered");
+                }
+                for template in Template::all() {
+                    assert!(labels.contains(&template.display_title().as_str()));
+                }
             }
-            for template in Template::all() {
-                assert!(labels.contains(&template.display_title().as_str()));
+
+            {
+                let mut menu = FileMenu::default();
+                open(&mut menu, false);
+                let report = menu.item_center(Template::Report).unwrap();
+                assert_eq!(
+                    menu.click(report),
+                    Some(FileChoice::Template(Template::Report))
+                );
+                assert!(!menu.is_open());
+                open(&mut menu, false);
+                let save_as = menu.choice_center(FileChoice::SaveAs).unwrap();
+                assert_eq!(menu.click(save_as), Some(FileChoice::SaveAs));
+            }
+
+            {
+                let mut menu = FileMenu::default();
+                menu.set_text_scale(2.0);
+                open(&mut menu, false);
+                let report = menu
+                    .item_center(Template::Report)
+                    .expect("report stays an actionable row at large text");
+                assert_eq!(
+                    menu.click(report),
+                    Some(FileChoice::Template(Template::Report))
+                );
+            }
+
+            {
+                let mut menu = FileMenu::default();
+                open(&mut menu, false);
+                assert_eq!(menu.click(Point::new(0.0, 0.0)), None);
+                assert!(!menu.is_open());
             }
         }
 
+        phase a_template_asks_before_replacing_words;
         {
             let mut menu = FileMenu::default();
-            open(&mut menu, false);
-            let report = menu.item_center(Template::Report).unwrap();
+            open(&mut menu, true);
+            let letter = menu.item_center(Template::Letter).unwrap();
+            assert_eq!(menu.click(letter), None, "no replacement yet");
+            assert!(menu.is_asking(), "the menu asks first");
+            let replace = menu
+                .choice_center(FileChoice::Template(Template::Letter))
+                .expect("the question offers Replace");
             assert_eq!(
-                menu.click(report),
-                Some(FileChoice::Template(Template::Report))
+                menu.click(replace),
+                Some(FileChoice::Template(Template::Letter))
             );
             assert!(!menu.is_open());
-            open(&mut menu, false);
-            let save_as = menu.choice_center(FileChoice::SaveAs).unwrap();
-            assert_eq!(menu.click(save_as), Some(FileChoice::SaveAs));
-        }
 
-        {
-            let mut menu = FileMenu::default();
-            menu.set_text_scale(2.0);
-            open(&mut menu, false);
-            let report = menu
-                .item_center(Template::Report)
-                .expect("report stays an actionable row at large text");
-            assert_eq!(
-                menu.click(report),
-                Some(FileChoice::Template(Template::Report))
-            );
-        }
-
-        {
-            let mut menu = FileMenu::default();
-            open(&mut menu, false);
-            assert_eq!(menu.click(Point::new(0.0, 0.0)), None);
+            open(&mut menu, true);
+            let letter = menu.item_center(Template::Letter).unwrap();
+            assert_eq!(menu.click(letter), None);
+            let keep = menu.cancel_center().unwrap();
+            assert_eq!(menu.click(keep), None, "Keep chooses nothing");
             assert!(!menu.is_open());
         }
-    }
-
-    #[test]
-    fn a_template_asks_before_replacing_words() {
-        let mut menu = FileMenu::default();
-        open(&mut menu, true);
-        let letter = menu.item_center(Template::Letter).unwrap();
-        assert_eq!(menu.click(letter), None, "no replacement yet");
-        assert!(menu.is_asking(), "the menu asks first");
-        let replace = menu
-            .choice_center(FileChoice::Template(Template::Letter))
-            .expect("the question offers Replace");
-        assert_eq!(
-            menu.click(replace),
-            Some(FileChoice::Template(Template::Letter))
-        );
-        assert!(!menu.is_open());
-
-        open(&mut menu, true);
-        let letter = menu.item_center(Template::Letter).unwrap();
-        assert_eq!(menu.click(letter), None);
-        let keep = menu.cancel_center().unwrap();
-        assert_eq!(menu.click(keep), None, "Keep chooses nothing");
-        assert!(!menu.is_open());
     }
 }

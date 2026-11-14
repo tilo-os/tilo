@@ -155,61 +155,65 @@ pub fn on_demand_record(base: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_record_id_declares_how_it_syncs() {
-        assert_eq!(record_sync("general"), RecordSync::Eager);
-        assert_eq!(
-            record_sync("derived:default@tab:0000000000000000"),
-            RecordSync::Eager
-        );
-        assert_eq!(
-            record_sync(&on_demand_record("uuid:1")),
-            RecordSync::OnDemand
-        );
-        assert_eq!(
-            record_sync(&record_part("chat", 12)),
-            RecordSync::Part {
-                base: "chat",
-                index: 12
-            }
-        );
-        assert_eq!(
-            record_sync(&record_part("", 0)),
-            RecordSync::Part { base: "", index: 0 }
-        );
-        assert_eq!(
-            record_sync(&chain_head("chat")),
-            RecordSync::ChainHead { base: "chat" }
-        );
-        // One part, one id: anything else is an ordinary record.
-        for other in [
-            "derived:part.01@chat",
-            "derived:part.@chat",
-            "derived:part.1x@chat",
-            "derived:part.-1@chat",
-        ] {
-            assert_eq!(record_sync(other), RecordSync::Eager, "{other}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_record_declares_how_it_syncs;
 
-    #[test]
-    fn a_chunk_is_a_numbered_record_sent_when_opened() {
-        assert_eq!(
-            record_sync(&record_chunk("general", 3)),
-            RecordSync::Chunk {
-                base: "general",
-                number: 3
+        phase a_record_id_declares_how_it_syncs;
+        {
+            assert_eq!(record_sync("general"), RecordSync::Eager);
+            assert_eq!(
+                record_sync("derived:default@tab:0000000000000000"),
+                RecordSync::Eager
+            );
+            assert_eq!(
+                record_sync(&on_demand_record("uuid:1")),
+                RecordSync::OnDemand
+            );
+            assert_eq!(
+                record_sync(&record_part("chat", 12)),
+                RecordSync::Part {
+                    base: "chat",
+                    index: 12
+                }
+            );
+            assert_eq!(
+                record_sync(&record_part("", 0)),
+                RecordSync::Part { base: "", index: 0 }
+            );
+            assert_eq!(
+                record_sync(&chain_head("chat")),
+                RecordSync::ChainHead { base: "chat" }
+            );
+            // One part, one id: anything else is an ordinary record.
+            for other in [
+                "derived:part.01@chat",
+                "derived:part.@chat",
+                "derived:part.1x@chat",
+                "derived:part.-1@chat",
+            ] {
+                assert_eq!(record_sync(other), RecordSync::Eager, "{other}");
             }
-        );
-        // Chunk 0 is the record itself, which a join replays like any record.
-        for other in [
-            "general",
-            "derived:chunk.0@general",
-            "derived:chunk.01@general",
-            "derived:chunk.@general",
-            "derived:chunk.1x@general",
-        ] {
-            assert_eq!(record_sync(other), RecordSync::Eager, "{other}");
+        }
+
+        phase a_chunk_is_a_numbered_record_sent_when_opened;
+        {
+            assert_eq!(
+                record_sync(&record_chunk("general", 3)),
+                RecordSync::Chunk {
+                    base: "general",
+                    number: 3
+                }
+            );
+            // Chunk 0 is the record itself, which a join replays like any record.
+            for other in [
+                "general",
+                "derived:chunk.0@general",
+                "derived:chunk.01@general",
+                "derived:chunk.@general",
+                "derived:chunk.1x@general",
+            ] {
+                assert_eq!(record_sync(other), RecordSync::Eager, "{other}");
+            }
         }
     }
 }

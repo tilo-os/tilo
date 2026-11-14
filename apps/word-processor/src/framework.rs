@@ -298,57 +298,62 @@ mod tests {
         assert_eq!(app.peer_document().get_heads(), before);
     }
 
-    /// A relative path is refused before it reaches the app: it would name
-    /// a file wherever the process runs.
-    #[test]
-    fn file_effects_refuse_a_relative_path() {
-        use super::WordProcessorEffect;
-        use ui::tilo_resource::Effect as _;
-        for (id, param) in [
-            ("open-document", "path"),
-            ("save", "path"),
-            ("save-as", "path"),
-            ("read-file", "file"),
-            ("convert-file", "file"),
-        ] {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(param.into(), "notes.md".into());
-            arguments.insert("to".into(), "odt".into());
-            let error = WordProcessorEffect::decode(id, &arguments).unwrap_err();
+    tilo_test_env::scenario! {
+        /// The contracts of the published effects, without a window.
+        fn effects_take_absolute_paths_and_answer_typed_content;
+
+        phase file_effects_refuse_a_relative_path;
+        // A relative path is refused before it reaches the app: it would name
+        // a file wherever the process runs.
+        {
+            use super::WordProcessorEffect;
+            use ui::tilo_resource::Effect as _;
+            for (id, param) in [
+                ("open-document", "path"),
+                ("save", "path"),
+                ("save-as", "path"),
+                ("read-file", "file"),
+                ("convert-file", "file"),
+            ] {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(param.into(), "notes.md".into());
+                arguments.insert("to".into(), "odt".into());
+                let error = WordProcessorEffect::decode(id, &arguments).unwrap_err();
+                assert!(
+                    matches!(
+                        &error,
+                        ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                            if name == param && source.to_string().contains("absolute")
+                    ),
+                    "{id}: {error}"
+                );
+            }
+        }
+
+        phase sharing_an_image_answers_content_another_app_takes;
+        {
+            use ui::tilo_resource::Effect;
+            let spec = super::WordProcessorEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == "share-image")
+                .expect("sharing an image is a published effect");
+            assert_eq!(
+                spec.contract.result,
+                tilo_actions::ResultSpec::Resource {
+                    resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
+                },
+                "its result is typed content, so a caller chains it into a content input"
+            );
+            let answer = ui::framework::Effected::content("abc123").expect("a content hash");
             assert!(
                 matches!(
-                    &error,
-                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                        if name == param && source.to_string().contains("absolute")
+                    answer,
+                    ui::framework::Effected::Done(ref output)
+                        if output.resources == ["tilo.content:abc123"]
                 ),
-                "{id}: {error}"
+                "{answer:?}"
             );
         }
-    }
-
-    #[test]
-    fn sharing_an_image_answers_content_another_app_takes() {
-        use ui::tilo_resource::Effect;
-        let spec = super::WordProcessorEffect::specs()
-            .into_iter()
-            .find(|spec| spec.id == "share-image")
-            .expect("sharing an image is a published effect");
-        assert_eq!(
-            spec.contract.result,
-            tilo_actions::ResultSpec::Resource {
-                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
-            },
-            "its result is typed content, so a caller chains it into a content input"
-        );
-        let answer = ui::framework::Effected::content("abc123").expect("a content hash");
-        assert!(
-            matches!(
-                answer,
-                ui::framework::Effected::Done(ref output)
-                    if output.resources == ["tilo.content:abc123"]
-            ),
-            "{answer:?}"
-        );
     }
 
     #[test]

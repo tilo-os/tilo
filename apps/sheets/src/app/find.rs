@@ -355,30 +355,34 @@ mod tests {
         matches_in(text, &query)
     }
 
-    #[test]
-    fn folding_finds_case_and_diacritics_and_maps_back_to_raw_bytes() {
-        let text = "Le Café Crème, déjà vu";
-        let found = matches(text, "creme", false, false);
-        assert_eq!(found.len(), 1);
-        assert_eq!(text.get(found[0].0..found[0].1), Some("Crème"));
-        assert!(matches(text, "CREME", true, false).is_empty());
-        assert_eq!(matches("Straße", "strasse", false, false).len(), 1);
-    }
+    tilo_test_env::scenario! {
+        fn find_matches_and_replaces_text;
 
-    #[test]
-    fn whole_word_and_non_overlapping_matches_hold() {
-        let text = "aa a aa";
-        assert_eq!(matches(text, "aa", true, true).len(), 2);
-        assert_eq!(matches(text, "a", true, true).len(), 1);
-        assert_eq!(matches("aaaa", "aa", true, false).len(), 2);
-    }
+        phase folding_finds_case_and_diacritics_and_maps_back_to_raw_bytes;
+        {
+            let text = "Le Café Crème, déjà vu";
+            let found = matches(text, "creme", false, false);
+            assert_eq!(found.len(), 1);
+            assert_eq!(text.get(found[0].0..found[0].1), Some("Crème"));
+            assert!(matches(text, "CREME", true, false).is_empty());
+            assert_eq!(matches("Straße", "strasse", false, false).len(), 1);
+        }
 
-    #[test]
-    fn replacements_are_byte_exact_and_can_expand() {
-        assert_eq!(
-            replace_range("crème", 0, 6, "creme").as_deref(),
-            Some("creme")
-        );
-        assert_eq!(replace_range("abc", 1, 2, "XYZ").as_deref(), Some("aXYZc"));
+        phase whole_word_and_non_overlapping_matches_hold;
+        {
+            let text = "aa a aa";
+            assert_eq!(matches(text, "aa", true, true).len(), 2);
+            assert_eq!(matches(text, "a", true, true).len(), 1);
+            assert_eq!(matches("aaaa", "aa", true, false).len(), 2);
+        }
+
+        phase replacements_are_byte_exact_and_can_expand;
+        {
+            assert_eq!(
+                replace_range("crème", 0, 6, "creme").as_deref(),
+                Some("creme")
+            );
+            assert_eq!(replace_range("abc", 1, 2, "XYZ").as_deref(), Some("aXYZc"));
+        }
     }
 }

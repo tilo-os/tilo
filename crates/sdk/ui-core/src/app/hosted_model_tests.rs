@@ -640,7 +640,7 @@ fn hosted_directory_equivalent_notification_before_sync_preserves_offered_revisi
     let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
     assert_eq!(page.rows.len(), 1);
     events.borrow_mut().push(CollabEvent::Context {
-        collaborators: vec![],
+        members: vec![],
         permissions: vec![],
         apps: Vec::new(),
     });
@@ -689,7 +689,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         }));
         app.invalidate_widget_resource_cache();
         let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
-            collaborators: vec![],
+            members: vec![],
             permissions: vec![],
             apps: Vec::new(),
         }]));
@@ -724,7 +724,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
 fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     let mut app = hosted_directory_fixture();
     let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
-        collaborators: vec![],
+        members: vec![],
         permissions: vec![],
         apps: Vec::new(),
     }]));
@@ -750,20 +750,18 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
 /// number, and nobody already in the workspace is renumbered.
 #[test]
 fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
-    fn person(id: &str, joined_at: u64, is_self: bool) -> crate::collaboration::Collaborator {
-        crate::collaboration::Collaborator {
-            id: id.into(),
-            name: "Ada".into(),
-            colour: None,
-            is_agent: false,
-            is_self,
-            joined_at: Some(joined_at),
-        }
+    fn person(id: &str, joined_at: u64, is_self: bool) -> collab_types::Member {
+        let row = collab_types::Member::of_person(
+            &collab_types::Person::new(id.trim_start_matches("person:"), "Ada"),
+            None,
+        )
+        .joined_at(Some(joined_at));
+        if is_self { row.claiming_self() } else { row }
     }
     let mut app = hosted_directory_fixture();
     let first = crate::permissions::UserId("person:m".into());
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![
+        members: vec![
             person("person:m", 2_000, true),
             person("person:z", 5_000, false),
         ],
@@ -775,7 +773,7 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
     assert_eq!(app.presence_ctx.display_name(&second), "Ada (2)");
 
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![
+        members: vec![
             person("person:a", 9_000, false),
             person("person:m", 2_000, true),
             person("person:z", 5_000, false),
@@ -790,70 +788,49 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
 }
 
 #[test]
-fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() {
+fn complete_context_replaces_the_people_a_member_list_names() {
     let mut app = hosted_directory_fixture();
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![
-            crate::collaboration::Collaborator {
-                id: "person:local".into(),
-                name: "Local person".into(),
-                colour: None,
-                is_agent: false,
-                is_self: true,
-                joined_at: None,
-            },
-            crate::collaboration::Collaborator {
-                id: "opaque-member".into(),
-                name: "Build helper".into(),
-                colour: None,
-                is_agent: true,
-                is_self: false,
-                joined_at: None,
-            },
-            crate::collaboration::Collaborator {
-                id: "agent:spoof".into(),
-                name: "A person".into(),
-                colour: None,
-                is_agent: false,
-                is_self: false,
-                joined_at: None,
-            },
+        members: vec![
+            collab_types::Member::of_person(
+                &collab_types::Person::new("local", "Local person"),
+                None,
+            )
+            .claiming_self(),
+            collab_types::Member::of_software(
+                collab_types::MemberId::agent("build-helper"),
+                "Build helper",
+                None,
+            ),
         ],
         permissions: vec![],
         apps: Vec::new(),
     });
-    let opaque = crate::permissions::UserId("opaque-member".into());
-    let spoof = crate::permissions::UserId("agent:spoof".into());
+    let helper = crate::permissions::UserId("agent:build-helper".into());
     assert_eq!(
-        app.presence_ctx.participant_kind(&opaque),
+        app.presence_ctx.participant_kind(&helper),
         crate::presence::ParticipantKind::Agent
-    );
-    assert_eq!(
-        app.presence_ctx.participant_kind(&spoof),
-        crate::presence::ParticipantKind::Person
     );
 
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![crate::collaboration::Collaborator {
-            id: "person:local".into(),
-            name: "Local person".into(),
-            colour: None,
-            is_agent: false,
-            is_self: true,
-            joined_at: None,
-        }],
+        members: vec![
+            collab_types::Member::of_person(
+                &collab_types::Person::new("local", "Local person"),
+                None,
+            )
+            .claiming_self(),
+        ],
         permissions: vec![],
         apps: Vec::new(),
     });
-    assert!(!app.presence_ctx.names.contains_key(&opaque));
-    assert!(!app.presence_ctx.names.contains_key(&spoof));
+    assert!(!app.presence_ctx.names.contains_key(&helper));
     assert_eq!(
-        app.presence_ctx.participant_kind(&opaque),
+        app.presence_ctx.participant_kind(&helper),
         crate::presence::ParticipantKind::Person
     );
 
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![],
+        members: vec![],
         permissions: vec![],
         apps: Vec::new(),
     });

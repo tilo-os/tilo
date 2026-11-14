@@ -13,9 +13,7 @@ use std::path::Path;
 use tilo_app_package::manifest::Manifest;
 use tilolang_cli::package::{self, BuildOptions};
 
-mod support;
-
-use support::{copy_package, packages, with_used};
+use crate::support::{copy_package, packages, with_used};
 
 #[test]
 fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {

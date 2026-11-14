@@ -14,6 +14,7 @@ use crate::handshake::{Doorway, EntryFuture};
 use crate::workspace_access::person_device;
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
+use tilo_relay_protocol::WorkspaceId;
 
 /// A refusal of the join itself, after the door let the person in.
 const fn refused(reason: String) -> EnterRefusal {
@@ -40,7 +41,7 @@ impl Doorway for Workspaces {
                     })
                 };
                 if let Some(again) = again {
-                    return self.with_desktop_scope(&entering.workspace, again).await;
+                    return self.with_host(&entering.workspace, again).await;
                 }
             }
             // A device that is a member already — a `tilo mcp` restarted, a
@@ -52,7 +53,7 @@ impl Doorway for Workspaces {
             if entering.through == Through::Door
                 && let Some(member) = self.member_already(cert, &entering.workspace).await
             {
-                return self.with_desktop_scope(&entering.workspace, member).await;
+                return self.with_host(&entering.workspace, member).await;
             }
             // A further device of someone the workspace has in it — a second
             // tab, a new computer of theirs — is theirs, not a newcomer's:
@@ -88,7 +89,9 @@ impl Doorway for Workspaces {
                         &invitation,
                         tilo_clock::unix_now_ns(),
                     );
-                    if names.as_deref().ok() != Some(entering.workspace.as_str()) {
+                    if names.ok().map(|workspace| workspace.to_string()).as_deref()
+                        != Some(entering.workspace.as_str())
+                    {
                         return Entered::Refused(refused(
                             "the invitation is not for the workspace this device enters".to_owned(),
                         ));
@@ -114,10 +117,7 @@ impl Doorway for Workspaces {
                 self.key_arrival(&entering.workspace, cert, access).await;
                 crate::timing::event("entry.keys", keying, 0);
             }
-            let scoping = crate::timing::start();
-            let entered = self.with_desktop_scope(&entering.workspace, entered).await;
-            crate::timing::event("entry.desktop_scope", scoping, 0);
-            entered
+            self.with_host(&entering.workspace, entered).await
         })
     }
 }
@@ -322,13 +322,13 @@ impl Workspaces {
     ) {
         let device = cert.device_public_key;
         if access.device.as_bytes() != &device
-            || access.channel != collab_types::workspace_scope(workspace)
+            || access.workspace.to_string() != workspace
             || access.verify().is_err()
         {
             tracing::debug!(%workspace, "an entry's channel request was not the device's own for the workspace's group");
             return;
         }
-        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return;
         };
         if !self
@@ -362,10 +362,9 @@ impl Workspaces {
         });
     }
 
-    /// `entered`, with the group that seals `workspace`'s shared desktop as
-    /// its governance decides it now, and this host's signed address for the
-    /// workspace, where a desktop takes it in.
-    async fn with_desktop_scope(&self, workspace: &str, entered: Entered) -> Entered {
+    /// `entered`, with this host's signed address for the workspace, where a
+    /// desktop takes it in.
+    async fn with_host(&self, workspace: &str, entered: Entered) -> Entered {
         let Entered::Admitted {
             workspace: uuid,
             workspace_id,
@@ -376,29 +375,18 @@ impl Workspaces {
         else {
             return entered;
         };
-        let (desktop_scope, host) = match self.workspace(workspace).await {
+        let host = match self.workspace(workspace).await {
             Ok(governed) => {
-                use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
-                let route = collab_types::ChannelRoute::new(DESKTOP_APP, DESKTOP_RECORD);
-                let governed = governed.lock().await;
-                let scope = governed
-                    .peer()
-                    .governance()
-                    .unit_scope(tilo_clock::wall(), &route)
-                    .ok();
-                let hint = self.transport_hint(&governed);
-                drop(governed);
-                let host = hint.ok().and_then(|hint| postcard::to_stdvec(&hint).ok());
-                (scope, host)
+                let hint = self.transport_hint(&*governed.lock().await);
+                hint.ok().and_then(|hint| postcard::to_stdvec(&hint).ok())
             }
-            Err(_) => (None, None),
+            Err(_) => None,
         };
         Entered::Admitted {
             workspace: uuid,
             workspace_id,
             name,
             role,
-            desktop_scope,
             host,
         }
     }
@@ -417,7 +405,6 @@ fn entered(reply: JoinReply) -> Entered {
             workspace_id,
             name,
             role,
-            desktop_scope: None,
             host: None,
         },
         JoinReply::Refused(reason) => Entered::Refused(refused(reason)),
@@ -436,7 +423,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use tilo_relay_protocol::directory::{DoorJoin, Listing};
     use tilo_relay_protocol::entering::{Entered, Entering, Entry, Through};
-    use tilo_relay_protocol::workspaces::{JoinReply, WorkspaceRole};
+    use tilo_relay_protocol::workspaces::{JoinReply, Role};
     use tilo_relay_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -494,7 +481,7 @@ mod tests {
         owner: &DeviceCert,
         workspace: &str,
         root: &SigningKey,
-        role: WorkspaceRole,
+        role: Role,
     ) {
         let first = device_of(root, DeviceCapabilities::member());
         let token: [u8; 16] = rand::random();
@@ -555,7 +542,7 @@ mod tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Viewer,
+                    default_role: Role::Viewer,
                 },
             )
             .await
@@ -567,21 +554,11 @@ mod tests {
         let unlisted = workspaces.create("Team").await.unwrap().workspace;
 
         let ada = SigningKey::from_bytes(&rand::random());
-        member_at(workspaces, &owner, &closed, &ada, WorkspaceRole::Moderator).await;
-        member_at(
-            workspaces,
-            &owner,
-            &unlisted,
-            &ada,
-            WorkspaceRole::Commenter,
-        )
-        .await;
+        member_at(workspaces, &owner, &closed, &ada, Role::Moderator).await;
+        member_at(workspaces, &owner, &unlisted, &ada, Role::Commenter).await;
         let before = role_of(workspaces, &closed, ada.verifying_key().to_bytes()).await;
 
-        for (workspace, role) in [
-            (&closed, WorkspaceRole::Moderator),
-            (&unlisted, WorkspaceRole::Commenter),
-        ] {
+        for (workspace, role) in [(&closed, Role::Moderator), (&unlisted, Role::Commenter)] {
             let tab = device_of(&ada, DeviceCapabilities::member());
             let entered = through_the_door(workspaces, workspace, &tab).await;
             assert!(
@@ -632,7 +609,7 @@ mod tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Viewer,
+                    default_role: Role::Viewer,
                 },
             )
             .await
@@ -642,14 +619,7 @@ mod tests {
             .await
             .unwrap();
         let ada = SigningKey::from_bytes(&rand::random());
-        member_at(
-            workspaces,
-            &owner,
-            &workspace,
-            &ada,
-            WorkspaceRole::Moderator,
-        )
-        .await;
+        member_at(workspaces, &owner, &workspace, &ada, Role::Moderator).await;
         let before = role_of(workspaces, &workspace, ada.verifying_key().to_bytes()).await;
 
         let join = DoorJoin {
@@ -671,7 +641,7 @@ mod tests {
             matches!(
                 reply,
                 JoinReply::Admitted {
-                    role: WorkspaceRole::Moderator,
+                    role: Role::Moderator,
                     ..
                 }
             ),
@@ -698,7 +668,7 @@ mod tests {
         let removed = SigningKey::from_bytes(&rand::random());
         let ada = SigningKey::from_bytes(&rand::random());
         for root in [&banned, &removed, &ada] {
-            member_at(workspaces, &owner, &workspace, root, WorkspaceRole::Editor).await;
+            member_at(workspaces, &owner, &workspace, root, Role::Editor).await;
         }
         workspaces
             .ban_member(

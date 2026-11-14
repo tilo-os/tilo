@@ -525,104 +525,108 @@ pub fn save(details: &AppDetails) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn appstream_markup_reads_as_paragraphs_and_list_items() {
-        assert_eq!(
-            paragraphs(
-                "<p>Edit &amp; share   photos.</p><ul><li>Crop</li><li>Rotate <em>fast</em></li></ul>"
-            ),
-            ["Edit & share photos.", "Crop", "Rotate fast"]
-        );
-        assert!(paragraphs("").is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn details_read_markup_facts_permissions_and_capabilities;
 
-    #[test]
-    fn flathub_details_name_size_licence_permissions_and_releases() {
-        let appstream = serde_json::json!({
-            "description": "<p>A music player.</p>",
-            "developer_name": "Example Devs",
-            "project_license": "GPL-3.0-or-later",
-            "urls": {"homepage": "https://example.org"},
-            "screenshots": [
-                {"sizes": [{"src": "https://img/small.png", "width": "624"},
-                           {"src": "https://img/large.png", "width": "1248"}]},
-                {"sizes": {"624x351": "https://img/b.png"}},
-                {"url": "http://insecure/c.png"}
-            ],
-            "releases": [{"version": "2.0", "timestamp": "1760000000",
-                          "description": "<ul><li>Gapless playback</li></ul>"}]
-        });
-        let mut installed = serde_json::Map::new();
-        installed.insert(std::env::consts::ARCH.into(), 12_000_000u64.into());
-        let summary = serde_json::json!({
-            "download_size": 4_000_000u64,
-            "installed_size": installed,
-            "metadata": {"permissions": {
-                "shared": ["network", "ipc"],
-                "sockets": ["wayland", "pulseaudio"],
-                "filesystems": ["xdg-music:ro"],
-                "session-bus": {"talk": ["org.freedesktop.Notifications"]}
-            }}
-        });
-        let details = AppDetails::from_flathub(
-            "org.example.Music",
-            "en-US",
-            Some(&appstream),
-            Some(&summary),
-            10,
-        );
-        assert_eq!(details.paragraphs, ["A music player."]);
-        assert_eq!(details.developer, "Example Devs");
-        assert_eq!(details.license, "GPL-3.0-or-later");
-        assert_eq!(details.homepage.as_deref(), Some("https://example.org"));
-        assert_eq!(
-            details.screenshots,
-            ["https://img/large.png", "https://img/b.png"],
-            "the largest image of each screenshot, never an insecure one"
-        );
-        assert_eq!(details.releases[0].version, "2.0");
-        assert_eq!(details.releases[0].date_unix, 1_760_000_000);
-        assert_eq!(details.releases[0].notes, ["Gapless playback"]);
-        assert_eq!(details.download_bytes, 4_000_000);
-        assert_eq!(details.installed_bytes, 12_000_000);
-        assert!(details.permissions_known);
-        assert!(details.permissions.contains(&Permission::Internet));
-        assert!(details.permissions.contains(&Permission::Sound));
-        assert!(details.permissions.contains(&Permission::Notifications));
-        assert!(
-            details
-                .permissions
-                .iter()
-                .any(|permission| matches!(permission, Permission::Folder(_)))
-        );
-        assert!(details.is_fresh(11));
-        assert!(!details.is_fresh(10 + FRESH_FOR_SECONDS));
-    }
+        phase appstream_markup_reads_as_paragraphs_and_list_items;
+        {
+            assert_eq!(
+                paragraphs(
+                    "<p>Edit &amp; share   photos.</p><ul><li>Crop</li><li>Rotate <em>fast</em></li></ul>"
+                ),
+                ["Edit & share photos.", "Crop", "Rotate fast"]
+            );
+            assert!(paragraphs("").is_empty());
+        }
 
-    #[test]
-    fn a_flatpak_that_talks_to_flatpak_is_said_to_leave_its_sandbox_first() {
-        let permissions = flatpak_permissions(&serde_json::json!({
-            "filesystems": ["home"],
-            "session-bus": {"org.freedesktop.Flatpak": "talk"}
-        }));
-        assert_eq!(permissions.first(), Some(&Permission::LeavesSandbox));
-        assert!(permissions.contains(&Permission::HomeFolder));
-    }
+        phase flathub_details_name_size_licence_permissions_and_releases;
+        {
+            let appstream = serde_json::json!({
+                "description": "<p>A music player.</p>",
+                "developer_name": "Example Devs",
+                "project_license": "GPL-3.0-or-later",
+                "urls": {"homepage": "https://example.org"},
+                "screenshots": [
+                    {"sizes": [{"src": "https://img/small.png", "width": "624"},
+                               {"src": "https://img/large.png", "width": "1248"}]},
+                    {"sizes": {"624x351": "https://img/b.png"}},
+                    {"url": "http://insecure/c.png"}
+                ],
+                "releases": [{"version": "2.0", "timestamp": "1760000000",
+                              "description": "<ul><li>Gapless playback</li></ul>"}]
+            });
+            let mut installed = serde_json::Map::new();
+            installed.insert(std::env::consts::ARCH.into(), 12_000_000u64.into());
+            let summary = serde_json::json!({
+                "download_size": 4_000_000u64,
+                "installed_size": installed,
+                "metadata": {"permissions": {
+                    "shared": ["network", "ipc"],
+                    "sockets": ["wayland", "pulseaudio"],
+                    "filesystems": ["xdg-music:ro"],
+                    "session-bus": {"talk": ["org.freedesktop.Notifications"]}
+                }}
+            });
+            let details = AppDetails::from_flathub(
+                "org.example.Music",
+                "en-US",
+                Some(&appstream),
+                Some(&summary),
+                10,
+            );
+            assert_eq!(details.paragraphs, ["A music player."]);
+            assert_eq!(details.developer, "Example Devs");
+            assert_eq!(details.license, "GPL-3.0-or-later");
+            assert_eq!(details.homepage.as_deref(), Some("https://example.org"));
+            assert_eq!(
+                details.screenshots,
+                ["https://img/large.png", "https://img/b.png"],
+                "the largest image of each screenshot, never an insecure one"
+            );
+            assert_eq!(details.releases[0].version, "2.0");
+            assert_eq!(details.releases[0].date_unix, 1_760_000_000);
+            assert_eq!(details.releases[0].notes, ["Gapless playback"]);
+            assert_eq!(details.download_bytes, 4_000_000);
+            assert_eq!(details.installed_bytes, 12_000_000);
+            assert!(details.permissions_known);
+            assert!(details.permissions.contains(&Permission::Internet));
+            assert!(details.permissions.contains(&Permission::Sound));
+            assert!(details.permissions.contains(&Permission::Notifications));
+            assert!(
+                details
+                    .permissions
+                    .iter()
+                    .any(|permission| matches!(permission, Permission::Folder(_)))
+            );
+            assert!(details.is_fresh(11));
+            assert!(!details.is_fresh(10 + FRESH_FOR_SECONDS));
+        }
 
-    #[test]
-    fn tilo_capabilities_that_shape_how_an_app_runs_are_not_listed() {
-        let capabilities = [
-            "threads",
-            "gpu",
-            "app-files",
-            "network.http",
-            "files.open",
-            "files.save",
-        ]
-        .map(String::from);
-        assert_eq!(
-            tilo_permissions(&capabilities),
-            [Permission::ChosenFiles, Permission::Internet]
-        );
+        phase a_flatpak_that_talks_to_flatpak_is_said_to_leave_its_sandbox_first;
+        {
+            let permissions = flatpak_permissions(&serde_json::json!({
+                "filesystems": ["home"],
+                "session-bus": {"org.freedesktop.Flatpak": "talk"}
+            }));
+            assert_eq!(permissions.first(), Some(&Permission::LeavesSandbox));
+            assert!(permissions.contains(&Permission::HomeFolder));
+        }
+
+        phase tilo_capabilities_that_shape_how_an_app_runs_are_not_listed;
+        {
+            let capabilities = [
+                "threads",
+                "gpu",
+                "app-files",
+                "network.http",
+                "files.open",
+                "files.save",
+            ]
+            .map(String::from);
+            assert_eq!(
+                tilo_permissions(&capabilities),
+                [Permission::ChosenFiles, Permission::Internet]
+            );
+        }
     }
 }

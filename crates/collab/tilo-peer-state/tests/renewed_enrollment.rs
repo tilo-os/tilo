@@ -16,12 +16,13 @@
 )]
 
 use crate::common::endpoint;
+use tilo_peer_state::join::WorkspaceId;
 
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_identity_host::custody::HostIdentity;
-use tilo_peer_state::join::{self, MemberRole};
+use tilo_peer_state::join::{self, Role};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{Relay, RelayConfig};
@@ -62,7 +63,7 @@ struct Admitted {
     _state: tempfile::TempDir,
     _directory: tempfile::TempDir,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     invitation: String,
     owner: tilo_peer_state::owner::NativeWorkspaceOwner,
     client: WorkspaceJoinClient,
@@ -76,7 +77,7 @@ impl Admitted {
         let host_key = SigningKey::from_bytes(&tilo_test_env::node_key());
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let desk_key = SigningKey::from_bytes(&[5; 32]);
-        let host = certificate(&alice, &host_key, DeviceCapabilities::host(), 1, None);
+        let host = certificate(&alice, &host_key, DeviceCapabilities::member(), 1, None);
         let laptop = certificate(&alice, &laptop_key, DeviceCapabilities::primary(), 1, None);
         let held = held(&bob, &desk_key);
         let now = tilo_clock::unix_now_ns();
@@ -111,7 +112,7 @@ impl Admitted {
                 &laptop,
                 IssueInvitationRequest {
                     request_id: [9; 32],
-                    role: MemberRole::Editor,
+                    role: Role::Editor,
                     recipient_user_public_key: Some(bob.verifying_key().to_bytes()),
                     invitee_name: None,
                     expires_at_ns: now.saturating_add(600 * SECOND),
@@ -193,9 +194,11 @@ impl Admitted {
             .with_current(joined, |view| {
                 Ok(view
                     .peer()
-                    .permissions(self.desk_key.verifying_key().to_bytes(), tilo_clock::wall())
-                    .ok()
-                    .map(|member| member.role))
+                    .role(
+                        &self.desk_key.verifying_key().to_bytes(),
+                        tilo_clock::wall(),
+                    )
+                    .ok())
             })
             .unwrap();
         assert_eq!(role, Some(collab_types::Role::Editor), "the same member");

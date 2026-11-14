@@ -677,62 +677,71 @@ impl ProtectedFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn finite_mode_refuses_caller_arguments_before_any_installed_lookup() {
-        let mut out = Vec::new();
-        assert!(run([OsString::from("/tmp/proof.json")], &mut out).is_err());
-        assert!(out.is_empty());
-        assert!(qualify([OsString::from("/tmp/proof.json")], &mut out).is_err());
-        assert!(out.is_empty());
-    }
-    #[test]
-    fn protected_reader_refuses_actual_symlink_and_nonregular_artifacts() {
-        assert!(ProtectedFile::open(Path::new("/proc/self/exe")).is_err());
-        assert!(ProtectedFile::open(Path::new("/dev/null")).is_err());
-        assert!(ProtectedFile::open(Path::new("relative/proof")).is_err());
-    }
-    #[test]
-    fn executable_permission_check_refuses_chmod_without_a_content_change() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("consumer");
-        std::fs::write(&path, b"fixed consumer bytes").unwrap();
-        let file = File::open(&path).unwrap();
-        file.set_permissions(std::fs::Permissions::from_mode(0o755))
-            .unwrap();
-        assert!(executable_permissions(&file.metadata().unwrap()));
-        let before = std::fs::read(&path).unwrap();
-        file.set_permissions(std::fs::Permissions::from_mode(0o644))
-            .unwrap();
-        assert!(!executable_permissions(&file.metadata().unwrap()));
-        assert_eq!(before, std::fs::read(&path).unwrap());
-        file.set_permissions(std::fs::Permissions::from_mode(0o777))
-            .unwrap();
-        assert!(!executable_permissions(&file.metadata().unwrap()));
-    }
-    #[test]
-    fn signed_table_comparison_refuses_role_and_target_substitutions() {
-        let proof = crate::setup::original_admission::syntax_fixture();
-        let mut table = Table {
-            schema: 1,
-            openpgp_version: "2.4".into(),
-            libexecdir: "/usr/libexec".into(),
-            helpers: proof
-                .runtime_helpers
-                .iter()
-                .map(|h| TableHelper {
-                    role: h.role.clone(),
-                    target: format!("/usr/bin/{}", h.bundle.strip_prefix("bin/").unwrap()),
-                    bundle: h.bundle.clone(),
-                })
-                .collect(),
-        };
-        table.matches(&proof).unwrap();
-        table.helpers[0].role = "openpgp".into();
-        assert!(table.matches(&proof).is_err());
-        table.helpers[0].role = "agent".into();
-        table.helpers[0].target = "/tmp/gpg-agent".into();
-        assert!(table.matches(&proof).is_err());
+    tilo_test_env::scenario! {
+        /// The helper that re-attests an original system's artifacts.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_original_reattest_helper_refuses_arguments_links_and_substitutions;
+
+        phase finite_mode_refuses_caller_arguments_before_any_installed_lookup;
+        {
+            let mut out = Vec::new();
+            assert!(run([OsString::from("/tmp/proof.json")], &mut out).is_err());
+            assert!(out.is_empty());
+            assert!(qualify([OsString::from("/tmp/proof.json")], &mut out).is_err());
+            assert!(out.is_empty());
+        }
+
+        phase protected_reader_refuses_actual_symlink_and_nonregular_artifacts;
+        {
+            assert!(ProtectedFile::open(Path::new("/proc/self/exe")).is_err());
+            assert!(ProtectedFile::open(Path::new("/dev/null")).is_err());
+            assert!(ProtectedFile::open(Path::new("relative/proof")).is_err());
+        }
+
+        phase executable_permission_check_refuses_chmod_without_a_content_change;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("consumer");
+            std::fs::write(&path, b"fixed consumer bytes").unwrap();
+            let file = File::open(&path).unwrap();
+            file.set_permissions(std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            assert!(executable_permissions(&file.metadata().unwrap()));
+            let before = std::fs::read(&path).unwrap();
+            file.set_permissions(std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+            assert!(!executable_permissions(&file.metadata().unwrap()));
+            assert_eq!(before, std::fs::read(&path).unwrap());
+            file.set_permissions(std::fs::Permissions::from_mode(0o777))
+                .unwrap();
+            assert!(!executable_permissions(&file.metadata().unwrap()));
+        }
+
+        phase signed_table_comparison_refuses_role_and_target_substitutions;
+        {
+            let proof = crate::setup::original_admission::syntax_fixture();
+            let mut table = Table {
+                schema: 1,
+                openpgp_version: "2.4".into(),
+                libexecdir: "/usr/libexec".into(),
+                helpers: proof
+                    .runtime_helpers
+                    .iter()
+                    .map(|h| TableHelper {
+                        role: h.role.clone(),
+                        target: format!("/usr/bin/{}", h.bundle.strip_prefix("bin/").unwrap()),
+                        bundle: h.bundle.clone(),
+                    })
+                    .collect(),
+            };
+            table.matches(&proof).unwrap();
+            table.helpers[0].role = "openpgp".into();
+            assert!(table.matches(&proof).is_err());
+            table.helpers[0].role = "agent".into();
+            table.helpers[0].target = "/tmp/gpg-agent".into();
+            assert!(table.matches(&proof).is_err());
+        }
     }
 }
 

@@ -405,22 +405,127 @@ mod tests {
         d
     }
 
-    #[test]
-    fn a_typed_phrase_gates_the_confirmation() {
-        let body = PromptBody::confirm_phrase("Everything on sdb will be erased.", "sdb");
-        let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-        assert!(!d.content().confirms());
-        dispatch(&mut d, &char_key("s"));
-        dispatch(&mut d, &char_key("d"));
-        assert!(!d.content().confirms());
-        dispatch(&mut d, &char_key("b"));
-        assert!(d.content().confirms(), "the phrase confirms");
-        let node = Widget::accessibility(d.content()).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Type sdb to confirm"));
-        assert!(
-            d.content().get_rect().height() > ControlSize::Regular.height(&Theme::dark()) * 2.0,
-            "the message and the label stand above the field"
-        );
+    tilo_test_env::scenario! {
+        fn a_prompt_gates_on_its_real_editable_field;
+
+        phase a_typed_phrase_gates_the_confirmation;
+        {
+            let body = PromptBody::confirm_phrase("Everything on sdb will be erased.", "sdb");
+            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+            assert!(!d.content().confirms());
+            dispatch(&mut d, &char_key("s"));
+            dispatch(&mut d, &char_key("d"));
+            assert!(!d.content().confirms());
+            dispatch(&mut d, &char_key("b"));
+            assert!(d.content().confirms(), "the phrase confirms");
+            let node = Widget::accessibility(d.content()).unwrap();
+            assert_eq!(node.name.as_deref(), Some("Type sdb to confirm"));
+            assert!(
+                d.content().get_rect().height() > ControlSize::Regular.height(&Theme::dark()) * 2.0,
+                "the message and the label stand above the field"
+            );
+        }
+
+        phase wrapped_prompt_help_leaves_the_editable_field_below_all_lines;
+        {
+            for scale in [1.0, 2.0] {
+                let mut body = PromptBody::new(
+                    "Only the playlist owner can rename it. Saving does not grant editing access. Ask the owner for permission before editing this shared playlist.",
+                    "Name",
+                )
+                .with_caption("This change is sent to the provider after confirmation.");
+                body.rect = Rect::new(0.0, 0.0, 240.0, 700.0);
+                let mut text = TextRenderer::new();
+                text.set_text_scale(scale);
+                let theme = Theme::high_contrast().with_text_scale(scale);
+                body.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                let (_, caption) =
+                    text.measure_style(&body.caption, Some(240.0), &theme.text(TextRole::Body));
+                let (_, label) =
+                    text.measure_style(&body.label, Some(240.0), &theme.text(TextRole::Label));
+                assert!(
+                    label > theme.text(TextRole::Label).line_height_px() * 2.0,
+                    "the long label occupies multiple lines"
+                );
+                assert!(
+                    body.field_rect.y0 >= f64::from(caption + label) + PromptBody::gap(&theme) * 3.0,
+                    "text and editable field do not overlap"
+                );
+                assert!(body.field_rect.y1 <= body.rect.y1);
+            }
+        }
+
+        phase prompt_field_is_the_real_editable_input;
+        {
+            {
+                let body = PromptBody::new("Name", "New volume");
+                let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+                dispatch(&mut d, &char_key("h"));
+                dispatch(&mut d, &char_key("i"));
+                assert_eq!(
+                    d.content().value(),
+                    "hi",
+                    "keystrokes must land in the embedded TextInput's real value",
+                );
+            }
+
+            {
+                let body = PromptBody::new("Name", "").with_initial("old-name");
+                let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+                assert_eq!(d.content().value(), "old-name");
+                dispatch(&mut d, &char_key("x"));
+                assert_eq!(
+                    d.content().value(),
+                    "x",
+                    "typing over a selected initial value must replace it",
+                );
+            }
+
+            {
+                let body = PromptBody::new("Name", "hint");
+                let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+                dispatch(&mut d, &char_key("a"));
+                dispatch(&mut d, &char_key("b"));
+                let center = d.dialog_rect().center();
+                dispatch(&mut d, &cursor_at(center));
+                dispatch(&mut d, &mouse_press());
+                assert!(
+                    d.content().is_focused(),
+                    "the field stays focused after an in-box click",
+                );
+                dispatch(&mut d, &char_key("c"));
+                assert!(
+                    d.content().value().contains('c'),
+                    "typing continues to reach the field after the click",
+                );
+            }
+
+            {
+                let body = PromptBody::new("Notes", "").multiline(true);
+                let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+                dispatch(&mut d, &char_key("a"));
+                let ev = crate::synthetic_input::key_event(
+                    Key::Named(NamedKey::Enter),
+                    None,
+                    ElementState::Pressed,
+                );
+                // The dialog itself does not intercept Enter (only Escape), so it
+                // forwards to the multiline field, which inserts a newline.
+                dispatch(&mut d, &crate::synthetic_input::keyboard_input(ev));
+                dispatch(&mut d, &char_key("b"));
+                assert_eq!(
+                    d.content().value(),
+                    "a\nb",
+                    "Enter in a multiline prompt inserts a newline",
+                );
+            }
+        }
     }
 
     use crate::synthetic_input::char_key;
@@ -430,105 +535,4 @@ mod tests {
     }
 
     use crate::synthetic_input::mouse_press;
-
-    #[test]
-    fn wrapped_prompt_help_leaves_the_editable_field_below_all_lines() {
-        for scale in [1.0, 2.0] {
-            let mut body = PromptBody::new(
-                "Only the playlist owner can rename it. Saving does not grant editing access. Ask the owner for permission before editing this shared playlist.",
-                "Name",
-            )
-            .with_caption("This change is sent to the provider after confirmation.");
-            body.rect = Rect::new(0.0, 0.0, 240.0, 700.0);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(scale);
-            let theme = Theme::high_contrast().with_text_scale(scale);
-            body.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            let (_, caption) =
-                text.measure_style(&body.caption, Some(240.0), &theme.text(TextRole::Body));
-            let (_, label) =
-                text.measure_style(&body.label, Some(240.0), &theme.text(TextRole::Label));
-            assert!(
-                label > theme.text(TextRole::Label).line_height_px() * 2.0,
-                "the long label occupies multiple lines"
-            );
-            assert!(
-                body.field_rect.y0 >= f64::from(caption + label) + PromptBody::gap(&theme) * 3.0,
-                "text and editable field do not overlap"
-            );
-            assert!(body.field_rect.y1 <= body.rect.y1);
-        }
-    }
-
-    #[test]
-    fn prompt_field_is_the_real_editable_input() {
-        {
-            let body = PromptBody::new("Name", "New volume");
-            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_key("h"));
-            dispatch(&mut d, &char_key("i"));
-            assert_eq!(
-                d.content().value(),
-                "hi",
-                "keystrokes must land in the embedded TextInput's real value",
-            );
-        }
-
-        {
-            let body = PromptBody::new("Name", "").with_initial("old-name");
-            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            assert_eq!(d.content().value(), "old-name");
-            dispatch(&mut d, &char_key("x"));
-            assert_eq!(
-                d.content().value(),
-                "x",
-                "typing over a selected initial value must replace it",
-            );
-        }
-
-        {
-            let body = PromptBody::new("Name", "hint");
-            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_key("a"));
-            dispatch(&mut d, &char_key("b"));
-            let center = d.dialog_rect().center();
-            dispatch(&mut d, &cursor_at(center));
-            dispatch(&mut d, &mouse_press());
-            assert!(
-                d.content().is_focused(),
-                "the field stays focused after an in-box click",
-            );
-            dispatch(&mut d, &char_key("c"));
-            assert!(
-                d.content().value().contains('c'),
-                "typing continues to reach the field after the click",
-            );
-        }
-
-        {
-            let body = PromptBody::new("Notes", "").multiline(true);
-            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_key("a"));
-            let ev = crate::synthetic_input::key_event(
-                Key::Named(NamedKey::Enter),
-                None,
-                ElementState::Pressed,
-            );
-            // The dialog itself does not intercept Enter (only Escape), so it
-            // forwards to the multiline field, which inserts a newline.
-            dispatch(&mut d, &crate::synthetic_input::keyboard_input(ev));
-            dispatch(&mut d, &char_key("b"));
-            assert_eq!(
-                d.content().value(),
-                "a\nb",
-                "Enter in a multiline prompt inserts a newline",
-            );
-        }
-    }
 }

@@ -149,43 +149,47 @@ mod tests {
         }
     }
 
-    #[test]
-    fn local_index_round_trips_and_rejects_misfiled_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let index = LocalIndex::at(dir.path());
-        let e = entry(1, "jq-1-1.x86_64", 9);
-        let digest = e.key.digest();
-        assert_eq!(index.lookup(&digest), None);
-        index.put(&e).unwrap();
-        assert_eq!(index.lookup(&digest), Some(e.tool));
+    tilo_test_env::scenario! {
+        fn tool_indexes;
 
-        // Copy the entry to another key's name: not trusted.
-        let other = entry(2, "jq-1-1.x86_64", 9).key.digest();
-        std::fs::copy(
-            dir.path().join(format!("{digest}.json")),
-            dir.path().join(format!("{other}.json")),
-        )
-        .unwrap();
-        assert_eq!(index.lookup(&other), None);
+        phase local_index_round_trips_and_rejects_misfiled_entries;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let index = LocalIndex::at(dir.path());
+            let e = entry(1, "jq-1-1.x86_64", 9);
+            let digest = e.key.digest();
+            assert_eq!(index.lookup(&digest), None);
+            index.put(&e).unwrap();
+            assert_eq!(index.lookup(&digest), Some(e.tool));
 
-        index.forget(&digest).unwrap();
-        index.forget(&digest).unwrap();
-        assert_eq!(index.lookup(&digest), None);
-    }
+            // Copy the entry to another key's name: not trusted.
+            let other = entry(2, "jq-1-1.x86_64", 9).key.digest();
+            std::fs::copy(
+                dir.path().join(format!("{digest}.json")),
+                dir.path().join(format!("{other}.json")),
+            )
+            .unwrap();
+            assert_eq!(index.lookup(&other), None);
 
-    #[test]
-    fn catalog_round_trips_and_drops_misnamed_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut catalog = Catalog::default();
-        let good = entry(1, "git-2-1.x86_64", 3);
-        catalog.insert(good.clone());
-        catalog
-            .tools
-            .insert("00".repeat(32), entry(1, "evil-1-1.x86_64", 4));
-        let path = dir.path().join("catalog.json");
-        catalog.save(&path).unwrap();
-        let loaded = Catalog::load(&path).unwrap();
-        assert_eq!(loaded.tools.len(), 1);
-        assert_eq!(loaded.lookup(&good.key.digest()), Some(good.tool));
+            index.forget(&digest).unwrap();
+            index.forget(&digest).unwrap();
+            assert_eq!(index.lookup(&digest), None);
+        }
+
+        phase catalog_round_trips_and_drops_misnamed_entries;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut catalog = Catalog::default();
+            let good = entry(1, "git-2-1.x86_64", 3);
+            catalog.insert(good.clone());
+            catalog
+                .tools
+                .insert("00".repeat(32), entry(1, "evil-1-1.x86_64", 4));
+            let path = dir.path().join("catalog.json");
+            catalog.save(&path).unwrap();
+            let loaded = Catalog::load(&path).unwrap();
+            assert_eq!(loaded.tools.len(), 1);
+            assert_eq!(loaded.lookup(&good.key.digest()), Some(good.tool));
+        }
     }
 }

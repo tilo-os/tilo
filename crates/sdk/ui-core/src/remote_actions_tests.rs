@@ -167,8 +167,10 @@ fn a_catalogue_read_gathers_every_page_as_the_app() {
     let seen = host.seen.lock().unwrap();
     assert_eq!(seen.len(), 2, "one request per page");
     assert!(
-        seen.iter().all(|caller| *caller.principal()
-            == tilo_actions::remote::CallerPrincipal::App("so.tilo.example".into())),
+        seen.iter().all(
+            |caller| caller.acting().app().map(ToString::to_string).as_deref()
+                == Some("so.tilo.example")
+        ),
         "the app asks as itself"
     );
     assert!(!actions.is_busy());

@@ -2714,332 +2714,402 @@ mod key_and_mask_tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
-    )]
-    fn chroma_key_removes_the_key_hue_with_soft_edges_and_despill() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario: each former test is a labelled case block with its own fixture"
+        )]
+        #[expect(
+            clippy::float_cmp,
+            reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn keys_and_masks_cover_animate_and_despill;
+
+        phase chroma_key_removes_the_key_hue_with_soft_edges_and_despill;
         {
-            let off = ChromaKey::default();
-            assert!(!off.enabled);
-            assert_eq!(
-                off.coverage(GREEN),
-                1.0,
-                "a key that is off keeps its own colour"
-            );
-            // On, but wound to zero tolerance: still nothing, and it says so.
-            let zero = ChromaKey {
-                enabled: true,
-                tolerance: 0.0,
-                ..ChromaKey::default()
-            };
-            assert!(!zero.is_active());
-            assert_eq!(zero.coverage(GREEN), 1.0);
-        }
-        {
-            let k = keyer();
-            assert_eq!(
-                k.coverage(GREEN),
-                0.0,
-                "the colour being keyed is removed outright"
-            );
-            for keep in [[0.9, 0.5, 0.15], [0.8, 0.1, 0.7], [0.1, 0.2, 0.9]] {
-                assert_eq!(k.coverage(keep), 1.0, "{keep:?} is nothing like the key");
-            }
-        }
-        {
-            let k = keyer();
-            for gain in [0.2_f64, 0.35, 0.6, 1.0, 1.35] {
-                let shade = [
-                    (GREEN[0] * gain).clamp(0.0, 1.0),
-                    (GREEN[1] * gain).clamp(0.0, 1.0),
-                    (GREEN[2] * gain).clamp(0.0, 1.0),
-                ];
+            {
+                let off = ChromaKey::default();
+                assert!(!off.enabled);
                 assert_eq!(
-                    k.coverage(shade),
+                    off.coverage(GREEN),
+                    1.0,
+                    "a key that is off keeps its own colour"
+                );
+                // On, but wound to zero tolerance: still nothing, and it says so.
+                let zero = ChromaKey {
+                    enabled: true,
+                    tolerance: 0.0,
+                    ..ChromaKey::default()
+                };
+                assert!(!zero.is_active());
+                assert_eq!(zero.coverage(GREEN), 1.0);
+            }
+            {
+                let k = keyer();
+                assert_eq!(
+                    k.coverage(GREEN),
                     0.0,
-                    "green at {gain}× exposure is still the same green: {shade:?}",
+                    "the colour being keyed is removed outright"
+                );
+                for keep in [[0.9, 0.5, 0.15], [0.8, 0.1, 0.7], [0.1, 0.2, 0.9]] {
+                    assert_eq!(k.coverage(keep), 1.0, "{keep:?} is nothing like the key");
+                }
+            }
+            {
+                let k = keyer();
+                for gain in [0.2_f64, 0.35, 0.6, 1.0, 1.35] {
+                    let shade = [
+                        (GREEN[0] * gain).clamp(0.0, 1.0),
+                        (GREEN[1] * gain).clamp(0.0, 1.0),
+                        (GREEN[2] * gain).clamp(0.0, 1.0),
+                    ];
+                    assert_eq!(
+                        k.coverage(shade),
+                        0.0,
+                        "green at {gain}× exposure is still the same green: {shade:?}",
+                    );
+                }
+                // And an RGB-distance keyer would have kept the dark one: prove the
+                // shades really are far apart in plain RGB, so the invariance above
+                // is the keyer's doing and not an accident of the numbers.
+                let dark = [GREEN[0] * 0.2, GREEN[1] * 0.2, GREEN[2] * 0.2];
+                let rgb_gap: f64 = GREEN
+                    .iter()
+                    .zip(&dark)
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                assert!(
+                    rgb_gap > 0.3,
+                    "the two shades are {rgb_gap:.2} apart in RGB"
                 );
             }
-            // And an RGB-distance keyer would have kept the dark one: prove the
-            // shades really are far apart in plain RGB, so the invariance above
-            // is the keyer's doing and not an accident of the numbers.
-            let dark = [GREEN[0] * 0.2, GREEN[1] * 0.2, GREEN[2] * 0.2];
-            let rgb_gap: f64 = GREEN
-                .iter()
-                .zip(&dark)
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f64>()
-                .sqrt();
-            assert!(
-                rgb_gap > 0.3,
-                "the two shades are {rgb_gap:.2} apart in RGB"
-            );
-        }
-        {
-            let k = keyer();
-            assert_eq!(
-                k.coverage([0.0, 0.0, 0.0]),
-                1.0,
-                "black is not a colour to key on"
-            );
-            let almost = [GREEN[0] * 0.02, GREEN[1] * 0.02, GREEN[2] * 0.02];
-            assert!(
-                k.coverage(almost) > 0.0,
-                "a near-black pixel is not confidently green: {almost:?}",
-            );
-        }
-        {
-            // A green diluted halfway toward grey: near the key but not on it.
-            let edge = [
-                GREEN[0].midpoint(0.5),
-                GREEN[1].midpoint(0.5),
-                GREEN[2].midpoint(0.5),
-            ];
-            // Place the band around wherever that colour actually falls, read
-            // off the keyer itself rather than recomputed here — a test that
-            // re-derives the distance would pass while the keyer was wrong.
-            let d = keyer().distance(edge);
-            assert!(d > 0.05, "the diluted green is off the key: {d:.3}");
-            let hard = ChromaKey {
-                tolerance: d * 0.5,
-                softness: 0.0,
-                ..keyer()
-            };
-            let soft = ChromaKey {
-                tolerance: d * 0.5,
-                softness: d,
-                ..keyer()
-            };
-            assert_eq!(
-                hard.coverage(edge),
-                1.0,
-                "with no softness the edge is a step"
-            );
-            let partial = soft.coverage(edge);
-            assert!(
-                partial > 0.0 && partial < 1.0,
-                "softness must give the edge a partial matte, got {partial}",
-            );
-            assert_eq!(
-                soft.coverage([0.5, 0.5, 0.5]),
-                1.0,
-                "neutral grey is nowhere near"
-            );
-        }
-        {
-            let k = ChromaKey {
-                spill: 1.0,
-                ..keyer()
-            };
-            let tinted = [0.62, 0.58, 0.36];
-            let clean = k.despilled(tinted);
-            let luma = |c: [f64; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-            assert!(
-                (luma(clean) - luma(tinted)).abs() < 0.02,
-                "brightness is left alone: {:.3} → {:.3}",
-                luma(tinted),
-                luma(clean),
-            );
-            let toward_key = |c: [f64; 3]| {
-                let (kb, kr) = ChromaKey::chroma(k.color);
-                let n = (kb * kb + kr * kr).sqrt();
-                let (pb, pr) = ChromaKey::chroma(c);
-                (pb * kb + pr * kr) / n
-            };
-            assert!(
-                toward_key(clean) < toward_key(tinted) - 1e-3,
-                "the key hue is reduced: {:.4} → {:.4}",
-                toward_key(tinted),
-                toward_key(clean),
-            );
-        }
-        {
-            let k = ChromaKey {
-                spill: 1.0,
-                ..keyer()
-            };
-            let magenta = [0.7, 0.1, 0.6];
-            assert_eq!(k.despilled(magenta), magenta);
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
-    )]
-    fn masks_cover_shape_feather_invert_move_and_rotate() {
-        {
-            let m = Mask::default();
-            assert!(!m.is_active());
-            for (u, v) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
-                assert_eq!(m.coverage(u, v, 16.0 / 9.0), 1.0);
+            {
+                let k = keyer();
+                assert_eq!(
+                    k.coverage([0.0, 0.0, 0.0]),
+                    1.0,
+                    "black is not a colour to key on"
+                );
+                let almost = [GREEN[0] * 0.02, GREEN[1] * 0.02, GREEN[2] * 0.02];
+                assert!(
+                    k.coverage(almost) > 0.0,
+                    "a near-black pixel is not confidently green: {almost:?}",
+                );
+            }
+            {
+                // A green diluted halfway toward grey: near the key but not on it.
+                let edge = [
+                    GREEN[0].midpoint(0.5),
+                    GREEN[1].midpoint(0.5),
+                    GREEN[2].midpoint(0.5),
+                ];
+                // Place the band around wherever that colour actually falls, read
+                // off the keyer itself rather than recomputed here — a test that
+                // re-derives the distance would pass while the keyer was wrong.
+                let d = keyer().distance(edge);
+                assert!(d > 0.05, "the diluted green is off the key: {d:.3}");
+                let hard = ChromaKey {
+                    tolerance: d * 0.5,
+                    softness: 0.0,
+                    ..keyer()
+                };
+                let soft = ChromaKey {
+                    tolerance: d * 0.5,
+                    softness: d,
+                    ..keyer()
+                };
+                assert_eq!(
+                    hard.coverage(edge),
+                    1.0,
+                    "with no softness the edge is a step"
+                );
+                let partial = soft.coverage(edge);
+                assert!(
+                    partial > 0.0 && partial < 1.0,
+                    "softness must give the edge a partial matte, got {partial}",
+                );
+                assert_eq!(
+                    soft.coverage([0.5, 0.5, 0.5]),
+                    1.0,
+                    "neutral grey is nowhere near"
+                );
+            }
+            {
+                let k = ChromaKey {
+                    spill: 1.0,
+                    ..keyer()
+                };
+                let tinted = [0.62, 0.58, 0.36];
+                let clean = k.despilled(tinted);
+                let luma = |c: [f64; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+                assert!(
+                    (luma(clean) - luma(tinted)).abs() < 0.02,
+                    "brightness is left alone: {:.3} → {:.3}",
+                    luma(tinted),
+                    luma(clean),
+                );
+                let toward_key = |c: [f64; 3]| {
+                    let (kb, kr) = ChromaKey::chroma(k.color);
+                    let n = (kb * kb + kr * kr).sqrt();
+                    let (pb, pr) = ChromaKey::chroma(c);
+                    (pb * kb + pr * kr) / n
+                };
+                assert!(
+                    toward_key(clean) < toward_key(tinted) - 1e-3,
+                    "the key hue is reduced: {:.4} → {:.4}",
+                    toward_key(tinted),
+                    toward_key(clean),
+                );
+            }
+            {
+                let k = ChromaKey {
+                    spill: 1.0,
+                    ..keyer()
+                };
+                let magenta = [0.7, 0.1, 0.6];
+                assert_eq!(k.despilled(magenta), magenta);
             }
         }
+
+        phase masks_cover_shape_feather_invert_move_and_rotate;
         {
-            let m = Mask {
-                shape: MaskShape::Ellipse,
-                w: 0.5,
-                h: 0.5,
-                feather: 0.1,
-                ..Mask::default()
-            };
-            assert!(
-                (m.coverage(0.5, 0.5, 1.0) - 1.0).abs() < 1e-9,
-                "dead centre is kept"
-            );
-            assert_eq!(
-                m.coverage(0.02, 0.02, 1.0),
-                0.0,
-                "a frame corner is outside it"
-            );
-            assert_eq!(m.coverage(0.98, 0.5, 1.0), 0.0, "so is the far edge");
+            {
+                let m = Mask::default();
+                assert!(!m.is_active());
+                for (u, v) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
+                    assert_eq!(m.coverage(u, v, 16.0 / 9.0), 1.0);
+                }
+            }
+            {
+                let m = Mask {
+                    shape: MaskShape::Ellipse,
+                    w: 0.5,
+                    h: 0.5,
+                    feather: 0.1,
+                    ..Mask::default()
+                };
+                assert!(
+                    (m.coverage(0.5, 0.5, 1.0) - 1.0).abs() < 1e-9,
+                    "dead centre is kept"
+                );
+                assert_eq!(
+                    m.coverage(0.02, 0.02, 1.0),
+                    0.0,
+                    "a frame corner is outside it"
+                );
+                assert_eq!(m.coverage(0.98, 0.5, 1.0), 0.0, "so is the far edge");
+            }
+            {
+                let base = Mask {
+                    w: 0.8,
+                    h: 0.8,
+                    feather: 0.02,
+                    ..Mask::default()
+                };
+                let rect = Mask {
+                    shape: MaskShape::Rect,
+                    ..base
+                };
+                let ellipse = Mask {
+                    shape: MaskShape::Ellipse,
+                    ..base
+                };
+                // Just inside the box's corner: inside the rect, outside the ellipse
+                // (the ellipse's radius there is sqrt(2) of its half-extent).
+                let (u, v) = (0.5 + 0.36, 0.5 + 0.36);
+                assert!(rect.coverage(u, v, 1.0) > 0.9, "the rect keeps its corner");
+                assert_eq!(ellipse.coverage(u, v, 1.0), 0.0, "the ellipse does not");
+            }
+            {
+                let sharp = Mask {
+                    shape: MaskShape::Ellipse,
+                    w: 0.6,
+                    h: 0.6,
+                    feather: 0.001,
+                    ..Mask::default()
+                };
+                let soft = Mask {
+                    feather: 0.6,
+                    ..sharp
+                };
+                let (u, v) = (0.5 + 0.3 * 0.8, 0.5);
+                assert!(
+                    (sharp.coverage(u, v, 1.0) - 1.0).abs() < 1e-6,
+                    "unfeathered, still fully inside"
+                );
+                let ramped = soft.coverage(u, v, 1.0);
+                assert!(
+                    ramped > 0.0 && ramped < 1.0,
+                    "feathered, the same point is part-way through the edge: {ramped}",
+                );
+            }
+            {
+                let m = Mask {
+                    shape: MaskShape::Ellipse,
+                    w: 0.5,
+                    h: 0.5,
+                    feather: 0.1,
+                    ..Mask::default()
+                };
+                let holed = Mask { invert: true, ..m };
+                assert!((m.coverage(0.5, 0.5, 1.0) + holed.coverage(0.5, 0.5, 1.0) - 1.0).abs() < 1e-9);
+                assert_eq!(
+                    holed.coverage(0.5, 0.5, 1.0),
+                    0.0,
+                    "the centre is now the hole"
+                );
+                assert_eq!(
+                    holed.coverage(0.02, 0.02, 1.0),
+                    1.0,
+                    "and the corner is kept"
+                );
+            }
+            {
+                let centred = Mask {
+                    shape: MaskShape::Ellipse,
+                    w: 0.3,
+                    h: 0.3,
+                    ..Mask::default()
+                };
+                let right = Mask { x: 0.3, ..centred };
+                assert_eq!(
+                    right.coverage(0.5, 0.5, 1.0),
+                    0.0,
+                    "the centre is no longer inside"
+                );
+                assert!(
+                    right.coverage(0.8, 0.5, 1.0) > 0.9,
+                    "but the point it moved to is"
+                );
+            }
+            {
+                let fa = 16.0 / 9.0;
+                let tall = Mask {
+                    shape: MaskShape::Rect,
+                    w: 0.12,
+                    h: 0.8,
+                    feather: 0.02,
+                    ..Mask::default()
+                };
+                let turned = Mask {
+                    rotation: 90.0,
+                    ..tall
+                };
+                // A point out along the frame's x axis: outside the upright sliver,
+                // inside it once the sliver is laid on its side. The distance is
+                // scaled by the frame aspect so it matches the shape's own units.
+                let u = 0.5 + 0.3 / fa;
+                assert_eq!(
+                    tall.coverage(u, 0.5, fa),
+                    0.0,
+                    "outside the narrow upright bar"
+                );
+                assert!(
+                    turned.coverage(u, 0.5, fa) > 0.9,
+                    "inside it once turned on its side"
+                );
+                assert_eq!(turned.coverage(0.5, 0.5 + 0.3, fa), 0.0);
+            }
+            {
+                let t = Transform::pip(0.3, (1.0, -1.0), 0.04);
+                let m = Mask::over(MaskShape::Ellipse, &t, 16.0 / 9.0, 16.0 / 9.0);
+                assert_eq!(m.shape, MaskShape::Ellipse);
+                assert!(
+                    (m.x - t.pos_x).abs() < 1e-9,
+                    "centred on where the picture went"
+                );
+                assert!((m.y - t.pos_y).abs() < 1e-9);
+                assert!((m.w - 0.3).abs() < 1e-6, "and sized to it: {}", m.w);
+                assert!((m.h - 0.3).abs() < 1e-6);
+                // The middle of the inset picture is inside the fitted mask, and the
+                // middle of the frame — where a default mask would have gone — is not.
+                assert!(m.coverage(0.5 + m.x, 0.5 + m.y, 16.0 / 9.0) > 0.9);
+                assert_eq!(m.coverage(0.5, 0.5, 16.0 / 9.0), 0.0);
+            }
+            {
+                let m = Mask::over(MaskShape::Rect, &Transform::default(), 1.0, 16.0 / 9.0);
+                assert!(
+                    (m.w - 9.0 / 16.0).abs() < 1e-6,
+                    "pillarboxed to the source's aspect: {}",
+                    m.w
+                );
+                assert!((m.h - 1.0).abs() < 1e-6, "and full height");
+            }
         }
+
+        phase key_and_mask_parameters_animate_through_their_named_fields;
         {
-            let base = Mask {
-                w: 0.8,
-                h: 0.8,
-                feather: 0.02,
-                ..Mask::default()
-            };
-            let rect = Mask {
-                shape: MaskShape::Rect,
-                ..base
-            };
-            let ellipse = Mask {
-                shape: MaskShape::Ellipse,
-                ..base
-            };
-            // Just inside the box's corner: inside the rect, outside the ellipse
-            // (the ellipse's radius there is sqrt(2) of its half-extent).
-            let (u, v) = (0.5 + 0.36, 0.5 + 0.36);
-            assert!(rect.coverage(u, v, 1.0) > 0.9, "the rect keeps its corner");
-            assert_eq!(ellipse.coverage(u, v, 1.0), 0.0, "the ellipse does not");
-        }
-        {
-            let sharp = Mask {
-                shape: MaskShape::Ellipse,
-                w: 0.6,
-                h: 0.6,
-                feather: 0.001,
-                ..Mask::default()
-            };
-            let soft = Mask {
-                feather: 0.6,
-                ..sharp
-            };
-            let (u, v) = (0.5 + 0.3 * 0.8, 0.5);
-            assert!(
-                (sharp.coverage(u, v, 1.0) - 1.0).abs() < 1e-6,
-                "unfeathered, still fully inside"
-            );
-            let ramped = soft.coverage(u, v, 1.0);
-            assert!(
-                ramped > 0.0 && ramped < 1.0,
-                "feathered, the same point is part-way through the edge: {ramped}",
-            );
-        }
-        {
-            let m = Mask {
-                shape: MaskShape::Ellipse,
-                w: 0.5,
-                h: 0.5,
-                feather: 0.1,
-                ..Mask::default()
-            };
-            let holed = Mask { invert: true, ..m };
-            assert!((m.coverage(0.5, 0.5, 1.0) + holed.coverage(0.5, 0.5, 1.0) - 1.0).abs() < 1e-9);
-            assert_eq!(
-                holed.coverage(0.5, 0.5, 1.0),
-                0.0,
-                "the centre is now the hole"
-            );
-            assert_eq!(
-                holed.coverage(0.02, 0.02, 1.0),
-                1.0,
-                "and the corner is kept"
-            );
-        }
-        {
-            let centred = Mask {
-                shape: MaskShape::Ellipse,
-                w: 0.3,
-                h: 0.3,
-                ..Mask::default()
-            };
-            let right = Mask { x: 0.3, ..centred };
-            assert_eq!(
-                right.coverage(0.5, 0.5, 1.0),
-                0.0,
-                "the centre is no longer inside"
-            );
-            assert!(
-                right.coverage(0.8, 0.5, 1.0) > 0.9,
-                "but the point it moved to is"
-            );
-        }
-        {
-            let fa = 16.0 / 9.0;
-            let tall = Mask {
-                shape: MaskShape::Rect,
-                w: 0.12,
-                h: 0.8,
-                feather: 0.02,
-                ..Mask::default()
-            };
-            let turned = Mask {
-                rotation: 90.0,
-                ..tall
-            };
-            // A point out along the frame's x axis: outside the upright sliver,
-            // inside it once the sliver is laid on its side. The distance is
-            // scaled by the frame aspect so it matches the shape's own units.
-            let u = 0.5 + 0.3 / fa;
-            assert_eq!(
-                tall.coverage(u, 0.5, fa),
-                0.0,
-                "outside the narrow upright bar"
-            );
-            assert!(
-                turned.coverage(u, 0.5, fa) > 0.9,
-                "inside it once turned on its side"
-            );
-            assert_eq!(turned.coverage(0.5, 0.5 + 0.3, fa), 0.0);
-        }
-        {
-            let t = Transform::pip(0.3, (1.0, -1.0), 0.04);
-            let m = Mask::over(MaskShape::Ellipse, &t, 16.0 / 9.0, 16.0 / 9.0);
-            assert_eq!(m.shape, MaskShape::Ellipse);
-            assert!(
-                (m.x - t.pos_x).abs() < 1e-9,
-                "centred on where the picture went"
-            );
-            assert!((m.y - t.pos_y).abs() < 1e-9);
-            assert!((m.w - 0.3).abs() < 1e-6, "and sized to it: {}", m.w);
-            assert!((m.h - 0.3).abs() < 1e-6);
-            // The middle of the inset picture is inside the fitted mask, and the
-            // middle of the frame — where a default mask would have gone — is not.
-            assert!(m.coverage(0.5 + m.x, 0.5 + m.y, 16.0 / 9.0) > 0.9);
-            assert_eq!(m.coverage(0.5, 0.5, 16.0 / 9.0), 0.0);
-        }
-        {
-            let m = Mask::over(MaskShape::Rect, &Transform::default(), 1.0, 16.0 / 9.0);
-            assert!(
-                (m.w - 9.0 / 16.0).abs() < 1e-6,
-                "pillarboxed to the source's aspect: {}",
-                m.w
-            );
-            assert!((m.h - 1.0).abs() < 1e-6, "and full height");
+            {
+                let c = keyed_clip();
+                assert_eq!(c.key_at(3.0), c.key);
+                assert_eq!(c.mask_at(3.0), c.mask);
+            }
+            {
+                let mut c = keyed_clip();
+                // Clip-local 0 and 4 — the clip starts at timeline 2.0.
+                c.set_key_at(Param::MaskX, 2.0, -0.4, Interp::Linear);
+                c.set_key_at(Param::MaskX, 6.0, 0.4, Interp::Linear);
+                assert!(
+                    (c.mask_at(2.0).x + 0.4).abs() < 1e-9,
+                    "at the head it is left"
+                );
+                assert!(c.mask_at(4.0).x.abs() < 1e-9, "half way it is centred");
+                assert!(
+                    (c.mask_at(6.0).x - 0.4).abs() < 1e-9,
+                    "at the tail it is right"
+                );
+                // The shape and the invert flag are not animatable and must survive.
+                assert_eq!(c.mask_at(4.0).shape, MaskShape::Ellipse);
+                // And nothing else on the mask drifted.
+                assert!((c.mask_at(4.0).w - c.mask.w).abs() < 1e-9);
+            }
+            {
+                let mut c = keyed_clip();
+                c.set_key_at(Param::KeyTolerance, 2.0, 0.0, Interp::Linear);
+                c.set_key_at(Param::KeyTolerance, 6.0, 0.5, Interp::Linear);
+                assert!(
+                    !c.key_at(2.0).is_active(),
+                    "at the head the key removes nothing"
+                );
+                assert!((c.key_at(4.0).tolerance - 0.25).abs() < 1e-9);
+                assert!(c.key_at(6.0).is_active(), "by the tail it is keying");
+                // The key colour is not a curve and must come through untouched.
+                assert_eq!(c.key_at(4.0).color, c.key.color);
+                assert!(c.key_at(4.0).enabled);
+            }
+            {
+                let mut c = keyed_clip();
+                for (p, v) in [
+                    (Param::KeyTolerance, 0.31),
+                    (Param::KeySoftness, 0.17),
+                    (Param::KeySpill, 0.62),
+                    (Param::MaskX, -0.22),
+                    (Param::MaskY, 0.44),
+                    (Param::MaskW, 0.71),
+                    (Param::MaskH, 1.3),
+                    (Param::MaskRotation, 37.0),
+                    (Param::MaskFeather, 0.09),
+                ] {
+                    c.set_param_const(p, v);
+                    assert_eq!(
+                        c.param_const(p),
+                        Some(v),
+                        "{p:?} round-trips through its field"
+                    );
+                    assert!(
+                        (c.param_at(p, 5.0) - v).abs() < 1e-12,
+                        "{p:?} reads back at the playhead"
+                    );
+                }
+                // The writes landed on the right structures, not on each other.
+                assert!((c.key.tolerance - 0.31).abs() < 1e-12);
+                assert!((c.mask.rotation - 37.0).abs() < 1e-12);
+            }
         }
     }
 
@@ -3061,80 +3131,6 @@ mod key_and_mask_tests {
                 ..Mask::default()
             },
             ..Default::default()
-        }
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
-    )]
-    fn key_and_mask_parameters_animate_through_their_named_fields() {
-        {
-            let c = keyed_clip();
-            assert_eq!(c.key_at(3.0), c.key);
-            assert_eq!(c.mask_at(3.0), c.mask);
-        }
-        {
-            let mut c = keyed_clip();
-            // Clip-local 0 and 4 — the clip starts at timeline 2.0.
-            c.set_key_at(Param::MaskX, 2.0, -0.4, Interp::Linear);
-            c.set_key_at(Param::MaskX, 6.0, 0.4, Interp::Linear);
-            assert!(
-                (c.mask_at(2.0).x + 0.4).abs() < 1e-9,
-                "at the head it is left"
-            );
-            assert!(c.mask_at(4.0).x.abs() < 1e-9, "half way it is centred");
-            assert!(
-                (c.mask_at(6.0).x - 0.4).abs() < 1e-9,
-                "at the tail it is right"
-            );
-            // The shape and the invert flag are not animatable and must survive.
-            assert_eq!(c.mask_at(4.0).shape, MaskShape::Ellipse);
-            // And nothing else on the mask drifted.
-            assert!((c.mask_at(4.0).w - c.mask.w).abs() < 1e-9);
-        }
-        {
-            let mut c = keyed_clip();
-            c.set_key_at(Param::KeyTolerance, 2.0, 0.0, Interp::Linear);
-            c.set_key_at(Param::KeyTolerance, 6.0, 0.5, Interp::Linear);
-            assert!(
-                !c.key_at(2.0).is_active(),
-                "at the head the key removes nothing"
-            );
-            assert!((c.key_at(4.0).tolerance - 0.25).abs() < 1e-9);
-            assert!(c.key_at(6.0).is_active(), "by the tail it is keying");
-            // The key colour is not a curve and must come through untouched.
-            assert_eq!(c.key_at(4.0).color, c.key.color);
-            assert!(c.key_at(4.0).enabled);
-        }
-        {
-            let mut c = keyed_clip();
-            for (p, v) in [
-                (Param::KeyTolerance, 0.31),
-                (Param::KeySoftness, 0.17),
-                (Param::KeySpill, 0.62),
-                (Param::MaskX, -0.22),
-                (Param::MaskY, 0.44),
-                (Param::MaskW, 0.71),
-                (Param::MaskH, 1.3),
-                (Param::MaskRotation, 37.0),
-                (Param::MaskFeather, 0.09),
-            ] {
-                c.set_param_const(p, v);
-                assert_eq!(
-                    c.param_const(p),
-                    Some(v),
-                    "{p:?} round-trips through its field"
-                );
-                assert!(
-                    (c.param_at(p, 5.0) - v).abs() < 1e-12,
-                    "{p:?} reads back at the playhead"
-                );
-            }
-            // The writes landed on the right structures, not on each other.
-            assert!((c.key.tolerance - 0.31).abs() < 1e-12);
-            assert!((c.mask.rotation - 37.0).abs() < 1e-12);
         }
     }
 }
@@ -3169,536 +3165,872 @@ mod tests {
         (p, cid)
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
-    )]
-    fn clip_speed_maps_source_time_and_survives_splits_and_trims() {
-        {
-            let (mut p, cid) = speed_fixture();
-            let c = p.clip_mut(cid).unwrap();
-            assert!(
-                ((c.duration()) - (20.0)).abs() < 1e-9,
-                "normal speed is the source window"
-            );
-            assert!(
-                ((c.set_speed(2.0, false)) - (10.0)).abs() < 1e-9,
-                "2x halves the timeline length"
-            );
-            assert!(
-                ((c.source_span()) - (20.0)).abs() < 1e-9,
-                "but the source window is untouched"
-            );
-            assert!(
-                ((c.set_speed(0.5, false)) - (40.0)).abs() < 1e-9,
-                "and half speed doubles it"
-            );
-            assert!(
-                ((c.end()) - (40.0)).abs() < 1e-9,
-                "which moves the clip's right edge"
-            );
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            {
-                let c = p.clip_mut(cid).unwrap();
-                c.in_point = 2.0;
-                c.out_point = 12.0;
-            }
-            let at = |p: &Project, t: f64| p.clip(cid).unwrap().source_time(t);
-            assert!(
-                ((at(&p, 0.0)) - (2.0)).abs() < 1e-9,
-                "the head shows the in-point"
-            );
-            assert!(
-                ((at(&p, 3.0)) - (5.0)).abs() < 1e-9,
-                "and 3s in is 3s of source"
-            );
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario: each former test is a labelled case block with its own fixture"
+        )]
+        #[expect(
+            clippy::float_cmp,
+            reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_clip_keeps_exact_values_through_speed_keys_trims_and_effects;
 
-            p.clip_mut(cid).unwrap().set_speed(2.0, false);
-            assert!(
-                ((at(&p, 0.0)) - (2.0)).abs() < 1e-9,
-                "the head is still the in-point"
-            );
-            assert!(
-                ((at(&p, 3.0)) - (8.0)).abs() < 1e-9,
-                "but at 2x, 3s in is 6s of source"
-            );
+        phase clip_speed_maps_source_time_and_survives_splits_and_trims;
+        {
+            {
+                let (mut p, cid) = speed_fixture();
+                let c = p.clip_mut(cid).unwrap();
+                assert!(
+                    ((c.duration()) - (20.0)).abs() < 1e-9,
+                    "normal speed is the source window"
+                );
+                assert!(
+                    ((c.set_speed(2.0, false)) - (10.0)).abs() < 1e-9,
+                    "2x halves the timeline length"
+                );
+                assert!(
+                    ((c.source_span()) - (20.0)).abs() < 1e-9,
+                    "but the source window is untouched"
+                );
+                assert!(
+                    ((c.set_speed(0.5, false)) - (40.0)).abs() < 1e-9,
+                    "and half speed doubles it"
+                );
+                assert!(
+                    ((c.end()) - (40.0)).abs() < 1e-9,
+                    "which moves the clip's right edge"
+                );
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.in_point = 2.0;
+                    c.out_point = 12.0;
+                }
+                let at = |p: &Project, t: f64| p.clip(cid).unwrap().source_time(t);
+                assert!(
+                    ((at(&p, 0.0)) - (2.0)).abs() < 1e-9,
+                    "the head shows the in-point"
+                );
+                assert!(
+                    ((at(&p, 3.0)) - (5.0)).abs() < 1e-9,
+                    "and 3s in is 3s of source"
+                );
 
-            p.clip_mut(cid).unwrap().set_speed(1.0, true);
-            assert!(
-                ((at(&p, 0.0)) - (12.0)).abs() < 1e-9,
-                "reversed, the head shows the out-point"
-            );
-            assert!(
-                ((at(&p, 3.0)) - (9.0)).abs() < 1e-9,
-                "and it walks back through the source"
-            );
-            assert!(
-                ((at(&p, 100.0)) - (2.0)).abs() < 1e-9,
-                "held at the in-point rather than running past it"
-            );
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            {
-                let c = p.clip_mut(cid).unwrap();
-                c.in_point = 4.0;
-                c.out_point = 6.0;
-                c.set_speed(4.0, false);
-            }
-            let c = p.clip(cid).unwrap();
-            assert!(
-                ((c.duration()) - (0.5)).abs() < 1e-9,
-                "a 2s window at 4x is half a second"
-            );
-            assert!(
-                ((c.source_time(0.49)) - (5.96)).abs() < 1e-9,
-                "still inside the window"
-            );
-            assert!(
-                ((c.source_time(9.0)) - (6.0)).abs() < 1e-9,
-                "and past the end it holds the out-point"
-            );
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            {
-                let c = p.clip_mut(cid).unwrap();
-                c.out_point = 12.0;
-                c.set_speed(3.0, false);
-            }
-            // 12s of source at 3x is 4s of timeline; split at 1s in.
-            assert!(
-                ((p.clip(cid).unwrap().duration()) - (4.0)).abs() < 1e-9,
-                "p.clip(cid).unwrap().duration() is {}, want {}",
-                p.clip(cid).unwrap().duration(),
-                4.0
-            );
-            let right = p.split_clip(cid, 1.0).expect("inside the clip");
-            let left = p.clip(cid).unwrap();
-            let right = p.clip(right).unwrap();
-            assert!(
-                ((left.out_point) - (3.0)).abs() < 1e-9,
-                "one timeline second at 3x is three source seconds"
-            );
-            assert!(
-                ((right.in_point) - (3.0)).abs() < 1e-9,
-                "and the tail picks up exactly there"
-            );
-            assert!(
-                ((right.start) - (1.0)).abs() < 1e-9,
-                "right.start is {}, want {}",
-                right.start,
-                1.0
-            );
-            assert!(
-                (left.duration() + right.duration() - 4.0).abs() < 1e-9,
-                "the halves still add up to the original length",
-            );
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            {
-                let c = p.clip_mut(cid).unwrap();
-                c.in_point = 0.0;
-                c.out_point = 8.0;
-                c.set_speed(1.0, true);
-            }
-            // Reversed, the timeline runs 8 → 0 through the source.
-            let right = p.split_clip(cid, 2.0).expect("inside the clip");
-            let left = p.clip(cid).unwrap();
-            let right = p.clip(right).unwrap();
-            assert!(
-                ((left.in_point) - (6.0)).abs() < 1e-9,
-                "the head half plays source 8 → 6"
-            );
-            assert!(
-                ((left.out_point) - (8.0)).abs() < 1e-9,
-                "left.out_point is {}, want {}",
-                left.out_point,
-                8.0
-            );
-            assert!(
-                ((right.out_point) - (6.0)).abs() < 1e-9,
-                "and the tail picks up at 6 going down"
-            );
-            assert!(
-                ((right.in_point) - (0.0)).abs() < 1e-9,
-                "right.in_point is {}, want {}",
-                right.in_point,
-                0.0
-            );
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            {
-                let c = p.clip_mut(cid).unwrap();
-                c.start = 10.0;
-                c.in_point = 0.0;
-                c.out_point = 8.0;
-                c.set_speed(2.0, false);
-            }
-            // Pull the in-point 2 source-seconds later. At 2x that is one
-            // timeline second, so the clip's left edge moves by one, not two.
-            p.trim_in(cid, 2.0);
-            let c = p.clip(cid).unwrap();
-            assert!(
-                ((c.in_point) - (2.0)).abs() < 1e-9,
-                "c.in_point is {}, want {}",
-                c.in_point,
-                2.0
-            );
-            assert!(
-                ((c.start) - (11.0)).abs() < 1e-9,
-                "the left edge moved by the timeline seconds trimmed away"
-            );
-            assert!(((c.duration()) - (3.0)).abs() < 1e-9, "6s of source at 2x");
-        }
-        {
-            assert_eq!(Speed::new(0.0, false).rate(), MIN_SPEED);
-            assert_eq!(Speed::new(1e9, false).rate(), MAX_SPEED);
-            assert_eq!(Speed::new(2.0, false).label(), "2×");
-            assert_eq!(Speed::new(0.5, true).label(), "0.50× reverse");
-            assert!(Speed::default().is_normal());
-            assert_eq!(Speed::new(2.0, true).signed(), -2.0);
-        }
-    }
+                p.clip_mut(cid).unwrap().set_speed(2.0, false);
+                assert!(
+                    ((at(&p, 0.0)) - (2.0)).abs() < 1e-9,
+                    "the head is still the in-point"
+                );
+                assert!(
+                    ((at(&p, 3.0)) - (8.0)).abs() < 1e-9,
+                    "but at 2x, 3s in is 6s of source"
+                );
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
-    )]
-    fn animated_parameters_are_clip_relative_and_read_through_one_door() {
-        {
-            let (mut p, cid) = speed_fixture();
-            p.clip_mut(cid).unwrap().opacity = 0.4;
-            assert_eq!(
-                p.clip(cid).unwrap().param_at(Param::Opacity, 3.0),
-                0.4,
-                "with no curve, the field is the value at every instant",
-            );
-            {
-                let c = p.clip_mut(cid).unwrap();
-                c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
-                c.set_key_at(Param::Opacity, 10.0, 1.0, Interp::Linear);
+                p.clip_mut(cid).unwrap().set_speed(1.0, true);
+                assert!(
+                    ((at(&p, 0.0)) - (12.0)).abs() < 1e-9,
+                    "reversed, the head shows the out-point"
+                );
+                assert!(
+                    ((at(&p, 3.0)) - (9.0)).abs() < 1e-9,
+                    "and it walks back through the source"
+                );
+                assert!(
+                    ((at(&p, 100.0)) - (2.0)).abs() < 1e-9,
+                    "held at the in-point rather than running past it"
+                );
             }
-            let c = p.clip(cid).unwrap();
-            assert_eq!(c.param_at(Param::Opacity, 0.0), 0.0, "now the curve wins");
-            assert!((c.param_at(Param::Opacity, 5.0) - 0.5).abs() < 1e-9);
-            assert_eq!(c.opacity, 0.4, "and the constant is still there underneath");
-        }
-        {
-            let (mut p, cid) = speed_fixture();
             {
-                let c = p.clip_mut(cid).unwrap();
-                c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
-                c.set_key_at(Param::Opacity, 4.0, 1.0, Interp::Linear);
+                let (mut p, cid) = speed_fixture();
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.in_point = 4.0;
+                    c.out_point = 6.0;
+                    c.set_speed(4.0, false);
+                }
+                let c = p.clip(cid).unwrap();
+                assert!(
+                    ((c.duration()) - (0.5)).abs() < 1e-9,
+                    "a 2s window at 4x is half a second"
+                );
+                assert!(
+                    ((c.source_time(0.49)) - (5.96)).abs() < 1e-9,
+                    "still inside the window"
+                );
+                assert!(
+                    ((c.source_time(9.0)) - (6.0)).abs() < 1e-9,
+                    "and past the end it holds the out-point"
+                );
             }
-            let before = p.clip(cid).unwrap().param_at(Param::Opacity, 2.0);
-            p.move_clip(cid, 30.0);
-            let after = p.clip(cid).unwrap().param_at(Param::Opacity, 32.0);
-            assert!(
-                ((before) - (after)).abs() < 1e-9,
-                "the same point in the clip has the same value"
-            );
-            assert!((before - 0.5).abs() < 1e-9);
-        }
-        {
-            let (mut p, cid) = speed_fixture();
             {
-                let c = p.clip_mut(cid).unwrap();
-                c.out_point = 8.0;
-                c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
-                c.set_key_at(Param::Opacity, 8.0, 1.0, Interp::Linear);
+                let (mut p, cid) = speed_fixture();
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.out_point = 12.0;
+                    c.set_speed(3.0, false);
+                }
+                // 12s of source at 3x is 4s of timeline; split at 1s in.
+                assert!(
+                    ((p.clip(cid).unwrap().duration()) - (4.0)).abs() < 1e-9,
+                    "p.clip(cid).unwrap().duration() is {}, want {}",
+                    p.clip(cid).unwrap().duration(),
+                    4.0
+                );
+                let right = p.split_clip(cid, 1.0).expect("inside the clip");
+                let left = p.clip(cid).unwrap();
+                let right = p.clip(right).unwrap();
+                assert!(
+                    ((left.out_point) - (3.0)).abs() < 1e-9,
+                    "one timeline second at 3x is three source seconds"
+                );
+                assert!(
+                    ((right.in_point) - (3.0)).abs() < 1e-9,
+                    "and the tail picks up exactly there"
+                );
+                assert!(
+                    ((right.start) - (1.0)).abs() < 1e-9,
+                    "right.start is {}, want {}",
+                    right.start,
+                    1.0
+                );
+                assert!(
+                    (left.duration() + right.duration() - 4.0).abs() < 1e-9,
+                    "the halves still add up to the original length",
+                );
             }
-            let at_cut = p.clip(cid).unwrap().param_at(Param::Opacity, 3.0);
-            let right = p.split_clip(cid, 3.0).expect("inside");
-            assert!(
-                (p.clip(cid).unwrap().param_at(Param::Opacity, 3.0) - at_cut).abs() < 1e-9,
-                "the head half ends on the value it had at the cut",
-            );
-            assert!(
-                (p.clip(right).unwrap().param_at(Param::Opacity, 3.0) - at_cut).abs() < 1e-9,
-                "and the tail half starts on it",
-            );
-            // And each half still animates rather than freezing.
-            let tail = p.clip(right).unwrap();
-            assert!(
-                tail.param_at(Param::Opacity, 7.0) > at_cut,
-                "the tail keeps rising"
-            );
-        }
-        {
-            let (mut p, cid) = speed_fixture();
             {
-                let c = p.clip_mut(cid).unwrap();
-                c.filters.brightness = 0.3;
-                c.transform.scale_x = 0.8;
-                c.set_key_at(Param::Brightness, 0.0, 0.1, Interp::Linear);
-                c.set_key_at(Param::Brightness, 4.0, 0.9, Interp::Linear);
-                c.set_key_at(Param::ScaleX, 0.0, 1.0, Interp::Hold);
-                c.set_key_at(Param::ScaleX, 4.0, 2.0, Interp::Linear);
+                let (mut p, cid) = speed_fixture();
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.in_point = 0.0;
+                    c.out_point = 8.0;
+                    c.set_speed(1.0, true);
+                }
+                // Reversed, the timeline runs 8 → 0 through the source.
+                let right = p.split_clip(cid, 2.0).expect("inside the clip");
+                let left = p.clip(cid).unwrap();
+                let right = p.clip(right).unwrap();
+                assert!(
+                    ((left.in_point) - (6.0)).abs() < 1e-9,
+                    "the head half plays source 8 → 6"
+                );
+                assert!(
+                    ((left.out_point) - (8.0)).abs() < 1e-9,
+                    "left.out_point is {}, want {}",
+                    left.out_point,
+                    8.0
+                );
+                assert!(
+                    ((right.out_point) - (6.0)).abs() < 1e-9,
+                    "and the tail picks up at 6 going down"
+                );
+                assert!(
+                    ((right.in_point) - (0.0)).abs() < 1e-9,
+                    "right.in_point is {}, want {}",
+                    right.in_point,
+                    0.0
+                );
             }
-            let c = p.clip(cid).unwrap();
-            assert!(
-                (c.filters_at(2.0).brightness - 0.5).abs() < 1e-9,
-                "the graded axis animates"
-            );
-            assert_eq!(
-                c.filters_at(2.0).contrast,
-                0.5,
-                "an unkeyed axis keeps its constant",
-            );
-            assert_eq!(c.transform_at(2.0).scale_x, 1.0, "a held key does not ramp");
-            assert_eq!(c.transform_at(4.0).scale_x, 2.0);
-            assert_eq!(
-                c.transform_at(2.0).scale_y,
-                1.0,
-                "an unkeyed channel is its constant"
-            );
+            {
+                let (mut p, cid) = speed_fixture();
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.start = 10.0;
+                    c.in_point = 0.0;
+                    c.out_point = 8.0;
+                    c.set_speed(2.0, false);
+                }
+                // Pull the in-point 2 source-seconds later. At 2x that is one
+                // timeline second, so the clip's left edge moves by one, not two.
+                p.trim_in(cid, 2.0);
+                let c = p.clip(cid).unwrap();
+                assert!(
+                    ((c.in_point) - (2.0)).abs() < 1e-9,
+                    "c.in_point is {}, want {}",
+                    c.in_point,
+                    2.0
+                );
+                assert!(
+                    ((c.start) - (11.0)).abs() < 1e-9,
+                    "the left edge moved by the timeline seconds trimmed away"
+                );
+                assert!(((c.duration()) - (3.0)).abs() < 1e-9, "6s of source at 2x");
+            }
+            {
+                assert_eq!(Speed::new(0.0, false).rate(), MIN_SPEED);
+                assert_eq!(Speed::new(1e9, false).rate(), MAX_SPEED);
+                assert_eq!(Speed::new(2.0, false).label(), "2×");
+                assert_eq!(Speed::new(0.5, true).label(), "0.50× reverse");
+                assert!(Speed::default().is_normal());
+                assert_eq!(Speed::new(2.0, true).signed(), -2.0);
+            }
         }
+
+        phase animated_parameters_are_clip_relative_and_read_through_one_door;
         {
-            let (mut p, cid) = speed_fixture();
-            let orphan = Uuid::from_u128(7);
-            let vignette = {
+            {
+                let (mut p, cid) = speed_fixture();
+                p.clip_mut(cid).unwrap().opacity = 0.4;
+                assert_eq!(
+                    p.clip(cid).unwrap().param_at(Param::Opacity, 3.0),
+                    0.4,
+                    "with no curve, the field is the value at every instant",
+                );
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
+                    c.set_key_at(Param::Opacity, 10.0, 1.0, Interp::Linear);
+                }
+                let c = p.clip(cid).unwrap();
+                assert_eq!(c.param_at(Param::Opacity, 0.0), 0.0, "now the curve wins");
+                assert!((c.param_at(Param::Opacity, 5.0) - 0.5).abs() < 1e-9);
+                assert_eq!(c.opacity, 0.4, "and the constant is still there underneath");
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
+                    c.set_key_at(Param::Opacity, 4.0, 1.0, Interp::Linear);
+                }
+                let before = p.clip(cid).unwrap().param_at(Param::Opacity, 2.0);
+                p.move_clip(cid, 30.0);
+                let after = p.clip(cid).unwrap().param_at(Param::Opacity, 32.0);
+                assert!(
+                    ((before) - (after)).abs() < 1e-9,
+                    "the same point in the clip has the same value"
+                );
+                assert!((before - 0.5).abs() < 1e-9);
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.out_point = 8.0;
+                    c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
+                    c.set_key_at(Param::Opacity, 8.0, 1.0, Interp::Linear);
+                }
+                let at_cut = p.clip(cid).unwrap().param_at(Param::Opacity, 3.0);
+                let right = p.split_clip(cid, 3.0).expect("inside");
+                assert!(
+                    (p.clip(cid).unwrap().param_at(Param::Opacity, 3.0) - at_cut).abs() < 1e-9,
+                    "the head half ends on the value it had at the cut",
+                );
+                assert!(
+                    (p.clip(right).unwrap().param_at(Param::Opacity, 3.0) - at_cut).abs() < 1e-9,
+                    "and the tail half starts on it",
+                );
+                // And each half still animates rather than freezing.
+                let tail = p.clip(right).unwrap();
+                assert!(
+                    tail.param_at(Param::Opacity, 7.0) > at_cut,
+                    "the tail keeps rising"
+                );
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.filters.brightness = 0.3;
+                    c.transform.scale_x = 0.8;
+                    c.set_key_at(Param::Brightness, 0.0, 0.1, Interp::Linear);
+                    c.set_key_at(Param::Brightness, 4.0, 0.9, Interp::Linear);
+                    c.set_key_at(Param::ScaleX, 0.0, 1.0, Interp::Hold);
+                    c.set_key_at(Param::ScaleX, 4.0, 2.0, Interp::Linear);
+                }
+                let c = p.clip(cid).unwrap();
+                assert!(
+                    (c.filters_at(2.0).brightness - 0.5).abs() < 1e-9,
+                    "the graded axis animates"
+                );
+                assert_eq!(
+                    c.filters_at(2.0).contrast,
+                    0.5,
+                    "an unkeyed axis keeps its constant",
+                );
+                assert_eq!(c.transform_at(2.0).scale_x, 1.0, "a held key does not ramp");
+                assert_eq!(c.transform_at(4.0).scale_x, 2.0);
+                assert_eq!(
+                    c.transform_at(2.0).scale_y,
+                    1.0,
+                    "an unkeyed channel is its constant"
+                );
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                let orphan = Uuid::from_u128(7);
+                let vignette = {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.add_effect(EffectKind::Vignette);
+                    let vignette = c.effects[0].id;
+                    c.set_key_at(Param::EffectAmount(vignette), 0.0, 0.0, Interp::Linear);
+                    c.set_key_at(Param::EffectAmount(vignette), 4.0, 1.0, Interp::Linear);
+                    // A curve on an effect the stack does not have.
+                    c.set_key_at(Param::EffectAmount(orphan), 0.0, 0.5, Interp::Linear);
+                    vignette
+                };
+                let c = p.clip(cid).unwrap();
+                let mid = c.effects_at(2.0);
+                assert_eq!(mid.len(), 1, "the orphan curve adds no effect");
+                assert!(
+                    (mid[0].amount - 0.5).abs() < 1e-9,
+                    "the real one animates: {mid:?}"
+                );
+                assert_eq!(
+                    c.param_const(Param::EffectAmount(orphan)),
+                    None,
+                    "and has no constant either"
+                );
+
+                // Reordering the stack keeps each curve on its own effect;
+                // removing an effect takes its curve with it.
                 let c = p.clip_mut(cid).unwrap();
                 c.add_effect(EffectKind::Vignette);
-                let vignette = c.effects[0].id;
-                c.set_key_at(Param::EffectAmount(vignette), 0.0, 0.0, Interp::Linear);
-                c.set_key_at(Param::EffectAmount(vignette), 4.0, 1.0, Interp::Linear);
-                // A curve on an effect the stack does not have.
-                c.set_key_at(Param::EffectAmount(orphan), 0.0, 0.5, Interp::Linear);
-                vignette
-            };
-            let c = p.clip(cid).unwrap();
-            let mid = c.effects_at(2.0);
-            assert_eq!(mid.len(), 1, "the orphan curve adds no effect");
-            assert!(
-                (mid[0].amount - 0.5).abs() < 1e-9,
-                "the real one animates: {mid:?}"
-            );
-            assert_eq!(
-                c.param_const(Param::EffectAmount(orphan)),
-                None,
-                "and has no constant either"
-            );
-
-            // Reordering the stack keeps each curve on its own effect;
-            // removing an effect takes its curve with it.
-            let c = p.clip_mut(cid).unwrap();
-            c.add_effect(EffectKind::Vignette);
-            let second = c.effects[1].id;
-            c.set_key_at(Param::EffectAmount(second), 0.0, 0.25, Interp::Linear);
-            assert!(c.move_effect_id(second, true));
-            assert_eq!(c.effects[0].id, second);
-            let moved = c.effects_at(2.0);
-            assert!((moved[0].amount - 0.25).abs() < 1e-9, "{moved:?}");
-            assert!((moved[1].amount - 0.5).abs() < 1e-9, "{moved:?}");
-            assert!(c.remove_effect_id(vignette));
-            assert!(!c.anim.is_animated(Param::EffectAmount(vignette)));
-            assert!(c.anim.is_animated(Param::EffectAmount(second)));
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            let c = p.clip_mut(cid).unwrap();
-            // Nothing keyed: not animated anywhere.
-            assert!(!c.anim.is_animated(Param::Opacity));
-            assert!(!c.has_key_at(Param::Opacity, 2.0));
-            // Keyed at 2s: animated, and the key is *on* 2s.
-            c.set_key_at(Param::Opacity, 2.0, 0.4, Interp::Linear);
-            assert!(c.anim.is_animated(Param::Opacity));
-            assert!(c.has_key_at(Param::Opacity, 2.0));
-            // 5s is animated but between keys — the third, distinct state.
-            assert!(!c.has_key_at(Param::Opacity, 5.0));
-            // Half a frame away still counts as on the key; a whole frame does not.
-            assert!(c.has_key_at(Param::Opacity, 2.0 + KEY_TOL * 0.9));
-            assert!(!c.has_key_at(Param::Opacity, 2.0 + 0.1));
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            let c = p.clip_mut(cid).unwrap();
-            c.start = 10.0;
-            c.set_key_at(Param::Opacity, 12.0, 0.5, Interp::Linear);
-            c.set_key_at(Param::Brightness, 12.0, 0.7, Interp::Linear);
-            c.set_key_at(Param::Opacity, 16.0, 1.0, Interp::Linear);
-            assert_eq!(c.key_times(), vec![12.0, 16.0], "absolute, sorted, deduped");
-            assert_eq!(c.next_key_after(10.0), Some(12.0));
-            assert_eq!(c.next_key_after(12.0), Some(16.0));
-            assert_eq!(
-                c.next_key_after(16.0),
-                None,
-                "navigation stops, never wraps"
-            );
-            assert_eq!(c.prev_key_before(16.0), Some(12.0));
-            assert_eq!(c.prev_key_before(12.0), None);
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            let c = p.clip_mut(cid).unwrap();
-            c.set_key_at(Param::PosX, 3.0, 0.25, Interp::Linear);
-            assert_eq!(c.key_interp_at(Param::PosX, 3.0), Some(Interp::Linear));
-            assert_eq!(c.key_interp_at(Param::PosX, 9.0), None, "no key, no shape");
-            assert!(c.set_interp_at(Param::PosX, 3.0, Interp::Ease));
-            assert_eq!(c.key_interp_at(Param::PosX, 3.0), Some(Interp::Ease));
-            assert!(
-                !c.set_interp_at(Param::PosX, 9.0, Interp::Hold),
-                "nothing there to re-shape"
-            );
-            // Re-shaping must not disturb the value the key holds.
-            assert!(
-                ((c.param_at(Param::PosX, 3.0)) - (0.25)).abs() < 1e-9,
-                "c.param_at(Param::PosX, 3.0) is {}, want {}",
-                c.param_at(Param::PosX, 3.0),
-                0.25
-            );
-        }
-    }
-
-    #[test]
-    fn markers_merge_navigate_and_split_with_their_clips() {
-        {
-            let (mut p, cid) = speed_fixture();
-            p.clip_mut(cid).unwrap().start = 10.0;
-            p.add_marker(5.0, "intro", 1);
-            p.add_marker(1.0, "slate", 2);
-            assert_eq!(
-                p.markers
-                    .iter()
-                    .map(|m| m.name.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["slate", "intro"],
-                "project markers are kept in time order",
-            );
-            // A clip marker is stored clip-local but reads back absolute.
-            p.clip_mut(cid)
-                .unwrap()
-                .add_marker(13.0, "beat", 3)
-                .expect("inside the clip");
-            assert!(
-                ((p.clip(cid).unwrap().markers[0].t) - (3.0)).abs() < 1e-9,
-                "stored relative to the clip"
-            );
-            let all = p.all_markers();
-            let times: Vec<f64> = all.iter().map(|(t, _, _)| *t).collect();
-            assert_eq!(
-                times,
-                vec![1.0, 5.0, 13.0],
-                "and merges onto one absolute timeline"
-            );
-            assert_eq!(all[2].2, Some(cid), "carrying which clip it belongs to");
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            assert!(
-                p.clip_mut(cid)
-                    .unwrap()
-                    .add_marker(999.0, "nope", 0)
-                    .is_none(),
-                "a marker past the clip is not silently pinned to its end",
-            );
-            assert!(p.clip(cid).unwrap().markers.is_empty());
-        }
-        {
-            let mut p = Project::new("m");
-            p.add_marker(2.0, "a", 0);
-            p.add_marker(8.0, "b", 0);
-            assert_eq!(p.next_marker_at(0.0), Some(2.0));
-            assert_eq!(p.next_marker_at(2.0), Some(8.0), "strictly after");
-            assert_eq!(p.next_marker_at(8.0), None, "no wrap at the end");
-            assert_eq!(p.prev_marker_at(8.0), Some(2.0));
-            assert_eq!(p.prev_marker_at(0.0), None, "nor at the start");
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            p.clip_mut(cid).unwrap().out_point = 10.0;
-            for (t, name) in [(2.0, "early"), (7.0, "late")] {
-                p.clip_mut(cid)
-                    .unwrap()
-                    .add_marker(t, name, 0)
-                    .expect("inside");
+                let second = c.effects[1].id;
+                c.set_key_at(Param::EffectAmount(second), 0.0, 0.25, Interp::Linear);
+                assert!(c.move_effect_id(second, true));
+                assert_eq!(c.effects[0].id, second);
+                let moved = c.effects_at(2.0);
+                assert!((moved[0].amount - 0.25).abs() < 1e-9, "{moved:?}");
+                assert!((moved[1].amount - 0.5).abs() < 1e-9, "{moved:?}");
+                assert!(c.remove_effect_id(vignette));
+                assert!(!c.anim.is_animated(Param::EffectAmount(vignette)));
+                assert!(c.anim.is_animated(Param::EffectAmount(second)));
             }
-            let right = p.split_clip(cid, 5.0).expect("inside");
-            assert_eq!(
-                p.clip(cid)
-                    .unwrap()
-                    .markers
-                    .iter()
-                    .map(|m| m.name.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["early"],
-            );
-            let tail = p.clip(right).unwrap();
-            assert_eq!(tail.markers.len(), 1);
-            assert_eq!(tail.markers[0].name, "late");
-            assert!(
-                ((tail.markers[0].t) - (2.0)).abs() < 1e-9,
-                "rebased onto the tail's own start"
-            );
-        }
-        {
-            let (mut p, cid) = speed_fixture();
-            p.add_marker(4.0, "act two", 1);
             {
+                let (mut p, cid) = speed_fixture();
                 let c = p.clip_mut(cid).unwrap();
-                c.start = 0.0;
-                c.add_marker(9.0, "beat", 2);
+                // Nothing keyed: not animated anywhere.
+                assert!(!c.anim.is_animated(Param::Opacity));
+                assert!(!c.has_key_at(Param::Opacity, 2.0));
+                // Keyed at 2s: animated, and the key is *on* 2s.
+                c.set_key_at(Param::Opacity, 2.0, 0.4, Interp::Linear);
+                assert!(c.anim.is_animated(Param::Opacity));
+                assert!(c.has_key_at(Param::Opacity, 2.0));
+                // 5s is animated but between keys — the third, distinct state.
+                assert!(!c.has_key_at(Param::Opacity, 5.0));
+                // Half a frame away still counts as on the key; a whole frame does not.
+                assert!(c.has_key_at(Param::Opacity, 2.0 + KEY_TOL * 0.9));
+                assert!(!c.has_key_at(Param::Opacity, 2.0 + 0.1));
             }
-            // The clip marker is stored clip-local but navigates absolutely.
-            assert_eq!(p.next_marker_at(0.0), Some(4.0));
-            assert_eq!(
-                p.next_marker_at(4.0),
-                Some(9.0),
-                "a clip marker is a destination too"
-            );
-            assert_eq!(p.next_marker_at(9.0), None);
-            assert_eq!(p.prev_marker_at(9.0), Some(4.0));
-            assert_eq!(p.prev_marker_at(4.0), None);
+            {
+                let (mut p, cid) = speed_fixture();
+                let c = p.clip_mut(cid).unwrap();
+                c.start = 10.0;
+                c.set_key_at(Param::Opacity, 12.0, 0.5, Interp::Linear);
+                c.set_key_at(Param::Brightness, 12.0, 0.7, Interp::Linear);
+                c.set_key_at(Param::Opacity, 16.0, 1.0, Interp::Linear);
+                assert_eq!(c.key_times(), vec![12.0, 16.0], "absolute, sorted, deduped");
+                assert_eq!(c.next_key_after(10.0), Some(12.0));
+                assert_eq!(c.next_key_after(12.0), Some(16.0));
+                assert_eq!(
+                    c.next_key_after(16.0),
+                    None,
+                    "navigation stops, never wraps"
+                );
+                assert_eq!(c.prev_key_before(16.0), Some(12.0));
+                assert_eq!(c.prev_key_before(12.0), None);
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                let c = p.clip_mut(cid).unwrap();
+                c.set_key_at(Param::PosX, 3.0, 0.25, Interp::Linear);
+                assert_eq!(c.key_interp_at(Param::PosX, 3.0), Some(Interp::Linear));
+                assert_eq!(c.key_interp_at(Param::PosX, 9.0), None, "no key, no shape");
+                assert!(c.set_interp_at(Param::PosX, 3.0, Interp::Ease));
+                assert_eq!(c.key_interp_at(Param::PosX, 3.0), Some(Interp::Ease));
+                assert!(
+                    !c.set_interp_at(Param::PosX, 9.0, Interp::Hold),
+                    "nothing there to re-shape"
+                );
+                // Re-shaping must not disturb the value the key holds.
+                assert!(
+                    ((c.param_at(Param::PosX, 3.0)) - (0.25)).abs() < 1e-9,
+                    "c.param_at(Param::PosX, 3.0) is {}, want {}",
+                    c.param_at(Param::PosX, 3.0),
+                    0.25
+                );
+            }
+        }
+
+        phase clip_add_split_and_trim_respect_the_source_window;
+        {
+            {
+                let (p, _m, _t, cid) = project_with_clip();
+                let c = p.clip(cid).unwrap();
+                assert_eq!(c.in_point, 0.0);
+                assert_eq!(c.out_point, 20.0);
+                assert_eq!(c.duration(), 20.0);
+                assert_eq!(c.end(), 20.0);
+            }
+            {
+                let (mut p, _m, _t, cid) = project_with_clip();
+                let right = p.split_clip(cid, 8.0).unwrap();
+                let left = p.clip(cid).unwrap();
+                let right = p.clip(right).unwrap();
+                assert!((left.end() - 8.0).abs() < 1e-9);
+                assert!((right.start - 8.0).abs() < 1e-9);
+                assert!((left.out_point - right.in_point).abs() < 1e-9);
+                assert!((left.duration() + right.duration() - 20.0).abs() < 1e-9);
+            }
+            {
+                let (mut p, _m, _t, cid) = project_with_clip();
+                assert!(p.split_clip(cid, 0.0).is_none());
+                assert!(p.split_clip(cid, 25.0).is_none());
+                assert_eq!(p.clips.len(), 1);
+            }
+            {
+                let (mut p, _m, _t, cid) = project_with_clip();
+                p.trim_in(cid, 3.0);
+                let c = p.clip(cid).unwrap();
+                assert!((c.in_point - 3.0).abs() < 1e-9);
+                assert!((c.start - 3.0).abs() < 1e-9);
+                // right edge unchanged
+                assert!((c.end() - 20.0).abs() < 1e-9);
+            }
+            {
+                let (mut p, _m, _t, cid) = project_with_clip();
+                p.trim_out(cid, 50.0); // way past the 20s source
+                let c = p.clip(cid).unwrap();
+                assert!((c.out_point - 20.0).abs() < 1e-9);
+            }
+            {
+                let (mut p, _m, _t, cid) = project_with_clip();
+                p.trim_in(cid, 1000.0);
+                let c = p.clip(cid).unwrap();
+                assert!(c.duration() >= MIN_CLIP - 1e-9);
+            }
+        }
+
+        phase fades_and_effect_stacks_edit_with_stable_ids;
+        {
+            {
+                let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.fade_in = 2.0;
+                    c.fade_out = 4.0;
+                }
+                let c = p.clip(cid).unwrap();
+                assert!(c.envelope(0.0) < 0.01, "silent at the very head");
+                assert!(
+                    (c.envelope(1.0) - 0.5).abs() < 1e-6,
+                    "half through a 2s fade-in"
+                );
+                assert!((c.envelope(10.0) - 1.0).abs() < 1e-6, "full in the middle");
+                assert!(
+                    (c.envelope(18.0) - 0.5).abs() < 1e-6,
+                    "half through a 4s fade-out"
+                );
+                assert!(c.envelope(20.0) < 0.01, "silent at the tail");
+            }
+            {
+                let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.fade_in = 2.0;
+                    c.fade_out = 3.0;
+                }
+                let right = p.split_clip(cid, 8.0).unwrap();
+                let left = p.clip(cid).unwrap();
+                let right = p.clip(right).unwrap();
+                assert!((left.fade_in - 2.0).abs() < 1e-9, "head keeps fade-in");
+                assert_eq!(left.fade_out, 0.0, "head loses tail fade");
+                assert_eq!(right.fade_in, 0.0, "tail loses head fade");
+                assert!((right.fade_out - 3.0).abs() < 1e-9, "tail keeps fade-out");
+            }
+            {
+                let (mut p, _m, _t, cid) = project_with_clip();
+                let c = p.clip_mut(cid).unwrap();
+                assert!(c.effects.is_empty(), "a fresh clip has no effects");
+                c.add_effect(EffectKind::Grayscale);
+                c.add_effect(EffectKind::Sepia);
+                c.add_effect(EffectKind::Invert);
+                let kinds = |c: &Clip| c.effects.iter().map(|e| e.kind).collect::<Vec<_>>();
+                assert_eq!(
+                    kinds(c),
+                    vec![EffectKind::Grayscale, EffectKind::Sepia, EffectKind::Invert]
+                );
+                assert!((c.effects[0].amount - EffectKind::Grayscale.default_amount()).abs() < 1e-9);
+                // Reorder: move Invert (idx 2) up.
+                let invert = c.effects[2].id;
+                assert!(c.move_effect_id(invert, true));
+                assert_eq!(
+                    kinds(c),
+                    vec![EffectKind::Grayscale, EffectKind::Invert, EffectKind::Sepia]
+                );
+                c.remove_effect(0);
+                assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
+                // Out-of-range moves / removes are no-ops.
+                let (head, tail) = (c.effects[0].id, c.effects[1].id);
+                assert!(!c.move_effect_id(head, true));
+                assert!(!c.move_effect_id(tail, false));
+                c.remove_effect(9);
+                assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
+            }
         }
     }
 
-    #[test]
-    fn transforms_and_filters_default_to_the_identity() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_timeline_marks_orders_places_and_mutes_its_clips;
+
+        phase markers_merge_navigate_and_split_with_their_clips;
         {
-            let t = Transform::default();
-            assert!(t.is_identity());
-            assert!(!t.is_cropped());
-            assert_eq!(t.crop_rect(), (0.0, 0.0, 1.0, 1.0), "nothing cropped away");
-            let pip = Transform::pip(0.25, (1.0, -1.0), 0.05);
-            assert!(!pip.is_identity());
-            assert!(pip.pos_x > 0.0 && pip.pos_y < 0.0, "top-right: {pip:?}");
-            assert!((pip.scale_x - 0.25).abs() < 1e-9);
+            {
+                let (mut p, cid) = speed_fixture();
+                p.clip_mut(cid).unwrap().start = 10.0;
+                p.add_marker(5.0, "intro", 1);
+                p.add_marker(1.0, "slate", 2);
+                assert_eq!(
+                    p.markers
+                        .iter()
+                        .map(|m| m.name.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["slate", "intro"],
+                    "project markers are kept in time order",
+                );
+                // A clip marker is stored clip-local but reads back absolute.
+                p.clip_mut(cid)
+                    .unwrap()
+                    .add_marker(13.0, "beat", 3)
+                    .expect("inside the clip");
+                assert!(
+                    ((p.clip(cid).unwrap().markers[0].t) - (3.0)).abs() < 1e-9,
+                    "stored relative to the clip"
+                );
+                let all = p.all_markers();
+                let times: Vec<f64> = all.iter().map(|(t, _, _)| *t).collect();
+                assert_eq!(
+                    times,
+                    vec![1.0, 5.0, 13.0],
+                    "and merges onto one absolute timeline"
+                );
+                assert_eq!(all[2].2, Some(cid), "carrying which clip it belongs to");
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                assert!(
+                    p.clip_mut(cid)
+                        .unwrap()
+                        .add_marker(999.0, "nope", 0)
+                        .is_none(),
+                    "a marker past the clip is not silently pinned to its end",
+                );
+                assert!(p.clip(cid).unwrap().markers.is_empty());
+            }
+            {
+                let mut p = Project::new("m");
+                p.add_marker(2.0, "a", 0);
+                p.add_marker(8.0, "b", 0);
+                assert_eq!(p.next_marker_at(0.0), Some(2.0));
+                assert_eq!(p.next_marker_at(2.0), Some(8.0), "strictly after");
+                assert_eq!(p.next_marker_at(8.0), None, "no wrap at the end");
+                assert_eq!(p.prev_marker_at(8.0), Some(2.0));
+                assert_eq!(p.prev_marker_at(0.0), None, "nor at the start");
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                p.clip_mut(cid).unwrap().out_point = 10.0;
+                for (t, name) in [(2.0, "early"), (7.0, "late")] {
+                    p.clip_mut(cid)
+                        .unwrap()
+                        .add_marker(t, name, 0)
+                        .expect("inside");
+                }
+                let right = p.split_clip(cid, 5.0).expect("inside");
+                assert_eq!(
+                    p.clip(cid)
+                        .unwrap()
+                        .markers
+                        .iter()
+                        .map(|m| m.name.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["early"],
+                );
+                let tail = p.clip(right).unwrap();
+                assert_eq!(tail.markers.len(), 1);
+                assert_eq!(tail.markers[0].name, "late");
+                assert!(
+                    ((tail.markers[0].t) - (2.0)).abs() < 1e-9,
+                    "rebased onto the tail's own start"
+                );
+            }
+            {
+                let (mut p, cid) = speed_fixture();
+                p.add_marker(4.0, "act two", 1);
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.start = 0.0;
+                    c.add_marker(9.0, "beat", 2);
+                }
+                // The clip marker is stored clip-local but navigates absolutely.
+                assert_eq!(p.next_marker_at(0.0), Some(4.0));
+                assert_eq!(
+                    p.next_marker_at(4.0),
+                    Some(9.0),
+                    "a clip marker is a destination too"
+                );
+                assert_eq!(p.next_marker_at(9.0), None);
+                assert_eq!(p.prev_marker_at(9.0), Some(4.0));
+                assert_eq!(p.prev_marker_at(4.0), None);
+            }
         }
+
+        phase transforms_and_filters_default_to_the_identity;
         {
-            let t = Transform {
-                crop_left: 0.8,
-                crop_right: 0.8,
-                ..Transform::default()
-            };
-            let (l, _, r, _) = t.crop_rect();
-            assert!(
-                r > l,
-                "a fully cropped rect would make the inside-test meaningless: {l}..{r}"
-            );
+            {
+                let t = Transform::default();
+                assert!(t.is_identity());
+                assert!(!t.is_cropped());
+                assert_eq!(t.crop_rect(), (0.0, 0.0, 1.0, 1.0), "nothing cropped away");
+                let pip = Transform::pip(0.25, (1.0, -1.0), 0.05);
+                assert!(!pip.is_identity());
+                assert!(pip.pos_x > 0.0 && pip.pos_y < 0.0, "top-right: {pip:?}");
+                assert!((pip.scale_x - 0.25).abs() < 1e-9);
+            }
+            {
+                let t = Transform {
+                    crop_left: 0.8,
+                    crop_right: 0.8,
+                    ..Transform::default()
+                };
+                let (l, _, r, _) = t.crop_rect();
+                assert!(
+                    r > l,
+                    "a fully cropped rect would make the inside-test meaningless: {l}..{r}"
+                );
+            }
+            {
+                assert!(Filters::default().is_identity());
+                assert!(
+                    (Filters::gain(0.5) - 1.0).abs() < 1e-9,
+                    "0.5 slider = unity gain"
+                );
+                assert!(Filters::gain(0.0) < 1e-9);
+                assert!((Filters::gain(1.0) - 2.0).abs() < 1e-9);
+            }
         }
+
+        phase timeline_edits_order_ripple_snap_and_paste;
         {
-            assert!(Filters::default().is_identity());
-            assert!(
-                (Filters::gain(0.5) - 1.0).abs() < 1e-9,
-                "0.5 slider = unity gain"
-            );
-            assert!(Filters::gain(0.0) < 1e-9);
-            assert!((Filters::gain(1.0) - 2.0).abs() < 1e-9);
+            {
+                let (mut p, mid, _t, _cid) = project_with_clip();
+                let t2 = Track {
+                    id: Uuid::new_v4(),
+                    name: "V2".into(),
+                    kind: TrackKind::Video,
+                    index: 2,
+                    muted: false,
+                    locked: false,
+                    solo: false,
+                    gain_db: 0.0,
+                    pan: 0.0,
+                };
+                let t2id = t2.id;
+                p.tracks.push(t2);
+                let over = p.add_clip(t2id, mid, 0.0).unwrap();
+                let top = p.top_video_clip_at(5.0).unwrap();
+                assert_eq!(top.id, over, "V2 clip must win over V1 at the same time");
+            }
+            {
+                let mut p = Project::new("t");
+                for (name, kind, index) in [
+                    ("V1", TrackKind::Video, 1),
+                    ("V2", TrackKind::Video, 2),
+                    ("A1", TrackKind::Audio, 1),
+                    ("A2", TrackKind::Audio, 2),
+                ] {
+                    p.tracks.push(Track {
+                        id: Uuid::new_v4(),
+                        name: name.into(),
+                        kind,
+                        index,
+                        muted: false,
+                        locked: false,
+                        solo: false,
+                        gain_db: 0.0,
+                        pan: 0.0,
+                    });
+                }
+                let order: Vec<&str> = p.display_tracks().iter().map(|t| t.name.as_str()).collect();
+                assert_eq!(order, vec!["V2", "V1", "A1", "A2"]);
+            }
+            {
+                let (mut p, mid, tid, first) = project_with_clip();
+                // first occupies [0,20]. Place two more after it.
+                let second = p.add_clip(tid, mid, 20.0).unwrap();
+                let third = p.add_clip(tid, mid, 40.0).unwrap();
+                let first_dur = p.clip(first).unwrap().duration();
+                let moved = p.ripple_delete(first);
+                assert!(moved.contains(&second) && moved.contains(&third));
+                assert!((p.clip(second).unwrap().start - (20.0 - first_dur)).abs() < 1e-9);
+                assert!((p.clip(third).unwrap().start - (40.0 - first_dur)).abs() < 1e-9);
+                assert_eq!(p.clips.len(), 2);
+            }
+            {
+                let (p, _m, _t, cid) = project_with_clip();
+                // Candidates include 0.0 and the clip end (20.0) and playhead 7.0.
+                let cands = p.snap_candidates(Uuid::new_v4(), 7.0);
+                // 19.9 is within 0.2 of the 20.0 clip end → snaps.
+                assert!((Project::snap_to_candidates(19.9, &cands, 0.2) - 20.0).abs() < 1e-9);
+                // 7.1 snaps to the playhead at 7.0.
+                assert!((Project::snap_to_candidates(7.1, &cands, 0.2) - 7.0).abs() < 1e-9);
+                // 12.0 is far from every candidate → unchanged.
+                assert!((Project::snap_to_candidates(12.0, &cands, 0.2) - 12.0).abs() < 1e-9);
+                let excl = p.snap_candidates(cid, 7.0);
+                assert!((Project::snap_to_candidates(19.9, &excl, 0.2) - 19.9).abs() < 1e-9);
+            }
+            {
+                let (mut p, _m, tid, cid) = project_with_clip();
+                let src = p.clip(cid).unwrap().clone();
+                let pasted = p.paste_clip(src, tid, 30.0);
+                assert_ne!(pasted, cid, "pasted clip gets a fresh id");
+                assert!((p.clip(pasted).unwrap().start - 30.0).abs() < 1e-9);
+                p.clip_mut(pasted).unwrap().opacity = 0.1;
+                assert!((p.clip(cid).unwrap().opacity - 1.0).abs() < 1e-9);
+            }
+        }
+
+        phase moving_and_placing_clips_respects_kind_and_locks;
+        {
+            {
+                let (mut p, _m, v1, cid) = project_with_clip();
+                let (v2, _a1) = extra_tracks(&mut p);
+                assert!(
+                    p.move_clip_to(cid, v2, 3.5),
+                    "a video clip lands on another video track"
+                );
+                let c = p.clip(cid).unwrap();
+                assert_eq!(c.track, v2, "the clip now belongs to the target track");
+                assert!((c.start - 3.5).abs() < 1e-9, "and moved to the drop time");
+                assert!(p.clips_on(v1).is_empty(), "it left the source track");
+                assert_eq!(p.clips_on(v2).len(), 1);
+            }
+            {
+                let (mut p, _m, v1, cid) = project_with_clip();
+                let (_v2, a1) = extra_tracks(&mut p);
+                assert!(
+                    !p.move_clip_to(cid, a1, 2.0),
+                    "a video clip cannot land on an audio track"
+                );
+                let c = p.clip(cid).unwrap();
+                assert_eq!(c.track, v1, "the clip stayed where it was");
+                assert!(
+                    (c.start - 0.0).abs() < 1e-9,
+                    "and did not move in time either"
+                );
+            }
+            {
+                let (mut p, _m, v1, cid) = project_with_clip();
+                let (v2, _a1) = extra_tracks(&mut p);
+                // Locked destination.
+                p.tracks.iter_mut().find(|t| t.id == v2).unwrap().locked = true;
+                assert!(
+                    !p.move_clip_to(cid, v2, 4.0),
+                    "a locked track refuses a drop"
+                );
+                assert_eq!(p.clip(cid).unwrap().track, v1);
+                // Locked source: even an unlocked destination refuses.
+                p.tracks.iter_mut().find(|t| t.id == v2).unwrap().locked = false;
+                p.tracks.iter_mut().find(|t| t.id == v1).unwrap().locked = true;
+                assert!(
+                    !p.move_clip_to(cid, v2, 4.0),
+                    "a clip on a locked track cannot be moved off it"
+                );
+                assert_eq!(p.clip(cid).unwrap().track, v1);
+            }
+            {
+                let (mut p, _m, v1, cid) = project_with_clip();
+                assert!(p.clip_editable(cid));
+                p.tracks.iter_mut().find(|t| t.id == v1).unwrap().locked = true;
+                assert!(
+                    !p.clip_editable(cid),
+                    "a clip on a locked track is not editable"
+                );
+                assert!(p.track_locked(v1));
+                assert!(
+                    p.track_locked(Uuid::new_v4()),
+                    "a missing track is treated as locked"
+                );
+            }
+            {
+                let (mut p, _m, v1, _cid) = project_with_clip();
+                let (v2, a1) = extra_tracks(&mut p);
+                assert_eq!(
+                    p.placement_track(TrackKind::Video, Some(v2)),
+                    Some(v2),
+                    "an eligible hint wins"
+                );
+                assert_eq!(
+                    p.placement_track(TrackKind::Audio, Some(v2)),
+                    Some(a1),
+                    "a kind-mismatched hint falls back to a track of the right kind",
+                );
+                // Locking every video track leaves nowhere to place a video clip.
+                for t in p.tracks.iter_mut().filter(|t| t.kind == TrackKind::Video) {
+                    t.locked = true;
+                }
+                assert_eq!(p.placement_track(TrackKind::Video, Some(v1)), None);
+            }
+        }
+
+        phase track_mute_solo_and_clip_kind_decide_audibility;
+        {
+            {
+                let (mut p, _m, v1, _cid) = project_with_clip();
+                let (v2, a1) = extra_tracks(&mut p);
+                // Nothing muted or soloed: everything plays.
+                assert!(p.track_audible(v1) && p.track_audible(v2) && p.track_audible(a1));
+                p.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
+                assert!(!p.track_audible(v1), "a muted track is silent");
+                assert!(p.track_audible(v2), "its neighbours are not");
+                // Solo the other video track: the muted one stays silent, and so does
+                // every other video track — but the audio bed is untouched, because
+                // solo is scoped per kind.
+                p.tracks.iter_mut().find(|t| t.id == v2).unwrap().solo = true;
+                assert!(p.any_solo(TrackKind::Video));
+                assert!(!p.any_solo(TrackKind::Audio));
+                assert!(p.track_audible(v2), "the soloed track plays");
+                assert!(
+                    !p.track_audible(v1),
+                    "a non-soloed track of that kind does not"
+                );
+                assert!(p.track_audible(a1), "audio is unaffected by a video solo");
+            }
+            {
+                let (mut p, _m, v1, _cid) = project_with_clip();
+                {
+                    let t = p.tracks.iter_mut().find(|t| t.id == v1).unwrap();
+                    t.muted = true;
+                    t.solo = true;
+                }
+                assert!(
+                    p.track_audible(v1),
+                    "soloing a muted track plays it, and keeps the mute flag for when solo is released",
+                );
+                assert!(p.track(v1).unwrap().muted, "the mute flag is preserved");
+            }
+            {
+                let (mut p, _m, v1, cid) = project_with_clip();
+                assert!(p.clip_audible(cid));
+                p.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
+                assert!(!p.clip_audible(cid));
+            }
+            {
+                let (p, _m, _v1, cid) = project_with_clip();
+                assert_eq!(p.clip_kind(cid), TrackKind::Video);
+            }
         }
     }
 
@@ -3737,211 +4069,6 @@ mod tests {
         (p, mid, tid, cid)
     }
 
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
-    )]
-    fn clip_add_split_and_trim_respect_the_source_window() {
-        {
-            let (p, _m, _t, cid) = project_with_clip();
-            let c = p.clip(cid).unwrap();
-            assert_eq!(c.in_point, 0.0);
-            assert_eq!(c.out_point, 20.0);
-            assert_eq!(c.duration(), 20.0);
-            assert_eq!(c.end(), 20.0);
-        }
-        {
-            let (mut p, _m, _t, cid) = project_with_clip();
-            let right = p.split_clip(cid, 8.0).unwrap();
-            let left = p.clip(cid).unwrap();
-            let right = p.clip(right).unwrap();
-            assert!((left.end() - 8.0).abs() < 1e-9);
-            assert!((right.start - 8.0).abs() < 1e-9);
-            assert!((left.out_point - right.in_point).abs() < 1e-9);
-            assert!((left.duration() + right.duration() - 20.0).abs() < 1e-9);
-        }
-        {
-            let (mut p, _m, _t, cid) = project_with_clip();
-            assert!(p.split_clip(cid, 0.0).is_none());
-            assert!(p.split_clip(cid, 25.0).is_none());
-            assert_eq!(p.clips.len(), 1);
-        }
-        {
-            let (mut p, _m, _t, cid) = project_with_clip();
-            p.trim_in(cid, 3.0);
-            let c = p.clip(cid).unwrap();
-            assert!((c.in_point - 3.0).abs() < 1e-9);
-            assert!((c.start - 3.0).abs() < 1e-9);
-            // right edge unchanged
-            assert!((c.end() - 20.0).abs() < 1e-9);
-        }
-        {
-            let (mut p, _m, _t, cid) = project_with_clip();
-            p.trim_out(cid, 50.0); // way past the 20s source
-            let c = p.clip(cid).unwrap();
-            assert!((c.out_point - 20.0).abs() < 1e-9);
-        }
-        {
-            let (mut p, _m, _t, cid) = project_with_clip();
-            p.trim_in(cid, 1000.0);
-            let c = p.clip(cid).unwrap();
-            assert!(c.duration() >= MIN_CLIP - 1e-9);
-        }
-    }
-
-    #[test]
-    fn timeline_edits_order_ripple_snap_and_paste() {
-        {
-            let (mut p, mid, _t, _cid) = project_with_clip();
-            let t2 = Track {
-                id: Uuid::new_v4(),
-                name: "V2".into(),
-                kind: TrackKind::Video,
-                index: 2,
-                muted: false,
-                locked: false,
-                solo: false,
-                gain_db: 0.0,
-                pan: 0.0,
-            };
-            let t2id = t2.id;
-            p.tracks.push(t2);
-            let over = p.add_clip(t2id, mid, 0.0).unwrap();
-            let top = p.top_video_clip_at(5.0).unwrap();
-            assert_eq!(top.id, over, "V2 clip must win over V1 at the same time");
-        }
-        {
-            let mut p = Project::new("t");
-            for (name, kind, index) in [
-                ("V1", TrackKind::Video, 1),
-                ("V2", TrackKind::Video, 2),
-                ("A1", TrackKind::Audio, 1),
-                ("A2", TrackKind::Audio, 2),
-            ] {
-                p.tracks.push(Track {
-                    id: Uuid::new_v4(),
-                    name: name.into(),
-                    kind,
-                    index,
-                    muted: false,
-                    locked: false,
-                    solo: false,
-                    gain_db: 0.0,
-                    pan: 0.0,
-                });
-            }
-            let order: Vec<&str> = p.display_tracks().iter().map(|t| t.name.as_str()).collect();
-            assert_eq!(order, vec!["V2", "V1", "A1", "A2"]);
-        }
-        {
-            let (mut p, mid, tid, first) = project_with_clip();
-            // first occupies [0,20]. Place two more after it.
-            let second = p.add_clip(tid, mid, 20.0).unwrap();
-            let third = p.add_clip(tid, mid, 40.0).unwrap();
-            let first_dur = p.clip(first).unwrap().duration();
-            let moved = p.ripple_delete(first);
-            assert!(moved.contains(&second) && moved.contains(&third));
-            assert!((p.clip(second).unwrap().start - (20.0 - first_dur)).abs() < 1e-9);
-            assert!((p.clip(third).unwrap().start - (40.0 - first_dur)).abs() < 1e-9);
-            assert_eq!(p.clips.len(), 2);
-        }
-        {
-            let (p, _m, _t, cid) = project_with_clip();
-            // Candidates include 0.0 and the clip end (20.0) and playhead 7.0.
-            let cands = p.snap_candidates(Uuid::new_v4(), 7.0);
-            // 19.9 is within 0.2 of the 20.0 clip end → snaps.
-            assert!((Project::snap_to_candidates(19.9, &cands, 0.2) - 20.0).abs() < 1e-9);
-            // 7.1 snaps to the playhead at 7.0.
-            assert!((Project::snap_to_candidates(7.1, &cands, 0.2) - 7.0).abs() < 1e-9);
-            // 12.0 is far from every candidate → unchanged.
-            assert!((Project::snap_to_candidates(12.0, &cands, 0.2) - 12.0).abs() < 1e-9);
-            let excl = p.snap_candidates(cid, 7.0);
-            assert!((Project::snap_to_candidates(19.9, &excl, 0.2) - 19.9).abs() < 1e-9);
-        }
-        {
-            let (mut p, _m, tid, cid) = project_with_clip();
-            let src = p.clip(cid).unwrap().clone();
-            let pasted = p.paste_clip(src, tid, 30.0);
-            assert_ne!(pasted, cid, "pasted clip gets a fresh id");
-            assert!((p.clip(pasted).unwrap().start - 30.0).abs() < 1e-9);
-            p.clip_mut(pasted).unwrap().opacity = 0.1;
-            assert!((p.clip(cid).unwrap().opacity - 1.0).abs() < 1e-9);
-        }
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
-    )]
-    fn fades_and_effect_stacks_edit_with_stable_ids() {
-        {
-            let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
-            {
-                let c = p.clip_mut(cid).unwrap();
-                c.fade_in = 2.0;
-                c.fade_out = 4.0;
-            }
-            let c = p.clip(cid).unwrap();
-            assert!(c.envelope(0.0) < 0.01, "silent at the very head");
-            assert!(
-                (c.envelope(1.0) - 0.5).abs() < 1e-6,
-                "half through a 2s fade-in"
-            );
-            assert!((c.envelope(10.0) - 1.0).abs() < 1e-6, "full in the middle");
-            assert!(
-                (c.envelope(18.0) - 0.5).abs() < 1e-6,
-                "half through a 4s fade-out"
-            );
-            assert!(c.envelope(20.0) < 0.01, "silent at the tail");
-        }
-        {
-            let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
-            {
-                let c = p.clip_mut(cid).unwrap();
-                c.fade_in = 2.0;
-                c.fade_out = 3.0;
-            }
-            let right = p.split_clip(cid, 8.0).unwrap();
-            let left = p.clip(cid).unwrap();
-            let right = p.clip(right).unwrap();
-            assert!((left.fade_in - 2.0).abs() < 1e-9, "head keeps fade-in");
-            assert_eq!(left.fade_out, 0.0, "head loses tail fade");
-            assert_eq!(right.fade_in, 0.0, "tail loses head fade");
-            assert!((right.fade_out - 3.0).abs() < 1e-9, "tail keeps fade-out");
-        }
-        {
-            let (mut p, _m, _t, cid) = project_with_clip();
-            let c = p.clip_mut(cid).unwrap();
-            assert!(c.effects.is_empty(), "a fresh clip has no effects");
-            c.add_effect(EffectKind::Grayscale);
-            c.add_effect(EffectKind::Sepia);
-            c.add_effect(EffectKind::Invert);
-            let kinds = |c: &Clip| c.effects.iter().map(|e| e.kind).collect::<Vec<_>>();
-            assert_eq!(
-                kinds(c),
-                vec![EffectKind::Grayscale, EffectKind::Sepia, EffectKind::Invert]
-            );
-            assert!((c.effects[0].amount - EffectKind::Grayscale.default_amount()).abs() < 1e-9);
-            // Reorder: move Invert (idx 2) up.
-            let invert = c.effects[2].id;
-            assert!(c.move_effect_id(invert, true));
-            assert_eq!(
-                kinds(c),
-                vec![EffectKind::Grayscale, EffectKind::Invert, EffectKind::Sepia]
-            );
-            c.remove_effect(0);
-            assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
-            // Out-of-range moves / removes are no-ops.
-            let (head, tail) = (c.effects[0].id, c.effects[1].id);
-            assert!(!c.move_effect_id(head, true));
-            assert!(!c.move_effect_id(tail, false));
-            c.remove_effect(9);
-            assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
-        }
-    }
-
     /// A second video track and an audio track alongside the fixture's V1.
     fn extra_tracks(p: &mut Project) -> (TrackId, TrackId) {
         let v2 = Track {
@@ -3970,137 +4097,6 @@ mod tests {
         p.tracks.push(v2);
         p.tracks.push(a1);
         (v, a)
-    }
-
-    #[test]
-    fn moving_and_placing_clips_respects_kind_and_locks() {
-        {
-            let (mut p, _m, v1, cid) = project_with_clip();
-            let (v2, _a1) = extra_tracks(&mut p);
-            assert!(
-                p.move_clip_to(cid, v2, 3.5),
-                "a video clip lands on another video track"
-            );
-            let c = p.clip(cid).unwrap();
-            assert_eq!(c.track, v2, "the clip now belongs to the target track");
-            assert!((c.start - 3.5).abs() < 1e-9, "and moved to the drop time");
-            assert!(p.clips_on(v1).is_empty(), "it left the source track");
-            assert_eq!(p.clips_on(v2).len(), 1);
-        }
-        {
-            let (mut p, _m, v1, cid) = project_with_clip();
-            let (_v2, a1) = extra_tracks(&mut p);
-            assert!(
-                !p.move_clip_to(cid, a1, 2.0),
-                "a video clip cannot land on an audio track"
-            );
-            let c = p.clip(cid).unwrap();
-            assert_eq!(c.track, v1, "the clip stayed where it was");
-            assert!(
-                (c.start - 0.0).abs() < 1e-9,
-                "and did not move in time either"
-            );
-        }
-        {
-            let (mut p, _m, v1, cid) = project_with_clip();
-            let (v2, _a1) = extra_tracks(&mut p);
-            // Locked destination.
-            p.tracks.iter_mut().find(|t| t.id == v2).unwrap().locked = true;
-            assert!(
-                !p.move_clip_to(cid, v2, 4.0),
-                "a locked track refuses a drop"
-            );
-            assert_eq!(p.clip(cid).unwrap().track, v1);
-            // Locked source: even an unlocked destination refuses.
-            p.tracks.iter_mut().find(|t| t.id == v2).unwrap().locked = false;
-            p.tracks.iter_mut().find(|t| t.id == v1).unwrap().locked = true;
-            assert!(
-                !p.move_clip_to(cid, v2, 4.0),
-                "a clip on a locked track cannot be moved off it"
-            );
-            assert_eq!(p.clip(cid).unwrap().track, v1);
-        }
-        {
-            let (mut p, _m, v1, cid) = project_with_clip();
-            assert!(p.clip_editable(cid));
-            p.tracks.iter_mut().find(|t| t.id == v1).unwrap().locked = true;
-            assert!(
-                !p.clip_editable(cid),
-                "a clip on a locked track is not editable"
-            );
-            assert!(p.track_locked(v1));
-            assert!(
-                p.track_locked(Uuid::new_v4()),
-                "a missing track is treated as locked"
-            );
-        }
-        {
-            let (mut p, _m, v1, _cid) = project_with_clip();
-            let (v2, a1) = extra_tracks(&mut p);
-            assert_eq!(
-                p.placement_track(TrackKind::Video, Some(v2)),
-                Some(v2),
-                "an eligible hint wins"
-            );
-            assert_eq!(
-                p.placement_track(TrackKind::Audio, Some(v2)),
-                Some(a1),
-                "a kind-mismatched hint falls back to a track of the right kind",
-            );
-            // Locking every video track leaves nowhere to place a video clip.
-            for t in p.tracks.iter_mut().filter(|t| t.kind == TrackKind::Video) {
-                t.locked = true;
-            }
-            assert_eq!(p.placement_track(TrackKind::Video, Some(v1)), None);
-        }
-    }
-
-    #[test]
-    fn track_mute_solo_and_clip_kind_decide_audibility() {
-        {
-            let (mut p, _m, v1, _cid) = project_with_clip();
-            let (v2, a1) = extra_tracks(&mut p);
-            // Nothing muted or soloed: everything plays.
-            assert!(p.track_audible(v1) && p.track_audible(v2) && p.track_audible(a1));
-            p.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
-            assert!(!p.track_audible(v1), "a muted track is silent");
-            assert!(p.track_audible(v2), "its neighbours are not");
-            // Solo the other video track: the muted one stays silent, and so does
-            // every other video track — but the audio bed is untouched, because
-            // solo is scoped per kind.
-            p.tracks.iter_mut().find(|t| t.id == v2).unwrap().solo = true;
-            assert!(p.any_solo(TrackKind::Video));
-            assert!(!p.any_solo(TrackKind::Audio));
-            assert!(p.track_audible(v2), "the soloed track plays");
-            assert!(
-                !p.track_audible(v1),
-                "a non-soloed track of that kind does not"
-            );
-            assert!(p.track_audible(a1), "audio is unaffected by a video solo");
-        }
-        {
-            let (mut p, _m, v1, _cid) = project_with_clip();
-            {
-                let t = p.tracks.iter_mut().find(|t| t.id == v1).unwrap();
-                t.muted = true;
-                t.solo = true;
-            }
-            assert!(
-                p.track_audible(v1),
-                "soloing a muted track plays it, and keeps the mute flag for when solo is released",
-            );
-            assert!(p.track(v1).unwrap().muted, "the mute flag is preserved");
-        }
-        {
-            let (mut p, _m, v1, cid) = project_with_clip();
-            assert!(p.clip_audible(cid));
-            p.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
-            assert!(!p.clip_audible(cid));
-        }
-        {
-            let (p, _m, _v1, cid) = project_with_clip();
-            assert_eq!(p.clip_kind(cid), TrackKind::Video);
-        }
     }
 }
 
@@ -4155,301 +4151,305 @@ mod link_tests {
         (p, vid, aid)
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn linking_and_splitting_sound_forms_a_two_clip_group() {
-        // Unlinking must not offer to split the sound off a second time: the sound clip is
-        // still on the timeline, and splitting again makes a duplicate.
-        {
-            let (mut p, vid, aid) = pair();
-            assert!(
-                !p.can_split_audio(vid),
-                "a linked shot has nothing to split",
-            );
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario: each former test is a labelled case block with its own fixture"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_linked_shot_is_one_group_through_every_edit;
 
-            p.unlink_clips(&[vid, aid]);
-            assert!(!p.is_linked(vid), "the two no longer move together");
-            assert!(
-                !p.can_split_audio(vid),
-                "its sound is on the timeline, unlinked — offering the split \
-             again makes a duplicate of a clip the user can see",
-            );
-            assert_eq!(
-                p.detached_sound(vid),
-                Some(aid),
-                "and the editor can name it, which is what it offers to re-link",
-            );
-
-            let group = p.link_clips(&[vid, aid]).expect("two clips do link");
-            assert!(p.is_linked(vid) && p.is_linked(aid));
-            assert_eq!(p.clip(vid).expect("picture").link, Some(group));
-
-            // Recovery still works: delete the sound and the split comes back,
-            // or a shot whose audio lane was removed would be silent forever.
-            p.unlink_clips(&[vid, aid]);
-            p.clips.retain(|c| c.id != aid);
-            assert_eq!(p.detached_sound(vid), None);
-            assert!(
-                p.can_split_audio(vid),
-                "with its sound gone, the shot must be offered one again",
-            );
-        }
+        phase linking_and_splitting_sound_forms_a_two_clip_group;
         {
-            let (p, vid, aid) = pair();
-            let v = p.clip(vid).expect("picture");
-            let a = p.clip(aid).expect("sound");
-            assert_ne!(vid, aid, "the sound is its own clip, not the same one");
-            assert_eq!(
-                a.media, v.media,
-                "both halves read the one source; the bin does not grow a copy"
-            );
-            assert!((a.start - v.start).abs() < 1e-9, "they start together");
-            assert!((a.in_point - v.in_point).abs() < 1e-9);
-            assert!((a.out_point - v.out_point).abs() < 1e-9);
-            assert_eq!(
-                p.track(a.track).map(|t| t.kind),
-                Some(TrackKind::Audio),
-                "the sound lands on an audio lane, which is what makes it \
-             sliddable, levellable and cuttable on its own",
-            );
-            assert_eq!(v.link, a.link, "one shared group id");
-            assert!(v.link.is_some());
-            assert!(
-                v.sound_split,
-                "the picture must stop carrying the sound the audio clip now has",
-            );
-            assert!(
-                !a.sound_split,
-                "the sound half is where the sound comes from",
-            );
-            assert!(
-                a.filters.is_identity(),
-                "a grade describes frames the sound half never draws: {:?}",
-                a.filters,
-            );
-        }
-        {
-            // The whole reason it is a shared id rather than "my partner is clip
-            // X": no dangling reference to repair, and no repair to conflict over.
-            let (mut p, vid, aid) = pair();
-            assert!(p.is_linked(vid) && p.is_linked(aid));
-            assert_eq!(p.link_partners(vid), vec![aid]);
-            p.delete_clip(aid);
-            assert!(
-                !p.is_linked(vid),
-                "a group with one member is a clip, not a link",
-            );
-            assert!(p.link_partners(vid).is_empty());
-            assert!(
-                p.clip(vid)
-                    .expect("the picture is still there")
-                    .link
-                    .is_some(),
-                "and nothing had to be written to repair it",
-            );
-        }
-        {
-            let (mut p, vid, aid) = pair();
-            assert_eq!(
-                p.link_clips(&[vid]),
-                None,
-                "one clip is not a link, and asking must change nothing",
-            );
-            let changed = p.unlink_clips(&[vid, aid]);
-            assert_eq!(changed.len(), 2, "both halves changed: {changed:?}");
-            // Two ordinary clips: nothing follows anything.
-            assert!(!p.is_linked(vid) && !p.is_linked(aid));
-            assert!(p.link_partners(vid).is_empty() && p.link_partners(aid).is_empty());
-            // The group id survives the break, which is what still lets the
-            // editor find the sound this shot was split from. Asserting
-            // `link.is_none()` here used to stand in for "unlinked" — it was the
-            // representation, not the claim, and keeping the id is what stops a
-            // second copy of the sound being offered.
-            assert!(p.clip(vid).expect("picture").link.is_some());
-            assert_eq!(p.detached_sound(vid), Some(aid));
-            // …and back again, on a fresh group id.
-            let group = p.link_clips(&[vid, aid]).expect("two clips do link");
-            assert_eq!(p.clip(vid).expect("picture").link, Some(group));
-            assert_eq!(p.clip(aid).expect("sound").link, Some(group));
-        }
-        {
-            let (p, vid, _a1) = shot();
-            assert!(
-                p.can_split_audio(vid),
-                "a project made before links existed has to be able to get one",
-            );
-            let (mut p, vid, aid) = pair();
-            assert!(
-                !p.can_split_audio(vid),
-                "not while a linked clip is already carrying that sound: it would \
-             be heard twice",
-            );
-            assert!(!p.can_split_audio(aid), "and never off a sound clip");
-            // Losing the sound half -- deleting the lane it sits on takes every
-            // one of them -- has to be recoverable, or every shot on the timeline
-            // is permanently silent with nothing offering a way back.
-            p.delete_clip(aid);
-            assert!(
-                p.clip(vid).expect("picture").sound_split,
-                "the flag stays: the sound really did leave the picture",
-            );
-            assert!(
-                p.can_split_audio(vid),
-                "…but the clip it left for is gone, so the offer has to come back",
-            );
-        }
-        {
-            // The sound half references a *video* file. Reading its lane kind off
-            // the media would call it a video clip, and `can_place` would then
-            // refuse to let it move along the lane it is already on.
-            let (p, vid, aid) = pair();
-            assert_eq!(p.clip_kind(aid), TrackKind::Audio);
-            assert_eq!(
-                p.media_kind_of(aid),
-                TrackKind::Video,
-                "the source really is a picture; it is the placement that differs",
-            );
-            assert_eq!(p.clip_kind(vid), TrackKind::Video);
-            let a_track = p.clip(aid).expect("sound").track;
-            assert!(
-                p.can_place(aid, a_track),
-                "the sound half must be able to move along its own lane",
-            );
-            assert!(
-                !p.can_place(vid, a_track),
-                "and a picture clip still may not land on an audio lane",
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn linked_halves_split_trim_retime_delete_and_paste_together() {
-        {
-            // Four clips in one group would make dragging the second half of the
-            // shot drag the first half with it.
-            let (mut p, vid, aid) = pair();
-            let was = p.clip(vid).expect("picture").link;
-            let pairs = p.split_linked(vid, 6.0);
-            assert_eq!(pairs.len(), 2, "both lanes were cut: {pairs:?}");
-            let tails: Vec<ClipId> = pairs.iter().map(|(_, t)| *t).collect();
-            let tail_link = p.clip(tails[0]).expect("a tail").link;
-            assert!(tail_link.is_some());
-            assert_ne!(tail_link, was, "the tails are not in the heads' group");
-            assert_eq!(
-                p.clip(tails[1]).expect("the other tail").link,
-                tail_link,
-                "but they are in each other's",
-            );
-            assert_eq!(
-                p.clip(vid).expect("head").link,
-                was,
-                "the heads keep theirs"
-            );
-            assert_eq!(p.clip(aid).expect("head").link, was);
-            assert_eq!(p.link_group(tails[0]).len(), 2);
-            assert_eq!(p.link_group(vid).len(), 2);
-        }
-        {
-            let (mut p, vid, _aid) = pair();
-            // Only the picture is offered to the cut (a locked sound lane, say).
-            let pairs = p.split_group(&[vid], 6.0);
-            assert_eq!(pairs.len(), 1);
-            let tail = pairs[0].1;
-            assert!(
-                !p.is_linked(tail),
-                "a tail with no sibling must not stay in the group it was cut from",
-            );
-            // And it must not have inherited the head's *placement* either, or it
-            // would be told its sound is already on the timeline and never be
-            // offered one.
-            assert!(
-                p.group_members(tail).is_empty(),
-                "the tail carries the head's group: {:?}",
-                p.group_members(tail),
-            );
-        }
-        {
-            // The halves do not have to hold identical windows -- a user can slide
-            // the sound. Handing the follower the *raw* delta would move it by
-            // more than the clip that was actually dragged, and the two would come
-            // out of a single drag desynced by exactly the difference.
-            let (mut p, vid, aid) = pair();
-            p.clip_mut(vid).expect("picture").in_point = 1.0;
-            p.clip_mut(aid).expect("sound").in_point = 6.0;
-            let applied = p.trim_in_linked(vid, -5.0);
-            assert!(
-                (applied - -1.0).abs() < 1e-9,
-                "the picture could only give back 1s of head: {applied}",
-            );
-            assert!((p.clip(vid).expect("picture").in_point - 0.0).abs() < 1e-9);
-            assert!(
-                (p.clip(aid).expect("sound").in_point - 5.0).abs() < 1e-9,
-                "the sound took the same 1s, not the 5s that was asked for",
-            );
-        }
-        {
-            // The one field where drifting apart is not cosmetic: the gap grows
-            // with every second of the shot and nothing on screen says why.
-            let (mut p, vid, aid) = pair();
-            p.set_speed_linked(vid, 2.0, true);
-            let v = p.clip(vid).expect("picture");
-            let a = p.clip(aid).expect("sound");
-            assert_eq!(a.speed, v.speed, "both halves play at one rate");
-            assert!((a.speed.rate() - 2.0).abs() < 1e-9);
-            assert!(a.speed.reverse);
-            assert!(
-                (a.duration() - v.duration()).abs() < 1e-9,
-                "so they still cover the same stretch of timeline",
-            );
-        }
-        {
-            let (mut p, vid, aid) = pair();
-            let (v_track, a_track) = (
-                p.clip(vid).expect("picture").track,
-                p.clip(aid).expect("sound").track,
-            );
-            let media = p.clip(vid).expect("picture").media;
-            let after_v = p.add_clip(v_track, media, 20.0).expect("a later picture");
-            let after_a = p.add_clip(a_track, media, 20.0).expect("a later sound");
-            let gap = p.clip(vid).expect("picture").duration();
-
-            let (removed, moved) = p.ripple_delete_linked(vid);
-            assert_eq!(removed.len(), 2, "both halves went: {removed:?}");
-            assert!(p.clip(vid).is_none() && p.clip(aid).is_none());
-            assert!(
-                moved.contains(&after_v) && moved.contains(&after_a),
-                "{moved:?}"
-            );
-            for later in [after_v, after_a] {
+            // Unlinking must not offer to split the sound off a second time: the sound clip is
+            // still on the timeline, and splitting again makes a duplicate.
+            {
+                let (mut p, vid, aid) = pair();
                 assert!(
-                    (p.clip(later).expect("later clip").start - (20.0 - gap)).abs() < 1e-9,
-                    "the gap has to close on the sound lane as well as the picture one",
+                    !p.can_split_audio(vid),
+                    "a linked shot has nothing to split",
+                );
+
+                p.unlink_clips(&[vid, aid]);
+                assert!(!p.is_linked(vid), "the two no longer move together");
+                assert!(
+                    !p.can_split_audio(vid),
+                    "its sound is on the timeline, unlinked — offering the split \
+             again makes a duplicate of a clip the user can see",
+                );
+                assert_eq!(
+                    p.detached_sound(vid),
+                    Some(aid),
+                    "and the editor can name it, which is what it offers to re-link",
+                );
+
+                let group = p.link_clips(&[vid, aid]).expect("two clips do link");
+                assert!(p.is_linked(vid) && p.is_linked(aid));
+                assert_eq!(p.clip(vid).expect("picture").link, Some(group));
+
+                // Recovery still works: delete the sound and the split comes back,
+                // or a shot whose audio lane was removed would be silent forever.
+                p.unlink_clips(&[vid, aid]);
+                p.clips.retain(|c| c.id != aid);
+                assert_eq!(p.detached_sound(vid), None);
+                assert!(
+                    p.can_split_audio(vid),
+                    "with its sound gone, the shot must be offered one again",
                 );
             }
-
-            let (mut p, vid, aid) = pair();
-            assert_eq!(p.delete_linked(vid).len(), 2);
-            assert!(
-                p.clip(aid).is_none(),
-                "half a shot left behind is the surprise"
-            );
+            {
+                let (p, vid, aid) = pair();
+                let v = p.clip(vid).expect("picture");
+                let a = p.clip(aid).expect("sound");
+                assert_ne!(vid, aid, "the sound is its own clip, not the same one");
+                assert_eq!(
+                    a.media, v.media,
+                    "both halves read the one source; the bin does not grow a copy"
+                );
+                assert!((a.start - v.start).abs() < 1e-9, "they start together");
+                assert!((a.in_point - v.in_point).abs() < 1e-9);
+                assert!((a.out_point - v.out_point).abs() < 1e-9);
+                assert_eq!(
+                    p.track(a.track).map(|t| t.kind),
+                    Some(TrackKind::Audio),
+                    "the sound lands on an audio lane, which is what makes it \
+             sliddable, levellable and cuttable on its own",
+                );
+                assert_eq!(v.link, a.link, "one shared group id");
+                assert!(v.link.is_some());
+                assert!(
+                    v.sound_split,
+                    "the picture must stop carrying the sound the audio clip now has",
+                );
+                assert!(
+                    !a.sound_split,
+                    "the sound half is where the sound comes from",
+                );
+                assert!(
+                    a.filters.is_identity(),
+                    "a grade describes frames the sound half never draws: {:?}",
+                    a.filters,
+                );
+            }
+            {
+                // The whole reason it is a shared id rather than "my partner is clip
+                // X": no dangling reference to repair, and no repair to conflict over.
+                let (mut p, vid, aid) = pair();
+                assert!(p.is_linked(vid) && p.is_linked(aid));
+                assert_eq!(p.link_partners(vid), vec![aid]);
+                p.delete_clip(aid);
+                assert!(
+                    !p.is_linked(vid),
+                    "a group with one member is a clip, not a link",
+                );
+                assert!(p.link_partners(vid).is_empty());
+                assert!(
+                    p.clip(vid)
+                        .expect("the picture is still there")
+                        .link
+                        .is_some(),
+                    "and nothing had to be written to repair it",
+                );
+            }
+            {
+                let (mut p, vid, aid) = pair();
+                assert_eq!(
+                    p.link_clips(&[vid]),
+                    None,
+                    "one clip is not a link, and asking must change nothing",
+                );
+                let changed = p.unlink_clips(&[vid, aid]);
+                assert_eq!(changed.len(), 2, "both halves changed: {changed:?}");
+                // Two ordinary clips: nothing follows anything.
+                assert!(!p.is_linked(vid) && !p.is_linked(aid));
+                assert!(p.link_partners(vid).is_empty() && p.link_partners(aid).is_empty());
+                // The group id survives the break, which is what still lets the
+                // editor find the sound this shot was split from. Asserting
+                // `link.is_none()` here used to stand in for "unlinked" — it was the
+                // representation, not the claim, and keeping the id is what stops a
+                // second copy of the sound being offered.
+                assert!(p.clip(vid).expect("picture").link.is_some());
+                assert_eq!(p.detached_sound(vid), Some(aid));
+                // …and back again, on a fresh group id.
+                let group = p.link_clips(&[vid, aid]).expect("two clips do link");
+                assert_eq!(p.clip(vid).expect("picture").link, Some(group));
+                assert_eq!(p.clip(aid).expect("sound").link, Some(group));
+            }
+            {
+                let (p, vid, _a1) = shot();
+                assert!(
+                    p.can_split_audio(vid),
+                    "a project made before links existed has to be able to get one",
+                );
+                let (mut p, vid, aid) = pair();
+                assert!(
+                    !p.can_split_audio(vid),
+                    "not while a linked clip is already carrying that sound: it would \
+             be heard twice",
+                );
+                assert!(!p.can_split_audio(aid), "and never off a sound clip");
+                // Losing the sound half -- deleting the lane it sits on takes every
+                // one of them -- has to be recoverable, or every shot on the timeline
+                // is permanently silent with nothing offering a way back.
+                p.delete_clip(aid);
+                assert!(
+                    p.clip(vid).expect("picture").sound_split,
+                    "the flag stays: the sound really did leave the picture",
+                );
+                assert!(
+                    p.can_split_audio(vid),
+                    "…but the clip it left for is gone, so the offer has to come back",
+                );
+            }
+            {
+                // The sound half references a *video* file. Reading its lane kind off
+                // the media would call it a video clip, and `can_place` would then
+                // refuse to let it move along the lane it is already on.
+                let (p, vid, aid) = pair();
+                assert_eq!(p.clip_kind(aid), TrackKind::Audio);
+                assert_eq!(
+                    p.media_kind_of(aid),
+                    TrackKind::Video,
+                    "the source really is a picture; it is the placement that differs",
+                );
+                assert_eq!(p.clip_kind(vid), TrackKind::Video);
+                let a_track = p.clip(aid).expect("sound").track;
+                assert!(
+                    p.can_place(aid, a_track),
+                    "the sound half must be able to move along its own lane",
+                );
+                assert!(
+                    !p.can_place(vid, a_track),
+                    "and a picture clip still may not land on an audio lane",
+                );
+            }
         }
+
+        phase linked_halves_split_trim_retime_delete_and_paste_together;
         {
-            // Carrying the group over would tie the copy to the original, so
-            // dragging the original would drag the copy across the timeline.
-            let (mut p, vid, _aid) = pair();
-            let clip = p.clip(vid).expect("picture").clone();
-            let track = clip.track;
-            let copy = p.paste_clip(clip, track, 30.0);
-            assert!(p.clip(copy).expect("the copy").link.is_none());
-            assert!(!p.is_linked(copy));
+            {
+                // Four clips in one group would make dragging the second half of the
+                // shot drag the first half with it.
+                let (mut p, vid, aid) = pair();
+                let was = p.clip(vid).expect("picture").link;
+                let pairs = p.split_linked(vid, 6.0);
+                assert_eq!(pairs.len(), 2, "both lanes were cut: {pairs:?}");
+                let tails: Vec<ClipId> = pairs.iter().map(|(_, t)| *t).collect();
+                let tail_link = p.clip(tails[0]).expect("a tail").link;
+                assert!(tail_link.is_some());
+                assert_ne!(tail_link, was, "the tails are not in the heads' group");
+                assert_eq!(
+                    p.clip(tails[1]).expect("the other tail").link,
+                    tail_link,
+                    "but they are in each other's",
+                );
+                assert_eq!(
+                    p.clip(vid).expect("head").link,
+                    was,
+                    "the heads keep theirs"
+                );
+                assert_eq!(p.clip(aid).expect("head").link, was);
+                assert_eq!(p.link_group(tails[0]).len(), 2);
+                assert_eq!(p.link_group(vid).len(), 2);
+            }
+            {
+                let (mut p, vid, _aid) = pair();
+                // Only the picture is offered to the cut (a locked sound lane, say).
+                let pairs = p.split_group(&[vid], 6.0);
+                assert_eq!(pairs.len(), 1);
+                let tail = pairs[0].1;
+                assert!(
+                    !p.is_linked(tail),
+                    "a tail with no sibling must not stay in the group it was cut from",
+                );
+                // And it must not have inherited the head's *placement* either, or it
+                // would be told its sound is already on the timeline and never be
+                // offered one.
+                assert!(
+                    p.group_members(tail).is_empty(),
+                    "the tail carries the head's group: {:?}",
+                    p.group_members(tail),
+                );
+            }
+            {
+                // The halves do not have to hold identical windows -- a user can slide
+                // the sound. Handing the follower the *raw* delta would move it by
+                // more than the clip that was actually dragged, and the two would come
+                // out of a single drag desynced by exactly the difference.
+                let (mut p, vid, aid) = pair();
+                p.clip_mut(vid).expect("picture").in_point = 1.0;
+                p.clip_mut(aid).expect("sound").in_point = 6.0;
+                let applied = p.trim_in_linked(vid, -5.0);
+                assert!(
+                    (applied - -1.0).abs() < 1e-9,
+                    "the picture could only give back 1s of head: {applied}",
+                );
+                assert!((p.clip(vid).expect("picture").in_point - 0.0).abs() < 1e-9);
+                assert!(
+                    (p.clip(aid).expect("sound").in_point - 5.0).abs() < 1e-9,
+                    "the sound took the same 1s, not the 5s that was asked for",
+                );
+            }
+            {
+                // The one field where drifting apart is not cosmetic: the gap grows
+                // with every second of the shot and nothing on screen says why.
+                let (mut p, vid, aid) = pair();
+                p.set_speed_linked(vid, 2.0, true);
+                let v = p.clip(vid).expect("picture");
+                let a = p.clip(aid).expect("sound");
+                assert_eq!(a.speed, v.speed, "both halves play at one rate");
+                assert!((a.speed.rate() - 2.0).abs() < 1e-9);
+                assert!(a.speed.reverse);
+                assert!(
+                    (a.duration() - v.duration()).abs() < 1e-9,
+                    "so they still cover the same stretch of timeline",
+                );
+            }
+            {
+                let (mut p, vid, aid) = pair();
+                let (v_track, a_track) = (
+                    p.clip(vid).expect("picture").track,
+                    p.clip(aid).expect("sound").track,
+                );
+                let media = p.clip(vid).expect("picture").media;
+                let after_v = p.add_clip(v_track, media, 20.0).expect("a later picture");
+                let after_a = p.add_clip(a_track, media, 20.0).expect("a later sound");
+                let gap = p.clip(vid).expect("picture").duration();
+
+                let (removed, moved) = p.ripple_delete_linked(vid);
+                assert_eq!(removed.len(), 2, "both halves went: {removed:?}");
+                assert!(p.clip(vid).is_none() && p.clip(aid).is_none());
+                assert!(
+                    moved.contains(&after_v) && moved.contains(&after_a),
+                    "{moved:?}"
+                );
+                for later in [after_v, after_a] {
+                    assert!(
+                        (p.clip(later).expect("later clip").start - (20.0 - gap)).abs() < 1e-9,
+                        "the gap has to close on the sound lane as well as the picture one",
+                    );
+                }
+
+                let (mut p, vid, aid) = pair();
+                assert_eq!(p.delete_linked(vid).len(), 2);
+                assert!(
+                    p.clip(aid).is_none(),
+                    "half a shot left behind is the surprise"
+                );
+            }
+            {
+                // Carrying the group over would tie the copy to the original, so
+                // dragging the original would drag the copy across the timeline.
+                let (mut p, vid, _aid) = pair();
+                let clip = p.clip(vid).expect("picture").clone();
+                let track = clip.track;
+                let copy = p.paste_clip(clip, track, 30.0);
+                assert!(p.clip(copy).expect("the copy").link.is_none());
+                assert!(!p.is_linked(copy));
+            }
         }
     }
 }

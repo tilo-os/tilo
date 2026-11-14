@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use super::{Carried, Workspaces};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Notices one workspace hands its channel service at once; a device asks
 /// again when its request is dropped.
@@ -60,7 +61,7 @@ impl Workspaces {
     /// Retain channel governance messages as this relay's own.
     pub(super) async fn retain_channel_governance(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         messages: Vec<neighbour_wire::NeighbourMsg>,
     ) -> Result<(), String> {
         for admission in self
@@ -116,13 +117,7 @@ impl Workspaces {
         message: neighbour_wire::NeighbourMsg,
         carried: Carried,
     ) -> Result<(), String> {
-        // A host's word that a channel has no group is its own to say.
-        if message.channel_workspace() != Some(workspace)
-            || matches!(
-                message,
-                neighbour_wire::NeighbourMsg::MlsChannelUnfounded { .. }
-            )
-        {
+        if message.channel_workspace() != Some(workspace) {
             return Ok(());
         }
         let state = self
@@ -152,11 +147,18 @@ impl Workspaces {
         {
             self.channel_notice(workspace, message.clone())?;
         }
-        if carried == Carried::Kept {
-            return Ok(());
+        let genesis = matches!(&message, neighbour_wire::NeighbourMsg::MlsGovernance { .. })
+            .then(|| message.clone());
+        if carried != Carried::Kept {
+            self.retain_channel_governance(workspace_id, vec![message])
+                .await?;
         }
-        self.retain_channel_governance(workspace_id, vec![message])
-            .await
+        if let Some(genesis) = genesis
+            && let Some(link) = self.inner.direct.link(workspace_id)
+        {
+            link.remember_genesis(author, &genesis);
+        }
+        Ok(())
     }
 
     /// Start handing `workspace`'s queued channel governance over. A crowd
@@ -232,7 +234,7 @@ impl Workspaces {
     /// relay's own, without waiting for them to be durable.
     async fn enqueue_channel_governance(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         messages: Vec<neighbour_wire::NeighbourMsg>,
     ) -> Result<Vec<crate::workspace_records::WorkspaceAdmission>, String> {
         let mut admissions = Vec::with_capacity(messages.len());

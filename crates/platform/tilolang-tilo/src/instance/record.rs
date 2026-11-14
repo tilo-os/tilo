@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
+use automerge::transaction::Transactable as _;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
@@ -80,8 +81,12 @@ enum Read {
 pub struct InstanceRecord {
     /// The record (chunk [`FIRST`]) and the chunks above it this replica holds, each a document of
     /// its own. A change is written in the chunk the manifest places its resource in, and one
-    /// action's changes across chunks travel under one workspace commit.
-    chunks: Chunks,
+    /// action's changes across chunks travel under one workspace commit. Once the instance's
+    /// store opens over them they are the store's, the one copy of each: the record reads and
+    /// writes them through it ([`Docs`]).
+    chunks: Docs,
+    /// Whether a write since the instance last took the record in moved what the store reads.
+    moved: bool,
     manager: CollaborationManager,
     route: RouteSpec,
     /// The kind of the record, as its app publishes it: what every route of it is joined as.
@@ -114,6 +119,40 @@ pub struct InstanceRecord {
     /// in: what it keeps is offered on the route, and what it lacks is asked of it.
     content: ContentStore,
     lane: Arc<ContentLane>,
+}
+
+/// The record's chunk documents: the record's own until the instance's store opens over them,
+/// and the store's from then on, so each is held once. Every write goes through the store
+/// ([`crate::store::TiloStore::write_record`]), which takes its unsaved writes out first and
+/// derives what the write changed after.
+enum Docs {
+    Own(Chunks),
+    Store(crate::store::TiloStore),
+}
+
+impl Docs {
+    fn read<R>(&self, read: impl FnOnce(&Chunks) -> R) -> R {
+        match self {
+            Self::Own(chunks) => read(chunks),
+            Self::Store(store) => store.with_record(read),
+        }
+    }
+
+    /// Write the chunks; whether what the store reads moved.
+    fn write_chunk<R>(&mut self, chunk: ChunkNo, write: impl FnOnce(&mut Doc) -> R) -> (R, bool) {
+        match self {
+            Self::Own(chunks) => (write(chunks.open_held(chunk)), true),
+            Self::Store(store) => store.write_chunk(chunk, write),
+        }
+    }
+
+    /// Read the record's manifest again, after a change reached it: the store does so as it
+    /// takes the change in.
+    fn reread_placement(&mut self) {
+        if let Self::Own(chunks) = self {
+            chunks.reread_placement();
+        }
+    }
 }
 
 /// The on-disk copies of the record's chunks: the store the record was opened from, and the
@@ -230,11 +269,12 @@ impl InstanceRecord {
         // other workspace's record of the app this process holds. Its content is sealed under the
         // secret of the members who read the record, once its route holds their keys.
         let lane = Arc::new(ContentLane::default());
-        ContentLane::show_on_route(&route.app_id, route.record.as_deref().unwrap_or(""), &lane);
+        ContentLane::show_on_route(&route, &lane);
         Self {
             content: RecordContent::store(ContentStore::memory(), Arc::clone(&lane)),
             lane,
-            chunks,
+            chunks: Docs::Own(chunks),
+            moved: true,
             manager,
             route,
             kind,
@@ -448,26 +488,85 @@ impl InstanceRecord {
     }
 
     /// The record as this replica holds it: chunk [`FIRST`], which every record has and which
-    /// holds the manifest of where everything else is.
+    /// holds the manifest of where everything else is. Its committed changes only: the store's
+    /// unsaved writes are no change of the record, and a copy that kept them would commit them
+    /// as one when it is saved.
     #[must_use]
-    #[expect(
-        clippy::expect_used,
-        reason = "an instance's record holds chunk 0 from the moment it opens"
-    )]
-    pub fn doc(&self) -> &Doc {
-        self.chunks.first().expect("the record is held")
+    pub fn doc(&self) -> Doc {
+        self.chunk(FIRST).unwrap_or_default()
     }
 
-    /// The record and the chunks above it this replica holds.
+    /// A copy of the record and the chunks above it this replica holds, their committed changes
+    /// only ([`Self::doc`]): to look at, as a test does. A frame reads through [`Self::read`].
     #[must_use]
-    pub fn chunks(&self) -> &Chunks {
-        &self.chunks
+    pub fn chunks(&self) -> Chunks {
+        let mut whole = self.read(Chunks::whole);
+        let open: Vec<ChunkNo> = whole
+            .docs()
+            .filter(|(_, doc)| doc.pending_ops() > 0)
+            .map(|(chunk, _)| chunk)
+            .collect();
+        for chunk in open {
+            if let Some(doc) = whole.mirror_mut(chunk) {
+                doc.rollback();
+            }
+        }
+        whole
     }
 
-    /// The chunk `chunk` holds, to read.
+    /// A copy of the chunk `chunk`, its committed changes only ([`Self::doc`]).
     #[must_use]
-    pub fn chunk(&self, chunk: ChunkNo) -> Option<&Doc> {
-        self.chunks.mirror(chunk)
+    pub fn chunk(&self, chunk: ChunkNo) -> Option<Doc> {
+        let mut doc = self.read(|chunks| chunks.held(chunk).cloned())?;
+        doc.rollback();
+        Some(doc)
+    }
+
+    /// Read the record and the chunks above it this replica holds.
+    pub fn read<R>(&self, read: impl FnOnce(&Chunks) -> R) -> R {
+        self.chunks.read(read)
+    }
+
+    /// Bring `instance` up to date with the record: the first time, its store opens over the
+    /// record's chunks and holds them from then on; after that, what the record's writes moved
+    /// is already in the store, and the instance's frame reads it.
+    pub fn sync_instance(&mut self, instance: &mut Instance) {
+        let moved = std::mem::take(&mut self.moved);
+        if let Docs::Own(chunks) = &mut self.chunks {
+            if let Some(chunks) = instance.open_over(std::mem::take(chunks)) {
+                // No store opened over them: the record keeps them, and the next frame tries
+                // again.
+                self.chunks = Docs::Own(chunks);
+                self.moved = true;
+                return;
+            }
+            if let Some(host) = instance.host() {
+                self.held_by(host.store());
+            }
+            return;
+        }
+        instance.sync_held(moved);
+        // A host started over on a new build took the chunks over from the last one.
+        if let Some(host) = instance.host() {
+            self.held_by(host.store());
+        }
+    }
+
+    /// Read and write the chunks through `store` from here on, which writes as the person at
+    /// the window: what they do there is written once, as the change it makes.
+    fn held_by(&mut self, store: &crate::store::TiloStore) {
+        store.set_author(self.person.as_bytes());
+        self.chunks = Docs::Store(store.clone());
+    }
+
+    /// Have `host`'s store hold the record's chunks from here on, the one copy of each, which
+    /// the record reads and writes through it: what a host with no window over the record (the
+    /// record's origin applying what others ask) opens with.
+    pub fn hold_in(&mut self, host: &crate::host::Host) {
+        if let Docs::Own(chunks) = &mut self.chunks {
+            host.adopt(std::mem::take(chunks));
+            self.held_by(host.store());
+        }
     }
 
     /// The collab client the record travels through.
@@ -497,10 +596,14 @@ impl InstanceRecord {
         };
         let mut status = RecordSaveStatus::Saved;
         for (chunk, writer) in &writers.chunks {
-            let Some(doc) = self.chunks.mirror(*chunk) else {
+            let Some(of) = self.read(|chunks| {
+                chunks
+                    .held(*chunk)
+                    .map(|doc| RecordSaveStatus::of_writer(doc, writer))
+            }) else {
                 continue;
             };
-            match RecordSaveStatus::of_writer(doc, writer) {
+            match of {
                 failure @ RecordSaveStatus::Failed(_) => return failure,
                 RecordSaveStatus::Saving => status = RecordSaveStatus::Saving,
                 RecordSaveStatus::Saved | RecordSaveStatus::MemoryOnly => {}
@@ -518,16 +621,18 @@ impl InstanceRecord {
 
     /// The chunks holding changes the workspace was not handed yet, the record first.
     fn unsent_chunks(&self) -> Vec<ChunkNo> {
-        self.chunks
-            .docs()
-            .filter(|(chunk, doc)| {
-                !heads_equal(
-                    &doc.committed_heads(),
-                    self.sent.get(chunk).map_or(&[], Vec::as_slice),
-                )
-            })
-            .map(|(chunk, _)| chunk)
-            .collect()
+        self.read(|chunks| {
+            chunks
+                .all()
+                .filter(|(chunk, doc)| {
+                    !heads_equal(
+                        &doc.committed_heads(),
+                        self.sent.get(chunk).map_or(&[], Vec::as_slice),
+                    )
+                })
+                .map(|(chunk, _)| chunk)
+                .collect()
+        })
     }
 
     /// Why the record's changes stay on this device, when the collab client refused them for
@@ -547,9 +652,11 @@ impl InstanceRecord {
             return;
         };
         for (chunk, writer) in &mut writers.chunks {
-            if let Some(doc) = chunks.mirror_mut(*chunk) {
-                writer.request(doc);
-            }
+            chunks.read(|chunks| {
+                if let Some(doc) = chunks.held(*chunk) {
+                    writer.request(doc);
+                }
+            });
             writer.flush();
         }
     }
@@ -566,32 +673,44 @@ impl InstanceRecord {
         let Some(writers) = writers.as_mut() else {
             return;
         };
-        let Some(doc) = chunks.mirror_mut(chunk) else {
-            return;
-        };
-        if let Some(writer) = writers.start(route, chunk) {
-            writer.request(doc);
-        }
+        chunks.read(|chunks| {
+            if let Some(doc) = chunks.held(chunk)
+                && let Some(writer) = writers.start(route, chunk)
+            {
+                writer.request(doc);
+            }
+        });
     }
 
     /// The chunk `chunk`, to write into: the one this replica holds, or the one it starts here
     /// (a write into a run that begins there, before that chunk arrives), with the writer that
     /// keeps it on disk like the record's own.
-    fn open_chunk(&mut self, chunk: ChunkNo) -> &mut Doc {
-        let Self {
-            writers,
-            chunks,
-            route,
-            ..
-        } = self;
+    fn write_chunk<R>(&mut self, chunk: ChunkNo, write: impl FnOnce(&mut Doc) -> R) -> R {
+        self.keep_on_disk(chunk);
+        let (out, moved) = self.chunks.write_chunk(chunk, write);
+        self.moved |= moved;
+        out
+    }
+
+    /// Start the on-disk copy of chunk `chunk`, before it is written: a chunk this replica
+    /// writes to keeps its own copy, so the change goes to disk with the record's own.
+    fn keep_on_disk(&mut self, chunk: ChunkNo) {
+        let Self { writers, route, .. } = self;
         if let Some(writers) = writers.as_mut()
             && !writers.chunks.contains_key(&chunk)
         {
-            // A chunk this replica writes to keeps its own copy: it is started before the doc
-            // is written, so the change goes to disk with the record's own.
             let _ = writers.start(route, chunk);
         }
-        chunks.open(chunk)
+    }
+
+    /// The heads chunk `chunk` holds: none when this replica holds no such chunk.
+    fn heads_of(&self, chunk: ChunkNo) -> Vec<ChangeHash> {
+        self.read(|chunks| {
+            chunks
+                .held(chunk)
+                .map(Doc::committed_heads)
+                .unwrap_or_default()
+        })
     }
 
     /// Whether the person at the window has a step to undo, or an undo to redo.
@@ -608,10 +727,12 @@ impl InstanceRecord {
         let owns = |version: &tilo_resource::history::Version| scope.owns(version);
         let mut undo = false;
         let mut redo = false;
-        for (_, doc) in self.chunks.docs() {
-            undo |= !steps::undo_preview(doc, &scope, 1).is_empty();
-            redo |= !steps::undos_in_effect(doc, &owns, 1).is_empty();
-        }
+        self.read(|chunks| {
+            for (_, doc) in chunks.all() {
+                undo |= !steps::undo_preview(doc, &scope, 1).is_empty();
+                redo |= !steps::undos_in_effect(doc, &owns, 1).is_empty();
+            }
+        });
         (undo, redo)
     }
 
@@ -628,14 +749,16 @@ impl InstanceRecord {
     /// latest, the record's own before a chunk's when two share one (a change's time is what
     /// orders the chunks, which share no history between them).
     fn last_step(&self, scope: &Scope) -> Option<[u8; 32]> {
-        self.chunks
-            .docs()
-            .filter_map(|(_, doc)| {
-                let step = steps::undo_preview(doc, scope, 1).into_iter().next()?;
-                Some((step.time_ms, step.hash.0))
-            })
-            .max()
-            .map(|(_, hash)| hash)
+        self.read(|chunks| {
+            chunks
+                .all()
+                .filter_map(|(_, doc)| {
+                    let step = steps::undo_preview(doc, scope, 1).into_iter().next()?;
+                    Some((step.time_ms, step.hash.0))
+                })
+                .max()
+                .map(|(_, hash)| hash)
+        })
     }
 
     /// The changes of this unit the invocation `invocation` made, oldest first: the unit's part
@@ -644,17 +767,19 @@ impl InstanceRecord {
     #[must_use]
     pub fn changes_of(&self, invocation: InvocationId) -> Vec<[u8; 32]> {
         let mut changes: Vec<(i64, [u8; 32])> = Vec::new();
-        for (_, doc) in self.chunks.docs() {
-            for change in doc.committed_document().get_changes(&[]) {
-                if change
-                    .message()
-                    .and_then(ActionContext::from_change_message)
-                    .is_some_and(|context| context.source_invocation == Some(invocation))
-                {
-                    changes.push((change.timestamp(), change.hash().0));
+        self.read(|chunks| {
+            for (_, doc) in chunks.all() {
+                for change in doc.committed_document().get_changes(&[]) {
+                    if change
+                        .message()
+                        .and_then(ActionContext::from_change_message)
+                        .is_some_and(|context| context.source_invocation == Some(invocation))
+                    {
+                        changes.push((change.timestamp(), change.hash().0));
+                    }
                 }
             }
-        }
+        });
         changes.sort_unstable();
         changes.into_iter().map(|(_, hash)| hash).collect()
     }
@@ -662,45 +787,50 @@ impl InstanceRecord {
     /// The chunk of this instance that holds the change `change`.
     #[must_use]
     pub fn chunk_of_change(&self, change: &[u8; 32]) -> Option<ChunkNo> {
-        self.chunks
-            .docs()
-            .find(|(_, doc)| {
-                doc.committed_document()
-                    .get_changes(&[])
-                    .iter()
-                    .any(|known| known.hash().0 == *change)
-            })
-            .map(|(chunk, _)| chunk)
+        self.read(|chunks| {
+            chunks
+                .all()
+                .find(|(_, doc)| {
+                    doc.committed_document()
+                        .get_changes(&[])
+                        .iter()
+                        .any(|known| known.hash().0 == *change)
+                })
+                .map(|(chunk, _)| chunk)
+        })
     }
 
     /// The invocation the change `change` of this instance ran in.
     fn invocation_of(&self, change: &[u8; 32]) -> Option<InvocationId> {
         let chunk = self.chunk_of_change(change)?;
-        self.chunks
-            .mirror(chunk)?
-            .committed_document()
-            .get_changes(&[])
-            .into_iter()
-            .find(|known| known.hash().0 == *change)
-            .and_then(|known| known.message().and_then(ActionContext::from_change_message))
-            .and_then(|context| context.source_invocation)
+        self.read(|chunks| {
+            chunks
+                .held(chunk)?
+                .committed_document()
+                .get_changes(&[])
+                .into_iter()
+                .find(|known| known.hash().0 == *change)
+                .and_then(|known| known.message().and_then(ActionContext::from_change_message))
+                .and_then(|context| context.source_invocation)
+        })
     }
 
     /// Whether the step the change `change` is part of is still in effect for the person: what an
     /// undo of it takes back, and not a step already undone or not theirs.
     #[must_use]
     pub fn can_revert(&self, change: &[u8; 32]) -> bool {
-        let Some(doc) = self
-            .chunk_of_change(change)
-            .and_then(|chunk| self.chunk(chunk))
-        else {
+        let Some(chunk) = self.chunk_of_change(change) else {
             return false;
         };
         let scope = Scope::Invoker(self.person.clone());
-        steps::steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
-            .into_iter()
-            .flatten()
-            .any(|version| version.hash.0 == *change)
+        self.read(|chunks| {
+            chunks.held(chunk).is_some_and(|doc| {
+                steps::steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
+                    .into_iter()
+                    .flatten()
+                    .any(|version| version.hash.0 == *change)
+            })
+        })
     }
 
     /// Take back the step the change `change` is part of through the history verb `undo`, as a
@@ -729,7 +859,7 @@ impl InstanceRecord {
         };
         let chunk = self.chunk_of_change(change).unwrap_or(FIRST);
         self.history_apply(chunk, &edit, resource, kind, invoker, Some(ambient))?;
-        instance.sync_chunks(&self.chunks);
+        self.sync_instance(instance);
         Ok(())
     }
 
@@ -839,12 +969,13 @@ impl InstanceRecord {
         };
         // The undo being redone may have taken back changes in several chunks: each is brought
         // back in the chunk that holds it, as one action, sent once all of them are.
-        let undone: Vec<ChunkNo> = self
-            .chunks
-            .docs()
-            .filter(|(_, doc)| !steps::undos_in_effect(doc, &owns, 1).is_empty())
-            .map(|(chunk, _)| chunk)
-            .collect();
+        let undone: Vec<ChunkNo> = self.read(|chunks| {
+            chunks
+                .all()
+                .filter(|(_, doc)| !steps::undos_in_effect(doc, &owns, 1).is_empty())
+                .map(|(chunk, _)| chunk)
+                .collect()
+        });
         let mut brought = false;
         for chunk in undone {
             let edit = HistoryEdit::Redo { steps: None };
@@ -865,7 +996,7 @@ impl InstanceRecord {
         if let Some(why) = self.share() {
             instance.unshared(why);
         }
-        instance.sync_chunks(&self.chunks);
+        self.sync_instance(instance);
         true
     }
 
@@ -902,7 +1033,7 @@ impl InstanceRecord {
         if let Some(why) = unshared {
             instance.unshared(why);
         }
-        instance.sync_chunks(&self.chunks);
+        self.sync_instance(instance);
         Ok(result)
     }
 
@@ -950,7 +1081,7 @@ impl InstanceRecord {
     ) -> Result<Option<Json>, RecordError> {
         let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
         let encoded = action.encoded().map_err(RecordError::Refused)?;
-        let before = self.open_chunk(chunk).get_heads();
+        let before = self.heads_of(chunk);
         // The verb's change is a step of its own, or a part of the one action an undo or redo
         // across chunks is (`ambient`'s invocation).
         let invocation = ambient
@@ -958,15 +1089,17 @@ impl InstanceRecord {
             .unwrap_or_default();
         let context = ActionContext::for_resource(resource, kind, kind)
             .with_source_invocation(Some(invocation));
-        self.apply_on(chunk, &action, encoded, context, invoker, ambient)?;
-        let Some(doc) = self.chunks.mirror_mut(chunk) else {
-            return Err(RecordError::Refused(format!(
-                "chunk {chunk} is not held, though its change was taken"
-            )));
-        };
-        let after = doc.get_heads();
-        let patches = doc.diff(&before, &after);
-        Ok(verbs::result(edit.verb(), doc, &patches, &self.words))
+        self.apply_on(chunk, (&action, None), encoded, context, invoker, ambient)?;
+        let words = &self.words;
+        self.chunks.read(|chunks| {
+            let Some(doc) = chunks.held(chunk) else {
+                return Err(RecordError::Refused(format!(
+                    "chunk {chunk} is not held, though its change was taken"
+                )));
+            };
+            let patches = doc.committed_diff(&before, &doc.committed_heads());
+            Ok(verbs::result(edit.verb(), doc, &patches, words))
+        })
     }
 
     /// Answer the history view `payload` asks ([`verbs::VIEW_TYPE`]) of the record.
@@ -974,7 +1107,10 @@ impl InstanceRecord {
     /// The view is the record's own chunk: a step written in another chunk is listed there. The
     /// action that made it is in the workspace's log, which names every unit the action wrote.
     pub fn view_history(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
-        verbs::answer(self.doc(), payload, &self.words)
+        self.read(|chunks| {
+            let doc = chunks.first().ok_or("the record is not held here")?;
+            verbs::answer(doc, payload, &self.words)
+        })
     }
 
     /// Hand the workspace what the record holds past what it was handed, as one change. What the
@@ -995,19 +1131,20 @@ impl InstanceRecord {
     /// record it holds nothing of only from the whole of it, and a change alone builds on nothing
     /// there.
     pub fn unsent_parts(&self) -> Vec<(ChunkNo, DocumentMutation)> {
-        self.chunks
-            .docs()
-            .filter_map(|(chunk, doc)| {
-                let sent = self.sent.get(&chunk).map_or(&[][..], Vec::as_slice);
-                if sent.is_empty() {
-                    let document = doc.committed_document();
-                    return (!document.get_heads().is_empty())
-                        .then(|| (chunk, DocumentMutation::Snapshot(document.save())));
-                }
-                let change = doc.committed_document().save_after(sent);
-                (!change.is_empty()).then_some((chunk, DocumentMutation::Incremental(change)))
-            })
-            .collect()
+        self.read(|chunks| {
+            chunks
+                .all()
+                .filter_map(|(chunk, doc)| {
+                    let sent = self.sent.get(&chunk).map_or(&[][..], Vec::as_slice);
+                    if sent.is_empty() {
+                        return (!doc.committed_heads().is_empty())
+                            .then(|| (chunk, DocumentMutation::Snapshot(doc.save_committed())));
+                    }
+                    let change = doc.committed_document().save_after(sent);
+                    (!change.is_empty()).then_some((chunk, DocumentMutation::Incremental(change)))
+                })
+                .collect()
+        })
     }
 
     /// [`Self::share`] as this unit's part of `commit`, the one action across every unit it
@@ -1124,8 +1261,11 @@ impl InstanceRecord {
     /// The routes this replica takes changes in on: the record's own, and each chunk's it holds
     /// or the manifest names ([`Self::chunk_route`]).
     fn taken_routes(&self) -> Vec<(RouteSpec, ChunkNo)> {
-        let mut chunks: BTreeSet<ChunkNo> = self.chunks.placement().chunks();
-        chunks.extend(self.chunks.numbers().filter(|chunk| *chunk != FIRST));
+        let chunks: BTreeSet<ChunkNo> = self.read(|chunks| {
+            let mut named = chunks.placement().chunks();
+            named.extend(chunks.all().map(|(chunk, _)| chunk).filter(|c| *c != FIRST));
+            named
+        });
         let mut routes = vec![(self.route.clone(), FIRST)];
         routes.extend(
             chunks
@@ -1140,11 +1280,7 @@ impl InstanceRecord {
     /// next send.
     fn note_arrived(&mut self, chunk: ChunkNo, before: &[ChangeHash]) {
         let sent = self.sent.get(&chunk).cloned().unwrap_or_default();
-        let heads = self
-            .chunks
-            .mirror(chunk)
-            .map(Doc::committed_heads)
-            .unwrap_or_default();
+        let heads = self.heads_of(chunk);
         let mut held = sent.clone();
         if !heads_equal(before, &sent) {
             for head in heads {
@@ -1159,11 +1295,7 @@ impl InstanceRecord {
 
     /// Note that the workspace holds chunk `chunk` as it is now.
     fn note_sent(&mut self, chunk: ChunkNo) {
-        let heads = self
-            .chunks
-            .mirror(chunk)
-            .map(Doc::committed_heads)
-            .unwrap_or_default();
+        let heads = self.heads_of(chunk);
         self.sent.insert(chunk, heads);
     }
 
@@ -1192,7 +1324,7 @@ impl InstanceRecord {
     /// Join the route of every chunk the record's manifest names: a chunk's changes reach only
     /// the replicas that opened it, so a chunk this replica holds or wants is one it joined.
     fn join_chunks(&mut self) {
-        for chunk in self.chunks.placement().chunks() {
+        for chunk in self.read(|chunks| chunks.placement().chunks()) {
             if !self.joined.insert(chunk) {
                 continue;
             }
@@ -1207,10 +1339,10 @@ impl InstanceRecord {
     /// the broker asked this replica to bring up to date. One the collab client does not take is
     /// said: the joiner asks again while no holder answers.
     fn send_snapshot(&mut self, chunk: ChunkNo) {
-        let Some(doc) = self.chunks.mirror(chunk) else {
+        let Some(whole) = self.read(|chunks| chunks.held(chunk).map(Doc::save_committed)) else {
             return;
         };
-        let request = CollabRequest::document_snapshot(doc.committed_document().save());
+        let request = CollabRequest::document_snapshot(whole);
         if let Err(error) = self.send_on(chunk, request) {
             tracing::warn!(chunk, %error, "workspace: a snapshot for a late joiner was not sent");
         }
@@ -1232,7 +1364,7 @@ impl InstanceRecord {
         if let Some(why) = self.share() {
             instance.unshared(why);
         }
-        instance.sync_chunks(&self.chunks);
+        self.sync_instance(instance);
         committed
     }
 
@@ -1297,7 +1429,7 @@ impl InstanceRecord {
         if let Some(why) = self.share() {
             instance.unshared(why);
         }
-        instance.sync_chunks(&self.chunks);
+        self.sync_instance(instance);
         Ok(())
     }
 
@@ -1362,7 +1494,7 @@ impl InstanceRecord {
                 .map_err(|error| RecordError::Refused(error.to_string()))?;
             match self.apply_on(
                 chunk,
-                &part,
+                (&part, Some(&part)),
                 encoded,
                 context.clone(),
                 invoker.clone(),
@@ -1390,21 +1522,13 @@ impl InstanceRecord {
     /// held before it: an action refused partway leaves nothing in any chunk.
     fn take_back(&mut self, written: Vec<(ChunkNo, Vec<ChangeHash>)>) {
         for (chunk, before) in written {
-            let Some(doc) = self.chunks.mirror(chunk) else {
-                continue;
-            };
-            let actor = doc.get_actor().clone();
-            match doc.committed_fork_at(&before) {
-                Ok(mut taken) => {
-                    taken.set_actor(actor);
-                    self.chunks.insert(chunk, taken);
-                }
-                Err(error) => tracing::error!(
+            if let Err(error) = self.write_chunk(chunk, |doc| fork_back(doc, &before)) {
+                tracing::error!(
                     app = %self.route.app_id,
                     chunk,
                     %error,
                     "workspace: an action it did not take could not be taken back"
-                ),
+                );
             }
         }
         self.chunks.reread_placement();
@@ -1413,22 +1537,34 @@ impl InstanceRecord {
     /// The edits of `action` by the chunk they are written in ([`Chunks::chunk_of`]).
     fn parts_of(&self, action: &DynAction) -> BTreeMap<ChunkNo, Vec<DynEdit>> {
         let mut parts: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
-        for edit in &action.edits {
-            parts
-                .entry(self.chunks.chunk_of(edit))
-                .or_default()
-                .push(edit.clone());
-        }
+        self.read(|chunks| {
+            for edit in &action.edits {
+                parts
+                    .entry(chunks.chunk_of(edit))
+                    .or_default()
+                    .push(edit.clone());
+            }
+        });
         parts
     }
 
     /// Apply `action`, encoded as `encoded`, to the chunk `chunk` as one step of its own,
     /// recorded with `context`; the heads the chunk held before it. The caller sends it on the
     /// chunk's route ([`Self::share`]).
+    ///
+    /// What the chunk holds past those heads is kept only if the workspace takes it, as every
+    /// receiver decides its claims against the app's surface
+    /// ([`collaboration::app_surface::refusal`]): a change the workspace refuses is taken out of
+    /// the chunk again, with all of it, so it is never kept here, built on and written to disk
+    /// while the workspace holds none of it.
+    ///
+    /// `part`, when `action` is the part of a tilolang action the instance's store wrote, is
+    /// committed as the store wrote it when that is how replaying it writes it
+    /// ([`crate::store::TiloStore::written_as`]), rather than written a second time.
     fn apply_on(
         &mut self,
         chunk: ChunkNo,
-        action: &dyn tilo_actions::Action,
+        (action, part): (&dyn tilo_actions::Action, Option<&DynAction>),
         encoded: EncodedAction,
         mut context: ActionContext,
         invoker: ActionInvoker,
@@ -1439,80 +1575,63 @@ impl InstanceRecord {
         }
         let author = invoker.actor.clone();
         let context = context.with_invoker(invoker);
-        let before = {
-            let doc = self.open_chunk(chunk);
-            let before = doc.get_heads();
-            tilo_actions::apply_local_with_context(
-                doc,
-                action,
-                encoded,
-                Some(author.as_bytes()),
-                context,
-            )
-            .map_err(|error| RecordError::Refused(error.to_string()))?;
-            // The change is a step of whoever made it, by the invoker its entry names: their
-            // Undo takes it back.
-            doc.commit();
-            before
-        };
-        self.keep_only_if_the_workspace_takes(chunk, &before)?;
-        Ok(before)
-    }
-
-    /// Keep what chunk `chunk` holds past `before` only if the workspace takes it, as every
-    /// receiver decides its claims against the app's surface
-    /// ([`collaboration::app_surface::refusal`]): a change the workspace refuses is taken out of
-    /// the chunk again, with all of it, so it is never kept here, built on and written to disk
-    /// while the workspace holds none of it.
-    fn keep_only_if_the_workspace_takes(
-        &mut self,
-        chunk: ChunkNo,
-        before: &[ChangeHash],
-    ) -> Result<(), RecordError> {
-        let Some(why) = self.refusal_of(chunk, before) else {
-            return Ok(());
-        };
-        tracing::warn!(app = %self.route.app_id, chunk, %why, "workspace: a change the workspace refuses was not kept");
-        let kept = {
-            let Some(doc) = self.chunks.mirror(chunk) else {
-                return Err(RecordError::Refused(format!(
-                    "{why}; and chunk {chunk} is not held"
-                )));
-            };
-            let actor = doc.get_actor().clone();
-            let mut kept = doc.committed_fork_at(before).map_err(|error| {
-                RecordError::Refused(format!("{why}; and it could not be taken out: {error}"))
-            })?;
-            kept.set_actor(actor);
-            kept
-        };
-        self.chunks.insert(chunk, kept);
-        Err(RecordError::Refused(format!(
-            "the workspace refuses it: {why}"
-        )))
-    }
-
-    /// Why the workspace refuses what chunk `chunk` holds past `before`, when it does.
-    fn refusal_of(&self, chunk: ChunkNo, before: &[ChangeHash]) -> Option<String> {
-        let change = self
-            .chunks
-            .mirror(chunk)?
-            .committed_document()
-            .save_after(before);
-        if change.is_empty() {
-            return None;
-        }
         let workspace = self.route.cluster_id.to_string();
+        let app = self.route.app_id.clone();
         let record_id = self.chunk_record(chunk);
         let record = collab_types::Record {
-            room: &workspace,
-            app: &self.route.app_id,
+            workspace: &workspace,
+            app: &app,
             record: &record_id,
         };
-        collaboration::app_surface::refusal(
-            &record,
-            &collab_types::DocumentMutation::Incremental(change),
-        )
+        self.keep_on_disk(chunk);
+        // What the store wrote of the action is its change when it wrote it as the author, and
+        // as replaying the action writes it: committed as it stands, never written twice.
+        let written = match (&self.chunks, part) {
+            (Docs::Store(store), Some(part)) => store
+                .written_as(chunk, part, author.as_bytes())
+                .map(|described| (store.clone(), part, described)),
+            _ => None,
+        };
+        let (before, refused) = if let Some((store, part, described)) = written {
+            let (out, moved) = store.commit_open(chunk, |doc| {
+                let before = doc.committed_heads();
+                tilo_actions::commit_written(
+                    doc,
+                    part,
+                    encoded,
+                    author.as_bytes(),
+                    context,
+                    Some(described),
+                )
+                .map_err(|error| RecordError::Refused(error.to_string()))?;
+                kept_or_refused(&record, doc, before)
+            });
+            self.moved |= moved;
+            out?
+        } else {
+            self.write_chunk(chunk, |doc| {
+                let before = doc.committed_heads();
+                tilo_actions::apply_local_with_context(
+                    doc,
+                    action,
+                    encoded,
+                    Some(author.as_bytes()),
+                    context,
+                )
+                .map_err(|error| RecordError::Refused(error.to_string()))?;
+                // The change is a step of whoever made it, by the invoker its entry names: their
+                // Undo takes it back.
+                doc.commit();
+                kept_or_refused(&record, doc, before)
+            })?
+        };
+        if let Some(why) = refused {
+            tracing::warn!(%app, chunk, %why, "workspace: a change the workspace refuses was not kept");
+            return Err(RecordError::Refused(format!(
+                "the workspace refuses it: {why}"
+            )));
+        }
+        Ok(before)
     }
 
     /// Take in what the record's route brought and bring `instance` up to date with the
@@ -1529,7 +1648,7 @@ impl InstanceRecord {
             instance.unshared(why);
         }
         if changed {
-            instance.sync_chunks(&self.chunks);
+            self.sync_instance(instance);
         }
         changed
     }
@@ -1537,10 +1656,12 @@ impl InstanceRecord {
     /// The heads of every chunk this replica holds now: what [`Self::changes_since`] starts from.
     #[must_use]
     pub fn marks(&self) -> Stamps {
-        self.chunks
-            .docs()
-            .map(|(chunk, doc)| (chunk, doc.committed_heads()))
-            .collect()
+        self.read(|chunks| {
+            chunks
+                .all()
+                .map(|(chunk, doc)| (chunk, doc.committed_heads()))
+                .collect()
+        })
     }
 
     /// What this replica holds past `marks`, as Automerge changes: what a change applied here
@@ -1548,10 +1669,12 @@ impl InstanceRecord {
     #[must_use]
     pub fn changes_since(&self, marks: &Stamps) -> Vec<u8> {
         let mut changes = Vec::new();
-        for (chunk, doc) in self.chunks.docs() {
-            let from = marks.get(&chunk).map_or(&[][..], Vec::as_slice);
-            changes.extend_from_slice(&doc.committed_document().save_after(from));
-        }
+        self.read(|chunks| {
+            for (chunk, doc) in chunks.all() {
+                let from = marks.get(&chunk).map_or(&[][..], Vec::as_slice);
+                changes.extend_from_slice(&doc.committed_document().save_after(from));
+            }
+        });
         changes
     }
 
@@ -1611,12 +1734,9 @@ impl InstanceRecord {
                         other(CollabEvent::CommittedDocument { route, read });
                         continue;
                     };
-                    let before = self
-                        .chunks
-                        .mirror(chunk)
-                        .map(Doc::committed_heads)
-                        .unwrap_or_default();
-                    let Some(applied) = read.take_into(self.open_chunk(chunk), load_mutation)
+                    let before = self.heads_of(chunk);
+                    let Some(applied) =
+                        self.write_chunk(chunk, |doc| read.take_into(doc, load_mutation))
                     else {
                         if read.was_refused() && read.is_whole() {
                             // The workspace's copy of the record cannot be read
@@ -1693,7 +1813,7 @@ impl InstanceRecord {
             else {
                 continue;
             };
-            let mutation = match decode_routed_mutation(route, payload, decrypted_payload) {
+            let mutation = match decode_routed_mutation(payload, decrypted_payload) {
                 Ok(mutation) => mutation,
                 Err(error) => {
                     tracing::warn!(
@@ -1703,12 +1823,8 @@ impl InstanceRecord {
                     return Taken::Nothing;
                 }
             };
-            let before = self
-                .chunks
-                .mirror(*chunk)
-                .map(Doc::committed_heads)
-                .unwrap_or_default();
-            return match load_mutation(self.open_chunk(*chunk), &mutation) {
+            let before = self.heads_of(*chunk);
+            return match self.write_chunk(*chunk, |doc| load_mutation(doc, &mutation)) {
                 Ok(applied) => Taken::Change((*chunk, before, applied)),
                 Err(error) => {
                     tracing::warn!(%error, chunk, "workspace: a change was not taken in");
@@ -1718,6 +1834,47 @@ impl InstanceRecord {
         }
         Taken::OtherRoute
     }
+}
+
+/// Why the workspace refuses what `doc`, the chunk `record`, holds past `before`, when it does.
+fn refusal_of(
+    record: &collab_types::Record<'_>,
+    doc: &Doc,
+    before: &[ChangeHash],
+) -> Option<String> {
+    let change = doc.committed_document().save_after(before);
+    if change.is_empty() {
+        return None;
+    }
+    collaboration::app_surface::refusal(
+        record,
+        &collab_types::DocumentMutation::Incremental(change),
+    )
+}
+
+/// Take `doc` back to the heads `before`, writing on under the actor it had.
+fn fork_back(doc: &mut Doc, before: &[ChangeHash]) -> Result<(), automerge::AutomergeError> {
+    let actor = doc.get_actor().clone();
+    let mut taken = doc.committed_fork_at(before)?;
+    taken.set_actor(actor);
+    *doc = taken;
+    Ok(())
+}
+
+/// What `doc`, the chunk `record`, holds past `before` once an action wrote it: kept, with the
+/// heads before it, or taken out again, with why the workspace refuses it.
+fn kept_or_refused(
+    record: &collab_types::Record<'_>,
+    doc: &mut Doc,
+    before: Vec<ChangeHash>,
+) -> Result<(Vec<ChangeHash>, Option<String>), RecordError> {
+    let Some(why) = refusal_of(record, doc, &before) else {
+        return Ok((before, None));
+    };
+    fork_back(doc, &before).map_err(|error| {
+        RecordError::Refused(format!("{why}; and it could not be taken out: {error}"))
+    })?;
+    Ok((before, Some(why)))
 }
 
 /// The route chunk `chunk` of the record on `route` travels on: `route` itself for [`FIRST`], the
@@ -1794,7 +1951,7 @@ impl ReadRecord {
                     envelope,
                     decrypted_payload.as_deref(),
                 )?;
-                let applied = decode_routed_mutation(route, payload, decrypted_payload.as_deref())
+                let applied = decode_routed_mutation(payload, decrypted_payload.as_deref())
                     .map_err(|error| format!("{error:?}"))
                     .and_then(|mutation| {
                         load_mutation(self.chunks.open(*chunk), &mutation)

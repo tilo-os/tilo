@@ -100,6 +100,23 @@ mod tests {
             assert!(from_cmdline("tilo.generation=1 tilo.generation=2").is_err());
         }
         {
+            // Nothing to read, and `/proc/cmdline` as the kernel gives it: one newline-ended line.
+            assert_eq!(from_cmdline("").unwrap(), None);
+            assert_eq!(from_cmdline("quiet tilo.generation=7\n").unwrap(), Some(7));
+        }
+        {
+            // The key with an empty value is a mistake, like the bare key.
+            assert!(from_cmdline("tilo.generation=").is_err());
+        }
+        {
+            // The largest generation parses; one past it is refused, not wrapped.
+            assert_eq!(
+                from_cmdline("tilo.generation=18446744073709551615").unwrap(),
+                Some(u64::MAX)
+            );
+            assert!(from_cmdline("tilo.generation=18446744073709551616").is_err());
+        }
+        {
             assert_eq!(policy_ref(1), [0, 0, 0, 0, 0, 0, 0, 1]);
             assert_eq!(policy_ref(0x0102_0304_0506_0708), [1, 2, 3, 4, 5, 6, 7, 8]);
         }

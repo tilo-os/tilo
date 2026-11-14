@@ -958,41 +958,46 @@ fn capitalized(word: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn terminals_answers_are_read_only_with_the_key() {
-        let body = format!(
-            "H;k=key;s=0;q={};e={},{};end=1",
-            b64(""),
-            b64("ls"),
-            b64("pwd")
-        );
-        match incoming(&body, "key") {
-            Some(Incoming::History {
-                query,
-                entries,
-                done,
-            }) => {
-                assert_eq!(query.skip, 0);
-                assert_eq!(entries, ["ls", "pwd"]);
-                assert!(done);
-            }
-            _ => panic!("a history answer"),
-        }
-        assert!(incoming(&body, "other").is_none());
-        let run = format!("R;k=key;cmd={};agent=1", b64("ls -R"));
-        assert!(matches!(
-            incoming(&run, "key"),
-            Some(Incoming::Run { line, agent: true }) if line == "ls -R"
-        ));
-    }
+    tilo_test_env::scenario! {
+        /// The editor's history: Terminal's answers and this shell's own lines.
+        fn history_is_answered_by_terminal_and_merged_with_this_shells;
 
-    #[test]
-    fn this_shells_lines_come_first_and_once() {
-        let history = History {
-            local: vec!["git status".into(), "ls".into()],
-            remote: vec!["ls".into(), "cargo build".into()],
-            ..History::default()
-        };
-        assert_eq!(history.entries(), ["git status", "ls", "cargo build"]);
+        phase terminals_answers_are_read_only_with_the_key;
+        {
+            let body = format!(
+                "H;k=key;s=0;q={};e={},{};end=1",
+                b64(""),
+                b64("ls"),
+                b64("pwd")
+            );
+            match incoming(&body, "key") {
+                Some(Incoming::History {
+                    query,
+                    entries,
+                    done,
+                }) => {
+                    assert_eq!(query.skip, 0);
+                    assert_eq!(entries, ["ls", "pwd"]);
+                    assert!(done);
+                }
+                _ => panic!("a history answer"),
+            }
+            assert!(incoming(&body, "other").is_none());
+            let run = format!("R;k=key;cmd={};agent=1", b64("ls -R"));
+            assert!(matches!(
+                incoming(&run, "key"),
+                Some(Incoming::Run { line, agent: true }) if line == "ls -R"
+            ));
+        }
+
+        phase this_shells_lines_come_first_and_once;
+        {
+            let history = History {
+                local: vec!["git status".into(), "ls".into()],
+                remote: vec!["ls".into(), "cargo build".into()],
+                ..History::default()
+            };
+            assert_eq!(history.entries(), ["git status", "ls", "cargo build"]);
+        }
     }
 }

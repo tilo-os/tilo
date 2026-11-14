@@ -461,71 +461,6 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn extend_places_a_fresh_monitor_beside_the_builtin_panel() {
-        let outputs = laptop_and_monitor();
-        let plan = plan_layout(
-            DisplayLayoutMode::Extend,
-            &outputs,
-            &DisplayConfig::default(),
-        )
-        .expect("two displays extend");
-        let panel = &plan.outputs["eDP-1"];
-        let monitor = &plan.outputs["HDMI-A-1"];
-        assert!(panel.enabled && monitor.enabled);
-        assert!(panel.primary && !monitor.primary);
-        assert_eq!((panel.x, panel.y), (0, 0));
-        assert_eq!((monitor.x, monitor.y), (2560, 0));
-        assert_eq!(
-            active_layout(&outputs, &plan),
-            Some(DisplayLayoutMode::Extend)
-        );
-    }
-
-    #[test]
-    fn extend_keeps_a_non_overlapping_user_arrangement() {
-        let outputs = laptop_and_monitor();
-        let mut base = DisplayConfig::default();
-        base.outputs.insert(
-            "HDMI-A-1".into(),
-            OutputConfig {
-                x: 0,
-                y: 0,
-                primary: true,
-                ..OutputConfig::default()
-            },
-        );
-        base.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                x: 640,
-                y: 2160,
-                ..OutputConfig::default()
-            },
-        );
-        let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
-        assert_eq!(
-            (plan.outputs["eDP-1"].x, plan.outputs["eDP-1"].y),
-            (640, 2160)
-        );
-        assert!(plan.outputs["HDMI-A-1"].primary, "the user's primary stays");
-    }
-
-    #[test]
-    fn extend_accounts_for_rotation() {
-        let outputs = laptop_and_monitor();
-        let mut base = DisplayConfig::default();
-        base.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                transform: OutputTransform::Rotate90,
-                ..OutputConfig::default()
-            },
-        );
-        let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
-        assert_eq!(plan.outputs["HDMI-A-1"].x, 1600);
-    }
-
     fn output_at(
         plan: &DisplayConfig,
         outputs: &[DisplayOutputSnapshot],
@@ -540,243 +475,320 @@ mod tests {
             .map(|(connector, _)| connector)
     }
 
-    #[test]
-    fn extend_places_mixed_dpi_displays_edge_to_edge_in_logical_size() {
-        let outputs = vec![
-            output("eDP-1", true, &[mode(2560, 1600, 60_000)]),
-            output("HDMI-A-1", false, &[mode(1920, 1080, 60_000)]),
-        ];
-        let mut base = DisplayConfig::default();
-        base.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                scale: 2.0,
-                ..OutputConfig::default()
-            },
-        );
-        let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
-        assert_eq!((plan.outputs["eDP-1"].x, plan.outputs["eDP-1"].y), (0, 0));
-        assert_eq!(
-            (plan.outputs["HDMI-A-1"].x, plan.outputs["HDMI-A-1"].y),
-            (1280, 0),
-            "no gap beside the 2x panel"
-        );
-        assert_eq!(
-            output_at(&plan, &outputs, 1279, 400).as_deref(),
-            Some("eDP-1")
-        );
-        assert_eq!(
-            output_at(&plan, &outputs, 1280, 400).as_deref(),
-            Some("HDMI-A-1")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn extend_arranges_displays_edge_to_edge;
 
-    #[test]
-    fn extend_keeps_the_scale_the_compositor_chose_for_an_unconfigured_display() {
-        // Nothing saved yet: the compositor runs the HiDPI panel at the 2x
-        // it chose itself. Writing the panel's first entry must keep that
-        // scale, not drop it to 1x, and place the monitor beside it.
-        let mut panel = output("eDP-1", true, &[mode(2560, 1600, 60_000)]);
-        panel.scale = 2.0;
-        let outputs = vec![
-            panel,
-            output("HDMI-A-1", false, &[mode(1920, 1080, 60_000)]),
-        ];
-        let plan = plan_layout(
-            DisplayLayoutMode::Extend,
-            &outputs,
-            &DisplayConfig::default(),
-        )
-        .unwrap();
-        assert!((plan.outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON);
-        assert!((plan.outputs["HDMI-A-1"].scale - 1.0).abs() < f64::EPSILON);
-        assert_eq!(
-            (plan.outputs["HDMI-A-1"].x, plan.outputs["HDMI-A-1"].y),
-            (1280, 0),
-            "beside the panel's 1280 logical pixels"
-        );
-    }
-
-    #[test]
-    fn extend_keeps_an_arrangement_that_is_edge_to_edge_in_logical_size() {
-        let outputs = vec![
-            output("eDP-1", true, &[mode(1920, 1080, 60_000)]),
-            output("DP-1", false, &[mode(3840, 2160, 60_000)]),
-        ];
-        let mut base = DisplayConfig::default();
-        base.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                primary: true,
-                ..OutputConfig::default()
-            },
-        );
-        base.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                x: -2560,
-                scale: 1.5,
-                ..OutputConfig::default()
-            },
-        );
-        let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
-        assert_eq!(
-            plan.outputs["DP-1"].x, -2560,
-            "logically edge to edge, kept"
-        );
-        assert_eq!(output_at(&plan, &outputs, -1, 500).as_deref(), Some("DP-1"));
-        assert_eq!(output_at(&plan, &outputs, 0, 500).as_deref(), Some("eDP-1"));
-    }
-
-    #[test]
-    fn mirror_targets_the_builtin_panel_at_the_largest_shared_extent() {
-        let outputs = laptop_and_monitor();
-        let plan = plan_layout(
-            DisplayLayoutMode::Mirror,
-            &outputs,
-            &DisplayConfig::default(),
-        )
-        .unwrap();
-        let panel = &plan.outputs["eDP-1"];
-        let monitor = &plan.outputs["HDMI-A-1"];
-        assert_eq!(monitor.mirror_of.as_deref(), Some("eDP-1"));
-        assert_eq!(panel.mirror_of, None);
-        assert_eq!(panel.mode, Some(mode(1920, 1080, 60_000)));
-        assert_eq!(monitor.mode, Some(mode(1920, 1080, 59_940)));
-        assert_eq!(
-            active_layout(&outputs, &plan),
-            Some(DisplayLayoutMode::Mirror)
-        );
-    }
-
-    #[test]
-    fn mirror_never_picks_a_resolution_neither_display_is_driving() {
-        let mut outputs = vec![
-            output(
-                "Virtual-1",
-                true,
-                &[mode(4096, 2160, 60_000), mode(1024, 768, 60_000)],
-            ),
-            output(
-                "Virtual-2",
-                false,
-                &[mode(4096, 2160, 60_000), mode(1024, 768, 60_000)],
-            ),
-        ];
-        for output in &mut outputs {
-            output.current_mode = mode(1024, 768, 60_000);
-        }
-        let plan = plan_layout(
-            DisplayLayoutMode::Mirror,
-            &outputs,
-            &DisplayConfig::default(),
-        )
-        .unwrap();
-        for connector in ["Virtual-1", "Virtual-2"] {
+        phase extend_places_a_fresh_monitor_beside_the_builtin_panel;
+        {
+            let outputs = laptop_and_monitor();
+            let plan = plan_layout(
+                DisplayLayoutMode::Extend,
+                &outputs,
+                &DisplayConfig::default(),
+            )
+            .expect("two displays extend");
+            let panel = &plan.outputs["eDP-1"];
+            let monitor = &plan.outputs["HDMI-A-1"];
+            assert!(panel.enabled && monitor.enabled);
+            assert!(panel.primary && !monitor.primary);
+            assert_eq!((panel.x, panel.y), (0, 0));
+            assert_eq!((monitor.x, monitor.y), (2560, 0));
             assert_eq!(
-                plan.outputs[connector].mode,
-                Some(mode(1024, 768, 60_000)),
-                "{connector}"
+                active_layout(&outputs, &plan),
+                Some(DisplayLayoutMode::Extend)
             );
         }
+
+        phase extend_keeps_a_non_overlapping_user_arrangement;
+        {
+            let outputs = laptop_and_monitor();
+            let mut base = DisplayConfig::default();
+            base.outputs.insert(
+                "HDMI-A-1".into(),
+                OutputConfig {
+                    x: 0,
+                    y: 0,
+                    primary: true,
+                    ..OutputConfig::default()
+                },
+            );
+            base.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    x: 640,
+                    y: 2160,
+                    ..OutputConfig::default()
+                },
+            );
+            let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
+            assert_eq!(
+                (plan.outputs["eDP-1"].x, plan.outputs["eDP-1"].y),
+                (640, 2160)
+            );
+            assert!(plan.outputs["HDMI-A-1"].primary, "the user's primary stays");
+        }
+
+        phase extend_accounts_for_rotation;
+        {
+            let outputs = laptop_and_monitor();
+            let mut base = DisplayConfig::default();
+            base.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    transform: OutputTransform::Rotate90,
+                    ..OutputConfig::default()
+                },
+            );
+            let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
+            assert_eq!(plan.outputs["HDMI-A-1"].x, 1600);
+        }
+
+        phase extend_places_mixed_dpi_displays_edge_to_edge_in_logical_size;
+        {
+            let outputs = vec![
+                output("eDP-1", true, &[mode(2560, 1600, 60_000)]),
+                output("HDMI-A-1", false, &[mode(1920, 1080, 60_000)]),
+            ];
+            let mut base = DisplayConfig::default();
+            base.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    scale: 2.0,
+                    ..OutputConfig::default()
+                },
+            );
+            let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
+            assert_eq!((plan.outputs["eDP-1"].x, plan.outputs["eDP-1"].y), (0, 0));
+            assert_eq!(
+                (plan.outputs["HDMI-A-1"].x, plan.outputs["HDMI-A-1"].y),
+                (1280, 0),
+                "no gap beside the 2x panel"
+            );
+            assert_eq!(
+                output_at(&plan, &outputs, 1279, 400).as_deref(),
+                Some("eDP-1")
+            );
+            assert_eq!(
+                output_at(&plan, &outputs, 1280, 400).as_deref(),
+                Some("HDMI-A-1")
+            );
+        }
+
+        phase extend_keeps_the_scale_the_compositor_chose_for_an_unconfigured_display;
+        {
+            // Nothing saved yet: the compositor runs the HiDPI panel at the 2x
+            // it chose itself. Writing the panel's first entry must keep that
+            // scale, not drop it to 1x, and place the monitor beside it.
+            let mut panel = output("eDP-1", true, &[mode(2560, 1600, 60_000)]);
+            panel.scale = 2.0;
+            let outputs = vec![
+                panel,
+                output("HDMI-A-1", false, &[mode(1920, 1080, 60_000)]),
+            ];
+            let plan = plan_layout(
+                DisplayLayoutMode::Extend,
+                &outputs,
+                &DisplayConfig::default(),
+            )
+            .unwrap();
+            assert!((plan.outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON);
+            assert!((plan.outputs["HDMI-A-1"].scale - 1.0).abs() < f64::EPSILON);
+            assert_eq!(
+                (plan.outputs["HDMI-A-1"].x, plan.outputs["HDMI-A-1"].y),
+                (1280, 0),
+                "beside the panel's 1280 logical pixels"
+            );
+        }
+
+        phase extend_keeps_an_arrangement_that_is_edge_to_edge_in_logical_size;
+        {
+            let outputs = vec![
+                output("eDP-1", true, &[mode(1920, 1080, 60_000)]),
+                output("DP-1", false, &[mode(3840, 2160, 60_000)]),
+            ];
+            let mut base = DisplayConfig::default();
+            base.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    primary: true,
+                    ..OutputConfig::default()
+                },
+            );
+            base.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    x: -2560,
+                    scale: 1.5,
+                    ..OutputConfig::default()
+                },
+            );
+            let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
+            assert_eq!(
+                plan.outputs["DP-1"].x, -2560,
+                "logically edge to edge, kept"
+            );
+            assert_eq!(output_at(&plan, &outputs, -1, 500).as_deref(), Some("DP-1"));
+            assert_eq!(output_at(&plan, &outputs, 0, 500).as_deref(), Some("eDP-1"));
+        }
     }
 
-    #[test]
-    fn mirror_without_a_shared_resolution_is_unavailable() {
-        let outputs = vec![
-            output("eDP-1", true, &[mode(2560, 1600, 60_000)]),
-            output("DP-1", false, &[mode(3840, 2160, 60_000)]),
-        ];
-        assert_eq!(
-            plan_layout(
+    tilo_test_env::scenario! {
+        fn mirror_shares_a_resolution_both_displays_drive;
+
+        phase mirror_targets_the_builtin_panel_at_the_largest_shared_extent;
+        {
+            let outputs = laptop_and_monitor();
+            let plan = plan_layout(
                 DisplayLayoutMode::Mirror,
                 &outputs,
-                &DisplayConfig::default()
-            ),
-            Err(DisplayLayoutError::NoCommonMirrorMode)
-        );
-    }
-
-    #[test]
-    fn leaving_a_mirror_releases_the_pinned_modes() {
-        let outputs = laptop_and_monitor();
-        let mirrored = plan_layout(
-            DisplayLayoutMode::Mirror,
-            &outputs,
-            &DisplayConfig::default(),
-        )
-        .unwrap();
-        let extended = plan_layout(DisplayLayoutMode::Extend, &outputs, &mirrored).unwrap();
-        assert_eq!(extended.outputs["eDP-1"].mode, None);
-        assert_eq!(extended.outputs["HDMI-A-1"].mode, None);
-        assert_eq!(extended.outputs["HDMI-A-1"].mirror_of, None);
-        assert_eq!(extended.outputs["HDMI-A-1"].x, 2560);
-    }
-
-    #[test]
-    fn single_screen_layouts_turn_the_other_side_off() {
-        let outputs = laptop_and_monitor();
-        let builtin = plan_layout(
-            DisplayLayoutMode::BuiltinOnly,
-            &outputs,
-            &DisplayConfig::default(),
-        )
-        .unwrap();
-        assert!(builtin.outputs["eDP-1"].enabled && builtin.outputs["eDP-1"].primary);
-        assert!(!builtin.outputs["HDMI-A-1"].enabled);
-        assert_eq!(
-            active_layout(&outputs, &builtin),
-            Some(DisplayLayoutMode::BuiltinOnly)
-        );
-
-        let external = plan_layout(DisplayLayoutMode::ExternalOnly, &outputs, &builtin).unwrap();
-        assert!(!external.outputs["eDP-1"].enabled);
-        assert!(external.outputs["HDMI-A-1"].enabled && external.outputs["HDMI-A-1"].primary);
-        assert_eq!(
-            active_layout(&outputs, &external),
-            Some(DisplayLayoutMode::ExternalOnly)
-        );
-    }
-
-    #[test]
-    fn layouts_need_two_displays_and_single_screen_layouts_need_a_panel() {
-        let one = vec![output("eDP-1", true, &[mode(1920, 1080, 60_000)])];
-        for mode in DisplayLayoutMode::ALL {
+                &DisplayConfig::default(),
+            )
+            .unwrap();
+            let panel = &plan.outputs["eDP-1"];
+            let monitor = &plan.outputs["HDMI-A-1"];
+            assert_eq!(monitor.mirror_of.as_deref(), Some("eDP-1"));
+            assert_eq!(panel.mirror_of, None);
+            assert_eq!(panel.mode, Some(mode(1920, 1080, 60_000)));
+            assert_eq!(monitor.mode, Some(mode(1920, 1080, 59_940)));
             assert_eq!(
-                plan_layout(mode, &one, &DisplayConfig::default()),
-                Err(DisplayLayoutError::SingleDisplay)
+                active_layout(&outputs, &plan),
+                Some(DisplayLayoutMode::Mirror)
             );
         }
-        let desk = vec![
-            output("DP-1", false, &[mode(1920, 1080, 60_000)]),
-            output("DP-2", false, &[mode(1920, 1080, 60_000)]),
-        ];
-        assert!(layout_available(
-            DisplayLayoutMode::Extend,
-            &desk,
-            &DisplayConfig::default()
-        ));
-        assert!(layout_available(
-            DisplayLayoutMode::Mirror,
-            &desk,
-            &DisplayConfig::default()
-        ));
-        assert!(!layout_available(
-            DisplayLayoutMode::BuiltinOnly,
-            &desk,
-            &DisplayConfig::default()
-        ));
-        assert!(!layout_available(
-            DisplayLayoutMode::ExternalOnly,
-            &desk,
-            &DisplayConfig::default()
-        ));
+
+        phase mirror_never_picks_a_resolution_neither_display_is_driving;
+        {
+            let mut outputs = vec![
+                output(
+                    "Virtual-1",
+                    true,
+                    &[mode(4096, 2160, 60_000), mode(1024, 768, 60_000)],
+                ),
+                output(
+                    "Virtual-2",
+                    false,
+                    &[mode(4096, 2160, 60_000), mode(1024, 768, 60_000)],
+                ),
+            ];
+            for output in &mut outputs {
+                output.current_mode = mode(1024, 768, 60_000);
+            }
+            let plan = plan_layout(
+                DisplayLayoutMode::Mirror,
+                &outputs,
+                &DisplayConfig::default(),
+            )
+            .unwrap();
+            for connector in ["Virtual-1", "Virtual-2"] {
+                assert_eq!(
+                    plan.outputs[connector].mode,
+                    Some(mode(1024, 768, 60_000)),
+                    "{connector}"
+                );
+            }
+        }
+
+        phase mirror_without_a_shared_resolution_is_unavailable;
+        {
+            let outputs = vec![
+                output("eDP-1", true, &[mode(2560, 1600, 60_000)]),
+                output("DP-1", false, &[mode(3840, 2160, 60_000)]),
+            ];
+            assert_eq!(
+                plan_layout(
+                    DisplayLayoutMode::Mirror,
+                    &outputs,
+                    &DisplayConfig::default()
+                ),
+                Err(DisplayLayoutError::NoCommonMirrorMode)
+            );
+        }
+
+        phase leaving_a_mirror_releases_the_pinned_modes;
+        {
+            let outputs = laptop_and_monitor();
+            let mirrored = plan_layout(
+                DisplayLayoutMode::Mirror,
+                &outputs,
+                &DisplayConfig::default(),
+            )
+            .unwrap();
+            let extended = plan_layout(DisplayLayoutMode::Extend, &outputs, &mirrored).unwrap();
+            assert_eq!(extended.outputs["eDP-1"].mode, None);
+            assert_eq!(extended.outputs["HDMI-A-1"].mode, None);
+            assert_eq!(extended.outputs["HDMI-A-1"].mirror_of, None);
+            assert_eq!(extended.outputs["HDMI-A-1"].x, 2560);
+        }
     }
 
-    #[test]
-    fn mode_ids_round_trip() {
-        for mode in DisplayLayoutMode::ALL {
-            assert_eq!(DisplayLayoutMode::from_id(mode.id()), Some(mode));
+    tilo_test_env::scenario! {
+        fn layouts_are_offered_for_the_displays_there_are;
+
+        phase single_screen_layouts_turn_the_other_side_off;
+        {
+            let outputs = laptop_and_monitor();
+            let builtin = plan_layout(
+                DisplayLayoutMode::BuiltinOnly,
+                &outputs,
+                &DisplayConfig::default(),
+            )
+            .unwrap();
+            assert!(builtin.outputs["eDP-1"].enabled && builtin.outputs["eDP-1"].primary);
+            assert!(!builtin.outputs["HDMI-A-1"].enabled);
+            assert_eq!(
+                active_layout(&outputs, &builtin),
+                Some(DisplayLayoutMode::BuiltinOnly)
+            );
+
+            let external = plan_layout(DisplayLayoutMode::ExternalOnly, &outputs, &builtin).unwrap();
+            assert!(!external.outputs["eDP-1"].enabled);
+            assert!(external.outputs["HDMI-A-1"].enabled && external.outputs["HDMI-A-1"].primary);
+            assert_eq!(
+                active_layout(&outputs, &external),
+                Some(DisplayLayoutMode::ExternalOnly)
+            );
+        }
+
+        phase layouts_need_two_displays_and_single_screen_layouts_need_a_panel;
+        {
+            let one = vec![output("eDP-1", true, &[mode(1920, 1080, 60_000)])];
+            for mode in DisplayLayoutMode::ALL {
+                assert_eq!(
+                    plan_layout(mode, &one, &DisplayConfig::default()),
+                    Err(DisplayLayoutError::SingleDisplay)
+                );
+            }
+            let desk = vec![
+                output("DP-1", false, &[mode(1920, 1080, 60_000)]),
+                output("DP-2", false, &[mode(1920, 1080, 60_000)]),
+            ];
+            assert!(layout_available(
+                DisplayLayoutMode::Extend,
+                &desk,
+                &DisplayConfig::default()
+            ));
+            assert!(layout_available(
+                DisplayLayoutMode::Mirror,
+                &desk,
+                &DisplayConfig::default()
+            ));
+            assert!(!layout_available(
+                DisplayLayoutMode::BuiltinOnly,
+                &desk,
+                &DisplayConfig::default()
+            ));
+            assert!(!layout_available(
+                DisplayLayoutMode::ExternalOnly,
+                &desk,
+                &DisplayConfig::default()
+            ));
+        }
+
+        phase mode_ids_round_trip;
+        {
+            for mode in DisplayLayoutMode::ALL {
+                assert_eq!(DisplayLayoutMode::from_id(mode.id()), Some(mode));
+            }
         }
     }
 }

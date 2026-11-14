@@ -503,10 +503,13 @@ mod tests {
         .expect("checks")
     }
 
-    #[test]
-    fn verbs_may_not_reach_outside_the_document() {
-        let found = findings(
-            r#"
+    tilo_test_env::scenario! {
+        fn source_checks_find_impure_verbs_and_unknown_label_keys;
+
+        phase verbs_may_not_reach_outside_the_document;
+        {
+            let found = findings(
+                r#"
             #[resource(kind = "demo")]
             impl Demo {
                 #[action]
@@ -545,27 +548,27 @@ mod tests {
                 }
             }
             "#,
-            &[],
-        );
-        let verbs: BTreeSet<String> = found
-            .iter()
-            .filter(|f| f.rule == "verb-determinism")
-            .map(|f| f.message.split('`').nth(1).unwrap_or_default().to_owned())
-            .collect();
-        assert_eq!(
-            verbs,
-            ["fetch", "home", "load", "roll", "spawn", "stamp"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
-        );
-        assert!(found.iter().all(|f| f.level == Level::Error));
-    }
+                &[],
+            );
+            let verbs: BTreeSet<String> = found
+                .iter()
+                .filter(|f| f.rule == "verb-determinism")
+                .map(|f| f.message.split('`').nth(1).unwrap_or_default().to_owned())
+                .collect();
+            assert_eq!(
+                verbs,
+                ["fetch", "home", "load", "roll", "spawn", "stamp"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            );
+            assert!(found.iter().all(|f| f.level == Level::Error));
+        }
 
-    #[test]
-    fn literal_label_keys_must_be_catalog_messages() {
-        let found = findings(
-            r#"
+        phase literal_label_keys_must_be_catalog_messages;
+        {
+            let found = findings(
+                r#"
             fn view(cx: &mut ViewCx<Notes>) -> Element {
                 let add = cx.button("notes-add", Notes::ADD.invoke());
                 let typo = cx.button("notes-ad", Notes::ADD.invoke());
@@ -574,53 +577,58 @@ mod tests {
                 Box::new(ui::column![add, typo, plain, hint])
             }
             "#,
-            &["notes-add"],
-        );
-        let keys: Vec<&str> = found
-            .iter()
-            .filter(|f| f.rule == "label-key")
-            .map(|f| f.message.split('"').nth(1).unwrap_or_default())
-            .collect();
-        assert_eq!(keys, ["notes-ad", "notes-title-hint"]);
-    }
-
-    #[test]
-    fn shipped_translations_carry_every_source_message() {
-        let temp = tempfile::tempdir().unwrap();
-        let locales = temp.path().join("locales");
-        std::fs::create_dir_all(&locales).unwrap();
-        std::fs::write(locales.join("en-US.ftl"), "a-b = A\nc-d = C\n").unwrap();
-        std::fs::write(locales.join("de-DE.ftl"), "a-b = A\n").unwrap();
-        std::fs::write(locales.join("fr-FR.ftl"), "a-b = A\nc-d = C\n").unwrap();
-        let source = source_catalog(temp.path()).unwrap().unwrap();
-        let found = check_translations(temp.path(), &source).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].path, Path::new("locales/de-DE.ftl"));
-        assert!(found[0].message.starts_with("missing c-d"));
-    }
-
-    #[test]
-    fn a_catalogue_that_defines_a_message_twice_fails() {
-        let temp = tempfile::tempdir().unwrap();
-        let locales = temp.path().join("locales");
-        std::fs::create_dir_all(&locales).unwrap();
-        // Written by appending so this fixture is not itself a second
-        // definition of the id it repeats.
-        let path = locales.join("en-US.ftl");
-        std::fs::write(&path, "notes-add = Add\nnotes-edit = Edit\n").unwrap();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        std::io::Write::write_all(&mut file, b"notes-add = Add a note\n").unwrap();
-        let error = source_catalog(temp.path()).unwrap_err();
-        let mut said = String::new();
-        let mut cause = std::error::Error::source(&*error);
-        while let Some(inner) = cause {
-            said.push_str(&inner.to_string());
-            cause = inner.source();
+                &["notes-add"],
+            );
+            let keys: Vec<&str> = found
+                .iter()
+                .filter(|f| f.rule == "label-key")
+                .map(|f| f.message.split('"').nth(1).unwrap_or_default())
+                .collect();
+            assert_eq!(keys, ["notes-ad", "notes-title-hint"]);
         }
-        assert!(said.contains("notes-add"), "{said}");
-        assert!(!said.contains("notes-edit"), "{said}");
+    }
+
+    tilo_test_env::scenario! {
+        fn catalogues_are_complete_and_define_each_message_once;
+
+        phase shipped_translations_carry_every_source_message;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let locales = temp.path().join("locales");
+            std::fs::create_dir_all(&locales).unwrap();
+            std::fs::write(locales.join("en-US.ftl"), "a-b = A\nc-d = C\n").unwrap();
+            std::fs::write(locales.join("de-DE.ftl"), "a-b = A\n").unwrap();
+            std::fs::write(locales.join("fr-FR.ftl"), "a-b = A\nc-d = C\n").unwrap();
+            let source = source_catalog(temp.path()).unwrap().unwrap();
+            let found = check_translations(temp.path(), &source).unwrap();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].path, Path::new("locales/de-DE.ftl"));
+            assert!(found[0].message.starts_with("missing c-d"));
+        }
+
+        phase a_catalogue_that_defines_a_message_twice_fails;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let locales = temp.path().join("locales");
+            std::fs::create_dir_all(&locales).unwrap();
+            // Written by appending so this fixture is not itself a second
+            // definition of the id it repeats.
+            let path = locales.join("en-US.ftl");
+            std::fs::write(&path, "notes-add = Add\nnotes-edit = Edit\n").unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            std::io::Write::write_all(&mut file, b"notes-add = Add a note\n").unwrap();
+            let error = source_catalog(temp.path()).unwrap_err();
+            let mut said = String::new();
+            let mut cause = std::error::Error::source(&*error);
+            while let Some(inner) = cause {
+                said.push_str(&inner.to_string());
+                cause = inner.source();
+            }
+            assert!(said.contains("notes-add"), "{said}");
+            assert!(!said.contains("notes-edit"), "{said}");
+        }
     }
 }

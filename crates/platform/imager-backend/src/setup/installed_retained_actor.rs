@@ -520,75 +520,81 @@ mod tests {
             );
         }
     }
-    #[test]
-    fn partial_proof_progress_never_renews_absolute_deadline() {
-        use std::io::Read;
-        let (mut receiver, mut sender) = UnixStream::pair().unwrap();
-        let held = receiver.try_clone().unwrap();
-        let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let sent = progress.clone();
-        let (ready, observed) = std::sync::mpsc::sync_channel(1);
-        let (mut unrelated, mut peer) = UnixStream::pair().unwrap();
-        let writer = std::thread::spawn(move || {
-            sender
-                .set_write_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            sender.write_all(&64_u32.to_le_bytes()).unwrap();
-            sender.write_all(&[7, 7]).unwrap();
-            sent.store(2, Ordering::Release);
-            ready.send(()).unwrap();
-            for _ in 2..64 {
-                if sender.write_all(&[7]).is_err() {
-                    break;
-                }
-                sent.fetch_add(1, Ordering::Release);
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        });
-        tilo_test_env::recv("the partial payload to be sent", &observed);
-        let start = Instant::now();
-        let error = with_proof_deadline_at(
-            &held,
-            &AtomicBool::new(false),
-            start + Duration::from_millis(200),
-            || {
-                wire_frame::Framing::little_endian(MAX_PROOF_BYTES)
-                    .reject_empty()
-                    .read(&mut receiver)
-                    .map_err(io::Error::other)
-            },
-        )
-        .unwrap_err();
-        writer.join().unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        // The payload trickles in over more than a second, so a deadline renewed by progress would
-        // have read it whole.
-        assert!(
-            progress.load(Ordering::Acquire) >= 2,
-            "actual partial payload arrived"
-        );
-        peer.write_all(&[9]).unwrap();
-        let mut byte = [0];
-        unrelated.read_exact(&mut byte).unwrap();
-        assert_eq!(byte, [9]);
-    }
+    tilo_test_env::scenario! {
+        /// The deadline and cancellation fence around a proof read.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_proof_deadline_is_absolute_and_a_cancelled_fence_refuses_before_io;
 
-    #[test]
-    fn cancelled_proof_fence_refuses_before_first_io() {
-        use std::io::Read;
-        let (receiver, mut sender) = UnixStream::pair().unwrap();
-        sender
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let mut invoked = false;
-        let error = with_proof_deadline(&receiver, &AtomicBool::new(true), || {
-            invoked = true;
-            Ok(())
-        })
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(!invoked);
-        assert_eq!(sender.read(&mut [0]).unwrap(), 0, "exact socket shut down");
+        phase partial_proof_progress_never_renews_absolute_deadline;
+        {
+            use std::io::Read;
+            let (mut receiver, mut sender) = UnixStream::pair().unwrap();
+            let held = receiver.try_clone().unwrap();
+            let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let sent = progress.clone();
+            let (ready, observed) = std::sync::mpsc::sync_channel(1);
+            let (mut unrelated, mut peer) = UnixStream::pair().unwrap();
+            let writer = std::thread::spawn(move || {
+                sender
+                    .set_write_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                sender.write_all(&64_u32.to_le_bytes()).unwrap();
+                sender.write_all(&[7, 7]).unwrap();
+                sent.store(2, Ordering::Release);
+                ready.send(()).unwrap();
+                for _ in 2..64 {
+                    if sender.write_all(&[7]).is_err() {
+                        break;
+                    }
+                    sent.fetch_add(1, Ordering::Release);
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            });
+            tilo_test_env::recv("the partial payload to be sent", &observed);
+            let start = Instant::now();
+            let error = with_proof_deadline_at(
+                &held,
+                &AtomicBool::new(false),
+                start + Duration::from_millis(200),
+                || {
+                    wire_frame::Framing::little_endian(MAX_PROOF_BYTES)
+                        .reject_empty()
+                        .read(&mut receiver)
+                        .map_err(io::Error::other)
+                },
+            )
+            .unwrap_err();
+            writer.join().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            // The payload trickles in over more than a second, so a deadline renewed by progress would
+            // have read it whole.
+            assert!(
+                progress.load(Ordering::Acquire) >= 2,
+                "actual partial payload arrived"
+            );
+            peer.write_all(&[9]).unwrap();
+            let mut byte = [0];
+            unrelated.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [9]);
+        }
+
+        phase cancelled_proof_fence_refuses_before_first_io;
+        {
+            use std::io::Read;
+            let (receiver, mut sender) = UnixStream::pair().unwrap();
+            sender
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let mut invoked = false;
+            let error = with_proof_deadline(&receiver, &AtomicBool::new(true), || {
+                invoked = true;
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert!(!invoked);
+            assert_eq!(sender.read(&mut [0]).unwrap(), 0, "exact socket shut down");
+        }
     }
 
     #[cfg(feature = "native-capture-qualification")]

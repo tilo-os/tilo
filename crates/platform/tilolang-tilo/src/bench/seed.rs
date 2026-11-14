@@ -350,7 +350,11 @@ pub fn seeded_chunks(packages: &[Compiled], n: usize) -> Result<Chunks, String> 
     let shape = shape_of(&main.meta, &others)?;
     // The root and the roots it links, their collections empty: the items come as the action
     // that adds each does, one change an item in the chunk its run is in.
-    let mut record = Doc::new();
+    // Every run seeds the same workspace, down to its actors: where an actor sorts among a
+    // document's decides what writing under a new one costs, so a random one makes each run's
+    // costs differ.
+    let seeder = automerge::ActorId::from(b"seed".as_slice());
+    let mut record = Doc::new().with_actor(seeder.clone());
     seed(&mut record, &shape, 0, "seed", SEED_BATCH)?;
     let mut chunks = Chunks::of(record);
     let Some(list) = &shape.list else {
@@ -412,8 +416,10 @@ pub fn seeded_chunks(packages: &[Compiled], n: usize) -> Result<Chunks, String> 
                 edits: vec![edit.clone()],
                 ..action.clone()
             };
-            one.apply(chunks.open(target)).map_err(|e| e.to_string())?;
-            chunks.open(target).commit();
+            let doc = chunks.open(target);
+            doc.set_actor(seeder.clone());
+            one.apply(doc).map_err(|e| e.to_string())?;
+            doc.commit();
         }
     }
     chunks.reread_placement();

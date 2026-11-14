@@ -226,6 +226,7 @@ directory-role-viewer = a viewer
 directory-role-commenter = a commenter
 directory-role-editor = an editor
 directory-role-moderator = a moderator
+directory-role-owner = the owner
 
 ## Display sheet
 display-sheet-title = Display
@@ -265,14 +266,6 @@ wireless-stop = Stop
 wireless-wait = Wait
 wireless-protocols = Miracast, Google Cast, AirPlay and FCast
 display-sheet-saving-layout = Saving display layout…
-display-remote-heading = Your other screens
-display-remote-title = Display { $number }: { $name } on { $device }
-display-remote-row-description = Include this screen in your shared display layout
-display-remote-offline = Offline
-display-remote-offline-excluded = Offline, not in the layout
-display-remote-switched-off = Switched off on its device
-display-remote-in-layout = In layout
-display-remote-out-of-layout = Not in layout
 
 ## The system sheets the shell asks with on an app's or a service's behalf
 portal-sheet-description = Asked by Tilo, not by the app. Enter answers, Escape declines.
@@ -728,3 +721,25 @@ so-tilo-workspace-settings-change-set-agent-spend-limit = Set the daily limit
 so-tilo-workspace-settings-change-set-role = Change a role
 so-tilo-workspace-settings-change-show-tab = Show a tab
 so-tilo-workspace-settings-change-toggle-device = Show on a device
+
+## Add a device
+
+pair-device = Device pairing
+so-tilo-pair-device-link-copy = Copy the link
+so-tilo-pair-device-link-done = Close
+pair-device-title = Add a device
+pair-device-description = Scan the code or open the link on your new device to make it one of yours.
+pair-device-close = Close
+pair-device-link-label = The link
+pair-device-copy = Copy link
+pair-device-copied = Copied
+pair-device-code-alt = The pairing link as a code to scan
+pair-device-lasting = { $minutes ->
+    [one] Works once, for the next minute.
+   *[other] Works once, for the next { $minutes } minutes.
+}
+pair-device-in-tilo = On a computer with Tilo, paste the link into Join a workspace.
+pair-device-nearby = Your new device can't reach this computer from elsewhere, so there is no link to show. Add it nearby instead: on the new device, choose Use my existing Tilo identity. Then, in Settings under Your devices, choose Add device and check both show the same code.
+pair-device-no-workspace = Open a workspace first: the link opens it on your new device.
+pair-device-not-yours = This computer isn't signed in as you, so it can't let a new device in.
+pair-device-no-link = The link could not be made. Close this and try again.

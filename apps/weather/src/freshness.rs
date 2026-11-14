@@ -79,59 +79,63 @@ mod tests {
             .expect("a real moment")
     }
 
-    #[test]
-    fn a_fresh_forecast_counts_the_minutes_since_it_was_fetched() {
-        let now = at(2026, 6, 30, 14, 30);
-        let fresh = updated_at(at(2026, 6, 30, 14, 25), now);
-        assert_eq!(fresh.text, "Updated 5 min ago");
-        assert!(!fresh.stale);
-        assert_eq!(updated_at(now, now).text, "Updated just now");
-        assert_eq!(
-            updated_at(at(2026, 6, 30, 14, 31), now).text,
-            "Updated just now"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_forecasts_age_is_worded_by_how_old_it_is;
 
-    #[test]
-    fn an_older_forecast_names_the_clock_time_it_was_fetched_at() {
-        let now = at(2026, 6, 30, 14, 30);
-        let fetched = at(2026, 6, 30, 13, 0);
-        let older = updated_at(fetched, now);
-        assert_eq!(
-            older.text,
-            format!("Updated at {}", ui::format::time(&fetched.time()))
-        );
-        assert!(!older.stale, "ninety minutes is still current");
-    }
+        phase a_fresh_forecast_counts_the_minutes_since_it_was_fetched;
+        {
+            let now = at(2026, 6, 30, 14, 30);
+            let fresh = updated_at(at(2026, 6, 30, 14, 25), now);
+            assert_eq!(fresh.text, "Updated 5 min ago");
+            assert!(!fresh.stale);
+            assert_eq!(updated_at(now, now).text, "Updated just now");
+            assert_eq!(
+                updated_at(at(2026, 6, 30, 14, 31), now).text,
+                "Updated just now"
+            );
+        }
 
-    #[test]
-    fn a_stale_forecast_says_so_and_says_when_it_was_last_updated() {
-        let now = at(2026, 6, 30, 14, 30);
-        // Two hours old: the reading can no longer be the current hour.
-        let stale = updated_at(at(2026, 6, 30, 12, 30), now);
-        assert!(stale.stale, "{STALE_AFTER_SECS} s is the threshold");
-        assert!(stale.text.starts_with("Last updated"), "{}", stale.text);
-        let morning = updated_at(at(2026, 6, 30, 7, 0), now);
-        assert_eq!(
-            morning.text,
-            format!(
-                "Last updated at {}, and out of date",
-                ui::format::time(&at(2026, 6, 30, 7, 0).time())
-            )
-        );
-        let days = updated_at(at(2026, 6, 27, 9, 15), now);
-        assert!(days.stale);
-        assert_eq!(
-            days.text,
-            format!(
-                "Last updated {}, and out of date",
-                ui::format::timestamp(&at(2026, 6, 27, 9, 15))
-            )
-        );
-    }
+        phase an_older_forecast_names_the_clock_time_it_was_fetched_at;
+        {
+            let now = at(2026, 6, 30, 14, 30);
+            let fetched = at(2026, 6, 30, 13, 0);
+            let older = updated_at(fetched, now);
+            assert_eq!(
+                older.text,
+                format!("Updated at {}", ui::format::time(&fetched.time()))
+            );
+            assert!(!older.stale, "ninety minutes is still current");
+        }
 
-    #[test]
-    fn a_capture_fixture_makes_no_claim_about_its_age() {
-        assert_eq!(updated(0, at(2026, 6, 30, 14, 30)), None);
+        phase a_stale_forecast_says_so_and_says_when_it_was_last_updated;
+        {
+            let now = at(2026, 6, 30, 14, 30);
+            // Two hours old: the reading can no longer be the current hour.
+            let stale = updated_at(at(2026, 6, 30, 12, 30), now);
+            assert!(stale.stale, "{STALE_AFTER_SECS} s is the threshold");
+            assert!(stale.text.starts_with("Last updated"), "{}", stale.text);
+            let morning = updated_at(at(2026, 6, 30, 7, 0), now);
+            assert_eq!(
+                morning.text,
+                format!(
+                    "Last updated at {}, and out of date",
+                    ui::format::time(&at(2026, 6, 30, 7, 0).time())
+                )
+            );
+            let days = updated_at(at(2026, 6, 27, 9, 15), now);
+            assert!(days.stale);
+            assert_eq!(
+                days.text,
+                format!(
+                    "Last updated {}, and out of date",
+                    ui::format::timestamp(&at(2026, 6, 27, 9, 15))
+                )
+            );
+        }
+
+        phase a_capture_fixture_makes_no_claim_about_its_age;
+        {
+            assert_eq!(updated(0, at(2026, 6, 30, 14, 30)), None);
+        }
     }
 }

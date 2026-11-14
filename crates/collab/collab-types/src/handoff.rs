@@ -199,88 +199,94 @@ impl HandoffReport {
 mod tests {
     use super::*;
 
-    #[test]
-    fn handoff_messages_round_trip_and_refuse_anything_else() {
-        let successor = Successor {
-            room: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
-            record: "uuid:5b0e".into(),
-            by: "person:ada".into(),
-        };
-        for request in [
-            HandoffRequest::Checkpoint { token: 7 },
-            HandoffRequest::Retire {
-                token: 8,
-                successor: successor.clone(),
-            },
-        ] {
-            assert_eq!(HandoffRequest::decode(&request.encode()), Some(request));
+    tilo_test_env::scenario! {
+        /// The handoff and owner messages on the wire: what round-trips, what is refused and what is bounded.
+        fn handoff_and_owner_messages_are_bounded_and_exact;
+
+        phase handoff_messages_round_trip_and_refuse_anything_else;
+        {
+            let successor = Successor {
+                room: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
+                record: "uuid:5b0e".into(),
+                by: "person:ada".into(),
+            };
+            for request in [
+                HandoffRequest::Checkpoint { token: 7 },
+                HandoffRequest::Retire {
+                    token: 8,
+                    successor: successor.clone(),
+                },
+            ] {
+                assert_eq!(HandoffRequest::decode(&request.encode()), Some(request));
+            }
+            let mut doc = automerge::AutoCommit::new();
+            let _ = automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "a", 1);
+            doc.commit();
+            let heads = doc.get_heads();
+            let done = HandoffReport::done(8, &heads);
+            let decoded = HandoffReport::decode(&done.encode()).unwrap();
+            assert_eq!(decoded.heads(), Some(heads));
+            let retired = HandoffReport::Retired { successor };
+            assert_eq!(HandoffReport::decode(&retired.encode()), Some(retired));
+            assert_eq!(HandoffRequest::decode(b"{\"step\":\"format_disk\"}"), None);
+            assert_eq!(
+                HandoffRequest::decode(&vec![b' '; MAX_MESSAGE_BYTES + 1]),
+                None
+            );
         }
-        let mut doc = automerge::AutoCommit::new();
-        let _ = automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "a", 1);
-        doc.commit();
-        let heads = doc.get_heads();
-        let done = HandoffReport::done(8, &heads);
-        let decoded = HandoffReport::decode(&done.encode()).unwrap();
-        assert_eq!(decoded.heads(), Some(heads));
-        let retired = HandoffReport::Retired { successor };
-        assert_eq!(HandoffReport::decode(&retired.encode()), Some(retired));
-        assert_eq!(HandoffRequest::decode(b"{\"step\":\"format_disk\"}"), None);
-        assert_eq!(
-            HandoffRequest::decode(&vec![b' '; MAX_MESSAGE_BYTES + 1]),
-            None
-        );
-    }
-    #[test]
-    fn owner_messages_are_bounded_and_do_not_expand_legacy_handoffs() {
-        let mut view = OwnerView {
-            room: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
-            app: "so.tilo.code-editor".into(),
-            instance: 7,
-            generation: 1,
-            counter: 8,
-            source: "certified-device".into(),
-            local_claim: false,
-            projection: Some(OwnerProjection {
-                schema_version: 1,
-                bytes: vec![255; 32 * 1024],
-            }),
-        };
-        let request = HandoffRequest::OwnerView { view: view.clone() };
-        assert!(request.encode().len() > MAX_MESSAGE_BYTES);
-        assert_eq!(HandoffRequest::decode(&request.encode()), Some(request));
-        let report = HandoffReport::OwnerTakeover {
-            token: 8,
-            schema: 1,
-            metadata: vec![255; 32 * 1024],
-        };
-        assert_eq!(HandoffReport::decode(&report.encode()), Some(report));
-        view.projection.as_mut().unwrap().bytes.push(0);
-        assert!(
-            HandoffRequest::decode(&HandoffRequest::OwnerView { view: view.clone() }.encode())
+
+        phase owner_messages_are_bounded_and_do_not_expand_legacy_handoffs;
+        {
+            let mut view = OwnerView {
+                room: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
+                app: "so.tilo.code-editor".into(),
+                instance: 7,
+                generation: 1,
+                counter: 8,
+                source: "certified-device".into(),
+                local_claim: false,
+                projection: Some(OwnerProjection {
+                    schema_version: 1,
+                    bytes: vec![255; 32 * 1024],
+                }),
+            };
+            let request = HandoffRequest::OwnerView { view: view.clone() };
+            assert!(request.encode().len() > MAX_MESSAGE_BYTES);
+            assert_eq!(HandoffRequest::decode(&request.encode()), Some(request));
+            let report = HandoffReport::OwnerTakeover {
+                token: 8,
+                schema: 1,
+                metadata: vec![255; 32 * 1024],
+            };
+            assert_eq!(HandoffReport::decode(&report.encode()), Some(report));
+            view.projection.as_mut().unwrap().bytes.push(0);
+            assert!(
+                HandoffRequest::decode(&HandoffRequest::OwnerView { view: view.clone() }.encode())
+                    .is_none()
+            );
+            view.projection = None;
+            view.source = "file:/secret".into();
+            assert!(HandoffRequest::decode(&HandoffRequest::OwnerView { view }.encode()).is_none());
+            let oversized = HandoffReport::Failed {
+                token: 1,
+                reason: "x".repeat(MAX_MESSAGE_BYTES),
+            };
+            assert!(HandoffReport::decode(&oversized.encode()).is_none());
+            assert!(
+                HandoffReport::decode(
+                    &HandoffReport::OwnerTakeover {
+                        token: 1,
+                        schema: 1,
+                        metadata: vec![0; 32 * 1024 + 1]
+                    }
+                    .encode()
+                )
                 .is_none()
-        );
-        view.projection = None;
-        view.source = "file:/secret".into();
-        assert!(HandoffRequest::decode(&HandoffRequest::OwnerView { view }.encode()).is_none());
-        let oversized = HandoffReport::Failed {
-            token: 1,
-            reason: "x".repeat(MAX_MESSAGE_BYTES),
-        };
-        assert!(HandoffReport::decode(&oversized.encode()).is_none());
-        assert!(
-            HandoffReport::decode(
-                &HandoffReport::OwnerTakeover {
-                    token: 1,
-                    schema: 1,
-                    metadata: vec![0; 32 * 1024 + 1]
-                }
-                .encode()
-            )
-            .is_none()
-        );
-        assert!(
-            HandoffReport::decode(br#"{"report":"owner_subscribe","version":1,"grant":true}"#)
-                .is_none()
-        );
+            );
+            assert!(
+                HandoffReport::decode(br#"{"report":"owner_subscribe","version":1,"grant":true}"#)
+                    .is_none()
+            );
+        }
     }
 }

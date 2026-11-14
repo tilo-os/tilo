@@ -1571,44 +1571,173 @@ mod tests {
             .to_rect()
     }
 
-    #[test]
-    fn hosted_pointer_moves_between_panes_without_activating_stale_hover() {
-        use crate::widget::{Column, Segment, ToggleGroup};
-        let left = std::rc::Rc::new(std::cell::Cell::new(0));
-        let right = std::rc::Rc::new(std::cell::Cell::new(0));
-        let left_changed = left.clone();
-        let right_changed = right.clone();
-        let split = ResizableSplit::new(
-            Column::new().with_no_padding().push(Box::new(
-                ToggleGroup::new(
-                    vec![Segment::new("Left first"), Segment::new("Left second")],
-                    0,
-                )
-                .on_view("left", move |index| left_changed.set(index)),
-            )),
-            Column::new().with_no_padding().push(Box::new(
-                ToggleGroup::new(
-                    vec![Segment::new("Right first"), Segment::new("Right second")],
-                    0,
-                )
-                .on_view("right", move |index| right_changed.set(index)),
-            )),
-            SplitOrientation::Vertical,
-        )
-        .with_divider_id("pointer-divider");
-        let mut harness = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            split,
-            (400, 300),
-            Theme::dark(),
-        );
-        for left in [true, false] {
-            let rect = hosted_segment_bounds(&harness, left, 1);
-            assert!(rect.width() > 0.0 && rect.height() > 0.0);
-            harness.click_at(rect.center().x, rect.center().y);
+    tilo_test_env::scenario! {
+        fn both_panes_follow_the_ratio_and_the_pointer;
+
+        phase reset_restores_content_sized_first_pane_after_resizing;
+        {
+            let mut left = TestLeaf::new();
+            left.width = Some(120.0);
+            let mut split = ResizableSplit::new(left, TestLeaf::new(), SplitOrientation::Horizontal)
+                .with_content_sized_first()
+                .with_divider_id("request-divider");
+            let (mut tree, node) = solve(&mut split, 400.0, 300.0);
+            assert_eq!(split.left().get_rect().width(), 120.0);
+            assert!(split.is_at_content_size());
+            split.set_split_position(0.7);
+            assert!(
+                !split.is_at_content_size(),
+                "a moved divider has something to reset"
+            );
+            relayout(&mut split, &mut tree, node, 400.0, 300.0);
+            assert_eq!(split.left().get_rect().width(), 280.0);
+            split.reset_to_content_size();
+            assert!(split.is_at_content_size());
+            relayout(&mut split, &mut tree, node, 400.0, 300.0);
+            assert_eq!(split.left().get_rect().width(), 120.0);
+            assert_eq!(split.handle.hit_rect().center().x, 120.0);
         }
-        assert_eq!(left.get(), 1);
-        assert_eq!(right.get(), 1, "the right pane receives its physical press");
+
+        phase both_panes_receive_the_update_pass;
+        {
+            let mut s = split(SplitOrientation::Horizontal);
+            let doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            s.left.changes = false;
+            s.right.changes = false;
+            assert!(!s.update(&doc, &root), "nothing changed");
+            s.right.changes = true;
+            assert!(s.update(&doc, &root), "a pane's change is the split's");
+            assert_eq!((s.left.updates.get(), s.right.updates.get()), (2, 2));
+        }
+
+        phase split_layout_starts_even_and_fills_the_axis;
+        {
+            assert_eq!(split(SplitOrientation::Horizontal).split_position(), 0.5);
+            let mut s = split(SplitOrientation::Horizontal).with_split_position(0.32);
+            let (tree, node) = solve(&mut s, 1000.0, 640.0);
+            assert_eq!(tree.children(node).expect("split children").len(), 2);
+            assert!((s.left().rect.width() - 320.0).abs() < 0.1);
+            assert!((s.right().rect.width() - 680.0).abs() < 0.1);
+        }
+
+        phase the_per_frame_update_reaches_both_panes;
+        {
+            let mut s = split(SplitOrientation::Horizontal);
+            let (left, right) = (s.left().updates.clone(), s.right().updates.clone());
+            let doc = AutoCommit::new();
+            assert!(Widget::update(&mut s, &doc, &automerge::ROOT));
+            assert_eq!((left.get(), right.get()), (1, 1));
+        }
+
+        phase a_content_sized_first_pane_keeps_its_size_until_the_divider_moves;
+        {
+            let mut first = TestLeaf::new();
+            first.width = Some(120.0);
+            let mut s = ResizableSplit::new(first, TestLeaf::new(), SplitOrientation::Horizontal)
+                .with_content_sized_first();
+            let (mut tree, node) = solve(&mut s, 600.0, 300.0);
+            assert!(
+                (s.left().rect.width() - 120.0).abs() < 0.5,
+                "{:?}",
+                s.left().rect
+            );
+            assert!(
+                (s.split_position() - 0.2).abs() < 1e-3,
+                "the divider sits where it ends"
+            );
+            s.set_split_position(0.5);
+            relayout(&mut s, &mut tree, node, 600.0, 300.0);
+            assert!((s.left().rect.width() - 300.0).abs() < 0.5);
+        }
+
+        phase a_painted_host_shares_the_ratio_model;
+        {
+            let theme = Theme::dark();
+            let mut handle = SplitHandle::new(SplitOrientation::Vertical, SplitRatio::new(0.3));
+            handle.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0), &theme);
+            let (top, bottom) = handle.pane_rects();
+            assert!((top.height() - 150.0).abs() < 0.5);
+            assert!(
+                (top.y1 - bottom.y0).abs() < 1e-9,
+                "the panes meet at the hairline"
+            );
+            let mut ratio = SplitRatio::new(0.5).with_bounds(0.2, 0.6);
+            assert!(ratio.set(0.9));
+            assert!((ratio.position() - 0.6).abs() < 1e-6);
+            assert!(!ratio.step(0.1), "already at the bound");
+        }
+
+        phase a_capped_first_pane_keeps_the_chosen_ratio;
+        {
+            let theme = Theme::dark();
+            let mut handle = SplitHandle::new(SplitOrientation::Vertical, SplitRatio::new(0.6));
+            handle.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0), &theme);
+            handle.set_first_max(Some(200.0));
+            let (top, bottom) = handle.pane_rects();
+            assert!(
+                (top.height() - 200.0).abs() < 0.5,
+                "the divider stands at the cap"
+            );
+            assert!((bottom.height() - 300.0).abs() < 0.5, "the rest goes below");
+            assert!(
+                (handle.ratio().position() - 0.6).abs() < 1e-6,
+                "the ratio is kept"
+            );
+            handle.set_first_max(Some(1000.0));
+            let (top, _) = handle.pane_rects();
+            assert!(
+                (top.height() - 300.0).abs() < 0.5,
+                "with room, the ratio is back"
+            );
+            handle.set_first_max(Some(200.0));
+            assert!(handle.perform_action(&crate::a11y::Action::Decrement));
+            let (top, _) = handle.pane_rects();
+            assert!(
+                top.height() < 199.5,
+                "a step back moves from where the divider stands"
+            );
+        }
+
+        phase hosted_pointer_moves_between_panes_without_activating_stale_hover;
+        {
+            use crate::widget::{Column, Segment, ToggleGroup};
+            let left = std::rc::Rc::new(std::cell::Cell::new(0));
+            let right = std::rc::Rc::new(std::cell::Cell::new(0));
+            let left_changed = left.clone();
+            let right_changed = right.clone();
+            let split = ResizableSplit::new(
+                Column::new().with_no_padding().push(Box::new(
+                    ToggleGroup::new(
+                        vec![Segment::new("Left first"), Segment::new("Left second")],
+                        0,
+                    )
+                    .on_view("left", move |index| left_changed.set(index)),
+                )),
+                Column::new().with_no_padding().push(Box::new(
+                    ToggleGroup::new(
+                        vec![Segment::new("Right first"), Segment::new("Right second")],
+                        0,
+                    )
+                    .on_view("right", move |index| right_changed.set(index)),
+                )),
+                SplitOrientation::Vertical,
+            )
+            .with_divider_id("pointer-divider");
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                split,
+                (400, 300),
+                Theme::dark(),
+            );
+            for left in [true, false] {
+                let rect = hosted_segment_bounds(&harness, left, 1);
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                harness.click_at(rect.center().x, rect.center().y);
+            }
+            assert_eq!(left.get(), 1);
+            assert_eq!(right.get(), 1, "the right pane receives its physical press");
+        }
     }
 
     #[test]
@@ -1695,104 +1824,179 @@ mod tests {
         );
     }
 
-    #[test]
-    fn named_divider_targets_the_separator_and_resizes_through_host_input() {
-        for orientation in [SplitOrientation::Horizontal, SplitOrientation::Vertical] {
-            let mut harness = crate::headless::FrameHarness::for_root(
-                crate::State::new(),
-                split(orientation).with_divider_id("request-divider"),
-                (400, 300),
-                Theme::dark(),
-            );
-            let divider = harness.targets()["request-divider"];
-            let along = match orientation {
-                SplitOrientation::Horizontal => {
-                    assert!(divider.width() < 400.0 / 10.0);
-                    assert_eq!(divider.height(), 300.0);
-                    divider.center().x
-                }
-                SplitOrientation::Vertical => {
-                    assert!(divider.height() < 300.0 / 10.0);
-                    assert_eq!(divider.width(), 400.0);
-                    divider.center().y
-                }
-            };
+    tilo_test_env::scenario! {
+        fn the_divider_drags_glides_and_steps;
+
+        phase dragging_the_divider_relays_out_the_panes_within_bounds;
+        {
+            let mut s = split(SplitOrientation::Horizontal);
+            let (mut tree, node) = solve(&mut s, 400.0, 300.0);
+            dispatch(&mut s, &tree, node, &cursor_moved(200.0, 150.0));
+            assert!(s.handle.is_hovered(), "the divider is under the pointer");
             assert_eq!(
-                along,
-                if orientation == SplitOrientation::Horizontal {
-                    200.0
+                Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
+                Some(winit::window::CursorIcon::EwResize)
+            );
+            assert_eq!(Widget::cursor_shape(&s, Point::new(50.0, 150.0)), None);
+            dispatch(&mut s, &tree, node, &mouse_press());
+            assert!(s.handle.is_dragging());
+            dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
+            dispatch(&mut s, &tree, node, &mouse_release());
+            assert!(!s.handle.is_dragging());
+            assert!(
+                (s.split_position() - 0.25).abs() < 1e-3,
+                "{}",
+                s.split_position()
+            );
+            assert!(s.is_layout_dirty(), "the panes follow the divider");
+            relayout(&mut s, &mut tree, node, 400.0, 300.0);
+            assert!(
+                (s.left().rect.width() - 100.0).abs() < 0.5,
+                "{:?}",
+                s.left().rect
+            );
+            assert!(!s.layout_dirty, "laid out at the new ratio");
+
+            dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
+            dispatch(&mut s, &tree, node, &mouse_press());
+            dispatch(&mut s, &tree, node, &cursor_moved(2.0, 150.0));
+            dispatch(&mut s, &tree, node, &mouse_release());
+            assert_eq!(s.split_position(), SPLIT_MIN);
+
+            let v = split(SplitOrientation::Vertical);
+            let mut v = v;
+            solve(&mut v, 400.0, 300.0);
+            assert_eq!(
+                Widget::cursor_shape(&v, Point::new(200.0, 150.0)),
+                Some(winit::window::CursorIcon::NsResize)
+            );
+        }
+
+        phase the_divider_steps_with_the_keyboard_and_reads_as_a_separator;
+        {
+            let mut s = split(SplitOrientation::Horizontal).with_divider_label("Resize preview");
+            let (tree, node) = solve(&mut s, 400.0, 300.0);
+            assert!(s.is_focusable());
+            s.set_focus(true);
+            let right = crate::synthetic_input::key_input(
+                &Key::Named(NamedKey::ArrowRight),
+                ElementState::Pressed,
+            );
+            dispatch(&mut s, &tree, node, &right);
+            assert!((s.split_position() - 0.55).abs() < 1e-4);
+            let node_access = s.accessibility().expect("a separator");
+            assert_eq!(node_access.role, crate::a11y::Role::Separator);
+            assert_eq!(node_access.name.as_deref(), Some("Resize preview"));
+            assert_eq!(node_access.value.as_deref(), Some("55%"));
+            let mut doc = AutoCommit::new();
+            assert!(s.perform_action(
+                &crate::a11y::Action::Decrement,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+            assert!((s.split_position() - 0.5).abs() < 1e-4);
+        }
+
+        phase named_divider_targets_the_separator_and_resizes_through_host_input;
+        {
+            for orientation in [SplitOrientation::Horizontal, SplitOrientation::Vertical] {
+                let mut harness = crate::headless::FrameHarness::for_root(
+                    crate::State::new(),
+                    split(orientation).with_divider_id("request-divider"),
+                    (400, 300),
+                    Theme::dark(),
+                );
+                let divider = harness.targets()["request-divider"];
+                let along = match orientation {
+                    SplitOrientation::Horizontal => {
+                        assert!(divider.width() < 400.0 / 10.0);
+                        assert_eq!(divider.height(), 300.0);
+                        divider.center().x
+                    }
+                    SplitOrientation::Vertical => {
+                        assert!(divider.height() < 300.0 / 10.0);
+                        assert_eq!(divider.width(), 400.0);
+                        divider.center().y
+                    }
+                };
+                assert_eq!(
+                    along,
+                    if orientation == SplitOrientation::Horizontal {
+                        200.0
+                    } else {
+                        150.0
+                    }
+                );
+                let root = harness.root::<ResizableSplit<TestLeaf, TestLeaf>>();
+                let separator = root.children()[2];
+                assert_eq!(separator.test_id(), Some("request-divider"));
+                assert_eq!(
+                    separator.accessibility().unwrap().role,
+                    crate::a11y::Role::Separator
+                );
+                assert!(!root.is_focusable());
+                let resources = harness.resources();
+                let separator = resources
+                    .iter()
+                    .find(|resource| {
+                        resource
+                            .actions
+                            .iter()
+                            .any(|action| action.id == "set-value")
+                    })
+                    .expect("named shared divider publishes its canonical resize door");
+                for verb in ["increment", "decrement", "set-value"] {
+                    assert!(separator.actions.iter().any(|action| action.id == verb));
+                }
+                harness
+                    .perform_named(
+                        "request-divider",
+                        &crate::a11y::Action::SetValue("40%".into()),
+                    )
+                    .expect("canonical named divider dispatch");
+                assert!(
+                    (harness
+                        .root::<ResizableSplit<TestLeaf, TestLeaf>>()
+                        .split_position()
+                        - 0.4)
+                        .abs()
+                        < f32::EPSILON
+                );
+                harness
+                    .perform_named(
+                        "request-divider",
+                        &crate::a11y::Action::SetValue("50%".into()),
+                    )
+                    .expect("restore through the same public control");
+                harness.click_named("request-divider").unwrap();
+                harness.key(if orientation == SplitOrientation::Horizontal {
+                    "ArrowRight"
                 } else {
-                    150.0
-                }
-            );
-            let root = harness.root::<ResizableSplit<TestLeaf, TestLeaf>>();
-            let separator = root.children()[2];
-            assert_eq!(separator.test_id(), Some("request-divider"));
-            assert_eq!(
-                separator.accessibility().unwrap().role,
-                crate::a11y::Role::Separator
-            );
-            assert!(!root.is_focusable());
-            let resources = harness.resources();
-            let separator = resources
-                .iter()
-                .find(|resource| {
-                    resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "set-value")
-                })
-                .expect("named shared divider publishes its canonical resize door");
-            for verb in ["increment", "decrement", "set-value"] {
-                assert!(separator.actions.iter().any(|action| action.id == verb));
+                    "ArrowDown"
+                });
+                assert!(
+                    (harness
+                        .root::<ResizableSplit<TestLeaf, TestLeaf>>()
+                        .split_position()
+                        - 0.55)
+                        .abs()
+                        < f32::EPSILON
+                );
+                let moved = harness.targets()["request-divider"].center();
+                assert_eq!(
+                    if orientation == SplitOrientation::Horizontal {
+                        moved.x
+                    } else {
+                        moved.y
+                    },
+                    if orientation == SplitOrientation::Horizontal {
+                        220.0
+                    } else {
+                        165.0
+                    }
+                );
             }
-            harness
-                .perform_named(
-                    "request-divider",
-                    &crate::a11y::Action::SetValue("40%".into()),
-                )
-                .expect("canonical named divider dispatch");
-            assert!(
-                (harness
-                    .root::<ResizableSplit<TestLeaf, TestLeaf>>()
-                    .split_position()
-                    - 0.4)
-                    .abs()
-                    < f32::EPSILON
-            );
-            harness
-                .perform_named(
-                    "request-divider",
-                    &crate::a11y::Action::SetValue("50%".into()),
-                )
-                .expect("restore through the same public control");
-            harness.click_named("request-divider").unwrap();
-            harness.key(if orientation == SplitOrientation::Horizontal {
-                "ArrowRight"
-            } else {
-                "ArrowDown"
-            });
-            assert!(
-                (harness
-                    .root::<ResizableSplit<TestLeaf, TestLeaf>>()
-                    .split_position()
-                    - 0.55)
-                    .abs()
-                    < f32::EPSILON
-            );
-            let moved = harness.targets()["request-divider"].center();
-            assert_eq!(
-                if orientation == SplitOrientation::Horizontal {
-                    moved.x
-                } else {
-                    moved.y
-                },
-                if orientation == SplitOrientation::Horizontal {
-                    220.0
-                } else {
-                    165.0
-                }
-            );
         }
     }
 
@@ -1826,53 +2030,6 @@ mod tests {
             divider,
             "the first pane ends at the moved divider in the same frame"
         );
-    }
-
-    #[test]
-    fn reset_restores_content_sized_first_pane_after_resizing() {
-        let mut left = TestLeaf::new();
-        left.width = Some(120.0);
-        let mut split = ResizableSplit::new(left, TestLeaf::new(), SplitOrientation::Horizontal)
-            .with_content_sized_first()
-            .with_divider_id("request-divider");
-        let (mut tree, node) = solve(&mut split, 400.0, 300.0);
-        assert_eq!(split.left().get_rect().width(), 120.0);
-        assert!(split.is_at_content_size());
-        split.set_split_position(0.7);
-        assert!(
-            !split.is_at_content_size(),
-            "a moved divider has something to reset"
-        );
-        relayout(&mut split, &mut tree, node, 400.0, 300.0);
-        assert_eq!(split.left().get_rect().width(), 280.0);
-        split.reset_to_content_size();
-        assert!(split.is_at_content_size());
-        relayout(&mut split, &mut tree, node, 400.0, 300.0);
-        assert_eq!(split.left().get_rect().width(), 120.0);
-        assert_eq!(split.handle.hit_rect().center().x, 120.0);
-    }
-
-    #[test]
-    fn both_panes_receive_the_update_pass() {
-        let mut s = split(SplitOrientation::Horizontal);
-        let doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.left.changes = false;
-        s.right.changes = false;
-        assert!(!s.update(&doc, &root), "nothing changed");
-        s.right.changes = true;
-        assert!(s.update(&doc, &root), "a pane's change is the split's");
-        assert_eq!((s.left.updates.get(), s.right.updates.get()), (2, 2));
-    }
-
-    #[test]
-    fn split_layout_starts_even_and_fills_the_axis() {
-        assert_eq!(split(SplitOrientation::Horizontal).split_position(), 0.5);
-        let mut s = split(SplitOrientation::Horizontal).with_split_position(0.32);
-        let (tree, node) = solve(&mut s, 1000.0, 640.0);
-        assert_eq!(tree.children(node).expect("split children").len(), 2);
-        assert!((s.left().rect.width() - 320.0).abs() < 0.1);
-        assert!((s.right().rect.width() - 680.0).abs() < 0.1);
     }
 
     fn own_layout_dirty<L: Widget + 'static, R: Widget + 'static>(
@@ -1979,154 +2136,5 @@ mod tests {
         relayout(&mut s, &mut tree, node, 400.0, 300.0);
         assert!((s.left().rect.width() - 200.0).abs() < 0.5);
         assert!(!Widget::needs_animation_frame(&s));
-    }
-
-    #[test]
-    fn dragging_the_divider_relays_out_the_panes_within_bounds() {
-        let mut s = split(SplitOrientation::Horizontal);
-        let (mut tree, node) = solve(&mut s, 400.0, 300.0);
-        dispatch(&mut s, &tree, node, &cursor_moved(200.0, 150.0));
-        assert!(s.handle.is_hovered(), "the divider is under the pointer");
-        assert_eq!(
-            Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
-            Some(winit::window::CursorIcon::EwResize)
-        );
-        assert_eq!(Widget::cursor_shape(&s, Point::new(50.0, 150.0)), None);
-        dispatch(&mut s, &tree, node, &mouse_press());
-        assert!(s.handle.is_dragging());
-        dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
-        dispatch(&mut s, &tree, node, &mouse_release());
-        assert!(!s.handle.is_dragging());
-        assert!(
-            (s.split_position() - 0.25).abs() < 1e-3,
-            "{}",
-            s.split_position()
-        );
-        assert!(s.is_layout_dirty(), "the panes follow the divider");
-        relayout(&mut s, &mut tree, node, 400.0, 300.0);
-        assert!(
-            (s.left().rect.width() - 100.0).abs() < 0.5,
-            "{:?}",
-            s.left().rect
-        );
-        assert!(!s.layout_dirty, "laid out at the new ratio");
-
-        dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
-        dispatch(&mut s, &tree, node, &mouse_press());
-        dispatch(&mut s, &tree, node, &cursor_moved(2.0, 150.0));
-        dispatch(&mut s, &tree, node, &mouse_release());
-        assert_eq!(s.split_position(), SPLIT_MIN);
-
-        let v = split(SplitOrientation::Vertical);
-        let mut v = v;
-        solve(&mut v, 400.0, 300.0);
-        assert_eq!(
-            Widget::cursor_shape(&v, Point::new(200.0, 150.0)),
-            Some(winit::window::CursorIcon::NsResize)
-        );
-    }
-
-    #[test]
-    fn the_divider_steps_with_the_keyboard_and_reads_as_a_separator() {
-        let mut s = split(SplitOrientation::Horizontal).with_divider_label("Resize preview");
-        let (tree, node) = solve(&mut s, 400.0, 300.0);
-        assert!(s.is_focusable());
-        s.set_focus(true);
-        let right = crate::synthetic_input::key_input(
-            &Key::Named(NamedKey::ArrowRight),
-            ElementState::Pressed,
-        );
-        dispatch(&mut s, &tree, node, &right);
-        assert!((s.split_position() - 0.55).abs() < 1e-4);
-        let node_access = s.accessibility().expect("a separator");
-        assert_eq!(node_access.role, crate::a11y::Role::Separator);
-        assert_eq!(node_access.name.as_deref(), Some("Resize preview"));
-        assert_eq!(node_access.value.as_deref(), Some("55%"));
-        let mut doc = AutoCommit::new();
-        assert!(s.perform_action(
-            &crate::a11y::Action::Decrement,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT
-        ));
-        assert!((s.split_position() - 0.5).abs() < 1e-4);
-    }
-
-    #[test]
-    fn the_per_frame_update_reaches_both_panes() {
-        let mut s = split(SplitOrientation::Horizontal);
-        let (left, right) = (s.left().updates.clone(), s.right().updates.clone());
-        let doc = AutoCommit::new();
-        assert!(Widget::update(&mut s, &doc, &automerge::ROOT));
-        assert_eq!((left.get(), right.get()), (1, 1));
-    }
-
-    #[test]
-    fn a_content_sized_first_pane_keeps_its_size_until_the_divider_moves() {
-        let mut first = TestLeaf::new();
-        first.width = Some(120.0);
-        let mut s = ResizableSplit::new(first, TestLeaf::new(), SplitOrientation::Horizontal)
-            .with_content_sized_first();
-        let (mut tree, node) = solve(&mut s, 600.0, 300.0);
-        assert!(
-            (s.left().rect.width() - 120.0).abs() < 0.5,
-            "{:?}",
-            s.left().rect
-        );
-        assert!(
-            (s.split_position() - 0.2).abs() < 1e-3,
-            "the divider sits where it ends"
-        );
-        s.set_split_position(0.5);
-        relayout(&mut s, &mut tree, node, 600.0, 300.0);
-        assert!((s.left().rect.width() - 300.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn a_painted_host_shares_the_ratio_model() {
-        let theme = Theme::dark();
-        let mut handle = SplitHandle::new(SplitOrientation::Vertical, SplitRatio::new(0.3));
-        handle.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0), &theme);
-        let (top, bottom) = handle.pane_rects();
-        assert!((top.height() - 150.0).abs() < 0.5);
-        assert!(
-            (top.y1 - bottom.y0).abs() < 1e-9,
-            "the panes meet at the hairline"
-        );
-        let mut ratio = SplitRatio::new(0.5).with_bounds(0.2, 0.6);
-        assert!(ratio.set(0.9));
-        assert!((ratio.position() - 0.6).abs() < 1e-6);
-        assert!(!ratio.step(0.1), "already at the bound");
-    }
-
-    #[test]
-    fn a_capped_first_pane_keeps_the_chosen_ratio() {
-        let theme = Theme::dark();
-        let mut handle = SplitHandle::new(SplitOrientation::Vertical, SplitRatio::new(0.6));
-        handle.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0), &theme);
-        handle.set_first_max(Some(200.0));
-        let (top, bottom) = handle.pane_rects();
-        assert!(
-            (top.height() - 200.0).abs() < 0.5,
-            "the divider stands at the cap"
-        );
-        assert!((bottom.height() - 300.0).abs() < 0.5, "the rest goes below");
-        assert!(
-            (handle.ratio().position() - 0.6).abs() < 1e-6,
-            "the ratio is kept"
-        );
-        handle.set_first_max(Some(1000.0));
-        let (top, _) = handle.pane_rects();
-        assert!(
-            (top.height() - 300.0).abs() < 0.5,
-            "with room, the ratio is back"
-        );
-        handle.set_first_max(Some(200.0));
-        assert!(handle.perform_action(&crate::a11y::Action::Decrement));
-        let (top, _) = handle.pane_rects();
-        assert!(
-            top.height() < 199.5,
-            "a step back moves from where the divider stands"
-        );
     }
 }

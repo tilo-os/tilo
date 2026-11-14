@@ -352,19 +352,47 @@ fn termination_before_release_is_retryable() {
     assert_eq!(t.read("expiry"), "-1");
 }
 
-#[test]
-fn intent_before_account_creation_can_retry() {
-    let t = Transaction::new();
-    let intent = t.path("etc/install-user.transaction");
-    fs::write(
-        &intent,
-        format!("fixtureuser:!tilo-firstboot-{}\n", "a".repeat(32)),
-    )
-    .unwrap();
-    fs::set_permissions(&intent, fs::Permissions::from_mode(0o600)).unwrap();
-    let result = t.boot("");
-    assert!(result.status.success(), "{}", stderr(&result));
-    assert_eq!(t.read("shadow"), hash());
+tilo_test_env::scenario! {
+    fn an_account_is_adopted_only_through_this_installs_own_intent;
+
+    phase intent_before_account_creation_can_retry;
+    {
+        let t = Transaction::new();
+        let intent = t.path("etc/install-user.transaction");
+        fs::write(
+            &intent,
+            format!("fixtureuser:!tilo-firstboot-{}\n", "a".repeat(32)),
+        )
+        .unwrap();
+        fs::set_permissions(&intent, fs::Permissions::from_mode(0o600)).unwrap();
+        let result = t.boot("");
+        assert!(result.status.success(), "{}", stderr(&result));
+        assert_eq!(t.read("shadow"), hash());
+    }
+
+    phase unrelated_existing_account_preserves_seed_and_shadow;
+    {
+        let t = Transaction::new();
+        t.write("shadow", "!unrelated");
+        t.write("expiry", "-1");
+        assert!(!t.boot("").status.success());
+        assert!(t.credential().exists());
+        assert_eq!(t.read("shadow"), "!unrelated");
+        assert!(!t.path("etc/install-user.transaction").exists());
+        assert_eq!(t.read("expiry"), "-1");
+    }
+
+    phase intent_does_not_adopt_wrong_shadow;
+    {
+        let t = Transaction::new();
+        assert!(!t.boot("key-repair").status.success());
+        t.write("shadow", "!unrelated");
+        t.write("expiry", "-1");
+        assert!(!t.boot("").status.success());
+        assert_eq!(t.read("shadow"), "!unrelated");
+        assert_eq!(t.read("expiry"), "-1");
+        assert!(t.credential().exists());
+    }
 }
 
 #[test]
@@ -393,30 +421,6 @@ fn retry_expiry_failure_does_not_provision() {
     assert_eq!(t.read("shadow"), hash());
     assert!(t.credential().exists());
     assert!(t.boot("").status.success());
-}
-
-#[test]
-fn unrelated_existing_account_preserves_seed_and_shadow() {
-    let t = Transaction::new();
-    t.write("shadow", "!unrelated");
-    t.write("expiry", "-1");
-    assert!(!t.boot("").status.success());
-    assert!(t.credential().exists());
-    assert_eq!(t.read("shadow"), "!unrelated");
-    assert!(!t.path("etc/install-user.transaction").exists());
-    assert_eq!(t.read("expiry"), "-1");
-}
-
-#[test]
-fn intent_does_not_adopt_wrong_shadow() {
-    let t = Transaction::new();
-    assert!(!t.boot("key-repair").status.success());
-    t.write("shadow", "!unrelated");
-    t.write("expiry", "-1");
-    assert!(!t.boot("").status.success());
-    assert_eq!(t.read("shadow"), "!unrelated");
-    assert_eq!(t.read("expiry"), "-1");
-    assert!(t.credential().exists());
 }
 
 #[test]

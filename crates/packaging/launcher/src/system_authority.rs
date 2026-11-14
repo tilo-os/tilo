@@ -309,212 +309,216 @@ pub fn push_landlock_rules(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_the_control_panel_receives_the_grant() {
-        let declared: std::collections::BTreeMap<String, crate::manifest::ServiceReq> = [(
-            "system".to_owned(),
-            crate::manifest::service_req("required@1"),
-        )]
-        .into();
-        assert!(is_client("so.tilo.settings"));
-        assert!(grants("so.tilo.settings", &declared));
-        // Settings without the system interface declared is not served it.
-        assert!(!grants(
-            "so.tilo.settings",
-            &std::collections::BTreeMap::default()
-        ));
-        assert!(
-            resolve(
+    tilo_test_env::scenario! {
+        fn system_authority_grants_reach_only_their_named_apps_and_paths;
+
+        phase only_the_control_panel_receives_the_grant;
+        {
+            let declared: std::collections::BTreeMap<String, crate::manifest::ServiceReq> = [(
+                "system".to_owned(),
+                crate::manifest::service_req("required@1"),
+            )]
+            .into();
+            assert!(is_client("so.tilo.settings"));
+            assert!(grants("so.tilo.settings", &declared));
+            // Settings without the system interface declared is not served it.
+            assert!(!grants(
                 "so.tilo.settings",
-                &std::collections::BTreeMap::default(),
-                1000
-            )
-            .is_none()
-        );
-        for other in [
-            "so.tilo.files",
-            "so.tilo.settings.evil",
-            "",
-            "so.tilo.browser",
-        ] {
-            assert!(!is_client(other), "{other}");
-            assert!(!grants(other, &declared), "{other}");
-            assert!(resolve(other, &declared, 1000).is_none(), "{other}");
+                &std::collections::BTreeMap::default()
+            ));
+            assert!(
+                resolve(
+                    "so.tilo.settings",
+                    &std::collections::BTreeMap::default(),
+                    1000
+                )
+                .is_none()
+            );
+            for other in [
+                "so.tilo.files",
+                "so.tilo.settings.evil",
+                "",
+                "so.tilo.browser",
+            ] {
+                assert!(!is_client(other), "{other}");
+                assert!(!grants(other, &declared), "{other}");
+                assert!(resolve(other, &declared, 1000).is_none(), "{other}");
+            }
         }
-    }
 
-    #[test]
-    fn the_cloud_grant_reaches_account_control_and_never_file_requests() {
-        let sockets = authority_sockets(1000);
-        assert!(sockets.contains(&PathBuf::from("/run/user/1000/tilo-fs-cloud")));
-        let files = std::path::Path::new("/run/user/1000/tilo-fs-cloud-files/files.sock");
-        assert!(
-            !sockets.iter().any(|bound| files.starts_with(bound)),
-            "Settings' grant reaches the cloud file socket: {sockets:?}"
-        );
-    }
-
-    #[test]
-    fn the_storage_grant_binds_only_the_storage_directory_at_one_path() {
-        let root = tempfile::tempdir().unwrap();
-        let session = root.path().join("run/tilo/files-storage");
-        let bind = storage_bind(Some(session.clone())).expect("created and bound");
-        assert_eq!(bind.host, session);
-        assert_eq!(bind.sandbox, PathBuf::from(STORAGE_DIR));
-        assert!(session.is_dir());
-        // The blob and authority sockets' directory is never reached.
-        let workspace = root.path().join("run/tilo/files-workspace/fs-blobs.sock");
-        assert!(!workspace.starts_with(&bind.host));
-        // A symlink is not followed into another tree, and a relative name never stands for the
-        // image's directory.
-        let link = root.path().join("link");
-        std::os::unix::fs::symlink(root.path(), &link).unwrap();
-        assert!(storage_bind(Some(link)).is_none());
-        let relative = storage_bind(Some("relative".into()));
-        assert!(relative.is_none_or(|bind| bind.host == std::path::Path::new(STORAGE_DIR)));
-        assert!(!PathBuf::from("relative").exists());
-    }
-
-    #[test]
-    fn the_ntfs_grant_reaches_the_mount_service_socket_for_settings_only() {
-        let sockets = authority_sockets(1000);
-        let control = std::path::Path::new("/run/tilo-ntfs-mount/control.sock");
-        assert!(
-            sockets.iter().any(|bound| control.starts_with(bound)),
-            "Settings cannot reach the NTFS mount service: {sockets:?}"
-        );
-        // Every other package gets no plan at all, so no path of it.
-        let declared: std::collections::BTreeMap<String, crate::manifest::ServiceReq> = [(
-            "system".to_owned(),
-            crate::manifest::service_req("required@1"),
-        )]
-        .into();
-        assert!(resolve("so.tilo.file-explorer", &declared, 1000).is_none());
-    }
-
-    #[test]
-    fn the_system_bus_filter_names_authorities_and_never_opens_the_whole_bus() {
-        assert_eq!(SYSTEM_BUS_FILTER_ARGS.first(), Some(&"--filter"));
-        for arg in SYSTEM_BUS_FILTER_ARGS.iter().skip(1) {
-            let name = arg
-                .strip_prefix("--talk=")
-                .or_else(|| arg.strip_prefix("--see="))
-                .unwrap_or_else(|| panic!("unexpected rule {arg}"));
-            assert!(!name.contains('*'), "{arg} must name one service");
-            assert!(name.contains('.'), "{arg}");
+        phase the_cloud_grant_reaches_account_control_and_never_file_requests;
+        {
+            let sockets = authority_sockets(1000);
+            assert!(sockets.contains(&PathBuf::from("/run/user/1000/tilo-fs-cloud")));
+            let files = std::path::Path::new("/run/user/1000/tilo-fs-cloud-files/files.sock");
+            assert!(
+                !sockets.iter().any(|bound| files.starts_with(bound)),
+                "Settings' grant reaches the cloud file socket: {sockets:?}"
+            );
         }
-        assert!(SYSTEM_BUS_FILTER_ARGS.contains(&"--talk=org.freedesktop.NetworkManager"));
-    }
 
-    #[test]
-    fn binds_and_landlock_rules_cover_the_same_paths() {
-        let plan = SystemAuthorityPlan {
-            read_paths: vec!["/usr/bin".into(), "/etc".into()],
-            sockets: vec![SocketBind {
-                host: "/run/user/1000/tilo/dbus-proxy/7-system.sock".into(),
-                sandbox: SANDBOX_SYSTEM_BUS.into(),
-            }],
-            system_bus: true,
-            runtime_state: Some(RuntimeState {
-                dir: "/run/user/1000/tilo".into(),
-                masked: vec!["/run/user/1000/tilo/services".into()],
-            }),
-            user_apps: Some(SocketBind {
-                host: "/home/a/.local/share/tilo-apps".into(),
-                sandbox: sandbox_user_apps(),
-            }),
-        };
-        let mut binds = Vec::new();
-        push_binds(&mut binds, &plan);
-        assert_eq!(
-            binds,
-            [
-                "--ro-bind",
-                "/usr/bin",
-                "/usr/bin",
-                "--ro-bind",
-                "/etc",
-                "/etc",
-                "--bind",
-                "/run/user/1000/tilo/dbus-proxy/7-system.sock",
-                SANDBOX_SYSTEM_BUS,
-                "--ro-bind",
-                "/run/user/1000/tilo",
-                "/run/user/1000/tilo",
-                "--tmpfs",
-                "/run/user/1000/tilo/services",
-                "--ro-bind",
-                "/home/a/.local/share/tilo-apps",
-                "/home/a/.local/share/tilo-apps",
-                "--ro-bind",
-                "/home/a/.local/share/tilo-apps",
-                "/run/tilo/app/.local/share/tilo-apps",
-                "--setenv",
-                "DBUS_SYSTEM_BUS_ADDRESS",
-                "unix:path=/run/dbus/system_bus_socket",
-            ]
-        );
-        let mut rules = Vec::new();
-        push_landlock_rules(&mut rules, &plan);
-        assert_eq!(
-            rules,
-            [
-                "--ro",
-                "/usr/bin",
-                "--ro",
-                "/etc",
-                "--rw",
-                SANDBOX_SYSTEM_BUS,
-                "--ro",
-                "/run/user/1000/tilo",
-                "--ro",
-                "/home/a/.local/share/tilo-apps",
-                "--ro",
-                "/run/tilo/app/.local/share/tilo-apps",
-            ]
-        );
-    }
-
-    #[test]
-    fn systemd_clients_receive_the_boot_marker_without_the_manager_socket() {
-        let plan = SystemAuthorityPlan {
-            read_paths: HOST_READ_PATHS.iter().map(PathBuf::from).collect(),
-            ..SystemAuthorityPlan::default()
-        };
-        let mut binds = Vec::new();
-        push_binds(&mut binds, &plan);
-        assert!(
-            binds.windows(3).any(|args| {
-                args == ["--ro-bind", "/run/systemd/system", "/run/systemd/system"]
-            })
-        );
-        let mut rules = Vec::new();
-        push_landlock_rules(&mut rules, &plan);
-        assert!(
-            rules
-                .windows(2)
-                .any(|args| args == ["--ro", "/run/systemd/system"])
-        );
-        for private in ["/run/systemd/private", "/run/systemd", "/run/dbus"] {
-            assert!(!binds.iter().any(|arg| arg == private));
-            assert!(!rules.iter().any(|arg| arg == private));
+        phase the_storage_grant_binds_only_the_storage_directory_at_one_path;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let session = root.path().join("run/tilo/files-storage");
+            let bind = storage_bind(Some(session.clone())).expect("created and bound");
+            assert_eq!(bind.host, session);
+            assert_eq!(bind.sandbox, PathBuf::from(STORAGE_DIR));
+            assert!(session.is_dir());
+            // The blob and authority sockets' directory is never reached.
+            let workspace = root.path().join("run/tilo/files-workspace/fs-blobs.sock");
+            assert!(!workspace.starts_with(&bind.host));
+            // A symlink is not followed into another tree, and a relative name never stands for the
+            // image's directory.
+            let link = root.path().join("link");
+            std::os::unix::fs::symlink(root.path(), &link).unwrap();
+            assert!(storage_bind(Some(link)).is_none());
+            let relative = storage_bind(Some("relative".into()));
+            assert!(relative.is_none_or(|bind| bind.host == std::path::Path::new(STORAGE_DIR)));
+            assert!(!PathBuf::from("relative").exists());
         }
-    }
 
-    #[test]
-    fn the_runtime_state_shows_its_files_and_hides_every_subdirectory() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("tilo");
-        for sub in ["capabilities", "identity-projections", "services"] {
-            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        phase the_ntfs_grant_reaches_the_mount_service_socket_for_settings_only;
+        {
+            let sockets = authority_sockets(1000);
+            let control = std::path::Path::new("/run/tilo-ntfs-mount/control.sock");
+            assert!(
+                sockets.iter().any(|bound| control.starts_with(bound)),
+                "Settings cannot reach the NTFS mount service: {sockets:?}"
+            );
+            // Every other package gets no plan at all, so no path of it.
+            let declared: std::collections::BTreeMap<String, crate::manifest::ServiceReq> = [(
+                "system".to_owned(),
+                crate::manifest::service_req("required@1"),
+            )]
+            .into();
+            assert!(resolve("so.tilo.file-explorer", &declared, 1000).is_none());
         }
-        std::fs::write(dir.join("display-state.json"), b"{}").unwrap();
-        let state = runtime_state_in(dir.clone()).unwrap();
-        assert_eq!(state.dir, dir);
-        assert_eq!(
-            state.masked,
-            ["capabilities", "identity-projections", "services"].map(|sub| dir.join(sub))
-        );
-        assert!(runtime_state_in(root.path().join("absent")).is_none());
+
+        phase the_system_bus_filter_names_authorities_and_never_opens_the_whole_bus;
+        {
+            assert_eq!(SYSTEM_BUS_FILTER_ARGS.first(), Some(&"--filter"));
+            for arg in SYSTEM_BUS_FILTER_ARGS.iter().skip(1) {
+                let name = arg
+                    .strip_prefix("--talk=")
+                    .or_else(|| arg.strip_prefix("--see="))
+                    .unwrap_or_else(|| panic!("unexpected rule {arg}"));
+                assert!(!name.contains('*'), "{arg} must name one service");
+                assert!(name.contains('.'), "{arg}");
+            }
+            assert!(SYSTEM_BUS_FILTER_ARGS.contains(&"--talk=org.freedesktop.NetworkManager"));
+        }
+
+        phase binds_and_landlock_rules_cover_the_same_paths;
+        {
+            let plan = SystemAuthorityPlan {
+                read_paths: vec!["/usr/bin".into(), "/etc".into()],
+                sockets: vec![SocketBind {
+                    host: "/run/user/1000/tilo/dbus-proxy/7-system.sock".into(),
+                    sandbox: SANDBOX_SYSTEM_BUS.into(),
+                }],
+                system_bus: true,
+                runtime_state: Some(RuntimeState {
+                    dir: "/run/user/1000/tilo".into(),
+                    masked: vec!["/run/user/1000/tilo/services".into()],
+                }),
+                user_apps: Some(SocketBind {
+                    host: "/home/a/.local/share/tilo-apps".into(),
+                    sandbox: sandbox_user_apps(),
+                }),
+            };
+            let mut binds = Vec::new();
+            push_binds(&mut binds, &plan);
+            assert_eq!(
+                binds,
+                [
+                    "--ro-bind",
+                    "/usr/bin",
+                    "/usr/bin",
+                    "--ro-bind",
+                    "/etc",
+                    "/etc",
+                    "--bind",
+                    "/run/user/1000/tilo/dbus-proxy/7-system.sock",
+                    SANDBOX_SYSTEM_BUS,
+                    "--ro-bind",
+                    "/run/user/1000/tilo",
+                    "/run/user/1000/tilo",
+                    "--tmpfs",
+                    "/run/user/1000/tilo/services",
+                    "--ro-bind",
+                    "/home/a/.local/share/tilo-apps",
+                    "/home/a/.local/share/tilo-apps",
+                    "--ro-bind",
+                    "/home/a/.local/share/tilo-apps",
+                    "/run/tilo/app/.local/share/tilo-apps",
+                    "--setenv",
+                    "DBUS_SYSTEM_BUS_ADDRESS",
+                    "unix:path=/run/dbus/system_bus_socket",
+                ]
+            );
+            let mut rules = Vec::new();
+            push_landlock_rules(&mut rules, &plan);
+            assert_eq!(
+                rules,
+                [
+                    "--ro",
+                    "/usr/bin",
+                    "--ro",
+                    "/etc",
+                    "--rw",
+                    SANDBOX_SYSTEM_BUS,
+                    "--ro",
+                    "/run/user/1000/tilo",
+                    "--ro",
+                    "/home/a/.local/share/tilo-apps",
+                    "--ro",
+                    "/run/tilo/app/.local/share/tilo-apps",
+                ]
+            );
+        }
+
+        phase systemd_clients_receive_the_boot_marker_without_the_manager_socket;
+        {
+            let plan = SystemAuthorityPlan {
+                read_paths: HOST_READ_PATHS.iter().map(PathBuf::from).collect(),
+                ..SystemAuthorityPlan::default()
+            };
+            let mut binds = Vec::new();
+            push_binds(&mut binds, &plan);
+            assert!(
+                binds.windows(3).any(|args| {
+                    args == ["--ro-bind", "/run/systemd/system", "/run/systemd/system"]
+                })
+            );
+            let mut rules = Vec::new();
+            push_landlock_rules(&mut rules, &plan);
+            assert!(
+                rules
+                    .windows(2)
+                    .any(|args| args == ["--ro", "/run/systemd/system"])
+            );
+            for private in ["/run/systemd/private", "/run/systemd", "/run/dbus"] {
+                assert!(!binds.iter().any(|arg| arg == private));
+                assert!(!rules.iter().any(|arg| arg == private));
+            }
+        }
+
+        phase the_runtime_state_shows_its_files_and_hides_every_subdirectory;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let dir = root.path().join("tilo");
+            for sub in ["capabilities", "identity-projections", "services"] {
+                std::fs::create_dir_all(dir.join(sub)).unwrap();
+            }
+            std::fs::write(dir.join("display-state.json"), b"{}").unwrap();
+            let state = runtime_state_in(dir.clone()).unwrap();
+            assert_eq!(state.dir, dir);
+            assert_eq!(
+                state.masked,
+                ["capabilities", "identity-projections", "services"].map(|sub| dir.join(sub))
+            );
+            assert!(runtime_state_in(root.path().join("absent")).is_none());
+        }
     }
 }

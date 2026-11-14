@@ -28,6 +28,17 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::LinkError;
 use crate::host::{Carrier, Host};
 
+/// How long a dial waits for a connection before it is retried.
+///
+/// A host that is down answers nothing: its stopped addresses drop the
+/// packets silently (the UDP socket is not connected, so the port's refusal
+/// never reaches it), and a relay carries nothing to an endpoint it does not
+/// have. A dial would otherwise wait out QUIC's 30-second idle timeout, which
+/// a session spends on every attempt. A working handshake completes within a
+/// few round trips, so ten seconds is a stopped host, not a slow one.
+#[cfg(not(target_arch = "wasm32"))]
+const DIAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// One thing a device asks its host, on a link of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Purpose {
@@ -134,10 +145,19 @@ impl Dialer {
                     LinkError::Unavailable("the live plane dials its own carrier over iroh".into())
                 })?;
                 let endpoint = self.endpoint().await?;
-                let connection = endpoint
-                    .connect(self.host.addr(), alpn)
-                    .await
-                    .map_err(|error| connect_error(&error, alpn))?;
+                let connection = match tokio::time::timeout(
+                    DIAL_DEADLINE,
+                    endpoint.connect(self.host.addr(), alpn),
+                )
+                .await
+                {
+                    Ok(connection) => connection.map_err(|error| connect_error(&error, alpn))?,
+                    Err(_) => {
+                        return Err(LinkError::Unavailable(
+                            "the host did not answer the dial in time".into(),
+                        ));
+                    }
+                };
                 Ok(Link::of(Inner::Iroh(connection)))
             }
             #[cfg(target_arch = "wasm32")]

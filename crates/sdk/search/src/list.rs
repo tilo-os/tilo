@@ -143,113 +143,117 @@ mod tests {
         ranks
     }
 
-    #[test]
-    fn list_staging_preserves_rows_fields_weights_and_phrase_changes() {
-        let list = ListIndex::default();
-        let title = FieldWeight::TITLE;
-        let keyword = FieldWeight::KEYWORD;
-        let versions = [
-            vec![vec![("Hotel", title)], vec![]],
-            vec![vec![], vec![("Hotel", title)]],
-            vec![vec![("Hotel", title), ("Rename", keyword)]],
-            vec![vec![("Hotel", title)], vec![("Rename", keyword)]],
-            vec![vec![("Hotel", FieldWeight::SUBTITLE)]],
-            vec![vec![("Restart", title), ("rechner neu starten", keyword)]],
-            vec![vec![("Écran", title)], vec![("世界", title)], vec![]],
-            Vec::new(),
-        ];
-        for rows in versions {
-            for query in [
-                "",
-                "  ",
-                "hotel",
-                "hotle",
-                "rename",
-                "rechner",
-                "rechner neu",
-                "écr",
-                "世界",
-                "zzq",
-            ] {
-                // Filtering removes an exact size hint, as lazy callers may do.
-                let actual = list.ranks(
-                    query,
-                    rows.iter().filter(|_| true).map(|row| row.iter().copied()),
-                );
-                assert_eq!(actual, reference_ranks(query, &rows), "{query:?}: {rows:?}");
+    tilo_test_env::scenario! {
+        fn a_list_ranks_its_rows_as_an_index_of_them_would;
+
+        phase list_staging_preserves_rows_fields_weights_and_phrase_changes;
+        {
+            let list = ListIndex::default();
+            let title = FieldWeight::TITLE;
+            let keyword = FieldWeight::KEYWORD;
+            let versions = [
+                vec![vec![("Hotel", title)], vec![]],
+                vec![vec![], vec![("Hotel", title)]],
+                vec![vec![("Hotel", title), ("Rename", keyword)]],
+                vec![vec![("Hotel", title)], vec![("Rename", keyword)]],
+                vec![vec![("Hotel", FieldWeight::SUBTITLE)]],
+                vec![vec![("Restart", title), ("rechner neu starten", keyword)]],
+                vec![vec![("Écran", title)], vec![("世界", title)], vec![]],
+                Vec::new(),
+            ];
+            for rows in versions {
+                for query in [
+                    "",
+                    "  ",
+                    "hotel",
+                    "hotle",
+                    "rename",
+                    "rechner",
+                    "rechner neu",
+                    "écr",
+                    "世界",
+                    "zzq",
+                ] {
+                    // Filtering removes an exact size hint, as lazy callers may do.
+                    let actual = list.ranks(
+                        query,
+                        rows.iter().filter(|_| true).map(|row| row.iter().copied()),
+                    );
+                    assert_eq!(actual, reference_ranks(query, &rows), "{query:?}: {rows:?}");
+                }
             }
         }
-    }
 
-    #[test]
-    fn list_staging_preserves_the_large_list_engine_path() {
-        let list = ListIndex::default();
-        let mut rows = vec![vec![("Hotel", FieldWeight::TITLE)]; crate::direct::DIRECT_LIMIT + 1];
-        rows.push(Vec::new());
-        for query in ["", "hotel", "hotle", "zzq"] {
-            assert_eq!(
-                list.ranks(query, rows.iter().map(|row| row.iter().copied())),
-                reference_ranks(query, &rows),
-                "{query:?}"
+        phase list_staging_preserves_the_large_list_engine_path;
+        {
+            let list = ListIndex::default();
+            let mut rows = vec![vec![("Hotel", FieldWeight::TITLE)]; crate::direct::DIRECT_LIMIT + 1];
+            rows.push(Vec::new());
+            for query in ["", "hotel", "hotle", "zzq"] {
+                assert_eq!(
+                    list.ranks(query, rows.iter().map(|row| row.iter().copied())),
+                    reference_ranks(query, &rows),
+                    "{query:?}"
+                );
+            }
+        }
+
+        phase a_keyword_phrase_needs_more_than_its_first_word;
+        {
+            let list = ListIndex::new(Matching::LOOSE);
+            let rows = [
+                vec![
+                    ("Restart", FieldWeight::TITLE),
+                    ("neustart", FieldWeight::KEYWORD),
+                    ("rechner neu starten", FieldWeight::KEYWORD),
+                ],
+                vec![
+                    ("Calculator", FieldWeight::TITLE),
+                    ("rechner", FieldWeight::KEYWORD),
+                ],
+            ];
+            let ranks = |query| list.ranks(query, rows.iter().map(|row| row.iter().copied()));
+            assert_eq!(ranks("rechner")[0], None, "one word never matches a phrase");
+            assert!(ranks("rechner")[1].is_some());
+            assert!(ranks("rechner neu")[0].is_some(), "the phrase, typed on");
+            assert!(
+                ranks("neustart")[0].is_some(),
+                "a one-word keyword still matches"
             );
         }
-    }
 
-    #[test]
-    fn a_keyword_phrase_needs_more_than_its_first_word() {
-        let list = ListIndex::new(Matching::LOOSE);
-        let rows = [
-            vec![
-                ("Restart", FieldWeight::TITLE),
-                ("neustart", FieldWeight::KEYWORD),
-                ("rechner neu starten", FieldWeight::KEYWORD),
-            ],
-            vec![
-                ("Calculator", FieldWeight::TITLE),
-                ("rechner", FieldWeight::KEYWORD),
-            ],
-        ];
-        let ranks = |query| list.ranks(query, rows.iter().map(|row| row.iter().copied()));
-        assert_eq!(ranks("rechner")[0], None, "one word never matches a phrase");
-        assert!(ranks("rechner")[1].is_some());
-        assert!(ranks("rechner neu")[0].is_some(), "the phrase, typed on");
-        assert!(
-            ranks("neustart")[0].is_some(),
-            "a one-word keyword still matches"
-        );
-    }
-
-    #[test]
-    fn ranks_rows_and_reindexes_only_on_change() {
-        let list = ListIndex::new(Matching::LOOSE);
-        let rows = [
-            ["Rename Workspace", "Give the workspace a new name"],
-            ["Hotel", ""],
-            ["Bravo", ""],
-        ];
-        let fields = |rows: &[[&'static str; 2]]| {
-            rows.iter()
-                .map(|[label, description]| {
-                    [
-                        (*label, FieldWeight::TITLE),
-                        (*description, FieldWeight::SUBTITLE),
-                    ]
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(list.ranks("", fields(&rows)), [Some(0); 3]);
-        assert_eq!(
-            list.ranks("ren", fields(&rows)),
-            [Some(MatchTier::Prefix.percent()), None, None]
-        );
-        assert!(list.ranks("new name", fields(&rows))[0].is_some());
-        assert!(list.ranks("rename space", fields(&rows))[0].is_some());
-        assert!(list.ranks("hotle", fields(&rows))[1].is_some());
-        assert_eq!(list.ranks("xyz", fields(&rows)), [None; 3]);
-        let changed = [["Charlie", ""], ["Hotel", ""]];
-        assert_eq!(
-            list.ranks("char", fields(&changed)),
-            [Some(MatchTier::Prefix.percent()), None]
-        );
+        phase ranks_rows_and_reindexes_only_on_change;
+        {
+            let list = ListIndex::new(Matching::LOOSE);
+            let rows = [
+                ["Rename Workspace", "Give the workspace a new name"],
+                ["Hotel", ""],
+                ["Bravo", ""],
+            ];
+            let fields = |rows: &[[&'static str; 2]]| {
+                rows.iter()
+                    .map(|[label, description]| {
+                        [
+                            (*label, FieldWeight::TITLE),
+                            (*description, FieldWeight::SUBTITLE),
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(list.ranks("", fields(&rows)), [Some(0); 3]);
+            assert_eq!(
+                list.ranks("ren", fields(&rows)),
+                [Some(MatchTier::Prefix.percent()), None, None]
+            );
+            assert!(list.ranks("new name", fields(&rows))[0].is_some());
+            assert!(list.ranks("rename space", fields(&rows))[0].is_some());
+            assert!(list.ranks("hotle", fields(&rows))[1].is_some());
+            assert_eq!(list.ranks("xyz", fields(&rows)), [None; 3]);
+            let changed = [["Charlie", ""], ["Hotel", ""]];
+            assert_eq!(
+                list.ranks("char", fields(&changed)),
+                [Some(MatchTier::Prefix.percent()), None]
+            );
+        }
     }
 }

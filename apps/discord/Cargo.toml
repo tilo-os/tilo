@@ -45,6 +45,8 @@ chat = { path = "../chat" }
 tilo-reference = { path = "../../crates/collab/reference" }
 # The bridge bot's program is built and checked against the real surfaces.
 tilo-automation = { path = "../../crates/collab/automation" }
+# One test function holds the cases of one subject (`tilo_test_env::scenario!`).
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

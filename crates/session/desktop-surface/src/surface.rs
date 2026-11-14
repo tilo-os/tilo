@@ -54,7 +54,7 @@ mod commands;
 mod displays;
 mod floating;
 mod floats;
-pub use floats::DockedCard;
+pub use floats::{AskedFloat, DockedCard};
 mod history;
 mod hung;
 mod launch;
@@ -100,7 +100,7 @@ pub use search::{
 };
 pub use seed::{seed_tree, seed_tree_in};
 pub use tile_content::tile_app_kind;
-use tile_content::{build_tile, descriptor, placeholder};
+use tile_content::{app_name_of, build_tile, descriptor, placeholder};
 pub use window_menu::Row as WindowMenuRow;
 pub use workspace_share::{WorkspaceShare, WorkspaceShares};
 
@@ -201,6 +201,9 @@ struct Shared {
     /// The floating windows this device stands in the floating layer's column, and where the
     /// layer put each ([`DesktopHandle::docked_cards`], [`DesktopHandle::dock_at`]).
     dock: floats::Dock,
+    /// The windows the person floated or put back that the host has not made arranging actions of
+    /// yet ([`DesktopHandle::take_asked_floats`]).
+    asked_floats: Vec<floats::AskedFloat>,
     /// Whoever holds each window someone else opened, by tab ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
     /// The agent run that opened each window an agent opened, by tab
@@ -1277,8 +1280,7 @@ impl DesktopSurface {
         for (strip, row) in &mut self.rows {
             let floats: HashMap<u64, Rect> = if Some(*strip) == shown {
                 let mut shared = self.shared.borrow_mut();
-                let floats =
-                    floats::floats_of(&shared.tree, *strip, floats::area_of(row.get_rect()));
+                let floats = floats::floats_of(&shared, *strip, floats::area_of(row.get_rect()));
                 // A docked window the record no longer floats has left the column.
                 if !floats.is_empty() || !shared.dock.cards.is_empty() {
                     let dock = &mut shared.dock;
@@ -1839,7 +1841,7 @@ impl DesktopSurface {
             // opened next to, clear of it, not over it.
             if float {
                 row.share_with_floating_neighbour(group, FLOAT_CARD_SIZE.0 + 2.0 * FLOAT_CARD_ROOM);
-            } else if !floats::holds(&shared.tree, strip, group) {
+            } else if !floats::holds(&shared, strip, group) {
                 row.share_with_neighbour(group);
             }
         }

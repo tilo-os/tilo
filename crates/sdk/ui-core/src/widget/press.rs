@@ -66,6 +66,17 @@ impl Press {
             .map(|action| action.borrow().binding().address().clone())
     }
 
+    /// What the part does, as a window publishes it ([`tilo_actions::ActionAddress::naming`]): the
+    /// action it runs, naming the one record it acts on. A menu row built for one record's action
+    /// says so, whichever record's menu it stands in.
+    #[must_use]
+    pub fn identity(&self) -> Option<tilo_actions::ActionAddress> {
+        self.action
+            .as_ref()
+            .map(|action| action.borrow().binding().identity())
+    }
+
+    /// Press it: run the action, or report the event to the view.
     pub fn run(&self) {
         if let Some(action) = &self.action {
             if let Err(error) = action.borrow_mut().emit(()) {

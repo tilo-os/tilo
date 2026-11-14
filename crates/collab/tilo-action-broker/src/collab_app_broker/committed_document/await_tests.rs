@@ -411,7 +411,6 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
     use tilo_channels::{ChannelKeyAccess, testing};
     let workspace = Arc::new(testing::Workspace::default());
     let workspace_id = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
-    let route = collab_types::ChannelRoute::new("so.tilo.notes", "note");
     let policy = testing::Policy::readers([1, 2]);
     let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
     let [founder, reader] = [0_u8, 1].map(|id| {
@@ -427,6 +426,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
             },
             Box::new(testing::Directory {
                 policy: policy.clone(),
+                founds: Arc::new(std::sync::atomic::AtomicBool::new(id == 0)),
             }),
             Arc::new(tilo_channels::Gates::default()),
         )
@@ -438,13 +438,13 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
     keys.set(Some(reader.0.clone()));
     let keys_here = || {
         keys.get()
-            .and_then(|access| access.record_keys(workspace_id, &route))
+            .and_then(|access| access.record_keys(workspace_id))
             .is_some_and(|keys| keys.is_ok())
     };
     let mut now = tilo_clock::now();
     let mut pass = |(access, endpoint): &(ChannelKeyAccess, testing::Endpoint)| {
         now = now.checked_add(Duration::from_secs(60)).unwrap();
-        access.access_record(workspace_id, &route);
+        access.access(workspace_id);
         access.pump_at(endpoint, now);
     };
     // The founder's group exists; the reader has heard of it and holds none

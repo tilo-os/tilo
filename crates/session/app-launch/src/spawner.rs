@@ -610,58 +610,78 @@ mod tests {
         collected
     }
 
-    #[test]
-    fn an_app_starts_with_exactly_the_environment_it_planned() {
-        let directory = tempfile::tempdir().expect("a directory");
-        let written = directory.path().join("environment");
-        let script = format!(
-            "printf '%s\\n' \"$WAYLAND_DISPLAY\" \"$TILO_USER_ID\" \"$LEAK\" > {}",
-            written.display()
-        );
-        let planned = shell(
-            &script,
-            BTreeMap::from([
-                ("WAYLAND_DISPLAY".to_owned(), "wayland-6".to_owned()),
-                ("TILO_USER_ID".to_owned(), "person-4".to_owned()),
-            ]),
-        );
-        let mut spawner = Spawner::default();
-        let started = spawner.start(&planned).expect("starts");
-        assert_ne!(started.pid, 0);
-        let event = events(&spawner, 1).remove(0);
-        assert_eq!(event.app, "org.example.Probe");
-        assert_eq!(event.title, "Probe");
-        assert_eq!(event.end, End::exited(0));
-        assert_eq!(event.end.memory(), None, "a clean exit is nobody's doing");
-        assert!(!event.end.crashed(), "a clean exit is not a crash");
-        assert_eq!(
-            std::fs::read_to_string(&written).expect("the probe's environment"),
-            "wayland-6\nperson-4\n\n",
-            "the planned variables arrive and nothing else in the process's environment does"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_started_app_is_reported_as_it_ended;
 
-    #[test]
-    fn an_app_that_fails_or_is_killed_is_reported_as_a_crash() {
-        let mut spawner = Spawner::default();
-        let failing = spawner
-            .start(&shell("exit 3", BTreeMap::new()))
-            .expect("starts");
-        let killed = spawner
-            .start(&shell("kill -9 $$", BTreeMap::new()))
-            .expect("starts");
-        assert_ne!(failing.id, killed.id, "each launch is reported on its own");
-        let mut events = events(&spawner, 2);
-        events.sort_by_key(|event| event.id);
-        assert_eq!(events[0].end, End::exited(3));
-        assert!(events[0].end.crashed());
-        assert_eq!(events[1].end, End::signalled(9));
-        assert!(events[1].end.crashed());
-        assert_eq!(events[1].end.to_string(), "was killed by signal 9");
-        assert!(
-            events.iter().all(|event| event.end.memory().is_none()),
-            "a launcher that keeps no app tree remembers nothing"
-        );
+        phase an_app_starts_with_exactly_the_environment_it_planned;
+        {
+            let directory = tempfile::tempdir().expect("a directory");
+            let written = directory.path().join("environment");
+            let script = format!(
+                "printf '%s\\n' \"$WAYLAND_DISPLAY\" \"$TILO_USER_ID\" \"$LEAK\" > {}",
+                written.display()
+            );
+            let planned = shell(
+                &script,
+                BTreeMap::from([
+                    ("WAYLAND_DISPLAY".to_owned(), "wayland-6".to_owned()),
+                    ("TILO_USER_ID".to_owned(), "person-4".to_owned()),
+                ]),
+            );
+            let mut spawner = Spawner::default();
+            let started = spawner.start(&planned).expect("starts");
+            assert_ne!(started.pid, 0);
+            let event = events(&spawner, 1).remove(0);
+            assert_eq!(event.app, "org.example.Probe");
+            assert_eq!(event.title, "Probe");
+            assert_eq!(event.end, End::exited(0));
+            assert_eq!(event.end.memory(), None, "a clean exit is nobody's doing");
+            assert!(!event.end.crashed(), "a clean exit is not a crash");
+            assert_eq!(
+                std::fs::read_to_string(&written).expect("the probe's environment"),
+                "wayland-6\nperson-4\n\n",
+                "the planned variables arrive and nothing else in the process's environment does"
+            );
+        }
+
+        phase an_app_that_fails_or_is_killed_is_reported_as_a_crash;
+        {
+            let mut spawner = Spawner::default();
+            let failing = spawner
+                .start(&shell("exit 3", BTreeMap::new()))
+                .expect("starts");
+            let killed = spawner
+                .start(&shell("kill -9 $$", BTreeMap::new()))
+                .expect("starts");
+            assert_ne!(failing.id, killed.id, "each launch is reported on its own");
+            let mut events = events(&spawner, 2);
+            events.sort_by_key(|event| event.id);
+            assert_eq!(events[0].end, End::exited(3));
+            assert!(events[0].end.crashed());
+            assert_eq!(events[1].end, End::signalled(9));
+            assert!(events[1].end.crashed());
+            assert_eq!(events[1].end.to_string(), "was killed by signal 9");
+            assert!(
+                events.iter().all(|event| event.end.memory().is_none()),
+                "a launcher that keeps no app tree remembers nothing"
+            );
+        }
+
+        phase an_app_that_cannot_start_says_so_instead_of_starting_something_else;
+        {
+            let mut spawner = Spawner::default();
+            let missing = Planned {
+                program: PathBuf::from("/nonexistent/tilo-app"),
+                ..shell("true", BTreeMap::new())
+            };
+            let error = spawner.start(&missing).expect_err("nothing starts");
+            assert_eq!(error.app, "org.example.Probe");
+            assert!(error.reason.contains("No such file"), "{error}");
+            assert!(
+                spawner.events().is_empty(),
+                "no process, no ending to report"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -680,21 +700,5 @@ mod tests {
 
         drop(spawner);
         tilo_test_env::exited("the app its session no longer runs", running.pid);
-    }
-
-    #[test]
-    fn an_app_that_cannot_start_says_so_instead_of_starting_something_else() {
-        let mut spawner = Spawner::default();
-        let missing = Planned {
-            program: PathBuf::from("/nonexistent/tilo-app"),
-            ..shell("true", BTreeMap::new())
-        };
-        let error = spawner.start(&missing).expect_err("nothing starts");
-        assert_eq!(error.app, "org.example.Probe");
-        assert!(error.reason.contains("No such file"), "{error}");
-        assert!(
-            spawner.events().is_empty(),
-            "no process, no ending to report"
-        );
     }
 }

@@ -1254,7 +1254,7 @@ fn start_record(
     // A record of its own, or the workspace's record an app keeps one of
     // (`ResourceApp::WORKSPACE_RECORD`), opened for the first time.
     let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
-    record_content(context);
+    record_content(context)?;
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();
     let options = context.take_launch_options();
@@ -1420,36 +1420,46 @@ fn revealed(target: &LaunchTarget) -> Option<String> {
 /// content the record references and this device lacks is asked of the
 /// route, and content the app stores reaches the record's other readers.
 /// A capture keeps its fixture's store as it is: it reaches nothing outside.
-fn record_content(context: &mut HostContext) {
+fn record_content(context: &mut HostContext) -> Result<(), LaunchError> {
     if context.capture().is_some() {
-        return;
+        return Ok(());
     }
     let Some(local) = context.content().cloned() else {
-        return;
+        return Ok(());
     };
+    let route = record_route(context)?;
     let lane = ui_core::collaboration::record_content::ContentLane::of_window();
     // The window keeps its lane: another window of the app on this thread
     // reads its own, never this one's queue of wants.
     ui_core::collaboration::record_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
     // Whatever carries the record's content for the process (a browser
-    // page's replication) asks for and hands over this window's too.
-    ui_core::collaboration::record_content::ContentLane::show_on_route(
-        context.app_id(),
-        record_wire(&context.record().id),
-        &lane,
-    );
+    // page's replication) asks for and hands over this window's too, and
+    // what it stores is sealed for the members of the record's workspace.
+    ui_core::collaboration::record_content::ContentLane::show_on_route(&route, &lane);
     context
         .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
+    Ok(())
 }
 
-/// The name `record` travels under on its route: none for a package's
-/// primary record.
-pub(super) fn record_wire(record: &RecordId) -> &str {
-    if record.is_package_primary() {
-        ""
-    } else {
-        record.as_str()
-    }
+/// The route of the record the window opens, or the refusal to open it:
+/// content the app would store for a record this host cannot name a route for
+/// is sealed under a key of its own, which nothing carries to the record's
+/// other readers and no member of its workspace holds. A window that would
+/// lose what it writes is refused before it writes, not sealed for nobody.
+///
+/// # Errors
+/// A record whose workspace this host cannot name: a window opened outside
+/// every workspace, or on a profile opened by a name rather than an id.
+pub(super) fn record_route(
+    context: &HostContext,
+) -> Result<ui_core::collaboration::RouteSpec, LaunchError> {
+    let record = context.record();
+    context.records().wire_route(&record.id).map_err(|error| {
+        LaunchError::Operation(format!(
+            "{} has no workspace on this device to keep its content in ({error})",
+            context.app_id()
+        ))
+    })
 }
 
 /// Prepare a capture's scene before its view is built: the app's fixture,
@@ -1492,28 +1502,6 @@ fn merge_peer(
 
 #[cfg(not(target_arch = "wasm32"))]
 const CAPTURE_INSTANCE: u64 = 1;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) const DATA_DIR_INSTANCE: u64 = 0;
-
-#[cfg(not(target_arch = "wasm32"))]
-/// The host of an explicit `--data-dir` profile: one personal workspace in
-/// that directory. Tools that seed or inspect such a profile open it the same
-/// way the app does.
-pub(crate) fn data_dir_host(
-    directory: &std::path::Path,
-    author: &UserId,
-    permissions: ui_core::permissions::SharedPermissions,
-) -> Result<ApplicationHost, LaunchError> {
-    let root = std::path::absolute(directory).map_err(super::headless::operation)?;
-    ApplicationHost::new(
-        root,
-        "local-device".into(),
-        "personal",
-        author.clone(),
-        permissions,
-        tilo_actions::ActionContext::default(),
-    )
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 /// The permissions of `author` holding `role`, shared with the host so a
@@ -1822,10 +1810,15 @@ fn prepare_named(
         let root = profile.path().join("state");
         let profile_root = profile.path().to_path_buf();
         let content = profile_content(profile.path());
+        // The profile is a workspace of its own, which nothing else keeps: it is
+        // named by an id, so the records kept in it have a route, and it holds
+        // its own members' keys, so what its windows store is sealed once for
+        // it and reaches nothing outside ([`super::headless::hold_workspace_keys`]).
+        let workspace = tilo_resource::fresh_uuid().to_string();
         let mut host = ApplicationHost::new_with_profile_lifetime(
             root,
             "capture-device".into(),
-            "capture-workspace",
+            &workspace,
             UserId("capture-author".into()),
             role_permissions("capture-author", Role::Owner),
             tilo_actions::ActionContext::default(),
@@ -1858,36 +1851,53 @@ fn prepare_named(
         if private {
             prepared.context.provide_private();
         }
-        return Ok(super::headless::in_profile(
-            prepared,
-            &profile_root,
-            definition.app_id(),
-        ));
+        let prepared = super::headless::in_profile(prepared, &profile_root, definition.app_id());
+        super::headless::hold_workspace_keys(&prepared.context, &workspace)?;
+        return Ok(prepared);
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
-        let mut host = data_dir_host(
+        let mut host = super::headless::data_dir_host(
             std::path::Path::new(directory),
             &author,
             role_permissions(&author.0, Role::Owner),
         )?;
-        return prepare_on(&mut host, definition, DATA_DIR_INSTANCE, named, inputs).map(
-            |mut prepared| {
-                prepared
-                    .context
-                    .provide_content(super::headless::data_dir_content(directory.as_ref()));
-                super::headless::in_profile(
-                    prepared,
-                    &super::headless::data_dir_root(directory.as_ref()),
-                    definition.app_id(),
-                )
-            },
+        let mut prepared = prepare_on(
+            &mut host,
+            definition,
+            super::headless::DATA_DIR_INSTANCE,
+            named,
+            inputs,
+        )?;
+        prepared
+            .context
+            .provide_content(super::headless::data_dir_content(directory.as_ref()));
+        let prepared = super::headless::in_profile(
+            prepared,
+            &super::headless::data_dir_root(directory.as_ref()),
+            definition.app_id(),
         );
+        super::headless::hold_workspace_keys(
+            &prepared.context,
+            super::headless::DATA_DIR_WORKSPACE,
+        )?;
+        return Ok(prepared);
     }
     let mut prepared = NativeProcessHost::prepare_window(definition, named, inputs)?;
     prepared
         .context
         .provide_content(tilo_content_device::for_app());
+    // A launch outside every workspace keeps this device's own records, whose
+    // keys no collaboration plane holds: the window seals what it stores under
+    // the workspace's own secret ([`super::headless::hold_workspace_keys`]). A window of a
+    // collaboration workspace holds its members' secret instead, once its route
+    // carries their keys.
+    if prepared.context.records().home() == ui_core::application::PERSONAL_WORKSPACE {
+        super::headless::hold_workspace_keys(
+            &prepared.context,
+            ui_core::application::PERSONAL_WORKSPACE,
+        )?;
+    }
     Ok(prepared)
 }
 

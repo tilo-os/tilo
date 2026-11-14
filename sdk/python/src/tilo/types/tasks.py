@@ -69,6 +69,7 @@ class Issue(TypedDict):
     comments: list[Message]
     author: str
     created_ms: int
+    url: str | None
 
 Kind = Literal["project", "area"]
 
@@ -106,7 +107,7 @@ class TrackerArea(TypedDict):
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@1af478b177cd7ffc"
+    __surface__ = "so.tilo.tasks@08d0fa20785e982a"
     issues: list[Issue]
     areas: list[TrackerArea]
     @property
@@ -125,6 +126,7 @@ class Tracker(Resource):
         body: str | None = None,
         status: Status | None = None,
         assignee: str | None = None,
+        url: str | None = None,
     ) -> Run | None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -137,6 +139,8 @@ class Tracker(Resource):
             args["status"] = status
         if assignee is not None:
             args["assignee"] = assignee
+        if url is not None:
+            args["url"] = url
         return self.action("create", **args)
 
     def create_area(self,

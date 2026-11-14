@@ -73,44 +73,48 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn the_window_bar_names_the_screen_and_the_page_titles_itself() {
-        let app = TubeApp::sample();
-        assert_eq!(location(&app).as_deref(), Some("Home"));
-        assert!(action_names(&app).is_empty(), "{:?}", action_names(&app));
-        app.tube()
-            .apply(Action::Navigate(Route::Search("donut".into())));
-        assert_eq!(location(&app).as_deref(), Some("Search: donut"));
-        app.tube().apply(Action::OpenVideo("vid_donut".into()));
-        assert_eq!(location(&app), None, "a video page titles itself");
-    }
+    tilo_test_env::scenario! {
+        fn the_window_bar_carries_the_screens_name_and_its_actions;
 
-    #[test]
-    fn clear_history_is_the_window_bars_on_a_history_with_videos() {
-        let mut app = TubeApp::sample();
-        app.tube().apply(Action::OpenVideo("vid_donut".into()));
-        app.tube().apply(Action::Navigate(Route::History));
-        let clear = app
-            .window_toolbar()
-            .actions
-            .into_iter()
-            .find(|action| action.name == "Clear history")
-            .expect("the History screen offers Clear history in the bar");
-        assert!(clear.menu, "a destructive action waits in the bar's menu");
+        phase the_window_bar_names_the_screen_and_the_page_titles_itself;
+        {
+            let app = TubeApp::sample();
+            assert_eq!(location(&app).as_deref(), Some("Home"));
+            assert!(action_names(&app).is_empty(), "{:?}", action_names(&app));
+            app.tube()
+                .apply(Action::Navigate(Route::Search("donut".into())));
+            assert_eq!(location(&app).as_deref(), Some("Search: donut"));
+            app.tube().apply(Action::OpenVideo("vid_donut".into()));
+            assert_eq!(location(&app), None, "a video page titles itself");
+        }
 
-        action::drain(&app.tube().bus);
-        ui::window_toolbar::deliver(ToolbarEvent::Action { id: clear.id });
-        assert!(app.take_window_toolbar_events());
-        assert_eq!(
-            action::drain(&app.tube().bus),
-            [Action::Effect(TubeEffect::ClearHistory)],
-            "the bar's press asks for the same effect the palette runs"
-        );
+        phase clear_history_is_the_window_bars_on_a_history_with_videos;
+        {
+            let mut app = TubeApp::sample();
+            app.tube().apply(Action::OpenVideo("vid_donut".into()));
+            app.tube().apply(Action::Navigate(Route::History));
+            let clear = app
+                .window_toolbar()
+                .actions
+                .into_iter()
+                .find(|action| action.name == "Clear history")
+                .expect("the History screen offers Clear history in the bar");
+            assert!(clear.menu, "a destructive action waits in the bar's menu");
 
-        app.tube().perform(TubeEffect::ClearHistory).unwrap();
-        assert!(
-            !action_names(&app).contains(&"Clear history".to_owned()),
-            "an empty history offers nothing to clear"
-        );
+            action::drain(&app.tube().bus);
+            ui::window_toolbar::deliver(ToolbarEvent::Action { id: clear.id });
+            assert!(app.take_window_toolbar_events());
+            assert_eq!(
+                action::drain(&app.tube().bus),
+                [Action::Effect(TubeEffect::ClearHistory)],
+                "the bar's press asks for the same effect the palette runs"
+            );
+
+            app.tube().perform(TubeEffect::ClearHistory).unwrap();
+            assert!(
+                !action_names(&app).contains(&"Clear history".to_owned()),
+                "an empty history offers nothing to clear"
+            );
+        }
     }
 }

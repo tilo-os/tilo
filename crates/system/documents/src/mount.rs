@@ -983,82 +983,123 @@ mod tests {
         crate::app_view(mounted.path(), key).join(rest)
     }
 
-    #[test]
-    fn choosing_a_file_in_the_picker_gives_the_app_that_file_through_the_mount() {
-        let documents = Documents::new();
-        let Some((_dir, mounted)) = mounted(&documents) else {
-            return;
-        };
-        let home = tempfile::tempdir().unwrap();
-        std::fs::write(home.path().join("report.pdf"), b"%PDF").unwrap();
-        std::fs::write(home.path().join("secret.txt"), b"secret").unwrap();
-        let key = AppKey::new("workspace-1", "so.tilo.pdf-viewer").unwrap();
-        let view = crate::app_view(mounted.path(), &key);
-        assert_eq!(
-            std::fs::read_dir(&view).unwrap().count(),
-            0,
-            "nothing before a choice"
-        );
+    tilo_test_env::scenario! {
+        fn the_mount_gives_an_app_exactly_its_chosen_documents;
 
-        let given = documents
-            .grant(&key, &home.path().join("report.pdf"), Kind::Read)
-            .unwrap();
-        let path = in_view(&mounted, &key, &given);
-        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
-        assert!(
-            std::fs::write(&path, b"changed").is_err(),
-            "an Open is read-only"
-        );
-        assert!(
-            std::fs::read(path.with_file_name("secret.txt")).is_err(),
-            "nothing beside the chosen file"
-        );
-        let token_dir = path.parent().unwrap();
-        let listed: Vec<_> = std::fs::read_dir(token_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(listed, vec![OsString::from("report.pdf")]);
+        phase choosing_a_file_in_the_picker_gives_the_app_that_file_through_the_mount;
+        {
+            let documents = Documents::new();
+            let Some((_dir, mounted)) = mounted(&documents) else {
+                return;
+            };
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(home.path().join("report.pdf"), b"%PDF").unwrap();
+            std::fs::write(home.path().join("secret.txt"), b"secret").unwrap();
+            let key = AppKey::new("workspace-1", "so.tilo.pdf-viewer").unwrap();
+            let view = crate::app_view(mounted.path(), &key);
+            assert_eq!(
+                std::fs::read_dir(&view).unwrap().count(),
+                0,
+                "nothing before a choice"
+            );
 
-        let other = AppKey::new("workspace-1", "so.tilo.files").unwrap();
-        assert!(
-            std::fs::read(in_view(&mounted, &other, &given)).is_err(),
-            "another app's view does not have it"
-        );
-        documents.revoke(&key);
-        assert!(std::fs::read(&path).is_err(), "taken back at once");
+            let given = documents
+                .grant(&key, &home.path().join("report.pdf"), Kind::Read)
+                .unwrap();
+            let path = in_view(&mounted, &key, &given);
+            assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
+            assert!(
+                std::fs::write(&path, b"changed").is_err(),
+                "an Open is read-only"
+            );
+            assert!(
+                std::fs::read(path.with_file_name("secret.txt")).is_err(),
+                "nothing beside the chosen file"
+            );
+            let token_dir = path.parent().unwrap();
+            let listed: Vec<_> = std::fs::read_dir(token_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(listed, vec![OsString::from("report.pdf")]);
+
+            let other = AppKey::new("workspace-1", "so.tilo.files").unwrap();
+            assert!(
+                std::fs::read(in_view(&mounted, &other, &given)).is_err(),
+                "another app's view does not have it"
+            );
+            documents.revoke(&key);
+            assert!(std::fs::read(&path).is_err(), "taken back at once");
+        }
+
+        phase a_save_to_a_new_file_writes_its_sibling_and_renames_it_over;
+        {
+            let documents = Documents::new();
+            let Some((_dir, mounted)) = mounted(&documents) else {
+                return;
+            };
+            let home = tempfile::tempdir().unwrap();
+            let key = AppKey::new("workspace-1", "so.tilo.logs").unwrap();
+            let given = documents
+                .grant(&key, &home.path().join("export.log"), Kind::Save)
+                .unwrap();
+            let path = in_view(&mounted, &key, &given);
+            let sibling = path.with_file_name(".export.log.tilo-save");
+            let mut file = std::fs::File::create(&sibling).unwrap();
+            file.write_all(b"log lines").unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+            std::fs::rename(&sibling, &path).unwrap();
+            assert_eq!(
+                std::fs::read(home.path().join("export.log")).unwrap(),
+                b"log lines"
+            );
+            assert!(!home.path().join(".export.log.tilo-save").exists());
+            assert!(std::fs::write(path.with_file_name("other.log"), b"x").is_err());
+            assert!(
+                std::fs::remove_file(&path).is_err(),
+                "a Save does not remove"
+            );
+        }
+
+        phase a_folder_choice_gives_its_subtree_and_nothing_above_it;
+        {
+            let documents = Documents::new();
+            let Some((_dir, mounted)) = mounted(&documents) else {
+                return;
+            };
+            let home = tempfile::tempdir().unwrap();
+            let folder = home.path().join("Backups");
+            std::fs::create_dir_all(folder.join("2026")).unwrap();
+            std::fs::write(folder.join("2026/a.tar"), b"a").unwrap();
+            std::fs::write(home.path().join("secret.txt"), b"secret").unwrap();
+            let key = AppKey::new("workspace-1", "so.tilo.backups").unwrap();
+            let given = documents
+                .grant(&key, &folder, Kind::Folder { write: true })
+                .unwrap();
+            let path = in_view(&mounted, &key, &given);
+            let mut bytes = Vec::new();
+            std::fs::File::open(path.join("2026/a.tar"))
+                .unwrap()
+                .read_to_end(&mut bytes)
+                .unwrap();
+            assert_eq!(bytes, b"a");
+            std::fs::write(path.join("2026/b.tar"), b"b").unwrap();
+            assert_eq!(std::fs::read(folder.join("2026/b.tar")).unwrap(), b"b");
+            std::fs::create_dir(path.join("2027")).unwrap();
+            assert!(folder.join("2027").is_dir());
+            assert!(std::fs::read(path.join("../secret.txt")).is_err());
+            assert!(
+                std::fs::remove_dir(&path).is_err(),
+                "the chosen folder stays"
+            );
+        }
     }
 
-    #[test]
-    fn a_save_to_a_new_file_writes_its_sibling_and_renames_it_over() {
-        let documents = Documents::new();
-        let Some((_dir, mounted)) = mounted(&documents) else {
-            return;
-        };
-        let home = tempfile::tempdir().unwrap();
-        let key = AppKey::new("workspace-1", "so.tilo.logs").unwrap();
-        let given = documents
-            .grant(&key, &home.path().join("export.log"), Kind::Save)
-            .unwrap();
-        let path = in_view(&mounted, &key, &given);
-        let sibling = path.with_file_name(".export.log.tilo-save");
-        let mut file = std::fs::File::create(&sibling).unwrap();
-        file.write_all(b"log lines").unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-        std::fs::rename(&sibling, &path).unwrap();
-        assert_eq!(
-            std::fs::read(home.path().join("export.log")).unwrap(),
-            b"log lines"
-        );
-        assert!(!home.path().join(".export.log.tilo-save").exists());
-        assert!(std::fs::write(path.with_file_name("other.log"), b"x").is_err());
-        assert!(
-            std::fs::remove_file(&path).is_err(),
-            "a Save does not remove"
-        );
-    }
-
+    // A test of its own, not a phase of the scenario above: it looks for a second serving thread
+    // among all the threads of this process, and a mount an earlier phase dropped is unmounted at
+    // once but its `fuser-N` threads end on their own time, so one of those could be the thread
+    // this finds.
     #[test]
     fn the_mount_serves_on_more_than_one_thread() {
         let documents = Documents::new();
@@ -1086,39 +1127,6 @@ mod tests {
         assert!(
             serving,
             "one slow read must not hold up every app's documents"
-        );
-    }
-
-    #[test]
-    fn a_folder_choice_gives_its_subtree_and_nothing_above_it() {
-        let documents = Documents::new();
-        let Some((_dir, mounted)) = mounted(&documents) else {
-            return;
-        };
-        let home = tempfile::tempdir().unwrap();
-        let folder = home.path().join("Backups");
-        std::fs::create_dir_all(folder.join("2026")).unwrap();
-        std::fs::write(folder.join("2026/a.tar"), b"a").unwrap();
-        std::fs::write(home.path().join("secret.txt"), b"secret").unwrap();
-        let key = AppKey::new("workspace-1", "so.tilo.backups").unwrap();
-        let given = documents
-            .grant(&key, &folder, Kind::Folder { write: true })
-            .unwrap();
-        let path = in_view(&mounted, &key, &given);
-        let mut bytes = Vec::new();
-        std::fs::File::open(path.join("2026/a.tar"))
-            .unwrap()
-            .read_to_end(&mut bytes)
-            .unwrap();
-        assert_eq!(bytes, b"a");
-        std::fs::write(path.join("2026/b.tar"), b"b").unwrap();
-        assert_eq!(std::fs::read(folder.join("2026/b.tar")).unwrap(), b"b");
-        std::fs::create_dir(path.join("2027")).unwrap();
-        assert!(folder.join("2027").is_dir());
-        assert!(std::fs::read(path.join("../secret.txt")).is_err());
-        assert!(
-            std::fs::remove_dir(&path).is_err(),
-            "the chosen folder stays"
         );
     }
 

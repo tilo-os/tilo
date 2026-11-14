@@ -360,129 +360,133 @@ mod tests {
     use crate::error::CliError;
     use crate::hypervisor::Output;
 
-    #[test]
-    fn the_magic_packet_is_the_mac_sixteen_times_after_six_ff() {
-        let mac = parse_mac("AA:bb:cc:01:02:03").unwrap();
-        assert_eq!(mac, [0xaa, 0xbb, 0xcc, 1, 2, 3]);
-        assert_eq!(parse_mac("aa-bb-cc-01-02-03"), Some(mac));
-        assert_eq!(parse_mac("aa:bb:cc:01:02"), None);
-        assert_eq!(parse_mac("aa:bb:cc:01:02:03:04"), None);
-        assert_eq!(parse_mac("aa:bb:cc:01:02:zz"), None);
-        let packet = magic_packet(mac);
-        assert_eq!(packet.len(), 102);
-        assert_eq!(packet[..6], [0xff; 6]);
-        for copy in packet[6..].chunks(6) {
-            assert_eq!(copy, mac);
+    tilo_test_env::scenario! {
+        fn wake_on_lan_is_probed_and_sent;
+
+        phase the_magic_packet_is_the_mac_sixteen_times_after_six_ff;
+        {
+            let mac = parse_mac("AA:bb:cc:01:02:03").unwrap();
+            assert_eq!(mac, [0xaa, 0xbb, 0xcc, 1, 2, 3]);
+            assert_eq!(parse_mac("aa-bb-cc-01-02-03"), Some(mac));
+            assert_eq!(parse_mac("aa:bb:cc:01:02"), None);
+            assert_eq!(parse_mac("aa:bb:cc:01:02:03:04"), None);
+            assert_eq!(parse_mac("aa:bb:cc:01:02:zz"), None);
+            let packet = magic_packet(mac);
+            assert_eq!(packet.len(), 102);
+            assert_eq!(packet[..6], [0xff; 6]);
+            for copy in packet[6..].chunks(6) {
+                assert_eq!(copy, mac);
+            }
+            assert_eq!(
+                wake_targets(Some("10.0.0.255")),
+                [Ipv4Addr::BROADCAST, Ipv4Addr::new(10, 0, 0, 255)]
+            );
+            assert_eq!(wake_targets(None), [Ipv4Addr::BROADCAST]);
+            assert_eq!(wake_targets(Some("garbage")), [Ipv4Addr::BROADCAST]);
         }
-        assert_eq!(
-            wake_targets(Some("10.0.0.255")),
-            [Ipv4Addr::BROADCAST, Ipv4Addr::new(10, 0, 0, 255)]
-        );
-        assert_eq!(wake_targets(None), [Ipv4Addr::BROADCAST]);
-        assert_eq!(wake_targets(Some("garbage")), [Ipv4Addr::BROADCAST]);
-    }
 
-    #[test]
-    fn the_net_probe_reports_enabled_disabled_and_unsupported_wake() {
-        let wired = |ethtool: &str| {
-            format!(
-                "hostname=opi\ninterface=end0\nmac=AA:BB:CC:00:11:22\nbroadcast=10.0.0.255\nkind=ethernet\n@@ethtool\n{ethtool}"
-            )
-        };
-        let facts = parse_net_probe(&wired("\tSupports Wake-on: pumbg\n\tWake-on: g\n"));
-        assert_eq!(facts.hostname.as_deref(), Some("opi"));
-        assert_eq!(facts.mac.as_deref(), Some("aa:bb:cc:00:11:22"));
-        let wake = facts.wake.unwrap();
-        assert_eq!(
-            (
-                wake.via.as_str(),
-                wake.state.as_str(),
-                wake.broadcast.as_deref()
-            ),
-            ("wol", "enabled", Some("10.0.0.255"))
-        );
-        assert!(wake.reliable());
-        let disabled = parse_net_probe(&wired("\tSupports Wake-on: pumbg\n\tWake-on: d\n"))
-            .wake
-            .unwrap();
-        assert_eq!(disabled.state, "disabled");
-        assert!(!disabled.reliable());
-        assert!(disabled.describe().contains("ethtool -s end0 wol g"));
-        let none = parse_net_probe(&wired("\tSupports Wake-on: d\n\tWake-on: d\n"));
-        assert_eq!(none.wake.unwrap().state, "unsupported");
-        let no_tool =
-            parse_net_probe("hostname=opi\ninterface=end0\nmac=aa:bb:cc:00:11:22\nkind=ethernet\n");
-        assert_eq!(no_tool.wake.unwrap().state, "unknown");
+        phase the_net_probe_reports_enabled_disabled_and_unsupported_wake;
+        {
+            let wired = |ethtool: &str| {
+                format!(
+                    "hostname=opi\ninterface=end0\nmac=AA:BB:CC:00:11:22\nbroadcast=10.0.0.255\nkind=ethernet\n@@ethtool\n{ethtool}"
+                )
+            };
+            let facts = parse_net_probe(&wired("\tSupports Wake-on: pumbg\n\tWake-on: g\n"));
+            assert_eq!(facts.hostname.as_deref(), Some("opi"));
+            assert_eq!(facts.mac.as_deref(), Some("aa:bb:cc:00:11:22"));
+            let wake = facts.wake.unwrap();
+            assert_eq!(
+                (
+                    wake.via.as_str(),
+                    wake.state.as_str(),
+                    wake.broadcast.as_deref()
+                ),
+                ("wol", "enabled", Some("10.0.0.255"))
+            );
+            assert!(wake.reliable());
+            let disabled = parse_net_probe(&wired("\tSupports Wake-on: pumbg\n\tWake-on: d\n"))
+                .wake
+                .unwrap();
+            assert_eq!(disabled.state, "disabled");
+            assert!(!disabled.reliable());
+            assert!(disabled.describe().contains("ethtool -s end0 wol g"));
+            let none = parse_net_probe(&wired("\tSupports Wake-on: d\n\tWake-on: d\n"));
+            assert_eq!(none.wake.unwrap().state, "unsupported");
+            let no_tool =
+                parse_net_probe("hostname=opi\ninterface=end0\nmac=aa:bb:cc:00:11:22\nkind=ethernet\n");
+            assert_eq!(no_tool.wake.unwrap().state, "unknown");
 
-        let wifi = |show: &str, support: &str| {
-            parse_net_probe(&format!(
-                "hostname=yoga\ninterface=wlan0\nmac=02:11:22:33:44:55\nbroadcast=10.0.0.255\nkind=wifi\nphy=phy0\n@@wowlan\n{show}@@support\n{support}"
-            ))
-            .wake
-            .unwrap()
-        };
-        let on = wifi(
-            "WoWLAN is enabled:\n * wake up on magic packet\n",
-            "\tWoWLAN support:\n\t\t * wake up on magic packet\n",
-        );
-        assert_eq!((on.via.as_str(), on.state.as_str()), ("wowlan", "enabled"));
-        assert!(!on.reliable());
-        assert!(
-            on.describe().contains("not known to wake"),
-            "{}",
-            on.describe()
-        );
-        let off = wifi(
-            "WoWLAN is disabled.\n",
-            "\tWoWLAN support:\n\t\t * wake up on disconnect\n\t\t * wake up on magic packet\n",
-        );
-        assert_eq!(off.state, "disabled");
-        assert!(
-            off.describe()
-                .contains("iw phy phy0 wowlan enable magic-packet"),
-            "{}",
-            off.describe()
-        );
-        assert_eq!(wifi("WoWLAN is disabled.\n", "").state, "disabled");
-        assert_eq!(
-            wifi(
+            let wifi = |show: &str, support: &str| {
+                parse_net_probe(&format!(
+                    "hostname=yoga\ninterface=wlan0\nmac=02:11:22:33:44:55\nbroadcast=10.0.0.255\nkind=wifi\nphy=phy0\n@@wowlan\n{show}@@support\n{support}"
+                ))
+                .wake
+                .unwrap()
+            };
+            let on = wifi(
+                "WoWLAN is enabled:\n * wake up on magic packet\n",
+                "\tWoWLAN support:\n\t\t * wake up on magic packet\n",
+            );
+            assert_eq!((on.via.as_str(), on.state.as_str()), ("wowlan", "enabled"));
+            assert!(!on.reliable());
+            assert!(
+                on.describe().contains("not known to wake"),
+                "{}",
+                on.describe()
+            );
+            let off = wifi(
                 "WoWLAN is disabled.\n",
-                "\tWoWLAN support:\n\t\t * wake up on disconnect\n"
-            )
-            .state,
-            "unsupported"
-        );
-        assert_eq!(
-            wifi("command failed: Operation not supported (-95)\n", "").state,
-            "unsupported"
-        );
-        // A loopback-only machine (a VM behind a forwarded port) has no MAC worth recording.
-        let lo = parse_net_probe("hostname=vm\ninterface=lo\nmac=00:00:00:00:00:00\n");
-        assert_eq!(lo.mac, None);
-        let line = net_probe("10.0.0.5");
-        assert!(line.starts_with("addr=10.0.0.5; iface="), "{line}");
-        assert!(!line.contains('\n') && !line.contains("then;"), "{line}");
-        assert!(line.contains("tilo-device-admin id"), "{line}");
-        let admin = parse_net_probe(concat!(
-            "hostname=yoga\n@@admin\n",
-            r#"{"device":"aa","endpoint":"bb","label":"Yoga","identity":"cc","relay":null,"home_relay":"https://relay.example/","serving":true}"#,
-            "\n"
-        ));
-        assert_eq!(admin.hostname.as_deref(), Some("yoga"));
-        assert_eq!(
-            admin.peer,
-            Some(crate::config::PeerRoute {
-                device: "aa".into(),
-                endpoint: "bb".into(),
-                identity: Some("cc".into()),
-                relay: None,
-                home_relay: Some("https://relay.example/".into()),
-            })
-        );
-        assert_eq!(
-            parse_net_probe("hostname=vm\n@@admin\nnot json\n").peer,
-            None
-        );
+                "\tWoWLAN support:\n\t\t * wake up on disconnect\n\t\t * wake up on magic packet\n",
+            );
+            assert_eq!(off.state, "disabled");
+            assert!(
+                off.describe()
+                    .contains("iw phy phy0 wowlan enable magic-packet"),
+                "{}",
+                off.describe()
+            );
+            assert_eq!(wifi("WoWLAN is disabled.\n", "").state, "disabled");
+            assert_eq!(
+                wifi(
+                    "WoWLAN is disabled.\n",
+                    "\tWoWLAN support:\n\t\t * wake up on disconnect\n"
+                )
+                .state,
+                "unsupported"
+            );
+            assert_eq!(
+                wifi("command failed: Operation not supported (-95)\n", "").state,
+                "unsupported"
+            );
+            // A loopback-only machine (a VM behind a forwarded port) has no MAC worth recording.
+            let lo = parse_net_probe("hostname=vm\ninterface=lo\nmac=00:00:00:00:00:00\n");
+            assert_eq!(lo.mac, None);
+            let line = net_probe("10.0.0.5");
+            assert!(line.starts_with("addr=10.0.0.5; iface="), "{line}");
+            assert!(!line.contains('\n') && !line.contains("then;"), "{line}");
+            assert!(line.contains("tilo-device-admin id"), "{line}");
+            let admin = parse_net_probe(concat!(
+                "hostname=yoga\n@@admin\n",
+                r#"{"device":"aa","endpoint":"bb","label":"Yoga","identity":"cc","relay":null,"home_relay":"https://relay.example/","serving":true}"#,
+                "\n"
+            ));
+            assert_eq!(admin.hostname.as_deref(), Some("yoga"));
+            assert_eq!(
+                admin.peer,
+                Some(crate::config::PeerRoute {
+                    device: "aa".into(),
+                    endpoint: "bb".into(),
+                    identity: Some("cc".into()),
+                    relay: None,
+                    home_relay: Some("https://relay.example/".into()),
+                })
+            );
+            assert_eq!(
+                parse_net_probe("hostname=vm\n@@admin\nnot json\n").peer,
+                None
+            );
+        }
     }
 
     struct Lookups {
@@ -581,100 +585,104 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reachability_authenticates_without_opening_an_unauthenticated_tcp_probe() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let endpoint = SshEndpoint {
-            host: "127.0.0.1".into(),
-            port: listener.local_addr().unwrap().port(),
-            user: "owner".into(),
-        };
-        let mut runner = SshProbe {
-            stderr: "",
-            commands: Vec::new(),
-            interactive_called: false,
-        };
-        for _ in 0..10 {
-            assert_eq!(
-                probe(
-                    &mut runner,
-                    &endpoint,
-                    Some("/private/key"),
-                    Duration::from_secs(3)
-                ),
-                Probe::There
-            );
-        }
-        assert_eq!(runner.commands.len(), 10);
-        assert!(!runner.interactive_called);
-        for command in &runner.commands {
-            let mut expected = crate::remote::ssh_transport(&endpoint, Some("/private/key"), false);
-            for argument in &mut expected.args {
-                if argument == "ConnectTimeout=10" {
-                    *argument = "ConnectTimeout=3".into();
-                }
+    tilo_test_env::scenario! {
+        fn reachability_is_authenticated_and_tells_refusal_from_loss;
+
+        phase reachability_authenticates_without_opening_an_unauthenticated_tcp_probe;
+        {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let endpoint = SshEndpoint {
+                host: "127.0.0.1".into(),
+                port: listener.local_addr().unwrap().port(),
+                user: "owner".into(),
+            };
+            let mut runner = SshProbe {
+                stderr: "",
+                commands: Vec::new(),
+                interactive_called: false,
+            };
+            for _ in 0..10 {
+                assert_eq!(
+                    probe(
+                        &mut runner,
+                        &endpoint,
+                        Some("/private/key"),
+                        Duration::from_secs(3)
+                    ),
+                    Probe::There
+                );
             }
-            expected.args.push("true".into());
-            assert_eq!(command, &expected);
-            assert!(command.args.iter().any(|arg| arg == "BatchMode=yes"));
-            assert!(
-                command
-                    .args
-                    .iter()
-                    .any(|arg| arg == "StrictHostKeyChecking=accept-new")
-            );
-            assert!(!command.args.iter().any(|arg| arg == "sudo" || arg == "-t"));
-        }
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-    }
-
-    #[test]
-    fn authenticated_reachability_keeps_refusals_distinct_from_network_loss() {
-        let endpoint = SshEndpoint {
-            host: "device-alias".into(),
-            port: 22,
-            user: "owner".into(),
-        };
-        let mut runner = SshProbe {
-            stderr: "",
-            commands: Vec::new(),
-            interactive_called: false,
-        };
-        for detail in [
-            "Permission denied (publickey).",
-            "Host key verification failed.",
-            "ssh: connect to host x port 22: Connection refused",
-        ] {
-            runner.stderr = detail;
+            assert_eq!(runner.commands.len(), 10);
+            assert!(!runner.interactive_called);
+            for command in &runner.commands {
+                let mut expected = crate::remote::ssh_transport(&endpoint, Some("/private/key"), false);
+                for argument in &mut expected.args {
+                    if argument == "ConnectTimeout=10" {
+                        *argument = "ConnectTimeout=3".into();
+                    }
+                }
+                expected.args.push("true".into());
+                assert_eq!(command, &expected);
+                assert!(command.args.iter().any(|arg| arg == "BatchMode=yes"));
+                assert!(
+                    command
+                        .args
+                        .iter()
+                        .any(|arg| arg == "StrictHostKeyChecking=accept-new")
+                );
+                assert!(!command.args.iter().any(|arg| arg == "sudo" || arg == "-t"));
+            }
             assert_eq!(
-                probe(&mut runner, &endpoint, None, Duration::from_secs(3)),
-                Probe::There
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
             );
         }
-        for detail in [
-            "ssh: connect to host x port 22: No route to host",
-            "ssh: connect to host x port 22: Connection timed out",
-        ] {
-            runner.stderr = detail;
-            assert_eq!(
-                probe(&mut runner, &endpoint, None, Duration::from_secs(3)),
-                Probe::Lost(detail.into())
-            );
-        }
-    }
 
-    #[test]
-    fn a_lost_route_is_told_apart_from_a_refusal() {
-        assert!(lost(
-            "ssh: connect to host 10.0.0.223 port 22: No route to host"
-        ));
-        assert!(lost("ssh: connect to host x port 22: Connection timed out"));
-        assert!(lost("connect to host x port 22: Network is unreachable"));
-        assert!(!lost("ssh: connect to host x port 22: Connection refused"));
-        assert!(!lost("Permission denied (publickey)."));
+        phase authenticated_reachability_keeps_refusals_distinct_from_network_loss;
+        {
+            let endpoint = SshEndpoint {
+                host: "device-alias".into(),
+                port: 22,
+                user: "owner".into(),
+            };
+            let mut runner = SshProbe {
+                stderr: "",
+                commands: Vec::new(),
+                interactive_called: false,
+            };
+            for detail in [
+                "Permission denied (publickey).",
+                "Host key verification failed.",
+                "ssh: connect to host x port 22: Connection refused",
+            ] {
+                runner.stderr = detail;
+                assert_eq!(
+                    probe(&mut runner, &endpoint, None, Duration::from_secs(3)),
+                    Probe::There
+                );
+            }
+            for detail in [
+                "ssh: connect to host x port 22: No route to host",
+                "ssh: connect to host x port 22: Connection timed out",
+            ] {
+                runner.stderr = detail;
+                assert_eq!(
+                    probe(&mut runner, &endpoint, None, Duration::from_secs(3)),
+                    Probe::Lost(detail.into())
+                );
+            }
+        }
+
+        phase a_lost_route_is_told_apart_from_a_refusal;
+        {
+            assert!(lost(
+                "ssh: connect to host 10.0.0.223 port 22: No route to host"
+            ));
+            assert!(lost("ssh: connect to host x port 22: Connection timed out"));
+            assert!(lost("connect to host x port 22: Network is unreachable"));
+            assert!(!lost("ssh: connect to host x port 22: Connection refused"));
+            assert!(!lost("Permission denied (publickey)."));
+        }
     }
 }

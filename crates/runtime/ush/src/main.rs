@@ -965,168 +965,173 @@ explain when the host does not offer them.\n";
             parts.iter().map(|part| (*part).to_string()).collect()
         }
 
-        #[test]
-        fn the_file_verbs_are_the_runtimes_own_names_in_a_guest() {
-            for name in [
-                "cp", "mv", "rm", "mkdir", "rmdir", "ln", "truncate", "touch", "append",
-            ] {
-                assert!(
-                    ush::GUEST_COMMANDS.contains(&name),
-                    "{name} is not put on the guest's PATH"
-                );
-                assert!(!is_legacy_shim(name), "{name} is not a legacy app");
-            }
-            assert!(ush::GUEST_COMMANDS.contains(&"history"));
-        }
+        tilo_test_env::scenario! {
+            /// The guest's own commands: argv to a typed request, with no broker round trip for what needs none.
+            fn guest_command_lines_parse_into_typed_requests;
 
-        #[test]
-        fn a_file_verb_and_its_arguments_are_one_action() {
-            use ush::file_actions::{FileAction, cli};
-            let parse = |name: &str, line: &str| {
-                let args: Vec<String> = line.split_whitespace().map(str::to_string).collect();
-                cli::parse(cli::Tool::of(name).unwrap(), &args).unwrap()
-            };
-            assert!(matches!(
-                parse("rm", "-rf build"),
-                FileAction::Remove(op) if op.recursive && op.force
-            ));
-            assert!(matches!(
-                parse("cp", "a.txt b.txt"),
-                FileAction::Copy(op) if op.sources == [PathBuf::from("a.txt")]
-            ));
-            assert!(matches!(
-                parse("truncate", "-s 0 log"),
-                FileAction::Truncate(op) if op.size == 0
-            ));
-            assert!(matches!(
-                parse("ln", "-s target"),
-                FileAction::Link(op) if op.symbolic && op.into_directory
-            ));
-            assert!(matches!(
-                parse("touch", "notes/today.md"),
-                FileAction::Touch(op) if op.files == [PathBuf::from("notes/today.md")]
-            ));
-            assert!(matches!(
-                parse("append", "bought-milk notes/today.md"),
-                FileAction::Append(op) if op.text == "bought-milk"
-                    && op.files == [PathBuf::from("notes/today.md")]
-            ));
-        }
-
-        #[test]
-        fn management_commands_parse_into_typed_requests() {
-            // Aliases and read-only operations are typed.
-            let cases = [
-                (
-                    "app",
-                    argv(&["u", "browser"]),
-                    Request::AppUpdate {
-                        package: Some("browser".into()),
-                    },
-                ),
-                (
-                    "tilo",
-                    argv(&["app", "u", "browser"]),
-                    Request::AppUpdate {
-                        package: Some("browser".into()),
-                    },
-                ),
-                ("store", argv(&["repo", "list"]), Request::AppRepoList),
-                (
-                    "app",
-                    argv(&["list", "--json"]),
-                    Request::AppList { json: true },
-                ),
-                (
-                    "app",
-                    argv(&["search", "browser"]),
-                    Request::AppSearch {
-                        query: "browser".into(),
-                    },
-                ),
-            ];
-            for (program, args, want) in cases {
-                assert_eq!(
-                    management_request(program, &args).unwrap(),
-                    want,
-                    "case {program} {args:?}"
-                );
-            }
-
-            // System updates accept both yes spellings and require confirmation otherwise.
-            for flag in ["--yes", "-y"] {
-                let request = management_request("system", &argv(&["update", flag])).unwrap();
-                assert_eq!(request, Request::SystemUpdate, "case {flag}");
-                assert!(requires_confirmation(&request), "case {flag}");
-                assert!(has_yes(&argv(&["update", flag])), "case {flag}");
-            }
-            let request = management_request("tilo", &argv(&["update"])).unwrap();
-            assert_eq!(request, Request::AllUpdates);
-            assert!(requires_confirmation(&request));
-            assert!(!has_yes(&argv(&["update"])));
-        }
-
-        #[test]
-        fn help_and_confirmation_text_need_no_broker_round_trip() {
-            for (program, args, want) in [
-                ("tilo", argv(&[]), "tilo update"),
-                ("tilo", argv(&["app", "--help"]), "app u browser"),
-                ("store", argv(&["repo", "--help"]), "app repo list"),
-                ("system", argv(&["update", "-h"]), "system update"),
-            ] {
-                assert!(
-                    management_help(program, &args).unwrap().contains(want),
-                    "case {program} {args:?}"
-                );
-            }
-            assert!(management_help("app", &argv(&["u", "browser"])).is_none());
-
-            assert_eq!(
-                confirmation_prompt(&Request::AllUpdates),
-                "Update installed apps and every available system provider?"
-            );
-            assert_eq!(
-                confirmation_prompt(&Request::SystemUpdate),
-                "Update the host system image?"
-            );
-        }
-
-        #[test]
-        fn management_parser_rejects_extra_arguments_and_unsupported_mutations() {
+            phase the_file_verbs_are_the_runtimes_own_names_in_a_guest;
             {
-                for (program, args) in [
-                    ("app", argv(&["list", "--json", "extra"])),
-                    ("system", argv(&["status", "--json", "extra"])),
-                    ("system", argv(&["update", "--yes", "extra"])),
-                    ("tilo", argv(&["update", "unexpected"])),
-                    ("tilo", argv(&["status", "--yes"])),
+                for name in [
+                    "cp", "mv", "rm", "mkdir", "rmdir", "ln", "truncate", "touch", "append",
                 ] {
                     assert!(
-                        management_request(program, &args).is_err(),
-                        "{program} {args:?} must not silently discard arguments"
+                        ush::GUEST_COMMANDS.contains(&name),
+                        "{name} is not put on the guest's PATH"
+                    );
+                    assert!(!is_legacy_shim(name), "{name} is not a legacy app");
+                }
+                assert!(ush::GUEST_COMMANDS.contains(&"history"));
+            }
+
+            phase a_file_verb_and_its_arguments_are_one_action;
+            {
+                use ush::file_actions::{FileAction, cli};
+                let parse = |name: &str, line: &str| {
+                    let args: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+                    cli::parse(cli::Tool::of(name).unwrap(), &args).unwrap()
+                };
+                assert!(matches!(
+                    parse("rm", "-rf build"),
+                    FileAction::Remove(op) if op.recursive && op.force
+                ));
+                assert!(matches!(
+                    parse("cp", "a.txt b.txt"),
+                    FileAction::Copy(op) if op.sources == [PathBuf::from("a.txt")]
+                ));
+                assert!(matches!(
+                    parse("truncate", "-s 0 log"),
+                    FileAction::Truncate(op) if op.size == 0
+                ));
+                assert!(matches!(
+                    parse("ln", "-s target"),
+                    FileAction::Link(op) if op.symbolic && op.into_directory
+                ));
+                assert!(matches!(
+                    parse("touch", "notes/today.md"),
+                    FileAction::Touch(op) if op.files == [PathBuf::from("notes/today.md")]
+                ));
+                assert!(matches!(
+                    parse("append", "bought-milk notes/today.md"),
+                    FileAction::Append(op) if op.text == "bought-milk"
+                        && op.files == [PathBuf::from("notes/today.md")]
+                ));
+            }
+
+            phase management_commands_parse_into_typed_requests;
+            {
+                // Aliases and read-only operations are typed.
+                let cases = [
+                    (
+                        "app",
+                        argv(&["u", "browser"]),
+                        Request::AppUpdate {
+                            package: Some("browser".into()),
+                        },
+                    ),
+                    (
+                        "tilo",
+                        argv(&["app", "u", "browser"]),
+                        Request::AppUpdate {
+                            package: Some("browser".into()),
+                        },
+                    ),
+                    ("store", argv(&["repo", "list"]), Request::AppRepoList),
+                    (
+                        "app",
+                        argv(&["list", "--json"]),
+                        Request::AppList { json: true },
+                    ),
+                    (
+                        "app",
+                        argv(&["search", "browser"]),
+                        Request::AppSearch {
+                            query: "browser".into(),
+                        },
+                    ),
+                ];
+                for (program, args, want) in cases {
+                    assert_eq!(
+                        management_request(program, &args).unwrap(),
+                        want,
+                        "case {program} {args:?}"
                     );
                 }
-            }
-            {
-                for args in [
-                    argv(&["install", "browser"]),
-                    argv(&["remove", "browser"]),
-                    argv(&["rollback"]),
-                    argv(&["boot", "old-image"]),
-                ] {
-                    assert!(management_request("tilo", &args).is_err());
+
+                // System updates accept both yes spellings and require confirmation otherwise.
+                for flag in ["--yes", "-y"] {
+                    let request = management_request("system", &argv(&["update", flag])).unwrap();
+                    assert_eq!(request, Request::SystemUpdate, "case {flag}");
+                    assert!(requires_confirmation(&request), "case {flag}");
+                    assert!(has_yes(&argv(&["update", flag])), "case {flag}");
                 }
+                let request = management_request("tilo", &argv(&["update"])).unwrap();
+                assert_eq!(request, Request::AllUpdates);
+                assert!(requires_confirmation(&request));
+                assert!(!has_yes(&argv(&["update"])));
+            }
 
-                let error = management_request("app", &argv(&["install", "browser"]))
-                    .unwrap_err()
-                    .to_string();
-                assert!(error.contains("`app install browser`"));
-                assert!(error.contains("app --help"));
+            phase help_and_confirmation_text_need_no_broker_round_trip;
+            {
+                for (program, args, want) in [
+                    ("tilo", argv(&[]), "tilo update"),
+                    ("tilo", argv(&["app", "--help"]), "app u browser"),
+                    ("store", argv(&["repo", "--help"]), "app repo list"),
+                    ("system", argv(&["update", "-h"]), "system update"),
+                ] {
+                    assert!(
+                        management_help(program, &args).unwrap().contains(want),
+                        "case {program} {args:?}"
+                    );
+                }
+                assert!(management_help("app", &argv(&["u", "browser"])).is_none());
 
-                let typo = management_request("app", &argv(&["udpate", "browser"]))
-                    .unwrap_err()
-                    .to_string();
-                assert!(typo.contains("did you mean `app update`?"), "{typo}");
+                assert_eq!(
+                    confirmation_prompt(&Request::AllUpdates),
+                    "Update installed apps and every available system provider?"
+                );
+                assert_eq!(
+                    confirmation_prompt(&Request::SystemUpdate),
+                    "Update the host system image?"
+                );
+            }
+
+            phase management_parser_rejects_extra_arguments_and_unsupported_mutations;
+            {
+                {
+                    for (program, args) in [
+                        ("app", argv(&["list", "--json", "extra"])),
+                        ("system", argv(&["status", "--json", "extra"])),
+                        ("system", argv(&["update", "--yes", "extra"])),
+                        ("tilo", argv(&["update", "unexpected"])),
+                        ("tilo", argv(&["status", "--yes"])),
+                    ] {
+                        assert!(
+                            management_request(program, &args).is_err(),
+                            "{program} {args:?} must not silently discard arguments"
+                        );
+                    }
+                }
+                {
+                    for args in [
+                        argv(&["install", "browser"]),
+                        argv(&["remove", "browser"]),
+                        argv(&["rollback"]),
+                        argv(&["boot", "old-image"]),
+                    ] {
+                        assert!(management_request("tilo", &args).is_err());
+                    }
+
+                    let error = management_request("app", &argv(&["install", "browser"]))
+                        .unwrap_err()
+                        .to_string();
+                    assert!(error.contains("`app install browser`"));
+                    assert!(error.contains("app --help"));
+
+                    let typo = management_request("app", &argv(&["udpate", "browser"]))
+                        .unwrap_err()
+                        .to_string();
+                    assert!(typo.contains("did you mean `app update`?"), "{typo}");
+                }
             }
         }
     }

@@ -1,6 +1,8 @@
 import importlib.util
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -102,6 +104,70 @@ class ProbeTests(unittest.TestCase):
                 mock.patch.object(capability.subprocess, "run", side_effect=AssertionError("cargo ran")),
             ):
                 self.assertEqual(capability.probe_program(), str(probe))
+
+
+class WrapperTests(unittest.TestCase):
+    """tools/ci/nextest.sh asks the tool only for a run that could have a group to leave out."""
+
+    def run_of(self, packages: str) -> tuple[list[str], list[str]]:
+        """A shard of PACKAGES as t starts one, through the production wrapper: the command
+        cargo was given, and every Python the wrapper started."""
+        with tempfile.TemporaryDirectory() as work:
+            tree, programs = Path(work) / "tree", Path(work) / "bin"
+            (tree / "tools/ci").mkdir(parents=True)
+            (tree / ".config").mkdir()
+            programs.mkdir()
+            shutil.copy(TOOLS / "ci/nextest.sh", tree / "tools/ci/nextest.sh")
+            shutil.copy(capability.MANIFEST, tree / ".config/nextest-capabilities.toml")
+            given, asked = Path(work) / "cargo", Path(work) / "python"
+            asked.touch()
+            (programs / "cargo").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >"{given}"\n')
+            # The tool's answer for a machine that lacks nothing: no filter.
+            (programs / "python3").write_text(f'#!/bin/sh\necho "$*" >>"{asked}"\n')
+            for program in programs.iterdir():
+                program.chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "T_NEXTEST_PACKAGES": packages}
+            # A filter and a test of its own: the wrapper adds neither the goldens' filter
+            # nor the timings' recorder, which are other questions and other programs.
+            command = ["cargo", "nextest", "run", "--locked", "--profile", "ci",
+                       "-E", "all()", "--test", "it"]
+            result = subprocess.run(["bash", str(tree / "tools/ci/nextest.sh"), *command],
+                                    env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(given.read_text().splitlines()[:len(command) - 1], command[1:])
+            return given.read_text().splitlines(), asked.read_text().splitlines()
+
+    def test_an_ordinary_run_starts_no_interpreter_to_hear_it_probes_nothing(self):
+        # Every job of a suite goes through the wrapper, and all but a handful test a
+        # package the manifest does not name: the manifest's text answers those here.
+        for packages in ("no-such-package", "tilo-reference collab-types"):
+            with self.subTest(packages=packages):
+                _, asked = self.run_of(packages)
+                self.assertEqual(asked, [])
+
+    def test_a_run_of_a_package_the_manifest_names_asks_the_tool(self):
+        probed = sorted({
+            package
+            for group in capability.groups(capability.manifest())
+            for package in capability.PACKAGE.findall(group["filter"])
+        })
+        self.assertTrue(probed)
+        for package in probed:
+            with self.subTest(package=package):
+                _, asked = self.run_of(f"collab-types {package}")
+                self.assertEqual(len(asked), 1, asked)
+                self.assertTrue(asked[0].endswith(
+                    f"tools/ci/capability_filter.py --packages collab-types {package}"), asked)
+        # A name that only begins like one of them is another package.
+        _, asked = self.run_of(f"{probed[0]}-extra")
+        self.assertEqual(asked, [])
+
+    def test_a_run_that_names_no_package_asks_the_tool(self):
+        # It tests every package, the manifest's among them.
+        _, asked = self.run_of("")
+        self.assertEqual(len(asked), 1, asked)
+        self.assertTrue(asked[0].endswith("tools/ci/capability_filter.py --packages"), asked)
 
 
 class StartsTests(unittest.TestCase):

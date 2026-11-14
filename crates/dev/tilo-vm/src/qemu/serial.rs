@@ -123,46 +123,50 @@ mod tests {
         )
     }
 
-    #[test]
-    fn boot_measurement_requires_the_target_and_an_observed_kernel_time() {
-        let target = "systemd[1]: Reached target multi-user.target - Multi-User System.";
-        let hit = check(&format!("[    1.250] {target}")).unwrap();
-        assert_eq!((hit.verdict, hit.kernel_ms), (Verdict::Ready, Some(1250)));
+    tilo_test_env::scenario! {
+        fn the_serial_console_is_cleaned_and_scanned;
 
-        let graphical = format!(
-            "[    2.500] previous line\n\x1b[32m[ OK ]\x1b[0m {}",
-            target.replace("multi-user", "graphical")
-        );
-        let hit = check(&graphical).unwrap();
-        assert_eq!((hit.verdict, hit.kernel_ms), (Verdict::Ready, Some(2500)));
+        phase boot_measurement_requires_the_target_and_an_observed_kernel_time;
+        {
+            let target = "systemd[1]: Reached target multi-user.target - Multi-User System.";
+            let hit = check(&format!("[    1.250] {target}")).unwrap();
+            assert_eq!((hit.verdict, hit.kernel_ms), (Verdict::Ready, Some(1250)));
 
-        assert_eq!(check("Kernel panic").unwrap().verdict, Verdict::Failed);
-        assert_eq!(
-            check(&format!("[ 1.250] {target}\nKernel panic"))
-                .unwrap()
-                .verdict,
-            Verdict::Failed
-        );
-        assert_eq!(check(""), None);
-        assert_eq!(check(target).unwrap().verdict, Verdict::MissingTiming);
-        assert_eq!(
-            check(&format!("{target}\n[ 9.000] too late"))
-                .unwrap()
-                .verdict,
-            Verdict::MissingTiming
-        );
-    }
+            let graphical = format!(
+                "[    2.500] previous line\n\x1b[32m[ OK ]\x1b[0m {}",
+                target.replace("multi-user", "graphical")
+            );
+            let hit = check(&graphical).unwrap();
+            assert_eq!((hit.verdict, hit.kernel_ms), (Verdict::Ready, Some(2500)));
 
-    #[test]
-    fn serial_noise_is_removed_before_matching() {
-        assert_eq!(clean(b"a\0b\r\n\x1b[1;32mok\x1b[0m"), "ab\nok");
-        let hit = scan(
-            "[ 0.5] x\nlogin: ",
-            &[Regex::new("login:").unwrap()],
-            &[],
-            false,
-        )
-        .unwrap();
-        assert_eq!((hit.verdict, hit.kernel_ms), (Verdict::Ready, Some(500)));
+            assert_eq!(check("Kernel panic").unwrap().verdict, Verdict::Failed);
+            assert_eq!(
+                check(&format!("[ 1.250] {target}\nKernel panic"))
+                    .unwrap()
+                    .verdict,
+                Verdict::Failed
+            );
+            assert_eq!(check(""), None);
+            assert_eq!(check(target).unwrap().verdict, Verdict::MissingTiming);
+            assert_eq!(
+                check(&format!("{target}\n[ 9.000] too late"))
+                    .unwrap()
+                    .verdict,
+                Verdict::MissingTiming
+            );
+        }
+
+        phase serial_noise_is_removed_before_matching;
+        {
+            assert_eq!(clean(b"a\0b\r\n\x1b[1;32mok\x1b[0m"), "ab\nok");
+            let hit = scan(
+                "[ 0.5] x\nlogin: ",
+                &[Regex::new("login:").unwrap()],
+                &[],
+                false,
+            )
+            .unwrap();
+            assert_eq!((hit.verdict, hit.kernel_ms), (Verdict::Ready, Some(500)));
+        }
     }
 }

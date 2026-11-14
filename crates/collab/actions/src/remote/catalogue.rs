@@ -508,116 +508,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn in_memory_rows_page_filter_and_refuse_stale_cursors() {
-        let rows = (0..5)
-            .map(|index| row(&format!("note:{index}"), Some("archive"), ""))
-            .chain([
-                row("folder:a", None, ""),
-                row("note:a1", Some("open"), "folder:a"),
-            ])
-            .collect::<Vec<_>>();
-        let first = CataloguePage::from_rows(
-            "r1".into(),
-            rows.clone(),
-            &CatalogueQuery {
-                max_results: 4,
-                ..CatalogueQuery::default()
-            },
-        );
-        assert_eq!(first.rows.len(), 4);
-        assert!(!first.exhausted);
-        let second = CataloguePage::from_rows(
-            "r1".into(),
-            rows.clone(),
-            &CatalogueQuery {
-                max_results: 4,
-                cursor: first.next_cursor.clone(),
-                revision: Some("r1".into()),
-                ..CatalogueQuery::default()
-            },
-        );
-        assert_eq!(second.rows.len(), 2, "the remaining top-level rows");
-        assert!(second.exhausted);
-        let stale = CataloguePage::from_rows(
-            "r2".into(),
-            rows.clone(),
-            &CatalogueQuery {
-                cursor: first.next_cursor,
-                revision: Some("r1".into()),
-                ..CatalogueQuery::default()
-            },
-        );
-        assert!(stale.stale_cursor && stale.rows.is_empty());
-
-        let named = |name: &str| {
-            CataloguePage::from_rows(
-                "r1".into(),
-                rows.clone(),
-                &CatalogueQuery {
-                    resource_name: Some(name.into()),
-                    max_results: 4,
-                    ..CatalogueQuery::default()
-                },
-            )
-        };
-        let by_label = named("NOTE:4");
-        assert_eq!(by_label.rows.len(), 1, "a label past the first page");
-        assert_eq!(by_label.rows[0].resource.id, "note:4");
-        assert!(named("note:a1").rows.is_empty(), "only the top level");
-        assert_eq!(named("notes.note").rows.len(), 4, "a kind names each");
-
-        let children = CataloguePage::from_rows(
-            "r1".into(),
-            rows.clone(),
-            &CatalogueQuery {
-                parent_resource: Some("folder:a".into()),
-                ..CatalogueQuery::default()
-            },
-        );
-        assert_eq!(children.rows.len(), 1);
-        let needle = CataloguePage::from_rows(
-            "r1".into(),
-            rows.clone(),
-            &CatalogueQuery {
-                needle: "NOTE:3".into(),
-                ..CatalogueQuery::default()
-            },
-        );
-        assert_eq!(needle.rows.len(), 1);
-        let exact = CataloguePage::from_rows(
-            "r1".into(),
-            rows,
-            &CatalogueQuery::resolve(
-                &RemoteActionTarget {
-                    provider: "7".into(),
-                    address: ActionAddress::new("note:2", "archive"),
-                },
-                "r1",
-            ),
-        );
-        assert_eq!(exact.rows.len(), 1);
-        assert_eq!(
-            exact.rows[0].target().map(|target| target.address),
-            Some(ActionAddress::new("note:2", "archive"))
-        );
-    }
-
-    #[test]
-    fn an_exact_action_is_found_below_the_top_level() {
-        let rows = vec![
-            row("folder:a", None, ""),
-            row("note:a1", Some("open"), "folder:a"),
-        ];
-        let target = RemoteActionTarget {
-            provider: "7".into(),
-            address: ActionAddress::new("note:a1", "open"),
-        };
-        let page =
-            CataloguePage::from_rows("r1".into(), rows, &CatalogueQuery::resolve(&target, "r1"));
-        assert_eq!(page.rows.len(), 1);
-    }
-
     /// The row `resource` of application `app`, with a `run` action.
     fn app_row(app: &str, resource: &str) -> CatalogueRow {
         let mut row = row(resource, Some("run"), "");
@@ -625,121 +515,235 @@ mod tests {
         row
     }
 
-    #[test]
-    fn an_app_filter_narrows_before_the_page_bound() {
-        let wanted = app_row("so.tilo.shortcuts", "shortcuts.shortcut:tidy");
-        let rows = (0..MAX_CATALOGUE_PAGE)
-            .map(|index| app_row("so.tilo.notes", &format!("note:{index}")))
-            .chain([wanted.clone()])
-            .collect::<Vec<_>>();
-        let query = |app_id: Option<&str>| CatalogueQuery {
-            app_id: app_id.map(str::to_owned),
-            max_results: MAX_CATALOGUE_PAGE,
-            ..CatalogueQuery::default()
-        };
-        let scoped =
-            CataloguePage::from_rows("r1".into(), rows.clone(), &query(Some("so.tilo.shortcuts")));
-        assert_eq!(scoped.rows, [wanted], "the one row of the app asked for");
-        assert!(scoped.exhausted && scoped.next_cursor.is_empty());
+    tilo_test_env::scenario! {
+        fn a_catalogue_pages_filters_and_matches_its_rows;
 
-        let unfiltered = CataloguePage::from_rows("r1".into(), rows, &query(None));
-        assert_eq!(
-            unfiltered.rows.len(),
-            usize::try_from(MAX_CATALOGUE_PAGE).unwrap_or(usize::MAX)
-        );
-        assert!(
-            unfiltered
-                .rows
-                .iter()
-                .all(|row| row.app_id == "so.tilo.notes"),
-            "the wanted row sits past the first page when nothing narrows it"
-        );
-        assert!(!unfiltered.exhausted);
-    }
-
-    #[test]
-    fn an_app_filter_is_optional_on_the_wire() {
-        let legacy: CatalogueQuery =
-            serde_json::from_value(serde_json::json!({ "max_results": 4 })).unwrap();
-        assert_eq!(legacy.app_id, None);
-        let scoped = CatalogueQuery {
-            app_id: Some("so.tilo.shortcuts".into()),
-            ..CatalogueQuery::default()
-        };
-        assert_eq!(
-            serde_json::to_value(&scoped).unwrap()["app_id"],
-            "so.tilo.shortcuts"
-        );
-        assert!(
-            serde_json::to_value(CatalogueQuery::default())
-                .unwrap()
-                .get("app_id")
-                .is_none(),
-            "a query with no app filter says nothing about one"
-        );
-    }
-
-    #[test]
-    fn a_needle_matches_an_inflection_of_a_described_word() {
-        let mut scroll = row("page:1", Some("press-page"), "");
-        if let Some(action) = scroll.action.as_mut() {
-            action.description =
-                Some("Scroll down the page with PageDown, or Space for a screenful.".into());
-        }
-        let mut draw = row("page:1", Some("pointer-path"), "");
-        if let Some(action) = draw.action.as_mut() {
-            action.description = Some("Moves the pointer as drawing a signature does.".into());
-        }
-        let rows = vec![draw, scroll];
-        let actions = |needle: &str| {
-            CataloguePage::from_rows(
+        phase in_memory_rows_page_filter_and_refuse_stale_cursors;
+        {
+            let rows = (0..5)
+                .map(|index| row(&format!("note:{index}"), Some("archive"), ""))
+                .chain([
+                    row("folder:a", None, ""),
+                    row("note:a1", Some("open"), "folder:a"),
+                ])
+                .collect::<Vec<_>>();
+            let first = CataloguePage::from_rows(
                 "r1".into(),
                 rows.clone(),
                 &CatalogueQuery {
-                    needle: needle.into(),
-                    ..CatalogueQuery::default()
-                },
-            )
-            .rows
-            .iter()
-            .filter_map(|row| row.action.as_ref().map(|a| a.address.action.clone()))
-            .collect::<Vec<_>>()
-        };
-        // The word the caller types and the word the description spells are
-        // the same word in another inflection.
-        assert_eq!(actions("scrolling"), ["press-page"]);
-        assert_eq!(actions("draw"), ["pointer-path"]);
-        assert_eq!(actions("drawing"), ["pointer-path"]);
-        // A word nothing spells still matches nothing.
-        assert!(actions("printing").is_empty());
-    }
-
-    #[test]
-    fn a_needle_matches_parameter_names_and_descriptions() {
-        let mut format = row("sheet:1", Some("format-cells"), "");
-        if let Some(action) = format.action.as_mut() {
-            action.params = vec![crate::ActionParam::optional(
-                "bold",
-                crate::ParamType::Boolean,
-                "Heavier text",
-            )];
-        }
-        let rows = vec![row("sheet:1", Some("sort-rows"), ""), format];
-        for needle in ["BOLD", "heavier"] {
-            let page = CataloguePage::from_rows(
-                "r1".into(),
-                rows.clone(),
-                &CatalogueQuery {
-                    needle: needle.into(),
+                    max_results: 4,
                     ..CatalogueQuery::default()
                 },
             );
-            let actions: Vec<_> = page
+            assert_eq!(first.rows.len(), 4);
+            assert!(!first.exhausted);
+            let second = CataloguePage::from_rows(
+                "r1".into(),
+                rows.clone(),
+                &CatalogueQuery {
+                    max_results: 4,
+                    cursor: first.next_cursor.clone(),
+                    revision: Some("r1".into()),
+                    ..CatalogueQuery::default()
+                },
+            );
+            assert_eq!(second.rows.len(), 2, "the remaining top-level rows");
+            assert!(second.exhausted);
+            let stale = CataloguePage::from_rows(
+                "r2".into(),
+                rows.clone(),
+                &CatalogueQuery {
+                    cursor: first.next_cursor,
+                    revision: Some("r1".into()),
+                    ..CatalogueQuery::default()
+                },
+            );
+            assert!(stale.stale_cursor && stale.rows.is_empty());
+
+            let named = |name: &str| {
+                CataloguePage::from_rows(
+                    "r1".into(),
+                    rows.clone(),
+                    &CatalogueQuery {
+                        resource_name: Some(name.into()),
+                        max_results: 4,
+                        ..CatalogueQuery::default()
+                    },
+                )
+            };
+            let by_label = named("NOTE:4");
+            assert_eq!(by_label.rows.len(), 1, "a label past the first page");
+            assert_eq!(by_label.rows[0].resource.id, "note:4");
+            assert!(named("note:a1").rows.is_empty(), "only the top level");
+            assert_eq!(named("notes.note").rows.len(), 4, "a kind names each");
+
+            let children = CataloguePage::from_rows(
+                "r1".into(),
+                rows.clone(),
+                &CatalogueQuery {
+                    parent_resource: Some("folder:a".into()),
+                    ..CatalogueQuery::default()
+                },
+            );
+            assert_eq!(children.rows.len(), 1);
+            let needle = CataloguePage::from_rows(
+                "r1".into(),
+                rows.clone(),
+                &CatalogueQuery {
+                    needle: "NOTE:3".into(),
+                    ..CatalogueQuery::default()
+                },
+            );
+            assert_eq!(needle.rows.len(), 1);
+            let exact = CataloguePage::from_rows(
+                "r1".into(),
+                rows,
+                &CatalogueQuery::resolve(
+                    &RemoteActionTarget {
+                        provider: "7".into(),
+                        address: ActionAddress::new("note:2", "archive"),
+                    },
+                    "r1",
+                ),
+            );
+            assert_eq!(exact.rows.len(), 1);
+            assert_eq!(
+                exact.rows[0].target().map(|target| target.address),
+                Some(ActionAddress::new("note:2", "archive"))
+            );
+        }
+
+        phase an_exact_action_is_found_below_the_top_level;
+        {
+            let rows = vec![
+                row("folder:a", None, ""),
+                row("note:a1", Some("open"), "folder:a"),
+            ];
+            let target = RemoteActionTarget {
+                provider: "7".into(),
+                address: ActionAddress::new("note:a1", "open"),
+            };
+            let page =
+                CataloguePage::from_rows("r1".into(), rows, &CatalogueQuery::resolve(&target, "r1"));
+            assert_eq!(page.rows.len(), 1);
+        }
+
+        phase an_app_filter_narrows_before_the_page_bound;
+        {
+            let wanted = app_row("so.tilo.shortcuts", "shortcuts.shortcut:tidy");
+            let rows = (0..MAX_CATALOGUE_PAGE)
+                .map(|index| app_row("so.tilo.notes", &format!("note:{index}")))
+                .chain([wanted.clone()])
+                .collect::<Vec<_>>();
+            let query = |app_id: Option<&str>| CatalogueQuery {
+                app_id: app_id.map(str::to_owned),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            };
+            let scoped =
+                CataloguePage::from_rows("r1".into(), rows.clone(), &query(Some("so.tilo.shortcuts")));
+            assert_eq!(scoped.rows, [wanted], "the one row of the app asked for");
+            assert!(scoped.exhausted && scoped.next_cursor.is_empty());
+
+            let unfiltered = CataloguePage::from_rows("r1".into(), rows, &query(None));
+            assert_eq!(
+                unfiltered.rows.len(),
+                usize::try_from(MAX_CATALOGUE_PAGE).unwrap_or(usize::MAX)
+            );
+            assert!(
+                unfiltered
+                    .rows
+                    .iter()
+                    .all(|row| row.app_id == "so.tilo.notes"),
+                "the wanted row sits past the first page when nothing narrows it"
+            );
+            assert!(!unfiltered.exhausted);
+        }
+
+        phase an_app_filter_is_optional_on_the_wire;
+        {
+            let legacy: CatalogueQuery =
+                serde_json::from_value(serde_json::json!({ "max_results": 4 })).unwrap();
+            assert_eq!(legacy.app_id, None);
+            let scoped = CatalogueQuery {
+                app_id: Some("so.tilo.shortcuts".into()),
+                ..CatalogueQuery::default()
+            };
+            assert_eq!(
+                serde_json::to_value(&scoped).unwrap()["app_id"],
+                "so.tilo.shortcuts"
+            );
+            assert!(
+                serde_json::to_value(CatalogueQuery::default())
+                    .unwrap()
+                    .get("app_id")
+                    .is_none(),
+                "a query with no app filter says nothing about one"
+            );
+        }
+
+        phase a_needle_matches_an_inflection_of_a_described_word;
+        {
+            let mut scroll = row("page:1", Some("press-page"), "");
+            if let Some(action) = scroll.action.as_mut() {
+                action.description =
+                    Some("Scroll down the page with PageDown, or Space for a screenful.".into());
+            }
+            let mut draw = row("page:1", Some("pointer-path"), "");
+            if let Some(action) = draw.action.as_mut() {
+                action.description = Some("Moves the pointer as drawing a signature does.".into());
+            }
+            let rows = vec![draw, scroll];
+            let actions = |needle: &str| {
+                CataloguePage::from_rows(
+                    "r1".into(),
+                    rows.clone(),
+                    &CatalogueQuery {
+                        needle: needle.into(),
+                        ..CatalogueQuery::default()
+                    },
+                )
                 .rows
                 .iter()
-                .filter_map(|row| row.action.as_ref().map(|a| a.address.action.as_str()))
-                .collect();
-            assert_eq!(actions, ["format-cells"], "{needle}");
+                .filter_map(|row| row.action.as_ref().map(|a| a.address.action.clone()))
+                .collect::<Vec<_>>()
+            };
+            // The word the caller types and the word the description spells are
+            // the same word in another inflection.
+            assert_eq!(actions("scrolling"), ["press-page"]);
+            assert_eq!(actions("draw"), ["pointer-path"]);
+            assert_eq!(actions("drawing"), ["pointer-path"]);
+            // A word nothing spells still matches nothing.
+            assert!(actions("printing").is_empty());
+        }
+
+        phase a_needle_matches_parameter_names_and_descriptions;
+        {
+            let mut format = row("sheet:1", Some("format-cells"), "");
+            if let Some(action) = format.action.as_mut() {
+                action.params = vec![crate::ActionParam::optional(
+                    "bold",
+                    crate::ParamType::Boolean,
+                    "Heavier text",
+                )];
+            }
+            let rows = vec![row("sheet:1", Some("sort-rows"), ""), format];
+            for needle in ["BOLD", "heavier"] {
+                let page = CataloguePage::from_rows(
+                    "r1".into(),
+                    rows.clone(),
+                    &CatalogueQuery {
+                        needle: needle.into(),
+                        ..CatalogueQuery::default()
+                    },
+                );
+                let actions: Vec<_> = page
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.action.as_ref().map(|a| a.address.action.as_str()))
+                    .collect();
+                assert_eq!(actions, ["format-cells"], "{needle}");
+            }
         }
     }
 }

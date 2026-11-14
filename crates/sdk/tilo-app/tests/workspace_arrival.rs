@@ -118,8 +118,12 @@ impl AppSurface for Window {
     fn set_cursor(&self, _: CursorIcon) {}
 }
 
+/// A window shows the workspace's record once its first sync landed: the
+/// frames the window asks for bring it in, from the very next one when
+/// nothing stood in its place, and after the skeleton's moment when the
+/// window was slow enough to have shown one.
 #[test]
-fn a_window_shows_the_workspaces_record_in_the_frame_after_its_first_sync() {
+fn a_window_shows_the_workspaces_record_once_its_first_sync_lands() {
     workspace_sync::hosted_by_shell();
     workspace_sync::set(Some(sync(WorkspaceSyncState::Connecting)));
     drive_live_window::<Boards, _>(|app| {
@@ -127,12 +131,21 @@ fn a_window_shows_the_workspaces_record_in_the_frame_after_its_first_sync() {
         app.surface_frame(&Window, &mut scene);
         assert_eq!(VIEWS.with(Cell::get), 0, "the view waits for the workspace");
         workspace_sync::set(Some(sync(WorkspaceSyncState::Synced)));
-        scene.reset();
-        app.surface_frame(&Window, &mut scene);
-        assert!(
-            VIEWS.with(Cell::get) > 0,
-            "the frame after the first sync shows the workspace's record"
-        );
+        // A skeleton that already stood is held a moment before the record
+        // takes its place, so run the frames the window asks for — waiting
+        // each until its own deadline, as a host does — until it has the
+        // record, by that state rather than a wait of a guessed length.
+        let limit = tilo_app::time::now() + tilo_app::time::Duration::from_secs(30);
+        while VIEWS.with(Cell::get) == 0 {
+            let now = tilo_app::time::now();
+            assert!(now < limit, "the first sync settles what the window shows");
+            std::thread::sleep(app.surface_next_frame().map_or_else(
+                || tilo_app::time::Duration::from_millis(16),
+                |next| next.saturating_duration_since(now),
+            ));
+            scene.reset();
+            app.surface_frame(&Window, &mut scene);
+        }
     })
     .unwrap();
 }

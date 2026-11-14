@@ -184,25 +184,30 @@ mod tests {
     use super::*;
     use automerge::ROOT;
 
-    #[test]
-    fn pending_edits_are_never_committed_by_review_or_restore() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "title", "old").unwrap();
-        let target = doc.commit().unwrap();
-        doc.put(ROOT, "title", "new").unwrap();
-        doc.commit();
-        let response = answer(&doc, &target.to_string(), &["title".into()]).unwrap();
-        let review: RestoreReview = serde_json::from_value(response["review"].clone()).unwrap();
-        doc.put(ROOT, "draft", true).unwrap();
-        let before = (doc.base_heads(), doc.pending_ops());
-        assert!(answer(&doc, &target.to_string(), &["title".into()]).is_err());
-        assert!(review.apply(&mut doc).is_err());
-        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    }
+    tilo_test_env::scenario! {
+        /// Reviewing a restoration before it is applied.
+        fn a_restore_review_never_commits_pending_edits_and_bounds_what_it_reads;
 
-    #[test]
-    fn historical_read_limit_refuses_incomplete_content() {
-        assert!(bounded(json!({"body": "x".repeat(MAX_READ_BYTES)})).is_err());
-        assert!(bounded(json!({"body": "short"})).is_ok());
+        phase pending_edits_are_never_committed_by_review_or_restore;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "title", "old").unwrap();
+            let target = doc.commit().unwrap();
+            doc.put(ROOT, "title", "new").unwrap();
+            doc.commit();
+            let response = answer(&doc, &target.to_string(), &["title".into()]).unwrap();
+            let review: RestoreReview = serde_json::from_value(response["review"].clone()).unwrap();
+            doc.put(ROOT, "draft", true).unwrap();
+            let before = (doc.base_heads(), doc.pending_ops());
+            assert!(answer(&doc, &target.to_string(), &["title".into()]).is_err());
+            assert!(review.apply(&mut doc).is_err());
+            assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+        }
+
+        phase historical_read_limit_refuses_incomplete_content;
+        {
+            assert!(bounded(json!({"body": "x".repeat(MAX_READ_BYTES)})).is_err());
+            assert!(bounded(json!({"body": "short"})).is_ok());
+        }
     }
 }

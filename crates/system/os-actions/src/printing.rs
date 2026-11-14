@@ -776,106 +776,110 @@ pub fn parse_driverless(text: &str) -> Vec<DiscoveredPrinter> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn cups_queues_devices_supplies_and_identifiers_parse_bounded() {
-        {
-            let q = parse_queues(
-                "printer Office is printing Office-8. enabled since now\nprinter Lab is disabled since now - media-empty\nsystem default destination: Office\n",
-                "Office accepting requests since now\nLab not accepting requests since now\n",
-            );
-            assert_eq!(q.len(), 2);
-            assert!(q[0].default && q[0].accepting_jobs);
-            assert_eq!(q[1].state, QueueState::Paused);
-            assert_eq!(q[1].reason.as_deref(), Some("media-empty"));
-            assert!(!q[1].accepting_jobs);
-        }
-        {
-            let d =
-                parse_driverless("ipps://office.local/ipp/print \"Acme Laser 4\" \"Copy room\"\n");
-            assert_eq!(d[0].name, "Acme Laser 4");
-            assert_eq!(d[0].location.as_deref(), Some("Copy room"));
-        }
-        {
-            let d = parse_driverless(
-                "ipp://Acme%20Laser._ipp._tcp.local/ \"Acme Laser 4\" \"\"\nipps://Acme%20Laser._ipps._tcp.local/ \"Acme Laser 4\" \"\"\n",
-            );
-            assert_eq!(d.len(), 1);
-            assert!(d[0].uri.starts_with("ipps://"));
-        }
-        {
-            assert!(validate_uri("ipps://printer.local/ipp/print").is_ok());
-            assert!(validate_uri("file:///etc/shadow").is_err());
-            assert!(validate_job_id("Office-42").is_ok());
-            assert!(validate_job_id("Office;shutdown-42").is_err());
-            assert_eq!(queue_name("Office Laser").unwrap(), "Office_Laser");
-            assert!(
-                print_document(
-                    "Office",
-                    std::path::Path::new("/does/not/matter"),
-                    &PrintSettings {
-                        copies: 0,
-                        ..PrintSettings::default()
-                    },
-                )
-                .is_err()
-            );
-        }
-        {
-            let telemetry = parse_ipp_printer_attributes(
-                " marker-names (1setOf nameWithoutLanguage) = \"Black Toner\",\"Cyan\u{1b} Toner\"\n marker-colors (1setOf nameWithoutLanguage) = black,cyan\n marker-levels (1setOf integer) = 83,-1\n printer-state-reasons (1setOf keyword) = none,media-low\n",
-            );
-            assert!(telemetry.available);
-            let supplies = telemetry.supplies.unwrap();
-            assert_eq!(supplies[0].level_percent, Some(83));
-            assert_eq!(supplies[1].level_percent, None);
-            assert!(!supplies[1].name.contains('\u{1b}'));
-            assert_eq!(telemetry.state_reasons, ["media-low"]);
+    tilo_test_env::scenario! {
+        fn cups_printers_are_parsed_bounded_and_offered_once;
 
-            let jobs = parse_ipp_jobs(
-                " job-id (integer) = 42\n job-name (nameWithoutLanguage) = \"Travel itinerary.pdf\"\n job-state (enum) = processing\n job-state-reasons (1setOf keyword) = job-printing\n job-impressions-completed (integer) = 3\n job-impressions (integer) = 12\n",
-            );
-            assert_eq!(jobs[&42].title.as_deref(), Some("Travel itinerary.pdf"));
-            assert_eq!(jobs[&42].state, Some(JobState::Processing));
-            assert_eq!(jobs[&42].impressions_completed, Some(3));
-            assert_eq!(jobs[&42].impressions_total, Some(12));
-        }
-    }
+        phase cups_queues_devices_supplies_and_identifiers_parse_bounded;
+        {
+            {
+                let q = parse_queues(
+                    "printer Office is printing Office-8. enabled since now\nprinter Lab is disabled since now - media-empty\nsystem default destination: Office\n",
+                    "Office accepting requests since now\nLab not accepting requests since now\n",
+                );
+                assert_eq!(q.len(), 2);
+                assert!(q[0].default && q[0].accepting_jobs);
+                assert_eq!(q[1].state, QueueState::Paused);
+                assert_eq!(q[1].reason.as_deref(), Some("media-empty"));
+                assert!(!q[1].accepting_jobs);
+            }
+            {
+                let d =
+                    parse_driverless("ipps://office.local/ipp/print \"Acme Laser 4\" \"Copy room\"\n");
+                assert_eq!(d[0].name, "Acme Laser 4");
+                assert_eq!(d[0].location.as_deref(), Some("Copy room"));
+            }
+            {
+                let d = parse_driverless(
+                    "ipp://Acme%20Laser._ipp._tcp.local/ \"Acme Laser 4\" \"\"\nipps://Acme%20Laser._ipps._tcp.local/ \"Acme Laser 4\" \"\"\n",
+                );
+                assert_eq!(d.len(), 1);
+                assert!(d[0].uri.starts_with("ipps://"));
+            }
+            {
+                assert!(validate_uri("ipps://printer.local/ipp/print").is_ok());
+                assert!(validate_uri("file:///etc/shadow").is_err());
+                assert!(validate_job_id("Office-42").is_ok());
+                assert!(validate_job_id("Office;shutdown-42").is_err());
+                assert_eq!(queue_name("Office Laser").unwrap(), "Office_Laser");
+                assert!(
+                    print_document(
+                        "Office",
+                        std::path::Path::new("/does/not/matter"),
+                        &PrintSettings {
+                            copies: 0,
+                            ..PrintSettings::default()
+                        },
+                    )
+                    .is_err()
+                );
+            }
+            {
+                let telemetry = parse_ipp_printer_attributes(
+                    " marker-names (1setOf nameWithoutLanguage) = \"Black Toner\",\"Cyan\u{1b} Toner\"\n marker-colors (1setOf nameWithoutLanguage) = black,cyan\n marker-levels (1setOf integer) = 83,-1\n printer-state-reasons (1setOf keyword) = none,media-low\n",
+                );
+                assert!(telemetry.available);
+                let supplies = telemetry.supplies.unwrap();
+                assert_eq!(supplies[0].level_percent, Some(83));
+                assert_eq!(supplies[1].level_percent, None);
+                assert!(!supplies[1].name.contains('\u{1b}'));
+                assert_eq!(telemetry.state_reasons, ["media-low"]);
 
-    #[test]
-    fn a_printer_already_added_is_not_offered_again_whichever_address_it_was_added_by() {
-        let devices = parse_device_uris(
-            "device for Office: ipps://Acme%20Laser._ipps._tcp.local/\ndevice for Lab: ipp://192.168.1.20:631/ipp/print\n",
-        );
-        let queue = |name: &str| PrinterQueue {
-            name: name.into(),
-            state: QueueState::Ready,
-            default: false,
-            accepting_jobs: true,
-            reason: None,
-            device_uri: devices.get(name).cloned(),
-            telemetry: PrinterTelemetry::default(),
-        };
-        let queues = [queue("Office"), queue("Lab")];
-        let found = |uri: &str| DiscoveredPrinter {
-            uri: uri.into(),
-            name: "Printer".into(),
-            location: None,
-        };
-        assert!(is_added(
-            &found("ipp://Acme%20Laser._ipp._tcp.local/"),
-            &queues
-        ));
-        assert!(is_added(&found("ipps://192.168.1.20/ipp/print/"), &queues));
-        let other = found("ipps://Other%20Inkjet._ipps._tcp.local/");
-        assert!(!is_added(&other, &queues));
-        let offered = not_added(
-            &[
-                found("ipps://Acme%20Laser._ipps._tcp.local/"),
-                other.clone(),
-            ],
-            &queues,
-        );
-        assert_eq!(offered, vec![other]);
+                let jobs = parse_ipp_jobs(
+                    " job-id (integer) = 42\n job-name (nameWithoutLanguage) = \"Travel itinerary.pdf\"\n job-state (enum) = processing\n job-state-reasons (1setOf keyword) = job-printing\n job-impressions-completed (integer) = 3\n job-impressions (integer) = 12\n",
+                );
+                assert_eq!(jobs[&42].title.as_deref(), Some("Travel itinerary.pdf"));
+                assert_eq!(jobs[&42].state, Some(JobState::Processing));
+                assert_eq!(jobs[&42].impressions_completed, Some(3));
+                assert_eq!(jobs[&42].impressions_total, Some(12));
+            }
+        }
+
+        phase a_printer_already_added_is_not_offered_again_whichever_address_it_was_added_by;
+        {
+            let devices = parse_device_uris(
+                "device for Office: ipps://Acme%20Laser._ipps._tcp.local/\ndevice for Lab: ipp://192.168.1.20:631/ipp/print\n",
+            );
+            let queue = |name: &str| PrinterQueue {
+                name: name.into(),
+                state: QueueState::Ready,
+                default: false,
+                accepting_jobs: true,
+                reason: None,
+                device_uri: devices.get(name).cloned(),
+                telemetry: PrinterTelemetry::default(),
+            };
+            let queues = [queue("Office"), queue("Lab")];
+            let found = |uri: &str| DiscoveredPrinter {
+                uri: uri.into(),
+                name: "Printer".into(),
+                location: None,
+            };
+            assert!(is_added(
+                &found("ipp://Acme%20Laser._ipp._tcp.local/"),
+                &queues
+            ));
+            assert!(is_added(&found("ipps://192.168.1.20/ipp/print/"), &queues));
+            let other = found("ipps://Other%20Inkjet._ipps._tcp.local/");
+            assert!(!is_added(&other, &queues));
+            let offered = not_added(
+                &[
+                    found("ipps://Acme%20Laser._ipps._tcp.local/"),
+                    other.clone(),
+                ],
+                &queues,
+            );
+            assert_eq!(offered, vec![other]);
+        }
     }
 }
 
@@ -1132,62 +1136,66 @@ Orientation/Orientation: *3 4
 printer-make-and-model/Custom.10 = Acme Laser 4
 ";
 
-    #[test]
-    fn the_drivers_own_options_come_out_with_their_defaults() {
-        let options = parse_lpoptions(REPORT);
-        assert_eq!(
-            options
-                .page_sizes
-                .iter()
-                .map(|choice| choice.key.as_str())
-                .collect::<Vec<_>>(),
-            ["A4", "A5", "Letter", "Legal"]
-        );
-        assert_eq!(PrinterOptions::default_key(&options.page_sizes), Some("A4"));
-        assert_eq!(
-            PrinterOptions::default_key(&options.colour_modes),
-            Some("RGB")
-        );
-        assert_eq!(
-            options
-                .duplex_modes
-                .iter()
-                .find(|choice| choice.key == "DuplexTumble")
-                .map(|choice| choice.label.as_str()),
-            Some("Two-sided, short edge")
-        );
-        assert_eq!(
-            PrinterOptions::default_key(&options.orientations),
-            Some("3"),
-            "the orientation values keep the numbers CUPS takes"
-        );
-        assert!(
-            options
-                .orientations
-                .iter()
-                .any(|choice| choice.label == "Landscape"),
-            "a person reads a word, not a 4"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_printers_options_are_the_drivers_own_and_a_page_range_is_one_cups_reads;
 
-    #[test]
-    fn a_printer_that_reports_nothing_offers_nothing() {
-        let options = parse_lpoptions("");
-        assert_eq!(options, PrinterOptions::default());
-        assert!(
-            parse_lpoptions("Resolution/Output Resolution: *600dpi\n")
-                .page_sizes
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_page_range_must_be_one_cups_reads() {
-        for good in ["1-3", "1,4,9", "2-", "7", "1-3, 8-10"] {
-            assert!(PageRange::parse(good).is_ok(), "{good}");
+        phase the_drivers_own_options_come_out_with_their_defaults;
+        {
+            let options = parse_lpoptions(REPORT);
+            assert_eq!(
+                options
+                    .page_sizes
+                    .iter()
+                    .map(|choice| choice.key.as_str())
+                    .collect::<Vec<_>>(),
+                ["A4", "A5", "Letter", "Legal"]
+            );
+            assert_eq!(PrinterOptions::default_key(&options.page_sizes), Some("A4"));
+            assert_eq!(
+                PrinterOptions::default_key(&options.colour_modes),
+                Some("RGB")
+            );
+            assert_eq!(
+                options
+                    .duplex_modes
+                    .iter()
+                    .find(|choice| choice.key == "DuplexTumble")
+                    .map(|choice| choice.label.as_str()),
+                Some("Two-sided, short edge")
+            );
+            assert_eq!(
+                PrinterOptions::default_key(&options.orientations),
+                Some("3"),
+                "the orientation values keep the numbers CUPS takes"
+            );
+            assert!(
+                options
+                    .orientations
+                    .iter()
+                    .any(|choice| choice.label == "Landscape"),
+                "a person reads a word, not a 4"
+            );
         }
-        for bad in ["", "  ", "0", "1-0", "5-2", "1,,3", "1-a", "-3", "one"] {
-            assert!(PageRange::parse(bad).is_err(), "{bad}");
+
+        phase a_printer_that_reports_nothing_offers_nothing;
+        {
+            let options = parse_lpoptions("");
+            assert_eq!(options, PrinterOptions::default());
+            assert!(
+                parse_lpoptions("Resolution/Output Resolution: *600dpi\n")
+                    .page_sizes
+                    .is_empty()
+            );
+        }
+
+        phase a_page_range_must_be_one_cups_reads;
+        {
+            for good in ["1-3", "1,4,9", "2-", "7", "1-3, 8-10"] {
+                assert!(PageRange::parse(good).is_ok(), "{good}");
+            }
+            for bad in ["", "  ", "0", "1-0", "5-2", "1,,3", "1-a", "-3", "one"] {
+                assert!(PageRange::parse(bad).is_err(), "{bad}");
+            }
         }
     }
 }

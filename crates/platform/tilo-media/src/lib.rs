@@ -70,6 +70,9 @@ pub mod pcm;
 #[cfg(any(gst_decode, gst_realtime))]
 mod gst_frames;
 
+#[cfg(test)]
+mod test_gst;
+
 /// `GStreamer`, re-exported so a consumer can configure the sink from
 /// [`MediaEngine::audio_sink`] without another `GStreamer` dependency.
 #[cfg(any(gst_decode, gst_realtime))]

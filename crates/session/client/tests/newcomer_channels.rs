@@ -28,6 +28,7 @@ use tilo_user_identity::{DeviceCert, UserIdentity};
 use crate::support::{
     enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_keyed,
 };
+use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -49,7 +50,7 @@ async fn visitor(
     host: &crate::support::TestHost,
     host_cert: &DeviceCert,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     desktop: &DocumentRoute,
     name: &str,
 ) -> Link {
@@ -91,7 +92,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
@@ -103,7 +104,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

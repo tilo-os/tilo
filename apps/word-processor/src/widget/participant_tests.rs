@@ -786,7 +786,7 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
         tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
         tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
     ];
-    assert_eq!(callers[0].principal(), callers[1].principal());
+    assert_eq!(callers[0].acting(), callers[1].acting());
     assert_ne!(callers[0].execution_id(), callers[1].execution_id());
     let participants =
         callers.map(|caller| ParticipantId::for_execution(caller.execution_id().unwrap()));
@@ -853,7 +853,12 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
     let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
     let content = writer_view(&mut app, |wp, _| wp.inner.content_store().clone());
     let hash = content.put(&png).unwrap();
-    assert_eq!(hash, tilo_content::hash_bytes(&png));
+    // A record's content is sealed under its members' secret: the reference the
+    // store answers names these bytes, and its key is not a plain address.
+    assert!(
+        tilo_content::names(&hash, &png),
+        "the place names the picture it stored: {hash}"
+    );
     invoke_opening_action(
         &mut app,
         &participants[1],

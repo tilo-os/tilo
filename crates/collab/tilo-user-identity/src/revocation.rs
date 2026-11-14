@@ -345,17 +345,18 @@ mod tests {
         );
     }
 
-    /// Revocations sign and verify; a tampered device key or reason fails; a wrong root fails the
-    /// pre-sign guard.
-    #[test]
-    fn revocations_verify_only_untampered_and_from_the_root() {
-        // Phase: sign_and_verify.
+    tilo_test_env::scenario! {
+        /// Revocations sign and verify; a tampered device key or reason fails; a wrong root fails the
+        /// pre-sign guard.
+        fn revocations_verify_only_untampered_and_from_the_root;
+
+        phase sign_and_verify;
         {
             let (_root, entry) = fresh_entry(RevocationReason::Lost);
             verify_revocation_entry(&entry).unwrap();
         }
 
-        // Phase: tampered_device_pubkey_fails.
+        phase tampered_device_pubkey_fails;
         {
             let (_root, mut entry) = fresh_entry(RevocationReason::Stolen);
             entry.revoked_device_public_key[0] ^= 0x01;
@@ -365,7 +366,7 @@ mod tests {
             );
         }
 
-        // Phase: tampered_reason_fails.
+        phase tampered_reason_fails;
         {
             let (_root, mut entry) = fresh_entry(RevocationReason::Lost);
             entry.reason = RevocationReason::Retired;
@@ -375,7 +376,7 @@ mod tests {
             );
         }
 
-        // Phase: signed_by_wrong_root_fails_pre_sign_guard.
+        phase signed_by_wrong_root_fails_pre_sign_guard;
         {
             let (_, alice) = UserIdentity::generate("Alice", 1);
             let (bob_sk, _) = UserIdentity::generate("Bob", 2);
@@ -393,9 +394,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn revocation_lists_dedup_and_reject_bad_signatures() {
-        // Phase: list_dedups_earliest_wins.
+    tilo_test_env::scenario! {
+        fn revocation_lists_dedup_and_reject_bad_signatures;
+
+        phase list_dedups_earliest_wins;
         {
             let (root_sk, _) = UserIdentity::generate("Alice", 1);
             let user_pk = root_sk.verifying_key().to_bytes();
@@ -428,7 +430,7 @@ mod tests {
             assert!(!list.is_revoked_at(&user_pk, &device_pk, 99));
         }
 
-        // Phase: list_rejects_bad_signature.
+        phase list_rejects_bad_signature;
         {
             let (_root, mut entry) = fresh_entry(RevocationReason::Compromised);
             entry.signature[0] ^= 0x01;

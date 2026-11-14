@@ -58,7 +58,7 @@ impl Dictation {
         services: &Rc<RefCell<tilo_service::Services>>,
         options: &Options,
     ) -> Self {
-        let (service, link) = DictationService::start(options.wake.handle());
+        let (service, link) = DictationService::start();
         services.borrow_mut().add(Box::new(service));
         let seat = mount_sheet(compositor, doors, options);
         Self {

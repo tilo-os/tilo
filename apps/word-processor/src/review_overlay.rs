@@ -480,52 +480,57 @@ pub(super) fn sort_replies(comment: &mut CommentView) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn comment_marks_take_the_author_colour_and_read_on_paper() {
-        use ui::a11y::contrast_ratio;
-        let paper = Color::from_rgb8(0xfc, 0xfc, 0xfa);
-        for name in Theme::ALL {
-            let theme = Theme::named(name).expect("shipped theme resolves");
-            let mark = ReviewColors::author_mark(&theme, paper, Tone::of_identity("Maya Chen"));
-            assert!(
-                contrast_ratio(mark, paper) >= NON_TEXT_MIN_CONTRAST,
-                "{name}"
-            );
-            let wash =
-                ReviewColors::comment_highlight(&theme, paper, Tone::of_identity("Maya Chen"));
-            assert_eq!(wash.to_rgba8().a, COMMENT_HIGHLIGHT_ALPHA, "{name}");
-        }
-    }
+    tilo_test_env::scenario! {
+        /// The review overlay: the colours of its marks and what a press on it reaches.
+        fn review_marks_read_on_paper_and_hits_stay_current;
 
-    #[test]
-    fn review_overlay_hits_are_topmost_and_never_stale() {
+        phase comment_marks_take_the_author_colour_and_read_on_paper;
         {
-            let mut overlay = ReviewOverlay::default();
-            overlay.hits.push((
-                Rect::new(0.0, 0.0, 20.0, 20.0),
-                ReviewAction::AcceptChange("change".into()),
-            ));
-            overlay.toggle();
-            overlay.clear_hits();
-
-            assert!(!overlay.is_visible());
-            assert_eq!(overlay.action_at(Point::new(10.0, 10.0)), None);
+            use ui::a11y::contrast_ratio;
+            let paper = Color::from_rgb8(0xfc, 0xfc, 0xfa);
+            for name in Theme::ALL {
+                let theme = Theme::named(name).expect("shipped theme resolves");
+                let mark = ReviewColors::author_mark(&theme, paper, Tone::of_identity("Maya Chen"));
+                assert!(
+                    contrast_ratio(mark, paper) >= NON_TEXT_MIN_CONTRAST,
+                    "{name}"
+                );
+                let wash =
+                    ReviewColors::comment_highlight(&theme, paper, Tone::of_identity("Maya Chen"));
+                assert_eq!(wash.to_rgba8().a, COMMENT_HIGHLIGHT_ALPHA, "{name}");
+            }
         }
 
+        phase review_overlay_hits_are_topmost_and_never_stale;
         {
-            let mut overlay = ReviewOverlay::default();
-            let rect = Rect::new(0.0, 0.0, 20.0, 20.0);
-            overlay
-                .hits
-                .push((rect, ReviewAction::AcceptChange("under".into())));
-            overlay
-                .hits
-                .push((rect, ReviewAction::RejectChange("over".into())));
+            {
+                let mut overlay = ReviewOverlay::default();
+                overlay.hits.push((
+                    Rect::new(0.0, 0.0, 20.0, 20.0),
+                    ReviewAction::AcceptChange("change".into()),
+                ));
+                overlay.toggle();
+                overlay.clear_hits();
 
-            assert_eq!(
-                overlay.action_at(Point::new(10.0, 10.0)),
-                Some(ReviewAction::RejectChange("over".into()))
-            );
+                assert!(!overlay.is_visible());
+                assert_eq!(overlay.action_at(Point::new(10.0, 10.0)), None);
+            }
+
+            {
+                let mut overlay = ReviewOverlay::default();
+                let rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+                overlay
+                    .hits
+                    .push((rect, ReviewAction::AcceptChange("under".into())));
+                overlay
+                    .hits
+                    .push((rect, ReviewAction::RejectChange("over".into())));
+
+                assert_eq!(
+                    overlay.action_at(Point::new(10.0, 10.0)),
+                    Some(ReviewAction::RejectChange("over".into()))
+                );
+            }
         }
     }
 }

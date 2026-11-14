@@ -351,83 +351,87 @@ mod focus_tests {
         }
     }
 
-    #[test]
-    fn the_window_in_front_names_its_app_never_its_title() {
-        let none = |_: &str| None;
-        assert_eq!(focused(&tree(Vec::new()), none), Focused::Nothing);
-        let mut desktop = tree(vec![
-            TileContent::LocalApp {
-                app_id: "org.mozilla.firefox".into(),
-                label: "Bank statement".into(),
-                note: String::new(),
-            },
-            TileContent::AppPlaceholder {
-                kind: AppKind::Other(KIND.into()),
-                label: "Feedback".into(),
-            },
-        ]);
-        assert_eq!(
-            focused(&desktop, none),
-            Focused::App(Subject {
-                app: "org.mozilla.firefox".into(),
-                name: String::new(),
-                control: None,
-                record: None,
-            }),
-            "a label can be a window title"
-        );
-        assert_eq!(
-            focused(&desktop, |app: &str| Some(format!("Name of {app}"))),
-            Focused::App(Subject {
-                app: "org.mozilla.firefox".into(),
-                name: "Name of org.mozilla.firefox".into(),
-                control: None,
-                record: None,
-            })
-        );
-        desktop.set_active_group(StripId(2), 11);
-        assert_eq!(focused(&desktop, none), Focused::Composer);
-        assert_eq!(
-            composer_tab(&desktop),
-            Some((WorkspaceSlot(1), StripId(2), 11, 11))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn feedback_is_about_the_window_in_front;
 
-    /// Picked parts are about the window in front only when every one is in its app: a recording
-    /// never records a window nothing was picked in.
-    #[test]
-    fn picked_parts_are_about_the_window_in_front_only_when_all_are_in_it() {
-        use tilo_app::feedback::report::{Pick, ReportDraft};
-        let notes = Subject {
-            record: Some(ShownRecord {
-                workspace: "w".into(),
-                record: "note-1".into(),
-            }),
-            ..Subject::of_app("so.tilo.notes", "Notes")
-        };
-        let draft = |apps: &[&str]| ReportDraft {
-            picks: apps
-                .iter()
-                .map(|app| Pick {
-                    app: (*app).into(),
-                    ..Pick::default()
+        phase the_window_in_front_names_its_app_never_its_title;
+        {
+            let none = |_: &str| None;
+            assert_eq!(focused(&tree(Vec::new()), none), Focused::Nothing);
+            let mut desktop = tree(vec![
+                TileContent::LocalApp {
+                    app_id: "org.mozilla.firefox".into(),
+                    label: "Bank statement".into(),
+                    note: String::new(),
+                },
+                TileContent::AppPlaceholder {
+                    kind: AppKind::Other(KIND.into()),
+                    label: "Feedback".into(),
+                },
+            ]);
+            assert_eq!(
+                focused(&desktop, none),
+                Focused::App(Subject {
+                    app: "org.mozilla.firefox".into(),
+                    name: String::new(),
+                    control: None,
+                    record: None,
+                }),
+                "a label can be a window title"
+            );
+            assert_eq!(
+                focused(&desktop, |app: &str| Some(format!("Name of {app}"))),
+                Focused::App(Subject {
+                    app: "org.mozilla.firefox".into(),
+                    name: "Name of org.mozilla.firefox".into(),
+                    control: None,
+                    record: None,
                 })
-                .collect(),
-            ..ReportDraft::default()
-        };
-        let front = || Focused::App(notes.clone());
-        assert_eq!(
-            picked_subject(&draft(&["so.tilo.notes", "so.tilo.notes"]), front()),
-            Some(notes.clone())
-        );
-        assert_eq!(
-            picked_subject(&draft(&["so.tilo.notes", "so.tilo.chat"]), front()),
-            None
-        );
-        assert_eq!(picked_subject(&draft(&[]), front()), None);
-        assert_eq!(
-            picked_subject(&draft(&["so.tilo.notes"]), Focused::Composer),
-            None
-        );
+            );
+            desktop.set_active_group(StripId(2), 11);
+            assert_eq!(focused(&desktop, none), Focused::Composer);
+            assert_eq!(
+                composer_tab(&desktop),
+                Some((WorkspaceSlot(1), StripId(2), 11, 11))
+            );
+        }
+
+        phase picked_parts_are_about_the_window_in_front_only_when_all_are_in_it;
+        // Picked parts are about the window in front only when every one is in its app: a recording
+        // never records a window nothing was picked in.
+        {
+            use tilo_app::feedback::report::{Pick, ReportDraft};
+            let notes = Subject {
+                record: Some(ShownRecord {
+                    workspace: "w".into(),
+                    record: "note-1".into(),
+                }),
+                ..Subject::of_app("so.tilo.notes", "Notes")
+            };
+            let draft = |apps: &[&str]| ReportDraft {
+                picks: apps
+                    .iter()
+                    .map(|app| Pick {
+                        app: (*app).into(),
+                        ..Pick::default()
+                    })
+                    .collect(),
+                ..ReportDraft::default()
+            };
+            let front = || Focused::App(notes.clone());
+            assert_eq!(
+                picked_subject(&draft(&["so.tilo.notes", "so.tilo.notes"]), front()),
+                Some(notes.clone())
+            );
+            assert_eq!(
+                picked_subject(&draft(&["so.tilo.notes", "so.tilo.chat"]), front()),
+                None
+            );
+            assert_eq!(picked_subject(&draft(&[]), front()), None);
+            assert_eq!(
+                picked_subject(&draft(&["so.tilo.notes"]), Focused::Composer),
+                None
+            );
+        }
     }
 }

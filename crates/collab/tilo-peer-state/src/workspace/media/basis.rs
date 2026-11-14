@@ -109,13 +109,17 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         members.insert(key, *role);
     }
     let peers = read::strict_map(workspace, &workspace.root(), "peers").map_err(strict_error)?;
-    let mut roster = BTreeSet::new();
+    // The names the workspace keeps, by the key each is for: a device's, or a
+    // person's root for someone it holds by root alone (a declared owner,
+    // before any device of theirs arrived). Which is which the identity rows
+    // below say.
+    let mut named = BTreeSet::new();
     workspace
         .visit_entries(&peers, read::Selection::All, &mut |key, values| {
             read::strict_string_of(values).map_err(strict_error)?;
-            let device = super::canonical_key(key).map_err(policy)?;
+            let key = super::canonical_key(key).map_err(policy)?;
             work.tree_entry::<[u8; 32], ()>()?;
-            roster.insert(device);
+            named.insert(key);
             Ok(())
         })
         .map_err(visit_error)?;
@@ -169,12 +173,21 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
             Ok(())
         })
         .map_err(visit_error)?;
-    if !certificates.values().any(|root| *root == owner_key)
-        || roster
-            .iter()
-            .any(|device| !certificates.contains_key(device))
-    {
+    if !certificates.values().any(|root| *root == owner_key) {
         return Err(policy(MediaPolicyError::Binding));
+    }
+    // The roster is the devices the policy's authorization rests on: every
+    // device name is one of them. A name kept under a root names nobody's
+    // device — it is the person's own, which no grant turns on — so it is none
+    // of the roster and only has to name somebody the membership or the owner
+    // holds.
+    let mut roster = BTreeSet::new();
+    for key in named {
+        if certificates.contains_key(&key) {
+            roster.insert(key);
+        } else if key != owner_key && !members.contains_key(&hex::encode(key)) {
+            return Err(policy(MediaPolicyError::Binding));
+        }
     }
     for entry in extra {
         work.push(&mut revocations, entry.clone())?;

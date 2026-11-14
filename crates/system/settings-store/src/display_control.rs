@@ -319,251 +319,259 @@ mod tests {
         }
     }
 
-    #[test]
-    fn host_identify_uses_the_existing_request_section_without_creating_a_preview() {
-        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
-            let source = HostDocument::new(
-                serde_json::json!({"unrelated":{"keep":true}})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-                |_| Ok(()),
-            );
-            let reply = execute(&source, observed(), DisplayCommand::Identify).unwrap();
-            let request = reply.identify.expect("host stamped the identify request");
-            assert!(request.is_fresh(tilo_clock::unix_now_ms()));
-            assert_eq!(
-                source.load()["display_identify"]["requested_unix_ms"],
-                request.requested_unix_ms
-            );
-            assert_eq!(source.load()["unrelated"]["keep"], true);
-            assert!(source.load().get("display_transaction").is_none());
-            assert!(reply.transaction.is_none());
-        });
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_host_executes_display_commands_through_its_own_transaction;
 
-    #[test]
-    fn host_transaction_owns_previous_state_and_persists_only_its_section() {
-        let initial = serde_json::json!({"app_personal":{"so.tilo.settings":{"theme":"dark"}}})
-            .as_object()
-            .unwrap()
-            .clone();
-        let source = HostDocument::new(initial.clone(), |_| Ok(()));
-        let reply = execute(&source, observed(), request(&observed())).unwrap();
-        let transaction = reply.transaction.unwrap();
-        assert_eq!(transaction.state, DisplayTransactionState::Requested);
-        assert_eq!(
-            transaction.previous.outputs["eDP-1"]
-                .mode
-                .unwrap()
-                .refresh_mhz,
-            59_999
-        );
-        assert_eq!(
-            transaction.previous.outputs["eDP-1"].scale.to_bits(),
-            2.0_f64.to_bits()
-        );
-        assert_eq!(
-            transaction.candidate.outputs["eDP-1"]
-                .mode
-                .unwrap()
-                .refresh_mhz,
-            89_999
-        );
-        assert_eq!(source.load()["app_personal"], initial["app_personal"]);
-        assert!(execute(&source, observed(), request(&observed())).is_err());
-        assert_eq!(
-            execute(&source, observed(), DisplayCommand::Inspect)
-                .unwrap()
-                .transaction
-                .unwrap()
-                .id,
-            transaction.id
-        );
-    }
-
-    #[test]
-    fn sandbox_denied_direct_preview_uses_explicit_host_source_without_global_write_grant() {
-        let sandbox = std::sync::Arc::new(HostDocument::new(serde_json::Map::default(), |_| {
-            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-        }));
-        let _sandbox = crate::scoped_source(Some(sandbox.clone()));
-        let snapshot = observed();
-        let DisplayCommand::Apply {
-            observed_set,
-            candidate,
-        } = request(&snapshot)
-        else {
-            unreachable!()
-        };
-        assert_eq!(
-            DisplayTransaction::request(observed_set.clone(), candidate.clone())
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-        assert_eq!(
-            crate::display_identify::IdentifyRequest::request()
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-        let host = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
-        let identify = execute(&host, snapshot.clone(), DisplayCommand::Identify).unwrap();
-        assert!(identify.identify.is_some());
-        assert!(host.load().get("display_identify").is_some());
-        assert!(sandbox.load().get("display_identify").is_none());
-        assert!(crate::display_identify::IdentifyRequest::request().is_err());
-        let reply = execute(
-            &host,
-            snapshot,
-            DisplayCommand::Apply {
-                observed_set,
-                candidate,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            reply.transaction.unwrap().state,
-            DisplayTransactionState::Requested
-        );
-        assert!(sandbox.load().get("display_transaction").is_none());
-        assert!(host.load().get("display_transaction").is_some());
-        assert_eq!(
-            DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::PermissionDenied,
-            "host mediation must not change the sandbox's generic settings rights"
-        );
-    }
-
-    #[test]
-    fn readonly_inspect_does_not_write_and_failed_persistence_does_not_claim_apply() {
-        let source = HostDocument::new(serde_json::Map::default(), |_| {
-            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-        });
-        assert!(execute(&source, observed(), DisplayCommand::Inspect).is_ok());
-        assert!(
-            execute(&source, observed(), request(&observed()))
-                .unwrap_err()
-                .contains("could not be saved")
-        );
-        assert!(source.load().get("display_transaction").is_none());
-    }
-
-    #[test]
-    fn decisions_require_the_current_host_transaction_and_connected_outputs() {
-        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
-            let source = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
-            let mut transaction = execute(&source, observed(), request(&observed()))
-                .unwrap()
-                .transaction
-                .unwrap();
-            transaction.state = DisplayTransactionState::AwaitingConfirmation;
-            transaction.deadline_unix_ms = Some(tilo_clock::unix_now_ms() + 15_000);
-            source
-                .update_section(
-                    "display_transaction",
-                    serde_json::to_value(&transaction)
-                        .unwrap()
+        phase host_identify_uses_the_existing_request_section_without_creating_a_preview;
+        {
+            tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+                let source = HostDocument::new(
+                    serde_json::json!({"unrelated":{"keep":true}})
                         .as_object()
                         .unwrap()
                         .clone(),
-                )
-                .unwrap();
+                    |_| Ok(()),
+                );
+                let reply = execute(&source, observed(), DisplayCommand::Identify).unwrap();
+                let request = reply.identify.expect("host stamped the identify request");
+                assert!(request.is_fresh(tilo_clock::unix_now_ms()));
+                assert_eq!(
+                    source.load()["display_identify"]["requested_unix_ms"],
+                    request.requested_unix_ms
+                );
+                assert_eq!(source.load()["unrelated"]["keep"], true);
+                assert!(source.load().get("display_transaction").is_none());
+                assert!(reply.transaction.is_none());
+            });
+        }
+
+        phase host_transaction_owns_previous_state_and_persists_only_its_section;
+        {
+            let initial = serde_json::json!({"app_personal":{"so.tilo.settings":{"theme":"dark"}}})
+                .as_object()
+                .unwrap()
+                .clone();
+            let source = HostDocument::new(initial.clone(), |_| Ok(()));
+            let reply = execute(&source, observed(), request(&observed())).unwrap();
+            let transaction = reply.transaction.unwrap();
+            assert_eq!(transaction.state, DisplayTransactionState::Requested);
+            assert_eq!(
+                transaction.previous.outputs["eDP-1"]
+                    .mode
+                    .unwrap()
+                    .refresh_mhz,
+                59_999
+            );
+            assert_eq!(
+                transaction.previous.outputs["eDP-1"].scale.to_bits(),
+                2.0_f64.to_bits()
+            );
+            assert_eq!(
+                transaction.candidate.outputs["eDP-1"]
+                    .mode
+                    .unwrap()
+                    .refresh_mhz,
+                89_999
+            );
+            assert_eq!(source.load()["app_personal"], initial["app_personal"]);
+            assert!(execute(&source, observed(), request(&observed())).is_err());
+            assert_eq!(
+                execute(&source, observed(), DisplayCommand::Inspect)
+                    .unwrap()
+                    .transaction
+                    .unwrap()
+                    .id,
+                transaction.id
+            );
+        }
+
+        phase sandbox_denied_direct_preview_uses_explicit_host_source_without_global_write_grant;
+        {
+            let sandbox = std::sync::Arc::new(HostDocument::new(serde_json::Map::default(), |_| {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            }));
+            let _sandbox = crate::scoped_source(Some(sandbox.clone()));
+            let snapshot = observed();
+            let DisplayCommand::Apply {
+                observed_set,
+                candidate,
+            } = request(&snapshot)
+            else {
+                unreachable!()
+            };
+            assert_eq!(
+                DisplayTransaction::request(observed_set.clone(), candidate.clone())
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                crate::display_identify::IdentifyRequest::request()
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            let host = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
+            let identify = execute(&host, snapshot.clone(), DisplayCommand::Identify).unwrap();
+            assert!(identify.identify.is_some());
+            assert!(host.load().get("display_identify").is_some());
+            assert!(sandbox.load().get("display_identify").is_none());
+            assert!(crate::display_identify::IdentifyRequest::request().is_err());
+            let reply = execute(
+                &host,
+                snapshot,
+                DisplayCommand::Apply {
+                    observed_set,
+                    candidate,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                reply.transaction.unwrap().state,
+                DisplayTransactionState::Requested
+            );
+            assert!(sandbox.load().get("display_transaction").is_none());
+            assert!(host.load().get("display_transaction").is_some());
+            assert_eq!(
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "host mediation must not change the sandbox's generic settings rights"
+            );
+        }
+
+        phase readonly_inspect_does_not_write_and_failed_persistence_does_not_claim_apply;
+        {
+            let source = HostDocument::new(serde_json::Map::default(), |_| {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            });
+            assert!(execute(&source, observed(), DisplayCommand::Inspect).is_ok());
             assert!(
-                execute(
+                execute(&source, observed(), request(&observed()))
+                    .unwrap_err()
+                    .contains("could not be saved")
+            );
+            assert!(source.load().get("display_transaction").is_none());
+        }
+
+        phase decisions_require_the_current_host_transaction_and_connected_outputs;
+        {
+            tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+                let source = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
+                let mut transaction = execute(&source, observed(), request(&observed()))
+                    .unwrap()
+                    .transaction
+                    .unwrap();
+                transaction.state = DisplayTransactionState::AwaitingConfirmation;
+                transaction.deadline_unix_ms = Some(tilo_clock::unix_now_ms() + 15_000);
+                source
+                    .update_section(
+                        "display_transaction",
+                        serde_json::to_value(&transaction)
+                            .unwrap()
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    )
+                    .unwrap();
+                assert!(
+                    execute(
+                        &source,
+                        observed(),
+                        DisplayCommand::Keep {
+                            transaction: transaction.id + 1
+                        }
+                    )
+                    .is_err()
+                );
+                assert!(
+                    execute(
+                        &source,
+                        DisplayHardwareSnapshot::default(),
+                        DisplayCommand::Keep {
+                            transaction: transaction.id
+                        }
+                    )
+                    .is_err()
+                );
+                assert!(
+                    execute(
+                        &source,
+                        DisplayHardwareSnapshot::default(),
+                        DisplayCommand::Revert {
+                            transaction: transaction.id
+                        }
+                    )
+                    .is_err()
+                );
+                let reply = execute(
                     &source,
                     observed(),
                     DisplayCommand::Keep {
-                        transaction: transaction.id + 1
-                    }
+                        transaction: transaction.id,
+                    },
                 )
-                .is_err()
-            );
-            assert!(
-                execute(
+                .unwrap();
+                assert_eq!(
+                    reply.transaction.unwrap().state,
+                    DisplayTransactionState::ConfirmRequested
+                );
+                let reply = execute(
                     &source,
-                    DisplayHardwareSnapshot::default(),
-                    DisplayCommand::Keep {
-                        transaction: transaction.id
-                    }
-                )
-                .is_err()
-            );
-            assert!(
-                execute(
-                    &source,
-                    DisplayHardwareSnapshot::default(),
+                    observed(),
                     DisplayCommand::Revert {
-                        transaction: transaction.id
+                        transaction: transaction.id,
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    reply.transaction.unwrap().state,
+                    DisplayTransactionState::RevertRequested
+                );
+            });
+        }
+
+        phase stale_set_unsupported_mode_and_oversized_reply_are_refused_before_persistence;
+        {
+            let source = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
+            let mut snapshot = observed();
+            let mut candidate = previous(&snapshot, &DisplayConfig::default());
+            candidate
+                .outputs
+                .get_mut("eDP-1")
+                .unwrap()
+                .mode
+                .as_mut()
+                .unwrap()
+                .refresh_mhz = 120_000;
+            let set = DisplaySet::of_descriptors(&descriptors(&snapshot));
+            assert!(
+                execute(
+                    &source,
+                    snapshot.clone(),
+                    DisplayCommand::Apply {
+                        observed_set: set,
+                        candidate
                     }
                 )
                 .is_err()
             );
-            let reply = execute(
-                &source,
-                observed(),
-                DisplayCommand::Keep {
-                    transaction: transaction.id,
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                reply.transaction.unwrap().state,
-                DisplayTransactionState::ConfirmRequested
-            );
-            let reply = execute(
-                &source,
-                observed(),
-                DisplayCommand::Revert {
-                    transaction: transaction.id,
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                reply.transaction.unwrap().state,
-                DisplayTransactionState::RevertRequested
-            );
-        });
-    }
-
-    #[test]
-    fn stale_set_unsupported_mode_and_oversized_reply_are_refused_before_persistence() {
-        let source = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
-        let mut snapshot = observed();
-        let mut candidate = previous(&snapshot, &DisplayConfig::default());
-        candidate
-            .outputs
-            .get_mut("eDP-1")
-            .unwrap()
-            .mode
-            .as_mut()
-            .unwrap()
-            .refresh_mhz = 120_000;
-        let set = DisplaySet::of_descriptors(&descriptors(&snapshot));
-        assert!(
-            execute(
-                &source,
-                snapshot.clone(),
-                DisplayCommand::Apply {
-                    observed_set: set,
-                    candidate
-                }
-            )
-            .is_err()
-        );
-        let command = request(&snapshot);
-        snapshot.outputs[0].descriptor.connector = "HDMI-A-1".into();
-        assert!(execute(&source, snapshot, command).is_err());
-        let mut snapshot = observed();
-        let command = request(&snapshot);
-        snapshot.outputs[0]
-            .color_profile_labels
-            .insert("profile".into(), "x".repeat(MAX_DISPLAY_CONTROL_BYTES));
-        assert!(execute(&source, snapshot, command).is_err());
-        assert!(source.load().get("display_transaction").is_none());
+            let command = request(&snapshot);
+            snapshot.outputs[0].descriptor.connector = "HDMI-A-1".into();
+            assert!(execute(&source, snapshot, command).is_err());
+            let mut snapshot = observed();
+            let command = request(&snapshot);
+            snapshot.outputs[0]
+                .color_profile_labels
+                .insert("profile".into(), "x".repeat(MAX_DISPLAY_CONTROL_BYTES));
+            assert!(execute(&source, snapshot, command).is_err());
+            assert!(source.load().get("display_transaction").is_none());
+        }
     }
 }
 
@@ -618,19 +626,23 @@ mod compare_tests {
         assert_eq!(source.load()["display_transaction"]["message"], "observed");
     }
 
-    #[test]
-    fn host_document_does_not_overwrite_a_newer_compositor_decision() {
-        refuses_stale_confirmation(&HostDocument::new(serde_json::Map::default(), |_| Ok(())));
-    }
+    tilo_test_env::scenario! {
+        fn a_newer_compositor_decision_is_never_overwritten;
 
-    #[test]
-    fn session_records_do_not_overwrite_a_newer_compositor_decision() {
-        let directory = crate::test_dir();
-        let session = crate::Store::open(directory.path()).unwrap();
-        refuses_stale_confirmation(&session);
-        session.flush_pending();
-        drop(session);
-        let reopened = crate::Store::open(directory.path()).unwrap();
-        assert_eq!(reopened.load()["display_transaction"]["state"], "reverted");
+        phase host_document_does_not_overwrite_a_newer_compositor_decision;
+        {
+            refuses_stale_confirmation(&HostDocument::new(serde_json::Map::default(), |_| Ok(())));
+        }
+
+        phase session_records_do_not_overwrite_a_newer_compositor_decision;
+        {
+            let directory = crate::test_dir();
+            let session = crate::Store::open(directory.path()).unwrap();
+            refuses_stale_confirmation(&session);
+            session.flush_pending();
+            drop(session);
+            let reopened = crate::Store::open(directory.path()).unwrap();
+            assert_eq!(reopened.load()["display_transaction"]["state"], "reverted");
+        }
     }
 }

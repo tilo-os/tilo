@@ -678,106 +678,114 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn every_page_and_setting_is_named_in_every_language() {
-        let mut wanted = BTreeSet::new();
-        for page in PAGES {
-            wanted.insert(page.title_key());
-            wanted.insert(page.subtitle_key());
-            wanted.insert(page.words_key());
-        }
-        for setting in SETTINGS {
-            wanted.insert(setting.name_key());
-            wanted.insert(setting.words_key());
-            for option in setting.choice.iter().flat_map(|choice| choice.options) {
-                wanted.insert(setting.option_key(*option));
+    tilo_test_env::scenario! {
+        fn the_index_is_complete_and_consistent_in_every_language;
+
+        phase every_page_and_setting_is_named_in_every_language;
+        {
+            let mut wanted = BTreeSet::new();
+            for page in PAGES {
+                wanted.insert(page.title_key());
+                wanted.insert(page.subtitle_key());
+                wanted.insert(page.words_key());
+            }
+            for setting in SETTINGS {
+                wanted.insert(setting.name_key());
+                wanted.insert(setting.words_key());
+                for option in setting.choice.iter().flat_map(|choice| choice.options) {
+                    wanted.insert(setting.option_key(*option));
+                }
+            }
+            for (locale, catalogue) in CATALOGUES {
+                let have: BTreeSet<String> =
+                    messages(catalogue).into_iter().map(str::to_owned).collect();
+                let missing: Vec<_> = wanted.difference(&have).collect();
+                let extra: Vec<_> = have.difference(&wanted).collect();
+                assert!(missing.is_empty(), "{locale} lacks {missing:?}");
+                assert!(extra.is_empty(), "{locale} holds unused {extra:?}");
             }
         }
-        for (locale, catalogue) in CATALOGUES {
-            let have: BTreeSet<String> =
-                messages(catalogue).into_iter().map(str::to_owned).collect();
-            let missing: Vec<_> = wanted.difference(&have).collect();
-            let extra: Vec<_> = have.difference(&wanted).collect();
-            assert!(missing.is_empty(), "{locale} lacks {missing:?}");
-            assert!(extra.is_empty(), "{locale} holds unused {extra:?}");
-        }
-    }
 
-    #[test]
-    fn every_choice_names_values_its_field_can_hold() {
-        for setting in SETTINGS {
-            let Some(choice) = setting.choice else {
-                continue;
-            };
-            assert!(setting.switch.is_none(), "{}", setting.id);
-            assert!(setting.value.is_none(), "{}", setting.id);
-            assert!(choice.options.len() >= 2, "{}", setting.id);
-            let mut names = HashSet::new();
-            for option in choice.options {
+        phase every_choice_names_values_its_field_can_hold;
+        {
+            for setting in SETTINGS {
+                let Some(choice) = setting.choice else {
+                    continue;
+                };
+                assert!(setting.switch.is_none(), "{}", setting.id);
+                assert!(setting.value.is_none(), "{}", setting.id);
+                assert!(choice.options.len() >= 2, "{}", setting.id);
+                let mut names = HashSet::new();
+                for option in choice.options {
+                    assert!(
+                        serde_json::from_str::<serde_json::Value>(option.value).is_ok(),
+                        "{}: {} is JSON",
+                        setting.id,
+                        option.value
+                    );
+                    assert!(names.insert(option.name), "{}: {}", setting.id, option.name);
+                }
+            }
+        }
+
+        phase ids_are_unique_and_every_setting_is_on_a_listed_page;
+        {
+            let mut pages = HashSet::new();
+            for page in PAGES {
+                assert!(pages.insert(page.slug), "page {} twice", page.slug);
+            }
+            let mut ids = HashSet::new();
+            for setting in SETTINGS {
+                assert!(ids.insert(setting.id), "setting {} twice", setting.id);
                 assert!(
-                    serde_json::from_str::<serde_json::Value>(option.value).is_ok(),
-                    "{}: {} is JSON",
+                    pages.contains(setting.page),
+                    "{} is on unknown page {}",
                     setting.id,
-                    option.value
+                    setting.page
                 );
-                assert!(names.insert(option.name), "{}: {}", setting.id, option.name);
+                assert!(
+                    !setting.control.is_empty(),
+                    "{} names no control",
+                    setting.id
+                );
             }
         }
     }
 
-    #[test]
-    fn ids_are_unique_and_every_setting_is_on_a_listed_page() {
-        let mut pages = HashSet::new();
-        for page in PAGES {
-            assert!(pages.insert(page.slug), "page {} twice", page.slug);
-        }
-        let mut ids = HashSet::new();
-        for setting in SETTINGS {
-            assert!(ids.insert(setting.id), "setting {} twice", setting.id);
-            assert!(
-                pages.contains(setting.page),
-                "{} is on unknown page {}",
-                setting.id,
-                setting.page
-            );
-            assert!(
-                !setting.control.is_empty(),
-                "{} names no control",
-                setting.id
+    tilo_test_env::scenario! {
+        fn a_setting_is_found_with_its_link_names_and_words;
+
+        phase a_setting_links_to_its_page_and_knows_its_controls;
+        {
+            let scale = setting("display.scale").expect("indexed");
+            assert_eq!(scale.link(), "settings://displays#display.scale");
+            assert!(scale.is_control("display.output.eDP-1.scale"));
+            assert!(!scale.is_control("display.output.eDP-1.scale_milli"));
+            assert!(!scale.is_control("display.brightness"));
+            let layout = setting("keyboard.layout").expect("indexed");
+            assert!(layout.is_control("input.source.replace"));
+            assert!(layout.is_control("input.source.add_picker"));
+            assert!(!layout.is_control("input.source"));
+            assert_eq!(
+                page("keyboard").map(Page::link).as_deref(),
+                Some("settings://keyboard")
             );
         }
-    }
 
-    #[test]
-    fn a_setting_links_to_its_page_and_knows_its_controls() {
-        let scale = setting("display.scale").expect("indexed");
-        assert_eq!(scale.link(), "settings://displays#display.scale");
-        assert!(scale.is_control("display.output.eDP-1.scale"));
-        assert!(!scale.is_control("display.output.eDP-1.scale_milli"));
-        assert!(!scale.is_control("display.brightness"));
-        let layout = setting("keyboard.layout").expect("indexed");
-        assert!(layout.is_control("input.source.replace"));
-        assert!(layout.is_control("input.source.add_picker"));
-        assert!(!layout.is_control("input.source"));
-        assert_eq!(
-            page("keyboard").map(Page::link).as_deref(),
-            Some("settings://keyboard")
-        );
-    }
+        phase names_come_from_every_language;
+        {
+            let zone = setting("time.zone").expect("indexed");
+            assert_eq!(
+                names_in_every_locale(&zone.name_key()),
+                vec!["time zone".to_owned(), "zeitzone".to_owned()]
+            );
+        }
 
-    #[test]
-    fn names_come_from_every_language() {
-        let zone = setting("time.zone").expect("indexed");
-        assert_eq!(
-            names_in_every_locale(&zone.name_key()),
-            vec!["time zone".to_owned(), "zeitzone".to_owned()]
-        );
-    }
-
-    #[test]
-    fn words_come_from_every_language() {
-        let words = words_in_every_locale(&page("network").expect("listed").words_key());
-        assert!(words.iter().any(|word| word == "wifi"), "{words:?}");
-        assert!(words.iter().any(|word| word == "wlan"), "{words:?}");
+        phase words_come_from_every_language;
+        {
+            let words = words_in_every_locale(&page("network").expect("listed").words_key());
+            assert!(words.iter().any(|word| word == "wifi"), "{words:?}");
+            assert!(words.iter().any(|word| word == "wlan"), "{words:?}");
+        }
     }
 }

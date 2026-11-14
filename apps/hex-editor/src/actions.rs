@@ -99,70 +99,74 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bytes_parse_as_people_write_them() {
-        assert_eq!(parse_bytes("0xFF"), Ok(vec![0xff]));
-        assert_eq!(parse_bytes("DE-AD be ef"), Ok(vec![0xde, 0xad, 0xbe, 0xef]));
-        assert_eq!(parse_bytes(""), Ok(Vec::new()));
-        assert!(parse_bytes("xyz").is_err());
-        assert!(
-            parse_bytes("abc").is_err(),
-            "an odd digit count is no bytes"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_editors_actions_parse_continue_and_publish_their_contracts;
 
-    #[test]
-    fn a_run_of_typing_or_deleting_continues_while_it_stays_in_place() {
-        let overwrite = |offset, bytes: &[u8]| BufferEdit::Overwrite {
-            offset,
-            bytes: Hex(bytes.to_vec()),
-        };
-        let insert = |offset, bytes: &[u8]| BufferEdit::Insert {
-            offset,
-            bytes: Hex(bytes.to_vec()),
-        };
-        let delete = |offset| BufferEdit::Delete { offset, len: 1 };
-        assert!(overwrite(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
-        assert!(overwrite(4, &[0xab]).continues(&overwrite(5, &[0xc0])));
-        assert!(!overwrite(4, &[0xab]).continues(&overwrite(9, &[0xc0])));
-        assert!(insert(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
-        assert!(overwrite(4, &[0xab]).continues(&insert(5, &[0xc0])));
-        assert!(delete(4).continues(&delete(4)));
-        assert!(delete(4).continues(&delete(3)));
-        assert!(!delete(4).continues(&delete(7)));
-        assert!(!delete(4).continues(&insert(4, &[1])));
-    }
+        phase bytes_parse_as_people_write_them;
+        {
+            assert_eq!(parse_bytes("0xFF"), Ok(vec![0xff]));
+            assert_eq!(parse_bytes("DE-AD be ef"), Ok(vec![0xde, 0xad, 0xbe, 0xef]));
+            assert_eq!(parse_bytes(""), Ok(Vec::new()));
+            assert!(parse_bytes("xyz").is_err());
+            assert!(
+                parse_bytes("abc").is_err(),
+                "an odd digit count is no bytes"
+            );
+        }
 
-    #[test]
-    fn effects_and_views_are_published_with_their_contracts() {
-        let specs = HexEffect::specs();
-        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["open-file", "save", "save-as", "search", "goto-offset"]
-        );
-        for spec in &specs[..3] {
-            assert_eq!(spec.kind, OperationKind::Effect);
+        phase a_run_of_typing_or_deleting_continues_while_it_stays_in_place;
+        {
+            let overwrite = |offset, bytes: &[u8]| BufferEdit::Overwrite {
+                offset,
+                bytes: Hex(bytes.to_vec()),
+            };
+            let insert = |offset, bytes: &[u8]| BufferEdit::Insert {
+                offset,
+                bytes: Hex(bytes.to_vec()),
+            };
+            let delete = |offset| BufferEdit::Delete { offset, len: 1 };
+            assert!(overwrite(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
+            assert!(overwrite(4, &[0xab]).continues(&overwrite(5, &[0xc0])));
+            assert!(!overwrite(4, &[0xab]).continues(&overwrite(9, &[0xc0])));
+            assert!(insert(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
+            assert!(overwrite(4, &[0xab]).continues(&insert(5, &[0xc0])));
+            assert!(delete(4).continues(&delete(4)));
+            assert!(delete(4).continues(&delete(3)));
+            assert!(!delete(4).continues(&delete(7)));
+            assert!(!delete(4).continues(&insert(4, &[1])));
         }
-        for spec in &specs[3..] {
-            assert_eq!(spec.kind, OperationKind::View);
+
+        phase effects_and_views_are_published_with_their_contracts;
+        {
+            let specs = HexEffect::specs();
+            let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["open-file", "save", "save-as", "search", "goto-offset"]
+            );
+            for spec in &specs[..3] {
+                assert_eq!(spec.kind, OperationKind::Effect);
+            }
+            for spec in &specs[3..] {
+                assert_eq!(spec.kind, OperationKind::View);
+            }
+            assert!(!specs[0].params()[0].required, "open may use the picker");
+            assert!(specs[1].params().is_empty());
+            assert!(specs[2].params()[0].required);
+            assert!(
+                matches!(
+                    specs[1].contract.confirmation,
+                    ui::tilo_actions::ConfirmationPolicy::None
+                ),
+                "saving in place is what Ctrl+S asks for"
+            );
+            assert!(
+                !matches!(
+                    specs[2].contract.confirmation,
+                    ui::tilo_actions::ConfirmationPolicy::None
+                ),
+                "replacing another file is confirmed"
+            );
         }
-        assert!(!specs[0].params()[0].required, "open may use the picker");
-        assert!(specs[1].params().is_empty());
-        assert!(specs[2].params()[0].required);
-        assert!(
-            matches!(
-                specs[1].contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::None
-            ),
-            "saving in place is what Ctrl+S asks for"
-        );
-        assert!(
-            !matches!(
-                specs[2].contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::None
-            ),
-            "replacing another file is confirmed"
-        );
     }
 }

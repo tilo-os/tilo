@@ -272,45 +272,49 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_flagging_watch_starts_flagged_and_flags_each_change_once() {
-        let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("input-state.json");
-        let watched = Watched::files(std::slice::from_ref(&file));
-        assert!(watched.is_complete());
-        assert!(watched.take(), "the first look reads the files");
-        assert!(!watched.take(), "and only that one");
-        std::fs::write(&file, "{}").unwrap();
-        tilo_test_env::wait_until("the change to be flagged", || watched.take());
-    }
+    tilo_test_env::scenario! {
+        fn a_watch_flags_changes_and_is_shared_while_held;
 
-    #[test]
-    fn a_directory_that_cannot_be_watched_leaves_the_watch_incomplete() {
-        let root = tempfile::tempdir().unwrap();
-        let missing = root.path().join("absent").join("display-state.json");
-        let watched = Watched::files(&[missing]);
-        assert!(!watched.is_complete(), "the pane falls back to its timer");
-        assert!(
-            !Watched::files(&[]).is_complete(),
-            "nor are files nobody could locate"
-        );
-    }
+        phase a_flagging_watch_starts_flagged_and_flags_each_change_once;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let file = root.path().join("input-state.json");
+            let watched = Watched::files(std::slice::from_ref(&file));
+            assert!(watched.is_complete());
+            assert!(watched.take(), "the first look reads the files");
+            assert!(!watched.take(), "and only that one");
+            std::fs::write(&file, "{}").unwrap();
+            tilo_test_env::wait_until("the change to be flagged", || watched.take());
+        }
 
-    #[test]
-    fn panes_share_one_guard_until_the_last_drops_it() {
-        let mut slot = Weak::new();
-        let mut started = 0;
-        let first = shared(&mut slot, || {
-            started += 1;
-        });
-        let second = shared(&mut slot, || {
-            started += 1;
-        });
-        assert!(Rc::ptr_eq(&first, &second));
-        drop((first, second));
-        let _third = shared(&mut slot, || {
-            started += 1;
-        });
-        assert_eq!(started, 2, "a guard nobody holds is started again");
+        phase a_directory_that_cannot_be_watched_leaves_the_watch_incomplete;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let missing = root.path().join("absent").join("display-state.json");
+            let watched = Watched::files(&[missing]);
+            assert!(!watched.is_complete(), "the pane falls back to its timer");
+            assert!(
+                !Watched::files(&[]).is_complete(),
+                "nor are files nobody could locate"
+            );
+        }
+
+        phase panes_share_one_guard_until_the_last_drops_it;
+        {
+            let mut slot = Weak::new();
+            let mut started = 0;
+            let first = shared(&mut slot, || {
+                started += 1;
+            });
+            let second = shared(&mut slot, || {
+                started += 1;
+            });
+            assert!(Rc::ptr_eq(&first, &second));
+            drop((first, second));
+            let _third = shared(&mut slot, || {
+                started += 1;
+            });
+            assert_eq!(started, 2, "a guard nobody holds is started again");
+        }
     }
 }

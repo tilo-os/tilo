@@ -5,7 +5,7 @@
 
 use super::super::handoff::HandoffRequest;
 use super::DocumentMutation;
-use super::{CollabEvent, CollabRequest, Collaborator, PresencePayload, SdkCommand, SignedOp};
+use super::{CollabEvent, CollabRequest, Member, PresencePayload, SdkCommand, SignedOp};
 
 #[derive(Default)]
 pub(crate) struct ByteMeter(Option<usize>);
@@ -346,17 +346,17 @@ fn workspace_control_event_bytes(
 }
 
 fn context_event_bytes(
-    collaborators: &[Collaborator],
-    collaborator_capacity: usize,
+    members: &[Member],
+    members_capacity: usize,
     permissions: &[String],
     permission_capacity: usize,
     apps: &[collab_types::history::NamedApp],
     meter: &mut ByteMeter,
 ) {
-    meter.add_product(collaborator_capacity, std::mem::size_of::<Collaborator>());
-    for collaborator in collaborators {
-        meter.string_capacity(&collaborator.id);
-        meter.string_capacity(&collaborator.name);
+    meter.add_product(members_capacity, std::mem::size_of::<Member>());
+    for member in members {
+        meter.string_capacity(&member.id.key());
+        meter.string_capacity(&member.name);
     }
     meter.add_product(permission_capacity, std::mem::size_of::<String>());
     for permission in permissions {
@@ -452,13 +452,13 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             "CommittedDocument"
         }
         CollabEvent::Context {
-            collaborators,
+            members,
             permissions,
             apps,
         } => {
             context_event_bytes(
-                collaborators,
-                collaborators.capacity(),
+                members,
+                members.capacity(),
                 permissions,
                 permissions.capacity(),
                 apps,

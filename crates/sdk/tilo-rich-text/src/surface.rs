@@ -38,6 +38,15 @@ pub enum FieldOutcome {
     Cancel,
 }
 
+/// What the window says about an edit that was not kept: the reason in the person's words when
+/// the app declined for one they can act on, else that the edit was not kept at all.
+fn not_kept(error: &ActionError) -> String {
+    match error {
+        ActionError::Declined(reason) => ui::i18n::declined_text(*reason),
+        _ => ui::i18n::widget_text("rich-text-edit-not-kept"),
+    }
+}
+
 /// The toolkit's [`BlockEditor`] showing rich text and editing it through
 /// the document's own actions.
 ///
@@ -829,7 +838,15 @@ impl RichTextSurface<dyn ErasedSource> {
             let mut host = Through(&mut self.source, std::marker::PhantomData);
             match edit::commit(&mut host, edits, presented, &edited) {
                 Ok(renames) => rename(&mut self.editor, &renames),
-                Err(error) => tracing::debug!(%error, "rich-text edit not applied"),
+                Err(error) => {
+                    // The editor shows the text as it is again, so what the person typed or
+                    // pasted is gone from it: they hear what happened and what to do.
+                    tracing::warn!(%error, "rich-text edit not kept");
+                    ui::window_toolbar::notify(Some(ui::window_toolbar::ToolbarNotice::new(
+                        not_kept(&error),
+                        ui::widget::toast::ToastKind::Error,
+                    )));
+                }
             }
             self.source.sync(edits.doc());
         }

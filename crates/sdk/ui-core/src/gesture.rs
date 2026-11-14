@@ -568,36 +568,73 @@ impl DragSelect {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parallel_captures_keep_their_own_multi_click_gestures_and_session_preference() {
-        let session_interval = multi_click_interval();
-        let ready = std::sync::Barrier::new(3);
-        let done = std::sync::Barrier::new(3);
-        std::thread::scope(|scope| {
-            let capture = |interval| {
-                with_capture_multi_click_interval(interval, || {
-                    ready.wait();
-                    let mut gesture = DragSelect {
-                        last_click: Some(crate::time::now()),
-                        last_pos: Point::ZERO,
-                        click_count: 1,
-                        ..DragSelect::default()
-                    };
-                    let granularity = gesture.press(Point::ZERO, false).granularity;
-                    done.wait();
-                    granularity
-                })
-            };
-            let long = scope.spawn(move || capture(Duration::from_secs(3600)));
-            let short = scope.spawn(move || capture(Duration::ZERO));
-            ready.wait();
-            let observed_session_interval = multi_click_interval();
-            done.wait();
-            assert_eq!(long.join().unwrap(), Granularity::Word);
-            assert_eq!(short.join().unwrap(), Granularity::Char);
-            assert_eq!(observed_session_interval, session_interval);
-        });
-        assert_eq!(multi_click_interval(), session_interval);
+    tilo_test_env::scenario! {
+        /// Multi-click counting in a drag selection, under the session's window or a capture's own.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_multi_click_counts_within_the_window_its_capture_or_session_sets;
+
+        phase parallel_captures_keep_their_own_multi_click_gestures_and_session_preference;
+        {
+            let session_interval = multi_click_interval();
+            let ready = std::sync::Barrier::new(3);
+            let done = std::sync::Barrier::new(3);
+            std::thread::scope(|scope| {
+                let capture = |interval| {
+                    with_capture_multi_click_interval(interval, || {
+                        ready.wait();
+                        let mut gesture = DragSelect {
+                            last_click: Some(crate::time::now()),
+                            last_pos: Point::ZERO,
+                            click_count: 1,
+                            ..DragSelect::default()
+                        };
+                        let granularity = gesture.press(Point::ZERO, false).granularity;
+                        done.wait();
+                        granularity
+                    })
+                };
+                let long = scope.spawn(move || capture(Duration::from_secs(3600)));
+                let short = scope.spawn(move || capture(Duration::ZERO));
+                ready.wait();
+                let observed_session_interval = multi_click_interval();
+                done.wait();
+                assert_eq!(long.join().unwrap(), Granularity::Word);
+                assert_eq!(short.join().unwrap(), Granularity::Char);
+                assert_eq!(observed_session_interval, session_interval);
+            });
+            assert_eq!(multi_click_interval(), session_interval);
+        }
+
+        phase drag_select_escalates_clicks_extends_with_shift_and_tracks_the_drag;
+        {
+            let mut g = DragSelect::new();
+            assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Char);
+            assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Word);
+            assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Line);
+            assert_eq!(
+                g.press(Point::new(500.0, 500.0), false).granularity,
+                Granularity::Char
+            );
+
+            // A shift press extends and is never a multi-click.
+            let mut g = DragSelect::new();
+            g.press(Point::ZERO, false);
+            let p = g.press(Point::ZERO, true);
+            assert!(p.extend, "shift extends");
+            assert_eq!(
+                p.granularity,
+                Granularity::Char,
+                "shift press is not a double-click"
+            );
+
+            let mut g = DragSelect::new();
+            assert!(g.drag().is_none());
+            g.press(Point::ZERO, false);
+            assert_eq!(g.drag(), Some(Granularity::Char));
+            assert!(g.release());
+            assert!(g.drag().is_none());
+            assert!(!g.release(), "second release reports no drag");
+        }
     }
 
     #[test]
@@ -614,37 +651,6 @@ mod tests {
             assert_eq!(multi_click_interval(), Duration::from_secs(3600));
         });
         assert_eq!(multi_click_interval(), session_interval);
-    }
-
-    #[test]
-    fn drag_select_escalates_clicks_extends_with_shift_and_tracks_the_drag() {
-        let mut g = DragSelect::new();
-        assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Char);
-        assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Word);
-        assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Line);
-        assert_eq!(
-            g.press(Point::new(500.0, 500.0), false).granularity,
-            Granularity::Char
-        );
-
-        // A shift press extends and is never a multi-click.
-        let mut g = DragSelect::new();
-        g.press(Point::ZERO, false);
-        let p = g.press(Point::ZERO, true);
-        assert!(p.extend, "shift extends");
-        assert_eq!(
-            p.granularity,
-            Granularity::Char,
-            "shift press is not a double-click"
-        );
-
-        let mut g = DragSelect::new();
-        assert!(g.drag().is_none());
-        g.press(Point::ZERO, false);
-        assert_eq!(g.drag(), Some(Granularity::Char));
-        assert!(g.release());
-        assert!(g.drag().is_none());
-        assert!(!g.release(), "second release reports no drag");
     }
 
     #[test]
@@ -749,74 +755,80 @@ mod tests {
         fired
     }
 
-    #[test]
-    fn trackpad_swipe_navigates_by_direction_once_above_threshold() {
-        for (case, dx, dy, want) in [
-            (
-                "rightward swipe goes back",
-                200.0,
-                5.0,
-                Some(NavDirection::Back),
-            ),
-            (
-                "leftward swipe goes forward",
-                -200.0,
-                5.0,
-                Some(NavDirection::Forward),
-            ),
-            ("mostly vertical scroll never navigates", 200.0, 400.0, None),
-            ("small swipe below threshold does not fire", 40.0, 2.0, None),
-        ] {
+    tilo_test_env::scenario! {
+        /// The navigation recogniser: a trackpad swipe and a pull from a screen edge.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_navigation_gesture_fires_once_by_direction_and_only_from_an_edge;
+
+        phase trackpad_swipe_navigates_by_direction_once_above_threshold;
+        {
+            for (case, dx, dy, want) in [
+                (
+                    "rightward swipe goes back",
+                    200.0,
+                    5.0,
+                    Some(NavDirection::Back),
+                ),
+                (
+                    "leftward swipe goes forward",
+                    -200.0,
+                    5.0,
+                    Some(NavDirection::Forward),
+                ),
+                ("mostly vertical scroll never navigates", 200.0, 400.0, None),
+                ("small swipe below threshold does not fire", 40.0, 2.0, None),
+            ] {
+                let mut g = NavGestureRecognizer::new();
+                assert_eq!(swipe(&mut g, dx, dy), want, "case {case}");
+            }
+
+            // A swipe fires once per gesture: continued travel must not re-fire.
             let mut g = NavGestureRecognizer::new();
-            assert_eq!(swipe(&mut g, dx, dy), want, "case {case}");
+            assert_eq!(
+                g.on_scroll(120.0, 0.0, GesturePhase::Begin, true),
+                Some(NavDirection::Back)
+            );
+            assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Update, true), None);
+
+            let mut g = NavGestureRecognizer::new();
+            assert_eq!(g.on_scroll(500.0, 0.0, GesturePhase::Update, false), None);
         }
 
-        // A swipe fires once per gesture: continued travel must not re-fire.
-        let mut g = NavGestureRecognizer::new();
-        assert_eq!(
-            g.on_scroll(120.0, 0.0, GesturePhase::Begin, true),
-            Some(NavDirection::Back)
-        );
-        assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Update, true), None);
+        phase edge_pull_navigates_once_and_only_from_a_screen_edge;
+        {
+            let w = 1000.0;
+            let mut g = NavGestureRecognizer::new();
+            assert_eq!(g.on_touch(1, 10.0, 300.0, GesturePhase::Begin, w), None);
+            assert_eq!(
+                g.on_touch(1, 80.0, 305.0, GesturePhase::Update, w),
+                Some(NavDirection::Back)
+            );
+            assert_eq!(g.on_touch(1, 900.0, 305.0, GesturePhase::End, w), None);
+            assert_eq!(g.on_touch(2, 995.0, 300.0, GesturePhase::Begin, w), None);
+            assert_eq!(
+                g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w),
+                Some(NavDirection::Forward)
+            );
 
-        let mut g = NavGestureRecognizer::new();
-        assert_eq!(g.on_scroll(500.0, 0.0, GesturePhase::Update, false), None);
-    }
+            // A touch starting mid-screen never navigates.
+            let mut g = NavGestureRecognizer::new();
+            g.on_touch(1, 500.0, 300.0, GesturePhase::Begin, 1000.0);
+            assert_eq!(
+                g.on_touch(1, 800.0, 300.0, GesturePhase::Update, 1000.0),
+                None
+            );
 
-    #[test]
-    fn edge_pull_navigates_once_and_only_from_a_screen_edge() {
-        let w = 1000.0;
-        let mut g = NavGestureRecognizer::new();
-        assert_eq!(g.on_touch(1, 10.0, 300.0, GesturePhase::Begin, w), None);
-        assert_eq!(
-            g.on_touch(1, 80.0, 305.0, GesturePhase::Update, w),
-            Some(NavDirection::Back)
-        );
-        assert_eq!(g.on_touch(1, 900.0, 305.0, GesturePhase::End, w), None);
-        assert_eq!(g.on_touch(2, 995.0, 300.0, GesturePhase::Begin, w), None);
-        assert_eq!(
-            g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w),
-            Some(NavDirection::Forward)
-        );
-
-        // A touch starting mid-screen never navigates.
-        let mut g = NavGestureRecognizer::new();
-        g.on_touch(1, 500.0, 300.0, GesturePhase::Begin, 1000.0);
-        assert_eq!(
-            g.on_touch(1, 800.0, 300.0, GesturePhase::Update, 1000.0),
-            None
-        );
-
-        let mut g = NavGestureRecognizer::new();
-        g.on_touch(1, 8.0, 300.0, GesturePhase::Begin, w);
-        assert_eq!(
-            g.on_touch(1, 80.0, 300.0, GesturePhase::Update, w),
-            Some(NavDirection::Back)
-        );
-        assert_eq!(
-            g.on_touch(1, 160.0, 300.0, GesturePhase::Update, w),
-            None,
-            "must not re-fire"
-        );
+            let mut g = NavGestureRecognizer::new();
+            g.on_touch(1, 8.0, 300.0, GesturePhase::Begin, w);
+            assert_eq!(
+                g.on_touch(1, 80.0, 300.0, GesturePhase::Update, w),
+                Some(NavDirection::Back)
+            );
+            assert_eq!(
+                g.on_touch(1, 160.0, 300.0, GesturePhase::Update, w),
+                None,
+                "must not re-fire"
+            );
+        }
     }
 }

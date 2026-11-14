@@ -5,20 +5,6 @@ use crate::widget::{Column, Container, Scrollable};
 use std::cell::Cell;
 use std::rc::Rc;
 
-#[test]
-fn card_columns_reflow_fill_and_align_by_width() {
-    assert_eq!(card_columns(200.0, 260.0, 16.0), 1, "too narrow → 1 col");
-    assert_eq!(card_columns(260.0, 260.0, 16.0), 1);
-    assert_eq!(card_columns(536.0, 260.0, 16.0), 2);
-    assert_eq!(card_columns(820.0, 260.0, 16.0), 3);
-    assert_eq!(card_columns(0.0, 260.0, 16.0), 1);
-    assert_eq!(card_columns(-50.0, 260.0, 16.0), 1);
-    let w = card_column_width(820.0, 3, 16.0);
-    assert!((w - 262.6667).abs() < 0.01, "got {w}");
-    assert!((3.0 * w + 2.0 * 16.0 - 820.0).abs() < 0.01);
-    assert!((card_column_width(500.0, 1, 16.0) - 500.0).abs() < 0.01);
-}
-
 fn rect(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;
     Rect::new(x, y, x + w, y + h)
@@ -136,94 +122,6 @@ fn lay_out_grid(mut g: CardGrid, w: f64, h: f64) -> CardGrid {
 }
 
 #[test]
-fn card_grid_resolves_columns_from_semantic_width_and_content_rows() {
-    let theme = Theme::dark();
-    let min = CardWidth::Regular.min_width(&theme);
-    let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
-    let width = 3.0 * min + 2.0 * gap + 20.0;
-    let g = lay_out_grid(
-        CardGrid::new((0..6).map(|i| text_card(&format!("card {i}"))).collect()),
-        width,
-        2000.0,
-    );
-    let first_row: Vec<_> = g
-        .cards
-        .iter()
-        .filter(|card| card.get_rect().y0 == g.rect.y0)
-        .collect();
-    assert_eq!(first_row.len(), 3);
-    let gap_between = g.cards[1].get_rect().x0 - g.cards[0].get_rect().x1;
-    assert!((gap_between - gap).abs() <= 1.0);
-    for card in &g.cards {
-        assert!(
-            (card.get_rect().width() - g.cards[0].get_rect().width()).abs() <= 1.0,
-            "{:?}",
-            g.cards.iter().map(|c| c.get_rect()).collect::<Vec<_>>()
-        );
-    }
-    let line = f64::from(theme.text(TextRole::Body).line_height_px());
-    assert!(g.cards[0].get_rect().height() < line * 4.0);
-
-    let narrow = lay_out_grid(
-        CardGrid::new((0..4).map(|i| text_card(&format!("card {i}"))).collect()),
-        min - 10.0,
-        2000.0,
-    );
-    assert_eq!(narrow.columns_for_width(min - 10.0), 1);
-    assert!((narrow.cards[0].get_rect().width() - (min - 10.0)).abs() < 0.5);
-
-    let wide = CardGrid::new((0..6).map(|i| text_card(&format!("{i}"))).collect())
-        .with_card_width(CardWidth::Wide);
-    assert!(CardWidth::Wide.min_width(&theme) > min);
-    assert!(CardWidth::Compact.min_width(&theme) < min);
-    assert!(CardWidth::Regular.min_width(&Theme::dark().with_text_scale(2.0)) > min * 1.5);
-    let wide = lay_out_grid(wide, width, 2000.0);
-    assert!(wide.columns_for_width(width) < 3);
-}
-
-#[test]
-fn a_card_led_by_its_art_shows_the_art_first_and_its_caption_under_it() {
-    let theme = Theme::dark();
-    let art = || Box::new(Container::new().with_no_padding().with_height(120.0)) as Element;
-    let actions = || {
-        Box::new(
-            Actions::new(Button::new("use", "Use").role(ButtonRole::Primary))
-                .secondary(Button::new("customize", "Customize")),
-        ) as Element
-    };
-    let card = Card::with_media(art())
-        .with_title("Placeholder")
-        .with_title_action("Dark graphite", actions());
-    let g = lay_out_grid(CardGrid::new(vec![Box::new(card)]), 400.0, 1000.0);
-    let card = g.cards[0].get_rect();
-    let parts = g.cards[0].children();
-    assert_eq!(
-        parts.len(),
-        2,
-        "one header, replaced in place, under the art"
-    );
-    let media = parts[0].get_rect();
-    let header = parts[1].get_rect();
-    let pad = f64::from(theme.tokens.spacing.rhythm.section);
-    assert!((media.height() - 120.0).abs() < 0.5, "{media:?}");
-    assert!(
-        (media.y0 - (card.y0 + pad)).abs() < 0.5,
-        "the art leads the card"
-    );
-    assert!(
-        (media.width() - (card.width() - 2.0 * pad)).abs() < 0.5,
-        "the art spans the inner width: {media:?} in {card:?}"
-    );
-    assert!(header.y0 >= media.y1, "the caption sits under the art");
-    let caption = parts[1].children();
-    assert!(
-        caption[1].get_rect().x1 <= header.x1 + 0.5
-            && caption[1].get_rect().x0 > caption[0].get_rect().x0,
-        "the actions trail the name on the same row"
-    );
-}
-
-#[test]
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -320,44 +218,6 @@ fn content_rows_use_each_rows_largest_card_and_align_footers() {
 }
 
 #[test]
-fn scaled_card_regions_contain_content_and_match_fresh_geometry() {
-    fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
-        let mut all = vec![node.rect];
-        for child in &node.children {
-            all.extend(geometry(child));
-        }
-        all
-    }
-    for scale in [1.0, 2.0] {
-        let theme = Theme::dark().with_text_scale(scale);
-        let mut resized = FrameHarness::new_with_theme(
-            crate::State::new(),
-            long_fixture(),
-            (1000, 1800),
-            theme.clone(),
-        );
-        resized.tab(false);
-        resized.resize((240, 1800)).unwrap();
-        let fresh =
-            FrameHarness::new_with_theme(crate::State::new(), long_fixture(), (240, 1800), theme);
-        let a = resized.inspection();
-        let b = fresh.inspection();
-        assert_eq!(geometry(&a.root), geometry(&b.root));
-        for card in &a.root.children {
-            assert!(rect(card).width() <= 240.0);
-            for child in &card.children {
-                assert_contained(child, rect(card));
-            }
-            assert!(rect(&card.children[1]).y1 <= rect(&card.children[2]).y0);
-        }
-        assert_eq!(
-            resized.focused_access_node().unwrap().name.as_deref(),
-            Some("View details")
-        );
-    }
-}
-
-#[test]
 fn scrolling_reaches_the_last_scaled_action() {
     let root = Scrollable::new_vertical().with_child(long_fixture());
     let mut harness = FrameHarness::new_with_theme(
@@ -377,41 +237,6 @@ fn scrolling_reaches_the_last_scaled_action() {
         rect(action).y0 >= 0.0 && rect(action).y1 <= 400.0,
         "last action {:?}",
         rect(action)
-    );
-}
-
-#[test]
-fn actions_trail_and_keep_manual_order() {
-    let root = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(Actions::new(Button::new("save", "Save changes"))));
-    let harness = FrameHarness::new_with_theme(
-        crate::State::new(),
-        Box::new(root),
-        (600, 300),
-        Theme::dark(),
-    );
-    let snapshot = harness.inspection();
-    let action = &snapshot.root.children[0].children[0];
-    assert!((rect(action).x1 - 600.0).abs() < 1.0);
-
-    let actions = Actions::new(Button::new("primary", "Primary"))
-        .secondary(Button::new("secondary", "Secondary"));
-    let harness = FrameHarness::new_with_theme(
-        crate::State::new(),
-        Box::new(actions),
-        (600, 80),
-        Theme::dark().with_text_scale(2.0),
-    );
-    let snapshot = harness.inspection();
-    assert_eq!(
-        snapshot.root.children[0].test_id.as_deref(),
-        Some("secondary")
-    );
-    assert_eq!(
-        snapshot.root.children[1].test_id.as_deref(),
-        Some("primary")
     );
 }
 
@@ -468,87 +293,172 @@ fn cards_in_a_scroll_stack_keep_their_content_height() {
     assert_eq!(invocations.get(), 1);
 }
 
-#[test]
-fn a_card_keeps_intrinsic_height_in_a_short_flex_parent() {
-    let mut parent = Column::new()
-        .with_no_padding()
-        .push(Box::new(Card::new(Box::new(
-            Container::new().with_no_padding().with_height(80.0),
-        ))));
-    let mut tree = TaffyTree::new();
-    let mut map = HashMap::new();
-    let node = parent.build_layout(&mut tree, &Theme::dark(), &mut map);
-    tree.compute_layout(
-        node,
-        Size {
-            width: taffy::AvailableSpace::Definite(300.0),
-            height: taffy::AvailableSpace::Definite(40.0),
-        },
-    )
-    .unwrap();
-    parent.apply_layout(&tree, node, Point::ZERO);
-    assert!(parent.children()[0].get_rect().height() >= 80.0);
-}
+tilo_test_env::scenario! {
+    /// Card columns, grids and heights.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn cards_reflow_and_keep_their_content_height;
 
-#[test]
-fn a_card_headed_by_a_section_header_shows_its_title_above_the_body() {
-    let harness = FrameHarness::new_with_theme(
-        crate::State::new(),
-        Box::new(
-            Card::new(Box::new(Text::new("body")))
-                .with_section_header(crate::widget::SectionHeader::group("Saturday").count(10)),
-        ),
-        (400, 300),
-        Theme::dark(),
-    );
-    let root = harness.inspection().root;
-    fn named<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
-        if node.widget == widget {
-            return Some(node);
-        }
-        node.children.iter().find_map(|child| named(child, widget))
+    phase card_columns_reflow_fill_and_align_by_width;
+    {
+        assert_eq!(card_columns(200.0, 260.0, 16.0), 1, "too narrow → 1 col");
+        assert_eq!(card_columns(260.0, 260.0, 16.0), 1);
+        assert_eq!(card_columns(536.0, 260.0, 16.0), 2);
+        assert_eq!(card_columns(820.0, 260.0, 16.0), 3);
+        assert_eq!(card_columns(0.0, 260.0, 16.0), 1);
+        assert_eq!(card_columns(-50.0, 260.0, 16.0), 1);
+        let w = card_column_width(820.0, 3, 16.0);
+        assert!((w - 262.6667).abs() < 0.01, "got {w}");
+        assert!((3.0 * w + 2.0 * 16.0 - 820.0).abs() < 0.01);
+        assert!((card_column_width(500.0, 1, 16.0) - 500.0).abs() < 0.01);
     }
-    fn texts<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
-        if node.widget == "Text" {
-            out.push(node);
-        }
-        for child in &node.children {
-            texts(child, out);
-        }
-    }
-    let header =
-        rect(named(&root, "SectionHeader").expect("the card is headed by a section header"));
-    let mut all = Vec::new();
-    texts(&root, &mut all);
-    let body = rect(all.last().expect("the body"));
-    assert!(
-        header.y1 <= body.y0 + 0.5,
-        "the header stands above the body: {header:?} {body:?}"
-    );
-}
 
-#[test]
-fn a_titled_card_title_is_a_subheading_that_follows_the_text_scale() {
-    fn first_text(node: &InspectionNode) -> Option<[f64; 4]> {
-        if node.widget == "Text" {
-            return Some(node.rect);
-        }
-        node.children.iter().find_map(first_text)
-    }
-    let title_height = |scale: f32| {
-        let harness = FrameHarness::new_with_theme(
-            crate::State::new(),
-            Box::new(Card::new(Box::new(Text::new("body"))).with_title("Group")),
-            (400, 200),
-            Theme::dark().with_text_scale(scale),
+    phase card_grid_resolves_columns_from_semantic_width_and_content_rows;
+    {
+        let theme = Theme::dark();
+        let min = CardWidth::Regular.min_width(&theme);
+        let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
+        let width = 3.0 * min + 2.0 * gap + 20.0;
+        let g = lay_out_grid(
+            CardGrid::new((0..6).map(|i| text_card(&format!("card {i}"))).collect()),
+            width,
+            2000.0,
         );
-        first_text(&harness.inspection().root).expect("card title text")[3]
-    };
-    let theme = Theme::dark();
-    let expected = f64::from(theme.text(TextRole::Subheading).line_height_px());
-    let base = title_height(1.0);
-    assert!((base - expected).abs() < 1.0, "{base} vs {expected}");
-    assert!((title_height(2.0) - base * 2.0).abs() < 1.5);
+        let first_row: Vec<_> = g
+            .cards
+            .iter()
+            .filter(|card| card.get_rect().y0 == g.rect.y0)
+            .collect();
+        assert_eq!(first_row.len(), 3);
+        let gap_between = g.cards[1].get_rect().x0 - g.cards[0].get_rect().x1;
+        assert!((gap_between - gap).abs() <= 1.0);
+        for card in &g.cards {
+            assert!(
+                (card.get_rect().width() - g.cards[0].get_rect().width()).abs() <= 1.0,
+                "{:?}",
+                g.cards.iter().map(|c| c.get_rect()).collect::<Vec<_>>()
+            );
+        }
+        let line = f64::from(theme.text(TextRole::Body).line_height_px());
+        assert!(g.cards[0].get_rect().height() < line * 4.0);
+
+        let narrow = lay_out_grid(
+            CardGrid::new((0..4).map(|i| text_card(&format!("card {i}"))).collect()),
+            min - 10.0,
+            2000.0,
+        );
+        assert_eq!(narrow.columns_for_width(min - 10.0), 1);
+        assert!((narrow.cards[0].get_rect().width() - (min - 10.0)).abs() < 0.5);
+
+        let wide = CardGrid::new((0..6).map(|i| text_card(&format!("{i}"))).collect())
+            .with_card_width(CardWidth::Wide);
+        assert!(CardWidth::Wide.min_width(&theme) > min);
+        assert!(CardWidth::Compact.min_width(&theme) < min);
+        assert!(CardWidth::Regular.min_width(&Theme::dark().with_text_scale(2.0)) > min * 1.5);
+        let wide = lay_out_grid(wide, width, 2000.0);
+        assert!(wide.columns_for_width(width) < 3);
+    }
+
+    phase a_card_led_by_its_art_shows_the_art_first_and_its_caption_under_it;
+    {
+        let theme = Theme::dark();
+        let art = || Box::new(Container::new().with_no_padding().with_height(120.0)) as Element;
+        let actions = || {
+            Box::new(
+                Actions::new(Button::new("use", "Use").role(ButtonRole::Primary))
+                    .secondary(Button::new("customize", "Customize")),
+            ) as Element
+        };
+        let card = Card::with_media(art())
+            .with_title("Placeholder")
+            .with_title_action("Dark graphite", actions());
+        let g = lay_out_grid(CardGrid::new(vec![Box::new(card)]), 400.0, 1000.0);
+        let card = g.cards[0].get_rect();
+        let parts = g.cards[0].children();
+        assert_eq!(
+            parts.len(),
+            2,
+            "one header, replaced in place, under the art"
+        );
+        let media = parts[0].get_rect();
+        let header = parts[1].get_rect();
+        let pad = f64::from(theme.tokens.spacing.rhythm.section);
+        assert!((media.height() - 120.0).abs() < 0.5, "{media:?}");
+        assert!(
+            (media.y0 - (card.y0 + pad)).abs() < 0.5,
+            "the art leads the card"
+        );
+        assert!(
+            (media.width() - (card.width() - 2.0 * pad)).abs() < 0.5,
+            "the art spans the inner width: {media:?} in {card:?}"
+        );
+        assert!(header.y0 >= media.y1, "the caption sits under the art");
+        let caption = parts[1].children();
+        assert!(
+            caption[1].get_rect().x1 <= header.x1 + 0.5
+                && caption[1].get_rect().x0 > caption[0].get_rect().x0,
+            "the actions trail the name on the same row"
+        );
+    }
+
+    phase scaled_card_regions_contain_content_and_match_fresh_geometry;
+    {
+        fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
+            let mut all = vec![node.rect];
+            for child in &node.children {
+                all.extend(geometry(child));
+            }
+            all
+        }
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut resized = FrameHarness::new_with_theme(
+                crate::State::new(),
+                long_fixture(),
+                (1000, 1800),
+                theme.clone(),
+            );
+            resized.tab(false);
+            resized.resize((240, 1800)).unwrap();
+            let fresh =
+                FrameHarness::new_with_theme(crate::State::new(), long_fixture(), (240, 1800), theme);
+            let a = resized.inspection();
+            let b = fresh.inspection();
+            assert_eq!(geometry(&a.root), geometry(&b.root));
+            for card in &a.root.children {
+                assert!(rect(card).width() <= 240.0);
+                for child in &card.children {
+                    assert_contained(child, rect(card));
+                }
+                assert!(rect(&card.children[1]).y1 <= rect(&card.children[2]).y0);
+            }
+            assert_eq!(
+                resized.focused_access_node().unwrap().name.as_deref(),
+                Some("View details")
+            );
+        }
+    }
+
+    phase a_card_keeps_intrinsic_height_in_a_short_flex_parent;
+    {
+        let mut parent = Column::new()
+            .with_no_padding()
+            .push(Box::new(Card::new(Box::new(
+                Container::new().with_no_padding().with_height(80.0),
+            ))));
+        let mut tree = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = parent.build_layout(&mut tree, &Theme::dark(), &mut map);
+        tree.compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(300.0),
+                height: taffy::AvailableSpace::Definite(40.0),
+            },
+        )
+        .unwrap();
+        parent.apply_layout(&tree, node, Point::ZERO);
+        assert!(parent.children()[0].get_rect().height() >= 80.0);
+    }
 }
 
 #[test]
@@ -581,27 +491,129 @@ fn a_pressable_card_activates_but_its_own_actions_do_not_open_it() {
     assert_eq!(opened.get(), 2);
 }
 
-#[test]
-fn card_face_reserves_its_title_and_paints_a_stripe_inside_the_shape() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let face = CardFace::new()
-        .title("Comment from Ada")
-        .leading_stripe(Tone::of_identity("ada"));
-    let rect = Rect::new(0.0, 0.0, 320.0, 160.0);
-    let body = face.body_rect(&mut text, &theme, rect);
-    let m = CardMetrics::new(&theme);
-    assert!(
-        body.y0 > rect.y0 + m.padding,
-        "the title sits above the body"
-    );
-    assert!((body.x0 - m.padding).abs() < 0.01);
-    let chrome = face.height_for_body(&mut text, &theme, 320.0, 40.0);
-    assert!((chrome - (body.y0 + 40.0 + m.padding)).abs() < 1.0);
-    let mut scene = Scene::new();
-    face.paint(
-        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-        rect,
-    );
-    assert!(!scene.encoding().draw_tags.is_empty());
+tilo_test_env::scenario! {
+    /// Card titles, faces, actions and presses.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_cards_title_face_and_actions_stand_where_they_should;
+
+    phase actions_trail_and_keep_manual_order;
+    {
+        let root = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(Actions::new(Button::new("save", "Save changes"))));
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(root),
+            (600, 300),
+            Theme::dark(),
+        );
+        let snapshot = harness.inspection();
+        let action = &snapshot.root.children[0].children[0];
+        assert!((rect(action).x1 - 600.0).abs() < 1.0);
+
+        let actions = Actions::new(Button::new("primary", "Primary"))
+            .secondary(Button::new("secondary", "Secondary"));
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(actions),
+            (600, 80),
+            Theme::dark().with_text_scale(2.0),
+        );
+        let snapshot = harness.inspection();
+        assert_eq!(
+            snapshot.root.children[0].test_id.as_deref(),
+            Some("secondary")
+        );
+        assert_eq!(
+            snapshot.root.children[1].test_id.as_deref(),
+            Some("primary")
+        );
+    }
+
+    phase a_card_headed_by_a_section_header_shows_its_title_above_the_body;
+    {
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                Card::new(Box::new(Text::new("body")))
+                    .with_section_header(crate::widget::SectionHeader::group("Saturday").count(10)),
+            ),
+            (400, 300),
+            Theme::dark(),
+        );
+        let root = harness.inspection().root;
+        fn named<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
+            if node.widget == widget {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| named(child, widget))
+        }
+        fn texts<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
+            if node.widget == "Text" {
+                out.push(node);
+            }
+            for child in &node.children {
+                texts(child, out);
+            }
+        }
+        let header =
+            rect(named(&root, "SectionHeader").expect("the card is headed by a section header"));
+        let mut all = Vec::new();
+        texts(&root, &mut all);
+        let body = rect(all.last().expect("the body"));
+        assert!(
+            header.y1 <= body.y0 + 0.5,
+            "the header stands above the body: {header:?} {body:?}"
+        );
+    }
+
+    phase a_titled_card_title_is_a_subheading_that_follows_the_text_scale;
+    {
+        fn first_text(node: &InspectionNode) -> Option<[f64; 4]> {
+            if node.widget == "Text" {
+                return Some(node.rect);
+            }
+            node.children.iter().find_map(first_text)
+        }
+        let title_height = |scale: f32| {
+            let harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                Box::new(Card::new(Box::new(Text::new("body"))).with_title("Group")),
+                (400, 200),
+                Theme::dark().with_text_scale(scale),
+            );
+            first_text(&harness.inspection().root).expect("card title text")[3]
+        };
+        let theme = Theme::dark();
+        let expected = f64::from(theme.text(TextRole::Subheading).line_height_px());
+        let base = title_height(1.0);
+        assert!((base - expected).abs() < 1.0, "{base} vs {expected}");
+        assert!((title_height(2.0) - base * 2.0).abs() < 1.5);
+    }
+
+    phase card_face_reserves_its_title_and_paints_a_stripe_inside_the_shape;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let face = CardFace::new()
+            .title("Comment from Ada")
+            .leading_stripe(Tone::of_identity("ada"));
+        let rect = Rect::new(0.0, 0.0, 320.0, 160.0);
+        let body = face.body_rect(&mut text, &theme, rect);
+        let m = CardMetrics::new(&theme);
+        assert!(
+            body.y0 > rect.y0 + m.padding,
+            "the title sits above the body"
+        );
+        assert!((body.x0 - m.padding).abs() < 0.01);
+        let chrome = face.height_for_body(&mut text, &theme, 320.0, 40.0);
+        assert!((chrome - (body.y0 + 40.0 + m.padding)).abs() < 1.0);
+        let mut scene = Scene::new();
+        face.paint(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            rect,
+        );
+        assert!(!scene.encoding().draw_tags.is_empty());
+    }
 }

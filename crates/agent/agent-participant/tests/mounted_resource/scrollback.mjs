@@ -7,7 +7,7 @@ import {createServer} from 'node:https';
 import {readFileSync, existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {resolve, join, extname} from 'node:path';
 import {createInterface} from 'node:readline';
-import {launch, sleep} from '../../../../../tools/web/chrome.mjs';
+import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../../tools/web/chrome.mjs';
 import {mountChat} from './mount-chat.mjs';
 
 const UNAVAILABLE = "Earlier messages aren't available on this device's hosts";
@@ -51,7 +51,11 @@ const deadline = setTimeout(async () => {
   process.exit(1);
 }, 400_000);
 try {
-  browser = await launch({args: ['--ignore-certificate-errors', '--enable-features=Vulkan',
+  // The page's own fixture's certificate and the host's development one: what
+  // its two origins present, and the only certificates it accepts.
+  browser = await launch({args: [pinnedCertificates([{certificate: credentials.cert, host: '127.0.0.1'},
+      await servedCertificate(fixture.origin)]),
+    '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
   tab = await browser.tab();

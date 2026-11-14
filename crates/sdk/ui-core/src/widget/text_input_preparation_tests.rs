@@ -27,35 +27,56 @@ fn warm_multiline_preparation_allocates_nothing() {
     }
 }
 
-#[test]
-fn complete_block_style_invalidates_preparation() {
-    let mut tr = crate::font_catalog::fixture_renderer();
-    let theme = Theme::dark();
-    let mut input = TextInput::local()
-        .multiline(true)
-        .with_initial_value("office שלום\nsecond line");
-    let style = TextStyle::new(16.0);
-    input.ensure_shaped_layout(&mut tr, &theme, &style, 180.0);
-    let changed = style.with_line_height(2.0).with_letter_spacing(1.5);
-    input.ensure_shaped_layout(&mut tr, &theme, &changed, 180.0);
-    let fresh = RichTextLayout::shape_styled(
-        &mut tr.font_system,
-        &input.highlighted_display_spans(&theme),
-        &changed,
-        Some(180.0),
-        input.align,
-        vec![],
-        vec![],
-    );
-    assert_eq!(
-        input.single_layout.as_ref().unwrap().height(),
-        fresh.height()
-    );
-    for byte in input.text.char_indices().map(|(byte, _)| byte) {
-        assert_eq!(
-            input.single_layout.as_ref().unwrap().caret_geometry(byte),
-            fresh.caret_geometry(byte)
+tilo_test_env::scenario! {
+    fn a_changed_style_or_secret_discards_what_was_prepared;
+
+    phase complete_block_style_invalidates_preparation;
+    {
+        let mut tr = crate::font_catalog::fixture_renderer();
+        let theme = Theme::dark();
+        let mut input = TextInput::local()
+            .multiline(true)
+            .with_initial_value("office שלום\nsecond line");
+        let style = TextStyle::new(16.0);
+        input.ensure_shaped_layout(&mut tr, &theme, &style, 180.0);
+        let changed = style.with_line_height(2.0).with_letter_spacing(1.5);
+        input.ensure_shaped_layout(&mut tr, &theme, &changed, 180.0);
+        let fresh = RichTextLayout::shape_styled(
+            &mut tr.font_system,
+            &input.highlighted_display_spans(&theme),
+            &changed,
+            Some(180.0),
+            input.align,
+            vec![],
+            vec![],
         );
+        assert_eq!(
+            input.single_layout.as_ref().unwrap().height(),
+            fresh.height()
+        );
+        for byte in input.text.char_indices().map(|(byte, _)| byte) {
+            assert_eq!(
+                input.single_layout.as_ref().unwrap().caret_geometry(byte),
+                fresh.caret_geometry(byte)
+            );
+        }
+    }
+
+    phase enabling_secret_discards_retained_plaintext_preparation;
+    {
+        let mut tr = crate::font_catalog::fixture_renderer();
+        let theme = Theme::dark();
+        let mut input = TextInput::local()
+            .multiline(true)
+            .with_initial_value("private é value");
+        input.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
+        let style = input.multiline_style(theme.text_scale);
+        input.ensure_shaped_layout(&mut tr, &theme, &style, 200.0);
+        input.set_secret(true);
+        assert!(input.shaped_preparation.is_none());
+        assert!(input.hl_text.is_none());
+        assert!(input.single_layout.is_none());
+        assert_eq!(input.display_text(), "•".repeat(input.text.chars().count()));
     }
 }
 
@@ -216,23 +237,6 @@ fn measure_keeps_warm_attributed_preparation() {
     });
     assert_eq!(input.single_layout.as_ref().unwrap().height(), before);
     assert_eq!(stats.requested, 0, "{stats:?}");
-}
-
-#[test]
-fn enabling_secret_discards_retained_plaintext_preparation() {
-    let mut tr = crate::font_catalog::fixture_renderer();
-    let theme = Theme::dark();
-    let mut input = TextInput::local()
-        .multiline(true)
-        .with_initial_value("private é value");
-    input.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
-    let style = input.multiline_style(theme.text_scale);
-    input.ensure_shaped_layout(&mut tr, &theme, &style, 200.0);
-    input.set_secret(true);
-    assert!(input.shaped_preparation.is_none());
-    assert!(input.hl_text.is_none());
-    assert!(input.single_layout.is_none());
-    assert_eq!(input.display_text(), "•".repeat(input.text.chars().count()));
 }
 
 #[test]

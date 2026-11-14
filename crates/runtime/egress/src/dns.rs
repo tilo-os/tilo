@@ -368,120 +368,124 @@ pub(crate) mod tests {
         out
     }
 
-    #[test]
-    fn a_query_parses_to_its_lowercased_question() {
-        let q = query(0x1234, "API.GitHub.com.", TYPE_AAAA);
-        let parsed = parse_query(&q).unwrap();
-        assert_eq!(parsed.id, 0x1234);
-        assert_eq!(parsed.name, "api.github.com");
-        assert_eq!(parsed.qtype, TYPE_AAAA);
-        assert_eq!(parsed.end, q.len());
+    tilo_test_env::scenario! {
+        fn dns_messages;
 
-        // A response, two questions, and junk are not queries.
-        let mut as_response = q.clone();
-        as_response[2] |= 0x80;
-        assert!(parse_query(&as_response).is_none());
-        let mut two = q.clone();
-        two[5] = 2;
-        assert!(parse_query(&two).is_none());
-        assert!(parse_query(&q[..q.len() - 3]).is_none());
-        assert!(parse_query(&[]).is_none());
-    }
+        phase a_query_parses_to_its_lowercased_question;
+        {
+            let q = query(0x1234, "API.GitHub.com.", TYPE_AAAA);
+            let parsed = parse_query(&q).unwrap();
+            assert_eq!(parsed.id, 0x1234);
+            assert_eq!(parsed.name, "api.github.com");
+            assert_eq!(parsed.qtype, TYPE_AAAA);
+            assert_eq!(parsed.end, q.len());
 
-    #[test]
-    fn a_refusal_echoes_the_question_with_the_rcode() {
-        let q = query(7, "denied.example", TYPE_A);
-        let parsed = parse_query(&q).unwrap();
-        let nx = refusal(&q, Some(&parsed), Rcode::NxDomain);
-        assert_eq!(rcode(&nx), Some(3));
-        assert!(answers(&nx, &parsed), "the refusal answers the question");
-        assert!(answered_addresses(&nx).is_empty());
-        let bare = refusal(&q[..12], None, Rcode::Refused);
-        assert_eq!(bare.len(), 12);
-        assert_eq!(rcode(&bare), Some(5));
-        assert_eq!(query_id(&bare), Some(7));
-    }
+            // A response, two questions, and junk are not queries.
+            let mut as_response = q.clone();
+            as_response[2] |= 0x80;
+            assert!(parse_query(&as_response).is_none());
+            let mut two = q.clone();
+            two[5] = 2;
+            assert!(parse_query(&two).is_none());
+            assert!(parse_query(&q[..q.len() - 3]).is_none());
+            assert!(parse_query(&[]).is_none());
+        }
 
-    #[test]
-    fn answers_yield_their_addresses_and_ttls_through_cnames() {
-        let q = query(9, "www.example.com", TYPE_A);
-        // A CNAME (type 5) to a name that is compressed into the question,
-        // then two A records and an AAAA.
-        let resp = response(
-            &q,
-            &[
-                (5, 300, vec![3, b'c', b'd', b'n', 0xc0, 16]),
-                (TYPE_A, 60, vec![192, 0, 2, 1]),
-                (TYPE_A, 7_200, vec![192, 0, 2, 2]),
-                (
-                    TYPE_AAAA,
-                    30,
-                    "2001:db8::1".parse::<Ipv6Addr>().unwrap().octets().to_vec(),
-                ),
-                (TYPE_A, 60, vec![1, 2, 3]),
-            ],
-        );
-        let parsed = parse_query(&q).unwrap();
-        assert!(answers(&resp, &parsed));
-        assert!(!answers(
-            &resp,
-            &parse_query(&query(10, "www.example.com", TYPE_A)).unwrap()
-        ));
-        assert!(!answers(
-            &resp,
-            &parse_query(&query(9, "other.example", TYPE_A)).unwrap()
-        ));
-        let got = answered_addresses(&resp);
-        assert_eq!(
-            got,
-            vec![
-                Answered {
-                    addr: "192.0.2.1".parse().unwrap(),
-                    ttl: 60
-                },
-                Answered {
-                    addr: "192.0.2.2".parse().unwrap(),
-                    ttl: 7_200
-                },
-                Answered {
-                    addr: "2001:db8::1".parse().unwrap(),
-                    ttl: 30
-                },
-            ]
-        );
-    }
+        phase a_refusal_echoes_the_question_with_the_rcode;
+        {
+            let q = query(7, "denied.example", TYPE_A);
+            let parsed = parse_query(&q).unwrap();
+            let nx = refusal(&q, Some(&parsed), Rcode::NxDomain);
+            assert_eq!(rcode(&nx), Some(3));
+            assert!(answers(&nx, &parsed), "the refusal answers the question");
+            assert!(answered_addresses(&nx).is_empty());
+            let bare = refusal(&q[..12], None, Rcode::Refused);
+            assert_eq!(bare.len(), 12);
+            assert_eq!(rcode(&bare), Some(5));
+            assert_eq!(query_id(&bare), Some(7));
+        }
 
-    #[test]
-    fn https_records_yield_their_address_hints() {
-        let q = query(3, "example.com", TYPE_HTTPS);
-        let mut rdata = vec![0, 1, 0]; // priority 1, target "."
-        rdata.extend_from_slice(&[0, 1, 0, 3, 2, b'h', b'2']); // alpn
-        rdata.extend_from_slice(&[0, 4, 0, 8, 192, 0, 2, 7, 192, 0, 2, 8]); // ipv4hint
-        let v6 = "2001:db8::7".parse::<Ipv6Addr>().unwrap().octets();
-        rdata.extend_from_slice(&[0, 6, 0, 16]);
-        rdata.extend_from_slice(&v6);
-        let resp = response(&q, &[(TYPE_HTTPS, 120, rdata)]);
-        let addrs: Vec<IpAddr> = answered_addresses(&resp).iter().map(|a| a.addr).collect();
-        assert_eq!(
-            addrs,
-            vec![
-                "192.0.2.7".parse::<IpAddr>().unwrap(),
-                "192.0.2.8".parse().unwrap(),
-                "2001:db8::7".parse().unwrap()
-            ]
-        );
-    }
+        phase answers_yield_their_addresses_and_ttls_through_cnames;
+        {
+            let q = query(9, "www.example.com", TYPE_A);
+            // A CNAME (type 5) to a name that is compressed into the question,
+            // then two A records and an AAAA.
+            let resp = response(
+                &q,
+                &[
+                    (5, 300, vec![3, b'c', b'd', b'n', 0xc0, 16]),
+                    (TYPE_A, 60, vec![192, 0, 2, 1]),
+                    (TYPE_A, 7_200, vec![192, 0, 2, 2]),
+                    (
+                        TYPE_AAAA,
+                        30,
+                        "2001:db8::1".parse::<Ipv6Addr>().unwrap().octets().to_vec(),
+                    ),
+                    (TYPE_A, 60, vec![1, 2, 3]),
+                ],
+            );
+            let parsed = parse_query(&q).unwrap();
+            assert!(answers(&resp, &parsed));
+            assert!(!answers(
+                &resp,
+                &parse_query(&query(10, "www.example.com", TYPE_A)).unwrap()
+            ));
+            assert!(!answers(
+                &resp,
+                &parse_query(&query(9, "other.example", TYPE_A)).unwrap()
+            ));
+            let got = answered_addresses(&resp);
+            assert_eq!(
+                got,
+                vec![
+                    Answered {
+                        addr: "192.0.2.1".parse().unwrap(),
+                        ttl: 60
+                    },
+                    Answered {
+                        addr: "192.0.2.2".parse().unwrap(),
+                        ttl: 7_200
+                    },
+                    Answered {
+                        addr: "2001:db8::1".parse().unwrap(),
+                        ttl: 30
+                    },
+                ]
+            );
+        }
 
-    #[test]
-    fn pointer_loops_and_truncation_are_not_followed() {
-        let q = query(1, "a.example", TYPE_A);
-        let mut resp = response(&q, &[(TYPE_A, 60, vec![192, 0, 2, 1])]);
-        let at = q.len();
-        resp[at] = 0xc0;
-        resp[at + 1] = u8::try_from(at).unwrap();
-        assert!(answered_addresses(&resp).is_empty());
-        assert!(!truncated(&resp));
-        resp[2] |= 0x02;
-        assert!(truncated(&resp));
+        phase https_records_yield_their_address_hints;
+        {
+            let q = query(3, "example.com", TYPE_HTTPS);
+            let mut rdata = vec![0, 1, 0]; // priority 1, target "."
+            rdata.extend_from_slice(&[0, 1, 0, 3, 2, b'h', b'2']); // alpn
+            rdata.extend_from_slice(&[0, 4, 0, 8, 192, 0, 2, 7, 192, 0, 2, 8]); // ipv4hint
+            let v6 = "2001:db8::7".parse::<Ipv6Addr>().unwrap().octets();
+            rdata.extend_from_slice(&[0, 6, 0, 16]);
+            rdata.extend_from_slice(&v6);
+            let resp = response(&q, &[(TYPE_HTTPS, 120, rdata)]);
+            let addrs: Vec<IpAddr> = answered_addresses(&resp).iter().map(|a| a.addr).collect();
+            assert_eq!(
+                addrs,
+                vec![
+                    "192.0.2.7".parse::<IpAddr>().unwrap(),
+                    "192.0.2.8".parse().unwrap(),
+                    "2001:db8::7".parse().unwrap()
+                ]
+            );
+        }
+
+        phase pointer_loops_and_truncation_are_not_followed;
+        {
+            let q = query(1, "a.example", TYPE_A);
+            let mut resp = response(&q, &[(TYPE_A, 60, vec![192, 0, 2, 1])]);
+            let at = q.len();
+            resp[at] = 0xc0;
+            resp[at + 1] = u8::try_from(at).unwrap();
+            assert!(answered_addresses(&resp).is_empty());
+            assert!(!truncated(&resp));
+            resp[2] |= 0x02;
+            assert!(truncated(&resp));
+        }
     }
 }

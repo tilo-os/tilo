@@ -1701,23 +1701,298 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn sample_area_rows_do_not_wait_for_workers() {
-        let profile = tempfile::tempdir().unwrap();
-        let area = SpeakersArea::new(&crate::area::AreaContext::in_profile(
-            profile.path().to_path_buf(),
-        ));
-        assert_eq!(
-            area.rows().len(),
-            1,
-            "the speaker group publishes on the first read"
-        );
-        let model = area.model().borrow();
-        assert_eq!(
-            model.in_flight, 0,
-            "sample rows are ready when the area reads"
-        );
-        assert_eq!(model.setup.groups().len(), 1);
+    tilo_test_env::scenario! {
+        fn speaker_sets_are_read_set_up_and_calibrated_through_the_service;
+
+        phase sample_area_rows_do_not_wait_for_workers;
+        {
+            let profile = tempfile::tempdir().unwrap();
+            let area = SpeakersArea::new(&crate::area::AreaContext::in_profile(
+                profile.path().to_path_buf(),
+            ));
+            assert_eq!(
+                area.rows().len(),
+                1,
+                "the speaker group publishes on the first read"
+            );
+            let model = area.model().borrow();
+            assert_eq!(
+                model.in_flight, 0,
+                "sample rows are ready when the area reads"
+            );
+            assert_eq!(model.setup.groups().len(), 1);
+        }
+
+        phase a_saved_set_is_read_back_from_the_service;
+        {
+            let stateful = Arc::new(StatefulService {
+                snapshot: Mutex::new(SpeakerSnapshot {
+                    media_enabled: true,
+                    devices: vec![device("desk"), device("shelf")],
+                    groups: Vec::new(),
+                    calibrations: Vec::new(),
+                }),
+            });
+            let service: Arc<dyn SpeakerService> = Arc::clone(&stateful) as Arc<dyn SpeakerService>;
+            let mut pane = SpeakersModel::new(service, false, None);
+            settle(&mut pane);
+            assert!(pane.setup().groups().is_empty());
+
+            pane.start(
+                SpeakerEffect::CreateSpeakerSet {
+                    name: "Living room".into(),
+                    members: vec![SpeakerMemberSpec {
+                        device: "desk".into(),
+                        output: "0a".repeat(16),
+                        role: SpeakerRoleSpec::Room {
+                            x_mm: 0,
+                            y_mm: 600,
+                            z_mm: 1100,
+                        },
+                    }],
+                },
+                None,
+            );
+            settle(&mut pane);
+
+            let names = pane
+                .setup()
+                .groups()
+                .iter()
+                .map(|group| group.name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["Living room"]);
+            assert!(stateful.snapshot.lock().unwrap().groups[0].led_here);
+        }
+
+        phase a_shown_pane_asks_once_per_announced_change_and_never_on_a_timer;
+        // The pane never asks on a timer, not even while something moves on
+        // its own (a setup flow, a device yet to answer): it asks when shown
+        // anew, once per change the compositor announces while shown, and once
+        // more for changes announced during an unanswered ask.
+        {
+            use ui::collaboration::CollabEvent;
+            let service = fake();
+            service.snapshot.lock().unwrap().groups[0].members[0].status =
+                SpeakerMemberStatus::AwaitingConsent;
+            let mut pane = model(service.clone());
+            settle(&mut pane);
+            let asked = || {
+                service
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|command| matches!(command, SpeakerCommand::Snapshot))
+                    .count()
+            };
+            let shown = pane.follow();
+            settle(&mut pane);
+            let first = asked();
+            press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
+            for _ in 0..3 {
+                let _ = pane.poll();
+            }
+            assert_eq!(asked(), first, "nothing is asked meanwhile");
+
+            pane.handle_collab_event(&CollabEvent::SpeakersChanged);
+            settle(&mut pane);
+            assert_eq!(asked(), first + 1, "a change asks once");
+
+            for _ in 0..3 {
+                pane.handle_collab_event(&CollabEvent::SpeakersChanged);
+            }
+            settle(&mut pane);
+            assert_eq!(
+                asked(),
+                first + 3,
+                "a burst asks once, and once more for what came during that ask"
+            );
+
+            drop(shown);
+            pane.handle_collab_event(&CollabEvent::SpeakersChanged);
+            settle(&mut pane);
+            assert_eq!(asked(), first + 3, "a hidden pane does not ask");
+            let _shown = pane.follow();
+            settle(&mut pane);
+            assert_eq!(asked(), first + 4, "it asks when shown again");
+        }
+
+        phase the_buttons_walk_a_stereo_pair_from_choice_to_saved;
+        {
+            let service = fake();
+            let mut pane = model(service.clone());
+            settle(&mut pane);
+            assert_eq!(pane.setup().groups().len(), 1);
+            press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
+            assert_eq!(pane.setup().step(), &Step::ChooseOutputs);
+            settle(&mut pane);
+            for (_, _, state) in &pane.chosen_states {
+                state.set(true);
+            }
+            settle(&mut pane);
+            press(&mut pane, SpeakerFlow::ContinueSpeakerSetup);
+            assert!(matches!(
+                pane.setup().step(),
+                Step::Identify { index: 0, .. }
+            ));
+            press(&mut pane, SpeakerFlow::PlayIdentifySound);
+            assert!(
+                service
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|command| matches!(
+                        command,
+                        SpeakerCommand::Identify { device, .. } if device == "desk"
+                    ))
+            );
+            press(
+                &mut pane,
+                SpeakerFlow::AssignSpeakerRole {
+                    role: "left".into(),
+                },
+            );
+            assert_eq!(pane.setup().step(), &Step::Name);
+            pane.name_state.set("Living room".into());
+            settle(&mut pane);
+            press(&mut pane, SpeakerFlow::SaveSpeakerSet);
+            let created = service
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|command| match command {
+                    SpeakerCommand::Create { name, members } => Some((name.clone(), members.clone())),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(created.0, "Living room");
+            assert_eq!(created.1[0].role, SpeakerRoleSpec::Left);
+            assert_eq!(created.1[1].role, SpeakerRoleSpec::Right);
+            assert_eq!(
+                pane.setup().step(),
+                &Step::Calibrate {
+                    group: "ab".repeat(16)
+                }
+            );
+        }
+
+        phase calibration_is_a_proposal_until_applied;
+        {
+            use ui::collaboration::{CalibrationInfo, CalibrationMemberInfo};
+            let service = fake();
+            {
+                let mut snapshot = service.snapshot.lock().unwrap();
+                for (device, local) in [("desk", true), ("shelf", false), ("phone", false)] {
+                    snapshot.groups[0]
+                        .microphones
+                        .push(ui::collaboration::CalibrationMicrophoneInfo {
+                            device: device.into(),
+                            device_label: device.into(),
+                            label: "Microphone".into(),
+                            local,
+                            status: ui::collaboration::MicrophoneStatus::Ready,
+                        });
+                }
+            }
+            let mut pane = model(service.clone());
+            settle(&mut pane);
+            let group = "cd".repeat(16);
+            press(
+                &mut pane,
+                SpeakerFlow::OpenCalibration {
+                    group: group.clone(),
+                },
+            );
+            settle(&mut pane);
+            assert_eq!(
+                pane.setup().step(),
+                &Step::Calibrate {
+                    group: group.clone()
+                }
+            );
+            sit_at_the_phone_without_the_shelf(&mut pane);
+            press(&mut pane, SpeakerFlow::StartCalibration);
+            assert!(
+                service
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .contains(&SpeakerCommand::StartCalibration {
+                        group: group.clone(),
+                        excluded: vec!["desk".into(), "shelf".into()],
+                        listening: Some("phone".into()),
+                    })
+            );
+            service
+                .snapshot
+                .lock()
+                .unwrap()
+                .calibrations
+                .push(CalibrationInfo {
+                    group: group.clone(),
+                    phase: CalibrationPhaseInfo::Proposed,
+                    members: vec![CalibrationMemberInfo {
+                        device: "shelf".into(),
+                        label: "shelf".into(),
+                        state: CalibrationMemberState::Measured {
+                            delay_ms: 4.0,
+                            level_db: -6.0,
+                            output_latency_ms: Some(1.0),
+                            acoustic_ms: Some(3.0),
+                        },
+                        before: SpeakerTrimInfo::default(),
+                        after: Some(SpeakerTrimInfo {
+                            delay_ms: 2.5,
+                            gain_db: -1.5,
+                            eq_bands: 2,
+                        }),
+                    }],
+                    microphones: Vec::new(),
+                    listening_label: Some("phone".into()),
+                    message: None,
+                });
+            pane.refresh();
+            settle(&mut pane);
+            assert!(
+                !service
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|command| matches!(command, SpeakerCommand::ApplyCalibration { .. })),
+                "a proposal is never applied implicitly"
+            );
+            pane.start(
+                SpeakerEffect::ApplyCalibration {
+                    group: group.clone(),
+                },
+                None,
+            );
+            settle(&mut pane);
+            assert!(
+                service
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .contains(&SpeakerCommand::ApplyCalibration { group })
+            );
+        }
+
+        phase a_room_speakers_place_reads_as_distances_from_the_listener;
+        {
+            assert_eq!(
+                position_text((-1_234, 2_000)),
+                "1.2 m to your left, 2.0 m in front of you"
+            );
+            assert_eq!(position_text((20, -30)), "Centred, level with you");
+            assert_eq!(
+                position_text((1_500, -2_500)),
+                "1.5 m to your right, 2.5 m behind you"
+            );
+        }
     }
 
     struct FakeService {
@@ -1835,48 +2110,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_saved_set_is_read_back_from_the_service() {
-        let stateful = Arc::new(StatefulService {
-            snapshot: Mutex::new(SpeakerSnapshot {
-                media_enabled: true,
-                devices: vec![device("desk"), device("shelf")],
-                groups: Vec::new(),
-                calibrations: Vec::new(),
-            }),
-        });
-        let service: Arc<dyn SpeakerService> = Arc::clone(&stateful) as Arc<dyn SpeakerService>;
-        let mut pane = SpeakersModel::new(service, false, None);
-        settle(&mut pane);
-        assert!(pane.setup().groups().is_empty());
-
-        pane.start(
-            SpeakerEffect::CreateSpeakerSet {
-                name: "Living room".into(),
-                members: vec![SpeakerMemberSpec {
-                    device: "desk".into(),
-                    output: "0a".repeat(16),
-                    role: SpeakerRoleSpec::Room {
-                        x_mm: 0,
-                        y_mm: 600,
-                        z_mm: 1100,
-                    },
-                }],
-            },
-            None,
-        );
-        settle(&mut pane);
-
-        let names = pane
-            .setup()
-            .groups()
-            .iter()
-            .map(|group| group.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["Living room"]);
-        assert!(stateful.snapshot.lock().unwrap().groups[0].led_here);
-    }
-
     fn model(service: Arc<FakeService>) -> SpeakersModel {
         SpeakersModel::new(service, false, None)
     }
@@ -1898,120 +2131,6 @@ mod tests {
             model.start(job, None);
         }
         settle(model);
-    }
-
-    /// The pane never asks on a timer, not even while something moves on
-    /// its own (a setup flow, a device yet to answer): it asks when shown
-    /// anew, once per change the compositor announces while shown, and once
-    /// more for changes announced during an unanswered ask.
-    #[test]
-    fn a_shown_pane_asks_once_per_announced_change_and_never_on_a_timer() {
-        use ui::collaboration::CollabEvent;
-        let service = fake();
-        service.snapshot.lock().unwrap().groups[0].members[0].status =
-            SpeakerMemberStatus::AwaitingConsent;
-        let mut pane = model(service.clone());
-        settle(&mut pane);
-        let asked = || {
-            service
-                .commands
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|command| matches!(command, SpeakerCommand::Snapshot))
-                .count()
-        };
-        let shown = pane.follow();
-        settle(&mut pane);
-        let first = asked();
-        press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
-        for _ in 0..3 {
-            let _ = pane.poll();
-        }
-        assert_eq!(asked(), first, "nothing is asked meanwhile");
-
-        pane.handle_collab_event(&CollabEvent::SpeakersChanged);
-        settle(&mut pane);
-        assert_eq!(asked(), first + 1, "a change asks once");
-
-        for _ in 0..3 {
-            pane.handle_collab_event(&CollabEvent::SpeakersChanged);
-        }
-        settle(&mut pane);
-        assert_eq!(
-            asked(),
-            first + 3,
-            "a burst asks once, and once more for what came during that ask"
-        );
-
-        drop(shown);
-        pane.handle_collab_event(&CollabEvent::SpeakersChanged);
-        settle(&mut pane);
-        assert_eq!(asked(), first + 3, "a hidden pane does not ask");
-        let _shown = pane.follow();
-        settle(&mut pane);
-        assert_eq!(asked(), first + 4, "it asks when shown again");
-    }
-
-    #[test]
-    fn the_buttons_walk_a_stereo_pair_from_choice_to_saved() {
-        let service = fake();
-        let mut pane = model(service.clone());
-        settle(&mut pane);
-        assert_eq!(pane.setup().groups().len(), 1);
-        press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
-        assert_eq!(pane.setup().step(), &Step::ChooseOutputs);
-        settle(&mut pane);
-        for (_, _, state) in &pane.chosen_states {
-            state.set(true);
-        }
-        settle(&mut pane);
-        press(&mut pane, SpeakerFlow::ContinueSpeakerSetup);
-        assert!(matches!(
-            pane.setup().step(),
-            Step::Identify { index: 0, .. }
-        ));
-        press(&mut pane, SpeakerFlow::PlayIdentifySound);
-        assert!(
-            service
-                .commands
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|command| matches!(
-                    command,
-                    SpeakerCommand::Identify { device, .. } if device == "desk"
-                ))
-        );
-        press(
-            &mut pane,
-            SpeakerFlow::AssignSpeakerRole {
-                role: "left".into(),
-            },
-        );
-        assert_eq!(pane.setup().step(), &Step::Name);
-        pane.name_state.set("Living room".into());
-        settle(&mut pane);
-        press(&mut pane, SpeakerFlow::SaveSpeakerSet);
-        let created = service
-            .commands
-            .lock()
-            .unwrap()
-            .iter()
-            .find_map(|command| match command {
-                SpeakerCommand::Create { name, members } => Some((name.clone(), members.clone())),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(created.0, "Living room");
-        assert_eq!(created.1[0].role, SpeakerRoleSpec::Left);
-        assert_eq!(created.1[1].role, SpeakerRoleSpec::Right);
-        assert_eq!(
-            pane.setup().step(),
-            &Step::Calibrate {
-                group: "ab".repeat(16)
-            }
-        );
     }
 
     #[test]
@@ -2088,108 +2207,6 @@ mod tests {
         settle(pane);
         microphone_switch(pane, "shelf").set(false);
         settle(pane);
-    }
-
-    #[test]
-    fn calibration_is_a_proposal_until_applied() {
-        use ui::collaboration::{CalibrationInfo, CalibrationMemberInfo};
-        let service = fake();
-        {
-            let mut snapshot = service.snapshot.lock().unwrap();
-            for (device, local) in [("desk", true), ("shelf", false), ("phone", false)] {
-                snapshot.groups[0]
-                    .microphones
-                    .push(ui::collaboration::CalibrationMicrophoneInfo {
-                        device: device.into(),
-                        device_label: device.into(),
-                        label: "Microphone".into(),
-                        local,
-                        status: ui::collaboration::MicrophoneStatus::Ready,
-                    });
-            }
-        }
-        let mut pane = model(service.clone());
-        settle(&mut pane);
-        let group = "cd".repeat(16);
-        press(
-            &mut pane,
-            SpeakerFlow::OpenCalibration {
-                group: group.clone(),
-            },
-        );
-        settle(&mut pane);
-        assert_eq!(
-            pane.setup().step(),
-            &Step::Calibrate {
-                group: group.clone()
-            }
-        );
-        sit_at_the_phone_without_the_shelf(&mut pane);
-        press(&mut pane, SpeakerFlow::StartCalibration);
-        assert!(
-            service
-                .commands
-                .lock()
-                .unwrap()
-                .contains(&SpeakerCommand::StartCalibration {
-                    group: group.clone(),
-                    excluded: vec!["desk".into(), "shelf".into()],
-                    listening: Some("phone".into()),
-                })
-        );
-        service
-            .snapshot
-            .lock()
-            .unwrap()
-            .calibrations
-            .push(CalibrationInfo {
-                group: group.clone(),
-                phase: CalibrationPhaseInfo::Proposed,
-                members: vec![CalibrationMemberInfo {
-                    device: "shelf".into(),
-                    label: "shelf".into(),
-                    state: CalibrationMemberState::Measured {
-                        delay_ms: 4.0,
-                        level_db: -6.0,
-                        output_latency_ms: Some(1.0),
-                        acoustic_ms: Some(3.0),
-                    },
-                    before: SpeakerTrimInfo::default(),
-                    after: Some(SpeakerTrimInfo {
-                        delay_ms: 2.5,
-                        gain_db: -1.5,
-                        eq_bands: 2,
-                    }),
-                }],
-                microphones: Vec::new(),
-                listening_label: Some("phone".into()),
-                message: None,
-            });
-        pane.refresh();
-        settle(&mut pane);
-        assert!(
-            !service
-                .commands
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|command| matches!(command, SpeakerCommand::ApplyCalibration { .. })),
-            "a proposal is never applied implicitly"
-        );
-        pane.start(
-            SpeakerEffect::ApplyCalibration {
-                group: group.clone(),
-            },
-            None,
-        );
-        settle(&mut pane);
-        assert!(
-            service
-                .commands
-                .lock()
-                .unwrap()
-                .contains(&SpeakerCommand::ApplyCalibration { group })
-        );
     }
 
     type App = ui::prelude::TestApp<crate::resource::SettingsShell>;
@@ -2291,18 +2308,5 @@ mod tests {
         let now = lines(&text, "Play a sound on ");
         assert_eq!(now.len(), 1, "{text:#?}");
         assert_ne!(now, played, "a new choice shows that speaker");
-    }
-
-    #[test]
-    fn a_room_speakers_place_reads_as_distances_from_the_listener() {
-        assert_eq!(
-            position_text((-1_234, 2_000)),
-            "1.2 m to your left, 2.0 m in front of you"
-        );
-        assert_eq!(position_text((20, -30)), "Centred, level with you");
-        assert_eq!(
-            position_text((1_500, -2_500)),
-            "1.5 m to your right, 2.5 m behind you"
-        );
     }
 }

@@ -1265,7 +1265,7 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
             runner_permissions(),
         )
         .unwrap();
-    let first_lane = ContentLane::of("test.successor-content", "first");
+    let first_lane = Arc::new(ContentLane::default());
     first.provide_content(RecordContent::store(
         tilo_content::ContentStore::memory(),
         Arc::clone(&first_lane),
@@ -1287,7 +1287,7 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
         .reopener()
         .prepare(runner_probe_definition(), crate::record::RecordId::minted())
         .unwrap();
-    let next_lane = ContentLane::of("test.successor-content", "next");
+    let next_lane = Arc::new(ContentLane::default());
     let next_local = tilo_content::ContentStore::memory();
     next.provide_content(RecordContent::store(
         next_local.clone(),

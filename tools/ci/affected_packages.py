@@ -135,6 +135,8 @@ NON_COMPILING_DOCS = {
 # compiler wrappers and packaging implementation changes retain native coverage.
 QUALITY_ONLY_HELPERS = {
     ".githooks/pre-commit": "tools/tests/test_pre_commit_contract.py",
+    ".githooks/pre-push": "tools/tests/test_pre_push_lint.py",
+    "tools/ci/pre_push_lint.py": "tools/tests/test_pre_push_lint.py",
     "scripts/ci-run.sh": "tools/tests/test_ci_run.py",
     "tools/ci/check-changed-rustfmt.sh": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/comparison_range.py": "tools/tests/test_changed_rust_comparison.py",

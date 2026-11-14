@@ -635,68 +635,6 @@ impl SpanBuilder {
 mod tests {
     use super::*;
 
-    /// XHTML parses headings, paragraphs, lists, quotes and rules, collapses whitespace, sanitises entities and yields nothing for garbage.
-    #[test]
-    fn xhtml_parses_prose_blocks_and_entities() {
-        {
-            let src = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>
-            <h1>Title</h1>
-            <p>Hello <strong>bold</strong> and <em>italic</em>.</p>
-        </body></html>"#;
-            let blocks = parse_xhtml(src);
-            assert_eq!(blocks.len(), 2);
-            match &blocks[0] {
-                Block::Heading { level, spans } => {
-                    assert_eq!(*level, 1);
-                    assert_eq!(spans[0].text, "Title");
-                }
-                _ => panic!("expected heading"),
-            }
-            match &blocks[1] {
-                Block::Paragraph { spans } => {
-                    let bold = spans.iter().find(|s| s.bold).unwrap();
-                    assert_eq!(bold.text, "bold");
-                    let ital = spans.iter().find(|s| s.italic).unwrap();
-                    assert_eq!(ital.text, "italic");
-                }
-                _ => panic!("expected paragraph"),
-            }
-        }
-
-        {
-            let src = "<body><p>one\n   two\t three</p></body>";
-            let blocks = parse_xhtml(src);
-            assert_eq!(blocks[0].plain_text(), "one two three");
-        }
-
-        {
-            let src = r"<body>
-            <ul><li>a</li><li>b</li></ul>
-            <blockquote><p>quoted</p></blockquote>
-            <hr/>
-        </body>";
-            let blocks = parse_xhtml(src);
-            let li = blocks
-                .iter()
-                .filter(|b| matches!(b, Block::ListItem { .. }))
-                .count();
-            assert_eq!(li, 2);
-            assert!(blocks.iter().any(|b| matches!(b, Block::Quote { .. })));
-            assert!(blocks.iter().any(super::super::model::Block::is_separator));
-        }
-
-        {
-            let src = "<body><p>a&nbsp;b&mdash;c</p></body>";
-            let blocks = parse_xhtml(src);
-            // nbsp (U+00A0) is whitespace and collapses; mdash survives.
-            assert!(blocks[0].plain_text().contains('\u{2014}'));
-        }
-
-        {
-            assert!(parse_xhtml("<<<not xml").is_empty());
-        }
-    }
-
     /// The runs of `block` that start a line, as (text, indent); the block's
     /// first run leads.
     fn lines(block: &Block) -> Vec<(String, u8)> {
@@ -740,86 +678,151 @@ mod tests {
         </section>
     </body></html>"#;
 
-    /// z3998 verse keeps one block per stanza with each marked line starting a line, while headers, prose, quotes and `<br/>` keep their text and offsets.
-    #[test]
-    fn verse_lines_break_without_changing_blocks_or_text() {
+    tilo_test_env::scenario! {
+        fn xhtml_lowers_prose_verse_and_math_to_blocks;
+
+        phase xhtml_parses_prose_blocks_and_entities;
+        // XHTML parses headings, paragraphs, lists, quotes and rules, collapses whitespace, sanitises entities and yields nothing for garbage.
         {
-            let blocks = parse_xhtml(POEM);
-            assert_eq!(blocks.len(), 5, "{blocks:#?}");
-            assert!(matches!(blocks[0], Block::Heading { .. }));
-            assert!(
-                matches!(blocks[1], Block::Paragraph { .. })
-                    && matches!(blocks[2], Block::Paragraph { .. }),
-                "the header is not verse"
-            );
-            let Block::Verse { quoted, .. } = &blocks[3] else {
-                panic!("stanza is verse: {:?}", blocks[3]);
-            };
-            assert!(!quoted);
-            assert_eq!(
-                lines(&blocks[3]),
-                [
-                    ("Tell me, O Muse, of that sagacious man".to_string(), 0),
-                    ("Who, having overthrown the sacred town".to_string(), 0),
-                    ("Of Ilium, wandered far".to_string(), 1),
-                ]
-            );
-            assert_eq!(
-                blocks[3].plain_text(),
-                "Tell me, O Muse, of that sagacious man Who, having overthrown the sacred town \
-                 Of Ilium, wandered far",
-                "lines join with the single space they always had"
-            );
-            assert_eq!(lines(&blocks[4]).len(), 2);
+            {
+                let src = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>
+            <h1>Title</h1>
+            <p>Hello <strong>bold</strong> and <em>italic</em>.</p>
+        </body></html>"#;
+                let blocks = parse_xhtml(src);
+                assert_eq!(blocks.len(), 2);
+                match &blocks[0] {
+                    Block::Heading { level, spans } => {
+                        assert_eq!(*level, 1);
+                        assert_eq!(spans[0].text, "Title");
+                    }
+                    _ => panic!("expected heading"),
+                }
+                match &blocks[1] {
+                    Block::Paragraph { spans } => {
+                        let bold = spans.iter().find(|s| s.bold).unwrap();
+                        assert_eq!(bold.text, "bold");
+                        let ital = spans.iter().find(|s| s.italic).unwrap();
+                        assert_eq!(ital.text, "italic");
+                    }
+                    _ => panic!("expected paragraph"),
+                }
+            }
+
+            {
+                let src = "<body><p>one\n   two\t three</p></body>";
+                let blocks = parse_xhtml(src);
+                assert_eq!(blocks[0].plain_text(), "one two three");
+            }
+
+            {
+                let src = r"<body>
+            <ul><li>a</li><li>b</li></ul>
+            <blockquote><p>quoted</p></blockquote>
+            <hr/>
+        </body>";
+                let blocks = parse_xhtml(src);
+                let li = blocks
+                    .iter()
+                    .filter(|b| matches!(b, Block::ListItem { .. }))
+                    .count();
+                assert_eq!(li, 2);
+                assert!(blocks.iter().any(|b| matches!(b, Block::Quote { .. })));
+                assert!(blocks.iter().any(super::super::model::Block::is_separator));
+            }
+
+            {
+                let src = "<body><p>a&nbsp;b&mdash;c</p></body>";
+                let blocks = parse_xhtml(src);
+                // nbsp (U+00A0) is whitespace and collapses; mdash survives.
+                assert!(blocks[0].plain_text().contains('\u{2014}'));
+            }
+
+            {
+                assert!(parse_xhtml("<<<not xml").is_empty());
+            }
         }
 
+        phase verse_lines_break_without_changing_blocks_or_text;
+        // z3998 verse keeps one block per stanza with each marked line starting a line, while headers, prose, quotes and `<br/>` keep their text and offsets.
         {
-            let src = r#"<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+            {
+                let blocks = parse_xhtml(POEM);
+                assert_eq!(blocks.len(), 5, "{blocks:#?}");
+                assert!(matches!(blocks[0], Block::Heading { .. }));
+                assert!(
+                    matches!(blocks[1], Block::Paragraph { .. })
+                        && matches!(blocks[2], Block::Paragraph { .. }),
+                    "the header is not verse"
+                );
+                let Block::Verse { quoted, .. } = &blocks[3] else {
+                    panic!("stanza is verse: {:?}", blocks[3]);
+                };
+                assert!(!quoted);
+                assert_eq!(
+                    lines(&blocks[3]),
+                    [
+                        ("Tell me, O Muse, of that sagacious man".to_string(), 0),
+                        ("Who, having overthrown the sacred town".to_string(), 0),
+                        ("Of Ilium, wandered far".to_string(), 1),
+                    ]
+                );
+                assert_eq!(
+                    blocks[3].plain_text(),
+                    "Tell me, O Muse, of that sagacious man Who, having overthrown the sacred town \
+                 Of Ilium, wandered far",
+                    "lines join with the single space they always had"
+                );
+                assert_eq!(lines(&blocks[4]).len(), 2);
+            }
+
+            {
+                let src = r#"<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
               <blockquote epub:type="z3998:verse"><p><span>One line,</span><span class="i2">and two.</span></p></blockquote>
               <div class="poem"><div class="stanza"><span class="i0">Gutenberg line<br/></span><span class="i2">indented line<br/></span></div></div>
             </body></html>"#;
-            let blocks = parse_xhtml(src);
-            assert_eq!(blocks.len(), 2, "{blocks:#?}");
-            assert!(matches!(blocks[0], Block::Verse { quoted: true, .. }));
-            assert_eq!(
-                lines(&blocks[0]),
-                [("One line,".to_string(), 0), ("and two.".to_string(), 2)]
-            );
-            assert!(matches!(blocks[1], Block::Verse { quoted: false, .. }));
-            assert_eq!(
-                lines(&blocks[1]),
-                [
-                    ("Gutenberg line".to_string(), 0),
-                    ("indented line".to_string(), 2)
-                ]
-            );
+                let blocks = parse_xhtml(src);
+                assert_eq!(blocks.len(), 2, "{blocks:#?}");
+                assert!(matches!(blocks[0], Block::Verse { quoted: true, .. }));
+                assert_eq!(
+                    lines(&blocks[0]),
+                    [("One line,".to_string(), 0), ("and two.".to_string(), 2)]
+                );
+                assert!(matches!(blocks[1], Block::Verse { quoted: false, .. }));
+                assert_eq!(
+                    lines(&blocks[1]),
+                    [
+                        ("Gutenberg line".to_string(), 0),
+                        ("indented line".to_string(), 2)
+                    ]
+                );
+            }
+
+            {
+                let src = r#"<body class="verse"><p>Sing, <span class="name">goddess</span>, the wrath</p></body>"#;
+                let blocks = parse_xhtml(src);
+                assert!(matches!(blocks[0], Block::Paragraph { .. }), "{blocks:?}");
+                assert_eq!(lines(&blocks[0]).len(), 1);
+            }
+
+            {
+                let blocks = parse_xhtml("<body><p>221B Baker Street<br/>London</p></body>");
+                assert!(matches!(blocks[0], Block::Paragraph { .. }));
+                assert_eq!(
+                    lines(&blocks[0]),
+                    [
+                        ("221B Baker Street".to_string(), 0),
+                        ("London".to_string(), 0)
+                    ]
+                );
+                assert_eq!(blocks[0].plain_text(), "221B Baker Street London");
+            }
         }
 
+        phase mathml_lowers_to_structured_two_dimensional_math;
         {
-            let src = r#"<body class="verse"><p>Sing, <span class="name">goddess</span>, the wrath</p></body>"#;
-            let blocks = parse_xhtml(src);
-            assert!(matches!(blocks[0], Block::Paragraph { .. }), "{blocks:?}");
-            assert_eq!(lines(&blocks[0]).len(), 1);
-        }
-
-        {
-            let blocks = parse_xhtml("<body><p>221B Baker Street<br/>London</p></body>");
-            assert!(matches!(blocks[0], Block::Paragraph { .. }));
-            assert_eq!(
-                lines(&blocks[0]),
-                [
-                    ("221B Baker Street".to_string(), 0),
-                    ("London".to_string(), 0)
-                ]
-            );
-            assert_eq!(blocks[0].plain_text(), "221B Baker Street London");
-        }
-    }
-
-    #[test]
-    fn mathml_lowers_to_structured_two_dimensional_math() {
-        {
-            let src = r#"<body xmlns="http://www.w3.org/1999/xhtml">
+            {
+                let src = r#"<body xmlns="http://www.w3.org/1999/xhtml">
           <math xmlns="http://www.w3.org/1998/Math/MathML" display="block">
             <mfrac>
               <mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mn>1</mn></mrow>
@@ -827,69 +830,70 @@ mod tests {
             </mfrac>
           </math>
         </body>"#;
-            let blocks = parse_xhtml(src);
-            let Block::Math {
-                expr,
-                source,
-                display,
-            } = &blocks[0]
-            else {
-                panic!("expected a mathematical block");
-            };
-            assert!(*display);
-            assert!(matches!(expr.root.first(), Some(MathNode::Frac { .. })));
-            assert_eq!(source, "(x^(2)+1)/(sqrt(y-3))");
-        }
+                let blocks = parse_xhtml(src);
+                let Block::Math {
+                    expr,
+                    source,
+                    display,
+                } = &blocks[0]
+                else {
+                    panic!("expected a mathematical block");
+                };
+                assert!(*display);
+                assert!(matches!(expr.root.first(), Some(MathNode::Frac { .. })));
+                assert_eq!(source, "(x^(2)+1)/(sqrt(y-3))");
+            }
 
-        {
-            let src = r"<body><p><math><msubsup><mo>∑</mo><mi>i</mi><mi>n</mi></msubsup></math></p></body>";
-            let blocks = parse_xhtml(src);
-            let Block::Math { expr, .. } = &blocks[0] else {
-                panic!("expected wrapped MathML to remain mathematical");
-            };
-            assert!(matches!(expr.root.get(1), Some(MathNode::SubSup { .. })));
-        }
+            {
+                let src = r"<body><p><math><msubsup><mo>∑</mo><mi>i</mi><mi>n</mi></msubsup></math></p></body>";
+                let blocks = parse_xhtml(src);
+                let Block::Math { expr, .. } = &blocks[0] else {
+                    panic!("expected wrapped MathML to remain mathematical");
+                };
+                assert!(matches!(expr.root.get(1), Some(MathNode::SubSup { .. })));
+            }
 
-        {
-            let src = r"<body><p>Einstein wrote <math><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math> in 1905.</p></body>";
-            let blocks = parse_xhtml(src);
-            let Block::Paragraph { spans } = &blocks[0] else {
-                panic!("expected prose paragraph");
-            };
-            let math = spans
-                .iter()
-                .find(|span| span.math.is_some())
-                .expect("inline formula remains a structured span");
-            assert_eq!(math.text, "E=mc^(2)");
-            assert!(math.space_before);
-            assert_eq!(blocks[0].plain_text(), "Einstein wrote E=mc^(2) in 1905.");
-        }
+            {
+                let src = r"<body><p>Einstein wrote <math><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math> in 1905.</p></body>";
+                let blocks = parse_xhtml(src);
+                let Block::Paragraph { spans } = &blocks[0] else {
+                    panic!("expected prose paragraph");
+                };
+                let math = spans
+                    .iter()
+                    .find(|span| span.math.is_some())
+                    .expect("inline formula remains a structured span");
+                assert_eq!(math.text, "E=mc^(2)");
+                assert!(math.space_before);
+                assert_eq!(blocks[0].plain_text(), "Einstein wrote E=mc^(2) in 1905.");
+            }
 
-        {
-            let src = r#"<body><math display="block"><mrow>
+            {
+                let src = r#"<body><math display="block"><mrow>
           <munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
           <mfenced><mtable>
             <mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr>
             <mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr>
           </mtable></mfenced>
         </mrow></math></body>"#;
-            let blocks = parse_xhtml(src);
-            let Block::Math { expr, .. } = &blocks[0] else {
-                panic!("expected display math");
-            };
-            assert!(matches!(expr.root[0], MathNode::UnderOver { .. }));
-            let MathNode::Delimited { open, close, body } = &expr.root[1] else {
-                panic!("matrix fence retained");
-            };
-            assert_eq!((*open, *close), (Some('('), Some(')')));
-            let MathNode::Table { rows } = &body[0] else {
-                panic!("matrix remains a table");
-            };
-            assert_eq!((rows.len(), rows[0].len()), (2, 2));
-            assert_eq!(rows[0][0], vec![MathNode::Char('a')]);
-            assert_eq!(rows[0][1], vec![MathNode::Char('b')]);
-            assert_eq!(rows[1][0], vec![MathNode::Char('c')]);
-            assert_eq!(rows[1][1], vec![MathNode::Char('d')]);
+                let blocks = parse_xhtml(src);
+                let Block::Math { expr, .. } = &blocks[0] else {
+                    panic!("expected display math");
+                };
+                assert!(matches!(expr.root[0], MathNode::UnderOver { .. }));
+                let MathNode::Delimited { open, close, body } = &expr.root[1] else {
+                    panic!("matrix fence retained");
+                };
+                assert_eq!((*open, *close), (Some('('), Some(')')));
+                let MathNode::Table { rows } = &body[0] else {
+                    panic!("matrix remains a table");
+                };
+                assert_eq!((rows.len(), rows[0].len()), (2, 2));
+                assert_eq!(rows[0][0], vec![MathNode::Char('a')]);
+                assert_eq!(rows[0][1], vec![MathNode::Char('b')]);
+                assert_eq!(rows[1][0], vec![MathNode::Char('c')]);
+                assert_eq!(rows[1][1], vec![MathNode::Char('d')]);
+            }
         }
     }
 }

@@ -21,9 +21,10 @@ use crate::widget::{ActivityTimeline, HistoryFilter};
 const T0: i64 = 1_780_000_000; // 2026-06-08T…, comfortably in the Tilo era.
 const HOUR: i64 = 3_600;
 
-#[test]
-fn browsing_history_never_commits_or_invents_entries() {
-    // phase: browsing_history_preserves_pending_action_and_committed_entry_ids
+tilo_test_env::scenario! {
+    fn browsing_history_never_commits_or_invents_entries;
+
+    phase browsing_history_preserves_pending_action_and_committed_entry_ids;
     {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "title", "saved").unwrap();
@@ -80,7 +81,8 @@ fn browsing_history_never_commits_or_invents_entries() {
         assert_eq!(changes.len(), 2);
         assert_eq!(changes[1].message(), Some("Rename document"));
     }
-    // phase: browsing_uncommitted_document_does_not_invent_history
+
+    phase browsing_uncommitted_document_does_not_invent_history;
     {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "title", "draft").unwrap();
@@ -96,7 +98,8 @@ fn browsing_history_never_commits_or_invents_entries() {
         assert!(doc.commit().is_some());
         assert_eq!(doc.get_changes(&[]).len(), 1);
     }
-    // phase: history_preview_preserves_pending_text_edits
+
+    phase history_preview_preserves_pending_text_edits;
     {
         let (mut doc, block) = two_identity_document();
         let entries = source().entries(&mut doc);
@@ -121,7 +124,8 @@ fn browsing_history_never_commits_or_invents_entries() {
         assert_eq!(doc.pending_ops(), pending);
         assert!(doc.commit().is_some());
     }
-    // phase: an_untouched_document_has_no_history
+
+    phase an_untouched_document_has_no_history;
     // An empty document produces an empty timeline rather than a phantom row.
     {
         let mut doc = AutoCommit::new();
@@ -224,13 +228,10 @@ fn unnamed() -> String {
 
 // 1. Three edits, two identities, attributed
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn rows_attribute_and_summarise_what_actually_changed() {
-    // phase: three_edits_by_two_identities_are_attributed_correctly
+tilo_test_env::scenario! {
+    fn rows_attribute_and_summarise_what_actually_changed;
+
+    phase three_edits_by_two_identities_are_attributed_correctly;
     // THE HEADLINE TEST. Three edits made under two different actors must come
     // back as three rows with the right names on them.
     {
@@ -257,7 +258,8 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(rows[0].author.identity_short, "a11ce000");
         assert_eq!(rows[1].author.identity_short, "b0b00000");
     }
-    // phase: deltas_report_the_characters_actually_typed
+
+    phase deltas_report_the_characters_actually_typed;
     // The delta is what the change actually did, not an op count. "hello" is
     // five characters; " world" is six; "!" is one. Changes that name no
     // action say so, never a guess from their content.
@@ -274,7 +276,8 @@ fn rows_attribute_and_summarise_what_actually_changed() {
             assert_eq!(r.summary, unnamed());
         }
     }
-    // phase: deletions_are_counted_and_a_removed_block_is_a_tombstone
+
+    phase deletions_are_counted_and_a_removed_block_is_a_tombstone;
     // A deletion is reported as a deletion, and a change that only removes a block
     // is classed as a tombstone so it lands under the timeline's "Deletes" chip.
     {
@@ -328,7 +331,8 @@ fn rows_attribute_and_summarise_what_actually_changed() {
             "a removed block is a delete"
         );
     }
-    // phase: a_plain_automerge_document_is_read_through_its_patches
+
+    phase a_plain_automerge_document_is_read_through_its_patches;
     // A document with no tilo-doc schema still produces real rows via its
     // patches, which is what makes the producer usable over the compositor's
     // chrome document, not just tilo-doc artifacts.
@@ -355,7 +359,8 @@ fn rows_attribute_and_summarise_what_actually_changed() {
             "single-actor document, single author"
         );
     }
-    // phase: an_unregistered_actor_is_named_honestly_in_a_produced_row
+
+    phase an_unregistered_actor_is_named_honestly_in_a_produced_row;
     // An actor nobody registered gets an honest label and a stable colour — never
     // a made-up name.
     {
@@ -378,7 +383,8 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         );
         assert!((0.0..360.0).contains(&a.avatar_hue));
     }
-    // phase: semantic_action_context_becomes_the_row_summary_and_browse_metadata
+
+    phase semantic_action_context_becomes_the_row_summary_and_browse_metadata;
     {
         let (mut doc, c, mut ids) = rich_doc("alice");
         let mut dm = tilo_doc::DocMut {
@@ -417,9 +423,10 @@ fn rows_attribute_and_summarise_what_actually_changed() {
 
 // 2. Restore
 
-#[test]
-fn restore_appends_an_undoable_entry_or_does_nothing() {
-    // phase: restore_returns_earlier_content_and_appends_a_new_entry
+tilo_test_env::scenario! {
+    fn restore_appends_an_undoable_entry_or_does_nothing;
+
+    phase restore_returns_earlier_content_and_appends_a_new_entry;
     // Restore to an earlier version must bring the earlier content back — and
     // must do it by *appending* to history, never by rewriting it.
     {
@@ -483,7 +490,8 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
             &tilo_doc::model::materialize(&state.doc, &containers).blocks[0].id
         );
     }
-    // phase: a_restore_is_undoable
+
+    phase a_restore_is_undoable;
     // The restore lands on the undo stack, so a user who scrubbed by mistake can
     // Ctrl+Z out of it.
     {
@@ -509,7 +517,8 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
             .expect("the restore is on the undo stack");
         assert_eq!(text(&state), "hello world!", "undo puts the restore back");
     }
-    // phase: restoring_to_the_current_version_does_nothing
+
+    phase restoring_to_the_current_version_does_nothing;
     // Restoring to the state the document is already in is a no-op — it must not
     // litter the timeline with empty entries.
     {
@@ -526,7 +535,8 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
             "a no-op restore adds no entry"
         );
     }
-    // phase: an_unknown_entry_id_resolves_to_no_version
+
+    phase an_unknown_entry_id_resolves_to_no_version;
     // A row id from a different document addresses nothing here.
     {
         let (mut doc, _) = two_identity_document();
@@ -536,9 +546,10 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
 
 // 3. Filters, through the real widget
 
-#[test]
-fn contributor_and_date_filters_select_and_intersect() {
-    // phase: filtering_by_contributor_hides_the_other_authors_rows
+tilo_test_env::scenario! {
+    fn contributor_and_date_filters_select_and_intersect;
+
+    phase filtering_by_contributor_hides_the_other_authors_rows;
     // Filtering by contributor must actually filter. Asserted through
     // `ActivityTimeline`, not `HistoryFilter::matches` in isolation.
     {
@@ -565,7 +576,8 @@ fn contributor_and_date_filters_select_and_intersect() {
             "no Bob rows leak through the Alice filter"
         );
     }
-    // phase: filtering_by_date_range_selects_only_edits_inside_the_window
+
+    phase filtering_by_date_range_selects_only_edits_inside_the_window;
     // Filtering by date range must actually filter. The producer's timestamps are
     // the ones the commits carry, so a window that brackets one edit shows one row.
     {
@@ -593,7 +605,8 @@ fn contributor_and_date_filters_select_and_intersect() {
         });
         assert_eq!(timeline.visible_len(), entries.len());
     }
-    // phase: contributor_and_date_filters_intersect
+
+    phase contributor_and_date_filters_intersect;
     // The two filters compose: contributor AND window.
     {
         let (mut doc, _) = two_identity_document();
@@ -615,9 +628,10 @@ fn contributor_and_date_filters_select_and_intersect() {
 
 // Timestamps + authorship edge cases
 
-#[test]
-fn entries_are_stamped_capped_and_stably_addressed() {
-    // phase: stamped_commits_carry_their_wall_clock_into_the_row
+tilo_test_env::scenario! {
+    fn entries_are_stamped_capped_and_stably_addressed;
+
+    phase stamped_commits_carry_their_wall_clock_into_the_row;
     // A stamped commit produces a real timestamp, so date filters have
     // something to compare against.
     {
@@ -628,7 +642,8 @@ fn entries_are_stamped_capped_and_stably_addressed() {
         assert_eq!(rows[1].timestamp, at(T0 + 2 * HOUR));
         assert_eq!(rows[2].timestamp, at(T0 + 3 * HOUR));
     }
-    // phase: state_commit_action_stamps_the_change
+
+    phase state_commit_action_stamps_the_change;
     // `State::commit_action` — the path every `ui` app takes — stamps its changes.
     {
         let mut state = State::new();
@@ -646,7 +661,8 @@ fn entries_are_stamped_capped_and_stably_addressed() {
             "a just-committed action must be stamped with now, got {age:?} ago"
         );
     }
-    // phase: the_entry_cap_keeps_the_most_recent_versions
+
+    phase the_entry_cap_keeps_the_most_recent_versions;
     // The window cap keeps the newest rows, not the oldest.
     {
         let (mut doc, c, mut ids) = rich_doc("alice");
@@ -686,7 +702,8 @@ fn entries_are_stamped_capped_and_stably_addressed() {
         // against the snapshot just before it.
         assert_eq!(capped[0].text_delta, Some((1, 0)));
     }
-    // phase: entry_ids_are_stable_across_peers
+
+    phase entry_ids_are_stable_across_peers;
     // Entry ids are the change's own content address, so two peers building a
     // timeline over the same history agree on which row is which.
     {
@@ -702,7 +719,8 @@ fn entries_are_stamped_capped_and_stably_addressed() {
             .collect();
         assert_eq!(a, b, "same history, same row ids");
     }
-    // phase: heads_address_a_merged_history_correctly
+
+    phase heads_address_a_merged_history_correctly;
     // `prefix_heads` has to handle a merged, non-linear change graph, and
     // materialising through it must reproduce the content the timeline claims.
     {
@@ -723,363 +741,458 @@ fn entries_are_stamped_capped_and_stably_addressed() {
     }
 }
 
-#[test]
-fn a_change_naming_no_finer_action_says_so_in_the_frameworks_words() {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "title", "draft").unwrap();
-    doc.commit();
-    // A window's direct edit names the whole record.
-    doc.put(ROOT, "title", "final").unwrap();
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
-    );
-    // An entry naming its resource but no action names the resource.
-    doc.put(ROOT, "title", "shipped").unwrap();
-    let report = tilo_actions::ActionContext::for_resource("r", "doc", "Report");
-    doc.commit_with(CommitOptions::default().with_message(report.change_message().unwrap()));
-    // Moving the record between workspaces is a row of its own.
-    doc.put(ROOT, "workspace", "elsewhere").unwrap();
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
-    );
-    // A newer package naming the record's surface is nobody's doing.
-    doc.put(ROOT, "surface", "abc").unwrap();
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
-    );
-    let summaries = HistorySource::new()
-        .entries(&mut doc)
-        .into_iter()
-        .map(|entry| entry.summary)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        summaries,
-        [
-            unnamed(),
-            unnamed(),
-            sentence::sentence(&report),
-            crate::i18n::I18nManager::lookup_plain("history-moved"),
-        ]
-    );
-    assert_eq!(summaries[0], "Changed the document");
-    assert_eq!(summaries[2], "Changed Report");
-    assert!(summaries.iter().all(|summary| !summary.contains("title")));
-}
+tilo_test_env::scenario! {
+    fn a_change_is_named_by_what_was_done_and_who_did_it;
 
-#[test]
-fn an_action_context_names_its_change() {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "title", "draft").unwrap();
-    doc.commit();
-    doc.put(ROOT, "title", "final").unwrap();
-    let context = tilo_actions::ActionContext::for_resource("r", "doc", "Report").with_described(
-        tilo_actions::Described::new(tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "finalize"),
-            [],
-        )),
-    );
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
-    let entries = HistorySource::new().entries(&mut doc);
-    let last = entries.last().unwrap();
-    assert_eq!(
-        last.summary,
-        crate::history_source::sentence::sentence(&context)
-    );
-    assert_eq!(last.summary, "Finalize in Report");
-    assert!(!last.summary.contains("title"), "{}", last.summary);
-}
+    phase a_change_naming_no_finer_action_says_so_in_the_frameworks_words;
+    {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "draft").unwrap();
+        doc.commit();
+        // A window's direct edit names the whole record.
+        doc.put(ROOT, "title", "final").unwrap();
+        doc.commit_with(
+            CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
+        // An entry naming its resource but no action names the resource.
+        doc.put(ROOT, "title", "shipped").unwrap();
+        let report = tilo_actions::ActionContext::for_resource("r", "doc", "Report");
+        doc.commit_with(CommitOptions::default().with_message(report.change_message().unwrap()));
+        // Moving the record between workspaces is a row of its own.
+        doc.put(ROOT, "workspace", "elsewhere").unwrap();
+        doc.commit_with(
+            CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
+        );
+        // A newer package naming the record's surface is nobody's doing.
+        doc.put(ROOT, "surface", "abc").unwrap();
+        doc.commit_with(
+            CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+        );
+        let summaries = HistorySource::new()
+            .entries(&mut doc)
+            .into_iter()
+            .map(|entry| entry.summary)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summaries,
+            [
+                unnamed(),
+                unnamed(),
+                sentence::sentence(&report),
+                crate::i18n::I18nManager::lookup_plain("history-moved"),
+            ]
+        );
+        assert_eq!(summaries[0], "Changed the document");
+        assert_eq!(summaries[2], "Changed Report");
+        assert!(summaries.iter().all(|summary| !summary.contains("title")));
+    }
 
-#[test]
-fn a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did() {
-    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, genesis_actor};
-    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let store = RecordOwners::portable(cache)
-        .open("test", "workspace")
-        .unwrap();
-    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
-    store.create_record(&checkout).unwrap();
-    let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
-    let genesis = genesis_actor(&doc).expect("a record names its genesis actor");
-    assert!(
-        tilo_resource::history::versions(&mut doc)
+    phase an_action_context_names_its_change;
+    {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "draft").unwrap();
+        doc.commit();
+        doc.put(ROOT, "title", "final").unwrap();
+        let context = tilo_actions::ActionContext::for_resource("r", "doc", "Report").with_described(
+            tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "finalize"),
+                [],
+            )),
+        );
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        let entries = HistorySource::new().entries(&mut doc);
+        let last = entries.last().unwrap();
+        assert_eq!(
+            last.summary,
+            crate::history_source::sentence::sentence(&context)
+        );
+        assert_eq!(last.summary, "Finalize in Report");
+        assert!(!last.summary.contains("title"), "{}", last.summary);
+    }
+
+    phase rows_tell_the_readers_changes_from_a_collaborators_and_an_agents;
+    {
+        use crate::widget::history::AuthorRelation;
+        use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+        let mut doc = AutoCommit::new();
+        let step = |doc: &mut AutoCommit, key: &str, invoker: ActionInvoker| {
+            doc.put(ROOT, key, "x").unwrap();
+            let context = ActionContext::for_resource("r", "doc", "Report")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
+                    [],
+                )))
+                .with_invoker(invoker);
+            doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        };
+        step(&mut doc, "mine", ActionInvoker::actor("kai"));
+        step(&mut doc, "theirs", ActionInvoker::actor("ada"));
+        step(
+            &mut doc,
+            "agents",
+            ActionInvoker::actor("agent:claude")
+                .with_kind(ActorKind::Agent)
+                .acting_for("kai"),
+        );
+        let mut authors = AuthorDirectory::new();
+        authors.set_reader("kai");
+        let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+        let rows: Vec<(String, AuthorRelation)> = entries
             .iter()
-            .any(|v| v.actor == genesis.to_hex_string() && v.time_ms == 0),
-        "the genesis is made by the record's derived actor at time zero"
-    );
-    let kept = HistorySource::new().entries(&mut doc);
-    assert_eq!(
-        kept.len(),
-        1,
-        "a document's history keeps the version it was created as"
-    );
-    assert!(kept[0].is_genesis(), "and says it is the genesis");
-    assert_eq!(kept[0].summary, "Created");
-    assert!(
-        !kept[0].is_revertible(),
-        "creation is restored to, not reverted"
-    );
-    assert!(
-        HistorySource::new()
-            .without_record_genesis()
-            .entries(&mut doc)
-            .is_empty()
-    );
+            .rev()
+            .take(3)
+            .map(|entry| (crate::author_line(&entry.author), entry.author.relation))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("claude for you".to_owned(), AuthorRelation::Software),
+                ("ada".to_owned(), AuthorRelation::Person),
+                ("You".to_owned(), AuthorRelation::Reader),
+            ]
+        );
+    }
 
-    doc.put(ROOT, "title", "Notes").unwrap();
-    tilo_resource::history::commit_stamped_at(&mut doc, T0);
-    let entries = HistorySource::new()
-        .without_record_genesis()
-        .entries(&mut doc);
-    assert_eq!(entries.len(), 1, "only the edit someone made");
-    assert_eq!(entries[0].timestamp, at(T0));
-    assert!(!entries[0].is_genesis());
-    assert_eq!(
-        entries[0].author.identity_short,
-        short_id(&doc.get_actor().to_hex_string())
-    );
-    assert_eq!(genesis_actor(&AutoCommit::new()), None);
-}
-
-#[test]
-fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
-    use crate::record::{RecordCheckout, RecordKind, RecordOwners, genesis_actor};
-    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let store = RecordOwners::portable(cache)
-        .open("test", "workspace")
-        .unwrap();
-    let checkout = RecordCheckout::package_primary(RecordKind::new("chat"));
-    store
-        .reserve_record(&checkout)
-        .unwrap()
-        .initialize(|doc| {
-            doc.put(ROOT, "categories", "general")
-                .map_err(|error| error.to_string())?;
-            Ok(())
-        })
-        .unwrap();
-    let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
-    assert_eq!(
-        genesis_actor(&doc),
-        None,
-        "a primary document records no identity"
-    );
-    let kept = HistorySource::new().entries(&mut doc);
-    assert_eq!(
-        kept.len(),
-        1,
-        "its own history keeps the version it was created as"
-    );
-    assert!(kept[0].is_genesis());
-    assert!(
-        HistorySource::new()
-            .without_record_genesis()
-            .entries(&mut doc)
-            .is_empty(),
-        "nobody made the root change at time zero"
-    );
-
-    doc.put(ROOT, "categories", "general, voice").unwrap();
-    doc.commit();
-    assert!(
-        !HistorySource::new().entries(&mut doc)[1].is_genesis(),
-        "an edit at time zero is not the genesis"
-    );
-    assert_eq!(
-        HistorySource::new()
-            .without_record_genesis()
-            .entries(&mut doc)
-            .len(),
-        1,
-        "an edit without a time is still someone's"
-    );
-
-    let mut first = AutoCommit::new();
-    first.put(ROOT, "text", "typed").unwrap();
-    first.commit();
-    assert_eq!(
-        HistorySource::new()
-            .without_record_genesis()
-            .entries(&mut first)
-            .len(),
-        1,
-        "a document's first edit is not a genesis unless its store made it"
-    );
-}
-
-#[test]
-fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
-    use crate::widget::history::AuthorRelation;
-    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
-    let mut doc = AutoCommit::new();
-    let step = |doc: &mut AutoCommit, key: &str, invoker: ActionInvoker| {
-        doc.put(ROOT, key, "x").unwrap();
+    phase an_agents_change_reads_as_the_agent_on_behalf_of_its_person;
+    // An agent's change is the agent's, on behalf of its person: by the
+    // invoker its entry records, and by its own key when it writes as itself.
+    // The row names both and carries them as data.
+    {
+        use crate::widget::history::{AuthorRelation, HistoryAttribution};
+        use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+        // Through the action surface: the host stamps the authenticated agent
+        // and the person it acted for on the change.
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "x").unwrap();
         let context = ActionContext::for_resource("r", "doc", "Report")
             .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
                 tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
                 [],
             )))
-            .with_invoker(invoker);
+            .with_invoker(
+                ActionInvoker::actor("agent:claude")
+                    .with_kind(ActorKind::Agent)
+                    .acting_for("ada"),
+            );
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
-    };
-    step(&mut doc, "mine", ActionInvoker::actor("kai"));
-    step(&mut doc, "theirs", ActionInvoker::actor("ada"));
-    step(
-        &mut doc,
-        "agents",
-        ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
-            .acting_for("kai"),
-    );
-    let mut authors = AuthorDirectory::new();
-    authors.set_reader("kai");
-    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
-    let rows: Vec<(String, AuthorRelation)> = entries
-        .iter()
-        .rev()
-        .take(3)
-        .map(|entry| (crate::author_line(&entry.author), entry.author.relation))
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            ("claude for you".to_owned(), AuthorRelation::Software),
-            ("ada".to_owned(), AuthorRelation::Person),
-            ("You".to_owned(), AuthorRelation::Reader),
-        ]
-    );
-}
-
-/// An agent's change is the agent's, on behalf of its person: by the
-/// invoker its entry records, and by its own key when it writes as itself.
-/// The row names both and carries them as data.
-#[test]
-fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
-    use crate::widget::history::{AuthorRelation, HistoryAttribution};
-    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
-    // Through the action surface: the host stamps the authenticated agent
-    // and the person it acted for on the change.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "title", "x").unwrap();
-    let context = ActionContext::for_resource("r", "doc", "Report")
-        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
-            [],
-        )))
-        .with_invoker(
-            ActionInvoker::actor("agent:claude")
-                .with_kind(ActorKind::Agent)
-                .acting_for("ada"),
+        let mut authors = AuthorDirectory::new();
+        authors.set_reader("kai");
+        let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+        let author = &entries.last().unwrap().author;
+        assert_eq!(author.name, "claude");
+        assert_eq!(crate::author_line(author), "claude for ada");
+        assert_eq!(author.relation, AuthorRelation::Software);
+        assert_eq!(
+            author.attribution,
+            Some(HistoryAttribution {
+                actor: "agent:claude".into(),
+                kind: ActorKind::Agent,
+                on_behalf_of: Some("ada".into()),
+                on_behalf_of_name: Some("ada".into()),
+            })
         );
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
-    let mut authors = AuthorDirectory::new();
-    authors.set_reader("kai");
-    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
-    let author = &entries.last().unwrap().author;
-    assert_eq!(author.name, "claude");
-    assert_eq!(crate::author_line(author), "claude for ada");
-    assert_eq!(author.relation, AuthorRelation::Software);
-    assert_eq!(
-        author.attribution,
-        Some(HistoryAttribution {
-            actor: "agent:claude".into(),
+
+        // As itself: a delegated agent signs with its own device key, which the
+        // directory knows as the agent of its person, in its own colour.
+        let device = [7_u8; 32];
+        let person = hex::encode([9_u8; 32]);
+        let mut doc = AutoCommit::new();
+        doc.set_actor(ActorId::from(device.as_slice()));
+        doc.put(ROOT, "title", "y").unwrap();
+        doc.commit();
+        let mut authors = AuthorDirectory::new();
+        authors.set_reader("kai");
+        authors.register_person(&person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_agent(
+            &hex::encode(device),
+            HistoryAgent {
+                principal: "agent:scribe".into(),
+                label: "Scribe".into(),
+                rgb: (10, 20, 30),
+                person: person.clone(),
+            },
+        );
+        let entries = HistorySource::new()
+            .with_authors(authors.clone())
+            .entries(&mut doc);
+        let author = &entries.last().unwrap().author;
+        assert_eq!(author.name, "Scribe");
+        assert_eq!(crate::author_line(author), "Scribe for Ada");
+        // Its run, a task going by its own name, still reads as the agent's.
+        let mut run = author.clone();
+        run.task = Some("Scribe".into());
+        assert_eq!(crate::author_line(&run), "Scribe for Ada");
+        assert_eq!(author.relation, AuthorRelation::Software);
+        assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
+        assert_eq!(
+            author.attribution,
+            Some(HistoryAttribution {
+                actor: "agent:scribe".into(),
+                kind: ActorKind::Agent,
+                on_behalf_of: Some(person.clone()),
+                on_behalf_of_name: Some("Ada".into()),
+            })
+        );
+        // The person reading it sees it was done for them.
+        authors.set_reader(person);
+        let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+        assert_eq!(
+            crate::author_line(&entries.last().unwrap().author),
+            "Scribe for you"
+        );
+    }
+
+    phase a_change_taken_in_a_task_is_named_by_the_task;
+    // A change taken in a task is attributed to that task: there are no
+    // separate agents, so history names the person through the task the change
+    // was made in, and the task's id and label stay on the row as data.
+    {
+        use crate::widget::history::AuthorRelation;
+        use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "x").unwrap();
+        let context = ActionContext::default()
+            .with_group(
+                "11111111-1111-4111-8111-111111111111",
+                "Prepare Q3 financials",
+                "task",
+            )
+            .with_invoker(
+                ActionInvoker::actor("agent:claude")
+                    .with_kind(ActorKind::Agent)
+                    .acting_for("ada"),
+            );
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        let mut authors = AuthorDirectory::new();
+        authors.set_reader("kai");
+        let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+        let entry = entries.last().expect("the change");
+        assert_eq!(entry.author.name, "claude");
+        assert_eq!(
+            crate::author_line(&entry.author),
+            "ada via task ‘Prepare Q3 financials’"
+        );
+        assert_eq!(entry.author.relation, AuthorRelation::Software);
+        let group = entry
+            .context
+            .as_ref()
+            .and_then(|context| context.group.as_ref())
+            .expect("the task the change was taken in");
+        assert_eq!(group.kind, "task");
+        assert_eq!(group.label, "Prepare Q3 financials");
+        assert_eq!(group.id, "11111111-1111-4111-8111-111111111111");
+    }
+
+    phase a_wire_author_reads_as_one_line;
+    // An author as an app reads it over the wire words its row once: the
+    // agent's own name, whom it acted for, and the reader as themselves.
+    {
+        use tilo_actions::ActorKind;
+        use tilo_actions::remote::workspace_activity as wire;
+        let agent = wire::Author {
+            name: "claude".into(),
+            relation: wire::Relation::Software,
             kind: ActorKind::Agent,
             on_behalf_of: Some("ada".into()),
-            on_behalf_of_name: Some("ada".into()),
-        })
-    );
-
-    // As itself: a delegated agent signs with its own device key, which the
-    // directory knows as the agent of its person, in its own colour.
-    let device = [7_u8; 32];
-    let person = hex::encode([9_u8; 32]);
-    let mut doc = AutoCommit::new();
-    doc.set_actor(ActorId::from(device.as_slice()));
-    doc.put(ROOT, "title", "y").unwrap();
-    doc.commit();
-    let mut authors = AuthorDirectory::new();
-    authors.set_reader("kai");
-    authors.register_person(&person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
-    authors.register_agent(
-        &hex::encode(device),
-        HistoryAgent {
-            principal: "agent:scribe".into(),
-            label: "Scribe".into(),
-            rgb: (10, 20, 30),
-            person: person.clone(),
-        },
-    );
-    let entries = HistorySource::new()
-        .with_authors(authors.clone())
-        .entries(&mut doc);
-    let author = &entries.last().unwrap().author;
-    assert_eq!(author.name, "Scribe");
-    assert_eq!(crate::author_line(author), "Scribe for Ada");
-    // Its run, a task going by its own name, still reads as the agent's.
-    let mut run = author.clone();
-    run.task = Some("Scribe".into());
-    assert_eq!(crate::author_line(&run), "Scribe for Ada");
-    assert_eq!(author.relation, AuthorRelation::Software);
-    assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
-    assert_eq!(
-        author.attribution,
-        Some(HistoryAttribution {
-            actor: "agent:scribe".into(),
-            kind: ActorKind::Agent,
-            on_behalf_of: Some(person.clone()),
-            on_behalf_of_name: Some("Ada".into()),
-        })
-    );
-    // The person reading it sees it was done for them.
-    authors.set_reader(person);
-    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
-    assert_eq!(
-        crate::author_line(&entries.last().unwrap().author),
-        "Scribe for you"
-    );
+            ..wire::Author::default()
+        };
+        assert_eq!(crate::wire_author_line(&agent), "claude for ada");
+        let software = wire::Author {
+            for_reader: true,
+            ..agent
+        };
+        assert_eq!(crate::wire_author_line(&software), "claude for you");
+        let reader = wire::Author {
+            name: "Ada".into(),
+            relation: wire::Relation::Reader,
+            ..wire::Author::default()
+        };
+        assert_eq!(crate::wire_author_line(&reader), "You");
+        let person = wire::Author {
+            name: "Grace".into(),
+            ..wire::Author::default()
+        };
+        assert_eq!(crate::wire_author_line(&person), "Grace");
+    }
 }
 
-/// A change taken in a task is attributed to that task: there are no
-/// separate agents, so history names the person through the task the change
-/// was made in, and the task's id and label stay on the row as data.
-#[test]
-fn a_change_taken_in_a_task_is_named_by_the_task() {
-    use crate::widget::history::AuthorRelation;
-    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "title", "x").unwrap();
-    let context = ActionContext::default()
-        .with_group(
-            "11111111-1111-4111-8111-111111111111",
-            "Prepare Q3 financials",
-            "task",
-        )
-        .with_invoker(
-            ActionInvoker::actor("agent:claude")
-                .with_kind(ActorKind::Agent)
-                .acting_for("ada"),
+tilo_test_env::scenario! {
+    fn a_feed_leaves_out_genesis_and_joins_typing_into_one_change;
+
+    phase a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did;
+    {
+        use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, genesis_actor};
+        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+        let store = RecordOwners::portable(cache)
+            .open("test", "workspace")
+            .unwrap();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+        store.create_record(&checkout).unwrap();
+        let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
+        let genesis = genesis_actor(&doc).expect("a record names its genesis actor");
+        assert!(
+            tilo_resource::history::versions(&mut doc)
+                .iter()
+                .any(|v| v.actor == genesis.to_hex_string() && v.time_ms == 0),
+            "the genesis is made by the record's derived actor at time zero"
         );
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
-    let mut authors = AuthorDirectory::new();
-    authors.set_reader("kai");
-    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
-    let entry = entries.last().expect("the change");
-    assert_eq!(entry.author.name, "claude");
-    assert_eq!(
-        crate::author_line(&entry.author),
-        "ada via task ‘Prepare Q3 financials’"
-    );
-    assert_eq!(entry.author.relation, AuthorRelation::Software);
-    let group = entry
-        .context
-        .as_ref()
-        .and_then(|context| context.group.as_ref())
-        .expect("the task the change was taken in");
-    assert_eq!(group.kind, "task");
-    assert_eq!(group.label, "Prepare Q3 financials");
-    assert_eq!(group.id, "11111111-1111-4111-8111-111111111111");
+        let kept = HistorySource::new().entries(&mut doc);
+        assert_eq!(
+            kept.len(),
+            1,
+            "a document's history keeps the version it was created as"
+        );
+        assert!(kept[0].is_genesis(), "and says it is the genesis");
+        assert_eq!(kept[0].summary, "Created");
+        assert!(
+            !kept[0].is_revertible(),
+            "creation is restored to, not reverted"
+        );
+        assert!(
+            HistorySource::new()
+                .without_record_genesis()
+                .entries(&mut doc)
+                .is_empty()
+        );
+
+        doc.put(ROOT, "title", "Notes").unwrap();
+        tilo_resource::history::commit_stamped_at(&mut doc, T0);
+        let entries = HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut doc);
+        assert_eq!(entries.len(), 1, "only the edit someone made");
+        assert_eq!(entries[0].timestamp, at(T0));
+        assert!(!entries[0].is_genesis());
+        assert_eq!(
+            entries[0].author.identity_short,
+            short_id(&doc.get_actor().to_hex_string())
+        );
+        assert_eq!(genesis_actor(&AutoCommit::new()), None);
+    }
+
+    phase a_package_primary_documents_genesis_is_left_out_of_a_feed_too;
+    {
+        use crate::record::{RecordCheckout, RecordKind, RecordOwners, genesis_actor};
+        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+        let store = RecordOwners::portable(cache)
+            .open("test", "workspace")
+            .unwrap();
+        let checkout = RecordCheckout::package_primary(RecordKind::new("chat"));
+        store
+            .reserve_record(&checkout)
+            .unwrap()
+            .initialize(|doc| {
+                doc.put(ROOT, "categories", "general")
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
+        assert_eq!(
+            genesis_actor(&doc),
+            None,
+            "a primary document records no identity"
+        );
+        let kept = HistorySource::new().entries(&mut doc);
+        assert_eq!(
+            kept.len(),
+            1,
+            "its own history keeps the version it was created as"
+        );
+        assert!(kept[0].is_genesis());
+        assert!(
+            HistorySource::new()
+                .without_record_genesis()
+                .entries(&mut doc)
+                .is_empty(),
+            "nobody made the root change at time zero"
+        );
+
+        doc.put(ROOT, "categories", "general, voice").unwrap();
+        doc.commit();
+        assert!(
+            !HistorySource::new().entries(&mut doc)[1].is_genesis(),
+            "an edit at time zero is not the genesis"
+        );
+        assert_eq!(
+            HistorySource::new()
+                .without_record_genesis()
+                .entries(&mut doc)
+                .len(),
+            1,
+            "an edit without a time is still someone's"
+        );
+
+        let mut first = AutoCommit::new();
+        first.put(ROOT, "text", "typed").unwrap();
+        first.commit();
+        assert_eq!(
+            HistorySource::new()
+                .without_record_genesis()
+                .entries(&mut first)
+                .len(),
+            1,
+            "a document's first edit is not a genesis unless its store made it"
+        );
+    }
+
+    phase typing_in_one_field_is_one_change_until_the_person_stops;
+    {
+        use tilo_actions::{ActionContext, ActionId, Did, EditOp, FieldEdit, PathStep, Scalar};
+        let typed = |row: &str, text: &str| ActionContext {
+            what: Some(Did::Edit(FieldEdit {
+                ty: "plot-fn".into(),
+                field: "expr".into(),
+                path: vec![
+                    PathStep::Field("funcs".into()),
+                    PathStep::Item(row.into()),
+                    PathStep::Field("expr".into()),
+                ],
+                op: EditOp::Replace,
+                old: None,
+                new: Some(Scalar::text(text)),
+                args: std::collections::BTreeMap::new(),
+            })),
+            gesture: Some(ActionId::new()),
+            ..ActionContext::default()
+        };
+        let mut doc = AutoCommit::new();
+        doc.set_actor(ActorId::from(b"typist".as_slice()));
+        let type_at = |doc: &mut AutoCommit, row: &str, text: &str, secs: i64| {
+            doc.put(ROOT, row, text).unwrap();
+            doc.commit_with(
+                CommitOptions::default()
+                    .with_time(secs)
+                    .with_message(typed(row, text).change_message().unwrap()),
+            );
+        };
+        for (secs, text) in [(100, "sin"), (101, "sin("), (102, "sin(x"), (103, "sin(x)")] {
+            type_at(&mut doc, "a", text, secs);
+        }
+        type_at(&mut doc, "b", "x", 104);
+        type_at(&mut doc, "b", "x/2", 105);
+        type_at(&mut doc, "a", "sin(x)+1", 105 + 60);
+
+        let rows = HistorySource::new().entries(&mut doc);
+        let formulas: Vec<String> = rows
+            .iter()
+            .filter_map(|row| match row.context.as_ref()?.what.as_ref()? {
+                Did::Edit(edit) => edit.new.as_ref()?.as_str().map(str::to_owned),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(formulas, ["sin(x)", "x/2", "sin(x)+1"], "{rows:?}");
+
+        let first = rows
+            .iter()
+            .find(|row| row.timestamp == timestamp_from_ms(103_000))
+            .expect("the first row is as of its last keystroke");
+        let changes = revert::changes_of_entries(&mut doc, &[first.id]);
+        assert_eq!(changes.len(), 4, "restoring the row takes back all of it");
+    }
 }
 
 // N. A long-lived reader reads each change once and says what a fresh read says
@@ -1314,91 +1427,4 @@ fn passed_over_changes_make_no_row_and_take_no_place_in_the_window() {
     let mut scratch = HistoryLog::default();
     let (fresh, _) = read_since(&viewer, &mut doc, &mut scratch);
     assert_eq!(fresh, rows);
-}
-
-#[test]
-fn typing_in_one_field_is_one_change_until_the_person_stops() {
-    use tilo_actions::{ActionContext, ActionId, Did, EditOp, FieldEdit, PathStep, Scalar};
-    let typed = |row: &str, text: &str| ActionContext {
-        what: Some(Did::Edit(FieldEdit {
-            ty: "plot-fn".into(),
-            field: "expr".into(),
-            path: vec![
-                PathStep::Field("funcs".into()),
-                PathStep::Item(row.into()),
-                PathStep::Field("expr".into()),
-            ],
-            op: EditOp::Replace,
-            old: None,
-            new: Some(Scalar::text(text)),
-            args: std::collections::BTreeMap::new(),
-        })),
-        gesture: Some(ActionId::new()),
-        ..ActionContext::default()
-    };
-    let mut doc = AutoCommit::new();
-    doc.set_actor(ActorId::from(b"typist".as_slice()));
-    let type_at = |doc: &mut AutoCommit, row: &str, text: &str, secs: i64| {
-        doc.put(ROOT, row, text).unwrap();
-        doc.commit_with(
-            CommitOptions::default()
-                .with_time(secs)
-                .with_message(typed(row, text).change_message().unwrap()),
-        );
-    };
-    for (secs, text) in [(100, "sin"), (101, "sin("), (102, "sin(x"), (103, "sin(x)")] {
-        type_at(&mut doc, "a", text, secs);
-    }
-    type_at(&mut doc, "b", "x", 104);
-    type_at(&mut doc, "b", "x/2", 105);
-    type_at(&mut doc, "a", "sin(x)+1", 105 + 60);
-
-    let rows = HistorySource::new().entries(&mut doc);
-    let formulas: Vec<String> = rows
-        .iter()
-        .filter_map(|row| match row.context.as_ref()?.what.as_ref()? {
-            Did::Edit(edit) => edit.new.as_ref()?.as_str().map(str::to_owned),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(formulas, ["sin(x)", "x/2", "sin(x)+1"], "{rows:?}");
-
-    let first = rows
-        .iter()
-        .find(|row| row.timestamp == timestamp_from_ms(103_000))
-        .expect("the first row is as of its last keystroke");
-    let changes = revert::changes_of_entries(&mut doc, &[first.id]);
-    assert_eq!(changes.len(), 4, "restoring the row takes back all of it");
-}
-
-/// An author as an app reads it over the wire words its row once: the
-/// agent's own name, whom it acted for, and the reader as themselves.
-#[test]
-fn a_wire_author_reads_as_one_line() {
-    use tilo_actions::ActorKind;
-    use tilo_actions::remote::workspace_activity as wire;
-    let agent = wire::Author {
-        name: "claude".into(),
-        relation: wire::Relation::Software,
-        kind: ActorKind::Agent,
-        on_behalf_of: Some("ada".into()),
-        ..wire::Author::default()
-    };
-    assert_eq!(crate::wire_author_line(&agent), "claude for ada");
-    let software = wire::Author {
-        for_reader: true,
-        ..agent
-    };
-    assert_eq!(crate::wire_author_line(&software), "claude for you");
-    let reader = wire::Author {
-        name: "Ada".into(),
-        relation: wire::Relation::Reader,
-        ..wire::Author::default()
-    };
-    assert_eq!(crate::wire_author_line(&reader), "You");
-    let person = wire::Author {
-        name: "Grace".into(),
-        ..wire::Author::default()
-    };
-    assert_eq!(crate::wire_author_line(&person), "Grace");
 }

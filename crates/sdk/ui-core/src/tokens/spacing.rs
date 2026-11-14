@@ -151,32 +151,38 @@ pub enum SpacingStep {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_rhythm_is_monotone_scale_steps_and_scales_with_the_scale() {
-        let base = Spacing::BASE;
-        let r = base.rhythm;
-        assert_eq!(
-            [r.tight, r.related, r.sibling, r.section, r.group],
-            [base.s1, base.s2, base.s3, base.s4, base.s6]
-        );
-        let scaled = base.scaled(1.5);
-        assert!((scaled.rhythm.section - base.s4 * 1.5).abs() < 1e-4);
-        assert!((scaled.rhythm.tight - scaled.s1).abs() < 1e-4);
-        let dense = crate::Theme::dark().with_ui_scale(2.0);
-        assert!((dense.tokens.spacing.rhythm.sibling - 24.0).abs() < 1e-4);
-    }
+    tilo_test_env::scenario! {
+        /// The spacing scale and the relationships that name its steps.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn spacing_is_scale_steps_named_by_relationship;
 
-    #[test]
-    fn each_relationship_names_its_scale_step() {
-        let r = Spacing::BASE.scaled(1.25).rhythm;
-        for (step, value) in [
-            (Rhythm::Tight, r.tight),
-            (Rhythm::Related, r.related),
-            (Rhythm::Sibling, r.sibling),
-            (Rhythm::Section, r.section),
-            (Rhythm::Group, r.group),
-        ] {
-            assert!((r.get(step) - value).abs() < f32::EPSILON, "{step:?}");
+        phase the_rhythm_is_monotone_scale_steps_and_scales_with_the_scale;
+        {
+            let base = Spacing::BASE;
+            let r = base.rhythm;
+            assert_eq!(
+                [r.tight, r.related, r.sibling, r.section, r.group],
+                [base.s1, base.s2, base.s3, base.s4, base.s6]
+            );
+            let scaled = base.scaled(1.5);
+            assert!((scaled.rhythm.section - base.s4 * 1.5).abs() < 1e-4);
+            assert!((scaled.rhythm.tight - scaled.s1).abs() < 1e-4);
+            let dense = crate::Theme::dark().with_ui_scale(2.0);
+            assert!((dense.tokens.spacing.rhythm.sibling - 24.0).abs() < 1e-4);
+        }
+
+        phase each_relationship_names_its_scale_step;
+        {
+            let r = Spacing::BASE.scaled(1.25).rhythm;
+            for (step, value) in [
+                (Rhythm::Tight, r.tight),
+                (Rhythm::Related, r.related),
+                (Rhythm::Sibling, r.sibling),
+                (Rhythm::Section, r.section),
+                (Rhythm::Group, r.group),
+            ] {
+                assert!((r.get(step) - value).abs() < f32::EPSILON, "{step:?}");
+            }
         }
     }
 }

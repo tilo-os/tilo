@@ -143,31 +143,35 @@ mod tests {
         map
     }
 
-    #[test]
-    fn rate_is_clamped_and_unknown_voices_fall_back_to_the_system_voice() {
-        let settings = ScreenReaderSettings::from_section(&section(serde_json::json!({
-            "screen_reader": true,
-            "screen_reader_rate": 900,
-            "screen_reader_voice": "klingon",
-        })));
-        assert!(settings.enabled);
-        assert!((settings.rate - 2.0).abs() < f32::EPSILON);
-        assert_eq!(settings.voice, ScreenReaderVoice::System);
-        assert_eq!(settings.voice.engine_voice(), None);
+    tilo_test_env::scenario! {
+        fn screen_reader_settings_clamp_their_rate_and_name_their_voices;
 
-        let settings = ScreenReaderSettings::from_section(&section(serde_json::json!({
-            "screen_reader_rate": 65,
-            "screen_reader_voice": "english_gb",
-        })));
-        assert!(!settings.enabled);
-        assert!((settings.rate - 0.65).abs() < f32::EPSILON);
-        assert_eq!(settings.voice.engine_voice(), Some("en-gb"));
-    }
+        phase rate_is_clamped_and_unknown_voices_fall_back_to_the_system_voice;
+        {
+            let settings = ScreenReaderSettings::from_section(&section(serde_json::json!({
+                "screen_reader": true,
+                "screen_reader_rate": 900,
+                "screen_reader_voice": "klingon",
+            })));
+            assert!(settings.enabled);
+            assert!((settings.rate - 2.0).abs() < f32::EPSILON);
+            assert_eq!(settings.voice, ScreenReaderVoice::System);
+            assert_eq!(settings.voice.engine_voice(), None);
 
-    #[test]
-    fn labels_round_trip() {
-        for voice in ScreenReaderVoice::ALL {
-            assert_eq!(ScreenReaderVoice::from_label(voice.label()), Some(*voice));
+            let settings = ScreenReaderSettings::from_section(&section(serde_json::json!({
+                "screen_reader_rate": 65,
+                "screen_reader_voice": "english_gb",
+            })));
+            assert!(!settings.enabled);
+            assert!((settings.rate - 0.65).abs() < f32::EPSILON);
+            assert_eq!(settings.voice.engine_voice(), Some("en-gb"));
+        }
+
+        phase labels_round_trip;
+        {
+            for voice in ScreenReaderVoice::ALL {
+                assert_eq!(ScreenReaderVoice::from_label(voice.label()), Some(*voice));
+            }
         }
     }
 }

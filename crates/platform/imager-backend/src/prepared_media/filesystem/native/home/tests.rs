@@ -108,98 +108,104 @@ fn fixture() -> (tempfile::TempDir, TargetDrive, Fixture) {
         },
     )
 }
-#[test]
-fn exact_provisioned_partition_formats_once_and_reuses_verified_ext4() {
-    let (_temp, target, backend) = fixture();
-    with_data(&backend, &target, &AtomicBool::new(false), |grant| {
-        fs::write(grant.root.join("sealed-home"), b"ciphertext")
-    })
-    .expect("actual delivery controller");
-    assert_eq!(*backend.calls.borrow(), ["format", "mount", "unmount"]);
-    assert_eq!(
-        fs::read(backend.root.join("sealed-home")).expect("delivered bytes"),
-        b"ciphertext"
-    );
-    backend.calls.borrow_mut().clear();
-    with_data(&backend, &target, &AtomicBool::new(false), |_| Ok(())).expect("retry");
-    assert_eq!(*backend.calls.borrow(), ["mount", "unmount"]);
-}
-#[test]
-fn changed_extent_incompatible_filesystem_and_cancellation_never_format() {
-    let (_temp, target, backend) = fixture();
-    assert!(with_data(&backend, &target, &AtomicBool::new(true), |_| Ok(())).is_err());
-    assert!(backend.calls.borrow().is_empty());
-    backend
-        .rows
-        .borrow_mut()
-        .first_mut()
-        .and_then(|r| r.children.first_mut())
-        .expect("partition")
-        .fstype = Some("xfs".into());
-    assert!(with_data(&backend, &target, &AtomicBool::new(false), |_| Ok(())).is_err());
-    assert!(backend.calls.borrow().is_empty());
-    let mut rows = backend.rows.borrow_mut();
-    let part = rows
-        .first_mut()
-        .and_then(|r| r.children.first_mut())
-        .expect("partition");
-    part.fstype = None;
-    part.start = Some(1);
-    drop(rows);
-    assert!(with_data(&backend, &target, &AtomicBool::new(false), |_| Ok(())).is_err());
-    assert!(backend.calls.borrow().is_empty());
-}
 
-#[test]
-fn new_partition_identity_reformats_old_ext4_but_exact_retry_preserves_export() {
-    use std::os::unix::fs::FileExt;
-    let (_temp, target, backend) = fixture();
-    let cancel = AtomicBool::new(false);
-    with_data(&backend, &target, &cancel, |grant| {
-        fs::write(grant.root.join("old-ciphertext"), b"old sealed data")
-    })
-    .expect("first owned filesystem");
-    backend.calls.borrow_mut().clear();
-    with_data(&backend, &target, &cancel, |_| Ok(())).expect("exact retry");
-    assert_eq!(*backend.calls.borrow(), ["mount", "unmount"]);
-    assert_eq!(
-        fs::read(backend.root.join("old-ciphertext")).expect("preserved ciphertext"),
-        b"old sealed data"
-    );
-    let (_image_temp, _image_path, image) = disk();
-    let mut bytes = vec![0; 4 * 1024 * 1024];
-    image.read_exact_at(&mut bytes, 0).expect("original image");
-    backend
-        .raw
-        .write_all_at(&bytes, 0)
-        .expect("rewrite approved installer image prefix");
-    let new_binding = crate::media_layout::provision(
-        &backend.raw,
-        4 * 1024 * 1024,
-        target.size,
-        target.stable_id.as_deref().expect("stable media"),
-        &|| false,
-    )
-    .expect("new GPT identity at same extent");
-    backend
-        .rows
-        .borrow_mut()
-        .first_mut()
-        .and_then(|row| row.children.first_mut())
-        .expect("partition")
-        .partuuid = Some(new_binding.partition_guid);
-    backend.calls.borrow_mut().clear();
-    with_data(&backend, &target, &cancel, |grant| {
-        fs::write(grant.root.join("new-ciphertext"), b"new sealed data")
-    })
-    .expect("new identity reformats old filesystem");
-    assert_eq!(
-        *backend.calls.borrow(),
-        ["mount", "unmount", "format", "mount", "unmount"]
-    );
-    assert!(!backend.root.join("old-ciphertext").exists());
-    assert_eq!(
-        fs::read(backend.root.join("new-ciphertext")).expect("new export"),
-        b"new sealed data"
-    );
+tilo_test_env::scenario! {
+    fn home_partition_formats_only_the_exact_provisioned_extent;
+
+    phase exact_provisioned_partition_formats_once_and_reuses_verified_ext4;
+    {
+        let (_temp, target, backend) = fixture();
+        with_data(&backend, &target, &AtomicBool::new(false), |grant| {
+            fs::write(grant.root.join("sealed-home"), b"ciphertext")
+        })
+        .expect("actual delivery controller");
+        assert_eq!(*backend.calls.borrow(), ["format", "mount", "unmount"]);
+        assert_eq!(
+            fs::read(backend.root.join("sealed-home")).expect("delivered bytes"),
+            b"ciphertext"
+        );
+        backend.calls.borrow_mut().clear();
+        with_data(&backend, &target, &AtomicBool::new(false), |_| Ok(())).expect("retry");
+        assert_eq!(*backend.calls.borrow(), ["mount", "unmount"]);
+    }
+
+    phase changed_extent_incompatible_filesystem_and_cancellation_never_format;
+    {
+        let (_temp, target, backend) = fixture();
+        assert!(with_data(&backend, &target, &AtomicBool::new(true), |_| Ok(())).is_err());
+        assert!(backend.calls.borrow().is_empty());
+        backend
+            .rows
+            .borrow_mut()
+            .first_mut()
+            .and_then(|r| r.children.first_mut())
+            .expect("partition")
+            .fstype = Some("xfs".into());
+        assert!(with_data(&backend, &target, &AtomicBool::new(false), |_| Ok(())).is_err());
+        assert!(backend.calls.borrow().is_empty());
+        let mut rows = backend.rows.borrow_mut();
+        let part = rows
+            .first_mut()
+            .and_then(|r| r.children.first_mut())
+            .expect("partition");
+        part.fstype = None;
+        part.start = Some(1);
+        drop(rows);
+        assert!(with_data(&backend, &target, &AtomicBool::new(false), |_| Ok(())).is_err());
+        assert!(backend.calls.borrow().is_empty());
+    }
+
+    phase new_partition_identity_reformats_old_ext4_but_exact_retry_preserves_export;
+    {
+        use std::os::unix::fs::FileExt;
+        let (_temp, target, backend) = fixture();
+        let cancel = AtomicBool::new(false);
+        with_data(&backend, &target, &cancel, |grant| {
+            fs::write(grant.root.join("old-ciphertext"), b"old sealed data")
+        })
+        .expect("first owned filesystem");
+        backend.calls.borrow_mut().clear();
+        with_data(&backend, &target, &cancel, |_| Ok(())).expect("exact retry");
+        assert_eq!(*backend.calls.borrow(), ["mount", "unmount"]);
+        assert_eq!(
+            fs::read(backend.root.join("old-ciphertext")).expect("preserved ciphertext"),
+            b"old sealed data"
+        );
+        let (_image_temp, _image_path, image) = disk();
+        let mut bytes = vec![0; 4 * 1024 * 1024];
+        image.read_exact_at(&mut bytes, 0).expect("original image");
+        backend
+            .raw
+            .write_all_at(&bytes, 0)
+            .expect("rewrite approved installer image prefix");
+        let new_binding = crate::media_layout::provision(
+            &backend.raw,
+            4 * 1024 * 1024,
+            target.size,
+            target.stable_id.as_deref().expect("stable media"),
+            &|| false,
+        )
+        .expect("new GPT identity at same extent");
+        backend
+            .rows
+            .borrow_mut()
+            .first_mut()
+            .and_then(|row| row.children.first_mut())
+            .expect("partition")
+            .partuuid = Some(new_binding.partition_guid);
+        backend.calls.borrow_mut().clear();
+        with_data(&backend, &target, &cancel, |grant| {
+            fs::write(grant.root.join("new-ciphertext"), b"new sealed data")
+        })
+        .expect("new identity reformats old filesystem");
+        assert_eq!(
+            *backend.calls.borrow(),
+            ["mount", "unmount", "format", "mount", "unmount"]
+        );
+        assert!(!backend.root.join("old-ciphertext").exists());
+        assert_eq!(
+            fs::read(backend.root.join("new-ciphertext")).expect("new export"),
+            b"new sealed data"
+        );
+    }
 }

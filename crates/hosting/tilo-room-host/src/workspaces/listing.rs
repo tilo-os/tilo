@@ -37,16 +37,13 @@ use tilo_peer_state::join_ledger::request_digest;
 use tilo_relay_protocol::directory::{
     DirectoryEntry, DoorJoin, DoorReport, Face, Listing, MAX_FACES, door_path,
 };
-use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice, WorkspaceRole};
+use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
 use super::{CollaborationError, GovernedWorkspace, Workspaces};
 
-/// Where a relay kept its public workspaces' listings before a workspace's
-/// door was part of its governance ([`Workspaces::adopt_listings_file`]).
-const LISTINGS_FILE: &str = "listings.json";
 /// How long a door's invitation and its token stay good: time for the
 /// person's device to redeem it now, not to keep it.
 const DOOR_INVITATION_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -187,12 +184,12 @@ fn faces(
 /// The part an invitation hands a member who holds `role`, so that redeeming
 /// it leaves them as they are. The owner holds the workspace whatever an
 /// invitation names: none is theirs.
-const fn invited_part(role: Role) -> Option<WorkspaceRole> {
+const fn invited_part(role: Role) -> Option<Role> {
     match role {
-        Role::Viewer => Some(WorkspaceRole::Viewer),
-        Role::Commenter => Some(WorkspaceRole::Commenter),
-        Role::Editor => Some(WorkspaceRole::Editor),
-        Role::Moderator => Some(WorkspaceRole::Moderator),
+        Role::Viewer => Some(Role::Viewer),
+        Role::Commenter => Some(Role::Commenter),
+        Role::Editor => Some(Role::Editor),
+        Role::Moderator => Some(Role::Moderator),
         Role::Owner => None,
     }
 }
@@ -200,21 +197,11 @@ const fn invited_part(role: Role) -> Option<WorkspaceRole> {
 /// The part a listing hands everyone who joins through the door. A listing hands
 /// out no more than an editor ([`DoorPolicy::checked`] refuses a moderator's or
 /// an owner's), so one written another way still hands out no governance.
-const fn listed_part(role: Role) -> WorkspaceRole {
+const fn listed_part(role: Role) -> Role {
     match role {
-        Role::Viewer => WorkspaceRole::Viewer,
-        Role::Commenter => WorkspaceRole::Commenter,
-        Role::Editor | Role::Moderator | Role::Owner => WorkspaceRole::Editor,
-    }
-}
-
-/// The part the wire names, as the workspace's policy names it.
-const fn action_role(role: WorkspaceRole) -> Role {
-    match role {
-        WorkspaceRole::Viewer => Role::Viewer,
-        WorkspaceRole::Commenter => Role::Commenter,
-        WorkspaceRole::Editor => Role::Editor,
-        WorkspaceRole::Moderator => Role::Moderator,
+        Role::Viewer => Role::Viewer,
+        Role::Commenter => Role::Commenter,
+        Role::Editor | Role::Moderator | Role::Owner => Role::Editor,
     }
 }
 
@@ -343,7 +330,7 @@ impl Workspaces {
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         let settling = ListingPolicy {
             description: listing.description,
-            default_role: action_role(listing.default_role),
+            default_role: listing.default_role,
         };
         let door = self
             .settle_door(workspace, device, |door| {
@@ -435,7 +422,7 @@ impl Workspaces {
             .peer()
             .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
             .ok()
-            .map(|permissions| permissions.policy)
+            .map(|permissions| (*permissions.policy).clone())
     }
 
     /// The role `user` holds in `workspace` as one of its members now: `None`
@@ -468,53 +455,6 @@ impl Workspaces {
             }
         }
         listed
-    }
-
-    /// Take over the listings a relay kept in [`LISTINGS_FILE`] before a
-    /// workspace's door was part of its governance: each workspace that file
-    /// lists, whose door lists nothing yet, is listed again as its owner listed
-    /// it, settled by this host as the workspace's governor. The file then
-    /// moves beside the records as `listings.json.v1`, so going back to the
-    /// build that wrote it still finds it. Nothing to do when there is none.
-    ///
-    /// A listing whose workspace is gone, or whose door this host may not
-    /// settle, is left out and said; the rest are still taken over.
-    ///
-    /// # Errors
-    ///
-    /// The file cannot be read, does not parse, or cannot be moved.
-    pub(super) async fn adopt_listings_file(&self) -> Result<(), String> {
-        #[derive(serde::Deserialize)]
-        struct Kept {
-            /// Each public workspace's listing, by workspace UUID.
-            workspaces: BTreeMap<String, Listing>,
-        }
-        let path = self.inner.dir.join(LISTINGS_FILE);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(format!("{}: {error}", path.display())),
-        };
-        let kept: Kept = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        let host = self.inner.host.cert.clone();
-        for (workspace, listing) in kept.workspaces {
-            if self.door_policy(&workspace).await.is_none() {
-                tracing::warn!(%workspace, "a listing kept before the door names a workspace this host no longer keeps");
-                continue;
-            }
-            if self.is_listed(&workspace).await {
-                continue;
-            }
-            match self.publish(&workspace, &host, listing).await {
-                Ok(_) => tracing::info!(%workspace, "listed again as it was before the door"),
-                Err(error) => {
-                    tracing::error!(%workspace, %error, "a listing kept before the door was not taken over");
-                }
-            }
-        }
-        std::fs::rename(&path, path.with_file_name(format!("{LISTINGS_FILE}.v1")))
-            .map_err(|error| format!("{}: {error}", path.display()))
     }
 
     /// The workspace UUID after each change of a workspace's door.
@@ -709,7 +649,7 @@ impl Workspaces {
                         &host,
                         IssueInvitationRequest {
                             request_id: rand::random(),
-                            role: super::pages::member_role(role),
+                            role,
                             recipient_user_public_key: Some(user),
                             invitee_name: tilo_user_identity::display_name(&join.display_name)
                                 .ok()
@@ -744,7 +684,7 @@ impl Workspaces {
     fn door_grant(
         &self,
         workspace: &str,
-        role: WorkspaceRole,
+        role: Role,
         now: u64,
         token: &str,
     ) -> Result<PreAdmission, DoorRefusal> {
@@ -832,7 +772,7 @@ pub(super) mod tests {
     fn member(key: u8, name: &str, removed: bool) -> tilo_peer_state::GovernedMember {
         tilo_peer_state::GovernedMember {
             user_public_key: [key; 32],
-            role: tilo_peer_state::join::MemberRole::Commenter,
+            role: tilo_peer_state::join::Role::Commenter,
             display_name: Some(name.into()),
             active_device_keys: Vec::new(),
             removed,
@@ -869,9 +809,10 @@ mod door_tests {
         ActionHost as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,
     };
-    use tilo_peer_state::join::MemberRole;
+    use tilo_peer_state::join::Role;
+    use tilo_relay_protocol::WorkspaceId;
     use tilo_relay_protocol::directory::{DoorJoin, Listing};
-    use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
+    use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission};
     use tilo_relay_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::DeviceCert;
 
@@ -916,7 +857,7 @@ mod door_tests {
     /// The owner invokes the workspace's governance `verb` with `argument`.
     async fn govern(
         workspaces: &Workspaces,
-        workspace: u64,
+        workspace: WorkspaceId,
         owner: &DeviceCert,
         request: InvokeRequest,
     ) -> serde_json::Value {
@@ -996,7 +937,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1095,12 +1036,12 @@ mod door_tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "Coffee");
         assert_eq!(listed[0].description, "Talk about coffee");
-        assert_eq!(listed[0].default_role, WorkspaceRole::Commenter);
+        assert_eq!(listed[0].default_role, Role::Commenter);
 
         for _ in 0..2 {
             let (reply, cert) = walk_in(workspaces, &workspace).await;
             match reply.unwrap() {
-                JoinReply::Admitted { role, .. } => assert_eq!(role, WorkspaceRole::Commenter),
+                JoinReply::Admitted { role, .. } => assert_eq!(role, Role::Commenter),
                 other => panic!("the door admits at once: {other:?}"),
             }
             let members = workspaces.summary(&workspace).await.unwrap().members;
@@ -1108,7 +1049,7 @@ mod door_tests {
                 .iter()
                 .find(|member| member.user_public_key == cert.user_public_key)
                 .expect("a member now");
-            assert_eq!(joined.role, MemberRole::Commenter);
+            assert_eq!(joined.role, Role::Commenter);
         }
 
         // Another default from now on: the next person gets it.
@@ -1118,7 +1059,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: "Talk about coffee".into(),
-                    default_role: WorkspaceRole::Viewer,
+                    default_role: Role::Viewer,
                 },
             )
             .await
@@ -1128,7 +1069,7 @@ mod door_tests {
             matches!(
                 reply.unwrap(),
                 JoinReply::Admitted {
-                    role: WorkspaceRole::Viewer,
+                    role: Role::Viewer,
                     ..
                 }
             ),
@@ -1138,9 +1079,8 @@ mod door_tests {
     }
 
     /// Whether `device` may write in `workspace`'s Chat now: its role lets it
-    /// change Chat's content and Chat authors the workspace, the two things a
-    /// Tilo computer checks before it opens Chat writable rather than
-    /// read-only.
+    /// change Chat's content, the thing a Tilo computer checks before it opens
+    /// Chat writable rather than read-only.
     async fn writes_in_chat(workspaces: &Workspaces, workspace: &str, device: &DeviceCert) -> bool {
         const CHAT: &str = "so.tilo.chat";
         let state = workspaces.workspace(workspace).await.unwrap();
@@ -1155,14 +1095,11 @@ mod door_tests {
             &member.policy.node().app(CHAT),
             tilo_action_policy::ActionKind::Undoable,
             now,
-        ) && member
-            .policy
-            .app_authors(CHAT, &tilo_action_policy::Context::at_time(now))
+        )
     }
 
     #[tokio::test]
-    async fn a_person_who_joined_a_public_room_can_talk_in_its_chat_unless_the_host_withdraws_it() {
-        use std::collections::BTreeSet;
+    async fn a_person_who_joined_a_public_room_writes_in_its_chat_as_their_role_allows() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1174,7 +1111,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1183,66 +1120,27 @@ mod door_tests {
         assert!(matches!(
             reply.unwrap(),
             JoinReply::Admitted {
-                role: WorkspaceRole::Editor,
+                role: Role::Editor,
                 ..
             }
         ));
-        // An Editor of a workspace whose Chat authors nothing reads it only: what
-        // the Lounge showed ("You can read this conversation but not write
-        // in it").
-        assert!(!writes_in_chat(workspaces, &workspace, &guest).await);
-
-        let chat = BTreeSet::from(["so.tilo.chat".to_owned()]);
-        let none = BTreeSet::new();
-        assert!(
-            workspaces
-                .settle_app_authorship(&workspace, &owner, &chat, &none)
-                .await
-                .unwrap()
-        );
+        // An Editor writes in Chat, as in everything else in the workspace.
         assert!(writes_in_chat(workspaces, &workspace, &guest).await);
-        // Every start settles it again; a workspace already so is left alone.
-        assert!(
-            !workspaces
-                .settle_app_authorship(&workspace, &owner, &chat, &none)
-                .await
-                .unwrap()
-        );
-        let (_, later) = walk_in(workspaces, &workspace).await;
-        assert!(writes_in_chat(workspaces, &workspace, &later).await);
 
-        // Authorship is the app's; whether a person writes stays their
-        // role's, and moderation stays the host's.
+        // Whether a person writes stays their role's.
         workspaces
             .publish(
                 &workspace,
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Viewer,
+                    default_role: Role::Viewer,
                 },
             )
             .await
             .unwrap();
         let (_, viewer) = walk_in(workspaces, &workspace).await;
         assert!(!writes_in_chat(workspaces, &workspace, &viewer).await);
-        // Only the host settles it, not a member.
-        assert!(
-            workspaces
-                .settle_app_authorship(&workspace, &guest, &none, &chat)
-                .await
-                .is_err()
-        );
-        assert!(writes_in_chat(workspaces, &workspace, &guest).await);
-
-        // The host configured otherwise: Chat is read-only to members again.
-        assert!(
-            workspaces
-                .settle_app_authorship(&workspace, &owner, &none, &chat)
-                .await
-                .unwrap()
-        );
-        assert!(!writes_in_chat(workspaces, &workspace, &guest).await);
         relay.shutdown().await;
     }
 
@@ -1263,7 +1161,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1299,7 +1197,7 @@ mod door_tests {
             matches!(
                 walk_in_as(workspaces, &workspace, &join, &guest).await,
                 Ok(JoinReply::Admitted {
-                    role: WorkspaceRole::Editor,
+                    role: Role::Editor,
                     ..
                 })
             ),
@@ -1326,7 +1224,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1400,7 +1298,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1452,62 +1350,6 @@ mod door_tests {
         relay.shutdown().await;
     }
 
-    /// A relay that kept its listings in a file of their own, before a
-    /// workspace's door was part of its governance, lists the same workspaces
-    /// after the upgrade: each is listed again as its owner listed it, and the
-    /// old file stays beside the records.
-    #[tokio::test]
-    async fn a_listing_kept_before_the_door_lists_its_workspace_after_the_upgrade() {
-        let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspace = relay
-            .workspaces()
-            .create("Sketches")
-            .await
-            .unwrap()
-            .workspace;
-        relay.shutdown().await;
-        let file = dir.path().join("rooms").join(super::LISTINGS_FILE);
-        let kept = serde_json::json!({"workspaces": {
-            workspace.clone(): {"description": "Open to look at", "defaultRole": "Viewer"},
-            "00000000-0000-4000-8000-000000000000": {"description": "Gone", "defaultRole": "Editor"},
-        }})
-        .to_string();
-        std::fs::write(&file, &kept).unwrap();
-
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces().clone();
-        assert_eq!(
-            workspaces.listing(&workspace).await,
-            Some(Listing {
-                description: "Open to look at".into(),
-                default_role: WorkspaceRole::Viewer,
-            })
-        );
-        assert_eq!(workspaces.published_rooms().await, vec![workspace.clone()]);
-        assert!(!file.exists(), "taken over once");
-        assert_eq!(
-            std::fs::read_to_string(file.with_file_name("listings.json.v1")).unwrap(),
-            kept,
-            "the old file stays beside the records"
-        );
-        relay.shutdown().await;
-
-        // The workspace's door is its governance from then on: unlisted, it
-        // stays unlisted across a restart.
-        let relay = test_host(dir.path(), &key, &owner).await;
-        relay
-            .workspaces()
-            .unpublish(&workspace, &owner)
-            .await
-            .unwrap();
-        relay.shutdown().await;
-        let relay = test_host(dir.path(), &key, &owner).await;
-        assert!(relay.workspaces().published_rooms().await.is_empty());
-        relay.shutdown().await;
-    }
-
     /// A door that holds as many open grants as the workspace keeps says when
     /// it has room again instead of taking another invitation.
     #[tokio::test]
@@ -1523,7 +1365,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1570,7 +1412,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1600,7 +1442,7 @@ mod door_tests {
                     &owner,
                     Listing {
                         description: String::new(),
-                        default_role: WorkspaceRole::Moderator,
+                        default_role: Role::Moderator,
                     },
                 )
                 .await
@@ -1622,7 +1464,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1683,7 +1525,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: "Coffee and tea".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1772,7 +1614,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: "Coffee and tea".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1786,7 +1628,13 @@ mod door_tests {
         // device of theirs arrives, so the door does not see a stranger.
         let (_, declared) = guest_device();
         workspaces
-            .set_member_administrator(&workspace, &owner, rand::random(), declared.user_public_key)
+            .set_member_administrator(
+                &workspace,
+                &owner,
+                rand::random(),
+                declared.user_public_key,
+                None,
+            )
             .await
             .unwrap();
         let declared_join = DoorJoin {

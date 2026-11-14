@@ -51,9 +51,31 @@ pub use decide::{Authority, Basis, Cap, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use door::{DoorError, DoorPolicy, ListingPolicy};
 pub use earlier::EarlierIds;
+/// The id prefix of the answers a person gives for one issue's runs: what
+/// "Allow for this issue" records, kept on the issue and deciding no other
+/// run of its agent ([`is_issue_answer`]).
+pub const ISSUE_ANSWER_PREFIX: &str = "issue-answer:";
+
+/// Whether `grant` is an answer a person gave for one issue's runs.
+#[must_use]
+pub fn is_issue_answer(grant: &Grant) -> bool {
+    grant.id.as_str().starts_with(ISSUE_ANSWER_PREFIX)
+}
+
+/// The answers a person gave for the work of `issue`: what that work is
+/// decided by, and no other is.
+pub fn issue_answers<'g>(grants: &'g [Grant], issue: &str) -> impl Iterator<Item = &'g Grant> + 'g {
+    let prefix = format!("{ISSUE_ANSWER_PREFIX}{issue}:");
+    grants
+        .iter()
+        .filter(move |grant| grant.id.as_str().starts_with(&prefix))
+}
+
 pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
 pub use kind::{ActionKind, KindSet};
-pub use member::{Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId};
+pub use member::{
+    Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId, person_root, same_person,
+};
 pub use member_record::{member_record, member_record_id};
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use roles::{Preset, PresetError, Rule};

@@ -225,6 +225,7 @@ directory-role-viewer = Betrachter
 directory-role-commenter = Kommentierende
 directory-role-editor = Bearbeitende
 directory-role-moderator = Moderierende
+directory-role-owner = Eigentümer
 
 ## Display sheet
 display-sheet-title = Anzeige
@@ -264,14 +265,6 @@ wireless-stop = Beenden
 wireless-wait = Warten
 wireless-protocols = Miracast, Google Cast, AirPlay und FCast
 display-sheet-saving-layout = Anordnung wird gespeichert…
-display-remote-heading = Deine anderen Bildschirme
-display-remote-title = Bildschirm { $number }: { $name } auf { $device }
-display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
-display-remote-offline = Offline
-display-remote-offline-excluded = Offline, nicht in der Anordnung
-display-remote-switched-off = Auf dem Gerät ausgeschaltet
-display-remote-in-layout = Im Layout
-display-remote-out-of-layout = Nicht im Layout
 
 ## The system sheets the shell asks with on an app's or a service's behalf
 portal-sheet-description = Gefragt von Tilo, nicht von der App. Eingabe antwortet, Escape lehnt ab.
@@ -728,3 +721,25 @@ so-tilo-workspace-settings-change-set-agent-spend-limit = Das Tageslimit setzen
 so-tilo-workspace-settings-change-set-role = Eine Rolle ändern
 so-tilo-workspace-settings-change-show-tab = Einen Tab zeigen
 so-tilo-workspace-settings-change-toggle-device = Auf einem Gerät zeigen
+
+## Add a device
+
+pair-device = Gerätekopplung
+so-tilo-pair-device-link-copy = Den Link kopieren
+so-tilo-pair-device-link-done = Schließen
+pair-device-title = Gerät hinzufügen
+pair-device-description = Scanne den Code oder öffne den Link auf deinem neuen Gerät, damit es eines deiner Geräte wird.
+pair-device-close = Schließen
+pair-device-link-label = Der Link
+pair-device-copy = Link kopieren
+pair-device-copied = Kopiert
+pair-device-code-alt = Der Kopplungslink als Code zum Scannen
+pair-device-lasting = { $minutes ->
+    [one] Gilt einmal, für die nächste Minute.
+   *[other] Gilt einmal, für die nächsten { $minutes } Minuten.
+}
+pair-device-in-tilo = Auf einem Computer mit Tilo fügst du den Link in „Arbeitsbereich beitreten“ ein.
+pair-device-nearby = Dein neues Gerät erreicht diesen Computer nicht von unterwegs, deshalb gibt es keinen Link. Füge es stattdessen in der Nähe hinzu: Wähle auf dem neuen Gerät „Meine vorhandene Tilo-Identität verwenden“. Wähle dann in den Einstellungen unter „Deine Geräte“ „Gerät hinzufügen“ und prüfe, dass beide denselben Code zeigen.
+pair-device-no-workspace = Öffne zuerst einen Arbeitsbereich: Der Link öffnet ihn auf deinem neuen Gerät.
+pair-device-not-yours = Dieser Computer ist nicht als du angemeldet und kann daher kein neues Gerät aufnehmen.
+pair-device-no-link = Der Link ließ sich nicht erstellen. Schließe dies und versuche es noch einmal.

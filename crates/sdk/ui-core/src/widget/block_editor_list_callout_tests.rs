@@ -98,364 +98,382 @@ fn role_descriptions(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
     }
 }
 
-#[test]
-fn bullet_x_height_is_the_top_of_the_faces_x() {
-    let theme = Theme::dark();
-    let mut editor = page(vec![Block::bullet(0, "Item")]);
-    let (_, mut renderer) = lay_out_and_draw(&mut editor, &theme);
-    let measured = editor
-        .marker_x_height
-        .as_ref()
-        .map(|(_, em)| *em)
-        .expect("drawing a bullet measures the face's x-height");
-    let mut style = theme.text(crate::tokens::TextRole::Body);
-    style.scaling = crate::text_render::TextScaling::Resolved;
-    let outline = renderer.glyph_outlines("x", None, &style);
-    let path_top = {
-        use vello::kurbo::Shape as _;
-        -outline
-            .first()
-            .expect("the UI face has an x")
-            .path
-            .bounding_box()
-            .y0
-    };
-    let expected = path_top / f64::from(style.size);
-    assert!(
-        (measured - expected).abs() < 0.005,
-        "x-height {measured} em, the x's outline reaches {expected} em"
-    );
-    assert!((0.3..0.7).contains(&measured), "{measured} em");
-}
+tilo_test_env::scenario! {
+    /// Bullets, numbers and boxes: their column, spacing and nesting.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn list_markers_share_a_column_and_nest;
 
-#[test]
-fn bullets_numbers_and_boxes_share_one_marker_column() {
-    for scale in [1.0, 2.0] {
-        let theme = Theme::dark().with_text_scale(scale);
-        let long = "A bullet long enough to wrap onto a second row of the page, \
-                    and then onto a third one as well, to see where its dot sits";
-        let mut editor = page(vec![
-            Block::bullet(0, long),
-            Block::numbered(0, "First"),
-            Block::checklist(0, false, "Task"),
-        ]);
+    phase bullet_x_height_is_the_top_of_the_faces_x;
+    {
+        let theme = Theme::dark();
+        let mut editor = page(vec![Block::bullet(0, "Item")]);
         let (_, mut renderer) = lay_out_and_draw(&mut editor, &theme);
-        let x_height_em = editor.marker_x_height.as_ref().map_or(0.5, |(_, em)| *em);
-
-        let (bullet_text, bullet_edge) = text_start_and_edge(&editor, 0);
-        let (number_text, number_edge) = text_start_and_edge(&editor, 1);
-        let (box_text, box_edge) = text_start_and_edge(&editor, 2);
-        assert!((bullet_text - number_text).abs() < 0.01, "scale {scale}");
-        assert!((bullet_text - box_text).abs() < 0.01, "scale {scale}");
-
-        let bullet_line = &editor.blocks[0].line;
-        let disc =
-            list_marker::bullet_disc(bullet_line, bullet_edge, &theme, &mut renderer, x_height_em);
-        let font_px = f64::from(bullet_line.line_style(theme.text_scale).size);
+        let measured = editor
+            .marker_x_height
+            .as_ref()
+            .map(|(_, em)| *em)
+            .expect("drawing a bullet measures the face's x-height");
+        let mut style = theme.text(crate::tokens::TextRole::Body);
+        style.scaling = crate::text_render::TextScaling::Resolved;
+        let outline = renderer.glyph_outlines("x", None, &style);
+        let path_top = {
+            use vello::kurbo::Shape as _;
+            -outline
+                .first()
+                .expect("the UI face has an x")
+                .path
+                .bounding_box()
+                .y0
+        };
+        let expected = path_top / f64::from(style.size);
         assert!(
-            (disc.radius * 2.0 / font_px - list_marker::BULLET_DIAMETER_EM).abs() < 1e-6,
-            "a bullet is a typographic bullet's size: {} at {font_px} px",
-            disc.radius * 2.0
+            (measured - expected).abs() < 0.005,
+            "x-height {measured} em, the x's outline reaches {expected} em"
         );
-        let (top, row) = bullet_line.first_row_band();
-        assert!(
-            bullet_line.get_rect().height() > row * 1.5,
-            "the item wraps: {:?} row {row}",
-            bullet_line.get_rect()
-        );
-        let baseline = f64::from(renderer.first_baseline_style(
-            "x",
-            None,
-            &bullet_line.line_style(theme.text_scale),
-        ));
-        assert!(disc.center.y > top + row / 2.0 - 0.01, "scale {scale}");
-        assert!(disc.center.y < top + baseline, "scale {scale}");
-
-        let label = list_marker::ordinal_label(1, 0);
-        let (origin, style) = list_marker::ordinal_placement(
-            &editor.blocks[1].line,
-            number_edge,
-            &label,
-            &theme,
-            &mut renderer,
-        );
-        let (label_w, _) = renderer.measure_style(&label, None, &style);
-        let number_right = origin.x + f64::from(label_w);
-        let bullet_right = disc.center.x + disc.radius;
-        let checkbox = list_marker::checklist_box(&editor.blocks[2].line, box_edge, scale.into());
-        assert!((number_right - bullet_right).abs() < 0.01, "scale {scale}");
-        assert!((checkbox.x1 - bullet_right).abs() < 0.01, "scale {scale}");
-        assert!(
-            (number_text - number_right - (bullet_text - bullet_right)).abs() < 0.01,
-            "the text starts the same gap after every marker"
-        );
-        assert!((origin.y - editor.blocks[1].line.first_row_band().0).abs() < 0.01);
+        assert!((0.3..0.7).contains(&measured), "{measured} em");
     }
-}
 
-#[test]
-fn consecutive_list_items_sit_closer_than_paragraphs() {
-    let theme = Theme::dark();
-    let mut editor = page(vec![
-        Block::paragraph("First paragraph"),
-        Block::paragraph("Second paragraph"),
-        Block::bullet(0, "One"),
-        Block::bullet(0, "Two"),
-        Block::checklist(1, false, "Nested task"),
-        Block::numbered(0, "Three"),
-        Block::paragraph("After the list"),
-    ]);
-    lay_out_and_draw(&mut editor, &theme);
-    let gap = |index: usize| {
-        let (above_top, above_row) = editor.blocks[index - 1].line.first_row_band();
-        let (below_top, _) = editor.blocks[index].line.first_row_band();
-        below_top - (above_top + above_row)
-    };
-    let paragraphs = gap(1);
-    for item in [3, 4, 5] {
+    phase bullets_numbers_and_boxes_share_one_marker_column;
+    {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let long = "A bullet long enough to wrap onto a second row of the page, \
+                    and then onto a third one as well, to see where its dot sits";
+            let mut editor = page(vec![
+                Block::bullet(0, long),
+                Block::numbered(0, "First"),
+                Block::checklist(0, false, "Task"),
+            ]);
+            let (_, mut renderer) = lay_out_and_draw(&mut editor, &theme);
+            let x_height_em = editor.marker_x_height.as_ref().map_or(0.5, |(_, em)| *em);
+
+            let (bullet_text, bullet_edge) = text_start_and_edge(&editor, 0);
+            let (number_text, number_edge) = text_start_and_edge(&editor, 1);
+            let (box_text, box_edge) = text_start_and_edge(&editor, 2);
+            assert!((bullet_text - number_text).abs() < 0.01, "scale {scale}");
+            assert!((bullet_text - box_text).abs() < 0.01, "scale {scale}");
+
+            let bullet_line = &editor.blocks[0].line;
+            let disc =
+                list_marker::bullet_disc(bullet_line, bullet_edge, &theme, &mut renderer, x_height_em);
+            let font_px = f64::from(bullet_line.line_style(theme.text_scale).size);
+            assert!(
+                (disc.radius * 2.0 / font_px - list_marker::BULLET_DIAMETER_EM).abs() < 1e-6,
+                "a bullet is a typographic bullet's size: {} at {font_px} px",
+                disc.radius * 2.0
+            );
+            let (top, row) = bullet_line.first_row_band();
+            assert!(
+                bullet_line.get_rect().height() > row * 1.5,
+                "the item wraps: {:?} row {row}",
+                bullet_line.get_rect()
+            );
+            let baseline = f64::from(renderer.first_baseline_style(
+                "x",
+                None,
+                &bullet_line.line_style(theme.text_scale),
+            ));
+            assert!(disc.center.y > top + row / 2.0 - 0.01, "scale {scale}");
+            assert!(disc.center.y < top + baseline, "scale {scale}");
+
+            let label = list_marker::ordinal_label(1, 0);
+            let (origin, style) = list_marker::ordinal_placement(
+                &editor.blocks[1].line,
+                number_edge,
+                &label,
+                &theme,
+                &mut renderer,
+            );
+            let (label_w, _) = renderer.measure_style(&label, None, &style);
+            let number_right = origin.x + f64::from(label_w);
+            let bullet_right = disc.center.x + disc.radius;
+            let checkbox = list_marker::checklist_box(&editor.blocks[2].line, box_edge, scale.into());
+            assert!((number_right - bullet_right).abs() < 0.01, "scale {scale}");
+            assert!((checkbox.x1 - bullet_right).abs() < 0.01, "scale {scale}");
+            assert!(
+                (number_text - number_right - (bullet_text - bullet_right)).abs() < 0.01,
+                "the text starts the same gap after every marker"
+            );
+            assert!((origin.y - editor.blocks[1].line.first_row_band().0).abs() < 0.01);
+        }
+    }
+
+    phase consecutive_list_items_sit_closer_than_paragraphs;
+    {
+        let theme = Theme::dark();
+        let mut editor = page(vec![
+            Block::paragraph("First paragraph"),
+            Block::paragraph("Second paragraph"),
+            Block::bullet(0, "One"),
+            Block::bullet(0, "Two"),
+            Block::checklist(1, false, "Nested task"),
+            Block::numbered(0, "Three"),
+            Block::paragraph("After the list"),
+        ]);
+        lay_out_and_draw(&mut editor, &theme);
+        let gap = |index: usize| {
+            let (above_top, above_row) = editor.blocks[index - 1].line.first_row_band();
+            let (below_top, _) = editor.blocks[index].line.first_row_band();
+            below_top - (above_top + above_row)
+        };
+        let paragraphs = gap(1);
+        for item in [3, 4, 5] {
+            assert!(
+                gap(item) < paragraphs,
+                "list item {item}: {} vs paragraphs {paragraphs}",
+                gap(item)
+            );
+            assert!(gap(item) >= 0.0);
+        }
         assert!(
-            gap(item) < paragraphs,
-            "list item {item}: {} vs paragraphs {paragraphs}",
-            gap(item)
+            gap(2) >= paragraphs,
+            "a list stands off the prose before it"
         );
-        assert!(gap(item) >= 0.0);
+        assert!(gap(6) >= paragraphs, "and after it");
     }
-    assert!(
-        gap(2) >= paragraphs,
-        "a list stands off the prose before it"
-    );
-    assert!(gap(6) >= paragraphs, "and after it");
-}
 
-#[test]
-fn nested_ordinals_follow_tex_enumerate_and_are_announced_as_shown() {
-    let theme = Theme::dark();
-    let mut editor = page(vec![
-        Block::numbered(0, "Top"),
-        Block::numbered(1, "Letter"),
-        Block::numbered(2, "Roman"),
-        Block::numbered(2, "Roman two"),
-        Block::numbered(1, "Letter two"),
-    ]);
-    lay_out_and_draw(&mut editor, &theme);
-    let ordinals = numbered_ordinals(&editor.blocks);
-    let labels: Vec<String> = editor
-        .blocks
-        .iter()
-        .zip(&ordinals)
-        .map(|(block, ordinal)| list_marker::ordinal_label(*ordinal, block.indent()))
-        .collect();
-    assert_eq!(labels, ["1.", "(a)", "i.", "ii.", "(b)"]);
-    let mut names = Vec::new();
-    access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
-    for expected in ["Top", "Letter", "Roman", "Letter two"] {
-        assert!(
-            names.iter().any(|name| name == expected),
-            "{expected}: {names:?}"
-        );
-    }
-    let mut described = Vec::new();
-    role_descriptions(&Widget::accessibility(&editor).unwrap(), &mut described);
-    for expected in [
-        "Numbered item 1.",
-        "Numbered item (a)",
-        "Numbered item i.",
-        "Numbered item (b)",
-    ] {
-        assert!(
-            described.iter().any(|description| description == expected),
-            "{expected}: {described:?}"
-        );
-    }
-    assert_eq!(
-        editor.to_markdown(),
-        "1. Top\n\n  1. Letter\n\n    1. Roman\n\n    2. Roman two\n\n  2. Letter two\n"
-    );
-}
-
-#[test]
-fn a_paragraph_nested_under_an_item_starts_at_the_item_text() {
-    let theme = Theme::dark();
-    let mut editor = page(vec![
-        Block::bullet(0, "Item"),
-        Block::paragraph("More about the item"),
-        Block::numbered(1, "Deeper"),
-        Block::paragraph("More about the deeper item"),
-    ]);
-    editor.focus_block(1, CursorPlacement::End);
-    assert!(editor.try_indent(1, 1));
-    assert_eq!(editor.blocks[1].indent(), 1);
-    editor.focus_block(3, CursorPlacement::End);
-    let under_deeper = editor.blocks[2].indent() + 1;
-    while editor.blocks[3].indent() < under_deeper {
-        assert!(editor.try_indent(3, 1));
-    }
-    lay_out_and_draw(&mut editor, &theme);
-    let (item, _) = text_start_and_edge(&editor, 0);
-    let (prose, _) = text_start_and_edge(&editor, 1);
-    assert!((item - prose).abs() < 0.01, "{item} vs {prose}");
-    let (deeper, _) = text_start_and_edge(&editor, 2);
-    let (deeper_prose, _) = text_start_and_edge(&editor, 3);
-    assert!(
-        (deeper - deeper_prose).abs() < 0.01,
-        "{deeper} vs {deeper_prose}"
-    );
-}
-
-#[test]
-fn a_callout_paints_its_wash_under_its_header_and_text() {
-    let theme = Theme::dark();
-    let mut editor = page(vec![
-        Block::paragraph("Before"),
-        Block::callout(CalloutKind::Warning, "Mind the gap"),
-    ]);
-    let (scene, _) = lay_out_and_draw(&mut editor, &theme);
-    let colors = &theme.tokens.colors;
-    let wash = colors.wash_on(
-        colors.surfaces.content,
-        crate::widget::Tone::Warning,
-        crate::tokens::colors::WashStrength::Rest,
-    );
-    assert!(
-        scene_fills(&scene, wash.fill),
-        "the warning wash is painted"
-    );
-    assert!(
-        scene_fills(&scene, wash.mark),
-        "its icon and name in the status ink"
-    );
-
-    let line = editor.blocks[1].line.get_rect();
-    let painted = editor.block_paint_rect(1).unwrap();
-    assert!(
-        (line.y0 - painted.y0 - callout::callout_header_height()).abs() < 0.01,
-        "{line:?} in {painted:?}"
-    );
-    let mut names = Vec::new();
-    access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
-    assert!(names.iter().any(|name| name == "Mind the gap"), "{names:?}");
-    let mut described = Vec::new();
-    role_descriptions(&Widget::accessibility(&editor).unwrap(), &mut described);
-    assert!(
-        described
+    phase nested_ordinals_follow_tex_enumerate_and_are_announced_as_shown;
+    {
+        let theme = Theme::dark();
+        let mut editor = page(vec![
+            Block::numbered(0, "Top"),
+            Block::numbered(1, "Letter"),
+            Block::numbered(2, "Roman"),
+            Block::numbered(2, "Roman two"),
+            Block::numbered(1, "Letter two"),
+        ]);
+        lay_out_and_draw(&mut editor, &theme);
+        let ordinals = numbered_ordinals(&editor.blocks);
+        let labels: Vec<String> = editor
+            .blocks
             .iter()
-            .any(|description| description == "Warning callout"),
-        "{described:?}"
-    );
-
-    let mut plain = page(vec![Block::paragraph("Mind the gap")]);
-    let (scene, _) = lay_out_and_draw(&mut plain, &theme);
-    assert!(!scene_fills(&scene, wash.fill));
-}
-
-#[test]
-fn callouts_store_and_write_as_github_alerts() {
-    for kind in CalloutKind::ALL {
-        let block_kind = BlockKind::Callout(kind);
+            .zip(&ordinals)
+            .map(|(block, ordinal)| list_marker::ordinal_label(*ordinal, block.indent()))
+            .collect();
+        assert_eq!(labels, ["1.", "(a)", "i.", "ii.", "(b)"]);
+        let mut names = Vec::new();
+        access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
+        for expected in ["Top", "Letter", "Roman", "Letter two"] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "{expected}: {names:?}"
+            );
+        }
+        let mut described = Vec::new();
+        role_descriptions(&Widget::accessibility(&editor).unwrap(), &mut described);
+        for expected in [
+            "Numbered item 1.",
+            "Numbered item (a)",
+            "Numbered item i.",
+            "Numbered item (b)",
+        ] {
+            assert!(
+                described.iter().any(|description| description == expected),
+                "{expected}: {described:?}"
+            );
+        }
         assert_eq!(
-            BlockKind::from_stored(&block_kind.stored()),
-            Some(block_kind)
+            editor.to_markdown(),
+            "1. Top\n\n  1. Letter\n\n    1. Roman\n\n    2. Roman two\n\n  2. Letter two\n"
         );
-        let markdown = format!("> {}\n> Mind\n> the gap\n", kind.marker());
-        let editor = BlockEditor::from_markdown(&markdown);
-        assert_eq!(editor.blocks.len(), 1);
-        assert_eq!(editor.blocks[0].kind, BlockKind::Callout(kind));
-        assert_eq!(editor.blocks[0].text(), "Mind\nthe gap");
-        assert_eq!(editor.to_markdown(), markdown);
     }
-    assert_eq!(BlockKind::from_stored("callout:danger"), None);
-    assert_eq!(BlockKind::from_stored("quote"), Some(BlockKind::Quote));
+
+    phase a_paragraph_nested_under_an_item_starts_at_the_item_text;
+    {
+        let theme = Theme::dark();
+        let mut editor = page(vec![
+            Block::bullet(0, "Item"),
+            Block::paragraph("More about the item"),
+            Block::numbered(1, "Deeper"),
+            Block::paragraph("More about the deeper item"),
+        ]);
+        editor.focus_block(1, CursorPlacement::End);
+        assert!(editor.try_indent(1, 1));
+        assert_eq!(editor.blocks[1].indent(), 1);
+        editor.focus_block(3, CursorPlacement::End);
+        let under_deeper = editor.blocks[2].indent() + 1;
+        while editor.blocks[3].indent() < under_deeper {
+            assert!(editor.try_indent(3, 1));
+        }
+        lay_out_and_draw(&mut editor, &theme);
+        let (item, _) = text_start_and_edge(&editor, 0);
+        let (prose, _) = text_start_and_edge(&editor, 1);
+        assert!((item - prose).abs() < 0.01, "{item} vs {prose}");
+        let (deeper, _) = text_start_and_edge(&editor, 2);
+        let (deeper_prose, _) = text_start_and_edge(&editor, 3);
+        assert!(
+            (deeper - deeper_prose).abs() < 0.01,
+            "{deeper} vs {deeper_prose}"
+        );
+    }
 }
 
-#[test]
-fn backspace_at_a_callouts_start_and_enter_in_an_empty_one_leave_it() {
-    let mut editor = page(vec![Block::callout(CalloutKind::Tip, "")]);
-    editor.focus_block(0, CursorPlacement::Start);
-    editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
-    assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
-    assert_eq!(editor.blocks.len(), 1);
+tilo_test_env::scenario! {
+    /// Callouts: wash, storage and the keys that leave them.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn callouts_paint_store_and_leave_as_github_alerts;
 
-    let mut editor = page(vec![Block::callout(CalloutKind::Note, "Keep me")]);
-    editor.focus_block(0, CursorPlacement::Start);
-    editor.apply_signal(0, &LineSignal::BackspaceAtStart);
-    assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
-    assert_eq!(editor.blocks[0].text(), "Keep me");
+    phase a_callout_paints_its_wash_under_its_header_and_text;
+    {
+        let theme = Theme::dark();
+        let mut editor = page(vec![
+            Block::paragraph("Before"),
+            Block::callout(CalloutKind::Warning, "Mind the gap"),
+        ]);
+        let (scene, _) = lay_out_and_draw(&mut editor, &theme);
+        let colors = &theme.tokens.colors;
+        let wash = colors.wash_on(
+            colors.surfaces.content,
+            crate::widget::Tone::Warning,
+            crate::tokens::colors::WashStrength::Rest,
+        );
+        assert!(
+            scene_fills(&scene, wash.fill),
+            "the warning wash is painted"
+        );
+        assert!(
+            scene_fills(&scene, wash.mark),
+            "its icon and name in the status ink"
+        );
+
+        let line = editor.blocks[1].line.get_rect();
+        let painted = editor.block_paint_rect(1).unwrap();
+        assert!(
+            (line.y0 - painted.y0 - callout::callout_header_height()).abs() < 0.01,
+            "{line:?} in {painted:?}"
+        );
+        let mut names = Vec::new();
+        access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
+        assert!(names.iter().any(|name| name == "Mind the gap"), "{names:?}");
+        let mut described = Vec::new();
+        role_descriptions(&Widget::accessibility(&editor).unwrap(), &mut described);
+        assert!(
+            described
+                .iter()
+                .any(|description| description == "Warning callout"),
+            "{described:?}"
+        );
+
+        let mut plain = page(vec![Block::paragraph("Mind the gap")]);
+        let (scene, _) = lay_out_and_draw(&mut plain, &theme);
+        assert!(!scene_fills(&scene, wash.fill));
+    }
+
+    phase callouts_store_and_write_as_github_alerts;
+    {
+        for kind in CalloutKind::ALL {
+            let block_kind = BlockKind::Callout(kind);
+            assert_eq!(
+                BlockKind::from_stored(&block_kind.stored()),
+                Some(block_kind)
+            );
+            let markdown = format!("> {}\n> Mind\n> the gap\n", kind.marker());
+            let editor = BlockEditor::from_markdown(&markdown);
+            assert_eq!(editor.blocks.len(), 1);
+            assert_eq!(editor.blocks[0].kind, BlockKind::Callout(kind));
+            assert_eq!(editor.blocks[0].text(), "Mind\nthe gap");
+            assert_eq!(editor.to_markdown(), markdown);
+        }
+        assert_eq!(BlockKind::from_stored("callout:danger"), None);
+        assert_eq!(BlockKind::from_stored("quote"), Some(BlockKind::Quote));
+    }
+
+    phase backspace_at_a_callouts_start_and_enter_in_an_empty_one_leave_it;
+    {
+        let mut editor = page(vec![Block::callout(CalloutKind::Tip, "")]);
+        editor.focus_block(0, CursorPlacement::Start);
+        editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
+        assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
+        assert_eq!(editor.blocks.len(), 1);
+
+        let mut editor = page(vec![Block::callout(CalloutKind::Note, "Keep me")]);
+        editor.focus_block(0, CursorPlacement::Start);
+        editor.apply_signal(0, &LineSignal::BackspaceAtStart);
+        assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
+        assert_eq!(editor.blocks[0].text(), "Keep me");
+    }
 }
 
 fn above(editor: &BlockEditor, index: usize, theme: &Theme) -> f32 {
     editor.stack_boxes[index].margin_top / theme.text_scale
 }
 
-#[test]
-fn a_block_that_paints_a_surface_clears_the_prose_around_it() {
-    let theme = Theme::dark();
-    let spacing = theme.tokens.spacing;
-    let mut editor = page(vec![
-        Block::paragraph("Before"),
-        Block::code_block(Some("rust".to_owned()), "fn main() {}"),
-        Block::code_block(Some("toml".to_owned()), "name = "),
-        Block::paragraph("Between"),
-        Block::quote("Quoted"),
-        Block::quote("The same quote continues"),
-        Block::paragraph("After"),
-        Block::divider(),
-        Block::paragraph("End"),
-    ]);
-    lay_out_and_draw(&mut editor, &theme);
-    assert_eq!(above(&editor, 1, &theme), spacing.s4, "above the fence");
-    assert_eq!(above(&editor, 2, &theme), spacing.s4, "between fences");
-    assert_eq!(above(&editor, 3, &theme), spacing.s4, "below the fence");
-    // The lines of one quote are one unit; the quote as a whole stands apart from the prose.
-    assert_eq!(above(&editor, 4, &theme), spacing.s4, "above the quote");
-    assert!(above(&editor, 5, &theme) < spacing.s4, "within the quote");
-    assert_eq!(above(&editor, 6, &theme), spacing.s4, "below the quote");
-    assert_eq!(above(&editor, 7, &theme), spacing.s4, "above the rule");
-    assert_eq!(above(&editor, 8, &theme), spacing.s4, "below the rule");
-}
+tilo_test_env::scenario! {
+    /// The space between blocks of different kinds.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn blocks_keep_their_gaps_around_surfaces_embeds_and_headings;
 
-#[test]
-fn an_embed_stands_the_same_gap_from_the_line_above_it_and_the_one_below() {
-    let theme = Theme::dark();
-    let spacing = theme.tokens.spacing;
-    let mut editor = page(vec![
-        Block::paragraph("Before"),
-        Block::paragraph("![Groceries](groceries.png)"),
-        Block::paragraph("After"),
-    ]);
-    lay_out_and_draw(&mut editor, &theme);
-    assert_eq!(above(&editor, 1, &theme), spacing.s6, "above the card");
-    assert_eq!(above(&editor, 2, &theme), spacing.s6, "below the card");
-}
+    phase a_block_that_paints_a_surface_clears_the_prose_around_it;
+    {
+        let theme = Theme::dark();
+        let spacing = theme.tokens.spacing;
+        let mut editor = page(vec![
+            Block::paragraph("Before"),
+            Block::code_block(Some("rust".to_owned()), "fn main() {}"),
+            Block::code_block(Some("toml".to_owned()), "name = "),
+            Block::paragraph("Between"),
+            Block::quote("Quoted"),
+            Block::quote("The same quote continues"),
+            Block::paragraph("After"),
+            Block::divider(),
+            Block::paragraph("End"),
+        ]);
+        lay_out_and_draw(&mut editor, &theme);
+        assert_eq!(above(&editor, 1, &theme), spacing.s4, "above the fence");
+        assert_eq!(above(&editor, 2, &theme), spacing.s4, "between fences");
+        assert_eq!(above(&editor, 3, &theme), spacing.s4, "below the fence");
+        // The lines of one quote are one unit; the quote as a whole stands apart from the prose.
+        assert_eq!(above(&editor, 4, &theme), spacing.s4, "above the quote");
+        assert!(above(&editor, 5, &theme) < spacing.s4, "within the quote");
+        assert_eq!(above(&editor, 6, &theme), spacing.s4, "below the quote");
+        assert_eq!(above(&editor, 7, &theme), spacing.s4, "above the rule");
+        assert_eq!(above(&editor, 8, &theme), spacing.s4, "below the rule");
+    }
 
-#[test]
-fn a_heading_opens_its_section_with_room_and_its_first_block_sits_close_under_it() {
-    let theme = Theme::dark();
-    let spacing = theme.tokens.spacing;
-    let rhythm = spacing.rhythm;
-    let mut editor = page(vec![
-        Block::paragraph("Before"),
-        Block::heading(2, "Section"),
-        Block::paragraph("First line of the section"),
-        Block::paragraph("Second paragraph"),
-    ]);
-    lay_out_and_draw(&mut editor, &theme);
-    assert_eq!(
-        above(&editor, 1, &theme),
-        rhythm.group,
-        "the widest gap the rhythm has stands over a heading"
-    );
-    assert_eq!(
-        above(&editor, 2, &theme),
-        rhythm.tight,
-        "the section's first block sits at the closest gap under its heading"
-    );
-    assert!(
-        above(&editor, 1, &theme) > above(&editor, 2, &theme) * 2.0,
-        "a heading stands clearly nearer its own block than the line over it"
-    );
-    assert_eq!(
-        above(&editor, 3, &theme),
-        spacing.s1,
-        "prose keeps its compact gap"
-    );
+    phase an_embed_stands_the_same_gap_from_the_line_above_it_and_the_one_below;
+    {
+        let theme = Theme::dark();
+        let spacing = theme.tokens.spacing;
+        let mut editor = page(vec![
+            Block::paragraph("Before"),
+            Block::paragraph("![Groceries](groceries.png)"),
+            Block::paragraph("After"),
+        ]);
+        lay_out_and_draw(&mut editor, &theme);
+        assert_eq!(above(&editor, 1, &theme), spacing.s6, "above the card");
+        assert_eq!(above(&editor, 2, &theme), spacing.s6, "below the card");
+    }
+
+    phase a_heading_opens_its_section_with_room_and_its_first_block_sits_close_under_it;
+    {
+        let theme = Theme::dark();
+        let spacing = theme.tokens.spacing;
+        let rhythm = spacing.rhythm;
+        let mut editor = page(vec![
+            Block::paragraph("Before"),
+            Block::heading(2, "Section"),
+            Block::paragraph("First line of the section"),
+            Block::paragraph("Second paragraph"),
+        ]);
+        lay_out_and_draw(&mut editor, &theme);
+        assert_eq!(
+            above(&editor, 1, &theme),
+            rhythm.group,
+            "the widest gap the rhythm has stands over a heading"
+        );
+        assert_eq!(
+            above(&editor, 2, &theme),
+            rhythm.tight,
+            "the section's first block sits at the closest gap under its heading"
+        );
+        assert!(
+            above(&editor, 1, &theme) > above(&editor, 2, &theme) * 2.0,
+            "a heading stands clearly nearer its own block than the line over it"
+        );
+        assert_eq!(
+            above(&editor, 3, &theme),
+            spacing.s1,
+            "prose keeps its compact gap"
+        );
+    }
 }

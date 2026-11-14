@@ -99,7 +99,7 @@ pub fn members_of(standing: &Standing, people: &People) -> Vec<Member> {
         out.push(Member {
             who: Principal::new(who),
             kind: MemberKind::Person,
-            role: Some(role.name().to_lowercase()),
+            role: Some(role.key().to_owned()),
         });
     }
     let mut agents: Vec<&str> = policy
@@ -219,48 +219,52 @@ mod tests {
         )
     }
 
-    #[test]
-    fn the_members_are_the_policys_people_as_the_runtime_names_them_then_its_agents() {
-        let members = members_of(&standing(), &people());
-        let shown: Vec<(&str, MemberKind, Option<&str>)> = members
-            .iter()
-            .map(|member| (member.who.0.as_str(), member.kind, member.role.as_deref()))
-            .collect();
-        assert_eq!(
-            shown,
-            [
-                ("me", MemberKind::Person, Some("owner")),
-                ("bo", MemberKind::Person, Some("editor")),
-                ("cy-laptop", MemberKind::Person, Some("viewer")),
-                ("agent:planner", MemberKind::Agent, None),
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn members_and_readers_are_what_the_policy_answers;
 
-    #[test]
-    fn who_reads_a_resource_is_what_the_policy_answers_for_each_person() {
-        let (standing, people) = (standing(), people());
-        let node = |id: &str| {
-            TreePath::workspace("workspace")
-                .app("notes")
-                .kind("tl.notes.Note")
-                .resource(id)
-        };
-        let all = ["me", "bo", "cy-laptop", "cy-phone", "agent:planner"];
-        for who in all {
-            assert!(
-                reads_node(&standing, &people, &Principal::new(who), &node("open")),
-                "{who} reads what the workspace holds"
+        phase the_members_are_the_policys_people_as_the_runtime_names_them_then_its_agents;
+        {
+            let members = members_of(&standing(), &people());
+            let shown: Vec<(&str, MemberKind, Option<&str>)> = members
+                .iter()
+                .map(|member| (member.who.0.as_str(), member.kind, member.role.as_deref()))
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    ("me", MemberKind::Person, Some("owner")),
+                    ("bo", MemberKind::Person, Some("editor")),
+                    ("cy-laptop", MemberKind::Person, Some("viewer")),
+                    ("agent:planner", MemberKind::Agent, None),
+                ]
             );
         }
-        let secret: Vec<&str> = all
-            .into_iter()
-            .filter(|who| reads_node(&standing, &people, &Principal::new(*who), &node("secret")))
-            .collect();
-        assert_eq!(
-            secret,
-            ["me", "bo", "agent:planner"],
-            "each of Cy's devices is Cy, whom the grant keeps out"
-        );
+
+        phase who_reads_a_resource_is_what_the_policy_answers_for_each_person;
+        {
+            let (standing, people) = (standing(), people());
+            let node = |id: &str| {
+                TreePath::workspace("workspace")
+                    .app("notes")
+                    .kind("tl.notes.Note")
+                    .resource(id)
+            };
+            let all = ["me", "bo", "cy-laptop", "cy-phone", "agent:planner"];
+            for who in all {
+                assert!(
+                    reads_node(&standing, &people, &Principal::new(who), &node("open")),
+                    "{who} reads what the workspace holds"
+                );
+            }
+            let secret: Vec<&str> = all
+                .into_iter()
+                .filter(|who| reads_node(&standing, &people, &Principal::new(*who), &node("secret")))
+                .collect();
+            assert_eq!(
+                secret,
+                ["me", "bo", "agent:planner"],
+                "each of Cy's devices is Cy, whom the grant keeps out"
+            );
+        }
     }
 }

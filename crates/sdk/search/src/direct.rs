@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::index::{Document, Hit, Hits, Page, Signals};
 use crate::query::{Matching, admitted, names_only, tier_sequence, typo_distance};
 use crate::tokenizer::{marked, words};
-use crate::typo::within;
+use crate::typo::matches_word;
 use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks};
 
 /// Most records an index answers directly; a larger one is searched through
@@ -120,7 +120,7 @@ impl Direct {
                     .iter()
                     .map(|(text, held)| match distance {
                         0 => text == word,
-                        distance => within(&scalars, held, distance),
+                        distance => matches_word(&scalars, held, distance),
                     })
                     .collect()
             })

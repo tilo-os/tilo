@@ -840,205 +840,209 @@ mod tests {
         (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3
     }
 
-    #[test]
-    fn page_map_fits_rotated_pages_and_round_trips_every_space() {
-        let own = tilo_pdf::PageGeometry {
-            user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 600.0, 800.0),
-            rotation: tilo_pdf::Rotation::None,
-        };
-        let map = PageMap::new(own, 90, 600.0, 800.0);
-        assert!(!map.is_identity());
-        assert!((map.scale - 0.75).abs() < 1e-9);
-        assert!(close(map.offset, (0.0, 175.0)));
-        assert!(close(map.user_to_card((0.0, 800.0)), (600.0, 175.0)));
-        let p = (123.0, 456.0);
-        assert!(close(map.card_to_user(map.user_to_card(p)), p));
-        assert!(close(map.card_to_layer(map.layer_to_card(p)), p));
-        let layer = map.own.to_display(tilo_pdf::Point::new(123.0, 456.0));
-        let via_layer = map.layer_to_card((f64::from(layer.x), f64::from(layer.y)));
-        assert!(close(via_layer, map.user_to_card(p)));
-        assert!(PageMap::new(own, 0, 600.0, 800.0).is_identity());
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+        fn the_model_maps_pages_normalises_rects_and_matches_search_spans;
 
-        let own = tilo_pdf::PageGeometry {
-            user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 612.0, 792.0),
-            rotation: tilo_pdf::Rotation::Cw90,
-        };
-        let map = PageMap::new(own, 270, 612.0, 792.0);
-        let a = Annotation::new(
-            1,
-            AnnoKind::Markup {
-                style: MarkupStyle::Underline,
-                quads: vec![PtRect::new(100.0, 200.0, 50.0, 12.0)],
-            },
-            HighlightColor::Blue,
-            "Ada",
-        );
-        let user = map.annotation_to_user(&a);
-        assert_eq!(user.space, GeomSpace::User);
-        let back = map.annotation_to_card(&user);
-        let (AnnoKind::Markup { quads: q0, .. }, AnnoKind::Markup { quads: q1, .. }) =
-            (&a.kind, &back.kind)
-        else {
-            panic!("markup");
-        };
-        assert!(close((q0[0].x, q0[0].y), (q1[0].x, q1[0].y)));
-        assert!(close((q0[0].w, q0[0].h), (q1[0].w, q1[0].h)));
-    }
+        phase page_map_fits_rotated_pages_and_round_trips_every_space;
+        {
+            let own = tilo_pdf::PageGeometry {
+                user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 600.0, 800.0),
+                rotation: tilo_pdf::Rotation::None,
+            };
+            let map = PageMap::new(own, 90, 600.0, 800.0);
+            assert!(!map.is_identity());
+            assert!((map.scale - 0.75).abs() < 1e-9);
+            assert!(close(map.offset, (0.0, 175.0)));
+            assert!(close(map.user_to_card((0.0, 800.0)), (600.0, 175.0)));
+            let p = (123.0, 456.0);
+            assert!(close(map.card_to_user(map.user_to_card(p)), p));
+            assert!(close(map.card_to_layer(map.layer_to_card(p)), p));
+            let layer = map.own.to_display(tilo_pdf::Point::new(123.0, 456.0));
+            let via_layer = map.layer_to_card((f64::from(layer.x), f64::from(layer.y)));
+            assert!(close(via_layer, map.user_to_card(p)));
+            assert!(PageMap::new(own, 0, 600.0, 800.0).is_identity());
 
-    #[test]
-    fn rects_normalise_and_swatches_round_trip() {
-        let r = PtRect::from_corners(100.0, 80.0, 40.0, 200.0);
-        assert!((r.x - 40.0).abs() < f64::EPSILON);
-        assert!((r.y - 80.0).abs() < f64::EPSILON);
-        assert!((r.w - 60.0).abs() < f64::EPSILON);
-        assert!((r.h - 120.0).abs() < f64::EPSILON);
-        assert!(r.contains(50.0, 100.0));
-        assert!(!r.contains(10.0, 10.0));
-
-        for s in HighlightColor::ALL {
-            assert_eq!(HighlightColor::parse(&s.key()), s);
-        }
-        assert_eq!(HighlightColor::parse("nonsense"), HighlightColor::Yellow);
-        let custom = HighlightColor::from_rgb(12, 200, 99);
-        assert_eq!(custom, HighlightColor::Custom(0x0c_c8_63));
-        assert_eq!(HighlightColor::parse(&custom.key()), custom);
-        assert_eq!(custom.rgb(), (12, 200, 99));
-        assert_eq!(
-            HighlightColor::from_rgb(250, 204, 21),
-            HighlightColor::Yellow
-        );
-    }
-
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn search_options_match_exact_source_byte_spans() {
-        const ANY: SearchOptions = SearchOptions {
-            case_sensitive: false,
-            whole_word: false,
-        };
-        const CASE: SearchOptions = SearchOptions {
-            case_sensitive: true,
-            whole_word: false,
-        };
-        const WORD: SearchOptions = SearchOptions {
-            case_sensitive: false,
-            whole_word: true,
-        };
-        let unicode = "İ test \u{212a} TEST";
-        let words = "étest testé e\u{301}test test\u{301} test test_2 (test) İ";
-        #[allow(
-            clippy::type_complexity,
-            reason = "one row per search case: name, text, query, options, expected hits"
-        )]
-        let cases: &[(&str, &str, &str, SearchOptions, Vec<(usize, &str)>)] = &[
-            (
-                "overlapping progresses",
-                "aaaa",
-                "aa",
-                ANY,
-                vec![(0, "aa"), (2, "aa")],
-            ),
-            (
-                "case-insensitive matches both 'The' and 'the'",
-                "The Tilo shell. the OS.",
-                "the",
-                ANY,
-                vec![(0, "The"), (16, "the")],
-            ),
-            (
-                "case-sensitive matches only lowercase 'the'",
-                "The Tilo shell. the OS.",
-                "the",
-                CASE,
-                vec![(16, "the")],
-            ),
-            (
-                "substring search finds 'ink' three times",
-                "ink is thinking and ink.",
-                "ink",
-                ANY,
-                vec![(0, "ink"), (9, "ink"), (20, "ink")],
-            ),
-            (
-                "whole-word skips the 'ink' inside 'thinking'",
-                "ink is thinking and ink.",
-                "ink",
-                WORD,
-                vec![(0, "ink"), (20, "ink")],
-            ),
-            (
-                "unicode case folding keeps source spans",
-                unicode,
-                "test",
-                ANY,
-                vec![
-                    (unicode.find("test").unwrap(), "test"),
-                    (unicode.find("TEST").unwrap(), "TEST"),
-                ],
-            ),
-            (
-                "kelvin sign folds to k",
-                unicode,
-                "k",
-                ANY,
-                vec![(unicode.find('\u{212a}').unwrap(), "\u{212a}")],
-            ),
-            (
-                "dotted capital I expands",
-                unicode,
-                "i\u{307}",
-                ANY,
-                vec![(0, "İ")],
-            ),
-            ("case-sensitive kelvin misses", unicode, "k", CASE, vec![]),
-            (
-                "whole words use complete source words",
-                words,
-                "test",
-                WORD,
-                vec![
-                    (words.find(" test test_2").unwrap() + 1, "test"),
-                    (words.find("(test)").unwrap() + 1, "test"),
-                ],
-            ),
-            (
-                "accented whole word matches both spellings",
-                words,
-                "étest",
-                WORD,
-                vec![
-                    (0, "étest"),
-                    (words.find("e\u{301}test").unwrap(), "e\u{301}test"),
-                ],
-            ),
-            (
-                "plain i names the dotted capital as a whole word",
-                words,
-                "i",
-                WORD,
-                vec![(words.find('İ').unwrap(), "İ")],
-            ),
-            (
-                "full dotted expansion is a whole word",
-                words,
-                "i\u{307}",
-                WORD,
-                vec![(words.find('İ').unwrap(), "İ")],
-            ),
-        ];
-        for (case, text, query, options, expected) in cases {
-            let hits = search_text(text, query, *options, MAX_SEARCH_RESULTS);
-            let got: Vec<(usize, &str)> = hits
-                .iter()
-                .map(|range| (range.start, &text[range.clone()]))
-                .collect();
-            assert_eq!(&got, expected, "case {case}");
+            let own = tilo_pdf::PageGeometry {
+                user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 612.0, 792.0),
+                rotation: tilo_pdf::Rotation::Cw90,
+            };
+            let map = PageMap::new(own, 270, 612.0, 792.0);
+            let a = Annotation::new(
+                1,
+                AnnoKind::Markup {
+                    style: MarkupStyle::Underline,
+                    quads: vec![PtRect::new(100.0, 200.0, 50.0, 12.0)],
+                },
+                HighlightColor::Blue,
+                "Ada",
+            );
+            let user = map.annotation_to_user(&a);
+            assert_eq!(user.space, GeomSpace::User);
+            let back = map.annotation_to_card(&user);
+            let (AnnoKind::Markup { quads: q0, .. }, AnnoKind::Markup { quads: q1, .. }) =
+                (&a.kind, &back.kind)
+            else {
+                panic!("markup");
+            };
+            assert!(close((q0[0].x, q0[0].y), (q1[0].x, q1[0].y)));
+            assert!(close((q0[0].w, q0[0].h), (q1[0].w, q1[0].h)));
         }
 
-        let many = "a ".repeat(MAX_SEARCH_RESULTS + 100);
-        assert_eq!(
-            search_text(&many, "a", SearchOptions::default(), usize::MAX).len(),
-            MAX_SEARCH_RESULTS
-        );
+        phase rects_normalise_and_swatches_round_trip;
+        {
+            let r = PtRect::from_corners(100.0, 80.0, 40.0, 200.0);
+            assert!((r.x - 40.0).abs() < f64::EPSILON);
+            assert!((r.y - 80.0).abs() < f64::EPSILON);
+            assert!((r.w - 60.0).abs() < f64::EPSILON);
+            assert!((r.h - 120.0).abs() < f64::EPSILON);
+            assert!(r.contains(50.0, 100.0));
+            assert!(!r.contains(10.0, 10.0));
+
+            for s in HighlightColor::ALL {
+                assert_eq!(HighlightColor::parse(&s.key()), s);
+            }
+            assert_eq!(HighlightColor::parse("nonsense"), HighlightColor::Yellow);
+            let custom = HighlightColor::from_rgb(12, 200, 99);
+            assert_eq!(custom, HighlightColor::Custom(0x0c_c8_63));
+            assert_eq!(HighlightColor::parse(&custom.key()), custom);
+            assert_eq!(custom.rgb(), (12, 200, 99));
+            assert_eq!(
+                HighlightColor::from_rgb(250, 204, 21),
+                HighlightColor::Yellow
+            );
+        }
+
+        phase search_options_match_exact_source_byte_spans;
+        {
+            const ANY: SearchOptions = SearchOptions {
+                case_sensitive: false,
+                whole_word: false,
+            };
+            const CASE: SearchOptions = SearchOptions {
+                case_sensitive: true,
+                whole_word: false,
+            };
+            const WORD: SearchOptions = SearchOptions {
+                case_sensitive: false,
+                whole_word: true,
+            };
+            let unicode = "İ test \u{212a} TEST";
+            let words = "étest testé e\u{301}test test\u{301} test test_2 (test) İ";
+            #[allow(
+                clippy::type_complexity,
+                reason = "one row per search case: name, text, query, options, expected hits"
+            )]
+            let cases: &[(&str, &str, &str, SearchOptions, Vec<(usize, &str)>)] = &[
+                (
+                    "overlapping progresses",
+                    "aaaa",
+                    "aa",
+                    ANY,
+                    vec![(0, "aa"), (2, "aa")],
+                ),
+                (
+                    "case-insensitive matches both 'The' and 'the'",
+                    "The Tilo shell. the OS.",
+                    "the",
+                    ANY,
+                    vec![(0, "The"), (16, "the")],
+                ),
+                (
+                    "case-sensitive matches only lowercase 'the'",
+                    "The Tilo shell. the OS.",
+                    "the",
+                    CASE,
+                    vec![(16, "the")],
+                ),
+                (
+                    "substring search finds 'ink' three times",
+                    "ink is thinking and ink.",
+                    "ink",
+                    ANY,
+                    vec![(0, "ink"), (9, "ink"), (20, "ink")],
+                ),
+                (
+                    "whole-word skips the 'ink' inside 'thinking'",
+                    "ink is thinking and ink.",
+                    "ink",
+                    WORD,
+                    vec![(0, "ink"), (20, "ink")],
+                ),
+                (
+                    "unicode case folding keeps source spans",
+                    unicode,
+                    "test",
+                    ANY,
+                    vec![
+                        (unicode.find("test").unwrap(), "test"),
+                        (unicode.find("TEST").unwrap(), "TEST"),
+                    ],
+                ),
+                (
+                    "kelvin sign folds to k",
+                    unicode,
+                    "k",
+                    ANY,
+                    vec![(unicode.find('\u{212a}').unwrap(), "\u{212a}")],
+                ),
+                (
+                    "dotted capital I expands",
+                    unicode,
+                    "i\u{307}",
+                    ANY,
+                    vec![(0, "İ")],
+                ),
+                ("case-sensitive kelvin misses", unicode, "k", CASE, vec![]),
+                (
+                    "whole words use complete source words",
+                    words,
+                    "test",
+                    WORD,
+                    vec![
+                        (words.find(" test test_2").unwrap() + 1, "test"),
+                        (words.find("(test)").unwrap() + 1, "test"),
+                    ],
+                ),
+                (
+                    "accented whole word matches both spellings",
+                    words,
+                    "étest",
+                    WORD,
+                    vec![
+                        (0, "étest"),
+                        (words.find("e\u{301}test").unwrap(), "e\u{301}test"),
+                    ],
+                ),
+                (
+                    "plain i names the dotted capital as a whole word",
+                    words,
+                    "i",
+                    WORD,
+                    vec![(words.find('İ').unwrap(), "İ")],
+                ),
+                (
+                    "full dotted expansion is a whole word",
+                    words,
+                    "i\u{307}",
+                    WORD,
+                    vec![(words.find('İ').unwrap(), "İ")],
+                ),
+            ];
+            for (case, text, query, options, expected) in cases {
+                let hits = search_text(text, query, *options, MAX_SEARCH_RESULTS);
+                let got: Vec<(usize, &str)> = hits
+                    .iter()
+                    .map(|range| (range.start, &text[range.clone()]))
+                    .collect();
+                assert_eq!(&got, expected, "case {case}");
+            }
+
+            let many = "a ".repeat(MAX_SEARCH_RESULTS + 100);
+            assert_eq!(
+                search_text(&many, "a", SearchOptions::default(), usize::MAX).len(),
+                MAX_SEARCH_RESULTS
+            );
+        }
     }
 }

@@ -143,34 +143,38 @@ mod tests {
     #[cfg(all(target_os = "linux", target_endian = "little"))]
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn the_session_starts_the_compositor_and_its_services_without_huge_pages() {
-        let session = include_str!("../../../../os/usr/libexec/tilo-session");
-        assert!(
-            session.contains(&format!(
-                "\nexport GLIBC_TUNABLES={NO_HUGE_PAGES_TUNABLES}\n"
-            )),
-            "the session script must export the launcher's tunables to the compositor"
-        );
-        let imports: Vec<&str> = session
-            .lines()
-            .filter(|line| {
-                line.contains("import-environment") || line.contains("$DBUS_UPDATE\" --systemd XDG")
-            })
-            .collect();
-        assert!(
-            imports.len() == 2 && imports.iter().all(|line| line.contains("GLIBC_TUNABLES")),
-            "the user manager's services must get them too: {imports:?}"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn launches_and_the_session_opt_out_of_huge_pages;
 
-    #[test]
-    fn a_launch_carries_the_huge_page_opt_out_beside_shadow_stacks() {
-        assert_eq!(tunables(false), NO_HUGE_PAGES_TUNABLES);
-        assert_eq!(
-            tunables(true),
-            format!("glibc.cpu.hwcaps=SHSTK:{NO_HUGE_PAGES_TUNABLES}")
-        );
+        phase the_session_starts_the_compositor_and_its_services_without_huge_pages;
+        {
+            let session = include_str!("../../../../os/usr/libexec/tilo-session");
+            assert!(
+                session.contains(&format!(
+                    "\nexport GLIBC_TUNABLES={NO_HUGE_PAGES_TUNABLES}\n"
+                )),
+                "the session script must export the launcher's tunables to the compositor"
+            );
+            let imports: Vec<&str> = session
+                .lines()
+                .filter(|line| {
+                    line.contains("import-environment") || line.contains("$DBUS_UPDATE\" --systemd XDG")
+                })
+                .collect();
+            assert!(
+                imports.len() == 2 && imports.iter().all(|line| line.contains("GLIBC_TUNABLES")),
+                "the user manager's services must get them too: {imports:?}"
+            );
+        }
+
+        phase a_launch_carries_the_huge_page_opt_out_beside_shadow_stacks;
+        {
+            assert_eq!(tunables(false), NO_HUGE_PAGES_TUNABLES);
+            assert_eq!(
+                tunables(true),
+                format!("glibc.cpu.hwcaps=SHSTK:{NO_HUGE_PAGES_TUNABLES}")
+            );
+        }
     }
 
     /// Set in the re-executed test binary that runs the probe.
@@ -287,71 +291,75 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hardening_policy_entries_match_ids_and_families() {
-        {
-            let list = "so.tilo.browser\n";
-            assert!(policy_matches(list, "so.tilo.browser"));
-            assert!(!policy_matches(list, "so.tilo.browserish"));
-            assert!(!policy_matches(list, "so.tilo.calculator"));
-        }
-        {
-            let list = "\n# so.tilo.calculator\n   \nso.tilo.tube  # decodes video\n";
-            assert!(policy_matches(list, "so.tilo.tube"));
-            assert!(
-                !policy_matches(list, "so.tilo.calculator"),
-                "a commented-out id must not match"
-            );
-        }
-        {
-            let list = "so.tilo.media.*\n";
-            assert!(policy_matches(list, "so.tilo.media.player"));
-            assert!(!policy_matches(list, "so.tilo.notes"));
-        }
-        {
-            assert!(!policy_matches("", "so.tilo.browser"));
-            assert!(!policy_matches(
-                "# everything commented\n",
-                "so.tilo.browser"
-            ));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_hardening_policy_is_the_builtin_list_or_the_file_replacing_it;
 
-    #[test]
-    fn hardening_policy_file_replaces_the_builtin_list() {
+        phase hardening_policy_entries_match_ids_and_families;
         {
-            let dir = tempfile::tempdir().unwrap();
-            let file = dir.path().join("untrusted-parsers.conf");
-            std::fs::write(&file, "so.tilo.notes\n").unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(POLICY_PATH_ENV, &file);
+            {
+                let list = "so.tilo.browser\n";
+                assert!(policy_matches(list, "so.tilo.browser"));
+                assert!(!policy_matches(list, "so.tilo.browserish"));
+                assert!(!policy_matches(list, "so.tilo.calculator"));
+            }
+            {
+                let list = "\n# so.tilo.calculator\n   \nso.tilo.tube  # decodes video\n";
+                assert!(policy_matches(list, "so.tilo.tube"));
+                assert!(
+                    !policy_matches(list, "so.tilo.calculator"),
+                    "a commented-out id must not match"
+                );
+            }
+            {
+                let list = "so.tilo.media.*\n";
+                assert!(policy_matches(list, "so.tilo.media.player"));
+                assert!(!policy_matches(list, "so.tilo.notes"));
+            }
+            {
+                assert!(!policy_matches("", "so.tilo.browser"));
+                assert!(!policy_matches(
+                    "# everything commented\n",
+                    "so.tilo.browser"
+                ));
+            }
+        }
 
-            let notes = for_package("so.tilo.notes");
-            let browser = for_package("so.tilo.browser");
-            drop(env);
+        phase hardening_policy_file_replaces_the_builtin_list;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let file = dir.path().join("untrusted-parsers.conf");
+                std::fs::write(&file, "so.tilo.notes\n").unwrap();
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set(POLICY_PATH_ENV, &file);
 
-            assert!(
-                notes.shadow_stack,
-                "the package named by the policy file must be hardened"
-            );
-            assert!(
-                !browser.is_active(),
-                "a package the policy file omits must not be hardened just because \
+                let notes = for_package("so.tilo.notes");
+                let browser = for_package("so.tilo.browser");
+                drop(env);
+
+                assert!(
+                    notes.shadow_stack,
+                    "the package named by the policy file must be hardened"
+                );
+                assert!(
+                    !browser.is_active(),
+                    "a package the policy file omits must not be hardened just because \
                  it is in the compiled-in fallback"
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let missing = dir.path().join("does-not-exist.conf");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(POLICY_PATH_ENV, &missing);
+                );
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let missing = dir.path().join("does-not-exist.conf");
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set(POLICY_PATH_ENV, &missing);
 
-            let browser = for_package("so.tilo.browser");
-            let calculator = for_package("so.tilo.calculator");
-            drop(env);
+                let browser = for_package("so.tilo.browser");
+                let calculator = for_package("so.tilo.calculator");
+                drop(env);
 
-            assert!(browser.shadow_stack, "fallback list lost the browser");
-            assert!(!calculator.is_active(), "a plain app must stay unhardened");
+                assert!(browser.shadow_stack, "fallback list lost the browser");
+                assert!(!calculator.is_active(), "a plain app must stay unhardened");
+            }
         }
     }
 }

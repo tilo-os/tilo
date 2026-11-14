@@ -402,192 +402,200 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_seat_alone_is_its_raw_readings() {
-        let room = Room::living_room();
-        let seat_only = room
-            .hearings()
-            .into_iter()
-            .filter(|h| h.microphone == SEAT)
-            .collect::<Vec<_>>();
-        let fusion = room.fuse(&seat_only);
-        assert!(fusion.rejected.is_empty());
-        assert_raw(&fusion, &room);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn fusing_what_the_microphones_heard;
 
-    #[test]
-    fn consistent_extra_microphones_change_nothing() {
-        let room = Room::living_room();
-        let fusion = room.fuse(&room.hearings());
-        assert!(fusion.rejected.is_empty());
-        assert_raw(&fusion, &room);
-    }
-
-    #[test]
-    fn clock_offsets_and_small_drift_elsewhere_cause_no_false_rejection() {
-        let mut room = Room::living_room();
-        room.clock_offset_ns = vec![0.0, -80e6, 45e6, 12e6];
-        room.drift_ppm = vec![0.0, 20.0, -15.0, 50.0];
-        let fusion = room.fuse(&room.hearings());
-        assert!(fusion.rejected.is_empty(), "{:?}", fusion.rejected);
-        assert_raw(&fusion, &room);
-    }
-
-    #[test]
-    fn a_gross_error_at_the_seat_is_replaced_by_the_others() {
-        let mut room = Room::living_room();
-        room.clock_offset_ns = vec![0.0, -80e6, 45e6, 12e6];
-        let mut hearings = room.hearings();
-        hearings
-            .iter_mut()
-            .find(|h| h.speaker == 2 && h.microphone == SEAT)
-            .unwrap()
-            .arrival_ns += 40e6;
-        let fusion = room.fuse(&hearings);
-        assert_eq!(fusion.rejected, vec![(2, SEAT)]);
-        let fused = fusion.speakers[2].unwrap();
-        assert!(!fused.at_listening);
-        // The stand-in carries the other microphones' geometry, all within a
-        // metre of the seat: a metre of path is under 3 ms.
-        let truth = room.truth()[2];
-        assert!(
-            (fused.arrival_ns - truth.0).abs() < 3e6,
-            "{fused:?} vs {truth:?}"
-        );
-        assert!(
-            (fused.level_db - truth.1).abs() < 1e-9,
-            "its level was fine"
-        );
-        assert!(fusion.speakers[1].unwrap().at_listening);
-    }
-
-    #[test]
-    fn a_pair_s_seat_readings_always_stand() {
-        let mut room = Room::living_room();
-        room.speakers.truncate(2);
-        room.latency_ns.truncate(2);
-        room.gain_db.truncate(2);
-        let mut hearings = room.hearings();
-        hearings
-            .iter_mut()
-            .find(|h| h.speaker == 1 && h.microphone == SEAT)
-            .unwrap()
-            .arrival_ns += 40e6;
-        let fusion = room.fuse(&hearings);
-        assert!(
-            fusion.rejected.is_empty(),
-            "two seat readings anchor only each other: {:?}",
-            fusion.rejected
-        );
-        assert!(
-            fusion
-                .speakers
-                .iter()
-                .all(|fused| fused.unwrap().at_listening)
-        );
-    }
-
-    #[test]
-    fn a_gross_error_needs_two_other_witnesses() {
-        let room = Room::living_room();
-        let mut hearings = room
-            .hearings()
-            .into_iter()
-            .filter(|h| h.microphone <= 1)
-            .collect::<Vec<_>>();
-        hearings
-            .iter_mut()
-            .find(|h| h.speaker == 2 && h.microphone == SEAT)
-            .unwrap()
-            .arrival_ns += 40e6;
-        let fusion = room.fuse(&hearings);
-        assert!(fusion.rejected.is_empty());
-        assert!(fusion.speakers[2].unwrap().at_listening);
-    }
-
-    #[test]
-    fn a_noisy_or_missing_seat_reading_is_filled_in() {
-        let room = Room::living_room();
-        let mut hearings = room.hearings();
-        hearings
-            .iter_mut()
-            .find(|h| h.speaker == 1 && h.microphone == SEAT)
-            .unwrap()
-            .snr_db = MIN_SNR_DB - 1.0;
-        hearings.retain(|h| !(h.speaker == 3 && h.microphone == SEAT));
-        let fusion = room.fuse(&hearings);
-        assert!(fusion.rejected.is_empty(), "ignored, not rejected");
-        let truth = room.truth();
-        for speaker in [1, 3] {
-            let fused = fusion.speakers[speaker].unwrap();
-            assert!(!fused.at_listening);
-            assert!(
-                (fused.arrival_ns - truth[speaker].0).abs() < 3e6,
-                "{fused:?}"
-            );
-            assert!((fused.level_db - truth[speaker].1).abs() < 3.0, "{fused:?}");
-        }
-        assert!(fusion.speakers[0].unwrap().at_listening);
-    }
-
-    #[test]
-    fn a_speaker_only_the_seat_missed_and_nobody_else_heard_is_unknown() {
-        let room = Room::living_room();
-        let hearings = room
-            .hearings()
-            .into_iter()
-            .filter(|h| h.speaker != 2)
-            .collect::<Vec<_>>();
-        let fusion = room.fuse(&hearings);
-        assert!(fusion.speakers[2].is_none());
-        assert!(fusion.speakers[3].is_some());
-    }
-
-    #[test]
-    fn the_own_microphone_splits_output_latency_from_flight_time() {
-        let mut room = Room::living_room();
-        // Speaker 1's device has a microphone 5 cm from its driver.
-        room.microphones.push([4.65, 0.3]);
-        room.sensitivity_db.push(0.0);
-        room.clock_offset_ns.push(0.0);
-        room.drift_ppm.push(0.0);
-        let own = [None, Some(4), None, None];
-        let fusion = room.fuse_with(&room.hearings(), &own);
-        let fused = fusion.speakers[1].unwrap();
-        let latency = fused.output_latency_ns.unwrap();
-        assert!((latency - 14e6).abs() < 200_000.0, "{latency}");
-        let flight = distance(room.speakers[1], room.microphones[SEAT]) / SOUND_M_PER_S * 1e9;
-        assert!((fused.acoustic_ns.unwrap() - flight).abs() < 200_000.0);
-        assert!(fusion.speakers[0].unwrap().output_latency_ns.is_none());
-        assert!(fusion.rejected.is_empty());
-    }
-
-    #[test]
-    fn a_noisy_extra_microphone_does_not_disturb_the_seat() {
-        let room = Room::living_room();
-        let mut hearings = room.hearings();
-        for (index, hearing) in hearings
-            .iter_mut()
-            .filter(|h| h.microphone == 3)
-            .enumerate()
+        phase the_seat_alone_is_its_raw_readings;
         {
-            hearing.arrival_ns += [9e6, -12e6, 30e6, -45e6][index];
-            hearing.level_db += [6.0, -8.0, 15.0, -20.0][index];
-            hearing.snr_db = 12.0;
+            let room = Room::living_room();
+            let seat_only = room
+                .hearings()
+                .into_iter()
+                .filter(|h| h.microphone == SEAT)
+                .collect::<Vec<_>>();
+            let fusion = room.fuse(&seat_only);
+            assert!(fusion.rejected.is_empty());
+            assert_raw(&fusion, &room);
         }
-        let fusion = room.fuse(&hearings);
-        assert!(fusion.rejected.is_empty(), "{:?}", fusion.rejected);
-        assert_raw(&fusion, &room);
-    }
 
-    #[test]
-    fn weights_follow_snr_and_clock_error() {
-        assert_eq!(weight(MIN_SNR_DB - 0.1, 0.0), 0.0);
-        assert_eq!(weight(f64::NAN, 0.0), 0.0);
-        assert_eq!(weight(30.0, f64::INFINITY), 0.0);
-        assert!(weight(30.0, 0.0) > weight(20.0, 0.0));
-        assert!(weight(30.0, 0.0) > weight(30.0, 1e6));
-        assert!((weight(30.0, CLOCK_SCALE_NS) - weight(30.0, 0.0) / 2.0).abs() < 1e-9);
-        assert_eq!(weight(60.0, 0.0), weight(MAX_SNR_DB, 0.0));
+        phase consistent_extra_microphones_change_nothing;
+        {
+            let room = Room::living_room();
+            let fusion = room.fuse(&room.hearings());
+            assert!(fusion.rejected.is_empty());
+            assert_raw(&fusion, &room);
+        }
+
+        phase clock_offsets_and_small_drift_elsewhere_cause_no_false_rejection;
+        {
+            let mut room = Room::living_room();
+            room.clock_offset_ns = vec![0.0, -80e6, 45e6, 12e6];
+            room.drift_ppm = vec![0.0, 20.0, -15.0, 50.0];
+            let fusion = room.fuse(&room.hearings());
+            assert!(fusion.rejected.is_empty(), "{:?}", fusion.rejected);
+            assert_raw(&fusion, &room);
+        }
+
+        phase a_gross_error_at_the_seat_is_replaced_by_the_others;
+        {
+            let mut room = Room::living_room();
+            room.clock_offset_ns = vec![0.0, -80e6, 45e6, 12e6];
+            let mut hearings = room.hearings();
+            hearings
+                .iter_mut()
+                .find(|h| h.speaker == 2 && h.microphone == SEAT)
+                .unwrap()
+                .arrival_ns += 40e6;
+            let fusion = room.fuse(&hearings);
+            assert_eq!(fusion.rejected, vec![(2, SEAT)]);
+            let fused = fusion.speakers[2].unwrap();
+            assert!(!fused.at_listening);
+            // The stand-in carries the other microphones' geometry, all within a
+            // metre of the seat: a metre of path is under 3 ms.
+            let truth = room.truth()[2];
+            assert!(
+                (fused.arrival_ns - truth.0).abs() < 3e6,
+                "{fused:?} vs {truth:?}"
+            );
+            assert!(
+                (fused.level_db - truth.1).abs() < 1e-9,
+                "its level was fine"
+            );
+            assert!(fusion.speakers[1].unwrap().at_listening);
+        }
+
+        phase a_pair_s_seat_readings_always_stand;
+        {
+            let mut room = Room::living_room();
+            room.speakers.truncate(2);
+            room.latency_ns.truncate(2);
+            room.gain_db.truncate(2);
+            let mut hearings = room.hearings();
+            hearings
+                .iter_mut()
+                .find(|h| h.speaker == 1 && h.microphone == SEAT)
+                .unwrap()
+                .arrival_ns += 40e6;
+            let fusion = room.fuse(&hearings);
+            assert!(
+                fusion.rejected.is_empty(),
+                "two seat readings anchor only each other: {:?}",
+                fusion.rejected
+            );
+            assert!(
+                fusion
+                    .speakers
+                    .iter()
+                    .all(|fused| fused.unwrap().at_listening)
+            );
+        }
+
+        phase a_gross_error_needs_two_other_witnesses;
+        {
+            let room = Room::living_room();
+            let mut hearings = room
+                .hearings()
+                .into_iter()
+                .filter(|h| h.microphone <= 1)
+                .collect::<Vec<_>>();
+            hearings
+                .iter_mut()
+                .find(|h| h.speaker == 2 && h.microphone == SEAT)
+                .unwrap()
+                .arrival_ns += 40e6;
+            let fusion = room.fuse(&hearings);
+            assert!(fusion.rejected.is_empty());
+            assert!(fusion.speakers[2].unwrap().at_listening);
+        }
+
+        phase a_noisy_or_missing_seat_reading_is_filled_in;
+        {
+            let room = Room::living_room();
+            let mut hearings = room.hearings();
+            hearings
+                .iter_mut()
+                .find(|h| h.speaker == 1 && h.microphone == SEAT)
+                .unwrap()
+                .snr_db = MIN_SNR_DB - 1.0;
+            hearings.retain(|h| !(h.speaker == 3 && h.microphone == SEAT));
+            let fusion = room.fuse(&hearings);
+            assert!(fusion.rejected.is_empty(), "ignored, not rejected");
+            let truth = room.truth();
+            for speaker in [1, 3] {
+                let fused = fusion.speakers[speaker].unwrap();
+                assert!(!fused.at_listening);
+                assert!(
+                    (fused.arrival_ns - truth[speaker].0).abs() < 3e6,
+                    "{fused:?}"
+                );
+                assert!((fused.level_db - truth[speaker].1).abs() < 3.0, "{fused:?}");
+            }
+            assert!(fusion.speakers[0].unwrap().at_listening);
+        }
+
+        phase a_speaker_only_the_seat_missed_and_nobody_else_heard_is_unknown;
+        {
+            let room = Room::living_room();
+            let hearings = room
+                .hearings()
+                .into_iter()
+                .filter(|h| h.speaker != 2)
+                .collect::<Vec<_>>();
+            let fusion = room.fuse(&hearings);
+            assert!(fusion.speakers[2].is_none());
+            assert!(fusion.speakers[3].is_some());
+        }
+
+        phase the_own_microphone_splits_output_latency_from_flight_time;
+        {
+            let mut room = Room::living_room();
+            // Speaker 1's device has a microphone 5 cm from its driver.
+            room.microphones.push([4.65, 0.3]);
+            room.sensitivity_db.push(0.0);
+            room.clock_offset_ns.push(0.0);
+            room.drift_ppm.push(0.0);
+            let own = [None, Some(4), None, None];
+            let fusion = room.fuse_with(&room.hearings(), &own);
+            let fused = fusion.speakers[1].unwrap();
+            let latency = fused.output_latency_ns.unwrap();
+            assert!((latency - 14e6).abs() < 200_000.0, "{latency}");
+            let flight = distance(room.speakers[1], room.microphones[SEAT]) / SOUND_M_PER_S * 1e9;
+            assert!((fused.acoustic_ns.unwrap() - flight).abs() < 200_000.0);
+            assert!(fusion.speakers[0].unwrap().output_latency_ns.is_none());
+            assert!(fusion.rejected.is_empty());
+        }
+
+        phase a_noisy_extra_microphone_does_not_disturb_the_seat;
+        {
+            let room = Room::living_room();
+            let mut hearings = room.hearings();
+            for (index, hearing) in hearings
+                .iter_mut()
+                .filter(|h| h.microphone == 3)
+                .enumerate()
+            {
+                hearing.arrival_ns += [9e6, -12e6, 30e6, -45e6][index];
+                hearing.level_db += [6.0, -8.0, 15.0, -20.0][index];
+                hearing.snr_db = 12.0;
+            }
+            let fusion = room.fuse(&hearings);
+            assert!(fusion.rejected.is_empty(), "{:?}", fusion.rejected);
+            assert_raw(&fusion, &room);
+        }
+
+        phase weights_follow_snr_and_clock_error;
+        {
+            assert_eq!(weight(MIN_SNR_DB - 0.1, 0.0), 0.0);
+            assert_eq!(weight(f64::NAN, 0.0), 0.0);
+            assert_eq!(weight(30.0, f64::INFINITY), 0.0);
+            assert!(weight(30.0, 0.0) > weight(20.0, 0.0));
+            assert!(weight(30.0, 0.0) > weight(30.0, 1e6));
+            assert!((weight(30.0, CLOCK_SCALE_NS) - weight(30.0, 0.0) / 2.0).abs() < 1e-9);
+            assert_eq!(weight(60.0, 0.0), weight(MAX_SNR_DB, 0.0));
+        }
     }
 }

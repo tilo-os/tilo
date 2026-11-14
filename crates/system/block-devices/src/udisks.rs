@@ -191,59 +191,64 @@ mod client {
 mod tests {
     use super::*;
 
-    #[test]
-    fn migration_mounts_disable_writes_and_journal_replay() {
-        for filesystem in [
-            ReadOnlyFilesystem::Ext4,
-            ReadOnlyFilesystem::Xfs,
-            ReadOnlyFilesystem::Btrfs,
-        ] {
-            let options: Vec<_> = filesystem.options().split(',').collect();
-            for required in ["ro", "nodev", "nosuid", "noexec", "noatime"] {
-                assert!(options.contains(&required));
-            }
-            assert!(!options.contains(&"rw"));
-        }
-        assert!(ReadOnlyFilesystem::Ext4.options().contains("noload"));
-        assert!(ReadOnlyFilesystem::Xfs.options().contains("norecovery"));
-        assert!(
-            ReadOnlyFilesystem::Btrfs
-                .options()
-                .contains("nologreplay,subvolid=5")
-        );
-    }
+    tilo_test_env::scenario! {
+        /// What is sent to UDisks.
+        fn udisks_requests_are_read_only_and_escaped;
 
-    #[test]
-    fn object_paths_escape_every_byte_outside_the_plain_name_set() {
-        for (case, device, want) in [
-            (
-                "plain_names_pass_through",
-                "nvme0n1p2",
-                "/org/freedesktop/UDisks2/block_devices/nvme0n1p2",
-            ),
-            (
-                "plain_names_pass_through",
-                "/dev/sda1",
-                "/org/freedesktop/UDisks2/block_devices/sda1",
-            ),
-            (
-                "other_bytes_use_gdbus_escaping",
-                "dm-0",
-                "/org/freedesktop/UDisks2/block_devices/dm_2d0",
-            ),
-            (
-                "other_bytes_use_gdbus_escaping",
-                "/dev/md/root_0",
-                "/org/freedesktop/UDisks2/block_devices/md_2froot_5f0",
-            ),
-            // Path encoding cannot escape the block device namespace.
-            (
-                "path_encoding_cannot_escape_the_block_device_namespace",
-                "../../sda",
-                "/org/freedesktop/UDisks2/block_devices/_2e_2e_2f_2e_2e_2fsda",
-            ),
-        ] {
-            assert_eq!(object_path(device), want, "case {case}: {device}");
+        phase migration_mounts_disable_writes_and_journal_replay;
+        {
+            for filesystem in [
+                ReadOnlyFilesystem::Ext4,
+                ReadOnlyFilesystem::Xfs,
+                ReadOnlyFilesystem::Btrfs,
+            ] {
+                let options: Vec<_> = filesystem.options().split(',').collect();
+                for required in ["ro", "nodev", "nosuid", "noexec", "noatime"] {
+                    assert!(options.contains(&required));
+                }
+                assert!(!options.contains(&"rw"));
+            }
+            assert!(ReadOnlyFilesystem::Ext4.options().contains("noload"));
+            assert!(ReadOnlyFilesystem::Xfs.options().contains("norecovery"));
+            assert!(
+                ReadOnlyFilesystem::Btrfs
+                    .options()
+                    .contains("nologreplay,subvolid=5")
+            );
+        }
+
+        phase object_paths_escape_every_byte_outside_the_plain_name_set;
+        {
+            for (case, device, want) in [
+                (
+                    "plain_names_pass_through",
+                    "nvme0n1p2",
+                    "/org/freedesktop/UDisks2/block_devices/nvme0n1p2",
+                ),
+                (
+                    "plain_names_pass_through",
+                    "/dev/sda1",
+                    "/org/freedesktop/UDisks2/block_devices/sda1",
+                ),
+                (
+                    "other_bytes_use_gdbus_escaping",
+                    "dm-0",
+                    "/org/freedesktop/UDisks2/block_devices/dm_2d0",
+                ),
+                (
+                    "other_bytes_use_gdbus_escaping",
+                    "/dev/md/root_0",
+                    "/org/freedesktop/UDisks2/block_devices/md_2froot_5f0",
+                ),
+                // Path encoding cannot escape the block device namespace.
+                (
+                    "path_encoding_cannot_escape_the_block_device_namespace",
+                    "../../sda",
+                    "/org/freedesktop/UDisks2/block_devices/_2e_2e_2f_2e_2e_2fsda",
+                ),
+            ] {
+                assert_eq!(object_path(device), want, "case {case}: {device}");
+            }
         }
     }
 }

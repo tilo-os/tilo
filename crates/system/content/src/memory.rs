@@ -79,6 +79,17 @@ impl ContentBackend for MemoryBackend {
             .is_ok_and(|state| state.entries.contains_key(&hash.to_ascii_lowercase()))
     }
 
+    fn size(&self, hash: &str) -> Option<u64> {
+        let key = hash.to_ascii_lowercase();
+        let inner = self.inner.read().ok()?;
+        let size = inner
+            .entries
+            .get(&key)
+            .and_then(|entry| u64::try_from(entry.len()).ok());
+        drop(inner);
+        size
+    }
+
     fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
         self.remove_where(|hash| !live.contains(hash))
     }

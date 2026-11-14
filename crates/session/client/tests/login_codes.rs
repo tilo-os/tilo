@@ -28,7 +28,7 @@ fn new_key() -> SigningKey {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let lounge = host

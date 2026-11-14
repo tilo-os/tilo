@@ -12,19 +12,18 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
-use collab_types::ChannelRoute;
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{ChannelKeys, ChannelKeysAnswerFuture, DeviceChannels, PreAdmitRequest, Workspaces};
-use crate::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use crate::host::{HostConfig, HostIdentity, WorkspaceHost};
 
 /// A host certified only to host workspaces: it governs them without taking part in
 /// their channels.
 #[must_use]
 pub fn governor() -> (SigningKey, DeviceCert) {
-    governor_with(DeviceCapabilities::host())
+    governor_with(DeviceCapabilities::member())
 }
 
 /// A host device of the person whose root is `[1; 32]`, certified with
@@ -56,6 +55,10 @@ pub fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCer
 pub struct TestHost {
     host: WorkspaceHost,
     router: Router,
+    /// The relay its endpoint took as its home ([`reached_through`]), closed
+    /// after the endpoint that reaches it.
+    #[cfg(test)]
+    _home: tilo_test_env::relay::Relay,
 }
 
 impl TestHost {
@@ -102,25 +105,15 @@ impl TestHost {
 /// and answers with the same keys every time after.
 #[derive(Default)]
 pub struct TestChannelKeys {
-    held: Mutex<BTreeMap<(String, String, String), ChannelContentKeys>>,
+    held: Mutex<BTreeMap<String, ChannelContentKeys>>,
 }
 
 impl ChannelKeys for TestChannelKeys {
-    fn channel_keys<'a>(
-        &'a self,
-        workspace: &'a str,
-        route: &'a ChannelRoute,
-        create: bool,
-    ) -> ChannelKeysAnswerFuture<'a> {
+    fn channel_keys<'a>(&'a self, workspace: &'a str, create: bool) -> ChannelKeysAnswerFuture<'a> {
         Box::pin(async move {
-            let named = (
-                workspace.to_owned(),
-                route.app.clone(),
-                route.record.clone(),
-            );
             let held = {
                 let keys = self.held.lock().expect("the fixture's keys");
-                keys.get(&named).cloned()
+                keys.get(workspace).cloned()
             };
             if let Some(keys) = held {
                 return Some(Ok(keys));
@@ -128,10 +121,9 @@ impl ChannelKeys for TestChannelKeys {
             if !create {
                 return Some(Err("this channel has no keys yet".into()));
             }
-            let name = format!("{workspace}/{}/{}", route.app, route.record);
             let keys = ChannelGroup::create(
-                route.channel(workspace),
-                MemberKey::generate(&name).expect("a fixture member key"),
+                collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
+                MemberKey::generate(workspace).expect("a fixture member key"),
             )
             .expect("a fixture channel opens")
             .content_keys()
@@ -139,7 +131,7 @@ impl ChannelKeys for TestChannelKeys {
             self.held
                 .lock()
                 .expect("the fixture's keys")
-                .insert(named, keys.clone());
+                .insert(workspace.to_owned(), keys.clone());
             Some(Ok(keys))
         })
     }
@@ -217,14 +209,25 @@ async fn host_on(
     grants: Option<usize>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .bind()
-        .await
-        .expect("a loopback endpoint binds");
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
+    #[cfg(test)]
+    let home = tilo_test_env::relay::relay().await;
+    #[cfg(test)]
+    let endpoint = endpoint.relay_mode(iroh::RelayMode::Custom(home.relays()));
+    let endpoint = endpoint.bind().await.expect("a loopback endpoint binds");
+    #[cfg(test)]
+    reached_through(&endpoint, &home).await;
     let host = WorkspaceHost::open(
         HostConfig {
             max_workspace_grants: grants,
-            ..HostConfig::new(state_root.to_owned(), HostMode::CertifiedHost)
+            // A host serving other people's workspaces takes their work in them.
+            ..HostConfig::new(
+                state_root.to_owned(),
+                tilo_relay_protocol::WorkSetting {
+                    from: tilo_relay_protocol::WorkFrom::Anyone,
+                    ..tilo_relay_protocol::WorkSetting::own_person()
+                },
+            )
         },
         HostIdentity {
             user_public_key: cert.user_public_key,
@@ -244,7 +247,36 @@ async fn host_on(
     TestHost {
         host,
         router: router.spawn(),
+        #[cfg(test)]
+        _home: home,
     }
+}
+
+/// Wait until `endpoint` names `home` as the relay it is reached through.
+///
+/// A host waits at its opening for its endpoint to name a relay
+/// ([`super::await_relay`]), so no workspace learns an address the host must
+/// rename, and gives up after iroh's net report timeout. An endpoint that has
+/// no relay to reach waits that whole bound out: five seconds for every host a
+/// test opens. This package's tests give the fixture's endpoint a relay on this
+/// machine's loopback instead, as a host on a network has one, and the host
+/// opens as soon as its endpoint names it. An embedder's tests reach this
+/// fixture without that relay, which is a development dependency here, and
+/// wait as before.
+#[cfg(test)]
+async fn reached_through(endpoint: &iroh::Endpoint, home: &tilo_test_env::relay::Relay) {
+    use iroh::Watcher as _;
+    tilo_test_env::within("the fixture host's endpoint names its relay", async {
+        let mut watch = endpoint.watch_addr();
+        let mut addr = watch.get();
+        while !addr.relay_urls().any(|url| url == home.url()) {
+            let Ok(next) = watch.updated().await else {
+                panic!("the endpoint closed before it named its relay");
+            };
+            addr = next;
+        }
+    })
+    .await;
 }
 
 /// Admit `member` to `workspace` as a reader, as the governor `key` decides it.
@@ -346,7 +378,7 @@ pub fn signed_pre_admission(
     signed_pre_admission_as(
         workspace,
         token,
-        tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+        tilo_relay_protocol::workspaces::Role::Editor,
     )
 }
 
@@ -360,7 +392,7 @@ pub fn signed_pre_admission(
 pub fn signed_pre_admission_as(
     workspace: &str,
     token: &[u8],
-    role: tilo_relay_protocol::workspaces::WorkspaceRole,
+    role: tilo_relay_protocol::workspaces::Role,
 ) -> tilo_relay_protocol::workspaces::PreAdmission {
     use ed25519_dalek::Signer as _;
     use sha2::Digest as _;
@@ -395,7 +427,7 @@ pub async fn door_join(
     tilo_peer_state::join::JoinTransportRequest,
     tilo_peer_state::join::JoinTransportResponse,
 ) {
-    let role = tilo_relay_protocol::workspaces::WorkspaceRole::Editor;
+    let role = tilo_relay_protocol::workspaces::Role::Editor;
     door_join_as(
         workspaces,
         host,
@@ -421,7 +453,7 @@ pub async fn door_join_as(
     workspace: &str,
     (device, device_cert): (&SigningKey, &DeviceCert),
     seed: u8,
-    role: tilo_relay_protocol::workspaces::WorkspaceRole,
+    role: tilo_relay_protocol::workspaces::Role,
 ) -> (
     tilo_peer_state::join::JoinTransportRequest,
     tilo_peer_state::join::JoinTransportResponse,

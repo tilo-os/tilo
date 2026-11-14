@@ -128,9 +128,6 @@ impl NativeWorkspaceOwner {
 }
 
 #[cfg(test)]
-#[path = "workspace_app_authorship_tests.rs"]
-mod app_authorship_tests;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,10 +176,11 @@ mod tests {
                     Ok(authority
                         .policy
                         .grants
-                        .into_iter()
+                        .iter()
                         .filter(|grant| {
                             grant.grantee == tilo_action_policy::Grantee::agent("scribe")
                         })
+                        .cloned()
                         .collect())
                 },
             )

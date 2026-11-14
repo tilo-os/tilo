@@ -505,29 +505,34 @@ fn resample(
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_blur_taps_divide_the_light_between_them() {
-        let taps = taps(2.5);
-        let total = taps[0] + 2.0 * taps[1..].iter().sum::<f32>();
-        assert!((total - 1.0).abs() < 1e-5, "they sum to one: {total}");
-        // A pair's weight covers the two texels its fetch reads.
-        let texel = |pair: usize| if pair == 0 { taps[0] } else { taps[pair] / 2.0 };
-        assert!(
-            texel(0) > texel(1) && texel(1) > texel(2),
-            "centred: {taps:?}"
-        );
-        assert!(taps[PAIRS] > 0.0, "and reach past the last pair");
-    }
+    tilo_test_env::scenario! {
+        /// The numbers the backdrop blur is drawn with.
+        fn the_blur_spreads_its_light_and_halves_down_to_a_few_texels;
 
-    #[test]
-    fn the_blur_halves_until_its_deviation_is_a_few_texels() {
-        assert_eq!(halvings(3.0, (40, 20)), 0, "a small deviation runs whole");
-        assert_eq!(halvings(12.0, (640, 400)), 2, "12 texels: 6, then 3");
-        assert_eq!(halvings(0.0, (40, 20)), 0, "nothing to blur");
-        assert_eq!(
-            halvings(12.0, (2, 2)),
-            1,
-            "an image only halves while it can"
-        );
+        phase the_blur_taps_divide_the_light_between_them;
+        {
+            let taps = taps(2.5);
+            let total = taps[0] + 2.0 * taps[1..].iter().sum::<f32>();
+            assert!((total - 1.0).abs() < 1e-5, "they sum to one: {total}");
+            // A pair's weight covers the two texels its fetch reads.
+            let texel = |pair: usize| if pair == 0 { taps[0] } else { taps[pair] / 2.0 };
+            assert!(
+                texel(0) > texel(1) && texel(1) > texel(2),
+                "centred: {taps:?}"
+            );
+            assert!(taps[PAIRS] > 0.0, "and reach past the last pair");
+        }
+
+        phase the_blur_halves_until_its_deviation_is_a_few_texels;
+        {
+            assert_eq!(halvings(3.0, (40, 20)), 0, "a small deviation runs whole");
+            assert_eq!(halvings(12.0, (640, 400)), 2, "12 texels: 6, then 3");
+            assert_eq!(halvings(0.0, (40, 20)), 0, "nothing to blur");
+            assert_eq!(
+                halvings(12.0, (2, 2)),
+                1,
+                "an image only halves while it can"
+            );
+        }
     }
 }

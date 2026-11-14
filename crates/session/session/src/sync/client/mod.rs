@@ -69,6 +69,8 @@ mod adopt;
 mod plane;
 
 #[cfg(target_os = "linux")]
+pub(crate) use plane::Reached;
+#[cfg(target_os = "linux")]
 use plane::{Serving, Wire, run};
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
@@ -288,13 +290,22 @@ pub(crate) struct SiblingDials {
     /// This device's endpoint id: its own session is never dialled.
     ours: [u8; 32],
     outgoing: HostOutbox,
+    /// The relay this device's settings name, when they name one: the
+    /// person's devices are configured with the same relay, so a sibling is
+    /// reached through it while its key resolves nowhere else.
+    relay: Option<iroh::RelayUrl>,
 }
 
 #[cfg(target_os = "linux")]
 impl SiblingDials {
-    /// Dial from `ours`, the endpoint this device's sessions run on.
-    pub(crate) fn new(ours: [u8; 32], outgoing: HostOutbox) -> Self {
-        Self { ours, outgoing }
+    /// Dial from `ours`, the endpoint this device's sessions run on, through
+    /// `relay` when the person's settings name one.
+    pub(crate) fn new(ours: [u8; 32], outgoing: HostOutbox, relay: Option<iroh::RelayUrl>) -> Self {
+        Self {
+            ours,
+            outgoing,
+            relay,
+        }
     }
 
     /// Dial `device` as a sibling, unless it is this device. The plane dials again whatever has no
@@ -307,9 +318,11 @@ impl SiblingDials {
             tracing::warn!(device = %hex::encode(device), "a device of the person has no endpoint id");
             return;
         };
-        let _ = self
-            .outgoing
-            .send(Cmd::ConnectDevice(EndpointAddr::new(id)));
+        let mut addr = EndpointAddr::new(id);
+        if let Some(relay) = &self.relay {
+            addr = addr.with_relay_url(relay.clone());
+        }
+        let _ = self.outgoing.send(Cmd::ConnectDevice(addr));
     }
 }
 
@@ -325,6 +338,9 @@ pub(crate) struct Seat {
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
     /// What the peer actor and the fabric said that only this desktop keeps.
     host_events: std::sync::mpsc::Receiver<HostEvent>,
+    /// The actions of the person's devices that arrived ahead of the pass routing them: what the
+    /// session took at once ([`Client::fabric_actions_now`]) left these for it.
+    fabric_waiting: RefCell<Vec<crate::platform::fabric::PersonalFabricActionEnvelope>>,
     /// The window streams that reached this device: their frames, starts, ends and control, which
     /// the shares take ([`Self::take_surfaces`]).
     surfaces: RefCell<Vec<ReceivedSurface>>,
@@ -347,7 +363,7 @@ pub(crate) struct Seat {
     /// What the session's channels hear and say on this plane. What the engine holds, so a session
     /// that runs no channel service has none.
     link: Option<Arc<ChannelLink>>,
-    /// The collaborator's devices the plane heard at another peer protocol version since the last
+    /// The member's devices the plane heard at another peer protocol version since the last
     /// call: what the person is answered.
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     /// The records' content this session keeps and asks the workspaces for: `None` until the
@@ -841,11 +857,10 @@ impl Seat {
     pub(crate) fn fabric_actions(
         &self,
     ) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
-        let actions = self
-            .fabric
-            .as_ref()
-            .map(|fabric| fabric.take_actions())
-            .unwrap_or_default();
+        let mut actions = std::mem::take(&mut *self.fabric_waiting.borrow_mut());
+        if let Some(fabric) = &self.fabric {
+            actions.extend(fabric.take_actions());
+        }
         let Some(nearby) = self.nearby() else {
             return actions;
         };
@@ -874,7 +889,7 @@ impl Seat {
         self.engine.as_ref()
     }
 
-    /// The collaborator's devices the plane heard at another peer protocol version since the last
+    /// The member's devices the plane heard at another peer protocol version since the last
     /// call, each once per device and version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
@@ -1000,7 +1015,8 @@ impl Roster {
     #[cfg(target_os = "linux")]
     /// Who is here, as the desktop lists them: `tree` places them where their focused record is
     /// shown — `records` (what each window shows, by tab) names the window each person works in —
-    /// and `app_name` names an app.
+    /// and `app_name` names an app. The workspace's own record of when it admitted each of its
+    /// people numbers namesakes here, as it numbers them in the roster.
     #[must_use]
     pub(crate) fn people(
         &self,
@@ -1008,6 +1024,16 @@ impl Roster {
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
+        let joined =
+            tree.active_workspace()
+                .map_or_else(std::collections::BTreeMap::new, |workspace| {
+                    workspace
+                        .policy
+                        .admitted()
+                        .map(|(person, at)| (person.to_owned(), at))
+                        .collect()
+                });
+        self.here.borrow_mut().set_joined(&joined);
         self.here.borrow().people(
             tree,
             &crate::sync::layout::bindings_of(tree, &notes.windows()),
@@ -1016,7 +1042,7 @@ impl Roster {
     }
 
     #[cfg(target_os = "linux")]
-    /// Who is here, written into `tree`'s active workspace as its collaborators: the roster every
+    /// Who is here, written into `tree`'s active workspace as its members and their presence: the roster every
     /// surface that lists people reads.
     pub(crate) fn show(
         &self,
@@ -1027,7 +1053,7 @@ impl Roster {
         let people = self.people(tree, notes, app_name);
         // Whose view this person follows, so the bar keeps that face when it has room for only one.
         let following = self.here.borrow().following().map(str::to_owned);
-        tilo_desktop::here::overlay_collaborators(tree, &people, following.as_deref());
+        tilo_desktop::here::place_here(tree, &people, following.as_deref());
         people
     }
 
@@ -1120,10 +1146,11 @@ impl Host for Hosting {
             .with_current(identity, |view| {
                 view.peer()
                     .permissions(*device.as_bytes(), now)
-                    .map(|member| member.person)
                     .map_err(|error| error.to_string())
+                    .map(|member| member.person_id().map(str::to_owned))
             })
             .ok()
+            .flatten()
     }
 
     fn heard(&self, event: &Event, client: &SessionClient) -> bool {
@@ -1216,6 +1243,9 @@ pub struct Client {
     /// watcher, which keeps the endpoint's socket open until it goes.
     #[cfg(target_os = "linux")]
     own_address: Option<tokio::task::AbortHandle>,
+    /// Where this device was given and reached its hosts ([`plane::Reached`]).
+    #[cfg(target_os = "linux")]
+    reached: plane::Reached,
 }
 
 impl std::fmt::Debug for Client {
@@ -1298,6 +1328,9 @@ impl Client {
         let (enrollments, enrolled) = std::sync::mpsc::channel();
         let (ready, bound) = std::sync::mpsc::channel();
         let (user, device) = certified_as(identity.as_ref());
+        // What this device hears on its local network wakes the session, which shows which of the
+        // person's devices are nearby.
+        let lan = tilo_endpoint_reachability::Nearby::new(Arc::clone(&wake));
         let host_outbox = HostOutbox {
             commands: commands.clone(),
         };
@@ -1308,6 +1341,7 @@ impl Client {
             host_outbox,
             entry.continuity,
             entry.fabric,
+            lan.clone(),
         );
         // What the actor serves is installed before it starts: every actor built after answers it.
         let versions = crate::network::install(fabric.as_ref(), questions);
@@ -1318,7 +1352,8 @@ impl Client {
         let device_actions = Arc::new(std::sync::OnceLock::new());
         let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
-        let binding = plane::Bound::new(Arc::clone(&endpoint_handle), entry.relays);
+        let binding = plane::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
+        let reached = binding.reached.clone();
         // The live plane's relay role, when this device may serve one, is one more protocol on the
         // endpoint this session binds.
         let mut live = engine
@@ -1383,6 +1418,7 @@ impl Client {
             outgoing,
             thread: Some(thread),
             own_address,
+            reached,
         };
         // The person's other devices are heard from the start, so a list one of them published is
         // taken even when this session shows none of their workspaces yet.
@@ -1424,6 +1460,8 @@ impl Client {
             thread: None,
             #[cfg(target_os = "linux")]
             own_address: None,
+            #[cfg(target_os = "linux")]
+            reached: plane::Reached::default(),
         }
     }
 
@@ -1486,6 +1524,7 @@ impl Client {
             outgoing: outbox,
             thread: None,
             own_address: None,
+            reached: plane::Reached::default(),
         };
         for host in hosts {
             let _ = client.outgoing.send(Cmd::Connect(host));
@@ -1661,7 +1700,25 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn fabric_actions(&self) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
+        self.hosting.seat.keep_host_events(&self.inner);
         self.hosting.seat.fabric_actions()
+    }
+
+    /// Hand `take` each action one of the person's devices sent this one since the last look, the
+    /// moment it is here; what it does not take waits for [`Self::fabric_actions`] .
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fabric_actions_now(
+        &self,
+        take: impl Fn(&crate::platform::fabric::PersonalFabricActionEnvelope) -> bool,
+    ) {
+        let seat = &self.hosting.seat;
+        seat.keep_host_events(&self.inner);
+        let left: Vec<_> = seat
+            .fabric_actions()
+            .into_iter()
+            .filter(|envelope| !take(envelope))
+            .collect();
+        seat.fabric_waiting.borrow_mut().extend(left);
     }
 
     /// Where this device's actions are served.
@@ -1671,7 +1728,7 @@ impl Client {
         self.hosting.seat.device_actions()
     }
 
-    /// The collaborator's devices the plane heard at another peer protocol version.
+    /// The member's devices the plane heard at another peer protocol version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
         self.hosting.seat.take_version_mismatches()
@@ -1683,6 +1740,14 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn hold_relays_with(&self, reachability: Reachability) {
         *self.hosting.seat.reachability.borrow_mut() = reachability;
+    }
+
+    /// Where this device notes the hosts it was given an address for and reached there: its
+    /// endpoint dials them there from then on, beside whatever they say of themselves
+    /// ([`Reached`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn reached(&self) -> Reached {
+        self.reached.clone()
     }
 
     /// This device's collaboration endpoint, once it has bound.
@@ -1801,11 +1866,26 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn sibling_dials(&self) -> Option<SiblingDials> {
+        // One relay is the person's own, and their devices name the same one: a sibling is
+        // reached through it. Number 0's relays are many, and the directory names which one a
+        // device is at, so nothing is guessed there.
+        let urls = self
+            .hosting
+            .seat
+            .reachability
+            .try_borrow()
+            .map(|reachability| reachability.relay_urls())
+            .unwrap_or_default();
+        let relay = match urls.as_slice() {
+            [relay] => Some(relay.clone()),
+            _ => None,
+        };
         Some(SiblingDials::new(
             *self.inner.endpoint()?.id().as_bytes(),
             HostOutbox {
                 commands: self.hosting.seat.commands.clone(),
             },
+            relay,
         ))
     }
 
@@ -1829,7 +1909,7 @@ impl Client {
     }
 
     #[cfg(target_os = "linux")]
-    /// Who is here, written into `tree`'s active workspace as its collaborators.
+    /// Who is here, written into `tree`'s active workspace as its members.
     pub(crate) fn show(
         &self,
         tree: &mut DesktopTree,
@@ -1890,6 +1970,7 @@ impl Seat {
                 desk: RefCell::new(None),
                 commands,
                 host_events,
+                fabric_waiting: RefCell::default(),
                 surfaces: RefCell::new(Vec::new()),
                 call_audio: RefCell::new(Vec::new()),
                 call_pictures: RefCell::new(Vec::new()),
@@ -1925,6 +2006,7 @@ impl Seat {
             desk: RefCell::new(None),
             commands,
             host_events,
+            fabric_waiting: RefCell::default(),
             surfaces: RefCell::new(Vec::new()),
             call_audio: RefCell::new(Vec::new()),
             call_pictures: RefCell::new(Vec::new()),
@@ -2028,6 +2110,7 @@ fn restored_fabric(
     outgoing: HostOutbox,
     continuity: Continuity,
     state: Option<std::path::PathBuf>,
+    lan: tilo_endpoint_reachability::Nearby,
 ) -> Option<Arc<SessionFabric>> {
     let identity = identity?;
     let device = (
@@ -2051,6 +2134,7 @@ fn restored_fabric(
         ed25519_dalek::SigningKey::from_bytes(&identity.signer.endpoint_secret()?),
         continuity,
         kept,
+        lan,
     ))
 }
 
@@ -2069,6 +2153,7 @@ pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> s
 fn endpoint_for(
     identity: Option<&HostIdentity>,
     relays: &tilo_endpoint_reachability::EndpointRelays,
+    lan: &tilo_endpoint_reachability::Nearby,
 ) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
     let Some(identity) = identity else {
         let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -2087,12 +2172,13 @@ fn endpoint_for(
     // The relays are held back ([`tilo_endpoint_reachability`]): binding with an empty relay map
     // keeps net report, address discovery and port mapping off the network until a workspace this
     // session shows has someone else in it. A peer's key also resolves on the local network
-    // ([`tilo_endpoint_reachability::lan`]), so two of the person's devices that share one find
+    // ([`tilo_endpoint_reachability::Nearby`]), so two of the person's devices that share one find
     // each other while their relays rest, and with their own relay (or none) that is what finds
-    // them.
+    // them. The lookup only answers for a key this device already dials: hearing an endpoint there
+    // dials nobody.
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
-        .address_lookup(tilo_endpoint_reachability::lan())
+        .address_lookup(lan.lookup())
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
     if relays.n0_dns {
         builder = builder

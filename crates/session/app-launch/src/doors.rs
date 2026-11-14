@@ -715,360 +715,368 @@ mod tests {
         }
     }
 
-    /// The first window of an app in a workspace starts its process and reserves
-    /// its door; its launch holds the door and hands its end to the
-    /// launcher; once the launch is over, a window starts a process again.
-    #[test]
-    fn a_workspaces_app_keeps_one_door_until_its_launch_is_over() {
-        let (doors, _) = doors();
-        doors.reserve_for_test(APP, WORKSPACE);
-        let mut held = doors
-            .hold(APP, WORKSPACE)
-            .expect("the launch holds the door");
-        assert!(doors.hold(APP, WORKSPACE).is_none(), "held by one launch");
-        assert!(
-            doors.reserve(APP, WORKSPACE).is_none(),
-            "a second launch keeps the running process's door"
-        );
-        assert!(held.serve(4242).is_some(), "the launcher's end");
-        assert!(held.serve(4242).is_none(), "handed over once");
-        assert!(has_door(&doors, APP, WORKSPACE));
-        drop(held);
-        assert!(!has_door(&doors, APP, WORKSPACE), "the launch is over");
+    tilo_test_env::scenario! {
+        fn a_door_is_reserved_held_and_given_up_with_its_launch;
+
+        phase a_workspaces_app_keeps_one_door_until_its_launch_is_over;
+        // The first window of an app in a workspace starts its process and reserves
+        // its door; its launch holds the door and hands its end to the
+        // launcher; once the launch is over, a window starts a process again.
+        {
+            let (doors, _) = doors();
+            doors.reserve_for_test(APP, WORKSPACE);
+            let mut held = doors
+                .hold(APP, WORKSPACE)
+                .expect("the launch holds the door");
+            assert!(doors.hold(APP, WORKSPACE).is_none(), "held by one launch");
+            assert!(
+                doors.reserve(APP, WORKSPACE).is_none(),
+                "a second launch keeps the running process's door"
+            );
+            assert!(held.serve(4242).is_some(), "the launcher's end");
+            assert!(held.serve(4242).is_none(), "handed over once");
+            assert!(has_door(&doors, APP, WORKSPACE));
+            drop(held);
+            assert!(!has_door(&doors, APP, WORKSPACE), "the launch is over");
+        }
+
+        phase an_earlier_launch_never_retires_a_later_door;
+        // A launch that ends after its door was replaced leaves the new one.
+        {
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000002";
+            let (doors, _) = doors();
+            doors.reserve_for_test(APP, WORKSPACE);
+            let earlier = doors.hold(APP, WORKSPACE).expect("held");
+            doors.doors().remove(&key(APP, WORKSPACE));
+            doors.reserve_for_test(APP, WORKSPACE);
+            drop(earlier);
+            assert!(
+                has_door(&doors, APP, WORKSPACE),
+                "the later launch's door stays"
+            );
+        }
+
+        phase a_launch_that_never_started_gives_its_door_up;
+        // A launch that never started gives its door up.
+        {
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000003";
+            let (doors, _) = doors();
+            drop(doors.reserve(APP, WORKSPACE).expect("reserved"));
+            assert!(!has_door(&doors, APP, WORKSPACE));
+        }
+
+        phase a_launch_that_names_what_it_opens_reserves_a_door_and_starts;
+        // A launch the door does not carry, such as a record, never opens in a
+        // running process: the app's own command line carries it.
+        {
+            let (doors, _) = doors();
+            let reserved = doors
+                .route_or_reserve(APP, WORKSPACE, false, &Opens::default(), &never_alone, None)
+                .expect("not routed");
+            assert!(reserved.is_none(), "a process of its own, without a door");
+            let reserved = doors
+                .route_or_reserve(APP, WORKSPACE, true, &Opens::default(), &never_alone, None)
+                .expect("reserved");
+            assert!(reserved.is_some(), "the first window reserves the door");
+            drop(reserved);
+            assert!(
+                !has_door(&doors, APP, WORKSPACE),
+                "a launch that never started"
+            );
+        }
     }
 
-    /// A launch that ends after its door was replaced leaves the new one.
-    #[test]
-    fn an_earlier_launch_never_retires_a_later_door() {
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000002";
-        let (doors, _) = doors();
-        doors.reserve_for_test(APP, WORKSPACE);
-        let earlier = doors.hold(APP, WORKSPACE).expect("held");
-        doors.doors().remove(&key(APP, WORKSPACE));
-        doors.reserve_for_test(APP, WORKSPACE);
-        drop(earlier);
-        assert!(
-            has_door(&doors, APP, WORKSPACE),
-            "the later launch's door stays"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_window_of_a_running_app_opens_through_its_door;
 
-    /// A launch that never started gives its door up.
-    #[test]
-    fn a_launch_that_never_started_gives_its_door_up() {
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000003";
-        let (doors, _) = doors();
-        drop(doors.reserve(APP, WORKSPACE).expect("reserved"));
-        assert!(!has_door(&doors, APP, WORKSPACE));
-    }
+        phase another_window_of_a_running_app_opens_in_its_process;
+        // One process per app per workspace: the second window of an app running in
+        // a workspace, once the app said it opens windows, is a request on its door,
+        // naming the window's own instance and carrying its own connections; in
+        // a workspace where the app does not run, or once its process is gone, a
+        // window starts a process.
+        {
+            const APP: &str = "so.tilo.window-door-route";
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000004";
+            const ELSEWHERE: &str = "7a110d00-0000-4000-8000-000000000005";
+            let (doors, _) = doors();
+            assert_eq!(
+                doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                Routed::NotRunning
+            );
+            doors.reserve_for_test(APP, WORKSPACE);
+            let mut held = doors.hold(APP, WORKSPACE).expect("held");
+            let launcher_end = held.serve(4_100_001).expect("the launcher's end");
+            runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
-    /// One process per app per workspace: the second window of an app running in
-    /// a workspace, once the app said it opens windows, is a request on its door,
-    /// naming the window's own instance and carrying its own connections; in
-    /// a workspace where the app does not run, or once its process is gone, a
-    /// window starts a process.
-    #[test]
-    fn another_window_of_a_running_app_opens_in_its_process() {
-        const APP: &str = "so.tilo.window-door-route";
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000004";
-        const ELSEWHERE: &str = "7a110d00-0000-4000-8000-000000000005";
-        let (doors, _) = doors();
-        assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
-            Routed::NotRunning
-        );
-        doors.reserve_for_test(APP, WORKSPACE);
-        let mut held = doors.hold(APP, WORKSPACE).expect("held");
-        let launcher_end = held.serve(4_100_001).expect("the launcher's end");
-        runtime_portal::windows::send_serves(&launcher_end).unwrap();
-
-        assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
-            Routed::Opened
-        );
-        let opening = ui::window_door::receive(&launcher_end)
-            .expect("a request")
-            .expect("open");
-        let first = opening.request.instance;
-        assert!(opening.request.collaboration, "the window's own connection");
-        assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
-            Routed::Opened
-        );
-        let plain = ui::window_door::receive(&launcher_end)
-            .expect("a request")
-            .expect("open")
-            .request;
-        assert_eq!(
-            plain.reveal, None,
-            "a window asked for on nothing in particular says so"
-        );
-        assert_ne!(
-            first, plain.instance,
-            "each window is an instance of its own"
-        );
-
-        assert_eq!(
-            doors.open_in_running(
-                APP,
-                WORKSPACE,
-                &Opens {
-                    reveal: Some("chat/channels/c_ada".to_owned()),
-                    ..Opens::default()
-                },
-                &never_alone,
-                None,
-            ),
-            Routed::Opened
-        );
-        let told = ui::window_door::receive(&launcher_end)
-            .expect("a request")
-            .expect("open")
-            .request;
-        assert_eq!(
-            told.reveal.as_deref(),
-            Some("chat/channels/c_ada"),
-            "the window opens on what it was asked for"
-        );
-        assert_ne!(first, told.instance);
-        assert_ne!(plain.instance, told.instance);
-
-        // A second file opened with the app reaches the process that runs it, at the path
-        // the app's sandbox holds it at: it opens in a window of its own there.
-        let budget = Opens {
-            open: Some("/documents/Budget.txt".to_owned()),
-            ..Opens::default()
-        };
-        assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, &budget, &never_alone, None),
-            Routed::Opened
-        );
-        let opened = ui::window_door::receive(&launcher_end)
-            .expect("a request")
-            .expect("open")
-            .request;
-        assert_eq!(
-            opened.open.as_deref(),
-            Some("/documents/Budget.txt"),
-            "the running app is handed the file"
-        );
-        assert!(
-            ![first, plain.instance, told.instance].contains(&opened.instance),
-            "the file opens in a window of its own"
-        );
-
-        assert_eq!(
-            doors.open_in_running(APP, ELSEWHERE, &Opens::default(), &never_alone, None),
-            Routed::NotRunning
-        );
-        drop(launcher_end);
-        drop(held);
-        assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
-            Routed::NotRunning,
-            "the process is gone"
-        );
-    }
-
-    /// A window the session starts takes the tab the desk made for it, and that
-    /// tab is the instance it is known by, which its request names.
-    #[test]
-    fn a_window_takes_the_tab_the_desk_made_for_it_as_its_instance() {
-        const APP: &str = "so.tilo.window-door-tab";
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-00000000000a";
-        let (doors, _) = doors();
-        doors.reserve_for_test(APP, WORKSPACE);
-        let mut held = doors.hold(APP, WORKSPACE).expect("held");
-        let launcher_end = held.serve(4_100_002).expect("the launcher's end");
-        runtime_portal::windows::send_serves(&launcher_end).unwrap();
-
-        assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, Some(77)),
-            Routed::Opened
-        );
-        let request = ui::window_door::receive(&launcher_end)
-            .expect("a request")
-            .expect("open")
-            .request;
-        assert_eq!(
-            request.instance, 77,
-            "the window is known by the tab it takes"
-        );
-    }
-
-    /// The session and the apps are updated apart. An app built before the
-    /// window door never says it opens windows: a window asked for while it
-    /// starts waits until it maps its own, then starts a process of its own,
-    /// as every window of such an app always did, and so does every later
-    /// one.
-    #[test]
-    fn an_app_built_before_the_window_door_keeps_a_process_per_window() {
-        const APP: &str = "so.tilo.window-door-older-app";
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000006";
-        let (doors, _) = doors();
-        doors.reserve_for_test(APP, WORKSPACE);
-        let mut held = doors.hold(APP, WORKSPACE).expect("held");
-        // The process that maps a window is the launcher itself here.
-        let _launcher_end = held.serve(std::process::id()).expect("the launcher's end");
-        let (started, waiting) = std::sync::mpsc::channel();
-        let alone = alone_into(started);
-
-        assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &alone, None),
-            Routed::Opened,
-            "waits for the app to answer"
-        );
-        doors.window_mapped(std::process::id());
-        waiting
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the waiting window starts a process of its own");
-        assert_eq!(
-            doors.open_in_running(
-                APP,
-                WORKSPACE,
-                &Opens::default(),
-                &alone_into(std::sync::mpsc::channel().0),
-                None
-            ),
-            Routed::NotRunning,
-            "a later window starts its own process at once"
-        );
-    }
-
-    /// An app that reads its door says so before it maps its first window: a
-    /// window asked for while it started opens in it.
-    #[test]
-    fn a_window_asked_for_while_its_app_starts_opens_in_it() {
-        const APP: &str = "so.tilo.window-door-starting";
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000007";
-        let (doors, _) = doors();
-        doors.reserve_for_test(APP, WORKSPACE);
-        let mut held = doors.hold(APP, WORKSPACE).expect("held");
-        let launcher_end = held.serve(std::process::id()).expect("the launcher's end");
-        assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
-            Routed::Opened
-        );
-        runtime_portal::windows::send_serves(&launcher_end).unwrap();
-        doors.window_mapped(std::process::id());
-        assert!(
-            ui::window_door::receive(&launcher_end)
+            assert_eq!(
+                doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                Routed::Opened
+            );
+            let opening = ui::window_door::receive(&launcher_end)
                 .expect("a request")
-                .is_some(),
-            "the window that waited opens in the app"
-        );
-    }
+                .expect("open");
+            let first = opening.request.instance;
+            assert!(opening.request.collaboration, "the window's own connection");
+            assert_eq!(
+                doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                Routed::Opened
+            );
+            let plain = ui::window_door::receive(&launcher_end)
+                .expect("a request")
+                .expect("open")
+                .request;
+            assert_eq!(
+                plain.reveal, None,
+                "a window asked for on nothing in particular says so"
+            );
+            assert_ne!(
+                first, plain.instance,
+                "each window is an instance of its own"
+            );
 
-    /// A launch the door does not carry, such as a record, never opens in a
-    /// running process: the app's own command line carries it.
-    #[test]
-    fn a_launch_that_names_what_it_opens_reserves_a_door_and_starts() {
-        let (doors, _) = doors();
-        let reserved = doors
-            .route_or_reserve(APP, WORKSPACE, false, &Opens::default(), &never_alone, None)
-            .expect("not routed");
-        assert!(reserved.is_none(), "a process of its own, without a door");
-        let reserved = doors
-            .route_or_reserve(APP, WORKSPACE, true, &Opens::default(), &never_alone, None)
-            .expect("reserved");
-        assert!(reserved.is_some(), "the first window reserves the door");
-        drop(reserved);
-        assert!(
-            !has_door(&doors, APP, WORKSPACE),
-            "a launch that never started"
-        );
-    }
+            assert_eq!(
+                doors.open_in_running(
+                    APP,
+                    WORKSPACE,
+                    &Opens {
+                        reveal: Some("chat/channels/c_ada".to_owned()),
+                        ..Opens::default()
+                    },
+                    &never_alone,
+                    None,
+                ),
+                Routed::Opened
+            );
+            let told = ui::window_door::receive(&launcher_end)
+                .expect("a request")
+                .expect("open")
+                .request;
+            assert_eq!(
+                told.reveal.as_deref(),
+                Some("chat/channels/c_ada"),
+                "the window opens on what it was asked for"
+            );
+            assert_ne!(first, told.instance);
+            assert_ne!(plain.instance, told.instance);
 
-    /// A tilolang app whose instances a tilolang host runs: each window gets
-    /// its patch connection on the door before it is asked for, and no
-    /// collaboration connection of its own; its instance goes to the host
-    /// with the other end of that connection and the window's collaboration.
-    #[test]
-    fn a_hosted_windows_instance_goes_to_its_host_with_its_patch_connection() {
-        use std::io::{Read as _, Write as _};
-        const APP: &str = "so.tilo.window-door-tilolang";
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000008";
-        let (doors, _) = doors();
-        let handed = Rc::new(RefCell::new(Vec::new()));
-        let into = Rc::clone(&handed);
-        doors.hand_instances_to(Box::new(move |hosted| into.borrow_mut().push(hosted)));
-        doors.reserve_for_test(APP, WORKSPACE);
-        assert!(doors.host_instances(APP, WORKSPACE));
-        let mut held = doors.hold(APP, WORKSPACE).expect("held");
-        let launcher_end = held.serve(4_100_008).expect("the launcher's end");
-        runtime_portal::windows::send_serves(&launcher_end).unwrap();
+            // A second file opened with the app reaches the process that runs it, at the path
+            // the app's sandbox holds it at: it opens in a window of its own there.
+            let budget = Opens {
+                open: Some("/documents/Budget.txt".to_owned()),
+                ..Opens::default()
+            };
+            assert_eq!(
+                doors.open_in_running(APP, WORKSPACE, &budget, &never_alone, None),
+                Routed::Opened
+            );
+            let opened = ui::window_door::receive(&launcher_end)
+                .expect("a request")
+                .expect("open")
+                .request;
+            assert_eq!(
+                opened.open.as_deref(),
+                Some("/documents/Budget.txt"),
+                "the running app is handed the file"
+            );
+            assert!(
+                ![first, plain.instance, told.instance].contains(&opened.instance),
+                "the file opens in a window of its own"
+            );
 
-        let first_opens = Opens {
-            record: Some("uuid:7a110d00-0000-4000-8000-000000000009".to_owned()),
-            ..Opens::default()
-        };
-        doors
-            .first_hosted_window(APP, WORKSPACE, 5, &first_opens)
-            .unwrap();
-        let Some(runtime_portal::windows::Message::Patch(first, first_patch)) =
-            runtime_portal::windows::receive_message(&launcher_end).unwrap()
-        else {
-            panic!("the first window's patch connection");
-        };
-        assert_eq!(first, 5);
+            assert_eq!(
+                doors.open_in_running(APP, ELSEWHERE, &Opens::default(), &never_alone, None),
+                Routed::NotRunning
+            );
+            drop(launcher_end);
+            drop(held);
+            assert_eq!(
+                doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                Routed::NotRunning,
+                "the process is gone"
+            );
+        }
 
-        assert_eq!(
-            doors.open_in_running(
-                APP,
-                WORKSPACE,
-                &Opens {
-                    reveal: Some("tl.notes.Note:7".to_owned()),
-                    ..Opens::default()
-                },
-                &never_alone,
-                Some(6)
-            ),
-            Routed::Opened
-        );
-        let Some(runtime_portal::windows::Message::Patch(patched, _)) =
-            runtime_portal::windows::receive_message(&launcher_end).unwrap()
-        else {
-            panic!("the window's patch connection comes first");
-        };
-        let opening = ui::window_door::receive(&launcher_end)
-            .expect("a request")
-            .expect("open");
-        assert_eq!(
-            opening.request.instance, patched,
-            "for the window asked for"
-        );
-        assert_eq!(patched, 6);
-        assert!(
-            !opening.request.collaboration && opening.collaboration.is_none(),
-            "the window holds none of the app's data"
-        );
+        phase a_window_takes_the_tab_the_desk_made_for_it_as_its_instance;
+        // A window the session starts takes the tab the desk made for it, and that
+        // tab is the instance it is known by, which its request names.
+        {
+            const APP: &str = "so.tilo.window-door-tab";
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-00000000000a";
+            let (doors, _) = doors();
+            doors.reserve_for_test(APP, WORKSPACE);
+            let mut held = doors.hold(APP, WORKSPACE).expect("held");
+            let launcher_end = held.serve(4_100_002).expect("the launcher's end");
+            runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
-        let handed = handed.borrow();
-        let instances: Vec<(u64, u32)> = handed
-            .iter()
-            .map(|hosted| (hosted.instance, hosted.launcher_pid))
-            .collect();
-        assert_eq!(instances, [(5, 4_100_008), (6, 4_100_008)]);
-        assert_eq!(
-            handed[0].opens, first_opens,
-            "the first window's instance opens the record its launch named"
-        );
-        assert_eq!(
-            handed[1].opens.reveal.as_deref(),
-            Some("tl.notes.Note:7"),
-            "a later window's instance opens on the item it was asked for"
-        );
-        assert_eq!(
-            opening.request.reveal.as_deref(),
-            Some("tl.notes.Note:7"),
-            "the window is told as any window is"
-        );
-        // The host's end and the window's are one connection.
-        let mut host = std::os::unix::net::UnixStream::from(handed[0].patch.try_clone().unwrap());
-        host.write_all(b"patch").unwrap();
-        let mut window = std::os::unix::net::UnixStream::from(first_patch);
-        let mut read = [0_u8; 5];
-        window.read_exact(&mut read).unwrap();
-        assert_eq!(&read, b"patch");
+            assert_eq!(
+                doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, Some(77)),
+                Routed::Opened
+            );
+            let request = ui::window_door::receive(&launcher_end)
+                .expect("a request")
+                .expect("open")
+                .request;
+            assert_eq!(
+                request.instance, 77,
+                "the window is known by the tab it takes"
+            );
+        }
+
+        phase an_app_built_before_the_window_door_keeps_a_process_per_window;
+        // The session and the apps are updated apart. An app built before the
+        // window door never says it opens windows: a window asked for while it
+        // starts waits until it maps its own, then starts a process of its own,
+        // as every window of such an app always did, and so does every later
+        // one.
+        {
+            const APP: &str = "so.tilo.window-door-older-app";
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000006";
+            let (doors, _) = doors();
+            doors.reserve_for_test(APP, WORKSPACE);
+            let mut held = doors.hold(APP, WORKSPACE).expect("held");
+            // The process that maps a window is the launcher itself here.
+            let _launcher_end = held.serve(std::process::id()).expect("the launcher's end");
+            let (started, waiting) = std::sync::mpsc::channel();
+            let alone = alone_into(started);
+
+            assert_eq!(
+                doors.open_in_running(APP, WORKSPACE, &Opens::default(), &alone, None),
+                Routed::Opened,
+                "waits for the app to answer"
+            );
+            doors.window_mapped(std::process::id());
+            waiting
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the waiting window starts a process of its own");
+            assert_eq!(
+                doors.open_in_running(
+                    APP,
+                    WORKSPACE,
+                    &Opens::default(),
+                    &alone_into(std::sync::mpsc::channel().0),
+                    None
+                ),
+                Routed::NotRunning,
+                "a later window starts its own process at once"
+            );
+        }
+
+        phase a_window_asked_for_while_its_app_starts_opens_in_it;
+        // An app that reads its door says so before it maps its first window: a
+        // window asked for while it started opens in it.
+        {
+            const APP: &str = "so.tilo.window-door-starting";
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000007";
+            let (doors, _) = doors();
+            doors.reserve_for_test(APP, WORKSPACE);
+            let mut held = doors.hold(APP, WORKSPACE).expect("held");
+            let launcher_end = held.serve(std::process::id()).expect("the launcher's end");
+            assert_eq!(
+                doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                Routed::Opened
+            );
+            runtime_portal::windows::send_serves(&launcher_end).unwrap();
+            doors.window_mapped(std::process::id());
+            assert!(
+                ui::window_door::receive(&launcher_end)
+                    .expect("a request")
+                    .is_some(),
+                "the window that waited opens in the app"
+            );
+        }
+
+        phase a_hosted_windows_instance_goes_to_its_host_with_its_patch_connection;
+        // A tilolang app whose instances a tilolang host runs: each window gets
+        // its patch connection on the door before it is asked for, and no
+        // collaboration connection of its own; its instance goes to the host
+        // with the other end of that connection and the window's collaboration.
+        {
+            use std::io::{Read as _, Write as _};
+            const APP: &str = "so.tilo.window-door-tilolang";
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000008";
+            let (doors, _) = doors();
+            let handed = Rc::new(RefCell::new(Vec::new()));
+            let into = Rc::clone(&handed);
+            doors.hand_instances_to(Box::new(move |hosted| into.borrow_mut().push(hosted)));
+            doors.reserve_for_test(APP, WORKSPACE);
+            assert!(doors.host_instances(APP, WORKSPACE));
+            let mut held = doors.hold(APP, WORKSPACE).expect("held");
+            let launcher_end = held.serve(4_100_008).expect("the launcher's end");
+            runtime_portal::windows::send_serves(&launcher_end).unwrap();
+
+            let first_opens = Opens {
+                record: Some("uuid:7a110d00-0000-4000-8000-000000000009".to_owned()),
+                ..Opens::default()
+            };
+            doors
+                .first_hosted_window(APP, WORKSPACE, 5, &first_opens)
+                .unwrap();
+            let Some(runtime_portal::windows::Message::Patch(first, first_patch)) =
+                runtime_portal::windows::receive_message(&launcher_end).unwrap()
+            else {
+                panic!("the first window's patch connection");
+            };
+            assert_eq!(first, 5);
+
+            assert_eq!(
+                doors.open_in_running(
+                    APP,
+                    WORKSPACE,
+                    &Opens {
+                        reveal: Some("tl.notes.Note:7".to_owned()),
+                        ..Opens::default()
+                    },
+                    &never_alone,
+                    Some(6)
+                ),
+                Routed::Opened
+            );
+            let Some(runtime_portal::windows::Message::Patch(patched, _)) =
+                runtime_portal::windows::receive_message(&launcher_end).unwrap()
+            else {
+                panic!("the window's patch connection comes first");
+            };
+            let opening = ui::window_door::receive(&launcher_end)
+                .expect("a request")
+                .expect("open");
+            assert_eq!(
+                opening.request.instance, patched,
+                "for the window asked for"
+            );
+            assert_eq!(patched, 6);
+            assert!(
+                !opening.request.collaboration && opening.collaboration.is_none(),
+                "the window holds none of the app's data"
+            );
+
+            let handed = handed.borrow();
+            let instances: Vec<(u64, u32)> = handed
+                .iter()
+                .map(|hosted| (hosted.instance, hosted.launcher_pid))
+                .collect();
+            assert_eq!(instances, [(5, 4_100_008), (6, 4_100_008)]);
+            assert_eq!(
+                handed[0].opens, first_opens,
+                "the first window's instance opens the record its launch named"
+            );
+            assert_eq!(
+                handed[1].opens.reveal.as_deref(),
+                Some("tl.notes.Note:7"),
+                "a later window's instance opens on the item it was asked for"
+            );
+            assert_eq!(
+                opening.request.reveal.as_deref(),
+                Some("tl.notes.Note:7"),
+                "the window is told as any window is"
+            );
+            // The host's end and the window's are one connection.
+            let mut host = std::os::unix::net::UnixStream::from(handed[0].patch.try_clone().unwrap());
+            host.write_all(b"patch").unwrap();
+            let mut window = std::os::unix::net::UnixStream::from(first_patch);
+            let mut read = [0_u8; 5];
+            window.read_exact(&mut read).unwrap();
+            assert_eq!(&read, b"patch");
+        }
     }
 }

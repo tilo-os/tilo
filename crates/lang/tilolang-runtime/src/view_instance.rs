@@ -1183,39 +1183,43 @@ fn field_mutation(
 mod event_value_tests {
     use super::*;
 
-    /// A view that sets what an event carries into a state of its own holds it in the state's
-    /// option (`set(editing, c)` on an `Option<Comment>`), and the value fills it there: the
-    /// slot is the item the person opened, not the place the event's value stood in the view.
-    #[test]
-    fn the_event_value_fills_the_option_a_view_set_it_into() {
-        let comment = Value::text("said");
-        let mut aref = ActionRef::new(
-            "$set",
-            vec![
-                Value::text("w"),
-                Value::text("ada"),
-                Value::text("editing"),
-                Value::some(Value::Event),
-            ],
-        );
-        fill_event(&mut aref, Some(&comment)).expect("the event carries a value");
-        assert_eq!(aref.args[3], Value::some(comment));
-    }
+    tilo_test_env::scenario! {
+        fn the_event_value_fills_only_what_the_view_left_open;
 
-    /// A value the view wrote itself is the view's, whatever the event carries.
-    #[test]
-    fn the_event_value_leaves_what_the_view_wrote_alone() {
-        let mut aref = ActionRef::new(
-            "$set",
-            vec![
-                Value::text("w"),
-                Value::text("ada"),
-                Value::text("editing"),
-                Value::none(),
-            ],
-        );
-        fill_event(&mut aref, Some(&Value::text("said"))).expect("the event carries a value");
-        assert_eq!(aref.args[3], Value::none());
+        phase the_event_value_fills_the_option_a_view_set_it_into;
+        // A view that sets what an event carries into a state of its own holds it in the state's
+        // option (`set(editing, c)` on an `Option<Comment>`), and the value fills it there: the
+        // slot is the item the person opened, not the place the event's value stood in the view.
+        {
+            let comment = Value::text("said");
+            let mut aref = ActionRef::new(
+                "$set",
+                vec![
+                    Value::text("w"),
+                    Value::text("ada"),
+                    Value::text("editing"),
+                    Value::some(Value::Event),
+                ],
+            );
+            fill_event(&mut aref, Some(&comment)).expect("the event carries a value");
+            assert_eq!(aref.args[3], Value::some(comment));
+        }
+
+        phase the_event_value_leaves_what_the_view_wrote_alone;
+        // A value the view wrote itself is the view's, whatever the event carries.
+        {
+            let mut aref = ActionRef::new(
+                "$set",
+                vec![
+                    Value::text("w"),
+                    Value::text("ada"),
+                    Value::text("editing"),
+                    Value::none(),
+                ],
+            );
+            fill_event(&mut aref, Some(&Value::text("said"))).expect("the event carries a value");
+            assert_eq!(aref.args[3], Value::none());
+        }
     }
 }
 

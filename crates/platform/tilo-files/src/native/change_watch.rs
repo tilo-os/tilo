@@ -971,308 +971,295 @@ mod tests {
         tilo_test_env::wait_until(what, || seen.lock().expect("events").iter().any(&found));
     }
 
-    /// Every watch of a process shares one inotify instance, so watches past the user's instance limit
-    /// do not fail.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn more_watches_than_the_instance_limit_start_and_each_reports_its_own_changes() {
-        let dirs: Vec<_> = (0..200)
-            .map(|_| tempfile::tempdir().expect("temporary directory"))
-            .collect();
-        let (counts, callbacks): (Vec<_>, Vec<_>) = dirs.iter().map(|_| counted()).unzip();
-        let _watches: Vec<_> = dirs
-            .iter()
-            .zip(callbacks)
-            .map(|(dir, on_change)| watch_changes(dir.path(), |_| true, on_change).expect("watch"))
-            .collect();
-        std::fs::write(dirs[0].path().join("first"), b"x").expect("write");
-        std::fs::write(dirs[199].path().join("last"), b"x").expect("write");
-        assert!(reaches(&counts[0], 1) && reaches(&counts[199], 1));
-        std::thread::sleep(QUIET);
-        assert_eq!(
-            counts[100].load(Ordering::SeqCst),
-            0,
-            "a watch hears only its own directory"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_tree_watch_reports_what_happens_below_it;
 
-    /// Two watches of one directory share the kernel's watch of it: each hears only what it asked for,
-    /// and dropping one leaves the other.
-    #[test]
-    fn two_watches_of_one_directory_are_independent() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let file = dir.path().join("value");
-        std::fs::write(&file, b"one").expect("write");
-        let (presence, on_presence) = counted();
-        let presence_watch =
-            watch_presence(dir.path(), |_| true, on_presence).expect("presence watch");
-        let (changes, on_change) = counted();
-        let _changes_watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
-        std::fs::write(&file, b"two").expect("rewrite");
-        assert!(reaches(&changes, 1), "the changes watch hears the write");
-        std::thread::sleep(QUIET);
-        assert_eq!(
-            presence.load(Ordering::SeqCst),
-            0,
-            "the presence watch does not hear a write"
-        );
-        drop(presence_watch);
-        let before = changes.load(Ordering::SeqCst);
-        std::fs::write(dir.path().join("new"), b"x").expect("create");
-        assert!(
-            reaches(&changes, before + 1),
-            "dropping the other watch leaves this one watching"
-        );
-    }
+        phase a_tree_watch_reports_writes_in_subdirectories_old_and_new;
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let nested = dir.path().join("package").join("payload");
+            std::fs::create_dir_all(&nested).expect("nested directory");
+            std::fs::write(nested.join("manifest"), b"one").expect("write");
+            let (count, on_change) = counted();
+            let _watch = watch_tree_changes(dir.path(), |_| true, on_change).expect("watch");
+            std::fs::write(nested.join("manifest"), b"two").expect("rewrite");
+            assert!(reaches(&count, 1), "a write two levels down is a change");
 
-    #[test]
-    fn a_changes_watch_reports_a_write_to_an_entry() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let file = dir.path().join("value");
-        std::fs::write(&file, b"one").expect("write");
-        let (count, on_change) = counted();
-        let _watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
-        std::fs::write(&file, b"two").expect("rewrite");
-        assert!(reaches(&count, 1), "a write to an entry is a change");
-    }
-
-    #[test]
-    fn an_entries_watch_reports_creation_and_removal_but_not_writes() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let file = dir.path().join("busy");
-        std::fs::write(&file, b"one").expect("write");
-        let (count, on_change) = counted();
-        let _watch = watch_presence(dir.path(), |_| true, on_change).expect("watch");
-        for round in 0..20 {
-            std::fs::write(&file, format!("{round}")).expect("rewrite");
+            let later = dir.path().join("later").join("deeper");
+            std::fs::create_dir_all(&later).expect("new nested directory");
+            assert!(reaches(&count, 2), "a new subdirectory is a change");
+            // Let the watch take the new directories in before writing into them.
+            std::thread::sleep(QUIET);
+            let seen = count.load(Ordering::SeqCst);
+            std::fs::write(later.join("manifest"), b"one").expect("write in new directory");
+            assert!(
+                reaches(&count, seen + 1),
+                "a write in a directory created after the watch started is a change"
+            );
         }
-        std::thread::sleep(QUIET);
-        assert_eq!(
-            count.load(Ordering::SeqCst),
-            0,
-            "writes to an existing entry wake nothing"
-        );
-        std::fs::write(dir.path().join("new"), b"").expect("create");
-        assert!(reaches(&count, 1), "a new entry is reported");
-        let seen = count.load(Ordering::SeqCst);
-        std::fs::remove_file(&file).expect("remove");
-        assert!(reaches(&count, seen + 1), "a removed entry is reported");
+
+        phase a_tree_watch_follows_a_directory_moved_within_it;
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let before = dir.path().join("before");
+            std::fs::create_dir_all(before.join("inner")).expect("directory");
+            let (seen, _watch) = recorded(Watcher::tree(dir.path()));
+            let after = dir.path().join("after");
+            std::fs::rename(&before, &after).expect("move");
+            until_seen(&seen, "the moved directory", |event| event.path == after);
+            std::thread::sleep(QUIET);
+            let file = after.join("inner").join("file");
+            std::fs::write(&file, b"").expect("write");
+            until_seen(&seen, "the entry by its new path", |event| {
+                event.path == file && event.kind == ChangeKind::Created
+            });
+        }
+
+        phase a_tree_watch_reports_paths_and_kinds_and_leaves_skipped_folders_out;
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let skipped = dir.path().join("target");
+            std::fs::create_dir_all(skipped.join("debug")).expect("skipped directory");
+            let (seen, _watch) = recorded(
+                Watcher::tree(dir.path()).skip(|path| path.file_name() == Some("target".as_ref())),
+            );
+            std::fs::write(skipped.join("debug").join("out"), b"").expect("write in skipped");
+            let file = dir.path().join("src").join("main.rs");
+            std::fs::create_dir(dir.path().join("src")).expect("directory");
+            std::thread::sleep(QUIET);
+            std::fs::write(&file, b"one").expect("create");
+            until_seen(&seen, "the created file", |event| {
+                event.path == file && event.kind == ChangeKind::Created
+            });
+            std::fs::write(&file, b"two").expect("rewrite");
+            until_seen(&seen, "the written file", |event| {
+                event.path == file && event.kind == ChangeKind::Changed
+            });
+            std::fs::remove_file(&file).expect("remove");
+            until_seen(&seen, "the removed file", |event| {
+                event.path == file && event.kind == ChangeKind::Removed
+            });
+            assert!(
+                seen.lock()
+                    .expect("events")
+                    .iter()
+                    .all(|event| !event.path.starts_with(&skipped) || event.path == skipped),
+                "nothing below a skipped folder is reported"
+            );
+        }
     }
 
-    #[test]
-    fn a_tree_watch_reports_writes_in_subdirectories_old_and_new() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let nested = dir.path().join("package").join("payload");
-        std::fs::create_dir_all(&nested).expect("nested directory");
-        std::fs::write(nested.join("manifest"), b"one").expect("write");
-        let (count, on_change) = counted();
-        let _watch = watch_tree_changes(dir.path(), |_| true, on_change).expect("watch");
-        std::fs::write(nested.join("manifest"), b"two").expect("rewrite");
-        assert!(reaches(&count, 1), "a write two levels down is a change");
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_directory_watch_reports_only_what_it_asked_for;
 
-        let later = dir.path().join("later").join("deeper");
-        std::fs::create_dir_all(&later).expect("new nested directory");
-        assert!(reaches(&count, 2), "a new subdirectory is a change");
-        // Let the watch take the new directories in before writing into them.
-        std::thread::sleep(QUIET);
-        let seen = count.load(Ordering::SeqCst);
-        std::fs::write(later.join("manifest"), b"one").expect("write in new directory");
-        assert!(
-            reaches(&count, seen + 1),
-            "a write in a directory created after the watch started is a change"
-        );
+        phase two_watches_of_one_directory_are_independent;
+        // Two watches of one directory share the kernel's watch of it: each hears only what it asked for,
+        // and dropping one leaves the other.
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let file = dir.path().join("value");
+            std::fs::write(&file, b"one").expect("write");
+            let (presence, on_presence) = counted();
+            let presence_watch =
+                watch_presence(dir.path(), |_| true, on_presence).expect("presence watch");
+            let (changes, on_change) = counted();
+            let _changes_watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
+            std::fs::write(&file, b"two").expect("rewrite");
+            assert!(reaches(&changes, 1), "the changes watch hears the write");
+            std::thread::sleep(QUIET);
+            assert_eq!(
+                presence.load(Ordering::SeqCst),
+                0,
+                "the presence watch does not hear a write"
+            );
+            drop(presence_watch);
+            let before = changes.load(Ordering::SeqCst);
+            std::fs::write(dir.path().join("new"), b"x").expect("create");
+            assert!(
+                reaches(&changes, before + 1),
+                "dropping the other watch leaves this one watching"
+            );
+        }
+
+        phase a_changes_watch_reports_a_write_to_an_entry;
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let file = dir.path().join("value");
+            std::fs::write(&file, b"one").expect("write");
+            let (count, on_change) = counted();
+            let _watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
+            std::fs::write(&file, b"two").expect("rewrite");
+            assert!(reaches(&count, 1), "a write to an entry is a change");
+        }
+
+        phase an_entries_watch_reports_creation_and_removal_but_not_writes;
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let file = dir.path().join("busy");
+            std::fs::write(&file, b"one").expect("write");
+            let (count, on_change) = counted();
+            let _watch = watch_presence(dir.path(), |_| true, on_change).expect("watch");
+            for round in 0..20 {
+                std::fs::write(&file, format!("{round}")).expect("rewrite");
+            }
+            std::thread::sleep(QUIET);
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                0,
+                "writes to an existing entry wake nothing"
+            );
+            std::fs::write(dir.path().join("new"), b"").expect("create");
+            assert!(reaches(&count, 1), "a new entry is reported");
+            let seen = count.load(Ordering::SeqCst);
+            std::fs::remove_file(&file).expect("remove");
+            assert!(reaches(&count, seen + 1), "a removed entry is reported");
+        }
+
+        phase reading_an_entry_is_not_a_change;
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let file = dir.path().join("value");
+            std::fs::write(&file, b"one").expect("write");
+            let (count, on_change) = counted();
+            let _watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
+            for _ in 0..20 {
+                std::fs::read(&file).expect("read");
+                // Opened for writing, as a lock file is, and closed unchanged.
+                drop(
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&file)
+                        .expect("open"),
+                );
+            }
+            std::thread::sleep(QUIET);
+            assert_eq!(count.load(Ordering::SeqCst), 0, "a read wakes nothing");
+        }
+
+        phase an_entries_watch_does_not_reach_into_subdirectories;
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let nested = dir.path().join("nested");
+            std::fs::create_dir(&nested).expect("directory");
+            let (count, on_change) = counted();
+            let _watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
+            std::fs::write(nested.join("file"), b"").expect("write");
+            std::thread::sleep(QUIET);
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                0,
+                "a nested write is not seen"
+            );
+        }
+
+        phase a_file_removed_before_its_writes_are_delivered_is_never_reported_changed;
+        // Two atomic writes and a removal, all done before the watch's thread got to them, as happens
+        // under load: each change is what its file is now.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("a.md");
+            let temporary = dir.path().join(".a.md.42.0.tmp");
+            assert!(is_temporary(&temporary));
+            assert!(!is_temporary(&file));
+            assert_eq!(event_now(file.clone(), true).kind, ChangeKind::Removed);
+            std::fs::write(&file, b"back").unwrap();
+            assert_eq!(event_now(file.clone(), true).kind, ChangeKind::Created);
+            assert_eq!(event_now(file, false).kind, ChangeKind::Changed);
+        }
     }
 
-    #[test]
-    fn a_tree_watch_follows_a_directory_moved_within_it() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let before = dir.path().join("before");
-        std::fs::create_dir_all(before.join("inner")).expect("directory");
-        let (seen, _watch) = recorded(Watcher::tree(dir.path()));
-        let after = dir.path().join("after");
-        std::fs::rename(&before, &after).expect("move");
-        until_seen(&seen, "the moved directory", |event| event.path == after);
-        std::thread::sleep(QUIET);
-        let file = after.join("inner").join("file");
-        std::fs::write(&file, b"").expect("write");
-        until_seen(&seen, "the entry by its new path", |event| {
-            event.path == file && event.kind == ChangeKind::Created
-        });
-    }
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn linux_watches_share_one_instance_and_report_releases_and_endings;
 
-    #[test]
-    fn a_tree_watch_reports_paths_and_kinds_and_leaves_skipped_folders_out() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let skipped = dir.path().join("target");
-        std::fs::create_dir_all(skipped.join("debug")).expect("skipped directory");
-        let (seen, _watch) = recorded(
-            Watcher::tree(dir.path()).skip(|path| path.file_name() == Some("target".as_ref())),
-        );
-        std::fs::write(skipped.join("debug").join("out"), b"").expect("write in skipped");
-        let file = dir.path().join("src").join("main.rs");
-        std::fs::create_dir(dir.path().join("src")).expect("directory");
-        std::thread::sleep(QUIET);
-        std::fs::write(&file, b"one").expect("create");
-        until_seen(&seen, "the created file", |event| {
-            event.path == file && event.kind == ChangeKind::Created
-        });
-        std::fs::write(&file, b"two").expect("rewrite");
-        until_seen(&seen, "the written file", |event| {
-            event.path == file && event.kind == ChangeKind::Changed
-        });
-        std::fs::remove_file(&file).expect("remove");
-        until_seen(&seen, "the removed file", |event| {
-            event.path == file && event.kind == ChangeKind::Removed
-        });
-        assert!(
-            seen.lock()
-                .expect("events")
+        phase more_watches_than_the_instance_limit_start_and_each_reports_its_own_changes;
+        // Every watch of a process shares one inotify instance, so watches past the user's instance limit
+        // do not fail.
+        {
+            let dirs: Vec<_> = (0..200)
+                .map(|_| tempfile::tempdir().expect("temporary directory"))
+                .collect();
+            let (counts, callbacks): (Vec<_>, Vec<_>) = dirs.iter().map(|_| counted()).unzip();
+            let _watches: Vec<_> = dirs
                 .iter()
-                .all(|event| !event.path.starts_with(&skipped) || event.path == skipped),
-            "nothing below a skipped folder is reported"
-        );
-    }
+                .zip(callbacks)
+                .map(|(dir, on_change)| watch_changes(dir.path(), |_| true, on_change).expect("watch"))
+                .collect();
+            std::fs::write(dirs[0].path().join("first"), b"x").expect("write");
+            std::fs::write(dirs[199].path().join("last"), b"x").expect("write");
+            assert!(reaches(&counts[0], 1) && reaches(&counts[199], 1));
+            std::thread::sleep(QUIET);
+            assert_eq!(
+                counts[100].load(Ordering::SeqCst),
+                0,
+                "a watch hears only its own directory"
+            );
+        }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_tree_watch_does_not_follow_links() {
-        let outside = tempfile::tempdir().expect("temporary directory");
-        let dir = tempfile::tempdir().expect("temporary directory");
-        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
-        let (count, on_change) = counted();
-        let _watch = watch_tree_changes(dir.path(), |_| true, on_change).expect("watch");
-        std::fs::write(outside.path().join("file"), b"").expect("write");
-        std::thread::sleep(QUIET);
-        assert_eq!(
-            count.load(Ordering::SeqCst),
-            0,
-            "a linked folder is not watched"
-        );
-    }
-
-    #[test]
-    fn reading_an_entry_is_not_a_change() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let file = dir.path().join("value");
-        std::fs::write(&file, b"one").expect("write");
-        let (count, on_change) = counted();
-        let _watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
-        for _ in 0..20 {
-            std::fs::read(&file).expect("read");
-            // Opened for writing, as a lock file is, and closed unchanged.
+        phase a_writer_letting_go_is_reported_to_a_watch_that_asks_for_releases;
+        // A file published with [`super::super::held::publish`] is vouched for only while its writer holds
+        // it, and the hold ends with the close of the descriptor it published through, leaving the name
+        // and its bytes as they were: a watch that reads such a file asks for releases, and one that reads
+        // changes hears nothing of them. Only Linux reports the close of a file opened for writing.
+        {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let file = dir.path().join("value");
+            std::fs::write(&file, b"one").expect("write");
+            let (releases, on_release) = counted();
+            let _releases = Watcher::entries(dir.path())
+                .released()
+                .on_change(move |entry| entry == file.as_path(), on_release)
+                .expect("releases watch");
+            let (changes, on_change) = counted();
+            let _changes = watch_changes(dir.path(), |_| true, on_change).expect("watch");
+            // Opened for writing, as the writer of a held file holds it, and closed unchanged.
             drop(
                 std::fs::OpenOptions::new()
                     .write(true)
-                    .open(&file)
+                    .open(dir.path().join("value"))
                     .expect("open"),
             );
+            assert!(reaches(&releases, 1), "the writer letting go is reported");
+            std::thread::sleep(QUIET);
+            assert_eq!(
+                changes.load(Ordering::SeqCst),
+                0,
+                "a close writes nothing, so a changes watch hears nothing"
+            );
         }
-        std::thread::sleep(QUIET);
-        assert_eq!(count.load(Ordering::SeqCst), 0, "a read wakes nothing");
-    }
 
-    /// A file published with [`super::super::held::publish`] is vouched for only while its writer holds
-    /// it, and the hold ends with the close of the descriptor it published through, leaving the name
-    /// and its bytes as they were: a watch that reads such a file asks for releases, and one that reads
-    /// changes hears nothing of them. Only Linux reports the close of a file opened for writing.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_writer_letting_go_is_reported_to_a_watch_that_asks_for_releases() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let file = dir.path().join("value");
-        std::fs::write(&file, b"one").expect("write");
-        let (releases, on_release) = counted();
-        let _releases = Watcher::entries(dir.path())
-            .released()
-            .on_change(move |entry| entry == file.as_path(), on_release)
-            .expect("releases watch");
-        let (changes, on_change) = counted();
-        let _changes = watch_changes(dir.path(), |_| true, on_change).expect("watch");
-        // Opened for writing, as the writer of a held file holds it, and closed unchanged.
-        drop(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(dir.path().join("value"))
-                .expect("open"),
-        );
-        assert!(reaches(&releases, 1), "the writer letting go is reported");
-        std::thread::sleep(QUIET);
-        assert_eq!(
-            changes.load(Ordering::SeqCst),
-            0,
-            "a close writes nothing, so a changes watch hears nothing"
-        );
-    }
+        phase the_directory_going_away_is_a_change;
+        {
+            let parent = tempfile::tempdir().expect("temporary directory");
+            let dir = parent.path().join("watched");
+            std::fs::create_dir(&dir).expect("directory");
+            let (count, on_change) = counted();
+            let _watch = watch_changes(&dir, |_| false, on_change).expect("watch");
+            std::fs::remove_dir(&dir).expect("remove");
+            assert!(reaches(&count, 1), "a removed directory is a change");
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn the_directory_going_away_is_a_change() {
-        let parent = tempfile::tempdir().expect("temporary directory");
-        let dir = parent.path().join("watched");
-        std::fs::create_dir(&dir).expect("directory");
-        let (count, on_change) = counted();
-        let _watch = watch_changes(&dir, |_| false, on_change).expect("watch");
-        std::fs::remove_dir(&dir).expect("remove");
-        assert!(reaches(&count, 1), "a removed directory is a change");
+            std::fs::create_dir(&dir).expect("directory");
+            let (seen, _watch) = recorded(Watcher::entries(&dir));
+            std::fs::rename(&dir, parent.path().join("elsewhere")).expect("move");
+            until_seen(&seen, "the end of the watch", |event| {
+                event.path == dir && event.kind == ChangeKind::Removed
+            });
+        }
 
-        std::fs::create_dir(&dir).expect("directory");
-        let (seen, _watch) = recorded(Watcher::entries(&dir));
-        std::fs::rename(&dir, parent.path().join("elsewhere")).expect("move");
-        until_seen(&seen, "the end of the watch", |event| {
-            event.path == dir && event.kind == ChangeKind::Removed
-        });
-    }
-
-    #[test]
-    fn an_entries_watch_does_not_reach_into_subdirectories() {
-        let dir = tempfile::tempdir().expect("temporary directory");
-        let nested = dir.path().join("nested");
-        std::fs::create_dir(&nested).expect("directory");
-        let (count, on_change) = counted();
-        let _watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
-        std::fs::write(nested.join("file"), b"").expect("write");
-        std::thread::sleep(QUIET);
-        assert_eq!(
-            count.load(Ordering::SeqCst),
-            0,
-            "a nested write is not seen"
-        );
-    }
-
-    /// Two atomic writes and a removal, all done before the watch's thread got to them, as happens
-    /// under load: each change is what its file is now.
-    #[test]
-    fn a_file_removed_before_its_writes_are_delivered_is_never_reported_changed() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.md");
-        let temporary = dir.path().join(".a.md.42.0.tmp");
-        assert!(is_temporary(&temporary));
-        assert!(!is_temporary(&file));
-        assert_eq!(event_now(file.clone(), true).kind, ChangeKind::Removed);
-        std::fs::write(&file, b"back").unwrap();
-        assert_eq!(event_now(file.clone(), true).kind, ChangeKind::Created);
-        assert_eq!(event_now(file, false).kind, ChangeKind::Changed);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_dangling_symlink_is_an_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
-        assert_eq!(event_now(link, false).kind, ChangeKind::Changed);
-        assert_eq!(
-            event_now(dir.path().join("missing"), false).kind,
-            ChangeKind::Removed
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_watch_on_a_local_directory_sees_every_change() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(sees_every_change(dir.path()));
-        assert!(!sees_every_change(&dir.path().join("missing")));
+        phase a_watch_on_a_local_directory_sees_every_change;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(sees_every_change(dir.path()));
+            assert!(!sees_every_change(&dir.path().join("missing")));
+        }
     }
 
     fn entries(dir: &Path) -> Watch {
@@ -1294,61 +1281,97 @@ mod tests {
         seen
     }
 
-    /// `FSEvents` can hand a watch the creation of the directory it watches when the directory was made
-    /// a moment before: the event is numbered when its daemon gets to it. That is no change since the
-    /// watch began.
-    #[test]
-    fn a_watch_on_a_just_made_directory_reports_nothing_of_its_making() {
-        for _ in 0..50 {
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn links_and_the_watched_directory_itself_are_reported_as_what_they_are;
+
+        phase a_tree_watch_does_not_follow_links;
+        {
+            let outside = tempfile::tempdir().expect("temporary directory");
+            let dir = tempfile::tempdir().expect("temporary directory");
+            std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
+            let (count, on_change) = counted();
+            let _watch = watch_tree_changes(dir.path(), |_| true, on_change).expect("watch");
+            std::fs::write(outside.path().join("file"), b"").expect("write");
+            std::thread::sleep(QUIET);
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                0,
+                "a linked folder is not watched"
+            );
+        }
+
+        phase a_dangling_symlink_is_an_entry;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
+            assert_eq!(event_now(link, false).kind, ChangeKind::Changed);
+            assert_eq!(
+                event_now(dir.path().join("missing"), false).kind,
+                ChangeKind::Removed
+            );
+        }
+
+        phase a_change_to_the_watched_directory_itself_is_reported;
+        // What the directory itself goes through after the watch began is reported, as a change of the
+        // watched path.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
             let dir = tempfile::tempdir().unwrap();
             let watch = entries(dir.path());
-            let seen = changes_until_made(&watch, dir.path(), "made");
-            assert!(seen.iter().all(|change| !change.path.is_root()), "{seen:?}");
+            // Past any report of the directory's making.
+            let _ = changes_until_made(&watch, dir.path(), "made");
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o750)).unwrap();
+            tilo_test_env::wait_until("the watch to report the directory's new mode", || {
+                std::iter::from_fn(|| watch.try_next()).any(|change| change.path.is_root())
+            });
         }
     }
 
-    /// What the directory itself goes through after the watch began is reported, as a change of the
-    /// watched path.
-    #[cfg(unix)]
-    #[test]
-    fn a_change_to_the_watched_directory_itself_is_reported() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let watch = entries(dir.path());
-        // Past any report of the directory's making.
-        let _ = changes_until_made(&watch, dir.path(), "made");
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o750)).unwrap();
-        tilo_test_env::wait_until("the watch to report the directory's new mode", || {
-            std::iter::from_fn(|| watch.try_next()).any(|change| change.path.is_root())
-        });
-    }
+    tilo_test_env::scenario! {
+        fn a_change_stream_starts_clean_and_follows_replaced_files;
 
-    #[test]
-    fn an_entries_watch_sees_replaced_files_but_not_subdirectories() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
-        let watch = entries(dir.path());
-        crate::native::atomic::write(&dir.path().join("sub/inner.json"), b"below").unwrap();
-        crate::native::atomic::write(&dir.path().join("top.json"), b"one").unwrap();
-        crate::native::atomic::write(&dir.path().join("top.json"), b"two").unwrap();
-        let top = VPath::new("top.json").unwrap();
-        let mut seen = Vec::new();
-        tilo_test_env::wait_until("the replaced file to be watched", || {
-            while let Some(change) = watch.try_next() {
-                seen.push(change);
+        phase a_watch_on_a_just_made_directory_reports_nothing_of_its_making;
+        // `FSEvents` can hand a watch the creation of the directory it watches when the directory was made
+        // a moment before: the event is numbered when its daemon gets to it. That is no change since the
+        // watch began.
+        {
+            for _ in 0..50 {
+                let dir = tempfile::tempdir().unwrap();
+                let watch = entries(dir.path());
+                let seen = changes_until_made(&watch, dir.path(), "made");
+                assert!(seen.iter().all(|change| !change.path.is_root()), "{seen:?}");
             }
-            seen.iter().any(|change| change.path == top)
-        });
-        assert!(
-            seen.iter().any(|change| change.path == top
-                && matches!(change.kind, ChangeKind::Changed | ChangeKind::Created)),
-            "{seen:?}"
-        );
-        assert!(
-            seen.iter()
-                .all(|change| !change.path.as_str().starts_with("sub/")
-                    && !is_temporary(Path::new(change.path.as_str()))),
-            "{seen:?}"
-        );
+        }
+
+        phase an_entries_watch_sees_replaced_files_but_not_subdirectories;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir(dir.path().join("sub")).unwrap();
+            let watch = entries(dir.path());
+            crate::native::atomic::write(&dir.path().join("sub/inner.json"), b"below").unwrap();
+            crate::native::atomic::write(&dir.path().join("top.json"), b"one").unwrap();
+            crate::native::atomic::write(&dir.path().join("top.json"), b"two").unwrap();
+            let top = VPath::new("top.json").unwrap();
+            let mut seen = Vec::new();
+            tilo_test_env::wait_until("the replaced file to be watched", || {
+                while let Some(change) = watch.try_next() {
+                    seen.push(change);
+                }
+                seen.iter().any(|change| change.path == top)
+            });
+            assert!(
+                seen.iter().any(|change| change.path == top
+                    && matches!(change.kind, ChangeKind::Changed | ChangeKind::Created)),
+                "{seen:?}"
+            );
+            assert!(
+                seen.iter()
+                    .all(|change| !change.path.as_str().starts_with("sub/")
+                        && !is_temporary(Path::new(change.path.as_str()))),
+                "{seen:?}"
+            );
+        }
     }
 }

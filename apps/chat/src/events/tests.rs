@@ -1,6 +1,7 @@
 use super::*;
 use crate::model;
 use taffy::{NodeId, TaffyTree};
+use tilo_actions::policy::MemberId;
 use tilo_automerge::ApplyIncoming;
 use ui::Widget;
 use ui::widget::DrawChild;
@@ -86,13 +87,14 @@ fn activate_context_menu_action(
     assert!(app.menu.is_none(), "selection closes the modal menu");
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one labelled phase per original scenario, each with its own fresh fixture"
-)]
-fn channel_context_menu_delete_through_the_palette_action() {
-    // Phase: delete_channel_affordance_matches_palette_spec.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn channel_context_menu_delete_through_the_palette_action;
+
+    phase delete_channel_affordance_matches_palette_spec;
     {
         let (mut app, mut doc) = app_with_doc();
 
@@ -149,7 +151,7 @@ fn channel_context_menu_delete_through_the_palette_action() {
         );
     }
 
-    // Phase: context_menu_delete_removes_a_channel.
+    phase context_menu_delete_removes_a_channel;
     {
         let (mut app, mut doc) = app_with_doc();
         assert!(app.channels.iter().any(|c| c.id == "c_random"));
@@ -166,7 +168,7 @@ fn channel_context_menu_delete_through_the_palette_action() {
         );
     }
 
-    // Phase: context_menu_is_modal_keyboard_operable_and_accessible.
+    phase context_menu_is_modal_keyboard_operable_and_accessible;
     {
         let (mut app, mut doc) = app_with_doc();
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0);
@@ -215,39 +217,14 @@ fn channel_context_menu_delete_through_the_palette_action() {
     }
 }
 
-#[test]
-fn with_no_channel_open_the_composer_takes_no_text() {
-    // A chat with no channels yet, as a workspace opens one its operator named
-    // none for.
-    let mut doc = AutoCommit::new();
-    let mut app = ChatApp::new_ephemeral();
-    app.reload(&doc);
-    assert!(
-        app.channel(&app.active_channel).is_none(),
-        "no channel is open"
-    );
-    app.focus = Focus::Main;
-    app.set_composer_focus();
-    type_str(&mut app, &mut doc, "nowhere to go");
-    assert_eq!(app.composer_main.value(), "", "no channel, no draft");
-    feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-    assert!(
-        !app.dispatched_parts
-            .borrow()
-            .iter()
-            .map(|action| serde_json::to_value(action).unwrap())
-            .any(|action| action["action"] == "post"),
-        "nothing was posted"
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn composer_edits_the_draft_and_sends_through_the_action_route;
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one labelled phase per original scenario, each with its own fresh fixture"
-)]
-fn composer_edits_the_draft_and_sends_through_the_action_route() {
-    // Phase: send_affordance_sends_what_the_draft_holds_to_the_channel.
+    phase send_affordance_sends_what_the_draft_holds_to_the_channel;
     {
         let (mut app, mut doc) = app_with_doc();
         app.active_channel = "c_general".into();
@@ -263,7 +240,7 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         );
     }
 
-    // Phase: typing_then_send_appends_a_message.
+    phase typing_then_send_appends_a_message;
     {
         let (mut app, mut doc) = app_with_doc();
         let before = crate::testing::messages(&doc, "c_crit").len();
@@ -289,7 +266,7 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         assert_eq!(app.draft_main, "", "draft cleared after send");
     }
 
-    // Phase: backspace_edits_the_draft.
+    phase backspace_edits_the_draft;
     {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
@@ -305,7 +282,7 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         assert_eq!(app.draft_main, "ab", "the draft mirrors the edit");
     }
 
-    // Phase: ctrl_v_pastes_clipboard_into_the_composer.
+    phase ctrl_v_pastes_clipboard_into_the_composer;
     {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
@@ -332,7 +309,7 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         );
     }
 
-    // Phase: drag_select_then_ctrl_c_copies_the_selection.
+    phase drag_select_then_ctrl_c_copies_the_selection;
     {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
@@ -353,7 +330,7 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         );
     }
 
-    // Phase: reply_in_thread_sets_parent.
+    phase reply_in_thread_sets_parent;
     {
         let (mut app, mut doc) = app_with_doc();
         app.thread_open = Some("m_concept".into());
@@ -394,185 +371,6 @@ fn offers_undo(app: &mut ChatApp, doc: &crate::testing::Workspace) -> bool {
         .any(|(_, hit, ..)| matches!(hit, Hit::UndoDelete))
 }
 
-/// Delete in a message's menu asks first, as Discord's does: the message
-/// stays until the person agrees. Once they do it goes, and the Undo under
-/// the composer brings it back through the history of its part.
-#[test]
-fn deleting_your_own_message_from_its_menu_asks_first_and_undo_brings_it_back() {
-    ui::widget::note_shift(false);
-    let (mut app, mut doc) = app_with_doc();
-    let id = send_own(&mut app, &mut doc, "a slip of the keys");
-
-    activate_context_menu_action(
-        &mut app,
-        &mut doc,
-        MenuTarget::Message(id.clone()),
-        MenuAction::DeleteMessage,
-    );
-    assert_eq!(
-        own_message(&doc, "a slip of the keys").as_ref(),
-        Some(&id),
-        "nothing goes before the person agrees"
-    );
-    app.confirm_asked(&mut doc);
-    assert_eq!(
-        own_message(&doc, "a slip of the keys"),
-        None,
-        "then it goes"
-    );
-    assert!(
-        offers_undo(&mut app, &doc),
-        "Undo is offered under the composer"
-    );
-
-    app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(
-        own_message(&doc, "a slip of the keys"),
-        Some(id),
-        "Undo brings the message back"
-    );
-    assert!(app.deleted.borrow().is_none(), "and the offer is gone");
-}
-
-/// With Shift held, Delete in the menu goes at once, unasked, and Undo
-/// brings it back.
-#[test]
-fn shift_deletes_your_own_message_from_its_menu_at_once() {
-    let (mut app, mut doc) = app_with_doc();
-    let id = send_own(&mut app, &mut doc, "a slip of the keys");
-    ui::widget::note_shift(true);
-    activate_context_menu_action(
-        &mut app,
-        &mut doc,
-        MenuTarget::Message(id.clone()),
-        MenuAction::DeleteMessage,
-    );
-    ui::widget::note_shift(false);
-    let chain = app.chain.clone().expect("the window holds the messages");
-    assert_eq!(
-        chain.dispatcher().take_asked().map(|asked| asked.len()),
-        Ok(0),
-        "nobody is asked"
-    );
-    assert_eq!(
-        own_message(&doc, "a slip of the keys"),
-        None,
-        "it goes at once"
-    );
-    assert!(
-        offers_undo(&mut app, &doc),
-        "Undo is offered under the composer"
-    );
-    app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(own_message(&doc, "a slip of the keys"), Some(id));
-}
-
-/// The pointer over a message lifts its row and shows its bar: react,
-/// reply, edit (one's own) and More. Shift grows the quick actions, and
-/// its delete goes at once; Undo brings the message back.
-#[test]
-fn hovering_a_message_shows_its_bar_and_shift_its_quick_actions() {
-    ui::widget::note_shift(false);
-    let (mut app, mut doc) = app_with_doc();
-    let id = send_own(&mut app, &mut doc, "hover over me");
-    app.message_bar.settle_for_visual_review();
-    render_frame(&mut app, 1440.0, 900.0);
-    let row = app
-        .message_rows
-        .iter()
-        .find(|(_, row)| *row == id)
-        .map(|(rect, _)| *rect)
-        .expect("the message is painted");
-    let mut handled = false;
-    app.dispatch_event(
-        &ui::synthetic_input::cursor_moved(row.center().x, row.center().y),
-        1.0,
-        Modifiers::default(),
-        &mut ui::widget::Edits::lend(&mut doc),
-        &mut handled,
-    );
-    assert!(handled, "the hover repaints");
-    assert_eq!(app.hovered_message.as_ref(), Some(&id));
-    render_frame(&mut app, 1440.0, 900.0);
-    let bar = |app: &ChatApp| {
-        app.hits
-            .iter()
-            .filter_map(|(_, hit)| match hit {
-                Hit::MessageBar { msg, action } if *msg == id => Some(action.bar_key()),
-                Hit::MessageMore { msg } if *msg == id => Some("more"),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(bar(&app), ["react", "reply", "edit", "more"]);
-    let names: Vec<String> = app
-        .semantic_hits()
-        .into_iter()
-        .filter(|(_, hit, ..)| matches!(hit, Hit::MessageBar { .. } | Hit::MessageMore { .. }))
-        .map(|(_, _, name, ..)| name.text)
-        .collect();
-    assert_eq!(
-        names,
-        ["Add reaction", "Reply in thread", "Edit message", "More"]
-    );
-
-    ui::widget::note_shift(true);
-    render_frame(&mut app, 1440.0, 900.0);
-    assert_eq!(
-        bar(&app),
-        ["react", "reply", "edit", "pin", "copy", "delete", "more"]
-    );
-    app.on_hit(
-        Hit::MessageBar {
-            msg: id.clone(),
-            action: MenuAction::DeleteMessage,
-        },
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    ui::widget::note_shift(false);
-    assert_eq!(own_message(&doc, "hover over me"), None, "deleted at once");
-    assert!(offers_undo(&mut app, &doc), "Undo is offered");
-    app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(own_message(&doc, "hover over me"), Some(id));
-}
-
-/// The bar's More opens the message's whole menu, as a right click does.
-#[test]
-fn the_bars_more_opens_the_messages_menu() {
-    ui::widget::note_shift(false);
-    let (mut app, mut doc) = app_with_doc();
-    let id = send_own(&mut app, &mut doc, "more please");
-    app.message_bar.settle_for_visual_review();
-    render_frame(&mut app, 1440.0, 900.0);
-    app.hovered_message = Some(id.clone());
-    render_frame(&mut app, 1440.0, 900.0);
-    let more = app
-        .hits
-        .iter()
-        .find(|(_, hit)| matches!(hit, Hit::MessageMore { msg } if *msg == id))
-        .map(|(rect, _)| *rect)
-        .expect("the bar shows More");
-    app.on_hit(
-        Hit::MessageMore { msg: id.clone() },
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    let menu = app.menu.as_ref().expect("the menu opens");
-    assert_eq!(menu.target, MenuTarget::Message(id));
-    assert_eq!(menu.items, MenuAction::for_message().to_vec());
-    // At the button, not where the pointer last was: its trailing edge on
-    // the button's, under it or (near the window's bottom) above it.
-    let at = menu.widget.get_rect();
-    assert!((at.x1 - more.x1).abs() < 1.0, "{at:?} ends at {more:?}");
-    assert!(
-        at.y0 >= more.y1 || at.y1 <= more.y0,
-        "{at:?} opens off {more:?}, not across it"
-    );
-    assert!(
-        (at.y0 - more.y1).abs() < 12.0 || (more.y0 - at.y1).abs() < 12.0,
-        "{at:?} stays at {more:?}"
-    );
-}
-
 #[test]
 fn a_refused_post_keeps_its_text_and_says_it_was_not_sent() {
     let (mut app, mut doc) = app_with_doc();
@@ -604,108 +402,142 @@ fn a_refused_post_keeps_its_text_and_says_it_was_not_sent() {
     assert_eq!(retries, 1, "Retry stands under the composer");
 }
 
-/// A post the workspace refuses after this window showed it as sent comes
-/// back to the composer, marked as not sent.
-#[test]
-fn a_post_the_workspace_refuses_comes_back_to_the_composer() {
-    let (mut app, mut doc) = app_with_doc();
-    app.active_channel = "c_general".into();
-    app.focus = Focus::Main;
-    app.thread_open = None;
-    crate::testing::write_draft(&mut app, &mut doc, "over the budget");
-    app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(
-        app.composer_main.value(),
-        "",
-        "sent, as far as this window knows"
-    );
-    let refused = app
-        .chain
-        .as_ref()
-        .expect("the window holds the messages")
-        .dispatcher()
-        .refused();
-    refused.set(Some(ui::framework::Refused {
-        action: "post".into(),
-        item: None,
-        reason: "the workspace is receiving too many changes from you".into(),
-        by_workspace: true,
-    }));
-    app.settle_refused_post();
-    assert_eq!(app.composer_main.value(), "over the budget");
-    assert_eq!(
-        app.not_sent.as_deref(),
-        Some("the workspace is receiving too many changes from you")
-    );
-}
+tilo_test_env::scenario! {
+    /// Where the composer writes, and what it says of a post that was not taken.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn the_composer_sends_only_where_a_channel_takes_the_post;
 
-#[test]
-fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
-    let (mut app, mut doc) = app_with_doc();
-    app.active_channel = "c_general".into();
-    app.focus = Focus::Main;
-    app.thread_open = None;
-    render_frame(&mut app, 1280.0, 720.0);
-    let target = app
-        .semantic_hits()
-        .into_iter()
-        .find_map(|(_, hit, ..)| matches!(hit, Hit::Send).then(|| hit.semantic_id()))
-        .expect("the painted Send button has a semantic target");
-
-    assert!(!ui::Widget::perform_semantic_action(
-        &mut app,
-        &target,
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    let before = crate::testing::top_level(&doc, "c_general");
-    crate::testing::write_draft(&mut app, &mut doc, "accepted semantic send");
-    render_frame(&mut app, 1280.0, 720.0);
-    assert!(ui::Widget::perform_semantic_action(
-        &mut app,
-        &target,
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    assert_eq!(crate::testing::top_level(&doc, "c_general"), before + 1);
-    assert_eq!(app.composer_main.value(), "");
-    assert!(
-        !crate::projection::has_draft(&doc, "c_general"),
-        "a draft never enters the workspace's record"
-    );
-}
-
-#[test]
-fn live_start_selects_the_workspaces_first_real_channel() {
-    // Against a real (minimal) starter document whose ids differ from the
-    // demo defaults the app boots with, the reload must re-home the
-    // active channel and drop the stale demo thread.
-    let mut doc = AutoCommit::new();
-    crate::testing::starter(&mut doc, model::ME, "You", "Y");
-    let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
-    app.reload(&doc);
-    if app.ensure_selection() {
+    phase with_no_channel_open_the_composer_takes_no_text;
+    {
+        // A chat with no channels yet, as a workspace opens one its operator named
+        // none for.
+        let mut doc = AutoCommit::new();
+        let mut app = ChatApp::new_ephemeral();
         app.reload(&doc);
+        assert!(
+            app.channel(&app.active_channel).is_none(),
+            "no channel is open"
+        );
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "nowhere to go");
+        assert_eq!(app.composer_main.value(), "", "no channel, no draft");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        assert!(
+            !app.dispatched_parts
+                .borrow()
+                .iter()
+                .map(|action| serde_json::to_value(action).unwrap())
+                .any(|action| action["action"] == "post"),
+            "nothing was posted"
+        );
     }
-    assert_eq!(
-        app.active_channel,
-        crate::record::CHAT_CHANNEL,
-        "picked the first text channel"
-    );
-    assert!(app.thread_open.is_none(), "stale demo thread dropped");
-    // And nothing fake leaked in.
-    assert!(app.users.iter().all(|u| u.id == model::ME));
+
+    phase a_post_the_workspace_refuses_comes_back_to_the_composer;
+    // A post the workspace refuses after this window showed it as sent comes
+    // back to the composer, marked as not sent.
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        crate::testing::write_draft(&mut app, &mut doc, "over the budget");
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(
+            app.composer_main.value(),
+            "",
+            "sent, as far as this window knows"
+        );
+        let refused = app
+            .chain
+            .as_ref()
+            .expect("the window holds the messages")
+            .dispatcher()
+            .refused();
+        refused.set(Some(ui::framework::Refused {
+            action: "post".into(),
+            item: None,
+            reason: "the workspace is receiving too many changes from you".into(),
+            by_workspace: true,
+        }));
+        app.settle_refused_post();
+        assert_eq!(app.composer_main.value(), "over the budget");
+        assert_eq!(
+            app.not_sent.as_deref(),
+            Some("the workspace is receiving too many changes from you")
+        );
+    }
+
+    phase semantic_send_reports_acceptance_only_when_it_appends_a_message;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        render_frame(&mut app, 1280.0, 720.0);
+        let target = app
+            .semantic_hits()
+            .into_iter()
+            .find_map(|(_, hit, ..)| matches!(hit, Hit::Send).then(|| hit.semantic_id()))
+            .expect("the painted Send button has a semantic target");
+
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        let before = crate::testing::top_level(&doc, "c_general");
+        crate::testing::write_draft(&mut app, &mut doc, "accepted semantic send");
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(crate::testing::top_level(&doc, "c_general"), before + 1);
+        assert_eq!(app.composer_main.value(), "");
+        assert!(
+            !crate::projection::has_draft(&doc, "c_general"),
+            "a draft never enters the workspace's record"
+        );
+    }
+
+    phase live_start_selects_the_workspaces_first_real_channel;
+    {
+        // Against a real (minimal) starter document whose ids differ from the
+        // demo defaults the app boots with, the reload must re-home the
+        // active channel and drop the stale demo thread.
+        let mut doc = AutoCommit::new();
+        crate::testing::starter(&mut doc, model::ME, "You", "Y");
+        let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
+        app.reload(&doc);
+        if app.ensure_selection() {
+            app.reload(&doc);
+        }
+        assert_eq!(
+            app.active_channel,
+            crate::record::CHAT_CHANNEL,
+            "picked the first text channel"
+        );
+        assert!(app.thread_open.is_none(), "stale demo thread dropped");
+        // And nothing fake leaked in.
+        assert!(app.users.iter().all(|u| u.id == model::ME));
+    }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one labelled phase per original scenario, each with its own fresh fixture"
-)]
-fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
-    // Phase: attachment_image_decodes_through_the_image_store.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn attachments_are_picked_imported_and_posted_as_real_portable_cards;
+
+    phase attachment_image_decodes_through_the_image_store;
     {
         // The concept message in #design-crit carries an image attachment;
         // prewarming must drive it through the real fetch → decode → cache
@@ -726,7 +558,7 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         );
     }
 
-    // Phase: attach_shares_a_real_file_with_true_dimensions_and_no_caption.
+    phase attach_shares_a_real_file_with_true_dimensions_and_no_caption;
     {
         // The picker imports the selected file into the content store, with
         // true header dimensions and no invented caption.
@@ -764,7 +596,7 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         }
     }
 
-    // Phase: attach_button_opens_picker_listing_real_workspace_files.
+    phase attach_button_opens_picker_listing_real_workspace_files;
     {
         let (mut app, mut doc) = app_with_doc();
         let dir = tempfile::tempdir().unwrap();
@@ -787,7 +619,7 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         );
     }
 
-    // Phase: picker_result_settlement_is_generation_checked_and_cancelled_when_dismissed.
+    phase picker_result_settlement_is_generation_checked_and_cancelled_when_dismissed;
     {
         let (mut app, doc) = app_with_doc();
         app.attach_open = true;
@@ -828,7 +660,7 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         assert!(!crate::testing::messages(&doc, "c_crit").is_empty());
     }
 
-    // Phase: attaching_a_video_posts_an_inline_video_card.
+    phase attaching_a_video_posts_an_inline_video_card;
     {
         let (mut app, mut doc) = app_with_doc();
         let dir = tempfile::tempdir().unwrap();
@@ -855,7 +687,7 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         }
     }
 
-    // Phase: attaching_a_generic_file_posts_a_portable_file_card.
+    phase attaching_a_generic_file_posts_a_portable_file_card;
     {
         let (mut app, mut doc) = app_with_doc();
         let dir = tempfile::tempdir().unwrap();
@@ -883,7 +715,7 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         }
     }
 
-    // Phase: stale_import_result_does_not_consume_the_accepted_request.
+    phase stale_import_result_does_not_consume_the_accepted_request;
     {
         let (mut app, mut doc) = app_with_doc();
         app.attachment_pending = Some(AttachmentImportPending {
@@ -911,45 +743,10 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
     }
 }
 
-#[test]
-fn switching_to_voice_channel_starts_a_muted_service_join_without_membership_write() {
-    let (mut app, mut doc) = app_with_doc();
-    let before = doc.save();
-    app.on_hit(
-        Hit::Channel("c_standup".into()),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    app.land(&mut doc);
-    app.reload(&doc);
-    assert!(app.call.active && app.call.muted && app.call.audio_only);
-    assert_eq!(app.call.channel, "c_standup");
-    assert_eq!(
-        app.native_voice.snapshot.state,
-        ui::native_media::State::Preparing
-    );
-    assert_eq!(doc.save(), before);
-}
+tilo_test_env::scenario! {
+    fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size;
 
-#[test]
-fn expanding_a_call_preserves_verified_streams_without_rewriting_legacy_history() {
-    let (mut app, mut doc) = app_with_doc();
-    app.on_hit(
-        Hit::Channel("c_huddle".into()),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    app.land(&mut doc);
-    app.reload(&doc);
-    service_streams(&mut app, "c_huddle", 3);
-    let before = doc.save();
-    app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
-    assert!(app.call.expanded);
-    assert_eq!(app.voice_in("c_huddle").len(), 3);
-    assert_eq!(doc.save(), before);
-}
-
-#[test]
-fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
-    // Phase: expanded_overlay_fills_the_surface_at_every_width.
+    phase expanded_overlay_fills_the_surface_at_every_width;
     {
         // The narrow/portrait void regression, exercised through the real app:
         // join the demo huddle, expand, and at each target width the host +
@@ -1017,7 +814,7 @@ fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
         }
     }
 
-    // Phase: call_resize_samples_keep_content_and_native_chrome_in_one_geometry.
+    phase call_resize_samples_keep_content_and_native_chrome_in_one_geometry;
     {
         let (mut app, _doc) = app_with_doc();
         app.call.join("c_huddle");
@@ -1052,65 +849,42 @@ fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
     }
 }
 
-#[test]
-fn leaving_a_call_clears_local_service_state_without_rewriting_history() {
-    let (mut app, mut doc) = app_with_doc();
-    app.on_hit(
-        Hit::Channel("c_standup".into()),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    app.land(&mut doc);
-    app.reload(&doc);
-    service_streams(&mut app, "c_standup", 2);
-    let before = doc.save();
-    assert_eq!(app.voice_in("c_standup").len(), 2);
-    app.on_hit(Hit::CallLeave, &mut ui::widget::Edits::lend(&mut doc));
-    assert!(!app.call.active && app.call.muted);
-    assert!(!app.voice_people("c_standup").contains(&app.me.id));
-    assert_eq!(
-        app.voice_in("c_standup").len(),
-        2,
-        "the others stay in the workspace's call"
-    );
-    assert_eq!(doc.save(), before);
-}
+tilo_test_env::scenario! {
+    fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar;
 
-fn add_channel_asks_then_creates_and_opens_it() {
-    let (mut app, mut doc) = app_with_doc();
-    let before = app.channels.len();
-    app.on_hit(
-        Hit::AddChannel {
-            category: "cat_acme_main".into(),
-        },
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    assert_eq!(
-        app.channels.len(),
-        before,
-        "nothing is made before it is named"
-    );
-    assert!(app.channel_sheet.is_some(), "the channel sheet asks");
-    type_str(&mut app, &mut doc, "Launch Plans");
-    feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
-    type_str(&mut app, &mut doc, "Dates");
-    feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-    assert!(app.channel_sheet.is_none(), "Enter creates and closes it");
-    let made = app
-        .channels
-        .iter()
-        .find(|c| c.name == "launch-plans")
-        .expect("the channel is made under its kept name");
-    assert_eq!(made.category, "cat_acme_main");
-    assert_eq!(made.topic, "Dates");
-    assert_eq!(made.kind, ChannelKind::Text);
-    assert_eq!(app.active_channel, made.id, "a new text channel opens");
-}
+    phase add_channel_asks_then_creates_and_opens_it;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        let before = app.channels.len();
+        app.on_hit(
+            Hit::AddChannel {
+                category: "cat_acme_main".into(),
+            },
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(
+            app.channels.len(),
+            before,
+            "nothing is made before it is named"
+        );
+        assert!(app.channel_sheet.is_some(), "the channel sheet asks");
+        type_str(&mut app, &mut doc, "Launch Plans");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
+        type_str(&mut app, &mut doc, "Dates");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        assert!(app.channel_sheet.is_none(), "Enter creates and closes it");
+        let made = app
+            .channels
+            .iter()
+            .find(|c| c.name == "launch-plans")
+            .expect("the channel is made under its kept name");
+        assert_eq!(made.category, "cat_acme_main");
+        assert_eq!(made.topic, "Dates");
+        assert_eq!(made.kind, ChannelKind::Text);
+        assert_eq!(app.active_channel, made.id, "a new text channel opens");
+    }
 
-#[test]
-fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() {
-    add_channel_asks_then_creates_and_opens_it();
-
-    // Phase: a_menus_rename_names_the_row_in_the_sidebar.
+    phase a_menus_rename_names_the_row_in_the_sidebar;
     {
         let (mut app, mut doc) = app_with_doc();
         app.apply_menu_action(
@@ -1142,7 +916,7 @@ fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() 
         );
     }
 
-    // Phase: category_create_and_collapse_via_the_hit_path.
+    phase category_create_and_collapse_via_the_hit_path;
     {
         let (mut app, mut doc) = app_with_doc();
         let acme_cats = |app: &ChatApp| app.categories.len();
@@ -1170,7 +944,7 @@ fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() 
         );
     }
 
-    // Phase: reorder_channel_via_menu_action.
+    phase reorder_channel_via_menu_action;
     {
         let (mut app, mut doc) = app_with_doc();
         let order =
@@ -1187,57 +961,6 @@ fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() 
             "MoveUp swapped order with the sibling above it"
         );
     }
-}
-
-#[test]
-fn message_lines_keep_a_readable_length_on_a_wide_screen() {
-    use ui::theme::Theme;
-    use vello::kurbo::Rect;
-    let (app, _doc) = app_with_doc();
-    let theme = Theme::dark();
-    let readable = theme.tokens.metrics.readable_width;
-    let narrow = Rect::new(0.0, 0.0, 600.0, 800.0);
-    let wide = Rect::new(0.0, 0.0, 2200.0, 1400.0);
-    assert!(
-        app.message_text_width(narrow, &theme) < readable,
-        "a narrow column uses the workspace it has"
-    );
-    assert!(
-        (app.message_text_width(wide, &theme) - readable).abs() < f32::EPSILON,
-        "a wide one stops at the readable measure"
-    );
-}
-
-#[test]
-fn an_empty_channel_invites_the_first_message() {
-    let (mut app, _doc) = app_with_doc();
-    let id = app.active_channel.clone();
-    let name = app.channel(&id).expect("an active channel").name.clone();
-    app.channels
-        .iter_mut()
-        .filter(|c| c.id == id)
-        .for_each(|c| c.topic.clear());
-    let invite = app.empty_channel_message().expect("an invitation");
-    assert!(invite.contains(&name), "{invite}");
-
-    app.channels
-        .iter_mut()
-        .filter(|c| c.id == id)
-        .for_each(|c| c.topic = "Release planning".into());
-    assert_eq!(
-        app.empty_channel_message().as_deref(),
-        Some("Release planning"),
-        "a topic says what the channel is for"
-    );
-
-    app.channels
-        .iter_mut()
-        .filter(|c| c.id == id)
-        .for_each(|c| c.topic.clear());
-    app.perms = crate::permissions::ChatPermissions::from_context(
-        ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Viewer),
-    );
-    assert_eq!(app.empty_channel_message(), None, "no invitation to write");
 }
 
 /// A workspace whose emoji someone may manage, counting the times the
@@ -1293,106 +1016,298 @@ fn the_pickers_add_emoji_tile_is_a_named_action() {
     assert_eq!(chosen.get(), 1, "it asks for a picture to add");
 }
 
-#[test]
-fn a_reaction_pill_says_how_many_reacted() {
-    let (mut app, _doc) = app_with_doc();
-    render_frame(&mut app, 1280.0, 720.0);
-    let shown: Vec<(String, usize)> = app
-        .hits
-        .iter()
-        .filter_map(|(_, hit)| match hit {
-            Hit::Reaction { msg, emoji } => app
-                .message(msg)
-                .and_then(|m| m.reactions.iter().find(|r| r.emoji == *emoji))
-                .map(|r| (emoji.clone(), r.count())),
-            _ => None,
-        })
-        .collect();
-    let (emoji, count) = shown
-        .first()
-        .cloned()
-        .expect("a message with a reaction shows");
-    let tree = app.accessibility().unwrap();
-    let pill = tree
-        .children
-        .iter()
-        .find(|node| {
-            node.name
-                .as_deref()
-                .is_some_and(|name| name.contains(&emoji))
-        })
-        .expect("the pill is named");
-    assert_eq!(
-        pill.value.as_deref(),
-        Some(ui::widget::reaction_strip::pill_count(count).as_str()),
-        "its value is the count, as the toolkit's strip says it"
-    );
+tilo_test_env::scenario! {
+    /// A message's hover bar, its menu, its reactions and its deletion.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    ///
+    /// Shift is the thread's, not a fixture's (`ui::widget::note_shift`): the two
+    /// cases that never set it run first, on the thread as it starts, and each
+    /// case after them says what Shift is before it reads it, so a case that
+    /// failed with Shift held cannot hand it to the next.
+    fn a_message_is_reached_reacted_to_and_deleted_from_its_bar_and_menu;
+
+    phase a_reaction_pill_says_how_many_reacted;
+    {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+        let shown: Vec<(String, usize)> = app
+            .hits
+            .iter()
+            .filter_map(|(_, hit)| match hit {
+                Hit::Reaction { msg, emoji } => app
+                    .message(msg)
+                    .and_then(|m| m.reactions.iter().find(|r| r.emoji == *emoji))
+                    .map(|r| (emoji.clone(), r.count())),
+                _ => None,
+            })
+            .collect();
+        let (emoji, count) = shown
+            .first()
+            .cloned()
+            .expect("a message with a reaction shows");
+        let tree = app.accessibility().unwrap();
+        let pill = tree
+            .children
+            .iter()
+            .find(|node| {
+                node.name
+                    .as_deref()
+                    .is_some_and(|name| name.contains(&emoji))
+            })
+            .expect("the pill is named");
+        assert_eq!(
+            pill.value.as_deref(),
+            Some(ui::widget::reaction_strip::pill_count(count).as_str()),
+            "its value is the count, as the toolkit's strip says it"
+        );
+    }
+
+    phase the_message_menu_adds_a_first_reaction_and_starts_a_thread;
+    {
+        // The reaction row's "+" and the thread bar exist only once a
+        // message has reactions or replies, so the menu is how anyone
+        // reacts first or replies first.
+        assert!(MenuAction::for_others_message().contains(&MenuAction::AddReaction));
+        assert!(MenuAction::for_others_message().contains(&MenuAction::ReplyInThread));
+        let (mut app, mut doc) = app_with_doc();
+        let id = app
+            .messages
+            .iter()
+            .find(|m| m.reactions.is_empty())
+            .map(|m| m.id.clone())
+            .expect("a message without reactions");
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::AddReaction,
+        );
+        assert!(app.emoji_open, "the picker opens");
+        app.on_hit(
+            Hit::EmojiChoice("🔥".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        let reacted = app.message(&id).expect("the message");
+        assert!(
+            reacted.reactions.iter().any(|r| r.emoji == "🔥"),
+            "the first reaction lands: {:?}",
+            reacted.reactions
+        );
+
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::ReplyInThread,
+        );
+        assert_eq!(app.thread_open.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            app.focus,
+            Focus::Thread,
+            "the reply field takes the keyboard"
+        );
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::ReplyInThread,
+        );
+        assert_eq!(
+            app.thread_open.as_deref(),
+            Some(id.as_str()),
+            "replying again keeps the thread open"
+        );
+    }
+
+    phase deleting_your_own_message_from_its_menu_asks_first_and_undo_brings_it_back;
+    // Delete in a message's menu asks first, as Discord's does: the message
+    // stays until the person agrees. Once they do it goes, and the Undo under
+    // the composer brings it back through the history of its part.
+    {
+        ui::widget::note_shift(false);
+        let (mut app, mut doc) = app_with_doc();
+        let id = send_own(&mut app, &mut doc, "a slip of the keys");
+
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::DeleteMessage,
+        );
+        assert_eq!(
+            own_message(&doc, "a slip of the keys").as_ref(),
+            Some(&id),
+            "nothing goes before the person agrees"
+        );
+        app.confirm_asked(&mut doc);
+        assert_eq!(
+            own_message(&doc, "a slip of the keys"),
+            None,
+            "then it goes"
+        );
+        assert!(
+            offers_undo(&mut app, &doc),
+            "Undo is offered under the composer"
+        );
+
+        app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(
+            own_message(&doc, "a slip of the keys"),
+            Some(id),
+            "Undo brings the message back"
+        );
+        assert!(app.deleted.borrow().is_none(), "and the offer is gone");
+    }
+
+    phase shift_deletes_your_own_message_from_its_menu_at_once;
+    // With Shift held, Delete in the menu goes at once, unasked, and Undo
+    // brings it back.
+    {
+        let (mut app, mut doc) = app_with_doc();
+        let id = send_own(&mut app, &mut doc, "a slip of the keys");
+        ui::widget::note_shift(true);
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::Message(id.clone()),
+            MenuAction::DeleteMessage,
+        );
+        ui::widget::note_shift(false);
+        let chain = app.chain.clone().expect("the window holds the messages");
+        assert_eq!(
+            chain.dispatcher().take_asked().map(|asked| asked.len()),
+            Ok(0),
+            "nobody is asked"
+        );
+        assert_eq!(
+            own_message(&doc, "a slip of the keys"),
+            None,
+            "it goes at once"
+        );
+        assert!(
+            offers_undo(&mut app, &doc),
+            "Undo is offered under the composer"
+        );
+        app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(own_message(&doc, "a slip of the keys"), Some(id));
+    }
+
+    phase hovering_a_message_shows_its_bar_and_shift_its_quick_actions;
+    // The pointer over a message lifts its row and shows its bar: react,
+    // reply, edit (one's own) and More. Shift grows the quick actions, and
+    // its delete goes at once; Undo brings the message back.
+    {
+        ui::widget::note_shift(false);
+        let (mut app, mut doc) = app_with_doc();
+        let id = send_own(&mut app, &mut doc, "hover over me");
+        app.message_bar.settle_for_visual_review();
+        render_frame(&mut app, 1440.0, 900.0);
+        let row = app
+            .message_rows
+            .iter()
+            .find(|(_, row)| *row == id)
+            .map(|(rect, _)| *rect)
+            .expect("the message is painted");
+        let mut handled = false;
+        app.dispatch_event(
+            &ui::synthetic_input::cursor_moved(row.center().x, row.center().y),
+            1.0,
+            Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &mut handled,
+        );
+        assert!(handled, "the hover repaints");
+        assert_eq!(app.hovered_message.as_ref(), Some(&id));
+        render_frame(&mut app, 1440.0, 900.0);
+        let bar = |app: &ChatApp| {
+            app.hits
+                .iter()
+                .filter_map(|(_, hit)| match hit {
+                    Hit::MessageBar { msg, action } if *msg == id => Some(action.bar_key()),
+                    Hit::MessageMore { msg } if *msg == id => Some("more"),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bar(&app), ["react", "reply", "edit", "more"]);
+        let names: Vec<String> = app
+            .semantic_hits()
+            .into_iter()
+            .filter(|(_, hit, ..)| matches!(hit, Hit::MessageBar { .. } | Hit::MessageMore { .. }))
+            .map(|(_, _, name, ..)| name.text)
+            .collect();
+        assert_eq!(
+            names,
+            ["Add reaction", "Reply in thread", "Edit message", "More"]
+        );
+
+        ui::widget::note_shift(true);
+        render_frame(&mut app, 1440.0, 900.0);
+        assert_eq!(
+            bar(&app),
+            ["react", "reply", "edit", "pin", "copy", "delete", "more"]
+        );
+        app.on_hit(
+            Hit::MessageBar {
+                msg: id.clone(),
+                action: MenuAction::DeleteMessage,
+            },
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        ui::widget::note_shift(false);
+        assert_eq!(own_message(&doc, "hover over me"), None, "deleted at once");
+        assert!(offers_undo(&mut app, &doc), "Undo is offered");
+        app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(own_message(&doc, "hover over me"), Some(id));
+    }
+
+    phase the_bars_more_opens_the_messages_menu;
+    // The bar's More opens the message's whole menu, as a right click does.
+    {
+        ui::widget::note_shift(false);
+        let (mut app, mut doc) = app_with_doc();
+        let id = send_own(&mut app, &mut doc, "more please");
+        app.message_bar.settle_for_visual_review();
+        render_frame(&mut app, 1440.0, 900.0);
+        app.hovered_message = Some(id.clone());
+        render_frame(&mut app, 1440.0, 900.0);
+        let more = app
+            .hits
+            .iter()
+            .find(|(_, hit)| matches!(hit, Hit::MessageMore { msg } if *msg == id))
+            .map(|(rect, _)| *rect)
+            .expect("the bar shows More");
+        app.on_hit(
+            Hit::MessageMore { msg: id.clone() },
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        let menu = app.menu.as_ref().expect("the menu opens");
+        assert_eq!(menu.target, MenuTarget::Message(id));
+        assert_eq!(menu.items, MenuAction::for_message().to_vec());
+        // At the button, not where the pointer last was: its trailing edge on
+        // the button's, under it or (near the window's bottom) above it.
+        let at = menu.widget.get_rect();
+        assert!((at.x1 - more.x1).abs() < 1.0, "{at:?} ends at {more:?}");
+        assert!(
+            at.y0 >= more.y1 || at.y1 <= more.y0,
+            "{at:?} opens off {more:?}, not across it"
+        );
+        assert!(
+            (at.y0 - more.y1).abs() < 12.0 || (more.y0 - at.y1).abs() < 12.0,
+            "{at:?} stays at {more:?}"
+        );
+    }
 }
 
-#[test]
-fn the_message_menu_adds_a_first_reaction_and_starts_a_thread() {
-    // The reaction row's "+" and the thread bar exist only once a
-    // message has reactions or replies, so the menu is how anyone
-    // reacts first or replies first.
-    assert!(MenuAction::for_others_message().contains(&MenuAction::AddReaction));
-    assert!(MenuAction::for_others_message().contains(&MenuAction::ReplyInThread));
-    let (mut app, mut doc) = app_with_doc();
-    let id = app
-        .messages
-        .iter()
-        .find(|m| m.reactions.is_empty())
-        .map(|m| m.id.clone())
-        .expect("a message without reactions");
-    activate_context_menu_action(
-        &mut app,
-        &mut doc,
-        MenuTarget::Message(id.clone()),
-        MenuAction::AddReaction,
-    );
-    assert!(app.emoji_open, "the picker opens");
-    app.on_hit(
-        Hit::EmojiChoice("🔥".into()),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    let reacted = app.message(&id).expect("the message");
-    assert!(
-        reacted.reactions.iter().any(|r| r.emoji == "🔥"),
-        "the first reaction lands: {:?}",
-        reacted.reactions
-    );
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn flaps_and_detail_views_open_reflow_and_unwind;
 
-    activate_context_menu_action(
-        &mut app,
-        &mut doc,
-        MenuTarget::Message(id.clone()),
-        MenuAction::ReplyInThread,
-    );
-    assert_eq!(app.thread_open.as_deref(), Some(id.as_str()));
-    assert_eq!(
-        app.focus,
-        Focus::Thread,
-        "the reply field takes the keyboard"
-    );
-    activate_context_menu_action(
-        &mut app,
-        &mut doc,
-        MenuTarget::Message(id.clone()),
-        MenuAction::ReplyInThread,
-    );
-    assert_eq!(
-        app.thread_open.as_deref(),
-        Some(id.as_str()),
-        "replying again keeps the thread open"
-    );
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one labelled phase per original scenario, each with its own fresh fixture"
-)]
-fn flaps_and_detail_views_open_reflow_and_unwind() {
-    // Phase: members_pill_reveals_the_roster_not_a_blank_column.
+    phase members_pill_reveals_the_roster_not_a_blank_column;
     {
         let (mut app, mut doc) = app_with_doc();
         app.thread_open = None; // no thread → the flap's other half is members
@@ -1424,7 +1339,7 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
         );
     }
 
-    // Phase: narrow_thread_is_a_full_detail_view_with_back_navigation.
+    phase narrow_thread_is_a_full_detail_view_with_back_navigation;
     {
         let (mut app, mut doc) = app_with_doc();
         app.thread_open = Some("m_concept".into());
@@ -1463,7 +1378,7 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
         );
     }
 
-    // Phase: open_thread_affordance_opens_thread_and_right_flap.
+    phase open_thread_affordance_opens_thread_and_right_flap;
     {
         let (mut app, mut doc) = app_with_doc();
         app.thread_open = None;
@@ -1490,7 +1405,7 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
         assert_eq!(app.focus, Focus::Main);
     }
 
-    // Phase: escape_unwinds_the_layer_stack.
+    phase escape_unwinds_the_layer_stack;
     {
         let (mut app, mut doc) = app_with_doc();
         app.emoji_open = true;
@@ -1713,13 +1628,14 @@ fn settle_picker_until(app: &mut ChatApp) {
     });
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one labelled phase per original scenario, each with its own fresh fixture"
-)]
-fn own_messages_are_edited_in_place_and_commit_only_on_save() {
-    // Phase: edit_via_menu_writes_through_edit_message.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn own_messages_are_edited_in_place_and_commit_only_on_save;
+
+    phase edit_via_menu_writes_through_edit_message;
     {
         let (mut app, mut doc) = app_with_doc();
         let original = app.message("m_me1").unwrap().text.clone();
@@ -1767,7 +1683,7 @@ fn own_messages_are_edited_in_place_and_commit_only_on_save() {
         );
     }
 
-    // Phase: message_edit_selection_and_ime_commit_only_on_save.
+    phase message_edit_selection_and_ime_commit_only_on_save;
     {
         let (mut app, mut doc) = app_with_doc();
         let original = app.message("m_me1").unwrap().text.clone();
@@ -1806,7 +1722,7 @@ fn own_messages_are_edited_in_place_and_commit_only_on_save() {
         assert_eq!(app.message("m_me1").unwrap().text, "東京");
     }
 
-    // Phase: clicking_message_editor_places_the_shared_input_caret.
+    phase clicking_message_editor_places_the_shared_input_caret;
     {
         let (mut app, mut doc) = app_with_doc();
         app.begin_edit("m_me1".into());
@@ -1841,7 +1757,7 @@ fn own_messages_are_edited_in_place_and_commit_only_on_save() {
         assert!(!app.edit_input.value().ends_with('Z'));
     }
 
-    // Phase: arrow_up_in_empty_composer_edits_last_own_message.
+    phase arrow_up_in_empty_composer_edits_last_own_message;
     {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
@@ -1860,7 +1776,7 @@ fn own_messages_are_edited_in_place_and_commit_only_on_save() {
         );
     }
 
-    // Phase: arrow_up_with_a_draft_does_not_start_editing.
+    phase arrow_up_with_a_draft_does_not_start_editing;
     {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
@@ -1873,7 +1789,7 @@ fn own_messages_are_edited_in_place_and_commit_only_on_save() {
         );
     }
 
-    // Phase: edit_escape_discards_without_writing.
+    phase edit_escape_discards_without_writing;
     {
         let (mut app, mut doc) = app_with_doc();
         let original = app.message("m_me1").unwrap().text.clone();
@@ -1886,7 +1802,7 @@ fn own_messages_are_edited_in_place_and_commit_only_on_save() {
         assert!(!m.edited, "cancel does not flag the message edited");
     }
 
-    // Phase: cannot_edit_another_authors_message.
+    phase cannot_edit_another_authors_message;
     {
         let (mut app, _doc) = app_with_doc();
         assert_eq!(app.message("m_open").unwrap().author, "u_aria");
@@ -1897,7 +1813,7 @@ fn own_messages_are_edited_in_place_and_commit_only_on_save() {
         );
     }
 
-    // Phase: edit_history_popover_opens_and_dismisses.
+    phase edit_history_popover_opens_and_dismisses;
     {
         let (mut app, mut doc) = app_with_doc();
         assert!(
@@ -1921,13 +1837,14 @@ fn own_messages_are_edited_in_place_and_commit_only_on_save() {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the floating-surface regression deliberately follows the complete app-to-shell presentation lifecycle"
-)]
-fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
-    // Phase: host_call_tile_has_no_fabricated_video_frame.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the floating-surface regression deliberately follows the complete app-to-shell presentation lifecycle"
+    )]
+    fn call_tiles_and_controls_stay_honest_and_live_when_detached;
+
+    phase host_call_tile_has_no_fabricated_video_frame;
     {
         // The host video surface must be empty until a real capture feeds it —
         // never a synthesized gradient "face".
@@ -1938,7 +1855,7 @@ fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
         );
     }
 
-    // Phase: detached_call_keeps_live_controls_in_the_shell_presentation_pass.
+    phase detached_call_keeps_live_controls_in_the_shell_presentation_pass;
     {
         use ui::Widget;
         use ui::floating_surface::Attachment;
@@ -2130,7 +2047,7 @@ fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
         assert!(!Widget::wants_pointer_capture(&app));
     }
 
-    // Phase: call_controls_track_hover_and_clear_it_on_departure.
+    phase call_controls_track_hover_and_clear_it_on_departure;
     {
         let (mut app, mut doc) = app_with_doc();
         app.call.join("c_huddle");
@@ -2347,65 +2264,6 @@ fn chat_without_the_keyboard_leaves_typed_text_to_the_focused_window() {
     assert_eq!(driver.root::<ChatApp>().composer_main.value(), "hi");
 }
 
-/// The shell keeps the channels docked while the conversation beside them
-/// keeps a reading column; at that narrowest, every composer control still
-/// fits.
-#[test]
-fn the_composer_fits_the_narrowest_conversation_beside_the_channels() {
-    let (mut app, _doc) = app_with_doc();
-    let narrowest =
-        f64::from(ui::widget::ContentKind::Reading.min_width(&ui::tokens::Metrics::BASE));
-    render_frame(&mut app, narrowest, 720.0);
-    let content = app.content_rect();
-    for control in [Hit::FocusMain, Hit::Send, Hit::Attach] {
-        let rect = app
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| (hit.semantic_id() == control.semantic_id()).then_some(*rect))
-            .expect("the actual conversation paints every composer control");
-        assert!(
-            content.contains_rect(rect),
-            "composer controls fit beside navigation"
-        );
-    }
-}
-
-/// A message's author line in a narrow window, as a card's: a long name ends in an ellipsis
-/// and the time beside it stays whole, inside the conversation.
-#[test]
-fn a_narrow_window_keeps_a_messages_time_whole_beside_a_long_name() {
-    let (mut app, mut doc) = app_with_doc();
-    let name = "Book the room for the whole marketing team on Friday";
-    app.workspace_agent_names
-        .insert("planner".into(), name.into());
-    let channel = app.active_channel.clone();
-    let id = crate::testing::say(&mut doc, "agent:planner", &channel, "On it.");
-    app.reload(&doc);
-    render_frame(&mut app, 320.0, 480.0);
-    render_frame(&mut app, 320.0, 480.0);
-    let parts = app.painted_messages.get(&id).expect("the message is drawn");
-    let (name, _) = parts.author.clone().expect("its author is drawn");
-    let (time, clock) = parts.time.clone().expect("its time is drawn");
-    let style = ui::theme::Theme::dark()
-        .text(ui::tokens::TextRole::Caption)
-        .numeric();
-    let whole = ui::text_render::TextRenderer::new()
-        .measure_style(&clock, None, &style)
-        .0;
-    assert!(
-        (time.width() - f64::from(whole)).abs() < 1.0,
-        "the time `{clock}` is drawn whole ({whole}), not cut to {time:?}"
-    );
-    assert!(
-        name.x1 <= time.x0,
-        "the name ends before the time: {name:?}, {time:?}"
-    );
-    assert!(
-        time.x1 <= app.content_rect().x1,
-        "inside the window: {time:?}"
-    );
-}
-
 #[test]
 fn the_attached_call_window_rests_below_the_header_row() {
     for (w, h) in [(1280.0, 800.0), (800.0, 600.0)] {
@@ -2563,52 +2421,118 @@ mod calls_and_peers;
 mod menus;
 mod workspace_state;
 
-/// Every participant in the expanded call is their own tile, named as their
-/// messages read, and opens how loud they play here.
-#[test]
-fn each_participant_in_an_expanded_call_gets_their_own_tile_and_volume() {
-    use ui::native_media::Roster;
-    let (mut app, mut doc) = app_with_doc();
-    app.call.join("c_standup");
-    app.call.expanded = true;
-    app.native_voice.snapshot.rosters = vec![Roster {
-        channel_id: "c_standup".into(),
-        people: vec!["u_aria".into(), "u_milo".into()],
-        ..Default::default()
-    }];
-    app.refresh_native_streams();
-    render_frame(&mut app, 1280.0, 720.0);
-    let milo = app
-        .semantic_hits()
-        .into_iter()
-        .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "u_milo"))
-        .expect("Milo has a tile of his own");
-    assert_eq!(milo.2.text, "Milo Park: volume and mute for you");
-    assert!(
-        app.semantic_hits()
-            .iter()
-            .all(|(_, hit, ..)| !matches!(hit, Hit::CallParticipant(id) if app.is_me(id))),
-        "this person's own tile has no volume"
-    );
+tilo_test_env::scenario! {
+    /// Joining, expanding and leaving a call from the window.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_call_is_joined_expanded_and_left_without_writing_the_record;
 
-    app.on_hit(milo.1, &mut ui::widget::Edits::lend(&mut doc));
-    let menu = app.menu.as_ref().expect("his tile opens the volume menu");
-    assert_eq!(menu.target, MenuTarget::CallParticipant("u_milo".into()));
-    activate_context_menu_action(
-        &mut app,
-        &mut doc,
-        MenuTarget::CallParticipant("u_milo".into()),
-        MenuAction::Silence,
-    );
-    assert!(app.call_listening("u_milo").silenced);
-    activate_context_menu_action(
-        &mut app,
-        &mut doc,
-        MenuTarget::CallParticipant("u_milo".into()),
-        MenuAction::Volume(50),
-    );
-    let listening = app.call_listening("u_milo");
-    assert_eq!((listening.percent, listening.silenced), (50, false));
+    phase switching_to_voice_channel_starts_a_muted_service_join_without_membership_write;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        let before = doc.save();
+        app.on_hit(
+            Hit::Channel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.land(&mut doc);
+        app.reload(&doc);
+        assert!(app.call.active && app.call.muted && app.call.audio_only);
+        assert_eq!(app.call.channel, "c_standup");
+        assert_eq!(
+            app.native_voice.snapshot.state,
+            ui::native_media::State::Preparing
+        );
+        assert_eq!(doc.save(), before);
+    }
+
+    phase expanding_a_call_preserves_verified_streams_without_rewriting_legacy_history;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(
+            Hit::Channel("c_huddle".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.land(&mut doc);
+        app.reload(&doc);
+        service_streams(&mut app, "c_huddle", 3);
+        let before = doc.save();
+        app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(app.call.expanded);
+        assert_eq!(app.voice_in("c_huddle").len(), 3);
+        assert_eq!(doc.save(), before);
+    }
+
+    phase leaving_a_call_clears_local_service_state_without_rewriting_history;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(
+            Hit::Channel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.land(&mut doc);
+        app.reload(&doc);
+        service_streams(&mut app, "c_standup", 2);
+        let before = doc.save();
+        assert_eq!(app.voice_in("c_standup").len(), 2);
+        app.on_hit(Hit::CallLeave, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(!app.call.active && app.call.muted);
+        assert!(!app.voice_people("c_standup").contains(&app.me.id));
+        assert_eq!(
+            app.voice_in("c_standup").len(),
+            2,
+            "the others stay in the workspace's call"
+        );
+        assert_eq!(doc.save(), before);
+    }
+
+    phase each_participant_in_an_expanded_call_gets_their_own_tile_and_volume;
+    // Every participant in the expanded call is their own tile, named as their
+    // messages read, and opens how loud they play here.
+    {
+        use ui::native_media::Roster;
+        let (mut app, mut doc) = app_with_doc();
+        app.call.join("c_standup");
+        app.call.expanded = true;
+        app.native_voice.snapshot.rosters = vec![Roster {
+            channel_id: "c_standup".into(),
+            people: vec!["u_aria".into(), "u_milo".into()],
+            ..Default::default()
+        }];
+        app.refresh_native_streams();
+        render_frame(&mut app, 1280.0, 720.0);
+        let milo = app
+            .semantic_hits()
+            .into_iter()
+            .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "u_milo"))
+            .expect("Milo has a tile of his own");
+        assert_eq!(milo.2.text, "Milo Park: volume and mute for you");
+        assert!(
+            app.semantic_hits()
+                .iter()
+                .all(|(_, hit, ..)| !matches!(hit, Hit::CallParticipant(id) if app.is_me(id))),
+            "this person's own tile has no volume"
+        );
+
+        app.on_hit(milo.1, &mut ui::widget::Edits::lend(&mut doc));
+        let menu = app.menu.as_ref().expect("his tile opens the volume menu");
+        assert_eq!(menu.target, MenuTarget::CallParticipant("u_milo".into()));
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::CallParticipant("u_milo".into()),
+            MenuAction::Silence,
+        );
+        assert!(app.call_listening("u_milo").silenced);
+        activate_context_menu_action(
+            &mut app,
+            &mut doc,
+            MenuTarget::CallParticipant("u_milo".into()),
+            MenuAction::Volume(50),
+        );
+        let listening = app.call_listening("u_milo");
+        assert_eq!((listening.percent, listening.silenced), (50, false));
+    }
 }
 
 /// Every node under `node`, depth first.
@@ -2618,73 +2542,190 @@ fn access_nodes(node: &ui::a11y::AccessNode) -> Vec<&ui::a11y::AccessNode> {
         .collect()
 }
 
-#[test]
-fn the_composers_controls_are_chats_own_copy() {
-    let (mut app, _doc) = app_with_doc();
-    render_frame(&mut app, 1280.0, 720.0);
-    let tree = app.accessibility().unwrap();
-    let nodes = access_nodes(&tree);
-    for name in [
-        crate::i18n::t("chat-send-message"),
-        crate::i18n::t("chat-attach"),
-    ] {
-        let node = nodes
-            .iter()
-            .find(|node| node.name.as_deref() == Some(name.as_str()))
-            .unwrap_or_else(|| panic!("the composer shows {name}"));
-        assert!(node.interface_name, "{name} is Chat's own copy");
-    }
-    // A message is someone's words, never Chat's copy.
-    let message = nodes
-        .iter()
-        .find(|node| node.role == ui::a11y::Role::ListItem)
-        .expect("a message is shown");
-    assert!(!message.interface_name);
-}
+tilo_test_env::scenario! {
+    /// The layout and the reading of a conversation's text and composer.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn the_conversation_lays_out_its_text_composer_and_controls;
 
-#[test]
-fn a_messages_texts_are_read_where_they_are_drawn() {
-    let (mut app, _doc) = app_with_doc();
-    render_frame(&mut app, 1280.0, 720.0);
-    let tree = app.accessibility().unwrap();
-    let rows: Vec<&ui::a11y::AccessNode> = access_nodes(&tree)
-        .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::ListItem && !node.children.is_empty())
-        .collect();
-    assert!(!rows.is_empty(), "shown messages say where their texts are");
-    let mut headed = false;
-    for row in rows {
-        let bounds = row.bounds.expect("a shown message has bounds").to_rect();
-        let roles: Vec<ui::a11y::Role> = row.children.iter().map(|child| child.role).collect();
-        if roles.first() == Some(&ui::a11y::Role::Image) {
-            headed = true;
-            assert_eq!(
-                roles.get(1..3),
-                Some(&[ui::a11y::Role::StaticText, ui::a11y::Role::StaticText][..]),
-                "an avatar is followed by the author and the time"
-            );
-        }
+    phase message_lines_keep_a_readable_length_on_a_wide_screen;
+    {
+        use ui::theme::Theme;
+        use vello::kurbo::Rect;
+        let (app, _doc) = app_with_doc();
+        let theme = Theme::dark();
+        let readable = theme.tokens.metrics.readable_width;
+        let narrow = Rect::new(0.0, 0.0, 600.0, 800.0);
+        let wide = Rect::new(0.0, 0.0, 2200.0, 1400.0);
         assert!(
-            roles.contains(&ui::a11y::Role::StaticText),
-            "a shown message has texts"
+            app.message_text_width(narrow, &theme) < readable,
+            "a narrow column uses the workspace it has"
         );
-        // Laid out, a part may overhang the row by a hair of rounding.
-        let row_band = bounds.inflate(1.0, 1.0);
-        for child in &row.children {
-            let rect = child.bounds.expect("every part has its rect").to_rect();
-            assert!(rect.width() > 0.0 && rect.height() > 0.0);
+        assert!(
+            (app.message_text_width(wide, &theme) - readable).abs() < f32::EPSILON,
+            "a wide one stops at the readable measure"
+        );
+    }
+
+    phase an_empty_channel_invites_the_first_message;
+    {
+        let (mut app, _doc) = app_with_doc();
+        let id = app.active_channel.clone();
+        let name = app.channel(&id).expect("an active channel").name.clone();
+        app.channels
+            .iter_mut()
+            .filter(|c| c.id == id)
+            .for_each(|c| c.topic.clear());
+        let invite = app.empty_channel_message().expect("an invitation");
+        assert!(invite.contains(&name), "{invite}");
+
+        app.channels
+            .iter_mut()
+            .filter(|c| c.id == id)
+            .for_each(|c| c.topic = "Release planning".into());
+        assert_eq!(
+            app.empty_channel_message().as_deref(),
+            Some("Release planning"),
+            "a topic says what the channel is for"
+        );
+
+        app.channels
+            .iter_mut()
+            .filter(|c| c.id == id)
+            .for_each(|c| c.topic.clear());
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Viewer),
+        );
+        assert_eq!(app.empty_channel_message(), None, "no invitation to write");
+    }
+
+    phase the_composer_fits_the_narrowest_conversation_beside_the_channels;
+    // The shell keeps the channels docked while the conversation beside them
+    // keeps a reading column; at that narrowest, every composer control still
+    // fits.
+    {
+        let (mut app, _doc) = app_with_doc();
+        let narrowest =
+            f64::from(ui::widget::ContentKind::Reading.min_width(&ui::tokens::Metrics::BASE));
+        render_frame(&mut app, narrowest, 720.0);
+        let content = app.content_rect();
+        for control in [Hit::FocusMain, Hit::Send, Hit::Attach] {
+            let rect = app
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| (hit.semantic_id() == control.semantic_id()).then_some(*rect))
+                .expect("the actual conversation paints every composer control");
             assert!(
-                row_band.contains(rect.origin()) && row_band.contains(Point::new(rect.x1, rect.y1)),
-                "{child:?} is drawn inside its row {bounds:?}"
+                content.contains_rect(rect),
+                "composer controls fit beside navigation"
             );
-            assert!(
-                !child.interface_name,
-                "a message's parts are not Chat's copy"
-            );
-            assert!(child.name.as_deref().is_some_and(|name| !name.is_empty()));
         }
     }
-    assert!(headed, "a message that starts a group shows its author");
+
+    phase a_narrow_window_keeps_a_messages_time_whole_beside_a_long_name;
+    // A message's author line in a narrow window, as a card's: a long name ends in an ellipsis
+    // and the time beside it stays whole, inside the conversation.
+    {
+        let (mut app, mut doc) = app_with_doc();
+        let name = "Book the room for the whole marketing team on Friday";
+        app.workspace_agent_names
+            .insert("planner".into(), name.into());
+        let channel = app.active_channel.clone();
+        let id = crate::testing::say(&mut doc, "agent:planner", &channel, "On it.");
+        app.reload(&doc);
+        render_frame(&mut app, 320.0, 480.0);
+        render_frame(&mut app, 320.0, 480.0);
+        let parts = app.painted_messages.get(&id).expect("the message is drawn");
+        let (name, _) = parts.author.clone().expect("its author is drawn");
+        let (time, clock) = parts.time.clone().expect("its time is drawn");
+        let style = ui::theme::Theme::dark()
+            .text(ui::tokens::TextRole::Caption)
+            .numeric();
+        let whole = ui::text_render::TextRenderer::new()
+            .measure_style(&clock, None, &style)
+            .0;
+        assert!(
+            (time.width() - f64::from(whole)).abs() < 1.0,
+            "the time `{clock}` is drawn whole ({whole}), not cut to {time:?}"
+        );
+        assert!(
+            name.x1 <= time.x0,
+            "the name ends before the time: {name:?}, {time:?}"
+        );
+        assert!(
+            time.x1 <= app.content_rect().x1,
+            "inside the window: {time:?}"
+        );
+    }
+
+    phase the_composers_controls_are_chats_own_copy;
+    {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+        let tree = app.accessibility().unwrap();
+        let nodes = access_nodes(&tree);
+        for name in [
+            crate::i18n::t("chat-send-message"),
+            crate::i18n::t("chat-attach"),
+        ] {
+            let node = nodes
+                .iter()
+                .find(|node| node.name.as_deref() == Some(name.as_str()))
+                .unwrap_or_else(|| panic!("the composer shows {name}"));
+            assert!(node.interface_name, "{name} is Chat's own copy");
+        }
+        // A message is someone's words, never Chat's copy.
+        let message = nodes
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::ListItem)
+            .expect("a message is shown");
+        assert!(!message.interface_name);
+    }
+
+    phase a_messages_texts_are_read_where_they_are_drawn;
+    {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+        let tree = app.accessibility().unwrap();
+        let rows: Vec<&ui::a11y::AccessNode> = access_nodes(&tree)
+            .into_iter()
+            .filter(|node| node.role == ui::a11y::Role::ListItem && !node.children.is_empty())
+            .collect();
+        assert!(!rows.is_empty(), "shown messages say where their texts are");
+        let mut headed = false;
+        for row in rows {
+            let bounds = row.bounds.expect("a shown message has bounds").to_rect();
+            let roles: Vec<ui::a11y::Role> = row.children.iter().map(|child| child.role).collect();
+            if roles.first() == Some(&ui::a11y::Role::Image) {
+                headed = true;
+                assert_eq!(
+                    roles.get(1..3),
+                    Some(&[ui::a11y::Role::StaticText, ui::a11y::Role::StaticText][..]),
+                    "an avatar is followed by the author and the time"
+                );
+            }
+            assert!(
+                roles.contains(&ui::a11y::Role::StaticText),
+                "a shown message has texts"
+            );
+            // Laid out, a part may overhang the row by a hair of rounding.
+            let row_band = bounds.inflate(1.0, 1.0);
+            for child in &row.children {
+                let rect = child.bounds.expect("every part has its rect").to_rect();
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                assert!(
+                    row_band.contains(rect.origin()) && row_band.contains(Point::new(rect.x1, rect.y1)),
+                    "{child:?} is drawn inside its row {bounds:?}"
+                );
+                assert!(
+                    !child.interface_name,
+                    "a message's parts are not Chat's copy"
+                );
+                assert!(child.name.as_deref().is_some_and(|name| !name.is_empty()));
+            }
+        }
+        assert!(headed, "a message that starts a group shows its author");
+    }
 }
 
 /// A browser page's Save dialog: every place chosen is one the host keeps,
@@ -2778,45 +2819,50 @@ fn an_attachment_is_saved_where_a_pathless_host_keeps_it() {
     );
 }
 
-/// The attach action on a page with no file paths: without a path it
-/// opens the conversation and asks the platform's chooser, whose bytes go
-/// to the page's content store; a path is refused with how to attach.
-#[test]
-fn the_attach_action_chooses_files_where_the_device_has_no_paths() {
-    let (mut app, _doc) = app_with_doc();
-    app.external_services = false;
-    app.active_channel = "c_chat".into();
-    let refused = app
-        .attach_file_effect("c_crit", Some(&"/home/ada/plan.pdf".parse().unwrap()))
-        .unwrap_err();
-    assert!(refused.contains("leave out the path"), "{refused}");
-    assert!(app.device_pick.is_none(), "a refused path asks nothing");
-    app.attach_file_effect("c_crit", None).unwrap();
-    assert_eq!(
-        app.active_channel, "c_crit",
-        "the files' conversation opens"
-    );
-    assert!(app.device_pick.is_some(), "the platform's chooser is asked");
-}
+tilo_test_env::scenario! {
+    /// The attach action where a device has no file paths, and with a path that names no one file.
+    fn the_attach_action_asks_the_chooser_and_refuses_a_path_it_cannot_take;
 
-/// The attach action refuses a relative path before Chat sees it: it would
-/// name a file wherever the app happens to run.
-#[test]
-fn the_attach_action_refuses_a_relative_path() {
-    use ui::tilo_resource::Effect as _;
-    let arguments = serde_json::Map::from_iter([
-        ("channel".to_owned(), serde_json::json!("c_chat")),
-        ("path".to_owned(), serde_json::json!("plan.pdf")),
-    ]);
-    let refused = crate::effects::ChatEffect::decode("attach-file", &arguments).unwrap_err();
-    assert!(
-        matches!(
-            &refused,
-            ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                if name == "path" && source.to_string().contains("absolute")
-        ),
-        "{refused}"
-    );
+    phase the_attach_action_chooses_files_where_the_device_has_no_paths;
+    // The attach action on a page with no file paths: without a path it
+    // opens the conversation and asks the platform's chooser, whose bytes go
+    // to the page's content store; a path is refused with how to attach.
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.external_services = false;
+        app.active_channel = "c_chat".into();
+        let refused = app
+            .attach_file_effect("c_crit", Some(&"/home/ada/plan.pdf".parse().unwrap()))
+            .unwrap_err();
+        assert!(refused.contains("leave out the path"), "{refused}");
+        assert!(app.device_pick.is_none(), "a refused path asks nothing");
+        app.attach_file_effect("c_crit", None).unwrap();
+        assert_eq!(
+            app.active_channel, "c_crit",
+            "the files' conversation opens"
+        );
+        assert!(app.device_pick.is_some(), "the platform's chooser is asked");
+    }
+
+    phase the_attach_action_refuses_a_relative_path;
+    // The attach action refuses a relative path before Chat sees it: it would
+    // name a file wherever the app happens to run.
+    {
+        use ui::tilo_resource::Effect as _;
+        let arguments = serde_json::Map::from_iter([
+            ("channel".to_owned(), serde_json::json!("c_chat")),
+            ("path".to_owned(), serde_json::json!("plan.pdf")),
+        ]);
+        let refused = crate::effects::ChatEffect::decode("attach-file", &arguments).unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{refused}"
+        );
+    }
 }
 
 /// The bar names the conversation with who or what it is: the face of the agent a direct
@@ -2825,8 +2871,8 @@ fn the_attach_action_refuses_a_relative_path() {
 fn the_bar_leads_the_conversation_with_who_it_is_with() {
     let (mut app, _doc) = app_with_doc();
     app.active_channel = crate::record::Chat::direct_id([
-        crate::record::Participant::person(app.me.id.clone()),
-        crate::record::Participant::agent("assistant"),
+        MemberId::person(app.me.id.clone()),
+        MemberId::agent("assistant"),
     ])
     .to_string();
     render_frame(&mut app, 360.0, 520.0);

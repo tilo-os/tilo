@@ -58,29 +58,17 @@ pub fn validated_route_payload_with(
 }
 
 /// The mutation `payload` carries on `route`: the cleartext one, or the
-/// endpoint's decryption of an encrypted one, which must name `route`'s
-/// channel.
+/// endpoint's decryption of an encrypted one.
 pub fn decode_routed_mutation(
-    route: &RouteSpec,
     payload: collab_types::WholeDocumentPayload,
     decrypted_payload: Option<&[u8]>,
 ) -> Result<collab_types::DocumentMutation, collab_types::DocumentMutationError> {
     match payload {
         collab_types::WholeDocumentPayload::Cleartext(mutation) => Ok(mutation),
-        collab_types::WholeDocumentPayload::Encrypted { channel, .. } => {
+        collab_types::WholeDocumentPayload::Encrypted { .. } => {
             let decrypted_payload =
                 decrypted_payload.ok_or(collab_types::DocumentMutationError::RouteMismatch)?;
-            let mutation = collab_types::DocumentMutation::decode(decrypted_payload)?;
-            let record = route.record.as_deref().unwrap_or("");
-            if collab_types::document_channel_id(
-                &route.app_id,
-                &route.cluster_id.to_string(),
-                record,
-            ) != channel
-            {
-                return Err(collab_types::DocumentMutationError::RouteMismatch);
-            }
-            Ok(mutation)
+            collab_types::DocumentMutation::decode(decrypted_payload)
         }
     }
 }

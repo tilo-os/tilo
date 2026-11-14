@@ -490,7 +490,6 @@ fn assert_word_roundtrip(fixture: &[u8], expected_refs: usize) {
     assert_footer_has_page_field(&d3);
 }
 
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -636,7 +635,6 @@ fn only_sectpr(document: &str) -> &str {
     &document[start..end]
 }
 
-#[test]
 fn header_removal_and_qdoc_headers_roundtrip_consistently() {
     {
         let mut d = import(&word_docx_default_only());
@@ -672,5 +670,23 @@ fn header_removal_and_qdoc_headers_roundtrip_consistently() {
         let d3 = import(&exported2);
         assert_eq!(header_texts(&d3), [HEADER_TEXT]);
         assert_footer_has_page_field(&d3);
+    }
+}
+
+#[test]
+fn docx_headers_and_footers_roundtrip_and_removal_is_consistent() {
+    let cases: [(&str, fn()); 2] = [
+        (
+            "word headers and footers survive docx roundtrip",
+            word_headers_and_footers_survive_docx_roundtrip,
+        ),
+        (
+            "header removal and qdoc headers roundtrip consistently",
+            header_removal_and_qdoc_headers_roundtrip_consistently,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
     }
 }

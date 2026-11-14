@@ -80,7 +80,7 @@ fn app_row(listing: &CataloguePage, app: &str) -> (String, Option<String>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "tilo.sh", DeviceCapabilities::host());
+    let host = enrol(&root, "tilo.sh", DeviceCapabilities::member());
     let computer = enrol(&root, "visa agent", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     // The relay makes itself the person's stand-in from the root it keeps, as
@@ -114,15 +114,10 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         )
         .await
     };
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut agent = Browser::open(&hosted, &computer, &host).await;
     let _ =
         tilo_session_client::device::run_as_agent(&agent.peer, hosted_documents::RUN_LABEL).await;
-    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) else {
-        panic!("a key names a person")
-    };
+    let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
@@ -159,7 +154,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     assert_eq!(started[0].workspace, WORKSPACE);
     assert_eq!(
         browsers
-            .window(tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap())
+            .window(tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap())
             .map(|window| window.provider),
         Some(WINDOW.into()),
         "the workspace has the window"

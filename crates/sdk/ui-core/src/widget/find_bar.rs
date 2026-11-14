@@ -1774,44 +1774,159 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_bar_counts_steps_and_wraps_through_matches() {
-        let mut doc = Doc {
-            text: "Cat cat concat cat".into(),
-            ..Doc::default()
-        };
-        let mut bar = FindBar::new();
-        bar.set_query("cat");
-        bar.drive(&mut doc);
-        assert_eq!(bar.position(), Some((1, 4)));
-        assert_eq!(doc.current, Some(0));
-        bar.next();
-        bar.drive(&mut doc);
-        assert_eq!(bar.position(), Some((2, 4)));
-        bar.previous();
-        bar.drive(&mut doc);
-        bar.previous();
-        bar.drive(&mut doc);
-        assert_eq!(bar.position(), Some((4, 4)), "previous wraps to the last");
-        assert_eq!(bar.field.count(), Some(FilterCount::new(4, 4)));
+    tilo_test_env::scenario! {
+        fn the_find_bar_counts_opens_and_publishes_its_fields;
 
-        bar.toggle(Part::MatchCase);
-        bar.drive(&mut doc);
-        assert_eq!(bar.position(), Some((1, 3)), "Match case drops `Cat`");
-        bar.toggle(Part::WholeWord);
-        bar.drive(&mut doc);
-        assert_eq!(bar.position(), Some((1, 2)), "Whole word drops `concat`");
+        phase the_bar_counts_steps_and_wraps_through_matches;
+        {
+            let mut doc = Doc {
+                text: "Cat cat concat cat".into(),
+                ..Doc::default()
+            };
+            let mut bar = FindBar::new();
+            bar.set_query("cat");
+            bar.drive(&mut doc);
+            assert_eq!(bar.position(), Some((1, 4)));
+            assert_eq!(doc.current, Some(0));
+            bar.next();
+            bar.drive(&mut doc);
+            assert_eq!(bar.position(), Some((2, 4)));
+            bar.previous();
+            bar.drive(&mut doc);
+            bar.previous();
+            bar.drive(&mut doc);
+            assert_eq!(bar.position(), Some((4, 4)), "previous wraps to the last");
+            assert_eq!(bar.field.count(), Some(FilterCount::new(4, 4)));
 
-        assert!(bar.replace_row, "a replacing findable gets the replace row");
-        bar.replace_field.set_query("dog");
-        bar.toggle(Part::Replace);
-        bar.drive(&mut doc);
-        assert_eq!(doc.replaced, [(0, "dog".to_owned())]);
+            bar.toggle(Part::MatchCase);
+            bar.drive(&mut doc);
+            assert_eq!(bar.position(), Some((1, 3)), "Match case drops `Cat`");
+            bar.toggle(Part::WholeWord);
+            bar.drive(&mut doc);
+            assert_eq!(bar.position(), Some((1, 2)), "Whole word drops `concat`");
 
-        bar.request_close();
-        bar.drive(&mut doc);
-        assert!(doc.found.is_empty(), "closing clears the highlights");
-        assert_eq!(bar.position(), None);
+            assert!(bar.replace_row, "a replacing findable gets the replace row");
+            bar.replace_field.set_query("dog");
+            bar.toggle(Part::Replace);
+            bar.drive(&mut doc);
+            assert_eq!(doc.replaced, [(0, "dog".to_owned())]);
+
+            bar.request_close();
+            bar.drive(&mut doc);
+            assert!(doc.found.is_empty(), "closing clears the highlights");
+            assert_eq!(bar.position(), None);
+        }
+
+        phase ctrl_f_opens_the_bar_as_a_band_above_the_content_and_escape_closes_it;
+        {
+            let page = Page {
+                doc: Doc {
+                    text: "one two one".into(),
+                    ..Doc::default()
+                },
+                rect: Rect::ZERO,
+            };
+            let mut scope = FindScope::new(Box::new(page));
+            scope.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+            let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let plain = winit::event::Modifiers::default();
+
+            let _ = send(&mut scope, &ctrl_f(), plain);
+            assert!(!scope.is_open(), "plain F is typing, not find");
+            let _ = send(&mut scope, &ctrl_f(), ctrl);
+            assert!(scope.is_open());
+            assert!(scope.take_structure_dirty(), "the band joins the layout");
+            let focus = send(&mut scope, &WindowEvent::Focused(true), plain);
+            assert!(focus.is_none());
+            assert!(scope.bar.get_rect().height() > 0.0);
+            assert!(
+                scope.content.get_rect().y0 >= scope.bar.get_rect().y1 - 0.5,
+                "the content starts under the band"
+            );
+            scope.bar.field.set_query("one");
+            scope.drive();
+            assert_eq!(scope.bar.position(), Some((1, 2)));
+
+            let _ = send(&mut scope, &escape(), plain);
+            assert!(!scope.is_open(), "Escape closes the bar");
+        }
+
+        phase content_moving_with_the_band_is_hit_where_it_is_drawn;
+        {
+            let pointer = WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: (10.0, 50.0).into(),
+            };
+            let moved = super::super::event_offset(&pointer, vello::kurbo::Vec2::new(0.0, -20.0), 2.0);
+            let WindowEvent::CursorMoved { position, .. } = moved.as_ref() else {
+                panic!("a pointer move stays a pointer move");
+            };
+            assert_eq!((position.x, position.y), (10.0, 90.0));
+            let key = escape();
+            assert!(matches!(
+                super::super::event_offset(&key, vello::kurbo::Vec2::new(0.0, -20.0), 2.0),
+                std::borrow::Cow::Borrowed(_)
+            ));
+        }
+
+        phase semantic_tree_publishes_each_find_field_once_under_its_real_owner;
+        {
+            let mut scope = FindScope::new(Box::new(Page {
+                doc: Doc {
+                    text: "one two one".into(),
+                    ..Doc::default()
+                },
+                rect: Rect::ZERO,
+            }))
+            .with_bar(FindBar::new().with_replace());
+            scope.open();
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = HashMap::new();
+            let node = scope.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(900.0),
+                        height: taffy::AvailableSpace::Definite(400.0),
+                    },
+                )
+                .unwrap();
+            scope.apply_layout(&taffy, node, Point::ZERO);
+            let mut tree = crate::a11y_tree::SemanticTree::new();
+            tree.refresh(&scope, &node_map, None, &[]);
+            for (name, target) in [
+                (tr("find-bar-placeholder"), "find-query"),
+                (tr("find-bar-replace-placeholder"), "find-replacement"),
+            ] {
+                let fields: Vec<_> = tree
+                    .iter()
+                    .filter(|node| {
+                        node.role == crate::a11y::Role::TextInput
+                            && node.name.as_deref() == Some(name.as_str())
+                    })
+                    .collect();
+                assert_eq!(fields.len(), 1, "one canonical semantic field for {name}");
+                assert_eq!(fields[0].semantic_target.as_deref(), Some(target));
+                assert!(fields[0].widget_taffy_id.is_some(), "real admitted owner");
+            }
+        }
+
+        phase a_match_highlight_marks_only_its_span;
+        {
+            let theme = Theme::dark();
+            let mut scene = Scene::new();
+            paint_find_match(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(10.0, 0.0, 30.0, 14.0),
+                true,
+                &theme,
+            );
+            paint_find_match(&mut scene, Affine::IDENTITY, Rect::ZERO, false, &theme);
+            assert!(!scene.encoding().is_empty());
+        }
     }
 
     struct Page {
@@ -1897,40 +2012,6 @@ mod tests {
             .layout(&taffy, node)
             .send(scope, event)
             .focus_target
-    }
-
-    #[test]
-    fn ctrl_f_opens_the_bar_as_a_band_above_the_content_and_escape_closes_it() {
-        let page = Page {
-            doc: Doc {
-                text: "one two one".into(),
-                ..Doc::default()
-            },
-            rect: Rect::ZERO,
-        };
-        let mut scope = FindScope::new(Box::new(page));
-        scope.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
-        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let plain = winit::event::Modifiers::default();
-
-        let _ = send(&mut scope, &ctrl_f(), plain);
-        assert!(!scope.is_open(), "plain F is typing, not find");
-        let _ = send(&mut scope, &ctrl_f(), ctrl);
-        assert!(scope.is_open());
-        assert!(scope.take_structure_dirty(), "the band joins the layout");
-        let focus = send(&mut scope, &WindowEvent::Focused(true), plain);
-        assert!(focus.is_none());
-        assert!(scope.bar.get_rect().height() > 0.0);
-        assert!(
-            scope.content.get_rect().y0 >= scope.bar.get_rect().y1 - 0.5,
-            "the content starts under the band"
-        );
-        scope.bar.field.set_query("one");
-        scope.drive();
-        assert_eq!(scope.bar.position(), Some((1, 2)));
-
-        let _ = send(&mut scope, &escape(), plain);
-        assert!(!scope.is_open(), "Escape closes the bar");
     }
 
     fn page_scope() -> FindScope {
@@ -2073,24 +2154,6 @@ mod tests {
     }
 
     #[test]
-    fn content_moving_with_the_band_is_hit_where_it_is_drawn() {
-        let pointer = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: (10.0, 50.0).into(),
-        };
-        let moved = super::super::event_offset(&pointer, vello::kurbo::Vec2::new(0.0, -20.0), 2.0);
-        let WindowEvent::CursorMoved { position, .. } = moved.as_ref() else {
-            panic!("a pointer move stays a pointer move");
-        };
-        assert_eq!((position.x, position.y), (10.0, 90.0));
-        let key = escape();
-        assert!(matches!(
-            super::super::event_offset(&key, vello::kurbo::Vec2::new(0.0, -20.0), 2.0),
-            std::borrow::Cow::Borrowed(_)
-        ));
-    }
-
-    #[test]
     fn hosted_accessibility_edits_the_real_find_query_and_replacement() {
         let page = Page {
             doc: Doc {
@@ -2174,65 +2237,6 @@ mod tests {
         );
         assert_eq!(harness.root::<FindScope>().bar.query(), "two");
     }
-
-    #[test]
-    fn semantic_tree_publishes_each_find_field_once_under_its_real_owner() {
-        let mut scope = FindScope::new(Box::new(Page {
-            doc: Doc {
-                text: "one two one".into(),
-                ..Doc::default()
-            },
-            rect: Rect::ZERO,
-        }))
-        .with_bar(FindBar::new().with_replace());
-        scope.open();
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = HashMap::new();
-        let node = scope.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(900.0),
-                    height: taffy::AvailableSpace::Definite(400.0),
-                },
-            )
-            .unwrap();
-        scope.apply_layout(&taffy, node, Point::ZERO);
-        let mut tree = crate::a11y_tree::SemanticTree::new();
-        tree.refresh(&scope, &node_map, None, &[]);
-        for (name, target) in [
-            (tr("find-bar-placeholder"), "find-query"),
-            (tr("find-bar-replace-placeholder"), "find-replacement"),
-        ] {
-            let fields: Vec<_> = tree
-                .iter()
-                .filter(|node| {
-                    node.role == crate::a11y::Role::TextInput
-                        && node.name.as_deref() == Some(name.as_str())
-                })
-                .collect();
-            assert_eq!(fields.len(), 1, "one canonical semantic field for {name}");
-            assert_eq!(fields[0].semantic_target.as_deref(), Some(target));
-            assert!(fields[0].widget_taffy_id.is_some(), "real admitted owner");
-        }
-    }
-
-    #[test]
-    fn a_match_highlight_marks_only_its_span() {
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        paint_find_match(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(10.0, 0.0, 30.0, 14.0),
-            true,
-            &theme,
-        );
-        paint_find_match(&mut scene, Affine::IDENTITY, Rect::ZERO, false, &theme);
-        assert!(!scene.encoding().is_empty());
-    }
 }
 
 #[cfg(test)]
@@ -2287,26 +2291,277 @@ mod host_driven_tests {
         }
     }
 
-    #[test]
-    fn refresh_keeps_the_current_match_as_content_grows() {
-        let mut log = Log {
-            text: "error error".into(),
-            ..Log::default()
-        };
-        let mut bar = FindBar::new();
-        bar.set_query("error");
-        bar.drive(&mut log);
-        bar.next();
-        bar.drive(&mut log);
-        assert_eq!(bar.position(), Some((2, 2)));
-        log.text.push_str(" error");
-        bar.refresh();
-        bar.drive(&mut log);
-        assert_eq!(
-            bar.position(),
-            Some((2, 3)),
-            "the count follows; the place stays"
-        );
+    tilo_test_env::scenario! {
+        fn a_host_drives_the_bar_through_its_engine;
+
+        phase refresh_keeps_the_current_match_as_content_grows;
+        {
+            let mut log = Log {
+                text: "error error".into(),
+                ..Log::default()
+            };
+            let mut bar = FindBar::new();
+            bar.set_query("error");
+            bar.drive(&mut log);
+            bar.next();
+            bar.drive(&mut log);
+            assert_eq!(bar.position(), Some((2, 2)));
+            log.text.push_str(" error");
+            bar.refresh();
+            bar.drive(&mut log);
+            assert_eq!(
+                bar.position(),
+                Some((2, 3)),
+                "the count follows; the place stays"
+            );
+        }
+
+        phase an_edit_under_an_open_bar_updates_the_counter_on_the_next_drive;
+        {
+            let mut buffer = Buffer(
+                Log {
+                    text: "fn fn".into(),
+                    ..Log::default()
+                },
+                1,
+            );
+            let mut bar = FindBar::new();
+            bar.set_query("fn");
+            bar.drive(&mut buffer);
+            bar.next();
+            bar.drive(&mut buffer);
+            assert_eq!(bar.position(), Some((2, 2)));
+            buffer.0.text.push_str(" fn");
+            buffer.1 += 1;
+            bar.drive(&mut buffer);
+            assert_eq!(
+                bar.position(),
+                Some((2, 3)),
+                "the count follows the edit without a refresh; the place stays"
+            );
+            assert_eq!(buffer.0.current, Some(1), "the view is not moved");
+        }
+
+        phase a_close_request_is_acknowledged_once_and_the_bar_reopens;
+        {
+            let mut log = Log {
+                text: "abc".into(),
+                ..Log::default()
+            };
+            let mut bar = FindBar::new().with_mode(FindMode::Hex).with_hex_mode();
+            assert_eq!(
+                bar.options().mode,
+                FindMode::Hex,
+                "a byte view opens on hex"
+            );
+            bar.request_close();
+            bar.drive(&mut log);
+            assert!(bar.take_close_requested());
+            assert!(!bar.take_close_requested(), "acknowledged once");
+            assert!(!bar.close_requested());
+            bar.set_options(FindOptions {
+                match_case: true,
+                ..bar.options()
+            });
+            assert!(bar.options().match_case);
+            assert_eq!(bar.options().mode, FindMode::Hex);
+        }
+
+        phase an_engine_reports_its_own_results_and_steps;
+        {
+            let mut page = Engine::default();
+            let mut bar = FindBar::new();
+            bar.set_query("tilo");
+            bar.drive(&mut page);
+            assert_eq!(page.queries, ["tilo"]);
+            bar.set_results(7, Some(2));
+            assert_eq!(bar.position(), Some((3, 7)));
+            bar.next();
+            bar.drive(&mut page);
+            assert_eq!(page.steps, [true], "the engine steps");
+            assert_eq!(
+                bar.position(),
+                Some((3, 7)),
+                "until it reports where it landed"
+            );
+            bar.set_results(7, Some(3));
+            assert_eq!(bar.position(), Some((4, 7)));
+        }
+
+        phase an_engine_says_where_it_landed_through_the_view;
+        {
+            let mut page = Engine::default();
+            let mut bar = FindBar::new();
+            bar.set_query("tilo");
+            bar.drive(&mut page);
+            assert_eq!(bar.position(), None, "nothing known until the engine says");
+            page.reported = Some((4, Some(0)));
+            bar.drive(&mut page);
+            assert_eq!(bar.position(), Some((1, 4)));
+            bar.next();
+            page.reported = Some((4, Some(1)));
+            bar.drive(&mut page);
+            assert_eq!(page.steps, [true]);
+            assert_eq!(bar.position(), Some((2, 4)));
+            bar.drive(&mut page);
+            assert_eq!(
+                bar.position(),
+                Some((2, 4)),
+                "a quiet engine changes nothing"
+            );
+        }
+
+        phase options_are_toggles_and_a_strip_and_the_bar_has_one_close_control;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut log = Log {
+                regex_offered: true,
+                ..Log::default()
+            };
+            let mut bar = FindBar::new()
+                .with_hex_mode()
+                .with_content_inset(40.0, 40.0);
+            bar.drive(&mut log);
+            bar.layout(
+                Rect::new(0.0, 0.0, 900.0, bar.height(&theme)),
+                &theme,
+                &mut text,
+            );
+            let parts: Vec<Part> = bar.parts.iter().map(|(p, _)| *p).collect();
+            assert!(
+                parts.contains(&Part::Regex),
+                "a findable that matches patterns offers it"
+            );
+            assert_eq!(parts.iter().filter(|p| **p == Part::Close).count(), 1);
+            bar.field.set_query("needle");
+            bar.paint(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            assert_eq!(
+                bar.field.clear_rect(),
+                Rect::ZERO,
+                "the field has no X of its own"
+            );
+            assert!((bar.field.get_rect().x0 - 40.0).abs() < 1e-9);
+            let text_rect = bar.parts.iter().find(|(p, _)| *p == Part::Text).unwrap().1;
+            let hex_rect = bar.parts.iter().find(|(p, _)| *p == Part::Hex).unwrap().1;
+            assert!(
+                (text_rect.x1 - hex_rect.x0).abs() < 1.5,
+                "adjacent segments"
+            );
+            bar.toggle(Part::Regex);
+            assert_eq!(bar.options().mode, FindMode::Regex);
+            let node = Widget::accessibility(&bar).unwrap();
+            assert!(
+                node.children
+                    .iter()
+                    .any(|c| c.name.as_deref() == Some("Regular expression")
+                        && c.role == crate::a11y::Role::ToggleButton),
+                "named from the toolkit's catalogue"
+            );
+            bar.focus_replace();
+            assert!(bar.replace_row && bar.replace_focused);
+        }
+
+        phase a_scope_opens_on_its_own_shortcut_or_only_when_asked;
+        {
+            struct Page(Log);
+            impl Findable for Page {
+                fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+                    self.0.find(query, options)
+                }
+                fn reveal(&mut self, index: usize) {
+                    self.0.reveal(index);
+                }
+            }
+            impl Widget for Page {
+                crate::provides!(dyn Findable);
+                fn build_layout(
+                    &mut self,
+                    taffy: &mut TaffyTree<()>,
+                    _theme: &Theme,
+                    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+                ) -> NodeId {
+                    taffy.widget_leaf(Style::default(), node_map, self)
+                }
+                fn name(&self) -> &'static str {
+                    "Page"
+                }
+            }
+            let press = |scope: &mut FindScope, modifiers: winit::keyboard::ModifiersState| {
+                let ev = crate::synthetic_input::key_event(
+                    Key::Character("f".into()),
+                    None,
+                    ElementState::Pressed,
+                );
+                let event = crate::synthetic_input::keyboard_input(ev);
+                Dispatch::new().modifiers(modifiers).send(scope, &event);
+            };
+            use winit::keyboard::ModifiersState;
+            let mut terminal = FindScope::new(Box::new(Page(Log::default())))
+                .with_shortcut(crate::platform::Shortcut::command("F").shift());
+            terminal
+                .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+            press(&mut terminal, ModifiersState::CONTROL);
+            assert!(!terminal.is_open(), "Ctrl+F stays with the program");
+            press(
+                &mut terminal,
+                ModifiersState::CONTROL | ModifiersState::SHIFT,
+            );
+            assert!(terminal.is_open(), "its own chord opens find");
+
+            let mut quiet = FindScope::new(Box::new(Page(Log::default()))).without_shortcut();
+            quiet.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+            press(&mut quiet, ModifiersState::CONTROL);
+            assert!(!quiet.is_open());
+            quiet.open();
+            assert!(quiet.is_open(), "the host opens it");
+        }
+
+        phase after_a_replacement_written_later_the_next_match_is_current_and_shown;
+        {
+            let mut doc = Deferred {
+                text: "a1 a2 a3".into(),
+                ..Deferred::default()
+            };
+            let options = FindOptions::default();
+            let mut session = FindSession::default();
+            session.search(&mut doc, "a", options, Some(0));
+            session.step(&mut doc, true);
+            assert_eq!(session.position(), Some((2, 3)));
+            assert!(session.replace(&mut doc, "a", options, "b", false));
+            doc.write();
+            assert!(session.content_moved(&doc));
+            session.refresh(&mut doc, "a", options);
+            assert_eq!(doc.text, "a1 b2 a3");
+            assert_eq!(session.position(), Some((2, 2)), "a3 is current");
+            assert_eq!(doc.current, Some(1), "the document paints it as current");
+            assert_eq!(doc.revealed.last(), Some(&1), "and scrolls it into view");
+        }
+
+        phase an_edit_from_elsewhere_keeps_the_current_match_painted_without_scrolling;
+        {
+            let mut doc = Deferred {
+                text: "a1 a2".into(),
+                ..Deferred::default()
+            };
+            let options = FindOptions::default();
+            let mut session = FindSession::default();
+            session.search(&mut doc, "a", options, Some(0));
+            session.step(&mut doc, true);
+            let shown = doc.revealed.len();
+            doc.text.push_str(" a3");
+            doc.revision += 1;
+            session.refresh(&mut doc, "a", options);
+            assert_eq!(session.position(), Some((2, 3)));
+            assert_eq!(doc.current, Some(1), "the current match stays emphasised");
+            assert_eq!(doc.revealed.len(), shown, "the view stays where it was");
+        }
     }
 
     struct Buffer(Log, u64);
@@ -2321,213 +2576,6 @@ mod host_driven_tests {
         fn content_revision(&self) -> u64 {
             self.1
         }
-    }
-
-    #[test]
-    fn an_edit_under_an_open_bar_updates_the_counter_on_the_next_drive() {
-        let mut buffer = Buffer(
-            Log {
-                text: "fn fn".into(),
-                ..Log::default()
-            },
-            1,
-        );
-        let mut bar = FindBar::new();
-        bar.set_query("fn");
-        bar.drive(&mut buffer);
-        bar.next();
-        bar.drive(&mut buffer);
-        assert_eq!(bar.position(), Some((2, 2)));
-        buffer.0.text.push_str(" fn");
-        buffer.1 += 1;
-        bar.drive(&mut buffer);
-        assert_eq!(
-            bar.position(),
-            Some((2, 3)),
-            "the count follows the edit without a refresh; the place stays"
-        );
-        assert_eq!(buffer.0.current, Some(1), "the view is not moved");
-    }
-
-    #[test]
-    fn a_close_request_is_acknowledged_once_and_the_bar_reopens() {
-        let mut log = Log {
-            text: "abc".into(),
-            ..Log::default()
-        };
-        let mut bar = FindBar::new().with_mode(FindMode::Hex).with_hex_mode();
-        assert_eq!(
-            bar.options().mode,
-            FindMode::Hex,
-            "a byte view opens on hex"
-        );
-        bar.request_close();
-        bar.drive(&mut log);
-        assert!(bar.take_close_requested());
-        assert!(!bar.take_close_requested(), "acknowledged once");
-        assert!(!bar.close_requested());
-        bar.set_options(FindOptions {
-            match_case: true,
-            ..bar.options()
-        });
-        assert!(bar.options().match_case);
-        assert_eq!(bar.options().mode, FindMode::Hex);
-    }
-
-    #[test]
-    fn an_engine_reports_its_own_results_and_steps() {
-        let mut page = Engine::default();
-        let mut bar = FindBar::new();
-        bar.set_query("tilo");
-        bar.drive(&mut page);
-        assert_eq!(page.queries, ["tilo"]);
-        bar.set_results(7, Some(2));
-        assert_eq!(bar.position(), Some((3, 7)));
-        bar.next();
-        bar.drive(&mut page);
-        assert_eq!(page.steps, [true], "the engine steps");
-        assert_eq!(
-            bar.position(),
-            Some((3, 7)),
-            "until it reports where it landed"
-        );
-        bar.set_results(7, Some(3));
-        assert_eq!(bar.position(), Some((4, 7)));
-    }
-
-    #[test]
-    fn an_engine_says_where_it_landed_through_the_view() {
-        let mut page = Engine::default();
-        let mut bar = FindBar::new();
-        bar.set_query("tilo");
-        bar.drive(&mut page);
-        assert_eq!(bar.position(), None, "nothing known until the engine says");
-        page.reported = Some((4, Some(0)));
-        bar.drive(&mut page);
-        assert_eq!(bar.position(), Some((1, 4)));
-        bar.next();
-        page.reported = Some((4, Some(1)));
-        bar.drive(&mut page);
-        assert_eq!(page.steps, [true]);
-        assert_eq!(bar.position(), Some((2, 4)));
-        bar.drive(&mut page);
-        assert_eq!(
-            bar.position(),
-            Some((2, 4)),
-            "a quiet engine changes nothing"
-        );
-    }
-
-    #[test]
-    fn options_are_toggles_and_a_strip_and_the_bar_has_one_close_control() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut log = Log {
-            regex_offered: true,
-            ..Log::default()
-        };
-        let mut bar = FindBar::new()
-            .with_hex_mode()
-            .with_content_inset(40.0, 40.0);
-        bar.drive(&mut log);
-        bar.layout(
-            Rect::new(0.0, 0.0, 900.0, bar.height(&theme)),
-            &theme,
-            &mut text,
-        );
-        let parts: Vec<Part> = bar.parts.iter().map(|(p, _)| *p).collect();
-        assert!(
-            parts.contains(&Part::Regex),
-            "a findable that matches patterns offers it"
-        );
-        assert_eq!(parts.iter().filter(|p| **p == Part::Close).count(), 1);
-        bar.field.set_query("needle");
-        bar.paint(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        assert_eq!(
-            bar.field.clear_rect(),
-            Rect::ZERO,
-            "the field has no X of its own"
-        );
-        assert!((bar.field.get_rect().x0 - 40.0).abs() < 1e-9);
-        let text_rect = bar.parts.iter().find(|(p, _)| *p == Part::Text).unwrap().1;
-        let hex_rect = bar.parts.iter().find(|(p, _)| *p == Part::Hex).unwrap().1;
-        assert!(
-            (text_rect.x1 - hex_rect.x0).abs() < 1.5,
-            "adjacent segments"
-        );
-        bar.toggle(Part::Regex);
-        assert_eq!(bar.options().mode, FindMode::Regex);
-        let node = Widget::accessibility(&bar).unwrap();
-        assert!(
-            node.children
-                .iter()
-                .any(|c| c.name.as_deref() == Some("Regular expression")
-                    && c.role == crate::a11y::Role::ToggleButton),
-            "named from the toolkit's catalogue"
-        );
-        bar.focus_replace();
-        assert!(bar.replace_row && bar.replace_focused);
-    }
-
-    #[test]
-    fn a_scope_opens_on_its_own_shortcut_or_only_when_asked() {
-        struct Page(Log);
-        impl Findable for Page {
-            fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
-                self.0.find(query, options)
-            }
-            fn reveal(&mut self, index: usize) {
-                self.0.reveal(index);
-            }
-        }
-        impl Widget for Page {
-            crate::provides!(dyn Findable);
-            fn build_layout(
-                &mut self,
-                taffy: &mut TaffyTree<()>,
-                _theme: &Theme,
-                node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-            ) -> NodeId {
-                taffy.widget_leaf(Style::default(), node_map, self)
-            }
-            fn name(&self) -> &'static str {
-                "Page"
-            }
-        }
-        let press = |scope: &mut FindScope, modifiers: winit::keyboard::ModifiersState| {
-            let ev = crate::synthetic_input::key_event(
-                Key::Character("f".into()),
-                None,
-                ElementState::Pressed,
-            );
-            let event = crate::synthetic_input::keyboard_input(ev);
-            Dispatch::new().modifiers(modifiers).send(scope, &event);
-        };
-        use winit::keyboard::ModifiersState;
-        let mut terminal = FindScope::new(Box::new(Page(Log::default())))
-            .with_shortcut(crate::platform::Shortcut::command("F").shift());
-        terminal
-            .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
-        press(&mut terminal, ModifiersState::CONTROL);
-        assert!(!terminal.is_open(), "Ctrl+F stays with the program");
-        press(
-            &mut terminal,
-            ModifiersState::CONTROL | ModifiersState::SHIFT,
-        );
-        assert!(terminal.is_open(), "its own chord opens find");
-
-        let mut quiet = FindScope::new(Box::new(Page(Log::default()))).without_shortcut();
-        quiet.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
-        press(&mut quiet, ModifiersState::CONTROL);
-        assert!(!quiet.is_open());
-        quiet.open();
-        assert!(quiet.is_open(), "the host opens it");
     }
 
     #[derive(Default)]
@@ -2580,45 +2628,5 @@ mod host_driven_tests {
         fn content_revision(&self) -> u64 {
             self.revision
         }
-    }
-
-    #[test]
-    fn after_a_replacement_written_later_the_next_match_is_current_and_shown() {
-        let mut doc = Deferred {
-            text: "a1 a2 a3".into(),
-            ..Deferred::default()
-        };
-        let options = FindOptions::default();
-        let mut session = FindSession::default();
-        session.search(&mut doc, "a", options, Some(0));
-        session.step(&mut doc, true);
-        assert_eq!(session.position(), Some((2, 3)));
-        assert!(session.replace(&mut doc, "a", options, "b", false));
-        doc.write();
-        assert!(session.content_moved(&doc));
-        session.refresh(&mut doc, "a", options);
-        assert_eq!(doc.text, "a1 b2 a3");
-        assert_eq!(session.position(), Some((2, 2)), "a3 is current");
-        assert_eq!(doc.current, Some(1), "the document paints it as current");
-        assert_eq!(doc.revealed.last(), Some(&1), "and scrolls it into view");
-    }
-
-    #[test]
-    fn an_edit_from_elsewhere_keeps_the_current_match_painted_without_scrolling() {
-        let mut doc = Deferred {
-            text: "a1 a2".into(),
-            ..Deferred::default()
-        };
-        let options = FindOptions::default();
-        let mut session = FindSession::default();
-        session.search(&mut doc, "a", options, Some(0));
-        session.step(&mut doc, true);
-        let shown = doc.revealed.len();
-        doc.text.push_str(" a3");
-        doc.revision += 1;
-        session.refresh(&mut doc, "a", options);
-        assert_eq!(session.position(), Some((2, 3)));
-        assert_eq!(doc.current, Some(1), "the current match stays emphasised");
-        assert_eq!(doc.revealed.len(), shown, "the view stays where it was");
     }
 }

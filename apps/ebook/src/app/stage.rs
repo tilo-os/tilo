@@ -38,7 +38,7 @@ impl BooksApp {
         else {
             return;
         };
-        let lane = ContentLane::of("so.tilo.books-capture", "fresh-device");
+        let lane = Arc::new(ContentLane::default());
         let store = RecordContent::store(tilo_content::ContentStore::memory(), Arc::clone(&lane));
         if let Some(hash) = entry.content_reference() {
             // Asked for, and the host says where it stands.

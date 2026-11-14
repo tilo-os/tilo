@@ -228,158 +228,162 @@ mod tests {
     use crate::widget::Widget as _;
     use vello::kurbo::{Point, Rect};
 
-    // The move hint points at a window's title, where its bar takes it,
-    // never at the buttons further along the bar.
-    #[test]
-    fn hint_places_point_beside_the_title_not_at_the_buttons() {
-        use crate::window_toolbar::{ToolbarAction, WindowToolbar};
-        let action = |id: &str| ToolbarAction {
-            id: id.into(),
-            icon: "refresh".into(),
-            name: id.into(),
-            enabled: true,
-            on: false,
-            menu: false,
-            items: Vec::new(),
-            navigates: false,
-            toggles: false,
-            destructive: false,
-            labelled: false,
-            primary: false,
-        };
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        for group in &mut row.groups {
-            group.bar_mut().set_window_controls(true);
-        }
-        let _ = row.groups[0].bar_mut().set_toolbar(
-            1,
-            Some(WindowToolbar {
-                actions: vec![action("more"), action("share"), action("pin")],
-                ..WindowToolbar::default()
-            }),
-        );
-        row.groups[0].focused = true;
-        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-        let filled = beside_the_title(&row);
-        assert_eq!(filled, row.groups[0].tab_rects()[0], "the title");
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        for group in &mut row.groups {
-            group.bar_mut().set_window_controls(true);
-        }
-        row.groups[0].focused = true;
-        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-        let free = beside_the_title(&row);
-        let group = &row.groups[0];
-        let y = free.center().y;
-        assert!(group.bar_grab_hit(Point::new(free.x0, y)), "{free:?}");
-        assert!(group.bar_grab_hit(Point::new(free.x1, y)), "{free:?}");
-        assert!(
-            free.x0 >= group.tab_rects()[0].x1,
-            "{free:?} past the title"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn hints_point_at_a_shown_windows_title_content_and_corners;
 
-    // An app stands cards of its own over its window's content (an agent's activity): the corners it
-    // stands them in are reported as places no hint may stand, so the two never cover each other.
-    #[test]
-    fn a_shown_window_reports_the_corners_its_app_stands_cards_in() {
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        row.groups[0].focused = true;
-        let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
-        let places = row.hint_places();
-        let cards = places.app_cards;
-        assert_eq!(
-            cards.len(),
-            6,
-            "three cards' places for each of two windows: {cards:?}"
-        );
-        for (index, group) in row.groups.iter().enumerate() {
-            let rect = group.get_rect();
-            let content = Rect::new(rect.x0, group.bar_rect().y1.max(rect.y0), rect.x1, rect.y1);
-            let first = cards[index * 3];
-            assert_eq!(
-                first.x1,
-                content.x1 - 12.0,
-                "the window's trailing edge, a card's margin in: {first:?}"
+        phase hint_places_point_beside_the_title_not_at_the_buttons;
+        // The move hint points at a window's title, where its bar takes it,
+        // never at the buttons further along the bar.
+        {
+            use crate::window_toolbar::{ToolbarAction, WindowToolbar};
+            let action = |id: &str| ToolbarAction {
+                id: id.into(),
+                icon: "refresh".into(),
+                name: id.into(),
+                enabled: true,
+                on: false,
+                menu: false,
+                items: Vec::new(),
+                navigates: false,
+                toggles: false,
+                destructive: false,
+                labelled: false,
+                primary: false,
+            };
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            for group in &mut row.groups {
+                group.bar_mut().set_window_controls(true);
+            }
+            let _ = row.groups[0].bar_mut().set_toolbar(
+                1,
+                Some(WindowToolbar {
+                    actions: vec![action("more"), action("share"), action("pin")],
+                    ..WindowToolbar::default()
+                }),
             );
-            assert_eq!(
-                first.y0,
-                content.y0 + 12.0,
-                "the top of its content: {first:?}"
-            );
-            assert!(content.contains_rect(first), "{first:?} in {content:?}");
-        }
-        use crate::widget::Widget as _;
-        use std::collections::HashMap;
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        let mut floats = HashMap::new();
-        floats.insert(row.groups[1].id, Rect::new(880.0, 120.0, 1240.0, 640.0));
-        row.set_floats(floats);
-        let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
-        assert_eq!(
-            row.hint_places().app_cards.len(),
-            3,
-            "the strip's one window keeps its corners"
-        );
-    }
-
-    // The desktop's bar overlays the desk's top edge and the windows stand clear of it: each
-    // window is reported whole, and its content from below its own bar, so a hint never stands
-    // over either.
-    #[test]
-    fn a_shown_window_reports_its_content_below_its_own_bar() {
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        row.set_top_overlay_inset(32.0);
-        let (row, _taffy, _root) =
-            relayout_row_owned_with(row, 1200.0, &Theme::dark().with_reduce_motion(true));
-        let places = row.hint_places();
-        assert_eq!(places.windows_on_desk.len(), 2, "{places:?}");
-        for (window, content) in &places.windows_on_desk {
+            row.groups[0].focused = true;
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let filled = beside_the_title(&row);
+            assert_eq!(filled, row.groups[0].tab_rects()[0], "the title");
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            for group in &mut row.groups {
+                group.bar_mut().set_window_controls(true);
+            }
+            row.groups[0].focused = true;
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let free = beside_the_title(&row);
+            let group = &row.groups[0];
+            let y = free.center().y;
+            assert!(group.bar_grab_hit(Point::new(free.x0, y)), "{free:?}");
+            assert!(group.bar_grab_hit(Point::new(free.x1, y)), "{free:?}");
             assert!(
-                window.y0 > places.viewport.y0 + 1.0,
-                "fixture: the window stands clear of the bar: {window:?}"
-            );
-            let bar = row
-                .groups
-                .iter()
-                .find(|group| group.get_rect() == *window)
-                .map(|group| group.bar_rect());
-            assert_eq!(bar.map(|bar| bar.y1), Some(content.y0), "below its bar");
-            assert_eq!(
-                content.x0..content.x1,
-                window.x0..window.x1,
-                "its own width"
+                free.x0 >= group.tab_rects()[0].x1,
+                "{free:?} past the title"
             );
         }
-    }
 
-    #[test]
-    fn a_floating_card_is_no_window_a_hint_points_at() {
-        use crate::widget::Widget as _;
-        use std::collections::HashMap;
+        phase a_shown_window_reports_the_corners_its_app_stands_cards_in;
+        // An app stands cards of its own over its window's content (an agent's activity): the corners it
+        // stands them in are reported as places no hint may stand, so the two never cover each other.
+        {
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            row.groups[0].focused = true;
+            let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+            let places = row.hint_places();
+            let cards = places.app_cards;
+            assert_eq!(
+                cards.len(),
+                6,
+                "three cards' places for each of two windows: {cards:?}"
+            );
+            for (index, group) in row.groups.iter().enumerate() {
+                let rect = group.get_rect();
+                let content = Rect::new(rect.x0, group.bar_rect().y1.max(rect.y0), rect.x1, rect.y1);
+                let first = cards[index * 3];
+                assert_eq!(
+                    first.x1,
+                    content.x1 - 12.0,
+                    "the window's trailing edge, a card's margin in: {first:?}"
+                );
+                assert_eq!(
+                    first.y0,
+                    content.y0 + 12.0,
+                    "the top of its content: {first:?}"
+                );
+                assert!(content.contains_rect(first), "{first:?} in {content:?}");
+            }
+            use crate::widget::Widget as _;
+            use std::collections::HashMap;
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            let mut floats = HashMap::new();
+            floats.insert(row.groups[1].id, Rect::new(880.0, 120.0, 1240.0, 640.0));
+            row.set_floats(floats);
+            let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+            assert_eq!(
+                row.hint_places().app_cards.len(),
+                3,
+                "the strip's one window keeps its corners"
+            );
+        }
 
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        let card = Rect::new(880.0, 120.0, 1240.0, 640.0);
-        let mut floats = HashMap::new();
-        floats.insert(row.groups[1].id, card);
-        row.set_floats(floats);
-        row.groups[1].focused = true;
-        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-        let places = row.hint_places();
-        assert_eq!(places.windows, 1, "the strip holds one window, not two");
-        assert_eq!(places.focused_bar, None, "a card's header takes no hint");
-        assert_eq!(places.focused_edge, None, "a card's edge resizes nothing");
-        let over = places.over;
-        assert_eq!(over.len(), 1, "{over:?}");
-        assert!(
-            over[0].contains_rect(row.groups[1].get_rect()),
-            "the card whole, header and body, is content no hint may stand over: {over:?}"
-        );
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        row.groups[0].focused = true;
-        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-        assert!(row.hint_places().focused_edge.is_some());
-        assert!(row.hint_places().over.is_empty());
+        phase a_shown_window_reports_its_content_below_its_own_bar;
+        // The desktop's bar overlays the desk's top edge and the windows stand clear of it: each
+        // window is reported whole, and its content from below its own bar, so a hint never stands
+        // over either.
+        {
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            row.set_top_overlay_inset(32.0);
+            let (row, _taffy, _root) =
+                relayout_row_owned_with(row, 1200.0, &Theme::dark().with_reduce_motion(true));
+            let places = row.hint_places();
+            assert_eq!(places.windows_on_desk.len(), 2, "{places:?}");
+            for (window, content) in &places.windows_on_desk {
+                assert!(
+                    window.y0 > places.viewport.y0 + 1.0,
+                    "fixture: the window stands clear of the bar: {window:?}"
+                );
+                let bar = row
+                    .groups
+                    .iter()
+                    .find(|group| group.get_rect() == *window)
+                    .map(|group| group.bar_rect());
+                assert_eq!(bar.map(|bar| bar.y1), Some(content.y0), "below its bar");
+                assert_eq!(
+                    content.x0..content.x1,
+                    window.x0..window.x1,
+                    "its own width"
+                );
+            }
+        }
+
+        phase a_floating_card_is_no_window_a_hint_points_at;
+        {
+            use crate::widget::Widget as _;
+            use std::collections::HashMap;
+
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            let card = Rect::new(880.0, 120.0, 1240.0, 640.0);
+            let mut floats = HashMap::new();
+            floats.insert(row.groups[1].id, card);
+            row.set_floats(floats);
+            row.groups[1].focused = true;
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let places = row.hint_places();
+            assert_eq!(places.windows, 1, "the strip holds one window, not two");
+            assert_eq!(places.focused_bar, None, "a card's header takes no hint");
+            assert_eq!(places.focused_edge, None, "a card's edge resizes nothing");
+            let over = places.over;
+            assert_eq!(over.len(), 1, "{over:?}");
+            assert!(
+                over[0].contains_rect(row.groups[1].get_rect()),
+                "the card whole, header and body, is content no hint may stand over: {over:?}"
+            );
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            row.groups[0].focused = true;
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            assert!(row.hint_places().focused_edge.is_some());
+            assert!(row.hint_places().over.is_empty());
+        }
     }
 
     fn beside_the_title(row: &GroupRow) -> Rect {

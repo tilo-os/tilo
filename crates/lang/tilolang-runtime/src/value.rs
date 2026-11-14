@@ -268,9 +268,9 @@ mod shared_filter {
     }
 }
 
-/// A collection field read in a view: the field, not its items. A view reads what it uses of it
-/// (its length, an item, its first or last) through the store's listing, item by item, and its
-/// boundary depends on exactly that; nothing builds a reference per item. Two compare equal when
+/// A collection field read: the field, not its items. Code reads what it uses of it (its length,
+/// an item, its first or last) through the store's listing, item by item; nothing builds a
+/// reference per item. A view's boundary depends on exactly what it read. Two compare equal when
 /// they are the same field of the same resource with the same filter, whatever it holds: what a
 /// view read of it is tracked as the view's own reads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -294,6 +294,31 @@ pub struct CollRef {
     /// collection's own when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<crate::query::Order>,
+    /// The listing it reads, where code outside a view read it.
+    #[serde(skip)]
+    pub pinned: Pinned,
+}
+
+/// The listing of a collection read outside a view, kept from its first read: what an action
+/// reads of it stays what it read, whatever the action writes after, as a list of its items
+/// would. `None` for a view's, which reads the store's listing each run. It says nothing of
+/// which collection it is, so two collections compare equal whatever each listed.
+#[derive(Clone, Debug, Default)]
+pub struct Pinned(pub Option<std::cell::OnceCell<Rc<crate::store::Listing>>>);
+
+impl Pinned {
+    /// The pin of a collection drawn from one with this pin: kept from its own first read when
+    /// that one was read outside a view.
+    #[must_use]
+    pub fn derived(&self) -> Self {
+        Self(self.0.as_ref().map(|_| std::cell::OnceCell::new()))
+    }
+}
+
+impl PartialEq for Pinned {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl CollRef {
@@ -306,6 +331,7 @@ impl CollRef {
         };
         Self {
             filter: Some(Rc::new(pred)),
+            pinned: self.pinned.derived(),
             ..self.clone()
         }
     }
@@ -369,7 +395,7 @@ pub enum Value {
     /// A `RichText` value: tilo-doc's rich text (see [`crate::rich`]).
     Rich(crate::rich::RichValue),
     List(Vec<Value>),
-    /// A collection field read in a view, read item by item (see [`CollRef`]). Wherever its
+    /// A collection field read, read item by item (see [`CollRef`]). Wherever its
     /// items are needed as values (stored, sorted, put in a list) it is read whole into a
     /// [`Value::List`] first; it never goes into another value.
     Coll(Rc<CollRef>),
@@ -831,108 +857,116 @@ pub fn same_value(lhs: &Value, rhs: &Value) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_then_does_what_its_first_action_does() {
-        // A control that answers a message and then clears the box it was typed in acts on the
-        // message: what it does is the first action, the second only completing it.
-        let answer = ActionRef::new("answer", vec![Value::none()]);
-        let clear = ActionRef::new("$set", vec![Value::text("box"), Value::text("")]);
-        let press = ActionRef::new(
-            crate::host_ui::THEN_ACTION,
-            vec![Value::Action(answer.clone()), Value::Action(clear)],
-        );
-        assert_eq!(press.acting().action, answer.action);
-        // An action that runs nothing of its own is itself.
-        assert_eq!(answer.acting().action, "answer");
+    tilo_test_env::scenario! {
+        fn values_and_actions_carry_what_they_were_given;
+
+        phase a_then_does_what_its_first_action_does;
+        {
+            // A control that answers a message and then clears the box it was typed in acts on the
+            // message: what it does is the first action, the second only completing it.
+            let answer = ActionRef::new("answer", vec![Value::none()]);
+            let clear = ActionRef::new("$set", vec![Value::text("box"), Value::text("")]);
+            let press = ActionRef::new(
+                crate::host_ui::THEN_ACTION,
+                vec![Value::Action(answer.clone()), Value::Action(clear)],
+            );
+            assert_eq!(press.acting().action, answer.action);
+            // An action that runs nothing of its own is itself.
+            assert_eq!(answer.acting().action, "answer");
+        }
+
+        phase values_round_trip_through_json;
+        {
+            let target = ResourceRef::root("d1", "T").item("i-1", "U");
+            let v = Value::List(vec![
+                Value::Int(3),
+                Value::Float(2.0),
+                Value::Tuple(vec![Value::text("x"), Value::none()]),
+                Value::some(Value::Bool(true)),
+                Value::Ref(RefValue {
+                    target: Rc::new(target),
+                    author: Some(ModuleHash("m".into())),
+                }),
+                Value::Action(ActionRef::new("a", vec![Value::Int(1)])),
+                Value::Enum(EnumValue {
+                    ty: "e1".into(),
+                    variant: "v1".into(),
+                    fields: BTreeMap::from([("f1".to_owned(), Value::text("payload"))]),
+                }),
+            ]);
+            let json = to_json(&v).unwrap();
+            let text = serde_json::to_string(&json).unwrap();
+            let back = from_json(&serde_json::from_str(&text).unwrap()).unwrap();
+            assert_eq!(back, v);
+        }
+
+        phase an_argument_is_plain_json_however_deep_its_lists_and_maps;
+        {
+            let to = Value::List(vec![Value::Map(vec![(
+                Value::text("id"),
+                Value::some(Value::Int(2)),
+            )])]);
+            let none = to_argument(&Value::none()).unwrap();
+            assert_eq!(
+                (to_argument(&to).unwrap(), none),
+                (serde_json::json!([{"id": 2}]), Json::Null)
+            );
+        }
     }
 
-    #[test]
-    fn values_round_trip_through_json() {
-        let target = ResourceRef::root("d1", "T").item("i-1", "U");
-        let v = Value::List(vec![
-            Value::Int(3),
-            Value::Float(2.0),
-            Value::Tuple(vec![Value::text("x"), Value::none()]),
-            Value::some(Value::Bool(true)),
-            Value::Ref(RefValue {
-                target: Rc::new(target),
-                author: Some(ModuleHash("m".into())),
-            }),
-            Value::Action(ActionRef::new("a", vec![Value::Int(1)])),
-            Value::Enum(EnumValue {
-                ty: "e1".into(),
-                variant: "v1".into(),
-                fields: BTreeMap::from([("f1".to_owned(), Value::text("payload"))]),
-            }),
-        ]);
-        let json = to_json(&v).unwrap();
-        let text = serde_json::to_string(&json).unwrap();
-        let back = from_json(&serde_json::from_str(&text).unwrap()).unwrap();
-        assert_eq!(back, v);
-    }
+    tilo_test_env::scenario! {
+        fn a_reference_names_its_resource_however_it_was_written;
 
-    #[test]
-    fn a_reference_is_the_resource_it_names_whichever_type_it_was_read_with() {
-        // A reference read where its type is known, and the same one read from an id alone (a
-        // row's item, a press): they name one resource, so they compare as one.
-        let typed = ResourceRef {
-            ty: "U".into(),
-            ..ResourceRef::root("d1", "T").item("i-1", "U")
-        };
-        let bare = ResourceRef::parse_id("d1/i-1", "").expect("an id");
-        assert_ne!(typed, bare, "the type is what the store holds of it");
-        assert!(typed.same(&bare), "and the resource is the one it names");
-        assert!(same_value(
-            &Value::Ref(RefValue {
-                target: Rc::new(typed.clone()),
-                author: None,
-            }),
-            &Value::Ref(RefValue {
-                target: Rc::new(bare),
-                author: Some(ModuleHash("m".into())),
-            }),
-        ));
-        let other = ResourceRef::parse_id("d1/i-2", "").expect("an id");
-        assert!(!typed.same(&other), "another item is another resource");
-    }
+        phase a_reference_is_the_resource_it_names_whichever_type_it_was_read_with;
+        {
+            // A reference read where its type is known, and the same one read from an id alone (a
+            // row's item, a press): they name one resource, so they compare as one.
+            let typed = ResourceRef {
+                ty: "U".into(),
+                ..ResourceRef::root("d1", "T").item("i-1", "U")
+            };
+            let bare = ResourceRef::parse_id("d1/i-1", "").expect("an id");
+            assert_ne!(typed, bare, "the type is what the store holds of it");
+            assert!(typed.same(&bare), "and the resource is the one it names");
+            assert!(same_value(
+                &Value::Ref(RefValue {
+                    target: Rc::new(typed.clone()),
+                    author: None,
+                }),
+                &Value::Ref(RefValue {
+                    target: Rc::new(bare),
+                    author: Some(ModuleHash("m".into())),
+                }),
+            ));
+            let other = ResourceRef::parse_id("d1/i-2", "").expect("an id");
+            assert!(!typed.same(&other), "another item is another resource");
+        }
 
-    #[test]
-    fn reference_ids_parse_back() {
-        let r = ResourceRef::root("d1", "T").item("i-1", "U");
-        assert_eq!(r.id_string(), "d1/i-1");
-        assert_eq!(ResourceRef::parse_id(&r.id_string(), "U"), Some(r));
-    }
+        phase reference_ids_parse_back;
+        {
+            let r = ResourceRef::root("d1", "T").item("i-1", "U");
+            assert_eq!(r.id_string(), "d1/i-1");
+            assert_eq!(ResourceRef::parse_id(&r.id_string(), "U"), Some(r));
+        }
 
-    #[test]
-    fn a_path_written_before_items_were_flat_reads_as_its_last_item() {
-        let r = ResourceRef::root("d1", "T").item("i-2", "U");
-        assert_eq!(
-            ResourceRef::parse_id("d1/f:i-1/g:i-2", "U"),
-            Some(r.clone())
-        );
-        assert_eq!(flat_id("d1/f:i-1/g:i-2"), "d1/i-2");
-        assert_eq!(flat_id("d1"), "d1");
-        assert_eq!(ResourceRef::parse_id("/f:i", "U"), None);
-        let old = serde_json::json!({
-            "doc": "d1",
-            "path": [{"field": "f", "item": "i-1"}, {"field": "g", "item": "i-2"}],
-            "ty": "U",
-        });
-        assert_eq!(serde_json::from_value::<ResourceRef>(old).unwrap(), r);
-        let json = serde_json::to_value(&r).unwrap();
-        assert_eq!(serde_json::from_value::<ResourceRef>(json).unwrap(), r);
-    }
-
-    #[test]
-    fn an_argument_is_plain_json_however_deep_its_lists_and_maps() {
-        let to = Value::List(vec![Value::Map(vec![(
-            Value::text("id"),
-            Value::some(Value::Int(2)),
-        )])]);
-        let none = to_argument(&Value::none()).unwrap();
-        assert_eq!(
-            (to_argument(&to).unwrap(), none),
-            (serde_json::json!([{"id": 2}]), Json::Null)
-        );
+        phase a_path_written_before_items_were_flat_reads_as_its_last_item;
+        {
+            let r = ResourceRef::root("d1", "T").item("i-2", "U");
+            assert_eq!(
+                ResourceRef::parse_id("d1/f:i-1/g:i-2", "U"),
+                Some(r.clone())
+            );
+            assert_eq!(flat_id("d1/f:i-1/g:i-2"), "d1/i-2");
+            assert_eq!(flat_id("d1"), "d1");
+            assert_eq!(ResourceRef::parse_id("/f:i", "U"), None);
+            let old = serde_json::json!({
+                "doc": "d1",
+                "path": [{"field": "f", "item": "i-1"}, {"field": "g", "item": "i-2"}],
+                "ty": "U",
+            });
+            assert_eq!(serde_json::from_value::<ResourceRef>(old).unwrap(), r);
+            let json = serde_json::to_value(&r).unwrap();
+            assert_eq!(serde_json::from_value::<ResourceRef>(json).unwrap(), r);
+        }
     }
 }

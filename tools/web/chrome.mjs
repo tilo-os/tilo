@@ -5,10 +5,13 @@
 // Pages are served from 127.0.0.1, a secure context, so OPFS, Web Locks and
 // WebGPU are available.
 import {spawn} from 'node:child_process';
+import {createHash, X509Certificate} from 'node:crypto';
 import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, statfsSync} from 'node:fs';
 import {createServer} from 'node:http';
+import {isIP} from 'node:net';
 import {homedir, hostname, tmpdir} from 'node:os';
 import {extname, join, normalize, resolve} from 'node:path';
+import {connect} from 'node:tls';
 import {fileURLToPath} from 'node:url';
 import {brotliCompressSync, constants as zlibConstants} from 'node:zlib';
 
@@ -33,6 +36,61 @@ export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
  * as a returning person does. A test of the first screen opts out
  * (`tab({firstRun: true})`). */
 export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}";
+
+/** The certificate `origin` presents, as a pin for [`pinnedCertificates`]:
+ * `{certificate, host}`. A check whose stack makes its certificate in memory (a
+ * host's development identity) has no file to read, so it asks the listener.
+ * The connection carries no request and nothing is trusted on its strength:
+ * it answers what to pin, and the certificate is checked before a page loads
+ * it. */
+export function servedCertificate(origin) {
+  const {hostname, port} = new URL(origin);
+  return new Promise((decide, refuse) => {
+    const socket = connect({host: hostname, port: Number(port || 443), rejectUnauthorized: false,
+      ...(isIP(hostname) ? {} : {servername: hostname})}, () => {
+      const presented = socket.getPeerCertificate(false)?.raw;
+      socket.end();
+      if (!presented?.length) {
+        refuse(new Error(`${origin} presented no certificate`));
+        return;
+      }
+      const body = presented.toString('base64').match(/.{1,64}/g).join('\n');
+      decide({certificate: `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`, host: hostname});
+    });
+    socket.on('error', refuse);
+  });
+}
+
+/** The Chromium flag that lets a page load these certificates and no others:
+ * `--ignore-certificate-errors-spki-list` accepts a certificate error for a
+ * connection whose chain names one of the pins, as a page's WebTransport pins
+ * `serverCertificateHashes`. What it accepts is exactly the certificate the
+ * stack was handed, and never a class of error: a check that passes a looser
+ * flag than this hides a site no person's browser opens.
+ *
+ * A pin is `{certificate, host}` — PEM or DER, and the name the page dials it
+ * by — and `sha256` where the stack announced the certificate's digest (a
+ * host's `certificateSha256`), so what is pinned is the certificate the stack
+ * says it serves. Each is checked here first: it names its host, and its dates
+ * span now, because the flag would otherwise let the browser accept a
+ * certificate it should refuse for exactly those reasons. */
+export function pinnedCertificates(pins) {
+  const hashes = pins.map(({certificate, host, sha256}) => {
+    const parsed = new X509Certificate(certificate);
+    if (sha256 && createHash('sha256').update(parsed.raw).digest('hex') !== String(sha256).toLowerCase()) {
+      throw new Error(`${host} presents a certificate that is not the one it announced (${sha256})`);
+    }
+    const now = Date.now();
+    if (!(Date.parse(parsed.validFrom) <= now && now <= Date.parse(parsed.validTo))) {
+      throw new Error(`the certificate ${host} presents is valid ${parsed.validFrom} to ${parsed.validTo}, not now`);
+    }
+    const named = isIP(host) ? parsed.checkIP(host) : parsed.checkHost(host);
+    if (!named) throw new Error(`the certificate ${host} presents does not name it`);
+    const spki = parsed.publicKey.export({type: 'spki', format: 'der'});
+    return createHash('sha256').update(spki).digest('base64');
+  });
+  return `--ignore-certificate-errors-spki-list=${hashes.join(',')}`;
+}
 
 /** Compressed copies by path, kept until the file they were made from changes:
  * a bundle's start module is tens of megabytes and a page load asks for it

@@ -375,148 +375,156 @@ mod tests {
         SystemSoundPrefs::default()
     }
 
-    #[test]
-    fn keys_round_trip_and_every_event_has_a_sound_id() {
-        for event in SystemSoundEvent::ALL {
-            assert_eq!(SystemSoundEvent::from_key(event.key()), Some(event));
-            assert!(!event.sound_ids().is_empty());
-        }
-        assert_eq!(SystemSoundEvent::from_key("startup"), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_sound_plays_only_when_its_event_and_the_quiet_state_allow;
 
-    /// Every event × Do Not Disturb × its own toggle.
-    #[test]
-    fn policy_table() {
-        use SystemSoundEvent as E;
-        // Feedback and critical events play through Do Not Disturb.
-        // Notifications and messages carry their own verdict, which is
-        // already "no" under DND; other interruptions are held back here.
-        let expected_under_dnd =
-            |event: E| matches!(event, E::VolumeChange | E::Screenshot | E::LowBattery);
-        for event in E::ALL {
-            for dnd in [false, true] {
-                for toggle in [false, true] {
-                    let mut prefs = prefs();
-                    prefs.events.set(event, toggle);
-                    let quiet = QuietState {
-                        do_not_disturb: dnd,
-                        ..QuietState::default()
-                    };
-                    let notification_verdict =
-                        !(dnd && matches!(event, E::Notification | E::Message));
-                    let expected = toggle && (!dnd || expected_under_dnd(event));
-                    assert_eq!(
-                        should_play(event, &prefs, quiet, notification_verdict),
-                        expected,
-                        "{event:?} dnd={dnd} toggle={toggle}"
-                    );
+        phase policy_table;
+        // Every event × Do Not Disturb × its own toggle.
+        {
+            use SystemSoundEvent as E;
+            // Feedback and critical events play through Do Not Disturb.
+            // Notifications and messages carry their own verdict, which is
+            // already "no" under DND; other interruptions are held back here.
+            let expected_under_dnd =
+                |event: E| matches!(event, E::VolumeChange | E::Screenshot | E::LowBattery);
+            for event in E::ALL {
+                for dnd in [false, true] {
+                    for toggle in [false, true] {
+                        let mut prefs = prefs();
+                        prefs.events.set(event, toggle);
+                        let quiet = QuietState {
+                            do_not_disturb: dnd,
+                            ..QuietState::default()
+                        };
+                        let notification_verdict =
+                            !(dnd && matches!(event, E::Notification | E::Message));
+                        let expected = toggle && (!dnd || expected_under_dnd(event));
+                        assert_eq!(
+                            should_play(event, &prefs, quiet, notification_verdict),
+                            expected,
+                            "{event:?} dnd={dnd} toggle={toggle}"
+                        );
+                    }
                 }
+            }
+        }
+
+        phase focus_time_and_presenting_hold_interruptions_only;
+        {
+            let focus = QuietState {
+                focus: true,
+                ..QuietState::default()
+            };
+            let presenting = QuietState {
+                presenting: true,
+                ..QuietState::default()
+            };
+            let p = prefs();
+            assert!(!should_play(
+                SystemSoundEvent::DeviceConnected,
+                &p,
+                focus,
+                true
+            ));
+            assert!(!should_play(SystemSoundEvent::Error, &p, presenting, true));
+            assert!(should_play(SystemSoundEvent::Message, &p, focus, true));
+            assert!(!should_play(
+                SystemSoundEvent::Message,
+                &p,
+                presenting,
+                true
+            ));
+            assert!(should_play(
+                SystemSoundEvent::VolumeChange,
+                &p,
+                presenting,
+                true
+            ));
+            assert!(should_play(SystemSoundEvent::LowBattery, &p, focus, true));
+        }
+
+        phase the_master_switch_volume_and_suppression_silence_everything;
+        {
+            let mut off = prefs();
+            off.enabled = false;
+            let mut silent = prefs();
+            silent.volume = 0.0;
+            for event in SystemSoundEvent::ALL {
+                assert!(!should_play(event, &off, QuietState::default(), true));
+                assert!(!should_play(event, &silent, QuietState::default(), true));
+                assert!(!should_play(event, &prefs(), QuietState::default(), false));
+                assert!(should_play(event, &prefs(), QuietState::default(), true));
             }
         }
     }
 
-    #[test]
-    fn focus_time_and_presenting_hold_interruptions_only() {
-        let focus = QuietState {
-            focus: true,
-            ..QuietState::default()
-        };
-        let presenting = QuietState {
-            presenting: true,
-            ..QuietState::default()
-        };
-        let p = prefs();
-        assert!(!should_play(
-            SystemSoundEvent::DeviceConnected,
-            &p,
-            focus,
-            true
-        ));
-        assert!(!should_play(SystemSoundEvent::Error, &p, presenting, true));
-        assert!(should_play(SystemSoundEvent::Message, &p, focus, true));
-        assert!(!should_play(
-            SystemSoundEvent::Message,
-            &p,
-            presenting,
-            true
-        ));
-        assert!(should_play(
-            SystemSoundEvent::VolumeChange,
-            &p,
-            presenting,
-            true
-        ));
-        assert!(should_play(SystemSoundEvent::LowBattery, &p, focus, true));
-    }
+    tilo_test_env::scenario! {
+        fn sound_events_and_preferences_are_named_and_read_back;
 
-    #[test]
-    fn the_master_switch_volume_and_suppression_silence_everything() {
-        let mut off = prefs();
-        off.enabled = false;
-        let mut silent = prefs();
-        silent.volume = 0.0;
-        for event in SystemSoundEvent::ALL {
-            assert!(!should_play(event, &off, QuietState::default(), true));
-            assert!(!should_play(event, &silent, QuietState::default(), true));
-            assert!(!should_play(event, &prefs(), QuietState::default(), false));
-            assert!(should_play(event, &prefs(), QuietState::default(), true));
+        phase keys_round_trip_and_every_event_has_a_sound_id;
+        {
+            for event in SystemSoundEvent::ALL {
+                assert_eq!(SystemSoundEvent::from_key(event.key()), Some(event));
+                assert!(!event.sound_ids().is_empty());
+            }
+            assert_eq!(SystemSoundEvent::from_key("startup"), None);
         }
-    }
 
-    #[test]
-    fn notification_categories_pick_the_event() {
-        use SystemSoundEvent as E;
-        assert_eq!(E::for_notification_category(None), E::Notification);
-        assert_eq!(
-            E::for_notification_category(Some("im.received")),
-            E::Message
-        );
-        assert_eq!(
-            E::for_notification_category(Some("device.added")),
-            E::DeviceConnected
-        );
-        assert_eq!(
-            E::for_notification_category(Some("device.removed")),
-            E::DeviceDisconnected
-        );
-        assert_eq!(
-            E::for_notification_category(Some("battery.low")),
-            E::Notification
-        );
-        assert_eq!(
-            E::for_notification_category(Some("transfer.complete")),
-            E::Notification
-        );
-    }
+        phase notification_categories_pick_the_event;
+        {
+            use SystemSoundEvent as E;
+            assert_eq!(E::for_notification_category(None), E::Notification);
+            assert_eq!(
+                E::for_notification_category(Some("im.received")),
+                E::Message
+            );
+            assert_eq!(
+                E::for_notification_category(Some("device.added")),
+                E::DeviceConnected
+            );
+            assert_eq!(
+                E::for_notification_category(Some("device.removed")),
+                E::DeviceDisconnected
+            );
+            assert_eq!(
+                E::for_notification_category(Some("battery.low")),
+                E::Notification
+            );
+            assert_eq!(
+                E::for_notification_category(Some("transfer.complete")),
+                E::Notification
+            );
+        }
 
-    #[test]
-    fn preferences_round_trip_and_malformed_values_fall_back() {
-        let mut chosen = prefs();
-        chosen.volume = 0.25;
-        chosen.theme = Some("ocean".into());
-        chosen.events.set(SystemSoundEvent::VolumeChange, false);
-        let mut doc = serde_json::Map::new();
-        doc.insert(
-            SECTION.into(),
-            json!({ LEAF: serde_json::to_value(&chosen).unwrap() }),
-        );
-        assert_eq!(SystemSoundPrefs::from_document(&doc), chosen);
+        phase preferences_round_trip_and_malformed_values_fall_back;
+        {
+            let mut chosen = prefs();
+            chosen.volume = 0.25;
+            chosen.theme = Some("ocean".into());
+            chosen.events.set(SystemSoundEvent::VolumeChange, false);
+            let mut doc = serde_json::Map::new();
+            doc.insert(
+                SECTION.into(),
+                json!({ LEAF: serde_json::to_value(&chosen).unwrap() }),
+            );
+            assert_eq!(SystemSoundPrefs::from_document(&doc), chosen);
 
-        doc.insert(
-            SECTION.into(),
-            json!({ LEAF: { "volume": 7.0, "theme": "../../etc", "events": { "error": false } } }),
-        );
-        let parsed = SystemSoundPrefs::from_document(&doc);
-        assert!((parsed.volume - 1.0).abs() < f64::EPSILON);
-        assert_eq!(parsed.theme_name(), DEFAULT_THEME);
-        assert!(!parsed.events.error);
-        assert!(parsed.events.message, "unspecified events stay on");
+            doc.insert(
+                SECTION.into(),
+                json!({ LEAF: { "volume": 7.0, "theme": "../../etc", "events": { "error": false } } }),
+            );
+            let parsed = SystemSoundPrefs::from_document(&doc);
+            assert!((parsed.volume - 1.0).abs() < f64::EPSILON);
+            assert_eq!(parsed.theme_name(), DEFAULT_THEME);
+            assert!(!parsed.events.error);
+            assert!(parsed.events.message, "unspecified events stay on");
 
-        doc.insert(SECTION.into(), json!({ LEAF: "loud" }));
-        assert_eq!(SystemSoundPrefs::from_document(&doc), prefs());
-        assert_eq!(
-            SystemSoundPrefs::from_document(&serde_json::Map::new()),
-            prefs()
-        );
+            doc.insert(SECTION.into(), json!({ LEAF: "loud" }));
+            assert_eq!(SystemSoundPrefs::from_document(&doc), prefs());
+            assert_eq!(
+                SystemSoundPrefs::from_document(&serde_json::Map::new()),
+                prefs()
+            );
+        }
     }
 }

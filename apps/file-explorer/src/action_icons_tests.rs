@@ -17,64 +17,68 @@ fn actions() -> Vec<ui::tilo_actions::ActionSpec> {
     actions
 }
 
-#[test]
-fn actions_wear_icons_the_toolkit_draws() {
-    let actions = actions();
-    for action in &actions {
-        if let Some(icon) = &action.icon {
+tilo_test_env::scenario! {
+    fn files_actions_wear_drawn_icons_and_say_what_they_act_on;
+
+    phase actions_wear_icons_the_toolkit_draws;
+    {
+        let actions = actions();
+        for action in &actions {
+            if let Some(icon) = &action.icon {
+                assert!(
+                    ui::icons::Icon::from_name(icon).is_some(),
+                    "{}: the toolkit draws no icon named {icon}",
+                    action.id
+                );
+            }
+        }
+        for id in [
+            "new-folder",
+            "rename",
+            "trash",
+            "move",
+            "copy-into",
+            "compress",
+            "extract",
+            "refresh",
+            "paste",
+            "go-to",
+            "open-trash",
+            "up",
+            "back",
+            "forward",
+            "copy-selection",
+            "cut-selection",
+            "toggle-hidden",
+            "list",
+            "grid",
+            "open-terminal",
+            "empty-trash",
+        ] {
             assert!(
-                ui::icons::Icon::from_name(icon).is_some(),
-                "{}: the toolkit draws no icon named {icon}",
-                action.id
+                actions
+                    .iter()
+                    .any(|action| action.id == id && action.icon.is_some()),
+                "{id} declares its icon"
             );
         }
     }
-    for id in [
-        "new-folder",
-        "rename",
-        "trash",
-        "move",
-        "copy-into",
-        "compress",
-        "extract",
-        "refresh",
-        "paste",
-        "go-to",
-        "open-trash",
-        "up",
-        "back",
-        "forward",
-        "copy-selection",
-        "cut-selection",
-        "toggle-hidden",
-        "list",
-        "grid",
-        "open-terminal",
-        "empty-trash",
-    ] {
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.id == id && action.icon.is_some()),
-            "{id} declares its icon"
-        );
-    }
-}
 
-#[test]
-fn what_acts_on_the_selection_says_so() {
-    let actions = actions();
-    for id in ["copy-selection", "cut-selection"] {
-        let action = actions
-            .iter()
-            .find(|action| action.id == id)
-            .unwrap_or_else(|| panic!("{id} is declared"));
-        assert!(
-            action
-                .contract
-                .requirements()
-                .contains(&ui::tilo_actions::ContextRequirement::Selection),
-            "{id} acts on the selection"
-        );
+    phase what_acts_on_the_selection_says_so;
+    {
+        let actions = actions();
+        for id in ["copy-selection", "cut-selection"] {
+            let action = actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("{id} is declared"));
+            assert!(
+                action
+                    .contract
+                    .requirements()
+                    .contains(&ui::tilo_actions::ContextRequirement::Selection),
+                "{id} acts on the selection"
+            );
+        }
     }
 }

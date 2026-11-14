@@ -369,89 +369,94 @@ mod tests {
         read(text, params, look, NOW, BERLIN, Language::English)
     }
 
-    #[test]
-    fn the_story_reads_every_parameter_of_the_create_action() {
-        let parsed = story("call landlord fri 10am @bo #move flat", &tasks(), &look());
-        assert_eq!(parsed.title, "call landlord");
-        assert_eq!(
-            parsed.fills,
-            vec![
-                (1, Filled::Day("2026-10-30".into())),
-                (2, Filled::Time("2026-10-30T09:00:00Z".into())),
-                (3, Filled::Who("bo".into())),
-                (4, Filled::Record("tasks:Move flat".into())),
-            ]
-        );
-        let labels: Vec<&str> = parsed.parts.iter().map(|p| p.label.as_str()).collect();
-        assert_eq!(labels, vec!["Tomorrow", "10:00", "@Bo", "#Move flat"]);
-    }
+    tilo_test_env::scenario! {
+        /// What a typed entry gives the parameters of the action it fills.
+        fn an_entry_reads_its_parts_out_of_the_title;
 
-    #[test]
-    fn a_part_leaves_the_title_and_can_be_taken_out() {
-        let parsed = story("call landlord fri 10am @bo", &tasks(), &look());
-        let due = &parsed.parts[0];
-        assert_eq!(due.without, "call landlord 10am @bo");
-        let who = &parsed.parts[2];
-        assert_eq!(who.without, "call landlord fri 10am");
-    }
-
-    #[test]
-    fn what_is_only_parts_or_space_names_nothing() {
-        for text in ["fri 10am @bo", "   ", ""] {
-            let parsed = story(text, &tasks(), &look());
-            assert_eq!(parsed.title, "", "`{text}` names nothing");
+        phase the_story_reads_every_parameter_of_the_create_action;
+        {
+            let parsed = story("call landlord fri 10am @bo #move flat", &tasks(), &look());
+            assert_eq!(parsed.title, "call landlord");
+            assert_eq!(
+                parsed.fills,
+                vec![
+                    (1, Filled::Day("2026-10-30".into())),
+                    (2, Filled::Time("2026-10-30T09:00:00Z".into())),
+                    (3, Filled::Who("bo".into())),
+                    (4, Filled::Record("tasks:Move flat".into())),
+                ]
+            );
+            let labels: Vec<&str> = parsed.parts.iter().map(|p| p.label.as_str()).collect();
+            assert_eq!(labels, vec!["Tomorrow", "10:00", "@Bo", "#Move flat"]);
         }
-        assert_eq!(story("fri 10am @bo", &tasks(), &look()).parts.len(), 3);
-        assert_eq!(story(" @bo ", &tasks(), &look()).title, "");
-        assert_eq!(story(" milk @bo ", &tasks(), &look()).title, "milk");
-    }
 
-    #[test]
-    fn what_is_not_sure_stays_in_the_title() {
-        let parsed = story("call landlord @zoe", &tasks(), &look());
-        assert_eq!(parsed.title, "call landlord @zoe");
-        assert!(parsed.parts.is_empty());
-        let mut two = look();
-        two.people.push(("Bo".into(), "bo-2".into()));
-        let parsed = story("call @bo", &tasks(), &two);
-        assert_eq!(parsed.title, "call @bo");
-        assert!(parsed.parts.is_empty());
-        let parsed = story("call #nowhere", &tasks(), &look());
-        assert_eq!(parsed.title, "call #nowhere");
-        let parsed = story("read 3 chapters", &tasks(), &look());
-        assert_eq!(parsed.title, "read 3 chapters");
-        assert!(parsed.parts.is_empty());
-    }
+        phase a_part_leaves_the_title_and_can_be_taken_out;
+        {
+            let parsed = story("call landlord fri 10am @bo", &tasks(), &look());
+            let due = &parsed.parts[0];
+            assert_eq!(due.without, "call landlord 10am @bo");
+            let who = &parsed.parts[2];
+            assert_eq!(who.without, "call landlord fri 10am");
+        }
 
-    #[test]
-    fn a_time_alone_fills_the_day_it_falls_on() {
-        let mut params = tasks();
-        params.remove(2);
-        let parsed = story("call landlord at 9", &params, &look());
-        assert_eq!(parsed.fills, vec![(1, Filled::Day("2026-10-29".into()))]);
-        assert_eq!(parsed.parts[0].label, "09:00");
-    }
+        phase what_is_only_parts_or_space_names_nothing;
+        {
+            for text in ["fri 10am @bo", "   ", ""] {
+                let parsed = story(text, &tasks(), &look());
+                assert_eq!(parsed.title, "", "`{text}` names nothing");
+            }
+            assert_eq!(story("fri 10am @bo", &tasks(), &look()).parts.len(), 3);
+            assert_eq!(story(" @bo ", &tasks(), &look()).title, "");
+            assert_eq!(story(" milk @bo ", &tasks(), &look()).title, "milk");
+        }
 
-    #[test]
-    fn german_says_its_parts_in_its_own_words() {
-        let done = read(
-            "Vermieter anrufen morgen 10 uhr @bo",
-            &tasks(),
-            &look(),
-            NOW,
-            BERLIN,
-            Language::German,
-        );
-        assert_eq!(done.title, "Vermieter anrufen");
-        assert_eq!(
-            done.fills,
-            vec![
-                (1, Filled::Day("2026-10-30".into())),
-                (2, Filled::Time("2026-10-30T09:00:00Z".into())),
-                (3, Filled::Who("bo".into())),
-            ]
-        );
-        assert_eq!(done.parts[0].label, "Morgen");
-        assert_eq!(done.parts[1].label, "10:00");
+        phase what_is_not_sure_stays_in_the_title;
+        {
+            let parsed = story("call landlord @zoe", &tasks(), &look());
+            assert_eq!(parsed.title, "call landlord @zoe");
+            assert!(parsed.parts.is_empty());
+            let mut two = look();
+            two.people.push(("Bo".into(), "bo-2".into()));
+            let parsed = story("call @bo", &tasks(), &two);
+            assert_eq!(parsed.title, "call @bo");
+            assert!(parsed.parts.is_empty());
+            let parsed = story("call #nowhere", &tasks(), &look());
+            assert_eq!(parsed.title, "call #nowhere");
+            let parsed = story("read 3 chapters", &tasks(), &look());
+            assert_eq!(parsed.title, "read 3 chapters");
+            assert!(parsed.parts.is_empty());
+        }
+
+        phase a_time_alone_fills_the_day_it_falls_on;
+        {
+            let mut params = tasks();
+            params.remove(2);
+            let parsed = story("call landlord at 9", &params, &look());
+            assert_eq!(parsed.fills, vec![(1, Filled::Day("2026-10-29".into()))]);
+            assert_eq!(parsed.parts[0].label, "09:00");
+        }
+
+        phase german_says_its_parts_in_its_own_words;
+        {
+            let done = read(
+                "Vermieter anrufen morgen 10 uhr @bo",
+                &tasks(),
+                &look(),
+                NOW,
+                BERLIN,
+                Language::German,
+            );
+            assert_eq!(done.title, "Vermieter anrufen");
+            assert_eq!(
+                done.fills,
+                vec![
+                    (1, Filled::Day("2026-10-30".into())),
+                    (2, Filled::Time("2026-10-30T09:00:00Z".into())),
+                    (3, Filled::Who("bo".into())),
+                ]
+            );
+            assert_eq!(done.parts[0].label, "Morgen");
+            assert_eq!(done.parts[1].label, "10:00");
+        }
     }
 }

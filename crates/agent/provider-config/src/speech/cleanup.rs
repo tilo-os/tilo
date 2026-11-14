@@ -197,88 +197,197 @@ impl Profile {
 mod tests {
     use super::*;
 
-    #[test]
-    fn explicit_numeric_repair_keeps_replacement_and_surrounding_text() {
-        for (raw, expected) in [
-            (
-                "Let me grab two, uh, no, three of these",
-                "Let me grab three of these",
-            ),
-            ("Take 2, um, no, 3.", "Take 3."),
-            (
-                "Take two, no, three; then four, uh, no, five.",
-                "Take three; then five.",
-            ),
-            ("Tilo needs two, uh, no, three.", "Tilo needs three."),
-        ] {
-            assert_eq!(clean_final(raw, "en", false), expected);
-            assert_eq!(clean_final(raw, "auto", false), expected);
-            assert_eq!(clean_final(raw, "en", true), raw);
-        }
-    }
-
-    #[test]
-    fn selected_languages_and_chained_repairs_preserve_literal_choice() {
-        for (language, raw, expected) in [
-            ("en-GB", "Take two, no, three, uh, no, four.", "Take four."),
-            (
-                "de-DE",
-                "TiLo braucht zwei, äh, nein, drei Stück.",
-                "TiLo braucht drei Stück.",
-            ),
-            ("de", "Nimm 2, ähm, nein, 3, nein, 4.", "Nimm 4."),
-            (
-                "fr-FR",
-                "Prendre deux, euh, non, trois exemplaires.",
-                "Prendre trois exemplaires.",
-            ),
-            (
-                "es-419",
-                "TiLo necesita dos, eh, no, tres unidades.",
-                "TiLo necesita tres unidades.",
-            ),
-        ] {
-            assert_eq!(clean_final(raw, language, false), expected);
-            assert_eq!(clean_final(raw, language, true), raw);
-        }
-        for (language, raw) in [
-            ("de", "Zwei, äh, nein, Drei ist ein Name."),
-            ("de", "zwei, nein, dreifach"),
-            ("fr", "deux, non, trois-quarts"),
-            ("es", "dos, no, trescientos"),
-            ("de", "zwei, äh, drei"),
-            ("fr", "deux, non, 03"),
-            ("es", "dos, no, 3.5"),
-            ("de", "«zwei, nein, drei»"),
-            ("auto", "zwei, nein, drei"),
-            ("de", "two, no, three"),
-        ] {
-            assert_eq!(clean_final(raw, language, false), raw);
-        }
-    }
-
-    #[test]
-    fn uncertain_disfluency_names_quotes_languages_and_numbers_stay_literal() {
-        for raw in [
+    /// One call of `clean_final` a row: the language, whether literal mode is on, what was said and
+    /// what is kept. The three groups are the three tests this table was.
+    const FINAL_CLEANUP: &[(&str, bool, &str, &str)] = &[
+        // explicit_numeric_repair_keeps_replacement_and_surrounding_text
+        (
+            "en",
+            false,
+            "Let me grab two, uh, no, three of these",
+            "Let me grab three of these",
+        ),
+        (
+            "auto",
+            false,
+            "Let me grab two, uh, no, three of these",
+            "Let me grab three of these",
+        ),
+        (
+            "en",
+            true,
+            "Let me grab two, uh, no, three of these",
+            "Let me grab two, uh, no, three of these",
+        ),
+        ("en", false, "Take 2, um, no, 3.", "Take 3."),
+        ("auto", false, "Take 2, um, no, 3.", "Take 3."),
+        ("en", true, "Take 2, um, no, 3.", "Take 2, um, no, 3."),
+        (
+            "en",
+            false,
+            "Take two, no, three; then four, uh, no, five.",
+            "Take three; then five.",
+        ),
+        (
+            "auto",
+            false,
+            "Take two, no, three; then four, uh, no, five.",
+            "Take three; then five.",
+        ),
+        (
+            "en",
+            true,
+            "Take two, no, three; then four, uh, no, five.",
+            "Take two, no, three; then four, uh, no, five.",
+        ),
+        (
+            "en",
+            false,
+            "Tilo needs two, uh, no, three.",
+            "Tilo needs three.",
+        ),
+        (
+            "auto",
+            false,
+            "Tilo needs two, uh, no, three.",
+            "Tilo needs three.",
+        ),
+        (
+            "en",
+            true,
+            "Tilo needs two, uh, no, three.",
+            "Tilo needs two, uh, no, three.",
+        ),
+        // selected_languages_and_chained_repairs_preserve_literal_choice
+        (
+            "en-GB",
+            false,
+            "Take two, no, three, uh, no, four.",
+            "Take four.",
+        ),
+        (
+            "en-GB",
+            true,
+            "Take two, no, three, uh, no, four.",
+            "Take two, no, three, uh, no, four.",
+        ),
+        (
+            "de-DE",
+            false,
+            "TiLo braucht zwei, äh, nein, drei Stück.",
+            "TiLo braucht drei Stück.",
+        ),
+        (
+            "de-DE",
+            true,
+            "TiLo braucht zwei, äh, nein, drei Stück.",
+            "TiLo braucht zwei, äh, nein, drei Stück.",
+        ),
+        ("de", false, "Nimm 2, ähm, nein, 3, nein, 4.", "Nimm 4."),
+        (
+            "de",
+            true,
+            "Nimm 2, ähm, nein, 3, nein, 4.",
+            "Nimm 2, ähm, nein, 3, nein, 4.",
+        ),
+        (
+            "fr-FR",
+            false,
+            "Prendre deux, euh, non, trois exemplaires.",
+            "Prendre trois exemplaires.",
+        ),
+        (
+            "fr-FR",
+            true,
+            "Prendre deux, euh, non, trois exemplaires.",
+            "Prendre deux, euh, non, trois exemplaires.",
+        ),
+        (
+            "es-419",
+            false,
+            "TiLo necesita dos, eh, no, tres unidades.",
+            "TiLo necesita tres unidades.",
+        ),
+        (
+            "es-419",
+            true,
+            "TiLo necesita dos, eh, no, tres unidades.",
+            "TiLo necesita dos, eh, no, tres unidades.",
+        ),
+        (
+            "de",
+            false,
+            "Zwei, äh, nein, Drei ist ein Name.",
+            "Zwei, äh, nein, Drei ist ein Name.",
+        ),
+        ("de", false, "zwei, nein, dreifach", "zwei, nein, dreifach"),
+        (
+            "fr",
+            false,
+            "deux, non, trois-quarts",
+            "deux, non, trois-quarts",
+        ),
+        ("es", false, "dos, no, trescientos", "dos, no, trescientos"),
+        ("de", false, "zwei, äh, drei", "zwei, äh, drei"),
+        ("fr", false, "deux, non, 03", "deux, non, 03"),
+        ("es", false, "dos, no, 3.5", "dos, no, 3.5"),
+        ("de", false, "«zwei, nein, drei»", "«zwei, nein, drei»"),
+        ("auto", false, "zwei, nein, drei", "zwei, nein, drei"),
+        ("de", false, "two, no, three", "two, no, three"),
+        // uncertain_disfluency_names_quotes_languages_and_numbers_stay_literal
+        (
+            "en",
+            false,
             "Let me, uh, grab three of these",
+            "Let me, uh, grab three of these",
+        ),
+        (
+            "en",
+            false,
             "Say 'Let me grab two, uh, no, three of these' exactly",
+            "Say 'Let me grab two, uh, no, three of these' exactly",
+        ),
+        (
+            "en",
+            false,
             "Two, uh, no, Three knows Tilo",
+            "Two, uh, no, Three knows Tilo",
+        ),
+        (
+            "en",
+            false,
             "Say \"two, uh, no, three\" exactly",
-            "two, no, threefold",
-            "two, no, 03",
-            "two, no three",
-            "two uh no three",
-            "two, no, 3.5",
+            "Say \"two, uh, no, three\" exactly",
+        ),
+        ("en", false, "two, no, threefold", "two, no, threefold"),
+        ("en", false, "two, no, 03", "two, no, 03"),
+        ("en", false, "two, no three", "two, no three"),
+        ("en", false, "two uh no three", "two uh no three"),
+        ("en", false, "two, no, 3.5", "two, no, 3.5"),
+        (
+            "en",
+            false,
             "two, no, three-legged",
-            "three and two",
-            "no, three",
-            "two, no, Tilo",
-        ] {
-            assert_eq!(clean_final(raw, "en", false), raw);
-        }
-        for language in ["fr", "de", "es", "ar", "zh"] {
-            let raw = "two, uh, no, three";
-            assert_eq!(clean_final(raw, language, false), raw);
+            "two, no, three-legged",
+        ),
+        ("en", false, "three and two", "three and two"),
+        ("en", false, "no, three", "no, three"),
+        ("en", false, "two, no, Tilo", "two, no, Tilo"),
+        ("fr", false, "two, uh, no, three", "two, uh, no, three"),
+        ("de", false, "two, uh, no, three", "two, uh, no, three"),
+        ("es", false, "two, uh, no, three", "two, uh, no, three"),
+        ("ar", false, "two, uh, no, three", "two, uh, no, three"),
+        ("zh", false, "two, uh, no, three", "two, uh, no, three"),
+    ];
+
+    #[test]
+    fn final_cleanup_removes_only_an_explicit_numeric_repair_in_a_supported_language() {
+        for (row, &(language, literal, said, kept)) in FINAL_CLEANUP.iter().enumerate() {
+            assert_eq!(
+                clean_final(said, language, literal),
+                kept,
+                "row {row}: {language}, literal {literal}: {said}"
+            );
         }
     }
 }

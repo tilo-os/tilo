@@ -1157,25 +1157,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// on_behalf_of}`, the caller this session acts as. The host decides nothing by it; every
     /// read and change still comes back here and passes the gate as that caller.
     fn program_author(&self) -> Value {
-        use tilo_actions::remote::CallerPrincipal;
         let caller = self.execution_caller();
-        match caller.principal() {
-            CallerPrincipal::Agent(agent) => json!({
-                "actor": format!("agent:{agent}"),
-                "agent": true,
-                "on_behalf_of": caller.acting_for_person(),
-            }),
-            CallerPrincipal::Person(person) => json!({
-                "actor": person,
-                "agent": false,
-                "on_behalf_of": Value::Null,
-            }),
-            other => json!({
-                "actor": format!("{other:?}"),
-                "agent": true,
-                "on_behalf_of": caller.acting_for_person(),
-            }),
-        }
+        let acting = caller.acting();
+        json!({
+            "actor": acting.by.id(),
+            "agent": !acting.is_person(),
+            "on_behalf_of": acting.acted_for_person(),
+        })
     }
 
     /// Start this task's host.

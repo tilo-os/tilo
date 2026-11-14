@@ -159,6 +159,7 @@ fn candidate(app: &str, lists: &AppLists) -> DocumentApp {
                 .to_owned(),
         ),
         source: None,
+        artwork: None,
         is_default: false,
     }
 }

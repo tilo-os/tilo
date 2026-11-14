@@ -443,128 +443,132 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    #[test]
-    fn refused_external_config_keeps_owned_home_firefox_inventory_and_warning() {
-        use std::os::unix::fs::PermissionsExt;
-        let fixture = tempfile::tempdir().unwrap();
-        let home_path = fixture.path().join("home");
-        let profile = home_path.join(".mozilla/firefox/personal.default");
-        std::fs::create_dir_all(&profile).unwrap();
-        std::fs::set_permissions(&home_path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(
-            home_path.join(".mozilla/firefox/profiles.ini"),
-            "[Profile0]\nName=Personal\nIsRelative=1\nPath=personal.default\n",
-        )
-        .unwrap();
-        let places = rusqlite::Connection::open(profile.join("places.sqlite")).unwrap();
-        places.execute_batch("CREATE TABLE moz_places(id INTEGER PRIMARY KEY,url TEXT); INSERT INTO moz_places VALUES(1,'https://example.invalid/owned');").unwrap();
-        drop(places);
-        let cookies = rusqlite::Connection::open(profile.join("cookies.sqlite")).unwrap();
-        cookies.execute_batch("PRAGMA user_version=17;
+    tilo_test_env::scenario! {
+        fn a_config_directory_outside_the_home_is_read_only_when_granted;
+
+        phase refused_external_config_keeps_owned_home_firefox_inventory_and_warning;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let fixture = tempfile::tempdir().unwrap();
+            let home_path = fixture.path().join("home");
+            let profile = home_path.join(".mozilla/firefox/personal.default");
+            std::fs::create_dir_all(&profile).unwrap();
+            std::fs::set_permissions(&home_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(
+                home_path.join(".mozilla/firefox/profiles.ini"),
+                "[Profile0]\nName=Personal\nIsRelative=1\nPath=personal.default\n",
+            )
+            .unwrap();
+            let places = rusqlite::Connection::open(profile.join("places.sqlite")).unwrap();
+            places.execute_batch("CREATE TABLE moz_places(id INTEGER PRIMARY KEY,url TEXT); INSERT INTO moz_places VALUES(1,'https://example.invalid/owned');").unwrap();
+            drop(places);
+            let cookies = rusqlite::Connection::open(profile.join("cookies.sqlite")).unwrap();
+            cookies.execute_batch("PRAGMA user_version=17;
             CREATE TABLE moz_cookies(id INTEGER PRIMARY KEY,host TEXT,name TEXT,value TEXT,path TEXT,
             expiry INTEGER,isSecure INTEGER,isHttpOnly INTEGER,sameSite INTEGER,
             originAttributes TEXT,isPartitionedAttributeSet INTEGER,inBrowserElement INTEGER);
             INSERT INTO moz_cookies VALUES(1,'.slack.com','d','private-home-cookie-sentinel','/',2000000000000,1,1,256,'',0,0);").unwrap();
-        drop(cookies);
-        let external = fixture.path().join("external-config");
-        std::fs::write(&external, b"external-private-config-sentinel").unwrap();
-        let fallback = home_path.join(".config/Nextcloud/nextcloud.cfg");
-        std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
-        std::fs::write(
-            &fallback,
-            "[Accounts]\n0\\url=https://cloud.example\n0\\user=ungranted\n",
-        )
-        .unwrap();
-        let before_places = std::fs::read(profile.join("places.sqlite")).unwrap();
-        let before_cookies = std::fs::read(profile.join("cookies.sqlite")).unwrap();
-        let home = home_transfer::granted_root(&home_path).unwrap();
-        let refused = home_transfer::granted_root(&external);
-        assert!(refused.is_err());
-        let belongings = Belongings::from_home_and_config(home.clone(), refused);
-        assert_eq!(belongings.home.as_ref(), Some(&home));
-        assert!(
-            belongings.roots.is_none(),
-            "refused config never becomes source authority"
-        );
-        assert!(
-            belongings
-                .accounts
-                .candidates
-                .iter()
-                .all(|c| c.provider == account_transfer::Provider::Firefox)
-        );
-        assert_eq!(belongings.accounts.candidates.len(), 1);
-        assert!(
-            belongings
-                .warning_keys()
-                .contains(&"installer-belongings-accounts-unchecked")
-        );
-        assert!(!belongings.browser_unavailable);
-        assert!(!belongings.sessions_unavailable);
-        assert_eq!(belongings.browser.selected().profiles().len(), 1);
-        let sessions = belongings.sessions.report();
-        assert_eq!(sessions["sources"].as_array().unwrap().len(), 1);
-        assert_eq!(sessions["selected"].as_array().unwrap().len(), 1);
-        assert!(
-            !sessions
-                .to_string()
-                .contains("private-home-cookie-sentinel")
-        );
-        assert!(
-            !sessions
-                .to_string()
-                .contains(&home.to_string_lossy().to_string())
-        );
-        assert_eq!(
-            std::fs::read(profile.join("places.sqlite")).unwrap(),
-            before_places
-        );
-        assert_eq!(
-            std::fs::read(profile.join("cookies.sqlite")).unwrap(),
-            before_cookies
-        );
-        assert_eq!(
-            std::fs::read(&external).unwrap(),
-            b"external-private-config-sentinel"
-        );
-        assert!(
-            std::fs::read_to_string(fallback)
-                .unwrap()
-                .contains("ungranted")
-        );
-    }
+            drop(cookies);
+            let external = fixture.path().join("external-config");
+            std::fs::write(&external, b"external-private-config-sentinel").unwrap();
+            let fallback = home_path.join(".config/Nextcloud/nextcloud.cfg");
+            std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
+            std::fs::write(
+                &fallback,
+                "[Accounts]\n0\\url=https://cloud.example\n0\\user=ungranted\n",
+            )
+            .unwrap();
+            let before_places = std::fs::read(profile.join("places.sqlite")).unwrap();
+            let before_cookies = std::fs::read(profile.join("cookies.sqlite")).unwrap();
+            let home = home_transfer::granted_root(&home_path).unwrap();
+            let refused = home_transfer::granted_root(&external);
+            assert!(refused.is_err());
+            let belongings = Belongings::from_home_and_config(home.clone(), refused);
+            assert_eq!(belongings.home.as_ref(), Some(&home));
+            assert!(
+                belongings.roots.is_none(),
+                "refused config never becomes source authority"
+            );
+            assert!(
+                belongings
+                    .accounts
+                    .candidates
+                    .iter()
+                    .all(|c| c.provider == account_transfer::Provider::Firefox)
+            );
+            assert_eq!(belongings.accounts.candidates.len(), 1);
+            assert!(
+                belongings
+                    .warning_keys()
+                    .contains(&"installer-belongings-accounts-unchecked")
+            );
+            assert!(!belongings.browser_unavailable);
+            assert!(!belongings.sessions_unavailable);
+            assert_eq!(belongings.browser.selected().profiles().len(), 1);
+            let sessions = belongings.sessions.report();
+            assert_eq!(sessions["sources"].as_array().unwrap().len(), 1);
+            assert_eq!(sessions["selected"].as_array().unwrap().len(), 1);
+            assert!(
+                !sessions
+                    .to_string()
+                    .contains("private-home-cookie-sentinel")
+            );
+            assert!(
+                !sessions
+                    .to_string()
+                    .contains(&home.to_string_lossy().to_string())
+            );
+            assert_eq!(
+                std::fs::read(profile.join("places.sqlite")).unwrap(),
+                before_places
+            );
+            assert_eq!(
+                std::fs::read(profile.join("cookies.sqlite")).unwrap(),
+                before_cookies
+            );
+            assert_eq!(
+                std::fs::read(&external).unwrap(),
+                b"external-private-config-sentinel"
+            );
+            assert!(
+                std::fs::read_to_string(fallback)
+                    .unwrap()
+                    .contains("ungranted")
+            );
+        }
 
-    #[test]
-    fn explicitly_granted_config_alias_discovers_accounts_without_following_members() {
-        let temporary = tempfile::tempdir().unwrap();
-        let base = temporary.path().canonicalize().unwrap();
-        let home = base.join("actual-home");
-        let config = base.join("actual-config");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::create_dir_all(config.join("Nextcloud")).unwrap();
-        symlink(&config, base.join("chosen-config")).unwrap();
-        std::fs::write(
-            config.join("Nextcloud/nextcloud.cfg"),
-            "[Accounts]\n0\\url=https://cloud.example\n0\\user=fixture\n",
-        )
-        .unwrap();
-        let roots = account_transfer::SourceRoots {
-            home,
-            config: home_transfer::granted_root(&base.join("chosen-config")).unwrap(),
-        };
-        let inventory = account_transfer::discover(&roots);
-        assert!(
-            inventory
-                .candidates
-                .iter()
-                .any(|candidate| candidate.provider == account_transfer::Provider::Nextcloud)
-        );
-        std::fs::rename(config.join("Nextcloud"), base.join("external")).unwrap();
-        symlink(base.join("external"), config.join("Nextcloud")).unwrap();
-        let inventory = account_transfer::discover(&roots);
-        assert!(inventory.candidates.is_empty());
-        assert!(inventory.unreadable_sources.contains(&"Nextcloud"));
-        assert!(home_transfer::granted_root(std::path::Path::new("relative-config")).is_err());
-        assert!(!unresolved_config().unreadable_sources.is_empty());
+        phase explicitly_granted_config_alias_discovers_accounts_without_following_members;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let base = temporary.path().canonicalize().unwrap();
+            let home = base.join("actual-home");
+            let config = base.join("actual-config");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::create_dir_all(config.join("Nextcloud")).unwrap();
+            symlink(&config, base.join("chosen-config")).unwrap();
+            std::fs::write(
+                config.join("Nextcloud/nextcloud.cfg"),
+                "[Accounts]\n0\\url=https://cloud.example\n0\\user=fixture\n",
+            )
+            .unwrap();
+            let roots = account_transfer::SourceRoots {
+                home,
+                config: home_transfer::granted_root(&base.join("chosen-config")).unwrap(),
+            };
+            let inventory = account_transfer::discover(&roots);
+            assert!(
+                inventory
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.provider == account_transfer::Provider::Nextcloud)
+            );
+            std::fs::rename(config.join("Nextcloud"), base.join("external")).unwrap();
+            symlink(base.join("external"), config.join("Nextcloud")).unwrap();
+            let inventory = account_transfer::discover(&roots);
+            assert!(inventory.candidates.is_empty());
+            assert!(inventory.unreadable_sources.contains(&"Nextcloud"));
+            assert!(home_transfer::granted_root(std::path::Path::new("relative-config")).is_err());
+            assert!(!unresolved_config().unreadable_sources.is_empty());
+        }
     }
 }

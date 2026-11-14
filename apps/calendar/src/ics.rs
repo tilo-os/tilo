@@ -1091,489 +1091,741 @@ mod tests {
     use super::*;
     use chrono::Timelike as _;
 
-    #[test]
-    fn duration_events_keep_their_full_span() {
-        for (start, duration, expected) in [
-            ("DTSTART:20260615T090000", "PT1H30M", "2026-06-15T10:30:00"),
-            (
-                "DTSTART:20260615T090000Z",
-                "+PT45M15S",
-                "2026-06-15T09:45:15",
-            ),
-            ("DTSTART;VALUE=DATE:20260615", "P3D", "2026-06-18T00:00:00"),
-            ("DTSTART;VALUE=DATE:20260615", "P2W", "2026-06-29T00:00:00"),
-            (
-                "DTSTART;TZID=Europe/Berlin:20260328T120000",
-                "P1D",
-                "2026-03-29T12:00:00",
-            ),
-            (
-                "DTSTART;TZID=Europe/Berlin:20260328T120000",
-                "PT24H",
-                "2026-03-29T13:00:00",
-            ),
-        ] {
-            let payload = format!(
-                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Visit\r\n{start}\r\nDURATION:{duration}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-            );
-            let (events, _) = parse(&payload);
-            assert_eq!(events.len(), 1, "{duration}");
-            assert_eq!(
-                events[0].end,
-                expected.parse::<NaiveDateTime>().unwrap(),
-                "{duration}"
-            );
-            let model = Calendar {
-                events: events.into(),
-                ..Calendar::default()
-            };
-            let (round_trip, _) = parse(&export(&model));
-            assert_eq!(round_trip[0].end, model.events.first().unwrap().end);
-        }
-        for duration in [
-            "P",
-            "PT",
-            "-PT1H",
-            "P1M",
-            "PT1H1H",
-            "PT1M1H",
-            "P1DT",
-            "PT999999999999999999H",
-            "P9999999999999999W",
-        ] {
-            let payload = format!(
-                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART:20260615T090000\r\nDURATION:{duration}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-            );
-            assert!(parse(&payload).0.is_empty(), "{duration}");
-        }
-    }
+    tilo_test_env::scenario! {
+        /// Import: what an iCalendar file says becomes the events it names, at their instants.
+        fn ics_files_import_at_the_instants_they_name;
 
-    #[test]
-    fn external_uids_preserve_detached_occurrences_and_import_identity() {
-        let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nSUMMARY:Meeting\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nRECURRENCE-ID:20260622T090000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:follow-up@example.com\r\nSUMMARY:Follow up\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        let (events, tasks) = parse(payload);
-        let (again, tasks_again) = parse(payload);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].id, again[0].id);
-        assert_eq!(tasks[0].id, tasks_again[0].id);
-        assert_ne!(events[0].id, tasks[0].id);
-        assert_eq!(events[0].occurrence_overrides.len(), 1);
-        let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        let cancelled = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
-        assert_eq!(events[0].occurrences_in(from, cancelled), vec![from]);
-    }
-
-    #[test]
-    fn an_events_notes_are_exported_as_its_description() {
-        let mut model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let id = model.events.iter().next().unwrap().id;
-        model.notes.insert(
-            id.to_string(),
-            tilo_document::RichText::from_markdown("Bring the Q3 numbers"),
-        );
-        let ics = export(&model);
-        assert!(
-            ics.contains("DESCRIPTION:Bring the Q3 numbers\r\n"),
-            "{ics}"
-        );
-    }
-
-    #[test]
-    fn export_envelope_and_event_task_all_day_round_trips() {
+        phase duration_events_keep_their_full_span;
         {
-            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-            let ics = export(&model);
-            assert!(ics.starts_with("BEGIN:VCALENDAR\r\n"));
-            assert!(ics.contains("BEGIN:VEVENT"));
-            assert!(ics.contains("BEGIN:VTODO"));
-            assert!(ics.trim_end().ends_with("END:VCALENDAR"));
+            for (start, duration, expected) in [
+                ("DTSTART:20260615T090000", "PT1H30M", "2026-06-15T10:30:00"),
+                (
+                    "DTSTART:20260615T090000Z",
+                    "+PT45M15S",
+                    "2026-06-15T09:45:15",
+                ),
+                ("DTSTART;VALUE=DATE:20260615", "P3D", "2026-06-18T00:00:00"),
+                ("DTSTART;VALUE=DATE:20260615", "P2W", "2026-06-29T00:00:00"),
+                (
+                    "DTSTART;TZID=Europe/Berlin:20260328T120000",
+                    "P1D",
+                    "2026-03-29T12:00:00",
+                ),
+                (
+                    "DTSTART;TZID=Europe/Berlin:20260328T120000",
+                    "PT24H",
+                    "2026-03-29T13:00:00",
+                ),
+            ] {
+                let payload = format!(
+                    "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Visit\r\n{start}\r\nDURATION:{duration}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+                );
+                let (events, _) = parse(&payload);
+                assert_eq!(events.len(), 1, "{duration}");
+                assert_eq!(
+                    events[0].end,
+                    expected.parse::<NaiveDateTime>().unwrap(),
+                    "{duration}"
+                );
+                let model = Calendar {
+                    events: events.into(),
+                    ..Calendar::default()
+                };
+                let (round_trip, _) = parse(&export(&model));
+                assert_eq!(round_trip[0].end, model.events.first().unwrap().end);
+            }
+            for duration in [
+                "P",
+                "PT",
+                "-PT1H",
+                "P1M",
+                "PT1H1H",
+                "PT1M1H",
+                "P1DT",
+                "PT999999999999999999H",
+                "P9999999999999999W",
+            ] {
+                let payload = format!(
+                    "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART:20260615T090000\r\nDURATION:{duration}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+                );
+                assert!(parse(&payload).0.is_empty(), "{duration}");
+            }
         }
-        {
-            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-            let ics = export(&model);
-            let (events, tasks) = parse(&ics);
-            assert_eq!(events.len(), model.events.len());
-            assert_eq!(tasks.len(), model.tasks.len());
 
-            let standup = events.iter().find(|e| e.title == "Team standup").unwrap();
-            assert_eq!(standup.recurrence, Recurrence::Weekdays);
-            assert_eq!(standup.reminder_min, Some(10));
-            assert_eq!(standup.start.hour(), 9);
-            assert_eq!(standup.start.minute(), 30);
-
-            let offsite = events
-                .iter()
-                .find(|e| e.title == "Company offsite")
-                .unwrap();
-            assert!(offsite.all_day);
-        }
+        phase external_uids_preserve_detached_occurrences_and_import_identity;
         {
-            let start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-            let model = Calendar {
-                projects: Keyed::default(),
-                tasks: Keyed::default(),
-                events: vec![Event {
-                    id: Uuid::new_v4(),
-                    title: "Conference".into(),
-                    start: start.and_time(NaiveTime::MIN),
-                    end: (start + chrono::Duration::days(3)).and_time(NaiveTime::MIN),
-                    all_day: true,
-                    ..Event::default()
-                }]
-                .into(),
-                ..Calendar::default()
-            };
-            let calendar = export(&model);
-            assert!(calendar.contains("DTSTART;VALUE=DATE:20260615"));
-            assert!(calendar.contains("DTEND;VALUE=DATE:20260618"));
+            let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nSUMMARY:Meeting\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nRECURRENCE-ID:20260622T090000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:follow-up@example.com\r\nSUMMARY:Follow up\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+            let (events, tasks) = parse(payload);
+            let (again, tasks_again) = parse(payload);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].id, again[0].id);
+            assert_eq!(tasks[0].id, tasks_again[0].id);
+            assert_ne!(events[0].id, tasks[0].id);
+            assert_eq!(events[0].occurrence_overrides.len(), 1);
+            let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+            let cancelled = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+            assert_eq!(events[0].occurrences_in(from, cancelled), vec![from]);
+        }
 
-            let (events, _) = parse(&calendar);
-            let event = events.first().expect("round-tripped event");
-            assert!(event.all_day);
-            assert!(event.occurs_on(start + chrono::Duration::days(2)));
-            assert!(!event.occurs_on(start + chrono::Duration::days(3)));
-        }
+        phase imported_alarms_keep_their_time_before_the_start;
         {
-            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-            let (_, tasks) = parse(&export(&model));
-            assert!(tasks.iter().any(|t| t.done));
-            assert!(tasks.iter().any(|t| t.priority == Priority::High));
-            let mut expected: Vec<_> = model.tasks.iter().map(|task| task.id).collect();
-            let mut actual: Vec<_> = tasks.iter().map(|task| task.id).collect();
-            expected.sort_unstable();
-            actual.sort_unstable();
-            assert_eq!(actual, expected, "VTODO UIDs retain task identities");
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn timezones_recurrence_and_invite_identity_round_trip_deterministically() {
-        {
-            let mut model =
-                crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
-            let event = model
-                .events
-                .iter_mut()
-                .find(|event| event.title == "Design review")
-                .expect("recurring demo event");
-            let guest = Attendee {
-                id: Uuid::new_v4(),
-                name: "Sam Example".into(),
-                email: "sam@example.com".into(),
-                status: InviteStatus::Tentative,
-            };
-            event.timezone = "Europe/Berlin".into();
-            event.organizer = Some(guest.id);
-            event.attendees.push(guest.clone());
-            event.recurrence_interval = 2;
-            event.recurrence_until = NaiveDate::from_ymd_opt(2026, 12, 31);
-            event.recurrence_count = Some(8);
-            event.recurrence_exdates = [NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date")]
-                .into_iter()
-                .collect();
-            event.occurrence_overrides.clear();
-            event
-                .occurrence_overrides
-                .push(crate::model::OccurrenceOverride {
-                    original_date: NaiveDate::from_ymd_opt(2026, 6, 19).expect("valid date"),
-                    original_time: None,
-                    cancelled: true,
-                    start: None,
-                    end: None,
-                    end_later_fold: false,
-                    title: None,
-                    location: None,
-                });
-            let event_id = event.id;
-            let expected_attendees = event.attendees.clone();
-
-            let exported = export(&model);
-            assert!(exported.contains("INTERVAL=2"), "{exported}");
-            let uid = format!("UID:{event_id}@tilo");
-            let block = exported
-                .split("BEGIN:VEVENT")
-                .find(|block| block.contains(&uid) && block.contains("RRULE:"))
-                .expect("series component");
-            assert!(block.contains("INTERVAL=2"), "{block}");
-            let (round_tripped, _) = parse(&exported);
-            let event = round_tripped
-                .iter()
-                .find(|candidate| candidate.id == event_id)
-                .expect("stable UID round trips");
-            assert_eq!(event.timezone, "Europe/Berlin");
-            assert_eq!(event.organizer, Some(guest.id));
-            let mut attendees = event.attendees.clone();
-            attendees.sort_by(|left, right| left.email.cmp(&right.email));
-            let mut expected_attendees = expected_attendees;
-            expected_attendees.sort_by(|left, right| left.email.cmp(&right.email));
-            assert_eq!(attendees, expected_attendees);
-            assert_eq!(event.recurrence_interval, 2);
-            assert_eq!(event.recurrence_count, Some(8));
-            assert_eq!(
-                event.recurrence_until,
-                NaiveDate::from_ymd_opt(2026, 12, 31)
-            );
-            assert_eq!(event.recurrence_exdates.len(), 1);
-            assert_eq!(event.occurrence_overrides.len(), 1);
-            assert!(event.occurrence_overrides[0].cancelled);
-        }
-        {
-            let payload = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:11111111-1111-1111-1111-111111111111@example\r\nDTSTART;TZID=Europe/Berlin:20261020T090000\r\nDTEND;TZID=Europe/Berlin:20261020T100000\r\nRRULE:FREQ=WEEKLY\r\nATTENDEE;CN=Sam;PARTSTAT=NEEDS-ACTION:mailto:Sam@Example.COM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:11111111-1111-1111-1111-111111111111@example\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261027T090000\r\nDTSTART;TZID=Europe/Berlin:20261027T110000\r\nDTEND;TZID=Europe/Berlin:20261027T120000\r\nSUMMARY:Moved\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-            let (first, _) = parse(payload);
-            let (second, _) = parse(payload);
-            assert_eq!(first[0].attendees[0].id, second[0].attendees[0].id);
-            let edit = &first[0].occurrence_overrides[0];
-            assert_eq!(
-                edit.original_date,
-                NaiveDate::from_ymd_opt(2026, 10, 27).unwrap()
-            );
-            assert_eq!(edit.original_time, NaiveTime::from_hms_opt(9, 0, 0));
-
-            let exported = export(&Calendar {
-                events: first.into(),
-                tasks: Keyed::default(),
-                projects: Keyed::default(),
-                ..Calendar::default()
-            });
-            assert!(exported.contains("RECURRENCE-ID;TZID=Europe/Berlin:20261027T090000"));
-            let (round_tripped, _) = parse(&exported);
-            assert_eq!(
-                round_tripped[0].occurrence_overrides[0].original_time,
-                NaiveTime::from_hms_opt(9, 0, 0)
-            );
-        }
-        {
-            let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:22222222-2222-2222-2222-222222222222@example\r\nDTSTART;TZID=Europe/Berlin:20260329T023000\r\nDTEND;TZID=Europe/Berlin:20260329T033000\r\nSUMMARY:DST gap\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-            let (events, _) = parse(payload);
-            assert_eq!(
-                events[0].start.time(),
-                NaiveTime::from_hms_opt(3, 0, 0).unwrap()
-            );
-            assert_eq!(
-                events[0].end.time(),
-                NaiveTime::from_hms_opt(3, 30, 0).unwrap()
-            );
-        }
-        {
-            let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:bad@example\r\nSUMMARY:Broken\r\nDTSTART:not-a-date\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-            assert!(parse(payload).0.is_empty());
-        }
-    }
-
-    #[test]
-    fn imported_alarms_keep_their_time_before_the_start() {
-        let reminder = |trigger: &str| {
-            let payload = format!(
-                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:alarm@example.com\r\n\
+            let reminder = |trigger: &str| {
+                let payload = format!(
+                    "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:alarm@example.com\r\n\
                  DTSTART:20261020T090000\r\nDTEND:20261020T100000\r\nSUMMARY:Dentist\r\n\
                  BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:{trigger}\r\nEND:VALARM\r\n\
                  END:VEVENT\r\nEND:VCALENDAR\r\n"
-            );
-            let parsed = parse(&payload).0[0].reminder_min;
-            let (events, _) = crate::actions::import_payload(&payload).expect("one event");
-            (parsed, events[0].reminder)
-        };
-        assert_eq!(reminder("-PT15M"), (Some(15), 15));
-        assert_eq!(reminder("-PT1H"), (Some(60), 60));
-        assert_eq!(reminder("-P1D"), (Some(1440), 1440));
-        assert_eq!(reminder("PT0S"), (Some(0), 0));
-        assert_eq!(reminder("-PT1H30M"), (Some(90), -1));
-        assert_eq!(reminder("PT15M"), (None, -1));
-    }
+                );
+                let parsed = parse(&payload).0[0].reminder_min;
+                let (events, _) = crate::actions::import_payload(&payload).expect("one event");
+                (parsed, events[0].reminder)
+            };
+            assert_eq!(reminder("-PT15M"), (Some(15), 15));
+            assert_eq!(reminder("-PT1H"), (Some(60), 60));
+            assert_eq!(reminder("-P1D"), (Some(1440), 1440));
+            assert_eq!(reminder("PT0S"), (Some(0), 0));
+            assert_eq!(reminder("-PT1H30M"), (Some(90), -1));
+            assert_eq!(reminder("PT15M"), (None, -1));
+        }
 
-    #[test]
-    fn date_time_series_ends_exclusions_and_due_times_import() {
-        let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date");
-        let weekly = |until: &str, exdate: &str| {
-            let payload = format!(
-                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:standup@example.com\r\n\
+        phase date_time_series_ends_exclusions_and_due_times_import;
+        {
+            let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date");
+            let weekly = |until: &str, exdate: &str| {
+                let payload = format!(
+                    "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:standup@example.com\r\n\
                  RRULE:FREQ=WEEKLY;UNTIL={until}\r\n\
                  DTSTART;TZID=Europe/Berlin:20261005T090000\r\n\
                  DTEND;TZID=Europe/Berlin:20261005T093000\r\n\
                  {exdate}\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+                );
+                let (events, _) = parse(&payload);
+                events[0].occurrences_in(date(1), date(31) + chrono::Duration::days(90))
+            };
+            assert_eq!(
+                weekly(
+                    "20261019T070000Z",
+                    "EXDATE;TZID=Europe/Berlin:20261012T090000"
+                ),
+                vec![date(5), date(19)]
             );
-            let (events, _) = parse(&payload);
-            events[0].occurrences_in(date(1), date(31) + chrono::Duration::days(90))
-        };
-        assert_eq!(
-            weekly(
-                "20261019T070000Z",
-                "EXDATE;TZID=Europe/Berlin:20261012T090000"
-            ),
-            vec![date(5), date(19)]
-        );
-        assert_eq!(
-            weekly("20261026T075959Z", "EXDATE:20261005T070000Z"),
-            vec![date(12), date(19)]
-        );
-        assert_eq!(
-            weekly("20261026", "EXDATE;VALUE=DATE:20261019"),
-            vec![date(5), date(12), date(26)]
-        );
+            assert_eq!(
+                weekly("20261026T075959Z", "EXDATE:20261005T070000Z"),
+                vec![date(12), date(19)]
+            );
+            assert_eq!(
+                weekly("20261026", "EXDATE;VALUE=DATE:20261019"),
+                vec![date(5), date(12), date(26)]
+            );
 
-        let (_, tasks) = parse(
-            "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:ship@example.com\r\nSUMMARY:Ship\r\n\
+            let (_, tasks) = parse(
+                "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:ship@example.com\r\nSUMMARY:Ship\r\n\
              DUE;TZID=Europe/Berlin:20261015T170000\r\nEND:VTODO\r\n\
              BEGIN:VTODO\r\nUID:file@example.com\r\nSUMMARY:File\r\n\
              DUE:20261016T120000Z\r\nEND:VTODO\r\nEND:VCALENDAR\r\n",
-        );
-        assert_eq!(
-            tasks.iter().map(|task| task.due).collect::<Vec<_>>(),
-            vec![Some(date(15)), Some(date(16))]
-        );
-    }
+            );
+            assert_eq!(
+                tasks.iter().map(|task| task.due).collect::<Vec<_>>(),
+                vec![Some(date(15)), Some(date(16))]
+            );
+        }
 
-    #[test]
-    fn a_zoned_series_imports_to_the_days_rfc_5545_gives_it() {
-        let series = [
-            "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
+        phase a_zoned_series_imports_to_the_days_rfc_5545_gives_it;
+        {
+            let series = [
+                "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
              RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;INTERVAL=2;COUNT=12\n\
              EXDATE;TZID=Europe/Berlin:20261016T090000",
-            "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
+                "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
              RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;INTERVAL=2;UNTIL=20261110T080000Z\n\
              EXDATE:20261027T080000Z",
-            "DTSTART;TZID=America/New_York:20260131T183000\n\
+                "DTSTART;TZID=America/New_York:20260131T183000\n\
              RRULE:FREQ=MONTHLY;COUNT=6",
-            "DTSTART;TZID=America/New_York:20240229T070000\n\
+                "DTSTART;TZID=America/New_York:20240229T070000\n\
              RRULE:FREQ=YEARLY;INTERVAL=1;UNTIL=20320301T000000Z",
-        ];
-        let (from, to) = (
-            NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
-            NaiveDate::from_ymd_opt(2033, 1, 1).expect("valid date"),
-        );
-        for lines in series {
-            let set: rrule::RRuleSet = lines.parse().expect("valid series");
-            let expected: Vec<NaiveDateTime> = set
-                .all(u16::MAX)
-                .dates
-                .into_iter()
-                .map(|at| at.naive_local())
-                .collect();
-            let payload = format!(
-                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:series@example.com\r\nSUMMARY:Series\r\n{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
-                lines.replace('\n', "\r\n")
+            ];
+            let (from, to) = (
+                NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
+                NaiveDate::from_ymd_opt(2033, 1, 1).expect("valid date"),
             );
-            let (events, _) = parse(&payload);
-            let event = &events[0];
-            let imported: Vec<NaiveDateTime> = event
-                .occurrences_in(from, to)
-                .into_iter()
-                .map(|date| date.and_time(event.start.time()))
-                .collect();
-            assert_eq!(imported, expected, "{lines}");
+            for lines in series {
+                let set: rrule::RRuleSet = lines.parse().expect("valid series");
+                let expected: Vec<NaiveDateTime> = set
+                    .all(u16::MAX)
+                    .dates
+                    .into_iter()
+                    .map(|at| at.naive_local())
+                    .collect();
+                let payload = format!(
+                    "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:series@example.com\r\nSUMMARY:Series\r\n{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+                    lines.replace('\n', "\r\n")
+                );
+                let (events, _) = parse(&payload);
+                let event = &events[0];
+                let imported: Vec<NaiveDateTime> = event
+                    .occurrences_in(from, to)
+                    .into_iter()
+                    .map(|date| date.and_time(event.start.time()))
+                    .collect();
+                assert_eq!(imported, expected, "{lines}");
+            }
         }
-    }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn content_lines_fold_escape_and_quote_per_rfc_5545() {
+        phase outlook_invites_import_at_their_instant;
         {
-            let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Hello Wo\r\n rld\\, again\\; line1\\nline2\r\nDTSTART:20260615T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-            let (events, _) = parse(payload);
-            assert_eq!(events[0].title, "Hello World, again; line1\nline2");
-        }
-        {
-            let mut model =
-                crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
-            let event = model.events.first_mut().expect("demo event");
-            let guest = Attendee {
-                id: Uuid::new_v4(),
-                name: "Doe, Jane; PhD: Ops".into(),
-                email: "jane@example.com".into(),
-                status: InviteStatus::Accepted,
-            };
-            event.attendees = vec![guest.clone()].into();
-            let exported = export(&model);
-            assert!(
-                exported.contains("CN=\"Doe, Jane; PhD: Ops\":mailto:jane@example.com")
-                    || pim_lines::unfold(&exported)
-                        .iter()
-                        .any(|line| line
-                            .contains("CN=\"Doe, Jane; PhD: Ops\":mailto:jane@example.com")),
-                "{exported}"
+            let at_ten = "2026-11-03T09:00:00+00:00".to_string();
+            for zone in [String::new(), outlook_zone("W. Europe Standard Time")] {
+                let payload = outlook_invite(
+                    &zone,
+                    "W. Europe Standard Time",
+                    "20261103T100000",
+                    "20261103T110000",
+                );
+                assert_eq!(
+                    imported_at(&payload),
+                    ("Europe/Berlin".to_string(), at_ten.clone())
+                );
+                let (events, _) = crate::actions::import_payload(&payload)
+                    .expect("an Outlook invite is something to import");
+                assert_eq!(events[0].timezone, "Europe/Berlin");
+                assert_eq!(events[0].reminder, 15);
+                assert!(parse_calendar(&payload).unknown_zones.is_empty());
+            }
+            assert_eq!(
+                imported_at(&outlook_invite(
+                    "",
+                    "Pacific Standard Time",
+                    "20260710T090000",
+                    "20260710T100000"
+                )),
+                (
+                    "America/Los_Angeles".to_string(),
+                    "2026-07-10T16:00:00+00:00".to_string()
+                )
             );
-            let (events, _) = parse(&exported);
-            let attendee = events
-                .iter()
-                .flat_map(|event| event.attendees.iter())
-                .find(|attendee| attendee.id == guest.id)
-                .expect("attendee round trips");
-            assert_eq!(attendee, &guest);
+            // A zone Outlook names after its cities, or a customised one, is
+            // known only by its VTIMEZONE's rules: the zone that keeps them, and
+            // one of the cities when it names one.
+            let cities = "(UTC+01:00) Amsterdam\\, Berlin\\, Bern\\, Rome\\, Stockholm\\, Vienna";
+            let quoted = "\"(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna\"";
+            assert_eq!(
+                imported_at(&outlook_invite(
+                    &outlook_zone(cities),
+                    quoted,
+                    "20261103T100000",
+                    "20261103T110000"
+                )),
+                ("Europe/Berlin".to_string(), at_ten)
+            );
+            let (zone, instant) = imported_at(&outlook_invite(
+                &outlook_zone("Customized Time Zone"),
+                "Customized Time Zone",
+                "20260710T100000",
+                "20260710T110000",
+            ));
+            assert_eq!(instant, "2026-07-10T08:00:00+00:00");
+            let winter = NaiveDate::from_ymd_opt(2026, 1, 15)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap();
+            assert_eq!(
+                crate::timezone::wall_to_utc(&zone, winter)
+                    .unwrap()
+                    .0
+                    .to_rfc3339(),
+                "2026-01-15T11:00:00+00:00",
+                "{zone} keeps Central European winter time"
+            );
+            let sydney = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone 1\r\n\
+             BEGIN:STANDARD\r\nDTSTART:16010101T030000\r\nTZOFFSETFROM:+1100\r\n\
+             TZOFFSETTO:+1000\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=4\r\n\
+             END:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\n\
+             TZOFFSETFROM:+1000\r\nTZOFFSETTO:+1100\r\n\
+             RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=10\r\nEND:DAYLIGHT\r\n\
+             END:VTIMEZONE\r\n";
+            assert_eq!(
+                imported_at(&outlook_invite(
+                    sydney,
+                    "Customized Time Zone 1",
+                    "20261201T090000",
+                    "20261201T100000"
+                )),
+                (
+                    "Australia/Sydney".to_string(),
+                    "2026-11-30T22:00:00+00:00".to_string()
+                )
+            );
+            let located = "BEGIN:VTIMEZONE\r\nTZID:/citadel.org/20250101_1/Custom\r\n\
+             X-LIC-LOCATION:America/New_York\r\nEND:VTIMEZONE\r\n";
+            assert_eq!(
+                imported_at(&outlook_invite(
+                    located,
+                    "/citadel.org/20250101_1/Custom",
+                    "20260710T090000",
+                    "20260710T100000"
+                ))
+                .0,
+                "America/New_York"
+            );
         }
+
+        phase a_customised_zone_is_the_one_changing_clocks_at_its_instants;
         {
-            let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:33333333-3333-3333-3333-333333333333@example\r\nDTSTART:20261020T090000Z\r\nATTENDEE;DELEGATED-FROM=\"mailto:boss@example.com\";CN=\"Lee: Ops\";PARTSTAT=ACCEPTED:mailto:lee@example.com\r\nORGANIZER;SENT-BY=\"mailto:assistant@example.com\":mailto:boss@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-            let (events, _) = parse(payload);
-            let event = &events[0];
-            let lee = event
-                .attendees
-                .iter()
-                .find(|attendee| attendee.email == "lee@example.com")
-                .expect("delegated attendee parsed");
-            assert_eq!(lee.name, "Lee: Ops");
-            assert_eq!(lee.status, InviteStatus::Accepted);
-            let organizer = event.organizer.expect("organizer parsed");
-            assert!(
-                event.attendees.iter().any(
-                    |attendee| attendee.id == organizer && attendee.email == "boss@example.com"
+            let eastern = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone\r\n\
+             BEGIN:STANDARD\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:-0400\r\n\
+             TZOFFSETTO:-0500\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=11\r\n\
+             END:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\n\
+             TZOFFSETFROM:-0500\r\nTZOFFSETTO:-0400\r\n\
+             RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=2SU;BYMONTH=3\r\nEND:DAYLIGHT\r\n\
+             END:VTIMEZONE\r\n";
+            assert_eq!(
+                imported_at(&outlook_invite(
+                    eastern,
+                    "Customized Time Zone",
+                    "20260710T090000",
+                    "20260710T100000"
+                )),
+                (
+                    "America/New_York".to_string(),
+                    "2026-07-10T13:00:00+00:00".to_string()
                 )
             );
         }
+
+        phase an_unknown_zone_keeps_the_time_as_written;
         {
-            let mut model =
-                crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
-            model.events.first_mut().expect("demo event").title = "Line one\r\nLine two".into();
-            let exported = export(&model);
-            assert!(
-                exported.split("\r\n").all(|line| !line.contains('\r')),
-                "a raw CR would end the content line early"
-            );
-            let (events, _) = parse(&exported);
-            assert!(
-                events
-                    .iter()
-                    .any(|event| event.title == "Line one\nLine two")
-            );
+            let no_fit = "BEGIN:VTIMEZONE\r\nTZID:Lunar Standard Time\r\nBEGIN:STANDARD\r\n\
+             DTSTART:16010101T000000\r\nTZOFFSETFROM:+0123\r\nTZOFFSETTO:+0123\r\n\
+             END:STANDARD\r\nEND:VTIMEZONE\r\n";
+            for (zone, tzid) in [
+                ("", "Olympus Mons Standard Time"),
+                (no_fit, "Lunar Standard Time"),
+            ] {
+                let payload = outlook_invite(zone, tzid, "20261103T100000", "20261103T110000");
+                let parsed = parse_calendar(&payload);
+                assert_eq!(parsed.unknown_zones, vec![tzid.to_string()]);
+                let event = &parsed.events[0];
+                assert_eq!(event.timezone, "floating");
+                assert_eq!(event.start.to_string(), "2026-11-03 10:00:00");
+                assert_eq!(event.end.to_string(), "2026-11-03 11:00:00");
+                let (import, unknown) =
+                    crate::resource::import_reporting(&payload).expect("the event is imported");
+                assert_eq!(unknown, vec![tzid.to_string()]);
+                assert_eq!(
+                    crate::resource::imported_status("invite.ics", &unknown),
+                    format!(
+                        "Imported calendar items from invite.ics. Times in {tzid} stay as written, as that time zone is unknown"
+                    )
+                );
+                let mut calendar = ui::tilo_resource::Replica::<Calendar>::new();
+                calendar.apply(import).unwrap();
+                assert_eq!(calendar.state().unwrap().events.len(), 1);
+            }
         }
+
+        phase an_end_in_another_zone_is_the_same_instant;
         {
-            let payload = "begin:vcalendar\r\nbegin:vevent\r\nsummary:Quiet\r\ndtstart;value=date:20260615\r\nend:vevent\r\nend:vcalendar\r\n";
+            let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:flight@example.com\r\n\
+             SUMMARY:Flight\r\nDTSTART;TZID=W. Europe Standard Time:20260710T100000\r\n\
+             DTEND;TZID=Eastern Standard Time:20260710T123000\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n";
             let (events, _) = parse(payload);
-            assert_eq!(events[0].title, "Quiet");
-            assert!(events[0].all_day);
-        }
-        {
-            let title = format!("Planning {}", "界".repeat(40));
-            let event = Event {
-                id: Uuid::new_v4(),
-                title: title.clone(),
-                start: NaiveDate::from_ymd_opt(2026, 9, 15)
-                    .unwrap()
-                    .and_hms_opt(9, 0, 0)
-                    .unwrap(),
-                end: NaiveDate::from_ymd_opt(2026, 9, 15)
-                    .unwrap()
-                    .and_hms_opt(10, 0, 0)
-                    .unwrap(),
-                ..Event::default()
-            };
-            let ics = export(&Calendar {
-                events: vec![event].into(),
-                tasks: Keyed::default(),
-                projects: Keyed::default(),
-                ..Calendar::default()
-            });
-            assert!(
-                ics.split("\r\n").all(|line| line.len() <= 75),
-                "every physical content line respects RFC 5545's 75-octet limit"
+            assert_eq!(events[0].timezone, "Europe/Berlin");
+            assert_eq!(events[0].end.to_string(), "2026-07-10 18:30:00");
+            assert_eq!(
+                events[0].end_instant().unwrap().to_rfc3339(),
+                "2026-07-10T16:30:00+00:00"
             );
-            let (events, _) = parse(&ics);
-            assert_eq!(events[0].title, title);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// Export: the file a calendar is written as, and what reading it back gives.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn calendars_export_as_rfc_5545_and_read_back;
+
+        phase an_events_notes_are_exported_as_its_description;
+        {
+            let mut model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let id = model.events.iter().next().unwrap().id;
+            model.notes.insert(
+                id.to_string(),
+                tilo_document::RichText::from_markdown("Bring the Q3 numbers"),
+            );
+            let ics = export(&model);
+            assert!(
+                ics.contains("DESCRIPTION:Bring the Q3 numbers\r\n"),
+                "{ics}"
+            );
+        }
+
+        phase export_envelope_and_event_task_all_day_round_trips;
+        {
+            {
+                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let ics = export(&model);
+                assert!(ics.starts_with("BEGIN:VCALENDAR\r\n"));
+                assert!(ics.contains("BEGIN:VEVENT"));
+                assert!(ics.contains("BEGIN:VTODO"));
+                assert!(ics.trim_end().ends_with("END:VCALENDAR"));
+            }
+            {
+                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let ics = export(&model);
+                let (events, tasks) = parse(&ics);
+                assert_eq!(events.len(), model.events.len());
+                assert_eq!(tasks.len(), model.tasks.len());
+
+                let standup = events.iter().find(|e| e.title == "Team standup").unwrap();
+                assert_eq!(standup.recurrence, Recurrence::Weekdays);
+                assert_eq!(standup.reminder_min, Some(10));
+                assert_eq!(standup.start.hour(), 9);
+                assert_eq!(standup.start.minute(), 30);
+
+                let offsite = events
+                    .iter()
+                    .find(|e| e.title == "Company offsite")
+                    .unwrap();
+                assert!(offsite.all_day);
+            }
+            {
+                let start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+                let model = Calendar {
+                    projects: Keyed::default(),
+                    tasks: Keyed::default(),
+                    events: vec![Event {
+                        id: Uuid::new_v4(),
+                        title: "Conference".into(),
+                        start: start.and_time(NaiveTime::MIN),
+                        end: (start + chrono::Duration::days(3)).and_time(NaiveTime::MIN),
+                        all_day: true,
+                        ..Event::default()
+                    }]
+                    .into(),
+                    ..Calendar::default()
+                };
+                let calendar = export(&model);
+                assert!(calendar.contains("DTSTART;VALUE=DATE:20260615"));
+                assert!(calendar.contains("DTEND;VALUE=DATE:20260618"));
+
+                let (events, _) = parse(&calendar);
+                let event = events.first().expect("round-tripped event");
+                assert!(event.all_day);
+                assert!(event.occurs_on(start + chrono::Duration::days(2)));
+                assert!(!event.occurs_on(start + chrono::Duration::days(3)));
+            }
+            {
+                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let (_, tasks) = parse(&export(&model));
+                assert!(tasks.iter().any(|t| t.done));
+                assert!(tasks.iter().any(|t| t.priority == Priority::High));
+                let mut expected: Vec<_> = model.tasks.iter().map(|task| task.id).collect();
+                let mut actual: Vec<_> = tasks.iter().map(|task| task.id).collect();
+                expected.sort_unstable();
+                actual.sort_unstable();
+                assert_eq!(actual, expected, "VTODO UIDs retain task identities");
+            }
+        }
+
+        phase timezones_recurrence_and_invite_identity_round_trip_deterministically;
+        {
+            {
+                let mut model =
+                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                let event = model
+                    .events
+                    .iter_mut()
+                    .find(|event| event.title == "Design review")
+                    .expect("recurring demo event");
+                let guest = Attendee {
+                    id: Uuid::new_v4(),
+                    name: "Sam Example".into(),
+                    email: "sam@example.com".into(),
+                    status: InviteStatus::Tentative,
+                };
+                event.timezone = "Europe/Berlin".into();
+                event.organizer = Some(guest.id);
+                event.attendees.push(guest.clone());
+                event.recurrence_interval = 2;
+                event.recurrence_until = NaiveDate::from_ymd_opt(2026, 12, 31);
+                event.recurrence_count = Some(8);
+                event.recurrence_exdates = [NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date")]
+                    .into_iter()
+                    .collect();
+                event.occurrence_overrides.clear();
+                event
+                    .occurrence_overrides
+                    .push(crate::model::OccurrenceOverride {
+                        original_date: NaiveDate::from_ymd_opt(2026, 6, 19).expect("valid date"),
+                        original_time: None,
+                        cancelled: true,
+                        start: None,
+                        end: None,
+                        end_later_fold: false,
+                        title: None,
+                        location: None,
+                    });
+                let event_id = event.id;
+                let expected_attendees = event.attendees.clone();
+
+                let exported = export(&model);
+                assert!(exported.contains("INTERVAL=2"), "{exported}");
+                let uid = format!("UID:{event_id}@tilo");
+                let block = exported
+                    .split("BEGIN:VEVENT")
+                    .find(|block| block.contains(&uid) && block.contains("RRULE:"))
+                    .expect("series component");
+                assert!(block.contains("INTERVAL=2"), "{block}");
+                let (round_tripped, _) = parse(&exported);
+                let event = round_tripped
+                    .iter()
+                    .find(|candidate| candidate.id == event_id)
+                    .expect("stable UID round trips");
+                assert_eq!(event.timezone, "Europe/Berlin");
+                assert_eq!(event.organizer, Some(guest.id));
+                let mut attendees = event.attendees.clone();
+                attendees.sort_by(|left, right| left.email.cmp(&right.email));
+                let mut expected_attendees = expected_attendees;
+                expected_attendees.sort_by(|left, right| left.email.cmp(&right.email));
+                assert_eq!(attendees, expected_attendees);
+                assert_eq!(event.recurrence_interval, 2);
+                assert_eq!(event.recurrence_count, Some(8));
+                assert_eq!(
+                    event.recurrence_until,
+                    NaiveDate::from_ymd_opt(2026, 12, 31)
+                );
+                assert_eq!(event.recurrence_exdates.len(), 1);
+                assert_eq!(event.occurrence_overrides.len(), 1);
+                assert!(event.occurrence_overrides[0].cancelled);
+            }
+            {
+                let payload = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:11111111-1111-1111-1111-111111111111@example\r\nDTSTART;TZID=Europe/Berlin:20261020T090000\r\nDTEND;TZID=Europe/Berlin:20261020T100000\r\nRRULE:FREQ=WEEKLY\r\nATTENDEE;CN=Sam;PARTSTAT=NEEDS-ACTION:mailto:Sam@Example.COM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:11111111-1111-1111-1111-111111111111@example\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261027T090000\r\nDTSTART;TZID=Europe/Berlin:20261027T110000\r\nDTEND;TZID=Europe/Berlin:20261027T120000\r\nSUMMARY:Moved\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+                let (first, _) = parse(payload);
+                let (second, _) = parse(payload);
+                assert_eq!(first[0].attendees[0].id, second[0].attendees[0].id);
+                let edit = &first[0].occurrence_overrides[0];
+                assert_eq!(
+                    edit.original_date,
+                    NaiveDate::from_ymd_opt(2026, 10, 27).unwrap()
+                );
+                assert_eq!(edit.original_time, NaiveTime::from_hms_opt(9, 0, 0));
+
+                let exported = export(&Calendar {
+                    events: first.into(),
+                    tasks: Keyed::default(),
+                    projects: Keyed::default(),
+                    ..Calendar::default()
+                });
+                assert!(exported.contains("RECURRENCE-ID;TZID=Europe/Berlin:20261027T090000"));
+                let (round_tripped, _) = parse(&exported);
+                assert_eq!(
+                    round_tripped[0].occurrence_overrides[0].original_time,
+                    NaiveTime::from_hms_opt(9, 0, 0)
+                );
+            }
+            {
+                let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:22222222-2222-2222-2222-222222222222@example\r\nDTSTART;TZID=Europe/Berlin:20260329T023000\r\nDTEND;TZID=Europe/Berlin:20260329T033000\r\nSUMMARY:DST gap\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+                let (events, _) = parse(payload);
+                assert_eq!(
+                    events[0].start.time(),
+                    NaiveTime::from_hms_opt(3, 0, 0).unwrap()
+                );
+                assert_eq!(
+                    events[0].end.time(),
+                    NaiveTime::from_hms_opt(3, 30, 0).unwrap()
+                );
+            }
+            {
+                let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:bad@example\r\nSUMMARY:Broken\r\nDTSTART:not-a-date\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+                assert!(parse(payload).0.is_empty());
+            }
+        }
+
+        phase content_lines_fold_escape_and_quote_per_rfc_5545;
+        {
+            {
+                let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Hello Wo\r\n rld\\, again\\; line1\\nline2\r\nDTSTART:20260615T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+                let (events, _) = parse(payload);
+                assert_eq!(events[0].title, "Hello World, again; line1\nline2");
+            }
+            {
+                let mut model =
+                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                let event = model.events.first_mut().expect("demo event");
+                let guest = Attendee {
+                    id: Uuid::new_v4(),
+                    name: "Doe, Jane; PhD: Ops".into(),
+                    email: "jane@example.com".into(),
+                    status: InviteStatus::Accepted,
+                };
+                event.attendees = vec![guest.clone()].into();
+                let exported = export(&model);
+                assert!(
+                    exported.contains("CN=\"Doe, Jane; PhD: Ops\":mailto:jane@example.com")
+                        || pim_lines::unfold(&exported)
+                            .iter()
+                            .any(|line| line
+                                .contains("CN=\"Doe, Jane; PhD: Ops\":mailto:jane@example.com")),
+                    "{exported}"
+                );
+                let (events, _) = parse(&exported);
+                let attendee = events
+                    .iter()
+                    .flat_map(|event| event.attendees.iter())
+                    .find(|attendee| attendee.id == guest.id)
+                    .expect("attendee round trips");
+                assert_eq!(attendee, &guest);
+            }
+            {
+                let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:33333333-3333-3333-3333-333333333333@example\r\nDTSTART:20261020T090000Z\r\nATTENDEE;DELEGATED-FROM=\"mailto:boss@example.com\";CN=\"Lee: Ops\";PARTSTAT=ACCEPTED:mailto:lee@example.com\r\nORGANIZER;SENT-BY=\"mailto:assistant@example.com\":mailto:boss@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+                let (events, _) = parse(payload);
+                let event = &events[0];
+                let lee = event
+                    .attendees
+                    .iter()
+                    .find(|attendee| attendee.email == "lee@example.com")
+                    .expect("delegated attendee parsed");
+                assert_eq!(lee.name, "Lee: Ops");
+                assert_eq!(lee.status, InviteStatus::Accepted);
+                let organizer = event.organizer.expect("organizer parsed");
+                assert!(
+                    event.attendees.iter().any(
+                        |attendee| attendee.id == organizer && attendee.email == "boss@example.com"
+                    )
+                );
+            }
+            {
+                let mut model =
+                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                model.events.first_mut().expect("demo event").title = "Line one\r\nLine two".into();
+                let exported = export(&model);
+                assert!(
+                    exported.split("\r\n").all(|line| !line.contains('\r')),
+                    "a raw CR would end the content line early"
+                );
+                let (events, _) = parse(&exported);
+                assert!(
+                    events
+                        .iter()
+                        .any(|event| event.title == "Line one\nLine two")
+                );
+            }
+            {
+                let payload = "begin:vcalendar\r\nbegin:vevent\r\nsummary:Quiet\r\ndtstart;value=date:20260615\r\nend:vevent\r\nend:vcalendar\r\n";
+                let (events, _) = parse(payload);
+                assert_eq!(events[0].title, "Quiet");
+                assert!(events[0].all_day);
+            }
+            {
+                let title = format!("Planning {}", "界".repeat(40));
+                let event = Event {
+                    id: Uuid::new_v4(),
+                    title: title.clone(),
+                    start: NaiveDate::from_ymd_opt(2026, 9, 15)
+                        .unwrap()
+                        .and_hms_opt(9, 0, 0)
+                        .unwrap(),
+                    end: NaiveDate::from_ymd_opt(2026, 9, 15)
+                        .unwrap()
+                        .and_hms_opt(10, 0, 0)
+                        .unwrap(),
+                    ..Event::default()
+                };
+                let ics = export(&Calendar {
+                    events: vec![event].into(),
+                    tasks: Keyed::default(),
+                    projects: Keyed::default(),
+                    ..Calendar::default()
+                });
+                assert!(
+                    ics.split("\r\n").all(|line| line.len() <= 75),
+                    "every physical content line respects RFC 5545's 75-octet limit"
+                );
+                let (events, _) = parse(&ics);
+                assert_eq!(events[0].title, title);
+            }
+        }
+
+        phase a_timed_series_exports_its_end_and_exclusions_as_date_times;
+        {
+            let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).unwrap();
+            for (zone, all_day, until, exdate) in [
+                (
+                    "Europe/Berlin",
+                    false,
+                    "UNTIL=20261026T080000Z",
+                    "EXDATE;TZID=Europe/Berlin:20261012T090000",
+                ),
+                (
+                    "UTC",
+                    false,
+                    "UNTIL=20261026T090000Z",
+                    "EXDATE:20261012T090000Z",
+                ),
+                (
+                    "floating",
+                    false,
+                    "UNTIL=20261026T090000",
+                    "EXDATE:20261012T090000",
+                ),
+                (
+                    "floating",
+                    true,
+                    "UNTIL=20261026",
+                    "EXDATE;VALUE=DATE:20261012",
+                ),
+            ] {
+                let start = date(5)
+                    .and_hms_opt(if all_day { 0 } else { 9 }, 0, 0)
+                    .unwrap();
+                let event = Event {
+                    id: Uuid::new_v4(),
+                    title: "Standup".into(),
+                    start,
+                    end: start + chrono::Duration::minutes(if all_day { 24 * 60 } else { 30 }),
+                    all_day,
+                    recurrence: Recurrence::Weekly,
+                    recurrence_until: Some(date(26)),
+                    recurrence_exdates: [date(12)].into_iter().collect(),
+                    timezone: zone.into(),
+                    ..Event::default()
+                };
+                let exported = export(&Calendar {
+                    events: vec![event.clone()].into(),
+                    ..Calendar::default()
+                });
+                assert!(
+                    exported.contains(&format!("RRULE:FREQ=WEEKLY;{until}\r\n")),
+                    "{exported}"
+                );
+                assert!(exported.contains(&format!("{exdate}\r\n")), "{exported}");
+                let (events, _) = parse(&exported);
+                let back = &events[0];
+                assert_eq!(
+                    (
+                        back.recurrence_until,
+                        &back.recurrence_exdates,
+                        &back.timezone
+                    ),
+                    (
+                        event.recurrence_until,
+                        &event.recurrence_exdates,
+                        &event.timezone
+                    )
+                );
+                let window = (date(1), date(31) + chrono::Duration::days(60));
+                assert_eq!(
+                    back.occurrences_in(window.0, window.1),
+                    vec![date(5), date(19), date(26)]
+                );
+                assert_eq!(
+                    back.occurrences_in(window.0, window.1),
+                    event.occurrences_in(window.0, window.1)
+                );
+            }
         }
     }
 
@@ -1617,251 +1869,5 @@ mod tests {
             .map(|(instant, _)| instant.to_rfc3339())
             .unwrap_or_default();
         (event.timezone.clone(), instant)
-    }
-
-    #[test]
-    fn outlook_invites_import_at_their_instant() {
-        let at_ten = "2026-11-03T09:00:00+00:00".to_string();
-        for zone in [String::new(), outlook_zone("W. Europe Standard Time")] {
-            let payload = outlook_invite(
-                &zone,
-                "W. Europe Standard Time",
-                "20261103T100000",
-                "20261103T110000",
-            );
-            assert_eq!(
-                imported_at(&payload),
-                ("Europe/Berlin".to_string(), at_ten.clone())
-            );
-            let (events, _) = crate::actions::import_payload(&payload)
-                .expect("an Outlook invite is something to import");
-            assert_eq!(events[0].timezone, "Europe/Berlin");
-            assert_eq!(events[0].reminder, 15);
-            assert!(parse_calendar(&payload).unknown_zones.is_empty());
-        }
-        assert_eq!(
-            imported_at(&outlook_invite(
-                "",
-                "Pacific Standard Time",
-                "20260710T090000",
-                "20260710T100000"
-            )),
-            (
-                "America/Los_Angeles".to_string(),
-                "2026-07-10T16:00:00+00:00".to_string()
-            )
-        );
-        // A zone Outlook names after its cities, or a customised one, is
-        // known only by its VTIMEZONE's rules: the zone that keeps them, and
-        // one of the cities when it names one.
-        let cities = "(UTC+01:00) Amsterdam\\, Berlin\\, Bern\\, Rome\\, Stockholm\\, Vienna";
-        let quoted = "\"(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna\"";
-        assert_eq!(
-            imported_at(&outlook_invite(
-                &outlook_zone(cities),
-                quoted,
-                "20261103T100000",
-                "20261103T110000"
-            )),
-            ("Europe/Berlin".to_string(), at_ten)
-        );
-        let (zone, instant) = imported_at(&outlook_invite(
-            &outlook_zone("Customized Time Zone"),
-            "Customized Time Zone",
-            "20260710T100000",
-            "20260710T110000",
-        ));
-        assert_eq!(instant, "2026-07-10T08:00:00+00:00");
-        let winter = NaiveDate::from_ymd_opt(2026, 1, 15)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
-        assert_eq!(
-            crate::timezone::wall_to_utc(&zone, winter)
-                .unwrap()
-                .0
-                .to_rfc3339(),
-            "2026-01-15T11:00:00+00:00",
-            "{zone} keeps Central European winter time"
-        );
-        let sydney = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone 1\r\n\
-             BEGIN:STANDARD\r\nDTSTART:16010101T030000\r\nTZOFFSETFROM:+1100\r\n\
-             TZOFFSETTO:+1000\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=4\r\n\
-             END:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\n\
-             TZOFFSETFROM:+1000\r\nTZOFFSETTO:+1100\r\n\
-             RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=10\r\nEND:DAYLIGHT\r\n\
-             END:VTIMEZONE\r\n";
-        assert_eq!(
-            imported_at(&outlook_invite(
-                sydney,
-                "Customized Time Zone 1",
-                "20261201T090000",
-                "20261201T100000"
-            )),
-            (
-                "Australia/Sydney".to_string(),
-                "2026-11-30T22:00:00+00:00".to_string()
-            )
-        );
-        let located = "BEGIN:VTIMEZONE\r\nTZID:/citadel.org/20250101_1/Custom\r\n\
-             X-LIC-LOCATION:America/New_York\r\nEND:VTIMEZONE\r\n";
-        assert_eq!(
-            imported_at(&outlook_invite(
-                located,
-                "/citadel.org/20250101_1/Custom",
-                "20260710T090000",
-                "20260710T100000"
-            ))
-            .0,
-            "America/New_York"
-        );
-    }
-
-    #[test]
-    fn a_customised_zone_is_the_one_changing_clocks_at_its_instants() {
-        let eastern = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone\r\n\
-             BEGIN:STANDARD\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:-0400\r\n\
-             TZOFFSETTO:-0500\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=11\r\n\
-             END:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\n\
-             TZOFFSETFROM:-0500\r\nTZOFFSETTO:-0400\r\n\
-             RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=2SU;BYMONTH=3\r\nEND:DAYLIGHT\r\n\
-             END:VTIMEZONE\r\n";
-        assert_eq!(
-            imported_at(&outlook_invite(
-                eastern,
-                "Customized Time Zone",
-                "20260710T090000",
-                "20260710T100000"
-            )),
-            (
-                "America/New_York".to_string(),
-                "2026-07-10T13:00:00+00:00".to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn an_unknown_zone_keeps_the_time_as_written() {
-        let no_fit = "BEGIN:VTIMEZONE\r\nTZID:Lunar Standard Time\r\nBEGIN:STANDARD\r\n\
-             DTSTART:16010101T000000\r\nTZOFFSETFROM:+0123\r\nTZOFFSETTO:+0123\r\n\
-             END:STANDARD\r\nEND:VTIMEZONE\r\n";
-        for (zone, tzid) in [
-            ("", "Olympus Mons Standard Time"),
-            (no_fit, "Lunar Standard Time"),
-        ] {
-            let payload = outlook_invite(zone, tzid, "20261103T100000", "20261103T110000");
-            let parsed = parse_calendar(&payload);
-            assert_eq!(parsed.unknown_zones, vec![tzid.to_string()]);
-            let event = &parsed.events[0];
-            assert_eq!(event.timezone, "floating");
-            assert_eq!(event.start.to_string(), "2026-11-03 10:00:00");
-            assert_eq!(event.end.to_string(), "2026-11-03 11:00:00");
-            let (import, unknown) =
-                crate::resource::import_reporting(&payload).expect("the event is imported");
-            assert_eq!(unknown, vec![tzid.to_string()]);
-            assert_eq!(
-                crate::resource::imported_status("invite.ics", &unknown),
-                format!(
-                    "Imported calendar items from invite.ics. Times in {tzid} stay as written, as that time zone is unknown"
-                )
-            );
-            let mut calendar = ui::tilo_resource::Replica::<Calendar>::new();
-            calendar.apply(import).unwrap();
-            assert_eq!(calendar.state().unwrap().events.len(), 1);
-        }
-    }
-
-    #[test]
-    fn an_end_in_another_zone_is_the_same_instant() {
-        let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:flight@example.com\r\n\
-             SUMMARY:Flight\r\nDTSTART;TZID=W. Europe Standard Time:20260710T100000\r\n\
-             DTEND;TZID=Eastern Standard Time:20260710T123000\r\nEND:VEVENT\r\n\
-             END:VCALENDAR\r\n";
-        let (events, _) = parse(payload);
-        assert_eq!(events[0].timezone, "Europe/Berlin");
-        assert_eq!(events[0].end.to_string(), "2026-07-10 18:30:00");
-        assert_eq!(
-            events[0].end_instant().unwrap().to_rfc3339(),
-            "2026-07-10T16:30:00+00:00"
-        );
-    }
-
-    #[test]
-    fn a_timed_series_exports_its_end_and_exclusions_as_date_times() {
-        let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).unwrap();
-        for (zone, all_day, until, exdate) in [
-            (
-                "Europe/Berlin",
-                false,
-                "UNTIL=20261026T080000Z",
-                "EXDATE;TZID=Europe/Berlin:20261012T090000",
-            ),
-            (
-                "UTC",
-                false,
-                "UNTIL=20261026T090000Z",
-                "EXDATE:20261012T090000Z",
-            ),
-            (
-                "floating",
-                false,
-                "UNTIL=20261026T090000",
-                "EXDATE:20261012T090000",
-            ),
-            (
-                "floating",
-                true,
-                "UNTIL=20261026",
-                "EXDATE;VALUE=DATE:20261012",
-            ),
-        ] {
-            let start = date(5)
-                .and_hms_opt(if all_day { 0 } else { 9 }, 0, 0)
-                .unwrap();
-            let event = Event {
-                id: Uuid::new_v4(),
-                title: "Standup".into(),
-                start,
-                end: start + chrono::Duration::minutes(if all_day { 24 * 60 } else { 30 }),
-                all_day,
-                recurrence: Recurrence::Weekly,
-                recurrence_until: Some(date(26)),
-                recurrence_exdates: [date(12)].into_iter().collect(),
-                timezone: zone.into(),
-                ..Event::default()
-            };
-            let exported = export(&Calendar {
-                events: vec![event.clone()].into(),
-                ..Calendar::default()
-            });
-            assert!(
-                exported.contains(&format!("RRULE:FREQ=WEEKLY;{until}\r\n")),
-                "{exported}"
-            );
-            assert!(exported.contains(&format!("{exdate}\r\n")), "{exported}");
-            let (events, _) = parse(&exported);
-            let back = &events[0];
-            assert_eq!(
-                (
-                    back.recurrence_until,
-                    &back.recurrence_exdates,
-                    &back.timezone
-                ),
-                (
-                    event.recurrence_until,
-                    &event.recurrence_exdates,
-                    &event.timezone
-                )
-            );
-            let window = (date(1), date(31) + chrono::Duration::days(60));
-            assert_eq!(
-                back.occurrences_in(window.0, window.1),
-                vec![date(5), date(19), date(26)]
-            );
-            assert_eq!(
-                back.occurrences_in(window.0, window.1),
-                event.occurrences_in(window.0, window.1)
-            );
-        }
     }
 }

@@ -26,9 +26,10 @@ pub fn compare(left: &str, right: &str) -> Ordering {
 mod tests {
     use super::*;
 
-    #[test]
-    fn version_ordering_ranks_updates_per_channel() {
-        // phase: development_sequence_is_numeric_and_hash_does_not_rank_updates
+    tilo_test_env::scenario! {
+        fn version_ordering_ranks_updates_per_channel;
+
+        phase development_sequence_is_numeric_and_hash_does_not_rank_updates;
         {
             assert_eq!(
                 compare("0.1.1-dev.10+ga", "0.1.1-dev.9+gz"),
@@ -40,14 +41,16 @@ mod tests {
             );
             assert_eq!(compare("0.1.1", "0.1.1-dev.999"), Ordering::Greater);
         }
-        // phase: stable_channel_keeps_explicit_release_visible
+
+        phase stable_channel_keeps_explicit_release_visible;
         {
             assert!(!ReleaseChannel::Stable.accepts("0.1.1-dev.10+gabc"));
             assert!(ReleaseChannel::Stable.accepts("0.1.0"));
             assert!(ReleaseChannel::Development.accepts("0.1.1-dev.10+gabc"));
             assert!(ReleaseChannel::Stable.accepts("2026.09"));
         }
-        // phase: legacy_calver_and_opaque_ordering_is_retained
+
+        phase legacy_calver_and_opaque_ordering_is_retained;
         {
             assert_eq!(compare("2026.10", "2026.9"), Ordering::Greater);
             assert_eq!(compare("beta", "alpha"), Ordering::Greater);

@@ -132,82 +132,86 @@ mod tests {
         TopBarChrome::from_tree(&tree).with_chrome(chrome)
     }
 
-    /// The bar says who waved for a moment, then lets it go and wakes to take it away.
-    #[test]
-    fn the_bar_says_who_waved_for_a_moment() {
-        ui::i18n::I18nManager::init("en-US");
-        let workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
-        let tree = DesktopTree {
-            active: workspace.slot,
-            workspaces: vec![workspace],
-            ..DesktopTree::default()
-        };
-        let chrome = FixtureChrome::new(tree.clone());
-        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        let now = ui::time::now();
-        assert_eq!(bar.wave_notice_text(now), None, "nobody waved");
-        chrome.borrow_mut().waved = Some(WaveNotice {
-            from: "Eager Dolphin".into(),
-            at: now,
-        });
-        assert_eq!(
-            bar.wave_notice_text(now).as_deref(),
-            Some("Eager Dolphin waved at you")
-        );
-        let later = now.checked_add(WAVE_NOTICE_FOR).unwrap();
-        assert_eq!(bar.wave_notice_ends(now), Some(later));
-        assert_eq!(bar.wave_notice_text(later), None);
-        assert_eq!(bar.wave_notice_ends(later), None);
-    }
+    tilo_test_env::scenario! {
+        fn the_bar_says_who_waved_for_a_moment;
 
-    /// Where the bar is narrow, the waver's name gives way, never the words saying they waved.
-    #[test]
-    fn a_narrow_bar_shortens_the_name_never_the_words() {
-        let now = ui::time::now();
-        let bar = bar_waved_at_by("Gentle Dolphin", now);
-        let theme = Theme::default();
-        let mut text = TextRenderer::new();
-        let mut width =
-            |s: &str| ChipFace::intrinsic_width(s, WAVE_NOTICE_LEAD, false, &mut text, &theme);
-        let whole = width("Gentle Dolphin waved at you");
-        let tight = width("Gentle D\u{2026} waved at you");
-        let least = width("G\u{2026} waved at you");
-        let mut text = TextRenderer::new();
-        assert_eq!(
-            bar.wave_notice_fitted(now, whole, &mut text, &theme)
-                .as_deref(),
-            Some("Gentle Dolphin waved at you"),
-            "room for it all"
-        );
-        for room in [
-            whole - 1.0,
-            f64::midpoint(whole, tight),
-            tight,
-            f64::midpoint(tight, least),
-            least,
-        ] {
-            let fitted = bar
-                .wave_notice_fitted(now, room, &mut text, &theme)
-                .expect("the words fit");
-            assert!(
-                fitted.starts_with('G') && fitted.ends_with("\u{2026} waved at you"),
-                "{room}px: {fitted:?}"
+        phase the_bar_says_who_waved_for_a_moment;
+        // The bar says who waved for a moment, then lets it go and wakes to take it away.
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
+            let tree = DesktopTree {
+                active: workspace.slot,
+                workspaces: vec![workspace],
+                ..DesktopTree::default()
+            };
+            let chrome = FixtureChrome::new(tree.clone());
+            let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+            let now = ui::time::now();
+            assert_eq!(bar.wave_notice_text(now), None, "nobody waved");
+            chrome.borrow_mut().waved = Some(WaveNotice {
+                from: "Eager Dolphin".into(),
+                at: now,
+            });
+            assert_eq!(
+                bar.wave_notice_text(now).as_deref(),
+                Some("Eager Dolphin waved at you")
             );
-            assert!(
-                ChipFace::intrinsic_width(&fitted, WAVE_NOTICE_LEAD, false, &mut text, &theme)
-                    <= room,
-                "{fitted:?} fits {room}px"
+            let later = now.checked_add(WAVE_NOTICE_FOR).unwrap();
+            assert_eq!(bar.wave_notice_ends(now), Some(later));
+            assert_eq!(bar.wave_notice_text(later), None);
+            assert_eq!(bar.wave_notice_ends(later), None);
+        }
+
+        phase a_narrow_bar_shortens_the_name_never_the_words;
+        // Where the bar is narrow, the waver's name gives way, never the words saying they waved.
+        {
+            let now = ui::time::now();
+            let bar = bar_waved_at_by("Gentle Dolphin", now);
+            let theme = Theme::default();
+            let mut text = TextRenderer::new();
+            let mut width =
+                |s: &str| ChipFace::intrinsic_width(s, WAVE_NOTICE_LEAD, false, &mut text, &theme);
+            let whole = width("Gentle Dolphin waved at you");
+            let tight = width("Gentle D\u{2026} waved at you");
+            let least = width("G\u{2026} waved at you");
+            let mut text = TextRenderer::new();
+            assert_eq!(
+                bar.wave_notice_fitted(now, whole, &mut text, &theme)
+                    .as_deref(),
+                Some("Gentle Dolphin waved at you"),
+                "room for it all"
+            );
+            for room in [
+                whole - 1.0,
+                f64::midpoint(whole, tight),
+                tight,
+                f64::midpoint(tight, least),
+                least,
+            ] {
+                let fitted = bar
+                    .wave_notice_fitted(now, room, &mut text, &theme)
+                    .expect("the words fit");
+                assert!(
+                    fitted.starts_with('G') && fitted.ends_with("\u{2026} waved at you"),
+                    "{room}px: {fitted:?}"
+                );
+                assert!(
+                    ChipFace::intrinsic_width(&fitted, WAVE_NOTICE_LEAD, false, &mut text, &theme)
+                        <= room,
+                    "{fitted:?} fits {room}px"
+                );
+            }
+            assert_eq!(
+                bar.wave_notice_fitted(now, tight, &mut text, &theme)
+                    .as_deref(),
+                Some("Gentle D\u{2026} waved at you")
+            );
+            assert_eq!(
+                bar.wave_notice_fitted(now, least - 1.0, &mut text, &theme),
+                None,
+                "no room for the words: the bouncing face says it alone"
             );
         }
-        assert_eq!(
-            bar.wave_notice_fitted(now, tight, &mut text, &theme)
-                .as_deref(),
-            Some("Gentle D\u{2026} waved at you")
-        );
-        assert_eq!(
-            bar.wave_notice_fitted(now, least - 1.0, &mut text, &theme),
-            None,
-            "no room for the words: the bouncing face says it alone"
-        );
     }
 }

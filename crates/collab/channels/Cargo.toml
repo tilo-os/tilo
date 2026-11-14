@@ -27,7 +27,6 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "rt"] }
 tracing.workspace = true
-uuid.workspace = true
 zeroize.workspace = true
 # Crash-safe, owner-only state replacement on a host's own store.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }

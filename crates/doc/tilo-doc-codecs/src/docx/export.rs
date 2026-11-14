@@ -1849,7 +1849,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2167,7 +2166,6 @@ mod tests {
         0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2328,7 +2326,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2527,7 +2524,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2698,7 +2694,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2851,7 +2846,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -3343,7 +3337,6 @@ mod tests {
         (ins_id, del_id)
     }
 
-    #[test]
     fn section_columns_roundtrip_through_docx() {
         {
             // 2-column body with a gap must round-trip; sectPr carries `w:cols w:num="2" w:space="…"`.
@@ -3438,7 +3431,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn keeps_paragraph_properties_links_merged_cells_and_numbering() {
         let numbering = concat!(
             r#"<w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1)"/></w:lvl></w:abstractNum>"#,
@@ -3517,5 +3509,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(norm(&again.materialize()), norm(&snap));
+    }
+
+    #[test]
+    fn documents_roundtrip_through_docx() {
+        let cases: [(&str, fn()); 8] = [
+            (
+                "text and paragraph formatting roundtrips through docx",
+                text_and_paragraph_formatting_roundtrips_through_docx,
+            ),
+            (
+                "images roundtrip through docx",
+                images_roundtrip_through_docx,
+            ),
+            (
+                "lists tables and cross references roundtrip through docx",
+                lists_tables_and_cross_references_roundtrip_through_docx,
+            ),
+            (
+                "document properties and unmodeled parts roundtrip through docx",
+                document_properties_and_unmodeled_parts_roundtrip_through_docx,
+            ),
+            (
+                "headers and footers with page fields roundtrip through docx",
+                headers_and_footers_with_page_fields_roundtrip_through_docx,
+            ),
+            (
+                "notes comments and tracked changes roundtrip through docx",
+                notes_comments_and_tracked_changes_roundtrip_through_docx,
+            ),
+            (
+                "section columns roundtrip through docx",
+                section_columns_roundtrip_through_docx,
+            ),
+            (
+                "keeps paragraph properties links merged cells and numbering",
+                keeps_paragraph_properties_links_merged_cells_and_numbering,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

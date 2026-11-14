@@ -505,48 +505,53 @@ mod tests {
         list.iter().map(|mime| (*mime).to_owned()).collect()
     }
 
-    #[test]
-    fn text_offers_go_by_every_text_name_utf8_first_and_bad_names_are_dropped() {
-        let mimes = normalized_mimes(strings(&["text/plain", "image/png", "bad mime", ""]));
-        assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
-        for alias in TEXT_MIMES {
+    tilo_test_env::scenario! {
+        /// The formats a selection is offered and read under.
+        fn text_selections_go_by_every_text_name;
+
+        phase text_offers_go_by_every_text_name_utf8_first_and_bad_names_are_dropped;
+        {
+            let mimes = normalized_mimes(strings(&["text/plain", "image/png", "bad mime", ""]));
+            assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
+            for alias in TEXT_MIMES {
+                assert!(
+                    mimes.iter().any(|mime| mime == alias),
+                    "{alias} missing: {mimes:?}"
+                );
+            }
+            assert!(mimes.iter().any(|mime| mime == "image/png"));
             assert!(
-                mimes.iter().any(|mime| mime == alias),
-                "{alias} missing: {mimes:?}"
+                !mimes
+                    .iter()
+                    .any(|mime| mime.contains(' ') || mime.is_empty())
+            );
+            assert_eq!(
+                normalized_mimes(strings(&["image/png"])),
+                strings(&["image/png"])
             );
         }
-        assert!(mimes.iter().any(|mime| mime == "image/png"));
-        assert!(
-            !mimes
-                .iter()
-                .any(|mime| mime.contains(' ') || mime.is_empty())
-        );
-        assert_eq!(
-            normalized_mimes(strings(&["image/png"])),
-            strings(&["image/png"])
-        );
-    }
 
-    #[test]
-    fn text_is_read_under_any_of_its_names() {
-        let values = BTreeMap::from([("text/plain".to_owned(), b"hello".to_vec())]);
-        assert_eq!(value_for(&values, "UTF8_STRING"), Some(&b"hello"[..]));
-        assert_eq!(value_for(&values, TEXT_MIME), Some(&b"hello"[..]));
-        assert_eq!(value_for(&values, "image/png"), None);
-    }
+        phase text_is_read_under_any_of_its_names;
+        {
+            let values = BTreeMap::from([("text/plain".to_owned(), b"hello".to_vec())]);
+            assert_eq!(value_for(&values, "UTF8_STRING"), Some(&b"hello"[..]));
+            assert_eq!(value_for(&values, TEXT_MIME), Some(&b"hello"[..]));
+            assert_eq!(value_for(&values, "image/png"), None);
+        }
 
-    #[test]
-    fn hosted_offers_are_bounded_and_empty_ones_offer_nothing() {
-        assert_eq!(host_offer(Vec::new()), None);
-        assert_eq!(host_offer(vec![("bad mime".into(), b"x".to_vec())]), None);
-        let huge = vec![
-            ("text/plain".to_owned(), vec![b'a'; MAX_SELECTION_BYTES]),
-            ("text/html".to_owned(), vec![b'b'; 16]),
-        ];
-        let kept = host_offer(huge).expect("the first format fits");
-        assert_eq!(
-            kept.keys().cloned().collect::<Vec<_>>(),
-            strings(&["text/plain"])
-        );
+        phase hosted_offers_are_bounded_and_empty_ones_offer_nothing;
+        {
+            assert_eq!(host_offer(Vec::new()), None);
+            assert_eq!(host_offer(vec![("bad mime".into(), b"x".to_vec())]), None);
+            let huge = vec![
+                ("text/plain".to_owned(), vec![b'a'; MAX_SELECTION_BYTES]),
+                ("text/html".to_owned(), vec![b'b'; 16]),
+            ];
+            let kept = host_offer(huge).expect("the first format fits");
+            assert_eq!(
+                kept.keys().cloned().collect::<Vec<_>>(),
+                strings(&["text/plain"])
+            );
+        }
     }
 }

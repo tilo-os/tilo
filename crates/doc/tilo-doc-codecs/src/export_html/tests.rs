@@ -55,7 +55,6 @@ fn count(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()
 }
 
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -303,7 +302,6 @@ fn html_export_block_structure_images_and_scaffolding() {
     }
 }
 
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -628,7 +626,6 @@ fn html_export_escapes_and_neutralises_hostile_content() {
     }
 }
 
-#[test]
 fn html_export_marks_split_runs_at_boundaries() {
     {
         let mut p = block("paragraph", "styled");
@@ -725,5 +722,27 @@ fn html_export_marks_split_runs_at_boundaries() {
             html.contains("<strong>héll</strong>o"),
             "multibyte boundary respected:\n{html}"
         );
+    }
+}
+
+#[test]
+fn html_export_writes_blocks_lists_and_marks() {
+    let cases: [(&str, fn()); 3] = [
+        (
+            "html export block structure images and scaffolding",
+            html_export_block_structure_images_and_scaffolding,
+        ),
+        (
+            "html export lists nest and number",
+            html_export_lists_nest_and_number,
+        ),
+        (
+            "html export marks split runs at boundaries",
+            html_export_marks_split_runs_at_boundaries,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
     }
 }

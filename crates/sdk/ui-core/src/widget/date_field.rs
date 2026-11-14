@@ -403,110 +403,116 @@ impl Decorator for DateField {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_picked_day_is_shown_and_reported_and_clearing_reports_no_date() {
-        let reported: Rc<Cell<Option<Option<NaiveDate>>>> = Rc::default();
-        let seen = Rc::clone(&reported);
-        let day = NaiveDate::from_ymd_opt(2026, 10, 24);
-        let mut field = DateField::new("due", None, true).on_change(move |value| {
-            seen.set(Some(value));
-        });
-        assert_eq!(DateField::label(None, None), "Add date");
-        field.picked.set(Some(day));
-        assert!(field.take_pick());
-        assert_eq!(field.value(), day);
-        assert_eq!(reported.take(), Some(day));
-        field.picked.set(Some(None));
-        assert!(field.take_pick());
-        assert_eq!(field.value(), None);
-        assert_eq!(reported.take(), Some(None));
-    }
+    tilo_test_env::scenario! {
+        /// What a date field shows and reports.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_date_field_shows_reports_and_follows_its_day;
 
-    #[test]
-    fn a_day_with_its_time_reads_as_one_fact() {
-        let nine = NaiveTime::from_hms_opt(9, 0, 0);
-        let day = crate::clock::today();
-        assert_eq!(
-            DateField::label(Some(day), nine),
-            crate::format::day_fact_today(day, nine).text,
-            "the chip says the day as the platform reads a day, with its time"
-        );
-        assert_eq!(
-            DateField::label(Some(day), None),
-            "Today",
-            "a day with no time says only the day"
-        );
-    }
+        phase a_picked_day_is_shown_and_reported_and_clearing_reports_no_date;
+        {
+            let reported: Rc<Cell<Option<Option<NaiveDate>>>> = Rc::default();
+            let seen = Rc::clone(&reported);
+            let day = NaiveDate::from_ymd_opt(2026, 10, 24);
+            let mut field = DateField::new("due", None, true).on_change(move |value| {
+                seen.set(Some(value));
+            });
+            assert_eq!(DateField::label(None, None), "Add date");
+            field.picked.set(Some(day));
+            assert!(field.take_pick());
+            assert_eq!(field.value(), day);
+            assert_eq!(reported.take(), Some(day));
+            field.picked.set(Some(None));
+            assert!(field.take_pick());
+            assert_eq!(field.value(), None);
+            assert_eq!(reported.take(), Some(None));
+        }
 
-    #[test]
-    fn a_late_day_reads_in_the_overdue_tone() {
-        let today = crate::clock::today();
-        let tomorrow = today.succ_opt().expect("a day");
-        let late = today.pred_opt().expect("a day");
-        assert_eq!(DateField::fact(Some(tomorrow), None).1, Tone::Neutral);
-        assert_eq!(DateField::fact(Some(late), None).1, Tone::Danger);
-    }
+        phase a_day_with_its_time_reads_as_one_fact;
+        {
+            let nine = NaiveTime::from_hms_opt(9, 0, 0);
+            let day = crate::clock::today();
+            assert_eq!(
+                DateField::label(Some(day), nine),
+                crate::format::day_fact_today(day, nine).text,
+                "the chip says the day as the platform reads a day, with its time"
+            );
+            assert_eq!(
+                DateField::label(Some(day), None),
+                "Today",
+                "a day with no time says only the day"
+            );
+        }
 
-    #[test]
-    fn a_date_from_elsewhere_is_shown_without_being_reported() {
-        let reported: Rc<Cell<bool>> = Rc::default();
-        let seen = Rc::clone(&reported);
-        let mut field = DateField::new("due", None, false).on_change(move |_| seen.set(true));
-        let day = NaiveDate::from_ymd_opt(2026, 11, 2).expect("a day");
-        field.set_value(Some(day));
-        assert_eq!(field.value(), Some(day));
-        assert!(!field.take_pick());
-        assert!(!reported.get());
-        assert_eq!(
-            field.shown.with(|shown| *shown),
-            day,
-            "the calendar follows the day the field shows"
-        );
-    }
+        phase a_late_day_reads_in_the_overdue_tone;
+        {
+            let today = crate::clock::today();
+            let tomorrow = today.succ_opt().expect("a day");
+            let late = today.pred_opt().expect("a day");
+            assert_eq!(DateField::fact(Some(tomorrow), None).1, Tone::Neutral);
+            assert_eq!(DateField::fact(Some(late), None).1, Tone::Danger);
+        }
 
-    #[test]
-    fn a_time_from_elsewhere_changes_only_what_the_chip_says() {
-        let day = NaiveDate::from_ymd_opt(2026, 6, 30);
-        let mut field = DateField::new("due", day, true);
-        field.set_at(NaiveTime::from_hms_opt(9, 0, 0));
-        assert_eq!(field.at(), NaiveTime::from_hms_opt(9, 0, 0));
-        assert_eq!(
-            field.value(),
-            day,
-            "the day a time is set for stays the day it was"
-        );
-    }
+        phase a_date_from_elsewhere_is_shown_without_being_reported;
+        {
+            let reported: Rc<Cell<bool>> = Rc::default();
+            let seen = Rc::clone(&reported);
+            let mut field = DateField::new("due", None, false).on_change(move |_| seen.set(true));
+            let day = NaiveDate::from_ymd_opt(2026, 11, 2).expect("a day");
+            field.set_value(Some(day));
+            assert_eq!(field.value(), Some(day));
+            assert!(!field.take_pick());
+            assert!(!reported.get());
+            assert_eq!(
+                field.shown.with(|shown| *shown),
+                day,
+                "the calendar follows the day the field shows"
+            );
+        }
 
-    #[test]
-    fn a_bound_day_shows_and_one_set_while_the_calendar_is_open_waits_for_it() {
-        let state = crate::LocalState::new("2026-06-30".to_owned());
-        let mut field = DateField::from_state("due", &state, true, None, Vec::new(), None, false);
-        assert_eq!(
-            field.value(),
-            NaiveDate::from_ymd_opt(2026, 6, 30),
-            "the day the binding holds is shown"
-        );
-        state.set("2026-07-01".to_owned());
-        Decorator::sync(&mut field, &(), &());
-        assert_eq!(
-            field.value(),
-            NaiveDate::from_ymd_opt(2026, 7, 1),
-            "a day set elsewhere shows in place"
-        );
-        field.inner_mut().open();
-        state.set("2026-07-02".to_owned());
-        Decorator::sync(&mut field, &(), &());
-        assert_eq!(
-            field.value(),
-            NaiveDate::from_ymd_opt(2026, 7, 1),
-            "a day set while the calendar is open does not move it"
-        );
-        field.inner_mut().close();
-        assert!(Decorator::update(&mut field, &(), &()));
-        assert_eq!(
-            field.value(),
-            NaiveDate::from_ymd_opt(2026, 7, 2),
-            "the day it took shows once the calendar closes"
-        );
+        phase a_time_from_elsewhere_changes_only_what_the_chip_says;
+        {
+            let day = NaiveDate::from_ymd_opt(2026, 6, 30);
+            let mut field = DateField::new("due", day, true);
+            field.set_at(NaiveTime::from_hms_opt(9, 0, 0));
+            assert_eq!(field.at(), NaiveTime::from_hms_opt(9, 0, 0));
+            assert_eq!(
+                field.value(),
+                day,
+                "the day a time is set for stays the day it was"
+            );
+        }
+
+        phase a_bound_day_shows_and_one_set_while_the_calendar_is_open_waits_for_it;
+        {
+            let state = crate::LocalState::new("2026-06-30".to_owned());
+            let mut field = DateField::from_state("due", &state, true, None, Vec::new(), None, false);
+            assert_eq!(
+                field.value(),
+                NaiveDate::from_ymd_opt(2026, 6, 30),
+                "the day the binding holds is shown"
+            );
+            state.set("2026-07-01".to_owned());
+            Decorator::sync(&mut field, &(), &());
+            assert_eq!(
+                field.value(),
+                NaiveDate::from_ymd_opt(2026, 7, 1),
+                "a day set elsewhere shows in place"
+            );
+            field.inner_mut().open();
+            state.set("2026-07-02".to_owned());
+            Decorator::sync(&mut field, &(), &());
+            assert_eq!(
+                field.value(),
+                NaiveDate::from_ymd_opt(2026, 7, 1),
+                "a day set while the calendar is open does not move it"
+            );
+            field.inner_mut().close();
+            assert!(Decorator::update(&mut field, &(), &()));
+            assert_eq!(
+                field.value(),
+                NaiveDate::from_ymd_opt(2026, 7, 2),
+                "the day it took shows once the calendar closes"
+            );
+        }
     }
 }

@@ -73,7 +73,8 @@ use tilolang_runtime::store::{
 use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{
-    Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
+    Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, edit_seed, outbox_entries,
+    read_resource, read_subject, subject_of,
 };
 use crate::background::Waker;
 use crate::chunk::{self, ChunkNo, Chunks, Stamps};
@@ -195,6 +196,13 @@ struct LocalWrite {
     chunk: ChunkNo,
     edit: DynEdit,
     seed: Vec<u8>,
+    /// Its place among the store's writes into its chunk when it was written: the ids it mints
+    /// are drawn from it, as replaying its action draws them ([`crate::action::edit_seed`]).
+    index: usize,
+    /// For the first write of an action into its chunk that names a resource, that resource as
+    /// the chunk held it before the write, read for the action's app: what the action's history
+    /// entry is titled by ([`crate::action::read_subject`]).
+    subject: Option<(AppId, Option<crate::action::Subject>)>,
     touched: Vec<FieldKey>,
     /// The collection items it added, removed or moved, by each collection they joined or
     /// left.
@@ -306,10 +314,16 @@ pub struct StoreStats {
     pub incremental_syncs: u64,
     /// Syncs that had to copy the whole record: the mirror held a change of its own.
     pub full_syncs: u64,
+    /// Actions whose writes the store made became their change as written, with nothing
+    /// applied a second time ([`TiloStore::commit_open`]).
+    pub written_once: u64,
     /// Indexes built from the record whole, there being none to read (or none to trust).
     pub builds: u64,
     /// Indexes brought up to date from the heads they were stamped with.
     pub catch_ups: u64,
+    /// Of those, the ones a store no frame wakes derived on the frame that asked, in its own
+    /// time ([`Inner::catch_up`]).
+    pub catch_ups_in_frame: u64,
     /// Indexes written: one commit of the rows a change derived, per package the change reached.
     /// A change one package made writes that package's index alone, whatever else a workspace
     /// holds.
@@ -408,6 +422,13 @@ struct Inner {
     /// Where a chunk the store was not sent comes from when something reads into it or a write
     /// is addressed to it ([`TiloStore::set_chunk_loader`]).
     chunk_loader: Option<ChunkLoader>,
+    /// Whether the store holds the record's chunks as their holder's one copy
+    /// ([`TiloStore::adopt`]): the chunks above the record it has not read yet are among them.
+    adopted: bool,
+    /// Who the record's holder writes as: an action's writes into a chunk with no other open
+    /// writes are made under this actor, so they are the change the holder commits for it
+    /// ([`TiloStore::commit_open`]).
+    author: Option<automerge::ActorId>,
     /// The chunks the store asked its source for and the source cannot give: they are not on
     /// this device yet, or the peer holding them is away. Each is asked for once and waited on:
     /// the sync that brings it reads it then ([`Inner::attach_document`]), and a window reads
@@ -705,6 +726,15 @@ fn invalid(what: impl Into<String>) -> StoreError {
     StoreError::Invalid(what.into())
 }
 
+/// `error` as the store answers it: a reason a window tells someone stays the reason, so the
+/// window can say what happened instead of the plumbing, and every other fault is its words.
+fn edit_refused(error: tilo_actions::ActionError) -> StoreError {
+    match error {
+        tilo_actions::ActionError::Declined(reason) => StoreError::Declined(reason),
+        other => invalid(other.to_string()),
+    }
+}
+
 fn not_found(what: impl Into<String>) -> StoreError {
     StoreError::NotFound(what.into())
 }
@@ -722,16 +752,17 @@ impl TiloStore {
     #[must_use]
     pub fn new(record: &Doc) -> Self {
         let store = Self::empty(None);
-        store.mutate().attach_document(chunk::FIRST, record);
+        store.mutate().attach_document(chunk::FIRST, record.clone());
         store
     }
 
-    /// A store without the record yet, reading the indexes kept in `dir`: what opens a workspace
-    /// before its record is loaded. Packages whose index is missing show nothing until the
-    /// record is had ([`Self::sync_from`], or the [`Loader`]).
+    /// A store without the record yet, reading the indexes kept in `dir` (`None`: built in
+    /// memory): what opens a workspace before its record is loaded, or before its holder hands
+    /// the record's chunks over ([`Self::adopt`]). Packages whose index is missing show nothing
+    /// until the record is had ([`Self::sync_from`], or the [`Loader`]).
     #[must_use]
-    pub fn detached(dir: PathBuf) -> Self {
-        Self::empty(Some(dir))
+    pub fn detached(dir: Option<PathBuf>) -> Self {
+        Self::empty(dir)
     }
 
     fn empty(index_dir: Option<PathBuf>) -> Self {
@@ -753,6 +784,8 @@ impl TiloStore {
                 index_dir,
                 loader: None,
                 chunk_loader: None,
+                adopted: false,
+                author: None,
                 waited: BTreeSet::new(),
                 wake: None,
                 doc_reads: std::cell::Cell::default(),
@@ -848,6 +881,12 @@ impl TiloStore {
                 )
             })
             .collect()
+    }
+
+    /// Whether the store holds chunk `chunk`.
+    #[must_use]
+    pub(crate) fn holds_chunk(&self, chunk: ChunkNo) -> bool {
+        self.held().chunks.mirror(chunk).is_some()
     }
 
     /// What the store did so far.
@@ -1956,12 +1995,23 @@ impl Inner {
         // A run's manifest is written before what it places reads it: the next edit of the same
         // action sees the run the last one recorded.
         let manifest = matches!(edit.bare(), DynEdit::RunChunk { .. });
-        let applied = apply_edits(
-            self.chunks.open(chunk),
-            app,
-            std::slice::from_ref(&edit),
-            seed,
-        );
+        let mut held = self.local.iter().filter(|write| write.chunk == chunk);
+        let index = held.clone().count();
+        let named = held.any(|write| subject_of(write.edit.bare()));
+        let doc = self.chunks.open(chunk);
+        // An action's first write into a chunk that holds no other open writes writes as the
+        // record's holder, who commits it as the action's change.
+        if !derived
+            && index == 0
+            && doc.pending_ops() == 0
+            && let Some(author) = self.author.as_ref()
+            && doc.get_actor() != author
+        {
+            doc.set_actor(author.clone());
+        }
+        let subject = (!derived && !named && subject_of(edit.bare()))
+            .then(|| (AppId::from(app), read_subject(app, edit.bare(), doc)));
+        let applied = apply_edits(doc, app, std::slice::from_ref(&edit), &edit_seed(index));
         if manifest {
             self.chunks.reread_placement();
         }
@@ -1970,6 +2020,8 @@ impl Inner {
             chunk,
             edit,
             seed: seed.to_vec(),
+            index,
+            subject,
             touched: touched.to_vec(),
             items,
             placed,
@@ -1983,10 +2035,15 @@ impl Inner {
             self.derive_write(&mut write);
         }
         self.touch(&write);
-        applied.map_err(|error| invalid(error.to_string()))?;
+        applied.map_err(edit_refused)?;
         let reached = write.touched.clone();
         self.local.push(write);
         Ok(reached)
+    }
+
+    /// Whether the store can have a chunk it was not sent: from its holder, or its loader.
+    fn can_load(&self) -> bool {
+        self.adopted || self.chunk_loader.is_some()
     }
 
     /// Drop the open transaction of the chunk `chunk`'s mirror, if it has one.

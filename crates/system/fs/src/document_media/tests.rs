@@ -79,6 +79,47 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
     }
 }
 
+/// Every store answers for the empty content without anyone having put it, so only a
+/// workspace's reference decides who reads it.
+#[tokio::test]
+async fn the_empty_attachment_is_readable_only_where_it_was_stored() {
+    let media = DocumentMedia::new(Arc::new(ContentStore::memory()));
+    let photos = scope("workspace-1", "so.tilo.photos");
+    let other = scope("workspace-2", "so.tilo.photos");
+    let empty = Hash::from(*blake3::hash(b"").as_bytes());
+
+    for unreferenced in [&photos, &other] {
+        assert_eq!(
+            media
+                .read_range(unreferenced.clone(), empty, 0, u32::MAX)
+                .await,
+            ReadOutcome::Unavailable,
+            "the empty content was read before anyone stored it"
+        );
+        assert!(!media.contains(unreferenced, empty).await);
+        assert_eq!(media.len_of(unreferenced, empty).await, None);
+    }
+
+    assert_eq!(media.store(&photos, Vec::new()).await.unwrap(), empty);
+    assert_eq!(
+        media.read_range(photos.clone(), empty, 0, u32::MAX).await,
+        ReadOutcome::Ready {
+            bytes: Vec::new(),
+            total_len: 0,
+        }
+    );
+    assert!(media.contains(&photos, empty).await);
+    assert_eq!(media.len_of(&photos, empty).await, Some(0));
+
+    assert_eq!(
+        media.read_range(other.clone(), empty, 0, u32::MAX).await,
+        ReadOutcome::Unavailable,
+        "another workspace read the empty content this one stored"
+    );
+    assert!(!media.contains(&other, empty).await);
+    assert_eq!(media.len_of(&other, empty).await, None);
+}
+
 #[tokio::test]
 async fn ranged_reads_after_a_restart_read_only_the_range() {
     let dir = tempfile::tempdir().unwrap();
@@ -683,59 +724,63 @@ fn device_backend_rejects_oversize_without_buffering() {
     );
 }
 
-#[test]
-fn device_backend_open_is_verified_at_eof() {
-    let harness = DeviceHarness::start();
-    let data = pattern(64 * 1024);
-    let hash = harness.store.put(&data).unwrap();
+tilo_test_env::scenario! {
+    fn the_device_backend_verifies_reads_and_answers_state_without_downloading;
 
-    harness
-        .observed
-        .tamper
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(
-        harness.read_through(&hash).unwrap_err().kind(),
-        std::io::ErrorKind::InvalidData,
-        "other bytes than the address names fail at the end"
-    );
-    assert!(harness.store.read(&hash).is_none());
+    phase device_backend_open_is_verified_at_eof;
+    {
+        let harness = DeviceHarness::start();
+        let data = pattern(64 * 1024);
+        let hash = harness.store.put(&data).unwrap();
 
-    harness
-        .observed
-        .tamper
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    let before = harness.reads().len();
-    assert_eq!(harness.read_through(&hash).unwrap(), data);
-    assert!(harness.reads().len() > before);
+        harness
+            .observed
+            .tamper
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            harness.read_through(&hash).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "other bytes than the address names fail at the end"
+        );
+        assert!(harness.store.read(&hash).is_none());
 
-    let before = harness.reads().len();
-    assert_eq!(harness.read_through(&hash).unwrap(), data);
-    assert_eq!(harness.reads().len(), before);
-}
+        harness
+            .observed
+            .tamper
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let before = harness.reads().len();
+        assert_eq!(harness.read_through(&hash).unwrap(), data);
+        assert!(harness.reads().len() > before);
 
-#[test]
-fn device_backend_state_does_not_download() {
-    let harness = DeviceHarness::start();
-    let data = pattern(9 * 1024 * 1024);
-    let hash = harness.store.put(&data).unwrap();
-    let daemon_hash = hash.parse().unwrap();
-    harness.daemon_store.forget_cached(daemon_hash);
-    assert_eq!(
-        harness.store.state(&hash),
-        tilo_content::ContentState::Resolved
-    );
-    assert!(!harness.daemon_store.is_cached(daemon_hash));
-    let absent = blake3::hash(b"never stored").to_hex().to_string();
-    assert_eq!(
-        harness.store.state(&absent),
-        tilo_content::ContentState::Unavailable
-    );
-    let reads = harness.reads();
-    assert_eq!(reads.len(), 2);
-    assert!(
-        reads.iter().all(|max_len| *max_len == 0),
-        "state() asked for content: {reads:?}"
-    );
+        let before = harness.reads().len();
+        assert_eq!(harness.read_through(&hash).unwrap(), data);
+        assert_eq!(harness.reads().len(), before);
+    }
+
+    phase device_backend_state_does_not_download;
+    {
+        let harness = DeviceHarness::start();
+        let data = pattern(9 * 1024 * 1024);
+        let hash = harness.store.put(&data).unwrap();
+        let daemon_hash = hash.parse().unwrap();
+        harness.daemon_store.forget_cached(daemon_hash);
+        assert_eq!(
+            harness.store.state(&hash),
+            tilo_content::ContentState::Resolved
+        );
+        assert!(!harness.daemon_store.is_cached(daemon_hash));
+        let absent = blake3::hash(b"never stored").to_hex().to_string();
+        assert_eq!(
+            harness.store.state(&absent),
+            tilo_content::ContentState::Unavailable
+        );
+        let reads = harness.reads();
+        assert_eq!(reads.len(), 2);
+        assert!(
+            reads.iter().all(|max_len| *max_len == 0),
+            "state() asked for content: {reads:?}"
+        );
+    }
 }
 
 #[test]

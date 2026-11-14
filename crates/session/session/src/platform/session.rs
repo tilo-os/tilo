@@ -196,6 +196,10 @@ impl Session {
         let continuity = crate::platform::fabric::Continuity::default();
         continuity.read(&settings_store::load());
         let watched_continuity = continuity.clone();
+        // Where the person placed their devices' screens beside each other, which the pointer
+        // crosses between them by.
+        let arranged = crate::shared_input::Arranged::loaded();
+        let watched_arranged = arranged.clone();
         // The bar's own setting, read on the same watch: it changes what the
         // desk's band takes and when the bars show.
         let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
@@ -230,6 +234,7 @@ impl Session {
             watched_wallpapers.follow(&document);
             crate::desk::follow_prefs(&watched_widgets, &document);
             watched_continuity.read(&document);
+            watched_arranged.read(&document);
             watched_night_light.read(&document);
             crate::ambient_brightness::read(&watched_auto, &document);
             watched_hide.store(
@@ -274,6 +279,19 @@ impl Session {
             .map_or_else(crate::platform::records::Changes::default, |records| {
                 records.changes()
             });
+        // What each open window shows, as the broker knows it: the desk offers the windows a person
+        // may share from, and the sharing doors read it.
+        let notes = options.launches.notes();
+        // The workspaces' layouts, which hold the desk itself: what every member shows, and what a
+        // change of it is written into.
+        let desktops = Rc::new(
+            crate::shared_desktop::SharedDesktops::new(
+                std::sync::Arc::clone(&notes),
+                options.wake.clone(),
+                options.person.clone(),
+            )
+            .hosting(crate::apps::runs_on_its_device),
+        );
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),
             options.person.clone(),
@@ -282,6 +300,10 @@ impl Session {
             Some(std::sync::Arc::new(options.lists.clone())
                 as std::sync::Arc<dyn crate::platform::apps::Apps>),
             Some(options.wake.handle()),
+            Box::new(crate::shared_desktop::LayoutHistory::new(
+                Rc::clone(&desktops),
+                &options.person,
+            )),
         );
         tilo_startup_metrics::mark("session-activity-done");
         // When each display's bar shows over the window covering it: the desk's
@@ -316,33 +338,16 @@ impl Session {
         desktop.set_theme(presentation.theme.clone());
         tilo_startup_metrics::mark("desk-build-done");
         let handle = desktop.with_policy(|policy| policy.handle().clone());
-        // The desk as this device left it: its workspaces, the windows they
-        // held, and the apps those windows open again.
-        let mut restore = crate::desk_restore::Restore::default();
-        match activity.opened_desk() {
-            crate::desk_doc::Kept::Desk(kept) => {
-                let mut kept = *kept;
-                // A launch that no window came for is not a window this start
-                // restores, and keeping it would leave one more of them on the
-                // desk with every restart.
-                crate::desk_restore::without_unfilled(&mut kept);
-                restore = crate::desk_restore::Restore::of(&kept);
-                handle.replace_tree(kept);
-            }
-            // The person's desk is on disk and this session did not open it:
-            // they are looking at a desk that is not theirs, and have to be
-            // told where their own still is.
-            crate::desk_doc::Kept::Refused(refusal) => {
-                crate::notices::tell_desk_not_opened(&notifications, &refusal);
-            }
-            crate::desk_doc::Kept::None => {}
+        // The desk is the workspaces' layouts, which the first pass lays out as their records hold
+        // them; what this device keeps of its own is what it showed.
+        let restore = crate::desk_restore::Restore::default();
+        let mut tree = handle.read(Clone::clone);
+        if activity.show(&mut tree) {
+            handle.replace_tree(tree);
         }
-        // What each window shows, as the broker knows it: the desk offers the
-        // windows a person may share from, and the sharing doors read it.
-        let notes = options.launches.notes();
-        // The person's arrangement: the desk this session holds, which the
-        // workspace shares as its own desk record.
-        let arrangement = crate::arrangement::open(&options.person, handle.clone(), &activity);
+        // The person's arrangement: the desk this session holds, whose layout the workspaces keep.
+        let arrangement =
+            crate::arrangement::open(&options.person, handle.clone(), Rc::clone(&desktops));
         let arrangement = Rc::new(RefCell::new(arrangement));
         // Whether the person is mid-gesture or typing, as only the
         // compositor knows: what an arranging action that is not their own
@@ -729,6 +734,14 @@ impl Session {
             // Notifications continue on the person's other devices.
             notifications.borrow().attach_fabric(Arc::clone(link));
         }
+        // The person's one keyboard and pointer, across the screens of their devices.
+        let shared_input = fabric.as_ref().map(|link| {
+            Arc::new(crate::shared_input::SharedInput::new(
+                Arc::clone(link),
+                continuity.clone(),
+                arranged,
+            ))
+        });
         // Nearby Send: one engine for every file that leaves this device for
         // another of the person's, whether a screenshot the studio sends or a
         // file Files hands over. It stages into this machine's own spool, and
@@ -1004,6 +1017,7 @@ impl Session {
             file_picker,
             directory,
             invite,
+            pair_device,
             delete_workspace,
             display_confirm,
             displays: display_seat,
@@ -1454,9 +1468,9 @@ impl Session {
                         .read(|tree| {
                             tree.workspaces
                                 .iter()
-                                .flat_map(|workspace| workspace.collaborators.iter())
-                                .find(|collaborator| collaborator.id == person)
-                                .map(|collaborator| collaborator.name.clone())
+                                .flat_map(|workspace| workspace.members.iter())
+                                .find(|member| member.id == collab_types::MemberId::person(person))
+                                .map(|member| member.name.clone())
                                 .filter(|name| !name.is_empty())
                         })
                         .unwrap_or_else(tilo_desktop::here::guest_label)
@@ -1464,6 +1478,9 @@ impl Session {
                 wake: Some(options.wake.handle()),
             })
         });
+        let adding = crate::pair_device::Adding::new(
+            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>
+        );
         let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
         // A share's write into a workspace's governance answers through the same landings.
         window_shares
@@ -1496,8 +1513,7 @@ impl Session {
             restore: RefCell::new(restore),
             drives: options.drives,
             asks,
-            send_from: Cell::default(),
-            report_from: Cell::default(),
+            box_ask: Cell::default(),
             feedback,
             intents,
             quick_settings: crate::quick_settings::installed(&options.surfaces),
@@ -1530,6 +1546,7 @@ impl Session {
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: crate::wake::Wake::new(&options.wake_seams),
+            keyboard_and_pointer: shared_input,
             wake_handle: options.wake.handle(),
             music,
             power,
@@ -1544,6 +1561,8 @@ impl Session {
             directory,
             invite,
             inviting,
+            pair_device,
+            adding,
             delete_workspace,
             delete_workspace_ask: RefCell::default(),
             directory_store,
@@ -1581,11 +1600,7 @@ impl Session {
             folder_import: RefCell::new(None),
             sync,
             engine,
-            desktops: crate::shared_desktop::SharedDesktops::new(
-                std::sync::Arc::clone(&notes),
-                options.wake.clone(),
-            )
-            .hosting(crate::apps::runs_on_its_device),
+            desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),
             landings,
@@ -1613,10 +1628,6 @@ impl Session {
             controller_keys,
             app_sheets,
         };
-        // A package the person opens authors its own records in the workspace
-        // it opens in, as the person there: the workspace's governance gives
-        // it before the process is planned, so the app starts able to keep
-        // what they do in it.
         // An app of a workspace this device waits for its host to admit it to is not started:
         // whoever asked hears why at once (`Apps::spawn`).
         if let (Some(launch), Some(engine)) = (&shared.launch, &shared.engine) {
@@ -1624,54 +1635,6 @@ impl Session {
             launch.lend_admission(Rc::new(move |workspace: &str| {
                 crate::agent_door::awaited_reason(&engine, &handle, workspace)
             }));
-        }
-        if let Some(launch) = &shared.launch {
-            let handle = shared.handle.clone();
-            let engine = shared.engine.clone();
-            let landings = Rc::clone(&shared.landings);
-            let apps = Rc::downgrade(launch);
-            launch.lend_authorship(Rc::new(
-                move |workspace: &str, app: &str, then: Box<dyn FnOnce(&crate::apps::Apps)>| {
-                    let apps = apps.clone();
-                    let start = move || {
-                        if let Some(apps) = apps.upgrade() {
-                            then(&apps);
-                        }
-                    };
-                    let desk = crate::governance::Desk(&handle);
-                    let granting =
-                        match crate::membership::authorship(engine.as_ref(), &desk, workspace, app)
-                        {
-                            Ok(Some(granting)) => granting,
-                            Ok(None) => return start(),
-                            Err(error) => {
-                                not_authored(workspace, app, &error);
-                                return start();
-                            }
-                        };
-                    // The workspace's governance signs the grant off the loop; the launch starts
-                    // once it landed, and asking again then takes the grant onto the desk.
-                    let (engine, handle) = (engine.clone(), handle.clone());
-                    let (workspace, app) = (workspace.to_owned(), app.to_owned());
-                    landings.then(crate::landing::off_loop(granting), move |granted| {
-                        let desk = crate::governance::Desk(&handle);
-                        let taken = granted
-                            .unwrap_or_else(|| Err("the grant was given up".into()))
-                            .and_then(|()| {
-                                crate::membership::authorship(
-                                    engine.as_ref(),
-                                    &desk,
-                                    &workspace,
-                                    &app,
-                                )
-                            });
-                        if let Err(error) = taken {
-                            not_authored(&workspace, &app, &error);
-                        }
-                        start();
-                    });
-                },
-            ));
         }
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
@@ -1720,18 +1683,22 @@ impl Session {
                     Rc::clone(&shared.devices.handed),
                 )));
         }
-        // The broker decides a granted reading when the app asks, which is
-        // before this loop's first pass: what the services declare is read
-        // here, with every service mounted, so a connection that arrives as
-        // the session starts meets the workspace's grants and not an empty
-        // declaration.
-        if let Some(plane) = &action_plane {
-            plane.link.declare(&shared.services.borrow());
-        }
         // What the portal brings comes from any thread, and wakes the loop
         // instead of waiting for its next turn.
-        if let Some(portal) = &options.portal {
-            compositor.set_input_observer(Some(portal.input_observer()));
+        // This device's input goes first to the person's device it drives, then to an app's input
+        // capture.
+        let captures = options
+            .portal
+            .as_ref()
+            .map(crate::portal_link::SessionLink::input_observer);
+        let sharing = shared.keyboard_and_pointer.clone();
+        if captures.is_some() || sharing.is_some() {
+            compositor.set_input_observer(Some(Arc::new(move |input| {
+                sharing
+                    .as_ref()
+                    .is_some_and(|sharing| sharing.observe(input))
+                    || captures.as_ref().is_some_and(|captures| captures(input))
+            })));
         }
         let loop_wake = compositor.waker();
         // Signing in does not change the login screens; what the person
@@ -2310,9 +2277,6 @@ impl Session {
     ) -> Result<ResourceOperationStart, DoorError> {
         let empty = serde_json::Map::new();
         let arguments = arguments.as_object().unwrap_or(&empty);
-        if let Ok(mut arrangement) = self.shared.arrangement.try_borrow_mut() {
-            let _ = &mut arrangement;
-        }
         self.shared.doors.invoke_as(
             actor,
             &ActionAddress::new(resource, action),
@@ -2814,11 +2778,6 @@ impl LoopTurns for Turns {
     fn unparked(&self) {
         self.0.unparked();
     }
-}
-
-/// Say that the app `app` opening in `workspace` was not let author its records there.
-fn not_authored(workspace: &str, app: &str, error: &str) {
-    tracing::warn!(%workspace, app, %error, "an opening app was not let author its workspace");
 }
 
 /// Every resource of `resource` and its children: what an app publishes is found among these,

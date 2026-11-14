@@ -452,336 +452,362 @@ mod tests {
         DeviceCaps::default()
     }
 
-    #[test]
-    fn defaults_tap_on_a_laptop_and_keep_wheels_conventional() {
-        // libinput says off, but that's the wrong answer on a laptop.
-        let d = InputConfig::default();
-        assert!(d.tap_to_click);
-        assert!(d.touchpad_natural_scroll);
-        assert!(!d.mouse_natural_scroll);
-        assert_eq!(d.pointer_speed, 0.5);
-        assert_eq!(d.key_repeat, 0.5);
-        assert_eq!(plan_for(&d, &touchpad()).natural_scroll, Some(true));
-        assert_eq!(plan_for(&d, &mouse()).natural_scroll, Some(false));
-    }
+    tilo_test_env::scenario! {
+        /// The plan a device is configured with.
+        #[allow(clippy::too_many_lines, reason = "one scenario, one block per case")]
+        fn a_device_plan_follows_the_settings_and_what_the_device_can_do;
 
-    #[test]
-    fn pointer_speed_and_key_repeat_map_onto_libinput_ranges() {
-        // 0.5 must map to exactly 0.0, or everyone who never touched the
-        // slider gets a different acceleration than libinput's default.
-        assert_eq!(InputConfig::default().accel_speed(), 0.0);
-        let slow = InputConfig {
-            pointer_speed: 0.0,
-            key_repeat: 0.0,
-            ..Default::default()
-        };
-        let fast = InputConfig {
-            pointer_speed: 1.0,
-            key_repeat: 1.0,
-            ..Default::default()
-        };
-        assert_eq!(slow.accel_speed(), -1.0);
-        assert_eq!(fast.accel_speed(), 1.0);
-        let (slow_delay, slow_rate) = slow.key_repeat_params();
-        let (fast_delay, fast_rate) = fast.key_repeat_params();
-        assert_eq!(slow_rate, REPEAT_RATE_MIN);
-        assert_eq!(fast_rate, REPEAT_RATE_MAX);
-        assert_eq!(
-            slow_delay,
-            Duration::from_millis(u64::from(REPEAT_DELAY_MAX_MS))
-        );
-        assert_eq!(
-            fast_delay,
-            Duration::from_millis(u64::from(REPEAT_DELAY_MIN_MS))
-        );
-        let (delay, rate) = InputConfig::default().key_repeat_params();
-        assert_eq!(rate, 30);
-        assert_eq!(delay, Duration::from_millis(400));
-        let exact = InputConfig {
-            key_repeat_delay_ms: Some(275),
-            key_repeat_rate_hz: Some(37),
-            ..Default::default()
-        };
-        assert_eq!(exact.key_repeat_params(), (Duration::from_millis(275), 37));
-        let disabled = InputConfig {
-            key_repeat_delay_ms: Some(500),
-            key_repeat_rate_hz: Some(0),
-            ..Default::default()
-        };
-        assert_eq!(
-            disabled.key_repeat_params(),
-            (Duration::from_millis(500), 0)
-        );
-    }
-
-    #[test]
-    #[allow(clippy::too_many_lines, reason = "one scenario, one block per case")]
-    fn device_plan_follows_config_and_capabilities() {
-        // A touchpad gets tapping, dragging and palm protection.
+        phase defaults_tap_on_a_laptop_and_keep_wheels_conventional;
         {
-            let plan = plan_for(&InputConfig::default(), &touchpad());
-            assert_eq!(plan.tap, Some(true));
-            assert_eq!(
-                plan.tap_drag,
-                Some(true),
-                "tapping without tap-and-drag is a touchpad that cannot drag"
-            );
-            assert_eq!(plan.disable_while_typing, Some(true));
-            assert_eq!(plan.middle_emulation, Some(true));
+            // libinput says off, but that's the wrong answer on a laptop.
+            let d = InputConfig::default();
+            assert!(d.tap_to_click);
+            assert!(d.touchpad_natural_scroll);
+            assert!(!d.mouse_natural_scroll);
+            assert_eq!(d.pointer_speed, 0.5);
+            assert_eq!(d.key_repeat, 0.5);
+            assert_eq!(plan_for(&d, &touchpad()).natural_scroll, Some(true));
+            assert_eq!(plan_for(&d, &mouse()).natural_scroll, Some(false));
         }
-        // The touchpad toggle switches off touchpads and nothing else.
+
+        phase pointer_speed_and_key_repeat_map_onto_libinput_ranges;
         {
+            // 0.5 must map to exactly 0.0, or everyone who never touched the
+            // slider gets a different acceleration than libinput's default.
+            assert_eq!(InputConfig::default().accel_speed(), 0.0);
+            let slow = InputConfig {
+                pointer_speed: 0.0,
+                key_repeat: 0.0,
+                ..Default::default()
+            };
+            let fast = InputConfig {
+                pointer_speed: 1.0,
+                key_repeat: 1.0,
+                ..Default::default()
+            };
+            assert_eq!(slow.accel_speed(), -1.0);
+            assert_eq!(fast.accel_speed(), 1.0);
+            let (slow_delay, slow_rate) = slow.key_repeat_params();
+            let (fast_delay, fast_rate) = fast.key_repeat_params();
+            assert_eq!(slow_rate, REPEAT_RATE_MIN);
+            assert_eq!(fast_rate, REPEAT_RATE_MAX);
             assert_eq!(
-                plan_for(&InputConfig::default(), &touchpad()).send_events,
-                Some(SendEvents::Enabled)
+                slow_delay,
+                Duration::from_millis(u64::from(REPEAT_DELAY_MAX_MS))
             );
-            let off = InputConfig {
-                touchpad_enabled: false,
+            assert_eq!(
+                fast_delay,
+                Duration::from_millis(u64::from(REPEAT_DELAY_MIN_MS))
+            );
+            let (delay, rate) = InputConfig::default().key_repeat_params();
+            assert_eq!(rate, 30);
+            assert_eq!(delay, Duration::from_millis(400));
+            let exact = InputConfig {
+                key_repeat_delay_ms: Some(275),
+                key_repeat_rate_hz: Some(37),
+                ..Default::default()
+            };
+            assert_eq!(exact.key_repeat_params(), (Duration::from_millis(275), 37));
+            let disabled = InputConfig {
+                key_repeat_delay_ms: Some(500),
+                key_repeat_rate_hz: Some(0),
                 ..Default::default()
             };
             assert_eq!(
-                plan_for(&off, &touchpad()).send_events,
-                Some(SendEvents::Disabled)
+                disabled.key_repeat_params(),
+                (Duration::from_millis(500), 0)
             );
-            assert_eq!(plan_for(&off, &mouse()).send_events, None);
-            assert_eq!(plan_for(&off, &keyboard()).send_events, None);
         }
-        // A touchpad can step aside while a mouse is connected.
+
+        phase device_plan_follows_config_and_capabilities;
         {
-            let with_mouse = InputConfig {
-                touchpad_disabled_on_external_mouse: true,
-                ..Default::default()
-            };
+            // A touchpad gets tapping, dragging and palm protection.
+            {
+                let plan = plan_for(&InputConfig::default(), &touchpad());
+                assert_eq!(plan.tap, Some(true));
+                assert_eq!(
+                    plan.tap_drag,
+                    Some(true),
+                    "tapping without tap-and-drag is a touchpad that cannot drag"
+                );
+                assert_eq!(plan.disable_while_typing, Some(true));
+                assert_eq!(plan.middle_emulation, Some(true));
+            }
+            // The touchpad toggle switches off touchpads and nothing else.
+            {
+                assert_eq!(
+                    plan_for(&InputConfig::default(), &touchpad()).send_events,
+                    Some(SendEvents::Enabled)
+                );
+                let off = InputConfig {
+                    touchpad_enabled: false,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    plan_for(&off, &touchpad()).send_events,
+                    Some(SendEvents::Disabled)
+                );
+                assert_eq!(plan_for(&off, &mouse()).send_events, None);
+                assert_eq!(plan_for(&off, &keyboard()).send_events, None);
+            }
+            // A touchpad can step aside while a mouse is connected.
+            {
+                let with_mouse = InputConfig {
+                    touchpad_disabled_on_external_mouse: true,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    plan_for(&with_mouse, &touchpad()).send_events,
+                    Some(SendEvents::DisabledOnExternalMouse)
+                );
+                assert_eq!(plan_for(&with_mouse, &mouse()).send_events, None);
+                let unsupported = DeviceCaps {
+                    supports_disable_on_external_mouse: false,
+                    ..touchpad()
+                };
+                assert_eq!(
+                    plan_for(&with_mouse, &unsupported).send_events,
+                    Some(SendEvents::Enabled),
+                    "a touchpad libinput cannot hand off keeps working"
+                );
+                let off = InputConfig {
+                    touchpad_enabled: false,
+                    ..with_mouse
+                };
+                assert_eq!(
+                    plan_for(&off, &touchpad()).send_events,
+                    Some(SendEvents::Disabled),
+                    "switched off means off, mouse or not"
+                );
+            }
+            // Turning tap off turns tap-drag off with it.
+            {
+                let s = InputConfig {
+                    tap_to_click: false,
+                    ..Default::default()
+                };
+                let plan = plan_for(&s, &touchpad());
+                assert_eq!(plan.tap, Some(false));
+                assert_eq!(plan.tap_drag, Some(false));
+            }
+            // A mouse is never asked about tapping: libinput errors every call.
+            {
+                let plan = plan_for(&InputConfig::default(), &mouse());
+                assert_eq!(plan.tap, None);
+                assert_eq!(plan.tap_drag, None);
+                assert_eq!(plan.disable_while_typing, None);
+                assert_eq!(plan.middle_emulation, None);
+            }
+            // Mouse and touchpad keep independent scroll directions.
+            {
+                let s = InputConfig {
+                    touchpad_natural_scroll: false,
+                    mouse_natural_scroll: true,
+                    ..Default::default()
+                };
+                assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(false));
+                assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
+                assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
+            }
+            // Pointer speed reaches devices with acceleration, per class.
+            {
+                let s = InputConfig {
+                    pointer_speed: 1.0,
+                    ..Default::default()
+                };
+                assert_eq!(plan_for(&s, &mouse()).accel_speed(), Some(1.0));
+                let s = InputConfig {
+                    pointer_speed: 0.0,
+                    ..Default::default()
+                };
+                assert_eq!(plan_for(&s, &touchpad()).accel_speed(), Some(-1.0));
+                assert_eq!(plan_for(&s, &keyboard()).accel_speed(), None);
+                let split = InputConfig {
+                    touchpad_pointer_speed: Some(1.0),
+                    mouse_pointer_speed: Some(0.0),
+                    ..Default::default()
+                };
+                assert_eq!(plan_for(&split, &touchpad()).accel_speed(), Some(1.0));
+                assert_eq!(plan_for(&split, &mouse()).accel_speed(), Some(-1.0));
+            }
+            // A keyboard gets an empty plan.
             assert_eq!(
-                plan_for(&with_mouse, &touchpad()).send_events,
-                Some(SendEvents::DisabledOnExternalMouse)
+                plan_for(&InputConfig::default(), &keyboard()),
+                DevicePlan::default()
             );
-            assert_eq!(plan_for(&with_mouse, &mouse()).send_events, None);
-            let unsupported = DeviceCaps {
-                supports_disable_on_external_mouse: false,
+            assert!(touchpad().is_touchpad());
+            assert!(!mouse().is_touchpad());
+            assert!(!keyboard().is_touchpad());
+        }
+
+        phase click_methods_follow_the_choice_and_the_device;
+        {
+            for (choice, expected) in [
+                (TouchpadClickMethod::Areas, Some(ClickMethod::ButtonAreas)),
+                (
+                    TouchpadClickMethod::Clickfinger,
+                    Some(ClickMethod::Clickfinger),
+                ),
+                (TouchpadClickMethod::Default, Some(ClickMethod::ButtonAreas)),
+            ] {
+                let config = InputConfig {
+                    touchpad_click_method: choice,
+                    ..Default::default()
+                };
+                assert_eq!(plan_for(&config, &touchpad()).click_method, expected);
+            }
+            // An Apple-style clickpad defaults to clickfinger; "Default" must restore that rather than
+            // forcing button areas on it.
+            let apple = DeviceCaps {
+                default_click_method: Some(ClickMethod::Clickfinger),
                 ..touchpad()
             };
             assert_eq!(
-                plan_for(&with_mouse, &unsupported).send_events,
-                Some(SendEvents::Enabled),
-                "a touchpad libinput cannot hand off keeps working"
+                plan_for(&InputConfig::default(), &apple).click_method,
+                Some(ClickMethod::Clickfinger)
             );
-            let off = InputConfig {
-                touchpad_enabled: false,
-                ..with_mouse
+            // Unsupported methods are never requested.
+            let areas_only = DeviceCaps {
+                supports_clickfinger: false,
+                ..touchpad()
             };
+            let clickfinger = InputConfig {
+                touchpad_click_method: TouchpadClickMethod::Clickfinger,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&clickfinger, &areas_only).click_method, None);
+            assert_eq!(plan_for(&clickfinger, &mouse()).click_method, None);
             assert_eq!(
-                plan_for(&off, &touchpad()).send_events,
-                Some(SendEvents::Disabled),
-                "switched off means off, mouse or not"
+                plan_for(&InputConfig::default(), &mouse()).click_method,
+                None
             );
         }
-        // Turning tap off turns tap-drag off with it.
+
+        phase scroll_method_is_capability_checked;
         {
+            let edge = InputConfig {
+                touchpad_scroll_method: TouchpadScrollMethod::Edge,
+                ..Default::default()
+            };
+            assert_eq!(
+                plan_for(&InputConfig::default(), &touchpad()).scroll_method,
+                Some(ScrollMethod::TwoFinger)
+            );
+            assert_eq!(
+                plan_for(&edge, &touchpad()).scroll_method,
+                Some(ScrollMethod::Edge)
+            );
+            let single_touch = DeviceCaps {
+                supports_two_finger_scroll: false,
+                ..touchpad()
+            };
+            assert_eq!(
+                plan_for(&InputConfig::default(), &single_touch).scroll_method,
+                None
+            );
+            assert_eq!(plan_for(&edge, &mouse()).scroll_method, None);
+            assert_eq!(plan_for(&edge, &keyboard()).scroll_method, None);
+        }
+
+        phase drag_lock_rides_on_tapping_and_tap_and_drag;
+        {
+            assert_eq!(
+                plan_for(&InputConfig::default(), &touchpad()).tap_drag_lock,
+                Some(false),
+                "off by default, and said so explicitly so switching back undoes it"
+            );
+            let locked = InputConfig {
+                tap_drag_lock: true,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&locked, &touchpad()).tap_drag_lock, Some(true));
+            for (tap_to_click, tap_drag) in [(false, true), (true, false)] {
+                let without_drag = InputConfig {
+                    tap_to_click,
+                    tap_drag,
+                    ..locked.clone()
+                };
+                assert_eq!(
+                    plan_for(&without_drag, &touchpad()).tap_drag_lock,
+                    Some(false),
+                    "a lock needs a tap-and-drag to hold"
+                );
+            }
+            assert_eq!(plan_for(&locked, &mouse()).tap_drag_lock, None);
+        }
+
+        phase device_kind_puts_each_device_in_one_group;
+        {
+            assert_eq!(touchpad().kind(), DeviceKind::Touchpad);
+            assert_eq!(mouse().kind(), DeviceKind::Mouse);
+            assert_eq!(keyboard().kind(), DeviceKind::Other);
+            let typing = DeviceCaps {
+                is_keyboard: true,
+                ..DeviceCaps::default()
+            };
+            assert_eq!(typing.kind(), DeviceKind::Keyboard);
+            let screen = DeviceCaps {
+                is_touch: true,
+                ..DeviceCaps::default()
+            };
+            assert_eq!(screen.kind(), DeviceKind::Touchscreen);
+            let pen = DeviceCaps {
+                is_tablet_tool: true,
+                is_pointer: true,
+                ..DeviceCaps::default()
+            };
+            assert_eq!(pen.kind(), DeviceKind::Tablet, "a pen is not a mouse");
+            let pad = DeviceCaps {
+                is_tablet_pad: true,
+                is_keyboard: true,
+                ..DeviceCaps::default()
+            };
+            assert_eq!(pad.kind(), DeviceKind::TabletPad);
+        }
+
+        phase a_pen_is_never_turned_by_the_mouse_handedness;
+        {
+            let pen = DeviceCaps {
+                is_tablet_tool: true,
+                supports_left_handed: true,
+                ..DeviceCaps::default()
+            };
+            let left = InputConfig {
+                left_handed: true,
+                ..Default::default()
+            };
+            assert_eq!(plan_for(&left, &pen).left_handed, Some(false));
+            assert_eq!(plan_for(&left, &mouse()).left_handed, Some(true));
+        }
+
+        phase device_keys_match_what_settings_stores;
+        {
+            assert_eq!(
+                device_key(0x056a, 0x0374, " Wacom Intuos "),
+                "056a:0374:Wacom Intuos"
+            );
+        }
+
+        phase reconfigure_all_reaches_every_device_with_its_own_plan;
+        {
+            let mut devices = [
+                Recorder {
+                    caps: touchpad(),
+                    ..Recorder::default()
+                },
+                Recorder {
+                    caps: mouse(),
+                    ..Recorder::default()
+                },
+            ];
             let s = InputConfig {
                 tap_to_click: false,
                 ..Default::default()
             };
-            let plan = plan_for(&s, &touchpad());
-            assert_eq!(plan.tap, Some(false));
-            assert_eq!(plan.tap_drag, Some(false));
+            reconfigure_all(&s, &mut devices);
+            assert_eq!(devices[0].applied, [plan_for(&s, &touchpad())]);
+            assert_eq!(devices[1].applied, [plan_for(&s, &mouse())]);
         }
-        // A mouse is never asked about tapping: libinput errors every call.
-        {
-            let plan = plan_for(&InputConfig::default(), &mouse());
-            assert_eq!(plan.tap, None);
-            assert_eq!(plan.tap_drag, None);
-            assert_eq!(plan.disable_while_typing, None);
-            assert_eq!(plan.middle_emulation, None);
-        }
-        // Mouse and touchpad keep independent scroll directions.
-        {
-            let s = InputConfig {
-                touchpad_natural_scroll: false,
-                mouse_natural_scroll: true,
-                ..Default::default()
-            };
-            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(false));
-            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
-            assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
-        }
-        // Pointer speed reaches devices with acceleration, per class.
-        {
-            let s = InputConfig {
-                pointer_speed: 1.0,
-                ..Default::default()
-            };
-            assert_eq!(plan_for(&s, &mouse()).accel_speed(), Some(1.0));
-            let s = InputConfig {
-                pointer_speed: 0.0,
-                ..Default::default()
-            };
-            assert_eq!(plan_for(&s, &touchpad()).accel_speed(), Some(-1.0));
-            assert_eq!(plan_for(&s, &keyboard()).accel_speed(), None);
-            let split = InputConfig {
-                touchpad_pointer_speed: Some(1.0),
-                mouse_pointer_speed: Some(0.0),
-                ..Default::default()
-            };
-            assert_eq!(plan_for(&split, &touchpad()).accel_speed(), Some(1.0));
-            assert_eq!(plan_for(&split, &mouse()).accel_speed(), Some(-1.0));
-        }
-        // A keyboard gets an empty plan.
-        assert_eq!(
-            plan_for(&InputConfig::default(), &keyboard()),
-            DevicePlan::default()
-        );
-        assert!(touchpad().is_touchpad());
-        assert!(!mouse().is_touchpad());
-        assert!(!keyboard().is_touchpad());
-    }
-
-    #[test]
-    fn click_methods_follow_the_choice_and_the_device() {
-        for (choice, expected) in [
-            (TouchpadClickMethod::Areas, Some(ClickMethod::ButtonAreas)),
-            (
-                TouchpadClickMethod::Clickfinger,
-                Some(ClickMethod::Clickfinger),
-            ),
-            (TouchpadClickMethod::Default, Some(ClickMethod::ButtonAreas)),
-        ] {
-            let config = InputConfig {
-                touchpad_click_method: choice,
-                ..Default::default()
-            };
-            assert_eq!(plan_for(&config, &touchpad()).click_method, expected);
-        }
-        // An Apple-style clickpad defaults to clickfinger; "Default" must restore that rather than
-        // forcing button areas on it.
-        let apple = DeviceCaps {
-            default_click_method: Some(ClickMethod::Clickfinger),
-            ..touchpad()
-        };
-        assert_eq!(
-            plan_for(&InputConfig::default(), &apple).click_method,
-            Some(ClickMethod::Clickfinger)
-        );
-        // Unsupported methods are never requested.
-        let areas_only = DeviceCaps {
-            supports_clickfinger: false,
-            ..touchpad()
-        };
-        let clickfinger = InputConfig {
-            touchpad_click_method: TouchpadClickMethod::Clickfinger,
-            ..Default::default()
-        };
-        assert_eq!(plan_for(&clickfinger, &areas_only).click_method, None);
-        assert_eq!(plan_for(&clickfinger, &mouse()).click_method, None);
-        assert_eq!(
-            plan_for(&InputConfig::default(), &mouse()).click_method,
-            None
-        );
-    }
-
-    #[test]
-    fn scroll_method_is_capability_checked() {
-        let edge = InputConfig {
-            touchpad_scroll_method: TouchpadScrollMethod::Edge,
-            ..Default::default()
-        };
-        assert_eq!(
-            plan_for(&InputConfig::default(), &touchpad()).scroll_method,
-            Some(ScrollMethod::TwoFinger)
-        );
-        assert_eq!(
-            plan_for(&edge, &touchpad()).scroll_method,
-            Some(ScrollMethod::Edge)
-        );
-        let single_touch = DeviceCaps {
-            supports_two_finger_scroll: false,
-            ..touchpad()
-        };
-        assert_eq!(
-            plan_for(&InputConfig::default(), &single_touch).scroll_method,
-            None
-        );
-        assert_eq!(plan_for(&edge, &mouse()).scroll_method, None);
-        assert_eq!(plan_for(&edge, &keyboard()).scroll_method, None);
-    }
-
-    #[test]
-    fn drag_lock_rides_on_tapping_and_tap_and_drag() {
-        assert_eq!(
-            plan_for(&InputConfig::default(), &touchpad()).tap_drag_lock,
-            Some(false),
-            "off by default, and said so explicitly so switching back undoes it"
-        );
-        let locked = InputConfig {
-            tap_drag_lock: true,
-            ..Default::default()
-        };
-        assert_eq!(plan_for(&locked, &touchpad()).tap_drag_lock, Some(true));
-        for (tap_to_click, tap_drag) in [(false, true), (true, false)] {
-            let without_drag = InputConfig {
-                tap_to_click,
-                tap_drag,
-                ..locked.clone()
-            };
-            assert_eq!(
-                plan_for(&without_drag, &touchpad()).tap_drag_lock,
-                Some(false),
-                "a lock needs a tap-and-drag to hold"
-            );
-        }
-        assert_eq!(plan_for(&locked, &mouse()).tap_drag_lock, None);
-    }
-
-    #[test]
-    fn device_kind_puts_each_device_in_one_group() {
-        assert_eq!(touchpad().kind(), DeviceKind::Touchpad);
-        assert_eq!(mouse().kind(), DeviceKind::Mouse);
-        assert_eq!(keyboard().kind(), DeviceKind::Other);
-        let typing = DeviceCaps {
-            is_keyboard: true,
-            ..DeviceCaps::default()
-        };
-        assert_eq!(typing.kind(), DeviceKind::Keyboard);
-        let screen = DeviceCaps {
-            is_touch: true,
-            ..DeviceCaps::default()
-        };
-        assert_eq!(screen.kind(), DeviceKind::Touchscreen);
-        let pen = DeviceCaps {
-            is_tablet_tool: true,
-            is_pointer: true,
-            ..DeviceCaps::default()
-        };
-        assert_eq!(pen.kind(), DeviceKind::Tablet, "a pen is not a mouse");
-        let pad = DeviceCaps {
-            is_tablet_pad: true,
-            is_keyboard: true,
-            ..DeviceCaps::default()
-        };
-        assert_eq!(pad.kind(), DeviceKind::TabletPad);
-    }
-
-    #[test]
-    fn a_pen_is_never_turned_by_the_mouse_handedness() {
-        let pen = DeviceCaps {
-            is_tablet_tool: true,
-            supports_left_handed: true,
-            ..DeviceCaps::default()
-        };
-        let left = InputConfig {
-            left_handed: true,
-            ..Default::default()
-        };
-        assert_eq!(plan_for(&left, &pen).left_handed, Some(false));
-        assert_eq!(plan_for(&left, &mouse()).left_handed, Some(true));
-    }
-
-    #[test]
-    fn device_keys_match_what_settings_stores() {
-        assert_eq!(
-            device_key(0x056a, 0x0374, " Wacom Intuos "),
-            "056a:0374:Wacom Intuos"
-        );
     }
 
     #[derive(Default)]
@@ -797,26 +823,5 @@ mod tests {
         fn apply(&mut self, plan: &DevicePlan) {
             self.applied.push(*plan);
         }
-    }
-
-    #[test]
-    fn reconfigure_all_reaches_every_device_with_its_own_plan() {
-        let mut devices = [
-            Recorder {
-                caps: touchpad(),
-                ..Recorder::default()
-            },
-            Recorder {
-                caps: mouse(),
-                ..Recorder::default()
-            },
-        ];
-        let s = InputConfig {
-            tap_to_click: false,
-            ..Default::default()
-        };
-        reconfigure_all(&s, &mut devices);
-        assert_eq!(devices[0].applied, [plan_for(&s, &touchpad())]);
-        assert_eq!(devices[1].applied, [plan_for(&s, &mouse())]);
     }
 }

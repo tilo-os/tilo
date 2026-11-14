@@ -3,7 +3,6 @@ use super::{
     AdmittedJoinIdentity, AppBrokerState, Arc, CrdtRoute, PrivateWorkerRegistration,
     PublishedAction, VerifiedActionCaller, Weak,
 };
-use tilo_action_policy::roles;
 use ui::invocation_scope::{
     PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
     PublishedInvocationSpec,
@@ -352,49 +351,6 @@ impl OriginalInvocationData {
             return Err("original invocation cannot authorize this launch".into());
         }
         self.current_person_certificate(state)
-    }
-
-    pub(super) fn launch_administrator_certificate(
-        &self,
-        state: &AppBrokerState,
-        workspace: &str,
-    ) -> Result<tilo_user_identity::DeviceCert, String> {
-        let certificate = self.launch_person_certificate(state, workspace)?;
-        let (_, now) = state.checked_policy_time(Some(&self.time))?;
-        let mut actor = state.certified_person(workspace, &certificate);
-        if let InvocationCaller::Certified {
-            foreign_restriction,
-            ..
-        } = &self.caller
-        {
-            actor.capped |= super::cap_applies_in(
-                state.certificate_authority.get().map(AsRef::as_ref),
-                workspace,
-                *foreign_restriction,
-                Some(&certificate.device_public_key),
-            );
-        }
-        let seconds = now / 1_000_000_000;
-        state
-            .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?
-            .decide_in_workspace(workspace, |workspace| {
-                let workspace = workspace.ok_or("original launch workspace unavailable")?;
-                if !actor.may_in(
-                    workspace,
-                    &roles::governance_action(
-                        &workspace.policy.workspace,
-                        roles::governance::GRANT,
-                    ),
-                    roles::GOVERNANCE_KIND,
-                    seconds,
-                ) {
-                    return Err("original launch caller cannot delegate application authorship");
-                }
-                Ok(())
-            })??;
-        Ok(certificate)
     }
 
     pub(super) fn capture(
@@ -946,12 +902,12 @@ fn agent_actor(
     let certificate = certificate
         .map_err(|error| format!("the agent's person could not be verified: {error}"))?;
     Ok(super::BrokerActor::agent(format!("agent:{agent}"))
-        .for_person(super::principal_id_for_root(certificate.user_public_key)))
+        .for_person(super::person_id_for_root(certificate.user_public_key)))
 }
 
 #[cfg(test)]
 mod agent_actor_tests {
-    use super::super::{BrokerActor, principal_id_for_root};
+    use super::super::{BrokerActor, person_id_for_root};
     use super::agent_actor;
 
     /// A certificate issued by a person to a device of theirs.
@@ -980,7 +936,7 @@ mod agent_actor_tests {
         let actor = agent_actor("one", Ok(&cert)).expect("the agent's person is verified");
         assert_eq!(
             actor,
-            BrokerActor::agent("agent:one").for_person(principal_id_for_root(cert.user_public_key))
+            BrokerActor::agent("agent:one").for_person(person_id_for_root(cert.user_public_key))
         );
     }
 

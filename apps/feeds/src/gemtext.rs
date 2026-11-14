@@ -68,6 +68,70 @@ pub fn to_blocks(text: &str) -> Vec<ContentBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use BlockKind::{Code, Heading1, Heading3, Link, Paragraph, Quote};
+
+    /// What a block is: its kind, its text and where it links.
+    type Shape<'a> = (BlockKind, &'a str, Option<&'a str>);
+
+    fn shape(blocks: &[ContentBlock]) -> Vec<Shape<'_>> {
+        blocks
+            .iter()
+            .map(|block| (block.kind, block.text.as_str(), block.href.as_deref()))
+            .collect()
+    }
+
+    /// A document at each edge of the format, and every block it becomes.
+    const EDGES: &[(&str, &str, &[Shape<'static>])] = &[
+        ("an empty document", "", &[]),
+        ("blank lines only", "\n  \n\t\n", &[]),
+        ("a lone fence", "```", &[]),
+        (
+            "a third-level heading",
+            "### Deep",
+            &[(Heading3, "Deep", None)],
+        ),
+        (
+            "a heading without a space",
+            "#Tight",
+            &[(Heading1, "Tight", None)],
+        ),
+        ("a quote", ">  said  ", &[(Quote, "said", None)]),
+        (
+            "a star without a space is text",
+            "*not an item",
+            &[(Paragraph, "*not an item", None)],
+        ),
+        (
+            "an indented marker is text",
+            "  # not a heading",
+            &[(Paragraph, "# not a heading", None)],
+        ),
+        (
+            "a link without a space",
+            "=>gemini://tight.org",
+            &[(Link, "gemini://tight.org", Some("gemini://tight.org"))],
+        ),
+        (
+            "a link's label keeps its inner spaces",
+            "=>   gemini://a.org \t Two  words  ",
+            &[(Link, "Two  words", Some("gemini://a.org"))],
+        ),
+        (
+            "markup inside a preformatted block is text",
+            "```\n# no heading\n=> no link\n\n* no item\n```",
+            &[(Code, "# no heading\n=> no link\n\n* no item", None)],
+        ),
+        (
+            "a preformatted block left open",
+            "before\n```alt text\nleft open\n",
+            &[(Paragraph, "before", None), (Code, "left open", None)],
+        ),
+        (
+            "windows line ends",
+            "# Title\r\ntext\r\n",
+            &[(Heading1, "Title", None), (Paragraph, "text", None)],
+        ),
+    ];
 
     #[test]
     fn gemtext_renders_headings_links_lists_and_preformatted() {
@@ -91,6 +155,10 @@ mod tests {
             assert_eq!(blocks[0].kind, BlockKind::Code);
             assert_eq!(blocks[0].text, "fn main() {}\nlet x = 1;");
             assert_eq!(blocks[1].text, "after");
+        }
+
+        for (edge, doc, expected) in EDGES {
+            assert_eq!(shape(&to_blocks(doc)), *expected, "{edge}: {doc:?}");
         }
     }
 }

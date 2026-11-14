@@ -120,155 +120,160 @@ fn fail_then_try_again(
     item
 }
 
-/// Adding, preferring, pausing and resuming a printer, cancelling and retrying a document:
-/// Try again runs the same effect on the same printer or document.
-#[test]
-fn a_failed_printer_or_document_operations_try_again_runs_it_again() {
-    let _serial = crate::surface::serial();
-    let (mut app, devices) = opened();
-    centre(&mut app).borrow_mut().discovered = Some(Ok(super::super::demo_discovered_printers()));
-    let printer = || "Studio_printer".to_owned();
-    let effects = [
-        PrintCentreEffect::PausePrinter { printer: printer() },
-        PrintCentreEffect::ResumePrinter { printer: printer() },
-        PrintCentreEffect::SetDefaultPrinter { printer: printer() },
-        PrintCentreEffect::CancelDocument {
-            job: "Studio_printer-42".into(),
-        },
-        PrintCentreEffect::RetryDocument {
-            job: "Studio_printer-41".into(),
-        },
-        PrintCentreEffect::AddPrinter {
-            printer: "ipps://office.local/ipp/print".into(),
-        },
-    ];
-    for effect in &effects {
-        // The search for nearby printers is periodic: an answered failure must still find
-        // what it asked about.
-        centre(&mut app).borrow_mut().discovered =
-            Some(Ok(super::super::demo_discovered_printers()));
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+    fn a_failure_waits_with_try_again_and_a_success_informs_nobody;
+
+    phase a_failed_printer_or_document_operations_try_again_runs_it_again;
+    // Adding, preferring, pausing and resuming a printer, cancelling and retrying a document:
+    // Try again runs the same effect on the same printer or document.
+    {
+        let _serial = crate::surface::serial();
+        let (mut app, devices) = opened();
+        centre(&mut app).borrow_mut().discovered = Some(Ok(super::super::demo_discovered_printers()));
+        let printer = || "Studio_printer".to_owned();
+        let effects = [
+            PrintCentreEffect::PausePrinter { printer: printer() },
+            PrintCentreEffect::ResumePrinter { printer: printer() },
+            PrintCentreEffect::SetDefaultPrinter { printer: printer() },
+            PrintCentreEffect::CancelDocument {
+                job: "Studio_printer-42".into(),
+            },
+            PrintCentreEffect::RetryDocument {
+                job: "Studio_printer-41".into(),
+            },
+            PrintCentreEffect::AddPrinter {
+                printer: "ipps://office.local/ipp/print".into(),
+            },
+        ];
+        for effect in &effects {
+            // The search for nearby printers is periodic: an answered failure must still find
+            // what it asked about.
+            centre(&mut app).borrow_mut().discovered =
+                Some(Ok(super::super::demo_discovered_printers()));
+            let before = asked(&devices).len();
+            set_failing(&devices, true);
+            let _ = app.effect(effect);
+            let item = fail_then_try_again(&mut app, Some(&devices));
+            until_answered(
+                &mut app,
+                &item,
+                &devices,
+                before,
+                "the work asked again to go through",
+            );
+            let asked = asked(&devices);
+            let Some(first) = asked.get(before) else {
+                panic!("the work was not asked at all: {asked:?}");
+            };
+            assert!(
+                asked[before + 1..].contains(first),
+                "Try again asks for the very work that failed: {asked:?}"
+            );
+        }
+    }
+
+    phase a_failed_prints_try_again_prints_it_again;
+    // Printing that failed: Try again prints the same document on the same printer with the
+    // same settings.
+    {
+        let _serial = crate::surface::serial();
+        let (mut app, devices) = opened();
+        centre(&mut app).borrow_mut().stage_scenario(Some("print"));
+        centre(&mut app).borrow().print_copies.set(3.0);
+        app.settle();
         let before = asked(&devices).len();
         set_failing(&devices, true);
-        let _ = app.effect(effect);
+        let _ = app.effect(&PrintCentreEffect::SendToPrinter);
         let item = fail_then_try_again(&mut app, Some(&devices));
         until_answered(
             &mut app,
             &item,
             &devices,
             before,
-            "the work asked again to go through",
+            "the document to be sent again",
         );
         let asked = asked(&devices);
-        let Some(first) = asked.get(before) else {
-            panic!("the work was not asked at all: {asked:?}");
-        };
         assert!(
-            asked[before + 1..].contains(first),
-            "Try again asks for the very work that failed: {asked:?}"
+            asked[before].contains("Studio_printer")
+                && asked[before].contains("Travel itinerary.pdf")
+                && asked[before].contains("copies: 3"),
+            "{asked:?}"
+        );
+        assert!(
+            asked[before + 1..].contains(&asked[before]),
+            "the same document on the same printer: {asked:?}"
         );
     }
-}
 
-/// Printing that failed: Try again prints the same document on the same printer with the
-/// same settings.
-#[test]
-fn a_failed_prints_try_again_prints_it_again() {
-    let _serial = crate::surface::serial();
-    let (mut app, devices) = opened();
-    centre(&mut app).borrow_mut().stage_scenario(Some("print"));
-    centre(&mut app).borrow().print_copies.set(3.0);
-    app.settle();
-    let before = asked(&devices).len();
-    set_failing(&devices, true);
-    let _ = app.effect(&PrintCentreEffect::SendToPrinter);
-    let item = fail_then_try_again(&mut app, Some(&devices));
-    until_answered(
-        &mut app,
-        &item,
-        &devices,
-        before,
-        "the document to be sent again",
-    );
-    let asked = asked(&devices);
-    assert!(
-        asked[before].contains("Studio_printer")
-            && asked[before].contains("Travel itinerary.pdf")
-            && asked[before].contains("copies: 3"),
-        "{asked:?}"
-    );
-    assert!(
-        asked[before + 1..].contains(&asked[before]),
-        "the same document on the same printer: {asked:?}"
-    );
-}
-
-/// A page that did not scan: Try again scans with the same scanner.
-#[test]
-fn a_failed_scans_try_again_scans_again() {
-    let _serial = crate::surface::serial();
-    let (mut app, devices) = opened();
-    centre(&mut app).borrow_mut().stage_scenario(Some("scan"));
-    app.settle();
-    let pages = centre(&mut app).borrow().scan.pages.len();
-    let before = asked(&devices).len();
-    set_failing(&devices, true);
-    let _ = app.effect(&PrintCentreEffect::ScanPage);
-    fail_then_try_again(&mut app, Some(&devices));
-    tilo_test_env::wait_until("the page to be scanned again", || {
+    phase a_failed_scans_try_again_scans_again;
+    // A page that did not scan: Try again scans with the same scanner.
+    {
+        let _serial = crate::surface::serial();
+        let (mut app, devices) = opened();
+        centre(&mut app).borrow_mut().stage_scenario(Some("scan"));
         app.settle();
-        centre(&mut app).borrow().scan.pages.len() == pages.saturating_add(1)
-    });
-    assert_eq!(
-        asked(&devices)[before..],
-        ["scan scanner0", "scan scanner0"]
-    );
-}
+        let pages = centre(&mut app).borrow().scan.pages.len();
+        let before = asked(&devices).len();
+        set_failing(&devices, true);
+        let _ = app.effect(&PrintCentreEffect::ScanPage);
+        fail_then_try_again(&mut app, Some(&devices));
+        tilo_test_env::wait_until("the page to be scanned again", || {
+            app.settle();
+            centre(&mut app).borrow().scan.pages.len() == pages.saturating_add(1)
+        });
+        assert_eq!(
+            asked(&devices)[before..],
+            ["scan scanner0", "scan scanner0"]
+        );
+    }
 
-/// Text that was not recognized: Try again recognizes the same page.
-#[test]
-fn a_failed_recognitions_try_again_recognizes_the_page_again() {
-    let _serial = crate::surface::serial();
-    let (mut app, devices) = opened();
-    centre(&mut app)
-        .borrow_mut()
-        .stage_scenario(Some("scan-result"));
-    app.settle();
-    let before = asked(&devices).len();
-    set_failing(&devices, true);
-    let _ = app.effect(&PrintCentreEffect::RecognizeText);
-    fail_then_try_again(&mut app, Some(&devices));
-    tilo_test_env::wait_until("the text to be recognized again", || {
-        app.settle();
+    phase a_failed_recognitions_try_again_recognizes_the_page_again;
+    // Text that was not recognized: Try again recognizes the same page.
+    {
+        let _serial = crate::surface::serial();
+        let (mut app, devices) = opened();
         centre(&mut app)
-            .borrow()
-            .scan
-            .result
-            .as_ref()
-            .is_some_and(|page| page.recognized_text.as_deref() == Some("Stand-in text"))
-    });
-    assert_eq!(asked(&devices)[before..], ["recognize", "recognize"]);
-}
-
-/// A success needs nobody: it is recorded in the ledger and no row waits.
-#[test]
-fn a_success_is_recorded_and_nobody_is_called() {
-    let _serial = crate::surface::serial();
-    let (mut app, devices) = opened();
-    let _ = app.effect(&PrintCentreEffect::PausePrinter {
-        printer: "Studio_printer".into(),
-    });
-    tilo_test_env::wait_until("the pause to be recorded", || {
+            .borrow_mut()
+            .stage_scenario(Some("scan-result"));
         app.settle();
-        ui::attention::entries()
-            .iter()
-            .any(|entry| entry.what() == "Printer paused. Documents will wait until you resume it.")
-    });
-    assert_eq!(asked(&devices).len(), 1);
-    assert!(
-        !ui::attention::items()
-            .iter()
-            .any(|item| item.title().contains("Printer paused")),
-        "a success asks nothing of anyone"
-    );
-    assert_eq!(centre(&mut app).borrow().page, Page::Dashboard);
+        let before = asked(&devices).len();
+        set_failing(&devices, true);
+        let _ = app.effect(&PrintCentreEffect::RecognizeText);
+        fail_then_try_again(&mut app, Some(&devices));
+        tilo_test_env::wait_until("the text to be recognized again", || {
+            app.settle();
+            centre(&mut app)
+                .borrow()
+                .scan
+                .result
+                .as_ref()
+                .is_some_and(|page| page.recognized_text.as_deref() == Some("Stand-in text"))
+        });
+        assert_eq!(asked(&devices)[before..], ["recognize", "recognize"]);
+    }
+
+    phase a_success_is_recorded_and_nobody_is_called;
+    // A success needs nobody: it is recorded in the ledger and no row waits.
+    {
+        let _serial = crate::surface::serial();
+        let (mut app, devices) = opened();
+        let _ = app.effect(&PrintCentreEffect::PausePrinter {
+            printer: "Studio_printer".into(),
+        });
+        tilo_test_env::wait_until("the pause to be recorded", || {
+            app.settle();
+            ui::attention::entries()
+                .iter()
+                .any(|entry| entry.what() == "Printer paused. Documents will wait until you resume it.")
+        });
+        assert_eq!(asked(&devices).len(), 1);
+        assert!(
+            !ui::attention::items()
+                .iter()
+                .any(|item| item.title().contains("Printer paused")),
+            "a success asks nothing of anyone"
+        );
+        assert_eq!(centre(&mut app).borrow().page, Page::Dashboard);
+    }
 }

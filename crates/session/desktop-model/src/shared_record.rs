@@ -674,6 +674,25 @@ pub fn write(
     Ok(changed)
 }
 
+/// Stand the containers every entry of the record is kept in, empty, where `doc` holds none yet: a
+/// change that takes back the entries a later change wrote leaves them standing.
+///
+/// # Errors
+/// The document refused a write.
+pub fn found(doc: &mut AutoCommit) -> Result<(), automerge::AutomergeError> {
+    for key in [WORKSPACES, STRIPS, GROUPS, WINDOWS] {
+        let held = At {
+            doc: &*doc,
+            heads: None,
+        }
+        .containers(key);
+        if held.is_empty() {
+            doc.put_object(ROOT, key, ObjType::Map)?;
+        }
+    }
+    Ok(())
+}
+
 /// `value` written as the field `key` of `obj`: the document is the only
 /// thing that can refuse a value made of JSON.
 fn write_json(
@@ -974,6 +993,35 @@ pub fn change_message(person: Option<&str>) -> String {
     context
         .change_message()
         .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message())
+}
+
+/// `person`'s change of the record as one step of theirs: [`change_message`],
+/// with the gesture it is, which also orders it among their steps of other
+/// records.
+#[must_use]
+pub fn step_message(person: &str) -> String {
+    tilo_actions::ActionContext {
+        gesture: Some(tilo_actions::ActionId::new()),
+        ..tilo_actions::ActionContext::for_resource(
+            crate::ownership::DESKTOP_RECORD,
+            crate::ownership::DESKTOP_KIND,
+            "Desktop",
+        )
+        .with_invoker(tilo_actions::ActionInvoker::actor(person))
+    }
+    .change_message()
+    .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message())
+}
+
+/// `person`'s change of the record that is nobody's step: what it shows, or the desk it was
+/// founded on.
+#[must_use]
+pub fn housekeeping_message(person: &str) -> String {
+    tilo_actions::ActionContext::default()
+        .with_invoker(tilo_actions::ActionInvoker::actor(person))
+        .with_change(tilo_actions::ChangeKind::Housekeeping)
+        .change_message()
+        .unwrap_or_else(|| change_message(Some(person)))
 }
 
 /// Who made a change of the record, as its message ([`change_message`])

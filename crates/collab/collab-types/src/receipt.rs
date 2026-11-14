@@ -50,7 +50,7 @@ pub trait ReceiptSurface {
 /// The record a document op writes, as the tree names it.
 #[derive(Clone, Copy, Debug)]
 pub struct Record<'a> {
-    pub room: &'a str,
+    pub workspace: &'a str,
     pub app: &'a str,
     pub record: &'a str,
 }
@@ -111,7 +111,7 @@ pub fn claim_node(
     action: &ClaimedAction,
 ) -> TreePath {
     let kind = surface.kind();
-    let resource = TreePath::workspace(record.room)
+    let resource = TreePath::workspace(record.workspace)
         .app(record.app)
         .kind(kind)
         .resource(record.record);
@@ -438,7 +438,7 @@ impl std::fmt::Debug for Surfaces {
 /// without its app's surface.
 #[must_use]
 pub fn record_node(record: &Record<'_>) -> TreePath {
-    TreePath::workspace(record.room)
+    TreePath::workspace(record.workspace)
         .app(record.app)
         .resource(record.record)
 }
@@ -522,7 +522,7 @@ pub fn decide_op_pinned(
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
     let governed = |action: &str| {
-        let node = roles::governance_action(record.room, action);
+        let node = roles::governance_action(record.workspace, action);
         if allows(&node, roles::GOVERNANCE_KIND) {
             Ok(Receipt::Admit)
         } else {

@@ -302,70 +302,129 @@ mod tests {
         )
     }
 
-    #[test]
-    fn adjacency_follows_key_geometry() {
-        let adj = KeyAdjacency::from_layout(&KeyboardLayout::qwerty());
-        assert!(adj.adjacent('g', 'h'));
-        assert!(adj.adjacent('h', 'g'));
-        assert!(adj.adjacent('g', 't'), "diagonal neighbours count");
-        assert!(!adj.adjacent('q', 'p'));
-        assert!(!adj.adjacent('g', 'q'));
-    }
+    tilo_test_env::scenario! {
+        fn corrections_weigh_key_geometry_and_leave_kept_words_as_typed;
 
-    #[test]
-    fn adjacent_substitution_is_cheaper() {
-        let adj = KeyAdjacency::from_layout(&KeyboardLayout::qwerty());
-        assert_eq!(edit_cost("tge", "the", &adj), ADJACENT_SUBSTITUTION_COST);
-        assert_eq!(edit_cost("tpe", "the", &adj), EDIT_COST);
-        assert_eq!(edit_cost("teh", "the", &adj), TRANSPOSITION_COST);
-        assert_eq!(edit_cost("the", "the", &adj), 0.0);
-    }
+        phase adjacency_follows_key_geometry;
+        {
+            let adj = KeyAdjacency::from_layout(&KeyboardLayout::qwerty());
+            assert!(adj.adjacent('g', 'h'));
+            assert!(adj.adjacent('h', 'g'));
+            assert!(adj.adjacent('g', 't'), "diagonal neighbours count");
+            assert!(!adj.adjacent('q', 'p'));
+            assert!(!adj.adjacent('g', 'q'));
+        }
 
-    #[test]
-    fn corrects_transposition() {
-        assert_eq!(english().correct("teh").as_deref(), Some("the"));
-    }
+        phase adjacent_substitution_is_cheaper;
+        {
+            let adj = KeyAdjacency::from_layout(&KeyboardLayout::qwerty());
+            assert_eq!(edit_cost("tge", "the", &adj), ADJACENT_SUBSTITUTION_COST);
+            assert_eq!(edit_cost("tpe", "the", &adj), EDIT_COST);
+            assert_eq!(edit_cost("teh", "the", &adj), TRANSPOSITION_COST);
+            assert_eq!(edit_cost("the", "the", &adj), 0.0);
+            // Nothing to line up, or a letter too few or too many: each letter
+            // put in or taken out costs one edit.
+            assert_eq!(edit_cost("", "", &adj), 0.0);
+            assert_eq!(edit_cost("", "the", &adj), 3.0 * EDIT_COST);
+            assert_eq!(edit_cost("the", "", &adj), 3.0 * EDIT_COST);
+            assert_eq!(edit_cost("th", "the", &adj), EDIT_COST, "a missing letter");
+            assert_eq!(
+                edit_cost("thee", "the", &adj),
+                EDIT_COST,
+                "a doubled letter"
+            );
+        }
 
-    #[test]
-    fn corrects_adjacent_key_slip() {
-        assert_eq!(english().correct("tge").as_deref(), Some("the"));
-    }
+        phase corrections_follow_the_typed_word_and_kept_words_stay_as_typed;
+        // One corrector serves every row and then the kept word: `correct` takes
+        // `&self`, so no row changes what the next one sees.
+        {
+            let ac = english();
+            for (typed, expected, why) in [
+                ("teh", Some("the"), "a transposition"),
+                ("tge", Some("the"), "a slip onto the adjacent key"),
+                ("dont", Some("don't"), "a missing apostrophe"),
+                (
+                    "Dont",
+                    Some("Don't"),
+                    "a missing apostrophe under a capital",
+                ),
+                ("im", Some("I'm"), "a missing apostrophe"),
+                ("cant", None, "a word of its own"),
+                ("Teh", Some("The"), "the capital is kept"),
+                (
+                    "tEH",
+                    Some("the"),
+                    "only the first letter's case carries over",
+                ),
+                (
+                    "TEh",
+                    Some("The"),
+                    "only the first letter's case carries over",
+                ),
+                ("the", None, "a real word"),
+                ("keyboard", None, "a real word"),
+                ("foe", None, "a real word"),
+                ("fir", None, "a real word"),
+                ("jot", None, "a real word"),
+                ("mot", None, "a real word"),
+                ("TEH", None, "an acronym"),
+                ("a1", None, "not letters"),
+                ("don't", None, "an apostrophe is not a letter"),
+                ("qzxjvkw", None, "noise"),
+                ("", None, "nothing typed"),
+                ("t", None, "shorter than the shortest word corrected"),
+            ] {
+                assert_eq!(ac.correct(typed).as_deref(), expected, "{typed:?}: {why}");
+            }
+            let longest = "q".repeat(MAX_WORD_CHARS);
+            assert_eq!(ac.correct(&longest), None, "the longest word looked at");
+            assert_eq!(
+                ac.correct(&format!("{longest}q")),
+                None,
+                "longer than the longest word looked at"
+            );
 
-    #[test]
-    fn restores_a_missing_apostrophe() {
-        let ac = english();
-        assert_eq!(ac.correct("dont").as_deref(), Some("don't"));
-        assert_eq!(ac.correct("Dont").as_deref(), Some("Don't"));
-        assert_eq!(ac.correct("im").as_deref(), Some("I'm"));
-        assert_eq!(ac.correct("cant"), None);
-    }
+            let mut ac = ac;
+            ac.keep("teh");
+            assert!(ac.is_kept("Teh"));
+            assert_eq!(ac.correct("teh"), None);
+            assert_eq!(ac.correct("Teh"), None, "kept under a capital too");
+            assert_eq!(
+                ac.correct("tge").as_deref(),
+                Some("the"),
+                "keeping one word leaves the others corrected"
+            );
+            ac.clear_kept();
+            assert!(!ac.is_kept("teh"));
+            assert_eq!(ac.correct("teh").as_deref(), Some("the"));
+        }
 
-    #[test]
-    fn keeps_capitalisation() {
-        assert_eq!(english().correct("Teh").as_deref(), Some("The"));
-    }
+        phase kept_words_stop_at_their_bound;
+        // The kept words are a bounded memory: at the bound a new word is not
+        // remembered, and a saved list longer than the bound is cut to it.
+        {
+            let mut ac =
+                Autocorrector::new(&Dictionary::from_str("the\t100\n"), KeyAdjacency::default());
+            let words: Vec<String> = (0..MAX_KEPT_WORDS + 6)
+                .map(|index| format!("word{index}"))
+                .collect();
+            let (within, beyond) = words.split_at(MAX_KEPT_WORDS);
+            for word in &words {
+                ac.keep(word);
+            }
+            assert!(within.iter().all(|word| ac.is_kept(word)));
+            assert!(!beyond.iter().any(|word| ac.is_kept(word)));
+            ac.keep("WORD0");
+            assert!(ac.is_kept("word0"), "a kept word kept again is no new word");
 
-    #[test]
-    fn leaves_real_words_acronyms_and_noise_alone() {
-        let ac = english();
-        assert_eq!(ac.correct("the"), None);
-        assert_eq!(ac.correct("keyboard"), None);
-        assert_eq!(ac.correct("foe"), None);
-        assert_eq!(ac.correct("fir"), None);
-        assert_eq!(ac.correct("jot"), None);
-        assert_eq!(ac.correct("mot"), None);
-        assert_eq!(ac.correct("TEH"), None);
-        assert_eq!(ac.correct("a1"), None);
-        assert_eq!(ac.correct("qzxjvkw"), None);
-    }
-
-    #[test]
-    fn kept_words_are_never_corrected() {
-        let mut ac = english();
-        ac.keep("teh");
-        assert!(ac.is_kept("Teh"));
-        assert_eq!(ac.correct("teh"), None);
-        ac.clear_kept();
-        assert_eq!(ac.correct("teh").as_deref(), Some("the"));
+            ac.clear_kept();
+            assert!(!words.iter().any(|word| ac.is_kept(word)));
+            ac.adopt_kept(&words);
+            assert_eq!(
+                words.iter().filter(|word| ac.is_kept(word)).count(),
+                MAX_KEPT_WORDS
+            );
+        }
     }
 }

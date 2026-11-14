@@ -4,6 +4,7 @@
 //! applies one policy model to media, clipboard, roaming preferences, secret
 //! references and cross-screen input.
 
+pub mod carried;
 pub mod clock;
 mod i18n {
     ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
@@ -16,6 +17,8 @@ pub mod secrets;
 pub mod speaker_group;
 pub mod unlock;
 pub mod wake;
+
+pub use carried::{CarriedDrag, CarriedOffer, MAX_CARRIED_OFFERS};
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -53,7 +56,6 @@ pub const MAX_WIFI_CREDENTIALS: usize = 256;
 pub const MAX_SEALED_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
-pub const MAX_DISPLAY_MOVE_AGE_MS: u64 = 10_000;
 /// Inline fast path only; larger nearby drops belong on the object stream.
 pub const MAX_NEARBY_DROP_BYTES: usize = 48 * 1024;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
@@ -340,11 +342,10 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         session_id: String,
     },
-    /// Ask the receiving device to author this placement in its next
-    /// snapshot. The sender never forges another device's durable state.
-    SetDisplayPlacement {
-        rect: DisplayRect,
-    },
+    /// Retired: a placement for the receiving device to author. Where the
+    /// person's screens stand is their shared arrangement setting now; the
+    /// variant keeps every later Postcard discriminant's value.
+    RetiredSetDisplayPlacement,
     /// A target-issued, short-lived permission delivered to its controller.
     InputLeaseGranted {
         lease: InputLease,
@@ -717,28 +718,16 @@ pub enum PersonalFabricAction {
     WakeProbeReply {
         nonce: [u8; 16],
     },
-    /// Compare-and-set placement; old action tags and checkpoint bytes stay stable.
-    SetDisplayPlacementChecked {
-        expected: FabricStamp,
-        rect: DisplayRect,
-        expires_unix_ms: u64,
-    },
-    /// Probe/acknowledge sequencing only for an existing exact-route lease.
-    SpatialInputProtocol {
-        lease_nonce: [u8; 16],
-        acknowledgement: bool,
-    },
-    /// Appended optional action; the existing Input tag and bytes do not move.
-    SpatialInputSequenced {
-        lease_nonce: [u8; 16],
-        sequence: u64,
-        event: FabricInputEvent,
-    },
-    /// Show this tab of the person's workspaces on the receiving device:
-    /// the person moved its window there from the sending one.
-    ShowTab {
-        tab: u64,
-    },
+    /// Retired, as [`Self::RetiredSetDisplayPlacement`]: its compare-and-set form.
+    RetiredSetDisplayPlacementChecked,
+    /// Retired: sequencing for [`Self::Input`], which one ordered session
+    /// between two devices already gives.
+    RetiredSpatialInputProtocol,
+    /// Retired, as [`Self::RetiredSpatialInputProtocol`].
+    RetiredSpatialInputSequenced,
+    /// Retired: a window shown on the receiving device. No build sent one; a
+    /// window crosses as the drag of its bar ([`Self::DragCarried`]).
+    RetiredShowTab,
     /// Certify a device the sender paired: the devices that can approve it
     /// ask their person (the shell's device certification). The ask,
     /// postcard-encoded.
@@ -748,6 +737,16 @@ pub enum PersonalFabricAction {
     /// A device's postcard-encoded answer to a [`Self::CertifyAsk`].
     CertifyAnswer {
         answer: Vec<u8>,
+    },
+    /// The sender's pointer pushes against the edge that leads to the
+    /// receiving device: grant it an [`InputLease`] if this device takes
+    /// the person's input from their other devices.
+    InputLeaseAsk,
+    /// What the pointer under `lease_nonce` carried across to the
+    /// receiving device in the middle of a drag. The drag goes on there.
+    DragCarried {
+        lease_nonce: [u8; 16],
+        drag: CarriedDrag,
     },
 }
 
@@ -1068,8 +1067,9 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::ShowTab { tab } => {
-                if *tab == 0 {
+            PersonalFabricAction::InputLeaseAsk => {}
+            PersonalFabricAction::DragCarried { lease_nonce, drag } => {
+                if lease_nonce == &[0; 16] || !drag.valid() {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1238,7 +1238,12 @@ impl PersonalFabricActionEnvelope {
             | PersonalFabricAction::RetiredRemoteCaptureChunk
             | PersonalFabricAction::RetiredDeviceHealthProbe
             | PersonalFabricAction::RetiredDeviceHealthReport
-            | PersonalFabricAction::RetiredTethering => {
+            | PersonalFabricAction::RetiredTethering
+            | PersonalFabricAction::RetiredShowTab
+            | PersonalFabricAction::RetiredSetDisplayPlacement
+            | PersonalFabricAction::RetiredSetDisplayPlacementChecked
+            | PersonalFabricAction::RetiredSpatialInputProtocol
+            | PersonalFabricAction::RetiredSpatialInputSequenced => {
                 return Err(FabricError::InvalidAction);
             }
             PersonalFabricAction::GamepadForwardRequest {
@@ -1293,47 +1298,12 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::SetDisplayPlacementChecked {
-                expected,
-                rect,
-                expires_unix_ms,
-            } => {
-                if &expected.device != local_target
-                    || expected.counter == 0
-                    || *expires_unix_ms < self.issued_unix_ms
-                    || *expires_unix_ms
-                        > self.issued_unix_ms.saturating_add(MAX_DISPLAY_MOVE_AGE_MS)
-                    || now_unix_ms > *expires_unix_ms
-                    || !valid_display_rect(rect)
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::SetDisplayPlacement { rect } => {
-                if !valid_display_rect(rect) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::InputLeaseGranted { lease } => {
                 if &lease.target != transport_source
                     || &lease.controller != local_target
                     || lease.nonce == [0; 16]
                     || lease.validate_at(now_unix_ms).is_err()
                 {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::SpatialInputProtocol { lease_nonce, .. } => {
-                if lease_nonce == &[0; 16] {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::SpatialInputSequenced {
-                lease_nonce,
-                sequence,
-                event,
-            } => {
-                if lease_nonce == &[0; 16] || *sequence == 0 || !event.validate() {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1551,27 +1521,6 @@ impl WifiCredential {
         crate::secrets::validate_wifi_envelopes(&self.sealed_secret)
             .map_err(|_| FabricError::InvalidWifiCredential)?;
         Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayEdge {
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
-impl DisplayEdge {
-    #[must_use]
-    pub fn opposite(self) -> Self {
-        match self {
-            Self::Left => Self::Right,
-            Self::Right => Self::Left,
-            Self::Top => Self::Bottom,
-            Self::Bottom => Self::Top,
-        }
     }
 }
 
@@ -2259,7 +2208,7 @@ impl DeviceFabric {
     }
 }
 
-fn valid_identifier(value: &str, max: usize) -> bool {
+pub(crate) fn valid_identifier(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
         && value
@@ -2267,21 +2216,12 @@ fn valid_identifier(value: &str, max: usize) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '/'))
 }
 
-fn valid_mime(value: &str) -> bool {
+pub(crate) fn valid_mime(value: &str) -> bool {
     value.len() <= 128
         && value.contains('/')
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
-}
-
-fn valid_display_rect(rect: &DisplayRect) -> bool {
-    rect.width > 0
-        && rect.height > 0
-        && rect.width <= 100_000
-        && rect.height <= 100_000
-        && rect.x.unsigned_abs() <= 1_000_000
-        && rect.y.unsigned_abs() <= 1_000_000
 }
 
 fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
@@ -2949,25 +2889,6 @@ mod tests {
     }
 
     #[test]
-    fn a_window_shown_on_another_device_names_a_tab() {
-        let source = id("laptop");
-        let target = id("board");
-        let ok = |tab| {
-            PersonalFabricActionEnvelope {
-                request_id: [5; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action: PersonalFabricAction::ShowTab { tab },
-            }
-            .validate_at(&source, &target, 10_000)
-            .is_ok()
-        };
-        assert!(ok(7));
-        assert!(!ok(0), "a tab id is never zero");
-    }
-
-    #[test]
     fn window_views_are_bounded_distinct_and_sized() {
         let source = id("viewer");
         let target = id("host");
@@ -3021,26 +2942,6 @@ mod tests {
         assert!(
             !decodes(vec![hw("h264", None), hw("h264", Some((1280, 720)))]),
             "one limit per codec"
-        );
-    }
-
-    #[test]
-    fn display_placement_wire_encoding_is_stable() {
-        let action = PersonalFabricAction::SetDisplayPlacement {
-            rect: DisplayRect {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-            },
-        };
-        // The original wire tag and postcard field encoding, independent of
-        // the current enum serializer. Encoding and decoding must both agree.
-        let original = [2, 0, 0, 1, 1];
-        assert_eq!(postcard::to_allocvec(&action).unwrap(), original);
-        assert_eq!(
-            postcard::from_bytes::<PersonalFabricAction>(&original).unwrap(),
-            action
         );
     }
 
@@ -3563,15 +3464,8 @@ mod tests {
         }
 
         fn new_action_variants_do_not_renumber_existing_wire_actions() {
-            let placement = postcard::to_allocvec(&PersonalFabricAction::SetDisplayPlacement {
-                rect: DisplayRect {
-                    x: 0,
-                    y: 0,
-                    width: 1,
-                    height: 1,
-                },
-            })
-            .unwrap();
+            let placement =
+                postcard::to_allocvec(&PersonalFabricAction::RetiredSetDisplayPlacement).unwrap();
             let input = postcard::to_allocvec(&PersonalFabricAction::Input {
                 lease_nonce: [1; 16],
                 event: FabricInputEvent::PointerMotion { x: 0, y: 0 },

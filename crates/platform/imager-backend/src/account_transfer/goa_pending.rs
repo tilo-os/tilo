@@ -338,96 +338,100 @@ mod tests {
         })
     }
 
-    #[test]
-    fn one_excluded_goa_account_creates_only_the_selected_pending_services() {
-        let text = format!(
-            "{}{}",
-            goa("account_1", "person@example.test", "files mail calendar"),
-            goa("account_2", "other@example.test", "mail")
-        );
-        let inventory = inventory(&text);
-        let selected: Vec<_> = inventory
-            .candidates
-            .iter()
-            .filter(|candidate| candidate.identity.as_deref() == Some("person@example.test"))
-            .filter_map(SelectedAccount::from_candidate)
-            .collect();
-        assert_eq!(selected.len(), 1);
-        let target = tempfile::tempdir().unwrap();
-        let root = target.path().join(".config/tilo");
-        let receipts = import_selected(&root, &inventory, &selected).unwrap();
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(
-            receipts[0].services,
-            vec![Service::Files, Service::Mail, Service::Calendar]
-        );
-        assert!(receipts[0].pending);
-        assert!(
-            !serde_json::to_string(&receipts)
-                .unwrap()
-                .contains("person@example.test")
-        );
-        let store = AccountStore::load_in(&root);
-        assert!(store.all().iter().any(|account| {
-            account.type_id.as_str() == PENDING_TYPE
-                && account.config["email"] == "person@example.test"
-                && account.config["source_goa_identity"] == "person@example.test"
-        }));
-        assert!(store.all().iter().any(|account| {
-            account.type_id.as_str() == CALDAV_TYPE
-                && account.config["username"] == "person@example.test"
-        }));
-        assert!(store.all().iter().any(|account| {
-            account.type_id.as_str() == accounts::cloud_types::GOOGLE_DRIVE
-                && account.config["use_files"] == true
-        }));
-        assert!(
-            store
-                .all()
-                .iter()
-                .all(|account| !same_identity(account, "other@example.test")),
-            "an excluded GOA account must not create a destination row"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn pending_goa_services_follow_the_selection;
 
-    #[test]
-    fn an_existing_destination_mailbox_keeps_its_own_authentication() {
-        let text = goa("account_1", "person@example.test", "mail");
-        let inventory = inventory(&text);
-        let selected: Vec<_> = inventory
-            .candidates
-            .iter()
-            .filter_map(SelectedAccount::from_candidate)
-            .collect();
-        let target = tempfile::tempdir().unwrap();
-        let root = target.path().join(".config/tilo");
-        let mut store = AccountStore::new();
-        let mut existing = Account::new(
-            AccountId::new("person@example.test"),
-            accounts::thunderbird::PENDING_TYPE,
-        );
-        existing.config = serde_json::json!({
-            "display_name": "Personal",
-            "email": "person@example.test",
-            "import_pending": true,
-            "source_provenance": {"mail_client": "thunderbird"},
-        });
-        store.upsert(existing);
-        store.save_in(&root).unwrap();
-        let receipts = import_selected(&root, &inventory, &selected).unwrap();
-        assert!(receipts[0].pending);
-        let after = AccountStore::load_in(&root);
-        assert_eq!(
-            after.len(),
-            1,
-            "the existing mailbox is reused, not replaced"
-        );
-        assert_eq!(
-            after
-                .get(&AccountId::new("person@example.test"))
-                .unwrap()
-                .config["source_provenance"]["mail_client"],
-            "thunderbird"
-        );
+        phase one_excluded_goa_account_creates_only_the_selected_pending_services;
+        {
+            let text = format!(
+                "{}{}",
+                goa("account_1", "person@example.test", "files mail calendar"),
+                goa("account_2", "other@example.test", "mail")
+            );
+            let inventory = inventory(&text);
+            let selected: Vec<_> = inventory
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.identity.as_deref() == Some("person@example.test"))
+                .filter_map(SelectedAccount::from_candidate)
+                .collect();
+            assert_eq!(selected.len(), 1);
+            let target = tempfile::tempdir().unwrap();
+            let root = target.path().join(".config/tilo");
+            let receipts = import_selected(&root, &inventory, &selected).unwrap();
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(
+                receipts[0].services,
+                vec![Service::Files, Service::Mail, Service::Calendar]
+            );
+            assert!(receipts[0].pending);
+            assert!(
+                !serde_json::to_string(&receipts)
+                    .unwrap()
+                    .contains("person@example.test")
+            );
+            let store = AccountStore::load_in(&root);
+            assert!(store.all().iter().any(|account| {
+                account.type_id.as_str() == PENDING_TYPE
+                    && account.config["email"] == "person@example.test"
+                    && account.config["source_goa_identity"] == "person@example.test"
+            }));
+            assert!(store.all().iter().any(|account| {
+                account.type_id.as_str() == CALDAV_TYPE
+                    && account.config["username"] == "person@example.test"
+            }));
+            assert!(store.all().iter().any(|account| {
+                account.type_id.as_str() == accounts::cloud_types::GOOGLE_DRIVE
+                    && account.config["use_files"] == true
+            }));
+            assert!(
+                store
+                    .all()
+                    .iter()
+                    .all(|account| !same_identity(account, "other@example.test")),
+                "an excluded GOA account must not create a destination row"
+            );
+        }
+
+        phase an_existing_destination_mailbox_keeps_its_own_authentication;
+        {
+            let text = goa("account_1", "person@example.test", "mail");
+            let inventory = inventory(&text);
+            let selected: Vec<_> = inventory
+                .candidates
+                .iter()
+                .filter_map(SelectedAccount::from_candidate)
+                .collect();
+            let target = tempfile::tempdir().unwrap();
+            let root = target.path().join(".config/tilo");
+            let mut store = AccountStore::new();
+            let mut existing = Account::new(
+                AccountId::new("person@example.test"),
+                accounts::thunderbird::PENDING_TYPE,
+            );
+            existing.config = serde_json::json!({
+                "display_name": "Personal",
+                "email": "person@example.test",
+                "import_pending": true,
+                "source_provenance": {"mail_client": "thunderbird"},
+            });
+            store.upsert(existing);
+            store.save_in(&root).unwrap();
+            let receipts = import_selected(&root, &inventory, &selected).unwrap();
+            assert!(receipts[0].pending);
+            let after = AccountStore::load_in(&root);
+            assert_eq!(
+                after.len(),
+                1,
+                "the existing mailbox is reused, not replaced"
+            );
+            assert_eq!(
+                after
+                    .get(&AccountId::new("person@example.test"))
+                    .unwrap()
+                    .config["source_provenance"]["mail_client"],
+                "thunderbird"
+            );
+        }
     }
 }

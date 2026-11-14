@@ -166,60 +166,64 @@ mod tests {
     const OLD: &str = "ostree/deploy/default/deploy/aaaa.0";
     const NEW: &str = "ostree/deploy/default/deploy/bbbb.0";
 
-    #[test]
-    fn a_machine_that_is_not_image_based_needs_no_old_passwords() {
-        let m = Machine::new("root=/dev/vda3 quiet");
-        assert_eq!(m.set().needs_old_passwords(), None);
-    }
+    tilo_test_env::scenario! {
+        fn old_passwords_are_kept_while_an_image_that_needs_them_can_boot;
 
-    #[test]
-    fn an_older_deployment_without_pam_tilo_keeps_them_until_it_is_gone() {
-        let m = Machine::new("root=/dev/vda3");
-        m.deployment(OLD, false);
-        m.deployment(NEW, true);
-        let why = m.set().needs_old_passwords().unwrap();
-        assert!(why.contains("aaaa.0"), "{why}");
-        m.remove(OLD);
-        assert_eq!(m.set().needs_old_passwords(), None);
-    }
+        phase a_machine_that_is_not_image_based_needs_no_old_passwords;
+        {
+            let m = Machine::new("root=/dev/vda3 quiet");
+            assert_eq!(m.set().needs_old_passwords(), None);
+        }
 
-    #[test]
-    fn composefs_deployments_count_too() {
-        let m = Machine::new("root=/dev/vda3");
-        m.deployment("state/deploy/1111", true);
-        m.deployment("state/deploy/2222", false);
-        assert!(m.set().needs_old_passwords().unwrap().contains("2222"));
-        m.remove("state/deploy/2222");
-        assert_eq!(m.set().needs_old_passwords(), None);
-    }
+        phase an_older_deployment_without_pam_tilo_keeps_them_until_it_is_gone;
+        {
+            let m = Machine::new("root=/dev/vda3");
+            m.deployment(OLD, false);
+            m.deployment(NEW, true);
+            let why = m.set().needs_old_passwords().unwrap();
+            assert!(why.contains("aaaa.0"), "{why}");
+            m.remove(OLD);
+            assert_eq!(m.set().needs_old_passwords(), None);
+        }
 
-    #[test]
-    fn an_unconfirmed_generation_keeps_them_while_rollback_protection_is_in_use() {
-        let m = Machine::new("root=/dev/vda3 tilo.generation=7");
-        m.deployment(NEW, true);
-        assert_eq!(m.set().needs_old_passwords(), None);
-        m.confirmed(Some(6));
-        assert!(
-            m.set()
-                .needs_old_passwords()
-                .unwrap()
-                .contains("generation 7")
-        );
-        m.confirmed(None);
-        assert!(m.set().needs_old_passwords().is_some());
-        m.confirmed(Some(7));
-        assert_eq!(m.set().needs_old_passwords(), None);
-    }
+        phase composefs_deployments_count_too;
+        {
+            let m = Machine::new("root=/dev/vda3");
+            m.deployment("state/deploy/1111", true);
+            m.deployment("state/deploy/2222", false);
+            assert!(m.set().needs_old_passwords().unwrap().contains("2222"));
+            m.remove("state/deploy/2222");
+            assert_eq!(m.set().needs_old_passwords(), None);
+        }
 
-    #[test]
-    fn what_cannot_be_read_keeps_them() {
-        let m = Machine::new("tilo.generation=x");
-        assert!(m.set().needs_old_passwords().is_some());
-        let m = Machine::new("root=/dev/vda3");
-        std::fs::create_dir_all(m.dir.path().join("sysroot/ostree/deploy/default/deploy")).unwrap();
-        assert!(
-            m.set().needs_old_passwords().is_some(),
-            "no deployment found"
-        );
+        phase an_unconfirmed_generation_keeps_them_while_rollback_protection_is_in_use;
+        {
+            let m = Machine::new("root=/dev/vda3 tilo.generation=7");
+            m.deployment(NEW, true);
+            assert_eq!(m.set().needs_old_passwords(), None);
+            m.confirmed(Some(6));
+            assert!(
+                m.set()
+                    .needs_old_passwords()
+                    .unwrap()
+                    .contains("generation 7")
+            );
+            m.confirmed(None);
+            assert!(m.set().needs_old_passwords().is_some());
+            m.confirmed(Some(7));
+            assert_eq!(m.set().needs_old_passwords(), None);
+        }
+
+        phase what_cannot_be_read_keeps_them;
+        {
+            let m = Machine::new("tilo.generation=x");
+            assert!(m.set().needs_old_passwords().is_some());
+            let m = Machine::new("root=/dev/vda3");
+            std::fs::create_dir_all(m.dir.path().join("sysroot/ostree/deploy/default/deploy")).unwrap();
+            assert!(
+                m.set().needs_old_passwords().is_some(),
+                "no deployment found"
+            );
+        }
     }
 }

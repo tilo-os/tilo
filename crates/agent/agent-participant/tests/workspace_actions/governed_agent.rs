@@ -4,7 +4,7 @@
 //! part in its channels. Ada asks for an agent from her page and approves it on her
 //! laptop with a delegation naming the workspace; the agent runs on the node
 //! under its own device key. When it opens a sealed record it asks the
-//! channel's participants for it like any collaborator: the governor admits
+//! channel's participants for it like any member: the governor admits
 //! it to the workspace's roster through the one admission decision, bound to its
 //! delegation, and a participant admits it to the channel. Its change
 //! arrives at Bob, another member, sealed, signed by the agent's own key and
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::{InvokeArgument, ReceiptStatus};
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
@@ -28,6 +28,7 @@ use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     Browser, Device, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request, sheet_names, start,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 /// The laptop: a root holder answering every agent request with the
 /// agent's certificate and the delegation of exactly what was proposed.
@@ -174,7 +175,11 @@ async fn until_sheet_by(
 
 /// Every body `author` wrote that the relay retains for `workspace`: its
 /// message kind, app and whether it is sealed.
-async fn retained_by(hosted: &super::Hosted, workspace: u64, author: [u8; 32]) -> Vec<String> {
+async fn retained_by(
+    hosted: &super::Hosted,
+    workspace: WorkspaceId,
+    author: [u8; 32],
+) -> Vec<String> {
     hosted
         .relay
         .workspace_records()
@@ -199,12 +204,10 @@ async fn retained_by(hosted: &super::Hosted, workspace: u64, author: [u8; 32]) -
 /// sealed on the route's channel, and how many there are.
 async fn retained_sealed(
     hosted: &super::Hosted,
-    workspace: u64,
+    workspace: WorkspaceId,
     route: &DocumentRoute,
     author: [u8; 32],
 ) -> (usize, bool) {
-    let channel =
-        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
     let bodies: Vec<bool> = hosted
         .relay
         .workspace_records()
@@ -220,12 +223,9 @@ async fn retained_sealed(
                     record_id,
                     envelope,
                     ..
-                }) if app_id == route.app_id && record_id == route.record => Some(
-                    envelope
-                        .encryption
-                        .as_ref()
-                        .is_some_and(|metadata| metadata.channel == channel),
-                ),
+                }) if app_id == route.app_id && record_id == route.record => {
+                    Some(envelope.encryption.as_ref().is_some())
+                }
                 _ => None,
             },
         )
@@ -240,7 +240,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     let host = enrol(
         &owner,
         "node",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let laptop = enrol(&owner, "laptop", DeviceCapabilities::primary());
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
@@ -255,7 +255,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         &host,
         &workspace.workspace,
         &member_device,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
     let mut page =

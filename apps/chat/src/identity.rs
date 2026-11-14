@@ -86,18 +86,31 @@ pub(crate) fn shared_name_label(id: &str, name: &str) -> String {
     }
 }
 
+/// Where a name says its owner is software: after the name, or in the badge beside it.
+#[derive(Clone, Copy)]
+pub(crate) enum RoleWord {
+    /// After the name: "Helper (agent)".
+    InName,
+    /// In the badge beside the name, which then names the software alone: "Helper".
+    InBadge,
+}
+
 /// What to call software that wrote as `name`, acting for `person`: its name with the person's,
 /// as the surface showing it names them — "Helper for Ada", and "Helper for you" to Ada, as
 /// Chat's window names a message's author. Software that acted for nobody is named alone, with
-/// what it is: "Helper (agent)".
+/// the role `word` says.
 pub(crate) fn acting_label(
     name: &str,
     person: Option<&str>,
+    word: RoleWord,
     name_of: impl Fn(&str) -> String,
     is_me: impl Fn(&str) -> bool,
 ) -> String {
     person.map_or_else(
-        || crate::i18n::t_args("chat-agent-author", &[("name", name.into())]),
+        || match word {
+            RoleWord::InName => crate::i18n::t_args("chat-agent-author", &[("name", name.into())]),
+            RoleWord::InBadge => name.to_owned(),
+        },
         |person| ui::acting_line(name, Some(&name_of(person)), is_me(person)),
     )
 }

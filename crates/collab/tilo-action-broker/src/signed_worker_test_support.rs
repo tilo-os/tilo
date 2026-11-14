@@ -60,16 +60,9 @@ impl crate::certificate_authority::CertificateAuthority for CurrentHost {
         }
         Ok(())
     }
-    // A permissive ordinary provider still cannot create descriptor provenance.
     fn authorize_join(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
-        self.authorize(workspace, cert)
-    }
-    fn authorize_host_worker(&self, route: &CrdtRoute, cert: &DeviceCert) -> Result<(), String> {
         self.checks.fetch_add(1, Ordering::SeqCst);
-        if route != &self.route || !cert.capabilities.can_act_as_host {
-            return Err("wrong host worker route or role".into());
-        }
-        self.authorize(route.cluster_id.parse().unwrap(), cert)
+        self.authorize(workspace, cert)
     }
 }
 
@@ -194,11 +187,6 @@ pub fn directory_server(
     wire_answerer(Rc::new(TestActionDirectoryServer {
         state: state.clone(),
     }))
-}
-
-pub fn empty_directories() -> Rc<LocalActionDirectoryRegistry> {
-    let (_, rx) = std::sync::mpsc::channel();
-    Rc::new(LocalActionDirectoryRegistry::new(rx))
 }
 
 /// The certified join presentation `cert`/`key` sign for `workspace`.
@@ -364,7 +352,7 @@ impl OriginalWorkspace {
         workspace: Option<tilo_desktop_model::WorkspaceId>,
     ) -> Self {
         Self::hosting(
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
             None,
             None,
             Some((content, workspace)),
@@ -428,7 +416,7 @@ impl OriginalWorkspace {
             ),
         };
         // Someone the workspace grants everything until 100s, and nothing after.
-        let principal = principal_id_for_root(cert.user_public_key);
+        let principal = person_id_for_root(cert.user_public_key);
         let changes = tilo_action_policy::Grant::new(
             "changes-for-a-while",
             tilo_action_policy::Grantee::person(principal.clone()),
@@ -595,7 +583,7 @@ impl crate::services::LocalPersonServices for NativePerson {
             .clone()
             .ok_or("native identity retired")?;
         if workspace != self.0.route.cluster_id
-            || person != principal_id_for_root(certificate.user_public_key)
+            || person != person_id_for_root(certificate.user_public_key)
         {
             return Err("native person mismatch".into());
         }
@@ -605,6 +593,6 @@ impl crate::services::LocalPersonServices for NativePerson {
 
 /// The host's own person, invoking through its native seat.
 pub fn native_person(workspace: &CrdtRoute, cert: &DeviceCert) -> tilo_actions::remote::Caller {
-    tilo_actions::remote::Caller::local_person(principal_id_for_root(cert.user_public_key))
+    tilo_actions::remote::Caller::local_person(person_id_for_root(cert.user_public_key))
         .in_workspace(workspace.cluster_id.clone())
 }

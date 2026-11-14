@@ -142,9 +142,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn session_readiness_and_preflight_fail_closed() {
-        eprintln!("phase tilo_broker_transport_is_production_on");
+    tilo_test_env::scenario! {
+        fn session_readiness_and_preflight_fail_closed;
+
+        phase tilo_broker_transport_is_production_on;
         {
             assert!(transport_readiness(ConnectionKind::Tilo).can_connect());
             assert!(!transport_readiness(ConnectionKind::Rdp).can_connect());
@@ -158,7 +159,7 @@ mod tests {
             );
         }
 
-        eprintln!("phase readiness_distinguishes_a_missing_capability_from_a_missing_backend");
+        phase readiness_distinguishes_a_missing_capability_from_a_missing_backend;
         {
             assert_eq!(
                 transport_readiness(ConnectionKind::Rdp),
@@ -174,9 +175,7 @@ mod tests {
             );
         }
 
-        eprintln!(
-            "phase connection_preflight_fails_closed_for_bad_profiles_but_not_cached_presence"
-        );
+        phase connection_preflight_fails_closed_for_bad_profiles_but_not_cached_presence;
         {
             let mut tilo = connection(ConnectionKind::Tilo);
             tilo.host = Atom("friendly-name".into());

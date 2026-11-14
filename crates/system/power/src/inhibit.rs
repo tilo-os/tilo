@@ -243,148 +243,153 @@ impl Drop for InhibitToken {
 mod tests {
     use super::*;
 
-    #[test]
-    fn inhibitor_tokens_compose_share_state_and_release_on_drop() {
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
+        fn inhibitors_compose_announce_changes_and_lapse_at_their_deadline;
+
+        phase inhibitor_tokens_compose_share_state_and_release_on_drop;
         {
-            let r = InhibitRegistry::new();
-            assert!(!r.is_inhibited());
-            assert_eq!(r.count(), 0);
-            assert!(r.active_reasons().is_empty());
-        }
-        {
-            let r = InhibitRegistry::new();
-            {
-                let _t = r.acquire("media playback");
-                assert!(r.is_inhibited());
-                assert_eq!(r.count(), 1);
-                assert_eq!(r.active_reasons(), vec!["media playback".to_string()]);
-            }
-            assert!(!r.is_inhibited());
-            assert_eq!(r.count(), 0);
-        }
-        {
-            let r = InhibitRegistry::new();
-            let a = r.acquire("media");
-            let b = r.acquire("backup task");
-            assert_eq!(r.count(), 2);
-            assert!(r.is_inhibited());
-            drop(a);
-            assert!(r.is_inhibited());
-            assert_eq!(r.active_reasons(), vec!["backup task".to_string()]);
-            drop(b);
-            assert!(!r.is_inhibited());
-        }
-        {
-            let r = InhibitRegistry::new();
-            let r2 = r.clone();
-            let _t = r.acquire("x");
-            assert!(r2.is_inhibited());
-            assert_eq!(r2.count(), 1);
-        }
-        {
-            let registry = InhibitRegistry::new();
-            let _logout = registry.acquire_for("unsaved work", INHIBIT_LOGOUT);
-            assert!(registry.is_inhibited_for(INHIBIT_LOGOUT));
-            assert!(!registry.is_inhibited_for(INHIBIT_POWER));
-            assert!(registry.active_reasons().is_empty());
-        }
-        {
-            let token;
             {
                 let r = InhibitRegistry::new();
-                token = r.acquire("x");
-                assert_eq!(r.count(), 1);
+                assert!(!r.is_inhibited());
+                assert_eq!(r.count(), 0);
+                assert!(r.active_reasons().is_empty());
             }
-            // Registry dropped; dropping the token must not panic (Weak upgrade
-            // fails and the drop is a no-op).
-            drop(token);
+            {
+                let r = InhibitRegistry::new();
+                {
+                    let _t = r.acquire("media playback");
+                    assert!(r.is_inhibited());
+                    assert_eq!(r.count(), 1);
+                    assert_eq!(r.active_reasons(), vec!["media playback".to_string()]);
+                }
+                assert!(!r.is_inhibited());
+                assert_eq!(r.count(), 0);
+            }
+            {
+                let r = InhibitRegistry::new();
+                let a = r.acquire("media");
+                let b = r.acquire("backup task");
+                assert_eq!(r.count(), 2);
+                assert!(r.is_inhibited());
+                drop(a);
+                assert!(r.is_inhibited());
+                assert_eq!(r.active_reasons(), vec!["backup task".to_string()]);
+                drop(b);
+                assert!(!r.is_inhibited());
+            }
+            {
+                let r = InhibitRegistry::new();
+                let r2 = r.clone();
+                let _t = r.acquire("x");
+                assert!(r2.is_inhibited());
+                assert_eq!(r2.count(), 1);
+            }
+            {
+                let registry = InhibitRegistry::new();
+                let _logout = registry.acquire_for("unsaved work", INHIBIT_LOGOUT);
+                assert!(registry.is_inhibited_for(INHIBIT_LOGOUT));
+                assert!(!registry.is_inhibited_for(INHIBIT_POWER));
+                assert!(registry.active_reasons().is_empty());
+            }
+            {
+                let token;
+                {
+                    let r = InhibitRegistry::new();
+                    token = r.acquire("x");
+                    assert_eq!(r.count(), 1);
+                }
+                // Registry dropped; dropping the token must not panic (Weak upgrade
+                // fails and the drop is a no-op).
+                drop(token);
+            }
         }
-    }
 
-    #[test]
-    fn every_change_is_announced_and_the_next_lapse_is_named() {
-        let registry = InhibitRegistry::new();
-        let changes = Arc::new(AtomicU64::new(0));
-        registry.on_change({
-            let changes = Arc::clone(&changes);
-            let registry = registry.clone();
-            move || {
-                // A listener may read the registry: it runs outside the lock.
-                let _ = registry.count();
-                changes.fetch_add(1, Ordering::SeqCst);
-            }
-        });
-        let start = Instant::now();
-        let minute = std::time::Duration::from_secs(60);
-        assert_eq!(registry.next_lapse_for(INHIBIT_POWER, start), None);
-
-        let hold = registry.acquire("media");
-        assert_eq!(changes.load(Ordering::SeqCst), 1, "acquire is announced");
-        assert_eq!(
-            registry.next_lapse_for(INHIBIT_POWER, start),
-            None,
-            "a plain hold never lapses by itself"
-        );
-        let lease = registry.acquire_until("remote use", INHIBIT_SUSPEND, start + minute);
-        assert_eq!(changes.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            registry.next_lapse_for(INHIBIT_POWER, start),
-            Some(start + minute)
-        );
-        assert_eq!(
-            registry.next_lapse_for(INHIBIT_IDLE, start),
-            None,
-            "a suspend lease does not lapse an idle hold"
-        );
-        assert!(lease.renew_until("remote use", start + 2 * minute));
-        assert_eq!(changes.load(Ordering::SeqCst), 3, "renewal is announced");
-        assert_eq!(
-            registry.next_lapse_for(INHIBIT_POWER, start),
-            Some(start + 2 * minute)
-        );
-        assert_eq!(
-            registry.next_lapse_for(INHIBIT_POWER, start + 2 * minute),
-            None,
-            "a lapsed lease has nothing left to announce"
-        );
-        drop(lease);
-        drop(hold);
-        assert_eq!(changes.load(Ordering::SeqCst), 5, "releases are announced");
-    }
-
-    #[test]
-    fn a_lease_counts_until_its_deadline_and_renewal_moves_it() {
-        let registry = InhibitRegistry::new();
-        let start = Instant::now();
-        let minute = std::time::Duration::from_secs(60);
-        let lease = registry.acquire_until("remote use", INHIBIT_SUSPEND, start + minute);
-        assert!(registry.is_inhibited_for_at(INHIBIT_SUSPEND, start));
-        assert!(
-            !registry.is_inhibited_for_at(INHIBIT_IDLE, start),
-            "a suspend lease leaves the screen to blank and lock"
-        );
-        assert!(
-            !registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + minute),
-            "the lease lapses at its deadline though the token lives"
-        );
-        assert!(lease.renew_until("remote use again", start + 2 * minute));
-        assert!(registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + minute));
-        assert!(!registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + 2 * minute));
-        let _forever = registry.acquire_for("download", INHIBIT_SUSPEND);
-        assert!(
-            registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + 10 * minute),
-            "a plain hold has no deadline"
-        );
-        drop(lease);
-        assert_eq!(registry.count(), 1);
-        let gone;
+        phase every_change_is_announced_and_the_next_lapse_is_named;
         {
-            let other = InhibitRegistry::new();
-            gone = other.acquire_until("x", INHIBIT_SUSPEND, start + minute);
+            let registry = InhibitRegistry::new();
+            let changes = Arc::new(AtomicU64::new(0));
+            registry.on_change({
+                let changes = Arc::clone(&changes);
+                let registry = registry.clone();
+                move || {
+                    // A listener may read the registry: it runs outside the lock.
+                    let _ = registry.count();
+                    changes.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            let start = Instant::now();
+            let minute = std::time::Duration::from_secs(60);
+            assert_eq!(registry.next_lapse_for(INHIBIT_POWER, start), None);
+
+            let hold = registry.acquire("media");
+            assert_eq!(changes.load(Ordering::SeqCst), 1, "acquire is announced");
+            assert_eq!(
+                registry.next_lapse_for(INHIBIT_POWER, start),
+                None,
+                "a plain hold never lapses by itself"
+            );
+            let lease = registry.acquire_until("remote use", INHIBIT_SUSPEND, start + minute);
+            assert_eq!(changes.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                registry.next_lapse_for(INHIBIT_POWER, start),
+                Some(start + minute)
+            );
+            assert_eq!(
+                registry.next_lapse_for(INHIBIT_IDLE, start),
+                None,
+                "a suspend lease does not lapse an idle hold"
+            );
+            assert!(lease.renew_until("remote use", start + 2 * minute));
+            assert_eq!(changes.load(Ordering::SeqCst), 3, "renewal is announced");
+            assert_eq!(
+                registry.next_lapse_for(INHIBIT_POWER, start),
+                Some(start + 2 * minute)
+            );
+            assert_eq!(
+                registry.next_lapse_for(INHIBIT_POWER, start + 2 * minute),
+                None,
+                "a lapsed lease has nothing left to announce"
+            );
+            drop(lease);
+            drop(hold);
+            assert_eq!(changes.load(Ordering::SeqCst), 5, "releases are announced");
         }
-        assert!(
-            !gone.renew_until("x", start + minute),
-            "its registry is gone"
-        );
+
+        phase a_lease_counts_until_its_deadline_and_renewal_moves_it;
+        {
+            let registry = InhibitRegistry::new();
+            let start = Instant::now();
+            let minute = std::time::Duration::from_secs(60);
+            let lease = registry.acquire_until("remote use", INHIBIT_SUSPEND, start + minute);
+            assert!(registry.is_inhibited_for_at(INHIBIT_SUSPEND, start));
+            assert!(
+                !registry.is_inhibited_for_at(INHIBIT_IDLE, start),
+                "a suspend lease leaves the screen to blank and lock"
+            );
+            assert!(
+                !registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + minute),
+                "the lease lapses at its deadline though the token lives"
+            );
+            assert!(lease.renew_until("remote use again", start + 2 * minute));
+            assert!(registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + minute));
+            assert!(!registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + 2 * minute));
+            let _forever = registry.acquire_for("download", INHIBIT_SUSPEND);
+            assert!(
+                registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + 10 * minute),
+                "a plain hold has no deadline"
+            );
+            drop(lease);
+            assert_eq!(registry.count(), 1);
+            let gone;
+            {
+                let other = InhibitRegistry::new();
+                gone = other.acquire_until("x", INHIBIT_SUSPEND, start + minute);
+            }
+            assert!(
+                !gone.renew_until("x", start + minute),
+                "its registry is gone"
+            );
+        }
     }
 }

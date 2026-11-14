@@ -32,6 +32,9 @@
 //! keys ([`ContentLane::hold_secret`]): the same bytes stored twice, by any
 //! window on a record of the same members, are one item under one
 //! reference. Before the keys arrive, each item is sealed under a fresh key.
+//! A record is named by its route, whose cluster is its workspace: one app's
+//! records in two workspaces are two lanes, each sealed under the secret of
+//! its own workspace's members.
 //!
 //! A record other than the window's own — one of the person's records,
 //! kept in their own workspace — has a lane of its own that names its route
@@ -122,63 +125,70 @@ pub struct LaneRequests {
     pub offers: Vec<(String, Vec<u8>)>,
 }
 
-type Lanes = Mutex<HashMap<(String, String), Arc<ContentLane>>>;
+/// Which record a lane carries: its workspace (the route's cluster), its
+/// app and its wire name. One app's records in two workspaces are two
+/// lanes, each sealed under its own members' secret.
+type LaneKey = (uuid::Uuid, String, String);
 
-fn lanes() -> std::sync::MutexGuard<'static, HashMap<(String, String), Arc<ContentLane>>> {
+fn lane_key(route: &super::RouteSpec) -> LaneKey {
+    (
+        route.cluster_id,
+        route.app_id.clone(),
+        route.record.clone().unwrap_or_default(),
+    )
+}
+
+type Lanes = Mutex<HashMap<LaneKey, Arc<ContentLane>>>;
+
+fn lanes() -> std::sync::MutexGuard<'static, HashMap<LaneKey, Arc<ContentLane>>> {
     static LANES: OnceLock<Lanes> = OnceLock::new();
     LANES.get_or_init(Mutex::default).lock_recover()
 }
 
-/// The lanes windows keep for the records they show, by app and wire record
+/// The lanes windows keep for the records they show, by record
 /// ([`ContentLane::show_on_route`]); a lane goes once its window let it go.
-type WindowLanes = Mutex<HashMap<(String, String), Vec<std::sync::Weak<ContentLane>>>>;
+type WindowLanes = Mutex<HashMap<LaneKey, Vec<std::sync::Weak<ContentLane>>>>;
 
 fn window_lanes()
--> std::sync::MutexGuard<'static, HashMap<(String, String), Vec<std::sync::Weak<ContentLane>>>> {
+-> std::sync::MutexGuard<'static, HashMap<LaneKey, Vec<std::sync::Weak<ContentLane>>>> {
     static WINDOW_LANES: OnceLock<WindowLanes> = OnceLock::new();
     WINDOW_LANES.get_or_init(Mutex::default).lock_recover()
 }
 
 impl ContentLane {
     /// `lane`, a window's own ([`Self::of_window`]), carries the content of
-    /// record `record` (its wire name) of app `app`: whatever moves that
-    /// record's content for the process, rather than the window's own
-    /// collaboration (a browser page's replication), reaches it through
-    /// [`Self::on_route`] for as long as the window keeps it.
-    pub fn show_on_route(app: &str, record: &str, lane: &Arc<Self>) {
-        let _ = lane.record.set(Self::of(app, record));
+    /// the record `route` names: whatever moves that record's content for
+    /// the process reaches it through [`Self::on_route`] for as long as the
+    /// window keeps it, and what it stores is sealed under the secret of
+    /// that record's members.
+    pub fn show_on_route(route: &super::RouteSpec, lane: &Arc<Self>) {
+        let _ = lane.record.set(Self::of(route));
         let mut lanes = window_lanes();
-        let kept = lanes
-            .entry((app.to_owned(), record.to_owned()))
-            .or_default();
+        let kept = lanes.entry(lane_key(route)).or_default();
         kept.retain(|kept| {
             kept.strong_count() > 0 && !std::ptr::eq(kept.as_ptr(), Arc::as_ptr(lane))
         });
         kept.push(Arc::downgrade(lane));
     }
 
-    /// Every lane carrying record `record` (its wire name) of app `app`'s
-    /// content in this process: the record's own ([`Self::of`]) and those of
-    /// the windows showing it ([`Self::show_on_route`]). What their windows
-    /// ask for is asked of the record's route, and what arrives on it is
-    /// handed to each.
-    pub fn on_route(app: &str, record: &str) -> Vec<Arc<Self>> {
-        let mut found = vec![Self::of(app, record)];
+    /// Every lane carrying the content of the record `route` names in this
+    /// process: the record's own ([`Self::of`]) and those of the windows
+    /// showing it ([`Self::show_on_route`]). What their windows ask for is
+    /// asked of the record's route, and what arrives on it is handed to
+    /// each.
+    pub fn on_route(route: &super::RouteSpec) -> Vec<Arc<Self>> {
+        let mut found = vec![Self::of(route)];
         let mut lanes = window_lanes();
-        if let Some(kept) = lanes.get_mut(&(app.to_owned(), record.to_owned())) {
+        if let Some(kept) = lanes.get_mut(&lane_key(route)) {
             kept.retain(|kept| kept.strong_count() > 0);
             found.extend(kept.iter().filter_map(std::sync::Weak::upgrade));
         }
         found
     }
 
-    /// The lane of record `record` of app `app` in this process.
-    pub fn of(app: &str, record: &str) -> Arc<Self> {
-        Arc::clone(
-            lanes()
-                .entry((app.to_owned(), record.to_owned()))
-                .or_default(),
-        )
+    /// The lane of the record `route` names in this process.
+    pub fn of(route: &super::RouteSpec) -> Arc<Self> {
+        Arc::clone(lanes().entry(lane_key(route)).or_default())
     }
 
     /// The lane of the window whose code is running: the one it keeps
@@ -211,7 +221,7 @@ impl ContentLane {
     /// under that record's scope, and travels on its route alone. This
     /// device holds the bytes for the app only while it runs.
     pub fn record_store(route: &super::RouteSpec) -> ContentStore {
-        let lane = Self::of(&route.app_id, route.record.as_deref().unwrap_or(""));
+        let lane = Self::of(route);
         let _ = lane.route.set(route.clone());
         lane.store
             .get_or_init(|| RecordContent::store(ContentStore::memory(), Arc::clone(&lane)))
@@ -223,7 +233,7 @@ impl ContentLane {
     pub fn routed(app: &str) -> Vec<(super::RouteSpec, Arc<Self>)> {
         lanes()
             .iter()
-            .filter(|((lane_app, _), _)| lane_app == app)
+            .filter(|((_, lane_app, _), _)| lane_app == app)
             .filter_map(|(_, lane)| Some((lane.route.get()?.clone(), Arc::clone(lane))))
             .collect()
     }

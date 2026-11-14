@@ -288,9 +288,10 @@ fn where_the_window_is_stays_local() {
     assert_eq!(app.tab(), DetailTab::Inspect);
 }
 
-#[test]
-fn lifecycle_effects_and_resources_are_exported_and_bounded() {
-    // --- phase: lifecycle_control_emits_the_exported_effect_instead_of_running_podman_inline ---
+tilo_test_env::scenario! {
+    fn lifecycle_effects_and_resources_are_exported_and_bounded;
+
+    phase lifecycle_control_emits_the_exported_effect_instead_of_running_podman_inline;
     {
         let window = ContainersApp::sample();
         let mut app = window.state();
@@ -314,7 +315,7 @@ fn lifecycle_effects_and_resources_are_exported_and_bounded() {
         );
     }
 
-    // --- phase: resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily ---
+    phase resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily;
     {
         let limit = RESOURCE_SNAPSHOT_LIMIT;
         let window = ContainersApp::sample();

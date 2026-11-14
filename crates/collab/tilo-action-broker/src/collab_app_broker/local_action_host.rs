@@ -1,8 +1,8 @@
 //! A host-local door retaining an existing signed workspace admission, never a new grant.
 use super::{AppBrokerState, Arc, VerifiedActionCaller, published_invocation::InvocationCaller};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, PendingPoll,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeRequest, Pending, PendingPoll,
 };
 
 #[derive(Clone)]
@@ -31,20 +31,21 @@ impl AppBrokerState {
             || (caller.execution_id().is_some() && !caller.execution_is_live())
             || caller.is_foreign_device()
             || caller.acting_for_person().is_some()
-            || caller.shortcut().is_some()
+            || caller.acting().is_automation()
             || caller.user_public_key().is_some()
             || caller.device_public_key().is_some()
         {
             return Err("native person execution unavailable".into());
         }
-        let CallerPrincipal::Person(person) = caller.principal() else {
-            return Err("native person required".into());
-        };
+        let person = caller
+            .acting()
+            .person_id()
+            .ok_or("native person required")?;
         let workspace = caller
             .workspace()
             .ok_or("native personal cluster required")?;
         let certificate = service.certificate(workspace, person)?;
-        if super::principal_id_for_root(certificate.user_public_key) != *person {
+        if super::person_id_for_root(certificate.user_public_key) != *person {
             return Err("native person certificate mismatch".into());
         }
         self.current_native_person(workspace, &certificate)?;
@@ -69,7 +70,7 @@ impl AppBrokerState {
         }
         if request.on_behalf_of.is_some()
             || caller.is_foreign_device()
-            || !matches!(caller.principal(), CallerPrincipal::Person(_))
+            || !caller.acting().is_person()
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
@@ -93,9 +94,10 @@ impl AppBrokerState {
                     "this desk's broker is not serving the person at it",
                 ));
             }
-            let CallerPrincipal::Person(person) = caller.principal() else {
-                return Err(refused("the caller is not a person at this desk"));
-            };
+            let person = caller
+                .acting()
+                .person_id()
+                .ok_or_else(|| refused("the caller is not a person at this desk"))?;
             let workspace = caller
                 .workspace()
                 .ok_or_else(|| ActionHostError::Unavailable {
@@ -139,7 +141,7 @@ impl AppBrokerState {
                     );
                     ActionHostError::NotPermitted
                 })?;
-            if super::principal_id_for_root(certificate.user_public_key) != *person {
+            if super::person_id_for_root(certificate.user_public_key) != *person {
                 return Err(refused("the certificate belongs to another person"));
             }
             let time = self
@@ -195,7 +197,7 @@ impl AppBrokerState {
             .ok_or("native person authority unavailable")?
             .certificate(
                 workspace,
-                &super::principal_id_for_root(certificate.user_public_key),
+                &super::person_id_for_root(certificate.user_public_key),
             )?;
         if current != *certificate {
             return Err("native person identity replaced".into());
@@ -228,9 +230,10 @@ impl AppBrokerState {
         if checked.effective.is_foreign_device() {
             return Err("native action requires this device's person".into());
         }
-        let CallerPrincipal::Person(person) = caller.principal() else {
-            return Err("native action requires a person".into());
-        };
+        let person = caller
+            .acting()
+            .person_id()
+            .ok_or("native action requires a person")?;
         let mut projection =
             Caller::local_person(person).in_workspace(&checked.admission.workspace);
         if let Some(lease) = caller.execution_lease() {
@@ -315,7 +318,7 @@ impl AppBrokerState {
             .certificate
             .as_ref()
             .ok_or("original certificate unavailable")?;
-        if caller.principal() != &CallerPrincipal::Person(admission.admitted.principal_id.clone())
+        if caller.acting().person_id() != Some(admission.admitted.principal_id.as_str())
             || caller.user_public_key() != Some(&certificate.user_public_key)
             || caller.device_public_key() != Some(&certificate.device_public_key)
         {
@@ -459,7 +462,6 @@ impl AppBrokerState {
         if !collab_types::is_personal_cluster(&certificate.user_public_key, &workspace)
             || checked.effective.is_foreign_device()
             || checked.admission.admitted.agent_id.is_some()
-            || checked.admission.admitted.host_scope.is_some()
         {
             return Err(
                 "native credentials require this person's own admitted device workspace".into(),
@@ -711,7 +713,7 @@ fn certified_provider(provider: &str) -> bool {
         provider,
         tilo_actions::remote::device_pairing::PROVIDER
             | tilo_actions::remote::identity_admin::PROVIDER
-            | tilo_actions::remote::home_relay_hosting::PROVIDER
+            | tilo_actions::remote::host_account::PROVIDER
             | tilo_actions::remote::own_device::PROVIDER
     ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()

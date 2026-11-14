@@ -134,81 +134,89 @@ view recent(b: Board) {
         tilolang::calendar::instant(time).unwrap()
     }
 
-    #[test]
-    fn a_view_on_today_runs_again_at_the_persons_midnight_and_no_other_view_does() {
-        assert_eq!(MIDNIGHT, seconds("2026-10-29T22:00:00Z"));
-        let days = Days::at(BEFORE_MIDNIGHT);
-        let mut today = days.view("today");
-        let mut plain = days.view("plain");
-        let mut both = days.view("both");
-        assert_eq!(texts(today.tree()), ["due today"]);
-        assert_eq!(
-            texts(both.tree()),
-            ["due today", "due tomorrow", "undated", "due today"]
-        );
-        // What read `today` waits for the person's midnight; what read no time waits for nothing.
-        assert_eq!(today.wakes_at(), Some(MIDNIGHT));
-        assert_eq!(both.wakes_at(), Some(MIDNIGHT));
-        assert_eq!(
-            plain.wakes_at(),
-            None,
-            "a view that read no time is never woken"
-        );
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_view_on_the_clock_runs_again_when_its_reading_changes;
 
-        // Before midnight nothing is due: a poll runs nothing.
-        days.set_clock("2026-10-29T21:59:59Z");
-        assert!(!today.is_stale());
-        let renders = (today.stats().renders, both.stats().renders);
-        assert!(today.poll_patches().unwrap().is_empty());
-        assert!(both.poll_patches().unwrap().is_empty());
-        assert_eq!((today.stats().renders, both.stats().renders), renders);
+        phase a_view_on_today_runs_again_at_the_persons_midnight_and_no_other_view_does;
+        {
+            assert_eq!(MIDNIGHT, seconds("2026-10-29T22:00:00Z"));
+            let days = Days::at(BEFORE_MIDNIGHT);
+            let mut today = days.view("today");
+            let mut plain = days.view("plain");
+            let mut both = days.view("both");
+            assert_eq!(texts(today.tree()), ["due today"]);
+            assert_eq!(
+                texts(both.tree()),
+                ["due today", "due tomorrow", "undated", "due today"]
+            );
+            // What read `today` waits for the person's midnight; what read no time waits for nothing.
+            assert_eq!(today.wakes_at(), Some(MIDNIGHT));
+            assert_eq!(both.wakes_at(), Some(MIDNIGHT));
+            assert_eq!(
+                plain.wakes_at(),
+                None,
+                "a view that read no time is never woken"
+            );
 
-        days.set_clock(AFTER_MIDNIGHT);
-        assert!(today.is_stale(), "the day it read has turned");
-        assert!(!plain.is_stale(), "a view that read no time is not stale");
-        let plain_renders = plain.stats().renders;
-        let both_renders = both.stats().renders;
-        let today_renders = today.stats().renders;
-        assert!(!today.poll_patches().unwrap().is_empty());
-        assert_eq!(texts(today.tree()), ["due today", "due tomorrow"]);
-        // The view ran once, and the row that came in rendered: its boundary of its own.
-        assert_eq!(today.stats().renders, today_renders + 2);
-        assert!(plain.poll_patches().unwrap().is_empty());
-        assert_eq!(plain.stats().renders, plain_renders);
-        // In one tree, only the boundary that read the time ran again (with the row that came
-        // in): not its parent, not its sibling or their rows.
-        both.poll_patches().unwrap();
-        assert_eq!(
-            texts(both.tree()),
-            [
-                "due today",
-                "due tomorrow",
-                "undated",
-                "due today",
-                "due tomorrow"
-            ]
-        );
-        assert_eq!(both.stats().renders, both_renders + 2);
-        // Each now waits for the next midnight.
-        assert_eq!(today.wakes_at(), Some(MIDNIGHT + 86_400));
-        assert_eq!(both.wakes_at(), Some(MIDNIGHT + 86_400));
-    }
+            // Before midnight nothing is due: a poll runs nothing.
+            days.set_clock("2026-10-29T21:59:59Z");
+            assert!(!today.is_stale());
+            let renders = (today.stats().renders, both.stats().renders);
+            assert!(today.poll_patches().unwrap().is_empty());
+            assert!(both.poll_patches().unwrap().is_empty());
+            assert_eq!((today.stats().renders, both.stats().renders), renders);
 
-    #[test]
-    fn a_view_on_the_running_clock_runs_again_at_the_next_minute() {
-        let days = Days::at("2026-10-29T21:58:30Z");
-        let mut recent = days.view("recent");
-        assert_eq!(texts(recent.tree()), ["an hour ago"]);
-        // A query reads its clock to the minute: what it read moves on at the next one.
-        assert_eq!(recent.wakes_at(), Some(seconds("2026-10-29T21:59:00Z")));
-        days.set_clock("2026-10-29T22:00:00Z");
-        recent.poll_patches().unwrap();
-        assert_eq!(
-            texts(recent.tree()),
-            Vec::<String>::new(),
-            "a message received more than an hour ago leaves"
-        );
-        assert_eq!(recent.wakes_at(), Some(seconds("2026-10-29T22:01:00Z")));
+            days.set_clock(AFTER_MIDNIGHT);
+            assert!(today.is_stale(), "the day it read has turned");
+            assert!(!plain.is_stale(), "a view that read no time is not stale");
+            let plain_renders = plain.stats().renders;
+            let both_renders = both.stats().renders;
+            let today_renders = today.stats().renders;
+            assert!(!today.poll_patches().unwrap().is_empty());
+            assert_eq!(texts(today.tree()), ["due today", "due tomorrow"]);
+            // The view ran once, and the row that came in rendered: its boundary of its own.
+            assert_eq!(today.stats().renders, today_renders + 2);
+            assert!(plain.poll_patches().unwrap().is_empty());
+            assert_eq!(plain.stats().renders, plain_renders);
+            // In one tree, only the boundary that read the time ran again (with the row that came
+            // in): not its parent, not its sibling or their rows.
+            both.poll_patches().unwrap();
+            assert_eq!(
+                texts(both.tree()),
+                [
+                    "due today",
+                    "due tomorrow",
+                    "undated",
+                    "due today",
+                    "due tomorrow"
+                ]
+            );
+            assert_eq!(both.stats().renders, both_renders + 2);
+            // Each now waits for the next midnight.
+            assert_eq!(today.wakes_at(), Some(MIDNIGHT + 86_400));
+            assert_eq!(both.wakes_at(), Some(MIDNIGHT + 86_400));
+        }
+
+        phase a_view_on_the_running_clock_runs_again_at_the_next_minute;
+        {
+            let days = Days::at("2026-10-29T21:58:30Z");
+            let mut recent = days.view("recent");
+            assert_eq!(texts(recent.tree()), ["an hour ago"]);
+            // A query reads its clock to the minute: what it read moves on at the next one.
+            assert_eq!(recent.wakes_at(), Some(seconds("2026-10-29T21:59:00Z")));
+            days.set_clock("2026-10-29T22:00:00Z");
+            recent.poll_patches().unwrap();
+            assert_eq!(
+                texts(recent.tree()),
+                Vec::<String>::new(),
+                "a message received more than an hour ago leaves"
+            );
+            assert_eq!(recent.wakes_at(), Some(seconds("2026-10-29T22:01:00Z")));
+        }
     }
 
     #[test]

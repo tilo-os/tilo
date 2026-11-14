@@ -28,12 +28,7 @@ impl Fixture {
             .arg("--headless-drive")
             .arg(payload.to_string())
             .arg(source);
-        for (key, _) in std::env::vars_os() {
-            let name = key.to_string_lossy();
-            if name.starts_with("TILO_") || name.starts_with("QUICK_") {
-                command.env_remove(key);
-            }
-        }
+        tilo_test_env::launch_env(&mut command);
         for key in [
             "XDG_DATA_HOME",
             "XDG_STATE_HOME",

@@ -77,12 +77,14 @@ client_side = [
     "tilo-action-policy",      # the policy an answer to a message is held to
     "tilo-actions",
     "tilo-advisory-lock",
+    "tilo-app-id",             # the id an app is known by
     "tilo-automerge",          # the CRDT the workspace's documents are
     "tilo-clock",
     "tilo-content",
     "tilo-content-types",
     "tilo-delivery-protocol",  # where a workspace's host is reached
     "tilo-face",
+    "tilo-failure",            # a failure dropped on purpose, with its reason
     "tilo-files",
     "tilo-formats",            # dates and clocks as the person set them
     "tilo-identity-client",
@@ -103,6 +105,7 @@ client_side = [
     "tilo-sort",
     "tilo-user-identity",
     "tilo-wake",
+    "tilo-words",              # what a declared name is called in a sentence
     "tilo-workspace-join",
     "wire-frame",
     "workspace-hack",

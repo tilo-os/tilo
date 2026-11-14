@@ -208,65 +208,73 @@ mod tests {
         text.parse().unwrap()
     }
 
-    #[test]
-    fn built_datagrams_parse_back_with_valid_checksums() {
-        let packet = udp_packet(
-            addr("100.100.64.1:53"),
-            addr("100.100.64.2:40000"),
-            b"answer",
-        )
-        .unwrap();
-        let parsed = Ipv4Packet::parse(&packet).expect("a whole packet");
-        assert_eq!(parsed.source(), Ipv4Addr::new(100, 100, 64, 1));
-        assert_eq!(parsed.destination(), Ipv4Addr::new(100, 100, 64, 2));
-        assert_eq!(parsed.udp(), Some((53, 40000, &b"answer"[..])));
-        assert_eq!(checksum(&[&packet[..20]]), 0, "header checksum");
-        let mut pseudo = Vec::new();
-        pseudo.extend_from_slice(&packet[12..20]);
-        pseudo.extend_from_slice(&[0, 17]);
-        pseudo.extend_from_slice(&packet[24..26]);
-        assert_eq!(checksum(&[&pseudo, &packet[20..]]), 0, "UDP checksum");
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn packets_are_built_parsed_and_answered_by_their_headers;
 
-    #[test]
-    fn packets_whose_header_and_length_disagree_are_not_packets() {
-        let packet = udp_packet(addr("10.0.0.1:1"), addr("10.0.0.2:2"), b"x").unwrap();
-        assert!(Ipv4Packet::parse(&packet[..packet.len() - 1]).is_none());
-        let mut longer = packet.clone();
-        longer.push(0);
-        assert!(Ipv4Packet::parse(&longer).is_none());
-        let mut six = packet;
-        six[0] = 0x65;
-        assert!(Ipv4Packet::parse(&six).is_none());
-        assert!(Ipv4Packet::parse(&[]).is_none());
-    }
+        phase built_datagrams_parse_back_with_valid_checksums;
+        {
+            let packet = udp_packet(
+                addr("100.100.64.1:53"),
+                addr("100.100.64.2:40000"),
+                b"answer",
+            )
+            .unwrap();
+            let parsed = Ipv4Packet::parse(&packet).expect("a whole packet");
+            assert_eq!(parsed.source(), Ipv4Addr::new(100, 100, 64, 1));
+            assert_eq!(parsed.destination(), Ipv4Addr::new(100, 100, 64, 2));
+            assert_eq!(parsed.udp(), Some((53, 40000, &b"answer"[..])));
+            assert_eq!(checksum(&[&packet[..20]]), 0, "header checksum");
+            let mut pseudo = Vec::new();
+            pseudo.extend_from_slice(&packet[12..20]);
+            pseudo.extend_from_slice(&[0, 17]);
+            pseudo.extend_from_slice(&packet[24..26]);
+            assert_eq!(checksum(&[&pseudo, &packet[20..]]), 0, "UDP checksum");
+        }
 
-    #[test]
-    fn a_packet_too_big_for_the_tunnel_is_answered_with_its_size() {
-        let original = udp_packet(
-            addr("100.100.64.2:5000"),
-            addr("198.51.100.9:443"),
-            &[7; 1400],
-        )
-        .unwrap();
-        let parsed = Ipv4Packet::parse(&original).unwrap();
-        let answer = fragmentation_needed(&parsed, Ipv4Addr::new(100, 100, 64, 1), 1180).unwrap();
-        let icmp = Ipv4Packet::parse(&answer).unwrap();
-        assert_eq!(icmp.protocol(), ICMP);
-        assert_eq!(icmp.source(), Ipv4Addr::new(100, 100, 64, 1));
-        assert_eq!(icmp.destination(), Ipv4Addr::new(100, 100, 64, 2));
-        let body = &answer[20..];
-        assert_eq!(&body[..2], &[3, 4]);
-        assert_eq!(u16::from_be_bytes([body[6], body[7]]), 1180);
-        assert_eq!(
-            &body[8..],
-            &original[..28],
-            "quotes the header and eight bytes"
-        );
-        assert_eq!(checksum(&[body]), 0);
-        assert!(
-            fragmentation_needed(&icmp, Ipv4Addr::new(100, 100, 64, 1), 1180).is_none(),
-            "no error about an error"
-        );
+        phase packets_whose_header_and_length_disagree_are_not_packets;
+        {
+            let packet = udp_packet(addr("10.0.0.1:1"), addr("10.0.0.2:2"), b"x").unwrap();
+            assert!(Ipv4Packet::parse(&packet[..packet.len() - 1]).is_none());
+            let mut longer = packet.clone();
+            longer.push(0);
+            assert!(Ipv4Packet::parse(&longer).is_none());
+            let mut six = packet;
+            six[0] = 0x65;
+            assert!(Ipv4Packet::parse(&six).is_none());
+            assert!(Ipv4Packet::parse(&[]).is_none());
+        }
+
+        phase a_packet_too_big_for_the_tunnel_is_answered_with_its_size;
+        {
+            let original = udp_packet(
+                addr("100.100.64.2:5000"),
+                addr("198.51.100.9:443"),
+                &[7; 1400],
+            )
+            .unwrap();
+            let parsed = Ipv4Packet::parse(&original).unwrap();
+            let answer = fragmentation_needed(&parsed, Ipv4Addr::new(100, 100, 64, 1), 1180).unwrap();
+            let icmp = Ipv4Packet::parse(&answer).unwrap();
+            assert_eq!(icmp.protocol(), ICMP);
+            assert_eq!(icmp.source(), Ipv4Addr::new(100, 100, 64, 1));
+            assert_eq!(icmp.destination(), Ipv4Addr::new(100, 100, 64, 2));
+            let body = &answer[20..];
+            assert_eq!(&body[..2], &[3, 4]);
+            assert_eq!(u16::from_be_bytes([body[6], body[7]]), 1180);
+            assert_eq!(
+                &body[8..],
+                &original[..28],
+                "quotes the header and eight bytes"
+            );
+            assert_eq!(checksum(&[body]), 0);
+            assert!(
+                fragmentation_needed(&icmp, Ipv4Addr::new(100, 100, 64, 1), 1180).is_none(),
+                "no error about an error"
+            );
+        }
     }
 }

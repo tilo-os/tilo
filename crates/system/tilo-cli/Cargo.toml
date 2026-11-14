@@ -28,9 +28,15 @@ serde_json.workspace = true
 # fixture generators hold, and free space for the policy's floor.
 serde.workspace = true
 toml.workspace = true
+# The times imported sources write (`createdAt` in Linear's and Forgejo's
+# answers) as milliseconds since the epoch.
+chrono = { workspace = true, features = ["std"] }
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
+# What an uploaded file is, from its own bytes: which app opens it, so
+# `tilo files put` lands it in that app's record.
+tilo-content-types = { path = "../content-types" }
 rustix = { workspace = true, features = ["fs", "std"] }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
@@ -56,7 +62,7 @@ ed25519-dalek.workspace = true
 postcard.workspace = true
 hex.workspace = true
 rand.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std"] }
 # `tilo mcp`: the runtime's own MCP projection of a workspace, its actions
 # asked of the workspace's host through this device's session, as the person
 # their workspaces name.

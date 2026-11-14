@@ -296,141 +296,145 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn the_map_answers_by_name_keyword_and_scope() {
-        let places = [
-            place("cafe-glueck", "Café Glück", Category::Cafe, true),
-            place("marienplatz", "Marienplatz", Category::Landmark, false),
-        ];
-        let pois = [
-            poi("poi-1", "Hofbräuhaus", Category::Bar),
-            poi("marienplatz", "Marienplatz", Category::Landmark),
-        ];
-        let recents = ["coffee near me".to_owned()];
-        let shown = Shown {
-            places: &places,
-            pois: &pois,
-            recents: &recents,
-            found: None,
-            anchor: LatLon::new(48.137, 11.575),
-        };
-        let all = entries(&shown);
-        assert_eq!(
-            all.len(),
-            4,
-            "a point of interest the map knows is listed once"
-        );
+    tilo_test_env::scenario! {
+        fn place_search_answers_locally_and_asks_the_geocoder_once;
 
-        let coffee = search(all.clone(), &SearchQuery::new("coffee"));
-        assert!(
-            coffee.contains(&("Saved places".into(), "Café Glück".into())),
-            "a keyword finds the saved café: {coffee:?}"
-        );
-        let beer = search(all.clone(), &SearchQuery::new("beer"));
-        assert!(
-            beer.contains(&("Nearby".into(), "Hofbräuhaus".into())),
-            "{beer:?}"
-        );
-        let marien = search(all.clone(), &SearchQuery::new("Marien"));
-        assert!(
-            marien.contains(&("Places".into(), "Marienplatz".into())),
-            "{marien:?}"
-        );
+        phase the_map_answers_by_name_keyword_and_scope;
+        {
+            let places = [
+                place("cafe-glueck", "Café Glück", Category::Cafe, true),
+                place("marienplatz", "Marienplatz", Category::Landmark, false),
+            ];
+            let pois = [
+                poi("poi-1", "Hofbräuhaus", Category::Bar),
+                poi("marienplatz", "Marienplatz", Category::Landmark),
+            ];
+            let recents = ["coffee near me".to_owned()];
+            let shown = Shown {
+                places: &places,
+                pois: &pois,
+                recents: &recents,
+                found: None,
+                anchor: LatLon::new(48.137, 11.575),
+            };
+            let all = entries(&shown);
+            assert_eq!(
+                all.len(),
+                4,
+                "a point of interest the map knows is listed once"
+            );
 
-        let cafe = all
-            .iter()
-            .find(|entry| entry.title == "Café Glück")
-            .unwrap();
-        assert_eq!(cafe.anchor.as_deref(), Some("maps.place:cafe-glueck"));
-        assert_eq!(cafe.icon.as_deref(), Some(Icon::Star.name()));
-        assert!(cafe.subtitle.as_deref().unwrap().starts_with("Munich, "));
-        assert!(cafe.in_scope(SAVED_SCOPE), "saved places narrow the search");
-        let square = all
-            .iter()
-            .find(|entry| entry.title == "Marienplatz")
-            .unwrap();
-        assert!(!square.in_scope(SAVED_SCOPE));
-        let recent = all
-            .iter()
-            .find(|entry| entry.title == "coffee near me")
-            .unwrap();
-        assert_eq!(
-            recent
-                .action
-                .as_ref()
-                .map(|address| address.action.as_str()),
-            Some("search"),
-            "a recent search runs again"
-        );
-    }
+            let coffee = search(all.clone(), &SearchQuery::new("coffee"));
+            assert!(
+                coffee.contains(&("Saved places".into(), "Café Glück".into())),
+                "a keyword finds the saved café: {coffee:?}"
+            );
+            let beer = search(all.clone(), &SearchQuery::new("beer"));
+            assert!(
+                beer.contains(&("Nearby".into(), "Hofbräuhaus".into())),
+                "{beer:?}"
+            );
+            let marien = search(all.clone(), &SearchQuery::new("Marien"));
+            assert!(
+                marien.contains(&("Places".into(), "Marienplatz".into())),
+                "{marien:?}"
+            );
 
-    #[test]
-    fn only_a_free_long_query_reaches_the_geocoder_once() {
-        let mut search = PlaceSearch::default();
-        search.ask(&SearchQuery::new("ma"), true);
-        search.ask(&SearchQuery::new("Marien").within(SAVED_SCOPE), true);
-        search.ask(&SearchQuery::new("Marien"), false);
-        assert_eq!(search.take_query(), None, "short, scoped or offline");
+            let cafe = all
+                .iter()
+                .find(|entry| entry.title == "Café Glück")
+                .unwrap();
+            assert_eq!(cafe.anchor.as_deref(), Some("maps.place:cafe-glueck"));
+            assert_eq!(cafe.icon.as_deref(), Some(Icon::Star.name()));
+            assert!(cafe.subtitle.as_deref().unwrap().starts_with("Munich, "));
+            assert!(cafe.in_scope(SAVED_SCOPE), "saved places narrow the search");
+            let square = all
+                .iter()
+                .find(|entry| entry.title == "Marienplatz")
+                .unwrap();
+            assert!(!square.in_scope(SAVED_SCOPE));
+            let recent = all
+                .iter()
+                .find(|entry| entry.title == "coffee near me")
+                .unwrap();
+            assert_eq!(
+                recent
+                    .action
+                    .as_ref()
+                    .map(|address| address.action.as_str()),
+                Some("search"),
+                "a recent search runs again"
+            );
+        }
 
-        search.ask(&SearchQuery::new("Mari"), true);
-        search.ask(&SearchQuery::new("Marien"), true);
-        assert_eq!(search.take_query().as_deref(), Some("Marien"), "the latest");
-        assert_eq!(search.take_query(), None, "sent once");
-        assert!(search.is_busy());
-        search.ask(&SearchQuery::new("marien "), true);
-        assert_eq!(search.take_query(), None, "already on its way");
-        assert!(search.found().is_none());
+        phase only_a_free_long_query_reaches_the_geocoder_once;
+        {
+            let mut search = PlaceSearch::default();
+            search.ask(&SearchQuery::new("ma"), true);
+            search.ask(&SearchQuery::new("Marien").within(SAVED_SCOPE), true);
+            search.ask(&SearchQuery::new("Marien"), false);
+            assert_eq!(search.take_query(), None, "short, scoped or offline");
 
-        search.answer(
-            "Marien",
-            vec![place("geo-1", "Marienhof", Category::Other, false)],
-        );
-        assert!(!search.is_busy());
-        let (query, found) = search.found().expect("answered");
-        assert_eq!((query, found[0].name.as_str()), ("marien", "Marienhof"));
-        search.ask(&SearchQuery::new("Marien"), true);
-        assert_eq!(search.take_query(), None, "answered already");
-        search.ask(&SearchQuery::new(""), true);
-        assert!(search.found().is_none(), "a cleared search lists no answer");
-        assert_eq!(
-            search.geocoded("geo-1").map(|place| place.name.as_str()),
-            Some("Marienhof"),
-            "an earlier answer still opens"
-        );
-    }
+            search.ask(&SearchQuery::new("Mari"), true);
+            search.ask(&SearchQuery::new("Marien"), true);
+            assert_eq!(search.take_query().as_deref(), Some("Marien"), "the latest");
+            assert_eq!(search.take_query(), None, "sent once");
+            assert!(search.is_busy());
+            search.ask(&SearchQuery::new("marien "), true);
+            assert_eq!(search.take_query(), None, "already on its way");
+            assert!(search.found().is_none());
 
-    #[test]
-    fn geocoded_places_are_found_by_their_query() {
-        let places = [place("known", "Marienplatz", Category::Landmark, false)];
-        let found = [
-            place("geo-1", "Theatinerstraße 18", Category::Shop, false),
-            place("known", "Marienplatz", Category::Landmark, false),
-        ];
-        let shown = Shown {
-            places: &places,
-            pois: &[],
-            recents: &[],
-            found: Some(("theatiner", &found)),
-            anchor: LatLon::new(48.137, 11.575),
-        };
-        let all = entries(&shown);
-        assert_eq!(all.len(), 2, "a known place is not listed twice");
-        let hits = search(all.clone(), &SearchQuery::new("theatiner"));
-        assert!(
-            hits.contains(&("Addresses and places".into(), "Theatinerstraße 18".into())),
-            "{hits:?}"
-        );
-        let geo = all
-            .iter()
-            .find(|entry| entry.title.starts_with("Theatiner"))
-            .unwrap();
-        assert_eq!(geo.anchor.as_deref(), Some("maps.place:geo-1"));
-        assert_eq!(
-            PlaceHit::opened("maps.place:geo-1"),
-            Some(MapsEffect::OpenPlace {
-                place: "geo-1".into()
-            }),
-            "the found place opens like one on the map"
-        );
+            search.answer(
+                "Marien",
+                vec![place("geo-1", "Marienhof", Category::Other, false)],
+            );
+            assert!(!search.is_busy());
+            let (query, found) = search.found().expect("answered");
+            assert_eq!((query, found[0].name.as_str()), ("marien", "Marienhof"));
+            search.ask(&SearchQuery::new("Marien"), true);
+            assert_eq!(search.take_query(), None, "answered already");
+            search.ask(&SearchQuery::new(""), true);
+            assert!(search.found().is_none(), "a cleared search lists no answer");
+            assert_eq!(
+                search.geocoded("geo-1").map(|place| place.name.as_str()),
+                Some("Marienhof"),
+                "an earlier answer still opens"
+            );
+        }
+
+        phase geocoded_places_are_found_by_their_query;
+        {
+            let places = [place("known", "Marienplatz", Category::Landmark, false)];
+            let found = [
+                place("geo-1", "Theatinerstraße 18", Category::Shop, false),
+                place("known", "Marienplatz", Category::Landmark, false),
+            ];
+            let shown = Shown {
+                places: &places,
+                pois: &[],
+                recents: &[],
+                found: Some(("theatiner", &found)),
+                anchor: LatLon::new(48.137, 11.575),
+            };
+            let all = entries(&shown);
+            assert_eq!(all.len(), 2, "a known place is not listed twice");
+            let hits = search(all.clone(), &SearchQuery::new("theatiner"));
+            assert!(
+                hits.contains(&("Addresses and places".into(), "Theatinerstraße 18".into())),
+                "{hits:?}"
+            );
+            let geo = all
+                .iter()
+                .find(|entry| entry.title.starts_with("Theatiner"))
+                .unwrap();
+            assert_eq!(geo.anchor.as_deref(), Some("maps.place:geo-1"));
+            assert_eq!(
+                PlaceHit::opened("maps.place:geo-1"),
+                Some(MapsEffect::OpenPlace {
+                    place: "geo-1".into()
+                }),
+                "the found place opens like one on the map"
+            );
+        }
     }
 }

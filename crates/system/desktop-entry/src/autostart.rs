@@ -332,183 +332,187 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn dirs_follow_the_specification_order() {
-        assert_eq!(
-            autostart_dirs_from(
-                Some(Path::new("/home/u/.config")),
-                &[PathBuf::from("/etc/xdg"), PathBuf::from("/etc/xdg")]
-            ),
-            vec![
-                PathBuf::from("/home/u/.config/autostart"),
-                PathBuf::from("/etc/xdg/autostart")
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn autostart_entries_are_found_filtered_and_conditioned_as_gnome_session_does;
 
-    #[test]
-    fn user_files_override_system_files_and_every_filter_applies() {
-        let root = tempfile::tempdir().unwrap();
-        let user = root.path().join("home/autostart");
-        let system = root.path().join("etc/autostart");
-        write(&system, "overridden.desktop", &app(""));
-        write(&user, "overridden.desktop", &app("Hidden=true\n"));
-        write(
-            &system,
-            "reenabled.desktop",
-            &app("X-GNOME-Autostart-enabled=false\n"),
-        );
-        write(&user, "reenabled.desktop", &app(""));
-        write(&system, "plain.desktop", &app(""));
-        write(&system, "gnome-only.desktop", &app("OnlyShowIn=GNOME;\n"));
-        write(&system, "not-gnome.desktop", &app("NotShowIn=GNOME;\n"));
-        write(&system, "not-tilo.desktop", &app("NotShowIn=Tilo;\n"));
-        write(
-            &system,
-            "tilo-only.desktop",
-            &app("OnlyShowIn=GNOME;tilo;\n"),
-        );
-        write(
-            &system,
-            "off.desktop",
-            &app("X-GNOME-Autostart-enabled=false\n"),
-        );
-        write(
-            &system,
-            "tryexec.desktop",
-            &app("TryExec=/nonexistent/helper\n"),
-        );
-        write(&system, "found.desktop", &app("TryExec=present\n"));
-        write(
-            &system,
-            "unit.desktop",
-            &app("X-GNOME-HiddenUnderSystemd=true\n"),
-        );
-        write(
-            &system,
-            "panel.desktop",
-            &app("X-GNOME-Autostart-Phase=Panel\n"),
-        );
-        write(
-            &system,
-            "init.desktop",
-            &app("X-GNOME-Autostart-Phase=Initialization\nX-systemd-skip=true\n"),
-        );
-        write(
-            &system,
-            "restarts.desktop",
-            &app("X-GNOME-AutoRestart=true\n"),
-        );
-        write(
-            &system,
-            "link.desktop",
-            "[Desktop Entry]\nType=Link\nName=L\nURL=x\n",
-        );
-        write(&system, "readme.txt", "not a desktop file");
-
-        let probe = Probe {
-            programs: vec!["present"],
-            ..Probe::default()
-        };
-        let scan = scan_autostart(&[user, system], &probe, &[]);
-        assert_eq!(
-            started(&scan),
-            vec![
-                "reenabled",
-                "found",
-                "init",
-                "not-gnome",
-                "plain",
-                "restarts",
-                "tilo-only"
-            ]
-        );
-        assert!(
-            scan.start
-                .iter()
-                .all(|start| start.auto_restart == (start.entry.id == "restarts"))
-        );
-        assert_eq!(reason(&scan, "overridden"), Some(Skipped::Hidden));
-        assert_eq!(reason(&scan, "gnome-only"), Some(Skipped::NotShownIn));
-        assert_eq!(reason(&scan, "not-tilo"), Some(Skipped::NotShownIn));
-        assert_eq!(reason(&scan, "off"), Some(Skipped::Disabled));
-        assert_eq!(
-            reason(&scan, "tryexec"),
-            Some(Skipped::TryExecMissing("/nonexistent/helper".into()))
-        );
-        assert_eq!(reason(&scan, "unit"), Some(Skipped::HiddenUnderSystemd));
-        assert_eq!(
-            reason(&scan, "panel"),
-            Some(Skipped::DesktopPhase("Panel".into()))
-        );
-        assert_eq!(reason(&scan, "link"), Some(Skipped::NotAnApplication));
-    }
-
-    #[test]
-    fn autostart_conditions_follow_gnome_session() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("autostart");
-        let cases = [
-            ("setting-on", "GSettings org.example.app enabled", true),
-            ("setting-off", "GSettings org.example.app disabled", false),
-            ("setting-missing", "GSettings org.example.absent key", false),
-            ("if-exists", "if-exists app/enabled", true),
-            ("if-exists-missing", "if-exists app/missing", false),
-            ("unless-exists", "unless-exists app/missing", true),
-            ("unless-exists-present", "unless-exists app/enabled", false),
-            ("if-session", "GNOME3 if-session tilo", true),
-            ("if-other-session", "GNOME3 if-session gnome", false),
-            ("unless-other-session", "GNOME3 unless-session gnome", true),
-        ];
-        for (id, condition, _) in cases {
-            write(
-                &dir,
-                &format!("{id}.desktop"),
-                &app(&format!("AutostartCondition={condition}\n")),
+        phase dirs_follow_the_specification_order;
+        {
+            assert_eq!(
+                autostart_dirs_from(
+                    Some(Path::new("/home/u/.config")),
+                    &[PathBuf::from("/etc/xdg"), PathBuf::from("/etc/xdg")]
+                ),
+                vec![
+                    PathBuf::from("/home/u/.config/autostart"),
+                    PathBuf::from("/etc/xdg/autostart")
+                ]
             );
         }
-        write(
-            &dir,
-            "gconf.desktop",
-            &app("AutostartCondition=GNOME /apps/example/enabled\n"),
-        );
-        let probe = Probe {
-            settings: BTreeMap::from([
-                (("org.example.app", "enabled"), true),
-                (("org.example.app", "disabled"), false),
-            ]),
-            config_files: vec!["app/enabled"],
-            ..Probe::default()
-        };
-        let scan = scan_autostart(&[dir], &probe, &[]);
-        for (id, condition, starts) in cases {
-            assert_eq!(
-                started(&scan).contains(&id),
-                starts,
-                "{id}: AutostartCondition={condition}"
+
+        phase user_files_override_system_files_and_every_filter_applies;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let user = root.path().join("home/autostart");
+            let system = root.path().join("etc/autostart");
+            write(&system, "overridden.desktop", &app(""));
+            write(&user, "overridden.desktop", &app("Hidden=true\n"));
+            write(
+                &system,
+                "reenabled.desktop",
+                &app("X-GNOME-Autostart-enabled=false\n"),
             );
-            if !starts {
-                assert_eq!(
-                    reason(&scan, id),
-                    Some(Skipped::ConditionFalse(condition.into()))
+            write(&user, "reenabled.desktop", &app(""));
+            write(&system, "plain.desktop", &app(""));
+            write(&system, "gnome-only.desktop", &app("OnlyShowIn=GNOME;\n"));
+            write(&system, "not-gnome.desktop", &app("NotShowIn=GNOME;\n"));
+            write(&system, "not-tilo.desktop", &app("NotShowIn=Tilo;\n"));
+            write(
+                &system,
+                "tilo-only.desktop",
+                &app("OnlyShowIn=GNOME;tilo;\n"),
+            );
+            write(
+                &system,
+                "off.desktop",
+                &app("X-GNOME-Autostart-enabled=false\n"),
+            );
+            write(
+                &system,
+                "tryexec.desktop",
+                &app("TryExec=/nonexistent/helper\n"),
+            );
+            write(&system, "found.desktop", &app("TryExec=present\n"));
+            write(
+                &system,
+                "unit.desktop",
+                &app("X-GNOME-HiddenUnderSystemd=true\n"),
+            );
+            write(
+                &system,
+                "panel.desktop",
+                &app("X-GNOME-Autostart-Phase=Panel\n"),
+            );
+            write(
+                &system,
+                "init.desktop",
+                &app("X-GNOME-Autostart-Phase=Initialization\nX-systemd-skip=true\n"),
+            );
+            write(
+                &system,
+                "restarts.desktop",
+                &app("X-GNOME-AutoRestart=true\n"),
+            );
+            write(
+                &system,
+                "link.desktop",
+                "[Desktop Entry]\nType=Link\nName=L\nURL=x\n",
+            );
+            write(&system, "readme.txt", "not a desktop file");
+
+            let probe = Probe {
+                programs: vec!["present"],
+                ..Probe::default()
+            };
+            let scan = scan_autostart(&[user, system], &probe, &[]);
+            assert_eq!(
+                started(&scan),
+                vec![
+                    "reenabled",
+                    "found",
+                    "init",
+                    "not-gnome",
+                    "plain",
+                    "restarts",
+                    "tilo-only"
+                ]
+            );
+            assert!(
+                scan.start
+                    .iter()
+                    .all(|start| start.auto_restart == (start.entry.id == "restarts"))
+            );
+            assert_eq!(reason(&scan, "overridden"), Some(Skipped::Hidden));
+            assert_eq!(reason(&scan, "gnome-only"), Some(Skipped::NotShownIn));
+            assert_eq!(reason(&scan, "not-tilo"), Some(Skipped::NotShownIn));
+            assert_eq!(reason(&scan, "off"), Some(Skipped::Disabled));
+            assert_eq!(
+                reason(&scan, "tryexec"),
+                Some(Skipped::TryExecMissing("/nonexistent/helper".into()))
+            );
+            assert_eq!(reason(&scan, "unit"), Some(Skipped::HiddenUnderSystemd));
+            assert_eq!(
+                reason(&scan, "panel"),
+                Some(Skipped::DesktopPhase("Panel".into()))
+            );
+            assert_eq!(reason(&scan, "link"), Some(Skipped::NotAnApplication));
+        }
+
+        phase autostart_conditions_follow_gnome_session;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let dir = root.path().join("autostart");
+            let cases = [
+                ("setting-on", "GSettings org.example.app enabled", true),
+                ("setting-off", "GSettings org.example.app disabled", false),
+                ("setting-missing", "GSettings org.example.absent key", false),
+                ("if-exists", "if-exists app/enabled", true),
+                ("if-exists-missing", "if-exists app/missing", false),
+                ("unless-exists", "unless-exists app/missing", true),
+                ("unless-exists-present", "unless-exists app/enabled", false),
+                ("if-session", "GNOME3 if-session tilo", true),
+                ("if-other-session", "GNOME3 if-session gnome", false),
+                ("unless-other-session", "GNOME3 unless-session gnome", true),
+            ];
+            for (id, condition, _) in cases {
+                write(
+                    &dir,
+                    &format!("{id}.desktop"),
+                    &app(&format!("AutostartCondition={condition}\n")),
                 );
             }
+            write(
+                &dir,
+                "gconf.desktop",
+                &app("AutostartCondition=GNOME /apps/example/enabled\n"),
+            );
+            let probe = Probe {
+                settings: BTreeMap::from([
+                    (("org.example.app", "enabled"), true),
+                    (("org.example.app", "disabled"), false),
+                ]),
+                config_files: vec!["app/enabled"],
+                ..Probe::default()
+            };
+            let scan = scan_autostart(&[dir], &probe, &[]);
+            for (id, condition, starts) in cases {
+                assert_eq!(
+                    started(&scan).contains(&id),
+                    starts,
+                    "{id}: AutostartCondition={condition}"
+                );
+                if !starts {
+                    assert_eq!(
+                        reason(&scan, id),
+                        Some(Skipped::ConditionFalse(condition.into()))
+                    );
+                }
+            }
+            assert_eq!(
+                reason(&scan, "gconf"),
+                Some(Skipped::UnknownCondition(
+                    "GNOME /apps/example/enabled".into()
+                ))
+            );
         }
-        assert_eq!(
-            reason(&scan, "gconf"),
-            Some(Skipped::UnknownCondition(
-                "GNOME /apps/example/enabled".into()
-            ))
-        );
-    }
 
-    #[test]
-    fn missing_directories_are_simply_empty() {
-        let scan = scan_autostart(
-            &[PathBuf::from("/nonexistent/autostart")],
-            &Probe::default(),
-            &[],
-        );
-        assert!(scan.start.is_empty() && scan.skipped.is_empty());
+        phase missing_directories_are_simply_empty;
+        {
+            let scan = scan_autostart(
+                &[PathBuf::from("/nonexistent/autostart")],
+                &Probe::default(),
+                &[],
+            );
+            assert!(scan.start.is_empty() && scan.skipped.is_empty());
+        }
     }
 }

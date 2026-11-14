@@ -581,16 +581,10 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     assert_eq!(d.targets()["api.request-divider"], manual);
 }
 
-/// Real management buttons and Send (pointer and keyboard) drive the same
-/// mutations and requests as the live app; each case mounts its own `FrameHarness`.
+/// Real management buttons drive the same mutations as the live app. Send has its own test,
+/// `pointer_and_keyboard_send_use_the_live_request`.
 #[test]
-fn real_buttons_perform_canonical_mutations_and_live_sends() {
-    composition_management_real_buttons_keep_canonical_mutations();
-    pointer_and_keyboard_send_use_the_live_request();
-}
-
-/// Case of `real_buttons_perform_canonical_mutations_and_live_sends`.
-fn composition_management_real_buttons_keep_canonical_mutations() {
+fn real_buttons_perform_canonical_mutations() {
     let mut app = sample();
     let d = app.harness();
     act_named(d, "Rename collection Users API", &ui::a11y::Action::Focus);

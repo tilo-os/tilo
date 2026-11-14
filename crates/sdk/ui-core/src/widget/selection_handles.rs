@@ -499,170 +499,176 @@ mod tests {
         a.distance(b) < 1e-6
     }
 
-    #[test]
-    fn edges_resize_one_axis_and_a_frame_can_drop_its_rotation() {
-        let bounds = Rect::new(100.0, 100.0, 200.0, 150.0);
-        let frame = SelectionHandles::new(bounds, &Metrics::BASE)
-            .with_edges()
-            .without_rotation();
-        assert_eq!(
-            frame.handle_at(Point::new(201.0, 125.0), 1.0),
-            Some(Handle::Right)
-        );
-        assert!(Handle::Right.is_edge() && !Handle::TopLeft.is_edge());
-        assert_eq!(frame.handle_at(Point::new(150.0, 72.0), 1.0), None);
-        assert!(!frame.handles(1.0).any(|handle| handle == Handle::Rotate));
-        let stretch = frame.stretch_for(
-            Handle::Right,
-            (Point::new(200.0, 125.0), Point::new(300.0, 140.0)),
-            false,
-            false,
-        );
-        assert!(close(
-            stretch * Point::new(100.0, 125.0),
-            Point::new(100.0, 125.0)
-        ));
-        assert!(close(
-            stretch * Point::new(200.0, 150.0),
-            Point::new(300.0, 150.0)
-        ));
-    }
+    tilo_test_env::scenario! {
+        /// Selection handles: their targets, and what a drag of one does to the frame.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn handles_are_hit_and_stretch_or_turn_a_frame;
 
-    #[test]
-    fn handles_are_hit_at_constant_screen_size() {
-        let bounds = Rect::new(100.0, 100.0, 200.0, 150.0);
-        let frame = SelectionHandles::new(bounds, &Metrics::BASE);
-        assert_eq!(
-            frame.handle_at(Point::new(201.0, 151.0), 1.0),
-            Some(Handle::BottomRight)
-        );
-        let edge = Point::new(
-            200.0 + f64::from(Metrics::BASE.min_pointer_target) * 0.7,
-            150.0,
-        );
-        assert_eq!(frame.handle_at(edge, 1.0), None);
-        let doubled = SelectionHandles::new(bounds, &Metrics::BASE.scaled(2.0));
-        assert_eq!(doubled.handle_at(edge, 1.0), Some(Handle::BottomRight));
-        assert_eq!(frame.handle_at(Point::new(150.0, 125.0), 1.0), None);
-        // Zoomed out 4x, a handle reaches four times further in content.
-        assert_eq!(
-            frame.handle_at(Point::new(140.0, 100.0), 0.25),
-            Some(Handle::TopLeft)
-        );
-        assert_eq!(
-            frame.handle_at(Point::new(150.0, 72.0), 1.0),
-            Some(Handle::Rotate)
-        );
-        assert_eq!(frame.handle_at(Point::new(200.0, 125.0), 1.0), None);
-        assert_eq!(
-            frame.handle_at(Point::new(200.0, 125.0), 4.0),
-            Some(Handle::Right)
-        );
-    }
+        phase edges_resize_one_axis_and_a_frame_can_drop_its_rotation;
+        {
+            let bounds = Rect::new(100.0, 100.0, 200.0, 150.0);
+            let frame = SelectionHandles::new(bounds, &Metrics::BASE)
+                .with_edges()
+                .without_rotation();
+            assert_eq!(
+                frame.handle_at(Point::new(201.0, 125.0), 1.0),
+                Some(Handle::Right)
+            );
+            assert!(Handle::Right.is_edge() && !Handle::TopLeft.is_edge());
+            assert_eq!(frame.handle_at(Point::new(150.0, 72.0), 1.0), None);
+            assert!(!frame.handles(1.0).any(|handle| handle == Handle::Rotate));
+            let stretch = frame.stretch_for(
+                Handle::Right,
+                (Point::new(200.0, 125.0), Point::new(300.0, 140.0)),
+                false,
+                false,
+            );
+            assert!(close(
+                stretch * Point::new(100.0, 125.0),
+                Point::new(100.0, 125.0)
+            ));
+            assert!(close(
+                stretch * Point::new(200.0, 150.0),
+                Point::new(300.0, 150.0)
+            ));
+        }
 
-    #[test]
-    fn a_corner_stretches_freely_or_keeps_its_aspect() {
-        let frame = SelectionHandles::new(Rect::new(100.0, 100.0, 200.0, 150.0), &Metrics::BASE);
-        let drag = (Point::new(200.0, 150.0), Point::new(300.0, 160.0));
-        let free = frame.stretch_for(Handle::BottomRight, drag, false, false);
-        assert!(close(
-            free * Point::new(100.0, 100.0),
-            Point::new(100.0, 100.0)
-        ));
-        assert!(close(
-            free * Point::new(200.0, 150.0),
-            Point::new(300.0, 160.0)
-        ));
-        let kept = frame.stretch_for(Handle::BottomRight, drag, true, false);
-        let corner = kept * Point::new(200.0, 150.0);
-        assert!(
-            ((corner.x - 100.0) / (corner.y - 100.0) - 2.0).abs() < 1e-9,
-            "{corner:?}"
-        );
-        let centred = frame.stretch_for(Handle::Right, drag, false, true);
-        assert!(close(
-            centred * Point::new(150.0, 125.0),
-            Point::new(150.0, 125.0)
-        ));
-        assert!(close(
-            centred * Point::new(200.0, 150.0),
-            Point::new(300.0, 150.0)
-        ));
-        let edge = frame.stretch_for(
-            Handle::Bottom,
-            (Point::new(150.0, 150.0), Point::new(170.0, 200.0)),
-            false,
-            false,
-        );
-        assert!(close(
-            edge * Point::new(200.0, 150.0),
-            Point::new(200.0, 200.0)
-        ));
-    }
+        phase handles_are_hit_at_constant_screen_size;
+        {
+            let bounds = Rect::new(100.0, 100.0, 200.0, 150.0);
+            let frame = SelectionHandles::new(bounds, &Metrics::BASE);
+            assert_eq!(
+                frame.handle_at(Point::new(201.0, 151.0), 1.0),
+                Some(Handle::BottomRight)
+            );
+            let edge = Point::new(
+                200.0 + f64::from(Metrics::BASE.min_pointer_target) * 0.7,
+                150.0,
+            );
+            assert_eq!(frame.handle_at(edge, 1.0), None);
+            let doubled = SelectionHandles::new(bounds, &Metrics::BASE.scaled(2.0));
+            assert_eq!(doubled.handle_at(edge, 1.0), Some(Handle::BottomRight));
+            assert_eq!(frame.handle_at(Point::new(150.0, 125.0), 1.0), None);
+            // Zoomed out 4x, a handle reaches four times further in content.
+            assert_eq!(
+                frame.handle_at(Point::new(140.0, 100.0), 0.25),
+                Some(Handle::TopLeft)
+            );
+            assert_eq!(
+                frame.handle_at(Point::new(150.0, 72.0), 1.0),
+                Some(Handle::Rotate)
+            );
+            assert_eq!(frame.handle_at(Point::new(200.0, 125.0), 1.0), None);
+            assert_eq!(
+                frame.handle_at(Point::new(200.0, 125.0), 4.0),
+                Some(Handle::Right)
+            );
+        }
 
-    #[test]
-    fn a_turned_frame_stretches_along_its_own_sides() {
-        let quarter = std::f64::consts::FRAC_PI_2;
-        let frame = SelectionHandles::new(Rect::new(-50.0, -10.0, 50.0, 10.0), &Metrics::BASE)
-            .turned(quarter);
-        let right = frame.position(Handle::Right, 1.0);
-        assert!(close(right, Point::new(0.0, 50.0)), "{right:?}");
-        let stretch =
-            frame.stretch_for(Handle::Right, (right, Point::new(5.0, 100.0)), false, false);
-        assert!(close(
-            stretch * Point::new(0.0, 50.0),
-            Point::new(0.0, 100.0)
-        ));
-        assert!(close(
-            stretch * Point::new(0.0, -50.0),
-            Point::new(0.0, -50.0)
-        ));
-        assert!(frame.contains(Point::new(5.0, 40.0)));
-        assert!(!frame.contains(Point::new(40.0, 5.0)));
-    }
+        phase a_corner_stretches_freely_or_keeps_its_aspect;
+        {
+            let frame = SelectionHandles::new(Rect::new(100.0, 100.0, 200.0, 150.0), &Metrics::BASE);
+            let drag = (Point::new(200.0, 150.0), Point::new(300.0, 160.0));
+            let free = frame.stretch_for(Handle::BottomRight, drag, false, false);
+            assert!(close(
+                free * Point::new(100.0, 100.0),
+                Point::new(100.0, 100.0)
+            ));
+            assert!(close(
+                free * Point::new(200.0, 150.0),
+                Point::new(300.0, 160.0)
+            ));
+            let kept = frame.stretch_for(Handle::BottomRight, drag, true, false);
+            let corner = kept * Point::new(200.0, 150.0);
+            assert!(
+                ((corner.x - 100.0) / (corner.y - 100.0) - 2.0).abs() < 1e-9,
+                "{corner:?}"
+            );
+            let centred = frame.stretch_for(Handle::Right, drag, false, true);
+            assert!(close(
+                centred * Point::new(150.0, 125.0),
+                Point::new(150.0, 125.0)
+            ));
+            assert!(close(
+                centred * Point::new(200.0, 150.0),
+                Point::new(300.0, 150.0)
+            ));
+            let edge = frame.stretch_for(
+                Handle::Bottom,
+                (Point::new(150.0, 150.0), Point::new(170.0, 200.0)),
+                false,
+                false,
+            );
+            assert!(close(
+                edge * Point::new(200.0, 150.0),
+                Point::new(200.0, 200.0)
+            ));
+        }
 
-    #[test]
-    fn rotation_snaps_the_resulting_angle() {
-        let frame = SelectionHandles::new(Rect::new(100.0, 100.0, 200.0, 150.0), &Metrics::BASE);
-        let quarter = frame.rotation_for(Point::new(150.0, 72.0), Point::new(250.0, 125.0), true);
-        assert!((quarter - 90.0).abs() < 1e-9, "{quarter}");
-        // A frame turned 5 degrees nudged a little lands back square.
-        let turned = frame.turned(5_f64.to_radians());
-        let step = turned.rotation_for(Point::new(150.0, 72.0), Point::new(151.0, 72.0), true);
-        assert!((step + 5.0).abs() < 1e-9, "{step}");
-    }
+        phase a_turned_frame_stretches_along_its_own_sides;
+        {
+            let quarter = std::f64::consts::FRAC_PI_2;
+            let frame = SelectionHandles::new(Rect::new(-50.0, -10.0, 50.0, 10.0), &Metrics::BASE)
+                .turned(quarter);
+            let right = frame.position(Handle::Right, 1.0);
+            assert!(close(right, Point::new(0.0, 50.0)), "{right:?}");
+            let stretch =
+                frame.stretch_for(Handle::Right, (right, Point::new(5.0, 100.0)), false, false);
+            assert!(close(
+                stretch * Point::new(0.0, 50.0),
+                Point::new(0.0, 100.0)
+            ));
+            assert!(close(
+                stretch * Point::new(0.0, -50.0),
+                Point::new(0.0, -50.0)
+            ));
+            assert!(frame.contains(Point::new(5.0, 40.0)));
+            assert!(!frame.contains(Point::new(40.0, 5.0)));
+        }
 
-    #[test]
-    fn a_stretch_never_collapses_the_frame() {
-        let frame = SelectionHandles::new(Rect::new(0.0, 0.0, 100.0, 100.0), &Metrics::BASE);
-        let flat = frame.stretch_for(
-            Handle::Right,
-            (Point::new(100.0, 50.0), Point::new(0.0, 50.0)),
-            false,
-            false,
-        );
-        assert!(flat.determinant().abs() > 1e-4);
-    }
+        phase rotation_snaps_the_resulting_angle;
+        {
+            let frame = SelectionHandles::new(Rect::new(100.0, 100.0, 200.0, 150.0), &Metrics::BASE);
+            let quarter = frame.rotation_for(Point::new(150.0, 72.0), Point::new(250.0, 125.0), true);
+            assert!((quarter - 90.0).abs() < 1e-9, "{quarter}");
+            // A frame turned 5 degrees nudged a little lands back square.
+            let turned = frame.turned(5_f64.to_radians());
+            let step = turned.rotation_for(Point::new(150.0, 72.0), Point::new(151.0, 72.0), true);
+            assert!((step + 5.0).abs() < 1e-9, "{step}");
+        }
 
-    #[test]
-    fn a_text_selection_grip_is_taken_at_its_knob_within_the_target() {
-        let grips = TextGrips::new(
-            Rect::new(100.0, 200.0, 300.0, 216.0),
-            Rect::new(40.0, 400.0, 220.0, 416.0),
-            48.0,
-        );
-        let start = grips.knob(TextGrip::Start);
-        let end = grips.knob(TextGrip::End);
-        assert!(
-            start.y < 200.0,
-            "the start knob stands above the first line"
-        );
-        assert!(end.y > 416.0, "the end knob hangs below the last line");
-        assert_eq!(grips.grip_at(start), Some(TextGrip::Start));
-        assert_eq!(
-            grips.grip_at(end + Vec2::new(20.0, 10.0)),
-            Some(TextGrip::End)
-        );
-        assert_eq!(grips.grip_at(Point::new(200.0, 300.0)), None);
+        phase a_stretch_never_collapses_the_frame;
+        {
+            let frame = SelectionHandles::new(Rect::new(0.0, 0.0, 100.0, 100.0), &Metrics::BASE);
+            let flat = frame.stretch_for(
+                Handle::Right,
+                (Point::new(100.0, 50.0), Point::new(0.0, 50.0)),
+                false,
+                false,
+            );
+            assert!(flat.determinant().abs() > 1e-4);
+        }
+
+        phase a_text_selection_grip_is_taken_at_its_knob_within_the_target;
+        {
+            let grips = TextGrips::new(
+                Rect::new(100.0, 200.0, 300.0, 216.0),
+                Rect::new(40.0, 400.0, 220.0, 416.0),
+                48.0,
+            );
+            let start = grips.knob(TextGrip::Start);
+            let end = grips.knob(TextGrip::End);
+            assert!(
+                start.y < 200.0,
+                "the start knob stands above the first line"
+            );
+            assert!(end.y > 416.0, "the end knob hangs below the last line");
+            assert_eq!(grips.grip_at(start), Some(TextGrip::Start));
+            assert_eq!(
+                grips.grip_at(end + Vec2::new(20.0, 10.0)),
+                Some(TextGrip::End)
+            );
+            assert_eq!(grips.grip_at(Point::new(200.0, 300.0)), None);
+        }
     }
 }

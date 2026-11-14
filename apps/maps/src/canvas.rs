@@ -1059,44 +1059,6 @@ mod tests {
     use crate::tiles::TileLayer;
     use ui::text_render::TextRenderer;
 
-    #[test]
-    fn labels_try_clear_alternatives_and_never_cover_markers_or_names() {
-        let theme = Theme::dark().with_ui_scale(1.5);
-        let pal = MapPalette::from_theme(&theme);
-        let proj = Projection::new(LatLon::new(48.137, 11.575), 17.0, Point::new(500.0, 400.0));
-        let chrome = [Rect::new(600.0, 0.0, 800.0, 810.0)];
-        let view = MapView {
-            proj: &proj,
-            pal: &pal,
-            clip: Rect::new(0.0, 0.0, 1440.0, 810.0),
-            chrome: &chrome,
-        };
-        let marker = Rect::from_center_size((500.0, 400.0), (27.0, 27.0));
-        let mut labels = LabelPlacer {
-            occupied: vec![marker],
-            gap: 6.0,
-        };
-        let right = Rect::new(526.0, 385.0, 686.0, 415.0);
-        let left = labels
-            .place(view, right, Point::new(500.0, 400.0), 13.5)
-            .expect("left side fits");
-        assert!(left.x1 < marker.x0);
-        let next = labels
-            .place(view, right, Point::new(500.0, 400.0), 13.5)
-            .expect("below fits");
-        assert!(next.y0 > marker.y1);
-        assert_eq!(left.intersect(next).area(), 0.0);
-        assert!(
-            labels
-                .place(view, right, Point::new(500.0, 400.0), 13.5)
-                .is_none()
-        );
-        for plate in [left, next] {
-            assert!(view.shows_whole(plate));
-            assert_eq!(marker.intersect(plate).area(), 0.0);
-        }
-    }
-
     fn poi_at(id: &str, cat: Category, lat: f64, lon: f64) -> Poi {
         Poi {
             id: id.to_string(),
@@ -1111,283 +1073,321 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn map_palette_markers_and_legs_follow_theme_and_priority() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+        )]
+        fn the_canvas_places_labels_markers_and_tiles;
+
+        phase labels_try_clear_alternatives_and_never_cover_markers_or_names;
         {
-            let center = LatLon::new(48.1371, 11.5754);
-            let proj = Projection::new(center, 17.0, Point::new(640.0, 400.0));
-
-            let far = LatLon::new(center.lat, center.lon + 0.01);
-            let pois = vec![
-                poi_at("shop", Category::Shop, center.lat, center.lon),
-                poi_at("transit", Category::Transit, center.lat, center.lon + 1e-6),
-                poi_at("cafe-far", Category::Cafe, far.lat, far.lon),
-            ];
-
-            let kept = declutter_indices(&proj, &pois, 24.0, None);
-            let ids: Vec<&str> = kept.iter().map(|&i| pois[i].id.as_str()).collect();
+            let theme = Theme::dark().with_ui_scale(1.5);
+            let pal = MapPalette::from_theme(&theme);
+            let proj = Projection::new(LatLon::new(48.137, 11.575), 17.0, Point::new(500.0, 400.0));
+            let chrome = [Rect::new(600.0, 0.0, 800.0, 810.0)];
+            let view = MapView {
+                proj: &proj,
+                pal: &pal,
+                clip: Rect::new(0.0, 0.0, 1440.0, 810.0),
+                chrome: &chrome,
+            };
+            let marker = Rect::from_center_size((500.0, 400.0), (27.0, 27.0));
+            let mut labels = LabelPlacer {
+                occupied: vec![marker],
+                gap: 6.0,
+            };
+            let right = Rect::new(526.0, 385.0, 686.0, 415.0);
+            let left = labels
+                .place(view, right, Point::new(500.0, 400.0), 13.5)
+                .expect("left side fits");
+            assert!(left.x1 < marker.x0);
+            let next = labels
+                .place(view, right, Point::new(500.0, 400.0), 13.5)
+                .expect("below fits");
+            assert!(next.y0 > marker.y1);
+            assert_eq!(left.intersect(next).area(), 0.0);
             assert!(
-                ids.contains(&"transit"),
-                "salient category wins the contested cell: {ids:?}"
+                labels
+                    .place(view, right, Point::new(500.0, 400.0), 13.5)
+                    .is_none()
             );
-            assert!(
-                !ids.contains(&"shop"),
-                "the overlapped lower-priority marker is dropped: {ids:?}"
-            );
-            assert!(
-                ids.contains(&"cafe-far"),
-                "a well-separated marker is always kept: {ids:?}"
-            );
-
-            let mut sorted = kept.clone();
-            sorted.sort_unstable();
-            assert_eq!(kept, sorted, "kept indices preserve input order");
-
-            let kept_sel = declutter_indices(&proj, &pois, 24.0, Some("shop"));
-            let ids_sel: Vec<&str> = kept_sel.iter().map(|&i| pois[i].id.as_str()).collect();
-            assert!(
-                ids_sel.contains(&"shop"),
-                "the selected POI is always kept: {ids_sel:?}"
-            );
+            for plate in [left, next] {
+                assert!(view.shows_whole(plate));
+                assert_eq!(marker.intersect(plate).area(), 0.0);
+            }
         }
 
+        phase map_palette_markers_and_legs_follow_theme_and_priority;
         {
-            let lum = |c: Color| {
-                let c = c.to_rgba8();
-                0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
-            };
-            let dark = MapPalette::from_theme(&Theme::dark());
-            assert!(
-                lum(dark.land) < 70.0,
-                "dark theme => a dark basemap land, got {}",
-                lum(dark.land)
-            );
-            let light = MapPalette::from_theme(&Theme::light());
-            assert!(
-                lum(light.land) > 220.0,
-                "light theme => near-white land, got {}",
-                lum(light.land)
-            );
-            assert!(
-                (lum(dark.road_res) - lum(dark.land)).abs() > 30.0,
-                "dark residential roads must read against the dark land"
-            );
-            assert!(
-                (lum(light.road_primary) - lum(light.land)).abs() > 15.0,
-                "light arterials must read against the paper land"
-            );
-        }
+            {
+                let center = LatLon::new(48.1371, 11.5754);
+                let proj = Projection::new(center, 17.0, Point::new(640.0, 400.0));
 
-        {
-            let lum = |c: Color| {
-                let c = c.to_rgba8();
-                0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
-            };
-            for theme in [Theme::dark(), Theme::light()] {
-                let p = MapPalette::from_theme(&theme);
+                let far = LatLon::new(center.lat, center.lon + 0.01);
+                let pois = vec![
+                    poi_at("shop", Category::Shop, center.lat, center.lon),
+                    poi_at("transit", Category::Transit, center.lat, center.lon + 1e-6),
+                    poi_at("cafe-far", Category::Cafe, far.lat, far.lon),
+                ];
+
+                let kept = declutter_indices(&proj, &pois, 24.0, None);
+                let ids: Vec<&str> = kept.iter().map(|&i| pois[i].id.as_str()).collect();
                 assert!(
-                    (lum(p.substrate) - lum(p.land)).abs() < 45.0,
-                    "substrate ({}) must share the land tone ({}) — no light/dark seam",
-                    lum(p.substrate),
-                    lum(p.land)
+                    ids.contains(&"transit"),
+                    "salient category wins the contested cell: {ids:?}"
+                );
+                assert!(
+                    !ids.contains(&"shop"),
+                    "the overlapped lower-priority marker is dropped: {ids:?}"
+                );
+                assert!(
+                    ids.contains(&"cafe-far"),
+                    "a well-separated marker is always kept: {ids:?}"
+                );
+
+                let mut sorted = kept.clone();
+                sorted.sort_unstable();
+                assert_eq!(kept, sorted, "kept indices preserve input order");
+
+                let kept_sel = declutter_indices(&proj, &pois, 24.0, Some("shop"));
+                let ids_sel: Vec<&str> = kept_sel.iter().map(|&i| pois[i].id.as_str()).collect();
+                assert!(
+                    ids_sel.contains(&"shop"),
+                    "the selected POI is always kept: {ids_sel:?}"
                 );
             }
-        }
 
-        {
-            use vello::kurbo::Shape as _;
-            let anchor = Point::new(100.0, 200.0);
-            let (r, h) = (8.0, 22.0);
-            let bb = pin_path(anchor, r, h).bounding_box();
-            assert!(
-                (bb.y1 - anchor.y).abs() < 0.5,
-                "pin tip on the anchor, got y1={}",
-                bb.y1
-            );
-            assert!(
-                (bb.y0 - (anchor.y - h - r)).abs() < 1.5,
-                "head top near anchor.y-h-r, got y0={}",
-                bb.y0
-            );
-            assert!(
-                (bb.width() - 2.0 * r).abs() < 2.0,
-                "width ~ head diameter, got {}",
-                bb.width()
-            );
-            assert!(
-                (0.5 * (bb.x0 + bb.x1) - anchor.x).abs() < 0.5,
-                "the pin is centred on the anchor x"
-            );
-        }
-
-        {
-            use crate::model::TransitLeg;
-            let theme = Theme::dark();
-            let base = TransitLeg {
-                mode: TransitMode::Subway,
-                line: "U3".into(),
-                headsign: String::new(),
-                from_name: String::new(),
-                to_name: String::new(),
-                dep: String::new(),
-                arr: String::new(),
-                duration_min: 5,
-                num_stops: 2,
-                geometry: vec![
-                    crate::model::LatLon::new(0.0, 0.0),
-                    crate::model::LatLon::new(0.1, 0.1),
-                ],
-                color: Some("eb690b".into()),
-                text_color: Some("ffffff".into()),
-                agency: "MVG".into(),
-                realtime: true,
-            };
-            assert_eq!(
-                leg_color(&theme, &base),
-                Color::from_rgba8(0xeb, 0x69, 0x0b, 255)
-            );
-            let no_color = TransitLeg {
-                color: None,
-                ..base.clone()
-            };
-            assert_eq!(
-                leg_color(&theme, &no_color),
-                transit_leg_color(&theme, TransitMode::Subway)
-            );
-            let bad = TransitLeg {
-                color: Some("nothex".into()),
-                ..base
-            };
-            assert_eq!(
-                leg_color(&theme, &bad),
-                transit_leg_color(&theme, TransitMode::Subway)
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn drawing_markers_and_tiles_never_fetches_synchronously_or_blanks() {
-        {
-            use crate::model::Place;
-            let theme = Theme::dark();
-            let pal = MapPalette::from_theme(&theme);
-            let mut tr = TextRenderer::new();
-            let center = LatLon::new(48.14, 11.58);
-            let model = MapModel {
-                center,
-                zoom: 16.0,
-                places: vec![Place::new(
-                    "a",
-                    "Alpha",
-                    Category::Cafe,
-                    "1 Main St",
-                    center,
-                )],
-                selected: Some("a".to_string()),
-                ..Default::default()
-            };
-            let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
-            let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let paths = |chrome: &[Rect], tr: &mut TextRenderer| {
-                let mut scene = Scene::new();
-                let view = MapView {
-                    proj: &proj,
-                    pal: &pal,
-                    clip,
-                    chrome,
+            {
+                let lum = |c: Color| {
+                    let c = c.to_rgba8();
+                    0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
                 };
-                draw_markers(
-                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, tr, &theme),
-                    view,
-                    &model,
+                let dark = MapPalette::from_theme(&Theme::dark());
+                assert!(
+                    lum(dark.land) < 70.0,
+                    "dark theme => a dark basemap land, got {}",
+                    lum(dark.land)
                 );
-                scene.encoding().n_paths
-            };
-            assert!(
-                clip.contains(proj.project(model.center)),
-                "the marker is on screen"
-            );
-            let open = paths(&[], &mut tr);
-            let none = paths(&[clip], &mut tr);
-            assert!(open > none, "the pin and its name plate paint");
-            let at = proj.project(model.center);
-            let over = Rect::new(at.x - 4.0, at.y - 4.0, at.x + 200.0, at.y + 4.0);
-            assert_eq!(paths(&[over], &mut tr), none, "a covered pin is left out");
-            let plate = Rect::new(at.x - 2.0, at.y - 80.0, at.x + 2.0, at.y - 52.0);
-            let covered = paths(&[plate], &mut tr);
-            assert!(
-                covered > none && covered < open,
-                "the pin shows without its name"
-            );
-        }
-
-        {
-            let theme = Theme::dark();
-            let pal = MapPalette::from_theme(&theme);
-            let mut layer = TileLayer::offline();
-            let model = MapModel::default();
-            let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let view_center = clip.center();
-
-            let mut scene = Scene::new();
-            let painted_exact = draw_tiles(
-                &mut scene,
-                Affine::IDENTITY,
-                clip,
-                &mut layer,
-                &model,
-                view_center,
-                &pal,
-            );
-
-            assert!(!painted_exact);
-            assert_eq!(layer.mem_len(), 0, "draw must not decode tiles inline");
-            assert!(!layer.has_inflight());
-        }
-
-        {
-            let theme = Theme::dark();
-            let pal = MapPalette::from_theme(&theme);
-            let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let vc = clip.center();
-            let center = crate::model::LatLon::new(48.1371, 11.5754);
-
-            let mut layer = TileLayer::offline();
-            for (id, _) in TileLayer::visible_tiles(center, 14.0, vc, clip) {
-                layer.insert_solid_tile(id);
+                let light = MapPalette::from_theme(&Theme::light());
+                assert!(
+                    lum(light.land) > 220.0,
+                    "light theme => near-white land, got {}",
+                    lum(light.land)
+                );
+                assert!(
+                    (lum(dark.road_res) - lum(dark.land)).abs() > 30.0,
+                    "dark residential roads must read against the dark land"
+                );
+                assert!(
+                    (lum(light.road_primary) - lum(light.land)).abs() > 15.0,
+                    "light arterials must read against the paper land"
+                );
             }
-            assert!(layer.mem_len() > 0, "seeded z14 imagery");
 
-            let paints = |layer: &mut TileLayer, zoom: f64| {
+            {
+                let lum = |c: Color| {
+                    let c = c.to_rgba8();
+                    0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
+                };
+                for theme in [Theme::dark(), Theme::light()] {
+                    let p = MapPalette::from_theme(&theme);
+                    assert!(
+                        (lum(p.substrate) - lum(p.land)).abs() < 45.0,
+                        "substrate ({}) must share the land tone ({}) — no light/dark seam",
+                        lum(p.substrate),
+                        lum(p.land)
+                    );
+                }
+            }
+
+            {
+                use vello::kurbo::Shape as _;
+                let anchor = Point::new(100.0, 200.0);
+                let (r, h) = (8.0, 22.0);
+                let bb = pin_path(anchor, r, h).bounding_box();
+                assert!(
+                    (bb.y1 - anchor.y).abs() < 0.5,
+                    "pin tip on the anchor, got y1={}",
+                    bb.y1
+                );
+                assert!(
+                    (bb.y0 - (anchor.y - h - r)).abs() < 1.5,
+                    "head top near anchor.y-h-r, got y0={}",
+                    bb.y0
+                );
+                assert!(
+                    (bb.width() - 2.0 * r).abs() < 2.0,
+                    "width ~ head diameter, got {}",
+                    bb.width()
+                );
+                assert!(
+                    (0.5 * (bb.x0 + bb.x1) - anchor.x).abs() < 0.5,
+                    "the pin is centred on the anchor x"
+                );
+            }
+
+            {
+                use crate::model::TransitLeg;
+                let theme = Theme::dark();
+                let base = TransitLeg {
+                    mode: TransitMode::Subway,
+                    line: "U3".into(),
+                    headsign: String::new(),
+                    from_name: String::new(),
+                    to_name: String::new(),
+                    dep: String::new(),
+                    arr: String::new(),
+                    duration_min: 5,
+                    num_stops: 2,
+                    geometry: vec![
+                        crate::model::LatLon::new(0.0, 0.0),
+                        crate::model::LatLon::new(0.1, 0.1),
+                    ],
+                    color: Some("eb690b".into()),
+                    text_color: Some("ffffff".into()),
+                    agency: "MVG".into(),
+                    realtime: true,
+                };
+                assert_eq!(
+                    leg_color(&theme, &base),
+                    Color::from_rgba8(0xeb, 0x69, 0x0b, 255)
+                );
+                let no_color = TransitLeg {
+                    color: None,
+                    ..base.clone()
+                };
+                assert_eq!(
+                    leg_color(&theme, &no_color),
+                    transit_leg_color(&theme, TransitMode::Subway)
+                );
+                let bad = TransitLeg {
+                    color: Some("nothex".into()),
+                    ..base
+                };
+                assert_eq!(
+                    leg_color(&theme, &bad),
+                    transit_leg_color(&theme, TransitMode::Subway)
+                );
+            }
+        }
+
+        phase drawing_markers_and_tiles_never_fetches_synchronously_or_blanks;
+        {
+            {
+                use crate::model::Place;
+                let theme = Theme::dark();
+                let pal = MapPalette::from_theme(&theme);
+                let mut tr = TextRenderer::new();
+                let center = LatLon::new(48.14, 11.58);
                 let model = MapModel {
                     center,
-                    zoom,
+                    zoom: 16.0,
+                    places: vec![Place::new(
+                        "a",
+                        "Alpha",
+                        Category::Cafe,
+                        "1 Main St",
+                        center,
+                    )],
+                    selected: Some("a".to_string()),
                     ..Default::default()
                 };
+                let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
+                let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
+                let paths = |chrome: &[Rect], tr: &mut TextRenderer| {
+                    let mut scene = Scene::new();
+                    let view = MapView {
+                        proj: &proj,
+                        pal: &pal,
+                        clip,
+                        chrome,
+                    };
+                    draw_markers(
+                        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, tr, &theme),
+                        view,
+                        &model,
+                    );
+                    scene.encoding().n_paths
+                };
+                assert!(
+                    clip.contains(proj.project(model.center)),
+                    "the marker is on screen"
+                );
+                let open = paths(&[], &mut tr);
+                let none = paths(&[clip], &mut tr);
+                assert!(open > none, "the pin and its name plate paint");
+                let at = proj.project(model.center);
+                let over = Rect::new(at.x - 4.0, at.y - 4.0, at.x + 200.0, at.y + 4.0);
+                assert_eq!(paths(&[over], &mut tr), none, "a covered pin is left out");
+                let plate = Rect::new(at.x - 2.0, at.y - 80.0, at.x + 2.0, at.y - 52.0);
+                let covered = paths(&[plate], &mut tr);
+                assert!(
+                    covered > none && covered < open,
+                    "the pin shows without its name"
+                );
+            }
+
+            {
+                let theme = Theme::dark();
+                let pal = MapPalette::from_theme(&theme);
+                let mut layer = TileLayer::offline();
+                let model = MapModel::default();
+                let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
+                let view_center = clip.center();
+
                 let mut scene = Scene::new();
-                draw_tiles(&mut scene, Affine::IDENTITY, clip, layer, &model, vc, &pal)
-            };
+                let painted_exact = draw_tiles(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    clip,
+                    &mut layer,
+                    &model,
+                    view_center,
+                    &pal,
+                );
 
-            assert!(paints(&mut layer, 14.0), "exact-zoom tiles paint imagery");
-            assert!(
-                paints(&mut layer, 15.0),
-                "zoom-in reuses z14 as scaled ancestors — must not blank"
-            );
-            assert!(
-                paints(&mut layer, 13.0),
-                "zoom-out reuses z14 as descendants — must not blank"
-            );
+                assert!(!painted_exact);
+                assert_eq!(layer.mem_len(), 0, "draw must not decode tiles inline");
+                assert!(!layer.has_inflight());
+            }
 
-            let mut empty = TileLayer::offline();
-            assert!(!paints(&mut empty, 14.0), "empty cache paints no imagery");
+            {
+                let theme = Theme::dark();
+                let pal = MapPalette::from_theme(&theme);
+                let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
+                let vc = clip.center();
+                let center = crate::model::LatLon::new(48.1371, 11.5754);
+
+                let mut layer = TileLayer::offline();
+                for (id, _) in TileLayer::visible_tiles(center, 14.0, vc, clip) {
+                    layer.insert_solid_tile(id);
+                }
+                assert!(layer.mem_len() > 0, "seeded z14 imagery");
+
+                let paints = |layer: &mut TileLayer, zoom: f64| {
+                    let model = MapModel {
+                        center,
+                        zoom,
+                        ..Default::default()
+                    };
+                    let mut scene = Scene::new();
+                    draw_tiles(&mut scene, Affine::IDENTITY, clip, layer, &model, vc, &pal)
+                };
+
+                assert!(paints(&mut layer, 14.0), "exact-zoom tiles paint imagery");
+                assert!(
+                    paints(&mut layer, 15.0),
+                    "zoom-in reuses z14 as scaled ancestors — must not blank"
+                );
+                assert!(
+                    paints(&mut layer, 13.0),
+                    "zoom-out reuses z14 as descendants — must not blank"
+                );
+
+                let mut empty = TileLayer::offline();
+                assert!(!paints(&mut empty, 14.0), "empty cache paints no imagery");
+            }
         }
     }
 }

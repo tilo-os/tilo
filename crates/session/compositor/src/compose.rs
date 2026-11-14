@@ -108,69 +108,74 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_dead_key_and_the_key_it_accents_type_together() {
-        let mut compose = compose();
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_dead_acute), None),
-            None
-        );
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_e), Some('e')),
-            Some("é".to_owned())
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Dead keys and compose sequences.
+        fn a_compose_sequence_types_what_its_table_says;
 
-    #[test]
-    fn a_compose_key_opens_the_sequence_the_keys_after_it_finish() {
-        let mut compose = compose();
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_Multi_key), None),
-            None
-        );
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_o), Some('o')),
-            None
-        );
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_c), Some('c')),
-            Some("©".to_owned())
-        );
-    }
+        phase a_dead_key_and_the_key_it_accents_type_together;
+        {
+            let mut compose = compose();
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_dead_acute), None),
+                None
+            );
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_e), Some('e')),
+                Some("é".to_owned())
+            );
+        }
 
-    #[test]
-    fn a_key_the_sequence_does_not_know_types_its_own_character() {
-        let mut compose = compose();
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_dead_acute), None),
-            None
-        );
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_x), Some('x')),
-            Some("x".to_owned()),
-            "the accent takes nothing the letter typed"
-        );
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_a), Some('a')),
-            Some("a".to_owned()),
-            "and leaves nothing open behind"
-        );
-    }
+        phase a_compose_key_opens_the_sequence_the_keys_after_it_finish;
+        {
+            let mut compose = compose();
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_Multi_key), None),
+                None
+            );
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_o), Some('o')),
+                None
+            );
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_c), Some('c')),
+                Some("©".to_owned())
+            );
+        }
 
-    #[test]
-    fn a_modifier_between_the_keys_of_a_sequence_leaves_it_open() {
-        let mut compose = compose();
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_dead_acute), None),
-            None
-        );
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_Shift_L), None),
-            None
-        );
-        assert_eq!(
-            compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_e), Some('e')),
-            Some("é".to_owned())
-        );
+        phase a_key_the_sequence_does_not_know_types_its_own_character;
+        {
+            let mut compose = compose();
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_dead_acute), None),
+                None
+            );
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_x), Some('x')),
+                Some("x".to_owned()),
+                "the accent takes nothing the letter typed"
+            );
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_a), Some('a')),
+                Some("a".to_owned()),
+                "and leaves nothing open behind"
+            );
+        }
+
+        phase a_modifier_between_the_keys_of_a_sequence_leaves_it_open;
+        {
+            let mut compose = compose();
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_dead_acute), None),
+                None
+            );
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_Shift_L), None),
+                None
+            );
+            assert_eq!(
+                compose.typed(xkb::Keysym::new(xkb::keysyms::KEY_e), Some('e')),
+                Some("é".to_owned())
+            );
+        }
     }
 }

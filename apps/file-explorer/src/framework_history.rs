@@ -350,138 +350,143 @@ mod tests {
             frontier: [4; 32],
         }
     }
-    #[test]
-    fn history_writes_repeat_while_content_hydrates() {
-        let clock = std::cell::Cell::new(Duration::ZERO);
-        let repeat = |wait, write: &mut dyn FnMut() -> std::io::Result<()>| {
-            clock.set(Duration::ZERO);
-            repeat_while_hydrating(
-                wait,
-                || clock.get(),
-                |pause| clock.set(clock.get() + pause),
-                write,
-            )
-        };
+    tilo_test_env::scenario! {
+        fn history_writes_repeat_while_hydrating_and_read_exact_intent;
+
+        phase history_writes_repeat_while_content_hydrates;
         {
-            let mut calls = 0_u32;
-            let result = repeat(Duration::from_secs(30), &mut || {
-                calls = calls.saturating_add(1);
-                if calls < 3 {
+            let clock = std::cell::Cell::new(Duration::ZERO);
+            let repeat = |wait, write: &mut dyn FnMut() -> std::io::Result<()>| {
+                clock.set(Duration::ZERO);
+                repeat_while_hydrating(
+                    wait,
+                    || clock.get(),
+                    |pause| clock.set(clock.get() + pause),
+                    write,
+                )
+            };
+            {
+                let mut calls = 0_u32;
+                let result = repeat(Duration::from_secs(30), &mut || {
+                    calls = calls.saturating_add(1);
+                    if calls < 3 {
+                        Err(ErrorCode::InProgress.into_io_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+                assert!(result.is_ok());
+                assert_eq!(calls, 3);
+                assert_eq!(
+                    clock.get(),
+                    Duration::from_millis(60),
+                    "paused 20 then 40 ms"
+                );
+            }
+            {
+                let mut calls = 0_u32;
+                let result = repeat(Duration::from_secs(30), &mut || {
+                    calls = calls.saturating_add(1);
+                    Err(ErrorCode::Busy.into_io_error())
+                });
+                assert_eq!(ErrorCode::of(&result.unwrap_err()), Some(ErrorCode::Busy));
+                assert_eq!(calls, 1);
+                assert_eq!(clock.get(), Duration::ZERO);
+            }
+            {
+                let mut calls = 0_u32;
+                let result = repeat(Duration::from_millis(100), &mut || {
+                    calls = calls.saturating_add(1);
                     Err(ErrorCode::InProgress.into_io_error())
-                } else {
-                    Ok(())
-                }
-            });
-            assert!(result.is_ok());
-            assert_eq!(calls, 3);
-            assert_eq!(
-                clock.get(),
-                Duration::from_millis(60),
-                "paused 20 then 40 ms"
-            );
-        }
-        {
-            let mut calls = 0_u32;
-            let result = repeat(Duration::from_secs(30), &mut || {
-                calls = calls.saturating_add(1);
-                Err(ErrorCode::Busy.into_io_error())
-            });
-            assert_eq!(ErrorCode::of(&result.unwrap_err()), Some(ErrorCode::Busy));
-            assert_eq!(calls, 1);
-            assert_eq!(clock.get(), Duration::ZERO);
-        }
-        {
-            let mut calls = 0_u32;
-            let result = repeat(Duration::from_millis(100), &mut || {
-                calls = calls.saturating_add(1);
-                Err(ErrorCode::InProgress.into_io_error())
-            });
-            assert_eq!(
-                ErrorCode::of(&result.unwrap_err()),
-                Some(ErrorCode::InProgress)
-            );
-            assert_eq!(calls, 4);
-            assert_eq!(clock.get(), Duration::from_millis(100));
-        }
-    }
-    #[test]
-    fn checked_history_writes_read_exact_intent_through_a_stable_descriptor() {
-        {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("record");
-            std::fs::write(&path, b"current").unwrap();
-            let scope = scope();
-            let request = CheckedHistoryRequestV1 {
-                schema_version: 1,
-                intent_id: uuid::Uuid::from_u128(5),
-                review: FileRestoreReviewV1 {
-                    schema_version: 1,
-                    workspace_id: scope.workspace_id,
-                    mount_lifetime: scope.mount_lifetime,
-                    record_id: scope.record_id,
-                    frontier: scope.frontier,
-                },
-                operation: CheckedHistoryOperationV1::Restore {
-                    version_id: fs_protocol::FileVersionId(uuid::Uuid::from_u128(6)),
-                },
-            };
-            let response = CheckedHistoryResponseV1 {
-                schema_version: 1,
-                outcome: CheckedHistoryOutcomeV1::RecoveryPending {
-                    intent_id: request.intent_id,
-                },
-            };
-            xattr::set(
-                &path,
-                format!("{CHECKED_HISTORY_RESULT_XATTR_PREFIX}{}", request.intent_id),
-                &serde_json::to_vec(&response).unwrap(),
-            )
-            .unwrap();
-            let transport = MountedFileHistory::open(&path).unwrap();
-            assert_eq!(transport.submit(request), response.outcome);
-            assert_eq!(transport.submit(request), response.outcome);
-            let actual: CheckedHistoryRequestV1 = serde_json::from_slice(
-                &xattr::get(&path, CHECKED_HISTORY_RESTORE_XATTR)
-                    .unwrap()
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                actual, request,
-                "exact retry keeps the original ID, frontier, record and selected version"
-            );
-            assert_eq!(
-                transport.result(uuid::Uuid::from_u128(7)),
-                CheckedHistoryOutcomeV1::Unavailable
-            );
-            assert!(
-                xattr::get(&path, fs_protocol::HISTORY_CONTROL_XATTR)
-                    .unwrap()
-                    .is_none()
-            );
+                });
+                assert_eq!(
+                    ErrorCode::of(&result.unwrap_err()),
+                    Some(ErrorCode::InProgress)
+                );
+                assert_eq!(calls, 4);
+                assert_eq!(clock.get(), Duration::from_millis(100));
+            }
         }
 
+        phase checked_history_writes_read_exact_intent_through_a_stable_descriptor;
         {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("record");
-            std::fs::write(&path, b"current bytes").unwrap();
-            let version = fs_protocol::FileVersionId(uuid::Uuid::from_u128(9));
-            let name = FileHistoryReadQueryV1::Preview {
-                frontier: scope().frontier,
-                version_id: version,
+            {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("record");
+                std::fs::write(&path, b"current").unwrap();
+                let scope = scope();
+                let request = CheckedHistoryRequestV1 {
+                    schema_version: 1,
+                    intent_id: uuid::Uuid::from_u128(5),
+                    review: FileRestoreReviewV1 {
+                        schema_version: 1,
+                        workspace_id: scope.workspace_id,
+                        mount_lifetime: scope.mount_lifetime,
+                        record_id: scope.record_id,
+                        frontier: scope.frontier,
+                    },
+                    operation: CheckedHistoryOperationV1::Restore {
+                        version_id: fs_protocol::FileVersionId(uuid::Uuid::from_u128(6)),
+                    },
+                };
+                let response = CheckedHistoryResponseV1 {
+                    schema_version: 1,
+                    outcome: CheckedHistoryOutcomeV1::RecoveryPending {
+                        intent_id: request.intent_id,
+                    },
+                };
+                xattr::set(
+                    &path,
+                    format!("{CHECKED_HISTORY_RESULT_XATTR_PREFIX}{}", request.intent_id),
+                    &serde_json::to_vec(&response).unwrap(),
+                )
+                .unwrap();
+                let transport = MountedFileHistory::open(&path).unwrap();
+                assert_eq!(transport.submit(request), response.outcome);
+                assert_eq!(transport.submit(request), response.outcome);
+                let actual: CheckedHistoryRequestV1 = serde_json::from_slice(
+                    &xattr::get(&path, CHECKED_HISTORY_RESTORE_XATTR)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    actual, request,
+                    "exact retry keeps the original ID, frontier, record and selected version"
+                );
+                assert_eq!(
+                    transport.result(uuid::Uuid::from_u128(7)),
+                    CheckedHistoryOutcomeV1::Unavailable
+                );
+                assert!(
+                    xattr::get(&path, fs_protocol::HISTORY_CONTROL_XATTR)
+                        .unwrap()
+                        .is_none()
+                );
             }
-            .xattr_name();
-            assert!(name.len() <= 127);
-            xattr::set(&path, &name, b"old immutable bytes").unwrap();
-            let transport = MountedFileHistory::open(&path).unwrap();
-            std::fs::rename(&path, directory.path().join("old-record")).unwrap();
-            std::fs::write(&path, b"replacement current bytes").unwrap();
-            xattr::set(&path, &name, b"wrong replacement history").unwrap();
-            assert_eq!(
-                transport.preview(scope(), version).unwrap(),
-                b"old immutable bytes"
-            );
-            assert_eq!(std::fs::read(&path).unwrap(), b"replacement current bytes");
+
+            {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("record");
+                std::fs::write(&path, b"current bytes").unwrap();
+                let version = fs_protocol::FileVersionId(uuid::Uuid::from_u128(9));
+                let name = FileHistoryReadQueryV1::Preview {
+                    frontier: scope().frontier,
+                    version_id: version,
+                }
+                .xattr_name();
+                assert!(name.len() <= 127);
+                xattr::set(&path, &name, b"old immutable bytes").unwrap();
+                let transport = MountedFileHistory::open(&path).unwrap();
+                std::fs::rename(&path, directory.path().join("old-record")).unwrap();
+                std::fs::write(&path, b"replacement current bytes").unwrap();
+                xattr::set(&path, &name, b"wrong replacement history").unwrap();
+                assert_eq!(
+                    transport.preview(scope(), version).unwrap(),
+                    b"old immutable bytes"
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), b"replacement current bytes");
+            }
         }
     }
 }

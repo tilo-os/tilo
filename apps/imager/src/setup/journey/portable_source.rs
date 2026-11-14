@@ -898,109 +898,150 @@ mod tests {
         bytes
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn named_file_acl_review_refuses_before_ready_without_permission_retry() {
-        let temp = live_review_tempdir();
-        let home = temp.path().join("home");
-        std::fs::create_dir(&home).unwrap();
-        let document = home.join("document");
-        std::fs::write(&document, b"original document").unwrap();
-        let original = install_acl(&document, false, true);
-        let mut selection = Selection::default();
-        selection.start(home.clone(), home).unwrap();
-        assert_eq!(
-            settle(&mut selection),
-            Err("installer-portable-metadata-unsupported")
-        );
-        assert_eq!(selection.projection()["prepared"], false);
-        assert!(selection.reviewed_handle().is_none());
-        assert_eq!(std::fs::read(&document).unwrap(), b"original document");
-        let error = imager_backend::setup::portable_transfer::acl::policy(
-            &std::fs::File::open(&document).unwrap(),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        assert_eq!(read_acl(&document, false), original);
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn acl_reviews_refuse_named_entries_and_accept_supported_ones;
+
+        phase named_file_acl_review_refuses_before_ready_without_permission_retry;
+        {
+            let temp = live_review_tempdir();
+            let home = temp.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            let document = home.join("document");
+            std::fs::write(&document, b"original document").unwrap();
+            let original = install_acl(&document, false, true);
+            let mut selection = Selection::default();
+            selection.start(home.clone(), home).unwrap();
+            assert_eq!(
+                settle(&mut selection),
+                Err("installer-portable-metadata-unsupported")
+            );
+            assert_eq!(selection.projection()["prepared"], false);
+            assert!(selection.reviewed_handle().is_none());
+            assert_eq!(std::fs::read(&document).unwrap(), b"original document");
+            let error = imager_backend::setup::portable_transfer::acl::policy(
+                &std::fs::File::open(&document).unwrap(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert_eq!(read_acl(&document, false), original);
+            assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        }
+
+        phase named_default_directory_acl_review_refuses_before_ready;
+        {
+            let temp = live_review_tempdir();
+            let home = temp.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            let original = install_acl(&home, true, true);
+            let mut selection = Selection::default();
+            selection.start(home.clone(), home.clone()).unwrap();
+            assert_eq!(
+                settle(&mut selection),
+                Err("installer-portable-metadata-unsupported")
+            );
+            assert!(selection.reviewed_handle().is_none());
+            let error = imager_backend::setup::portable_transfer::acl::policy(
+                &std::fs::File::open(&home).unwrap(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert_eq!(read_acl(&home, true), original);
+            assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        }
+
+        phase supported_file_and_default_acls_review_successfully;
+        {
+            let temp = live_review_tempdir();
+            let home = temp.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            let document = home.join("document");
+            std::fs::write(&document, b"original document").unwrap();
+            let file_acl = install_acl(&document, false, false);
+            let default_acl = install_acl(&home, true, false);
+            let mut selection = Selection::default();
+            selection.start(home.clone(), home.clone()).unwrap();
+            assert!(settle(&mut selection).unwrap());
+            assert_eq!(selection.projection()["prepared"], true);
+            selection.reviewed_handle().unwrap().validate().unwrap();
+            assert_eq!(read_acl(&document, false), file_acl);
+            assert_eq!(read_acl(&home, true), default_acl);
+            assert_eq!(std::fs::read(&document).unwrap(), b"original document");
+            assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        }
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn named_default_directory_acl_review_refuses_before_ready() {
-        let temp = live_review_tempdir();
-        let home = temp.path().join("home");
-        std::fs::create_dir(&home).unwrap();
-        let original = install_acl(&home, true, true);
-        let mut selection = Selection::default();
-        selection.start(home.clone(), home.clone()).unwrap();
-        assert_eq!(
-            settle(&mut selection),
-            Err("installer-portable-metadata-unsupported")
-        );
-        assert!(selection.reviewed_handle().is_none());
-        let error = imager_backend::setup::portable_transfer::acl::policy(
-            &std::fs::File::open(&home).unwrap(),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        assert_eq!(read_acl(&home, true), original);
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
-    }
+    tilo_test_env::scenario! {
+        fn a_grant_must_be_the_reviewed_home_itself;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn supported_file_and_default_acls_review_successfully() {
-        let temp = live_review_tempdir();
-        let home = temp.path().join("home");
-        std::fs::create_dir(&home).unwrap();
-        let document = home.join("document");
-        std::fs::write(&document, b"original document").unwrap();
-        let file_acl = install_acl(&document, false, false);
-        let default_acl = install_acl(&home, true, false);
-        let mut selection = Selection::default();
-        selection.start(home.clone(), home.clone()).unwrap();
-        assert!(settle(&mut selection).unwrap());
-        assert_eq!(selection.projection()["prepared"], true);
-        selection.reviewed_handle().unwrap().validate().unwrap();
-        assert_eq!(read_acl(&document, false), file_acl);
-        assert_eq!(read_acl(&home, true), default_acl);
-        assert_eq!(std::fs::read(&document).unwrap(), b"original document");
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
-    }
+        phase wrong_selection_is_permission_but_replaced_approved_home_is_source_changed;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let home = temp.path().join("home");
+            let other = temp.path().join("other");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::create_dir(&other).unwrap();
+            std::fs::write(home.join("document"), b"original").unwrap();
+            let mut selection = Selection::default();
+            selection.start(other, home.clone()).unwrap();
+            assert_eq!(
+                settle(&mut selection),
+                Err("installer-portable-permission-failed")
+            );
+            assert!(selection.reviewed_handle().is_none());
+            selection.start(home.clone(), home.clone()).unwrap();
+            assert!(settle(&mut selection).unwrap());
+            let retained = temp.path().join("retained-original");
+            std::fs::rename(&home, &retained).unwrap();
+            std::fs::create_dir(&home).unwrap();
+            std::fs::write(home.join("document"), b"replacement").unwrap();
+            selection.refresh().unwrap();
+            assert_eq!(settle(&mut selection), Err("installer-source-changed"));
+            assert!(selection.reviewed_handle().is_none());
+            assert_eq!(
+                std::fs::read(retained.join("document")).unwrap(),
+                b"original"
+            );
+            assert_eq!(
+                std::fs::read(home.join("document")).unwrap(),
+                b"replacement"
+            );
+        }
 
-    #[test]
-    fn wrong_selection_is_permission_but_replaced_approved_home_is_source_changed() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        let other = temp.path().join("other");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::create_dir(&other).unwrap();
-        std::fs::write(home.join("document"), b"original").unwrap();
-        let mut selection = Selection::default();
-        selection.start(other, home.clone()).unwrap();
-        assert_eq!(
-            settle(&mut selection),
-            Err("installer-portable-permission-failed")
-        );
-        assert!(selection.reviewed_handle().is_none());
-        selection.start(home.clone(), home.clone()).unwrap();
-        assert!(settle(&mut selection).unwrap());
-        let retained = temp.path().join("retained-original");
-        std::fs::rename(&home, &retained).unwrap();
-        std::fs::create_dir(&home).unwrap();
-        std::fs::write(home.join("document"), b"replacement").unwrap();
-        selection.refresh().unwrap();
-        assert_eq!(settle(&mut selection), Err("installer-source-changed"));
-        assert!(selection.reviewed_handle().is_none());
-        assert_eq!(
-            std::fs::read(retained.join("document")).unwrap(),
-            b"original"
-        );
-        assert_eq!(
-            std::fs::read(home.join("document")).unwrap(),
-            b"replacement"
-        );
+        phase wrong_home_and_symlink_grants_fail_and_explicit_retry_can_succeed;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let home = temp.path().join("home");
+            let other = temp.path().join("other");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::create_dir(&other).unwrap();
+            let mut selection = Selection::default();
+            selection.start(other, home.clone()).unwrap();
+            assert!(settle(&mut selection).is_err());
+            assert!(selection.reviewed_handle().is_none());
+            let symlink = temp.path().join("alias");
+            std::os::unix::fs::symlink(&home, &symlink).unwrap();
+            selection.start(symlink, home.clone()).unwrap();
+            assert!(settle(&mut selection).is_err());
+            selection.start(home.clone(), home).unwrap();
+            assert!(settle(&mut selection).unwrap());
+            assert!(selection.reviewed_handle().is_some());
+        }
+
+        phase invalidating_inflight_review_cannot_publish_stale_consent;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let home = temp.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::write(home.join("original"), b"unchanged").unwrap();
+            let mut selection = Selection::default();
+            selection.start(home.clone(), home.clone()).unwrap();
+            selection.invalidate();
+            assert!(!settle(&mut selection).unwrap());
+            assert!(selection.reviewed_handle().is_none());
+            assert_eq!(selection.projection()["state"], "cancelled");
+            assert_eq!(std::fs::read(home.join("original")).unwrap(), b"unchanged");
+        }
     }
 
     fn settle(selection: &mut Selection) -> Result<bool, &'static str> {
@@ -1077,38 +1118,5 @@ mod tests {
             std::fs::read(temp.path().join("original-home/document")).unwrap(),
             b"changed original document"
         );
-    }
-    #[test]
-    fn wrong_home_and_symlink_grants_fail_and_explicit_retry_can_succeed() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        let other = temp.path().join("other");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::create_dir(&other).unwrap();
-        let mut selection = Selection::default();
-        selection.start(other, home.clone()).unwrap();
-        assert!(settle(&mut selection).is_err());
-        assert!(selection.reviewed_handle().is_none());
-        let symlink = temp.path().join("alias");
-        std::os::unix::fs::symlink(&home, &symlink).unwrap();
-        selection.start(symlink, home.clone()).unwrap();
-        assert!(settle(&mut selection).is_err());
-        selection.start(home.clone(), home).unwrap();
-        assert!(settle(&mut selection).unwrap());
-        assert!(selection.reviewed_handle().is_some());
-    }
-    #[test]
-    fn invalidating_inflight_review_cannot_publish_stale_consent() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::write(home.join("original"), b"unchanged").unwrap();
-        let mut selection = Selection::default();
-        selection.start(home.clone(), home.clone()).unwrap();
-        selection.invalidate();
-        assert!(!settle(&mut selection).unwrap());
-        assert!(selection.reviewed_handle().is_none());
-        assert_eq!(selection.projection()["state"], "cancelled");
-        assert_eq!(std::fs::read(home.join("original")).unwrap(), b"unchanged");
     }
 }

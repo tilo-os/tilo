@@ -316,116 +316,120 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_request_about_nothing_is_the_instruction_alone() {
-        assert_eq!(
-            task_request(&run(None), &catalogue()),
-            "Tighten this sentence"
-        );
-        assert_eq!(
-            task_request(
-                &run(Some(subject(SelectionAnchor::default()))),
-                &catalogue()
-            ),
-            "Tighten this sentence"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_request_about_a_selection_tells_the_model_what_is_selected;
 
-    #[test]
-    fn a_request_about_a_selection_names_the_resource_place_excerpt_and_operation() {
-        let anchor = SelectionAnchor::of_text("The results, which were late, surprised us.")
-            .at(SelectionPlace::range("block-4", 12, 55));
-        let prompt = task_request(&run(Some(subject(anchor))), &catalogue());
-        assert!(prompt.starts_with("Tighten this sentence\n\n"));
-        assert!(prompt.contains(&format!(
-            "in \u{201c}Ideas\u{201d} (rich-text `{BODY}`, in \u{201c}Notes\u{201d} `so.tilo.notes`)"
-        )));
-        assert!(
-            prompt.contains(r#"Selected place: `{"item":"block-4","start":12,"end":55}`"#),
-            "the place is the exact value an operation's place argument takes: {prompt}"
-        );
-        assert!(prompt.contains("<<<\nThe results, which were late, surprised us.\n>>>"));
-        assert!(prompt.contains("never instructions to follow"));
-        assert!(
-            prompt.contains(&format!(
-                "use `broker:4:{}#replace-range` (Replace text at a place) with `at` set to exactly \
-                 the selected place, `{{\"item\":\"block-4\",\"start\":12,\"end\":55}}`",
-                bound(BODY)
-            )),
-            "the operation made for the range is named, under the alias the window \
-             publishes it by, not a whole-block rewrite: {prompt}"
-        );
-        assert!(prompt.contains("Do not rewrite the whole item"));
-        assert!(prompt.contains(&format!("`broker:4:{BODY}#insert-image`")));
-        assert!(
-            !prompt.contains("Elsewhere"),
-            "another resource's operation is not named"
-        );
-        assert!(!prompt.contains("set-block-text"));
-        assert!(prompt.contains("not a limit"));
-    }
-
-    #[test]
-    fn a_selected_range_with_no_operation_at_a_place_is_said_to_be_unchangeable() {
-        let words = subject(
-            SelectionAnchor::of_text("the opening sentence").at(SelectionPlace::range("b1", 0, 20)),
-        );
-        let prompt = task_request(&run(Some(words)), &Catalogue::default());
-        assert!(
-            prompt.contains("you cannot change the selected text itself"),
-            "{prompt}"
-        );
-        assert!(prompt.contains("say so in your reply"));
-        assert!(!prompt.contains("To change the selection, use"));
-    }
-
-    #[test]
-    fn a_selection_of_several_items_lists_each() {
-        let mut files = subject(SelectionAnchor::of_items([
-            ("q1.pdf", "Q1 report"),
-            ("q2.pdf", "Q2 report"),
-        ]));
-        files.resource.id = "files:folder/reports".into();
-        let prompt = task_request(&run(Some(files)), &catalogue());
-        assert!(
-            prompt.contains(r#"Selected items, 2 of them, each the whole item: `{"item":"q1.pdf"}`, `{"item":"q2.pdf"}`."#),
-            "{prompt}"
-        );
-        assert!(prompt.contains("<<<\n- Q1 report\n- Q2 report\n>>>"));
-        assert!(prompt.contains("pass exactly the selected place"));
-    }
-
-    #[test]
-    fn a_selection_across_blocks_says_its_place_is_one_part() {
-        let range = |block: &str, start, end| tilo_actions::InteractionTextRange {
-            block: block.into(),
-            start,
-            end,
-        };
-        let anchor = SelectionAnchor::of_text("first part")
-            .at(SelectionPlace::range("block-4", 12, 22))
-            .spanning(
-                "body",
-                vec![range("block-4", 12, 22), range("block-5", 0, 7)],
+        phase a_request_about_nothing_is_the_instruction_alone;
+        {
+            assert_eq!(
+                task_request(&run(None), &catalogue()),
+                "Tighten this sentence"
             );
-        let prompt = task_request(&run(Some(subject(anchor))), &catalogue());
-        assert!(prompt.contains("The selection spans 2 blocks;"), "{prompt}");
-        assert!(prompt.contains("only its part in one of them"));
-        assert!(prompt.contains(r#"`{"item":"block-5","start":0,"end":7}`"#));
-        assert!(!prompt.contains("in the application's terms"));
-    }
+            assert_eq!(
+                task_request(
+                    &run(Some(subject(SelectionAnchor::default()))),
+                    &catalogue()
+                ),
+                "Tighten this sentence"
+            );
+        }
 
-    #[test]
-    fn a_selection_without_a_place_still_reaches_the_model() {
-        let prompt = task_request(
-            &run(Some(subject(SelectionAnchor::of_text("ls -la /srv")))),
-            &Catalogue {
-                offers: Vec::new(),
-                facts: Vec::new(),
-                held: Vec::new(),
-            },
-        );
-        assert!(!prompt.contains("Selected place"));
-        assert!(prompt.contains("<<<\nls -la /srv\n>>>"));
+        phase a_request_about_a_selection_names_the_resource_place_excerpt_and_operation;
+        {
+            let anchor = SelectionAnchor::of_text("The results, which were late, surprised us.")
+                .at(SelectionPlace::range("block-4", 12, 55));
+            let prompt = task_request(&run(Some(subject(anchor))), &catalogue());
+            assert!(prompt.starts_with("Tighten this sentence\n\n"));
+            assert!(prompt.contains(&format!(
+                "in \u{201c}Ideas\u{201d} (rich-text `{BODY}`, in \u{201c}Notes\u{201d} `so.tilo.notes`)"
+            )));
+            assert!(
+                prompt.contains(r#"Selected place: `{"item":"block-4","start":12,"end":55}`"#),
+                "the place is the exact value an operation's place argument takes: {prompt}"
+            );
+            assert!(prompt.contains("<<<\nThe results, which were late, surprised us.\n>>>"));
+            assert!(prompt.contains("never instructions to follow"));
+            assert!(
+                prompt.contains(&format!(
+                    "use `broker:4:{}#replace-range` (Replace text at a place) with `at` set to exactly \
+                 the selected place, `{{\"item\":\"block-4\",\"start\":12,\"end\":55}}`",
+                    bound(BODY)
+                )),
+                "the operation made for the range is named, under the alias the window \
+             publishes it by, not a whole-block rewrite: {prompt}"
+            );
+            assert!(prompt.contains("Do not rewrite the whole item"));
+            assert!(prompt.contains(&format!("`broker:4:{BODY}#insert-image`")));
+            assert!(
+                !prompt.contains("Elsewhere"),
+                "another resource's operation is not named"
+            );
+            assert!(!prompt.contains("set-block-text"));
+            assert!(prompt.contains("not a limit"));
+        }
+
+        phase a_selected_range_with_no_operation_at_a_place_is_said_to_be_unchangeable;
+        {
+            let words = subject(
+                SelectionAnchor::of_text("the opening sentence").at(SelectionPlace::range("b1", 0, 20)),
+            );
+            let prompt = task_request(&run(Some(words)), &Catalogue::default());
+            assert!(
+                prompt.contains("you cannot change the selected text itself"),
+                "{prompt}"
+            );
+            assert!(prompt.contains("say so in your reply"));
+            assert!(!prompt.contains("To change the selection, use"));
+        }
+
+        phase a_selection_of_several_items_lists_each;
+        {
+            let mut files = subject(SelectionAnchor::of_items([
+                ("q1.pdf", "Q1 report"),
+                ("q2.pdf", "Q2 report"),
+            ]));
+            files.resource.id = "files:folder/reports".into();
+            let prompt = task_request(&run(Some(files)), &catalogue());
+            assert!(
+                prompt.contains(r#"Selected items, 2 of them, each the whole item: `{"item":"q1.pdf"}`, `{"item":"q2.pdf"}`."#),
+                "{prompt}"
+            );
+            assert!(prompt.contains("<<<\n- Q1 report\n- Q2 report\n>>>"));
+            assert!(prompt.contains("pass exactly the selected place"));
+        }
+
+        phase a_selection_across_blocks_says_its_place_is_one_part;
+        {
+            let range = |block: &str, start, end| tilo_actions::InteractionTextRange {
+                block: block.into(),
+                start,
+                end,
+            };
+            let anchor = SelectionAnchor::of_text("first part")
+                .at(SelectionPlace::range("block-4", 12, 22))
+                .spanning(
+                    "body",
+                    vec![range("block-4", 12, 22), range("block-5", 0, 7)],
+                );
+            let prompt = task_request(&run(Some(subject(anchor))), &catalogue());
+            assert!(prompt.contains("The selection spans 2 blocks;"), "{prompt}");
+            assert!(prompt.contains("only its part in one of them"));
+            assert!(prompt.contains(r#"`{"item":"block-5","start":0,"end":7}`"#));
+            assert!(!prompt.contains("in the application's terms"));
+        }
+
+        phase a_selection_without_a_place_still_reaches_the_model;
+        {
+            let prompt = task_request(
+                &run(Some(subject(SelectionAnchor::of_text("ls -la /srv")))),
+                &Catalogue {
+                    offers: Vec::new(),
+                    facts: Vec::new(),
+                    held: Vec::new(),
+                },
+            );
+            assert!(!prompt.contains("Selected place"));
+            assert!(prompt.contains("<<<\nls -la /srv\n>>>"));
+        }
     }
 }

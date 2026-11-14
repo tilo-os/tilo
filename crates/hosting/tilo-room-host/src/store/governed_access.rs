@@ -461,6 +461,7 @@ impl WorkspaceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_relay_protocol::WorkspaceId;
 
     fn key(n: u8) -> [u8; 32] {
         [n; 32]
@@ -480,7 +481,7 @@ mod tests {
     #[test]
     fn an_admission_appends_its_change_and_the_log_reads_back() {
         let dir = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut devices = Vec::new();
         let mut appended = Vec::new();
         for n in 0..60_u8 {
@@ -497,7 +498,7 @@ mod tests {
             "the 51st member's write ({} B) is no larger than the 11th's ({small} B)",
             appended[50]
         );
-        let reopened = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let reopened = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(
             reopened.load_governed_access().unwrap(),
             Some(access(&devices, &[200]))
@@ -507,7 +508,7 @@ mod tests {
             .save_governed_access(&access(&devices, &[201]))
             .unwrap();
         assert_eq!(
-            WorkspaceStore::open(dir.path(), 7, false)
+            WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false)
                 .unwrap()
                 .load_governed_access()
                 .unwrap(),
@@ -524,9 +525,12 @@ mod tests {
     #[test]
     fn a_change_cut_short_is_dropped_whole() {
         let dir = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
         store.save_governed_access(&access(&[1, 2], &[9])).unwrap();
-        let path = dir.path().join("workspaces/7").join(GOVERNED_ACCESS_FILE);
+        let path = dir
+            .path()
+            .join(format!("workspaces/{}", WorkspaceId::from_u128(7)))
+            .join(GOVERNED_ACCESS_FILE);
         let held = fs::read(&path).unwrap();
         let mut torn = held.clone();
         torn.extend_from_slice(
@@ -538,7 +542,7 @@ mod tests {
             .unwrap()[..20],
         );
         fs::write(&path, &torn).unwrap();
-        let reopened = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let reopened = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(
             reopened.load_governed_access().unwrap(),
             Some(access(&[1, 2], &[9]))
@@ -548,7 +552,7 @@ mod tests {
             .save_governed_access(&access(&[1, 2, 4], &[9]))
             .unwrap();
         assert_eq!(
-            WorkspaceStore::open(dir.path(), 7, false)
+            WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false)
                 .unwrap()
                 .load_governed_access()
                 .unwrap(),
@@ -572,8 +576,10 @@ mod tests {
         let brought_up = FORMAT.migrate(v1.to_vec(), 1).unwrap();
         assert_eq!(read(&brought_up).unwrap().0, access(&[1], &[2]));
         let dir = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
-        let root = dir.path().join("workspaces/7");
+        let store = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
+        let root = dir
+            .path()
+            .join(format!("workspaces/{}", WorkspaceId::from_u128(7)));
         fs::write(root.join(V1_FILE), v1).unwrap();
         assert_eq!(
             store.load_governed_access().unwrap(),
@@ -617,8 +623,11 @@ mod tests {
         // A workspace whose log a version 2 build wrote opens, and keeps the
         // log as it was beside it.
         let dir = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
-        let path = dir.path().join("workspaces/7").join(GOVERNED_ACCESS_FILE);
+        let store = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
+        let path = dir
+            .path()
+            .join(format!("workspaces/{}", WorkspaceId::from_u128(7)))
+            .join(GOVERNED_ACCESS_FILE);
         fs::write(&path, &v2).unwrap();
         assert_eq!(
             store.load_governed_access().unwrap(),
@@ -629,12 +638,17 @@ mod tests {
     }
 
     /// The bytes this build writes for a workspace's first access.
+    const GOLDEN: &str = include_str!("../../golden/governed-workspace-access/v3.hex");
+
+    fn golden() -> Vec<u8> {
+        hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
+    }
+
     #[test]
     fn the_log_this_build_writes() {
-        const KEPT: &str = "74696c6f61636300030000004700000001010101010101010101010101010101010101010101010101010101010101010101000102020202020202020202020202020202020202020202020202020202020202020001017059f4fed357fdc7";
         tilo_files::native::migration::assert_golden_bytes(
-            "governed workspace access",
-            &hex::decode(KEPT).unwrap(),
+            FORMAT.name,
+            &golden(),
             |bytes| assert_eq!(read(bytes).unwrap().0, access(&[1], &[2])),
             || {
                 let mut log = header();

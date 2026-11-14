@@ -408,27 +408,17 @@ fn open_workspace_defaults() -> Result<(), String> {
 /// under the same names), so a default the host set is named here rather than shown as an id.
 pub fn installed_candidates() -> Vec<AppCandidate> {
     let mut out = Vec::new();
-    for entry in package_store::list_installed().unwrap_or_default() {
-        let Ok(manifest) = tilo_app_package::view::read_manifest(&entry.manifest_path) else {
-            continue;
-        };
-        if manifest.entrypoint.gui_bin().is_none() {
+    for app in crate::installed::installed() {
+        if app.manifest.entrypoint.gui_bin().is_none() {
             continue;
         }
-        let package_id = if manifest.package_id.is_empty() {
-            entry.id
-        } else {
-            manifest.package_id
-        };
         out.push(AppCandidate::package(
-            package_id.clone(),
-            manifest
-                .name
-                .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
-            &manifest.opens_ext,
-            &manifest.opens_mime,
-            &manifest.opens_schemes,
-            manifest.opens_secondary,
+            app.package_id,
+            app.name,
+            &app.manifest.opens_ext,
+            &app.manifest.opens_mime,
+            &app.manifest.opens_schemes,
+            app.manifest.opens_secondary,
         ));
     }
     out.extend(host_candidates(&out));
@@ -473,20 +463,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn personal_apps_copy_comes_from_the_catalogue() {
-        assert_eq!(
-            t("settings-personal-apps-files-title"),
-            "Open files and links with"
-        );
-        assert_eq!(
-            resource_label(&ResourceKind::extension("pdf").unwrap()),
-            "PDF documents"
-        );
-        assert_eq!(
-            resource_label(&ResourceKind::scheme("https").unwrap()),
-            "Secure web links"
-        );
+    tilo_test_env::scenario! {
+        fn default_apps_are_worded_from_the_catalogue_and_checked_by_the_section;
+
+        phase personal_apps_copy_comes_from_the_catalogue;
+        {
+            assert_eq!(
+                t("settings-personal-apps-files-title"),
+                "Open files and links with"
+            );
+            assert_eq!(
+                resource_label(&ResourceKind::extension("pdf").unwrap()),
+                "PDF documents"
+            );
+            assert_eq!(
+                resource_label(&ResourceKind::scheme("https").unwrap()),
+                "Secure web links"
+            );
+        }
+
+        phase the_section_refuses_what_is_not_a_kind_or_an_app;
+        // A kind that is not one, or no app, is refused at the section.
+        {
+            let mut apps = DefaultApps::default();
+            assert!(apps.open_with("pdf".into(), "so.tilo.pdf".into()).is_err());
+            assert!(apps.open_with("ext:pdf".into(), " ".into()).is_err());
+            assert!(apps.handlers.is_empty());
+            apps.open_with("ext:pdf".into(), "so.tilo.pdf".into())
+                .unwrap();
+            assert_eq!(
+                apps.handlers.get("ext:pdf").map(String::as_str),
+                Some("so.tilo.pdf")
+            );
+        }
     }
 
     /// A choice is the person's `default_apps` section, which the launcher
@@ -592,20 +601,5 @@ mod tests {
             .unwrap();
         app.settle();
         assert_eq!(shown(&mut app).as_deref(), Some("so.tilo.b"));
-    }
-
-    /// A kind that is not one, or no app, is refused at the section.
-    #[test]
-    fn the_section_refuses_what_is_not_a_kind_or_an_app() {
-        let mut apps = DefaultApps::default();
-        assert!(apps.open_with("pdf".into(), "so.tilo.pdf".into()).is_err());
-        assert!(apps.open_with("ext:pdf".into(), " ".into()).is_err());
-        assert!(apps.handlers.is_empty());
-        apps.open_with("ext:pdf".into(), "so.tilo.pdf".into())
-            .unwrap();
-        assert_eq!(
-            apps.handlers.get("ext:pdf").map(String::as_str),
-            Some("so.tilo.pdf")
-        );
     }
 }

@@ -1,11 +1,15 @@
 //! Identifiers of the desktop model and the salted id space they share.
 //!
-//! Workspace, strip, window-group and tab ids are all `u64`s from one space:
-//! the low 48 bits are a per-minter counter, the high 16 a peer salt, so two
-//! peers minting in parallel never collide once their changes merge. Minting
-//! is a value ([`IdMinter`]) the host owns; this crate holds no global state.
+//! Strip, window-group and tab ids are `u64`s from one space: the low 48 bits
+//! are a per-minter counter, the high 16 a peer salt, so two peers minting in
+//! parallel never collide once their changes merge. Minting is a value
+//! ([`IdMinter`]) the host owns; this crate holds no global state.
+//!
+//! A workspace's own id is [`WorkspaceId`], the UUID from `collab-types`.
 
 use serde::{Deserialize, Serialize};
+
+pub use collab_types::WorkspaceId;
 
 /// A workspace's slot on this desk: its local handle, newtype-wrapped over a
 /// salted `u64` minted by an [`IdMinter`]. Logs call it a slot. Stored under
@@ -23,11 +27,8 @@ impl WorkspaceSlot {
     }
 
     /// The slot a workspace with `identity` takes on a desk that has never
-    /// held it: derived from the workspace's transport shard, which Activity,
-    /// the relay and custody already derive from the identity
-    /// (`tilo_workspace_join::room_workspace_id`, pinned to the same value by
-    /// the shell's tests). A new workspace takes it; one stored before keeps
-    /// the slot it has.
+    /// held it: derived from its id, the value every host derives the same.
+    /// A new workspace takes it; one stored before keeps the slot it has.
     #[must_use]
     pub fn of_workspace(identity: WorkspaceId) -> Self {
         // Encoded on the stack, as the transport derivation does.
@@ -44,57 +45,6 @@ impl WorkspaceSlot {
         first8.copy_from_slice(&hash[..8]);
         let id = u64::from_le_bytes(first8);
         Self(if id == 0 { 1 } else { id })
-    }
-}
-
-/// Durable, globally-unique identity of a collaboration workspace. Unlike
-/// [`WorkspaceSlot`] (a local counter) it is minted once as a random v4 uuid and
-/// carried rather than recomputed, so machines that have never met still agree
-/// on it. [`Self::nil`] is the unminted sentinel.
-#[derive(
-    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-#[serde(transparent)]
-pub struct WorkspaceId(uuid::Uuid);
-
-impl WorkspaceId {
-    /// Mint a fresh workspace identity, once per workspace at creation.
-    pub fn new() -> Self {
-        Self(uuid::Uuid::new_v4())
-    }
-
-    /// The "no identity yet" sentinel. Distinguishable from every
-    /// minted id because `Uuid::new_v4` never produces the nil uuid.
-    pub const fn nil() -> Self {
-        Self(uuid::Uuid::nil())
-    }
-
-    /// Whether this is the unminted sentinel.
-    pub fn is_nil(&self) -> bool {
-        self.0.is_nil()
-    }
-
-    /// The underlying uuid, for the wire formats that speak `Uuid`.
-    pub fn as_uuid(&self) -> uuid::Uuid {
-        self.0
-    }
-
-    /// Parse a workspace id off the wire (invite token, automerge doc,
-    /// `TILO_WORKSPACE_ID`). `None` on anything that isn't a valid uuid.
-    pub fn parse(s: &str) -> Option<Self> {
-        uuid::Uuid::parse_str(s).ok().map(Self)
-    }
-}
-
-impl std::fmt::Display for WorkspaceId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<uuid::Uuid> for WorkspaceId {
-    fn from(v: uuid::Uuid) -> Self {
-        Self(v)
     }
 }
 
@@ -319,9 +269,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_workspaces_id_is_its_transport_shard() {
-        // The same literal `tilo_workspace_join::room_workspace_id` is pinned
-        // to: every device and the relay derive the same id for a workspace.
+    fn a_workspaces_slot_is_derived_from_its_id() {
         let identity = WorkspaceId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
         assert_eq!(
             WorkspaceSlot::of_workspace(identity).raw(),

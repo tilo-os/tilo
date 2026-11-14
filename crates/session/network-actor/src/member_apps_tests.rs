@@ -15,12 +15,12 @@ use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId as Workspace;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Owning};
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
-use tilo_peer_state::join::{MemberRole, TransportHint, encode_invitation_text};
+use tilo_peer_state::join::{Role, TransportHint, encode_invitation_text};
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_peer_state::join_transport::LocalJoinService;
 use tilo_peer_state::owner::{NativeWorkspaceOwner, OwnerJoinWorkspaces, enroll};
@@ -76,14 +76,14 @@ fn hint(
     certificate: &DeviceCert,
     key: &SigningKey,
 ) -> TransportHint {
-    IrohWorkspaceHostHintV1 {
+    WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        workspace_id: crate::workspace_topic_id(workspace),
-        room: workspace.to_string(),
+        holds_keys: true,
+        runs_work: false,
+        workspace_id: workspace,
         endpoint_addr: addr(endpoint),
-        host_user_public_key: certificate.user_public_key,
-        host_device_certificate: certificate.clone(),
+        user_public_key: certificate.user_public_key,
+        device_certificate: certificate.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(key)
@@ -111,7 +111,7 @@ async fn invitation(
             administrator,
             &IssueInvitationRequest {
                 request_id,
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: None,
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
@@ -144,14 +144,14 @@ async fn joins(
             key.verifying_key().to_bytes(),
         ),
         identity,
-        crate::workspace_topic_id(workspace),
+        workspace,
         None,
         invitation,
         owner.clone(),
     )
     .await
     .expect("the workspace's device admits this one");
-    assert_eq!(enrollment.bootstrap().room, workspace.to_string());
+    assert_eq!(enrollment.bootstrap().workspace_id, workspace);
     owner
         .install(&enrollment, SystemTime::now())
         .expect("the join installs here");
@@ -296,10 +296,7 @@ async fn event(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let hosting = DeviceCapabilities {
-        can_act_as_host: true,
-        ..DeviceCapabilities::primary()
-    };
+    let hosting = DeviceCapabilities::primary();
     let (host_key, host_cert) = device_with(&root, 2, hosting.clone());
     let (far_key, far_cert) = device_with(&root, 3, hosting);
     let (guest_key, guest_cert) = device_with(&root, 4, DeviceCapabilities::member());
@@ -440,7 +437,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
         .expect("the actor is running");
     for workspace in [here, elsewhere] {
         cmd.send(NetCmd::JoinWorkspace {
-            ws: crate::workspace_topic_id(workspace),
+            ws: workspace,
             on_event: on_event.clone(),
         })
         .await
@@ -457,14 +454,14 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     event(
         &mut events,
         "this device links the workspace of its separate host",
-        |event| matches!(event, NetEvent::HostReady { ws, .. } if *ws == crate::workspace_topic_id(elsewhere)),
+        |event| matches!(event, NetEvent::HostReady { ws, .. } if *ws == elsewhere),
     )
     .await;
     // The workspace this device hosts itself has no link: nothing of it pairs
     // with a host elsewhere.
     let opened = tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(event) = events.recv().await {
-            if matches!(event, NetEvent::HostReady { ws, .. } if ws == crate::workspace_topic_id(here)) {
+            if matches!(event, NetEvent::HostReady { ws, .. } if ws == here) {
                 panic!("the workspace this device hosts is never dialled");
             }
         }

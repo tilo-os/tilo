@@ -12,6 +12,7 @@ use tilo_session_core::remote::Heard;
 
 use crate::engine::Engine;
 use crate::plane::{Closed, Cmd, Event, Outbox};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Failures kept at once; the oldest goes first.
 const MAX_FAILURES: usize = 16;
@@ -110,7 +111,7 @@ pub struct PeerStatus {
     /// Last envelope from the host (ms since the epoch).
     pub last_contact_at_ms: Option<u64>,
     /// Joined workspaces and whether the host answered `Ready`.
-    pub workspaces: BTreeMap<u64, bool>,
+    pub workspaces: BTreeMap<WorkspaceId, bool>,
     /// Each record's local store state, as reported with [`Link::set_local_state`].
     pub local: BTreeMap<DocumentRoute, LocalState>,
     /// Current failures, newest last.
@@ -132,6 +133,9 @@ pub struct PeerStatus {
     /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
     /// person from it, so someone the live plane never certified to this page is still theirs.
     pub room_devices: BTreeMap<String, BTreeMap<String, String>>,
+    /// When each of a joined workspace's people was admitted, by workspace, by person id: the
+    /// order people who share a name are numbered in, as the workspace's roster numbers them.
+    pub room_joined: BTreeMap<String, BTreeMap<String, u64>>,
     /// What the host answered the entry this session asked for
     /// (its door entry), once it did.
     pub entry: Option<Entry>,
@@ -156,6 +160,7 @@ impl PeerStatus {
             channels: String::new(),
             room_members: BTreeMap::new(),
             room_devices: BTreeMap::new(),
+            room_joined: BTreeMap::new(),
             entry: None,
         }
     }
@@ -169,11 +174,11 @@ pub enum Entry {
         /// The workspace's UUID.
         workspace: String,
         /// Its relay workspace.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Its name.
         name: String,
         /// What the person may do there.
-        role: tilo_relay_protocol::workspaces::WorkspaceRole,
+        role: tilo_relay_protocol::workspaces::Role,
     },
     /// The door or the workspace did not let it in: the door's `code`
     /// (`banned`, `removed`, `invitation-only`, `full`, `refused`), or
@@ -209,6 +214,10 @@ impl PeerStatus {
 }
 
 type Queue = Arc<Mutex<VecDeque<Event>>>;
+/// Which events a consumer's queue takes: a consumer is handed only the events it reads, so a
+/// session that hears a busy workspace (its members' presence, many times a second) keeps none
+/// of them for a consumer that would throw them away.
+pub type Takes = fn(&Event) -> bool;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// What a session reports to everyone holding its [`Link`]: its status, the events it heard, and
@@ -217,7 +226,7 @@ pub struct Reports(Mutex<Reported>);
 
 struct Reported {
     status: PeerStatus,
-    queues: Vec<Weak<Mutex<VecDeque<Event>>>>,
+    queues: Vec<(Weak<Mutex<VecDeque<Event>>>, Takes)>,
     wakes: Vec<Wake>,
     /// Wakes that last as long as their consumer's event queue (an asker's), dropped
     /// with it.
@@ -289,11 +298,13 @@ impl Reports {
     pub fn emit(&self, event: &Event) {
         let wakes = {
             let mut reported = self.lock();
-            reported.queues.retain(|queue| {
+            reported.queues.retain(|(queue, takes)| {
                 let Some(queue) = queue.upgrade() else {
                     return false;
                 };
-                queue.lock_recover().push_back(event.clone());
+                if takes(event) {
+                    queue.lock_recover().push_back(event.clone());
+                }
                 true
             });
             reported.wakes_now()
@@ -332,16 +343,17 @@ impl Reports {
             .push((Arc::downgrade(&events.0), wake));
     }
 
-    /// A new, independent event queue.
-    fn events(&self) -> Events {
+    /// A new, independent queue of the events `takes` takes.
+    fn events(&self, takes: Takes) -> Events {
         let queue: Queue = Arc::new(Mutex::new(VecDeque::new()));
-        self.lock().queues.push(Arc::downgrade(&queue));
+        self.lock().queues.push((Arc::downgrade(&queue), takes));
         Events(queue)
     }
 }
 
-/// One consumer's view of the session's events: every event produced after it was created,
-/// independent of other consumers.
+/// One consumer's view of the session's events: every event it takes produced after it was
+/// created, independent of other consumers. It holds what it took until drained, so a consumer
+/// drains it as long as it holds it, and drops it once it stops reading.
 pub struct Events(Queue);
 
 impl Events {
@@ -362,8 +374,6 @@ pub struct Link {
     /// This device's replicas of its workspaces, and what reads their records.
     engine: Arc<Engine>,
     reports: Arc<Reports>,
-    /// This link's own event queue, which [`Self::drain`] reads.
-    events: Arc<Events>,
 }
 
 impl Link {
@@ -374,12 +384,10 @@ impl Link {
         engine: Arc<Engine>,
         reports: Arc<Reports>,
     ) -> Self {
-        let events = Arc::new(reports.events());
         Self {
             outbox,
             engine,
             reports,
-            events,
         }
     }
 
@@ -546,17 +554,17 @@ impl Link {
             .unwrap_or_default()
     }
 
-    /// Take every event produced since the last call on this link's own queue, which its clones
-    /// share. Other consumers use [`Self::events`].
-    #[must_use]
-    pub fn drain(&self) -> Vec<Event> {
-        self.events.drain()
-    }
-
-    /// A new, independent event queue.
+    /// A new, independent queue of every event the session produces from now on. A link keeps
+    /// no queue of its own: what nobody reads is not kept.
     #[must_use]
     pub fn events(&self) -> Events {
-        self.reports.events()
+        self.reports.events(|_| true)
+    }
+
+    /// A new, independent queue of the events `takes` takes, from now on.
+    #[must_use]
+    pub fn events_where(&self, takes: Takes) -> Events {
+        self.reports.events(takes)
     }
 
     /// Call `wake` whenever status or events change.
@@ -577,11 +585,7 @@ impl Outbox for Link {
         if let Cmd::InstallChannelKeys(route, keys) = &command
             && let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
         {
-            self.engine.hand_keys(
-                workspace,
-                collab_types::ChannelRoute::new(&route.app_id, &route.record),
-                keys.clone(),
-            );
+            self.engine.hand_keys(workspace, keys.clone());
         }
         // Held before the session, which reads held writes under this lock, can look: read from
         // now on, and said to the session as the route alone.
@@ -604,7 +608,7 @@ impl From<&Link> for Arc<dyn tilo_session_core::remote::RemoteSession> {
         Arc::new(Asking {
             outbox: Arc::clone(&link.outbox),
             reports: Arc::clone(&link.reports),
-            events: link.events(),
+            events: link.events_where(|event| matches!(event, Event::Remote(_))),
         })
     }
 }
@@ -619,7 +623,7 @@ struct Asking {
 impl tilo_session_core::remote::RemoteSession for Asking {
     fn send_remote_action(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
         frame: Vec<u8>,
     ) -> Result<(), String> {

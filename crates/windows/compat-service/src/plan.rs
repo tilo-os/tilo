@@ -2046,69 +2046,73 @@ mod payload_tests {
         .unwrap()
     }
 
-    #[test]
-    fn a_device_without_windows_support_gets_an_install_instruction_not_a_failed_bind() {
-        for host in ["x86_64", "aarch64"] {
-            let error = require_payload(&proton(host), |_| false).unwrap_err();
-            assert!(
-                matches!(error, PlanError::WindowsSupportNotInstalled),
-                "{host}"
-            );
-            let message = error.to_string();
-            assert!(message.contains("not installed"), "{message}");
-            assert!(
-                message.contains("tilo-extension@install:windows-compat.service"),
-                "the message names the action: {message}"
-            );
-            assert!(message.contains("Nothing was started"), "{message}");
+    tilo_test_env::scenario! {
+        fn the_windows_payload_is_required_before_a_plan_binds_it;
+
+        phase a_device_without_windows_support_gets_an_install_instruction_not_a_failed_bind;
+        {
+            for host in ["x86_64", "aarch64"] {
+                let error = require_payload(&proton(host), |_| false).unwrap_err();
+                assert!(
+                    matches!(error, PlanError::WindowsSupportNotInstalled),
+                    "{host}"
+                );
+                let message = error.to_string();
+                assert!(message.contains("not installed"), "{message}");
+                assert!(
+                    message.contains("tilo-extension@install:windows-compat.service"),
+                    "the message names the action: {message}"
+                );
+                assert!(message.contains("Nothing was started"), "{message}");
+            }
         }
-    }
 
-    #[test]
-    fn a_merged_payload_plans_normally() {
-        assert!(require_payload(&proton("x86_64"), |_| true).is_ok());
-        assert!(require_payload(&proton("aarch64"), |_| true).is_ok());
-    }
-
-    #[test]
-    fn only_payload_paths_are_probed_not_the_base_the_image_always_has() {
-        let probed = std::cell::RefCell::new(Vec::new());
-        let _ = require_payload(&proton("aarch64"), |path| {
-            probed.borrow_mut().push(path.to_path_buf());
-            true
-        });
-        let probed = probed.into_inner();
-        assert!(!probed.is_empty());
-        assert!(
-            probed
-                .iter()
-                .all(|path| { PAYLOAD_PATHS.iter().any(|prefix| path.starts_with(prefix)) })
-        );
-        assert!(probed.contains(&PathBuf::from(PROTON_HOST)));
-        assert!(!probed.contains(&PathBuf::from("/usr/bin/bwrap")));
-    }
-
-    #[test]
-    fn production_registry_requires_the_payload_and_test_registry_does_not() {
-        assert!(SystemRuntimeRegistry::new().require_payload);
-        assert!(!SystemRuntimeRegistry::assuming_provider().require_payload);
-    }
-
-    #[test]
-    fn the_payload_paths_are_exactly_what_the_sysext_stage_packs() {
-        let containerfile = include_str!("../../../../os/Containerfile");
-        for packed in [
-            "/tree/usr/lib/tilo/windows-runners/proton/",
-            "/tree/usr/lib/tilo/windows-runners/steam-runtime/",
-            "/payload/usr/lib/tilo/windows-runners",
-        ] {
-            assert!(containerfile.contains(packed), "{packed}");
+        phase a_merged_payload_plans_normally;
+        {
+            assert!(require_payload(&proton("x86_64"), |_| true).is_ok());
+            assert!(require_payload(&proton("aarch64"), |_| true).is_ok());
         }
-        for host in [PROTON_HOST, STEAM_RUNTIME_HOST, X86_ROOTFS_HOST] {
+
+        phase only_payload_paths_are_probed_not_the_base_the_image_always_has;
+        {
+            let probed = std::cell::RefCell::new(Vec::new());
+            let _ = require_payload(&proton("aarch64"), |path| {
+                probed.borrow_mut().push(path.to_path_buf());
+                true
+            });
+            let probed = probed.into_inner();
+            assert!(!probed.is_empty());
             assert!(
-                PAYLOAD_PATHS.iter().any(|prefix| host.starts_with(prefix)),
-                "{host}"
+                probed
+                    .iter()
+                    .all(|path| { PAYLOAD_PATHS.iter().any(|prefix| path.starts_with(prefix)) })
             );
+            assert!(probed.contains(&PathBuf::from(PROTON_HOST)));
+            assert!(!probed.contains(&PathBuf::from("/usr/bin/bwrap")));
+        }
+
+        phase production_registry_requires_the_payload_and_test_registry_does_not;
+        {
+            assert!(SystemRuntimeRegistry::new().require_payload);
+            assert!(!SystemRuntimeRegistry::assuming_provider().require_payload);
+        }
+
+        phase the_payload_paths_are_exactly_what_the_sysext_stage_packs;
+        {
+            let containerfile = include_str!("../../../../os/Containerfile");
+            for packed in [
+                "/tree/usr/lib/tilo/windows-runners/proton/",
+                "/tree/usr/lib/tilo/windows-runners/steam-runtime/",
+                "/payload/usr/lib/tilo/windows-runners",
+            ] {
+                assert!(containerfile.contains(packed), "{packed}");
+            }
+            for host in [PROTON_HOST, STEAM_RUNTIME_HOST, X86_ROOTFS_HOST] {
+                assert!(
+                    PAYLOAD_PATHS.iter().any(|prefix| host.starts_with(prefix)),
+                    "{host}"
+                );
+            }
         }
     }
 }

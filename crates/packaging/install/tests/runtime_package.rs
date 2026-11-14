@@ -277,87 +277,225 @@ fn registry(blobs: HashMap<String, Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>
     (served.url(), requested, served)
 }
 
-#[test]
-fn runtime_install_reuses_verified_local_blobs() {
-    let env = Env::new();
-    let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
-    env.trust(&[&runtime_key]);
-    let (one, one_bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
-    let package = env.runtime_tapp("one", &one_bundle, &format!("tilo-runtime/{one}"));
-    let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(ok, "{out}");
-    let (two, two_bundle) = env.bundle("two", b"toolkit build two", &runtime_identity);
-    let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
-    let shared = tilo_app_package::BlobHash::of(b"loader").to_hex();
-    assert!(blobs.contains_key(&shared), "both builds carry the loader");
-    let (url, requested, _served) = registry(blobs);
+tilo_test_env::scenario! {
+    fn runtime_packages_install_verified;
 
-    let (ok, out) = env.cmd(&[
-        "install",
-        thin.to_str().unwrap(),
-        "--allow-self-signed",
-        // A second build is a replacement: the catalogue holds one verified record per package id.
-        "--force",
-        "--payload-from",
-        &url,
-    ]);
-    assert!(ok, "{out}");
-    assert!(out.contains("already on this device"), "{out}");
-    let requested = requested.lock().unwrap().clone();
-    assert!(!requested.is_empty(), "the new toolkit is fetched");
-    assert!(
-        !requested.iter().any(|path| path.contains(&shared)),
-        "the shared loader was fetched again: {requested:?}"
-    );
-    let installed = env.installed_bundle(&two);
-    runtime_bundle::verify_bundle(&installed).expect("the reused bundle verifies");
-    assert_eq!(
-        std::fs::read(installed.join("lib/libruntime_dylib.so")).unwrap(),
-        b"toolkit build two"
-    );
-}
+    phase runtime_install_reuses_verified_local_blobs;
+    {
+        let env = Env::new();
+        let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
+        env.trust(&[&runtime_key]);
+        let (one, one_bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
+        let package = env.runtime_tapp("one", &one_bundle, &format!("tilo-runtime/{one}"));
+        let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(ok, "{out}");
+        let (two, two_bundle) = env.bundle("two", b"toolkit build two", &runtime_identity);
+        let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
+        let shared = tilo_app_package::BlobHash::of(b"loader").to_hex();
+        assert!(blobs.contains_key(&shared), "both builds carry the loader");
+        let (url, requested, _served) = registry(blobs);
 
-#[test]
-fn runtime_install_refuses_a_local_file_whose_hash_differs() {
-    let env = Env::new();
-    let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
-    env.trust(&[&runtime_key]);
-    let (one, one_bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
-    let package = env.runtime_tapp("one", &one_bundle, &format!("tilo-runtime/{one}"));
-    let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(ok, "{out}");
-    // The installed loader no longer holds the bytes its manifest lists: a sealed runtime cannot be
-    // written, but its directory can, so the loader is replaced.
-    let shared = tilo_app_package::BlobHash::of(b"loader").to_hex();
-    let loader = bundle_path_of(&env.installed_bundle(&one), &shared);
-    let loader_path = env.installed_bundle(&one).join(&loader);
-    std::fs::remove_file(&loader_path).unwrap();
-    std::fs::write(&loader_path, b"loadeR").unwrap();
-    let (two, two_bundle) = env.bundle("two", b"toolkit build two", &runtime_identity);
-    let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
-    let (url, requested, _served) = registry(blobs);
-    let (ok, out) = env.cmd(&[
-        "install",
-        thin.to_str().unwrap(),
-        "--allow-self-signed",
-        // A second build of the one runtime package is a replacement: the
-        // catalogue holds one verified record per package id.
-        "--force",
-        "--payload-from",
-        &url,
-    ]);
-    assert!(ok, "{out}");
-    assert!(
-        requested
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|path| path.contains(&shared)),
-        "the altered local copy must not stand in for the signed loader"
-    );
-    let installed = env.installed_bundle(&two);
-    runtime_bundle::verify_bundle(&installed).expect("the installed bundle verifies");
-    assert_eq!(std::fs::read(installed.join(loader)).unwrap(), b"loader");
+        let (ok, out) = env.cmd(&[
+            "install",
+            thin.to_str().unwrap(),
+            "--allow-self-signed",
+            // A second build is a replacement: the catalogue holds one verified record per package id.
+            "--force",
+            "--payload-from",
+            &url,
+        ]);
+        assert!(ok, "{out}");
+        assert!(out.contains("already on this device"), "{out}");
+        let requested = requested.lock().unwrap().clone();
+        assert!(!requested.is_empty(), "the new toolkit is fetched");
+        assert!(
+            !requested.iter().any(|path| path.contains(&shared)),
+            "the shared loader was fetched again: {requested:?}"
+        );
+        let installed = env.installed_bundle(&two);
+        runtime_bundle::verify_bundle(&installed).expect("the reused bundle verifies");
+        assert_eq!(
+            std::fs::read(installed.join("lib/libruntime_dylib.so")).unwrap(),
+            b"toolkit build two"
+        );
+    }
+
+    phase runtime_install_refuses_a_local_file_whose_hash_differs;
+    {
+        let env = Env::new();
+        let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
+        env.trust(&[&runtime_key]);
+        let (one, one_bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
+        let package = env.runtime_tapp("one", &one_bundle, &format!("tilo-runtime/{one}"));
+        let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(ok, "{out}");
+        // The installed loader no longer holds the bytes its manifest lists: a sealed runtime cannot be
+        // written, but its directory can, so the loader is replaced.
+        let shared = tilo_app_package::BlobHash::of(b"loader").to_hex();
+        let loader = bundle_path_of(&env.installed_bundle(&one), &shared);
+        let loader_path = env.installed_bundle(&one).join(&loader);
+        std::fs::remove_file(&loader_path).unwrap();
+        std::fs::write(&loader_path, b"loadeR").unwrap();
+        let (two, two_bundle) = env.bundle("two", b"toolkit build two", &runtime_identity);
+        let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
+        let (url, requested, _served) = registry(blobs);
+        let (ok, out) = env.cmd(&[
+            "install",
+            thin.to_str().unwrap(),
+            "--allow-self-signed",
+            // A second build of the one runtime package is a replacement: the
+            // catalogue holds one verified record per package id.
+            "--force",
+            "--payload-from",
+            &url,
+        ]);
+        assert!(ok, "{out}");
+        assert!(
+            requested
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|path| path.contains(&shared)),
+            "the altered local copy must not stand in for the signed loader"
+        );
+        let installed = env.installed_bundle(&two);
+        runtime_bundle::verify_bundle(&installed).expect("the installed bundle verifies");
+        assert_eq!(std::fs::read(installed.join(loader)).unwrap(), b"loader");
+    }
+
+    phase an_app_installs_only_beside_the_runtime_build_it_links;
+    {
+        let env = Env::new();
+        let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
+        env.trust(&[&runtime_key]);
+        let (version, bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
+        let runtime = format!("tilo-runtime/{version}");
+
+        let app = env.app_tapp(&runtime);
+        let (ok, out) = env.cmd(&["install", app.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(!ok, "{out}");
+        assert!(out.contains(&format!("needs runtime `{runtime}`")), "{out}");
+        assert!(out.contains("app install so.tilo.linked"), "{out}");
+
+        let package = env.runtime_tapp("one", &bundle, &runtime);
+        let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(ok, "{out}");
+        let installed = env.installed_bundle(&version);
+        let verified = runtime_bundle::verify_bundle(&installed).expect("installed bundle verifies");
+        assert_eq!(verified.version, version);
+        assert_eq!(
+            std::fs::read(installed.join("lib/libruntime_dylib.so")).unwrap(),
+            b"toolkit build one"
+        );
+        // Installing it again is a no-op: the store asks for a runtime only when it is missing, but a
+        // race must not break an install.
+        let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(ok && out.contains("already installed"), "{out}");
+
+        let (ok, out) = env.cmd(&["install", app.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(ok, "{out}");
+
+        let (_, other_identity) = identity_file(&env, "other-publisher");
+        let (other_version, other_bundle) = env.bundle("two", b"toolkit build two", &other_identity);
+        let other = env.runtime_tapp(
+            "two",
+            &other_bundle,
+            &format!("tilo-runtime/{other_version}"),
+        );
+        let (ok, out) = env.cmd(&["install", other.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(!ok, "{out}");
+        assert!(out.contains("does not trust"), "{out}");
+        assert!(!env.installed_bundle(&other_version).exists());
+
+        let forged = format!(
+            "tilo-runtime/2026.07+native.{}",
+            "0".repeat(runtime_bundle::ABI_DIGEST_HEX_LEN)
+        );
+        let lying = env.runtime_tapp("lying", &bundle, &forged);
+        let (ok, out) = env.cmd(&["install", lying.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(!ok, "{out}");
+        assert!(out.contains("provides"), "{out}");
+        let (_, forged_version) = forged.split_once('/').unwrap();
+        assert!(!env.installed_bundle(forged_version).exists());
+    }
+
+    phase app_host_unit_covers_the_canonical_signed_runtime_destination;
+    {
+        let env = Env::new();
+        let (runtime_key, runtime_identity) = identity_file(&env, "host-runtime-publisher");
+        env.trust(&[&runtime_key]);
+        let (version, bundle) = env.bundle("host", b"canonical runtime payload", &runtime_identity);
+        let package = env.runtime_tapp("host", &bundle, &format!("tilo-runtime/{version}"));
+        let output = Command::new(tilo_test_env::package_binary!("tilo-install"))
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", env.home.path())
+            .env("XDG_CONFIG_HOME", env.path("config"))
+            .env(
+                "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+                env.path("trusted-runtime-publishers.txt"),
+            )
+            .args([
+                "install",
+                package.to_str().unwrap(),
+                "--require-publisher",
+                &hex_key(&env.publisher),
+            ])
+            .output_locked()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let root = env.path(".local/share/tilo-runtime");
+        let installed = root.join(&version);
+        assert!(String::from_utf8_lossy(&output.stdout).contains(installed.to_str().unwrap()));
+        let verified = runtime_bundle::verify_bundle_with(
+            &installed,
+            &runtime_bundle::VerifyOptions {
+                require_publisher: Some(runtime_key),
+                require_signature: true,
+                require_arch: Some(runtime_bundle::host_arch().to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(verified.version, version);
+        assert_eq!(
+            std::fs::read(installed.join("lib/libruntime_dylib.so")).unwrap(),
+            b"canonical runtime payload"
+        );
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".install-")
+        }));
+
+        let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
+        let shipped = include_str!("../../../../os/usr/lib/systemd/user/tilo-app-host.service");
+        assert_eq!(unit, shipped, "maintained and shipped host units differ");
+        let paths = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ReadWritePaths="))
+            .unwrap();
+        let granted = paths
+            .split_whitespace()
+            .map(|path| path.replace("%h", env.home.path().to_str().unwrap()))
+            .any(|path| path == root.display().to_string());
+        assert!(
+            granted,
+            "actual canonical installer destination is read-only in AppHost"
+        );
+        assert!(
+            !paths
+                .split_whitespace()
+                .any(|path| matches!(path, "%h" | "%h/.local/share" | "/usr"))
+        );
+        assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
+        assert!(unit.lines().any(|line| line == "ProtectSystem=strict"));
+    }
 }
 
 /// A temporary directory on a filesystem with fs-verity: `TILO_FSVERITY_DIR`, else the target's.
@@ -437,259 +575,128 @@ fn identity_file(env: &Env, name: &str) -> (String, PathBuf) {
     (identity.public_key_hex(), path)
 }
 
-#[test]
-fn an_app_installs_only_beside_the_runtime_build_it_links() {
-    let env = Env::new();
-    let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
-    env.trust(&[&runtime_key]);
-    let (version, bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
-    let runtime = format!("tilo-runtime/{version}");
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn runtime_installs_preserve_permissions;
 
-    let app = env.app_tapp(&runtime);
-    let (ok, out) = env.cmd(&["install", app.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(!ok, "{out}");
-    assert!(out.contains(&format!("needs runtime `{runtime}`")), "{out}");
-    assert!(out.contains("app install so.tilo.linked"), "{out}");
-
-    let package = env.runtime_tapp("one", &bundle, &runtime);
-    let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(ok, "{out}");
-    let installed = env.installed_bundle(&version);
-    let verified = runtime_bundle::verify_bundle(&installed).expect("installed bundle verifies");
-    assert_eq!(verified.version, version);
-    assert_eq!(
-        std::fs::read(installed.join("lib/libruntime_dylib.so")).unwrap(),
-        b"toolkit build one"
-    );
-    // Installing it again is a no-op: the store asks for a runtime only when it is missing, but a
-    // race must not break an install.
-    let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(ok && out.contains("already installed"), "{out}");
-
-    let (ok, out) = env.cmd(&["install", app.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(ok, "{out}");
-
-    let (_, other_identity) = identity_file(&env, "other-publisher");
-    let (other_version, other_bundle) = env.bundle("two", b"toolkit build two", &other_identity);
-    let other = env.runtime_tapp(
-        "two",
-        &other_bundle,
-        &format!("tilo-runtime/{other_version}"),
-    );
-    let (ok, out) = env.cmd(&["install", other.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(!ok, "{out}");
-    assert!(out.contains("does not trust"), "{out}");
-    assert!(!env.installed_bundle(&other_version).exists());
-
-    let forged = format!(
-        "tilo-runtime/2026.07+native.{}",
-        "0".repeat(runtime_bundle::ABI_DIGEST_HEX_LEN)
-    );
-    let lying = env.runtime_tapp("lying", &bundle, &forged);
-    let (ok, out) = env.cmd(&["install", lying.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(!ok, "{out}");
-    assert!(out.contains("provides"), "{out}");
-    let (_, forged_version) = forged.split_once('/').unwrap();
-    assert!(!env.installed_bundle(forged_version).exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn signed_engine_runtime_preserves_executable_permissions_on_install() {
-    use std::os::unix::fs::PermissionsExt;
-    let env = Env::new();
-    let (runtime_key, runtime_identity) = identity_file(&env, "engine-publisher");
-    env.trust(&[&runtime_key]);
-    let host = env.path("engine-host-root");
-    let loader = runtime_bundle::host_minimal_paths_for(runtime_bundle::host_arch()).unwrap()[0]
-        .trim_start_matches('/');
-    std::fs::create_dir_all(host.join(loader).parent().unwrap()).unwrap();
-    std::fs::write(host.join(loader), b"loader fixture").unwrap();
-    let engine = env.path("chromium");
-    std::fs::create_dir_all(&engine).unwrap();
-    let executable = engine.join("tilo-chromium-host");
-    std::fs::write(&executable, b"#!/bin/sh\nprintf 'engine started\\n'\n").unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::write(engine.join("resources.pak"), b"engine resource").unwrap();
-    let bundle = env.path("signed-engine-bundle");
-    let version = "2026.10.2-engine-test";
-    runtime_bundle::build_bundle_with(
-        &bundle,
-        version,
-        &runtime_bundle::BuildOptions {
-            from: Some(&host),
-            arch: Some(runtime_bundle::host_arch()),
-            identity: Some(&runtime_identity),
-            extra_libs: &[engine],
-            extra_bins: &[],
-        },
-    )
-    .unwrap();
-    let tapp = env.runtime_tapp_with_host(
-        "engine",
-        &bundle,
-        &format!("tilo-runtime/{version}"),
-        Some("lib/chromium/tilo-chromium-host"),
-    );
-    let (ok, output) = env.cmd(&[
-        "install",
-        tapp.to_str().unwrap(),
-        "--require-publisher",
-        &hex_key(&env.publisher),
-    ]);
-    assert!(ok, "{output}");
-    let installed = env.installed_bundle(version);
-    runtime_bundle::verify_bundle_with(
-        &installed,
-        &runtime_bundle::VerifyOptions {
-            require_publisher: Some(runtime_key),
-            require_signature: true,
-            require_arch: Some(runtime_bundle::host_arch().to_string()),
-        },
-    )
-    .unwrap();
-    let host = installed.join("lib/chromium/tilo-chromium-host");
-    assert_ne!(
-        std::fs::metadata(&host).unwrap().permissions().mode() & 0o111,
-        0,
-        "signed engine executable lost its execute bits"
-    );
-    assert_eq!(
-        std::fs::metadata(installed.join("lib/chromium/resources.pak"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o111,
-        0,
-        "resource acquired execute bits"
-    );
-    let process = Command::new(host)
-        .output_locked()
-        .expect("installed signed engine must execute");
-    assert!(process.status.success());
-    assert_eq!(process.stdout, b"engine started\n");
-}
-
-#[test]
-fn app_host_unit_covers_the_canonical_signed_runtime_destination() {
-    let env = Env::new();
-    let (runtime_key, runtime_identity) = identity_file(&env, "host-runtime-publisher");
-    env.trust(&[&runtime_key]);
-    let (version, bundle) = env.bundle("host", b"canonical runtime payload", &runtime_identity);
-    let package = env.runtime_tapp("host", &bundle, &format!("tilo-runtime/{version}"));
-    let output = Command::new(tilo_test_env::package_binary!("tilo-install"))
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", env.home.path())
-        .env("XDG_CONFIG_HOME", env.path("config"))
-        .env(
-            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
-            env.path("trusted-runtime-publishers.txt"),
+    phase signed_engine_runtime_preserves_executable_permissions_on_install;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let env = Env::new();
+        let (runtime_key, runtime_identity) = identity_file(&env, "engine-publisher");
+        env.trust(&[&runtime_key]);
+        let host = env.path("engine-host-root");
+        let loader = runtime_bundle::host_minimal_paths_for(runtime_bundle::host_arch()).unwrap()[0]
+            .trim_start_matches('/');
+        std::fs::create_dir_all(host.join(loader).parent().unwrap()).unwrap();
+        std::fs::write(host.join(loader), b"loader fixture").unwrap();
+        let engine = env.path("chromium");
+        std::fs::create_dir_all(&engine).unwrap();
+        let executable = engine.join("tilo-chromium-host");
+        std::fs::write(&executable, b"#!/bin/sh\nprintf 'engine started\\n'\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(engine.join("resources.pak"), b"engine resource").unwrap();
+        let bundle = env.path("signed-engine-bundle");
+        let version = "2026.10.2-engine-test";
+        runtime_bundle::build_bundle_with(
+            &bundle,
+            version,
+            &runtime_bundle::BuildOptions {
+                from: Some(&host),
+                arch: Some(runtime_bundle::host_arch()),
+                identity: Some(&runtime_identity),
+                extra_libs: &[engine],
+                extra_bins: &[],
+            },
         )
-        .args([
+        .unwrap();
+        let tapp = env.runtime_tapp_with_host(
+            "engine",
+            &bundle,
+            &format!("tilo-runtime/{version}"),
+            Some("lib/chromium/tilo-chromium-host"),
+        );
+        let (ok, output) = env.cmd(&[
             "install",
-            package.to_str().unwrap(),
+            tapp.to_str().unwrap(),
             "--require-publisher",
             &hex_key(&env.publisher),
-        ])
-        .output_locked()
+        ]);
+        assert!(ok, "{output}");
+        let installed = env.installed_bundle(version);
+        runtime_bundle::verify_bundle_with(
+            &installed,
+            &runtime_bundle::VerifyOptions {
+                require_publisher: Some(runtime_key),
+                require_signature: true,
+                require_arch: Some(runtime_bundle::host_arch().to_string()),
+            },
+        )
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let root = env.path(".local/share/tilo-runtime");
-    let installed = root.join(&version);
-    assert!(String::from_utf8_lossy(&output.stdout).contains(installed.to_str().unwrap()));
-    let verified = runtime_bundle::verify_bundle_with(
-        &installed,
-        &runtime_bundle::VerifyOptions {
-            require_publisher: Some(runtime_key),
-            require_signature: true,
-            require_arch: Some(runtime_bundle::host_arch().to_string()),
-        },
-    )
-    .unwrap();
-    assert_eq!(verified.version, version);
-    assert_eq!(
-        std::fs::read(installed.join("lib/libruntime_dylib.so")).unwrap(),
-        b"canonical runtime payload"
-    );
-    assert!(std::fs::read_dir(&root).unwrap().all(|entry| {
-        !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".install-")
-    }));
+        let host = installed.join("lib/chromium/tilo-chromium-host");
+        assert_ne!(
+            std::fs::metadata(&host).unwrap().permissions().mode() & 0o111,
+            0,
+            "signed engine executable lost its execute bits"
+        );
+        assert_eq!(
+            std::fs::metadata(installed.join("lib/chromium/resources.pak"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0,
+            "resource acquired execute bits"
+        );
+        let process = Command::new(host)
+            .output_locked()
+            .expect("installed signed engine must execute");
+        assert!(process.status.success());
+        assert_eq!(process.stdout, b"engine started\n");
+    }
 
-    let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
-    let shipped = include_str!("../../../../os/usr/lib/systemd/user/tilo-app-host.service");
-    assert_eq!(unit, shipped, "maintained and shipped host units differ");
-    let paths = unit
-        .lines()
-        .find_map(|line| line.strip_prefix("ReadWritePaths="))
-        .unwrap();
-    let granted = paths
-        .split_whitespace()
-        .map(|path| path.replace("%h", env.home.path().to_str().unwrap()))
-        .any(|path| path == root.display().to_string());
-    assert!(
-        granted,
-        "actual canonical installer destination is read-only in AppHost"
-    );
-    assert!(
-        !paths
+    phase host_runtime_directory_setup_preserves_existing_permissions;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let env = Env::new();
+        let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
+        let setup: Vec<_> = unit
+            .lines()
+            .filter_map(|line| line.strip_prefix("ExecStartPre=+"))
+            .filter(|line| line.ends_with(" %h/.local/share/tilo-runtime"))
+            .collect();
+        assert_eq!(setup.len(), 1);
+        let words: Vec<_> = setup[0]
             .split_whitespace()
-            .any(|path| matches!(path, "%h" | "%h/.local/share" | "/usr"))
-    );
-    assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
-    assert!(unit.lines().any(|line| line == "ProtectSystem=strict"));
-}
-
-#[cfg(unix)]
-#[test]
-fn host_runtime_directory_setup_preserves_existing_permissions() {
-    use std::os::unix::fs::PermissionsExt as _;
-    let env = Env::new();
-    let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
-    let setup: Vec<_> = unit
-        .lines()
-        .filter_map(|line| line.strip_prefix("ExecStartPre=+"))
-        .filter(|line| line.ends_with(" %h/.local/share/tilo-runtime"))
-        .collect();
-    assert_eq!(setup.len(), 1);
-    let words: Vec<_> = setup[0]
-        .split_whitespace()
-        .map(|word| word.replace("%h", env.home.path().to_str().unwrap()))
-        .collect();
-    assert_eq!(words[0], "/usr/bin/mkdir");
-    let prepare = || {
-        Command::new(&words[0])
-            .args(&words[1..])
-            .status_locked()
-            .unwrap()
-    };
-    let root = env.path(".local/share/tilo-runtime");
-    assert!(prepare().success());
-    assert_eq!(
-        std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let existing = root.join("retained-runtime");
-    std::fs::create_dir(&existing).unwrap();
-    std::fs::write(existing.join("payload"), b"retained runtime").unwrap();
-    assert!(prepare().success());
-    assert_eq!(
-        std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
-        0o755
-    );
-    assert_eq!(
-        std::fs::read(existing.join("payload")).unwrap(),
-        b"retained runtime"
-    );
+            .map(|word| word.replace("%h", env.home.path().to_str().unwrap()))
+            .collect();
+        assert_eq!(words[0], "/usr/bin/mkdir");
+        let prepare = || {
+            Command::new(&words[0])
+                .args(&words[1..])
+                .status_locked()
+                .unwrap()
+        };
+        let root = env.path(".local/share/tilo-runtime");
+        assert!(prepare().success());
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let existing = root.join("retained-runtime");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::write(existing.join("payload"), b"retained runtime").unwrap();
+        assert!(prepare().success());
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::read(existing.join("payload")).unwrap(),
+            b"retained runtime"
+        );
+    }
 }
 
 #[path = "gc.rs"]

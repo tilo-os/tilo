@@ -190,32 +190,36 @@ fn serve_web(start: &Path, options: &WebDevOptions, watch: bool, debounce: Durat
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_web_build_is_the_app_bundle() {
-        let request = app_bundle(true, false);
-        assert_eq!(request.target, Target::Web);
-        assert_eq!(request.bundle, WebBundle::App);
-        assert!(request.release);
-        assert!(!request.assertions);
-        // A qualification build asks for the asserting release profile; the
-        // request carries it rather than the bundle deciding for itself.
-        assert!(app_bundle(true, true).assertions);
-    }
+    tilo_test_env::scenario! {
+        fn a_web_build_asks_for_the_app_bundle_and_replaces_its_output;
 
-    #[test]
-    fn an_output_copy_replaces_what_was_there() {
-        let dir = tempfile::tempdir().unwrap();
-        let bundle = dir.path().join("bundle");
-        std::fs::create_dir_all(bundle.join("pkg")).unwrap();
-        std::fs::write(bundle.join("pkg/module.wasm"), "wasm").unwrap();
-        let output = dir.path().join("out");
-        std::fs::create_dir_all(&output).unwrap();
-        std::fs::write(output.join("stale.js"), "old").unwrap();
-        replace_tree(&bundle, &output).unwrap();
-        assert!(!output.join("stale.js").exists());
-        assert_eq!(
-            std::fs::read_to_string(output.join("pkg/module.wasm")).unwrap(),
-            "wasm"
-        );
+        phase the_web_build_is_the_app_bundle;
+        {
+            let request = app_bundle(true, false);
+            assert_eq!(request.target, Target::Web);
+            assert_eq!(request.bundle, WebBundle::App);
+            assert!(request.release);
+            assert!(!request.assertions);
+            // A qualification build asks for the asserting release profile; the
+            // request carries it rather than the bundle deciding for itself.
+            assert!(app_bundle(true, true).assertions);
+        }
+
+        phase an_output_copy_replaces_what_was_there;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bundle = dir.path().join("bundle");
+            std::fs::create_dir_all(bundle.join("pkg")).unwrap();
+            std::fs::write(bundle.join("pkg/module.wasm"), "wasm").unwrap();
+            let output = dir.path().join("out");
+            std::fs::create_dir_all(&output).unwrap();
+            std::fs::write(output.join("stale.js"), "old").unwrap();
+            replace_tree(&bundle, &output).unwrap();
+            assert!(!output.join("stale.js").exists());
+            assert_eq!(
+                std::fs::read_to_string(output.join("pkg/module.wasm")).unwrap(),
+                "wasm"
+            );
+        }
     }
 }

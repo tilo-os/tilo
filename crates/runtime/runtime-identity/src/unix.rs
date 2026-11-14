@@ -1821,140 +1821,144 @@ mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
-    #[test]
-    fn public_profile_edits_preserve_signer_and_provider_custody() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 31)).unwrap();
-        let signer = load_from_path(path.clone()).unwrap();
-        let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let signature = signer.sign(b"profile-edit-proof").unwrap();
-        let changed =
-            update_identity_profile(dir.path(), "personal", "  Ada  ", [9, 8, 7]).unwrap();
-        assert_eq!(changed.display_name, "Ada");
-        assert_eq!(changed.avatar_color, [9, 8, 7]);
-        assert_eq!(changed.group_public_key, signer.group_public_key());
-        let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        for field in [
-            "secret_ref",
-            "threshold_identity",
-            "created_at",
-            "schema_version",
-        ] {
-            assert_eq!(after[field], before[field], "profile edit changed {field}");
-        }
-        assert_eq!(
-            load_from_path(path.clone())
-                .unwrap()
-                .sign(b"profile-edit-proof")
-                .unwrap(),
-            signature
-        );
-        let accepted = fs::read(&path).unwrap();
-        for invalid in ["", "\n", "Ada\nOther"] {
-            assert!(update_identity_profile(dir.path(), "personal", invalid, [0; 3]).is_err());
+    tilo_test_env::scenario! {
+        fn public_profile_edits_keep_signer_and_custody;
+
+        phase public_profile_edits_preserve_signer_and_provider_custody;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 31)).unwrap();
+            let signer = load_from_path(path.clone()).unwrap();
+            let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let signature = signer.sign(b"profile-edit-proof").unwrap();
+            let changed =
+                update_identity_profile(dir.path(), "personal", "  Ada  ", [9, 8, 7]).unwrap();
+            assert_eq!(changed.display_name, "Ada");
+            assert_eq!(changed.avatar_color, [9, 8, 7]);
+            assert_eq!(changed.group_public_key, signer.group_public_key());
+            let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            for field in [
+                "secret_ref",
+                "threshold_identity",
+                "created_at",
+                "schema_version",
+            ] {
+                assert_eq!(after[field], before[field], "profile edit changed {field}");
+            }
+            assert_eq!(
+                load_from_path(path.clone())
+                    .unwrap()
+                    .sign(b"profile-edit-proof")
+                    .unwrap(),
+                signature
+            );
+            let accepted = fs::read(&path).unwrap();
+            for invalid in ["", "\n", "Ada\nOther"] {
+                assert!(update_identity_profile(dir.path(), "personal", invalid, [0; 3]).is_err());
+                assert_eq!(fs::read(&path).unwrap(), accepted);
+            }
+            assert!(update_identity_profile(dir.path(), "../personal", "Name", [0; 3]).is_err());
             assert_eq!(fs::read(&path).unwrap(), accepted);
         }
-        assert!(update_identity_profile(dir.path(), "../personal", "Name", [0; 3]).is_err());
-        assert_eq!(fs::read(&path).unwrap(), accepted);
-    }
 
-    #[test]
-    fn complete_presentation_publication_preserves_signer_and_refuses_invalid_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 37)).unwrap();
-        let signer = load_from_path(path.clone()).unwrap();
-        let proof = signer.sign(b"complete-presentation").unwrap();
-        let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let photo = crate::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
-        let metadata = update_identity_presentation(
-            dir.path(),
-            "personal",
-            "Grace",
-            [1, 2, 3],
-            Some(photo.clone()),
-        )
-        .unwrap();
-        assert_eq!(metadata.display_name, "Grace");
-        assert_eq!(metadata.profile_photo, Some(photo));
-        assert_eq!(metadata.group_public_key, signer.group_public_key());
-        assert_eq!(
-            load_from_path(path.clone())
-                .unwrap()
-                .sign(b"complete-presentation")
-                .unwrap(),
-            proof
-        );
-        let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        for field in [
-            "secret_ref",
-            "threshold_identity",
-            "created_at",
-            "schema_version",
-        ] {
-            assert_eq!(after[field], before[field]);
-        }
-        let saved = fs::read(&path).unwrap();
-        assert!(update_identity_presentation(dir.path(), "personal", "", [0; 3], None).is_err());
-        assert_eq!(fs::read(&path).unwrap(), saved);
-    }
-
-    #[test]
-    fn canonical_photo_updates_preserve_custody_and_invalid_imports_write_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 32)).unwrap();
-        let signer = load_from_path(path.clone()).unwrap();
-        assert!(signer.profile_photo().is_none());
-        let proof = signer.sign(b"photo-custody-proof").unwrap();
-        let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let photo = crate::ProfilePhoto::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
-        let changed = update_identity_photo(dir.path(), "personal", Some(photo.clone())).unwrap();
-        assert_eq!(changed.profile_photo.as_ref(), Some(&photo));
-        let loaded = load_from_path(path.clone()).unwrap();
-        assert_eq!(loaded.profile_photo(), Some(&photo));
-        assert_eq!(loaded.sign(b"photo-custody-proof").unwrap(), proof);
-        let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        for field in [
-            "display_name",
-            "avatar_color",
-            "secret_ref",
-            "threshold_identity",
-            "schema_version",
-        ] {
-            assert_eq!(before[field], after[field]);
-        }
-        update_identity_profile(dir.path(), "personal", "Ada", [1, 2, 3]).unwrap();
-        assert_eq!(
-            load_metadata_from_path(&path)
-                .unwrap()
-                .profile_photo
-                .as_ref(),
-            Some(&photo)
-        );
-        let original = fs::read(&path).unwrap();
-        for invalid in [
-            serde_json::json!({"width": 129, "height": 1, "rgba": [0, 0, 0, 255]}),
-            serde_json::json!({"width": 1, "height": 1, "rgba": [0]}),
-            serde_json::json!({"width": 0, "height": 1, "rgba": []}),
-            serde_json::json!({"width": 1, "height": 1, "rgba": vec![0; crate::MAX_PHOTO_BYTES + 1]}),
-        ] {
-            let mut record: serde_json::Value =
-                serde_json::from_slice(&record_bytes("Invalid", 33)).unwrap();
-            record["profile_photo"] = invalid;
-            assert!(
-                import_identity(dir.path(), "invalid", &serde_json::to_vec(&record).unwrap())
-                    .is_err()
+        phase complete_presentation_publication_preserves_signer_and_refuses_invalid_name;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 37)).unwrap();
+            let signer = load_from_path(path.clone()).unwrap();
+            let proof = signer.sign(b"complete-presentation").unwrap();
+            let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let photo = crate::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+            let metadata = update_identity_presentation(
+                dir.path(),
+                "personal",
+                "Grace",
+                [1, 2, 3],
+                Some(photo.clone()),
+            )
+            .unwrap();
+            assert_eq!(metadata.display_name, "Grace");
+            assert_eq!(metadata.profile_photo, Some(photo));
+            assert_eq!(metadata.group_public_key, signer.group_public_key());
+            assert_eq!(
+                load_from_path(path.clone())
+                    .unwrap()
+                    .sign(b"complete-presentation")
+                    .unwrap(),
+                proof
             );
-            assert!(!dir.path().join("invalid.json").exists());
-            assert_eq!(fs::read(&path).unwrap(), original);
+            let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            for field in [
+                "secret_ref",
+                "threshold_identity",
+                "created_at",
+                "schema_version",
+            ] {
+                assert_eq!(after[field], before[field]);
+            }
+            let saved = fs::read(&path).unwrap();
+            assert!(update_identity_presentation(dir.path(), "personal", "", [0; 3], None).is_err());
+            assert_eq!(fs::read(&path).unwrap(), saved);
         }
-        update_identity_photo(dir.path(), "personal", None).unwrap();
-        assert!(
-            load_metadata_from_path(&path)
-                .unwrap()
-                .profile_photo
-                .is_none()
-        );
-        assert!(update_identity_photo(dir.path(), "../personal", Some(photo)).is_err());
+
+        phase canonical_photo_updates_preserve_custody_and_invalid_imports_write_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 32)).unwrap();
+            let signer = load_from_path(path.clone()).unwrap();
+            assert!(signer.profile_photo().is_none());
+            let proof = signer.sign(b"photo-custody-proof").unwrap();
+            let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let photo = crate::ProfilePhoto::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+            let changed = update_identity_photo(dir.path(), "personal", Some(photo.clone())).unwrap();
+            assert_eq!(changed.profile_photo.as_ref(), Some(&photo));
+            let loaded = load_from_path(path.clone()).unwrap();
+            assert_eq!(loaded.profile_photo(), Some(&photo));
+            assert_eq!(loaded.sign(b"photo-custody-proof").unwrap(), proof);
+            let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            for field in [
+                "display_name",
+                "avatar_color",
+                "secret_ref",
+                "threshold_identity",
+                "schema_version",
+            ] {
+                assert_eq!(before[field], after[field]);
+            }
+            update_identity_profile(dir.path(), "personal", "Ada", [1, 2, 3]).unwrap();
+            assert_eq!(
+                load_metadata_from_path(&path)
+                    .unwrap()
+                    .profile_photo
+                    .as_ref(),
+                Some(&photo)
+            );
+            let original = fs::read(&path).unwrap();
+            for invalid in [
+                serde_json::json!({"width": 129, "height": 1, "rgba": [0, 0, 0, 255]}),
+                serde_json::json!({"width": 1, "height": 1, "rgba": [0]}),
+                serde_json::json!({"width": 0, "height": 1, "rgba": []}),
+                serde_json::json!({"width": 1, "height": 1, "rgba": vec![0; crate::MAX_PHOTO_BYTES + 1]}),
+            ] {
+                let mut record: serde_json::Value =
+                    serde_json::from_slice(&record_bytes("Invalid", 33)).unwrap();
+                record["profile_photo"] = invalid;
+                assert!(
+                    import_identity(dir.path(), "invalid", &serde_json::to_vec(&record).unwrap())
+                        .is_err()
+                );
+                assert!(!dir.path().join("invalid.json").exists());
+                assert_eq!(fs::read(&path).unwrap(), original);
+            }
+            update_identity_photo(dir.path(), "personal", None).unwrap();
+            assert!(
+                load_metadata_from_path(&path)
+                    .unwrap()
+                    .profile_photo
+                    .is_none()
+            );
+            assert!(update_identity_photo(dir.path(), "../personal", Some(photo)).is_err());
+        }
     }
 
     // Only the external keyring transport is emulated. Both its provider
@@ -2016,16 +2020,18 @@ mod tests {
         operation()
     }
 
-    #[test]
-    fn the_secret_provider_is_classified_and_unlocked_only_to_sign() {
-        // phase: secret_service_unavailability_has_a_typed_classification
+    tilo_test_env::scenario! {
+        fn the_secret_provider_is_classified_and_unlocked_only_to_sign;
+
+        phase secret_service_unavailability_has_a_typed_classification;
         {
             let unavailable = NotAvailable::ConnectionFailed(secret_service_unavailable_error());
             assert!(is_secret_service_unavailable(&unavailable));
             let other = NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::EACCES));
             assert!(!is_secret_service_unavailable(&other));
         }
-        // phase: public_metadata_does_not_unlock_the_secret_provider
+
+        phase public_metadata_does_not_unlock_the_secret_provider;
         {
             let dir = tempfile::tempdir().expect("identity directory");
             let path = dir.path().join("secured.json");
@@ -2068,10 +2074,11 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn identity_files_stay_owner_only() {
-        // phase: a_shared_lifecycle_lock_is_refused_and_listing_takes_none
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn identity_files_stay_owner_only;
+
+        phase a_shared_lifecycle_lock_is_refused_and_listing_takes_none;
         {
             let dir = tempfile::tempdir().expect("identity directory");
             let lock = dir.path().join(LOCK_FILE);
@@ -2092,7 +2099,8 @@ mod tests {
             );
             assert!(!dir.path().join("missing").exists());
         }
-        // phase: imported_secrets_and_selector_are_private
+
+        phase imported_secrets_and_selector_are_private;
         {
             let dir = tempfile::tempdir().unwrap();
             let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 26)).unwrap();
@@ -2121,7 +2129,8 @@ mod tests {
                 "private signing material remained in mounted-style JSON"
             );
         }
-        // phase: broker_file_revalidates_key_permissions_before_load_or_remove
+
+        phase broker_file_revalidates_key_permissions_before_load_or_remove;
         {
             let dir = tempfile::tempdir().unwrap();
             let provider = BrokerFileProvider::new(dir.path());
@@ -2139,7 +2148,8 @@ mod tests {
                 io::ErrorKind::PermissionDenied
             );
         }
-        // phase: record_open_rejects_symlinks_and_wide_permissions
+
+        phase record_open_rejects_symlinks_and_wide_permissions;
         {
             use std::os::unix::fs::symlink;
 
@@ -2247,10 +2257,11 @@ mod tests {
         drop(env);
     }
 
-    #[test]
-    #[serial_test::serial(identity_env)]
-    fn the_environment_never_relocates_or_fakes_an_identity() {
-        // phase: load_without_env_returns_service_fd_missing
+    tilo_test_env::scenario! {
+        #[serial_test::serial(identity_env)]
+        fn the_environment_never_relocates_or_fakes_an_identity;
+
+        phase load_without_env_returns_service_fd_missing;
         {
             let _env = clear_env();
             match load() {
@@ -2258,7 +2269,8 @@ mod tests {
                 other => panic!("expected ServiceFdMissing, got {other:?}"),
             }
         }
-        // phase: load_with_empty_env_returns_service_fd_missing
+
+        phase load_with_empty_env_returns_service_fd_missing;
         {
             let mut env = clear_env();
             env.set(IDENTITY_ENV_VAR, "");
@@ -2269,7 +2281,8 @@ mod tests {
                 other => panic!("expected ServiceFdMissing, got {other:?}"),
             }
         }
-        // phase: relative_xdg_config_home_never_relocates_identity_by_cwd
+
+        phase relative_xdg_config_home_never_relocates_identity_by_cwd;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_CONFIG_HOME", "relative/config")
@@ -2281,9 +2294,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn loading_an_identity_file_validates_its_shape() {
-        // phase: load_missing_file_surfaces_connection_failed
+    tilo_test_env::scenario! {
+        fn loading_an_identity_file_validates_its_shape;
+
+        phase load_missing_file_surfaces_connection_failed;
         {
             let err = load_from_path(PathBuf::from("/nonexistent/tilo-identity.json"))
                 .expect_err("should fail");
@@ -2294,7 +2308,8 @@ mod tests {
                 other => panic!("expected ConnectionFailed(NotFound), got {other:?}"),
             }
         }
-        // phase: load_bad_json_surfaces_invalid_data
+
+        phase load_bad_json_surfaces_invalid_data;
         {
             let err = load_from_bytes(b"not json at all").expect_err("should fail");
             match err {
@@ -2304,7 +2319,8 @@ mod tests {
                 other => panic!("expected ConnectionFailed(InvalidData), got {other:?}"),
             }
         }
-        // phase: load_unknown_schema_version_rejected
+
+        phase load_unknown_schema_version_rejected;
         {
             let json = r#"{
             "display_name": "Alice",
@@ -2328,7 +2344,8 @@ mod tests {
                 other => panic!("unexpected: {other:?}"),
             }
         }
-        // phase: extra_fields_in_json_are_tolerated
+
+        phase extra_fields_in_json_are_tolerated;
         {
             // Forward-compat: a newer launcher may write extra fields;
             // an older SDK must NOT hard-fail. This test asserts that.
@@ -2354,7 +2371,8 @@ mod tests {
             let bytes = serde_json::to_vec(&record).unwrap();
             load_from_bytes(&bytes).expect("must tolerate unknown fields");
         }
-        // phase: load_from_path_reads_disk_file
+
+        phase load_from_path_reads_disk_file;
         {
             use std::io::Write;
             let dir = tempfile::tempdir().unwrap();
@@ -2388,13 +2406,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn a_local_secret_must_derive_the_recorded_key_to_sign() {
-        // phase: single_device_load_then_sign_and_verify
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn a_local_secret_must_derive_the_recorded_key_to_sign;
+
+        phase single_device_load_then_sign_and_verify;
         {
             use ed25519_dalek::{Verifier, VerifyingKey};
 
@@ -2436,7 +2455,8 @@ mod tests {
                 .verify(msg, &sig)
                 .expect("verification should succeed");
         }
-        // phase: public_projection_loads_metadata_but_cannot_sign
+
+        phase public_projection_loads_metadata_but_cannot_sign;
         {
             let bytes = serde_json::to_vec(&serde_json::json!({
                 "display_name": "Alice",
@@ -2460,7 +2480,8 @@ mod tests {
             assert!(!identity.is_single_device());
             assert!(identity.sign(b"forbidden").is_err());
         }
-        // phase: secret_that_does_not_derive_the_recorded_pubkey_is_refused
+
+        phase secret_that_does_not_derive_the_recorded_pubkey_is_refused;
         // A record whose secret does not derive its recorded public key must not
         // load — silently accepting it would hand apps an identity that can never
         // sign successfully.
@@ -2501,7 +2522,8 @@ mod tests {
                 other => panic!("expected ConnectionFailed(InvalidData), got {other:?}"),
             }
         }
-        // phase: the_pubkey_mismatch_check_is_not_gated_on_debug_assertions
+
+        phase the_pubkey_mismatch_check_is_not_gated_on_debug_assertions;
         // The refusal is a property of the build, not of
         // `debug_assertions`. Nothing here may be compiled out.
         {
@@ -2529,9 +2551,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn threshold_shares_must_be_real_to_participate() {
-        // phase: synthetic_threshold_bytes_are_rejected
+    tilo_test_env::scenario! {
+        fn threshold_shares_must_be_real_to_participate;
+
+        phase synthetic_threshold_bytes_are_rejected;
         {
             let zero32: Vec<u8> = vec![0; 32];
             let record = serde_json::json!({
@@ -2551,7 +2574,8 @@ mod tests {
             let bytes = serde_json::to_vec(&record).unwrap();
             assert!(load_from_bytes(&bytes).is_err());
         }
-        // phase: real_threshold_share_restores_and_participates_in_broker_rounds
+
+        phase real_threshold_share_restores_and_participates_in_broker_rounds;
         {
             let mut rng = UnwrapErr(SysRng);
             let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
@@ -2660,198 +2684,259 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn secure_record_publication_cleanup_preserves_published_secret() {
-        use tilo_files::native::atomic::PublicationState;
-        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+    tilo_test_env::scenario! {
+        fn secure_record_publication_cleanup;
 
-        for (checkpoint, expected) in [
-            (
-                Checkpoint::AfterPublish,
-                PublicationState::PublicationUnknown,
-            ),
-            (
-                Checkpoint::BeforeCommit,
-                PublicationState::PublishedDurabilityUnknown,
-            ),
-        ] {
+        phase secure_record_publication_cleanup_preserves_published_secret;
+        {
+            use tilo_files::native::atomic::PublicationState;
+            use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+
+            for (checkpoint, expected) in [
+                (
+                    Checkpoint::AfterPublish,
+                    PublicationState::PublicationUnknown,
+                ),
+                (
+                    Checkpoint::BeforeCommit,
+                    PublicationState::PublishedDurabilityUnknown,
+                ),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("personal.json");
+                let provider = BrokerFileProvider::new(dir.path());
+                write_private_atomic(&path, &record_bytes("Ada", 71)).unwrap();
+                let error = with_failure(checkpoint, || {
+                    secure_identity_with_provider(dir.path(), "personal", &provider)
+                })
+                .expect_err("the real metadata writer must report the injected failure");
+                assert_eq!(
+                    tilo_files::native::atomic::publication_state(&error),
+                    Some(expected)
+                );
+                assert_published_identity_keeps_secret(&path, &provider, 71);
+            }
+        }
+
+        phase secure_record_publication_cleanup_before_publish_removes_new_secret;
+        {
+            use tilo_files::native::atomic::PublicationState;
+            use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("personal.json");
             let provider = BrokerFileProvider::new(dir.path());
-            write_private_atomic(&path, &record_bytes("Ada", 71)).unwrap();
-            let error = with_failure(checkpoint, || {
+            let original = record_bytes("Ada", 72);
+            write_private_atomic(&path, &original).unwrap();
+            let error = with_failure(Checkpoint::BeforePublish, || {
                 secure_identity_with_provider(dir.path(), "personal", &provider)
             })
             .expect_err("the real metadata writer must report the injected failure");
             assert_eq!(
                 tilo_files::native::atomic::publication_state(&error),
-                Some(expected)
+                Some(PublicationState::NotPublished)
             );
-            assert_published_identity_keeps_secret(&path, &provider, 71);
+            assert_eq!(fs::read(&path).unwrap(), original);
+            let locator = hex::encode(SigningKey::from_bytes(&[72; 32]).verifying_key().to_bytes());
+            assert_eq!(
+                provider.load(&locator).unwrap_err().kind(),
+                io::ErrorKind::NotFound
+            );
         }
     }
 
-    #[test]
-    fn secure_record_publication_cleanup_before_publish_removes_new_secret() {
-        use tilo_files::native::atomic::PublicationState;
-        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn import_publication_cleanup;
 
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.json");
-        let provider = BrokerFileProvider::new(dir.path());
-        let original = record_bytes("Ada", 72);
-        write_private_atomic(&path, &original).unwrap();
-        let error = with_failure(Checkpoint::BeforePublish, || {
-            secure_identity_with_provider(dir.path(), "personal", &provider)
-        })
-        .expect_err("the real metadata writer must report the injected failure");
-        assert_eq!(
-            tilo_files::native::atomic::publication_state(&error),
-            Some(PublicationState::NotPublished)
-        );
-        assert_eq!(fs::read(&path).unwrap(), original);
-        let locator = hex::encode(SigningKey::from_bytes(&[72; 32]).verifying_key().to_bytes());
-        assert_eq!(
-            provider.load(&locator).unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
-    }
+        phase import_publication_cleanup_preserves_second_write_and_secret;
+        {
+            use tilo_files::native::atomic::PublicationState;
+            use tilo_files::native::atomic::test_support::{
+                Checkpoint, with_failure_on_nth, with_observer,
+            };
+            for (checkpoint, expected) in [
+                (
+                    Checkpoint::AfterPublish,
+                    PublicationState::PublicationUnknown,
+                ),
+                (
+                    Checkpoint::BeforeCommit,
+                    PublicationState::PublishedDurabilityUnknown,
+                ),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let provider = BrokerFileProvider::new(dir.path());
+                let completed = std::rc::Rc::new(std::cell::Cell::new(0));
+                let observed = completed.clone();
+                let error = with_observer(
+                    move |event| {
+                        if event.checkpoint == Checkpoint::Committed {
+                            observed.set(observed.get() + 1);
+                        }
+                    },
+                    || {
+                        with_failure_on_nth(checkpoint, 2, || {
+                            import_identity_with_provider(
+                                dir.path(),
+                                "personal",
+                                &record_bytes("Ada", 73),
+                                &provider,
+                            )
+                        })
+                    },
+                )
+                .expect_err("v2 publication must report the injected failure");
+                assert_eq!(completed.get(), 1, "v1 must commit before v2 fails");
+                assert_eq!(
+                    tilo_files::native::atomic::publication_state(&error),
+                    Some(expected)
+                );
+                assert_published_identity_keeps_secret(
+                    &dir.path().join("personal.json"),
+                    &provider,
+                    73,
+                );
+            }
+        }
 
-    #[test]
-    fn import_publication_cleanup_preserves_second_write_and_secret() {
-        use tilo_files::native::atomic::PublicationState;
-        use tilo_files::native::atomic::test_support::{
-            Checkpoint, with_failure_on_nth, with_observer,
-        };
-        for (checkpoint, expected) in [
-            (
-                Checkpoint::AfterPublish,
-                PublicationState::PublicationUnknown,
-            ),
-            (
-                Checkpoint::BeforeCommit,
-                PublicationState::PublishedDurabilityUnknown,
-            ),
-        ] {
+        phase import_publication_cleanup_before_second_publish_removes_record_and_secret;
+        {
+            use tilo_files::native::atomic::PublicationState;
+            use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
             let dir = tempfile::tempdir().unwrap();
             let provider = BrokerFileProvider::new(dir.path());
-            let completed = std::rc::Rc::new(std::cell::Cell::new(0));
-            let observed = completed.clone();
-            let error = with_observer(
-                move |event| {
-                    if event.checkpoint == Checkpoint::Committed {
-                        observed.set(observed.get() + 1);
-                    }
-                },
-                || {
-                    with_failure_on_nth(checkpoint, 2, || {
-                        import_identity_with_provider(
-                            dir.path(),
-                            "personal",
-                            &record_bytes("Ada", 73),
-                            &provider,
-                        )
-                    })
-                },
-            )
-            .expect_err("v2 publication must report the injected failure");
-            assert_eq!(completed.get(), 1, "v1 must commit before v2 fails");
+            let error = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
+                import_identity_with_provider(
+                    dir.path(),
+                    "personal",
+                    &record_bytes("Ada", 74),
+                    &provider,
+                )
+            })
+            .unwrap_err();
             assert_eq!(
                 tilo_files::native::atomic::publication_state(&error),
-                Some(expected)
+                Some(PublicationState::NotPublished)
             );
-            assert_published_identity_keeps_secret(
-                &dir.path().join("personal.json"),
-                &provider,
-                73,
+            assert!(!dir.path().join("personal.json").exists());
+            let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
+            assert_eq!(
+                provider.load(&locator).unwrap_err().kind(),
+                io::ErrorKind::NotFound
             );
         }
-    }
 
-    #[test]
-    fn import_publication_cleanup_before_second_publish_removes_record_and_secret() {
-        use tilo_files::native::atomic::PublicationState;
-        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
-        let dir = tempfile::tempdir().unwrap();
-        let provider = BrokerFileProvider::new(dir.path());
-        let error = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-            import_identity_with_provider(
-                dir.path(),
-                "personal",
-                &record_bytes("Ada", 74),
-                &provider,
-            )
-        })
-        .unwrap_err();
-        assert_eq!(
-            tilo_files::native::atomic::publication_state(&error),
-            Some(PublicationState::NotPublished)
-        );
-        assert!(!dir.path().join("personal.json").exists());
-        let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
-        assert_eq!(
-            provider.load(&locator).unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
-    }
-
-    #[test]
-    fn import_publication_cleanup_unknown_before_rename_preserves_record_and_secret() {
-        use tilo_files::native::atomic::PublicationState;
-        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
-        let dir = tempfile::tempdir().unwrap();
-        let provider = BrokerFileProvider::new(dir.path());
-        let original = record_bytes("Ada", 75);
-        let error = with_failure_on_nth(Checkpoint::PublishSubmitted, 2, || {
-            import_identity_with_provider(dir.path(), "personal", &original, &provider)
-        })
-        .unwrap_err();
-        assert_eq!(
-            tilo_files::native::atomic::publication_state(&error),
-            Some(PublicationState::PublicationUnknown)
-        );
-        assert_eq!(
-            fs::read(dir.path().join("personal.json")).unwrap(),
-            original
-        );
-        let locator = hex::encode(SigningKey::from_bytes(&[75; 32]).verifying_key().to_bytes());
-        assert_eq!(provider.load(&locator).unwrap().as_slice(), [75; 32]);
-    }
-
-    #[test]
-    fn import_publication_cleanup_preferred_provider_does_not_fallback_after_publication() {
-        use tilo_files::native::atomic::PublicationState;
-        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
-        for (checkpoint, expected) in [
-            (
-                Checkpoint::AfterPublish,
-                PublicationState::PublicationUnknown,
-            ),
-            (
-                Checkpoint::BeforeCommit,
-                PublicationState::PublishedDurabilityUnknown,
-            ),
-        ] {
+        phase import_publication_cleanup_unknown_before_rename_preserves_record_and_secret;
+        {
+            use tilo_files::native::atomic::PublicationState;
+            use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
             let dir = tempfile::tempdir().unwrap();
-            let error = with_preferred_secret_service(false, || {
-                with_failure_on_nth(checkpoint, 2, || {
-                    import_identity(dir.path(), "personal", &record_bytes("Ada", 76))
-                })
+            let provider = BrokerFileProvider::new(dir.path());
+            let original = record_bytes("Ada", 75);
+            let error = with_failure_on_nth(Checkpoint::PublishSubmitted, 2, || {
+                import_identity_with_provider(dir.path(), "personal", &original, &provider)
             })
-            .expect_err("fallback must not hide an uncertain metadata publication");
+            .unwrap_err();
             assert_eq!(
                 tilo_files::native::atomic::publication_state(&error),
-                Some(expected)
+                Some(PublicationState::PublicationUnknown)
             );
-            assert_published_identity_keeps_secret(
-                &dir.path().join("personal.json"),
-                &SecretServiceFixture::new(dir.path(), false),
-                76,
+            assert_eq!(
+                fs::read(dir.path().join("personal.json")).unwrap(),
+                original
             );
-            assert!(
-                !dir.path().join("secrets").exists(),
-                "fallback provider must not be used"
+            let locator = hex::encode(SigningKey::from_bytes(&[75; 32]).verifying_key().to_bytes());
+            assert_eq!(provider.load(&locator).unwrap().as_slice(), [75; 32]);
+        }
+
+        phase import_publication_cleanup_preferred_provider_does_not_fallback_after_publication;
+        {
+            use tilo_files::native::atomic::PublicationState;
+            use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
+            for (checkpoint, expected) in [
+                (
+                    Checkpoint::AfterPublish,
+                    PublicationState::PublicationUnknown,
+                ),
+                (
+                    Checkpoint::BeforeCommit,
+                    PublicationState::PublishedDurabilityUnknown,
+                ),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let error = with_preferred_secret_service(false, || {
+                    with_failure_on_nth(checkpoint, 2, || {
+                        import_identity(dir.path(), "personal", &record_bytes("Ada", 76))
+                    })
+                })
+                .expect_err("fallback must not hide an uncertain metadata publication");
+                assert_eq!(
+                    tilo_files::native::atomic::publication_state(&error),
+                    Some(expected)
+                );
+                assert_published_identity_keeps_secret(
+                    &dir.path().join("personal.json"),
+                    &SecretServiceFixture::new(dir.path(), false),
+                    76,
+                );
+                assert!(
+                    !dir.path().join("secrets").exists(),
+                    "fallback provider must not be used"
+                );
+            }
+        }
+
+        phase import_publication_cleanup_preferred_provider_may_fallback_before_publication;
+        {
+            use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
+            let dir = tempfile::tempdir().unwrap();
+            let imported = with_preferred_secret_service(false, || {
+                with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
+                    import_identity(dir.path(), "personal", &record_bytes("Ada", 77))
+                })
+            });
+            if !secure_store::FILE_FALLBACK {
+                assert_import_failed_closed(dir.path(), &imported);
+                return;
+            }
+            let path = imported.unwrap();
+            assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 77);
+            let locator = hex::encode(SigningKey::from_bytes(&[77; 32]).verifying_key().to_bytes());
+            assert_eq!(
+                SecretServiceFixture::new(dir.path(), false)
+                    .load(&locator)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NotFound
             );
+        }
+
+        phase import_publication_cleanup_provider_store_failure_is_prepublication;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let error = import_identity_with_provider(
+                dir.path(),
+                "personal",
+                &record_bytes("Ada", 78),
+                &SecretServiceFixture::new(dir.path(), true),
+            )
+            .unwrap_err();
+            assert!(tilo_files::native::atomic::publication_state(&error).is_none());
+            assert!(!dir.path().join("personal.json").exists());
+
+            let imported = with_preferred_secret_service(true, || {
+                import_identity(dir.path(), "personal", &record_bytes("Ada", 78))
+            });
+            if !secure_store::FILE_FALLBACK {
+                assert_import_failed_closed(dir.path(), &imported);
+                return;
+            }
+            let path = imported.unwrap();
+            assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 78);
         }
     }
 
@@ -2861,55 +2946,6 @@ mod tests {
         assert!(imported.is_err(), "{imported:?}");
         assert!(!dir.join("personal.json").exists());
         assert!(!dir.join("secrets").exists(), "a file fallback was written");
-    }
-
-    #[test]
-    fn import_publication_cleanup_preferred_provider_may_fallback_before_publication() {
-        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
-        let dir = tempfile::tempdir().unwrap();
-        let imported = with_preferred_secret_service(false, || {
-            with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-                import_identity(dir.path(), "personal", &record_bytes("Ada", 77))
-            })
-        });
-        if !secure_store::FILE_FALLBACK {
-            assert_import_failed_closed(dir.path(), &imported);
-            return;
-        }
-        let path = imported.unwrap();
-        assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 77);
-        let locator = hex::encode(SigningKey::from_bytes(&[77; 32]).verifying_key().to_bytes());
-        assert_eq!(
-            SecretServiceFixture::new(dir.path(), false)
-                .load(&locator)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::NotFound
-        );
-    }
-
-    #[test]
-    fn import_publication_cleanup_provider_store_failure_is_prepublication() {
-        let dir = tempfile::tempdir().unwrap();
-        let error = import_identity_with_provider(
-            dir.path(),
-            "personal",
-            &record_bytes("Ada", 78),
-            &SecretServiceFixture::new(dir.path(), true),
-        )
-        .unwrap_err();
-        assert!(tilo_files::native::atomic::publication_state(&error).is_none());
-        assert!(!dir.path().join("personal.json").exists());
-
-        let imported = with_preferred_secret_service(true, || {
-            import_identity(dir.path(), "personal", &record_bytes("Ada", 78))
-        });
-        if !secure_store::FILE_FALLBACK {
-            assert_import_failed_closed(dir.path(), &imported);
-            return;
-        }
-        let path = imported.unwrap();
-        assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 78);
     }
 
     #[test]
@@ -2964,9 +3000,10 @@ mod tests {
         write_private_atomic(path, &serde_json::to_vec(&record).unwrap()).unwrap();
     }
 
-    #[test]
-    fn a_launch_reads_public_fields_without_the_secret_provider() {
-        // phase: launch_metadata_equals_the_full_records_public_fields
+    tilo_test_env::scenario! {
+        fn a_launch_reads_public_fields_without_the_secret_provider;
+
+        phase launch_metadata_equals_the_full_records_public_fields;
         // phase: a_launch_succeeds_with_the_secret_absent_from_its_provider
         // The secret is deleted from its provider: a load that touched the
         // provider would fail, so a launch that still answers never read it.
@@ -2990,7 +3027,8 @@ mod tests {
             );
             assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
         }
-        // phase: a_secret_service_record_launches_without_a_lookup
+
+        phase a_secret_service_record_launches_without_a_lookup;
         // No Secret Service answers in a test, and none holds this locator.
         {
             let dir = tempfile::tempdir().unwrap();
@@ -3009,25 +3047,29 @@ mod tests {
             });
             assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
         }
-        // phase: a_record_no_session_provider_can_hold_still_fails_the_launch
-        for backend in ["tpm2-sealed-v1", "unknown-backend"] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = import_identity_with_provider(
-                dir.path(),
-                "primary",
-                &record_bytes("Ada", 63),
-                &BrokerFileProvider::new(dir.path()),
-            )
-            .unwrap();
-            rewrite_record(&path, |record| {
-                record["secret_ref"]["backend"] = backend.into();
-            });
-            let Err(error) = load_metadata_for_launch(&path) else {
-                panic!("{backend}: a record with no reachable provider must not launch");
-            };
-            assert!(error.to_string().contains("secret provider"), "{error}");
+
+        phase a_record_no_session_provider_can_hold_still_fails_the_launch;
+        {
+            for backend in ["tpm2-sealed-v1", "unknown-backend"] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = import_identity_with_provider(
+                    dir.path(),
+                    "primary",
+                    &record_bytes("Ada", 63),
+                    &BrokerFileProvider::new(dir.path()),
+                )
+                .unwrap();
+                rewrite_record(&path, |record| {
+                    record["secret_ref"]["backend"] = backend.into();
+                });
+                let Err(error) = load_metadata_for_launch(&path) else {
+                    panic!("{backend}: a record with no reachable provider must not launch");
+                };
+                assert!(error.to_string().contains("secret provider"), "{error}");
+            }
         }
-        // phase: a_secured_record_without_a_reference_fails_the_launch
+
+        phase a_secured_record_without_a_reference_fails_the_launch;
         {
             let dir = tempfile::tempdir().unwrap();
             let path = import_identity_with_provider(
@@ -3042,7 +3084,8 @@ mod tests {
             });
             assert!(load_metadata_for_launch(&path).is_err());
         }
-        // phase: a_joined_devices_public_record_launches
+
+        phase a_joined_devices_public_record_launches;
         {
             let dir = tempfile::tempdir().unwrap();
             ensure_private_dir(dir.path()).unwrap();
@@ -3055,9 +3098,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_identity_store_keeps_explicit_safe_records() {
-        // phase: multi_identity_store_has_explicit_active_record
+    tilo_test_env::scenario! {
+        fn the_identity_store_keeps_explicit_safe_records;
+
+        phase multi_identity_store_has_explicit_active_record;
         {
             let dir = tempfile::tempdir().unwrap();
             import_identity(dir.path(), "personal", &record_bytes("Ada", 21)).unwrap();
@@ -3071,7 +3115,8 @@ mod tests {
             let active = resolve_active_identity(dir.path()).unwrap();
             assert_eq!(active.file_name().unwrap(), "work.json");
         }
-        // phase: identity_store_refuses_traversal_symlinks_and_active_removal
+
+        phase identity_store_refuses_traversal_symlinks_and_active_removal;
         {
             let dir = tempfile::tempdir().unwrap();
             assert!(import_identity(dir.path(), "../escape", &record_bytes("No", 23)).is_err());
@@ -3082,7 +3127,8 @@ mod tests {
             remove_identity(dir.path(), "work").unwrap();
             assert_eq!(list_identities(dir.path()).unwrap().len(), 1);
         }
-        // phase: duplicate_public_identity_is_rejected_on_import
+
+        phase duplicate_public_identity_is_rejected_on_import;
         {
             let dir = tempfile::tempdir().unwrap();
             let bytes = record_bytes("Ada", 27);
@@ -3090,7 +3136,8 @@ mod tests {
             let error = import_identity(dir.path(), "duplicate", &bytes).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         }
-        // phase: schema_two_public_member_projection_loads_without_becoming_a_signer
+
+        phase schema_two_public_member_projection_loads_without_becoming_a_signer;
         {
             let dir = tempfile::tempdir().unwrap();
             let mut record: ondisk::IdentityRecord = serde_json::from_slice(
@@ -3105,7 +3152,8 @@ mod tests {
             assert_eq!(identity.group_public_key(), [9; 32]);
             assert!(identity.sign(b"must stay public-only").is_err());
         }
-        // phase: a_joined_public_projection_is_left_as_written_when_secured
+
+        phase a_joined_public_projection_is_left_as_written_when_secured;
         {
             let dir = tempfile::tempdir().unwrap();
             ensure_private_dir(dir.path()).unwrap();
@@ -3131,7 +3179,8 @@ mod tests {
                 KeyProtection::DeviceCertificate
             );
         }
-        // phase: schema_two_missing_reference_rejects_private_or_malformed_shapes
+
+        phase schema_two_missing_reference_rejects_private_or_malformed_shapes;
         {
             let dir = tempfile::tempdir().unwrap();
             let template = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
@@ -3151,7 +3200,8 @@ mod tests {
                 .unwrap();
             assert!(load_from_path(malformed_path).is_err());
         }
-        // phase: removing_one_legacy_duplicate_keeps_the_shared_provider_secret
+
+        phase removing_one_legacy_duplicate_keeps_the_shared_provider_secret;
         {
             let dir = tempfile::tempdir().unwrap();
             ensure_private_dir(dir.path()).unwrap();

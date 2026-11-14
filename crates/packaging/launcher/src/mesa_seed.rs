@@ -308,93 +308,135 @@ mod tests {
         relative
     }
 
-    #[test]
-    fn private_copy_preserves_driver_names_and_never_changes_the_public_source() {
-        let home = tempfile::tempdir().unwrap();
-        let compiled = home.path().join("compiled");
-        let a = cache(&compiled, 'a', 64);
-        let b = cache(&compiled, 'b', 40);
-        let published = home.path().join("published");
-        publish(&compiled, &published, "renderer-v1").unwrap();
-        let source = published.join("mesa");
-        let before = load(&source).unwrap().1;
-        let private = home.path().join("private");
-        prepare(&source, &private).unwrap();
-        for relative in [a, b] {
+    tilo_test_env::scenario! {
+        fn the_mesa_seed_is_copied_whole_or_not_at_all;
+
+        phase private_copy_preserves_driver_names_and_never_changes_the_public_source;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let compiled = home.path().join("compiled");
+            let a = cache(&compiled, 'a', 64);
+            let b = cache(&compiled, 'b', 40);
+            let published = home.path().join("published");
+            publish(&compiled, &published, "renderer-v1").unwrap();
+            let source = published.join("mesa");
+            let before = load(&source).unwrap().1;
+            let private = home.path().join("private");
+            prepare(&source, &private).unwrap();
+            for relative in [a, b] {
+                let copied = private
+                    .join("mesa_shader_cache_sf")
+                    .join(relative)
+                    .join("tilo-seed.foz");
+                assert_eq!(std::fs::read(&copied).unwrap(), before[0]);
+                assert!(copied.metadata().unwrap().permissions().readonly());
+            }
+            assert_eq!(load(&source).unwrap().1, before);
+            assert_eq!(fingerprint(&source).unwrap(), "renderer-v1");
+        }
+
+        phase corruption_fails_before_replacing_a_good_private_generation;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let compiled = home.path().join("compiled");
+            let relative = cache(&compiled, 'a', 64);
+            let published = home.path().join("published");
+            publish(&compiled, &published, "v1").unwrap();
+            let source = published.join("mesa");
+            let private = home.path().join("private");
+            prepare(&source, &private).unwrap();
             let copied = private
                 .join("mesa_shader_cache_sf")
-                .join(relative)
+                .join(&relative)
                 .join("tilo-seed.foz");
-            assert_eq!(std::fs::read(&copied).unwrap(), before[0]);
-            assert!(copied.metadata().unwrap().permissions().readonly());
+            let before = std::fs::read(&copied).unwrap();
+            let broken = source.join(relative).join("foz_cache.foz");
+            std::fs::remove_file(&broken).unwrap();
+            std::fs::write(&broken, [HEADER, b"damaged data"].concat()).unwrap();
+            assert_eq!(
+                prepare(&source, &private).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert_eq!(std::fs::read(copied).unwrap(), before);
+            assert!(fingerprint(&source).is_err());
+            publish(&compiled, &published, "v2").unwrap();
+            prepare(&source, &private).unwrap();
+            assert_eq!(fingerprint(&source).unwrap(), "v2");
         }
-        assert_eq!(load(&source).unwrap().1, before);
-        assert_eq!(fingerprint(&source).unwrap(), "renderer-v1");
-    }
 
-    #[test]
-    fn corruption_fails_before_replacing_a_good_private_generation() {
-        let home = tempfile::tempdir().unwrap();
-        let compiled = home.path().join("compiled");
-        let relative = cache(&compiled, 'a', 64);
-        let published = home.path().join("published");
-        publish(&compiled, &published, "v1").unwrap();
-        let source = published.join("mesa");
-        let private = home.path().join("private");
-        prepare(&source, &private).unwrap();
-        let copied = private
-            .join("mesa_shader_cache_sf")
-            .join(&relative)
-            .join("tilo-seed.foz");
-        let before = std::fs::read(&copied).unwrap();
-        let broken = source.join(relative).join("foz_cache.foz");
-        std::fs::remove_file(&broken).unwrap();
-        std::fs::write(&broken, [HEADER, b"damaged data"].concat()).unwrap();
-        assert_eq!(
-            prepare(&source, &private).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
-        assert_eq!(std::fs::read(copied).unwrap(), before);
-        assert!(fingerprint(&source).is_err());
-        publish(&compiled, &published, "v2").unwrap();
-        prepare(&source, &private).unwrap();
-        assert_eq!(fingerprint(&source).unwrap(), "v2");
-    }
+        phase missing_seed_leaves_private_cache_untouched;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let private = home.path().join("private");
+            assert_eq!(
+                prepare(&home.path().join("absent"), &private)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+            assert!(!private.exists());
+        }
 
-    #[test]
-    fn missing_seed_leaves_private_cache_untouched() {
-        let home = tempfile::tempdir().unwrap();
-        let private = home.path().join("private");
-        assert_eq!(
-            prepare(&home.path().join("absent"), &private)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::NotFound
-        );
-        assert!(!private.exists());
-    }
+        phase manifest_cannot_escape_the_seed_or_exceed_the_byte_budget;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let source = home.path().join("source");
+            std::fs::create_dir(&source).unwrap();
+            for (path, bytes) in [
+                (PathBuf::from("../../outside"), 16),
+                (
+                    PathBuf::from("a".repeat(64)).join("llvmpipe/foz_cache.foz"),
+                    MAX_BYTES + 1,
+                ),
+            ] {
+                let manifest = Manifest {
+                    format: FORMAT,
+                    fingerprint: "v1".into(),
+                    files: vec![Archive {
+                        path,
+                        bytes,
+                        hash: String::new(),
+                    }],
+                };
+                std::fs::write(
+                    source.join(MANIFEST),
+                    serde_json::to_vec(&manifest).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    load(&source).unwrap_err().kind(),
+                    io::ErrorKind::InvalidData
+                );
+            }
+        }
 
-    #[test]
-    fn manifest_cannot_escape_the_seed_or_exceed_the_byte_budget() {
-        let home = tempfile::tempdir().unwrap();
-        let source = home.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        for (path, bytes) in [
-            (PathBuf::from("../../outside"), 16),
-            (
-                PathBuf::from("a".repeat(64)).join("llvmpipe/foz_cache.foz"),
-                MAX_BYTES + 1,
-            ),
-        ] {
-            let manifest = Manifest {
-                format: FORMAT,
-                fingerprint: "v1".into(),
-                files: vec![Archive {
-                    path,
-                    bytes,
-                    hash: String::new(),
-                }],
-            };
+        phase symlink_and_unpaired_archives_are_refused;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let compiled = home.path().join("compiled");
+            let relative = cache(&compiled, 'a', 64);
+            let published = home.path().join("published");
+            publish(&compiled, &published, "v1").unwrap();
+            let source = published.join("mesa");
+            let entry = source.join(&relative).join("foz_cache.foz");
+            std::fs::remove_file(&entry).unwrap();
+            std::os::unix::fs::symlink(
+                compiled
+                    .join("mesa_shader_cache_sf")
+                    .join(relative)
+                    .join("foz_cache.foz"),
+                &entry,
+            )
+            .unwrap();
+            assert_eq!(
+                load(&source).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            publish(&compiled, &published, "v1").unwrap();
+            let mut manifest: Manifest =
+                serde_json::from_slice(&std::fs::read(source.join(MANIFEST)).unwrap()).unwrap();
+            manifest.files.pop();
+            std::fs::remove_file(source.join(MANIFEST)).unwrap();
             std::fs::write(
                 source.join(MANIFEST),
                 serde_json::to_vec(&manifest).unwrap(),
@@ -405,43 +447,5 @@ mod tests {
                 io::ErrorKind::InvalidData
             );
         }
-    }
-
-    #[test]
-    fn symlink_and_unpaired_archives_are_refused() {
-        let home = tempfile::tempdir().unwrap();
-        let compiled = home.path().join("compiled");
-        let relative = cache(&compiled, 'a', 64);
-        let published = home.path().join("published");
-        publish(&compiled, &published, "v1").unwrap();
-        let source = published.join("mesa");
-        let entry = source.join(&relative).join("foz_cache.foz");
-        std::fs::remove_file(&entry).unwrap();
-        std::os::unix::fs::symlink(
-            compiled
-                .join("mesa_shader_cache_sf")
-                .join(relative)
-                .join("foz_cache.foz"),
-            &entry,
-        )
-        .unwrap();
-        assert_eq!(
-            load(&source).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
-        publish(&compiled, &published, "v1").unwrap();
-        let mut manifest: Manifest =
-            serde_json::from_slice(&std::fs::read(source.join(MANIFEST)).unwrap()).unwrap();
-        manifest.files.pop();
-        std::fs::remove_file(source.join(MANIFEST)).unwrap();
-        std::fs::write(
-            source.join(MANIFEST),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            load(&source).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
     }
 }

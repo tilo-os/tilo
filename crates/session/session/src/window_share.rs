@@ -1035,7 +1035,7 @@ impl WindowShares {
                 self.retract(desk, engine, start.tab);
                 continue;
             }
-            let Some(ws) = sync.workspace_topic(&start.workspace) else {
+            let Some(ws) = sync.workspace_of(&start.workspace) else {
                 t("session-window-share-workspace-left").clone_into(&mut start.waiting_for);
                 self.starting.push(start);
                 continue;
@@ -1173,7 +1173,7 @@ impl WindowShares {
             .iter()
             .filter(|(_, hosted)| {
                 !shareable.contains(&hosted.window)
-                    || sync.workspace_topic(&hosted.workspace).is_none()
+                    || sync.workspace_of(&hosted.workspace).is_none()
             })
             .map(|(tab, _)| *tab)
             .collect();
@@ -1182,7 +1182,7 @@ impl WindowShares {
             .pages
             .iter()
             .filter(|(_, page)| {
-                !shareable.contains(&page.window) || sync.workspace_topic(&page.workspace).is_none()
+                !shareable.contains(&page.window) || sync.workspace_of(&page.workspace).is_none()
             })
             .map(|(tab, _)| *tab)
             .collect();
@@ -1272,7 +1272,7 @@ impl WindowShares {
     /// so each lets its tile go rather than waiting on pictures that stopped. A member that shows
     /// it because the workspace's governance names it learns it from the governance too.
     fn end(&self, hosted: &Hosted, tab: TabId, sync: &Client) {
-        let Some(ws) = sync.workspace_topic(&hosted.workspace) else {
+        let Some(ws) = sync.workspace_of(&hosted.workspace) else {
             return;
         };
         let end = NeighbourMsg::SurfaceStreamEnd {
@@ -1476,7 +1476,7 @@ impl WindowShares {
                     )
             });
             if !same {
-                let Some(ws) = sync.workspace_topic(workspace) else {
+                let Some(ws) = sync.workspace_of(workspace) else {
                     return;
                 };
                 if self
@@ -1666,14 +1666,14 @@ impl WindowShares {
     ) -> bool {
         // The ask is made in a workspace whose topic it arrives on, and names windows and decoders
         // the wire allows.
-        if !tilo_relay_protocol::room_workspace_id_matches(workspace, ws)
+        if WorkspaceId::parse(workspace) != Some(ws)
             || views.len() > MAX_SURFACE_VIEWS
             || decode.len() > MAX_SURFACE_VIEW_DECODERS
             || views.iter().any(|view| {
                 !(1..=MAX_SURFACE_VIEW_SIDE).contains(&view.width)
                     || !(1..=MAX_SURFACE_VIEW_SIDE).contains(&view.height)
             })
-            || sync.workspace_topic(workspace) != Some(ws)
+            || sync.workspace_of(workspace) != Some(ws)
         {
             return false;
         }
@@ -1989,7 +1989,7 @@ impl WindowShares {
             due,
         } in asks
         {
-            let Some(ws) = sync.workspace_topic(&workspace).filter(|_| due) else {
+            let Some(ws) = sync.workspace_of(&workspace).filter(|_| due) else {
                 continue;
             };
             let ask = NeighbourMsg::SurfaceViewRequest {
@@ -2902,9 +2902,7 @@ mod window_tracks {
         Received {
             tab,
             host,
-            ws: tilo_network_actor::workspace_topic_id(
-                tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
-            ),
+            ws: tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
             shown: true,
             start: PeerStreamStart::announced(&msg, 11, "Laptop", "Browser", false)
                 .expect("a stream start"),

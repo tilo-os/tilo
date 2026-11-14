@@ -65,56 +65,465 @@ fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
     );
 }
 
-#[test]
-fn painted_strips_refuse_removed_changed_and_interrupted_touch_owners() {
-    use winit::event::TouchPhase::{Cancelled, Ended, Started};
-    let _settled = crate::motion::testing::settled();
-    let rects = [
-        Rect::new(0.0, 0.0, 100.0, 48.0),
-        Rect::new(100.0, 0.0, 200.0, 48.0),
-    ];
-    let group = SegmentedTouchGroup::new(42, &rects, 0);
-    let mut recognizer = SegmentedTouch::default();
-    let event = |id, phase, x, y| winit::event::Touch {
-        device_id: winit::event::DeviceId::dummy(),
-        phase,
-        location: winit::dpi::PhysicalPosition::new(x, y),
-        force: None,
-        id,
-    };
-    assert_eq!(
-        recognizer.handle(&event(1, Started, 180.0, 24.0), 1.0, &[group]),
-        SegmentedTouchResult::Captured
-    );
-    assert_eq!(
-        recognizer.handle(&event(1, Ended, 80.0, 24.0), 1.0, &[]),
-        SegmentedTouchResult::Captured
-    );
-    assert!(!recognizer.is_active());
-    recognizer.handle(&event(2, Started, 180.0, 24.0), 1.0, &[group]);
-    let changed = SegmentedTouchGroup::new(42, &rects, 1);
-    assert_eq!(
-        recognizer.handle(&event(2, Ended, 80.0, 24.0), 1.0, &[changed]),
-        SegmentedTouchResult::Captured
-    );
-    recognizer.handle(&event(3, Started, 180.0, 24.0), 1.0, &[group]);
-    recognizer.handle(&event(4, Started, 180.0, 24.0), 1.0, &[group]);
-    recognizer.handle(&event(3, Ended, 80.0, 24.0), 1.0, &[group]);
-    recognizer.handle(&event(5, Started, 180.0, 24.0), 1.0, &[group]);
-    recognizer.handle(&event(4, Cancelled, 80.0, 24.0), 1.0, &[group]);
-    assert_eq!(
-        recognizer.handle(&event(5, Ended, 80.0, 24.0), 1.0, &[group]),
-        SegmentedTouchResult::Captured
-    );
-    assert!(!recognizer.is_active());
-    recognizer.handle(&event(6, Started, 180.0, 24.0), 1.0, &[group]);
-    assert_eq!(
-        recognizer.handle(&event(6, Ended, 80.0, 24.0), 1.0, &[group]),
-        SegmentedTouchResult::Selected {
-            group: 42,
-            index: 1
+tilo_test_env::scenario! {
+    fn a_strip_chooses_by_pointer_touch_keyboard_and_action;
+
+    phase painted_strips_refuse_removed_changed_and_interrupted_touch_owners;
+    {
+        use winit::event::TouchPhase::{Cancelled, Ended, Started};
+        let _settled = crate::motion::testing::settled();
+        let rects = [
+            Rect::new(0.0, 0.0, 100.0, 48.0),
+            Rect::new(100.0, 0.0, 200.0, 48.0),
+        ];
+        let group = SegmentedTouchGroup::new(42, &rects, 0);
+        let mut recognizer = SegmentedTouch::default();
+        let event = |id, phase, x, y| winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(x, y),
+            force: None,
+            id,
+        };
+        assert_eq!(
+            recognizer.handle(&event(1, Started, 180.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Captured
+        );
+        assert_eq!(
+            recognizer.handle(&event(1, Ended, 80.0, 24.0), 1.0, &[]),
+            SegmentedTouchResult::Captured
+        );
+        assert!(!recognizer.is_active());
+        recognizer.handle(&event(2, Started, 180.0, 24.0), 1.0, &[group]);
+        let changed = SegmentedTouchGroup::new(42, &rects, 1);
+        assert_eq!(
+            recognizer.handle(&event(2, Ended, 80.0, 24.0), 1.0, &[changed]),
+            SegmentedTouchResult::Captured
+        );
+        recognizer.handle(&event(3, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(4, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(3, Ended, 80.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(5, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(4, Cancelled, 80.0, 24.0), 1.0, &[group]);
+        assert_eq!(
+            recognizer.handle(&event(5, Ended, 80.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Captured
+        );
+        assert!(!recognizer.is_active());
+        recognizer.handle(&event(6, Started, 180.0, 24.0), 1.0, &[group]);
+        assert_eq!(
+            recognizer.handle(&event(6, Ended, 80.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Selected {
+                group: 42,
+                index: 1
+            }
+        );
+    }
+
+    phase a_press_focuses_without_a_ring_until_the_keys_are_used;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut g = group_at(
+            vec![Segment::new("A"), Segment::new("B")],
+            0,
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+        );
+        dispatch(&mut g, &cursor_moved(150.0, 16.0));
+        dispatch(&mut g, &mouse_press());
+        g.set_focus(true);
+        assert!(!g.focus_visible(), "a click shows no focus ring");
+        dispatch(&mut g, &named_key(NamedKey::ArrowLeft));
+        assert!(g.focus_visible(), "the keys bring the ring back");
+        g.set_focus(false);
+        g.set_focus(true);
+        assert!(g.focus_visible(), "keyboard focus shows the ring");
+    }
+
+    phase a_disabled_segment_is_never_chosen_and_the_keys_step_over_it;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut g = group_at(
+            vec![
+                Segment::new("Whole"),
+                Segment::new("Selection").with_enabled(false),
+                Segment::new("View"),
+            ],
+            0,
+            Rect::new(0.0, 0.0, 300.0, 36.0),
+        );
+        dispatch(&mut g, &cursor_moved(150.0, 18.0));
+        dispatch(&mut g, &mouse_press());
+        assert_eq!(g.selected(), 0, "a click on it chooses nothing");
+        g.set_focus(true);
+        assert!(dispatch(&mut g, &named_key(NamedKey::ArrowRight)));
+        assert_eq!(g.selected(), 2, "the arrow steps over it");
+        assert!(dispatch(&mut g, &named_key(NamedKey::ArrowLeft)));
+        assert_eq!(g.selected(), 0);
+        let node = g.accessibility().expect("a group node");
+        assert!(
+            node.children
+                .get(1)
+                .is_some_and(|segment| segment.state.disabled)
+        );
+    }
+
+    phase toggle_group_selection_follows_pointer_touch_and_keyboard;
+    {
+        let _settled = crate::motion::testing::settled();
+        {
+            let g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
+            assert_eq!(g.selected(), 0);
         }
-    );
+
+        {
+            let captured: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+            let captured_clone = captured.clone();
+            let mut g = group_at(
+                vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
+                0,
+                Rect::new(0.0, 0.0, 300.0, 36.0),
+            )
+            .on_view("choice", move |i| {
+                *captured_clone.borrow_mut() = Some(i);
+            });
+
+            dispatch(&mut g, &cursor_moved(250.0, 18.0));
+            dispatch(&mut g, &mouse_press());
+
+            assert_eq!(
+                crate::testing::answer_controls(&mut g),
+                1,
+                "the choice reaches the group when it is answered"
+            );
+            assert_eq!(g.selected(), 2, "click in segment 2 must select index 2");
+            assert_eq!(
+                *captured.borrow(),
+                Some(2),
+                "the published choice must fire with the new index"
+            );
+        }
+
+        {
+            let changes = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&changes);
+            let mut group = ToggleGroup::new(
+                vec![
+                    Segment::new("One"),
+                    Segment::new("Two"),
+                    Segment::new("Three"),
+                ],
+                0,
+            )
+            .on_view("choice", move |index| captured.borrow_mut().push(index));
+            group.set_focus(true);
+
+            assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
+            crate::testing::answer_controls(&mut group);
+            assert_eq!(group.selected(), 1);
+            assert!(dispatch(&mut group, &named_key(NamedKey::End)));
+            crate::testing::answer_controls(&mut group);
+            assert_eq!(group.selected(), 2);
+            assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
+            crate::testing::answer_controls(&mut group);
+            assert_eq!(group.selected(), 0, "arrow navigation wraps");
+            assert!(dispatch(&mut group, &named_key(NamedKey::Enter)));
+            crate::testing::answer_controls(&mut group);
+            assert_eq!(&*changes.borrow(), &[1, 2, 0]);
+
+            group.set_focus(false);
+            assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
+            assert_eq!(
+                group.selected(),
+                0,
+                "unfocused controls do not consume keys"
+            );
+        }
+
+        {
+            let mut group = group_at(
+                vec![
+                    Segment::new("World"),
+                    Segment::new("Alarms"),
+                    Segment::new("Timers"),
+                ],
+                0,
+                Rect::new(0.0, 0.0, 300.0, 44.0),
+            );
+            dispatch(
+                &mut group,
+                &touch(winit::event::TouchPhase::Started, Point::new(250.0, 22.0)),
+            );
+            assert_eq!(group.selected(), 0, "touch down does not switch a tab");
+            dispatch(
+                &mut group,
+                &touch(winit::event::TouchPhase::Ended, Point::new(250.0, 22.0)),
+            );
+            assert_eq!(group.selected(), 2);
+
+            group.set_focus(true);
+            dispatch(&mut group, &named_key(NamedKey::ArrowRight));
+            assert_eq!(group.selected(), 0, "right arrow wraps to the first tab");
+            dispatch(&mut group, &named_key(NamedKey::End));
+            assert_eq!(group.selected(), 2);
+        }
+
+        {
+            let mut group = group_at(
+                vec![Segment::new("Light"), Segment::new("Dark")],
+                0,
+                Rect::new(0.0, 0.0, 200.0, 44.0),
+            )
+            .on_view("appearance", |_| {});
+            crate::widget::controls::refresh_control_action_availability(
+                &mut group,
+                &std::collections::HashSet::new(),
+            );
+            group.set_focus(true);
+            assert!(!Widget::is_enabled(&group));
+
+            dispatch(&mut group, &cursor_moved(150.0, 22.0));
+            assert!(!dispatch(&mut group, &mouse_press()));
+            assert!(!dispatch(
+                &mut group,
+                &touch(winit::event::TouchPhase::Started, Point::new(150.0, 22.0)),
+            ));
+            assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight),));
+            assert_eq!(group.selected(), 0);
+        }
+    }
+
+    phase accessibility_and_actions_expose_and_drive_the_selected_segment;
+    {
+        let _settled = crate::motion::testing::settled();
+        {
+            use crate::a11y::Role;
+            let g = ToggleGroup::new(
+                vec![
+                    Segment::new("Light"),
+                    Segment::new("Dark"),
+                    Segment::new("Auto"),
+                ],
+                1,
+            );
+            let node = Widget::accessibility(&g).expect("toggle group is not presentational");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name, None, "no intrinsic label on the group");
+            assert_eq!(
+                node.value.as_deref(),
+                Some("Dark"),
+                "value is the selected segment's label",
+            );
+            assert!(node.state.focusable);
+            assert!(!node.state.disabled);
+        }
+
+        {
+            let captured: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+            let mut g = group_at(
+                vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
+                0,
+                Rect::new(0.0, 0.0, 300.0, 36.0),
+            )
+            .on_view("choice", move |i| *captured.borrow_mut() = Some(i));
+
+            assert_eq!(
+                Widget::accessibility(&g).unwrap().value.as_deref(),
+                Some("a")
+            );
+            let segments = Widget::accessibility(&g).unwrap().children;
+            assert_eq!(
+                segments.get(2).and_then(|segment| segment.bounds),
+                g.segment_rects.get(2).map(|rect| (*rect).into()),
+                "each segment is placed where it is drawn"
+            );
+
+            dispatch(&mut g, &cursor_moved(250.0, 18.0));
+            dispatch(&mut g, &mouse_press());
+            assert_eq!(crate::testing::answer_controls(&mut g), 1);
+            assert_eq!(g.selected(), 2);
+            assert_eq!(
+                Widget::accessibility(&g).unwrap().value.as_deref(),
+                Some("c")
+            );
+        }
+
+        {
+            let changed = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&changed);
+            let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
+                .on_view("choice", move |index| captured.borrow_mut().push(index));
+
+            assert!(Widget::perform_semantic_action(
+                &mut group,
+                "choice:segment:1",
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &automerge::ROOT,
+            ));
+            assert_eq!(crate::testing::answer_controls(&mut group), 1);
+            assert_eq!(group.selected(), 1);
+            assert_eq!(&*changed.borrow(), &[1]);
+        }
+
+        {
+            let changed = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&changed);
+            let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
+                .on_view("appearance", move |index| captured.borrow_mut().push(index));
+
+            let resources = crate::resources::resources(&group, &AutoCommit::new());
+            assert_eq!(resources.len(), 1);
+            let resource = &resources[0];
+            assert_eq!(resource.id.as_str(), "tilo.control:appearance");
+            assert_eq!(resource.actions.len(), 1);
+            let spec = &resource.actions[0];
+            assert_eq!(spec.kind, crate::tilo_actions::OperationKind::View);
+            assert_eq!(spec.params()[0].name, "index");
+
+            assert!(Widget::perform_semantic_action(
+                &mut group,
+                "appearance:segment:1",
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                group.selected(),
+                0,
+                "UI intent does not bypass the action host"
+            );
+            assert!(changed.borrow().is_empty());
+
+            let invocation = crate::widget::controls::take_control_invocation(&mut group).unwrap();
+            assert_eq!(
+                invocation.address,
+                crate::tilo_actions::ActionAddress::new("tilo.control:appearance", "select")
+            );
+            assert_eq!(invocation.arguments["index"], 1);
+            let encoded = spec.build_json(&invocation.arguments).unwrap();
+            assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
+            let output = crate::widget::start_operation(
+                &mut group,
+                &crate::widget::ResourceOperation::local(
+                    crate::tilo_actions::InvocationId::new(),
+                    crate::tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &automerge::ROOT,
+            )
+            .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
+            .unwrap();
+            assert!(output.is_some());
+            assert_eq!(group.selected(), 1);
+            assert_eq!(&*changed.borrow(), &[1]);
+        }
+    }
+
+    phase a_multi_select_toggle_runs_its_action_with_the_chosen_indices;
+    {
+        use crate::widget::controls::ActionControls;
+        let mut g = ToggleGroup::multiple(
+            vec![
+                Segment::new("Mon"),
+                Segment::new("Tue"),
+                Segment::new("Wed"),
+            ],
+            vec![true, false, false],
+        )
+        .with_id("days")
+        .on_chosen_action(crate::widget::test_value_action_binding(
+            tilo_actions::ParamType::Array,
+        ));
+        assert_eq!(
+            g.control_action_bindings()
+                .iter()
+                .map(|binding| binding.control_id.as_str())
+                .collect::<Vec<_>>(),
+            ["days:segment:0", "days:segment:1", "days:segment:2"]
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut g,
+            "days:segment:2",
+            &crate::a11y::Action::ToggleCheck,
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT,
+        ));
+        let invocation = g
+            .take_control_invocation()
+            .expect("the toggle runs the action");
+        assert_eq!(
+            invocation.arguments.get("value"),
+            Some(&serde_json::json!([0, 2]))
+        );
+        assert_eq!(
+            g.chosen().map(<[bool]>::to_vec),
+            Some(vec![true, false, false]),
+            "the strip shows the new set once the app hands it back"
+        );
+        g.refresh_control_action_availability(&std::collections::HashSet::new());
+        assert!(
+            !Widget::is_enabled(&g),
+            "an unavailable action disables the strip"
+        );
+    }
+
+    phase a_strip_of_choices_runs_the_choice_pressed_and_holds_what_the_setting_says;
+    // A strip whose choices each run their own action — a setting's cases — runs the choice pressed
+    // and chooses nothing itself: what it fills is the case the setting holds, which the app sets.
+    {
+        fn binding(edge: &str) -> crate::tilo_actions::ActionBinding<()> {
+            let spec = crate::tilo_actions::ActionSpec::typed_operation(
+                format!("dock_{edge}"),
+                "Dock edge",
+                "Move the dock",
+                crate::tilo_actions::OperationKind::Effect,
+                "fixture.edge",
+                vec![],
+                |_| crate::tilo_actions::EncodedAction::encode_operation("fixture.edge", &()).unwrap(),
+            );
+            let resource = crate::tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture")
+                .with_action(spec.clone());
+            crate::tilo_actions::ActionBinding::new(&resource, &spec, |()| serde_json::Map::new())
+                .unwrap()
+        }
+        let edges = ["top", "bottom", "left", "right"];
+        let mut group = ToggleGroup::new(edges.iter().map(|edge| Segment::new(*edge)).collect(), 1);
+        group.set_presses(
+            edges
+                .iter()
+                .map(|edge| Press::Action(crate::widget::ActionEmitter::new(binding(edge))))
+                .collect(),
+        );
+        let mut text = TextRenderer::new();
+        group.adopt_theme(&Theme::dark());
+        group.measure_naturals(&mut text);
+        group.apply_layout_external(Rect::new(0.0, 0.0, 344.0, 36.0));
+
+        assert!(Widget::perform_semantic_action(
+            &mut group,
+            "segment:2",
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            group.selected(),
+            1,
+            "the strip holds the case the setting says, not the one pressed"
+        );
+        let invocation = crate::widget::controls::take_control_invocation(&mut group)
+            .expect("the choice pressed queues its own action");
+        assert_eq!(
+            invocation.address,
+            crate::tilo_actions::ActionAddress::new("fixture", "dock_left")
+        );
+        assert!(
+            crate::widget::controls::take_control_invocation(&mut group).is_none(),
+            "one press runs one choice"
+        );
+    }
 }
 
 fn group_at(segments: Vec<Segment>, selected: usize, rect: Rect) -> ToggleGroup {
@@ -156,77 +565,342 @@ fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
     })
 }
 
-#[test]
-fn a_vertical_rail_stacks_square_segments_bound_to_view_state() {
-    let _settled = crate::motion::testing::settled();
-    let state = crate::LocalState::new('b');
-    let mut rail = ToggleGroup::from_state(
-        vec![
-            (
-                'a',
-                Segment::new("Select")
-                    .with_icon(Icon::MousePointer2)
-                    .with_hint("V"),
-            ),
-            (
-                'b',
-                Segment::new("Brush").with_icon(Icon::Brush).with_hint("B"),
-            ),
-            ('c', Segment::icon(Icon::Type, "Text")),
-        ],
-        &state,
-    )
-    .vertical();
-    assert_eq!(
-        rail.selected(),
-        1,
-        "the state's value is the chosen segment"
-    );
-    rail.apply_layout_external(Rect::new(0.0, 0.0, 40.0, 128.0));
-    let rects = rail.segment_rects.clone();
-    assert_eq!(rects.len(), 3);
-    assert!(
-        rects
-            .iter()
-            .all(|rect| (rect.width() - rect.height()).abs() < 1e-9)
-    );
-    assert!(
-        (rects[2].y1 - 128.0).abs() < 1e-9,
-        "the gaps share the rest"
-    );
+tilo_test_env::scenario! {
+    fn a_strip_lays_out_and_colours_its_segments;
 
-    dispatch(&mut rail, &cursor_moved(20.0, rects[2].center().y));
-    dispatch(&mut rail, &mouse_press());
-    assert_eq!(state.with(|value| *value), 'c');
+    phase a_vertical_rail_stacks_square_segments_bound_to_view_state;
+    {
+        let _settled = crate::motion::testing::settled();
+        let state = crate::LocalState::new('b');
+        let mut rail = ToggleGroup::from_state(
+            vec![
+                (
+                    'a',
+                    Segment::new("Select")
+                        .with_icon(Icon::MousePointer2)
+                        .with_hint("V"),
+                ),
+                (
+                    'b',
+                    Segment::new("Brush").with_icon(Icon::Brush).with_hint("B"),
+                ),
+                ('c', Segment::icon(Icon::Type, "Text")),
+            ],
+            &state,
+        )
+        .vertical();
+        assert_eq!(
+            rail.selected(),
+            1,
+            "the state's value is the chosen segment"
+        );
+        rail.apply_layout_external(Rect::new(0.0, 0.0, 40.0, 128.0));
+        let rects = rail.segment_rects.clone();
+        assert_eq!(rects.len(), 3);
+        assert!(
+            rects
+                .iter()
+                .all(|rect| (rect.width() - rect.height()).abs() < 1e-9)
+        );
+        assert!(
+            (rects[2].y1 - 128.0).abs() < 1e-9,
+            "the gaps share the rest"
+        );
 
-    state.set('a');
-    let doc = AutoCommit::new();
-    Widget::sync(&mut rail, &doc, &automerge::ROOT);
-    assert_eq!(rail.selected(), 0);
+        dispatch(&mut rail, &cursor_moved(20.0, rects[2].center().y));
+        dispatch(&mut rail, &mouse_press());
+        assert_eq!(state.with(|value| *value), 'c');
 
-    let (_, tip) = rail
-        .tooltip_target_at(rects[0].center())
-        .expect("an icon segment has a tooltip");
-    assert_eq!(tip, "Select  V");
-}
+        state.set('a');
+        let doc = AutoCommit::new();
+        Widget::sync(&mut rail, &doc, &automerge::ROOT);
+        assert_eq!(rail.selected(), 0);
 
-#[test]
-fn a_press_focuses_without_a_ring_until_the_keys_are_used() {
-    let _settled = crate::motion::testing::settled();
-    let mut g = group_at(
-        vec![Segment::new("A"), Segment::new("B")],
-        0,
-        Rect::new(0.0, 0.0, 200.0, 32.0),
-    );
-    dispatch(&mut g, &cursor_moved(150.0, 16.0));
-    dispatch(&mut g, &mouse_press());
-    g.set_focus(true);
-    assert!(!g.focus_visible(), "a click shows no focus ring");
-    dispatch(&mut g, &named_key(NamedKey::ArrowLeft));
-    assert!(g.focus_visible(), "the keys bring the ring back");
-    g.set_focus(false);
-    g.set_focus(true);
-    assert!(g.focus_visible(), "keyboard focus shows the ring");
+        let (_, tip) = rail
+            .tooltip_target_at(rects[0].center())
+            .expect("an icon segment has a tooltip");
+        assert_eq!(tip, "Select  V");
+    }
+
+    phase hovering_a_segment_of_a_single_choice_draws_no_second_pill;
+    {
+        let segments = [
+            Rect::new(0.0, 0.0, 100.0, 32.0),
+            Rect::new(100.0, 0.0, 200.0, 32.0),
+            Rect::new(200.0, 0.0, 300.0, 32.0),
+        ];
+        let items = [
+            Segment::new("Small"),
+            Segment::new("Default"),
+            Segment::new("Large"),
+        ];
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut text = TextRenderer::new();
+            let mut drawn = |hovered: Option<usize>, chosen: Option<&[bool]>| {
+                let mut face = SegmentedFace::of_segments(&segments, &items, 1).hovered(hovered);
+                if let Some(chosen) = chosen {
+                    face = face.chosen(chosen);
+                }
+                let mut scene = Scene::new();
+                ToggleGroup::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
+                scene.encoding().draw_data.clone()
+            };
+            assert_eq!(
+                drawn(Some(2), None),
+                drawn(None, None),
+                "{}: the pointer over Large draws nothing beside the chosen Default",
+                theme.name
+            );
+            let chosen = [false, true, false];
+            assert_ne!(
+                drawn(Some(2), Some(&chosen)),
+                drawn(None, Some(&chosen)),
+                "{}: a multi-select strip lifts the segment under the pointer",
+                theme.name
+            );
+        }
+    }
+
+    phase segment_colours_follow_selection_focus_and_style;
+    {
+        let _settled = crate::motion::testing::settled();
+        {
+            let theme = Theme::high_contrast();
+            let unfocused = group_draw_data(false, &theme);
+            let focused = group_draw_data(true, &theme);
+            assert_ne!(
+                unfocused, focused,
+                "focusing the group must change the border colour in the encoded scene",
+            );
+        }
+
+        // Case `the_chosen_segment_is_a_lift_with_readable_ink`: the thumb is
+        // its style's selector lift (on a light raised track the one white
+        // object in the well), tinted at most by the accent's faint hue.
+        {
+            use crate::a11y::contrast_ratio;
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let colors = &theme.tokens.colors;
+                for (style, ground) in [
+                    (SegmentedStyle::Segmented, colors.surfaces.raised),
+                    (SegmentedStyle::Tabs, colors.surfaces.content),
+                    (SegmentedStyle::Quiet, colors.surfaces.content),
+                ] {
+                    let (fill, ink) = segment_colors(&theme, style, true, false);
+                    let fill = fill.expect("the chosen segment is lifted");
+                    assert_eq!(
+                        fill,
+                        segment_tier(&theme, style, SelectionState::active(true)).fill,
+                        "{} {style:?}: the thumb is its style's selector lift",
+                        theme.name
+                    );
+                    let chroma = crate::color::Oklch::from_color(fill).c;
+                    assert!(
+                        chroma <= crate::tokens::palette::TINTED_LIFT_CHROMA + 0.01,
+                        "{} {style:?}: the chosen segment carries more than a faint tint ({chroma})",
+                        theme.name
+                    );
+                    assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
+                    let (idle, idle_ink) = segment_colors(&theme, style, false, false);
+                    assert_eq!(idle, None, "{}: an idle segment paints nothing", theme.name);
+                    assert!(
+                        contrast_ratio(idle_ink, ground) < contrast_ratio(colors.text_primary, ground),
+                        "{} {style:?}: an idle label is quieter than the chosen one",
+                        theme.name
+                    );
+                    let (hover, hover_ink) = segment_colors(&theme, style, false, true);
+                    assert!(hover.is_some(), "a hovered segment lifts");
+                    assert_eq!(hover_ink, idle_ink, "the label holds its colour on hover");
+                }
+                let (fill, _) = segment_colors(&theme, SegmentedStyle::Tabs, true, false);
+                assert_eq!(
+                    fill,
+                    Some(
+                        crate::chrome::selector_tier(
+                            &theme,
+                            SelectionState::active(true),
+                            colors.surfaces.content
+                        )
+                        .fill
+                    ),
+                    "{}: a chosen tab is the selector lift of the window ground",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    phase strips_choose_nothing_many_or_icons_and_tabs_start_flush;
+    {
+        fn nothing_chosen_until_the_person_picks() {
+            let mut g = group_at(
+                vec![Segment::new("Low"), Segment::new("High")],
+                NONE_CHOSEN,
+                Rect::new(0.0, 0.0, 200.0, 32.0),
+            );
+            assert_eq!(g.selection(), None);
+            assert_eq!(g.separator_count(), 1);
+            let node = g.accessibility().expect("semantics");
+            assert_eq!(node.value, None);
+            g.set_focus(true);
+            dispatch(&mut g, &named_key(NamedKey::ArrowRight));
+            assert_eq!(g.selection(), Some(0), "the first arrow chooses the first");
+            g.set_selection(None);
+            assert_eq!(g.selected(), NONE_CHOSEN);
+        }
+
+        fn a_bound_selection_follows_its_state_both_ways() {
+            let state = crate::LocalState::new(1usize);
+            let mut g =
+                ToggleGroup::new(vec![Segment::new("A"), Segment::new("B")], 0).bind_selection(&state);
+            assert_eq!(g.selected(), 1);
+            g.rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+            g.segment_rects = partition(g.rect, 2);
+            dispatch(&mut g, &cursor_moved(20.0, 16.0));
+            dispatch(&mut g, &mouse_press());
+            assert_eq!(state.get(), 0);
+            state.set(1);
+            g.sync(&AutoCommit::new(), &automerge::ROOT);
+            assert_eq!(g.selected(), 1);
+        }
+
+        fn many_toggle_on_their_own_and_wrap() {
+            let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+            let state = crate::LocalState::new(std::collections::BTreeSet::from([0_usize]));
+            let mut g = ToggleGroup::multiple_from_state(
+                days.iter()
+                    .enumerate()
+                    .map(|(index, d)| (index, Segment::new(*d)))
+                    .collect(),
+                &state,
+            );
+            let mut text = TextRenderer::new();
+            g.measure_naturals(&mut text);
+            g.apply_layout_external(Rect::new(0.0, 0.0, 160.0, 200.0));
+            assert!(g.rows > 1, "seven toggles wrap in 160 px: {} rows", g.rows);
+            let second = g.segment_rects[1];
+            dispatch(&mut g, &cursor_moved(second.center().x, second.center().y));
+            dispatch(&mut g, &mouse_press());
+            assert_eq!(state.get(), std::collections::BTreeSet::from([0, 1]));
+            let node = g.accessibility().expect("semantics");
+            assert_eq!(node.children[1].state.checked, Some(true));
+            state.set(std::collections::BTreeSet::from([6]));
+            g.sync(&AutoCommit::new(), &automerge::ROOT);
+            assert_eq!(
+                g.chosen().map(<[bool]>::to_vec),
+                Some(vec![false, false, false, false, false, false, true])
+            );
+        }
+
+        fn icon_segments_are_named_and_square() {
+            let segments = vec![
+                Segment::icon(crate::icons::Icon::List, "List"),
+                Segment::icon(crate::icons::Icon::LayoutGrid, "Grid"),
+            ];
+            let mut g = ToggleGroup::new(segments, 0);
+            let mut text = TextRenderer::new();
+            g.measure_naturals(&mut text);
+            assert!((g.naturals[0].0 - g.metrics.height.ceil()).abs() < 1e-9);
+            let node = g.accessibility().expect("semantics");
+            assert_eq!(node.children[1].name.as_deref(), Some("Grid"));
+        }
+
+        fn a_disabled_strip_takes_no_input() {
+            let mut g = group_at(
+                vec![Segment::new("A"), Segment::new("B")],
+                0,
+                Rect::new(0.0, 0.0, 200.0, 32.0),
+            )
+            .with_enabled(false);
+            dispatch(&mut g, &cursor_moved(150.0, 16.0));
+            dispatch(&mut g, &mouse_press());
+            assert_eq!(g.selected(), 0);
+            assert!(!g.is_focusable());
+        }
+
+        fn tabs_start_on_the_leading_edge_and_scroll_when_long() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let labels: Vec<Segment> = ["Overview", "Activity", "Settings", "Members", "Billing"]
+                .iter()
+                .map(|l| Segment::new(*l))
+                .collect();
+            let rects = SegmentedFace::partition_segments(
+                Rect::new(10.0, 0.0, 600.0, 32.0),
+                &labels,
+                SegmentedStyle::Tabs,
+                ControlSize::Regular,
+                &mut text,
+                &theme,
+            );
+            assert!((rects[0].x0 - 10.0).abs() < 1e-9);
+            let metrics = StripMetrics::of(ControlSize::Regular, &theme);
+            let (x0, _) = tab_label_span(&rects[0], "Overview", &metrics, &mut text);
+            assert!(
+                (x0 - 10.0 - metrics.pad_x).abs() < 1e-9,
+                "the first label sits its padding inside the first tab"
+            );
+
+            let mut g = ToggleGroup::new(labels, 4).with_style(SegmentedStyle::Tabs);
+            g.metrics = metrics.clone();
+            g.measure_naturals(&mut text);
+            g.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
+            assert!(g.overflows());
+            g.reveal(4);
+            let last = g.segment_rects[4];
+            assert!(
+                last.x1 <= 200.0 + 1e-6 && last.x0 >= 0.0,
+                "the chosen tab scrolls into view: {last:?}"
+            );
+
+            let named = |short: bool| -> Vec<Segment> {
+                [("Privacy & Security", "Privacy"), ("Apps & Files", "Apps")]
+                    .iter()
+                    .map(|(full, brief)| {
+                        let tab = Segment::new(*full);
+                        if short { tab.short(*brief) } else { tab }
+                    })
+                    .collect()
+            };
+            let mut g = ToggleGroup::new(named(true), 0).with_style(SegmentedStyle::Tabs);
+            g.metrics = metrics.clone();
+            g.measure_naturals(&mut text);
+            g.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 32.0));
+            assert_eq!(g.shown_labels(), ["Privacy & Security", "Apps & Files"]);
+            let full_width = g.segment_rects[1].x1;
+            let room = full_width - 1.0;
+            g.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
+            assert_eq!(g.shown_labels(), ["Privacy", "Apps"]);
+            assert!(!g.overflows(), "the short labels fit");
+            assert!(g.segment_rects[1].x1 <= room + 1e-6);
+            let mut plain = ToggleGroup::new(named(false), 0).with_style(SegmentedStyle::Tabs);
+            plain.metrics = metrics;
+            plain.measure_naturals(&mut text);
+            plain.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
+            assert!(plain.overflows(), "without short labels the strip scrolls");
+        }
+
+        fn a_caption_names_the_strip_and_sits_above_it() {
+            let mut g =
+                ToggleGroup::new(vec![Segment::new("A"), Segment::new("B")], 0).caption("Repeat");
+            g.adopt_theme(&Theme::dark());
+            g.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 60.0));
+            assert!(g.rect.y0 > 0.0);
+            assert_eq!(
+                g.accessibility().and_then(|n| n.name).as_deref(),
+                Some("Repeat")
+            );
+        }
+
+        let _settled = crate::motion::testing::settled();
+        nothing_chosen_until_the_person_picks();
+        a_bound_selection_follows_its_state_both_ways();
+        many_toggle_on_their_own_and_wrap();
+        icon_segments_are_named_and_square();
+        a_disabled_strip_takes_no_input();
+        tabs_start_on_the_leading_edge_and_scroll_when_long();
+        a_caption_names_the_strip_and_sits_above_it();
+    }
 }
 
 #[test]
@@ -438,159 +1112,6 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
 }
 
 #[test]
-fn a_disabled_segment_is_never_chosen_and_the_keys_step_over_it() {
-    let _settled = crate::motion::testing::settled();
-    let mut g = group_at(
-        vec![
-            Segment::new("Whole"),
-            Segment::new("Selection").with_enabled(false),
-            Segment::new("View"),
-        ],
-        0,
-        Rect::new(0.0, 0.0, 300.0, 36.0),
-    );
-    dispatch(&mut g, &cursor_moved(150.0, 18.0));
-    dispatch(&mut g, &mouse_press());
-    assert_eq!(g.selected(), 0, "a click on it chooses nothing");
-    g.set_focus(true);
-    assert!(dispatch(&mut g, &named_key(NamedKey::ArrowRight)));
-    assert_eq!(g.selected(), 2, "the arrow steps over it");
-    assert!(dispatch(&mut g, &named_key(NamedKey::ArrowLeft)));
-    assert_eq!(g.selected(), 0);
-    let node = g.accessibility().expect("a group node");
-    assert!(
-        node.children
-            .get(1)
-            .is_some_and(|segment| segment.state.disabled)
-    );
-}
-
-#[test]
-fn toggle_group_selection_follows_pointer_touch_and_keyboard() {
-    let _settled = crate::motion::testing::settled();
-    {
-        let g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
-        assert_eq!(g.selected(), 0);
-    }
-
-    {
-        let captured: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-        let captured_clone = captured.clone();
-        let mut g = group_at(
-            vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
-            0,
-            Rect::new(0.0, 0.0, 300.0, 36.0),
-        )
-        .on_view("choice", move |i| {
-            *captured_clone.borrow_mut() = Some(i);
-        });
-
-        dispatch(&mut g, &cursor_moved(250.0, 18.0));
-        dispatch(&mut g, &mouse_press());
-
-        assert_eq!(
-            crate::testing::answer_controls(&mut g),
-            1,
-            "the choice reaches the group when it is answered"
-        );
-        assert_eq!(g.selected(), 2, "click in segment 2 must select index 2");
-        assert_eq!(
-            *captured.borrow(),
-            Some(2),
-            "the published choice must fire with the new index"
-        );
-    }
-
-    {
-        let changes = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&changes);
-        let mut group = ToggleGroup::new(
-            vec![
-                Segment::new("One"),
-                Segment::new("Two"),
-                Segment::new("Three"),
-            ],
-            0,
-        )
-        .on_view("choice", move |index| captured.borrow_mut().push(index));
-        group.set_focus(true);
-
-        assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
-        crate::testing::answer_controls(&mut group);
-        assert_eq!(group.selected(), 1);
-        assert!(dispatch(&mut group, &named_key(NamedKey::End)));
-        crate::testing::answer_controls(&mut group);
-        assert_eq!(group.selected(), 2);
-        assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
-        crate::testing::answer_controls(&mut group);
-        assert_eq!(group.selected(), 0, "arrow navigation wraps");
-        assert!(dispatch(&mut group, &named_key(NamedKey::Enter)));
-        crate::testing::answer_controls(&mut group);
-        assert_eq!(&*changes.borrow(), &[1, 2, 0]);
-
-        group.set_focus(false);
-        assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
-        assert_eq!(
-            group.selected(),
-            0,
-            "unfocused controls do not consume keys"
-        );
-    }
-
-    {
-        let mut group = group_at(
-            vec![
-                Segment::new("World"),
-                Segment::new("Alarms"),
-                Segment::new("Timers"),
-            ],
-            0,
-            Rect::new(0.0, 0.0, 300.0, 44.0),
-        );
-        dispatch(
-            &mut group,
-            &touch(winit::event::TouchPhase::Started, Point::new(250.0, 22.0)),
-        );
-        assert_eq!(group.selected(), 0, "touch down does not switch a tab");
-        dispatch(
-            &mut group,
-            &touch(winit::event::TouchPhase::Ended, Point::new(250.0, 22.0)),
-        );
-        assert_eq!(group.selected(), 2);
-
-        group.set_focus(true);
-        dispatch(&mut group, &named_key(NamedKey::ArrowRight));
-        assert_eq!(group.selected(), 0, "right arrow wraps to the first tab");
-        dispatch(&mut group, &named_key(NamedKey::End));
-        assert_eq!(group.selected(), 2);
-    }
-
-    {
-        let mut group = group_at(
-            vec![Segment::new("Light"), Segment::new("Dark")],
-            0,
-            Rect::new(0.0, 0.0, 200.0, 44.0),
-        )
-        .on_view("appearance", |_| {});
-        crate::widget::controls::refresh_control_action_availability(
-            &mut group,
-            &std::collections::HashSet::new(),
-        );
-        group.set_focus(true);
-        assert!(!Widget::is_enabled(&group));
-
-        dispatch(&mut group, &cursor_moved(150.0, 22.0));
-        assert!(!dispatch(&mut group, &mouse_press()));
-        assert!(!dispatch(
-            &mut group,
-            &touch(winit::event::TouchPhase::Started, Point::new(150.0, 22.0)),
-        ));
-        assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight),));
-        assert_eq!(group.selected(), 0);
-    }
-}
-
-#[test]
 fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
     use crate::time::testing::with_monotonic_time;
     let strip = std::env::var_os("TILO_SEGMENT_FRAMES").map(std::path::PathBuf::from);
@@ -703,45 +1224,6 @@ fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
 }
 
 #[test]
-fn hovering_a_segment_of_a_single_choice_draws_no_second_pill() {
-    let segments = [
-        Rect::new(0.0, 0.0, 100.0, 32.0),
-        Rect::new(100.0, 0.0, 200.0, 32.0),
-        Rect::new(200.0, 0.0, 300.0, 32.0),
-    ];
-    let items = [
-        Segment::new("Small"),
-        Segment::new("Default"),
-        Segment::new("Large"),
-    ];
-    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let mut text = TextRenderer::new();
-        let mut drawn = |hovered: Option<usize>, chosen: Option<&[bool]>| {
-            let mut face = SegmentedFace::of_segments(&segments, &items, 1).hovered(hovered);
-            if let Some(chosen) = chosen {
-                face = face.chosen(chosen);
-            }
-            let mut scene = Scene::new();
-            ToggleGroup::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
-            scene.encoding().draw_data.clone()
-        };
-        assert_eq!(
-            drawn(Some(2), None),
-            drawn(None, None),
-            "{}: the pointer over Large draws nothing beside the chosen Default",
-            theme.name
-        );
-        let chosen = [false, true, false];
-        assert_ne!(
-            drawn(Some(2), Some(&chosen)),
-            drawn(None, Some(&chosen)),
-            "{}: a multi-select strip lifts the segment under the pointer",
-            theme.name
-        );
-    }
-}
-
-#[test]
 fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
     use crate::time::testing::with_monotonic_time;
     use crate::tokens::MotionSource;
@@ -833,424 +1315,6 @@ fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
     let mut scene = Scene::new();
     g.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     scene.encoding().draw_data.clone()
-}
-
-#[test]
-fn segment_colours_follow_selection_focus_and_style() {
-    let _settled = crate::motion::testing::settled();
-    {
-        let theme = Theme::high_contrast();
-        let unfocused = group_draw_data(false, &theme);
-        let focused = group_draw_data(true, &theme);
-        assert_ne!(
-            unfocused, focused,
-            "focusing the group must change the border colour in the encoded scene",
-        );
-    }
-
-    // Case `the_chosen_segment_is_a_lift_with_readable_ink`: the thumb is
-    // its style's selector lift (on a light raised track the one white
-    // object in the well), tinted at most by the accent's faint hue.
-    {
-        use crate::a11y::contrast_ratio;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let colors = &theme.tokens.colors;
-            for (style, ground) in [
-                (SegmentedStyle::Segmented, colors.surfaces.raised),
-                (SegmentedStyle::Tabs, colors.surfaces.content),
-                (SegmentedStyle::Quiet, colors.surfaces.content),
-            ] {
-                let (fill, ink) = segment_colors(&theme, style, true, false);
-                let fill = fill.expect("the chosen segment is lifted");
-                assert_eq!(
-                    fill,
-                    segment_tier(&theme, style, SelectionState::active(true)).fill,
-                    "{} {style:?}: the thumb is its style's selector lift",
-                    theme.name
-                );
-                let chroma = crate::color::Oklch::from_color(fill).c;
-                assert!(
-                    chroma <= crate::tokens::palette::TINTED_LIFT_CHROMA + 0.01,
-                    "{} {style:?}: the chosen segment carries more than a faint tint ({chroma})",
-                    theme.name
-                );
-                assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
-                let (idle, idle_ink) = segment_colors(&theme, style, false, false);
-                assert_eq!(idle, None, "{}: an idle segment paints nothing", theme.name);
-                assert!(
-                    contrast_ratio(idle_ink, ground) < contrast_ratio(colors.text_primary, ground),
-                    "{} {style:?}: an idle label is quieter than the chosen one",
-                    theme.name
-                );
-                let (hover, hover_ink) = segment_colors(&theme, style, false, true);
-                assert!(hover.is_some(), "a hovered segment lifts");
-                assert_eq!(hover_ink, idle_ink, "the label holds its colour on hover");
-            }
-            let (fill, _) = segment_colors(&theme, SegmentedStyle::Tabs, true, false);
-            assert_eq!(
-                fill,
-                Some(
-                    crate::chrome::selector_tier(
-                        &theme,
-                        SelectionState::active(true),
-                        colors.surfaces.content
-                    )
-                    .fill
-                ),
-                "{}: a chosen tab is the selector lift of the window ground",
-                theme.name
-            );
-        }
-    }
-}
-
-#[test]
-fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
-    let _settled = crate::motion::testing::settled();
-    {
-        use crate::a11y::Role;
-        let g = ToggleGroup::new(
-            vec![
-                Segment::new("Light"),
-                Segment::new("Dark"),
-                Segment::new("Auto"),
-            ],
-            1,
-        );
-        let node = Widget::accessibility(&g).expect("toggle group is not presentational");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name, None, "no intrinsic label on the group");
-        assert_eq!(
-            node.value.as_deref(),
-            Some("Dark"),
-            "value is the selected segment's label",
-        );
-        assert!(node.state.focusable);
-        assert!(!node.state.disabled);
-    }
-
-    {
-        let captured: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-        let mut g = group_at(
-            vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
-            0,
-            Rect::new(0.0, 0.0, 300.0, 36.0),
-        )
-        .on_view("choice", move |i| *captured.borrow_mut() = Some(i));
-
-        assert_eq!(
-            Widget::accessibility(&g).unwrap().value.as_deref(),
-            Some("a")
-        );
-        let segments = Widget::accessibility(&g).unwrap().children;
-        assert_eq!(
-            segments.get(2).and_then(|segment| segment.bounds),
-            g.segment_rects.get(2).map(|rect| (*rect).into()),
-            "each segment is placed where it is drawn"
-        );
-
-        dispatch(&mut g, &cursor_moved(250.0, 18.0));
-        dispatch(&mut g, &mouse_press());
-        assert_eq!(crate::testing::answer_controls(&mut g), 1);
-        assert_eq!(g.selected(), 2);
-        assert_eq!(
-            Widget::accessibility(&g).unwrap().value.as_deref(),
-            Some("c")
-        );
-    }
-
-    {
-        let changed = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&changed);
-        let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
-            .on_view("choice", move |index| captured.borrow_mut().push(index));
-
-        assert!(Widget::perform_semantic_action(
-            &mut group,
-            "choice:segment:1",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-            &automerge::ROOT,
-        ));
-        assert_eq!(crate::testing::answer_controls(&mut group), 1);
-        assert_eq!(group.selected(), 1);
-        assert_eq!(&*changed.borrow(), &[1]);
-    }
-
-    {
-        let changed = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&changed);
-        let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
-            .on_view("appearance", move |index| captured.borrow_mut().push(index));
-
-        let resources = crate::resources::resources(&group, &AutoCommit::new());
-        assert_eq!(resources.len(), 1);
-        let resource = &resources[0];
-        assert_eq!(resource.id.as_str(), "tilo.control:appearance");
-        assert_eq!(resource.actions.len(), 1);
-        let spec = &resource.actions[0];
-        assert_eq!(spec.kind, crate::tilo_actions::OperationKind::View);
-        assert_eq!(spec.params()[0].name, "index");
-
-        assert!(Widget::perform_semantic_action(
-            &mut group,
-            "appearance:segment:1",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            group.selected(),
-            0,
-            "UI intent does not bypass the action host"
-        );
-        assert!(changed.borrow().is_empty());
-
-        let invocation = crate::widget::controls::take_control_invocation(&mut group).unwrap();
-        assert_eq!(
-            invocation.address,
-            crate::tilo_actions::ActionAddress::new("tilo.control:appearance", "select")
-        );
-        assert_eq!(invocation.arguments["index"], 1);
-        let encoded = spec.build_json(&invocation.arguments).unwrap();
-        assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
-        let output = crate::widget::start_operation(
-            &mut group,
-            &crate::widget::ResourceOperation::local(
-                crate::tilo_actions::InvocationId::new(),
-                crate::tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-            &automerge::ROOT,
-        )
-        .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
-        .unwrap();
-        assert!(output.is_some());
-        assert_eq!(group.selected(), 1);
-        assert_eq!(&*changed.borrow(), &[1]);
-    }
-}
-
-#[test]
-fn strips_choose_nothing_many_or_icons_and_tabs_start_flush() {
-    fn nothing_chosen_until_the_person_picks() {
-        let mut g = group_at(
-            vec![Segment::new("Low"), Segment::new("High")],
-            NONE_CHOSEN,
-            Rect::new(0.0, 0.0, 200.0, 32.0),
-        );
-        assert_eq!(g.selection(), None);
-        assert_eq!(g.separator_count(), 1);
-        let node = g.accessibility().expect("semantics");
-        assert_eq!(node.value, None);
-        g.set_focus(true);
-        dispatch(&mut g, &named_key(NamedKey::ArrowRight));
-        assert_eq!(g.selection(), Some(0), "the first arrow chooses the first");
-        g.set_selection(None);
-        assert_eq!(g.selected(), NONE_CHOSEN);
-    }
-
-    fn a_bound_selection_follows_its_state_both_ways() {
-        let state = crate::LocalState::new(1usize);
-        let mut g =
-            ToggleGroup::new(vec![Segment::new("A"), Segment::new("B")], 0).bind_selection(&state);
-        assert_eq!(g.selected(), 1);
-        g.rect = Rect::new(0.0, 0.0, 200.0, 32.0);
-        g.segment_rects = partition(g.rect, 2);
-        dispatch(&mut g, &cursor_moved(20.0, 16.0));
-        dispatch(&mut g, &mouse_press());
-        assert_eq!(state.get(), 0);
-        state.set(1);
-        g.sync(&AutoCommit::new(), &automerge::ROOT);
-        assert_eq!(g.selected(), 1);
-    }
-
-    fn many_toggle_on_their_own_and_wrap() {
-        let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-        let state = crate::LocalState::new(std::collections::BTreeSet::from([0_usize]));
-        let mut g = ToggleGroup::multiple_from_state(
-            days.iter()
-                .enumerate()
-                .map(|(index, d)| (index, Segment::new(*d)))
-                .collect(),
-            &state,
-        );
-        let mut text = TextRenderer::new();
-        g.measure_naturals(&mut text);
-        g.apply_layout_external(Rect::new(0.0, 0.0, 160.0, 200.0));
-        assert!(g.rows > 1, "seven toggles wrap in 160 px: {} rows", g.rows);
-        let second = g.segment_rects[1];
-        dispatch(&mut g, &cursor_moved(second.center().x, second.center().y));
-        dispatch(&mut g, &mouse_press());
-        assert_eq!(state.get(), std::collections::BTreeSet::from([0, 1]));
-        let node = g.accessibility().expect("semantics");
-        assert_eq!(node.children[1].state.checked, Some(true));
-        state.set(std::collections::BTreeSet::from([6]));
-        g.sync(&AutoCommit::new(), &automerge::ROOT);
-        assert_eq!(
-            g.chosen().map(<[bool]>::to_vec),
-            Some(vec![false, false, false, false, false, false, true])
-        );
-    }
-
-    fn icon_segments_are_named_and_square() {
-        let segments = vec![
-            Segment::icon(crate::icons::Icon::List, "List"),
-            Segment::icon(crate::icons::Icon::LayoutGrid, "Grid"),
-        ];
-        let mut g = ToggleGroup::new(segments, 0);
-        let mut text = TextRenderer::new();
-        g.measure_naturals(&mut text);
-        assert!((g.naturals[0].0 - g.metrics.height.ceil()).abs() < 1e-9);
-        let node = g.accessibility().expect("semantics");
-        assert_eq!(node.children[1].name.as_deref(), Some("Grid"));
-    }
-
-    fn a_disabled_strip_takes_no_input() {
-        let mut g = group_at(
-            vec![Segment::new("A"), Segment::new("B")],
-            0,
-            Rect::new(0.0, 0.0, 200.0, 32.0),
-        )
-        .with_enabled(false);
-        dispatch(&mut g, &cursor_moved(150.0, 16.0));
-        dispatch(&mut g, &mouse_press());
-        assert_eq!(g.selected(), 0);
-        assert!(!g.is_focusable());
-    }
-
-    fn tabs_start_on_the_leading_edge_and_scroll_when_long() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let labels: Vec<Segment> = ["Overview", "Activity", "Settings", "Members", "Billing"]
-            .iter()
-            .map(|l| Segment::new(*l))
-            .collect();
-        let rects = SegmentedFace::partition_segments(
-            Rect::new(10.0, 0.0, 600.0, 32.0),
-            &labels,
-            SegmentedStyle::Tabs,
-            ControlSize::Regular,
-            &mut text,
-            &theme,
-        );
-        assert!((rects[0].x0 - 10.0).abs() < 1e-9);
-        let metrics = StripMetrics::of(ControlSize::Regular, &theme);
-        let (x0, _) = tab_label_span(&rects[0], "Overview", &metrics, &mut text);
-        assert!(
-            (x0 - 10.0 - metrics.pad_x).abs() < 1e-9,
-            "the first label sits its padding inside the first tab"
-        );
-
-        let mut g = ToggleGroup::new(labels, 4).with_style(SegmentedStyle::Tabs);
-        g.metrics = metrics.clone();
-        g.measure_naturals(&mut text);
-        g.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
-        assert!(g.overflows());
-        g.reveal(4);
-        let last = g.segment_rects[4];
-        assert!(
-            last.x1 <= 200.0 + 1e-6 && last.x0 >= 0.0,
-            "the chosen tab scrolls into view: {last:?}"
-        );
-
-        let named = |short: bool| -> Vec<Segment> {
-            [("Privacy & Security", "Privacy"), ("Apps & Files", "Apps")]
-                .iter()
-                .map(|(full, brief)| {
-                    let tab = Segment::new(*full);
-                    if short { tab.short(*brief) } else { tab }
-                })
-                .collect()
-        };
-        let mut g = ToggleGroup::new(named(true), 0).with_style(SegmentedStyle::Tabs);
-        g.metrics = metrics.clone();
-        g.measure_naturals(&mut text);
-        g.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 32.0));
-        assert_eq!(g.shown_labels(), ["Privacy & Security", "Apps & Files"]);
-        let full_width = g.segment_rects[1].x1;
-        let room = full_width - 1.0;
-        g.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
-        assert_eq!(g.shown_labels(), ["Privacy", "Apps"]);
-        assert!(!g.overflows(), "the short labels fit");
-        assert!(g.segment_rects[1].x1 <= room + 1e-6);
-        let mut plain = ToggleGroup::new(named(false), 0).with_style(SegmentedStyle::Tabs);
-        plain.metrics = metrics;
-        plain.measure_naturals(&mut text);
-        plain.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
-        assert!(plain.overflows(), "without short labels the strip scrolls");
-    }
-
-    fn a_caption_names_the_strip_and_sits_above_it() {
-        let mut g =
-            ToggleGroup::new(vec![Segment::new("A"), Segment::new("B")], 0).caption("Repeat");
-        g.adopt_theme(&Theme::dark());
-        g.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 60.0));
-        assert!(g.rect.y0 > 0.0);
-        assert_eq!(
-            g.accessibility().and_then(|n| n.name).as_deref(),
-            Some("Repeat")
-        );
-    }
-
-    let _settled = crate::motion::testing::settled();
-    nothing_chosen_until_the_person_picks();
-    a_bound_selection_follows_its_state_both_ways();
-    many_toggle_on_their_own_and_wrap();
-    icon_segments_are_named_and_square();
-    a_disabled_strip_takes_no_input();
-    tabs_start_on_the_leading_edge_and_scroll_when_long();
-    a_caption_names_the_strip_and_sits_above_it();
-}
-
-#[test]
-fn a_multi_select_toggle_runs_its_action_with_the_chosen_indices() {
-    use crate::widget::controls::ActionControls;
-    let mut g = ToggleGroup::multiple(
-        vec![
-            Segment::new("Mon"),
-            Segment::new("Tue"),
-            Segment::new("Wed"),
-        ],
-        vec![true, false, false],
-    )
-    .with_id("days")
-    .on_chosen_action(crate::widget::test_value_action_binding(
-        tilo_actions::ParamType::Array,
-    ));
-    assert_eq!(
-        g.control_action_bindings()
-            .iter()
-            .map(|binding| binding.control_id.as_str())
-            .collect::<Vec<_>>(),
-        ["days:segment:0", "days:segment:1", "days:segment:2"]
-    );
-    assert!(Widget::perform_semantic_action(
-        &mut g,
-        "days:segment:2",
-        &crate::a11y::Action::ToggleCheck,
-        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-        &automerge::ROOT,
-    ));
-    let invocation = g
-        .take_control_invocation()
-        .expect("the toggle runs the action");
-    assert_eq!(
-        invocation.arguments.get("value"),
-        Some(&serde_json::json!([0, 2]))
-    );
-    assert_eq!(
-        g.chosen().map(<[bool]>::to_vec),
-        Some(vec![true, false, false]),
-        "the strip shows the new set once the app hands it back"
-    );
-    g.refresh_control_action_availability(&std::collections::HashSet::new());
-    assert!(
-        !Widget::is_enabled(&g),
-        "an unavailable action disables the strip"
-    );
 }
 
 #[test]

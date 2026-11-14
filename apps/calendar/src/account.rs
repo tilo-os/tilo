@@ -384,35 +384,168 @@ mod tests {
     use super::*;
     use accounts::SecretVault;
 
-    #[test]
-    fn account_credentials_are_never_serialized_or_debugged() {
-        let config = CalDavConfig {
-            password: "private-calendar-password".into(),
-            ..Default::default()
-        };
-        assert!(
-            !serde_json::to_string(&config)
-                .unwrap()
-                .contains("private-calendar-password")
-        );
-        assert!(!format!("{config:?}").contains("private-calendar-password"));
-    }
+    tilo_test_env::scenario! {
+        /// The account store: what it writes, what it refuses to publish and what it reads back.
+        fn account_credentials_stay_in_the_vault_and_the_store_round_trips;
 
-    #[test]
-    fn damaged_credentials_prevent_publishing_account_changes() {
-        let root = temp_root();
-        let store = AccountStore::sample();
-        store.persist_in(&root).unwrap();
-        let before = std::fs::read(accounts::store_path_in(&root)).unwrap();
-        std::fs::write(accounts::vault_dir_in(&root).join("vault.enc"), b"damaged").unwrap();
-        let mut changed = store;
-        changed.accounts[0].config.display_name = "Must not publish".into();
-        assert!(changed.persist_in(&root).is_err());
-        assert_eq!(
-            std::fs::read(accounts::store_path_in(&root)).unwrap(),
-            before
-        );
-        std::fs::remove_dir_all(root).unwrap();
+        phase account_credentials_are_never_serialized_or_debugged;
+        {
+            let config = CalDavConfig {
+                password: "private-calendar-password".into(),
+                ..Default::default()
+            };
+            assert!(
+                !serde_json::to_string(&config)
+                    .unwrap()
+                    .contains("private-calendar-password")
+            );
+            assert!(!format!("{config:?}").contains("private-calendar-password"));
+        }
+
+        phase damaged_credentials_prevent_publishing_account_changes;
+        {
+            let root = temp_root();
+            let store = AccountStore::sample();
+            store.persist_in(&root).unwrap();
+            let before = std::fs::read(accounts::store_path_in(&root)).unwrap();
+            std::fs::write(accounts::vault_dir_in(&root).join("vault.enc"), b"damaged").unwrap();
+            let mut changed = store;
+            changed.accounts[0].config.display_name = "Must not publish".into();
+            assert!(changed.persist_in(&root).is_err());
+            assert_eq!(
+                std::fs::read(accounts::store_path_in(&root)).unwrap(),
+                before
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        phase legacy_account_credentials_load_and_damaged_custody_is_reported;
+        {
+            let root = temp_root();
+            let id = AccountId::from("legacy@example.test");
+            let mut shared = SharedStore::new();
+            let mut account = CalendarAccount::new(cfg("Legacy", "legacy@example.test"));
+            account.id = id.to_string();
+            shared.upsert(account.to_stored());
+            shared.save_in(&root).unwrap();
+            let mut vault = SecretVault::open_in(&root);
+            vault.put(&id, &accounts::Secret::password("legacy-fixture-password"));
+            vault.try_save().unwrap();
+
+            let loaded = AccountStore::try_load_in(&root).unwrap();
+            assert_eq!(
+                loaded.accounts[0].config.password,
+                "legacy-fixture-password"
+            );
+            let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
+            let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
+            std::fs::write(&vault_path, b"damaged").unwrap();
+            assert!(AccountStore::try_load_in(&root).is_err());
+            assert_eq!(std::fs::read(&vault_path).unwrap(), b"damaged");
+            assert_eq!(
+                std::fs::read(accounts::store_path_in(&root)).unwrap(),
+                metadata
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        phase account_store_round_trips_accounts_visibility_and_vaulted_secrets;
+        {
+            {
+                let root = temp_root();
+                let mut store = AccountStore::new();
+                let mut a = CalendarAccount::new(cfg("Work", "a@x.example"));
+                a.calendars.push(RemoteCalendar {
+                    id: "work/team".into(),
+                    name: "Team".into(),
+                    color: 1,
+                    visible: true,
+                    read_only: false,
+                });
+                a.collapsed = true;
+                store.upsert(a);
+                store.upsert(CalendarAccount::new(cfg("Home", "b@y.example")));
+                store.persist_in(&root).expect("persist");
+
+                let back = AccountStore::load_from_settings_in(&root);
+                assert_eq!(back.len(), 2);
+                assert_eq!(back.accounts[0].config.username, "a@x.example");
+                assert_eq!(back.accounts[0].calendars.len(), 1);
+                assert_eq!(back.accounts[0].calendars[0].name, "Team");
+                assert!(back.accounts[0].collapsed);
+                std::fs::remove_dir_all(&root).ok();
+            }
+            {
+                let root = temp_root();
+                let other_id = AccountId::from("unrelated-service");
+                let mut shared = SharedStore::new();
+                shared.upsert(StoredAccount::new(
+                    other_id.clone(),
+                    AccountTypeId::from("unrelated"),
+                ));
+                shared.save_in(&root).expect("seed unrelated account");
+                let mut vault = SecretVault::open_in(&root);
+                vault.put(&other_id, &accounts::Secret::password("unrelated-secret"));
+                vault.save();
+
+                let mut store = AccountStore::sample();
+                store.persist_in(&root).expect("persist calendar accounts");
+                let calendar = &mut store.accounts[0].calendars[0];
+                let id = calendar.id.clone();
+                calendar.visible = false;
+                store.persist_in(&root).expect("persist visibility toggle");
+
+                let restarted = AccountStore::load_from_settings_in(&root);
+                assert!(
+                    restarted
+                        .all_calendars()
+                        .find(|(_, calendar)| calendar.id == id)
+                        .is_some_and(|(_, calendar)| !calendar.visible)
+                );
+                assert!(SharedStore::load_in(&root).get(&other_id).is_some());
+                assert!(SecretVault::open_in(&root).get(&other_id).is_some());
+                std::fs::remove_dir_all(&root).ok();
+            }
+            {
+                let mut store = AccountStore::new();
+                store.upsert(CalendarAccount::new(cfg("A", "a@x.example")));
+                let mut updated = CalendarAccount::new(cfg("A renamed", "a@x.example"));
+                updated.id = "a@x.example".into();
+                store.upsert(updated);
+                assert_eq!(store.len(), 1);
+                assert_eq!(store.accounts[0].config.display_name, "A renamed");
+            }
+            {
+                let root = temp_root();
+                let mut c = cfg("A", "a@x.example");
+                c.password = "hunter2".into();
+                let mut store = AccountStore::new();
+                store.upsert(CalendarAccount::new(c));
+                store.persist_in(&root).expect("persist");
+
+                let store_json =
+                    std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
+                assert!(
+                    !store_json.contains("hunter2"),
+                    "password must not reach the shared store JSON"
+                );
+
+                let back = AccountStore::load_from_settings_in(&root);
+                assert_eq!(
+                    back.accounts[0].config.password, "hunter2",
+                    "password rehydrates from the vault"
+                );
+                std::fs::remove_dir_all(&root).ok();
+            }
+            {
+                let store = AccountStore::sample();
+                assert_eq!(store.len(), 2);
+                let total = store.all_calendars().count();
+                assert_eq!(total, 4);
+                let visible = store.all_calendars().filter(|(_, c)| c.visible).count();
+                assert_eq!(visible, 3);
+            }
+        }
     }
 
     fn cfg(name: &str, user: &str) -> CalDavConfig {
@@ -424,135 +557,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn legacy_account_credentials_load_and_damaged_custody_is_reported() {
-        let root = temp_root();
-        let id = AccountId::from("legacy@example.test");
-        let mut shared = SharedStore::new();
-        let mut account = CalendarAccount::new(cfg("Legacy", "legacy@example.test"));
-        account.id = id.to_string();
-        shared.upsert(account.to_stored());
-        shared.save_in(&root).unwrap();
-        let mut vault = SecretVault::open_in(&root);
-        vault.put(&id, &accounts::Secret::password("legacy-fixture-password"));
-        vault.try_save().unwrap();
-
-        let loaded = AccountStore::try_load_in(&root).unwrap();
-        assert_eq!(
-            loaded.accounts[0].config.password,
-            "legacy-fixture-password"
-        );
-        let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
-        let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
-        std::fs::write(&vault_path, b"damaged").unwrap();
-        assert!(AccountStore::try_load_in(&root).is_err());
-        assert_eq!(std::fs::read(&vault_path).unwrap(), b"damaged");
-        assert_eq!(
-            std::fs::read(accounts::store_path_in(&root)).unwrap(),
-            metadata
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
     fn temp_root() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("tilo-cal-accounts-{}", uuid::Uuid::new_v4()))
-    }
-
-    #[test]
-    fn account_store_round_trips_accounts_visibility_and_vaulted_secrets() {
-        {
-            let root = temp_root();
-            let mut store = AccountStore::new();
-            let mut a = CalendarAccount::new(cfg("Work", "a@x.example"));
-            a.calendars.push(RemoteCalendar {
-                id: "work/team".into(),
-                name: "Team".into(),
-                color: 1,
-                visible: true,
-                read_only: false,
-            });
-            a.collapsed = true;
-            store.upsert(a);
-            store.upsert(CalendarAccount::new(cfg("Home", "b@y.example")));
-            store.persist_in(&root).expect("persist");
-
-            let back = AccountStore::load_from_settings_in(&root);
-            assert_eq!(back.len(), 2);
-            assert_eq!(back.accounts[0].config.username, "a@x.example");
-            assert_eq!(back.accounts[0].calendars.len(), 1);
-            assert_eq!(back.accounts[0].calendars[0].name, "Team");
-            assert!(back.accounts[0].collapsed);
-            std::fs::remove_dir_all(&root).ok();
-        }
-        {
-            let root = temp_root();
-            let other_id = AccountId::from("unrelated-service");
-            let mut shared = SharedStore::new();
-            shared.upsert(StoredAccount::new(
-                other_id.clone(),
-                AccountTypeId::from("unrelated"),
-            ));
-            shared.save_in(&root).expect("seed unrelated account");
-            let mut vault = SecretVault::open_in(&root);
-            vault.put(&other_id, &accounts::Secret::password("unrelated-secret"));
-            vault.save();
-
-            let mut store = AccountStore::sample();
-            store.persist_in(&root).expect("persist calendar accounts");
-            let calendar = &mut store.accounts[0].calendars[0];
-            let id = calendar.id.clone();
-            calendar.visible = false;
-            store.persist_in(&root).expect("persist visibility toggle");
-
-            let restarted = AccountStore::load_from_settings_in(&root);
-            assert!(
-                restarted
-                    .all_calendars()
-                    .find(|(_, calendar)| calendar.id == id)
-                    .is_some_and(|(_, calendar)| !calendar.visible)
-            );
-            assert!(SharedStore::load_in(&root).get(&other_id).is_some());
-            assert!(SecretVault::open_in(&root).get(&other_id).is_some());
-            std::fs::remove_dir_all(&root).ok();
-        }
-        {
-            let mut store = AccountStore::new();
-            store.upsert(CalendarAccount::new(cfg("A", "a@x.example")));
-            let mut updated = CalendarAccount::new(cfg("A renamed", "a@x.example"));
-            updated.id = "a@x.example".into();
-            store.upsert(updated);
-            assert_eq!(store.len(), 1);
-            assert_eq!(store.accounts[0].config.display_name, "A renamed");
-        }
-        {
-            let root = temp_root();
-            let mut c = cfg("A", "a@x.example");
-            c.password = "hunter2".into();
-            let mut store = AccountStore::new();
-            store.upsert(CalendarAccount::new(c));
-            store.persist_in(&root).expect("persist");
-
-            let store_json =
-                std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
-            assert!(
-                !store_json.contains("hunter2"),
-                "password must not reach the shared store JSON"
-            );
-
-            let back = AccountStore::load_from_settings_in(&root);
-            assert_eq!(
-                back.accounts[0].config.password, "hunter2",
-                "password rehydrates from the vault"
-            );
-            std::fs::remove_dir_all(&root).ok();
-        }
-        {
-            let store = AccountStore::sample();
-            assert_eq!(store.len(), 2);
-            let total = store.all_calendars().count();
-            assert_eq!(total, 4);
-            let visible = store.all_calendars().filter(|(_, c)| c.visible).count();
-            assert_eq!(visible, 3);
-        }
     }
 }

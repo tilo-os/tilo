@@ -48,67 +48,71 @@ mod tests {
         File::from(std::os::fd::OwnedFd::from(stream))
     }
 
-    #[test]
-    fn validated_endpoint_preserves_exact_stream_and_acknowledges_role() {
-        for role in [
-            EndpointRole::PersonProof,
-            EndpointRole::Consumer,
-            EndpointRole::Retirement,
-        ] {
-            let (mut sender, receiver) = UnixStream::pair().unwrap();
-            let (endpoint, mut peer) = UnixStream::pair().unwrap();
-            fd_transport::send_with_fd(sender.as_fd(), &[role.tag()], endpoint.as_fd()).unwrap();
-            let mut transport = receive(&channel(receiver), role).unwrap();
-            let mut ack = [0];
-            sender.read_exact(&mut ack).unwrap();
-            assert_eq!(ack, [role.tag()]);
-            peer.write_all(b"live").unwrap();
-            let mut bytes = [0; 4];
-            transport.read_exact(&mut bytes).unwrap();
-            assert_eq!(&bytes, b"live");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn consumer_endpoints_admit_only_the_exact_unix_stream;
 
-    #[test]
-    fn datagram_and_non_unix_stream_are_not_admitted_as_endpoints() {
-        use std::net::{TcpListener, TcpStream};
-        use std::os::unix::net::UnixDatagram;
-
-        let (datagram, _peer) = UnixDatagram::pair().unwrap();
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let tcp = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (_accepted, _) = listener.accept().unwrap();
-        for descriptor in [datagram.as_fd(), tcp.as_fd()] {
-            let (mut sender, receiver) = UnixStream::pair().unwrap();
-            fd_transport::send_with_fd(sender.as_fd(), &[71], descriptor).unwrap();
-            let receiver = channel(receiver);
-            assert!(receive(&receiver, EndpointRole::PersonProof).is_err());
-            sender.set_nonblocking(true).unwrap();
-            assert_eq!(
-                sender.read(&mut [0]).unwrap_err().kind(),
-                io::ErrorKind::WouldBlock
-            );
-        }
-    }
-
-    #[test]
-    fn wrong_role_missing_descriptor_and_non_socket_never_receive_ack() {
-        for fixture in 0..3 {
-            let (mut sender, receiver) = UnixStream::pair().unwrap();
-            let (endpoint, _peer) = UnixStream::pair().unwrap();
-            let file = tempfile::tempfile().unwrap();
-            match fixture {
-                0 => fd_transport::send_with_fd(sender.as_fd(), &[72], endpoint.as_fd()).unwrap(),
-                1 => sender.write_all(&[71]).unwrap(),
-                _ => fd_transport::send_with_fd(sender.as_fd(), &[71], file.as_fd()).unwrap(),
+        phase validated_endpoint_preserves_exact_stream_and_acknowledges_role;
+        {
+            for role in [
+                EndpointRole::PersonProof,
+                EndpointRole::Consumer,
+                EndpointRole::Retirement,
+            ] {
+                let (mut sender, receiver) = UnixStream::pair().unwrap();
+                let (endpoint, mut peer) = UnixStream::pair().unwrap();
+                fd_transport::send_with_fd(sender.as_fd(), &[role.tag()], endpoint.as_fd()).unwrap();
+                let mut transport = receive(&channel(receiver), role).unwrap();
+                let mut ack = [0];
+                sender.read_exact(&mut ack).unwrap();
+                assert_eq!(ack, [role.tag()]);
+                peer.write_all(b"live").unwrap();
+                let mut bytes = [0; 4];
+                transport.read_exact(&mut bytes).unwrap();
+                assert_eq!(&bytes, b"live");
             }
-            let receiver = channel(receiver);
-            assert!(receive(&receiver, EndpointRole::PersonProof).is_err());
-            sender.set_nonblocking(true).unwrap();
-            assert_eq!(
-                sender.read(&mut [0]).unwrap_err().kind(),
-                io::ErrorKind::WouldBlock
-            );
+        }
+
+        phase datagram_and_non_unix_stream_are_not_admitted_as_endpoints;
+        {
+            use std::net::{TcpListener, TcpStream};
+            use std::os::unix::net::UnixDatagram;
+
+            let (datagram, _peer) = UnixDatagram::pair().unwrap();
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let tcp = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (_accepted, _) = listener.accept().unwrap();
+            for descriptor in [datagram.as_fd(), tcp.as_fd()] {
+                let (mut sender, receiver) = UnixStream::pair().unwrap();
+                fd_transport::send_with_fd(sender.as_fd(), &[71], descriptor).unwrap();
+                let receiver = channel(receiver);
+                assert!(receive(&receiver, EndpointRole::PersonProof).is_err());
+                sender.set_nonblocking(true).unwrap();
+                assert_eq!(
+                    sender.read(&mut [0]).unwrap_err().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+            }
+        }
+
+        phase wrong_role_missing_descriptor_and_non_socket_never_receive_ack;
+        {
+            for fixture in 0..3 {
+                let (mut sender, receiver) = UnixStream::pair().unwrap();
+                let (endpoint, _peer) = UnixStream::pair().unwrap();
+                let file = tempfile::tempfile().unwrap();
+                match fixture {
+                    0 => fd_transport::send_with_fd(sender.as_fd(), &[72], endpoint.as_fd()).unwrap(),
+                    1 => sender.write_all(&[71]).unwrap(),
+                    _ => fd_transport::send_with_fd(sender.as_fd(), &[71], file.as_fd()).unwrap(),
+                }
+                let receiver = channel(receiver);
+                assert!(receive(&receiver, EndpointRole::PersonProof).is_err());
+                sender.set_nonblocking(true).unwrap();
+                assert_eq!(
+                    sender.read(&mut [0]).unwrap_err().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+            }
         }
     }
 }

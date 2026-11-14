@@ -198,51 +198,55 @@ impl Vault {
 mod tests {
     use super::*;
 
-    #[test]
-    fn imported_items_are_for_the_system_and_own_items_for_their_owner() {
-        let system = CallerId::parse("binary:/usr/bin/chromium").unwrap();
-        let local = CallerId::parse("local-process:/home/me/tool").unwrap();
-        assert!(Owner::Imported.admits(&system));
-        assert!(!Owner::Imported.admits(&local));
-        assert!(Owner::App(local.clone()).admits(&local));
-        assert!(!Owner::App(local).admits(&system));
-    }
+    tilo_test_env::scenario! {
+        fn a_vault_keeps_owners_apart_and_never_persists_the_session_or_shows_secrets;
 
-    #[test]
-    fn the_session_collection_is_never_persisted() {
-        let mut vault = Vault::new(1);
-        let item = Item {
-            label: "x".into(),
-            attributes: BTreeMap::new(),
-            secret: SecretBytes::new(b"s".to_vec()),
-            content_type: "text/plain".into(),
-            created: 1,
-            modified: 1,
-            owner: Owner::Imported,
-        };
-        for name in [LOGIN_COLLECTION, SESSION_COLLECTION] {
-            vault
-                .collections
-                .get_mut(name)
-                .unwrap()
-                .items
-                .insert("a".into(), item.clone());
+        phase imported_items_are_for_the_system_and_own_items_for_their_owner;
+        {
+            let system = CallerId::parse("binary:/usr/bin/chromium").unwrap();
+            let local = CallerId::parse("local-process:/home/me/tool").unwrap();
+            assert!(Owner::Imported.admits(&system));
+            assert!(!Owner::Imported.admits(&local));
+            assert!(Owner::App(local.clone()).admits(&local));
+            assert!(!Owner::App(local).admits(&system));
         }
-        let kept = vault.persistable();
-        assert_eq!(kept.collections[LOGIN_COLLECTION].items.len(), 1);
-        assert!(kept.collections[SESSION_COLLECTION].items.is_empty());
-        assert_eq!(vault.resolve("default"), LOGIN_COLLECTION);
-    }
 
-    #[test]
-    fn a_vault_survives_postcard_and_debug_hides_secrets() {
-        let mut vault = Vault::new(5);
-        vault
-            .sandbox_secrets
-            .insert("so.tilo.notes".into(), SecretBytes::new(vec![7; 32]));
-        let bytes = postcard::to_allocvec(&vault).unwrap();
-        let back: Vault = postcard::from_bytes(&bytes).unwrap();
-        assert_eq!(back, vault);
-        assert!(!format!("{vault:?}").contains("[7, 7"));
+        phase the_session_collection_is_never_persisted;
+        {
+            let mut vault = Vault::new(1);
+            let item = Item {
+                label: "x".into(),
+                attributes: BTreeMap::new(),
+                secret: SecretBytes::new(b"s".to_vec()),
+                content_type: "text/plain".into(),
+                created: 1,
+                modified: 1,
+                owner: Owner::Imported,
+            };
+            for name in [LOGIN_COLLECTION, SESSION_COLLECTION] {
+                vault
+                    .collections
+                    .get_mut(name)
+                    .unwrap()
+                    .items
+                    .insert("a".into(), item.clone());
+            }
+            let kept = vault.persistable();
+            assert_eq!(kept.collections[LOGIN_COLLECTION].items.len(), 1);
+            assert!(kept.collections[SESSION_COLLECTION].items.is_empty());
+            assert_eq!(vault.resolve("default"), LOGIN_COLLECTION);
+        }
+
+        phase a_vault_survives_postcard_and_debug_hides_secrets;
+        {
+            let mut vault = Vault::new(5);
+            vault
+                .sandbox_secrets
+                .insert("so.tilo.notes".into(), SecretBytes::new(vec![7; 32]));
+            let bytes = postcard::to_allocvec(&vault).unwrap();
+            let back: Vault = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(back, vault);
+            assert!(!format!("{vault:?}").contains("[7, 7"));
+        }
     }
 }

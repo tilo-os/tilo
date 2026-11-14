@@ -24,9 +24,9 @@
 //! or anything a viewer's action wrote, is never saved.
 
 use super::{
-    ActionHostError, Arc, Caller, CallerPrincipal, ConfinedReplica, Confirmation, DocumentMutation,
-    DocumentRoute, HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome,
-    Seed, Worker, WorkspaceState, reads,
+    ActionHostError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
+    HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome, Seed, Worker,
+    WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
 use tilo_actions::door::ActionAddress;
@@ -34,6 +34,7 @@ use tilo_actions::remote::{
     ActorPlace, ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 
@@ -79,7 +80,7 @@ pub(super) struct BoundedReplica {
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct WitnessBinding {
     caller: Caller,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     invocation: InvocationId,
     provider: String,
     resource: String,
@@ -88,7 +89,7 @@ pub(super) struct WitnessBinding {
 }
 
 impl WitnessBinding {
-    pub(super) fn of(workspace_id: u64, caller: &Caller, request: &InvokeRequest) -> Self {
+    pub(super) fn of(workspace_id: WorkspaceId, caller: &Caller, request: &InvokeRequest) -> Self {
         Self {
             caller: caller.clone(),
             workspace_id,
@@ -276,12 +277,12 @@ pub(super) fn question(
 ) -> Result<ConfirmationQuestion, String> {
     let mut id = [0_u8; 32];
     getrandom::fill(&mut id).map_err(|error| error.to_string())?;
-    let agent = match caller.principal() {
-        // An agent by the name its key goes by, as History names its
-        // changes; else its id.
-        CallerPrincipal::Agent(agent) => caller.agent_name().unwrap_or(agent).to_owned(),
-        _ => "One of your devices".into(),
-    };
+    // An agent by the name its key goes by, as History names its
+    // changes; else its id.
+    let agent = caller.acting().agent_id().map_or_else(
+        || "One of your devices".into(),
+        |agent| caller.agent_name().unwrap_or(agent).to_owned(),
+    );
     // The run as the agent titled it (`_meta` run.title); a run that goes
     // by the agent's own name says nothing more.
     let run = super::said_run_title(request)
@@ -304,16 +305,19 @@ pub(super) fn question(
 
 /// `who`'s standing as the host decides for them: the person's standing as
 /// `policy` gives it now, held to the bounds the one reading of a caller
-/// gives ([`Caller::acting`]): for an agent, the delegation a device gives
-/// its agents. Refused when the policy is someone else's.
+/// gives ([`Caller::acting`]): for an agent, the grants the caller carries
+/// ([`Caller::granted`]) as the broker gives them. Refused when the policy is
+/// someone else's.
 pub(super) fn bounded_standing(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<policy::Standing, ActionHostError> {
+    let granted = who.caller.granted(&policy.workspace);
     policy
         .standing
         .clone()
-        .as_acting(who.caller.acting())
+        .as_acting(who.caller.acting().clone())
+        .map(|standing| standing.granted(granted))
         .ok_or(ActionHostError::NotPermitted)
 }
 
@@ -350,43 +354,39 @@ impl Worker {
     /// or an agent device a person certified. `None` for the host's own person, and for anyone the host acts for
     /// in no person's name.
     pub(super) fn bounded(&self, caller: &Caller) -> Option<Bounded> {
-        match caller.principal() {
-            CallerPrincipal::Person(person) if *person == self.participant => None,
-            CallerPrincipal::Person(person) => Some(Bounded {
+        if let Some(person) = caller.acting().person_id() {
+            if person == self.participant {
+                return None;
+            }
+            return Some(Bounded {
                 caller: caller.clone(),
                 person_caller: caller.clone(),
-                person: person.clone(),
+                person: person.to_owned(),
                 agent: None,
                 agent_name: None,
-            }),
-            CallerPrincipal::Agent(agent) => {
-                // An agent the person's device handed its session to acts on
-                // that device's admission; an agent device the person
-                // certified, on its own device's: either is bounded by the
-                // person it acts for, as `Caller::invoker` reads it.
-                let person_caller = caller.delegating_person().or_else(|| {
-                    let person = Caller::authenticated(
-                        *caller.user_public_key()?,
-                        *caller.device_public_key()?,
-                    );
-                    Some(match caller.workspace() {
-                        Some(workspace) => person.in_workspace(workspace),
-                        None => person,
-                    })
-                })?;
-                let CallerPrincipal::Person(person) = person_caller.principal() else {
-                    return None;
-                };
-                Some(Bounded {
-                    caller: caller.clone(),
-                    person: person.clone(),
-                    agent: Some(agent.clone()),
-                    agent_name: caller.agent_name().map(str::to_owned),
-                    person_caller,
-                })
-            }
-            CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => None,
+            });
         }
+        let agent = caller.acting().agent_id()?;
+        // An agent the person's device handed its session to acts on
+        // that device's admission; an agent device the person
+        // certified, on its own device's: either is bounded by the
+        // person it acts for.
+        let person_caller = caller.delegating_person().or_else(|| {
+            let person =
+                Caller::authenticated(*caller.user_public_key()?, *caller.device_public_key()?);
+            Some(match caller.workspace() {
+                Some(workspace) => person.in_workspace(workspace),
+                None => person,
+            })
+        })?;
+        let person = person_caller.acting().person_id()?.to_owned();
+        Some(Bounded {
+            caller: caller.clone(),
+            person,
+            agent: Some(agent.to_owned()),
+            agent_name: caller.agent_name().map(str::to_owned),
+            person_caller,
+        })
     }
 
     /// The person's standing in the workspace `cluster` as its policy gives
@@ -396,7 +396,7 @@ impl Worker {
     /// here answers for, is its owner, as the host's own mount holds it.
     pub(super) fn policy_for(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         cluster: &str,
         record: Option<(&str, &str)>,
@@ -434,7 +434,7 @@ impl Worker {
     /// [`Self::policy_for`] the record at `route`.
     fn policy_at(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
     ) -> Result<super::ViewReadPolicy, ActionHostError> {
@@ -446,7 +446,12 @@ impl Worker {
     /// (its content, a new record of it): the host's own person and their
     /// agents may; anyone else as the workspace's policy gives them now, an
     /// agent held to what an agent of its person may do.
-    pub(super) fn may_across(&self, workspace_id: u64, caller: &Caller, kind: ActionKind) -> bool {
+    pub(super) fn may_across(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        kind: ActionKind,
+    ) -> bool {
         if super::acts_for(caller, &self.participant) {
             return true;
         }
@@ -462,20 +467,20 @@ impl Worker {
     }
 
     /// Whether a governance on this host answers for who is in `workspace_id`.
-    fn governed(&self, workspace_id: u64) -> bool {
+    fn governed(&self, workspace_id: WorkspaceId) -> bool {
         self.shared.link.get().is_some_and(|link| {
             link.admits(
                 workspace_id,
                 &Caller::authenticated(
-                    self.member.endpoint.host_cert.user_public_key,
-                    self.member.endpoint.host_cert.device_public_key,
+                    self.host_device.endpoint.host_cert.user_public_key,
+                    self.host_device.endpoint.host_cert.device_public_key,
                 ),
             )
         })
     }
 
     /// Whether `who` may see the workspace's records at all.
-    pub(super) fn admits_bounded(&self, workspace_id: u64, who: &Bounded) -> bool {
+    pub(super) fn admits_bounded(&self, workspace_id: WorkspaceId, who: &Bounded) -> bool {
         (who.person == self.participant && !self.governed(workspace_id))
             || self
                 .shared
@@ -489,7 +494,7 @@ impl Worker {
     /// for them while that standing is unchanged.
     pub(super) fn bounded_replica(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
         state: &WorkspaceState,
@@ -575,7 +580,7 @@ impl Worker {
     /// surveys.
     pub(super) fn bounded_actions(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
         state: &WorkspaceState,
@@ -593,7 +598,7 @@ impl Worker {
     /// each row where it stands.
     pub(super) fn bounded_page(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         (route, state): (&DocumentRoute, &WorkspaceState),
         query: &tilo_actions::remote::CatalogueQuery,
@@ -612,7 +617,7 @@ impl Worker {
     /// costs, not a survey of everything the record publishes.
     pub(super) fn bounded_descriptor(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         (route, state): (&DocumentRoute, &WorkspaceState),
         address: &ActionAddress,
@@ -632,7 +637,7 @@ impl Worker {
     /// asked already, or this host has nobody to ask.
     pub(super) fn ask_person(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
         about: &About,
@@ -688,7 +693,7 @@ impl Worker {
     /// on the record at `route` ([`About`]).
     pub(super) fn about(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: &DocumentRoute,
         descriptor: &tilo_actions::ActionDescriptor,
         arguments: serde_json::Map<String, serde_json::Value>,
@@ -714,7 +719,7 @@ impl Worker {
     )]
     pub(super) fn perform_bounded(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         who: &Bounded,
         (request, route, state): (&InvokeRequest, &DocumentRoute, &WorkspaceState),
@@ -809,7 +814,7 @@ impl Worker {
     )]
     fn save_bounded(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         (who, route, state): (&Bounded, &DocumentRoute, &WorkspaceState),
         (holder, taken): (&DocumentRoute, Vec<(DocumentRoute, DocumentMutation)>),
         (declared, confirmed): (Option<&str>, bool),
@@ -885,7 +890,7 @@ pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
 
 /// What a bounded caller's invocation waiting on the person needs to go on.
 pub(super) struct Asking {
-    pub(super) workspace_id: u64,
+    pub(super) workspace_id: WorkspaceId,
     pub(super) invocation: InvocationId,
     pub(super) binding: WitnessBinding,
 }

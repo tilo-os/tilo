@@ -130,91 +130,103 @@ impl AuditLog {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_log_keeps_every_grant_and_refusal_it_is_given() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let log = AuditLog::at(dir.path().join("audit"));
+    tilo_test_env::scenario! {
+        /// `AuditLog`: what it keeps, and how it is read back.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn the_audit_log_keeps_tails_and_rotates_its_records;
 
-            log.append(
-                &AuditRecord::new("s1", "default", "trust-dir", true).about("/var/home/you/src"),
-            );
-            log.append(
-                &AuditRecord::new("s1", "default", "trust-dir", false)
-                    .about("/usr")
-                    .because("the overlay owns this subtree"),
-            );
+        phase the_log_keeps_every_grant_and_refusal_it_is_given;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let log = AuditLog::at(dir.path().join("audit"));
 
-            let all = log.read_all();
-            assert_eq!(all.len(), 2);
-            assert!(all[0].allowed);
-            assert_eq!(all[0].subject.as_deref(), Some("/var/home/you/src"));
-            assert!(!all[1].allowed);
-            assert_eq!(
-                all[1].detail.as_deref(),
-                Some("the overlay owns this subtree")
-            );
-        }
-        // phase: a_refusal_is_recorded_as_loudly_as_a_grant
-        // A log that only recorded successes could not answer the question it
-        // exists for.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let log = AuditLog::at(dir.path().join("audit"));
-            log.append(&AuditRecord::new("s1", "default", "pkg-install", false).about("nethack"));
-            let all = log.read_all();
-            assert_eq!(all.len(), 1);
-            assert!(!all[0].allowed);
-            assert_eq!(all[0].request, "pkg-install");
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let log = AuditLog::at(dir.path().join("audit"));
-            for i in 0..5 {
                 log.append(
-                    &AuditRecord::new("s1", "default", "pkg-install", true).about(format!("p{i}")),
+                    &AuditRecord::new("s1", "default", "trust-dir", true).about("/var/home/you/src"),
+                );
+                log.append(
+                    &AuditRecord::new("s1", "default", "trust-dir", false)
+                        .about("/usr")
+                        .because("the overlay owns this subtree"),
+                );
+
+                let all = log.read_all();
+                assert_eq!(all.len(), 2);
+                assert!(all[0].allowed);
+                assert_eq!(all[0].subject.as_deref(), Some("/var/home/you/src"));
+                assert!(!all[1].allowed);
+                assert_eq!(
+                    all[1].detail.as_deref(),
+                    Some("the overlay owns this subtree")
                 );
             }
-            assert_eq!(log.read_all().len(), 5);
-            let reopened = AuditLog::at(dir.path().join("audit"));
-            assert_eq!(reopened.read_all().len(), 5);
         }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let audit = dir.path().join("audit");
-            let log = AuditLog::at(&audit);
-            log.append(&AuditRecord::new("s1", "default", "trust-dir", true));
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(log.file_for(unix_now()))
-                .unwrap()
-                .write_all(b"{ truncated\n")
-                .unwrap();
-            log.append(&AuditRecord::new("s1", "default", "pkg-install", true));
-            assert_eq!(log.read_all().len(), 2);
-        }
-    }
 
-    #[test]
-    fn the_log_tails_the_newest_records_and_rotates_by_day() {
+        phase a_refusal_is_recorded_as_loudly_as_a_grant;
         {
-            let dir = tempfile::tempdir().unwrap();
-            let log = AuditLog::at(dir.path().join("audit"));
-            for i in 0..10 {
-                let mut r =
-                    AuditRecord::new("s1", "default", "pkg-install", true).about(format!("p{i}"));
-                r.at = 1_000_000 + i;
-                log.append(&r);
+            // A log that only recorded successes could not answer the question it
+            // exists for.
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let log = AuditLog::at(dir.path().join("audit"));
+                log.append(&AuditRecord::new("s1", "default", "pkg-install", false).about("nethack"));
+                let all = log.read_all();
+                assert_eq!(all.len(), 1);
+                assert!(!all[0].allowed);
+                assert_eq!(all[0].request, "pkg-install");
             }
-            let tail = log.tail(3);
-            assert_eq!(tail.len(), 3);
-            assert_eq!(tail[2].subject.as_deref(), Some("p9"));
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let log = AuditLog::at(dir.path().join("audit"));
+                for i in 0..5 {
+                    log.append(
+                        &AuditRecord::new("s1", "default", "pkg-install", true).about(format!("p{i}")),
+                    );
+                }
+                assert_eq!(log.read_all().len(), 5);
+                let reopened = AuditLog::at(dir.path().join("audit"));
+                assert_eq!(reopened.read_all().len(), 5);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let audit = dir.path().join("audit");
+                let log = AuditLog::at(&audit);
+                log.append(&AuditRecord::new("s1", "default", "trust-dir", true));
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(log.file_for(unix_now()))
+                    .unwrap()
+                    .write_all(b"{ truncated\n")
+                    .unwrap();
+                log.append(&AuditRecord::new("s1", "default", "pkg-install", true));
+                assert_eq!(log.read_all().len(), 2);
+            }
         }
+
+        phase the_log_tails_the_newest_records_and_rotates_by_day;
         {
-            let dir = tempfile::tempdir().unwrap();
-            let log = AuditLog::at(dir.path().join("audit"));
-            assert_ne!(log.file_for(0), log.file_for(86_400));
-            assert_eq!(log.file_for(0), log.file_for(86_399));
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let log = AuditLog::at(dir.path().join("audit"));
+                for i in 0..10 {
+                    let mut r =
+                        AuditRecord::new("s1", "default", "pkg-install", true).about(format!("p{i}"));
+                    r.at = 1_000_000 + i;
+                    log.append(&r);
+                }
+                let tail = log.tail(3);
+                assert_eq!(tail.len(), 3);
+                assert_eq!(tail[2].subject.as_deref(), Some("p9"));
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let log = AuditLog::at(dir.path().join("audit"));
+                assert_ne!(log.file_for(0), log.file_for(86_400));
+                assert_eq!(log.file_for(0), log.file_for(86_399));
+            }
         }
     }
 }

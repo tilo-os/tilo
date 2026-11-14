@@ -1,102 +1,106 @@
 use super::*;
 
-#[test]
-fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let root = tempfile::tempdir().unwrap();
-    let runtime = tilo_test_env::runtime_tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", runtime.path());
-    let socket = tilo_cloud_files::cloud::files_socket_in(runtime.path());
-    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let (services, _) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
-    let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
-    assert!(!files.state().cloud_fixture_consent);
-    let folder = root.path().display().to_string();
-    let entry = ImportEntry {
-        id: "native".into(),
-        name: "Copy.docx".into(),
-        kind: ImportKind::NativeExport,
-        revision: None,
-        size: None,
-        content_writable: false,
-    };
-    let op = crate::file_ops::FileOp::CloudImport {
-        job_id: uuid::Uuid::new_v4().to_string(),
-        account: "account".into(),
-        destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty()).unwrap(),
-        entries: vec![entry],
-        folder,
-    };
-    files.state().queue(
-        op,
-        OpFollowUp::Paste {
-            count: 1,
-            cut: false,
-        },
-    );
-    tilo_test_env::wait_until("the cloud transfer to settle", || {
-        files.state().poll_cloud();
-        files.state().cloud.transfer.is_none()
-    });
-    assert_eq!(files.state().local_outcomes.len(), 1);
-    let outcome = files
-        .state()
-        .local_outcomes
-        .values()
-        .next()
-        .unwrap()
-        .clone();
-    assert_eq!(
-        outcome.reason(),
-        Some("only the host person can approve a personal cloud import")
-    );
-    assert!(outcome.result().is_empty());
-    assert_eq!(files.state().cloud.error.as_deref(), outcome.reason());
-    assert!(!root.path().join("Copy.docx").exists());
-    assert_eq!(
-        listener.accept().unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
-    );
-}
+tilo_test_env::scenario! {
+    fn cloud_jobs_settle_and_cancel_within_their_own_window;
 
-#[test]
-fn two_windows_cancel_only_their_queued_attempt_and_keep_its_status() {
-    let root = tempfile::tempdir().unwrap();
-    let first = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
-    let second = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
-    let first_id = uuid::Uuid::new_v4().to_string();
-    let second_id = uuid::Uuid::new_v4().to_string();
-    first.state().cloud.job_id = Some(first_id.clone());
-    second.state().cloud.job_id = Some(second_id.clone());
-    crate::cloud_jobs::register(&first_id);
-    crate::cloud_jobs::register(&second_id);
-    first.state().run_effect(FilesEffect::CancelCloud).unwrap();
-    let folder = root.path().display().to_string();
-    let op = crate::file_ops::FileOp::CloudImport {
-        job_id: first_id,
-        account: "account".into(),
-        entries: vec![],
-        destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty()).unwrap(),
-        folder,
-    };
-    assert_eq!(
-        crate::cloud_jobs::run(&op, crate::cloud_jobs::fixture_consent(&op)).reason(),
-        Some("cloud import cancelled")
-    );
-    first.state().poll_cloud();
-    second.state().poll_cloud();
-    assert!(
-        matches!(first.state().run_effect(FilesEffect::CloudProgress).unwrap(),
-        Ran::Done(Some(value)) if value["phase"] == "cancelled")
-    );
-    assert!(
-        matches!(second.state().run_effect(FilesEffect::CloudProgress).unwrap(),
-        Ran::Done(Some(value)) if value["phase"] == "")
-    );
-    second.state().run_effect(FilesEffect::CancelCloud).unwrap();
-    assert_eq!(first.state().cloud.progress.phase, "cancelled");
-    assert!(crate::cloud_jobs::snapshot(&second_id).phase.is_empty());
+    phase unhosted_cloud_import_without_issuer_settles_without_contacting_source;
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let root = tempfile::tempdir().unwrap();
+        let runtime = tilo_test_env::runtime_tempdir().unwrap();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let socket = tilo_cloud_files::cloud::files_socket_in(runtime.path());
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (services, _) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
+        assert!(!files.state().cloud_fixture_consent);
+        let folder = root.path().display().to_string();
+        let entry = ImportEntry {
+            id: "native".into(),
+            name: "Copy.docx".into(),
+            kind: ImportKind::NativeExport,
+            revision: None,
+            size: None,
+            content_writable: false,
+        };
+        let op = crate::file_ops::FileOp::CloudImport {
+            job_id: uuid::Uuid::new_v4().to_string(),
+            account: "account".into(),
+            destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty()).unwrap(),
+            entries: vec![entry],
+            folder,
+        };
+        files.state().queue(
+            op,
+            OpFollowUp::Paste {
+                count: 1,
+                cut: false,
+            },
+        );
+        tilo_test_env::wait_until("the cloud transfer to settle", || {
+            files.state().poll_cloud();
+            files.state().cloud.transfer.is_none()
+        });
+        assert_eq!(files.state().local_outcomes.len(), 1);
+        let outcome = files
+            .state()
+            .local_outcomes
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            outcome.reason(),
+            Some("only the host person can approve a personal cloud import")
+        );
+        assert!(outcome.result().is_empty());
+        assert_eq!(files.state().cloud.error.as_deref(), outcome.reason());
+        assert!(!root.path().join("Copy.docx").exists());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    phase two_windows_cancel_only_their_queued_attempt_and_keep_its_status;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let first = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
+        let second = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
+        let first_id = uuid::Uuid::new_v4().to_string();
+        let second_id = uuid::Uuid::new_v4().to_string();
+        first.state().cloud.job_id = Some(first_id.clone());
+        second.state().cloud.job_id = Some(second_id.clone());
+        crate::cloud_jobs::register(&first_id);
+        crate::cloud_jobs::register(&second_id);
+        first.state().run_effect(FilesEffect::CancelCloud).unwrap();
+        let folder = root.path().display().to_string();
+        let op = crate::file_ops::FileOp::CloudImport {
+            job_id: first_id,
+            account: "account".into(),
+            entries: vec![],
+            destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty()).unwrap(),
+            folder,
+        };
+        assert_eq!(
+            crate::cloud_jobs::run(&op, crate::cloud_jobs::fixture_consent(&op)).reason(),
+            Some("cloud import cancelled")
+        );
+        first.state().poll_cloud();
+        second.state().poll_cloud();
+        assert!(
+            matches!(first.state().run_effect(FilesEffect::CloudProgress).unwrap(),
+            Ran::Done(Some(value)) if value["phase"] == "cancelled")
+        );
+        assert!(
+            matches!(second.state().run_effect(FilesEffect::CloudProgress).unwrap(),
+            Ran::Done(Some(value)) if value["phase"] == "")
+        );
+        second.state().run_effect(FilesEffect::CancelCloud).unwrap();
+        assert_eq!(first.state().cloud.progress.phase, "cancelled");
+        assert!(crate::cloud_jobs::snapshot(&second_id).phase.is_empty());
+    }
 }

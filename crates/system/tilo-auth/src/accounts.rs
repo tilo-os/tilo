@@ -192,45 +192,49 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn accounts_resolve_by_name_and_uid_with_their_display_name() {
-        let dir = root();
-        let accounts = Accounts::new(dir.path());
-        let ada = accounts.by_name("ada").unwrap().unwrap();
-        assert_eq!(ada.uid, 1000);
-        assert_eq!(ada.display_name, "Ada Lovelace");
-        assert_eq!(accounts.by_uid(1001).unwrap().unwrap().display_name, "bob");
-        assert!(accounts.by_name("eve").unwrap().is_none());
-    }
+    tilo_test_env::scenario! {
+        fn the_machines_accounts_are_read_from_its_files;
 
-    #[test]
-    fn the_admin_is_in_wheel_and_tilo_identity() {
-        let dir = root();
-        let accounts = Accounts::new(dir.path());
-        assert!(
-            accounts
-                .is_admin(&accounts.by_name("ada").unwrap().unwrap())
-                .unwrap()
-        );
-        assert!(
-            !accounts
-                .is_admin(&accounts.by_name("bob").unwrap().unwrap())
-                .unwrap()
-        );
-    }
+        phase accounts_resolve_by_name_and_uid_with_their_display_name;
+        {
+            let dir = root();
+            let accounts = Accounts::new(dir.path());
+            let ada = accounts.by_name("ada").unwrap().unwrap();
+            assert_eq!(ada.uid, 1000);
+            assert_eq!(ada.display_name, "Ada Lovelace");
+            assert_eq!(accounts.by_uid(1001).unwrap().unwrap().display_name, "bob");
+            assert!(accounts.by_name("eve").unwrap().is_none());
+        }
 
-    #[test]
-    fn only_a_locked_or_disabled_shadow_entry_holds_no_password() {
-        let shadow = "root:!:19000::::::\n\
+        phase the_admin_is_in_wheel_and_tilo_identity;
+        {
+            let dir = root();
+            let accounts = Accounts::new(dir.path());
+            assert!(
+                accounts
+                    .is_admin(&accounts.by_name("ada").unwrap().unwrap())
+                    .unwrap()
+            );
+            assert!(
+                !accounts
+                    .is_admin(&accounts.by_name("bob").unwrap().unwrap())
+                    .unwrap()
+            );
+        }
+
+        phase only_a_locked_or_disabled_shadow_entry_holds_no_password;
+        {
+            let shadow = "root:!:19000::::::\n\
                       ada:$y$j9T$salt$hash:19000:0:99999:7:::\n\
                       bob:!$y$j9T$salt$hash:19000::::::\n\
                       greetd:*:19000::::::\n\
                       eve::19000::::::\n";
-        assert!(shadow_has_password(shadow, "ada"));
-        assert!(shadow_has_password(shadow, "eve"));
-        assert!(!shadow_has_password(shadow, "root"));
-        assert!(!shadow_has_password(shadow, "bob"));
-        assert!(!shadow_has_password(shadow, "greetd"));
-        assert!(!shadow_has_password(shadow, "mallory"));
+            assert!(shadow_has_password(shadow, "ada"));
+            assert!(shadow_has_password(shadow, "eve"));
+            assert!(!shadow_has_password(shadow, "root"));
+            assert!(!shadow_has_password(shadow, "bob"));
+            assert!(!shadow_has_password(shadow, "greetd"));
+            assert!(!shadow_has_password(shadow, "mallory"));
+        }
     }
 }

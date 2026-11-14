@@ -51,145 +51,149 @@ fn notes(sent: &[CollabRequest]) -> Vec<String> {
         .collect()
 }
 
-/// A run that looks something up: it searches, reads the page that matters,
-/// and answers with what it read. Both are steps of the run — the person is
-/// told what is being searched and which page is being read, the model reads
-/// their answers, and the turn's record keeps both.
-#[test]
-fn a_search_and_a_read_are_steps_of_the_run() {
-    let server = server();
-    let mut f = fixture(
-        "What did Ada Lovelace write?",
-        World {
-            chat: Some("asked".into()),
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[(
-                    crate::tools::web::SEARCH_WEB,
-                    serde_json::json!({"query": "Ada Lovelace first algorithm"}),
-                )],
-                16,
-            ),
-            turn(
-                &[(
-                    crate::tools::web::READ_PAGE,
-                    serde_json::json!({"url": server.at("/ada")}),
-                )],
-                16,
-            ),
-            turn(
-                &[finish(
-                    "Ada Lovelace wrote the first published algorithm.",
-                    true,
-                )],
-                16,
-            ),
-        ],
-    );
-    look_at(&mut f, &server);
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Ada Lovelace wrote the first published algorithm.".into()
-        }
-    );
+tilo_test_env::scenario! {
+    fn the_web_tools_work_as_steps_of_a_run;
 
-    // The person was told what was searched and which page was read, as each
-    // step began.
-    let told = notes(&f.sent.borrow());
-    assert!(
-        told.iter()
-            .any(|note| note
-                == "Searching the web for \u{201c}Ada Lovelace first algorithm\u{201d}…"),
-        "{told:?}"
-    );
-    assert!(
-        told.iter()
-            .any(|note| note == &format!("Reading {}…", server.at("/ada"))),
-        "{told:?}"
-    );
+    phase a_search_and_a_read_are_steps_of_the_run;
+    // A run that looks something up: it searches, reads the page that matters,
+    // and answers with what it read. Both are steps of the run — the person is
+    // told what is being searched and which page is being read, the model reads
+    // their answers, and the turn's record keeps both.
+    {
+        let server = server();
+        let mut f = fixture(
+            "What did Ada Lovelace write?",
+            World {
+                chat: Some("asked".into()),
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[(
+                        crate::tools::web::SEARCH_WEB,
+                        serde_json::json!({"query": "Ada Lovelace first algorithm"}),
+                    )],
+                    16,
+                ),
+                turn(
+                    &[(
+                        crate::tools::web::READ_PAGE,
+                        serde_json::json!({"url": server.at("/ada")}),
+                    )],
+                    16,
+                ),
+                turn(
+                    &[finish(
+                        "Ada Lovelace wrote the first published algorithm.",
+                        true,
+                    )],
+                    16,
+                ),
+            ],
+        );
+        look_at(&mut f, &server);
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Ada Lovelace wrote the first published algorithm.".into()
+            }
+        );
 
-    // The model read what the tools answered: the merge's results, and the
-    // page's text.
-    let bodies = f.script.bodies.lock().unwrap();
-    let after_search = bodies[1].to_string();
-    assert!(
-        after_search.contains("rust-lang.org") || after_search.contains("example"),
-        "the search's results reached the model: {after_search}"
-    );
-    let after_read = bodies[2].to_string();
-    assert!(
-        after_read.contains("wrote the first published algorithm"),
-        "the page's text reached the model: {after_read}"
-    );
-    assert!(
-        tool_names(&bodies[0]).contains(&crate::tools::web::SEARCH_WEB.to_owned()),
-        "the search is a tool the model is offered"
-    );
-    drop(bodies);
+        // The person was told what was searched and which page was read, as each
+        // step began.
+        let told = notes(&f.sent.borrow());
+        assert!(
+            told.iter()
+                .any(|note| note
+                    == "Searching the web for \u{201c}Ada Lovelace first algorithm\u{201d}…"),
+            "{told:?}"
+        );
+        assert!(
+            told.iter()
+                .any(|note| note == &format!("Reading {}…", server.at("/ada"))),
+            "{told:?}"
+        );
 
-    // Both are steps of the turn's record, by what they asked and reached.
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    let steps = records
-        .last()
-        .and_then(|record| record["work"]["trace"].as_array().cloned())
-        .expect("the reply's steps");
-    assert_eq!(steps.len(), 2, "{steps:?}");
-    assert_eq!(steps[0]["resource"], "web.search");
-    assert_eq!(
-        steps[0]["label"],
-        "Searching the web for \u{201c}Ada Lovelace first algorithm\u{201d}\u{2026}"
-    );
-    assert_eq!(steps[0]["outcome"], "applied");
-    assert_eq!(steps[1]["resource"], "web.page");
-    assert_eq!(
-        steps[1]["label"],
-        format!("Reading {}\u{2026}", server.at("/ada"))
-    );
-    assert_eq!(steps[1]["outcome"], "applied");
-}
+        // The model read what the tools answered: the merge's results, and the
+        // page's text.
+        let bodies = f.script.bodies.lock().unwrap();
+        let after_search = bodies[1].to_string();
+        assert!(
+            after_search.contains("rust-lang.org") || after_search.contains("example"),
+            "the search's results reached the model: {after_search}"
+        );
+        let after_read = bodies[2].to_string();
+        assert!(
+            after_read.contains("wrote the first published algorithm"),
+            "the page's text reached the model: {after_read}"
+        );
+        assert!(
+            tool_names(&bodies[0]).contains(&crate::tools::web::SEARCH_WEB.to_owned()),
+            "the search is a tool the model is offered"
+        );
+        drop(bodies);
 
-/// A search the engines could not answer is the step's own failure: the model
-/// is told what went wrong, the run does not claim the step succeeded, and
-/// the turn's record says it was refused.
-#[test]
-fn a_failed_read_is_a_refused_step() {
-    let server = server();
-    let mut f = fixture(
-        "What is at the example address?",
-        World {
-            chat: Some("asked".into()),
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[(
-                    crate::tools::web::READ_PAGE,
-                    serde_json::json!({"url": server.at("/missing")}),
-                )],
-                16,
-            ),
-            turn(&[finish("The page is not there.", true)], 16),
-        ],
-    );
-    look_at(&mut f, &server);
-    f.session.run_task(&f.run).unwrap();
-    let bodies = f.script.bodies.lock().unwrap();
-    let result = bodies[1].to_string();
-    assert!(result.contains("failed"), "{result}");
-    assert!(result.contains("404"), "{result}");
-    drop(bodies);
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    let steps = records
-        .last()
-        .and_then(|record| record["work"]["trace"].as_array().cloned())
-        .expect("the reply's steps");
-    assert_eq!(steps.len(), 1, "{steps:?}");
-    assert_eq!(steps[0]["resource"], "web.page");
-    assert_eq!(steps[0]["outcome"], "refused", "{steps:?}");
+        // Both are steps of the turn's record, by what they asked and reached.
+        let sent = f.sent.borrow();
+        let records = recorded(&sent, "record-work");
+        let steps = records
+            .last()
+            .and_then(|record| record["work"]["trace"].as_array().cloned())
+            .expect("the reply's steps");
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert_eq!(steps[0]["resource"], "web.search");
+        assert_eq!(
+            steps[0]["label"],
+            "Searching the web for \u{201c}Ada Lovelace first algorithm\u{201d}\u{2026}"
+        );
+        assert_eq!(steps[0]["outcome"], "applied");
+        assert_eq!(steps[1]["resource"], "web.page");
+        assert_eq!(
+            steps[1]["label"],
+            format!("Reading {}\u{2026}", server.at("/ada"))
+        );
+        assert_eq!(steps[1]["outcome"], "applied");
+    }
+
+    phase a_failed_read_is_a_refused_step;
+    // A search the engines could not answer is the step's own failure: the model
+    // is told what went wrong, the run does not claim the step succeeded, and
+    // the turn's record says it was refused.
+    {
+        let server = server();
+        let mut f = fixture(
+            "What is at the example address?",
+            World {
+                chat: Some("asked".into()),
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[(
+                        crate::tools::web::READ_PAGE,
+                        serde_json::json!({"url": server.at("/missing")}),
+                    )],
+                    16,
+                ),
+                turn(&[finish("The page is not there.", true)], 16),
+            ],
+        );
+        look_at(&mut f, &server);
+        f.session.run_task(&f.run).unwrap();
+        let bodies = f.script.bodies.lock().unwrap();
+        let result = bodies[1].to_string();
+        assert!(result.contains("failed"), "{result}");
+        assert!(result.contains("404"), "{result}");
+        drop(bodies);
+        let sent = f.sent.borrow();
+        let records = recorded(&sent, "record-work");
+        let steps = records
+            .last()
+            .and_then(|record| record["work"]["trace"].as_array().cloned())
+            .expect("the reply's steps");
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert_eq!(steps[0]["resource"], "web.page");
+        assert_eq!(steps[0]["outcome"], "refused", "{steps:?}");
+    }
 }

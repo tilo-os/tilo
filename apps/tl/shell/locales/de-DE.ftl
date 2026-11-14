@@ -687,14 +687,11 @@ d-rfgelicn = Zeigen
 
 d-p4owlmpg = Immer
 
-d-sscc6gs3 = Gezeigt, solange kein Fenster sie überlappt; sie verbirgt sich, wenn ein Fenster sie decken würde
-    .doc = Gezeigt, solange kein Fenster sie überlappt; sie verbirgt sich, wenn ein Fenster sie decken würde.
+d-sscc6gs3 = Solange kein Fenster sie deckt
 
-d-v2eyzsgr = Verborgen, bis der Zeiger an die Bildschirmkante stößt, an der sie fährt
-    .doc = Verborgen, bis der Zeiger an die Bildschirmkante stößt, an der sie fährt.
+d-v2eyzsgr = An der Bildschirmkante
 
-d-62fazfo4 = Verborgen, wenn der Zeiger eine Weile nicht darauf war, gezeigt, wenn er zurückkommt
-    .doc = Verborgen, wenn der Zeiger eine Weile nicht darauf war, gezeigt, wenn er zurückkommt.
+d-62fazfo4 = Nach einer Weile
 
 d-v3z2zasp = Größe
     .doc = Wie groß die Teile sind.
@@ -1119,6 +1116,11 @@ d-ebrt7kdg = Vorschaudock
 d-grqdyggg = Einstellungen der Shell
     .w-top-bar = Obere Leiste
     .w-show-the-top-bar = Die obere Leiste zeigen
+    .w-edge = Kante
+    .w-fit = Sitz
+    .w-material = Ausführung
+    .w-when-it-shows = Wann sie zeigt
+    .w-size = Größe
     .w-dock = Dock
     .w-show-the-dock = Das Dock zeigen
 
@@ -1284,9 +1286,31 @@ d-p5wzoqr5 = Fensterbedienelemente
     .w-close = Schließen
     .w-this-window = Dieses Fenster
 
+d-bmd7xmln = Ein Platz für eine Suche
+    .doc = Fügt `strip` einen Platz hinzu, der eine Suche nach `text` zeigt, mit den beiden Treffern, die die Notizen-App geantwortet hat, und gibt den Schlüssel des Platzes zurück: der Zustand, in dem ein Platz steht, bis die Person eine der gefundenen Ressourcen wählt.
+
+d-bmd7xmln-strip = Spalte
+
+d-bmd7xmln-text = Text
+
+d-yd725hjw = Die installierten Apps
+    .doc = Die auf diesem Gerät installierten Anwendungen, wie der Launcher sie auflistet: die, die die Aufnahmen und die Layouts des Schreibtischs zeigen.
+
+d-gncm64rz = Stileinstellungen als Blatt
+    .w-settings-for = Einstellungen für { $style_title }
+    .w-close = Schließen
+
+d-mmqndkio = Einstellungen eines Stils
+    .w-comes-from-and-its-settings-are = { $style_label } kommt aus { $package }, und seine Einstellungen gehören seinem Paket.
+
+d-5o2gn6hf = Einstellungen eines Stils
+    .doc = Ein Schreibtisch mit einer Notiz im genannten Stil, dieser Platz vorn, und die eigenen Einstellungen des Stils darüber geöffnet: was eine Person sieht, die sie aus dem Stilmenü der Leiste öffnet.
+
+d-5o2gn6hf-style = Stil
+
 d-z4vc77e6 = Bedienelemente des Platzes
+    .w-this-window = Dieses Fenster
     .w-pin-place = Platz anheften
-    .w-move-to-row = In eine Zeile verschieben
     .w-close = Schließen
 
 d-oyjbbzbk = Inhalt des Platzes
@@ -1316,7 +1340,7 @@ d-6izhhsie = Desktop-Rahmen
 d-fabwkpdf = Rahmen klassisch
 
 d-efc4bnyi = Rahmenknöpfe
-    .w-move-to-row = In eine Zeile verschieben
+    .w-this-window = Dieses Fenster
     .w-close = Schließen
 
 d-u55srubm = Aktionsleiste
@@ -1384,7 +1408,7 @@ d-wz5iufcx = Grund
     .doc = Warum sie fehlgeschlagen ist, in den Worten der App; leer, solange es besser läuft.
 
 d-m3of3jpo = Anordnungsverweis
-    .doc = Eine Ressource, die eine Anfrage gefunden hat: ihre Adresse, der Name, unter dem sie läuft, und ihre Art – dieselben drei Angaben, mit denen der Datensatz eines Platzes benannt ist.
+    .doc = Eine Ressource, die eine Anfrage gefunden hat: ihre Adresse, der Name, unter dem sie läuft, und ihre Art. Der Datensatz eines Platzes ist mit denselben drei Angaben benannt.
     .noun = { $count ->
         [one] Anordnungsverweis
        *[other] Anordnungsverweise
@@ -1441,7 +1465,7 @@ d-4vtnv5px = Anfrage wiederholen
 d-4vtnv5px-place = Platz
 
 d-mtt6d3af = Hier als Tab
-    .doc = Macht den Platz, dessen Fensterleiste auf die Reihe `s` gezogen wurde, zu einem Tab dieser Reihe – so zieht eine Person die Leiste eines Fensters auf die eines anderen, um Tabs zu bilden, und dieselbe Anordnungsaktion, die „In … als Tab verschieben“ im Fenstermenü ausführt.
+    .doc = Macht den Platz, dessen Fensterleiste auf die Reihe `s` gezogen wurde, zu einem Tab dieser Reihe. So zieht eine Person die Leiste eines Fensters auf die eines anderen, um Tabs zu bilden, und „In … als Tab verschieben“ im Fenstermenü führt dieselbe Anordnungsaktion aus.
 
 d-mtt6d3af-v = V
 
@@ -1488,9 +1512,6 @@ d-lfa3rl6s-on = An
 
 d-7womqcp3 = App-Zeile
 
-d-6bfcv6wf = Fensteraktionen
-    .w-window-actions = Fensteraktionen
-
 d-6t5hb2z7 = Anfrageansicht
     .w-retry = Erneut versuchen
     .w-nothing-matched = Nichts passt zu { $text }
@@ -1500,11 +1521,13 @@ d-pjkvdmwk = Stileinstellungen zeigen~present
 d-vseev2rl = Stilbereich
     .w-settings-for = Einstellungen für { $style_title }
     .w-close = Schließen
-    .w-comes-from-and-its-settings-are = { $style_label } stammt aus { $package }, und seine Einstellungen gehören zu seinem Paket.
 
 d-g476xvac = Einstellungen des Desktopstils
     .w-show-the-top-bar = Obere Leiste zeigen
     .w-show-the-dock = Dock zeigen
+    .w-dock-edge = Dock-Kante
+    .w-dock-size = Dock-Größe
+    .w-when-the-dock-shows = Wann das Dock zeigt
 
 d-e3tczbcu = Einstellungen des Reihenstils
     .w-show-the-tabs-of-a-strip = Tabs einer Reihe zeigen

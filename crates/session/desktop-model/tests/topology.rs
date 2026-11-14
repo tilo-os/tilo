@@ -62,9 +62,10 @@ fn layout(tree: &DesktopTree, strip: u64) -> Vec<(u64, Vec<u64>)> {
         .collect()
 }
 
-#[test]
-fn tab_drops_and_splits_reshape_groups_or_change_nothing() {
-    // Phase `a_tab_dropped_in_a_gap_becomes_its_own_group_and_empties_its_source`.
+tilo_test_env::scenario! {
+    fn tab_drops_and_splits_reshape_groups_or_change_nothing;
+
+    phase a_tab_dropped_in_a_gap_becomes_its_own_group_and_empties_its_source;
     {
         let mut tree = tree();
         let moved = tree
@@ -82,7 +83,8 @@ fn tab_drops_and_splits_reshape_groups_or_change_nothing() {
         assert_eq!(layout(&tree, 1), vec![(10, vec![100, 101])]);
         assert_eq!(layout(&tree, 2), vec![(20, vec![200]), (99, vec![110])]);
     }
-    // Phase `a_tab_dropped_into_a_group_lands_at_its_index_and_becomes_active`.
+
+    phase a_tab_dropped_into_a_group_lands_at_its_index_and_becomes_active;
     {
         let mut tree = tree();
         let moved = tree
@@ -106,7 +108,8 @@ fn tab_drops_and_splits_reshape_groups_or_change_nothing() {
             100
         );
     }
-    // Phase `a_stale_target_or_same_strip_move_changes_nothing`.
+
+    phase a_stale_target_or_same_strip_move_changes_nothing;
     {
         let mut tree = tree();
         let stale = DropTarget::ExistingGroup {
@@ -129,7 +132,8 @@ fn tab_drops_and_splits_reshape_groups_or_change_nothing() {
         assert_eq!(layout(&tree, 1), layout(&self::tree(), 1));
         assert_eq!(layout(&tree, 2), layout(&self::tree(), 2));
     }
-    // Phase `splitting_mints_a_group_and_refuses_a_lone_tab`.
+
+    phase splitting_mints_a_group_and_refuses_a_lone_tab;
     {
         let mut tree = tree();
         let mut ids = IdMinter::resume(0, 500);
@@ -147,314 +151,326 @@ fn tab_drops_and_splits_reshape_groups_or_change_nothing() {
             "a group's only tab has nothing to split from"
         );
     }
-}
 
-#[test]
-fn a_live_strip_shape_rearranges_tabs_without_touching_their_content() {
-    let mut tree = tree();
-    tree.workspaces[0].strips[0].window_groups[1].maximized = true;
-    let shape = [
-        GroupShape {
-            id: 11,
-            tab_ids: vec![110, 101],
-            active_tab: 101,
-            width: WindowWidth::Fraction(700),
-        },
-        GroupShape {
-            id: 12,
-            tab_ids: vec![100],
-            active_tab: 100,
-            width: WindowWidth::Normal,
-        },
-    ];
-    let groups = tree.reconcile_strip_topology(StripId(1), &shape).unwrap();
-    assert_eq!(groups.len(), 2);
-    assert_eq!(
-        layout(&tree, 1),
-        vec![(11, vec![110, 101]), (12, vec![100])]
-    );
-    let first = &tree.workspaces[0].strips[0].window_groups[0];
-    assert!(first.maximized, "maximized stays with its group id");
-    assert_eq!(first.width, WindowWidth::Fraction(700));
-    assert!(
-        matches!(&first.tabs[1].tile, TileContent::LocalApp { app_id, .. } if app_id == "org.example.App")
-    );
-    assert_eq!(tree.active_group_for(StripId(1)), Some(11));
-    assert!(
-        tree.reconcile_strip_topology(StripId(1), &shape).is_none(),
-        "an unchanged shape reports nothing"
-    );
-}
-
-#[test]
-fn removing_a_groups_last_tab_removes_the_group_and_moves_the_active_pointer() {
-    let mut tree = tree();
-    tree.set_active_group(StripId(1), 10);
-    let removed = tree.remove_tab(101).unwrap();
-    assert!(!removed.group_removed);
-    assert_eq!(
-        tree.workspaces[0].strips[0].window_groups[0].active_tab,
-        100
-    );
-    let removed = tree.remove_tab(100).unwrap();
-    assert!(removed.group_removed);
-    assert_eq!(
-        (removed.strip, removed.group, removed.tab.id),
-        (StripId(1), 10, 100)
-    );
-    assert_eq!(layout(&tree, 1), vec![(11, vec![110])]);
-    assert_eq!(tree.active_group_for(StripId(1)), Some(11));
-    assert!(tree.remove_tab(100).is_none());
-}
-
-#[test]
-fn a_live_strip_shape_that_loses_or_invents_a_tab_is_refused() {
-    let mut tree = tree();
-    let lost = [GroupShape {
-        id: 10,
-        tab_ids: vec![100, 101],
-        active_tab: 100,
-        width: WindowWidth::Normal,
-    }];
-    assert!(tree.reconcile_strip_topology(StripId(1), &lost).is_none());
-    let invented = [
-        GroupShape {
-            id: 10,
-            tab_ids: vec![100, 101, 999],
-            active_tab: 100,
-            width: WindowWidth::Normal,
-        },
-        GroupShape {
-            id: 11,
-            tab_ids: vec![110],
-            active_tab: 110,
-            width: WindowWidth::Normal,
-        },
-    ];
-    assert!(
-        tree.reconcile_strip_topology(StripId(1), &invented)
-            .is_none()
-    );
-    assert_eq!(
-        layout(&tree, 1),
-        vec![(10, vec![100, 101]), (11, vec![110])]
-    );
-}
-
-#[test]
-fn closing_a_window_frees_its_place_on_the_canvas() {
-    let mut tree = tree();
+    phase removing_a_groups_last_tab_removes_the_group_and_moves_the_active_pointer;
     {
-        let ws = &mut tree.workspaces[0];
-        ws.arrangement
-            .places
-            .insert(10, CanvasPlace::new(0, 0, 720, 520));
-        ws.arrangement
-            .places
-            .insert(11, CanvasPlace::new(744, 0, 720, 520));
-        ws.arrangement.set_float(
-            11,
-            Some(FloatPlace::new(FloatCorner::TopLeft, 20, 20, 640, 480)),
+        let mut tree = tree();
+        tree.set_active_group(StripId(1), 10);
+        let removed = tree.remove_tab(101).unwrap();
+        assert!(!removed.group_removed);
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups[0].active_tab,
+            100
+        );
+        let removed = tree.remove_tab(100).unwrap();
+        assert!(removed.group_removed);
+        assert_eq!(
+            (removed.strip, removed.group, removed.tab.id),
+            (StripId(1), 10, 100)
+        );
+        assert_eq!(layout(&tree, 1), vec![(11, vec![110])]);
+        assert_eq!(tree.active_group_for(StripId(1)), Some(11));
+        assert!(tree.remove_tab(100).is_none());
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_live_strip_shape_is_taken_or_refused;
+
+    phase a_live_strip_shape_rearranges_tabs_without_touching_their_content;
+    {
+        let mut tree = tree();
+        tree.workspaces[0].strips[0].window_groups[1].maximized = true;
+        let shape = [
+            GroupShape {
+                id: 11,
+                tab_ids: vec![110, 101],
+                active_tab: 101,
+                width: WindowWidth::Fraction(700),
+            },
+            GroupShape {
+                id: 12,
+                tab_ids: vec![100],
+                active_tab: 100,
+                width: WindowWidth::Normal,
+            },
+        ];
+        let groups = tree.reconcile_strip_topology(StripId(1), &shape).unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            layout(&tree, 1),
+            vec![(11, vec![110, 101]), (12, vec![100])]
+        );
+        let first = &tree.workspaces[0].strips[0].window_groups[0];
+        assert!(first.maximized, "maximized stays with its group id");
+        assert_eq!(first.width, WindowWidth::Fraction(700));
+        assert!(
+            matches!(&first.tabs[1].tile, TileContent::LocalApp { app_id, .. } if app_id == "org.example.App")
+        );
+        assert_eq!(tree.active_group_for(StripId(1)), Some(11));
+        assert!(
+            tree.reconcile_strip_topology(StripId(1), &shape).is_none(),
+            "an unchanged shape reports nothing"
         );
     }
-    let closed = tree.close_tab(110).expect("group 11 holds its only tab");
-    assert!(closed.group_removed);
-    let ws = &tree.workspaces[0];
-    assert_eq!(ws.arrangement.place_of(11), None, "its place went with it");
-    assert_eq!(ws.arrangement.float_of(11), None, "and its float");
-    assert!(
-        ws.arrangement.place_of(10).is_some(),
-        "the windows left keep their places"
-    );
-}
 
-#[test]
-fn the_window_opened_after_a_close_stands_in_the_room_it_left() {
-    let mut tree = tree();
+    phase a_live_strip_shape_that_loses_or_invents_a_tab_is_refused;
     {
-        let ws = &mut tree.workspaces[0];
-        ws.arrangement
-            .places
-            .insert(10, CanvasPlace::new(0, 0, 720, 520));
-        ws.arrangement
-            .places
-            .insert(11, CanvasPlace::new(744, 0, 720, 520));
+        let mut tree = tree();
+        let lost = [GroupShape {
+            id: 10,
+            tab_ids: vec![100, 101],
+            active_tab: 100,
+            width: WindowWidth::Normal,
+        }];
+        assert!(tree.reconcile_strip_topology(StripId(1), &lost).is_none());
+        let invented = [
+            GroupShape {
+                id: 10,
+                tab_ids: vec![100, 101, 999],
+                active_tab: 100,
+                width: WindowWidth::Normal,
+            },
+            GroupShape {
+                id: 11,
+                tab_ids: vec![110],
+                active_tab: 110,
+                width: WindowWidth::Normal,
+            },
+        ];
+        assert!(
+            tree.reconcile_strip_topology(StripId(1), &invented)
+                .is_none()
+        );
+        assert_eq!(
+            layout(&tree, 1),
+            vec![(10, vec![100, 101]), (11, vec![110])]
+        );
     }
-    tree.close_tab(110).unwrap();
-    // A window opened on the desk after the close, placed as the desk places one.
-    let ws = &mut tree.workspaces[0];
-    ws.strips[0].window_groups.push(group(12, &[120]));
-    let strips = ws.strips.clone();
-    ws.arrangement.place_missing(&strips);
-    assert_eq!(
-        ws.arrangement.place_of(12),
-        Some(CanvasPlace::new(744, 0, 720, 520)),
-        "the next window stands where the closed one stood, not past a hole"
-    );
 }
 
-#[test]
-fn closing_the_front_tab_returns_to_the_tab_it_came_from() {
-    let mut tree = tree();
-    // Group 10 shows 100; a third tab opens beside it and takes the front.
-    let group = &mut tree.workspaces[0].strips[0].window_groups[0];
-    group.tabs.push(tab(102));
-    group.activate_tab(102);
-    // 100 was the one the person came from, though 101 sits beside it.
-    tree.close_tab(102).unwrap();
-    assert_eq!(
-        tree.workspaces[0].strips[0].window_groups[0].active_tab, 100,
-        "closing returns to the previously shown tab"
-    );
+tilo_test_env::scenario! {
+    fn a_closed_windows_place_on_the_canvas_is_free;
+
+    phase closing_a_window_frees_its_place_on_the_canvas;
+    {
+        let mut tree = tree();
+        {
+            let ws = &mut tree.workspaces[0];
+            ws.arrangement
+                .places
+                .insert(10, CanvasPlace::new(0, 0, 720, 520));
+            ws.arrangement
+                .places
+                .insert(11, CanvasPlace::new(744, 0, 720, 520));
+            ws.arrangement.set_float(
+                11,
+                Some(FloatPlace::new(FloatCorner::TopLeft, 20, 20, 640, 480)),
+            );
+        }
+        let closed = tree.close_tab(110).expect("group 11 holds its only tab");
+        assert!(closed.group_removed);
+        let ws = &tree.workspaces[0];
+        assert_eq!(ws.arrangement.place_of(11), None, "its place went with it");
+        assert_eq!(ws.arrangement.float_of(11), None, "and its float");
+        assert!(
+            ws.arrangement.place_of(10).is_some(),
+            "the windows left keep their places"
+        );
+    }
+
+    phase the_window_opened_after_a_close_stands_in_the_room_it_left;
+    {
+        let mut tree = tree();
+        {
+            let ws = &mut tree.workspaces[0];
+            ws.arrangement
+                .places
+                .insert(10, CanvasPlace::new(0, 0, 720, 520));
+            ws.arrangement
+                .places
+                .insert(11, CanvasPlace::new(744, 0, 720, 520));
+        }
+        tree.close_tab(110).unwrap();
+        // A window opened on the desk after the close, placed as the desk places one.
+        let ws = &mut tree.workspaces[0];
+        ws.strips[0].window_groups.push(group(12, &[120]));
+        let strips = ws.strips.clone();
+        ws.arrangement.place_missing(&strips);
+        assert_eq!(
+            ws.arrangement.place_of(12),
+            Some(CanvasPlace::new(744, 0, 720, 520)),
+            "the next window stands where the closed one stood, not past a hole"
+        );
+    }
 }
 
-#[test]
-fn history_skips_tabs_that_closed_and_plain_removal_keeps_the_index_rule() {
-    let mut tree = tree();
-    let group = &mut tree.workspaces[0].strips[0].window_groups[0];
-    group.tabs.push(tab(102));
-    group.tabs.push(tab(103));
-    group.activate_tab(101);
-    group.activate_tab(102);
-    group.activate_tab(103);
-    // 102 closes while behind, then 103 closes: 101 is the most recent
-    // survivor before it, not 100.
-    tree.close_tab(102).unwrap();
-    tree.close_tab(103).unwrap();
-    assert_eq!(
-        tree.workspaces[0].strips[0].window_groups[0].active_tab,
-        101
-    );
-    // Restructuring removal ignores history: the tab now at the index.
-    let mut plain = self::tree();
-    let group = &mut plain.workspaces[0].strips[0].window_groups[0];
-    group.activate_tab(101);
-    group.activate_tab(100);
-    plain.remove_tab(100).unwrap();
-    assert_eq!(
-        plain.workspaces[0].strips[0].window_groups[0].active_tab,
-        101
-    );
-}
+tilo_test_env::scenario! {
+    fn focus_after_a_tab_or_window_goes;
 
-#[test]
-fn a_window_that_goes_away_hands_focus_to_its_left_neighbour_not_where_focus_was_before() {
-    // [10 | 12 | 11]: the person works in 10, opens 12 beside it, looks at
-    // it, and it goes away: back to 10, on its left, not 11 at its index.
-    let mut tree = tree();
-    tree.set_active_group(StripId(1), 10);
-    let strip = &mut tree.workspaces[0].strips[0];
-    strip.window_groups.insert(1, group(12, &[120]));
-    tree.set_active_group(StripId(1), 12);
-    let removed = tree.close_tab(120).unwrap();
-    assert!(removed.group_removed);
-    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+    phase closing_the_front_tab_returns_to_the_tab_it_came_from;
+    {
+        let mut tree = tree();
+        // Group 10 shows 100; a third tab opens beside it and takes the front.
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs.push(tab(102));
+        group.activate_tab(102);
+        // 100 was the one the person came from, though 101 sits beside it.
+        tree.close_tab(102).unwrap();
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups[0].active_tab, 100,
+            "closing returns to the previously shown tab"
+        );
+    }
 
-    // [10 | 11 | 12 | 13]: focused 10 long ago, now in 13 at the far end.
-    // When 13 crashes, focus goes to 12 beside it; going back to 10 would
-    // pan the strip to its start.
-    let mut tree = self::tree();
-    let strip = &mut tree.workspaces[0].strips[0];
-    strip.window_groups.push(group(12, &[120]));
-    strip.window_groups.push(group(13, &[130]));
-    tree.set_active_group(StripId(1), 10);
-    tree.set_active_group(StripId(1), 13);
-    tree.close_tab(130).unwrap();
-    assert_eq!(tree.active_group_for(StripId(1)), Some(12));
+    phase history_skips_tabs_that_closed_and_plain_removal_keeps_the_index_rule;
+    {
+        let mut tree = tree();
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs.push(tab(102));
+        group.tabs.push(tab(103));
+        group.activate_tab(101);
+        group.activate_tab(102);
+        group.activate_tab(103);
+        // 102 closes while behind, then 103 closes: 101 is the most recent
+        // survivor before it, not 100.
+        tree.close_tab(102).unwrap();
+        tree.close_tab(103).unwrap();
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups[0].active_tab,
+            101
+        );
+        // Restructuring removal ignores history: the tab now at the index.
+        let mut plain = self::tree();
+        let group = &mut plain.workspaces[0].strips[0].window_groups[0];
+        group.activate_tab(101);
+        group.activate_tab(100);
+        plain.remove_tab(100).unwrap();
+        assert_eq!(
+            plain.workspaces[0].strips[0].window_groups[0].active_tab,
+            101
+        );
+    }
 
-    // At the strip's start, the neighbour on the right.
-    let mut tree = self::tree();
-    tree.workspaces[0].strips[0]
-        .window_groups
-        .insert(0, group(12, &[120]));
-    tree.set_active_group(StripId(1), 11);
-    tree.set_active_group(StripId(1), 12);
-    tree.close_tab(120).unwrap();
-    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+    phase a_window_that_goes_away_hands_focus_to_its_left_neighbour_not_where_focus_was_before;
+    {
+        // [10 | 12 | 11]: the person works in 10, opens 12 beside it, looks at
+        // it, and it goes away: back to 10, on its left, not 11 at its index.
+        let mut tree = tree();
+        tree.set_active_group(StripId(1), 10);
+        let strip = &mut tree.workspaces[0].strips[0];
+        strip.window_groups.insert(1, group(12, &[120]));
+        tree.set_active_group(StripId(1), 12);
+        let removed = tree.close_tab(120).unwrap();
+        assert!(removed.group_removed);
+        assert_eq!(tree.active_group_for(StripId(1)), Some(10));
 
-    // Restructuring removal keeps the index rule.
-    let mut plain = self::tree();
-    plain.workspaces[0].strips[0]
-        .window_groups
-        .insert(1, group(12, &[120]));
-    plain.set_active_group(StripId(1), 10);
-    plain.set_active_group(StripId(1), 12);
-    plain.remove_tab(120).unwrap();
-    assert_eq!(plain.active_group_for(StripId(1)), Some(11));
-}
+        // [10 | 11 | 12 | 13]: focused 10 long ago, now in 13 at the far end.
+        // When 13 crashes, focus goes to 12 beside it; going back to 10 would
+        // pan the strip to its start.
+        let mut tree = self::tree();
+        let strip = &mut tree.workspaces[0].strips[0];
+        strip.window_groups.push(group(12, &[120]));
+        strip.window_groups.push(group(13, &[130]));
+        tree.set_active_group(StripId(1), 10);
+        tree.set_active_group(StripId(1), 13);
+        tree.close_tab(130).unwrap();
+        assert_eq!(tree.active_group_for(StripId(1)), Some(12));
 
-#[test]
-fn a_focused_window_moved_to_another_strip_hands_its_strip_focus_to_its_neighbour() {
-    // [10 | 11]: the person works in 11, then moves its only tab to strip 2
-    // (the window menu's Move to workspace, a drop on another strip). Strip
-    // 1 focuses 10, beside it, rather than the group that is gone: every
-    // keyboard command on the focused window acts on that pointer.
-    let mut tree = tree();
-    tree.set_active_group(StripId(1), 11);
-    let moved = tree
-        .move_tab_across_strips(
+        // At the strip's start, the neighbour on the right.
+        let mut tree = self::tree();
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .insert(0, group(12, &[120]));
+        tree.set_active_group(StripId(1), 11);
+        tree.set_active_group(StripId(1), 12);
+        tree.close_tab(120).unwrap();
+        assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+
+        // Restructuring removal keeps the index rule.
+        let mut plain = self::tree();
+        plain.workspaces[0].strips[0]
+            .window_groups
+            .insert(1, group(12, &[120]));
+        plain.set_active_group(StripId(1), 10);
+        plain.set_active_group(StripId(1), 12);
+        plain.remove_tab(120).unwrap();
+        assert_eq!(plain.active_group_for(StripId(1)), Some(11));
+    }
+
+    phase a_focused_window_moved_to_another_strip_hands_its_strip_focus_to_its_neighbour;
+    {
+        // [10 | 11]: the person works in 11, then moves its only tab to strip 2
+        // (the window menu's Move to workspace, a drop on another strip). Strip
+        // 1 focuses 10, beside it, rather than the group that is gone: every
+        // keyboard command on the focused window acts on that pointer.
+        let mut tree = tree();
+        tree.set_active_group(StripId(1), 11);
+        let moved = tree
+            .move_tab_across_strips(
+                StripId(1),
+                StripId(2),
+                110,
+                99,
+                DropTarget::GroupGap { gap_index: 1 },
+            )
+            .unwrap();
+        assert!(moved.source_group_removed);
+        assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+
+        // At the strip's start, the neighbour on the right.
+        let mut tree = self::tree();
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .insert(0, group(12, &[120]));
+        tree.set_active_group(StripId(1), 12);
+        tree.move_tab_across_strips(
+            StripId(1),
+            StripId(2),
+            120,
+            99,
+            DropTarget::ExistingGroup {
+                group_id: 20,
+                tab_index: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+
+        // The strip's last window leaves: it has no focused group.
+        let mut tree = self::tree();
+        tree.set_active_group(StripId(2), 20);
+        tree.move_tab_across_strips(
+            StripId(2),
+            StripId(1),
+            200,
+            99,
+            DropTarget::GroupGap { gap_index: 0 },
+        )
+        .unwrap();
+        assert_eq!(tree.active_group_for(StripId(2)), None);
+
+        // A window that was not focused leaves the focus where it was.
+        let mut tree = self::tree();
+        tree.set_active_group(StripId(1), 10);
+        tree.move_tab_across_strips(
             StripId(1),
             StripId(2),
             110,
             99,
-            DropTarget::GroupGap { gap_index: 1 },
+            DropTarget::GroupGap { gap_index: 0 },
         )
         .unwrap();
-    assert!(moved.source_group_removed);
-    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+        assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+    }
 
-    // At the strip's start, the neighbour on the right.
-    let mut tree = self::tree();
-    tree.workspaces[0].strips[0]
-        .window_groups
-        .insert(0, group(12, &[120]));
-    tree.set_active_group(StripId(1), 12);
-    tree.move_tab_across_strips(
-        StripId(1),
-        StripId(2),
-        120,
-        99,
-        DropTarget::ExistingGroup {
-            group_id: 20,
-            tab_index: 0,
-        },
-    )
-    .unwrap();
-    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
-
-    // The strip's last window leaves: it has no focused group.
-    let mut tree = self::tree();
-    tree.set_active_group(StripId(2), 20);
-    tree.move_tab_across_strips(
-        StripId(2),
-        StripId(1),
-        200,
-        99,
-        DropTarget::GroupGap { gap_index: 0 },
-    )
-    .unwrap();
-    assert_eq!(tree.active_group_for(StripId(2)), None);
-
-    // A window that was not focused leaves the focus where it was.
-    let mut tree = self::tree();
-    tree.set_active_group(StripId(1), 10);
-    tree.move_tab_across_strips(
-        StripId(1),
-        StripId(2),
-        110,
-        99,
-        DropTarget::GroupGap { gap_index: 0 },
-    )
-    .unwrap();
-    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
-}
-
-#[test]
-fn activating_the_front_tab_again_records_nothing() {
-    let mut group = group(30, &[300, 301]);
-    group.activate_tab(300);
-    assert!(group.focus_history.is_empty());
-    group.activate_tab(301);
-    group.activate_tab(301);
-    assert_eq!(group.focus_history, vec![300]);
+    phase activating_the_front_tab_again_records_nothing;
+    {
+        let mut group = group(30, &[300, 301]);
+        group.activate_tab(300);
+        assert!(group.focus_history.is_empty());
+        group.activate_tab(301);
+        group.activate_tab(301);
+        assert_eq!(group.focus_history, vec![300]);
+    }
 }

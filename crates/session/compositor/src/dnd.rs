@@ -126,10 +126,11 @@ struct Drag {
 enum Source {
     /// A Wayland client's data source.
     Client(WlDataSource),
-    /// A hosted app's bytes; `origin` is the app.
+    /// Bytes the compositor holds: a hosted app's, `origin` being that app, or what a drag that
+    /// crossed from another of the person's devices carried here, which no app here started.
     Host {
         values: Arc<BTreeMap<String, Vec<u8>>>,
-        origin: usize,
+        origin: Option<usize>,
     },
     /// An X11 client's drag ([`Dnd::incoming`]).
     X11,
@@ -278,6 +279,38 @@ impl State {
             }
             origin
         };
+        self.begin_held_drag(values, Some(origin), icon, touch);
+        true
+    }
+
+    /// Carry on here a drag that crossed from another of the person's devices with `offer`: it
+    /// follows the pointer from where it is, and the release that drops it is still to come. False
+    /// when it offers nothing or the pointer is held by something else.
+    pub(crate) fn carry_drag_here(&mut self, offer: Vec<(String, Vec<u8>)>) -> bool {
+        let Some(values) = host_offer(offer) else {
+            return false;
+        };
+        if self.dnd.drag.is_some()
+            || self
+                .seat
+                .get_pointer()
+                .is_none_or(|pointer| pointer.is_grabbed())
+        {
+            return false;
+        }
+        self.begin_held_drag(values, None, None, None);
+        true
+    }
+
+    /// Start the compositor's own drag of `values` from `origin` , under the finger `touch` names
+    /// or else the pointer.
+    fn begin_held_drag(
+        &mut self,
+        values: BTreeMap<String, Vec<u8>>,
+        origin: Option<usize>,
+        icon: Option<(tilo_session_core::surface::HostFrame, Point<i32, Logical>)>,
+        touch: Option<(u32, usize, Point<f64, Logical>)>,
+    ) {
         let values = Arc::new(values);
         let mimes = normalized_mimes(values.keys().cloned());
         self.dnd.served = Some(Served::Host(Arc::clone(&values)));
@@ -314,6 +347,64 @@ impl State {
             };
             start_dnd(&display, &seat, self, serial, Some(start), None, metadata);
             self.drag_motion(self.pointer, SERIAL_COUNTER.next_serial(), time);
+        }
+    }
+
+    /// The formats the pointer's drag offers, while the pointer carries one whose bytes can be
+    /// read here: a Wayland client's or the compositor's own, not an X11 client's.
+    pub(crate) fn dragged_formats(&self) -> Option<Vec<String>> {
+        let drag = self.dnd.drag.as_ref()?;
+        if self.drag_finger().is_some() || matches!(drag.source, Source::X11) {
+            return None;
+        }
+        Some(drag.mimes.clone())
+    }
+
+    /// Ask the pointer's drag for its bytes in `mime` , written into `fd` .
+    pub(crate) fn receive_drag(&self, mime: &str, fd: OwnedFd) -> Result<(), String> {
+        let drag = self.dnd.drag.as_ref().ok_or("no drag runs")?;
+        match &drag.source {
+            Source::Client(source) => {
+                source.send(mime.to_owned(), fd.as_fd());
+                Ok(())
+            }
+            Source::Host { values, .. } => {
+                let bytes = value_for(values, mime).ok_or("the drag does not offer it")?;
+                serve(fd, bytes.to_vec());
+                Ok(())
+            }
+            Source::X11 => Err("an X11 drag is read only where it drops".into()),
+        }
+    }
+
+    /// End the pointer's drag dropped nowhere: what it was over is left, and its source hears it
+    /// was cancelled. False when no drag runs.
+    pub(crate) fn cancel_drag(&mut self) -> bool {
+        if self.dnd.drag.is_none() {
+            return false;
+        }
+        self.retarget(&Under::Nothing, self.dnd.at);
+        if let Some(drag) = self.dnd.drag.as_mut() {
+            drag.outcome = Some(false);
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            let serial = SERIAL_COUNTER.next_serial();
+            let time = self.now_ms();
+            // Off every surface first: a grab let go over one that took the offer drops on it.
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: self.dnd.at,
+                    serial,
+                    time,
+                },
+            );
+            pointer.unset_grab(self, serial, time);
+            pointer.frame(self);
+        }
+        if let Some(drag) = self.dnd.drag.take() {
+            self.drag_ended(&drag, BTN_LEFT);
         }
         true
     }
@@ -658,7 +749,10 @@ impl State {
     /// come up, and route the pointer anew.
     fn drag_ended(&mut self, drag: &Drag, button: u32) {
         self.dnd.icon = None;
-        if let Source::Host { origin, .. } = drag.source
+        if let Source::Host {
+            origin: Some(origin),
+            ..
+        } = drag.source
             && let Some(host) = self.hosts.get_mut(origin)
         {
             // The press was the app's; so is the release.

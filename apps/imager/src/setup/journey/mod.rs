@@ -10365,150 +10365,186 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_migration_row_edits_early_choice_and_cancellation_preserves_person() {
-        let mut app = fixture();
-        choose(&mut app, "another");
-        choose(&mut app, "fresh");
-        choose(&mut app, "new");
-        app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "Ada".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        password(&mut app);
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        assert_eq!(status(&mut app)["page"], "purpose");
-        choose(&mut app, "computer");
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        let original = status(&mut app);
-        assert_eq!(original["page"], "review");
-        app.settle();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(visual_tests::control(preview, "installer.review.migration").is_some());
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::EditPreview {
-            section: "belongings".into(),
-        })
-        .unwrap();
-        assert_eq!(status(&mut app)["page"], "migration");
-        choose(&mut app, "migrate");
-        assert_eq!(status(&mut app)["page"], "belongings");
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        assert_eq!(status(&mut app)["page"], "migration");
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        assert_eq!(status(&mut app), original);
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.password, "preview-secret-only");
-            assert!(!preview.migration_busy());
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::EditPreview {
-            section: "belongings".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        assert_eq!(status(&mut app)["page"], "review");
-        assert_eq!(status(&mut app)["migrate"], false);
-        assert_eq!(status(&mut app)["name"], "Ada");
-    }
+    tilo_test_env::scenario! {
+        fn identity_and_migration_choices_follow_the_route;
 
-    #[test]
-    fn new_identity_migration_is_driven_through_public_effects() {
-        let mut app = fixture();
-        assert!(
-            app.effect(&InstallerPreviewEffect::ContinuePreview)
-                .is_err()
-        );
-        choose(&mut app, "computer");
-        choose(&mut app, "migrate");
-        choose(&mut app, "new");
-        app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "My name".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        password(&mut app);
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        assert_eq!(status(&mut app)["page"], "purpose");
-        choose(&mut app, "computer");
-        assert_eq!(status(&mut app)["page"], "belongings");
-        app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
-            .unwrap();
-        app.effect(&InstallerPreviewEffect::SetPreviewCategory {
-            category: "accounts".into(),
-            included: true,
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        assert_eq!(status(&mut app)["page"], "accounts");
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        assert_eq!(status(&mut app)["page"], "storage");
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        let review = status(&mut app);
-        assert_eq!(review["page"], "review");
-        assert_eq!(review["name"], "My name");
-        app.settle();
-        let rendered_review = app.harness().inspection_json().unwrap();
-        assert!(rendered_review.contains("My name"));
-        assert!(rendered_review.contains(&t("installer-review-setup")));
-        assert!(rendered_review.contains(&t("installer-review-belongings-heading")));
-        assert!(rendered_review.contains(&t("installer-review-person-body")));
-        assert!(rendered_review.contains(review["device_name"].as_str().unwrap()));
-        assert!(rendered_review.contains("installer.review.devices"));
-        assert!(rendered_review.contains("installer.review.profile"));
-        assert!(rendered_review.contains("installer.review.destination"));
-        assert!(!rendered_review.contains("preview-secret-only"));
-        assert_eq!(review["categories"][2], true);
-        assert!(!review.to_string().contains("preview-secret-only"));
-        assert!(
-            !app.state().profile.user.username.contains("My name"),
-            "preview choices never mutate the installation profile"
-        );
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        assert_eq!(status(&mut app)["page"], "ready");
-    }
-
-    #[test]
-    fn existing_identity_can_migrate_and_fresh_skips_belongings() {
-        for migrate in [true, false] {
+        phase review_migration_row_edits_early_choice_and_cancellation_preserves_person;
+        {
             let mut app = fixture();
             choose(&mut app, "another");
-            choose(&mut app, if migrate { "migrate" } else { "fresh" });
-            choose(&mut app, "existing");
-            assert_eq!(status(&mut app)["page"], "connect");
-            choose(&mut app, "device");
+            choose(&mut app, "fresh");
+            choose(&mut app, "new");
+            app.effect(&InstallerPreviewEffect::SetPreviewName {
+                value: "Ada".into(),
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
             password(&mut app);
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
             assert_eq!(status(&mut app)["page"], "purpose");
             choose(&mut app, "computer");
-            assert_eq!(
-                status(&mut app)["page"],
-                if migrate { "belongings" } else { "storage" }
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            let original = status(&mut app);
+            assert_eq!(original["page"], "review");
+            app.settle();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                assert!(visual_tests::control(preview, "installer.review.migration").is_some());
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::EditPreview {
+                section: "belongings".into(),
+            })
+            .unwrap();
+            assert_eq!(status(&mut app)["page"], "migration");
+            choose(&mut app, "migrate");
+            assert_eq!(status(&mut app)["page"], "belongings");
+            app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+            assert_eq!(status(&mut app)["page"], "migration");
+            app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+            assert_eq!(status(&mut app), original);
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                assert_eq!(preview.journey.password, "preview-secret-only");
+                assert!(!preview.migration_busy());
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::EditPreview {
+                section: "belongings".into(),
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            assert_eq!(status(&mut app)["page"], "review");
+            assert_eq!(status(&mut app)["migrate"], false);
+            assert_eq!(status(&mut app)["name"], "Ada");
+        }
+
+        phase new_identity_migration_is_driven_through_public_effects;
+        {
+            let mut app = fixture();
+            assert!(
+                app.effect(&InstallerPreviewEffect::ContinuePreview)
+                    .is_err()
             );
-            if migrate {
+            choose(&mut app, "computer");
+            choose(&mut app, "migrate");
+            choose(&mut app, "new");
+            app.effect(&InstallerPreviewEffect::SetPreviewName {
+                value: "My name".into(),
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            password(&mut app);
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            assert_eq!(status(&mut app)["page"], "purpose");
+            choose(&mut app, "computer");
+            assert_eq!(status(&mut app)["page"], "belongings");
+            app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
+                .unwrap();
+            app.effect(&InstallerPreviewEffect::SetPreviewCategory {
+                category: "accounts".into(),
+                included: true,
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            assert_eq!(status(&mut app)["page"], "accounts");
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            assert_eq!(status(&mut app)["page"], "storage");
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            let review = status(&mut app);
+            assert_eq!(review["page"], "review");
+            assert_eq!(review["name"], "My name");
+            app.settle();
+            let rendered_review = app.harness().inspection_json().unwrap();
+            assert!(rendered_review.contains("My name"));
+            assert!(rendered_review.contains(&t("installer-review-setup")));
+            assert!(rendered_review.contains(&t("installer-review-belongings-heading")));
+            assert!(rendered_review.contains(&t("installer-review-person-body")));
+            assert!(rendered_review.contains(review["device_name"].as_str().unwrap()));
+            assert!(rendered_review.contains("installer.review.devices"));
+            assert!(rendered_review.contains("installer.review.profile"));
+            assert!(rendered_review.contains("installer.review.destination"));
+            assert!(!rendered_review.contains("preview-secret-only"));
+            assert_eq!(review["categories"][2], true);
+            assert!(!review.to_string().contains("preview-secret-only"));
+            assert!(
+                !app.state().profile.user.username.contains("My name"),
+                "preview choices never mutate the installation profile"
+            );
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            assert_eq!(status(&mut app)["page"], "ready");
+        }
+
+        phase existing_identity_can_migrate_and_fresh_skips_belongings;
+        {
+            for migrate in [true, false] {
+                let mut app = fixture();
+                choose(&mut app, "another");
+                choose(&mut app, if migrate { "migrate" } else { "fresh" });
+                choose(&mut app, "existing");
+                assert_eq!(status(&mut app)["page"], "connect");
+                choose(&mut app, "device");
+                password(&mut app);
                 app.effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap();
+                assert_eq!(status(&mut app)["page"], "purpose");
+                choose(&mut app, "computer");
+                assert_eq!(
+                    status(&mut app)["page"],
+                    if migrate { "belongings" } else { "storage" }
+                );
+                if migrate {
+                    app.effect(&InstallerPreviewEffect::ContinuePreview)
+                        .unwrap();
+                }
+                app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+                assert_eq!(
+                    status(&mut app)["page"],
+                    if migrate { "belongings" } else { "purpose" }
+                );
+                assert_eq!(status(&mut app)["identity"], "existing");
+                assert_eq!(status(&mut app)["destination"], "another");
             }
-            app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-            assert_eq!(
-                status(&mut app)["page"],
-                if migrate { "belongings" } else { "purpose" }
-            );
-            assert_eq!(status(&mut app)["identity"], "existing");
-            assert_eq!(status(&mut app)["destination"], "another");
+        }
+
+        phase identity_recovery_route_availability_matches_native_platform_before_choice;
+        {
+            let mut preview = InstallerPreview {
+                dirty: true,
+                live: true,
+                ..Default::default()
+            };
+            for destination in [
+                Destination::Computer,
+                Destination::Another,
+                Destination::Desktop,
+            ] {
+                for migrate in [false, true] {
+                    preview.journey.destination = Some(destination);
+                    preview.journey.migrate = Some(migrate);
+                    assert_eq!(
+                        preview.identity_route_available("device"),
+                        cfg!(target_os = "linux")
+                    );
+                    assert_eq!(preview.identity_route_available("backup"), cfg!(unix));
+                    assert_eq!(
+                        preview.identity_route_available("current"),
+                        cfg!(target_os = "linux") && destination == Destination::Desktop
+                    );
+                    assert!(!preview.identity_route_available("unknown"));
+                    assert!(preview.personal.prepared_handle().is_none());
+                    assert!(!preview.pairing.started());
+                    assert!(preview.journey.transfer.is_none());
+                }
+            }
         }
     }
 
@@ -10771,112 +10807,115 @@ mod tests {
         .unwrap();
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn desktop_belongings_actions_keep_files_and_apps_in_place_and_select_connections() {
-        let mut app = fixture();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.journey.destination = Some(Destination::Desktop);
-            preview.journey.page = Page::Belongings;
-            preview.journey.migrate = Some(true);
-            preview.journey.categories = [false, false, true];
-            preview.dirty = true;
-        })
-        .unwrap();
-        assert_eq!(status(&mut app)["page"], "belongings");
-        app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn the_desktop_route_keeps_files_in_place_and_admits_the_device;
+
+        phase desktop_belongings_actions_keep_files_and_apps_in_place_and_select_connections;
+        {
+            let mut app = fixture();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                preview.journey.destination = Some(Destination::Desktop);
+                preview.journey.page = Page::Belongings;
+                preview.journey.migrate = Some(true);
+                preview.journey.categories = [false, false, true];
+                preview.dirty = true;
+            })
             .unwrap();
-        let inspection = app.harness().inspection_json().unwrap();
-        for id in [
-            "installer.desktop.files.in-place",
-            "installer.desktop.apps.in-place",
-            "installer.category.accounts",
-        ] {
-            assert!(inspection.contains(id), "Desktop exposes {id}");
-        }
-        assert!(!inspection.contains("installer.category.files"));
-        assert!(!inspection.contains("installer.category.flatpak"));
-        for category in ["files", "flatpak"] {
-            for included in [false, true] {
-                assert!(
-                    app.effect(&InstallerPreviewEffect::SetPreviewCategory {
-                        category: category.into(),
-                        included
-                    })
-                    .is_err()
-                );
+            assert_eq!(status(&mut app)["page"], "belongings");
+            app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
+                .unwrap();
+            let inspection = app.harness().inspection_json().unwrap();
+            for id in [
+                "installer.desktop.files.in-place",
+                "installer.desktop.apps.in-place",
+                "installer.category.accounts",
+            ] {
+                assert!(inspection.contains(id), "Desktop exposes {id}");
             }
-        }
-        for category in ["bookmarks", "history", "accounts"] {
+            assert!(!inspection.contains("installer.category.files"));
+            assert!(!inspection.contains("installer.category.flatpak"));
+            for category in ["files", "flatpak"] {
+                for included in [false, true] {
+                    assert!(
+                        app.effect(&InstallerPreviewEffect::SetPreviewCategory {
+                            category: category.into(),
+                            included
+                        })
+                        .is_err()
+                    );
+                }
+            }
+            for category in ["bookmarks", "history", "accounts"] {
+                app.effect(&InstallerPreviewEffect::SetPreviewCategory {
+                    category: category.into(),
+                    included: false,
+                })
+                .unwrap();
+            }
+            let snapshot = status(&mut app);
+            assert_eq!(
+                snapshot["categories"],
+                serde_json::json!([false, false, false])
+            );
+            assert_eq!(
+                snapshot["browser_domains"],
+                serde_json::json!([false, false])
+            );
             app.effect(&InstallerPreviewEffect::SetPreviewCategory {
-                category: category.into(),
-                included: false,
+                category: "accounts".into(),
+                included: true,
+            })
+            .unwrap();
+            assert_eq!(status(&mut app)["categories"][2], true);
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                assert!(preview.selected_portable_apps().is_empty());
+                assert_eq!(preview.migration_categories(), [false, false, true]);
             })
             .unwrap();
         }
-        let snapshot = status(&mut app);
-        assert_eq!(
-            snapshot["categories"],
-            serde_json::json!([false, false, false])
-        );
-        assert_eq!(
-            snapshot["browser_domains"],
-            serde_json::json!([false, false])
-        );
-        app.effect(&InstallerPreviewEffect::SetPreviewCategory {
-            category: "accounts".into(),
-            included: true,
-        })
-        .unwrap();
-        assert_eq!(status(&mut app)["categories"][2], true);
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(preview.selected_portable_apps().is_empty());
-            assert_eq!(preview.migration_categories(), [false, false, true]);
-        })
-        .unwrap();
-    }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn desktop_identity_routes_admit_device_without_pairing_and_keep_backup() {
-        let mut app = fixture();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.live = true;
-            preview.journey.destination = Some(Destination::Desktop);
-            preview.journey.migrate = Some(false);
-            preview.journey.identity = Some(Identity::Existing);
-            preview.journey.page = Page::Connect;
-            preview.dirty = true;
-        })
-        .unwrap();
-        assert_eq!(status(&mut app)["page"], "connect");
-        let inspection = app.harness().inspection_json().unwrap();
-        assert!(inspection.contains("installer.choice.device"));
-        assert!(inspection.contains("installer.choice.backup"));
-        assert!(inspection.contains("installer.choice.current"));
-        app.effect(&InstallerPreviewEffect::ChoosePreview {
-            choice: "device".into(),
-        })
-        .unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(!preview.pairing.started());
-            assert_eq!(preview.journey.transfer.as_deref(), Some("device"));
-            assert!(preview.personal.prepared_handle().is_none());
-            assert!(preview.identity_route_available("backup"));
-            assert!(preview.identity_route_available("device"));
-        })
-        .unwrap();
-        assert_eq!(status(&mut app)["page"], "connect");
-        app.effect(&InstallerPreviewEffect::ChoosePreview {
-            choice: "backup".into(),
-        })
-        .unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.transfer.as_deref(), Some("backup"));
-            assert!(!preview.existing_identity.selected());
-        })
-        .unwrap();
-        assert_eq!(status(&mut app)["page"], "connect");
+        phase desktop_identity_routes_admit_device_without_pairing_and_keep_backup;
+        {
+            let mut app = fixture();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                preview.live = true;
+                preview.journey.destination = Some(Destination::Desktop);
+                preview.journey.migrate = Some(false);
+                preview.journey.identity = Some(Identity::Existing);
+                preview.journey.page = Page::Connect;
+                preview.dirty = true;
+            })
+            .unwrap();
+            assert_eq!(status(&mut app)["page"], "connect");
+            let inspection = app.harness().inspection_json().unwrap();
+            assert!(inspection.contains("installer.choice.device"));
+            assert!(inspection.contains("installer.choice.backup"));
+            assert!(inspection.contains("installer.choice.current"));
+            app.effect(&InstallerPreviewEffect::ChoosePreview {
+                choice: "device".into(),
+            })
+            .unwrap();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                assert!(!preview.pairing.started());
+                assert_eq!(preview.journey.transfer.as_deref(), Some("device"));
+                assert!(preview.personal.prepared_handle().is_none());
+                assert!(preview.identity_route_available("backup"));
+                assert!(preview.identity_route_available("device"));
+            })
+            .unwrap();
+            assert_eq!(status(&mut app)["page"], "connect");
+            app.effect(&InstallerPreviewEffect::ChoosePreview {
+                choice: "backup".into(),
+            })
+            .unwrap();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                assert_eq!(preview.journey.transfer.as_deref(), Some("backup"));
+                assert!(!preview.existing_identity.selected());
+            })
+            .unwrap();
+            assert_eq!(status(&mut app)["page"], "connect");
+        }
     }
 
     fn catalog_availability(
@@ -10924,213 +10963,258 @@ mod tests {
         );
     }
 
-    #[test]
-    fn guided_catalog_page_actions_follow_dispatch_and_review_profile_edits() {
-        let mut app = fixture();
-        for (id, effect) in [
-            (
-                "set-preview-name",
-                InstallerPreviewEffect::SetPreviewName {
-                    value: "Wrong page".into(),
-                },
-            ),
-            (
-                "select-preview-avatar",
-                InstallerPreviewEffect::SelectPreviewAvatar {
-                    source_file: AbsolutePath::new("/not-granted.png").unwrap(),
-                },
-            ),
-            (
-                "select-existing-identity-backup",
-                InstallerPreviewEffect::SelectExistingIdentityBackup {
-                    source_file: AbsolutePath::new("/not-granted.backup").unwrap(),
-                },
-            ),
-            (
-                "set-preview-password",
-                InstallerPreviewEffect::SetPreviewPassword {
-                    value: "Not accepted offscreen".into(),
-                },
-            ),
-            (
-                "set-account-field",
-                InstallerPreviewEffect::SetAccountField {
-                    field: "password".into(),
-                    value: "Not accepted offscreen".into(),
-                },
-            ),
-        ] {
-            assert!(matches!(catalog_availability(&mut app, id),
-                ui::tilo_actions::Availability::Unavailable { code, .. } if code == "wrong_page"));
-            assert!(
-                app.effect(&effect).is_err(),
-                "{id} cannot mutate another page"
-            );
-            assert_eq!(status(&mut app)["page"], "destination");
-        }
-        assert!(catalog_availability(&mut app, "read-preview").is_available());
-        choose(&mut app, "another");
-        choose(&mut app, "fresh");
-        choose(&mut app, "new");
-        assert!(catalog_availability(&mut app, "set-preview-name").is_available());
-        assert!(catalog_availability(&mut app, "select-preview-avatar").is_available());
-        app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "Ada".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
+    tilo_test_env::scenario! {
+        fn the_guided_catalog_admits_only_what_the_page_can_do;
+
+        phase guided_catalog_page_actions_follow_dispatch_and_review_profile_edits;
+        {
+            let mut app = fixture();
+            for (id, effect) in [
+                (
+                    "set-preview-name",
+                    InstallerPreviewEffect::SetPreviewName {
+                        value: "Wrong page".into(),
+                    },
+                ),
+                (
+                    "select-preview-avatar",
+                    InstallerPreviewEffect::SelectPreviewAvatar {
+                        source_file: AbsolutePath::new("/not-granted.png").unwrap(),
+                    },
+                ),
+                (
+                    "select-existing-identity-backup",
+                    InstallerPreviewEffect::SelectExistingIdentityBackup {
+                        source_file: AbsolutePath::new("/not-granted.backup").unwrap(),
+                    },
+                ),
+                (
+                    "set-preview-password",
+                    InstallerPreviewEffect::SetPreviewPassword {
+                        value: "Not accepted offscreen".into(),
+                    },
+                ),
+                (
+                    "set-account-field",
+                    InstallerPreviewEffect::SetAccountField {
+                        field: "password".into(),
+                        value: "Not accepted offscreen".into(),
+                    },
+                ),
+            ] {
+                assert!(matches!(catalog_availability(&mut app, id),
+                    ui::tilo_actions::Availability::Unavailable { code, .. } if code == "wrong_page"));
+                assert!(
+                    app.effect(&effect).is_err(),
+                    "{id} cannot mutate another page"
+                );
+                assert_eq!(status(&mut app)["page"], "destination");
+            }
+            assert!(catalog_availability(&mut app, "read-preview").is_available());
+            choose(&mut app, "another");
+            choose(&mut app, "fresh");
+            choose(&mut app, "new");
+            assert!(catalog_availability(&mut app, "set-preview-name").is_available());
+            assert!(catalog_availability(&mut app, "select-preview-avatar").is_available());
+            app.effect(&InstallerPreviewEffect::SetPreviewName {
+                value: "Ada".into(),
+            })
             .unwrap();
-        assert!(!catalog_availability(&mut app, "set-preview-name").is_available());
-        assert!(
-            !catalog_availability(&mut app, "set-preview-password").is_available(),
-            "the interactive route has no password stop"
-        );
-        password(&mut app);
-        assert_eq!(status(&mut app)["page"], "devices");
-        assert!(catalog_availability(&mut app, "set-preview-device-name").is_available());
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        assert_eq!(status(&mut app)["page"], "purpose");
-        choose(&mut app, "computer");
-        if status(&mut app)["page"] == "storage" {
-            assert!(catalog_availability(&mut app, "set-storage-size").is_available());
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
+            assert!(!catalog_availability(&mut app, "set-preview-name").is_available());
+            assert!(
+                !catalog_availability(&mut app, "set-preview-password").is_available(),
+                "the interactive route has no password stop"
+            );
+            password(&mut app);
+            assert_eq!(status(&mut app)["page"], "devices");
+            assert!(catalog_availability(&mut app, "set-preview-device-name").is_available());
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            assert_eq!(status(&mut app)["page"], "purpose");
+            choose(&mut app, "computer");
+            if status(&mut app)["page"] == "storage" {
+                assert!(catalog_availability(&mut app, "set-storage-size").is_available());
+                app.effect(&InstallerPreviewEffect::ContinuePreview)
+                    .unwrap();
+            }
+            assert_eq!(status(&mut app)["page"], "review");
+            assert!(catalog_availability(&mut app, "edit-preview").is_available());
+            app.effect(&InstallerPreviewEffect::EditPreview {
+                section: "profile".into(),
+            })
+            .unwrap();
+            assert!(catalog_availability(&mut app, "set-preview-name").is_available());
+            app.effect(&InstallerPreviewEffect::SetPreviewName {
+                value: "Reviewed Ada".into(),
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            assert_eq!(status(&mut app)["page"], "review");
+            assert_eq!(status(&mut app)["name"], "Reviewed Ada");
+            assert!(!catalog_availability(&mut app, "set-preview-name").is_available());
         }
-        assert_eq!(status(&mut app)["page"], "review");
-        assert!(catalog_availability(&mut app, "edit-preview").is_available());
-        app.effect(&InstallerPreviewEffect::EditPreview {
-            section: "profile".into(),
-        })
-        .unwrap();
-        assert!(catalog_availability(&mut app, "set-preview-name").is_available());
-        app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "Reviewed Ada".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
+
+        phase guided_catalog_belongings_controls_require_expanded_review;
+        {
+            let mut app = fixture();
+            choose(&mut app, "another");
+            choose(&mut app, "migrate");
+            choose(&mut app, "new");
+            app.effect(&InstallerPreviewEffect::SetPreviewName {
+                value: "Ada".into(),
+            })
             .unwrap();
-        assert_eq!(status(&mut app)["page"], "review");
-        assert_eq!(status(&mut app)["name"], "Reviewed Ada");
-        assert!(!catalog_availability(&mut app, "set-preview-name").is_available());
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            password(&mut app);
+            assert_eq!(status(&mut app)["page"], "devices");
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            assert_eq!(status(&mut app)["page"], "purpose");
+            choose(&mut app, "computer");
+            assert_eq!(status(&mut app)["page"], "belongings");
+            let effect = InstallerPreviewEffect::SetPreviewCategory {
+                category: "accounts".into(),
+                included: false,
+            };
+            assert!(!catalog_availability(&mut app, "set-preview-category").is_available());
+            assert!(app.effect(&effect).is_err());
+            assert_eq!(status(&mut app)["categories"][2], true);
+            app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
+                .unwrap();
+            assert!(catalog_availability(&mut app, "set-preview-category").is_available());
+            app.effect(&effect).unwrap();
+            assert_eq!(status(&mut app)["categories"][2], false);
+            app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
+                .unwrap();
+            assert!(!catalog_availability(&mut app, "set-preview-category").is_available());
+            assert_eq!(status(&mut app)["categories"][2], false);
+        }
+
+        phase guided_catalog_navigation_admission_tracks_start_and_completion;
+        {
+            let mut app = fixture();
+            assert!(matches!(catalog_availability(&mut app, "back-in-preview"),
+                ui::tilo_actions::Availability::Unavailable { code, .. } if code == "at_start"));
+            assert!(app.effect(&InstallerPreviewEffect::BackInPreview).is_err());
+            assert_eq!(status(&mut app)["page"], "destination");
+            choose(&mut app, "another");
+            assert!(catalog_availability(&mut app, "back-in-preview").is_available());
+            app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+            assert_eq!(status(&mut app)["page"], "destination");
+            choose(&mut app, "another");
+            choose(&mut app, "fresh");
+            choose(&mut app, "new");
+            app.effect(&InstallerPreviewEffect::SetPreviewName {
+                value: "My name".into(),
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            password(&mut app);
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+            for _ in 0..4 {
+                if status(&mut app)["page"] == "ready" {
+                    break;
+                }
+                app.effect(&InstallerPreviewEffect::ContinuePreview)
+                    .unwrap();
+            }
+            assert_eq!(status(&mut app)["page"], "ready");
+            assert!(matches!(catalog_availability(&mut app, "continue-preview"),
+                ui::tilo_actions::Availability::Unavailable { code, .. } if code == "finished"));
+            assert!(
+                app.effect(&InstallerPreviewEffect::ContinuePreview)
+                    .is_err()
+            );
+            assert_eq!(status(&mut app)["page"], "ready");
+        }
     }
 
-    #[test]
-    fn guided_catalog_belongings_controls_require_expanded_review() {
-        let mut app = fixture();
-        choose(&mut app, "another");
-        choose(&mut app, "migrate");
-        choose(&mut app, "new");
-        app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "Ada".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        password(&mut app);
-        assert_eq!(status(&mut app)["page"], "devices");
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        assert_eq!(status(&mut app)["page"], "purpose");
-        choose(&mut app, "computer");
-        assert_eq!(status(&mut app)["page"], "belongings");
-        let effect = InstallerPreviewEffect::SetPreviewCategory {
-            category: "accounts".into(),
-            included: false,
-        };
-        assert!(!catalog_availability(&mut app, "set-preview-category").is_available());
-        assert!(app.effect(&effect).is_err());
-        assert_eq!(status(&mut app)["categories"][2], true);
-        app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
-            .unwrap();
-        assert!(catalog_availability(&mut app, "set-preview-category").is_available());
-        app.effect(&effect).unwrap();
-        assert_eq!(status(&mut app)["categories"][2], false);
-        app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
-            .unwrap();
-        assert!(!catalog_availability(&mut app, "set-preview-category").is_available());
-        assert_eq!(status(&mut app)["categories"][2], false);
-    }
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn a_guided_host_offers_only_what_it_can_install;
 
-    #[test]
-    fn guided_catalog_navigation_admission_tracks_start_and_completion() {
-        let mut app = fixture();
-        assert!(matches!(catalog_availability(&mut app, "back-in-preview"),
-            ui::tilo_actions::Availability::Unavailable { code, .. } if code == "at_start"));
-        assert!(app.effect(&InstallerPreviewEffect::BackInPreview).is_err());
-        assert_eq!(status(&mut app)["page"], "destination");
-        choose(&mut app, "another");
-        assert!(catalog_availability(&mut app, "back-in-preview").is_available());
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        assert_eq!(status(&mut app)["page"], "destination");
-        choose(&mut app, "another");
-        choose(&mut app, "fresh");
-        choose(&mut app, "new");
-        app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "My name".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
+        phase guided_catalog_refuses_unavailable_installation_and_owned_busy_navigation;
+        {
+            let mut app = fixture();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                preview.live = true;
+                preview.journey.page = Page::Review;
+                preview.journey.destination = Some(Destination::Computer);
+                preview.journey.history = vec![Page::Devices];
+                preview.dirty = true;
+            })
             .unwrap();
-        password(&mut app);
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            app.settle();
+            assert!(
+                matches!(catalog_availability(&mut app, "prepare-direct-installation"),
+                ui::tilo_actions::Availability::Unavailable { code, .. } if code == "installation_unavailable")
+            );
+            assert!(
+                app.effect(&InstallerPreviewEffect::PrepareDirectInstallation)
+                    .is_err()
+            );
+            assert_eq!(status(&mut app)["page"], "review");
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                preview.direct.active = true;
+                preview.direct.navigation.set(false);
+            })
             .unwrap();
-        for _ in 0..4 {
-            if status(&mut app)["page"] == "ready" {
-                break;
+            app.settle();
+            assert!(matches!(catalog_availability(&mut app, "back-in-preview"),
+                ui::tilo_actions::Availability::Unavailable { code, .. } if code == "installation_busy"));
+            assert!(app.effect(&InstallerPreviewEffect::BackInPreview).is_err());
+            assert_eq!(status(&mut app)["direct_install"]["active"], true);
+            app.with_widget::<InstallerPreview, _>(|preview| preview.direct.navigation.set(true))
+                .unwrap();
+            app.settle();
+            assert!(catalog_availability(&mut app, "back-in-preview").is_available());
+            app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+            assert_eq!(status(&mut app)["direct_install"]["active"], false);
+            assert_eq!(status(&mut app)["page"], "review");
+        }
+
+        phase supported_guided_host_keeps_personal_setup_before_storage;
+        {
+            let mut app = fixture();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                preview.live = true;
+                preview.dirty = true;
+            })
+            .unwrap();
+            assert_eq!(
+                status(&mut app)["guided_capabilities"]["prepared_installation"],
+                true
+            );
+            choose(&mut app, "another");
+            assert_eq!(status(&mut app)["page"], "target");
+            for (field, value) in [
+                ("manufacturer", "Test Vendor"),
+                ("model", "Other Test Laptop"),
+                ("variant", "OTHER-TEST-BOARD"),
+            ] {
+                app.effect(&InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: value.into(),
+                })
+                .unwrap();
             }
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
-        }
-        assert_eq!(status(&mut app)["page"], "ready");
-        assert!(matches!(catalog_availability(&mut app, "continue-preview"),
-            ui::tilo_actions::Availability::Unavailable { code, .. } if code == "finished"));
-        assert!(
-            app.effect(&InstallerPreviewEffect::ContinuePreview)
-                .is_err()
-        );
-        assert_eq!(status(&mut app)["page"], "ready");
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn guided_catalog_refuses_unavailable_installation_and_owned_busy_navigation() {
-        let mut app = fixture();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.live = true;
-            preview.journey.page = Page::Review;
-            preview.journey.destination = Some(Destination::Computer);
-            preview.journey.history = vec![Page::Devices];
-            preview.dirty = true;
-        })
-        .unwrap();
-        app.settle();
-        assert!(
-            matches!(catalog_availability(&mut app, "prepare-direct-installation"),
-            ui::tilo_actions::Availability::Unavailable { code, .. } if code == "installation_unavailable")
-        );
-        assert!(
-            app.effect(&InstallerPreviewEffect::PrepareDirectInstallation)
-                .is_err()
-        );
-        assert_eq!(status(&mut app)["page"], "review");
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.direct.active = true;
-            preview.direct.navigation.set(false);
-        })
-        .unwrap();
-        app.settle();
-        assert!(matches!(catalog_availability(&mut app, "back-in-preview"),
-            ui::tilo_actions::Availability::Unavailable { code, .. } if code == "installation_busy"));
-        assert!(app.effect(&InstallerPreviewEffect::BackInPreview).is_err());
-        assert_eq!(status(&mut app)["direct_install"]["active"], true);
-        app.with_widget::<InstallerPreview, _>(|preview| preview.direct.navigation.set(true))
+            choose(&mut app, "fresh");
+            choose(&mut app, "new");
+            assert_eq!(status(&mut app)["page"], "profile");
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                assert!(!preview.journey.history.contains(&Page::Storage));
+                assert!(preview.belongings_worker.is_none());
+            })
             .unwrap();
-        app.settle();
-        assert!(catalog_availability(&mut app, "back-in-preview").is_available());
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        assert_eq!(status(&mut app)["direct_install"]["active"], false);
-        assert_eq!(status(&mut app)["page"], "review");
+        }
     }
 
     #[test]
@@ -11268,76 +11352,6 @@ mod tests {
         assert_eq!(status(&mut app)["page"], "migration");
         choose(&mut app, "fresh");
         assert_eq!(status(&mut app)["page"], "identity");
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn supported_guided_host_keeps_personal_setup_before_storage() {
-        let mut app = fixture();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.live = true;
-            preview.dirty = true;
-        })
-        .unwrap();
-        assert_eq!(
-            status(&mut app)["guided_capabilities"]["prepared_installation"],
-            true
-        );
-        choose(&mut app, "another");
-        assert_eq!(status(&mut app)["page"], "target");
-        for (field, value) in [
-            ("manufacturer", "Test Vendor"),
-            ("model", "Other Test Laptop"),
-            ("variant", "OTHER-TEST-BOARD"),
-        ] {
-            app.effect(&InstallerPreviewEffect::SetTargetIdentityField {
-                field: field.into(),
-                value: value.into(),
-            })
-            .unwrap();
-        }
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        choose(&mut app, "fresh");
-        choose(&mut app, "new");
-        assert_eq!(status(&mut app)["page"], "profile");
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(!preview.journey.history.contains(&Page::Storage));
-            assert!(preview.belongings_worker.is_none());
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn identity_recovery_route_availability_matches_native_platform_before_choice() {
-        let mut preview = InstallerPreview {
-            dirty: true,
-            live: true,
-            ..Default::default()
-        };
-        for destination in [
-            Destination::Computer,
-            Destination::Another,
-            Destination::Desktop,
-        ] {
-            for migrate in [false, true] {
-                preview.journey.destination = Some(destination);
-                preview.journey.migrate = Some(migrate);
-                assert_eq!(
-                    preview.identity_route_available("device"),
-                    cfg!(target_os = "linux")
-                );
-                assert_eq!(preview.identity_route_available("backup"), cfg!(unix));
-                assert_eq!(
-                    preview.identity_route_available("current"),
-                    cfg!(target_os = "linux") && destination == Destination::Desktop
-                );
-                assert!(!preview.identity_route_available("unknown"));
-                assert!(preview.personal.prepared_handle().is_none());
-                assert!(!preview.pairing.started());
-                assert!(preview.journey.transfer.is_none());
-            }
-        }
     }
 
     #[cfg(target_os = "linux")]

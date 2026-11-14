@@ -194,86 +194,91 @@ mod tests {
     use super::*;
     use crate::people::SecretKind;
 
-    #[test]
-    fn messages_cross_whole_in_both_directions() {
-        let (supervisor, greeter) = Link::pair().unwrap();
-        let people = vec![Person {
-            uid: 1000,
-            name: "ada".into(),
-            display_name: "Ada Lovelace".into(),
-            secret: SecretKind::Pin,
-        }];
-        let sent = [
-            ToGreeter::Hello {
-                comforts: serde_json::json!({"screen_reader": true}),
-            },
-            ToGreeter::People {
-                people,
-                highlighted: 0,
-            },
-            ToGreeter::Ask {
-                person: 0,
-                note: Note::Wrong {
-                    secret: SecretKind::Pin,
-                    tries_left: Some(3),
+    tilo_test_env::scenario! {
+        /// `Link`, the socket pair between the supervisor and the greeter.
+        fn the_greeter_link_carries_whole_messages_or_errors;
+
+        phase messages_cross_whole_in_both_directions;
+        {
+            let (supervisor, greeter) = Link::pair().unwrap();
+            let people = vec![Person {
+                uid: 1000,
+                name: "ada".into(),
+                display_name: "Ada Lovelace".into(),
+                secret: SecretKind::Pin,
+            }];
+            let sent = [
+                ToGreeter::Hello {
+                    comforts: serde_json::json!({"screen_reader": true}),
                 },
-                several: false,
-            },
-            ToGreeter::Checking,
-            ToGreeter::Finish { unlocked: true },
-        ];
-        for message in &sent {
-            supervisor.send_to_greeter(message).unwrap();
-        }
-        for message in &sent {
-            assert_eq!(&greeter.recv_from_supervisor().unwrap(), message);
+                ToGreeter::People {
+                    people,
+                    highlighted: 0,
+                },
+                ToGreeter::Ask {
+                    person: 0,
+                    note: Note::Wrong {
+                        secret: SecretKind::Pin,
+                        tries_left: Some(3),
+                    },
+                    several: false,
+                },
+                ToGreeter::Checking,
+                ToGreeter::Finish { unlocked: true },
+            ];
+            for message in &sent {
+                supervisor.send_to_greeter(message).unwrap();
+            }
+            for message in &sent {
+                assert_eq!(&greeter.recv_from_supervisor().unwrap(), message);
+            }
+
+            let answers = [
+                FromGreeter::Secret {
+                    person: 0,
+                    secret: Zeroizing::new("1234 ünï".into()),
+                },
+                FromGreeter::CantSignIn,
+                FromGreeter::Power(Power::Reboot),
+            ];
+            for answer in &answers {
+                greeter.send_to_supervisor(answer).unwrap();
+            }
+            for answer in &answers {
+                assert_eq!(&supervisor.recv_from_greeter().unwrap(), answer);
+            }
         }
 
-        let answers = [
-            FromGreeter::Secret {
-                person: 0,
-                secret: Zeroizing::new("1234 ünï".into()),
-            },
-            FromGreeter::CantSignIn,
-            FromGreeter::Power(Power::Reboot),
-        ];
-        for answer in &answers {
-            greeter.send_to_supervisor(answer).unwrap();
-        }
-        for answer in &answers {
-            assert_eq!(&supervisor.recv_from_greeter().unwrap(), answer);
-        }
-    }
-
-    #[test]
-    fn a_closed_end_and_a_malformed_packet_are_errors() {
-        let (supervisor, greeter) = Link::pair().unwrap();
-        greeter.send(b"Sxx").unwrap();
-        greeter.send(&[SECRET, 0, 0, 0, 0, 0xff]).unwrap();
-        greeter.send(b"?").unwrap();
-        for _ in 0..3 {
+        phase a_closed_end_and_a_malformed_packet_are_errors;
+        {
+            let (supervisor, greeter) = Link::pair().unwrap();
+            greeter.send(b"Sxx").unwrap();
+            greeter.send(&[SECRET, 0, 0, 0, 0, 0xff]).unwrap();
+            greeter.send(b"?").unwrap();
+            for _ in 0..3 {
+                assert_eq!(
+                    supervisor.recv_from_greeter().unwrap_err().kind(),
+                    io::ErrorKind::InvalidData
+                );
+            }
+            drop(greeter);
             assert_eq!(
                 supervisor.recv_from_greeter().unwrap_err().kind(),
-                io::ErrorKind::InvalidData
+                io::ErrorKind::UnexpectedEof
             );
         }
-        drop(greeter);
-        assert_eq!(
-            supervisor.recv_from_greeter().unwrap_err().kind(),
-            io::ErrorKind::UnexpectedEof
-        );
-    }
 
-    #[test]
-    fn a_secret_longer_than_the_limit_is_not_sent() {
-        let (_supervisor, greeter) = Link::pair().unwrap();
-        let long = FromGreeter::Secret {
-            person: 0,
-            secret: Zeroizing::new("1".repeat(SECRET_LIMIT + 1)),
-        };
-        assert_eq!(
-            greeter.send_to_supervisor(&long).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
+        phase a_secret_longer_than_the_limit_is_not_sent;
+        {
+            let (_supervisor, greeter) = Link::pair().unwrap();
+            let long = FromGreeter::Secret {
+                person: 0,
+                secret: Zeroizing::new("1".repeat(SECRET_LIMIT + 1)),
+            };
+            assert_eq!(
+                greeter.send_to_supervisor(&long).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
     }
 }

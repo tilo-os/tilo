@@ -455,167 +455,176 @@ mod tests {
         assess_change(changes, &two_heads(), &watching(watched), shown)
     }
 
-    #[test]
-    fn arranging_and_listed_modes_apply_directly() {
-        let changes = monitor(OutputChange {
-            mode: Some(at_mode(2560, 1440, 59_951)),
-            position: Some((-2560, 0)),
-            transform: Some(Transform::_90),
-            scale: Some(1.25),
-            ..OutputChange::enable("DP-1")
-        });
-        let none = HashMap::new();
-        assert_eq!(risk(&changes, &["eDP-1"], &none), ChangeRisk::Safe);
-        // Turning off a display nobody is using is safe too.
-        let off = monitor(OutputChange::disable("DP-1"));
-        assert_eq!(risk(&off, &["eDP-1"], &none), ChangeRisk::Safe);
-    }
+    tilo_test_env::scenario! {
+        /// Which display changes are risky, and what an unanswered one does.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
+        fn a_display_change_that_could_leave_the_person_blind_is_asked_about;
 
-    #[test]
-    fn an_unlisted_mode_is_risky_even_where_nobody_looks() {
-        let changes = monitor(OutputChange {
-            mode: Some(at_mode(2560, 1440, 75_000)),
-            ..OutputChange::enable("DP-1")
-        });
-        assert_eq!(
-            risk(&changes, &["eDP-1"], &HashMap::new()),
-            ChangeRisk::Risky
-        );
-    }
-
-    #[test]
-    fn turning_off_the_display_in_use_is_risky() {
-        let off = monitor(OutputChange::disable("DP-1"));
-        assert_eq!(risk(&off, &["DP-1"], &HashMap::new()), ChangeRisk::Risky);
-    }
-
-    #[test]
-    fn a_mode_or_scale_the_display_in_use_never_showed_is_risky_until_it_has() {
-        let new_mode = monitor(OutputChange {
-            mode: Some(at_mode(2560, 1440, 59_951)),
-            ..OutputChange::enable("DP-1")
-        });
-        let new_scale = monitor(OutputChange {
-            scale: Some(1.5),
-            ..OutputChange::enable("DP-1")
-        });
-        let same_again = monitor(OutputChange {
-            mode: Some(at_mode(2560, 1440, 144_000)),
-            scale: Some(1.0),
-            ..OutputChange::enable("DP-1")
-        });
-        let none = HashMap::new();
-        assert_eq!(risk(&new_mode, &["DP-1"], &none), ChangeRisk::Risky);
-        assert_eq!(risk(&new_scale, &["DP-1"], &none), ChangeRisk::Risky);
-        assert_eq!(risk(&same_again, &["DP-1"], &none), ChangeRisk::Safe);
-
-        let mut shown = Shown::default();
-        shown.note(Some(mode(2560, 1440, 59_951)), 1.5);
-        let shown = HashMap::from([("DP-1".to_owned(), shown)]);
-        assert_eq!(risk(&new_mode, &["DP-1"], &shown), ChangeRisk::Safe);
-        assert_eq!(risk(&new_scale, &["DP-1"], &shown), ChangeRisk::Safe);
-    }
-
-    #[test]
-    fn a_change_with_every_display_off_is_its_own_risk() {
-        let off = vec![
-            OutputChange::disable("eDP-1"),
-            OutputChange::disable("DP-1"),
-        ];
-        assert_eq!(risk(&off, &[], &HashMap::new()), ChangeRisk::NoDisplay);
-    }
-
-    #[test]
-    fn only_trusted_tools_skip_the_question_and_never_with_every_display_off() {
-        let mut changes = DisplayChanges::default();
-        let tool = PathBuf::from("/usr/bin/kanshi");
-        assert!(changes.keeps_unasked(ChangeRisk::Safe, None));
-        assert!(!changes.keeps_unasked(ChangeRisk::Risky, Some(&tool)));
-        changes.set_trusted([tool.clone()]);
-        assert!(changes.keeps_unasked(ChangeRisk::Risky, Some(&tool)));
-        assert!(!changes.keeps_unasked(ChangeRisk::Risky, None));
-        assert!(!changes.keeps_unasked(ChangeRisk::NoDisplay, Some(&tool)));
-    }
-
-    #[test]
-    fn an_unanswered_change_reverts_and_its_layout_is_refused_for_a_while() {
-        let mut changes = DisplayChanges::default();
-        let tool = Some(PathBuf::from("/usr/bin/wlr-randr"));
-        let plan = vec![OutputChange::disable("DP-1")];
-        let undo = vec![OutputChange::enable("DP-1")];
-        let start = Instant::now();
-        let id = changes.ask(tool.clone(), plan.clone(), undo.clone(), start);
-        assert!(changes.due(start + Duration::from_secs(14)).is_none());
-        assert_eq!(changes.due(start + CONFIRM_FOR), Some(undo));
-        assert!(!changes.keep(id, &[]), "the question is gone");
-
-        let later = start + Duration::from_secs(30);
-        assert!(changes.refuses_reapply(tool.as_ref(), &plan, later));
-        assert!(changes.refuses_reapply(tool.as_ref(), &plan, later));
-        assert!(!changes.refuses_reapply(None, &plan, later), "another tool");
-        assert!(!changes.refuses_reapply(tool.as_ref(), &plan, start + Duration::from_secs(80)));
-        let events = changes.take_events();
-        assert_eq!(
-            events,
-            vec![
-                DisplayEvent::Confirm {
-                    id,
-                    tool: tool.clone(),
-                    within: CONFIRM_FOR
-                },
-                DisplayEvent::Reverted { id },
-                DisplayEvent::RefusedReapply { tool },
-            ],
-            "the refusal is told once"
-        );
-    }
-
-    #[test]
-    fn a_second_question_reverts_to_the_layout_before_the_first() {
-        let mut changes = DisplayChanges::default();
-        let now = Instant::now();
-        let first_undo = vec![OutputChange {
-            scale: Some(1.0),
-            ..OutputChange::enable("DP-1")
-        }];
-        changes.ask(None, vec![], first_undo.clone(), now);
-        let second_undo = vec![
-            OutputChange {
-                scale: Some(2.0),
+        phase arranging_and_listed_modes_apply_directly;
+        {
+            let changes = monitor(OutputChange {
+                mode: Some(at_mode(2560, 1440, 59_951)),
+                position: Some((-2560, 0)),
+                transform: Some(Transform::_90),
+                scale: Some(1.25),
                 ..OutputChange::enable("DP-1")
-            },
-            OutputChange::enable("eDP-1"),
-        ];
-        let id = changes.ask(None, vec![], second_undo, now);
-        let undo = changes.revert(id, now).expect("open question");
-        assert!(undo.contains(&first_undo[0]));
-        assert!(undo.contains(&OutputChange::enable("eDP-1")));
-        assert_eq!(undo.len(), 2);
-    }
+            });
+            let none = HashMap::new();
+            assert_eq!(risk(&changes, &["eDP-1"], &none), ChangeRisk::Safe);
+            // Turning off a display nobody is using is safe too.
+            let off = monitor(OutputChange::disable("DP-1"));
+            assert_eq!(risk(&off, &["eDP-1"], &none), ChangeRisk::Safe);
+        }
 
-    #[test]
-    fn a_kept_change_counts_as_shown() {
-        let mut changes = DisplayChanges::default();
-        let mut heads = two_heads();
-        heads[1].scale = 1.5;
-        let id = changes.ask(
-            None,
-            vec![OutputChange::enable("DP-1")],
-            vec![],
-            Instant::now(),
-        );
-        assert!(changes.keep(id, &heads));
-        let again = monitor(OutputChange {
-            scale: Some(1.5),
-            ..OutputChange::enable("DP-1")
-        });
-        assert_eq!(
-            changes.risk(&again, &two_heads(), &watching(&["DP-1"])),
-            ChangeRisk::Safe
-        );
-        assert!(matches!(
-            changes.take_events().last(),
-            Some(DisplayEvent::Kept { .. })
-        ));
+        phase an_unlisted_mode_is_risky_even_where_nobody_looks;
+        {
+            let changes = monitor(OutputChange {
+                mode: Some(at_mode(2560, 1440, 75_000)),
+                ..OutputChange::enable("DP-1")
+            });
+            assert_eq!(
+                risk(&changes, &["eDP-1"], &HashMap::new()),
+                ChangeRisk::Risky
+            );
+        }
+
+        phase turning_off_the_display_in_use_is_risky;
+        {
+            let off = monitor(OutputChange::disable("DP-1"));
+            assert_eq!(risk(&off, &["DP-1"], &HashMap::new()), ChangeRisk::Risky);
+        }
+
+        phase a_mode_or_scale_the_display_in_use_never_showed_is_risky_until_it_has;
+        {
+            let new_mode = monitor(OutputChange {
+                mode: Some(at_mode(2560, 1440, 59_951)),
+                ..OutputChange::enable("DP-1")
+            });
+            let new_scale = monitor(OutputChange {
+                scale: Some(1.5),
+                ..OutputChange::enable("DP-1")
+            });
+            let same_again = monitor(OutputChange {
+                mode: Some(at_mode(2560, 1440, 144_000)),
+                scale: Some(1.0),
+                ..OutputChange::enable("DP-1")
+            });
+            let none = HashMap::new();
+            assert_eq!(risk(&new_mode, &["DP-1"], &none), ChangeRisk::Risky);
+            assert_eq!(risk(&new_scale, &["DP-1"], &none), ChangeRisk::Risky);
+            assert_eq!(risk(&same_again, &["DP-1"], &none), ChangeRisk::Safe);
+
+            let mut shown = Shown::default();
+            shown.note(Some(mode(2560, 1440, 59_951)), 1.5);
+            let shown = HashMap::from([("DP-1".to_owned(), shown)]);
+            assert_eq!(risk(&new_mode, &["DP-1"], &shown), ChangeRisk::Safe);
+            assert_eq!(risk(&new_scale, &["DP-1"], &shown), ChangeRisk::Safe);
+        }
+
+        phase a_change_with_every_display_off_is_its_own_risk;
+        {
+            let off = vec![
+                OutputChange::disable("eDP-1"),
+                OutputChange::disable("DP-1"),
+            ];
+            assert_eq!(risk(&off, &[], &HashMap::new()), ChangeRisk::NoDisplay);
+        }
+
+        phase only_trusted_tools_skip_the_question_and_never_with_every_display_off;
+        {
+            let mut changes = DisplayChanges::default();
+            let tool = PathBuf::from("/usr/bin/kanshi");
+            assert!(changes.keeps_unasked(ChangeRisk::Safe, None));
+            assert!(!changes.keeps_unasked(ChangeRisk::Risky, Some(&tool)));
+            changes.set_trusted([tool.clone()]);
+            assert!(changes.keeps_unasked(ChangeRisk::Risky, Some(&tool)));
+            assert!(!changes.keeps_unasked(ChangeRisk::Risky, None));
+            assert!(!changes.keeps_unasked(ChangeRisk::NoDisplay, Some(&tool)));
+        }
+
+        phase an_unanswered_change_reverts_and_its_layout_is_refused_for_a_while;
+        {
+            let mut changes = DisplayChanges::default();
+            let tool = Some(PathBuf::from("/usr/bin/wlr-randr"));
+            let plan = vec![OutputChange::disable("DP-1")];
+            let undo = vec![OutputChange::enable("DP-1")];
+            let start = Instant::now();
+            let id = changes.ask(tool.clone(), plan.clone(), undo.clone(), start);
+            assert!(changes.due(start + Duration::from_secs(14)).is_none());
+            assert_eq!(changes.due(start + CONFIRM_FOR), Some(undo));
+            assert!(!changes.keep(id, &[]), "the question is gone");
+
+            let later = start + Duration::from_secs(30);
+            assert!(changes.refuses_reapply(tool.as_ref(), &plan, later));
+            assert!(changes.refuses_reapply(tool.as_ref(), &plan, later));
+            assert!(!changes.refuses_reapply(None, &plan, later), "another tool");
+            assert!(!changes.refuses_reapply(tool.as_ref(), &plan, start + Duration::from_secs(80)));
+            let events = changes.take_events();
+            assert_eq!(
+                events,
+                vec![
+                    DisplayEvent::Confirm {
+                        id,
+                        tool: tool.clone(),
+                        within: CONFIRM_FOR
+                    },
+                    DisplayEvent::Reverted { id },
+                    DisplayEvent::RefusedReapply { tool },
+                ],
+                "the refusal is told once"
+            );
+        }
+
+        phase a_second_question_reverts_to_the_layout_before_the_first;
+        {
+            let mut changes = DisplayChanges::default();
+            let now = Instant::now();
+            let first_undo = vec![OutputChange {
+                scale: Some(1.0),
+                ..OutputChange::enable("DP-1")
+            }];
+            changes.ask(None, vec![], first_undo.clone(), now);
+            let second_undo = vec![
+                OutputChange {
+                    scale: Some(2.0),
+                    ..OutputChange::enable("DP-1")
+                },
+                OutputChange::enable("eDP-1"),
+            ];
+            let id = changes.ask(None, vec![], second_undo, now);
+            let undo = changes.revert(id, now).expect("open question");
+            assert!(undo.contains(&first_undo[0]));
+            assert!(undo.contains(&OutputChange::enable("eDP-1")));
+            assert_eq!(undo.len(), 2);
+        }
+
+        phase a_kept_change_counts_as_shown;
+        {
+            let mut changes = DisplayChanges::default();
+            let mut heads = two_heads();
+            heads[1].scale = 1.5;
+            let id = changes.ask(
+                None,
+                vec![OutputChange::enable("DP-1")],
+                vec![],
+                Instant::now(),
+            );
+            assert!(changes.keep(id, &heads));
+            let again = monitor(OutputChange {
+                scale: Some(1.5),
+                ..OutputChange::enable("DP-1")
+            });
+            assert_eq!(
+                changes.risk(&again, &two_heads(), &watching(&["DP-1"])),
+                ChangeRisk::Safe
+            );
+            assert!(matches!(
+                changes.take_events().last(),
+                Some(DisplayEvent::Kept { .. })
+            ));
+        }
     }
 }

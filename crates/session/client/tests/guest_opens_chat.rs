@@ -39,6 +39,7 @@ use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{enrol, enter_page, start_workspace_host_relaying, wait_keyed, written};
+use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -147,12 +148,17 @@ async fn through_the_door(
 /// guest opens the chat's head and its newest part's route as it enters, as
 /// a Chat window on the desk does, and the chat must read whole by the
 /// landing after which nothing more arrives.
-async fn chat_read_by_guest(page: &Link, workspace_id: u64, chat: &DocumentRoute) -> Duration {
+async fn chat_read_by_guest(
+    page: &Link,
+    workspace_id: WorkspaceId,
+    chat: &DocumentRoute,
+) -> Duration {
     let head = DocumentRoute {
         record: neighbour_wire::chain_head(CHAT_CHAIN),
         ..chat.clone()
     };
     let opened = Instant::now();
+    let events = page.events();
     page.send(Cmd::Join(workspace_id)).unwrap();
     page.send(Cmd::OpenRoute(chat.clone())).unwrap();
     page.send(Cmd::OpenRecordAt(workspace_id, head.clone()))
@@ -161,7 +167,7 @@ async fn chat_read_by_guest(page: &Link, workspace_id: u64, chat: &DocumentRoute
     let (mut shown, mut answered, mut refusals) = (false, false, Vec::new());
     let mut quiet_since = Instant::now();
     loop {
-        for event in page.drain() {
+        for event in events.drain() {
             match event {
                 Event::Landed { route, .. } if route == *chat => {
                     quiet_since = Instant::now();
@@ -214,7 +220,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
@@ -226,7 +232,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

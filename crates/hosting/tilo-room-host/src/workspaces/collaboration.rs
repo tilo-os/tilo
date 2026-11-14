@@ -119,7 +119,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         administrator: &DeviceCert,
-        request: IssueInvitationRequest,
+        mut request: IssueInvitationRequest,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let issued = {
@@ -128,13 +128,40 @@ impl Workspaces {
             self.authorize(
                 administrator,
                 Some(&governed),
-                WorkspaceOp::Invite(request.role.into()),
+                WorkspaceOp::Invite(request.role),
                 now,
             )?;
+            // An invitation says who it is from. A caller that names nobody
+            // (an API key, the command line) invites under the name the
+            // workspace already shows for them, so the person it reaches
+            // sees who asked them in, not "someone".
+            if request.inviter_name.is_none() {
+                request.inviter_name = self.member_name(workspace, &governed, administrator);
+            }
             self.stage_issue(&mut governed, administrator, request, now)?
         };
         self.written(workspace, false).await?;
         Ok(issued)
+    }
+
+    /// The name `workspace` shows for the person `device` belongs to, where
+    /// they chose one an invitation can carry.
+    fn member_name(
+        &self,
+        workspace: &str,
+        governed: &GovernedWorkspace,
+        device: &DeviceCert,
+    ) -> Option<String> {
+        self.people(workspace, governed)
+            .members
+            .into_iter()
+            .find(|member| member.user_public_key == device.user_public_key && !member.removed)
+            .and_then(|member| member.display_name)
+            .map(|name| name.trim().to_owned())
+            .filter(|name| {
+                !name.is_empty()
+                    && name.chars().count() <= tilo_peer_state::join::MAX_INVITER_NAME_CHARS
+            })
     }
 
     /// Record an invitation `request` asks of `workspace`, unwritten.
@@ -363,120 +390,24 @@ impl Workspaces {
         .await
     }
 
-    /// Make the workspace's app authorship what its host configured: every app
-    /// in `apps` authors the workspace's content
-    /// ([`tilo_action_policy::roles::app_authorship`]), so a member whose
-    /// role lets them change the workspace can do so through it, and every app in
-    /// `withdrawn` (one the host made an author before and names no longer)
-    /// stops. A workspace already that way is left as it is, so the host settles
-    /// this at every start without a governance change each time. Whether a
-    /// member may write stays their role's: a viewer still writes nothing.
-    ///
-    /// Answers whether anything changed.
-    ///
-    /// # Errors
-    ///
-    /// Refuses non-administrators, invalid application ids and changes that
-    /// could not commit.
-    pub async fn settle_app_authorship(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        apps: &std::collections::BTreeSet<String>,
-        withdrawn: &std::collections::BTreeSet<String>,
-    ) -> Result<bool, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            administrator,
-            None,
-            WorkspaceOp::Host(HostOperation::PutWorkspaceGrants),
-            now,
-        )?;
-        for app in apps.iter().chain(withdrawn) {
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                app: app.clone(),
-            }
-            .validate()?;
-        }
-        let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        let granted_by =
-            tilo_action_policy::Grantee::person(hex::encode(administrator.user_public_key));
-        let held = governed
-            .peer()
-            .permissions(administrator.device_public_key, system_time(now))
-            .map_err(|error| error.to_string())?
-            .policy
-            .grants;
-        let grants: Vec<tilo_action_policy::Grant> = apps
-            .iter()
-            .map(|app| {
-                tilo_action_policy::roles::app_authorship(workspace, app, granted_by.clone())
-            })
-            .filter(|grant| !held.contains(grant))
-            .collect();
-        let revoked: Vec<tilo_action_policy::GrantId> = withdrawn
-            .iter()
-            .filter(|app| !apps.contains(*app))
-            .map(|app| {
-                tilo_action_policy::roles::app_authorship(workspace, app, granted_by.clone()).id
-            })
-            .filter(|id| held.iter().any(|grant| &grant.id == id))
-            .collect();
-        if grants.is_empty() && revoked.is_empty() {
-            return Ok(false);
-        }
-        let digest = request_digest(&("app.authorship.settle", &grants, &revoked))?;
-        // One request per change from this generation: settling the same
-        // configuration again later finds nothing to change and asks nothing.
-        let request_id = request_digest(&(digest, governed.record.generation))?;
-        let key = self.inner.host.key.clone();
-        self.administer(
-            &mut governed,
-            request_id,
-            digest,
-            |peer| {
-                let added = !grants.is_empty()
-                    && peer.governance_mut().put_governed_grants(
-                        &grants,
-                        &key,
-                        system_time(now),
-                    )?;
-                let removed = !revoked.is_empty()
-                    && peer.governance_mut().remove_governed_grants(
-                        &revoked,
-                        &key,
-                        system_time(now),
-                    )?;
-                Ok(added || removed)
-            },
-            now,
-        )
-        .await?;
-        drop(governed);
-        tracing::info!(
-            %workspace,
-            authors = ?apps,
-            withdrawn = revoked.len(),
-            "room app authorship settled"
-        );
-        Ok(true)
-    }
-
     /// Make `user_public_key` an administrator of `workspace`: an editor holding
     /// every governance action, still bounded by their role
-    /// ([`tilo_action_policy::roles::administrator_grant`]).
+    /// ([`tilo_action_policy::roles::administrator_grant`]). `name`, when the
+    /// declaring request carries one, is how the workspace names them from
+    /// then on: its member list and the invitations they make say it before
+    /// any device of theirs has named them.
     ///
     /// # Errors
     ///
-    /// Refuses non-administrators, the structural owner and people the
-    /// workspace never admitted.
+    /// Refuses non-administrators, the structural owner, a name that is not a
+    /// display name, and governance that cannot be updated.
     pub async fn set_member_administrator(
         &self,
         workspace: &str,
         administrator: &DeviceCert,
         request_id: [u8; 32],
         user_public_key: [u8; 32],
+        name: Option<&str>,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         self.authorize(
@@ -491,10 +422,11 @@ impl Workspaces {
         self.administer(
             &mut workspace,
             request_id,
-            request_digest(&("administrator", user_public_key))?,
+            request_digest(&("administrator", user_public_key, name))?,
             |peer| {
                 peer.governance_mut().set_member_administrator(
                     user_public_key,
+                    name,
                     &key,
                     system_time(now),
                 )
@@ -1234,10 +1166,12 @@ impl Workspaces {
     ) -> Result<(), CollaborationError> {
         let key = &self.inner.host.key;
         let mut candidate = workspace.peer().clone();
-        if !candidate
-            .governance_mut()
-            .set_member_administrator(person, key, system_time(now))?
-        {
+        if !candidate.governance_mut().set_member_administrator(
+            person,
+            None,
+            key,
+            system_time(now),
+        )? {
             return Ok(());
         }
         let state = workspace.collaboration().clone();

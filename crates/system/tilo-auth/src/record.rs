@@ -212,78 +212,137 @@ mod tests {
         }
     }
 
-    #[test]
-    fn records_round_trip_owner_only_and_by_uid() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path().join("users"));
-        assert!(store.load(1000).unwrap().is_none());
-        let mut record = Record::new(1000, "ada", "Ada Lovelace");
-        record.set_recovery_wrapper(recovery());
-        store.save(&record).unwrap();
-        assert_eq!(store.load(1000).unwrap().unwrap(), record);
-        assert_eq!(store.all().unwrap(), vec![record]);
-        let file = std::fs::metadata(dir.path().join("users/1000.json")).unwrap();
-        assert_eq!(file.permissions().mode() & 0o777, 0o600);
-        let parent = std::fs::metadata(dir.path().join("users")).unwrap();
-        assert_eq!(parent.permissions().mode() & 0o777, 0o700);
+    tilo_test_env::scenario! {
+        fn a_persons_record_is_stored_and_changed_as_the_contract_says;
+
+        phase records_round_trip_owner_only_and_by_uid;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::new(dir.path().join("users"));
+            assert!(store.load(1000).unwrap().is_none());
+            let mut record = Record::new(1000, "ada", "Ada Lovelace");
+            record.set_recovery_wrapper(recovery());
+            store.save(&record).unwrap();
+            assert_eq!(store.load(1000).unwrap().unwrap(), record);
+            assert_eq!(store.all().unwrap(), vec![record]);
+            let file = std::fs::metadata(dir.path().join("users/1000.json")).unwrap();
+            assert_eq!(file.permissions().mode() & 0o777, 0o600);
+            let parent = std::fs::metadata(dir.path().join("users")).unwrap();
+            assert_eq!(parent.permissions().mode() & 0o777, 0o700);
+        }
+
+        phase the_stored_shape_is_the_contract;
+        {
+            let mut record = Record::new(1000, "ada", "Ada");
+            record.unlocks_system = true;
+            record.system_keyslot = Some(3);
+            let json = serde_json::to_value(&record).unwrap();
+            let mut keys: Vec<&str> = json
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                [
+                    "display_name",
+                    "name",
+                    "system_keyslot",
+                    "uid",
+                    "unlocks_system",
+                    "version",
+                    "wrappers"
+                ]
+            );
+        }
+
+        phase a_new_secret_replaces_only_the_wrappers_a_secret_opens;
+        {
+            let mut record = Record::new(1, "a", "A");
+            record.set_recovery_wrapper(recovery());
+            record.set_secret_wrapper(Wrapper::Passphrase {
+                envelope: "b2xk".into(),
+            });
+            record
+                .wrappers
+                .push(Entry::Unknown(serde_json::json!({"kind": "fido2"})));
+            assert!(record.enrolled());
+            assert_eq!(record.factors(), [Factor::Password, Factor::Recovery]);
+            let tpm = Wrapper::Tpm {
+                public: "cA==".into(),
+                private: "cQ==".into(),
+            };
+            record.set_secret_wrapper(tpm.clone());
+            assert_eq!(record.known().next(), Some(&tpm));
+            assert!(!record.has(Kind::Passphrase));
+            assert!(record.has(Kind::Recovery));
+            assert_eq!(record.wrappers.len(), 3);
+        }
+
+        phase a_record_filed_under_another_uid_is_refused;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::new(dir.path());
+            store.save(&Record::new(1000, "ada", "Ada")).unwrap();
+            std::fs::rename(dir.path().join("1000.json"), dir.path().join("1001.json")).unwrap();
+            assert!(store.load(1001).is_err());
+        }
+    }
+
+    /// The sign-in record this build writes: a person's account enrolled
+    /// with the TPM and with a recovery key, and a factor a newer build
+    /// enrolled this one does not know. Kept so a machine's file goes on
+    /// reading the same way; a field added, removed or reordered changes
+    /// these bytes.
+    const GOLDEN: &str = include_str!("../golden/sign-in-record/v1.hex");
+
+    fn golden() -> Vec<u8> {
+        hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
+    }
+
+    fn kept() -> Record {
+        Record {
+            version: RECORD_FORMAT.version,
+            uid: 1000,
+            name: "ada".into(),
+            display_name: "Ada Lovelace".into(),
+            unlocks_system: true,
+            wrappers: vec![
+                Entry::Known(Wrapper::Tpm {
+                    public: "cA==".into(),
+                    private: "cQ==".into(),
+                }),
+                Entry::Known(Wrapper::Recovery {
+                    envelope: "cmVj".into(),
+                }),
+                Entry::Unknown(serde_json::json!({"kind": "fido2"})),
+            ],
+            system_keyslot: Some(3),
+            attention: Some(Attention::SystemKeyslotPending),
+            secret: Some(SecretKind::Password),
+        }
     }
 
     #[test]
-    fn the_stored_shape_is_the_contract() {
-        let mut record = Record::new(1000, "ada", "Ada");
-        record.unlocks_system = true;
-        record.system_keyslot = Some(3);
-        let json = serde_json::to_value(&record).unwrap();
-        let mut keys: Vec<&str> = json
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            [
-                "display_name",
-                "name",
-                "system_keyslot",
-                "uid",
-                "unlocks_system",
-                "version",
-                "wrappers"
-            ]
+    fn the_record_kept_here_reads_and_writes_as_it_is() {
+        let kept = kept();
+        tilo_files::native::migration::assert_golden_bytes(
+            RECORD_FORMAT.name,
+            &golden(),
+            |bytes| {
+                let read = parse(Path::new("1000.json"), bytes.to_vec()).unwrap();
+                assert_eq!(read.version, RECORD_FORMAT.version);
+                assert_eq!(read.uid, 1000);
+                assert_eq!(read.display_name, "Ada Lovelace");
+                assert_eq!(read.system_keyslot, Some(3));
+                assert_eq!(read.attention, Some(Attention::SystemKeyslotPending));
+                assert_eq!(read.secret, Some(SecretKind::Password));
+                assert_eq!(read.wrappers.len(), 3);
+                assert_eq!(read.known().count(), 2);
+            },
+            || serde_json::to_vec_pretty(&kept).unwrap(),
         );
-    }
-
-    #[test]
-    fn a_new_secret_replaces_only_the_wrappers_a_secret_opens() {
-        let mut record = Record::new(1, "a", "A");
-        record.set_recovery_wrapper(recovery());
-        record.set_secret_wrapper(Wrapper::Passphrase {
-            envelope: "b2xk".into(),
-        });
-        record
-            .wrappers
-            .push(Entry::Unknown(serde_json::json!({"kind": "fido2"})));
-        assert!(record.enrolled());
-        assert_eq!(record.factors(), [Factor::Password, Factor::Recovery]);
-        let tpm = Wrapper::Tpm {
-            public: "cA==".into(),
-            private: "cQ==".into(),
-        };
-        record.set_secret_wrapper(tpm.clone());
-        assert_eq!(record.known().next(), Some(&tpm));
-        assert!(!record.has(Kind::Passphrase));
-        assert!(record.has(Kind::Recovery));
-        assert_eq!(record.wrappers.len(), 3);
-    }
-
-    #[test]
-    fn a_record_filed_under_another_uid_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path());
-        store.save(&Record::new(1000, "ada", "Ada")).unwrap();
-        std::fs::rename(dir.path().join("1000.json"), dir.path().join("1001.json")).unwrap();
-        assert!(store.load(1001).is_err());
     }
 }

@@ -439,77 +439,85 @@ impl<R: BufRead> Read for Stream<R> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_framed_layer_streams_byte_for_byte_and_damage_is_refused() {
-        let layer: Vec<u8> = (0..(LINE_BYTES * 2 + 1234))
-            .map(|i| u8::try_from(i % 251).unwrap())
-            .collect();
-        let mut framed = b"   Compiling shell\n".to_vec();
-        writeln!(
-            framed,
-            "{BEGIN}{}",
-            serde_json::to_string(&Packed {
-                component: "shell".into(),
-                target: Some("aarch64-unknown-linux-gnu".into()),
-                toolchain: None,
-                source_digest: None,
-                ..Packed::default()
-            })
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn builder_layers_are_framed_and_packed_on_the_builder;
+
+        phase a_framed_layer_streams_byte_for_byte_and_damage_is_refused;
+        {
+            let layer: Vec<u8> = (0..(LINE_BYTES * 2 + 1234))
+                .map(|i| u8::try_from(i % 251).unwrap())
+                .collect();
+            let mut framed = b"   Compiling shell\n".to_vec();
+            writeln!(
+                framed,
+                "{BEGIN}{}",
+                serde_json::to_string(&Packed {
+                    component: "shell".into(),
+                    target: Some("aarch64-unknown-linux-gnu".into()),
+                    toolchain: None,
+                    source_digest: None,
+                    ..Packed::default()
+                })
+                .unwrap()
+            )
+            .unwrap();
+            let mut lines = Lines::new(&mut framed);
+            lines.write_all(&layer).unwrap();
+            let (sha, bytes) = lines.finish().unwrap();
+            writeln!(framed, "{END}{sha} {bytes}").unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&framed).lines().count(),
+                2 + 3 + 1,
+                "three data lines"
+            );
+
+            let mut stream = Stream::new(&framed[..]);
+            let mut passed = Vec::new();
+            let packed = stream.header(&mut passed).unwrap();
+            assert_eq!(packed.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
+            assert_eq!(passed, b"   Compiling shell\n");
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).unwrap();
+            assert_eq!(received, layer);
+
+            let text = String::from_utf8(framed.clone()).unwrap();
+            let damaged = text.replacen(&format!("{DATA}AAEC"), &format!("{DATA}AAED"), 1);
+            assert_ne!(damaged, text);
+            let mut stream = Stream::new(damaged.as_bytes());
+            stream.header(&mut Vec::new()).unwrap();
+            assert!(stream.read_to_end(&mut Vec::new()).is_err());
+            let cut = &framed[..framed.len() - 80];
+            let mut stream = Stream::new(cut);
+            stream.header(&mut Vec::new()).unwrap();
+            assert!(stream.read_to_end(&mut Vec::new()).is_err());
+            assert!(
+                Stream::new(&b"error: could not compile\n"[..])
+                    .header(&mut Vec::new())
+                    .is_err()
+            );
+        }
+
+        phase the_remote_run_packs_on_the_builder;
+        {
+            let component = tilo_vm_protocol::Manifest::parse(
+                "[[component]]\nname = \"shell\"\npackages = [\"shell\"]\n",
+            )
             .unwrap()
-        )
-        .unwrap();
-        let mut lines = Lines::new(&mut framed);
-        lines.write_all(&layer).unwrap();
-        let (sha, bytes) = lines.finish().unwrap();
-        writeln!(framed, "{END}{sha} {bytes}").unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&framed).lines().count(),
-            2 + 3 + 1,
-            "three data lines"
-        );
-
-        let mut stream = Stream::new(&framed[..]);
-        let mut passed = Vec::new();
-        let packed = stream.header(&mut passed).unwrap();
-        assert_eq!(packed.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
-        assert_eq!(passed, b"   Compiling shell\n");
-        let mut received = Vec::new();
-        stream.read_to_end(&mut received).unwrap();
-        assert_eq!(received, layer);
-
-        let text = String::from_utf8(framed.clone()).unwrap();
-        let damaged = text.replacen(&format!("{DATA}AAEC"), &format!("{DATA}AAED"), 1);
-        assert_ne!(damaged, text);
-        let mut stream = Stream::new(damaged.as_bytes());
-        stream.header(&mut Vec::new()).unwrap();
-        assert!(stream.read_to_end(&mut Vec::new()).is_err());
-        let cut = &framed[..framed.len() - 80];
-        let mut stream = Stream::new(cut);
-        stream.header(&mut Vec::new()).unwrap();
-        assert!(stream.read_to_end(&mut Vec::new()).is_err());
-        assert!(
-            Stream::new(&b"error: could not compile\n"[..])
-                .header(&mut Vec::new())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn the_remote_run_packs_on_the_builder() {
-        let component = tilo_vm_protocol::Manifest::parse(
-            "[[component]]\nname = \"shell\"\npackages = [\"shell\"]\n",
-        )
-        .unwrap()
-        .components
-        .remove("shell")
-        .unwrap()
-        .with_profile(Some("release"));
-        let builder = ["env", "BUILDER=arm", "remote-cargo", "--on-builder"].map(str::to_owned);
-        let line = remote_command(&builder, &component, &["shell/dev-overrides".into()]);
-        assert_eq!(
-            line.display(),
-            "env BUILDER=arm remote-cargo --on-builder run --locked -p tilo-vm --bin tilo-vm -- layer-pack --component shell --profile release --features shell/dev-overrides"
-        );
+            .components
+            .remove("shell")
+            .unwrap()
+            .with_profile(Some("release"));
+            let builder = ["env", "BUILDER=arm", "remote-cargo", "--on-builder"].map(str::to_owned);
+            let line = remote_command(&builder, &component, &["shell/dev-overrides".into()]);
+            assert_eq!(
+                line.display(),
+                "env BUILDER=arm remote-cargo --on-builder run --locked -p tilo-vm --bin tilo-vm -- layer-pack --component shell --profile release --features shell/dev-overrides"
+            );
+        }
     }
 }
 

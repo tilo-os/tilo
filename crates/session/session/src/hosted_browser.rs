@@ -453,7 +453,7 @@ impl HostedBrowser {
     /// record's window once the desk holds the workspace, and report what became of it.
     pub(crate) fn follow(&mut self, shared: &Shared) {
         self.take_arrived(shared);
-        self.join();
+        self.join(shared);
         self.ask_host(shared);
         if self.holds == Holds::Apps {
             self.follow_apps(shared);
@@ -587,7 +587,12 @@ impl HostedBrowser {
 
     /// Ask its relay to enter the device into the workspace, once: as the device the
     /// material certifies, it answers with an invitation, which the session redeems.
-    fn join(&mut self) {
+    ///
+    /// The relay is reached at the address the material names, which is where this VM reaches
+    /// it; the invitation names the relay where it sees itself, its own loopback. Once the relay
+    /// answered there, the session's endpoint dials it there too, so the join and everything
+    /// after it reach the relay this session did.
+    fn join(&mut self, shared: &Shared) {
         if !matches!(self.join, Join::Waiting) {
             return;
         }
@@ -599,8 +604,14 @@ impl HostedBrowser {
         let material = self.material.clone();
         let arrived = self.sender.clone();
         let waking = self.waking.clone();
+        let reached = shared.sync.as_ref().map(|sync| sync.reached());
         runtime.spawn(async move {
             let answer = invitation(&material).await;
+            if answer.is_ok()
+                && let Some(reached) = &reached
+            {
+                reached.note(&material.relay);
+            }
             if arrived.send(Arrived::Invitation(answer)).is_err() {
                 return;
             }
@@ -870,6 +881,12 @@ fn take_identity(material: &Material) -> Result<(), String> {
     {
         return Err(format!("the person's record was not taken: {error}"));
     }
+    // The person's devices this device trusts are the ones their fleet lists, and an app's identity
+    // service answers only while this device is one of them: the certificate the relay issued is
+    // listed, as a device enrolled at this login lists its own.
+    tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+        .and_then(|fleet| fleet.register_current_device(&user))
+        .map_err(|error| format!("this device was not listed among the person's: {error}"))?;
     Ok(())
 }
 
@@ -1040,6 +1057,7 @@ fn tab_of(shared: &Shared, workspace: &str, app: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+    use tilo_relay_protocol::WorkspaceId;
 
     /// What a relay hands a session: a device of the workspace's person that
     /// the host certified with its stand-in.
@@ -1072,7 +1090,7 @@ mod tests {
         tilo_user_identity::sign_device_cert(&mut device, &stand_in_key).unwrap();
         Material {
             workspace: "11111111-1111-4111-8111-111111111111".into(),
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             record: "browser-1".into(),
             device,
             secret,
@@ -1097,7 +1115,21 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_IDENTITY_ROOT", &identity)
             .set("XDG_CONFIG_HOME", &config);
-        take_identity(&material()).expect("the session took the identity it was handed");
+        let handed = material();
+        take_identity(&handed).expect("the session took the identity it was handed");
+        // Taken again, as a session restarted in the same VM takes it.
+        take_identity(&handed).expect("the session took the identity it was handed again");
+        let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+            .unwrap()
+            .load(&hex::encode(handed.user_public_key))
+            .unwrap();
+        assert!(
+            fleet
+                .certificates
+                .iter()
+                .any(|cert| cert.device_public_key == handed.device.device_public_key),
+            "the device is among the person's trusted devices, so an app's identity service answers"
+        );
         let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
@@ -1132,7 +1164,7 @@ mod tests {
         HostedBrowser {
             material: Material {
                 workspace: "11111111-1111-4111-8111-111111111111".into(),
-                workspace_id: 1,
+                workspace_id: WorkspaceId::from_u128(1),
                 record: "uuid:5c07c075-0000-4000-8000-0000000000aa".into(),
                 device: tilo_user_identity::DeviceCert {
                     user_public_key: [1; 32],

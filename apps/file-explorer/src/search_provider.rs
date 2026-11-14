@@ -367,330 +367,330 @@ mod tests {
         }
     }
 
-    #[test]
-    fn import_account_without_a_mount_has_a_searchable_open_action() {
-        let account = RemoteAccount {
-            id: accounts::AccountId::from("import-cloud"),
-            kind: crate::remote_accounts::RemoteAccountKind::WebDav,
-            label: "Import cloud".into(),
-            host: "cloud.example".into(),
-            health: crate::remote_accounts::RemoteAccountHealth::NeverChecked,
-            files_mode: accounts::cloud_types::FilesMode::Import,
-            mount: None,
-        };
-        let search = RemoteAccountSearch::new(std::slice::from_ref(&account));
-        let hit = source(search.entries()).search("import").pop().unwrap();
-        let resource = search.resource(&hit.anchor()).unwrap();
-        assert_eq!(
-            resource.id.as_str(),
-            crate::remote_accounts::resource_id(&account.id)
-        );
-        assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == REMOTE_ACCOUNT_OPEN_ACTION)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn places_search_addresses_destinations_within_budgets;
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn places_search_finds_and_addresses_destinations() {
-        {
-            let values = places();
-            let provider = source(PlacesSearch::new(&values).entries());
-            assert!(
-                provider
-                    .search("projects")
-                    .iter()
-                    .any(|r| r.title == "Projects")
-            );
-            assert!(
-                provider
-                    .search("code")
-                    .iter()
-                    .any(|r| r.title == "Projects")
-            );
-            assert_eq!(provider.search("").len(), 3);
-        }
-
-        {
-            let mut values = places();
-            values.reverse();
-            let titles: Vec<String> = source(PlacesSearch::new(&values).entries())
-                .search("")
-                .into_iter()
-                .map(|hit| hit.title)
-                .collect();
-            assert_eq!(
-                titles,
-                ["Projects", "Documents", "Home"],
-                "the places are listed as the person arranged them"
-            );
-        }
-
-        {
-            let mut registry = SearchRegistry::new();
-            let values = places();
-            registry.register(Box::new(source(PlacesSearch::new(&values).entries())));
-            let hit = registry
-                .query("documents")
-                .into_iter()
-                .find(|r| r.title == "Documents")
-                .expect("Documents is findable");
-            assert_eq!(
-                hit.action_id,
-                place_resource_id(PathBuf::from("/home/tester/Documents").as_path()),
-                "a hit is anchored at its place's row"
-            );
-        }
-
+        phase import_account_without_a_mount_has_a_searchable_open_action;
         {
             let account = RemoteAccount {
-                id: accounts::AccountId::from("cloud"),
-                kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
-                label: "Personal cloud".into(),
+                id: accounts::AccountId::from("import-cloud"),
+                kind: crate::remote_accounts::RemoteAccountKind::WebDav,
+                label: "Import cloud".into(),
                 host: "cloud.example".into(),
-                health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
-                files_mode: accounts::cloud_types::FilesMode::Sync,
+                health: crate::remote_accounts::RemoteAccountHealth::NeverChecked,
+                files_mode: accounts::cloud_types::FilesMode::Import,
                 mount: None,
             };
-            let accounts = vec![account.clone()];
-            let provider = source(RemoteAccountSearch::new(&accounts).entries());
-            for query in ["personal", "example", "nextcloud"] {
-                assert_eq!(provider.search(query).len(), 1, "{query}");
-            }
-            let anchor = provider.search("personal")[0].action_id.clone();
-            assert_eq!(anchor, crate::remote_accounts::resource_id(&account.id));
+            let search = RemoteAccountSearch::new(std::slice::from_ref(&account));
+            let hit = source(search.entries()).search("import").pop().unwrap();
+            let resource = search.resource(&hit.anchor()).unwrap();
             assert_eq!(
-                crate::remote_accounts::account_of_resource(&anchor).as_deref(),
-                Some("cloud")
+                resource.id.as_str(),
+                crate::remote_accounts::resource_id(&account.id)
             );
-        }
-
-        {
-            let address = crate::effects::FilesEffect::OPEN_ITEM
-                .on(place_resource_id(PathBuf::from("/tmp/a\u{1f}b").as_path()));
-            assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
-        }
-
-        {
-            let path = PathBuf::from("/tmp/a\u{1f}b");
-            let entry = crate::effects::FilesEffect::OPEN_ITEM.on(entry_resource_id(&path));
-            assert_eq!(ActionAddress::parse(&entry.encode()), Some(entry));
-            for id in [place_resource_id(&path), entry_resource_id(&path)] {
-                assert!(
-                    !id.contains("/tmp") && !id.contains("2f746d70"),
-                    "resource ids must not retain either the path or its old reversible hex: {id}"
-                );
-                assert_eq!(
-                    id.rsplit(':').next().map(str::len),
-                    Some(32),
-                    "resource ids use a compact 128-bit opaque digest"
-                );
-            }
-        }
-
-        {
-            use automerge::AutoCommit;
-
-            let base = std::env::temp_dir().join(format!("tilo-fe-search-{}", std::process::id()));
-            let home = base.join("home");
-            let sub = home.join("sub");
-            let cfg = base.join("cfg");
-            std::fs::create_dir_all(&sub).unwrap();
-            std::fs::create_dir_all(&cfg).unwrap();
-
-            let app = crate::files_app::FileExplorerWidget::with_persistence(
-                Some(&cfg),
-                Some(home.clone()),
-            );
-            app.state().navigate(sub.clone());
-            assert_eq!(app.state().current_path(), sub);
-
-            let hit = source(app.state().search_entries_shown())
-                .search("")
-                .into_iter()
-                .find(|r| r.action_id == place_resource_id(&home))
-                .expect("the Home favourite is findable through the real hook");
-
-            let doc = AutoCommit::new();
-            let resources = crate::files_app::published::tree(&app, &doc);
-            let row = resources
-                .iter()
-                .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
-                .find(|resource| resource.id.as_str() == hit.action_id)
-                .expect("the hit's anchor is a published row");
-            let spec = row
-                .actions
-                .iter()
-                .find(|spec| spec.id == OPEN_ACTION)
-                .expect("the place's row opens it");
-            assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
-            assert_eq!(spec.contract, ui::tilo_actions::ActionContract::view());
-            app.state()
-                .open_anchor(&hit.anchor())
-                .expect("the window opens the hit's anchor");
-            assert_eq!(
-                app.state().current_path(),
-                home,
-                "activation navigated to the chosen place"
-            );
-
-            std::fs::remove_dir_all(&base).ok();
-        }
-    }
-
-    #[test]
-    fn retained_catalogues_page_within_budgets() {
-        {
-            let values = places();
-            let places = PlacesSearch::new(&values);
-            let before = places.entries();
-            let changed = vec![Favorite {
-                label: "Late place".into(),
-                path: "/home/tester/late-needle".into(),
-                is_home: false,
-                kind: FavKind::Folder,
-            }];
-            assert!(
-                !places.refresh(0, &changed),
-                "the owner must advance the source revision before any traversal"
-            );
-            assert_eq!(places.entries(), before);
-            assert!(source(places.entries()).search("late-needle").is_empty());
-            assert!(places.refresh(1, &changed));
-            assert_eq!(source(places.entries()).search("late-needle").len(), 1);
-        }
-
-        {
-            let accounts: Vec<_> = (0..20)
-                .map(|index| RemoteAccount {
-                    id: accounts::AccountId::from(format!("account-{index}")),
-                    kind: crate::remote_accounts::RemoteAccountKind::WebDav,
-                    label: format!("Shared record {index}"),
-                    host: format!("host-{index}.example"),
-                    health: crate::remote_accounts::RemoteAccountHealth::Healthy,
-                    files_mode: accounts::cloud_types::FilesMode::Sync,
-                    mount: None,
-                })
-                .collect();
-            let remote = RemoteAccountSearch::new(&accounts);
-            let provider = source(remote.entries());
-            let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 3, 3);
-            assert_eq!(first.inspected, 3);
-            assert_eq!(first.results.len(), 3);
-            let second = provider.search_page(
-                &ui::search::SearchQuery::new("record"),
-                first.next.as_ref(),
-                3,
-                3,
-            );
-            assert_eq!(second.inspected, 3);
-            assert!(
-                second
-                    .results
-                    .iter()
-                    .all(|hit| !first.results.contains(hit))
-            );
-
-            let hit = first.results.first().expect("a page has a result");
-            let resource = remote
-                .resource(&hit.anchor())
-                .expect("the omitted account is materialized exactly");
             assert!(
                 resource
                     .actions
                     .iter()
-                    .any(|spec| spec.id == REMOTE_ACCOUNT_OPEN_ACTION),
-                "the anchored row opens the account"
+                    .any(|action| action.id == REMOTE_ACCOUNT_OPEN_ACTION)
             );
         }
-    }
 
-    #[test]
-    fn collaborative_search_uses_stable_record_identity() {
+        phase places_search_finds_and_addresses_destinations;
         {
-            let record_id = uuid::Uuid::from_u128(0x51);
-            let mut entry = collaborative_entry("old-name.txt");
-            entry.path = PathBuf::from("/Workspace/old-name.txt");
-            entry.record_id = record_id;
-            let provider = source(CollaborativeRecordSearch::new(&[entry]).entries());
-            let hit = provider.search("workspace").pop().expect("path matches");
-            assert_eq!(hit.action_id, record_resource_id(record_id));
-            assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
-        }
+            {
+                let values = places();
+                let provider = source(PlacesSearch::new(&values).entries());
+                assert!(
+                    provider
+                        .search("projects")
+                        .iter()
+                        .any(|r| r.title == "Projects")
+                );
+                assert!(
+                    provider
+                        .search("code")
+                        .iter()
+                        .any(|r| r.title == "Projects")
+                );
+                assert_eq!(provider.search("").len(), 3);
+            }
 
-        {
-            const RECORD_COUNT: usize = 276;
-            let entries: Vec<_> = (0..RECORD_COUNT)
-                .flat_map(|index| {
-                    let id = uuid::Uuid::from_u128(index as u128 + 1);
-                    let mut first = collaborative_entry(&format!("file-{index}"));
-                    first.record_id = id;
-                    let duplicate = first.clone();
-                    [first, duplicate]
-                })
-                .collect();
-            let provider = source(CollaborativeRecordSearch::new(&entries).entries());
-            // Result presentation is capped; the index is complete, so a match
-            // past the cap is still found.
-            assert_eq!(provider.search("file-275").len(), 1);
-        }
+            {
+                let mut values = places();
+                values.reverse();
+                let titles: Vec<String> = source(PlacesSearch::new(&values).entries())
+                    .search("")
+                    .into_iter()
+                    .map(|hit| hit.title)
+                    .collect();
+                assert_eq!(
+                    titles,
+                    ["Projects", "Documents", "Home"],
+                    "the places are listed as the person arranged them"
+                );
+            }
 
-        {
-            let (provider, hit) = assert_late_hit_reachable(
-                |corpus| {
-                    let entries: Vec<_> = corpus
-                        .map(|row| {
-                            let name = if row.is_target {
-                                format!("{}-文書", row.text)
-                            } else {
-                                row.text
-                            };
-                            let mut entry = collaborative_entry(&name);
-                            entry.record_id = uuid::Uuid::from_u128(row.index as u128 + 1);
-                            entry.path = PathBuf::from(format!("/Workspace/{name}"));
-                            entry
-                        })
-                        .collect();
-                    source(CollaborativeRecordSearch::new(&entries).entries())
-                },
-                3_000,
-            );
-            assert_eq!(
-                hit.title,
-                format!("ordinary record 2999 {LATE_HIT_NEEDLE}-文書")
-            );
+            {
+                let mut registry = SearchRegistry::new();
+                let values = places();
+                registry.register(Box::new(source(PlacesSearch::new(&values).entries())));
+                let hit = registry
+                    .query("documents")
+                    .into_iter()
+                    .find(|r| r.title == "Documents")
+                    .expect("Documents is findable");
+                assert_eq!(
+                    hit.action_id,
+                    place_resource_id(PathBuf::from("/home/tester/Documents").as_path()),
+                    "a hit is anchored at its place's row"
+                );
+            }
 
-            let page =
-                provider.search_page(&ui::search::SearchQuery::new("needle-文書"), None, 1, 1);
-            assert_eq!(page.inspected, 1);
-            assert_eq!(page.results, vec![hit]);
-            assert!(
-                page.next.is_none(),
-                "the exact late hit exhausted its posting"
-            );
+            {
+                let account = RemoteAccount {
+                    id: accounts::AccountId::from("cloud"),
+                    kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
+                    label: "Personal cloud".into(),
+                    host: "cloud.example".into(),
+                    health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                    files_mode: accounts::cloud_types::FilesMode::Sync,
+                    mount: None,
+                };
+                let accounts = vec![account.clone()];
+                let provider = source(RemoteAccountSearch::new(&accounts).entries());
+                for query in ["personal", "example", "nextcloud"] {
+                    assert_eq!(provider.search(query).len(), 1, "{query}");
+                }
+                let anchor = provider.search("personal")[0].action_id.clone();
+                assert_eq!(anchor, crate::remote_accounts::resource_id(&account.id));
+                assert_eq!(
+                    crate::remote_accounts::account_of_resource(&anchor).as_deref(),
+                    Some("cloud")
+                );
+            }
 
-            let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 7, 7);
-            assert_eq!(first.inspected, 7);
-            assert_eq!(first.results.len(), 7);
-            let second = provider.search_page(
-                &ui::search::SearchQuery::new("record"),
-                first.next.as_ref(),
-                7,
-                7,
-            );
-            assert_eq!(second.inspected, 7);
-            assert!(
-                second
-                    .results
+            {
+                let address = crate::effects::FilesEffect::OPEN_ITEM
+                    .on(place_resource_id(PathBuf::from("/tmp/a\u{1f}b").as_path()));
+                assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
+            }
+
+            {
+                let path = PathBuf::from("/tmp/a\u{1f}b");
+                let entry = crate::effects::FilesEffect::OPEN_ITEM.on(entry_resource_id(&path));
+                assert_eq!(ActionAddress::parse(&entry.encode()), Some(entry));
+                for id in [place_resource_id(&path), entry_resource_id(&path)] {
+                    assert!(
+                        !id.contains("/tmp") && !id.contains("2f746d70"),
+                        "resource ids must not retain either the path or its old reversible hex: {id}"
+                    );
+                    assert_eq!(
+                        id.rsplit(':').next().map(str::len),
+                        Some(32),
+                        "resource ids use a compact 128-bit opaque digest"
+                    );
+                }
+            }
+
+            {
+                use automerge::AutoCommit;
+
+                let base = std::env::temp_dir().join(format!("tilo-fe-search-{}", std::process::id()));
+                let home = base.join("home");
+                let sub = home.join("sub");
+                let cfg = base.join("cfg");
+                std::fs::create_dir_all(&sub).unwrap();
+                std::fs::create_dir_all(&cfg).unwrap();
+
+                let app = crate::files_app::FileExplorerWidget::with_persistence(
+                    Some(&cfg),
+                    Some(home.clone()),
+                );
+                app.state().navigate(sub.clone());
+                assert_eq!(app.state().current_path(), sub);
+
+                let hit = source(app.state().search_entries_shown())
+                    .search("")
+                    .into_iter()
+                    .find(|r| r.action_id == place_resource_id(&home))
+                    .expect("the Home favourite is findable through the real hook");
+
+                let doc = AutoCommit::new();
+                let resources = crate::files_app::published::tree(&app, &doc);
+                let row = resources
                     .iter()
-                    .all(|hit| !first.results.contains(hit))
-            );
+                    .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
+                    .find(|resource| resource.id.as_str() == hit.action_id)
+                    .expect("the hit's anchor is a published row");
+                let spec = row
+                    .actions
+                    .iter()
+                    .find(|spec| spec.id == OPEN_ACTION)
+                    .expect("the place's row opens it");
+                assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
+                assert_eq!(spec.contract, ui::tilo_actions::ActionContract::view());
+                app.state()
+                    .open_anchor(&hit.anchor())
+                    .expect("the window opens the hit's anchor");
+                assert_eq!(
+                    app.state().current_path(),
+                    home,
+                    "activation navigated to the chosen place"
+                );
+
+                std::fs::remove_dir_all(&base).ok();
+            }
+        }
+
+        phase retained_catalogues_page_within_budgets;
+        {
+            {
+                let values = places();
+                let places = PlacesSearch::new(&values);
+                let before = places.entries();
+                let changed = vec![Favorite {
+                    label: "Late place".into(),
+                    path: "/home/tester/late-needle".into(),
+                    is_home: false,
+                    kind: FavKind::Folder,
+                }];
+                assert!(
+                    !places.refresh(0, &changed),
+                    "the owner must advance the source revision before any traversal"
+                );
+                assert_eq!(places.entries(), before);
+                assert!(source(places.entries()).search("late-needle").is_empty());
+                assert!(places.refresh(1, &changed));
+                assert_eq!(source(places.entries()).search("late-needle").len(), 1);
+            }
+
+            {
+                let accounts: Vec<_> = (0..20)
+                    .map(|index| RemoteAccount {
+                        id: accounts::AccountId::from(format!("account-{index}")),
+                        kind: crate::remote_accounts::RemoteAccountKind::WebDav,
+                        label: format!("Shared record {index}"),
+                        host: format!("host-{index}.example"),
+                        health: crate::remote_accounts::RemoteAccountHealth::Healthy,
+                        files_mode: accounts::cloud_types::FilesMode::Sync,
+                        mount: None,
+                    })
+                    .collect();
+                let remote = RemoteAccountSearch::new(&accounts);
+                let provider = source(remote.entries());
+                let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 3, 3);
+                assert_eq!(first.inspected, 3);
+                assert_eq!(first.results.len(), 3);
+                let second = provider.search_page(
+                    &ui::search::SearchQuery::new("record"),
+                    first.next.as_ref(),
+                    3,
+                    3,
+                );
+                assert_eq!(second.inspected, 3);
+                assert!(
+                    second
+                        .results
+                        .iter()
+                        .all(|hit| !first.results.contains(hit))
+                );
+
+                let hit = first.results.first().expect("a page has a result");
+                let resource = remote
+                    .resource(&hit.anchor())
+                    .expect("the omitted account is materialized exactly");
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .any(|spec| spec.id == REMOTE_ACCOUNT_OPEN_ACTION),
+                    "the anchored row opens the account"
+                );
+            }
+        }
+
+        phase collaborative_search_uses_stable_record_identity;
+        {
+            {
+                let record_id = uuid::Uuid::from_u128(0x51);
+                let mut entry = collaborative_entry("old-name.txt");
+                entry.path = PathBuf::from("/Workspace/old-name.txt");
+                entry.record_id = record_id;
+                let provider = source(CollaborativeRecordSearch::new(&[entry]).entries());
+                let hit = provider.search("workspace").pop().expect("path matches");
+                assert_eq!(hit.action_id, record_resource_id(record_id));
+                assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
+            }
+
+            {
+                const RECORD_COUNT: usize = 276;
+                let entries: Vec<_> = (0..RECORD_COUNT)
+                    .flat_map(|index| {
+                        let id = uuid::Uuid::from_u128(index as u128 + 1);
+                        let mut first = collaborative_entry(&format!("file-{index}"));
+                        first.record_id = id;
+                        let duplicate = first.clone();
+                        [first, duplicate]
+                    })
+                    .collect();
+                let provider = source(CollaborativeRecordSearch::new(&entries).entries());
+                // Result presentation is capped; the index is complete, so a match
+                // past the cap is still found.
+                assert_eq!(provider.search("file-275").len(), 1);
+            }
+
+            {
+                let (provider, hit) = assert_late_hit_reachable(
+                    |corpus| {
+                        let entries: Vec<_> = corpus
+                            .map(|row| {
+                                let name = if row.is_target {
+                                    format!("{}-文書", row.text)
+                                } else {
+                                    row.text
+                                };
+                                let mut entry = collaborative_entry(&name);
+                                entry.record_id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                                entry.path = PathBuf::from(format!("/Workspace/{name}"));
+                                entry
+                            })
+                            .collect();
+                        source(CollaborativeRecordSearch::new(&entries).entries())
+                    },
+                    3_000,
+                );
+                assert_eq!(
+                    hit.title,
+                    format!("ordinary record 2999 {LATE_HIT_NEEDLE}-文書")
+                );
+
+                let page =
+                    provider.search_page(&ui::search::SearchQuery::new("needle-文書"), None, 1, 1);
+                assert_eq!(page.inspected, 1);
+                assert_eq!(page.results, vec![hit]);
+                assert!(
+                    page.next.is_none(),
+                    "the exact late hit exhausted its posting"
+                );
+
+                let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 7, 7);
+                assert_eq!(first.inspected, 7);
+                assert_eq!(first.results.len(), 7);
+                let second = provider.search_page(
+                    &ui::search::SearchQuery::new("record"),
+                    first.next.as_ref(),
+                    7,
+                    7,
+                );
+                assert_eq!(second.inspected, 7);
+                assert!(
+                    second
+                        .results
+                        .iter()
+                        .all(|hit| !first.results.contains(hit))
+                );
+            }
         }
     }
 }

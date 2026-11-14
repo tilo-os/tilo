@@ -199,87 +199,92 @@ mod tests {
         }
     }
 
-    #[test]
-    fn events_are_placed_at_their_instant_on_the_viewers_clock() {
-        let berlin = Viewer::named("Europe/Berlin");
-        let day = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+    tilo_test_env::scenario! {
+        /// An event as its viewer sees it: the same instant, on the viewer's clock and days.
+        fn a_viewer_sees_events_at_their_instant_on_their_own_clock;
 
-        let utc = event("UTC", at(2026, 6, 30, 7, 0), 60);
-        let shown = occurrences(&utc, day, day, &berlin);
-        assert_eq!(shown.len(), 1);
-        assert_eq!(shown[0].start, at(2026, 6, 30, 9, 0));
-        assert_eq!(shown[0].end, at(2026, 6, 30, 10, 0));
+        phase events_are_placed_at_their_instant_on_the_viewers_clock;
+        {
+            let berlin = Viewer::named("Europe/Berlin");
+            let day = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-        let ny = event("America/New_York", at(2026, 6, 30, 9, 0), 30);
-        let shown = occurrences(&ny, day, day, &berlin);
-        assert_eq!(shown[0].start, at(2026, 6, 30, 15, 0));
-        assert_eq!(shown[0].original, day);
+            let utc = event("UTC", at(2026, 6, 30, 7, 0), 60);
+            let shown = occurrences(&utc, day, day, &berlin);
+            assert_eq!(shown.len(), 1);
+            assert_eq!(shown[0].start, at(2026, 6, 30, 9, 0));
+            assert_eq!(shown[0].end, at(2026, 6, 30, 10, 0));
 
-        let floating = event("floating", at(2026, 6, 30, 9, 0), 30);
-        assert_eq!(
-            occurrences(&floating, day, day, &berlin)[0].start,
-            at(2026, 6, 30, 9, 0)
-        );
-    }
+            let ny = event("America/New_York", at(2026, 6, 30, 9, 0), 30);
+            let shown = occurrences(&ny, day, day, &berlin);
+            assert_eq!(shown[0].start, at(2026, 6, 30, 15, 0));
+            assert_eq!(shown[0].original, day);
 
-    #[test]
-    fn an_evening_elsewhere_lands_on_the_next_day_here() {
-        let tokyo = Viewer::named("Asia/Tokyo");
-        let ny = event("America/New_York", at(2026, 6, 30, 20, 0), 60);
-        let jun30 = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
-        let jul1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
-        assert!(occurrences(&ny, jun30, jun30, &tokyo).is_empty());
-        let shown = occurrences(&ny, jul1, jul1, &tokyo);
-        assert_eq!(shown[0].start, at(2026, 7, 1, 9, 0));
-        assert_eq!(
-            shown[0].original, jun30,
-            "the series still knows it by its own date"
-        );
-    }
+            let floating = event("floating", at(2026, 6, 30, 9, 0), 30);
+            assert_eq!(
+                occurrences(&floating, day, day, &berlin)[0].start,
+                at(2026, 6, 30, 9, 0)
+            );
+        }
 
-    #[test]
-    fn repeating_events_follow_their_own_zones_daylight_saving() {
-        let berlin = Viewer::named("Europe/Berlin");
-        let mut weekly = event("America/New_York", at(2026, 10, 19, 9, 0), 60);
-        weekly.recurrence = Recurrence::Weekly;
-        let from = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
-        let to = NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
-        let hours: Vec<_> = occurrences(&weekly, from, to, &berlin)
-            .iter()
-            .map(|shown| chrono::Timelike::hour(&shown.start))
-            .collect();
-        assert_eq!(hours, vec![15, 14, 15]);
-    }
+        phase an_evening_elsewhere_lands_on_the_next_day_here;
+        {
+            let tokyo = Viewer::named("Asia/Tokyo");
+            let ny = event("America/New_York", at(2026, 6, 30, 20, 0), 60);
+            let jun30 = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+            let jul1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+            assert!(occurrences(&ny, jun30, jun30, &tokyo).is_empty());
+            let shown = occurrences(&ny, jul1, jul1, &tokyo);
+            assert_eq!(shown[0].start, at(2026, 7, 1, 9, 0));
+            assert_eq!(
+                shown[0].original, jun30,
+                "the series still knows it by its own date"
+            );
+        }
 
-    #[test]
-    fn a_late_event_runs_into_the_next_day() {
-        let berlin = Viewer::named("Europe/Berlin");
-        let late = event("Europe/Berlin", at(2026, 6, 30, 23, 0), 120);
-        let jul1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
-        let shown = occurrences(&late, jul1, jul1, &berlin);
-        assert_eq!(shown.len(), 1);
-        assert!(shown[0].on(jul1));
-        assert_eq!(shown[0].minutes_on(jul1), (0, 60));
-        assert_eq!(
-            shown[0].minutes_on(NaiveDate::from_ymd_opt(2026, 6, 30).unwrap()),
-            (23 * 60, 24 * 60)
-        );
-    }
+        phase repeating_events_follow_their_own_zones_daylight_saving;
+        {
+            let berlin = Viewer::named("Europe/Berlin");
+            let mut weekly = event("America/New_York", at(2026, 10, 19, 9, 0), 60);
+            weekly.recurrence = Recurrence::Weekly;
+            let from = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+            let to = NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+            let hours: Vec<_> = occurrences(&weekly, from, to, &berlin)
+                .iter()
+                .map(|shown| chrono::Timelike::hour(&shown.start))
+                .collect();
+            assert_eq!(hours, vec![15, 14, 15]);
+        }
 
-    #[test]
-    fn a_time_authored_here_is_kept_as_the_same_instant_in_the_events_zone() {
-        let berlin = Viewer::named("Europe/Berlin");
-        assert_eq!(
-            berlin.to_zone(at(2026, 6, 30, 15, 0), "America/New_York"),
-            at(2026, 6, 30, 9, 0)
-        );
-        assert_eq!(
-            berlin.to_zone(at(2026, 6, 30, 9, 0), "UTC"),
-            at(2026, 6, 30, 7, 0)
-        );
-        assert_eq!(
-            berlin.to_zone(at(2026, 6, 30, 9, 0), "floating"),
-            at(2026, 6, 30, 9, 0)
-        );
+        phase a_late_event_runs_into_the_next_day;
+        {
+            let berlin = Viewer::named("Europe/Berlin");
+            let late = event("Europe/Berlin", at(2026, 6, 30, 23, 0), 120);
+            let jul1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+            let shown = occurrences(&late, jul1, jul1, &berlin);
+            assert_eq!(shown.len(), 1);
+            assert!(shown[0].on(jul1));
+            assert_eq!(shown[0].minutes_on(jul1), (0, 60));
+            assert_eq!(
+                shown[0].minutes_on(NaiveDate::from_ymd_opt(2026, 6, 30).unwrap()),
+                (23 * 60, 24 * 60)
+            );
+        }
+
+        phase a_time_authored_here_is_kept_as_the_same_instant_in_the_events_zone;
+        {
+            let berlin = Viewer::named("Europe/Berlin");
+            assert_eq!(
+                berlin.to_zone(at(2026, 6, 30, 15, 0), "America/New_York"),
+                at(2026, 6, 30, 9, 0)
+            );
+            assert_eq!(
+                berlin.to_zone(at(2026, 6, 30, 9, 0), "UTC"),
+                at(2026, 6, 30, 7, 0)
+            );
+            assert_eq!(
+                berlin.to_zone(at(2026, 6, 30, 9, 0), "floating"),
+                at(2026, 6, 30, 9, 0)
+            );
+        }
     }
 }

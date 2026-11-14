@@ -170,52 +170,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_page_object_round_trips_and_a_malformed_one_is_refused() {
-        let whole = object(true);
-        let bytes = whole.encode().unwrap();
-        assert_eq!(PageObject::decode(&bytes).unwrap(), whole);
-        let header = validate(&bytes).unwrap();
-        assert!(header.whole);
-        assert_eq!(header.sequence, 9);
+    tilo_test_env::scenario! {
+        fn a_page_object_and_its_track_name_are_read_strictly;
 
-        let patch = object(false);
-        assert!(!validate(&patch.encode().unwrap()).unwrap().whole);
+        phase a_page_object_round_trips_and_a_malformed_one_is_refused;
+        {
+            let whole = object(true);
+            let bytes = whole.encode().unwrap();
+            assert_eq!(PageObject::decode(&bytes).unwrap(), whole);
+            let header = validate(&bytes).unwrap();
+            assert!(header.whole);
+            assert_eq!(header.sequence, 9);
 
-        let mut versioned = bytes.clone();
-        versioned[0] = 2;
-        assert!(validate(&versioned).is_err());
-        let mut flagged = bytes.clone();
-        flagged[1] = 0b10;
-        assert!(validate(&flagged).is_err());
-        let mut reserved = bytes.clone();
-        reserved[2] = 1;
-        assert!(validate(&reserved).is_err());
-        let mut truncated = bytes;
-        truncated.pop();
-        assert!(validate(&truncated).is_err(), "the length says the payload");
-        assert!(
-            PageObject {
-                payload: Vec::new(),
-                ..object(true)
+            let patch = object(false);
+            assert!(!validate(&patch.encode().unwrap()).unwrap().whole);
+
+            let mut versioned = bytes.clone();
+            versioned[0] = 2;
+            assert!(validate(&versioned).is_err());
+            let mut flagged = bytes.clone();
+            flagged[1] = 0b10;
+            assert!(validate(&flagged).is_err());
+            let mut reserved = bytes.clone();
+            reserved[2] = 1;
+            assert!(validate(&reserved).is_err());
+            let mut truncated = bytes;
+            truncated.pop();
+            assert!(validate(&truncated).is_err(), "the length says the payload");
+            assert!(
+                PageObject {
+                    payload: Vec::new(),
+                    ..object(true)
+                }
+                .encode()
+                .is_err()
+            );
+        }
+
+        phase a_page_track_names_its_window_and_nothing_else_parses_as_one;
+        {
+            assert_eq!(track(7), "page/0000000000000007");
+            assert_eq!(parse_track("page/0000000000000007"), Some(7));
+            for name in [
+                "page/",
+                "page/000000000000007",
+                "page/5EED000000000007",
+                "window/5eed000000000007",
+                "pages/5eed000000000007",
+            ] {
+                assert_eq!(parse_track(name), None, "{name}");
             }
-            .encode()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn a_page_track_names_its_window_and_nothing_else_parses_as_one() {
-        assert_eq!(track(7), "page/0000000000000007");
-        assert_eq!(parse_track("page/0000000000000007"), Some(7));
-        for name in [
-            "page/",
-            "page/000000000000007",
-            "page/5EED000000000007",
-            "window/5eed000000000007",
-            "pages/5eed000000000007",
-        ] {
-            assert_eq!(parse_track(name), None, "{name}");
         }
     }
 }

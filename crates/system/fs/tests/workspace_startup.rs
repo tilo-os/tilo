@@ -8,49 +8,53 @@
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-#[test]
-fn recovery_only_launch_does_not_create_a_workspace_or_identity() {
-    let dir = tempfile::tempdir().expect("isolated fixture");
-    let cache = dir.path().join("cache");
-    let mount = dir.path().join("mount");
-    let identity = dir.path().join("identity");
-    let output = Command::new(tilo_test_env::package_binary!("fs"))
-        .env("TILO_IDENTITY_ROOT", &identity)
-        .args(["serve", "--require-existing-workspace", "--cache-dir"])
-        .arg(&cache)
-        .arg("--mount-point")
-        .arg(&mount)
-        .output_locked()
-        .expect("run production Files CLI");
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files authority"));
-    assert!(!cache.exists());
-    assert!(!mount.exists());
-    assert!(!identity.exists());
-}
+tilo_test_env::scenario! {
+    fn recovery_and_status_launches_create_nothing;
 
-#[test]
-fn status_is_read_only_and_does_not_require_identity() {
-    let dir = tempfile::tempdir().expect("isolated fixture");
-    let cache = dir.path().join("cache");
-    let output = Command::new(tilo_test_env::package_binary!("fs"))
-        .env("TILO_IDENTITY_ROOT", dir.path().join("identity"))
-        .args(["workspace-status", "--cache-dir"])
-        .arg(&cache)
-        .output_locked()
-        .expect("run production Files CLI");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let status: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("public status JSON");
-    assert_eq!(status["can_resume_existing"], false);
-    assert_eq!(status["saved_authority"], false);
-    assert_eq!(status["saved_namespace"], false);
-    assert!(!cache.exists());
-    assert!(!dir.path().join("identity").exists());
+    phase recovery_only_launch_does_not_create_a_workspace_or_identity;
+    {
+        let dir = tempfile::tempdir().expect("isolated fixture");
+        let cache = dir.path().join("cache");
+        let mount = dir.path().join("mount");
+        let identity = dir.path().join("identity");
+        let output = Command::new(tilo_test_env::package_binary!("fs"))
+            .env("TILO_IDENTITY_ROOT", &identity)
+            .args(["serve", "--require-existing-workspace", "--cache-dir"])
+            .arg(&cache)
+            .arg("--mount-point")
+            .arg(&mount)
+            .output_locked()
+            .expect("run production Files CLI");
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files authority"));
+        assert!(!cache.exists());
+        assert!(!mount.exists());
+        assert!(!identity.exists());
+    }
+
+    phase status_is_read_only_and_does_not_require_identity;
+    {
+        let dir = tempfile::tempdir().expect("isolated fixture");
+        let cache = dir.path().join("cache");
+        let output = Command::new(tilo_test_env::package_binary!("fs"))
+            .env("TILO_IDENTITY_ROOT", dir.path().join("identity"))
+            .args(["workspace-status", "--cache-dir"])
+            .arg(&cache)
+            .output_locked()
+            .expect("run production Files CLI");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let status: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("public status JSON");
+        assert_eq!(status["can_resume_existing"], false);
+        assert_eq!(status["saved_authority"], false);
+        assert_eq!(status["saved_namespace"], false);
+        assert!(!cache.exists());
+        assert!(!dir.path().join("identity").exists());
+    }
 }
 
 struct Profile {
@@ -132,169 +136,177 @@ fn assert_not_ready(output: &std::process::Output) {
     assert!(String::from_utf8_lossy(&output.stderr).starts_with("Files service is not ready: "));
 }
 
-#[test]
-fn primary_launch_without_a_saved_namespace_creates_nothing() {
-    let profile = Profile::new(0);
-    let output = profile.launch(&[]);
-    assert_not_ready(&output);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files authority"));
-    assert!(
-        profile.admin_argv().is_none(),
-        "no identity check without saved state"
-    );
-    assert!(!profile.path("state").exists());
-    assert!(!profile.path("run").exists());
-    assert!(!profile.path("identity").exists());
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn a_primary_launch_checks_its_saved_authority_before_it_serves;
 
-#[test]
-fn primary_launch_resumes_a_cache_that_holds_only_its_signed_authority() {
-    let profile = Profile::new(0);
-    profile.save_authority();
-    let output = profile.launch(&[]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(profile.admin_argv().is_some(), "the authority check ran");
-    assert!(
-        !profile.cache().join("namespace.bin").exists(),
-        "the tree arrives with the first mount, from the Files record"
-    );
-}
-
-#[test]
-fn primary_launch_refused_by_the_authority_check_never_mounts() {
-    let profile = Profile::new(1);
-    profile.save_namespace();
-    let output = profile.launch(&[]);
-    assert_not_ready(&output);
-    assert!(profile.admin_argv().is_some());
-    assert!(!profile.cache().join("mount").exists());
-    assert!(!profile.path("run").exists());
-    assert_eq!(
-        std::fs::read(profile.cache().join("namespace.bin")).expect("namespace kept"),
-        b"retained namespace"
-    );
-}
-
-#[test]
-fn primary_launch_refuses_a_namespace_that_is_not_a_regular_file() {
-    let profile = Profile::new(0);
-    std::fs::create_dir_all(profile.cache()).expect("create cache");
-    std::fs::write(profile.path("elsewhere"), b"namespace").expect("write target");
-    std::os::unix::fs::symlink(
-        profile.path("elsewhere"),
-        profile.cache().join("namespace.bin"),
-    )
-    .expect("symlink namespace");
-    assert_not_ready(&profile.launch(&[]));
-    assert!(!profile.cache().join("mount").exists());
-    assert!(!profile.path("run").exists());
-}
-
-#[test]
-fn primary_launch_rejects_relative_paths() {
-    let profile = Profile::new(0);
-    profile.save_namespace();
-    let output = profile.launch(&[("XDG_STATE_HOME", "relative")]);
-    assert_not_ready(&output);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("must be absolute"));
-    assert!(profile.admin_argv().is_none());
-}
-
-#[test]
-fn primary_launch_gives_the_daemon_the_paths_the_authority_check_saw() {
-    use std::os::unix::fs::PermissionsExt as _;
-    let profile = Profile::new(0);
-    profile.save_namespace();
-    let output = profile.launch(&[]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).expect("UTF-8 argv");
-    assert!(!stdout.contains("readiness-stdout-must-stay-private"));
-    assert!(
-        !String::from_utf8_lossy(&output.stderr).contains("readiness-stdout-must-stay-private")
-    );
-    let argv: Vec<String> = serde_json::from_str(&stdout).expect("argv JSON");
-    let cache = profile.cache();
-    let run = profile.path("run/tilo/files-workspace");
-    let text = |path: std::path::PathBuf| path.to_str().expect("UTF-8 fixture").to_string();
-    assert_eq!(
-        std::fs::canonicalize(&argv[0]).expect("fs path"),
-        std::fs::canonicalize(tilo_test_env::package_binary!("fs")).expect("fs path"),
-        "the daemon is this same fs executable"
-    );
-    assert_eq!(
-        argv[1..],
-        [
-            "serve".to_string(),
-            "--require-existing-workspace".into(),
-            "--cache-dir".into(),
-            text(cache.clone()),
-            "--mount-point".into(),
-            text(cache.join("mount")),
-            "--acl".into(),
-            text(profile.path("config/tilo/fs-capabilities.json")),
-            "--data-plane".into(),
-            "fuse".into(),
-            "--storage-sock".into(),
-            text(profile.path("run/tilo/files-storage/storage.sock")),
-            "--blob-sock".into(),
-            text(run.join("fs-blobs.sock")),
-        ]
-    );
-    assert_eq!(
-        profile.admin_argv().expect("authority check ran"),
-        [
-            "files-workspace-check".to_string(),
-            "--identity-root".into(),
-            text(profile.path("identity")),
-            "--cache-dir".into(),
-            text(cache.clone()),
-        ]
-    );
-    for dir in [cache.join("mount"), run] {
-        let mode = std::fs::metadata(&dir)
-            .expect("private dir")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
+    phase primary_launch_without_a_saved_namespace_creates_nothing;
+    {
+        let profile = Profile::new(0);
+        let output = profile.launch(&[]);
+        assert_not_ready(&output);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files authority"));
+        assert!(
+            profile.admin_argv().is_none(),
+            "no identity check without saved state"
+        );
+        assert!(!profile.path("state").exists());
+        assert!(!profile.path("run").exists());
+        assert!(!profile.path("identity").exists());
     }
-    assert!(
-        !profile.path("identity").exists(),
-        "launch never mints identity"
-    );
-    let defaults = Profile::new(0);
-    std::fs::create_dir_all(defaults.path(".local/state/tilo/files")).expect("create cache");
-    std::fs::write(
-        defaults.path(".local/state/tilo/files/namespace.bin"),
-        b"saved",
-    )
-    .expect("write namespace");
-    let blank = [
-        ("XDG_STATE_HOME", ""),
-        ("XDG_DATA_HOME", ""),
-        ("XDG_CONFIG_HOME", ""),
-        ("TILO_IDENTITY_ROOT", ""),
-    ];
-    let output = defaults.launch(&blank);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        defaults.admin_argv().expect("authority check ran")[2],
-        text(defaults.path(".local/share/tilo"))
-    );
-    let argv: Vec<String> = serde_json::from_slice(&output.stdout).expect("argv JSON");
-    assert_eq!(
-        argv[argv.iter().position(|a| a == "--acl").expect("acl") + 1],
-        text(defaults.path(".config/tilo/fs-capabilities.json"))
-    );
+
+    phase primary_launch_resumes_a_cache_that_holds_only_its_signed_authority;
+    {
+        let profile = Profile::new(0);
+        profile.save_authority();
+        let output = profile.launch(&[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(profile.admin_argv().is_some(), "the authority check ran");
+        assert!(
+            !profile.cache().join("namespace.bin").exists(),
+            "the tree arrives with the first mount, from the Files record"
+        );
+    }
+
+    phase primary_launch_refused_by_the_authority_check_never_mounts;
+    {
+        let profile = Profile::new(1);
+        profile.save_namespace();
+        let output = profile.launch(&[]);
+        assert_not_ready(&output);
+        assert!(profile.admin_argv().is_some());
+        assert!(!profile.cache().join("mount").exists());
+        assert!(!profile.path("run").exists());
+        assert_eq!(
+            std::fs::read(profile.cache().join("namespace.bin")).expect("namespace kept"),
+            b"retained namespace"
+        );
+    }
+
+    phase primary_launch_refuses_a_namespace_that_is_not_a_regular_file;
+    {
+        let profile = Profile::new(0);
+        std::fs::create_dir_all(profile.cache()).expect("create cache");
+        std::fs::write(profile.path("elsewhere"), b"namespace").expect("write target");
+        std::os::unix::fs::symlink(
+            profile.path("elsewhere"),
+            profile.cache().join("namespace.bin"),
+        )
+        .expect("symlink namespace");
+        assert_not_ready(&profile.launch(&[]));
+        assert!(!profile.cache().join("mount").exists());
+        assert!(!profile.path("run").exists());
+    }
+
+    phase primary_launch_rejects_relative_paths;
+    {
+        let profile = Profile::new(0);
+        profile.save_namespace();
+        let output = profile.launch(&[("XDG_STATE_HOME", "relative")]);
+        assert_not_ready(&output);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("must be absolute"));
+        assert!(profile.admin_argv().is_none());
+    }
+
+    phase primary_launch_gives_the_daemon_the_paths_the_authority_check_saw;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let profile = Profile::new(0);
+        profile.save_namespace();
+        let output = profile.launch(&[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("UTF-8 argv");
+        assert!(!stdout.contains("readiness-stdout-must-stay-private"));
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("readiness-stdout-must-stay-private")
+        );
+        let argv: Vec<String> = serde_json::from_str(&stdout).expect("argv JSON");
+        let cache = profile.cache();
+        let run = profile.path("run/tilo/files-workspace");
+        let text = |path: std::path::PathBuf| path.to_str().expect("UTF-8 fixture").to_string();
+        assert_eq!(
+            std::fs::canonicalize(&argv[0]).expect("fs path"),
+            std::fs::canonicalize(tilo_test_env::package_binary!("fs")).expect("fs path"),
+            "the daemon is this same fs executable"
+        );
+        assert_eq!(
+            argv[1..],
+            [
+                "serve".to_string(),
+                "--require-existing-workspace".into(),
+                "--cache-dir".into(),
+                text(cache.clone()),
+                "--mount-point".into(),
+                text(cache.join("mount")),
+                "--acl".into(),
+                text(profile.path("config/tilo/fs-capabilities.json")),
+                "--data-plane".into(),
+                "fuse".into(),
+                "--storage-sock".into(),
+                text(profile.path("run/tilo/files-storage/storage.sock")),
+                "--blob-sock".into(),
+                text(run.join("fs-blobs.sock")),
+            ]
+        );
+        assert_eq!(
+            profile.admin_argv().expect("authority check ran"),
+            [
+                "files-workspace-check".to_string(),
+                "--identity-root".into(),
+                text(profile.path("identity")),
+                "--cache-dir".into(),
+                text(cache.clone()),
+            ]
+        );
+        for dir in [cache.join("mount"), run] {
+            let mode = std::fs::metadata(&dir)
+                .expect("private dir")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
+        }
+        assert!(
+            !profile.path("identity").exists(),
+            "launch never mints identity"
+        );
+        let defaults = Profile::new(0);
+        std::fs::create_dir_all(defaults.path(".local/state/tilo/files")).expect("create cache");
+        std::fs::write(
+            defaults.path(".local/state/tilo/files/namespace.bin"),
+            b"saved",
+        )
+        .expect("write namespace");
+        let blank = [
+            ("XDG_STATE_HOME", ""),
+            ("XDG_DATA_HOME", ""),
+            ("XDG_CONFIG_HOME", ""),
+            ("TILO_IDENTITY_ROOT", ""),
+        ];
+        let output = defaults.launch(&blank);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            defaults.admin_argv().expect("authority check ran")[2],
+            text(defaults.path(".local/share/tilo"))
+        );
+        let argv: Vec<String> = serde_json::from_slice(&output.stdout).expect("argv JSON");
+        assert_eq!(
+            argv[argv.iter().position(|a| a == "--acl").expect("acl") + 1],
+            text(defaults.path(".config/tilo/fs-capabilities.json"))
+        );
+    }
 }

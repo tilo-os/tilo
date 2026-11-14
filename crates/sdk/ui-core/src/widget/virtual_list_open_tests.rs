@@ -80,120 +80,225 @@ fn heard_list() -> (VirtualList<Opens>, Rc<RefCell<Vec<u64>>>, Rc<Cell<usize>>) 
     (list, opens, closes)
 }
 
-#[test]
-fn the_host_hears_the_item_the_person_opened_and_told_when_it_closed() {
-    let (mut list, opens, closes) = heard_list();
-    let (taffy, node) = lay_out(&mut list, 300.0);
-    list.set_focus(true);
+tilo_test_env::scenario! {
+    fn an_item_opens_closes_and_tells_its_host;
 
-    list.activate_key(0);
-    assert_eq!(*opens.borrow(), vec![0], "the host hears the item open");
-    assert_eq!(closes.get(), 0);
+    phase the_host_hears_the_item_the_person_opened_and_told_when_it_closed;
+    {
+        let (mut list, opens, closes) = heard_list();
+        let (taffy, node) = lay_out(&mut list, 300.0);
+        list.set_focus(true);
 
-    list.activate_key(0);
-    assert_eq!(list.open_row(), None);
-    assert_eq!(closes.get(), 1);
+        list.activate_key(0);
+        assert_eq!(*opens.borrow(), vec![0], "the host hears the item open");
+        assert_eq!(closes.get(), 0);
 
-    list.activate_key(2);
-    assert_eq!(*opens.borrow(), vec![0, 2]);
-    assert!(
-        Dispatch::new()
-            .layout(&taffy, node)
-            .send(
-                &mut list,
-                &crate::synthetic_input::named_key(NamedKey::Escape)
-            )
-            .handled
-    );
-    assert_eq!(closes.get(), 2, "Escape closes the item, heard once");
-}
+        list.activate_key(0);
+        assert_eq!(list.open_row(), None);
+        assert_eq!(closes.get(), 1);
 
-#[test]
-fn an_item_a_host_holds_open_stands_open_where_it_stands() {
-    let (mut list, _opens, _closes) = heard_list();
-    let _ = lay_out(&mut list, 300.0);
-    list.set_open(Some(4));
-    assert_eq!(list.open_row(), Some(&4));
-    list.set_open(Some(1));
-    assert_eq!(
-        list.open_row(),
-        None,
-        "a row without a document opens nowhere"
-    );
-    list.set_open(Some(4));
-    assert_eq!(list.open_row(), Some(&4), "and it opens again when named");
-    list.set_open(None);
-    assert_eq!(list.open_row(), None);
-}
+        list.activate_key(2);
+        assert_eq!(*opens.borrow(), vec![0, 2]);
+        assert!(
+            Dispatch::new()
+                .layout(&taffy, node)
+                .send(
+                    &mut list,
+                    &crate::synthetic_input::named_key(NamedKey::Escape)
+                )
+                .handled
+        );
+        assert_eq!(closes.get(), 2, "Escape closes the item, heard once");
+    }
 
-#[test]
-fn a_row_with_a_document_opens_where_it_stands_and_the_host_hears_nothing() {
-    let opened = Rc::new(RefCell::new(Vec::new()));
-    let mut list = list(Rc::clone(&opened));
-    let (taffy, node) = lay_out(&mut list, 300.0);
-    list.set_focus(true);
+    phase an_item_a_host_holds_open_stands_open_where_it_stands;
+    {
+        let (mut list, _opens, _closes) = heard_list();
+        let _ = lay_out(&mut list, 300.0);
+        list.set_open(Some(4));
+        assert_eq!(list.open_row(), Some(&4));
+        list.set_open(Some(1));
+        assert_eq!(
+            list.open_row(),
+            None,
+            "a row without a document opens nowhere"
+        );
+        list.set_open(Some(4));
+        assert_eq!(list.open_row(), Some(&4), "and it opens again when named");
+        list.set_open(None);
+        assert_eq!(list.open_row(), None);
+    }
 
-    list.activate_key(0);
-    assert_eq!(list.open_row(), Some(&0), "the row opened where it stands");
-    assert!(
-        opened.borrow().is_empty(),
-        "a row that opens in the list opens nothing else"
-    );
+    phase a_row_with_a_document_opens_where_it_stands_and_the_host_hears_nothing;
+    {
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let mut list = list(Rc::clone(&opened));
+        let (taffy, node) = lay_out(&mut list, 300.0);
+        list.set_focus(true);
 
-    // A row without a document opens elsewhere: it is not the list's to open.
-    list.activate_key(1);
-    assert_eq!(*opened.borrow(), vec![1]);
-    assert_eq!(
-        list.open_row(),
-        Some(&0),
-        "a row that opens elsewhere leaves the open one open"
-    );
+        list.activate_key(0);
+        assert_eq!(list.open_row(), Some(&0), "the row opened where it stands");
+        assert!(
+            opened.borrow().is_empty(),
+            "a row that opens in the list opens nothing else"
+        );
 
-    list.activate_key(2);
-    assert_eq!(list.open_row(), Some(&2));
+        // A row without a document opens elsewhere: it is not the list's to open.
+        list.activate_key(1);
+        assert_eq!(*opened.borrow(), vec![1]);
+        assert_eq!(
+            list.open_row(),
+            Some(&0),
+            "a row that opens elsewhere leaves the open one open"
+        );
 
-    assert!(
-        Dispatch::new()
-            .layout(&taffy, node)
-            .send(
-                &mut list,
-                &crate::synthetic_input::named_key(NamedKey::Escape)
-            )
-            .handled
-    );
-    assert_eq!(list.open_row(), None);
-}
+        list.activate_key(2);
+        assert_eq!(list.open_row(), Some(&2));
 
-#[test]
-fn an_item_that_leaves_the_list_closes_with_it() {
-    let opened = Rc::new(RefCell::new(Vec::new()));
-    let mut list = list(Rc::clone(&opened));
-    let _ = lay_out(&mut list, 300.0);
-    list.activate_key(2);
-    assert_eq!(list.open_row(), Some(&2));
+        assert!(
+            Dispatch::new()
+                .layout(&taffy, node)
+                .send(
+                    &mut list,
+                    &crate::synthetic_input::named_key(NamedKey::Escape)
+                )
+                .handled
+        );
+        assert_eq!(list.open_row(), None);
+    }
 
-    // The place switched, and the item the person was reading is not a row of it: the
-    // document goes with the row it stood on.
-    list.update_model(|model| {
-        model.rows.retain(|row| *row != 2);
-    });
-    assert_eq!(list.open_row(), None);
-}
+    phase an_item_that_leaves_the_list_closes_with_it;
+    {
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let mut list = list(Rc::clone(&opened));
+        let _ = lay_out(&mut list, 300.0);
+        list.activate_key(2);
+        assert_eq!(list.open_row(), Some(&2));
 
-#[test]
-fn an_item_that_leaves_the_list_is_heard_to_close() {
-    let (mut list, _opens, closes) = heard_list();
-    let _ = lay_out(&mut list, 300.0);
-    list.activate_key(2);
-    assert_eq!(closes.get(), 0);
-    list.update_model(|model| {
-        model.rows.retain(|row| *row != 2);
-    });
-    assert_eq!(
-        closes.get(),
-        1,
-        "the host hears the item close with its row"
-    );
+        // The place switched, and the item the person was reading is not a row of it: the
+        // document goes with the row it stood on.
+        list.update_model(|model| {
+            model.rows.retain(|row| *row != 2);
+        });
+        assert_eq!(list.open_row(), None);
+    }
+
+    phase an_item_that_leaves_the_list_is_heard_to_close;
+    {
+        let (mut list, _opens, closes) = heard_list();
+        let _ = lay_out(&mut list, 300.0);
+        list.activate_key(2);
+        assert_eq!(closes.get(), 0);
+        list.update_model(|model| {
+            model.rows.retain(|row| *row != 2);
+        });
+        assert_eq!(
+            closes.get(),
+            1,
+            "the host hears the item close with its row"
+        );
+    }
+
+    phase a_row_named_again_keeps_standing_open_while_the_rows_come_back;
+    {
+        let (mut list, rows, closes) = renamed_list();
+        let _ = lay_out(&mut list, 300.0);
+        list.set_open(Some(2));
+        assert_eq!(list.open_row(), Some(&2));
+
+        // The app names the list's rows again: the keys go until it answers with the ones it reads
+        // now, so the row that stood open is not one that left.
+        rows.borrow_mut().clear();
+        list.notify_model_changes(&[ListModelChange::Reset]);
+        assert_eq!(
+            list.open_row(),
+            Some(&2),
+            "the open waits for the rows the app names"
+        );
+        assert_eq!(closes.get(), 0, "a row named again is not heard to close");
+
+        rows.borrow_mut().extend(0..6_u64);
+        list.notify_model_changes(&[ListModelChange::RowsChanged {
+            keys: (0..6_u64).collect(),
+        }]);
+        assert_eq!(list.open_row(), Some(&2));
+        assert_eq!(closes.get(), 0);
+    }
+
+    phase a_row_named_again_closes_when_the_rows_arrive_without_it;
+    {
+        let (mut list, rows, closes) = renamed_list();
+        let _ = lay_out(&mut list, 300.0);
+        list.set_open(Some(2));
+
+        rows.borrow_mut().clear();
+        list.notify_model_changes(&[ListModelChange::Reset]);
+        assert_eq!(list.open_row(), Some(&2));
+
+        // The rows the app reads now do not hold the item: the open closes with the row it stood
+        // on, and the host hears it.
+        rows.borrow_mut().extend([0_u64, 1, 3, 4, 5]);
+        list.notify_model_changes(&[ListModelChange::RowsChanged {
+            keys: vec![0, 1, 3, 4, 5],
+        }]);
+        assert_eq!(list.open_row(), None);
+        assert_eq!(closes.get(), 1);
+    }
+
+    phase a_list_too_narrow_to_hold_its_item_opens_it_in_front_instead;
+    {
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let mut narrow = list(Rc::clone(&opened)).in_place(false);
+        let _ = lay_out(&mut narrow, 300.0);
+        // What a host holds open as the window narrows, and what a press does at that width: the
+        // item opens in front of the list, through the host, never grown into the row.
+        narrow.set_open(Some(0));
+        assert_eq!(
+            narrow.open_row(),
+            None,
+            "a list too narrow for the item keeps no row open"
+        );
+        narrow.activate_key(0);
+        assert_eq!(narrow.open_row(), None);
+        assert_eq!(
+            *opened.borrow(),
+            vec![0],
+            "the press opens the item in front, where the host shows it"
+        );
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let mut roomy = list(Rc::clone(&opened));
+        let _ = lay_out(&mut roomy, 300.0);
+        roomy.activate_key(0);
+        assert_eq!(roomy.open_row(), Some(&0));
+        assert!(opened.borrow().is_empty());
+    }
+
+    phase the_row_standing_open_is_handed_to_a_reader_once;
+    {
+        let mut list = opening_list();
+        let _ = lay_out(&mut list, 300.0);
+        list.set_open(Some(0));
+
+        let semantics = list.accessibility().expect("the list has a node");
+        let item = semantics.children.first().expect("the list hands its rows");
+        assert_eq!(item.role, crate::a11y::Role::ListItem);
+        assert_eq!(item.state.expanded, Some(true));
+        assert_eq!(item.name.as_deref(), Some("row 0"));
+        let nested: Vec<_> = item
+            .children
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.role,
+                    crate::a11y::Role::ListItem | crate::a11y::Role::TreeItem
+                )
+            })
+            .collect();
+        assert!(
+            nested.is_empty(),
+            "the open row is one row, not one inside another: {nested:?}"
+        );
+    }
 }
 
 #[test]
@@ -269,80 +374,6 @@ fn renamed_list() -> (VirtualList<Renamed>, Rc<RefCell<Vec<u64>>>, Rc<Cell<usize
     (list, rows, closes)
 }
 
-#[test]
-fn a_row_named_again_keeps_standing_open_while_the_rows_come_back() {
-    let (mut list, rows, closes) = renamed_list();
-    let _ = lay_out(&mut list, 300.0);
-    list.set_open(Some(2));
-    assert_eq!(list.open_row(), Some(&2));
-
-    // The app names the list's rows again: the keys go until it answers with the ones it reads
-    // now, so the row that stood open is not one that left.
-    rows.borrow_mut().clear();
-    list.notify_model_changes(&[ListModelChange::Reset]);
-    assert_eq!(
-        list.open_row(),
-        Some(&2),
-        "the open waits for the rows the app names"
-    );
-    assert_eq!(closes.get(), 0, "a row named again is not heard to close");
-
-    rows.borrow_mut().extend(0..6_u64);
-    list.notify_model_changes(&[ListModelChange::RowsChanged {
-        keys: (0..6_u64).collect(),
-    }]);
-    assert_eq!(list.open_row(), Some(&2));
-    assert_eq!(closes.get(), 0);
-}
-
-#[test]
-fn a_row_named_again_closes_when_the_rows_arrive_without_it() {
-    let (mut list, rows, closes) = renamed_list();
-    let _ = lay_out(&mut list, 300.0);
-    list.set_open(Some(2));
-
-    rows.borrow_mut().clear();
-    list.notify_model_changes(&[ListModelChange::Reset]);
-    assert_eq!(list.open_row(), Some(&2));
-
-    // The rows the app reads now do not hold the item: the open closes with the row it stood
-    // on, and the host hears it.
-    rows.borrow_mut().extend([0_u64, 1, 3, 4, 5]);
-    list.notify_model_changes(&[ListModelChange::RowsChanged {
-        keys: vec![0, 1, 3, 4, 5],
-    }]);
-    assert_eq!(list.open_row(), None);
-    assert_eq!(closes.get(), 1);
-}
-
-#[test]
-fn a_list_too_narrow_to_hold_its_item_opens_it_in_front_instead() {
-    let opened = Rc::new(RefCell::new(Vec::new()));
-    let mut narrow = list(Rc::clone(&opened)).in_place(false);
-    let _ = lay_out(&mut narrow, 300.0);
-    // What a host holds open as the window narrows, and what a press does at that width: the
-    // item opens in front of the list, through the host, never grown into the row.
-    narrow.set_open(Some(0));
-    assert_eq!(
-        narrow.open_row(),
-        None,
-        "a list too narrow for the item keeps no row open"
-    );
-    narrow.activate_key(0);
-    assert_eq!(narrow.open_row(), None);
-    assert_eq!(
-        *opened.borrow(),
-        vec![0],
-        "the press opens the item in front, where the host shows it"
-    );
-    let opened = Rc::new(RefCell::new(Vec::new()));
-    let mut roomy = list(Rc::clone(&opened));
-    let _ = lay_out(&mut roomy, 300.0);
-    roomy.activate_key(0);
-    assert_eq!(roomy.open_row(), Some(&0));
-    assert!(opened.borrow().is_empty());
-}
-
 fn opening_list() -> VirtualList<Opens> {
     VirtualList::with_selection_delegate(
         Opens {
@@ -364,33 +395,6 @@ fn opening_list() -> VirtualList<Opens> {
         },
     )
     .with_viewport_height(200.0)
-}
-
-#[test]
-fn the_row_standing_open_is_handed_to_a_reader_once() {
-    let mut list = opening_list();
-    let _ = lay_out(&mut list, 300.0);
-    list.set_open(Some(0));
-
-    let semantics = list.accessibility().expect("the list has a node");
-    let item = semantics.children.first().expect("the list hands its rows");
-    assert_eq!(item.role, crate::a11y::Role::ListItem);
-    assert_eq!(item.state.expanded, Some(true));
-    assert_eq!(item.name.as_deref(), Some("row 0"));
-    let nested: Vec<_> = item
-        .children
-        .iter()
-        .filter(|node| {
-            matches!(
-                node.role,
-                crate::a11y::Role::ListItem | crate::a11y::Role::TreeItem
-            )
-        })
-        .collect();
-    assert!(
-        nested.is_empty(),
-        "the open row is one row, not one inside another: {nested:?}"
-    );
 }
 
 fn document(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Element {

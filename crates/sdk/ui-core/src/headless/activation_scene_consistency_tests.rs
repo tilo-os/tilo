@@ -847,33 +847,29 @@ fn setter_topology_oscillation_refuses_with_existing_eight_bound() {
     assert!(f.frame.pending_app_activation.is_none());
     assert_consistent_return(&mut f, SELECTED);
 }
+/// An unwind out of the outgoing owner's blur setter, or out of its draw, retires the maps, publishes
+/// no partial activation and leaves the activation to a retry that settles.
 #[test]
-fn outgoing_setter_unwind_retires_maps_and_preserves_retry() {
-    let mut f = Fixture::new();
-    f.frame.prepare_app_activation(SELECTED);
-    f.old.restore_from_sync.set(true);
-    f.old.panic_blur_after_sync.set(true);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f.frame.activate_app_focus(SELECTED);
-    }));
-    assert!(result.is_err());
-    assert_retired_activation(&f);
-    f.frame.try_relayout().unwrap();
-    assert_consistent_return(&mut f, SELECTED);
-}
-#[test]
-fn draw_unwind_does_not_publish_partial_activation() {
-    let mut f = Fixture::new();
-    f.frame.prepare_app_activation(SELECTED);
-    f.old.restore_from_sync.set(true);
-    f.old.panic_next_draw.set(true);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f.frame.activate_app_focus(SELECTED);
-    }));
-    assert!(result.is_err());
-    assert_retired_activation(&f);
-    f.frame.try_relayout().unwrap();
-    assert_consistent_return(&mut f, SELECTED);
+fn outgoing_setter_or_draw_unwind_retires_maps_publishes_nothing_and_preserves_retry() {
+    for unwinds_in in ["the outgoing blur setter", "the draw"] {
+        // The shared assertions below name no case: a failure's output ends with this line.
+        eprintln!("case: an unwind out of {unwinds_in}");
+        let mut f = Fixture::new();
+        f.frame.prepare_app_activation(SELECTED);
+        f.old.restore_from_sync.set(true);
+        if unwinds_in == "the draw" {
+            f.old.panic_next_draw.set(true);
+        } else {
+            f.old.panic_blur_after_sync.set(true);
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f.frame.activate_app_focus(SELECTED);
+        }));
+        assert!(result.is_err(), "an unwind out of {unwinds_in}");
+        assert_retired_activation(&f);
+        f.frame.try_relayout().unwrap();
+        assert_consistent_return(&mut f, SELECTED);
+    }
 }
 #[test]
 fn late_draw_refocus_is_refused_and_fresh_retry_settles() {

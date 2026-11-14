@@ -343,105 +343,111 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn prose_has_no_identifiers() {
-        for text in [
-            "Illinois is a state. Ill-advised, e.g. not i.e. this.",
-            "Version 1.0 shipped at 10:30; see section 3.2.",
-            "Open file.txt and node.js, then Mr.Smith arrives.",
-            "#rust is a tag, and @ alone is not a handle.",
-            "",
-        ] {
-            assert!(found(text).is_empty(), "{text}: {:?}", found(text));
+    tilo_test_env::scenario! {
+        /// What is detected in running text, and where.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn identifiers_are_found_in_text_by_kind_and_range;
+
+        phase prose_has_no_identifiers;
+        {
+            for text in [
+                "Illinois is a state. Ill-advised, e.g. not i.e. this.",
+                "Version 1.0 shipped at 10:30; see section 3.2.",
+                "Open file.txt and node.js, then Mr.Smith arrives.",
+                "#rust is a tag, and @ alone is not a handle.",
+                "",
+            ] {
+                assert!(found(text).is_empty(), "{text}: {:?}", found(text));
+            }
         }
-    }
 
-    #[test]
-    fn links_with_and_without_scheme() {
-        assert_eq!(
-            found("See https://paypa1.com/login?x=0, or (www.example.org)."),
-            [
-                ("https://paypa1.com/login?x=0", Detected::Url),
-                ("www.example.org", Detected::Url),
-            ]
-        );
-        assert_eq!(
-            found("Docs at tilo.so and example.net/guide/intro."),
-            [
-                ("tilo.so", Detected::Url),
-                ("example.net/guide/intro", Detected::Url),
-            ]
-        );
-        assert_eq!(
-            found("https://en.wikipedia.org/wiki/Foo_(bar) and (https://a.org/x)"),
-            [
-                ("https://en.wikipedia.org/wiki/Foo_(bar)", Detected::Url),
-                ("https://a.org/x", Detected::Url),
-            ]
-        );
-        assert_eq!(
-            found("link:tilo://share/0OIl, mailto:ilya@example.org"),
-            [
-                ("tilo://share/0OIl", Detected::Url),
-                ("mailto:ilya@example.org", Detected::Url),
-            ]
-        );
-        assert_eq!(
-            found("localhost.dev:8080/a"),
-            [("localhost.dev:8080/a", Detected::Url)]
-        );
-    }
-
-    #[test]
-    fn emails_mentions_and_workspaces() {
-        assert_eq!(
-            found(
-                "Mail Ilya.l1@example.org, ping @ilya_l1 or @Il1:matrix.org in #general:tilo.so."
-            ),
-            [
-                ("Ilya.l1@example.org", Detected::Email),
-                ("@ilya_l1", Detected::Mention),
-                ("@Il1:matrix.org", Detected::Mention),
-                ("#general:tilo.so", Detected::WorkspaceAlias),
-            ]
-        );
-        assert_eq!(found("“@lena”"), [("@lena", Detected::Mention)]);
-        assert_eq!(
-            found("@lena@social.example.org!"),
-            [("@lena@social.example.org", Detected::Mention)]
-        );
-        assert_eq!(found("someone@localhost"), []);
-    }
-
-    #[test]
-    fn ranges_are_on_character_boundaries_in_unicode_text() {
-        let text = "Привет — @Илья, письмо на почта@пример.рф и https://пример.рф/путь…";
-        let spans = identifier_spans(text);
-        for span in &spans {
-            assert!(text.is_char_boundary(span.range.start));
-            assert!(text.is_char_boundary(span.range.end));
+        phase links_with_and_without_scheme;
+        {
+            assert_eq!(
+                found("See https://paypa1.com/login?x=0, or (www.example.org)."),
+                [
+                    ("https://paypa1.com/login?x=0", Detected::Url),
+                    ("www.example.org", Detected::Url),
+                ]
+            );
+            assert_eq!(
+                found("Docs at tilo.so and example.net/guide/intro."),
+                [
+                    ("tilo.so", Detected::Url),
+                    ("example.net/guide/intro", Detected::Url),
+                ]
+            );
+            assert_eq!(
+                found("https://en.wikipedia.org/wiki/Foo_(bar) and (https://a.org/x)"),
+                [
+                    ("https://en.wikipedia.org/wiki/Foo_(bar)", Detected::Url),
+                    ("https://a.org/x", Detected::Url),
+                ]
+            );
+            assert_eq!(
+                found("link:tilo://share/0OIl, mailto:ilya@example.org"),
+                [
+                    ("tilo://share/0OIl", Detected::Url),
+                    ("mailto:ilya@example.org", Detected::Url),
+                ]
+            );
+            assert_eq!(
+                found("localhost.dev:8080/a"),
+                [("localhost.dev:8080/a", Detected::Url)]
+            );
         }
-        assert_eq!(
-            found(text),
-            [
-                ("@Илья", Detected::Mention),
-                ("почта@пример.рф", Detected::Email),
-                ("https://пример.рф/путь", Detected::Url),
-            ]
-        );
-    }
 
-    #[test]
-    fn soft_hyphens_from_the_line_breaker_stay_inside_the_span() {
-        let text = "visit ex\u{AD}ample.org now";
-        assert_eq!(found(text), [("ex\u{AD}ample.org", Detected::Url)]);
-    }
+        phase emails_mentions_and_workspaces;
+        {
+            assert_eq!(
+                found(
+                    "Mail Ilya.l1@example.org, ping @ilya_l1 or @Il1:matrix.org in #general:tilo.so."
+                ),
+                [
+                    ("Ilya.l1@example.org", Detected::Email),
+                    ("@ilya_l1", Detected::Mention),
+                    ("@Il1:matrix.org", Detected::Mention),
+                    ("#general:tilo.so", Detected::WorkspaceAlias),
+                ]
+            );
+            assert_eq!(found("“@lena”"), [("@lena", Detected::Mention)]);
+            assert_eq!(
+                found("@lena@social.example.org!"),
+                [("@lena@social.example.org", Detected::Mention)]
+            );
+            assert_eq!(found("someone@localhost"), []);
+        }
 
-    #[test]
-    fn kinds_follow_the_policy() {
-        assert_eq!(Detected::Url.kind(), TextKind::Url);
-        assert_eq!(Detected::Email.kind(), TextKind::Identifier);
-        assert_eq!(Detected::Mention.kind(), TextKind::Identifier);
-        assert_eq!(Detected::WorkspaceAlias.kind(), TextKind::Identifier);
+        phase ranges_are_on_character_boundaries_in_unicode_text;
+        {
+            let text = "Привет — @Илья, письмо на почта@пример.рф и https://пример.рф/путь…";
+            let spans = identifier_spans(text);
+            for span in &spans {
+                assert!(text.is_char_boundary(span.range.start));
+                assert!(text.is_char_boundary(span.range.end));
+            }
+            assert_eq!(
+                found(text),
+                [
+                    ("@Илья", Detected::Mention),
+                    ("почта@пример.рф", Detected::Email),
+                    ("https://пример.рф/путь", Detected::Url),
+                ]
+            );
+        }
+
+        phase soft_hyphens_from_the_line_breaker_stay_inside_the_span;
+        {
+            let text = "visit ex\u{AD}ample.org now";
+            assert_eq!(found(text), [("ex\u{AD}ample.org", Detected::Url)]);
+        }
+
+        phase kinds_follow_the_policy;
+        {
+            assert_eq!(Detected::Url.kind(), TextKind::Url);
+            assert_eq!(Detected::Email.kind(), TextKind::Identifier);
+            assert_eq!(Detected::Mention.kind(), TextKind::Identifier);
+            assert_eq!(Detected::WorkspaceAlias.kind(), TextKind::Identifier);
+        }
     }
 }

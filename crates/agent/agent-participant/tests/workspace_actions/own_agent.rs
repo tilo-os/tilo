@@ -70,7 +70,7 @@ fn invokers(changes: &[([u8; 32], Vec<u8>)]) -> Vec<tilo_actions::ActionInvoker>
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let laptop_device = enrol(&root, "laptop", DeviceCapabilities::primary());
     let computer = enrol(
@@ -92,7 +92,6 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         },
     )
     .await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     // The person's laptop answers what the host asks them about the agent.
     let _asked = crate::harness::hosted::Laptop::new(
         ["Claude Code".to_owned()],
@@ -109,11 +108,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     // `tilo login` makes it, that its session runs the agent.
     let agent = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
-    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) else {
-        panic!("a key names a person")
-    };
+    let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
@@ -387,7 +382,7 @@ fn agent_groups(changes: &[([u8; 32], Vec<u8>)]) -> Vec<Option<tilo_actions::Wor
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -402,15 +397,10 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
         Options::offering(crate::common::catalogue, ModelChoice::Scripted),
     )
     .await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
-    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) else {
-        panic!("a key names a person")
-    };
+    let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
@@ -559,5 +549,169 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
             "the agent's writes never arrived: {groups:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The person's own agent on a logged-in computer, on a host as tilo.sh's
+/// relay runs (records served, no agents): `tilo mcp` holds one session for
+/// the computer's device, and every agent connection on it is a run of its
+/// own over that session. `runs` are those connections, each an agent
+/// surface over the one session the device `agent` holds.
+fn agent_runs(
+    agent: &Browser,
+    host: &crate::support::Device,
+    person: &str,
+    runs: &[&str],
+) -> Vec<McpServer<SessionActions>> {
+    // The session is shared: every run asks the host through it.
+    let session = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    runs.iter()
+        .map(|run| {
+            McpServer::new(session.clone(), WORKSPACE.into(), person.to_owned())
+                .with_surface(Surface::Agent)
+                .with_agent_run(*run, "Claude Code")
+        })
+        .collect()
+}
+
+/// The person, as the actions the agent runs for them name them.
+fn person_of(root: &ed25519_dalek::SigningKey) -> String {
+    hex::encode(root.verifying_key().to_bytes())
+}
+
+/// Each run opens Notes and makes a note: both succeed, whichever run asks.
+async fn open_and_write(runs: &[McpServer<SessionActions>]) -> Vec<String> {
+    let mut titles = Vec::new();
+    for (index, server) in runs.iter().enumerate() {
+        let (opened, failed) = tool(server, "tilo_do", json!({"path": "notes#open"})).await;
+        assert!(!failed, "notes#open from run {index}: {opened}");
+        let title = format!("From the agent's run {index}");
+        let (made, failed) = tool(
+            server,
+            "tilo_do",
+            json!({"path": "notes#new-note", "args": {"title": title}}),
+        )
+        .await;
+        assert!(!failed, "notes#new-note from run {index}: {made}");
+        titles.push(title);
+    }
+    titles
+}
+
+/// What the notebook lists, as `server`'s agent reads it.
+async fn notebook_pages(server: &McpServer<SessionActions>) -> String {
+    let (listing, failed) = tool(server, "tilo_ls", json!({"path": "notes"})).await;
+    assert!(!failed, "{listing}");
+    let notebook = listed_resources(&listing)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("notes lists a notebook: {listing}"));
+    let (pages, failed) = tool(
+        server,
+        "tilo_ls",
+        json!({"path": format!("notes/{notebook}")}),
+    )
+    .await;
+    assert!(!failed, "{pages}");
+    pages
+}
+
+/// With a tab of the person's open on their workspace, two agent connections
+/// on their logged-in computer each open Notes and make a note, and the tab
+/// sees the notes arrive as the agent's, for the person.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let relay = crate::harness::hosted::serving_records(
+        &root,
+        &host,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let mut tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
+    let agent = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let person = person_of(&root);
+    let runs = agent_runs(&agent, &host, &person, &["run-a", "run-b"]);
+    let titles = open_and_write(&runs).await;
+    let pages = notebook_pages(&runs[0]).await;
+    for title in &titles {
+        assert!(
+            pages.contains(title.as_str()),
+            "the notebook lists {title:?}: {pages}"
+        );
+    }
+
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        tab.pump();
+        let changes: Vec<_> = tab
+            .documents
+            .iter()
+            .filter(|(route, _)| route.app_id == NOTES)
+            .flat_map(|(_, changes)| changes.iter().cloned())
+            .collect();
+        let by_agent = invokers(&changes).iter().any(|invoker| {
+            invoker.kind == tilo_actions::ActorKind::Agent
+                && invoker.actor == "agent:Claude Code"
+                && invoker.on_behalf_of.as_deref() == Some(person.as_str())
+        });
+        if by_agent {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the tab never saw the notes arrive as the agent's: {:?}; the tab holds {:?}, and \
+             could not open {:?}",
+            invokers(&changes),
+            tab.documents
+                .iter()
+                .map(|(route, changes)| (route.app_id.clone(), changes.len()))
+                .collect::<Vec<_>>(),
+            tab.unopened()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// With no tab of the person's open (it entered the workspace once, then
+/// closed), their logged-in computer's agents still open Notes and make
+/// notes: the host runs the apps, and the notes are there to read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_logged_in_computers_agents_act_with_no_tab_open() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let relay = crate::harness::hosted::serving_records(
+        &root,
+        &host,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    // The person's tab made the workspace, and is gone.
+    let tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
+    tab.peer.close();
+    drop(tab);
+    let agent = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let person = person_of(&root);
+    let runs = agent_runs(&agent, &host, &person, &["run-a", "run-b"]);
+    let titles = open_and_write(&runs).await;
+
+    // Each note is in the notebook, as the other run reads it.
+    let pages = notebook_pages(&runs[1]).await;
+    for title in &titles {
+        assert!(
+            pages.contains(title.as_str()),
+            "the notebook lists {title:?}: {pages}"
+        );
     }
 }

@@ -33,26 +33,30 @@ pub fn relative(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn relative_locator_preserves_traversal_and_depth_bounds() {
-        for path in ["", "/home", "../home", "home/../other", "./home"] {
-            assert!(relative(Path::new(path)).is_err(), "{path}");
-        }
-        assert!(relative(Path::new("home/person")).is_ok());
-        assert!(relative(Path::new(&vec!["part"; 128].join("/"))).is_ok());
-        assert!(relative(Path::new(&vec!["part"; 129].join("/"))).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn migration_entries_keep_their_locator_bounds_and_wire_spelling;
 
-    #[test]
-    fn entry_kind_preserves_wire_spelling() {
-        assert_eq!(
-            serde_json::to_string(&EntryKind::Directory).unwrap(),
-            "\"directory\""
-        );
-        assert_eq!(
-            serde_json::from_str::<EntryKind>("\"file\"").unwrap(),
-            EntryKind::File
-        );
-        assert!(serde_json::from_str::<EntryKind>("\"symlink\"").is_err());
+        phase relative_locator_preserves_traversal_and_depth_bounds;
+        {
+            for path in ["", "/home", "../home", "home/../other", "./home"] {
+                assert!(relative(Path::new(path)).is_err(), "{path}");
+            }
+            assert!(relative(Path::new("home/person")).is_ok());
+            assert!(relative(Path::new(&vec!["part"; 128].join("/"))).is_ok());
+            assert!(relative(Path::new(&vec!["part"; 129].join("/"))).is_err());
+        }
+
+        phase entry_kind_preserves_wire_spelling;
+        {
+            assert_eq!(
+                serde_json::to_string(&EntryKind::Directory).unwrap(),
+                "\"directory\""
+            );
+            assert_eq!(
+                serde_json::from_str::<EntryKind>("\"file\"").unwrap(),
+                EntryKind::File
+            );
+            assert!(serde_json::from_str::<EntryKind>("\"symlink\"").is_err());
+        }
     }
 }

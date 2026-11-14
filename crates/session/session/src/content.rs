@@ -12,6 +12,7 @@
 //! thread, never from the session's loop.
 
 use std::collections::{BTreeSet, HashMap};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -28,7 +29,7 @@ use tilo_broker_core::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreSer
 use tilo_content::{ContentStore, hash_bytes};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
+use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
 use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
 
 use crate::sync::{Cmd, HostOutbox};
@@ -54,6 +55,9 @@ pub(crate) struct Plane {
     shelf: Arc<Shelf>,
     peers: Arc<Peers>,
     inbound: SyncSender<Inbound>,
+    /// The store of each record the session keeps itself, by workspace and app
+    /// ([`Plane::store`]).
+    kept: Mutex<HashMap<(String, String), Arc<Kept>>>,
 }
 
 impl Plane {
@@ -83,6 +87,7 @@ impl Plane {
             shelf,
             peers,
             inbound,
+            kept: Mutex::default(),
         })
     }
 
@@ -116,6 +121,48 @@ impl Plane {
     /// its workspace, through the same store the app's own `offerBlob` and `wantBlob` reach.
     pub(crate) fn media(self: &Arc<Self>) -> Arc<dyn WorkspaceMedia> {
         Arc::new(Media(Arc::clone(&self.shelf)))
+    }
+
+    /// The content store of the record of `app` in `workspace`, as the session keeps it itself:
+    /// what its actions keep is offered where the workspace's devices fetch the record's content
+    /// from, and what a record names and this device lacks is asked of the route.
+    ///
+    /// The store is the same one for the workspace and app every time: a session lends it to the
+    /// services whose records it keeps (`tilo_service::Service::lend_content`) on every pass.
+    pub(crate) fn store(&self, workspace: &str, app: &str) -> ContentStore {
+        let kept = self.kept_record(workspace, app);
+        ContentStore::from_backend(kept as Arc<dyn tilo_content::ContentBackend>).sealing()
+    }
+
+    /// Seal what the record of `app` in `workspace` keeps under `secret`, the content secret its
+    /// members hold: the same bytes stored twice are then one item under one reference, as a
+    /// window's record content is, and whoever keeps the ciphertext holds no key.
+    pub(crate) fn seal_under(
+        &self,
+        workspace: &str,
+        app: &str,
+        secret: Option<tilo_seal::SymmetricKey>,
+    ) {
+        let Some(secret) = secret else {
+            return;
+        };
+        *self.kept_record(workspace, app).secret.lock_recover() = Some(secret);
+    }
+
+    /// The store of the record of `app` in `workspace`, as the session keeps it: the same one for
+    /// the workspace and app every time.
+    fn kept_record(&self, workspace: &str, app: &str) -> Arc<Kept> {
+        let scope = (workspace.to_owned(), app.to_owned());
+        if let Some(kept) = self.kept.lock_recover().get(&scope) {
+            return Arc::clone(kept);
+        }
+        let kept = Arc::new(Kept {
+            route: Arc::clone(&self.route),
+            on: CrdtRoute::app(app, workspace),
+            secret: Mutex::default(),
+        });
+        self.kept.lock_recover().insert(scope, Arc::clone(&kept));
+        kept
     }
 
     /// The bytes this device keeps of `app` 's content in `workspace` under `hash` (lower-case
@@ -450,6 +497,88 @@ impl WorkspaceMedia for Media {
     }
 }
 
+/// The store of a record the session keeps itself, on the route the workspace's devices fetch its
+/// content from: what is kept is offered there, and what the record names and this device lacks is
+/// asked of it ([`RouteContent`]).
+struct Kept {
+    route: Arc<RouteContent>,
+    on: CrdtRoute,
+    /// The content secret of the members who read the record, once the engine holds it
+    /// ([`Plane::seal_under`]).
+    secret: Mutex<Option<tilo_seal::SymmetricKey>>,
+}
+
+impl tilo_content::ContentBackend for Kept {
+    fn put(
+        &self,
+        reader: &mut dyn std::io::Read,
+        _mime: &str,
+    ) -> Result<tilo_content::Stored, tilo_content::ContentError> {
+        let mut bytes = Vec::new();
+        reader
+            .take(MAX_CONTENT_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_CONTENT_BYTES {
+            return Err(tilo_content::ContentError::ItemTooLarge {
+                actual: bytes.len(),
+                limit: usize::try_from(MAX_CONTENT_BYTES).unwrap_or(usize::MAX),
+            });
+        }
+        let hash = hash_bytes(&bytes);
+        self.route
+            .offer(&self.on, &hash, &bytes)
+            .map_err(tilo_content::ContentError::Io)?;
+        Ok(tilo_content::Stored {
+            hash,
+            len: bytes.len() as u64,
+        })
+    }
+
+    fn open(
+        &self,
+        hash: &str,
+    ) -> Result<Option<tilo_content::ContentReader>, tilo_content::ContentError> {
+        if let Some(bytes) = self.route.kept(&self.on, hash) {
+            return Ok(Some(Box::new(std::io::Cursor::new(bytes))));
+        }
+        // Not here: the route's other devices are asked, and what one hands over is kept where
+        // this store reads it the next time.
+        self.route.want(&self.on, hash);
+        Ok(None)
+    }
+
+    fn has(&self, hash: &str) -> bool {
+        self.route.kept(&self.on, hash).is_some()
+    }
+
+    fn state(&self, hash: &str) -> ContentState {
+        if self.has(hash) {
+            ContentState::Resolved
+        } else {
+            // A want started by [`Self::open`]: where it stands reaches the route's subscribers.
+            ContentState::Pending
+        }
+    }
+
+    fn shared(&self) -> bool {
+        true
+    }
+
+    /// The route serves the workspace's record, so what this store reads is as scoped as the
+    /// workspace the record is in.
+    fn workspace_scoped(&self) -> bool {
+        true
+    }
+
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        self.secret.lock_recover().clone()
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        usize::try_from(MAX_CONTENT_BYTES).unwrap_or(usize::MAX)
+    }
+}
+
 fn component(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_SCOPE_COMPONENT
@@ -650,7 +779,7 @@ impl ContentPeers for Peers {
 /// The topic a record's content travels on: its workspace's, and none for a record of no workspace.
 fn topic(route: &CrdtRoute) -> Option<WorkspaceId> {
     let workspace = ModelWorkspaceId::parse(&route.cluster_id)?;
-    (!workspace.is_nil()).then(|| workspace_topic_id(workspace))
+    (!workspace.is_nil()).then_some(workspace)
 }
 
 /// The devices a workspace's topic carries to this session, from what the plane heard: those that

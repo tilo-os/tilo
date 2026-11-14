@@ -911,88 +911,92 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_bold_word_in_a_text_box_survives_the_round_trip() {
-        use ui::widget::marks::{Mark, MarkSpan};
-        let content = ContentStore::memory();
-        let mut deck = crate::model::seed_deck();
-        let mut first = ui::widget::BlockContent::paragraph("", "plain bold");
-        first.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
-        let mut second = ui::widget::BlockContent::paragraph("", "slanted");
-        second.marks = vec![MarkSpan::new(0..7, Mark::Italic)];
-        let element = deck.slides[0]
-            .elements
-            .iter_mut()
-            .find(|element| element.kind == crate::model::ElementKind::Text)
-            .unwrap();
-        element.set_blocks(vec![first, second]);
-        let id = element.id.clone();
-        let written = element.clone();
-        let bytes = write_odp(&deck, &content).expect("write");
-        let back = read_odp(&bytes, &content).expect("read");
-        let read = back.slides[0]
-            .elements
-            .iter()
-            .find(|element| element.id == id || element.text == written.text)
-            .expect("the text box comes back");
-        assert_eq!(read.text, "plain bold\nslanted");
-        assert_eq!(
-            read.rich_blocks(),
-            written.rich_blocks(),
-            "runs keep their marks"
-        );
+    tilo_test_env::scenario! {
+        fn a_deck_survives_the_odp_round_trip;
+
+        phase a_bold_word_in_a_text_box_survives_the_round_trip;
+        {
+            use ui::widget::marks::{Mark, MarkSpan};
+            let content = ContentStore::memory();
+            let mut deck = crate::model::seed_deck();
+            let mut first = ui::widget::BlockContent::paragraph("", "plain bold");
+            first.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
+            let mut second = ui::widget::BlockContent::paragraph("", "slanted");
+            second.marks = vec![MarkSpan::new(0..7, Mark::Italic)];
+            let element = deck.slides[0]
+                .elements
+                .iter_mut()
+                .find(|element| element.kind == crate::model::ElementKind::Text)
+                .unwrap();
+            element.set_blocks(vec![first, second]);
+            let id = element.id.clone();
+            let written = element.clone();
+            let bytes = write_odp(&deck, &content).expect("write");
+            let back = read_odp(&bytes, &content).expect("read");
+            let read = back.slides[0]
+                .elements
+                .iter()
+                .find(|element| element.id == id || element.text == written.text)
+                .expect("the text box comes back");
+            assert_eq!(read.text, "plain bold\nslanted");
+            assert_eq!(
+                read.rich_blocks(),
+                written.rich_blocks(),
+                "runs keep their marks"
+            );
+        }
+
+        phase odp_round_trips_model_text_and_fills;
+        {
+            // Case `odp_round_trips_the_model_exactly`.
+            // The core requirement: a deck written to `.odp` and read back is
+            // byte-for-byte the same model (geometry, text, colours, z-order, every
+            // per-element flag, and the deck title + palette).
+            {
+                let content = ContentStore::memory();
+                let deck = seed_deck();
+                let bytes = write_odp(&deck, &content).expect("write");
+                let back = read_odp(&bytes, &content).expect("read");
+                assert_eq!(deck, back, "model → .odp → model must be identity");
+            }
+
+            {
+                let content = ContentStore::memory();
+                let deck = seed_deck();
+                let bytes = write_odp(&deck, &content).unwrap();
+                // The ODF package's first entry is an uncompressed `mimetype` whose
+                // bytes appear verbatim right after the local file header.
+                let head = String::from_utf8_lossy(&bytes[..120]);
+                assert!(head.contains(MIME), "package must declare the ODP mimetype");
+            }
+
+            {
+                let content = ContentStore::memory();
+                let mut deck = seed_deck();
+                // A body with blank lines + an explicit alignment is the tricky case:
+                // newlines can't ride in an attribute, so they must survive as text:p.
+                let s = deck.slides.get_mut(1).unwrap();
+                s.elements[0].text = "Line one\n\nLine three".into();
+                s.elements[0].align = TextAlign::Justify;
+                let bytes = write_odp(&deck, &content).unwrap();
+                let back = read_odp(&bytes, &content).unwrap();
+                let el = &back.slides[1].elements[0];
+                assert_eq!(el.text, "Line one\n\nLine three");
+                assert_eq!(el.align, TextAlign::Justify);
+            }
+
+            {
+                let content = ContentStore::memory();
+                let mut deck = seed_deck();
+                deck.slides[0].elements[0].fill = "#1A2B3C".into();
+                let bytes = write_odp(&deck, &content).unwrap();
+                let back = read_odp(&bytes, &content).unwrap();
+                assert_eq!(back.slides[0].elements[0].fill, "#1A2B3C");
+            }
+        }
     }
     use crate::model::{ElementKind, seed_deck};
     use std::io::Read;
-
-    #[test]
-    fn odp_round_trips_model_text_and_fills() {
-        // Case `odp_round_trips_the_model_exactly`.
-        // The core requirement: a deck written to `.odp` and read back is
-        // byte-for-byte the same model (geometry, text, colours, z-order, every
-        // per-element flag, and the deck title + palette).
-        {
-            let content = ContentStore::memory();
-            let deck = seed_deck();
-            let bytes = write_odp(&deck, &content).expect("write");
-            let back = read_odp(&bytes, &content).expect("read");
-            assert_eq!(deck, back, "model → .odp → model must be identity");
-        }
-
-        {
-            let content = ContentStore::memory();
-            let deck = seed_deck();
-            let bytes = write_odp(&deck, &content).unwrap();
-            // The ODF package's first entry is an uncompressed `mimetype` whose
-            // bytes appear verbatim right after the local file header.
-            let head = String::from_utf8_lossy(&bytes[..120]);
-            assert!(head.contains(MIME), "package must declare the ODP mimetype");
-        }
-
-        {
-            let content = ContentStore::memory();
-            let mut deck = seed_deck();
-            // A body with blank lines + an explicit alignment is the tricky case:
-            // newlines can't ride in an attribute, so they must survive as text:p.
-            let s = deck.slides.get_mut(1).unwrap();
-            s.elements[0].text = "Line one\n\nLine three".into();
-            s.elements[0].align = TextAlign::Justify;
-            let bytes = write_odp(&deck, &content).unwrap();
-            let back = read_odp(&bytes, &content).unwrap();
-            let el = &back.slides[1].elements[0];
-            assert_eq!(el.text, "Line one\n\nLine three");
-            assert_eq!(el.align, TextAlign::Justify);
-        }
-
-        {
-            let content = ContentStore::memory();
-            let mut deck = seed_deck();
-            deck.slides[0].elements[0].fill = "#1A2B3C".into();
-            let bytes = write_odp(&deck, &content).unwrap();
-            let back = read_odp(&bytes, &content).unwrap();
-            assert_eq!(back.slides[0].elements[0].fill, "#1A2B3C");
-        }
-    }
 
     #[test]
     fn odp_preserves_foreign_content_kinds_and_pictures() {

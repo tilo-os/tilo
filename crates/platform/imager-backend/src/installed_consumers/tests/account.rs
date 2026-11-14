@@ -207,54 +207,6 @@ fn root_producer_drops_privilege_without_disabling_cef_sandbox() {
     assert!(!dropped.iter().any(|arg| arg == "--no-sandbox"));
 }
 
-#[test]
-fn cloud_consumer_checks_execute_without_optional_service_tools() {
-    let runtime = Runtime::new();
-    let mut calls = Vec::new();
-    let receipt = produce(&runtime.root, &mut |command, env| {
-        stub_signature(&mut calls, command, env)
-    })
-    .unwrap();
-    assert!(receipt.get("service_sessions").is_none());
-    assert_eq!(receipt["protected_grant_protocol"], 1);
-    assert_eq!(
-        receipt["runtime_probe_sha256"],
-        hex::encode(Sha256::digest(std::fs::read(&runtime.probe).unwrap())).as_str()
-    );
-    assert_eq!(calls.len(), 4);
-    assert!(calls[1].iter().any(|arg| arg == "--inhibit-cache"));
-    assert_eq!(calls[2][1..], [OsString::from("capabilities")]);
-
-    // A probe linked against another SDK protocol is refused.
-    let mut changed = runtime.root.clone();
-    changed.push("usr/libexec/tilo-account-credential");
-    executable(
-        &changed,
-        b"#!/bin/sh\nprintf '{\"schema\":1,\"protected_grant_protocol\":2}\\n'\n",
-    );
-    assert!(
-        produce(&runtime.root, &mut |command, env| {
-            stub_signature(&mut Vec::new(), command, env)
-        })
-        .is_err()
-    );
-}
-
-#[test]
-fn partial_optional_qualification_refuses_cloud_receipt() {
-    let runtime = Runtime::new();
-    for name in [service::RECEIVING_ENTRY, service::QUALIFICATION_SCRIPT] {
-        let path = runtime.root.join(name.strip_prefix('/').unwrap());
-        executable(&path, b"not qualification");
-        let error = produce(&runtime.root, &mut |command, env| {
-            stub_signature(&mut Vec::new(), command, env)
-        })
-        .unwrap_err();
-        assert!(error.to_string().contains("incomplete optional"), "{error}");
-        std::fs::remove_file(path).unwrap();
-    }
-}
-
 fn service_produce(
     root: &Path,
     evidence: Option<&Value>,
@@ -281,35 +233,87 @@ fn service_produce(
     })
 }
 
-#[test]
-fn saved_service_claim_cannot_downgrade_to_cloud_only() {
-    let runtime = Runtime::new();
-    let error = service_produce(
-        &runtime.root,
-        Some(&json!({"schema": 1, "protocol": 1})),
-        false,
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("qualified sandbox"), "{error}");
-    let mut saved = json!({"schema": service::SERVICE_SCHEMA});
-    for key in service::ROUTE_KEYS {
-        saved[key] = "ab".repeat(32).into();
-    }
-    saved["receiving_shell_path"] = service::SHELL.into();
-    saved["receiving_dependencies"] = json!({});
-    saved["receiving_python_path"] = "/usr/bin/python3".into();
-    let error = service_produce(&runtime.root, Some(&saved), false).unwrap_err();
-    assert!(error.to_string().contains("no longer installed"), "{error}");
-}
+tilo_test_env::scenario! {
+    fn account_consumer_receipts_follow_the_installed_runtime;
 
-#[test]
-fn readonly_cloud_check_skips_optional_receivers() {
-    let runtime = Runtime::new();
-    assert!(
-        service_produce(&runtime.root, None, false)
-            .unwrap()
-            .is_none()
-    );
+    phase cloud_consumer_checks_execute_without_optional_service_tools;
+    {
+        let runtime = Runtime::new();
+        let mut calls = Vec::new();
+        let receipt = produce(&runtime.root, &mut |command, env| {
+            stub_signature(&mut calls, command, env)
+        })
+        .unwrap();
+        assert!(receipt.get("service_sessions").is_none());
+        assert_eq!(receipt["protected_grant_protocol"], 1);
+        assert_eq!(
+            receipt["runtime_probe_sha256"],
+            hex::encode(Sha256::digest(std::fs::read(&runtime.probe).unwrap())).as_str()
+        );
+        assert_eq!(calls.len(), 4);
+        assert!(calls[1].iter().any(|arg| arg == "--inhibit-cache"));
+        assert_eq!(calls[2][1..], [OsString::from("capabilities")]);
+
+        // A probe linked against another SDK protocol is refused.
+        let mut changed = runtime.root.clone();
+        changed.push("usr/libexec/tilo-account-credential");
+        executable(
+            &changed,
+            b"#!/bin/sh\nprintf '{\"schema\":1,\"protected_grant_protocol\":2}\\n'\n",
+        );
+        assert!(
+            produce(&runtime.root, &mut |command, env| {
+                stub_signature(&mut Vec::new(), command, env)
+            })
+            .is_err()
+        );
+    }
+
+    phase partial_optional_qualification_refuses_cloud_receipt;
+    {
+        let runtime = Runtime::new();
+        for name in [service::RECEIVING_ENTRY, service::QUALIFICATION_SCRIPT] {
+            let path = runtime.root.join(name.strip_prefix('/').unwrap());
+            executable(&path, b"not qualification");
+            let error = produce(&runtime.root, &mut |command, env| {
+                stub_signature(&mut Vec::new(), command, env)
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("incomplete optional"), "{error}");
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    phase saved_service_claim_cannot_downgrade_to_cloud_only;
+    {
+        let runtime = Runtime::new();
+        let error = service_produce(
+            &runtime.root,
+            Some(&json!({"schema": 1, "protocol": 1})),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("qualified sandbox"), "{error}");
+        let mut saved = json!({"schema": service::SERVICE_SCHEMA});
+        for key in service::ROUTE_KEYS {
+            saved[key] = "ab".repeat(32).into();
+        }
+        saved["receiving_shell_path"] = service::SHELL.into();
+        saved["receiving_dependencies"] = json!({});
+        saved["receiving_python_path"] = "/usr/bin/python3".into();
+        let error = service_produce(&runtime.root, Some(&saved), false).unwrap_err();
+        assert!(error.to_string().contains("no longer installed"), "{error}");
+    }
+
+    phase readonly_cloud_check_skips_optional_receivers;
+    {
+        let runtime = Runtime::new();
+        assert!(
+            service_produce(&runtime.root, None, false)
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 /// A real measured receiving closure over fixture files, as the saved account

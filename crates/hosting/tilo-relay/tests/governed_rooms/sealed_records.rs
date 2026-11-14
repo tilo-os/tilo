@@ -52,7 +52,7 @@ pub(super) async fn join(
     device: &TestDevice,
     request_id: [u8; 32],
 ) -> Result<StatePeer, String> {
-    let invitation = invite(relay, issuer, room, MemberRole::Editor, person.user_pk).await;
+    let invitation = invite(relay, issuer, room, Role::Editor, person.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -72,7 +72,7 @@ pub(super) async fn join(
         .map_err(|error| error.to_string())?;
     let bootstrap = admission.bootstrap;
     let mut peer = StatePeer::new(
-        &bootstrap.room,
+        &bootstrap.workspace_id.to_string(),
         bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),
@@ -94,7 +94,7 @@ pub(super) async fn join(
 async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -146,7 +146,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let workspaces = relay.workspaces().unwrap();
     let mut followed = workspaces.record_writes();
     let group = ChannelGroup::create(
-        collab_types::document_channel_id(APP, &room.workspace, ""),
+        collab_types::WorkspaceId::parse(&room.workspace).unwrap(),
         MemberKey::generate("bob").unwrap(),
     )
     .unwrap();

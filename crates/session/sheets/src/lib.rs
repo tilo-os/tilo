@@ -17,6 +17,7 @@ pub mod file_picker;
 pub mod invite;
 pub mod keyboard_shortcuts;
 pub mod lock;
+pub mod pair_device;
 pub mod portal;
 pub mod power;
 mod presentation;
@@ -33,6 +34,11 @@ ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 #[must_use]
 pub fn word(key: &str) -> String {
     t(key)
+}
+
+/// `text` as small print: what a sheet says under a part of it.
+pub(crate) fn caption(text: &str) -> ui::widget::Element {
+    Box::new(ui::widget::Text::new(text).with_role(ui::prelude::TextRole::Caption))
 }
 
 /// The same, with `args` filled in.

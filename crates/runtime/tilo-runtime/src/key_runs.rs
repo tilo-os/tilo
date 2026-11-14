@@ -24,6 +24,7 @@ use tilo_room_host::app_serving::AppServingPlane;
 use tilo_user_identity::DeviceCert;
 
 use crate::remote_door::PersonsDevices;
+use collab_types::WorkspaceId;
 
 /// The most runs one device keeps for its person's keys at once.
 const MAX_RUNS: usize = 256;
@@ -36,7 +37,7 @@ pub type RunHost = Arc<dyn ActionHost + Send + Sync>;
 pub trait Runs: Send + Sync {
     /// The workspace (its UUID) the host's session calls `workspace_id`, when
     /// this device answers its actions.
-    fn workspace(&self, workspace_id: u64) -> Option<String>;
+    fn workspace(&self, workspace_id: WorkspaceId) -> Option<String>;
 
     /// A run for `key` in `workspace`: the host its calls go through and the
     /// caller they go as. The broker admits it as it admits an agent at this
@@ -54,7 +55,7 @@ pub struct KeyRuns {
     /// The person's devices and the broker, once they run: a host opens
     /// before the store and the broker it serves.
     serving: OnceLock<Serving>,
-    open: std::sync::Mutex<HashMap<(u64, [u8; 32]), Run>>,
+    open: std::sync::Mutex<HashMap<(WorkspaceId, [u8; 32]), Run>>,
 }
 
 struct Serving {
@@ -89,7 +90,7 @@ impl KeyRuns {
     /// once the key is the person's and its scope reaches the workspace.
     fn run(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         key: &DeviceCert,
     ) -> Result<(RunHost, Caller), ActionHostError> {
         let Serving { devices, runs } =
@@ -149,7 +150,7 @@ impl KeyRuns {
     }
 
     /// End the run `device` works in on `workspace_id`, if it has one.
-    fn end(&self, workspace_id: u64, device: &[u8; 32]) {
+    fn end(&self, workspace_id: WorkspaceId, device: &[u8; 32]) {
         let ended = self.open.lock_recover().remove(&(workspace_id, *device));
         if let Some(run) = ended {
             run.host.retire_execution(&run.caller);
@@ -162,7 +163,7 @@ impl AppServingPlane for KeyRuns {
     /// there is no key to hold to its scope.
     fn serve(
         &self,
-        _workspace_id: u64,
+        _workspace_id: WorkspaceId,
         _caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
@@ -171,7 +172,7 @@ impl AppServingPlane for KeyRuns {
 
     fn serve_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         _caller: &Caller,
         certificate: &DeviceCert,
         message: RemoteActionMessage,
@@ -182,7 +183,7 @@ impl AppServingPlane for KeyRuns {
         }
     }
 
-    fn forget_workspace(&self, workspace_id: u64) {
+    fn forget_workspace(&self, workspace_id: WorkspaceId) {
         let ended: Vec<Run> = {
             let mut open = self.open.lock_recover();
             let keys: Vec<_> = open

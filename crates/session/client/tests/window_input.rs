@@ -29,7 +29,7 @@ const PRESSES: u32 = 40;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pages_input_on_a_window_reaches_the_device_hosting_it() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let page = enrol(&root, "browser", DeviceCapabilities::member());
     let window_host = enrol(&root, "Linux apps", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

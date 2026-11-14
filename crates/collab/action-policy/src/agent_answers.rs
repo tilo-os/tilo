@@ -146,13 +146,12 @@ pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
     GrantId(format!("{PREFIX}{agent}:{}:{kind}", scope.key()))
 }
 
-/// Whether `grant` is an answer: given an agent, or the work on an issue.
+/// Whether `grant` is an answer: given to an agent, or for one issue's runs.
 #[must_use]
 pub fn is_answer(grant: &Grant) -> bool {
-    matches!(
-        grant.grantee,
-        Grantee::Member(crate::MemberId::Agent(_)) | Grantee::Task(_)
-    ) && grant.id.as_str().starts_with(PREFIX)
+    let id = grant.id.as_str();
+    (id.starts_with(PREFIX) && matches!(grant.grantee, Grantee::Member(crate::MemberId::Agent(_))))
+        || crate::is_issue_answer(grant)
 }
 
 /// The grant giving `agent` `answer` for actions of `kind` at `scope` in
@@ -174,11 +173,8 @@ pub fn grant(
     )
 }
 
-/// The grant giving `delegate` (an agent, or the work on an issue,
-/// [`Grantee::task`]) `answer` for actions of `kind` at `scope` in `workspace`,
-/// set by `granted_by`. Given for one action, it is what "Allow for this
-/// issue" records, and lifts that action's confirmation as an agent's
-/// answer does.
+/// The grant giving `delegate` (an agent) `answer` for actions of `kind` at
+/// `scope` in `workspace`, set by `granted_by`.
 #[must_use]
 pub fn answer_grant(
     workspace: &str,
@@ -189,7 +185,6 @@ pub fn answer_grant(
 ) -> Grant {
     let key = match &delegate {
         Grantee::Member(crate::MemberId::Agent(agent)) => agent.clone(),
-        Grantee::Task(issue) => format!("task:{issue}"),
         other => other.to_string(),
     };
     Grant::new(

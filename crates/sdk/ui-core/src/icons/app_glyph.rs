@@ -86,39 +86,43 @@ fn category_glyph(category: &str) -> Icon {
 mod tests {
     use super::*;
 
-    #[test]
-    fn known_apps_get_their_own_glyph_whatever_the_build_prefix() {
-        assert_eq!(app_glyph("so.tilo.notes", Some("Office")), Icon::FileText);
-        assert_eq!(app_glyph("dev.tilo.terminal", None), Icon::SquareTerminal);
-        assert_eq!(app_glyph("so.tilo.browser", None), Icon::Globe);
-        assert_eq!(app_glyph("so.tilo.file-explorer", None), Icon::Folder);
-    }
+    tilo_test_env::scenario! {
+        fn an_app_wears_its_own_glyph_or_its_categorys;
 
-    #[test]
-    fn unknown_apps_fall_back_by_category_then_to_a_window() {
-        assert_eq!(app_glyph("org.example.x", Some("Development")), Icon::Code);
-        assert_eq!(app_glyph("org.example.x", Some("Weird")), Icon::AppWindow);
-        assert_eq!(app_glyph("org.example.x", None), Icon::AppWindow);
-    }
+        phase known_apps_get_their_own_glyph_whatever_the_build_prefix;
+        {
+            assert_eq!(app_glyph("so.tilo.notes", Some("Office")), Icon::FileText);
+            assert_eq!(app_glyph("dev.tilo.terminal", None), Icon::SquareTerminal);
+            assert_eq!(app_glyph("so.tilo.browser", None), Icon::Globe);
+            assert_eq!(app_glyph("so.tilo.file-explorer", None), Icon::Folder);
+        }
 
-    #[test]
-    fn a_host_apps_desktop_entry_has_the_glyph_of_the_app_it_opens() {
-        assert_eq!(
-            app_glyph("host:so.tilo.notes", None),
-            Icon::FileText,
-            "a window of an app the machine installed shows that app's glyph"
-        );
-        assert_eq!(
-            app_glyph("host:so.tilo.file-explorer.desktop", None),
-            Icon::Folder
-        );
-    }
+        phase unknown_apps_fall_back_by_category_then_to_a_window;
+        {
+            assert_eq!(app_glyph("org.example.x", Some("Development")), Icon::Code);
+            assert_eq!(app_glyph("org.example.x", Some("Weird")), Icon::AppWindow);
+            assert_eq!(app_glyph("org.example.x", None), Icon::AppWindow);
+        }
 
-    #[test]
-    fn no_application_glyph_is_a_search_or_generic_grid() {
-        for id in ["browser", "notes", "terminal", "calendar", "weather"] {
-            let glyph = app_glyph(id, None);
-            assert!(!matches!(glyph, Icon::Search | Icon::LayoutGrid), "{id}");
+        phase a_host_apps_desktop_entry_has_the_glyph_of_the_app_it_opens;
+        {
+            assert_eq!(
+                app_glyph("host:so.tilo.notes", None),
+                Icon::FileText,
+                "a window of an app the machine installed shows that app's glyph"
+            );
+            assert_eq!(
+                app_glyph("host:so.tilo.file-explorer.desktop", None),
+                Icon::Folder
+            );
+        }
+
+        phase no_application_glyph_is_a_search_or_generic_grid;
+        {
+            for id in ["browser", "notes", "terminal", "calendar", "weather"] {
+                let glyph = app_glyph(id, None);
+                assert!(!matches!(glyph, Icon::Search | Icon::LayoutGrid), "{id}");
+            }
         }
     }
 }

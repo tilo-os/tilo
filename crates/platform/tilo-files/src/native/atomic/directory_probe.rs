@@ -118,41 +118,47 @@ mod tests {
             components: vec![],
         }
     }
-    #[test]
-    fn missing_or_malformed_prerequisites_refuse_before_native_dispatch() {
-        let mut r = request();
-        r.root = PathBuf::from("relative");
-        assert!(r.validate().is_err());
-        let mut r = request();
-        r.profile = "auto".into();
-        assert!(r.validate().is_err());
-        let mut r = request();
-        r.evidence.establishment_record.clear();
-        assert!(r.validate().is_err());
-        let mut r = request();
-        r.evidence.storage_profile.clear();
-        assert!(r.validate().is_err());
-    }
-    #[test]
-    fn replay_requires_bounded_safe_components() {
-        let mut r = request();
-        r.candidate = Candidate::Replay;
-        assert!(r.validate().is_err());
-        for bad in ["..", ".", "x/y", "x\\y", "x:y", "", "x\0y"] {
-            r.components = vec![bad.into()];
-            assert!(r.validate().is_err(), "{bad:?}");
+    tilo_test_env::scenario! {
+        fn a_probe_request_is_validated_and_never_passes_unobserved;
+
+        phase missing_or_malformed_prerequisites_refuse_before_native_dispatch;
+        {
+            let mut r = request();
+            r.root = PathBuf::from("relative");
+            assert!(r.validate().is_err());
+            let mut r = request();
+            r.profile = "auto".into();
+            assert!(r.validate().is_err());
+            let mut r = request();
+            r.evidence.establishment_record.clear();
+            assert!(r.validate().is_err());
+            let mut r = request();
+            r.evidence.storage_profile.clear();
+            assert!(r.validate().is_err());
         }
-        r.components = vec!["probe-17".into(), "final".into()];
-        assert!(r.validate().is_ok());
-        r.components = vec!["x".into(); 17];
-        assert!(r.validate().is_err());
-    }
-    #[test]
-    fn successful_calls_without_complete_observation_do_not_pass() {
-        let outcome = Outcome::from_result(&Ok(()), false);
-        assert!(!outcome.candidate_calls_succeeded);
-        assert!(!outcome.fully_observed);
-        assert_eq!(outcome.qualification, "unqualified");
+
+        phase replay_requires_bounded_safe_components;
+        {
+            let mut r = request();
+            r.candidate = Candidate::Replay;
+            assert!(r.validate().is_err());
+            for bad in ["..", ".", "x/y", "x\\y", "x:y", "", "x\0y"] {
+                r.components = vec![bad.into()];
+                assert!(r.validate().is_err(), "{bad:?}");
+            }
+            r.components = vec!["probe-17".into(), "final".into()];
+            assert!(r.validate().is_ok());
+            r.components = vec!["x".into(); 17];
+            assert!(r.validate().is_err());
+        }
+
+        phase successful_calls_without_complete_observation_do_not_pass;
+        {
+            let outcome = Outcome::from_result(&Ok(()), false);
+            assert!(!outcome.candidate_calls_succeeded);
+            assert!(!outcome.fully_observed);
+            assert_eq!(outcome.qualification, "unqualified");
+        }
     }
 }
 
@@ -270,99 +276,107 @@ pub(crate) mod observation {
     #[cfg(test)]
     mod tests {
         use super::*;
-        #[test]
-        fn incomplete_ancestor_stops_before_fixture_mutation() {
-            for error in [
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "pending/malformed native output",
-                ),
-                io::Error::from_raw_os_error(5),
-            ] {
-                let mut mutated = false;
-                let mut logged_refusal = false;
-                let result = (|| {
-                    ancestor::<()>(Err(error), false, |_| {
-                        logged_refusal = true;
-                        Ok(())
-                    })?;
-                    mutated = true;
-                    Ok(true)
-                })();
-                assert!(!outcome(result).fully_observed);
-                assert!(!mutated);
-                assert!(
-                    !logged_refusal,
-                    "incomplete event-sink/admission error is not a native refusal"
+        tilo_test_env::scenario! {
+            fn incomplete_observations_never_count_and_completed_refusals_do;
+
+            phase incomplete_ancestor_stops_before_fixture_mutation;
+            {
+                for error in [
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "pending/malformed native output",
+                    ),
+                    io::Error::from_raw_os_error(5),
+                ] {
+                    let mut mutated = false;
+                    let mut logged_refusal = false;
+                    let result = (|| {
+                        ancestor::<()>(Err(error), false, |_| {
+                            logged_refusal = true;
+                            Ok(())
+                        })?;
+                        mutated = true;
+                        Ok(true)
+                    })();
+                    assert!(!outcome(result).fully_observed);
+                    assert!(!mutated);
+                    assert!(
+                        !logged_refusal,
+                        "incomplete event-sink/admission error is not a native refusal"
+                    );
+                }
+            }
+
+            phase incomplete_collision_cannot_be_a_complete_negative;
+            {
+                for error in [
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "pending/malformed native output",
+                    ),
+                    io::Error::from_raw_os_error(183),
+                ] {
+                    let mut continued = false;
+                    let result = (|| {
+                        let expected =
+                            collision::<()>(Err(error), |e| e.raw_os_error() == Some(183), |_| Ok(()))?;
+                        continued = true;
+                        Ok(expected)
+                    })();
+                    let observed = outcome(result);
+                    assert!(!observed.fully_observed);
+                    assert!(!observed.candidate_calls_succeeded);
+                    assert!(!continued);
+                }
+            }
+
+            phase unknown_flush_status_and_missing_completion_are_incomplete;
+            {
+                for (status, done, info) in [
+                    (1, 0x103, usize::MAX),
+                    (0x4000_0000, 0, 0),
+                    (0, 0x103, usize::MAX),
+                ] {
+                    let observed = outcome(flush(status, done, info));
+                    assert!(!observed.fully_observed, "status={status:#x}");
+                    assert!(!observed.candidate_calls_succeeded);
+                }
+            }
+
+            phase incomplete_reparse_snapshot_or_event_never_becomes_refusal_evidence;
+            {
+                for error in [
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "security descriptor snapshot failed",
+                    ),
+                    io::Error::from_raw_os_error(5),
+                ] {
+                    let observed = outcome(reparse(Err(error)));
+                    assert!(!observed.fully_observed);
+                    assert!(!observed.candidate_calls_succeeded);
+                }
+                assert!(outcome(reparse(Ok(true))).candidate_calls_succeeded);
+                assert!(!outcome(reparse(Ok(false))).fully_observed);
+            }
+
+            phase completed_native_refusals_remain_observed;
+            {
+                let denied = || Ok(Directory::<()>::Refused(io::Error::from_raw_os_error(5)));
+                assert!(ancestor(denied(), false, |_| Ok(())).unwrap().is_none());
+                assert!(ancestor(denied(), true, |_| Ok(())).is_err());
+                let collision = collision(
+                    Ok(Directory::<()>::Refused(io::Error::from_raw_os_error(183))),
+                    |e| e.raw_os_error() == Some(183),
+                    |_| Ok(()),
                 );
+                assert!(outcome(collision).candidate_calls_succeeded);
+                let failed = outcome(flush(0xc000_0022_u32.cast_signed(), 0x103, usize::MAX));
+                assert!(failed.fully_observed);
+                assert!(!failed.candidate_calls_succeeded);
+                assert!(outcome(flush(0, 0, 0)).candidate_calls_succeeded);
+                assert_eq!(required(Ok(Directory::Opened(7))).unwrap(), 7);
             }
-        }
-        #[test]
-        fn incomplete_collision_cannot_be_a_complete_negative() {
-            for error in [
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "pending/malformed native output",
-                ),
-                io::Error::from_raw_os_error(183),
-            ] {
-                let mut continued = false;
-                let result = (|| {
-                    let expected =
-                        collision::<()>(Err(error), |e| e.raw_os_error() == Some(183), |_| Ok(()))?;
-                    continued = true;
-                    Ok(expected)
-                })();
-                let observed = outcome(result);
-                assert!(!observed.fully_observed);
-                assert!(!observed.candidate_calls_succeeded);
-                assert!(!continued);
-            }
-        }
-        #[test]
-        fn unknown_flush_status_and_missing_completion_are_incomplete() {
-            for (status, done, info) in [
-                (1, 0x103, usize::MAX),
-                (0x4000_0000, 0, 0),
-                (0, 0x103, usize::MAX),
-            ] {
-                let observed = outcome(flush(status, done, info));
-                assert!(!observed.fully_observed, "status={status:#x}");
-                assert!(!observed.candidate_calls_succeeded);
-            }
-        }
-        #[test]
-        fn incomplete_reparse_snapshot_or_event_never_becomes_refusal_evidence() {
-            for error in [
-                io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "security descriptor snapshot failed",
-                ),
-                io::Error::from_raw_os_error(5),
-            ] {
-                let observed = outcome(reparse(Err(error)));
-                assert!(!observed.fully_observed);
-                assert!(!observed.candidate_calls_succeeded);
-            }
-            assert!(outcome(reparse(Ok(true))).candidate_calls_succeeded);
-            assert!(!outcome(reparse(Ok(false))).fully_observed);
-        }
-        #[test]
-        fn completed_native_refusals_remain_observed() {
-            let denied = || Ok(Directory::<()>::Refused(io::Error::from_raw_os_error(5)));
-            assert!(ancestor(denied(), false, |_| Ok(())).unwrap().is_none());
-            assert!(ancestor(denied(), true, |_| Ok(())).is_err());
-            let collision = collision(
-                Ok(Directory::<()>::Refused(io::Error::from_raw_os_error(183))),
-                |e| e.raw_os_error() == Some(183),
-                |_| Ok(()),
-            );
-            assert!(outcome(collision).candidate_calls_succeeded);
-            let failed = outcome(flush(0xc000_0022_u32.cast_signed(), 0x103, usize::MAX));
-            assert!(failed.fully_observed);
-            assert!(!failed.candidate_calls_succeeded);
-            assert!(outcome(flush(0, 0, 0)).candidate_calls_succeeded);
-            assert_eq!(required(Ok(Directory::Opened(7))).unwrap(), 7);
         }
     }
 }

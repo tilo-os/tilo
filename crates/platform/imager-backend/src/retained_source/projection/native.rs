@@ -96,72 +96,76 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    #[test]
-    fn selected_factory_refuses_paths_links_and_nonregular_objects() {
-        let tree = tempfile::tempdir().unwrap();
-        let directory = File::open(tree.path()).unwrap();
-        File::create(tree.path().join("selected")).unwrap();
-        symlink("selected", tree.path().join("symlink")).unwrap();
-        std::fs::create_dir(tree.path().join("directory")).unwrap();
-        let fifo = CString::new(tree.path().join("fifo").as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-        selected(&directory, OsStr::new("selected")).unwrap();
-        for name in [
-            "",
-            ".",
-            "..",
-            "../selected",
-            "selected/child",
-            "symlink",
-            "directory",
-            "fifo",
-            "nul\0",
-        ] {
-            assert!(selected(&directory, OsStr::new(name)).is_err(), "{name:?}");
+    tilo_test_env::scenario! {
+        fn source_projection_is_built_only_from_held_regular_objects;
+
+        phase selected_factory_refuses_paths_links_and_nonregular_objects;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            let directory = File::open(tree.path()).unwrap();
+            File::create(tree.path().join("selected")).unwrap();
+            symlink("selected", tree.path().join("symlink")).unwrap();
+            std::fs::create_dir(tree.path().join("directory")).unwrap();
+            let fifo = CString::new(tree.path().join("fifo").as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+            selected(&directory, OsStr::new("selected")).unwrap();
+            for name in [
+                "",
+                ".",
+                "..",
+                "../selected",
+                "selected/child",
+                "symlink",
+                "directory",
+                "fifo",
+                "nul\0",
+            ] {
+                assert!(selected(&directory, OsStr::new(name)).is_err(), "{name:?}");
+            }
+            std::fs::hard_link(tree.path().join("selected"), tree.path().join("alias")).unwrap();
+            assert!(selected(&directory, OsStr::new("selected")).is_err());
         }
-        std::fs::hard_link(tree.path().join("selected"), tree.path().join("alias")).unwrap();
-        assert!(selected(&directory, OsStr::new("selected")).is_err());
-    }
 
-    #[test]
-    fn held_projection_digest_preserves_domains_context_and_object_identity() {
-        let tree = tempfile::tempdir().unwrap();
-        let directory = File::open(tree.path()).unwrap();
-        File::create(tree.path().join("selected")).unwrap();
-        let file = selected(&directory, OsStr::new("selected")).unwrap();
-        let projection = SourceProjection::pin(file, false, "context").unwrap();
-        let held = projection.duplicate_file().unwrap().metadata().unwrap();
-        let mut expected = Sha256::new();
-        expected.update(b"tilo-retained-selected-source-v1\0");
-        expected.update(b"context");
-        expected.update(held.dev().to_le_bytes());
-        expected.update(held.ino().to_le_bytes());
-        assert_eq!(
-            projection.context_sha256(),
-            <[u8; 32]>::from(expected.finalize())
-        );
-        let other =
-            SourceProjection::pin(projection.duplicate_file().unwrap(), false, "other").unwrap();
-        assert_ne!(projection.context_sha256(), other.context_sha256());
-        assert!(SourceProjection::pin(directory, false, "context").is_err());
-        assert!(
-            SourceProjection::pin(projection.duplicate_file().unwrap(), true, "context").is_err()
-        );
-    }
+        phase held_projection_digest_preserves_domains_context_and_object_identity;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            let directory = File::open(tree.path()).unwrap();
+            File::create(tree.path().join("selected")).unwrap();
+            let file = selected(&directory, OsStr::new("selected")).unwrap();
+            let projection = SourceProjection::pin(file, false, "context").unwrap();
+            let held = projection.duplicate_file().unwrap().metadata().unwrap();
+            let mut expected = Sha256::new();
+            expected.update(b"tilo-retained-selected-source-v1\0");
+            expected.update(b"context");
+            expected.update(held.dev().to_le_bytes());
+            expected.update(held.ino().to_le_bytes());
+            assert_eq!(
+                projection.context_sha256(),
+                <[u8; 32]>::from(expected.finalize())
+            );
+            let other =
+                SourceProjection::pin(projection.duplicate_file().unwrap(), false, "other").unwrap();
+            assert_ne!(projection.context_sha256(), other.context_sha256());
+            assert!(SourceProjection::pin(directory, false, "context").is_err());
+            assert!(
+                SourceProjection::pin(projection.duplicate_file().unwrap(), true, "context").is_err()
+            );
+        }
 
-    #[test]
-    fn ordinary_process_cannot_construct_source_projection() {
-        let file = tempfile::tempfile().unwrap();
-        // The production root check runs before even inspecting the source.
-        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
-            let error = SourceProjection::home(&file, "context").err().unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            let error = SourceProjection::selected(&file, OsStr::new("selected"), "context")
-                .err()
-                .unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        } else {
-            assert!(SourceProjection::home(&file, "context").is_err());
+        phase ordinary_process_cannot_construct_source_projection;
+        {
+            let file = tempfile::tempfile().unwrap();
+            // The production root check runs before even inspecting the source.
+            if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
+                let error = SourceProjection::home(&file, "context").err().unwrap();
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                let error = SourceProjection::selected(&file, OsStr::new("selected"), "context")
+                    .err()
+                    .unwrap();
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            } else {
+                assert!(SourceProjection::home(&file, "context").is_err());
+            }
         }
     }
 }

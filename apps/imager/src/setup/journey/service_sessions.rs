@@ -769,233 +769,271 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unsafe_native_source_keeps_independent_firefox_selected_and_warning() {
-        let home = tempfile::tempdir().unwrap();
-        let _firefox = firefox(home.path(), "independent", true);
-        inventory(home.path(), &["independent"]);
-        let (path, _slack) = native_slack_database(home.path(), false, false, true);
-        let candidates = account_transfer::discover(&SourceRoots {
-            home: home.path().into(),
-            config: home.path().join(".config"),
-        });
-        assert!(
-            candidates
-                .candidates
-                .iter()
-                .any(|candidate| candidate.provider == account_transfer::Provider::Slack)
-        );
-        assert!(
-            candidates
-                .candidates
-                .iter()
-                .any(|candidate| candidate.provider == account_transfer::Provider::Firefox)
-        );
-        let original = native_slack_bytes(&path);
-        let firefox_bytes = std::fs::read(
-            home.path()
-                .join(".mozilla/firefox/independent/cookies.sqlite"),
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            path.parent().unwrap(),
-            std::fs::Permissions::from_mode(0o777),
-        )
-        .unwrap();
-        let selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
-        assert!(selection.unavailable());
-        assert_eq!(selection.included.len(), 1);
-        let selected_id = &selection.included[0].0;
-        let selected = selection
-            .sources
-            .iter()
-            .find(|source| &source.id == selected_id)
-            .unwrap();
-        assert_eq!(
-            selected.provider,
-            imager_backend::browser_selection::Provider::Firefox
-        );
-        assert_eq!(selection.included[0].1, Service::Slack);
-        let captured = selection
-            .selected()
-            .capture([7; 32], "independent-source-operation".into())
-            .unwrap();
-        let (_, declaration) = captured
-            .seal(b"private synthetic isolation password")
-            .unwrap();
-        assert_eq!(declaration.sessions.len(), 1);
-        let public = selection.report().to_string();
-        assert!(!public.contains(home.path().to_str().unwrap()));
-        assert!(!public.contains("private-native-slack-sentinel"));
-        assert!(!public.contains("private-synthetic-sentinel"));
-        assert_eq!(native_slack_bytes(&path), original);
-        assert_eq!(
-            std::fs::read(
+    tilo_test_env::scenario! {
+        fn a_source_that_cannot_be_read_stays_visible_with_its_reason;
+
+        phase unsafe_native_source_keeps_independent_firefox_selected_and_warning;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let _firefox = firefox(home.path(), "independent", true);
+            inventory(home.path(), &["independent"]);
+            let (path, _slack) = native_slack_database(home.path(), false, false, true);
+            let candidates = account_transfer::discover(&SourceRoots {
+                home: home.path().into(),
+                config: home.path().join(".config"),
+            });
+            assert!(
+                candidates
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.provider == account_transfer::Provider::Slack)
+            );
+            assert!(
+                candidates
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.provider == account_transfer::Provider::Firefox)
+            );
+            let original = native_slack_bytes(&path);
+            let firefox_bytes = std::fs::read(
                 home.path()
-                    .join(".mozilla/firefox/independent/cookies.sqlite")
+                    .join(".mozilla/firefox/independent/cookies.sqlite"),
             )
-            .unwrap(),
-            firefox_bytes
-        );
-        let guarded_inventory =
-            service_profiles::discover(home.path(), &candidates.candidates).unwrap();
-        guarded_inventory.validate_home().unwrap();
-        std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(
-            guarded_inventory.validate_home().is_err(),
-            "the held guard used around actual presence observes in-flight Home custody loss"
-        );
-        assert!(
-            Selection::discover(home.path(), &candidates.candidates).is_err(),
-            "global Home custody must remain fatal"
-        );
+            .unwrap();
+            std::fs::set_permissions(
+                path.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o777),
+            )
+            .unwrap();
+            let selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
+            assert!(selection.unavailable());
+            assert_eq!(selection.included.len(), 1);
+            let selected_id = &selection.included[0].0;
+            let selected = selection
+                .sources
+                .iter()
+                .find(|source| &source.id == selected_id)
+                .unwrap();
+            assert_eq!(
+                selected.provider,
+                imager_backend::browser_selection::Provider::Firefox
+            );
+            assert_eq!(selection.included[0].1, Service::Slack);
+            let captured = selection
+                .selected()
+                .capture([7; 32], "independent-source-operation".into())
+                .unwrap();
+            let (_, declaration) = captured
+                .seal(b"private synthetic isolation password")
+                .unwrap();
+            assert_eq!(declaration.sessions.len(), 1);
+            let public = selection.report().to_string();
+            assert!(!public.contains(home.path().to_str().unwrap()));
+            assert!(!public.contains("private-native-slack-sentinel"));
+            assert!(!public.contains("private-synthetic-sentinel"));
+            assert_eq!(native_slack_bytes(&path), original);
+            assert_eq!(
+                std::fs::read(
+                    home.path()
+                        .join(".mozilla/firefox/independent/cookies.sqlite")
+                )
+                .unwrap(),
+                firefox_bytes
+            );
+            let guarded_inventory =
+                service_profiles::discover(home.path(), &candidates.candidates).unwrap();
+            guarded_inventory.validate_home().unwrap();
+            std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(
+                guarded_inventory.validate_home().is_err(),
+                "the held guard used around actual presence observes in-flight Home custody loss"
+            );
+            assert!(
+                Selection::discover(home.path(), &candidates.candidates).is_err(),
+                "global Home custody must remain fatal"
+            );
+        }
+
+        phase encrypted_chromium_material_is_visible_for_explicit_access_without_discovery_decryption;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let profile = home.path().join(".config/chromium/Default");
+            let _database = encrypted_chromium(home.path());
+            let roots = SourceRoots {
+                home: home.path().to_owned(),
+                config: home.path().join(".config"),
+            };
+            let inventory = account_transfer::discover(&roots);
+            let before = std::fs::read(profile.join("Cookies")).unwrap();
+            let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
+            assert_eq!(selection.detected.len(), 1);
+            assert_eq!(selection.detected[0].1, Service::Slack);
+            assert_eq!(selection.detected[0].2, Presence::NeedsAccess);
+            assert!(
+                selection.selected().is_empty(),
+                "undecrypted input is not proved readable"
+            );
+            assert!(selection.report().to_string().contains("needs_access"));
+            let id = selection.detected[0].0.clone();
+            assert!(selection.set(&id, Service::Slack, true).unwrap());
+            assert!(selection.set(&id, Service::Discord, true).is_err());
+            assert_eq!(std::fs::read(profile.join("Cookies")).unwrap(), before);
+        }
     }
 
-    #[test]
-    fn migrate_all_defaults_only_actual_supported_material_and_preserves_original_wal() {
-        let home = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let _first = firefox(home.path(), "first", true);
-        let _second = firefox(home.path(), "second", true);
-        let _empty = firefox(home.path(), "unrelated", false);
-        let inventory = inventory(home.path(), &["second", "unrelated", "first"]);
-        let before = bytes(home.path(), &["first", "second", "unrelated"]);
-        let selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        assert_eq!(selection.detected.len(), 2);
-        assert_eq!(
-            selection.included.len(),
-            1,
-            "one source per service/material"
-        );
-        assert_eq!(selection.included[0].1, Service::Slack);
-        assert_eq!(
-            selection.included[0].0,
-            selection
-                .detected
-                .iter()
-                .map(|(id, _, _)| id)
-                .min()
-                .unwrap()
-                .clone()
-        );
-        assert!(
-            selection
-                .detected
-                .iter()
-                .all(|(_, _, presence)| *presence == Presence::Readable)
-        );
-        let mut reversed = inventory.candidates;
-        reversed.reverse();
-        assert_eq!(
-            Selection::discover(home.path(), &reversed)
-                .unwrap()
-                .included,
-            selection.included
-        );
-        assert_eq!(
-            bytes(home.path(), &["first", "second", "unrelated"]),
-            before
-        );
-        let report = selection.report().to_string();
-        assert!(!report.contains("private-synthetic-sentinel"));
-        assert!(!report.contains("private-unrelated-sentinel"));
-        assert!(!report.contains("source_snapshot_digest"));
-        let prepared = selection
-            .selected()
-            .capture([7; 32], "operation".into())
-            .unwrap();
-        let (_, declaration) = prepared.seal(b"synthetic-checkpoint-password").unwrap();
-        assert_eq!(declaration.sessions.len(), 1);
-    }
-    #[test]
-    fn database_container_without_selected_service_material_is_not_an_included_login() {
-        let home = tempfile::tempdir().unwrap();
-        let _empty = firefox(home.path(), "unrelated", false);
-        let inventory = inventory(home.path(), &["unrelated"]);
-        let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        assert!(!selection.available());
-        assert!(selection.selected().is_empty());
-        let id = selection.sources[0].id.clone();
-        assert!(selection.set(&id, Service::Slack, true).is_err());
-        assert!(selection.set(&id, Service::Discord, true).is_err());
-    }
-    #[test]
-    fn default_inclusion_exclusion_and_cancel_preserve_exact_reviewed_baseline() {
-        let home = tempfile::tempdir().unwrap();
-        let _source = firefox(home.path(), "included", true);
-        let inventory = inventory(home.path(), &["included"]);
-        let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        let baseline = selection.included.clone();
-        let id = baseline[0].0.clone();
-        selection.begin_edit();
-        assert!(selection.set(&id, Service::Slack, false).unwrap());
-        selection.cancel_edit();
-        assert_eq!(selection.included, baseline);
-        selection.begin_edit();
-        selection.set(&id, Service::Slack, false).unwrap();
-        assert!(selection.commit_edit());
-        assert!(selection.selected().is_empty());
-        assert!(
-            selection
-                .set("foreign-source", Service::Slack, true)
-                .is_err()
-        );
-    }
-    #[test]
-    fn malformed_origin_container_never_becomes_default_or_a_selectable_login() {
-        let home = tempfile::tempdir().unwrap();
-        let store = home.path().join(".config/discord/Local Storage/leveldb");
-        std::fs::create_dir_all(&store).unwrap();
-        std::fs::write(store.join("CURRENT"), b"private-invalid-origin-sentinel").unwrap();
-        let inventory = account_transfer::discover(&SourceRoots {
-            home: home.path().to_owned(),
-            config: home.path().join(".config"),
-        });
-        let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        assert!(!selection.available());
-        assert!(selection.selected().is_empty());
-        let id = selection.sources[0].id.clone();
-        assert!(selection.set(&id, Service::Discord, true).is_err());
-        assert_eq!(
-            std::fs::read(store.join("CURRENT")).unwrap(),
-            b"private-invalid-origin-sentinel"
-        );
-        assert!(
-            !selection
-                .report()
-                .to_string()
-                .contains("private-invalid-origin-sentinel")
-        );
-    }
-    #[test]
-    fn migrate_all_includes_current_discord_origin_without_guessing_cookie_material() {
-        let home = tempfile::tempdir().unwrap();
-        let profile = home.path().join(".config/discord");
-        imager_backend::setup::service_sessions::source::discord_origin::fixture_selected_origin(
-            &profile,
-        );
-        let inventory = account_transfer::discover(&SourceRoots {
-            home: home.path().to_owned(),
-            config: home.path().join(".config"),
-        });
-        let selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        assert_eq!(selection.included.len(), 1);
-        assert_eq!(selection.included[0].1, Service::Discord);
-        assert_eq!(selection.sources[0].material, Material::DiscordOrigin);
-        assert!(!profile.join("Cookies").exists());
-        assert!(
-            !selection
-                .report()
-                .to_string()
-                .contains("private-origin-sentinel")
-        );
-        let prepared = selection
-            .selected()
-            .capture([7; 32], "operation".into())
-            .unwrap();
-        let (_, declaration) = prepared.seal(b"synthetic-checkpoint-password").unwrap();
-        assert_eq!(declaration.consumer_protocol, 2);
-        assert_eq!(declaration.sessions.len(), 1);
+    tilo_test_env::scenario! {
+        fn only_reviewed_supported_material_is_included_by_default;
+
+        phase migrate_all_defaults_only_actual_supported_material_and_preserves_original_wal;
+        {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let _first = firefox(home.path(), "first", true);
+            let _second = firefox(home.path(), "second", true);
+            let _empty = firefox(home.path(), "unrelated", false);
+            let inventory = inventory(home.path(), &["second", "unrelated", "first"]);
+            let before = bytes(home.path(), &["first", "second", "unrelated"]);
+            let selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
+            assert_eq!(selection.detected.len(), 2);
+            assert_eq!(
+                selection.included.len(),
+                1,
+                "one source per service/material"
+            );
+            assert_eq!(selection.included[0].1, Service::Slack);
+            assert_eq!(
+                selection.included[0].0,
+                selection
+                    .detected
+                    .iter()
+                    .map(|(id, _, _)| id)
+                    .min()
+                    .unwrap()
+                    .clone()
+            );
+            assert!(
+                selection
+                    .detected
+                    .iter()
+                    .all(|(_, _, presence)| *presence == Presence::Readable)
+            );
+            let mut reversed = inventory.candidates;
+            reversed.reverse();
+            assert_eq!(
+                Selection::discover(home.path(), &reversed)
+                    .unwrap()
+                    .included,
+                selection.included
+            );
+            assert_eq!(
+                bytes(home.path(), &["first", "second", "unrelated"]),
+                before
+            );
+            let report = selection.report().to_string();
+            assert!(!report.contains("private-synthetic-sentinel"));
+            assert!(!report.contains("private-unrelated-sentinel"));
+            assert!(!report.contains("source_snapshot_digest"));
+            let prepared = selection
+                .selected()
+                .capture([7; 32], "operation".into())
+                .unwrap();
+            let (_, declaration) = prepared.seal(b"synthetic-checkpoint-password").unwrap();
+            assert_eq!(declaration.sessions.len(), 1);
+        }
+
+        phase database_container_without_selected_service_material_is_not_an_included_login;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let _empty = firefox(home.path(), "unrelated", false);
+            let inventory = inventory(home.path(), &["unrelated"]);
+            let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
+            assert!(!selection.available());
+            assert!(selection.selected().is_empty());
+            let id = selection.sources[0].id.clone();
+            assert!(selection.set(&id, Service::Slack, true).is_err());
+            assert!(selection.set(&id, Service::Discord, true).is_err());
+        }
+
+        phase default_inclusion_exclusion_and_cancel_preserve_exact_reviewed_baseline;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let _source = firefox(home.path(), "included", true);
+            let inventory = inventory(home.path(), &["included"]);
+            let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
+            let baseline = selection.included.clone();
+            let id = baseline[0].0.clone();
+            selection.begin_edit();
+            assert!(selection.set(&id, Service::Slack, false).unwrap());
+            selection.cancel_edit();
+            assert_eq!(selection.included, baseline);
+            selection.begin_edit();
+            selection.set(&id, Service::Slack, false).unwrap();
+            assert!(selection.commit_edit());
+            assert!(selection.selected().is_empty());
+            assert!(
+                selection
+                    .set("foreign-source", Service::Slack, true)
+                    .is_err()
+            );
+        }
+
+        phase malformed_origin_container_never_becomes_default_or_a_selectable_login;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let store = home.path().join(".config/discord/Local Storage/leveldb");
+            std::fs::create_dir_all(&store).unwrap();
+            std::fs::write(store.join("CURRENT"), b"private-invalid-origin-sentinel").unwrap();
+            let inventory = account_transfer::discover(&SourceRoots {
+                home: home.path().to_owned(),
+                config: home.path().join(".config"),
+            });
+            let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
+            assert!(!selection.available());
+            assert!(selection.selected().is_empty());
+            let id = selection.sources[0].id.clone();
+            assert!(selection.set(&id, Service::Discord, true).is_err());
+            assert_eq!(
+                std::fs::read(store.join("CURRENT")).unwrap(),
+                b"private-invalid-origin-sentinel"
+            );
+            assert!(
+                !selection
+                    .report()
+                    .to_string()
+                    .contains("private-invalid-origin-sentinel")
+            );
+        }
+
+        phase migrate_all_includes_current_discord_origin_without_guessing_cookie_material;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let profile = home.path().join(".config/discord");
+            imager_backend::setup::service_sessions::source::discord_origin::fixture_selected_origin(
+                &profile,
+            );
+            let inventory = account_transfer::discover(&SourceRoots {
+                home: home.path().to_owned(),
+                config: home.path().join(".config"),
+            });
+            let selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
+            assert_eq!(selection.included.len(), 1);
+            assert_eq!(selection.included[0].1, Service::Discord);
+            assert_eq!(selection.sources[0].material, Material::DiscordOrigin);
+            assert!(!profile.join("Cookies").exists());
+            assert!(
+                !selection
+                    .report()
+                    .to_string()
+                    .contains("private-origin-sentinel")
+            );
+            let prepared = selection
+                .selected()
+                .capture([7; 32], "operation".into())
+                .unwrap();
+            let (_, declaration) = prepared.seal(b"synthetic-checkpoint-password").unwrap();
+            assert_eq!(declaration.consumer_protocol, 2);
+            assert_eq!(declaration.sessions.len(), 1);
+        }
     }
     #[test]
     fn public_belongings_action_can_exclude_a_default_included_detected_session() {
@@ -1070,31 +1108,6 @@ mod tests {
             )
             .unwrap();
         database
-    }
-    #[test]
-    fn encrypted_chromium_material_is_visible_for_explicit_access_without_discovery_decryption() {
-        let home = tempfile::tempdir().unwrap();
-        let profile = home.path().join(".config/chromium/Default");
-        let _database = encrypted_chromium(home.path());
-        let roots = SourceRoots {
-            home: home.path().to_owned(),
-            config: home.path().join(".config"),
-        };
-        let inventory = account_transfer::discover(&roots);
-        let before = std::fs::read(profile.join("Cookies")).unwrap();
-        let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        assert_eq!(selection.detected.len(), 1);
-        assert_eq!(selection.detected[0].1, Service::Slack);
-        assert_eq!(selection.detected[0].2, Presence::NeedsAccess);
-        assert!(
-            selection.selected().is_empty(),
-            "undecrypted input is not proved readable"
-        );
-        assert!(selection.report().to_string().contains("needs_access"));
-        let id = selection.detected[0].0.clone();
-        assert!(selection.set(&id, Service::Slack, true).unwrap());
-        assert!(selection.set(&id, Service::Discord, true).is_err());
-        assert_eq!(std::fs::read(profile.join("Cookies")).unwrap(), before);
     }
     #[test]
     fn overview_reports_selected_material_and_only_selected_permission_attention() {

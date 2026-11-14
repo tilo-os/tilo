@@ -16,14 +16,17 @@ use tilo_actions::remote::{
     InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
-use super::{CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS, MEMBERS};
+use super::{
+    CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS, MEMBERS, NAME, VERBS,
+};
 use crate::app_serving::AppServingPlane as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
+use tilo_relay_protocol::WorkspaceId;
 
 /// What a pending answer comes to, on this runtime.
 pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
@@ -132,7 +135,9 @@ pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeReq
 
 /// A new workspace of `workspaces`, the workspace carrying it, and its governance
 /// as actions.
-pub(super) async fn governed(workspaces: &Workspaces) -> (String, u64, HostWorkspaceActions) {
+pub(super) async fn governed(
+    workspaces: &Workspaces,
+) -> (String, WorkspaceId, HostWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -140,7 +145,11 @@ pub(super) async fn governed(workspaces: &Workspaces) -> (String, u64, HostWorks
 }
 
 /// The verbs `caller` is offered on the workspace `workspace_id` carries.
-async fn offered(host: &HostWorkspaceActions, workspace_id: u64, caller: &Caller) -> Vec<String> {
+async fn offered(
+    host: &HostWorkspaceActions,
+    workspace_id: WorkspaceId,
+    caller: &Caller,
+) -> Vec<String> {
     let query = CatalogueQuery {
         provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
         max_results: 100,
@@ -158,7 +167,7 @@ async fn offered(host: &HostWorkspaceActions, workspace_id: u64, caller: &Caller
 /// `request` by `caller`: what it produced, or why not.
 async fn invoke(
     host: &HostWorkspaceActions,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     caller: &Caller,
     request: InvokeRequest,
 ) -> Result<Value, ActionHostError> {
@@ -170,6 +179,17 @@ async fn invoke(
 }
 
 const INVITE_FAMILY: [&str; 4] = [governance::INVITE, INVITATIONS, CANCEL_INVITATION, MEMBERS];
+
+/// Naming themselves, which every person is offered in a workspace they are
+/// in and no grant gives them.
+const NAME_SELF: [&str; 1] = [NAME];
+
+/// `verbs` in the order the catalogue offers them.
+fn offered_in_catalogue(verbs: impl IntoIterator<Item = &'static str>) -> Vec<String> {
+    let mut offered = verbs.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    offered.sort_by_key(|verb| VERBS.iter().position(|row| row.id == verb));
+    offered
+}
 
 #[tokio::test]
 async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
@@ -185,25 +205,37 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     // workspace's own governance resource, removing and banning included: their
     // own request confirms it.
     let owners = offered(&host, workspace_id, &caller(&owner)).await;
-    for verb in INVITE_FAMILY.iter().chain(&[
-        governance::UNBAN,
-        governance::CALL,
-        governance::REMOVE_MEMBER,
-        governance::BAN,
-    ]) {
+    for verb in INVITE_FAMILY
+        .iter()
+        .chain(&NAME_SELF)
+        .chain(&[
+            governance::UNBAN,
+            governance::CALL,
+            governance::REMOVE_MEMBER,
+            governance::BAN,
+        ])
+        .copied()
+    {
         assert!(
             owners.iter().any(|offered| offered == verb),
             "{verb}: {owners:?}"
         );
     }
 
-    // An Editor by role alone is offered nothing.
-    assert!(offered(&host, workspace_id, &caller(&ada)).await.is_empty());
+    // An Editor by role alone is offered naming themselves and nothing else.
+    assert_eq!(
+        offered(&host, workspace_id, &caller(&ada)).await,
+        NAME_SELF.map(str::to_owned).to_vec()
+    );
 
-    // Granted invite, Ada is offered inviting and nothing beyond it.
+    // Granted invite, Ada is offered inviting and naming themselves, and
+    // nothing beyond them.
     grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
     let granted = offered(&host, workspace_id, &caller(&ada)).await;
-    assert_eq!(granted, INVITE_FAMILY.map(str::to_owned).to_vec());
+    assert_eq!(
+        granted,
+        offered_in_catalogue(INVITE_FAMILY.iter().chain(&NAME_SELF).copied())
+    );
 
     // A Moderator is offered unbanning members below them, but no
     // invitations. Roles, restrictions and the workspace's settings are written
@@ -215,20 +247,20 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
             SetMemberRoleRequest {
                 request_id: [30; 32],
                 user_public_key: bo.user_public_key,
-                role: MemberRole::Moderator,
+                role: Role::Moderator,
             },
         )
         .await
         .unwrap();
     let moderator = offered(&host, workspace_id, &caller(&bo)).await;
-    assert_eq!(moderator, [governance::UNBAN].map(str::to_owned));
+    assert_eq!(moderator, offered_in_catalogue([NAME, governance::UNBAN]));
 
     // An agent governs nothing, even on the relay person's own key, and a
     // workspace that carries no governed workspace offers nothing.
     let agent = Caller::delegated_agent("writer", owner.user_public_key, owner.device_public_key);
     assert!(offered(&host, workspace_id, &agent).await.is_empty());
     assert!(
-        offered(&host, workspace_id ^ 1, &caller(&owner))
+        offered(&host, WorkspaceId::from_u128(41), &caller(&owner))
             .await
             .is_empty()
     );
@@ -277,7 +309,7 @@ async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
         .into_iter()
         .find(|pending| hex::encode(pending.invite_id) == timed_id)
         .expect("the timed invitation is pending");
-    assert_eq!(timed.role, MemberRole::Viewer);
+    assert_eq!(timed.role, Role::Viewer);
     assert_eq!(timed.recipient_user_public_key, Some(guest));
     assert_eq!(timed.invitee_name.as_deref(), Some("Ada"));
     let lifetime: u64 = 600_000_000_000;
@@ -438,7 +470,7 @@ async fn destructive_governance_waits_for_the_person() {
             SetMemberRoleRequest {
                 request_id: [31; 32],
                 user_public_key: bo.user_public_key,
-                role: MemberRole::Moderator,
+                role: Role::Moderator,
             },
         )
         .await
@@ -542,7 +574,7 @@ async fn a_host_without_apps_answers_only_its_rooms_governance() {
     assert!(plane.answers(&someone, &governance));
     assert!(!plane.answers(&someone, &RemoteActionMessage::Invoke(app)));
     // Nothing is attached: the workspace's actions are unknown, never run.
-    let Some(answer) = plane.serve(7, &someone, governance) else {
+    let Some(answer) = plane.serve(WorkspaceId::from_u128(7), &someone, governance) else {
         panic!("an invocation is answered");
     };
     drop(plane);
@@ -715,7 +747,7 @@ fn dev_release(publisher: &str, version: &str, surface: u8) -> Value {
 async fn an_editor_installs_nothing(
     workspaces: &Workspaces,
     host: &HostWorkspaceActions,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     editor: &DeviceCert,
     publisher: &str,
@@ -750,7 +782,7 @@ async fn an_editor_installs_nothing(
 async fn a_developer_installs_its_own_build(
     workspaces: &Workspaces,
     host: &HostWorkspaceActions,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     owner: &DeviceCert,
     developer: &DeviceCert,

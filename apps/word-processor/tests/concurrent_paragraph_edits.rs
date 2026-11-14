@@ -57,130 +57,135 @@ fn splice(block: &str, at: usize, del: usize, ins: &str) -> RichTextAction {
     splice_text_action(RegionKind::Body, block, at, at.saturating_add(del), ins)
 }
 
-#[test]
-fn concurrent_first_typing_in_a_fresh_paragraph_keeps_both_sides() {
-    let mut base = fresh_writer_document();
-    let block = blocks(&base)[0].clone();
-    let (mut a, mut b) = fork(&mut base);
-    apply(&mut a, &splice(&block, 0, 0, "alpha "));
-    apply(&mut b, &splice(&block, 0, 0, "beta "));
-    let snap = merge_both(&mut a, &mut b);
-    let text = only_text(&snap);
-    assert!(
-        text.contains("alpha ") && text.contains("beta "),
-        "both concurrent first edits survive, got {text:?}"
-    );
-    assert_eq!(text.chars().count(), "alpha beta ".chars().count());
-}
+tilo_test_env::scenario! {
+    /// Two replicas edit one paragraph apart and merge both ways.
+    fn concurrent_edits_in_one_paragraph_keep_both_sides;
 
-#[test]
-fn concurrent_typing_into_a_new_empty_paragraph_keeps_both_sides() {
-    let mut base = fresh_writer_document();
-    let first = blocks(&base)[0].clone();
-    apply(&mut base, &splice(&first, 0, 0, "Intro"));
-    apply(
-        &mut base,
-        &split_block_action(RegionKind::Body, &first, 5, "paragraph", None),
-    );
-    let second = blocks(&base)[1].clone();
-    let (mut a, mut b) = fork(&mut base);
-    apply(&mut a, &splice(&second, 0, 0, "from A"));
-    apply(&mut b, &splice(&second, 0, 0, "from B"));
-    let snap = merge_both(&mut a, &mut b);
-    assert_eq!(snap.blocks[0].text, "Intro");
-    let text = &snap.blocks[1].text;
-    assert!(
-        text.contains("from A") && text.contains("from B"),
-        "got {text:?}"
-    );
-}
+    phase concurrent_first_typing_in_a_fresh_paragraph_keeps_both_sides;
+    {
+        let mut base = fresh_writer_document();
+        let block = blocks(&base)[0].clone();
+        let (mut a, mut b) = fork(&mut base);
+        apply(&mut a, &splice(&block, 0, 0, "alpha "));
+        apply(&mut b, &splice(&block, 0, 0, "beta "));
+        let snap = merge_both(&mut a, &mut b);
+        let text = only_text(&snap);
+        assert!(
+            text.contains("alpha ") && text.contains("beta "),
+            "both concurrent first edits survive, got {text:?}"
+        );
+        assert_eq!(text.chars().count(), "alpha beta ".chars().count());
+    }
 
-#[test]
-fn concurrent_inserts_at_different_positions_merge_character_level() {
-    let mut base = fresh_writer_document();
-    let block = blocks(&base)[0].clone();
-    apply(&mut base, &splice(&block, 0, 0, "Hello world"));
-    let (mut a, mut b) = fork(&mut base);
-    apply(&mut a, &splice(&block, 0, 0, ">> "));
-    apply(&mut b, &splice(&block, 11, 0, "!"));
-    apply(&mut b, &splice(&block, 5, 0, ","));
-    let snap = merge_both(&mut a, &mut b);
-    assert_eq!(only_text(&snap), ">> Hello, world!");
-}
+    phase concurrent_typing_into_a_new_empty_paragraph_keeps_both_sides;
+    {
+        let mut base = fresh_writer_document();
+        let first = blocks(&base)[0].clone();
+        apply(&mut base, &splice(&first, 0, 0, "Intro"));
+        apply(
+            &mut base,
+            &split_block_action(RegionKind::Body, &first, 5, "paragraph", None),
+        );
+        let second = blocks(&base)[1].clone();
+        let (mut a, mut b) = fork(&mut base);
+        apply(&mut a, &splice(&second, 0, 0, "from A"));
+        apply(&mut b, &splice(&second, 0, 0, "from B"));
+        let snap = merge_both(&mut a, &mut b);
+        assert_eq!(snap.blocks[0].text, "Intro");
+        let text = &snap.blocks[1].text;
+        assert!(
+            text.contains("from A") && text.contains("from B"),
+            "got {text:?}"
+        );
+    }
 
-#[test]
-fn concurrent_insert_and_delete_in_one_paragraph_preserve_both_intents() {
-    let mut base = fresh_writer_document();
-    let block = blocks(&base)[0].clone();
-    apply(&mut base, &splice(&block, 0, 0, "Hello cruel world"));
-    let (mut a, mut b) = fork(&mut base);
-    apply(&mut a, &splice(&block, 6, 6, ""));
-    apply(&mut b, &splice(&block, 12, 0, "big "));
-    apply(&mut b, &splice(&block, 21, 0, "!"));
-    let snap = merge_both(&mut a, &mut b);
-    assert_eq!(only_text(&snap), "Hello big world!");
-}
+    phase concurrent_inserts_at_different_positions_merge_character_level;
+    {
+        let mut base = fresh_writer_document();
+        let block = blocks(&base)[0].clone();
+        apply(&mut base, &splice(&block, 0, 0, "Hello world"));
+        let (mut a, mut b) = fork(&mut base);
+        apply(&mut a, &splice(&block, 0, 0, ">> "));
+        apply(&mut b, &splice(&block, 11, 0, "!"));
+        apply(&mut b, &splice(&block, 5, 0, ","));
+        let snap = merge_both(&mut a, &mut b);
+        assert_eq!(only_text(&snap), ">> Hello, world!");
+    }
 
-#[test]
-fn concurrent_formatting_and_typing_in_one_paragraph_both_survive() {
-    let mut base = fresh_writer_document();
-    let block = blocks(&base)[0].clone();
-    apply(&mut base, &splice(&block, 0, 0, "Hello world"));
-    let (mut a, mut b) = fork(&mut base);
-    apply(
-        &mut a,
-        &set_mark_action(
-            RegionKind::Body,
-            vec![Span {
-                block: block.clone(),
-                start: 6,
-                end: 11,
-            }],
-            "bold",
-            Some(MarkVal::Bool(true)),
-            vec![],
-        ),
-    );
-    apply(&mut b, &splice(&block, 0, 0, "Say: "));
-    let snap = merge_both(&mut a, &mut b);
-    let paragraph = &snap.blocks[0];
-    assert_eq!(paragraph.text, "Say: Hello world");
-    let bold: Vec<_> = paragraph
-        .marks
-        .iter()
-        .filter(|mark| mark.name == "bold")
-        .map(|mark| (mark.start, mark.end))
-        .collect();
-    assert_eq!(bold, vec![(11, 16)], "the mark follows the characters");
-}
+    phase concurrent_insert_and_delete_in_one_paragraph_preserve_both_intents;
+    {
+        let mut base = fresh_writer_document();
+        let block = blocks(&base)[0].clone();
+        apply(&mut base, &splice(&block, 0, 0, "Hello cruel world"));
+        let (mut a, mut b) = fork(&mut base);
+        apply(&mut a, &splice(&block, 6, 6, ""));
+        apply(&mut b, &splice(&block, 12, 0, "big "));
+        apply(&mut b, &splice(&block, 21, 0, "!"));
+        let snap = merge_both(&mut a, &mut b);
+        assert_eq!(only_text(&snap), "Hello big world!");
+    }
 
-#[test]
-fn concurrent_formatting_and_first_typing_in_a_fresh_paragraph_both_survive() {
-    let mut base = fresh_writer_document();
-    let block = blocks(&base)[0].clone();
-    let (mut a, mut b) = fork(&mut base);
-    apply(&mut a, &splice(&block, 0, 0, "bold"));
-    apply(
-        &mut a,
-        &set_mark_action(
-            RegionKind::Body,
-            vec![Span {
-                block: block.clone(),
-                start: 0,
-                end: 4,
-            }],
-            "bold",
-            Some(MarkVal::Bool(true)),
-            vec![],
-        ),
-    );
-    apply(&mut b, &splice(&block, 0, 0, "plain"));
-    let snap = merge_both(&mut a, &mut b);
-    let paragraph = &snap.blocks[0];
-    assert!(
-        paragraph.text.contains("bold") && paragraph.text.contains("plain"),
-        "got {:?}",
-        paragraph.text
-    );
-    assert!(paragraph.marks.iter().any(|mark| mark.name == "bold"));
+    phase concurrent_formatting_and_typing_in_one_paragraph_both_survive;
+    {
+        let mut base = fresh_writer_document();
+        let block = blocks(&base)[0].clone();
+        apply(&mut base, &splice(&block, 0, 0, "Hello world"));
+        let (mut a, mut b) = fork(&mut base);
+        apply(
+            &mut a,
+            &set_mark_action(
+                RegionKind::Body,
+                vec![Span {
+                    block: block.clone(),
+                    start: 6,
+                    end: 11,
+                }],
+                "bold",
+                Some(MarkVal::Bool(true)),
+                vec![],
+            ),
+        );
+        apply(&mut b, &splice(&block, 0, 0, "Say: "));
+        let snap = merge_both(&mut a, &mut b);
+        let paragraph = &snap.blocks[0];
+        assert_eq!(paragraph.text, "Say: Hello world");
+        let bold: Vec<_> = paragraph
+            .marks
+            .iter()
+            .filter(|mark| mark.name == "bold")
+            .map(|mark| (mark.start, mark.end))
+            .collect();
+        assert_eq!(bold, vec![(11, 16)], "the mark follows the characters");
+    }
+
+    phase concurrent_formatting_and_first_typing_in_a_fresh_paragraph_both_survive;
+    {
+        let mut base = fresh_writer_document();
+        let block = blocks(&base)[0].clone();
+        let (mut a, mut b) = fork(&mut base);
+        apply(&mut a, &splice(&block, 0, 0, "bold"));
+        apply(
+            &mut a,
+            &set_mark_action(
+                RegionKind::Body,
+                vec![Span {
+                    block: block.clone(),
+                    start: 0,
+                    end: 4,
+                }],
+                "bold",
+                Some(MarkVal::Bool(true)),
+                vec![],
+            ),
+        );
+        apply(&mut b, &splice(&block, 0, 0, "plain"));
+        let snap = merge_both(&mut a, &mut b);
+        let paragraph = &snap.blocks[0];
+        assert!(
+            paragraph.text.contains("bold") && paragraph.text.contains("plain"),
+            "got {:?}",
+            paragraph.text
+        );
+        assert!(paragraph.marks.iter().any(|mark| mark.name == "bold"));
+    }
 }

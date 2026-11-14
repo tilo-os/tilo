@@ -629,7 +629,9 @@ impl<R: Resource> Each<R> {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.menu.cursor = ctx.logical(position);
         }
-        if self.menu.menu.is_open() {
+        // An open menu, or a box the window was asked for standing on it with no
+        // menu around it, has the pointer and the keys.
+        if self.menu.menu.is_showing() {
             self.menu.menu.handle_event(event, ctx);
             if let Some(index) = self.menu.menu.take_selection() {
                 self.choose(index);
@@ -1020,7 +1022,7 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.menu.is_open()
+        self.menu.menu.is_showing()
             || self
                 .mounted()
                 .any(|(_, view)| view.widget.wants_pointer_capture())
@@ -1048,11 +1050,25 @@ impl<R: Resource> Widget for Each<R> {
             row.widget
                 .draw_overlay(scene, transform, text, theme, presence);
         });
-        // Drawn while it is open and while it leaves (`motion::Appear`);
-        // a closed menu draws nothing.
+        // Drawn while it is open and while it leaves (`motion::Appear`); a
+        // closed menu draws nothing but a box its window was asked for.
+        self.menu.menu.take_window_send_box(presence);
         self.menu
             .menu
             .draw_overlay(scene, transform, text, theme, presence);
+    }
+
+    /// What the menu paints — a menu arriving or leaving, a box beside it — is
+    /// the list's frame too, though the menu is no child while it is closed.
+    fn needs_redraw(&self) -> bool {
+        self.menu.menu.needs_redraw() || self.mounted().any(|(_, view)| view.widget.needs_redraw())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.menu.menu.needs_animation_frame()
+            || self
+                .mounted()
+                .any(|(_, view)| view.widget.needs_animation_frame())
     }
 
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
@@ -1119,10 +1135,12 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        // Its menu is part of the list's frame while it shows, and a box its
+        // window was asked for shows with no menu around it.
         let open = self
             .menu
             .menu
-            .is_open()
+            .is_showing()
             .then_some(&self.menu.menu as &dyn Widget);
         self.mounted()
             .map(|(_, view)| view.widget.as_ref())
@@ -1131,7 +1149,9 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let open = self.menu.menu.is_open();
+        // The box a window was asked for stands with no menu around it, and it is a child then as
+        // the open menu is: the list hands it out as it lists it.
+        let open = self.menu.menu.is_showing();
         let mut children: Vec<&mut (dyn Widget + '_)> =
             Vec::with_capacity(self.mounted.len().saturating_add(1));
         // `mounted` is ascending: split each mounted row off the rest.
@@ -1155,6 +1175,13 @@ impl<R: Resource> Widget for Each<R> {
             children.push(&mut self.menu.menu);
         }
         children
+    }
+
+    /// The menu placed over the rows — and the box it carries with no menu around it — is laid out
+    /// by the list itself, where the window's layout gives it no node: an assistive technology and
+    /// an agent reach its controls through the row's node, as a person reaches them by pointer.
+    fn lays_out_child(&self, child_index: usize) -> bool {
+        self.menu.menu.is_showing() && child_index == self.mounted().count()
     }
 
     // A list of every item: each mounted row sits in an item that says

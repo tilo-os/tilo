@@ -57,6 +57,21 @@ pub fn desktop_draws_frame(window: &Window) -> Option<bool> {
     }
 }
 
+/// Whether a frame [`present`] shows may fill only the top-left corner of a larger buffer: the
+/// window shows the frame's own pixels, so its swapchain can outlast a change of size.
+pub fn crops_frames(window: &Window) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::WindowExtWayland as _;
+        window.crops_frames()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+        false
+    }
+}
+
 /// Present a frame of `size` pixels that `present` commits, at the size it was drawn for, and
 /// report its presentation to `observer` when one is given. Returns whether it is observed.
 pub fn present(

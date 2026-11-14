@@ -289,35 +289,93 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn placeholders_substitute_and_are_referenced_in_order() {
-        let v = vars(&[("base_url", "https://api.example.com"), ("ver", "v2")]);
-        let out = substitute("{{base_url}}/{{ver}}/users/{{missing}}", &v);
-        assert_eq!(
-            out, "https://api.example.com/v2/users/{{missing}}",
-            "case known and unknown"
-        );
+    tilo_test_env::scenario! {
+        fn placeholders_resolve_once_and_name_what_they_reference;
 
-        let v = vars(&[("token", "abc")]);
-        assert_eq!(
-            substitute("Bearer {{ token }}", &v),
-            "Bearer abc",
-            "case inner whitespace"
-        );
+        phase placeholders_substitute_and_are_referenced_in_order;
+        {
+            let v = vars(&[("base_url", "https://api.example.com"), ("ver", "v2")]);
+            let out = substitute("{{base_url}}/{{ver}}/users/{{missing}}", &v);
+            assert_eq!(
+                out, "https://api.example.com/v2/users/{{missing}}",
+                "case known and unknown"
+            );
 
-        let v = vars(&[("name", "wörld")]);
-        assert_eq!(
-            substitute("héllo {{name}} ☃", &v),
-            "héllo wörld ☃",
-            "case unicode"
-        );
+            let v = vars(&[("token", "abc")]);
+            assert_eq!(
+                substitute("Bearer {{ token }}", &v),
+                "Bearer abc",
+                "case inner whitespace"
+            );
 
-        let refs = referenced_vars("{{a}}/{{b}}/{{a}}");
-        assert_eq!(
-            refs,
-            vec!["a".to_string(), "b".to_string()],
-            "case referenced vars"
-        );
+            let v = vars(&[("name", "wörld")]);
+            assert_eq!(
+                substitute("héllo {{name}} ☃", &v),
+                "héllo wörld ☃",
+                "case unicode"
+            );
+
+            let refs = referenced_vars("{{a}}/{{b}}/{{a}}");
+            assert_eq!(
+                refs,
+                vec!["a".to_string(), "b".to_string()],
+                "case referenced vars"
+            );
+        }
+
+        phase a_placeholder_resolves_once_and_what_does_not_resolve_stays_as_typed;
+        // A placeholder resolves once, to its value as it stands; what does not resolve is sent
+        // as it was typed.
+        {
+            let known = vars(&[
+                ("id", "7"),
+                ("host", "api.test"),
+                ("nested", "{{id}}"),
+                ("ünï", "ö"),
+            ]);
+            for (input, want) in [
+                ("", ""),
+                ("no placeholder", "no placeholder"),
+                ("{{host}}{{id}}", "api.test7"),
+                ("{{id}}{{id}}", "77"),
+                ("{{ missing }}", "{{ missing }}"),
+                ("{{Id}}", "{{Id}}"),
+                ("{{}}", "{{}}"),
+                ("{{  }}", "{{  }}"),
+                ("{{id", "{{id"),
+                ("id}}", "id}}"),
+                ("{{nested}}", "{{id}}"),
+                ("é{{id}}é", "é7é"),
+                ("{{ünï}}", "ö"),
+                ("{\"id\":{{id}}}", "{\"id\":7}"),
+            ] {
+                assert_eq!(substitute(input, &known), want, "substitute({input:?})");
+            }
+        }
+
+        phase referenced_and_defined_names_are_trimmed_and_never_empty;
+        // The names a string refers to and the names an environment defines are read alike:
+        // trimmed, and never empty.
+        {
+            for (input, want) in [
+                ("{{ a }}/{{a}}", vec!["a"]),
+                ("{{b}}{{a}}{{b}}", vec!["b", "a"]),
+                ("{{}}{{ }}", vec![]),
+                ("{{a}} then {{b", vec!["a"]),
+                ("plain", vec![]),
+            ] {
+                assert_eq!(referenced_vars(input), want, "referenced_vars({input:?})");
+            }
+
+            let mut off = KeyValue::new("off", "1");
+            off.enabled = false;
+            let defined = var_map(&[
+                KeyValue::new(" host ", " api.test "),
+                KeyValue::new("   ", "unnamed"),
+                off,
+            ]);
+            assert_eq!(defined, vars(&[("host", " api.test ")]));
+        }
     }
 
     #[test]

@@ -276,30 +276,34 @@ impl SettingsPortal {
 mod tests {
     use super::*;
 
-    #[test]
-    fn read_all_honours_only_trailing_section_globs() {
-        let mut settings = BTreeMap::new();
-        settings.insert(
-            ("org.freedesktop.appearance".into(), "color-scheme".into()),
-            PortalSetting::Unsigned(1),
-        );
-        settings.insert(
-            ("org.example".into(), "key".into()),
-            PortalSetting::Unsigned(2),
-        );
-        assert_eq!(grouped(settings, &["org.freedesktop.*".into()]).len(), 1);
-        assert!(matches_namespace("", "anything"));
-        assert!(!matches_namespace("org.*.bad", "org.any.bad"));
-        assert!(!matches_namespace("org.free.*", "org.freedesktop"));
-    }
+    tilo_test_env::scenario! {
+        fn settings_are_read_by_section_glob_and_announced_only_when_they_change;
 
-    #[test]
-    fn a_value_that_did_not_change_is_not_announced() {
-        let settings = Settings::default();
-        let mut changes = settings.subscribe();
-        settings.set("org.example", "key", PortalSetting::Bool(true));
-        settings.set("org.example", "key", PortalSetting::Bool(true));
-        assert!(changes.try_recv().is_ok());
-        assert!(changes.try_recv().is_err(), "announced once");
+        phase read_all_honours_only_trailing_section_globs;
+        {
+            let mut settings = BTreeMap::new();
+            settings.insert(
+                ("org.freedesktop.appearance".into(), "color-scheme".into()),
+                PortalSetting::Unsigned(1),
+            );
+            settings.insert(
+                ("org.example".into(), "key".into()),
+                PortalSetting::Unsigned(2),
+            );
+            assert_eq!(grouped(settings, &["org.freedesktop.*".into()]).len(), 1);
+            assert!(matches_namespace("", "anything"));
+            assert!(!matches_namespace("org.*.bad", "org.any.bad"));
+            assert!(!matches_namespace("org.free.*", "org.freedesktop"));
+        }
+
+        phase a_value_that_did_not_change_is_not_announced;
+        {
+            let settings = Settings::default();
+            let mut changes = settings.subscribe();
+            settings.set("org.example", "key", PortalSetting::Bool(true));
+            settings.set("org.example", "key", PortalSetting::Bool(true));
+            assert!(changes.try_recv().is_ok());
+            assert!(changes.try_recv().is_err(), "announced once");
+        }
     }
 }

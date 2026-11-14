@@ -373,132 +373,135 @@ fn triggers(seed: &mut Seed) -> Vec<TriggerSpec> {
     triggers
 }
 
-#[test]
-fn every_generated_program_reads_back_as_itself() {
-    for start in 1..=RUNS {
-        let mut seed = Seed(
-            u64::try_from(start)
-                .unwrap_or(1)
-                .wrapping_mul(0x9E37_79B9_7F4A_7C15),
-        );
-        let shortcut = generate(&mut seed);
-        round_trip(&shortcut);
-    }
-}
+tilo_test_env::scenario! {
+    fn generated_and_edited_programs_read_back_as_written;
 
-#[test]
-fn a_program_a_person_edited_reads_back_as_the_program_they_wrote() {
-    // An edit lands as the same text a fresh render writes, so the two views
-    // agree on the document rather than parting on the first keystroke.
-    let catalog = catalog();
-    let shared = Shared {
-        catalog: &catalog,
-        app_label: &bare,
-    };
-    // A seed whose program names the folder argument, so there is an argument
-    // in the text to change.
-    let mut seed = Seed(0x5EED);
-    let mut shortcut = None;
-    for _ in 0..RUNS {
-        let program = generate(&mut seed);
-        let (text, _) = match render(&shared, &program, &BTreeMap::new()) {
+    phase every_generated_program_reads_back_as_itself;
+    {
+        for start in 1..=RUNS {
+            let mut seed = Seed(
+                u64::try_from(start)
+                    .unwrap_or(1)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            );
+            let shortcut = generate(&mut seed);
+            round_trip(&shortcut);
+        }
+    }
+
+    phase a_program_a_person_edited_reads_back_as_the_program_they_wrote;
+    {
+        // An edit lands as the same text a fresh render writes, so the two views
+        // agree on the document rather than parting on the first keystroke.
+        let catalog = catalog();
+        let shared = Shared {
+            catalog: &catalog,
+            app_label: &bare,
+        };
+        // A seed whose program names the folder argument, so there is an argument
+        // in the text to change.
+        let mut seed = Seed(0x5EED);
+        let mut shortcut = None;
+        for _ in 0..RUNS {
+            let program = generate(&mut seed);
+            let (text, _) = match render(&shared, &program, &BTreeMap::new()) {
+                Ok(rendered) => rendered,
+                Err(error) => panic!("{error}"),
+            };
+            if text.contains(FOLDER_ARGUMENT) {
+                shortcut = Some(program);
+                break;
+            }
+        }
+        let Some(shortcut) = shortcut else {
+            panic!("no generated program names its folder argument");
+        };
+        let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
             Ok(rendered) => rendered,
             Err(error) => panic!("{error}"),
         };
-        if text.contains(FOLDER_ARGUMENT) {
-            shortcut = Some(program);
-            break;
+        // One argument changed in the text: the program reads back with that
+        // argument changed and nothing else.
+        let edited = text.replacen(FOLDER_ARGUMENT, "Folder \"elsewhere\"", 1);
+        assert_ne!(edited, text, "the program has the argument to change");
+        let edit = match crate::text::edit(&shared, &shortcut, &edited) {
+            Ok(edit) => edit,
+            Err(error) => panic!("line {}: {error}\n{edited}", error.line),
+        };
+        let (again, _) = match render(&shared, &edit.shortcut, &BTreeMap::new()) {
+            Ok(rendered) => rendered,
+            Err(error) => panic!("{error}"),
+        };
+        assert_eq!(again, edited, "a program's text is the text it reads from");
+    }
+
+    phase one_changed_argument_changes_one_field_of_one_step;
+    {
+        let catalog = catalog();
+        let shared = Shared {
+            catalog: &catalog,
+            app_label: &bare,
+        };
+        let before = super::program();
+        let (text, _) = match render(&shared, &before, &BTreeMap::new()) {
+            Ok(rendered) => rendered,
+            Err(error) => panic!("{error}"),
+        };
+        let edited = text.replacen("Folder input folder", "Folder \"elsewhere\"", 1);
+        assert_ne!(edited, text);
+        let edit = match crate::text::edit(&shared, &before, &edited) {
+            Ok(edit) => edit,
+            Err(error) => panic!("{error}\n{edited}"),
+        };
+        let listed = &edit.shortcut.steps[0];
+        let StepKind::Invoke { args, resource, .. } = &listed.kind else {
+            panic!("the first step invokes");
+        };
+        assert_eq!(
+            args.get("folder"),
+            Some(&Binding::Literal(serde_json::json!("elsewhere")))
+        );
+        assert_eq!(*resource, Selector::FirstOfKind("notes.note".into()));
+        // Every other step is the step the document already held.
+        assert_eq!(listed.id, "listed");
+        assert_eq!(edit.shortcut.steps[1].id, "each");
+        assert!(edit.removed.is_empty(), "{:?}", edit.removed);
+    }
+
+    phase a_dictionary_holding_a_list_reads_as_one_value;
+    {
+        let targets = super::super::Targets::default();
+        for text in [
+            r#"{"kind": "text", "path": ["a", "b"]}"#,
+            r#"{ "kind": "text", "path": ["a", "b"] }"#,
+        ] {
+            let read = crate::text_read::binding_of(text, &targets)
+                .unwrap_or_else(|error| panic!("{text}: {error}"));
+            assert!(
+                matches!(read, Binding::Literal(Value::Object(_))),
+                "{text}: {read:?}"
+            );
         }
     }
-    let Some(shortcut) = shortcut else {
-        panic!("no generated program names its folder argument");
-    };
-    let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
-        Ok(rendered) => rendered,
-        Err(error) => panic!("{error}"),
-    };
-    // One argument changed in the text: the program reads back with that
-    // argument changed and nothing else.
-    let edited = text.replacen(FOLDER_ARGUMENT, "Folder \"elsewhere\"", 1);
-    assert_ne!(edited, text, "the program has the argument to change");
-    let edit = match crate::text::edit(&shared, &shortcut, &edited) {
-        Ok(edit) => edit,
-        Err(error) => panic!("line {}: {error}\n{edited}", error.line),
-    };
-    let (again, _) = match render(&shared, &edit.shortcut, &BTreeMap::new()) {
-        Ok(rendered) => rendered,
-        Err(error) => panic!("{error}"),
-    };
-    assert_eq!(again, edited, "a program's text is the text it reads from");
-}
 
-#[test]
-fn one_changed_argument_changes_one_field_of_one_step() {
-    let catalog = catalog();
-    let shared = Shared {
-        catalog: &catalog,
-        app_label: &bare,
-    };
-    let before = super::program();
-    let (text, _) = match render(&shared, &before, &BTreeMap::new()) {
-        Ok(rendered) => rendered,
-        Err(error) => panic!("{error}"),
-    };
-    let edited = text.replacen("Folder input folder", "Folder \"elsewhere\"", 1);
-    assert_ne!(edited, text);
-    let edit = match crate::text::edit(&shared, &before, &edited) {
-        Ok(edit) => edit,
-        Err(error) => panic!("{error}\n{edited}"),
-    };
-    let listed = &edit.shortcut.steps[0];
-    let StepKind::Invoke { args, resource, .. } = &listed.kind else {
-        panic!("the first step invokes");
-    };
-    assert_eq!(
-        args.get("folder"),
-        Some(&Binding::Literal(serde_json::json!("elsewhere")))
-    );
-    assert_eq!(*resource, Selector::FirstOfKind("notes.note".into()));
-    // Every other step is the step the document already held.
-    assert_eq!(listed.id, "listed");
-    assert_eq!(edit.shortcut.steps[1].id, "each");
-    assert!(edit.removed.is_empty(), "{:?}", edit.removed);
-}
-
-#[test]
-fn a_dictionary_holding_a_list_reads_as_one_value() {
-    let targets = super::super::Targets::default();
-    for text in [
-        r#"{"kind": "text", "path": ["a", "b"]}"#,
-        r#"{ "kind": "text", "path": ["a", "b"] }"#,
-    ] {
-        let read = crate::text_read::binding_of(text, &targets)
-            .unwrap_or_else(|error| panic!("{text}: {error}"));
-        assert!(
-            matches!(read, Binding::Literal(Value::Object(_))),
-            "{text}: {read:?}"
-        );
+    phase a_name_with_a_number_reads_as_the_step_it_names;
+    {
+        let mut targets = super::super::Targets::default();
+        targets.note_name("file in notes");
+        targets.note_name("file in notes 2");
+        let read = crate::text_read::binding_of("file in notes 2", &targets)
+            .expect("a numbered name is a name");
+        assert_eq!(read, Binding::step("file in notes 2", ""), "{read:?}");
     }
-}
 
-#[test]
-fn a_name_with_a_number_reads_as_the_step_it_names() {
-    let mut targets = super::super::Targets::default();
-    targets.note_name("file in notes");
-    targets.note_name("file in notes 2");
-    let read = crate::text_read::binding_of("file in notes 2", &targets)
-        .expect("a numbered name is a name");
-    assert_eq!(read, Binding::step("file in notes 2", ""), "{read:?}");
-}
-
-#[test]
-fn a_result_named_after_a_numbered_step_reads_back() {
-    let catalog = catalog();
-    let shared = Shared {
-        catalog: &catalog,
-        app_label: &bare,
-    };
-    let text = "shortcut \"Tidy\"\n\
+    phase a_result_named_after_a_numbered_step_reads_back;
+    {
+        let catalog = catalog();
+        let shared = Shared {
+            catalog: &catalog,
+            app_label: &bare,
+        };
+        let text = "shortcut \"Tidy\"\n\
                 input \"folder\" is text, not nothing, always, called \"Where they go\"\n\
                 file in notes on input folder\n\
                 when: not nothing is set\n\
@@ -507,12 +510,13 @@ fn a_result_named_after_a_numbered_step_reads_back() {
                 \x20 file on any Notes.note in notes\n\
                 file in notes on input folder\n\
                 result is file in notes 2\n";
-    let parsed = crate::text::parse(&shared, text).expect("this text is a program");
-    let output = parsed
-        .shortcut
-        .output
-        .expect("the program gives something back");
-    // The text names the last of the two lines that read alike, so the result
-    // has to be that step's, by the name the numbered phrase gives it.
-    assert_eq!(output, Binding::step("file in notes 2", ""), "{output:?}");
+        let parsed = crate::text::parse(&shared, text).expect("this text is a program");
+        let output = parsed
+            .shortcut
+            .output
+            .expect("the program gives something back");
+        // The text names the last of the two lines that read alike, so the result
+        // has to be that step's, by the name the numbered phrase gives it.
+        assert_eq!(output, Binding::step("file in notes 2", ""), "{output:?}");
+    }
 }

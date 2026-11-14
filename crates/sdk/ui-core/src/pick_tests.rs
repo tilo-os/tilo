@@ -131,114 +131,54 @@ fn window() -> Node {
     )
 }
 
-#[test]
-fn the_deepest_named_node_is_picked_with_its_chain_to_widen_along() {
-    let window = window();
-    let chain = targets_at(&window, Point::new(50.0, 80.0));
-    let names: Vec<_> = chain.iter().map(|target| target.role_name()).collect();
-    assert_eq!(names, ["List", "ListItem", "StaticText"]);
-    let deepest = chain.last().unwrap();
-    assert_eq!(deepest.name.as_deref(), Some("Thanks Ada for the fix"));
-    assert!(!deepest.interface);
-    assert_eq!(deepest.path, "Window[0]/List[0]/Row[0]/Text[1]");
-    assert_eq!(deepest.rect, Rect::new(10.0, 70.0, 300.0, 95.0));
-    let reply = targets_at(&window, Point::new(350.0, 120.0));
-    let reply = reply.last().unwrap();
-    assert_eq!(reply.role, Role::Button);
-    assert!(reply.interface);
-    assert_eq!(reply.path, "Window[0]/List[0]/Row[1]/Button[0]");
-}
+tilo_test_env::scenario! {
+    fn a_pick_finds_the_named_nodes_at_a_point_and_in_an_area;
 
-#[test]
-fn clipped_children_and_empty_space_pick_nothing_below() {
-    let window = window();
-    let below = targets_at(&window, Point::new(50.0, 185.0));
-    assert!(
-        below
-            .iter()
-            .all(|target| target.name.as_deref() != Some("Not on screen")),
-        "{below:?}"
-    );
-    assert!(targets_at(&window, Point::new(399.0, 299.0)).is_empty());
-}
+    phase the_deepest_named_node_is_picked_with_its_chain_to_widen_along;
+    {
+        let window = window();
+        let chain = targets_at(&window, Point::new(50.0, 80.0));
+        let names: Vec<_> = chain.iter().map(|target| target.role_name()).collect();
+        assert_eq!(names, ["List", "ListItem", "StaticText"]);
+        let deepest = chain.last().unwrap();
+        assert_eq!(deepest.name.as_deref(), Some("Thanks Ada for the fix"));
+        assert!(!deepest.interface);
+        assert_eq!(deepest.path, "Window[0]/List[0]/Row[0]/Text[1]");
+        assert_eq!(deepest.rect, Rect::new(10.0, 70.0, 300.0, 95.0));
+        let reply = targets_at(&window, Point::new(350.0, 120.0));
+        let reply = reply.last().unwrap();
+        assert_eq!(reply.role, Role::Button);
+        assert!(reply.interface);
+        assert_eq!(reply.path, "Window[0]/List[0]/Row[1]/Button[0]");
+    }
 
-#[test]
-fn a_dragged_rectangle_picks_the_outermost_named_nodes_inside_it() {
-    let window = window();
-    let rows = targets_within(&window, Rect::new(0.0, 45.0, 400.0, 155.0), 6);
-    let roles: Vec<_> = rows.iter().map(|target| target.role).collect();
-    assert_eq!(roles, [Role::ListItem, Role::ListItem]);
-    let whole = targets_within(&window, Rect::new(-1.0, -1.0, 401.0, 301.0), 6);
-    let roles: Vec<_> = whole.iter().map(|target| target.role_name()).collect();
-    assert_eq!(roles, ["StaticText", "List", "TextInput", "TextInput"]);
-    assert_eq!(
-        targets_within(&window, Rect::new(-1.0, -1.0, 401.0, 301.0), 2).len(),
-        2
-    );
-}
+    phase clipped_children_and_empty_space_pick_nothing_below;
+    {
+        let window = window();
+        let below = targets_at(&window, Point::new(50.0, 185.0));
+        assert!(
+            below
+                .iter()
+                .all(|target| target.name.as_deref() != Some("Not on screen")),
+            "{below:?}"
+        );
+        assert!(targets_at(&window, Point::new(399.0, 299.0)).is_empty());
+    }
 
-#[test]
-fn capture_reads_texts_in_order_classified_and_never_a_protected_value() {
-    let window = window();
-    let row = capture(&window, "Window[0]/List[0]/Row[0]").unwrap();
-    assert_eq!(row.label, None);
-    let texts: Vec<_> = row
-        .texts
-        .iter()
-        .map(|text| (text.text.as_str(), text.interface))
-        .collect();
-    assert_eq!(
-        texts,
-        [
-            ("Ada Lovelace", false),
-            ("Thanks Ada for the fix", false),
-            ("Reply", true)
-        ]
-    );
-    assert_eq!(row.texts[0].rect, Some(Rect::new(10.0, 50.0, 100.0, 70.0)));
-    assert_eq!(row.role, Some(Role::ListItem));
-    let field = capture(&window, "Window[0]/Field[0]").unwrap();
-    assert_eq!(field.label.unwrap().text, "Message #general");
-    assert_eq!(field.texts[0].text, "a draft with secrets");
-    assert!(!field.texts[0].interface, "a field's contents are content");
-    let password = capture(&window, "Window[0]/Password[0]").unwrap();
-    assert!(password.texts.is_empty(), "{password:?}");
-    assert!(capture(&window, "Window[0]/List[0]/Row[7]").is_none());
-}
-
-#[test]
-fn synthetic_rows_are_picked_and_captured_by_their_index_path() {
-    let mut row = AccessNode::new(Role::ListItem).with_name("Row two");
-    row.bounds = Some(AccessBounds {
-        x0: 0.0,
-        y0: 20.0,
-        x1: 100.0,
-        y1: 40.0,
-    });
-    row.children.push({
-        let mut cell = AccessNode::new(Role::StaticText).with_name("cell text");
-        cell.bounds = Some(AccessBounds {
-            x0: 0.0,
-            y0: 20.0,
-            x1: 50.0,
-            y1: 40.0,
-        });
-        cell
-    });
-    let mut table = AccessNode::new(Role::List).with_name("Table");
-    table.children.push(row);
-    let window = node(
-        "Table",
-        Rect::new(0.0, 0.0, 100.0, 100.0),
-        Some(table),
-        vec![],
-    );
-    let chain = targets_at(&window, Point::new(10.0, 30.0));
-    assert_eq!(chain.last().unwrap().path, "Table[0]#0/0");
-    assert_eq!(chain[1].path, "Table[0]#0");
-    let captured = capture(&window, "Table[0]#0").unwrap();
-    assert_eq!(captured.label.unwrap().text, "Row two");
-    assert_eq!(captured.texts[0].text, "cell text");
+    phase a_dragged_rectangle_picks_the_outermost_named_nodes_inside_it;
+    {
+        let window = window();
+        let rows = targets_within(&window, Rect::new(0.0, 45.0, 400.0, 155.0), 6);
+        let roles: Vec<_> = rows.iter().map(|target| target.role).collect();
+        assert_eq!(roles, [Role::ListItem, Role::ListItem]);
+        let whole = targets_within(&window, Rect::new(-1.0, -1.0, 401.0, 301.0), 6);
+        let roles: Vec<_> = whole.iter().map(|target| target.role_name()).collect();
+        assert_eq!(roles, ["StaticText", "List", "TextInput", "TextInput"]);
+        assert_eq!(
+            targets_within(&window, Rect::new(-1.0, -1.0, 401.0, 301.0), 2).len(),
+            2
+        );
+    }
 }
 
 #[test]
@@ -257,28 +197,6 @@ fn text_from_the_catalogue_is_interface_copy_and_literal_or_bound_text_is_conten
     assert!(Widget::accessibility(&button).unwrap().interface_name);
     let named = crate::widget::Button::new("b", "Ada's file");
     assert!(!Widget::accessibility(&named).unwrap().interface_name);
-}
-
-#[test]
-fn a_picture_is_masked_over_content_images_and_secrets_not_interface_copy() {
-    let window = window();
-    let whole = Rect::new(0.0, 0.0, 400.0, 300.0);
-    let row = sensitive_areas(&window, "Window[0]/List[0]/Row[0]", whole);
-    assert_eq!(
-        row,
-        [
-            Rect::new(10.0, 50.0, 100.0, 70.0),
-            Rect::new(10.0, 70.0, 300.0, 95.0)
-        ],
-        "the author and message, not the Reply button"
-    );
-    let password = sensitive_areas(&window, "Window[0]/Password[0]", whole);
-    assert_eq!(password, [Rect::new(0.0, 200.0, 200.0, 240.0)]);
-    assert_eq!(
-        sensitive_areas(&window, "Window[0]/Gone[0]", whole),
-        [whole],
-        "a part no longer there is masked whole"
-    );
 }
 
 fn placed(role: Role, name: &str, (x0, y0, x1, y1): (f64, f64, f64, f64)) -> AccessNode {
@@ -320,26 +238,116 @@ fn message_list(lines: &[&str]) -> Node {
     )
 }
 
-#[test]
-fn a_row_its_parts_spell_out_is_masked_part_by_part() {
-    let window = message_list(&["Thanks Grace", "for the tip"]);
-    let whole = Rect::new(0.0, 0.0, 400.0, 60.0);
-    assert_eq!(
-        sensitive_areas(&window, "Chat[0]#0", whole),
-        [
-            Rect::new(8.0, 8.0, 32.0, 32.0),
-            Rect::new(40.0, 8.0, 80.0, 24.0),
-            Rect::new(40.0, 28.0, 200.0, 42.0),
-            Rect::new(40.0, 44.0, 200.0, 58.0),
-        ],
-        "the avatar, the author and each line; the row's ground and Reply stay"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_capture_reads_texts_and_masks_what_is_not_interface_copy;
 
-#[test]
-fn a_row_whose_parts_leave_words_out_is_masked_whole() {
-    let window = message_list(&["Thanks Grace"]);
-    let whole = Rect::new(0.0, 0.0, 400.0, 60.0);
-    let areas = sensitive_areas(&window, "Chat[0]#0", whole);
-    assert_eq!(areas[0], Rect::new(0.0, 0.0, 400.0, 60.0), "{areas:?}");
+    phase capture_reads_texts_in_order_classified_and_never_a_protected_value;
+    {
+        let window = window();
+        let row = capture(&window, "Window[0]/List[0]/Row[0]").unwrap();
+        assert_eq!(row.label, None);
+        let texts: Vec<_> = row
+            .texts
+            .iter()
+            .map(|text| (text.text.as_str(), text.interface))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                ("Ada Lovelace", false),
+                ("Thanks Ada for the fix", false),
+                ("Reply", true)
+            ]
+        );
+        assert_eq!(row.texts[0].rect, Some(Rect::new(10.0, 50.0, 100.0, 70.0)));
+        assert_eq!(row.role, Some(Role::ListItem));
+        let field = capture(&window, "Window[0]/Field[0]").unwrap();
+        assert_eq!(field.label.unwrap().text, "Message #general");
+        assert_eq!(field.texts[0].text, "a draft with secrets");
+        assert!(!field.texts[0].interface, "a field's contents are content");
+        let password = capture(&window, "Window[0]/Password[0]").unwrap();
+        assert!(password.texts.is_empty(), "{password:?}");
+        assert!(capture(&window, "Window[0]/List[0]/Row[7]").is_none());
+    }
+
+    phase synthetic_rows_are_picked_and_captured_by_their_index_path;
+    {
+        let mut row = AccessNode::new(Role::ListItem).with_name("Row two");
+        row.bounds = Some(AccessBounds {
+            x0: 0.0,
+            y0: 20.0,
+            x1: 100.0,
+            y1: 40.0,
+        });
+        row.children.push({
+            let mut cell = AccessNode::new(Role::StaticText).with_name("cell text");
+            cell.bounds = Some(AccessBounds {
+                x0: 0.0,
+                y0: 20.0,
+                x1: 50.0,
+                y1: 40.0,
+            });
+            cell
+        });
+        let mut table = AccessNode::new(Role::List).with_name("Table");
+        table.children.push(row);
+        let window = node(
+            "Table",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            Some(table),
+            vec![],
+        );
+        let chain = targets_at(&window, Point::new(10.0, 30.0));
+        assert_eq!(chain.last().unwrap().path, "Table[0]#0/0");
+        assert_eq!(chain[1].path, "Table[0]#0");
+        let captured = capture(&window, "Table[0]#0").unwrap();
+        assert_eq!(captured.label.unwrap().text, "Row two");
+        assert_eq!(captured.texts[0].text, "cell text");
+    }
+
+    phase a_picture_is_masked_over_content_images_and_secrets_not_interface_copy;
+    {
+        let window = window();
+        let whole = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let row = sensitive_areas(&window, "Window[0]/List[0]/Row[0]", whole);
+        assert_eq!(
+            row,
+            [
+                Rect::new(10.0, 50.0, 100.0, 70.0),
+                Rect::new(10.0, 70.0, 300.0, 95.0)
+            ],
+            "the author and message, not the Reply button"
+        );
+        let password = sensitive_areas(&window, "Window[0]/Password[0]", whole);
+        assert_eq!(password, [Rect::new(0.0, 200.0, 200.0, 240.0)]);
+        assert_eq!(
+            sensitive_areas(&window, "Window[0]/Gone[0]", whole),
+            [whole],
+            "a part no longer there is masked whole"
+        );
+    }
+
+    phase a_row_its_parts_spell_out_is_masked_part_by_part;
+    {
+        let window = message_list(&["Thanks Grace", "for the tip"]);
+        let whole = Rect::new(0.0, 0.0, 400.0, 60.0);
+        assert_eq!(
+            sensitive_areas(&window, "Chat[0]#0", whole),
+            [
+                Rect::new(8.0, 8.0, 32.0, 32.0),
+                Rect::new(40.0, 8.0, 80.0, 24.0),
+                Rect::new(40.0, 28.0, 200.0, 42.0),
+                Rect::new(40.0, 44.0, 200.0, 58.0),
+            ],
+            "the avatar, the author and each line; the row's ground and Reply stay"
+        );
+    }
+
+    phase a_row_whose_parts_leave_words_out_is_masked_whole;
+    {
+        let window = message_list(&["Thanks Grace"]);
+        let whole = Rect::new(0.0, 0.0, 400.0, 60.0);
+        let areas = sensitive_areas(&window, "Chat[0]#0", whole);
+        assert_eq!(areas[0], Rect::new(0.0, 0.0, 400.0, 60.0), "{areas:?}");
+    }
 }

@@ -324,123 +324,122 @@ mod tests {
 
     const DEVICE: [u8; 32] = [0xAB; 32];
 
-    #[test]
-    fn a_namespace_names_the_scope_and_the_participant() {
-        let scope = Scope::workspace("w1");
-        let namespace = Namespace::new(&scope, DEVICE);
-        assert_eq!(
-            namespace.path(),
-            format!(
-                "workspace/w1/scope/workspace/participant/{}",
-                "ab".repeat(32)
-            )
-        );
-        assert_eq!(Namespace::parse(&namespace.path()), Some(namespace.clone()));
-        assert_eq!(namespace.scope_path(), "workspace/w1/scope/workspace");
-        assert!(namespace.path().starts_with(&namespace.scope_path()));
-        assert_eq!(namespace.scope_id(), "workspace");
-        assert_eq!(namespace.device(), DEVICE);
-    }
+    tilo_test_env::scenario! {
+        fn a_namespace_is_one_participant_of_one_scope_of_a_workspace;
 
-    #[test]
-    fn a_channel_scope_has_its_own_namespace() {
-        let route = collab_types::ChannelRoute::new("so.tilo.sheets", "payroll");
-        let scope = Scope::channel("w1", route.channel("w1"));
-        let path = Namespace::new(&scope, DEVICE).path();
-        assert!(path.contains(&format!("/scope/{}/", scope.id())));
-        assert_ne!(path, Namespace::new(&Scope::workspace("w1"), DEVICE).path());
-    }
-
-    #[test]
-    fn every_track_round_trips_and_has_its_own_name() {
-        let tracks = [
-            Track::Presence,
-            Track::Audio,
-            Track::Camera(Layer::Low),
-            Track::Camera(Layer::High),
-            Track::Window(7, Layer::Low),
-            Track::Page(7),
-            Track::Input(7),
-            Track::Activity,
-        ];
-        for track in tracks {
-            assert_eq!(parse_track(&super::track(track)), Some(track));
+        phase a_namespace_names_the_scope_and_the_participant;
+        {
+            let scope = Scope::workspace("w1");
+            let namespace = Namespace::new(&scope, DEVICE);
+            assert_eq!(
+                namespace.path(),
+                format!(
+                    "workspace/w1/scope/workspace/participant/{}",
+                    "ab".repeat(32)
+                )
+            );
+            assert_eq!(Namespace::parse(&namespace.path()), Some(namespace.clone()));
+            assert_eq!(namespace.scope_path(), "workspace/w1/scope/workspace");
+            assert!(namespace.path().starts_with(&namespace.scope_path()));
+            assert_eq!(namespace.scope_id(), "workspace");
+            assert_eq!(namespace.device(), DEVICE);
         }
-        let mut names: Vec<_> = tracks.iter().map(|track| super::track(*track)).collect();
-        let count = names.len();
-        names.sort();
-        names.dedup();
-        assert_eq!(names.len(), count, "two tracks share a name");
+
+        phase a_workspace_id_round_trips_through_its_grant_bytes;
+        {
+            let workspace = "0f8fad5b-d9cb-469f-a165-70867728950e";
+            let bytes = workspace_bytes(workspace).unwrap();
+            assert_eq!(workspace_id(bytes), workspace);
+            assert_eq!(
+                workspace_bytes("0F8FAD5B-D9CB-469F-A165-70867728950E"),
+                None
+            );
+            assert_eq!(workspace_bytes("0f8fad5bd9cb469fa16570867728950"), None);
+            assert_eq!(workspace_bytes("workspace"), None);
+        }
+
+        phase participants_names_the_subtree_of_one_scope;
+        {
+            let scope = Scope::workspace("0f8fad5b-d9cb-469f-a165-70867728950e");
+            assert_eq!(
+                participants(&scope),
+                "workspace/0f8fad5b-d9cb-469f-a165-70867728950e/scope/workspace/participant"
+            );
+        }
     }
 
-    #[test]
-    fn a_screen_has_no_mid_layer() {
-        assert_eq!(parse_track("screen/mid"), None);
-        assert_eq!(parse_track("screen/high"), Some(Track::Screen(Layer::High)));
-    }
+    tilo_test_env::scenario! {
+        fn a_track_has_one_name_one_priority_and_one_delivery;
 
-    #[test]
-    fn a_window_track_names_its_layer() {
-        assert_eq!(
-            parse_track("window/0000000000000007/low"),
-            Some(Track::Window(7, Layer::Low))
-        );
-        assert_eq!(parse_track("window/0000000000000007"), None);
-        assert_eq!(parse_track("window/nothex/low"), None);
-    }
-
-    #[test]
-    fn a_page_track_names_its_window() {
-        assert_eq!(parse_track("page/0000000000000007"), Some(Track::Page(7)));
-        assert_eq!(Track::Page(7).layer(), Layer::High);
-        assert_eq!(Track::Page(7).picture_of(), None);
-        assert_eq!(
-            Track::Camera(Layer::Mid).picture_of(),
-            Some(crate::video::Source::Camera)
-        );
-        assert_eq!(parse_track("page/nothex"), None);
-        assert_eq!(parse_track("page/0000000000000007/low"), None);
-    }
-
-    #[test]
-    fn priorities_put_audio_before_pictures() {
-        assert!(priority(Track::Audio) > priority(Track::Presence));
-        assert!(priority(Track::Presence) > priority(Track::Screen(Layer::High)));
-        assert!(priority(Track::Screen(Layer::High)) > priority(Track::Camera(Layer::High)));
-        assert!(priority(Track::Camera(Layer::High)) > priority(Track::Activity));
-    }
-
-    #[test]
-    fn a_workspace_id_round_trips_through_its_grant_bytes() {
-        let workspace = "0f8fad5b-d9cb-469f-a165-70867728950e";
-        let bytes = workspace_bytes(workspace).unwrap();
-        assert_eq!(workspace_id(bytes), workspace);
-        assert_eq!(
-            workspace_bytes("0F8FAD5B-D9CB-469F-A165-70867728950E"),
-            None
-        );
-        assert_eq!(workspace_bytes("0f8fad5bd9cb469fa16570867728950"), None);
-        assert_eq!(workspace_bytes("workspace"), None);
-    }
-
-    #[test]
-    fn participants_names_the_subtree_of_one_scope() {
-        let scope = Scope::workspace("0f8fad5b-d9cb-469f-a165-70867728950e");
-        assert_eq!(
-            participants(&scope),
-            "workspace/0f8fad5b-d9cb-469f-a165-70867728950e/scope/workspace/participant"
-        );
-    }
-
-    #[test]
-    fn audio_is_a_redundant_datagram_track() {
-        assert_eq!(
-            delivery(Track::Audio),
-            Delivery::Datagram {
-                retain: Duration::from_millis(200),
-                redundancy: true
+        phase every_track_round_trips_and_has_its_own_name;
+        {
+            let tracks = [
+                Track::Presence,
+                Track::Audio,
+                Track::Camera(Layer::Low),
+                Track::Camera(Layer::High),
+                Track::Window(7, Layer::Low),
+                Track::Page(7),
+                Track::Input(7),
+                Track::Activity,
+            ];
+            for track in tracks {
+                assert_eq!(parse_track(&super::track(track)), Some(track));
             }
-        );
-        assert!(matches!(delivery(Track::Presence), Delivery::Stream { .. }));
+            let mut names: Vec<_> = tracks.iter().map(|track| super::track(*track)).collect();
+            let count = names.len();
+            names.sort();
+            names.dedup();
+            assert_eq!(names.len(), count, "two tracks share a name");
+        }
+
+        phase a_screen_has_no_mid_layer;
+        {
+            assert_eq!(parse_track("screen/mid"), None);
+            assert_eq!(parse_track("screen/high"), Some(Track::Screen(Layer::High)));
+        }
+
+        phase a_window_track_names_its_layer;
+        {
+            assert_eq!(
+                parse_track("window/0000000000000007/low"),
+                Some(Track::Window(7, Layer::Low))
+            );
+            assert_eq!(parse_track("window/0000000000000007"), None);
+            assert_eq!(parse_track("window/nothex/low"), None);
+        }
+
+        phase a_page_track_names_its_window;
+        {
+            assert_eq!(parse_track("page/0000000000000007"), Some(Track::Page(7)));
+            assert_eq!(Track::Page(7).layer(), Layer::High);
+            assert_eq!(Track::Page(7).picture_of(), None);
+            assert_eq!(
+                Track::Camera(Layer::Mid).picture_of(),
+                Some(crate::video::Source::Camera)
+            );
+            assert_eq!(parse_track("page/nothex"), None);
+            assert_eq!(parse_track("page/0000000000000007/low"), None);
+        }
+
+        phase priorities_put_audio_before_pictures;
+        {
+            assert!(priority(Track::Audio) > priority(Track::Presence));
+            assert!(priority(Track::Presence) > priority(Track::Screen(Layer::High)));
+            assert!(priority(Track::Screen(Layer::High)) > priority(Track::Camera(Layer::High)));
+            assert!(priority(Track::Camera(Layer::High)) > priority(Track::Activity));
+        }
+
+        phase audio_is_a_redundant_datagram_track;
+        {
+            assert_eq!(
+                delivery(Track::Audio),
+                Delivery::Datagram {
+                    retain: Duration::from_millis(200),
+                    redundancy: true
+                }
+            );
+            assert!(matches!(delivery(Track::Presence), Delivery::Stream { .. }));
+        }
     }
 }

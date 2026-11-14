@@ -200,9 +200,10 @@ impl LibraryAnalysisState {
 mod tests {
     use super::*;
 
-    #[test]
-    fn analysis_queue_is_bounded_and_counts_honestly() {
-        eprintln!("phase queue_keeps_only_ids_and_one_in_flight_item");
+    tilo_test_env::scenario! {
+        fn analysis_queue_is_bounded_and_counts_honestly;
+
+        phase queue_keeps_only_ids_and_one_in_flight_item;
         {
             let invocation = InvocationId::new();
             let mut state = LibraryAnalysisState::default();
@@ -225,7 +226,7 @@ mod tests {
             assert_eq!(state.unavailable, 3);
         }
 
-        eprintln!("phase pause_resume_and_retry_preserve_honest_counts");
+        phase pause_resume_and_retry_preserve_honest_counts;
         {
             let mut state = LibraryAnalysisState::default();
             state.begin(
@@ -261,7 +262,7 @@ mod tests {
             assert_eq!(state.failed, 0);
         }
 
-        eprintln!("phase failure_details_are_bounded_without_losing_total");
+        phase failure_details_are_bounded_without_losing_total;
         {
             let total = FAILURE_DETAIL_LIMIT + 5;
             let mut state = LibraryAnalysisState::default();

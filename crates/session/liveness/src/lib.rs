@@ -1072,74 +1072,78 @@ mod tests {
         assert!(render(&answer).contains("halfway through the budget"));
     }
 
-    #[test]
-    fn a_loop_that_ran_or_waited_to_run_is_slow_and_one_that_did_neither_is_blocked() {
-        assert!(stalled(400, 0).stalled_but_working(), "computing");
-        assert!(stalled(0, 400).stalled_but_working(), "starved of a core");
-        assert!(
-            !stalled(0, 0).stalled_but_working(),
-            "asleep and waiting for nothing: a deadlock or a missed wake"
-        );
-        assert!(
-            !stalled(10, 20).stalled_but_working(),
-            "a sliver of either does not make it working"
-        );
-        assert!(render(&stalled(0, 400)).contains("starved"));
-        assert!(render(&stalled(0, 0)).contains("blocked"));
-    }
+    tilo_test_env::scenario! {
+        fn a_stalled_loop_is_told_working_starved_paging_or_blocked;
 
-    #[test]
-    fn a_loop_queued_for_a_core_throughout_is_starved_though_the_kernel_has_not_counted_it() {
-        let mut answer = stalled(0, 0);
-        if let Answer::Stalled {
-            main_thread_queued,
-            halfway,
-            ..
-        } = &mut answer
+        phase a_loop_that_ran_or_waited_to_run_is_slow_and_one_that_did_neither_is_blocked;
         {
-            *main_thread_queued = true;
-            *halfway = Some(main_thread_at_halfway("R", "0"));
+            assert!(stalled(400, 0).stalled_but_working(), "computing");
+            assert!(stalled(0, 400).stalled_but_working(), "starved of a core");
+            assert!(
+                !stalled(0, 0).stalled_but_working(),
+                "asleep and waiting for nothing: a deadlock or a missed wake"
+            );
+            assert!(
+                !stalled(10, 20).stalled_but_working(),
+                "a sliver of either does not make it working"
+            );
+            assert!(render(&stalled(0, 400)).contains("starved"));
+            assert!(render(&stalled(0, 0)).contains("blocked"));
         }
-        assert!(answer.stalled_but_working());
-        assert!(render(&answer).contains("starved"));
-    }
 
-    #[test]
-    fn a_loop_asleep_in_a_page_fault_is_paging_and_one_asleep_in_a_read_is_blocked() {
-        let waiting_for_a_page = |faults| {
+        phase a_loop_queued_for_a_core_throughout_is_starved_though_the_kernel_has_not_counted_it;
+        {
             let mut answer = stalled(0, 0);
             if let Answer::Stalled {
-                main_thread_major_faults,
+                main_thread_queued,
                 halfway,
                 ..
             } = &mut answer
             {
-                *main_thread_major_faults = faults;
-                *halfway = Some(main_thread_at_halfway("D", "folio_wait_bit_common"));
+                *main_thread_queued = true;
+                *halfway = Some(main_thread_at_halfway("R", "0"));
             }
-            answer
-        };
-        let paging = waiting_for_a_page(3);
-        assert!(paging.stalled_but_working());
-        assert!(render(&paging).contains("paging"));
-        // The same wait without a major fault is the page cache serving a
-        // `read` the loop made: a file read on the main thread.
-        let reading = waiting_for_a_page(0);
-        assert!(!reading.stalled_but_working());
-        assert!(render(&reading).contains("blocked"));
-        // Thrashing, the thread is as often runnable, between two faults.
-        let mut thrashing = waiting_for_a_page(1083);
-        if let Answer::Stalled { halfway, .. } = &mut thrashing {
-            *halfway = Some(main_thread_at_halfway("R", "0"));
+            assert!(answer.stalled_but_working());
+            assert!(render(&answer).contains("starved"));
         }
-        assert!(thrashing.stalled_but_working());
-        assert!(render(&thrashing).contains("paging"));
-        // Asleep with a fault behind it, it waits on something else.
-        let mut asleep = waiting_for_a_page(1);
-        if let Answer::Stalled { halfway, .. } = &mut asleep {
-            *halfway = Some(main_thread_at_halfway("S", "futex_wait_queue"));
+
+        phase a_loop_asleep_in_a_page_fault_is_paging_and_one_asleep_in_a_read_is_blocked;
+        {
+            let waiting_for_a_page = |faults| {
+                let mut answer = stalled(0, 0);
+                if let Answer::Stalled {
+                    main_thread_major_faults,
+                    halfway,
+                    ..
+                } = &mut answer
+                {
+                    *main_thread_major_faults = faults;
+                    *halfway = Some(main_thread_at_halfway("D", "folio_wait_bit_common"));
+                }
+                answer
+            };
+            let paging = waiting_for_a_page(3);
+            assert!(paging.stalled_but_working());
+            assert!(render(&paging).contains("paging"));
+            // The same wait without a major fault is the page cache serving a
+            // `read` the loop made: a file read on the main thread.
+            let reading = waiting_for_a_page(0);
+            assert!(!reading.stalled_but_working());
+            assert!(render(&reading).contains("blocked"));
+            // Thrashing, the thread is as often runnable, between two faults.
+            let mut thrashing = waiting_for_a_page(1083);
+            if let Answer::Stalled { halfway, .. } = &mut thrashing {
+                *halfway = Some(main_thread_at_halfway("R", "0"));
+            }
+            assert!(thrashing.stalled_but_working());
+            assert!(render(&thrashing).contains("paging"));
+            // Asleep with a fault behind it, it waits on something else.
+            let mut asleep = waiting_for_a_page(1);
+            if let Answer::Stalled { halfway, .. } = &mut asleep {
+                *halfway = Some(main_thread_at_halfway("S", "futex_wait_queue"));
+            }
+            assert!(!asleep.stalled_but_working());
         }
-        assert!(!asleep.stalled_but_working());
     }
 
     #[test]

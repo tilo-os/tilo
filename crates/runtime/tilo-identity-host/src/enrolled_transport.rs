@@ -116,8 +116,6 @@ impl Payload {
             || self.certificate.device_public_key != device
             || self.certificate.user_public_key != root
             || caps.can_admit_devices
-            || caps.can_act_as_host
-            || caps.can_read_all_workspaces
             || caps.foreign
             || caps.can_administer_devices
             || self.public_record.len() as u64 > MAX_BYTES
@@ -203,7 +201,7 @@ fn validate_peers(
             || cert.user_public_key != root
             || peer.user_public_key != hex::encode(root)
             || peer.device_node_id != hex::encode(cert.device_public_key)
-            || !cert.capabilities.can_act_as_host
+            || !cert.capabilities.can_own_workspaces
             || peer.relay_workspace_ids.len() > 4096
             || hex::decode(&peer.relay_service_node_id).map_or(true, |bytes| bytes.len() != 32)
             || peer.label.len() > 256

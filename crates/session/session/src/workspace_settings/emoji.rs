@@ -17,7 +17,7 @@ use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_emoji::{
     EmojiImage, OWNER, WorkspaceEmoji as Record, workspace_emoji as actions,
 };
-use tilo_desktop::collaborators::PeopleNames;
+use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_desktop_model::{DesktopTree, UserId, Workspace};
 use tilo_desktop_surface::i18n::{t, t_args};
@@ -251,10 +251,10 @@ impl Emoji {
             return open.record.clone();
         }
         drop(held);
-        let context = PermissionContext::from_standing(
-            &workspace_id,
-            Standing::person(workspace.policy.clone(), person.clone()),
-        )
+        let context = PermissionContext::from_standing(Standing::person(
+            workspace.policy.clone(),
+            person.clone(),
+        ))
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let records = self.records.in_workspace(&workspace_id, author.clone());
         let record = WorkspaceRecord::<Record>::open(

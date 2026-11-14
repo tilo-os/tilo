@@ -371,8 +371,8 @@ fn the_menu_names_the_window_it_is_on_and_forgets_it_when_closed() {
     );
     assert_eq!(
         reading["subject"]["app"].as_str(),
-        Some("so.tilo.notes"),
-        "and the app that paints it"
+        Some("Notes"),
+        "and the app that paints it, named as the person knows it"
     );
 
     tap(&mut session, KEY_ESCAPE);

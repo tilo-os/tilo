@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use tilo_desktop::collaborators::{LineSource, RosterStatus};
+use tilo_desktop::people::{LineSource, RosterStatus};
 use tilo_desktop::profile_card::{OtherPerson, ProfileCard, ProfileModel};
 use ui::headless::Framed;
 use ui::state::State;

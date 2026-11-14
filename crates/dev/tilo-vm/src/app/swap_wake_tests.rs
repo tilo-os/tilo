@@ -82,118 +82,69 @@ for line in sys.stdin:
  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
 ";
 
-#[test]
-fn managed_swap_wakes_before_strict_transport_and_retains_hello_lease() {
-    for compatible in [true, false] {
-        let dir = tempfile::tempdir().unwrap();
-        let mut guest = guest(dir.path(), "pmsuspended");
-        let entry = VmEntry {
-            hypervisor: "libvirt".into(),
-            ..VmEntry::default()
-        };
-        let vm = Vm {
-            name: "test",
-            entry: &entry,
-        };
-        let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
-        let protocol = if compatible {
-            tilo_vm_protocol::PROTOCOL_VERSION
-        } else {
-            0
-        };
-        let line = CommandLine::new("python3", &["-c", DAEMON])
-            .arg(guest.log.display().to_string())
-            .arg(protocol.to_string());
-        let connected = swap_transport(adapter.as_ref(), &vm, &mut guest, || {
-            Remote::over_peer("test", &line)
-        });
-        if compatible {
-            let (mut remote, _) = connected.unwrap();
-            let lease = remote.hello.awake.as_ref().unwrap();
-            assert!(lease.held);
-            assert_eq!(lease.hold_until, Some(456));
-            let applied = remote
-                .call(Swap {
-                    slot: "test-slot".into(),
-                    component: "shell".into(),
-                    layer: "a".repeat(64),
-                    info: None,
-                    partner: None,
-                })
-                .unwrap();
-            assert_eq!(applied.generation, 8);
-            assert!(!applied.changed);
-            assert_eq!(
-                std::fs::read_to_string(&guest.log).unwrap(),
-                "domstate\ndompmwakeup\nhello\nswap\n"
-            );
-        } else {
-            assert!(matches!(connected, Err(CliError::ProtocolMismatch { .. })));
-            assert_eq!(
-                std::fs::read_to_string(&guest.log).unwrap(),
-                "domstate\ndompmwakeup\nhello\n"
-            );
+tilo_test_env::scenario! {
+    fn a_swap_wakes_only_a_managed_guest_that_sleeps;
+
+    phase managed_swap_wakes_before_strict_transport_and_retains_hello_lease;
+    {
+        for compatible in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut guest = guest(dir.path(), "pmsuspended");
+            let entry = VmEntry {
+                hypervisor: "libvirt".into(),
+                ..VmEntry::default()
+            };
+            let vm = Vm {
+                name: "test",
+                entry: &entry,
+            };
+            let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
+            let protocol = if compatible {
+                tilo_vm_protocol::PROTOCOL_VERSION
+            } else {
+                0
+            };
+            let line = CommandLine::new("python3", &["-c", DAEMON])
+                .arg(guest.log.display().to_string())
+                .arg(protocol.to_string());
+            let connected = swap_transport(adapter.as_ref(), &vm, &mut guest, || {
+                Remote::over_peer("test", &line)
+            });
+            if compatible {
+                let (mut remote, _) = connected.unwrap();
+                let lease = remote.hello.awake.as_ref().unwrap();
+                assert!(lease.held);
+                assert_eq!(lease.hold_until, Some(456));
+                let applied = remote
+                    .call(Swap {
+                        slot: "test-slot".into(),
+                        component: "shell".into(),
+                        layer: "a".repeat(64),
+                        info: None,
+                        partner: None,
+                    })
+                    .unwrap();
+                assert_eq!(applied.generation, 8);
+                assert!(!applied.changed);
+                assert_eq!(
+                    std::fs::read_to_string(&guest.log).unwrap(),
+                    "domstate\ndompmwakeup\nhello\nswap\n"
+                );
+            } else {
+                assert!(matches!(connected, Err(CliError::ProtocolMismatch { .. })));
+                assert_eq!(
+                    std::fs::read_to_string(&guest.log).unwrap(),
+                    "domstate\ndompmwakeup\nhello\n"
+                );
+            }
         }
     }
-}
 
-#[test]
-fn wake_failure_stops_before_transport() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut guest = guest(dir.path(), "pmsuspended");
-    guest.fail_wake = true;
-    let entry = VmEntry {
-        hypervisor: "libvirt".into(),
-        ..VmEntry::default()
-    };
-    let vm = Vm {
-        name: "test",
-        entry: &entry,
-    };
-    let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
-    let called = std::cell::Cell::new(false);
-    let result = swap_transport(adapter.as_ref(), &vm, &mut guest, || {
-        called.set(true);
-        Ok(())
-    });
-    assert!(matches!(result, Err(CliError::CommandFailed { .. })));
-    assert!(!called.get());
-    assert_eq!(
-        std::fs::read_to_string(&guest.log).unwrap(),
-        "domstate\ndompmwakeup\n"
-    );
-}
-
-#[test]
-fn physical_swaps_never_probe_or_change_power_state() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut guest = guest(dir.path(), "pmsuspended");
-    let entry = VmEntry {
-        hypervisor: hypervisor::DEVICE.into(),
-        ..VmEntry::default()
-    };
-    let vm = Vm {
-        name: "physical",
-        entry: &entry,
-    };
-    let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
-    let result: Result<(), CliError> = swap_transport(adapter.as_ref(), &vm, &mut guest, || {
-        Err(CliError::InvalidInput("physical transport refused".into()))
-    });
-    assert!(matches!(result, Err(CliError::InvalidInput(_))));
-    assert!(!guest.log.exists(), "physical power adapter must not run");
-}
-
-#[test]
-fn running_off_and_unknown_managed_states_do_not_start_or_wake() {
-    for (state, known) in [
-        ("running", true),
-        ("shut off", true),
-        ("pmsuspended", false),
-    ] {
+    phase wake_failure_stops_before_transport;
+    {
         let dir = tempfile::tempdir().unwrap();
-        let mut guest = guest(dir.path(), state);
-        guest.probe_known = known;
+        let mut guest = guest(dir.path(), "pmsuspended");
+        guest.fail_wake = true;
         let entry = VmEntry {
             hypervisor: "libvirt".into(),
             ..VmEntry::default()
@@ -204,13 +155,66 @@ fn running_off_and_unknown_managed_states_do_not_start_or_wake() {
         };
         let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
         let called = std::cell::Cell::new(false);
-        swap_transport(adapter.as_ref(), &vm, &mut guest, || {
+        let result = swap_transport(adapter.as_ref(), &vm, &mut guest, || {
             called.set(true);
             Ok(())
-        })
-        .unwrap();
-        assert!(called.get());
-        assert_eq!(std::fs::read_to_string(&guest.log).unwrap(), "domstate\n");
+        });
+        assert!(matches!(result, Err(CliError::CommandFailed { .. })));
+        assert!(!called.get());
+        assert_eq!(
+            std::fs::read_to_string(&guest.log).unwrap(),
+            "domstate\ndompmwakeup\n"
+        );
+    }
+
+    phase physical_swaps_never_probe_or_change_power_state;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut guest = guest(dir.path(), "pmsuspended");
+        let entry = VmEntry {
+            hypervisor: hypervisor::DEVICE.into(),
+            ..VmEntry::default()
+        };
+        let vm = Vm {
+            name: "physical",
+            entry: &entry,
+        };
+        let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
+        let result: Result<(), CliError> = swap_transport(adapter.as_ref(), &vm, &mut guest, || {
+            Err(CliError::InvalidInput("physical transport refused".into()))
+        });
+        assert!(matches!(result, Err(CliError::InvalidInput(_))));
+        assert!(!guest.log.exists(), "physical power adapter must not run");
+    }
+
+    phase running_off_and_unknown_managed_states_do_not_start_or_wake;
+    {
+        for (state, known) in [
+            ("running", true),
+            ("shut off", true),
+            ("pmsuspended", false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut guest = guest(dir.path(), state);
+            guest.probe_known = known;
+            let entry = VmEntry {
+                hypervisor: "libvirt".into(),
+                ..VmEntry::default()
+            };
+            let vm = Vm {
+                name: "test",
+                entry: &entry,
+            };
+            let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
+            let called = std::cell::Cell::new(false);
+            swap_transport(adapter.as_ref(), &vm, &mut guest, || {
+                called.set(true);
+                Ok(())
+            })
+            .unwrap();
+            assert!(called.get());
+            assert_eq!(std::fs::read_to_string(&guest.log).unwrap(), "domstate\n");
+        }
     }
 }
 

@@ -55,41 +55,46 @@ fn says(body: &str, code: &str, needle: &str) {
     );
 }
 
-#[test]
-fn a_view_places_the_actions_it_names() {
-    let src = board(r#"[check, schedule (group: "Plan"), remove (primary: true)]"#);
-    let got = codes(&src);
-    assert!(
-        got.is_empty(),
-        "expected no errors, got {got:?}: {}",
-        first_message(&src)
-    );
-}
+tilo_test_env::scenario! {
+    /// `actions:` on a view's nodes.
+    fn a_view_places_the_actions_it_names_and_reports_the_ones_it_cannot;
 
-#[test]
-fn a_name_that_is_not_an_action_is_reported_with_the_nearest_one() {
-    says(&board("[chek]"), "E137", "did you mean `check`?");
-}
+    phase a_view_places_the_actions_it_names;
+    {
+        let src = board(r#"[check, schedule (group: "Plan"), remove (primary: true)]"#);
+        let got = codes(&src);
+        assert!(
+            got.is_empty(),
+            "expected no errors, got {got:?}: {}",
+            first_message(&src)
+        );
+    }
 
-#[test]
-fn an_action_that_does_not_apply_to_the_items_type_is_reported() {
-    says(
-        &board("[new_task]"),
-        "E138",
-        "`new_task` does not apply to a Task",
-    );
-}
+    phase a_name_that_is_not_an_action_is_reported_with_the_nearest_one;
+    {
+        says(&board("[chek]"), "E137", "did you mean `check`?");
+    }
 
-#[test]
-fn a_placement_is_a_list_of_names() {
-    says(&board("check"), "E137", "`actions: [name, ...]`");
-}
+    phase an_action_that_does_not_apply_to_the_items_type_is_reported;
+    {
+        says(
+            &board("[new_task]"),
+            "E138",
+            "`new_task` does not apply to a Task",
+        );
+    }
 
-#[test]
-fn an_entry_takes_only_group_and_primary() {
-    says(
-        &board(r#"[check (icon: "x")]"#),
-        "E137",
-        "takes `group:` and `primary:`",
-    );
+    phase a_placement_is_a_list_of_names;
+    {
+        says(&board("check"), "E137", "`actions: [name, ...]`");
+    }
+
+    phase an_entry_takes_only_group_and_primary;
+    {
+        says(
+            &board(r#"[check (icon: "x")]"#),
+            "E137",
+            "takes `group:` and `primary:`",
+        );
+    }
 }

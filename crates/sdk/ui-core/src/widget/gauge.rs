@@ -896,203 +896,207 @@ mod tests {
             .count()
     }
 
-    #[test]
-    fn gauge_ring_and_bar_paint_tracks_labels_and_threshold_bands() {
-        fn thresholds_pick_semantic_bands() {
-            let theme = Theme::dark();
-            let t = GaugeThresholds::default(); // warning 0.6, danger 0.85
-            let s = &theme.tokens.colors.semantic;
-            assert_eq!(t.color(&theme, 0.10), s.success);
-            assert_eq!(t.color(&theme, 0.59), s.success);
-            assert_eq!(t.color(&theme, 0.60), s.warning, "boundary is inclusive");
-            assert_eq!(t.color(&theme, 0.84), s.warning);
-            assert_eq!(t.color(&theme, 0.85), s.danger, "boundary is inclusive");
-            assert_eq!(t.color(&theme, 1.0), s.danger);
+    tilo_test_env::scenario! {
+        fn gauges_and_progress_rings_paint_their_tracks_and_readouts;
+
+        phase gauge_ring_and_bar_paint_tracks_labels_and_threshold_bands;
+        {
+            fn thresholds_pick_semantic_bands() {
+                let theme = Theme::dark();
+                let t = GaugeThresholds::default(); // warning 0.6, danger 0.85
+                let s = &theme.tokens.colors.semantic;
+                assert_eq!(t.color(&theme, 0.10), s.success);
+                assert_eq!(t.color(&theme, 0.59), s.success);
+                assert_eq!(t.color(&theme, 0.60), s.warning, "boundary is inclusive");
+                assert_eq!(t.color(&theme, 0.84), s.warning);
+                assert_eq!(t.color(&theme, 0.85), s.danger, "boundary is inclusive");
+                assert_eq!(t.color(&theme, 1.0), s.danger);
+            }
+
+            /// The bar gauge fills proportionally: a 0-fraction bar paints just the
+            /// track, a non-zero fraction adds the fill rect.
+            fn bar_zero_paints_track_only() {
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+
+                let mut zero = Scene::new();
+                BarGauge::draw_at(
+                    &mut PaintCtx::new(&mut zero, Affine::IDENTITY, &mut tr, &theme),
+                    rect,
+                    &GaugeReading {
+                        frac: 0.0,
+                        color: theme.tokens.colors.intent.accent,
+                        label: "",
+                        value: "",
+                    },
+                );
+                let mut filled = Scene::new();
+                BarGauge::draw_at(
+                    &mut PaintCtx::new(&mut filled, Affine::IDENTITY, &mut tr, &theme),
+                    rect,
+                    &GaugeReading {
+                        frac: 0.5,
+                        color: theme.tokens.colors.intent.accent,
+                        label: "",
+                        value: "",
+                    },
+                );
+                assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
+                assert!(
+                    count_color_tags(&filled) > count_color_tags(&zero),
+                    "fill adds a rect"
+                );
+            }
+
+            fn bar_label_and_value_paint() {
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                BarGauge::draw_at(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                    Rect::new(0.0, 0.0, 200.0, 32.0),
+                    &GaugeReading {
+                        frac: 0.4,
+                        color: theme.tokens.colors.intent.accent,
+                        label: "Memory",
+                        value: "4.2 GB",
+                    },
+                );
+                assert!(
+                    !scene.encoding().resources.glyph_runs.is_empty(),
+                    "label/value must paint glyph runs",
+                );
+            }
+
+            thresholds_pick_semantic_bands();
+            bar_zero_paints_track_only();
+            bar_label_and_value_paint();
         }
 
-        /// The bar gauge fills proportionally: a 0-fraction bar paints just the
-        /// track, a non-zero fraction adds the fill rect.
-        fn bar_zero_paints_track_only() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
-
-            let mut zero = Scene::new();
-            BarGauge::draw_at(
-                &mut PaintCtx::new(&mut zero, Affine::IDENTITY, &mut tr, &theme),
-                rect,
-                &GaugeReading {
-                    frac: 0.0,
-                    color: theme.tokens.colors.intent.accent,
-                    label: "",
-                    value: "",
-                },
-            );
-            let mut filled = Scene::new();
-            BarGauge::draw_at(
-                &mut PaintCtx::new(&mut filled, Affine::IDENTITY, &mut tr, &theme),
-                rect,
-                &GaugeReading {
-                    frac: 0.5,
-                    color: theme.tokens.colors.intent.accent,
-                    label: "",
-                    value: "",
-                },
-            );
-            assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
-            assert!(
-                count_color_tags(&filled) > count_color_tags(&zero),
-                "fill adds a rect"
-            );
+        phase progress_ring_track_and_fill_read_against_the_ground_on_every_preset;
+        {
+            let min = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let ground = theme.tokens.colors.surfaces.content;
+                let track = ring_track(ground);
+                let ratio = crate::color::contrast_ratio(track, ground);
+                assert!(
+                    ratio >= min,
+                    "{}: the track shows the ring's extent at only {ratio:.2}:1",
+                    theme.name
+                );
+                let progress = ProgressRingFace::new(0.5).fill_colour(&theme);
+                let ratio = crate::color::contrast_ratio(progress, track);
+                assert!(
+                    ratio >= min,
+                    "{}: progress on track {ratio:.2}:1",
+                    theme.name
+                );
+                for face in [
+                    ProgressRingFace::new(0.5).tone(Tone::Success),
+                    ProgressRingFace::new(0.9).level(GaugeThresholds::default()),
+                ] {
+                    let fill = face.fill_colour(&theme);
+                    assert!(
+                        crate::color::contrast_ratio(fill, ground) >= min,
+                        "{}: a status fill reads on the ground",
+                        theme.name
+                    );
+                    assert_ne!(fill, track);
+                }
+            }
         }
 
-        fn bar_label_and_value_paint() {
+        phase a_small_ring_holds_a_numeric_readout_and_follows_its_state;
+        {
             let theme = Theme::dark();
+            let plain = ProgressRingFace::new(0.5).size(ProgressRingSize::Small);
+            let counting = plain.value("23");
+            assert!(counting.diameter(&theme) > plain.diameter(&theme));
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            BarGauge::draw_at(
+            let side = counting.diameter(&theme);
+            counting.paint(
                 &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                Rect::new(0.0, 0.0, 200.0, 32.0),
-                &GaugeReading {
-                    frac: 0.4,
-                    color: theme.tokens.colors.intent.accent,
-                    label: "Memory",
-                    value: "4.2 GB",
-                },
+                Rect::new(0.0, 0.0, side, side),
             );
             assert!(
                 !scene.encoding().resources.glyph_runs.is_empty(),
-                "label/value must paint glyph runs",
+                "the seconds paint inside a small ring"
             );
+
+            let state = crate::LocalState::new(30_u32);
+            let mut ring = ProgressRing::from_state(&state, |left| {
+                RingReading::new(f64::from(*left) / 30.0, left.to_string()).caption("seconds")
+            })
+            .size(ProgressRingSize::Small);
+            assert_eq!(ring.value, "30");
+            state.set(12);
+            let doc = automerge::AutoCommit::new();
+            ring.sync(&doc, &automerge::ROOT);
+            assert_eq!(ring.value, "12");
+            assert_eq!(ring.caption, "seconds");
+            ring.set_caption("minutes");
+            assert_eq!(ring.caption, "minutes");
         }
 
-        thresholds_pick_semantic_bands();
-        bar_zero_paints_track_only();
-        bar_label_and_value_paint();
-    }
-
-    #[test]
-    fn progress_ring_track_and_fill_read_against_the_ground_on_every_preset() {
-        let min = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = theme.tokens.colors.surfaces.content;
-            let track = ring_track(ground);
-            let ratio = crate::color::contrast_ratio(track, ground);
+        phase progress_ring_sizes_readouts_and_semantics;
+        {
+            let theme = Theme::dark();
             assert!(
-                ratio >= min,
-                "{}: the track shows the ring's extent at only {ratio:.2}:1",
-                theme.name
+                ProgressRingSize::Small.diameter(&theme) < ProgressRingSize::Regular.diameter(&theme)
             );
-            let progress = ProgressRingFace::new(0.5).fill_colour(&theme);
-            let ratio = crate::color::contrast_ratio(progress, track);
             assert!(
-                ratio >= min,
-                "{}: progress on track {ratio:.2}:1",
-                theme.name
+                ProgressRingSize::Regular.diameter(&theme) < ProgressRingSize::Large.diameter(&theme)
             );
-            for face in [
-                ProgressRingFace::new(0.5).tone(Tone::Success),
-                ProgressRingFace::new(0.9).level(GaugeThresholds::default()),
-            ] {
-                let fill = face.fill_colour(&theme);
-                assert!(
-                    crate::color::contrast_ratio(fill, ground) >= min,
-                    "{}: a status fill reads on the ground",
-                    theme.name
-                );
-                assert_ne!(fill, track);
-            }
-        }
-    }
-
-    #[test]
-    fn a_small_ring_holds_a_numeric_readout_and_follows_its_state() {
-        let theme = Theme::dark();
-        let plain = ProgressRingFace::new(0.5).size(ProgressRingSize::Small);
-        let counting = plain.value("23");
-        assert!(counting.diameter(&theme) > plain.diameter(&theme));
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let side = counting.diameter(&theme);
-        counting.paint(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-            Rect::new(0.0, 0.0, side, side),
-        );
-        assert!(
-            !scene.encoding().resources.glyph_runs.is_empty(),
-            "the seconds paint inside a small ring"
-        );
-
-        let state = crate::LocalState::new(30_u32);
-        let mut ring = ProgressRing::from_state(&state, |left| {
-            RingReading::new(f64::from(*left) / 30.0, left.to_string()).caption("seconds")
-        })
-        .size(ProgressRingSize::Small);
-        assert_eq!(ring.value, "30");
-        state.set(12);
-        let doc = automerge::AutoCommit::new();
-        ring.sync(&doc, &automerge::ROOT);
-        assert_eq!(ring.value, "12");
-        assert_eq!(ring.caption, "seconds");
-        ring.set_caption("minutes");
-        assert_eq!(ring.caption, "minutes");
-    }
-
-    #[test]
-    fn progress_ring_sizes_readouts_and_semantics() {
-        let theme = Theme::dark();
-        assert!(
-            ProgressRingSize::Small.diameter(&theme) < ProgressRingSize::Regular.diameter(&theme)
-        );
-        assert!(
-            ProgressRingSize::Regular.diameter(&theme) < ProgressRingSize::Large.diameter(&theme)
-        );
-        let mut tr = TextRenderer::new();
-        let mut empty = Scene::new();
-        ProgressRingFace::new(0.0).paint(
-            &mut PaintCtx::new(&mut empty, Affine::IDENTITY, &mut tr, &theme),
-            Rect::new(0.0, 0.0, 120.0, 120.0),
-        );
-        let mut half = Scene::new();
-        ProgressRingFace::new(0.5)
-            .value("23")
-            .caption("seconds")
-            .paint(
-                &mut PaintCtx::new(&mut half, Affine::IDENTITY, &mut tr, &theme),
+            let mut tr = TextRenderer::new();
+            let mut empty = Scene::new();
+            ProgressRingFace::new(0.0).paint(
+                &mut PaintCtx::new(&mut empty, Affine::IDENTITY, &mut tr, &theme),
                 Rect::new(0.0, 0.0, 120.0, 120.0),
             );
-        assert!(count_color_tags(&half) > count_color_tags(&empty));
-        assert!(!half.encoding().resources.glyph_runs.is_empty());
-        let hot = ProgressRingFace::new(0.9).level(GaugeThresholds::default());
-        assert_eq!(hot.fill_colour(&theme), theme.tokens.colors.semantic.danger);
-        let ring = ProgressRing::new(0.42).value("42%").caption("CPU");
-        let node = Widget::accessibility(&ring).unwrap();
-        assert_eq!(node.role, crate::a11y::Role::ProgressBar);
-        assert_eq!(node.name.as_deref(), Some("CPU"));
-        assert_eq!(node.value.as_deref(), Some("42%"));
-    }
+            let mut half = Scene::new();
+            ProgressRingFace::new(0.5)
+                .value("23")
+                .caption("seconds")
+                .paint(
+                    &mut PaintCtx::new(&mut half, Affine::IDENTITY, &mut tr, &theme),
+                    Rect::new(0.0, 0.0, 120.0, 120.0),
+                );
+            assert!(count_color_tags(&half) > count_color_tags(&empty));
+            assert!(!half.encoding().resources.glyph_runs.is_empty());
+            let hot = ProgressRingFace::new(0.9).level(GaugeThresholds::default());
+            assert_eq!(hot.fill_colour(&theme), theme.tokens.colors.semantic.danger);
+            let ring = ProgressRing::new(0.42).value("42%").caption("CPU");
+            let node = Widget::accessibility(&ring).unwrap();
+            assert_eq!(node.role, crate::a11y::Role::ProgressBar);
+            assert_eq!(node.name.as_deref(), Some("CPU"));
+            assert_eq!(node.value.as_deref(), Some("42%"));
+        }
 
-    #[test]
-    fn span_paints_track_and_fill() {
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        BarGauge::draw_span(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 120.0, 6.0),
-            &theme,
-            (0.7, 0.7),
-            &Brush::Solid(theme.tokens.colors.intent.accent),
-            &GaugeStyle::default(),
-        );
-        assert_eq!(count_color_tags(&scene), 2);
-        let (faint, firm) = (
-            track_color(&theme, TRACK_ALPHA),
-            track_color(
+        phase span_paints_track_and_fill;
+        {
+            let theme = Theme::dark();
+            let mut scene = Scene::new();
+            BarGauge::draw_span(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 120.0, 6.0),
                 &theme,
-                GaugeStyle::default().with_track_alpha(56).track_alpha,
-            ),
-        );
-        assert!(firm.components[3] > faint.components[3]);
+                (0.7, 0.7),
+                &Brush::Solid(theme.tokens.colors.intent.accent),
+                &GaugeStyle::default(),
+            );
+            assert_eq!(count_color_tags(&scene), 2);
+            let (faint, firm) = (
+                track_color(&theme, TRACK_ALPHA),
+                track_color(
+                    &theme,
+                    GaugeStyle::default().with_track_alpha(56).track_alpha,
+                ),
+            );
+            assert!(firm.components[3] > faint.components[3]);
+        }
     }
 }

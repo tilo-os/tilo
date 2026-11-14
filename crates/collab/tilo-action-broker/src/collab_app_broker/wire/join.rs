@@ -19,7 +19,8 @@ impl AppConnection {
         let Join {
             channel: channel_id,
             identity,
-            participant,
+            member,
+            handle: announced,
             record_kind,
         } = join;
         let route = CrdtRoute::from_channel_key(&channel_id);
@@ -32,31 +33,19 @@ impl AppConnection {
                 ))
             })?;
         let mut verified_identity = match task_presentation {
-            Some(presentation) => {
-                if self
-                    .worker
+            Some(presentation) => super::verify_task_agent_join(
+                &route,
+                &presentation,
+                state.membership.as_ref(),
+                state
+                    .trusted_devices
                     .as_ref()
-                    .and_then(|worker| worker.host_scope.as_ref())
-                    .is_some()
-                {
-                    return Err(BrokerError::failed(
-                        "a host worker never joins as a task agent".into(),
-                    ));
-                }
-                super::verify_task_agent_join(
-                    &route,
-                    &presentation,
-                    state.membership.as_ref(),
-                    state
-                        .trusted_devices
-                        .as_ref()
-                        .map(|devices| devices.as_slice()),
-                    state.certificate_authority.get().map(Arc::as_ref),
-                )
-                .map_err(|error| {
-                    BrokerError::failed(format!("collaboration join identity rejected: {error}"))
-                })?
-            }
+                    .map(|devices| devices.as_slice()),
+                state.certificate_authority.get().map(Arc::as_ref),
+            )
+            .map_err(|error| {
+                BrokerError::failed(format!("collaboration join identity rejected: {error}"))
+            })?,
             None => admit_join_presentation(
                 &route,
                 &super::join_presentation(&identity).map_err(BrokerError::failed)?,
@@ -66,9 +55,6 @@ impl AppConnection {
                     .as_ref()
                     .map(|devices| devices.as_slice()),
                 state.certificate_authority.get().map(Arc::as_ref),
-                self.worker
-                    .as_ref()
-                    .and_then(|worker| worker.host_scope.as_ref()),
             )
             .map_err(|error| {
                 BrokerError::failed(format!("collaboration join identity rejected: {error}"))
@@ -112,7 +98,7 @@ impl AppConnection {
             }
             None => RouteAccess::Own,
         };
-        let person = matches!(participant, Participant::Person { .. });
+        let person = member.is_none();
         // The app a person's launcher started is the worker of that app's
         // routes on this device: the launcher verified which app it released
         // and who it released it for, which is the same durable admission a
@@ -182,47 +168,32 @@ impl AppConnection {
         // its record (`admit_kept_agent`) like any app of the workspace.
         let descriptor_worker =
             verified_identity.worker_registration.is_some() && !launcher_attested;
-        if (verified_identity.host_scope.is_some() || descriptor_worker) && !person {
+        if descriptor_worker && !person {
             return Err(BrokerError::failed(
                 "host worker cannot delegate an agent identity".into(),
             ));
         }
         // A task agent joins only as itself: its verified task delegation is
         // its certification, and a person's handle would name it otherwise.
-        super::task_agents::joins_as(
-            &verified_identity,
-            match &participant {
-                Participant::Person { .. } => "person",
-                Participant::Agent { .. } => "agent",
-            },
-        )
-        .map_err(BrokerError::failed)?;
-        match participant {
-            Participant::Person {
-                handle: participant_handle,
-            } => {
-                // A Person handle is presentation, not its certified identity.
-                let participant_handle = participant_handle
-                    .trim()
-                    .chars()
-                    .take(64)
-                    .collect::<String>();
-                if !participant_handle.is_empty() {
-                    verified_identity.display_handle = Some(participant_handle);
+        super::task_agents::joins_as(&verified_identity, if person { "person" } else { "agent" })
+            .map_err(BrokerError::failed)?;
+        match member {
+            None => {
+                // A person's handle is presentation, not their certified
+                // identity.
+                let announced = announced.trim().chars().take(64).collect::<String>();
+                if !announced.is_empty() {
+                    verified_identity.display_handle = Some(announced);
                 }
             }
-            Participant::Agent {
-                id: participant_handle,
-            } if verified_identity.task.is_some() => {
+            Some(MemberId::Agent(participant_handle)) if verified_identity.task.is_some() => {
                 // A task agent's run keeps it: it acts on its delegated task
                 // alone, and the tracker says the task still goes.
                 state
                     .admit_task_join(&route.cluster_id, &participant_handle, &verified_identity)
                     .map_err(BrokerError::failed)?;
             }
-            Participant::Agent {
-                id: participant_handle,
-            } => {
+            Some(MemberId::Agent(participant_handle)) => {
                 // Unlike a display handle, this names the exact workspace
                 // principal. Normalize as enrollment does, then validate
                 // its byte bound; truncation can silently select another
@@ -251,27 +222,11 @@ impl AppConnection {
                     BrokerError::failed(format!("agent collaboration join rejected: {error}"))
                 })?;
             }
-        }
-        // An app the person opens, launched or restored into a tab, is
-        // let author the workspace as its person may let it: asked where
-        // every opening of an app joins. The join goes on meanwhile:
-        // the app asks for the workspace's keys again until the grant is in.
-        if person
-            && verified_identity.agent_id.is_none()
-            && let Some(certificate) = verified_identity.certificate.clone()
-        {
-            let state = Arc::clone(&state);
-            let route = route.clone();
-            tokio::task::spawn_local(async move {
-                if let Err(error) = state.admit_opening_app(&route, &certificate).await {
-                    tracing::warn!(
-                        workspace = %route.cluster_id,
-                        app = %route.app_id,
-                        %error,
-                        "an opening app was not let author its workspace"
-                    );
-                }
-            });
+            Some(MemberId::Person(_) | MemberId::Bot(_)) => {
+                return Err(BrokerError::failed(
+                    "only a person's own device or their agent joins a channel".into(),
+                ));
+            }
         }
         tracing::info!(
             target: "tilo_collab_probe",

@@ -496,217 +496,221 @@ mod tests {
         }
     }
 
-    /// Clips that publish the same operations share one line, counted once
-    /// against the cap, so the project's own operations (its render) are
-    /// still listed; every clip's operations may be named.
-    #[test]
-    fn look_alike_resources_share_a_line_and_leave_room_for_the_rest() {
-        let catalogue = timeline(12);
-        let named = Naming::in_text("cut the promo");
-        let mut revealed = Revealed::new();
-        let summary =
-            catalogue_summary_with(&catalogue, &mut revealed, 30, Some(&named), &|_| false);
-        assert!(
-            summary.contains(
-                "In video-editor: 12 video-editor.clip resources — \
+    tilo_test_env::scenario! {
+        fn the_catalogue_summary_lists_what_matters_within_its_cap;
+
+        phase look_alike_resources_share_a_line_and_leave_room_for_the_rest;
+        // Clips that publish the same operations share one line, counted once
+        // against the cap, so the project's own operations (its render) are
+        // still listed; every clip's operations may be named.
+        {
+            let catalogue = timeline(12);
+            let named = Naming::in_text("cut the promo");
+            let mut revealed = Revealed::new();
+            let summary =
+                catalogue_summary_with(&catalogue, &mut revealed, 30, Some(&named), &|_| false);
+            assert!(
+                summary.contains(
+                    "In video-editor: 12 video-editor.clip resources — \
                  video-editor.project/clips/0000c110-0000-4000-8000-000000000000 \"shot-0.mp4\""
-            ),
-            "{summary}"
-        );
-        assert!(
-            summary.contains("  <resource>#set-op-19 — Set"),
-            "{summary}"
-        );
-        assert!(
-            summary.contains("video-editor.project#render"),
-            "the project's render is not crowded out: {summary}"
-        );
-        assert!(
-            revealed.contains(
-                "video-editor.project/clips/0000c11b-0000-4000-8000-000000000000#set-op-19"
-            )
-        );
-        assert_eq!(
-            summary.matches("#set-op-3 ").count(),
-            1,
-            "one line per operation for all the clips: {summary}"
-        );
-        assert!(
-            !summary.contains("more; ask"),
-            "nothing left out: {summary}"
-        );
-        // Without naming (the task loop), the cap applies as before.
-        let mut plain = Revealed::new();
-        let summary = catalogue_summary(&catalogue, &mut plain, 30);
-        assert!(
-            !summary.contains("12 video-editor.clip resources"),
-            "{summary}"
-        );
-        assert!(
-            !plain.contains(
-                "video-editor.project/clips/0000c11b-0000-4000-8000-000000000000#set-op-19"
-            )
-        );
-        // Fewer than five alike are each listed as themselves.
-        let summary = catalogue_summary_with(
-            &timeline(4),
-            &mut Revealed::new(),
-            200,
-            Some(&named),
-            &|_| false,
-        );
-        assert!(!summary.contains("resources —"), "{summary}");
-        assert_eq!(summary.matches("#set-op-3 ").count(), 4, "{summary}");
-    }
-
-    /// Operations described in full already are named in a line per
-    /// resource, without their labels and signatures again, and may still
-    /// be planned; the others keep their own line. Alike clips share the
-    /// line too.
-    #[test]
-    fn described_operations_are_named_in_a_line() {
-        let catalogue = timeline(12);
-        let named = Naming::in_text("cut the promo");
-        let described = |offer: &Offer| offer.address().action != "render";
-        let mut revealed = Revealed::new();
-        let summary =
-            catalogue_summary_with(&catalogue, &mut revealed, 30, Some(&named), &described);
-        assert!(
-            summary.contains("  video-editor.project# place-clip, add-title, read-timeline\n"),
-            "{summary}"
-        );
-        assert!(
-            summary.contains("  video-editor.project#render — render"),
-            "{summary}"
-        );
-        assert!(
-            summary.contains("  <resource># set-op-0, set-op-1, "),
-            "{summary}"
-        );
-        assert!(!summary.contains("#set-op-3 — "), "{summary}");
-        assert!(summary.ends_with(COMPACT_NOTE), "{summary}");
-        for id in [
-            "video-editor.project#add-title",
-            "video-editor.project/clips/0000c11b-0000-4000-8000-000000000000#set-op-19",
-        ] {
-            assert!(revealed.contains(id), "{id}");
+                ),
+                "{summary}"
+            );
+            assert!(
+                summary.contains("  <resource>#set-op-19 — Set"),
+                "{summary}"
+            );
+            assert!(
+                summary.contains("video-editor.project#render"),
+                "the project's render is not crowded out: {summary}"
+            );
+            assert!(
+                revealed.contains(
+                    "video-editor.project/clips/0000c11b-0000-4000-8000-000000000000#set-op-19"
+                )
+            );
+            assert_eq!(
+                summary.matches("#set-op-3 ").count(),
+                1,
+                "one line per operation for all the clips: {summary}"
+            );
+            assert!(
+                !summary.contains("more; ask"),
+                "nothing left out: {summary}"
+            );
+            // Without naming (the task loop), the cap applies as before.
+            let mut plain = Revealed::new();
+            let summary = catalogue_summary(&catalogue, &mut plain, 30);
+            assert!(
+                !summary.contains("12 video-editor.clip resources"),
+                "{summary}"
+            );
+            assert!(
+                !plain.contains(
+                    "video-editor.project/clips/0000c11b-0000-4000-8000-000000000000#set-op-19"
+                )
+            );
+            // Fewer than five alike are each listed as themselves.
+            let summary = catalogue_summary_with(
+                &timeline(4),
+                &mut Revealed::new(),
+                200,
+                Some(&named),
+                &|_| false,
+            );
+            assert!(!summary.contains("resources —"), "{summary}");
+            assert_eq!(summary.matches("#set-op-3 ").count(), 4, "{summary}");
         }
-        // Nothing described: no line of names and no note.
-        let full =
-            catalogue_summary_with(&catalogue, &mut Revealed::new(), 30, Some(&named), &|_| {
-                false
-            });
-        assert!(!full.contains(COMPACT_NOTE) && full.len() > summary.len());
-    }
 
-    /// A clip an earlier step returned the id of is listed whatever the
-    /// cap, and so is one the request names by its label; others past the
-    /// cap are not.
-    #[test]
-    fn a_resource_named_by_its_id_or_label_is_listed_past_the_cap() {
-        let mut catalogue = timeline(3);
-        for offer in &mut catalogue.offers {
-            // Three clips that are not alike: each its own operations.
-            if let Some(n) = offer.descriptor.resource_label.strip_prefix("shot-") {
-                let n = n.trim_end_matches(".mp4").to_owned();
-                offer.descriptor.address.action =
-                    format!("{}-{n}", offer.descriptor.address.action);
+        phase described_operations_are_named_in_a_line;
+        // Operations described in full already are named in a line per
+        // resource, without their labels and signatures again, and may still
+        // be planned; the others keep their own line. Alike clips share the
+        // line too.
+        {
+            let catalogue = timeline(12);
+            let named = Naming::in_text("cut the promo");
+            let described = |offer: &Offer| offer.address().action != "render";
+            let mut revealed = Revealed::new();
+            let summary =
+                catalogue_summary_with(&catalogue, &mut revealed, 30, Some(&named), &described);
+            assert!(
+                summary.contains("  video-editor.project# place-clip, add-title, read-timeline\n"),
+                "{summary}"
+            );
+            assert!(
+                summary.contains("  video-editor.project#render — render"),
+                "{summary}"
+            );
+            assert!(
+                summary.contains("  <resource># set-op-0, set-op-1, "),
+                "{summary}"
+            );
+            assert!(!summary.contains("#set-op-3 — "), "{summary}");
+            assert!(summary.ends_with(COMPACT_NOTE), "{summary}");
+            for id in [
+                "video-editor.project#add-title",
+                "video-editor.project/clips/0000c11b-0000-4000-8000-000000000000#set-op-19",
+            ] {
+                assert!(revealed.contains(id), "{id}");
             }
+            // Nothing described: no line of names and no note.
+            let full =
+                catalogue_summary_with(&catalogue, &mut Revealed::new(), 30, Some(&named), &|_| {
+                    false
+                });
+            assert!(!full.contains(COMPACT_NOTE) && full.len() > summary.len());
         }
-        let named = Naming::in_text(
-            "Fade out SHOT-1.MP4 and the clip the step added: \
+
+        phase a_resource_named_by_its_id_or_label_is_listed_past_the_cap;
+        // A clip an earlier step returned the id of is listed whatever the
+        // cap, and so is one the request names by its label; others past the
+        // cap are not.
+        {
+            let mut catalogue = timeline(3);
+            for offer in &mut catalogue.offers {
+                // Three clips that are not alike: each its own operations.
+                if let Some(n) = offer.descriptor.resource_label.strip_prefix("shot-") {
+                    let n = n.trim_end_matches(".mp4").to_owned();
+                    offer.descriptor.address.action =
+                        format!("{}-{n}", offer.descriptor.address.action);
+                }
+            }
+            let named = Naming::in_text(
+                "Fade out SHOT-1.MP4 and the clip the step added: \
              {\"clip\":\"0000C112-0000-4000-8000-000000000000\"}",
-        );
-        let mut revealed = Revealed::new();
-        let summary =
-            catalogue_summary_with(&catalogue, &mut revealed, 10, Some(&named), &|_| false);
-        assert!(
-            revealed.contains(
-                "video-editor.project/clips/0000c112-0000-4000-8000-000000000000#set-op-19-2"
-            ),
-            "named by its id: {summary}"
-        );
-        assert!(
-            revealed.contains(
-                "video-editor.project/clips/0000c111-0000-4000-8000-000000000000#set-op-19-1"
-            ),
-            "named by its label: {summary}"
-        );
-        assert!(
-            !revealed.contains(
-                "video-editor.project/clips/0000c110-0000-4000-8000-000000000000#set-op-19-0"
-            ),
-            "{summary}"
-        );
-        // A short id is no name: any number in the text could match it.
-        assert!(!Naming::in_text("row 12 of 3").names_resource("sheets.workbook/rows/12"));
-        assert!(!Naming::in_text("the sheets workbook").names_resource("sheets.workbook"));
-    }
+            );
+            let mut revealed = Revealed::new();
+            let summary =
+                catalogue_summary_with(&catalogue, &mut revealed, 10, Some(&named), &|_| false);
+            assert!(
+                revealed.contains(
+                    "video-editor.project/clips/0000c112-0000-4000-8000-000000000000#set-op-19-2"
+                ),
+                "named by its id: {summary}"
+            );
+            assert!(
+                revealed.contains(
+                    "video-editor.project/clips/0000c111-0000-4000-8000-000000000000#set-op-19-1"
+                ),
+                "named by its label: {summary}"
+            );
+            assert!(
+                !revealed.contains(
+                    "video-editor.project/clips/0000c110-0000-4000-8000-000000000000#set-op-19-0"
+                ),
+                "{summary}"
+            );
+            // A short id is no name: any number in the text could match it.
+            assert!(!Naming::in_text("row 12 of 3").names_resource("sheets.workbook/rows/12"));
+            assert!(!Naming::in_text("the sheets workbook").names_resource("sheets.workbook"));
+        }
 
-    /// What a re-plan's reads answered names every message, more operations
-    /// than the cap holds. Those are listed on top of each application's
-    /// share, so the channel no text names still offers its `post`; a
-    /// channel named without Chat's leading `#` is named all the same.
-    #[test]
-    fn named_resources_past_the_cap_leave_other_applications_their_share() {
-        let mut offers = Vec::new();
-        for (channel, label) in [("ops", "#ops-room"), ("wa-lena", "#WhatsApp: Lena")] {
-            for action in ["share-resource", "submit-feedback", "rename", "post"] {
-                let mut offer = offer(
-                    "chat",
-                    &format!("chat.workspace/channels/{channel}"),
-                    "chat.channel",
-                    action,
-                    action,
-                    InputSpec::None,
-                );
-                offer.descriptor.resource_label = label.into();
-                offers.push(offer);
+        phase named_resources_past_the_cap_leave_other_applications_their_share;
+        // What a re-plan's reads answered names every message, more operations
+        // than the cap holds. Those are listed on top of each application's
+        // share, so the channel no text names still offers its `post`; a
+        // channel named without Chat's leading `#` is named all the same.
+        {
+            let mut offers = Vec::new();
+            for (channel, label) in [("ops", "#ops-room"), ("wa-lena", "#WhatsApp: Lena")] {
+                for action in ["share-resource", "submit-feedback", "rename", "post"] {
+                    let mut offer = offer(
+                        "chat",
+                        &format!("chat.workspace/channels/{channel}"),
+                        "chat.channel",
+                        action,
+                        action,
+                        InputSpec::None,
+                    );
+                    offer.descriptor.resource_label = label.into();
+                    offers.push(offer);
+                }
             }
-        }
-        let mut ids = Vec::new();
-        for n in 0..12 {
-            let id = format!("0000a11{n:x}-0000-4000-8000-000000000000");
-            for op in 0..10 {
-                offers.push(offer(
-                    "mail",
-                    &format!("mail.mailbox/messages/{id}"),
-                    "mail.message",
-                    &format!("op-{op}-{n}"),
-                    "Op",
-                    InputSpec::None,
-                ));
+            let mut ids = Vec::new();
+            for n in 0..12 {
+                let id = format!("0000a11{n:x}-0000-4000-8000-000000000000");
+                for op in 0..10 {
+                    offers.push(offer(
+                        "mail",
+                        &format!("mail.mailbox/messages/{id}"),
+                        "mail.message",
+                        &format!("op-{op}-{n}"),
+                        "Op",
+                        InputSpec::None,
+                    ));
+                }
+                ids.push(id);
             }
-            ids.push(id);
+            let catalogue = Catalogue {
+                held: vec!["chat", "mail"],
+                offers,
+                ..Catalogue::default()
+            };
+            // Every message but the first is named by what the reads answered.
+            let named = Naming::in_text(&format!(
+                "reply in the WhatsApp: Lena channel; mail read answered {}",
+                ids[1..].join(", ")
+            ));
+            let mut revealed = Revealed::new();
+            let summary =
+                catalogue_summary_with(&catalogue, &mut revealed, 8, Some(&named), &|_| false);
+            assert!(
+                revealed.contains("chat.workspace/channels/ops#post"),
+                "chat keeps its share of the cap: {summary}"
+            );
+            assert!(
+                revealed.contains("chat.workspace/channels/wa-lena#post"),
+                "the channel named without its `#` is listed whole: {summary}"
+            );
+            assert!(
+                revealed.contains("mail.mailbox/messages/0000a11b-0000-4000-8000-000000000000#op-9-11"),
+                "every named message is listed past the cap: {summary}"
+            );
+            assert!(
+                !revealed.contains("mail.mailbox/messages/0000a110-0000-4000-8000-000000000000#op-9-0"),
+                "what nothing names stays within the cap: {summary}"
+            );
         }
-        let catalogue = Catalogue {
-            held: vec!["chat", "mail"],
-            offers,
-            ..Catalogue::default()
-        };
-        // Every message but the first is named by what the reads answered.
-        let named = Naming::in_text(&format!(
-            "reply in the WhatsApp: Lena channel; mail read answered {}",
-            ids[1..].join(", ")
-        ));
-        let mut revealed = Revealed::new();
-        let summary =
-            catalogue_summary_with(&catalogue, &mut revealed, 8, Some(&named), &|_| false);
-        assert!(
-            revealed.contains("chat.workspace/channels/ops#post"),
-            "chat keeps its share of the cap: {summary}"
-        );
-        assert!(
-            revealed.contains("chat.workspace/channels/wa-lena#post"),
-            "the channel named without its `#` is listed whole: {summary}"
-        );
-        assert!(
-            revealed.contains("mail.mailbox/messages/0000a11b-0000-4000-8000-000000000000#op-9-11"),
-            "every named message is listed past the cap: {summary}"
-        );
-        assert!(
-            !revealed.contains("mail.mailbox/messages/0000a110-0000-4000-8000-000000000000#op-9-0"),
-            "what nothing names stays within the cap: {summary}"
-        );
     }
 }

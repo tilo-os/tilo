@@ -10,14 +10,13 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{Map, Value};
 use settings_store::personal_dictionary::{Reader, Vocabulary};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
-use tilo_service::{Service, Started, Wake, decode, offer};
+use tilo_service::{Service, Started, decode, offer};
 use zeroize::Zeroizing;
 
 use crate::effects::DictationAction;
@@ -250,9 +249,9 @@ pub struct DictationService {
 impl DictationService {
     /// The service, and the session's handle on it.
     #[must_use]
-    pub fn start(wake: Wake) -> (Self, DictationLink) {
+    pub fn start() -> (Self, DictationLink) {
         let link = DictationLink::default();
-        let vocabulary = VocabularyBinding::new(wake);
+        let vocabulary = VocabularyBinding::new(&link);
         (
             Self {
                 link: link.clone(),
@@ -308,58 +307,40 @@ impl Service for DictationService {
     }
 }
 
-/// The host's personal dictionary, delivered to the recognizer's own thread.
-/// Nothing of it is read here: a change only wakes the loop, which rebinds the
-/// reader before the next word is recognized.
+/// The person's dictionary, read from the settings document this session serves. A new document
+/// revokes the reader the recognizer held, so it can never read the previous person's words.
 struct VocabularyBinding {
-    service: Option<Weak<settings_store::personal_dictionary::Service>>,
     reader: Option<Reader>,
-    changed: Arc<AtomicBool>,
-    _listener: Arc<settings_store::Listener>,
 }
 
 impl VocabularyBinding {
-    fn new(wake: Wake) -> Self {
-        let service =
-            settings_store::installed_source().and_then(|source| source.dictionary_service());
-        let changed = Arc::new(AtomicBool::new(true));
-        let pending = Arc::clone(&changed);
-        let listener: Arc<settings_store::Listener> = Arc::new(move || {
-            pending.store(true, Ordering::Release);
-            wake();
-        });
-        if let Some(service) = &service {
-            service.changes().listen(&listener);
-        }
-        Self {
-            service: service.map(|service| Arc::downgrade(&service)),
-            reader: None,
-            changed,
-            _listener: listener,
-        }
+    fn new(link: &DictationLink) -> Self {
+        let mut binding = Self { reader: None };
+        binding.refresh(link);
+        binding
     }
 
-    /// Rebind the reader when the host's binding changed. Word edits keep the
-    /// binding, so the recognizer can offer the draft a person already saw.
+    /// Rebind when the session installed another settings document. Word edits keep the binding,
+    /// so the recognizer can offer the draft a person already saw.
     fn refresh(&mut self, link: &DictationLink) -> bool {
-        if !self.changed.swap(false, Ordering::AcqRel) {
-            return false;
-        }
-        let reader = self
-            .service
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .and_then(|service| service.reader());
-        let same = match (&self.reader, &reader) {
-            (Some(previous), Some(next)) => previous.same_binding(next),
+        let source = settings_store::installed_source();
+        let same = match (&self.reader, &source) {
+            (Some(reader), Some(source)) => reader.reads(source),
             (None, None) => true,
             _ => false,
         };
         if same {
             return false;
         }
-        self.reader.clone_from(&reader);
-        link.set_vocabulary(reader.map(|reader| Arc::new(reader) as Arc<dyn Vocabulary>));
+        if let Some(reader) = self.reader.take() {
+            reader.revoke();
+        }
+        self.reader = source.map(Reader::bind);
+        link.set_vocabulary(
+            self.reader
+                .clone()
+                .map(|reader| Arc::new(reader) as Arc<dyn Vocabulary>),
+        );
         true
     }
 }
@@ -376,35 +357,39 @@ impl std::fmt::Debug for DictationService {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_reading_says_where_a_dictation_stands_and_never_what_it_heard() {
-        let link = DictationLink::default();
-        assert_eq!(
-            link.reading(),
-            serde_json::json!({
-                "status": "idle",
-                "session": null,
-                "failure": null,
-                "recovery": null,
-            })
-        );
-        link.request(Request::Toggle);
-        assert_eq!(link.take_requests(), vec![Request::Toggle]);
-        assert!(link.take_requests().is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn the_dictation_service_reads_where_it_stands_and_only_asks;
 
-    #[test]
-    fn an_action_asks_for_a_dictation_and_never_consents_to_one() {
-        let (mut service, link) = DictationService::start(Arc::new(|| {}));
-        let started = service
-            .invoke(DICTATION, "start", &Map::new())
-            .expect("start is offered");
-        assert_eq!(started, Started::Done(ActionOutput::default()));
-        assert_eq!(link.take_requests(), vec![Request::Toggle]);
-        assert_eq!(
-            service.invoke(DICTATION, "allow", &Map::new()),
-            Err(DoorError::Unknown(ActionAddress::new(DICTATION, "allow"))),
-            "there is no action that allows the microphone"
-        );
+        phase the_reading_says_where_a_dictation_stands_and_never_what_it_heard;
+        {
+            let link = DictationLink::default();
+            assert_eq!(
+                link.reading(),
+                serde_json::json!({
+                    "status": "idle",
+                    "session": null,
+                    "failure": null,
+                    "recovery": null,
+                })
+            );
+            link.request(Request::Toggle);
+            assert_eq!(link.take_requests(), vec![Request::Toggle]);
+            assert!(link.take_requests().is_empty());
+        }
+
+        phase an_action_asks_for_a_dictation_and_never_consents_to_one;
+        {
+            let (mut service, link) = DictationService::start();
+            let started = service
+                .invoke(DICTATION, "start", &Map::new())
+                .expect("start is offered");
+            assert_eq!(started, Started::Done(ActionOutput::default()));
+            assert_eq!(link.take_requests(), vec![Request::Toggle]);
+            assert_eq!(
+                service.invoke(DICTATION, "allow", &Map::new()),
+                Err(DoorError::Unknown(ActionAddress::new(DICTATION, "allow"))),
+                "there is no action that allows the microphone"
+            );
+        }
     }
 }

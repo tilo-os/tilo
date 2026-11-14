@@ -40,7 +40,7 @@ async fn admit_viewer(relay: &Relay, host: &TestDevice, member: &TestDevice, roo
             &host.cert,
             tilo_relay::workspaces::IssueInvitationRequest {
                 request_id: *blake3::hash(&member.device_pubkey()).as_bytes(),
-                role: MemberRole::Viewer,
+                role: Role::Viewer,
                 recipient_user_public_key: Some(member.cert.user_public_key),
                 invitee_name: None,
                 inviter_name: None,
@@ -71,11 +71,11 @@ async fn admit_viewer(relay: &Relay, host: &TestDevice, member: &TestDevice, roo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admitted_member_creates_an_authored_apps_empty_record() {
+async fn an_admitted_member_creates_an_apps_empty_record() {
     let alice = TestUser::fresh("Fixture governor");
     let bob = TestUser::fresh("Fixture editor");
     let carol = TestUser::fresh("Fixture viewer");
-    let host = alice.enrol("private-host", DeviceCapabilities::host());
+    let host = alice.enrol("private-host", DeviceCapabilities::member());
     let laptop = alice.enrol("private-laptop", DeviceCapabilities::primary());
     let member = bob.enrol("private-member", DeviceCapabilities::member());
     let viewer = carol.enrol("private-viewer", DeviceCapabilities::member());
@@ -107,15 +107,6 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
     };
     let mut member_peer = replica();
     let mut laptop_peer = replica();
-    let workspace_id = room.workspace.clone();
-    let authors = move |peer: &StatePeer| {
-        peer.admitted_workspace().is_some_and(|doc| {
-            tilo_peer_state::workspace::policy_of(doc, &workspace_id).app_authors(
-                OPENED,
-                &tilo_action_policy::Context::at_time(SystemTime::now()),
-            )
-        })
-    };
     receive_until(
         "the member holds the room",
         &member_session,
@@ -124,34 +115,9 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
         |peer, _| peer.admitted_workspace().is_some(),
     )
     .await;
-    assert!(
-        genesis(&mut member_peer.clone(), OPENED, &member.sk).is_err(),
-        "a record of an app the room does not let author is never created"
-    );
-
-    // The room lets the app author, as its host is configured to.
-    assert!(
-        relay
-            .workspaces()
-            .unwrap()
-            .settle_app_authorship(
-                &room.workspace,
-                &host.cert,
-                &std::collections::BTreeSet::from([OPENED.to_owned()]),
-                &std::collections::BTreeSet::new(),
-            )
-            .await
-            .unwrap()
-    );
+    // An editor's own change of an app's record is theirs: the record's
+    // genesis is theirs to start.
     let laptop_session = session(&relay, &laptop, workspace).await;
-    receive_until(
-        "the member holds the app's authorship",
-        &member_session,
-        &mut member_peer,
-        &mut Vec::new(),
-        |peer, _| authors(peer),
-    )
-    .await;
     assert!(
         genesis(&mut member_peer.clone(), "so.tilo.notes\n", &member.sk).is_err(),
         "a malformed application id is refused"
@@ -259,23 +225,12 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
     let alice = TestUser::fresh("Fixture governor");
-    let host = alice.enrol("collecting-host", DeviceCapabilities::host());
+    let host = alice.enrol("collecting-host", DeviceCapabilities::member());
     let laptop = alice.enrol("collecting-laptop", DeviceCapabilities::primary());
     let scratch = tempfile::tempdir().unwrap();
     let relay = start(scratch.path(), &alice, &host).await;
     let room = create_and_enter(&relay, &laptop, "Collected content").await;
     let workspaces = relay.workspaces().unwrap().clone();
-    assert!(
-        workspaces
-            .settle_app_authorship(
-                &room.workspace,
-                &host.cert,
-                &std::collections::BTreeSet::from([OPENED.to_owned()]),
-                &std::collections::BTreeSet::new(),
-            )
-            .await
-            .unwrap()
-    );
     let stores = relay.content();
     let store = stores.get(&room.workspace).unwrap();
     let earlier = store.put(b"the picture the note showed first").unwrap();

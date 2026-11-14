@@ -98,7 +98,6 @@ fn method_of(bytes: &[u8], name: &str) -> CompressionMethod {
     panic!("entry {name} not found");
 }
 
-#[test]
 fn epub_package_scaffolding_is_valid_even_when_empty() {
     {
         let mut snap = empty_snapshot();
@@ -200,7 +199,6 @@ fn epub_package_scaffolding_is_valid_even_when_empty() {
     }
 }
 
-#[test]
 fn epub_nav_mirrors_the_heading_tree() {
     {
         let mut snap = empty_snapshot();
@@ -279,7 +277,6 @@ fn epub_nav_mirrors_the_heading_tree() {
     }
 }
 
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -427,6 +424,28 @@ fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
             "body specials escaped:\n{chapter}"
         );
         assert_well_formed_xml(&chapter);
+    }
+}
+
+#[test]
+fn epub_export_writes_package_nav_and_chapters() {
+    let cases: [(&str, fn()); 3] = [
+        (
+            "epub package scaffolding is valid even when empty",
+            epub_package_scaffolding_is_valid_even_when_empty,
+        ),
+        (
+            "epub nav mirrors the heading tree",
+            epub_nav_mirrors_the_heading_tree,
+        ),
+        (
+            "epub chapters are split well formed escaped and carry images",
+            epub_chapters_are_split_well_formed_escaped_and_carry_images,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
     }
 }
 

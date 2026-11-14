@@ -317,36 +317,40 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 mod tests {
     use super::*;
 
-    #[test]
-    fn personal_transient_scenarios_are_capturable() {
-        for (name, expected) in [
-            ("personal-error", AuthScenario::PersonalError),
-            (
-                "personal-authenticating",
-                AuthScenario::PersonalAuthenticating,
-            ),
-            ("personal-caps", AuthScenario::PersonalCapsLock),
-            ("personal-hint", AuthScenario::PersonalHint),
-            ("personal-starting", AuthScenario::PersonalStarting),
-        ] {
-            assert_eq!(scenario_named(name), Ok(expected));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn shot_scenarios_are_named_and_keep_no_passcode;
 
-    #[test]
-    fn busy_shots_do_not_retain_representative_passcodes() {
-        for scenario in [
-            AuthScenario::Authenticating,
-            AuthScenario::Fingerprint,
-            AuthScenario::Starting,
-            AuthScenario::PersonalAuthenticating,
-            AuthScenario::PersonalStarting,
-        ] {
-            assert_eq!(
-                shot_credentials(scenario).map(|(_, passcode)| passcode),
-                Some(""),
-                "{scenario:?} must mirror the live path after secret handoff"
-            );
+        phase personal_transient_scenarios_are_capturable;
+        {
+            for (name, expected) in [
+                ("personal-error", AuthScenario::PersonalError),
+                (
+                    "personal-authenticating",
+                    AuthScenario::PersonalAuthenticating,
+                ),
+                ("personal-caps", AuthScenario::PersonalCapsLock),
+                ("personal-hint", AuthScenario::PersonalHint),
+                ("personal-starting", AuthScenario::PersonalStarting),
+            ] {
+                assert_eq!(scenario_named(name), Ok(expected));
+            }
+        }
+
+        phase busy_shots_do_not_retain_representative_passcodes;
+        {
+            for scenario in [
+                AuthScenario::Authenticating,
+                AuthScenario::Fingerprint,
+                AuthScenario::Starting,
+                AuthScenario::PersonalAuthenticating,
+                AuthScenario::PersonalStarting,
+            ] {
+                assert_eq!(
+                    shot_credentials(scenario).map(|(_, passcode)| passcode),
+                    Some(""),
+                    "{scenario:?} must mirror the live path after secret handoff"
+                );
+            }
         }
     }
 }

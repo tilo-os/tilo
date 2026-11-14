@@ -367,3 +367,57 @@ fn a_personal_setting_set_here_arrives_on_the_other_device_and_a_device_setting_
         "a setting taken from another device is not claimed here: {offered:?}"
     );
 }
+
+#[test]
+fn a_word_the_person_added_is_known_on_their_other_device() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined();
+    let mut session = session(&link);
+
+    let source = settings_store::source().expect("this person's settings");
+    let word = settings_store::personal_dictionary::Word::new("qwordz", None).unwrap();
+    settings_store::personal_dictionary::edit_in(
+        source.as_ref(),
+        0,
+        settings_store::personal_dictionary::Edit::Add(word),
+    )
+    .expect("the word is kept in the person's settings");
+
+    // The other device hears the dictionary the person holds.
+    when(&mut session, || {
+        link.what_their_devices_read()
+            .contains_key("tilo.personal_dictionary.words")
+    });
+    let theirs = link.what_their_devices_read();
+    let words = theirs
+        .get("tilo.personal_dictionary.words")
+        .expect("the dictionary travels with the person");
+
+    // On that device it is the same dictionary: the roamed leaves land in its
+    // own settings document and spell the word as known.
+    let other = tempfile::tempdir().unwrap();
+    let laptop = settings_store::Store::open(other.path()).unwrap();
+    let _scoped = settings_store::scoped_source(Some(
+        Arc::clone(&laptop) as Arc<dyn settings_store::SettingsSource>
+    ));
+    for (key, value) in &theirs {
+        let Some((section, leaf)) = key
+            .strip_prefix("tilo.")
+            .and_then(|rest| rest.split_once('.'))
+        else {
+            continue;
+        };
+        settings_store::update_section(
+            section,
+            serde_json::Map::from_iter([(leaf.to_owned(), value.clone())]),
+        )
+        .expect("a roamed setting is kept");
+    }
+    let known = settings_store::personal_dictionary::snapshot_in(laptop.as_ref());
+    assert!(
+        known.contains("qwordz", "en"),
+        "the other device knows the person's word: {known:?}"
+    );
+    assert_eq!(words["words"][0]["spelling"], "qwordz");
+}

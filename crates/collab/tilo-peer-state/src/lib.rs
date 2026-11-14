@@ -65,12 +65,12 @@ pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
     GovernedMember, InstalledApp, InstalledBot, KeptRecord, MAX_HELD_BYTES, MAX_HELD_INPUTS,
-    MemberAuthority, MembershipError, NativePublicationCut, OpenedHistory, OpenedRecord,
-    OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
+    MembershipError, NativePublicationCut, OpenedHistory, OpenedRecord, OpenedWrite,
+    PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
-    ReceiveOutcome, RecordReaders, RequestedBot, Reseal, RowError, SealCheckpoint, SeedDocument,
-    SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, WORKSPACE_HOSTS_KEY,
+    ReceiveOutcome, RequestedBot, Reseal, RowError, SealCheckpoint, SeedDocument, SeedState,
+    StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, WORKSPACE_HOSTS_KEY,
     committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle,
     seed_workspace, workspace_host_actor, workspace_hosts_of, workspace_seed,
 };

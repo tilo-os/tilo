@@ -7,15 +7,14 @@ use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
 use crate::{NeighbourMsg, workspace};
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-use collab_types::caps::Principal;
 use collab_types::{
-    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
+    ArtifactKind, DocumentMutation, Ed25519PublicKey, InboundState, OpKind, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, GrantId, Grantee, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Grant, GrantId, Grantee, Standing, TreePath, WorkspacePolicy,
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -71,7 +70,7 @@ mod publication;
 mod workspace_hosts;
 pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, workspace_hosts_of};
 mod personal;
-mod seed;
+pub(crate) mod seed;
 mod workspace_name;
 mod workspace_settings;
 use held::Held;
@@ -102,7 +101,6 @@ pub(crate) use durable::{
 mod receiving;
 mod records;
 mod sealing;
-pub use authority::MemberAuthority;
 
 #[expect(
     clippy::needless_pass_by_value,
@@ -110,6 +108,12 @@ pub use authority::MemberAuthority;
 )]
 fn err(error: impl ToString) -> String {
     error.to_string()
+}
+/// The person a member's standing is for.
+pub(crate) fn person_of(standing: &Standing) -> Result<&str, String> {
+    standing
+        .person_id()
+        .ok_or_else(|| "the standing is for no person".to_owned())
 }
 pub(crate) fn now_ns(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
@@ -161,23 +165,6 @@ pub struct GovernedAccess {
     /// Its members, by their roots: every person its policy gives a role,
     /// whether or not a device of theirs is listed now.
     pub member_user_roots: Vec<[u8; 32]>,
-}
-/// Who a Read Deny keeps out of a workspace's record channels; see
-/// [`PeerGovernance::withheld_record_readers`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RecordReaders {
-    /// Every device a record's channel admits where nothing withholds it from
-    /// the record: the workspace's member devices.
-    pub readers: BTreeSet<[u8; 32]>,
-    /// Each channel whose record the caller can name, and the devices that
-    /// may not read that record (possibly none).
-    pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
-    /// The devices kept out of every channel whose record the caller cannot
-    /// name: every device [`Self::readers`] lists. Such a channel may be any
-    /// record, a member's own (`member:<root>:<kind>`, read by that person
-    /// alone) included, so no one is admitted to it until a device names its
-    /// record.
-    pub unrouted: BTreeSet<[u8; 32]>,
 }
 #[derive(Clone, Debug, Default)]
 #[expect(
@@ -496,16 +483,6 @@ pub(crate) use governed_rows::WorkspaceDelegation;
 pub(crate) use governed_rows::WorkspaceDelegationPermissions;
 pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
 pub(crate) use invitation_ledger::LedgerReceipt;
-
-fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
-    match role {
-        Role::Viewer => Some(crate::join::MemberRole::Viewer),
-        Role::Commenter => Some(crate::join::MemberRole::Commenter),
-        Role::Editor => Some(crate::join::MemberRole::Editor),
-        Role::Moderator => Some(crate::join::MemberRole::Moderator),
-        Role::Owner => None,
-    }
-}
 
 /// The map at `key` of a governed workspace document.
 fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {

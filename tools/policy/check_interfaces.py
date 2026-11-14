@@ -34,6 +34,12 @@ source files, with the serde attributes that change the wire form. A type the
 sources do not define must be a known standard type or be listed under
 ``[opaque]`` with what it is, so nothing on the wire goes unexamined by
 accident.
+
+``json_roots`` names roots the interface carries as JSON although its
+``encoding`` is a compact format: a socket can carry two protocols, and this
+check judges every root by the interface's encoding either way, since the
+stricter rules catch every break the looser one allows
+(``check_wire_attributes.py`` reads it to leave those roots out).
 """
 
 from __future__ import annotations
@@ -528,6 +534,12 @@ class Spec:
     opaque: dict[str, str]
     serves: bool
     path: Path
+    # Roots this interface carries as JSON although `encoding` is a compact format: one
+    # socket can carry two protocols (Settings' language packs and the shell's tools
+    # speak length-prefixed JSON beside the postcard calls). The compatibility check
+    # judges them by the interface's encoding like every other root, and a check of what
+    # a compact encoding allows reads this to leave them out.
+    json_roots: list[str] = field(default_factory=list)
 
 
 def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
@@ -542,16 +554,23 @@ def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
         opaque=dict(data.get("opaque", {})),
         serves=bool(data.get("served_to_apps", False)),
         path=path,
+        json_roots=list(data.get("json_roots", [])),
     )
     if spec.encoding not in ENCODINGS:
         raise InterfaceError(f"{path}: encoding must be one of {', '.join(ENCODINGS)}")
     # A file listed twice would read every type it defines twice, and the schema
     # would blame the code for defining it more than once.
-    for listed in ("sources", "roots"):
+    for listed in ("sources", "roots", "json_roots"):
         names = getattr(spec, listed)
         twice = sorted({name for name in names if names.count(name) > 1})
         if twice:
             raise InterfaceError(f"`{listed}` lists {', '.join(twice)} more than once")
+    stray = sorted(set(spec.json_roots) - set(spec.roots))
+    if stray:
+        raise InterfaceError(
+            f"{path}: `json_roots` names {', '.join(stray)}, which `roots` does not: a "
+            "root is carried as JSON only by saying so where the roots are"
+        )
     return spec, dict(data.get("schema", {}))
 
 
@@ -573,7 +592,10 @@ def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
             items.setdefault(item.name, []).append(item)
     schema: dict[str, str] = {}
     seen: set[str] = set()
-    pending = [(name, None) for name in spec.roots]
+    # A root named by two sources is written `path:Name`, as `version_const` is.
+    pending = [
+        (name, path or None) for path, _, name in (root.rpartition(":") for root in spec.roots)
+    ]
     missing: dict[str, str] = {}
     ordered = spec.encoding == "postcard"
 
@@ -935,6 +957,16 @@ def at_revision(root: Path, revision: str, rel: str) -> str | None:
     return shown.stdout.decode() if shown.returncode == 0 else None
 
 
+def defined_types(sources: list[str], root: Path) -> set[str]:
+    """The type names the `sources` `root` holds define."""
+    names: set[str] = set()
+    for source in sources:
+        items: list[Item] = []
+        read_items(tokenize((root / source).read_text()), source, items)
+        names.update(item.name for item in items)
+    return names
+
+
 def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, dict[str, str]] | None:
     """The interface `rel` names as `revision` has it: its file, its version
     and its schema, read from that revision's sources by this extractor, so
@@ -961,6 +993,14 @@ def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, di
                 path = scratch_root / source
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content)
+            # A root that revision's own code does not define declares no bytes: the
+            # declaration is stale there, and `check` names it in the tree that holds
+            # it. Dropping it here keeps a stale line out of what an interface is
+            # compared with, so removing it is no incompatible change.
+            defined = defined_types(spec.sources, scratch_root)
+            spec.roots = [
+                name for name in spec.roots if name in defined or name in spec.opaque
+            ]
             return data, code_version(spec, scratch_root), schema_of(spec, scratch_root)
         except (InterfaceError, KeyError, OSError):
             # What that revision committed, when its sources no longer read.

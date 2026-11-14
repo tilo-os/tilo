@@ -67,39 +67,43 @@ impl std::fmt::Debug for RecoveryKey {
 mod tests {
     use super::*;
 
-    #[test]
-    fn recovery_keys_round_trip_through_their_printed_form() {
-        let mut bytes = [0_u8; KEY_LEN];
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = u8::try_from(i * 7 % 256).unwrap();
+    tilo_test_env::scenario! {
+        fn a_recovery_key_is_its_printed_form_and_nothing_else;
+
+        phase recovery_keys_round_trip_through_their_printed_form;
+        {
+            let mut bytes = [0_u8; KEY_LEN];
+            for (i, b) in bytes.iter_mut().enumerate() {
+                *b = u8::try_from(i * 7 % 256).unwrap();
+            }
+            let key = RecoveryKey::from_bytes(bytes);
+            let text = key.formatted();
+            assert_eq!(text.len(), 71);
+            assert_eq!(text.split('-').count(), 8);
+            assert!(text.split('-').all(|group| group.len() == 8));
+            assert_eq!(RecoveryKey::parse(&text).unwrap().expose(), &bytes);
+            assert_eq!(
+                RecoveryKey::parse(&text.to_uppercase().replace('-', " "))
+                    .unwrap()
+                    .expose(),
+                &bytes
+            );
         }
-        let key = RecoveryKey::from_bytes(bytes);
-        let text = key.formatted();
-        assert_eq!(text.len(), 71);
-        assert_eq!(text.split('-').count(), 8);
-        assert!(text.split('-').all(|group| group.len() == 8));
-        assert_eq!(RecoveryKey::parse(&text).unwrap().expose(), &bytes);
-        assert_eq!(
-            RecoveryKey::parse(&text.to_uppercase().replace('-', " "))
-                .unwrap()
-                .expose(),
-            &bytes
-        );
-    }
 
-    #[test]
-    fn anything_else_is_not_a_recovery_key() {
-        assert!(RecoveryKey::parse("123456").is_none());
-        assert!(RecoveryKey::parse("correct horse battery staple").is_none());
-        let full = RecoveryKey::from_bytes([1; KEY_LEN]).formatted();
-        assert!(RecoveryKey::parse(full.get(..full.len() - 1).unwrap()).is_none());
-        assert!(RecoveryKey::parse(&format!("{}c", *full)).is_none());
-    }
+        phase anything_else_is_not_a_recovery_key;
+        {
+            assert!(RecoveryKey::parse("123456").is_none());
+            assert!(RecoveryKey::parse("correct horse battery staple").is_none());
+            let full = RecoveryKey::from_bytes([1; KEY_LEN]).formatted();
+            assert!(RecoveryKey::parse(full.get(..full.len() - 1).unwrap()).is_none());
+            assert!(RecoveryKey::parse(&format!("{}c", *full)).is_none());
+        }
 
-    #[test]
-    fn the_first_byte_maps_to_systemds_alphabet() {
-        let mut bytes = [0_u8; KEY_LEN];
-        bytes[0] = 0x0f;
-        assert!(RecoveryKey::from_bytes(bytes).formatted().starts_with("cv"));
+        phase the_first_byte_maps_to_systemds_alphabet;
+        {
+            let mut bytes = [0_u8; KEY_LEN];
+            bytes[0] = 0x0f;
+            assert!(RecoveryKey::from_bytes(bytes).formatted().starts_with("cv"));
+        }
     }
 }

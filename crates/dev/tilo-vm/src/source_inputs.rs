@@ -203,109 +203,113 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn the_machine_a_worktree_builds_for_is_not_a_source_input() {
-        let root = tempfile::tempdir().unwrap();
-        let git = |args: &[&str]| {
-            assert!(
-                Command::new("git")
-                    .current_dir(root.path())
-                    .args(args)
-                    .status_locked()
-                    .unwrap()
-                    .success()
-            );
-        };
-        git(&["init", "-q"]);
-        std::fs::write(root.path().join("sdk.rs"), "source").unwrap();
-        git(&["add", "sdk.rs"]);
-        git(&[
-            "-c",
-            "user.name=fixture",
-            "-c",
-            "user.email=fixture@example.test",
-            "commit",
-            "-qm",
-            "initial",
-        ]);
-        let worktree = Worktree::detect(root.path()).unwrap();
-        std::fs::write(root.path().join(crate::config::WORKTREE_FILE), "opi").unwrap();
-        let snapshot = Snapshot::create(&worktree, "app:terminal").unwrap();
-        let target = crate::config::WORKTREE_FILE.to_owned();
-        assert!(
-            !snapshot.paths.contains(&target) && snapshot.paths.iter().any(|path| path == "sdk.rs"),
-            "the source inventory holds the source and not the target choice: {:?}",
-            snapshot.paths
-        );
-        std::fs::write(root.path().join(crate::config::WORKTREE_FILE), "opi-2").unwrap();
-        snapshot.unchanged(root.path()).unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn source_inputs_are_the_worktrees_own_files;
 
-    #[test]
-    fn remote_app_source_inventory_detects_dirty_sdk_and_cleans_owned_file() {
-        let root = tempfile::tempdir().unwrap();
-        let git = |args: &[&str]| {
+        phase the_machine_a_worktree_builds_for_is_not_a_source_input;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let git = |args: &[&str]| {
+                assert!(
+                    Command::new("git")
+                        .current_dir(root.path())
+                        .args(args)
+                        .status_locked()
+                        .unwrap()
+                        .success()
+                );
+            };
+            git(&["init", "-q"]);
+            std::fs::write(root.path().join("sdk.rs"), "source").unwrap();
+            git(&["add", "sdk.rs"]);
+            git(&[
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-qm",
+                "initial",
+            ]);
+            let worktree = Worktree::detect(root.path()).unwrap();
+            std::fs::write(root.path().join(crate::config::WORKTREE_FILE), "opi").unwrap();
+            let snapshot = Snapshot::create(&worktree, "app:terminal").unwrap();
+            let target = crate::config::WORKTREE_FILE.to_owned();
             assert!(
-                Command::new("git")
-                    .current_dir(root.path())
-                    .args(args)
-                    .status_locked()
-                    .unwrap()
-                    .success()
+                !snapshot.paths.contains(&target) && snapshot.paths.iter().any(|path| path == "sdk.rs"),
+                "the source inventory holds the source and not the target choice: {:?}",
+                snapshot.paths
             );
-        };
-        git(&["init", "-q"]);
-        std::fs::create_dir(root.path().join("sdk")).unwrap();
-        std::fs::write(root.path().join("sdk/ui.rs"), "initial").unwrap();
-        git(&["add", "sdk/ui.rs"]);
-        git(&[
-            "-c",
-            "user.name=fixture",
-            "-c",
-            "user.email=fixture@example.test",
-            "commit",
-            "-qm",
-            "initial",
-        ]);
-        std::fs::write(root.path().join("sdk/ui.rs"), "dirty SDK").unwrap();
-        let worktree = Worktree::detect(root.path()).unwrap();
-        let snapshot = Snapshot::create(&worktree, "app:terminal").unwrap();
-        let path = snapshot.file.path().to_path_buf();
-        assert_eq!(verify(root.path(), &path).unwrap(), snapshot.digest);
-        snapshot.unchanged(root.path()).unwrap();
-        std::fs::write(root.path().join("new-input.rs"), "new source").unwrap();
-        let detail = snapshot.unchanged(root.path()).unwrap_err().to_string();
-        assert!(
-            detail.contains("files were added to or removed"),
-            "new source files must not enter a frozen cohort, and the refusal names them: {detail}"
-        );
-        std::fs::remove_file(root.path().join("new-input.rs")).unwrap();
-        git(&[
-            "-c",
-            "user.name=fixture",
-            "-c",
-            "user.email=fixture@example.test",
-            "commit",
-            "--allow-empty",
-            "-qm",
-            "different head",
-        ]);
-        let detail = snapshot.unchanged(root.path()).unwrap_err().to_string();
-        assert!(
-            detail.contains("commit moved"),
-            "source commit changes must invalidate the cohort, and the refusal names it: {detail}"
-        );
-        git(&["reset", "--soft", "HEAD~1"]);
-        snapshot.unchanged(root.path()).unwrap();
-        let original = std::fs::read(&path).unwrap();
-        let mut altered: serde_json::Value = serde_json::from_slice(&original).unwrap();
-        altered["provenance"]["builder"] = serde_json::json!("different builder");
-        std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
-        assert!(snapshot.unchanged(root.path()).is_err());
-        std::fs::write(&path, original).unwrap();
-        std::fs::write(root.path().join("sdk/ui.rs"), "other SDK").unwrap();
-        assert!(verify(root.path(), &path).is_err());
-        drop(snapshot);
-        assert!(!path.exists());
+            std::fs::write(root.path().join(crate::config::WORKTREE_FILE), "opi-2").unwrap();
+            snapshot.unchanged(root.path()).unwrap();
+        }
+
+        phase remote_app_source_inventory_detects_dirty_sdk_and_cleans_owned_file;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let git = |args: &[&str]| {
+                assert!(
+                    Command::new("git")
+                        .current_dir(root.path())
+                        .args(args)
+                        .status_locked()
+                        .unwrap()
+                        .success()
+                );
+            };
+            git(&["init", "-q"]);
+            std::fs::create_dir(root.path().join("sdk")).unwrap();
+            std::fs::write(root.path().join("sdk/ui.rs"), "initial").unwrap();
+            git(&["add", "sdk/ui.rs"]);
+            git(&[
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-qm",
+                "initial",
+            ]);
+            std::fs::write(root.path().join("sdk/ui.rs"), "dirty SDK").unwrap();
+            let worktree = Worktree::detect(root.path()).unwrap();
+            let snapshot = Snapshot::create(&worktree, "app:terminal").unwrap();
+            let path = snapshot.file.path().to_path_buf();
+            assert_eq!(verify(root.path(), &path).unwrap(), snapshot.digest);
+            snapshot.unchanged(root.path()).unwrap();
+            std::fs::write(root.path().join("new-input.rs"), "new source").unwrap();
+            let detail = snapshot.unchanged(root.path()).unwrap_err().to_string();
+            assert!(
+                detail.contains("files were added to or removed"),
+                "new source files must not enter a frozen cohort, and the refusal names them: {detail}"
+            );
+            std::fs::remove_file(root.path().join("new-input.rs")).unwrap();
+            git(&[
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "different head",
+            ]);
+            let detail = snapshot.unchanged(root.path()).unwrap_err().to_string();
+            assert!(
+                detail.contains("commit moved"),
+                "source commit changes must invalidate the cohort, and the refusal names it: {detail}"
+            );
+            git(&["reset", "--soft", "HEAD~1"]);
+            snapshot.unchanged(root.path()).unwrap();
+            let original = std::fs::read(&path).unwrap();
+            let mut altered: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            altered["provenance"]["builder"] = serde_json::json!("different builder");
+            std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
+            assert!(snapshot.unchanged(root.path()).is_err());
+            std::fs::write(&path, original).unwrap();
+            std::fs::write(root.path().join("sdk/ui.rs"), "other SDK").unwrap();
+            assert!(verify(root.path(), &path).is_err());
+            drop(snapshot);
+            assert!(!path.exists());
+        }
     }
 }

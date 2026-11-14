@@ -266,147 +266,151 @@ pub enum Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn clipboard_wire_commands_bound_paths_and_require_opaque_receipts() {
-        let selected = || SelectedDescriptor {
-            path: b"/workspace/report".to_vec(),
-            descriptor: 3,
-            expected: ObjectIdentity {
-                device: 1,
-                inode: 2,
-            },
-        };
-        let capture = |source| Command::Capture {
-            sources: vec![source],
-            destination: None,
-        };
-        assert!(capture(selected()).valid());
-        let mut long = selected();
-        long.path = vec![b'x'; 4097];
-        assert!(!capture(long).valid());
-        let mut nul = selected();
-        nul.path.push(0);
-        assert!(!capture(nul).valid());
-        let mut fd = selected();
-        fd.descriptor = u32::MAX;
-        assert!(!capture(fd).valid());
-        assert!(
-            !Command::Capture {
-                sources: vec![selected(); MAX_ENTRIES + 1],
-                destination: None
-            }
-            .valid()
-        );
-        assert!(
-            !Command::Publish {
-                sources: vec!["/workspace/report".into()],
-                cut: false
-            }
-            .valid()
-        );
-        let id = "39949036-9d70-4796-9a8d-388648dc95f6";
-        assert!(
-            Command::Publish {
-                sources: vec![id.into()],
-                cut: false
-            }
-            .valid()
-        );
-        assert!(
-            !Command::Publish {
-                sources: vec![],
-                cut: false
-            }
-            .valid()
-        );
-        assert!(
-            !Command::Observe {
-                operation: "/workspace/file".into()
-            }
-            .valid()
-        );
-        assert!(
-            Command::Observe {
-                operation: id.into()
-            }
-            .valid()
-        );
-        assert!(!Command::Release { tickets: vec![] }.valid());
-        assert!(
-            !Command::Release {
-                tickets: vec![id.into(); MAX_ENTRIES + 2]
-            }
-            .valid()
-        );
-        assert!(
-            !Command::Paste {
-                offer: id.into(),
-                destination: "/workspace/folder".into(),
-                operation: id.into(),
-                conflict: Conflict::KeepBoth,
-            }
-            .valid()
-        );
-        assert!(
-            serde_json::from_str::<Command>(r#"{"Publish":{"paths":[[47]],"cut":false}}"#).is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn file_clipboard_wire;
 
-    #[test]
-    fn named_capture_carries_one_descriptor_and_old_pastes_keep_both() {
-        let selected = || SelectedDescriptor {
-            path: b"/workspace/folder".to_vec(),
-            descriptor: 3,
-            expected: ObjectIdentity {
-                device: 1,
-                inode: 2,
-            },
-        };
-        let id = "39949036-9d70-4796-9a8d-388648dc95f6";
-        let named = |names: Vec<Vec<u8>>| Command::CaptureNamed {
-            folder: selected(),
-            entries: names
-                .into_iter()
-                .map(|name| NamedEntry {
-                    name,
-                    expected: ObjectIdentity {
-                        device: 1,
-                        inode: 3,
-                    },
-                })
-                .collect(),
-        };
-        assert!(
-            named(vec![b"a.txt".to_vec(); MAX_NAMED_PER_COMMAND]).valid(),
-            "past 256 entries"
-        );
-        assert!(!named(vec![b"a.txt".to_vec(); MAX_NAMED_PER_COMMAND + 1]).valid());
-        for bad in [
-            vec![],
-            b".".to_vec(),
-            b"..".to_vec(),
-            b"a/b".to_vec(),
-            vec![b'a', 0],
-        ] {
-            assert!(!named(vec![bad]).valid());
+        phase clipboard_wire_commands_bound_paths_and_require_opaque_receipts;
+        {
+            let selected = || SelectedDescriptor {
+                path: b"/workspace/report".to_vec(),
+                descriptor: 3,
+                expected: ObjectIdentity {
+                    device: 1,
+                    inode: 2,
+                },
+            };
+            let capture = |source| Command::Capture {
+                sources: vec![source],
+                destination: None,
+            };
+            assert!(capture(selected()).valid());
+            let mut long = selected();
+            long.path = vec![b'x'; 4097];
+            assert!(!capture(long).valid());
+            let mut nul = selected();
+            nul.path.push(0);
+            assert!(!capture(nul).valid());
+            let mut fd = selected();
+            fd.descriptor = u32::MAX;
+            assert!(!capture(fd).valid());
+            assert!(
+                !Command::Capture {
+                    sources: vec![selected(); MAX_ENTRIES + 1],
+                    destination: None
+                }
+                .valid()
+            );
+            assert!(
+                !Command::Publish {
+                    sources: vec!["/workspace/report".into()],
+                    cut: false
+                }
+                .valid()
+            );
+            let id = "39949036-9d70-4796-9a8d-388648dc95f6";
+            assert!(
+                Command::Publish {
+                    sources: vec![id.into()],
+                    cut: false
+                }
+                .valid()
+            );
+            assert!(
+                !Command::Publish {
+                    sources: vec![],
+                    cut: false
+                }
+                .valid()
+            );
+            assert!(
+                !Command::Observe {
+                    operation: "/workspace/file".into()
+                }
+                .valid()
+            );
+            assert!(
+                Command::Observe {
+                    operation: id.into()
+                }
+                .valid()
+            );
+            assert!(!Command::Release { tickets: vec![] }.valid());
+            assert!(
+                !Command::Release {
+                    tickets: vec![id.into(); MAX_ENTRIES + 2]
+                }
+                .valid()
+            );
+            assert!(
+                !Command::Paste {
+                    offer: id.into(),
+                    destination: "/workspace/folder".into(),
+                    operation: id.into(),
+                    conflict: Conflict::KeepBoth,
+                }
+                .valid()
+            );
+            assert!(
+                serde_json::from_str::<Command>(r#"{"Publish":{"paths":[[47]],"cut":false}}"#).is_err()
+            );
         }
-        assert!(!named(vec![]).valid());
-        assert_eq!(
-            named(vec![b"a".to_vec()]).selected().count(),
-            1,
-            "one descriptor"
-        );
-        // A window that names no policy keeps both, as before.
-        let old: Command = serde_json::from_str(&format!(
-            r#"{{"Paste":{{"offer":"{id}","destination":"{id}","operation":"{id}"}}}}"#
-        ))
-        .unwrap();
-        assert!(matches!(
-            old,
-            Command::Paste {
-                conflict: Conflict::KeepBoth,
-                ..
+
+        phase named_capture_carries_one_descriptor_and_old_pastes_keep_both;
+        {
+            let selected = || SelectedDescriptor {
+                path: b"/workspace/folder".to_vec(),
+                descriptor: 3,
+                expected: ObjectIdentity {
+                    device: 1,
+                    inode: 2,
+                },
+            };
+            let id = "39949036-9d70-4796-9a8d-388648dc95f6";
+            let named = |names: Vec<Vec<u8>>| Command::CaptureNamed {
+                folder: selected(),
+                entries: names
+                    .into_iter()
+                    .map(|name| NamedEntry {
+                        name,
+                        expected: ObjectIdentity {
+                            device: 1,
+                            inode: 3,
+                        },
+                    })
+                    .collect(),
+            };
+            assert!(
+                named(vec![b"a.txt".to_vec(); MAX_NAMED_PER_COMMAND]).valid(),
+                "past 256 entries"
+            );
+            assert!(!named(vec![b"a.txt".to_vec(); MAX_NAMED_PER_COMMAND + 1]).valid());
+            for bad in [
+                vec![],
+                b".".to_vec(),
+                b"..".to_vec(),
+                b"a/b".to_vec(),
+                vec![b'a', 0],
+            ] {
+                assert!(!named(vec![bad]).valid());
             }
-        ));
+            assert!(!named(vec![]).valid());
+            assert_eq!(
+                named(vec![b"a".to_vec()]).selected().count(),
+                1,
+                "one descriptor"
+            );
+            // A window that names no policy keeps both, as before.
+            let old: Command = serde_json::from_str(&format!(
+                r#"{{"Paste":{{"offer":"{id}","destination":"{id}","operation":"{id}"}}}}"#
+            ))
+            .unwrap();
+            assert!(matches!(
+                old,
+                Command::Paste {
+                    conflict: Conflict::KeepBoth,
+                    ..
+                }
+            ));
+        }
     }
 }

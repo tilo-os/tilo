@@ -172,141 +172,145 @@ fn push(argv: &mut Vec<String>, kind: &str, src: &str, dst: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_system_profile_names_no_user_path_and_not_the_root() {
+    tilo_test_env::scenario! {
+        fn the_system_profile_binds_read_only_and_names_no_user_path;
+
+        phase the_system_profile_names_no_user_path_and_not_the_root;
         {
-            for p in SYSTEM_READ_PATHS
-                .iter()
-                .chain(NETWORK_READ_PATHS.iter())
-                .chain(GPU_DEVICE_PATHS.iter())
             {
-                assert!(
-                    p.starts_with('/'),
-                    "{p} is not absolute; a relative entry resolves against \
+                for p in SYSTEM_READ_PATHS
+                    .iter()
+                    .chain(NETWORK_READ_PATHS.iter())
+                    .chain(GPU_DEVICE_PATHS.iter())
+                {
+                    assert!(
+                        p.starts_with('/'),
+                        "{p} is not absolute; a relative entry resolves against \
                      whatever cwd the launcher inherited"
-                );
-                assert!(
-                    !p.contains('~') && !p.contains('$'),
-                    "{p} contains a placeholder; the profile is expanded by \
+                    );
+                    assert!(
+                        !p.contains('~') && !p.contains('$'),
+                        "{p} contains a placeholder; the profile is expanded by \
                      nobody and must be literal"
-                );
-                assert!(
-                    !p.starts_with("/home") && !p.starts_with("/root"),
-                    "{p} is a home directory: the profile must carry no user content"
-                );
-                assert!(
-                    !p.contains(".."),
-                    "{p} contains `..`; profile entries are literal paths"
-                );
+                    );
+                    assert!(
+                        !p.starts_with("/home") && !p.starts_with("/root"),
+                        "{p} is a home directory: the profile must carry no user content"
+                    );
+                    assert!(
+                        !p.contains(".."),
+                        "{p} contains `..`; profile entries are literal paths"
+                    );
+                }
             }
-        }
-        {
-            for p in SYSTEM_READ_PATHS
-                .iter()
-                .chain(NETWORK_READ_PATHS.iter())
-                .chain(GPU_DEVICE_PATHS.iter())
             {
-                assert_ne!(*p, "/", "the root filesystem is not a profile entry");
-                assert!(
-                    Path::new(p).components().count() >= 2,
-                    "{p} is a top-level directory; the profile names specific \
+                for p in SYSTEM_READ_PATHS
+                    .iter()
+                    .chain(NETWORK_READ_PATHS.iter())
+                    .chain(GPU_DEVICE_PATHS.iter())
+                {
+                    assert_ne!(*p, "/", "the root filesystem is not a profile entry");
+                    assert!(
+                        Path::new(p).components().count() >= 2,
+                        "{p} is a top-level directory; the profile names specific \
                      subtrees, not whole filesystems"
-                );
+                    );
+                }
             }
         }
-    }
 
-    /// The language packs a person installed are theirs, in their data directory; every app they run
-    /// reads them where the toolkit looks in a sandbox, read-only.
-    #[test]
-    fn the_persons_language_packs_are_bound_where_apps_read_them() {
-        let data = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", data.path());
-        assert_eq!(bind_source(SANDBOX_LANGUAGE_PACKS), SANDBOX_LANGUAGE_PACKS);
-        let installed = data.path().join("tilo/language-packs");
-        std::fs::create_dir_all(installed.join("de-DE")).unwrap();
-        let mut argv = Vec::new();
-        push_system_profile(&mut argv, false);
-        assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
-                && w[1] == installed.to_str().unwrap()
-                && w[2] == SANDBOX_LANGUAGE_PACKS),
-            "{argv:?}"
-        );
-        assert!(landlock_ro_paths(false).contains(&PathBuf::from(SANDBOX_LANGUAGE_PACKS)));
-    }
-
-    #[test]
-    fn the_profile_binds_read_only_and_devices_as_devices() {
+        phase the_persons_language_packs_are_bound_where_apps_read_them;
+        // The language packs a person installed are theirs, in their data directory; every app they run
+        // reads them where the toolkit looks in a sandbox, read-only.
         {
+            let data = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", data.path());
+            assert_eq!(bind_source(SANDBOX_LANGUAGE_PACKS), SANDBOX_LANGUAGE_PACKS);
+            let installed = data.path().join("tilo/language-packs");
+            std::fs::create_dir_all(installed.join("de-DE")).unwrap();
             let mut argv = Vec::new();
             push_system_profile(&mut argv, false);
             assert!(
                 argv.windows(3).any(|w| w[0] == "--ro-bind-try"
-                    && w[1] == "/usr/share/fonts"
-                    && w[2] == "/usr/share/fonts"),
-                "fonts must be read-only: {argv:?}"
+                    && w[1] == installed.to_str().unwrap()
+                    && w[2] == SANDBOX_LANGUAGE_PACKS),
+                "{argv:?}"
             );
-            // Without it every sandboxed Wayland app panics on `XKBNotFound` before it paints.
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--ro-bind-try"
-                    && w[1] == "/usr/share/X11/xkb"
-                    && w[2] == "/usr/share/X11/xkb"),
-                "the xkb keymap data must be read-only in the sandbox: {argv:?}"
-            );
-            // Every text field checks spelling in-process; without the dictionaries (bound and
-            // Landlock-readable) non-English checking silently finds nothing.
-            for dictionaries in ["/usr/share/hunspell", "/usr/share/myspell"] {
+            assert!(landlock_ro_paths(false).contains(&PathBuf::from(SANDBOX_LANGUAGE_PACKS)));
+        }
+
+        phase the_profile_binds_read_only_and_devices_as_devices;
+        {
+            {
+                let mut argv = Vec::new();
+                push_system_profile(&mut argv, false);
                 assert!(
                     argv.windows(3).any(|w| w[0] == "--ro-bind-try"
-                        && w[1] == dictionaries
-                        && w[2] == dictionaries),
-                    "{dictionaries} must be read-only in the sandbox: {argv:?}"
+                        && w[1] == "/usr/share/fonts"
+                        && w[2] == "/usr/share/fonts"),
+                    "fonts must be read-only: {argv:?}"
                 );
+                // Without it every sandboxed Wayland app panics on `XKBNotFound` before it paints.
                 assert!(
-                    landlock_ro_paths(false).contains(&PathBuf::from(dictionaries)),
-                    "{dictionaries} must be readable under Landlock"
+                    argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                        && w[1] == "/usr/share/X11/xkb"
+                        && w[2] == "/usr/share/X11/xkb"),
+                    "the xkb keymap data must be read-only in the sandbox: {argv:?}"
+                );
+                // Every text field checks spelling in-process; without the dictionaries (bound and
+                // Landlock-readable) non-English checking silently finds nothing.
+                for dictionaries in ["/usr/share/hunspell", "/usr/share/myspell"] {
+                    assert!(
+                        argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                            && w[1] == dictionaries
+                            && w[2] == dictionaries),
+                        "{dictionaries} must be read-only in the sandbox: {argv:?}"
+                    );
+                    assert!(
+                        landlock_ro_paths(false).contains(&PathBuf::from(dictionaries)),
+                        "{dictionaries} must be readable under Landlock"
+                    );
+                }
+                // The GPU is not part of what every app gets: an app draws through its workspace's render
+                // service unless it declares `gpu`.
+                assert!(
+                    !argv
+                        .iter()
+                        .any(|a| a.starts_with("/dev/dri") || a.starts_with("/dev/nvidia")),
+                    "no GPU node in the default profile: {argv:?}"
+                );
+                let mut gpu = Vec::new();
+                push_gpu_devices(&mut gpu);
+                assert!(
+                    gpu.windows(3)
+                        .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),
+                    "a `gpu` app's GPU node needs a device bind: {gpu:?}"
+                );
+                // The cgroup hierarchy is covered, after `/sys` is bound, by an empty tree no app can
+                // write either.
+                let sys = argv
+                    .windows(3)
+                    .position(|w| w[0] == "--ro-bind-try" && w[1] == "/sys")
+                    .expect("/sys is bound");
+                let hidden = argv
+                    .windows(4)
+                    .position(|w| {
+                        w == [
+                            "--tmpfs",
+                            "/sys/fs/cgroup",
+                            "--remount-ro",
+                            "/sys/fs/cgroup",
+                        ]
+                    })
+                    .expect("/sys/fs/cgroup is covered and read-only");
+                assert!(sys < hidden, "the cover must come after the bind: {argv:?}");
+                // Nothing in the profile may be writable.
+                assert!(
+                    !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
+                    "no profile entry may be read-write: {argv:?}"
                 );
             }
-            // The GPU is not part of what every app gets: an app draws through its workspace's render
-            // service unless it declares `gpu`.
-            assert!(
-                !argv
-                    .iter()
-                    .any(|a| a.starts_with("/dev/dri") || a.starts_with("/dev/nvidia")),
-                "no GPU node in the default profile: {argv:?}"
-            );
-            let mut gpu = Vec::new();
-            push_gpu_devices(&mut gpu);
-            assert!(
-                gpu.windows(3)
-                    .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),
-                "a `gpu` app's GPU node needs a device bind: {gpu:?}"
-            );
-            // The cgroup hierarchy is covered, after `/sys` is bound, by an empty tree no app can
-            // write either.
-            let sys = argv
-                .windows(3)
-                .position(|w| w[0] == "--ro-bind-try" && w[1] == "/sys")
-                .expect("/sys is bound");
-            let hidden = argv
-                .windows(4)
-                .position(|w| {
-                    w == [
-                        "--tmpfs",
-                        "/sys/fs/cgroup",
-                        "--remount-ro",
-                        "/sys/fs/cgroup",
-                    ]
-                })
-                .expect("/sys/fs/cgroup is covered and read-only");
-            assert!(sys < hidden, "the cover must come after the bind: {argv:?}");
-            // Nothing in the profile may be writable.
-            assert!(
-                !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
-                "no profile entry may be read-write: {argv:?}"
-            );
         }
     }
 }

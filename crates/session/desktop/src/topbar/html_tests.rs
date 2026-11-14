@@ -2,16 +2,16 @@
 
 use super::fixture::FixtureChrome;
 use super::*;
-use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceSlot};
 use ui::composition::{Composed, Own};
 
 fn bar_of(people: &[(&str, &str)]) -> TopBarChrome {
     ui::i18n::I18nManager::init("en-US");
     let mut workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
-    workspace.collaborators = people
-        .iter()
-        .map(|(id, name)| Collaborator::new(*id, *name))
-        .collect();
+    workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
+    for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
+        here.device.clone_from(&member.id.id().to_owned());
+    }
     let tree = DesktopTree {
         active: workspace.slot,
         workspaces: vec![workspace],
@@ -86,7 +86,7 @@ fn the_bar_shows_its_parts_as_what_they_are() {
     for target in [
         TopBarChrome::CONTROL_WORKSPACE_SETTINGS,
         TopBarChrome::CONTROL_NOTIFICATIONS,
-        TopBarChrome::CONTROL_COLLABORATORS,
+        TopBarChrome::CONTROL_PEOPLE,
         TopBarChrome::CONTROL_INVITE,
     ] {
         assert!(

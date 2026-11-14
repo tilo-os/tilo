@@ -273,102 +273,106 @@ mod tests {
             .get_rect()
     }
 
-    #[test]
-    fn an_absent_child_takes_no_gap_in_a_column_or_a_row() {
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(8.0)
-            .push(line("a"))
-            .push(optional(None))
-            .push(Box::new(When::new(line("hidden"), || false)))
-            .push(Box::new(Spacer::fixed(0.0)))
-            .push(line("b"));
-        solve(&mut column, 200.0);
-        let (a, b) = (rect_of(&column, "a"), rect_of(&column, "b"));
-        assert!(
-            (b.y0 - a.y1 - 8.0).abs() < 0.01,
-            "one gap between a and b, got {}",
-            b.y0 - a.y1
-        );
+    tilo_test_env::scenario! {
+        fn when_gives_room_only_to_what_it_shows;
 
-        let mut row = Row::new()
-            .with_gap(8.0)
-            .no_wrap()
-            .push(line("a"))
-            .push(optional(None))
-            .push(Box::new(When::new(line("hidden"), || false)))
-            .push(line("b"));
-        solve(&mut row, 200.0);
-        let (a, b) = (rect_of(&row, "a"), rect_of(&row, "b"));
-        assert!((b.x0 - a.x1 - 8.0).abs() < 0.01, "got {}", b.x0 - a.x1);
-    }
+        phase an_absent_child_takes_no_gap_in_a_column_or_a_row;
+        {
+            let mut column = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(line("a"))
+                .push(optional(None))
+                .push(Box::new(When::new(line("hidden"), || false)))
+                .push(Box::new(Spacer::fixed(0.0)))
+                .push(line("b"));
+            solve(&mut column, 200.0);
+            let (a, b) = (rect_of(&column, "a"), rect_of(&column, "b"));
+            assert!(
+                (b.y0 - a.y1 - 8.0).abs() < 0.01,
+                "one gap between a and b, got {}",
+                b.y0 - a.y1
+            );
 
-    #[test]
-    fn modal_dialogs_and_popovers_take_no_room_in_the_flow() {
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_gap(8.0)
-            .push(line("a"))
-            .push(Box::new(crate::widget::Popover::new()))
-            .push(Box::new(crate::widget::ModalDialog::new(
-                "Rename",
-                Text::new("Body"),
-            )))
-            .push(line("b"));
-        solve(&mut column, 300.0);
-        let (a, b) = (rect_of(&column, "a"), rect_of(&column, "b"));
-        assert!((b.y0 - a.y1 - 8.0).abs() < 0.01, "got {}", b.y0 - a.y1);
-    }
+            let mut row = Row::new()
+                .with_gap(8.0)
+                .no_wrap()
+                .push(line("a"))
+                .push(optional(None))
+                .push(Box::new(When::new(line("hidden"), || false)))
+                .push(line("b"));
+            solve(&mut row, 200.0);
+            let (a, b) = (rect_of(&row, "a"), rect_of(&row, "b"));
+            assert!((b.x0 - a.x1 - 8.0).abs() < 0.01, "got {}", b.x0 - a.x1);
+        }
 
-    #[test]
-    fn bound_text_with_nothing_to_say_takes_no_gap() {
-        let caption = crate::LocalState::new(String::new());
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(8.0)
-            .push(line("a"))
-            .push(Box::new(Text::from_state(&caption, Clone::clone)))
-            .push(line("b"));
-        solve(&mut column, 200.0);
-        let mut tree = TaffyTree::new();
-        let mut map = HashMap::new();
-        let theme = Theme::dark();
-        let node = column.build_layout(&mut tree, &theme, &mut map);
-        let caption_node = tree.children(node).expect("children")[1];
-        assert_eq!(
-            tree.style(caption_node).expect("style").display,
-            taffy::Display::None
-        );
-        let (a, b) = (rect_of(&column, "a"), rect_of(&column, "b"));
-        assert!((b.y0 - a.y1 - 8.0).abs() < 0.01, "got {}", b.y0 - a.y1);
-        let mut tree = TaffyTree::new();
-        let mut text = Text::new("");
-        let node = text.build_layout(&mut tree, &theme, &mut map);
-        assert_ne!(
-            tree.style(node).expect("style").display,
-            taffy::Display::None
-        );
-    }
+        phase modal_dialogs_and_popovers_take_no_room_in_the_flow;
+        {
+            let mut column = Column::new()
+                .with_no_padding()
+                .with_gap(8.0)
+                .push(line("a"))
+                .push(Box::new(crate::widget::Popover::new()))
+                .push(Box::new(crate::widget::ModalDialog::new(
+                    "Rename",
+                    Text::new("Body"),
+                )))
+                .push(line("b"));
+            solve(&mut column, 300.0);
+            let (a, b) = (rect_of(&column, "a"), rect_of(&column, "b"));
+            assert!((b.y0 - a.y1 - 8.0).abs() < 0.01, "got {}", b.y0 - a.y1);
+        }
 
-    #[test]
-    fn when_follows_its_state_and_asks_for_a_rebuild_on_change() {
-        let state = crate::LocalState::new(false);
-        let mut when = When::from_state(&state, |shown| *shown, Box::new(Text::new("Caption")));
-        assert!(!when.is_shown());
-        assert!(
-            Widget::children(&when).is_empty(),
-            "hidden: nothing to visit"
-        );
-        state.set(true);
-        let doc = automerge::AutoCommit::new();
-        Widget::sync(&mut when, &doc, &automerge::ROOT);
-        assert!(when.is_shown());
-        assert!(Widget::take_structure_dirty(&mut when));
-        assert!(
-            !Widget::take_structure_dirty(&mut when),
-            "reading clears it"
-        );
+        phase bound_text_with_nothing_to_say_takes_no_gap;
+        {
+            let caption = crate::LocalState::new(String::new());
+            let mut column = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(line("a"))
+                .push(Box::new(Text::from_state(&caption, Clone::clone)))
+                .push(line("b"));
+            solve(&mut column, 200.0);
+            let mut tree = TaffyTree::new();
+            let mut map = HashMap::new();
+            let theme = Theme::dark();
+            let node = column.build_layout(&mut tree, &theme, &mut map);
+            let caption_node = tree.children(node).expect("children")[1];
+            assert_eq!(
+                tree.style(caption_node).expect("style").display,
+                taffy::Display::None
+            );
+            let (a, b) = (rect_of(&column, "a"), rect_of(&column, "b"));
+            assert!((b.y0 - a.y1 - 8.0).abs() < 0.01, "got {}", b.y0 - a.y1);
+            let mut tree = TaffyTree::new();
+            let mut text = Text::new("");
+            let node = text.build_layout(&mut tree, &theme, &mut map);
+            assert_ne!(
+                tree.style(node).expect("style").display,
+                taffy::Display::None
+            );
+        }
+
+        phase when_follows_its_state_and_asks_for_a_rebuild_on_change;
+        {
+            let state = crate::LocalState::new(false);
+            let mut when = When::from_state(&state, |shown| *shown, Box::new(Text::new("Caption")));
+            assert!(!when.is_shown());
+            assert!(
+                Widget::children(&when).is_empty(),
+                "hidden: nothing to visit"
+            );
+            state.set(true);
+            let doc = automerge::AutoCommit::new();
+            Widget::sync(&mut when, &doc, &automerge::ROOT);
+            assert!(when.is_shown());
+            assert!(Widget::take_structure_dirty(&mut when));
+            assert!(
+                !Widget::take_structure_dirty(&mut when),
+                "reading clears it"
+            );
+        }
     }
 }

@@ -34,7 +34,8 @@ pub struct WorkspaceGovernance {
     pub owner: Option<String>,
     /// `sandbox.*`: JSON sandbox `CapOverride` blobs keyed by id.
     pub sandbox: BTreeMap<String, Vec<u8>>,
-    /// `peers.*`: self-asserted display names keyed by device key.
+    /// `peers.*`: self-asserted display names keyed by device key, or by a
+    /// person's user root for someone the workspace holds by root alone.
     pub peers: BTreeMap<String, String>,
     /// `peer_identities_v1.*`: postcard `GovernedIdentity` rows keyed by device key.
     pub identities: BTreeMap<String, Vec<u8>>,

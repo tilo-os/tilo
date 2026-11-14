@@ -82,22 +82,167 @@ fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
     (dir, root)
 }
 
-#[test]
-fn selected_browser_sessions_use_device_inventory_not_public_identity_records() {
-    let (_scratch, root) = scratch_root();
-    let mut store = accounts::AccountStore::new();
-    store.upsert(accounts::Account::new("selected", browser_sessions::TYPE));
-    store.upsert(accounts::Account::new("other", "email"));
-    store.save_in(&root.path().unwrap()).unwrap();
-    let pane = AccountsPane::from_dir_in(root.clone(), AccountDirectory::default(), false);
-    let selections = pane.browser_service_sessions();
-    assert_eq!(selections.len(), 1);
-    assert_eq!(selections[0].id.as_str(), "selected");
-    assert!(
-        AccountsPane::from_dir_in(root, AccountDirectory::default(), true)
-            .browser_service_sessions()
-            .is_empty()
-    );
+tilo_test_env::scenario! {
+    fn the_accounts_model_keeps_store_vault_and_journal_in_step;
+
+    phase selected_browser_sessions_use_device_inventory_not_public_identity_records;
+    {
+        let (_scratch, root) = scratch_root();
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new("selected", browser_sessions::TYPE));
+        store.upsert(accounts::Account::new("other", "email"));
+        store.save_in(&root.path().unwrap()).unwrap();
+        let pane = AccountsPane::from_dir_in(root.clone(), AccountDirectory::default(), false);
+        let selections = pane.browser_service_sessions();
+        assert_eq!(selections.len(), 1);
+        assert_eq!(selections[0].id.as_str(), "selected");
+        assert!(
+            AccountsPane::from_dir_in(root, AccountDirectory::default(), true)
+                .browser_service_sessions()
+                .is_empty()
+        );
+    }
+
+    phase account_edits_preserve_config_and_probe_before_persisting;
+    {
+        {
+            let (_dir, root) = scratch_root();
+            let id = accounts::AccountId::from("nextcloud-stable-id");
+            let mut original = accounts::Account::new(id.clone(), crate::accounts::NEXTCLOUD_TYPE);
+            original.display_name = "Old label".into();
+            original.enabled = false;
+            original.tint = 7;
+            original.owner = Some("local-owner".into());
+            original.config = serde_json::json!({
+                "id": "nextcloud-stable-id",
+                "label": "Old label",
+                "server_url": "https://old.example",
+                "username": "old-user",
+                "use_files": false,
+                "use_calendar": true,
+                "use_mail": false,
+                "future_provider_field": {"kept": true}
+            });
+            let mut store = accounts::AccountStore::new();
+            store.upsert(original);
+            root.save_store(&store).expect("seed canonical account");
+            let mut vault = root.vault();
+            vault.put(
+                &id,
+                &accounts::Secret {
+                    password: "old-password".into(),
+                    token: Some("future-provider-token".into()),
+                },
+            );
+            vault.try_save().expect("seed credential");
+
+            AccountsPane::save_account(
+                &root,
+                AccountKind::Nextcloud,
+                Some(id.as_str()),
+                "New label",
+                "new-user",
+                "",
+                "https://new.example/",
+                "",
+            )
+            .expect("edit account");
+
+            let saved = root.store().get(&id).cloned().expect("saved account");
+            assert!(!saved.enabled);
+            assert_eq!(saved.tint, 7);
+            assert_eq!(saved.owner.as_deref(), Some("local-owner"));
+            assert_eq!(saved.config["use_files"], false);
+            assert_eq!(saved.config["use_calendar"], true);
+            assert_eq!(saved.config["use_mail"], false);
+            assert_eq!(saved.config["future_provider_field"]["kept"], true);
+            assert_eq!(saved.config["server_url"], "https://new.example");
+            assert_eq!(saved.config["username"], "new-user");
+            assert_eq!(
+                root.vault().get(&id),
+                Some(accounts::Secret {
+                    password: "old-password".into(),
+                    token: Some("future-provider-token".into()),
+                })
+            );
+        }
+
+        {
+            let (_dir, root) = scratch_root();
+            let id = accounts::AccountId::from("reauth@example.test");
+            let mut account = accounts::Account::new(id.clone(), "email");
+            account.display_name = "Reauth".into();
+            account.config = serde_json::json!({
+                "email": id.as_str(), "username": id.as_str(),
+                "imap_host": "imap.example.test", "imap_port": 993
+            });
+            let mut store = accounts::AccountStore::new();
+            store.upsert(account);
+            root.save_store(&store).expect("seed account");
+            let mut vault = root.vault();
+            vault.put(&id, &accounts::Secret::password("old-password"));
+            vault.try_save().expect("seed credential");
+            let mut pane = AccountsPane::in_root(root.clone())
+                .with_account_tester(std::sync::Arc::new(RejectCandidate));
+            pane.command(AccountViewCommand::Reauthenticate(id.to_string()));
+            pane.set_reauth_password_for_test("candidate-password");
+            pane.command(AccountViewCommand::SubmitReauthentication);
+            settle_probes(&mut pane);
+            assert_eq!(
+                pane.reauth_error_for_test(),
+                Some("server rejected candidate")
+            );
+            assert_eq!(
+                root.vault().get(&id).map(|secret| secret.password),
+                Some("old-password".into()),
+                "rejected candidate must never replace the stored credential"
+            );
+        }
+    }
+
+    phase the_area_builds_its_model_from_the_read_it_started;
+    {
+        let (dir, root) = scratch_root();
+        let id = accounts::AccountId::from("warm@example.test");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new(id.clone(), "email"));
+        root.save_store(&store).expect("the store is saved");
+        let mut vault = root.vault();
+        vault.put(&id, &accounts::Secret::password("test-only-password"));
+        vault.try_save().expect("the vault is saved");
+        let cx = crate::area::AreaContext::in_profile(dir.path().to_path_buf());
+        let area = AccountsArea::new(&cx).with_account_root(root.clone());
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read.is_finished());
+        let model = area.model().borrow();
+        assert!(area.is_open());
+        assert!(vault.get(&id).is_some(), "the credential was saved");
+        assert_eq!(
+            model.vault.as_ref().and_then(|held| held.get(&id)),
+            vault.get(&id),
+            "the vault read is held"
+        );
+        assert_eq!(
+            model.directory(),
+            AccountsPane::in_root(root).directory(),
+            "the directory is the one reading in place shows"
+        );
+        drop(model);
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    phase a_pending_mutation_is_seen;
+    {
+        let (_dir, root) = scratch_root();
+        assert!(!root.mutation_pending());
+        let config = root.path().expect("an explicit root");
+        let accounts_dir = accounts::accounts_dir_in(&config);
+        std::fs::create_dir_all(&accounts_dir).expect("the accounts directory");
+        std::fs::write(accounts_dir.join("mutation-journal.json"), b"{}").expect("an intent");
+        assert!(root.mutation_pending());
+    }
 }
 
 /// Drive the host's polling until the pending account probe reports,
@@ -526,103 +671,6 @@ fn vault_save_failure_preserves_existing_account_metadata() {
 }
 
 #[test]
-fn account_edits_preserve_config_and_probe_before_persisting() {
-    {
-        let (_dir, root) = scratch_root();
-        let id = accounts::AccountId::from("nextcloud-stable-id");
-        let mut original = accounts::Account::new(id.clone(), crate::accounts::NEXTCLOUD_TYPE);
-        original.display_name = "Old label".into();
-        original.enabled = false;
-        original.tint = 7;
-        original.owner = Some("local-owner".into());
-        original.config = serde_json::json!({
-            "id": "nextcloud-stable-id",
-            "label": "Old label",
-            "server_url": "https://old.example",
-            "username": "old-user",
-            "use_files": false,
-            "use_calendar": true,
-            "use_mail": false,
-            "future_provider_field": {"kept": true}
-        });
-        let mut store = accounts::AccountStore::new();
-        store.upsert(original);
-        root.save_store(&store).expect("seed canonical account");
-        let mut vault = root.vault();
-        vault.put(
-            &id,
-            &accounts::Secret {
-                password: "old-password".into(),
-                token: Some("future-provider-token".into()),
-            },
-        );
-        vault.try_save().expect("seed credential");
-
-        AccountsPane::save_account(
-            &root,
-            AccountKind::Nextcloud,
-            Some(id.as_str()),
-            "New label",
-            "new-user",
-            "",
-            "https://new.example/",
-            "",
-        )
-        .expect("edit account");
-
-        let saved = root.store().get(&id).cloned().expect("saved account");
-        assert!(!saved.enabled);
-        assert_eq!(saved.tint, 7);
-        assert_eq!(saved.owner.as_deref(), Some("local-owner"));
-        assert_eq!(saved.config["use_files"], false);
-        assert_eq!(saved.config["use_calendar"], true);
-        assert_eq!(saved.config["use_mail"], false);
-        assert_eq!(saved.config["future_provider_field"]["kept"], true);
-        assert_eq!(saved.config["server_url"], "https://new.example");
-        assert_eq!(saved.config["username"], "new-user");
-        assert_eq!(
-            root.vault().get(&id),
-            Some(accounts::Secret {
-                password: "old-password".into(),
-                token: Some("future-provider-token".into()),
-            })
-        );
-    }
-
-    {
-        let (_dir, root) = scratch_root();
-        let id = accounts::AccountId::from("reauth@example.test");
-        let mut account = accounts::Account::new(id.clone(), "email");
-        account.display_name = "Reauth".into();
-        account.config = serde_json::json!({
-            "email": id.as_str(), "username": id.as_str(),
-            "imap_host": "imap.example.test", "imap_port": 993
-        });
-        let mut store = accounts::AccountStore::new();
-        store.upsert(account);
-        root.save_store(&store).expect("seed account");
-        let mut vault = root.vault();
-        vault.put(&id, &accounts::Secret::password("old-password"));
-        vault.try_save().expect("seed credential");
-        let mut pane = AccountsPane::in_root(root.clone())
-            .with_account_tester(std::sync::Arc::new(RejectCandidate));
-        pane.command(AccountViewCommand::Reauthenticate(id.to_string()));
-        pane.set_reauth_password_for_test("candidate-password");
-        pane.command(AccountViewCommand::SubmitReauthentication);
-        settle_probes(&mut pane);
-        assert_eq!(
-            pane.reauth_error_for_test(),
-            Some("server rejected candidate")
-        );
-        assert_eq!(
-            root.vault().get(&id).map(|secret| secret.password),
-            Some("old-password".into()),
-            "rejected candidate must never replace the stored credential"
-        );
-    }
-}
-
-#[test]
 fn account_actions_include_sync_now_for_mounted_accounts() {
     use runtime_fs::cloud::{CloudCapabilities, CloudMount, MountHealth};
     let mount = |account: &str, paused: bool| CloudMount {
@@ -716,50 +764,6 @@ fn until_finished(finished: impl Fn() -> bool) {
         assert!(std::time::Instant::now() < deadline, "the read ends");
         std::thread::yield_now();
     }
-}
-
-#[test]
-fn the_area_builds_its_model_from_the_read_it_started() {
-    let (dir, root) = scratch_root();
-    let id = accounts::AccountId::from("warm@example.test");
-    let mut store = accounts::AccountStore::new();
-    store.upsert(accounts::Account::new(id.clone(), "email"));
-    root.save_store(&store).expect("the store is saved");
-    let mut vault = root.vault();
-    vault.put(&id, &accounts::Secret::password("test-only-password"));
-    vault.try_save().expect("the vault is saved");
-    let cx = crate::area::AreaContext::in_profile(dir.path().to_path_buf());
-    let area = AccountsArea::new(&cx).with_account_root(root.clone());
-    assert!(area.start_read(), "the first read starts");
-    assert!(!area.start_read(), "one read at a time");
-    assert!(!area.is_open(), "a running read publishes nothing yet");
-    until_finished(|| area.read.is_finished());
-    let model = area.model().borrow();
-    assert!(area.is_open());
-    assert!(vault.get(&id).is_some(), "the credential was saved");
-    assert_eq!(
-        model.vault.as_ref().and_then(|held| held.get(&id)),
-        vault.get(&id),
-        "the vault read is held"
-    );
-    assert_eq!(
-        model.directory(),
-        AccountsPane::in_root(root).directory(),
-        "the directory is the one reading in place shows"
-    );
-    drop(model);
-    assert!(!area.start_read(), "a built model is not read again");
-}
-
-#[test]
-fn a_pending_mutation_is_seen() {
-    let (_dir, root) = scratch_root();
-    assert!(!root.mutation_pending());
-    let config = root.path().expect("an explicit root");
-    let accounts_dir = accounts::accounts_dir_in(&config);
-    std::fs::create_dir_all(&accounts_dir).expect("the accounts directory");
-    std::fs::write(accounts_dir.join("mutation-journal.json"), b"{}").expect("an intent");
-    assert!(root.mutation_pending());
 }
 
 #[test]

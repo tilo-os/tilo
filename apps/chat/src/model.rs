@@ -156,8 +156,8 @@ pub struct Channel {
     /// A direct conversation between some of the workspace's people, rather
     /// than one of its named channels.
     pub direct: bool,
-    /// Who a direct conversation is with, by participant key
-    /// (`person:<root>`, `agent:<id>`); empty for a channel.
+    /// Who a direct conversation is with, by [`MemberId::key`]
+    /// (`<root>`, `agent:<id>`, `bot:<id>`); empty for a channel.
     pub participants: Vec<String>,
 }
 
@@ -733,103 +733,110 @@ mod tests {
         }
     }
 
-    #[test]
-    fn timeline_groups_top_level_runs_and_counts_thread_replies() {
-        // Phase: grouping_merges_same_author_within_window.
-        {
-            let msgs = vec![
-                msg("a", "u1", 0, None),
-                msg("b", "u1", 60, None),
-                msg("c", "u1", 120, None),
-            ];
-            let groups = group_messages(&msgs, true);
-            assert_eq!(groups.len(), 1);
-            assert_eq!(groups[0].message_indices, vec![0, 1, 2]);
-        }
-        // Phase: grouping_splits_on_author_change_and_time_gap.
-        {
-            let msgs = vec![
-                msg("a", "u1", 0, None),
-                msg("b", "u2", 30, None),       // author change
-                msg("c", "u2", 30 + 999, None), // gap > window
-            ];
-            let groups = group_messages(&msgs, true);
-            assert_eq!(groups.len(), 3);
-        }
-        // A bridge's lines split by the outside person each shows.
-        {
-            let shown = |name: &str| {
-                Some(tilo_actions::Appearance {
-                    name: name.into(),
-                    avatar: None,
-                    persona: None,
-                })
-            };
-            let mut msgs = vec![
-                msg("a", "bot:bridge", 0, None),
-                msg("b", "bot:bridge", 10, None),
-                msg("c", "bot:bridge", 20, None),
-            ];
-            msgs[0].appearance = shown("kim");
-            msgs[1].appearance = shown("kim");
-            msgs[2].appearance = shown("rae");
-            let groups = group_messages(&msgs, true);
-            assert_eq!(groups.len(), 2);
-            assert_eq!(groups[0].message_indices, vec![0, 1]);
-            assert_eq!(groups[1].message_indices, vec![2]);
-        }
-        // Phase: grouping_excludes_thread_replies.
-        {
-            let msgs = vec![
-                msg("a", "u1", 0, None),
-                msg("r", "u1", 10, Some("a")), // reply — not in the timeline
-            ];
-            let groups = group_messages(&msgs, true);
-            assert_eq!(groups.len(), 1);
-            assert_eq!(groups[0].message_indices, vec![0]);
-        }
-        // A direct conversation shows its replies among the messages they
-        // answer, in time order, whoever wrote them.
-        {
-            let msgs = vec![
-                msg("a", "u1", 0, None),
-                msg("r", "u2", 10, Some("a")),
-                msg("b", "u1", 20, None),
-            ];
-            let groups = group_messages(&msgs, false);
-            assert_eq!(groups.len(), 3);
-            assert_eq!(groups[1].message_indices, vec![1]);
-        }
-        // Phase: reply_count_and_participants.
-        {
-            let msgs = vec![
-                msg("a", "u1", 0, None),
-                msg("r1", "u2", 10, Some("a")),
-                msg("r2", "u3", 20, Some("a")),
-                msg("r3", "u2", 30, Some("a")),
-            ];
-            assert_eq!(reply_count(&msgs, "a"), 3);
-            assert_eq!(thread_participants(&msgs, "a"), vec!["u2", "u3"]);
-        }
-    }
+    tilo_test_env::scenario! {
+        /// The timeline's runs and thread counts, and the times it shows.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn the_timeline_groups_its_rows_and_formats_their_times;
 
-    #[test]
-    fn timestamps_format_as_the_persons_clock_and_a_relative_day() {
-        // Phase: clock_reads_the_time_of_day_in_the_configured_style.
+        phase timeline_groups_top_level_runs_and_counts_thread_replies;
         {
-            let hm = ui::clock::hour_minute;
-            assert_eq!(clock(0), hm(0, 0));
-            assert_eq!(clock(14 * 3600 + 32 * 60), hm(14, 32));
-            assert_eq!(clock(23 * 3600 + 59 * 60), hm(23, 59));
-            assert_eq!(clock(3 * 86_400 + 14 * 3600 + 32 * 60), hm(14, 32));
-            assert_eq!(clock(-60), hm(23, 59), "before the epoch wraps the day");
+            // Phase: grouping_merges_same_author_within_window.
+            {
+                let msgs = vec![
+                    msg("a", "u1", 0, None),
+                    msg("b", "u1", 60, None),
+                    msg("c", "u1", 120, None),
+                ];
+                let groups = group_messages(&msgs, true);
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].message_indices, vec![0, 1, 2]);
+            }
+            // Phase: grouping_splits_on_author_change_and_time_gap.
+            {
+                let msgs = vec![
+                    msg("a", "u1", 0, None),
+                    msg("b", "u2", 30, None),       // author change
+                    msg("c", "u2", 30 + 999, None), // gap > window
+                ];
+                let groups = group_messages(&msgs, true);
+                assert_eq!(groups.len(), 3);
+            }
+            // A bridge's lines split by the outside person each shows.
+            {
+                let shown = |name: &str| {
+                    Some(tilo_actions::Appearance {
+                        name: name.into(),
+                        avatar: None,
+                        persona: None,
+                    })
+                };
+                let mut msgs = vec![
+                    msg("a", "bot:bridge", 0, None),
+                    msg("b", "bot:bridge", 10, None),
+                    msg("c", "bot:bridge", 20, None),
+                ];
+                msgs[0].appearance = shown("kim");
+                msgs[1].appearance = shown("kim");
+                msgs[2].appearance = shown("rae");
+                let groups = group_messages(&msgs, true);
+                assert_eq!(groups.len(), 2);
+                assert_eq!(groups[0].message_indices, vec![0, 1]);
+                assert_eq!(groups[1].message_indices, vec![2]);
+            }
+            // Phase: grouping_excludes_thread_replies.
+            {
+                let msgs = vec![
+                    msg("a", "u1", 0, None),
+                    msg("r", "u1", 10, Some("a")), // reply — not in the timeline
+                ];
+                let groups = group_messages(&msgs, true);
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].message_indices, vec![0]);
+            }
+            // A direct conversation shows its replies among the messages they
+            // answer, in time order, whoever wrote them.
+            {
+                let msgs = vec![
+                    msg("a", "u1", 0, None),
+                    msg("r", "u2", 10, Some("a")),
+                    msg("b", "u1", 20, None),
+                ];
+                let groups = group_messages(&msgs, false);
+                assert_eq!(groups.len(), 3);
+                assert_eq!(groups[1].message_indices, vec![1]);
+            }
+            // Phase: reply_count_and_participants.
+            {
+                let msgs = vec![
+                    msg("a", "u1", 0, None),
+                    msg("r1", "u2", 10, Some("a")),
+                    msg("r2", "u3", 20, Some("a")),
+                    msg("r3", "u2", 30, Some("a")),
+                ];
+                assert_eq!(reply_count(&msgs, "a"), 3);
+                assert_eq!(thread_participants(&msgs, "a"), vec!["u2", "u3"]);
+            }
         }
-        // Phase: day_label_relative.
+
+        phase timestamps_format_as_the_persons_clock_and_a_relative_day;
         {
-            let now = 100 * 86_400 + 3600;
-            assert_eq!(day_label(now, now), "Today");
-            assert_eq!(day_label(now - 86_400, now), "Yesterday");
-            assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
+            // Phase: clock_reads_the_time_of_day_in_the_configured_style.
+            {
+                let hm = ui::clock::hour_minute;
+                assert_eq!(clock(0), hm(0, 0));
+                assert_eq!(clock(14 * 3600 + 32 * 60), hm(14, 32));
+                assert_eq!(clock(23 * 3600 + 59 * 60), hm(23, 59));
+                assert_eq!(clock(3 * 86_400 + 14 * 3600 + 32 * 60), hm(14, 32));
+                assert_eq!(clock(-60), hm(23, 59), "before the epoch wraps the day");
+            }
+            // Phase: day_label_relative.
+            {
+                let now = 100 * 86_400 + 3600;
+                assert_eq!(day_label(now, now), "Today");
+                assert_eq!(day_label(now - 86_400, now), "Yesterday");
+                assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
+            }
         }
     }
 }
@@ -842,9 +849,10 @@ mod agent_record_tests {
         AgentStep::authored(resource, label, outcome, 0)
     }
 
-    #[test]
-    fn agent_work_records_keep_their_wire_shape_across_versions() {
-        // Phase: a_record_without_a_trace_still_parses.
+    tilo_test_env::scenario! {
+        fn agent_work_records_keep_their_wire_shape_across_versions;
+
+        phase a_record_without_a_trace_still_parses;
         // A record written by an older agent — one without it — still
         // reads. The whole record travels as a single JSON scalar in the shared
         // document, and a record that will not parse is deliberately read as no
@@ -865,13 +873,15 @@ mod agent_record_tests {
                 "the wire shape of a plain record changed"
             );
         }
-        // Phase: an_empty_trace_is_absent_from_the_wire.
+
+        phase an_empty_trace_is_absent_from_the_wire;
         {
             let json = serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000))
                 .expect("serialise");
             assert!(!json.contains("trace"), "empty trace leaked: {json}");
         }
-        // Phase: a_trace_survives_a_round_trip.
+
+        phase a_trace_survives_a_round_trip;
         {
             let work =
                 AgentWork::new(AgentWorkState::Done { did: "crop".into() }, 42).with_trace(vec![
@@ -889,7 +899,8 @@ mod agent_record_tests {
             let back: AgentWork = serde_json::from_str(&json).expect("parse");
             assert_eq!(back, work);
         }
-        // Phase: a_row_that_has_not_answered_yet_survives_the_wire.
+
+        phase a_row_that_has_not_answered_yet_survives_the_wire;
         // A row that is still in flight survives the wire, and says so — what
         // one peer wrote when it handed an operation over is what the next one
         // reads while it waits. A variant that did not round-trip would arrive
@@ -914,9 +925,10 @@ mod agent_record_tests {
         }
     }
 
-    #[test]
-    fn agent_progress_counts_only_carried_out_steps_and_finished_states() {
-        // Phase: only_an_applied_or_no_change_outcome_counts_as_carried_out.
+    tilo_test_env::scenario! {
+        fn agent_progress_counts_only_carried_out_steps_and_finished_states;
+
+        phase only_an_applied_or_no_change_outcome_counts_as_carried_out;
         // A refusal is never counted as work carried out — the difference
         // between "it did three things" and "it did two and was stopped once".
         {
@@ -928,7 +940,8 @@ mod agent_record_tests {
             // "no answer yet" read as one of the things that went through.
             assert!(!AgentStepOutcome::Asked.succeeded());
         }
-        // Phase: finished_is_true_only_once_the_agent_has_stopped.
+
+        phase finished_is_true_only_once_the_agent_has_stopped;
         // Whether the agent has stopped is read off the state alone.
         {
             assert!(!AgentWork::new(AgentWorkState::Taken, 0).finished());

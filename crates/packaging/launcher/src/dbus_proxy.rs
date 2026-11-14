@@ -375,147 +375,6 @@ impl Drop for DBusProxyGuard {
 mod tests {
     use super::*;
 
-    #[test]
-    fn filters_grant_exactly_the_listed_rules() {
-        // A portal-less graphical app: the bus daemon and the accessibility status questions, nothing
-        // else.
-        assert_eq!(
-            session_filter_args(false, true, None),
-            [
-                "--filter",
-                "--see=org.freedesktop.DBus",
-                "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
-                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
-                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
-                "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
-            ]
-        );
-        assert_eq!(
-            session_filter_args(true, true, None),
-            [
-                "--filter",
-                "--see=org.freedesktop.DBus",
-                "--talk=org.freedesktop.portal.*",
-                "--talk=org.freedesktop.Notifications",
-                "--talk=org.mpris.MediaPlayer2.*",
-                "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
-                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
-                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
-                "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
-            ]
-        );
-        assert_eq!(session_filter_args(true, false, None), DEFAULT_FILTER_ARGS);
-        // An app publishing its player owns exactly its own MPRIS name.
-        assert_eq!(
-            session_filter_args(false, false, Some("org.mpris.MediaPlayer2.so.tilo.music")),
-            [
-                "--filter",
-                "--see=org.freedesktop.DBus",
-                "--own=org.mpris.MediaPlayer2.so.tilo.music",
-            ]
-        );
-        assert_eq!(
-            media_player_name("so.tilo.music").as_deref(),
-            Some("org.mpris.MediaPlayer2.so.tilo.music")
-        );
-        assert_eq!(media_player_name("so tilo"), None);
-        assert_eq!(media_player_name(""), None);
-        // No rule anywhere grants a whole name on the accessibility side, and nothing else ever widens
-        // to ownership or to the raw bus.
-        for arg in session_filter_args(true, true, None)
-            .iter()
-            .map(String::as_str)
-            .chain(ATSPI_FILTER_ARGS.iter().copied())
-        {
-            assert!(!arg.starts_with("--own"), "{arg}");
-            assert!(
-                !arg.contains("org.a11y") || !arg.starts_with("--talk"),
-                "{arg}"
-            );
-        }
-        // The AT-SPI filter is Flatpak's: every rule is a call or broadcast to the registry at an
-        // exact object path.
-        assert_eq!(&ATSPI_FILTER_ARGS[..2], ["--filter", "--sloppy-names"]);
-        assert_eq!(ATSPI_FILTER_ARGS.len(), 11);
-        for rule in &ATSPI_FILTER_ARGS[2..] {
-            assert!(
-                rule.starts_with("--call=org.a11y.atspi.Registry=org.a11y.atspi.")
-                    || rule.starts_with("--broadcast=org.a11y.atspi.Registry=org.a11y.atspi."),
-                "{rule}"
-            );
-            let path = rule
-                .rsplit_once('@')
-                .expect("every rule names an object path")
-                .1;
-            assert!(
-                path.starts_with("/org/a11y/atspi/") && !path.contains('*'),
-                "{rule}"
-            );
-            assert!(!rule.contains(".*@"), "no wildcard method: {rule}");
-        }
-        assert_eq!(
-            atspi_proxy_socket_path(Path::new("/run/user/1000"), 7),
-            PathBuf::from("/run/user/1000/tilo/dbus-proxy/7-atspi.sock")
-        );
-        assert_eq!(
-            sandbox_atspi_path(1000),
-            PathBuf::from("/run/user/1000/at-spi/bus")
-        );
-        assert_eq!(
-            sandbox_atspi_env(1000),
-            "unix:path=/run/user/1000/at-spi/bus"
-        );
-    }
-
-    #[test]
-    fn proxy_paths_env_and_binary_lookup() {
-        {
-            let p = proxy_socket_path(Path::new("/run/user/1000"), 4242);
-            assert_eq!(p, PathBuf::from("/run/user/1000/tilo/dbus-proxy/4242.sock"));
-        }
-        // A nested session's proxies stay in its own runtime directory.
-        {
-            let nested = tempfile::tempdir().unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_RUNTIME_DIR", nested.path());
-            let runtime = session_runtime_dir();
-            assert_eq!(runtime, nested.path());
-            for socket in [
-                proxy_socket_path(&runtime, 4242),
-                atspi_proxy_socket_path(&runtime, 4242),
-                system_proxy_socket_path(&runtime, 4242),
-            ] {
-                assert!(socket.starts_with(nested.path()), "{socket:?}");
-            }
-        }
-        {
-            assert_eq!(sandbox_bus_env(1000), "unix:path=/run/user/1000/bus");
-            assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let bin = tmp.path().join("xdg-dbus-proxy-mock");
-            std::fs::write(&bin, "#!/bin/sh\n").unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(PROXY_BIN_ENV, &bin);
-            let found = find_proxy_binary().expect("env override");
-            assert_eq!(found, bin);
-        }
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            // Empty PATH so the fallback can't find a real binary.
-            env.set(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy")
-                .set("PATH", "");
-            let found = find_proxy_binary();
-            // Put `PATH` back before asserting.
-            drop(env);
-            assert!(
-                found.is_none(),
-                "expected None with bad env + empty PATH, got {found:?}"
-            );
-        }
-    }
-
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path) so callers waiting on socket
     /// existence see it, then becomes a `sleep` that the guard's SIGTERM ends.
     fn write_mock_proxy(dir: &Path) -> PathBuf {
@@ -549,119 +408,264 @@ exit 1
         script
     }
 
-    #[test]
-    fn proxy_marker_without_readiness_is_refused() {
-        use std::os::unix::fs::PermissionsExt;
-
-        for notification in ["", "?"] {
-            let tmp = tempfile::tempdir().unwrap();
-            let script = tmp.path().join("unready-proxy");
-            std::fs::write(
-                &script,
-                format!(
-                    "#!/bin/sh\nnotify=0\nif [ \"$1\" = --fd=0 ]; then notify=1; shift; fi\n: >\"$2\"\nif [ \"$notify\" = 1 ]; then printf '%s' '{notification}' >&0; fi\nexec /usr/bin/sleep infinity\n"
-                ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let socket = tmp.path().join("proxy.sock");
-            let result = spawn_dbus_proxy_within(
-                &script,
-                "unix:path=/dev/null/nope",
-                &socket,
-                Duration::from_millis(100),
-            );
-            assert!(
-                matches!(&result, Err(ProxyError::NotReady { .. })),
-                "an inode with notification {notification:?} must not admit an unready proxy"
-            );
-            assert!(!socket.exists(), "a refused helper must be cleaned up");
-        }
-    }
-
-    #[test]
-    fn proxy_child_is_reaped_on_drop() {
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mock = write_mock_proxy(tmp.path());
-            let socket = tmp.path().join("dbus-proxy.sock");
-            let mut guard =
-                spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
-            let pid = guard.pid().expect("proxy pid");
-            assert!(socket.exists(), "socket marker should be present");
-            // /proc/<pid> is present as long as the process is running.
-            assert!(
-                PathBuf::from(format!("/proc/{pid}")).exists(),
-                "proxy pid {pid} should be running"
-            );
-            guard.terminate();
-            // After terminate the socket should be gone and the pid should have been reaped (no
-            // zombie).
-            assert!(!socket.exists(), "socket should be removed on terminate");
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mock = write_mock_proxy(tmp.path());
-            let socket = tmp.path().join("dbus-proxy.sock");
-            let pid = {
-                let guard =
-                    spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
-                guard.pid().expect("proxy pid")
-            };
-            // Drop signals and waits for the proxy before it returns.
-            assert!(!socket.exists(), "socket should be removed on drop");
-            // /proc/<pid> disappears once the kernel reaps the exited process; poll briefly to avoid a
-            // schedule race.
-            let deadline = tilo_test_env::hang_deadline();
-            while PathBuf::from(format!("/proc/{pid}")).exists()
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            assert!(
-                !PathBuf::from(format!("/proc/{pid}")).exists(),
-                "proxy pid {pid} should have been reaped after Drop"
-            );
-        }
-    }
-
     // The proxy binary is located through `PROXY_BIN_ENV` and `PATH`, which is the interface these two
     // pin.
 
-    #[test]
-    fn find_proxy_binary_does_not_fall_back_past_an_invalid_override() {
-        use std::os::unix::ffi::OsStringExt;
+    tilo_test_env::scenario! {
+        fn the_bus_proxy_is_found_filtered_and_supervised;
 
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("xdg-dbus-proxy"), "#!/bin/sh\n").unwrap();
-        let invalid_paths = [
-            tmp.path().join("missing").into_os_string(),
-            std::ffi::OsString::new(),
-            tmp.path()
-                .join(std::ffi::OsString::from_vec(vec![0xff]))
-                .into_os_string(),
-        ];
-        for invalid in invalid_paths {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(PROXY_BIN_ENV, &invalid).set("PATH", tmp.path());
-            let found = find_proxy_binary();
-            drop(env);
-            assert!(
-                found.is_none(),
-                "an invalid explicit override must not use the available PATH proxy: {found:?}"
+        phase filters_grant_exactly_the_listed_rules;
+        {
+            // A portal-less graphical app: the bus daemon and the accessibility status questions, nothing
+            // else.
+            assert_eq!(
+                session_filter_args(false, true, None),
+                [
+                    "--filter",
+                    "--see=org.freedesktop.DBus",
+                    "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
+                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
+                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
+                    "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
+                ]
+            );
+            assert_eq!(
+                session_filter_args(true, true, None),
+                [
+                    "--filter",
+                    "--see=org.freedesktop.DBus",
+                    "--talk=org.freedesktop.portal.*",
+                    "--talk=org.freedesktop.Notifications",
+                    "--talk=org.mpris.MediaPlayer2.*",
+                    "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
+                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
+                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
+                    "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
+                ]
+            );
+            assert_eq!(session_filter_args(true, false, None), DEFAULT_FILTER_ARGS);
+            // An app publishing its player owns exactly its own MPRIS name.
+            assert_eq!(
+                session_filter_args(false, false, Some("org.mpris.MediaPlayer2.so.tilo.music")),
+                [
+                    "--filter",
+                    "--see=org.freedesktop.DBus",
+                    "--own=org.mpris.MediaPlayer2.so.tilo.music",
+                ]
+            );
+            assert_eq!(
+                media_player_name("so.tilo.music").as_deref(),
+                Some("org.mpris.MediaPlayer2.so.tilo.music")
+            );
+            assert_eq!(media_player_name("so tilo"), None);
+            assert_eq!(media_player_name(""), None);
+            // No rule anywhere grants a whole name on the accessibility side, and nothing else ever widens
+            // to ownership or to the raw bus.
+            for arg in session_filter_args(true, true, None)
+                .iter()
+                .map(String::as_str)
+                .chain(ATSPI_FILTER_ARGS.iter().copied())
+            {
+                assert!(!arg.starts_with("--own"), "{arg}");
+                assert!(
+                    !arg.contains("org.a11y") || !arg.starts_with("--talk"),
+                    "{arg}"
+                );
+            }
+            // The AT-SPI filter is Flatpak's: every rule is a call or broadcast to the registry at an
+            // exact object path.
+            assert_eq!(&ATSPI_FILTER_ARGS[..2], ["--filter", "--sloppy-names"]);
+            assert_eq!(ATSPI_FILTER_ARGS.len(), 11);
+            for rule in &ATSPI_FILTER_ARGS[2..] {
+                assert!(
+                    rule.starts_with("--call=org.a11y.atspi.Registry=org.a11y.atspi.")
+                        || rule.starts_with("--broadcast=org.a11y.atspi.Registry=org.a11y.atspi."),
+                    "{rule}"
+                );
+                let path = rule
+                    .rsplit_once('@')
+                    .expect("every rule names an object path")
+                    .1;
+                assert!(
+                    path.starts_with("/org/a11y/atspi/") && !path.contains('*'),
+                    "{rule}"
+                );
+                assert!(!rule.contains(".*@"), "no wildcard method: {rule}");
+            }
+            assert_eq!(
+                atspi_proxy_socket_path(Path::new("/run/user/1000"), 7),
+                PathBuf::from("/run/user/1000/tilo/dbus-proxy/7-atspi.sock")
+            );
+            assert_eq!(
+                sandbox_atspi_path(1000),
+                PathBuf::from("/run/user/1000/at-spi/bus")
+            );
+            assert_eq!(
+                sandbox_atspi_env(1000),
+                "unix:path=/run/user/1000/at-spi/bus"
             );
         }
-    }
 
-    #[test]
-    fn find_proxy_binary_uses_path_when_override_is_unset() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin = tmp.path().join("xdg-dbus-proxy");
-        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(PROXY_BIN_ENV).set("PATH", tmp.path());
-        let found = find_proxy_binary();
-        drop(env);
-        assert_eq!(found, Some(bin));
+        phase proxy_paths_env_and_binary_lookup;
+        {
+            {
+                let p = proxy_socket_path(Path::new("/run/user/1000"), 4242);
+                assert_eq!(p, PathBuf::from("/run/user/1000/tilo/dbus-proxy/4242.sock"));
+            }
+            // A nested session's proxies stay in its own runtime directory.
+            {
+                let nested = tempfile::tempdir().unwrap();
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set("XDG_RUNTIME_DIR", nested.path());
+                let runtime = session_runtime_dir();
+                assert_eq!(runtime, nested.path());
+                for socket in [
+                    proxy_socket_path(&runtime, 4242),
+                    atspi_proxy_socket_path(&runtime, 4242),
+                    system_proxy_socket_path(&runtime, 4242),
+                ] {
+                    assert!(socket.starts_with(nested.path()), "{socket:?}");
+                }
+            }
+            {
+                assert_eq!(sandbox_bus_env(1000), "unix:path=/run/user/1000/bus");
+                assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let bin = tmp.path().join("xdg-dbus-proxy-mock");
+                std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set(PROXY_BIN_ENV, &bin);
+                let found = find_proxy_binary().expect("env override");
+                assert_eq!(found, bin);
+            }
+            {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                // Empty PATH so the fallback can't find a real binary.
+                env.set(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy")
+                    .set("PATH", "");
+                let found = find_proxy_binary();
+                // Put `PATH` back before asserting.
+                drop(env);
+                assert!(
+                    found.is_none(),
+                    "expected None with bad env + empty PATH, got {found:?}"
+                );
+            }
+        }
+
+        phase proxy_marker_without_readiness_is_refused;
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            for notification in ["", "?"] {
+                let tmp = tempfile::tempdir().unwrap();
+                let script = tmp.path().join("unready-proxy");
+                std::fs::write(
+                    &script,
+                    format!(
+                        "#!/bin/sh\nnotify=0\nif [ \"$1\" = --fd=0 ]; then notify=1; shift; fi\n: >\"$2\"\nif [ \"$notify\" = 1 ]; then printf '%s' '{notification}' >&0; fi\nexec /usr/bin/sleep infinity\n"
+                    ),
+                )
+                .unwrap();
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+                let socket = tmp.path().join("proxy.sock");
+                let result = spawn_dbus_proxy_within(
+                    &script,
+                    "unix:path=/dev/null/nope",
+                    &socket,
+                    Duration::from_millis(100),
+                );
+                assert!(
+                    matches!(&result, Err(ProxyError::NotReady { .. })),
+                    "an inode with notification {notification:?} must not admit an unready proxy"
+                );
+                assert!(!socket.exists(), "a refused helper must be cleaned up");
+            }
+        }
+
+        phase proxy_child_is_reaped_on_drop;
+        {
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let mock = write_mock_proxy(tmp.path());
+                let socket = tmp.path().join("dbus-proxy.sock");
+                let mut guard =
+                    spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
+                let pid = guard.pid().expect("proxy pid");
+                assert!(socket.exists(), "socket marker should be present");
+                // /proc/<pid> is present as long as the process is running.
+                assert!(
+                    PathBuf::from(format!("/proc/{pid}")).exists(),
+                    "proxy pid {pid} should be running"
+                );
+                guard.terminate();
+                // After terminate the socket should be gone and the pid should have been reaped (no
+                // zombie).
+                assert!(!socket.exists(), "socket should be removed on terminate");
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let mock = write_mock_proxy(tmp.path());
+                let socket = tmp.path().join("dbus-proxy.sock");
+                let pid = {
+                    let guard =
+                        spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
+                    guard.pid().expect("proxy pid")
+                };
+                // Drop signals and waits for the proxy before it returns.
+                assert!(!socket.exists(), "socket should be removed on drop");
+                // /proc/<pid> disappears once the kernel reaps the exited process; poll briefly to avoid a
+                // schedule race.
+                let deadline = tilo_test_env::hang_deadline();
+                while PathBuf::from(format!("/proc/{pid}")).exists()
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert!(
+                    !PathBuf::from(format!("/proc/{pid}")).exists(),
+                    "proxy pid {pid} should have been reaped after Drop"
+                );
+            }
+        }
+
+        phase find_proxy_binary_does_not_fall_back_past_an_invalid_override;
+        {
+            use std::os::unix::ffi::OsStringExt;
+
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("xdg-dbus-proxy"), "#!/bin/sh\n").unwrap();
+            let invalid_paths = [
+                tmp.path().join("missing").into_os_string(),
+                std::ffi::OsString::new(),
+                tmp.path()
+                    .join(std::ffi::OsString::from_vec(vec![0xff]))
+                    .into_os_string(),
+            ];
+            for invalid in invalid_paths {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set(PROXY_BIN_ENV, &invalid).set("PATH", tmp.path());
+                let found = find_proxy_binary();
+                drop(env);
+                assert!(
+                    found.is_none(),
+                    "an invalid explicit override must not use the available PATH proxy: {found:?}"
+                );
+            }
+        }
+
+        phase find_proxy_binary_uses_path_when_override_is_unset;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let bin = tmp.path().join("xdg-dbus-proxy");
+            std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove(PROXY_BIN_ENV).set("PATH", tmp.path());
+            let found = find_proxy_binary();
+            drop(env);
+            assert_eq!(found, Some(bin));
+        }
     }
 }

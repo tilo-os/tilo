@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::edit::RenameStamp;
 use super::groups::{Band, HEADING_TARGET};
+use super::jump::PILL_TARGET;
 use super::open::first_page_title;
 use super::{ListModel, MountedRow, MountedRowState, VirtualList};
 use crate::a11y::{AccessNode, AccessState, Role};
@@ -203,6 +204,28 @@ impl<M: ListModel> VirtualList<M> {
             children = node.children;
         }
         children.splice(0..0, field);
+        // A tree row holding others offers the disclosure its chevron stands for: a control of
+        // its own, where the chevron is drawn, so a reader or a page folds the notes under the
+        // row without opening the row itself.
+        if let Some(marks) = &self.tree
+            && marks.is_branch(&row.key)
+            && let Some(encode) = &self.semantic_key
+        {
+            let folded = marks.is_folded(&row.key);
+            let name = widget_text(if folded {
+                "tree-branch-expand"
+            } else {
+                "tree-branch-collapse"
+            });
+            let mut disclosure = AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_state(AccessState::new().expanded(!folded))
+                .with_action_target(format!("fold:{}", encode(&row.key)));
+            if let Some(rect) = self.disclosure_rect(&row.key) {
+                disclosure = disclosure.with_bounds(rect);
+            }
+            children.push(disclosure);
+        }
         if !children.is_empty() {
             item = item.with_children(children);
         }
@@ -222,6 +245,16 @@ impl<M: ListModel> VirtualList<M> {
             return performed;
         }
 
+        // The way back over the rows: one control, wherever it stands, read by the words it says
+        // and pressed to go where it offers.
+        if target == PILL_TARGET {
+            return match action {
+                Action::Focus => self.focus_pill(),
+                Action::Activate => self.press_pill(),
+                _ => false,
+            };
+        }
+
         // A heading's group, as its node in the accessibility tree names it: read, folded and
         // unfolded by something that is not the keyboard.
         if let Some(heading) = target.strip_prefix(super::groups::HEADING_TARGET) {
@@ -235,6 +268,29 @@ impl<M: ListModel> VirtualList<M> {
                     self.scroll_to_index(index);
                     true
                 }),
+                _ => false,
+            };
+        }
+        // A tree row's disclosure, standing where the painted chevron is: pressing it folds the
+        // row's notes away or shows them again, where a press on the row itself opens the item
+        // it stands for.
+        if let Some(encoded) = target.strip_prefix("fold:") {
+            let Some(key) = self.key_for_name(encoded) else {
+                return false;
+            };
+            if self.tree.is_none() {
+                return false;
+            }
+            return match action {
+                Action::Activate => {
+                    let folded = self
+                        .tree
+                        .as_ref()
+                        .is_some_and(|marks| marks.is_folded(&key));
+                    self.fold_row(&key, !folded)
+                }
+                Action::Expand => self.fold_row(&key, false),
+                Action::Collapse => self.fold_row(&key, true),
                 _ => false,
             };
         }
@@ -348,6 +404,9 @@ impl<M: ListModel> VirtualList<M> {
         for band in bands {
             children.push(Arc::new(self.heading_node(band, enabled)));
         }
+        if let Some(pill) = self.pill_node(enabled) {
+            children.push(Arc::new(pill));
+        }
         children.extend(self.menu_node().map(Arc::new));
         if kept.rows.len() != reached {
             kept.rows.retain(|_, row| row.walk == walk);
@@ -430,6 +489,26 @@ impl<M: ListModel> VirtualList<M> {
         let mut bands: Vec<&Band> = self.groups.bands.iter().collect();
         bands.sort_by_key(|band| band.index);
         bands
+    }
+
+    /// The pill as a reader, an agent or a keyboard meets it: one button saying the words it
+    /// shows, standing where it is drawn, so the way back a list offers over its rows is reached
+    /// by something that is not a pointer.
+    fn pill_node(&self, enabled: bool) -> Option<AccessNode> {
+        let (jump, rect) = self.pill_rect_for(self.rect)?;
+        Some(
+            AccessNode::new(Role::Button)
+                .with_name(jump.label())
+                .with_interface_name(true)
+                .with_action_target(PILL_TARGET)
+                .with_bounds(rect)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.jump_focused)
+                        .disabled(!enabled),
+                ),
+        )
     }
 
     fn heading_node(&self, band: &Band, enabled: bool) -> AccessNode {

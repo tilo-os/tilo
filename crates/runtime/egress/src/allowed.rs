@@ -92,58 +92,62 @@ mod tests {
         s.parse().unwrap()
     }
 
-    #[test]
-    fn ttls_are_clamped_to_a_minute_and_four_hours() {
-        assert_eq!(clamp_ttl(0), MIN_TTL);
-        assert_eq!(clamp_ttl(59), MIN_TTL);
-        assert_eq!(clamp_ttl(300), Duration::from_secs(300));
-        assert_eq!(clamp_ttl(86_400), MAX_TTL);
-        assert_eq!(clamp_ttl(u32::MAX), MAX_TTL);
-    }
+    tilo_test_env::scenario! {
+        fn allowed_addresses;
 
-    #[test]
-    fn a_new_address_is_added_and_a_repeat_inside_its_ttl_is_not() {
-        let t0 = Instant::now();
-        let mut set = AllowedAddrs::default();
-        assert_eq!(
-            set.admit(ip("140.82.112.3"), 300, t0),
-            Some(Change::Add(Duration::from_secs(300)))
-        );
-        assert!(set.contains(ip("140.82.112.3"), t0));
-        assert_eq!(
-            set.admit(ip("140.82.112.3"), 300, t0 + Duration::from_secs(5)),
-            None
-        );
-        assert_eq!(
-            set.admit(ip("140.82.112.3"), 300, t0 + Duration::from_secs(200)),
-            Some(Change::Refresh(Duration::from_secs(300)))
-        );
-        // A shorter TTL never shortens what the kernel holds.
-        assert_eq!(
-            set.admit(ip("140.82.112.3"), 0, t0 + Duration::from_secs(201)),
-            None
-        );
-        let later = t0 + Duration::from_secs(1_000);
-        assert!(!set.contains(ip("140.82.112.3"), later));
-        assert_eq!(
-            set.admit(ip("140.82.112.3"), 30, later),
-            Some(Change::Add(MIN_TTL))
-        );
-    }
+        phase ttls_are_clamped_to_a_minute_and_four_hours;
+        {
+            assert_eq!(clamp_ttl(0), MIN_TTL);
+            assert_eq!(clamp_ttl(59), MIN_TTL);
+            assert_eq!(clamp_ttl(300), Duration::from_secs(300));
+            assert_eq!(clamp_ttl(86_400), MAX_TTL);
+            assert_eq!(clamp_ttl(u32::MAX), MAX_TTL);
+        }
 
-    #[test]
-    fn pruning_and_clearing_forget_entries() {
-        let t0 = Instant::now();
-        let mut set = AllowedAddrs::default();
-        set.admit(ip("192.0.2.1"), 60, t0);
-        set.admit(ip("2001:db8::1"), 3_600, t0);
-        set.prune(t0 + Duration::from_secs(120));
-        assert_eq!(set.len(), 1);
-        assert!(set.contains(ip("2001:db8::1"), t0 + Duration::from_secs(120)));
-        set.forget([ip("2001:db8::1")]);
-        assert!(set.is_empty());
-        set.admit(ip("192.0.2.1"), 60, t0);
-        set.clear();
-        assert!(set.is_empty());
+        phase a_new_address_is_added_and_a_repeat_inside_its_ttl_is_not;
+        {
+            let t0 = Instant::now();
+            let mut set = AllowedAddrs::default();
+            assert_eq!(
+                set.admit(ip("140.82.112.3"), 300, t0),
+                Some(Change::Add(Duration::from_secs(300)))
+            );
+            assert!(set.contains(ip("140.82.112.3"), t0));
+            assert_eq!(
+                set.admit(ip("140.82.112.3"), 300, t0 + Duration::from_secs(5)),
+                None
+            );
+            assert_eq!(
+                set.admit(ip("140.82.112.3"), 300, t0 + Duration::from_secs(200)),
+                Some(Change::Refresh(Duration::from_secs(300)))
+            );
+            // A shorter TTL never shortens what the kernel holds.
+            assert_eq!(
+                set.admit(ip("140.82.112.3"), 0, t0 + Duration::from_secs(201)),
+                None
+            );
+            let later = t0 + Duration::from_secs(1_000);
+            assert!(!set.contains(ip("140.82.112.3"), later));
+            assert_eq!(
+                set.admit(ip("140.82.112.3"), 30, later),
+                Some(Change::Add(MIN_TTL))
+            );
+        }
+
+        phase pruning_and_clearing_forget_entries;
+        {
+            let t0 = Instant::now();
+            let mut set = AllowedAddrs::default();
+            set.admit(ip("192.0.2.1"), 60, t0);
+            set.admit(ip("2001:db8::1"), 3_600, t0);
+            set.prune(t0 + Duration::from_secs(120));
+            assert_eq!(set.len(), 1);
+            assert!(set.contains(ip("2001:db8::1"), t0 + Duration::from_secs(120)));
+            set.forget([ip("2001:db8::1")]);
+            assert!(set.is_empty());
+            set.admit(ip("192.0.2.1"), 60, t0);
+            set.clear();
+            assert!(set.is_empty());
+        }
     }
 }

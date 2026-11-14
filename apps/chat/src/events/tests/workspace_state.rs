@@ -5,13 +5,14 @@ use super::*;
 
 // --- the workspace's channels, one place -------------------------------
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one labelled phase per original scenario, each with its own fresh fixture"
-)]
-fn visible_controls_publish_unique_accessible_semantics() {
-    // Phase: accessibility_names_contextual_navigation_and_conversation_content.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn visible_controls_publish_unique_accessible_semantics;
+
+    phase accessibility_names_contextual_navigation_and_conversation_content;
     {
         let (mut app, _doc) = app_with_doc();
         render_frame(&mut app, 1280.0, 720.0);
@@ -53,7 +54,7 @@ fn visible_controls_publish_unique_accessible_semantics() {
         assert_eq!(heading.description.as_deref(), Some(channel.topic.as_str()));
     }
 
-    // Phase: narrow_window_names_the_channel_and_offers_navigation_in_the_bar.
+    phase narrow_window_names_the_channel_and_offers_navigation_in_the_bar;
     {
         let (mut app, _doc) = app_with_doc();
         app.stage_view("narrow");
@@ -70,7 +71,7 @@ fn visible_controls_publish_unique_accessible_semantics() {
         );
     }
 
-    // Phase: semantic_text_inputs_accept_focus_value_and_selection_without_sending.
+    phase semantic_text_inputs_accept_focus_value_and_selection_without_sending;
     {
         let (mut app, mut doc) = app_with_doc();
         render_frame(&mut app, 1280.0, 720.0);
@@ -129,7 +130,7 @@ fn visible_controls_publish_unique_accessible_semantics() {
         );
     }
 
-    // Phase: every_visible_scenario_has_unique_semantic_targets.
+    phase every_visible_scenario_has_unique_semantic_targets;
     {
         for (scenario, width, height) in [
             ("", 1280.0, 720.0),
@@ -161,116 +162,124 @@ fn visible_controls_publish_unique_accessible_semantics() {
     }
 }
 
-#[test]
-fn a_mention_completed_with_tab_is_sent_as_a_marked_reference() {
-    let (mut app, mut doc) = app_with_doc();
-    app.focus = Focus::Main;
-    app.set_composer_focus();
-    // The editor learns who the workspace offers at `@` as it is drawn.
-    render_frame(&mut app, 1280.0, 720.0);
-    let who = app
-        .participants()
-        .into_iter()
-        .find(|participant| !app.is_me(&participant.id) && participant.name.len() > 2)
-        .expect("the demo workspace has someone to mention");
-    let prefix: String = who.name.chars().take(2).collect();
-    type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
-    feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
-    let label = format!("@{}", who.name);
-    assert_eq!(app.composer_main.value(), format!("ping {label} "));
-    type_str(&mut app, &mut doc, "now");
-    feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-    let sent = crate::testing::messages(&doc, &app.active_channel)
-        .into_iter()
-        .last()
-        .unwrap();
-    assert_eq!(sent.text, format!("ping {label} now"));
-    assert_eq!(sent.mentions.len(), 1, "{:?}", sent.mentions);
-    assert_eq!(sent.mentions[0].user, who.id);
-    assert_eq!(sent.mentions[0].slice(&sent.text), label);
-    assert!(
-        sent.blocks()[0]
-            .marks
+tilo_test_env::scenario! {
+    /// What the composer keeps of a mention, of formatting and of a selection.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn the_composer_keeps_mentions_formatting_and_selection;
+
+    phase a_mention_completed_with_tab_is_sent_as_a_marked_reference;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        // The editor learns who the workspace offers at `@` as it is drawn.
+        render_frame(&mut app, 1280.0, 720.0);
+        let who = app
+            .participants()
+            .into_iter()
+            .find(|participant| !app.is_me(&participant.id.0) && participant.name.len() > 2)
+            .expect("the demo workspace has someone to mention");
+        let prefix: String = who.name.chars().take(2).collect();
+        type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
+        let label = format!("@{}", who.name);
+        assert_eq!(app.composer_main.value(), format!("ping {label} "));
+        type_str(&mut app, &mut doc, "now");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        let sent = crate::testing::messages(&doc, &app.active_channel)
+            .into_iter()
+            .last()
+            .unwrap();
+        assert_eq!(sent.text, format!("ping {label} now"));
+        assert_eq!(sent.mentions.len(), 1, "{:?}", sent.mentions);
+        assert_eq!(sent.mentions[0].user, who.id.0);
+        assert_eq!(sent.mentions[0].slice(&sent.text), label);
+        assert!(
+            sent.blocks()[0]
+                .marks
+                .iter()
+                .any(|span| span.mark == ui::widget::Mark::Mention(who.id.0.clone())),
+            "the body keeps the mention as written"
+        );
+        // Rendered through the read-only view, it lays out at its width.
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(!app.body_views.borrow().is_empty());
+    }
+
+    phase editing_a_formatted_message_keeps_its_formatting;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "plain ");
+        feed_mods(&mut app, &mut doc, &char_key("b"), mods(true, false));
+        type_str(&mut app, &mut doc, "bold");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        let sent = crate::testing::messages(&doc, &app.active_channel)
+            .into_iter()
+            .last()
+            .unwrap();
+        assert_eq!(sent.text, "plain bold");
+        assert!(
+            sent.blocks()[0]
+                .marks
+                .iter()
+                .any(|span| span.mark == ui::widget::Mark::Bold && span.range == (6..10))
+        );
+        app.reload(&doc);
+        app.begin_edit(sent.id.clone());
+        assert_eq!(app.edit_input.value(), "plain bold");
+        type_str(&mut app, &mut doc, "!");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        let edited = app.message(&sent.id).unwrap();
+        assert_eq!(edited.text, "plain bold!");
+        assert!(
+            edited.blocks()[0]
+                .marks
+                .iter()
+                .any(|span| span.mark == ui::widget::Mark::Bold),
+            "the edit keeps the bold run"
+        );
+        assert_eq!(edited.history.last().unwrap().text, "plain bold");
+    }
+
+    phase composer_accessibility_keeps_a_backward_browser_selection_direction;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        crate::testing::write_draft(&mut app, &mut doc, "Ae\u{301}👋B");
+        app.sync_composers(&doc);
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(app.composer_main.perform_action(
+            &ui::a11y::Action::SetSelection {
+                anchor: 4,
+                focus: 2,
+            },
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+        let composer = root
+            .children
             .iter()
-            .any(|span| span.mark == ui::widget::Mark::Mention(who.id.clone())),
-        "the body keeps the mention as written"
-    );
-    // Rendered through the read-only view, it lays out at its width.
-    render_frame(&mut app, 1280.0, 720.0);
-    assert!(!app.body_views.borrow().is_empty());
+            .find(|node| node.action_target.as_deref() == Some("chat.composer"))
+            .expect("the main composer remains semantic");
+        assert_eq!(
+            composer.text_selection,
+            Some(ui::a11y::AccessibleTextSelection {
+                anchor: 9,
+                focus: 4
+            }),
+            "the semantic bridge must retain the anchor at the right edge while Shift+Left moves focus backward"
+        );
+    }
 }
 
-#[test]
-fn editing_a_formatted_message_keeps_its_formatting() {
-    let (mut app, mut doc) = app_with_doc();
-    app.focus = Focus::Main;
-    app.set_composer_focus();
-    type_str(&mut app, &mut doc, "plain ");
-    feed_mods(&mut app, &mut doc, &char_key("b"), mods(true, false));
-    type_str(&mut app, &mut doc, "bold");
-    feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-    let sent = crate::testing::messages(&doc, &app.active_channel)
-        .into_iter()
-        .last()
-        .unwrap();
-    assert_eq!(sent.text, "plain bold");
-    assert!(
-        sent.blocks()[0]
-            .marks
-            .iter()
-            .any(|span| span.mark == ui::widget::Mark::Bold && span.range == (6..10))
-    );
-    app.reload(&doc);
-    app.begin_edit(sent.id.clone());
-    assert_eq!(app.edit_input.value(), "plain bold");
-    type_str(&mut app, &mut doc, "!");
-    feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-    let edited = app.message(&sent.id).unwrap();
-    assert_eq!(edited.text, "plain bold!");
-    assert!(
-        edited.blocks()[0]
-            .marks
-            .iter()
-            .any(|span| span.mark == ui::widget::Mark::Bold),
-        "the edit keeps the bold run"
-    );
-    assert_eq!(edited.history.last().unwrap().text, "plain bold");
-}
+tilo_test_env::scenario! {
+    fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route;
 
-#[test]
-fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
-    let (mut app, mut doc) = app_with_doc();
-    crate::testing::write_draft(&mut app, &mut doc, "Ae\u{301}👋B");
-    app.sync_composers(&doc);
-    render_frame(&mut app, 1280.0, 720.0);
-    assert!(app.composer_main.perform_action(
-        &ui::a11y::Action::SetSelection {
-            anchor: 4,
-            focus: 2,
-        },
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-
-    let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
-    let composer = root
-        .children
-        .iter()
-        .find(|node| node.action_target.as_deref() == Some("chat.composer"))
-        .expect("the main composer remains semantic");
-    assert_eq!(
-        composer.text_selection,
-        Some(ui::a11y::AccessibleTextSelection {
-            anchor: 9,
-            focus: 4
-        }),
-        "the semantic bridge must retain the anchor at the right edge while Shift+Left moves focus backward"
-    );
-}
-
-#[test]
-fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
-    // Phase: reaction_via_the_emoji_picker_round_trips_through_the_ui.
+    phase reaction_via_the_emoji_picker_round_trips_through_the_ui;
     {
         let (mut app, mut doc) = app_with_doc();
         let reacted = |app: &ChatApp| {
@@ -311,7 +320,7 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
         assert!(!reacted(&app), "picking it again removed the reaction");
     }
 
-    // Phase: reaction_chips_have_unique_toggle_semantics_and_use_the_shared_action_route.
+    phase reaction_chips_have_unique_toggle_semantics_and_use_the_shared_action_route;
     {
         let (mut app, mut doc) = app_with_doc();
         render_frame(&mut app, 1280.0, 720.0);
@@ -377,109 +386,116 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
 
 // --- members roster (right flap "members" half was unimplemented) ---
 
-#[test]
-fn the_roster_shows_who_the_workspace_says_is_here_not_who_once_introduced_themselves() {
-    use crate::model::Presence;
-    let (mut app, _) = app_with_doc();
-    let others: Vec<String> = app
-        .users
-        .iter()
-        .filter(|u| !app.is_me(&u.id) && !u.is_agent)
-        .map(|u| u.id.clone())
-        .collect();
-    assert!(others.len() >= 2, "the sample workspace has other people");
-    for user in &mut app.users {
-        user.status = Presence::Online;
-    }
-    let status = |app: &crate::app::ChatApp, id: &str| {
-        app.roster_rows()
-            .into_iter()
-            .find(|(u, _)| u.id == id)
-            .map(|(u, _)| u.status)
-    };
-    // Without a workspace the record's word stands.
-    assert_eq!(status(&app, &others[1]), Some(Presence::Online));
-    // The workspace knows the first person is here; the second has left.
-    app.workspace_names.insert(others[0].clone(), "Here".into());
-    app.workspace_presence_answers = true;
-    assert_eq!(status(&app, &others[0]), Some(Presence::Online));
-    assert_eq!(
-        status(&app, &others[1]),
-        Some(Presence::Offline),
-        "a visitor who closed the tab is offline"
-    );
-    let mut me = app.users[0].clone();
-    me.id = app.me.id.clone();
-    me.status = Presence::Offline;
-    assert_eq!(app.live_status(&me), Presence::Online, "I am here");
-}
+tilo_test_env::scenario! {
+    /// Who the roster and the voice channel list, and under which names.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn the_roster_and_voice_channel_show_who_the_workspace_says_is_here;
 
-/// A workspace that answers with nobody in it — every visitor closed their tab,
-/// or this is the first one in — reads as empty rather than as everybody who
-/// ever introduced themselves still being online.
-#[test]
-fn a_workspace_whose_answer_names_nobody_marks_everyone_else_offline() {
-    use crate::model::Presence;
-    let (mut app, _) = app_with_doc();
-    let others: Vec<String> = app
-        .users
-        .iter()
-        .filter(|u| !app.is_me(&u.id) && !u.is_agent)
-        .map(|u| u.id.clone())
-        .collect();
-    assert!(!others.is_empty(), "the sample workspace has other people");
-    for user in &mut app.users {
-        user.status = Presence::Online;
-    }
-    // Presence answered, and the answer names nobody but me.
-    app.adopt_workspace(&ui::presence::PresenceCtx::default());
-    for id in &others {
+    phase the_roster_shows_who_the_workspace_says_is_here_not_who_once_introduced_themselves;
+    {
+        use crate::model::Presence;
+        let (mut app, _) = app_with_doc();
+        let others: Vec<String> = app
+            .users
+            .iter()
+            .filter(|u| !app.is_me(&u.id) && !u.is_agent)
+            .map(|u| u.id.clone())
+            .collect();
+        assert!(others.len() >= 2, "the sample workspace has other people");
+        for user in &mut app.users {
+            user.status = Presence::Online;
+        }
+        let status = |app: &crate::app::ChatApp, id: &str| {
+            app.roster_rows()
+                .into_iter()
+                .find(|(u, _)| u.id == id)
+                .map(|(u, _)| u.status)
+        };
+        // Without a workspace the record's word stands.
+        assert_eq!(status(&app, &others[1]), Some(Presence::Online));
+        // The workspace knows the first person is here; the second has left.
+        app.workspace_names.insert(others[0].clone(), "Here".into());
+        app.workspace_presence_answers = true;
+        assert_eq!(status(&app, &others[0]), Some(Presence::Online));
         assert_eq!(
-            app.live_status(&app.user(id).expect("the workspace lists them").clone()),
-            Presence::Offline,
-            "{id} left, so the roster must not call them online"
+            status(&app, &others[1]),
+            Some(Presence::Offline),
+            "a visitor who closed the tab is offline"
         );
+        let mut me = app.users[0].clone();
+        me.id = app.me.id.clone();
+        me.status = Presence::Offline;
+        assert_eq!(app.live_status(&me), Presence::Online, "I am here");
     }
-    let mut me = app.users[0].clone();
-    me.id = app.me.id.clone();
-    me.status = Presence::Offline;
-    assert_eq!(app.live_status(&me), Presence::Online, "I am here");
-}
 
-/// An agent a person admitted is named with them, as presence knows whom it acts for: "Helper
-/// for Ada" to everyone else, "Helper for you" to Ada.
-#[test]
-fn an_agent_is_named_with_the_person_it_acts_for() {
-    use ui::permissions::UserId;
-    let (mut app, _) = app_with_doc();
-    let mut presence = ui::presence::PresenceCtx::default();
-    presence.set_display_name(UserId("ada".into()), "Ada");
-    presence.set_display_name(UserId("agent:helper".into()), "Helper");
-    presence.set_acting_for(UserId("agent:helper".into()), Some(UserId("ada".into())));
-    app.adopt_workspace(&presence);
-    assert_eq!(app.user_name("agent:helper"), "Helper for Ada");
-    app.me.id = "ada".into();
-    assert_eq!(app.user_name("agent:helper"), "Helper for you");
-}
+    phase a_workspace_whose_answer_names_nobody_marks_everyone_else_offline;
+    // A workspace that answers with nobody in it — every visitor closed their tab,
+    // or this is the first one in — reads as empty rather than as everybody who
+    // ever introduced themselves still being online.
+    {
+        use crate::model::Presence;
+        let (mut app, _) = app_with_doc();
+        let others: Vec<String> = app
+            .users
+            .iter()
+            .filter(|u| !app.is_me(&u.id) && !u.is_agent)
+            .map(|u| u.id.clone())
+            .collect();
+        assert!(!others.is_empty(), "the sample workspace has other people");
+        for user in &mut app.users {
+            user.status = Presence::Online;
+        }
+        // Presence answered, and the answer names nobody but me.
+        app.adopt_workspace(&ui::presence::PresenceCtx::default());
+        for id in &others {
+            assert_eq!(
+                app.live_status(&app.user(id).expect("the workspace lists them").clone()),
+                Presence::Offline,
+                "{id} left, so the roster must not call them online"
+            );
+        }
+        let mut me = app.users[0].clone();
+        me.id = app.me.id.clone();
+        me.status = Presence::Offline;
+        assert_eq!(app.live_status(&me), Presence::Online, "I am here");
+    }
 
-#[test]
-fn the_workspaces_call_places_its_people_in_the_voice_channel_by_person() {
-    let (mut app, _) = app_with_doc();
-    let people = app.users.len();
-    service_streams(&mut app, "c_huddle", 3);
-    assert_eq!(
-        app.roster_rows().len(),
-        people,
-        "the roster lists the workspace's people"
-    );
-    let in_call = app.voice_people("c_huddle");
-    for index in 1..=3 {
-        let person = format!("{index:064x}");
-        assert!(in_call.contains(&person), "{person} is in the call");
-        assert!(
-            !app.user_name(&person).contains(&person),
-            "nobody is shown by their raw id"
+    phase an_agent_is_named_with_the_person_it_acts_for;
+    // An agent a person admitted is named with them, as presence knows whom it acts for: "Helper
+    // for Ada" to everyone else, "Helper for you" to Ada.
+    {
+        use ui::permissions::UserId;
+        let (mut app, _) = app_with_doc();
+        let mut presence = ui::presence::PresenceCtx::default();
+        presence.set_display_name(UserId("ada".into()), "Ada");
+        presence.set_display_name(UserId("agent:helper".into()), "Helper");
+        presence.set_acting_for(UserId("agent:helper".into()), Some(UserId("ada".into())));
+        app.adopt_workspace(&presence);
+        assert_eq!(app.user_name("agent:helper"), "Helper for Ada");
+        app.me.id = "ada".into();
+        assert_eq!(app.user_name("agent:helper"), "Helper for you");
+    }
+
+    phase the_workspaces_call_places_its_people_in_the_voice_channel_by_person;
+    {
+        let (mut app, _) = app_with_doc();
+        let people = app.users.len();
+        service_streams(&mut app, "c_huddle", 3);
+        assert_eq!(
+            app.roster_rows().len(),
+            people,
+            "the roster lists the workspace's people"
         );
+        let in_call = app.voice_people("c_huddle");
+        for index in 1..=3 {
+            let person = format!("{index:064x}");
+            assert!(in_call.contains(&person), "{person} is in the call");
+            assert!(
+                !app.user_name(&person).contains(&person),
+                "nobody is shown by their raw id"
+            );
+        }
     }
 }
 
@@ -526,67 +542,14 @@ fn present(app: &mut ChatApp) {
     app.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
 }
 
-#[test]
-fn headless_host_worker_sync_never_authors_read_receipts() {
-    // A hosted/headless worker only pumps the model (update + sync) and
-    // never lays out: read state belongs to the person's device, so the
-    // host identity must not append "Mark channel read" changes.
-    let (mut app, mut doc) = app_with_doc();
-    let channel = app.active_channel.clone();
-    crate::testing::apply_part_at(
-        &mut doc,
-        "u_aria",
-        (crate::demo::NOW + 1) * 1000,
-        crate::testing::post(&channel, "arrived while nobody was looking", None),
-    )
-    .unwrap();
-    let watermark = crate::testing::read_mark(&doc, &channel, &app.me.id);
-    let heads = doc.get_heads();
-    for _ in 0..5 {
-        assert!(!app.update(&doc.chat, &automerge::ROOT));
-        app.sync(&doc.chat, &automerge::ROOT);
-    }
-    assert_eq!(
-        crate::testing::read_mark(&doc, &channel, &app.me.id),
-        watermark,
-        "an unpresented worker must not advance the read watermark"
-    );
-    assert_eq!(
-        doc.get_heads(),
-        heads,
-        "an unpresented worker authored a change"
-    );
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn reading_position_drives_unread_state_and_the_return_to_latest_control;
 
-    // The same instance once presented to a person marks the channel in
-    // view read on the next model frame, without waiting for input.
-    present(&mut app);
-    assert!(
-        app.needs_animation_frame(),
-        "first presentation requests a model frame"
-    );
-    assert!(
-        app.update(&doc.chat, &automerge::ROOT),
-        "first presentation re-runs sync"
-    );
-    app.sync(&doc.chat, &automerge::ROOT);
-    app.land(&mut doc);
-    assert!(
-        crate::testing::read_mark(&doc, &channel, &app.me.id) > watermark,
-        "the presented channel is marked read"
-    );
-    assert!(
-        !app.update(&doc.chat, &automerge::ROOT),
-        "the extra frame is one-shot"
-    );
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one labelled phase per original scenario, each with its own fresh fixture"
-)]
-fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
-    // Phase: opening_a_channel_marks_it_read_and_clears_unread.
+    phase opening_a_channel_marks_it_read_and_clears_unread;
     {
         let (mut app, mut doc) = app_with_doc();
         // Simulate having viewed the initial channel (as each sync frame does).
@@ -626,7 +589,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         );
     }
 
-    // Phase: a_message_in_another_channel_shows_as_unread.
+    phase a_message_in_another_channel_shows_as_unread;
     {
         let (mut app, mut doc) = app_with_doc();
         app.mark_active_read(&doc);
@@ -655,7 +618,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         );
     }
 
-    // Phase: mouse_wheel_scrolls_the_timeline.
+    phase mouse_wheel_scrolls_the_timeline;
     {
         let (mut app, mut doc) = app_with_doc();
         assert_eq!(app.scroll, 0.0);
@@ -666,7 +629,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         assert!(app.scroll < up, "scrolling the other way moves it back");
     }
 
-    // Phase: reading_history_does_not_mark_new_messages_read_until_returning_to_latest.
+    phase reading_history_does_not_mark_new_messages_read_until_returning_to_latest;
     {
         let (mut app, mut doc) = app_with_doc();
         app.mark_active_read(&doc);
@@ -705,7 +668,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         );
     }
 
-    // Phase: history_scroll_exposes_an_accessible_return_to_latest_control.
+    phase history_scroll_exposes_an_accessible_return_to_latest_control;
     {
         let (mut app, mut doc) = app_with_doc();
         // The ephemeral fixture opens a thread by default. On a compact
@@ -747,7 +710,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         assert!(app.timeline_at_end);
     }
 
-    // Phase: wheeling_back_to_the_latest_message_asks_for_its_read_receipt_once.
+    phase wheeling_back_to_the_latest_message_asks_for_its_read_receipt_once;
     {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::CloseThread, &mut ui::widget::Edits::lend(&mut doc));
@@ -792,7 +755,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         );
     }
 
-    // Phase: ctrl_end_returns_to_the_live_edge_without_stealing_plain_end.
+    phase ctrl_end_returns_to_the_live_edge_without_stealing_plain_end;
     {
         let (mut app, mut doc) = app_with_doc();
         app.scroll = -180.0;
@@ -847,126 +810,192 @@ fn an_empty_category_is_listed_only_to_whoever_keeps_the_layout() {
     );
 }
 
-#[test]
-fn the_sidebar_names_the_channels_and_categories_of_a_chat_kept_flat() {
-    let mut doc = crate::testing::chat_kept_flat(5);
-    assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
-    let mut app = ChatApp::new_ephemeral();
-    app.reload(&doc);
-    let sections = app.sidebar_sections();
-    let titled: Vec<(&str, &str)> = sections
-        .iter()
-        .filter(|section| !section.title.is_empty())
-        .map(|section| (section.id.as_str(), section.title.as_str()))
-        .collect();
-    assert_eq!(
-        titled,
-        [
-            ("category:cat_home_text", "Channels"),
-            ("category:cat_home_voice", "Voice")
-        ]
-    );
-    let names: Vec<&str> = sections
-        .iter()
-        .flat_map(|section| &section.items)
-        .map(|item| item.label.as_str())
-        .collect();
-    for shown in ["general", "Lounge"] {
-        assert!(names.contains(&shown), "{shown} in {names:?}");
-    }
-}
+tilo_test_env::scenario! {
+    /// A chat an older record kept, as the window shows it once migrated.
+    fn a_chat_an_older_record_kept_shows_its_channels_messages_and_authors;
 
-#[test]
-fn messages_the_chat_record_kept_show_in_their_channel_and_none_is_unread() {
-    let mut doc = crate::testing::chat_with_kept_messages(2, false);
-    assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
-    let mut app = ChatApp::new_ephemeral();
-    app.active_channel = "c_general".into();
-    app.reload(&doc);
-    let shown: Vec<(&str, &str, &str)> = app
-        .messages
-        .iter()
-        .map(|message| {
-            (
-                message.id.as_str(),
-                message.author.as_str(),
-                message.text.as_str(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        shown,
-        [("m1", "ada", "first"), ("m2", crate::testing::BO, "second")]
-    );
-    assert_eq!(
-        app.channel("c_random").map(|channel| channel.unread),
-        Some(0)
-    );
-    assert!(
-        app.search_messages
+    phase the_sidebar_names_the_channels_and_categories_of_a_chat_kept_flat;
+    {
+        let mut doc = crate::testing::chat_kept_flat(5);
+        assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
+        let mut app = ChatApp::new_ephemeral();
+        app.reload(&doc);
+        let sections = app.sidebar_sections();
+        let titled: Vec<(&str, &str)> = sections
             .iter()
-            .any(|message| message.text == "elsewhere")
-    );
-}
-
-#[test]
-fn a_kept_message_names_its_author_as_the_record_kept_them_and_never_by_their_id() {
-    let mut doc = crate::testing::chat_with_kept_messages(1, true);
-    assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
-    let mut app = ChatApp::new_ephemeral();
-    app.active_channel = "c_general".into();
-    app.reload(&doc);
-    assert_eq!(app.user_name("ada"), "Ada Lovelace");
-    let unnamed = app.user_name(crate::testing::BO);
-    assert_eq!(unnamed, crate::identity::unnamed_label(crate::testing::BO));
-    assert!(!unnamed.contains(crate::testing::BO));
-    let held = app.held_messages();
-    let said: Vec<&str> = held
-        .iter()
-        .map(|(_, message)| message.text.as_str())
-        .collect();
-    assert!(
-        said.contains(&"first") && said.contains(&"second"),
-        "{said:?}"
-    );
-}
-
-#[test]
-fn a_read_receipt_the_door_refused_is_not_sent_again_until_the_person_reads_further() {
-    let (mut app, mut doc) = app_with_doc();
-    // Only receipts are submitted here.
-    app.dispatched.borrow_mut().clear();
-    let marks = |app: &ChatApp| app.dispatched.borrow().len();
-    app.mark_active_read(&doc);
-    assert_eq!(marks(&app), 1, "the channel in view is marked read");
-    // The door does not offer this person the receipt (a viewer): it says so
-    // and nothing lands.
-    app.dispatch
-        .as_ref()
-        .expect("the window has its dispatcher")
-        .refused()
-        .set(Some(ui::framework::Refused {
-            action: crate::resource::Chat::MARK_READ.id.into(),
-            item: None,
-            reason: "That didn't run. It isn't available to you here.".into(),
-            by_workspace: false,
-        }));
-    for _ in 0..3 {
-        app.mark_active_read(&doc);
+            .filter(|section| !section.title.is_empty())
+            .map(|section| (section.id.as_str(), section.title.as_str()))
+            .collect();
+        assert_eq!(
+            titled,
+            [
+                ("category:cat_home_text", "Channels"),
+                ("category:cat_home_voice", "Voice")
+            ]
+        );
+        let names: Vec<&str> = sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .map(|item| item.label.as_str())
+            .collect();
+        for shown in ["general", "Lounge"] {
+            assert!(names.contains(&shown), "{shown} in {names:?}");
+        }
     }
-    assert_eq!(
-        marks(&app),
-        1,
-        "a refused receipt is not sent again on every frame"
-    );
-    crate::testing::apply_part_at(
-        &mut doc,
-        "u_aria",
-        (crate::demo::NOW + 1) * 1000,
-        crate::testing::post(&app.active_channel, "Something new to read", None),
-    )
-    .unwrap();
-    app.reload(&doc);
-    app.mark_active_read(&doc);
-    assert_eq!(marks(&app), 2, "reading further asks the door again");
+
+    phase messages_the_chat_record_kept_show_in_their_channel_and_none_is_unread;
+    {
+        let mut doc = crate::testing::chat_with_kept_messages(2, false);
+        assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
+        let mut app = ChatApp::new_ephemeral();
+        app.active_channel = "c_general".into();
+        app.reload(&doc);
+        let shown: Vec<(&str, &str, &str)> = app
+            .messages
+            .iter()
+            .map(|message| {
+                (
+                    message.id.as_str(),
+                    message.author.as_str(),
+                    message.text.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [("m1", "ada", "first"), ("m2", crate::testing::BO, "second")]
+        );
+        assert_eq!(
+            app.channel("c_random").map(|channel| channel.unread),
+            Some(0)
+        );
+        assert!(
+            app.search_messages
+                .iter()
+                .any(|message| message.text == "elsewhere")
+        );
+    }
+
+    phase a_kept_message_names_its_author_as_the_record_kept_them_and_never_by_their_id;
+    {
+        let mut doc = crate::testing::chat_with_kept_messages(1, true);
+        assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
+        let mut app = ChatApp::new_ephemeral();
+        app.active_channel = "c_general".into();
+        app.reload(&doc);
+        assert_eq!(app.user_name("ada"), "Ada Lovelace");
+        let unnamed = app.user_name(crate::testing::BO);
+        assert_eq!(unnamed, crate::identity::unnamed_label(crate::testing::BO));
+        assert!(!unnamed.contains(crate::testing::BO));
+        let held = app.held_messages();
+        let said: Vec<&str> = held
+            .iter()
+            .map(|(_, message)| message.text.as_str())
+            .collect();
+        assert!(
+            said.contains(&"first") && said.contains(&"second"),
+            "{said:?}"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    /// When a read receipt is written.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_read_receipt_is_written_by_a_reader_and_not_resent_once_refused;
+
+    phase headless_host_worker_sync_never_authors_read_receipts;
+    {
+        // A hosted/headless worker only pumps the model (update + sync) and
+        // never lays out: read state belongs to the person's device, so the
+        // host identity must not append "Mark channel read" changes.
+        let (mut app, mut doc) = app_with_doc();
+        let channel = app.active_channel.clone();
+        crate::testing::apply_part_at(
+            &mut doc,
+            "u_aria",
+            (crate::demo::NOW + 1) * 1000,
+            crate::testing::post(&channel, "arrived while nobody was looking", None),
+        )
+        .unwrap();
+        let watermark = crate::testing::read_mark(&doc, &channel, &app.me.id);
+        let heads = doc.get_heads();
+        for _ in 0..5 {
+            assert!(!app.update(&doc.chat, &automerge::ROOT));
+            app.sync(&doc.chat, &automerge::ROOT);
+        }
+        assert_eq!(
+            crate::testing::read_mark(&doc, &channel, &app.me.id),
+            watermark,
+            "an unpresented worker must not advance the read watermark"
+        );
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "an unpresented worker authored a change"
+        );
+
+        // The same instance once presented to a person marks the channel in
+        // view read on the next model frame, without waiting for input.
+        present(&mut app);
+        assert!(
+            app.needs_animation_frame(),
+            "first presentation requests a model frame"
+        );
+        assert!(
+            app.update(&doc.chat, &automerge::ROOT),
+            "first presentation re-runs sync"
+        );
+        app.sync(&doc.chat, &automerge::ROOT);
+        app.land(&mut doc);
+        assert!(
+            crate::testing::read_mark(&doc, &channel, &app.me.id) > watermark,
+            "the presented channel is marked read"
+        );
+        assert!(
+            !app.update(&doc.chat, &automerge::ROOT),
+            "the extra frame is one-shot"
+        );
+    }
+
+    phase a_read_receipt_the_door_refused_is_not_sent_again_until_the_person_reads_further;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        // Only receipts are submitted here.
+        app.dispatched.borrow_mut().clear();
+        let marks = |app: &ChatApp| app.dispatched.borrow().len();
+        app.mark_active_read(&doc);
+        assert_eq!(marks(&app), 1, "the channel in view is marked read");
+        // The door does not offer this person the receipt (a viewer): it says so
+        // and nothing lands.
+        app.dispatch
+            .as_ref()
+            .expect("the window has its dispatcher")
+            .refused()
+            .set(Some(ui::framework::Refused {
+                action: crate::resource::Chat::MARK_READ.id.into(),
+                item: None,
+                reason: "That didn't run. It isn't available to you here.".into(),
+                by_workspace: false,
+            }));
+        for _ in 0..3 {
+            app.mark_active_read(&doc);
+        }
+        assert_eq!(
+            marks(&app),
+            1,
+            "a refused receipt is not sent again on every frame"
+        );
+        crate::testing::apply_part_at(
+            &mut doc,
+            "u_aria",
+            (crate::demo::NOW + 1) * 1000,
+            crate::testing::post(&app.active_channel, "Something new to read", None),
+        )
+        .unwrap();
+        app.reload(&doc);
+        app.mark_active_read(&doc);
+        assert_eq!(marks(&app), 2, "reading further asks the door again");
+    }
 }

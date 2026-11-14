@@ -191,7 +191,7 @@ impl PresenceCtx {
         // Software the workspace's roster does not know (a Shortcut's run) is
         // named by the run it works in.
         if interaction.actor.kind.acts_for_someone()
-            && !self.names.contains_key(&user)
+            && super::stored(&self.names, &user).is_none()
             && let Some(group) = &interaction.group
         {
             self.set_display_name(user.clone(), group.label.clone());
@@ -1213,52 +1213,6 @@ mod tests {
         }
     }
 
-    /// An agent or a Shortcut acting for a person is named with that person
-    /// and gets the software mark and marker a person's activity never does.
-    #[test]
-    fn an_actor_is_named_with_the_person_it_acts_for() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        presence.set_display_name(UserId("ada".into()), "Ada");
-        presence.set_display_name(UserId("quill".into()), "Claude");
-        let mut agent = interaction(30, 1, InteractionPhase::Applying);
-        agent.actor.for_person = Some("ada".into());
-        assert!(presence.apply_interaction_at(agent.clone(), at).unwrap());
-        let claude = UserId("quill".into());
-        assert_eq!(presence.display_name(&claude), "Claude for Ada");
-        assert_eq!(presence.acting_for(&claude), Some(&UserId("ada".into())));
-        assert!(presence.is_agent(&claude));
-        assert_eq!(presence.agent_marker_interactions(at), vec![agent]);
-
-        let mut shortcut = interaction(31, 1, InteractionPhase::Applying);
-        shortcut.actor = InteractionActor::new("shortcut:morning", ActorKind::Shortcut);
-        shortcut.group = Some(tilo_actions::WorkGroup {
-            id: "run-7".into(),
-            label: "Morning".into(),
-            kind: "shortcut".into(),
-            title: None,
-        });
-        assert!(presence.apply_interaction_at(shortcut, at).unwrap());
-        let morning = UserId("shortcut:morning".into());
-        assert_eq!(
-            presence.display_name(&morning),
-            "Morning · Shortcut",
-            "named by its run when the roster does not know it"
-        );
-        assert_eq!(presence.agent_marker_interactions(at).len(), 2);
-
-        let mut person = interaction(32, 1, InteractionPhase::Applying);
-        person.actor = InteractionActor::new("bob", ActorKind::Person);
-        presence.set_display_name(UserId("bob".into()), "Bob");
-        assert!(presence.apply_interaction_at(person, at).unwrap());
-        assert_eq!(presence.display_name(&UserId("bob".into())), "Bob");
-        assert_eq!(
-            presence.agent_marker_interactions(at).len(),
-            2,
-            "a collaborator's own action keeps the plain outline"
-        );
-    }
-
     fn paint_marker(
         presence: &mut PresenceCtx,
         interaction: &SemanticInteraction,
@@ -1284,775 +1238,510 @@ mod tests {
         )
     }
 
-    /// An agent writing in a document wears one tag, at its caret: the caret's tag names it, and
-    /// the marker of the action it is taking there adds no second tag, whatever words that tag
-    /// would have said.
-    #[test]
-    fn an_agent_writing_at_its_caret_wears_one_tag() {
-        let at = crate::time::now();
-        let theme = Theme::default();
-        let mut presence = PresenceCtx::empty();
-        presence.set_display_name(UserId("quill".into()), "Claude Code");
-        let agent = interaction(40, 1, InteractionPhase::Applying);
-        presence.apply_interaction_at(agent.clone(), at).unwrap();
-        let claude = UserId("quill".into());
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        presence.draw_peer_caret_labeled_in(
-            &mut scene,
-            &theme,
-            &mut text,
-            Affine::IDENTITY,
-            &claude,
-            "Claude Code · Agent",
-            super::super::LabeledCaret::new(Rect::new(200.0, 300.0, 202.0, 318.0)),
-        );
-        let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let marker = paint_marker(&mut presence, &agent, locus, viewport, "note", at, &theme)
-            .expect("the action is marked");
-        assert!(
-            marker.bounds.is_zero_area(),
-            "and no pointer of its own beside the caret: {:?}",
-            marker.bounds
-        );
-        let tags: Vec<String> = presence
-            .caret_tags()
-            .into_iter()
-            .filter(|tag| tag.user == claude)
-            .map(|tag| tag.label)
-            .collect();
-        assert_eq!(
-            tags,
-            vec!["Claude Code · Agent".to_owned()],
-            "one tag, at its caret"
-        );
-    }
-
-    /// A tag of the agent's standing elsewhere — at the caret in the field it just wrote — says
-    /// nothing about the control it would press next: that place keeps its own tag, or a person
-    /// seeing the step has only a thin outline to go by.
-    #[test]
-    fn a_tag_elsewhere_leaves_the_would_click_place_labelled() {
-        let at = crate::time::now();
-        let theme = Theme::default();
-        let mut presence = PresenceCtx::empty();
-        presence.set_display_name(UserId("quill".into()), "Claude Code");
-        let agent = interaction(41, 1, InteractionPhase::Applying);
-        presence.apply_interaction_at(agent.clone(), at).unwrap();
-        let claude = UserId("quill".into());
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        // Its caret stands in another field, far from the button it acts on.
-        presence.draw_peer_caret_labeled_in(
-            &mut scene,
-            &theme,
-            &mut text,
-            Affine::IDENTITY,
-            &claude,
-            "Claude Code · Agent",
-            super::super::LabeledCaret::new(Rect::new(600.0, 80.0, 602.0, 98.0)),
-        );
-        let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let marker = paint_marker(&mut presence, &agent, locus, viewport, "note", at, &theme)
-            .expect("the action is marked");
-        assert!(
-            !marker.bounds.is_zero_area(),
-            "the place it would press wears its tag: {:?}",
-            marker.bounds
-        );
-        let tags: Vec<String> = presence
-            .caret_tags()
-            .into_iter()
-            .filter(|tag| tag.user == claude)
-            .map(|tag| tag.label)
-            .collect();
-        assert_eq!(tags.len(), 2, "one at its caret, one where it would press");
-    }
-
-    /// The place an agent would press is washed in its colour, so it reads at a glance: light at
-    /// rest, brighter the moment its step was taken, and steady for a person who asked for less
-    /// motion.
-    #[test]
-    fn the_place_an_agent_would_press_is_washed_in_its_colour() {
-        let at = crate::time::now();
-        let theme = Theme::dark();
-        let at_rest = crate::presence::render::OUTLINE_FILL;
-        assert!((locus_tint(None, at, &theme) - at_rest).abs() < f32::EPSILON);
-        assert!(
-            (locus_tint(Some(at), at, &theme) - (at_rest + LOCUS_FLASH)).abs() < 0.01,
-            "it flashes as the step is taken"
-        );
-        let settled = at
-            + crate::motion::Attention::FLASH.settle_time(
-                crate::motion::Direction::Exit,
-                theme.motion(),
-                crate::tokens::MotionSource::Pointer,
-            );
-        assert!(
-            (locus_tint(Some(at), settled, &theme) - at_rest).abs() < 0.01,
-            "the flash is over, the wash stays"
-        );
-        let still = theme.with_reduce_motion(true);
-        assert!(
-            (locus_tint(Some(at), at, &still) - at_rest).abs() < f32::EPSILON,
-            "no flash for a person who asked for less motion"
-        );
-    }
-
-    #[test]
-    fn interaction_updates_are_monotonic_bound_to_their_actor_and_expire() {
-        // phase: invocation_updates_are_monotonic_and_terminal_is_final
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            assert!(
-                presence
-                    .apply_interaction_at(interaction(1, 2, InteractionPhase::Applying), at)
-                    .unwrap()
-            );
-            assert!(
-                !presence
-                    .apply_interaction_at(interaction(1, 1, InteractionPhase::Locating), at)
-                    .unwrap()
-            );
-            assert!(
-                presence
-                    .apply_interaction_at(interaction(1, 3, InteractionPhase::Committed), at)
-                    .unwrap()
-            );
-            assert!(
-                !presence
-                    .apply_interaction_at(interaction(1, 4, InteractionPhase::Applying), at)
-                    .unwrap()
-            );
-            assert_eq!(
-                presence.interactions_for_resource("file:draft", at)[0].sequence,
-                3
-            );
-        }
-        // phase: an_invocation_cannot_substitute_its_actor_or_target
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            presence
-                .apply_interaction_at(interaction(2, 1, InteractionPhase::Applying), at)
-                .unwrap();
-            let mut forged = interaction(2, 2, InteractionPhase::Committed);
-            forged.actor.id = "someone-else".into();
-            assert!(!presence.apply_interaction_at(forged, at).unwrap());
-            let mut moved = interaction(2, 2, InteractionPhase::Committed);
-            moved.resource.id = "file:secret".into();
-            assert!(!presence.apply_interaction_at(moved, at).unwrap());
-        }
-        // phase: active_and_terminal_states_expire_on_their_own_dwell
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            presence
-                .apply_interaction_at(interaction(3, 1, InteractionPhase::Applying), at)
-                .unwrap();
-            assert!(presence.has_visible_interactions(at + ACTIVE_INTERACTION_EXPIRY));
-            assert!(!presence.has_visible_interactions(
-                at + ACTIVE_INTERACTION_EXPIRY + Duration::from_millis(1)
-            ));
-
-            let mut terminal_presence = PresenceCtx::empty();
-            let committed = interaction(4, 1, InteractionPhase::Committed);
-            terminal_presence
-                .apply_interaction_at(committed.clone(), at)
-                .unwrap();
-            terminal_presence.note_drawn(committed.invocation, at);
-            assert!(terminal_presence.has_visible_interactions(at + TERMINAL_INTERACTION_DWELL));
-            assert!(
-                terminal_presence
-                    .prune_interactions(at + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1))
-            );
-            assert!(!terminal_presence.has_visible_interactions(
-                at + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
-            ));
-        }
-    }
-
-    #[test]
-    fn interactions_paint_only_their_addressed_surface() {
-        // phase: workspace_fanout_only_paints_the_addressed_app_surface
-        {
-            let at = crate::time::now();
-            let update = interaction(10, 1, InteractionPhase::Applying);
-            let key = crate::presence::PresenceKey::resource(
-                "org.tilo.Writer",
-                &update.resource.id,
-                &update.resource.kind,
-            );
-            let payload = crate::collaboration::PresencePayload::Interaction(Box::new(update));
-
-            let mut files = PresenceCtx::empty();
-            files.set_surface_id("org.tilo.Files");
-            files.apply_remote_presence("broker-agent".into(), key.clone(), payload.clone());
-            assert!(!files.has_visible_interactions(at));
-
-            let mut writer = PresenceCtx::empty();
-            writer.set_surface_id("org.tilo.Writer");
-            writer.apply_remote_presence("broker-agent".into(), key, payload);
-            assert!(writer.has_visible_interactions(crate::time::now()));
-        }
-        // phase: applying_an_agent_interaction_does_not_synthesize_input_presence
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            presence
-                .apply_interaction_at(interaction(9, 1, InteractionPhase::Applying), at)
-                .unwrap();
-            assert!(presence.pointers.is_empty());
-            assert!(presence.carets.is_empty());
-            assert!(presence.selections.is_empty());
-            assert!(presence.remote_cursors.is_empty());
-        }
-        // phase: fallback_cards_do_not_overlap_and_fold_excess_activity
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            for id in 1..=5 {
-                let mut someone = interaction(id, 1, InteractionPhase::Applying);
-                someone.actor.id = format!("agent-{id}");
-                presence.apply_interaction_at(someone, at).unwrap();
-            }
-            let cards = presence.interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at);
-            assert_eq!(cards.len(), 3);
-            assert_eq!(cards[2].additional, 2);
-            for pair in cards.windows(2) {
-                assert!(pair[0].rect.intersect(pair[1].rect).is_zero_area());
-            }
-        }
-    }
-
-    #[test]
-    fn agent_action_markers_are_truthful_bounded_paint_only_motion() {
-        let at = crate::time::now();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let locus = Rect::new(560.0, 280.0, 640.0, 320.0);
-        let theme = Theme::light();
-        let mut presence = PresenceCtx::empty();
-        let locating = interaction(40, 1, InteractionPhase::Locating);
-        presence.apply_interaction_at(locating.clone(), at).unwrap();
-
-        // phase: a_first_action_enters_from_the_nearest_viewport_edge
-        let first = paint_marker(
-            &mut presence,
-            &locating,
-            locus,
-            viewport,
-            "writer:1",
-            at,
-            &theme,
-        )
-        .unwrap();
-        assert_eq!(first.tip, Point::new(viewport.x1, 300.0));
-        assert_eq!(first.target, Point::new(600.0, 300.0));
-        assert!(locus.contains(first.target));
-        assert_eq!(first.approach, 0.0);
-        assert!(first.pulse > 0.99);
-
-        // phase: a_phase_update_keeps_the_invocations_first_observation
-        let applying_at = at + Duration::from_millis(300);
-        let applying = interaction(40, 2, InteractionPhase::Applying);
-        presence
-            .apply_interaction_at(applying.clone(), applying_at)
-            .unwrap();
-        let advanced = paint_marker(
-            &mut presence,
-            &applying,
-            locus,
-            viewport,
-            "writer:1",
-            applying_at,
-            &theme,
-        )
-        .unwrap();
-        assert!(
-            advanced.approach > 0.9 && advanced.approach < 1.0,
-            "still on its way from the first observation, not restarted: {}",
-            advanced.approach
-        );
-        assert!(advanced.tip.x < first.tip.x);
-        assert!(
-            advanced.pulse < first.pulse,
-            "a phase in the same burst carries on the one flash, never restarts it: {}",
-            advanced.pulse
-        );
-
-        // phase: motion_stops_after_the_bounded_approach_and_pulse
-        assert!(presence.interaction_animation_demand(applying_at, &theme));
-        let settled_at = at + Duration::from_millis(611);
-        let settled = paint_marker(
-            &mut presence,
-            &applying,
-            locus,
-            viewport,
-            "writer:1",
-            settled_at,
-            &theme,
-        )
-        .unwrap();
-        assert_eq!(settled.tip, Point::new(600.0, 300.0));
-        assert_eq!(settled.approach, 1.0);
-        assert_eq!(settled.pulse, 0.0);
-        assert!(!presence.interaction_animation_demand(settled_at, &theme));
-        assert!(presence.pointers.is_empty());
-        assert!(presence.carets.is_empty());
-        assert!(presence.selections.is_empty());
-        assert!(presence.remote_cursors.is_empty());
-    }
-
-    #[test]
-    fn agent_action_markers_choose_one_newest_action_and_preserve_recent_continuity() {
-        let at = crate::time::now();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let first_locus = Rect::new(80.0, 80.0, 160.0, 120.0);
-        let second_locus = Rect::new(400.0, 300.0, 500.0, 360.0);
-        let theme = Theme::light();
-        let mut presence = PresenceCtx::empty();
-        let first = interaction(50, 1, InteractionPhase::Applying);
-        presence.apply_interaction_at(first.clone(), at).unwrap();
-        let first_settled_at = at + Duration::from_millis(611);
-        let first_frame = paint_marker(
-            &mut presence,
-            &first,
-            first_locus,
-            viewport,
-            "writer:1",
-            first_settled_at,
-            &theme,
-        )
-        .unwrap();
-
-        let second_at = at + Duration::from_millis(700);
-        let second = interaction(51, 1, InteractionPhase::Locating);
-        presence
-            .apply_interaction_at(second.clone(), second_at)
-            .unwrap();
-        assert_eq!(
-            presence.agent_marker_interactions(second_at),
-            vec![second.clone()]
-        );
-        assert!(
-            paint_marker(
-                &mut presence,
-                &first,
-                first_locus,
-                viewport,
-                "writer:1",
-                second_at,
-                &theme,
-            )
-            .is_none(),
-            "an older invocation cannot paint a second marker for the actor"
-        );
-        let second_frame = paint_marker(
-            &mut presence,
-            &second,
-            second_locus,
-            viewport,
-            "writer:1",
-            second_at,
-            &theme,
-        )
-        .unwrap();
-        assert_eq!(second_frame.tip, first_frame.tip);
-
-        // phase: reduced_motion_snaps_to_the_locus_without_pulsing
-        let reduced = theme.clone().with_reduce_motion(true);
-        let reduced_frame = paint_marker(
-            &mut presence,
-            &second,
-            second_locus,
-            viewport,
-            "writer:1",
-            second_at,
-            &reduced,
-        )
-        .unwrap();
-        assert_eq!(reduced_frame.tip, Point::new(450.0, 330.0));
-        assert_eq!(reduced_frame.pulse, 0.0);
-        assert!(!presence.interaction_animation_demand(second_at, &reduced));
-    }
-
-    #[test]
-    fn agent_marker_continuity_never_crosses_surface_viewport_or_long_travel_bounds() {
-        let at = crate::time::now();
-        let theme = Theme::light();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-
-        // phase: the_same_invocation_reenters_from_an_edge_on_another_surface
-        {
-            let mut presence = PresenceCtx::empty();
-            let action = interaction(70, 1, InteractionPhase::Locating);
-            presence.apply_interaction_at(action.clone(), at).unwrap();
-            let _ = paint_marker(
-                &mut presence,
-                &action,
-                Rect::new(80.0, 280.0, 160.0, 320.0),
-                viewport,
-                "writer:1",
-                at,
-                &theme,
-            )
-            .unwrap();
-            let moved = paint_marker(
-                &mut presence,
-                &action,
-                Rect::new(640.0, 280.0, 720.0, 320.0),
-                viewport,
-                "writer:2",
-                at + Duration::from_millis(100),
-                &theme,
-            )
-            .unwrap();
-            assert!(
-                moved.tip.x > moved.target.x,
-                "a cross-surface marker must approach from that surface's nearest edge"
-            );
-            assert!(presence.pointers.is_empty());
-        }
-
-        // phase: a_compact_resize_discards_an_origin_outside_the_new_viewport
-        {
-            let mut presence = PresenceCtx::empty();
-            let action = interaction(71, 1, InteractionPhase::Locating);
-            presence.apply_interaction_at(action.clone(), at).unwrap();
-            let _ = paint_marker(
-                &mut presence,
-                &action,
-                Rect::new(640.0, 280.0, 720.0, 320.0),
-                viewport,
-                "writer:1",
-                at,
-                &theme,
-            )
-            .unwrap();
-            let compact = Rect::new(0.0, 0.0, 320.0, 240.0);
-            let resized = paint_marker(
-                &mut presence,
-                &action,
-                Rect::new(40.0, 90.0, 100.0, 130.0),
-                compact,
-                "writer:1",
-                at + Duration::from_millis(100),
-                &theme,
-            )
-            .unwrap();
-            assert!(
-                resized.tip.x < resized.target.x,
-                "the compact viewport supplies a fresh nearest-edge origin"
-            );
-            assert!(point_in_rect(compact, resized.tip));
-            assert!(presence.carets.is_empty());
-            assert!(presence.selections.is_empty());
-        }
-
-        // phase: a_recent_but_far_new_invocation_uses_the_nearest_edge
-        {
-            let mut presence = PresenceCtx::empty();
-            let first = interaction(72, 1, InteractionPhase::Applying);
-            presence.apply_interaction_at(first.clone(), at).unwrap();
-            let _ = paint_marker(
-                &mut presence,
-                &first,
-                Rect::new(60.0, 80.0, 140.0, 120.0),
-                viewport,
-                "writer:1",
-                at + Duration::from_millis(611),
-                &theme,
-            )
-            .unwrap();
-            let next_at = at + Duration::from_millis(700);
-            let next = interaction(73, 1, InteractionPhase::Locating);
-            presence
-                .apply_interaction_at(next.clone(), next_at)
-                .unwrap();
-            let far = paint_marker(
-                &mut presence,
-                &next,
-                Rect::new(660.0, 430.0, 740.0, 470.0),
-                viewport,
-                "writer:1",
-                next_at,
-                &theme,
-            )
-            .unwrap();
-            assert_eq!(far.tip, Point::new(viewport.x1, far.target.y));
-            assert!(presence.remote_cursors.is_empty());
-        }
-    }
-
     fn on(target: &str, invocation: u128, phase: InteractionPhase) -> SemanticInteraction {
         let mut action = interaction(invocation, 1, phase);
         action.resource.id = target.into();
         action
     }
 
-    /// A fast agent never strobes: a burst on one target is one action at
-    /// rest there, a new target waits until the cursor rested on the last
-    /// one, and only the newest of the targets that waited is gone to.
-    #[test]
-    fn a_fast_agents_actions_are_paced_so_a_person_can_follow_them() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
+    tilo_test_env::scenario! {
+        fn agent_action_markers_move_truthfully_and_at_a_followable_pace;
 
-        // phase: a_burst_on_one_target_is_one_action
-        for n in 0..8u128 {
-            let when = at + Duration::from_millis(40 * n as u64);
+        phase agent_action_markers_are_truthful_bounded_paint_only_motion;
+        {
+            let at = crate::time::now();
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let locus = Rect::new(560.0, 280.0, 640.0, 320.0);
+            let theme = Theme::light();
+            let mut presence = PresenceCtx::empty();
+            let locating = interaction(40, 1, InteractionPhase::Locating);
+            presence.apply_interaction_at(locating.clone(), at).unwrap();
+
+            // phase: a_first_action_enters_from_the_nearest_viewport_edge
+            let first = paint_marker(
+                &mut presence,
+                &locating,
+                locus,
+                viewport,
+                "writer:1",
+                at,
+                &theme,
+            )
+            .unwrap();
+            assert_eq!(first.tip, Point::new(viewport.x1, 300.0));
+            assert_eq!(first.target, Point::new(600.0, 300.0));
+            assert!(locus.contains(first.target));
+            assert_eq!(first.approach, 0.0);
+            assert!(first.pulse > 0.99);
+
+            // phase: a_phase_update_keeps_the_invocations_first_observation
+            let applying_at = at + Duration::from_millis(300);
+            let applying = interaction(40, 2, InteractionPhase::Applying);
             presence
-                .apply_interaction_at(on("file:draft", 100 + n, InteractionPhase::Committed), when)
+                .apply_interaction_at(applying.clone(), applying_at)
                 .unwrap();
+            let advanced = paint_marker(
+                &mut presence,
+                &applying,
+                locus,
+                viewport,
+                "writer:1",
+                applying_at,
+                &theme,
+            )
+            .unwrap();
+            assert!(
+                advanced.approach > 0.9 && advanced.approach < 1.0,
+                "still on its way from the first observation, not restarted: {}",
+                advanced.approach
+            );
+            assert!(advanced.tip.x < first.tip.x);
+            assert!(
+                advanced.pulse < first.pulse,
+                "a phase in the same burst carries on the one flash, never restarts it: {}",
+                advanced.pulse
+            );
+
+            // phase: motion_stops_after_the_bounded_approach_and_pulse
+            assert!(presence.interaction_animation_demand(applying_at, &theme));
+            let settled_at = at + Duration::from_millis(611);
+            let settled = paint_marker(
+                &mut presence,
+                &applying,
+                locus,
+                viewport,
+                "writer:1",
+                settled_at,
+                &theme,
+            )
+            .unwrap();
+            assert_eq!(settled.tip, Point::new(600.0, 300.0));
+            assert_eq!(settled.approach, 1.0);
+            assert_eq!(settled.pulse, 0.0);
+            assert!(!presence.interaction_animation_demand(settled_at, &theme));
+            assert!(presence.pointers.is_empty());
+            assert!(presence.carets.is_empty());
+            assert!(presence.selections.is_empty());
+            assert!(presence.remote_cursors.is_empty());
         }
-        let burst_end = at + Duration::from_millis(280);
-        let shown = presence.visible_interactions(burst_end);
-        assert_eq!(shown.len(), 1, "eight edits read as one: {shown:?}");
-        assert_eq!(shown[0].invocation, InvocationId(Uuid::from_u128(107)));
-        let pulses: std::collections::HashSet<_> = presence
-            .interactions
-            .values()
-            .filter_map(|entry| entry.pulsed_at)
-            .collect();
-        assert_eq!(pulses, [at].into(), "the burst flashes the cursor once");
 
-        // phase: a_new_target_waits_for_the_rest_on_the_last_one
-        let elsewhere_at = at + Duration::from_millis(300);
-        presence
-            .apply_interaction_at(
-                on("file:notes", 200, InteractionPhase::Applying),
-                elsewhere_at,
+        phase agent_action_markers_choose_one_newest_action_and_preserve_recent_continuity;
+        {
+            let at = crate::time::now();
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let first_locus = Rect::new(80.0, 80.0, 160.0, 120.0);
+            let second_locus = Rect::new(400.0, 300.0, 500.0, 360.0);
+            let theme = Theme::light();
+            let mut presence = PresenceCtx::empty();
+            let first = interaction(50, 1, InteractionPhase::Applying);
+            presence.apply_interaction_at(first.clone(), at).unwrap();
+            let first_settled_at = at + Duration::from_millis(611);
+            let first_frame = paint_marker(
+                &mut presence,
+                &first,
+                first_locus,
+                viewport,
+                "writer:1",
+                first_settled_at,
+                &theme,
             )
             .unwrap();
-        let waiting = presence.agent_marker_interactions(elsewhere_at);
-        assert_eq!(waiting.len(), 1);
-        assert_eq!(
-            waiting[0].resource.id, "file:draft",
-            "the cursor stays where it rests"
-        );
-        // The rest counts from the burst's last action there.
-        let rest_ends = burst_end + AGENT_TARGET_DWELL;
-        assert_eq!(
-            presence.interaction_next_wake_deadline(elsewhere_at),
-            Some(rest_ends),
-            "the frame that moves it on is asked for"
-        );
 
-        // phase: only_the_newest_waiting_target_is_gone_to
-        presence
-            .apply_interaction_at(
-                on("file:todo", 201, InteractionPhase::Applying),
-                elsewhere_at + Duration::from_millis(10),
-            )
-            .unwrap();
-        presence
-            .apply_interaction_at(
-                {
-                    let mut later = on("file:notes", 200, InteractionPhase::Committed);
-                    later.sequence = 2;
-                    later
-                },
-                rest_ends,
-            )
-            .unwrap();
-        let moved = presence.agent_marker_interactions(rest_ends);
-        assert_eq!(moved.len(), 1);
-        assert_eq!(
-            moved[0].resource.id, "file:todo",
-            "the skipped target never shows"
-        );
-        assert!(
+            let second_at = at + Duration::from_millis(700);
+            let second = interaction(51, 1, InteractionPhase::Locating);
             presence
-                .visible_interactions(rest_ends)
-                .iter()
-                .all(|shown| shown.resource.id != "file:notes"),
-            "a later phase of a skipped action does not bring it back"
-        );
-    }
-
-    #[test]
-    fn resolved_interactions_are_excluded_from_fallback_and_expire_on_a_precise_wake() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        let resolved = interaction(60, 1, InteractionPhase::Applying);
-        let mut unresolved = interaction(61, 1, InteractionPhase::Applying);
-        unresolved.actor.id = "another-agent".into();
-        presence.apply_interaction_at(resolved.clone(), at).unwrap();
-        presence
-            .apply_interaction_at(unresolved.clone(), at)
+                .apply_interaction_at(second.clone(), second_at)
+                .unwrap();
+            assert_eq!(
+                presence.agent_marker_interactions(second_at),
+                vec![second.clone()]
+            );
+            assert!(
+                paint_marker(
+                    &mut presence,
+                    &first,
+                    first_locus,
+                    viewport,
+                    "writer:1",
+                    second_at,
+                    &theme,
+                )
+                .is_none(),
+                "an older invocation cannot paint a second marker for the actor"
+            );
+            let second_frame = paint_marker(
+                &mut presence,
+                &second,
+                second_locus,
+                viewport,
+                "writer:1",
+                second_at,
+                &theme,
+            )
             .unwrap();
-        let remaining = presence.visible_interactions_excluding(at, &[resolved.invocation]);
-        assert_eq!(remaining, vec![unresolved]);
-        let cards = presence.interaction_card_layout_excluding(
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            at,
-            &[resolved.invocation],
-        );
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].invocation, InvocationId(Uuid::from_u128(61)));
-        assert_eq!(
-            presence.interaction_next_wake_deadline(at),
-            Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON)
-        );
-    }
+            assert_eq!(second_frame.tip, first_frame.tip);
 
-    /// A card reads as its actor: one colour from its face through its border
-    /// and bar, and the words presence says beside that face.
-    #[test]
-    fn a_card_wears_its_actors_colour_and_words() {
-        let theme = Theme::light();
-        let actor = Color::from_rgb8(0x12, 0x9f, 0x8a);
-        for phase in [
-            InteractionPhase::Locating,
-            InteractionPhase::Applying,
-            InteractionPhase::Progress {
-                label: "halfway".into(),
-                completed: Some(1),
-                total: Some(2),
-            },
-            InteractionPhase::Committed,
-        ] {
-            assert_eq!(phase_color(&phase, &theme, actor), actor, "{phase:?}");
+            // phase: reduced_motion_snaps_to_the_locus_without_pulsing
+            let reduced = theme.clone().with_reduce_motion(true);
+            let reduced_frame = paint_marker(
+                &mut presence,
+                &second,
+                second_locus,
+                viewport,
+                "writer:1",
+                second_at,
+                &reduced,
+            )
+            .unwrap();
+            assert_eq!(reduced_frame.tip, Point::new(450.0, 330.0));
+            assert_eq!(reduced_frame.pulse, 0.0);
+            assert!(!presence.interaction_animation_demand(second_at, &reduced));
         }
-        let mut made = interaction(90, 1, InteractionPhase::Committed);
-        made.action = InteractionAction {
-            id: "create".into(),
-            label: "Create an issue".into(),
-            app: Some(ActionApp {
-                id: "so.tilo.tasks".into(),
-                label: "Tasks".into(),
-            }),
-            step: Some(StepKind::Create),
-            creates: None,
-        };
-        made.resource.label = "Issues".into();
-        assert_eq!(card_detail(&made, 0), "Creating in Issues");
-        assert_eq!(card_detail(&made, 2), "Creating in Issues · +2 more");
-    }
 
-    /// A step says the kind of work its action declares, else the part of the
-    /// record it acts on: never an English verb read out of the label.
-    #[test]
-    fn a_step_reads_as_the_kind_of_work_it_declares() {
-        let mut writing = interaction(91, 1, InteractionPhase::Applying);
-        writing.resource.label = "Trip plan".into();
-        writing.anchor = InteractionAnchor::Text {
-            region: "text".into(),
-            ranges: Vec::new(),
-        };
-        assert_eq!(step_line(&writing), "Writing in Trip plan");
+        phase agent_marker_continuity_never_crosses_surface_viewport_or_long_travel_bounds;
+        {
+            let at = crate::time::now();
+            let theme = Theme::light();
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
 
-        let mut deleting = interaction(92, 1, InteractionPhase::Applying);
-        deleting.action.step = Some(StepKind::Delete);
-        assert_eq!(step_line(&deleting), "Deleting Draft.md");
+            // phase: the_same_invocation_reenters_from_an_edge_on_another_surface
+            {
+                let mut presence = PresenceCtx::empty();
+                let action = interaction(70, 1, InteractionPhase::Locating);
+                presence.apply_interaction_at(action.clone(), at).unwrap();
+                let _ = paint_marker(
+                    &mut presence,
+                    &action,
+                    Rect::new(80.0, 280.0, 160.0, 320.0),
+                    viewport,
+                    "writer:1",
+                    at,
+                    &theme,
+                )
+                .unwrap();
+                let moved = paint_marker(
+                    &mut presence,
+                    &action,
+                    Rect::new(640.0, 280.0, 720.0, 320.0),
+                    viewport,
+                    "writer:2",
+                    at + Duration::from_millis(100),
+                    &theme,
+                )
+                .unwrap();
+                assert!(
+                    moved.tip.x > moved.target.x,
+                    "a cross-surface marker must approach from that surface's nearest edge"
+                );
+                assert!(presence.pointers.is_empty());
+            }
 
-        let unclassified = interaction(93, 1, InteractionPhase::Applying);
-        assert_eq!(
-            step_line(&unclassified),
-            "Working in Draft.md",
-            "a step whose declaration names no kind says where it works"
-        );
-    }
+            // phase: a_compact_resize_discards_an_origin_outside_the_new_viewport
+            {
+                let mut presence = PresenceCtx::empty();
+                let action = interaction(71, 1, InteractionPhase::Locating);
+                presence.apply_interaction_at(action.clone(), at).unwrap();
+                let _ = paint_marker(
+                    &mut presence,
+                    &action,
+                    Rect::new(640.0, 280.0, 720.0, 320.0),
+                    viewport,
+                    "writer:1",
+                    at,
+                    &theme,
+                )
+                .unwrap();
+                let compact = Rect::new(0.0, 0.0, 320.0, 240.0);
+                let resized = paint_marker(
+                    &mut presence,
+                    &action,
+                    Rect::new(40.0, 90.0, 100.0, 130.0),
+                    compact,
+                    "writer:1",
+                    at + Duration::from_millis(100),
+                    &theme,
+                )
+                .unwrap();
+                assert!(
+                    resized.tip.x < resized.target.x,
+                    "the compact viewport supplies a fresh nearest-edge origin"
+                );
+                assert!(point_in_rect(compact, resized.tip));
+                assert!(presence.carets.is_empty());
+                assert!(presence.selections.is_empty());
+            }
 
-    /// On a page that draws a frame every few seconds, a write that arrived between two frames is
-    /// still shown whole by the next, and fades over its own time from there: its mark counts from
-    /// the first frame that drew it, not from its arrival. One no frame ever draws still goes.
-    #[test]
-    fn a_write_counts_its_mark_from_the_first_frame_that_drew_it() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        let written = interaction(80, 1, InteractionPhase::Committed);
-        presence.apply_interaction_at(written.clone(), at).unwrap();
-        // The page draws its next frame long after the write's whole mark would have faded.
-        let drawn = at + TERMINAL_INTERACTION_DWELL + Duration::from_secs(2);
-        assert!(
-            presence.has_visible_interactions(drawn),
-            "not drawn yet: it waits"
-        );
-        assert_eq!(
-            presence.interaction_fade(written.invocation, drawn),
-            Some(1.0)
-        );
-        presence.note_drawn(written.invocation, drawn);
-        let later = drawn + Duration::from_millis(500);
-        let fade = presence.interaction_fade(written.invocation, later);
-        assert!(
-            fade.is_some_and(|alpha| alpha > 0.0 && alpha < 1.0),
-            "it fades from the frame that drew it: {fade:?}"
-        );
-        assert!(presence.has_visible_interactions(drawn + TERMINAL_INTERACTION_DWELL));
-        assert!(!presence.has_visible_interactions(
-            drawn + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
-        ));
-        // Drawn again, it keeps its first frame's count.
-        presence.note_drawn(written.invocation, later);
-        assert!(!presence.has_visible_interactions(
-            drawn + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
-        ));
+            // phase: a_recent_but_far_new_invocation_uses_the_nearest_edge
+            {
+                let mut presence = PresenceCtx::empty();
+                let first = interaction(72, 1, InteractionPhase::Applying);
+                presence.apply_interaction_at(first.clone(), at).unwrap();
+                let _ = paint_marker(
+                    &mut presence,
+                    &first,
+                    Rect::new(60.0, 80.0, 140.0, 120.0),
+                    viewport,
+                    "writer:1",
+                    at + Duration::from_millis(611),
+                    &theme,
+                )
+                .unwrap();
+                let next_at = at + Duration::from_millis(700);
+                let next = interaction(73, 1, InteractionPhase::Locating);
+                presence
+                    .apply_interaction_at(next.clone(), next_at)
+                    .unwrap();
+                let far = paint_marker(
+                    &mut presence,
+                    &next,
+                    Rect::new(660.0, 430.0, 740.0, 470.0),
+                    viewport,
+                    "writer:1",
+                    next_at,
+                    &theme,
+                )
+                .unwrap();
+                assert_eq!(far.tip, Point::new(viewport.x1, far.target.y));
+                assert!(presence.remote_cursors.is_empty());
+            }
+        }
 
-        let mut unseen = PresenceCtx::empty();
-        unseen.apply_interaction_at(written.clone(), at).unwrap();
-        assert!(unseen.has_visible_interactions(at + ACTIVE_INTERACTION_EXPIRY));
-        assert!(
-            !unseen.has_visible_interactions(
-                at + ACTIVE_INTERACTION_EXPIRY + Duration::from_millis(1)
-            )
-        );
-    }
+        phase a_fast_agents_actions_are_paced_so_a_person_can_follow_them;
+        // A fast agent never strobes: a burst on one target is one action at
+        // rest there, a new target waits until the cursor rested on the last
+        // one, and only the newest of the targets that waited is gone to.
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
 
-    /// The text a write put on a note dims in steps: a host that woke only when
-    /// the dwell ended showed it whole and then gone, so the text mark asks for
-    /// each step of its fade. A place that is not text has no mark to fade and
-    /// asks for none.
-    #[test]
-    fn a_text_write_asks_for_each_step_of_its_fade() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        let mut written = interaction(90, 1, InteractionPhase::Applying);
-        written.anchor = tilo_actions::InteractionAnchor::Text {
-            region: "body".into(),
-            ranges: vec![tilo_actions::InteractionTextRange {
-                block: "b1".into(),
-                start: 33,
-                end: 66,
-            }],
-        };
-        presence.apply_interaction_at(written.clone(), at).unwrap();
-        presence.note_drawn(written.invocation, at);
-        // The mark dims in ten steps over its life.
-        let step = Duration::from_millis(250);
-        assert_eq!(
-            presence.interaction_next_wake_deadline(at),
-            Some(at + step),
-            "the frame that dims it once is asked for"
-        );
-        let later = at + step * 4;
-        assert_eq!(
-            presence.interaction_next_wake_deadline(later),
-            Some(at + step * 5),
-            "and each step after it"
-        );
-        assert!(
+            // phase: a_burst_on_one_target_is_one_action
+            for n in 0..8u128 {
+                let when = at + Duration::from_millis(40 * n as u64);
+                presence
+                    .apply_interaction_at(on("file:draft", 100 + n, InteractionPhase::Committed), when)
+                    .unwrap();
+            }
+            let burst_end = at + Duration::from_millis(280);
+            let shown = presence.visible_interactions(burst_end);
+            assert_eq!(shown.len(), 1, "eight edits read as one: {shown:?}");
+            assert_eq!(shown[0].invocation, InvocationId(Uuid::from_u128(107)));
+            let pulses: std::collections::HashSet<_> = presence
+                .interactions
+                .values()
+                .filter_map(|entry| entry.pulsed_at)
+                .collect();
+            assert_eq!(pulses, [at].into(), "the burst flashes the cursor once");
+
+            // phase: a_new_target_waits_for_the_rest_on_the_last_one
+            let elsewhere_at = at + Duration::from_millis(300);
             presence
-                .interaction_fade(written.invocation, later)
-                .is_some_and(|alpha| alpha > 0.0 && alpha < 1.0),
-            "the text is still dimming at that step"
-        );
+                .apply_interaction_at(
+                    on("file:notes", 200, InteractionPhase::Applying),
+                    elsewhere_at,
+                )
+                .unwrap();
+            let waiting = presence.agent_marker_interactions(elsewhere_at);
+            assert_eq!(waiting.len(), 1);
+            assert_eq!(
+                waiting[0].resource.id, "file:draft",
+                "the cursor stays where it rests"
+            );
+            // The rest counts from the burst's last action there.
+            let rest_ends = burst_end + AGENT_TARGET_DWELL;
+            assert_eq!(
+                presence.interaction_next_wake_deadline(elsewhere_at),
+                Some(rest_ends),
+                "the frame that moves it on is asked for"
+            );
 
-        // A row it names, not text it wrote: its dwell's end is the only wake
-        // there is.
-        let mut elsewhere = PresenceCtx::empty();
-        let listed = interaction(91, 1, InteractionPhase::Applying);
-        elsewhere.apply_interaction_at(listed.clone(), at).unwrap();
-        elsewhere.note_drawn(listed.invocation, at);
-        assert_eq!(
-            elsewhere.interaction_next_wake_deadline(later),
-            Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON),
-            "nothing fades, so nothing wakes before the dwell ends"
-        );
+            // phase: only_the_newest_waiting_target_is_gone_to
+            presence
+                .apply_interaction_at(
+                    on("file:todo", 201, InteractionPhase::Applying),
+                    elsewhere_at + Duration::from_millis(10),
+                )
+                .unwrap();
+            presence
+                .apply_interaction_at(
+                    {
+                        let mut later = on("file:notes", 200, InteractionPhase::Committed);
+                        later.sequence = 2;
+                        later
+                    },
+                    rest_ends,
+                )
+                .unwrap();
+            let moved = presence.agent_marker_interactions(rest_ends);
+            assert_eq!(moved.len(), 1);
+            assert_eq!(
+                moved[0].resource.id, "file:todo",
+                "the skipped target never shows"
+            );
+            assert!(
+                presence
+                    .visible_interactions(rest_ends)
+                    .iter()
+                    .all(|shown| shown.resource.id != "file:notes"),
+                "a later phase of a skipped action does not bring it back"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn interactions_update_expire_and_paint_only_where_addressed;
+
+        phase interaction_updates_are_monotonic_bound_to_their_actor_and_expire;
+        {
+            // phase: invocation_updates_are_monotonic_and_terminal_is_final
+            {
+                let at = crate::time::now();
+                let mut presence = PresenceCtx::empty();
+                assert!(
+                    presence
+                        .apply_interaction_at(interaction(1, 2, InteractionPhase::Applying), at)
+                        .unwrap()
+                );
+                assert!(
+                    !presence
+                        .apply_interaction_at(interaction(1, 1, InteractionPhase::Locating), at)
+                        .unwrap()
+                );
+                assert!(
+                    presence
+                        .apply_interaction_at(interaction(1, 3, InteractionPhase::Committed), at)
+                        .unwrap()
+                );
+                assert!(
+                    !presence
+                        .apply_interaction_at(interaction(1, 4, InteractionPhase::Applying), at)
+                        .unwrap()
+                );
+                assert_eq!(
+                    presence.interactions_for_resource("file:draft", at)[0].sequence,
+                    3
+                );
+            }
+            // phase: an_invocation_cannot_substitute_its_actor_or_target
+            {
+                let at = crate::time::now();
+                let mut presence = PresenceCtx::empty();
+                presence
+                    .apply_interaction_at(interaction(2, 1, InteractionPhase::Applying), at)
+                    .unwrap();
+                let mut forged = interaction(2, 2, InteractionPhase::Committed);
+                forged.actor.id = "someone-else".into();
+                assert!(!presence.apply_interaction_at(forged, at).unwrap());
+                let mut moved = interaction(2, 2, InteractionPhase::Committed);
+                moved.resource.id = "file:secret".into();
+                assert!(!presence.apply_interaction_at(moved, at).unwrap());
+            }
+            // phase: active_and_terminal_states_expire_on_their_own_dwell
+            {
+                let at = crate::time::now();
+                let mut presence = PresenceCtx::empty();
+                presence
+                    .apply_interaction_at(interaction(3, 1, InteractionPhase::Applying), at)
+                    .unwrap();
+                assert!(presence.has_visible_interactions(at + ACTIVE_INTERACTION_EXPIRY));
+                assert!(!presence.has_visible_interactions(
+                    at + ACTIVE_INTERACTION_EXPIRY + Duration::from_millis(1)
+                ));
+
+                let mut terminal_presence = PresenceCtx::empty();
+                let committed = interaction(4, 1, InteractionPhase::Committed);
+                terminal_presence
+                    .apply_interaction_at(committed.clone(), at)
+                    .unwrap();
+                terminal_presence.note_drawn(committed.invocation, at);
+                assert!(terminal_presence.has_visible_interactions(at + TERMINAL_INTERACTION_DWELL));
+                assert!(
+                    terminal_presence
+                        .prune_interactions(at + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1))
+                );
+                assert!(!terminal_presence.has_visible_interactions(
+                    at + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
+                ));
+            }
+        }
+
+        phase interactions_paint_only_their_addressed_surface;
+        {
+            // phase: workspace_fanout_only_paints_the_addressed_app_surface
+            {
+                let at = crate::time::now();
+                let update = interaction(10, 1, InteractionPhase::Applying);
+                let key = crate::presence::PresenceKey::resource(
+                    "org.tilo.Writer",
+                    &update.resource.id,
+                    &update.resource.kind,
+                );
+                let payload = crate::collaboration::PresencePayload::Interaction(Box::new(update));
+
+                let mut files = PresenceCtx::empty();
+                files.set_surface_id("org.tilo.Files");
+                files.apply_remote_presence("broker-agent".into(), key.clone(), payload.clone());
+                assert!(!files.has_visible_interactions(at));
+
+                let mut writer = PresenceCtx::empty();
+                writer.set_surface_id("org.tilo.Writer");
+                writer.apply_remote_presence("broker-agent".into(), key, payload);
+                assert!(writer.has_visible_interactions(crate::time::now()));
+            }
+            // phase: applying_an_agent_interaction_does_not_synthesize_input_presence
+            {
+                let at = crate::time::now();
+                let mut presence = PresenceCtx::empty();
+                presence
+                    .apply_interaction_at(interaction(9, 1, InteractionPhase::Applying), at)
+                    .unwrap();
+                assert!(presence.pointers.is_empty());
+                assert!(presence.carets.is_empty());
+                assert!(presence.selections.is_empty());
+                assert!(presence.remote_cursors.is_empty());
+            }
+            // phase: fallback_cards_do_not_overlap_and_fold_excess_activity
+            {
+                let at = crate::time::now();
+                let mut presence = PresenceCtx::empty();
+                for id in 1..=5 {
+                    let mut someone = interaction(id, 1, InteractionPhase::Applying);
+                    someone.actor.id = format!("agent-{id}");
+                    presence.apply_interaction_at(someone, at).unwrap();
+                }
+                let cards = presence.interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at);
+                assert_eq!(cards.len(), 3);
+                assert_eq!(cards[2].additional, 2);
+                for pair in cards.windows(2) {
+                    assert!(pair[0].rect.intersect(pair[1].rect).is_zero_area());
+                }
+            }
+        }
+
+        phase resolved_interactions_are_excluded_from_fallback_and_expire_on_a_precise_wake;
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
+            let resolved = interaction(60, 1, InteractionPhase::Applying);
+            let mut unresolved = interaction(61, 1, InteractionPhase::Applying);
+            unresolved.actor.id = "another-agent".into();
+            presence.apply_interaction_at(resolved.clone(), at).unwrap();
+            presence
+                .apply_interaction_at(unresolved.clone(), at)
+                .unwrap();
+            let remaining = presence.visible_interactions_excluding(at, &[resolved.invocation]);
+            assert_eq!(remaining, vec![unresolved]);
+            let cards = presence.interaction_card_layout_excluding(
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+                at,
+                &[resolved.invocation],
+            );
+            assert_eq!(cards.len(), 1);
+            assert_eq!(cards[0].invocation, InvocationId(Uuid::from_u128(61)));
+            assert_eq!(
+                presence.interaction_next_wake_deadline(at),
+                Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON)
+            );
+        }
     }
 
     #[test]
@@ -2081,190 +1770,517 @@ mod tests {
         );
     }
 
-    #[test]
-    fn interactions_are_labelled_and_narrated_as_actions() {
-        // The exact-control badge names the action and lifecycle first, so
-        // elision does not leave only an actor with an ambiguous "Applying".
+    tilo_test_env::scenario! {
+        fn a_write_marks_its_place_from_its_first_frame_and_fades;
+
+        phase a_write_counts_its_mark_from_the_first_frame_that_drew_it;
+        // On a page that draws a frame every few seconds, a write that arrived between two frames is
+        // still shown whole by the next, and fades over its own time from there: its mark counts from
+        // the first frame that drew it, not from its arrival. One no frame ever draws still goes.
         {
+            let at = crate::time::now();
             let mut presence = PresenceCtx::empty();
-            presence
-                .names
-                .insert(UserId("quill".into()), "Release Notes Agent".into());
-            assert_eq!(
-                presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
-                "Release Notes Agent: Working in Draft.md"
+            let written = interaction(80, 1, InteractionPhase::Committed);
+            presence.apply_interaction_at(written.clone(), at).unwrap();
+            // The page draws its next frame long after the write's whole mark would have faded.
+            let drawn = at + TERMINAL_INTERACTION_DWELL + Duration::from_secs(2);
+            assert!(
+                presence.has_visible_interactions(drawn),
+                "not drawn yet: it waits"
             );
-            presence.names.clear();
             assert_eq!(
-                presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
-                "Agent: Working in Draft.md"
+                presence.interaction_fade(written.invocation, drawn),
+                Some(1.0)
             );
-        }
-        // phase: agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id
-        {
-            let user = UserId("agent:opaque-runtime-id".into());
-            let mut presence = PresenceCtx::empty();
-            assert_eq!(actor_label(&presence, &user, true), "Agent");
-            presence.names.insert(user.clone(), "Quill".into());
-            assert_eq!(actor_label(&presence, &user, true), "Quill · Agent");
-            assert_eq!(actor_label(&presence, &user, false), "Quill");
-        }
-        // A roster that knows a participant only by its key hands that key
-        // back as its name; the card names the kind of participant instead.
-        {
-            let key = "a4b05b334073f7dc3c31652f1b0143be8b7f5e0c2d9a1f6b3e4c5d6a7b8c9d0e";
-            let user = UserId(key.into());
-            let mut presence = PresenceCtx::empty();
-            presence.set_display_name(user.clone(), key);
-            assert_eq!(actor_label(&presence, &user, true), "Agent");
-            assert_eq!(actor_label(&presence, &user, false), "Collaborator");
-            let mut keyed = interaction(12, 1, InteractionPhase::Committed);
-            keyed.actor = InteractionActor::new(key, ActorKind::Person);
-            assert_eq!(
-                presence.interaction_status_label(&keyed),
-                "Collaborator: Working in Draft.md"
+            presence.note_drawn(written.invocation, drawn);
+            let later = drawn + Duration::from_millis(500);
+            let fade = presence.interaction_fade(written.invocation, later);
+            assert!(
+                fade.is_some_and(|alpha| alpha > 0.0 && alpha < 1.0),
+                "it fades from the frame that drew it: {fade:?}"
             );
-            let agent = UserId("quill".into());
-            presence.set_display_name(agent.clone(), "Claude");
-            presence.set_participant_kind(&agent, ParticipantKind::Agent);
-            presence.set_acting_for(&agent, Some(user));
-            assert_eq!(
-                presence.display_name(&agent),
-                "Claude · Agent",
-                "an unnamed person it acts for is left out, not shown as a key"
+            assert!(presence.has_visible_interactions(drawn + TERMINAL_INTERACTION_DWELL));
+            assert!(!presence.has_visible_interactions(
+                drawn + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
+            ));
+            // Drawn again, it keeps its first frame's count.
+            presence.note_drawn(written.invocation, later);
+            assert!(!presence.has_visible_interactions(
+                drawn + TERMINAL_INTERACTION_DWELL + Duration::from_millis(1)
+            ));
+
+            let mut unseen = PresenceCtx::empty();
+            unseen.apply_interaction_at(written.clone(), at).unwrap();
+            assert!(unseen.has_visible_interactions(at + ACTIVE_INTERACTION_EXPIRY));
+            assert!(
+                !unseen.has_visible_interactions(
+                    at + ACTIVE_INTERACTION_EXPIRY + Duration::from_millis(1)
+                )
             );
         }
-        // phase: accessibility_narrates_real_action_state_without_pointer_language
+
+        phase a_text_write_asks_for_each_step_of_its_fade;
+        // The text a write put on a note dims in steps: a host that woke only when
+        // the dwell ended showed it whole and then gone, so the text mark asks for
+        // each step of its fade. A place that is not text has no mark to fade and
+        // asks for none.
         {
+            let at = crate::time::now();
             let mut presence = PresenceCtx::empty();
-            presence
-                .names
-                .insert(UserId("quill".into()), "Quill".into());
-            let applying = interaction(11, 1, InteractionPhase::Applying);
+            let mut written = interaction(90, 1, InteractionPhase::Applying);
+            written.anchor = tilo_actions::InteractionAnchor::Text {
+                region: "body".into(),
+                ranges: vec![tilo_actions::InteractionTextRange {
+                    block: "b1".into(),
+                    start: 33,
+                    end: 66,
+                }],
+            };
+            presence.apply_interaction_at(written.clone(), at).unwrap();
+            presence.note_drawn(written.invocation, at);
+            // The mark dims in ten steps over its life.
+            let step = Duration::from_millis(250);
             assert_eq!(
-                presence.interaction_announcement(&applying).as_deref(),
-                Some("Quill · Agent, Applying: Rename on Draft.md")
+                presence.interaction_next_wake_deadline(at),
+                Some(at + step),
+                "the frame that dims it once is asked for"
+            );
+            let later = at + step * 4;
+            assert_eq!(
+                presence.interaction_next_wake_deadline(later),
+                Some(at + step * 5),
+                "and each step after it"
             );
             assert!(
                 presence
-                    .interaction_announcement(&interaction(11, 0, InteractionPhase::Locating))
-                    .is_none(),
-                "the short locating edge is intentionally not narrated"
+                    .interaction_fade(written.invocation, later)
+                    .is_some_and(|alpha| alpha > 0.0 && alpha < 1.0),
+                "the text is still dimming at that step"
             );
-            let failed = interaction(
-                11,
-                2,
-                InteractionPhase::Failed {
-                    code: Some("conflict".into()),
-                    message: "Draft changed".into(),
-                },
+
+            // A row it names, not text it wrote: its dwell's end is the only wake
+            // there is.
+            let mut elsewhere = PresenceCtx::empty();
+            let listed = interaction(91, 1, InteractionPhase::Applying);
+            elsewhere.apply_interaction_at(listed.clone(), at).unwrap();
+            elsewhere.note_drawn(listed.invocation, at);
+            assert_eq!(
+                elsewhere.interaction_next_wake_deadline(later),
+                Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON),
+                "nothing fades, so nothing wakes before the dwell ends"
             );
-            let announcement = presence
-                .interaction_announcement(&failed)
-                .expect("terminal action announcement");
-            assert!(announcement.contains("Failed: Draft changed"));
-            assert!(!announcement.to_lowercase().contains("cursor"));
-            assert!(!announcement.to_lowercase().contains("click"));
+        }
+
+        phase a_write_shows_when_it_arrives_not_when_the_cursor_finishes_resting;
+        // The characters a write put in a text show when the phase arrives: the
+        // rest on the agent's last target still takes the targets in between off
+        // the rail, but it is the cursor's rest, not the write's.
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
+            // The agent's last action rests on another target.
+            let mut resting = interaction(96, 1, InteractionPhase::Committed);
+            resting.resource.id = "file:todo".into();
+            resting.action.id = "tick".into();
+            presence.apply_interaction_at(resting, at).unwrap();
+
+            let mut write = interaction(97, 1, InteractionPhase::Applying);
+            write.resource.id = "file:notes".into();
+            write.action.id = "replace-range".into();
+            write.anchor = tilo_actions::InteractionAnchor::Text {
+                region: "body".into(),
+                ranges: vec![tilo_actions::InteractionTextRange {
+                    block: "b1".into(),
+                    start: 33,
+                    end: 66,
+                }],
+            };
+            presence.apply_interaction_at(write.clone(), at).unwrap();
+            assert!(
+                presence
+                    .visible_interactions(at)
+                    .iter()
+                    .any(|shown| shown.invocation == write.invocation),
+                "the text it wrote is already there"
+            );
+            assert_eq!(presence.interaction_fade(write.invocation, at), Some(1.0));
+
+            // A place the cursor has to travel to still waits for the rest.
+            let mut card = interaction(98, 1, InteractionPhase::Applying);
+            card.resource.id = "file:third".into();
+            card.action.id = "open".into();
+            presence.apply_interaction_at(card.clone(), at).unwrap();
+            assert!(
+                !presence
+                    .visible_interactions(at)
+                    .iter()
+                    .any(|shown| shown.invocation == card.invocation),
+                "the cursor rests before it moves on"
+            );
+            assert!(
+                presence
+                    .visible_interactions(at + AGENT_TARGET_DWELL)
+                    .iter()
+                    .any(|shown| shown.invocation == card.invocation)
+            );
         }
     }
 
-    /// The characters a write put in a text show when the phase arrives: the
-    /// rest on the agent's last target still takes the targets in between off
-    /// the rail, but it is the cursor's rest, not the write's.
-    #[test]
-    fn a_write_shows_when_it_arrives_not_when_the_cursor_finishes_resting() {
-        let at = crate::time::now();
-        let mut presence = PresenceCtx::empty();
-        // The agent's last action rests on another target.
-        let mut resting = interaction(96, 1, InteractionPhase::Committed);
-        resting.resource.id = "file:todo".into();
-        resting.action.id = "tick".into();
-        presence.apply_interaction_at(resting, at).unwrap();
+    tilo_test_env::scenario! {
+        fn an_actor_and_its_work_are_named_and_coloured;
 
-        let mut write = interaction(97, 1, InteractionPhase::Applying);
-        write.resource.id = "file:notes".into();
-        write.action.id = "replace-range".into();
-        write.anchor = tilo_actions::InteractionAnchor::Text {
-            region: "body".into(),
-            ranges: vec![tilo_actions::InteractionTextRange {
-                block: "b1".into(),
-                start: 33,
-                end: 66,
-            }],
-        };
-        presence.apply_interaction_at(write.clone(), at).unwrap();
-        assert!(
+        phase an_actor_is_named_with_the_person_it_acts_for;
+        // An agent or a Shortcut acting for a person is named with that person
+        // and gets the software mark and marker a person's activity never does.
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
+            presence.set_display_name(UserId("ada".into()), "Ada");
+            presence.set_display_name(UserId("quill".into()), "Claude");
+            let mut agent = interaction(30, 1, InteractionPhase::Applying);
+            agent.actor.for_person = Some("ada".into());
+            assert!(presence.apply_interaction_at(agent.clone(), at).unwrap());
+            let claude = UserId("quill".into());
+            assert_eq!(presence.display_name(&claude), "Claude for Ada");
+            assert_eq!(presence.acting_for(&claude), Some(&UserId("ada".into())));
+            assert!(presence.is_agent(&claude));
+            assert_eq!(presence.agent_marker_interactions(at), vec![agent]);
+
+            let mut shortcut = interaction(31, 1, InteractionPhase::Applying);
+            shortcut.actor = InteractionActor::new("shortcut:morning", ActorKind::Shortcut);
+            shortcut.group = Some(tilo_actions::WorkGroup {
+                id: "run-7".into(),
+                label: "Morning".into(),
+                kind: "shortcut".into(),
+                title: None,
+            });
+            assert!(presence.apply_interaction_at(shortcut, at).unwrap());
+            let morning = UserId("shortcut:morning".into());
+            assert_eq!(
+                presence.display_name(&morning),
+                "Morning · Shortcut",
+                "named by its run when the roster does not know it"
+            );
+            assert_eq!(presence.agent_marker_interactions(at).len(), 2);
+
+            let mut person = interaction(32, 1, InteractionPhase::Applying);
+            person.actor = InteractionActor::new("bob", ActorKind::Person);
+            presence.set_display_name(UserId("bob".into()), "Bob");
+            assert!(presence.apply_interaction_at(person, at).unwrap());
+            assert_eq!(presence.display_name(&UserId("bob".into())), "Bob");
+            assert_eq!(
+                presence.agent_marker_interactions(at).len(),
+                2,
+                "a collaborator's own action keeps the plain outline"
+            );
+        }
+
+        phase an_agent_writing_at_its_caret_wears_one_tag;
+        // An agent writing in a document wears one tag, at its caret: the caret's tag names it, and
+        // the marker of the action it is taking there adds no second tag, whatever words that tag
+        // would have said.
+        {
+            let at = crate::time::now();
+            let theme = Theme::default();
+            let mut presence = PresenceCtx::empty();
+            presence.set_display_name(UserId("quill".into()), "Claude Code");
+            let agent = interaction(40, 1, InteractionPhase::Applying);
+            presence.apply_interaction_at(agent.clone(), at).unwrap();
+            let claude = UserId("quill".into());
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            presence.draw_peer_caret_labeled_in(
+                &mut scene,
+                &theme,
+                &mut text,
+                Affine::IDENTITY,
+                &claude,
+                "Claude Code · Agent",
+                super::super::LabeledCaret::new(Rect::new(200.0, 300.0, 202.0, 318.0)),
+            );
+            let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let marker = paint_marker(&mut presence, &agent, locus, viewport, "note", at, &theme)
+                .expect("the action is marked");
+            assert!(
+                marker.bounds.is_zero_area(),
+                "and no pointer of its own beside the caret: {:?}",
+                marker.bounds
+            );
+            let tags: Vec<String> = presence
+                .caret_tags()
+                .into_iter()
+                .filter(|tag| tag.user == claude)
+                .map(|tag| tag.label)
+                .collect();
+            assert_eq!(
+                tags,
+                vec!["Claude Code · Agent".to_owned()],
+                "one tag, at its caret"
+            );
+        }
+
+        phase a_tag_elsewhere_leaves_the_would_click_place_labelled;
+        // A tag of the agent's standing elsewhere — at the caret in the field it just wrote — says
+        // nothing about the control it would press next: that place keeps its own tag, or a person
+        // seeing the step has only a thin outline to go by.
+        {
+            let at = crate::time::now();
+            let theme = Theme::default();
+            let mut presence = PresenceCtx::empty();
+            presence.set_display_name(UserId("quill".into()), "Claude Code");
+            let agent = interaction(41, 1, InteractionPhase::Applying);
+            presence.apply_interaction_at(agent.clone(), at).unwrap();
+            let claude = UserId("quill".into());
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            // Its caret stands in another field, far from the button it acts on.
+            presence.draw_peer_caret_labeled_in(
+                &mut scene,
+                &theme,
+                &mut text,
+                Affine::IDENTITY,
+                &claude,
+                "Claude Code · Agent",
+                super::super::LabeledCaret::new(Rect::new(600.0, 80.0, 602.0, 98.0)),
+            );
+            let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let marker = paint_marker(&mut presence, &agent, locus, viewport, "note", at, &theme)
+                .expect("the action is marked");
+            assert!(
+                !marker.bounds.is_zero_area(),
+                "the place it would press wears its tag: {:?}",
+                marker.bounds
+            );
+            let tags: Vec<String> = presence
+                .caret_tags()
+                .into_iter()
+                .filter(|tag| tag.user == claude)
+                .map(|tag| tag.label)
+                .collect();
+            assert_eq!(tags.len(), 2, "one at its caret, one where it would press");
+        }
+
+        phase the_place_an_agent_would_press_is_washed_in_its_colour;
+        // The place an agent would press is washed in its colour, so it reads at a glance: light at
+        // rest, brighter the moment its step was taken, and steady for a person who asked for less
+        // motion.
+        {
+            let at = crate::time::now();
+            let theme = Theme::dark();
+            let at_rest = crate::presence::render::OUTLINE_FILL;
+            assert!((locus_tint(None, at, &theme) - at_rest).abs() < f32::EPSILON);
+            assert!(
+                (locus_tint(Some(at), at, &theme) - (at_rest + LOCUS_FLASH)).abs() < 0.01,
+                "it flashes as the step is taken"
+            );
+            let settled = at
+                + crate::motion::Attention::FLASH.settle_time(
+                    crate::motion::Direction::Exit,
+                    theme.motion(),
+                    crate::tokens::MotionSource::Pointer,
+                );
+            assert!(
+                (locus_tint(Some(at), settled, &theme) - at_rest).abs() < 0.01,
+                "the flash is over, the wash stays"
+            );
+            let still = theme.with_reduce_motion(true);
+            assert!(
+                (locus_tint(Some(at), at, &still) - at_rest).abs() < f32::EPSILON,
+                "no flash for a person who asked for less motion"
+            );
+        }
+
+        phase a_card_wears_its_actors_colour_and_words;
+        // A card reads as its actor: one colour from its face through its border
+        // and bar, and the words presence says beside that face.
+        {
+            let theme = Theme::light();
+            let actor = Color::from_rgb8(0x12, 0x9f, 0x8a);
+            for phase in [
+                InteractionPhase::Locating,
+                InteractionPhase::Applying,
+                InteractionPhase::Progress {
+                    label: "halfway".into(),
+                    completed: Some(1),
+                    total: Some(2),
+                },
+                InteractionPhase::Committed,
+            ] {
+                assert_eq!(phase_color(&phase, &theme, actor), actor, "{phase:?}");
+            }
+            let mut made = interaction(90, 1, InteractionPhase::Committed);
+            made.action = InteractionAction {
+                id: "create".into(),
+                label: "Create an issue".into(),
+                app: Some(ActionApp {
+                    id: "so.tilo.tasks".into(),
+                    label: "Tasks".into(),
+                }),
+                step: Some(StepKind::Create),
+                creates: None,
+            };
+            made.resource.label = "Issues".into();
+            assert_eq!(card_detail(&made, 0), "Creating in Issues");
+            assert_eq!(card_detail(&made, 2), "Creating in Issues · +2 more");
+        }
+
+        phase a_step_reads_as_the_kind_of_work_it_declares;
+        // A step says the kind of work its action declares, else the part of the
+        // record it acts on: never an English verb read out of the label.
+        {
+            let mut writing = interaction(91, 1, InteractionPhase::Applying);
+            writing.resource.label = "Trip plan".into();
+            writing.anchor = InteractionAnchor::Text {
+                region: "text".into(),
+                ranges: Vec::new(),
+            };
+            assert_eq!(step_line(&writing), "Writing in Trip plan");
+
+            let mut deleting = interaction(92, 1, InteractionPhase::Applying);
+            deleting.action.step = Some(StepKind::Delete);
+            assert_eq!(step_line(&deleting), "Deleting Draft.md");
+
+            let unclassified = interaction(93, 1, InteractionPhase::Applying);
+            assert_eq!(
+                step_line(&unclassified),
+                "Working in Draft.md",
+                "a step whose declaration names no kind says where it works"
+            );
+        }
+
+        phase interactions_are_labelled_and_narrated_as_actions;
+        {
+            // The exact-control badge names the action and lifecycle first, so
+            // elision does not leave only an actor with an ambiguous "Applying".
+            {
+                let mut presence = PresenceCtx::empty();
+                presence
+                    .names
+                    .insert(UserId("quill".into()), "Release Notes Agent".into());
+                assert_eq!(
+                    presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
+                    "Release Notes Agent: Working in Draft.md"
+                );
+                presence.names.clear();
+                assert_eq!(
+                    presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
+                    "Agent: Working in Draft.md"
+                );
+            }
+            // phase: agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id
+            {
+                let user = UserId("agent:opaque-runtime-id".into());
+                let mut presence = PresenceCtx::empty();
+                assert_eq!(actor_label(&presence, &user, true), "Agent");
+                presence.names.insert(user.clone(), "Quill".into());
+                assert_eq!(actor_label(&presence, &user, true), "Quill · Agent");
+                assert_eq!(actor_label(&presence, &user, false), "Quill");
+            }
+            // A roster that knows a participant only by its key hands that key
+            // back as its name; the card names the kind of participant instead.
+            {
+                let key = "a4b05b334073f7dc3c31652f1b0143be8b7f5e0c2d9a1f6b3e4c5d6a7b8c9d0e";
+                let user = UserId(key.into());
+                let mut presence = PresenceCtx::empty();
+                presence.set_display_name(user.clone(), key);
+                assert_eq!(actor_label(&presence, &user, true), "Agent");
+                assert_eq!(actor_label(&presence, &user, false), "Collaborator");
+                let mut keyed = interaction(12, 1, InteractionPhase::Committed);
+                keyed.actor = InteractionActor::new(key, ActorKind::Person);
+                assert_eq!(
+                    presence.interaction_status_label(&keyed),
+                    "Collaborator: Working in Draft.md"
+                );
+                let agent = UserId("quill".into());
+                presence.set_display_name(agent.clone(), "Claude");
+                presence.set_participant_kind(&agent, ParticipantKind::Agent);
+                presence.set_acting_for(&agent, Some(user));
+                assert_eq!(
+                    presence.display_name(&agent),
+                    "Claude · Agent",
+                    "an unnamed person it acts for is left out, not shown as a key"
+                );
+            }
+            // phase: accessibility_narrates_real_action_state_without_pointer_language
+            {
+                let mut presence = PresenceCtx::empty();
+                presence
+                    .names
+                    .insert(UserId("quill".into()), "Quill".into());
+                let applying = interaction(11, 1, InteractionPhase::Applying);
+                assert_eq!(
+                    presence.interaction_announcement(&applying).as_deref(),
+                    Some("Quill · Agent, Applying: Rename on Draft.md")
+                );
+                assert!(
+                    presence
+                        .interaction_announcement(&interaction(11, 0, InteractionPhase::Locating))
+                        .is_none(),
+                    "the short locating edge is intentionally not narrated"
+                );
+                let failed = interaction(
+                    11,
+                    2,
+                    InteractionPhase::Failed {
+                        code: Some("conflict".into()),
+                        message: "Draft changed".into(),
+                    },
+                );
+                let announcement = presence
+                    .interaction_announcement(&failed)
+                    .expect("terminal action announcement");
+                assert!(announcement.contains("Failed: Draft changed"));
+                assert!(!announcement.to_lowercase().contains("cursor"));
+                assert!(!announcement.to_lowercase().contains("click"));
+            }
+        }
+
+        phase a_text_write_says_it_added_text;
+        // The chip on the characters a write put in a note says what the person
+        // sees happen there, not the name of the place the menu acts on: "Helper:
+        // added text", where "replace text at a place" named replacement even for
+        // an insertion. A write that failed says the step itself, since none of
+        // its text stands.
+        {
+            let mut presence = PresenceCtx::empty();
             presence
-                .visible_interactions(at)
-                .iter()
-                .any(|shown| shown.invocation == write.invocation),
-            "the text it wrote is already there"
-        );
-        assert_eq!(presence.interaction_fade(write.invocation, at), Some(1.0));
-
-        // A place the cursor has to travel to still waits for the rest.
-        let mut card = interaction(98, 1, InteractionPhase::Applying);
-        card.resource.id = "file:third".into();
-        card.action.id = "open".into();
-        presence.apply_interaction_at(card.clone(), at).unwrap();
-        assert!(
-            !presence
-                .visible_interactions(at)
-                .iter()
-                .any(|shown| shown.invocation == card.invocation),
-            "the cursor rests before it moves on"
-        );
-        assert!(
-            presence
-                .visible_interactions(at + AGENT_TARGET_DWELL)
-                .iter()
-                .any(|shown| shown.invocation == card.invocation)
-        );
-    }
-
-    /// The chip on the characters a write put in a note says what the person
-    /// sees happen there, not the name of the place the menu acts on: "Helper:
-    /// added text", where "replace text at a place" named replacement even for
-    /// an insertion. A write that failed says the step itself, since none of
-    /// its text stands.
-    #[test]
-    fn a_text_write_says_it_added_text() {
-        let mut presence = PresenceCtx::empty();
-        presence
-            .names
-            .insert(UserId("agent:helper".into()), "Helper".into());
-        let mut write = interaction(95, 1, InteractionPhase::Applying);
-        write.actor = InteractionActor::new("agent:helper", ActorKind::Agent);
-        write.action = InteractionAction {
-            id: "replace-range".into(),
-            label: "Replace text at a place".into(),
-            app: None,
-            step: None,
-            creates: None,
-        };
-        write.anchor = tilo_actions::InteractionAnchor::Text {
-            region: "body".into(),
-            ranges: vec![tilo_actions::InteractionTextRange {
-                block: "b1".into(),
-                start: 33,
-                end: 66,
-            }],
-        };
-        assert_eq!(
-            presence.interaction_status_label_written(&write),
-            "Helper: added text"
-        );
-        let mut failed = write.clone();
-        failed.sequence = 2;
-        failed.phase = InteractionPhase::Failed {
-            code: None,
-            message: "The note is read-only".into(),
-        };
-        let name = presence.interaction_status_label_written(&failed);
-        assert!(
-            name.starts_with("Helper: Writing in Draft.md. Failed"),
-            "a failed write says the step, not text that never landed: {name}"
-        );
+                .names
+                .insert(UserId("agent:helper".into()), "Helper".into());
+            let mut write = interaction(95, 1, InteractionPhase::Applying);
+            write.actor = InteractionActor::new("agent:helper", ActorKind::Agent);
+            write.action = InteractionAction {
+                id: "replace-range".into(),
+                label: "Replace text at a place".into(),
+                app: None,
+                step: None,
+                creates: None,
+            };
+            write.anchor = tilo_actions::InteractionAnchor::Text {
+                region: "body".into(),
+                ranges: vec![tilo_actions::InteractionTextRange {
+                    block: "b1".into(),
+                    start: 33,
+                    end: 66,
+                }],
+            };
+            assert_eq!(
+                presence.interaction_status_label_written(&write),
+                "Helper: added text"
+            );
+            let mut failed = write.clone();
+            failed.sequence = 2;
+            failed.phase = InteractionPhase::Failed {
+                code: None,
+                message: "The note is read-only".into(),
+            };
+            let name = presence.interaction_status_label_written(&failed);
+            assert!(
+                name.starts_with("Helper: Writing in Draft.md. Failed"),
+                "a failed write says the step, not text that never landed: {name}"
+            );
+        }
     }
 }
 

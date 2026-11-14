@@ -238,145 +238,156 @@ mod tests {
         bytes.push(b'\n');
         bytes
     }
-    #[test]
-    fn host_phase_vocabulary_obeys_wire_bounds_and_rejects_duplicate_ids() {
-        let phase = ReportedCheckPhase {
-            id: "route".into(),
-            label: "🦀".repeat(128),
-        };
-        assert!(validate_phases(std::slice::from_ref(&phase)).is_ok());
-        assert!(validate_phases(&[phase.clone(), phase]).is_err());
-        for label in [
-            "a".repeat(129),
-            "🦀".repeat(129),
-            "Routing\ncomplete".into(),
-            " ".into(),
-        ] {
-            assert!(
-                validate_phases(&[ReportedCheckPhase {
-                    id: "route".into(),
-                    label
-                }])
-                .is_err()
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        /// `ReportParser`: the frames a check's report may carry.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn the_report_parser_labels_bounds_and_refuses_frames;
 
-    #[test]
-    fn captured_frames_are_chunk_independent_coalesced_and_host_labelled() {
-        let mut parser = parser();
-        parser.feed(b"ordinary diagnostics\n");
-        let first = encoded(&frame(1));
-        for chunk in first.chunks(3) {
-            parser.feed(chunk);
+        phase host_phase_vocabulary_obeys_wire_bounds_and_rejects_duplicate_ids;
+        {
+            let phase = ReportedCheckPhase {
+                id: "route".into(),
+                label: "🦀".repeat(128),
+            };
+            assert!(validate_phases(std::slice::from_ref(&phase)).is_ok());
+            assert!(validate_phases(&[phase.clone(), phase]).is_err());
+            for label in [
+                "a".repeat(129),
+                "🦀".repeat(129),
+                "Routing\ncomplete".into(),
+                " ".into(),
+            ] {
+                assert!(
+                    validate_phases(&[ReportedCheckPhase {
+                        id: "route".into(),
+                        label
+                    }])
+                    .is_err()
+                );
+            }
         }
-        let mut second = frame(2);
-        second["completed"] = 8.into();
-        parser.feed(&encoded(&second));
-        assert_eq!(
-            parser.latest,
-            Some(ReportedCheckEvent::Reported(CheckReport {
-                phase_id: "route".into(),
-                phase: "Routing".into(),
-                completed: Some(8),
-                total: Some(10),
-            }))
-        );
-        assert!(!parser.disabled);
-    }
-    #[test]
-    fn untrusted_frames_refuse_only_the_informational_lane() {
-        for (key, value, reason) in [
-            (
-                "token",
-                serde_json::json!("stale"),
-                CheckReportRefusal::CorrelationChanged,
-            ),
-            (
-                "check_id",
-                serde_json::json!("foreign"),
-                CheckReportRefusal::CorrelationChanged,
-            ),
-            (
-                "sequence",
-                serde_json::json!(2),
-                CheckReportRefusal::SequenceChanged,
-            ),
-            (
-                "phase_id",
-                serde_json::json!("unknown"),
-                CheckReportRefusal::UnknownPhase,
-            ),
-            (
-                "completed",
-                serde_json::json!(11),
-                CheckReportRefusal::InvalidReport,
-            ),
-            (
-                "success",
-                serde_json::json!(true),
-                CheckReportRefusal::InvalidReport,
-            ),
-        ] {
+
+        phase captured_frames_are_chunk_independent_coalesced_and_host_labelled;
+        {
             let mut parser = parser();
-            let mut bad = frame(1);
-            bad[key] = value;
-            parser.feed(&encoded(&bad));
-            assert_eq!(parser.latest, Some(ReportedCheckEvent::Disabled(reason)));
-            assert!(parser.disabled);
-            parser.feed(&encoded(&frame(1)));
-            assert_eq!(parser.latest, Some(ReportedCheckEvent::Disabled(reason)));
+            parser.feed(b"ordinary diagnostics\n");
+            let first = encoded(&frame(1));
+            for chunk in first.chunks(3) {
+                parser.feed(chunk);
+            }
+            let mut second = frame(2);
+            second["completed"] = 8.into();
+            parser.feed(&encoded(&second));
+            assert_eq!(
+                parser.latest,
+                Some(ReportedCheckEvent::Reported(CheckReport {
+                    phase_id: "route".into(),
+                    phase: "Routing".into(),
+                    completed: Some(8),
+                    total: Some(10),
+                }))
+            );
+            assert!(!parser.disabled);
         }
-        for malformed in [
-            b"TILO_CHECK_REPORT_V1\n".as_slice(),
-            b"TILO_CHECK_REPORT_V2 {}\n".as_slice(),
-            b"TILO_CHECK_REPORT_V1 not-json\n".as_slice(),
-        ] {
+
+        phase untrusted_frames_refuse_only_the_informational_lane;
+        {
+            for (key, value, reason) in [
+                (
+                    "token",
+                    serde_json::json!("stale"),
+                    CheckReportRefusal::CorrelationChanged,
+                ),
+                (
+                    "check_id",
+                    serde_json::json!("foreign"),
+                    CheckReportRefusal::CorrelationChanged,
+                ),
+                (
+                    "sequence",
+                    serde_json::json!(2),
+                    CheckReportRefusal::SequenceChanged,
+                ),
+                (
+                    "phase_id",
+                    serde_json::json!("unknown"),
+                    CheckReportRefusal::UnknownPhase,
+                ),
+                (
+                    "completed",
+                    serde_json::json!(11),
+                    CheckReportRefusal::InvalidReport,
+                ),
+                (
+                    "success",
+                    serde_json::json!(true),
+                    CheckReportRefusal::InvalidReport,
+                ),
+            ] {
+                let mut parser = parser();
+                let mut bad = frame(1);
+                bad[key] = value;
+                parser.feed(&encoded(&bad));
+                assert_eq!(parser.latest, Some(ReportedCheckEvent::Disabled(reason)));
+                assert!(parser.disabled);
+                parser.feed(&encoded(&frame(1)));
+                assert_eq!(parser.latest, Some(ReportedCheckEvent::Disabled(reason)));
+            }
+            for malformed in [
+                b"TILO_CHECK_REPORT_V1\n".as_slice(),
+                b"TILO_CHECK_REPORT_V2 {}\n".as_slice(),
+                b"TILO_CHECK_REPORT_V1 not-json\n".as_slice(),
+            ] {
+                let mut parser = parser();
+                parser.feed(malformed);
+                assert_eq!(
+                    parser.latest,
+                    Some(ReportedCheckEvent::Disabled(
+                        CheckReportRefusal::InvalidReport
+                    ))
+                );
+            }
+            let mut oversized = parser();
+            let mut bytes = PREFIX.to_vec();
+            bytes.extend(vec![b'x'; MAX_FRAME_BYTES]);
+            oversized.feed(&bytes);
+            assert_eq!(
+                oversized.latest,
+                Some(ReportedCheckEvent::Disabled(
+                    CheckReportRefusal::OversizedReport
+                ))
+            );
+            let mut ordinary = parser();
+            ordinary.feed(&vec![b'x'; MAX_FRAME_BYTES * 10]);
+            ordinary.feed(b"\n");
+            ordinary.feed(&encoded(&frame(1)));
+            assert!(matches!(
+                ordinary.latest,
+                Some(ReportedCheckEvent::Reported(_))
+            ));
+        }
+
+        phase truncated_reports_and_revoked_callbacks_are_refused;
+        {
             let mut parser = parser();
-            parser.feed(malformed);
+            let bytes = encoded(&frame(1));
+            parser.feed(&bytes[..bytes.len() - 1]);
+            parser.finish();
             assert_eq!(
                 parser.latest,
                 Some(ReportedCheckEvent::Disabled(
                     CheckReportRefusal::InvalidReport
                 ))
             );
+            assert!(
+                parser
+                    .publish(&|| Err("revoked".into()), &|_| panic!("revoked callback"))
+                    .is_err()
+            );
+            assert!(parser.latest.is_some());
         }
-        let mut oversized = parser();
-        let mut bytes = PREFIX.to_vec();
-        bytes.extend(vec![b'x'; MAX_FRAME_BYTES]);
-        oversized.feed(&bytes);
-        assert_eq!(
-            oversized.latest,
-            Some(ReportedCheckEvent::Disabled(
-                CheckReportRefusal::OversizedReport
-            ))
-        );
-        let mut ordinary = parser();
-        ordinary.feed(&vec![b'x'; MAX_FRAME_BYTES * 10]);
-        ordinary.feed(b"\n");
-        ordinary.feed(&encoded(&frame(1)));
-        assert!(matches!(
-            ordinary.latest,
-            Some(ReportedCheckEvent::Reported(_))
-        ));
-    }
-    #[test]
-    fn truncated_reports_and_revoked_callbacks_are_refused() {
-        let mut parser = parser();
-        let bytes = encoded(&frame(1));
-        parser.feed(&bytes[..bytes.len() - 1]);
-        parser.finish();
-        assert_eq!(
-            parser.latest,
-            Some(ReportedCheckEvent::Disabled(
-                CheckReportRefusal::InvalidReport
-            ))
-        );
-        assert!(
-            parser
-                .publish(&|| Err("revoked".into()), &|_| panic!("revoked callback"))
-                .is_err()
-        );
-        assert!(parser.latest.is_some());
     }
 }

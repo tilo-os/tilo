@@ -8,13 +8,14 @@ use super::*;
 use tilo_actions::{ActionRegistry, Verified, entry_of, verify_change};
 use tilo_content::ContentStore;
 
-/// Seventeen paragraphs past a mebibyte in all, each saying where it is.
-fn pasted_body() -> patch::rich::RichText {
+/// `paragraphs` paragraphs past a mebibyte in all, each saying where it is.
+fn pasted_body(paragraphs: usize) -> patch::rich::RichText {
+    let words = 190_000_usize.div_ceil(paragraphs);
     patch::rich::RichText {
-        blocks: (0..17)
+        blocks: (0..paragraphs)
             .map(|at| patch::rich::Block {
                 kind: "paragraph".to_owned(),
-                text: format!("Pasted paragraph {at}: {}", "words ".repeat(11_000)),
+                text: format!("Pasted paragraph {at}: {}", "words ".repeat(words)),
                 ..patch::rich::Block::default()
             })
             .collect(),
@@ -38,6 +39,12 @@ fn body_of(host: &TilolangHost, target: &patch::ResourceRef) -> String {
     }
 }
 
+/// The heads of the record's own document, as the instance holds it.
+fn record_heads(host: &TilolangHost) -> Vec<automerge::ChangeHash> {
+    let record = host.instances().next().unwrap().record();
+    record.doc().get_heads()
+}
+
 /// The body field of the note the window shows beside the list, and that note.
 fn body_field(window: &Window) -> (String, patch::ResourceRef) {
     let field = node_with(
@@ -55,15 +62,17 @@ fn body_field(window: &Window) -> (String, patch::ResourceRef) {
     (field, note)
 }
 
-/// The change of `doc` whose recorded action keeps parts as content, and those parts.
+/// The change of `doc` whose recorded action keeps parts as content, and those parts. Only what
+/// each change says of itself is read, in the order the document lists its changes: none is
+/// built again whole, the megabyte the paste wrote included.
 fn kept_as_content(doc: &mut automerge::AutoCommit) -> (automerge::ChangeHash, Vec<String>) {
     let document = doc.document();
     document
-        .get_changes(&[])
+        .get_changes_meta(&[])
         .iter()
         .rev()
         .find_map(|change| {
-            let hash = change.hash();
+            let hash = change.hash;
             let action = entry_of(document, hash)?.action?;
             let parts = action.content_parts();
             (!parts.is_empty()).then_some((hash, parts))
@@ -109,13 +118,124 @@ fn address(reference: &str) -> &str {
 
 #[test]
 fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_a_peer() {
+    pastes_past_a_mebibyte(17);
+}
+
+#[test]
+fn one_paragraph_pasted_past_a_mebibyte_is_kept_and_undoes() {
+    pastes_past_a_mebibyte(1);
+}
+
+/// A paragraph longer than one text may hold is refused: Ada hears what happened and what to do,
+/// in the words every window says, and the note keeps what she typed. A text is held to its
+/// bytes, so two bytes a character runs out at half the characters, and one byte more than the
+/// limit is already too many. A refused paste leaves nothing behind: the record holds what it
+/// held, and nothing of it goes to the workspace or is offered on the record's route. Each paste
+/// is made in a notebook of its own.
+#[test]
+fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
+    let notes = notes();
+    // Every character two bytes: half the limit in characters is the whole limit in bytes.
+    let whole = "é".repeat(tilo_actions::MAX_TEXT_BYTES / 2);
+    for (row, pasted) in [
+        ("six bytes past the limit", format!("words {whole}")),
+        ("one byte past the limit", format!("{whole}a")),
+    ] {
+        let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
+        let mut host = TilolangHost::new(None, wake());
+        let (mut window, sent, _inbox) = instance_on(
+            &mut host,
+            spec(1, "ada", &route),
+            notes.clone(),
+            &route,
+            Rc::default(),
+            Rc::default(),
+            automerge::AutoCommit::new(),
+        );
+        settle(&mut host, &mut window);
+        press_new_note(&mut window);
+        settle(&mut host, &mut window);
+        let (field, note) = body_field(&window);
+        let edit = |text: &str| ToApp::EditRich {
+            lane: Lane::Root,
+            target: note.clone(),
+            key: field.clone(),
+            rich: typed_rich(text),
+        };
+        window.send(&[edit("draft")]);
+        settle(&mut host, &mut window);
+        // What the record and its workspace hold once she typed, before the paste.
+        let typed = (record_heads(&host), documents_sent(&sent));
+        assert!(typed.1 > 0, "{row}: what was typed went to the workspace");
+        window.send(&[edit(&pasted)]);
+        settle(&mut host, &mut window);
+        assert_eq!(
+            body_of(&host, &note),
+            "draft",
+            "{row}: the note keeps what was typed"
+        );
+        assert_eq!(
+            window.notices,
+            [patch::Words::Phrase {
+                id: "rich-text-too-long".to_owned(),
+                args: vec![("limit".to_owned(), "8 MB".to_owned())],
+            }],
+            "{row}: Ada hears why the paste was not kept, and what to do"
+        );
+        assert_eq!(
+            (record_heads(&host), documents_sent(&sent)),
+            typed,
+            "{row}: neither the record nor its workspace holds anything of the refused paste"
+        );
+        assert!(
+            offered(&sent).is_empty(),
+            "{row}: nothing of the refused paste is offered on the record's route"
+        );
+    }
+}
+
+/// A paragraph of the whole limit is one the window can carry: it is kept, and nothing is said.
+#[test]
+fn a_paragraph_of_the_whole_limit_is_kept_aloud() {
+    let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
+    let mut host = TilolangHost::new(None, wake());
+    let (mut window, _sent, _inbox) = instance_on(
+        &mut host,
+        spec(1, "ada", &route),
+        notes(),
+        &route,
+        Rc::default(),
+        Rc::default(),
+        automerge::AutoCommit::new(),
+    );
+    settle(&mut host, &mut window);
+    press_new_note(&mut window);
+    settle(&mut host, &mut window);
+    let (field, note) = body_field(&window);
+    // Every character two bytes: half as many characters is the same text in bytes.
+    let kept = "é".repeat(tilo_actions::MAX_TEXT_BYTES / 2);
+    window.send(&[ToApp::EditRich {
+        lane: Lane::Root,
+        target: note.clone(),
+        key: field,
+        rich: typed_rich(&kept),
+    }]);
+    settle(&mut host, &mut window);
+    assert!(window.notices.is_empty(), "{:?}", window.notices);
+    assert_eq!(body_of(&host, &note), kept, "the paste is kept whole");
+}
+
+/// Ada pastes `paragraphs` paragraphs past a mebibyte in all over what she typed.
+fn pastes_past_a_mebibyte(paragraphs: usize) {
     let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
     let device = ContentStore::memory();
+    // One build of the package, for the three instances that run it here.
+    let notes = notes();
     let mut host = TilolangHost::new(None, wake());
     let (mut window, sent, _inbox) = instance_keeping(
         &mut host,
         spec(1, "ada", &route),
-        notes(),
+        notes.clone(),
         &route,
         Rc::default(),
         Rc::default(),
@@ -137,7 +257,7 @@ fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_
     assert_eq!(before, "draft", "what Ada typed shows");
 
     // Ada pastes the body: one edit, too large to record inline.
-    let body = pasted_body();
+    let body = pasted_body(paragraphs);
     window.send(&[ToApp::EditRich {
         lane: Lane::Root,
         target: note.clone(),
@@ -145,12 +265,22 @@ fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_
         rich: body,
     }]);
     settle(&mut host, &mut window);
+    assert!(
+        window.notices.is_empty(),
+        "the paste is kept: {:?}",
+        window.notices
+    );
     let shown = body_of(&host, &note);
     assert!(
-        shown.starts_with("Pasted paragraph 0:") && shown.contains("Pasted paragraph 16:"),
+        shown.starts_with("Pasted paragraph 0:")
+            && shown.contains(&format!(
+                "Pasted paragraph {}:",
+                paragraphs.saturating_sub(1)
+            ))
+            && shown.len() > 1 << 20,
         "the paste shows: {shown:.60}"
     );
-    let mut doc = host.instances().next().unwrap().record().doc().clone();
+    let mut doc = host.instances().next().unwrap().record().doc();
     let (paste, parts) = kept_as_content(&mut doc);
     let record = host.instances().next().unwrap().record();
     assert!(
@@ -171,10 +301,21 @@ fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_
         "the writing device reads the paste back as it ran"
     );
 
-    reopened_reads_it_back(&route, &sent, device, paste);
-    a_peer_fetches_it(&route, &sent, paste, &parts, &offers);
+    // What the workspace holds of the record now. Ada's host runs no frame until her undo, so
+    // her connection sends nothing more meanwhile: the record that opens again and the peer
+    // each read a copy of this.
+    let workspace = workspace_copy(&sent);
+    let went_out = sent.borrow().len();
+    reopened_reads_it_back(&route, &notes, &workspace, device, paste);
+    a_peer_fetches_it(&route, &notes, &workspace, paste, &parts, &offers);
+    assert_eq!(
+        sent.borrow().len(),
+        went_out,
+        "Ada's connection sent nothing while the others read her record"
+    );
 
-    // Ada's undo takes the paste back exactly.
+    // Ada's undo takes the paste back exactly, as a change of its own sent on her connection.
+    let shared = documents_sent(&sent);
     window.send(&[ToApp::Undo]);
     settle(&mut host, &mut window);
     assert_eq!(
@@ -182,13 +323,19 @@ fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_
         before,
         "undo takes the paste back exactly"
     );
+    assert!(
+        documents_sent(&sent) > shared,
+        "the undo went out on the connection"
+    );
 }
 
-/// The record opens again on the same device, over what its workspace holds: the device's store
-/// still holds the parts of the paste `paste`, and the action reads back as it ran.
+/// The record opens again on the same device, in an instance of `notes` over what its
+/// `workspace` holds: the device's store still holds the parts of the paste `paste`, and the
+/// action reads back as it ran.
 fn reopened_reads_it_back(
     route: &RouteSpec,
-    sent: &Sent,
+    notes: &Bundle,
+    workspace: &automerge::AutoCommit,
     device: ContentStore,
     paste: automerge::ChangeHash,
 ) {
@@ -198,27 +345,29 @@ fn reopened_reads_it_back(
     let (mut reopened, _, _) = instance_keeping(
         &mut again,
         spec(2, "ada", route),
-        notes(),
+        notes.clone(),
         route,
         Rc::default(),
         Rc::default(),
-        workspace_copy(sent),
+        workspace.clone(),
         device,
     );
     settle(&mut again, &mut reopened);
     let record = again.instances().next().unwrap().record();
     assert_eq!(
-        decoded(&workspace_copy(sent), paste, record.content().clone()),
+        decoded(workspace, paste, record.content().clone()),
         Verified::Reproduced,
         "after the record opens again, the paste reads back as it ran"
     );
 }
 
-/// A peer holds the change `paste` and not the `parts` it kept: decoding it asks the record's
-/// route, and once what Ada `offers` arrives the action reproduces its change there too.
+/// A peer runs `notes` over what the `workspace` holds: the change `paste` and not the `parts` it
+/// kept. Decoding it asks the record's route, and once what Ada `offers` arrives the action
+/// reproduces its change there too.
 fn a_peer_fetches_it(
     route: &RouteSpec,
-    sent: &Sent,
+    notes: &Bundle,
+    workspace: &automerge::AutoCommit,
     paste: automerge::ChangeHash,
     parts: &[String],
     offers: &BTreeMap<String, Vec<u8>>,
@@ -230,11 +379,11 @@ fn a_peer_fetches_it(
     let (mut graces, grace_sent, grace_inbox) = instance_on(
         &mut theirs,
         spec(3, "grace", &peer_route),
-        notes(),
+        notes.clone(),
         &peer_route,
         Rc::default(),
         Rc::default(),
-        workspace_copy(sent),
+        workspace.clone(),
     );
     settle(&mut theirs, &mut graces);
     let store = theirs
@@ -246,7 +395,7 @@ fn a_peer_fetches_it(
         .clone();
     assert!(
         matches!(
-            decoded(&workspace_copy(sent), paste, store.clone()),
+            decoded(workspace, paste, store.clone()),
             Verified::ContentMissing(_)
         ),
         "the peer lacks the body until it arrives"
@@ -278,7 +427,7 @@ fn a_peer_fetches_it(
     }
     settle(&mut theirs, &mut graces);
     assert_eq!(
-        decoded(&workspace_copy(sent), paste, store),
+        decoded(workspace, paste, store),
         Verified::Reproduced,
         "once the body arrived, the peer's action reproduces its change"
     );

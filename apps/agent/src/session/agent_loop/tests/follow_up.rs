@@ -63,54 +63,58 @@ impl TurnTransport for ReadsTheConversation {
     }
 }
 
-/// The second run of a chat is told the first one's conversation in its
-/// instruction (as the conversation keeps it) and the person's new message as
-/// its direction: "now do the same for the other two" reviews the two the
-/// first run did not.
-#[test]
-fn a_follow_up_that_refers_to_the_first_message_is_understood() {
-    follows_up(World::default());
-}
+tilo_test_env::scenario! {
+    fn a_follow_up_message_reaches_the_run_it_follows;
 
-/// The host answers a poll the agent sent before it took the message in
-/// only after it did: the late answer, from the frontier the poll was sent
-/// at, is passed over rather than ending the run, and its message is not
-/// taken in twice.
-#[test]
-fn a_poll_answered_after_the_message_was_taken_in_does_not_end_the_run() {
-    let mut f = fixture("Review the applications", World::default(), Vec::new());
-    f.session.native_task = Some(crate::session::native_task::NativeTaskState {
-        run_id: f.run.run_id,
-        task_id: "chat.workspace/channels/loop/messages/asked".into(),
-        base: "native:run".into(),
-        revision: 1,
-        ..Default::default()
-    });
-    let late = runtime_collab::TaskRunControl {
-        version: 1,
-        task_id: "chat.workspace/channels/loop/messages/asked".into(),
-        run_epoch: 2,
-        from_revision: 0,
-        applied_revision: 0,
-        latest_revision: 1,
-        directions: vec![runtime_collab::TaskDirection {
+    phase a_follow_up_that_refers_to_the_first_message_is_understood;
+    // The second run of a chat is told the first one's conversation in its
+    // instruction (as the conversation keeps it) and the person's new message as
+    // its direction: "now do the same for the other two" reviews the two the
+    // first run did not.
+    {
+        follows_up(World::default());
+    }
+
+    phase a_poll_answered_after_the_message_was_taken_in_does_not_end_the_run;
+    // The host answers a poll the agent sent before it took the message in
+    // only after it did: the late answer, from the frontier the poll was sent
+    // at, is passed over rather than ending the run, and its message is not
+    // taken in twice.
+    {
+        let mut f = fixture("Review the applications", World::default(), Vec::new());
+        f.session.native_task = Some(crate::session::native_task::NativeTaskState {
+            run_id: f.run.run_id,
+            task_id: "chat.workspace/channels/loop/messages/asked".into(),
+            base: "native:run".into(),
             revision: 1,
-            author: "person:ada".into(),
-            text: "Now do the same for the other two".into(),
-            issued_at: 42,
-        }],
-        has_more: false,
-    };
-    f.session.observe_native_control(late.clone()).unwrap();
-    assert!(f.session.native_task.as_ref().unwrap().pending.is_none());
-    let ahead = runtime_collab::TaskRunControl {
-        from_revision: 2,
-        applied_revision: 2,
-        latest_revision: 2,
-        directions: Vec::new(),
-        ..late
-    };
-    assert!(f.session.observe_native_control(ahead).is_err());
+            ..Default::default()
+        });
+        let late = runtime_collab::TaskRunControl {
+            version: 1,
+            task_id: "chat.workspace/channels/loop/messages/asked".into(),
+            run_epoch: 2,
+            from_revision: 0,
+            applied_revision: 0,
+            latest_revision: 1,
+            directions: vec![runtime_collab::TaskDirection {
+                revision: 1,
+                author: "person:ada".into(),
+                text: "Now do the same for the other two".into(),
+                issued_at: 42,
+            }],
+            has_more: false,
+        };
+        f.session.observe_native_control(late.clone()).unwrap();
+        assert!(f.session.native_task.as_ref().unwrap().pending.is_none());
+        let ahead = runtime_collab::TaskRunControl {
+            from_revision: 2,
+            applied_revision: 2,
+            latest_revision: 2,
+            directions: Vec::new(),
+            ..late
+        };
+        assert!(f.session.observe_native_control(ahead).is_err());
+    }
 }
 
 fn follows_up(world: World) {

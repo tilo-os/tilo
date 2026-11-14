@@ -303,7 +303,7 @@ mod tests {
             user_public_key: user.public_key,
             device_public_key: device.public_key,
             device_label: device.label,
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: 3,
             expires_at_ns: None,
             signature: [0; 64],
@@ -341,8 +341,8 @@ mod tests {
                 cache_dir: temp.path().join("cache"),
                 capability_json: "[]".into(),
                 authority: None,
-                principals: Vec::new(),
-                relay_workspace_ids: vec![42],
+                members: Vec::new(),
+                relay_workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(42)],
             }],
         };
         std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();

@@ -13,6 +13,7 @@ mod said;
 mod shell;
 mod shown;
 
+pub use crate::member::{Member, Person, PersonId, assigned_colour, joined_at_from_packed};
 pub use call::CallPresence;
 pub use hue::{
     PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, TASK_AGENT_PREFIX, agent_client,
@@ -23,7 +24,7 @@ pub use key::{
     AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, UserId,
     ViewRect, ViewSubset,
 };
-pub use payload::{Availability, Collaborator, IDLE_AFTER, PresencePayload};
+pub use payload::{Availability, IDLE_AFTER, PresencePayload};
 pub use said::{DESKTOP_APP, Presence, stand_in};
 
 /// What a participant says in one presence frame: the semantics every

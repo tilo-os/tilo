@@ -6,16 +6,16 @@
 //! holds the root — signs a `DeviceCert` for it and posts it to
 //! `/peer/v1/install` (as JSON or its canonical encoding) with the install
 //! token the host was provisioned with.
-//! The certificate must be for this key, verify, let this device host and
-//! not admit devices; it is then written as a joined device's
+//! The certificate must be for this key, verify, be a device of the person
+//! and not admit devices; it is then written as a joined device's
 //! ([`tilo_user_identity::install_device_cert`]) and [`await_certificate`]
 //! returns, so the caller starts the relay on the same address.
 //!
 //! A node runs a session beside it ([`SessionDevice`]): the shell that runs
 //! the person's apps and agents, with a device key of its own. `GET` on the
 //! route names that key, signed by this device's key, and the page certifies
-//! it with the node's, as one of the person's devices: never a host, never
-//! one that admits devices. Its certificate is written to the session's
+//! it with the node's, as one of the person's devices: never one that admits
+//! devices. Its certificate is written to the session's
 //! file for the session to join with.
 
 use std::convert::Infallible;
@@ -399,7 +399,7 @@ fn info<B>(waiting: &Waiting, request: &Request<B>) -> Response<Body> {
 
 /// The session's certificate in `offered`, when it may run beside the node
 /// `node` certifies: for the session's key, by the same root, verifying
-/// now, and neither a host nor a device that admits others.
+/// now, a device of the person that admits no others.
 fn session_certificate(
     waiting: &Waiting,
     node: &DeviceCert,
@@ -414,8 +414,8 @@ fn session_certificate(
     if cert.user_public_key != node.user_public_key {
         return Err("the session certificate is from another root".into());
     }
-    if cert.capabilities.can_act_as_host || cert.capabilities.can_admit_devices {
-        return Err("the session certificate must not host or admit devices".into());
+    if !cert.capabilities.can_own_workspaces || cert.capabilities.can_admit_devices {
+        return Err("the session certificate must be a device that admits no devices".into());
     }
     tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns())
         .map_err(|error| error.to_string())?;
@@ -463,10 +463,10 @@ async fn install(
             "expected a DeviceCert as JSON or canonical bytes, or InstallCertificates",
         )
     })?;
-    if !cert.capabilities.can_act_as_host {
+    if !cert.capabilities.can_own_workspaces {
         return Err(status(
             StatusCode::BAD_REQUEST,
-            "the certificate does not let this device host",
+            "the certificate is not a device of the person",
         ));
     }
     let session = session_certificate(waiting, &cert, offered)
@@ -564,7 +564,7 @@ mod tests {
     }
 
     /// A host without a certificate takes one only with its token, only for
-    /// its own key and only one that lets it host; then it starts serving.
+    /// its own key and only a device's; then it starts serving.
     #[tokio::test]
     async fn a_waiting_host_installs_its_certificate_and_starts() {
         let dir = tempfile::tempdir().unwrap();
@@ -578,7 +578,7 @@ mod tests {
             InstallListener::bind(&config, paths.clone(), &format!("{TOKEN}\n")).unwrap();
         let addr = listener.plain_addr.unwrap();
         let token = format!("{INSTALL_TOKEN_HEADER}: {TOKEN}\r\n");
-        let node = tilo_user_identity::DeviceCapabilities::host;
+        let node = tilo_user_identity::DeviceCapabilities::member;
 
         let reply = request(addr, "POST", "/peer/v1/host", "", "").await;
         assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
@@ -605,7 +605,7 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
         for refused in [
             cert(&root, [9; 32], node()),
-            cert(&root, own, DeviceCapabilities::member()),
+            cert(&root, own, DeviceCapabilities::nothing()),
             cert(&root, own, DeviceCapabilities::primary()),
             "{}".into(),
         ] {
@@ -663,7 +663,7 @@ mod tests {
         let listener = InstallListener::bind(&config(dir.path()), paths, TOKEN).unwrap();
         let addr = listener.plain_addr.unwrap();
         let waiting = tokio::spawn(listener.installed());
-        let good = cert(&root, own, tilo_user_identity::DeviceCapabilities::host());
+        let good = cert(&root, own, tilo_user_identity::DeviceCapabilities::member());
         let token = format!("{INSTALL_TOKEN_HEADER}: {TOKEN}\r\n");
         let reply = request(addr, "POST", "/peer/v1/install", &token, &good).await;
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
@@ -682,7 +682,7 @@ mod tests {
 
     /// A node with a session beside it names the session's key, vouched for
     /// by its own, and takes the session's certificate with its own: one of
-    /// the same person's devices, never a host. The session's certificate
+    /// the same person's devices. The session's certificate
     /// is written for the session to join with.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_node_takes_its_sessions_certificate_with_its_own() {
@@ -729,7 +729,7 @@ mod tests {
             serde_json::from_str::<DeviceCert>(&cert(
                 root,
                 own,
-                tilo_user_identity::DeviceCapabilities::host(),
+                tilo_user_identity::DeviceCapabilities::member(),
             ))
             .unwrap()
         };
@@ -753,7 +753,7 @@ mod tests {
             member(&root, [9; 32], DeviceCapabilities::member()),
             member(&stranger, session, DeviceCapabilities::member()),
             member(&root, session, DeviceCapabilities::primary()),
-            member(&root, session, DeviceCapabilities::host()),
+            member(&root, session, DeviceCapabilities::nothing()),
         ] {
             let reply = request(addr, "POST", "/peer/v1/install", &token, both(refused)).await;
             assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");

@@ -156,26 +156,31 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_focused_window_is_where_the_person_is() {
-        assert_eq!(focus(&view()), Some(("so.tilo.word-processor", [9; 8])));
-        let mut none = view();
-        for window in &mut none.windows {
-            window.focused = false;
+    tilo_test_env::scenario! {
+        /// The shell's view of where a person is, and its wire encoding.
+        fn a_shell_view_says_where_the_person_is_and_round_trips;
+
+        phase the_focused_window_is_where_the_person_is;
+        {
+            assert_eq!(focus(&view()), Some(("so.tilo.word-processor", [9; 8])));
+            let mut none = view();
+            for window in &mut none.windows {
+                window.focused = false;
+            }
+            assert_eq!(focus(&none), None);
         }
-        assert_eq!(focus(&none), None);
+
+        phase a_shell_view_round_trips_through_its_wire_encoding;
+        {
+            let bytes = postcard::to_allocvec(&view()).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<ShellPresence>(&bytes).unwrap(),
+                view()
+            );
+        }
     }
 
     fn focus(view: &ShellPresence) -> Option<(&str, [u8; 8])> {
         view.focus()
-    }
-
-    #[test]
-    fn a_shell_view_round_trips_through_its_wire_encoding() {
-        let bytes = postcard::to_allocvec(&view()).unwrap();
-        assert_eq!(
-            postcard::from_bytes::<ShellPresence>(&bytes).unwrap(),
-            view()
-        );
     }
 }

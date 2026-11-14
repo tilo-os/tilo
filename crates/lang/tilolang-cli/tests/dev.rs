@@ -17,9 +17,7 @@ use tilolang_cli::package::{self, BuildOptions};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::upgrade::{Upgrade, compare};
 
-mod support;
-
-use support::{copy_package, packages};
+use crate::support::{copy_package, packages};
 
 #[test]
 fn a_saved_build_is_the_generation_the_app_reads() {
@@ -227,80 +225,86 @@ fn write_program(path: &Path, note: &str, starts: &Path) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// A new build of the runtime reaches the window: the file is published beside the old one and
-/// renamed over it, and the loop starts the window again on it.
-#[cfg(unix)]
-#[test]
-fn a_new_build_of_the_runtime_replaced_by_rename_restarts_the_window() {
-    let dev = Loop::start();
-    let first = dev.wait_starts(1);
-    dev.replace_runtime("the window's program, built again");
-    let started = dev.wait_starts(2);
-    assert_ne!(first[0], started[1], "{started:?}");
-    dev.wait_report("the app runs on the new runtime");
-    dev.stop();
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn a_new_runtime_restarts_the_window;
+
+    phase a_new_build_of_the_runtime_replaced_by_rename_restarts_the_window;
+    // A new build of the runtime reaches the window: the file is published beside the old one and
+    // renamed over it, and the loop starts the window again on it.
+    {
+        let dev = Loop::start();
+        let first = dev.wait_starts(1);
+        dev.replace_runtime("the window's program, built again");
+        let started = dev.wait_starts(2);
+        assert_ne!(first[0], started[1], "{started:?}");
+        dev.wait_report("the app runs on the new runtime");
+        dev.stop();
+    }
+
+    phase a_runtime_directory_replaced_whole_restarts_the_window;
+    // A build that replaces the directory holding the runtime reaches the window too: the loop watches
+    // the directory above it, and takes a new watch of the replaced one.
+    {
+        let dev = Loop::start();
+        let first = dev.wait_starts(1);
+        let moved = dev.scratch.path().join("bin.moved");
+        std::fs::rename(dev.runtime.parent().unwrap(), &moved).unwrap();
+        std::fs::create_dir(dev.runtime.parent().unwrap()).unwrap();
+        write_program(
+            &dev.runtime,
+            "the window's program, from a new directory",
+            &dev.starts,
+        );
+        let started = dev.wait_starts(2);
+        assert_ne!(first[0], started[1], "{started:?}");
+        dev.wait_report("the app runs on the new runtime");
+        dev.stop();
+    }
 }
 
-/// A build that replaces the directory holding the runtime reaches the window too: the loop watches
-/// the directory above it, and takes a new watch of the replaced one.
-#[cfg(unix)]
-#[test]
-fn a_runtime_directory_replaced_whole_restarts_the_window() {
-    let dev = Loop::start();
-    let first = dev.wait_starts(1);
-    let moved = dev.scratch.path().join("bin.moved");
-    std::fs::rename(dev.runtime.parent().unwrap(), &moved).unwrap();
-    std::fs::create_dir(dev.runtime.parent().unwrap()).unwrap();
-    write_program(
-        &dev.runtime,
-        "the window's program, from a new directory",
-        &dev.starts,
-    );
-    let started = dev.wait_starts(2);
-    assert_ne!(first[0], started[1], "{started:?}");
-    dev.wait_report("the app runs on the new runtime");
-    dev.stop();
-}
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn a_save_in_the_package_reaches_the_app;
 
-/// A saved source reaches the app: the editor's file is renamed over the package's, and the loop
-/// publishes the new build as the next generation.
-#[cfg(unix)]
-#[test]
-fn a_saved_source_replaced_by_rename_reaches_the_app() {
-    let dev = Loop::start();
-    dev.wait_starts(1);
-    let updates = dev.updates();
-    wait_generation(&updates, Some(1));
-    let file = dev.package.join("app.tl");
-    let text = std::fs::read_to_string(&file).unwrap();
-    let saved = text.replace(
-        "/// Add one to the counter.",
-        "/// Add one to the counter, whatever it shows.",
-    );
-    assert_ne!(saved, text, "the save changes the source");
-    let staged = dev.package.join(".app.tl.saved");
-    std::fs::write(&staged, saved).unwrap();
-    std::fs::rename(&staged, &file).unwrap();
-    wait_generation(&updates, Some(2));
-    dev.stop();
-}
+    phase a_saved_source_replaced_by_rename_reaches_the_app;
+    // A saved source reaches the app: the editor's file is renamed over the package's, and the loop
+    // publishes the new build as the next generation.
+    {
+        let dev = Loop::start();
+        dev.wait_starts(1);
+        let updates = dev.updates();
+        wait_generation(&updates, Some(1));
+        let file = dev.package.join("app.tl");
+        let text = std::fs::read_to_string(&file).unwrap();
+        let saved = text.replace(
+            "/// Add one to the counter.",
+            "/// Add one to the counter, whatever it shows.",
+        );
+        assert_ne!(saved, text, "the save changes the source");
+        let staged = dev.package.join(".app.tl.saved");
+        std::fs::write(&staged, saved).unwrap();
+        std::fs::rename(&staged, &file).unwrap();
+        wait_generation(&updates, Some(2));
+        dev.stop();
+    }
 
-/// A save in a subdirectory of the package reaches the app too: a translation in its `locales/` is
-/// part of a build, and the loop watches the package as a tree.
-#[cfg(unix)]
-#[test]
-fn a_translation_saved_in_the_packages_locales_reaches_the_app() {
-    let dev = Loop::start();
-    dev.wait_starts(1);
-    let updates = dev.updates();
-    wait_generation(&updates, Some(1));
-    std::fs::write(
-        dev.package.join("locales/de-DE.ftl"),
-        "d-so-tilo-lang-counter = Zähler\n",
-    )
-    .unwrap();
-    wait_generation(&updates, Some(2));
-    dev.stop();
+    phase a_translation_saved_in_the_packages_locales_reaches_the_app;
+    // A save in a subdirectory of the package reaches the app too: a translation in its `locales/` is
+    // part of a build, and the loop watches the package as a tree.
+    {
+        let dev = Loop::start();
+        dev.wait_starts(1);
+        let updates = dev.updates();
+        wait_generation(&updates, Some(1));
+        std::fs::write(
+            dev.package.join("locales/de-DE.ftl"),
+            "d-so-tilo-lang-counter = Zähler\n",
+        )
+        .unwrap();
+        wait_generation(&updates, Some(2));
+        dev.stop();
+    }
 }
 
 fn wait_generation(updates: &Path, generation: Option<u64>) {

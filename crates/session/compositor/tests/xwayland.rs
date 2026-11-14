@@ -486,289 +486,378 @@ fn xsetting_integer(data: &[u8], name: &str) -> Option<i32> {
     None
 }
 
-#[test]
-fn an_x11_window_maps_as_a_window_of_its_class() {
-    let mut session = Session::start(1.0);
-    let window = session.window("xterm", "XTerm", (400, 300));
-    session.map(window);
-    session.pump(|session| !session.compositor.windows().is_empty());
-    let (info, rect) = session.compositor.windows().remove(0);
-    assert_eq!(info.app_id.as_deref(), Some("XTerm"));
-    assert_eq!(info.title.as_deref(), Some("xterm window"));
-    // Centred on the output by the stack policy, like any other window.
-    assert_eq!(rect, (440, 210, 400, 300));
+tilo_test_env::scenario! {
+    /// X11 windows on the desktop.
+    fn an_x11_window_is_a_window_of_the_desktop;
+
+    phase an_x11_window_maps_as_a_window_of_its_class;
+    {
+        let mut session = Session::start(1.0);
+        let window = session.window("xterm", "XTerm", (400, 300));
+        session.map(window);
+        session.pump(|session| !session.compositor.windows().is_empty());
+        let (info, rect) = session.compositor.windows().remove(0);
+        assert_eq!(info.app_id.as_deref(), Some("XTerm"));
+        assert_eq!(info.title.as_deref(), Some("xterm window"));
+        // Centred on the output by the stack policy, like any other window.
+        assert_eq!(rect, (440, 210, 400, 300));
+    }
+
+    phase an_x11_window_takes_focus_and_closes_like_any_other_window;
+    {
+        let mut session = Session::start(1.0);
+        let window = session.window("xterm", "XTerm", (400, 300));
+        session.map(window);
+        session.pump(|session| {
+            session
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::FocusIn(_)))
+        });
+        session.pump(|session| !session.compositor.windows().is_empty());
+        let (info, _) = session.compositor.windows().remove(0);
+        session.compositor.close_window(info.id);
+        session.pump(|session| session.compositor.windows().is_empty());
+    }
+
+    phase an_x11_window_knows_its_program_and_its_icon;
+    {
+        let mut session = Session::start(1.0);
+        let window = session.window("xterm", "XTerm", (400, 300));
+        // A window may claim any process; the X server's own record decides.
+        session.set_property32(window, "_NET_WM_PID", &[999_999]);
+        session.set_property32(
+            window,
+            "_NET_WM_ICON",
+            // 2x2: red, green, blue and white, each opaque.
+            &[2, 2, 0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF, 0xFFFF_FFFF],
+        );
+        session.map(window);
+        session.pump(|session| !session.compositor.windows().is_empty());
+        // Xwayland associates a window's surface once it is mapped; the icon is read again then, as
+        // part of the window's facts.
+        session.pump(|session| {
+            session
+                .compositor
+                .windows()
+                .first()
+                .is_some_and(|(info, _)| info.icon.is_some())
+        });
+        let (info, _) = session.compositor.windows().remove(0);
+        let identity = session.compositor.x11_identity(info.id).expect("identity");
+        assert_eq!(identity.pid, Some(std::process::id()));
+        assert_eq!(identity.instance.as_deref(), Some("xterm"));
+        assert_eq!(identity.class.as_deref(), Some("XTerm"));
+        let icon = identity.icon.as_ref().expect("icon");
+        assert_eq!((icon.width, icon.height), (2, 2));
+        assert_eq!(icon.pixels.len(), 16);
+        assert_eq!(&icon.pixels[..4], &[255, 0, 0, 255]);
+
+        // The window's facts carry the same icon: what the desktop draws.
+        let own = info.icon.expect("the window's own icon");
+        let IconArtwork::Pixels(images) = own.artwork() else {
+            panic!("the pixels the window handed over");
+        };
+        assert_eq!(images.len(), 1);
+        assert_eq!((images[0].width, images[0].height), (2, 2));
+        assert_eq!(&images[0].pixels[..4], &[255, 0, 0, 255]);
+    }
+
+    phase an_x11_window_that_is_renamed_is_known_by_its_new_class;
+    {
+        let mut session = Session::start(1.0);
+        let window = session.window("xterm", "XTerm", (400, 300));
+        session.map(window);
+        session.pump(|session| !session.compositor.windows().is_empty());
+        let (mapped, _) = session.compositor.windows().remove(0);
+        session.set_class(window, "thunderbird", "Thunderbird");
+        session.set_title(window, "Inbox - Thunderbird");
+        // The two properties arrive as two separate changes; the desk names the window once it has
+        // both, so wait for both.
+        session.pump(|session| {
+            session
+                .compositor
+                .windows()
+                .first()
+                .is_some_and(|(info, _)| {
+                    info.app_id.as_deref() == Some("Thunderbird")
+                        && info.title.as_deref() == Some("Inbox - Thunderbird")
+                })
+        });
+        let identity = session
+            .compositor
+            .x11_identity(mapped.id)
+            .expect("identity");
+        assert_eq!(identity.instance.as_deref(), Some("thunderbird"));
+        assert_eq!(identity.class.as_deref(), Some("Thunderbird"));
+        // The desk names the tab by what the client says now, not by what it said when its window
+        // mapped.
+        let (renamed, _) = session.compositor.windows().remove(0);
+        assert_eq!(renamed.id, mapped.id);
+        assert_eq!(renamed.app_id.as_deref(), Some("Thunderbird"));
+        assert_eq!(renamed.title.as_deref(), Some("Inbox - Thunderbird"));
+    }
 }
 
-#[test]
-fn an_x11_window_takes_focus_and_closes_like_any_other_window() {
-    let mut session = Session::start(1.0);
-    let window = session.window("xterm", "XTerm", (400, 300));
-    session.map(window);
-    session.pump(|session| {
-        session
-            .events
-            .iter()
-            .any(|event| matches!(event, Event::FocusIn(_)))
-    });
-    session.pump(|session| !session.compositor.windows().is_empty());
-    let (info, _) = session.compositor.windows().remove(0);
-    session.compositor.close_window(info.id);
-    session.pump(|session| session.compositor.windows().is_empty());
-}
+tilo_test_env::scenario! {
+    /// What X clients are told of the session's settings.
+    fn x_clients_hear_the_displays_density_the_pointer_theme_and_the_layout;
 
-#[test]
-fn an_x11_window_knows_its_program_and_its_icon() {
-    let mut session = Session::start(1.0);
-    let window = session.window("xterm", "XTerm", (400, 300));
-    // A window may claim any process; the X server's own record decides.
-    session.set_property32(window, "_NET_WM_PID", &[999_999]);
-    session.set_property32(
-        window,
-        "_NET_WM_ICON",
-        // 2x2: red, green, blue and white, each opaque.
-        &[2, 2, 0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF, 0xFFFF_FFFF],
-    );
-    session.map(window);
-    session.pump(|session| !session.compositor.windows().is_empty());
-    // Xwayland associates a window's surface once it is mapped; the icon is read again then, as
-    // part of the window's facts.
-    session.pump(|session| {
+    phase x_clients_hear_how_dense_the_display_is;
+    {
+        let mut session = Session::start(2.0);
+        // A 96 DPI display at scale 2 is a 192 DPI display to X clients.
+        session.pump(|session| session.setting("Xft/DPI") == Some(192 * 1024));
+        assert_eq!(session.setting("Gdk/WindowScalingFactor"), Some(2));
+        assert_eq!(session.setting("Gdk/UnscaledDPI"), Some(96 * 1024));
+        let resources = session.resources();
+        assert!(resources.contains("Xft.dpi:\t192"), "{resources}");
+        assert!(resources.contains("Xcursor.size:\t48"), "{resources}");
+
+        // Their windows are sized in those pixels: 400 by 300 X pixels are 200 by 150 logical ones,
+        // centred on the output's 640 by 360 logical size like any other window.
+        let window = session.window("xterm", "XTerm", (400, 300));
+        session.map(window);
+        session.pump(|session| !session.compositor.windows().is_empty());
+        let (_, rect) = session.compositor.windows().remove(0);
+        assert_eq!(rect, (220, 105, 200, 150));
+    }
+
+    phase x_clients_draw_the_pointer_theme_the_person_chose;
+    {
+        let mut session = Session::start(1.0);
+        session.pump(|session| session.resources().contains("Xcursor.theme:"));
+        // X clients draw their own pointers from the theme they are told.
+        let mut a11y = session.compositor.a11y().clone();
+        a11y.cursor.theme = "Bibata-Modern-Ice".to_owned();
         session
             .compositor
-            .windows()
-            .first()
-            .is_some_and(|(info, _)| info.icon.is_some())
-    });
-    let (info, _) = session.compositor.windows().remove(0);
-    let identity = session.compositor.x11_identity(info.id).expect("identity");
-    assert_eq!(identity.pid, Some(std::process::id()));
-    assert_eq!(identity.instance.as_deref(), Some("xterm"));
-    assert_eq!(identity.class.as_deref(), Some("XTerm"));
-    let icon = identity.icon.as_ref().expect("icon");
-    assert_eq!((icon.width, icon.height), (2, 2));
-    assert_eq!(icon.pixels.len(), 16);
-    assert_eq!(&icon.pixels[..4], &[255, 0, 0, 255]);
+            .set_a11y(a11y)
+            .expect("the theme applies");
+        session.pump(|session| {
+            session
+                .resources()
+                .contains("Xcursor.theme:\tBibata-Modern-Ice")
+        });
+        let resources = session.resources();
+        assert!(
+            resources.contains("Xcursor.theme:\tBibata-Modern-Ice"),
+            "{resources}"
+        );
+        assert_eq!(
+            resources.matches("Xcursor.theme:").count(),
+            1,
+            "one theme line, not two: {resources}"
+        );
+    }
 
-    // The window's facts carry the same icon: what the desktop draws.
-    let own = info.icon.expect("the window's own icon");
-    let IconArtwork::Pixels(images) = own.artwork() else {
-        panic!("the pixels the window handed over");
-    };
-    assert_eq!(images.len(), 1);
-    assert_eq!((images[0].width, images[0].height), (2, 2));
-    assert_eq!(&images[0].pixels[..4], &[255, 0, 0, 255]);
-}
-
-#[test]
-fn an_x11_window_that_is_renamed_is_known_by_its_new_class() {
-    let mut session = Session::start(1.0);
-    let window = session.window("xterm", "XTerm", (400, 300));
-    session.map(window);
-    session.pump(|session| !session.compositor.windows().is_empty());
-    let (mapped, _) = session.compositor.windows().remove(0);
-    session.set_class(window, "thunderbird", "Thunderbird");
-    session.set_title(window, "Inbox - Thunderbird");
-    // The two properties arrive as two separate changes; the desk names the window once it has
-    // both, so wait for both.
-    session.pump(|session| {
+    phase a_denser_output_tells_x_clients_a_new_scale;
+    {
+        let mut session = Session::start(1.0);
+        session.pump(|session| session.setting("Xft/DPI") == Some(96 * 1024));
+        assert!(session.resources().contains("Xft.dpi:\t96"));
         session
             .compositor
-            .windows()
-            .first()
-            .is_some_and(|(info, _)| {
-                info.app_id.as_deref() == Some("Thunderbird")
-                    && info.title.as_deref() == Some("Inbox - Thunderbird")
-            })
-    });
-    let identity = session
-        .compositor
-        .x11_identity(mapped.id)
-        .expect("identity");
-    assert_eq!(identity.instance.as_deref(), Some("thunderbird"));
-    assert_eq!(identity.class.as_deref(), Some("Thunderbird"));
-    // The desk names the tab by what the client says now, not by what it said when its window
-    // mapped.
-    let (renamed, _) = session.compositor.windows().remove(0);
-    assert_eq!(renamed.id, mapped.id);
-    assert_eq!(renamed.app_id.as_deref(), Some("Thunderbird"));
-    assert_eq!(renamed.title.as_deref(), Some("Inbox - Thunderbird"));
-}
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720).with_scale(2.0))
+            .expect("output");
+        session.pump(|session| session.setting("Xft/DPI") == Some(192 * 1024));
+        assert_eq!(session.setting("Gdk/WindowScalingFactor"), Some(2));
+        let resources = session.resources();
+        assert!(resources.contains("Xft.dpi:\t192"), "{resources}");
+        assert!(resources.contains("Xcursor.size:\t48"), "{resources}");
+    }
 
-#[test]
-fn x_clients_hear_how_dense_the_display_is() {
-    let mut session = Session::start(2.0);
-    // A 96 DPI display at scale 2 is a 192 DPI display to X clients.
-    session.pump(|session| session.setting("Xft/DPI") == Some(192 * 1024));
-    assert_eq!(session.setting("Gdk/WindowScalingFactor"), Some(2));
-    assert_eq!(session.setting("Gdk/UnscaledDPI"), Some(96 * 1024));
-    let resources = session.resources();
-    assert!(resources.contains("Xft.dpi:\t192"), "{resources}");
-    assert!(resources.contains("Xcursor.size:\t48"), "{resources}");
+    phase x11_apps_type_in_the_layout_the_person_chose;
+    {
+        // The session sets the person's layout at login; the first X11 app they open types in it.
+        let session = Session::start_in_layout(
+            1.0,
+            Some(KeyboardLayout {
+                layout: "de".into(),
+                ..KeyboardLayout::default()
+            }),
+        );
+        assert_eq!(
+            session.character(KEY_Y),
+            'z',
+            "an X11 app opened after login types in the person's German layout"
+        );
+        assert_eq!(
+            session.rules_names(),
+            ["evdev", "pc105", "de", "", ""],
+            "and what asks which layout is in force hears the German one"
+        );
+    }
 
-    // Their windows are sized in those pixels: 400 by 300 X pixels are 200 by 150 logical ones,
-    // centred on the output's 640 by 360 logical size like any other window.
-    let window = session.window("xterm", "XTerm", (400, 300));
-    session.map(window);
-    session.pump(|session| !session.compositor.windows().is_empty());
-    let (_, rect) = session.compositor.windows().remove(0);
-    assert_eq!(rect, (220, 105, 200, 150));
-}
+    phase a_layout_change_reaches_x11_apps;
+    {
+        let mut session = Session::start(1.0);
+        assert_eq!(
+            session.character(KEY_Y),
+            'y',
+            "the X server types in its own layout before the person changes it"
+        );
+        assert_eq!(session.rules_names(), ["evdev", "pc105", "us", "", ""]);
 
-#[test]
-fn x_clients_draw_the_pointer_theme_the_person_chose() {
-    let mut session = Session::start(1.0);
-    session.pump(|session| session.resources().contains("Xcursor.theme:"));
-    // X clients draw their own pointers from the theme they are told.
-    let mut a11y = session.compositor.a11y().clone();
-    a11y.cursor.theme = "Bibata-Modern-Ice".to_owned();
-    session
-        .compositor
-        .set_a11y(a11y)
-        .expect("the theme applies");
-    session.pump(|session| {
+        session.compositor.set_keyboard_layout(&KeyboardLayout {
+            layout: "de".into(),
+            ..KeyboardLayout::default()
+        });
+        session.pump(|session| session.character(KEY_Y) == 'z');
+        assert_eq!(
+            session.rules_names(),
+            ["evdev", "pc105", "de", "", ""],
+            "the layout tools report what the keys type"
+        );
+
+        // A second change reaches the same server, windows and all.
         session
-            .resources()
-            .contains("Xcursor.theme:\tBibata-Modern-Ice")
-    });
-    let resources = session.resources();
-    assert!(
-        resources.contains("Xcursor.theme:\tBibata-Modern-Ice"),
-        "{resources}"
-    );
-    assert_eq!(
-        resources.matches("Xcursor.theme:").count(),
-        1,
-        "one theme line, not two: {resources}"
-    );
-}
-
-#[test]
-fn a_denser_output_tells_x_clients_a_new_scale() {
-    let mut session = Session::start(1.0);
-    session.pump(|session| session.setting("Xft/DPI") == Some(96 * 1024));
-    assert!(session.resources().contains("Xft.dpi:\t96"));
-    session
-        .compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720).with_scale(2.0))
-        .expect("output");
-    session.pump(|session| session.setting("Xft/DPI") == Some(192 * 1024));
-    assert_eq!(session.setting("Gdk/WindowScalingFactor"), Some(2));
-    let resources = session.resources();
-    assert!(resources.contains("Xft.dpi:\t192"), "{resources}");
-    assert!(resources.contains("Xcursor.size:\t48"), "{resources}");
+            .compositor
+            .set_keyboard_layout(&KeyboardLayout::default());
+        session.pump(|session| session.character(KEY_Y) == 'y');
+    }
 }
 
 /// The key that types `y` on a US keyboard and `z` on a German one.
 const KEY_Y: u8 = 29;
 
-#[test]
-fn x11_apps_type_in_the_layout_the_person_chose() {
-    // The session sets the person's layout at login; the first X11 app they open types in it.
-    let session = Session::start_in_layout(
-        1.0,
-        Some(KeyboardLayout {
-            layout: "de".into(),
-            ..KeyboardLayout::default()
-        }),
-    );
-    assert_eq!(
-        session.character(KEY_Y),
-        'z',
-        "an X11 app opened after login types in the person's German layout"
-    );
-    assert_eq!(
-        session.rules_names(),
-        ["evdev", "pc105", "de", "", ""],
-        "and what asks which layout is in force hears the German one"
-    );
-}
+tilo_test_env::scenario! {
+    /// The clipboard between X11 and Wayland apps.
+    fn the_clipboard_crosses_between_x11_and_wayland_within_a_workspace;
 
-#[test]
-fn a_layout_change_reaches_x11_apps() {
-    let mut session = Session::start(1.0);
-    assert_eq!(
-        session.character(KEY_Y),
-        'y',
-        "the X server types in its own layout before the person changes it"
-    );
-    assert_eq!(session.rules_names(), ["evdev", "pc105", "us", "", ""]);
+    phase a_copy_in_an_x11_app_pastes_in_a_wayland_app;
+    {
+        let mut session = Session::start(1.0);
+        let window = session.window("xterm", "XTerm", (400, 300));
+        session.map(window);
+        let formats = session.own_clipboard(window, &[(TEXT_MIME, b"copied in xterm")]);
+        assert!(formats.iter().any(|mime| mime == TEXT_MIME), "{formats:?}");
+        let bytes = session.read_selection(Selection::Clipboard, TEXT_MIME);
+        assert_eq!(bytes, b"copied in xterm");
+    }
 
-    session.compositor.set_keyboard_layout(&KeyboardLayout {
-        layout: "de".into(),
-        ..KeyboardLayout::default()
-    });
-    session.pump(|session| session.character(KEY_Y) == 'z');
-    assert_eq!(
-        session.rules_names(),
-        ["evdev", "pc105", "de", "", ""],
-        "the layout tools report what the keys type"
-    );
-
-    // A second change reaches the same server, windows and all.
-    session
-        .compositor
-        .set_keyboard_layout(&KeyboardLayout::default());
-    session.pump(|session| session.character(KEY_Y) == 'y');
-}
-
-#[test]
-fn a_copy_in_an_x11_app_pastes_in_a_wayland_app() {
-    let mut session = Session::start(1.0);
-    let window = session.window("xterm", "XTerm", (400, 300));
-    session.map(window);
-    let formats = session.own_clipboard(window, &[(TEXT_MIME, b"copied in xterm")]);
-    assert!(formats.iter().any(|mime| mime == TEXT_MIME), "{formats:?}");
-    let bytes = session.read_selection(Selection::Clipboard, TEXT_MIME);
-    assert_eq!(bytes, b"copied in xterm");
-}
-
-#[test]
-fn a_copy_in_a_wayland_app_pastes_in_an_x11_app() {
-    let mut session = Session::start(1.0);
-    let window = session.window("xterm", "XTerm", (400, 300));
-    session.map(window);
-    // An X11 client reads the clipboard only while one of its windows has the keyboard focus.
-    session.pump(|session| {
+    phase a_copy_in_a_wayland_app_pastes_in_an_x11_app;
+    {
+        let mut session = Session::start(1.0);
+        let window = session.window("xterm", "XTerm", (400, 300));
+        session.map(window);
+        // An X11 client reads the clipboard only while one of its windows has the keyboard focus.
+        session.pump(|session| {
+            session
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::FocusIn(_)))
+        });
         session
-            .events
-            .iter()
-            .any(|event| matches!(event, Event::FocusIn(_)))
-    });
-    session
-        .compositor
-        .set_selection(
-            Selection::Clipboard,
-            vec![(TEXT_MIME.to_owned(), b"copied in a wayland app".to_vec())],
-        )
-        .expect("selection");
-    // Xwayland tells X clients about the selection on its own connection,
-    // which runs when the session does.
-    session.settle();
-    let copied = session.atom("TILO_COPIED");
-    session
-        .x11
-        .convert_selection(
+            .compositor
+            .set_selection(
+                Selection::Clipboard,
+                vec![(TEXT_MIME.to_owned(), b"copied in a wayland app".to_vec())],
+            )
+            .expect("selection");
+        // Xwayland tells X clients about the selection on its own connection,
+        // which runs when the session does.
+        session.settle();
+        let copied = session.atom("TILO_COPIED");
+        session
+            .x11
+            .convert_selection(
+                window,
+                session.atom("CLIPBOARD"),
+                session.atom("UTF8_STRING"),
+                copied,
+                x11rb::CURRENT_TIME,
+            )
+            .expect("convert");
+        session.x11.flush().expect("flush");
+        session.pump(|session| {
+            session.events.iter().any(
+                |event| matches!(event, Event::SelectionNotify(notify) if notify.property == copied),
+            )
+        });
+        let value = session
+            .x11
+            .get_property(false, window, copied, AtomEnum::ANY, 0, u32::MAX)
+            .expect("property")
+            .reply()
+            .expect("property reply")
+            .value;
+        assert_eq!(value, b"copied in a wayland app");
+    }
+
+    phase each_workspace_gets_its_own_x_server_and_clipboard;
+    {
+        let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("headless");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 1280, 720))
+            .expect("output");
+        let displays = compositor.x11_displays().expect("displays");
+        let mine = displays.display_for("workspace-one").expect("a display");
+        let theirs = displays.display_for("workspace-two").expect("a display");
+        assert_ne!(mine, theirs, "two workspaces, two displays");
+        assert_eq!(
+            displays.display_for("workspace-one"),
+            Some(mine),
+            "a workspace keeps its display while it runs apps"
+        );
+
+        let (one, one_root) = x11_client(&mut compositor, mine);
+        let (two, two_root) = x11_client(&mut compositor, theirs);
+        let window = client_window(&one, one_root, "xterm", "XTerm");
+        one.map_window(window).expect("map");
+        one.flush().expect("flush");
+        pump_until(&mut compositor, |compositor| {
+            compositor.windows().len() == 1
+        });
+        let (info, _) = compositor.windows().remove(0);
+        assert_eq!(info.app_id.as_deref(), Some("XTerm"));
+
+        // The other workspace's X server has never heard of that window.
+        let children = two
+            .query_tree(two_root)
+            .expect("tree")
+            .reply()
+            .expect("tree reply")
+            .children;
+        assert!(
+            !children.contains(&window),
+            "a window of one workspace is not on another's X server: {children:?}"
+        );
+
+        // A copy in one workspace is only a copy in that workspace.
+        two.flush().expect("flush");
+        assert_eq!(
+            two.get_selection_owner(client_atom(&two, "CLIPBOARD"))
+                .expect("owner")
+                .reply()
+                .expect("owner reply")
+                .owner,
+            x11rb::NONE,
+            "the other workspace's clipboard is empty"
+        );
+        one.set_selection_owner(window, client_atom(&one, "CLIPBOARD"), x11rb::CURRENT_TIME)
+            .expect("owner");
+        one.flush().expect("flush");
+        assert_eq!(
+            one.get_selection_owner(client_atom(&one, "CLIPBOARD"))
+                .expect("owner")
+                .reply()
+                .expect("owner reply")
+                .owner,
             window,
-            session.atom("CLIPBOARD"),
-            session.atom("UTF8_STRING"),
-            copied,
-            x11rb::CURRENT_TIME,
-        )
-        .expect("convert");
-    session.x11.flush().expect("flush");
-    session.pump(|session| {
-        session.events.iter().any(
-            |event| matches!(event, Event::SelectionNotify(notify) if notify.property == copied),
-        )
-    });
-    let value = session
-        .x11
-        .get_property(false, window, copied, AtomEnum::ANY, 0, u32::MAX)
-        .expect("property")
-        .reply()
-        .expect("property reply")
-        .value;
-    assert_eq!(value, b"copied in a wayland app");
+            "its own workspace's clipboard is the app's"
+        );
+        two.flush().expect("flush");
+        assert_eq!(
+            two.get_selection_owner(client_atom(&two, "CLIPBOARD"))
+                .expect("owner")
+                .reply()
+                .expect("owner reply")
+                .owner,
+            x11rb::NONE,
+            "and the copy does not reach the other workspace"
+        );
+    }
 }
 
 /// A window `x11` creates on `root` , with the class and title a program gives a toplevel,
@@ -830,80 +919,6 @@ fn pump_until(compositor: &mut Compositor, mut done: impl FnMut(&Compositor) -> 
         }
     }
     panic!("the compositor never got there: {:?}", compositor.windows());
-}
-
-#[test]
-fn each_workspace_gets_its_own_x_server_and_clipboard() {
-    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("headless");
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-1", 1280, 720))
-        .expect("output");
-    let displays = compositor.x11_displays().expect("displays");
-    let mine = displays.display_for("workspace-one").expect("a display");
-    let theirs = displays.display_for("workspace-two").expect("a display");
-    assert_ne!(mine, theirs, "two workspaces, two displays");
-    assert_eq!(
-        displays.display_for("workspace-one"),
-        Some(mine),
-        "a workspace keeps its display while it runs apps"
-    );
-
-    let (one, one_root) = x11_client(&mut compositor, mine);
-    let (two, two_root) = x11_client(&mut compositor, theirs);
-    let window = client_window(&one, one_root, "xterm", "XTerm");
-    one.map_window(window).expect("map");
-    one.flush().expect("flush");
-    pump_until(&mut compositor, |compositor| {
-        compositor.windows().len() == 1
-    });
-    let (info, _) = compositor.windows().remove(0);
-    assert_eq!(info.app_id.as_deref(), Some("XTerm"));
-
-    // The other workspace's X server has never heard of that window.
-    let children = two
-        .query_tree(two_root)
-        .expect("tree")
-        .reply()
-        .expect("tree reply")
-        .children;
-    assert!(
-        !children.contains(&window),
-        "a window of one workspace is not on another's X server: {children:?}"
-    );
-
-    // A copy in one workspace is only a copy in that workspace.
-    two.flush().expect("flush");
-    assert_eq!(
-        two.get_selection_owner(client_atom(&two, "CLIPBOARD"))
-            .expect("owner")
-            .reply()
-            .expect("owner reply")
-            .owner,
-        x11rb::NONE,
-        "the other workspace's clipboard is empty"
-    );
-    one.set_selection_owner(window, client_atom(&one, "CLIPBOARD"), x11rb::CURRENT_TIME)
-        .expect("owner");
-    one.flush().expect("flush");
-    assert_eq!(
-        one.get_selection_owner(client_atom(&one, "CLIPBOARD"))
-            .expect("owner")
-            .reply()
-            .expect("owner reply")
-            .owner,
-        window,
-        "its own workspace's clipboard is the app's"
-    );
-    two.flush().expect("flush");
-    assert_eq!(
-        two.get_selection_owner(client_atom(&two, "CLIPBOARD"))
-            .expect("owner")
-            .reply()
-            .expect("owner reply")
-            .owner,
-        x11rb::NONE,
-        "and the copy does not reach the other workspace"
-    );
 }
 
 #[test]

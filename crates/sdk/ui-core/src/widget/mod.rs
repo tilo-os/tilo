@@ -1943,8 +1943,9 @@ pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,
-    LayoutInfo, LayoutOrigin, ListLayout, ManualConflict, ManualLayout, PageLayout, RowLayout,
-    ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarStanding, TextLayout,
+    LayoutInfo, LayoutOrigin, ListLayout, ListPillLayout, ManualConflict, ManualLayout, PageLayout,
+    RowLayout, ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarStanding,
+    TextLayout,
 };
 mod embedded;
 pub use embedded::Embedded;
@@ -2180,8 +2181,7 @@ pub use tile_host::{
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
-    AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, HostShellAllow, IconDescriptor,
-    WindowPublication,
+    AppCommand, AppHostIntent, AppWidget, HostShellAllow, IconDescriptor, WindowPublication,
 };
 pub mod input_hint;
 pub mod shortcut_recorder;

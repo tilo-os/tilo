@@ -561,30 +561,334 @@ fn strip_uri(value: &str) -> &str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn regression_import_preserves_postal_delivery_lines() {
-        for (adr, street) in [
-            ("PO Box 42;;;;;;", "PO Box 42"),
-            (
-                ";Suite 5;10 Main Street;London;;;UK",
-                "Suite 5\n10 Main Street",
-            ),
-            (
-                "PO Box 42;Building B;10 Main Street;London;;;UK",
-                "PO Box 42\nBuilding B\n10 Main Street",
-            ),
-        ] {
-            let report = parse_vcards_report(&format!(
-                "BEGIN:VCARD\r\nVERSION:3.0\r\nADR;TYPE=work:{adr}\r\nEND:VCARD\r\n"
-            ));
-            assert_eq!(report.skipped_cards, 0);
-            assert_eq!(report.contacts.len(), 1, "postal-only cards are contacts");
-            let contact = &report.contacts[0];
-            assert_eq!(contact.addresses.len(), 1);
-            assert_eq!(contact.addresses[0].street, street);
-            for version in [VCardVersion::V3, VCardVersion::V4] {
-                let reimported = parse_vcards(&to_vcard(contact, version));
-                assert_eq!(reimported[0].addresses[0].street, street);
+    tilo_test_env::scenario! {
+        fn vcards_are_read_and_written_as_other_clients_expect;
+
+        phase regression_import_preserves_postal_delivery_lines;
+        {
+            for (adr, street) in [
+                ("PO Box 42;;;;;;", "PO Box 42"),
+                (
+                    ";Suite 5;10 Main Street;London;;;UK",
+                    "Suite 5\n10 Main Street",
+                ),
+                (
+                    "PO Box 42;Building B;10 Main Street;London;;;UK",
+                    "PO Box 42\nBuilding B\n10 Main Street",
+                ),
+            ] {
+                let report = parse_vcards_report(&format!(
+                    "BEGIN:VCARD\r\nVERSION:3.0\r\nADR;TYPE=work:{adr}\r\nEND:VCARD\r\n"
+                ));
+                assert_eq!(report.skipped_cards, 0);
+                assert_eq!(report.contacts.len(), 1, "postal-only cards are contacts");
+                let contact = &report.contacts[0];
+                assert_eq!(contact.addresses.len(), 1);
+                assert_eq!(contact.addresses[0].street, street);
+                for version in [VCardVersion::V3, VCardVersion::V4] {
+                    let reimported = parse_vcards(&to_vcard(contact, version));
+                    assert_eq!(reimported[0].addresses[0].street, street);
+                }
+            }
+        }
+
+        phase vcard_round_trips_fields_and_birthdays;
+        {
+            {
+                let c = sample();
+                let doc = to_vcard(&c, VCardVersion::V3);
+                assert!(doc.contains("VERSION:3.0"));
+                assert!(doc.contains(&format!("UID:{}", c.id)));
+                let back = parse_vcards(&doc);
+                assert_eq!(back.len(), 1);
+                let r = &back[0];
+                assert_eq!(r.id, c.id, "own exports retain their merge identity");
+                assert_eq!(r.first, "Ada");
+                assert_eq!(r.last, "Lovelace");
+                assert_eq!(r.org, "Analytical Engines");
+                assert_eq!(r.title, "Mathematician");
+                assert_eq!(r.website, "https://example.com");
+                assert_eq!(
+                    r.birthday,
+                    Some(Birthday::Full {
+                        year: 1815,
+                        month: 12,
+                        day: 10
+                    })
+                );
+                assert_eq!(r.phones[0].value, "+44 20 7946 0101");
+                assert_eq!(r.phones[0].label, "mobile");
+                assert_eq!(r.emails[0].value, "ada@example.com");
+                assert_eq!(r.addresses[0].city, "London");
+                assert_eq!(r.addresses[0].postal, "SW1Y 4LE");
+                assert_eq!(
+                    r.groups
+                        .iter()
+                        .map(|group| group.value.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["Work", "Favorites"]
+                );
+                assert_eq!(r.notes, "Note: with, punctuation; and a\nnewline");
+            }
+
+            {
+                let c = sample();
+                let doc = to_vcard(&c, VCardVersion::V4);
+                assert!(doc.contains("VERSION:4.0"));
+                assert!(doc.contains("BDAY:18151210"), "v4 emits basic date: {doc}");
+                assert!(doc.to_lowercase().contains("type=mobile"));
+                let back = parse_vcards(&doc);
+                assert_eq!(
+                    back[0].birthday,
+                    Some(Birthday::Full {
+                        year: 1815,
+                        month: 12,
+                        day: 10
+                    })
+                );
+                assert_eq!(back[0].phones[0].label, "mobile");
+            }
+
+            {
+                // A birthday whose year is unknown survives both flavours as the
+                // RFC 6350 truncated `--MMDD` / `--MM-DD` form.
+                let mut c = sample();
+                c.birthday = Some(Birthday::MonthDay { month: 3, day: 9 });
+
+                let v3 = to_vcard(&c, VCardVersion::V3);
+                assert!(v3.contains("BDAY:--03-09"), "v3 truncated form: {v3}");
+                assert_eq!(
+                    parse_vcards(&v3)[0].birthday,
+                    Some(Birthday::MonthDay { month: 3, day: 9 })
+                );
+
+                let v4 = to_vcard(&c, VCardVersion::V4);
+                assert!(v4.contains("BDAY:--0309"), "v4 truncated form: {v4}");
+                assert_eq!(
+                    parse_vcards(&v4)[0].birthday,
+                    Some(Birthday::MonthDay { month: 3, day: 9 })
+                );
+            }
+
+            {
+                let mut c = sample();
+                c.birthday = None;
+                let doc = to_vcard(&c, VCardVersion::V3);
+                assert!(!doc.contains("BDAY:"), "no BDAY line when unset: {doc}");
+                assert_eq!(parse_vcards(&doc)[0].birthday, None);
+            }
+
+            {
+                let mut c = sample();
+                c.website = "https://example.com/a,b;c".into();
+                let doc = to_vcard(&c, VCardVersion::V4);
+                assert!(doc.contains("URL:https://example.com/a,b;c\r\n"), "{doc}");
+                assert_eq!(parse_vcards(&doc)[0].website, c.website);
+            }
+        }
+
+        phase other_clients_birthdays_import_as_the_date_they_mean;
+        {
+            let birthday = |line: &str| {
+                let card = format!("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\n{line}\r\nEND:VCARD\r\n");
+                parse_vcards(&card)[0].birthday
+            };
+            assert_eq!(
+                birthday("BDAY;X-APPLE-OMIT-YEAR=1604;VALUE=date:1604-03-15"),
+                Some(Birthday::MonthDay { month: 3, day: 15 })
+            );
+            assert_eq!(
+                birthday("BDAY;X-APPLE-OMIT-YEAR=1604:1604-02-29"),
+                Some(Birthday::MonthDay { month: 2, day: 29 })
+            );
+            // The marker only drops the year it names.
+            assert_eq!(
+                birthday("BDAY;X-APPLE-OMIT-YEAR=1604:1990-03-15"),
+                Some(Birthday::Full {
+                    year: 1990,
+                    month: 3,
+                    day: 15
+                })
+            );
+            assert_eq!(
+                birthday("BDAY:1990-05-12T00:00:00Z"),
+                Some(Birthday::Full {
+                    year: 1990,
+                    month: 5,
+                    day: 12
+                })
+            );
+            assert_eq!(
+                birthday("BDAY:19900512T000000"),
+                Some(Birthday::Full {
+                    year: 1990,
+                    month: 5,
+                    day: 12
+                })
+            );
+        }
+
+        phase vcard_parses_legacy_and_quoted_syntax;
+        {
+            {
+                let vcf = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;WORK:+1 202 555 0143\r\nNOTE:A very long note that should be fol\r\n ded across two physical lines\r\nEND:VCARD\r\n";
+                let back = parse_vcards(vcf);
+                assert_eq!(back.len(), 1);
+                assert_eq!(back[0].phones[0].label, "work");
+                assert_eq!(back[0].phones[0].value, "+1 202 555 0143");
+                assert_eq!(
+                    back[0].notes,
+                    "A very long note that should be folded across two physical lines"
+                );
+            }
+
+            {
+                let a = to_vcard(&sample(), VCardVersion::V3);
+                let mut b = sample();
+                b.first = "Grace".into();
+                b.last = "Hopper".into();
+                let doc = format!("{a}{}", to_vcard(&b, VCardVersion::V4));
+                let back = parse_vcards(&doc);
+                assert_eq!(back.len(), 2);
+                assert_eq!(back[0].first, "Ada");
+                assert_eq!(back[1].first, "Grace");
+            }
+
+            {
+                let vcf = "BEGIN:VCARD\nVERSION:4.0\nFN:T B\nTEL;VALUE=uri:tel:+15551234\nURL:https://w3.org\nEND:VCARD\n";
+                let back = parse_vcards(vcf);
+                assert_eq!(back[0].phones[0].value, "+15551234");
+                assert_eq!(back[0].website, "https://w3.org");
+            }
+
+            {
+                // RFC 6350's own example quotes the TYPE list.
+                let vcf = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Q\r\nTEL;VALUE=uri;PREF=1;TYPE=\"voice,home\":tel:+1-555-555-5555\r\nEMAIL;TYPE=\"work\":q@example.com\r\nEND:VCARD\r\n";
+                let back = parse_vcards(vcf);
+                assert_eq!(back[0].phones[0].label, "home");
+                assert_eq!(back[0].phones[0].value, "+1-555-555-5555");
+                assert_eq!(back[0].emails[0].label, "work");
+            }
+
+            {
+                let vcf = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Label\r\nADR;LABEL=\"1 Main St\\nSpringfield: IL\";TYPE=home:;;1 Main St;Springfield;IL;62701;US\r\nEND:VCARD\r\n";
+                let back = parse_vcards(vcf);
+                assert_eq!(back[0].addresses[0].street, "1 Main St");
+                assert_eq!(back[0].addresses[0].city, "Springfield");
+                assert_eq!(back[0].addresses[0].label, "home");
+            }
+
+            {
+                let id = Uuid::new_v4();
+                let card = format!(
+                    "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:{id}\r\nEMAIL:me@example.com\r\nEND:VCARD\r\n"
+                );
+                let parsed = parse_vcards(&card);
+                assert_eq!(parsed.len(), 1);
+                assert_eq!(parsed[0].id, id);
+            }
+        }
+
+        phase vcard_folding_and_limits_resist_injection;
+        {
+            {
+                let mut c = sample();
+                c.notes = "x".repeat(200);
+                let doc = to_vcard(&c, VCardVersion::V4);
+                assert!(doc.contains("\r\n "), "long line must fold");
+                assert_eq!(parse_vcards(&doc)[0].notes, c.notes);
+            }
+
+            {
+                let mut c = sample();
+                c.notes = "é".repeat(80);
+                let doc = to_vcard(&c, VCardVersion::V3);
+                for physical in doc.split("\r\n") {
+                    assert!(
+                        physical.len() <= 75,
+                        "physical line is {} bytes: {physical:?}",
+                        physical.len()
+                    );
+                }
+                assert_eq!(parse_vcards(&doc)[0].notes, c.notes);
+            }
+
+            {
+                let mut c = sample();
+                c.phones = vec![Labeled::new("desk; ext: 12", "+1 555 0100")].into();
+                let doc = to_vcard(&c, VCardVersion::V4);
+                assert!(
+                    doc.contains("TEL;TYPE=\"desk; ext: 12\":+1 555 0100"),
+                    "{doc}"
+                );
+                let back = parse_vcards(&doc);
+                assert_eq!(back[0].phones[0].value, "+1 555 0100");
+                assert_eq!(back[0].phones[0].label, "desk; ext: 12");
+            }
+
+            {
+                let input = format!(
+                    "BEGIN:VCARD\r\nFN:Safe name\r\nNOTE:{}\r\n EMAIL:smuggled@example.com\r\nEND:VCARD\r\n",
+                    "x".repeat(MAX_VCARD_LOGICAL_LINE_BYTES)
+                );
+                let report = parse_vcards_report(&input);
+                assert!(report.contacts.is_empty());
+                assert_eq!(report.skipped_cards, 1);
+            }
+
+            {
+                let input = format!(
+                    "BEGIN:VCARD\r\nFN:Safe name\r\nNOTE:{}\r\nEND:VCARD\r\n",
+                    "x".repeat(MAX_VCARD_LOGICAL_LINE_BYTES)
+                );
+                let report = parse_vcards_report(&input);
+                assert!(report.contacts.is_empty());
+                assert_eq!(report.skipped_cards, 1);
+            }
+
+            {
+                assert!(parse_vcards("BEGIN:VCARD\r\nEND:VCARD\r\n").is_empty());
+                assert!(parse_vcards("BEGIN:VCARD\r\nFN:Never closed").is_empty());
+            }
+
+            {
+                let card = "BEGIN:VCARD\r\nFN:Bounded\r\nEND:VCARD\r\n";
+                let report = parse_vcards_report(&card.repeat(MAX_VCARD_CARDS + 1));
+                assert_eq!(report.contacts.len(), MAX_VCARD_CARDS);
+                assert!(report.limit_reached);
+            }
+        }
+
+        phase uidless_cards_get_stable_framed_identities;
+        {
+            {
+                let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL;TYPE=work:grace@example.com\r\nADR;TYPE=home:;;12 Main St;Arlington;VA;22201;US\r\nCATEGORIES:Pioneers,Friends\r\nEND:VCARD\r\n";
+                let first = parse_vcards(card).pop().unwrap();
+                let second = parse_vcards(card).pop().unwrap();
+
+                assert!(!first.id.is_nil());
+                assert_eq!(first.id, second.id, "exact reimports keep one identity");
+                assert_eq!(first.phones[0].id, second.phones[0].id);
+                assert_eq!(first.emails[0].id, second.emails[0].id);
+                assert_eq!(first.addresses[0].id, second.addresses[0].id);
+                assert_eq!(first.groups[0].id, second.groups[0].id);
+                assert_eq!(first.groups[1].id, second.groups[1].id);
+            }
+
+            {
+                assert_ne!(
+                    deterministic_uuid(["ab", "c"]),
+                    deterministic_uuid(["a", "bc"])
+                );
+                let original = parse_vcards(
+                "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.com\r\nEND:VCARD\r\n",
+            )[0]
+            .clone();
+                let changed = parse_vcards(
+                "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nEMAIL:ada@elsewhere.example\r\nEND:VCARD\r\n",
+            )[0]
+            .clone();
+                assert_ne!(original.id, changed.id);
             }
         }
     }
@@ -614,306 +918,6 @@ mod tests {
             groups: vec![GroupEntry::new("Work"), GroupEntry::new("Favorites")].into(),
             favorite: true,
             photo: String::new(),
-        }
-    }
-
-    #[test]
-    fn vcard_round_trips_fields_and_birthdays() {
-        {
-            let c = sample();
-            let doc = to_vcard(&c, VCardVersion::V3);
-            assert!(doc.contains("VERSION:3.0"));
-            assert!(doc.contains(&format!("UID:{}", c.id)));
-            let back = parse_vcards(&doc);
-            assert_eq!(back.len(), 1);
-            let r = &back[0];
-            assert_eq!(r.id, c.id, "own exports retain their merge identity");
-            assert_eq!(r.first, "Ada");
-            assert_eq!(r.last, "Lovelace");
-            assert_eq!(r.org, "Analytical Engines");
-            assert_eq!(r.title, "Mathematician");
-            assert_eq!(r.website, "https://example.com");
-            assert_eq!(
-                r.birthday,
-                Some(Birthday::Full {
-                    year: 1815,
-                    month: 12,
-                    day: 10
-                })
-            );
-            assert_eq!(r.phones[0].value, "+44 20 7946 0101");
-            assert_eq!(r.phones[0].label, "mobile");
-            assert_eq!(r.emails[0].value, "ada@example.com");
-            assert_eq!(r.addresses[0].city, "London");
-            assert_eq!(r.addresses[0].postal, "SW1Y 4LE");
-            assert_eq!(
-                r.groups
-                    .iter()
-                    .map(|group| group.value.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["Work", "Favorites"]
-            );
-            assert_eq!(r.notes, "Note: with, punctuation; and a\nnewline");
-        }
-
-        {
-            let c = sample();
-            let doc = to_vcard(&c, VCardVersion::V4);
-            assert!(doc.contains("VERSION:4.0"));
-            assert!(doc.contains("BDAY:18151210"), "v4 emits basic date: {doc}");
-            assert!(doc.to_lowercase().contains("type=mobile"));
-            let back = parse_vcards(&doc);
-            assert_eq!(
-                back[0].birthday,
-                Some(Birthday::Full {
-                    year: 1815,
-                    month: 12,
-                    day: 10
-                })
-            );
-            assert_eq!(back[0].phones[0].label, "mobile");
-        }
-
-        {
-            // A birthday whose year is unknown survives both flavours as the
-            // RFC 6350 truncated `--MMDD` / `--MM-DD` form.
-            let mut c = sample();
-            c.birthday = Some(Birthday::MonthDay { month: 3, day: 9 });
-
-            let v3 = to_vcard(&c, VCardVersion::V3);
-            assert!(v3.contains("BDAY:--03-09"), "v3 truncated form: {v3}");
-            assert_eq!(
-                parse_vcards(&v3)[0].birthday,
-                Some(Birthday::MonthDay { month: 3, day: 9 })
-            );
-
-            let v4 = to_vcard(&c, VCardVersion::V4);
-            assert!(v4.contains("BDAY:--0309"), "v4 truncated form: {v4}");
-            assert_eq!(
-                parse_vcards(&v4)[0].birthday,
-                Some(Birthday::MonthDay { month: 3, day: 9 })
-            );
-        }
-
-        {
-            let mut c = sample();
-            c.birthday = None;
-            let doc = to_vcard(&c, VCardVersion::V3);
-            assert!(!doc.contains("BDAY:"), "no BDAY line when unset: {doc}");
-            assert_eq!(parse_vcards(&doc)[0].birthday, None);
-        }
-
-        {
-            let mut c = sample();
-            c.website = "https://example.com/a,b;c".into();
-            let doc = to_vcard(&c, VCardVersion::V4);
-            assert!(doc.contains("URL:https://example.com/a,b;c\r\n"), "{doc}");
-            assert_eq!(parse_vcards(&doc)[0].website, c.website);
-        }
-    }
-
-    #[test]
-    fn other_clients_birthdays_import_as_the_date_they_mean() {
-        let birthday = |line: &str| {
-            let card = format!("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\n{line}\r\nEND:VCARD\r\n");
-            parse_vcards(&card)[0].birthday
-        };
-        assert_eq!(
-            birthday("BDAY;X-APPLE-OMIT-YEAR=1604;VALUE=date:1604-03-15"),
-            Some(Birthday::MonthDay { month: 3, day: 15 })
-        );
-        assert_eq!(
-            birthday("BDAY;X-APPLE-OMIT-YEAR=1604:1604-02-29"),
-            Some(Birthday::MonthDay { month: 2, day: 29 })
-        );
-        // The marker only drops the year it names.
-        assert_eq!(
-            birthday("BDAY;X-APPLE-OMIT-YEAR=1604:1990-03-15"),
-            Some(Birthday::Full {
-                year: 1990,
-                month: 3,
-                day: 15
-            })
-        );
-        assert_eq!(
-            birthday("BDAY:1990-05-12T00:00:00Z"),
-            Some(Birthday::Full {
-                year: 1990,
-                month: 5,
-                day: 12
-            })
-        );
-        assert_eq!(
-            birthday("BDAY:19900512T000000"),
-            Some(Birthday::Full {
-                year: 1990,
-                month: 5,
-                day: 12
-            })
-        );
-    }
-
-    #[test]
-    fn vcard_parses_legacy_and_quoted_syntax() {
-        {
-            let vcf = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;WORK:+1 202 555 0143\r\nNOTE:A very long note that should be fol\r\n ded across two physical lines\r\nEND:VCARD\r\n";
-            let back = parse_vcards(vcf);
-            assert_eq!(back.len(), 1);
-            assert_eq!(back[0].phones[0].label, "work");
-            assert_eq!(back[0].phones[0].value, "+1 202 555 0143");
-            assert_eq!(
-                back[0].notes,
-                "A very long note that should be folded across two physical lines"
-            );
-        }
-
-        {
-            let a = to_vcard(&sample(), VCardVersion::V3);
-            let mut b = sample();
-            b.first = "Grace".into();
-            b.last = "Hopper".into();
-            let doc = format!("{a}{}", to_vcard(&b, VCardVersion::V4));
-            let back = parse_vcards(&doc);
-            assert_eq!(back.len(), 2);
-            assert_eq!(back[0].first, "Ada");
-            assert_eq!(back[1].first, "Grace");
-        }
-
-        {
-            let vcf = "BEGIN:VCARD\nVERSION:4.0\nFN:T B\nTEL;VALUE=uri:tel:+15551234\nURL:https://w3.org\nEND:VCARD\n";
-            let back = parse_vcards(vcf);
-            assert_eq!(back[0].phones[0].value, "+15551234");
-            assert_eq!(back[0].website, "https://w3.org");
-        }
-
-        {
-            // RFC 6350's own example quotes the TYPE list.
-            let vcf = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Q\r\nTEL;VALUE=uri;PREF=1;TYPE=\"voice,home\":tel:+1-555-555-5555\r\nEMAIL;TYPE=\"work\":q@example.com\r\nEND:VCARD\r\n";
-            let back = parse_vcards(vcf);
-            assert_eq!(back[0].phones[0].label, "home");
-            assert_eq!(back[0].phones[0].value, "+1-555-555-5555");
-            assert_eq!(back[0].emails[0].label, "work");
-        }
-
-        {
-            let vcf = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Label\r\nADR;LABEL=\"1 Main St\\nSpringfield: IL\";TYPE=home:;;1 Main St;Springfield;IL;62701;US\r\nEND:VCARD\r\n";
-            let back = parse_vcards(vcf);
-            assert_eq!(back[0].addresses[0].street, "1 Main St");
-            assert_eq!(back[0].addresses[0].city, "Springfield");
-            assert_eq!(back[0].addresses[0].label, "home");
-        }
-
-        {
-            let id = Uuid::new_v4();
-            let card = format!(
-                "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:{id}\r\nEMAIL:me@example.com\r\nEND:VCARD\r\n"
-            );
-            let parsed = parse_vcards(&card);
-            assert_eq!(parsed.len(), 1);
-            assert_eq!(parsed[0].id, id);
-        }
-    }
-
-    #[test]
-    fn vcard_folding_and_limits_resist_injection() {
-        {
-            let mut c = sample();
-            c.notes = "x".repeat(200);
-            let doc = to_vcard(&c, VCardVersion::V4);
-            assert!(doc.contains("\r\n "), "long line must fold");
-            assert_eq!(parse_vcards(&doc)[0].notes, c.notes);
-        }
-
-        {
-            let mut c = sample();
-            c.notes = "é".repeat(80);
-            let doc = to_vcard(&c, VCardVersion::V3);
-            for physical in doc.split("\r\n") {
-                assert!(
-                    physical.len() <= 75,
-                    "physical line is {} bytes: {physical:?}",
-                    physical.len()
-                );
-            }
-            assert_eq!(parse_vcards(&doc)[0].notes, c.notes);
-        }
-
-        {
-            let mut c = sample();
-            c.phones = vec![Labeled::new("desk; ext: 12", "+1 555 0100")].into();
-            let doc = to_vcard(&c, VCardVersion::V4);
-            assert!(
-                doc.contains("TEL;TYPE=\"desk; ext: 12\":+1 555 0100"),
-                "{doc}"
-            );
-            let back = parse_vcards(&doc);
-            assert_eq!(back[0].phones[0].value, "+1 555 0100");
-            assert_eq!(back[0].phones[0].label, "desk; ext: 12");
-        }
-
-        {
-            let input = format!(
-                "BEGIN:VCARD\r\nFN:Safe name\r\nNOTE:{}\r\n EMAIL:smuggled@example.com\r\nEND:VCARD\r\n",
-                "x".repeat(MAX_VCARD_LOGICAL_LINE_BYTES)
-            );
-            let report = parse_vcards_report(&input);
-            assert!(report.contacts.is_empty());
-            assert_eq!(report.skipped_cards, 1);
-        }
-
-        {
-            let input = format!(
-                "BEGIN:VCARD\r\nFN:Safe name\r\nNOTE:{}\r\nEND:VCARD\r\n",
-                "x".repeat(MAX_VCARD_LOGICAL_LINE_BYTES)
-            );
-            let report = parse_vcards_report(&input);
-            assert!(report.contacts.is_empty());
-            assert_eq!(report.skipped_cards, 1);
-        }
-
-        {
-            assert!(parse_vcards("BEGIN:VCARD\r\nEND:VCARD\r\n").is_empty());
-            assert!(parse_vcards("BEGIN:VCARD\r\nFN:Never closed").is_empty());
-        }
-
-        {
-            let card = "BEGIN:VCARD\r\nFN:Bounded\r\nEND:VCARD\r\n";
-            let report = parse_vcards_report(&card.repeat(MAX_VCARD_CARDS + 1));
-            assert_eq!(report.contacts.len(), MAX_VCARD_CARDS);
-            assert!(report.limit_reached);
-        }
-    }
-
-    #[test]
-    fn uidless_cards_get_stable_framed_identities() {
-        {
-            let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL;TYPE=work:grace@example.com\r\nADR;TYPE=home:;;12 Main St;Arlington;VA;22201;US\r\nCATEGORIES:Pioneers,Friends\r\nEND:VCARD\r\n";
-            let first = parse_vcards(card).pop().unwrap();
-            let second = parse_vcards(card).pop().unwrap();
-
-            assert!(!first.id.is_nil());
-            assert_eq!(first.id, second.id, "exact reimports keep one identity");
-            assert_eq!(first.phones[0].id, second.phones[0].id);
-            assert_eq!(first.emails[0].id, second.emails[0].id);
-            assert_eq!(first.addresses[0].id, second.addresses[0].id);
-            assert_eq!(first.groups[0].id, second.groups[0].id);
-            assert_eq!(first.groups[1].id, second.groups[1].id);
-        }
-
-        {
-            assert_ne!(
-                deterministic_uuid(["ab", "c"]),
-                deterministic_uuid(["a", "bc"])
-            );
-            let original = parse_vcards(
-            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.com\r\nEND:VCARD\r\n",
-        )[0]
-        .clone();
-            let changed = parse_vcards(
-            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nEMAIL:ada@elsewhere.example\r\nEND:VCARD\r\n",
-        )[0]
-        .clone();
-            assert_ne!(original.id, changed.id);
         }
     }
 

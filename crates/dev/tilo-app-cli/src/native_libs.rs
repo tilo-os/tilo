@@ -185,32 +185,36 @@ pub fn require_fonts() -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_absent_pkg_config_is_reported_with_every_library() {
-        let found = missing(OsStr::new("/nonexistent/pkg-config"), &THIN_RUNTIME);
-        assert_eq!(found[0], PKG_CONFIG);
-        assert_eq!(&found[1..], &THIN_RUNTIME);
-    }
+    tilo_test_env::scenario! {
+        fn missing_thin_runtime_libraries_are_named_with_their_packages;
 
-    #[test]
-    fn a_failed_thin_build_names_packages_only_when_they_are_missing() {
-        let hint = thin_build_failure_hint_from(OsStr::new("/nonexistent/pkg-config"))
-            .expect("nothing found without pkg-config");
-        assert!(hint.contains("links GStreamer; missing pkg-config, gstreamer-1.0"));
-        assert!(hint.ends_with("a desktop package (`--platform linux`) needs none of them"));
-        // `true` answers every `--exists`: the libraries are there.
-        assert_eq!(thin_build_failure_hint_from(OsStr::new("true")), None);
-    }
+        phase an_absent_pkg_config_is_reported_with_every_library;
+        {
+            let found = missing(OsStr::new("/nonexistent/pkg-config"), &THIN_RUNTIME);
+            assert_eq!(found[0], PKG_CONFIG);
+            assert_eq!(&found[1..], &THIN_RUNTIME);
+        }
 
-    #[test]
-    fn the_hint_names_each_package_once_per_distribution() {
-        let hint = install_hint(&THIN_RUNTIME);
-        assert!(
-            hint.starts_with("missing gstreamer-1.0, gstreamer-app-1.0, gstreamer-video-1.0\n")
-        );
-        assert!(hint.contains("sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel\n"));
-        assert!(
-            hint.ends_with("sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev")
-        );
+        phase a_failed_thin_build_names_packages_only_when_they_are_missing;
+        {
+            let hint = thin_build_failure_hint_from(OsStr::new("/nonexistent/pkg-config"))
+                .expect("nothing found without pkg-config");
+            assert!(hint.contains("links GStreamer; missing pkg-config, gstreamer-1.0"));
+            assert!(hint.ends_with("a desktop package (`--platform linux`) needs none of them"));
+            // `true` answers every `--exists`: the libraries are there.
+            assert_eq!(thin_build_failure_hint_from(OsStr::new("true")), None);
+        }
+
+        phase the_hint_names_each_package_once_per_distribution;
+        {
+            let hint = install_hint(&THIN_RUNTIME);
+            assert!(
+                hint.starts_with("missing gstreamer-1.0, gstreamer-app-1.0, gstreamer-video-1.0\n")
+            );
+            assert!(hint.contains("sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel\n"));
+            assert!(
+                hint.ends_with("sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev")
+            );
+        }
     }
 }

@@ -32,7 +32,7 @@ use crate::prefs::{DisplayPrefs, NightLightPrefs, PendingDisplayChange};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    Item, SettingsSection, block, note, rows, section, setting_row, setting_row_described,
+    Item, SettingsSection, note, rows, section, setting_row, setting_row_described,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -52,9 +52,6 @@ crate::area::pane_area! {
     }
     fn next_wake(&self) -> Option<Instant> {
         self.model.get().and_then(|model| model.borrow().next_wake())
-    }
-    fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
-        DisplayArea::take_host_intent(self)
     }
 }
 
@@ -106,7 +103,9 @@ pub enum DisplayEffect {
     /// dragging it does. Staged until applied.
     #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
-    /// Request this peer's screens at a shared logical position. No input grant.
+    /// Place a device's screens in the person's shared layout by where one of them goes: where
+    /// they meet another device's screens is where the pointer crosses between the two, and a
+    /// device placed apart from the others is out of its reach.
     #[effect(returns, row)]
     MoveDeviceDisplay {
         display: String,
@@ -117,22 +116,6 @@ pub enum DisplayEffect {
     /// Inspect the observed displays and their shared arrangement, including offline devices.
     #[effect(view, returns, kind = "read")]
     InspectSharedDisplays,
-    /// Include a display in the shared layout. This does not allow remote input.
-    #[effect(returns, row, idempotent)]
-    IncludeSharedDisplay {
-        device: String,
-        output: String,
-        revision: u64,
-        on: bool,
-    },
-    /// Set a display's one-based position in the person's display order.
-    #[effect(returns, row, idempotent)]
-    OrderSharedDisplay {
-        device: String,
-        output: String,
-        revision: u64,
-        order: u32,
-    },
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
     #[effect(returns, row)]
@@ -855,14 +838,6 @@ impl DisplayArea {
         self.model.get().is_some()
     }
 
-    /// What the host is asked to do for a display move. The host asks on
-    /// every turn of its event loop, the first one before Settings' first
-    /// frame, so asking never reads the displays: a move is only ever
-    /// pending in a model an effect has already read.
-    pub(crate) fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
-        self.model.get()?.borrow_mut().take_host_intent()
-    }
-
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let mut rows: Vec<LiveRow> = model
@@ -870,13 +845,6 @@ impl DisplayArea {
             .into_iter()
             .map(|output| model.output_row(output))
             .collect();
-        rows.extend(
-            model
-                .device_displays
-                .iter()
-                .filter(|display| DisplayModel::device_movable(display))
-                .map(DisplayModel::device_output_row),
-        );
         rows.extend(model.shared_display_rows());
         rows.extend(model.trusted_tools().iter().map(DisplayModel::tool_row));
         rows
@@ -897,13 +865,8 @@ pub struct DisplayModel {
     /// it the pane cannot tell what is connected, which it must not show
     /// as "no displays".
     outputs_read: bool,
-    device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     person_devices: Vec<settings_store::person_displays::PersonDevice>,
     pending_change: Option<DisplayTransaction>,
-    pending_device_move: Option<settings_store::device_displays::DeviceDisplayMove>,
-    awaiting_device_move: Option<(settings_store::device_displays::DeviceDisplayMove, Instant)>,
-    shared_move_revisions: Option<Vec<(String, u64)>>,
-    device_move_reply: Option<Rc<std::cell::RefCell<ui::widget::DeviceDisplayMoveReply>>>,
     ambient_sensor_available: bool,
     brightness: f32,
     output_config: DisplayConfig,
@@ -930,7 +893,6 @@ pub struct DisplayModel {
     pending_brightness: Option<f32>,
     notice: Option<String>,
     arrangement_drag: LocalState<super::display_arrangement::ArrangementGesture>,
-    device_arrangement_drag: LocalState<super::display_arrangement::ArrangementGesture>,
     selected: LocalState<String>,
     selected_seen: u64,
     identify_window: Option<(Instant, Instant)>,
@@ -951,101 +913,6 @@ impl DisplayModel {
             })
             .bound(),
         )
-    }
-
-    fn device_movable(display: &settings_store::device_displays::DeviceDisplay) -> bool {
-        display.online && !display.local && display.revision != 0
-    }
-
-    fn device_output_row(display: &settings_store::device_displays::DeviceDisplay) -> LiveRow {
-        LiveRow::new(
-            format!("settings.device-display:{}", display.key()),
-            "settings.device-display",
-            display.label.clone(),
-        )
-        .operation(
-            SettingsEffect::from(DisplayEffect::MoveDeviceDisplay {
-                display: display.key(),
-                revision: display.revision,
-                x: 0,
-                y: 0,
-            })
-            .bound_asking(&["x", "y"]),
-        )
-    }
-
-    pub(crate) fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        let request = self.pending_device_move.take()?;
-        let reply = Rc::downgrade(self.device_move_reply.as_ref()?);
-        Some(ui::widget::AppHostIntent::MoveDeviceDisplay { request, reply })
-    }
-
-    fn poll_device_move(&mut self) {
-        let result = self
-            .device_move_reply
-            .as_ref()
-            .and_then(|reply| reply.borrow_mut().result.take());
-        if let Some(result) = result {
-            self.device_move_reply = None;
-            self.notice = Some(result.map_or_else(
-                |error| {
-                    self.awaiting_device_move = None;
-                    error
-                },
-                |()| t("display-device-move-requested"),
-            ));
-            self.changed = true;
-        }
-        if self
-            .awaiting_device_move
-            .as_ref()
-            .is_some_and(|(_, started)| started.elapsed() >= Duration::from_secs(10))
-        {
-            self.device_move_reply = None;
-            self.pending_device_move = None;
-            self.awaiting_device_move = None;
-            self.notice = Some(t("display-device-move-unconfirmed"));
-            self.changed = true;
-            return;
-        }
-        if self.device_move_reply.is_some() {
-            return;
-        }
-        let Some((request, _started)) = &self.awaiting_device_move else {
-            return;
-        };
-        let observed = self
-            .device_displays
-            .iter()
-            .find(|screen| screen.key() == request.screen.key());
-        let request = request.clone();
-        let confirmed = observed.is_some_and(|screen| {
-            screen.online
-                && screen.revision > request.screen.revision
-                && (screen.x, screen.y) == (request.x, request.y)
-        });
-        let message = match observed {
-            None => Some(t("display-device-move-unavailable")),
-            Some(screen) if !screen.online => Some(t("display-device-move-unavailable")),
-            Some(screen) if screen.revision > request.screen.revision => {
-                Some(t(if (screen.x, screen.y) == (request.x, request.y) {
-                    "display-device-move-confirmed"
-                } else {
-                    "display-device-move-changed"
-                }))
-            }
-            _ => None,
-        };
-        if let Some(mut message) = message {
-            if confirmed && let Err(error) = self.confirm_shared_device_move(&request.screen.device)
-            {
-                message = error;
-            }
-            self.shared_move_revisions = None;
-            self.awaiting_device_move = None;
-            self.notice = Some(message);
-            self.changed = true;
-        }
     }
 
     fn of_device(storage: ui::storage::AppStorage, sections: crate::sections::Sections) -> Self {
@@ -1108,10 +975,6 @@ impl DisplayModel {
             output_brightness,
             dimmed_by_tilo,
             pending_candidate: None,
-            pending_device_move: None,
-            awaiting_device_move: None,
-            shared_move_revisions: None,
-            device_move_reply: None,
             last_seen_transaction: None,
             host_state: None,
             host_probe: None,
@@ -1131,17 +994,12 @@ impl DisplayModel {
             arrangement_drag: LocalState::new(
                 super::display_arrangement::ArrangementGesture::default(),
             ),
-            device_arrangement_drag: LocalState::new(
-                super::display_arrangement::ArrangementGesture::default(),
-            ),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
             identify_window: None,
             sample: None,
             person_devices: settings_store::person_displays::PersonDisplays::load()
                 .map_or_else(Vec::new, |view| view.devices),
-            device_displays: settings_store::device_displays::DeviceDisplaySnapshot::load()
-                .map_or_else(Vec::new, |snapshot| snapshot.displays),
             changed: false,
         };
         model.normalize_selection();
@@ -1153,7 +1011,6 @@ impl DisplayModel {
         sections: crate::sections::Sections,
         scene: Option<&crate::scenarios::CaptureScene>,
     ) -> Self {
-        let device_displays = scene.map_or_else(Vec::new, |scene| scene.device_displays.clone());
         let displays = scene.and_then(|scene| scene.displays);
         let mode = OutputMode {
             width: 1920,
@@ -1186,7 +1043,6 @@ impl DisplayModel {
         }
         let mut model = Self::detached(storage, sections).with_outputs(outputs);
         model.person_devices = scene.map_or_else(Vec::new, |scene| scene.person_devices.clone());
-        model.device_displays = device_displays;
         if let Some(sample) = displays {
             model.stage_sample(sample);
         }
@@ -1253,10 +1109,6 @@ impl DisplayModel {
             output_brightness: BTreeMap::new(),
             dimmed_by_tilo: BTreeSet::new(),
             pending_candidate: None,
-            pending_device_move: None,
-            awaiting_device_move: None,
-            shared_move_revisions: None,
-            device_move_reply: None,
             last_seen_transaction: None,
             host_state: None,
             host_probe: None,
@@ -1275,14 +1127,10 @@ impl DisplayModel {
             arrangement_drag: LocalState::new(
                 super::display_arrangement::ArrangementGesture::default(),
             ),
-            device_arrangement_drag: LocalState::new(
-                super::display_arrangement::ArrangementGesture::default(),
-            ),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
             identify_window: None,
             sample: None,
-            device_displays: Vec::new(),
             person_devices: Vec::new(),
             changed: false,
         }
@@ -1295,7 +1143,11 @@ impl DisplayModel {
         self
     }
 
+    /// This device's display the canvas has chosen; none while another device's screen is.
     fn selected_output(&self) -> Option<&DisplayOutput> {
+        if self.selected_screen().is_some() {
+            return None;
+        }
         let connected = self.connected_outputs();
         let chosen = self.selected.with(Clone::clone);
         connected
@@ -1315,6 +1167,9 @@ impl DisplayModel {
     }
 
     fn normalize_selection(&mut self) {
+        if self.selected_screen().is_some() {
+            return;
+        }
         let effective = self
             .selected_output()
             .map(|output| output.connector.clone())
@@ -1503,7 +1358,6 @@ impl DisplayModel {
                     "vrr_available": output.vrr,
                 })
             }).collect::<Vec<_>>(),
-            "device_displays": self.device_displays,
             "shared_displays": self.shared_display_inspection(),
             "saved_configuration": self.output_config,
             "staged_configuration": self.staged(),
@@ -1794,44 +1648,13 @@ impl DisplayModel {
         }
         self.changed = true;
         let reported = match effect {
-            DisplayEffect::IncludeSharedDisplay { .. }
-            | DisplayEffect::OrderSharedDisplay { .. } => self.edit_shared_display(effect),
             DisplayEffect::InspectSharedDisplays => Err(t("display-shared-read-only")),
             DisplayEffect::MoveDeviceDisplay {
                 display,
                 revision,
                 x,
                 y,
-            } => {
-                if self.device_move_reply.is_some() || self.awaiting_device_move.is_some() {
-                    return Err(t("display-device-move-pending"));
-                }
-                let screen = self
-                    .device_displays
-                    .iter()
-                    .find(|screen| {
-                        screen.key() == *display
-                            && screen.revision == *revision
-                            && DisplayModel::device_movable(screen)
-                    })
-                    .ok_or_else(|| t("display-device-move-unavailable"))?
-                    .clone();
-                self.shared_move_revisions = self.capture_shared_move_revisions(&screen.device);
-                self.pending_device_move =
-                    Some(settings_store::device_displays::DeviceDisplayMove {
-                        screen,
-                        x: *x,
-                        y: *y,
-                    });
-                self.awaiting_device_move = self
-                    .pending_device_move
-                    .clone()
-                    .map(|request| (request, ui::time::now()));
-                self.device_move_reply = Some(Rc::new(std::cell::RefCell::new(
-                    ui::widget::DeviceDisplayMoveReply::default(),
-                )));
-                Ok(t("display-device-move-pending"))
-            }
+            } => self.move_shared_device(display, *revision, (*x, *y)),
             DisplayEffect::InspectDisplayConfiguration => {
                 Err("Display inspection is read-only.".into())
             }
@@ -2213,12 +2036,6 @@ impl DisplayModel {
                 }),
             );
         }
-        let devices = settings_store::device_displays::DeviceDisplaySnapshot::load()
-            .map_or_else(Vec::new, |snapshot| snapshot.displays);
-        if devices != self.device_displays {
-            self.device_displays = devices;
-            self.changed = true;
-        }
         let person_devices = settings_store::person_displays::PersonDisplays::load()
             .map_or_else(Vec::new, |view| view.devices);
         if self.person_devices != person_devices {
@@ -2279,127 +2096,35 @@ impl DisplayModel {
         self.notice = notice;
     }
 
-    /// Certified peer connectors at their observed shared logical positions.
-    /// Observation alone never makes a screen movable or grants input access.
-    fn build_device_arrangement_card(
-        &self,
-        dispatcher: &ui::framework::Dispatcher<Settings>,
-    ) -> Option<SettingsSection> {
-        use super::display_arrangement::{
-            ArrangedDisplay, DisplayArrangement, SharedDisplayState, placement::Placement,
-        };
-        if !self.device_displays.iter().any(|display| !display.local) {
-            return None;
-        }
-        let layout = self.shared_layout();
-        let mut unknown_number = layout.displays.len().saturating_add(layout.inactive.len());
-        let first_local = self
-            .device_displays
-            .iter()
-            .position(|display| display.local);
-        let displays = self
-            .device_displays
-            .iter()
-            .enumerate()
-            .filter_map(|(index, display)| {
-                let resolved = display.output_id.as_deref().and_then(|output| {
-                    layout
-                        .listed()
-                        .find(|resolved| resolved.is(&display.device, output))
-                });
-                Some(ArrangedDisplay {
-                    connector: display.key(),
-                    movement_group: Some(display.device.clone()),
-                    shared: resolved.map(|resolved| SharedDisplayState {
-                        device: resolved.device.clone(),
-                        output: resolved.output.clone(),
-                        online: resolved.online,
-                        included: resolved.enabled,
-                    }),
-                    label: t_args(
-                        "display-device-screen",
-                        &[
-                            ("device", display.device_label.clone().into()),
-                            ("screen", display.label.clone().into()),
-                            (
-                                "status",
-                                t(if display.online {
-                                    "display-device-online"
-                                } else {
-                                    "display-device-offline"
-                                })
-                                .into(),
-                            ),
-                        ],
-                    ),
-                    number: resolved.map_or_else(
-                        || {
-                            unknown_number = unknown_number.saturating_add(1);
-                            unknown_number
-                        },
-                        |resolved| resolved.order.saturating_add(1),
-                    ),
-                    placement: Placement::new(
-                        display.x,
-                        display.y,
-                        i32::try_from(display.width).ok()?,
-                        i32::try_from(display.height).ok()?,
-                    ),
-                    primary: first_local == Some(index),
-                    movable: DisplayModel::device_movable(display),
-                })
-            })
-            .collect();
-        let moves = self
-            .device_displays
-            .iter()
-            .filter(|display| DisplayModel::device_movable(display))
-            .filter_map(|display| {
-                let key = display.key();
-                let target = key.clone();
-                let revision = display.revision;
-                crate::on_row::binding(
-                    dispatcher,
-                    &DisplayModel::device_output_row(display).into_resource(),
-                    effect(DisplayEffect::MOVE_DEVICE_DISPLAY)
-                        .map(move |(x, y): (i32, i32)| (target.clone(), revision, x, y)),
-                )
-                .map(|binding| (key, binding))
-            })
-            .collect();
-        Some(section(
-            &t("display-devices-title"),
-            rows(vec![
-                block(Box::new(DisplayArrangement::new(
-                    displays,
-                    moves,
-                    self.device_arrangement_drag.clone(),
-                ))),
-                note(&t("display-devices-arrange")),
-            ]),
-        ))
-    }
-
+    /// The canvas of this device's displays and, beside them where the person's layout places
+    /// them, their other devices' screens.
     fn arrangement_canvas(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
         connected: &[&DisplayOutput],
     ) -> super::display_arrangement::DisplayArrangement {
-        let displays = self.arranged_displays(connected);
-        let moves = displays
-            .iter()
-            .filter(|display| display.movable)
-            .filter_map(|display| {
-                let connector = display.connector.clone();
-                self.output_binding(
-                    dispatcher,
-                    &display.connector,
-                    effect(DisplayEffect::MOVE_DISPLAY)
-                        .map(move |(x, y): (i32, i32)| (connector.clone(), x, y)),
-                )
-                .map(|binding| (display.connector.clone(), binding))
-            })
-            .collect();
+        let mut displays = self.arranged_displays(connected);
+        let ((dx, dy), mut moves) = self.join_other_screens(dispatcher, &mut displays);
+        moves.extend(
+            displays
+                .iter()
+                .filter(|display| display.movable && display.movement_group.is_none())
+                .filter_map(|display| {
+                    let connector = display.connector.clone();
+                    self.output_binding(
+                        dispatcher,
+                        &display.connector,
+                        effect(DisplayEffect::MOVE_DISPLAY).map(move |(x, y): (i32, i32)| {
+                            (
+                                connector.clone(),
+                                x.saturating_sub(dx),
+                                y.saturating_sub(dy),
+                            )
+                        }),
+                    )
+                    .map(|binding| (display.connector.clone(), binding))
+                }),
+        );
         super::display_arrangement::DisplayArrangement::new(
             displays,
             moves,
@@ -2488,7 +2213,6 @@ impl DisplayModel {
 
 impl DisplayModel {
     pub(crate) fn poll(&mut self) -> bool {
-        self.poll_device_move();
         self.poll_background();
         self.poll_device();
         self.poll_selection();
@@ -2507,9 +2231,7 @@ impl DisplayModel {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.hardware_probe.is_some()
-            || self.pending_brightness.is_some()
-            || self.awaiting_device_move.is_some()
+        self.hardware_probe.is_some() || self.pending_brightness.is_some()
     }
 
     pub(crate) fn next_wake(&self) -> Option<Instant> {
@@ -2524,7 +2246,6 @@ impl DisplayModel {
         }
         let files: Vec<std::path::PathBuf> = [
             settings_store::hardware::display_snapshot_path(),
-            settings_store::device_displays::path(),
             settings_store::person_displays::path(),
         ]
         .into_iter()

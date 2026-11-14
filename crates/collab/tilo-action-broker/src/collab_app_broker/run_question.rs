@@ -23,9 +23,8 @@
 use crate::BrokerError;
 use std::sync::Arc;
 
-use tilo_action_policy::agent_answers::answer_grant;
 use tilo_action_policy::{Answer, Grant, Grantee};
-use tilo_actions::remote::{Caller, CallerPrincipal, InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 
 use super::AppBrokerState;
 use super::action_host::ConnectionActionHost;
@@ -33,7 +32,8 @@ use crate::app_actions::{
     AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
 };
 use crate::services::{
-    TRACKER_APP, TRACKER_ISSUE_PREFIX, TrackerAnswer, TrackerRun, issue_answer_scope,
+    TRACKER_APP, TRACKER_ISSUE_PREFIX, TrackerAnswer, TrackerRun, issue_answer_id,
+    issue_answer_scope,
 };
 
 /// The tracker's verb a person answers a run's question with.
@@ -78,9 +78,7 @@ impl AppBrokerState {
     }
 
     fn ask_run_question(&self, caller: &Caller, invoke: &InvokeRequest) -> Option<PendingAnswer> {
-        let CallerPrincipal::Person(person) = caller.principal() else {
-            return None;
-        };
+        let person = caller.acting().person_id()?;
         let workspace = caller.workspace()?;
         let InvokeArgument::Json(arguments) = &invoke.argument else {
             return None;
@@ -145,24 +143,26 @@ impl AppBrokerState {
         let may_grant = keeps_answers
             || self
                 .services
-                .app_action_grants
+                .workspace_grants
                 .as_ref()
-                .is_some_and(|grants| grants.may_grant(workspace, person));
+                .is_some_and(|grants| grants.may_record(workspace, person));
         let grant = asked
             .as_ref()
             .filter(|action| may_grant && !action.contract.need().privileged)
             .map(|action| {
-                answer_grant(
-                    workspace,
-                    Grantee::task(issue),
-                    (
-                        &issue_answer_scope(
-                            &question.app,
-                            (&action.resource_kind, &action.action),
-                            action.contract.asks_for_argument(None),
-                        ),
-                        action.contract.need().kind,
+                let (scope, kind) = (
+                    issue_answer_scope(
+                        &question.app,
+                        (&action.resource_kind, &action.action),
+                        action.contract.asks_for_argument(None),
                     ),
+                    action.contract.need().kind,
+                );
+                Grant::new(
+                    issue_answer_id(issue, (&scope, kind)),
+                    Grantee::agent(run.agent.clone()),
+                    scope.node(workspace),
+                    tilo_action_policy::KindSet::of(kind),
                     Answer::Allow,
                     Grantee::person(person),
                 )
@@ -215,7 +215,7 @@ impl AppBrokerState {
         answer: AppActionConsent,
     ) {
         if answer == AppActionConsent::Always
-            && let (Some(grant), Some(grants)) = (grant, self.services.app_action_grants.as_ref())
+            && let (Some(grant), Some(grants)) = (grant, self.services.workspace_grants.as_ref())
             && let Err(error) = grants.record(request, grant, answer).await
         {
             tracing::warn!(%error, "the grant for the issue could not be recorded");

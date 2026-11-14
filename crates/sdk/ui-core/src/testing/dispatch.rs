@@ -200,51 +200,57 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    #[test]
-    fn answer_controls_runs_the_action_a_press_published() {
-        let fired = Rc::new(Cell::new(0_u32));
-        let count = Rc::clone(&fired);
-        let mut button = Button::new("answer", "Answer").on_view(move || {
-            count.set(count.get() + 1);
-        });
-        let mut doc = AutoCommit::new();
-        let activated = Widget::perform_action(
-            &mut button,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut Edits::lend(&mut doc),
-            &automerge::ROOT,
-        );
-        assert!(activated, "the button takes the activation");
-        assert_eq!(fired.get(), 0, "a published press runs when it is answered");
-        assert_eq!(answer_controls(&mut button), 1);
-        assert_eq!(fired.get(), 1);
-        assert_eq!(answer_controls(&mut button), 0, "answered once");
-    }
+    tilo_test_env::scenario! {
+        /// `answer_controls`, for a press and for a reported value.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn answer_controls_runs_what_a_control_published_once;
 
-    #[test]
-    fn answer_controls_runs_the_value_a_control_reported() {
-        use crate::widget::Chip;
-        let reported = Rc::new(Cell::new(None));
-        let heard = Rc::clone(&reported);
-        let mut chip = Chip::new("Sort")
-            .selectable()
-            .on_toggle_view(move |on| heard.set(Some(on)));
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action(
-            &mut chip,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            reported.get(),
-            None,
-            "a published verb reaches its handler when it is answered"
-        );
-        assert_eq!(answer_controls(&mut chip), 1);
-        assert_eq!(reported.get(), Some(true));
-        assert_eq!(answer_controls(&mut chip), 0, "answered once");
+        phase answer_controls_runs_the_action_a_press_published;
+        {
+            let fired = Rc::new(Cell::new(0_u32));
+            let count = Rc::clone(&fired);
+            let mut button = Button::new("answer", "Answer").on_view(move || {
+                count.set(count.get() + 1);
+            });
+            let mut doc = AutoCommit::new();
+            let activated = Widget::perform_action(
+                &mut button,
+                &crate::a11y::Action::Activate,
+                &[],
+                &mut Edits::lend(&mut doc),
+                &automerge::ROOT,
+            );
+            assert!(activated, "the button takes the activation");
+            assert_eq!(fired.get(), 0, "a published press runs when it is answered");
+            assert_eq!(answer_controls(&mut button), 1);
+            assert_eq!(fired.get(), 1);
+            assert_eq!(answer_controls(&mut button), 0, "answered once");
+        }
+
+        phase answer_controls_runs_the_value_a_control_reported;
+        {
+            use crate::widget::Chip;
+            let reported = Rc::new(Cell::new(None));
+            let heard = Rc::clone(&reported);
+            let mut chip = Chip::new("Sort")
+                .selectable()
+                .on_toggle_view(move |on| heard.set(Some(on)));
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_action(
+                &mut chip,
+                &crate::a11y::Action::Activate,
+                &[],
+                &mut Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                reported.get(),
+                None,
+                "a published verb reaches its handler when it is answered"
+            );
+            assert_eq!(answer_controls(&mut chip), 1);
+            assert_eq!(reported.get(), Some(true));
+            assert_eq!(answer_controls(&mut chip), 0, "answered once");
+        }
     }
 }

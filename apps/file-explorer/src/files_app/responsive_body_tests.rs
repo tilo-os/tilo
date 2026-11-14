@@ -206,213 +206,429 @@ impl H {
     }
 }
 
-#[test]
-fn changes_announce_once_with_the_windows_undo() {
-    use crate::file_ops::Change;
-    let _serial = crate::files_app::serial();
-    ui::attention::clear();
-    let dir = tempfile::tempdir().unwrap();
-    for name in ["a.txt", "b.txt", "c.txt"] {
-        std::fs::write(dir.path().join(name), b"x").unwrap();
-    }
-    let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
-    h.draw_overlay();
-    h.w.state().status = None;
-    h.w.state().select(Some(1));
-    h.draw_overlay();
-    assert!(
-        !h.w.state().status_notice.is_shown(),
-        "selecting a file is not news"
-    );
+tilo_test_env::scenario! {
+    fn the_body_answers_keys_pointers_and_drags_and_announces_changes;
 
-    assert!(
-        !h.ctrl_char("z"),
-        "Ctrl+Z falls through to the window's Undo"
-    );
-
-    ui::undo::UndoControl::set_undo_status(&mut h.w, &mut || ui::UndoStatus {
-        can_undo: true,
-        ..ui::UndoStatus::default()
-    });
-    let gone = dir.path().join("a.txt").display().to_string();
-    h.w.state().settle_op(
-        OpFollowUp::Trash { count: 1 },
-        &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
-            from: gone,
-            entry: Some("/trash/files/a.txt".into()),
-        }]),
-    );
-    let told = h.w.state().notice_line().expect("a move to Trash is said");
-    assert_eq!(
-        told,
-        t_args("files-moved-to-trash", &[arg("count", 1)]),
-        "one plain line, no meta text"
-    );
-    h.lay_out(1000.0, 720.0);
-    let waiting = ui::attention::items()
-        .into_iter()
-        .find(|item| item.owner().app == "so.tilo.files")
-        .expect("the move waits in Needs you");
-    assert_eq!(waiting.title(), told);
-    assert_eq!(waiting.action().label, t("files-notice-undo"));
-    h.w.state()
-        .needs
-        .pressed(ui::attention::Press::Act(waiting.id()));
-    h.lay_out(1000.0, 720.0);
-    assert_eq!(
-        ui::undo::UndoControl::take_undo_request(&mut h.w),
-        Some(ui::UndoRequest::Undo),
-        "Undo asks the host, the same door as Ctrl+Z"
-    );
-    assert!(
-        h.w.state().notice_line().is_none(),
-        "acting on the notice takes it down"
-    );
-
-    h.w.state().settle_op(
-        OpFollowUp::Rename,
-        &ui::tilo_resource::Settled::Done(vec![Change::Moved {
-            from: dir.path().join("b.txt").display().to_string(),
-            to: dir.path().join("d.txt").display().to_string(),
-        }]),
-    );
-    assert!(h.w.state().notice_line().is_none());
-    assert!(h.w.state().status_line().is_none());
-
-    h.w.state().settle_op(
-        OpFollowUp::Rename,
-        &ui::tilo_resource::Settled::Failed {
-            reason: std::io::Error::from_raw_os_error(13).to_string(),
-            partial: vec![],
-        },
-    );
-    let told = h.w.state().notice_line().expect("a failed rename is said");
-    assert!(told.contains(&t("files-error-permission")), "{told}");
-    assert!(!told.contains("os error"), "{told}");
-}
-
-#[test]
-fn a_move_to_trash_keeps_its_undo_where_the_person_can_take_it() {
-    use crate::file_ops::Change;
-    let _serial = crate::files_app::serial();
-    ui::attention::clear();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
-    let files = FileExplorerWidget::with_persistence(None, None);
-    files.state().navigate(dir.path().to_path_buf());
-    files.state().wait_for_archive();
-    let mut harness =
-        ui::headless::FrameHarness::for_app(ui::State::new(), files, (1280, 720), Theme::dark());
-    harness.present_in_window_bar();
-    let gone = dir.path().join("a.txt").display().to_string();
-    let mut w = harness.root_mut::<FileExplorerWidget>();
-    ui::undo::UndoControl::set_undo_status(&mut *w, &mut || ui::UndoStatus {
-        can_undo: true,
-        ..ui::UndoStatus::default()
-    });
-    w.state().settle_op(
-        OpFollowUp::Trash { count: 1 },
-        &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
-            from: gone,
-            entry: Some("/trash/files/a.txt".into()),
-        }]),
-    );
-    drop(w);
-    harness.recompose().unwrap();
-    let waiting = ui::attention::items()
-        .into_iter()
-        .find(|item| item.owner().app == "so.tilo.files")
-        .expect("the move waits in Needs you");
-    assert_eq!(waiting.action().label, t("files-notice-undo"));
-    assert_eq!(waiting.owner().name, "Files");
-    let harness = harness;
-    drop(harness);
-}
-
-#[test]
-fn keys_go_back_forward_up_and_type_to_a_name() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("alpha")).unwrap();
-    for name in ["beta.txt", "bravo.txt", "charlie.txt"] {
-        std::fs::write(dir.path().join(name), b"x").unwrap();
-    }
-    let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
-    let selected = |h: &H| {
-        let state = h.w.state();
-        state
-            .selection
-            .primary()
-            .and_then(|i| state.displayed_entries().get(i).map(|e| e.name.clone()))
-    };
-    h.type_char("b");
-    assert_eq!(selected(&h).as_deref(), Some("beta.txt"));
-    h.type_char("r");
-    assert_eq!(selected(&h).as_deref(), Some("bravo.txt"));
-
-    h.w.state().navigate(dir.path().join("alpha"));
-    h.lay_out(1000.0, 720.0);
-    let alt = |h: &mut H, key| {
-        let ev = ui::synthetic_input::key_event(
-            winit::keyboard::Key::Named(key),
-            None,
-            winit::event::ElementState::Pressed,
+    phase changes_announce_once_with_the_windows_undo;
+    {
+        use crate::file_ops::Change;
+        let _serial = crate::files_app::serial();
+        ui::attention::clear();
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
+        h.draw_overlay();
+        h.w.state().status = None;
+        h.w.state().select(Some(1));
+        h.draw_overlay();
+        assert!(
+            !h.w.state().status_notice.is_shown(),
+            "selecting a file is not news"
         );
-        ui::testing::Dispatch::new()
-            .doc(&mut h.state.doc)
-            .path(&h.state.root)
-            .layout(&h.taffy, h.node)
-            .modifiers(winit::keyboard::ModifiersState::ALT)
-            .send(&mut h.w, &ui::synthetic_input::keyboard_input(ev))
-            .handled
-    };
-    assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowLeft));
-    assert_eq!(h.w.state().current_path(), dir.path());
-    assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowRight));
-    assert_eq!(h.w.state().current_path(), dir.path().join("alpha"));
-    assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowUp));
-    assert_eq!(h.w.state().current_path(), dir.path());
+
+        assert!(
+            !h.ctrl_char("z"),
+            "Ctrl+Z falls through to the window's Undo"
+        );
+
+        ui::undo::UndoControl::set_undo_status(&mut h.w, &mut || ui::UndoStatus {
+            can_undo: true,
+            ..ui::UndoStatus::default()
+        });
+        let gone = dir.path().join("a.txt").display().to_string();
+        h.w.state().settle_op(
+            OpFollowUp::Trash { count: 1 },
+            &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
+                from: gone,
+                entry: Some("/trash/files/a.txt".into()),
+            }]),
+        );
+        let told = h.w.state().notice_line().expect("a move to Trash is said");
+        assert_eq!(
+            told,
+            t_args("files-moved-to-trash", &[arg("count", 1)]),
+            "one plain line, no meta text"
+        );
+        h.lay_out(1000.0, 720.0);
+        let waiting = ui::attention::items()
+            .into_iter()
+            .find(|item| item.owner().app == "so.tilo.files")
+            .expect("the move waits in Needs you");
+        assert_eq!(waiting.title(), told);
+        assert_eq!(waiting.action().label, t("files-notice-undo"));
+        h.w.state()
+            .needs
+            .pressed(ui::attention::Press::Act(waiting.id()));
+        h.lay_out(1000.0, 720.0);
+        assert_eq!(
+            ui::undo::UndoControl::take_undo_request(&mut h.w),
+            Some(ui::UndoRequest::Undo),
+            "Undo asks the host, the same door as Ctrl+Z"
+        );
+        assert!(
+            h.w.state().notice_line().is_none(),
+            "acting on the notice takes it down"
+        );
+
+        h.w.state().settle_op(
+            OpFollowUp::Rename,
+            &ui::tilo_resource::Settled::Done(vec![Change::Moved {
+                from: dir.path().join("b.txt").display().to_string(),
+                to: dir.path().join("d.txt").display().to_string(),
+            }]),
+        );
+        assert!(h.w.state().notice_line().is_none());
+        assert!(h.w.state().status_line().is_none());
+
+        h.w.state().settle_op(
+            OpFollowUp::Rename,
+            &ui::tilo_resource::Settled::Failed {
+                reason: std::io::Error::from_raw_os_error(13).to_string(),
+                partial: vec![],
+            },
+        );
+        let told = h.w.state().notice_line().expect("a failed rename is said");
+        assert!(told.contains(&t("files-error-permission")), "{told}");
+        assert!(!told.contains("os error"), "{told}");
+    }
+
+    phase a_move_to_trash_keeps_its_undo_where_the_person_can_take_it;
+    {
+        use crate::file_ops::Change;
+        let _serial = crate::files_app::serial();
+        ui::attention::clear();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let files = FileExplorerWidget::with_persistence(None, None);
+        files.state().navigate(dir.path().to_path_buf());
+        files.state().wait_for_archive();
+        let mut harness =
+            ui::headless::FrameHarness::for_app(ui::State::new(), files, (1280, 720), Theme::dark());
+        harness.present_in_window_bar();
+        let gone = dir.path().join("a.txt").display().to_string();
+        let mut w = harness.root_mut::<FileExplorerWidget>();
+        ui::undo::UndoControl::set_undo_status(&mut *w, &mut || ui::UndoStatus {
+            can_undo: true,
+            ..ui::UndoStatus::default()
+        });
+        w.state().settle_op(
+            OpFollowUp::Trash { count: 1 },
+            &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
+                from: gone,
+                entry: Some("/trash/files/a.txt".into()),
+            }]),
+        );
+        drop(w);
+        harness.recompose().unwrap();
+        let waiting = ui::attention::items()
+            .into_iter()
+            .find(|item| item.owner().app == "so.tilo.files")
+            .expect("the move waits in Needs you");
+        assert_eq!(waiting.action().label, t("files-notice-undo"));
+        assert_eq!(waiting.owner().name, "Files");
+        let harness = harness;
+        drop(harness);
+    }
+
+    phase keys_go_back_forward_up_and_type_to_a_name;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("alpha")).unwrap();
+        for name in ["beta.txt", "bravo.txt", "charlie.txt"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
+        let selected = |h: &H| {
+            let state = h.w.state();
+            state
+                .selection
+                .primary()
+                .and_then(|i| state.displayed_entries().get(i).map(|e| e.name.clone()))
+        };
+        h.type_char("b");
+        assert_eq!(selected(&h).as_deref(), Some("beta.txt"));
+        h.type_char("r");
+        assert_eq!(selected(&h).as_deref(), Some("bravo.txt"));
+
+        h.w.state().navigate(dir.path().join("alpha"));
+        h.lay_out(1000.0, 720.0);
+        let alt = |h: &mut H, key| {
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Named(key),
+                None,
+                winit::event::ElementState::Pressed,
+            );
+            ui::testing::Dispatch::new()
+                .doc(&mut h.state.doc)
+                .path(&h.state.root)
+                .layout(&h.taffy, h.node)
+                .modifiers(winit::keyboard::ModifiersState::ALT)
+                .send(&mut h.w, &ui::synthetic_input::keyboard_input(ev))
+                .handled
+        };
+        assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowLeft));
+        assert_eq!(h.w.state().current_path(), dir.path());
+        assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowRight));
+        assert_eq!(h.w.state().current_path(), dir.path().join("alpha"));
+        assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowUp));
+        assert_eq!(h.w.state().current_path(), dir.path());
+    }
+
+    phase a_drag_resting_on_a_folder_opens_it;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = dir.path().join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let w = FileExplorerWidget::with_persistence(None, None);
+        w.state().navigate(dir.path().to_path_buf());
+        let now = ui::time::now();
+        w.state().spring = Some((inner.clone(), now));
+        assert!(!w.state().spring_open_if_due(now), "no drag, nothing opens");
+        w.state().pin_drag = Some(dir.path().join("a.txt"));
+        assert!(
+            !w.state().spring_open_if_due(now),
+            "not rested long enough yet"
+        );
+        assert!(w.state().spring_open_if_due(now + SPRING_OPEN));
+        assert_eq!(w.state().current_path(), inner);
+        assert!(
+            w.state().pin_drag.is_some(),
+            "the drag goes on in the opened folder"
+        );
+    }
+
+    phase rename_selects_the_name_but_not_its_extension;
+    {
+        assert_eq!(rename_stem_end("report.final.pdf", false), Some(12));
+        assert_eq!(rename_stem_end("notes", false), None);
+        assert_eq!(rename_stem_end(".bashrc", false), None);
+        assert_eq!(rename_stem_end("photos.2024", true), None);
+    }
+
+    phase row_drags_and_sidebar_favourites_respond_to_real_pointer_events;
+    {
+        dropping_a_folder_on_the_sidebar_pins_it();
+        releasing_a_pin_drag_off_the_sidebar_pins_nothing();
+        a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt();
+    }
+
+    phase right_clicking_a_favourite_opens_its_menu;
+    {
+        fn row(w: &dyn Widget, label: &str) -> Option<vello::kurbo::Point> {
+            fn node(n: &ui::a11y::AccessNode, label: &str) -> Option<vello::kurbo::Point> {
+                if n.name.as_deref() == Some(label) && n.role == ui::a11y::Role::TreeItem {
+                    return n.bounds.map(|bounds| {
+                        vello::kurbo::Point::new(
+                            f64::midpoint(bounds.x0, bounds.x1),
+                            f64::midpoint(bounds.y0, bounds.y1),
+                        )
+                    });
+                }
+                n.children.iter().find_map(|child| node(child, label))
+            }
+            w.accessibility()
+                .as_ref()
+                .and_then(|n| node(n, label))
+                .or_else(|| w.children().iter().find_map(|child| row(*child, label)))
+        }
+        let cfg = tempfile::tempdir().unwrap();
+        let w =
+            FileExplorerWidget::with_persistence(Some(cfg.path()), Some(PathBuf::from("/home/tester")));
+        let mut h = H::from_widget(w, 1200.0, 720.0);
+        assert_eq!(
+            h.w.debug_body_mode(),
+            SidebarPlacement::Docked,
+            "wide docks the sidebar"
+        );
+
+        let favorites = h.w.state().favorites_store().borrow().favorites.clone();
+        let removable = row(&h.w, &favorites[1].label).expect("the removable favorite is laid out");
+        let home_row = row(&h.w, &favorites[0].label).expect("the Home favorite is laid out");
+        let (x, y) = (removable.x, removable.y);
+        h.cursor(x, y);
+        h.right_press();
+        let labels = h.open_menu_labels();
+        assert!(
+            labels
+                .iter()
+                .any(|l| l == &crate::i18n::t("files-menu-remove-favourite")),
+            "the favourite's own menu is shown: {labels:?}",
+        );
+        assert!(
+            labels.iter().any(|l| l == "Open"),
+            "with the Open folder action: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l == "New Folder"),
+            "not the file menu: {labels:?}"
+        );
+
+        let (hx, hy) = (home_row.x, home_row.y);
+        h.cursor(hx, hy);
+        h.right_press();
+        let home = h.open_menu_labels();
+        assert!(
+            !home.iter().any(|l| l == "Remove from Favorites"),
+            "Home is pinned and cannot be removed: {home:?}",
+        );
+    }
 }
 
-#[test]
-fn a_drag_resting_on_a_folder_opens_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let inner = dir.path().join("inner");
-    std::fs::create_dir(&inner).unwrap();
-    std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
-    let w = FileExplorerWidget::with_persistence(None, None);
-    w.state().navigate(dir.path().to_path_buf());
-    let now = ui::time::now();
-    w.state().spring = Some((inner.clone(), now));
-    assert!(!w.state().spring_open_if_due(now), "no drag, nothing opens");
-    w.state().pin_drag = Some(dir.path().join("a.txt"));
-    assert!(
-        !w.state().spring_open_if_due(now),
-        "not rested long enough yet"
-    );
-    assert!(w.state().spring_open_if_due(now + SPRING_OPEN));
-    assert_eq!(w.state().current_path(), inner);
-    assert!(
-        w.state().pin_drag.is_some(),
-        "the drag goes on in the opened folder"
-    );
-}
+tilo_test_env::scenario! {
+    fn the_body_lays_out_its_panes_toolbar_menus_and_states_by_width;
 
-#[test]
-fn rename_selects_the_name_but_not_its_extension() {
-    assert_eq!(rename_stem_end("report.final.pdf", false), Some(12));
-    assert_eq!(rename_stem_end("notes", false), None);
-    assert_eq!(rename_stem_end(".bashrc", false), None);
-    assert_eq!(rename_stem_end("photos.2024", true), None);
-}
+    phase places_list_docks_wide_and_takes_turns_with_the_files_when_narrow;
+    {
+        body_docks_wide_and_reflows_to_push_when_narrowed();
+        wide_docks_the_places_list_beside_the_files();
+        narrow_shows_the_files_not_the_places_list();
+        narrow_places_are_a_screen_of_their_own();
+        narrow_places_screen_takes_input_the_files_do_not();
+        narrow_navigation_returns_to_the_files();
+    }
 
-#[test]
-fn places_list_docks_wide_and_takes_turns_with_the_files_when_narrow() {
-    body_docks_wide_and_reflows_to_push_when_narrowed();
-    wide_docks_the_places_list_beside_the_files();
-    narrow_shows_the_files_not_the_places_list();
-    narrow_places_are_a_screen_of_their_own();
-    narrow_places_screen_takes_input_the_files_do_not();
-    narrow_navigation_returns_to_the_files();
+    phase the_empty_state_is_centred_in_the_content_pane;
+    {
+        const WIDTHS: [f32; 19] = [
+            1200.0, 620.0, 560.0, 530.0, 520.0, 505.0, 480.0, 420.0, 360.0, 300.0, 260.0, 300.0, 420.0,
+            520.0, 700.0, 1200.0, 900.0, 500.0, 1200.0,
+        ];
+        for mode in [ViewMode::List, ViewMode::Grid] {
+            for places_open in [true, false] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
+                h.w.state().set_view_mode(mode);
+                if places_open {
+                    h.w.debug_show_places();
+                }
+                for width in WIDTHS {
+                    for _ in 0..2 {
+                        h.lay_out(width, 720.0);
+                        h.draw();
+                        let window = h.w.get_rect();
+                        let content = h.w.debug_content_rect();
+                        let sidebar = h.w.debug_sidebar_rect();
+                        let empty = h
+                            .rect_of("EmptyState")
+                            .expect("an empty folder shows its empty state");
+                        assert!(
+                            (empty.x0 - content.x0).abs() <= 1.0
+                                && (empty.x1 - content.x1).abs() <= 1.0,
+                            "{mode:?} open={places_open} at {width}: the empty state is the \
+                             file pane, not the window: empty={empty:?} content={content:?} \
+                             window={window:?} places={sidebar:?}"
+                        );
+                        assert!(
+                            (empty.center().x - content.center().x).abs() <= 1.0,
+                            "{mode:?} open={places_open} at {width}: the message centres in \
+                             the file pane: empty={empty:?} content={content:?}"
+                        );
+                        assert!(
+                            content.x1 <= window.x1 + 1.0,
+                            "{mode:?} open={places_open} at {width}: the file pane stays \
+                             inside the window: content={content:?} window={window:?}"
+                        );
+                        assert!(
+                            sidebar.width() <= 0.0 || sidebar.x1 <= empty.x0 + 1.0,
+                            "{mode:?} open={places_open} at {width}: the places list stands \
+                             beside the file pane, never over its message: \
+                             places={sidebar:?} empty={empty:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    phase toolbar_adapts_to_width_and_its_menus_open_through_every_door;
+    {
+        toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width();
+        toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport();
+        shared_toolbar_resource_action_opens_view_options();
+        accesskit_view_options_activation_updates_the_exported_menu_tree();
+        archive_extraction_stays_directly_reachable_on_phone_and_desktop();
+    }
+
+    phase the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away;
+    {
+        let mut h = H::new(None, 1200.0, 720.0);
+        h.w.chrome().nav.close_sidebar();
+        for _ in 0..2 {
+            h.w.chrome().nav.snap();
+            h.w.take_structure_dirty();
+            h.lay_out(1200.0, 720.0);
+        }
+        let toggle = h.w.chrome().nav.geometry().toggle;
+        assert!(toggle.width() > 0.0, "the shell shows its toggle");
+        let up =
+            h.w.state()
+                .toolbar
+                .up_button_rect()
+                .expect("the toolbar is laid out");
+        assert!(
+            up.x0 > toggle.x1,
+            "the toolbar's controls clear the toggle: toggle={toggle:?} up={up:?}"
+        );
+
+        h.w.chrome().nav.open_sidebar();
+        h.w.chrome().nav.snap();
+        h.lay_out(1200.0, 720.0);
+        h.w.take_structure_dirty();
+        h.lay_out(1200.0, 720.0);
+        let docked = h.w.chrome().nav.geometry();
+        assert!(docked.toggle.x1 <= docked.content_column.x0 + 1.0);
+    }
+
+    phase menu_rows_show_the_sort_and_hidden_state_as_checks;
+    {
+        let w = FileExplorerWidget::with_persistence(None, None);
+        assert_eq!(
+            w.state()
+                .command_checked(Some(&FileCommand::SetSort(SortBy::Name))),
+            Some(true)
+        );
+        assert_eq!(
+            w.state()
+                .command_checked(Some(&FileCommand::SetSort(SortBy::Size))),
+            Some(false)
+        );
+        assert_eq!(
+            w.state().command_checked(Some(&FileCommand::ToggleHidden)),
+            Some(false)
+        );
+        w.state().show_hidden = true;
+        assert_eq!(
+            w.state().command_checked(Some(&FileCommand::ToggleHidden)),
+            Some(true)
+        );
+        assert_eq!(
+            w.state().command_checked(Some(&FileCommand::NewFolder)),
+            None
+        );
+        assert_eq!(w.state().command_checked(None), None);
+    }
+
+    phase the_item_count_is_withheld_while_a_folder_is_loading_or_failed;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let w = FileExplorerWidget::with_persistence(None, None);
+        w.state().navigate(dir.path().to_path_buf());
+        assert!(!w.state().footer_label().is_empty());
+        w.state().debug_show_error_state();
+        assert!(
+            w.state().footer_label().is_empty(),
+            "no count over an error"
+        );
+        w.state().debug_show_loading_state();
+        assert!(
+            w.state().footer_label().is_empty(),
+            "no count while opening"
+        );
+    }
 }
 
 fn body_docks_wide_and_reflows_to_push_when_narrowed() {
@@ -430,68 +646,6 @@ fn body_docks_wide_and_reflows_to_push_when_narrowed() {
     );
     h.lay_out(1200.0, 720.0);
     assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
-}
-
-#[test]
-fn the_empty_state_is_centred_in_the_content_pane() {
-    const WIDTHS: [f32; 19] = [
-        1200.0, 620.0, 560.0, 530.0, 520.0, 505.0, 480.0, 420.0, 360.0, 300.0, 260.0, 300.0, 420.0,
-        520.0, 700.0, 1200.0, 900.0, 500.0, 1200.0,
-    ];
-    for mode in [ViewMode::List, ViewMode::Grid] {
-        for places_open in [true, false] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
-            h.w.state().set_view_mode(mode);
-            if places_open {
-                h.w.debug_show_places();
-            }
-            for width in WIDTHS {
-                for _ in 0..2 {
-                    h.lay_out(width, 720.0);
-                    h.draw();
-                    let window = h.w.get_rect();
-                    let content = h.w.debug_content_rect();
-                    let sidebar = h.w.debug_sidebar_rect();
-                    let empty = h
-                        .rect_of("EmptyState")
-                        .expect("an empty folder shows its empty state");
-                    assert!(
-                        (empty.x0 - content.x0).abs() <= 1.0
-                            && (empty.x1 - content.x1).abs() <= 1.0,
-                        "{mode:?} open={places_open} at {width}: the empty state is the \
-                             file pane, not the window: empty={empty:?} content={content:?} \
-                             window={window:?} places={sidebar:?}"
-                    );
-                    assert!(
-                        (empty.center().x - content.center().x).abs() <= 1.0,
-                        "{mode:?} open={places_open} at {width}: the message centres in \
-                             the file pane: empty={empty:?} content={content:?}"
-                    );
-                    assert!(
-                        content.x1 <= window.x1 + 1.0,
-                        "{mode:?} open={places_open} at {width}: the file pane stays \
-                             inside the window: content={content:?} window={window:?}"
-                    );
-                    assert!(
-                        sidebar.width() <= 0.0 || sidebar.x1 <= empty.x0 + 1.0,
-                        "{mode:?} open={places_open} at {width}: the places list stands \
-                             beside the file pane, never over its message: \
-                             places={sidebar:?} empty={empty:?}"
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn toolbar_adapts_to_width_and_its_menus_open_through_every_door() {
-    toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width();
-    toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport();
-    shared_toolbar_resource_action_opens_view_options();
-    accesskit_view_options_activation_updates_the_exported_menu_tree();
-    archive_extraction_stays_directly_reachable_on_phone_and_desktop();
 }
 
 fn toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width() {
@@ -1006,13 +1160,6 @@ fn typing_in_the_in_place_editor_renames_on_enter() {
     assert!(!dir.path().join("a.txt").exists(), "the old name is gone");
 }
 
-#[test]
-fn row_drags_and_sidebar_favourites_respond_to_real_pointer_events() {
-    dropping_a_folder_on_the_sidebar_pins_it();
-    releasing_a_pin_drag_off_the_sidebar_pins_nothing();
-    a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt();
-}
-
 fn dropping_a_folder_on_the_sidebar_pins_it() {
     let cfg = tempfile::tempdir().unwrap();
     let w =
@@ -1092,67 +1239,6 @@ fn a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt() {
     assert_eq!(crate::external_drag::unclaimed(), None);
 }
 
-#[test]
-fn right_clicking_a_favourite_opens_its_menu() {
-    fn row(w: &dyn Widget, label: &str) -> Option<vello::kurbo::Point> {
-        fn node(n: &ui::a11y::AccessNode, label: &str) -> Option<vello::kurbo::Point> {
-            if n.name.as_deref() == Some(label) && n.role == ui::a11y::Role::TreeItem {
-                return n.bounds.map(|bounds| {
-                    vello::kurbo::Point::new(
-                        f64::midpoint(bounds.x0, bounds.x1),
-                        f64::midpoint(bounds.y0, bounds.y1),
-                    )
-                });
-            }
-            n.children.iter().find_map(|child| node(child, label))
-        }
-        w.accessibility()
-            .as_ref()
-            .and_then(|n| node(n, label))
-            .or_else(|| w.children().iter().find_map(|child| row(*child, label)))
-    }
-    let cfg = tempfile::tempdir().unwrap();
-    let w =
-        FileExplorerWidget::with_persistence(Some(cfg.path()), Some(PathBuf::from("/home/tester")));
-    let mut h = H::from_widget(w, 1200.0, 720.0);
-    assert_eq!(
-        h.w.debug_body_mode(),
-        SidebarPlacement::Docked,
-        "wide docks the sidebar"
-    );
-
-    let favorites = h.w.state().favorites_store().borrow().favorites.clone();
-    let removable = row(&h.w, &favorites[1].label).expect("the removable favorite is laid out");
-    let home_row = row(&h.w, &favorites[0].label).expect("the Home favorite is laid out");
-    let (x, y) = (removable.x, removable.y);
-    h.cursor(x, y);
-    h.right_press();
-    let labels = h.open_menu_labels();
-    assert!(
-        labels
-            .iter()
-            .any(|l| l == &crate::i18n::t("files-menu-remove-favourite")),
-        "the favourite's own menu is shown: {labels:?}",
-    );
-    assert!(
-        labels.iter().any(|l| l == "Open"),
-        "with the Open folder action: {labels:?}"
-    );
-    assert!(
-        !labels.iter().any(|l| l == "New Folder"),
-        "not the file menu: {labels:?}"
-    );
-
-    let (hx, hy) = (home_row.x, home_row.y);
-    h.cursor(hx, hy);
-    h.right_press();
-    let home = h.open_menu_labels();
-    assert!(
-        !home.iter().any(|l| l == "Remove from Favorites"),
-        "Home is pinned and cannot be removed: {home:?}",
-    );
-}
-
 fn wide_docks_the_places_list_beside_the_files() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -1178,83 +1264,5 @@ fn wide_docks_the_places_list_beside_the_files() {
     assert!(
         h.w.debug_places_open(),
         "wide navigation leaves the docked list in place — nothing to dismiss",
-    );
-}
-
-#[test]
-fn the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away() {
-    let mut h = H::new(None, 1200.0, 720.0);
-    h.w.chrome().nav.close_sidebar();
-    for _ in 0..2 {
-        h.w.chrome().nav.snap();
-        h.w.take_structure_dirty();
-        h.lay_out(1200.0, 720.0);
-    }
-    let toggle = h.w.chrome().nav.geometry().toggle;
-    assert!(toggle.width() > 0.0, "the shell shows its toggle");
-    let up =
-        h.w.state()
-            .toolbar
-            .up_button_rect()
-            .expect("the toolbar is laid out");
-    assert!(
-        up.x0 > toggle.x1,
-        "the toolbar's controls clear the toggle: toggle={toggle:?} up={up:?}"
-    );
-
-    h.w.chrome().nav.open_sidebar();
-    h.w.chrome().nav.snap();
-    h.lay_out(1200.0, 720.0);
-    h.w.take_structure_dirty();
-    h.lay_out(1200.0, 720.0);
-    let docked = h.w.chrome().nav.geometry();
-    assert!(docked.toggle.x1 <= docked.content_column.x0 + 1.0);
-}
-
-#[test]
-fn menu_rows_show_the_sort_and_hidden_state_as_checks() {
-    let w = FileExplorerWidget::with_persistence(None, None);
-    assert_eq!(
-        w.state()
-            .command_checked(Some(&FileCommand::SetSort(SortBy::Name))),
-        Some(true)
-    );
-    assert_eq!(
-        w.state()
-            .command_checked(Some(&FileCommand::SetSort(SortBy::Size))),
-        Some(false)
-    );
-    assert_eq!(
-        w.state().command_checked(Some(&FileCommand::ToggleHidden)),
-        Some(false)
-    );
-    w.state().show_hidden = true;
-    assert_eq!(
-        w.state().command_checked(Some(&FileCommand::ToggleHidden)),
-        Some(true)
-    );
-    assert_eq!(
-        w.state().command_checked(Some(&FileCommand::NewFolder)),
-        None
-    );
-    assert_eq!(w.state().command_checked(None), None);
-}
-
-#[test]
-fn the_item_count_is_withheld_while_a_folder_is_loading_or_failed() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
-    let w = FileExplorerWidget::with_persistence(None, None);
-    w.state().navigate(dir.path().to_path_buf());
-    assert!(!w.state().footer_label().is_empty());
-    w.state().debug_show_error_state();
-    assert!(
-        w.state().footer_label().is_empty(),
-        "no count over an error"
-    );
-    w.state().debug_show_loading_state();
-    assert!(
-        w.state().footer_label().is_empty(),
-        "no count while opening"
     );
 }

@@ -59,298 +59,302 @@ fn children_of_kind<'a>(tree: &'a Published, kind: &str) -> Vec<&'a Published> {
         .collect()
 }
 
-#[test]
-fn opening_and_resolving_a_merge_goes_through_the_record() {
-    let mut session = opened_merge();
-    let hunk = conflict(&session);
-    assert!(session.state().unwrap().merged.contains("OURS"));
+tilo_test_env::scenario! {
+    fn the_session_record_opens_resolves_merges_and_publishes_its_changes;
 
-    session
-        .apply(Session::TAKE_THEIRS.with(session::TakeTheirs { hunk }))
-        .unwrap();
-    let state = session.state().unwrap();
-    assert!(
-        state.merged.contains("THEIRS") && !state.merged.contains("OURS"),
-        "{:?}",
-        state.merged
-    );
-    let index = usize::try_from(hunk).unwrap();
-    assert_eq!(state.resolutions(), vec![(index, HunkChoice::Theirs)]);
-    assert!(state.composed(&state.merge_model()));
-    assert_eq!(
-        state.merge_model().hunks[index].resolution,
-        Resolution::TookTheirs
-    );
+    phase opening_and_resolving_a_merge_goes_through_the_record;
+    {
+        let mut session = opened_merge();
+        let hunk = conflict(&session);
+        assert!(session.state().unwrap().merged.contains("OURS"));
 
-    assert!(
         session
-            .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk: 9999 }))
-            .is_err()
-    );
+            .apply(Session::TAKE_THEIRS.with(session::TakeTheirs { hunk }))
+            .unwrap();
+        let state = session.state().unwrap();
+        assert!(
+            state.merged.contains("THEIRS") && !state.merged.contains("OURS"),
+            "{:?}",
+            state.merged
+        );
+        let index = usize::try_from(hunk).unwrap();
+        assert_eq!(state.resolutions(), vec![(index, HunkChoice::Theirs)]);
+        assert!(state.composed(&state.merge_model()));
+        assert_eq!(
+            state.merge_model().hunks[index].resolution,
+            Resolution::TookTheirs
+        );
 
-    edit(
-        &mut session,
-        &Session::paths().merged.replace("hand made\n"),
-    )
-    .unwrap();
-    assert!(
-        session
-            .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk }))
-            .is_err(),
-        "a hand edit is never overwritten"
-    );
-    assert_eq!(session.state().unwrap().merged, "hand made\n");
-    let tree = session.published().unwrap();
-    assert!(
-        children_of_kind(&tree, "diffmerge.session.change").is_empty(),
-        "no side is offered once the result was edited"
-    );
-    assert!(
+        assert!(
+            session
+                .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk: 9999 }))
+                .is_err()
+        );
+
         edit(
             &mut session,
-            &Session::paths().resolutions.key("0").set(HunkChoice::Both)
+            &Session::paths().merged.replace("hand made\n"),
         )
-        .is_err(),
-        "only taking a side records one"
-    );
-
-    session.apply(conflict_merge()).unwrap();
-    let state = session.state().unwrap();
-    assert!(
-        state.resolutions().is_empty(),
-        "a new merge starts unresolved"
-    );
-    assert!(state.composed(&state.merge_model()));
-}
-
-#[test]
-fn a_change_takes_both_sides_or_custom_text() {
-    let mut session = opened_merge();
-    let hunk = conflict(&session);
-    session
-        .apply(Session::TAKE_BOTH.with(session::TakeBoth { hunk }))
         .unwrap();
-    assert_eq!(session.state().unwrap().merged, "a\nOURS\nTHEIRS\nc\n");
-    session.apply(conflict_merge()).unwrap();
-    session
-        .apply(Session::RESOLVE.with(session::Resolve {
-            hunk,
-            text: "CUSTOM".into(),
-        }))
-        .unwrap();
-    assert_eq!(session.state().unwrap().merged, "a\nCUSTOM\nc\n");
-}
+        assert!(
+            session
+                .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk }))
+                .is_err(),
+            "a hand edit is never overwritten"
+        );
+        assert_eq!(session.state().unwrap().merged, "hand made\n");
+        let tree = session.published().unwrap();
+        assert!(
+            children_of_kind(&tree, "diffmerge.session.change").is_empty(),
+            "no side is offered once the result was edited"
+        );
+        assert!(
+            edit(
+                &mut session,
+                &Session::paths().resolutions.key("0").set(HunkChoice::Both)
+            )
+            .is_err(),
+            "only taking a side records one"
+        );
 
-#[test]
-fn a_change_resolved_with_text_leaves_the_others_open() {
-    let mut session = Replica::<Session>::new();
-    session
-        .apply(Session::OPEN_MERGE.with(session::OpenMerge {
-            base_label: "base".into(),
-            base: "a\nb\nc\nd\ne\n".into(),
-            ours_label: "ours".into(),
-            ours: "a\nB1\nc\nD1\ne\n".into(),
-            theirs_label: "theirs".into(),
-            theirs: "a\nB2\nc\nD2\ne\n".into(),
-        }))
-        .unwrap();
-    let conflicts: Vec<u64> = session
-        .state()
-        .unwrap()
-        .merge_model()
-        .hunks
-        .iter()
-        .enumerate()
-        .filter(|(_, h)| h.resolution.is_conflict())
-        .map(|(index, _)| u64::try_from(index).unwrap())
-        .collect();
-    let [first, second] = conflicts[..] else {
-        panic!("two conflicts: {conflicts:?}");
-    };
-
-    session
-        .apply(Session::RESOLVE.with(session::Resolve {
-            hunk: first,
-            text: "B\nB'".into(),
-        }))
-        .unwrap();
-    let state = session.state().unwrap();
-    assert!(state.composed(&state.merge_model()), "{:?}", state.merged);
-    assert_eq!(
-        children_of_kind(&session.published().unwrap(), "diffmerge.session.change").len(),
-        2,
-        "every change is still offered"
-    );
-
-    session
-        .apply(Session::TAKE_THEIRS.with(session::TakeTheirs { hunk: second }))
-        .expect("the other change still takes a side");
-    let state = session.state().unwrap();
-    assert_eq!(state.merged, "a\nB\nB'\nc\nD2\ne\n");
-    let model = state.merge_model();
-    assert!(model.fully_resolved());
-    assert_eq!(
-        model.hunks[usize::try_from(first).unwrap()].resolution,
-        Resolution::Written
-    );
-
-    session
-        .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk: first }))
-        .expect("a written change can still take a side");
-    assert_eq!(session.state().unwrap().merged, "a\nB1\nc\nD2\ne\n");
-}
-
-#[test]
-fn a_windows_merge_keeps_its_line_endings_through_every_resolution() {
-    let mut session = Replica::<Session>::new();
-    session
-        .apply(Session::OPEN_MERGE.with(session::OpenMerge {
-            base_label: "base".into(),
-            base: "a\r\nb\r\nc\r\nd\r\ne".into(),
-            ours_label: "ours".into(),
-            ours: "a\r\nB1\r\nc\r\nD1\r\ne".into(),
-            theirs_label: "theirs".into(),
-            theirs: "a\r\nB2\r\nc\r\nD2\r\ne".into(),
-        }))
-        .unwrap();
-    let state = session.state().unwrap();
-    assert_eq!(state.merged, "a\r\nB1\r\nc\r\nD1\r\ne");
-    let conflicts: Vec<u64> = state
-        .merge_model()
-        .hunks
-        .iter()
-        .enumerate()
-        .filter(|(_, h)| h.resolution.is_conflict())
-        .map(|(index, _)| u64::try_from(index).unwrap())
-        .collect();
-    let [first, second] = conflicts[..] else {
-        panic!("two conflicts: {conflicts:?}");
-    };
-
-    session
-        .apply(Session::TAKE_BOTH.with(session::TakeBoth { hunk: first }))
-        .unwrap();
-    assert_eq!(
-        session.state().unwrap().merged,
-        "a\r\nB1\r\nB2\r\nc\r\nD1\r\ne"
-    );
-    session
-        .apply(Session::RESOLVE.with(session::Resolve {
-            hunk: second,
-            text: "D\nD'".into(),
-        }))
-        .expect("the other change still takes text");
-    let state = session.state().unwrap();
-    assert_eq!(state.merged, "a\r\nB1\r\nB2\r\nc\r\nD\r\nD'\r\ne");
-    assert!(state.composed(&state.merge_model()), "{:?}", state.merged);
-}
-
-/// Two people typing in the merged result converge character by
-/// character; inputs opened at once end as one of the two, never a mix.
-#[test]
-fn concurrent_edits_converge() {
-    let mut ours = opened_merge();
-    let mut theirs = ours.fork();
-    let merged = Session::paths().merged;
-    edit(&mut ours, &merged.splice(0, 0, "// ours\n")).unwrap();
-    edit(&mut theirs, &merged.splice(2, 0, "!")).unwrap();
-    theirs
-        .apply(Session::OPEN_COMPARISON.with(session::OpenComparison {
-            left_label: "x".into(),
-            left: "1\n".into(),
-            right_label: "y".into(),
-            right: "2\n".into(),
-        }))
-        .unwrap();
-    ours.sync_with(&mut theirs).unwrap();
-    let state = ours.state().unwrap();
-    assert_eq!(state, theirs.state().unwrap());
-    assert_eq!(state.merged, "// ours\na\n!OURS\nc\n");
-    let comparison = state.comparison.unwrap();
-    assert_eq!(
-        (comparison.left_label.0.as_str(), comparison.left.0.as_str()),
-        ("x", "1\n")
-    );
-}
-
-/// The session publishes the merge's changes with content-based ids and
-/// their sides bound, and the comparison's change blocks as bounded view
-/// actions.
-#[test]
-fn the_session_publishes_changes_and_change_blocks() {
-    let mut session = opened_merge();
-    let tree = session.published().unwrap();
-    let actions: Vec<&str> = tree.actions.iter().map(|a| a.id.as_str()).collect();
-    for id in ["open-comparison", "open-merge", "field-edit"] {
-        assert!(actions.contains(&id), "{id}: {actions:?}");
+        session.apply(conflict_merge()).unwrap();
+        let state = session.state().unwrap();
+        assert!(
+            state.resolutions().is_empty(),
+            "a new merge starts unresolved"
+        );
+        assert!(state.composed(&state.merge_model()));
     }
-    let changes = children_of_kind(&tree, "diffmerge.session.change");
-    let [change] = changes.as_slice() else {
-        panic!("one change, not {}", changes.len());
-    };
-    assert!(
-        change.id.as_str().contains("conflict:"),
-        "{}",
-        change.id.as_str()
-    );
-    for id in ["take-ours", "take-theirs", "take-both", "resolve"] {
-        let spec = change
+
+    phase a_change_takes_both_sides_or_custom_text;
+    {
+        let mut session = opened_merge();
+        let hunk = conflict(&session);
+        session
+            .apply(Session::TAKE_BOTH.with(session::TakeBoth { hunk }))
+            .unwrap();
+        assert_eq!(session.state().unwrap().merged, "a\nOURS\nTHEIRS\nc\n");
+        session.apply(conflict_merge()).unwrap();
+        session
+            .apply(Session::RESOLVE.with(session::Resolve {
+                hunk,
+                text: "CUSTOM".into(),
+            }))
+            .unwrap();
+        assert_eq!(session.state().unwrap().merged, "a\nCUSTOM\nc\n");
+    }
+
+    phase a_change_resolved_with_text_leaves_the_others_open;
+    {
+        let mut session = Replica::<Session>::new();
+        session
+            .apply(Session::OPEN_MERGE.with(session::OpenMerge {
+                base_label: "base".into(),
+                base: "a\nb\nc\nd\ne\n".into(),
+                ours_label: "ours".into(),
+                ours: "a\nB1\nc\nD1\ne\n".into(),
+                theirs_label: "theirs".into(),
+                theirs: "a\nB2\nc\nD2\ne\n".into(),
+            }))
+            .unwrap();
+        let conflicts: Vec<u64> = session
+            .state()
+            .unwrap()
+            .merge_model()
+            .hunks
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.resolution.is_conflict())
+            .map(|(index, _)| u64::try_from(index).unwrap())
+            .collect();
+        let [first, second] = conflicts[..] else {
+            panic!("two conflicts: {conflicts:?}");
+        };
+
+        session
+            .apply(Session::RESOLVE.with(session::Resolve {
+                hunk: first,
+                text: "B\nB'".into(),
+            }))
+            .unwrap();
+        let state = session.state().unwrap();
+        assert!(state.composed(&state.merge_model()), "{:?}", state.merged);
+        assert_eq!(
+            children_of_kind(&session.published().unwrap(), "diffmerge.session.change").len(),
+            2,
+            "every change is still offered"
+        );
+
+        session
+            .apply(Session::TAKE_THEIRS.with(session::TakeTheirs { hunk: second }))
+            .expect("the other change still takes a side");
+        let state = session.state().unwrap();
+        assert_eq!(state.merged, "a\nB\nB'\nc\nD2\ne\n");
+        let model = state.merge_model();
+        assert!(model.fully_resolved());
+        assert_eq!(
+            model.hunks[usize::try_from(first).unwrap()].resolution,
+            Resolution::Written
+        );
+
+        session
+            .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk: first }))
+            .expect("a written change can still take a side");
+        assert_eq!(session.state().unwrap().merged, "a\nB1\nc\nD2\ne\n");
+    }
+
+    phase a_windows_merge_keeps_its_line_endings_through_every_resolution;
+    {
+        let mut session = Replica::<Session>::new();
+        session
+            .apply(Session::OPEN_MERGE.with(session::OpenMerge {
+                base_label: "base".into(),
+                base: "a\r\nb\r\nc\r\nd\r\ne".into(),
+                ours_label: "ours".into(),
+                ours: "a\r\nB1\r\nc\r\nD1\r\ne".into(),
+                theirs_label: "theirs".into(),
+                theirs: "a\r\nB2\r\nc\r\nD2\r\ne".into(),
+            }))
+            .unwrap();
+        let state = session.state().unwrap();
+        assert_eq!(state.merged, "a\r\nB1\r\nc\r\nD1\r\ne");
+        let conflicts: Vec<u64> = state
+            .merge_model()
+            .hunks
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.resolution.is_conflict())
+            .map(|(index, _)| u64::try_from(index).unwrap())
+            .collect();
+        let [first, second] = conflicts[..] else {
+            panic!("two conflicts: {conflicts:?}");
+        };
+
+        session
+            .apply(Session::TAKE_BOTH.with(session::TakeBoth { hunk: first }))
+            .unwrap();
+        assert_eq!(
+            session.state().unwrap().merged,
+            "a\r\nB1\r\nB2\r\nc\r\nD1\r\ne"
+        );
+        session
+            .apply(Session::RESOLVE.with(session::Resolve {
+                hunk: second,
+                text: "D\nD'".into(),
+            }))
+            .expect("the other change still takes text");
+        let state = session.state().unwrap();
+        assert_eq!(state.merged, "a\r\nB1\r\nB2\r\nc\r\nD\r\nD'\r\ne");
+        assert!(state.composed(&state.merge_model()), "{:?}", state.merged);
+    }
+
+    phase concurrent_edits_converge;
+    // Two people typing in the merged result converge character by
+    // character; inputs opened at once end as one of the two, never a mix.
+    {
+        let mut ours = opened_merge();
+        let mut theirs = ours.fork();
+        let merged = Session::paths().merged;
+        edit(&mut ours, &merged.splice(0, 0, "// ours\n")).unwrap();
+        edit(&mut theirs, &merged.splice(2, 0, "!")).unwrap();
+        theirs
+            .apply(Session::OPEN_COMPARISON.with(session::OpenComparison {
+                left_label: "x".into(),
+                left: "1\n".into(),
+                right_label: "y".into(),
+                right: "2\n".into(),
+            }))
+            .unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        let state = ours.state().unwrap();
+        assert_eq!(state, theirs.state().unwrap());
+        assert_eq!(state.merged, "// ours\na\n!OURS\nc\n");
+        let comparison = state.comparison.unwrap();
+        assert_eq!(
+            (comparison.left_label.0.as_str(), comparison.left.0.as_str()),
+            ("x", "1\n")
+        );
+    }
+
+    phase the_session_publishes_changes_and_change_blocks;
+    // The session publishes the merge's changes with content-based ids and
+    // their sides bound, and the comparison's change blocks as bounded view
+    // actions.
+    {
+        let mut session = opened_merge();
+        let tree = session.published().unwrap();
+        let actions: Vec<&str> = tree.actions.iter().map(|a| a.id.as_str()).collect();
+        for id in ["open-comparison", "open-merge", "field-edit"] {
+            assert!(actions.contains(&id), "{id}: {actions:?}");
+        }
+        let changes = children_of_kind(&tree, "diffmerge.session.change");
+        let [change] = changes.as_slice() else {
+            panic!("one change, not {}", changes.len());
+        };
+        assert!(
+            change.id.as_str().contains("conflict:"),
+            "{}",
+            change.id.as_str()
+        );
+        for id in ["take-ours", "take-theirs", "take-both", "resolve"] {
+            let spec = change
+                .actions
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap_or_else(|| panic!("{id} on the change"));
+            assert!(
+                spec.params().iter().all(|p| p.name != "hunk"),
+                "{id} is bound to its change"
+            );
+        }
+
+        let state = session.state().unwrap();
+        let model = state.comparison.as_ref().unwrap().model();
+        let comparison = children_of_kind(&tree, "diffmerge.session.comparison");
+        let [comparison] = comparison.as_slice() else {
+            panic!("the comparison is published");
+        };
+        assert_eq!(comparison.children.len(), model.blocks.len());
+        for (index, child) in comparison.children.iter().enumerate() {
+            let show = child.actions.iter().find(|a| a.id == "show").unwrap();
+            assert_eq!(show.kind, ui::tilo_actions::OperationKind::View);
+            let encoded = ui::testing::action_contract::spec_encoding(show, None);
+            let fingerprint = diff_block_fingerprint(&model, index).unwrap();
+            assert_eq!(
+                DiffmergeEffect::from_payload(&encoded.payload).unwrap(),
+                DiffmergeEffect::Show {
+                    block: u64::try_from(index).unwrap(),
+                    fingerprint: fingerprint.clone(),
+                }
+            );
+            assert!(child.id.0.contains(&fingerprint));
+        }
+
+        let take = change
             .actions
             .iter()
-            .find(|a| a.id == id)
-            .unwrap_or_else(|| panic!("{id} on the change"));
+            .find(|a| a.id == "take-theirs")
+            .unwrap();
+        let encoded = take.build_json(&serde_json::Map::new()).unwrap();
+        let action: <Session as ui::tilo_resource::Resource>::Action =
+            serde_json::from_slice(&encoded.payload).unwrap();
+        session.apply_action(&action).unwrap();
+        assert!(session.state().unwrap().merged.contains("THEIRS"));
+    }
+
+    phase the_sample_merge_exposes_a_conflict;
+    {
+        let mut session = Replica::<Session>::new();
+        for invoke in sample_invocations() {
+            session.apply(invoke).unwrap();
+        }
+        let tree = session.published().unwrap();
         assert!(
-            spec.params().iter().all(|p| p.name != "hunk"),
-            "{id} is bound to its change"
+            children_of_kind(&tree, "diffmerge.session.change")
+                .iter()
+                .any(|change| change.label.starts_with("Conflict"))
         );
     }
-
-    let state = session.state().unwrap();
-    let model = state.comparison.as_ref().unwrap().model();
-    let comparison = children_of_kind(&tree, "diffmerge.session.comparison");
-    let [comparison] = comparison.as_slice() else {
-        panic!("the comparison is published");
-    };
-    assert_eq!(comparison.children.len(), model.blocks.len());
-    for (index, child) in comparison.children.iter().enumerate() {
-        let show = child.actions.iter().find(|a| a.id == "show").unwrap();
-        assert_eq!(show.kind, ui::tilo_actions::OperationKind::View);
-        let encoded = ui::testing::action_contract::spec_encoding(show, None);
-        let fingerprint = diff_block_fingerprint(&model, index).unwrap();
-        assert_eq!(
-            DiffmergeEffect::from_payload(&encoded.payload).unwrap(),
-            DiffmergeEffect::Show {
-                block: u64::try_from(index).unwrap(),
-                fingerprint: fingerprint.clone(),
-            }
-        );
-        assert!(child.id.0.contains(&fingerprint));
-    }
-
-    let take = change
-        .actions
-        .iter()
-        .find(|a| a.id == "take-theirs")
-        .unwrap();
-    let encoded = take.build_json(&serde_json::Map::new()).unwrap();
-    let action: <Session as ui::tilo_resource::Resource>::Action =
-        serde_json::from_slice(&encoded.payload).unwrap();
-    session.apply_action(&action).unwrap();
-    assert!(session.state().unwrap().merged.contains("THEIRS"));
-}
-
-#[test]
-fn the_sample_merge_exposes_a_conflict() {
-    let mut session = Replica::<Session>::new();
-    for invoke in sample_invocations() {
-        session.apply(invoke).unwrap();
-    }
-    let tree = session.published().unwrap();
-    assert!(
-        children_of_kind(&tree, "diffmerge.session.change")
-            .iter()
-            .any(|change| change.label.starts_with("Conflict"))
-    );
 }
 
 #[test]

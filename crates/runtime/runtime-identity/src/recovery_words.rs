@@ -534,229 +534,241 @@ mod tests {
         bip39::encode(&[seed; 32]).unwrap()
     }
 
-    #[test]
-    fn unknown_words_are_found_where_they_were_typed() {
-        assert_eq!(
-            unknown_recovery_words("1. Abandon 2. abilty\nabout abov"),
-            vec![14..20],
-            "a word still being typed is left alone"
-        );
-        assert_eq!(unknown_recovery_words("zebra, ZEBRAA. "), vec![7..13]);
-        assert!(unknown_recovery_words("").is_empty());
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn reading_recovery_words;
 
-    #[test]
-    fn progress_flags_only_finished_unknown_words() {
-        assert_eq!(
-            recovery_words_progress("1. abandon 2. abil"),
-            RecoveryWordsProgress {
-                words: 2,
-                unknown_word: None
-            },
-            "a word still being typed is not flagged"
-        );
-        assert_eq!(
-            recovery_words_progress("abandon abil "),
-            RecoveryWordsProgress {
-                words: 2,
-                unknown_word: Some(2)
-            }
-        );
-        assert_eq!(
-            recovery_words_progress(&words_of(7)),
-            RecoveryWordsProgress {
-                words: RECOVERY_WORD_COUNT,
-                unknown_word: None
-            }
-        );
-    }
-
-    #[test]
-    fn words_round_trip_into_an_identity_that_signs_as_the_original() {
-        let source = tempfile::tempdir().unwrap();
-        let path = secured_identity(source.path(), "personal", 41);
-        let original = super::super::load_from_path(path.clone()).unwrap();
-        let words = recovery_words(&path).unwrap();
-        assert_eq!(words.split(' ').count(), RECOVERY_WORD_COUNT);
-        assert_eq!(
-            recovery_words_public_key(&words).unwrap(),
-            original.group_public_key()
-        );
-
-        let target = tempfile::tempdir().unwrap();
-        let provider = super::super::BrokerFileProvider::new(target.path());
-        let restored = import_recovery_words_with_provider(
-            target.path(),
-            "restored",
-            &words,
-            " Ada ",
-            &provider,
-        )
-        .unwrap();
-        let record: serde_json::Value =
-            serde_json::from_slice(&fs::read(&restored).unwrap()).unwrap();
-        assert_eq!(
-            record["schema_version"], 2,
-            "the seed moved into the provider"
-        );
-        assert_eq!(record["display_name"], "Ada");
-        assert!(record["threshold_identity"].get("secret_bytes").is_none());
-        let identity = super::super::load_from_path(restored.clone()).unwrap();
-        assert_eq!(identity.group_public_key(), original.group_public_key());
-        assert_eq!(identity.avatar_color(), DEFAULT_AVATAR_COLOR);
-        assert_eq!(
-            identity.sign(b"recovered").unwrap(),
-            original.sign(b"recovered").unwrap()
-        );
-        assert_eq!(
-            import_recovery_words_with_provider(target.path(), "again", &words, "", &provider)
-                .unwrap(),
-            restored
-        );
-        assert_eq!(recovery_words(&restored).unwrap(), words);
-    }
-
-    #[test]
-    fn words_are_read_as_people_copy_them_and_errors_name_positions_only() {
-        let words = words_of(42);
-        let list: Vec<&str> = words.split(' ').collect();
-        let numbered: String = list
-            .iter()
-            .enumerate()
-            .map(|(at, word)| format!("{}. {}\n", at + 1, word.to_uppercase()))
-            .collect::<Vec<_>>()
-            .concat();
-        let expected = recovery_words_public_key(&words).unwrap();
-        for written in [
-            numbered,
-            list.join(", "),
-            format!("  {}\t\n", list.join("   ")),
-            list.iter()
-                .enumerate()
-                .map(|(at, word)| format!("{})\u{a0}{word}", at + 1))
-                .collect::<Vec<_>>()
-                .join(" "),
-        ] {
+        phase unknown_words_are_found_where_they_were_typed;
+        {
             assert_eq!(
-                recovery_words_public_key(&written),
-                Ok(expected),
-                "{written}"
+                unknown_recovery_words("1. Abandon 2. abilty\nabout abov"),
+                vec![14..20],
+                "a word still being typed is left alone"
+            );
+            assert_eq!(unknown_recovery_words("zebra, ZEBRAA. "), vec![7..13]);
+            assert!(unknown_recovery_words("").is_empty());
+        }
+
+        phase progress_flags_only_finished_unknown_words;
+        {
+            assert_eq!(
+                recovery_words_progress("1. abandon 2. abil"),
+                RecoveryWordsProgress {
+                    words: 2,
+                    unknown_word: None
+                },
+                "a word still being typed is not flagged"
+            );
+            assert_eq!(
+                recovery_words_progress("abandon abil "),
+                RecoveryWordsProgress {
+                    words: 2,
+                    unknown_word: Some(2)
+                }
+            );
+            assert_eq!(
+                recovery_words_progress(&words_of(7)),
+                RecoveryWordsProgress {
+                    words: RECOVERY_WORD_COUNT,
+                    unknown_word: None
+                }
             );
         }
 
-        assert_eq!(
-            check_recovery_words(&list[..23].join(" ")),
-            Err(RecoveryWordsError::WordCount { found: 23 })
-        );
-        assert_eq!(
-            check_recovery_words(&list[..12].join(" ")),
-            Err(RecoveryWordsError::WordCount { found: 12 }),
-            "twelve words, as a short BIP39 phrase has, are not a recovery key"
-        );
-        let mut unknown = list.clone();
-        unknown[6] = "tilo";
-        assert_eq!(
-            check_recovery_words(&unknown.join(" ")),
-            Err(RecoveryWordsError::UnknownWord { position: 7 })
-        );
-        let mut mistyped = list.clone();
-        mistyped[23] = if list[23] == "abandon" {
-            "ability"
-        } else {
-            "abandon"
-        };
-        let checksum = check_recovery_words(&mistyped.join(" ")).unwrap_err();
-        assert_eq!(checksum, RecoveryWordsError::Checksum);
-
-        let errors = [
-            RecoveryWordsError::WordCount { found: 23 },
-            RecoveryWordsError::UnknownWord { position: 7 },
-            checksum,
-        ];
-        for error in errors {
-            let io_error = io::Error::from(error);
-            assert_eq!(recovery_words_error(&io_error), Some(error));
-            for rendered in [
-                error.to_string(),
-                format!("{error:?}"),
-                io_error.to_string(),
-                format!("{io_error:?}"),
+        phase words_are_read_as_people_copy_them_and_errors_name_positions_only;
+        {
+            let words = words_of(42);
+            let list: Vec<&str> = words.split(' ').collect();
+            let numbered: String = list
+                .iter()
+                .enumerate()
+                .map(|(at, word)| format!("{}. {}\n", at + 1, word.to_uppercase()))
+                .collect::<Vec<_>>()
+                .concat();
+            let expected = recovery_words_public_key(&words).unwrap();
+            for written in [
+                numbered,
+                list.join(", "),
+                format!("  {}\t\n", list.join("   ")),
+                list.iter()
+                    .enumerate()
+                    .map(|(at, word)| format!("{})\u{a0}{word}", at + 1))
+                    .collect::<Vec<_>>()
+                    .join(" "),
             ] {
-                for word in &list {
-                    assert!(
-                        !rendered
-                            .split(|c: char| !c.is_alphabetic())
-                            .any(|part| part.eq_ignore_ascii_case(word)),
-                        "{rendered} names {word}"
-                    );
+                assert_eq!(
+                    recovery_words_public_key(&written),
+                    Ok(expected),
+                    "{written}"
+                );
+            }
+
+            assert_eq!(
+                check_recovery_words(&list[..23].join(" ")),
+                Err(RecoveryWordsError::WordCount { found: 23 })
+            );
+            assert_eq!(
+                check_recovery_words(&list[..12].join(" ")),
+                Err(RecoveryWordsError::WordCount { found: 12 }),
+                "twelve words, as a short BIP39 phrase has, are not a recovery key"
+            );
+            let mut unknown = list.clone();
+            unknown[6] = "tilo";
+            assert_eq!(
+                check_recovery_words(&unknown.join(" ")),
+                Err(RecoveryWordsError::UnknownWord { position: 7 })
+            );
+            let mut mistyped = list.clone();
+            mistyped[23] = if list[23] == "abandon" {
+                "ability"
+            } else {
+                "abandon"
+            };
+            let checksum = check_recovery_words(&mistyped.join(" ")).unwrap_err();
+            assert_eq!(checksum, RecoveryWordsError::Checksum);
+
+            let errors = [
+                RecoveryWordsError::WordCount { found: 23 },
+                RecoveryWordsError::UnknownWord { position: 7 },
+                checksum,
+            ];
+            for error in errors {
+                let io_error = io::Error::from(error);
+                assert_eq!(recovery_words_error(&io_error), Some(error));
+                for rendered in [
+                    error.to_string(),
+                    format!("{error:?}"),
+                    io_error.to_string(),
+                    format!("{io_error:?}"),
+                ] {
+                    for word in &list {
+                        assert!(
+                            !rendered
+                                .split(|c: char| !c.is_alphabetic())
+                                .any(|part| part.eq_ignore_ascii_case(word)),
+                            "{rendered} names {word}"
+                        );
+                    }
                 }
             }
         }
     }
 
-    #[test]
-    fn words_complete_this_accounts_identity_and_refuse_another() {
-        let dir = tempfile::tempdir().unwrap();
-        let key = SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes();
-        let public = super::super::public_member_record("Ada", [1, 2, 3], key).unwrap();
-        let provider = super::super::BrokerFileProvider::new(dir.path());
-        super::super::import_identity_with_provider(dir.path(), "joined", &public, &provider)
+    tilo_test_env::scenario! {
+        fn restoring_an_identity_from_recovery_words;
+
+        phase words_round_trip_into_an_identity_that_signs_as_the_original;
+        {
+            let source = tempfile::tempdir().unwrap();
+            let path = secured_identity(source.path(), "personal", 41);
+            let original = super::super::load_from_path(path.clone()).unwrap();
+            let words = recovery_words(&path).unwrap();
+            assert_eq!(words.split(' ').count(), RECOVERY_WORD_COUNT);
+            assert_eq!(
+                recovery_words_public_key(&words).unwrap(),
+                original.group_public_key()
+            );
+
+            let target = tempfile::tempdir().unwrap();
+            let provider = super::super::BrokerFileProvider::new(target.path());
+            let restored = import_recovery_words_with_provider(
+                target.path(),
+                "restored",
+                &words,
+                " Ada ",
+                &provider,
+            )
             .unwrap();
-        super::super::set_active_identity(dir.path(), "joined").unwrap();
-        assert_eq!(recovery_expected_identity(dir.path()).unwrap(), Some(key));
-        let joined = dir.path().join("joined.json");
-        assert_eq!(
-            recovery_words_error(&recovery_words(&joined).unwrap_err()),
-            Some(RecoveryWordsError::NoSecretOnThisDevice)
-        );
+            let record: serde_json::Value =
+                serde_json::from_slice(&fs::read(&restored).unwrap()).unwrap();
+            assert_eq!(
+                record["schema_version"], 2,
+                "the seed moved into the provider"
+            );
+            assert_eq!(record["display_name"], "Ada");
+            assert!(record["threshold_identity"].get("secret_bytes").is_none());
+            let identity = super::super::load_from_path(restored.clone()).unwrap();
+            assert_eq!(identity.group_public_key(), original.group_public_key());
+            assert_eq!(identity.avatar_color(), DEFAULT_AVATAR_COLOR);
+            assert_eq!(
+                identity.sign(b"recovered").unwrap(),
+                original.sign(b"recovered").unwrap()
+            );
+            assert_eq!(
+                import_recovery_words_with_provider(target.path(), "again", &words, "", &provider)
+                    .unwrap(),
+                restored
+            );
+            assert_eq!(recovery_words(&restored).unwrap(), words);
+        }
 
-        let other = words_of(44);
-        let refused =
-            import_recovery_words_with_provider(dir.path(), "other", &other, "Eve", &provider)
-                .unwrap_err();
-        assert_eq!(
-            recovery_words_error(&refused),
-            Some(RecoveryWordsError::DifferentIdentity {
-                expected: key,
-                found: recovery_words_public_key(&other).unwrap(),
-            })
-        );
-        assert!(!dir.path().join("other.json").exists());
-
-        let restored = import_recovery_words_with_provider(
-            dir.path(),
-            "ignored",
-            &words_of(43),
-            "Someone",
-            &provider,
-        )
-        .unwrap();
-        assert_eq!(restored, joined);
-        assert!(!dir.path().join("ignored.json").exists());
-        let identity = super::super::load_from_path(restored).unwrap();
-        assert!(identity.is_single_device());
-        assert_eq!(identity.display_name(), "Ada");
-        assert_eq!(identity.avatar_color(), [1, 2, 3]);
-        assert_eq!(identity.group_public_key(), key);
-        identity.sign(b"restored root").unwrap();
-    }
-
-    #[test]
-    fn a_lost_provider_secret_is_restored_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = secured_identity(dir.path(), "primary", 45);
-        let provider = super::super::BrokerFileProvider::new(dir.path());
-        let locator = hex::encode(SigningKey::from_bytes(&[45; 32]).verifying_key().to_bytes());
-        provider.remove(&locator).unwrap();
-        assert!(super::super::load_from_path(path.clone()).is_err());
-        assert!(recovery_words(&path).is_err());
-
-        let restored =
-            import_recovery_words_with_provider(dir.path(), "x", &words_of(45), "", &provider)
+        phase words_complete_this_accounts_identity_and_refuse_another;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let key = SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes();
+            let public = super::super::public_member_record("Ada", [1, 2, 3], key).unwrap();
+            let provider = super::super::BrokerFileProvider::new(dir.path());
+            super::super::import_identity_with_provider(dir.path(), "joined", &public, &provider)
                 .unwrap();
-        assert_eq!(restored, path);
-        let identity = super::super::load_from_path(path).unwrap();
-        assert_eq!(identity.display_name(), "Ada");
-        identity.sign(b"back").unwrap();
+            super::super::set_active_identity(dir.path(), "joined").unwrap();
+            assert_eq!(recovery_expected_identity(dir.path()).unwrap(), Some(key));
+            let joined = dir.path().join("joined.json");
+            assert_eq!(
+                recovery_words_error(&recovery_words(&joined).unwrap_err()),
+                Some(RecoveryWordsError::NoSecretOnThisDevice)
+            );
+
+            let other = words_of(44);
+            let refused =
+                import_recovery_words_with_provider(dir.path(), "other", &other, "Eve", &provider)
+                    .unwrap_err();
+            assert_eq!(
+                recovery_words_error(&refused),
+                Some(RecoveryWordsError::DifferentIdentity {
+                    expected: key,
+                    found: recovery_words_public_key(&other).unwrap(),
+                })
+            );
+            assert!(!dir.path().join("other.json").exists());
+
+            let restored = import_recovery_words_with_provider(
+                dir.path(),
+                "ignored",
+                &words_of(43),
+                "Someone",
+                &provider,
+            )
+            .unwrap();
+            assert_eq!(restored, joined);
+            assert!(!dir.path().join("ignored.json").exists());
+            let identity = super::super::load_from_path(restored).unwrap();
+            assert!(identity.is_single_device());
+            assert_eq!(identity.display_name(), "Ada");
+            assert_eq!(identity.avatar_color(), [1, 2, 3]);
+            assert_eq!(identity.group_public_key(), key);
+            identity.sign(b"restored root").unwrap();
+        }
+
+        phase a_lost_provider_secret_is_restored_in_place;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = secured_identity(dir.path(), "primary", 45);
+            let provider = super::super::BrokerFileProvider::new(dir.path());
+            let locator = hex::encode(SigningKey::from_bytes(&[45; 32]).verifying_key().to_bytes());
+            provider.remove(&locator).unwrap();
+            assert!(super::super::load_from_path(path.clone()).is_err());
+            assert!(recovery_words(&path).is_err());
+
+            let restored =
+                import_recovery_words_with_provider(dir.path(), "x", &words_of(45), "", &provider)
+                    .unwrap();
+            assert_eq!(restored, path);
+            let identity = super::super::load_from_path(path).unwrap();
+            assert_eq!(identity.display_name(), "Ada");
+            identity.sign(b"back").unwrap();
+        }
     }
 }

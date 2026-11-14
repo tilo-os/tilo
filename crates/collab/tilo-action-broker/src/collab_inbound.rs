@@ -1,11 +1,11 @@
 //! Signed document ops another device's write carried to this host: each is
-//! validated against local channel state, recorded, and fanned to the local
+//! validated against the local inbound state, recorded, and fanned to the local
 //! apps on its route.
 use crate::collab_broker::FanoutState;
 use crate::collab_core::{AuditEntry, BrokerChannels, apply_redaction_from_envelope};
 use crate::route::CrdtRoute;
 use collab_types::{
-    ArtifactKind, ChannelState, OpKind, RedactedMarker, SignedOp, ValidationError,
+    ArtifactKind, InboundState, OpKind, RedactedMarker, SignedOp, ValidationError,
     validate_admitted_inbound_op, validate_replayed_inbound_op,
 };
 use runtime_collab::event::CollabEvent;
@@ -44,7 +44,7 @@ pub fn validate_document(
     envelope: &SignedOp,
     author: &Standing,
     replayed: bool,
-    state: &mut ChannelState,
+    state: &mut InboundState,
     now: SystemTime,
 ) -> Result<(), ValidationError> {
     let author = author.authority();
@@ -60,7 +60,7 @@ pub fn validate_document(
 pub enum Delivery {
     /// Admitted and fanned out, or refused and audited.
     Done,
-    /// Nothing was decided: the channel state is poisoned.
+    /// Nothing was decided: the inbound state is poisoned.
     Halted,
 }
 
@@ -88,25 +88,14 @@ fn deliver_at(
     let route = CrdtRoute::record(&document.app_id, &document.cluster_id, &document.record_id);
     let payload = validate_route(&route, &document.envelope);
     let validation = match &payload {
-        Ok(payload) => {
+        Ok(_) => {
             let Ok(mut ch) = channels.lock() else {
                 return Delivery::Halted;
             };
-            let channel = match payload {
-                collab_types::RoutedDocumentPayload::Cleartext(_)
-                | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
-                    collab_types::document_channel_id(
-                        &document.app_id,
-                        &document.cluster_id,
-                        &document.record_id,
-                    )
-                }
-                collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
-            };
             let encryption = document.envelope.encryption.as_ref();
-            if ch.document_order_allowed(&document.cluster_id, channel, artifact, encryption) {
+            if ch.document_order_allowed(&document.cluster_id, artifact, encryption) {
                 let state = ch.state_for(artifact);
-                state.room.clone_from(&document.cluster_id);
+                state.workspace.clone_from(&document.cluster_id);
                 state.artifacts.insert(artifact, ArtifactKind::Note);
                 state
                     .artifact_apps
@@ -125,10 +114,9 @@ fn deliver_at(
                 tracing::warn!(
                     app = %document.app_id,
                     record = %document.record_id,
-                    channel = ?channel,
                     epoch = encryption.map(|metadata| metadata.epoch),
                     replayed,
-                    "collab_broker (net): a document op its channel's gate does not take"
+                    "collab_broker (net): a document op its workspace's gate does not take"
                 );
                 Err(ValidationError::DocumentRouteMismatch)
             }
@@ -324,6 +312,14 @@ mod tests {
         Standing::person(policy, "editor")
     }
 
+    /// The gate of a workspace that requires encryption: its group's, which
+    /// every record of the workspace seals under.
+    fn gate() -> channel_crypto::ChannelGate {
+        channel_crypto::ChannelGate {
+            encryption_required: true,
+        }
+    }
+
     #[test]
     fn a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
@@ -341,9 +337,9 @@ mod tests {
         collab_types::sign_op(&mut op, &key).unwrap();
         let now = tilo_clock::wall();
         let channel = || {
-            let mut state = ChannelState {
-                room: "workspace".into(),
-                ..ChannelState::default()
+            let mut state = InboundState {
+                workspace: "workspace".into(),
+                ..InboundState::default()
             };
             state.artifacts.insert(op.artifact, ArtifactKind::Note);
             state
@@ -440,7 +436,6 @@ mod tests {
     /// under the current ones (epoch 2), each its own Automerge change.
     fn two_sealed_writes(key: &ed25519_dalek::SigningKey) -> [SignedOp; 2] {
         use automerge::transaction::Transactable as _;
-        let channel = collab_types::document_channel_id("notes", "workspace", "record");
         let mut note = automerge::AutoCommit::new();
         let mut write = |epoch: u64, field: &str, text: &str| {
             let heads = note.get_heads();
@@ -457,7 +452,6 @@ mod tests {
                 collab_types::next_unordered_document_sequence(now),
                 collab_types::EncryptionMetadata::content_key(
                     epoch,
-                    channel,
                     collab_types::ContentRetention::Delta,
                 ),
             );
@@ -482,10 +476,8 @@ mod tests {
     fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
         channels.lock().unwrap().register_channel_gate(
-            collab_types::document_channel_id("notes", "workspace", "record"),
-            channel_crypto::ChannelGate {
-                encryption_required: true,
-            },
+            collab_types::WorkspaceId::parse("workspace").unwrap(),
+            gate(),
         );
         let fanout = FanoutState::new();
         let shown = Arc::new(Mutex::new(Vec::new()));
@@ -561,10 +553,8 @@ mod tests {
         };
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
         channels.lock().unwrap().register_channel_gate(
-            collab_types::document_channel_id("notes", "workspace", "record"),
-            channel_crypto::ChannelGate {
-                encryption_required: true,
-            },
+            collab_types::WorkspaceId::parse("workspace").unwrap(),
+            gate(),
         );
         let fanout = FanoutState::new();
         let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));

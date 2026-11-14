@@ -115,24 +115,9 @@ impl Task {
                 workspace_id,
                 name,
                 role,
-                desktop_scope,
                 ..
             } => {
                 self.config.entering = None;
-                // The desktop opens with the keys of the group the host named
-                // before the governance that decides it arrives.
-                if let (Some(scope), Some(id)) = (
-                    desktop_scope,
-                    tilo_desktop_model::WorkspaceId::parse(&workspace),
-                ) {
-                    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
-                    self.channels.scope_told(
-                        id,
-                        &collab_types::ChannelRoute::new(DESKTOP_APP, DESKTOP_RECORD),
-                        scope,
-                    );
-                    self.pump_channels(true);
-                }
                 self.reports.change(|status| {
                     status.entry = Some(Entry::Admitted {
                         workspace,

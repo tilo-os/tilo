@@ -419,79 +419,221 @@ mod tests {
         render(html).iter().map(|run| run.text.as_str()).collect()
     }
 
-    #[test]
-    fn paragraphs_lists_and_breaks_become_lines() {
-        assert_eq!(
-            text("<p>One</p><p>Two<br>three</p><ul><li>a</li><li>b</li></ul>"),
-            "One\n\nTwo\nthree\n\n• a\n• b"
-        );
-        assert_eq!(text("<ol><li>x</li><li>y</li></ol>"), "1. x\n2. y");
-    }
+    tilo_test_env::scenario! {
+        /// `render`: the text, runs and links read out of a mail's HTML.
+        fn html_is_read_as_the_text_runs_and_links_it_shows;
 
-    #[test]
-    fn whitespace_and_references_read_as_text() {
-        assert_eq!(
-            text("<div>  Fish &amp;\n   chips &#169; &#x41; &unknown; </div>"),
-            "Fish & chips © A &unknown;"
-        );
-        assert_eq!(text("1 < 2 and 3 > 2"), "1 < 2 and 3 > 2");
-    }
+        phase paragraphs_lists_and_breaks_become_lines;
+        {
+            assert_eq!(
+                text("<p>One</p><p>Two<br>three</p><ul><li>a</li><li>b</li></ul>"),
+                "One\n\nTwo\nthree\n\n• a\n• b"
+            );
+            assert_eq!(text("<ol><li>x</li><li>y</li></ol>"), "1. x\n2. y");
+        }
 
-    #[test]
-    fn nothing_hidden_or_active_is_shown() {
-        let shown = text(
-            "<head><title>t</title><style>p{}</style></head><body>\
+        phase whitespace_and_references_read_as_text;
+        {
+            assert_eq!(
+                text("<div>  Fish &amp;\n   chips &#169; &#x41; &unknown; </div>"),
+                "Fish & chips © A &unknown;"
+            );
+            assert_eq!(text("1 < 2 and 3 > 2"), "1 < 2 and 3 > 2");
+        }
+
+        phase nothing_hidden_or_active_is_shown;
+        {
+            let shown = text(
+                "<head><title>t</title><style>p{}</style></head><body>\
              <script>alert(1)</script><p>Hello</p>\
              <div style=\"display: none\">preheader <div>nested</div> junk</div>\
              <p hidden>secret</p><!-- note --><p>World</p>\
              <img src=\"https://tracker.example/p.gif\"><img src=x alt=\"Logo\"></body>",
-        );
-        assert_eq!(shown, "Hello\n\nWorld\n\nLogo");
-        assert!(!shown.contains("tracker"));
-    }
+            );
+            assert_eq!(shown, "Hello\n\nWorld\n\nLogo");
+            assert!(!shown.contains("tracker"));
+        }
 
-    #[test]
-    fn styles_and_quotes_are_runs() {
-        let runs = render(
-            "<h1>Title</h1><p>A <b>bold</b> and <i>slanted</i> word</p><blockquote>quoted</blockquote>",
-        );
-        assert!(
-            runs.iter()
-                .any(|r| r.text == "Title" && r.heading == 1 && r.bold)
-        );
-        assert!(
-            runs.iter()
-                .any(|r| r.text == "bold" && r.bold && r.heading == 0)
-        );
-        assert!(runs.iter().any(|r| r.text == "slanted" && r.italic));
-        let quoted: String = runs
-            .iter()
-            .filter(|r| r.quote)
-            .map(|r| r.text.as_str())
-            .collect();
-        assert!(quoted.contains("> quoted"), "{quoted:?}");
-    }
+        phase styles_and_quotes_are_runs;
+        {
+            let runs = render(
+                "<h1>Title</h1><p>A <b>bold</b> and <i>slanted</i> word</p><blockquote>quoted</blockquote>",
+            );
+            assert!(
+                runs.iter()
+                    .any(|r| r.text == "Title" && r.heading == 1 && r.bold)
+            );
+            assert!(
+                runs.iter()
+                    .any(|r| r.text == "bold" && r.bold && r.heading == 0)
+            );
+            assert!(runs.iter().any(|r| r.text == "slanted" && r.italic));
+            let quoted: String = runs
+                .iter()
+                .filter(|r| r.quote)
+                .map(|r| r.text.as_str())
+                .collect();
+            assert!(quoted.contains("> quoted"), "{quoted:?}");
+        }
 
-    #[test]
-    fn only_web_and_mail_links_are_links() {
-        let runs = render(
-            "<a href=\"https://example.com/x?a=1&amp;b=2\">site</a> \
+        phase only_web_and_mail_links_are_links;
+        {
+            let runs = render(
+                "<a href=\"https://example.com/x?a=1&amp;b=2\">site</a> \
              <a href=\"JavaScript:alert(1)\">bad</a> \
              <a href=\"file:///etc/passwd\">file</a> \
              <a href=\"mailto:me@example.com\">mail</a>",
-        );
-        let link = |label: &str| {
-            runs.iter()
-                .find(|r| r.text == label)
-                .and_then(|r| r.link.clone())
-        };
-        assert_eq!(
-            link("site").as_deref(),
-            Some("https://example.com/x?a=1&b=2")
-        );
-        assert_eq!(link("bad"), None);
-        assert_eq!(link("file"), None);
-        assert_eq!(link("mail").as_deref(), Some("mailto:me@example.com"));
+            );
+            let link = |label: &str| {
+                runs.iter()
+                    .find(|r| r.text == label)
+                    .and_then(|r| r.link.clone())
+            };
+            assert_eq!(
+                link("site").as_deref(),
+                Some("https://example.com/x?a=1&b=2")
+            );
+            assert_eq!(link("bad"), None);
+            assert_eq!(link("file"), None);
+            assert_eq!(link("mail").as_deref(), Some("mailto:me@example.com"));
+        }
+
+        // A mail longer than the reader takes is read up to the bound, and the
+        // cut never splits a character.
+        phase an_oversized_mail_is_read_up_to_the_bound;
+        {
+            for (case, html, kept) in [
+                ("at the bound", "a".repeat(MAX_INPUT), MAX_INPUT),
+                ("one past it", "a".repeat(MAX_INPUT) + "b", MAX_INPUT),
+                (
+                    "a character across it",
+                    "a".repeat(MAX_INPUT - 1) + "\u{e9}b",
+                    MAX_INPUT - 1,
+                ),
+            ] {
+                let shown = text(&html);
+                assert_eq!(shown.len(), kept, "{case}");
+                assert!(shown.bytes().all(|byte| byte == b'a'), "{case}");
+            }
+        }
+
+        // A link is kept only when its address starts with a web or mail
+        // scheme, however the scheme is cased or padded; any other address
+        // leaves its label plain text.
+        phase a_link_is_kept_only_for_a_web_or_mail_address;
+        {
+            let rows: [(&str, Option<&str>); 13] = [
+                ("http://example.com", Some("http://example.com")),
+                ("HTTPS://Example.com/A", Some("HTTPS://Example.com/A")),
+                ("  https://example.com/x \n", Some("https://example.com/x")),
+                ("MailTo:me@example.com", Some("MailTo:me@example.com")),
+                ("", None),
+                ("example.com", None),
+                ("/unsubscribe", None),
+                ("//example.com/x", None),
+                ("ftp://example.com/f", None),
+                ("data:text/html,hi", None),
+                ("vbscript:msgbox(1)", None),
+                ("java\tscript:alert(1)", None),
+                ("javascript://https://example.com/%0Aalert(1)", None),
+            ];
+            for (href, link) in rows {
+                let runs = render(&format!("<a href=\"{href}\">label</a>"));
+                let shown: Vec<(&str, Option<&str>)> = runs
+                    .iter()
+                    .map(|run| (run.text.as_str(), run.link.as_deref()))
+                    .collect();
+                assert_eq!(shown, [("label", link)], "{href:?}");
+            }
+            // An anchor without an address is not a link, and a link ends with
+            // its element.
+            let runs = render("<a>plain</a> <a href=\"https://a.example\">in</a> out");
+            let shown: Vec<(&str, Option<&str>)> = runs
+                .iter()
+                .map(|run| (run.text.as_str(), run.link.as_deref()))
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    ("plain ", None),
+                    ("in", Some("https://a.example")),
+                    (" out", None)
+                ]
+            );
+        }
+
+        // What a mail hides stays hidden however the style is spelled, with
+        // everything inside it; a style that hides nothing shows its text.
+        phase a_hidden_element_stays_hidden_however_it_is_spelled;
+        {
+            for (html, shown) in [
+                ("<p style=\"visibility:hidden\">x</p>y", "y"),
+                ("<p style=\"VISIBILITY : Hidden\">x</p>y", "y"),
+                ("<div style=\"color:red; DISPLAY:\n NONE\">x</div>y", "y"),
+                ("<span hidden=\"\">x</span>y", "y"),
+                (
+                    "<div hidden><img alt=\"Logo\"><a href=\"https://a.example\">go</a></div>y",
+                    "y",
+                ),
+                ("<p style=\"display:block\">x</p>y", "x\n\ny"),
+            ] {
+                assert_eq!(text(html), shown, "{html:?}");
+            }
+        }
+
+        // Quotes nest as deep as a mail likes; their marks stop at four.
+        phase quote_marks_stop_at_four_levels;
+        {
+            for (depth, marks) in [
+                (1, "> "),
+                (2, "> > "),
+                (4, "> > > > "),
+                (5, "> > > > "),
+                (9, "> > > > "),
+            ] {
+                let html = "<blockquote>".repeat(depth) + "q";
+                assert_eq!(text(&html), format!("{marks}q"), "depth {depth}");
+            }
+        }
+
+        phase markup_is_read_as_an_engine_reads_it;
+        {
+            // Comments, CDATA outside foreign content, and processing
+            // instructions are never text.
+            assert_eq!(
+                text("a<!-- <p>hidden</p> -->b<!--><p>c</p>-->"),
+                "ab\n\nc\n\n-->"
+            );
+            assert_eq!(text("a<![CDATA[<b>x</b>]]>b"), "ax]]>b");
+            assert_eq!(text("a<?php echo 1 ?>b"), "ab");
+            assert_eq!(
+                text("<script>var s = \"<p>no</p>\";</script><p>yes</p>"),
+                "yes"
+            );
+            assert_eq!(
+                text("<scr<script>ipt>alert(1)</script>ok"),
+                "ipt>alert(1)ok"
+            );
+            assert_eq!(text("<p onclick=\"alert(1)\" title=\"t\">x</p>"), "x");
+            let runs = render("<b>bold <i>both</b> slanted</i> plain");
+            assert!(runs.iter().any(|r| r.text == "both" && r.bold && r.italic));
+            assert!(
+                runs.iter()
+                    .any(|r| r.text == " slanted" && !r.bold && r.italic)
+            );
+            assert!(
+                runs.iter()
+                    .any(|r| r.text == " plain" && !r.bold && !r.italic)
+            );
+            assert_eq!(
+                text("<svg><text>s</text></svg><math><mi>m</mi></math>x"),
+                "x"
+            );
+            assert_eq!(
+                text("&hearts;&notin;&#x1F600;"),
+                "\u{2665}\u{2209}\u{1F600}"
+            );
+        }
     }
 
     #[test]
@@ -502,44 +644,10 @@ mod tests {
         assert_eq!(text("<div style=\"display:none\">never closed"), "");
         assert_eq!(text("a<!-- never closed <b>b</b>"), "a");
         assert_eq!(text("a<script>never closed</p>b"), "a");
-    }
-
-    #[test]
-    fn markup_is_read_as_an_engine_reads_it() {
-        // Comments, CDATA outside foreign content, and processing
-        // instructions are never text.
-        assert_eq!(
-            text("a<!-- <p>hidden</p> -->b<!--><p>c</p>-->"),
-            "ab\n\nc\n\n-->"
-        );
-        assert_eq!(text("a<![CDATA[<b>x</b>]]>b"), "ax]]>b");
-        assert_eq!(text("a<?php echo 1 ?>b"), "ab");
-        assert_eq!(
-            text("<script>var s = \"<p>no</p>\";</script><p>yes</p>"),
-            "yes"
-        );
-        assert_eq!(
-            text("<scr<script>ipt>alert(1)</script>ok"),
-            "ipt>alert(1)ok"
-        );
-        assert_eq!(text("<p onclick=\"alert(1)\" title=\"t\">x</p>"), "x");
-        let runs = render("<b>bold <i>both</b> slanted</i> plain");
-        assert!(runs.iter().any(|r| r.text == "both" && r.bold && r.italic));
-        assert!(
-            runs.iter()
-                .any(|r| r.text == " slanted" && !r.bold && r.italic)
-        );
-        assert!(
-            runs.iter()
-                .any(|r| r.text == " plain" && !r.bold && !r.italic)
-        );
-        assert_eq!(
-            text("<svg><text>s</text></svg><math><mi>m</mi></math>x"),
-            "x"
-        );
-        assert_eq!(
-            text("&hearts;&notin;&#x1F600;"),
-            "\u{2665}\u{2209}\u{1F600}"
-        );
+        // Nothing at all, and markup that ends where it begins.
+        assert!(render("").is_empty());
+        assert_eq!(text(" \n\t "), "");
+        assert_eq!(text("<"), "<");
+        assert_eq!(text("&"), "&");
     }
 }

@@ -37,6 +37,22 @@ impl MemberId {
         }
     }
 
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        match self {
+            Self::Agent(id) => Some(id),
+            Self::Person(_) | Self::Bot(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn bot_id(&self) -> Option<&str> {
+        match self {
+            Self::Bot(id) => Some(id),
+            Self::Person(_) | Self::Agent(_) => None,
+        }
+    }
+
     /// The person this is, when it is one.
     #[must_use]
     pub fn person_id(&self) -> Option<&str> {
@@ -50,6 +66,59 @@ impl MemberId {
     pub const fn is_person(&self) -> bool {
         matches!(self, Self::Person(_))
     }
+
+    #[must_use]
+    pub const fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent(_))
+    }
+
+    #[must_use]
+    pub const fn is_bot(&self) -> bool {
+        matches!(self, Self::Bot(_))
+    }
+
+    /// The spelling a stored id uses: a person's root key as it is, an agent's
+    /// `agent:<id>`, a bot's `bot:<id>`.
+    #[must_use]
+    pub fn key(&self) -> String {
+        match self {
+            Self::Person(id) => id.clone(),
+            Self::Agent(id) => format!("agent:{id}"),
+            Self::Bot(id) => format!("bot:{id}"),
+        }
+    }
+
+    /// The member [`Self::key`] spells.
+    #[must_use]
+    pub fn parse(key: &str) -> Option<Self> {
+        fn nonempty(id: &str) -> Option<String> {
+            (!id.is_empty()).then(|| id.to_owned())
+        }
+        if let Some(id) = key.strip_prefix("person:") {
+            return nonempty(id).map(Self::Person);
+        }
+        if let Some(id) = key.strip_prefix("agent:") {
+            return nonempty(id).map(Self::Agent);
+        }
+        if let Some(id) = key.strip_prefix("bot:") {
+            return nonempty(id).map(Self::Bot);
+        }
+        nonempty(key).map(Self::Person)
+    }
+}
+
+/// A person's id however a record spells it: their root key, or `person:<root>` as grants, mentions
+/// and an agent's keeper carry it. Every rule that compares people or looks one up asks this, so
+/// one person is one member wherever an id came from.
+#[must_use]
+pub fn person_root(id: &str) -> &str {
+    id.strip_prefix("person:").unwrap_or(id)
+}
+
+/// Whether two ids name the same person, in either spelling ([`person_root`]).
+#[must_use]
+pub fn same_person(a: &str, b: &str) -> bool {
+    person_root(a) == person_root(b)
 }
 
 impl std::fmt::Display for MemberId {
@@ -152,13 +221,11 @@ impl Actor {
         Self::Automation(AutomationId::new(id))
     }
 
-    /// The grantee a grant names this actor by.
+    /// The grantee a grant names this actor by, when it is a member: an
+    /// automation is its owner's.
     #[must_use]
-    pub fn grantee(&self) -> crate::Grantee {
-        match self {
-            Self::Member(member) => crate::granted_to(member),
-            Self::Automation(id) => crate::Grantee::shortcut(id.as_str().to_owned()),
-        }
+    pub fn grantee(&self) -> Option<crate::Grantee> {
+        Some(crate::granted_to(self.member_id()?))
     }
 
     /// The member, when the actor is one.
@@ -167,6 +234,15 @@ impl Actor {
         match self {
             Self::Member(member) => Some(member),
             Self::Automation(_) => None,
+        }
+    }
+
+    /// The id inside the actor: a member's, or an automation's.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Member(member) => member.id(),
+            Self::Automation(id) => id.as_str(),
         }
     }
 }
@@ -325,6 +401,62 @@ impl Acting {
         Some(person)
     }
 
+    /// The app the change went through.
+    #[must_use]
+    pub fn app(&self) -> Option<&AppId> {
+        self.app.as_ref()
+    }
+
+    /// The actor, when it is a member.
+    #[must_use]
+    pub fn member_id(&self) -> Option<&MemberId> {
+        self.by.member_id()
+    }
+
+    #[must_use]
+    pub fn is_person(&self) -> bool {
+        self.by.member_id().is_some_and(MemberId::is_person)
+    }
+
+    #[must_use]
+    pub fn is_agent(&self) -> bool {
+        self.by.member_id().is_some_and(MemberId::is_agent)
+    }
+
+    #[must_use]
+    pub fn is_bot(&self) -> bool {
+        self.by.member_id().is_some_and(MemberId::is_bot)
+    }
+
+    #[must_use]
+    pub fn is_automation(&self) -> bool {
+        matches!(self.by, Actor::Automation(_))
+    }
+
+    #[must_use]
+    pub fn person_id(&self) -> Option<&str> {
+        self.by.member_id().and_then(MemberId::person_id)
+    }
+
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        self.by.member_id().and_then(MemberId::agent_id)
+    }
+
+    #[must_use]
+    pub fn bot_id(&self) -> Option<&str> {
+        self.by.member_id().and_then(MemberId::bot_id)
+    }
+
+    /// The person this acting is for, when it is not the actor itself.
+    #[must_use]
+    pub fn acted_for_person(&self) -> Option<&str> {
+        self.acted_for
+            .first()
+            .and_then(|node| node.by.member_id())
+            .and_then(MemberId::person_id)
+    }
+
     /// Every member in the tree, the actor first.
     pub fn members(&self) -> Vec<&MemberId> {
         let mut members: Vec<&MemberId> = self.by.member_id().into_iter().collect();
@@ -354,38 +486,42 @@ impl Acting {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_tree_names_every_member_and_person_in_it() {
-        let acting =
-            Acting::agent("claude").acting_for(Acting::person("q").acting_for(Acting::person("x")));
-        assert!(acting.delegated());
-        assert_eq!(acting.direct_person(), None);
-        assert_eq!(
-            acting.members(),
-            [
-                &MemberId::agent("claude"),
-                &MemberId::person("q"),
-                &MemberId::person("x")
-            ]
-        );
-        assert_eq!(acting.people(), vec!["q", "x"]);
-        let person = Acting::person("q");
-        assert!(person.direct());
-        assert_eq!(person.direct_person(), Some("q"));
-        assert!(Acting::person("q").on_foreign_device(true).delegated());
-    }
+    tilo_test_env::scenario! {
+        fn a_member_tree_names_and_writes_its_members;
 
-    #[test]
-    fn the_tree_is_written_as_it_is_read() {
-        let acting = Acting::automation("1")
-            .acting_for(
-                Acting::agent("claude")
-                    .acting_for(Acting::person("q"))
-                    .acting_for(Acting::person("x")),
-            )
-            .caused_by("chat.message:m1");
-        let json = serde_json::to_string(&acting).unwrap();
-        assert_eq!(serde_json::from_str::<Acting>(&json).unwrap(), acting);
-        assert!(json.contains("\"for\""), "{json}");
+        phase a_tree_names_every_member_and_person_in_it;
+        {
+            let acting =
+                Acting::agent("claude").acting_for(Acting::person("q").acting_for(Acting::person("x")));
+            assert!(acting.delegated());
+            assert_eq!(acting.direct_person(), None);
+            assert_eq!(
+                acting.members(),
+                [
+                    &MemberId::agent("claude"),
+                    &MemberId::person("q"),
+                    &MemberId::person("x")
+                ]
+            );
+            assert_eq!(acting.people(), vec!["q", "x"]);
+            let person = Acting::person("q");
+            assert!(person.direct());
+            assert_eq!(person.direct_person(), Some("q"));
+            assert!(Acting::person("q").on_foreign_device(true).delegated());
+        }
+
+        phase the_tree_is_written_as_it_is_read;
+        {
+            let acting = Acting::automation("1")
+                .acting_for(
+                    Acting::agent("claude")
+                        .acting_for(Acting::person("q"))
+                        .acting_for(Acting::person("x")),
+                )
+                .caused_by("chat.message:m1");
+            let json = serde_json::to_string(&acting).unwrap();
+            assert_eq!(serde_json::from_str::<Acting>(&json).unwrap(), acting);
+            assert!(json.contains("\"for\""), "{json}");
+        }
     }
 }

@@ -208,35 +208,40 @@ mod tests {
         bytes.iter().filter_map(|b| decoder.push(*b)).collect()
     }
 
-    #[test]
-    fn the_keys_terminals_send_read_as_the_keys_they_are() {
-        assert_eq!(
-            keys(b"a\x01\x1b[A\x1bOB\x1b[1;5D\x1b[3~\x1bf\x1b\x7f\x1b[H\x1b[4~\r"),
-            [
-                Key::Char('a'),
-                Key::Ctrl('a'),
-                Key::Up,
-                Key::Down,
-                Key::WordLeft,
-                Key::Delete,
-                Key::Alt('f'),
-                Key::AltBackspace,
-                Key::Home,
-                Key::End,
-                Key::Enter,
-            ]
-        );
-        assert_eq!(keys("é".as_bytes()), [Key::Char('é')]);
-    }
+    tilo_test_env::scenario! {
+        /// The bytes a terminal sends, read as the editor's keys.
+        fn terminal_input_is_read_as_keys_pastes_and_marks;
 
-    #[test]
-    fn a_paste_and_a_mark_arrive_whole() {
-        assert_eq!(
-            keys(b"\x1b[200~echo one\r\necho two\x1b[201~\x1b]133;H;k=x\x07"),
-            [
-                Key::Paste("echo one\necho two".into()),
-                Key::Mark("H;k=x".into())
-            ]
-        );
+        phase the_keys_terminals_send_read_as_the_keys_they_are;
+        {
+            assert_eq!(
+                keys(b"a\x01\x1b[A\x1bOB\x1b[1;5D\x1b[3~\x1bf\x1b\x7f\x1b[H\x1b[4~\r"),
+                [
+                    Key::Char('a'),
+                    Key::Ctrl('a'),
+                    Key::Up,
+                    Key::Down,
+                    Key::WordLeft,
+                    Key::Delete,
+                    Key::Alt('f'),
+                    Key::AltBackspace,
+                    Key::Home,
+                    Key::End,
+                    Key::Enter,
+                ]
+            );
+            assert_eq!(keys("é".as_bytes()), [Key::Char('é')]);
+        }
+
+        phase a_paste_and_a_mark_arrive_whole;
+        {
+            assert_eq!(
+                keys(b"\x1b[200~echo one\r\necho two\x1b[201~\x1b]133;H;k=x\x07"),
+                [
+                    Key::Paste("echo one\necho two".into()),
+                    Key::Mark("H;k=x".into())
+                ]
+            );
+        }
     }
 }

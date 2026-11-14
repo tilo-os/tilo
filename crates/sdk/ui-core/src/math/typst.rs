@@ -727,9 +727,10 @@ fn typst_symbol(name: &str) -> Option<char> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn typst_parses_fractions_matrices_vectors_calls_and_operators() {
-        // phase: parses_typst_fraction_root_and_scripts
+    tilo_test_env::scenario! {
+        fn typst_parses_fractions_matrices_vectors_calls_and_operators;
+
+        phase parses_typst_fraction_root_and_scripts;
         {
             let parsed = parse_typst("frac(alpha_1 + x^2, root(3, 1-x))");
             assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -739,7 +740,8 @@ mod tests {
             assert!(matches!(num[0], Node::Char('α')));
             assert!(matches!(den[0], Node::Sqrt { index: Some(_), .. }));
         }
-        // phase: parses_typst_matrix_and_vector_constructors
+
+        phase parses_typst_matrix_and_vector_constructors;
         {
             let parsed = parse_typst("mat(a, b; c, d) + vec(x, y, z)");
             assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -752,7 +754,8 @@ mod tests {
             assert_eq!((rows.len(), rows[0].len()), (2, 2));
             assert!(parsed.expr.root.iter().any(|node| matches!(node, Node::Delimited { body, .. } if matches!(&body[0], Node::Table { rows } if rows.len() == 3))));
         }
-        // phase: vector_components_and_case_branches_are_vertical
+
+        phase vector_components_and_case_branches_are_vertical;
         {
             let vector = parse_typst("$ vec(x, y, z) $");
             let Node::Delimited { body, .. } = &vector.expr.root[0] else {
@@ -771,7 +774,8 @@ mod tests {
             );
             assert!(cases.diagnostics.is_empty(), "{:?}", cases.diagnostics);
         }
-        // phase: user_defined_function_calls_are_preserved_without_false_diagnostics
+
+        phase user_defined_function_calls_are_preserved_without_false_diagnostics;
         {
             let parsed = parse_typst("f(x) + energy(t)");
             assert!(parsed.diagnostics.is_empty());
@@ -783,7 +787,8 @@ mod tests {
                     .any(|node| matches!(node, Node::Paren { .. }))
             );
         }
-        // phase: parses_typst_large_operator_limits
+
+        phase parses_typst_large_operator_limits;
         {
             let parsed = parse_typst("sum_(i=1)^n x_i");
             assert!(parsed.diagnostics.is_empty());
@@ -798,9 +803,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn typst_round_trips_a_practical_corpus_and_visual_constructs() {
-        // phase: practical_typst_formula_corpus_parses_without_loss
+    tilo_test_env::scenario! {
+        fn typst_round_trips_a_practical_corpus_and_visual_constructs;
+
+        phase practical_typst_formula_corpus_parses_without_loss;
         {
             let formulas = [
                 "x = frac(-b plus.minus sqrt(b^2-4a c), 2a)",
@@ -821,7 +827,8 @@ mod tests {
                 assert!(!parsed.expr.root.is_empty(), "{source}");
             }
         }
-        // phase: visual_vector_and_cases_serialize_to_native_typst_constructs
+
+        phase visual_vector_and_cases_serialize_to_native_typst_constructs;
         {
             for source in [
                 "vec(alpha, beta, gamma)",

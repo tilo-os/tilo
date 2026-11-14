@@ -64,65 +64,6 @@ impl TurnTransport for LooksAtSites {
     }
 }
 
-#[test]
-fn looking_at_a_site_reads_and_captures_it_in_the_browser_not_by_fetch() {
-    let png = [b"\x89PNG\r\n\x1a\n".as_slice(), b"the page"].concat();
-    let mut f = fixture(
-        "Look at Jane Doe's portfolio site",
-        World::default(),
-        Vec::new(),
-    );
-    let capture = format!("tilo.content:{}", f.session.cfg.content.put(&png).unwrap());
-    f.world.borrow_mut().browser = Some(capture.clone());
-    f.session.broker_catalogue = super::catalogue_of(&f.world.borrow().surfaces());
-    let model = Arc::new(LooksAtSites {
-        bodies: Mutex::new(Vec::new()),
-    });
-    f.session.chooser = Chooser::scripted_model(
-        Duration::from_secs(5),
-        agent_provider_config::ModelDescriptor {
-            vision: true,
-            ..agent_provider_config::ModelDescriptor::new("sees")
-        },
-        Arc::clone(&model) as Arc<dyn TurnTransport>,
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Jane Doe's portfolio shows two solid projects.".into()
-        }
-    );
-    let actions: Vec<String> = f
-        .world
-        .borrow()
-        .steps
-        .iter()
-        .map(|(action, _)| action.clone())
-        .collect();
-    assert_eq!(
-        actions,
-        ["navigate", "read-page", "capture-page"],
-        "never fetch"
-    );
-    let bodies = model.bodies.lock().unwrap().clone();
-    let first = bodies[0].to_string();
-    assert!(
-        first.contains("open its address in the browser"),
-        "the loop tells the model to look at pages in the browser: {first}"
-    );
-    assert!(
-        first.contains("`read_page` is only a quick read of text nobody needs to see"),
-        "{first}"
-    );
-    let last = bodies.last().unwrap().to_string();
-    assert!(
-        last.contains("image/png"),
-        "the capture reached the model that sees"
-    );
-    assert!(last.contains(&capture));
-}
-
 /// A model reading a candidate's pages one after another.
 struct ReadsManyPages {
     pages: usize,
@@ -172,44 +113,107 @@ impl TurnTransport for ReadsManyPages {
     }
 }
 
-/// A run walks a list of pages it reads one by one: every page is read
-/// once, and the run finishes with what it found.
-#[test]
-fn the_run_reads_every_page_of_a_list_once() {
-    const PAGES: usize = 16;
-    let mut f = fixture(
-        "Read the candidates' sites",
-        World {
-            browser: Some(format!("tilo.content:{}", "0".repeat(64))),
-            ..World::default()
-        },
-        Vec::new(),
-    );
-    let model = Arc::new(ReadsManyPages {
-        pages: PAGES,
-        bodies: Mutex::new(Vec::new()),
-    });
-    f.session.chooser = Chooser::scripted_model(
-        Duration::from_secs(5),
-        agent_provider_config::ModelDescriptor::new("reads"),
-        Arc::clone(&model) as Arc<dyn TurnTransport>,
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Read all the pages.".into()
-        }
-    );
-    assert_eq!(f.world.borrow().steps.len(), PAGES, "every page read once");
-    // No step here asks the person: reading a page is not an operation that
-    // asks first, so none of them waits. A step that did would be held
-    // (`native_pipeline::a_step_that_asks_the_person_is_held_until_they_answer`).
-    assert!(
-        !f.sent.borrow().iter().any(|request| matches!(
-            request,
-            CollabRequest::InvokeTaskAction { wait: Some(_), .. }
-        )),
-        "no step waits for a person"
-    );
+tilo_test_env::scenario! {
+    fn a_run_reads_web_pages_in_the_browser_and_each_page_once;
+
+    phase looking_at_a_site_reads_and_captures_it_in_the_browser_not_by_fetch;
+    {
+        let png = [b"\x89PNG\r\n\x1a\n".as_slice(), b"the page"].concat();
+        let mut f = fixture(
+            "Look at Jane Doe's portfolio site",
+            World::default(),
+            Vec::new(),
+        );
+        let capture = format!("tilo.content:{}", f.session.cfg.content.put(&png).unwrap());
+        f.world.borrow_mut().browser = Some(capture.clone());
+        f.session.broker_catalogue = super::catalogue_of(&f.world.borrow().surfaces());
+        let model = Arc::new(LooksAtSites {
+            bodies: Mutex::new(Vec::new()),
+        });
+        f.session.chooser = Chooser::scripted_model(
+            Duration::from_secs(5),
+            agent_provider_config::ModelDescriptor {
+                vision: true,
+                ..agent_provider_config::ModelDescriptor::new("sees")
+            },
+            Arc::clone(&model) as Arc<dyn TurnTransport>,
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Jane Doe's portfolio shows two solid projects.".into()
+            }
+        );
+        let actions: Vec<String> = f
+            .world
+            .borrow()
+            .steps
+            .iter()
+            .map(|(action, _)| action.clone())
+            .collect();
+        assert_eq!(
+            actions,
+            ["navigate", "read-page", "capture-page"],
+            "never fetch"
+        );
+        let bodies = model.bodies.lock().unwrap().clone();
+        let first = bodies[0].to_string();
+        assert!(
+            first.contains("open its address in the browser"),
+            "the loop tells the model to look at pages in the browser: {first}"
+        );
+        assert!(
+            first.contains("`read_page` is only a quick read of text nobody needs to see"),
+            "{first}"
+        );
+        let last = bodies.last().unwrap().to_string();
+        assert!(
+            last.contains("image/png"),
+            "the capture reached the model that sees"
+        );
+        assert!(last.contains(&capture));
+    }
+
+    phase the_run_reads_every_page_of_a_list_once;
+    // A run walks a list of pages it reads one by one: every page is read
+    // once, and the run finishes with what it found.
+    {
+        const PAGES: usize = 16;
+        let mut f = fixture(
+            "Read the candidates' sites",
+            World {
+                browser: Some(format!("tilo.content:{}", "0".repeat(64))),
+                ..World::default()
+            },
+            Vec::new(),
+        );
+        let model = Arc::new(ReadsManyPages {
+            pages: PAGES,
+            bodies: Mutex::new(Vec::new()),
+        });
+        f.session.chooser = Chooser::scripted_model(
+            Duration::from_secs(5),
+            agent_provider_config::ModelDescriptor::new("reads"),
+            Arc::clone(&model) as Arc<dyn TurnTransport>,
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Read all the pages.".into()
+            }
+        );
+        assert_eq!(f.world.borrow().steps.len(), PAGES, "every page read once");
+        // No step here asks the person: reading a page is not an operation that
+        // asks first, so none of them waits. A step that did would be held
+        // (`native_pipeline::a_step_that_asks_the_person_is_held_until_they_answer`).
+        assert!(
+            !f.sent.borrow().iter().any(|request| matches!(
+                request,
+                CollabRequest::InvokeTaskAction { wait: Some(_), .. }
+            )),
+            "no step waits for a person"
+        );
+    }
 }

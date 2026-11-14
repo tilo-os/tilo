@@ -835,437 +835,445 @@ mod tests {
         overlays
     }
 
-    #[test]
-    fn every_slot_says_what_surface_it_is() {
-        for slot in Slot::ALL {
-            let role = slot.role();
+    tilo_test_env::scenario! {
+        fn the_overlay_stack_opens_closes_and_hands_on_the_keyboard;
+
+        phase every_slot_says_what_surface_it_is;
+        {
+            for slot in Slot::ALL {
+                let role = slot.role();
+                assert!(
+                    !role.as_str().is_empty() && !slot.as_str().is_empty(),
+                    "{slot:?} is named"
+                );
+                assert_eq!(Slot::named(slot.as_str()), Some(slot), "{slot:?}");
+            }
+        }
+
+        phase only_a_menu_closes_on_a_press_outside_and_escape_answers_by_kind;
+        {
+            assert!(Role::Popup.closes_on_press_outside());
+            for role in [Role::Overlay, Role::Dialog] {
+                assert!(!role.closes_on_press_outside(), "{role:?} stays");
+            }
+            assert!(Role::Popup.closes_on_escape() && Role::Dialog.closes_on_escape());
             assert!(
-                !role.as_str().is_empty() && !slot.as_str().is_empty(),
-                "{slot:?} is named"
+                !Role::Overlay.closes_on_escape(),
+                "an overlay answers Escape only if its own model says so"
             );
-            assert_eq!(Slot::named(slot.as_str()), Some(slot), "{slot:?}");
         }
-    }
 
-    #[test]
-    fn only_a_menu_closes_on_a_press_outside_and_escape_answers_by_kind() {
-        assert!(Role::Popup.closes_on_press_outside());
-        for role in [Role::Overlay, Role::Dialog] {
-            assert!(!role.closes_on_press_outside(), "{role:?} stays");
+        phase one_anchored_surface_stands_at_a_time;
+        {
+            let overlays = overlays();
+            overlays.open(Slot::TiloMenu, None);
+            overlays.open(Slot::Strips, None);
+            assert!(
+                !overlays.is_open(Slot::TiloMenu),
+                "the strip labels came up, and the menu went down with them"
+            );
+            overlays.open(Slot::QuickSettings, None);
+            assert!(
+                !overlays.is_open(Slot::Strips),
+                "and quick settings after them"
+            );
+            assert!(overlays.is_open(Slot::QuickSettings));
+            // The overview is the desk the others stand over, not one of them.
+            overlays.open(Slot::Overview, None);
+            assert!(
+                overlays.is_open(Slot::QuickSettings),
+                "the overview keeps what stands over it"
+            );
+            overlays.open(Slot::Strips, None);
+            assert!(
+                overlays.is_open(Slot::Overview),
+                "and the strip labels leave the overview itself up"
+            );
         }
-        assert!(Role::Popup.closes_on_escape() && Role::Dialog.closes_on_escape());
-        assert!(
-            !Role::Overlay.closes_on_escape(),
-            "an overlay answers Escape only if its own model says so"
-        );
-    }
 
-    #[test]
-    fn one_anchored_surface_stands_at_a_time() {
-        let overlays = overlays();
-        overlays.open(Slot::TiloMenu, None);
-        overlays.open(Slot::Strips, None);
-        assert!(
-            !overlays.is_open(Slot::TiloMenu),
-            "the strip labels came up, and the menu went down with them"
-        );
-        overlays.open(Slot::QuickSettings, None);
-        assert!(
-            !overlays.is_open(Slot::Strips),
-            "and quick settings after them"
-        );
-        assert!(overlays.is_open(Slot::QuickSettings));
-        // The overview is the desk the others stand over, not one of them.
-        overlays.open(Slot::Overview, None);
-        assert!(
-            overlays.is_open(Slot::QuickSettings),
-            "the overview keeps what stands over it"
-        );
-        overlays.open(Slot::Strips, None);
-        assert!(
-            overlays.is_open(Slot::Overview),
-            "and the strip labels leave the overview itself up"
-        );
-    }
+        phase the_keyboard_goes_to_the_topmost_surface_and_comes_back_down;
+        {
+            let overlays = overlays();
+            assert_eq!(overlays.target(), Target::Window, "the desk has it");
 
-    #[test]
-    fn a_popover_under_the_bars_right_end_leaves_the_margin_and_the_bar() {
-        let overlays = overlays();
-        overlays.open(Slot::QuickSettings, None);
-        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
-        let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();
-        assert_eq!(place.x1, DISPLAY.x1 - POPOVER_MARGIN);
-        assert_eq!(place.x0, DISPLAY.x1 - POPOVER_MARGIN - POPOVER_WIDTH);
-        assert_eq!(place.y0, bar, "under the bar");
-        assert_eq!(place.width(), POPOVER_WIDTH);
-        assert_eq!(
-            place.height(),
-            POPOVER_HEIGHT,
-            "its footprint, not the rest of the display"
-        );
-        assert!(
-            place.y1 < DISPLAY.y1 - POPOVER_MARGIN,
-            "with the desk it does not cover left below it"
-        );
-    }
+            overlays.open(Slot::Overview, None);
+            assert_eq!(overlays.target(), Target::Surface(Slot::Overview));
+            overlays.open(Slot::QuickSettings, None);
+            assert_eq!(
+                overlays.target(),
+                Target::Surface(Slot::Overview),
+                "the top of the stack holds it, not the last one opened"
+            );
 
-    #[test]
-    fn a_popover_opens_beside_the_caret_it_was_asked_at() {
-        let overlays = overlays();
-        let caret = Rect::new(600.0, 300.0, 602.0, 320.0);
-        overlays.open(
-            Slot::QuickSettings,
-            Some(Anchor::Beside {
-                at: caret,
-                gap: 4.0,
-            }),
-        );
-        let standing = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(standing.room.x0, caret.x1 + 4.0, "clear of the caret");
-        assert!(standing.room.x0 >= caret.x1, "and never over it");
-        assert_eq!(standing.room.width(), POPOVER_WIDTH);
-        assert_eq!(
-            standing.room.y0,
-            caret.y1 + 4.0,
-            "under the line the person types on"
-        );
-        assert_eq!(
-            standing.room.y1,
-            DISPLAY.y1 - POPOVER_MARGIN,
-            "taking the room below it, down to the display's margin"
-        );
-        assert!(!standing.rests_at_bottom, "hanging from its top edge");
+            overlays.close(Slot::Overview);
+            assert_eq!(
+                overlays.target(),
+                Target::Surface(Slot::QuickSettings),
+                "the one it covered takes it back"
+            );
+            overlays.close(Slot::QuickSettings);
+            assert_eq!(overlays.target(), Target::Window, "and the window again");
+        }
 
-        // With no room on the right of the caret, it opens on the left.
-        let edge = Rect::new(1200.0, 300.0, 1202.0, 320.0);
-        overlays.open(
-            Slot::QuickSettings,
-            Some(Anchor::Beside { at: edge, gap: 4.0 }),
-        );
-        let standing = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(standing.room.x1, edge.x0 - 4.0);
-        assert!(standing.room.x1 <= edge.x0, "still clear of the caret");
-    }
+        phase a_surface_opened_over_the_field_typed_in_leaves_it_up_and_gives_the_keys_back;
+        {
+            let overlays = overlays();
+            overlays.open(Slot::Search, None);
+            overlays.open_over(Slot::QuickSettings, None);
+            assert!(
+                overlays.is_open(Slot::Search),
+                "the search the clipboard was opened for stays up under it"
+            );
+            assert_eq!(overlays.target(), Target::Surface(Slot::QuickSettings));
+            assert_eq!(overlays.over(), Some(Slot::QuickSettings));
+            assert_eq!(
+                overlays.escape(),
+                Some(Slot::QuickSettings),
+                "Escape puts the clipboard away, not the search"
+            );
+            overlays.close(Slot::QuickSettings);
+            assert_eq!(overlays.over(), None);
+            assert_eq!(
+                overlays.target(),
+                Target::Surface(Slot::Search),
+                "the search has the keys back"
+            );
 
-    #[test]
-    fn a_pane_at_the_caret_never_covers_the_line_the_person_edits() {
-        let overlays = overlays();
-        // Halfway down: the room below the line holds the whole pane, so it goes there.
-        let middle = Rect::new(600.0, 200.0, 602.0, 220.0);
-        overlays.open(
-            Slot::QuickSettings,
-            Some(Anchor::Beside {
-                at: middle,
-                gap: 6.0,
-            }),
-        );
-        let standing = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(standing.room.y0, middle.y1 + 6.0, "just under the line");
-        assert_eq!(
-            standing.room.y1,
-            DISPLAY.y1 - POPOVER_MARGIN,
-            "as far down as the display's margin"
-        );
-        assert!(!standing.rests_at_bottom, "hanging from its top edge");
-        assert!(
-            standing.room.y0 >= middle.y1,
-            "the pane stands clear of the line: {:?} against {middle:?}",
-            standing.room
-        );
+            // Opened plainly, it stands alone.
+            overlays.open_over(Slot::QuickSettings, None);
+            overlays.open(Slot::QuickSettings, None);
+            assert!(!overlays.is_open(Slot::Search));
+            assert_eq!(overlays.over(), None);
+        }
 
-        // Near the bottom: no room below the line holds it, so it hangs above, by its bottom edge,
-        // and still covers nothing of the line.
-        let low = Rect::new(600.0, 700.0, 602.0, 720.0);
-        overlays.open(
-            Slot::QuickSettings,
-            Some(Anchor::Beside { at: low, gap: 6.0 }),
-        );
-        let standing = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(standing.room.y1, low.y0 - 6.0, "just over the line");
-        assert!(standing.rests_at_bottom, "hanging by its bottom edge");
-        assert_eq!(standing.room.height(), POPOVER_HEIGHT);
-        assert!(
-            standing.room.y1 <= low.y0,
-            "the pane stands clear of the line: {:?} against {low:?}",
-            standing.room
-        );
-    }
+        phase escape_and_a_press_outside_close_the_top_menu_that_stands_where_it_is_not;
+        {
+            let overlays = overlays();
+            overlays.open(Slot::QuickSettings, None);
+            let place = overlays.place(Slot::QuickSettings).expect("placed").room;
 
-    #[test]
-    fn the_caret_a_key_opens_at_outlives_the_displays_changing() {
-        let overlays = overlays();
-        let caret = Rect::new(600.0, 300.0, 602.0, 320.0);
-        overlays.set_caret(Some(caret));
-        // The outputs came and went while the person typed: where they type is still where the
-        // surface a key opens for the text stands.
-        overlays.set_displays(&[Rect::new(0.0, 0.0, 1000.0, 700.0)], Some(DISPLAY));
-        assert_eq!(overlays.caret(), Some(caret));
-        overlays.open(
-            Slot::QuickSettings,
-            overlays.caret().map(|at| Anchor::Beside { at, gap: 6.0 }),
-        );
-        let standing = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(standing.room.x0, caret.x1 + 6.0, "clear of the caret");
-        assert!(
-            standing.room.y0 >= caret.y1,
-            "under the line it types on, never over it"
-        );
-        assert_eq!(
-            standing.room.height(),
-            700.0 - POPOVER_MARGIN - caret.y1 - 6.0,
-            "the room below the line, which is less than the surface may be"
-        );
-    }
+            assert_eq!(overlays.escape(), Some(Slot::QuickSettings));
+            assert_eq!(
+                overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
+                Some(Slot::QuickSettings),
+                "a press outside its rect"
+            );
+            assert_eq!(
+                overlays.press_outside(place.center().x, place.center().y),
+                None,
+                "and none from inside it"
+            );
 
-    #[test]
-    fn a_surface_is_placed_on_the_display_holding_its_anchor() {
-        let left = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let right = Rect::new(1280.0, 0.0, 3840.0, 1440.0);
-        let overlays = Overlays::new();
-        overlays.set_displays(&[left, right], Some(left));
-        // On the right display's trailing edge, though the person works on the left one.
-        overlays.open(Slot::QuickSettings, Some(Anchor::TopTrailing(8.0)));
-        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
-        assert_eq!(place.x1, left.x1 - 8.0, "the display the person works on");
+            // The window menu takes its place: one anchored surface at a time.
+            overlays.open(Slot::WindowMenu, Some(Anchor::At(Point::new(40.0, 50.0))));
+            assert!(
+                !overlays.is_open(Slot::QuickSettings),
+                "the panel goes down for the menu the person just opened"
+            );
+            // And it stands where its own view draws it: nothing the session can judge, so nothing it
+            // closes.
+            assert_eq!(overlays.place(Slot::WindowMenu), None);
+            assert_eq!(overlays.escape(), Some(Slot::WindowMenu));
+            assert_eq!(
+                overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
+                None,
+                "its view closes it, the session has no rect to judge"
+            );
+        }
 
-        let caret = Rect::new(2000.0, 100.0, 2002.0, 120.0);
-        overlays.open(
-            Slot::QuickSettings,
-            Some(Anchor::Beside {
-                at: caret,
-                gap: 0.0,
-            }),
-        );
-        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
-        assert!(
-            place.x0 >= right.x0,
-            "the display holding the caret it was opened from"
-        );
-    }
+        phase a_change_in_the_stack_asks_what_draws_it_for_a_pass;
+        {
+            let overlays = overlays();
+            let asked = Rc::new(std::cell::Cell::new(false));
+            overlays.wake_with(Rc::clone(&asked));
+            assert!(!asked.replace(false), "nothing asked yet");
 
-    #[test]
-    fn the_keyboard_goes_to_the_topmost_surface_and_comes_back_down() {
-        let overlays = overlays();
-        assert_eq!(overlays.target(), Target::Window, "the desk has it");
+            overlays.open(Slot::WorkspaceMenu, None);
+            assert!(asked.replace(false), "the menu came up");
+            overlays.dismiss(Slot::WorkspaceMenu);
+            assert!(
+                asked.replace(false),
+                "a press outside took it down: the widget has to close it"
+            );
+            // The widget closing it follows the stack, which hears that: what the widget shows next is
+            // a surface of its own again, not the state the stack took down.
+            overlays.close(Slot::WorkspaceMenu);
+            assert!(
+                !overlays.awaiting_close(Slot::WorkspaceMenu),
+                "the widget followed the stack"
+            );
+            assert!(asked.replace(false), "the widget followed it");
+            assert!(
+                !asked.replace(false),
+                "and nothing is left to draw after that"
+            );
+            overlays.open(Slot::QuickSettings, None);
+            assert!(asked.replace(false), "another surface came up");
+            overlays.close(Slot::QuickSettings);
+            assert!(asked.replace(false), "and went down");
+        }
 
-        overlays.open(Slot::Overview, None);
-        assert_eq!(overlays.target(), Target::Surface(Slot::Overview));
-        overlays.open(Slot::QuickSettings, None);
-        assert_eq!(
-            overlays.target(),
-            Target::Surface(Slot::Overview),
-            "the top of the stack holds it, not the last one opened"
-        );
-
-        overlays.close(Slot::Overview);
-        assert_eq!(
-            overlays.target(),
-            Target::Surface(Slot::QuickSettings),
-            "the one it covered takes it back"
-        );
-        overlays.close(Slot::QuickSettings);
-        assert_eq!(overlays.target(), Target::Window, "and the window again");
-    }
-
-    #[test]
-    fn a_surface_opened_over_the_field_typed_in_leaves_it_up_and_gives_the_keys_back() {
-        let overlays = overlays();
-        overlays.open(Slot::Search, None);
-        overlays.open_over(Slot::QuickSettings, None);
-        assert!(
-            overlays.is_open(Slot::Search),
-            "the search the clipboard was opened for stays up under it"
-        );
-        assert_eq!(overlays.target(), Target::Surface(Slot::QuickSettings));
-        assert_eq!(overlays.over(), Some(Slot::QuickSettings));
-        assert_eq!(
-            overlays.escape(),
-            Some(Slot::QuickSettings),
-            "Escape puts the clipboard away, not the search"
-        );
-        overlays.close(Slot::QuickSettings);
-        assert_eq!(overlays.over(), None);
-        assert_eq!(
-            overlays.target(),
-            Target::Surface(Slot::Search),
-            "the search has the keys back"
-        );
-
-        // Opened plainly, it stands alone.
-        overlays.open_over(Slot::QuickSettings, None);
-        overlays.open(Slot::QuickSettings, None);
-        assert!(!overlays.is_open(Slot::Search));
-        assert_eq!(overlays.over(), None);
-    }
-
-    #[test]
-    fn escape_and_a_press_outside_close_the_top_menu_that_stands_where_it_is_not() {
-        let overlays = overlays();
-        overlays.open(Slot::QuickSettings, None);
-        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
-
-        assert_eq!(overlays.escape(), Some(Slot::QuickSettings));
-        assert_eq!(
-            overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
-            Some(Slot::QuickSettings),
-            "a press outside its rect"
-        );
-        assert_eq!(
-            overlays.press_outside(place.center().x, place.center().y),
-            None,
-            "and none from inside it"
-        );
-
-        // The window menu takes its place: one anchored surface at a time.
-        overlays.open(Slot::WindowMenu, Some(Anchor::At(Point::new(40.0, 50.0))));
-        assert!(
-            !overlays.is_open(Slot::QuickSettings),
-            "the panel goes down for the menu the person just opened"
-        );
-        // And it stands where its own view draws it: nothing the session can judge, so nothing it
-        // closes.
-        assert_eq!(overlays.place(Slot::WindowMenu), None);
-        assert_eq!(overlays.escape(), Some(Slot::WindowMenu));
-        assert_eq!(
-            overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
-            None,
-            "its view closes it, the session has no rect to judge"
-        );
-    }
-
-    #[test]
-    fn a_change_in_the_stack_asks_what_draws_it_for_a_pass() {
-        let overlays = overlays();
-        let asked = Rc::new(std::cell::Cell::new(false));
-        overlays.wake_with(Rc::clone(&asked));
-        assert!(!asked.replace(false), "nothing asked yet");
-
-        overlays.open(Slot::WorkspaceMenu, None);
-        assert!(asked.replace(false), "the menu came up");
-        overlays.dismiss(Slot::WorkspaceMenu);
-        assert!(
-            asked.replace(false),
-            "a press outside took it down: the widget has to close it"
-        );
-        // The widget closing it follows the stack, which hears that: what the widget shows next is
-        // a surface of its own again, not the state the stack took down.
-        overlays.close(Slot::WorkspaceMenu);
-        assert!(
-            !overlays.awaiting_close(Slot::WorkspaceMenu),
-            "the widget followed the stack"
-        );
-        assert!(asked.replace(false), "the widget followed it");
-        assert!(
-            !asked.replace(false),
-            "and nothing is left to draw after that"
-        );
-        overlays.open(Slot::QuickSettings, None);
-        assert!(asked.replace(false), "another surface came up");
-        overlays.close(Slot::QuickSettings);
-        assert!(asked.replace(false), "and went down");
-    }
-
-    #[test]
-    fn a_dismissed_surface_stays_down_for_the_press_that_dismissed_it() {
-        let overlays = overlays();
-        overlays.open(Slot::QuickSettings, None);
-        overlays.dismiss(Slot::QuickSettings);
-        assert!(!overlays.is_open(Slot::QuickSettings));
-        assert!(
-            overlays.dismissed_recently(Slot::QuickSettings),
-            "the press is still being delivered"
-        );
-        overlays.press_ended();
-        assert!(
-            overlays.dismissed_recently(Slot::QuickSettings),
-            "a quick click comes up before what it asked is carried out: \
+        phase a_dismissed_surface_stays_down_for_the_press_that_dismissed_it;
+        {
+            let overlays = overlays();
+            overlays.open(Slot::QuickSettings, None);
+            overlays.dismiss(Slot::QuickSettings);
+            assert!(!overlays.is_open(Slot::QuickSettings));
+            assert!(
+                overlays.dismissed_recently(Slot::QuickSettings),
+                "the press is still being delivered"
+            );
+            overlays.press_ended();
+            assert!(
+                overlays.dismissed_recently(Slot::QuickSettings),
+                "a quick click comes up before what it asked is carried out: \
              the toggle it raised must not raise it again"
-        );
-        overlays.settle_press();
-        assert!(
-            !overlays.dismissed_recently(Slot::QuickSettings),
-            "the asks are carried out: the press is over, and it opens again"
-        );
+            );
+            overlays.settle_press();
+            assert!(
+                !overlays.dismissed_recently(Slot::QuickSettings),
+                "the asks are carried out: the press is over, and it opens again"
+            );
 
-        overlays.dismiss(Slot::QuickSettings);
-        overlays.open(Slot::QuickSettings, None);
-        assert!(
-            !overlays.dismissed_recently(Slot::QuickSettings),
-            "opened again, it is nobody's dismissed surface"
-        );
-    }
-
-    #[test]
-    fn a_surface_that_says_where_it_stands_is_closed_by_a_press_that_misses_it() {
-        let overlays = overlays();
-        let panel = Rect::new(52.0, 40.0, 289.0, 240.0);
-        assert_eq!(
-            overlays.press_outside(640.0, 700.0),
-            None,
-            "nothing is up, so the press is the desk's"
-        );
-        overlays.open(Slot::WorkspaceMenu, None);
-        assert_eq!(
-            overlays.press_outside(640.0, 700.0),
-            None,
-            "an anchor alone does not say where a menu as big as its rows stands"
-        );
-
-        overlays.stands(Slot::WorkspaceMenu, Some(panel));
-        assert_eq!(
-            overlays.press_outside(640.0, 700.0),
-            Some(Slot::WorkspaceMenu),
-            "a press on the desk misses the panel"
-        );
-        assert_eq!(
-            overlays.press_outside(panel.center().x, panel.center().y),
-            None,
-            "a press on the panel is the menu's own"
-        );
-
-        overlays.stands(Slot::WorkspaceMenu, None);
-        assert_eq!(
-            overlays.press_outside(640.0, 700.0),
-            None,
-            "the widget takes its word back when the menu goes"
-        );
-    }
-
-    #[test]
-    fn an_anchor_reads_back_the_way_a_verb_spells_it() {
-        for anchor in [
-            Anchor::Center,
-            Anchor::Fill,
-            Anchor::TopTrailing(8.0),
-            Anchor::TopLeading(0.0),
-            Anchor::Beside {
-                at: Rect::new(600.0, 300.0, 602.0, 320.0),
-                gap: 4.0,
-            },
-            Anchor::At(Point::new(40.0, 50.0)),
-        ] {
-            let text = anchor.as_str();
-            assert_eq!(Anchor::parse(&text), Some(anchor), "{text}");
+            overlays.dismiss(Slot::QuickSettings);
+            overlays.open(Slot::QuickSettings, None);
+            assert!(
+                !overlays.dismissed_recently(Slot::QuickSettings),
+                "opened again, it is nobody's dismissed surface"
+            );
         }
-        assert_eq!(Anchor::parse("nowhere"), None);
-        assert_eq!(Anchor::parse("at:1"), None);
-        assert_eq!(Anchor::parse("beside:1,2,3,4"), None);
+
+        phase a_surface_that_says_where_it_stands_is_closed_by_a_press_that_misses_it;
+        {
+            let overlays = overlays();
+            let panel = Rect::new(52.0, 40.0, 289.0, 240.0);
+            assert_eq!(
+                overlays.press_outside(640.0, 700.0),
+                None,
+                "nothing is up, so the press is the desk's"
+            );
+            overlays.open(Slot::WorkspaceMenu, None);
+            assert_eq!(
+                overlays.press_outside(640.0, 700.0),
+                None,
+                "an anchor alone does not say where a menu as big as its rows stands"
+            );
+
+            overlays.stands(Slot::WorkspaceMenu, Some(panel));
+            assert_eq!(
+                overlays.press_outside(640.0, 700.0),
+                Some(Slot::WorkspaceMenu),
+                "a press on the desk misses the panel"
+            );
+            assert_eq!(
+                overlays.press_outside(panel.center().x, panel.center().y),
+                None,
+                "a press on the panel is the menu's own"
+            );
+
+            overlays.stands(Slot::WorkspaceMenu, None);
+            assert_eq!(
+                overlays.press_outside(640.0, 700.0),
+                None,
+                "the widget takes its word back when the menu goes"
+            );
+        }
+
+        phase the_reading_lists_the_open_surfaces_topmost_first;
+        {
+            let overlays = overlays();
+            assert!(overlays.entries().is_empty(), "nothing is up");
+            overlays.open(Slot::QuickSettings, None);
+            overlays.open(Slot::Overview, None);
+            let entries = overlays.entries();
+            assert_eq!(
+                entries.iter().map(|entry| entry.slot).collect::<Vec<_>>(),
+                vec![Slot::Overview, Slot::QuickSettings],
+                "the overview is the desk the panel stands over, not a second popup"
+            );
+            let overview = &entries[0];
+            assert_eq!(overview.role, Role::Overlay);
+            assert_eq!(overlays.target().as_str(), "overlay:overview");
+        }
     }
 
-    #[test]
-    fn the_reading_lists_the_open_surfaces_topmost_first() {
-        let overlays = overlays();
-        assert!(overlays.entries().is_empty(), "nothing is up");
-        overlays.open(Slot::QuickSettings, None);
-        overlays.open(Slot::Overview, None);
-        let entries = overlays.entries();
-        assert_eq!(
-            entries.iter().map(|entry| entry.slot).collect::<Vec<_>>(),
-            vec![Slot::Overview, Slot::QuickSettings],
-            "the overview is the desk the panel stands over, not a second popup"
-        );
-        let overview = &entries[0];
-        assert_eq!(overview.role, Role::Overlay);
-        assert_eq!(overlays.target().as_str(), "overlay:overview");
+    tilo_test_env::scenario! {
+        fn an_overlay_stands_where_its_anchor_puts_it;
+
+        phase a_popover_under_the_bars_right_end_leaves_the_margin_and_the_bar;
+        {
+            let overlays = overlays();
+            overlays.open(Slot::QuickSettings, None);
+            let place = overlays.place(Slot::QuickSettings).expect("placed").room;
+            let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();
+            assert_eq!(place.x1, DISPLAY.x1 - POPOVER_MARGIN);
+            assert_eq!(place.x0, DISPLAY.x1 - POPOVER_MARGIN - POPOVER_WIDTH);
+            assert_eq!(place.y0, bar, "under the bar");
+            assert_eq!(place.width(), POPOVER_WIDTH);
+            assert_eq!(
+                place.height(),
+                POPOVER_HEIGHT,
+                "its footprint, not the rest of the display"
+            );
+            assert!(
+                place.y1 < DISPLAY.y1 - POPOVER_MARGIN,
+                "with the desk it does not cover left below it"
+            );
+        }
+
+        phase a_popover_opens_beside_the_caret_it_was_asked_at;
+        {
+            let overlays = overlays();
+            let caret = Rect::new(600.0, 300.0, 602.0, 320.0);
+            overlays.open(
+                Slot::QuickSettings,
+                Some(Anchor::Beside {
+                    at: caret,
+                    gap: 4.0,
+                }),
+            );
+            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            assert_eq!(standing.room.x0, caret.x1 + 4.0, "clear of the caret");
+            assert!(standing.room.x0 >= caret.x1, "and never over it");
+            assert_eq!(standing.room.width(), POPOVER_WIDTH);
+            assert_eq!(
+                standing.room.y0,
+                caret.y1 + 4.0,
+                "under the line the person types on"
+            );
+            assert_eq!(
+                standing.room.y1,
+                DISPLAY.y1 - POPOVER_MARGIN,
+                "taking the room below it, down to the display's margin"
+            );
+            assert!(!standing.rests_at_bottom, "hanging from its top edge");
+
+            // With no room on the right of the caret, it opens on the left.
+            let edge = Rect::new(1200.0, 300.0, 1202.0, 320.0);
+            overlays.open(
+                Slot::QuickSettings,
+                Some(Anchor::Beside { at: edge, gap: 4.0 }),
+            );
+            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            assert_eq!(standing.room.x1, edge.x0 - 4.0);
+            assert!(standing.room.x1 <= edge.x0, "still clear of the caret");
+        }
+
+        phase a_pane_at_the_caret_never_covers_the_line_the_person_edits;
+        {
+            let overlays = overlays();
+            // Halfway down: the room below the line holds the whole pane, so it goes there.
+            let middle = Rect::new(600.0, 200.0, 602.0, 220.0);
+            overlays.open(
+                Slot::QuickSettings,
+                Some(Anchor::Beside {
+                    at: middle,
+                    gap: 6.0,
+                }),
+            );
+            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            assert_eq!(standing.room.y0, middle.y1 + 6.0, "just under the line");
+            assert_eq!(
+                standing.room.y1,
+                DISPLAY.y1 - POPOVER_MARGIN,
+                "as far down as the display's margin"
+            );
+            assert!(!standing.rests_at_bottom, "hanging from its top edge");
+            assert!(
+                standing.room.y0 >= middle.y1,
+                "the pane stands clear of the line: {:?} against {middle:?}",
+                standing.room
+            );
+
+            // Near the bottom: no room below the line holds it, so it hangs above, by its bottom edge,
+            // and still covers nothing of the line.
+            let low = Rect::new(600.0, 700.0, 602.0, 720.0);
+            overlays.open(
+                Slot::QuickSettings,
+                Some(Anchor::Beside { at: low, gap: 6.0 }),
+            );
+            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            assert_eq!(standing.room.y1, low.y0 - 6.0, "just over the line");
+            assert!(standing.rests_at_bottom, "hanging by its bottom edge");
+            assert_eq!(standing.room.height(), POPOVER_HEIGHT);
+            assert!(
+                standing.room.y1 <= low.y0,
+                "the pane stands clear of the line: {:?} against {low:?}",
+                standing.room
+            );
+        }
+
+        phase the_caret_a_key_opens_at_outlives_the_displays_changing;
+        {
+            let overlays = overlays();
+            let caret = Rect::new(600.0, 300.0, 602.0, 320.0);
+            overlays.set_caret(Some(caret));
+            // The outputs came and went while the person typed: where they type is still where the
+            // surface a key opens for the text stands.
+            overlays.set_displays(&[Rect::new(0.0, 0.0, 1000.0, 700.0)], Some(DISPLAY));
+            assert_eq!(overlays.caret(), Some(caret));
+            overlays.open(
+                Slot::QuickSettings,
+                overlays.caret().map(|at| Anchor::Beside { at, gap: 6.0 }),
+            );
+            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            assert_eq!(standing.room.x0, caret.x1 + 6.0, "clear of the caret");
+            assert!(
+                standing.room.y0 >= caret.y1,
+                "under the line it types on, never over it"
+            );
+            assert_eq!(
+                standing.room.height(),
+                700.0 - POPOVER_MARGIN - caret.y1 - 6.0,
+                "the room below the line, which is less than the surface may be"
+            );
+        }
+
+        phase a_surface_is_placed_on_the_display_holding_its_anchor;
+        {
+            let left = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let right = Rect::new(1280.0, 0.0, 3840.0, 1440.0);
+            let overlays = Overlays::new();
+            overlays.set_displays(&[left, right], Some(left));
+            // On the right display's trailing edge, though the person works on the left one.
+            overlays.open(Slot::QuickSettings, Some(Anchor::TopTrailing(8.0)));
+            let place = overlays.place(Slot::QuickSettings).expect("placed").room;
+            assert_eq!(place.x1, left.x1 - 8.0, "the display the person works on");
+
+            let caret = Rect::new(2000.0, 100.0, 2002.0, 120.0);
+            overlays.open(
+                Slot::QuickSettings,
+                Some(Anchor::Beside {
+                    at: caret,
+                    gap: 0.0,
+                }),
+            );
+            let place = overlays.place(Slot::QuickSettings).expect("placed").room;
+            assert!(
+                place.x0 >= right.x0,
+                "the display holding the caret it was opened from"
+            );
+        }
+
+        phase an_anchor_reads_back_the_way_a_verb_spells_it;
+        {
+            for anchor in [
+                Anchor::Center,
+                Anchor::Fill,
+                Anchor::TopTrailing(8.0),
+                Anchor::TopLeading(0.0),
+                Anchor::Beside {
+                    at: Rect::new(600.0, 300.0, 602.0, 320.0),
+                    gap: 4.0,
+                },
+                Anchor::At(Point::new(40.0, 50.0)),
+            ] {
+                let text = anchor.as_str();
+                assert_eq!(Anchor::parse(&text), Some(anchor), "{text}");
+            }
+            assert_eq!(Anchor::parse("nowhere"), None);
+            assert_eq!(Anchor::parse("at:1"), None);
+            assert_eq!(Anchor::parse("beside:1,2,3,4"), None);
+        }
     }
 }

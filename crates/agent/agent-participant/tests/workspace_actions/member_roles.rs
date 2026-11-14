@@ -10,9 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_actions::remote::{
     Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
 };
-use tilo_agent_participant::workspace_actions::{
-    ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
-};
+use tilo_agent_participant::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::Outbox;
 use ui::permissions::Role;
 
@@ -22,7 +21,9 @@ const TASKS: &str = "so.tilo.tasks";
 /// The workspace's word on one member: their role, whether their device is
 /// revoked, and what they answer when the host asks them.
 struct Membership {
-    member: WorkspaceMember,
+    member: HostDevice,
+    /// The host's workspaces, which hand the service the keys its device holds.
+    workspaces: tilo_relay::workspaces::Workspaces,
     person: [u8; 32],
     device: [u8; 32],
     role: Mutex<Option<Role>>,
@@ -38,10 +39,7 @@ impl Membership {
         (!self.revoked.load(Ordering::SeqCst)
             && caller.user_public_key() == Some(&self.person)
             && caller.device_public_key() == Some(&self.device)
-            && matches!(
-                caller.principal(),
-                tilo_actions::remote::CallerPrincipal::Person(_)
-            ))
+            && caller.acting().is_person())
         .then(|| {
             ui::permissions::PermissionContext::member_of(WORKSPACE, hex::encode(self.person), role)
                 .standing()
@@ -54,15 +52,15 @@ impl WorkspaceRecordsLink for Membership {
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.host_cert.user_public_key
     }
-    fn member(&self) -> WorkspaceMember {
+    fn host_device(&self) -> HostDevice {
         self.member.clone()
     }
-    fn admits(&self, _workspace: u64, caller: &Caller) -> bool {
+    fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
         self.standing(caller).is_some()
     }
     fn view_read_policy(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         caller: &Caller,
         _app: &str,
         _record: &str,
@@ -74,15 +72,24 @@ impl WorkspaceRecordsLink for Membership {
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
         })
     }
-    fn workspace_policy(&self, workspace: u64, caller: &Caller) -> Option<ViewReadPolicy> {
+    fn workspace_policy(&self, workspace: WorkspaceId, caller: &Caller) -> Option<ViewReadPolicy> {
         self.view_read_policy(workspace, caller, "", "")
     }
-    fn workspace_content(&self, _workspace: u64) -> Option<tilo_content::ContentStore> {
+    fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         Some(self.content.clone())
+    }
+    fn host_keys(
+        &self,
+        route: &DocumentRoute,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        self.member
+            .runtime
+            .block_on(self.workspaces.own_route_keys(route, create))
     }
     fn ask_person(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         caller: &Caller,
         _question: ConfirmationQuestion,
     ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
@@ -100,7 +107,7 @@ impl WorkspaceRecordsLink for Membership {
 /// What the service answers `caller` for `message`.
 fn served(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
@@ -116,7 +123,7 @@ fn served(
 /// The status `caller`'s `request` is answered with.
 fn invoked(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     request: &InvokeRequest,
 ) -> ReceiptStatus {
@@ -155,7 +162,7 @@ fn invoked(
 )]
 fn put(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     bytes: &[u8],
 ) -> Result<String, ActionHostError> {
@@ -191,7 +198,7 @@ fn put(
 )]
 fn got(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     content: &str,
 ) -> Result<Vec<u8>, ActionHostError> {
@@ -218,7 +225,7 @@ fn got(
 /// the one it names, so the record is walked as an agent walks it.
 fn listed(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     provider: &str,
 ) -> Vec<tilo_actions::ActionDescriptor> {
@@ -326,12 +333,11 @@ async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str
 async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let notes = browser.create(NOTES);
     let tasks = browser.create(TASKS);
@@ -356,7 +362,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     );
 
     let membership = Arc::new(Membership {
-        member: WorkspaceMember {
+        member: HostDevice {
             endpoint: tilo_agent_participant::HostEndpoint::iroh(
                 hosted.relay.node_addr(),
                 host.cert.clone(),
@@ -364,6 +370,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
+        workspaces: hosted.relay.workspaces().unwrap().clone(),
         person: guest_device.cert.user_public_key,
         device: guest_device.cert.device_public_key,
         role: Mutex::new(Some(Role::Viewer)),

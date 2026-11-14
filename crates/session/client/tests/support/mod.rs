@@ -17,6 +17,7 @@ use tilo_session_client::{Cmd, Link, Outbox, TransportPhase};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
+use collab_types::WorkspaceId;
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
@@ -27,7 +28,7 @@ use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::Host;
 use tilo_relay_client::{Approver, Carrier};
-use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
+use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, Role};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
@@ -117,8 +118,8 @@ pub fn is_host(device: &[u8; 32]) -> bool {
 }
 
 /// Whether `event` is a document a member wrote, not one of a host's.
-pub fn workspace() -> u64 {
-    tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
+pub fn workspace() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 /// Have `relay` govern [`WORKSPACE`], the person's workspace, unless it does,
@@ -233,6 +234,22 @@ pub async fn restart_host(root: &SigningKey, host: &Device, state: &Path) -> Tes
     start_host(root, host, state, "127.0.0.1:0".parse().unwrap()).await
 }
 
+/// [`restart_host`] through this machine's loopback relay, which outlives it:
+/// its pages find it there by its identity, at the address they knew.
+pub async fn restart_host_relayed(root: &SigningKey, host: &Device, state: &Path) -> TestHost {
+    start_host_serving(
+        root,
+        host,
+        state,
+        "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            relayed: true,
+            ..HostSettings::default()
+        },
+    )
+    .await
+}
+
 /// What a test host serves beyond its secure listener.
 #[derive(Default)]
 pub struct HostSettings<'a> {
@@ -244,9 +261,12 @@ pub struct HostSettings<'a> {
     pub limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
     /// The fetch proxy it serves its pages.
     pub fetch_proxy: Option<tilo_relay::web::FetchProxySetup>,
-    /// Run its own packet relay, as a host serving pages does: a page holds
-    /// no UDP socket and reaches it only through one.
-    pub packet_relay: bool,
+    /// Reached through this machine's loopback packet relay, as a host
+    /// serving pages is: a page holds no UDP socket and reaches it only
+    /// through one, which outlives the host so a restarted one is found at
+    /// the same address. Without it the host looks up no relay and is reached
+    /// on this machine's loopback alone.
+    pub relayed: bool,
 }
 
 /// A host serving what `settings` names.
@@ -262,7 +282,7 @@ pub async fn start_host_serving(
         guests,
         limits,
         fetch_proxy,
-        packet_relay,
+        relayed,
     } = settings;
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
@@ -270,25 +290,30 @@ pub async fn start_host_serving(
         member_limits: limits,
         ..Default::default()
     };
-    if packet_relay {
-        cfg.packet_relay = Some((std::net::Ipv4Addr::LOCALHOST, 0).into());
-    }
     if !guests.is_empty() {
         cfg.trust_policy = tilo_relay::TrustPolicy::AllowList {
             users: guests.iter().map(hex::encode).collect(),
         };
     }
-    let relay = Relay::start(
-        cfg,
-        RelayIdentity {
-            user_public_key: user,
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-    )
-    .await
-    .unwrap();
+    // The loopback relay outlives the host, as a relay a host is deployed
+    // with does: a page finds a restarted host there by its identity. A host
+    // without one is dialled directly and looks up no relay: the sandboxed
+    // runner refuses the public relay network, so a restarted host would never
+    // be found at its new port.
+    let identity = RelayIdentity {
+        user_public_key: user,
+        device_signing_key: host.key.clone(),
+        device_cert: host.cert.clone(),
+        revocations: RevocationList::new(),
+    };
+    let mode = if relayed {
+        test_relay::relay_mode()
+    } else {
+        iroh::RelayMode::Disabled
+    };
+    let relay = Relay::start_with_relay_mode(cfg, identity, mode)
+        .await
+        .unwrap();
     let web = relay
         .serve_web(WebConfig {
             listen: web_listen,
@@ -305,16 +330,16 @@ pub async fn start_host_serving(
         })
         .await
         .unwrap();
-    if packet_relay {
-        relayed(&relay);
+    if relayed {
+        names_its_relay(&relay);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }
 }
 
-/// A host that serves its own packet relay names it in its address from the start: what
+/// A host reached through a packet relay names it in its address from the start: what
 /// `Relay::start` waits for before it answers anything.
-fn relayed(relay: &Relay) {
+fn names_its_relay(relay: &Relay) {
     assert!(
         relay.node_addr().relay_urls().next().is_some(),
         "the host names its packet relay"
@@ -382,7 +407,7 @@ pub async fn start_workspace_host_relaying(
         .await
         .unwrap();
     if packet_relay {
-        relayed(&relay);
+        names_its_relay(&relay);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }
@@ -580,13 +605,18 @@ pub fn enter_page(
 }
 
 pub async fn ready(peers: &[&Link]) {
-    wait_for("sessions ready", || async {
-        peers
-            .iter()
-            .all(|peer| peer.snapshot().phase == "ready")
-            .then_some(())
-    })
-    .await;
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let snapshots: Vec<_> = peers.iter().map(|peer| peer.snapshot()).collect();
+        if snapshots.iter().all(|snapshot| snapshot.phase == "ready") {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for sessions ready: {snapshots:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Wait until the host admitted `peer` to `workspace`: connected, subscribed
@@ -594,7 +624,7 @@ pub async fn ready(peers: &[&Link]) {
 /// [`ready`] too, so a page that is about to act in one waits on that one
 /// rather than on the session: an action sent before the host subscribed the
 /// page is refused by the relay and never answered.
-pub async fn admitted_to(peer: &Link, workspace: u64) {
+pub async fn admitted_to(peer: &Link, workspace: tilo_relay_protocol::WorkspaceId) {
     wait_for("the session admitted to its workspace", || {
         let status = peer.status();
         async move {
@@ -613,7 +643,7 @@ pub async fn admitted(peer: &Link) {
 
 /// Whether a participant of the workspace admitted `peer` to `route`'s channel: it holds its keys.
 pub fn keyed(peer: &Link, route: &DocumentRoute) -> bool {
-    let prefix = format!("route {}/{} ", route.app_id, route.record);
+    let prefix = format!("route {}/{}:", route.app_id, route.record);
     peer.status()
         .channels
         .lines()
@@ -770,7 +800,7 @@ pub async fn door(
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
         workspace: workspace.to_owned(),
-        role: WorkspaceRole::Editor,
+        role: Role::Editor,
         token_sha256,
         label: "Guest".into(),
         expires_at_ns: tilo_clock::unix_now_ns()
@@ -823,7 +853,7 @@ pub async fn redeem(
         matches!(
             &admitted,
             JoinReply::Admitted {
-                role: WorkspaceRole::Editor,
+                role: Role::Editor,
                 ..
             }
         ),
@@ -838,7 +868,7 @@ pub async fn enter(
     cert: &DeviceCert,
     key: &SigningKey,
     host_cert: &DeviceCert,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> Link {
     redeem(host, door, cert, key).await;
     let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
@@ -847,7 +877,7 @@ pub async fn enter(
     peer
 }
 
-pub async fn in_workspace(peer: &Link, workspace_id: u64) {
+pub async fn in_workspace(peer: &Link, workspace_id: WorkspaceId) {
     ready(&[peer]).await;
     wait_for("the governed workspace to let the page in", || async {
         (peer.status().workspaces.get(&workspace_id) == Some(&true)).then_some(())

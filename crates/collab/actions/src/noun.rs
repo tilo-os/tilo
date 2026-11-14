@@ -67,38 +67,42 @@ pub struct ResourceType {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_declared_name_reads_as_words_and_its_plural() {
-        assert_eq!(Noun::of_type("Channel"), Noun::new("channel", "channels"));
-        assert_eq!(Noun::of_type("Entry"), Noun::new("entry", "entries"));
-        assert_eq!(Noun::of_type("Box"), Noun::new("box", "boxes"));
-        assert_eq!(
-            Noun::of_type("Mailbox"),
-            Noun::new("mailbox", "mailboxes"),
-            "a `box` takes `es`"
-        );
-        assert_eq!(
-            Noun::of_type("Person"),
-            Noun::new("person", "people"),
-            "an irregular plural is English's, not an app's"
-        );
-        assert_eq!(
-            Noun::of_type("Conversations"),
-            Noun::new("conversation", "conversations"),
-            "a name that already names several is one of them and all of them"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_noun_reads_in_singular_and_plural;
 
-    #[test]
-    fn a_plural_reads_back_to_its_singular() {
-        for (many, one) in [
-            ("notes", "note"),
-            ("entries", "entry"),
-            ("boxes", "box"),
-            ("channels", "channel"),
-            ("history", "history"),
-        ] {
-            assert_eq!(singular(many), one, "{many} is several {one}");
+        phase a_declared_name_reads_as_words_and_its_plural;
+        {
+            assert_eq!(Noun::of_type("Channel"), Noun::new("channel", "channels"));
+            assert_eq!(Noun::of_type("Entry"), Noun::new("entry", "entries"));
+            assert_eq!(Noun::of_type("Box"), Noun::new("box", "boxes"));
+            assert_eq!(
+                Noun::of_type("Mailbox"),
+                Noun::new("mailbox", "mailboxes"),
+                "a `box` takes `es`"
+            );
+            assert_eq!(
+                Noun::of_type("Person"),
+                Noun::new("person", "people"),
+                "an irregular plural is English's, not an app's"
+            );
+            assert_eq!(
+                Noun::of_type("Conversations"),
+                Noun::new("conversation", "conversations"),
+                "a name that already names several is one of them and all of them"
+            );
+        }
+
+        phase a_plural_reads_back_to_its_singular;
+        {
+            for (many, one) in [
+                ("notes", "note"),
+                ("entries", "entry"),
+                ("boxes", "box"),
+                ("channels", "channel"),
+                ("history", "history"),
+            ] {
+                assert_eq!(singular(many), one, "{many} is several {one}");
+            }
         }
     }
 }

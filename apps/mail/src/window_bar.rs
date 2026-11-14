@@ -291,111 +291,116 @@ mod tests {
         })
     }
 
-    #[test]
-    fn the_bar_offers_new_message_and_the_open_messages_actions_and_the_selections() {
-        let bar = BarCommands::new();
-        let mut state = state();
-        let items = bar_items(&bar, &state, false, false);
-        assert_eq!(names(&items, false), ["New message", "Reply", "Archive"]);
-        let menu = names(&items, true);
-        for name in [
-            "Reply all",
-            "Forward",
-            "Select messages",
-            "Write to a contact",
-        ] {
+    tilo_test_env::scenario! {
+        /// The window bar's actions.
+        fn the_window_bar_offers_what_the_open_message_allows;
+
+        phase the_bar_offers_new_message_and_the_open_messages_actions_and_the_selections;
+        {
+            let bar = BarCommands::new();
+            let mut state = state();
+            let items = bar_items(&bar, &state, false, false);
+            assert_eq!(names(&items, false), ["New message", "Reply", "Archive"]);
+            let menu = names(&items, true);
+            for name in [
+                "Reply all",
+                "Forward",
+                "Select messages",
+                "Write to a contact",
+            ] {
+                assert!(
+                    menu.contains(&name),
+                    "{name} is in the bar's menu: {menu:?}"
+                );
+            }
+            let star = items
+                .iter()
+                .find(|item| item.name == "Star")
+                .expect("star toggle");
+            let starred = state
+                .selected
+                .and_then(|id| state.mailbox.get(id))
+                .is_some_and(|message| message.starred);
+            assert_eq!(star.on, starred);
+
+            state.set_bulk_selecting(true);
+            let items = bar_items(&bar, &state, false, false);
+            assert_eq!(names(&items, false), ["Done", "Archive", "Move to Trash"]);
+            assert!(names(&items, true).contains(&"Select all"));
+            assert_eq!(location(&state, None), "Select messages");
+            assert_eq!(location(&state, Some("New message")), "New message");
+
             assert!(
-                menu.contains(&name),
-                "{name} is in the bar's menu: {menu:?}"
+                bar_items(&bar, &state, true, false).is_empty(),
+                "before any account the empty window's Add account is the one"
             );
         }
-        let star = items
-            .iter()
-            .find(|item| item.name == "Star")
-            .expect("star toggle");
-        let starred = state
-            .selected
-            .and_then(|id| state.mailbox.get(id))
-            .is_some_and(|message| message.starred);
-        assert_eq!(star.on, starred);
 
-        state.set_bulk_selecting(true);
-        let items = bar_items(&bar, &state, false, false);
-        assert_eq!(names(&items, false), ["Done", "Archive", "Move to Trash"]);
-        assert!(names(&items, true).contains(&"Select all"));
-        assert_eq!(location(&state, None), "Select messages");
-        assert_eq!(location(&state, Some("New message")), "New message");
-
-        assert!(
-            bar_items(&bar, &state, true, false).is_empty(),
-            "before any account the empty window's Add account is the one"
-        );
-    }
-
-    #[test]
-    fn the_outbox_offers_taking_the_open_message_back_unsent() {
-        let bar = BarCommands::new();
-        let mut state = state();
-        state.outbox = vec![crate::state::QueuedMessage {
-            id: "queued".into(),
-            account: state.accounts.active_config().email,
-            to: "ada@analytical.example".into(),
-            subject: "Notes on the second engine".into(),
-            body: "Sent from the platform on the train.".into(),
-            reason: Some("550 5.7.1 refused as spam".into()),
-        }];
-        state.open_outbox(state.accounts.active);
-        state.outbox_selected = Some("queued".into());
-        let items = bar_items(&bar, &state, false, false);
-        assert_eq!(names(&items, false), ["New message", "Cancel sending"]);
-        assert_eq!(location(&state, None), "Outbox");
-        let cancel = items
-            .iter()
-            .find(|item| item.name == "Cancel sending")
-            .expect("the verb is in the bar");
-        assert_eq!(
-            command(&bar, cancel),
-            Some(Command::CancelSend("queued".into()))
-        );
-        assert!(
-            !cancel.destructive,
-            "Undo puts the message back in the outbox, so it is no deletion"
-        );
-        assert!(
-            items.iter().all(|item| item.icon != "x"),
-            "nothing the outbox offers wears the window's own close"
-        );
-    }
-
-    #[test]
-    fn while_a_message_is_written_the_bar_closes_it() {
-        let bar = BarCommands::new();
-        let state = state();
-        let items = bar_items(&bar, &state, false, true);
-        assert_eq!(
-            names(&items, false),
-            ["Discard draft", "Close and keep in Drafts"]
-        );
-        assert_eq!(
-            items
+        phase the_outbox_offers_taking_the_open_message_back_unsent;
+        {
+            let bar = BarCommands::new();
+            let mut state = state();
+            state.outbox = vec![crate::state::QueuedMessage {
+                id: "queued".into(),
+                account: state.accounts.active_config().email,
+                to: "ada@analytical.example".into(),
+                subject: "Notes on the second engine".into(),
+                body: "Sent from the platform on the train.".into(),
+                reason: Some("550 5.7.1 refused as spam".into()),
+            }];
+            state.open_outbox(state.accounts.active);
+            state.outbox_selected = Some("queued".into());
+            let items = bar_items(&bar, &state, false, false);
+            assert_eq!(names(&items, false), ["New message", "Cancel sending"]);
+            assert_eq!(location(&state, None), "Outbox");
+            let cancel = items
                 .iter()
-                .filter(|item| !item.menu)
-                .map(|item| command(&bar, item))
-                .collect::<Vec<_>>(),
-            [Some(Command::DiscardCompose), Some(Command::CloseCompose)]
-        );
-        assert!(
-            items.iter().all(|item| item.icon != "x"),
-            "nothing the message offers wears the window's own close"
-        );
-        assert_eq!(
-            items.first().map(|item| item.icon.as_str()),
-            Some("trash-2")
-        );
-        assert!(
-            names(&items, true).contains(&"Select messages"),
-            "the menu stays"
-        );
-        assert_eq!(location(&state, Some("New message")), "New message");
+                .find(|item| item.name == "Cancel sending")
+                .expect("the verb is in the bar");
+            assert_eq!(
+                command(&bar, cancel),
+                Some(Command::CancelSend("queued".into()))
+            );
+            assert!(
+                !cancel.destructive,
+                "Undo puts the message back in the outbox, so it is no deletion"
+            );
+            assert!(
+                items.iter().all(|item| item.icon != "x"),
+                "nothing the outbox offers wears the window's own close"
+            );
+        }
+
+        phase while_a_message_is_written_the_bar_closes_it;
+        {
+            let bar = BarCommands::new();
+            let state = state();
+            let items = bar_items(&bar, &state, false, true);
+            assert_eq!(
+                names(&items, false),
+                ["Discard draft", "Close and keep in Drafts"]
+            );
+            assert_eq!(
+                items
+                    .iter()
+                    .filter(|item| !item.menu)
+                    .map(|item| command(&bar, item))
+                    .collect::<Vec<_>>(),
+                [Some(Command::DiscardCompose), Some(Command::CloseCompose)]
+            );
+            assert!(
+                items.iter().all(|item| item.icon != "x"),
+                "nothing the message offers wears the window's own close"
+            );
+            assert_eq!(
+                items.first().map(|item| item.icon.as_str()),
+                Some("trash-2")
+            );
+            assert!(
+                names(&items, true).contains(&"Select messages"),
+                "the menu stays"
+            );
+            assert_eq!(location(&state, Some("New message")), "New message");
+        }
     }
 }

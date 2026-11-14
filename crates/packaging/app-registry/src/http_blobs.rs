@@ -702,27 +702,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fetch_overlaps_requests() {
-        let bodies: Vec<Vec<u8>> = (0..8u8).map(|n| vec![n; 64]).collect();
-        let hashes: Vec<BlobHash> = bodies.iter().map(|body| BlobHash::of(body)).collect();
-        // Twins, so each blob is one request as from a registry that has them.
-        let objects = hashes
-            .iter()
-            .zip(&bodies)
-            .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
-            .collect();
-        // The server holds every answer until a window of requests is open
-        // at once, which a fetch asking one at a time never reaches.
-        let (url, peak) = counting_server(objects, IN_FLIGHT);
-        let mut sink = Collected::default();
-        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
-        let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(peak >= IN_FLIGHT, "only {peak} requests overlapped");
-        let delivered: Vec<_> = sink.0.iter().map(|(hash, _)| *hash).collect();
-        assert_eq!(delivered, hashes, "delivered in request order");
-        for ((_, body), expected) in sink.0.iter().zip(&bodies) {
-            assert_eq!(body, expected);
+    tilo_test_env::scenario! {
+        fn requests_overlap_within_the_window;
+
+        phase fetch_overlaps_requests;
+        {
+            let bodies: Vec<Vec<u8>> = (0..8u8).map(|n| vec![n; 64]).collect();
+            let hashes: Vec<BlobHash> = bodies.iter().map(|body| BlobHash::of(body)).collect();
+            // Twins, so each blob is one request as from a registry that has them.
+            let objects = hashes
+                .iter()
+                .zip(&bodies)
+                .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
+                .collect();
+            // The server holds every answer until a window of requests is open
+            // at once, which a fetch asking one at a time never reaches.
+            let (url, peak) = counting_server(objects, IN_FLIGHT);
+            let mut sink = Collected::default();
+            HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
+            let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(peak >= IN_FLIGHT, "only {peak} requests overlapped");
+            let delivered: Vec<_> = sink.0.iter().map(|(hash, _)| *hash).collect();
+            assert_eq!(delivered, hashes, "delivered in request order");
+            for ((_, body), expected) in sink.0.iter().zip(&bodies) {
+                assert_eq!(body, expected);
+            }
+        }
+
+        phase requests_in_flight_are_bounded_by_the_window;
+        {
+            let bodies: Vec<Vec<u8>> = (0..40u8).map(|n| vec![n; 64]).collect();
+            let hashes: Vec<BlobHash> = bodies.iter().map(|body| BlobHash::of(body)).collect();
+            let objects = hashes
+                .iter()
+                .zip(&bodies)
+                .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
+                .collect();
+            let (url, peak) = counting_server(objects, IN_FLIGHT);
+            let mut sink = Collected::default();
+            HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
+            let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
+            // The object being delivered plus the window ahead of it, each
+            // located by asking for its twin and its chunk list at once.
+            assert!(
+                peak <= 2 * (IN_FLIGHT + 1),
+                "peak {peak} exceeds the window"
+            );
+            assert!(peak >= IN_FLIGHT, "peak {peak}: the window was not used");
+            assert_eq!(sink.0.len(), hashes.len());
         }
     }
 
@@ -779,29 +806,6 @@ mod tests {
         (format!("http://{address}"), peak)
     }
 
-    #[test]
-    fn requests_in_flight_are_bounded_by_the_window() {
-        let bodies: Vec<Vec<u8>> = (0..40u8).map(|n| vec![n; 64]).collect();
-        let hashes: Vec<BlobHash> = bodies.iter().map(|body| BlobHash::of(body)).collect();
-        let objects = hashes
-            .iter()
-            .zip(&bodies)
-            .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
-            .collect();
-        let (url, peak) = counting_server(objects, IN_FLIGHT);
-        let mut sink = Collected::default();
-        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
-        let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
-        // The object being delivered plus the window ahead of it, each
-        // located by asking for its twin and its chunk list at once.
-        assert!(
-            peak <= 2 * (IN_FLIGHT + 1),
-            "peak {peak} exceeds the window"
-        );
-        assert!(peak >= IN_FLIGHT, "peak {peak}: the window was not used");
-        assert_eq!(sink.0.len(), hashes.len());
-    }
-
     /// A runtime-shaped payload — large libraries kept as chunks between
     /// small whole files: the objects a registry serves for it, the blobs to
     /// fetch, and what each delivers.
@@ -844,13 +848,133 @@ mod tests {
         (objects, hashes, expected)
     }
 
-    #[test]
-    fn a_chunked_payload_arrives_whole_and_in_order() {
-        let (objects, hashes, expected) = chunked_payload();
-        let url = slow_server(objects, Duration::ZERO);
-        let mut sink = Collected::default();
-        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
-        assert_eq!(sink.0, expected);
+    tilo_test_env::scenario! {
+        fn chunked_payloads_and_twins_are_verified;
+
+        phase a_chunked_payload_arrives_whole_and_in_order;
+        {
+            let (objects, hashes, expected) = chunked_payload();
+            let url = slow_server(objects, Duration::ZERO);
+            let mut sink = Collected::default();
+            HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
+            assert_eq!(sink.0, expected);
+        }
+
+        phase chunked_blobs_arrive_in_order_and_verified;
+        {
+            let blob = b"chunked payload, fetched ahead".to_vec();
+            let hash = BlobHash::of(&blob);
+            let chunk_bytes = 4u64;
+            let chunks: Vec<ChunkRef> = blob
+                .chunks(4)
+                .map(|piece| ChunkRef {
+                    hash: BlobHash::of(piece),
+                    len: piece.len() as u64,
+                })
+                .collect();
+            let list = ChunkList::new(hash, blob.len() as u64, chunk_bytes, chunks);
+            let mut objects: std::collections::HashMap<String, Vec<u8>> = blob
+                .chunks(4)
+                .map(|piece| (format!("/blobs/{}", BlobHash::of(piece)), piece.to_vec()))
+                .collect();
+            objects.insert(format!("/blobs/{hash}.chunks"), list.encode());
+            let small = b"a whole blob after it".to_vec();
+            objects.insert(format!("/blobs/{}", BlobHash::of(&small)), small.clone());
+            let url = slow_server(objects.clone(), Duration::from_millis(20));
+            let mut sink = Collected::default();
+            HttpBlobs::new(&url)
+                .fetch(&[hash, BlobHash::of(&small)], &mut sink)
+                .unwrap();
+            assert_eq!(
+                sink.0,
+                vec![(hash, blob.clone()), (BlobHash::of(&small), small)]
+            );
+
+            // A chunk the server corrupts stops the blob before its last byte.
+            let first = BlobHash::of(&blob[..4]);
+            objects.insert(format!("/blobs/{first}"), b"evil".to_vec());
+            let url = slow_server(objects, Duration::from_millis(1));
+            let mut sink = Collected::default();
+            assert!(HttpBlobs::new(url).fetch(&[hash], &mut sink).is_err());
+            assert!(sink.0.iter().all(|(_, body)| body != &blob));
+        }
+
+        phase twins_are_preferred_and_raw_objects_are_the_fallback;
+        {
+            let whole = b"a whole runtime library, compressed for the wire ".repeat(64);
+            let raw_only = b"an object stored before twins existed".to_vec();
+            let (whole_hash, raw_hash) = (BlobHash::of(&whole), BlobHash::of(&raw_only));
+            let objects = std::collections::HashMap::from([
+                // The raw copy is wrong: delivering the right bytes proves the
+                // twin was taken and verified after decompression.
+                (format!("/blobs/{whole_hash}"), b"not it".to_vec()),
+                (format!("/blobs/{whole_hash}.zst"), twin(&whole)),
+                // No twin: 404, then the raw object.
+                (format!("/blobs/{raw_hash}"), raw_only.clone()),
+            ]);
+            let url = slow_server(objects, Duration::from_millis(1));
+            let mut sink = Collected::default();
+            HttpBlobs::new(url)
+                .fetch(&[whole_hash, raw_hash], &mut sink)
+                .unwrap();
+            assert_eq!(sink.0, vec![(whole_hash, whole), (raw_hash, raw_only)]);
+        }
+
+        phase a_twin_is_verified_after_decompression;
+        {
+            let body = b"the payload the signed collection names".to_vec();
+            let hash = BlobHash::of(&body);
+            let objects = std::collections::HashMap::from([
+                (format!("/blobs/{hash}"), body),
+                (
+                    format!("/blobs/{hash}.zst"),
+                    twin(b"a well-formed twin of other bytes"),
+                ),
+            ]);
+            let url = slow_server(objects, Duration::from_millis(1));
+            let error = HttpBlobs::new(url)
+                .fetch(&[hash], &mut Collected::default())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("do not hash to the payload blob"), "{error}");
+        }
+
+        phase a_chunk_twin_that_expands_past_its_listed_length_is_refused;
+        {
+            let blob = b"chunked payload whose second twin is a bomb".to_vec();
+            let hash = BlobHash::of(&blob);
+            let pieces: Vec<&[u8]> = blob.chunks(16).collect();
+            let chunks: Vec<ChunkRef> = pieces
+                .iter()
+                .map(|piece| ChunkRef {
+                    hash: BlobHash::of(piece),
+                    len: piece.len() as u64,
+                })
+                .collect();
+            let list = ChunkList::new(hash, blob.len() as u64, 16, chunks.clone());
+            let mut objects: std::collections::HashMap<String, Vec<u8>> = pieces
+                .iter()
+                .map(|piece| (format!("/blobs/{}.zst", BlobHash::of(piece)), twin(piece)))
+                .collect();
+            objects.insert(format!("/blobs/{hash}.chunks"), list.encode());
+            let url = slow_server(objects.clone(), Duration::from_millis(1));
+            let mut sink = Collected::default();
+            HttpBlobs::new(&url).fetch(&[hash], &mut sink).unwrap();
+            assert_eq!(sink.0, vec![(hash, blob.clone())]);
+
+            objects.insert(
+                format!("/blobs/{}.zst", chunks[1].hash),
+                twin(&vec![0; 1 << 20]),
+            );
+            let url = slow_server(objects, Duration::from_millis(1));
+            let mut sink = Collected::default();
+            let error = HttpBlobs::new(url)
+                .fetch(&[hash], &mut sink)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("expands past its 16-byte bound"), "{error}");
+            assert!(sink.0.iter().all(|(_, body)| body != &blob));
+        }
     }
 
     /// The payload from a registry a round trip away. Each chunked blob is
@@ -878,120 +1002,5 @@ mod tests {
             "the payload took {elapsed:?}, {:.1} round trips",
             elapsed.as_secs_f64() / ROUND_TRIP.as_secs_f64()
         );
-    }
-
-    #[test]
-    fn chunked_blobs_arrive_in_order_and_verified() {
-        let blob = b"chunked payload, fetched ahead".to_vec();
-        let hash = BlobHash::of(&blob);
-        let chunk_bytes = 4u64;
-        let chunks: Vec<ChunkRef> = blob
-            .chunks(4)
-            .map(|piece| ChunkRef {
-                hash: BlobHash::of(piece),
-                len: piece.len() as u64,
-            })
-            .collect();
-        let list = ChunkList::new(hash, blob.len() as u64, chunk_bytes, chunks);
-        let mut objects: std::collections::HashMap<String, Vec<u8>> = blob
-            .chunks(4)
-            .map(|piece| (format!("/blobs/{}", BlobHash::of(piece)), piece.to_vec()))
-            .collect();
-        objects.insert(format!("/blobs/{hash}.chunks"), list.encode());
-        let small = b"a whole blob after it".to_vec();
-        objects.insert(format!("/blobs/{}", BlobHash::of(&small)), small.clone());
-        let url = slow_server(objects.clone(), Duration::from_millis(20));
-        let mut sink = Collected::default();
-        HttpBlobs::new(&url)
-            .fetch(&[hash, BlobHash::of(&small)], &mut sink)
-            .unwrap();
-        assert_eq!(
-            sink.0,
-            vec![(hash, blob.clone()), (BlobHash::of(&small), small)]
-        );
-
-        // A chunk the server corrupts stops the blob before its last byte.
-        let first = BlobHash::of(&blob[..4]);
-        objects.insert(format!("/blobs/{first}"), b"evil".to_vec());
-        let url = slow_server(objects, Duration::from_millis(1));
-        let mut sink = Collected::default();
-        assert!(HttpBlobs::new(url).fetch(&[hash], &mut sink).is_err());
-        assert!(sink.0.iter().all(|(_, body)| body != &blob));
-    }
-    #[test]
-    fn twins_are_preferred_and_raw_objects_are_the_fallback() {
-        let whole = b"a whole runtime library, compressed for the wire ".repeat(64);
-        let raw_only = b"an object stored before twins existed".to_vec();
-        let (whole_hash, raw_hash) = (BlobHash::of(&whole), BlobHash::of(&raw_only));
-        let objects = std::collections::HashMap::from([
-            // The raw copy is wrong: delivering the right bytes proves the
-            // twin was taken and verified after decompression.
-            (format!("/blobs/{whole_hash}"), b"not it".to_vec()),
-            (format!("/blobs/{whole_hash}.zst"), twin(&whole)),
-            // No twin: 404, then the raw object.
-            (format!("/blobs/{raw_hash}"), raw_only.clone()),
-        ]);
-        let url = slow_server(objects, Duration::from_millis(1));
-        let mut sink = Collected::default();
-        HttpBlobs::new(url)
-            .fetch(&[whole_hash, raw_hash], &mut sink)
-            .unwrap();
-        assert_eq!(sink.0, vec![(whole_hash, whole), (raw_hash, raw_only)]);
-    }
-
-    #[test]
-    fn a_twin_is_verified_after_decompression() {
-        let body = b"the payload the signed collection names".to_vec();
-        let hash = BlobHash::of(&body);
-        let objects = std::collections::HashMap::from([
-            (format!("/blobs/{hash}"), body),
-            (
-                format!("/blobs/{hash}.zst"),
-                twin(b"a well-formed twin of other bytes"),
-            ),
-        ]);
-        let url = slow_server(objects, Duration::from_millis(1));
-        let error = HttpBlobs::new(url)
-            .fetch(&[hash], &mut Collected::default())
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("do not hash to the payload blob"), "{error}");
-    }
-
-    #[test]
-    fn a_chunk_twin_that_expands_past_its_listed_length_is_refused() {
-        let blob = b"chunked payload whose second twin is a bomb".to_vec();
-        let hash = BlobHash::of(&blob);
-        let pieces: Vec<&[u8]> = blob.chunks(16).collect();
-        let chunks: Vec<ChunkRef> = pieces
-            .iter()
-            .map(|piece| ChunkRef {
-                hash: BlobHash::of(piece),
-                len: piece.len() as u64,
-            })
-            .collect();
-        let list = ChunkList::new(hash, blob.len() as u64, 16, chunks.clone());
-        let mut objects: std::collections::HashMap<String, Vec<u8>> = pieces
-            .iter()
-            .map(|piece| (format!("/blobs/{}.zst", BlobHash::of(piece)), twin(piece)))
-            .collect();
-        objects.insert(format!("/blobs/{hash}.chunks"), list.encode());
-        let url = slow_server(objects.clone(), Duration::from_millis(1));
-        let mut sink = Collected::default();
-        HttpBlobs::new(&url).fetch(&[hash], &mut sink).unwrap();
-        assert_eq!(sink.0, vec![(hash, blob.clone())]);
-
-        objects.insert(
-            format!("/blobs/{}.zst", chunks[1].hash),
-            twin(&vec![0; 1 << 20]),
-        );
-        let url = slow_server(objects, Duration::from_millis(1));
-        let mut sink = Collected::default();
-        let error = HttpBlobs::new(url)
-            .fetch(&[hash], &mut sink)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("expands past its 16-byte bound"), "{error}");
-        assert!(sink.0.iter().all(|(_, body)| body != &blob));
     }
 }

@@ -76,194 +76,198 @@ fn press_and_finish(pane: &mut UpdatesModel, effect: UpdatesEffect) {
     pane.poll();
 }
 
-#[test]
-fn codec_card_is_one_short_line_and_one_button() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let pane = codec_pane(shared_status(""), runs, Ok(()));
-    assert_eq!(
-        pane.codecs_card_lines(),
-        [
-            "Play more video and audio formats",
-            "Downloaded to this device from the formats' publishers. You can turn it off here at any time.",
-            "Status: Off",
-            "Install",
-        ]
-    );
-}
+tilo_test_env::scenario! {
+    fn the_codec_card_follows_the_helper;
 
-#[test]
-fn every_helper_state_has_its_status_and_controls() {
-    let cases: [(&str, &str, &[&str]); 7] = [
-        (r#"{"state":"not-installed"}"#, "Off", &["Install"]),
-        (
-            r#"{"state":"waiting-for-network","desired":true}"#,
-            "Waiting for an internet connection",
-            &["Cancel"],
-        ),
-        (
-            r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#,
-            "Downloading (step 3 of 7)",
-            &[],
-        ),
-        (
-            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
-            "On, including hardware H.264/HEVC",
-            &["Remove"],
-        ),
-        (
-            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
-            "follows once a matching driver is published",
-            &["Check for hardware support again", "Remove"],
-        ),
-        (
-            r#"{"state":"failed","last_error":"no route to host","desired":true}"#,
-            "Could not install: no route to host",
-            &["Try again", "Remove"],
-        ),
-        (r#"{"state":"removing"}"#, "Removing", &[]),
-    ];
-    for (json, status_line, controls) in cases {
+    phase codec_card_is_one_short_line_and_one_button;
+    {
         let runs = Arc::new(Mutex::new(Vec::new()));
-        let pane = codec_pane(shared_status(json), runs, Ok(()));
+        let pane = codec_pane(shared_status(""), runs, Ok(()));
+        assert_eq!(
+            pane.codecs_card_lines(),
+            [
+                "Play more video and audio formats",
+                "Downloaded to this device from the formats' publishers. You can turn it off here at any time.",
+                "Status: Off",
+                "Install",
+            ]
+        );
+    }
+
+    phase every_helper_state_has_its_status_and_controls;
+    {
+        let cases: [(&str, &str, &[&str]); 7] = [
+            (r#"{"state":"not-installed"}"#, "Off", &["Install"]),
+            (
+                r#"{"state":"waiting-for-network","desired":true}"#,
+                "Waiting for an internet connection",
+                &["Cancel"],
+            ),
+            (
+                r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#,
+                "Downloading (step 3 of 7)",
+                &[],
+            ),
+            (
+                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
+                "On, including hardware H.264/HEVC",
+                &["Remove"],
+            ),
+            (
+                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
+                "follows once a matching driver is published",
+                &["Check for hardware support again", "Remove"],
+            ),
+            (
+                r#"{"state":"failed","last_error":"no route to host","desired":true}"#,
+                "Could not install: no route to host",
+                &["Try again", "Remove"],
+            ),
+            (r#"{"state":"removing"}"#, "Removing", &[]),
+        ];
+        for (json, status_line, controls) in cases {
+            let runs = Arc::new(Mutex::new(Vec::new()));
+            let pane = codec_pane(shared_status(json), runs, Ok(()));
+            let lines = pane.codecs_card_lines();
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with("Status: ") && line.contains(status_line)),
+                "{json}: {lines:?}"
+            );
+            let buttons = pane.codec_buttons();
+            let offered: Vec<&str> = buttons.iter().map(|b| b.0.as_str()).collect();
+            assert_eq!(offered, controls, "{json}");
+        }
+    }
+
+    phase a_running_install_shows_the_helpers_progress;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let status = shared_status(
+            r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":20000000,"total":40000000}}"#,
+        );
+        let pane = codec_pane(status, runs, Ok(()));
+        let lines = pane.codecs_card_lines();
+        assert!(lines.contains(&"Progress: 50%".to_string()), "{lines:?}");
+        assert!(
+            lines.contains(&"Status: Downloading 20 of 40 MB (step 3 of 5)\u{2026}".to_string()),
+            "{lines:?}"
+        );
+    }
+
+    phase the_watcher_updates_the_card_while_the_helper_works;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let status = shared_status(r#"{"state":"waiting-for-network","desired":true}"#);
+        let mut pane = codec_pane(Arc::clone(&status), runs, Ok(()));
+        pane.poll();
+        *status.lock().unwrap() =
+                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#.to_string();
+        pane.poll();
+        assert_eq!(pane.codec_status().state, PackState::WaitingForNetwork);
+        pane.codec_status_file_changed();
+        pane.poll();
+        assert_eq!(pane.codec_status().state, PackState::Installed);
+        assert!(
+            pane.codecs_card_lines()
+                .iter()
+                .any(|line| line.contains("Sign out and back in"))
+        );
+    }
+
+    phase install_runs_the_unit_and_shows_the_waiting_mesa_part;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = codec_pane(shared_status(""), Arc::clone(&runs), Ok(()));
+        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
+        assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Install]);
+        assert_eq!(pane.codec_status().state, PackState::Installed);
         let lines = pane.codecs_card_lines();
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("Status: ") && line.contains(status_line)),
-            "{json}: {lines:?}"
+                .any(|line| line.contains("follows once a matching driver is published"))
         );
-        let buttons = pane.codec_buttons();
-        let offered: Vec<&str> = buttons.iter().map(|b| b.0.as_str()).collect();
-        assert_eq!(offered, controls, "{json}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("No restart is needed"))
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("Remove"));
+        assert_eq!(pane.notice(), None);
     }
-}
 
-#[test]
-fn a_running_install_shows_the_helpers_progress() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let status = shared_status(
-        r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":20000000,"total":40000000}}"#,
-    );
-    let pane = codec_pane(status, runs, Ok(()));
-    let lines = pane.codecs_card_lines();
-    assert!(lines.contains(&"Progress: 50%".to_string()), "{lines:?}");
-    assert!(
-        lines.contains(&"Status: Downloading 20 of 40 MB (step 3 of 5)\u{2026}".to_string()),
-        "{lines:?}"
-    );
-}
+    phase a_request_the_helper_has_not_picked_up_reads_as_starting;
+    {
+        let (release, gate) = channel::channel::<()>();
+        let gate = Mutex::new(gate);
+        let mut pane = pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
+            Arc::new(CodecPackStatus::default),
+            Arc::new(move |_| {
+                let _ = gate.lock().unwrap().recv();
+                Ok(())
+            }),
+        );
+        pane.poll();
+        pane.run(UpdatesEffect::InstallCodecs, None);
+        pane.poll();
+        let lines = pane.codecs_card_lines();
+        assert!(lines.contains(&"Status: Starting\u{2026}".to_string()));
+        assert!(lines.contains(&"Progress: 0%".to_string()));
+        assert!(
+            !lines.iter().any(|line| line == "Install"),
+            "no second request while one runs"
+        );
+        release.send(()).unwrap();
+        pane.wait_for_codec_operation();
+    }
 
-#[test]
-fn the_watcher_updates_the_card_while_the_helper_works() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let status = shared_status(r#"{"state":"waiting-for-network","desired":true}"#);
-    let mut pane = codec_pane(Arc::clone(&status), runs, Ok(()));
-    pane.poll();
-    *status.lock().unwrap() =
-            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#.to_string();
-    pane.poll();
-    assert_eq!(pane.codec_status().state, PackState::WaitingForNetwork);
-    pane.codec_status_file_changed();
-    pane.poll();
-    assert_eq!(pane.codec_status().state, PackState::Installed);
-    assert!(
-        pane.codecs_card_lines()
-            .iter()
-            .any(|line| line.contains("Sign out and back in"))
-    );
-}
+    phase failed_install_surfaces_the_helper_error_and_offers_retry;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = codec_pane(shared_status(""), Arc::clone(&runs), Err("offline".into()));
+        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
+        assert_eq!(
+            pane.notice(),
+            Some("The formats could not be changed: offline")
+        );
+        let lines = pane.codecs_card_lines();
+        assert!(lines.contains(&"Status: Could not install: offline".to_string()));
+        assert!(lines.contains(&"Try again".to_string()));
+        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
+        assert_eq!(
+            *runs.lock().unwrap(),
+            vec![CodecAction::Install, CodecAction::Install]
+        );
+    }
 
-#[test]
-fn install_runs_the_unit_and_shows_the_waiting_mesa_part() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let mut pane = codec_pane(shared_status(""), Arc::clone(&runs), Ok(()));
-    press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
-    assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Install]);
-    assert_eq!(pane.codec_status().state, PackState::Installed);
-    let lines = pane.codecs_card_lines();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("follows once a matching driver is published"))
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("No restart is needed"))
-    );
-    assert_eq!(lines.last().map(String::as_str), Some("Remove"));
-    assert_eq!(pane.notice(), None);
-}
+    phase checking_again_for_the_mesa_build_runs_a_refresh;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let status = shared_status(
+            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
+        );
+        let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
+        press_and_finish(&mut pane, UpdatesEffect::RefreshCodecs);
+        assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Refresh]);
+    }
 
-#[test]
-fn a_request_the_helper_has_not_picked_up_reads_as_starting() {
-    let (release, gate) = channel::channel::<()>();
-    let gate = Mutex::new(gate);
-    let mut pane = pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
-        Arc::new(CodecPackStatus::default),
-        Arc::new(move |_| {
-            let _ = gate.lock().unwrap().recv();
-            Ok(())
-        }),
-    );
-    pane.poll();
-    pane.run(UpdatesEffect::InstallCodecs, None);
-    pane.poll();
-    let lines = pane.codecs_card_lines();
-    assert!(lines.contains(&"Status: Starting\u{2026}".to_string()));
-    assert!(lines.contains(&"Progress: 0%".to_string()));
-    assert!(
-        !lines.iter().any(|line| line == "Install"),
-        "no second request while one runs"
-    );
-    release.send(()).unwrap();
-    pane.wait_for_codec_operation();
-}
-
-#[test]
-fn failed_install_surfaces_the_helper_error_and_offers_retry() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let mut pane = codec_pane(shared_status(""), Arc::clone(&runs), Err("offline".into()));
-    press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
-    assert_eq!(
-        pane.notice(),
-        Some("The formats could not be changed: offline")
-    );
-    let lines = pane.codecs_card_lines();
-    assert!(lines.contains(&"Status: Could not install: offline".to_string()));
-    assert!(lines.contains(&"Try again".to_string()));
-    press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
-    assert_eq!(
-        *runs.lock().unwrap(),
-        vec![CodecAction::Install, CodecAction::Install]
-    );
-}
-
-#[test]
-fn checking_again_for_the_mesa_build_runs_a_refresh() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let status = shared_status(
-        r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
-    );
-    let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
-    press_and_finish(&mut pane, UpdatesEffect::RefreshCodecs);
-    assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Refresh]);
-}
-
-#[test]
-fn remove_returns_to_not_installed() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let status = shared_status(
-        r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
-    );
-    let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
-    press_and_finish(&mut pane, UpdatesEffect::RemoveCodecs);
-    assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Remove]);
-    assert_eq!(pane.codec_status().state, PackState::NotInstalled);
-    assert_eq!(
-        pane.codecs_card_lines().last().map(String::as_str),
-        Some("Install")
-    );
+    phase remove_returns_to_not_installed;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let status = shared_status(
+            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
+        );
+        let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
+        press_and_finish(&mut pane, UpdatesEffect::RemoveCodecs);
+        assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Remove]);
+        assert_eq!(pane.codec_status().state, PackState::NotInstalled);
+        assert_eq!(
+            pane.codecs_card_lines().last().map(String::as_str),
+            Some("Install")
+        );
+    }
 }
 
 fn windows_pane(
@@ -305,136 +309,140 @@ fn press_windows(pane: &mut UpdatesModel, effect: UpdatesEffect) {
     pane.poll();
 }
 
-#[test]
-fn windows_card_discloses_the_download_before_it_installs() {
-    let pane = windows_pane(
-        Arc::new(Mutex::new(needs_install())),
-        Arc::new(Mutex::new(Vec::new())),
-        Ok(()),
-        WindowsReadiness::Ready,
-    );
-    let lines = pane.windows_support_card_lines();
-    assert_eq!(lines.first().map(String::as_str), Some("Run Windows apps"));
-    assert!(
-        lines.iter().any(|line| line
-            .starts_with("Status: Not installed. Windows support is a separate download")
-            && line.contains("about 1.9 GB")
-            && line.contains("about 3.1 GB")),
-        "{lines:?}"
-    );
-    assert_eq!(lines.last().map(String::as_str), Some("Install"));
-}
+tilo_test_env::scenario! {
+    fn the_windows_support_card_follows_its_install;
 
-#[test]
-fn installing_windows_support_runs_the_extension_and_shows_its_progress() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let mut pane = windows_pane(
-        Arc::new(Mutex::new(needs_install())),
-        Arc::clone(&runs),
-        Ok(()),
-        WindowsReadiness::Ready,
-    );
-    press_windows(&mut pane, UpdatesEffect::InstallWindowsSupport);
-    assert_eq!(*runs.lock().unwrap(), vec![WindowsSupportAction::Install]);
-    assert_eq!(pane.windows_support(), &WindowsReadiness::Ready);
-    let lines = pane.windows_support_card_lines();
-    assert!(
-        lines.contains(&"Status: Installed".to_string()),
-        "{lines:?}"
-    );
-    assert_eq!(lines.last().map(String::as_str), Some("Remove"));
-    assert_eq!(pane.notice(), None);
-}
+    phase windows_card_discloses_the_download_before_it_installs;
+    {
+        let pane = windows_pane(
+            Arc::new(Mutex::new(needs_install())),
+            Arc::new(Mutex::new(Vec::new())),
+            Ok(()),
+            WindowsReadiness::Ready,
+        );
+        let lines = pane.windows_support_card_lines();
+        assert_eq!(lines.first().map(String::as_str), Some("Run Windows apps"));
+        assert!(
+            lines.iter().any(|line| line
+                .starts_with("Status: Not installed. Windows support is a separate download")
+                && line.contains("about 1.9 GB")
+                && line.contains("about 3.1 GB")),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("Install"));
+    }
 
-#[test]
-fn a_running_windows_install_shows_the_helpers_step() {
-    let pane = windows_pane(
-        Arc::new(Mutex::new(WindowsReadiness::Installing(Some(
-            crate::windows_compat::Progress {
-                step: 3,
-                steps: 5,
-                label: "Downloading".into(),
-                bytes: Some((20_000_000, 40_000_000)),
-            },
-        )))),
-        Arc::new(Mutex::new(Vec::new())),
-        Ok(()),
-        WindowsReadiness::Ready,
-    );
-    let lines = pane.windows_support_card_lines();
-    assert!(
-        lines.contains(&"Status: Downloading 20 of 40 MB (step 3 of 5)\u{2026}".to_string()),
-        "{lines:?}"
-    );
-    assert!(lines.contains(&"Progress: 50%".to_string()), "{lines:?}");
-    assert!(
-        !lines
-            .iter()
-            .any(|line| line == "Install" || line == "Remove"),
-        "nothing to press while it works: {lines:?}"
-    );
-}
+    phase installing_windows_support_runs_the_extension_and_shows_its_progress;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = windows_pane(
+            Arc::new(Mutex::new(needs_install())),
+            Arc::clone(&runs),
+            Ok(()),
+            WindowsReadiness::Ready,
+        );
+        press_windows(&mut pane, UpdatesEffect::InstallWindowsSupport);
+        assert_eq!(*runs.lock().unwrap(), vec![WindowsSupportAction::Install]);
+        assert_eq!(pane.windows_support(), &WindowsReadiness::Ready);
+        let lines = pane.windows_support_card_lines();
+        assert!(
+            lines.contains(&"Status: Installed".to_string()),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("Remove"));
+        assert_eq!(pane.notice(), None);
+    }
 
-#[test]
-fn a_failed_windows_install_surfaces_the_error_and_offers_retry() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let mut pane = windows_pane(
-        Arc::new(Mutex::new(needs_install())),
-        Arc::clone(&runs),
-        Err("no route to host".into()),
-        WindowsReadiness::Failed("no route to host".into(), disclosure()),
-    );
-    press_windows(&mut pane, UpdatesEffect::InstallWindowsSupport);
-    assert_eq!(
-        pane.notice(),
-        Some("Windows support could not be changed: no route to host")
-    );
-    let lines = pane.windows_support_card_lines();
-    assert!(
-        lines.contains(&"Status: Could not install: no route to host".to_string()),
-        "{lines:?}"
-    );
-    assert!(lines.contains(&"Try again".to_string()), "{lines:?}");
-}
+    phase a_running_windows_install_shows_the_helpers_step;
+    {
+        let pane = windows_pane(
+            Arc::new(Mutex::new(WindowsReadiness::Installing(Some(
+                crate::windows_compat::Progress {
+                    step: 3,
+                    steps: 5,
+                    label: "Downloading".into(),
+                    bytes: Some((20_000_000, 40_000_000)),
+                },
+            )))),
+            Arc::new(Mutex::new(Vec::new())),
+            Ok(()),
+            WindowsReadiness::Ready,
+        );
+        let lines = pane.windows_support_card_lines();
+        assert!(
+            lines.contains(&"Status: Downloading 20 of 40 MB (step 3 of 5)\u{2026}".to_string()),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"Progress: 50%".to_string()), "{lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line == "Install" || line == "Remove"),
+            "nothing to press while it works: {lines:?}"
+        );
+    }
 
-#[test]
-fn removing_windows_support_returns_to_the_download_offer() {
-    let runs = Arc::new(Mutex::new(Vec::new()));
-    let mut pane = windows_pane(
-        Arc::new(Mutex::new(WindowsReadiness::Ready)),
-        Arc::clone(&runs),
-        Ok(()),
-        needs_install(),
-    );
-    press_windows(&mut pane, UpdatesEffect::RemoveWindowsSupport);
-    assert_eq!(*runs.lock().unwrap(), vec![WindowsSupportAction::Remove]);
-    assert_eq!(
-        pane.windows_support_card_lines().last().map(String::as_str),
-        Some("Install")
-    );
-}
+    phase a_failed_windows_install_surfaces_the_error_and_offers_retry;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = windows_pane(
+            Arc::new(Mutex::new(needs_install())),
+            Arc::clone(&runs),
+            Err("no route to host".into()),
+            WindowsReadiness::Failed("no route to host".into(), disclosure()),
+        );
+        press_windows(&mut pane, UpdatesEffect::InstallWindowsSupport);
+        assert_eq!(
+            pane.notice(),
+            Some("Windows support could not be changed: no route to host")
+        );
+        let lines = pane.windows_support_card_lines();
+        assert!(
+            lines.contains(&"Status: Could not install: no route to host".to_string()),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"Try again".to_string()), "{lines:?}");
+    }
 
-#[test]
-fn a_cancelled_install_offers_only_starting_it_again() {
-    let mut pane = windows_pane(
-        Arc::new(Mutex::new(WindowsReadiness::WaitingForNetwork)),
-        Arc::new(Mutex::new(Vec::new())),
-        Ok(()),
-        needs_install(),
-    );
-    let lines = pane.windows_support_card_lines();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("once this device is online")),
-        "{lines:?}"
-    );
-    assert_eq!(lines.last().map(String::as_str), Some("Cancel"));
-    press_windows(&mut pane, UpdatesEffect::RemoveWindowsSupport);
-    assert_eq!(
-        pane.windows_support_card_lines().last().map(String::as_str),
-        Some("Install")
-    );
+    phase removing_windows_support_returns_to_the_download_offer;
+    {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = windows_pane(
+            Arc::new(Mutex::new(WindowsReadiness::Ready)),
+            Arc::clone(&runs),
+            Ok(()),
+            needs_install(),
+        );
+        press_windows(&mut pane, UpdatesEffect::RemoveWindowsSupport);
+        assert_eq!(*runs.lock().unwrap(), vec![WindowsSupportAction::Remove]);
+        assert_eq!(
+            pane.windows_support_card_lines().last().map(String::as_str),
+            Some("Install")
+        );
+    }
+
+    phase a_cancelled_install_offers_only_starting_it_again;
+    {
+        let mut pane = windows_pane(
+            Arc::new(Mutex::new(WindowsReadiness::WaitingForNetwork)),
+            Arc::new(Mutex::new(Vec::new())),
+            Ok(()),
+            needs_install(),
+        );
+        let lines = pane.windows_support_card_lines();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("once this device is online")),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("Cancel"));
+        press_windows(&mut pane, UpdatesEffect::RemoveWindowsSupport);
+        assert_eq!(
+            pane.windows_support_card_lines().last().map(String::as_str),
+            Some("Install")
+        );
+    }
 }
 
 #[test]
@@ -490,116 +498,335 @@ fn update_status_parsers_accept_only_trusted_shapes() {
     }
 }
 
-#[test]
-fn update_checks_run_promptly_and_stamp_only_on_completion() {
-    // Check for updates re-queries the system and stamps a real
-    // last-checked time — proving the button acts, not no-ops.
+tilo_test_env::scenario! {
+    fn updates_are_checked_applied_and_scheduled_through_their_controls;
+
+    phase update_checks_run_promptly_and_stamp_only_on_completion;
     {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let reb = Arc::new(RecordingRebooter::default());
-        let mut pane = pane_with(None, reb);
-        pane.poll();
-        assert_eq!(pane.prefs().last_checked, "Never");
-        assert_eq!(pane.status().staged_version, None);
-        pane.run(UpdatesEffect::CheckForUpdates, None);
-        pane.poll();
-        settle(&mut pane, |pane| pane.check_pending);
-        assert_eq!(
-            pane.prefs().last_checked,
-            "CHECKED-NOW",
-            "timestamp updated"
-        );
-        assert_eq!(
-            pane.status().staged_version.as_deref(),
-            Some("Tilo 2026.07"),
-            "the re-query result landed"
-        );
+        // Check for updates re-queries the system and stamps a real
+        // last-checked time — proving the button acts, not no-ops.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let reb = Arc::new(RecordingRebooter::default());
+            let mut pane = pane_with(None, reb);
+            pane.poll();
+            assert_eq!(pane.prefs().last_checked, "Never");
+            assert_eq!(pane.status().staged_version, None);
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            pane.poll();
+            settle(&mut pane, |pane| pane.check_pending);
+            assert_eq!(
+                pane.prefs().last_checked,
+                "CHECKED-NOW",
+                "timestamp updated"
+            );
+            assert_eq!(
+                pane.status().staged_version.as_deref(),
+                Some("Tilo 2026.07"),
+                "the re-query result landed"
+            );
+        }
+
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(None, None));
+            let release = control.gate_checks();
+            let mut pane = pane_with_control(Arc::clone(&control));
+            pane.poll();
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            // The check is held until released below: were `sync` to wait for
+            // it, this call would only return once the gate timed out.
+            pane.poll();
+            assert!(pane.check_pending, "the check runs off the UI thread");
+            assert_eq!(pane.prefs().last_checked, "Never");
+            release.send(()).unwrap();
+            settle(&mut pane, |pane| pane.check_pending);
+            assert!(
+                !control.gate_timed_out(),
+                "sync blocked on the update check"
+            );
+            assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
+            assert!(pane.notice().is_none());
+        }
+
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(None, None).failing_check());
+            let mut pane = pane_with_control(control);
+            pane.poll();
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            settle(&mut pane, |pane| pane.check_pending);
+            assert_eq!(pane.prefs().last_checked, "Never");
+            assert!(
+                pane.notice()
+                    .is_some_and(|message| message.contains("could not be checked"))
+            );
+        }
+
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(None, None));
+            let release = control.gate_refreshes();
+            let mut pane = pane_with_control(Arc::clone(&control));
+            pane.poll();
+            pane.run(UpdatesEffect::RefreshFirmware, None);
+            pane.poll();
+            assert!(pane.firmware_refresh_pending);
+            release.send(()).unwrap();
+            settle(&mut pane, |pane| pane.firmware_refresh_pending);
+            assert!(
+                !control.gate_timed_out(),
+                "sync blocked on the firmware refresh"
+            );
+            assert_eq!(pane.firmware_updates, Ok(Vec::new()));
+
+            control.set_refresh_fails(true);
+            pane.run(UpdatesEffect::RefreshFirmware, None);
+            pane.poll();
+            assert!(pane.firmware_refresh_pending);
+            release.send(()).unwrap();
+            settle(&mut pane, |pane| pane.firmware_refresh_pending);
+            assert!(pane.firmware_updates.is_err());
+            // The pane's own failure sentence, with the reason: the copy comes
+            // from the catalogue, so a reworded notice still reads here.
+            let expected = t_args(
+                "upd-notice-fw-refresh",
+                &[("error", "firmware refresh failed".into())],
+            );
+            assert_eq!(pane.notice(), Some(expected.as_str()), "with the reason");
+        }
+
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(None, None));
+            let release = control.gate_checks();
+            let mut pane = pane_with_control(Arc::clone(&control));
+            pane.poll();
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            pane.poll();
+            assert!(pane.check_pending);
+            // A second press while the first check is provably still running.
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            pane.poll();
+            release.send(()).unwrap();
+            settle(&mut pane, |pane| pane.check_pending);
+            assert_eq!(*control.check_calls.lock().unwrap(), 1);
+        }
     }
 
+    phase restart_and_rollback_are_confirmed_and_reported;
     {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(None, None));
-        let release = control.gate_checks();
-        let mut pane = pane_with_control(Arc::clone(&control));
-        pane.poll();
-        pane.run(UpdatesEffect::CheckForUpdates, None);
-        // The check is held until released below: were `sync` to wait for
-        // it, this call would only return once the gate timed out.
-        pane.poll();
-        assert!(pane.check_pending, "the check runs off the UI thread");
-        assert_eq!(pane.prefs().last_checked, "Never");
-        release.send(()).unwrap();
-        settle(&mut pane, |pane| pane.check_pending);
-        assert!(
-            !control.gate_timed_out(),
-            "sync blocked on the update check"
-        );
-        assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
-        assert!(pane.notice().is_none());
+        {
+            let reb = Arc::new(RecordingRebooter::default());
+            let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
+            pane.poll();
+            pane.run(UpdatesEffect::RestartToUpdate, None);
+            pane.poll();
+            // A second stray press must not reboot again.
+            pane.run(UpdatesEffect::RestartToUpdate, None);
+            pane.poll();
+            settle(&mut pane, UpdatesModel::working);
+            assert_eq!(*reb.calls.lock().unwrap(), 1);
+        }
+
+        // Rolling back takes two clicks, and the first one only shows what a
+        // rollback does not undo.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
+            let mut pane = pane_with_control(control.clone());
+            pane.poll();
+            assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
+
+            pane.run(UpdatesEffect::ReviewRollback, None);
+            pane.poll();
+            assert_eq!(
+                *control.rollbacks.lock().unwrap(),
+                0,
+                "the first click must only ask; a one-click rollback is a rollback \
+             by accident"
+            );
+
+            let shown = pane.rollback_card_lines().join("\n");
+            for phrase in ["do not revert", "next app update"] {
+                assert!(
+                    shown.contains(phrase),
+                    "the confirmation must say what a rollback does not undo \
+                 ({phrase} missing) — shown was:\n{shown}"
+                );
+            }
+
+            pane.run(UpdatesEffect::RollBack, None);
+            pane.poll();
+            settle(&mut pane, UpdatesModel::working);
+            assert_eq!(*control.rollbacks.lock().unwrap(), 1);
+            let notice = pane.notice().expect("the result has to be shown");
+            assert!(
+                notice.contains("Restart"),
+                "the person has to be told a restart is what takes it, got: {notice}"
+            );
+        }
+
+        // A failed rollback says so where the person is looking.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
+            let mut pane = pane_with_control(control);
+            pane.poll();
+            pane.run(UpdatesEffect::RollBack, None);
+            pane.poll();
+            settle(&mut pane, UpdatesModel::working);
+            let notice = pane.notice().expect("a failed rollback must be visible");
+            assert!(
+                notice.contains("the boot loader would not take it"),
+                "the reason has to survive to the screen, got: {notice}"
+            );
+        }
+
+        // The help text must never promise a capability the pane does not offer
+        // — assert on what the pane renders, not on a comment.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
+            let help = pane.help_lines().join("\n");
+            assert!(
+                !help.contains("you can roll back to the previous image at boot"),
+                "the old sentence described a feature that did not exist; if it is \
+             back, so is the lie. Help text was:\n{help}"
+            );
+            assert_eq!(
+                pane.rollback_card_lines()[0],
+                rollback_card_title(),
+                "the rollback control has to be on the pane, since the pane talks \
+             about rolling back"
+            );
+            assert!(
+                help.contains("three times"),
+                "the automatic half is the part a person cannot discover by \
+             looking, so the pane has to state it. Help text was:\n{help}"
+            );
+        }
+
+        // A machine with nothing to go back to says so, rather than offering a
+        // button that would fail.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), None)));
+            let shown = pane.rollback_card_lines().join("\n");
+            assert!(
+                shown.contains("no previous image on this machine yet"),
+                "the absence has to be stated; an absent card reads as an absent \
+             feature. Shown was:\n{shown}"
+            );
+        }
     }
 
+    phase automatic_update_switch_follows_the_timer;
     {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(None, None).failing_check());
-        let mut pane = pane_with_control(control);
-        pane.poll();
-        pane.run(UpdatesEffect::CheckForUpdates, None);
-        settle(&mut pane, |pane| pane.check_pending);
-        assert_eq!(pane.prefs().last_checked, "Never");
-        assert!(
-            pane.notice()
-                .is_some_and(|message| message.contains("could not be checked"))
-        );
-    }
+        // The switch shows the timer, not a stored preference, even when the two
+        // disagree.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), None));
+            let pane = UpdatesModel::with_parts_and_control(
+                test_cx(),
+                UpdateStatus {
+                    current_version: "Tilo".into(),
+                    staged_version: None,
+                    staged_error: None,
+                },
+                UpdatePrefs {
+                    auto: false,
+                    ..UpdatePrefs::default()
+                },
+                Arc::new(|| UpdateStatus {
+                    current_version: "Tilo".into(),
+                    staged_version: None,
+                    staged_error: None,
+                }),
+                Arc::new(|| "now".to_string()),
+                Arc::new(RecordingRebooter::default()),
+                control,
+            );
+            assert!(
+                pane.prefs().auto,
+                "the machine's timer wins over a stale preference; showing the \
+             preference is how a switch comes to lie about the system"
+            );
+            assert_eq!(pane.timer_enabled(), Some(true));
+        }
 
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(None, None));
-        let release = control.gate_refreshes();
-        let mut pane = pane_with_control(Arc::clone(&control));
-        pane.poll();
-        pane.run(UpdatesEffect::RefreshFirmware, None);
-        pane.poll();
-        assert!(pane.firmware_refresh_pending);
-        release.send(()).unwrap();
-        settle(&mut pane, |pane| pane.firmware_refresh_pending);
-        assert!(
-            !control.gate_timed_out(),
-            "sync blocked on the firmware refresh"
-        );
-        assert_eq!(pane.firmware_updates, Ok(Vec::new()));
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), None));
+            let mut pane = pane_with_control(control.clone());
+            pane.poll();
 
-        control.set_refresh_fails(true);
-        pane.run(UpdatesEffect::RefreshFirmware, None);
-        pane.poll();
-        assert!(pane.firmware_refresh_pending);
-        release.send(()).unwrap();
-        settle(&mut pane, |pane| pane.firmware_refresh_pending);
-        assert!(pane.firmware_updates.is_err());
-        // The pane's own failure sentence, with the reason: the copy comes
-        // from the catalogue, so a reworded notice still reads here.
-        let expected = t_args(
-            "upd-notice-fw-refresh",
-            &[("error", "firmware refresh failed".into())],
-        );
-        assert_eq!(pane.notice(), Some(expected.as_str()), "with the reason");
-    }
+            pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
+            pane.poll();
+            settle(&mut pane, UpdatesModel::working);
 
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(None, None));
-        let release = control.gate_checks();
-        let mut pane = pane_with_control(Arc::clone(&control));
-        pane.poll();
-        pane.run(UpdatesEffect::CheckForUpdates, None);
-        pane.poll();
-        assert!(pane.check_pending);
-        // A second press while the first check is provably still running.
-        pane.run(UpdatesEffect::CheckForUpdates, None);
-        pane.poll();
-        release.send(()).unwrap();
-        settle(&mut pane, |pane| pane.check_pending);
-        assert_eq!(*control.check_calls.lock().unwrap(), 1);
+            assert_eq!(
+                *control.set_calls.lock().unwrap(),
+                vec![false],
+                "the switch must reach the update timer exactly once"
+            );
+            assert_eq!(
+                control.timer_enabled(),
+                Some(false),
+                "and the timer must actually be off afterwards"
+            );
+            assert_eq!(pane.timer_enabled(), Some(false));
+            assert!(
+                pane.notice().is_none(),
+                "nothing went wrong, so say nothing"
+            );
+        }
+
+        // When the system refuses, the switch goes back and the pane says so on
+        // screen. A warning in the journal is, for a settings switch, the same as
+        // failing silently.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
+            let mut pane = pane_with_control(control.clone());
+            pane.poll();
+
+            pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
+            pane.poll();
+            settle(&mut pane, UpdatesModel::working);
+
+            assert_eq!(
+                control.timer_enabled(),
+                Some(true),
+                "the timer must be untouched when the change was refused"
+            );
+            assert!(
+                pane.prefs().auto,
+                "the switch itself must snap back, or it shows a state the machine \
+             is not in"
+            );
+            let notice = pane
+                .notice()
+                .expect("a refused change has to appear in the pane, not only the journal");
+            assert!(
+                notice.contains("polkit said no"),
+                "the message must carry the reason, got: {notice}"
+            );
+        }
+
+        // A machine that cannot be asked gets no switch at all. Rendering "off"
+        // for a timer that could not be read is the same class of lie.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let pane = pane_with_control(Arc::new(FakeControl::new(None, None)));
+            assert_eq!(pane.timer_enabled(), None);
+            // And the stub used by the older constructor answers the same way, so
+            // a test written before this existed cannot get a confident `false`.
+            assert_eq!(UnavailableControl.timer_enabled(), None);
+            assert!(UnavailableControl.set_timer(true).is_err());
+            assert!(UnavailableControl.roll_back().is_err());
+        }
     }
 }
 
@@ -617,113 +844,6 @@ fn settle(pane: &mut UpdatesModel, pending: impl Fn(&UpdatesModel) -> bool) {
             "background worker never reported"
         );
         std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
-#[test]
-fn restart_and_rollback_are_confirmed_and_reported() {
-    {
-        let reb = Arc::new(RecordingRebooter::default());
-        let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
-        pane.poll();
-        pane.run(UpdatesEffect::RestartToUpdate, None);
-        pane.poll();
-        // A second stray press must not reboot again.
-        pane.run(UpdatesEffect::RestartToUpdate, None);
-        pane.poll();
-        settle(&mut pane, UpdatesModel::working);
-        assert_eq!(*reb.calls.lock().unwrap(), 1);
-    }
-
-    // Rolling back takes two clicks, and the first one only shows what a
-    // rollback does not undo.
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
-        let mut pane = pane_with_control(control.clone());
-        pane.poll();
-        assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
-
-        pane.run(UpdatesEffect::ReviewRollback, None);
-        pane.poll();
-        assert_eq!(
-            *control.rollbacks.lock().unwrap(),
-            0,
-            "the first click must only ask; a one-click rollback is a rollback \
-             by accident"
-        );
-
-        let shown = pane.rollback_card_lines().join("\n");
-        for phrase in ["do not revert", "next app update"] {
-            assert!(
-                shown.contains(phrase),
-                "the confirmation must say what a rollback does not undo \
-                 ({phrase} missing) — shown was:\n{shown}"
-            );
-        }
-
-        pane.run(UpdatesEffect::RollBack, None);
-        pane.poll();
-        settle(&mut pane, UpdatesModel::working);
-        assert_eq!(*control.rollbacks.lock().unwrap(), 1);
-        let notice = pane.notice().expect("the result has to be shown");
-        assert!(
-            notice.contains("Restart"),
-            "the person has to be told a restart is what takes it, got: {notice}"
-        );
-    }
-
-    // A failed rollback says so where the person is looking.
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
-        let mut pane = pane_with_control(control);
-        pane.poll();
-        pane.run(UpdatesEffect::RollBack, None);
-        pane.poll();
-        settle(&mut pane, UpdatesModel::working);
-        let notice = pane.notice().expect("a failed rollback must be visible");
-        assert!(
-            notice.contains("the boot loader would not take it"),
-            "the reason has to survive to the screen, got: {notice}"
-        );
-    }
-
-    // The help text must never promise a capability the pane does not offer
-    // — assert on what the pane renders, not on a comment.
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
-        let help = pane.help_lines().join("\n");
-        assert!(
-            !help.contains("you can roll back to the previous image at boot"),
-            "the old sentence described a feature that did not exist; if it is \
-             back, so is the lie. Help text was:\n{help}"
-        );
-        assert_eq!(
-            pane.rollback_card_lines()[0],
-            rollback_card_title(),
-            "the rollback control has to be on the pane, since the pane talks \
-             about rolling back"
-        );
-        assert!(
-            help.contains("three times"),
-            "the automatic half is the part a person cannot discover by \
-             looking, so the pane has to state it. Help text was:\n{help}"
-        );
-    }
-
-    // A machine with nothing to go back to says so, rather than offering a
-    // button that would fail.
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), None)));
-        let shown = pane.rollback_card_lines().join("\n");
-        assert!(
-            shown.contains("no previous image on this machine yet"),
-            "the absence has to be stated; an absent card reads as an absent \
-             feature. Shown was:\n{shown}"
-        );
     }
 }
 
@@ -912,114 +1032,6 @@ fn pane_with_control(control: Arc<FakeControl>) -> UpdatesModel {
         Arc::new(RecordingRebooter::default()),
         control,
     )
-}
-
-#[test]
-fn automatic_update_switch_follows_the_timer() {
-    // The switch shows the timer, not a stored preference, even when the two
-    // disagree.
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), None));
-        let pane = UpdatesModel::with_parts_and_control(
-            test_cx(),
-            UpdateStatus {
-                current_version: "Tilo".into(),
-                staged_version: None,
-                staged_error: None,
-            },
-            UpdatePrefs {
-                auto: false,
-                ..UpdatePrefs::default()
-            },
-            Arc::new(|| UpdateStatus {
-                current_version: "Tilo".into(),
-                staged_version: None,
-                staged_error: None,
-            }),
-            Arc::new(|| "now".to_string()),
-            Arc::new(RecordingRebooter::default()),
-            control,
-        );
-        assert!(
-            pane.prefs().auto,
-            "the machine's timer wins over a stale preference; showing the \
-             preference is how a switch comes to lie about the system"
-        );
-        assert_eq!(pane.timer_enabled(), Some(true));
-    }
-
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), None));
-        let mut pane = pane_with_control(control.clone());
-        pane.poll();
-
-        pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
-        pane.poll();
-        settle(&mut pane, UpdatesModel::working);
-
-        assert_eq!(
-            *control.set_calls.lock().unwrap(),
-            vec![false],
-            "the switch must reach the update timer exactly once"
-        );
-        assert_eq!(
-            control.timer_enabled(),
-            Some(false),
-            "and the timer must actually be off afterwards"
-        );
-        assert_eq!(pane.timer_enabled(), Some(false));
-        assert!(
-            pane.notice().is_none(),
-            "nothing went wrong, so say nothing"
-        );
-    }
-
-    // When the system refuses, the switch goes back and the pane says so on
-    // screen. A warning in the journal is, for a settings switch, the same as
-    // failing silently.
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
-        let mut pane = pane_with_control(control.clone());
-        pane.poll();
-
-        pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
-        pane.poll();
-        settle(&mut pane, UpdatesModel::working);
-
-        assert_eq!(
-            control.timer_enabled(),
-            Some(true),
-            "the timer must be untouched when the change was refused"
-        );
-        assert!(
-            pane.prefs().auto,
-            "the switch itself must snap back, or it shows a state the machine \
-             is not in"
-        );
-        let notice = pane
-            .notice()
-            .expect("a refused change has to appear in the pane, not only the journal");
-        assert!(
-            notice.contains("polkit said no"),
-            "the message must carry the reason, got: {notice}"
-        );
-    }
-
-    // A machine that cannot be asked gets no switch at all. Rendering "off"
-    // for a timer that could not be read is the same class of lie.
-    {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_with_control(Arc::new(FakeControl::new(None, None)));
-        assert_eq!(pane.timer_enabled(), None);
-        // And the stub used by the older constructor answers the same way, so
-        // a test written before this existed cannot get a confident `false`.
-        assert_eq!(UnavailableControl.timer_enabled(), None);
-        assert!(UnavailableControl.set_timer(true).is_err());
-        assert!(UnavailableControl.roll_back().is_err());
-    }
 }
 
 #[test]

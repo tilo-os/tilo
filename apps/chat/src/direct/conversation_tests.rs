@@ -4,7 +4,9 @@
 use ui::framework::testing::TestApp;
 
 use crate::ChatShell;
-use crate::record::{Chat, Participant};
+use tilo_actions::policy::MemberId;
+
+use crate::record::Chat;
 use crate::testing::MountedChat;
 
 type Window = TestApp<ChatShell>;
@@ -20,32 +22,59 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
     assert_eq!(ChatEffect::SEND_DIRECT_MESSAGE.id, "send-direct-message");
 }
 
-/// The conversation two people have is named by the two of them, whichever
-/// order they are named in, once.
-#[test]
-fn a_conversation_is_named_by_its_participants_once() {
-    let ada = Participant::person("ad".repeat(32));
-    let bob = Participant::person("b0".repeat(32));
-    let one = Chat::direct_id([ada.clone(), bob.clone()]);
-    let other = Chat::direct_id([bob.clone(), ada.clone(), ada.clone()]);
-    assert_eq!(one, other, "one conversation per pair, however named");
-    assert_eq!(
-        Chat::direct_participants(&one),
-        Some(vec![ada, bob]),
-        "the id names its participants back"
-    );
-    assert_eq!(Chat::direct_participants(&"c_general".into()), None);
-}
+tilo_test_env::scenario! {
+    /// The id of a direct conversation.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_conversations_id_names_its_participants_people_or_agents;
 
-#[test]
-fn an_agent_and_a_person_converse_apart_from_the_pair_of_people() {
-    let ada = Participant::person("ad".repeat(32));
-    let agent = Participant::agent("ag".repeat(32));
-    assert_ne!(
-        Chat::direct_id([ada.clone(), agent]),
-        Chat::direct_id([ada, Participant::person("ag".repeat(32))]),
-        "who someone is names the conversation"
-    );
+    phase a_conversation_is_named_by_its_participants_once;
+    // The conversation two people have is named by the two of them, whichever
+    // order they are named in, once.
+    {
+        let ada = MemberId::person("ad".repeat(32));
+        let bob = MemberId::person("b0".repeat(32));
+        let one = Chat::direct_id([ada.clone(), bob.clone()]);
+        let other = Chat::direct_id([bob.clone(), ada.clone(), ada.clone()]);
+        assert_eq!(one, other, "one conversation per pair, however named");
+        assert_eq!(
+            Chat::direct_participants(&one),
+            Some(vec![ada, bob]),
+            "the id names its participants back"
+        );
+        assert_eq!(Chat::direct_participants(&"c_general".into()), None);
+        // A conversation with oneself names one person; an id that names nobody,
+        // or holds a key that is no member, names no conversation.
+        let cy = MemberId::person("c1".repeat(32));
+        let alone = Chat::direct_id([cy.clone()]);
+        assert_eq!(
+            Chat::direct_participants(&alone),
+            Some(vec![cy]),
+            "a conversation with oneself"
+        );
+        assert_eq!(
+            Chat::direct_participants(&Chat::direct_id(std::iter::empty::<MemberId>())),
+            None,
+            "an id that names nobody"
+        );
+        let dangling = format!("{}|", alone.as_str());
+        assert_eq!(
+            Chat::direct_participants(&dangling.as_str().into()),
+            None,
+            "a key that is no member"
+        );
+    }
+
+    phase an_agent_and_a_person_converse_apart_from_the_pair_of_people;
+    {
+        let ada = MemberId::person("ad".repeat(32));
+        let agent = MemberId::agent("ag".repeat(32));
+        assert_ne!(
+            Chat::direct_id([ada.clone(), agent]),
+            Chat::direct_id([ada, MemberId::person("ag".repeat(32))]),
+            "who someone is names the conversation"
+        );
+    }
 }
 
 /// Ada's and Bob's windows in one workspace, each having introduced themself,
@@ -84,10 +113,7 @@ fn read_conversation(window: &mut Window, peer: &str) -> Vec<(String, String)> {
     let me = window
         .with_chat(|chat| chat.me.id.clone())
         .expect("a window");
-    let id = Chat::direct_id([
-        Participant::person(me),
-        Participant::person(peer.to_owned()),
-    ]);
+    let id = Chat::direct_id([MemberId::person(me), MemberId::person(peer.to_owned())]);
     crate::testing::mounted_rows(window, id.as_str())
         .into_iter()
         .map(|message| (message.text, message.author.as_str().to_owned()))
@@ -183,10 +209,8 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
     let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
-    let conversation = Chat::direct_id([
-        Participant::person(ada.clone()),
-        Participant::person(bob.clone()),
-    ]);
+    let conversation =
+        Chat::direct_id([MemberId::person(ada.clone()), MemberId::person(bob.clone())]);
     let carried = tilo_reference::Attached::Text {
         text: "the wheel stutters".into(),
         from: None,
@@ -251,8 +275,7 @@ fn a_box_send_of_a_subject_alone_posts_the_message_without_words() {
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
     let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
-    let conversation =
-        Chat::direct_id([Participant::person(ada.clone()), Participant::person(bob)]);
+    let conversation = Chat::direct_id([MemberId::person(ada.clone()), MemberId::person(bob)]);
     let carried = tilo_reference::Attached::Text {
         text: "#42 Ship the release".into(),
         from: None,
@@ -293,8 +316,7 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     let bob = "b0".repeat(32);
     let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
     let agent = "a5".repeat(16);
-    let conversation =
-        Chat::direct_id([Participant::person(bob), Participant::agent(agent.clone())]);
+    let conversation = Chat::direct_id([MemberId::person(bob), MemberId::agent(agent.clone())]);
 
     let sent = bob_window
         .effect(&ChatEffect::Send {
@@ -392,7 +414,7 @@ fn a_box_send_answers_the_conversation_it_landed_in() {
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
     let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
-    let conversation = Chat::direct_id([Participant::person(ada), Participant::person(bob)]);
+    let conversation = Chat::direct_id([MemberId::person(ada), MemberId::person(bob)]);
 
     let sent = bob_window
         .effect(&ChatEffect::Send {
@@ -517,8 +539,7 @@ fn an_agents_send_is_the_agents_on_every_member() {
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
     let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
-    let conversation =
-        Chat::direct_id([Participant::person(ada.clone()), Participant::person(bob)]);
+    let conversation = Chat::direct_id([MemberId::person(ada.clone()), MemberId::person(bob)]);
     let helper = tilo_actions::ActionInvoker::actor("agent:helper")
         .with_kind(tilo_actions::ActorKind::Agent)
         .acting_for(ada)

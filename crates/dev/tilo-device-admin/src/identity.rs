@@ -134,47 +134,51 @@ mod tests {
         cert
     }
 
-    /// A dialing machine makes its key once, installs only a certificate for
-    /// that key that grants administration, and loads it back.
-    #[test]
-    fn a_dialing_machine_enrols_with_an_administration_certificate() {
-        let dir = tempfile::tempdir().unwrap();
-        let device = ensure_key(dir.path()).unwrap();
-        assert_eq!(ensure_key(dir.path()).unwrap(), device);
-        let root = SigningKey::from_bytes(&[21; 32]);
-        let write = |name: &str, cert: &DeviceCert| {
-            let path = dir.path().join(name);
-            persist::write_device_cert(&path, cert).unwrap();
-            path
-        };
+    tilo_test_env::scenario! {
+        fn a_dialing_machine_keeps_an_administration_identity_of_its_own;
 
-        let member = write(
-            "member.cert",
-            &certify(&root, device, DeviceCapabilities::member()),
-        );
-        let error = install_cert(dir.path(), &member).unwrap_err().to_string();
-        assert!(error.contains("--capability admin"), "{error}");
-        let other = write(
-            "other.cert",
-            &certify(&root, [9; 32], DeviceCapabilities::administrator()),
-        );
-        assert!(install_cert(dir.path(), &other).is_err());
-        assert!(Identity::load(dir.path()).unwrap().cert.is_none());
+        phase a_dialing_machine_enrols_with_an_administration_certificate;
+        // A dialing machine makes its key once, installs only a certificate for
+        // that key that grants administration, and loads it back.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let device = ensure_key(dir.path()).unwrap();
+            assert_eq!(ensure_key(dir.path()).unwrap(), device);
+            let root = SigningKey::from_bytes(&[21; 32]);
+            let write = |name: &str, cert: &DeviceCert| {
+                let path = dir.path().join(name);
+                persist::write_device_cert(&path, cert).unwrap();
+                path
+            };
 
-        let admin = certify(&root, device, DeviceCapabilities::administrator());
-        let path = write("admin.cert", &admin);
-        assert_eq!(install_cert(dir.path(), &path).unwrap(), admin);
-        let identity = Identity::load(dir.path()).unwrap();
-        assert_eq!(identity.cert, Some(admin));
-        assert_eq!(identity.device_id(), device);
-        assert!(identity.revocations().unwrap().is_empty());
-    }
+            let member = write(
+                "member.cert",
+                &certify(&root, device, DeviceCapabilities::member()),
+            );
+            let error = install_cert(dir.path(), &member).unwrap_err().to_string();
+            assert!(error.contains("--capability admin"), "{error}");
+            let other = write(
+                "other.cert",
+                &certify(&root, [9; 32], DeviceCapabilities::administrator()),
+            );
+            assert!(install_cert(dir.path(), &other).is_err());
+            assert!(Identity::load(dir.path()).unwrap().cert.is_none());
 
-    #[test]
-    fn the_admin_endpoint_is_not_the_device_endpoint() {
-        let key = SigningKey::from_bytes(&[22; 32]);
-        let admin = endpoint_id(&key);
-        assert_ne!(admin.as_bytes(), &key.verifying_key().to_bytes());
-        assert_eq!(admin, endpoint_id(&key));
+            let admin = certify(&root, device, DeviceCapabilities::administrator());
+            let path = write("admin.cert", &admin);
+            assert_eq!(install_cert(dir.path(), &path).unwrap(), admin);
+            let identity = Identity::load(dir.path()).unwrap();
+            assert_eq!(identity.cert, Some(admin));
+            assert_eq!(identity.device_id(), device);
+            assert!(identity.revocations().unwrap().is_empty());
+        }
+
+        phase the_admin_endpoint_is_not_the_device_endpoint;
+        {
+            let key = SigningKey::from_bytes(&[22; 32]);
+            let admin = endpoint_id(&key);
+            assert_ne!(admin.as_bytes(), &key.verifying_key().to_bytes());
+            assert_eq!(admin, endpoint_id(&key));
+        }
     }
 }

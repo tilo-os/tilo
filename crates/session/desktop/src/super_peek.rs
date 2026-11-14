@@ -23,7 +23,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::tokens::{MotionSource, TextRole};
-use ui::widget::{InputHint, KeyHint, KeyHintsFace};
+use ui::widget::{InputHint, KeyHint, KeyHintsFace, TextLineFace};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -248,8 +248,8 @@ impl Layout {
     fn of(groups: &[PeekGroup], text: &mut TextRenderer, theme: &Theme) -> Self {
         let spacing = &theme.tokens.spacing;
         let related = f64::from(spacing.rhythm.related);
-        let title_style = theme.text(TextRole::Caption);
-        let label_style = theme.text(TextRole::Label);
+        // Titles and a hint's words are both Caption: `KeyHintsFace` sets the words in it.
+        let style = theme.text(TextRole::Caption);
         let mut columns = Vec::with_capacity(groups.len());
         let mut x = 0.0;
         for (title, hints) in groups {
@@ -260,9 +260,9 @@ impl Layout {
             let keys = widths.iter().copied().fold(0.0, f64::max);
             let labels = hints
                 .iter()
-                .map(|hint| f64::from(text.measure_style(&hint.label, None, &label_style).0))
+                .map(|hint| f64::from(text.measure_style(&hint.label, None, &style).0))
                 .fold(0.0, f64::max);
-            let titled = f64::from(text.measure_style(title, None, &title_style).0);
+            let titled = f64::from(text.measure_style(title, None, &style).0);
             if !columns.is_empty() {
                 x += f64::from(spacing.s8);
             }
@@ -277,7 +277,7 @@ impl Layout {
                 .map(|(_, hints)| hints.len())
                 .max()
                 .unwrap_or(0),
-            title: f64::from(text.measure_style("Ag", None, &title_style).1),
+            title: f64::from(text.measure_style("Ag", None, &style).1),
             keycap: InputHint::keycap_height(theme),
         }
     }
@@ -334,65 +334,46 @@ impl Layout {
         let first = card.y0 + gap + (edge + self.title) * grown;
         let rest = Disclose::reveal(grown, 1.0).opacity;
         let title_style = theme.text(TextRole::Caption);
-        let label_style = theme.text(TextRole::Label);
-        let label = f64::from(text.measure_style("Ag", None, &label_style).1);
         let left = card.x0 + edge;
-        let row = |scene: &mut Scene,
-                   text: &mut TextRenderer,
+        let mut ctx = ui::paint::PaintCtx::new(scene, at, text, theme);
+        let row = |ctx: &mut ui::paint::PaintCtx<'_>,
                    x: f64,
                    y: f64,
                    (keys, own): (f64, f64),
                    hint: &KeyHint| {
             // Right-aligned against the words they go with, so a wide pair elsewhere in the column
             // leaves no gap after a single key.
-            InputHint::paint_keycap_labels_at(
-                scene,
-                at,
-                Point::new(x + keys - own, y),
-                &hint.keys,
-                text,
-                theme,
-            );
-            text.draw_style(
-                scene,
-                &hint.label,
-                colors.text_primary,
-                at.pre_translate(
-                    (
-                        x + keys + f64::from(spacing.rhythm.related),
-                        y + (self.keycap - label) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &label_style,
-            );
+            let face = KeyHintsFace::new(std::slice::from_ref(hint));
+            let from = x + keys - own;
+            let to = from + face.width(ctx.text, ctx.theme);
+            face.paint(ctx, Rect::new(from, y, to, y + self.keycap));
         };
         for ((_, hints), (x, keys, widths)) in groups.iter().zip(&self.columns) {
             if let (Some(hint), Some(own)) = (hints.first(), widths.first()) {
-                row(scene, text, left + x, first, (*keys, *own), hint);
+                row(&mut ctx, left + x, first, (*keys, *own), hint);
             }
         }
         if rest <= 0.0 {
             return;
         }
-        scene.push_layer(Fill::NonZero, BlendMode::default(), rest, at, &card);
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), rest, at, &card);
         for ((title, hints), (x, keys, widths)) in groups.iter().zip(&self.columns) {
-            text.draw_style(
-                scene,
-                title,
+            let line = TextLineFace::styled(title, &title_style, TextRole::Caption).start();
+            let (width, height) = line.measure(ctx.text);
+            let top = first - gap - height;
+            line.paint(
+                &mut ctx,
+                Rect::new(left + x, top, left + x + width, top + height),
                 colors.text_dim,
-                at.pre_translate((left + x, first - gap - self.title).into()),
-                None,
-                &title_style,
             );
             let mut y = first;
             for (hint, own) in hints.iter().zip(widths).skip(1) {
                 y += self.keycap + gap;
-                row(scene, text, left + x, y, (*keys, *own), hint);
+                row(&mut ctx, left + x, y, (*keys, *own), hint);
             }
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 }
 
@@ -416,43 +397,47 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn a_hold_shows_the_glance_then_owes_the_whole_card_and_letting_go_takes_it_away() {
-        let peek = SuperPeek::default();
-        let now = ui::time::now();
-        assert!(!peek.is_up());
-        assert!(!peek.needs_redraw(now), "nothing is owed before a hold");
-        peek.show(groups());
-        let now = ui::time::now();
-        assert!(peek.is_up());
-        assert!(peek.needs_redraw(now), "the glance is owed a frame");
-        let due = peek
-            .next_wake_deadline(now)
-            .expect("the whole card is due later");
-        assert!(due > now && Some(due) <= now.checked_add(GROW));
-        assert_eq!(peek.groups().map(|groups| groups.len()), Some(2));
-        let said = peek.accessibility().expect("it speaks while up");
-        assert!(
-            said.value
-                .as_deref()
-                .is_some_and(|value| value.contains("Search everywhere"))
-        );
+    tilo_test_env::scenario! {
+        fn the_super_peek_shows_the_glance_while_held;
 
-        peek.hide();
-        assert!(!peek.is_up());
-        assert_eq!(
-            peek.next_wake_deadline(now),
-            None,
-            "nothing grows once it goes"
-        );
-        assert!(peek.accessibility().is_none());
-    }
+        phase a_hold_shows_the_glance_then_owes_the_whole_card_and_letting_go_takes_it_away;
+        {
+            let peek = SuperPeek::default();
+            let now = ui::time::now();
+            assert!(!peek.is_up());
+            assert!(!peek.needs_redraw(now), "nothing is owed before a hold");
+            peek.show(groups());
+            let now = ui::time::now();
+            assert!(peek.is_up());
+            assert!(peek.needs_redraw(now), "the glance is owed a frame");
+            let due = peek
+                .next_wake_deadline(now)
+                .expect("the whole card is due later");
+            assert!(due > now && Some(due) <= now.checked_add(GROW));
+            assert_eq!(peek.groups().map(|groups| groups.len()), Some(2));
+            let said = peek.accessibility().expect("it speaks while up");
+            assert!(
+                said.value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("Search everywhere"))
+            );
 
-    #[test]
-    fn a_second_show_while_up_keeps_what_the_hold_began_with() {
-        let peek = SuperPeek::default();
-        peek.show(groups());
-        peek.show(Vec::new());
-        assert_eq!(peek.groups().map(|groups| groups.len()), Some(2));
+            peek.hide();
+            assert!(!peek.is_up());
+            assert_eq!(
+                peek.next_wake_deadline(now),
+                None,
+                "nothing grows once it goes"
+            );
+            assert!(peek.accessibility().is_none());
+        }
+
+        phase a_second_show_while_up_keeps_what_the_hold_began_with;
+        {
+            let peek = SuperPeek::default();
+            peek.show(groups());
+            peek.show(Vec::new());
+            assert_eq!(peek.groups().map(|groups| groups.len()), Some(2));
+        }
     }
 }

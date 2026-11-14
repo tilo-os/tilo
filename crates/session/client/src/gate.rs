@@ -83,9 +83,7 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         // Channel governance is signed by a participant and checked against the membership; access
         // requests are how a reader obtains keys.
         | NeighbourMsg::MlsGovernance { .. }
-        | NeighbourMsg::MlsAccessRequest { .. }
-        | NeighbourMsg::MlsRoutedAccessRequest { .. }
-        | NeighbourMsg::MlsChannelUnfounded { .. } => {
+        | NeighbourMsg::MlsAccessRequest { .. } => {
             Some((TreePath::root(), ActionKind::Read))
         }
         // Settled before the gate: identity is how a sender becomes known at all; a codec advert,
@@ -161,10 +159,10 @@ mod tests {
     )]
     fn every_variant() -> Vec<(NeighbourMsg, Option<WorkspaceAction>)> {
         use collab_types::{
-            ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction,
-            MlsGovernanceFrame, PeerPresence, PeerPresencePayload, Signature,
+            Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame,
+            PeerPresence, PeerPresencePayload, Signature, WorkspaceId,
         };
-        let channel = ChannelId(uuid::Uuid::from_bytes([0x55; 16]));
+        let workspace = WorkspaceId::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555);
         let artifact = collab_types::document_artifact_id("so.tilo.notes", WORKSPACE, "notes");
         let device_cert = || Box::new(cert([1; 32], [2; 32]));
         vec![
@@ -342,7 +340,7 @@ mod tests {
                     workspace: WORKSPACE.into(),
                     frame: Box::new(MlsGovernanceFrame {
                         version: 2,
-                        channel,
+                        workspace,
                         previous_frame_digest: [7; 32],
                         epoch: 1,
                         action: MlsGovernanceAction::Commit {
@@ -364,7 +362,7 @@ mod tests {
                     workspace: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
-                        channel,
+                        workspace,
                         device: Ed25519PublicKey::from_bytes([2; 32]),
                         key_package: Vec::new(),
                         issued_at: 0,
@@ -420,22 +418,6 @@ mod tests {
                 Some(read()),
             ),
             (
-                NeighbourMsg::MlsRoutedAccessRequest {
-                    room: WORKSPACE.into(),
-                    request: Box::new(MlsAccessRequestV1 {
-                        version: 1,
-                        channel,
-                        device: Ed25519PublicKey::from_bytes([2; 32]),
-                        key_package: Vec::new(),
-                        issued_at: 0,
-                        signature: Signature::from_bytes([0xCD; 64]),
-                    }),
-                    route: Box::new(collab_types::ChannelRoute::new("so.tilo.notes", "notes")),
-                    delivery: 0,
-                },
-                Some(read()),
-            ),
-            (
                 NeighbourMsg::SurfaceKeyframeRequest {
                     peer: 1,
                     surface: 7,
@@ -478,7 +460,7 @@ mod tests {
             table.len(),
             "one message per variant, none repeated"
         );
-        assert_eq!(table.len(), 30, "every NeighbourMsg variant has an entry");
+        assert_eq!(table.len(), 29, "every NeighbourMsg variant has an entry");
         for (message, expected) in &table {
             assert_eq!(required_workspace_action(message), *expected, "{message:?}");
             // A retired generation is never admitted as a workspace's traffic.

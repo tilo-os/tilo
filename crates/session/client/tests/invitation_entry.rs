@@ -48,7 +48,7 @@ fn entering<'a>(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate_from_that_host() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspaces = host.relay.workspaces().unwrap();
@@ -171,7 +171,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_connection() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspaces = host.relay.workspaces().unwrap();
@@ -217,7 +217,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
             &host_device.cert,
             tilo_relay::workspaces::IssueInvitationRequest {
                 request_id: [9; 32],
-                role: tilo_peer_state::join::MemberRole::Editor,
+                role: tilo_peer_state::join::Role::Editor,
                 recipient_user_public_key: Some(user),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
@@ -253,8 +253,8 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
 #[tokio::test]
 async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_while_it_lasts() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host = enrol(&alice, "alice-home", DeviceCapabilities::host()).cert;
-    let other_host = enrol(&alice, "alice-other", DeviceCapabilities::host()).cert;
+    let host = enrol(&alice, "alice-home", DeviceCapabilities::member()).cert;
+    let other_host = enrol(&alice, "alice-other", DeviceCapabilities::member()).cert;
     let bob = new_key();
     let page = new_key();
     let now = 1_000_000_000_000_u64;

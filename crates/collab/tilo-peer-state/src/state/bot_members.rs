@@ -15,7 +15,9 @@ use tilo_automation::program::{parse_program, program_hash};
 use tilo_user_identity::DeviceCert;
 
 use super::delegates::{GovernedDelegateRow, holds_no_power};
-use super::{GovernedIdentity, StatePeer, SystemTime, err, governed_map, now_ns};
+use super::{
+    GovernedIdentity, Standing, StatePeer, SystemTime, err, governed_map, now_ns, person_of,
+};
 use crate::installation::Installation;
 use crate::workspace_membership::{BotDevice, BotInstall, BotRenewal};
 
@@ -174,7 +176,7 @@ impl StatePeer {
         let live = self.live_bot(&id)?;
         let mut identity = match (&live, &install.device) {
             (None, Some(device)) => {
-                if install.installation.installed_by != member.person {
+                if install.installation.installed_by != person_of(&member)? {
                     return Err("a bot is installed by the person installing it".into());
                 }
                 let authority = member.authority();
@@ -182,7 +184,7 @@ impl StatePeer {
                     .policy
                     .check_action(&authority, governance::INSTALL_BOT, &cx, false)
                     .map_err(|refusal| refusal.to_string())?;
-                let mut row = self.check_bot_device(device, &id, &member.person, now)?;
+                let mut row = self.check_bot_device(device, &id, person_of(&member)?, now)?;
                 row.installation = Some(install.installation.clone());
                 row.acting(&device.cert, &workspace, now_ns(now))
                     .map_err(|reason| reason.to_string())?;
@@ -281,10 +283,10 @@ impl StatePeer {
         let live = self.live_bot(id)?.ok_or("no such bot")?;
         let row = live.delegate.clone().ok_or("bot row missing")?;
         let installation = row.installation.clone().ok_or("bot row missing")?;
-        if installation.installed_by != member.person {
+        if installation.installed_by != person_of(&member)? {
             return Err("only the bot's installer renews it".into());
         }
-        let mut fresh = self.check_bot_device(&renewal.device, id, &member.person, now)?;
+        let mut fresh = self.check_bot_device(&renewal.device, id, person_of(&member)?, now)?;
         fresh.installation = Some(installation);
         fresh
             .acting(&renewal.device.cert, &self.core.workspace, now_ns(now))
@@ -427,12 +429,14 @@ impl StatePeer {
             let grants = bot::grants(
                 &self.core.workspace,
                 &request.entry,
-                &member.person,
+                person_of(&member)?,
                 &shortcut.grant,
             )
             .map_err(|error| error.to_string())?;
-            let asking =
-                tilo_action_policy::Standing::person(member.policy.clone(), member.person.clone());
+            let asking = tilo_action_policy::Standing::person(
+                member.policy.clone(),
+                person_of(&member)?.to_owned(),
+            );
             let authority = asking.authority();
             let cx = Context::at_time(now);
             for grant in &grants {
@@ -450,7 +454,7 @@ impl StatePeer {
         }
         let row = RequestedBot {
             request: request.clone(),
-            requested_by: member.person,
+            requested_by: person_of(&member)?.to_owned(),
             requested_at_ns: now_ns(now),
         };
         self.put_bot_request(&request.entry, Some(&row), key, now)
@@ -606,7 +610,7 @@ impl StatePeer {
         caller: &DeviceCert,
         action: &str,
         now: SystemTime,
-    ) -> Result<super::MemberAuthority, String> {
+    ) -> Result<Standing, String> {
         let member = self.membership(caller.device_public_key, now)?;
         member
             .policy
@@ -690,11 +694,11 @@ impl StatePeer {
             .as_ref()
             .and_then(|row| row.installation.clone())
             .ok_or("bot row missing")?;
-        if installation.installed_by == member.person {
+        if installation.installed_by == person_of(&member)? {
             return Err("the bot is already yours".into());
         }
-        installation.installed_by.clone_from(&member.person);
-        let mut fresh = self.check_bot_device(&adoption.device, id, &member.person, now)?;
+        person_of(&member)?.clone_into(&mut installation.installed_by);
+        let mut fresh = self.check_bot_device(&adoption.device, id, person_of(&member)?, now)?;
         fresh.installation = Some(installation);
         fresh
             .acting(&adoption.device.cert, &self.core.workspace, now_ns(now))

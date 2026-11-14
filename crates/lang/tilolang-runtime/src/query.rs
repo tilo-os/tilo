@@ -929,70 +929,74 @@ fn biggest_first(ty: &str) -> Option<bool> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_typed_search_reads_as_its_tokens() {
-        let q = find("Thread from:*@ycombinator.com is:unread received:-7d sort:-received in:t91 \"83(b)\" ~\"Y C\" jane@x.com").unwrap();
-        assert_eq!(q.ty.as_deref(), Some("Thread"));
-        assert_eq!(
-            q.terms,
-            vec![
-                Term::new("from", "*@ycombinator.com"),
-                Term::new("unread", "true"),
-                Term::new("received", "-7d"),
-                Term {
-                    key: None,
-                    value: "jane@x.com".into()
-                },
-            ]
-        );
-        assert_eq!(q.sort.as_deref(), Some("-received"));
-        assert_eq!(q.scope.as_deref(), Some("t91"));
-        assert_eq!(q.text, ["83(b)", "Y C"]);
-        assert!(find("from:").is_err());
-        assert!(find("\"open").is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_typed_search_reads_as_tokens_and_words;
 
-    /// A first word a search reads as a type's name is that type's resource when the type is the
-    /// one asked of, and a word to find when it is not: a notebook narrowed to "Monday" looks for
-    /// the note called that.
-    #[test]
-    fn a_word_that_names_another_type_is_searched_for() {
-        let note = TypeMeta {
-            id: "t1".into(),
-            name: "Note".into(),
-            doc: String::new(),
-            fields: vec![tilolang::meta::FieldMeta {
-                id: "title".into(),
-                name: "title".into(),
-                ty: "Text".into(),
-                merge: tilolang::types::MergeKind::Register,
+        phase a_typed_search_reads_as_its_tokens;
+        {
+            let q = find("Thread from:*@ycombinator.com is:unread received:-7d sort:-received in:t91 \"83(b)\" ~\"Y C\" jane@x.com").unwrap();
+            assert_eq!(q.ty.as_deref(), Some("Thread"));
+            assert_eq!(
+                q.terms,
+                vec![
+                    Term::new("from", "*@ycombinator.com"),
+                    Term::new("unread", "true"),
+                    Term::new("received", "-7d"),
+                    Term {
+                        key: None,
+                        value: "jane@x.com".into()
+                    },
+                ]
+            );
+            assert_eq!(q.sort.as_deref(), Some("-received"));
+            assert_eq!(q.scope.as_deref(), Some("t91"));
+            assert_eq!(q.text, ["83(b)", "Y C"]);
+            assert!(find("from:").is_err());
+            assert!(find("\"open").is_err());
+        }
+
+        phase a_word_that_names_another_type_is_searched_for;
+        // A first word a search reads as a type's name is that type's resource when the type is the
+        // one asked of, and a word to find when it is not: a notebook narrowed to "Monday" looks for
+        // the note called that.
+        {
+            let note = TypeMeta {
+                id: "t1".into(),
+                name: "Note".into(),
                 doc: String::new(),
-                default: None,
-            }],
-            search: tilolang::meta::SearchMeta::default(),
-            origin: None,
-            title: None,
-            untitled: None,
-        };
-        let clock = Clock::at("2026-01-01T00:00:00Z").unwrap().in_zone(0);
-        let resolve_with = |text: &str| {
-            let query = find(text).unwrap();
-            resolve(&query, &note, &[], &clock, None).unwrap().pred
-        };
-        assert_eq!(
-            resolve_with("Monday"),
-            Pred::Text("title".into(), "Monday".into()),
-            "a name that is not this type's text is searched for"
-        );
-        assert_eq!(
-            resolve_with("Note Monday"),
-            Pred::Text("title".into(), "Monday".into()),
-            "the type's own name narrows nothing further"
-        );
-        assert_eq!(
-            resolve_with("notes.Note"),
-            Pred::Const(true),
-            "naming the type alone finds every one of them"
-        );
+                fields: vec![tilolang::meta::FieldMeta {
+                    id: "title".into(),
+                    name: "title".into(),
+                    ty: "Text".into(),
+                    merge: tilolang::types::MergeKind::Register,
+                    doc: String::new(),
+                    default: None,
+                }],
+                search: tilolang::meta::SearchMeta::default(),
+                origin: None,
+                title: None,
+                untitled: None,
+            };
+            let clock = Clock::at("2026-01-01T00:00:00Z").unwrap().in_zone(0);
+            let resolve_with = |text: &str| {
+                let query = find(text).unwrap();
+                resolve(&query, &note, &[], &clock, None).unwrap().pred
+            };
+            assert_eq!(
+                resolve_with("Monday"),
+                Pred::Text("title".into(), "Monday".into()),
+                "a name that is not this type's text is searched for"
+            );
+            assert_eq!(
+                resolve_with("Note Monday"),
+                Pred::Text("title".into(), "Monday".into()),
+                "the type's own name narrows nothing further"
+            );
+            assert_eq!(
+                resolve_with("notes.Note"),
+                Pred::Const(true),
+                "naming the type alone finds every one of them"
+            );
+        }
     }
 }

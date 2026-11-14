@@ -214,40 +214,44 @@ mod flight_tests {
         json!({ "answer": { "windows": rows } })
     }
 
-    #[test]
-    fn presented_flight_window_must_be_new_matching_and_mapped() {
-        let baseline = windows(&json!([
-            { "window": 4, "app_id": "chatgpt", "frames": 8, "rect": [0, 0, 100, 100] }
-        ]));
-        let ids = window_ids(&baseline);
-        let current = windows(&json!([
-            { "window": 4, "app_id": "chatgpt", "frames": 9, "rect": [0, 0, 100, 100] },
-            { "window": 5, "app_id": "other", "frames": 1, "rect": [0, 0, 100, 100] },
-            { "window": 6, "app_id": "chatgpt", "frames": 0, "rect": null },
-            {
-                "window": 7,
-                "app_id": "chatgpt",
-                "frames": 2,
-                "rect": [10, 20, 300, 200]
-            }
-        ]));
+    tilo_test_env::scenario! {
+        fn flight_windows_are_found_and_followed;
 
-        let selected = matching_presented_window(&current, "chatgpt", &ids).expect("new window");
-        assert_eq!(selected.surface_id, 7);
-        assert_eq!(selected.frame_seq, 2);
-        let rect = selected.rect.expect("placement");
-        assert_eq!((rect.center_x(), rect.center_y()), (160.0, 120.0));
-    }
+        phase presented_flight_window_must_be_new_matching_and_mapped;
+        {
+            let baseline = windows(&json!([
+                { "window": 4, "app_id": "chatgpt", "frames": 8, "rect": [0, 0, 100, 100] }
+            ]));
+            let ids = window_ids(&baseline);
+            let current = windows(&json!([
+                { "window": 4, "app_id": "chatgpt", "frames": 9, "rect": [0, 0, 100, 100] },
+                { "window": 5, "app_id": "other", "frames": 1, "rect": [0, 0, 100, 100] },
+                { "window": 6, "app_id": "chatgpt", "frames": 0, "rect": null },
+                {
+                    "window": 7,
+                    "app_id": "chatgpt",
+                    "frames": 2,
+                    "rect": [10, 20, 300, 200]
+                }
+            ]));
 
-    #[test]
-    fn window_lookup_tracks_the_same_window_after_input() {
-        let value = windows(&json!([
-            { "window": 12, "app_id": "chatgpt", "frames": 41, "rect": [0, 0, 10, 10] },
-            { "window": 13, "app_id": "chatgpt", "frames": 99, "rect": [0, 0, 10, 10] }
-        ]));
+            let selected = matching_presented_window(&current, "chatgpt", &ids).expect("new window");
+            assert_eq!(selected.surface_id, 7);
+            assert_eq!(selected.frame_seq, 2);
+            let rect = selected.rect.expect("placement");
+            assert_eq!((rect.center_x(), rect.center_y()), (160.0, 120.0));
+        }
 
-        assert_eq!(matching_window(&value, 12).expect("window").frame_seq, 41);
-        assert!(matching_window(&value, 14).is_none());
+        phase window_lookup_tracks_the_same_window_after_input;
+        {
+            let value = windows(&json!([
+                { "window": 12, "app_id": "chatgpt", "frames": 41, "rect": [0, 0, 10, 10] },
+                { "window": 13, "app_id": "chatgpt", "frames": 99, "rect": [0, 0, 10, 10] }
+            ]));
+
+            assert_eq!(matching_window(&value, 12).expect("window").frame_seq, 41);
+            assert!(matching_window(&value, 14).is_none());
+        }
     }
 }
 
@@ -2089,7 +2093,17 @@ impl App {
         }
         let (uuid, nic_mac) = hypervisor::new_identity();
         let identified = matches!(plan.choice.adapter, "libvirt" | "whpx");
+        let lan = hypervisor::adapter(plan.choice.adapter)?
+            .joins_lan()
+            .then(|| {
+                if args.no_lan {
+                    crate::lan::OFF.to_owned()
+                } else {
+                    crate::lan::new_mac(|mac| lan_taken(&registry, mac))
+                }
+            });
         let entry = VmEntry {
+            lan,
             hypervisor: plan.choice.adapter.to_owned(),
             uuid: identified.then_some(uuid),
             nic_mac: identified.then_some(nic_mac),
@@ -2533,6 +2547,7 @@ impl App {
             });
         }
         let adapter = Self::adapter(&vm)?;
+        let vm = self.join_lan_now(adapter.as_ref(), vm)?;
         self.power_up(adapter.as_ref(), &vm)?;
         let started = Instant::now();
         let mut reachable = false;
@@ -5539,6 +5554,70 @@ fn yes(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+impl App {
+    /// [`App::join_lan`] by the host's own tools, saying so among the warnings.
+    fn join_lan_now(
+        &mut self,
+        adapter: &dyn Hypervisor,
+        vm: Resolved,
+    ) -> Result<Resolved, CliError> {
+        let mut runner = SystemRunner {
+            cwd: self.runner.cwd.clone(),
+        };
+        let (vm, joined) = self.join_lan(&mut runner, adapter, vm)?;
+        self.warnings.extend(joined);
+        Ok(vm)
+    }
+}
+
+/// Whether a VM in `registry` has `mac` on the host network ([`crate::lan`]).
+pub(crate) fn lan_taken(registry: &Registry, mac: &str) -> bool {
+    registry
+        .vms
+        .values()
+        .any(|entry| entry.lan.as_deref() == Some(mac))
+}
+
+impl App {
+    /// Put `vm` on the network this host's VMs share before it boots, when its adapter has one
+    /// and the VM, made before it, has no NIC there yet: give it a MAC, record it, and redefine
+    /// the VM with it. A VM tilo-vm did not make keeps its definition, and `lan = "off"` none.
+    /// Says so when it joined.
+    pub(crate) fn join_lan(
+        &self,
+        runner: &mut dyn Runner,
+        adapter: &dyn Hypervisor,
+        vm: Resolved,
+    ) -> Result<(Resolved, Option<String>), CliError> {
+        let own = sshkey::key_path(&self.registry_path, &vm.name);
+        if !adapter.joins_lan()
+            || vm.entry.lan.is_some()
+            || vm.entry.key.as_deref().map(Path::new) != Some(own.as_path())
+        {
+            return Ok((vm, None));
+        }
+        let mut registry = self.registry()?;
+        let mac = crate::lan::new_mac(|mac| lan_taken(&registry, mac));
+        let mut entry = vm.entry.clone();
+        entry.lan = Some(mac.clone());
+        let root_key = sshkey::read_public(&own)?;
+        let joined = Resolved { entry, ..vm };
+        let define = adapter.redefine(&joined.vm(), &root_key, runner)?;
+        run_all(runner, &define)?;
+        registry
+            .vms
+            .insert(joined.name.clone(), joined.entry.clone());
+        registry.save(&self.registry_path)?;
+        let note = format!(
+            "{} joined {} as {}: it was made before that network",
+            joined.name,
+            crate::lan::describe(),
+            crate::lan::address(&mac).map_or_else(String::new, |ip| ip.to_string())
+        );
+        Ok((joined, Some(note)))
+    }
+}
+
 fn entry_image(registry: &Registry, name: &str) -> Option<String> {
     registry.vms.get(name).and_then(|e| e.image.clone())
 }
@@ -6975,109 +7054,511 @@ mod host_layer_tests;
 mod tests {
     use super::*;
 
-    #[test]
-    fn daemon_import_receipt_refuses_wrong_layer_architecture_and_unknown_source() {
-        use tilo_vm_protocol::{LayerInfo, Provenance};
-        let hash = "ab".repeat(32);
-        let mut provenance = Provenance::local("vmd");
-        provenance.source_commit = Some("cd".repeat(20));
-        provenance.target = Some("x86_64-unknown-linux-gnu".into());
-        provenance.cargo_lock_hash = Some("ef".repeat(32));
-        provenance.toolchain = Some("rustc 1.97.1".into());
-        let receipt = |provenance| {
-            vec![LayerInfo {
-                hash: hash.clone(),
-                provenance,
-            }]
-        };
-        assert!(daemon_import_receipt(&receipt(provenance.clone()), &hash, "x86_64").is_ok());
-        assert!(
-            daemon_import_receipt(&receipt(provenance.clone()), &"ff".repeat(32), "x86_64")
-                .is_err()
-        );
-        assert!(daemon_import_receipt(&receipt(provenance.clone()), &hash, "aarch64").is_err());
-        let mut wrong = provenance.clone();
-        wrong.component = "shell".into();
-        assert!(daemon_import_receipt(&receipt(wrong), &hash, "x86_64").is_err());
-        for field in ["source", "lock", "toolchain"] {
-            let mut unknown = provenance.clone();
-            match field {
-                "source" => unknown.source_commit = None,
-                "lock" => unknown.cargo_lock_hash = Some(String::new()),
-                _ => unknown.toolchain = None,
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn machines_images_and_layers_are_checked_before_use;
+
+        phase daemon_import_receipt_refuses_wrong_layer_architecture_and_unknown_source;
+        {
+            use tilo_vm_protocol::{LayerInfo, Provenance};
+            let hash = "ab".repeat(32);
+            let mut provenance = Provenance::local("vmd");
+            provenance.source_commit = Some("cd".repeat(20));
+            provenance.target = Some("x86_64-unknown-linux-gnu".into());
+            provenance.cargo_lock_hash = Some("ef".repeat(32));
+            provenance.toolchain = Some("rustc 1.97.1".into());
+            let receipt = |provenance| {
+                vec![LayerInfo {
+                    hash: hash.clone(),
+                    provenance,
+                }]
+            };
+            assert!(daemon_import_receipt(&receipt(provenance.clone()), &hash, "x86_64").is_ok());
+            assert!(
+                daemon_import_receipt(&receipt(provenance.clone()), &"ff".repeat(32), "x86_64")
+                    .is_err()
+            );
+            assert!(daemon_import_receipt(&receipt(provenance.clone()), &hash, "aarch64").is_err());
+            let mut wrong = provenance.clone();
+            wrong.component = "shell".into();
+            assert!(daemon_import_receipt(&receipt(wrong), &hash, "x86_64").is_err());
+            for field in ["source", "lock", "toolchain"] {
+                let mut unknown = provenance.clone();
+                match field {
+                    "source" => unknown.source_commit = None,
+                    "lock" => unknown.cargo_lock_hash = Some(String::new()),
+                    _ => unknown.toolchain = None,
+                }
+                assert!(daemon_import_receipt(&receipt(unknown), &hash, "x86_64").is_err());
             }
-            assert!(daemon_import_receipt(&receipt(unknown), &hash, "x86_64").is_err());
         }
-    }
 
-    #[test]
-    fn image_build_runs_the_local_build_into_its_own_directory() {
-        let command = image_build_command(
-            Path::new("/w/os/dev/build-dev-image.sh"),
-            "localhost/tilo-vm:mine",
-            true,
-            Path::new("/w/target/tilo-vm-build"),
-        );
-        assert_eq!(command.program, "/w/os/dev/build-dev-image.sh");
-        let env = |key: &str| {
-            command
-                .env
-                .iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.as_str())
-        };
-        assert_eq!(env("TILO_DEV_DISK"), Some("1"));
-        assert_eq!(env("TILO_DEV_IMAGE"), Some("localhost/tilo-vm:mine"));
-        assert_eq!(env("TILO_DEV_BASE_BUILD"), Some("auto"));
-        assert_eq!(env("TILO_OUTPUT"), Some("/w/target/tilo-vm-build"));
-        let no_disk = image_build_command(
-            Path::new("/s"),
-            "localhost/tilo-vm:x",
-            false,
-            Path::new("/o"),
-        );
-        assert!(no_disk.env.contains(&("TILO_DEV_DISK".into(), "0".into())));
+        phase image_build_runs_the_local_build_into_its_own_directory;
+        {
+            let command = image_build_command(
+                Path::new("/w/os/dev/build-dev-image.sh"),
+                "localhost/tilo-vm:mine",
+                true,
+                Path::new("/w/target/tilo-vm-build"),
+            );
+            assert_eq!(command.program, "/w/os/dev/build-dev-image.sh");
+            let env = |key: &str| {
+                command
+                    .env
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.as_str())
+            };
+            assert_eq!(env("TILO_DEV_DISK"), Some("1"));
+            assert_eq!(env("TILO_DEV_IMAGE"), Some("localhost/tilo-vm:mine"));
+            assert_eq!(env("TILO_DEV_BASE_BUILD"), Some("auto"));
+            assert_eq!(env("TILO_OUTPUT"), Some("/w/target/tilo-vm-build"));
+            let no_disk = image_build_command(
+                Path::new("/s"),
+                "localhost/tilo-vm:x",
+                false,
+                Path::new("/o"),
+            );
+            assert!(no_disk.env.contains(&("TILO_DEV_DISK".into(), "0".into())));
 
-        assert_eq!(
-            build_scratch(Path::new("/w/target/tilo-vm")),
-            Path::new("/w/target/tilo-vm-build")
-        );
+            assert_eq!(
+                build_scratch(Path::new("/w/target/tilo-vm")),
+                Path::new("/w/target/tilo-vm-build")
+            );
 
-        let disk = image_disk_command(
-            Path::new("/w/os/dev/build-image.sh"),
-            "localhost/tilo-vm:mine",
-            Path::new("/w/target/tilo-vm-build"),
-        );
-        assert!(disk.env.contains(&("TILO_SKIP_BUILD".into(), "1".into())));
-        assert!(disk.env.contains(&("TILO_DISK_SIZE".into(), "64G".into())));
-        assert_eq!(
-            disk.env
-                .iter()
-                .find(|(key, _)| key == "TILO_ROOT_PODMAN_STORE")
-                .map(|(_, value)| PathBuf::from(value)),
-            Some(Path::new("/w/target/tilo-vm-build").join("root-podman"))
-        );
-        assert!(
-            disk.env
-                .contains(&("TILO_IMAGE".into(), "localhost/tilo-vm:mine".into()))
-        );
-        assert_eq!(
-            imageup::import_layout_command(
-                Path::new("/w/target/tilo-vm/image"),
-                "localhost/tilo-vm:latest"
+            let disk = image_disk_command(
+                Path::new("/w/os/dev/build-image.sh"),
+                "localhost/tilo-vm:mine",
+                Path::new("/w/target/tilo-vm-build"),
+            );
+            assert!(disk.env.contains(&("TILO_SKIP_BUILD".into(), "1".into())));
+            assert!(disk.env.contains(&("TILO_DISK_SIZE".into(), "64G".into())));
+            assert_eq!(
+                disk.env
+                    .iter()
+                    .find(|(key, _)| key == "TILO_ROOT_PODMAN_STORE")
+                    .map(|(_, value)| PathBuf::from(value)),
+                Some(Path::new("/w/target/tilo-vm-build").join("root-podman"))
+            );
+            assert!(
+                disk.env
+                    .contains(&("TILO_IMAGE".into(), "localhost/tilo-vm:mine".into()))
+            );
+            assert_eq!(
+                imageup::import_layout_command(
+                    Path::new("/w/target/tilo-vm/image"),
+                    "localhost/tilo-vm:latest"
+                )
+                .display(),
+                "skopeo copy --quiet oci:/w/target/tilo-vm/image:tilo-vm containers-storage:localhost/tilo-vm:latest"
+            );
+
+            let tree = tempfile::tempdir().unwrap();
+            let script = tree.path().join(imageup::BUILD_SCRIPT);
+            std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+            std::fs::write(&script, "").unwrap();
+            let deep = tree.path().join("crates/dev/tilo-vm");
+            std::fs::create_dir_all(&deep).unwrap();
+            assert_eq!(checkout_root(&deep).as_deref(), Some(tree.path()));
+            assert_eq!(checkout_root(Path::new("/")), None);
+        }
+
+        phase a_device_is_registered_with_its_own_key;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = app_with_empty_registry(dir.path());
+            let key = sshkey::key_path(&app.registry_path, "opi");
+            std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+            std::fs::write(&key, "private").unwrap();
+            std::fs::write(
+                sshkey::public_path(&key),
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA opi\n",
             )
-            .display(),
-            "skopeo copy --quiet oci:/w/target/tilo-vm/image:tilo-vm containers-storage:localhost/tilo-vm:latest"
-        );
+            .unwrap();
 
-        let tree = tempfile::tempdir().unwrap();
-        let script = tree.path().join(imageup::BUILD_SCRIPT);
-        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
-        std::fs::write(&script, "").unwrap();
-        let deep = tree.path().join("crates/dev/tilo-vm");
-        std::fs::create_dir_all(&deep).unwrap();
-        assert_eq!(checkout_root(&deep).as_deref(), Some(tree.path()));
-        assert_eq!(checkout_root(Path::new("/")), None);
+            {
+                let added = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
+                let registry = app.registry().unwrap();
+                let entry = &registry.vms["opi"];
+                assert_eq!(entry.hypervisor, "device");
+                assert_eq!(entry.ssh.as_deref(), Some("root@127.0.0.1:1"));
+                assert_eq!(entry.key.as_deref(), Some(key.to_str().unwrap()));
+                assert_eq!(registry.default.as_deref(), Some("opi"));
+                assert_eq!(added.data["reachable"], json!(false));
+                assert!(added.next.contains(&"tilo-vm vm use opi".to_owned()));
+                assert!(
+                    added
+                        .next
+                        .iter()
+                        .any(|n| n.starts_with("tilo-vm swap --slot device tilo-session")),
+                    "{:?}",
+                    added.next
+                );
+            }
+            {
+                let again = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
+                assert_eq!(again.data["added"], json!(false));
+                let error = app
+                    .vm_add(&AddArgs {
+                        key: Some(dir.path().join("missing")),
+                        ..add("pi2", "tester@10.0.0.109")
+                    })
+                    .err()
+                    .unwrap();
+                assert!(error.to_string().contains("no such file"), "{error}");
+                let error = app
+                    .vm_add(&AddArgs {
+                        grant_sudo: true,
+                        ..add("pi2", "root@10.0.0.109")
+                    })
+                    .err()
+                    .unwrap();
+                assert!(
+                    error.hint().contains("--ssh <user>@10.0.0.109"),
+                    "{}",
+                    error.hint()
+                );
+                assert!(app.vm_add(&add("pi2", "root@")).is_err());
+                let error = app
+                    .vm_create(CreateArgs {
+                        hypervisor: Some("device".into()),
+                        ..create_args("pi3")
+                    })
+                    .err()
+                    .unwrap();
+                assert!(
+                    error.hint().contains("tilo-vm vm add pi3"),
+                    "{}",
+                    error.hint()
+                );
+            }
+            {
+                let device = hypervisor::adapter("device").unwrap();
+                assert!(!device.powers_on());
+                assert!(hypervisor::adapter("libvirt").unwrap().powers_on());
+                let vm = app.resolve_vm(Some("opi")).unwrap();
+                assert!(device.start(&vm.vm()).is_empty());
+                assert_eq!(
+                    device.ssh_endpoint(&vm.vm(), &mut app.runner).unwrap(),
+                    SshEndpoint {
+                        user: "root".into(),
+                        host: "127.0.0.1".into(),
+                        port: 1
+                    }
+                );
+            }
+            {
+                let mut runner = SystemRunner { cwd: None };
+                let removed = app.vm_rm(&mut runner, "opi", false).unwrap();
+                assert!(
+                    removed.text.contains("the device itself is untouched"),
+                    "{}",
+                    removed.text
+                );
+                assert!(!key.exists());
+                assert!(app.registry().unwrap().vms.is_empty());
+            }
+        }
+
+        phase qemu_accepts_display_fixture_options_but_not_multiple_heads;
+        {
+            let mut args = create_args("dev");
+            args.resolution = Some("1920x1080".into());
+            args.gl = true;
+            assert!(App::validate_create_options("qemu", &args).is_ok());
+            assert!(App::validate_create_options("libvirt", &args).is_ok());
+            for adapter in ["whpx", "utm", "hyperv"] {
+                assert!(App::validate_create_options(adapter, &args).is_err());
+            }
+            args.heads = Some(2);
+            assert!(App::validate_create_options("qemu", &args).is_err());
+            assert!(App::validate_create_options("libvirt", &args).is_ok());
+        }
+
+        phase published_boot_json_cannot_redirect_to_an_unverified_kernel;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let tag = "main-1234567";
+            let arch = "aarch64";
+            let kernel = format!("tilo-vm-{tag}-{arch}-direct-Image");
+            let initrd = format!("tilo-vm-{tag}-{arch}-direct-initrd");
+            std::fs::write(dir.path().join(&kernel), b"kernel").unwrap();
+            std::fs::write(dir.path().join(&initrd), b"initrd").unwrap();
+            std::fs::write(dir.path().join("other-Image"), b"other").unwrap();
+            let path = dir
+                .path()
+                .join(format!("tilo-vm-{tag}-{arch}-direct-boot.json"));
+            let json = |name: &str| {
+                serde_json::json!({
+                    "kernel": name,
+                    "initrd": initrd,
+                    "cmdline": "root=tilo-auto console=ttyS0",
+                    "loader_partuuid": "fcdfc623-0563-4f91-9db8-f2b87b98b3ce",
+                })
+            };
+            std::fs::write(&path, json(&kernel).to_string()).unwrap();
+            assert!(read_published_direct_boot(&path, tag, arch).is_ok());
+            std::fs::write(&path, json("other-Image").to_string()).unwrap();
+            assert!(read_published_direct_boot(&path, tag, arch).is_err());
+
+            let mut args = create_args("dev");
+            args.direct_boot_bundle = Some(path.display().to_string());
+            assert!(App::validate_create_options("whpx", &args).is_err());
+            args.image = Some("local.qcow2".into());
+            assert!(App::validate_create_options("whpx", &args).is_ok());
+        }
+
+        phase preflight_checks_hypervisor_image_disks_and_worktree_rules;
+        {
+            // Explicit TCG must work without KVM, whether libvirt is selected
+            // directly or by the Linux default. Native creation still fails.
+            {
+                use crate::host::HostKind;
+                use crate::host::tests::{LIBVIRT, linux};
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_empty_registry(dir.path());
+                std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
+                let mut facts = linux(HostKind::Dnf, LIBVIRT);
+                facts.kvm = Some(false);
+                facts.session = Some(Ok(vec![crate::host::Guest {
+                    arch: "x86_64".into(),
+                    domains: vec!["qemu".into()],
+                }]));
+                let image = dir.path().join("base.qcow2");
+                std::fs::write(&image, b"QFI\xfb\0\0\0\x03").unwrap();
+                let mut args = create_args("dev");
+                args.image = Some(image.display().to_string());
+                args.disk = Some(dir.path().join("child.qcow2").display().to_string());
+                assert!(matches!(
+                    app.preflight_create(&facts, &args, "x86_64"),
+                    Err(CliError::NoHypervisor(_))
+                ));
+                args.emulated = true;
+                for adapter in [None, Some("libvirt".to_owned())] {
+                    args.hypervisor = adapter;
+                    let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
+                    assert_eq!(plan.choice.adapter, "libvirt");
+                }
+                facts.session = Some(Ok(vec![crate::host::Guest {
+                    arch: "x86_64".into(),
+                    domains: vec!["kvm".into()],
+                }]));
+                assert!(matches!(
+                    app.preflight_create(&facts, &args, "x86_64"),
+                    Err(CliError::NoHypervisor(_))
+                ));
+                assert!(!dir.path().join("child.qcow2").exists());
+            }
+
+            {
+                use crate::host::HostKind;
+                use crate::host::tests::linux;
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_empty_registry(dir.path());
+                // Only an Android SDK's qemu-img: refused, and nothing downloaded
+                // (no --image, so the next step would have been the network).
+                let facts = linux(
+                    HostKind::RpmOstree,
+                    &[("qemu-img", "/home/u/Android/Sdk/emulator/qemu-img")],
+                );
+                let error = app
+                    .preflight_create(&facts, &create_args("dev"), "x86_64")
+                    .err()
+                    .unwrap();
+                assert!(matches!(error, CliError::NoHypervisor(_)), "{error}");
+                assert!(error.to_string().contains("libvirt"), "{error}");
+                assert!(
+                    error
+                        .hint()
+                        .contains("rpm-ostree install libvirt-daemon-kvm"),
+                    "{}",
+                    error.hint()
+                );
+                assert!(!dir.path().join("vms.toml").exists());
+            }
+
+            {
+                use crate::host::HostKind;
+                use crate::host::tests::{LIBVIRT, linux};
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_empty_registry(dir.path());
+                // The checks under test are the image and the disk path, not this
+                // host's free space (a small /tmp would otherwise fail the floor).
+                std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
+                let facts = linux(HostKind::Dnf, LIBVIRT);
+
+                let mut args = create_args("dev");
+                args.image = Some(dir.path().join("missing.qcow2").display().to_string());
+                let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+                assert!(matches!(error, CliError::ImageNotFound { .. }), "{error}");
+
+                let image = dir.path().join("tilo-vm.qcow2");
+                std::fs::write(&image, "").unwrap();
+                args.image = Some(image.display().to_string());
+                let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+                assert!(matches!(error, CliError::ImageFormat { .. }), "{error}");
+                std::fs::write(&image, b"QFI\xfb\0\0\0\x03").unwrap();
+                let disk = dir.path().join("dev.qcow2");
+                std::fs::write(&disk, "").unwrap();
+                args.image = Some(image.display().to_string());
+                args.disk = Some(disk.display().to_string());
+                let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+                assert!(matches!(error, CliError::DiskExists { .. }), "{error}");
+
+                args.disk = Some(dir.path().join("vms/new.qcow2").display().to_string());
+                let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
+                assert_eq!(plan.choice.adapter, "libvirt");
+                assert_eq!(plan.choice.tool("qemu-img"), Some("/usr/bin/qemu-img"));
+                let text = plan.describe();
+                assert!(text.contains("qemu:///session"), "{text}");
+                assert!(text.contains("tilo-vm.qcow2"), "{text}");
+
+                args.arch = Some("aarch64".into());
+                args.emulated = true;
+                let error = app
+                    .preflight_create(&facts, &args, "aarch64")
+                    .err()
+                    .unwrap();
+                assert!(matches!(error, CliError::NoHypervisor(_)), "{error}");
+                assert!(error.to_string().contains("no aarch64 guest"), "{error}");
+                assert!(
+                    error.hint().contains("qemu-system-aarch64"),
+                    "{}",
+                    error.hint()
+                );
+            }
+
+            {
+                use crate::host::HostKind;
+                use crate::host::tests::{LIBVIRT, linux};
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_empty_registry(dir.path());
+                std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
+                let facts = linux(HostKind::Dnf, LIBVIRT);
+                let image = dir.path().join("disk.raw");
+                raw_disk(&image);
+                let esp = dir.path().join("override.raw");
+                let mut args = create_args("esp1");
+                args.image = Some(image.display().to_string());
+                args.disk = Some(dir.path().join("vms/esp1.qcow2").display().to_string());
+                args.boot_esp = Some(esp.display().to_string());
+
+                let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+                assert!(
+                    matches!(&error, CliError::ImageFormat { flag, .. } if flag == "--boot-esp"),
+                    "{error}"
+                );
+                assert!(
+                    error.hint().contains("make-boot-esp.sh"),
+                    "{}",
+                    error.hint()
+                );
+                std::fs::write(&esp, b"QFI\xfb\0\0\0\x03").unwrap();
+                let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+                assert!(error.to_string().contains("is qcow2"), "{error}");
+
+                raw_disk(&esp);
+                let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
+                assert_eq!(plan.image_format, Some(image::Format::Raw));
+                assert!(plan.import.is_none(), "a local path is used in place");
+                assert_eq!(plan.boot_esp.as_deref(), Some(esp.as_path()));
+                let text = plan.describe();
+                assert!(text.contains("(raw)"), "{text}");
+                assert!(text.contains("boot ESP"), "{text}");
+            }
+
+            {
+                use crate::host::HostKind;
+                use crate::host::tests::linux;
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_empty_registry(dir.path());
+                let facts = linux(
+                    HostKind::Dnf,
+                    &[
+                        ("qemu-system-x86_64", "/usr/bin/qemu-system-x86_64"),
+                        ("qemu-img", "/usr/bin/qemu-img"),
+                        ("bash", "/usr/bin/bash"),
+                    ],
+                );
+                let mut args = create_args("ci");
+                args.hypervisor = Some("qemu".into());
+                let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+                assert!(
+                    error.to_string().contains("outside a Tilo worktree"),
+                    "{error}"
+                );
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_empty_registry(dir.path());
+                let vms = dir.path().join("vms");
+                std::fs::create_dir_all(&vms).unwrap();
+                let disk = vms.join("try1.qcow2");
+                let sidecars = hypervisor::vm_files(&disk.display().to_string());
+                for file in &sidecars {
+                    std::fs::write(file, "x").unwrap();
+                }
+                let key = sshkey::key_path(&app.registry_path, "try1");
+                std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+                for file in [
+                    key.clone(),
+                    sshkey::public_path(&key),
+                    PathBuf::from(remote::known_hosts_path(&key.display().to_string())),
+                ] {
+                    std::fs::write(file, "k").unwrap();
+                }
+                let image = dir.path().join("base.raw");
+                raw_disk(&image);
+                let registry = format!(
+                    "default = \"try1\"\n[vms.try1]\nhypervisor = \"qemu\"\nimage = {image:?}\nimage_format = \"raw\"\ndisk = {disk:?}\nkey = {key:?}\n\n[vms.shared]\nhypervisor = \"libvirt\"\nssh = \"root@shared:22\"\nkey = \"/home/u/.ssh/id_ed25519\"\n",
+                    image = image.display().to_string(),
+                    disk = disk.display().to_string(),
+                    key = key.display().to_string(),
+                );
+                std::fs::write(&app.registry_path, registry).unwrap();
+
+                let outcome = app
+                    .run(Some(Command::Vm(VmCommand::Rm {
+                        name: "try1".into(),
+                        force: false,
+                    })))
+                    .unwrap();
+                assert!(outcome.text.contains("deleted"), "{}", outcome.text);
+                assert!(outcome.text.contains("kept its image"), "{}", outcome.text);
+                for file in &sidecars {
+                    assert!(!Path::new(file).exists(), "{file} survived");
+                }
+                assert!(!key.exists() && !sshkey::public_path(&key).exists());
+                assert!(image.exists(), "the image is not the VM's to delete");
+                let registry = app.registry().unwrap();
+                assert!(!registry.vms.contains_key("try1"));
+                assert_eq!(registry.default, None);
+
+                // A hand-registered VM is only forgotten: no hypervisor command runs
+                // (libvirt's would need virsh) and its key is the user's.
+                let outcome = app
+                    .run(Some(Command::Vm(VmCommand::Rm {
+                        name: "shared".into(),
+                        force: false,
+                    })))
+                    .unwrap();
+                assert!(outcome.text.contains("untouched"), "{}", outcome.text);
+                assert!(app.registry().unwrap().vms.is_empty());
+
+                let error = app
+                    .run(Some(Command::Vm(VmCommand::Rm {
+                        name: "gone".into(),
+                        force: false,
+                    })))
+                    .err()
+                    .unwrap();
+                assert!(matches!(error, CliError::UnknownVm { .. }), "{error}");
+            }
+        }
     }
 
     fn result(policy: Policy, actions: Vec<Action>, changed: bool) -> ApplyResult {
@@ -7093,663 +7574,702 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn commands_describe_their_consequence_and_redirect_where_needed() {
-        {
-            let manifest = Manifest::parse(
-                "[[component]]\nname = \"installer\"\nkind = \"boot\"\nscope = \"vm\"\nscenario = \"os/dev/test-installer-cycle.sh\"\n\n[[component]]\nname = \"uki\"\nkind = \"boot\"\nscope = \"vm\"\nscenario = \"os/dev/test-measured-boot.sh\"\n",
-            )
-            .unwrap();
-            let installer = scenario_driver(manifest.get("installer").unwrap());
-            assert!(
-                installer.starts_with("tilo-vm scenario install"),
-                "{installer}"
-            );
-            let error = CliError::BootComponent {
-                name: "installer".into(),
-                driver: installer,
-            };
-            assert!(
-                error.hint().contains("tilo-vm scenario install"),
-                "{}",
-                error.hint()
-            );
-            assert_eq!(
-                scenario_driver(manifest.get("uki").unwrap()),
-                "os/dev/test-measured-boot.sh"
-            );
-        }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn the_cli_explains_itself_and_its_errors;
 
+        phase commands_describe_their_consequence_and_redirect_where_needed;
         {
-            let mut swapped = result(Policy::Reboot, vec![Action::SysextRefresh], true);
-            swapped.boot = Some(tilo_vm_protocol::BootChange {
-                kver: Some("7.2.5+dev".into()),
-                entry: Some("tilo-vm-7.2.5+dev-0123456789ab.conf".into()),
-                fallback: Some("fedora.conf".into()),
-                loader: "systemd-boot".into(),
-                initramfs: Some("dracut".into()),
-                initramfs_seconds: 30.0,
-            });
-            let text = describe_apply(&swapped);
-            assert!(
-                text.contains(
-                    "kernel 7.2.5+dev is the next boot (tilo-vm-7.2.5+dev-0123456789ab.conf)"
-                ),
-                "{text}"
-            );
-            assert!(
-                text.ends_with("it takes effect when the VM reboots"),
-                "{text}"
-            );
-            let mut back = result(Policy::Reboot, vec![], true);
-            back.boot = Some(tilo_vm_protocol::BootChange {
-                kver: None,
-                entry: Some("fedora.conf".into()),
-                fallback: None,
-                loader: "systemd-boot".into(),
-                initramfs: None,
-                initramfs_seconds: 0.0,
-            });
-            assert!(
-                describe_apply(&back)
-                    .contains("the image's kernel is the default boot again (fedora.conf)")
-            );
-        }
-
-        {
-            assert_eq!(
-                describe_apply(&result(Policy::SessionRestart, vec![], true)),
-                "generation 4 applied to slot a; session restarted (logout, user manager restart, login)"
-            );
-            assert!(
-                describe_apply(&result(Policy::NoRestart, vec![], false)).contains("nothing to do")
-            );
-            let mut login = result(
-                Policy::SessionRestart,
-                vec![
-                    Action::SysextRefresh,
-                    Action::RestartDesktop { user: "me".into() },
-                ],
-                true,
-            );
-            login.slot = "device".into();
-            assert_eq!(
-                describe_apply(&login),
-                "generation 4 applied to slot device; merged into the machine's /usr with \
-                 systemd-sysext; me's desktop restarted in place (still logged in; apps reopen)"
-            );
-            let vm = describe_apply(&result(
-                Policy::VmRefresh,
-                vec![
-                    Action::SysextRefresh,
-                    Action::RestartUnit {
-                        unit: "fs.service".into(),
-                    },
-                    Action::RestartUnit {
-                        unit: "user@60001.service".into(),
-                    },
-                    Action::StartUnit {
-                        unit: "tilo-vm-session@b.service".into(),
-                    },
-                ],
-                true,
-            ));
-            assert!(vm.contains("restarted fs.service;"), "{vm}");
-            assert!(vm.contains("every slot so they see it: b"), "{vm}");
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut app = app_with_empty_registry(dir.path());
-            let ssh = |raw: bool, line: &str| {
-                Command::Vm(VmCommand::Ssh {
-                    raw,
-                    name: None,
-                    vm: None,
-                    command: line.split(' ').map(str::to_owned).collect(),
-                })
-            };
-            let error = app
-                .run(Some(ssh(false, "cp shell /usr/bin/shell")))
-                .err()
+            {
+                let manifest = Manifest::parse(
+                    "[[component]]\nname = \"installer\"\nkind = \"boot\"\nscope = \"vm\"\nscenario = \"os/dev/test-installer-cycle.sh\"\n\n[[component]]\nname = \"uki\"\nkind = \"boot\"\nscope = \"vm\"\nscenario = \"os/dev/test-measured-boot.sh\"\n",
+                )
                 .unwrap();
-            assert!(matches!(error, CliError::RawWrite { .. }), "{error}");
-            assert!(!error.to_string().contains("deploy"), "{error}");
-            assert!(
-                error.to_string().contains("writes /usr/bin/shell"),
-                "{error}"
-            );
-            assert!(error.hint().contains("--raw"), "{}", error.hint());
-            for command in [
-                ssh(false, "systemctl status tilo-vmd --no-pager"),
-                ssh(false, "tilo-vmd --version"),
-                ssh(true, "cp shell /usr/bin/shell"),
-            ] {
-                let error = app.run(Some(command)).err().unwrap();
+                let installer = scenario_driver(manifest.get("installer").unwrap());
                 assert!(
-                    matches!(error, CliError::NoVm { .. } | CliError::UnknownVm { .. }),
-                    "{error}"
+                    installer.starts_with("tilo-vm scenario install"),
+                    "{installer}"
+                );
+                let error = CliError::BootComponent {
+                    name: "installer".into(),
+                    driver: installer,
+                };
+                assert!(
+                    error.hint().contains("tilo-vm scenario install"),
+                    "{}",
+                    error.hint()
+                );
+                assert_eq!(
+                    scenario_driver(manifest.get("uki").unwrap()),
+                    "os/dev/test-measured-boot.sh"
                 );
             }
-        }
-    }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn status_and_errors_explain_what_is_wrong_and_what_to_do() {
-        {
-            let unreachable = Err(CliError::Unreachable {
-                vm: "dev".into(),
-                detail: "connection refused".into(),
-                debug: Vec::new(),
-            });
-            assert_eq!(
-                start_connect_disposition(&unreachable),
-                StartConnectDisposition::Retry
-            );
-            let missing = Err(CliError::DaemonMissing {
-                vm: "dev".into(),
-                bootc: Some(false),
-            });
-            assert_eq!(
-                start_connect_disposition(&missing),
-                StartConnectDisposition::NoDaemon
-            );
-            let mismatch = Err(CliError::ProtocolMismatch {
-                vm: "dev".into(),
-                client: 5,
-                daemon: 3,
-                bootc: Some(false),
-            });
-            assert_eq!(
-                start_connect_disposition(&mismatch),
-                StartConnectDisposition::Fail
-            );
-            let refused = Err(CliError::RootKeyRefused {
-                vm: "dev".into(),
-                key: "/tmp/key".into(),
-                install: "install key".into(),
-                credentials: false,
-            });
-            assert_eq!(
-                start_connect_disposition(&refused),
-                StartConnectDisposition::Fail
-            );
-        }
-
-        {
-            let debug = [
-                "tilo-vm vm shot dev".to_owned(),
-                "tilo-vm vm serial dev".to_owned(),
-            ];
-            let unreachable = CliError::Unreachable {
-                vm: "dev".into(),
-                detail: "Connection refused".into(),
-                debug: debug.to_vec(),
-            };
-            let off = connect_failure("dev", Some(false), &debug, &unreachable);
-            assert_eq!(off.state, "off");
-            assert!(off.summary.contains("shut off"), "{}", off.summary);
-            assert_eq!(off.next, ["tilo-vm vm start dev"]);
-            assert!(!off.text(&unreachable).contains("Connection refused"));
-
-            let silent = connect_failure("dev", Some(true), &debug, &unreachable);
-            assert_eq!(silent.state, "no-ssh");
-            assert!(
-                !silent.next.iter().any(|n| n.contains("vm start")),
-                "{:?}",
-                silent.next
-            );
-            assert!(silent.next.contains(&"tilo-vm vm serial dev".to_owned()));
-            assert!(silent.next.contains(&"tilo-vm doctor".to_owned()));
-            let unknown = connect_failure("dev", None, &debug, &unreachable);
-            assert!(unknown.next[0].starts_with("tilo-vm vm start dev"));
-
-            let missing = CliError::DaemonMissing {
-                vm: "dev".into(),
-                bootc: Some(false),
-            };
-            let no_daemon = connect_failure("dev", Some(true), &debug, &missing);
-            assert_eq!(no_daemon.state, "no-daemon");
-            assert!(no_daemon.ssh);
-            assert!(!no_daemon.next.iter().any(|n| n.contains("vm upgrade")));
-
-            let older_vm = |bootc| CliError::ProtocolMismatch {
-                vm: "dev".into(),
-                client: 3,
-                daemon: 2,
-                bootc,
-            };
-            let incompatible = connect_failure("dev", Some(true), &debug, &older_vm(Some(true)));
-            assert_eq!(incompatible.state, "incompatible");
-            assert!(incompatible.ssh);
-            assert!(
-                incompatible.summary.contains("protocol 2"),
-                "{}",
-                incompatible.summary
-            );
-            assert!(
-                incompatible.summary.contains("speaks 3"),
-                "{}",
-                incompatible.summary
-            );
-            assert_eq!(incompatible.next, ["tilo-vm vm upgrade dev"]);
-            assert!(!incompatible.next.iter().any(|n| n.contains("vm start")));
-            let no_bootc = connect_failure("dev", None, &debug, &older_vm(Some(false)));
-            assert!(
-                !no_bootc.next.iter().any(|n| n.contains("vm upgrade")),
-                "{:?}",
-                no_bootc.next
-            );
-            let older_tool = CliError::ProtocolMismatch {
-                vm: "dev".into(),
-                client: 2,
-                daemon: 3,
-                bootc: Some(true),
-            };
-            assert_eq!(
-                connect_failure("dev", Some(true), &debug, &older_tool).next,
-                ["cargo build -p tilo-vm"]
-            );
-        }
-
-        {
-            struct Guest {
-                obeys: &'static str,
-                ran: Vec<String>,
-                down: bool,
+            {
+                let mut swapped = result(Policy::Reboot, vec![Action::SysextRefresh], true);
+                swapped.boot = Some(tilo_vm_protocol::BootChange {
+                    kver: Some("7.2.5+dev".into()),
+                    entry: Some("tilo-vm-7.2.5+dev-0123456789ab.conf".into()),
+                    fallback: Some("fedora.conf".into()),
+                    loader: "systemd-boot".into(),
+                    initramfs: Some("dracut".into()),
+                    initramfs_seconds: 30.0,
+                });
+                let text = describe_apply(&swapped);
+                assert!(
+                    text.contains(
+                        "kernel 7.2.5+dev is the next boot (tilo-vm-7.2.5+dev-0123456789ab.conf)"
+                    ),
+                    "{text}"
+                );
+                assert!(
+                    text.ends_with("it takes effect when the VM reboots"),
+                    "{text}"
+                );
+                let mut back = result(Policy::Reboot, vec![], true);
+                back.boot = Some(tilo_vm_protocol::BootChange {
+                    kver: None,
+                    entry: Some("fedora.conf".into()),
+                    fallback: None,
+                    loader: "systemd-boot".into(),
+                    initramfs: None,
+                    initramfs_seconds: 0.0,
+                });
+                assert!(
+                    describe_apply(&back)
+                        .contains("the image's kernel is the default boot again (fedora.conf)")
+                );
             }
-            impl Runner for Guest {
-                fn output(
-                    &mut self,
-                    command: &CommandLine,
-                ) -> Result<crate::hypervisor::Output, CliError> {
-                    let line = command.display();
-                    if line.contains("--state-running") {
-                        let stdout = if self.down { "" } else { "dev\n" };
-                        return Ok(crate::hypervisor::Output {
-                            success: true,
-                            status: "exit status: 0".into(),
-                            stdout: stdout.into(),
-                            stderr: String::new(),
-                        });
-                    }
-                    if line.contains("Get-Process -Id") && !line.contains("TcpClient") {
-                        return Ok(crate::hypervisor::Output {
-                            success: true,
-                            status: "exit status: 0".into(),
-                            stdout: if self.down { "no" } else { "yes" }.into(),
-                            stderr: String::new(),
-                        });
-                    }
-                    self.down |= line.contains(self.obeys);
-                    self.ran.push(line);
-                    Ok(crate::hypervisor::Output {
-                        success: true,
-                        status: "exit status: 0".into(),
-                        stdout: String::new(),
-                        stderr: String::new(),
+
+            {
+                assert_eq!(
+                    describe_apply(&result(Policy::SessionRestart, vec![], true)),
+                    "generation 4 applied to slot a; session restarted (logout, user manager restart, login)"
+                );
+                assert!(
+                    describe_apply(&result(Policy::NoRestart, vec![], false)).contains("nothing to do")
+                );
+                let mut login = result(
+                    Policy::SessionRestart,
+                    vec![
+                        Action::SysextRefresh,
+                        Action::RestartDesktop { user: "me".into() },
+                    ],
+                    true,
+                );
+                login.slot = "device".into();
+                assert_eq!(
+                    describe_apply(&login),
+                    "generation 4 applied to slot device; merged into the machine's /usr with \
+                 systemd-sysext; me's desktop restarted in place (still logged in; apps reopen)"
+                );
+                let vm = describe_apply(&result(
+                    Policy::VmRefresh,
+                    vec![
+                        Action::SysextRefresh,
+                        Action::RestartUnit {
+                            unit: "fs.service".into(),
+                        },
+                        Action::RestartUnit {
+                            unit: "user@60001.service".into(),
+                        },
+                        Action::StartUnit {
+                            unit: "tilo-vm-session@b.service".into(),
+                        },
+                    ],
+                    true,
+                ));
+                assert!(vm.contains("restarted fs.service;"), "{vm}");
+                assert!(vm.contains("every slot so they see it: b"), "{vm}");
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let mut app = app_with_empty_registry(dir.path());
+                let ssh = |raw: bool, line: &str| {
+                    Command::Vm(VmCommand::Ssh {
+                        raw,
+                        name: None,
+                        vm: None,
+                        command: line.split(' ').map(str::to_owned).collect(),
                     })
-                }
-                fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
-                    self.output(command).map(|o| o.success)
+                };
+                let error = app
+                    .run(Some(ssh(false, "cp shell /usr/bin/shell")))
+                    .err()
+                    .unwrap();
+                assert!(matches!(error, CliError::RawWrite { .. }), "{error}");
+                assert!(!error.to_string().contains("deploy"), "{error}");
+                assert!(
+                    error.to_string().contains("writes /usr/bin/shell"),
+                    "{error}"
+                );
+                assert!(error.hint().contains("--raw"), "{}", error.hint());
+                for command in [
+                    ssh(false, "systemctl status tilo-vmd --no-pager"),
+                    ssh(false, "tilo-vmd --version"),
+                    ssh(true, "cp shell /usr/bin/shell"),
+                ] {
+                    let error = app.run(Some(command)).err().unwrap();
+                    assert!(
+                        matches!(error, CliError::NoVm { .. } | CliError::UnknownVm { .. }),
+                        "{error}"
+                    );
                 }
             }
-            let entry = VmEntry {
-                hypervisor: "libvirt".into(),
-                ..VmEntry::default()
-            };
-            let vm = Vm {
-                name: "dev",
-                entry: &entry,
-            };
-            let graces = StopGraces {
-                acpi: Duration::from_millis(30),
-                guest: Duration::from_millis(30),
-                hard: Duration::from_millis(30),
-                poll: Duration::from_millis(1),
-            };
-            let poweroff = CommandLine::new("ssh", &["dev", "systemctl", "poweroff"]);
-            let stop = |obeys: &'static str, poweroff: Option<&CommandLine>| {
-                let mut guest = Guest {
-                    obeys,
+        }
+
+        phase status_and_errors_explain_what_is_wrong_and_what_to_do;
+        {
+            {
+                let unreachable = Err(CliError::Unreachable {
+                    vm: "dev".into(),
+                    detail: "connection refused".into(),
+                    debug: Vec::new(),
+                });
+                assert_eq!(
+                    start_connect_disposition(&unreachable),
+                    StartConnectDisposition::Retry
+                );
+                let missing = Err(CliError::DaemonMissing {
+                    vm: "dev".into(),
+                    bootc: Some(false),
+                });
+                assert_eq!(
+                    start_connect_disposition(&missing),
+                    StartConnectDisposition::NoDaemon
+                );
+                let mismatch = Err(CliError::ProtocolMismatch {
+                    vm: "dev".into(),
+                    client: 5,
+                    daemon: 3,
+                    bootc: Some(false),
+                });
+                assert_eq!(
+                    start_connect_disposition(&mismatch),
+                    StartConnectDisposition::Fail
+                );
+                let refused = Err(CliError::RootKeyRefused {
+                    vm: "dev".into(),
+                    key: "/tmp/key".into(),
+                    install: "install key".into(),
+                    credentials: false,
+                });
+                assert_eq!(
+                    start_connect_disposition(&refused),
+                    StartConnectDisposition::Fail
+                );
+            }
+
+            {
+                let debug = [
+                    "tilo-vm vm shot dev".to_owned(),
+                    "tilo-vm vm serial dev".to_owned(),
+                ];
+                let unreachable = CliError::Unreachable {
+                    vm: "dev".into(),
+                    detail: "Connection refused".into(),
+                    debug: debug.to_vec(),
+                };
+                let off = connect_failure("dev", Some(false), &debug, &unreachable);
+                assert_eq!(off.state, "off");
+                assert!(off.summary.contains("shut off"), "{}", off.summary);
+                assert_eq!(off.next, ["tilo-vm vm start dev"]);
+                assert!(!off.text(&unreachable).contains("Connection refused"));
+
+                let silent = connect_failure("dev", Some(true), &debug, &unreachable);
+                assert_eq!(silent.state, "no-ssh");
+                assert!(
+                    !silent.next.iter().any(|n| n.contains("vm start")),
+                    "{:?}",
+                    silent.next
+                );
+                assert!(silent.next.contains(&"tilo-vm vm serial dev".to_owned()));
+                assert!(silent.next.contains(&"tilo-vm doctor".to_owned()));
+                let unknown = connect_failure("dev", None, &debug, &unreachable);
+                assert!(unknown.next[0].starts_with("tilo-vm vm start dev"));
+
+                let missing = CliError::DaemonMissing {
+                    vm: "dev".into(),
+                    bootc: Some(false),
+                };
+                let no_daemon = connect_failure("dev", Some(true), &debug, &missing);
+                assert_eq!(no_daemon.state, "no-daemon");
+                assert!(no_daemon.ssh);
+                assert!(!no_daemon.next.iter().any(|n| n.contains("vm upgrade")));
+
+                let older_vm = |bootc| CliError::ProtocolMismatch {
+                    vm: "dev".into(),
+                    client: 3,
+                    daemon: 2,
+                    bootc,
+                };
+                let incompatible = connect_failure("dev", Some(true), &debug, &older_vm(Some(true)));
+                assert_eq!(incompatible.state, "incompatible");
+                assert!(incompatible.ssh);
+                assert!(
+                    incompatible.summary.contains("protocol 2"),
+                    "{}",
+                    incompatible.summary
+                );
+                assert!(
+                    incompatible.summary.contains("speaks 3"),
+                    "{}",
+                    incompatible.summary
+                );
+                assert_eq!(incompatible.next, ["tilo-vm vm upgrade dev"]);
+                assert!(!incompatible.next.iter().any(|n| n.contains("vm start")));
+                let no_bootc = connect_failure("dev", None, &debug, &older_vm(Some(false)));
+                assert!(
+                    !no_bootc.next.iter().any(|n| n.contains("vm upgrade")),
+                    "{:?}",
+                    no_bootc.next
+                );
+                let older_tool = CliError::ProtocolMismatch {
+                    vm: "dev".into(),
+                    client: 2,
+                    daemon: 3,
+                    bootc: Some(true),
+                };
+                assert_eq!(
+                    connect_failure("dev", Some(true), &debug, &older_tool).next,
+                    ["cargo build -p tilo-vm"]
+                );
+            }
+
+            {
+                struct Guest {
+                    obeys: &'static str,
+                    ran: Vec<String>,
+                    down: bool,
+                }
+                impl Runner for Guest {
+                    fn output(
+                        &mut self,
+                        command: &CommandLine,
+                    ) -> Result<crate::hypervisor::Output, CliError> {
+                        let line = command.display();
+                        if line.contains("--state-running") {
+                            let stdout = if self.down { "" } else { "dev\n" };
+                            return Ok(crate::hypervisor::Output {
+                                success: true,
+                                status: "exit status: 0".into(),
+                                stdout: stdout.into(),
+                                stderr: String::new(),
+                            });
+                        }
+                        if line.contains("Get-Process -Id") && !line.contains("TcpClient") {
+                            return Ok(crate::hypervisor::Output {
+                                success: true,
+                                status: "exit status: 0".into(),
+                                stdout: if self.down { "no" } else { "yes" }.into(),
+                                stderr: String::new(),
+                            });
+                        }
+                        self.down |= line.contains(self.obeys);
+                        self.ran.push(line);
+                        Ok(crate::hypervisor::Output {
+                            success: true,
+                            status: "exit status: 0".into(),
+                            stdout: String::new(),
+                            stderr: String::new(),
+                        })
+                    }
+                    fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+                        self.output(command).map(|o| o.success)
+                    }
+                }
+                let entry = VmEntry {
+                    hypervisor: "libvirt".into(),
+                    ..VmEntry::default()
+                };
+                let vm = Vm {
+                    name: "dev",
+                    entry: &entry,
+                };
+                let graces = StopGraces {
+                    acpi: Duration::from_millis(30),
+                    guest: Duration::from_millis(30),
+                    hard: Duration::from_millis(30),
+                    poll: Duration::from_millis(1),
+                };
+                let poweroff = CommandLine::new("ssh", &["dev", "systemctl", "poweroff"]);
+                let stop = |obeys: &'static str, poweroff: Option<&CommandLine>| {
+                    let mut guest = Guest {
+                        obeys,
+                        ran: Vec::new(),
+                        down: false,
+                    };
+                    let result = stop_escalating(
+                        &mut guest,
+                        &hypervisor::Libvirt,
+                        &vm,
+                        poweroff,
+                        None,
+                        graces,
+                    )
+                    .unwrap();
+                    (result, guest.ran)
+                };
+                let acpi = "virsh --connect qemu:///session shutdown dev";
+                let hard = "virsh --connect qemu:///session destroy dev";
+                assert_eq!(
+                    stop("shutdown dev", Some(&poweroff)),
+                    ((Some(true), StopStep::Acpi), vec![acpi.to_owned()])
+                );
+                assert_eq!(
+                    stop("systemctl poweroff", Some(&poweroff)),
+                    (
+                        (Some(true), StopStep::GuestPoweroff),
+                        vec![acpi.to_owned(), poweroff.display()]
+                    )
+                );
+                assert_eq!(
+                    stop("destroy dev", Some(&poweroff)),
+                    (
+                        (Some(true), StopStep::HardPowerOff),
+                        vec![acpi.to_owned(), poweroff.display(), hard.to_owned()]
+                    )
+                );
+                assert_eq!(
+                    stop("destroy dev", None),
+                    (
+                        (Some(true), StopStep::HardPowerOff),
+                        vec![acpi.to_owned(), hard.to_owned()]
+                    )
+                );
+                assert_eq!(
+                    stop("nothing brings it down", Some(&poweroff)).0,
+                    (Some(false), StopStep::HardPowerOff)
+                );
+                // On WHPX the ACPI event can suspend the guest and cut off SSH.
+                // A clean stop must not send that event before the SSH poweroff.
+                let mut whpx_guest = Guest {
+                    obeys: "systemctl poweroff",
                     ran: Vec::new(),
                     down: false,
                 };
-                let result = stop_escalating(
-                    &mut guest,
-                    &hypervisor::Libvirt,
-                    &vm,
-                    poweroff,
-                    None,
-                    graces,
-                )
-                .unwrap();
-                (result, guest.ran)
-            };
-            let acpi = "virsh --connect qemu:///session shutdown dev";
-            let hard = "virsh --connect qemu:///session destroy dev";
-            assert_eq!(
-                stop("shutdown dev", Some(&poweroff)),
-                ((Some(true), StopStep::Acpi), vec![acpi.to_owned()])
-            );
-            assert_eq!(
-                stop("systemctl poweroff", Some(&poweroff)),
-                (
-                    (Some(true), StopStep::GuestPoweroff),
-                    vec![acpi.to_owned(), poweroff.display()]
-                )
-            );
-            assert_eq!(
-                stop("destroy dev", Some(&poweroff)),
-                (
-                    (Some(true), StopStep::HardPowerOff),
-                    vec![acpi.to_owned(), poweroff.display(), hard.to_owned()]
-                )
-            );
-            assert_eq!(
-                stop("destroy dev", None),
-                (
-                    (Some(true), StopStep::HardPowerOff),
-                    vec![acpi.to_owned(), hard.to_owned()]
-                )
-            );
-            assert_eq!(
-                stop("nothing brings it down", Some(&poweroff)).0,
-                (Some(false), StopStep::HardPowerOff)
-            );
-            // On WHPX the ACPI event can suspend the guest and cut off SSH.
-            // A clean stop must not send that event before the SSH poweroff.
-            let mut whpx_guest = Guest {
-                obeys: "systemctl poweroff",
-                ran: Vec::new(),
-                down: false,
-            };
-            assert_eq!(
-                stop_escalating(
-                    &mut whpx_guest,
-                    &hypervisor::Whpx,
-                    &vm,
-                    Some(&poweroff),
-                    None,
-                    graces,
-                )
-                .unwrap(),
-                (Some(true), StopStep::GuestPoweroff)
-            );
-            assert_eq!(whpx_guest.ran, vec![poweroff.display()]);
-        }
+                assert_eq!(
+                    stop_escalating(
+                        &mut whpx_guest,
+                        &hypervisor::Whpx,
+                        &vm,
+                        Some(&poweroff),
+                        None,
+                        graces,
+                    )
+                    .unwrap(),
+                    (Some(true), StopStep::GuestPoweroff)
+                );
+                assert_eq!(whpx_guest.ran, vec![poweroff.display()]);
+            }
 
-        {
-            let manifest = Manifest::parse(
-                "[[component]]\nname = \"apps+runtime\"\npackages = [\"runtime-dylib\"]\n\
+            {
+                let manifest = Manifest::parse(
+                    "[[component]]\nname = \"apps+runtime\"\npackages = [\"runtime-dylib\"]\n\
                  features = [\"music/audio\"]\nlayer = \"direct\"\n\
                  [[component]]\nname = \"fs\"\npackages = [\"fs\"]\n",
-            )
-            .unwrap();
-            let error = worktree_buildable(manifest.get("apps+runtime").unwrap()).unwrap_err();
-            let CliError::Unsupported { what, alternative } = &error else {
-                panic!("{error:?}");
-            };
-            assert!(what.contains("apps+runtime"), "{what}");
-            assert!(alternative.contains("swap app:"), "{alternative}");
-            assert!(alternative.contains("--from ci:"), "{alternative}");
-            worktree_buildable(manifest.get("fs").unwrap()).unwrap();
-        }
+                )
+                .unwrap();
+                let error = worktree_buildable(manifest.get("apps+runtime").unwrap()).unwrap_err();
+                let CliError::Unsupported { what, alternative } = &error else {
+                    panic!("{error:?}");
+                };
+                assert!(what.contains("apps+runtime"), "{what}");
+                assert!(alternative.contains("swap app:"), "{alternative}");
+                assert!(alternative.contains("--from ci:"), "{alternative}");
+                worktree_buildable(manifest.get("fs").unwrap()).unwrap();
+            }
 
-        {
-            use AppsRuntimeBuild::{Local, Remote};
-            let plan = |b, dev, host, linux, cfg| plan_apps_runtime_build(b, dev, host, linux, cfg);
-            assert_eq!(
-                plan(Some(Builder::Host), "x86_64", "x86_64", true, false).unwrap(),
-                Local
-            );
-            assert_eq!(plan(None, "x86_64", "x86_64", true, false).unwrap(), Local);
-            assert_eq!(plan(None, "x86_64", "x86_64", true, true).unwrap(), Remote);
-            assert_eq!(
-                plan(Some(Builder::Remote), "x86_64", "x86_64", true, false).unwrap(),
-                Remote
-            );
-            assert_eq!(
-                plan(None, "aarch64", "x86_64", true, false).unwrap(),
-                Remote
-            );
-            for refused in [
-                plan(Some(Builder::Host), "aarch64", "x86_64", true, true),
-                plan(Some(Builder::Host), "x86_64", "x86_64", false, true),
-                plan(Some(Builder::Vm), "x86_64", "x86_64", true, true),
-            ] {
+            {
+                use AppsRuntimeBuild::{Local, Remote};
+                let plan = |b, dev, host, linux, cfg| plan_apps_runtime_build(b, dev, host, linux, cfg);
+                assert_eq!(
+                    plan(Some(Builder::Host), "x86_64", "x86_64", true, false).unwrap(),
+                    Local
+                );
+                assert_eq!(plan(None, "x86_64", "x86_64", true, false).unwrap(), Local);
+                assert_eq!(plan(None, "x86_64", "x86_64", true, true).unwrap(), Remote);
+                assert_eq!(
+                    plan(Some(Builder::Remote), "x86_64", "x86_64", true, false).unwrap(),
+                    Remote
+                );
+                assert_eq!(
+                    plan(None, "aarch64", "x86_64", true, false).unwrap(),
+                    Remote
+                );
+                for refused in [
+                    plan(Some(Builder::Host), "aarch64", "x86_64", true, true),
+                    plan(Some(Builder::Host), "x86_64", "x86_64", false, true),
+                    plan(Some(Builder::Vm), "x86_64", "x86_64", true, true),
+                ] {
+                    assert!(
+                        matches!(refused, Err(CliError::Unsupported { .. })),
+                        "{refused:?}"
+                    );
+                }
+            }
+
+            {
+                let plan =
+                    |b, dev, host, linux, cfg| plan_device_app_build("notes", b, dev, host, linux, cfg);
+                assert_eq!(
+                    plan(None, "aarch64", "aarch64", true, false).unwrap(),
+                    Builder::Host
+                );
+                assert_eq!(
+                    plan(Some(Builder::Host), "aarch64", "aarch64", true, true).unwrap(),
+                    Builder::Host
+                );
+                assert_eq!(
+                    plan(None, "aarch64", "aarch64", true, true).unwrap(),
+                    Builder::Remote
+                );
+                assert_eq!(
+                    plan(None, "aarch64", "x86_64", true, false).unwrap(),
+                    Builder::Remote
+                );
+                assert_eq!(
+                    plan(None, "aarch64", "aarch64", false, false).unwrap(),
+                    Builder::Remote
+                );
+                for refused in [
+                    plan(Some(Builder::Host), "aarch64", "x86_64", true, false),
+                    plan(Some(Builder::Host), "aarch64", "aarch64", false, false),
+                    plan(Some(Builder::Vm), "aarch64", "aarch64", true, false),
+                ] {
+                    let Err(CliError::Unsupported { alternative, .. }) = &refused else {
+                        panic!("{refused:?}");
+                    };
+                    assert!(alternative.contains("app:notes"), "{alternative}");
+                }
+            }
+
+            {
+                check_app_lock(Some("aaaa"), Some("aaaa")).unwrap();
+                check_app_lock(None, Some("aaaa")).unwrap();
+                check_app_lock(Some("aaaa"), None).unwrap();
+                let error = check_app_lock(Some("aaaa"), Some("bbbb")).unwrap_err();
+                let CliError::Unsupported { what, alternative } = &error else {
+                    panic!("{error:?}");
+                };
+                assert!(what.contains("Cargo.lock"), "{what}");
+                assert!(alternative.contains("swap apps+runtime"), "{alternative}");
+                assert!(alternative.contains("rollback"), "{alternative}");
+            }
+
+            {
+                let ready = VmTools {
+                    cargo: true,
+                    rsync: true,
+                    python3: true,
+                    sccache: true,
+                    podman: false,
+                };
+                let bare = VmTools::default();
+                assert_eq!(
+                    choose_builder(None, &ready, true, "linux").unwrap(),
+                    (Builder::Vm, None)
+                );
+                let (builder, note) = choose_builder(None, &bare, true, "linux").unwrap();
+                assert_eq!(builder, Builder::Host);
+                assert!(note.unwrap().contains("--builder host"));
+                assert!(matches!(
+                    choose_builder(None, &bare, false, "macos"),
+                    Err(CliError::VmCannotBuild { .. })
+                ));
+                let error = choose_builder(Some(Builder::Host), &ready, false, "macos").unwrap_err();
+                assert!(matches!(error, CliError::HostBuildUnsupported { .. }));
+                assert!(error.to_string().contains("macos"));
+                assert!(error.hint().contains("--builder vm"));
+                assert!(matches!(
+                    choose_builder(Some(Builder::Vm), &bare, true, "linux"),
+                    Err(CliError::VmCannotBuild { .. })
+                ));
+                assert_eq!(
+                    choose_builder(Some(Builder::Host), &bare, true, "linux").unwrap(),
+                    (Builder::Host, None)
+                );
+                assert!(describe_tools(&ready, false).starts_with("in the VM"));
                 assert!(
-                    matches!(refused, Err(CliError::Unsupported { .. })),
-                    "{refused:?}"
+                    describe_tools(&ready, true)
+                        .ends_with("CI layers extracted on this host, only the layer sent")
+                );
+                assert!(hypervisor::adapter("device").unwrap().ci_layers_from_host());
+                assert!(
+                    !hypervisor::adapter("libvirt")
+                        .unwrap()
+                        .ci_layers_from_host()
                 );
             }
-        }
 
-        {
-            let plan =
-                |b, dev, host, linux, cfg| plan_device_app_build("notes", b, dev, host, linux, cfg);
-            assert_eq!(
-                plan(None, "aarch64", "aarch64", true, false).unwrap(),
-                Builder::Host
-            );
-            assert_eq!(
-                plan(Some(Builder::Host), "aarch64", "aarch64", true, true).unwrap(),
-                Builder::Host
-            );
-            assert_eq!(
-                plan(None, "aarch64", "aarch64", true, true).unwrap(),
-                Builder::Remote
-            );
-            assert_eq!(
-                plan(None, "aarch64", "x86_64", true, false).unwrap(),
-                Builder::Remote
-            );
-            assert_eq!(
-                plan(None, "aarch64", "aarch64", false, false).unwrap(),
-                Builder::Remote
-            );
-            for refused in [
-                plan(Some(Builder::Host), "aarch64", "x86_64", true, false),
-                plan(Some(Builder::Host), "aarch64", "aarch64", false, false),
-                plan(Some(Builder::Vm), "aarch64", "aarch64", true, false),
-            ] {
-                let Err(CliError::Unsupported { alternative, .. }) = &refused else {
-                    panic!("{refused:?}");
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let key = dir.path().join("keys/dev_ed25519");
+                std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+                std::fs::write(
+                    sshkey::public_path(&key),
+                    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev\n",
+                )
+                .unwrap();
+                let vm = Resolved {
+                    name: "dev".into(),
+                    entry: VmEntry {
+                        hypervisor: "utm".into(),
+                        key: Some(key.display().to_string()),
+                        ..VmEntry::default()
+                    },
+                    source: Source::Argument,
                 };
-                assert!(alternative.contains("app:notes"), "{alternative}");
-            }
-        }
-
-        {
-            check_app_lock(Some("aaaa"), Some("aaaa")).unwrap();
-            check_app_lock(None, Some("aaaa")).unwrap();
-            check_app_lock(Some("aaaa"), None).unwrap();
-            let error = check_app_lock(Some("aaaa"), Some("bbbb")).unwrap_err();
-            let CliError::Unsupported { what, alternative } = &error else {
-                panic!("{error:?}");
-            };
-            assert!(what.contains("Cargo.lock"), "{what}");
-            assert!(alternative.contains("swap apps+runtime"), "{alternative}");
-            assert!(alternative.contains("rollback"), "{alternative}");
-        }
-
-        {
-            let ready = VmTools {
-                cargo: true,
-                rsync: true,
-                python3: true,
-                sccache: true,
-                podman: false,
-            };
-            let bare = VmTools::default();
-            assert_eq!(
-                choose_builder(None, &ready, true, "linux").unwrap(),
-                (Builder::Vm, None)
-            );
-            let (builder, note) = choose_builder(None, &bare, true, "linux").unwrap();
-            assert_eq!(builder, Builder::Host);
-            assert!(note.unwrap().contains("--builder host"));
-            assert!(matches!(
-                choose_builder(None, &bare, false, "macos"),
-                Err(CliError::VmCannotBuild { .. })
-            ));
-            let error = choose_builder(Some(Builder::Host), &ready, false, "macos").unwrap_err();
-            assert!(matches!(error, CliError::HostBuildUnsupported { .. }));
-            assert!(error.to_string().contains("macos"));
-            assert!(error.hint().contains("--builder vm"));
-            assert!(matches!(
-                choose_builder(Some(Builder::Vm), &bare, true, "linux"),
-                Err(CliError::VmCannotBuild { .. })
-            ));
-            assert_eq!(
-                choose_builder(Some(Builder::Host), &bare, true, "linux").unwrap(),
-                (Builder::Host, None)
-            );
-            assert!(describe_tools(&ready, false).starts_with("in the VM"));
-            assert!(
-                describe_tools(&ready, true)
-                    .ends_with("CI layers extracted on this host, only the layer sent")
-            );
-            assert!(hypervisor::adapter("device").unwrap().ci_layers_from_host());
-            assert!(
-                !hypervisor::adapter("libvirt")
-                    .unwrap()
-                    .ci_layers_from_host()
-            );
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let key = dir.path().join("keys/dev_ed25519");
-            std::fs::create_dir_all(key.parent().unwrap()).unwrap();
-            std::fs::write(
-                sshkey::public_path(&key),
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev\n",
-            )
-            .unwrap();
-            let vm = Resolved {
-                name: "dev".into(),
-                entry: VmEntry {
-                    hypervisor: "utm".into(),
-                    key: Some(key.display().to_string()),
-                    ..VmEntry::default()
-                },
-                source: Source::Argument,
-            };
-            let endpoint = SshEndpoint {
-                user: "root".into(),
-                host: "192.168.64.5".into(),
-                port: 22,
-            };
-            let unreachable = |detail: &str| CliError::Unreachable {
-                vm: "dev".into(),
-                detail: detail.into(),
-                debug: vec![],
-            };
-            let error = key_refusal(
-                &vm,
-                &hypervisor::Utm,
-                &endpoint,
-                unreachable("root@192.168.64.5: Permission denied (publickey)."),
-            );
-            assert!(
-                matches!(
-                    error,
-                    CliError::RootKeyRefused {
-                        credentials: false,
-                        ..
-                    }
-                ),
-                "{error:?}"
-            );
-            assert!(
-                error.hint().contains("no credential channel"),
-                "{}",
-                error.hint()
-            );
-            assert!(
-                error.hint().contains("tester@192.168.64.5"),
-                "{}",
-                error.hint()
-            );
-            assert_eq!(error.see().as_deref(), Some("tilo-vm guide platforms"));
-            let libvirt = key_refusal(
-                &vm,
-                &hypervisor::Libvirt,
-                &endpoint,
-                unreachable("Permission denied (publickey)"),
-            );
-            assert!(
-                libvirt.hint().contains("did not take it"),
-                "{}",
-                libvirt.hint()
-            );
-            assert!(matches!(
-                key_refusal(
+                let endpoint = SshEndpoint {
+                    user: "root".into(),
+                    host: "192.168.64.5".into(),
+                    port: 22,
+                };
+                let unreachable = |detail: &str| CliError::Unreachable {
+                    vm: "dev".into(),
+                    detail: detail.into(),
+                    debug: vec![],
+                };
+                let error = key_refusal(
                     &vm,
                     &hypervisor::Utm,
                     &endpoint,
-                    unreachable("Connection refused")
-                ),
-                CliError::Unreachable { .. }
-            ));
-        }
-    }
-
-    #[test]
-    fn json_errors_have_one_top_level_shape_everywhere() {
-        if std::env::var_os("TILO_VM").is_some() {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("vms.toml"),
-            "default = \"probe\"\n[vms.probe]\nhypervisor = \"qemu\"\nssh = \"root@127.0.0.1:1\"\n",
-        )
-        .unwrap();
-        let mut app = app_with_empty_registry(dir.path());
-        let reports = [
-            app.run(Some(Command::Status { slot: None })).unwrap(),
-            app.run(Some(Command::Vm(VmCommand::Status { name: None })))
-                .unwrap(),
-        ];
-        for report in reports {
-            assert!(report.failed, "{}", report.text);
-            for key in ["error", "hint", "see"] {
+                    unreachable("root@192.168.64.5: Permission denied (publickey)."),
+                );
                 assert!(
-                    report.data[key].as_str().is_some_and(|v| !v.is_empty()),
-                    "{key} is not a top-level string: {:#}",
-                    report.data
+                    matches!(
+                        error,
+                        CliError::RootKeyRefused {
+                            credentials: false,
+                            ..
+                        }
+                    ),
+                    "{error:?}"
+                );
+                assert!(
+                    error.hint().contains("no credential channel"),
+                    "{}",
+                    error.hint()
+                );
+                assert!(
+                    error.hint().contains("tester@192.168.64.5"),
+                    "{}",
+                    error.hint()
+                );
+                assert_eq!(error.see().as_deref(), Some("tilo-vm guide platforms"));
+                let libvirt = key_refusal(
+                    &vm,
+                    &hypervisor::Libvirt,
+                    &endpoint,
+                    unreachable("Permission denied (publickey)"),
+                );
+                assert!(
+                    libvirt.hint().contains("did not take it"),
+                    "{}",
+                    libvirt.hint()
+                );
+                assert!(matches!(
+                    key_refusal(
+                        &vm,
+                        &hypervisor::Utm,
+                        &endpoint,
+                        unreachable("Connection refused")
+                    ),
+                    CliError::Unreachable { .. }
+                ));
+            }
+        }
+
+        phase json_errors_have_one_top_level_shape_everywhere;
+        {
+            if std::env::var_os("TILO_VM").is_some() {
+                return;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("vms.toml"),
+                "default = \"probe\"\n[vms.probe]\nhypervisor = \"qemu\"\nssh = \"root@127.0.0.1:1\"\n",
+            )
+            .unwrap();
+            let mut app = app_with_empty_registry(dir.path());
+            let reports = [
+                app.run(Some(Command::Status { slot: None })).unwrap(),
+                app.run(Some(Command::Vm(VmCommand::Status { name: None })))
+                    .unwrap(),
+            ];
+            for report in reports {
+                assert!(report.failed, "{}", report.text);
+                for key in ["error", "hint", "see"] {
+                    assert!(
+                        report.data[key].as_str().is_some_and(|v| !v.is_empty()),
+                        "{key} is not a top-level string: {:#}",
+                        report.data
+                    );
+                }
+                assert!(report.text.contains("hint: "), "{}", report.text);
+                assert!(
+                    report.next.iter().all(|n| !n.ends_with("vm start")),
+                    "{:?}",
+                    report.next
                 );
             }
-            assert!(report.text.contains("hint: "), "{}", report.text);
-            assert!(
-                report.next.iter().all(|n| !n.ends_with("vm start")),
-                "{:?}",
-                report.next
-            );
-        }
-        let failed = CliError::NoVm {
-            registry: "r".into(),
-        }
-        .to_json();
-        let mut merged = json!({ "vm": {} });
-        merge_error(
-            &mut merged,
-            &CliError::NoVm {
+            let failed = CliError::NoVm {
                 registry: "r".into(),
-            },
-        );
-        for key in ["error", "hint", "see"] {
-            assert_eq!(merged[key], failed[key]);
+            }
+            .to_json();
+            let mut merged = json!({ "vm": {} });
+            merge_error(
+                &mut merged,
+                &CliError::NoVm {
+                    registry: "r".into(),
+                },
+            );
+            for key in ["error", "hint", "see"] {
+                assert_eq!(merged[key], failed[key]);
+            }
+        }
+
+        phase first_contact_points_at_the_quickstart_and_both_ways_to_a_vm;
+        {
+            if std::env::var_os("TILO_VM").is_some() {
+                return;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = app_with_empty_registry(dir.path());
+            let status = app.run(None).unwrap();
+            assert!(
+                status.text.contains("tilo-vm guide quickstart"),
+                "{}",
+                status.text
+            );
+            assert!(status.text.contains("ask a human"), "{}", status.text);
+            assert_eq!(status.next[0], "tilo-vm guide quickstart");
+            assert!(status.next.contains(&"tilo-vm vm create <name>".to_owned()));
+
+            let list = app.run(Some(Command::Vm(VmCommand::List))).unwrap();
+            assert!(list.text.contains("no VMs registered yet"), "{}", list.text);
+            assert!(
+                list.text.contains("tilo-vm vm create <name>"),
+                "{}",
+                list.text
+            );
+            assert!(list.text.contains("ask a human"), "{}", list.text);
+            assert!(list.next.contains(&"tilo-vm vm create <name>".to_owned()));
+
+            let error = app
+                .run(Some(Command::Logs {
+                    slot: Some("a".into()),
+                    slot_flag: None,
+                    lines: 1,
+                }))
+                .err()
+                .unwrap();
+            assert!(matches!(error, CliError::NoVm { .. }));
+            assert!(error.render().contains("see: tilo-vm guide quickstart"));
         }
     }
 
@@ -7766,63 +8286,255 @@ mod tests {
         }
     }
 
-    #[test]
-    fn explicit_target_refuses_unknown_and_conflicting_targets() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app_with_empty_registry(dir.path());
-        std::fs::write(&app.registry_path, "default = 'default-vm'\n[vms.default-vm]\nhypervisor = 'libvirt'\n[vms.review]\nhypervisor = 'libvirt'\n").unwrap();
-        app.target = Some("review".into());
-        let selected = app.resolve_vm(None).unwrap();
-        assert_eq!(selected.name, "review");
-        assert!(matches!(selected.source, Source::Argument));
-        assert!(matches!(
-            app.resolve_vm(Some("default-vm")),
-            Err(CliError::TargetConflict { .. })
-        ));
-        app.target = Some("unknown".into());
-        assert!(matches!(
-            app.resolve_vm(None),
-            Err(CliError::UnknownVm { .. })
-        ));
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn targets_slots_and_generations_are_resolved_and_shown;
 
-    #[test]
-    fn first_contact_points_at_the_quickstart_and_both_ways_to_a_vm() {
-        if std::env::var_os("TILO_VM").is_some() {
-            return;
+        phase explicit_target_refuses_unknown_and_conflicting_targets;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = app_with_empty_registry(dir.path());
+            std::fs::write(&app.registry_path, "default = 'default-vm'\n[vms.default-vm]\nhypervisor = 'libvirt'\n[vms.review]\nhypervisor = 'libvirt'\n").unwrap();
+            app.target = Some("review".into());
+            let selected = app.resolve_vm(None).unwrap();
+            assert_eq!(selected.name, "review");
+            assert!(matches!(selected.source, Source::Argument));
+            assert!(matches!(
+                app.resolve_vm(Some("default-vm")),
+                Err(CliError::TargetConflict { .. })
+            ));
+            app.target = Some("unknown".into());
+            assert!(matches!(
+                app.resolve_vm(None),
+                Err(CliError::UnknownVm { .. })
+            ));
         }
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app_with_empty_registry(dir.path());
-        let status = app.run(None).unwrap();
-        assert!(
-            status.text.contains("tilo-vm guide quickstart"),
-            "{}",
-            status.text
-        );
-        assert!(status.text.contains("ask a human"), "{}", status.text);
-        assert_eq!(status.next[0], "tilo-vm guide quickstart");
-        assert!(status.next.contains(&"tilo-vm vm create <name>".to_owned()));
 
-        let list = app.run(Some(Command::Vm(VmCommand::List))).unwrap();
-        assert!(list.text.contains("no VMs registered yet"), "{}", list.text);
-        assert!(
-            list.text.contains("tilo-vm vm create <name>"),
-            "{}",
-            list.text
-        );
-        assert!(list.text.contains("ask a human"), "{}", list.text);
-        assert!(list.next.contains(&"tilo-vm vm create <name>".to_owned()));
+        phase slots_are_named_hinted_and_shown_with_their_owners;
+        {
+            {
+                assert_eq!(with_slot("tilo-vm shot", "ux1"), "tilo-vm shot --slot ux1");
+                assert_eq!(
+                    with_slot("tilo-vm control state-dump --pretty", "ux1"),
+                    "tilo-vm control --slot ux1 state-dump --pretty"
+                );
+                assert_eq!(
+                    with_slot("tilo-vm swap <component>", "ux1"),
+                    "tilo-vm swap --slot ux1 <component>"
+                );
+                assert_eq!(
+                    with_slot("tilo-vm seat release", "ux1"),
+                    "tilo-vm seat release --slot ux1"
+                );
+                assert_eq!(
+                    with_slot("tilo-vm slot exec -- sha256sum <path>", "ux1"),
+                    "tilo-vm slot exec --slot ux1 -- sha256sum <path>"
+                );
+                for untouched in [
+                    "tilo-vm vm shot",
+                    "tilo-vm gc",
+                    "tilo-vm status --slot other",
+                    "tilo-vm slot list",
+                ] {
+                    assert_eq!(with_slot(untouched, "ux1"), untouched);
+                }
+                let swap = Command::Swap {
+                    component: "shell".into(),
+                    slot: Some("ux1".into()),
+                    from: "worktree".into(),
+                    builder: None,
+                    profile: None,
+                    direct: false,
+                    jobs: None,
+                    cmdline: None,
+                    frame_cpu_trace: false,
+                };
+                assert_eq!(named_slot(&swap).as_deref(), Some("ux1"));
+                assert_eq!(named_slot(&Command::Doctor), None);
+            }
 
-        let error = app
-            .run(Some(Command::Logs {
-                slot: Some("a".into()),
-                slot_flag: None,
-                lines: 1,
-            }))
-            .err()
+            {
+                let (lines, next) = missing_slot("mine", &[slot_info("vm", SlotKind::Vm, 0, &[0])]);
+                assert!(lines[0].contains("not created yet"));
+                assert_eq!(next[0], "tilo-vm slot create --headless");
+                let (lines, next) = missing_slot(
+                    "mine",
+                    &[
+                        slot_info("vm", SlotKind::Vm, 0, &[0]),
+                        slot_info("ux1", SlotKind::Headless, 2, &[0, 1, 2]),
+                    ],
+                );
+                assert!(lines[0].contains("does not exist"), "{lines:?}");
+                assert!(lines[1].contains("ux1") && lines[1].contains("owner laptop:ux-pass"));
+                assert!(!next.iter().any(|n| n.contains("slot create")), "{next:?}");
+                assert_eq!(next[0], "tilo-vm status --slot ux1");
+            }
+
+            {
+                let line = slot_line(&slot_info("ux1", SlotKind::Headful, 1, &[0, 1]));
+                assert!(line.ends_with("owner laptop:ux-pass"), "{line}");
+                assert_eq!(describe_owner(&Owner::default()), None);
+            }
+
+            {
+                let words = exec_words(
+                    None,
+                    "a",
+                    60,
+                    &["sh".into(), "-c".into(), "ls /usr | head".into()],
+                );
+                assert_eq!(
+                    words.join(" "),
+                    "tilo-vmd exec --slot a --timeout 60 -- sh -c 'ls /usr | head'"
+                );
+                let sudo = exec_words(Some("sudo -n tilo-vmd rpc"), "a", 5, &["true".into()]);
+                assert_eq!(sudo[..3], ["sudo", "-n", "tilo-vmd"]);
+                assert_eq!(sudo[3], "exec");
+            }
+
+            {
+                let shown = SlotShowResult {
+                    provenance: std::collections::BTreeMap::new(),
+                    slot: slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]),
+                    files: vec![
+                        tilo_vm_protocol::SlotFile {
+                            component: "shell".into(),
+                            layer: "ab".repeat(32),
+                            path: "/usr/bin/shell".into(),
+                            sha256: Some("cd".repeat(32)),
+                            link: None,
+                            executable: true,
+                        },
+                        tilo_vm_protocol::SlotFile {
+                            component: "shell".into(),
+                            layer: "ab".repeat(32),
+                            path: "/usr/bin/sh-alias".into(),
+                            sha256: None,
+                            link: Some("shell".into()),
+                            executable: false,
+                        },
+                    ],
+                };
+                let text = describe_show(&shown);
+                assert!(text.contains("generations: 0, 1, 2 (current 2"), "{text}");
+                assert!(text.contains("  shell (layer abababababab)"), "{text}");
+                assert!(
+                    text.contains("/usr/bin/shell  sha256:cdcdcdcdcdcd"),
+                    "{text}"
+                );
+                assert!(text.contains("/usr/bin/sh-alias  -> shell"), "{text}");
+            }
+        }
+
+        phase installed_build_receipts_exclude_unselected_layers_and_keep_missing_explicit;
+        {
+            let mut slot = slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]);
+            slot.components.insert("shell".into(), "current".into());
+            slot.components.insert("missing".into(), "unknown".into());
+            let shown = SlotShowResult {
+                slot,
+                files: vec![],
+                provenance: BTreeMap::new(),
+            };
+            let layers = vec![
+                tilo_vm_protocol::LayerInfo {
+                    hash: "previous".into(),
+                    provenance: tilo_vm_protocol::Provenance::local("shell"),
+                },
+                tilo_vm_protocol::LayerInfo {
+                    hash: "current".into(),
+                    provenance: tilo_vm_protocol::Provenance::local("shell"),
+                },
+            ];
+            let builds = installed_builds(&shown, &layers);
+            assert_eq!(builds.len(), 2);
+            assert_eq!(builds["shell"].unwrap().hash, "current");
+            assert!(builds["missing"].is_none());
+            let outcome = installed_slot_outcome(&shown, &layers);
+            let receipt = outcome.data;
+            assert!(receipt["installed_builds"]["missing"].is_null());
+            assert_eq!(
+                receipt["installed_builds"]["shell"]["provenance"]["component"],
+                "shell"
+            );
+            assert_eq!(
+                receipt["identity_scope"],
+                "installed_layer_not_running_process"
+            );
+            assert_eq!(receipt["slot"]["generation"], 2);
+        }
+
+        phase the_worktree_file_can_name_the_default_slot;
+        {
+            if std::env::var_os("TILO_VM_SLOT").is_some() {
+                return;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = app_with_empty_registry(dir.path());
+            app.worktree = Some(Worktree {
+                root: dir.path().to_owned(),
+                branch: Some("feature/x".into()),
+            });
+            assert_eq!(app.slot_name(None).unwrap(), app.default_slot().unwrap());
+            let branch_slot = app.default_slot().unwrap();
+            std::fs::write(
+                dir.path().join(WORKTREE_FILE),
+                "vm = \"dev\"\nslot = \"ux1\"\n",
+            )
             .unwrap();
-        assert!(matches!(error, CliError::NoVm { .. }));
-        assert!(error.render().contains("see: tilo-vm guide quickstart"));
+            assert_eq!(app.slot_name(None).unwrap(), "ux1");
+            assert_ne!(branch_slot, "ux1");
+            assert_eq!(app.slot_name(Some("other".into())).unwrap(), "other");
+        }
+
+        phase generations_roll_forward_and_gc_explains_itself;
+        {
+            {
+                let info = slot_info("a", SlotKind::Headless, 1, &[0, 1, 2, 4]);
+                assert_eq!(forward_target("a", Some(&info)).unwrap(), 2);
+                let newest = slot_info("a", SlotKind::Headless, 4, &[0, 1, 2, 4]);
+                let error = forward_target("a", Some(&newest)).unwrap_err();
+                assert!(error.to_string().contains("newest"), "{error}");
+                assert!(error.hint().contains("--to <n>"), "{}", error.hint());
+                assert!(forward_target("a", None).is_err());
+            }
+
+            {
+                let mut result = tilo_vm_protocol::GcResult {
+                    dry_run: true,
+                    removed_layers: vec![],
+                    removed_generations: vec![],
+                    freed_bytes: 0,
+                    removed_targets: vec![],
+                    freed_target_bytes: 0,
+                    storage: tilo_vm_protocol::Storage::default(),
+                    kept_young: vec![],
+                    min_age_seconds: 3600,
+                };
+                assert_eq!(describe_kept(&result), None);
+                result.kept_young.push(tilo_vm_protocol::KeptLayer {
+                    hash: "ef".repeat(32),
+                    component: "shell".into(),
+                    age_seconds: 600,
+                    eligible_in_seconds: 3000,
+                });
+                let text = describe_kept(&result).unwrap();
+                assert!(text.contains("younger than 1h00m"), "{text}");
+                assert!(
+                    text.contains("shell efefefefefef (age 10m, eligible in 50m)"),
+                    "{text}"
+                );
+                assert!(text.contains("--min-age 0"), "{text}");
+            }
+
+            {
+                assert_eq!(human_bytes(5 << 30), "5.0 GB");
+                assert_eq!(human_bytes(300 << 20), "300 MB");
+            }
+        }
     }
 
     fn add(name: &str, ssh: &str) -> AddArgs {
@@ -7834,390 +8546,249 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_device_is_registered_with_its_own_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app_with_empty_registry(dir.path());
-        let key = sshkey::key_path(&app.registry_path, "opi");
-        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
-        std::fs::write(&key, "private").unwrap();
-        std::fs::write(
-            sshkey::public_path(&key),
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA opi\n",
-        )
-        .unwrap();
+    tilo_test_env::scenario! {
+        fn input_commands_become_validated_actions;
 
+        phase stdin_input_preserves_bytes_and_redacts_failures_and_receipts;
         {
-            let added = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
-            let registry = app.registry().unwrap();
-            let entry = &registry.vms["opi"];
-            assert_eq!(entry.hypervisor, "device");
-            assert_eq!(entry.ssh.as_deref(), Some("root@127.0.0.1:1"));
-            assert_eq!(entry.key.as_deref(), Some(key.to_str().unwrap()));
-            assert_eq!(registry.default.as_deref(), Some("opi"));
-            assert_eq!(added.data["reachable"], json!(false));
-            assert!(added.next.contains(&"tilo-vm vm use opi".to_owned()));
-            assert!(
-                added
-                    .next
-                    .iter()
-                    .any(|n| n.starts_with("tilo-vm swap --slot device tilo-session")),
-                "{:?}",
-                added.next
-            );
-        }
-        {
-            let again = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
-            assert_eq!(again.data["added"], json!(false));
-            let error = app
-                .vm_add(&AddArgs {
-                    key: Some(dir.path().join("missing")),
-                    ..add("pi2", "tester@10.0.0.109")
-                })
-                .err()
-                .unwrap();
-            assert!(error.to_string().contains("no such file"), "{error}");
-            let error = app
-                .vm_add(&AddArgs {
-                    grant_sudo: true,
-                    ..add("pi2", "root@10.0.0.109")
-                })
-                .err()
-                .unwrap();
-            assert!(
-                error.hint().contains("--ssh <user>@10.0.0.109"),
-                "{}",
-                error.hint()
-            );
-            assert!(app.vm_add(&add("pi2", "root@")).is_err());
-            let error = app
-                .vm_create(CreateArgs {
-                    hypervisor: Some("device".into()),
-                    ..create_args("pi3")
-                })
-                .err()
-                .unwrap();
-            assert!(
-                error.hint().contains("tilo-vm vm add pi3"),
-                "{}",
-                error.hint()
-            );
-        }
-        {
-            let device = hypervisor::adapter("device").unwrap();
-            assert!(!device.powers_on());
-            assert!(hypervisor::adapter("libvirt").unwrap().powers_on());
-            let vm = app.resolve_vm(Some("opi")).unwrap();
-            assert!(device.start(&vm.vm()).is_empty());
-            assert_eq!(
-                device.ssh_endpoint(&vm.vm(), &mut app.runner).unwrap(),
-                SshEndpoint {
-                    user: "root".into(),
-                    host: "127.0.0.1".into(),
-                    port: 1
+            use crate::cli::Cli;
+            use clap::Parser as _;
+            struct Broken;
+            impl std::io::Read for Broken {
+                fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                    Err(std::io::Error::other("private-reader-error"))
                 }
-            );
-        }
-        {
-            let mut runner = SystemRunner { cwd: None };
-            let removed = app.vm_rm(&mut runner, "opi", false).unwrap();
-            assert!(
-                removed.text.contains("the device itself is untouched"),
-                "{}",
-                removed.text
-            );
-            assert!(!key.exists());
-            assert!(app.registry().unwrap().vms.is_empty());
-        }
-    }
-
-    #[test]
-    fn stdin_input_preserves_bytes_and_redacts_failures_and_receipts() {
-        use crate::cli::Cli;
-        use clap::Parser as _;
-        struct Broken;
-        impl std::io::Read for Broken {
-            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::other("private-reader-error"))
             }
-        }
-        let argv = ["tilo-vm", "input", "type", "--stdin"];
-        let cli = Cli::try_parse_from(argv).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Input {
-                action: InputCommand::Type {
-                    text: None,
-                    stdin: true
-                },
-                ..
-            })
-        ));
-        for words in [
-            vec!["tilo-vm", "input", "type"],
-            vec!["tilo-vm", "input", "type", "value", "--stdin"],
-        ] {
-            assert!(Cli::try_parse_from(words).is_err());
-        }
-        let marker = "synthetic-private-input\n";
-        let actions = stdin_input_actions(marker.as_bytes()).unwrap();
-        assert_eq!(
-            actions,
-            vec![InputAction::Type {
-                text: marker.into()
-            }]
-        );
-        assert_eq!(describe_input(&actions[0]), "typed 24 characters");
-        let oversized = vec![b'a'; 65_537];
-        assert!(
-            stdin_input_actions(&oversized[..])
-                .unwrap_err()
-                .to_string()
-                .contains("65536")
-        );
-        assert!(stdin_input_actions(&vec![b'a'; 65_536][..]).is_ok());
-        for invalid in [b"private-\xff".as_slice(), "private-é".as_bytes()] {
-            let error = stdin_input_actions(invalid).unwrap_err().to_string();
-            assert!(!error.contains("private"));
-            assert!(!error.contains('é'));
-        }
-        assert!(
-            !stdin_input_actions(Broken)
-                .unwrap_err()
-                .to_string()
-                .contains("private")
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let receipt = Receipt::new(dir.path(), argv.iter().map(|s| (*s).into()).collect());
-        let path = receipt
-            .finish(Ok(&json!({"description": describe_input(&actions[0])})))
-            .unwrap();
-        let saved = std::fs::read_to_string(path).unwrap();
-        assert!(!saved.contains("synthetic-private-input"));
-        assert!(saved.contains("--stdin"));
-    }
-
-    #[test]
-    fn device_profile_and_touchpad_commands_become_validated_actions() {
-        let plug = input_actions(InputCommand::Device(DeviceCommand::Plug {
-            profile: "lenovo-83ed-touchpad".into(),
-        }))
-        .unwrap();
-        assert_eq!(
-            plug,
-            [InputAction::DevicePlug {
-                profile: "lenovo-83ed-touchpad".into()
-            }]
-        );
-        let unknown = input_actions(InputCommand::Device(DeviceCommand::Plug {
-            profile: "nope".into(),
-        }));
-        assert!(
-            matches!(unknown, Err(CliError::InvalidInput(m)) if m.contains("lenovo-83ed-keyboard"))
-        );
-        let swipe = input_actions(InputCommand::Touchpad(TouchpadCommand::Swipe {
-            dx: 0,
-            dy: -30,
-            fingers: 2,
-            duration: 300,
-            press: false,
-        }))
-        .unwrap();
-        assert_eq!(
-            swipe,
-            [InputAction::TouchpadSwipe {
-                fingers: 2,
-                dx_mm: 0,
-                dy_mm: -30,
-                duration_ms: 300,
-                press: false,
-            }]
-        );
-        assert!(
-            input_actions(InputCommand::Touchpad(TouchpadCommand::Tap { fingers: 5 })).is_err()
-        );
-        assert_eq!(
-            input_actions(InputCommand::Hold {
-                combo: "shift".into()
-            })
-            .unwrap(),
-            [InputAction::KeyDown {
-                combo: "shift".into()
-            }]
-        );
-    }
-
-    #[test]
-    fn inputs_and_boot_bundles_are_validated_before_use() {
-        {
-            let click = input_actions(InputCommand::Click {
-                button: "right".into(),
-                at: Some(vec![4, 5]),
-            })
-            .unwrap();
+            let argv = ["tilo-vm", "input", "type", "--stdin"];
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Input {
+                    action: InputCommand::Type {
+                        text: None,
+                        stdin: true
+                    },
+                    ..
+                })
+            ));
+            for words in [
+                vec!["tilo-vm", "input", "type"],
+                vec!["tilo-vm", "input", "type", "value", "--stdin"],
+            ] {
+                assert!(Cli::try_parse_from(words).is_err());
+            }
+            let marker = "synthetic-private-input\n";
+            let actions = stdin_input_actions(marker.as_bytes()).unwrap();
             assert_eq!(
-                click,
-                [InputAction::Click {
-                    button: Button::Right,
-                    at: Some((4, 5))
+                actions,
+                vec![InputAction::Type {
+                    text: marker.into()
                 }]
             );
-            assert_eq!(describe_input(&click[0]), "clicked right at 4,5");
-            assert!(matches!(
-                input_actions(InputCommand::Click {
-                    button: "fourth".into(),
-                    at: None
-                }),
-                Err(CliError::InvalidInput(_))
-            ));
-            let error = input_actions(InputCommand::Type {
-                text: Some("naïve".into()),
-                stdin: false,
-            })
-            .unwrap_err();
-            assert!(error.to_string().contains('ï'));
-            assert!(error.hint().contains("tilo-vm input key"));
-        }
-
-        {
+            assert_eq!(describe_input(&actions[0]), "typed 24 characters");
+            let oversized = vec![b'a'; 65_537];
+            assert!(
+                stdin_input_actions(&oversized[..])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("65536")
+            );
+            assert!(stdin_input_actions(&vec![b'a'; 65_536][..]).is_ok());
+            for invalid in [b"private-\xff".as_slice(), "private-é".as_bytes()] {
+                let error = stdin_input_actions(invalid).unwrap_err().to_string();
+                assert!(!error.contains("private"));
+                assert!(!error.contains('é'));
+            }
+            assert!(
+                !stdin_input_actions(Broken)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("private")
+            );
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("Image"), b"kernel").unwrap();
-            std::fs::write(dir.path().join("initrd"), b"initrd").unwrap();
-            let bundle = dir.path().join("boot.json");
-            std::fs::write(
-                &bundle,
-                r#"{"kernel":"Image","initrd":"initrd","cmdline":"root=tilo-auto composefs=abc","loader_partuuid":"FCDFC623-0563-4F91-9DB8-F2B87B98B3CE"}"#,
-            )
-            .unwrap();
-            let direct = read_direct_boot_bundle(&bundle).unwrap();
-            assert_eq!(
-                direct.kernel,
-                dir.path().join("Image").display().to_string()
-            );
-            assert_eq!(
-                direct.initrd,
-                dir.path().join("initrd").display().to_string()
-            );
-            assert_eq!(
-                direct.loader_partuuid.as_deref(),
-                Some("fcdfc623-0563-4f91-9db8-f2b87b98b3ce")
-            );
-            std::fs::write(
-                &bundle,
-                r#"{"kernel":"Image","initrd":"initrd","cmdline":"root=tilo-auto","loader_partuuid":"invalid"}"#,
-            )
-            .unwrap();
-            assert!(read_direct_boot_bundle(&bundle).is_err());
+            let receipt = Receipt::new(dir.path(), argv.iter().map(|s| (*s).into()).collect());
+            let path = receipt
+                .finish(Ok(&json!({"description": describe_input(&actions[0])})))
+                .unwrap();
+            let saved = std::fs::read_to_string(path).unwrap();
+            assert!(!saved.contains("synthetic-private-input"));
+            assert!(saved.contains("--stdin"));
         }
-    }
 
-    #[test]
-    fn qemu_accepts_display_fixture_options_but_not_multiple_heads() {
-        let mut args = create_args("dev");
-        args.resolution = Some("1920x1080".into());
-        args.gl = true;
-        assert!(App::validate_create_options("qemu", &args).is_ok());
-        assert!(App::validate_create_options("libvirt", &args).is_ok());
-        for adapter in ["whpx", "utm", "hyperv"] {
-            assert!(App::validate_create_options(adapter, &args).is_err());
+        phase device_profile_and_touchpad_commands_become_validated_actions;
+        {
+            let plug = input_actions(InputCommand::Device(DeviceCommand::Plug {
+                profile: "lenovo-83ed-touchpad".into(),
+            }))
+            .unwrap();
+            assert_eq!(
+                plug,
+                [InputAction::DevicePlug {
+                    profile: "lenovo-83ed-touchpad".into()
+                }]
+            );
+            let unknown = input_actions(InputCommand::Device(DeviceCommand::Plug {
+                profile: "nope".into(),
+            }));
+            assert!(
+                matches!(unknown, Err(CliError::InvalidInput(m)) if m.contains("lenovo-83ed-keyboard"))
+            );
+            let swipe = input_actions(InputCommand::Touchpad(TouchpadCommand::Swipe {
+                dx: 0,
+                dy: -30,
+                fingers: 2,
+                duration: 300,
+                press: false,
+            }))
+            .unwrap();
+            assert_eq!(
+                swipe,
+                [InputAction::TouchpadSwipe {
+                    fingers: 2,
+                    dx_mm: 0,
+                    dy_mm: -30,
+                    duration_ms: 300,
+                    press: false,
+                }]
+            );
+            assert!(
+                input_actions(InputCommand::Touchpad(TouchpadCommand::Tap { fingers: 5 })).is_err()
+            );
+            assert_eq!(
+                input_actions(InputCommand::Hold {
+                    combo: "shift".into()
+                })
+                .unwrap(),
+                [InputAction::KeyDown {
+                    combo: "shift".into()
+                }]
+            );
         }
-        args.heads = Some(2);
-        assert!(App::validate_create_options("qemu", &args).is_err());
-        assert!(App::validate_create_options("libvirt", &args).is_ok());
-    }
 
-    #[test]
-    fn published_boot_json_cannot_redirect_to_an_unverified_kernel() {
-        let dir = tempfile::tempdir().unwrap();
-        let tag = "main-1234567";
-        let arch = "aarch64";
-        let kernel = format!("tilo-vm-{tag}-{arch}-direct-Image");
-        let initrd = format!("tilo-vm-{tag}-{arch}-direct-initrd");
-        std::fs::write(dir.path().join(&kernel), b"kernel").unwrap();
-        std::fs::write(dir.path().join(&initrd), b"initrd").unwrap();
-        std::fs::write(dir.path().join("other-Image"), b"other").unwrap();
-        let path = dir
-            .path()
-            .join(format!("tilo-vm-{tag}-{arch}-direct-boot.json"));
-        let json = |name: &str| {
-            serde_json::json!({
-                "kernel": name,
-                "initrd": initrd,
-                "cmdline": "root=tilo-auto console=ttyS0",
-                "loader_partuuid": "fcdfc623-0563-4f91-9db8-f2b87b98b3ce",
-            })
-        };
-        std::fs::write(&path, json(&kernel).to_string()).unwrap();
-        assert!(read_published_direct_boot(&path, tag, arch).is_ok());
-        std::fs::write(&path, json("other-Image").to_string()).unwrap();
-        assert!(read_published_direct_boot(&path, tag, arch).is_err());
+        phase inputs_and_boot_bundles_are_validated_before_use;
+        {
+            {
+                let click = input_actions(InputCommand::Click {
+                    button: "right".into(),
+                    at: Some(vec![4, 5]),
+                })
+                .unwrap();
+                assert_eq!(
+                    click,
+                    [InputAction::Click {
+                        button: Button::Right,
+                        at: Some((4, 5))
+                    }]
+                );
+                assert_eq!(describe_input(&click[0]), "clicked right at 4,5");
+                assert!(matches!(
+                    input_actions(InputCommand::Click {
+                        button: "fourth".into(),
+                        at: None
+                    }),
+                    Err(CliError::InvalidInput(_))
+                ));
+                let error = input_actions(InputCommand::Type {
+                    text: Some("naïve".into()),
+                    stdin: false,
+                })
+                .unwrap_err();
+                assert!(error.to_string().contains('ï'));
+                assert!(error.hint().contains("tilo-vm input key"));
+            }
 
-        let mut args = create_args("dev");
-        args.direct_boot_bundle = Some(path.display().to_string());
-        assert!(App::validate_create_options("whpx", &args).is_err());
-        args.image = Some("local.qcow2".into());
-        assert!(App::validate_create_options("whpx", &args).is_ok());
-    }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::write(dir.path().join("Image"), b"kernel").unwrap();
+                std::fs::write(dir.path().join("initrd"), b"initrd").unwrap();
+                let bundle = dir.path().join("boot.json");
+                std::fs::write(
+                    &bundle,
+                    r#"{"kernel":"Image","initrd":"initrd","cmdline":"root=tilo-auto composefs=abc","loader_partuuid":"FCDFC623-0563-4F91-9DB8-F2B87B98B3CE"}"#,
+                )
+                .unwrap();
+                let direct = read_direct_boot_bundle(&bundle).unwrap();
+                assert_eq!(
+                    direct.kernel,
+                    dir.path().join("Image").display().to_string()
+                );
+                assert_eq!(
+                    direct.initrd,
+                    dir.path().join("initrd").display().to_string()
+                );
+                assert_eq!(
+                    direct.loader_partuuid.as_deref(),
+                    Some("fcdfc623-0563-4f91-9db8-f2b87b98b3ce")
+                );
+                std::fs::write(
+                    &bundle,
+                    r#"{"kernel":"Image","initrd":"initrd","cmdline":"root=tilo-auto","loader_partuuid":"invalid"}"#,
+                )
+                .unwrap();
+                assert!(read_direct_boot_bundle(&bundle).is_err());
+            }
+        }
 
-    #[test]
-    fn touch_pen_and_gamepad_commands_become_actions() {
-        use clap::Parser as _;
-        let parse = |args: &[&str]| {
-            let cli = crate::cli::Cli::try_parse_from(args).unwrap();
-            let Some(Command::Input { action, .. }) = cli.command else {
-                panic!("{args:?} is not an input command");
+        phase touch_pen_and_gamepad_commands_become_actions;
+        {
+            use clap::Parser as _;
+            let parse = |args: &[&str]| {
+                let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+                let Some(Command::Input { action, .. }) = cli.command else {
+                    panic!("{args:?} is not an input command");
+                };
+                input_actions(action)
             };
-            input_actions(action)
-        };
-        let pinch = parse(&[
-            "tilo-vm", "input", "touch", "pinch", "640", "400", "--from", "400", "--to", "100",
-        ])
-        .unwrap();
-        assert_eq!(
-            pinch,
-            [InputAction::TouchPinch {
-                center: (640, 400),
-                from_distance: 400,
-                to_distance: 100,
-                duration_ms: 400,
-            }]
-        );
-        assert_eq!(
-            describe_input(&pinch[0]),
-            "pinched at 640,400 from 400 to 100 px apart"
-        );
-        let stick = parse(&["tilo-vm", "input", "gamepad", "stick", "left", "0", "-100"]).unwrap();
-        assert_eq!(
-            stick,
-            [InputAction::GamepadStick {
-                stick: Stick::Left,
-                x: 0,
-                y: -100,
-                duration_ms: 300,
-            }]
-        );
-        let dpad = parse(&["tilo-vm", "input", "gamepad", "dpad", "down", "right"]).unwrap();
-        assert_eq!(
-            dpad,
-            [InputAction::GamepadPress {
-                combos: vec!["down".into(), "right".into()]
-            }]
-        );
-        let bad = parse(&["tilo-vm", "input", "gamepad", "dpad", "a"]).unwrap_err();
-        assert!(bad.to_string().contains("d-pad direction"), "{bad}");
-        let bad = parse(&["tilo-vm", "input", "gamepad", "press", "guide+zz"]).unwrap_err();
-        assert!(bad.to_string().contains("'zz'"), "{bad}");
-        let pen = parse(&[
-            "tilo-vm",
-            "input",
-            "pen",
-            "tap",
-            "1",
-            "2",
-            "--pressure",
-            "0",
-        ]);
-        assert!(pen.unwrap_err().to_string().contains("pressure"));
+            let pinch = parse(&[
+                "tilo-vm", "input", "touch", "pinch", "640", "400", "--from", "400", "--to", "100",
+            ])
+            .unwrap();
+            assert_eq!(
+                pinch,
+                [InputAction::TouchPinch {
+                    center: (640, 400),
+                    from_distance: 400,
+                    to_distance: 100,
+                    duration_ms: 400,
+                }]
+            );
+            assert_eq!(
+                describe_input(&pinch[0]),
+                "pinched at 640,400 from 400 to 100 px apart"
+            );
+            let stick = parse(&["tilo-vm", "input", "gamepad", "stick", "left", "0", "-100"]).unwrap();
+            assert_eq!(
+                stick,
+                [InputAction::GamepadStick {
+                    stick: Stick::Left,
+                    x: 0,
+                    y: -100,
+                    duration_ms: 300,
+                }]
+            );
+            let dpad = parse(&["tilo-vm", "input", "gamepad", "dpad", "down", "right"]).unwrap();
+            assert_eq!(
+                dpad,
+                [InputAction::GamepadPress {
+                    combos: vec!["down".into(), "right".into()]
+                }]
+            );
+            let bad = parse(&["tilo-vm", "input", "gamepad", "dpad", "a"]).unwrap_err();
+            assert!(bad.to_string().contains("d-pad direction"), "{bad}");
+            let bad = parse(&["tilo-vm", "input", "gamepad", "press", "guide+zz"]).unwrap_err();
+            assert!(bad.to_string().contains("'zz'"), "{bad}");
+            let pen = parse(&[
+                "tilo-vm",
+                "input",
+                "pen",
+                "tap",
+                "1",
+                "2",
+                "--pressure",
+                "0",
+            ]);
+            assert!(pen.unwrap_err().to_string().contains("pressure"));
+        }
     }
 
     fn create_args(name: &str) -> CreateArgs {
@@ -8240,259 +8811,7 @@ mod tests {
             ssh: None,
             ssh_port: None,
             template: None,
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn preflight_checks_hypervisor_image_disks_and_worktree_rules() {
-        // Explicit TCG must work without KVM, whether libvirt is selected
-        // directly or by the Linux default. Native creation still fails.
-        {
-            use crate::host::HostKind;
-            use crate::host::tests::{LIBVIRT, linux};
-            let dir = tempfile::tempdir().unwrap();
-            let mut app = app_with_empty_registry(dir.path());
-            std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
-            let mut facts = linux(HostKind::Dnf, LIBVIRT);
-            facts.kvm = Some(false);
-            facts.session = Some(Ok(vec![crate::host::Guest {
-                arch: "x86_64".into(),
-                domains: vec!["qemu".into()],
-            }]));
-            let image = dir.path().join("base.qcow2");
-            std::fs::write(&image, b"QFI\xfb\0\0\0\x03").unwrap();
-            let mut args = create_args("dev");
-            args.image = Some(image.display().to_string());
-            args.disk = Some(dir.path().join("child.qcow2").display().to_string());
-            assert!(matches!(
-                app.preflight_create(&facts, &args, "x86_64"),
-                Err(CliError::NoHypervisor(_))
-            ));
-            args.emulated = true;
-            for adapter in [None, Some("libvirt".to_owned())] {
-                args.hypervisor = adapter;
-                let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
-                assert_eq!(plan.choice.adapter, "libvirt");
-            }
-            facts.session = Some(Ok(vec![crate::host::Guest {
-                arch: "x86_64".into(),
-                domains: vec!["kvm".into()],
-            }]));
-            assert!(matches!(
-                app.preflight_create(&facts, &args, "x86_64"),
-                Err(CliError::NoHypervisor(_))
-            ));
-            assert!(!dir.path().join("child.qcow2").exists());
-        }
-
-        {
-            use crate::host::HostKind;
-            use crate::host::tests::linux;
-            let dir = tempfile::tempdir().unwrap();
-            let mut app = app_with_empty_registry(dir.path());
-            // Only an Android SDK's qemu-img: refused, and nothing downloaded
-            // (no --image, so the next step would have been the network).
-            let facts = linux(
-                HostKind::RpmOstree,
-                &[("qemu-img", "/home/u/Android/Sdk/emulator/qemu-img")],
-            );
-            let error = app
-                .preflight_create(&facts, &create_args("dev"), "x86_64")
-                .err()
-                .unwrap();
-            assert!(matches!(error, CliError::NoHypervisor(_)), "{error}");
-            assert!(error.to_string().contains("libvirt"), "{error}");
-            assert!(
-                error
-                    .hint()
-                    .contains("rpm-ostree install libvirt-daemon-kvm"),
-                "{}",
-                error.hint()
-            );
-            assert!(!dir.path().join("vms.toml").exists());
-        }
-
-        {
-            use crate::host::HostKind;
-            use crate::host::tests::{LIBVIRT, linux};
-            let dir = tempfile::tempdir().unwrap();
-            let mut app = app_with_empty_registry(dir.path());
-            // The checks under test are the image and the disk path, not this
-            // host's free space (a small /tmp would otherwise fail the floor).
-            std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
-            let facts = linux(HostKind::Dnf, LIBVIRT);
-
-            let mut args = create_args("dev");
-            args.image = Some(dir.path().join("missing.qcow2").display().to_string());
-            let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
-            assert!(matches!(error, CliError::ImageNotFound { .. }), "{error}");
-
-            let image = dir.path().join("tilo-vm.qcow2");
-            std::fs::write(&image, "").unwrap();
-            args.image = Some(image.display().to_string());
-            let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
-            assert!(matches!(error, CliError::ImageFormat { .. }), "{error}");
-            std::fs::write(&image, b"QFI\xfb\0\0\0\x03").unwrap();
-            let disk = dir.path().join("dev.qcow2");
-            std::fs::write(&disk, "").unwrap();
-            args.image = Some(image.display().to_string());
-            args.disk = Some(disk.display().to_string());
-            let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
-            assert!(matches!(error, CliError::DiskExists { .. }), "{error}");
-
-            args.disk = Some(dir.path().join("vms/new.qcow2").display().to_string());
-            let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
-            assert_eq!(plan.choice.adapter, "libvirt");
-            assert_eq!(plan.choice.tool("qemu-img"), Some("/usr/bin/qemu-img"));
-            let text = plan.describe();
-            assert!(text.contains("qemu:///session"), "{text}");
-            assert!(text.contains("tilo-vm.qcow2"), "{text}");
-
-            args.arch = Some("aarch64".into());
-            args.emulated = true;
-            let error = app
-                .preflight_create(&facts, &args, "aarch64")
-                .err()
-                .unwrap();
-            assert!(matches!(error, CliError::NoHypervisor(_)), "{error}");
-            assert!(error.to_string().contains("no aarch64 guest"), "{error}");
-            assert!(
-                error.hint().contains("qemu-system-aarch64"),
-                "{}",
-                error.hint()
-            );
-        }
-
-        {
-            use crate::host::HostKind;
-            use crate::host::tests::{LIBVIRT, linux};
-            let dir = tempfile::tempdir().unwrap();
-            let mut app = app_with_empty_registry(dir.path());
-            std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
-            let facts = linux(HostKind::Dnf, LIBVIRT);
-            let image = dir.path().join("disk.raw");
-            raw_disk(&image);
-            let esp = dir.path().join("override.raw");
-            let mut args = create_args("esp1");
-            args.image = Some(image.display().to_string());
-            args.disk = Some(dir.path().join("vms/esp1.qcow2").display().to_string());
-            args.boot_esp = Some(esp.display().to_string());
-
-            let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
-            assert!(
-                matches!(&error, CliError::ImageFormat { flag, .. } if flag == "--boot-esp"),
-                "{error}"
-            );
-            assert!(
-                error.hint().contains("make-boot-esp.sh"),
-                "{}",
-                error.hint()
-            );
-            std::fs::write(&esp, b"QFI\xfb\0\0\0\x03").unwrap();
-            let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
-            assert!(error.to_string().contains("is qcow2"), "{error}");
-
-            raw_disk(&esp);
-            let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
-            assert_eq!(plan.image_format, Some(image::Format::Raw));
-            assert!(plan.import.is_none(), "a local path is used in place");
-            assert_eq!(plan.boot_esp.as_deref(), Some(esp.as_path()));
-            let text = plan.describe();
-            assert!(text.contains("(raw)"), "{text}");
-            assert!(text.contains("boot ESP"), "{text}");
-        }
-
-        {
-            use crate::host::HostKind;
-            use crate::host::tests::linux;
-            let dir = tempfile::tempdir().unwrap();
-            let mut app = app_with_empty_registry(dir.path());
-            let facts = linux(
-                HostKind::Dnf,
-                &[
-                    ("qemu-system-x86_64", "/usr/bin/qemu-system-x86_64"),
-                    ("qemu-img", "/usr/bin/qemu-img"),
-                    ("bash", "/usr/bin/bash"),
-                ],
-            );
-            let mut args = create_args("ci");
-            args.hypervisor = Some("qemu".into());
-            let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
-            assert!(
-                error.to_string().contains("outside a Tilo worktree"),
-                "{error}"
-            );
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut app = app_with_empty_registry(dir.path());
-            let vms = dir.path().join("vms");
-            std::fs::create_dir_all(&vms).unwrap();
-            let disk = vms.join("try1.qcow2");
-            let sidecars = hypervisor::vm_files(&disk.display().to_string());
-            for file in &sidecars {
-                std::fs::write(file, "x").unwrap();
-            }
-            let key = sshkey::key_path(&app.registry_path, "try1");
-            std::fs::create_dir_all(key.parent().unwrap()).unwrap();
-            for file in [
-                key.clone(),
-                sshkey::public_path(&key),
-                PathBuf::from(remote::known_hosts_path(&key.display().to_string())),
-            ] {
-                std::fs::write(file, "k").unwrap();
-            }
-            let image = dir.path().join("base.raw");
-            raw_disk(&image);
-            let registry = format!(
-                "default = \"try1\"\n[vms.try1]\nhypervisor = \"qemu\"\nimage = {image:?}\nimage_format = \"raw\"\ndisk = {disk:?}\nkey = {key:?}\n\n[vms.shared]\nhypervisor = \"libvirt\"\nssh = \"root@shared:22\"\nkey = \"/home/u/.ssh/id_ed25519\"\n",
-                image = image.display().to_string(),
-                disk = disk.display().to_string(),
-                key = key.display().to_string(),
-            );
-            std::fs::write(&app.registry_path, registry).unwrap();
-
-            let outcome = app
-                .run(Some(Command::Vm(VmCommand::Rm {
-                    name: "try1".into(),
-                    force: false,
-                })))
-                .unwrap();
-            assert!(outcome.text.contains("deleted"), "{}", outcome.text);
-            assert!(outcome.text.contains("kept its image"), "{}", outcome.text);
-            for file in &sidecars {
-                assert!(!Path::new(file).exists(), "{file} survived");
-            }
-            assert!(!key.exists() && !sshkey::public_path(&key).exists());
-            assert!(image.exists(), "the image is not the VM's to delete");
-            let registry = app.registry().unwrap();
-            assert!(!registry.vms.contains_key("try1"));
-            assert_eq!(registry.default, None);
-
-            // A hand-registered VM is only forgotten: no hypervisor command runs
-            // (libvirt's would need virsh) and its key is the user's.
-            let outcome = app
-                .run(Some(Command::Vm(VmCommand::Rm {
-                    name: "shared".into(),
-                    force: false,
-                })))
-                .unwrap();
-            assert!(outcome.text.contains("untouched"), "{}", outcome.text);
-            assert!(app.registry().unwrap().vms.is_empty());
-
-            let error = app
-                .run(Some(Command::Vm(VmCommand::Rm {
-                    name: "gone".into(),
-                    force: false,
-                })))
-                .err()
-                .unwrap();
-            assert!(matches!(error, CliError::UnknownVm { .. }), "{error}");
+            no_lan: false,
         }
     }
 
@@ -8520,233 +8839,6 @@ mod tests {
             outputs: Vec::new(),
             parity: None,
             session_identity: None,
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn slots_are_named_hinted_and_shown_with_their_owners() {
-        {
-            assert_eq!(with_slot("tilo-vm shot", "ux1"), "tilo-vm shot --slot ux1");
-            assert_eq!(
-                with_slot("tilo-vm control state-dump --pretty", "ux1"),
-                "tilo-vm control --slot ux1 state-dump --pretty"
-            );
-            assert_eq!(
-                with_slot("tilo-vm swap <component>", "ux1"),
-                "tilo-vm swap --slot ux1 <component>"
-            );
-            assert_eq!(
-                with_slot("tilo-vm seat release", "ux1"),
-                "tilo-vm seat release --slot ux1"
-            );
-            assert_eq!(
-                with_slot("tilo-vm slot exec -- sha256sum <path>", "ux1"),
-                "tilo-vm slot exec --slot ux1 -- sha256sum <path>"
-            );
-            for untouched in [
-                "tilo-vm vm shot",
-                "tilo-vm gc",
-                "tilo-vm status --slot other",
-                "tilo-vm slot list",
-            ] {
-                assert_eq!(with_slot(untouched, "ux1"), untouched);
-            }
-            let swap = Command::Swap {
-                component: "shell".into(),
-                slot: Some("ux1".into()),
-                from: "worktree".into(),
-                builder: None,
-                profile: None,
-                direct: false,
-                jobs: None,
-                cmdline: None,
-                frame_cpu_trace: false,
-            };
-            assert_eq!(named_slot(&swap).as_deref(), Some("ux1"));
-            assert_eq!(named_slot(&Command::Doctor), None);
-        }
-
-        {
-            let (lines, next) = missing_slot("mine", &[slot_info("vm", SlotKind::Vm, 0, &[0])]);
-            assert!(lines[0].contains("not created yet"));
-            assert_eq!(next[0], "tilo-vm slot create --headless");
-            let (lines, next) = missing_slot(
-                "mine",
-                &[
-                    slot_info("vm", SlotKind::Vm, 0, &[0]),
-                    slot_info("ux1", SlotKind::Headless, 2, &[0, 1, 2]),
-                ],
-            );
-            assert!(lines[0].contains("does not exist"), "{lines:?}");
-            assert!(lines[1].contains("ux1") && lines[1].contains("owner laptop:ux-pass"));
-            assert!(!next.iter().any(|n| n.contains("slot create")), "{next:?}");
-            assert_eq!(next[0], "tilo-vm status --slot ux1");
-        }
-
-        {
-            let line = slot_line(&slot_info("ux1", SlotKind::Headful, 1, &[0, 1]));
-            assert!(line.ends_with("owner laptop:ux-pass"), "{line}");
-            assert_eq!(describe_owner(&Owner::default()), None);
-        }
-
-        {
-            let words = exec_words(
-                None,
-                "a",
-                60,
-                &["sh".into(), "-c".into(), "ls /usr | head".into()],
-            );
-            assert_eq!(
-                words.join(" "),
-                "tilo-vmd exec --slot a --timeout 60 -- sh -c 'ls /usr | head'"
-            );
-            let sudo = exec_words(Some("sudo -n tilo-vmd rpc"), "a", 5, &["true".into()]);
-            assert_eq!(sudo[..3], ["sudo", "-n", "tilo-vmd"]);
-            assert_eq!(sudo[3], "exec");
-        }
-
-        {
-            let shown = SlotShowResult {
-                provenance: std::collections::BTreeMap::new(),
-                slot: slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]),
-                files: vec![
-                    tilo_vm_protocol::SlotFile {
-                        component: "shell".into(),
-                        layer: "ab".repeat(32),
-                        path: "/usr/bin/shell".into(),
-                        sha256: Some("cd".repeat(32)),
-                        link: None,
-                        executable: true,
-                    },
-                    tilo_vm_protocol::SlotFile {
-                        component: "shell".into(),
-                        layer: "ab".repeat(32),
-                        path: "/usr/bin/sh-alias".into(),
-                        sha256: None,
-                        link: Some("shell".into()),
-                        executable: false,
-                    },
-                ],
-            };
-            let text = describe_show(&shown);
-            assert!(text.contains("generations: 0, 1, 2 (current 2"), "{text}");
-            assert!(text.contains("  shell (layer abababababab)"), "{text}");
-            assert!(
-                text.contains("/usr/bin/shell  sha256:cdcdcdcdcdcd"),
-                "{text}"
-            );
-            assert!(text.contains("/usr/bin/sh-alias  -> shell"), "{text}");
-        }
-    }
-
-    #[test]
-    fn installed_build_receipts_exclude_unselected_layers_and_keep_missing_explicit() {
-        let mut slot = slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]);
-        slot.components.insert("shell".into(), "current".into());
-        slot.components.insert("missing".into(), "unknown".into());
-        let shown = SlotShowResult {
-            slot,
-            files: vec![],
-            provenance: BTreeMap::new(),
-        };
-        let layers = vec![
-            tilo_vm_protocol::LayerInfo {
-                hash: "previous".into(),
-                provenance: tilo_vm_protocol::Provenance::local("shell"),
-            },
-            tilo_vm_protocol::LayerInfo {
-                hash: "current".into(),
-                provenance: tilo_vm_protocol::Provenance::local("shell"),
-            },
-        ];
-        let builds = installed_builds(&shown, &layers);
-        assert_eq!(builds.len(), 2);
-        assert_eq!(builds["shell"].unwrap().hash, "current");
-        assert!(builds["missing"].is_none());
-        let outcome = installed_slot_outcome(&shown, &layers);
-        let receipt = outcome.data;
-        assert!(receipt["installed_builds"]["missing"].is_null());
-        assert_eq!(
-            receipt["installed_builds"]["shell"]["provenance"]["component"],
-            "shell"
-        );
-        assert_eq!(
-            receipt["identity_scope"],
-            "installed_layer_not_running_process"
-        );
-        assert_eq!(receipt["slot"]["generation"], 2);
-    }
-
-    #[test]
-    fn the_worktree_file_can_name_the_default_slot() {
-        if std::env::var_os("TILO_VM_SLOT").is_some() {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app_with_empty_registry(dir.path());
-        app.worktree = Some(Worktree {
-            root: dir.path().to_owned(),
-            branch: Some("feature/x".into()),
-        });
-        assert_eq!(app.slot_name(None).unwrap(), app.default_slot().unwrap());
-        let branch_slot = app.default_slot().unwrap();
-        std::fs::write(
-            dir.path().join(WORKTREE_FILE),
-            "vm = \"dev\"\nslot = \"ux1\"\n",
-        )
-        .unwrap();
-        assert_eq!(app.slot_name(None).unwrap(), "ux1");
-        assert_ne!(branch_slot, "ux1");
-        assert_eq!(app.slot_name(Some("other".into())).unwrap(), "other");
-    }
-
-    #[test]
-    fn generations_roll_forward_and_gc_explains_itself() {
-        {
-            let info = slot_info("a", SlotKind::Headless, 1, &[0, 1, 2, 4]);
-            assert_eq!(forward_target("a", Some(&info)).unwrap(), 2);
-            let newest = slot_info("a", SlotKind::Headless, 4, &[0, 1, 2, 4]);
-            let error = forward_target("a", Some(&newest)).unwrap_err();
-            assert!(error.to_string().contains("newest"), "{error}");
-            assert!(error.hint().contains("--to <n>"), "{}", error.hint());
-            assert!(forward_target("a", None).is_err());
-        }
-
-        {
-            let mut result = tilo_vm_protocol::GcResult {
-                dry_run: true,
-                removed_layers: vec![],
-                removed_generations: vec![],
-                freed_bytes: 0,
-                removed_targets: vec![],
-                freed_target_bytes: 0,
-                storage: tilo_vm_protocol::Storage::default(),
-                kept_young: vec![],
-                min_age_seconds: 3600,
-            };
-            assert_eq!(describe_kept(&result), None);
-            result.kept_young.push(tilo_vm_protocol::KeptLayer {
-                hash: "ef".repeat(32),
-                component: "shell".into(),
-                age_seconds: 600,
-                eligible_in_seconds: 3000,
-            });
-            let text = describe_kept(&result).unwrap();
-            assert!(text.contains("younger than 1h00m"), "{text}");
-            assert!(
-                text.contains("shell efefefefefef (age 10m, eligible in 50m)"),
-                "{text}"
-            );
-            assert!(text.contains("--min-age 0"), "{text}");
-        }
-
-        {
-            assert_eq!(human_bytes(5 << 30), "5.0 GB");
-            assert_eq!(human_bytes(300 << 20), "300 MB");
         }
     }
 

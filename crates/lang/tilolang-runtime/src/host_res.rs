@@ -587,9 +587,10 @@ impl Core {
                 }
             });
         }
-        let in_run = self.frames.borrow().run().is_some();
-        if in_run {
-            // A run's reads go through its journal, which takes the frames to record them.
+        let journaled = self.frames.borrow().run().is_some_and(|run| run.journaled);
+        if journaled {
+            // A journaled run's reads go through its journal, which takes the frames to record
+            // them, and holds them whole: a replay reads what the run read, not the store.
             let target = Rc::unwrap_or_clone(self.ref_arg(rh)?.target);
             let field = self.text(fh)?;
             let (_, f) = self.lookup_field(&target, &field)?;
@@ -634,21 +635,26 @@ impl Core {
                         return trap(why);
                     }
                 }
-            } else if f.kind == FieldKind::Collection && in_view {
+            } else if f.kind == FieldKind::Collection {
                 // A collection of a union's types names no one item type: each item's is its own.
                 let item = match inner_ty(&f.ty) {
                     Some(Ty::Union(_)) => String::new(),
                     _ => self.item_type(&f.ty)?.id.clone(),
                 };
-                let coll = Value::Coll(Rc::new(CollRef {
+                let coll = Rc::new(CollRef {
                     target: Rc::clone(target),
                     field: f.id.clone(),
                     item,
                     author: Some(author.clone()),
                     filter: None,
                     order: None,
-                }));
-                (coll, None, None)
+                    pinned: crate::value::Pinned((!in_view).then(std::cell::OnceCell::new)),
+                });
+                // Outside a view it reads as it is now, whatever the code writes after.
+                if !in_view {
+                    self.coll_listing(&coll)?;
+                }
+                (Value::Coll(coll), None, None)
             } else {
                 let value = whole_map(f.kind, self.read_value(target, f, Some(author))?);
                 (value, Some((target.id_string(), f.id.clone())), None)
@@ -1205,7 +1211,7 @@ impl Core {
         let Ok(at) = usize::try_from(a.long(3)?) else {
             return trap("a run has no place before its first");
         };
-        let run = match self.val(a.h(4)?)? {
+        let run = match self.val_whole(a.h(4)?)? {
             Value::List(run) => run,
             other => return trap(format!("expected a list, got {}", other.kind_name())),
         };

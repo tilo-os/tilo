@@ -39,14 +39,25 @@ fn settle(app: &mut TestApp<SettingsShell>) {
     }
 }
 
-fn searching(query: &str) -> TestApp<SettingsShell> {
+/// Settings in its window, before anything is searched for.
+fn mounted() -> TestApp<SettingsShell> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
     app.harness().resize(VIEWPORT).unwrap();
     settle(&mut app);
+    app
+}
+
+/// Type `query` into the window's search, and let what it finds be drawn.
+fn search(app: &mut TestApp<SettingsShell>, query: &str) {
     app.with_widget::<crate::window::Inspected, _>(|settings| settings.narrow_sidebar(query))
         .expect("the window is Settings");
-    settle(&mut app);
+    settle(app);
+}
+
+fn searching(query: &str) -> TestApp<SettingsShell> {
+    let mut app = mounted();
+    search(&mut app, query);
     app
 }
 
@@ -61,18 +72,26 @@ fn found(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
 
 #[test]
 fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
+    // One window, searched for each setting in turn. What a search finds
+    // follows from the words typed, what it draws is built anew from what it
+    // found, and no row here changes a setting or sends the window input.
+    // Each row checks that the window draws this search and nothing an
+    // earlier one left.
+    let mut app = mounted();
+    assert_nothing_found(&mut app, "a window just opened");
     let mut ids = std::collections::HashSet::new();
     for entry in &crate::area::registry().settings {
         assert!(ids.insert(entry.id), "{} has two rows", entry.id);
         let setting = index::setting(entry.id)
             .unwrap_or_else(|| panic!("{} is not in the settings index", entry.id));
-        let mut app = searching(&crate::i18n::t(&setting.name_key()));
+        search(&mut app, &crate::i18n::t(&setting.name_key()));
         assert!(
             found(&mut app).contains(&entry.id),
             "{}: its name finds it, got {:?}",
             entry.id,
             found(&mut app)
         );
+        assert_shows_what_was_found(&mut app, entry.id);
         match entry.shown {
             super::Shown::Bound(_) => assert!(
                 control(app.harness().root_widget(), setting, content_left()).is_some(),
@@ -100,6 +119,129 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
                 entry.id
             ),
         }
+    }
+    // Nothing typed, or only spaces: nothing is found, and nothing of the
+    // last search stays in the window.
+    for nothing in ["", "   "] {
+        search(&mut app, nothing);
+        assert_nothing_found(&mut app, &format!("{nothing:?}"));
+    }
+}
+
+/// The ids of the parts of the window a search draws: a listed setting
+/// (`settings.found:`), its button (`settings.found.show:`) and a found
+/// page's button (`settings.found.open:`).
+fn drawn_of_search(root: &dyn Widget, out: &mut Vec<String>) {
+    if let Some(id) = root.test_id().filter(|id| id.starts_with("settings.found")) {
+        out.push(id.to_owned());
+    }
+    for child in root.children() {
+        drawn_of_search(child, out);
+    }
+}
+
+/// The window draws what this search found and nothing of another: one
+/// section for each page the found settings are on, and no listed setting
+/// that is not among them.
+fn assert_shows_what_was_found(app: &mut TestApp<SettingsShell>, row: &str) {
+    let found = found(app);
+    let mut pages: Vec<&str> = found
+        .iter()
+        .filter_map(|id| index::setting(id))
+        .map(|setting| setting.page)
+        .collect();
+    pages.sort_unstable();
+    pages.dedup();
+    let mut drawn = Vec::new();
+    drawn_of_search(app.harness().root_widget(), &mut drawn);
+    let mut sections: Vec<&str> = drawn
+        .iter()
+        .filter_map(|id| id.strip_prefix("settings.found.open:"))
+        .collect();
+    sections.sort_unstable();
+    assert_eq!(
+        sections, pages,
+        "{row}: the window draws one section for each page of what was found ({found:?})"
+    );
+    for id in &drawn {
+        let listed = id
+            .strip_prefix("settings.found:")
+            .or_else(|| id.strip_prefix("settings.found.show:"));
+        if let Some(listed) = listed {
+            assert!(
+                found.contains(&listed),
+                "{row}: the window lists {listed}, which this search did not find ({found:?})"
+            );
+        }
+    }
+}
+
+/// The window shows its page and nothing a search found: no setting is
+/// found, and no part of what a search draws (a listed setting, its button,
+/// a found page's button) is in the window.
+fn assert_nothing_found(app: &mut TestApp<SettingsShell>, after: &str) {
+    assert!(
+        found(app).is_empty(),
+        "{after}: with nothing typed nothing is found, got {:?}",
+        found(app)
+    );
+    let mut drawn = Vec::new();
+    drawn_of_search(app.harness().root_widget(), &mut drawn);
+    assert!(
+        drawn.is_empty(),
+        "{after}: with nothing typed the window draws nothing a search found, got {drawn:?}"
+    );
+}
+
+/// What a search finds, asked as the window asks it and without a window:
+/// nothing for nothing typed, a setting by its name, each setting once and
+/// only on a page this build has, and the same whatever space surrounds the
+/// words.
+#[test]
+fn a_search_finds_each_setting_once_and_only_on_a_page_this_build_has() {
+    ui::i18n::I18nManager::init("en-US");
+    let ids = |query: &str| -> Vec<&'static str> {
+        super::matching(query)
+            .iter()
+            .map(|setting| setting.id)
+            .collect()
+    };
+    for nothing in ["", " ", "\t \n"] {
+        assert!(
+            ids(nothing).is_empty(),
+            "{nothing:?} finds nothing, got {:?}",
+            ids(nothing)
+        );
+    }
+    for entry in &crate::area::registry().settings {
+        let setting = index::setting(entry.id)
+            .unwrap_or_else(|| panic!("{} is not in the settings index", entry.id));
+        let name = crate::i18n::t(&setting.name_key());
+        let hits = super::matching(&name);
+        assert!(
+            hits.iter().any(|hit| hit.id == entry.id),
+            "{}: its name {name:?} finds it, got {:?}",
+            entry.id,
+            ids(&name)
+        );
+        let mut once = std::collections::HashSet::new();
+        for hit in &hits {
+            assert!(once.insert(hit.id), "{name:?} finds {} twice", hit.id);
+            assert!(
+                Category::from_slug(hit.page).is_some(),
+                "{name:?} finds {} on {}, a page this build has not",
+                hit.id,
+                hit.page
+            );
+        }
+    }
+    for words in ["high contrast", "screen reader"] {
+        assert!(!ids(words).is_empty(), "{words:?} finds a setting");
+        assert_eq!(
+            ids(&format!("  {words}\t")),
+            ids(words),
+            "{words:?}: the space around the words changes nothing"
+        );
     }
 }
 

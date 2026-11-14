@@ -524,10 +524,10 @@ async fn person_asks(
     rig.stream.as_ref().unwrap().read().await.unwrap()
 }
 
-/// Where the test's workspace records the grants a person gives an app.
+/// Where the test's workspace records the grants a person gives.
 struct TreeGrants(crate::test_support::WorkspaceTreeHandle);
-impl crate::services::AppActionGrants for TreeGrants {
-    fn may_grant(&self, _workspace: &str, _person: &str) -> bool {
+impl crate::services::WorkspaceGrants for TreeGrants {
+    fn may_record(&self, _workspace: &str, _person: &str) -> bool {
         true
     }
     fn record(
@@ -555,7 +555,14 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
         .run_until(async {
             let env = Environment::new();
             let mut services = env.membership.services();
-            services.app_action_grants = Some(Arc::new(TreeGrants(env.membership.clone())));
+            services.workspace_grants = Some(Arc::new(TreeGrants(env.membership.clone())));
+            // The person's answers for one app's use of another app's actions.
+            services.app_consents = Some(Arc::new(crate::services::PersonalAppConsents {
+                source: Arc::new(settings_store::HostDocument::new(
+                    serde_json::Map::new(),
+                    |_| Ok(()),
+                )),
+            }));
             // The app declares that it takes other apps' actions.
             services.app_action_access =
                 Some(Arc::new(|_: &str| crate::app_actions::AppActionAccess {

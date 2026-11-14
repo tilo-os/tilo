@@ -50,17 +50,23 @@ impl AppSurface for Window {
     fn set_cursor(&self, _: winit::window::CursorIcon) {}
 }
 
+/// How many pixels of the window `rects` cover, a pixel under several of
+/// them once: a cell counts when the first rect over it marks it, so only the
+/// cells under the rects are read, not the window's.
 fn covered(rects: &[Rect], size: winit::dpi::PhysicalSize<u32>) -> f64 {
     let window = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     let width = size.width as usize;
     let mut cells = vec![false; width * size.height as usize];
+    let mut covered = 0_usize;
     for rect in rects {
         let rect = rect.intersect(window).expand();
         for y in rect.y0 as usize..rect.y1 as usize {
-            cells[y * width + rect.x0 as usize..y * width + rect.x1 as usize].fill(true);
+            let row = &mut cells[y * width + rect.x0 as usize..y * width + rect.x1 as usize];
+            covered += row.iter().filter(|cell| !**cell).count();
+            row.fill(true);
         }
     }
-    cells.iter().filter(|cell| **cell).count() as f64
+    covered as f64
 }
 
 #[derive(Debug, Default)]
@@ -146,7 +152,16 @@ impl Host {
             full: OffscreenRenderer::new(size.width, size.height),
             background: theme.tokens.colors.surfaces.content,
         };
-        for _ in 0..3 {
+        // A window's first frame has no frame before it to copy from or to
+        // repaint over: it is drawn whole.
+        let mut first = Run::default();
+        host.frame(&mut first);
+        assert_eq!(
+            (first.whole, first.copied_frames),
+            (1, 0),
+            "a window's first frame is drawn whole"
+        );
+        for _ in 0..2 {
             host.frame(&mut Run::default());
         }
         if !hover {

@@ -848,125 +848,239 @@ mod tests {
         setup
     }
 
-    #[test]
-    fn a_stereo_pair_is_set_up_by_listening_to_one_speaker() {
-        let mut setup = setup();
-        setup.begin();
-        assert_eq!(setup.step(), &Step::ChooseOutputs);
-        let candidates = setup.candidates();
-        assert_eq!(candidates.len(), 2);
-        setup.toggle(&candidates[0]);
-        assert_eq!(
-            setup.confirm_outputs(),
-            Err("Choose two speakers for a stereo pair".into())
-        );
-        setup.toggle(&candidates[1]);
-        setup.confirm_outputs().unwrap();
-        assert_eq!(
-            setup.identify_command(),
-            Some(SpeakerCommand::Identify {
-                device: "desk".into(),
-                output: "00".repeat(16),
-            })
-        );
-        assert_eq!(
-            setup.step(),
-            &Step::Identify {
-                index: 0,
-                played: true
+    tilo_test_env::scenario! {
+        fn the_speaker_setup_walks_from_choice_to_calibration;
+
+        phase a_stereo_pair_is_set_up_by_listening_to_one_speaker;
+        {
+            let mut setup = setup();
+            setup.begin();
+            assert_eq!(setup.step(), &Step::ChooseOutputs);
+            let candidates = setup.candidates();
+            assert_eq!(candidates.len(), 2);
+            setup.toggle(&candidates[0]);
+            assert_eq!(
+                setup.confirm_outputs(),
+                Err("Choose two speakers for a stereo pair".into())
+            );
+            setup.toggle(&candidates[1]);
+            setup.confirm_outputs().unwrap();
+            assert_eq!(
+                setup.identify_command(),
+                Some(SpeakerCommand::Identify {
+                    device: "desk".into(),
+                    output: "00".repeat(16),
+                })
+            );
+            assert_eq!(
+                setup.step(),
+                &Step::Identify {
+                    index: 0,
+                    played: true
+                }
+            );
+            setup.assign(SpeakerRoleSpec::Right).unwrap();
+            assert_eq!(setup.step(), &Step::Name, "the other side is implied");
+            setup.set_name("Living room");
+            let SpeakerCommand::Create { name, members } = setup.save_command().unwrap() else {
+                panic!("not a create command");
+            };
+            assert_eq!(name, "Living room");
+            assert_eq!(
+                members.iter().map(|member| member.role).collect::<Vec<_>>(),
+                vec![SpeakerRoleSpec::Right, SpeakerRoleSpec::Left]
+            );
+            setup.saved("ab".repeat(16));
+            assert_eq!(
+                setup.step(),
+                &Step::Calibrate {
+                    group: "ab".repeat(16)
+                }
+            );
+        }
+
+        phase surround_roles_are_offered_only_once;
+        {
+            let mut setup = SpeakerSetup::default();
+            let mut snap = snapshot();
+            snap.devices.push(device("tv", &["HDMI"], false));
+            setup.update(snap);
+            setup.begin();
+            setup.set_arrangement(Arrangement::Surround);
+            for candidate in setup.candidates() {
+                setup.toggle(&candidate);
             }
-        );
-        setup.assign(SpeakerRoleSpec::Right).unwrap();
-        assert_eq!(setup.step(), &Step::Name, "the other side is implied");
-        setup.set_name("Living room");
-        let SpeakerCommand::Create { name, members } = setup.save_command().unwrap() else {
-            panic!("not a create command");
-        };
-        assert_eq!(name, "Living room");
-        assert_eq!(
-            members.iter().map(|member| member.role).collect::<Vec<_>>(),
-            vec![SpeakerRoleSpec::Right, SpeakerRoleSpec::Left]
-        );
-        setup.saved("ab".repeat(16));
-        assert_eq!(
-            setup.step(),
-            &Step::Calibrate {
-                group: "ab".repeat(16)
+            setup.confirm_outputs().unwrap();
+            setup.assign(SpeakerRoleSpec::Left).unwrap();
+            assert!(!setup.remaining_roles().contains(&SpeakerRoleSpec::Left));
+            assert!(setup.assign(SpeakerRoleSpec::Left).is_err());
+            setup.assign(SpeakerRoleSpec::Right).unwrap();
+            setup.assign(SpeakerRoleSpec::Lfe).unwrap();
+            assert_eq!(setup.step(), &Step::Name);
+            assert!(setup.save_command().is_ok());
+        }
+
+        phase room_speakers_start_on_an_arc_and_can_be_placed;
+        {
+            let mut setup = setup();
+            setup.begin();
+            setup.set_arrangement(Arrangement::Room);
+            for candidate in setup.candidates() {
+                setup.toggle(&candidate);
             }
-        );
-    }
-
-    #[test]
-    fn surround_roles_are_offered_only_once() {
-        let mut setup = SpeakerSetup::default();
-        let mut snap = snapshot();
-        snap.devices.push(device("tv", &["HDMI"], false));
-        setup.update(snap);
-        setup.begin();
-        setup.set_arrangement(Arrangement::Surround);
-        for candidate in setup.candidates() {
-            setup.toggle(&candidate);
+            setup.confirm_outputs().unwrap();
+            let points = setup.room_points();
+            assert!(points[0].0 < 0 && points[1].0 > 0, "{points:?}");
+            setup.skip_identify();
+            setup.skip_identify();
+            assert_eq!(setup.step(), &Step::Layout);
+            setup.place(1, points[0].0, points[0].1);
+            assert!(setup.layout_problem().is_some());
+            setup.finish_layout();
+            assert_eq!(setup.step(), &Step::Layout, "overlapping speakers block");
+            setup.place(1, 99_000, 1_000);
+            assert_eq!(setup.room_points()[1], (ROOM_EXTENT_MM, 1_000));
+            setup.finish_layout();
+            assert_eq!(setup.step(), &Step::Name);
         }
-        setup.confirm_outputs().unwrap();
-        setup.assign(SpeakerRoleSpec::Left).unwrap();
-        assert!(!setup.remaining_roles().contains(&SpeakerRoleSpec::Left));
-        assert!(setup.assign(SpeakerRoleSpec::Left).is_err());
-        setup.assign(SpeakerRoleSpec::Right).unwrap();
-        setup.assign(SpeakerRoleSpec::Lfe).unwrap();
-        assert_eq!(setup.step(), &Step::Name);
-        assert!(setup.save_command().is_ok());
-    }
 
-    #[test]
-    fn room_speakers_start_on_an_arc_and_can_be_placed() {
-        let mut setup = setup();
-        setup.begin();
-        setup.set_arrangement(Arrangement::Room);
-        for candidate in setup.candidates() {
-            setup.toggle(&candidate);
+        phase back_walks_the_flow_in_reverse;
+        {
+            let mut setup = setup();
+            setup.begin();
+            for candidate in setup.candidates() {
+                setup.toggle(&candidate);
+            }
+            setup.confirm_outputs().unwrap();
+            setup.back();
+            assert_eq!(setup.step(), &Step::ChooseOutputs);
+            setup.back();
+            assert_eq!(setup.step(), &Step::Overview);
         }
-        setup.confirm_outputs().unwrap();
-        let points = setup.room_points();
-        assert!(points[0].0 < 0 && points[1].0 > 0, "{points:?}");
-        setup.skip_identify();
-        setup.skip_identify();
-        assert_eq!(setup.step(), &Step::Layout);
-        setup.place(1, points[0].0, points[0].1);
-        assert!(setup.layout_problem().is_some());
-        setup.finish_layout();
-        assert_eq!(setup.step(), &Step::Layout, "overlapping speakers block");
-        setup.place(1, 99_000, 1_000);
-        assert_eq!(setup.room_points()[1], (ROOM_EXTENT_MM, 1_000));
-        setup.finish_layout();
-        assert_eq!(setup.step(), &Step::Name);
-    }
 
-    #[test]
-    fn back_walks_the_flow_in_reverse() {
-        let mut setup = setup();
-        setup.begin();
-        for candidate in setup.candidates() {
-            setup.toggle(&candidate);
+        phase an_unplugged_output_leaves_the_draft;
+        {
+            let mut setup = setup();
+            setup.begin();
+            for candidate in setup.candidates() {
+                setup.toggle(&candidate);
+            }
+            let mut snap = snapshot();
+            snap.devices[1].online = false;
+            setup.update(snap);
+            assert_eq!(setup.chosen().len(), 1);
+            assert_eq!(setup.roles().len(), 1);
         }
-        setup.confirm_outputs().unwrap();
-        setup.back();
-        assert_eq!(setup.step(), &Step::ChooseOutputs);
-        setup.back();
-        assert_eq!(setup.step(), &Step::Overview);
-    }
 
-    #[test]
-    fn an_unplugged_output_leaves_the_draft() {
-        let mut setup = setup();
-        setup.begin();
-        for candidate in setup.candidates() {
-            setup.toggle(&candidate);
+        phase calibration_listens_where_you_sit_with_the_set_s_own_microphones;
+        {
+            let mut setup = SpeakerSetup::default();
+            let mut snap = snapshot();
+            snap.groups
+                .push(saved_group(SpeakerMemberStatus::Ready, true));
+            setup.update(snap);
+            let group = "ab".repeat(16);
+            assert_eq!(
+                setup.listening(&group).map(|microphone| microphone.device),
+                Some("desk".into()),
+                "this device is where you sit by default"
+            );
+            let extras = setup.extra_microphones(&group);
+            let listens = extras
+                .iter()
+                .map(|microphone| (microphone.device.as_str(), setup.also_listens(microphone)))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                listens,
+                [("shelf", true), ("phone", false), ("attic", false)],
+                "only the set's own devices listen too unless switched"
+            );
+            assert_eq!(
+                setup.calibrate_command(&group),
+                Ok(SpeakerCommand::StartCalibration {
+                    group: group.clone(),
+                    excluded: vec!["phone".into(), "attic".into()],
+                    listening: Some("desk".into()),
+                })
+            );
+            setup.set_listening("phone");
+            setup.set_also_listens("shelf", false);
+            setup.set_also_listens("desk", true);
+            assert_eq!(
+                setup.calibrate_command(&group),
+                Ok(SpeakerCommand::StartCalibration {
+                    group: group.clone(),
+                    excluded: vec!["shelf".into(), "attic".into()],
+                    listening: Some("phone".into()),
+                })
+            );
+            setup.set_listening("attic");
+            assert_eq!(
+                setup.listening(&group).map(|microphone| microphone.device),
+                Some("desk".into()),
+                "a declined microphone cannot be where you sit"
+            );
         }
-        let mut snap = snapshot();
-        snap.devices[1].online = false;
-        setup.update(snap);
-        assert_eq!(setup.chosen().len(), 1);
-        assert_eq!(setup.roles().len(), 1);
+
+        phase calibration_waits_for_every_speaker_and_a_microphone;
+        {
+            let mut setup = SpeakerSetup::default();
+            let mut snap = snapshot();
+            snap.groups
+                .push(saved_group(SpeakerMemberStatus::AwaitingConsent, true));
+            setup.update(snap.clone());
+            let group = "ab".repeat(16);
+            assert_eq!(
+                setup.calibrate_command(&group),
+                Err("Shelf: Waiting for approval on that device".into())
+            );
+            snap.groups[0] = saved_group(SpeakerMemberStatus::Ready, false);
+            setup.update(snap.clone());
+            assert_eq!(
+                setup.calibration_problem(&group),
+                Some("Calibrate Living room on desk, where it was set up".into())
+            );
+            snap.groups[0] = saved_group(SpeakerMemberStatus::Ready, true);
+            setup.update(snap.clone());
+            assert!(setup.calibrate_command(&group).is_ok());
+            snap.calibrations.push(CalibrationInfo {
+                group: group.clone(),
+                phase: CalibrationPhaseInfo::WaitingForMicrophones,
+                members: vec![CalibrationMemberInfo {
+                    device: "shelf".into(),
+                    label: "Shelf".into(),
+                    state: CalibrationMemberState::Waiting,
+                    before: SpeakerTrimInfo::default(),
+                    after: None,
+                }],
+                microphones: Vec::new(),
+                listening_label: None,
+                message: None,
+            });
+            setup.update(snap.clone());
+            assert!(setup.calibrate_command(&group).is_err());
+            snap.calibrations.clear();
+            snap.groups[0].microphones.clear();
+            setup.update(snap);
+            assert_eq!(
+                setup.calibrate_command(&group),
+                Err("None of your devices offers a microphone to calibrate with".into())
+            );
+        }
+
+        phase a_deleted_group_closes_its_calibration;
+        {
+            let mut setup = SpeakerSetup::default();
+            let mut snap = snapshot();
+            snap.groups
+                .push(saved_group(SpeakerMemberStatus::Ready, true));
+            setup.update(snap.clone());
+            setup.open_calibration(&"ab".repeat(16));
+            assert!(matches!(setup.step(), Step::Calibrate { .. }));
+            snap.groups.clear();
+            setup.update(snap);
+            assert_eq!(setup.step(), &Step::Overview);
+        }
     }
 
     fn saved_group(status: SpeakerMemberStatus, led_here: bool) -> SpeakerGroupInfo {
@@ -1007,115 +1121,5 @@ mod tests {
             local,
             status,
         }
-    }
-
-    #[test]
-    fn calibration_listens_where_you_sit_with_the_set_s_own_microphones() {
-        let mut setup = SpeakerSetup::default();
-        let mut snap = snapshot();
-        snap.groups
-            .push(saved_group(SpeakerMemberStatus::Ready, true));
-        setup.update(snap);
-        let group = "ab".repeat(16);
-        assert_eq!(
-            setup.listening(&group).map(|microphone| microphone.device),
-            Some("desk".into()),
-            "this device is where you sit by default"
-        );
-        let extras = setup.extra_microphones(&group);
-        let listens = extras
-            .iter()
-            .map(|microphone| (microphone.device.as_str(), setup.also_listens(microphone)))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            listens,
-            [("shelf", true), ("phone", false), ("attic", false)],
-            "only the set's own devices listen too unless switched"
-        );
-        assert_eq!(
-            setup.calibrate_command(&group),
-            Ok(SpeakerCommand::StartCalibration {
-                group: group.clone(),
-                excluded: vec!["phone".into(), "attic".into()],
-                listening: Some("desk".into()),
-            })
-        );
-        setup.set_listening("phone");
-        setup.set_also_listens("shelf", false);
-        setup.set_also_listens("desk", true);
-        assert_eq!(
-            setup.calibrate_command(&group),
-            Ok(SpeakerCommand::StartCalibration {
-                group: group.clone(),
-                excluded: vec!["shelf".into(), "attic".into()],
-                listening: Some("phone".into()),
-            })
-        );
-        setup.set_listening("attic");
-        assert_eq!(
-            setup.listening(&group).map(|microphone| microphone.device),
-            Some("desk".into()),
-            "a declined microphone cannot be where you sit"
-        );
-    }
-
-    #[test]
-    fn calibration_waits_for_every_speaker_and_a_microphone() {
-        let mut setup = SpeakerSetup::default();
-        let mut snap = snapshot();
-        snap.groups
-            .push(saved_group(SpeakerMemberStatus::AwaitingConsent, true));
-        setup.update(snap.clone());
-        let group = "ab".repeat(16);
-        assert_eq!(
-            setup.calibrate_command(&group),
-            Err("Shelf: Waiting for approval on that device".into())
-        );
-        snap.groups[0] = saved_group(SpeakerMemberStatus::Ready, false);
-        setup.update(snap.clone());
-        assert_eq!(
-            setup.calibration_problem(&group),
-            Some("Calibrate Living room on desk, where it was set up".into())
-        );
-        snap.groups[0] = saved_group(SpeakerMemberStatus::Ready, true);
-        setup.update(snap.clone());
-        assert!(setup.calibrate_command(&group).is_ok());
-        snap.calibrations.push(CalibrationInfo {
-            group: group.clone(),
-            phase: CalibrationPhaseInfo::WaitingForMicrophones,
-            members: vec![CalibrationMemberInfo {
-                device: "shelf".into(),
-                label: "Shelf".into(),
-                state: CalibrationMemberState::Waiting,
-                before: SpeakerTrimInfo::default(),
-                after: None,
-            }],
-            microphones: Vec::new(),
-            listening_label: None,
-            message: None,
-        });
-        setup.update(snap.clone());
-        assert!(setup.calibrate_command(&group).is_err());
-        snap.calibrations.clear();
-        snap.groups[0].microphones.clear();
-        setup.update(snap);
-        assert_eq!(
-            setup.calibrate_command(&group),
-            Err("None of your devices offers a microphone to calibrate with".into())
-        );
-    }
-
-    #[test]
-    fn a_deleted_group_closes_its_calibration() {
-        let mut setup = SpeakerSetup::default();
-        let mut snap = snapshot();
-        snap.groups
-            .push(saved_group(SpeakerMemberStatus::Ready, true));
-        setup.update(snap.clone());
-        setup.open_calibration(&"ab".repeat(16));
-        assert!(matches!(setup.step(), Step::Calibrate { .. }));
-        snap.groups.clear();
-        setup.update(snap);
-        assert_eq!(setup.step(), &Step::Overview);
     }
 }

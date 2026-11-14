@@ -3,26 +3,12 @@
 //! governance each of those is checked against.
 
 use super::{
-    ActionKind, Answer, Authority, AutoCommit, DeviceCert, Ed25519PublicKey, GovernedIdentity,
-    MembershipError, Principal, Role, Route, SignedOp, StatePeer, SystemTime, TreePath,
-    WorkspacePolicy, backend, err, held_units, now_ns, record_kind, record_surface, workspace,
-    workspace_host_actor,
+    ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MembershipError, Role, Route, SignedOp,
+    Standing, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, err, held_units, now_ns,
+    record_kind, record_surface, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
 
-/// A current member's authority in the workspace: who they are, their role, the
-/// workspace's policy as admitted, and whether their device is held to the
-/// foreign-device bound.
-#[derive(Clone, Debug)]
-pub struct MemberAuthority {
-    pub role: Role,
-    pub person: String,
-    pub policy: WorkspacePolicy,
-    pub foreign: bool,
-    /// The bound on a delegate's device, an agent's or a bot's: its
-    /// person's grants within its own, never above an Editor's.
-    pub delegate: Option<crate::state::ActingAs>,
-}
 /// `person`'s standing under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
 fn standing_of(
@@ -30,8 +16,8 @@ fn standing_of(
     person: String,
     foreign: bool,
     delegate: Option<crate::state::ActingAs>,
-) -> tilo_action_policy::Standing {
-    let mut standing = tilo_action_policy::Standing::person(policy, person);
+) -> Standing {
+    let mut standing = Standing::person(policy, person);
     if foreign {
         standing = standing.on_foreign_device();
     }
@@ -39,51 +25,6 @@ fn standing_of(
         standing = standing.acting_as(delegation.actor, delegation.grants);
     }
     standing
-}
-impl MemberAuthority {
-    /// The member's standing in the workspace, held to the foreign-device bound
-    /// on a foreign device: what a receiver decides their ops with.
-    #[must_use]
-    pub fn standing(self) -> tilo_action_policy::Standing {
-        standing_of(self.policy, self.person, self.foreign, self.delegate)
-    }
-
-    /// The member's authority, capped on a foreign device.
-    #[must_use]
-    pub fn authority(&self) -> Authority<'_> {
-        backend::access::member_authority(
-            &self.policy,
-            &self.person,
-            self.foreign,
-            self.delegate.as_ref(),
-        )
-    }
-    /// Whether the member may perform an action of `kind` at `node` at `now`.
-    #[must_use]
-    pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
-        self.authority()
-            .decide(node, kind, &tilo_action_policy::Context::at_time(now))
-            .answer
-            == Answer::Allow
-    }
-
-    /// Whether the member may run `action` of `resource` in `app` now: the
-    /// workspace's own grants for that app action decide it, whether the
-    /// member acts as a person's device, an agent or a bot.
-    #[must_use]
-    pub fn allows_app_action(
-        &self,
-        app: &str,
-        resource: &str,
-        action: &str,
-        now: SystemTime,
-    ) -> bool {
-        let Ok(named) = crate::workspace_membership::AppAction::new(app, app, resource, action)
-        else {
-            return false;
-        };
-        self.allows(&named.node(&self.policy.node()), ActionKind::Undoable, now)
-    }
 }
 
 impl StatePeer {
@@ -139,7 +80,9 @@ impl StatePeer {
     ) -> Result<(), String> {
         self.certificate(device, now)
             .map_err(|error| error.to_string())?;
-        self.role(device, now).map(drop)
+        self.role(device, now)
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 
     /// `device`'s certificate when it is one of the owner's devices, current
@@ -340,8 +283,9 @@ impl StatePeer {
             ))
         )
     }
-    /// The current authority of the device `source`: its person, role, the
-    /// workspace's policy and whether it is held to the foreign-device bound.
+    /// The standing of the device `source` now: its person, the workspace's
+    /// policy as admitted, the grants for its software, and whether it is held
+    /// to the foreign-device bound or to a delegate's.
     ///
     /// # Errors
     /// Returns [`MembershipError`] saying why the device holds no authority
@@ -351,10 +295,9 @@ impl StatePeer {
         &self,
         source: [u8; 32],
         now: SystemTime,
-    ) -> Result<MemberAuthority, MembershipError> {
-        let member = self.member(&source, now)?;
-        // `member` above already read the workspace document this policy is
-        // decided against, and the peer holds it for its whole life.
+    ) -> Result<Standing, MembershipError> {
+        // The workspace document read here is the one the policy is decided
+        // against, and the peer holds it for its whole life.
         let policy = self
             .core
             .workspace_doc
@@ -362,13 +305,8 @@ impl StatePeer {
             .ok_or(MembershipError::GovernanceMissing)?
             .workspace_policy(&self.core.workspace)
             .clone();
-        Ok(MemberAuthority {
-            role: member.role,
-            person: member.person,
-            policy,
-            foreign: member.foreign,
-            delegate: member.delegate,
-        })
+        let (person, foreign, delegate) = self.member_of(&source, now)?;
+        Ok(standing_of(policy, person, foreign, delegate))
     }
     /// The standing of the device `source` under `policy`, the workspace's
     /// own: [`Self::permissions`]'s standing, sharing the policy every
@@ -378,46 +316,35 @@ impl StatePeer {
         source: [u8; 32],
         policy: std::sync::Arc<WorkspacePolicy>,
         now: SystemTime,
-    ) -> Result<tilo_action_policy::Standing, MembershipError> {
-        let member = self.member(&source, now)?;
-        Ok(standing_of(
-            policy,
-            member.person,
-            member.foreign,
-            member.delegate,
-        ))
+    ) -> Result<Standing, MembershipError> {
+        let (person, foreign, delegate) = self.member_of(&source, now)?;
+        Ok(standing_of(policy, person, foreign, delegate))
     }
-    /// [`Self::permissions`] without the workspace's policy.
-    fn member(
+    /// Who the device `source` is at `now`, apart from the workspace's policy:
+    /// its person, whether its device is foreign, and the delegation it holds.
+    fn member_of(
         &self,
         source: &[u8; 32],
         now: SystemTime,
-    ) -> Result<backend::access::Member, MembershipError> {
-        let (role, agent) = backend::member::legacy(&self.core, source, now)?;
+    ) -> Result<(String, bool, Option<crate::state::ActingAs>), MembershipError> {
+        let (_, delegate) = backend::member::legacy(&self.core, source, now)?;
         let cert = self.certificate(source, now)?;
-        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        Ok(backend::access::Member {
-            role,
-            person: person.id().to_owned(),
-            foreign: backend::member::foreign(cert, &self.core.origin),
-            delegate: agent,
-        })
+        let person = hex::encode(cert.user_public_key);
+        Ok((
+            person,
+            backend::member::foreign(cert, &self.core.origin),
+            delegate,
+        ))
     }
     /// [`Self::permissions`] as the text refusal the workspace's own write paths
     /// report to the app that asked.
-    pub(crate) fn membership(
-        &self,
-        device: [u8; 32],
-        now: SystemTime,
-    ) -> Result<MemberAuthority, String> {
+    pub(crate) fn membership(&self, device: [u8; 32], now: SystemTime) -> Result<Standing, String> {
         self.permissions(device, now)
             .map_err(|error| error.to_string())
     }
     /// Whether the device `source` may run `action` of `resource` in `app`
     /// here now: the workspace's per-action permission for whatever its
-    /// principal is decides it
-    /// ([`MemberAuthority::allows_app_action`]), never the kind of
-    /// collaborator a device belongs to.
+    /// principal is decides it, never the kind of member a device belongs to.
     ///
     /// # Errors
     ///
@@ -432,7 +359,13 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, MembershipError> {
         let member = self.permissions(source, now)?;
-        Ok(member.allows_app_action(app, resource, action, now))
+        let node = TreePath::workspace(&member.policy.workspace)
+            .app(app)
+            .rest()
+            .resource(resource)
+            .rest()
+            .action(action);
+        Ok(member.allows(&node, ActionKind::Undoable, now))
     }
     /// The app surface this peer names in the changes it signs for `app`'s
     /// records, if it names one.
@@ -489,37 +422,17 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.membership(device, now)?;
-        backend::access::check_document_read(
-            &member.policy,
-            &member.person,
-            member.foreign,
-            member.delegate.as_ref(),
-            (&self.core.workspace, app, record),
+        if backend::access::document_read(
+            &member.authority(),
+            &self.core.workspace,
+            app,
+            record,
             now,
-        )
-    }
-    /// [`Self::check_document_read`] under `policy`, the workspace's current
-    /// policy, which a caller deciding many devices builds once rather than
-    /// once for each of them.
-    pub(crate) fn check_document_read_under(
-        &self,
-        policy: &WorkspacePolicy,
-        device: [u8; 32],
-        app: &str,
-        record: &str,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        let member = self
-            .member(&device, now)
-            .map_err(|error| error.to_string())?;
-        backend::access::check_document_read(
-            policy,
-            &member.person,
-            member.foreign,
-            member.delegate.as_ref(),
-            (&self.core.workspace, app, record),
-            now,
-        )
+        ) {
+            Ok(())
+        } else {
+            Err(format!("record read forbidden: {app}/{record}"))
+        }
     }
     pub fn has_governance(&self) -> bool {
         self.core.workspace_doc.is_some()
@@ -595,10 +508,12 @@ impl StatePeer {
     ) -> Result<&DeviceCert, MembershipError> {
         self.core.certificate_typed(source, now).map_err(Into::into)
     }
-    pub(super) fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
-        backend::member::legacy(&self.core, source, now)
-            .map(|(role, _)| role)
-            .map_err(err)
+    /// `source`'s role in the workspace now, capped for a delegate's device.
+    ///
+    /// # Errors
+    /// Why `source` holds no role here, as [`Self::permissions`].
+    pub fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, MembershipError> {
+        backend::member::legacy(&self.core, source, now).map(|(role, _)| role)
     }
 
     /// The bot actor `source` may show other names as: a bot device that
@@ -624,7 +539,7 @@ impl StatePeer {
         record: &str,
         envelope: &SignedOp,
         authorization_time: SystemTime,
-    ) -> Result<Option<MemberAuthority>, String> {
+    ) -> Result<Option<Standing>, String> {
         let member = self.membership(*source, authorization_time)?;
         // A change made with another version of the app than the workspace runs
         // is held: its author's desktop switches to the workspace's version, and
@@ -657,7 +572,7 @@ impl StatePeer {
         let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::Record {
-                room: &self.core.workspace,
+                workspace: &self.core.workspace,
                 app: app_id,
                 record,
             },

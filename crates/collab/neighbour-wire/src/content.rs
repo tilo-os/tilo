@@ -455,27 +455,38 @@ mod tests {
         }
     }
 
+    /// What `assembled` gives, by the name of the test each row was: what is wanted with the
+    /// pieces that came, and the whole content once they cover its total (none before that).
     #[test]
-    fn content_is_whole_once_its_pieces_cover_it_in_any_order() {
-        assert_eq!(
-            want(6, &[(3, b"def"), (0, b"abc")]).assembled().as_deref(),
-            Some(&b"abcdef"[..])
-        );
-        assert_eq!(want(0, &[(0, b"")]).assembled().as_deref(), Some(&b""[..]));
-    }
-
-    #[test]
-    fn content_with_a_gap_or_short_of_its_total_is_not_whole() {
-        assert!(want(9, &[(0, b"abc"), (6, b"ghi")]).assembled().is_none());
-        assert!(want(9, &[(0, b"abc"), (3, b"def")]).assembled().is_none());
-        assert!(
-            Want {
-                total: None,
-                ..want(3, &[(0, b"abc")])
+    fn wanted_content_is_whole_only_once_its_pieces_cover_its_total() {
+        let cases = [
+            (
+                "content_is_whole_once_its_pieces_cover_it_in_any_order",
+                vec![
+                    (want(6, &[(3, b"def"), (0, b"abc")]), Some(&b"abcdef"[..])),
+                    (want(0, &[(0, b"")]), Some(&b""[..])),
+                ],
+            ),
+            (
+                "content_with_a_gap_or_short_of_its_total_is_not_whole",
+                vec![
+                    (want(9, &[(0, b"abc"), (6, b"ghi")]), None),
+                    (want(9, &[(0, b"abc"), (3, b"def")]), None),
+                    (
+                        Want {
+                            total: None,
+                            ..want(3, &[(0, b"abc")])
+                        },
+                        None,
+                    ),
+                ],
+            ),
+        ];
+        for (case, wants) in cases {
+            for (row, (wanted, whole)) in wants.into_iter().enumerate() {
+                assert_eq!(wanted.assembled().as_deref(), whole, "{case}: row {row}");
             }
-            .assembled()
-            .is_none()
-        );
+        }
     }
 
     #[test]

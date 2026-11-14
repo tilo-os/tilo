@@ -875,47 +875,51 @@ pub fn key_latency_table(report: &Value) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_pattern_compiles() {
-        for pattern in [
-            &PAINT,
-            &ANSI,
-            &APP_FAILURE,
-            &RENDER_PHASE_FIELD,
-            &DIRECT_STATUS,
-            &KMS_MODE,
-            &KEY_LATENCY,
-            &KEY_UNANSWERED,
-            &LAUNCH_PACKAGE,
-            &LAUNCH_FIELD,
-        ] {
-            assert!(pattern.is_some());
+    tilo_test_env::scenario! {
+        fn the_report_reads_a_records_patterns_numbers_lines_and_rows;
+
+        phase every_pattern_compiles;
+        {
+            for pattern in [
+                &PAINT,
+                &ANSI,
+                &APP_FAILURE,
+                &RENDER_PHASE_FIELD,
+                &DIRECT_STATUS,
+                &KMS_MODE,
+                &KEY_LATENCY,
+                &KEY_UNANSWERED,
+                &LAUNCH_PACKAGE,
+                &LAUNCH_FIELD,
+            ] {
+                assert!(pattern.is_some());
+            }
         }
-    }
 
-    #[test]
-    fn percentiles_use_the_nearest_rank() {
-        assert_eq!(percentile(&[], 50), 0);
-        assert_eq!(percentile(&[18_000, 50_000], 50), 18_000);
-        assert_eq!(percentile(&[18_000, 50_000], 95), 50_000);
-        assert_eq!(percentile(&[5, 1, 3], 99), 5);
-    }
+        phase percentiles_use_the_nearest_rank;
+        {
+            assert_eq!(percentile(&[], 50), 0);
+            assert_eq!(percentile(&[18_000, 50_000], 50), 18_000);
+            assert_eq!(percentile(&[18_000, 50_000], 95), 50_000);
+            assert_eq!(percentile(&[5, 1, 3], 99), 5);
+        }
 
-    #[test]
-    fn lines_split_as_python_splits_them() {
-        assert_eq!(
-            split_lines("a\nb\r\nc\rd\u{2028}e\n"),
-            vec!["a", "b", "c", "d", "e"]
-        );
-        assert_eq!(split_lines(""), Vec::<&str>::new());
-        assert_eq!(split_lines("tail"), vec!["tail"]);
-    }
+        phase lines_split_as_python_splits_them;
+        {
+            assert_eq!(
+                split_lines("a\nb\r\nc\rd\u{2028}e\n"),
+                vec!["a", "b", "c", "d", "e"]
+            );
+            assert_eq!(split_lines(""), Vec::<&str>::new());
+            assert_eq!(split_lines("tail"), vec!["tail"]);
+        }
 
-    #[test]
-    fn csv_rows_follow_the_header_and_skip_blank_lines() {
-        let rows = csv_rows("a,b\n1,2\n\n\"3,x\",4\n5\n");
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[1]["a"], "3,x");
-        assert_eq!(rows[2].get("b"), None);
+        phase csv_rows_follow_the_header_and_skip_blank_lines;
+        {
+            let rows = csv_rows("a,b\n1,2\n\n\"3,x\",4\n5\n");
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[1]["a"], "3,x");
+            assert_eq!(rows[2].get("b"), None);
+        }
     }
 }

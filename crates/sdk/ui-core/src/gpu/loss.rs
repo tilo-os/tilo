@@ -242,37 +242,43 @@ mod tests {
         queue.submit([encoder.finish()]);
     }
 
-    #[test]
-    fn a_destroyed_device_is_lost_to_its_watch() {
-        let (context, id) = device();
-        let handle = &context.devices[id];
-        let mut watch = LossWatch::new(handle.loss_monitor());
-        assert!(watch.lost(&handle.device).is_none());
-        handle.device.destroy();
-        let _ = handle.device.poll(wgpu::PollType::Poll);
-        assert!(
-            watch
-                .lost(&handle.device)
-                .is_some_and(|reason| reason.contains("Destroyed")),
-            "wgpu's own report reaches the renderer through the watch"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A loss watch over a device of its own: a destroyed device is lost, late work is not.
+        /// Each phase was a test of its own and opens its own device.
+        fn a_loss_watch_tells_a_lost_device_from_a_slow_one;
 
-    #[test]
-    fn work_that_finishes_late_is_not_a_lost_device() {
-        let (context, id) = device();
-        let handle = &context.devices[id];
-        let mut watch = LossWatch::new(handle.loss_monitor());
-        let start = crate::time::now();
-        submit_empty(&handle.device, &handle.queue);
-        watch.unfinished_at(&handle.queue, start);
-        let _ = handle.device.poll(wgpu::PollType::wait_indefinitely());
-        assert!(
-            watch
-                .lost_at(&handle.device, start + NOT_PROGRESSING_AFTER)
-                .is_none(),
-            "a slow GPU that finished is still working"
-        );
+        phase a_destroyed_device_is_lost_to_its_watch;
+        {
+            let (context, id) = device();
+            let handle = &context.devices[id];
+            let mut watch = LossWatch::new(handle.loss_monitor());
+            assert!(watch.lost(&handle.device).is_none());
+            handle.device.destroy();
+            let _ = handle.device.poll(wgpu::PollType::Poll);
+            assert!(
+                watch
+                    .lost(&handle.device)
+                    .is_some_and(|reason| reason.contains("Destroyed")),
+                "wgpu's own report reaches the renderer through the watch"
+            );
+        }
+
+        phase work_that_finishes_late_is_not_a_lost_device;
+        {
+            let (context, id) = device();
+            let handle = &context.devices[id];
+            let mut watch = LossWatch::new(handle.loss_monitor());
+            let start = crate::time::now();
+            submit_empty(&handle.device, &handle.queue);
+            watch.unfinished_at(&handle.queue, start);
+            let _ = handle.device.poll(wgpu::PollType::wait_indefinitely());
+            assert!(
+                watch
+                    .lost_at(&handle.device, start + NOT_PROGRESSING_AFTER)
+                    .is_none(),
+                "a slow GPU that finished is still working"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]

@@ -26,7 +26,7 @@ pub(super) fn admit_task_delegation(admitted: &mut AdmittedJoinIdentity, task: T
 pub(super) fn verify_task_delegation(
     task: &TaskDelegation,
     cert: &tilo_user_identity::DeviceCert,
-    workspace: &str,
+    workspace: collab_types::WorkspaceId,
     now_ns: u64,
 ) -> Result<(), String> {
     task.verify(cert, workspace, now_ns)
@@ -102,7 +102,7 @@ pub(super) fn verify_task_agent_join(
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
     let (_, revoked, enrolled) =
-        authorize_join_certificate(route, &cert, trusted_devices, authority, None)?;
+        authorize_join_certificate(route, &cert, trusted_devices, authority)?;
     if revoked {
         return Err("the delegating device has been revoked".into());
     }
@@ -116,7 +116,13 @@ pub(super) fn verify_task_agent_join(
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     let task = TaskDelegation::decode(&presentation.delegation)
         .map_err(|error| format!("task delegation refused: {error}"))?;
-    verify_task_delegation(&task, &cert, &route.cluster_id, now_ns)?;
+    verify_task_delegation(
+        &task,
+        &cert,
+        collab_types::WorkspaceId::parse(&route.cluster_id)
+            .ok_or("the task's workspace is not a workspace id")?,
+        now_ns,
+    )?;
     task.verify_agent_signature(
         &runtime_identity::collaboration_join_signing_bytes(&route.cluster_id),
         &presentation.proof,
@@ -144,18 +150,15 @@ pub(super) fn joins_as(admitted: &AdmittedJoinIdentity, kind: &str) -> Result<()
 
 /// A task agent is no member: its verified task delegation is its
 /// certification, and it is in the roster it sees as itself.
-pub(super) fn self_row(admitted: &AdmittedJoinIdentity) -> Option<ui::collaboration::Collaborator> {
-    admitted
-        .task
-        .as_ref()
-        .map(|task| ui::collaboration::Collaborator {
-            id: format!("agent:{}", task.agent_id),
-            name: task.agent_id.clone(),
-            colour: None,
-            is_agent: true,
-            is_self: true,
-            joined_at: None,
-        })
+pub(super) fn self_row(admitted: &AdmittedJoinIdentity) -> Option<ui::collaboration::Member> {
+    admitted.task.as_ref().map(|task| {
+        collab_types::Member::of_software(
+            collab_types::MemberId::agent(task.agent_id.clone()),
+            task.agent_id.clone(),
+            None,
+        )
+        .claiming_self()
+    })
 }
 
 impl AppBrokerState {
@@ -217,7 +220,7 @@ pub(super) fn admit_kept_agent(
     let keeper = roster
         .keeper(workspace, agent_id)
         .ok_or_else(|| format!("the workspace keeps no active agent {agent_id}"))?;
-    if !same_person(&keeper, &admitted.principal_id) {
+    if !tilo_action_policy::same_person(&keeper, &admitted.principal_id) {
         return Err(format!(
             "the agent {agent_id} is {keeper}'s to launch, not this session's"
         ));
@@ -227,9 +230,4 @@ pub(super) fn admit_kept_agent(
     admitted.display_handle = Some(agent_id.to_string());
     admitted.session_delegated = true;
     Ok(())
-}
-
-/// Whether `a` and `b` name the same person, either spelling of their id.
-fn same_person(a: &str, b: &str) -> bool {
-    a.strip_prefix("person:").unwrap_or(a) == b.strip_prefix("person:").unwrap_or(b)
 }

@@ -90,9 +90,10 @@ mod tests {
         ui::framework::testing::search_source::<crate::resource::Containers>(engine_entries(engine))
     }
 
-    #[test]
-    fn search_finds_objects_and_logs_within_page_budgets() {
-        // --- phase: searches_objects_and_log_content_with_canonical_addresses ---
+    tilo_test_env::scenario! {
+        fn search_finds_objects_and_logs_within_page_budgets;
+
+        phase searches_objects_and_log_content_with_canonical_addresses;
         {
             let provider = source(&crate::model::sample_engine());
             let container = provider.search("web-frontend").remove(0);
@@ -108,14 +109,14 @@ mod tests {
             );
         }
 
-        // --- phase: limited_search_stops_materialising_at_budget ---
+        phase limited_search_stops_materialising_at_budget;
         {
             let provider = source(&crate::model::sample_engine());
             assert_eq!(provider.search_limited("", 3).len(), 3);
             assert!(provider.search_limited("", 0).is_empty());
         }
 
-        // --- phase: late_matches_are_reachable_without_exceeding_the_page_budget ---
+        phase late_matches_are_reachable_without_exceeding_the_page_budget;
         {
             let mut engine = Engine::default();
             for index in 0..300 {

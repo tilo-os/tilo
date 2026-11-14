@@ -23,6 +23,7 @@ use crate::workspaces::fixtures::{
     admit_view_reader, governor_with, project_standings, test_host_taking_part,
 };
 use crate::workspaces::sealed_records::fixtures::SealingMember;
+use tilo_relay_protocol::WorkspaceId;
 
 const APP: &str = "so.tilo.notes";
 const RECORD: &str = "welcome";
@@ -34,7 +35,7 @@ struct Lounge {
     relay: crate::workspaces::fixtures::TestHost,
     workspaces: crate::workspaces::Workspaces,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     governor_key: SigningKey,
     governor: DeviceCert,
     member_key: SigningKey,
@@ -46,7 +47,7 @@ struct Lounge {
 
 async fn lounge() -> Lounge {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -223,7 +224,7 @@ struct Doors {
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     agents: AgentRegistry,
     environments: crate::environment::EnvironmentRegistry,
-    resumes: std::sync::Mutex<HashMap<u64, ResumeLog>>,
+    resumes: std::sync::Mutex<HashMap<WorkspaceId, ResumeLog>>,
     agent: std::sync::OnceLock<String>,
     channel_reader: std::sync::atomic::AtomicBool,
     lag: Arc<Lag>,
@@ -238,7 +239,7 @@ struct Doors {
 impl Doors {
     fn over(
         runtime: &crate::workspace::SharedWorkspace,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         outbound: mpsc::Sender<Envelope>,
         disconnect: mpsc::Sender<()>,
     ) -> Self {
@@ -273,7 +274,6 @@ impl Doors {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: own_user,
-            own_device_cert: own_cert,
             own_device_public_key: &own_cert.device_public_key,
             app_serving: None,
             metrics: &self.metrics,

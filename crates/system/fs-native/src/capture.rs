@@ -1390,57 +1390,127 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn journal_batches_order_parents_removals_and_rescans() {
+    tilo_test_env::scenario! {
+        fn capture_orders_journal_batches_and_tells_moves_from_hard_links;
+
+        phase journal_batches_order_parents_removals_and_rescans;
         {
-            let order: HashMap<PathBuf, u64> = [("a/obj", 1), ("a", 5), ("ref", 3)]
+            {
+                let order: HashMap<PathBuf, u64> = [("a/obj", 1), ("a", 5), ("ref", 3)]
+                    .into_iter()
+                    .map(|(p, s)| (PathBuf::from(p), s))
+                    .collect();
+                let ops = order_ops(
+                    vec![
+                        ("ref".into(), node(NodeKind::File, 0)),
+                        ("a/obj".into(), node(NodeKind::File, 0)),
+                        ("a".into(), node(NodeKind::Dir, 0)),
+                    ],
+                    vec![],
+                    vec![],
+                    &order,
+                    false,
+                );
+                assert_eq!(paths(&ops), ["+a", "+a/obj", "+ref"]);
+            }
+            {
+                let order: HashMap<PathBuf, u64> = [("d", 1), ("d/x", 2), ("d/y/z", 3), ("d/y", 4)]
+                    .into_iter()
+                    .map(|(p, s)| (PathBuf::from(p), s))
+                    .collect();
+                let ops = order_ops(
+                    vec![],
+                    vec![
+                        ("d".into(), true),
+                        ("d/x".into(), false),
+                        ("d/y".into(), true),
+                        ("d/y/z".into(), false),
+                    ],
+                    vec![],
+                    &order,
+                    false,
+                );
+                assert_eq!(paths(&ops), ["-d/y/z", "-d/x", "-d/y", "-d"]);
+            }
+            {
+                let ops = order_ops(
+                    vec![
+                        ("late".into(), node(NodeKind::File, 20)),
+                        ("early".into(), node(NodeKind::File, 10)),
+                    ],
+                    vec![("gone".into(), false)],
+                    vec![],
+                    &HashMap::new(),
+                    true,
+                );
+                assert_eq!(paths(&ops), ["+early", "+late", "-gone"]);
+            }
+        }
+
+        phase moves_and_hard_links_are_told_apart_by_inode_and_path;
+        {
+            {
+                let before = prev(&[
+                    ("a", NodeKind::Dir, 1),
+                    ("a/f", NodeKind::File, 2),
+                    ("a/gone", NodeKind::File, 3),
+                    ("a/out", NodeKind::File, 4),
+                ]);
+                let mut order: HashMap<PathBuf, u64> = [
+                    ("z", 2),
+                    ("a", 2),
+                    ("a/gone", 1),
+                    ("elsewhere", 3),
+                    ("a/out", 3),
+                ]
                 .into_iter()
                 .map(|(p, s)| (PathBuf::from(p), s))
                 .collect();
-            let ops = order_ops(
-                vec![
-                    ("ref".into(), node(NodeKind::File, 0)),
-                    ("a/obj".into(), node(NodeKind::File, 0)),
-                    ("a".into(), node(NodeKind::Dir, 0)),
-                ],
-                vec![],
-                vec![],
-                &order,
-                false,
-            );
-            assert_eq!(paths(&ops), ["+a", "+a/obj", "+ref"]);
-        }
-        {
-            let order: HashMap<PathBuf, u64> = [("d", 1), ("d/x", 2), ("d/y/z", 3), ("d/y", 4)]
-                .into_iter()
-                .map(|(p, s)| (PathBuf::from(p), s))
-                .collect();
-            let ops = order_ops(
-                vec![],
-                vec![
-                    ("d".into(), true),
-                    ("d/x".into(), false),
-                    ("d/y".into(), true),
-                    ("d/y/z".into(), false),
-                ],
-                vec![],
-                &order,
-                false,
-            );
-            assert_eq!(paths(&ops), ["-d/y/z", "-d/x", "-d/y", "-d"]);
-        }
-        {
-            let ops = order_ops(
-                vec![
-                    ("late".into(), node(NodeKind::File, 20)),
-                    ("early".into(), node(NodeKind::File, 10)),
-                ],
-                vec![("gone".into(), false)],
-                vec![],
-                &HashMap::new(),
-                true,
-            );
-            assert_eq!(paths(&ops), ["+early", "+late", "-gone"]);
+                let (ups, rms, mv) = pair_moves(
+                    vec![
+                        at("z", NodeKind::Dir, 1),
+                        at("z/f", NodeKind::File, 2),
+                        at("elsewhere", NodeKind::File, 4),
+                    ],
+                    vec![
+                        ("a".into(), true),
+                        ("a/f".into(), false),
+                        ("a/gone".into(), false),
+                        ("a/out".into(), false),
+                    ],
+                    &before,
+                    &mut order,
+                );
+                assert!(ups.is_empty(), "the unchanged descendant is implied");
+                assert_eq!(rms, [(PathBuf::from("z/gone"), false)]);
+                assert_eq!(order.get(Path::new("z/gone")), Some(&1));
+                let ops = order_ops(ups, rms, mv, &order, false);
+                assert_eq!(paths(&ops), ["a>z", "-z/gone", "z/out>elsewhere"]);
+                let next = next_state(&before, &ops, false, Path::new("/nonexistent"));
+                let keys: Vec<&str> = next.keys().filter_map(|p| p.to_str()).collect();
+                assert_eq!(keys, ["elsewhere", "z", "z/f"]);
+            }
+            {
+                let before = prev(&[("a", NodeKind::File, 7)]);
+                let (ups, rms, mv) = pair_moves(
+                    vec![at("a", NodeKind::File, 7), at("b", NodeKind::File, 7)],
+                    vec![],
+                    &before,
+                    &mut HashMap::new(),
+                );
+                assert_eq!(ups.len(), 2);
+                assert!(rms.is_empty() && mv.is_empty());
+                // A file replaced by a directory of the same inode number is not a
+                // move either.
+                let (ups, _, mv) = pair_moves(
+                    vec![at("d", NodeKind::Dir, 7)],
+                    vec![("a".into(), false)],
+                    &before,
+                    &mut HashMap::new(),
+                );
+                assert_eq!(ups.len(), 1);
+                assert!(mv.is_empty());
+            }
         }
     }
 
@@ -1467,72 +1537,6 @@ mod tests {
                 ..node(kind, 0)
             },
         )
-    }
-
-    #[test]
-    fn moves_and_hard_links_are_told_apart_by_inode_and_path() {
-        {
-            let before = prev(&[
-                ("a", NodeKind::Dir, 1),
-                ("a/f", NodeKind::File, 2),
-                ("a/gone", NodeKind::File, 3),
-                ("a/out", NodeKind::File, 4),
-            ]);
-            let mut order: HashMap<PathBuf, u64> = [
-                ("z", 2),
-                ("a", 2),
-                ("a/gone", 1),
-                ("elsewhere", 3),
-                ("a/out", 3),
-            ]
-            .into_iter()
-            .map(|(p, s)| (PathBuf::from(p), s))
-            .collect();
-            let (ups, rms, mv) = pair_moves(
-                vec![
-                    at("z", NodeKind::Dir, 1),
-                    at("z/f", NodeKind::File, 2),
-                    at("elsewhere", NodeKind::File, 4),
-                ],
-                vec![
-                    ("a".into(), true),
-                    ("a/f".into(), false),
-                    ("a/gone".into(), false),
-                    ("a/out".into(), false),
-                ],
-                &before,
-                &mut order,
-            );
-            assert!(ups.is_empty(), "the unchanged descendant is implied");
-            assert_eq!(rms, [(PathBuf::from("z/gone"), false)]);
-            assert_eq!(order.get(Path::new("z/gone")), Some(&1));
-            let ops = order_ops(ups, rms, mv, &order, false);
-            assert_eq!(paths(&ops), ["a>z", "-z/gone", "z/out>elsewhere"]);
-            let next = next_state(&before, &ops, false, Path::new("/nonexistent"));
-            let keys: Vec<&str> = next.keys().filter_map(|p| p.to_str()).collect();
-            assert_eq!(keys, ["elsewhere", "z", "z/f"]);
-        }
-        {
-            let before = prev(&[("a", NodeKind::File, 7)]);
-            let (ups, rms, mv) = pair_moves(
-                vec![at("a", NodeKind::File, 7), at("b", NodeKind::File, 7)],
-                vec![],
-                &before,
-                &mut HashMap::new(),
-            );
-            assert_eq!(ups.len(), 2);
-            assert!(rms.is_empty() && mv.is_empty());
-            // A file replaced by a directory of the same inode number is not a
-            // move either.
-            let (ups, _, mv) = pair_moves(
-                vec![at("d", NodeKind::Dir, 7)],
-                vec![("a".into(), false)],
-                &before,
-                &mut HashMap::new(),
-            );
-            assert_eq!(ups.len(), 1);
-            assert!(mv.is_empty());
-        }
     }
 
     #[test]

@@ -83,84 +83,88 @@ pub fn humanized(app_id: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_apps_own_name_never_reads_as_an_id() {
-        assert_eq!(app_name("so.tilo.file-explorer"), "Files");
-        assert_eq!(app_name("org.example.TextEditor"), "Text Editor");
-        assert_eq!(app_name("org.example.file-explorer"), "File Explorer");
-        assert_eq!(app_name("org.example.Terminal"), "Terminal");
-        assert_eq!(app_name("org.example.Krita.desktop"), "Krita");
-        assert_eq!(app_name("  "), "");
-    }
+    tilo_test_env::scenario! {
+        fn a_row_is_named_by_its_app_and_title_never_by_an_id;
 
-    #[test]
-    fn a_program_named_by_its_path_is_named_by_the_program() {
-        // A sender with no installed app behind it is named by its file:
-        // never by the path it runs from.
-        assert_eq!(app_name("/usr/bin/notify-send"), "Notify Send");
-        assert_eq!(app_name("/usr/bin/gnome-text-editor"), "Gnome Text Editor");
-        assert_eq!(humanized("/opt/apps/thing"), "Thing");
-        assert_eq!(humanized("/"), "/", "a path with no file name stays itself");
-    }
+        phase an_apps_own_name_never_reads_as_an_id;
+        {
+            assert_eq!(app_name("so.tilo.file-explorer"), "Files");
+            assert_eq!(app_name("org.example.TextEditor"), "Text Editor");
+            assert_eq!(app_name("org.example.file-explorer"), "File Explorer");
+            assert_eq!(app_name("org.example.Terminal"), "Terminal");
+            assert_eq!(app_name("org.example.Krita.desktop"), "Krita");
+            assert_eq!(app_name("  "), "");
+        }
 
-    #[test]
-    fn an_apps_own_name_in_its_window_bar_is_not_a_title() {
-        // A window bar says the app's own words for it when the window holds
-        // no place: an app run without its list falls back to the id's words.
-        assert!(is_apps_own_name("so.tilo.file-explorer", "Files"));
-        assert!(is_apps_own_name("so.tilo.file-explorer", "file explorer"));
-        assert!(is_apps_own_name(
-            "host:so.tilo.file-explorer.desktop",
-            "File Explorer"
-        ));
-        assert!(!is_apps_own_name("so.tilo.file-explorer", "Downloads"));
-        assert!(!is_apps_own_name("so.tilo.notes", ""));
-        // A bar that writes the app's id is the app without its list, not a
-        // title: "org.example.Only" is the same window as "Only".
-        assert!(is_apps_own_name("org.example.Only", "org.example.Only"));
-        assert!(is_apps_own_name(
-            "host:org.example.Only.desktop",
-            "org.example.Only"
-        ));
-        assert_eq!(window_name("org.example.Only", "org.example.Only"), "Only");
-        assert_eq!(
-            window_name("so.tilo.file-explorer", "File Explorer"),
-            "Files"
-        );
-    }
+        phase a_program_named_by_its_path_is_named_by_the_program;
+        {
+            // A sender with no installed app behind it is named by its file:
+            // never by the path it runs from.
+            assert_eq!(app_name("/usr/bin/notify-send"), "Notify Send");
+            assert_eq!(app_name("/usr/bin/gnome-text-editor"), "Gnome Text Editor");
+            assert_eq!(humanized("/opt/apps/thing"), "Thing");
+            assert_eq!(humanized("/"), "/", "a path with no file name stays itself");
+        }
 
-    #[test]
-    fn a_host_apps_desktop_entry_is_the_app_it_opens() {
-        assert_eq!(app_name("host:so.tilo.notes.desktop"), "Notes");
-        assert_eq!(app_name("host:org.example.Editor.desktop"), "Editor");
-    }
+        phase an_apps_own_name_in_its_window_bar_is_not_a_title;
+        {
+            // A window bar says the app's own words for it when the window holds
+            // no place: an app run without its list falls back to the id's words.
+            assert!(is_apps_own_name("so.tilo.file-explorer", "Files"));
+            assert!(is_apps_own_name("so.tilo.file-explorer", "file explorer"));
+            assert!(is_apps_own_name(
+                "host:so.tilo.file-explorer.desktop",
+                "File Explorer"
+            ));
+            assert!(!is_apps_own_name("so.tilo.file-explorer", "Downloads"));
+            assert!(!is_apps_own_name("so.tilo.notes", ""));
+            // A bar that writes the app's id is the app without its list, not a
+            // title: "org.example.Only" is the same window as "Only".
+            assert!(is_apps_own_name("org.example.Only", "org.example.Only"));
+            assert!(is_apps_own_name(
+                "host:org.example.Only.desktop",
+                "org.example.Only"
+            ));
+            assert_eq!(window_name("org.example.Only", "org.example.Only"), "Only");
+            assert_eq!(
+                window_name("so.tilo.file-explorer", "File Explorer"),
+                "Files"
+            );
+        }
 
-    #[test]
-    fn a_window_is_the_app_and_its_own_title_never_an_id() {
-        assert_eq!(
-            window_name("so.tilo.notes", "Groceries"),
-            "Groceries — Notes",
-            "the window's own title, then the app it shows"
-        );
-        assert_eq!(
-            window_name("host:so.tilo.file-explorer.desktop", "Downloads"),
-            "Downloads — Files"
-        );
-        assert_eq!(
-            window_name("org.example.Terminal", "quinten@host: ~"),
-            "quinten@host: ~ — Terminal",
-            "a window claiming no app id the device knows still reads as words"
-        );
-    }
+        phase a_host_apps_desktop_entry_is_the_app_it_opens;
+        {
+            assert_eq!(app_name("host:so.tilo.notes.desktop"), "Notes");
+            assert_eq!(app_name("host:org.example.Editor.desktop"), "Editor");
+        }
 
-    #[test]
-    fn a_window_with_no_title_is_the_app_alone() {
-        assert_eq!(window_name("so.tilo.notes", ""), "Notes");
-        assert_eq!(window_name("so.tilo.notes", "   "), "Notes");
-        assert_eq!(
-            window_name("so.tilo.notes", "Notes"),
-            "Notes",
-            "the app's name is not said twice"
-        );
+        phase a_window_is_the_app_and_its_own_title_never_an_id;
+        {
+            assert_eq!(
+                window_name("so.tilo.notes", "Groceries"),
+                "Groceries — Notes",
+                "the window's own title, then the app it shows"
+            );
+            assert_eq!(
+                window_name("host:so.tilo.file-explorer.desktop", "Downloads"),
+                "Downloads — Files"
+            );
+            assert_eq!(
+                window_name("org.example.Terminal", "quinten@host: ~"),
+                "quinten@host: ~ — Terminal",
+                "a window claiming no app id the device knows still reads as words"
+            );
+        }
+
+        phase a_window_with_no_title_is_the_app_alone;
+        {
+            assert_eq!(window_name("so.tilo.notes", ""), "Notes");
+            assert_eq!(window_name("so.tilo.notes", "   "), "Notes");
+            assert_eq!(
+                window_name("so.tilo.notes", "Notes"),
+                "Notes",
+                "the app's name is not said twice"
+            );
+        }
     }
 }

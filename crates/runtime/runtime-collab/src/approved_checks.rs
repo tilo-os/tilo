@@ -420,40 +420,125 @@ mod tests {
         }
     }
 
-    #[test]
-    fn approved_check_report_closed_vocabulary_and_bounds() {
-        let value = report(1);
-        assert_eq!(Report::decode(&value.encode().unwrap()).unwrap(), value);
-        for phase in ["", " ", "line\nbreak", &"é".repeat(129)] {
-            let mut changed = value.clone();
-            changed.observation = ReportObservation::Reported {
-                phase: phase.into(),
-                completed: None,
-                total: None,
+    tilo_test_env::scenario! {
+        fn approved_check_messages_are_closed_and_bounded;
+
+        phase approved_check_report_closed_vocabulary_and_bounds;
+        {
+            let value = report(1);
+            assert_eq!(Report::decode(&value.encode().unwrap()).unwrap(), value);
+            for phase in ["", " ", "line\nbreak", &"é".repeat(129)] {
+                let mut changed = value.clone();
+                changed.observation = ReportObservation::Reported {
+                    phase: phase.into(),
+                    completed: None,
+                    total: None,
+                };
+                assert!(changed.encode().is_err());
+            }
+            assert!(report(0).encode().is_err());
+            let mut bad = serde_json::to_value(&value).unwrap();
+            bad["authority"] = serde_json::json!(true);
+            assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
+            let mut bad = serde_json::to_value(&value).unwrap();
+            bad["observation"]["argv"] = serde_json::json!(["anything"]);
+            assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
+            bad["observation"] =
+                serde_json::json!({"kind":"reported", "phase":"Routing", "completed":11, "total":10});
+            assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
+            assert!(Report::decode(&vec![b' '; MAX_REPORT_BYTES + 1]).is_err());
+            let disabled = Report {
+                observation: ReportObservation::Disabled {
+                    reason: LaneRefusal::Backpressure,
+                },
+                ..value
             };
-            assert!(changed.encode().is_err());
+            assert_eq!(
+                Report::decode(&disabled.encode().unwrap()).unwrap(),
+                disabled
+            );
         }
-        assert!(report(0).encode().is_err());
-        let mut bad = serde_json::to_value(&value).unwrap();
-        bad["authority"] = serde_json::json!(true);
-        assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
-        let mut bad = serde_json::to_value(&value).unwrap();
-        bad["observation"]["argv"] = serde_json::json!(["anything"]);
-        assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
-        bad["observation"] =
-            serde_json::json!({"kind":"reported", "phase":"Routing", "completed":11, "total":10});
-        assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
-        assert!(Report::decode(&vec![b' '; MAX_REPORT_BYTES + 1]).is_err());
-        let disabled = Report {
-            observation: ReportObservation::Disabled {
-                reason: LaneRefusal::Backpressure,
-            },
-            ..value
-        };
-        assert_eq!(
-            Report::decode(&disabled.encode().unwrap()).unwrap(),
-            disabled
-        );
+
+        phase approved_check_request_refuses_execution_inputs_and_ambiguous_identities;
+        {
+            let request = Request {
+                version: 1,
+                invocation: ID.into(),
+                check_id: "regression".into(),
+            };
+            let bytes = request.encode().unwrap();
+            assert_eq!(Request::decode(&bytes).unwrap(), request);
+            for extra in [
+                "command",
+                "argv",
+                "environment",
+                "checkout",
+                "host",
+                "certificate",
+            ] {
+                let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                value[extra] = serde_json::json!("caller-supplied");
+                assert!(Request::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+            }
+            let duplicate = format!(
+                r#"{{"version":1,"invocation":"{ID}","check_id":"regression","check_id":"other"}}"#
+            );
+            assert!(Request::decode(duplicate.as_bytes()).is_err());
+            for check_id in ["../regression", "regression;id", "-option", "", "run test"] {
+                assert!(
+                    Request {
+                        check_id: check_id.into(),
+                        ..request.clone()
+                    }
+                    .encode()
+                    .is_err()
+                );
+            }
+            assert!(Request::decode(&vec![b' '; MAX_REQUEST_BYTES + 1]).is_err());
+        }
+
+        phase approved_check_receipt_carries_a_bounded_supervision_failure_beside_empty_streams;
+        {
+            let mut value = receipt();
+            value.outcome = Outcome::Failed;
+            value.exit_code = None;
+            value.cleanup_observed = false;
+            value.stdout = value.stderr.clone();
+            value.failure = Some(Diagnostic {
+                sha256: Some("f".repeat(64)),
+                preview: "user scope bus unavailable".into(),
+                truncated: false,
+            });
+            let encoded = value.encode().unwrap();
+            assert_eq!(Receipt::decode(&encoded).unwrap(), value);
+            let duplicate = String::from_utf8(encoded).unwrap().replacen(
+                "\"failure\":",
+                "\"failure\":null,\"failure\":",
+                1,
+            );
+            assert!(Receipt::decode(duplicate.as_bytes()).is_err());
+            for invalid in [
+                Diagnostic {
+                    sha256: None,
+                    preview: "unbound reason".into(),
+                    truncated: false,
+                },
+                Diagnostic {
+                    sha256: Some("F".repeat(64)),
+                    preview: "reason".into(),
+                    truncated: false,
+                },
+                Diagnostic {
+                    sha256: Some("f".repeat(64)),
+                    preview: "x".repeat(MAX_PREVIEW_BYTES + 1),
+                    truncated: true,
+                },
+            ] {
+                value.failure = Some(invalid);
+                assert!(value.encode().is_err());
+                assert!(Receipt::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+            }
+        }
     }
 
     #[cfg(feature = "client")]
@@ -498,128 +583,92 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "client")]
-    #[test]
-    fn approved_check_report_stream_keeps_terminal_receipt_separate_and_final() {
-        let observed = report(1);
-        let terminal = receipt();
-        let mut stream = wire_reports(vec![
-            CheckProgress::Report(observed.encode().unwrap()),
-            CheckProgress::Receipt(terminal.encode().unwrap()),
-            CheckProgress::Report(report(2).encode().unwrap()),
-        ]);
-        assert_eq!(
-            stream.read().unwrap(),
-            ReportedProgressUpdate::Report(observed)
-        );
-        assert_eq!(
-            stream.read().unwrap(),
-            ReportedProgressUpdate::Receipt(Box::new(terminal))
-        );
-        assert!(
-            stream.read().is_err(),
-            "late observation cannot replace receipt"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[cfg(feature = "client")]
+        fn approved_check_report_streams;
 
-    #[cfg(feature = "client")]
-    #[test]
-    fn approved_check_disabled_report_lane_accepts_only_terminal_receipt() {
-        let disabled = Report {
-            observation: ReportObservation::Disabled {
-                reason: LaneRefusal::InvalidReport,
-            },
-            ..report(1)
-        };
-        let mut stream = wire_reports(vec![
-            CheckProgress::Report(disabled.encode().unwrap()),
-            CheckProgress::Receipt(receipt().encode().unwrap()),
-        ]);
-        assert_eq!(
-            stream.read().unwrap(),
-            ReportedProgressUpdate::Report(disabled.clone())
-        );
-        assert_eq!(
-            stream.read().unwrap(),
-            ReportedProgressUpdate::Receipt(Box::new(receipt()))
-        );
-        let mut stream = wire_reports(vec![
-            CheckProgress::Report(disabled.encode().unwrap()),
-            CheckProgress::Report(report(2).encode().unwrap()),
-        ]);
-        assert!(matches!(
-            stream.read().unwrap(),
-            ReportedProgressUpdate::Report(_)
-        ));
-        assert!(
-            stream.read().is_err(),
-            "disabled observation lane cannot restart"
-        );
-    }
-
-    #[cfg(feature = "client")]
-    #[test]
-    fn approved_check_report_stream_refuses_empty_foreign_stale_and_oversized() {
-        let mut foreign = report(1);
-        foreign.invocation = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
-        for frame in [
-            CheckProgress::Report(Vec::new()),
-            CheckProgress::Receipt(Vec::new()),
-            CheckProgress::Report(foreign.encode().unwrap()),
-            CheckProgress::Report(vec![b' '; MAX_REPORT_BYTES + 1]),
-            CheckProgress::Failed("x".repeat(MAX_REPORT_BYTES + 1)),
-        ] {
-            let mut stream = wire_reports(vec![frame]);
-            assert!(stream.read().is_err());
-            assert!(stream.read().is_err(), "refusal freezes lane");
-        }
-        let mut stream = wire_reports(vec![
-            CheckProgress::Report(report(3).encode().unwrap()),
-            CheckProgress::Report(report(3).encode().unwrap()),
-        ]);
-        assert!(matches!(
-            stream.read().unwrap(),
-            ReportedProgressUpdate::Report(_)
-        ));
-        assert!(stream.read().is_err());
-    }
-
-    #[test]
-    fn approved_check_request_refuses_execution_inputs_and_ambiguous_identities() {
-        let request = Request {
-            version: 1,
-            invocation: ID.into(),
-            check_id: "regression".into(),
-        };
-        let bytes = request.encode().unwrap();
-        assert_eq!(Request::decode(&bytes).unwrap(), request);
-        for extra in [
-            "command",
-            "argv",
-            "environment",
-            "checkout",
-            "host",
-            "certificate",
-        ] {
-            let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            value[extra] = serde_json::json!("caller-supplied");
-            assert!(Request::decode(&serde_json::to_vec(&value).unwrap()).is_err());
-        }
-        let duplicate = format!(
-            r#"{{"version":1,"invocation":"{ID}","check_id":"regression","check_id":"other"}}"#
-        );
-        assert!(Request::decode(duplicate.as_bytes()).is_err());
-        for check_id in ["../regression", "regression;id", "-option", "", "run test"] {
+        phase approved_check_report_stream_keeps_terminal_receipt_separate_and_final;
+        {
+            let observed = report(1);
+            let terminal = receipt();
+            let mut stream = wire_reports(vec![
+                CheckProgress::Report(observed.encode().unwrap()),
+                CheckProgress::Receipt(terminal.encode().unwrap()),
+                CheckProgress::Report(report(2).encode().unwrap()),
+            ]);
+            assert_eq!(
+                stream.read().unwrap(),
+                ReportedProgressUpdate::Report(observed)
+            );
+            assert_eq!(
+                stream.read().unwrap(),
+                ReportedProgressUpdate::Receipt(Box::new(terminal))
+            );
             assert!(
-                Request {
-                    check_id: check_id.into(),
-                    ..request.clone()
-                }
-                .encode()
-                .is_err()
+                stream.read().is_err(),
+                "late observation cannot replace receipt"
             );
         }
-        assert!(Request::decode(&vec![b' '; MAX_REQUEST_BYTES + 1]).is_err());
+
+        phase approved_check_disabled_report_lane_accepts_only_terminal_receipt;
+        {
+            let disabled = Report {
+                observation: ReportObservation::Disabled {
+                    reason: LaneRefusal::InvalidReport,
+                },
+                ..report(1)
+            };
+            let mut stream = wire_reports(vec![
+                CheckProgress::Report(disabled.encode().unwrap()),
+                CheckProgress::Receipt(receipt().encode().unwrap()),
+            ]);
+            assert_eq!(
+                stream.read().unwrap(),
+                ReportedProgressUpdate::Report(disabled.clone())
+            );
+            assert_eq!(
+                stream.read().unwrap(),
+                ReportedProgressUpdate::Receipt(Box::new(receipt()))
+            );
+            let mut stream = wire_reports(vec![
+                CheckProgress::Report(disabled.encode().unwrap()),
+                CheckProgress::Report(report(2).encode().unwrap()),
+            ]);
+            assert!(matches!(
+                stream.read().unwrap(),
+                ReportedProgressUpdate::Report(_)
+            ));
+            assert!(
+                stream.read().is_err(),
+                "disabled observation lane cannot restart"
+            );
+        }
+
+        phase approved_check_report_stream_refuses_empty_foreign_stale_and_oversized;
+        {
+            let mut foreign = report(1);
+            foreign.invocation = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
+            for frame in [
+                CheckProgress::Report(Vec::new()),
+                CheckProgress::Receipt(Vec::new()),
+                CheckProgress::Report(foreign.encode().unwrap()),
+                CheckProgress::Report(vec![b' '; MAX_REPORT_BYTES + 1]),
+                CheckProgress::Failed("x".repeat(MAX_REPORT_BYTES + 1)),
+            ] {
+                let mut stream = wire_reports(vec![frame]);
+                assert!(stream.read().is_err());
+                assert!(stream.read().is_err(), "refusal freezes lane");
+            }
+            let mut stream = wire_reports(vec![
+                CheckProgress::Report(report(3).encode().unwrap()),
+                CheckProgress::Report(report(3).encode().unwrap()),
+            ]);
+            assert!(matches!(
+                stream.read().unwrap(),
+                ReportedProgressUpdate::Report(_)
+            ));
+            assert!(stream.read().is_err());
+        }
     }
 
     #[test]
@@ -663,48 +712,5 @@ mod tests {
             .replacen('{', r#"{"version":1,"#, 1);
         assert!(Receipt::decode(duplicate.as_bytes()).is_err());
         assert!(Receipt::decode(&vec![b' '; MAX_RECEIPT_BYTES + 1]).is_err());
-    }
-
-    #[test]
-    fn approved_check_receipt_carries_a_bounded_supervision_failure_beside_empty_streams() {
-        let mut value = receipt();
-        value.outcome = Outcome::Failed;
-        value.exit_code = None;
-        value.cleanup_observed = false;
-        value.stdout = value.stderr.clone();
-        value.failure = Some(Diagnostic {
-            sha256: Some("f".repeat(64)),
-            preview: "user scope bus unavailable".into(),
-            truncated: false,
-        });
-        let encoded = value.encode().unwrap();
-        assert_eq!(Receipt::decode(&encoded).unwrap(), value);
-        let duplicate = String::from_utf8(encoded).unwrap().replacen(
-            "\"failure\":",
-            "\"failure\":null,\"failure\":",
-            1,
-        );
-        assert!(Receipt::decode(duplicate.as_bytes()).is_err());
-        for invalid in [
-            Diagnostic {
-                sha256: None,
-                preview: "unbound reason".into(),
-                truncated: false,
-            },
-            Diagnostic {
-                sha256: Some("F".repeat(64)),
-                preview: "reason".into(),
-                truncated: false,
-            },
-            Diagnostic {
-                sha256: Some("f".repeat(64)),
-                preview: "x".repeat(MAX_PREVIEW_BYTES + 1),
-                truncated: true,
-            },
-        ] {
-            value.failure = Some(invalid);
-            assert!(value.encode().is_err());
-            assert!(Receipt::decode(&serde_json::to_vec(&value).unwrap()).is_err());
-        }
     }
 }

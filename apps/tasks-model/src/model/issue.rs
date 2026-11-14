@@ -228,6 +228,11 @@ pub struct Issue {
     pub author: String,
     #[model(readonly)]
     pub created_ms: i64,
+    /// Source
+    ///
+    /// The page the issue is read at elsewhere: the tracker or repository
+    /// issue it was written from.
+    pub url: Option<String>,
 }
 
 impl Issue {

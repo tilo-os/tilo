@@ -250,14 +250,16 @@ mod tests {
     use super::*;
     use crate::widget::Spacer;
 
-    #[test]
-    fn shot_frames_follow_the_theme_scale_and_lay_out_inside_the_viewport() {
-        // phase: text_scale_follows_the_theme
+    tilo_test_env::scenario! {
+        fn shot_frames_follow_the_theme_scale_and_lay_out_inside_the_viewport;
+
+        phase text_scale_follows_the_theme;
         {
             let frame = ShotFrame::new((100, 100), Theme::dark().with_text_scale(2.0));
             assert!((frame.text.text_scale() - 2.0).abs() < f32::EPSILON);
         }
-        // phase: the_widget_is_laid_out_inside_the_viewport
+
+        phase the_widget_is_laid_out_inside_the_viewport;
         {
             let mut widget = Spacer::new();
             let mut frame = ShotFrame::new((320, 200), Theme::dark());

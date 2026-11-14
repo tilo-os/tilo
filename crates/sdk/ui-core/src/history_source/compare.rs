@@ -101,9 +101,10 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn group_comparison_materialises_exact_states_and_refuses_empty_selection() {
-        // phase: group_comparison_materializes_exact_before_and_after_states
+    tilo_test_env::scenario! {
+        fn group_comparison_materialises_exact_states_and_refuses_empty_selection;
+
+        phase group_comparison_materializes_exact_before_and_after_states;
         {
             let mut doc = AutoCommit::new();
             doc.put(automerge::ROOT, "title", "before").unwrap();
@@ -149,7 +150,8 @@ mod tests {
                 Some("done")
             );
         }
-        // phase: unknown_or_empty_selection_is_refused
+
+        phase unknown_or_empty_selection_is_refused;
         {
             let mut doc = AutoCommit::new();
             assert_eq!(

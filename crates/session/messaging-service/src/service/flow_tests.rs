@@ -304,76 +304,114 @@ fn a_link_is_finished_only_with_its_own_token_and_then_reviewed_once() {
     );
 }
 
-#[test]
-fn reviewing_needs_a_valid_name_and_a_request_the_vault_cannot_make_ends_the_enrollment() {
-    let rig = rig();
-    let Driven {
-        flow, cancelled, ..
-    } = drive::<LINK_THEN_GRANT>(&rig);
-    let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
-    assert_eq!(
-        rig.runtime
-            .block_on(flow.clone().review(pairing.account.clone(), "Phone".into()))
-            .err(),
-        Some(SendError::Revoked),
-        "a Signal account is reviewed only after its link is verified"
-    );
-    assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Linking);
-    rig.runtime
-        .block_on(
-            flow.clone()
-                .finish(pairing.account.clone(), "scanned".into()),
-        )
-        .unwrap();
-    for name in ["", "  ", "line\nbreak"] {
+tilo_test_env::scenario! {
+    fn an_enrollment_is_reviewed_chosen_and_retired_by_its_flow;
+
+    phase reviewing_needs_a_valid_name_and_a_request_the_vault_cannot_make_ends_the_enrollment;
+    {
+        let rig = rig();
+        let Driven {
+            flow, cancelled, ..
+        } = drive::<LINK_THEN_GRANT>(&rig);
+        let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
         assert_eq!(
             rig.runtime
-                .block_on(flow.clone().review(pairing.account.clone(), name.into()))
+                .block_on(flow.clone().review(pairing.account.clone(), "Phone".into()))
                 .err(),
-            Some(SendError::InvalidRequest),
-            "{name:?}"
+            Some(SendError::Revoked),
+            "a Signal account is reviewed only after its link is verified"
+        );
+        assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Linking);
+        rig.runtime
+            .block_on(
+                flow.clone()
+                    .finish(pairing.account.clone(), "scanned".into()),
+            )
+            .unwrap();
+        for name in ["", "  ", "line\nbreak"] {
+            assert_eq!(
+                rig.runtime
+                    .block_on(flow.clone().review(pairing.account.clone(), name.into()))
+                    .err(),
+                Some(SendError::InvalidRequest),
+                "{name:?}"
+            );
+        }
+        // This vault keeps its key in a file, never system custody: no key is
+        // prepared, so no request is made and the enrollment ends.
+        assert_eq!(
+            rig.runtime
+                .block_on(flow.clone().review(pairing.account.clone(), "Phone".into()))
+                .err(),
+            Some(SendError::Revoked)
+        );
+        assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Interrupted);
+        assert_eq!(cancelled.load(Atomic::SeqCst), 1, "the link was stopped");
+    }
+
+    phase a_sim_is_chosen_from_this_scan_only_and_closing_the_chooser_answers_nothing;
+    {
+        let rig = rig();
+        let Driven { flow, .. } = drive::<CHOOSE_THEN_GRANT>(&rig);
+        let choices = rig.runtime.block_on(flow.clone().choices()).unwrap();
+        assert_eq!(choices.len(), 2);
+        assert_ne!(choices[0].selection, choices[1].selection);
+        assert_eq!(
+            flow.select("not-offered").err(),
+            Some(SendError::InvalidRequest)
+        );
+        let choices = rig.runtime.block_on(flow.clone().choices()).unwrap();
+        flow.cancel_choices();
+        assert_eq!(
+            flow.select(&choices[0].selection).err(),
+            Some(SendError::Revoked),
+            "a closed chooser selects nothing"
+        );
+        let choices = rig.runtime.block_on(flow.clone().choices()).unwrap();
+        let review = flow.select(&choices[1].selection).unwrap();
+        assert_eq!(review.number.as_deref(), Some(choices[1].label.as_str()));
+        assert_eq!(review.generation, 1);
+        assert_eq!(review.scope, format!("signal:{}", review.account.account));
+        assert_eq!(phase(&flow, &review.account), EnrollmentPhase::Review);
+        assert_eq!(
+            rig.runtime.block_on(flow.choices()).err(),
+            Some(SendError::AlreadyReserved)
         );
     }
-    // This vault keeps its key in a file, never system custody: no key is
-    // prepared, so no request is made and the enrollment ends.
-    assert_eq!(
-        rig.runtime
-            .block_on(flow.clone().review(pairing.account.clone(), "Phone".into()))
-            .err(),
-        Some(SendError::Revoked)
-    );
-    assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Interrupted);
-    assert_eq!(cancelled.load(Atomic::SeqCst), 1, "the link was stopped");
-}
 
-#[test]
-fn a_sim_is_chosen_from_this_scan_only_and_closing_the_chooser_answers_nothing() {
-    let rig = rig();
-    let Driven { flow, .. } = drive::<CHOOSE_THEN_GRANT>(&rig);
-    let choices = rig.runtime.block_on(flow.clone().choices()).unwrap();
-    assert_eq!(choices.len(), 2);
-    assert_ne!(choices[0].selection, choices[1].selection);
-    assert_eq!(
-        flow.select("not-offered").err(),
-        Some(SendError::InvalidRequest)
-    );
-    let choices = rig.runtime.block_on(flow.clone().choices()).unwrap();
-    flow.cancel_choices();
-    assert_eq!(
-        flow.select(&choices[0].selection).err(),
-        Some(SendError::Revoked),
-        "a closed chooser selects nothing"
-    );
-    let choices = rig.runtime.block_on(flow.clone().choices()).unwrap();
-    let review = flow.select(&choices[1].selection).unwrap();
-    assert_eq!(review.number.as_deref(), Some(choices[1].label.as_str()));
-    assert_eq!(review.generation, 1);
-    assert_eq!(review.scope, format!("signal:{}", review.account.account));
-    assert_eq!(phase(&flow, &review.account), EnrollmentPhase::Review);
-    assert_eq!(
-        rig.runtime.block_on(flow.choices()).err(),
-        Some(SendError::AlreadyReserved)
-    );
+    phase cancelling_or_ending_the_session_or_breaking_the_link_retires_the_enrollment;
+    {
+        let rig = rig();
+        let Driven {
+            flow,
+            cancelled,
+            alive,
+            ..
+        } = drive::<LINK_THEN_GRANT>(&rig);
+        let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
+        flow.cancel(&pairing.account);
+        assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Interrupted);
+        assert_eq!(cancelled.load(Atomic::SeqCst), 1);
+        let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
+        *alive.lock().unwrap() = false;
+        flow.check();
+        assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Interrupted);
+        *alive.lock().unwrap() = true;
+        let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
+        rig.service.custody.session(true, 2);
+        flow.check();
+        assert_eq!(
+            phase(&flow, &pairing.account),
+            EnrollmentPhase::Interrupted,
+            "an enrollment admitted under an ended session does not continue"
+        );
+        rig.service.custody.session(false, 2);
+        assert_eq!(
+            rig.runtime.block_on(flow.begin()).err(),
+            Some(SendError::Revoked),
+            "nothing is admitted while the session is not usable"
+        );
+    }
 }
 
 #[test]
@@ -384,39 +422,5 @@ fn a_service_that_links_first_offers_only_its_own_first_step() {
     assert_eq!(
         rig.runtime.block_on(link.choices()).err(),
         Some(SendError::Unavailable)
-    );
-}
-
-#[test]
-fn cancelling_or_ending_the_session_or_breaking_the_link_retires_the_enrollment() {
-    let rig = rig();
-    let Driven {
-        flow,
-        cancelled,
-        alive,
-        ..
-    } = drive::<LINK_THEN_GRANT>(&rig);
-    let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
-    flow.cancel(&pairing.account);
-    assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Interrupted);
-    assert_eq!(cancelled.load(Atomic::SeqCst), 1);
-    let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
-    *alive.lock().unwrap() = false;
-    flow.check();
-    assert_eq!(phase(&flow, &pairing.account), EnrollmentPhase::Interrupted);
-    *alive.lock().unwrap() = true;
-    let pairing = rig.runtime.block_on(flow.clone().begin()).unwrap();
-    rig.service.custody.session(true, 2);
-    flow.check();
-    assert_eq!(
-        phase(&flow, &pairing.account),
-        EnrollmentPhase::Interrupted,
-        "an enrollment admitted under an ended session does not continue"
-    );
-    rig.service.custody.session(false, 2);
-    assert_eq!(
-        rig.runtime.block_on(flow.begin()).err(),
-        Some(SendError::Revoked),
-        "nothing is admitted while the session is not usable"
     );
 }

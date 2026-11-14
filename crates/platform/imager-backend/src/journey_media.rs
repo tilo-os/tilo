@@ -184,27 +184,6 @@ impl SourceGrant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn matching_grant_rejects_replaced_ancestor() {
-        let temporary = tempfile::tempdir().unwrap();
-        let ancestor = temporary.path().join("ancestor");
-        let selected = ancestor.join("home");
-        std::fs::create_dir_all(&selected).unwrap();
-        let grant = SourceGrant::admit(&selected, &selected).unwrap();
-        std::fs::rename(&ancestor, temporary.path().join("retained")).unwrap();
-        std::fs::create_dir_all(&selected).unwrap();
-        assert!(grant.validate().is_err());
-        let replacement = SourceGrant::admit(&selected, &selected).unwrap();
-        assert!(grant.matches(&replacement).is_err());
-    }
-    #[test]
-    fn refresh_matches_the_held_directory() {
-        let temporary = tempfile::tempdir().unwrap();
-        let first = SourceGrant::admit(temporary.path(), temporary.path()).unwrap();
-        let refreshed = SourceGrant::admit(temporary.path(), temporary.path()).unwrap();
-        assert!(first.matches(&refreshed).unwrap());
-        assert_eq!(first.selected(), temporary.path());
-    }
 
     #[cfg(unix)]
     #[test]
@@ -215,13 +194,40 @@ mod tests {
         assert!(SourceGrant::admit(&selected, temporary.path()).is_err());
     }
 
-    #[test]
-    fn mismatched_selection_is_not_a_grant() {
-        let temporary = tempfile::tempdir().unwrap();
-        let selected = temporary.path().join("selected");
-        let expected = temporary.path().join("expected");
-        std::fs::create_dir(&selected).unwrap();
-        std::fs::create_dir(&expected).unwrap();
-        assert!(SourceGrant::admit(&selected, &expected).is_err());
+    tilo_test_env::scenario! {
+        fn source_grant_admits_only_the_held_matching_directory;
+
+        phase matching_grant_rejects_replaced_ancestor;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let ancestor = temporary.path().join("ancestor");
+            let selected = ancestor.join("home");
+            std::fs::create_dir_all(&selected).unwrap();
+            let grant = SourceGrant::admit(&selected, &selected).unwrap();
+            std::fs::rename(&ancestor, temporary.path().join("retained")).unwrap();
+            std::fs::create_dir_all(&selected).unwrap();
+            assert!(grant.validate().is_err());
+            let replacement = SourceGrant::admit(&selected, &selected).unwrap();
+            assert!(grant.matches(&replacement).is_err());
+        }
+
+        phase refresh_matches_the_held_directory;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let first = SourceGrant::admit(temporary.path(), temporary.path()).unwrap();
+            let refreshed = SourceGrant::admit(temporary.path(), temporary.path()).unwrap();
+            assert!(first.matches(&refreshed).unwrap());
+            assert_eq!(first.selected(), temporary.path());
+        }
+
+        phase mismatched_selection_is_not_a_grant;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let selected = temporary.path().join("selected");
+            let expected = temporary.path().join("expected");
+            std::fs::create_dir(&selected).unwrap();
+            std::fs::create_dir(&expected).unwrap();
+            assert!(SourceGrant::admit(&selected, &expected).is_err());
+        }
     }
 }

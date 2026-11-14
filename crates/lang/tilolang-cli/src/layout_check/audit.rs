@@ -368,6 +368,114 @@ fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
     }
 }
 
+/// The boxes of the headings `node` shows, its own and its descendants', each as much of it as
+/// can be seen: the words a surface goes by.
+fn heading_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
+    use ui::a11y::Role;
+    if floats(&node.widget) {
+        return;
+    }
+    let inner = node
+        .child_clip
+        .map_or(clip, |child_clip| clip.intersect(rect(child_clip)));
+    let heading = node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| matches!(access.role, Role::Heading { .. }));
+    if heading {
+        let seen = rect(node.rect).intersect(clip);
+        if has_area(seen) {
+            out.push(seen);
+        }
+        return;
+    }
+    for child in &node.children {
+        heading_boxes(child, inner, out);
+    }
+}
+
+/// The boxes of the words and controls `node` shows, its own and its descendants', each as much of
+/// it as can be seen, and each at the depth it stands at rather than the box it stands in: a top
+/// bar is the controls on it, not the strip of window it spans. What stands inside a shown box is
+/// that box's own drawing read again, so only the innermost counts.
+fn showing_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) -> bool {
+    if floats(&node.widget) {
+        return false;
+    }
+    let inner = node
+        .child_clip
+        .map_or(clip, |child_clip| clip.intersect(rect(child_clip)));
+    let mut inside = false;
+    for child in &node.children {
+        inside |= showing_boxes(child, inner, out);
+    }
+    let shows = is_text(node)
+        || node.semantics.as_ref().is_some_and(|access| {
+            !access.state.hidden
+                && (access
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| !name.trim().is_empty())
+                    || interactive(access.role))
+        });
+    if !shows {
+        return inside;
+    }
+    if inside {
+        return true;
+    }
+    let seen = rect(node.rect).intersect(clip);
+    if has_area(seen) {
+        out.push(seen);
+        return true;
+    }
+    false
+}
+
+/// The title of a surface that says what it is for and shows nothing under it, with the band that
+/// title stands in: the room below the band holds no words and no control, so a person reads the
+/// name of a thing that is not there.
+fn shows_nothing_under_its_title(node: &InspectionNode, own: Rect) -> Option<(Rect, Rect)> {
+    // A panel or a popover is a surface of its own over what it covers, and one that names its
+    // business in a header: the surface this check is about. A card or a page is one block of a
+    // window among others, and a title with a picture under it is no panel over nothing.
+    if !matches!(
+        node.widget.as_str(),
+        "FloatingPanel" | "Popover" | "ContextMenu"
+    ) {
+        return None;
+    }
+    // A band folded away says nothing of what it holds until it opens.
+    if node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| access.state.expanded == Some(false))
+    {
+        return None;
+    }
+    let mut headings = Vec::new();
+    heading_boxes(node, own, &mut headings);
+    let title = headings.first().copied()?;
+    let mut shown = Vec::new();
+    showing_boxes(node, own, &mut shown);
+    let top = shown.iter().map(|line| line.y0).reduce(f64::min)?;
+    // What stands beside the title is the header's own band: a subtitle, a count, the control that
+    // closes it. What stands under the band is the surface's body.
+    let band = shown
+        .iter()
+        .filter(|line| line.y0 < top + HEADER_BAND)
+        .fold(title, |band, line| band.union(*line));
+    if shown
+        .iter()
+        .any(|line| line.y0 >= band.y1 - EPSILON && has_area(line.intersect(own)))
+    {
+        return None;
+    }
+    // A surface only as tall as what it says is a surface of its words, with no body to be empty:
+    // the fault is a title given room under it and nothing to put there.
+    (own.y1 - band.y1 >= CARD_GAP).then_some((title, band))
+}
+
 /// Whether some text of `a` and some text of `b` stand on each other, so
 /// neither can be read: two boxes laid over each other on purpose (a dock
 /// over the desk under the bar) whose text stands apart can both be read.
@@ -385,6 +493,16 @@ fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
 /// nothing of the two is read through the other.
 fn stands_as_window(node: &InspectionNode) -> bool {
     node.widget == "WindowFrame" || matches!(&node.children[..], [only] if stands_as_window(only))
+}
+
+/// Whether `node` is a surface floating over what it covers on its own opaque ground: a panel or a
+/// popover over the desk is read on its own, as a window on a desktop is, so what stands behind it
+/// is behind it by design.
+fn floats_opaque(node: &InspectionNode) -> bool {
+    matches!(
+        node.widget.as_str(),
+        "FloatingPanel" | "Popover" | "ContextMenu" | "Tooltip"
+    ) || matches!(&node.children[..], [only] if floats_opaque(only))
 }
 
 fn layers(widget: &str) -> bool {
@@ -430,6 +548,10 @@ fn rounds_its_corners(widget: &str) -> bool {
 /// The least gap a card keeps from what stands over or under it: the toolkit's sibling gap, the
 /// rhythm cards and rows of a list stand by (`rhythm.sibling` on the stock theme).
 const CARD_GAP: f64 = 12.0;
+
+/// How far under the topmost words of a surface another line still stands in its header's band: one
+/// line, so a control drawn beside the words on the same row counts as the header's.
+const HEADER_BAND: f64 = 48.0;
 
 /// How much more room a heading keeps over it than over its content: the toolkit's tightest step
 /// (`rhythm.tight`), the least that tells a title from the block above it.
@@ -820,11 +942,38 @@ impl Walk<'_> {
         self.lone_door(node, keys, above);
         self.empty_heading(node, keys, own);
         self.empty_surface(node, keys, own);
+        self.header_only(node, keys, own);
         self.rounded_on_edge(node, keys, own);
         self.repeated_day_fact(node, keys);
+        self.clipped_pill(node, keys);
         if under_page.is_some() {
             self.nested_scroller(node, keys, own);
         }
+    }
+
+    /// A pill a list floats over its rows that cuts the words it offers: the way back reads as
+    /// half a sentence, where the pill covers what it stands on and so may take the width its
+    /// words need.
+    fn clipped_pill(&mut self, node: &InspectionNode, keys: &[String]) {
+        let Some(ui::widget::LayoutInfo::List(list)) = &node.layout else {
+            return;
+        };
+        let Some(pill) = list.pill else {
+            return;
+        };
+        if f64::from(pill.needs) <= f64::from(pill.has) + EPSILON {
+            return;
+        }
+        self.out.push(Problem {
+            kind: Kind::ClippedPill,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: node.test_id.clone(),
+            detail: format!(
+                "the way back over the list needs {:.0} px for its words and stands {:.0} wide",
+                pill.needs, pill.has
+            ),
+        });
     }
 
     fn visit(
@@ -1171,6 +1320,24 @@ impl Walk<'_> {
             node,
             keys,
             format!("it paints {} and holds nothing", size(own)),
+        );
+    }
+
+    /// A panel that says what it is for and holds nothing under its title: the person reads the
+    /// name of what they opened and finds no control and no word of the thing itself.
+    fn header_only(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        let Some((title, _)) = shows_nothing_under_its_title(node, own) else {
+            return;
+        };
+        self.push(
+            Kind::HeaderOnly,
+            node,
+            keys,
+            format!(
+                "it says what it shows in {} of words at its top, in a surface {} tall, and everything under them is empty",
+                size(title),
+                size(own).rsplit('×').next().unwrap_or_default()
+            ),
         );
     }
 
@@ -2039,7 +2206,7 @@ impl Walk<'_> {
         for (i, (a, ra)) in shown.iter().enumerate() {
             for (b, rb) in shown.iter().skip(i.saturating_add(1)) {
                 let both = ra.intersect(*rb);
-                let covers = if stands_as_window(b) {
+                let covers = if stands_as_window(b) || floats_opaque(b) {
                     false
                 } else if places {
                     is_control(a) && is_control(b)

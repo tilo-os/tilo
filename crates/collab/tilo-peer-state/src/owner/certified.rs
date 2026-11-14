@@ -8,7 +8,7 @@ use crate::join::{
 use crate::owner::{PendingEnrollmentId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::{
-    IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceHostMode,
+    MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceDeviceHintV1,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
@@ -60,15 +60,9 @@ impl VerifiedNativeEnrollmentIntent {
     pub fn transport_hint(&self) -> &TransportHint {
         &self.join.grant().transport[self.record.hint_index as usize]
     }
-    #[allow(
-        clippy::expect_used,
-        reason = "`validate` rejects a noncanonical grant workspace before an intent exists"
-    )]
-    /// # Panics
-    /// Never: `validate` rejects a noncanonical grant workspace.
     #[must_use]
     pub fn workspace(&self) -> WorkspaceId {
-        WorkspaceId::parse(&self.join.grant().room).expect("checked canonical workspace")
+        self.join.grant().workspace_id
     }
     #[must_use]
     pub fn complete_bytes(&self) -> &[u8] {
@@ -173,29 +167,6 @@ impl VerifiedNativeEnrollmentIntent {
         intent.durable_bytes()?;
         Ok(intent)
     }
-    /// The stored record a build wrote before the join version bump, holding
-    /// `complete` in that build's challenge layout: what restoring such a
-    /// record has to carry.
-    ///
-    /// # Errors
-    /// `complete` is not a proof this build accepts.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn previous_layout_bytes(
-        complete: Vec<u8>,
-        local_device: DeviceCert,
-        hint_index: u32,
-        prepared_at: SystemTime,
-    ) -> Result<Vec<u8>, String> {
-        let record = IntentRecord {
-            version: PREVIOUS_INTENT_VERSION,
-            prepared_at_ns: now_ns(prepared_at)?,
-            local_device,
-            complete,
-            hint_index,
-        };
-        Self::validate(record.clone())?;
-        postcard::to_stdvec(&record).map_err(|e| e.to_string())
-    }
 }
 // Recovery verifies the historical hint at its preparation time. Live dialing
 // additionally uses authenticate_transport_hint, which verifies current certificates.
@@ -208,31 +179,20 @@ fn validate_historical_iroh(
         return Err("native enrollment requires signed Iroh host hint".into());
     }
     join::verify_transport_hint_at(hint, &RevocationList::new(), at)?;
-    let value: IrohWorkspaceHostHintV1 =
+    let value: WorkspaceDeviceHintV1 =
         serde_json::from_str(&hint.opaque_json).map_err(|e| e.to_string())?;
     if value.version != 1
-        || value.room != join.grant().room
         || value.workspace_id != join.grant().workspace_id
-        || !tilo_relay_protocol::room_workspace_id_matches(&value.room, value.workspace_id)
-        || WorkspaceId::parse(&value.room).is_none()
-        || value.host_device_certificate != hint.host
-        || value.host_user_public_key != hint.host.user_public_key
+        || value.device_certificate != hint.host
+        || value.user_public_key != hint.host.user_public_key
         || *value.endpoint_addr.id.as_bytes() != hint.service_public_key
         || value.packet_relay_url.is_empty()
         || value.packet_relay_url.len() > 4096
     {
         return Err("native signed Iroh scope mismatch".into());
     }
-    match value.mode {
-        WorkspaceHostMode::CertifiedHost if !hint.host.capabilities.can_act_as_host => {
-            return Err("native data host lacks host capability".into());
-        }
-        WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-            if !hint.host.capabilities.can_own_workspaces =>
-        {
-            return Err("interactive data host cannot own workspaces".into());
-        }
-        _ => {}
+    if value.holds_keys && !hint.host.capabilities.can_own_workspaces {
+        return Err("the device serving the workspace cannot govern workspaces".into());
     }
     value
         .validate_invitation(join.grant())
@@ -302,7 +262,6 @@ impl VerifiedNativeEnrollment {
             || (bootstrap.device_cert != *intent.local_device()
                 && !crate::owner::renewal::renews(&bootstrap.device_cert, intent.local_device()))
             || bootstrap.role != grant.role
-            || bootstrap.room != grant.room
             || bootstrap.workspace_id != grant.workspace_id
             || bootstrap.host != grant.issuer
             || bootstrap.generation == 0
@@ -321,7 +280,7 @@ impl VerifiedNativeEnrollment {
         // The roster is the workspace's admitted evidence: a guest whose
         // certificate expired since is still in it.
         crate::StatePeer::from_join(
-            &bootstrap.room,
+            &bootstrap.workspace_id.to_string(),
             bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             &bootstrap.revocations,

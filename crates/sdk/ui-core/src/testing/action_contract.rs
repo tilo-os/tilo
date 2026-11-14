@@ -280,7 +280,7 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
     };
     let value = match primary.ty {
         ParamType::Text => Some(ArgValue::Text(text.to_string())),
-        ParamType::Integer => text.trim().parse().ok().map(ArgValue::Integer),
+        ParamType::Integer => text.trim().parse::<i128>().ok().map(ArgValue::Integer),
         ParamType::Number => text.trim().parse().ok().map(ArgValue::Number),
         ParamType::Boolean => match text.trim() {
             "true" | "yes" | "on" => Some(ArgValue::Boolean(true)),

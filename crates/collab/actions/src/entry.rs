@@ -563,144 +563,148 @@ impl From<&str> for Scalar {
 mod tests {
     use super::*;
 
-    #[test]
-    fn encoded_actions_describe_themselves_as_verbs() {
-        let encoded = crate::EncodedAction {
-            type_id: "notes.action".into(),
-            payload: br#"{"RenameNote":{"id":"n1","title":"Groceries","tags":["a"]}}"#.to_vec(),
-        };
-        let described = Described::from_encoded(&encoded, None).unwrap();
-        let Did::Verb(verb) = &described.what else {
-            panic!("a verb: {described:?}");
-        };
-        assert_eq!(
-            verb.action,
-            ActionKey::new("notes", "notes.action", "rename-note")
-        );
-        assert_eq!(verb.args.get("title"), Some(&Scalar::from("Groceries")));
-        assert!(
-            !verb.args.contains_key("tags"),
-            "nested values are left out"
-        );
+    tilo_test_env::scenario! {
+        fn an_entry_describes_what_an_action_did;
 
-        let tagged = crate::EncodedAction {
-            type_id: "canvas.action".into(),
-            payload: br#"{"op":{"action":"draw","args":{"size":3}},"at":17}"#.to_vec(),
-        };
-        let Did::Verb(verb) = Described::from_encoded(&tagged, Some("canvas"))
-            .unwrap()
-            .what
-        else {
-            panic!("a verb");
-        };
-        assert_eq!(verb.action.action, "draw");
-        assert_eq!(verb.args.get("size"), Some(&Scalar::from(3)));
-        assert!(
-            Described::from_encoded(
-                &crate::EncodedAction {
-                    type_id: "x".into(),
-                    payload: b"7".to_vec()
+        phase encoded_actions_describe_themselves_as_verbs;
+        {
+            let encoded = crate::EncodedAction {
+                type_id: "notes.action".into(),
+                payload: br#"{"RenameNote":{"id":"n1","title":"Groceries","tags":["a"]}}"#.to_vec(),
+            };
+            let described = Described::from_encoded(&encoded, None).unwrap();
+            let Did::Verb(verb) = &described.what else {
+                panic!("a verb: {described:?}");
+            };
+            assert_eq!(
+                verb.action,
+                ActionKey::new("notes", "notes.action", "rename-note")
+            );
+            assert_eq!(verb.args.get("title"), Some(&Scalar::from("Groceries")));
+            assert!(
+                !verb.args.contains_key("tags"),
+                "nested values are left out"
+            );
+
+            let tagged = crate::EncodedAction {
+                type_id: "canvas.action".into(),
+                payload: br#"{"op":{"action":"draw","args":{"size":3}},"at":17}"#.to_vec(),
+            };
+            let Did::Verb(verb) = Described::from_encoded(&tagged, Some("canvas"))
+                .unwrap()
+                .what
+            else {
+                panic!("a verb");
+            };
+            assert_eq!(verb.action.action, "draw");
+            assert_eq!(verb.args.get("size"), Some(&Scalar::from(3)));
+            assert!(
+                Described::from_encoded(
+                    &crate::EncodedAction {
+                        type_id: "x".into(),
+                        payload: b"7".to_vec()
+                    },
+                    None
+                )
+                .is_none()
+            );
+        }
+
+        phase a_verbs_text_arguments_are_kept_whole;
+        // A long text argument reaches the entry whole, as passed: a formula
+        // an agent added, a calculation the palette committed.
+        {
+            let formula = ["x"; 60].join("+");
+            let tagged = crate::EncodedAction {
+                type_id: "calculator.action".into(),
+                payload: serde_json::to_vec(&serde_json::json!({
+                    "action": "commit-history",
+                    "args": {"expr": formula, "result": "1", "nested": {"note": formula}},
+                }))
+                .unwrap(),
+            };
+            let Did::Verb(verb) = Described::from_encoded(&tagged, Some("calculator"))
+                .unwrap()
+                .what
+            else {
+                panic!("a verb");
+            };
+            assert_eq!(verb.args.get("expr"), Some(&Scalar::whole_text(&formula)));
+            assert_eq!(
+                verb.args.get("nested.note"),
+                Some(&Scalar::whole_text(&formula))
+            );
+        }
+
+        phase values_are_bounded;
+        {
+            let long = "x".repeat(MAX_SCALAR_CHARS * 2);
+            assert_eq!(
+                Scalar::text(&long).as_str().unwrap().chars().count(),
+                MAX_SCALAR_CHARS + 1
+            );
+            assert!(Scalar::from_json(&serde_json::json!({"a": 1})).is_none());
+            assert!(Scalar::from_json(&serde_json::Value::Null).is_none());
+            let args = (0..20).map(|n| (format!("a{n}"), Scalar::from(i64::from(n))));
+            let Did::Verb(verb) = Did::verb(ActionKey::default(), args) else {
+                unreachable!()
+            };
+            assert_eq!(verb.args.len(), MAX_VERB_ARGS);
+            let Did::Group(group) = Did::group((0..20).map(|_| Did::verb(ActionKey::default(), [])))
+            else {
+                unreachable!()
+            };
+            assert_eq!((group.members.len(), group.count), (MAX_GROUP_MEMBERS, 20));
+            assert_eq!(group.distinct.len(), 1, "every member ran the same action");
+            assert!(
+                group.shared().is_none(),
+                "a cut group does not claim one shared step"
+            );
+        }
+
+        phase every_kind_of_entry_reads_back_from_its_json;
+        {
+            let edit = Did::Edit(FieldEdit {
+                ty: "snippet".into(),
+                field: "title".into(),
+                path: vec![
+                    PathStep::Item("s1".into()),
+                    PathStep::Cell("r1".into(), "c2".into()),
+                ],
+                op: EditOp::Set,
+                old: Some(Scalar::text("a")),
+                new: Some(Scalar::text("b")),
+                args: BTreeMap::from([("mark".to_owned(), Scalar::from(true))]),
+            });
+            let verb = Did::verb(ActionKey::default(), [("size".to_owned(), Scalar::from(3))]);
+            let group = Did::group([edit.clone(), verb.clone()]);
+            let history = Did::history(
+                HistoryOp::Checkpoint {
+                    name: "draft".into(),
                 },
-                None
-            )
-            .is_none()
-        );
-    }
-
-    /// A long text argument reaches the entry whole, as passed: a formula
-    /// an agent added, a calculation the palette committed.
-    #[test]
-    fn a_verbs_text_arguments_are_kept_whole() {
-        let formula = ["x"; 60].join("+");
-        let tagged = crate::EncodedAction {
-            type_id: "calculator.action".into(),
-            payload: serde_json::to_vec(&serde_json::json!({
-                "action": "commit-history",
-                "args": {"expr": formula, "result": "1", "nested": {"note": formula}},
-            }))
-            .unwrap(),
-        };
-        let Did::Verb(verb) = Described::from_encoded(&tagged, Some("calculator"))
-            .unwrap()
-            .what
-        else {
-            panic!("a verb");
-        };
-        assert_eq!(verb.args.get("expr"), Some(&Scalar::whole_text(&formula)));
-        assert_eq!(
-            verb.args.get("nested.note"),
-            Some(&Scalar::whole_text(&formula))
-        );
-    }
-
-    #[test]
-    fn values_are_bounded() {
-        let long = "x".repeat(MAX_SCALAR_CHARS * 2);
-        assert_eq!(
-            Scalar::text(&long).as_str().unwrap().chars().count(),
-            MAX_SCALAR_CHARS + 1
-        );
-        assert!(Scalar::from_json(&serde_json::json!({"a": 1})).is_none());
-        assert!(Scalar::from_json(&serde_json::Value::Null).is_none());
-        let args = (0..20).map(|n| (format!("a{n}"), Scalar::from(i64::from(n))));
-        let Did::Verb(verb) = Did::verb(ActionKey::default(), args) else {
-            unreachable!()
-        };
-        assert_eq!(verb.args.len(), MAX_VERB_ARGS);
-        let Did::Group(group) = Did::group((0..20).map(|_| Did::verb(ActionKey::default(), [])))
-        else {
-            unreachable!()
-        };
-        assert_eq!((group.members.len(), group.count), (MAX_GROUP_MEMBERS, 20));
-        assert_eq!(group.distinct.len(), 1, "every member ran the same action");
-        assert!(
-            group.shared().is_none(),
-            "a cut group does not claim one shared step"
-        );
-    }
-
-    #[test]
-    fn every_kind_of_entry_reads_back_from_its_json() {
-        let edit = Did::Edit(FieldEdit {
-            ty: "snippet".into(),
-            field: "title".into(),
-            path: vec![
-                PathStep::Item("s1".into()),
-                PathStep::Cell("r1".into(), "c2".into()),
-            ],
-            op: EditOp::Set,
-            old: Some(Scalar::text("a")),
-            new: Some(Scalar::text("b")),
-            args: BTreeMap::from([("mark".to_owned(), Scalar::from(true))]),
-        });
-        let verb = Did::verb(ActionKey::default(), [("size".to_owned(), Scalar::from(3))]);
-        let group = Did::group([edit.clone(), verb.clone()]);
-        let history = Did::history(
-            HistoryOp::Checkpoint {
-                name: "draft".into(),
-            },
-            1,
-            Some(Described::new(group.clone()).on("s1", "First")),
-        );
-        for did in [edit, verb, group, history] {
-            let json = serde_json::to_string(&did).unwrap();
-            assert!(json.starts_with(r#"{"did":"#), "the tag leads: {json}");
-            let read: Did = serde_json::from_str(&json).unwrap();
-            assert_eq!(read, did);
-            assert_eq!(serde_json::to_string(&read).unwrap(), json);
-            let from_value: Did =
-                serde_json::from_value(serde_json::to_value(&did).unwrap()).unwrap();
-            assert_eq!(from_value, did);
+                1,
+                Some(Described::new(group.clone()).on("s1", "First")),
+            );
+            for did in [edit, verb, group, history] {
+                let json = serde_json::to_string(&did).unwrap();
+                assert!(json.starts_with(r#"{"did":"#), "the tag leads: {json}");
+                let read: Did = serde_json::from_str(&json).unwrap();
+                assert_eq!(read, did);
+                assert_eq!(serde_json::to_string(&read).unwrap(), json);
+                let from_value: Did =
+                    serde_json::from_value(serde_json::to_value(&did).unwrap()).unwrap();
+                assert_eq!(from_value, did);
+            }
+            for bad in [r#"{"did":"wave"}"#, r#"{"ty":"x"}"#, r#"{"did":3}"#, "[]"] {
+                assert!(serde_json::from_str::<Did>(bad).is_err(), "{bad}");
+            }
         }
-        for bad in [r#"{"did":"wave"}"#, r#"{"ty":"x"}"#, r#"{"did":3}"#, "[]"] {
-            assert!(serde_json::from_str::<Did>(bad).is_err(), "{bad}");
-        }
-    }
 
-    #[test]
-    fn kebab_names() {
-        assert_eq!(kebab("RemoveMarks"), "remove-marks");
-        assert_eq!(kebab("remove_marks"), "remove-marks");
-        assert_eq!(kebab("Set2Up"), "set2-up");
+        phase kebab_names;
+        {
+            assert_eq!(kebab("RemoveMarks"), "remove-marks");
+            assert_eq!(kebab("remove_marks"), "remove-marks");
+            assert_eq!(kebab("Set2Up"), "set2-up");
+        }
     }
 }

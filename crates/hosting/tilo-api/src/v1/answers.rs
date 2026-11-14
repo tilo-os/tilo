@@ -343,6 +343,14 @@ pub struct NewInvitation {
     pub email: Option<String>,
 }
 
+/// How the key's person goes by in the workspace from now on.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NewName {
+    /// The name the workspace's member list and the invitations they make
+    /// show for them.
+    pub name: String,
+}
+
 /// A link that signs the person in and lands them in the workspace.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Invitation(pub Map<String, Value>);
@@ -376,6 +384,27 @@ pub struct Uploaded {
     /// `tilo.content:<hash>`: what an action takes the file as.
     pub content: String,
     pub size: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NewUpload {
+    /// How many bytes the whole file is.
+    pub size: u64,
+}
+
+/// One upload in pieces: where it stands, and what every byte of it is once
+/// the last piece answered.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Upload {
+    /// The id the caller named it by.
+    pub upload: String,
+    /// How many bytes the whole file is.
+    pub size: u64,
+    /// How many of them are there: the next piece goes at this offset.
+    pub offset: u64,
+    /// `tilo.content:<hash>`, in the answer of the piece that completed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 /// One event of a workspace's stream, or of a webhook's delivery.
@@ -425,6 +454,12 @@ pub struct DeletedWebhook {
     pub deleted: String,
 }
 
+/// An upload dropped before every byte of it was sent.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DeletedUpload {
+    pub deleted: String,
+}
+
 /// Every schema the description carries, by the name operations give it.
 #[must_use]
 pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, schemars::Schema)> {
@@ -454,13 +489,17 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Members,
         NewInvitation,
         Invitation,
+        NewName,
         Program,
         ProgramAnswer,
         Uploaded,
+        NewUpload,
+        Upload,
         Event,
         NewWebhook,
         Webhook,
         WebhookList,
         DeletedWebhook,
+        DeletedUpload,
     ]
 }

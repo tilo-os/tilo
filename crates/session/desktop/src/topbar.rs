@@ -167,10 +167,10 @@ struct CacheFingerprint {
     workspace_name: String,
     /// The strip the bar names after the workspace pill, if any.
     strip_name: Option<String>,
-    collaborator_initials: Vec<char>,
-    collaborator_names: Vec<String>,
-    collaborator_agents: Vec<bool>,
-    collaborator_overflow: usize,
+    face_initials: Vec<char>,
+    face_names: Vec<String>,
+    face_agents: Vec<bool>,
+    face_overflow: usize,
     /// How many of the people present the bar stood faces for: a narrower bar folds more of them
     /// into the count badge, which repaints the bar.
     faces_shown: usize,
@@ -339,7 +339,7 @@ pub struct TopBarChrome {
     /// Where the last layout stood the bar.
     laid_out: BarStanding,
     /// The compact bar a display other than the primary carries: workspace navigation and the
-    /// centre widget only. Session controls, the tray and collaborators live on the primary
+    /// centre widget only. Session controls, the tray and who is here live on the primary
     /// display's full bar.
     variant: BarVariant,
     /// The display a compact bar stands on, as [`Placement`] names it; the full bar carries none,
@@ -365,20 +365,20 @@ pub struct TopBarChrome {
     /// Reused iff every field matches `self.*` at draw time. See
     /// [`TopBarChrome::current_fingerprint`].
     cache_fp: CacheFingerprint,
-    collaborator_initials: Vec<char>,
-    collaborator_names: Vec<String>,
-    /// Same index as `collaborator_initials` . The workspace's colour for each, else
+    face_initials: Vec<char>,
+    face_names: Vec<String>,
+    /// Same index as `face_initials` . The workspace's colour for each, else
     /// [`ui::presence::participant_color`].
-    collaborator_colors: Vec<Color>,
-    /// Same index as `collaborator_initials` : drawn with the agent mark.
-    collaborator_agents: Vec<bool>,
-    /// Same index as `collaborator_initials` : the roster id presence knows them by (idle, in a
+    face_colors: Vec<Color>,
+    /// Same index as `face_initials` : drawn with the agent mark.
+    face_agents: Vec<bool>,
+    /// Same index as `face_initials` : the roster id presence knows them by (idle, in a
     /// call, a wave's bounce).
-    collaborator_ids: Vec<String>,
-    /// Same index as `collaborator_initials` : how available each face said they are and whether
+    face_ids: Vec<String>,
+    /// Same index as `face_initials` : how available each face said they are and whether
     /// they are in a call, as the roster they were read from says. `None` for a face the roster
     /// says nothing of, which the presence beside the bar answers instead.
-    collaborator_presence: Vec<Option<(ui::Availability, bool)>>,
+    face_presence: Vec<Option<(ui::Availability, bool)>>,
     /// How many of the people present the last draw stood a face for: the rest the "+N" badge
     /// counts. The bar stands as many as it has room for, the one this person follows first.
     faces_shown: usize,
@@ -386,12 +386,12 @@ pub struct TopBarChrome {
     /// banner that says whose view it is and offers Stop, so the clock stands aside rather than
     /// under it.
     following: bool,
-    /// Same index as `collaborator_initials` : how each face looks now, read from presence at each
+    /// Same index as `face_initials` : how each face looks now, read from presence at each
     /// draw.
     face_looks: Vec<FaceLook>,
     /// Where each face was painted, same index as [`Self::shown_faces`].
     face_rects: Vec<Rect>,
-    /// The roster index (into `collaborator_initials`) of each face the last draw stood, in the
+    /// The roster index (into `face_initials`) of each face the last draw stood, in the
     /// order drawn: a wide bar's are the first few in roster order, a phone's is the one who did
     /// something last.
     shown_faces: Vec<usize>,
@@ -410,8 +410,8 @@ pub struct TopBarChrome {
     people_count_rect: Rect,
     /// When someone here was first seen in a call, so their ring breathes from its start.
     call_since: Option<Instant>,
-    /// Collaborators beyond the three avatars; nonzero paints a "+N" chip.
-    collaborator_overflow: usize,
+    /// Members beyond the three avatars; nonzero paints a "+N" chip.
+    face_overflow: usize,
     /// Copied off the chrome on each revision bump. Empty until something polls — an empty reading
     /// paints no indicator rather than a plausible default.
     status: crate::chrome::SystemStatus,
@@ -549,12 +549,12 @@ impl TopBarChrome {
             cached_parts: None,
             cache_theme: None,
             cache_fp: CacheFingerprint::default(),
-            collaborator_initials: Vec::new(),
-            collaborator_names: Vec::new(),
-            collaborator_colors: Vec::new(),
-            collaborator_agents: Vec::new(),
-            collaborator_ids: Vec::new(),
-            collaborator_presence: Vec::new(),
+            face_initials: Vec::new(),
+            face_names: Vec::new(),
+            face_colors: Vec::new(),
+            face_agents: Vec::new(),
+            face_ids: Vec::new(),
+            face_presence: Vec::new(),
             face_looks: Vec::new(),
             face_rects: Vec::new(),
             shown_faces: Vec::new(),
@@ -563,7 +563,7 @@ impl TopBarChrome {
             latest_active: None,
             people_count_rect: Rect::ZERO,
             call_since: None,
-            collaborator_overflow: 0,
+            face_overflow: 0,
             faces_shown: 0,
             following: false,
             status: crate::chrome::SystemStatus::default(),
@@ -638,10 +638,10 @@ impl TopBarChrome {
             presence: self.presence(),
             workspace_name: self.workspace_name.clone(),
             strip_name: self.strip_name().map(str::to_owned),
-            collaborator_initials: self.collaborator_initials.clone(),
-            collaborator_names: self.collaborator_names.clone(),
-            collaborator_agents: self.collaborator_agents.clone(),
-            collaborator_overflow: self.collaborator_overflow,
+            face_initials: self.face_initials.clone(),
+            face_names: self.face_names.clone(),
+            face_agents: self.face_agents.clone(),
+            face_overflow: self.face_overflow,
             faces_shown: self.faces_shown,
             latest: self.latest_active,
             faces: self
@@ -752,7 +752,7 @@ impl TopBarChrome {
     }
 
     /// Where the full bar's session side stands: the tray, application tray, media and sharing
-    /// indicators, collaborators and the continuity offer. A compact bar on another display
+    /// indicators, who is here and the continuity offer. A compact bar on another display
     /// carries none of these. Returns where the person's own avatar leaves room beside it, for the
     /// ask.
     fn place_session_clusters(
@@ -1029,78 +1029,61 @@ impl TopBarChrome {
             );
         self.workspace_index = idx;
         self.workspace_name = name;
-        // Presence is workspace-scoped. The legacy tree-level cache can contain people active
-        // elsewhere and must not leak them into this bar.
-        let roster: &[tilo_desktop_model::Collaborator] =
-            active_ws.map_or(&[], |workspace| workspace.collaborators.as_slice());
-        // An invited-but-not-arrived peer doesn't count as present. This person is their own avatar
-        // beside the stack, never a face in it, and so are their other devices.
+        // Who is here is the workspace's: its member rows, each in the colour it wears
+        // everywhere, and presence for where each of them is.
+        let (members, present): (
+            &[tilo_desktop_model::Member],
+            &[tilo_desktop_model::Present],
+        ) = active_ws.map_or((&[], &[]), |workspace| {
+            (workspace.members.as_slice(), workspace.present.as_slice())
+        });
+        // This person is their own avatar beside the stack, never a face in it.
         let local = self.explicit_local_user.as_deref();
         let own_identity = self.own_identity();
-        let present = |c: &&tilo_desktop_model::Collaborator| {
-            c.id != "me"
-                && Some(c.id.as_str()) != local
-                && Some(c.id.as_str()) != own_identity.as_deref()
-                && !c.invited
-                && !c.own_device
+        let own = |member: &tilo_desktop_model::Member| -> bool {
+            let key = member.id.key();
+            key == "me"
+                || Some(key.as_str()) == local
+                || Some(key.as_str()) == own_identity.as_deref()
         };
-        self.collaborator_initials.clear();
-        self.collaborator_names.clear();
-        self.collaborator_colors.clear();
-        self.collaborator_agents.clear();
-        self.collaborator_ids.clear();
-        self.collaborator_presence.clear();
-        let now = tilo_clock::unix_now();
-        // Settled over the whole workspace, so a peer's avatar matches the colour their cursor is
-        // drawn in elsewhere on the desktop.
-        let colors =
-            crate::collaborators::roster_colors_with_local_user(roster, local.unwrap_or(""), |c| {
-                crate::collaborators::collaborator_is_agent(active_ws, c, now)
-            });
-        // Everyone present, the one this person follows first: the bar stands as many faces as it
-        // has room for and folds the rest into the count badge, so a narrow bar keeps the face
-        // being watched and never drops anyone uncounted.
-        let mut here: Vec<&tilo_desktop_model::Collaborator> =
-            roster.iter().filter(present).collect();
-        here.sort_by_key(|c| !c.following);
-        self.following = here.iter().any(|c| c.following);
+        self.face_initials.clear();
+        self.face_names.clear();
+        self.face_colors.clear();
+        self.face_agents.clear();
+        self.face_ids.clear();
+        self.face_presence.clear();
+        // Everyone here, the one this person follows first: the bar stands as many faces as it has
+        // room for and folds the rest into the count badge, so a narrow bar keeps the face being
+        // watched and never drops anyone uncounted.
+        let mut here: Vec<(&tilo_desktop_model::Member, &tilo_desktop_model::Present)> = members
+            .iter()
+            .filter(|member| !own(member))
+            .filter_map(|member| {
+                let here = present.iter().find(|here| here.member == member.id)?;
+                Some((member, here))
+            })
+            .collect();
+        here.sort_by_key(|(_, here)| !here.followed);
+        self.following = here.iter().any(|(_, here)| here.followed);
         let peer_count = here.len();
         // How many of them could stand at all, before the bar knows its width: a draw folds this
         // further into what the bar has room for.
         let (stand, counted) = ui::presence::FaceStack::BAR.split(peer_count);
         self.faces_shown = stand;
-        self.collaborator_overflow = counted;
+        self.face_overflow = counted;
         self.order_activity(&here);
-        for c in here {
-            let Some(ch) = c.name.chars().next() else {
+        for (member, present) in here {
+            let Some(initial) = member.name.chars().next() else {
                 continue;
             };
-            self.collaborator_initials.push(ch.to_ascii_uppercase());
-            self.collaborator_names.push(c.name.clone());
-            let agent = crate::collaborators::collaborator_is_agent(active_ws, c, now);
-            // A face wears the workspace's colour for them, as the People list and every window
-            // do: [`ui::presence::participant_color`] where the workspace has settled none, so
-            // Claude Code reads as Claude Code on the bar too.
-            let (r, g, b) = colors
-                .get(&c.id)
-                .copied()
-                .unwrap_or_else(|| ui::presence::participant_color(&c.id, agent, None));
-            self.collaborator_colors.push(Color::from_rgb8(r, g, b));
-            self.collaborator_agents.push(agent);
-            self.collaborator_ids.push(c.id.clone());
-            self.collaborator_presence.push(
-                c.availability
-                    .as_deref()
-                    .and_then(ui::Availability::from_id)
-                    .map(|availability| {
-                        let in_call = c
-                            .call
-                            .as_deref()
-                            .and_then(ui::CallPresence::decode)
-                            .is_some();
-                        (availability, in_call)
-                    }),
-            );
+            self.face_initials.push(initial.to_ascii_uppercase());
+            self.face_names.push(member.name.clone());
+            let (r, g, b) = collab_types::presence::identity_rgb(member.colour);
+            self.face_colors.push(Color::from_rgb8(r, g, b));
+            self.face_agents.push(!member.id.is_person());
+            self.face_ids.push(present.device.clone());
+            self.face_presence
+                .push(Some((present.availability, present.call.is_some())));
         }
         self.sync_strips(tree);
     }
@@ -1113,24 +1096,27 @@ impl TopBarChrome {
     /// in the same millisecond are still two events, and the next sync's change is still the later
     /// one. People whose presence changed while the bar read one workspace state have no order
     /// between them, and the roster's is the one the bar keeps.
-    fn order_activity(&mut self, here: &[&tilo_desktop_model::Collaborator]) {
+    fn order_activity(
+        &mut self,
+        here: &[(&tilo_desktop_model::Member, &tilo_desktop_model::Present)],
+    ) {
         self.syncs = self.syncs.saturating_add(1);
         let sync = self.syncs;
         self.seen_doing
-            .retain(|id, _| here.iter().any(|c| &c.id == id));
+            .retain(|id, _| here.iter().any(|(_, here)| &here.device == id));
         self.latest_active = None;
         let mut latest_at = None;
-        for (index, c) in here.iter().enumerate() {
-            let doing = presence_digest(c);
-            let since = match self.seen_doing.get(&c.id) {
+        for (index, (_, here)) in here.iter().enumerate() {
+            let doing = presence_digest(here);
+            let since = match self.seen_doing.get(&here.device) {
                 Some((digest, since)) if *digest == doing => *since,
                 _ => {
-                    self.seen_doing.insert(c.id.clone(), (doing, sync));
+                    self.seen_doing.insert(here.device.clone(), (doing, sync));
                     sync
                 }
             };
             // The face of the one this view follows already stands in the banner.
-            if c.following {
+            if here.followed {
                 continue;
             }
             if latest_at.is_none_or(|at| since > at) {
@@ -1153,7 +1139,7 @@ impl TopBarChrome {
     /// The bell inside the status cluster: its own target, which opens the notification centre.
     const CONTROL_NOTIFICATIONS: &'static str = "topbar:notifications";
     const CONTROL_QUICK_SETTINGS: &'static str = "topbar:quick-settings";
-    const CONTROL_COLLABORATORS: &'static str = "topbar:collaborators";
+    const CONTROL_PEOPLE: &'static str = "topbar:people";
     const CONTROL_MEDIA: &'static str = "topbar:media";
     const CONTROL_CONTINUITY: &'static str = "topbar:continuity";
     const CONTROL_CONTINUITY_DISMISS: &'static str = "topbar:continuity-dismiss";
@@ -1506,11 +1492,11 @@ impl Widget for TopBarChrome {
             ),
             (
                 "topbar_avatar_stack".to_string(),
-                self.control_rect(Self::CONTROL_COLLABORATORS),
+                self.control_rect(Self::CONTROL_PEOPLE),
             ),
             (
                 "topbar_sharing_indicator".to_string(),
-                self.control_rect(Self::CONTROL_COLLABORATORS),
+                self.control_rect(Self::CONTROL_PEOPLE),
             ),
             (
                 "topbar_continuity".to_string(),
@@ -1579,7 +1565,7 @@ impl Widget for TopBarChrome {
                     ));
                 }
                 // Each face in the people control is someone here: say who.
-                if target == Self::CONTROL_COLLABORATORS {
+                if target == Self::CONTROL_PEOPLE {
                     node = node.with_children(self.face_accessibility());
                 }
                 // An ask waiting on their own avatar: beside it as the pill when the bar has room,
@@ -1936,15 +1922,15 @@ mod shot_tests;
 
 /// A digest of what someone's presence says they are doing: where they are, what they say, their
 /// availability and call. Its change is what makes them the one who did something last.
-fn presence_digest(c: &tilo_desktop_model::Collaborator) -> u64 {
+fn presence_digest(present: &tilo_desktop_model::Present) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (
-        c.active_tab,
-        &c.in_app,
-        c.status.as_ref().map(|status| &status.text),
-        &c.availability,
-        &c.call,
+        present.tab,
+        &present.app,
+        present.status.as_ref().map(|status| &status.text),
+        present.availability,
+        &present.call,
     )
         .hash(&mut hasher);
     hasher.finish()

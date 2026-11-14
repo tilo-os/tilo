@@ -20,9 +20,9 @@ use ed25519_dalek::SigningKey;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
-use tilo_network_actor::{HostIdentity, workspace_topic_id};
+use tilo_network_actor::HostIdentity;
 use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner, testing};
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
@@ -107,12 +107,7 @@ fn workspace_held_here(state: &Path, workspace: WorkspaceId, cert: &DeviceCert, 
 
 /// The person a root key names, as a workspace writes its owner.
 fn principal(root: &[u8; 32]) -> String {
-    match collab_types::caps::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(*root),
-    ) {
-        collab_types::caps::Principal::Person(id) => id,
-        other => panic!("{other:?} is not a person"),
-    }
+    hex::encode(root)
 }
 
 /// A desk showing the workspace, known by its id, owned by the person.
@@ -154,7 +149,7 @@ fn settle(session: &mut Session) {
 }
 
 /// Who `owner` 's copy of `workspace` has in it, by person, in the part each holds.
-fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String, MemberRole)> {
+fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String, Role)> {
     owner
         .with_current(workspace, |view| {
             let members = view
@@ -194,7 +189,7 @@ fn joins_with(
         let enrollment = owner::enroll::prepare_and_complete(
             tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
             identity(cert, key),
-            workspace_topic_id(workspace),
+            workspace,
             // Her owner holds no copy of the workspace yet: the enrollment makes its own slot for
             // it.
             None,
@@ -274,9 +269,10 @@ fn invitations_at_the_desk(session: &mut Session) -> Vec<serde_json::Value> {
 fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
     use ui::widget::QrWidget;
 
-    let drawn = QrWidget::new(code.to_vec()).with_id("invite-code");
-    let px = tilo_sheets::invite::module_px(drawn.total_modules());
-    let widget = drawn.with_module_px(px);
+    let widget = QrWidget::new(code.to_vec())
+        .with_id("invite-code")
+        .with_width_at_most(tilo_sheets::invite::CODE_MAX_PX);
+    let px = widget.module_px().ok_or("no module width")?;
     if let Some(error) = widget.error() {
         return Err(format!("the code does not fit: {error}"));
     }
@@ -526,7 +522,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .iter()
             .find(|(who, _)| *who == hex::encode(her.user_public_key))
             .map(|(_, role)| *role),
-        Some(MemberRole::Editor),
+        Some(Role::Editor),
         "in the part the sheet asked for: {people:?}"
     );
 

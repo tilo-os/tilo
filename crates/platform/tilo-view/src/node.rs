@@ -266,22 +266,34 @@ pub fn count(node: &Node) -> usize {
 mod tests {
     use super::*;
 
+    /// `Props::set` refusing a prop: `(row, component, prop, value, why it is refused)`. Each row
+    /// was a test of its own, and a failure names its row.
     #[test]
-    fn a_prop_the_catalogue_does_not_declare_is_a_build_error() {
-        let err = Props::of("ListRow")
-            .expect("ListRow is described")
-            .set("colour", Value::text("red"))
-            .expect_err("ListRow has no colour");
-        assert!(err.what.contains("colour"), "{err}");
-    }
-
-    #[test]
-    fn a_prop_of_another_type_is_a_build_error() {
-        let err = Props::of("Badge")
-            .expect("Badge is described")
-            .set("count", Value::text("many"))
-            .expect_err("a count is a whole number");
-        assert!(err.what.contains("count"), "{err}");
+    fn a_prop_a_component_does_not_take_is_a_build_error() {
+        let rows = [
+            (
+                "a_prop_the_catalogue_does_not_declare_is_a_build_error",
+                "ListRow",
+                "colour",
+                Value::text("red"),
+                "ListRow has no colour",
+            ),
+            (
+                "a_prop_of_another_type_is_a_build_error",
+                "Badge",
+                "count",
+                Value::text("many"),
+                "a count is a whole number",
+            ),
+        ];
+        for (row, component, prop, value, why) in rows {
+            let props = Props::of(component)
+                .unwrap_or_else(|err| panic!("{row}: {component} is described: {err:?}"));
+            let Err(err) = props.set(prop, value) else {
+                panic!("{row}: {why}");
+            };
+            assert!(err.what.contains(prop), "{row}: {err}");
+        }
     }
 
     #[test]

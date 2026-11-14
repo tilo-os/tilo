@@ -6,7 +6,6 @@
 fn a_workspace_admits_the_readers_its_directory_names_and_no_one_else() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = ChannelId::new();
     // The identity's two devices, not the outsider's.
     let policy = Policy::default();
     policy.allowed.lock().unwrap().insert(public(1));
@@ -23,36 +22,28 @@ fn a_workspace_admits_the_readers_its_directory_names_and_no_one_else() {
     let mut now = Instant::now();
     assert!(
         matches!(
-            first.service.access(workspace_id, channel, now),
+            first.service.access(workspace_id, now),
             ChannelAccess::Waiting
         ),
         "a channel is taken up once its readers are named"
     );
     assert!(matches!(
-        outsider.service.access(workspace_id, channel, now),
+        outsider.service.access(workspace_id, now),
         ChannelAccess::Unavailable
     ));
 
     // The first device founds the group after its while and is answered
     // its keys; the second is admitted once it asks.
-    let access = create(&mut first, workspace_id, channel, now);
+    let access = create(&mut first, workspace_id, now);
     assert!(
         ready_epoch(&access).is_some(),
         "the founding device is handed the channel's keys: {access:?}"
     );
-    second.service.access(workspace_id, channel, now);
+    second.service.access(workspace_id, now);
     run(&mut [&mut first, &mut second], &mut now, 5);
+    assert!(second.service.existing_keys(workspace_id).is_some());
     assert!(
-        second
-            .service
-            .existing_keys(workspace_id, channel)
-            .is_some()
-    );
-    assert!(
-        outsider
-            .service
-            .existing_keys(workspace_id, channel)
-            .is_none(),
+        outsider.service.existing_keys(workspace_id).is_none(),
         "a device outside the identity never gets the keys"
     );
     assert!(outsider.service.peers.is_empty());

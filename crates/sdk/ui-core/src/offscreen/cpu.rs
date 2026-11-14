@@ -241,193 +241,201 @@ mod tests {
         out
     }
 
-    /// Without an adapter a picture is still drawn, on the CPU, at the asked size and in straight alpha
-    /// like the GPU path.
-    #[test]
-    fn a_picture_without_a_gpu_is_drawn_on_the_cpu() {
-        let (width, height) = (40, 30);
-        let mut scene = Scene::new();
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::from_rgb8(0xff, 0x00, 0x00),
-            None,
-            &Rect::new(0.0, 0.0, 20.0, 30.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::from_rgba8(0x00, 0x00, 0xff, 0x80),
-            None,
-            &Rect::new(20.0, 0.0, 40.0, 30.0),
-        );
-        let rgba = render_on_cpu(&scene, width, height, Color::TRANSPARENT)
-            .expect("the CPU rasterizer draws it");
-        assert_eq!(rgba.len(), (width * height * 4) as usize);
-        assert_eq!(pixel(&rgba, width, 5, 5), [0xff, 0x00, 0x00, 0xff]);
-        let [r, g, b, a] = pixel(&rgba, width, 30, 15);
-        assert_eq!((r, g), (0, 0));
-        assert!(b >= 0xfe, "straight alpha keeps the full blue, got {b}");
-        assert!(a.abs_diff(0x80) <= 1, "half coverage, got {a}");
-    }
+    tilo_test_env::scenario! {
+        fn a_scene_is_rendered_on_the_cpu_over_its_backdrop;
 
-    #[test]
-    fn the_backdrop_shows_where_nothing_is_drawn() {
-        let grey = Color::from_rgb8(0x33, 0x44, 0x55);
-        let rgba = render_on_cpu(&Scene::new(), 8, 8, grey).expect("drawn");
-        assert!(
-            rgba.chunks_exact(4)
-                .all(|pixel| pixel == [0x33, 0x44, 0x55, 0xff]),
-            "every pixel is the backdrop"
-        );
-    }
-
-    /// A frame is drawn where this surface saw its own frames differ, more finely than a caller's
-    /// damage says, and a frame that changed nothing costs nothing.
-    #[test]
-    fn a_frame_is_drawn_only_where_its_own_raster_saw_it_change() {
-        let (width, height) = (64, 48);
-        let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
-        let chip = |x: f64| {
+        phase a_picture_without_a_gpu_is_drawn_on_the_cpu;
+        // Without an adapter a picture is still drawn, on the CPU, at the asked size and in straight alpha
+        // like the GPU path.
+        {
+            let (width, height) = (40, 30);
             let mut scene = Scene::new();
             scene.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
-                Color::from_rgb8(0x20, 0x60, 0xc0),
+                Color::from_rgb8(0xff, 0x00, 0x00),
                 None,
-                &Rect::new(x, 8.0, x + 16.0, 24.0),
+                &Rect::new(0.0, 0.0, 20.0, 30.0),
             );
-            scene
-        };
-        let first = surface
-            .draw(&chip(8.0), None)
-            .expect("the first frame covers the surface");
-        assert_eq!(first, vec![(0, 0, width, height)]);
-
-        // The caller says nothing changed; the pixels this surface keeps say
-        // the chip moved, and they are the ones drawn.
-        let moved = surface
-            .draw(&chip(40.0), Some(&[]))
-            .expect("a moved chip changed pixels");
-        let covered = |x: u32, y: u32| {
-            moved
-                .iter()
-                .any(|&(rx, ry, rw, rh)| x >= rx && x < rx + rw && y >= ry && y < ry + rh)
-        };
-        assert!(covered(8, 16) && covered(55, 16), "where it was and is");
-        assert!(!covered(30, 40), "the pixels it never touched");
-        let full = render_on_cpu(&chip(40.0), width, height, Color::TRANSPARENT).expect("drawn");
-        assert_eq!(
-            pixel(surface.pixels(), width, 44, 16),
-            pixel(&full, width, 44, 16),
-            "the chip is where a whole render of the frame puts it"
-        );
-        assert_eq!(
-            pixel(surface.pixels(), width, 12, 16),
-            [0, 0, 0, 0],
-            "and the surface kept nothing of where it was"
-        );
-
-        assert!(
-            surface.draw(&chip(40.0), None).is_none(),
-            "an unchanged frame draws nothing"
-        );
-    }
-
-    /// A frame that only moved, as a strip that slides does, is moved rather than drawn again, and what
-    /// it leaves behind is a full render all the same: the pixels it left and the pixels it reached.
-    #[test]
-    fn a_frame_that_only_moves_leaves_a_full_render_behind() {
-        let (width, height) = (200, 120);
-        let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
-        let block = |x: f64| {
-            let mut scene = Scene::new();
             scene.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
-                Color::from_rgb8(0x20, 0x60, 0xc0),
+                Color::from_rgba8(0x00, 0x00, 0xff, 0x80),
                 None,
-                &Rect::new(x, 10.0, x + 120.0, 100.0),
+                &Rect::new(20.0, 0.0, 40.0, 30.0),
             );
-            scene
-        };
-        let first = surface
-            .draw(&block(10.0), None)
-            .expect("the first frame covers the surface");
-        assert_eq!(first, vec![(0, 0, width, height)]);
+            let rgba = render_on_cpu(&scene, width, height, Color::TRANSPARENT)
+                .expect("the CPU rasterizer draws it");
+            assert_eq!(rgba.len(), (width * height * 4) as usize);
+            assert_eq!(pixel(&rgba, width, 5, 5), [0xff, 0x00, 0x00, 0xff]);
+            let [r, g, b, a] = pixel(&rgba, width, 30, 15);
+            assert_eq!((r, g), (0, 0));
+            assert!(b >= 0xfe, "straight alpha keeps the full blue, got {b}");
+            assert!(a.abs_diff(0x80) <= 1, "half coverage, got {a}");
+        }
 
-        surface
-            .draw(&block(50.0), Some(&[]))
-            .expect("the block moved");
-        let full = render_on_cpu(&block(50.0), width, height, Color::TRANSPARENT).expect("drawn");
-        let differing: Vec<(u32, u32)> = surface
-            .pixels()
-            .chunks_exact(4)
-            .zip(full.chunks_exact(4))
-            .enumerate()
-            .filter(|(_, (moved, drawn))| {
-                moved
-                    .iter()
-                    .zip(drawn.iter())
-                    .any(|(a, b)| a.abs_diff(*b) > 1)
-            })
-            .map(|(at, _)| {
-                let at = at as u32;
-                (at % width, at / width)
-            })
-            .collect();
-        assert!(
-            differing.is_empty(),
-            "moved and drawn pixels equal a whole render: {differing:?}"
-        );
-        assert_eq!(
-            pixel(surface.pixels(), width, 11, 12),
-            [0, 0, 0, 0],
-            "the surface kept nothing of where the block was"
-        );
+        phase the_backdrop_shows_where_nothing_is_drawn;
+        {
+            let grey = Color::from_rgb8(0x33, 0x44, 0x55);
+            let rgba = render_on_cpu(&Scene::new(), 8, 8, grey).expect("drawn");
+            assert!(
+                rgba.chunks_exact(4)
+                    .all(|pixel| pixel == [0x33, 0x44, 0x55, 0xff]),
+                "every pixel is the backdrop"
+            );
+        }
     }
 
-    /// A frame that changed in more places than a scene walk is worth is drawn in one region covering
-    /// them, and leaves the same picture behind.
-    #[test]
-    fn many_changed_places_are_drawn_in_their_bounds() {
-        let (width, height) = (200, 100);
-        let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
-        let chips = |shift: f64| {
-            let mut scene = Scene::new();
-            for index in 0..40 {
-                let x = 2.0 + f64::from(index) * 4.0 + shift;
+    tilo_test_env::scenario! {
+        fn a_cpu_surface_draws_only_what_changed_and_leaves_a_full_render;
+
+        phase a_frame_is_drawn_only_where_its_own_raster_saw_it_change;
+        // A frame is drawn where this surface saw its own frames differ, more finely than a caller's
+        // damage says, and a frame that changed nothing costs nothing.
+        {
+            let (width, height) = (64, 48);
+            let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
+            let chip = |x: f64| {
+                let mut scene = Scene::new();
                 scene.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
                     Color::from_rgb8(0x20, 0x60, 0xc0),
                     None,
-                    &Rect::new(x, 10.0, x + 2.0, 12.0),
+                    &Rect::new(x, 8.0, x + 16.0, 24.0),
+                );
+                scene
+            };
+            let first = surface
+                .draw(&chip(8.0), None)
+                .expect("the first frame covers the surface");
+            assert_eq!(first, vec![(0, 0, width, height)]);
+
+            // The caller says nothing changed; the pixels this surface keeps say
+            // the chip moved, and they are the ones drawn.
+            let moved = surface
+                .draw(&chip(40.0), Some(&[]))
+                .expect("a moved chip changed pixels");
+            let covered = |x: u32, y: u32| {
+                moved
+                    .iter()
+                    .any(|&(rx, ry, rw, rh)| x >= rx && x < rx + rw && y >= ry && y < ry + rh)
+            };
+            assert!(covered(8, 16) && covered(55, 16), "where it was and is");
+            assert!(!covered(30, 40), "the pixels it never touched");
+            let full = render_on_cpu(&chip(40.0), width, height, Color::TRANSPARENT).expect("drawn");
+            assert_eq!(
+                pixel(surface.pixels(), width, 44, 16),
+                pixel(&full, width, 44, 16),
+                "the chip is where a whole render of the frame puts it"
+            );
+            assert_eq!(
+                pixel(surface.pixels(), width, 12, 16),
+                [0, 0, 0, 0],
+                "and the surface kept nothing of where it was"
+            );
+
+            assert!(
+                surface.draw(&chip(40.0), None).is_none(),
+                "an unchanged frame draws nothing"
+            );
+        }
+
+        phase a_frame_that_only_moves_leaves_a_full_render_behind;
+        // A frame that only moved, as a strip that slides does, is moved rather than drawn again, and what
+        // it leaves behind is a full render all the same: the pixels it left and the pixels it reached.
+        {
+            let (width, height) = (200, 120);
+            let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
+            let block = |x: f64| {
+                let mut scene = Scene::new();
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    Color::from_rgb8(0x20, 0x60, 0xc0),
+                    None,
+                    &Rect::new(x, 10.0, x + 120.0, 100.0),
+                );
+                scene
+            };
+            let first = surface
+                .draw(&block(10.0), None)
+                .expect("the first frame covers the surface");
+            assert_eq!(first, vec![(0, 0, width, height)]);
+
+            surface
+                .draw(&block(50.0), Some(&[]))
+                .expect("the block moved");
+            let full = render_on_cpu(&block(50.0), width, height, Color::TRANSPARENT).expect("drawn");
+            let differing: Vec<(u32, u32)> = surface
+                .pixels()
+                .chunks_exact(4)
+                .zip(full.chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (moved, drawn))| {
+                    moved
+                        .iter()
+                        .zip(drawn.iter())
+                        .any(|(a, b)| a.abs_diff(*b) > 1)
+                })
+                .map(|(at, _)| {
+                    let at = at as u32;
+                    (at % width, at / width)
+                })
+                .collect();
+            assert!(
+                differing.is_empty(),
+                "moved and drawn pixels equal a whole render: {differing:?}"
+            );
+            assert_eq!(
+                pixel(surface.pixels(), width, 11, 12),
+                [0, 0, 0, 0],
+                "the surface kept nothing of where the block was"
+            );
+        }
+
+        phase many_changed_places_are_drawn_in_their_bounds;
+        // A frame that changed in more places than a scene walk is worth is drawn in one region covering
+        // them, and leaves the same picture behind.
+        {
+            let (width, height) = (200, 100);
+            let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
+            let chips = |shift: f64| {
+                let mut scene = Scene::new();
+                for index in 0..40 {
+                    let x = 2.0 + f64::from(index) * 4.0 + shift;
+                    scene.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        Color::from_rgb8(0x20, 0x60, 0xc0),
+                        None,
+                        &Rect::new(x, 10.0, x + 2.0, 12.0),
+                    );
+                }
+                scene
+            };
+            let first = surface
+                .draw(&chips(0.0), None)
+                .expect("the first frame covers the surface");
+            assert_eq!(first, vec![(0, 0, width, height)]);
+
+            let moved = surface
+                .draw(&chips(20.0), Some(&[]))
+                .expect("every chip moved");
+            assert_eq!(
+                moved,
+                vec![(2, 10, 178, 2)],
+                "the chips and where they were are drawn as the one region they cover"
+            );
+            let full = render_on_cpu(&chips(20.0), width, height, Color::TRANSPARENT).expect("drawn");
+            for index in [0_u32, 20, 39] {
+                let x = 2 + index * 4 + 20;
+                assert_eq!(
+                    pixel(surface.pixels(), width, x, 10),
+                    pixel(&full, width, x, 10),
+                    "the chip at {x} is where a whole render of the frame puts it"
                 );
             }
-            scene
-        };
-        let first = surface
-            .draw(&chips(0.0), None)
-            .expect("the first frame covers the surface");
-        assert_eq!(first, vec![(0, 0, width, height)]);
-
-        let moved = surface
-            .draw(&chips(20.0), Some(&[]))
-            .expect("every chip moved");
-        assert_eq!(
-            moved,
-            vec![(2, 10, 178, 2)],
-            "the chips and where they were are drawn as the one region they cover"
-        );
-        let full = render_on_cpu(&chips(20.0), width, height, Color::TRANSPARENT).expect("drawn");
-        for index in [0_u32, 20, 39] {
-            let x = 2 + index * 4 + 20;
-            assert_eq!(
-                pixel(surface.pixels(), width, x, 10),
-                pixel(&full, width, x, 10),
-                "the chip at {x} is where a whole render of the frame puts it"
-            );
         }
     }
 }

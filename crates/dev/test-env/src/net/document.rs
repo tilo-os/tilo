@@ -337,6 +337,7 @@ fn read(document: &AutoCommit, value: Value<'_>, id: &ObjId) -> Option<serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenario;
     use automerge::transaction::Transactable as _;
 
     fn two_devices() -> (FakeDocumentNet, Peer, Peer, AutoCommit, AutoCommit) {
@@ -358,375 +359,383 @@ mod tests {
         forked
     }
 
-    #[test]
-    fn a_published_edit_reaches_the_other_device_once_the_net_delivers() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
-        a.put(automerge::ROOT, "title", "Shared").unwrap();
-        net.publish(&alice, &mut a);
-        assert_eq!(
-            at_path(&mut b, "title"),
-            None,
-            "nothing reaches a device before delivery",
-        );
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert_eq!(
-            at_path(&mut b, "title"),
-            Some(serde_json::Value::String("Shared".into())),
-        );
-        net.converged(&alice, &mut a, &bob, &mut b, &["title"])
-            .assert_holds();
-        assert_eq!(net.net().log().len(), 1, "one publish, one message");
-    }
+    scenario! {
+        fn the_document_net_carries_edits_between_devices_through_cuts_and_heals;
 
-    #[test]
-    fn publishing_a_replica_again_sends_only_what_is_new() {
-        let (mut net, alice, _bob, mut a, _b) = two_devices();
-        a.put(automerge::ROOT, "title", "First").unwrap();
-        net.publish(&alice, &mut a);
-        net.publish(&alice, &mut a);
-        assert_eq!(net.net().log().len(), 1, "the same change is offered once");
-        a.put(automerge::ROOT, "body", "Second").unwrap();
-        net.publish(&alice, &mut a);
-        assert_eq!(net.net().log().len(), 2, "a new change is offered");
-        net.publish(&alice, &mut a);
-        assert_eq!(net.net().log().len(), 2, "and only once");
-    }
-
-    #[test]
-    fn a_partition_holds_the_traffic_and_a_heal_delivers_it() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
-        a.put(automerge::ROOT, "title", "before").unwrap();
-        net.publish(&alice, &mut a);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-
-        net.net().partition(&["bob"]);
-        a.put(automerge::ROOT, "title", "while bob was away")
-            .unwrap();
-        net.publish(&alice, &mut a);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert_eq!(
-            at_path(&mut b, "title"),
-            Some(serde_json::Value::String("before".into())),
-            "a cut device receives nothing",
-        );
-        assert!(!net.converged(&alice, &mut a, &bob, &mut b, &[]).holds());
-        assert_eq!(net.net().held(), 1, "what was published for bob is held");
-
-        net.net().heal(&["bob"]);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert_eq!(
-            at_path(&mut b, "title"),
-            Some(serde_json::Value::String("while bob was away".into())),
-        );
-        net.converged(&alice, &mut a, &bob, &mut b, &["title"])
-            .assert_holds();
-    }
-
-    #[test]
-    fn a_cut_device_catches_up_when_the_net_heals() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
-        net.net().partition(&["bob"]);
-        b.put(automerge::ROOT, "body", "written on the train")
-            .unwrap();
-        net.publish(&bob, &mut b);
-        assert!(
-            net.net().log().is_empty(),
-            "nothing leaves a device off the net",
-        );
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert_eq!(at_path(&mut a, "body"), None);
-
-        net.net().heal(&["bob"]);
-        net.publish(&bob, &mut b);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert_eq!(
-            at_path(&mut a, "body"),
-            Some(serde_json::Value::String("written on the train".into())),
-        );
-        net.converged(&alice, &mut a, &bob, &mut b, &[])
-            .assert_holds();
-    }
-
-    #[test]
-    fn two_sides_of_a_partition_merge_when_the_net_heals() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
-        a.put(automerge::ROOT, "title", "shared").unwrap();
-        net.publish(&alice, &mut a);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-
-        net.net().partition(&["bob"]);
-        a.put(automerge::ROOT, "title", "from alice").unwrap();
-        b.put(automerge::ROOT, "body", "from bob").unwrap();
-        net.publish(&alice, &mut a);
-        net.publish(&bob, &mut b);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert!(
-            !net.converged(&alice, &mut a, &bob, &mut b, &["title"])
-                .holds(),
-            "a partition keeps them apart",
-        );
-
-        net.net().heal(&["bob"]);
-        net.publish(&alice, &mut a);
-        net.publish(&bob, &mut b);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        net.converged(&alice, &mut a, &bob, &mut b, &["title", "body"])
-            .assert_holds();
-        assert_eq!(
-            at_path(&mut a, "title"),
-            Some(serde_json::Value::String("from alice".into())),
-            "the later write wins, whichever side of the partition it was made on",
-        );
-        assert_eq!(
-            at_path(&mut b, "body"),
-            Some(serde_json::Value::String("from bob".into())),
-        );
-    }
-
-    #[test]
-    fn traffic_held_for_a_cut_device_can_be_forgotten_and_offered_again() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
-        net.net().partition(&["bob"]);
-        a.put(automerge::ROOT, "title", "lost").unwrap();
-        net.publish(&alice, &mut a);
-        net.forget_held();
-        net.net().heal(&["bob"]);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert_eq!(at_path(&mut b, "title"), None, "the frames were lost");
-
-        net.publish(&alice, &mut a);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert_eq!(
-            at_path(&mut b, "title"),
-            Some(serde_json::Value::String("lost".into())),
-            "offering the replica again offers what was lost",
-        );
-        net.converged(&alice, &mut a, &bob, &mut b, &["title"])
-            .assert_holds();
-    }
-
-    #[test]
-    fn the_same_steps_deliver_the_same_traffic_in_the_same_order() {
-        let run = || {
+        phase a_published_edit_reaches_the_other_device_once_the_net_delivers;
+        {
             let (mut net, alice, bob, mut a, mut b) = two_devices();
-            a.put(automerge::ROOT, "title", "one").unwrap();
+            a.put(automerge::ROOT, "title", "Shared").unwrap();
             net.publish(&alice, &mut a);
+            assert_eq!(
+                at_path(&mut b, "title"),
+                None,
+                "nothing reaches a device before delivery",
+            );
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert_eq!(
+                at_path(&mut b, "title"),
+                Some(serde_json::Value::String("Shared".into())),
+            );
+            net.converged(&alice, &mut a, &bob, &mut b, &["title"])
+                .assert_holds();
+            assert_eq!(net.net().log().len(), 1, "one publish, one message");
+        }
+
+        phase publishing_a_replica_again_sends_only_what_is_new;
+        {
+            let (mut net, alice, _bob, mut a, _b) = two_devices();
+            a.put(automerge::ROOT, "title", "First").unwrap();
+            net.publish(&alice, &mut a);
+            net.publish(&alice, &mut a);
+            assert_eq!(net.net().log().len(), 1, "the same change is offered once");
+            a.put(automerge::ROOT, "body", "Second").unwrap();
+            net.publish(&alice, &mut a);
+            assert_eq!(net.net().log().len(), 2, "a new change is offered");
+            net.publish(&alice, &mut a);
+            assert_eq!(net.net().log().len(), 2, "and only once");
+        }
+
+        phase a_partition_holds_the_traffic_and_a_heal_delivers_it;
+        {
+            let (mut net, alice, bob, mut a, mut b) = two_devices();
+            a.put(automerge::ROOT, "title", "before").unwrap();
+            net.publish(&alice, &mut a);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+
             net.net().partition(&["bob"]);
-            b.put(automerge::ROOT, "body", "two").unwrap();
+            a.put(automerge::ROOT, "title", "while bob was away")
+                .unwrap();
+            net.publish(&alice, &mut a);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert_eq!(
+                at_path(&mut b, "title"),
+                Some(serde_json::Value::String("before".into())),
+                "a cut device receives nothing",
+            );
+            assert!(!net.converged(&alice, &mut a, &bob, &mut b, &[]).holds());
+            assert_eq!(net.net().held(), 1, "what was published for bob is held");
+
+            net.net().heal(&["bob"]);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert_eq!(
+                at_path(&mut b, "title"),
+                Some(serde_json::Value::String("while bob was away".into())),
+            );
+            net.converged(&alice, &mut a, &bob, &mut b, &["title"])
+                .assert_holds();
+        }
+
+        phase a_cut_device_catches_up_when_the_net_heals;
+        {
+            let (mut net, alice, bob, mut a, mut b) = two_devices();
+            net.net().partition(&["bob"]);
+            b.put(automerge::ROOT, "body", "written on the train")
+                .unwrap();
+            net.publish(&bob, &mut b);
+            assert!(
+                net.net().log().is_empty(),
+                "nothing leaves a device off the net",
+            );
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert_eq!(at_path(&mut a, "body"), None);
+
+            net.net().heal(&["bob"]);
             net.publish(&bob, &mut b);
             net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert_eq!(
+                at_path(&mut a, "body"),
+                Some(serde_json::Value::String("written on the train".into())),
+            );
+            net.converged(&alice, &mut a, &bob, &mut b, &[])
+                .assert_holds();
+        }
+
+        phase two_sides_of_a_partition_merge_when_the_net_heals;
+        {
+            let (mut net, alice, bob, mut a, mut b) = two_devices();
+            a.put(automerge::ROOT, "title", "shared").unwrap();
+            net.publish(&alice, &mut a);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+
+            net.net().partition(&["bob"]);
+            a.put(automerge::ROOT, "title", "from alice").unwrap();
+            b.put(automerge::ROOT, "body", "from bob").unwrap();
+            net.publish(&alice, &mut a);
+            net.publish(&bob, &mut b);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert!(
+                !net.converged(&alice, &mut a, &bob, &mut b, &["title"])
+                    .holds(),
+                "a partition keeps them apart",
+            );
+
             net.net().heal(&["bob"]);
             net.publish(&alice, &mut a);
             net.publish(&bob, &mut b);
             net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
             net.converged(&alice, &mut a, &bob, &mut b, &["title", "body"])
                 .assert_holds();
-            let authors: Vec<String> = net
-                .net()
-                .log()
-                .iter()
-                .map(|(author, _)| author.clone())
-                .collect();
-            (authors, net.net().deliveries())
-        };
-        let first = run();
-        for _ in 0..100 {
-            assert_eq!(run(), first, "the same steps deliver the same traffic");
+            assert_eq!(
+                at_path(&mut a, "title"),
+                Some(serde_json::Value::String("from alice".into())),
+                "the later write wins, whichever side of the partition it was made on",
+            );
+            assert_eq!(
+                at_path(&mut b, "body"),
+                Some(serde_json::Value::String("from bob".into())),
+            );
+        }
+
+        phase traffic_held_for_a_cut_device_can_be_forgotten_and_offered_again;
+        {
+            let (mut net, alice, bob, mut a, mut b) = two_devices();
+            net.net().partition(&["bob"]);
+            a.put(automerge::ROOT, "title", "lost").unwrap();
+            net.publish(&alice, &mut a);
+            net.forget_held();
+            net.net().heal(&["bob"]);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert_eq!(at_path(&mut b, "title"), None, "the frames were lost");
+
+            net.publish(&alice, &mut a);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert_eq!(
+                at_path(&mut b, "title"),
+                Some(serde_json::Value::String("lost".into())),
+                "offering the replica again offers what was lost",
+            );
+            net.converged(&alice, &mut a, &bob, &mut b, &["title"])
+                .assert_holds();
+        }
+
+        phase the_same_steps_deliver_the_same_traffic_in_the_same_order;
+        {
+            let run = || {
+                let (mut net, alice, bob, mut a, mut b) = two_devices();
+                a.put(automerge::ROOT, "title", "one").unwrap();
+                net.publish(&alice, &mut a);
+                net.net().partition(&["bob"]);
+                b.put(automerge::ROOT, "body", "two").unwrap();
+                net.publish(&bob, &mut b);
+                net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+                net.net().heal(&["bob"]);
+                net.publish(&alice, &mut a);
+                net.publish(&bob, &mut b);
+                net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+                net.converged(&alice, &mut a, &bob, &mut b, &["title", "body"])
+                    .assert_holds();
+                let authors: Vec<String> = net
+                    .net()
+                    .log()
+                    .iter()
+                    .map(|(author, _)| author.clone())
+                    .collect();
+                (authors, net.net().deliveries())
+            };
+            let first = run();
+            for _ in 0..100 {
+                assert_eq!(run(), first, "the same steps deliver the same traffic");
+            }
+        }
+
+        phase a_net_carries_every_device_it_is_given;
+        {
+            let (mut net, alice, _bob, mut a, _b) = two_devices();
+            let bob = net.peer("bob");
+            let carol = net.peer("carol");
+            let mut b = AutoCommit::new();
+            b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
+            let mut c = AutoCommit::new();
+            c.set_actor(automerge::ActorId::from(b"carol".as_slice()));
+            a.put(automerge::ROOT, "title", "from alice").unwrap();
+            c.put(automerge::ROOT, "body", "from carol").unwrap();
+            net.publish(&alice, &mut a);
+            net.publish(&carol, &mut c);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b), (&carol, &mut c)]);
+            assert_eq!(
+                at_path(&mut b, "body"),
+                Some(serde_json::Value::String("from carol".into())),
+                "a device that published nothing still takes the net in",
+            );
+            net.assert_converged(
+                &mut [(&alice, &mut a), (&bob, &mut b), (&carol, &mut c)],
+                &["title", "body"],
+            );
+            assert_eq!(net.names(), vec!["alice", "bob", "carol"]);
+        }
+
+        phase replicas_forked_from_shared_history_converge_through_the_net;
+        {
+            let (mut net, alice, bob, mut a, _b) = two_devices();
+            a.put(automerge::ROOT, "title", "shared").unwrap();
+            net.publish(&alice, &mut a);
+            // Bob joins with the document he holds, and both write on their own device while the net is
+            // cut between them.
+            let mut b = forked_from(&mut a);
+            a.put(automerge::ROOT, "title", "alice's").unwrap();
+            b.put(automerge::ROOT, "note", "bob's").unwrap();
+            net.net().partition(&["bob"]);
+            a.put(automerge::ROOT, "body", "alice's").unwrap();
+            b.put(automerge::ROOT, "pinned", true).unwrap();
+            net.publish(&alice, &mut a);
+            net.publish(&bob, &mut b);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            let converged = net.converged(&alice, &mut a, &bob, &mut b, &["title", "note"]);
+            assert!(
+                !converged.holds(),
+                "they wrote on either side of the cut, so neither has what the other wrote: {:?}",
+                converged.disagreements(),
+            );
+
+            net.net().heal(&["bob"]);
+            net.publish(&alice, &mut a);
+            net.publish(&bob, &mut b);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            assert_eq!(
+                at_path(&mut a, "note"),
+                Some(serde_json::Value::String("bob's".into())),
+                "bob's change reached alice",
+            );
+            net.assert_converged(
+                &mut [(&alice, &mut a), (&bob, &mut b)],
+                &["title", "body", "note"],
+            );
         }
     }
 
-    #[test]
-    fn a_converged_assertion_names_the_path_that_disagrees() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
-        a.put(automerge::ROOT, "title", "alice's").unwrap();
-        net.publish(&alice, &mut a);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        net.converged(&alice, &mut a, &bob, &mut b, &["title", "body"])
-            .assert_holds();
+    scenario! {
+        fn convergence_is_reported_with_the_path_or_change_that_disagrees;
 
-        b.put(automerge::ROOT, "body", "bob's").unwrap();
-        let converged = net.converged(&alice, &mut a, &bob, &mut b, &["body"]);
-        assert!(!converged.holds());
-        assert!(
-            converged
-                .disagreements()
-                .iter()
-                .any(|line| line.contains("alice has body = None")
-                    && line.contains("bob has Some(String(\"bob's\"))")),
-            "the report names the path, both devices and their values: {:?}",
-            converged.disagreements(),
-        );
-    }
+        phase a_converged_assertion_names_the_path_that_disagrees;
+        {
+            let (mut net, alice, bob, mut a, mut b) = two_devices();
+            a.put(automerge::ROOT, "title", "alice's").unwrap();
+            net.publish(&alice, &mut a);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            net.converged(&alice, &mut a, &bob, &mut b, &["title", "body"])
+                .assert_holds();
 
-    #[test]
-    fn a_path_reads_through_maps_and_lists_to_the_value_a_person_sees() {
-        let mut document = AutoCommit::new();
-        document.put(automerge::ROOT, "title", "Notebook").unwrap();
-        document.put(automerge::ROOT, "count", 3_i64).unwrap();
-        document.put(automerge::ROOT, "pinned", true).unwrap();
-        let pages = document
-            .put_object(automerge::ROOT, "pages", ObjType::List)
-            .unwrap();
-        let page = document.insert_object(&pages, 0, ObjType::Map).unwrap();
-        document.put(&page, "title", "First").unwrap();
-        let text = document.put_object(&page, "text", ObjType::Text).unwrap();
-        document.splice_text(&text, 0, 0, "hello").unwrap();
+            b.put(automerge::ROOT, "body", "bob's").unwrap();
+            let converged = net.converged(&alice, &mut a, &bob, &mut b, &["body"]);
+            assert!(!converged.holds());
+            assert!(
+                converged
+                    .disagreements()
+                    .iter()
+                    .any(|line| line.contains("alice has body = None")
+                        && line.contains("bob has Some(String(\"bob's\"))")),
+                "the report names the path, both devices and their values: {:?}",
+                converged.disagreements(),
+            );
+        }
 
-        assert_eq!(
-            at_path(&mut document, "title"),
-            Some(serde_json::Value::String("Notebook".into())),
-        );
-        assert_eq!(at_path(&mut document, "count"), Some(3.into()));
-        assert_eq!(at_path(&mut document, "pinned"), Some(true.into()));
-        assert_eq!(
-            at_path(&mut document, "pages[0].title"),
-            Some(serde_json::Value::String("First".into())),
-        );
-        assert_eq!(
-            at_path(&mut document, "pages[0].text"),
-            Some(serde_json::Value::String("hello".into())),
-        );
-        assert_eq!(at_path(&mut document, "pages[1].title"), None);
-        assert_eq!(at_path(&mut document, "missing"), None);
-    }
+        phase a_path_reads_through_maps_and_lists_to_the_value_a_person_sees;
+        {
+            let mut document = AutoCommit::new();
+            document.put(automerge::ROOT, "title", "Notebook").unwrap();
+            document.put(automerge::ROOT, "count", 3_i64).unwrap();
+            document.put(automerge::ROOT, "pinned", true).unwrap();
+            let pages = document
+                .put_object(automerge::ROOT, "pages", ObjType::List)
+                .unwrap();
+            let page = document.insert_object(&pages, 0, ObjType::Map).unwrap();
+            document.put(&page, "title", "First").unwrap();
+            let text = document.put_object(&page, "text", ObjType::Text).unwrap();
+            document.splice_text(&text, 0, 0, "hello").unwrap();
 
-    #[test]
-    fn a_net_carries_every_device_it_is_given() {
-        let (mut net, alice, _bob, mut a, _b) = two_devices();
-        let bob = net.peer("bob");
-        let carol = net.peer("carol");
-        let mut b = AutoCommit::new();
-        b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
-        let mut c = AutoCommit::new();
-        c.set_actor(automerge::ActorId::from(b"carol".as_slice()));
-        a.put(automerge::ROOT, "title", "from alice").unwrap();
-        c.put(automerge::ROOT, "body", "from carol").unwrap();
-        net.publish(&alice, &mut a);
-        net.publish(&carol, &mut c);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b), (&carol, &mut c)]);
-        assert_eq!(
-            at_path(&mut b, "body"),
-            Some(serde_json::Value::String("from carol".into())),
-            "a device that published nothing still takes the net in",
-        );
-        net.assert_converged(
-            &mut [(&alice, &mut a), (&bob, &mut b), (&carol, &mut c)],
-            &["title", "body"],
-        );
-        assert_eq!(net.names(), vec!["alice", "bob", "carol"]);
-    }
+            assert_eq!(
+                at_path(&mut document, "title"),
+                Some(serde_json::Value::String("Notebook".into())),
+            );
+            assert_eq!(at_path(&mut document, "count"), Some(3.into()));
+            assert_eq!(at_path(&mut document, "pinned"), Some(true.into()));
+            assert_eq!(
+                at_path(&mut document, "pages[0].title"),
+                Some(serde_json::Value::String("First".into())),
+            );
+            assert_eq!(
+                at_path(&mut document, "pages[0].text"),
+                Some(serde_json::Value::String("hello".into())),
+            );
+            assert_eq!(at_path(&mut document, "pages[1].title"), None);
+            assert_eq!(at_path(&mut document, "missing"), None);
+        }
 
-    #[test]
-    fn replicas_forked_from_shared_history_converge_through_the_net() {
-        let (mut net, alice, bob, mut a, _b) = two_devices();
-        a.put(automerge::ROOT, "title", "shared").unwrap();
-        net.publish(&alice, &mut a);
-        // Bob joins with the document he holds, and both write on their own device while the net is
-        // cut between them.
-        let mut b = forked_from(&mut a);
-        a.put(automerge::ROOT, "title", "alice's").unwrap();
-        b.put(automerge::ROOT, "note", "bob's").unwrap();
-        net.net().partition(&["bob"]);
-        a.put(automerge::ROOT, "body", "alice's").unwrap();
-        b.put(automerge::ROOT, "pinned", true).unwrap();
-        net.publish(&alice, &mut a);
-        net.publish(&bob, &mut b);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        let converged = net.converged(&alice, &mut a, &bob, &mut b, &["title", "note"]);
-        assert!(
-            !converged.holds(),
-            "they wrote on either side of the cut, so neither has what the other wrote: {:?}",
-            converged.disagreements(),
-        );
+        phase a_converged_net_is_reported_converged;
+        {
+            let (mut net, alice, bob, mut a, _b) = two_devices();
+            a.put(automerge::ROOT, "title", "shared").unwrap();
+            let mut b = forked_from(&mut a);
+            a.put(automerge::ROOT, "body", "alice's").unwrap();
+            b.put(automerge::ROOT, "note", "bob's").unwrap();
+            b.put(automerge::ROOT, "title", "theirs").unwrap();
+            net.publish(&alice, &mut a);
+            net.publish(&bob, &mut b);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            net.converged(&alice, &mut a, &bob, &mut b, &["title", "body", "note"])
+                .assert_holds();
+            assert_eq!(
+                a.get_heads(),
+                b.get_heads(),
+                "both hold the same changes, whichever device wrote each",
+            );
+        }
 
-        net.net().heal(&["bob"]);
-        net.publish(&alice, &mut a);
-        net.publish(&bob, &mut b);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        assert_eq!(
-            at_path(&mut a, "note"),
-            Some(serde_json::Value::String("bob's".into())),
-            "bob's change reached alice",
-        );
-        net.assert_converged(
-            &mut [(&alice, &mut a), (&bob, &mut b)],
-            &["title", "body", "note"],
-        );
-    }
+        phase a_change_one_device_never_received_is_still_reported;
+        {
+            let (mut net, alice, bob, mut a, mut b) = two_devices();
+            a.put(automerge::ROOT, "title", "shared").unwrap();
+            net.publish(&alice, &mut a);
+            net.publish(&bob, &mut a);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
 
-    #[test]
-    fn a_converged_net_is_reported_converged() {
-        let (mut net, alice, bob, mut a, _b) = two_devices();
-        a.put(automerge::ROOT, "title", "shared").unwrap();
-        let mut b = forked_from(&mut a);
-        a.put(automerge::ROOT, "body", "alice's").unwrap();
-        b.put(automerge::ROOT, "note", "bob's").unwrap();
-        b.put(automerge::ROOT, "title", "theirs").unwrap();
-        net.publish(&alice, &mut a);
-        net.publish(&bob, &mut b);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        net.converged(&alice, &mut a, &bob, &mut b, &["title", "body", "note"])
-            .assert_holds();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "both hold the same changes, whichever device wrote each",
-        );
-    }
+            // Alice writes while bob is off the net, and bob never takes it in. Their paths still read
+            // the same, so only the changes tell them apart.
+            net.net().partition(&["bob"]);
+            a.put(automerge::ROOT, "count", 2_i64).unwrap();
+            net.publish(&alice, &mut a);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            net.net().heal(&["bob"]);
+            assert_eq!(
+                at_path(&mut a, "title"),
+                at_path(&mut b, "title"),
+                "the value bob reads is the one alice wrote",
+            );
+            let converged = net.converged(&alice, &mut a, &bob, &mut b, &["title"]);
+            assert!(!converged.holds(), "bob was cut before the change was sent");
+            assert!(
+                converged
+                    .disagreements()
+                    .iter()
+                    .any(|line| line.contains("bob has not taken in what alice published")),
+                "the report names the change bob is missing: {:?}",
+                converged.disagreements(),
+            );
+        }
 
-    #[test]
-    fn a_change_one_device_never_received_is_still_reported() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
-        a.put(automerge::ROOT, "title", "shared").unwrap();
-        net.publish(&alice, &mut a);
-        net.publish(&bob, &mut a);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-
-        // Alice writes while bob is off the net, and bob never takes it in. Their paths still read
-        // the same, so only the changes tell them apart.
-        net.net().partition(&["bob"]);
-        a.put(automerge::ROOT, "count", 2_i64).unwrap();
-        net.publish(&alice, &mut a);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        net.net().heal(&["bob"]);
-        assert_eq!(
-            at_path(&mut a, "title"),
-            at_path(&mut b, "title"),
-            "the value bob reads is the one alice wrote",
-        );
-        let converged = net.converged(&alice, &mut a, &bob, &mut b, &["title"]);
-        assert!(!converged.holds(), "bob was cut before the change was sent");
-        assert!(
-            converged
-                .disagreements()
-                .iter()
-                .any(|line| line.contains("bob has not taken in what alice published")),
-            "the report names the change bob is missing: {:?}",
-            converged.disagreements(),
-        );
-    }
-
-    #[test]
-    fn a_device_holding_no_change_of_its_own_still_misses_a_published_one() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
-        a.put(automerge::ROOT, "title", "shared").unwrap();
-        b.put(automerge::ROOT, "note", "bob's").unwrap();
-        net.net().partition(&["bob"]);
-        net.publish(&alice, &mut a);
-        net.publish(&bob, &mut b);
-        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
-        let converged = net.converged(&alice, &mut a, &bob, &mut b, &[]);
-        assert!(
-            !converged.holds(),
-            "bob was offered a change it did not take in"
-        );
-        assert!(
-            converged
-                .disagreements()
-                .iter()
-                .any(|line| line.contains("bob has not taken in what alice published")),
-            "the report names the change bob is missing: {:?}",
-            converged.disagreements(),
-        );
+        phase a_device_holding_no_change_of_its_own_still_misses_a_published_one;
+        {
+            let (mut net, alice, bob, mut a, mut b) = two_devices();
+            a.put(automerge::ROOT, "title", "shared").unwrap();
+            b.put(automerge::ROOT, "note", "bob's").unwrap();
+            net.net().partition(&["bob"]);
+            net.publish(&alice, &mut a);
+            net.publish(&bob, &mut b);
+            net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+            let converged = net.converged(&alice, &mut a, &bob, &mut b, &[]);
+            assert!(
+                !converged.holds(),
+                "bob was offered a change it did not take in"
+            );
+            assert!(
+                converged
+                    .disagreements()
+                    .iter()
+                    .any(|line| line.contains("bob has not taken in what alice published")),
+                "the report names the change bob is missing: {:?}",
+                converged.disagreements(),
+            );
+        }
     }
 }

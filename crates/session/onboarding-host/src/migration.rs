@@ -781,244 +781,250 @@ mod tests {
             .unwrap();
         home
     }
-    #[test]
-    fn metadata_selection_and_explicit_defer_do_not_claim_a_copy() {
-        let home = fixture();
-        let plan = plans(home.path()).join("setup.migration.json");
-        std::fs::write(&plan, b"{}").unwrap();
-        std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let mut migration = Migration::open(home.path().into());
-        assert_eq!(
-            migration.status()["operations"],
-            serde_json::json!(["setup"])
-        );
-        assert!(migration.invoke("start", None).is_err());
-        assert!(migration.invoke("continue", None).is_err());
-        migration.invoke("later", None).unwrap();
-        assert!(!migration.pending());
-        assert!(detect(home.path()).unwrap().is_empty());
-        let receipt: Acknowledgement = serde_json::from_slice(
-            &std::fs::read(plans(home.path()).join("setup.acknowledged.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(receipt.outcome, "deferred");
-        assert_eq!(std::fs::read(plan).unwrap(), b"{}");
-        assert!(!home.path().join(".local/state/tilo/migration").exists());
-    }
-    #[test]
-    fn original_copy_review_queues_the_native_actor_and_semantic_cancel() {
-        let home = fixture();
-        let operation = uuid::Uuid::new_v4().to_string();
-        let plan = plans(home.path()).join(format!("{operation}.migration.json"));
-        std::fs::write(&plan, b"{}").unwrap();
-        std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let mut migration = Migration::open(home.path().into());
-        migration.invoke("review", Some(&operation)).unwrap();
-        let request = migration.take_original_copy_request().unwrap();
-        assert_eq!(request.operation, operation);
-        assert!(migration.worker.is_none(), "no rootless source-copy helper");
-        assert!(!home.path().join(".local/state/tilo/migration").exists());
-        assert!(migration.invoke("continue", None).is_err());
-        migration.invoke("cancel", None).unwrap();
-        assert!(matches!(
-            request.commands.try_recv().unwrap(),
-            launcher::retained_view::installed_copy::CopyOwnerCommand::Cancel {}
-        ));
-        request
-            .events
-            .send(
-                launcher::retained_view::installed_copy::CopyOwnerEvent::RetirementPending {
-                    operation: operation.clone(),
-                    message: "Draining owned importer".into(),
-                },
+    tilo_test_env::scenario! {
+        fn a_migration_is_reviewed_copied_cleaned_up_and_deferred_only_as_its_owner_reports;
+
+        phase metadata_selection_and_explicit_defer_do_not_claim_a_copy;
+        {
+            let home = fixture();
+            let plan = plans(home.path()).join("setup.migration.json");
+            std::fs::write(&plan, b"{}").unwrap();
+            std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut migration = Migration::open(home.path().into());
+            assert_eq!(
+                migration.status()["operations"],
+                serde_json::json!(["setup"])
+            );
+            assert!(migration.invoke("start", None).is_err());
+            assert!(migration.invoke("continue", None).is_err());
+            migration.invoke("later", None).unwrap();
+            assert!(!migration.pending());
+            assert!(detect(home.path()).unwrap().is_empty());
+            let receipt: Acknowledgement = serde_json::from_slice(
+                &std::fs::read(plans(home.path()).join("setup.acknowledged.json")).unwrap(),
             )
             .unwrap();
-        assert!(migration.poll());
-        assert_eq!(migration.status()["state"], "retirement-pending");
-        assert!(migration.invoke("continue", None).is_err());
-    }
+            assert_eq!(receipt.outcome, "deferred");
+            assert_eq!(std::fs::read(plan).unwrap(), b"{}");
+            assert!(!home.path().join(".local/state/tilo/migration").exists());
+        }
 
-    #[test]
-    fn completed_copy_cleanup_resume_uses_live_owner_and_preserves_completion() {
-        use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
-        let home = fixture();
-        let operation = uuid::Uuid::new_v4().to_string();
-        let plan = plans(home.path()).join(format!("{operation}.migration.json"));
-        std::fs::write(&plan, b"{}").unwrap();
-        std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let mut migration = Migration::open(home.path().into());
-        migration.invoke("review", Some(&operation)).unwrap();
-        let request = migration.take_original_copy_request().unwrap();
-        request
-            .events
-            .send(CopyOwnerEvent::Complete {
-                operation: operation.clone(),
-                home_cipher_sha256: Some("held receipt".into()),
-                applications_cipher_sha256: None,
-            })
-            .unwrap();
-        assert!(migration.poll());
-        assert_eq!(migration.status()["state"], "complete");
-        assert_eq!(migration.status()["transfer_complete"], true);
-        assert!(migration.invoke("continue", None).is_err());
-        request
-            .events
-            .send(CopyOwnerEvent::CleanupPending {
-                operation: operation.clone(),
-                message: "held temporary files".into(),
-                resumable: true,
-            })
-            .unwrap();
-        assert!(migration.poll());
-        assert_eq!(migration.status()["state"], "complete");
-        assert_eq!(migration.next_action(), "cleanup-resume");
-        assert!(migration.invoke("retry", None).is_err());
-        migration.invoke("cleanup-resume", None).unwrap();
-        assert!(
-            matches!(request.commands.try_recv().unwrap(), CopyOwnerCommand::ResumeCleanup { operation: actual } if actual == operation)
-        );
-        request
-            .events
-            .send(CopyOwnerEvent::CleanupFinished {
-                operation: operation.clone(),
-                metadata_quarantined: true,
-            })
-            .unwrap();
-        assert!(migration.poll());
-        assert_eq!(migration.status()["state"], "complete");
-        assert_eq!(migration.status()["cleanup_state"], "finished");
-        assert_eq!(migration.status()["result"]["event"], "complete");
-        assert_eq!(migration.next_action(), "continue");
-        migration.invoke("continue", None).unwrap();
-        assert!(!migration.pending());
-    }
-    #[test]
-    fn composite_owner_never_releases_rw_on_completion_or_wrong_cleanup() {
-        let home = fixture();
-        let stage = uuid::Uuid::new_v4().to_string();
-        let source = uuid::Uuid::new_v4().to_string();
-        let plan = plans(home.path()).join(format!("{stage}.migration.json"));
-        std::fs::write(&plan, b"{}").unwrap();
-        std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let mut migration = Migration::open(home.path().into());
-        migration.invoke("review", Some(&stage)).unwrap();
-        let request = migration.take_original_copy_request().unwrap();
-        migration.shared_files = true;
-        migration.selected = Some(source.clone());
-        migration.access = Some(crate::retained::Request {
-            operation: source.clone(),
-            digest: "a".repeat(64),
-            applications: true,
-            identity_public_key: [7; 32],
-        });
-        // Even an accidentally queued old RW request remains fenced by the
-        // genuinely pending original-copy owner, rather than a status label.
-        migration.access_request = migration.access.clone();
-        assert!(migration.take_access_request().is_none());
-        migration.access_outcome(&source, true);
-        assert_eq!(migration.status()["state"], "reviewing");
-        request
-            .events
-            .send(
-                launcher::retained_view::installed_copy::CopyOwnerEvent::Complete {
+        phase original_copy_review_queues_the_native_actor_and_semantic_cancel;
+        {
+            let home = fixture();
+            let operation = uuid::Uuid::new_v4().to_string();
+            let plan = plans(home.path()).join(format!("{operation}.migration.json"));
+            std::fs::write(&plan, b"{}").unwrap();
+            std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut migration = Migration::open(home.path().into());
+            migration.invoke("review", Some(&operation)).unwrap();
+            let request = migration.take_original_copy_request().unwrap();
+            assert_eq!(request.operation, operation);
+            assert!(migration.worker.is_none(), "no rootless source-copy helper");
+            assert!(!home.path().join(".local/state/tilo/migration").exists());
+            assert!(migration.invoke("continue", None).is_err());
+            migration.invoke("cancel", None).unwrap();
+            assert!(matches!(
+                request.commands.try_recv().unwrap(),
+                launcher::retained_view::installed_copy::CopyOwnerCommand::Cancel {}
+            ));
+            request
+                .events
+                .send(
+                    launcher::retained_view::installed_copy::CopyOwnerEvent::RetirementPending {
+                        operation: operation.clone(),
+                        message: "Draining owned importer".into(),
+                    },
+                )
+                .unwrap();
+            assert!(migration.poll());
+            assert_eq!(migration.status()["state"], "retirement-pending");
+            assert!(migration.invoke("continue", None).is_err());
+        }
+
+        phase completed_copy_cleanup_resume_uses_live_owner_and_preserves_completion;
+        {
+            use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
+            let home = fixture();
+            let operation = uuid::Uuid::new_v4().to_string();
+            let plan = plans(home.path()).join(format!("{operation}.migration.json"));
+            std::fs::write(&plan, b"{}").unwrap();
+            std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut migration = Migration::open(home.path().into());
+            migration.invoke("review", Some(&operation)).unwrap();
+            let request = migration.take_original_copy_request().unwrap();
+            request
+                .events
+                .send(CopyOwnerEvent::Complete {
+                    operation: operation.clone(),
+                    home_cipher_sha256: Some("held receipt".into()),
+                    applications_cipher_sha256: None,
+                })
+                .unwrap();
+            assert!(migration.poll());
+            assert_eq!(migration.status()["state"], "complete");
+            assert_eq!(migration.status()["transfer_complete"], true);
+            assert!(migration.invoke("continue", None).is_err());
+            request
+                .events
+                .send(CopyOwnerEvent::CleanupPending {
+                    operation: operation.clone(),
+                    message: "held temporary files".into(),
+                    resumable: true,
+                })
+                .unwrap();
+            assert!(migration.poll());
+            assert_eq!(migration.status()["state"], "complete");
+            assert_eq!(migration.next_action(), "cleanup-resume");
+            assert!(migration.invoke("retry", None).is_err());
+            migration.invoke("cleanup-resume", None).unwrap();
+            assert!(
+                matches!(request.commands.try_recv().unwrap(), CopyOwnerCommand::ResumeCleanup { operation: actual } if actual == operation)
+            );
+            request
+                .events
+                .send(CopyOwnerEvent::CleanupFinished {
+                    operation: operation.clone(),
+                    metadata_quarantined: true,
+                })
+                .unwrap();
+            assert!(migration.poll());
+            assert_eq!(migration.status()["state"], "complete");
+            assert_eq!(migration.status()["cleanup_state"], "finished");
+            assert_eq!(migration.status()["result"]["event"], "complete");
+            assert_eq!(migration.next_action(), "continue");
+            migration.invoke("continue", None).unwrap();
+            assert!(!migration.pending());
+        }
+
+        phase composite_owner_never_releases_rw_on_completion_or_wrong_cleanup;
+        {
+            let home = fixture();
+            let stage = uuid::Uuid::new_v4().to_string();
+            let source = uuid::Uuid::new_v4().to_string();
+            let plan = plans(home.path()).join(format!("{stage}.migration.json"));
+            std::fs::write(&plan, b"{}").unwrap();
+            std::fs::set_permissions(&plan, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut migration = Migration::open(home.path().into());
+            migration.invoke("review", Some(&stage)).unwrap();
+            let request = migration.take_original_copy_request().unwrap();
+            migration.shared_files = true;
+            migration.selected = Some(source.clone());
+            migration.access = Some(crate::retained::Request {
+                operation: source.clone(),
+                digest: "a".repeat(64),
+                applications: true,
+                identity_public_key: [7; 32],
+            });
+            // Even an accidentally queued old RW request remains fenced by the
+            // genuinely pending original-copy owner, rather than a status label.
+            migration.access_request = migration.access.clone();
+            assert!(migration.take_access_request().is_none());
+            migration.access_outcome(&source, true);
+            assert_eq!(migration.status()["state"], "reviewing");
+            request
+                .events
+                .send(
+                    launcher::retained_view::installed_copy::CopyOwnerEvent::Complete {
+                        operation: stage.clone(),
+                        home_cipher_sha256: None,
+                        applications_cipher_sha256: Some("b".repeat(64)),
+                    },
+                )
+                .unwrap();
+            assert!(migration.poll());
+            assert_eq!(migration.status()["state"], "releasing-applications");
+            let completed = migration.status()["original_copy_completion"].clone();
+            assert_eq!(completed["operation"], stage);
+            assert_eq!(completed["event"], "complete");
+            assert_eq!(completed["home_cipher_sha256"], serde_json::Value::Null);
+            assert_eq!(completed["applications_cipher_sha256"], "b".repeat(64));
+            // Access cannot change while the owned RO copy still exists.
+            migration.access_outcome(&source, true);
+            assert_eq!(migration.status()["original_copy_completion"], completed);
+            assert!(migration.take_access_request().is_none());
+            assert!(migration.invoke("continue", None).is_err());
+            request
+                .events
+                .send(
+                    launcher::retained_view::installed_copy::CopyOwnerEvent::CleanupFinished {
+                        operation: source,
+                        metadata_quarantined: false,
+                    },
+                )
+                .unwrap();
+            assert!(migration.poll());
+            assert_eq!(migration.status()["cleanup_state"], "unavailable");
+            assert_eq!(
+                migration.status()["original_copy_completion"],
+                serde_json::Value::Null
+            );
+            assert!(migration.take_access_request().is_none());
+        }
+
+        phase validated_copy_completion_survives_later_rw_observation;
+        {
+            use launcher::retained_view::installed_copy::CopyOwnerEvent;
+            let home = fixture();
+            let stage = uuid::Uuid::new_v4().to_string();
+            let path = plans(home.path()).join(format!("{stage}.migration.json"));
+            std::fs::write(&path, b"{}").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut migration = Migration::open(home.path().into());
+            migration.invoke("review", Some(&stage)).unwrap();
+            let owner = migration.take_original_copy_request().unwrap();
+            owner
+                .events
+                .send(CopyOwnerEvent::Complete {
                     operation: stage.clone(),
                     home_cipher_sha256: None,
-                    applications_cipher_sha256: Some("b".repeat(64)),
-                },
-            )
-            .unwrap();
-        assert!(migration.poll());
-        assert_eq!(migration.status()["state"], "releasing-applications");
-        let completed = migration.status()["original_copy_completion"].clone();
-        assert_eq!(completed["operation"], stage);
-        assert_eq!(completed["event"], "complete");
-        assert_eq!(completed["home_cipher_sha256"], serde_json::Value::Null);
-        assert_eq!(completed["applications_cipher_sha256"], "b".repeat(64));
-        // Access cannot change while the owned RO copy still exists.
-        migration.access_outcome(&source, true);
-        assert_eq!(migration.status()["original_copy_completion"], completed);
-        assert!(migration.take_access_request().is_none());
-        assert!(migration.invoke("continue", None).is_err());
-        request
-            .events
-            .send(
-                launcher::retained_view::installed_copy::CopyOwnerEvent::CleanupFinished {
-                    operation: source,
-                    metadata_quarantined: false,
-                },
-            )
-            .unwrap();
-        assert!(migration.poll());
-        assert_eq!(migration.status()["cleanup_state"], "unavailable");
-        assert_eq!(
-            migration.status()["original_copy_completion"],
-            serde_json::Value::Null
-        );
-        assert!(migration.take_access_request().is_none());
-    }
-
-    #[test]
-    fn validated_copy_completion_survives_later_rw_observation() {
-        use launcher::retained_view::installed_copy::CopyOwnerEvent;
-        let home = fixture();
-        let stage = uuid::Uuid::new_v4().to_string();
-        let path = plans(home.path()).join(format!("{stage}.migration.json"));
-        std::fs::write(&path, b"{}").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let mut migration = Migration::open(home.path().into());
-        migration.invoke("review", Some(&stage)).unwrap();
-        let owner = migration.take_original_copy_request().unwrap();
-        owner
-            .events
-            .send(CopyOwnerEvent::Complete {
+                    applications_cipher_sha256: Some("c".repeat(64)),
+                })
+                .unwrap();
+            assert!(migration.poll());
+            let completed = migration.status()["original_copy_completion"].clone();
+            owner
+                .events
+                .send(CopyOwnerEvent::CleanupFinished {
+                    operation: stage.clone(),
+                    metadata_quarantined: true,
+                })
+                .unwrap();
+            assert!(migration.poll());
+            let cleanup = migration.status()["cleanup_result"].clone();
+            // Simulate only the existing actor's next access callback after its
+            // already-tested RO gate. This does not construct a source grant.
+            migration.original_copy = None;
+            migration.access = Some(crate::retained::Request {
                 operation: stage.clone(),
-                home_cipher_sha256: None,
-                applications_cipher_sha256: Some("c".repeat(64)),
-            })
-            .unwrap();
-        assert!(migration.poll());
-        let completed = migration.status()["original_copy_completion"].clone();
-        owner
-            .events
-            .send(CopyOwnerEvent::CleanupFinished {
-                operation: stage.clone(),
-                metadata_quarantined: true,
-            })
-            .unwrap();
-        assert!(migration.poll());
-        let cleanup = migration.status()["cleanup_result"].clone();
-        // Simulate only the existing actor's next access callback after its
-        // already-tested RO gate. This does not construct a source grant.
-        migration.original_copy = None;
-        migration.access = Some(crate::retained::Request {
-            operation: stage.clone(),
-            digest: "d".repeat(64),
-            applications: true,
-            identity_public_key: [8; 32],
-        });
-        migration.access_outcome(&stage, true);
-        let observed = migration.status();
-        assert_eq!(observed["state"], "existing-files-available");
-        assert_eq!(observed["result"]["existing_files"], true);
-        assert_eq!(observed["original_copy_completion"], completed);
-        assert_eq!(observed["cleanup_result"], cleanup);
-        assert_eq!(completed["applications_cipher_sha256"], "c".repeat(64));
-    }
+                digest: "d".repeat(64),
+                applications: true,
+                identity_public_key: [8; 32],
+            });
+            migration.access_outcome(&stage, true);
+            let observed = migration.status();
+            assert_eq!(observed["state"], "existing-files-available");
+            assert_eq!(observed["result"]["existing_files"], true);
+            assert_eq!(observed["original_copy_completion"], completed);
+            assert_eq!(observed["cleanup_result"], cleanup);
+            assert_eq!(completed["applications_cipher_sha256"], "c".repeat(64));
+        }
 
-    #[test]
-    fn empty_and_redirected_metadata_and_fifo_plan_remain_pending_errors() {
-        let home = fixture();
-        assert!(detect(home.path()).is_err());
-        let path = plans(home.path()).join("setup.migration.json");
-        let encoded = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-        // SAFETY: terminated fixture path creates only a temporary FIFO.
-        assert_eq!(unsafe { libc::mkfifo(encoded.as_ptr(), 0o600) }, 0);
-        assert!(detect(home.path()).is_err());
-        std::fs::remove_file(&path).unwrap();
-        symlink("/etc/passwd", &path).unwrap();
-        assert!(detect(home.path()).is_err());
-        let migration = Migration::open(home.path().into());
-        assert!(migration.pending());
-        assert_eq!(migration.status()["state"], "unavailable");
+        phase empty_and_redirected_metadata_and_fifo_plan_remain_pending_errors;
+        {
+            let home = fixture();
+            assert!(detect(home.path()).is_err());
+            let path = plans(home.path()).join("setup.migration.json");
+            let encoded = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: terminated fixture path creates only a temporary FIFO.
+            assert_eq!(unsafe { libc::mkfifo(encoded.as_ptr(), 0o600) }, 0);
+            assert!(detect(home.path()).is_err());
+            std::fs::remove_file(&path).unwrap();
+            symlink("/etc/passwd", &path).unwrap();
+            assert!(detect(home.path()).is_err());
+            let migration = Migration::open(home.path().into());
+            assert!(migration.pending());
+            assert_eq!(migration.status()["state"], "unavailable");
+        }
     }
 }

@@ -116,92 +116,151 @@ fn marked<'m>(marks: &'m [(String, Option<UiNode>)], id: &str) -> Option<&'m UiN
         .and_then(|(_, mark)| mark.as_ref())
 }
 
-#[test]
-fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
-    let Tidied {
-        ada,
-        made,
-        groceries,
-        ..
-    } = a_run_in_notes_and_tasks();
+tilo_test_env::scenario! {
+    fn the_host_marks_what_a_run_changed;
 
-    // The notebook: the rows the run made or changed carry its mark, with who and which run;
-    // no app code asked for it.
-    let mut notebook = ada.view(NOTES_APP);
-    let marks = tree_marks(&mut notebook);
-    for (at, kind) in [(&made, "created"), (&groceries, "changed")] {
-        let mark = marked(&marks, &at.id_string())
-            .unwrap_or_else(|| panic!("{at:?} is marked: {marks:?}"));
-        assert_eq!(mark.kind, "ui.ChangeMark");
-        assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
+    phase the_host_marks_rows_and_the_window_and_a_mark_shows_its_run;
+    {
+        let Tidied {
+            ada,
+            made,
+            groceries,
+            ..
+        } = a_run_in_notes_and_tasks();
+
+        // The notebook: the rows the run made or changed carry its mark, with who and which run;
+        // no app code asked for it.
+        let mut notebook = ada.view(NOTES_APP);
+        let marks = tree_marks(&mut notebook);
+        for (at, kind) in [(&made, "created"), (&groceries, "changed")] {
+            let mark = marked(&marks, &at.id_string())
+                .unwrap_or_else(|| panic!("{at:?} is marked: {marks:?}"));
+            assert_eq!(mark.kind, "ui.ChangeMark");
+            assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
+            assert_eq!(
+                mark.props.get("run"),
+                Some(&Value::text("Tidy my notes and tasks"))
+            );
+            assert_eq!(mark.props.get("kind"), Some(&Value::text(kind)));
+        }
+        // What each marked row says under its title: the change in words.
         assert_eq!(
-            mark.props.get("run"),
-            Some(&Value::text("Tidy my notes and tasks"))
+            said(marked(&marks, &made.id_string()).unwrap()),
+            "created it"
         );
-        assert_eq!(mark.props.get("kind"), Some(&Value::text(kind)));
+        assert!(
+            said(marked(&marks, &groceries.id_string()).unwrap()).contains("title"),
+            "the renamed note says what changed: {}",
+            said(marked(&marks, &groceries.id_string()).unwrap())
+        );
+        // The window's header counts what changed in it, and by whom.
+        let window = all(notebook.tree(), "ui.ChangeMark")
+            .into_iter()
+            .find(|m| m.props.get("window") == Some(&Value::Bool(true)))
+            .cloned()
+            .expect("the window's header is marked");
+        assert_eq!(principal(&window, "by").as_deref(), Some(AGENT));
+        assert_eq!(
+            principals(&window),
+            vec![AGENT.to_owned()],
+            "the header names everyone who changed it"
+        );
+        assert_eq!(
+            window.props.get("noun_one"),
+            Some(&Value::text("note")),
+            "the header says one of them, so one change agrees in number: {window:?}"
+        );
+        assert_eq!(
+            window.props.get("noun"),
+            Some(&Value::text("notes")),
+            "the header's count names what changed: {window:?}"
+        );
+        assert!(
+            matches!(window.props.get("count"), Some(Value::Int(n)) if *n >= 2),
+            "{window:?}"
+        );
+
+        // Activating a mark shows the run that made it.
+        let key = marked(&marks, &groceries.id_string()).unwrap().key.clone();
+        let found = notebook.find(&key).cloned();
+        assert!(found.is_some(), "the mark is found by its key");
+        assert!(
+            found.unwrap().events.contains_key("activate"),
+            "it activates"
+        );
+        notebook.fire(&key, "activate").unwrap();
+        assert!(
+            notebook.poll_events().iter().any(|event| matches!(
+                event,
+                ViewEvent::Review { run, target } if run == RUN && *target == groceries
+            )),
+            "the mark shows its run"
+        );
+
+        // Mark all seen on the run: every mark goes, live.
+        assert!(ada.host.runtime().mark_run_seen("ada", RUN));
+        let marks = tree_marks(&mut notebook);
+        assert!(marks.iter().all(|(_, mark)| mark.is_none()), "{marks:?}");
+        assert!(
+            all(notebook.tree(), "ui.ChangeMark").is_empty(),
+            "the window's mark is gone"
+        );
     }
-    // What each marked row says under its title: the change in words.
-    assert_eq!(
-        said(marked(&marks, &made.id_string()).unwrap()),
-        "created it"
-    );
-    assert!(
-        said(marked(&marks, &groceries.id_string()).unwrap()).contains("title"),
-        "the renamed note says what changed: {}",
-        said(marked(&marks, &groceries.id_string()).unwrap())
-    );
-    // The window's header counts what changed in it, and by whom.
-    let window = all(notebook.tree(), "ui.ChangeMark")
-        .into_iter()
-        .find(|m| m.props.get("window") == Some(&Value::Bool(true)))
-        .cloned()
-        .expect("the window's header is marked");
-    assert_eq!(principal(&window, "by").as_deref(), Some(AGENT));
-    assert_eq!(
-        principals(&window),
-        vec![AGENT.to_owned()],
-        "the header names everyone who changed it"
-    );
-    assert_eq!(
-        window.props.get("noun_one"),
-        Some(&Value::text("note")),
-        "the header says one of them, so one change agrees in number: {window:?}"
-    );
-    assert_eq!(
-        window.props.get("noun"),
-        Some(&Value::text("notes")),
-        "the header's count names what changed: {window:?}"
-    );
-    assert!(
-        matches!(window.props.get("count"), Some(Value::Int(n)) if *n >= 2),
-        "{window:?}"
-    );
 
-    // Activating a mark shows the run that made it.
-    let key = marked(&marks, &groceries.id_string()).unwrap().key.clone();
-    let found = notebook.find(&key).cloned();
-    assert!(found.is_some(), "the mark is found by its key");
-    assert!(
-        found.unwrap().events.contains_key("activate"),
-        "it activates"
-    );
-    notebook.fire(&key, "activate").unwrap();
-    assert!(
-        notebook.poll_events().iter().any(|event| matches!(
-            event,
-            ViewEvent::Review { run, target } if run == RUN && *target == groceries
-        )),
-        "the mark shows its run"
-    );
+    phase a_field_the_run_changed_takes_its_colour_and_says_what_it_held;
+    {
+        let Tidied { ada, groceries, .. } = a_run_in_notes_and_tasks();
+        let mut editor = ada.host.open_resource(&groceries, None).unwrap();
+        let changed: Vec<UiNode> = all(editor.tree(), "ui.TextInput")
+            .into_iter()
+            .filter(|input| principal(input, "changed_by").is_some())
+            .cloned()
+            .collect();
+        // The title it renamed, not the body it left alone.
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(principal(&changed[0], "changed_by").as_deref(), Some(AGENT));
+        assert_eq!(
+            changed[0].props.get("previous"),
+            Some(&Value::text("Groceries"))
+        );
+        // The window of the note counts its one change.
+        assert!(
+            all(editor.tree(), "ui.ChangeMark")
+                .iter()
+                .any(|m| m.props.get("count") == Some(&Value::Int(1))),
+            "the note's window is marked"
+        );
+        // Once seen, the field is the field again.
+        assert!(ada.host.runtime().mark_seen("ada", &groceries).unwrap());
+        editor.poll_patches().unwrap();
+        assert!(
+            all(editor.tree(), "ui.TextInput")
+                .iter()
+                .all(|input| principal(input, "changed_by").is_none())
+        );
+    }
 
-    // Mark all seen on the run: every mark goes, live.
-    assert!(ada.host.runtime().mark_run_seen("ada", RUN));
-    let marks = tree_marks(&mut notebook);
-    assert!(marks.iter().all(|(_, mark)| mark.is_none()), "{marks:?}");
-    assert!(
-        all(notebook.tree(), "ui.ChangeMark").is_empty(),
-        "the window's mark is gone"
-    );
+    phase a_view_that_places_the_mark_itself_gets_it_filled_and_the_host_places_none;
+    {
+        let app = "so.tilo.lang.placed";
+        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PLACED, "")]);
+        let shelf = Value::resource(&ada.host.root_of(app).unwrap());
+        ada.commit();
+        call(&ada, AGENT, app, "shelve", vec![shelf, Value::text("Dune")]);
+        ada.commit_in_run(AGENT, RUN, "Stock the shelf");
+        let mut view = ada.view(app);
+        let rows = rows(&mut view);
+        let placed: Vec<&UiNode> = rows
+            .iter()
+            .flat_map(|row| all(row, "ui.ChangeMark"))
+            .collect();
+        assert_eq!(placed.len(), 1, "one mark, the view's: {rows:?}");
+        assert_eq!(principal(placed[0], "by").as_deref(), Some(AGENT));
+        assert_eq!(
+            placed[0].props.get("run"),
+            Some(&Value::text("Stock the shelf"))
+        );
+    }
 }
 
 /// The window's mark names everyone who changed what it shows, newest first: not only whoever
@@ -317,39 +376,6 @@ fn a_list_built_over_the_record_shows_what_left_it() {
     assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
 }
 
-#[test]
-fn a_field_the_run_changed_takes_its_colour_and_says_what_it_held() {
-    let Tidied { ada, groceries, .. } = a_run_in_notes_and_tasks();
-    let mut editor = ada.host.open_resource(&groceries, None).unwrap();
-    let changed: Vec<UiNode> = all(editor.tree(), "ui.TextInput")
-        .into_iter()
-        .filter(|input| principal(input, "changed_by").is_some())
-        .cloned()
-        .collect();
-    // The title it renamed, not the body it left alone.
-    assert_eq!(changed.len(), 1, "{changed:?}");
-    assert_eq!(principal(&changed[0], "changed_by").as_deref(), Some(AGENT));
-    assert_eq!(
-        changed[0].props.get("previous"),
-        Some(&Value::text("Groceries"))
-    );
-    // The window of the note counts its one change.
-    assert!(
-        all(editor.tree(), "ui.ChangeMark")
-            .iter()
-            .any(|m| m.props.get("count") == Some(&Value::Int(1))),
-        "the note's window is marked"
-    );
-    // Once seen, the field is the field again.
-    assert!(ada.host.runtime().mark_seen("ada", &groceries).unwrap());
-    editor.poll_patches().unwrap();
-    assert!(
-        all(editor.tree(), "ui.TextInput")
-            .iter()
-            .all(|input| principal(input, "changed_by").is_none())
-    );
-}
-
 const PLACED: &str = r#"app so.tilo.lang.placed "Placed"
 
 type Book {
@@ -382,28 +408,6 @@ view shelf(s: Shelf) {
     }
 }
 "#;
-
-#[test]
-fn a_view_that_places_the_mark_itself_gets_it_filled_and_the_host_places_none() {
-    let app = "so.tilo.lang.placed";
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PLACED, "")]);
-    let shelf = Value::resource(&ada.host.root_of(app).unwrap());
-    ada.commit();
-    call(&ada, AGENT, app, "shelve", vec![shelf, Value::text("Dune")]);
-    ada.commit_in_run(AGENT, RUN, "Stock the shelf");
-    let mut view = ada.view(app);
-    let rows = rows(&mut view);
-    let placed: Vec<&UiNode> = rows
-        .iter()
-        .flat_map(|row| all(row, "ui.ChangeMark"))
-        .collect();
-    assert_eq!(placed.len(), 1, "one mark, the view's: {rows:?}");
-    assert_eq!(principal(placed[0], "by").as_deref(), Some(AGENT));
-    assert_eq!(
-        placed[0].props.get("run"),
-        Some(&Value::text("Stock the shelf"))
-    );
-}
 
 /// The window's mark of `view`: the header's, not a row's.
 fn window_mark(view: &mut ViewInstance) -> UiNode {
@@ -527,135 +531,185 @@ fn a_day_away_at_today() -> (Away, ViewInstance, UiNode) {
     (away, tasks, window)
 }
 
-/// A day away at a glance: the header names everyone who changed anything and says how much.
-#[test]
-fn a_day_away_names_in_its_header_who_changed_what() {
-    let (_away, _tasks, window) = a_day_away_at_today();
-    let mut who = principals(&window);
-    who.sort();
-    assert_eq!(
-        who,
-        {
-            let mut expected = vec![BO.to_owned(), SCOUT.to_owned()];
-            expected.sort();
-            expected
-        },
-        "the header names Bo and Scout"
-    );
-    assert_eq!(
-        window.props.get("count"),
-        Some(&Value::Int(3)),
-        "three changes fill the header: {window:?}"
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn a_day_away_reads_as_a_catch_up;
 
-/// Each marked row says what happened to it, in its own words.
-#[test]
-fn a_day_away_says_on_each_row_what_was_done_to_it() {
-    let (Away { paper, survey, .. }, mut tasks, _window) = a_day_away_at_today();
-    let marks = row_marks(&mut tasks);
-    let paper = marked(&marks, &paper.id_string())
-        .unwrap_or_else(|| panic!("the mail Ada was given is marked: {marks:?}"));
-    let survey = marked(&marks, &survey.id_string())
-        .unwrap_or_else(|| panic!("the survey her agent moved is marked: {marks:?}"));
-    assert_eq!(
-        said(paper),
-        "assigned it to you",
-        "the mail says what was done to it, and who holds it now"
-    );
-    assert_eq!(
-        said(survey),
-        "set the due date to 2026-10-29",
-        "the survey says the day its agent gave it: {:?}",
-        said(survey)
-    );
-    assert_ne!(said(paper), said(survey), "each row says its own change");
-}
-
-/// What the header opens: a row per item someone changed, newest first, each with who made the
-/// newest change of it and when.
-#[test]
-fn a_day_away_opens_a_catch_up_of_a_row_per_item() {
-    let (_away, _tasks, window) = a_day_away_at_today();
-    let content = catch_up(&window);
-    assert!(
-        texts(&content, "heading")
-            .iter()
-            .any(|line| line == "Since you looked"),
-        "the catch-up says what it is: {content:?}"
-    );
-    let groups: Vec<String> = buttons(&content)
-        .into_iter()
-        .filter_map(|button| match button.props.get("label") {
-            Some(Value::Text(label)) => Some(label.clone()),
-            _ => None,
-        })
-        .filter(|label| label != "Mark all seen")
-        .collect();
-    assert_eq!(
-        groups,
-        [
-            "Buy oat milk and eggs",
-            "Read the survey responses",
-            "Sort the paper mail"
-        ],
-        "the catch-up names each item it changed, newest first, once"
-    );
-    let seen_by: Vec<String> = all(&content, "ui.Avatar")
-        .into_iter()
-        .filter_map(|avatar| principal(avatar, "who"))
-        .collect();
-    assert!(seen_by.contains(&SCOUT.to_owned()), "{seen_by:?}");
-    assert!(seen_by.contains(&BO.to_owned()), "{seen_by:?}");
-    assert!(
-        !all(&content, "ui.Time").is_empty(),
-        "each step says when it happened: {content:?}"
-    );
-}
-
-/// Each row's line reads as a sentence, then when it happened at the line's end, out of its
-/// way, led by the changer's face.
-#[test]
-fn a_day_aways_catch_up_puts_the_time_at_the_lines_end() {
-    let (_away, _tasks, window) = a_day_away_at_today();
-    let content = catch_up(&window);
-    let mut steps = Vec::new();
-    find_all(&content, "row", &mut steps);
-    steps.retain(|step| {
-        step.children
-            .first()
-            .is_some_and(|child| child.kind == "ui.Avatar")
-    });
-    assert_eq!(
-        steps.len(),
-        3,
-        "the catch-up lists one line per item changed: {content:?}"
-    );
-    for step in &steps {
-        let kids = &step.children;
-        let said = kids
-            .iter()
-            .position(|child| child.kind == "ui.Text")
-            .unwrap_or_else(|| panic!("a step says what was done: {step:?}"));
-        let at = kids
-            .iter()
-            .position(|child| child.kind == "ui.Time")
-            .unwrap_or_else(|| panic!("a step says when: {step:?}"));
-        assert!(said < at, "what was done reads before when: {step:?}");
+    phase a_day_away_names_in_its_header_who_changed_what;
+    // A day away at a glance: the header names everyone who changed anything and says how much.
+    {
+        let (_away, _tasks, window) = a_day_away_at_today();
+        let mut who = principals(&window);
+        who.sort();
         assert_eq!(
-            at,
-            kids.len() - 1,
-            "the time stands at the line's end: {step:?}"
+            who,
+            {
+                let mut expected = vec![BO.to_owned(), SCOUT.to_owned()];
+                expected.sort();
+                expected
+            },
+            "the header names Bo and Scout"
         );
         assert_eq!(
-            kids.get(at - 1).map(|child| child.kind.as_str()),
-            Some("spacer"),
-            "the sentence is kept clear of the time: {step:?}"
+            window.props.get("count"),
+            Some(&Value::Int(3)),
+            "three changes fill the header: {window:?}"
+        );
+    }
+
+    phase a_day_away_says_on_each_row_what_was_done_to_it;
+    // Each marked row says what happened to it, in its own words.
+    {
+        let (Away { paper, survey, .. }, mut tasks, _window) = a_day_away_at_today();
+        let marks = row_marks(&mut tasks);
+        let paper = marked(&marks, &paper.id_string())
+            .unwrap_or_else(|| panic!("the mail Ada was given is marked: {marks:?}"));
+        let survey = marked(&marks, &survey.id_string())
+            .unwrap_or_else(|| panic!("the survey her agent moved is marked: {marks:?}"));
+        assert_eq!(
+            said(paper),
+            "assigned it to you",
+            "the mail says what was done to it, and who holds it now"
         );
         assert_eq!(
-            kids.first().map(|child| child.kind.as_str()),
-            Some("ui.Avatar"),
-            "the changer's face leads the line: {step:?}"
+            said(survey),
+            "set the due date to 2026-10-29",
+            "the survey says the day its agent gave it: {:?}",
+            said(survey)
+        );
+        assert_ne!(said(paper), said(survey), "each row says its own change");
+    }
+
+    phase a_day_away_opens_a_catch_up_of_a_row_per_item;
+    // What the header opens: a row per item someone changed, newest first, each with who made the
+    // newest change of it and when.
+    {
+        let (_away, _tasks, window) = a_day_away_at_today();
+        let content = catch_up(&window);
+        assert!(
+            texts(&content, "heading")
+                .iter()
+                .any(|line| line == "Since you looked"),
+            "the catch-up says what it is: {content:?}"
+        );
+        let groups: Vec<String> = buttons(&content)
+            .into_iter()
+            .filter_map(|button| match button.props.get("label") {
+                Some(Value::Text(label)) => Some(label.clone()),
+                _ => None,
+            })
+            .filter(|label| label != "Mark all seen")
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                "Buy oat milk and eggs",
+                "Read the survey responses",
+                "Sort the paper mail"
+            ],
+            "the catch-up names each item it changed, newest first, once"
+        );
+        let seen_by: Vec<String> = all(&content, "ui.Avatar")
+            .into_iter()
+            .filter_map(|avatar| principal(avatar, "who"))
+            .collect();
+        assert!(seen_by.contains(&SCOUT.to_owned()), "{seen_by:?}");
+        assert!(seen_by.contains(&BO.to_owned()), "{seen_by:?}");
+        assert!(
+            !all(&content, "ui.Time").is_empty(),
+            "each step says when it happened: {content:?}"
+        );
+    }
+
+    phase a_day_aways_catch_up_puts_the_time_at_the_lines_end;
+    // Each row's line reads as a sentence, then when it happened at the line's end, out of its
+    // way, led by the changers' faces.
+    {
+        let (_away, _tasks, window) = a_day_away_at_today();
+        let content = catch_up(&window);
+        let mut steps = Vec::new();
+        find_all(&content, "row", &mut steps);
+        steps.retain(|step| {
+            step.children
+                .last()
+                .is_some_and(|child| child.kind == "ui.Time")
+        });
+        assert_eq!(
+            steps.len(),
+            3,
+            "the catch-up lists one line per item changed: {content:?}"
+        );
+        for step in &steps {
+            let kids = &step.children;
+            let at = kids
+                .iter()
+                .position(|child| child.kind == "ui.Time")
+                .unwrap_or_else(|| panic!("a step says when: {step:?}"));
+            assert_eq!(
+                at,
+                kids.len() - 1,
+                "the time stands at the line's end: {step:?}"
+            );
+            // What they did is the line's own group, which takes the room the time leaves: it wraps
+            // rather than squeezing the faces it opens with.
+            let told = kids
+                .first()
+                .filter(|child| child.kind == "row")
+                .unwrap_or_else(|| panic!("the sentence is its own group: {step:?}"));
+            assert_eq!(
+                told.props.get("wrap"),
+                Some(&Value::Bool(true)),
+                "the sentence wraps rather than squeezing what it holds: {told:?}"
+            );
+            assert_eq!(
+                told.children.first().map(|child| child.kind.as_str()),
+                Some("ui.Avatar"),
+                "the changers' faces lead the line: {step:?}"
+            );
+            let said = told
+                .children
+                .iter()
+                .position(|child| child.kind == "ui.Text")
+                .unwrap_or_else(|| panic!("a step says what was done: {step:?}"));
+            assert!(
+                said > 0 && said < told.children.len() - 1,
+                "the names it opens with stand before what they did: {step:?}"
+            );
+        }
+    }
+
+    phase a_record_changed_many_times_stands_as_one_row;
+    // A record someone changed many times since the person looked stands as one row: it says who
+    // changed it and what the newest change did, and, as history folds the changes of one hand,
+    // how many it folds. Never a line per change.
+    {
+        let (ada, _) = a_task_bo_changed(4);
+        let window = window_mark(&mut ada.view(crate::legibility::TASKS_APP));
+        assert_eq!(
+            window.props.get("count"),
+            Some(&Value::Int(1)),
+            "one record changed: {window:?}"
+        );
+        let content = catch_up(&window);
+        let mut lines = Vec::new();
+        find_all(&content, "row", &mut lines);
+        lines.retain(|line| {
+            line.children
+                .first()
+                .is_some_and(|child| child.kind == "ui.Avatar")
+        });
+        assert_eq!(
+            lines.len(),
+            1,
+            "one line for the record, however many changes it holds: {content:?}"
+        );
+        assert_eq!(
+            texts(&content, "caption"),
+            ["4 changes"],
+            "the row says how many changes it folds: {content:?}"
         );
     }
 }
@@ -718,38 +772,6 @@ fn a_task_bo_changed(changes: usize) -> (Replica, ResourceRef) {
     }
     ada.commit_as(BO);
     (ada, milk)
-}
-
-/// A record someone changed many times since the person looked stands as one row: it says who
-/// changed it and what the newest change did, and, as history folds the changes of one hand,
-/// how many it folds. Never a line per change.
-#[test]
-fn a_record_changed_many_times_stands_as_one_row() {
-    let (ada, _) = a_task_bo_changed(4);
-    let window = window_mark(&mut ada.view(crate::legibility::TASKS_APP));
-    assert_eq!(
-        window.props.get("count"),
-        Some(&Value::Int(1)),
-        "one record changed: {window:?}"
-    );
-    let content = catch_up(&window);
-    let mut lines = Vec::new();
-    find_all(&content, "row", &mut lines);
-    lines.retain(|line| {
-        line.children
-            .first()
-            .is_some_and(|child| child.kind == "ui.Avatar")
-    });
-    assert_eq!(
-        lines.len(),
-        1,
-        "one line for the record, however many changes it holds: {content:?}"
-    );
-    assert_eq!(
-        texts(&content, "caption"),
-        ["4 changes"],
-        "the row says how many changes it folds: {content:?}"
-    );
 }
 
 /// A record someone changed a thousand times since the person looked: opening the window reads a

@@ -349,3 +349,37 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
         "the drop carries the resource the drag let go with, by its address"
     );
 }
+
+#[test]
+fn a_drag_carried_away_lands_nowhere_here() {
+    let payload = crate::dnd::DragPayload::Custom {
+        kind: RESOURCE_PAYLOAD.to_owned(),
+        blob: b"notes.page:one".to_vec(),
+    };
+    let pointer = vello::kurbo::Point::new(10.0, 10.0);
+    drag_bus::publish(drag_bus::InFlight {
+        source: "source".into(),
+        payload: payload.clone(),
+        label: String::new(),
+        pointer,
+        runs: Vec::new(),
+    });
+    drag_bus::carry_away();
+    assert!(
+        drag_bus::current().is_none(),
+        "nothing here shows it any more"
+    );
+    drag_bus::end(Some(drag_bus::Landed {
+        source: "source".into(),
+        payload: payload.clone(),
+        pointer,
+    }));
+    assert!(drag_bus::take("elsewhere", everywhere()).is_none());
+    // The next drag lands as every drag does.
+    drag_bus::end(Some(drag_bus::Landed {
+        source: "source".into(),
+        payload,
+        pointer,
+    }));
+    assert!(drag_bus::take("elsewhere", everywhere()).is_some());
+}

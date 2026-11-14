@@ -215,136 +215,142 @@ mod tests {
         remember(facts, Mode::Open, "g1".into(), "Windows".into()).unwrap()
     }
 
-    #[test]
-    fn every_unremembered_drive_needs_consent() {
-        let internal = assess(&internal_facts(), &[]);
-        assert!(internal.needs_consent);
-        assert_eq!(internal.preselect, Mode::Open);
-        let stick = assess(&forged_stick(), &[]);
-        assert!(stick.needs_consent);
-        assert_eq!(stick.preselect, Mode::OpenSafely);
-    }
+    tilo_test_env::scenario! {
+        /// What `assess` and `remember` decide for a drive: when to ask, what to pre-select and
+        /// which remembered grant still fits.
+        fn drive_consent_policy;
 
-    #[test]
-    fn open_is_preselected_only_for_an_internal_drive_on_the_install_disk() {
-        let mut second_disk = internal_facts();
-        second_disk.on_install_disk = false;
-        assert_eq!(assess(&second_disk, &[]).preselect, Mode::OpenSafely);
-        let mut late = internal_facts();
-        late.present_at_boot = false;
-        assert_eq!(assess(&late, &[]).preselect, Mode::OpenSafely);
-    }
+        phase every_unremembered_drive_needs_consent;
+        {
+            let internal = assess(&internal_facts(), &[]);
+            assert!(internal.needs_consent);
+            assert_eq!(internal.preselect, Mode::Open);
+            let stick = assess(&forged_stick(), &[]);
+            assert!(stick.needs_consent);
+            assert_eq!(stick.preselect, Mode::OpenSafely);
+        }
 
-    #[test]
-    fn a_remembered_internal_drive_opens_without_asking() {
-        let facts = internal_facts();
-        let grants = [remembered_open(&facts)];
-        let assessment = assess(&facts, &grants);
-        assert!(!assessment.needs_consent);
-        assert_eq!(assessment.preselect, Mode::Open);
-        assert_eq!(
-            assessment.remembered.map(|grant| grant.id.as_str()),
-            Some("g1")
-        );
-    }
+        phase open_is_preselected_only_for_an_internal_drive_on_the_install_disk;
+        {
+            let mut second_disk = internal_facts();
+            second_disk.on_install_disk = false;
+            assert_eq!(assess(&second_disk, &[]).preselect, Mode::OpenSafely);
+            let mut late = internal_facts();
+            late.present_at_boot = false;
+            assert_eq!(assess(&late, &[]).preselect, Mode::OpenSafely);
+        }
 
-    #[test]
-    fn a_forged_stick_fails_location_whatever_identifiers_it_copies() {
-        let grants = [remembered_open(&internal_facts())];
-        let assessment = assess(&forged_stick(), &grants);
-        assert!(assessment.needs_consent);
-        assert_eq!(assessment.preselect, Mode::OpenSafely);
-        assert!(assessment.remembered.is_none());
-    }
-
-    #[test]
-    fn each_location_criterion_alone_voids_a_remembered_grant() {
-        type Mutation = (&'static str, fn(&mut DriveFacts));
-        let grants = [remembered_open(&internal_facts())];
-        let mutations: [Mutation; 6] = [
-            ("moved to another port", |facts| {
-                facts.topology.device_path =
-                    "devices/pci0000:00/0000:00:1c.4/0000:3e:00.0/nvme/nvme1/nvme1n1/nvme1n1p3"
-                        .into();
-            }),
-            ("not on an internal controller", |facts| {
-                facts.topology.controller = Some(Controller::NvmeBehindBridge);
-            }),
-            ("behind a Thunderbolt link", |facts| {
-                facts.topology.hotplug_link = Some(Link::ExternalPci);
-            }),
-            ("removable", |facts| facts.topology.removable = true),
-            ("hot-added during the session", |facts| {
-                facts.present_at_boot = false;
-            }),
-            ("virtual", |facts| facts.topology.virtual_device = true),
-        ];
-        for (why, mutate) in mutations {
-            let mut facts = internal_facts();
-            mutate(&mut facts);
+        phase a_remembered_internal_drive_opens_without_asking;
+        {
+            let facts = internal_facts();
+            let grants = [remembered_open(&facts)];
             let assessment = assess(&facts, &grants);
-            assert!(assessment.needs_consent, "{why}: must ask again");
+            assert!(!assessment.needs_consent);
+            assert_eq!(assessment.preselect, Mode::Open);
             assert_eq!(
-                assessment.preselect,
-                Mode::OpenSafely,
-                "{why}: treated as new"
+                assessment.remembered.map(|grant| grant.id.as_str()),
+                Some("g1")
             );
         }
-    }
 
-    #[test]
-    fn a_swapped_drive_at_the_same_place_is_new() {
-        let grants = [remembered_open(&internal_facts())];
-        let swaps: [fn(&mut Identity); 4] = [
-            |identity| identity.drive = Some("wwn:other".into()),
-            |identity| identity.partition = Some("guid-2".into()),
-            |identity| identity.volume = Some(1),
-            |identity| identity.volume = None,
-        ];
-        for swap in swaps {
-            let mut facts = internal_facts();
-            swap(&mut facts.identity);
-            assert!(assess(&facts, &grants).needs_consent);
+        phase a_forged_stick_fails_location_whatever_identifiers_it_copies;
+        {
+            let grants = [remembered_open(&internal_facts())];
+            let assessment = assess(&forged_stick(), &grants);
+            assert!(assessment.needs_consent);
+            assert_eq!(assessment.preselect, Mode::OpenSafely);
+            assert!(assessment.remembered.is_none());
         }
-    }
 
-    #[test]
-    fn external_drives_remember_only_open_safely_and_still_ask() {
-        let stick = forged_stick();
-        let grant = remember(&stick, Mode::Open, "g2".into(), "Stick".into()).unwrap();
-        assert_eq!(
-            grant.mode,
-            Mode::OpenSafely,
-            "Open on a stick lasts one insertion"
-        );
-        assert!(matches!(grant.binding, Binding::External { .. }));
-        assert!(!mode_allowed(&grant, Mode::Open));
-        let grants = [grant];
-        let assessment = assess(&stick, &grants);
-        assert!(
-            assessment.needs_consent,
-            "removable drives prompt on every insert"
-        );
-        assert_eq!(assessment.preselect, Mode::OpenSafely);
-        assert!(assessment.remembered.is_some());
-        let mut other = stick.clone();
-        other.identity.volume = Some(99);
-        assert!(
-            assess(&other, &grants).remembered.is_none(),
-            "only for the same IDs"
-        );
-    }
+        phase each_location_criterion_alone_voids_a_remembered_grant;
+        {
+            type Mutation = (&'static str, fn(&mut DriveFacts));
+            let grants = [remembered_open(&internal_facts())];
+            let mutations: [Mutation; 6] = [
+                ("moved to another port", |facts| {
+                    facts.topology.device_path =
+                        "devices/pci0000:00/0000:00:1c.4/0000:3e:00.0/nvme/nvme1/nvme1n1/nvme1n1p3"
+                            .into();
+                }),
+                ("not on an internal controller", |facts| {
+                    facts.topology.controller = Some(Controller::NvmeBehindBridge);
+                }),
+                ("behind a Thunderbolt link", |facts| {
+                    facts.topology.hotplug_link = Some(Link::ExternalPci);
+                }),
+                ("removable", |facts| facts.topology.removable = true),
+                ("hot-added during the session", |facts| {
+                    facts.present_at_boot = false;
+                }),
+                ("virtual", |facts| facts.topology.virtual_device = true),
+            ];
+            for (why, mutate) in mutations {
+                let mut facts = internal_facts();
+                mutate(&mut facts);
+                let assessment = assess(&facts, &grants);
+                assert!(assessment.needs_consent, "{why}: must ask again");
+                assert_eq!(
+                    assessment.preselect,
+                    Mode::OpenSafely,
+                    "{why}: treated as new"
+                );
+            }
+        }
 
-    #[test]
-    fn an_internal_drive_without_every_identifier_cannot_keep_open() {
-        let mut facts = internal_facts();
-        facts.identity.partition = None;
-        let assessment = assess(&facts, &[]);
-        assert!(!assessment.can_remember_open);
-        let grant = remember(&facts, Mode::Open, "g3".into(), "Data".into()).unwrap();
-        assert_eq!(grant.mode, Mode::OpenSafely);
-        let mut anonymous = forged_stick();
-        anonymous.identity = Identity::default();
-        assert!(remember(&anonymous, Mode::OpenSafely, "g4".into(), "?".into()).is_none());
+        phase a_swapped_drive_at_the_same_place_is_new;
+        {
+            let grants = [remembered_open(&internal_facts())];
+            let swaps: [fn(&mut Identity); 4] = [
+                |identity| identity.drive = Some("wwn:other".into()),
+                |identity| identity.partition = Some("guid-2".into()),
+                |identity| identity.volume = Some(1),
+                |identity| identity.volume = None,
+            ];
+            for swap in swaps {
+                let mut facts = internal_facts();
+                swap(&mut facts.identity);
+                assert!(assess(&facts, &grants).needs_consent);
+            }
+        }
+
+        phase external_drives_remember_only_open_safely_and_still_ask;
+        {
+            let stick = forged_stick();
+            let grant = remember(&stick, Mode::Open, "g2".into(), "Stick".into()).unwrap();
+            assert_eq!(
+                grant.mode,
+                Mode::OpenSafely,
+                "Open on a stick lasts one insertion"
+            );
+            assert!(matches!(grant.binding, Binding::External { .. }));
+            assert!(!mode_allowed(&grant, Mode::Open));
+            let grants = [grant];
+            let assessment = assess(&stick, &grants);
+            assert!(
+                assessment.needs_consent,
+                "removable drives prompt on every insert"
+            );
+            assert_eq!(assessment.preselect, Mode::OpenSafely);
+            assert!(assessment.remembered.is_some());
+            let mut other = stick.clone();
+            other.identity.volume = Some(99);
+            assert!(
+                assess(&other, &grants).remembered.is_none(),
+                "only for the same IDs"
+            );
+        }
+
+        phase an_internal_drive_without_every_identifier_cannot_keep_open;
+        {
+            let mut facts = internal_facts();
+            facts.identity.partition = None;
+            let assessment = assess(&facts, &[]);
+            assert!(!assessment.can_remember_open);
+            let grant = remember(&facts, Mode::Open, "g3".into(), "Data".into()).unwrap();
+            assert_eq!(grant.mode, Mode::OpenSafely);
+            let mut anonymous = forged_stick();
+            anonymous.identity = Identity::default();
+            assert!(remember(&anonymous, Mode::OpenSafely, "g4".into(), "?".into()).is_none());
+        }
     }
 }

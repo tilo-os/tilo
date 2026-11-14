@@ -158,62 +158,66 @@ mod tests {
         (result, events_tx)
     }
 
-    /// The fault the supervisor exists for: the session ends without being
-    /// asked (an external unmount, a crash). It returns at once, with the
-    /// session's own result.
-    #[test]
-    fn a_session_that_ends_by_itself_is_noticed_at_once() {
-        let (session, end, _) = StandIn::serving(|| Ok(()));
-        let (result, _keep) = supervised(session, "fs-test-ends");
-        assert!(result.try_recv().is_err(), "returned while serving");
-        end.send(()).unwrap();
-        result
-            .recv_timeout(tilo_test_env::hang_bound())
-            .expect("a session that ended was not noticed")
-            .unwrap();
+    tilo_test_env::scenario! {
+        fn the_supervisor_returns_when_its_session_ends_or_is_unmounted;
 
-        let (session, end, _) = StandIn::serving(|| Err(io::Error::other("device gone")));
-        let (result, _keep) = supervised(session, "fs-test-fails");
-        end.send(()).unwrap();
-        let error = result
-            .recv_timeout(tilo_test_env::hang_bound())
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(error.to_string(), "device gone");
-    }
+        phase a_session_that_ends_by_itself_is_noticed_at_once;
+        // The fault the supervisor exists for: the session ends without being
+        // asked (an external unmount, a crash). It returns at once, with the
+        // session's own result.
+        {
+            let (session, end, _) = StandIn::serving(|| Ok(()));
+            let (result, _keep) = supervised(session, "fs-test-ends");
+            assert!(result.try_recv().is_err(), "returned while serving");
+            end.send(()).unwrap();
+            result
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect("a session that ended was not noticed")
+                .unwrap();
 
-    /// An unmount request unmounts and returns only once the session's
-    /// thread has ended, so the old mount is gone before a rebind.
-    #[test]
-    fn an_unmount_request_waits_for_the_session_to_end() {
-        let (session, _end, finished) = StandIn::serving(|| Ok(()));
-        let (result, events) = supervised(session, "fs-test-unmount");
-        events.send(SessionEvent::Unmount).unwrap();
-        result
-            .recv_timeout(tilo_test_env::hang_bound())
-            .expect("an unmount request was not served")
-            .unwrap();
-        assert!(
-            finished.load(Ordering::SeqCst),
-            "returned before the session's thread ended"
-        );
-    }
+            let (session, end, _) = StandIn::serving(|| Err(io::Error::other("device gone")));
+            let (result, _keep) = supervised(session, "fs-test-fails");
+            end.send(()).unwrap();
+            let error = result
+                .recv_timeout(tilo_test_env::hang_bound())
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(error.to_string(), "device gone");
+        }
 
-    /// The unmount aborts the kernel connection, and the session's read of
-    /// the device can lose the race with that abort and fail with
-    /// `ECONNABORTED` rather than `ENODEV`. That is how the session ended,
-    /// not a failure of it.
-    #[test]
-    fn a_read_aborted_by_the_unmount_ends_the_session_cleanly() {
-        let (session, _end, finished) =
-            StandIn::serving(|| Err(io::Error::from_raw_os_error(libc::ECONNABORTED)));
-        let (result, events) = supervised(session, "fs-test-aborted");
-        events.send(SessionEvent::Unmount).unwrap();
-        result
-            .recv_timeout(tilo_test_env::hang_bound())
-            .expect("an unmount request was not served")
-            .expect("an aborted connection is the end of the session");
-        assert!(finished.load(Ordering::SeqCst));
+        phase an_unmount_request_waits_for_the_session_to_end;
+        // An unmount request unmounts and returns only once the session's
+        // thread has ended, so the old mount is gone before a rebind.
+        {
+            let (session, _end, finished) = StandIn::serving(|| Ok(()));
+            let (result, events) = supervised(session, "fs-test-unmount");
+            events.send(SessionEvent::Unmount).unwrap();
+            result
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect("an unmount request was not served")
+                .unwrap();
+            assert!(
+                finished.load(Ordering::SeqCst),
+                "returned before the session's thread ended"
+            );
+        }
+
+        phase a_read_aborted_by_the_unmount_ends_the_session_cleanly;
+        // The unmount aborts the kernel connection, and the session's read of
+        // the device can lose the race with that abort and fail with
+        // `ECONNABORTED` rather than `ENODEV`. That is how the session ended,
+        // not a failure of it.
+        {
+            let (session, _end, finished) =
+                StandIn::serving(|| Err(io::Error::from_raw_os_error(libc::ECONNABORTED)));
+            let (result, events) = supervised(session, "fs-test-aborted");
+            events.send(SessionEvent::Unmount).unwrap();
+            result
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect("an unmount request was not served")
+                .expect("an aborted connection is the end of the session");
+            assert!(finished.load(Ordering::SeqCst));
+        }
     }
 
     /// Neither the supervisor nor the watcher is scheduled while the

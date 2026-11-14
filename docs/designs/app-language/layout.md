@@ -93,7 +93,8 @@ room above it as below at a phone's width and a monitor's alike.
 `tilolang layout-check` renders every view headlessly across sizes from 320×568 to 3440×1440,
 display scales 1, 1.5 and 2 and text scales 1 and 1.5. It reports overflow, clipped text, overlaps,
 hit targets that are too small, pages that scroll sideways and edges between device pixels, each at
-a view path. Agents run it like the type checker.
+a view path. It runs as the `layout-check` t checks, on the build servers, where its findings are
+the verdict and each standard size's dump and shots are `t outputs`.
 
 It also reads what a screen says and how its rows line up: every row at one depth starts its title
 at one x, nesting indents by one gutter, a box's rows end at one right edge, one choice is drawn
@@ -107,6 +108,10 @@ column or window it stands in, where an edge would cut its shape, and the gap of
 stands over and under it, so a list under a notice is not read as a row of it. It reads that an item
 stands once: a list folds the branch of a row standing open into its item, since the document under
 that row lists it, so no step of a task is read both there and again as a row of the list.
+
+It reads a panel or a popover that says what it is for and shows nothing under it: one whose title
+stands over an empty body is a `header-only` finding, since the name of a thing stands where the
+thing itself cannot be used.
 
 It reads a window as it stands at rest too, its bar hidden over the window's top edge, and holds a
 sidebar that declares a header row — the words that name its places and the buttons that add to

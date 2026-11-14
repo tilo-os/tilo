@@ -339,91 +339,98 @@ pub(crate) fn tab_index(order: &[NodeId], focused: Option<NodeId>, back: bool) -
 mod trap_tests {
     use super::*;
 
-    #[test]
-    fn history_focus_order_inspects_each_node_once() {
-        let mut tree = TaffyTree::new();
-        let children: Vec<_> = (0..2_000)
-            .map(|_| tree.new_leaf(taffy::Style::default()).unwrap())
-            .collect();
-        let root = tree
-            .new_with_children(taffy::Style::default(), &children)
-            .unwrap();
-        let calls = std::cell::RefCell::new(std::collections::HashMap::new());
-        let (order, trapped) = mapped_order(root, &tree, |node| {
-            *calls.borrow_mut().entry(node).or_insert(0) += 1;
-            (node != root, false, false)
-        });
-        assert_eq!(order, children, "focus order stays in layout tree order");
-        assert!(!trapped);
-        let calls = calls.borrow();
-        assert_eq!(calls.len(), children.len() + 1);
-        assert!(
-            calls.values().all(|&count| count == 1),
-            "one recomputation must inspect each node once: {} calls for {} nodes",
-            calls.values().sum::<usize>(),
-            calls.len(),
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The focus order under traps and hidden subtrees, and where focus goes when a trap
+        /// closes.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_focus_trap_orders_its_nodes_once_and_restores_focus_on_closing;
 
-    #[test]
-    fn mapped_history_focus_order_keeps_nested_traps_and_hidden_subtrees() {
-        let mut tree = TaffyTree::new();
-        let first = tree.new_leaf(taffy::Style::default()).unwrap();
-        let second = tree.new_leaf(taffy::Style::default()).unwrap();
-        let inner = tree
-            .new_with_children(taffy::Style::default(), &[first, second])
-            .unwrap();
-        let outer = tree
-            .new_with_children(taffy::Style::default(), &[inner])
-            .unwrap();
-        let hidden_trap = tree.new_leaf(taffy::Style::default()).unwrap();
-        let hidden = tree
-            .new_with_children(taffy::Style::default(), &[hidden_trap])
-            .unwrap();
-        let later_trap = tree.new_leaf(taffy::Style::default()).unwrap();
-        let root = tree
-            .new_with_children(taffy::Style::default(), &[hidden, outer, later_trap])
-            .unwrap();
-        let visited = std::cell::RefCell::new(Vec::new());
-        let (order, trapped) = mapped_order(root, &tree, |node| {
-            visited.borrow_mut().push(node);
-            (
-                node == first || node == second || node == later_trap,
-                node == outer || node == inner || node == hidden_trap || node == later_trap,
-                node == hidden,
-            )
-        });
-        assert!(trapped);
-        assert_eq!(order, [first, second]);
-        assert!(
-            !visited.borrow().contains(&hidden_trap),
-            "a hidden ancestor prunes even a nested trap",
-        );
-    }
+        phase history_focus_order_inspects_each_node_once;
+        {
+            let mut tree = TaffyTree::new();
+            let children: Vec<_> = (0..2_000)
+                .map(|_| tree.new_leaf(taffy::Style::default()).unwrap())
+                .collect();
+            let root = tree
+                .new_with_children(taffy::Style::default(), &children)
+                .unwrap();
+            let calls = std::cell::RefCell::new(std::collections::HashMap::new());
+            let (order, trapped) = mapped_order(root, &tree, |node| {
+                *calls.borrow_mut().entry(node).or_insert(0) += 1;
+                (node != root, false, false)
+            });
+            assert_eq!(order, children, "focus order stays in layout tree order");
+            assert!(!trapped);
+            let calls = calls.borrow();
+            assert_eq!(calls.len(), children.len() + 1);
+            assert!(
+                calls.values().all(|&count| count == 1),
+                "one recomputation must inspect each node once: {} calls for {} nodes",
+                calls.values().sum::<usize>(),
+                calls.len(),
+            );
+        }
 
-    #[test]
-    fn a_closing_trap_restores_focus_unless_its_choice_moved_it() {
-        let ids: Vec<NodeId> = (0..4_u64).map(NodeId::from).collect();
-        let [canvas, label, menu, other] = [ids[0], ids[1], ids[2], ids[3]];
-        let page = [canvas, label, other];
-        let (mut active, mut before) = (false, None);
-        assert_eq!(
-            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true, None),
-            Some(Some(menu))
-        );
-        assert_eq!(
-            reconcile_trap(&mut active, &mut before, Some(menu), &page, false, None),
-            Some(Some(canvas))
-        );
-        assert_eq!(
-            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true, None),
-            Some(Some(menu))
-        );
-        assert_eq!(
-            reconcile_trap(&mut active, &mut before, Some(label), &page, false, None),
-            None
-        );
-        assert_eq!(before, None);
+        phase mapped_history_focus_order_keeps_nested_traps_and_hidden_subtrees;
+        {
+            let mut tree = TaffyTree::new();
+            let first = tree.new_leaf(taffy::Style::default()).unwrap();
+            let second = tree.new_leaf(taffy::Style::default()).unwrap();
+            let inner = tree
+                .new_with_children(taffy::Style::default(), &[first, second])
+                .unwrap();
+            let outer = tree
+                .new_with_children(taffy::Style::default(), &[inner])
+                .unwrap();
+            let hidden_trap = tree.new_leaf(taffy::Style::default()).unwrap();
+            let hidden = tree
+                .new_with_children(taffy::Style::default(), &[hidden_trap])
+                .unwrap();
+            let later_trap = tree.new_leaf(taffy::Style::default()).unwrap();
+            let root = tree
+                .new_with_children(taffy::Style::default(), &[hidden, outer, later_trap])
+                .unwrap();
+            let visited = std::cell::RefCell::new(Vec::new());
+            let (order, trapped) = mapped_order(root, &tree, |node| {
+                visited.borrow_mut().push(node);
+                (
+                    node == first || node == second || node == later_trap,
+                    node == outer || node == inner || node == hidden_trap || node == later_trap,
+                    node == hidden,
+                )
+            });
+            assert!(trapped);
+            assert_eq!(order, [first, second]);
+            assert!(
+                !visited.borrow().contains(&hidden_trap),
+                "a hidden ancestor prunes even a nested trap",
+            );
+        }
+
+        phase a_closing_trap_restores_focus_unless_its_choice_moved_it;
+        {
+            let ids: Vec<NodeId> = (0..4_u64).map(NodeId::from).collect();
+            let [canvas, label, menu, other] = [ids[0], ids[1], ids[2], ids[3]];
+            let page = [canvas, label, other];
+            let (mut active, mut before) = (false, None);
+            assert_eq!(
+                reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true, None),
+                Some(Some(menu))
+            );
+            assert_eq!(
+                reconcile_trap(&mut active, &mut before, Some(menu), &page, false, None),
+                Some(Some(canvas))
+            );
+            assert_eq!(
+                reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true, None),
+                Some(Some(menu))
+            );
+            assert_eq!(
+                reconcile_trap(&mut active, &mut before, Some(label), &page, false, None),
+                None
+            );
+            assert_eq!(before, None);
+        }
     }
 }
 

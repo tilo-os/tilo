@@ -18,7 +18,7 @@ pub(crate) struct Custody {
     host: HostIdentity,
     principal: String,
     device: String,
-    workspace: u64,
+    workspace: collab_types::WorkspaceId,
     active: AtomicBool,
     generation: AtomicU64,
 }
@@ -57,7 +57,8 @@ impl Custody {
         let mut person = [0; 32];
         hex::decode_to_slice(principal, &mut person).map_err(|e| e.to_string())?;
         let room = collab_types::personal_cluster(&person).to_string();
-        let workspace = tilo_relay_protocol::room_workspace_id(&room).map_err(|e| e.to_string())?;
+        let workspace = collab_types::WorkspaceId::parse(&room)
+            .ok_or_else(|| "a person's cluster is not a workspace id".to_string())?;
         Ok(Self {
             host,
             principal: principal.into(),

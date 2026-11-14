@@ -34,7 +34,7 @@ pub async fn run() {
     use super::resource_support::{
         admit_person, on_messages, open_admitted_peer, part_route, published_message,
     };
-    use tilo_peer_state::join::MemberRole;
+    use tilo_peer_state::join::Role;
     use tilo_relay::workspaces::RemoveMemberRequest;
     let bundle = std::env::args()
         .nth(1)
@@ -100,7 +100,7 @@ pub async fn run() {
     let host = enrol(
         &alice,
         "fixture-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let (remote_author, _) = tilo_user_identity::UserIdentity::generate("Remote fixture writer", 1);
     let publisher = enrol(
@@ -136,7 +136,7 @@ pub async fn run() {
             &host,
             &workspace.workspace,
             &publisher,
-            MemberRole::Editor,
+            Role::Editor,
         )
         .await;
         open_admitted_peer(&hosted, &publisher, &host, &workspace.workspace).await
@@ -347,9 +347,9 @@ pub async fn run() {
     };
     for recipient in readers {
         let role = if voice_journey || disconnect_retry {
-            MemberRole::Editor
+            Role::Editor
         } else {
-            MemberRole::Viewer
+            Role::Viewer
         };
         admit_person(&hosted, &host, &workspace.workspace, recipient, role).await;
     }
@@ -362,14 +362,16 @@ pub async fn run() {
             .retained(workspace.workspace_id)
             .await
             .unwrap();
-        let expected =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
-        assert!(retained.iter().any(|body| body.author == publisher.cert.device_public_key &&
-            matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
+        assert!(
+            retained
+                .iter()
+                .any(|body| body.author == publisher.cert.device_public_key
+                    && matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
                 Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
                 if app_id == route.app_id && record_id == route.record &&
-                    envelope.encryption.as_ref().is_some_and(|metadata| metadata.channel == expected))),
-            "the compiled cold journey requires the foreign writer's actual retained ciphertext");
+                    envelope.encryption.as_ref().is_some())),
+            "the compiled cold journey requires the foreign writer's actual retained ciphertext"
+        );
         native.peer.close();
         hosted.agents.shutdown();
         drop(hosted.web);

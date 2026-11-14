@@ -104,7 +104,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
             workspaces.serving_certificate(),
             crate::workspaces::IssueInvitationRequest {
                 request_id: rand::random(),
-                role: tilo_peer_state::join::MemberRole::Viewer,
+                role: tilo_peer_state::join::Role::Viewer,
                 recipient_user_public_key: Some(root.verifying_key().to_bytes()),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
@@ -273,7 +273,7 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
             workspaces.serving_certificate(),
             crate::workspaces::IssueInvitationRequest {
                 request_id: rand::random(),
-                role: tilo_peer_state::join::MemberRole::Viewer,
+                role: tilo_peer_state::join::Role::Viewer,
                 recipient_user_public_key: Some(root.verifying_key().to_bytes()),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),

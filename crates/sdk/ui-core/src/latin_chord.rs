@@ -118,42 +118,46 @@ mod tests {
         &event.logical_key
     }
 
-    #[test]
-    fn a_chord_on_a_cyrillic_greek_or_hebrew_letter_names_its_latin_key() {
-        for (typed, code, latin) in [
-            ("с", KeyCode::KeyC, "c"),
-            ("м", KeyCode::KeyV, "v"),
-            ("ψ", KeyCode::KeyC, "c"),
-            ("ז", KeyCode::KeyZ, "z"),
-            ("х", KeyCode::BracketLeft, "["),
-        ] {
-            let renamed = renamed(&press(typed, code), ModifiersState::CONTROL)
-                .unwrap_or_else(|| panic!("Ctrl+{typed} is renamed"));
-            assert_eq!(logical(&renamed), &Key::Character(latin.into()));
-            let WindowEvent::KeyboardInput { event, .. } = &renamed else {
-                unreachable!()
-            };
-            assert_eq!(
-                event.text.as_deref(),
-                Some(typed),
-                "the text stays as typed"
-            );
-        }
-        let redo = renamed(
-            &press("Я", KeyCode::KeyZ),
-            ModifiersState::CONTROL | ModifiersState::SHIFT,
-        )
-        .expect("Ctrl+Shift+Я is renamed");
-        assert_eq!(logical(&redo), &Key::Character("Z".into()));
-    }
+    tilo_test_env::scenario! {
+        fn a_chord_names_the_latin_key_of_a_letter_from_another_script_only;
 
-    #[test]
-    fn typing_latin_letters_and_unmodified_keys_are_left_alone() {
-        assert!(renamed(&press("с", KeyCode::KeyC), ModifiersState::empty()).is_none());
-        assert!(renamed(&press("с", KeyCode::KeyC), ModifiersState::SHIFT).is_none());
-        assert!(renamed(&press("c", KeyCode::KeyC), ModifiersState::CONTROL).is_none());
-        assert!(renamed(&press("ö", KeyCode::Semicolon), ModifiersState::CONTROL).is_none());
-        assert!(renamed(&press("é", KeyCode::Digit2), ModifiersState::SUPER).is_none());
-        assert!(renamed(&press("ß", KeyCode::Minus), ModifiersState::CONTROL).is_none());
+        phase a_chord_on_a_cyrillic_greek_or_hebrew_letter_names_its_latin_key;
+        {
+            for (typed, code, latin) in [
+                ("с", KeyCode::KeyC, "c"),
+                ("м", KeyCode::KeyV, "v"),
+                ("ψ", KeyCode::KeyC, "c"),
+                ("ז", KeyCode::KeyZ, "z"),
+                ("х", KeyCode::BracketLeft, "["),
+            ] {
+                let renamed = renamed(&press(typed, code), ModifiersState::CONTROL)
+                    .unwrap_or_else(|| panic!("Ctrl+{typed} is renamed"));
+                assert_eq!(logical(&renamed), &Key::Character(latin.into()));
+                let WindowEvent::KeyboardInput { event, .. } = &renamed else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    event.text.as_deref(),
+                    Some(typed),
+                    "the text stays as typed"
+                );
+            }
+            let redo = renamed(
+                &press("Я", KeyCode::KeyZ),
+                ModifiersState::CONTROL | ModifiersState::SHIFT,
+            )
+            .expect("Ctrl+Shift+Я is renamed");
+            assert_eq!(logical(&redo), &Key::Character("Z".into()));
+        }
+
+        phase typing_latin_letters_and_unmodified_keys_are_left_alone;
+        {
+            assert!(renamed(&press("с", KeyCode::KeyC), ModifiersState::empty()).is_none());
+            assert!(renamed(&press("с", KeyCode::KeyC), ModifiersState::SHIFT).is_none());
+            assert!(renamed(&press("c", KeyCode::KeyC), ModifiersState::CONTROL).is_none());
+            assert!(renamed(&press("ö", KeyCode::Semicolon), ModifiersState::CONTROL).is_none());
+            assert!(renamed(&press("é", KeyCode::Digit2), ModifiersState::SUPER).is_none());
+            assert!(renamed(&press("ß", KeyCode::Minus), ModifiersState::CONTROL).is_none());
+        }
     }
 }

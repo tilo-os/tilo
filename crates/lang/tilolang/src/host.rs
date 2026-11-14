@@ -283,6 +283,15 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether it is the newest step: the change whose result the page shows.",
             ),
+            (
+                "said",
+                "Text",
+                "The step in the words its changes read with, where every change it folds is \
+                 the same action's and that action's words say how many (`wrote 7 messages`): \
+                 the count stands in the sentence, so no count stands beside it. Empty where \
+                 the step reads its newest change's words instead, and says how many changes it \
+                 folds beside them.",
+            ),
         ],
     },
     ValueType {

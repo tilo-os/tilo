@@ -476,278 +476,278 @@ mod tests {
     use crate::command::new_sink;
     use automerge::AutoCommit;
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn path_editing_keeps_location_and_input_consistent() {
-        {
-            use ui::a11y::Action;
-            use winit::event::{ElementState, KeyEvent, RawKeyEvent};
-            use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+    tilo_test_env::scenario! {
+        fn the_path_bar_edits_completes_and_keeps_its_breadcrumbs;
 
-            let fixture = tempfile::tempdir().unwrap();
-            let before = fixture.path().join("before");
-            let after = fixture.path().join("after");
-            for directory in [&before, &after] {
-                std::fs::create_dir_all(directory.join("same-name")).unwrap();
+        phase path_editing_keeps_location_and_input_consistent;
+        {
+            {
+                use ui::a11y::Action;
+                use winit::event::{ElementState, KeyEvent, RawKeyEvent};
+                use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+
+                let fixture = tempfile::tempdir().unwrap();
+                let before = fixture.path().join("before");
+                let after = fixture.path().join("after");
+                for directory in [&before, &after] {
+                    std::fs::create_dir_all(directory.join("same-name")).unwrap();
+                }
+                for input in ["same-name", "~/same-name"] {
+                    let sink = new_sink();
+                    let mut bar = PathBar::new(sink.clone());
+                    bar.set_path(before.clone(), Some(before.clone()), Vec::new());
+                    bar.begin_edit();
+                    bar.set_path(after.clone(), Some(after.clone()), Vec::new());
+                    let mut doc = AutoCommit::new();
+                    assert!(bar.perform_action(
+                        &Action::SetValue(input.into()),
+                        &[],
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT
+                    ));
+                    assert_eq!(bar.field.suggestions().len(), 1);
+                    assert_eq!(
+                        resolve_location(&bar.field.suggestions()[0].value, Some(&before), &before),
+                        before.join("same-name")
+                    );
+
+                    let key = Key::Named(NamedKey::Enter);
+                    let event = ui::synthetic_input::keyboard_input(KeyEvent::synthetic(
+                        RawKeyEvent {
+                            physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+                            state: ElementState::Pressed,
+                        },
+                        key.clone(),
+                        None,
+                        KeyLocation::Standard,
+                        false,
+                        None,
+                        key,
+                    ));
+                    let handled = ui::testing::Dispatch::new()
+                        .doc(&mut doc)
+                        .send(&mut bar, &event)
+                        .handled;
+                    assert!(handled);
+                    assert!(!bar.is_editing());
+                    assert_eq!(
+                        &*sink.borrow(),
+                        &[FileCommand::OpenPath(before.join("same-name"))]
+                    );
+                }
             }
-            for input in ["same-name", "~/same-name"] {
-                let sink = new_sink();
-                let mut bar = PathBar::new(sink.clone());
-                bar.set_path(before.clone(), Some(before.clone()), Vec::new());
-                bar.begin_edit();
-                bar.set_path(after.clone(), Some(after.clone()), Vec::new());
+
+            {
+                let root = tempfile::tempdir().unwrap();
+                let current = root.path().join("current");
+                std::fs::create_dir(&current).unwrap();
+                let child = current.join("child");
+                std::fs::create_dir(&child).unwrap();
+                assert_eq!(resolve_location("child", None, &current), child);
+                assert_eq!(
+                    resolve_location("~", Some(root.path()), &current),
+                    root.path()
+                );
+                let disk_root = crate::breadcrumbs::filesystem_root(&current);
+                assert_eq!(
+                    resolve_location(&disk_root.display().to_string(), None, &current),
+                    disk_root
+                );
+                #[cfg(windows)]
+                assert_eq!(
+                    resolve_location("C:/", None, &current),
+                    PathBuf::from("C:/")
+                );
+            }
+
+            {
+                use ui::a11y::{Action, Role};
+
+                let mut bar = PathBar::new(new_sink());
+                bar.set_path(
+                    PathBuf::from("/home/u/Documents"),
+                    Some(PathBuf::from("/home/u")),
+                    Vec::new(),
+                );
+                let trail = bar.accessibility().expect("trail semantics");
+                assert_eq!(trail.role, Role::List);
+                assert_eq!(trail.value.as_deref(), Some("Documents"));
+
                 let mut doc = AutoCommit::new();
                 assert!(bar.perform_action(
-                    &Action::SetValue(input.into()),
+                    &Action::Activate,
                     &[],
                     &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
-                assert_eq!(bar.field.suggestions().len(), 1);
-                assert_eq!(
-                    resolve_location(&bar.field.suggestions()[0].value, Some(&before), &before),
-                    before.join("same-name")
-                );
-
-                let key = Key::Named(NamedKey::Enter);
-                let event = ui::synthetic_input::keyboard_input(KeyEvent::synthetic(
-                    RawKeyEvent {
-                        physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
-                        state: ElementState::Pressed,
-                    },
-                    key.clone(),
-                    None,
-                    KeyLocation::Standard,
-                    false,
-                    None,
-                    key,
-                ));
-                let handled = ui::testing::Dispatch::new()
-                    .doc(&mut doc)
-                    .send(&mut bar, &event)
-                    .handled;
-                assert!(handled);
-                assert!(!bar.is_editing());
-                assert_eq!(
-                    &*sink.borrow(),
-                    &[FileCommand::OpenPath(before.join("same-name"))]
-                );
+                assert!(bar.is_editing());
+                let input = bar.accessibility().expect("editable path semantics");
+                assert_eq!(input.role, Role::TextInput);
+                assert!(input.state.focusable);
             }
         }
 
+        phase shared_breadcrumb_preserves_roots_targets_and_narrow_current_folder;
         {
-            let root = tempfile::tempdir().unwrap();
-            let current = root.path().join("current");
-            std::fs::create_dir(&current).unwrap();
-            let child = current.join("child");
-            std::fs::create_dir(&child).unwrap();
-            assert_eq!(resolve_location("child", None, &current), child);
+            use ui::icons::Icon;
+            let home = Path::new("/home/u");
+            assert_eq!(breadcrumb_root_icon(home, Some(home), &[]), Icon::Home);
             assert_eq!(
-                resolve_location("~", Some(root.path()), &current),
-                root.path()
+                breadcrumb_root_icon(Path::new("/"), Some(home), &[]),
+                Icon::HardDrive
             );
-            let disk_root = crate::breadcrumbs::filesystem_root(&current);
-            assert_eq!(
-                resolve_location(&disk_root.display().to_string(), None, &current),
-                disk_root
-            );
-            #[cfg(windows)]
-            assert_eq!(
-                resolve_location("C:/", None, &current),
-                PathBuf::from("C:/")
-            );
-        }
-
-        {
-            use ui::a11y::{Action, Role};
-
-            let mut bar = PathBar::new(new_sink());
-            bar.set_path(
-                PathBuf::from("/home/u/Documents"),
-                Some(PathBuf::from("/home/u")),
-                Vec::new(),
-            );
-            let trail = bar.accessibility().expect("trail semantics");
-            assert_eq!(trail.role, Role::List);
-            assert_eq!(trail.value.as_deref(), Some("Documents"));
-
-            let mut doc = AutoCommit::new();
-            assert!(bar.perform_action(
-                &Action::Activate,
-                &[],
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT
-            ));
-            assert!(bar.is_editing());
-            let input = bar.accessibility().expect("editable path semantics");
-            assert_eq!(input.role, Role::TextInput);
-            assert!(input.state.focusable);
-        }
-    }
-
-    #[test]
-    fn shared_breadcrumb_preserves_roots_targets_and_narrow_current_folder() {
-        use ui::icons::Icon;
-        let home = Path::new("/home/u");
-        assert_eq!(breadcrumb_root_icon(home, Some(home), &[]), Icon::Home);
-        assert_eq!(
-            breadcrumb_root_icon(Path::new("/"), Some(home), &[]),
-            Icon::HardDrive
-        );
-        for (path, expected) in [
-            ("/home/u", vec!["Home"]),
-            (
-                "/home/u/Documents/Projects/shared/current/Reports",
-                vec![
-                    "Home",
-                    "Documents",
-                    "Projects",
-                    "shared",
-                    "current",
-                    "Reports",
-                ],
-            ),
-        ] {
-            let mut bar = PathBar::new(new_sink());
-            bar.set_path(PathBuf::from(path), Some(home.to_path_buf()), Vec::new());
-            assert_eq!(bar.crumbs.segments(), expected);
-            assert_eq!(bar.targets.first().map(PathBuf::as_path), Some(home));
-            assert_eq!(
-                bar.targets.last().map(PathBuf::as_path),
-                Some(Path::new(path))
-            );
-            assert_eq!(
-                bar.accessibility().unwrap().value.as_deref(),
-                expected.last().copied()
-            );
-            let mut text = ui::font_catalog::fixture_renderer();
-            for theme in [Theme::dark(), Theme::light()] {
-                assert!(
-                    text.measure_style("Documents", None, &theme.text(ui::TextRole::Caption))
-                        .0
-                        > 0.0,
-                    "the actual breadcrumb face shapes its labels"
+            for (path, expected) in [
+                ("/home/u", vec!["Home"]),
+                (
+                    "/home/u/Documents/Projects/shared/current/Reports",
+                    vec![
+                        "Home",
+                        "Documents",
+                        "Projects",
+                        "shared",
+                        "current",
+                        "Reports",
+                    ],
+                ),
+            ] {
+                let mut bar = PathBar::new(new_sink());
+                bar.set_path(PathBuf::from(path), Some(home.to_path_buf()), Vec::new());
+                assert_eq!(bar.crumbs.segments(), expected);
+                assert_eq!(bar.targets.first().map(PathBuf::as_path), Some(home));
+                assert_eq!(
+                    bar.targets.last().map(PathBuf::as_path),
+                    Some(Path::new(path))
                 );
-                let wide = bar.crumbs.visible_segments(900.0, &theme, &mut text);
-                assert_eq!(wide, expected);
-                let narrow = bar.crumbs.visible_segments(160.0, &theme, &mut text);
-                assert_eq!(narrow.last().map(String::as_str), expected.last().copied());
-                if expected.len() > 4 {
-                    assert!(narrow.len() < expected.len(), "the middle folds away");
-                    assert_eq!(
-                        bar.crumbs.visible_segments(320.0, &theme, &mut text),
-                        vec!["Home", "...", "current", "Reports"],
-                        "the shared trail preserves its root and final two targets"
+                assert_eq!(
+                    bar.accessibility().unwrap().value.as_deref(),
+                    expected.last().copied()
+                );
+                let mut text = ui::font_catalog::fixture_renderer();
+                for theme in [Theme::dark(), Theme::light()] {
+                    assert!(
+                        text.measure_style("Documents", None, &theme.text(ui::TextRole::Caption))
+                            .0
+                            > 0.0,
+                        "the actual breadcrumb face shapes its labels"
                     );
-                } else {
-                    assert_eq!(bar.crumbs.separator_count(), 0);
+                    let wide = bar.crumbs.visible_segments(900.0, &theme, &mut text);
+                    assert_eq!(wide, expected);
+                    let narrow = bar.crumbs.visible_segments(160.0, &theme, &mut text);
+                    assert_eq!(narrow.last().map(String::as_str), expected.last().copied());
+                    if expected.len() > 4 {
+                        assert!(narrow.len() < expected.len(), "the middle folds away");
+                        assert_eq!(
+                            bar.crumbs.visible_segments(320.0, &theme, &mut text),
+                            vec!["Home", "...", "current", "Reports"],
+                            "the shared trail preserves its root and final two targets"
+                        );
+                    } else {
+                        assert_eq!(bar.crumbs.separator_count(), 0);
+                    }
                 }
             }
         }
-    }
 
-    #[test]
-    fn path_completion_lists_matching_entries() {
+        phase path_completion_lists_matching_entries;
         {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir(dir.path().join("Documents")).unwrap();
-            std::fs::create_dir(dir.path().join("Downloads")).unwrap();
-            std::fs::create_dir(dir.path().join("Music")).unwrap();
-            std::fs::write(dir.path().join("Do-not-list.txt"), b"x").unwrap();
-            std::fs::write(dir.path().join(".hidden"), b"x").unwrap();
+            {
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::create_dir(dir.path().join("Documents")).unwrap();
+                std::fs::create_dir(dir.path().join("Downloads")).unwrap();
+                std::fs::create_dir(dir.path().join("Music")).unwrap();
+                std::fs::write(dir.path().join("Do-not-list.txt"), b"x").unwrap();
+                std::fs::write(dir.path().join(".hidden"), b"x").unwrap();
 
-            let input = dir.path().join("Do").display().to_string();
-            let sugg = path_completions(&input, None);
-            let labels: Vec<&str> = sugg.iter().map(|s| s.label.as_str()).collect();
-            assert!(labels.contains(&"Documents"), "labels: {labels:?}");
-            assert!(labels.contains(&"Downloads"), "labels: {labels:?}");
-            assert!(labels.contains(&"Do-not-list.txt"), "files complete too");
-            assert!(!labels.contains(&"Music"), "non-matching entry excluded");
-            let doc_pos = labels.iter().position(|l| *l == "Documents").unwrap();
-            let file_pos = labels.iter().position(|l| *l == "Do-not-list.txt").unwrap();
-            assert!(
-                doc_pos < file_pos,
-                "directories sort before files: {labels:?}"
-            );
-            let docs = sugg.iter().find(|s| s.label == "Documents").unwrap();
-            assert_eq!(
-                docs.value,
-                format!(
-                    "{}{}",
-                    dir.path().join("Documents").display(),
-                    std::path::MAIN_SEPARATOR
-                )
-            );
-        }
+                let input = dir.path().join("Do").display().to_string();
+                let sugg = path_completions(&input, None);
+                let labels: Vec<&str> = sugg.iter().map(|s| s.label.as_str()).collect();
+                assert!(labels.contains(&"Documents"), "labels: {labels:?}");
+                assert!(labels.contains(&"Downloads"), "labels: {labels:?}");
+                assert!(labels.contains(&"Do-not-list.txt"), "files complete too");
+                assert!(!labels.contains(&"Music"), "non-matching entry excluded");
+                let doc_pos = labels.iter().position(|l| *l == "Documents").unwrap();
+                let file_pos = labels.iter().position(|l| *l == "Do-not-list.txt").unwrap();
+                assert!(
+                    doc_pos < file_pos,
+                    "directories sort before files: {labels:?}"
+                );
+                let docs = sugg.iter().find(|s| s.label == "Documents").unwrap();
+                assert_eq!(
+                    docs.value,
+                    format!(
+                        "{}{}",
+                        dir.path().join("Documents").display(),
+                        std::path::MAIN_SEPARATOR
+                    )
+                );
+            }
 
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir(dir.path().join("alpha")).unwrap();
-            std::fs::create_dir(dir.path().join("beta")).unwrap();
-            let input = format!("{}/", dir.path().display());
-            let sugg = path_completions(&input, None);
-            let labels: Vec<&str> = sugg.iter().map(|s| s.label.as_str()).collect();
-            assert!(
-                labels.contains(&"alpha") && labels.contains(&"beta"),
-                "{labels:?}"
-            );
-        }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::create_dir(dir.path().join("alpha")).unwrap();
+                std::fs::create_dir(dir.path().join("beta")).unwrap();
+                let input = format!("{}/", dir.path().display());
+                let sugg = path_completions(&input, None);
+                let labels: Vec<&str> = sugg.iter().map(|s| s.label.as_str()).collect();
+                assert!(
+                    labels.contains(&"alpha") && labels.contains(&"beta"),
+                    "{labels:?}"
+                );
+            }
 
-        {
-            let home = tempfile::tempdir().unwrap();
-            std::fs::create_dir(home.path().join("Projects")).unwrap();
-            let sugg = path_completions("~/Pro", Some(home.path()));
-            assert_eq!(sugg.len(), 1);
-            assert_eq!(sugg[0].label, "Projects");
-            assert!(
-                sugg[0].value.starts_with("~/Projects"),
-                "value: {}",
-                sugg[0].value
-            );
-            assert_eq!(
-                expand_tilde("~/Projects", Some(home.path())),
-                home.path().join("Projects"),
-            );
-        }
+            {
+                let home = tempfile::tempdir().unwrap();
+                std::fs::create_dir(home.path().join("Projects")).unwrap();
+                let sugg = path_completions("~/Pro", Some(home.path()));
+                assert_eq!(sugg.len(), 1);
+                assert_eq!(sugg[0].label, "Projects");
+                assert!(
+                    sugg[0].value.starts_with("~/Projects"),
+                    "value: {}",
+                    sugg[0].value
+                );
+                assert_eq!(
+                    expand_tilde("~/Projects", Some(home.path())),
+                    home.path().join("Projects"),
+                );
+            }
 
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir(dir.path().join(".config")).unwrap();
-            std::fs::create_dir(dir.path().join("visible")).unwrap();
-            let all = path_completions(&format!("{}/", dir.path().display()), None);
-            assert!(
-                all.iter().all(|s| s.label != ".config"),
-                "dotfiles hidden by default"
-            );
-            let dotted = path_completions(&format!("{}/.", dir.path().display()), None);
-            assert!(
-                dotted.iter().any(|s| s.label == ".config"),
-                "a dot prefix reveals them"
-            );
-        }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::create_dir(dir.path().join(".config")).unwrap();
+                std::fs::create_dir(dir.path().join("visible")).unwrap();
+                let all = path_completions(&format!("{}/", dir.path().display()), None);
+                assert!(
+                    all.iter().all(|s| s.label != ".config"),
+                    "dotfiles hidden by default"
+                );
+                let dotted = path_completions(&format!("{}/.", dir.path().display()), None);
+                assert!(
+                    dotted.iter().any(|s| s.label == ".config"),
+                    "a dot prefix reveals them"
+                );
+            }
 
-        {
-            let root = tempfile::tempdir().unwrap();
-            let current = root.path().join("current");
-            std::fs::create_dir(&current).unwrap();
-            let child = current.join("unique-child");
-            std::fs::create_dir(&child).unwrap();
-            std::fs::write(child.join("nested.txt"), b"test").unwrap();
-            assert_eq!(path_completions_at("", None, &current).len(), 1);
-            assert_eq!(
-                path_completions_at("~", Some(&current), root.path()).len(),
-                1
-            );
-            let suggestions = path_completions_at("unique-ch", None, &current);
-            assert_eq!(suggestions.len(), 1);
-            assert_eq!(suggestions[0].label, "unique-child");
-            assert_eq!(PathBuf::from(&suggestions[0].value), child);
-            let nested = path_completions_at("unique-child/", None, &current);
-            assert_eq!(nested.len(), 1);
-            assert_eq!(nested[0].label, "nested.txt");
+            {
+                let root = tempfile::tempdir().unwrap();
+                let current = root.path().join("current");
+                std::fs::create_dir(&current).unwrap();
+                let child = current.join("unique-child");
+                std::fs::create_dir(&child).unwrap();
+                std::fs::write(child.join("nested.txt"), b"test").unwrap();
+                assert_eq!(path_completions_at("", None, &current).len(), 1);
+                assert_eq!(
+                    path_completions_at("~", Some(&current), root.path()).len(),
+                    1
+                );
+                let suggestions = path_completions_at("unique-ch", None, &current);
+                assert_eq!(suggestions.len(), 1);
+                assert_eq!(suggestions[0].label, "unique-child");
+                assert_eq!(PathBuf::from(&suggestions[0].value), child);
+                let nested = path_completions_at("unique-child/", None, &current);
+                assert_eq!(nested.len(), 1);
+                assert_eq!(nested[0].label, "nested.txt");
+            }
         }
     }
 

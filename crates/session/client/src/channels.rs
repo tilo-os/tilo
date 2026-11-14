@@ -27,7 +27,7 @@ use tilo_clock::time::UNIX_EPOCH;
 
 use crate::plane::{Cmd, RosterDevice, Topic, topic_of};
 
-use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
+use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
 use tilo_broker_core::collab_core::{BrokerChannels, BrokerGates};
@@ -581,14 +581,11 @@ impl OwnerDirectory {
 }
 
 impl ChannelDirectory for OwnerDirectory {
-    /// The member devices the workspace's governance lets read `channel` at `now` (Unix seconds):
-    /// the same projection the workspace's doors apply to the record, so a person's device is in a
-    /// channel exactly when it may read the record that channel carries.
+    /// The devices that hold the workspace's keys at `now` (Unix seconds): every device of its
+    /// members.
     fn allowed_devices(
         &self,
         workspace: ModelWorkspaceId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let at = UNIX_EPOCH.checked_add(tilo_channels::policy_instant(now))?;
@@ -596,19 +593,15 @@ impl ChannelDirectory for OwnerDirectory {
         let readers = self
             .owner
             .with_current(workspace, |view| {
-                Ok(view
-                    .channel_readers(at, channel, route)?
-                    .map(|mut readers| {
-                        if reader {
-                            readers.insert(view.workspace_host().device_public_key);
-                            readers.insert(view.device().device_public_key);
-                        }
-                        readers
-                    }))
+                let mut readers = view.key_holders(at)?;
+                if reader {
+                    readers.insert(view.workspace_host().device_public_key);
+                    readers.insert(view.device().device_public_key);
+                }
+                Ok(readers)
             })
             // A workspace whose governance cannot be read says nothing of who reads it.
-            .ok()
-            .flatten()?;
+            .ok()?;
         Some(
             readers
                 .into_iter()
@@ -617,27 +610,9 @@ impl ChannelDirectory for OwnerDirectory {
         )
     }
 
-    /// The scope the record on `route` seals under: the workspace's participants while they all may
-    /// read it, the record's own channel when a Read Deny narrows its readers, so a unit's group
-    /// holds exactly the devices its record's policy names.
-    fn unit_scope(
-        &self,
-        workspace: ModelWorkspaceId,
-        route: &ChannelRoute,
-        now: u64,
-    ) -> Option<ChannelId> {
-        let at = UNIX_EPOCH.checked_add(tilo_channels::policy_instant(now))?;
+    fn founds(&self, workspace: ModelWorkspaceId) -> bool {
         self.owner
-            .with_current(workspace, |view| view.unit_scope(at, route))
-            .ok()
-    }
-
-    /// A workspace entered while hosted elsewhere is its host's: the host answers whether a channel
-    /// has a group.
-    fn hosts(&self, workspace: ModelWorkspaceId) -> bool {
-        !self
-            .owner
-            .with_current(workspace, |view| Ok(view.entered() && !view.hosted_here()))
+            .with_current(workspace, |view| Ok(view.founded_here()))
             .unwrap_or(false)
     }
 
@@ -703,15 +678,15 @@ pub type Roster = Vec<RosterDevice>;
 /// One device `workspace` admits, with the certificate the workspace certified it under: what its
 /// role in the workspace is read from.
 #[derive(Clone, Debug)]
-pub struct Member {
+pub struct Device {
     pub device: [u8; 32],
     pub cert: tilo_user_identity::DeviceCert,
 }
 
-/// The members of `workspace` : the devices its governance admits now, with the certificate it
-/// holds of each. A device the workspace removed, or whose certificate ran out, is not one, and
-/// what it sent or would receive is refused from then on.
-pub fn members_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Member>, String> {
+/// The devices `workspace` admits now, with the certificate it holds of each. A device the
+/// workspace removed, or whose certificate ran out, is not one, and what it sent or would receive
+/// is refused from then on.
+pub fn devices_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Device>, String> {
     let now = tilo_clock::wall();
     engine.owner().with_current(workspace, |view| {
         let admitted: BTreeSet<[u8; 32]> = view
@@ -725,7 +700,7 @@ pub fn members_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Me
             .peer()
             .admitted_workspace()
             .ok_or("no admitted workspace")?;
-        let mut members = BTreeMap::new();
+        let mut devices = BTreeMap::new();
         for bytes in tilo_peer_state::workspace::governance_of(Some(document))
             .identities
             .values()
@@ -735,27 +710,27 @@ pub fn members_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Me
             };
             let device = row.device_cert.device_public_key;
             if admitted.contains(&device) {
-                members.insert(
+                devices.insert(
                     device,
-                    Member {
+                    Device {
                         device,
                         cert: row.device_cert,
                     },
                 );
             }
         }
-        Ok(members.into_values().collect())
+        Ok(devices.into_values().collect())
     })
 }
 
-/// The roster of `workspace` , as [`members_of`] reads it: the devices whose window streams carry
+/// The roster of `workspace` , as [`devices_of`] reads it: the devices whose window streams carry
 /// between.
 pub fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster, String> {
-    members_of(engine, workspace)?
+    devices_of(engine, workspace)?
         .into_iter()
-        .map(|member| {
-            iroh_base::EndpointId::from_bytes(&member.device)
-                .map(|publisher| (publisher, member.cert.expires_at_ns))
+        .map(|device| {
+            iroh_base::EndpointId::from_bytes(&device.device)
+                .map(|publisher| (publisher, device.cert.expires_at_ns))
                 .map_err(|error| error.to_string())
         })
         .collect()
@@ -784,7 +759,7 @@ mod tests {
             workspace: workspace.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
-                channel: ChannelId::new(),
+                workspace: collab_types::WorkspaceId::new(),
                 previous_frame_digest: [0; 32],
                 epoch: 1,
                 action: collab_types::MlsGovernanceAction::Genesis,
@@ -876,7 +851,7 @@ mod tests {
             workspace: workspace.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
-                channel: ChannelId::new(),
+                workspace: collab_types::WorkspaceId::new(),
                 previous_frame_digest: [0; 32],
                 epoch,
                 action: collab_types::MlsGovernanceAction::Genesis,

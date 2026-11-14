@@ -25,6 +25,18 @@ declaration is gone while its file may still be on disk.
 
 Each step is tested against a file its previous version wrote, and only that
 (``assert_step_reads_previous``, beside each declaration).
+
+A version is pinned by the bytes it wrote. Postcard reads a field added,
+removed or retyped without a word as long as the types line up, so a layout
+that changed under the same version number goes unnoticed until a machine's
+file stops reading (a device's certificate, a workspace's record and a
+relay's invitations each did). So ``check`` also fails a format whose crate
+keeps no ``golden/<name>/v<version>.hex`` (the name lowercased, each run of
+other characters a ``-``; the bytes as lowercase hex pairs, 16 to a line), or no test of the crate that reads that path: the
+test hands it to ``assert_golden_bytes``, which fails when this build reads
+or writes it differently. And ``against BASE`` fails when a golden file BASE
+kept changed or is gone: what a version wrote never changes, so a layout
+change is a new version, with its own golden file and the step from this one.
 """
 
 from __future__ import annotations
@@ -58,6 +70,79 @@ BINDING = re.compile(
     re.S,
 )
 CALL = r"\s*\.\s*(?P<call>bring_up_moved|bring_up|migrate)\s*\("
+
+
+VERSIONED = re.compile(
+    r"(?<!\w)Format\s*\{\s*name:\s*\"(?P<name>[^\"]+)\"\s*,\s*version:\s*(?P<version>[^,]+?)\s*,",
+    re.S,
+)
+GOLDEN = re.compile(r"(?:^|/)golden/[^/]+/v[0-9]+\.hex$")
+
+
+def slug(name: str) -> str:
+    """The directory a format's golden bytes are kept in."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def crate_sources(crate: Path, root: Path, cache: dict[Path, dict[str, str]]) -> dict[str, str]:
+    """Every Rust file of `crate`, by its path relative to `root`."""
+    if crate not in cache:
+        cache[crate] = {
+            file.relative_to(root).as_posix(): file.read_text(errors="replace")
+            for file in crate.glob("**/*.rs")
+        }
+    return cache[crate]
+
+
+def version_of(expression: str, texts: dict[str, str]) -> int | None:
+    """The number a declaration's `version:` is: written out, or a `u32`
+    constant of its crate by its last path segment."""
+    expression = expression.strip()
+    if expression.isdigit():
+        return int(expression)
+    name = expression.rsplit("::", 1)[-1]
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+        return None
+    for text in texts.values():
+        found = re.search(rf"\bconst\s+{name}\s*:\s*u32\s*=\s*([0-9]+)\s*;", text)
+        if found:
+            return int(found.group(1))
+    return None
+
+
+def goldens(root: Path, texts: dict[str, str]) -> list[str]:
+    """Each declared format whose crate keeps no golden bytes for its
+    version, or no test that reads them."""
+    problems = []
+    cache: dict[Path, dict[str, str]] = {}
+    for path, text in texts.items():
+        for match in VERSIONED.finditer(without_tests(path, text)):
+            name = match.group("name")
+            crate = crate_of(root, path)
+            crate_texts = crate_sources(crate, root, cache)
+            version = version_of(match.group("version"), crate_texts)
+            if version is None:
+                problems.append(
+                    f"{path}: format {name!r} declares `version: {match.group('version')}`; "
+                    "write the number, or a `const NAME: u32 = N;` of its crate, so its golden "
+                    "bytes can be found"
+                )
+                continue
+            kept = f"golden/{slug(name)}/v{version}.hex"
+            shown = (crate / kept).relative_to(root).as_posix()
+            if not (crate / kept).is_file():
+                problems.append(
+                    f"{path}: format {name!r} version {version} keeps no golden bytes at "
+                    f"{shown}: write what this build stores there, and a test that passes it to "
+                    "`assert_golden_bytes`, so a layout that changes under this number fails"
+                )
+            elif not any(kept in other for other in crate_texts.values()):
+                problems.append(
+                    f"{path}: no test of its crate reads {shown}: pass it to "
+                    "`assert_golden_bytes`, which fails when this build reads or writes the "
+                    f"bytes format {name!r} version {version} stored differently"
+                )
+    return problems
 
 
 def without_tests(path: str, text: str) -> str:
@@ -207,6 +292,44 @@ def check(root: Path = ROOT) -> list[str]:
                 "that it can only ever fall"
             )
     problems.extend(loaders(root, texts))
+    problems.extend(goldens(root, texts))
+    return problems
+
+
+def kept_goldens(root: Path, revision: str) -> list[str]:
+    listed = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", revision, "--", "crates", "apps"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [path for path in listed.splitlines() if GOLDEN.search(path)]
+
+
+def changed_goldens(base: str, root: Path = ROOT) -> list[str]:
+    """Each golden file `base` kept that is gone or holds other bytes now."""
+    problems = []
+    for path in kept_goldens(root, base):
+        file = root / path
+        if not file.is_file():
+            problems.append(
+                f"{path}: the bytes a version of a stored format wrote are gone; machines "
+                "still hold them, so keep the file and the test that reads it"
+            )
+            continue
+        then = subprocess.run(
+            ["git", "rev-parse", f"{base}:{path}"], cwd=root, capture_output=True, text=True
+        ).stdout.strip()
+        now = subprocess.run(
+            ["git", "hash-object", "--", path], cwd=root, capture_output=True, text=True
+        ).stdout.strip()
+        if then != now:
+            problems.append(
+                f"{path}: golden bytes changed. What a version of a format wrote never changes: "
+                "a layout change is a new version, with its own golden file and the step that "
+                "brings these bytes up"
+            )
     return problems
 
 
@@ -228,6 +351,7 @@ def against(base: str, root: Path = ROOT) -> list[str]:
                 f"{new_path}: format {name!r} no longer brings up version {oldest}; a machine "
                 "that missed updates may still hold it. Keep its step."
             )
+    problems.extend(changed_goldens(base, root))
     return problems
 
 

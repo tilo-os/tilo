@@ -307,8 +307,8 @@ impl Widget for EmptyWorkspace {
 mod tests {
     use super::*;
     use tilo_desktop_model::{
-        Collaborator, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-        WorkspaceSlot, partition::Display,
+        Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
+        partition::Display,
     };
 
     fn group(id: u64) -> WindowGroup {
@@ -347,7 +347,6 @@ mod tests {
     /// A workspace of two strips: Main holding one window, Games empty.
     fn desk() -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Home");
-        workspace.collaborators = Vec::<Collaborator>::new();
         let mut main = Strip::new(StripId(10), "Main");
         main.window_groups = vec![group(1)];
         workspace.strips = vec![main, Strip::new(StripId(11), "Games")];
@@ -360,37 +359,41 @@ mod tests {
         tree
     }
 
-    /// On two displays only the display showing no window shows the start cards, and its cards
-    /// centre in that display rather than across the desk.
-    #[test]
-    fn an_empty_display_shows_its_own_start_cards() {
-        let mut tree = desk();
-        let displays = vec![display(0, "panel", 0.0), display(1, "monitor", 1280.0)];
-        tree.outputs.reconcile(&tree.workspaces, &displays);
-        tree.outputs.set_focused(0);
-        assert!(tree.outputs.set_shown(1, WorkspaceSlot(1), StripId(11)));
+    tilo_test_env::scenario! {
+        fn a_display_with_no_window_shows_its_start_cards;
 
-        let wants = EmptyWorkspace::wants(&tree);
-        assert_eq!(wants.len(), 2, "one pad per display");
-        assert_eq!(wants[0].display, Some(0));
-        assert!(!wants[0].shown, "the panel shows the window");
-        assert_eq!(wants[1].display, Some(1));
-        assert!(wants[1].shown, "the monitor shows an empty strip");
-        assert_eq!(wants[1].place, Rect::new(1280.0, 0.0, 2560.0, 800.0));
-    }
+        phase an_empty_display_shows_its_own_start_cards;
+        // On two displays only the display showing no window shows the start cards, and its cards
+        // centre in that display rather than across the desk.
+        {
+            let mut tree = desk();
+            let displays = vec![display(0, "panel", 0.0), display(1, "monitor", 1280.0)];
+            tree.outputs.reconcile(&tree.workspaces, &displays);
+            tree.outputs.set_focused(0);
+            assert!(tree.outputs.set_shown(1, WorkspaceSlot(1), StripId(11)));
 
-    /// A desk of one display shows the start cards once, over the whole desk, while it has no
-    /// window.
-    #[test]
-    fn a_desk_of_one_display_shows_the_cards_while_it_has_no_window() {
-        let mut tree = desk();
-        let wants = EmptyWorkspace::wants(&tree);
-        assert_eq!(wants.len(), 1);
-        assert_eq!(wants[0].display, None);
-        assert!(!wants[0].shown, "the strip has a window");
+            let wants = EmptyWorkspace::wants(&tree);
+            assert_eq!(wants.len(), 2, "one pad per display");
+            assert_eq!(wants[0].display, Some(0));
+            assert!(!wants[0].shown, "the panel shows the window");
+            assert_eq!(wants[1].display, Some(1));
+            assert!(wants[1].shown, "the monitor shows an empty strip");
+            assert_eq!(wants[1].place, Rect::new(1280.0, 0.0, 2560.0, 800.0));
+        }
 
-        tree.workspaces[0].strips[0].window_groups.clear();
-        let wants = EmptyWorkspace::wants(&tree);
-        assert!(wants[0].shown, "nothing on the desk");
+        phase a_desk_of_one_display_shows_the_cards_while_it_has_no_window;
+        // A desk of one display shows the start cards once, over the whole desk, while it has no
+        // window.
+        {
+            let mut tree = desk();
+            let wants = EmptyWorkspace::wants(&tree);
+            assert_eq!(wants.len(), 1);
+            assert_eq!(wants[0].display, None);
+            assert!(!wants[0].shown, "the strip has a window");
+
+            tree.workspaces[0].strips[0].window_groups.clear();
+            let wants = EmptyWorkspace::wants(&tree);
+            assert!(wants[0].shown, "nothing on the desk");
+        }
     }
 }

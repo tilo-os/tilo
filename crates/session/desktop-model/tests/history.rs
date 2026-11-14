@@ -2,7 +2,7 @@
 //! it is now: [`history::without_history`] serialisation and
 //! [`Workspace::policy_view`].
 
-use collab_types::caps::{Access, Actor, CapOverride, ResourceRef, Scope};
+use collab_types::caps::{Access, CapOverride, ResourceRef, Scope};
 use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
 use tilo_actions::{ActionContext, EffectReceiptStatus, InvocationId};
 use tilo_desktop_model::*;
@@ -32,54 +32,58 @@ fn desktop(receipts: u128) -> DesktopTree {
     }
 }
 
-#[test]
-fn serialising_without_history_leaves_out_every_history_field() {
-    let tree = desktop(3);
-    let full = serde_json::to_value(&tree).unwrap();
-    let workspace = &full["workspaces"][0];
-    assert_eq!(workspace["effect_receipts"].as_array().unwrap().len(), 3);
+tilo_test_env::scenario! {
+    fn without_history_leaves_history_out_of_what_it_serialises;
 
-    let current: serde_json::Value =
-        history::without_history(|| serde_json::to_value(&tree)).unwrap();
-    let workspace = &current["workspaces"][0];
-    assert!(
-        workspace.get("effect_receipts").is_none(),
-        "receipts are history"
-    );
-    // Everything that is not history is still there.
-    assert_eq!(workspace["strips"][0]["name"], "Main");
-    assert_eq!(workspace["policy"]["owner"], "owner");
+    phase serialising_without_history_leaves_out_every_history_field;
+    {
+        let tree = desktop(3);
+        let full = serde_json::to_value(&tree).unwrap();
+        let workspace = &full["workspaces"][0];
+        assert_eq!(workspace["effect_receipts"].as_array().unwrap().len(), 3);
 
-    // The switch is scoped: serialising after it writes history again, so
-    // persistence and replication are never affected.
-    let again = serde_json::to_value(&tree).unwrap();
-    assert_eq!(again, full);
-}
+        let current: serde_json::Value =
+            history::without_history(|| serde_json::to_value(&tree)).unwrap();
+        let workspace = &current["workspaces"][0];
+        assert!(
+            workspace.get("effect_receipts").is_none(),
+            "receipts are history"
+        );
+        // Everything that is not history is still there.
+        assert_eq!(workspace["strips"][0]["name"], "Main");
+        assert_eq!(workspace["policy"]["owner"], "owner");
 
-#[test]
-fn a_dump_without_history_is_the_same_size_whatever_the_history() {
-    let size = |receipts| {
-        let tree = desktop(receipts);
-        history::without_history(|| serde_json::to_vec(&tree))
-            .unwrap()
-            .len()
-    };
-    assert_eq!(size(0), size(10_000));
-}
+        // The switch is scoped: serialising after it writes history again, so
+        // persistence and replication are never affected.
+        let again = serde_json::to_value(&tree).unwrap();
+        assert_eq!(again, full);
+    }
 
-#[test]
-fn nested_switches_restore_the_outer_one() {
-    let tree = desktop(1);
-    let inner_then_outer = history::without_history(|| {
-        history::without_history(|| ());
-        serde_json::to_value(&tree)
-    })
-    .unwrap();
-    assert!(
-        inner_then_outer["workspaces"][0]
-            .get("effect_receipts")
-            .is_none()
-    );
+    phase a_dump_without_history_is_the_same_size_whatever_the_history;
+    {
+        let size = |receipts| {
+            let tree = desktop(receipts);
+            history::without_history(|| serde_json::to_vec(&tree))
+                .unwrap()
+                .len()
+        };
+        assert_eq!(size(0), size(10_000));
+    }
+
+    phase nested_switches_restore_the_outer_one;
+    {
+        let tree = desktop(1);
+        let inner_then_outer = history::without_history(|| {
+            history::without_history(|| ());
+            serde_json::to_value(&tree)
+        })
+        .unwrap();
+        assert!(
+            inner_then_outer["workspaces"][0]
+                .get("effect_receipts")
+                .is_none()
+        );
+    }
 }
 
 #[test]
@@ -89,17 +93,20 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     let notes = workspace.node().app("so.tilo.notes");
     workspace.grant(Grant::new(
         "notes-reads",
-        Grantee::app("so.tilo.notes"),
+        Grantee::person("editor"),
         notes,
         KindSet::READ,
         Answer::Allow,
         Grantee::person("owner"),
     ));
-    workspace.grant_sandbox(CapOverride::grant(
-        collab_types::caps::Subject::app("so.tilo.notes"),
-        Scope::FsPath("/var/workspace/notes".into()),
-        Access::Read,
-    ));
+    workspace.grant_sandbox(
+        CapOverride::grant(
+            Grantee::person("editor"),
+            Scope::FsPath("/var/workspace/notes".into()),
+            Access::Read,
+        )
+        .through("so.tilo.notes"),
+    );
     let view = workspace.policy_view();
 
     assert!(view.strips.is_empty());
@@ -131,7 +138,7 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
         }
     }
     let app = |ws: &Workspace| {
-        ws.subject_authority(Grantee::app("so.tilo.notes"))
+        ws.subject_authority(Grantee::person("editor"))
             .decide(
                 &ws.node().join(&TreePath::root().app("so.tilo.notes")),
                 ActionKind::Read,
@@ -140,10 +147,10 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
             .answer
     };
     assert_eq!(app(&view), app(&workspace));
-    let code = Actor::app("so.tilo.notes").in_workspace(workspace.id().to_string());
+    let code = "so.tilo.notes";
     let notes_files = ResourceRef::FsPath("/var/workspace/notes/a.md".into());
     assert_eq!(
-        view.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),
-        workspace.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),
+        view.sandbox_decide_at(code, &notes_files, Access::Read, NOW),
+        workspace.sandbox_decide_at(code, &notes_files, Access::Read, NOW),
     );
 }

@@ -35,9 +35,9 @@ use crate::compute::{
     ComputePackageCatalogue, ComputeResourceLimits, ComputeSandbox, ComputeWorker,
     MAX_COMPUTE_JOB_LIFETIME_MS,
 };
-use crate::mesh::{DeviceRole, PowerAvailability, ServerAdvertisement, ServiceCapabilities};
+use crate::mesh::{PowerAvailability, ServerAdvertisement, ServiceCapabilities};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::room_workspace_id;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The host's transforms: the packages it can run, the sandbox it runs them
 /// under, and the content it reads and keeps.
@@ -137,10 +137,9 @@ impl ComputeJobs {
     }
 
     /// What worker this host is for a job of `app` in `workspace`.
-    fn advertisement(&self, workspace: u64, app: &str) -> ServerAdvertisement {
+    fn advertisement(&self, workspace: WorkspaceId, app: &str) -> ServerAdvertisement {
         ServerAdvertisement {
             device: self.shared.device,
-            role: DeviceRole::AlwaysOnServer,
             services: ServiceCapabilities {
                 compute: true,
                 ..ServiceCapabilities::default()
@@ -164,7 +163,7 @@ impl ComputeJobs {
         if !self.can_run(&offload) {
             return None;
         }
-        let workspace_id = room_workspace_id(workspace).ok()?;
+        let workspace_id = WorkspaceId::parse(workspace)?;
         let inputs: Vec<[u8; 32]> = work.inputs.iter().map(|(digest, _)| *digest).collect();
         // Inputs travel as their digest each up to the wire's bound, and as
         // their total past it: a job whose inputs were not all named is not
@@ -186,7 +185,7 @@ impl ComputeJobs {
 
 /// One job the host was offered: what runs, where, and over what.
 struct Job {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     offload: Offload,
     inputs: Vec<[u8; 32]>,
 }
@@ -290,7 +289,7 @@ impl ComputeJobs {
     /// names each output.
     async fn execute(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         app: &str,
         spec: ComputeJobSpec,
         requester: [u8; 32],
@@ -343,7 +342,7 @@ fn content_output(outputs: &[[u8; 32]]) -> ActionOutput {
 fn job_spec(
     requester: [u8; 32],
     worker: [u8; 32],
-    (workspace_id, package_digest): (u64, [u8; 32]),
+    (workspace_id, package_digest): (WorkspaceId, [u8; 32]),
     offload: &Offload,
     inputs: &[[u8; 32]],
 ) -> Result<ComputeJobSpec, String> {

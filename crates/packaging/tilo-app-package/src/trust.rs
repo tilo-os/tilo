@@ -327,20 +327,6 @@ pub enum TrustLoadError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn missing_policy_files_are_optional() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("absent.toml");
-        assert_eq!(
-            TrustedAttestors::load(&path).unwrap(),
-            TrustedAttestors::default()
-        );
-        assert_eq!(
-            RevocationList::load(&path).unwrap(),
-            RevocationList::default()
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn policy_lookup_errors_are_not_empty_policies() {
@@ -357,43 +343,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn malformed_revocation_keys_are_rejected_at_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("revoked-keys.toml");
-        for key in ["not-hex".to_string(), "ab".repeat(31), "ab".repeat(33)] {
-            let text = format!("[[revoked]]\npubkey_hex = {key:?}\n");
-            std::fs::write(&path, &text).unwrap();
-            assert!(matches!(
-                RevocationList::load(&path),
-                Err(TrustLoadError::BadHex(_) | TrustLoadError::BadPubkeyLength { .. })
-            ));
-        }
-        let text = format!("[[revoked]]\npubkey_hex = {:?}\n", "ab".repeat(32));
-        std::fs::write(&path, text).unwrap();
-        assert!(
-            RevocationList::load(&path)
-                .unwrap()
-                .find(&[0xab; 32])
-                .is_some()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn attestation_scopes_parse_round_trip_and_match;
 
-    #[test]
-    fn attestation_scopes_parse_round_trip_and_match() {
-        // phase: scope_roundtrip_all
+        phase scope_roundtrip_all;
         {
             let s = AttestorScope::All;
             assert_eq!(s.render(), "all");
             assert_eq!(AttestorScope::parse("all").unwrap(), s);
         }
-        // phase: scope_roundtrip_mime
+
+        phase scope_roundtrip_mime;
         {
             let s = AttestorScope::Mime(vec!["application/pdf".into()]);
             assert_eq!(s.render(), "mime:application/pdf");
             assert_eq!(AttestorScope::parse("mime:application/pdf").unwrap(), s);
         }
-        // phase: scope_roundtrip_prefix
+
+        phase scope_roundtrip_prefix;
         {
             let s = AttestorScope::Prefix(vec!["so.tilo.".into(), "dev.example.".into()]);
             assert_eq!(s.render(), "prefix:so.tilo.,dev.example.");
@@ -402,7 +369,8 @@ mod tests {
                 s
             );
         }
-        // phase: scope_rejects_garbage
+
+        phase scope_rejects_garbage;
         {
             assert!(matches!(
                 AttestorScope::parse("hello"),
@@ -413,13 +381,15 @@ mod tests {
                 Err(TrustLoadError::BadScope(_))
             ));
         }
-        // phase: scope_covers_matches_prefix
+
+        phase scope_covers_matches_prefix;
         {
             let s = AttestorScope::Prefix(vec!["so.tilo.".into()]);
             assert!(s.covers("so.tilo.editor", &[]));
             assert!(!s.covers("com.example.foo", &[]));
         }
-        // phase: scope_covers_matches_mime
+
+        phase scope_covers_matches_mime;
         {
             let s = AttestorScope::Mime(vec!["application/pdf".into()]);
             assert!(s.covers("dev.foo", &["application/pdf".into()]));
@@ -427,9 +397,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn trust_lists_round_trip_and_attestations_are_domain_separated() {
-        // phase: trusted_attestors_toml_roundtrip
+    tilo_test_env::scenario! {
+        fn trust_lists_round_trip_and_attestations_are_domain_separated;
+
+        phase missing_policy_files_are_optional;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("absent.toml");
+            assert_eq!(
+                TrustedAttestors::load(&path).unwrap(),
+                TrustedAttestors::default()
+            );
+            assert_eq!(
+                RevocationList::load(&path).unwrap(),
+                RevocationList::default()
+            );
+        }
+
+        phase malformed_revocation_keys_are_rejected_at_load;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("revoked-keys.toml");
+            for key in ["not-hex".to_string(), "ab".repeat(31), "ab".repeat(33)] {
+                let text = format!("[[revoked]]\npubkey_hex = {key:?}\n");
+                std::fs::write(&path, &text).unwrap();
+                assert!(matches!(
+                    RevocationList::load(&path),
+                    Err(TrustLoadError::BadHex(_) | TrustLoadError::BadPubkeyLength { .. })
+                ));
+            }
+            let text = format!("[[revoked]]\npubkey_hex = {:?}\n", "ab".repeat(32));
+            std::fs::write(&path, text).unwrap();
+            assert!(
+                RevocationList::load(&path)
+                    .unwrap()
+                    .find(&[0xab; 32])
+                    .is_some()
+            );
+        }
+
+        phase trusted_attestors_toml_roundtrip;
         {
             let orig = TrustedAttestors {
                 attestor: vec![
@@ -449,7 +456,8 @@ mod tests {
             let decoded = TrustedAttestors::from_toml_str(&text).unwrap();
             assert_eq!(decoded, orig);
         }
-        // phase: revocation_toml_roundtrip
+
+        phase revocation_toml_roundtrip;
         {
             let orig = RevocationList {
                 revoked: vec![RevokedKey {
@@ -461,7 +469,8 @@ mod tests {
             let decoded = RevocationList::from_toml_str(&text).unwrap();
             assert_eq!(decoded, orig);
         }
-        // phase: revocation_list_finds_by_pubkey
+
+        phase revocation_list_finds_by_pubkey;
         {
             let list = RevocationList {
                 revoked: vec![RevokedKey {
@@ -472,7 +481,8 @@ mod tests {
             assert!(list.find(&[0xde; 32]).is_some());
             assert!(list.find(&[0x00; 32]).is_none());
         }
-        // phase: attestation_preimage_is_domain_separated
+
+        phase attestation_preimage_is_domain_separated;
         {
             let root = BlobHash([1u8; 32]);
             let pk = [2u8; 32];

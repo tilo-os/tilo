@@ -315,79 +315,88 @@ mod tests {
         );
     }
 
-    #[test]
-    fn actual_selected_files_are_captured_readonly_without_cookies_or_shm() {
-        let root = tempfile::tempdir().unwrap();
-        for (name, bytes) in [
-            ("Bookmarks", b"bookmarks".as_slice()),
-            ("History", b"history"),
-            ("History-wal", b"wal"),
-            ("Cookies", b"unrelated credentials"),
-            ("History-shm", b"runtime"),
-        ] {
-            fs::write(root.path().join(name), bytes).unwrap();
-        }
-        let before: Vec<_> = fs::read_dir(root.path())
-            .unwrap()
-            .map(|entry| {
-                let path = entry.unwrap().path();
-                (
-                    path.clone(),
-                    fs::read(&path).unwrap(),
-                    fs::metadata(&path).unwrap().permissions().mode(),
-                )
-            })
-            .collect();
-        let first = capture(File::open(root.path()).unwrap(), &selection(true, false)).unwrap();
-        assert_eq!(
-            first
-                .files()
-                .iter()
-                .map(CapturedFile::name)
-                .collect::<Vec<_>>(),
-            ["Bookmarks"]
-        );
-        assert_eq!(first.files()[0].bytes(), b"bookmarks");
-        let second = capture(File::open(root.path()).unwrap(), &selection(true, true)).unwrap();
-        assert_eq!(
-            second
-                .files()
-                .iter()
-                .map(CapturedFile::name)
-                .collect::<Vec<_>>(),
-            ["Bookmarks", "History", "History-wal"]
-        );
-        assert_eq!(second.bytes(), 19);
-        assert_ne!(first.fingerprint(), second.fingerprint());
-        assert_eq!(
-            second.fingerprint(),
-            capture(File::open(root.path()).unwrap(), &selection(true, true))
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_capture_takes_the_selected_files_as_they_are_or_refuses;
+
+        phase actual_selected_files_are_captured_readonly_without_cookies_or_shm;
+        {
+            let root = tempfile::tempdir().unwrap();
+            for (name, bytes) in [
+                ("Bookmarks", b"bookmarks".as_slice()),
+                ("History", b"history"),
+                ("History-wal", b"wal"),
+                ("Cookies", b"unrelated credentials"),
+                ("History-shm", b"runtime"),
+            ] {
+                fs::write(root.path().join(name), bytes).unwrap();
+            }
+            let before: Vec<_> = fs::read_dir(root.path())
                 .unwrap()
-                .fingerprint()
-        );
-        for (path, bytes, mode) in before {
-            assert_eq!(fs::read(&path).unwrap(), bytes);
-            assert_eq!(fs::metadata(path).unwrap().permissions().mode(), mode);
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (
+                        path.clone(),
+                        fs::read(&path).unwrap(),
+                        fs::metadata(&path).unwrap().permissions().mode(),
+                    )
+                })
+                .collect();
+            let first = capture(File::open(root.path()).unwrap(), &selection(true, false)).unwrap();
+            assert_eq!(
+                first
+                    .files()
+                    .iter()
+                    .map(CapturedFile::name)
+                    .collect::<Vec<_>>(),
+                ["Bookmarks"]
+            );
+            assert_eq!(first.files()[0].bytes(), b"bookmarks");
+            let second = capture(File::open(root.path()).unwrap(), &selection(true, true)).unwrap();
+            assert_eq!(
+                second
+                    .files()
+                    .iter()
+                    .map(CapturedFile::name)
+                    .collect::<Vec<_>>(),
+                ["Bookmarks", "History", "History-wal"]
+            );
+            assert_eq!(second.bytes(), 19);
+            assert_ne!(first.fingerprint(), second.fingerprint());
+            assert_eq!(
+                second.fingerprint(),
+                capture(File::open(root.path()).unwrap(), &selection(true, true))
+                    .unwrap()
+                    .fingerprint()
+            );
+            for (path, bytes, mode) in before {
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                assert_eq!(fs::metadata(path).unwrap().permissions().mode(), mode);
+            }
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 5);
         }
-        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 5);
-    }
-    #[test]
-    fn redirected_missing_or_oversized_selected_files_refuse_without_repair() {
-        let root = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
-        fs::write(other.path().join("secret"), b"unchanged").unwrap();
-        symlink(other.path().join("secret"), root.path().join("Bookmarks")).unwrap();
-        assert!(capture(File::open(root.path()).unwrap(), &selection(true, false)).is_err());
-        fs::remove_file(root.path().join("Bookmarks")).unwrap();
-        assert!(capture(File::open(root.path()).unwrap(), &selection(true, false)).is_err());
-        let file = File::create(root.path().join("Bookmarks")).unwrap();
-        file.set_len(MAX_FILE_BYTES + 1).unwrap();
-        assert!(capture(File::open(root.path()).unwrap(), &selection(true, false)).is_err());
-        assert_eq!(
-            fs::metadata(root.path().join("Bookmarks")).unwrap().len(),
-            MAX_FILE_BYTES + 1
-        );
-        assert_eq!(fs::read(other.path().join("secret")).unwrap(), b"unchanged");
-        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+
+        phase redirected_missing_or_oversized_selected_files_refuse_without_repair;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let other = tempfile::tempdir().unwrap();
+            fs::write(other.path().join("secret"), b"unchanged").unwrap();
+            symlink(other.path().join("secret"), root.path().join("Bookmarks")).unwrap();
+            assert!(capture(File::open(root.path()).unwrap(), &selection(true, false)).is_err());
+            fs::remove_file(root.path().join("Bookmarks")).unwrap();
+            assert!(capture(File::open(root.path()).unwrap(), &selection(true, false)).is_err());
+            let file = File::create(root.path().join("Bookmarks")).unwrap();
+            file.set_len(MAX_FILE_BYTES + 1).unwrap();
+            assert!(capture(File::open(root.path()).unwrap(), &selection(true, false)).is_err());
+            assert_eq!(
+                fs::metadata(root.path().join("Bookmarks")).unwrap().len(),
+                MAX_FILE_BYTES + 1
+            );
+            assert_eq!(fs::read(other.path().join("secret")).unwrap(), b"unchanged");
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        }
     }
 }

@@ -1474,196 +1474,358 @@ mod tests {
         crate::testing::lay_out_in(w, 300.0, 60.0, theme).expect("a chip lays out");
     }
 
-    #[test]
-    fn chip_geometry_is_measured_and_scales_once() {
-        fn retained_chip_reserves_large_text_metrics_and_hit_height() {
-            let mut normal = Chip::new("Collaboration").removable();
-            lay_out(&mut normal);
-            let mut large = Chip::new("Collaboration").removable();
-            lay_out_with_theme(&mut large, &Theme::dark().with_text_scale(2.0));
+    tilo_test_env::scenario! {
+        /// A chip's geometry, ink and pointer handling.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_chip_measures_paints_and_takes_the_pointer;
 
-            assert!(
-                large.get_rect().width() > normal.get_rect().width() * 1.45,
-                "200% label width must be measured rather than painted outside a 100% chip"
-            );
-            assert!(
-                large.get_rect().height() > normal.get_rect().height()
-                    && large.hit_rect().height() >= large.get_rect().height(),
-                "200% chip and its pointer target must grow with its measured line, got {:?}",
-                large.get_rect()
-            );
-        }
+        phase chip_geometry_is_measured_and_scales_once;
+        {
+            fn retained_chip_reserves_large_text_metrics_and_hit_height() {
+                let mut normal = Chip::new("Collaboration").removable();
+                lay_out(&mut normal);
+                let mut large = Chip::new("Collaboration").removable();
+                lay_out_with_theme(&mut large, &Theme::dark().with_text_scale(2.0));
 
-        /// The retained chip pinned both axes as `length`, so taffy never asked
-        /// `measure` and every chip was laid out at a 0.6 em-per-character
-        /// estimate. The settled width is now the measured pill.
-        fn chip_width_is_measured_not_estimated() {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let (label_w, _) = text.measure_style("Rust", None, &theme.text(TextRole::Label));
-            let metrics = PillMetrics::of(&theme, TextRole::Label);
-            let expected = (metrics.pad_x * 2.0 + f64::from(label_w)).ceil();
-            let rect = settled_chip_rect(Chip::new("Rust"), 1.0);
-            assert!(
-                (rect.width() - expected).abs() < 1e-6,
-                "settled width {} should be the measured pill {expected}",
-                rect.width()
-            );
-            assert_eq!(
-                rect.height(),
-                f64::from(theme.tokens.metrics.selector_height),
-                "1× pill keeps the 28 px selector height"
-            );
-        }
-
-        /// The pill height follows the label's measured line once that line
-        /// outgrows the 28 px selector height: the 13 px `Label` is 26 px at 2×,
-        /// its line 33.8 px — measured once, from the resolved role, never a
-        /// line doubled a second time by the renderer.
-        fn pill_is_28_at_one_x_and_follows_its_measured_label_at_two_x() {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(2.0);
-            let style = theme.text(TextRole::Label);
-            let (_, line_h) = text.measure_style("Filter", None, &style);
-            assert!(
-                (line_h - 13.0 * 2.0 * 1.3).abs() < 1e-3,
-                "2× label line: {line_h}"
-            );
-            let expected = (f64::from(line_h) + f64::from(theme.tokens.spacing.s1) * 2.0).ceil();
-            assert!(
-                expected > f64::from(theme.tokens.metrics.selector_height),
-                "fixture: the 2× line must outgrow the 28 px pill"
-            );
-            let rect = settled_chip_rect(Chip::new("Filter"), 2.0);
-            assert!(
-                (rect.height() - expected).abs() < 1e-6,
-                "2× pill height {} should be the measured line + 2×s1 = {expected}",
-                rect.height()
-            );
-        }
-
-        /// The painted pill is 28 px (a selector), the pointer target 32 px: the
-        /// two pixels above and below the pill belong to the chip, and a click
-        /// there toggles it.
-        fn hit_rect_meets_the_minimum_pointer_target_while_the_pill_stays_28() {
-            let mut c = Chip::new("Rust").selectable();
-            lay_out(&mut c);
-            draw(&mut c);
-            assert_eq!(
-                c.get_rect().height(),
-                f64::from(crate::tokens::Metrics::BASE.selector_height)
-            );
-            let hit = c.hit_rect();
-            assert_eq!(
-                hit.height(),
-                f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
-                "hit rect grows to the pointer target"
-            );
-            assert_eq!(hit.width(), c.get_rect().width(), "and not sideways");
-            let just_above = Point::new(c.get_rect().center().x, c.get_rect().y0 - 1.0);
-            assert!(!c.get_rect().contains(just_above) && hit.contains(just_above));
-            dispatch(&mut c, &cursor(just_above));
-            assert!(
-                dispatch(&mut c, &mouse_press()),
-                "a click in the grown target is consumed"
-            );
-            assert!(c.is_selected());
-        }
-
-        fn immediate_chip_large_text_scales_once_inside_scaled_geometry() {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(2.0);
-            let mut scene = Scene::new();
-            ChipFace::new(
-                Rect::new(0.0, 0.0, 240.0, ChipFace::height(&theme)),
-                "Group: All",
-            )
-            .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let run = scene
-                .encoding()
-                .resources
-                .glyph_runs
-                .first()
-                .expect("chip label glyph run");
-            assert_eq!(
-                run.font_size,
-                theme.tokens.typography.size(TextRole::Label),
-                "theme and renderer scale must not multiply each other"
-            );
-        }
-
-        retained_chip_reserves_large_text_metrics_and_hit_height();
-        chip_width_is_measured_not_estimated();
-        pill_is_28_at_one_x_and_follows_its_measured_label_at_two_x();
-        hit_rect_meets_the_minimum_pointer_target_while_the_pill_stays_28();
-        immediate_chip_large_text_scales_once_inside_scaled_geometry();
-    }
-
-    /// A pill's height and inset grow with the text scale, so a label at
-    /// 200 % still clears the round ends; a tone colours only the wash and
-    /// the edge, and the label stays readable neutral ink.
-    #[test]
-    fn pills_grow_with_text_scale_and_tones_keep_neutral_readable_ink() {
-        let one = PillMetrics::of(&Theme::dark(), TextRole::Label);
-        let two = PillMetrics::of(&Theme::dark().with_text_scale(2.0), TextRole::Label);
-        assert!(two.height > one.height && two.pad_x > one.pad_x);
-        assert_eq!(one.pad_x, (one.height / 2.0).round());
-
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = theme.tokens.colors.surfaces.content;
-            for tone in [
-                Tone::Neutral,
-                Tone::Info,
-                Tone::Success,
-                Tone::Warning,
-                Tone::Danger,
-                Tone::Presence(crate::tokens::PresenceHue::from_slot(3)),
-            ] {
-                let colors = ChipStyle::Tinted(tone).colors(&theme, ground, false, false);
-                let ratio = crate::a11y::contrast_ratio(colors.ink, colors.fill);
                 assert!(
-                    ratio >= SMALL_TEXT_MIN_CONTRAST,
-                    "{} {tone:?}: label {ratio:.2}:1",
-                    theme.name
+                    large.get_rect().width() > normal.get_rect().width() * 1.45,
+                    "200% label width must be measured rather than painted outside a 100% chip"
                 );
-                assert!(colors.edge.is_some(), "a tinted pill is closed by its edge");
+                assert!(
+                    large.get_rect().height() > normal.get_rect().height()
+                        && large.hit_rect().height() >= large.get_rect().height(),
+                    "200% chip and its pointer target must grow with its measured line, got {:?}",
+                    large.get_rect()
+                );
             }
-            // Unread and attention are your colour, as a sidebar's unread
-            // count; red is only for errors.
-            let live = ChipStyle::Live.colors(&theme, ground, false, false);
-            assert_eq!(live.fill, theme.tokens.colors.intent.you);
-            assert_ne!(live.fill, theme.tokens.colors.semantic.danger);
-            assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
-            // A numbered pick is the accent with its own label, as a
-            // primary action's: never ink measured onto a lighter fill.
-            let picked = ChipStyle::Accent.colors(&theme, ground, false, false);
-            assert_eq!(picked.fill, theme.tokens.colors.intent.accent);
-            assert_eq!(picked.ink, theme.tokens.colors.intent.on_accent);
-            assert!(crate::a11y::contrast_ratio(picked.ink, picked.fill) >= ON_FILL_MIN_CONTRAST);
-            let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
-            assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
-            let chosen = ChipStyle::Neutral.colors(&theme, ground, true, false);
-            assert_ne!(chosen.fill, neutral.fill, "a selected chip is tinted");
-            assert!(chosen.edge.is_some() && chosen.edge != neutral.edge);
-            assert!(
-                crate::a11y::contrast_ratio(chosen.ink, chosen.fill) >= SMALL_TEXT_MIN_CONTRAST
-            );
-        }
-    }
 
-    #[test]
-    fn a_menu_chip_with_a_choice_is_drawn_chosen() {
-        let chosen = Chip::new("Book: Tideglass")
-            .menu()
-            .current(true)
-            .removable();
-        assert!(chosen.shows_chosen());
-        let idle = Chip::new("Author").menu().current(false);
-        assert!(!idle.shows_chosen());
-        assert!(Chip::new("Liked").selected(true).shows_chosen());
-        assert!(!Chip::new("Liked").selected(false).shows_chosen());
+            /// The retained chip pinned both axes as `length`, so taffy never asked
+            /// `measure` and every chip was laid out at a 0.6 em-per-character
+            /// estimate. The settled width is now the measured pill.
+            fn chip_width_is_measured_not_estimated() {
+                let theme = Theme::dark();
+                let mut text = TextRenderer::new();
+                let (label_w, _) = text.measure_style("Rust", None, &theme.text(TextRole::Label));
+                let metrics = PillMetrics::of(&theme, TextRole::Label);
+                let expected = (metrics.pad_x * 2.0 + f64::from(label_w)).ceil();
+                let rect = settled_chip_rect(Chip::new("Rust"), 1.0);
+                assert!(
+                    (rect.width() - expected).abs() < 1e-6,
+                    "settled width {} should be the measured pill {expected}",
+                    rect.width()
+                );
+                assert_eq!(
+                    rect.height(),
+                    f64::from(theme.tokens.metrics.selector_height),
+                    "1× pill keeps the 28 px selector height"
+                );
+            }
+
+            /// The pill height follows the label's measured line once that line
+            /// outgrows the 28 px selector height: the 13 px `Label` is 26 px at 2×,
+            /// its line 33.8 px — measured once, from the resolved role, never a
+            /// line doubled a second time by the renderer.
+            fn pill_is_28_at_one_x_and_follows_its_measured_label_at_two_x() {
+                let theme = Theme::dark().with_text_scale(2.0);
+                let mut text = TextRenderer::new();
+                text.set_text_scale(2.0);
+                let style = theme.text(TextRole::Label);
+                let (_, line_h) = text.measure_style("Filter", None, &style);
+                assert!(
+                    (line_h - 13.0 * 2.0 * 1.3).abs() < 1e-3,
+                    "2× label line: {line_h}"
+                );
+                let expected = (f64::from(line_h) + f64::from(theme.tokens.spacing.s1) * 2.0).ceil();
+                assert!(
+                    expected > f64::from(theme.tokens.metrics.selector_height),
+                    "fixture: the 2× line must outgrow the 28 px pill"
+                );
+                let rect = settled_chip_rect(Chip::new("Filter"), 2.0);
+                assert!(
+                    (rect.height() - expected).abs() < 1e-6,
+                    "2× pill height {} should be the measured line + 2×s1 = {expected}",
+                    rect.height()
+                );
+            }
+
+            /// The painted pill is 28 px (a selector), the pointer target 32 px: the
+            /// two pixels above and below the pill belong to the chip, and a click
+            /// there toggles it.
+            fn hit_rect_meets_the_minimum_pointer_target_while_the_pill_stays_28() {
+                let mut c = Chip::new("Rust").selectable();
+                lay_out(&mut c);
+                draw(&mut c);
+                assert_eq!(
+                    c.get_rect().height(),
+                    f64::from(crate::tokens::Metrics::BASE.selector_height)
+                );
+                let hit = c.hit_rect();
+                assert_eq!(
+                    hit.height(),
+                    f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+                    "hit rect grows to the pointer target"
+                );
+                assert_eq!(hit.width(), c.get_rect().width(), "and not sideways");
+                let just_above = Point::new(c.get_rect().center().x, c.get_rect().y0 - 1.0);
+                assert!(!c.get_rect().contains(just_above) && hit.contains(just_above));
+                dispatch(&mut c, &cursor(just_above));
+                assert!(
+                    dispatch(&mut c, &mouse_press()),
+                    "a click in the grown target is consumed"
+                );
+                assert!(c.is_selected());
+            }
+
+            fn immediate_chip_large_text_scales_once_inside_scaled_geometry() {
+                let theme = Theme::dark().with_text_scale(2.0);
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(2.0);
+                let mut scene = Scene::new();
+                ChipFace::new(
+                    Rect::new(0.0, 0.0, 240.0, ChipFace::height(&theme)),
+                    "Group: All",
+                )
+                .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+                let run = scene
+                    .encoding()
+                    .resources
+                    .glyph_runs
+                    .first()
+                    .expect("chip label glyph run");
+                assert_eq!(
+                    run.font_size,
+                    theme.tokens.typography.size(TextRole::Label),
+                    "theme and renderer scale must not multiply each other"
+                );
+            }
+
+            retained_chip_reserves_large_text_metrics_and_hit_height();
+            chip_width_is_measured_not_estimated();
+            pill_is_28_at_one_x_and_follows_its_measured_label_at_two_x();
+            hit_rect_meets_the_minimum_pointer_target_while_the_pill_stays_28();
+            immediate_chip_large_text_scales_once_inside_scaled_geometry();
+        }
+
+        // A pill's height and inset grow with the text scale, so a label at
+        // 200 % still clears the round ends; a tone colours only the wash and
+        // the edge, and the label stays readable neutral ink.
+        phase pills_grow_with_text_scale_and_tones_keep_neutral_readable_ink;
+        {
+            let one = PillMetrics::of(&Theme::dark(), TextRole::Label);
+            let two = PillMetrics::of(&Theme::dark().with_text_scale(2.0), TextRole::Label);
+            assert!(two.height > one.height && two.pad_x > one.pad_x);
+            assert_eq!(one.pad_x, (one.height / 2.0).round());
+
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let ground = theme.tokens.colors.surfaces.content;
+                for tone in [
+                    Tone::Neutral,
+                    Tone::Info,
+                    Tone::Success,
+                    Tone::Warning,
+                    Tone::Danger,
+                    Tone::Presence(crate::tokens::PresenceHue::from_slot(3)),
+                ] {
+                    let colors = ChipStyle::Tinted(tone).colors(&theme, ground, false, false);
+                    let ratio = crate::a11y::contrast_ratio(colors.ink, colors.fill);
+                    assert!(
+                        ratio >= SMALL_TEXT_MIN_CONTRAST,
+                        "{} {tone:?}: label {ratio:.2}:1",
+                        theme.name
+                    );
+                    assert!(colors.edge.is_some(), "a tinted pill is closed by its edge");
+                }
+                // Unread and attention are your colour, as a sidebar's unread
+                // count; red is only for errors.
+                let live = ChipStyle::Live.colors(&theme, ground, false, false);
+                assert_eq!(live.fill, theme.tokens.colors.intent.you);
+                assert_ne!(live.fill, theme.tokens.colors.semantic.danger);
+                assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
+                // A numbered pick is the accent with its own label, as a
+                // primary action's: never ink measured onto a lighter fill.
+                let picked = ChipStyle::Accent.colors(&theme, ground, false, false);
+                assert_eq!(picked.fill, theme.tokens.colors.intent.accent);
+                assert_eq!(picked.ink, theme.tokens.colors.intent.on_accent);
+                assert!(crate::a11y::contrast_ratio(picked.ink, picked.fill) >= ON_FILL_MIN_CONTRAST);
+                let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
+                assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
+                let chosen = ChipStyle::Neutral.colors(&theme, ground, true, false);
+                assert_ne!(chosen.fill, neutral.fill, "a selected chip is tinted");
+                assert!(chosen.edge.is_some() && chosen.edge != neutral.edge);
+                assert!(
+                    crate::a11y::contrast_ratio(chosen.ink, chosen.fill) >= SMALL_TEXT_MIN_CONTRAST
+                );
+            }
+        }
+
+        phase a_menu_chip_with_a_choice_is_drawn_chosen;
+        {
+            let chosen = Chip::new("Book: Tideglass")
+                .menu()
+                .current(true)
+                .removable();
+            assert!(chosen.shows_chosen());
+            let idle = Chip::new("Author").menu().current(false);
+            assert!(!idle.shows_chosen());
+            assert!(Chip::new("Liked").selected(true).shows_chosen());
+            assert!(!Chip::new("Liked").selected(false).shows_chosen());
+        }
+
+        phase chip_pointer_toggles_and_removes_by_kind;
+        {
+            fn selectable_chip_toggles_on_body_click() {
+                let mut c = Chip::new("Rust").selectable();
+                lay_out(&mut c);
+                draw(&mut c);
+                assert!(!c.is_selected());
+                let center = c.get_rect().center();
+                dispatch(&mut c, &cursor(center));
+                assert!(
+                    dispatch(&mut c, &mouse_press()),
+                    "body click on a selectable chip is consumed"
+                );
+                assert!(c.is_selected(), "click selects");
+                assert!(c.take_toggled(), "toggle signal fires");
+                assert!(!c.take_toggled(), "toggle drains after one read");
+                dispatch(&mut c, &mouse_press());
+                assert!(!c.is_selected(), "second click deselects");
+            }
+
+            fn plain_chip_does_not_toggle() {
+                let mut c = Chip::new("Label");
+                lay_out(&mut c);
+                draw(&mut c);
+                let center = c.get_rect().center();
+                dispatch(&mut c, &cursor(center));
+                assert!(
+                    !dispatch(&mut c, &mouse_press()),
+                    "a plain chip ignores clicks"
+                );
+                assert!(!c.take_toggled());
+            }
+
+            fn removable_chip_fires_remove_on_x_click() {
+                let mut c = Chip::new("alice@example.com").removable();
+                lay_out(&mut c);
+                draw(&mut c);
+                let x = c.remove_rect().center();
+                assert!(x.x > 0.0, "the × stands where the layout puts it");
+                dispatch(&mut c, &cursor(x));
+                assert!(dispatch(&mut c, &mouse_press()), "× click is consumed");
+                assert!(c.take_removed(), "remove signal fires");
+                assert!(!c.take_removed(), "remove drains after one read");
+            }
+
+            fn removable_and_selectable_x_wins_over_toggle() {
+                let mut c = Chip::new("tag").selectable().removable();
+                lay_out(&mut c);
+                draw(&mut c);
+                let x = c.remove_rect().center();
+                dispatch(&mut c, &cursor(x));
+                dispatch(&mut c, &mouse_press());
+                assert!(c.take_removed(), "× removes");
+                assert!(!c.take_toggled(), "× does not also toggle selection");
+                assert!(!c.is_selected());
+            }
+
+            fn accessibility_toggle_vs_static() {
+                use crate::a11y::Role;
+                let sel = Chip::new("Filter").selected(true);
+                let node = Widget::accessibility(&sel).unwrap();
+                assert_eq!(node.role, Role::ToggleButton);
+                assert_eq!(
+                    node.state.checked,
+                    Some(true),
+                    "a selected chip reports checked"
+                );
+                assert!(node.state.focusable);
+
+                let plain = Chip::new("tag");
+                assert_eq!(
+                    Widget::accessibility(&plain).unwrap().role,
+                    Role::StaticText
+                );
+            }
+
+            /// A chip showing whether it is chosen and naming what a press does (a choice among
+            /// presets, its state bound to the record) runs the press; its selection follows what
+            /// it is bound to, never a flip of its own.
+            fn a_selected_chip_with_a_press_runs_the_press() {
+                let pressed = std::rc::Rc::new(std::cell::Cell::new(0));
+                let counted = std::rc::Rc::clone(&pressed);
+                let mut c = Chip::new("Frames")
+                    .selected(false)
+                    .on_click(move || counted.set(counted.get() + 1));
+                lay_out(&mut c);
+                draw(&mut c);
+                let center = c.get_rect().center();
+                dispatch(&mut c, &cursor(center));
+                assert!(dispatch(&mut c, &mouse_press()), "the press is the chip's");
+                dispatch(&mut c, &crate::synthetic_input::mouse_release());
+                assert_eq!(pressed.get(), 1, "the press runs");
+                assert!(!c.is_selected(), "the selection is what it is bound to");
+                assert!(!c.take_toggled(), "nothing flipped");
+            }
+
+            fn a_chip_whose_remove_is_bound_runs_the_action_it_names_once() {
+                let mut spec = tilo_actions::ResourceSpec::new("res-tag", "test.tag", "Tag");
+                spec = spec.with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "remove",
+                        "Remove",
+                        tilo_actions::OperationKind::Effect,
+                        "test.tag.effect",
+                        &(),
+                    )
+                    .expect("a test action"),
+                );
+                let binding =
+                    tilo_actions::ActionBinding::unit_for(&spec, "remove").expect("published");
+                let address = binding.address().clone();
+                let mut chip = Chip::new("tag").with_remove_press(crate::widget::Press::of(
+                    crate::component::Event::Action(binding),
+                ));
+                chip.remove_pressed();
+                assert!(chip.removed, "the press removes the chip");
+                let taken = crate::widget::controls::take_control_invocation(&mut chip);
+                assert_eq!(
+                    taken.as_ref().map(|taken| taken.address.clone()),
+                    Some(address),
+                    "one press runs the remove once"
+                );
+                assert!(
+                    crate::widget::controls::take_control_invocation(&mut chip).is_none(),
+                    "the press is taken once"
+                );
+            }
+
+            selectable_chip_toggles_on_body_click();
+            plain_chip_does_not_toggle();
+            removable_chip_fires_remove_on_x_click();
+            removable_and_selectable_x_wins_over_toggle();
+            accessibility_toggle_vs_static();
+            a_selected_chip_with_a_press_runs_the_press();
+            a_chip_whose_remove_is_bound_runs_the_action_it_names_once();
+        }
+
+        // A control's place is the layout's: a chip laid out and not yet painted
+        // still answers a press on its "×", inside the chip, never at the
+        // window's origin where a control nothing placed stands.
+        phase the_layout_places_the_remove_control_without_a_paint;
+        {
+            let mut chip = Chip::new("alice@example.com").removable();
+            lay_out(&mut chip);
+            let x = chip.remove_rect();
+            assert!(!x.is_zero_area(), "the layout places the ×: {x:?}");
+            assert!(
+                chip.get_rect().contains(x.center()),
+                "inside the chip: {x:?} in {:?}",
+                chip.get_rect()
+            );
+            dispatch(&mut chip, &cursor(x.center()));
+            assert!(dispatch(&mut chip, &mouse_press()), "the × press lands");
+            assert!(chip.take_removed(), "and removes");
+        }
     }
 
     fn draw(w: &mut dyn Widget) {
@@ -1682,143 +1844,6 @@ mod tests {
     }
     use crate::synthetic_input::mouse_press;
 
-    #[test]
-    fn chip_pointer_toggles_and_removes_by_kind() {
-        fn selectable_chip_toggles_on_body_click() {
-            let mut c = Chip::new("Rust").selectable();
-            lay_out(&mut c);
-            draw(&mut c);
-            assert!(!c.is_selected());
-            let center = c.get_rect().center();
-            dispatch(&mut c, &cursor(center));
-            assert!(
-                dispatch(&mut c, &mouse_press()),
-                "body click on a selectable chip is consumed"
-            );
-            assert!(c.is_selected(), "click selects");
-            assert!(c.take_toggled(), "toggle signal fires");
-            assert!(!c.take_toggled(), "toggle drains after one read");
-            dispatch(&mut c, &mouse_press());
-            assert!(!c.is_selected(), "second click deselects");
-        }
-
-        fn plain_chip_does_not_toggle() {
-            let mut c = Chip::new("Label");
-            lay_out(&mut c);
-            draw(&mut c);
-            let center = c.get_rect().center();
-            dispatch(&mut c, &cursor(center));
-            assert!(
-                !dispatch(&mut c, &mouse_press()),
-                "a plain chip ignores clicks"
-            );
-            assert!(!c.take_toggled());
-        }
-
-        fn removable_chip_fires_remove_on_x_click() {
-            let mut c = Chip::new("alice@example.com").removable();
-            lay_out(&mut c);
-            draw(&mut c);
-            let x = c.remove_rect().center();
-            assert!(x.x > 0.0, "the × stands where the layout puts it");
-            dispatch(&mut c, &cursor(x));
-            assert!(dispatch(&mut c, &mouse_press()), "× click is consumed");
-            assert!(c.take_removed(), "remove signal fires");
-            assert!(!c.take_removed(), "remove drains after one read");
-        }
-
-        fn removable_and_selectable_x_wins_over_toggle() {
-            let mut c = Chip::new("tag").selectable().removable();
-            lay_out(&mut c);
-            draw(&mut c);
-            let x = c.remove_rect().center();
-            dispatch(&mut c, &cursor(x));
-            dispatch(&mut c, &mouse_press());
-            assert!(c.take_removed(), "× removes");
-            assert!(!c.take_toggled(), "× does not also toggle selection");
-            assert!(!c.is_selected());
-        }
-
-        fn accessibility_toggle_vs_static() {
-            use crate::a11y::Role;
-            let sel = Chip::new("Filter").selected(true);
-            let node = Widget::accessibility(&sel).unwrap();
-            assert_eq!(node.role, Role::ToggleButton);
-            assert_eq!(
-                node.state.checked,
-                Some(true),
-                "a selected chip reports checked"
-            );
-            assert!(node.state.focusable);
-
-            let plain = Chip::new("tag");
-            assert_eq!(
-                Widget::accessibility(&plain).unwrap().role,
-                Role::StaticText
-            );
-        }
-
-        /// A chip showing whether it is chosen and naming what a press does (a choice among
-        /// presets, its state bound to the record) runs the press; its selection follows what
-        /// it is bound to, never a flip of its own.
-        fn a_selected_chip_with_a_press_runs_the_press() {
-            let pressed = std::rc::Rc::new(std::cell::Cell::new(0));
-            let counted = std::rc::Rc::clone(&pressed);
-            let mut c = Chip::new("Frames")
-                .selected(false)
-                .on_click(move || counted.set(counted.get() + 1));
-            lay_out(&mut c);
-            draw(&mut c);
-            let center = c.get_rect().center();
-            dispatch(&mut c, &cursor(center));
-            assert!(dispatch(&mut c, &mouse_press()), "the press is the chip's");
-            dispatch(&mut c, &crate::synthetic_input::mouse_release());
-            assert_eq!(pressed.get(), 1, "the press runs");
-            assert!(!c.is_selected(), "the selection is what it is bound to");
-            assert!(!c.take_toggled(), "nothing flipped");
-        }
-
-        fn a_chip_whose_remove_is_bound_runs_the_action_it_names_once() {
-            let mut spec = tilo_actions::ResourceSpec::new("res-tag", "test.tag", "Tag");
-            spec = spec.with_action(
-                tilo_actions::ActionSpec::operation(
-                    "remove",
-                    "Remove",
-                    tilo_actions::OperationKind::Effect,
-                    "test.tag.effect",
-                    &(),
-                )
-                .expect("a test action"),
-            );
-            let binding =
-                tilo_actions::ActionBinding::unit_for(&spec, "remove").expect("published");
-            let address = binding.address().clone();
-            let mut chip = Chip::new("tag").with_remove_press(crate::widget::Press::of(
-                crate::component::Event::Action(binding),
-            ));
-            chip.remove_pressed();
-            assert!(chip.removed, "the press removes the chip");
-            let taken = crate::widget::controls::take_control_invocation(&mut chip);
-            assert_eq!(
-                taken.as_ref().map(|taken| taken.address.clone()),
-                Some(address),
-                "one press runs the remove once"
-            );
-            assert!(
-                crate::widget::controls::take_control_invocation(&mut chip).is_none(),
-                "the press is taken once"
-            );
-        }
-
-        selectable_chip_toggles_on_body_click();
-        plain_chip_does_not_toggle();
-        removable_chip_fires_remove_on_x_click();
-        removable_and_selectable_x_wins_over_toggle();
-        accessibility_toggle_vs_static();
-        a_selected_chip_with_a_press_runs_the_press();
-        a_chip_whose_remove_is_bound_runs_the_action_it_names_once();
-    }
-
     /// Lay a chip out through the shared solver (the `App` / `FrameHarness`
     /// path), which runs `adjust_layout_style`; the raw
     /// `compute_layout_with_measure` in `lay_out` above never does.
@@ -1832,25 +1857,6 @@ mod tests {
         let rect = harness.inspection().root.children[0].rect;
         Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
     }
-
-    /// A control's place is the layout's: a chip laid out and not yet painted
-    /// still answers a press on its "×", inside the chip, never at the
-    /// window's origin where a control nothing placed stands.
-    #[test]
-    fn the_layout_places_the_remove_control_without_a_paint() {
-        let mut chip = Chip::new("alice@example.com").removable();
-        lay_out(&mut chip);
-        let x = chip.remove_rect();
-        assert!(!x.is_zero_area(), "the layout places the ×: {x:?}");
-        assert!(
-            chip.get_rect().contains(x.center()),
-            "inside the chip: {x:?} in {:?}",
-            chip.get_rect()
-        );
-        dispatch(&mut chip, &cursor(x.center()));
-        assert!(dispatch(&mut chip, &mouse_press()), "the × press lands");
-        assert!(chip.take_removed(), "and removes");
-    }
 }
 
 #[cfg(test)]
@@ -1859,151 +1865,157 @@ mod activation_tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    #[test]
-    fn a_chip_that_navigates_is_a_focusable_button() {
-        let opened = Rc::new(Cell::new(0));
-        let counter = Rc::clone(&opened);
-        let mut chip = Chip::new("design")
-            .with_id("tag-design")
-            .on_view(move || counter.set(counter.get() + 1));
-        assert!(chip.is_focusable());
-        let node = Widget::accessibility(&chip).unwrap();
-        assert_eq!(node.role, crate::a11y::Role::Button);
-        assert_eq!(node.name.as_deref(), Some("design"));
-        assert_eq!(chip.test_id(), Some("tag-design"));
-        let mut doc = automerge::AutoCommit::new();
-        assert!(Widget::perform_action(
-            &mut chip,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
-        assert_eq!(opened.get(), 0, "the press waits to be answered");
-        assert_eq!(crate::testing::answer_controls(&mut chip), 1);
-        assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
-        let mut harness = crate::headless::FrameHarness::new(
-            crate::State::new(),
-            Box::new(crate::widget::Row::new().push(Box::new(chip))),
-            (400, 100),
-        );
-        let [x, y, w, h] = harness.inspection().root.children[0].rect;
-        harness.click_at(x + w / 2.0, y + h / 2.0);
-        assert_eq!(opened.get(), 2);
-        assert!(!Chip::new("label").is_focusable());
-    }
+    tilo_test_env::scenario! {
+        /// A chip that is pressed or opens a menu.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_chip_that_acts_has_a_fingers_room_and_one_resource;
 
-    /// On a touchscreen a chip a person presses takes a finger's target of room in its line,
-    /// with its pill the selector height centred in it, so a press above or below the pill
-    /// lands on the chip and never on what is next to it; a label chip, or a chip under a
-    /// mouse, keeps the pill's height.
-    #[test]
-    fn a_pressed_chip_takes_a_fingers_room_on_touch() {
-        use crate::interaction::InteractionEnvironment;
-        let pill = f64::from(crate::tokens::Metrics::BASE.selector_height);
-        let finger = f64::from(InteractionEnvironment::TOUCH.minimum_target());
-        let chips: [(&str, fn() -> Chip, bool); 3] = [
-            (
-                "navigating",
-                || Chip::new("3 replies").on_click(|| {}),
-                true,
-            ),
-            ("removable", || Chip::new("planning").removable(), true),
-            ("label", || Chip::new("draft"), false),
-        ];
-        for (name, chip, pressed) in chips {
-            for (input, room) in [
-                (InteractionEnvironment::POINTER, pill),
+        phase a_chip_that_navigates_is_a_focusable_button;
+        {
+            let opened = Rc::new(Cell::new(0));
+            let counter = Rc::clone(&opened);
+            let mut chip = Chip::new("design")
+                .with_id("tag-design")
+                .on_view(move || counter.set(counter.get() + 1));
+            assert!(chip.is_focusable());
+            let node = Widget::accessibility(&chip).unwrap();
+            assert_eq!(node.role, crate::a11y::Role::Button);
+            assert_eq!(node.name.as_deref(), Some("design"));
+            assert_eq!(chip.test_id(), Some("tag-design"));
+            let mut doc = automerge::AutoCommit::new();
+            assert!(Widget::perform_action(
+                &mut chip,
+                &crate::a11y::Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
+            assert_eq!(opened.get(), 0, "the press waits to be answered");
+            assert_eq!(crate::testing::answer_controls(&mut chip), 1);
+            assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
+            let mut harness = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(crate::widget::Row::new().push(Box::new(chip))),
+                (400, 100),
+            );
+            let [x, y, w, h] = harness.inspection().root.children[0].rect;
+            harness.click_at(x + w / 2.0, y + h / 2.0);
+            assert_eq!(opened.get(), 2);
+            assert!(!Chip::new("label").is_focusable());
+        }
+
+        // On a touchscreen a chip a person presses takes a finger's target of room in its line,
+        // with its pill the selector height centred in it, so a press above or below the pill
+        // lands on the chip and never on what is next to it; a label chip, or a chip under a
+        // mouse, keeps the pill's height.
+        phase a_pressed_chip_takes_a_fingers_room_on_touch;
+        {
+            use crate::interaction::InteractionEnvironment;
+            let pill = f64::from(crate::tokens::Metrics::BASE.selector_height);
+            let finger = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+            let chips: [(&str, fn() -> Chip, bool); 3] = [
                 (
-                    InteractionEnvironment::TOUCH,
-                    if pressed { finger } else { pill },
+                    "navigating",
+                    || Chip::new("3 replies").on_click(|| {}),
+                    true,
                 ),
-            ] {
-                let mut harness = crate::headless::FrameHarness::new(
-                    crate::State::new(),
-                    Box::new(crate::widget::Row::new().push(Box::new(chip()))),
-                    (400, 100),
-                );
-                harness.set_interaction_environment(input);
-                let [_, _, _, h] = harness.inspection().root.children[0].rect;
-                assert!(
-                    (h - room).abs() < 0.5,
-                    "the {name} chip takes {room} for {input:?}, not {h}"
-                );
+                ("removable", || Chip::new("planning").removable(), true),
+                ("label", || Chip::new("draft"), false),
+            ];
+            for (name, chip, pressed) in chips {
+                for (input, room) in [
+                    (InteractionEnvironment::POINTER, pill),
+                    (
+                        InteractionEnvironment::TOUCH,
+                        if pressed { finger } else { pill },
+                    ),
+                ] {
+                    let mut harness = crate::headless::FrameHarness::new(
+                        crate::State::new(),
+                        Box::new(crate::widget::Row::new().push(Box::new(chip()))),
+                        (400, 100),
+                    );
+                    harness.set_interaction_environment(input);
+                    let [_, _, _, h] = harness.inspection().root.children[0].rect;
+                    assert!(
+                        (h - room).abs() < 0.5,
+                        "the {name} chip takes {room} for {input:?}, not {h}"
+                    );
+                }
             }
         }
-    }
 
-    /// A chip that both runs a press and offers its own removal publishes one
-    /// resource for its control: the host keeps one spec per id, so the
-    /// remove would be shadowed by the press's spec and answer nothing.
-    #[test]
-    fn a_chip_with_a_press_and_a_remove_publishes_one_resource_both_reach() {
-        let removed = Rc::new(Cell::new(0));
-        let counted = Rc::clone(&removed);
-        let chip = Chip::new("Book: The Tideglass")
-            .with_id("view-chip:book")
-            .on_view(|| {})
-            .on_remove_view(move || counted.set(counted.get() + 1));
-        let mut harness = crate::headless::FrameHarness::new(
-            crate::State::new(),
-            Box::new(crate::widget::Row::new().push(Box::new(chip))),
-            (400, 100),
-        );
-        let resources = harness.resources();
-        let published: Vec<&tilo_actions::ResourceSpec> = resources
-            .iter()
-            .filter(|resource| resource.id.as_str() == "tilo.control:view-chip:book")
-            .collect();
-        assert_eq!(published.len(), 1, "one resource for the control");
-        let actions: Vec<&str> = published
-            .first()
-            .expect("the chip publishes its control")
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        assert_eq!(actions, ["invoke", "remove"]);
-        harness
-            .invoke_published(
-                "tilo.control:view-chip:book",
-                "remove",
-                &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
-            )
-            .expect("the remove answers");
-        assert_eq!(removed.get(), 1, "the chip's own handler ran");
-    }
-
-    #[test]
-    fn a_menu_chip_reserves_its_chevron_and_a_wide_face_centres_its_label() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let plain = ChipFace::intrinsic_width("Sort", ChipLead::None, false, &mut text, &theme);
-        let menu = PillMetrics::of(&theme, TextRole::Label).intrinsic_width(
-            "Sort",
-            ChipLead::None,
-            true,
-            &mut text,
-        );
-        assert!(menu > plain);
-        let chip = Chip::new("Sort").menu().on_view(|| {});
-        let node = Widget::accessibility(&chip).unwrap();
-        assert_eq!(node.state.expanded, Some(false));
-        let paint_x = |width: f64, text: &mut TextRenderer| {
-            let mut scene = Scene::new();
-            ChipFace::new(Rect::new(0.0, 0.0, width, ChipFace::height(&theme)), "q").paint(
-                &mut scene,
-                Affine::IDENTITY,
-                text,
-                &theme,
+        // A chip that both runs a press and offers its own removal publishes one
+        // resource for its control: the host keeps one spec per id, so the
+        // remove would be shadowed by the press's spec and answer nothing.
+        phase a_chip_with_a_press_and_a_remove_publishes_one_resource_both_reach;
+        {
+            let removed = Rc::new(Cell::new(0));
+            let counted = Rc::clone(&removed);
+            let chip = Chip::new("Book: The Tideglass")
+                .with_id("view-chip:book")
+                .on_view(|| {})
+                .on_remove_view(move || counted.set(counted.get() + 1));
+            let mut harness = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(crate::widget::Row::new().push(Box::new(chip))),
+                (400, 100),
             );
-            scene.encoding().resources.glyph_runs[0]
-                .transform
-                .translation[0]
-        };
-        let narrow = paint_x(plain.max(28.0), &mut text);
-        let wide = paint_x(120.0, &mut text);
-        assert!(f64::from(wide) > 40.0, "centred: {wide}");
-        assert!(wide > narrow);
+            let resources = harness.resources();
+            let published: Vec<&tilo_actions::ResourceSpec> = resources
+                .iter()
+                .filter(|resource| resource.id.as_str() == "tilo.control:view-chip:book")
+                .collect();
+            assert_eq!(published.len(), 1, "one resource for the control");
+            let actions: Vec<&str> = published
+                .first()
+                .expect("the chip publishes its control")
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            assert_eq!(actions, ["invoke", "remove"]);
+            harness
+                .invoke_published(
+                    "tilo.control:view-chip:book",
+                    "remove",
+                    &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
+                )
+                .expect("the remove answers");
+            assert_eq!(removed.get(), 1, "the chip's own handler ran");
+        }
+
+        phase a_menu_chip_reserves_its_chevron_and_a_wide_face_centres_its_label;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let plain = ChipFace::intrinsic_width("Sort", ChipLead::None, false, &mut text, &theme);
+            let menu = PillMetrics::of(&theme, TextRole::Label).intrinsic_width(
+                "Sort",
+                ChipLead::None,
+                true,
+                &mut text,
+            );
+            assert!(menu > plain);
+            let chip = Chip::new("Sort").menu().on_view(|| {});
+            let node = Widget::accessibility(&chip).unwrap();
+            assert_eq!(node.state.expanded, Some(false));
+            let paint_x = |width: f64, text: &mut TextRenderer| {
+                let mut scene = Scene::new();
+                ChipFace::new(Rect::new(0.0, 0.0, width, ChipFace::height(&theme)), "q").paint(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    text,
+                    &theme,
+                );
+                scene.encoding().resources.glyph_runs[0]
+                    .transform
+                    .translation[0]
+            };
+            let narrow = paint_x(plain.max(28.0), &mut text);
+            let wide = paint_x(120.0, &mut text);
+            assert!(f64::from(wide) > 40.0, "centred: {wide}");
+            assert!(wide > narrow);
+        }
     }
 }

@@ -777,163 +777,171 @@ mod tests {
             ciphertext_sha256: [3; 32],
         }
     }
-    #[test]
-    fn helper_service_sessions_accept_legacy_and_refuse_malformed_public_selection() {
-        let key = [7u8; 32];
-        let mut value = serde_json::json!({"identity_public_key": key, "account_count": 1});
-        assert!(
-            Imported::decode(&serde_json::to_vec(&value).unwrap())
-                .unwrap()
-                .service_sessions
-                .is_none()
-        );
-        let selected = selected_sessions();
-        value["service_sessions"] = serde_json::to_value(&selected).unwrap();
-        assert!(
-            Imported::decode(&serde_json::to_vec(&value).unwrap())
-                .unwrap()
-                .service_sessions
-                .is_some_and(|sessions| sessions == selected)
-        );
-        for invalid in [
-            serde_json::json!({"schema": 2, "sessions": selected.sessions, "sealed_bytes": 1024, "ciphertext_sha256": key}),
-            serde_json::json!({"schema": 1, "sessions": [{"id":"selected-session","service":"spotify"}], "sealed_bytes": 1024, "ciphertext_sha256": key}),
-            serde_json::json!({"schema": 1, "sessions": [], "sealed_bytes": 1024, "ciphertext_sha256": key}),
-        ] {
-            value["service_sessions"] = invalid;
-            assert!(Imported::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+    tilo_test_env::scenario! {
+        fn a_prepared_setup_package_is_bound_to_its_private_delivery_and_acknowledged_once;
+
+        phase helper_service_sessions_accept_legacy_and_refuse_malformed_public_selection;
+        {
+            let key = [7u8; 32];
+            let mut value = serde_json::json!({"identity_public_key": key, "account_count": 1});
+            assert!(
+                Imported::decode(&serde_json::to_vec(&value).unwrap())
+                    .unwrap()
+                    .service_sessions
+                    .is_none()
+            );
+            let selected = selected_sessions();
+            value["service_sessions"] = serde_json::to_value(&selected).unwrap();
+            assert!(
+                Imported::decode(&serde_json::to_vec(&value).unwrap())
+                    .unwrap()
+                    .service_sessions
+                    .is_some_and(|sessions| sessions == selected)
+            );
+            for invalid in [
+                serde_json::json!({"schema": 2, "sessions": selected.sessions, "sealed_bytes": 1024, "ciphertext_sha256": key}),
+                serde_json::json!({"schema": 1, "sessions": [{"id":"selected-session","service":"spotify"}], "sealed_bytes": 1024, "ciphertext_sha256": key}),
+                serde_json::json!({"schema": 1, "sessions": [], "sealed_bytes": 1024, "ciphertext_sha256": key}),
+            ] {
+                value["service_sessions"] = invalid;
+                assert!(Imported::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+            }
+            let mut duplicate = selected_sessions();
+            duplicate.sessions.push(SelectedSession {
+                id: "other-session".into(),
+                service: browser_continuity::sessions::Service::Slack,
+            });
+            assert!(!duplicate.valid());
+            duplicate.sessions[1].service = browser_continuity::sessions::Service::Discord;
+            duplicate.sessions[1].id = duplicate.sessions[0].id.clone();
+            assert!(!duplicate.valid());
+            let mut oversized = selected_sessions();
+            oversized.sealed_bytes = 8 * 1024 * 1024 + 1025;
+            assert!(!oversized.valid());
         }
-        let mut duplicate = selected_sessions();
-        duplicate.sessions.push(SelectedSession {
-            id: "other-session".into(),
-            service: browser_continuity::sessions::Service::Slack,
-        });
-        assert!(!duplicate.valid());
-        duplicate.sessions[1].service = browser_continuity::sessions::Service::Discord;
-        duplicate.sessions[1].id = duplicate.sessions[0].id.clone();
-        assert!(!duplicate.valid());
-        let mut oversized = selected_sessions();
-        oversized.sealed_bytes = 8 * 1024 * 1024 + 1025;
-        assert!(!oversized.valid());
-    }
-    #[test]
-    fn acknowledge_keeps_service_session_selection_and_refuses_changed_retry() {
-        let home = fixture();
-        let pending = Pending::open(home.path()).unwrap();
-        let selected = selected_sessions();
-        pending
-            .acknowledge([7; 32], None, None, None, Some(selected.clone()), None)
-            .unwrap();
-        pending
-            .acknowledge([7; 32], None, None, None, Some(selected.clone()), None)
-            .unwrap();
-        let bytes = std::fs::read(state_root(home.path()).join(RECEIPT)).unwrap();
-        let stored: Receipt = serde_json::from_slice(&bytes).unwrap();
-        assert!(
-            stored
-                .service_sessions
-                .is_some_and(|sessions| sessions == selected)
-        );
-        assert!(
+
+        phase acknowledge_keeps_service_session_selection_and_refuses_changed_retry;
+        {
+            let home = fixture();
+            let pending = Pending::open(home.path()).unwrap();
+            let selected = selected_sessions();
             pending
-                .acknowledge([7; 32], None, None, None, None, None)
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::read(state_root(home.path()).join(RECEIPT)).unwrap(),
-            bytes
-        );
-    }
-
-    #[test]
-    fn prepared_grant_accepts_owned_readable_ancestors_but_keeps_carrier_private() {
-        let home = fixture();
-        let ancestors = [
-            home.path().join(".local"),
-            home.path().join(".local/state"),
-            home.path().join(".local/state/tilo"),
-        ];
-        for path in &ancestors {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                .acknowledge([7; 32], None, None, None, Some(selected.clone()), None)
+                .unwrap();
+            pending
+                .acknowledge([7; 32], None, None, None, Some(selected.clone()), None)
+                .unwrap();
+            let bytes = std::fs::read(state_root(home.path()).join(RECEIPT)).unwrap();
+            let stored: Receipt = serde_json::from_slice(&bytes).unwrap();
+            assert!(
+                stored
+                    .service_sessions
+                    .is_some_and(|sessions| sessions == selected)
+            );
+            assert!(
+                pending
+                    .acknowledge([7; 32], None, None, None, None, None)
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read(state_root(home.path()).join(RECEIPT)).unwrap(),
+                bytes
+            );
         }
-        let pending = Pending::open(home.path()).unwrap();
-        pending.validate().unwrap();
-        for path in &ancestors {
-            assert_eq!(std::fs::metadata(path).unwrap().mode() & 0o777, 0o755);
-        }
-        std::fs::set_permissions(&ancestors[0], std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(Pending::open(home.path()).is_err());
-        std::fs::set_permissions(&ancestors[0], std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::set_permissions(
-            state_root(home.path()),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-        assert!(Pending::open(home.path()).is_err());
-    }
-    #[test]
-    fn prepared_grant_binds_exact_delivered_bytes_and_rejects_parent_links() {
-        let home = fixture();
-        let pending = Pending::open(home.path()).expect("bound delivery");
-        pending.validate().expect("unchanged");
-        std::fs::write(state_root(home.path()).join(PACKAGE), b"changed ciphertext")
-            .expect("mutation");
-        assert!(pending.validate().is_err());
-        assert!(pending_at(home.path()));
-        let other = fixture();
-        let actual = other.path().join("moved");
-        std::fs::rename(other.path().join(".local"), &actual).expect("move");
-        symlink(&actual, other.path().join(".local")).expect("link");
-        assert!(Pending::open(other.path()).is_err());
-    }
-    #[test]
-    fn missing_and_fifo_packages_stay_pending_and_never_block() {
-        let home = fixture();
-        let package = state_root(home.path()).join(PACKAGE);
-        std::fs::remove_file(&package).expect("remove");
-        assert!(pending_at(home.path()));
-        assert!(Pending::open(home.path()).is_err());
-        let name = std::ffi::CString::new(package.as_os_str().as_bytes()).expect("name");
-        // SAFETY: name is terminated; this only creates a FIFO in the fixture.
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        assert!(Pending::open(home.path()).is_err());
-    }
-    #[test]
-    fn a_host_desktop_forwards_the_configured_system_root() {
-        let root = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_IDENTITY_ROOT", root.path());
-        assert_eq!(
-            forwarded_system_root(true).unwrap().as_deref(),
-            Some(root.path())
-        );
-        assert_eq!(forwarded_system_root(false).unwrap(), None);
-    }
 
-    #[test]
-    fn target_grant_creates_private_directories_and_refuses_public_existing_config() {
-        let home = fixture();
-        let pending = Pending::open(home.path()).expect("delivery");
-        let identity = home.path().join(".config/tilo/identity");
-        pending
-            .prepare_targets(&identity)
-            .expect("private new custody");
-        assert_eq!(
-            std::fs::metadata(&identity).expect("identity").mode() & 0o777,
-            0o700
-        );
-        std::fs::set_permissions(
-            identity.parent().expect("parent"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .expect("public existing");
-        assert!(pending.prepare_targets(&identity).is_err());
-        assert_eq!(
-            std::fs::metadata(identity.parent().expect("parent"))
-                .expect("unchanged")
-                .mode()
-                & 0o777,
-            0o755
-        );
+        phase prepared_grant_accepts_owned_readable_ancestors_but_keeps_carrier_private;
+        {
+            let home = fixture();
+            let ancestors = [
+                home.path().join(".local"),
+                home.path().join(".local/state"),
+                home.path().join(".local/state/tilo"),
+            ];
+            for path in &ancestors {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let pending = Pending::open(home.path()).unwrap();
+            pending.validate().unwrap();
+            for path in &ancestors {
+                assert_eq!(std::fs::metadata(path).unwrap().mode() & 0o777, 0o755);
+            }
+            std::fs::set_permissions(&ancestors[0], std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(Pending::open(home.path()).is_err());
+            std::fs::set_permissions(&ancestors[0], std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(
+                state_root(home.path()),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            assert!(Pending::open(home.path()).is_err());
+        }
+
+        phase prepared_grant_binds_exact_delivered_bytes_and_rejects_parent_links;
+        {
+            let home = fixture();
+            let pending = Pending::open(home.path()).expect("bound delivery");
+            pending.validate().expect("unchanged");
+            std::fs::write(state_root(home.path()).join(PACKAGE), b"changed ciphertext")
+                .expect("mutation");
+            assert!(pending.validate().is_err());
+            assert!(pending_at(home.path()));
+            let other = fixture();
+            let actual = other.path().join("moved");
+            std::fs::rename(other.path().join(".local"), &actual).expect("move");
+            symlink(&actual, other.path().join(".local")).expect("link");
+            assert!(Pending::open(other.path()).is_err());
+        }
+
+        phase missing_and_fifo_packages_stay_pending_and_never_block;
+        {
+            let home = fixture();
+            let package = state_root(home.path()).join(PACKAGE);
+            std::fs::remove_file(&package).expect("remove");
+            assert!(pending_at(home.path()));
+            assert!(Pending::open(home.path()).is_err());
+            let name = std::ffi::CString::new(package.as_os_str().as_bytes()).expect("name");
+            // SAFETY: name is terminated; this only creates a FIFO in the fixture.
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            assert!(Pending::open(home.path()).is_err());
+        }
+
+        phase a_host_desktop_forwards_the_configured_system_root;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_IDENTITY_ROOT", root.path());
+            assert_eq!(
+                forwarded_system_root(true).unwrap().as_deref(),
+                Some(root.path())
+            );
+            assert_eq!(forwarded_system_root(false).unwrap(), None);
+        }
+
+        phase target_grant_creates_private_directories_and_refuses_public_existing_config;
+        {
+            let home = fixture();
+            let pending = Pending::open(home.path()).expect("delivery");
+            let identity = home.path().join(".config/tilo/identity");
+            pending
+                .prepare_targets(&identity)
+                .expect("private new custody");
+            assert_eq!(
+                std::fs::metadata(&identity).expect("identity").mode() & 0o777,
+                0o700
+            );
+            std::fs::set_permissions(
+                identity.parent().expect("parent"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .expect("public existing");
+            assert!(pending.prepare_targets(&identity).is_err());
+            assert_eq!(
+                std::fs::metadata(identity.parent().expect("parent"))
+                    .expect("unchanged")
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
     }
 }

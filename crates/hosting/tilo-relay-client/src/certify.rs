@@ -221,12 +221,13 @@ async fn request_over(
                 checked_at(now, cert.issued_at_ns),
             )
             .map_err(|error| codec(&format!("issued certificate refused: {error}")))?;
-            // A member pairs through any host they share, so the host may be
-            // another person's: it must be a host, not necessarily this root's.
+            // A member pairs through any device of a workspace they share, so
+            // it may be another person's: it must be a person's device, not
+            // necessarily this root's.
             verify_device_cert_at(&host_cert, now)
                 .map_err(|error| codec(&format!("host certificate refused: {error}")))?;
-            if !host_cert.capabilities.can_act_as_host {
-                return Err(codec(&"host certificate is not a host's"));
+            if !host_cert.capabilities.can_own_workspaces {
+                return Err(codec(&"the certificate is not a person's device"));
             }
             Ok(CertificationOutcome::Issued { cert, host_cert })
         }

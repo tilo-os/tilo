@@ -18,7 +18,7 @@
 //! filesystem and lives with the runtime (`ush::file_actions`).
 use std::path::{Component, Path, PathBuf};
 
-use collab_types::caps::{Access, Actor, CapDecision, CapOverride, ResourceRef, decide_capability};
+use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, decide_app};
 use serde::{Deserialize, Serialize};
 use tilo_resource::Model;
 
@@ -205,9 +205,8 @@ pub fn ungranted(path: &Path) -> String {
 
 #[must_use]
 pub fn permits(grants: &[CapOverride], path: &Path, verb: Access, now: Option<u64>) -> bool {
-    let actor = Actor::app(RUNTIME_APP_ID);
     let resource = ResourceRef::FsPath(normalize(path).to_string_lossy().into_owned());
-    decide_capability(&actor, &resource, verb, grants, now) == CapDecision::Allow
+    decide_app(RUNTIME_APP_ID, &resource, verb, grants, now) == CapDecision::Allow
 }
 
 /// Whether `path` itself or the directory it would be written into is

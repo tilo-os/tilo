@@ -156,7 +156,7 @@ impl StatePeer {
             .map(|claims| {
                 self.surfaces.with_footprints(
                     &collab_types::Record {
-                        room: &self.core.workspace,
+                        workspace: &self.core.workspace,
                         app,
                         record,
                     },
@@ -169,11 +169,8 @@ impl StatePeer {
             })
             .unwrap_or_default();
         let (metadata, ciphertext) = seal(frame)?;
-        if metadata.retention() != Some(retention)
-            || metadata.channel
-                != collab_types::document_channel_id(app, &self.core.workspace, record)
-        {
-            return Err("a sealed write is a delta or a checkpoint of the record's channel".into());
+        if metadata.retention() != Some(retention) {
+            return Err("a sealed write is a delta or a checkpoint of the record".into());
         }
         Ok(SignedOp::new_unsigned_with_encryption(
             ciphertext,

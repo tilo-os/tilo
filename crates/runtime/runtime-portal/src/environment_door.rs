@@ -155,96 +155,100 @@ pub fn open(door: &Path, request: &Request) -> io::Result<Lease> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_request_reads_back_and_only_names_an_environment_a_record_key_may() {
-        let request = Request::new("personal/dev", "Development", Some("workspace-1"));
-        let line = serde_json::to_vec(&request).unwrap();
-        assert_eq!(Request::of(&line), Some(request));
-        let anywhere = Request::new("dev", "Development", None);
-        assert_eq!(
-            Request::of(&serde_json::to_vec(&anywhere).unwrap()),
-            Some(anywhere)
-        );
-        for refused in [
-            Request::new("../dev", "Development", None),
-            Request::new("w/../dev", "Development", None),
-            Request::new("w//dev", "Development", None),
-            Request::new("w/dev box", "Development", None),
-            Request::new("", "Development", None),
-            Request::new("dev", "", None),
-            Request::new("dev", "a\nb", None),
-        ] {
+    tilo_test_env::scenario! {
+        fn the_environment_door;
+
+        phase a_request_reads_back_and_only_names_an_environment_a_record_key_may;
+        {
+            let request = Request::new("personal/dev", "Development", Some("workspace-1"));
+            let line = serde_json::to_vec(&request).unwrap();
+            assert_eq!(Request::of(&line), Some(request));
+            let anywhere = Request::new("dev", "Development", None);
             assert_eq!(
-                Request::of(&serde_json::to_vec(&refused).unwrap()),
-                None,
-                "{refused:?}"
+                Request::of(&serde_json::to_vec(&anywhere).unwrap()),
+                Some(anywhere)
             );
+            for refused in [
+                Request::new("../dev", "Development", None),
+                Request::new("w/../dev", "Development", None),
+                Request::new("w//dev", "Development", None),
+                Request::new("w/dev box", "Development", None),
+                Request::new("", "Development", None),
+                Request::new("dev", "", None),
+                Request::new("dev", "a\nb", None),
+            ] {
+                assert_eq!(
+                    Request::of(&serde_json::to_vec(&refused).unwrap()),
+                    None,
+                    "{refused:?}"
+                );
+            }
+            assert_eq!(
+                Request::of(br#"{"op":"input","environment":"dev","name":"d"}"#),
+                None
+            );
+            assert_eq!(Request::of(b"{\"jsonrpc\":\"2.0\"}"), None);
         }
-        assert_eq!(
-            Request::of(br#"{"op":"input","environment":"dev","name":"d"}"#),
-            None
-        );
-        assert_eq!(Request::of(b"{\"jsonrpc\":\"2.0\"}"), None);
-    }
 
-    #[test]
-    fn a_lease_holds_the_door_the_session_answered_until_it_is_dropped() {
-        use std::io::Read as _;
-        let directory = tempfile::tempdir().unwrap();
-        let door = directory.path().join("agent.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&door).unwrap();
-        let session = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut line = Vec::new();
-            io::BufReader::new(stream.try_clone().unwrap())
-                .read_until(b'\n', &mut line)
-                .unwrap();
-            let asked = Request::of(line.strip_suffix(b"\n").unwrap()).unwrap();
-            assert_eq!(asked.environment, "dev");
-            (&stream)
-                .write_all(
-                    &Reply::Opened {
-                        path: "/run/door.sock".into(),
-                        workspace: "w1".into(),
-                    }
-                    .line(),
-                )
-                .unwrap();
-            // The lease is open until the environment's side drops it.
-            let mut rest = Vec::new();
-            (&stream).read_to_end(&mut rest).unwrap();
-            rest
-        });
-        let lease = open(&door, &Request::new("dev", "Development", None)).unwrap();
-        assert_eq!(lease.path(), Path::new("/run/door.sock"));
-        assert_eq!(lease.workspace(), "w1");
-        drop(lease);
-        assert!(session.join().unwrap().is_empty(), "the lease only closes");
-    }
+        phase a_lease_holds_the_door_the_session_answered_until_it_is_dropped;
+        {
+            use std::io::Read as _;
+            let directory = tempfile::tempdir().unwrap();
+            let door = directory.path().join("agent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&door).unwrap();
+            let session = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = Vec::new();
+                io::BufReader::new(stream.try_clone().unwrap())
+                    .read_until(b'\n', &mut line)
+                    .unwrap();
+                let asked = Request::of(line.strip_suffix(b"\n").unwrap()).unwrap();
+                assert_eq!(asked.environment, "dev");
+                (&stream)
+                    .write_all(
+                        &Reply::Opened {
+                            path: "/run/door.sock".into(),
+                            workspace: "w1".into(),
+                        }
+                        .line(),
+                    )
+                    .unwrap();
+                // The lease is open until the environment's side drops it.
+                let mut rest = Vec::new();
+                (&stream).read_to_end(&mut rest).unwrap();
+                rest
+            });
+            let lease = open(&door, &Request::new("dev", "Development", None)).unwrap();
+            assert_eq!(lease.path(), Path::new("/run/door.sock"));
+            assert_eq!(lease.workspace(), "w1");
+            drop(lease);
+            assert!(session.join().unwrap().is_empty(), "the lease only closes");
+        }
 
-    #[test]
-    fn a_refusal_is_the_reason_the_session_gave() {
-        let directory = tempfile::tempdir().unwrap();
-        let door = directory.path().join("agent.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&door).unwrap();
-        let session = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut line = Vec::new();
-            io::BufReader::new(stream.try_clone().unwrap())
-                .read_until(b'\n', &mut line)
-                .unwrap();
-            (&stream)
-                .write_all(
-                    &Reply::Refused {
-                        reason: "no workspace".into(),
-                    }
-                    .line(),
-                )
-                .unwrap();
-        });
-        let error = open(&door, &Request::new("dev", "Development", None)).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(error.to_string(), "no workspace");
-        session.join().unwrap();
+        phase a_refusal_is_the_reason_the_session_gave;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let door = directory.path().join("agent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&door).unwrap();
+            let session = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = Vec::new();
+                io::BufReader::new(stream.try_clone().unwrap())
+                    .read_until(b'\n', &mut line)
+                    .unwrap();
+                (&stream)
+                    .write_all(
+                        &Reply::Refused {
+                            reason: "no workspace".into(),
+                        }
+                        .line(),
+                    )
+                    .unwrap();
+            });
+            let error = open(&door, &Request::new("dev", "Development", None)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(error.to_string(), "no workspace");
+            session.join().unwrap();
+        }
     }
 }

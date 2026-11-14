@@ -169,14 +169,43 @@ impl Finding {
     }
 }
 
+/// What `--dump` prints at a window size: every frame the check reads, or only the frames a
+/// finding comes from. A page of every frame of every view is too much to read and too much to
+/// keep, so a check run over all the apps asks for the frames with findings and a run narrowed to
+/// one view asks for all of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dump {
+    /// `--dump WxH`: every frame the check reads.
+    Every((u32, u32)),
+    /// `--dump-findings WxH`: the frames a finding was read from.
+    Findings((u32, u32)),
+}
+
+impl Dump {
+    /// The window size it reads the frames at.
+    #[must_use]
+    pub fn size(self) -> (u32, u32) {
+        match self {
+            Self::Every(size) | Self::Findings(size) => size,
+        }
+    }
+
+    /// Whether the frame at `viewport` is printed: a frame a finding came from, or any frame when
+    /// every one was asked for.
+    #[must_use]
+    pub fn prints(self, viewport: (u32, u32), found: bool) -> bool {
+        self.size() == viewport && (found || matches!(self, Self::Every(_)))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Options {
     pub dirs: Vec<PathBuf>,
     pub search: Vec<PathBuf>,
     pub allow: Option<PathBuf>,
-    /// Print the toolkit's inspection of every layout at this window size to stderr: each widget's
-    /// box, clip and semantics, as the check reads them.
-    pub dump: Option<(u32, u32)>,
+    /// Print the toolkit's inspection of the frames the check reads at this window size to
+    /// stderr: each widget's box, clip and semantics, as the check reads them.
+    pub dump: Option<Dump>,
     /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves it,
     /// in the light and the dark theme, to PNGs in this directory.
     pub shots: Option<PathBuf>,
@@ -1609,7 +1638,7 @@ struct AppCheck<'a> {
     short: &'a str,
     meta: &'a tilolang::PackageMeta,
     sources: &'a source::SourceMap,
-    dump: Option<(u32, u32)>,
+    dump: Option<Dump>,
     shots: Option<&'a Path>,
     /// Take the shots with the window's bar at rest ([`Options::bar_at_rest`]).
     bar_at_rest: bool,
@@ -1983,7 +2012,7 @@ impl AppCheck<'_> {
     fn run(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
         // The keys reach the window at the size it is read at, where a shot shows them; a check
         // taken without a dump size reads them at its first layout.
-        let read_at = self.dump.or_else(|| {
+        let read_at = self.dump.map(Dump::size).or_else(|| {
             layouts()
                 .first()
                 .map(|layout| (layout.size.width, layout.size.height))
@@ -2004,7 +2033,7 @@ impl AppCheck<'_> {
                 // What the person sees before they touch it, where the run takes shots: a press
                 // leaves the window as it opened something, and both are what a person reads.
                 if let Some(dir) = self.shots
-                    && self.dump == Some(viewport)
+                    && self.dump.is_some_and(|dump| dump.size() == viewport)
                     && (layout.display_scale - 1.0).abs() < f64::EPSILON
                     && (layout.text_scale - 1.0).abs() < f32::EPSILON
                 {
@@ -2071,28 +2100,36 @@ impl AppCheck<'_> {
         Ok(())
     }
 
-    /// Write the bar and the frame `audit` read into the dump, with a capture at plain scale.
-    fn dump_frame(
+    /// Record the bar and the frame `audit` read: written to the dump when `dump` asks for this
+    /// frame (`found` says a finding was read from it), with a capture at plain scale whenever
+    /// shots were asked for at its size.
+    fn record_frame(
         &mut self,
+        dump: Dump,
         staged: &mut stage::Staged,
         layout: Layout,
         label: &str,
         bar: &ui::window_toolbar::BarLayout,
         inspection: &ui::headless::InspectionSnapshot,
+        found: bool,
     ) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(bar).map_err(|e| e.to_string())?;
-        let _ = writeln!(
-            self.dumped,
-            "== {} {label} at {layout} — the bar\n{json}",
-            self.meta.app
-        );
-        let json = serde_json::to_string_pretty(inspection).map_err(|e| e.to_string())?;
-        let _ = writeln!(
-            self.dumped,
-            "== {} {label} at {layout} — the frame\n{json}",
-            self.meta.app
-        );
+        let viewport = (layout.size.width, layout.size.height);
+        if dump.prints(viewport, found) {
+            let json = serde_json::to_string_pretty(bar).map_err(|e| e.to_string())?;
+            let _ = writeln!(
+                self.dumped,
+                "== {} {label} at {layout} — the bar\n{json}",
+                self.meta.app
+            );
+            let json = serde_json::to_string_pretty(inspection).map_err(|e| e.to_string())?;
+            let _ = writeln!(
+                self.dumped,
+                "== {} {label} at {layout} — the frame\n{json}",
+                self.meta.app
+            );
+        }
         if let Some(dir) = self.shots
+            && dump.size() == viewport
             && (layout.display_scale - 1.0).abs() < f64::EPSILON
             && (layout.text_scale - 1.0).abs() < f32::EPSILON
         {
@@ -2120,10 +2157,11 @@ impl AppCheck<'_> {
         let bar = staged
             .harness_mut()
             .window_bar_layout(f64::from(viewport.0));
-        if self.dump == Some(viewport) {
-            self.dump_frame(staged, layout, label, &bar, &inspection)?;
-        }
         let problems = self.problems(staged, layout, &inspection, &bar);
+        if let Some(dump) = self.dump {
+            let found = !problems.is_empty();
+            self.record_frame(dump, staged, layout, label, &bar, &inspection, found)?;
+        }
         self.gather_all(problems, layout, label);
         self.work.add(staged.take_work());
         Ok(())

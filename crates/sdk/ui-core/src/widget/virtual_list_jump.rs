@@ -5,6 +5,10 @@ use vello::kurbo::Rect;
 
 use super::{ListModel, VirtualList};
 
+/// What a press on the pill reaches the list by, as its accessible node names it: the way back is
+/// one control wherever it stands, so a reader or an agent holds it across the rows moving.
+pub(super) const PILL_TARGET: &str = "jump-pill";
+
 impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn following_end(mut self) -> Self {
@@ -93,6 +97,28 @@ impl<M: ListModel> VirtualList<M> {
         self.set_scroll_offset(self.viewport.max_offset());
     }
 
+    /// The pill becomes the control the keyboard or a reader is on: Return or Space takes it, as
+    /// a press does. `false` while the list offers no way back.
+    pub(super) fn focus_pill(&mut self) -> bool {
+        if self.pill_rect().is_none() {
+            return false;
+        }
+        self.focused_key = None;
+        self.focused_group = None;
+        self.jump_focused = true;
+        true
+    }
+
+    /// Take the way back the pill offers, as pressing it does.
+    pub(super) fn press_pill(&mut self) -> bool {
+        if self.jump().is_none() {
+            return false;
+        }
+        self.jump_focused = false;
+        self.follow_pill();
+        true
+    }
+
     pub(super) fn follow_pill(&mut self) {
         match self.jump() {
             Some(crate::widget::conversation::Jump::Unread) => self.jump_to_unread(),
@@ -101,21 +127,30 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
+    /// Where the pill stands in `area`: against the trailing edge, a gutter in, half a control's
+    /// height above the foot, and as wide as the words it says.
+    ///
+    /// The pill floats over the rows it covers, so it never trades its words for a share of the
+    /// width: a way back cut to "Jump to first unre…" names nothing at the window it is for. Only
+    /// the box it stands in can bound it, and the words a way back is written in fit that at every
+    /// width a window opens at.
     pub(super) fn pill_rect_for(
         &self,
         area: Rect,
     ) -> Option<(crate::widget::conversation::Jump, Rect)> {
         let jump = self.jump()?;
-        let gutter = self.gutter.max(self.bleed);
-        let width = (area.width() * 0.5).min(self.pill_width);
-        let height = self.pill_height;
-        let rect = Rect::new(
-            (area.x1 - gutter - width).max(area.x0),
-            (area.y1 - gutter / 2.0 - height).max(area.y0),
-            (area.x1 - gutter).max(area.x0),
-            (area.y1 - gutter / 2.0).max(area.y0),
+        let rect = crate::widget::conversation::pill_rect(
+            area,
+            self.gutter.max(self.bleed),
+            self.pill_width(jump),
+            self.pill_height,
         );
         Some((jump, rect))
+    }
+
+    /// The width the pill says `jump` in: the words measured at the face they are drawn in.
+    pub(super) fn pill_width(&self, jump: crate::widget::conversation::Jump) -> f64 {
+        self.pill_widths[jump.slot()]
     }
 
     pub(super) fn pill_rect(&self) -> Option<Rect> {
@@ -124,7 +159,21 @@ impl<M: ListModel> VirtualList<M> {
 
     pub(super) fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
         let (jump, rect) = self.pill_rect_for(self.rect)?;
-        Some(crate::widget::conversation::JumpFace::new(jump, rect).hovered(self.jump_hovered))
+        Some(
+            crate::widget::conversation::JumpFace::new(jump, rect)
+                .hovered(self.jump_hovered)
+                .focused(self.jump_focused),
+        )
+    }
+
+    /// The way back the list offers over its rows, and whether the pill has room for its words:
+    /// what a layout check reads to see a floating pill shows what it says.
+    pub(super) fn pill_layout(&self) -> Option<crate::widget::ListPillLayout> {
+        let (jump, rect) = self.pill_rect_for(self.rect)?;
+        Some(crate::widget::ListPillLayout {
+            needs: crate::num::f32_of_f64(self.pill_width(jump)),
+            has: crate::num::f32_of_f64(rect.width()),
+        })
     }
 
     pub(super) fn end_slack(&self) -> f64 {

@@ -378,215 +378,219 @@ mod tests {
         }
     }
 
-    #[test]
-    fn history_filter_matches_author_ops_time_and_facets() {
-        fn filter_matches_empty_means_all() {
-            // The contract the chrome relies on when it constructs
-            // `HistoryFilter::default()` and only fills in a single field.
-            let f = HistoryFilter::default();
-            assert!(f.matches(&entry(EntryKind::Text, "Alice", 0)));
-            assert!(f.matches(&entry(EntryKind::Comment, "Bob", 999)));
-            assert!(f.matches(&entry(EntryKind::Access, "Carol", 12345)));
-        }
+    tilo_test_env::scenario! {
+        fn history_entries_filter_and_format;
 
-        fn filter_matches_author_case_insensitive() {
-            // Typeahead "author:alice" must hit a row authored by "Alice".
-            let f = HistoryFilter::default().with_author("alice");
-            assert!(f.matches(&entry(EntryKind::Text, "Alice", 0)));
-            assert!(f.matches(&entry(EntryKind::Text, "ALICE", 0)));
-            assert!(!f.matches(&entry(EntryKind::Text, "Bob", 0)));
-        }
+        phase history_filter_matches_author_ops_time_and_facets;
+        {
+            fn filter_matches_empty_means_all() {
+                // The contract the chrome relies on when it constructs
+                // `HistoryFilter::default()` and only fills in a single field.
+                let f = HistoryFilter::default();
+                assert!(f.matches(&entry(EntryKind::Text, "Alice", 0)));
+                assert!(f.matches(&entry(EntryKind::Comment, "Bob", 999)));
+                assert!(f.matches(&entry(EntryKind::Access, "Carol", 12345)));
+            }
 
-        fn filter_matches_entry_kind_subset() {
-            // Stays inclusive within the subset — no implicit "Comments
-            // must also be from Alice" cross-product.
-            let f = HistoryFilter::default().with_entry_kind(EntryKind::Comment);
-            assert!(!f.matches(&entry(EntryKind::Text, "Alice", 0)));
-            assert!(f.matches(&entry(EntryKind::Comment, "Alice", 0)));
-            assert!(f.matches(&entry(EntryKind::Comment, "Bob", 0)));
-        }
+            fn filter_matches_author_case_insensitive() {
+                // Typeahead "author:alice" must hit a row authored by "Alice".
+                let f = HistoryFilter::default().with_author("alice");
+                assert!(f.matches(&entry(EntryKind::Text, "Alice", 0)));
+                assert!(f.matches(&entry(EntryKind::Text, "ALICE", 0)));
+                assert!(!f.matches(&entry(EntryKind::Text, "Bob", 0)));
+            }
 
-        fn filter_matches_time_range() {
-            let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-            let end = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
-            let f = HistoryFilter {
-                time_range: Some((start, end)),
-                ..Default::default()
-            };
-            assert!(!f.matches(&entry(EntryKind::Text, "Alice", 99)));
-            assert!(f.matches(&entry(EntryKind::Text, "Alice", 100)));
-            assert!(f.matches(&entry(EntryKind::Text, "Alice", 150)));
-            assert!(!f.matches(&entry(EntryKind::Text, "Alice", 200)));
-            assert!(!f.matches(&entry(EntryKind::Text, "Alice", 300)));
-        }
+            fn filter_matches_entry_kind_subset() {
+                // Stays inclusive within the subset — no implicit "Comments
+                // must also be from Alice" cross-product.
+                let f = HistoryFilter::default().with_entry_kind(EntryKind::Comment);
+                assert!(!f.matches(&entry(EntryKind::Text, "Alice", 0)));
+                assert!(f.matches(&entry(EntryKind::Comment, "Alice", 0)));
+                assert!(f.matches(&entry(EntryKind::Comment, "Bob", 0)));
+            }
 
-        fn semantic_facets_filter_context_without_guessing_legacy_entries() {
-            let mut contextual = entry(EntryKind::Details, "Ada", 100);
-            contextual.context = Some(
-                ActionContext::for_resource("files.entry:brief.md", "files.entry", "brief.md")
-                    .with_app("org.tilo.Files", "Files")
-                    .with_group("issue:42", "Launch brief", "issue")
-                    .with_facet(ActionFacet::new("file-type", "Markdown"))
-                    .with_facet(ActionFacet::new("path", "/work/brief.md")),
-            );
-            let legacy = entry(EntryKind::Details, "Ada", 100);
+            fn filter_matches_time_range() {
+                let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+                let end = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
+                let f = HistoryFilter {
+                    time_range: Some((start, end)),
+                    ..Default::default()
+                };
+                assert!(!f.matches(&entry(EntryKind::Text, "Alice", 99)));
+                assert!(f.matches(&entry(EntryKind::Text, "Alice", 100)));
+                assert!(f.matches(&entry(EntryKind::Text, "Alice", 150)));
+                assert!(!f.matches(&entry(EntryKind::Text, "Alice", 200)));
+                assert!(!f.matches(&entry(EntryKind::Text, "Alice", 300)));
+            }
 
-            let by_app = HistoryFilter::default().with_app("files");
-            assert!(by_app.matches(&contextual));
-            assert!(!by_app.matches(&legacy));
+            fn semantic_facets_filter_context_without_guessing_legacy_entries() {
+                let mut contextual = entry(EntryKind::Details, "Ada", 100);
+                contextual.context = Some(
+                    ActionContext::for_resource("files.entry:brief.md", "files.entry", "brief.md")
+                        .with_app("org.tilo.Files", "Files")
+                        .with_group("issue:42", "Launch brief", "issue")
+                        .with_facet(ActionFacet::new("file-type", "Markdown"))
+                        .with_facet(ActionFacet::new("path", "/work/brief.md")),
+                );
+                let legacy = entry(EntryKind::Details, "Ada", 100);
 
-            let by_kind = HistoryFilter::default().with_resource_kind("files.entry");
-            assert!(by_kind.matches(&contextual));
-            assert!(
-                HistoryFilter::default()
-                    .with_resource("brief.md")
-                    .matches(&contextual)
-            );
-            assert!(
-                HistoryFilter::default()
-                    .with_work_group("issue:42")
-                    .matches(&contextual)
-            );
-            let by_type =
-                HistoryFilter::default().with_facet(ActionFacet::new("file-type", "Markdown"));
-            assert!(by_type.matches(&contextual));
-            assert!(
-                !HistoryFilter::default()
+                let by_app = HistoryFilter::default().with_app("files");
+                assert!(by_app.matches(&contextual));
+                assert!(!by_app.matches(&legacy));
+
+                let by_kind = HistoryFilter::default().with_resource_kind("files.entry");
+                assert!(by_kind.matches(&contextual));
+                assert!(
+                    HistoryFilter::default()
+                        .with_resource("brief.md")
+                        .matches(&contextual)
+                );
+                assert!(
+                    HistoryFilter::default()
+                        .with_work_group("issue:42")
+                        .matches(&contextual)
+                );
+                let by_type =
+                    HistoryFilter::default().with_facet(ActionFacet::new("file-type", "Markdown"));
+                assert!(by_type.matches(&contextual));
+                assert!(
+                    !HistoryFilter::default()
+                        .with_facet(ActionFacet::new("file-type", "PDF"))
+                        .matches(&contextual)
+                );
+                let within_lens_is_or = HistoryFilter::default()
                     .with_facet(ActionFacet::new("file-type", "PDF"))
-                    .matches(&contextual)
-            );
-            let within_lens_is_or = HistoryFilter::default()
-                .with_facet(ActionFacet::new("file-type", "PDF"))
-                .with_facet(ActionFacet::new("file-type", "Markdown"));
-            assert!(within_lens_is_or.matches(&contextual));
-            let across_lenses_is_and =
-                within_lens_is_or.with_facet(ActionFacet::new("path", "/somewhere/else"));
-            assert!(!across_lenses_is_and.matches(&contextual));
-            assert!(
-                HistoryFilter::default()
-                    .with_classification(HistoryClassification::Classified)
-                    .matches(&contextual)
-            );
-            assert!(
-                HistoryFilter::default()
-                    .with_classification(HistoryClassification::Unclassified)
-                    .matches(&legacy)
-            );
+                    .with_facet(ActionFacet::new("file-type", "Markdown"));
+                assert!(within_lens_is_or.matches(&contextual));
+                let across_lenses_is_and =
+                    within_lens_is_or.with_facet(ActionFacet::new("path", "/somewhere/else"));
+                assert!(!across_lenses_is_and.matches(&contextual));
+                assert!(
+                    HistoryFilter::default()
+                        .with_classification(HistoryClassification::Classified)
+                        .matches(&contextual)
+                );
+                assert!(
+                    HistoryFilter::default()
+                        .with_classification(HistoryClassification::Unclassified)
+                        .matches(&legacy)
+                );
+            }
+
+            filter_matches_empty_means_all();
+            filter_matches_author_case_insensitive();
+            filter_matches_entry_kind_subset();
+            filter_matches_time_range();
+            semantic_facets_filter_context_without_guessing_legacy_entries();
         }
 
-        filter_matches_empty_means_all();
-        filter_matches_author_case_insensitive();
-        filter_matches_entry_kind_subset();
-        filter_matches_time_range();
-        semantic_facets_filter_context_without_guessing_legacy_entries();
-    }
+        phase entry_kind_revertibility_glyphs_and_formatting_helpers;
+        {
+            fn entry_kind_revertibility_matches_spec_table() {
+                assert!(EntryKind::Text.is_revertible());
+                assert!(EntryKind::Move.is_revertible());
+                assert!(EntryKind::Details.is_revertible());
+                assert!(EntryKind::Delete.is_revertible());
+                assert!(EntryKind::Restore.is_revertible());
+                assert!(!EntryKind::Comment.is_revertible());
+                assert!(!EntryKind::Access.is_revertible());
+                assert!(!EntryKind::Compaction.is_revertible());
+                assert!(!EntryKind::Redaction.is_revertible());
+            }
 
-    #[test]
-    fn entry_kind_revertibility_glyphs_and_formatting_helpers() {
-        fn entry_kind_revertibility_matches_spec_table() {
-            assert!(EntryKind::Text.is_revertible());
-            assert!(EntryKind::Move.is_revertible());
-            assert!(EntryKind::Details.is_revertible());
-            assert!(EntryKind::Delete.is_revertible());
-            assert!(EntryKind::Restore.is_revertible());
-            assert!(!EntryKind::Comment.is_revertible());
-            assert!(!EntryKind::Access.is_revertible());
-            assert!(!EntryKind::Compaction.is_revertible());
-            assert!(!EntryKind::Redaction.is_revertible());
-        }
+            fn redacted_entry_is_non_revertible_regardless_of_entry_kind() {
+                // The widget gates the [Revert] chip on `EntryKind::is_revertible`
+                // AND `entry.redaction.is_none()`; a Splice that has since been
+                // redacted MUST NOT show the chip.
+                let mut e = entry(EntryKind::Text, "Alice", 0);
+                e.redaction = Some(RedactionDisplay {
+                    redactor_label: "owner@example".into(),
+                    reason: "GDPR".into(),
+                    redacted_at: SystemTime::UNIX_EPOCH,
+                });
+                assert!(e.entry_kind.is_revertible());
+                assert!(
+                    e.redaction.is_some(),
+                    "the chrome reads `entry.redaction.is_some()` as the veto",
+                );
+            }
 
-        fn redacted_entry_is_non_revertible_regardless_of_entry_kind() {
-            // The widget gates the [Revert] chip on `EntryKind::is_revertible`
-            // AND `entry.redaction.is_none()`; a Splice that has since been
-            // redacted MUST NOT show the chip.
-            let mut e = entry(EntryKind::Text, "Alice", 0);
-            e.redaction = Some(RedactionDisplay {
-                redactor_label: "owner@example".into(),
-                reason: "GDPR".into(),
-                redacted_at: SystemTime::UNIX_EPOCH,
-            });
-            assert!(e.entry_kind.is_revertible());
-            assert!(
-                e.redaction.is_some(),
-                "the chrome reads `entry.redaction.is_some()` as the veto",
-            );
-        }
-
-        fn entry_kind_glyph_is_ascii_or_symbol_not_emoji() {
-            for op in [
-                EntryKind::Text,
-                EntryKind::Move,
-                EntryKind::Details,
-                EntryKind::Comment,
-                EntryKind::Delete,
-                EntryKind::Restore,
-                EntryKind::Access,
-                EntryKind::Compaction,
-                EntryKind::Redaction,
-            ] {
-                let g = op.glyph();
-                assert!(!g.is_empty(), "glyph for {op:?} must not be empty");
-                for ch in g.chars() {
-                    let cp = ch as u32;
-                    assert!(
-                        cp < 0x1f300,
-                        "glyph for {op:?} ({g:?} U+{cp:04X}) must not be a pictographic emoji",
-                    );
+            fn entry_kind_glyph_is_ascii_or_symbol_not_emoji() {
+                for op in [
+                    EntryKind::Text,
+                    EntryKind::Move,
+                    EntryKind::Details,
+                    EntryKind::Comment,
+                    EntryKind::Delete,
+                    EntryKind::Restore,
+                    EntryKind::Access,
+                    EntryKind::Compaction,
+                    EntryKind::Redaction,
+                ] {
+                    let g = op.glyph();
+                    assert!(!g.is_empty(), "glyph for {op:?} must not be empty");
+                    for ch in g.chars() {
+                        let cp = ch as u32;
+                        assert!(
+                            cp < 0x1f300,
+                            "glyph for {op:?} ({g:?} U+{cp:04X}) must not be a pictographic emoji",
+                        );
+                    }
                 }
             }
-        }
 
-        fn format_relative_time_thresholds() {
-            // Pin the wording so a regression can't silently swap to
-            // "1 minute ago" / "1 hour ago".
-            let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-            assert_eq!(
-                format_relative_time(base, base + Duration::from_secs(10)),
-                "just now"
-            );
-            assert_eq!(
-                format_relative_time(base, base + Duration::from_secs(120)),
-                "2 min ago"
-            );
-            assert_eq!(
-                format_relative_time(base, base + Duration::from_secs(2 * 3600 + 5)),
-                "2 hr ago"
-            );
-            assert_eq!(
-                format_relative_time(base, base + Duration::from_secs(259_200)),
-                "3 days ago"
-            );
-            assert_eq!(
-                format_relative_time(SystemTime::UNIX_EPOCH, base),
-                "",
-                "a change that recorded no time shows none, not decades ago"
-            );
-        }
-
-        fn hue_to_rgb_covers_every_sextant() {
-            let hues = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 359.9];
-            let mut seen: Vec<(u8, u8, u8)> = Vec::new();
-            for h in hues {
-                let rgb = hue_to_rgb(h);
-                assert_ne!(rgb, (0, 0, 0), "hue {h} produced black");
-                seen.push(rgb);
+            fn format_relative_time_thresholds() {
+                // Pin the wording so a regression can't silently swap to
+                // "1 minute ago" / "1 hour ago".
+                let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+                assert_eq!(
+                    format_relative_time(base, base + Duration::from_secs(10)),
+                    "just now"
+                );
+                assert_eq!(
+                    format_relative_time(base, base + Duration::from_secs(120)),
+                    "2 min ago"
+                );
+                assert_eq!(
+                    format_relative_time(base, base + Duration::from_secs(2 * 3600 + 5)),
+                    "2 hr ago"
+                );
+                assert_eq!(
+                    format_relative_time(base, base + Duration::from_secs(259_200)),
+                    "3 days ago"
+                );
+                assert_eq!(
+                    format_relative_time(SystemTime::UNIX_EPOCH, base),
+                    "",
+                    "a change that recorded no time shows none, not decades ago"
+                );
             }
-            // Allow a couple of near-duplicates at the wrap-around, but
-            // require at least 5 unique values out of 7 samples.
-            seen.sort_unstable();
-            seen.dedup();
-            assert!(
-                seen.len() >= 5,
-                "hues collapsed to {} unique colours",
-                seen.len()
-            );
-        }
 
-        entry_kind_revertibility_matches_spec_table();
-        redacted_entry_is_non_revertible_regardless_of_entry_kind();
-        entry_kind_glyph_is_ascii_or_symbol_not_emoji();
-        format_relative_time_thresholds();
-        hue_to_rgb_covers_every_sextant();
+            fn hue_to_rgb_covers_every_sextant() {
+                let hues = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 359.9];
+                let mut seen: Vec<(u8, u8, u8)> = Vec::new();
+                for h in hues {
+                    let rgb = hue_to_rgb(h);
+                    assert_ne!(rgb, (0, 0, 0), "hue {h} produced black");
+                    seen.push(rgb);
+                }
+                // Allow a couple of near-duplicates at the wrap-around, but
+                // require at least 5 unique values out of 7 samples.
+                seen.sort_unstable();
+                seen.dedup();
+                assert!(
+                    seen.len() >= 5,
+                    "hues collapsed to {} unique colours",
+                    seen.len()
+                );
+            }
+
+            entry_kind_revertibility_matches_spec_table();
+            redacted_entry_is_non_revertible_regardless_of_entry_kind();
+            entry_kind_glyph_is_ascii_or_symbol_not_emoji();
+            format_relative_time_thresholds();
+            hue_to_rgb_covers_every_sextant();
+        }
     }
 }
 

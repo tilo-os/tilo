@@ -855,232 +855,84 @@ mod tests {
     use tilo_actions::ActionContract;
     use tilo_actions::door::ActionAddress;
 
-    #[test]
-    fn closed_routes_remain_distinct_without_inventing_a_publisher() {
-        let make = |record: &str| {
-            serde_json::from_value::<ui::collaboration::BrokerActionSurface>(serde_json::json!({
-                "peer_id": 0,
-                "provider": format!("launch:workspace:so.tilo.notes:{record}"),
-                "app_id": "so.tilo.notes",
-                "cluster_id": "workspace",
-                "record_id": record,
-                "live": false,
-                "actions": [{
-                    "resource": "notes.document",
-                    "resource_kind": "notes.document",
-                    "resource_label": "Notes",
-                    "action": "rename",
-                    "action_label": "Rename",
-                    "description": null,
-                    "operation_kind": tilo_actions::OperationKind::Document,
-                    "params": [],
-                    "contract": tilo_actions::ActionContract::default(),
-                    "input": ui::collaboration::ExportedInput::None,
-                }],
-            }))
-            .unwrap()
-        };
-        let offers = broker_offers([make("first"), make("second")].as_slice());
-        assert_eq!(offers.len(), 2);
-        assert_ne!(offers[0].id(), offers[1].id());
-        for (offer, record) in offers.iter().zip(["first", "second"]) {
-            assert_eq!(
-                offer.broker_peer_id, None,
-                "an inert route has no publisher authority"
-            );
-            assert_eq!(
-                offer.broker_provider.as_deref(),
-                Some(format!("launch:workspace:so.tilo.notes:{record}").as_str())
-            );
-            assert_eq!(decode_address(&offer.id()), Some(offer.address().clone()));
-            assert_eq!(find(&offers, &offer.id()), Some(offer));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn offers_keep_distinct_addresses_per_publisher;
 
-    #[test]
-    fn offer_addresses_round_trip_and_stay_distinct_per_publisher() {
+        phase closed_routes_remain_distinct_without_inventing_a_publisher;
         {
-            let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
-            assert_eq!(decode_address(&encode_address(&a)), Some(a));
-        }
-
-        {
-            let address = ActionAddress::new("app.so.tilo.diffmerge", OPEN_ACTION);
-            let offer = Offer {
-                app: "so.tilo.diffmerge".into(),
-                broker_peer_id: Some(0),
-                broker_provider: None,
-                descriptor: ActionDescriptor {
-                    state: tilo_actions::ActionState::default(),
-                    semantic_identity: None,
-                    address,
-                    resource_kind: APPLICATION_KIND.into(),
-                    resource_label: "Diffmerge".into(),
-                    action_label: "Open Diffmerge".into(),
-                    keywords: Vec::new(),
-                    icon: None,
-                    description: None,
-                    locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                    kind: tilo_actions::OperationKind::Effect,
-                    contract: ActionContract::default(),
-                    params: Vec::new(),
-                    input: tilo_actions::InputSpec::None,
-                    view: None,
-                },
+            let make = |record: &str| {
+                serde_json::from_value::<ui::collaboration::BrokerActionSurface>(serde_json::json!({
+                    "peer_id": 0,
+                    "provider": format!("launch:workspace:so.tilo.notes:{record}"),
+                    "app_id": "so.tilo.notes",
+                    "cluster_id": "workspace",
+                    "record_id": record,
+                    "live": false,
+                    "actions": [{
+                        "resource": "notes.document",
+                        "resource_kind": "notes.document",
+                        "resource_label": "Notes",
+                        "action": "rename",
+                        "action_label": "Rename",
+                        "description": null,
+                        "operation_kind": tilo_actions::OperationKind::Document,
+                        "params": [],
+                        "contract": tilo_actions::ActionContract::default(),
+                        "input": ui::collaboration::ExportedInput::None,
+                    }],
+                }))
+                .unwrap()
             };
-            let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
-            assert_eq!(opens(&decoded), Some("so.tilo.diffmerge"));
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
-    fn a_quoted_literal_is_the_value_that_tells_same_verb_operations_apart() {
-        {
-            assert_eq!(
-                quoted_literal(r#"rename it to "launch.md""#),
-                Some("launch.md".into())
-            );
-            assert_eq!(quoted_literal(r#"rename "a.md" to "b.md""#), None);
-            assert_eq!(quoted_literal("rename it to launch.md"), None);
-            assert_eq!(
-                quoted_literal("rename it to \u{201c}launch.md\u{201d}"),
-                Some("launch.md".into())
-            );
-            assert_eq!(quoted_literal("don't rename anything"), None);
-            assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
+            let offers = broker_offers([make("first"), make("second")].as_slice());
+            assert_eq!(offers.len(), 2);
+            assert_ne!(offers[0].id(), offers[1].id());
+            for (offer, record) in offers.iter().zip(["first", "second"]) {
+                assert_eq!(
+                    offer.broker_peer_id, None,
+                    "an inert route has no publisher authority"
+                );
+                assert_eq!(
+                    offer.broker_provider.as_deref(),
+                    Some(format!("launch:workspace:so.tilo.notes:{record}").as_str())
+                );
+                assert_eq!(decode_address(&offer.id()), Some(offer.address().clone()));
+                assert_eq!(find(&offers, &offer.id()), Some(offer));
+            }
         }
 
+        phase offer_addresses_round_trip_and_stay_distinct_per_publisher;
         {
-            let offers = vec![
-                offer(
-                    "photos",
-                    "photos.image:1",
-                    "crop",
-                    "Crop to a region",
-                    tilo_actions::InputSpec::Text {
-                        prompt: "Region to keep".to_string(),
-                        placeholder: "0.25,0.25,0.5,0.5".to_string(),
-                        collects: tilo_actions::Collects::Words,
-                    },
-                ),
-                offer(
-                    "photos",
-                    "photos.image:1",
-                    "crop-square",
-                    "Crop to a square",
-                    tilo_actions::InputSpec::None,
-                ),
-            ];
-
-            let (chosen, argument) =
-                from_verbs(r#"crop the photograph to "0.25,0.25,0.5,0.5""#, &offers)
-                    .expect("a quoted region tells the two crops apart");
-            assert_eq!(
-                chosen.address().action,
-                "crop",
-                "a quoted region must reach the crop that collects one, not {}",
-                chosen.descriptor.action_label,
-            );
-            assert_eq!(
-                argument.get("value"),
-                Some(&serde_json::Value::String("0.25,0.25,0.5,0.5".into()))
-            );
-
-            let (chosen, argument) = from_verbs("crop the photograph", &offers)
-                .expect("with no region said, the crop that needs none is the one that can act");
-            assert_eq!(chosen.address().action, "crop-square");
-            assert!(argument.is_empty());
-
-            // What is gone is a false ambiguity, not the mechanism: two
-            // operations that both take nothing are still not told apart by an
-            // instruction that supplies nothing, and that is still a genuine
-            // question rather than a guess.
-            let both_bare = vec![
-                offer(
-                    "photos",
-                    "photos.image:1",
-                    "rotate-left",
-                    "Rotate left",
-                    tilo_actions::InputSpec::None,
-                ),
-                offer(
-                    "photos",
-                    "photos.image:1",
-                    "rotate-right",
-                    "Rotate right",
-                    tilo_actions::InputSpec::None,
-                ),
-            ];
-            match from_verbs("rotate the photograph", &both_bare) {
-                Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
-                other => panic!("a genuine ambiguity must still be refused: {other:?}"),
+            {
+                let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
+                assert_eq!(decode_address(&encode_address(&a)), Some(a));
             }
 
-            // A small word the instruction said still tells two labels apart
-            // once they tie: "zoom in" is Zoom in, never Zoom out.
-            let zooms = vec![
-                offer(
-                    "word-processor",
-                    "word-processor.document",
-                    "zoom-in",
-                    "Zoom in",
-                    tilo_actions::InputSpec::None,
-                ),
-                offer(
-                    "word-processor",
-                    "word-processor.document",
-                    "zoom-out",
-                    "Zoom out",
-                    tilo_actions::InputSpec::None,
-                ),
-            ];
-            let (chosen, _) = from_verbs("zoom in", &zooms).expect("zoom in names one operation");
-            assert_eq!(chosen.address().action, "zoom-in");
-            let (chosen, _) = from_verbs("zoom out please", &zooms).expect("so does zoom out");
-            assert_eq!(chosen.address().action, "zoom-out");
-            assert!(
-                matches!(from_verbs("zoom", &zooms), Err(NoMatch::Ambiguous(_))),
-                "zoom alone is still a question"
-            );
-
-            // Nor is it dropped when the split would leave nothing: two tied
-            // operations that both *want* a value are still ambiguous when the
-            // instruction supplied none — narrowing must give up and leave the
-            // original tie standing rather than choose from an empty set.
-            let both_prompted = vec![
-                offer(
-                    "photos",
-                    "photos.image:1",
-                    "crop-left-half",
-                    "Crop the left half",
-                    tilo_actions::InputSpec::Text {
-                        prompt: "Which half".to_string(),
-                        placeholder: String::new(),
-                        collects: tilo_actions::Collects::Words,
+            {
+                let address = ActionAddress::new("app.so.tilo.diffmerge", OPEN_ACTION);
+                let offer = Offer {
+                    app: "so.tilo.diffmerge".into(),
+                    broker_peer_id: Some(0),
+                    broker_provider: None,
+                    descriptor: ActionDescriptor {
+                        state: tilo_actions::ActionState::default(),
+                        semantic_identity: None,
+                        address,
+                        resource_kind: APPLICATION_KIND.into(),
+                        resource_label: "Diffmerge".into(),
+                        action_label: "Open Diffmerge".into(),
+                        keywords: Vec::new(),
+                        icon: None,
+                        description: None,
+                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
+                        kind: tilo_actions::OperationKind::Effect,
+                        contract: ActionContract::default(),
+                        params: Vec::new(),
+                        input: tilo_actions::InputSpec::None,
+                        view: None,
                     },
-                ),
-                offer(
-                    "photos",
-                    "photos.image:1",
-                    "crop-right-half",
-                    "Crop the right half",
-                    tilo_actions::InputSpec::Text {
-                        prompt: "Which half".to_string(),
-                        placeholder: String::new(),
-                        collects: tilo_actions::Collects::Words,
-                    },
-                ),
-            ];
-            match from_verbs("crop the photograph", &both_prompted) {
-                Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
-                other => panic!(
-                    "with no value supplied and both operations wanting one, the \
-                     tie must stand rather than pick from nothing: {other:?}"
-                ),
+                };
+                let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
+                assert_eq!(opens(&decoded), Some("so.tilo.diffmerge"));
             }
         }
     }
@@ -1145,37 +997,193 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn words_naming_where_the_person_is_are_not_answers_to_what_to_do() {
-        // A question written in a conversation whose name carries its words:
-        // the message's label is the question itself, so every operation
-        // offered on it used to score the same and be listed as a candidate.
-        let offers = offers_on(
-            "chat.workspace/channels/task-list/messages/asked",
-            "what is on my task list?",
-            &[
-                ("reveal-message", "Reveal message"),
-                ("copy-link", "Copy link"),
-                ("post-file", "Post a file"),
-                ("stop-sharing", "Stop sharing"),
-            ],
-        );
-        assert!(
-            matches!(
-                from_verbs("what is on my task list?", &offers),
-                Err(NoMatch::Nothing)
-            ),
-            "naming the conversation is not naming an operation"
-        );
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each case keeps its original fixture and assertions"
+        )]
+        fn a_requests_words_pick_an_operation_only_by_what_they_say;
 
-        // The same words still tell two operations on different things
-        // apart when they are the only difference between them.
-        let mut notes = offers_on("files.entry:notes", "notes.txt", &[("delete", "Delete")]);
-        let mut plan = offers_on("files.entry:plan", "plan.txt", &[("delete", "Delete")]);
-        let mut offers = Vec::new();
-        offers.append(&mut notes);
-        offers.append(&mut plan);
-        let (chosen, _) = from_verbs("delete plan.txt", &offers).expect("one file is named");
-        assert_eq!(chosen.address().resource, "files.entry:plan");
+        phase a_quoted_literal_is_the_value_that_tells_same_verb_operations_apart;
+        {
+            {
+                assert_eq!(
+                    quoted_literal(r#"rename it to "launch.md""#),
+                    Some("launch.md".into())
+                );
+                assert_eq!(quoted_literal(r#"rename "a.md" to "b.md""#), None);
+                assert_eq!(quoted_literal("rename it to launch.md"), None);
+                assert_eq!(
+                    quoted_literal("rename it to \u{201c}launch.md\u{201d}"),
+                    Some("launch.md".into())
+                );
+                assert_eq!(quoted_literal("don't rename anything"), None);
+                assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
+            }
+
+            {
+                let offers = vec![
+                    offer(
+                        "photos",
+                        "photos.image:1",
+                        "crop",
+                        "Crop to a region",
+                        tilo_actions::InputSpec::Text {
+                            prompt: "Region to keep".to_string(),
+                            placeholder: "0.25,0.25,0.5,0.5".to_string(),
+                            collects: tilo_actions::Collects::Words,
+                        },
+                    ),
+                    offer(
+                        "photos",
+                        "photos.image:1",
+                        "crop-square",
+                        "Crop to a square",
+                        tilo_actions::InputSpec::None,
+                    ),
+                ];
+
+                let (chosen, argument) =
+                    from_verbs(r#"crop the photograph to "0.25,0.25,0.5,0.5""#, &offers)
+                        .expect("a quoted region tells the two crops apart");
+                assert_eq!(
+                    chosen.address().action,
+                    "crop",
+                    "a quoted region must reach the crop that collects one, not {}",
+                    chosen.descriptor.action_label,
+                );
+                assert_eq!(
+                    argument.get("value"),
+                    Some(&serde_json::Value::String("0.25,0.25,0.5,0.5".into()))
+                );
+
+                let (chosen, argument) = from_verbs("crop the photograph", &offers)
+                    .expect("with no region said, the crop that needs none is the one that can act");
+                assert_eq!(chosen.address().action, "crop-square");
+                assert!(argument.is_empty());
+
+                // What is gone is a false ambiguity, not the mechanism: two
+                // operations that both take nothing are still not told apart by an
+                // instruction that supplies nothing, and that is still a genuine
+                // question rather than a guess.
+                let both_bare = vec![
+                    offer(
+                        "photos",
+                        "photos.image:1",
+                        "rotate-left",
+                        "Rotate left",
+                        tilo_actions::InputSpec::None,
+                    ),
+                    offer(
+                        "photos",
+                        "photos.image:1",
+                        "rotate-right",
+                        "Rotate right",
+                        tilo_actions::InputSpec::None,
+                    ),
+                ];
+                match from_verbs("rotate the photograph", &both_bare) {
+                    Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
+                    other => panic!("a genuine ambiguity must still be refused: {other:?}"),
+                }
+
+                // A small word the instruction said still tells two labels apart
+                // once they tie: "zoom in" is Zoom in, never Zoom out.
+                let zooms = vec![
+                    offer(
+                        "word-processor",
+                        "word-processor.document",
+                        "zoom-in",
+                        "Zoom in",
+                        tilo_actions::InputSpec::None,
+                    ),
+                    offer(
+                        "word-processor",
+                        "word-processor.document",
+                        "zoom-out",
+                        "Zoom out",
+                        tilo_actions::InputSpec::None,
+                    ),
+                ];
+                let (chosen, _) = from_verbs("zoom in", &zooms).expect("zoom in names one operation");
+                assert_eq!(chosen.address().action, "zoom-in");
+                let (chosen, _) = from_verbs("zoom out please", &zooms).expect("so does zoom out");
+                assert_eq!(chosen.address().action, "zoom-out");
+                assert!(
+                    matches!(from_verbs("zoom", &zooms), Err(NoMatch::Ambiguous(_))),
+                    "zoom alone is still a question"
+                );
+
+                // Nor is it dropped when the split would leave nothing: two tied
+                // operations that both *want* a value are still ambiguous when the
+                // instruction supplied none — narrowing must give up and leave the
+                // original tie standing rather than choose from an empty set.
+                let both_prompted = vec![
+                    offer(
+                        "photos",
+                        "photos.image:1",
+                        "crop-left-half",
+                        "Crop the left half",
+                        tilo_actions::InputSpec::Text {
+                            prompt: "Which half".to_string(),
+                            placeholder: String::new(),
+                            collects: tilo_actions::Collects::Words,
+                        },
+                    ),
+                    offer(
+                        "photos",
+                        "photos.image:1",
+                        "crop-right-half",
+                        "Crop the right half",
+                        tilo_actions::InputSpec::Text {
+                            prompt: "Which half".to_string(),
+                            placeholder: String::new(),
+                            collects: tilo_actions::Collects::Words,
+                        },
+                    ),
+                ];
+                match from_verbs("crop the photograph", &both_prompted) {
+                    Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
+                    other => panic!(
+                        "with no value supplied and both operations wanting one, the \
+                     tie must stand rather than pick from nothing: {other:?}"
+                    ),
+                }
+            }
+        }
+
+        phase words_naming_where_the_person_is_are_not_answers_to_what_to_do;
+        {
+            // A question written in a conversation whose name carries its words:
+            // the message's label is the question itself, so every operation
+            // offered on it used to score the same and be listed as a candidate.
+            let offers = offers_on(
+                "chat.workspace/channels/task-list/messages/asked",
+                "what is on my task list?",
+                &[
+                    ("reveal-message", "Reveal message"),
+                    ("copy-link", "Copy link"),
+                    ("post-file", "Post a file"),
+                    ("stop-sharing", "Stop sharing"),
+                ],
+            );
+            assert!(
+                matches!(
+                    from_verbs("what is on my task list?", &offers),
+                    Err(NoMatch::Nothing)
+                ),
+                "naming the conversation is not naming an operation"
+            );
+
+            // The same words still tell two operations on different things
+            // apart when they are the only difference between them.
+            let mut notes = offers_on("files.entry:notes", "notes.txt", &[("delete", "Delete")]);
+            let mut plan = offers_on("files.entry:plan", "plan.txt", &[("delete", "Delete")]);
+            let mut offers = Vec::new();
+            offers.append(&mut notes);
+            offers.append(&mut plan);
+            let (chosen, _) = from_verbs("delete plan.txt", &offers).expect("one file is named");
+            assert_eq!(chosen.address().resource, "files.entry:plan");
+        }
     }
 }

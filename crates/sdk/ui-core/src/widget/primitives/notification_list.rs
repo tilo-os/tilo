@@ -511,76 +511,80 @@ mod tests {
         view.paint(&mut ctx, Rect::new(0.0, 0.0, 360.0, 600.0))
     }
 
-    #[test]
-    fn a_list_paints_a_row_for_every_notification_it_holds() {
-        let rows = [item("One"), item("Two")];
-        let painted = layout(NotificationListView::new(&rows, 0));
-        assert_eq!(painted.rows.len(), 2);
-        assert!(
-            painted.rows[0].y1 <= painted.rows[1].y0,
-            "rows stack without overlap"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_notification_list_paints_folds_pages_and_routes_presses;
 
-    #[test]
-    fn a_group_heading_folds_and_unfolds_over_its_rows() {
-        let rows = [group("Mail", 3, true), item("One"), item("Two")];
-        let painted = layout(NotificationListView::new(&rows, 0));
-        assert_eq!(painted.rows.len(), 3, "an expanded group shows its rows");
-        assert!(
-            painted.rows[0].height() < painted.rows[1].height(),
-            "the heading is a band, not a row"
-        );
-    }
-
-    #[test]
-    fn a_page_shows_its_capacity_and_offers_the_pager() {
-        let rows = [item("One"), item("Two"), item("Three")];
-        let painted = layout(NotificationListView::new(&rows, 0).capacity(2));
-        assert_eq!(painted.rows.len(), 2);
-        assert!(!painted.older.is_zero_area(), "there is a next page");
-        assert!(!painted.older.contains(Point::ZERO));
-    }
-
-    #[test]
-    fn a_press_on_a_row_or_its_controls_is_routed_by_the_layout() {
-        let rows = [item("One")];
-        let painted = layout(NotificationListView::new(&rows, 0));
-        assert_eq!(
-            NotificationListView::new(&rows, 0).control_at(&painted, painted.rows[0].center()),
-            Some(NotificationListControl::Open(0))
-        );
-        assert_eq!(
-            NotificationListView::new(&rows, 0)
-                .control_at(&painted, painted.controls[0].dismiss.center()),
-            Some(NotificationListControl::Dismiss(0))
-        );
-    }
-
-    #[test]
-    fn an_empty_list_says_so_and_a_cleared_one_offers_undo() {
-        let rows: [NotificationListRow; 0] = [];
-        let painted = layout(NotificationListView::new(&rows, 0).empty("Nothing here yet"));
-        assert!(painted.rows.is_empty());
-        assert!(painted.undo.is_zero_area(), "nothing was cleared");
-        let rows = [item("One")];
-        let painted =
-            layout(NotificationListView::new(&rows, 0).cleared(Some("Notifications cleared")));
-        assert!(!painted.undo.is_zero_area(), "the cleared band offers Undo");
-        assert_eq!(
-            NotificationListView::new(&rows, 0).control_at(&painted, painted.undo.center()),
-            Some(NotificationListControl::Undo)
-        );
-    }
-
-    #[test]
-    fn a_warning_keeps_its_rail_beside_its_text() {
-        let mut warning = item("Disk almost full");
-        if let NotificationListRow::Item { severity, .. } = &mut warning {
-            *severity = Some(Tone::Warning);
+        phase a_list_paints_a_row_for_every_notification_it_holds;
+        {
+            let rows = [item("One"), item("Two")];
+            let painted = layout(NotificationListView::new(&rows, 0));
+            assert_eq!(painted.rows.len(), 2);
+            assert!(
+                painted.rows[0].y1 <= painted.rows[1].y0,
+                "rows stack without overlap"
+            );
         }
-        let rows = [warning];
-        let painted = layout(NotificationListView::new(&rows, 0));
-        assert_eq!(painted.rows.len(), 1);
+
+        phase a_group_heading_folds_and_unfolds_over_its_rows;
+        {
+            let rows = [group("Mail", 3, true), item("One"), item("Two")];
+            let painted = layout(NotificationListView::new(&rows, 0));
+            assert_eq!(painted.rows.len(), 3, "an expanded group shows its rows");
+            assert!(
+                painted.rows[0].height() < painted.rows[1].height(),
+                "the heading is a band, not a row"
+            );
+        }
+
+        phase a_page_shows_its_capacity_and_offers_the_pager;
+        {
+            let rows = [item("One"), item("Two"), item("Three")];
+            let painted = layout(NotificationListView::new(&rows, 0).capacity(2));
+            assert_eq!(painted.rows.len(), 2);
+            assert!(!painted.older.is_zero_area(), "there is a next page");
+            assert!(!painted.older.contains(Point::ZERO));
+        }
+
+        phase a_press_on_a_row_or_its_controls_is_routed_by_the_layout;
+        {
+            let rows = [item("One")];
+            let painted = layout(NotificationListView::new(&rows, 0));
+            assert_eq!(
+                NotificationListView::new(&rows, 0).control_at(&painted, painted.rows[0].center()),
+                Some(NotificationListControl::Open(0))
+            );
+            assert_eq!(
+                NotificationListView::new(&rows, 0)
+                    .control_at(&painted, painted.controls[0].dismiss.center()),
+                Some(NotificationListControl::Dismiss(0))
+            );
+        }
+
+        phase an_empty_list_says_so_and_a_cleared_one_offers_undo;
+        {
+            let rows: [NotificationListRow; 0] = [];
+            let painted = layout(NotificationListView::new(&rows, 0).empty("Nothing here yet"));
+            assert!(painted.rows.is_empty());
+            assert!(painted.undo.is_zero_area(), "nothing was cleared");
+            let rows = [item("One")];
+            let painted =
+                layout(NotificationListView::new(&rows, 0).cleared(Some("Notifications cleared")));
+            assert!(!painted.undo.is_zero_area(), "the cleared band offers Undo");
+            assert_eq!(
+                NotificationListView::new(&rows, 0).control_at(&painted, painted.undo.center()),
+                Some(NotificationListControl::Undo)
+            );
+        }
+
+        phase a_warning_keeps_its_rail_beside_its_text;
+        {
+            let mut warning = item("Disk almost full");
+            if let NotificationListRow::Item { severity, .. } = &mut warning {
+                *severity = Some(Tone::Warning);
+            }
+            let rows = [warning];
+            let painted = layout(NotificationListView::new(&rows, 0));
+            assert_eq!(painted.rows.len(), 1);
+        }
     }
 }

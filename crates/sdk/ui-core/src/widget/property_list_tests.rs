@@ -1,33 +1,142 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
 
-#[test]
-fn published_property_controls_invoke_real_clipboard_and_custom_actions() {
-    use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
-    let clipboard = std::sync::Arc::new(InProcessClipboard::default());
-    let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
-    crate::host::scoped(&services, || {
-        let activated = Rc::new(Cell::new(0));
-        let signal = activated.clone();
-        let mut driver = FrameHarness::new(
-            crate::State::new(),
-            Box::new(
-                PropertyList::new(vec![
-                    Property::new("Commit", "123456789abcdef").copyable(),
-                    Property::new("Website", "https://example.org").action(
-                        Icon::ExternalLink,
-                        "Open",
-                        move || signal.set(signal.get() + 1),
-                    ),
-                ])
-                .with_id("evidence-properties"),
-            ),
-            (640, 240),
-        );
+tilo_test_env::scenario! {
+    fn property_actions_and_values_are_published_and_read_aloud;
+
+    phase editable_text_still_requires_an_action_binding;
+    {
+        struct UnboundEditable;
+        impl Widget for UnboundEditable {
+            crate::testing::inert_widget_methods!(leaf_layout);
+            fn name(&self) -> &'static str {
+                "UnboundEditable"
+            }
+            fn test_id(&self) -> Option<&str> {
+                Some("editable-unbound")
+            }
+            fn accessibility(&self) -> Option<AccessNode> {
+                Some(AccessNode::new(Role::TextInput).with_name("Editable field"))
+            }
+        }
+        let driver = FrameHarness::new(crate::State::new(), Box::new(UnboundEditable), (320, 120));
         let audit = driver.native_app_audit();
-        assert!(audit.is_certified(), "{audit:?}");
-        for label in ["Copy Commit", "Open Website"] {
-            let resource = driver
+        assert!(
+            audit
+                .issues
+                .iter()
+                .any(|issue| issue.control == "editable-unbound"
+                    && issue.code == "missing-action-binding"),
+            "editable fields still need actual action provenance: {audit:?}"
+        );
+    }
+
+    phase accessibility_reads_each_value_and_its_actions;
+    {
+        let list = PropertyList::new(vec![
+            Property::new("Password", "hunter2")
+                .with_kind(TextKind::Secret)
+                .with_accessible_value("Hidden")
+                .copyable(),
+        ])
+        .with_id("login");
+        let node = Widget::accessibility(&list).unwrap();
+        assert_eq!(list.test_id(), Some("login"));
+        let row = &node.children[0];
+        assert_eq!(row.name.as_deref(), Some("Password"));
+        assert_eq!(row.value.as_deref(), Some("Hidden"));
+        assert_eq!(row.children[0].role, Role::Button);
+        assert_eq!(row.children[0].name.as_deref(), Some("Copy Password"));
+    }
+
+    phase a_read_only_value_reads_as_a_read_only_field;
+    {
+        let value = PropertyValue::new("acct_1234567890")
+            .with_kind(TextKind::Identifier)
+            .copyable()
+            .with_accessible_name("Account");
+        let node = Widget::accessibility(&value).unwrap();
+        assert_eq!(node.role, Role::TextInput);
+        assert_eq!(node.name.as_deref(), Some("Account"));
+        assert!(node.state.read_only);
+        assert_eq!(node.children.len(), 1);
+    }
+
+    phase published_property_controls_invoke_real_clipboard_and_custom_actions;
+    {
+        use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+        let clipboard = std::sync::Arc::new(InProcessClipboard::default());
+        let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
+        crate::host::scoped(&services, || {
+            let activated = Rc::new(Cell::new(0));
+            let signal = activated.clone();
+            let mut driver = FrameHarness::new(
+                crate::State::new(),
+                Box::new(
+                    PropertyList::new(vec![
+                        Property::new("Commit", "123456789abcdef").copyable(),
+                        Property::new("Website", "https://example.org").action(
+                            Icon::ExternalLink,
+                            "Open",
+                            move || signal.set(signal.get() + 1),
+                        ),
+                    ])
+                    .with_id("evidence-properties"),
+                ),
+                (640, 240),
+            );
+            let audit = driver.native_app_audit();
+            assert!(audit.is_certified(), "{audit:?}");
+            for label in ["Copy Commit", "Open Website"] {
+                let resource = driver
+                    .resources()
+                    .into_iter()
+                    .find(|resource| {
+                        resource
+                            .id
+                            .as_str()
+                            .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
+                            && resource.label == label
+                    })
+                    .expect("the actual property action is published through the resource door");
+                driver
+                    .invoke_action(
+                        &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
+                        &serde_json::Map::new(),
+                        false,
+                        None,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                Some("123456789abcdef")
+            );
+            assert_eq!(activated.get(), 1);
+            assert!(
+                driver
+                    .perform_semantic_named(
+                        "evidence-properties",
+                        Some("tilo.key-action:evidence-properties:0/9"),
+                        &crate::a11y::Action::Activate
+                    )
+                    .is_err()
+            );
+            assert_eq!(activated.get(), 1);
+
+            let mut value = FrameHarness::new(
+                crate::State::new(),
+                Box::new(
+                    PropertyValue::new("acct_123")
+                        .with_id("account-value")
+                        .copyable()
+                        .with_accessible_name("Account"),
+                ),
+                (320, 120),
+            );
+            let audit = value.native_app_audit();
+            assert!(audit.is_certified(), "{audit:?}");
+            let resource = value
                 .resources()
                 .into_iter()
                 .find(|resource| {
@@ -35,10 +144,10 @@ fn published_property_controls_invoke_real_clipboard_and_custom_actions() {
                         .id
                         .as_str()
                         .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
-                        && resource.label == label
+                        && resource.label == "Copy"
                 })
-                .expect("the actual property action is published through the resource door");
-            driver
+                .expect("read-only property's Copy is an ordinary published action");
+            value
                 .invoke_action(
                     &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
                     &serde_json::Map::new(),
@@ -46,86 +155,12 @@ fn published_property_controls_invoke_real_clipboard_and_custom_actions() {
                     None,
                 )
                 .unwrap();
-        }
-        assert_eq!(
-            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-            Some("123456789abcdef")
-        );
-        assert_eq!(activated.get(), 1);
-        assert!(
-            driver
-                .perform_semantic_named(
-                    "evidence-properties",
-                    Some("tilo.key-action:evidence-properties:0/9"),
-                    &crate::a11y::Action::Activate
-                )
-                .is_err()
-        );
-        assert_eq!(activated.get(), 1);
-
-        let mut value = FrameHarness::new(
-            crate::State::new(),
-            Box::new(
-                PropertyValue::new("acct_123")
-                    .with_id("account-value")
-                    .copyable()
-                    .with_accessible_name("Account"),
-            ),
-            (320, 120),
-        );
-        let audit = value.native_app_audit();
-        assert!(audit.is_certified(), "{audit:?}");
-        let resource = value
-            .resources()
-            .into_iter()
-            .find(|resource| {
-                resource
-                    .id
-                    .as_str()
-                    .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
-                    && resource.label == "Copy"
-            })
-            .expect("read-only property's Copy is an ordinary published action");
-        value
-            .invoke_action(
-                &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
-                &serde_json::Map::new(),
-                false,
-                None,
-            )
-            .unwrap();
-        assert_eq!(
-            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-            Some("acct_123")
-        );
-    });
-}
-
-#[test]
-fn editable_text_still_requires_an_action_binding() {
-    struct UnboundEditable;
-    impl Widget for UnboundEditable {
-        crate::testing::inert_widget_methods!(leaf_layout);
-        fn name(&self) -> &'static str {
-            "UnboundEditable"
-        }
-        fn test_id(&self) -> Option<&str> {
-            Some("editable-unbound")
-        }
-        fn accessibility(&self) -> Option<AccessNode> {
-            Some(AccessNode::new(Role::TextInput).with_name("Editable field"))
-        }
+            assert_eq!(
+                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                Some("acct_123")
+            );
+        });
     }
-    let driver = FrameHarness::new(crate::State::new(), Box::new(UnboundEditable), (320, 120));
-    let audit = driver.native_app_audit();
-    assert!(
-        audit
-            .issues
-            .iter()
-            .any(|issue| issue.control == "editable-unbound"
-                && issue.code == "missing-action-binding"),
-        "editable fields still need actual action provenance: {audit:?}"
-    );
 }
 
 fn rows() -> Vec<PropertyRow<'static>> {
@@ -165,84 +200,257 @@ fn rect(node: &InspectionNode) -> Rect {
     Rect::new(x, y, x + w, y + h)
 }
 
-#[test]
-fn labels_share_one_measured_column_and_values_line_up() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let rows = rows();
-    let m = regular(&theme);
-    let layout = layout(&mut text, &theme, &rows, 640.0);
-    assert!(!layout.stacked);
-    let x = layout.rows[0].value.x;
-    for row in &layout.rows {
-        assert!((row.value.x - x).abs() < 0.01, "values share a column");
-        assert!(row.value.x > row.label.x);
-        assert!(row.rect.height() >= m.min_row);
-    }
-    let longest = f64::from(text.measure_style("Birthday", None, &m.label).0);
-    assert!(x >= m.pad_x + longest + m.column_gap - 0.5);
-}
+tilo_test_env::scenario! {
+    fn labels_values_and_stripes_line_up_at_every_width;
 
-#[test]
-fn labels_start_on_the_content_edge_and_stripes_bleed_past_it() {
-    let theme = Theme::dark();
-    let bleed = crate::chrome::row_bleed(&theme);
-    let mut text = TextRenderer::new();
-    let rows = rows();
-    let laid = layout(&mut text, &theme, &rows, 400.0);
-    assert!((laid.rows[0].label.x - bleed).abs() < 0.01);
-    let harness = FrameHarness::new(
-        crate::State::new(),
-        Box::new(
-            crate::widget::Column::new()
-                .with_horizontal_padding(24.0, 24.0)
-                .push(Box::new(
-                    PropertyList::new(vec![Property::new("Size", "4 KB")]).striped(),
-                )),
-        ),
-        (400, 200),
-    );
-    fn find(node: &InspectionNode) -> Option<&InspectionNode> {
-        if node.widget == "PropertyList" {
-            return Some(node);
+    phase labels_share_one_measured_column_and_values_line_up;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rows = rows();
+        let m = regular(&theme);
+        let layout = layout(&mut text, &theme, &rows, 640.0);
+        assert!(!layout.stacked);
+        let x = layout.rows[0].value.x;
+        for row in &layout.rows {
+            assert!((row.value.x - x).abs() < 0.01, "values share a column");
+            assert!(row.value.x > row.label.x);
+            assert!(row.rect.height() >= m.min_row);
         }
-        node.children.iter().find_map(find)
+        let longest = f64::from(text.measure_style("Birthday", None, &m.label).0);
+        assert!(x >= m.pad_x + longest + m.column_gap - 0.5);
     }
-    let list = rect(find(&harness.inspection().root).unwrap());
-    assert!((list.x0 - 24.0).abs() < 0.5);
-    let mut retained = PropertyList::new(vec![Property::new("Size", "4 KB")]);
-    retained.metrics = Some(regular(&theme));
-    retained.rect = list;
-    let laid = retained.lay_out_at(
-        &mut text,
-        &regular(&theme),
-        retained.outer().origin(),
-        retained.outer().width(),
-    );
-    assert!(
-        (laid.rows[0].label.x - list.x0).abs() < 0.01,
-        "label on the edge"
-    );
-    assert!(laid.rows[0].rect.x0 < list.x0, "the stripe bleeds outward");
-}
 
-#[test]
-fn a_narrow_list_stacks_labels_above_values() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let rows = rows();
-    let face = PropertyListFace::new(&rows);
-    assert!(!face.is_stacked(&mut text, &theme, 640.0));
-    assert!(face.is_stacked(&mut text, &theme, 220.0));
-    let laid = layout(&mut text, &theme, &rows, 220.0);
-    for row in &laid.rows {
-        assert!((row.value.x - row.label.x).abs() < 0.01, "one column");
-        assert!(row.value.y > row.label.y, "label above value");
+    phase labels_start_on_the_content_edge_and_stripes_bleed_past_it;
+    {
+        let theme = Theme::dark();
+        let bleed = crate::chrome::row_bleed(&theme);
+        let mut text = TextRenderer::new();
+        let rows = rows();
+        let laid = layout(&mut text, &theme, &rows, 400.0);
+        assert!((laid.rows[0].label.x - bleed).abs() < 0.01);
+        let harness = FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                crate::widget::Column::new()
+                    .with_horizontal_padding(24.0, 24.0)
+                    .push(Box::new(
+                        PropertyList::new(vec![Property::new("Size", "4 KB")]).striped(),
+                    )),
+            ),
+            (400, 200),
+        );
+        fn find(node: &InspectionNode) -> Option<&InspectionNode> {
+            if node.widget == "PropertyList" {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        let list = rect(find(&harness.inspection().root).unwrap());
+        assert!((list.x0 - 24.0).abs() < 0.5);
+        let mut retained = PropertyList::new(vec![Property::new("Size", "4 KB")]);
+        retained.metrics = Some(regular(&theme));
+        retained.rect = list;
+        let laid = retained.lay_out_at(
+            &mut text,
+            &regular(&theme),
+            retained.outer().origin(),
+            retained.outer().width(),
+        );
+        assert!(
+            (laid.rows[0].label.x - list.x0).abs() < 0.01,
+            "label on the edge"
+        );
+        assert!(laid.rows[0].rect.x0 < list.x0, "the stripe bleeds outward");
     }
-    let big = Theme::dark().with_text_scale(2.0);
-    assert!(!face.is_stacked(&mut text, &theme, 360.0));
-    assert!(face.is_stacked(&mut text, &big, 360.0));
-    assert!(face.height(&mut text, &big, 640.0) > face.height(&mut text, &theme, 640.0) * 1.5);
+
+    phase a_narrow_list_stacks_labels_above_values;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rows = rows();
+        let face = PropertyListFace::new(&rows);
+        assert!(!face.is_stacked(&mut text, &theme, 640.0));
+        assert!(face.is_stacked(&mut text, &theme, 220.0));
+        let laid = layout(&mut text, &theme, &rows, 220.0);
+        for row in &laid.rows {
+            assert!((row.value.x - row.label.x).abs() < 0.01, "one column");
+            assert!(row.value.y > row.label.y, "label above value");
+        }
+        let big = Theme::dark().with_text_scale(2.0);
+        assert!(!face.is_stacked(&mut text, &theme, 360.0));
+        assert!(face.is_stacked(&mut text, &big, 360.0));
+        assert!(face.height(&mut text, &big, 640.0) > face.height(&mut text, &theme, 640.0) * 1.5);
+    }
+
+    phase a_label_wider_than_its_column_wraps_and_never_runs_into_its_value;
+    {
+        let theme = Theme::dark();
+        let m = regular(&theme);
+        let mut text = TextRenderer::new();
+        let rows = vec![
+            PropertyRow::new("Printers responding", "1 of 1"),
+            PropertyRow::new("Reporting ink or toner levels", "1 printer"),
+            PropertyRow::new("Scanners available", "1"),
+        ];
+        let width = 380.0;
+        let laid = layout(&mut text, &theme, &rows, width);
+        assert!(!laid.stacked, "the labels wrap beside their values");
+        for (index, row) in rows.iter().enumerate() {
+            let (label, value) = painted(&mut text, &m, &laid, index, row);
+            let geo = &laid.rows[index];
+            assert!(
+                label.x1 <= value.x0 && label.intersect(value).area() <= 0.0,
+                "{:?}'s label {label:?} runs into its value {value:?}",
+                row.label
+            );
+            assert!(
+                label.y0 >= geo.rect.y0 && label.y1 <= geo.rect.y1 && label.x1 <= geo.rect.x1,
+                "{:?}'s label {label:?} is cut off by its row {:?}",
+                row.label,
+                geo.rect
+            );
+        }
+        assert!(
+            laid.rows[1].label_wrap.is_some(),
+            "the longest label wraps within its column"
+        );
+
+        // A word wider than the column cannot wrap: the labels stand over the
+        // values, each shown whole.
+        let rows = vec![
+            PropertyRow::new("Interoperability", "Yes"),
+            PropertyRow::new("Scanners", "1"),
+        ];
+        let narrow = 200.0;
+        let laid = layout(&mut text, &theme, &rows, narrow);
+        assert!(laid.stacked);
+        for (index, row) in rows.iter().enumerate() {
+            let (label, value) = painted(&mut text, &m, &laid, index, row);
+            assert!(
+                label.y1 <= value.y0,
+                "{:?} stands over its value",
+                row.label
+            );
+            assert!(
+                label.x1 <= laid.rows[index].rect.x1,
+                "{:?} is whole",
+                row.label
+            );
+        }
+    }
+
+    phase up_to_two_actions_sit_at_the_trailing_edge_of_their_row;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rows = rows();
+        let face = PropertyListFace::new(&rows);
+        let targets = face.action_rects(&mut text, &theme, Point::new(10.0, 20.0), 500.0);
+        assert_eq!(targets.len(), 1);
+        let (index, rect) = targets[0];
+        assert_eq!(index, 3);
+        assert!(rect.x1 <= 510.0 && rect.x1 > 480.0);
+        let two = [PropertyRow::new("Password", "hunter2")
+            .with_kind(TextKind::Secret)
+            .action(Icon::Eye, "Reveal")
+            .action(Icon::Copy, "Copy")
+            .action(Icon::Trash, "Ignored")];
+        let targets = PropertyListFace::new(&two).action_targets(&mut text, &theme, Point::ZERO, 500.0);
+        assert_eq!(targets.len(), 2, "a row holds two actions");
+        assert!(targets[0].1.x1 < targets[1].1.x0, "in order");
+    }
+
+    phase unbreakable_values_elide_before_the_actions_and_prose_wraps;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let key = "a".repeat(200);
+        let rows = [
+            PropertyRow::new("Key", &key)
+                .with_kind(TextKind::Identifier)
+                .action(Icon::Copy, "Copy"),
+            PropertyRow::new(
+                "Notes",
+                "A long note that wraps across several lines at this width, as prose does.",
+            ),
+        ];
+        let laid = layout(&mut text, &theme, &rows, 360.0);
+        let id = &laid.rows[0];
+        assert!(id.elided.is_some(), "the identifier is elided");
+        let line = regular(&theme).line(&mut text);
+        assert!(id.rect.height() < line * 2.0 + 16.0, "one line");
+        assert!(id.value.x + id.value_width <= id.actions[0].unwrap().x0 + 0.5);
+        assert!(laid.rows[1].rect.height() > line * 2.0, "prose wraps");
+    }
+
+    phase a_compact_list_is_denser_and_toned_values_stay_legible;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rows = rows();
+        let regular = PropertyListFace::new(&rows).height(&mut text, &theme, 640.0);
+        let compact = PropertyListFace::new(&rows)
+            .compact()
+            .height(&mut text, &theme, 640.0);
+        assert!(compact < regular);
+        for theme in [Theme::dark(), Theme::light()] {
+            let ground = theme.tokens.colors.surfaces.content;
+            let ink = theme.tokens.colors.ink_on(
+                ground,
+                Tone::Danger.colour(&theme),
+                SMALL_TEXT_MIN_CONTRAST,
+            );
+            assert!(crate::a11y::contrast_ratio(ink, ground) >= SMALL_TEXT_MIN_CONTRAST);
+        }
+    }
+
+    phase groups_and_lists_in_a_section_share_one_label_column;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let short = [PropertyRow::new("Age", "36")];
+        let long = [PropertyRow::new("Date of birth", "10 December 1815")];
+        let laid = lay_out(
+            &mut text,
+            &regular(&theme),
+            &[(Some("Personal"), &short), (Some("Dates"), &long)],
+            Point::ZERO,
+            640.0,
+            None,
+        );
+        assert_eq!(laid.groups.len(), 2);
+        assert!((laid.rows[0].value.x - laid.rows[1].value.x).abs() < 0.01);
+        assert!(laid.groups[1].title_at.y > laid.rows[0].rect.y1);
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(crate::widget::Section::new(vec![
+                Box::new(PropertyList::new(vec![Property::new("Age", "36")]).with_id("a")),
+                Box::new(
+                    PropertyList::new(vec![Property::new("Date of birth", "10 December 1815")])
+                        .with_id("b"),
+                ),
+            ])),
+            (600, 400),
+            theme.clone(),
+        );
+        let width = property_label_column(&mut text, &theme, &long);
+        let root = harness.inspection().root;
+        assert_eq!(root.children.len(), 2);
+        let column = PropertyColumn::new();
+        column.offer(width);
+        assert!((column.get() - width).abs() < 0.01);
+    }
+
+    phase stripes_are_a_derived_tint_that_registers;
+    {
+        for theme in [Theme::dark(), Theme::light()] {
+            let ground = theme.tokens.colors.surfaces.content;
+            let stripe =
+                crate::tokens::colors::composite(Colors::hairline_on(ground, STRIPE_ALPHA), ground);
+            assert!(crate::surface::edge_delta(stripe, ground) > 0.0);
+        }
+    }
 }
 
 /// Where `row`'s label and value are painted in `laid`, as rects.
@@ -272,206 +480,6 @@ fn painted(
     );
     let value = Rect::from_origin_size(geo.value, (f64::from(w), f64::from(h)));
     (label, value)
-}
-
-#[test]
-fn a_label_wider_than_its_column_wraps_and_never_runs_into_its_value() {
-    let theme = Theme::dark();
-    let m = regular(&theme);
-    let mut text = TextRenderer::new();
-    let rows = vec![
-        PropertyRow::new("Printers responding", "1 of 1"),
-        PropertyRow::new("Reporting ink or toner levels", "1 printer"),
-        PropertyRow::new("Scanners available", "1"),
-    ];
-    let width = 380.0;
-    let laid = layout(&mut text, &theme, &rows, width);
-    assert!(!laid.stacked, "the labels wrap beside their values");
-    for (index, row) in rows.iter().enumerate() {
-        let (label, value) = painted(&mut text, &m, &laid, index, row);
-        let geo = &laid.rows[index];
-        assert!(
-            label.x1 <= value.x0 && label.intersect(value).area() <= 0.0,
-            "{:?}'s label {label:?} runs into its value {value:?}",
-            row.label
-        );
-        assert!(
-            label.y0 >= geo.rect.y0 && label.y1 <= geo.rect.y1 && label.x1 <= geo.rect.x1,
-            "{:?}'s label {label:?} is cut off by its row {:?}",
-            row.label,
-            geo.rect
-        );
-    }
-    assert!(
-        laid.rows[1].label_wrap.is_some(),
-        "the longest label wraps within its column"
-    );
-
-    // A word wider than the column cannot wrap: the labels stand over the
-    // values, each shown whole.
-    let rows = vec![
-        PropertyRow::new("Interoperability", "Yes"),
-        PropertyRow::new("Scanners", "1"),
-    ];
-    let narrow = 200.0;
-    let laid = layout(&mut text, &theme, &rows, narrow);
-    assert!(laid.stacked);
-    for (index, row) in rows.iter().enumerate() {
-        let (label, value) = painted(&mut text, &m, &laid, index, row);
-        assert!(
-            label.y1 <= value.y0,
-            "{:?} stands over its value",
-            row.label
-        );
-        assert!(
-            label.x1 <= laid.rows[index].rect.x1,
-            "{:?} is whole",
-            row.label
-        );
-    }
-}
-
-#[test]
-fn up_to_two_actions_sit_at_the_trailing_edge_of_their_row() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let rows = rows();
-    let face = PropertyListFace::new(&rows);
-    let targets = face.action_rects(&mut text, &theme, Point::new(10.0, 20.0), 500.0);
-    assert_eq!(targets.len(), 1);
-    let (index, rect) = targets[0];
-    assert_eq!(index, 3);
-    assert!(rect.x1 <= 510.0 && rect.x1 > 480.0);
-    let two = [PropertyRow::new("Password", "hunter2")
-        .with_kind(TextKind::Secret)
-        .action(Icon::Eye, "Reveal")
-        .action(Icon::Copy, "Copy")
-        .action(Icon::Trash, "Ignored")];
-    let targets = PropertyListFace::new(&two).action_targets(&mut text, &theme, Point::ZERO, 500.0);
-    assert_eq!(targets.len(), 2, "a row holds two actions");
-    assert!(targets[0].1.x1 < targets[1].1.x0, "in order");
-}
-
-#[test]
-fn unbreakable_values_elide_before_the_actions_and_prose_wraps() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let key = "a".repeat(200);
-    let rows = [
-        PropertyRow::new("Key", &key)
-            .with_kind(TextKind::Identifier)
-            .action(Icon::Copy, "Copy"),
-        PropertyRow::new(
-            "Notes",
-            "A long note that wraps across several lines at this width, as prose does.",
-        ),
-    ];
-    let laid = layout(&mut text, &theme, &rows, 360.0);
-    let id = &laid.rows[0];
-    assert!(id.elided.is_some(), "the identifier is elided");
-    let line = regular(&theme).line(&mut text);
-    assert!(id.rect.height() < line * 2.0 + 16.0, "one line");
-    assert!(id.value.x + id.value_width <= id.actions[0].unwrap().x0 + 0.5);
-    assert!(laid.rows[1].rect.height() > line * 2.0, "prose wraps");
-}
-
-#[test]
-fn a_compact_list_is_denser_and_toned_values_stay_legible() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let rows = rows();
-    let regular = PropertyListFace::new(&rows).height(&mut text, &theme, 640.0);
-    let compact = PropertyListFace::new(&rows)
-        .compact()
-        .height(&mut text, &theme, 640.0);
-    assert!(compact < regular);
-    for theme in [Theme::dark(), Theme::light()] {
-        let ground = theme.tokens.colors.surfaces.content;
-        let ink = theme.tokens.colors.ink_on(
-            ground,
-            Tone::Danger.colour(&theme),
-            SMALL_TEXT_MIN_CONTRAST,
-        );
-        assert!(crate::a11y::contrast_ratio(ink, ground) >= SMALL_TEXT_MIN_CONTRAST);
-    }
-}
-
-#[test]
-fn groups_and_lists_in_a_section_share_one_label_column() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let short = [PropertyRow::new("Age", "36")];
-    let long = [PropertyRow::new("Date of birth", "10 December 1815")];
-    let laid = lay_out(
-        &mut text,
-        &regular(&theme),
-        &[(Some("Personal"), &short), (Some("Dates"), &long)],
-        Point::ZERO,
-        640.0,
-        None,
-    );
-    assert_eq!(laid.groups.len(), 2);
-    assert!((laid.rows[0].value.x - laid.rows[1].value.x).abs() < 0.01);
-    assert!(laid.groups[1].title_at.y > laid.rows[0].rect.y1);
-    let harness = FrameHarness::new_with_theme(
-        crate::State::new(),
-        Box::new(crate::widget::Section::new(vec![
-            Box::new(PropertyList::new(vec![Property::new("Age", "36")]).with_id("a")),
-            Box::new(
-                PropertyList::new(vec![Property::new("Date of birth", "10 December 1815")])
-                    .with_id("b"),
-            ),
-        ])),
-        (600, 400),
-        theme.clone(),
-    );
-    let width = property_label_column(&mut text, &theme, &long);
-    let root = harness.inspection().root;
-    assert_eq!(root.children.len(), 2);
-    let column = PropertyColumn::new();
-    column.offer(width);
-    assert!((column.get() - width).abs() < 0.01);
-}
-
-#[test]
-fn accessibility_reads_each_value_and_its_actions() {
-    let list = PropertyList::new(vec![
-        Property::new("Password", "hunter2")
-            .with_kind(TextKind::Secret)
-            .with_accessible_value("Hidden")
-            .copyable(),
-    ])
-    .with_id("login");
-    let node = Widget::accessibility(&list).unwrap();
-    assert_eq!(list.test_id(), Some("login"));
-    let row = &node.children[0];
-    assert_eq!(row.name.as_deref(), Some("Password"));
-    assert_eq!(row.value.as_deref(), Some("Hidden"));
-    assert_eq!(row.children[0].role, Role::Button);
-    assert_eq!(row.children[0].name.as_deref(), Some("Copy Password"));
-}
-
-#[test]
-fn a_read_only_value_reads_as_a_read_only_field() {
-    let value = PropertyValue::new("acct_1234567890")
-        .with_kind(TextKind::Identifier)
-        .copyable()
-        .with_accessible_name("Account");
-    let node = Widget::accessibility(&value).unwrap();
-    assert_eq!(node.role, Role::TextInput);
-    assert_eq!(node.name.as_deref(), Some("Account"));
-    assert!(node.state.read_only);
-    assert_eq!(node.children.len(), 1);
-}
-
-#[test]
-fn stripes_are_a_derived_tint_that_registers() {
-    for theme in [Theme::dark(), Theme::light()] {
-        let ground = theme.tokens.colors.surfaces.content;
-        let stripe =
-            crate::tokens::colors::composite(Colors::hairline_on(ground, STRIPE_ALPHA), ground);
-        assert!(crate::surface::edge_delta(stripe, ground) > 0.0);
-    }
 }
 
 #[test]

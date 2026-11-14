@@ -286,167 +286,171 @@ mod tests {
         )
     }
 
-    #[test]
-    fn round_trip_preserves_reviewed_selection_and_exact_provider_file_grants() {
-        for (provider, bookmarks, history, expected) in [
-            (Provider::Chromium, true, false, vec!["Bookmarks"]),
-            (
-                Provider::Chromium,
-                false,
-                true,
-                vec!["History", "History-wal"],
-            ),
-            (
-                Provider::Chromium,
-                true,
-                true,
-                vec!["Bookmarks", "History", "History-wal"],
-            ),
-            (
-                Provider::Firefox,
-                true,
-                false,
-                vec!["places.sqlite", "places.sqlite-wal"],
-            ),
-            (
-                Provider::Firefox,
-                false,
-                true,
-                vec!["places.sqlite", "places.sqlite-wal"],
-            ),
-        ] {
-            let selected = profile(provider, bookmarks, history).unwrap();
-            assert_eq!(selected.allowed_files(), expected);
-            assert!(!selected.allowed_files().iter().any(|name| matches!(
-                *name,
-                "Login Data" | "Cookies" | "History-shm" | "places.sqlite-shm"
-            )));
-            let plan = Plan::new("setup:reviewed".into(), [7; 32], vec![selected]).unwrap();
-            assert_eq!(Plan::decode(&plan.encode().unwrap()).unwrap(), plan);
-        }
-        let mut empty = profile(Provider::Chromium, true, false).unwrap();
-        empty.bookmarks = false;
-        assert!(empty.allowed_files().is_empty());
-        assert_eq!(empty.validate(), Err(Error::InvalidProfile));
-    }
+    tilo_test_env::scenario! {
+        fn a_migration_plan_round_trips_and_refuses_what_is_out_of_bounds;
 
-    #[test]
-    fn relative_components_reject_traversal_controls_and_oversized_utf8() {
-        for component in [
-            "", ".", "..", "/home", "a/b", "a\\b", "a\0b", "a\nb", "a\u{85}b",
-        ] {
+        phase round_trip_preserves_reviewed_selection_and_exact_provider_file_grants;
+        {
+            for (provider, bookmarks, history, expected) in [
+                (Provider::Chromium, true, false, vec!["Bookmarks"]),
+                (
+                    Provider::Chromium,
+                    false,
+                    true,
+                    vec!["History", "History-wal"],
+                ),
+                (
+                    Provider::Chromium,
+                    true,
+                    true,
+                    vec!["Bookmarks", "History", "History-wal"],
+                ),
+                (
+                    Provider::Firefox,
+                    true,
+                    false,
+                    vec!["places.sqlite", "places.sqlite-wal"],
+                ),
+                (
+                    Provider::Firefox,
+                    false,
+                    true,
+                    vec!["places.sqlite", "places.sqlite-wal"],
+                ),
+            ] {
+                let selected = profile(provider, bookmarks, history).unwrap();
+                assert_eq!(selected.allowed_files(), expected);
+                assert!(!selected.allowed_files().iter().any(|name| matches!(
+                    *name,
+                    "Login Data" | "Cookies" | "History-shm" | "places.sqlite-shm"
+                )));
+                let plan = Plan::new("setup:reviewed".into(), [7; 32], vec![selected]).unwrap();
+                assert_eq!(Plan::decode(&plan.encode().unwrap()).unwrap(), plan);
+            }
+            let mut empty = profile(Provider::Chromium, true, false).unwrap();
+            empty.bookmarks = false;
+            assert!(empty.allowed_files().is_empty());
+            assert_eq!(empty.validate(), Err(Error::InvalidProfile));
+        }
+
+        phase relative_components_reject_traversal_controls_and_oversized_utf8;
+        {
+            for component in [
+                "", ".", "..", "/home", "a/b", "a\\b", "a\0b", "a\nb", "a\u{85}b",
+            ] {
+                let mut selected = profile(Provider::Chromium, true, false).unwrap();
+                selected.relative_path = vec![component.into()];
+                assert_eq!(selected.validate(), Err(Error::InvalidProfile));
+            }
             let mut selected = profile(Provider::Chromium, true, false).unwrap();
-            selected.relative_path = vec![component.into()];
+            selected.relative_path.clear();
             assert_eq!(selected.validate(), Err(Error::InvalidProfile));
-        }
-        let mut selected = profile(Provider::Chromium, true, false).unwrap();
-        selected.relative_path.clear();
-        assert_eq!(selected.validate(), Err(Error::InvalidProfile));
-        selected.relative_path = vec!["é".repeat(128)];
-        assert_eq!(selected.validate(), Err(Error::InvalidProfile));
-        selected.relative_path = vec!["x".repeat(255); 16];
-        selected.validate().unwrap();
-        selected.relative_path.push("a".into());
-        assert_eq!(selected.validate(), Err(Error::InvalidProfile));
-    }
-
-    #[test]
-    fn schema_binding_profile_ids_and_duplicates_are_strict() {
-        let selected = profile(Provider::Chromium, true, true).unwrap();
-        assert_eq!(
-            Plan::new(
-                "setup".into(),
-                [7; 32],
-                vec![selected.clone(), selected.clone()]
-            ),
-            Err(Error::InvalidPlan)
-        );
-        for id in [
-            "A".repeat(64),
-            "g".repeat(64),
-            "a".repeat(63),
-            "a".repeat(65),
-        ] {
-            let mut changed = selected.clone();
-            changed.id = id;
-            assert_eq!(changed.validate(), Err(Error::InvalidProfile));
-        }
-        let mut plan = Plan::new("x".repeat(256), [7; 32], vec![selected]).unwrap();
-        plan.schema = 2;
-        assert_eq!(plan.validate(), Err(Error::InvalidPlan));
-        plan.schema = SCHEMA;
-        for binding in [
-            String::new(),
-            "x".repeat(257),
-            "setup\0other".into(),
-            "setup\nother".into(),
-        ] {
-            plan.setup_binding = binding;
-            assert_eq!(plan.validate(), Err(Error::InvalidPlan));
-        }
-    }
-
-    #[test]
-    fn decode_refuses_unknown_fields_invalid_utf8_and_oversized_input() {
-        let plan = Plan::new(
-            "setup".into(),
-            [7; 32],
-            vec![profile(Provider::Firefox, true, true).unwrap()],
-        )
-        .unwrap();
-        let mut encoded = serde_json::to_value(&plan).unwrap();
-        encoded["unexpected"] = serde_json::json!("credential");
-        assert_eq!(
-            Plan::decode(&serde_json::to_vec(&encoded).unwrap()),
-            Err(Error::Serialization)
-        );
-        let mut encoded = serde_json::to_value(&plan).unwrap();
-        encoded["profiles"][0]["absolute_path"] = serde_json::json!("/home/person");
-        assert_eq!(
-            Plan::decode(&serde_json::to_vec(&encoded).unwrap()),
-            Err(Error::Serialization)
-        );
-        let mut encoded = serde_json::to_value(&plan).unwrap();
-        encoded["profiles"][0]["provider"] = serde_json::json!("other-browser");
-        assert_eq!(
-            Plan::decode(&serde_json::to_vec(&encoded).unwrap()),
-            Err(Error::Serialization)
-        );
-        let mut invalid_utf8 = plan.encode().unwrap();
-        let position = invalid_utf8
-            .windows(9)
-            .position(|bytes| bytes == b"\".config\"")
-            .expect("fixture profile path missing");
-        *invalid_utf8
-            .get_mut(position.saturating_add(1))
-            .expect("fixture profile path missing") = 0xff;
-        assert_eq!(Plan::decode(&invalid_utf8), Err(Error::Serialization));
-        assert_eq!(
-            Plan::decode(&vec![b' '; MAX_PLAN_BYTES.saturating_add(1)]),
-            Err(Error::Oversized)
-        );
-    }
-
-    #[test]
-    fn every_entry_and_encoding_byte_remains_bounded() {
-        let mut profiles = Vec::new();
-        for index in 0..MAX_PROFILES {
-            let mut selected = profile(Provider::Chromium, true, false).unwrap();
-            selected.id = format!("{index:064x}");
-            profiles.push(selected);
-        }
-        let mut plan = Plan::new("setup".into(), [7; 32], profiles).unwrap();
-        assert!(plan.encode().unwrap().len() <= MAX_PLAN_BYTES);
-        let mut extra = profile(Provider::Chromium, true, false).unwrap();
-        extra.id = "b".repeat(64);
-        plan.profiles.push(extra);
-        assert_eq!(plan.validate(), Err(Error::InvalidPlan));
-        plan.profiles.pop();
-        for selected in &mut plan.profiles {
+            selected.relative_path = vec!["é".repeat(128)];
+            assert_eq!(selected.validate(), Err(Error::InvalidProfile));
             selected.relative_path = vec!["x".repeat(255); 16];
             selected.validate().unwrap();
+            selected.relative_path.push("a".into());
+            assert_eq!(selected.validate(), Err(Error::InvalidProfile));
         }
-        assert_eq!(plan.validate(), Err(Error::Oversized));
-        assert_eq!(plan.encode(), Err(Error::Oversized));
+
+        phase schema_binding_profile_ids_and_duplicates_are_strict;
+        {
+            let selected = profile(Provider::Chromium, true, true).unwrap();
+            assert_eq!(
+                Plan::new(
+                    "setup".into(),
+                    [7; 32],
+                    vec![selected.clone(), selected.clone()]
+                ),
+                Err(Error::InvalidPlan)
+            );
+            for id in [
+                "A".repeat(64),
+                "g".repeat(64),
+                "a".repeat(63),
+                "a".repeat(65),
+            ] {
+                let mut changed = selected.clone();
+                changed.id = id;
+                assert_eq!(changed.validate(), Err(Error::InvalidProfile));
+            }
+            let mut plan = Plan::new("x".repeat(256), [7; 32], vec![selected]).unwrap();
+            plan.schema = 2;
+            assert_eq!(plan.validate(), Err(Error::InvalidPlan));
+            plan.schema = SCHEMA;
+            for binding in [
+                String::new(),
+                "x".repeat(257),
+                "setup\0other".into(),
+                "setup\nother".into(),
+            ] {
+                plan.setup_binding = binding;
+                assert_eq!(plan.validate(), Err(Error::InvalidPlan));
+            }
+        }
+
+        phase decode_refuses_unknown_fields_invalid_utf8_and_oversized_input;
+        {
+            let plan = Plan::new(
+                "setup".into(),
+                [7; 32],
+                vec![profile(Provider::Firefox, true, true).unwrap()],
+            )
+            .unwrap();
+            let mut encoded = serde_json::to_value(&plan).unwrap();
+            encoded["unexpected"] = serde_json::json!("credential");
+            assert_eq!(
+                Plan::decode(&serde_json::to_vec(&encoded).unwrap()),
+                Err(Error::Serialization)
+            );
+            let mut encoded = serde_json::to_value(&plan).unwrap();
+            encoded["profiles"][0]["absolute_path"] = serde_json::json!("/home/person");
+            assert_eq!(
+                Plan::decode(&serde_json::to_vec(&encoded).unwrap()),
+                Err(Error::Serialization)
+            );
+            let mut encoded = serde_json::to_value(&plan).unwrap();
+            encoded["profiles"][0]["provider"] = serde_json::json!("other-browser");
+            assert_eq!(
+                Plan::decode(&serde_json::to_vec(&encoded).unwrap()),
+                Err(Error::Serialization)
+            );
+            let mut invalid_utf8 = plan.encode().unwrap();
+            let position = invalid_utf8
+                .windows(9)
+                .position(|bytes| bytes == b"\".config\"")
+                .expect("fixture profile path missing");
+            *invalid_utf8
+                .get_mut(position.saturating_add(1))
+                .expect("fixture profile path missing") = 0xff;
+            assert_eq!(Plan::decode(&invalid_utf8), Err(Error::Serialization));
+            assert_eq!(
+                Plan::decode(&vec![b' '; MAX_PLAN_BYTES.saturating_add(1)]),
+                Err(Error::Oversized)
+            );
+        }
+
+        phase every_entry_and_encoding_byte_remains_bounded;
+        {
+            let mut profiles = Vec::new();
+            for index in 0..MAX_PROFILES {
+                let mut selected = profile(Provider::Chromium, true, false).unwrap();
+                selected.id = format!("{index:064x}");
+                profiles.push(selected);
+            }
+            let mut plan = Plan::new("setup".into(), [7; 32], profiles).unwrap();
+            assert!(plan.encode().unwrap().len() <= MAX_PLAN_BYTES);
+            let mut extra = profile(Provider::Chromium, true, false).unwrap();
+            extra.id = "b".repeat(64);
+            plan.profiles.push(extra);
+            assert_eq!(plan.validate(), Err(Error::InvalidPlan));
+            plan.profiles.pop();
+            for selected in &mut plan.profiles {
+                selected.relative_path = vec!["x".repeat(255); 16];
+                selected.validate().unwrap();
+            }
+            assert_eq!(plan.validate(), Err(Error::Oversized));
+            assert_eq!(plan.encode(), Err(Error::Oversized));
+        }
     }
 }

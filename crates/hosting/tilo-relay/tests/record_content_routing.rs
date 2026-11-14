@@ -12,8 +12,9 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay};
+use tilo_relay::WorkspaceId;
 
-const WS: u64 = 12;
+const WS: WorkspaceId = WorkspaceId::from_u128(12);
 
 async fn subscribed(
     addr: iroh_base::EndpointAddr,
@@ -60,7 +61,7 @@ async fn quiet(client: &RelayClient) -> bool {
 #[tokio::test]
 async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
     let user = TestUser::fresh("Alice");
-    let host = user.enrol("home", DeviceCapabilities::host());
+    let host = user.enrol("home", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("desktop", DeviceCapabilities::member());
     let c = user.enrol("phone", DeviceCapabilities::member());

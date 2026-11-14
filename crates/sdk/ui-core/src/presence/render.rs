@@ -3422,61 +3422,65 @@ mod tests {
         agent_nametag_rect(viewport, tip, locus, size)
     }
 
-    #[test]
-    fn an_agents_name_hangs_above_the_line_its_caret_is_in() {
-        // The mid-edit frame: the pointer stands on the line the agent is
-        // writing, and its name sat across that line's words. The box the
-        // caret publishes is its own, from the baseline down, while the words
-        // of the line rise above it.
-        let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
-        let line = Rect::new(120.0, 260.0, 640.0, 289.0);
-        let caret = Rect::new(120.0, 272.0, 121.0, 289.0);
-        let tag = nametag((300.0, 282.0), caret, viewport);
-        assert!(tag.intersect(line).is_zero_area(), "off the line: {tag:?}");
-        assert!(tag.y1 <= line.y0, "above the line's words: {tag:?}");
-    }
+    tilo_test_env::scenario! {
+        fn an_agents_name_hangs_clear_of_its_line_and_inside_the_frame;
 
-    #[test]
-    fn an_agents_name_keeps_one_gap_above_a_line_it_is_given_whole() {
-        let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
-        let line = Rect::new(120.0, 300.0, 640.0, 324.0);
-        let tag = nametag((300.0, 312.0), line, viewport);
-        assert!(
-            tag.y1 <= line.y0 - PILL_GAP,
-            "at least a gap above the line: {tag:?}"
-        );
-    }
+        phase an_agents_name_hangs_above_the_line_its_caret_is_in;
+        {
+            // The mid-edit frame: the pointer stands on the line the agent is
+            // writing, and its name sat across that line's words. The box the
+            // caret publishes is its own, from the baseline down, while the words
+            // of the line rise above it.
+            let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
+            let line = Rect::new(120.0, 260.0, 640.0, 289.0);
+            let caret = Rect::new(120.0, 272.0, 121.0, 289.0);
+            let tag = nametag((300.0, 282.0), caret, viewport);
+            assert!(tag.intersect(line).is_zero_area(), "off the line: {tag:?}");
+            assert!(tag.y1 <= line.y0, "above the line's words: {tag:?}");
+        }
 
-    #[test]
-    fn an_agents_name_hangs_below_only_when_there_is_no_room_above() {
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        // A first line at the very top of the frame: rising would leave it.
-        let line = Rect::new(120.0, 8.0, 640.0, 32.0);
-        let tag = nametag((300.0, 20.0), line, viewport);
-        assert!(tag.y0 >= line.y1, "below the line: {tag:?}");
-        assert!((tag.y0 - line.y1 - PILL_GAP).abs() < 0.01, "{tag:?}");
-    }
+        phase an_agents_name_keeps_one_gap_above_a_line_it_is_given_whole;
+        {
+            let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
+            let line = Rect::new(120.0, 300.0, 640.0, 324.0);
+            let tag = nametag((300.0, 312.0), line, viewport);
+            assert!(
+                tag.y1 <= line.y0 - PILL_GAP,
+                "at least a gap above the line: {tag:?}"
+            );
+        }
 
-    #[test]
-    fn an_agents_name_stays_inside_the_frame_beside_a_pointer_at_its_edge() {
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let line = Rect::new(120.0, 300.0, 1276.0, 324.0);
-        let tag = nametag((1270.0, 312.0), line, viewport);
-        assert!(tag.x0 >= viewport.x0 && tag.x1 <= viewport.x1, "{tag:?}");
-        assert!(tag.intersect(line).is_zero_area(), "{tag:?}");
-    }
+        phase an_agents_name_hangs_below_only_when_there_is_no_room_above;
+        {
+            let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            // A first line at the very top of the frame: rising would leave it.
+            let line = Rect::new(120.0, 8.0, 640.0, 32.0);
+            let tag = nametag((300.0, 20.0), line, viewport);
+            assert!(tag.y0 >= line.y1, "below the line: {tag:?}");
+            assert!((tag.y0 - line.y1 - PILL_GAP).abs() < 0.01, "{tag:?}");
+        }
 
-    #[test]
-    fn a_pointer_acting_on_a_whole_window_hangs_its_name_from_its_own_ring() {
-        // The bounds of a window are no line: a tag hung from their top edge
-        // would fly far above the pointer it belongs to.
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let window = Rect::new(0.0, 0.0, 1280.0, 700.0);
-        let tag = nametag((300.0, 400.0), window, viewport);
-        assert!(tag.y1 < 400.0, "above the pointer: {tag:?}");
-        assert!(
-            400.0 - tag.y1 < 64.0,
-            "beside it, not across the frame: {tag:?}"
-        );
+        phase an_agents_name_stays_inside_the_frame_beside_a_pointer_at_its_edge;
+        {
+            let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let line = Rect::new(120.0, 300.0, 1276.0, 324.0);
+            let tag = nametag((1270.0, 312.0), line, viewport);
+            assert!(tag.x0 >= viewport.x0 && tag.x1 <= viewport.x1, "{tag:?}");
+            assert!(tag.intersect(line).is_zero_area(), "{tag:?}");
+        }
+
+        phase a_pointer_acting_on_a_whole_window_hangs_its_name_from_its_own_ring;
+        {
+            // The bounds of a window are no line: a tag hung from their top edge
+            // would fly far above the pointer it belongs to.
+            let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let window = Rect::new(0.0, 0.0, 1280.0, 700.0);
+            let tag = nametag((300.0, 400.0), window, viewport);
+            assert!(tag.y1 < 400.0, "above the pointer: {tag:?}");
+            assert!(
+                400.0 - tag.y1 < 64.0,
+                "beside it, not across the frame: {tag:?}"
+            );
+        }
     }
 }

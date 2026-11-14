@@ -22,5 +22,7 @@ mod tests {
             super::escape(r#"<a href="x">Tom's & co</a>"#),
             "&lt;a href=&quot;x&quot;&gt;Tom&#39;s &amp; co&lt;/a&gt;"
         );
+        assert_eq!(super::escape(""), "");
+        assert_eq!(super::escape("plain text 1"), "plain text 1");
     }
 }

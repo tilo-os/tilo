@@ -456,7 +456,6 @@ impl JoinedChannel {
             })?;
         let route = self.route();
         if self.verified_identity.agent_id.is_some()
-            || self.verified_identity.host_scope.is_some()
             || !local.current()
             || route.app_id != local.app_id
             || route.cluster_id != local.workspace_id

@@ -19,6 +19,10 @@ pub enum Failure {
     Refused(String),
     /// The connection closed before the host answered.
     Closed,
+    /// The host sent a frame this endpoint cannot decode, so nothing after
+    /// it can be read either: the two sides disagree on the wire, and the
+    /// connection ended there.
+    Unreadable(String),
 }
 
 impl std::fmt::Display for Failure {
@@ -26,6 +30,10 @@ impl std::fmt::Display for Failure {
         match self {
             Self::Refused(reason) => f.write_str(reason),
             Self::Closed => f.write_str(DISCONNECTED),
+            Self::Unreadable(error) => write!(
+                f,
+                "the collaboration host sent a frame this endpoint cannot read: {error}"
+            ),
         }
     }
 }
@@ -51,7 +59,8 @@ struct Routes {
     calls: HashMap<u64, oneshot::Sender<Result<Reply, String>>>,
     subscriptions: HashMap<u64, mpsc::UnboundedSender<Delivery>>,
     answerers: HashMap<Handle, Answerer>,
-    closed: bool,
+    /// Why the connection ended, once it has.
+    ended: Option<Failure>,
 }
 
 struct Shared {
@@ -64,6 +73,11 @@ struct Shared {
 impl Shared {
     fn routes(&self) -> std::sync::MutexGuard<'_, Routes> {
         self.routes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Why the connection ended: what the reader saw, or a plain close.
+    fn ended(&self) -> Failure {
+        self.routes().ended.clone().unwrap_or(Failure::Closed)
     }
 
     fn id(&self) -> u64 {
@@ -158,18 +172,18 @@ impl Client {
         let (answer, answered) = oneshot::channel();
         {
             let mut routes = self.shared.routes();
-            if routes.closed {
-                return Err(Failure::Closed);
+            if let Some(ended) = &routes.ended {
+                return Err(ended.clone());
             }
             routes.calls.insert(id, answer);
         }
         if self.shared.outgoing.send(Call { id, request }).is_err() {
             self.shared.routes().calls.remove(&id);
-            return Err(Failure::Closed);
+            return Err(self.shared.ended());
         }
         answered
             .await
-            .map_err(|_| Failure::Closed)?
+            .map_err(|_| self.shared.ended())?
             .map_err(Failure::Refused)
     }
 
@@ -202,8 +216,8 @@ impl Client {
         let (deliver, deliveries) = mpsc::unbounded_channel();
         {
             let mut routes = self.shared.routes();
-            if routes.closed {
-                return Err(Failure::Closed);
+            if let Some(ended) = &routes.ended {
+                return Err(ended.clone());
             }
             routes.calls.insert(id, answer);
             routes.subscriptions.insert(id, deliver);
@@ -215,7 +229,7 @@ impl Client {
         };
         if self.shared.outgoing.send(Call { id, request }).is_err() {
             self.shared.routes().calls.remove(&id);
-            return Err(Failure::Closed);
+            return Err(self.shared.ended());
         }
         match answered.await {
             Ok(Ok(Reply::Subscribed)) => Ok(subscription),
@@ -227,7 +241,7 @@ impl Client {
                 self.shared.routes().subscriptions.remove(&id);
                 Err(Failure::Refused(error))
             }
-            Err(_) => Err(Failure::Closed),
+            Err(_) => Err(self.shared.ended()),
         }
     }
 
@@ -281,25 +295,31 @@ async fn carry<R, W>(
         loop {
             let frame: HostFrame = match FRAMING.read_value_async(&mut reader).await {
                 Ok(Some(frame)) => frame,
-                Ok(None) | Err(_) => break,
+                Ok(None)
+                | Err(
+                    wire_frame::FrameError::Io(_)
+                    | wire_frame::FrameError::Truncated
+                    | wire_frame::FrameError::Closed,
+                ) => return Failure::Closed,
+                Err(error) => return Failure::Unreadable(error.to_string()),
             };
             let Some(shared) = shared.upgrade() else {
-                break;
+                return Failure::Closed;
             };
             route(&shared, frame);
         }
     };
-    tokio::select! {
-        () = write => {}
-        () = read => {}
-    }
+    let ended = tokio::select! {
+        () = write => Failure::Closed,
+        ended = read => ended,
+    };
     if let Some(shared) = shared.upgrade() {
         let mut routes = shared.routes();
-        routes.closed = true;
+        routes.ended = Some(ended.clone());
         routes.calls.clear();
         routes.answerers.clear();
         for (_, deliver) in routes.subscriptions.drain() {
-            let _ = deliver.send(Delivery::Ended(Failure::Closed));
+            let _ = deliver.send(Delivery::Ended(ended.clone()));
         }
     }
     let _ = close.send(true);
@@ -353,5 +373,52 @@ fn route(shared: &Arc<Shared>, frame: HostFrame) {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame the endpoint cannot decode ends the connection with that
+    /// reason, not as a plain close: the two sides disagree on the wire, and
+    /// whoever reads the failure is told so.
+    #[tokio::test]
+    async fn a_frame_the_endpoint_cannot_read_says_so() {
+        let (endpoint, host) = tokio::io::duplex(1 << 16);
+        let (reader, writer) = tokio::io::split(endpoint);
+        let (client, carried) = Client::new(reader, writer);
+        let carried = tokio::spawn(carried);
+        let (mut host_reader, mut host_writer) = tokio::io::split(host);
+        let asked = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .subscribe(Handle(1), Topic::Context)
+                    .await
+                    .map(|_| ())
+            }
+        });
+        let call: Call = FRAMING
+            .read_value_async(&mut host_reader)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(call.request, Operation::Subscribe { .. }));
+        // A frame whose kind no endpoint knows: its tag reads 200.
+        let unreadable = FRAMING.encode_value(&200_u32).unwrap();
+        host_writer.write_all(&unreadable).await.unwrap();
+        host_writer.flush().await.unwrap();
+
+        let failure = asked.await.unwrap().unwrap_err();
+        assert!(
+            matches!(failure, Failure::Unreadable(_)),
+            "the pending call is told why: {failure}"
+        );
+        carried.await.unwrap();
+        assert!(matches!(
+            client.subscribe(Handle(1), Topic::Context).await,
+            Err(Failure::Unreadable(_))
+        ));
     }
 }

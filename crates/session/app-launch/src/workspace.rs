@@ -16,7 +16,8 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{Access, CapOverride, LaunchGrants, Scope, Subject};
+use collab_types::caps::{Access, CapOverride, LaunchGrants, Scope};
+use tilo_action_policy::Grantee;
 use tilo_action_policy::WorkspacePolicy;
 
 /// The one app that browses this device's own files. It is handed the home
@@ -87,18 +88,40 @@ impl Workspace {
     #[must_use]
     pub fn grants_for_launch(&self, app: &str, home: Option<PathBuf>) -> LaunchGrants {
         let mut grants = self.grants.for_app(app);
+        grants.author = self.may_change(app);
         if app != FILE_MANAGER {
             return grants;
         }
         let Some(home) = home.filter(|home| home.is_absolute()) else {
             return grants;
         };
-        grants.sandbox.push(CapOverride::grant(
-            Subject::app(app),
-            Scope::FsPath(home.display().to_string()),
-            Access::Write,
-        ));
+        grants.sandbox.push(
+            CapOverride::grant(
+                Grantee::person(self.person.clone()),
+                Scope::FsPath(home.display().to_string()),
+                Access::Write,
+            )
+            .through(app),
+        );
         grants
+    }
+
+    /// Whether `person` may change this workspace through `app`: what its
+    /// answer in the workspace's policy says, and nothing where the session
+    /// holds no policy for the workspace.
+    fn may_change(&self, app: &str) -> bool {
+        let Some(policy) = &self.policy else {
+            return false;
+        };
+        policy
+            .person_on_device(&self.person, false)
+            .decide(
+                &policy.node().app(app),
+                tilo_action_policy::ActionKind::Undoable,
+                &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
+            )
+            .answer
+            == tilo_action_policy::Answer::Allow
     }
 
     /// Write the grants where `tilo-launcher --capabilities` reads them, and
@@ -157,15 +180,18 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Scope, Subject};
+    use collab_types::caps::{Access, CapOverride, Scope};
 
     fn granted(workspace: &Workspace, app: &str, path: &str) -> LaunchGrants {
         let mut grants = workspace.grants.clone();
-        grants.sandbox.push(CapOverride::grant(
-            Subject::app(app),
-            Scope::FsPath(path.into()),
-            Access::Read,
-        ));
+        grants.sandbox.push(
+            CapOverride::grant(
+                Grantee::person("person-7"),
+                Scope::FsPath(path.into()),
+                Access::Read,
+            )
+            .through(app),
+        );
         grants
     }
 
@@ -206,17 +232,21 @@ mod tests {
     #[test]
     fn the_file_manager_is_handed_this_devices_home() {
         let directory = tempfile::tempdir().expect("a directory");
-        let workspace = Workspace::under(directory.path(), "workspace-7");
+        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        workspace.person = "person-7".to_owned();
         let home = PathBuf::from("/home/you");
         assert_eq!(
             workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
             LaunchGrants {
-                authors: Vec::new(),
-                sandbox: vec![CapOverride::grant(
-                    Subject::app("so.tilo.file-explorer"),
-                    Scope::FsPath(home.display().to_string()),
-                    Access::Write,
-                )],
+                author: false,
+                sandbox: vec![
+                    CapOverride::grant(
+                        Grantee::person("person-7"),
+                        Scope::FsPath(home.display().to_string()),
+                        Access::Write,
+                    )
+                    .through("so.tilo.file-explorer"),
+                ],
             }
         );
         assert!(
@@ -252,15 +282,19 @@ mod tests {
     fn a_launch_reads_back_only_what_this_app_was_granted() {
         let directory = tempfile::tempdir().expect("a directory");
         let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        workspace.policy = Some(WorkspacePolicy::new("workspace-7", "person-7"));
+        workspace.person = "person-7".to_owned();
         workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
         workspace.grants = {
             let mut grants = workspace.grants.clone();
-            grants.sandbox.push(CapOverride::grant(
-                Subject::app("so.tilo.mail"),
-                Scope::FsPath("/home/you/mail".into()),
-                Access::Read,
-            ));
-            grants.authors.push("so.tilo.notes".into());
+            grants.sandbox.push(
+                CapOverride::grant(
+                    Grantee::person("person-7"),
+                    Scope::FsPath("/home/you/mail".into()),
+                    Access::Read,
+                )
+                .through("so.tilo.mail"),
+            );
             grants
         };
         let path = workspace
@@ -271,11 +305,14 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
         assert_eq!(
             read,
-            workspace.grants.for_app("so.tilo.notes"),
+            workspace.grants_for_launch("so.tilo.notes", None),
             "the launcher reads what was granted to this app, not the workspace's other grants"
         );
         assert_eq!(read.sandbox.len(), 1);
-        assert_eq!(read.authors, vec!["so.tilo.notes".to_string()]);
+        assert!(
+            read.author,
+            "the person may change the workspace through the app"
+        );
     }
 
     #[test]

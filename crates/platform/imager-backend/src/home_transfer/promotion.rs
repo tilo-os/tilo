@@ -1211,14 +1211,19 @@ mod retirement_tests {
             std::thread::yield_now();
         }
     }
-    #[test]
-    fn actual_terminal_event_does_not_release_running_tail() {
-        let (worker, tail) = held_tail(false);
-        finish(worker, tail);
-    }
-    #[test]
-    fn actual_channel_eof_does_not_release_running_tail() {
-        let (worker, tail) = held_tail(true);
-        finish(worker, tail);
+    tilo_test_env::scenario! {
+        fn a_running_tail_outlives_terminal_events_and_channel_eof;
+
+        phase actual_terminal_event_does_not_release_running_tail;
+        {
+            let (worker, tail) = held_tail(false);
+            finish(worker, tail);
+        }
+
+        phase actual_channel_eof_does_not_release_running_tail;
+        {
+            let (worker, tail) = held_tail(true);
+            finish(worker, tail);
+        }
     }
 }

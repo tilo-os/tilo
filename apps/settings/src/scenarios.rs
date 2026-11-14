@@ -191,7 +191,6 @@ pub struct CaptureScene {
     pub account_root: Option<PathBuf>,
     pub account_form: Option<AccountKind>,
     pub displays: Option<DisplaysSample>,
-    pub device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     pub person_devices: Vec<settings_store::person_displays::PersonDevice>,
     pub input_hardware: Option<settings_store::hardware::InputHardwareSnapshot>,
     #[cfg(feature = "tilo-os")]
@@ -202,8 +201,8 @@ pub struct CaptureScene {
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
     pub access: Option<crate::panes::devices_access::AccessSample>,
     pub linked_account: Option<ui::linked_accounts::LinkState>,
-    pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
-    pub home_relay: Option<ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting>,
+    #[cfg(feature = "tilo-os")]
+    pub personal_devices: Vec<crate::panes::device_mesh::PersonalDevice>,
     pub billing: Option<ui::tilo_actions::remote::host_account::HostAccount>,
     pub network: Option<NetworkSample>,
     pub mobile: Option<MobileSample>,
@@ -317,11 +316,6 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         } else {
             Vec::new()
         },
-        device_displays: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
-            device_display_fixture()
-        } else {
-            Vec::new()
-        },
         #[cfg(feature = "tilo-os")]
         storage_devices: if fixture.scenario() == Some(Category::Storage.slug()) {
             storage_fixture()
@@ -343,14 +337,13 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         },
         access: access_fixture(fixture.scenario()),
         linked_account: capture_link_state(fixture.scenario()),
-        home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
-            .then(home_relay_fixture),
         billing: billing_fixture(fixture.scenario()),
-        fleet_devices: if matches!(
+        #[cfg(feature = "tilo-os")]
+        personal_devices: if matches!(
             fixture.scenario(),
             Some(scenario) if scenario == Category::DeviceMesh.slug()
         ) {
-            fleet_fixture()
+            personal_devices_fixture()
         } else {
             Vec::new()
         },
@@ -388,58 +381,21 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
     });
 }
 
-fn fleet_fixture() -> Vec<ui::tilo_actions::remote::identity_admin::FleetDevice> {
-    use ui::tilo_actions::remote::identity_admin::FleetDevice;
-    let device = |label: &str, key: &str, fingerprint: &str, current, can_host| FleetDevice {
+#[cfg(feature = "tilo-os")]
+fn personal_devices_fixture() -> Vec<crate::panes::device_mesh::PersonalDevice> {
+    use crate::panes::device_mesh::PersonalDevice;
+    let device = |label: &str, key: &str, local, nearby| PersonalDevice {
+        id: key.repeat(8),
         label: label.into(),
-        key_hex: key.repeat(8),
-        fingerprint: fingerprint.into(),
-        current,
-        revoked: false,
-        can_host,
-        kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
-        browser: None,
-        agent: None,
-        issued_ms: None,
-        expires_ms: None,
-        last_active_ms: None,
-        online: false,
-        workspace: None,
+        online: local || nearby,
+        nearby,
+        local,
     };
     vec![
-        device(
-            "Ada's MacBook",
-            "4f2a9c1e",
-            "4F 2A 9C 1E 7B D3",
-            true,
-            false,
-        ),
-        device(
-            "Safari on iPhone",
-            "b81d03e6",
-            "B8 1D 03 E6 5A 92",
-            false,
-            false,
-        ),
-        device("Home server", "6c47f2a0", "6C 47 F2 A0 E1 38", false, true),
+        device("Ada's MacBook", "4f2a9c1e", true, false),
+        device("Ada's iPhone", "b81d03e6", false, true),
+        device("Home server", "6c47f2a0", false, false),
     ]
-}
-
-fn home_relay_fixture() -> ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting {
-    use ui::tilo_actions::remote::home_relay_hosting::{HomeRelayHosting, HostedWorkspace};
-    let workspace = |room: &str, name: &str, on_relay| HostedWorkspace {
-        workspace: room.into(),
-        name: name.into(),
-        on_relay,
-    };
-    HomeRelayHosting {
-        relay: Some("Home server".into()),
-        workspaces: vec![
-            workspace("4d6f1a2c-0000-4000-8000-000000000001", "Personal", true),
-            workspace("4d6f1a2c-0000-4000-8000-000000000002", "Studio", false),
-            workspace("4d6f1a2c-0000-4000-8000-000000000003", "Taxes", false),
-        ],
-    }
 }
 
 pub(crate) fn access_fixture(
@@ -472,7 +428,6 @@ pub(crate) fn access_fixture(
         devices: vec![
             DeviceView {
                 current: true,
-                can_host: true,
                 ..device(1, "Framework 16")
             },
             DeviceView {
@@ -771,66 +726,62 @@ fn windows_support(scenario: Option<&str>) -> Option<os_actions::windows_compat:
 
 fn person_display_fixture() -> Vec<settings_store::person_displays::PersonDevice> {
     use settings_store::person_displays::{DeviceOutput, PersonDevice};
-    device_display_fixture()
-        .into_iter()
-        .map(|screen| PersonDevice {
-            device: screen.device,
-            label: screen.device_label,
-            local: screen.local,
-            online: screen.online,
+    [
+        (
+            "fixture-laptop",
+            "Laptop",
+            "eDP-1",
+            "Built-in display",
+            true,
+            1920,
+            1080,
+            1000,
+        ),
+        (
+            "fixture-desktop",
+            "Desktop",
+            "DP-1",
+            "External display",
+            false,
+            1280,
+            720,
+            1250,
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(device, label, output, name, local, width, height, scale_milli): (
+            &str,
+            &str,
+            &str,
+            &str,
+            bool,
+            u32,
+            u32,
+            u16,
+        )| PersonDevice {
+            device: device.into(),
+            label: label.into(),
+            local,
+            online: true,
             outputs: vec![DeviceOutput {
-                id: screen.connector,
-                name: screen.label,
-                builtin: screen.local,
+                id: output.into(),
+                name: name.into(),
+                builtin: local,
                 x: 0,
                 y: 0,
-                width: screen.width,
-                height: screen.height,
-                mode_width: screen.width * u32::from(screen.scale_milli) / 1000,
-                mode_height: screen.height * u32::from(screen.scale_milli) / 1000,
+                width,
+                height,
+                mode_width: width * u32::from(scale_milli) / 1000,
+                mode_height: height * u32::from(scale_milli) / 1000,
                 refresh_mhz: 60_000,
-                scale_milli: screen.scale_milli,
+                scale_milli,
                 connected: true,
                 enabled: true,
             }],
-        })
-        .collect()
-}
-
-fn device_display_fixture() -> Vec<settings_store::device_displays::DeviceDisplay> {
-    use settings_store::device_displays::DeviceDisplay;
-    vec![
-        DeviceDisplay {
-            device: "fixture-laptop".into(),
-            device_label: "Laptop".into(),
-            connector: "eDP-1".into(),
-            output_id: Some("eDP-1".into()),
-            label: "Built-in display".into(),
-            online: true,
-            local: true,
-            x: 0,
-            y: 0,
-            width: 960,
-            height: 540,
-            scale_milli: 2000,
-            revision: 1,
         },
-        DeviceDisplay {
-            device: "fixture-desktop".into(),
-            device_label: "Desktop".into(),
-            connector: "DP-1".into(),
-            output_id: Some("DP-1".into()),
-            label: "External display".into(),
-            online: true,
-            local: false,
-            x: 960,
-            y: 0,
-            width: 1280,
-            height: 720,
-            scale_milli: 1250,
-            revision: 1,
-        },
-    ]
+    )
+    .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

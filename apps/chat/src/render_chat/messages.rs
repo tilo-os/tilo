@@ -2,8 +2,7 @@
 //! what each row says and offers — its author, body, reactions, thread
 //! affordance and menu — and the attachments it carries.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use ui::Widget;
 use ui::chrome::{self, SelectionState};
@@ -15,7 +14,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::conversation::{
-    ConversationClock, DayBreaks, EarlierUnavailableFace, SectionDividerFace, unread_label,
+    ConversationClock, DayBreaks, EarlierUnavailableFace, Jump, JumpFace, SectionDividerFace,
+    unread_label,
 };
 use ui::widget::{ArrivalFace, SkeletonFace, SkeletonShape};
 use ui::widget::{
@@ -208,7 +208,7 @@ impl ChatApp {
         }));
         self.draw_message_bar(PaintCtx::new(scene, tf, tr, theme), area, hits);
         if !self.timeline_at_end {
-            self.draw_jump_to_latest(scene, tf, tr, theme, area, hits);
+            self.draw_jump_to_latest(PaintCtx::new(scene, tf, tr, theme), area, hits);
         }
     }
 
@@ -404,33 +404,20 @@ impl ChatApp {
     /// sync once the live edge is actually visible.
     fn draw_jump_to_latest(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        mut paint: PaintCtx<'_>,
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let label = &crate::i18n::t("chat-jump-latest");
-        let face = ButtonFace::new(Rect::ZERO, label).icon(Icon::ArrowDown);
-        let w = face.intrinsic_width(tr, theme);
-        let h = ButtonFace::height(ControlSize::Regular, theme);
-        let inset = self.chrome.gutter;
-        let rect = Rect::new(
-            area.x1 - inset - w,
-            area.y1 - inset / 2.0 - h,
-            area.x1 - inset,
-            area.y1 - inset / 2.0,
+        let theme = paint.theme;
+        let rect = ui::widget::conversation::pill_rect(
+            area,
+            self.chrome.gutter,
+            Jump::Present.width(paint.text, theme),
+            ButtonFace::height(ControlSize::Regular, theme),
         );
-        Button::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &ButtonFace::new(rect, label)
-                .icon(Icon::ArrowDown)
-                .hovered(self.hovered(rect)),
-        );
+        JumpFace::new(Jump::Present, rect)
+            .hovered(self.hovered(rect))
+            .paint(&mut paint);
         ChatApp::push_hit(hits, rect, Hit::JumpToLatest);
     }
 

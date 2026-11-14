@@ -259,73 +259,79 @@ mod tests {
             to_port: "in".into(),
         }
     }
-    #[test]
-    fn connections_refuse_cycles_and_invalid_targets_and_commit_requested_inputs() {
+    tilo_test_env::scenario! {
+        /// A node graph: the connections it refuses or commits, and the order it evaluates in.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_graph_refuses_bad_connections_and_evaluates_in_dependency_order;
+
+        phase connections_refuse_cycles_and_invalid_targets_and_commit_requested_inputs;
         {
-            let mut g = Graph::default();
-            for n in ["a", "b", "c"] {
-                g.insert(node(n));
+            {
+                let mut g = Graph::default();
+                for n in ["a", "b", "c"] {
+                    g.insert(node(n));
+                }
+                g.connect(edge("a", "b")).unwrap();
+                g.connect(edge("b", "c")).unwrap();
+                assert_eq!(g.connect(edge("c", "a")), Err(ConnectError::Cycle));
+                assert_eq!(g.edges.len(), 2);
             }
-            g.connect(edge("a", "b")).unwrap();
-            g.connect(edge("b", "c")).unwrap();
-            assert_eq!(g.connect(edge("c", "a")), Err(ConnectError::Cycle));
-            assert_eq!(g.edges.len(), 2);
+
+            {
+                let mut graph = Graph::default();
+                for id in ["source", "grade", "output"] {
+                    graph.insert(node(id));
+                }
+                graph.connect(edge("source", "grade")).unwrap();
+                graph.connect(edge("grade", "output")).unwrap();
+                let before = graph.edges.clone();
+
+                assert_eq!(
+                    graph.reconnect_input(edge("output", "grade")),
+                    Err(ConnectError::Cycle)
+                );
+                assert_eq!(graph.edges, before);
+            }
+
+            {
+                let mut graph = Graph::default();
+                for id in ["source", "first", "second"] {
+                    graph.insert(node(id));
+                }
+                graph.nodes.get_mut("second").unwrap().inputs.push(Port {
+                    id: "mask".into(),
+                    data_type: "mask".into(),
+                    label: "Mask".into(),
+                });
+
+                let targets = connection_targets(&graph, "source", "out");
+                assert_eq!(
+                    targets,
+                    vec![
+                        ConnectionTarget {
+                            node: "first".into(),
+                            port: "in".into()
+                        },
+                        ConnectionTarget {
+                            node: "second".into(),
+                            port: "in".into()
+                        },
+                    ]
+                );
+            }
         }
 
+        phase evaluation_order_follows_dependencies_not_visual_position;
         {
-            let mut graph = Graph::default();
-            for id in ["source", "grade", "output"] {
-                graph.insert(node(id));
+            {
+                let mut g = Graph::default();
+                for n in ["output", "source", "grade"] {
+                    g.insert(node(n));
+                }
+                g.connect(edge("source", "grade")).unwrap();
+                g.connect(edge("grade", "output")).unwrap();
+                assert_eq!(g.evaluation_order().unwrap(), ["source", "grade", "output"]);
             }
-            graph.connect(edge("source", "grade")).unwrap();
-            graph.connect(edge("grade", "output")).unwrap();
-            let before = graph.edges.clone();
-
-            assert_eq!(
-                graph.reconnect_input(edge("output", "grade")),
-                Err(ConnectError::Cycle)
-            );
-            assert_eq!(graph.edges, before);
-        }
-
-        {
-            let mut graph = Graph::default();
-            for id in ["source", "first", "second"] {
-                graph.insert(node(id));
-            }
-            graph.nodes.get_mut("second").unwrap().inputs.push(Port {
-                id: "mask".into(),
-                data_type: "mask".into(),
-                label: "Mask".into(),
-            });
-
-            let targets = connection_targets(&graph, "source", "out");
-            assert_eq!(
-                targets,
-                vec![
-                    ConnectionTarget {
-                        node: "first".into(),
-                        port: "in".into()
-                    },
-                    ConnectionTarget {
-                        node: "second".into(),
-                        port: "in".into()
-                    },
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn evaluation_order_follows_dependencies_not_visual_position() {
-        {
-            let mut g = Graph::default();
-            for n in ["output", "source", "grade"] {
-                g.insert(node(n));
-            }
-            g.connect(edge("source", "grade")).unwrap();
-            g.connect(edge("grade", "output")).unwrap();
-            assert_eq!(g.evaluation_order().unwrap(), ["source", "grade", "output"]);
         }
     }
 }

@@ -2,27 +2,26 @@
 //! permissions.
 
 use std::collections::{BTreeMap, HashMap};
-use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope,
-    Subject as SandboxSubject, decide_capability,
+    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app, decide_capability,
 };
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet, Lifetime,
-    MemberId, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
+    Acting, ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet,
+    Lifetime, MemberId, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
 };
 
 use crate::app::AppId;
 use crate::arrangement::Arrangement;
 use crate::capability::Capability;
-use crate::collaborator::Collaborator;
 use crate::ids::{WorkspaceId, WorkspaceSlot};
 use crate::layout::Strip;
+use crate::present::Present;
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::shared_surfaces::SharedSurfaces;
+use collab_types::Member;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "StoredWorkspace")]
@@ -46,14 +45,20 @@ pub struct Workspace {
     /// 2D surface ([`crate::arrangement`]).
     #[serde(default, skip_serializing_if = "Arrangement::is_default")]
     pub arrangement: Arrangement,
-    /// Who is in this workspace *right now*, asserted present by a
-    /// verified invite or presence frame — not durable membership, which
-    /// is [`Workspace::policy`].
+    /// The workspace's members: its people with their roles, the agents
+    /// admitted in it and its bots, each with the colour it wears everywhere.
+    /// Placed from [`Workspace::policy`] and presence before a surface reads
+    /// them; never read back from a stored workspace.
     /// `skip_deserializing` rather than `skip`: reading is the direction
-    /// that can fabricate a stale person, but `Serialize` still feeds the
+    /// that can fabricate a stale member, but `Serialize` still feeds the
     /// control socket's state dump.
-    #[serde(skip_deserializing)]
-    pub collaborators: Vec<Collaborator>,
+    #[serde(skip_deserializing, default)]
+    pub members: Vec<Member>,
+    /// How each of them is here now: where they are, what they say they are
+    /// doing, how available they are. Said again on every frame and never
+    /// written: presence, not the workspace's document.
+    #[serde(skip, default)]
+    pub present: Vec<Present>,
     /// Who may do what in this workspace: its owner (structural, `None` until the
     /// local user adopts it on load), each member's role preset, and every
     /// grant on the workspace's tree. Changed only through governance actions.
@@ -117,8 +122,8 @@ struct StoredWorkspace {
     strips: Vec<Strip>,
     #[serde(default)]
     arrangement: Arrangement,
-    #[serde(skip_deserializing)]
-    collaborators: Vec<Collaborator>,
+    #[serde(skip_deserializing, default)]
+    members: Vec<Member>,
     #[serde(default)]
     policy: Option<WorkspacePolicy>,
     #[serde(default)]
@@ -153,7 +158,8 @@ impl From<StoredWorkspace> for Workspace {
             name: stored.name,
             strips: stored.strips,
             arrangement: stored.arrangement,
-            collaborators: stored.collaborators,
+            members: stored.members,
+            present: Vec::new(),
             policy,
             sandbox: stored.sandbox,
             presets: stored.presets,
@@ -168,7 +174,7 @@ impl From<StoredWorkspace> for Workspace {
     }
 }
 
-/// Stable identifier for a person. The compositor's collaborator table
+/// Stable identifier for a person. The compositor's member table
 /// keys on this; a peer's Ed25519 key hex is a valid value, and so is
 /// the local user's account name.
 pub type UserId = String;
@@ -190,25 +196,6 @@ pub const WORKSPACE_GOVERNANCE_APP_ID: &str = tilo_actions::remote::WORKSPACE_GO
 pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
 /// Taking such a grant back, named the same way.
 pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
-
-/// A role's stable name, as a collaborator row records it
-/// ([`crate::Collaborator::role_id`]). Surfaces translate it for display
-/// through [`role_from_id`]; it is never shown as is.
-pub fn role_id(role: Role) -> &'static str {
-    match role {
-        Role::Owner => "owner",
-        Role::Moderator => "moderator",
-        Role::Editor => "editor",
-        Role::Commenter => "commenter",
-        Role::Viewer => "viewer",
-    }
-}
-
-/// The role a [`role_id`] names, or `None` for a name this model does not
-/// define.
-pub fn role_from_id(id: &str) -> Option<Role> {
-    Role::ALL.into_iter().find(|role| role_id(*role) == id)
-}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WorkspaceDefaultError {
@@ -304,26 +291,27 @@ impl Workspace {
 
     // The sandbox: what apps' code may reach, granted through portals.
 
-    /// Record an app's sandbox grant. Returns the ids of the capabilities
-    /// written (one per requested scope).
-    pub fn grant_app(&mut self, app_id: &str, cap: &Capability) -> Vec<String> {
+    /// Record an app's sandbox grant, for `person`. Returns the ids of the
+    /// capabilities written (one per requested scope).
+    pub fn grant_app(&mut self, person: &str, app_id: &str, cap: &Capability) -> Vec<String> {
         let expiry = cap.requested_expiry();
         cap.requested_scopes()
             .into_iter()
             .map(|(scope, access)| {
                 self.grant_sandbox(
-                    CapOverride::grant(SandboxSubject::app(app_id), scope, access).expiring(expiry),
+                    CapOverride::grant(Grantee::person(person), scope, access)
+                        .through(app_id)
+                        .expiring(expiry),
                 )
             })
             .collect()
     }
 
     pub fn app_capabilities_at(&self, app_id: &str, now: u64) -> Vec<&CapOverride> {
-        let want = SandboxSubject::app(app_id);
         let live_at = Some(now);
         self.sandbox
             .iter()
-            .filter(|c| c.subject == want && c.effect == Effect::Grant && c.is_live_at(live_at))
+            .filter(|c| c.names_app(app_id) && c.effect == Effect::Grant && c.is_live_at(live_at))
             .collect()
     }
 
@@ -331,9 +319,8 @@ impl Workspace {
     /// `now`: a live [`Capability::DesktopControl`] grant of this
     /// workspace's.
     pub fn holds_desktop_control_at(&self, app_id: &str, now: u64) -> bool {
-        let want = SandboxSubject::app(app_id);
         self.sandbox.iter().any(|cap| {
-            cap.subject == want
+            cap.names_app(app_id)
                 && cap.effect == Effect::Grant
                 && cap.is_live_at(Some(now))
                 && matches!(
@@ -347,10 +334,9 @@ impl Workspace {
     /// [`Capability::DesktopControl`] grant of its, whatever its lifetime.
     /// Whether there was one.
     pub fn stop_desktop_control(&mut self, app_id: &str) -> bool {
-        let want = SandboxSubject::app(app_id);
         !self
             .revoke_sandbox_matching(|cap| {
-                cap.subject == want
+                cap.names_app(app_id)
                     && matches!(
                         Capability::from_capability(cap),
                         Some(Capability::DesktopControl { .. })
@@ -370,11 +356,11 @@ impl Workspace {
             if c.effect != Effect::Grant || !c.is_live_at(live_at) {
                 continue;
             }
-            let SandboxSubject::Principal(Principal::App(app)) = &c.subject else {
+            let Some(app) = &c.app else {
                 continue;
             };
             if let Some(desc) = Capability::from_capability(c) {
-                out.entry(AppId::new(app)).or_default().push(desc);
+                out.entry(AppId::new(app.as_str())).or_default().push(desc);
             }
         }
         out
@@ -390,10 +376,7 @@ impl Workspace {
         self.sandbox.iter().any(|capability| {
             capability.effect == Effect::Grant
                 && capability.is_live_at(live_at)
-                && matches!(
-                    &capability.subject,
-                    SandboxSubject::Principal(Principal::App(app)) if app == app_id
-                )
+                && capability.names_app(app_id)
                 && matches!(&capability.scope, Scope::Device(scope) if scope == device)
         })
     }
@@ -405,7 +388,7 @@ impl Workspace {
         self.sandbox.iter().any(|c| {
             c.effect == Effect::Grant
                 && c.is_live_at(live_at)
-                && matches!(&c.subject, SandboxSubject::Principal(Principal::App(_)))
+                && c.app.is_some()
                 && Capability::from_capability(c).is_some()
         })
     }
@@ -415,11 +398,10 @@ impl Workspace {
     /// that knows a row index can name the capability it removes.
     pub fn app_grant_ids_at(&self, app_id: &str, now: u64) -> Vec<String> {
         let live_at = Some(now);
-        let want = SandboxSubject::app(app_id);
         self.sandbox
             .iter()
             .filter(|c| {
-                c.subject == want
+                c.names_app(app_id)
                     && c.effect == Effect::Grant
                     && c.is_live_at(live_at)
                     && Capability::from_capability(c).is_some()
@@ -428,23 +410,35 @@ impl Workspace {
             .collect()
     }
 
-    /// May `actor` reach `resource` with `access` under the workspace's sandbox?
+    /// May the app `app` reach `resource` with `access` under the workspace's sandbox?
     pub fn sandbox_decide_at(
         &self,
-        actor: &Actor,
+        app: &str,
         resource: &ResourceRef,
         access: Access,
         now: u64,
     ) -> CapDecision {
-        decide_capability(actor, resource, access, &self.sandbox, Some(now))
+        decide_app(app, resource, access, &self.sandbox, Some(now))
+    }
+
+    /// May `acting` reach `resource` with `access` under the workspace's sandbox?
+    pub fn sandbox_decide_as_at(
+        &self,
+        acting: &Acting,
+        resource: &ResourceRef,
+        access: Access,
+        now: u64,
+    ) -> CapDecision {
+        decide_capability(acting, resource, access, &self.sandbox, Some(now))
     }
 
     /// Record a sandbox capability, minting an id if the caller didn't supply
-    /// one. A re-grant of the same (subject, scope, effect, access) merges,
+    /// one. A re-grant of the same (grantee, app, scope, effect, access) merges,
     /// keeping the longer-lived expiry.
     pub fn grant_sandbox(&mut self, mut cap: CapOverride) -> String {
         if let Some(slot) = self.sandbox.iter_mut().find(|c| {
-            c.subject == cap.subject
+            c.grantee == cap.grantee
+                && c.app == cap.app
                 && c.scope == cap.scope
                 && c.effect == cap.effect
                 && c.access == cap.access
@@ -669,6 +663,47 @@ impl Workspace {
         })
     }
 
+    /// `member` joins this workspace's member list: what a host places from its governance and
+    /// presence before a surface reads who is in the workspace. A member already listed keeps
+    /// their place.
+    pub fn list_member(&mut self, member: Member) {
+        match self
+            .members
+            .iter_mut()
+            .find(|listed| listed.id == member.id)
+        {
+            Some(listed) => *listed = member,
+            None => self.members.push(member),
+        }
+    }
+
+    /// `here` is `member`'s presence now, replacing what was said of them before.
+    pub fn place_presence(&mut self, here: Present) {
+        match self
+            .present
+            .iter_mut()
+            .find(|placed| placed.member == here.member)
+        {
+            Some(placed) => *placed = here,
+            None => self.present.push(here),
+        }
+    }
+
+    /// `members` join this workspace's member list, each of them here now saying nothing of
+    /// themselves.
+    pub fn members_here(&mut self, members: impl IntoIterator<Item = Member>) {
+        for member in members {
+            self.member_here(member);
+        }
+    }
+
+    /// `member` is one of this workspace's members and is here now, saying nothing of themselves
+    /// yet: what a host places for someone presence named before the roster listed them.
+    pub fn member_here(&mut self, member: Member) {
+        self.place_presence(Present::of(member.id.clone()));
+        self.list_member(member);
+    }
+
     /// The workspace roster: the owner first, then the members by id.
     #[must_use]
     pub fn roster(&self) -> Vec<(UserId, Role)> {
@@ -770,45 +805,27 @@ impl Workspace {
             })
     }
 
-    /// What a launch into this workspace hands its apps at `now`: the apps the
-    /// workspace's grants make authors, and the workspace's sandbox.
+    /// What a launch into this workspace hands its apps: the workspace's
+    /// sandbox.
     #[must_use]
-    pub fn launch_grants(&self, now: u64) -> collab_types::caps::LaunchGrants {
-        let mut authors: Vec<String> = self
-            .policy
-            .grants
-            .iter()
-            .filter_map(|grant| match &grant.grantee {
-                Grantee::App(app) => Some(app.clone()),
-                _ => None,
-            })
-            .filter(|app| self.app_is_author_at(app, now))
-            .collect();
-        authors.compact_sort();
-        authors.dedup();
+    pub fn launch_grants(&self) -> collab_types::caps::LaunchGrants {
         collab_types::caps::LaunchGrants {
-            authors,
             sandbox: self.sandbox.clone(),
+            ..collab_types::caps::LaunchGrants::default()
         }
-    }
-
-    /// Whether application `app` is an author of the workspace at `now`: it may
-    /// change the workspace's content ([`roles::app_authorship`]).
-    #[must_use]
-    pub fn app_is_author_at(&self, app: &str, now: u64) -> bool {
-        self.policy.app_authors(app, &context_at(now))
     }
 
     /// Whether what `app`'s window changes in this workspace is told to that
     /// window as the person's own change: `person` may change the workspace
-    /// through `app` at `now` and `app` is an author of it. `None` when
-    /// `person` has no place in the workspace, so nothing is told to the window.
+    /// through `app` at `now`. `None` when `person` has no place in the
+    /// workspace, so nothing is told to the window.
     #[must_use]
     pub fn app_writes_at(&self, person: &str, app: &str, now: u64) -> Option<bool> {
         self.role_of(person)?;
-        let changes = self.answer_at(person, &self.node().app(app), ActionKind::Undoable, now)
-            == Answer::Allow;
-        Some(changes && self.app_is_author_at(app, now))
+        Some(
+            self.answer_at(person, &self.node().app(app), ActionKind::Undoable, now)
+                == Answer::Allow,
+        )
     }
 
     /// The grants naming a person on one node below the workspace — the share list
@@ -980,7 +997,8 @@ impl Workspace {
             name: name.into(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
-            collaborators: Vec::new(),
+            members: Vec::new(),
+            present: Vec::new(),
             policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
@@ -1008,7 +1026,8 @@ impl Workspace {
             name,
             strips: _,
             arrangement: _,
-            collaborators,
+            members,
+            present,
             policy,
             sandbox,
             presets,
@@ -1026,7 +1045,8 @@ impl Workspace {
             name: name.clone(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
-            collaborators: collaborators.clone(),
+            members: members.clone(),
+            present: present.clone(),
             policy: policy.clone(),
             sandbox: sandbox.clone(),
             presets: presets.clone(),
@@ -1079,7 +1099,8 @@ impl Default for Workspace {
             name: String::new(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
-            collaborators: Vec::new(),
+            members: Vec::new(),
+            present: Vec::new(),
             policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),

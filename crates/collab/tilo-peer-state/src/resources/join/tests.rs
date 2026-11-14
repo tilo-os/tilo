@@ -37,10 +37,9 @@ fn responses() -> Vec<JoinTransportResponse> {
     )
     .unwrap();
     let grant = InviteGrant {
-        workspace_id: 42,
-        room: peer.workspace_id().into(),
+        workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         issuer: member.clone(),
-        role: MemberRole::Editor,
+        role: Role::Editor,
         nonce: [17; 16],
         recipient_user_public_key: Some(member.user_public_key),
         invitee_name: Some("A real guest 🦀".into()),
@@ -74,8 +73,7 @@ fn responses() -> Vec<JoinTransportResponse> {
     )
     .unwrap();
     let membership = MembershipChallenge::new(
-        peer.workspace_id(),
-        42,
+        WorkspaceId::parse(peer.workspace_id()).unwrap(),
         &peer.owner_certificates()[0],
         &member,
         [20; 32],
@@ -88,9 +86,8 @@ fn responses() -> Vec<JoinTransportResponse> {
         version: 1,
         invite_id: verified.invite_id(),
         device_cert: member,
-        role: MemberRole::Editor,
-        room: peer.workspace_id().into(),
-        workspace_id: 42,
+        role: Role::Editor,
+        workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         host: peer.owner_certificates()[0].clone(),
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
@@ -107,7 +104,6 @@ fn responses() -> Vec<JoinTransportResponse> {
     let owner = OwnerBootstrapV1 {
         version: 1,
         device_cert: bootstrap.device_cert.clone(),
-        room: bootstrap.room.clone(),
         workspace_id: bootstrap.workspace_id,
         host: bootstrap.host.clone(),
         certified_roster: bootstrap.certified_roster.clone(),
@@ -242,9 +238,9 @@ fn owner_bootstrap_wire_keeps_response_tags_and_role_bytes() {
         );
     }
     for (role, wire) in [
-        (MemberRole::Viewer, vec![0]),
-        (MemberRole::Commenter, vec![1]),
-        (MemberRole::Editor, vec![2]),
+        (Role::Viewer, vec![0]),
+        (Role::Commenter, vec![1]),
+        (Role::Editor, vec![2]),
     ] {
         assert_eq!(postcard::to_allocvec(&role).unwrap(), wire);
     }

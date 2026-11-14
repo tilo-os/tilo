@@ -1084,167 +1084,171 @@ impl Widget for DisclosureRow {
 mod tests {
     use super::*;
 
-    #[test]
-    fn one_row_of_a_group_is_open_at_a_time() {
-        let _settled = crate::motion::testing::settled();
-        let group = DisclosureGroup::new();
-        let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
-        let mut a = DisclosureRow::new("Wi-Fi", body()).in_group(&group);
-        let mut b = DisclosureRow::new("Bluetooth", body()).in_group(&group);
-        a.set_open(true);
-        assert!(a.is_open());
-        b.set_open(true);
-        a.follow_group();
-        assert!(b.is_open() && !a.is_open(), "opening one closes the other");
-        b.set_open(false);
-        assert!(group.open.borrow().is_none());
-    }
+    tilo_test_env::scenario! {
+        fn a_disclosure_row_opens_alone_and_keeps_its_state_across_rebuilds;
 
-    /// A view that reads its devices every two seconds rebuilds their rows
-    /// each time; the row the person opened is open in every rebuild, at
-    /// the height its body had, until they close it.
-    #[test]
-    fn a_keyed_row_rebuilt_from_fresh_data_stays_open_at_its_height() {
-        let _settled = crate::motion::testing::settled();
-        let group = DisclosureGroup::new();
-        let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
-        let mut first = DisclosureRow::keyed("Headphones", body(), &group, "AA:01");
-        first.set_open(true);
-        assert!(first.state.set_body_height(40.0));
-        drop(first);
+        phase one_row_of_a_group_is_open_at_a_time;
+        {
+            let _settled = crate::motion::testing::settled();
+            let group = DisclosureGroup::new();
+            let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
+            let mut a = DisclosureRow::new("Wi-Fi", body()).in_group(&group);
+            let mut b = DisclosureRow::new("Bluetooth", body()).in_group(&group);
+            a.set_open(true);
+            assert!(a.is_open());
+            b.set_open(true);
+            a.follow_group();
+            assert!(b.is_open() && !a.is_open(), "opening one closes the other");
+            b.set_open(false);
+            assert!(group.open.borrow().is_none());
+        }
 
-        let rebuilt = DisclosureRow::keyed("Headphones", body(), &group, "AA:01");
-        assert!(rebuilt.is_open(), "the rebuilt row is still open");
-        assert!((rebuilt.state.body_height() - 40.0).abs() < 1e-6);
-        assert!(
-            (rebuilt.progress() - 1.0).abs() < 1e-6,
-            "at rest, not reopening"
-        );
-        assert_eq!(group.open_key().as_deref(), Some("AA:01"));
-        let other = DisclosureRow::keyed("Keyboard", body(), &group, "AA:02");
-        assert!(!other.is_open());
-    }
+        // A view that reads its devices every two seconds rebuilds their rows
+        // each time; the row the person opened is open in every rebuild, at
+        // the height its body had, until they close it.
+        phase a_keyed_row_rebuilt_from_fresh_data_stays_open_at_its_height;
+        {
+            let _settled = crate::motion::testing::settled();
+            let group = DisclosureGroup::new();
+            let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
+            let mut first = DisclosureRow::keyed("Headphones", body(), &group, "AA:01");
+            first.set_open(true);
+            assert!(first.state.set_body_height(40.0));
+            drop(first);
 
-    #[test]
-    fn opening_a_keyed_row_closes_the_open_one_across_rebuilds() {
-        let _settled = crate::motion::testing::settled();
-        let group = DisclosureGroup::new();
-        let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
-        DisclosureRow::keyed("Headphones", body(), &group, "AA:01").set_open(true);
-        DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").set_open(true);
-        assert!(!DisclosureRow::keyed("Headphones", body(), &group, "AA:01").is_open());
-        assert!(DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").is_open());
-        // `opened` is a first-build default, never a reopening.
-        DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").set_open(false);
-        let again = DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").opened();
-        assert!(!again.is_open(), "a row the person closed stays closed");
-        group.retain(&["AA:01"]);
-        assert!(group.open_key().is_none());
-    }
+            let rebuilt = DisclosureRow::keyed("Headphones", body(), &group, "AA:01");
+            assert!(rebuilt.is_open(), "the rebuilt row is still open");
+            assert!((rebuilt.state.body_height() - 40.0).abs() < 1e-6);
+            assert!(
+                (rebuilt.progress() - 1.0).abs() < 1e-6,
+                "at rest, not reopening"
+            );
+            assert_eq!(group.open_key().as_deref(), Some("AA:01"));
+            let other = DisclosureRow::keyed("Keyboard", body(), &group, "AA:02");
+            assert!(!other.is_open());
+        }
 
-    #[test]
-    fn a_lone_row_shows_the_state_its_view_keeps() {
-        let _settled = crate::motion::testing::settled();
-        let state = DisclosureState::new();
-        let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
-        DisclosureRow::new("Details", body())
-            .with_state(&state)
-            .set_open(true);
-        assert!(state.is_open());
-        assert!(
+        phase opening_a_keyed_row_closes_the_open_one_across_rebuilds;
+        {
+            let _settled = crate::motion::testing::settled();
+            let group = DisclosureGroup::new();
+            let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
+            DisclosureRow::keyed("Headphones", body(), &group, "AA:01").set_open(true);
+            DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").set_open(true);
+            assert!(!DisclosureRow::keyed("Headphones", body(), &group, "AA:01").is_open());
+            assert!(DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").is_open());
+            // `opened` is a first-build default, never a reopening.
+            DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").set_open(false);
+            let again = DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").opened();
+            assert!(!again.is_open(), "a row the person closed stays closed");
+            group.retain(&["AA:01"]);
+            assert!(group.open_key().is_none());
+        }
+
+        phase a_lone_row_shows_the_state_its_view_keeps;
+        {
+            let _settled = crate::motion::testing::settled();
+            let state = DisclosureState::new();
+            let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
             DisclosureRow::new("Details", body())
                 .with_state(&state)
-                .is_open()
-        );
-    }
-
-    /// A view opening its row (an agent's action) moves as the person
-    /// allows: under reduced motion the body lands at once, as it does for
-    /// the row's own press.
-    #[test]
-    fn a_view_opening_keeps_the_motion_its_row_was_laid_out_under() {
-        for (theme, moves) in [
-            (Theme::dark(), true),
-            (Theme::dark().with_reduce_motion(true), false),
-        ] {
-            let state = DisclosureState::new();
-            let mut row = DisclosureRow::new(
-                "Work or school network",
-                Box::new(crate::widget::Spacer::fixed(40.0)),
-            )
-            .with_state(&state);
-            let mut taffy = TaffyTree::<()>::new();
-            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            row.build_layout(&mut taffy, &theme, &mut nodes);
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-            state.set_open(true);
+                .set_open(true);
             assert!(state.is_open());
-            assert_eq!(
-                state.is_moving(),
-                moves,
-                "reduced motion: {}",
-                theme.motion().reduced()
+            assert!(
+                DisclosureRow::new("Details", body())
+                    .with_state(&state)
+                    .is_open()
             );
         }
-    }
 
-    #[test]
-    fn the_open_body_starts_on_the_titles_text_column() {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let body = Box::new(crate::widget::Spacer::fixed(40.0));
-        let mut row = DisclosureRow::new("Saved devices", body)
-            .secondary("3 devices")
-            .icon(Icon::Bluetooth)
-            .opened();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = row.build_layout(&mut taffy, &theme, &mut nodes);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .expect("layout");
-        row.apply_layout(&taffy, node, Point::ZERO);
-        let inset = DisclosureRow::text_inset(Some(&Leading::Icon(Icon::Bluetooth)), &theme);
-        assert!(inset > 0.0);
-        assert!(
-            (row.body.get_rect().x0 - (row.header.x0 + inset)).abs() < 0.5,
-            "the body lines up with the title, not the icon"
-        );
-    }
+        phase the_open_body_starts_on_the_titles_text_column;
+        {
+            let _settled = crate::motion::testing::settled();
+            let theme = Theme::dark();
+            let body = Box::new(crate::widget::Spacer::fixed(40.0));
+            let mut row = DisclosureRow::new("Saved devices", body)
+                .secondary("3 devices")
+                .icon(Icon::Bluetooth)
+                .opened();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = row.build_layout(&mut taffy, &theme, &mut nodes);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(400.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .expect("layout");
+            row.apply_layout(&taffy, node, Point::ZERO);
+            let inset = DisclosureRow::text_inset(Some(&Leading::Icon(Icon::Bluetooth)), &theme);
+            assert!(inset > 0.0);
+            assert!(
+                (row.body.get_rect().x0 - (row.header.x0 + inset)).abs() < 0.5,
+                "the body lines up with the title, not the icon"
+            );
+        }
 
-    #[test]
-    fn a_side_line_takes_its_room_from_the_end_of_the_titles_line() {
-        // What the side line may take of a title's line: never more than
-        // its own words need, and never more than two fifths of the line, so
-        // a long byline cannot crowd the title it belongs to.
-        assert_eq!(DisclosureRow::side_room(60.0, 300.0), 60.0);
-        assert_eq!(DisclosureRow::side_room(200.0, 300.0), 120.0);
-        assert_eq!(DisclosureRow::side_room(0.0, 0.0), 0.0);
-    }
+        phase a_side_line_takes_its_room_from_the_end_of_the_titles_line;
+        {
+            // What the side line may take of a title's line: never more than
+            // its own words need, and never more than two fifths of the line, so
+            // a long byline cannot crowd the title it belongs to.
+            assert_eq!(DisclosureRow::side_room(60.0, 300.0), 60.0);
+            assert_eq!(DisclosureRow::side_room(200.0, 300.0), 120.0);
+            assert_eq!(DisclosureRow::side_room(0.0, 0.0), 0.0);
+        }
 
-    #[test]
-    fn a_row_is_as_tall_as_its_lines() {
-        let theme = Theme::dark();
-        let body = Box::new(crate::widget::Spacer::fixed(40.0));
-        let one = DisclosureRow::new("Wi-Fi", body);
-        assert!((one.header_height(&theme) - 36.0).abs() < 1e-6);
-        let two = DisclosureRow::new("Wi-Fi", Box::new(crate::widget::Spacer::fixed(40.0)))
-            .secondary("Home");
-        assert!((two.header_height(&theme) - 52.0).abs() < 1e-6);
-        let three = DisclosureRow::new("Laptop", Box::new(crate::widget::Spacer::fixed(40.0)))
-            .secondary("Hosts your workspaces")
-            .tertiary("Active now");
-        assert!(
-            (three.header_height(&theme) - 68.0).abs() < 1e-6,
-            "a third line adds what the second did"
-        );
-        let compact = theme.with_density(crate::tokens::Density::Compact);
-        assert!((one.header_height(&compact) - 28.0).abs() < 1e-6);
+        phase a_row_is_as_tall_as_its_lines;
+        {
+            let theme = Theme::dark();
+            let body = Box::new(crate::widget::Spacer::fixed(40.0));
+            let one = DisclosureRow::new("Wi-Fi", body);
+            assert!((one.header_height(&theme) - 36.0).abs() < 1e-6);
+            let two = DisclosureRow::new("Wi-Fi", Box::new(crate::widget::Spacer::fixed(40.0)))
+                .secondary("Home");
+            assert!((two.header_height(&theme) - 52.0).abs() < 1e-6);
+            let three = DisclosureRow::new("Laptop", Box::new(crate::widget::Spacer::fixed(40.0)))
+                .secondary("Hosts your workspaces")
+                .tertiary("Active now");
+            assert!(
+                (three.header_height(&theme) - 68.0).abs() < 1e-6,
+                "a third line adds what the second did"
+            );
+            let compact = theme.with_density(crate::tokens::Density::Compact);
+            assert!((one.header_height(&compact) - 28.0).abs() < 1e-6);
+        }
+
+        // A view opening its row (an agent's action) moves as the person
+        // allows: under reduced motion the body lands at once, as it does for
+        // the row's own press.
+        phase a_view_opening_keeps_the_motion_its_row_was_laid_out_under;
+        {
+            for (theme, moves) in [
+                (Theme::dark(), true),
+                (Theme::dark().with_reduce_motion(true), false),
+            ] {
+                let state = DisclosureState::new();
+                let mut row = DisclosureRow::new(
+                    "Work or school network",
+                    Box::new(crate::widget::Spacer::fixed(40.0)),
+                )
+                .with_state(&state);
+                let mut taffy = TaffyTree::<()>::new();
+                let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                row.build_layout(&mut taffy, &theme, &mut nodes);
+                crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+                state.set_open(true);
+                assert!(state.is_open());
+                assert_eq!(
+                    state.is_moving(),
+                    moves,
+                    "reduced motion: {}",
+                    theme.motion().reduced()
+                );
+            }
+        }
     }
 }

@@ -564,12 +564,10 @@ fn install_joined_device_presented(
             "this machine's device key does not match its certificate",
         ));
     }
-    let relay_service = tilo_relay_protocol::relay_service_node_id(&local_device.to_bytes());
     copy_home_peers(
         layout.local_home_peers,
         &target_system,
         &local_cert,
-        relay_service,
         cert.device_public_key,
     )?;
     // Beside the peer lists the shell reads it with.
@@ -737,55 +735,14 @@ pub fn personal_rooms_export_path() -> Option<PathBuf> {
     Some(tilo_paths::xdg::state_home()?.join("tilo/personal-rooms.json"))
 }
 
-fn relay_is_dialable(
-    entries: &[tilo_relay_protocol::HomePeerRegistration],
-    registration: &tilo_relay_protocol::HomePeerRegistration,
-) -> bool {
-    entries.iter().any(|entry| {
-        entry.device_node_id == registration.device_node_id
-            && entry.relay_service_node_id == registration.relay_service_node_id
-            && registration
-                .relay_workspace_ids
-                .iter()
-                .all(|topic| entry.relay_workspace_ids.contains(topic))
-    })
-}
-
 fn copy_home_peers(
     source: &Path,
     target_system: &IdentityPaths,
     local_cert: &DeviceCert,
-    relay_service_node_id: [u8; 32],
     joined_device: [u8; 32],
 ) -> io::Result<()> {
     let identity_id = hex::encode(local_cert.user_public_key);
-    let mut entries = tilo_relay_protocol::read_home_peers(source)?;
-    // Clients reject a relay whose certificate cannot act as a host. A normal
-    // setup machine is dialed directly instead; only a host-capable machine is
-    // recorded as a relay.
-    if local_cert.capabilities.can_act_as_host {
-        let device_id = hex::encode(local_cert.device_public_key);
-        let service_id = hex::encode(relay_service_node_id);
-        let registration = tilo_relay_protocol::HomePeerRegistration {
-            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: device_id,
-            relay_service_node_id: service_id,
-            relay_endpoint: None,
-            label: if local_cert.device_label.trim().is_empty() {
-                "Setup machine".into()
-            } else {
-                local_cert.device_label.trim().to_string()
-            },
-            user_public_key: identity_id.clone(),
-            device_cert: Some(local_cert.clone()),
-            // It serves its person, whichever workspaces it holds.
-            relay_workspace_ids: Vec::new(),
-        };
-        if !relay_is_dialable(&entries, &registration) {
-            entries.push(registration);
-        }
-        tilo_relay_protocol::write_home_peers(source, &entries)?;
-    }
+    let entries = tilo_relay_protocol::read_home_peers(source)?;
     let own: Vec<_> = entries
         .into_iter()
         .filter(|entry| entry.user_public_key == identity_id)
@@ -1540,253 +1497,328 @@ mod tests {
 
     const FILES: IdentityStorage = IdentityStorage::Files;
 
-    #[test]
-    fn a_device_certificate_the_clock_reads_before_is_a_clock_refusal_and_nothing_else() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(temp.path());
-        assert_eq!(
-            device_certificate_clock_refusal(&paths, 10),
-            None,
-            "no certificate"
-        );
-        let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "laptop".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1_000,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+    tilo_test_env::scenario! {
+        fn device_certificates_at_provisioning;
 
-        let refusal = device_certificate_clock_refusal(&paths, 500).expect("the clock is behind");
-        assert_eq!(refusal.valid_at_ns(), Some(1_000));
-        assert_eq!(device_certificate_clock_refusal(&paths, 1_000), None);
+        phase a_device_certificate_the_clock_reads_before_is_a_clock_refusal_and_nothing_else;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(temp.path());
+            assert_eq!(
+                device_certificate_clock_refusal(&paths, 10),
+                None,
+                "no certificate"
+            );
+            let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "laptop".into(),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 1_000,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            persist::write_device_cert(&paths.device_cert, &cert).unwrap();
 
-        cert.device_label.push_str(" (tampered)");
-        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
-        assert_eq!(
-            device_certificate_clock_refusal(&paths, 500),
-            None,
-            "a forged certificate is not a clock problem"
-        );
+            let refusal = device_certificate_clock_refusal(&paths, 500).expect("the clock is behind");
+            assert_eq!(refusal.valid_at_ns(), Some(1_000));
+            assert_eq!(device_certificate_clock_refusal(&paths, 1_000), None);
+
+            cert.device_label.push_str(" (tampered)");
+            persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+            assert_eq!(
+                device_certificate_clock_refusal(&paths, 500),
+                None,
+                "a forged certificate is not a clock problem"
+            );
+        }
+
+        phase installer_device_label_is_signed_once_and_existing_custody_is_unchanged;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            let temp = tempfile::tempdir().unwrap();
+            let identity = temp.path().join("identity");
+            let paths = IdentityPaths::under(temp.path().join("system"));
+            for label in [String::new(), "bad\nlabel".into(), "x".repeat(65)] {
+                assert!(
+                    ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, &label)
+                        .is_err()
+                );
+                assert!(!identity.exists());
+                assert!(!paths.device_privkey.exists());
+            }
+            ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, "Ada's laptop")
+                .unwrap();
+            let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+            tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).unwrap();
+            assert_eq!(cert.device_label, "Ada's laptop");
+            let keyed_path = paths.device_cert_for_user(&cert.user_public_key);
+            assert_eq!(
+                persist::read_device_cert(&keyed_path).unwrap().device_label,
+                "Ada's laptop"
+            );
+            let originals: Vec<_> = [
+                identity.join("primary.json"),
+                paths.device_privkey.clone(),
+                paths.user_pubkey.clone(),
+                paths.device_cert.clone(),
+                keyed_path,
+            ]
+            .into_iter()
+            .map(|path| {
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+            assert_eq!(
+                ensure_collaboration_identity_with_device_label(
+                    &identity,
+                    &paths,
+                    FILES,
+                    "Replacement name"
+                )
+                .unwrap(),
+                ProvisionOutcome::Existing
+            );
+            for (path, bytes) in originals {
+                assert_eq!(fs::read(path).unwrap(), bytes);
+            }
+        }
+
+        phase the_shell_issues_native_certificates_and_the_runtime_foreign_ones;
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            ensure_collaboration_identity(&personal, &paths).unwrap();
+            let native = device_certificates(&paths, &personal);
+            for (_, cert) in &native {
+                assert_eq!(cert.capabilities, DeviceCapabilities::primary());
+            }
+            let native_bytes = native.clone().map(|(path, _)| fs::read(path).unwrap());
+            ensure_collaboration_identity(&personal, &paths).unwrap();
+            assert_eq!(
+                native.clone().map(|(path, _)| fs::read(path).unwrap()),
+                native_bytes
+            );
+
+            // A runtime profile left with native certificates is re-issued as
+            // foreign, keeping the device key and label.
+            super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+            let foreign = device_certificates(&paths, &personal);
+            for ((_, before), (_, after)) in native.iter().zip(&foreign) {
+                assert!(after.capabilities.foreign);
+                assert_eq!(after.device_public_key, before.device_public_key);
+                assert_eq!(after.device_label, before.device_label);
+            }
+            let foreign_bytes = foreign.clone().map(|(path, _)| fs::read(path).unwrap());
+            super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+            assert_eq!(
+                foreign.map(|(path, _)| fs::read(path).unwrap()),
+                foreign_bytes
+            );
+
+            let fresh = tempfile::tempdir().expect("tempdir");
+            let personal = fresh.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(fresh.path().join("system"));
+            super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+            for (_, cert) in device_certificates(&paths, &personal) {
+                assert!(cert.capabilities.foreign);
+            }
+        }
     }
 
-    #[test]
-    fn installer_device_label_is_signed_once_and_existing_custody_is_unchanged() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
-        let identity = temp.path().join("identity");
-        let paths = IdentityPaths::under(temp.path().join("system"));
-        for label in [String::new(), "bad\nlabel".into(), "x".repeat(65)] {
-            assert!(
-                ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, &label)
-                    .is_err()
+    tilo_test_env::scenario! {
+        fn setup_identities_and_device_ownership;
+
+        phase explicit_prepared_identity_creation_refuses_existing_and_invalid_names;
+        {
+            let root = tempfile::tempdir().unwrap();
+            assert!(matches!(
+                create_primary_identity(root.path(), "Ada", [1, 2, 3], IdentityStorage::Files).unwrap(),
+                ProvisionOutcome::Created { .. }
+            ));
+            let path = root.path().join(PRIMARY_IDENTITY_FILE);
+            let original = std::fs::read(&path).unwrap();
+            let metadata = runtime_identity::load_metadata_from_path(&path).unwrap();
+            assert_eq!(metadata.display_name, "Ada");
+            assert_eq!(metadata.avatar_color, [1, 2, 3]);
+            for name in ["Replacement", "", "Ada\nOther"] {
+                assert!(
+                    create_primary_identity(root.path(), name, [9; 3], IdentityStorage::Files).is_err()
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+            }
+            assert_eq!(
+                runtime_identity::load_metadata_from_path(&path)
+                    .unwrap()
+                    .group_public_key,
+                metadata.group_public_key
             );
-            assert!(!identity.exists());
-            assert!(!paths.device_privkey.exists());
         }
-        ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, "Ada's laptop")
-            .unwrap();
-        let cert = persist::read_device_cert(&paths.device_cert).unwrap();
-        tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).unwrap();
-        assert_eq!(cert.device_label, "Ada's laptop");
-        let keyed_path = paths.device_cert_for_user(&cert.user_public_key);
-        assert_eq!(
-            persist::read_device_cert(&keyed_path).unwrap().device_label,
-            "Ada's laptop"
-        );
-        let originals: Vec<_> = [
-            identity.join("primary.json"),
-            paths.device_privkey.clone(),
-            paths.user_pubkey.clone(),
-            paths.device_cert.clone(),
-            keyed_path,
-        ]
-        .into_iter()
-        .map(|path| {
-            let bytes = fs::read(&path).unwrap();
-            (path, bytes)
-        })
-        .collect();
-        assert_eq!(
-            ensure_collaboration_identity_with_device_label(
-                &identity,
+
+        phase prejoined_device_keeps_the_setup_identity;
+        {
+            use ed25519_dalek::Signer;
+
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let dir = tempfile::tempdir().unwrap();
+            let identity_dir = dir.path().join("identity");
+            let paths = IdentityPaths::under(dir.path().join("system"));
+            persist::provision_joined_device(
                 &paths,
-                FILES,
-                "Replacement name"
+                root.verifying_key().to_bytes(),
+                |digest| Ok(root.sign(digest).to_bytes()),
+                "orange-pi",
+                1_000,
             )
-            .unwrap(),
-            ProvisionOutcome::Existing
-        );
-        for (path, bytes) in originals {
-            assert_eq!(fs::read(path).unwrap(), bytes);
+            .unwrap();
+
+            // Every consumer resolves the person through the account's active
+            // record: an `Existing` with nothing to resolve strands the session
+            // in recovery although the enrollment is sound.
+            let held_by_account = || {
+                let record = runtime_identity::resolve_active_identity(&identity_dir)
+                    .expect("the joined person has a record the account resolves");
+                runtime_identity::load_metadata_from_path(&record)
+                    .unwrap()
+                    .group_public_key
+            };
+            let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
+            assert_eq!(outcome, ProvisionOutcome::Existing);
+            assert_eq!(held_by_account(), root.verifying_key().to_bytes());
+            assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
+            assert!(!paths.user_privkey.exists());
+            assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
+
+            // The account's config is reset while the system-wide enrollment
+            // survives: the person is taken up again, never replaced.
+            fs::remove_dir_all(&identity_dir).unwrap();
+            let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
+            assert_eq!(outcome, ProvisionOutcome::Existing);
+            assert_eq!(held_by_account(), root.verifying_key().to_bytes());
+            assert!(!paths.user_privkey.exists());
+        }
+
+        phase only_the_identity_that_claimed_the_device_owns_it;
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            let alice = tmp.path().join("alice/tilo/identity");
+            let bob = tmp.path().join("bob/tilo/identity");
+            let carol = tmp.path().join("carol/tilo/identity");
+            // Before anyone's first login there is no owner.
+            assert!(!active_identity_owns_device(&alice, &paths).expect("no identity yet"));
+            ensure_collaboration_identity(&alice, &paths).expect("alice claims the device");
+            ensure_collaboration_identity(&bob, &paths).expect("bob shares it");
+            assert!(active_identity_owns_device(&alice, &paths).expect("alice"));
+            assert!(!active_identity_owns_device(&bob, &paths).expect("bob"));
+            // An account that never finished first login is not the owner either.
+            assert!(!active_identity_owns_device(&carol, &paths).expect("carol"));
+            // A primary certificate that no longer verifies is an error, not a yes.
+            let mut cert = persist::read_device_cert(&paths.device_cert).expect("cert");
+            cert.device_label = "Tampered".into();
+            persist::write_device_cert(&paths.device_cert, &cert).expect("rewrite cert");
+            assert!(active_identity_owns_device(&alice, &paths).is_err());
         }
     }
 
-    #[test]
-    fn explicit_prepared_identity_creation_refuses_existing_and_invalid_names() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(matches!(
-            create_primary_identity(root.path(), "Ada", [1, 2, 3], IdentityStorage::Files).unwrap(),
-            ProvisionOutcome::Created { .. }
-        ));
-        let path = root.path().join(PRIMARY_IDENTITY_FILE);
-        let original = std::fs::read(&path).unwrap();
-        let metadata = runtime_identity::load_metadata_from_path(&path).unwrap();
-        assert_eq!(metadata.display_name, "Ada");
-        assert_eq!(metadata.avatar_color, [1, 2, 3]);
-        for name in ["Replacement", "", "Ada\nOther"] {
-            assert!(
-                create_primary_identity(root.path(), name, [9; 3], IdentityStorage::Files).is_err()
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn a_joined_device_takes_up_its_person;
+
+        phase a_nearby_paired_member_verifies_through_its_certificate;
+        // A device approved from a nearby device: a public-only record selected
+        // as the account's identity and an ordinary member certificate.
+        {
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let dir = tempfile::tempdir().unwrap();
+            let identity_dir = dir.path().join("identity");
+            let paths = IdentityPaths::under(dir.path().join("system"));
+            let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "laptop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1_000,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            persist::install_device_cert(&paths, &cert, 2_000).unwrap();
+            prepare_identity_directory(&identity_dir).unwrap();
+            let write_record = |root_public: [u8; 32]| {
+                let record = identity_dir.join("identity-joined.json");
+                fs::write(
+                    &record,
+                    runtime_identity::public_member_record("Member", [1, 2, 3], root_public).unwrap(),
+                )
+                .unwrap();
+                fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+                let active = identity_dir.join("active");
+                fs::write(&active, "identity-joined").unwrap();
+                fs::set_permissions(&active, fs::Permissions::from_mode(0o600)).unwrap();
+            };
+
+            write_record(root.verifying_key().to_bytes());
+            verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
+            assert_eq!(
+                ensure_collaboration_identity(&identity_dir, &paths).unwrap(),
+                ProvisionOutcome::Existing
             );
-            assert_eq!(std::fs::read(&path).unwrap(), original);
+
+            // A record naming another identity is not this device's.
+            write_record([7; 32]);
+            let error = verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         }
-        assert_eq!(
-            runtime_identity::load_metadata_from_path(&path)
-                .unwrap()
-                .group_public_key,
-            metadata.group_public_key
-        );
-    }
 
-    #[test]
-    fn prejoined_device_keeps_the_setup_identity() {
-        use ed25519_dalek::Signer;
+        phase an_enrolled_session_takes_up_its_person_as_a_joined_device;
+        // A node's session, given only its certificate and the person's key by
+        // the relay its page installed, holds that person as a joined device.
+        {
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let user = root.verifying_key().to_bytes();
+            let dir = tempfile::tempdir().unwrap();
+            let identity_dir = dir.path().join("identity");
+            let paths = IdentityPaths::under(dir.path().join("session"));
+            assert!(!complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
 
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let dir = tempfile::tempdir().unwrap();
-        let identity_dir = dir.path().join("identity");
-        let paths = IdentityPaths::under(dir.path().join("system"));
-        persist::provision_joined_device(
-            &paths,
-            root.verifying_key().to_bytes(),
-            |digest| Ok(root.sign(digest).to_bytes()),
-            "orange-pi",
-            1_000,
-        )
-        .unwrap();
+            let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
+            let mut cert = DeviceCert {
+                user_public_key: user,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Apps on node".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1_000,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+            persist::write_public_key(&paths.user_pubkey, &user).unwrap();
 
-        // Every consumer resolves the person through the account's active
-        // record: an `Existing` with nothing to resolve strands the session
-        // in recovery although the enrollment is sound.
-        let held_by_account = || {
-            let record = runtime_identity::resolve_active_identity(&identity_dir)
-                .expect("the joined person has a record the account resolves");
-            runtime_identity::load_metadata_from_path(&record)
-                .unwrap()
-                .group_public_key
-        };
-        let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
-        assert_eq!(outcome, ProvisionOutcome::Existing);
-        assert_eq!(held_by_account(), root.verifying_key().to_bytes());
-        assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
-        assert!(!paths.user_privkey.exists());
-        assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
-
-        // The account's config is reset while the system-wide enrollment
-        // survives: the person is taken up again, never replaced.
-        fs::remove_dir_all(&identity_dir).unwrap();
-        let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
-        assert_eq!(outcome, ProvisionOutcome::Existing);
-        assert_eq!(held_by_account(), root.verifying_key().to_bytes());
-        assert!(!paths.user_privkey.exists());
-    }
-
-    /// A device approved from a nearby device: a public-only record selected
-    /// as the account's identity and an ordinary member certificate.
-    #[cfg(unix)]
-    #[test]
-    fn a_nearby_paired_member_verifies_through_its_certificate() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let dir = tempfile::tempdir().unwrap();
-        let identity_dir = dir.path().join("identity");
-        let paths = IdentityPaths::under(dir.path().join("system"));
-        let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1_000,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        persist::install_device_cert(&paths, &cert, 2_000).unwrap();
-        prepare_identity_directory(&identity_dir).unwrap();
-        let write_record = |root_public: [u8; 32]| {
-            let record = identity_dir.join("identity-joined.json");
-            fs::write(
-                &record,
-                runtime_identity::public_member_record("Member", [1, 2, 3], root_public).unwrap(),
-            )
-            .unwrap();
-            fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
-            let active = identity_dir.join("active");
-            fs::write(&active, "identity-joined").unwrap();
-            fs::set_permissions(&active, fs::Permissions::from_mode(0o600)).unwrap();
-        };
-
-        write_record(root.verifying_key().to_bytes());
-        verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
-        assert_eq!(
-            ensure_collaboration_identity(&identity_dir, &paths).unwrap(),
-            ProvisionOutcome::Existing
-        );
-
-        // A record naming another identity is not this device's.
-        write_record([7; 32]);
-        let error = verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    }
-
-    /// A node's session, given only its certificate and the person's key by
-    /// the relay its page installed, holds that person as a joined device.
-    #[cfg(unix)]
-    #[test]
-    fn an_enrolled_session_takes_up_its_person_as_a_joined_device() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let user = root.verifying_key().to_bytes();
-        let dir = tempfile::tempdir().unwrap();
-        let identity_dir = dir.path().join("identity");
-        let paths = IdentityPaths::under(dir.path().join("session"));
-        assert!(!complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
-
-        let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
-        let mut cert = DeviceCert {
-            user_public_key: user,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Apps on node".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1_000,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
-        persist::write_public_key(&paths.user_pubkey, &user).unwrap();
-
-        assert!(complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
-        assert!(complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
-        verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
-        let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
-            .load_reconciled()
-            .unwrap();
-        assert_eq!(registry.default_identity, Some(hex::encode(user)));
-        let fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths.clone())
-            .load(&hex::encode(user))
-            .unwrap();
-        assert!(fleet.certificates.contains(&cert));
-        assert!(!paths.user_privkey.exists());
+            assert!(complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
+            assert!(complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
+            verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
+            let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
+                .load_reconciled()
+                .unwrap();
+            assert_eq!(registry.default_identity, Some(hex::encode(user)));
+            let fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths.clone())
+                .load(&hex::encode(user))
+                .unwrap();
+            assert!(fleet.certificates.contains(&cert));
+            assert!(!paths.user_privkey.exists());
+        }
     }
 
     #[test]
@@ -1797,6 +1829,7 @@ mod tests {
     fn installed_device_joins_the_setup_fleet_without_the_root_secret() {
         use ed25519_dalek::Signer;
         use tilo_relay_protocol::HomePeerRegistration;
+        use tilo_relay_protocol::WorkspaceId;
 
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let local_device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1827,7 +1860,7 @@ mod tests {
             label: "home".into(),
             user_public_key: identity_id.clone(),
             device_cert: None,
-            relay_workspace_ids: vec![1],
+            relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
         };
         let other = HomePeerRegistration {
             user_public_key: hex::encode([9_u8; 32]),
@@ -1924,7 +1957,7 @@ mod tests {
             copied
                 .iter()
                 .all(|entry| entry.relay_service_node_id != service),
-            "a machine that cannot host is not recorded as a relay"
+            "the setup machine is dialed directly, not recorded as a home peer"
         );
         let direct: Vec<String> = serde_json::from_slice(
             &std::fs::read(
@@ -1986,6 +2019,7 @@ mod tests {
     #[test]
     fn enroll_from_local_identity_signs_with_the_active_person_not_a_copied_root() {
         use tilo_relay_protocol::HomePeerRegistration;
+        use tilo_relay_protocol::WorkspaceId;
 
         let dir = tempfile::tempdir().unwrap();
         let local_identity = dir.path().join("local-identity");
@@ -2014,7 +2048,7 @@ mod tests {
                 label: "home".into(),
                 user_public_key: identity_id,
                 device_cert: None,
-                relay_workspace_ids: vec![1],
+                relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
             }])
             .unwrap(),
         )
@@ -2042,7 +2076,6 @@ mod tests {
             persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
         );
         assert!(!target_system.user_privkey.exists());
-        assert!(cert.capabilities.can_read_all_workspaces);
         let target_identity = dir.path().join("var/home/quser/.config/tilo/identity");
         let target_record = runtime_identity::resolve_active_identity(&target_identity).unwrap();
         let presentation = runtime_identity::load_metadata_from_path(&target_record).unwrap();
@@ -2085,95 +2118,103 @@ mod tests {
 
     use std::sync::{Arc, Barrier};
 
-    #[test]
-    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-    fn throwaway_refuses_the_shared_device_tree_before_writing_any_identity() {
-        let tmp = tempfile::tempdir().unwrap();
-        let personal = tmp.path().join("personal");
-        let error =
-            ensure_throwaway_test_identity(&personal, &IdentityPaths::default_system(), FILES)
-                .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(error.to_string().contains("private TILO_IDENTITY_ROOT"));
-        assert!(!personal.exists());
-        #[cfg(unix)]
+    tilo_test_env::scenario! {
+        #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn throwaway_identities_keep_apart_from_real_trust;
+
+        phase throwaway_refuses_the_shared_device_tree_before_writing_any_identity;
         {
-            let alias = tmp.path().join("shared-alias");
-            std::os::unix::fs::symlink("/var/lib/tilo", &alias).unwrap();
+            let tmp = tempfile::tempdir().unwrap();
+            let personal = tmp.path().join("personal");
             let error =
-                ensure_throwaway_test_identity(&personal, &IdentityPaths::under(alias), FILES)
+                ensure_throwaway_test_identity(&personal, &IdentityPaths::default_system(), FILES)
                     .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains("private TILO_IDENTITY_ROOT"));
+            assert!(!personal.exists());
+            #[cfg(unix)]
+            {
+                let alias = tmp.path().join("shared-alias");
+                std::os::unix::fs::symlink("/var/lib/tilo", &alias).unwrap();
+                let error =
+                    ensure_throwaway_test_identity(&personal, &IdentityPaths::under(alias), FILES)
+                        .unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                assert!(
+                    !personal.exists(),
+                    "a shared-tree alias also writes nothing"
+                );
+            }
+        }
+
+        phase disposable_home_contains_its_own_expiring_chain_and_preserves_real_trust;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let real = IdentityPaths::under(tmp.path().join("real-system"));
+            let real_personal = tmp.path().join("owner/identity");
+            ensure_collaboration_identity(&real_personal, &real).unwrap();
+            let before = fs::read(&real.device_cert).unwrap();
+            let real_key = fs::read(&real.device_privkey).unwrap();
+            let real_cert = persist::read_device_cert(&real.device_cert).unwrap();
+            assert_eq!(real_cert.expires_at_ns, None);
+            let mut keys = Vec::new();
+            for slot in ["a", "b"] {
+                let home = tmp.path().join(slot);
+                let personal = home.join(".config/tilo/identity");
+                let paths = IdentityPaths::under(home.join(".local/share/tilo/test-identity"));
+                ensure_throwaway_test_identity(&personal, &paths, IdentityStorage::Platform).unwrap();
+                let record: serde_json::Value =
+                    serde_json::from_slice(&fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap())
+                        .unwrap();
+                assert_eq!(record["secret_ref"]["backend"], "broker-file-v1");
+                let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+                let deadline = cert.issued_at_ns + 24 * 60 * 60 * 1_000_000_000;
+                assert_eq!(cert.expires_at_ns, Some(deadline));
+                tilo_user_identity::verify_device_cert_at(&cert, cert.issued_at_ns).unwrap();
+                assert!(tilo_user_identity::verify_device_cert_at(&cert, deadline).is_err());
+                assert_ne!(cert.device_public_key, real_cert.device_public_key);
+                keys.push(cert.device_public_key);
+                assert!(paths.device_cert_for_user(&cert.user_public_key).is_file());
+                assert_eq!(
+                    ensure_throwaway_test_identity(&personal, &paths, FILES).unwrap(),
+                    ProvisionOutcome::Existing
+                );
+            }
+            assert_ne!(
+                keys[0], keys[1],
+                "each test slot is a separate disposable device"
+            );
+            fs::remove_dir_all(tmp.path().join("a")).unwrap();
             assert!(
-                !personal.exists(),
-                "a shared-tree alias also writes nothing"
+                !tmp.path()
+                    .join("a/.local/share/tilo/test-identity")
+                    .exists()
             );
-        }
-    }
-
-    #[test]
-    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-    fn disposable_home_contains_its_own_expiring_chain_and_preserves_real_trust() {
-        let tmp = tempfile::tempdir().unwrap();
-        let real = IdentityPaths::under(tmp.path().join("real-system"));
-        let real_personal = tmp.path().join("owner/identity");
-        ensure_collaboration_identity(&real_personal, &real).unwrap();
-        let before = fs::read(&real.device_cert).unwrap();
-        let real_key = fs::read(&real.device_privkey).unwrap();
-        let real_cert = persist::read_device_cert(&real.device_cert).unwrap();
-        assert_eq!(real_cert.expires_at_ns, None);
-        let mut keys = Vec::new();
-        for slot in ["a", "b"] {
-            let home = tmp.path().join(slot);
-            let personal = home.join(".config/tilo/identity");
-            let paths = IdentityPaths::under(home.join(".local/share/tilo/test-identity"));
-            ensure_throwaway_test_identity(&personal, &paths, IdentityStorage::Platform).unwrap();
-            let record: serde_json::Value =
-                serde_json::from_slice(&fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap())
-                    .unwrap();
-            assert_eq!(record["secret_ref"]["backend"], "broker-file-v1");
-            let cert = persist::read_device_cert(&paths.device_cert).unwrap();
-            let deadline = cert.issued_at_ns + 24 * 60 * 60 * 1_000_000_000;
-            assert_eq!(cert.expires_at_ns, Some(deadline));
-            tilo_user_identity::verify_device_cert_at(&cert, cert.issued_at_ns).unwrap();
-            assert!(tilo_user_identity::verify_device_cert_at(&cert, deadline).is_err());
-            assert_ne!(cert.device_public_key, real_cert.device_public_key);
-            keys.push(cert.device_public_key);
-            assert!(paths.device_cert_for_user(&cert.user_public_key).is_file());
+            assert!(
+                tmp.path()
+                    .join("b/.local/share/tilo/test-identity/device/cert.bin")
+                    .exists()
+            );
+            assert_eq!(fs::read(&real.device_cert).unwrap(), before);
+            assert_eq!(fs::read(&real.device_privkey).unwrap(), real_key);
             assert_eq!(
-                ensure_throwaway_test_identity(&personal, &paths, FILES).unwrap(),
-                ProvisionOutcome::Existing
+                fs::read_dir(real.device_cert.parent().unwrap().join("certs"))
+                    .unwrap()
+                    .count(),
+                1
             );
         }
-        assert_ne!(
-            keys[0], keys[1],
-            "each test slot is a separate disposable device"
-        );
-        fs::remove_dir_all(tmp.path().join("a")).unwrap();
-        assert!(
-            !tmp.path()
-                .join("a/.local/share/tilo/test-identity")
-                .exists()
-        );
-        assert!(
-            tmp.path()
-                .join("b/.local/share/tilo/test-identity/device/cert.bin")
-                .exists()
-        );
-        assert_eq!(fs::read(&real.device_cert).unwrap(), before);
-        assert_eq!(fs::read(&real.device_privkey).unwrap(), real_key);
-        assert_eq!(
-            fs::read_dir(real.device_cert.parent().unwrap().join("certs"))
-                .unwrap()
-                .count(),
-            1
-        );
     }
 
-    #[test]
-    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-    fn a_throwaway_test_identity_is_marked_and_never_replaces_a_real_one() {
-        // Phase `a_throwaway_identity_is_named_and_marked`.
+    tilo_test_env::scenario! {
+        #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+        fn a_throwaway_test_identity_is_marked_and_never_replaces_a_real_one;
+
+        phase a_throwaway_identity_is_named_and_marked;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
@@ -2196,7 +2237,8 @@ mod tests {
                 ProvisionOutcome::Existing
             );
         }
-        // Phase `a_real_identity_is_refused_and_left_untouched`.
+
+        phase a_real_identity_is_refused_and_left_untouched;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
@@ -2227,11 +2269,12 @@ mod tests {
         assert!(!paths.device_cert.exists());
     }
 
-    /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
-    #[cfg(unix)]
-    #[test]
-    fn identity_files_are_private_and_refuse_symlinks() {
-        // Phase `identity_directory_preflight_refuses_a_symlink`.
+    tilo_test_env::scenario! {
+        /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
+        #[cfg(unix)]
+        fn identity_files_are_private_and_refuse_symlinks;
+
+        phase identity_directory_preflight_refuses_a_symlink;
         {
             use std::os::unix::fs::symlink;
 
@@ -2242,7 +2285,8 @@ mod tests {
             symlink(&target, &linked).unwrap();
             assert!(prepare_identity_directory(&linked).is_err());
         }
-        // Phase `collaboration_verifier_rejects_a_permissive_primary_secret`.
+
+        phase collaboration_verifier_rejects_a_permissive_primary_secret;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
@@ -2255,7 +2299,8 @@ mod tests {
                 .expect_err("a group-readable personal seed must fail closed");
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         }
-        // Phase `ensure_primary_identity_writes_a_private_file`.
+
+        phase ensure_primary_identity_writes_a_private_file;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let identity_dir = tmp.path().join("tilo").join("identity");
@@ -2267,9 +2312,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn primary_identity_is_created_once_and_legacy_hosts_are_associated_not_relabelled() {
-        // Phase `ensure_primary_identity_reports_existing_vs_created`.
+    tilo_test_env::scenario! {
+        fn primary_identity_is_created_once_and_legacy_hosts_are_associated_not_relabelled;
+
+        phase ensure_primary_identity_reports_existing_vs_created;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let dir = tmp.path().join("tilo").join("identity");
@@ -2295,7 +2341,8 @@ mod tests {
                 ProvisionOutcome::Existing
             );
         }
-        // Phase `legacy_linux_host_associates_a_fresh_identity_with_the_unix_account`.
+
+        phase legacy_linux_host_associates_a_fresh_identity_with_the_unix_account;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
@@ -2310,7 +2357,8 @@ mod tests {
                 .expect("load host identity");
             assert_eq!(identity.display_name(), login_account_display_name());
         }
-        // Phase `legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity`.
+
+        phase legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
@@ -2385,51 +2433,10 @@ mod tests {
         })
     }
 
-    #[test]
-    fn the_shell_issues_native_certificates_and_the_runtime_foreign_ones() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let personal = tmp.path().join("config/tilo/identity");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
-        ensure_collaboration_identity(&personal, &paths).unwrap();
-        let native = device_certificates(&paths, &personal);
-        for (_, cert) in &native {
-            assert_eq!(cert.capabilities, DeviceCapabilities::primary());
-        }
-        let native_bytes = native.clone().map(|(path, _)| fs::read(path).unwrap());
-        ensure_collaboration_identity(&personal, &paths).unwrap();
-        assert_eq!(
-            native.clone().map(|(path, _)| fs::read(path).unwrap()),
-            native_bytes
-        );
+    tilo_test_env::scenario! {
+        fn collaboration_setup_builds_and_verifies_one_identity_chain;
 
-        // A runtime profile left with native certificates is re-issued as
-        // foreign, keeping the device key and label.
-        super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
-        let foreign = device_certificates(&paths, &personal);
-        for ((_, before), (_, after)) in native.iter().zip(&foreign) {
-            assert!(after.capabilities.foreign);
-            assert_eq!(after.device_public_key, before.device_public_key);
-            assert_eq!(after.device_label, before.device_label);
-        }
-        let foreign_bytes = foreign.clone().map(|(path, _)| fs::read(path).unwrap());
-        super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
-        assert_eq!(
-            foreign.map(|(path, _)| fs::read(path).unwrap()),
-            foreign_bytes
-        );
-
-        let fresh = tempfile::tempdir().expect("tempdir");
-        let personal = fresh.path().join("config/tilo/identity");
-        let paths = IdentityPaths::under(fresh.path().join("system"));
-        super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
-        for (_, cert) in device_certificates(&paths, &personal) {
-            assert!(cert.capabilities.foreign);
-        }
-    }
-
-    #[test]
-    fn collaboration_setup_builds_and_verifies_one_identity_chain() {
-        // Phase `collaboration_setup_creates_one_verified_identity_chain`.
+        phase collaboration_setup_creates_one_verified_identity_chain;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
@@ -2471,7 +2478,8 @@ mod tests {
             ];
             assert_eq!(before, after, "login verification must be read-only");
         }
-        // Phase `collaboration_verifier_rejects_a_mismatched_personal_root`.
+
+        phase collaboration_verifier_rejects_a_mismatched_personal_root;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
@@ -2489,7 +2497,8 @@ mod tests {
                 .expect_err("a different personal root must not pass login");
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         }
-        // Phase `collaboration_setup_repairs_the_active_import_without_minting_primary`.
+
+        phase collaboration_setup_repairs_the_active_import_without_minting_primary;
         {
             // Selecting an identity secures it with the session's store; this
             // fixture's store is files.
@@ -2523,35 +2532,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_the_identity_that_claimed_the_device_owns_it() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
-        let alice = tmp.path().join("alice/tilo/identity");
-        let bob = tmp.path().join("bob/tilo/identity");
-        let carol = tmp.path().join("carol/tilo/identity");
-        // Before anyone's first login there is no owner.
-        assert!(!active_identity_owns_device(&alice, &paths).expect("no identity yet"));
-        ensure_collaboration_identity(&alice, &paths).expect("alice claims the device");
-        ensure_collaboration_identity(&bob, &paths).expect("bob shares it");
-        assert!(active_identity_owns_device(&alice, &paths).expect("alice"));
-        assert!(!active_identity_owns_device(&bob, &paths).expect("bob"));
-        // An account that never finished first login is not the owner either.
-        assert!(!active_identity_owns_device(&carol, &paths).expect("carol"));
-        // A primary certificate that no longer verifies is an error, not a yes.
-        let mut cert = persist::read_device_cert(&paths.device_cert).expect("cert");
-        cert.device_label = "Tampered".into();
-        persist::write_device_cert(&paths.device_cert, &cert).expect("rewrite cert");
-        assert!(active_identity_owns_device(&alice, &paths).is_err());
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn concurrent_and_multi_user_provisioning_keeps_one_device_owner;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn concurrent_and_multi_user_provisioning_keeps_one_device_owner() {
-        // Phase `multiple_os_users_share_one_device_without_replacing_its_owner`.
+        phase multiple_os_users_share_one_device_without_replacing_its_owner;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let paths = IdentityPaths::under(tmp.path().join("system"));
@@ -2583,7 +2571,8 @@ mod tests {
                     .to_bytes()
             );
         }
-        // Phase `simultaneous_user_provisioning_builds_one_consistent_device_chain`.
+
+        phase simultaneous_user_provisioning_builds_one_consistent_device_chain;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let paths = IdentityPaths::under(tmp.path().join("system"));
@@ -2640,7 +2629,8 @@ mod tests {
                     .expect("identity-specific chain remains valid");
             }
         }
-        // Phase `simultaneous_owner_claims_elect_one_valid_winner_without_clobbering`.
+
+        phase simultaneous_owner_claims_elect_one_valid_winner_without_clobbering;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let path = tmp.path().join("system/user-identity/pubkey.bin");
@@ -2687,6 +2677,8 @@ mod tests {
                 "concurrent readers can only observe a complete winner file"
             );
         }
+
+        phase an_established_claim_is_answered_without_writing;
         // Phase `an_established_claim_is_answered_without_writing`: every
         // login asks again, and a full disk must not fail it. With the claim
         // directory read-only, staging a new claim would fail; reading the

@@ -214,146 +214,152 @@ mod tests {
         (d, r)
     }
 
-    #[test]
-    fn divider_axis_thickness_and_rule_colour() {
-        fn horizontal_is_one_px_tall_and_fills_width() {
-            let (_d, r) = lay_out(Divider::horizontal());
-            assert!(
-                (r.height() - 1.0).abs() < 0.5,
-                "1px tall, got {}",
-                r.height()
-            );
-            assert!(r.width() > 100.0, "fills parent width, got {}", r.width());
-        }
+    tilo_test_env::scenario! {
+        /// A divider and its rule.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_divider_rules_its_axis;
 
-        fn vertical_is_one_px_wide_and_fills_height() {
-            let (_d, r) = lay_out(Divider::vertical());
-            assert!((r.width() - 1.0).abs() < 0.5, "1px wide, got {}", r.width());
-            assert!(
-                r.height() > 100.0,
-                "fills parent height, got {}",
-                r.height()
-            );
-        }
-
-        fn with_thickness_overrides_cross_axis() {
-            let (_d, r) = lay_out(Divider::horizontal().with_thickness(3.0));
-            assert!(
-                (r.height() - 3.0).abs() < 0.5,
-                "3px tall, got {}",
-                r.height()
-            );
-        }
-
-        fn rule_color_follows_with_color_then_on_then_default() {
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let raised = theme.tokens.colors.surfaces.raised;
-                let name = &theme.name;
-
-                let default = Divider::horizontal().rule_color(&theme);
-                assert_eq!(default, theme.border_standard, "{name}: default rule");
-
-                let on_raised = Divider::horizontal().on(raised).rule_color(&theme);
-                assert_eq!(
-                    on_raised,
-                    crate::surface::edge_on(raised),
-                    "{name}: `.on(raised)` derives the edge"
-                );
-                assert_ne!(
-                    on_raised, theme.border_standard,
-                    "{name}: `.on` changes the colour"
-                );
+        phase divider_axis_thickness_and_rule_colour;
+        {
+            fn horizontal_is_one_px_tall_and_fills_width() {
+                let (_d, r) = lay_out(Divider::horizontal());
                 assert!(
-                    crate::surface::edge_delta(on_raised, raised)
-                        >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{name}: a divider on `raised` must register against it"
+                    (r.height() - 1.0).abs() < 0.5,
+                    "1px tall, got {}",
+                    r.height()
                 );
+                assert!(r.width() > 100.0, "fills parent width, got {}", r.width());
+            }
 
-                let explicit = theme.tokens.colors.intent.accent;
-                assert_eq!(
-                    Divider::horizontal()
-                        .on(raised)
-                        .with_color(explicit)
-                        .rule_color(&theme),
-                    explicit,
-                    "{name}: `.with_color` wins over `.on`"
+            fn vertical_is_one_px_wide_and_fills_height() {
+                let (_d, r) = lay_out(Divider::vertical());
+                assert!((r.width() - 1.0).abs() < 0.5, "1px wide, got {}", r.width());
+                assert!(
+                    r.height() > 100.0,
+                    "fills parent height, got {}",
+                    r.height()
                 );
             }
+
+            fn with_thickness_overrides_cross_axis() {
+                let (_d, r) = lay_out(Divider::horizontal().with_thickness(3.0));
+                assert!(
+                    (r.height() - 3.0).abs() < 0.5,
+                    "3px tall, got {}",
+                    r.height()
+                );
+            }
+
+            fn rule_color_follows_with_color_then_on_then_default() {
+                for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                    let raised = theme.tokens.colors.surfaces.raised;
+                    let name = &theme.name;
+
+                    let default = Divider::horizontal().rule_color(&theme);
+                    assert_eq!(default, theme.border_standard, "{name}: default rule");
+
+                    let on_raised = Divider::horizontal().on(raised).rule_color(&theme);
+                    assert_eq!(
+                        on_raised,
+                        crate::surface::edge_on(raised),
+                        "{name}: `.on(raised)` derives the edge"
+                    );
+                    assert_ne!(
+                        on_raised, theme.border_standard,
+                        "{name}: `.on` changes the colour"
+                    );
+                    assert!(
+                        crate::surface::edge_delta(on_raised, raised)
+                            >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{name}: a divider on `raised` must register against it"
+                    );
+
+                    let explicit = theme.tokens.colors.intent.accent;
+                    assert_eq!(
+                        Divider::horizontal()
+                            .on(raised)
+                            .with_color(explicit)
+                            .rule_color(&theme),
+                        explicit,
+                        "{name}: `.with_color` wins over `.on`"
+                    );
+                }
+            }
+
+            fn on_surface_still_emits_exactly_one_fill() {
+                let theme = Theme::dark();
+                let raised = theme.tokens.colors.surfaces.raised;
+                let (mut d, _r) = lay_out(Divider::horizontal().on(raised));
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                let fills = scene
+                    .encoding()
+                    .draw_tags
+                    .iter()
+                    .filter(|t| **t == DrawTag::COLOR)
+                    .count();
+                assert_eq!(fills, 1, "a divider on a surface is still one fill");
+            }
+
+            fn draw_emits_a_fill() {
+                let (mut d, _r) = lay_out(Divider::horizontal());
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                let fills = scene
+                    .encoding()
+                    .draw_tags
+                    .iter()
+                    .filter(|t| **t == DrawTag::COLOR)
+                    .count();
+                assert_eq!(fills, 1, "a laid-out divider must emit exactly one fill");
+            }
+
+            horizontal_is_one_px_tall_and_fills_width();
+            vertical_is_one_px_wide_and_fills_height();
+            with_thickness_overrides_cross_axis();
+            rule_color_follows_with_color_then_on_then_default();
+            on_surface_still_emits_exactly_one_fill();
+            draw_emits_a_fill();
         }
 
-        fn on_surface_still_emits_exactly_one_fill() {
+        phase a_hand_painted_surface_paints_the_dividers_rule_along_one_edge;
+        {
             let theme = Theme::dark();
+            let fills = |rect: Rect, edge: RuleEdge| {
+                let mut scene = Scene::new();
+                paint_rule(&mut scene, Affine::IDENTITY, &theme, rect, edge, None);
+                scene
+                    .encoding()
+                    .draw_tags
+                    .iter()
+                    .filter(|t| **t == DrawTag::COLOR)
+                    .count()
+            };
+            let band = Rect::new(0.0, 0.0, 300.0, 40.0);
+            for edge in [
+                RuleEdge::Top,
+                RuleEdge::Bottom,
+                RuleEdge::Left,
+                RuleEdge::Right,
+            ] {
+                assert_eq!(fills(band, edge), 1, "one rule along {edge:?}");
+            }
+            assert_eq!(
+                fills(Rect::new(0.0, 0.0, 0.0, 40.0), RuleEdge::Bottom),
+                0,
+                "an empty rect has no edge to rule"
+            );
             let raised = theme.tokens.colors.surfaces.raised;
-            let (mut d, _r) = lay_out(Divider::horizontal().on(raised));
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert_eq!(fills, 1, "a divider on a surface is still one fill");
+            assert_eq!(
+                Divider::horizontal().on(raised).rule_color(&theme),
+                crate::surface::edge_on(raised),
+                "a rule on a surface takes that surface's edge, as the widget's does"
+            );
         }
-
-        fn draw_emits_a_fill() {
-            let (mut d, _r) = lay_out(Divider::horizontal());
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert_eq!(fills, 1, "a laid-out divider must emit exactly one fill");
-        }
-
-        horizontal_is_one_px_tall_and_fills_width();
-        vertical_is_one_px_wide_and_fills_height();
-        with_thickness_overrides_cross_axis();
-        rule_color_follows_with_color_then_on_then_default();
-        on_surface_still_emits_exactly_one_fill();
-        draw_emits_a_fill();
-    }
-
-    #[test]
-    fn a_hand_painted_surface_paints_the_dividers_rule_along_one_edge() {
-        let theme = Theme::dark();
-        let fills = |rect: Rect, edge: RuleEdge| {
-            let mut scene = Scene::new();
-            paint_rule(&mut scene, Affine::IDENTITY, &theme, rect, edge, None);
-            scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count()
-        };
-        let band = Rect::new(0.0, 0.0, 300.0, 40.0);
-        for edge in [
-            RuleEdge::Top,
-            RuleEdge::Bottom,
-            RuleEdge::Left,
-            RuleEdge::Right,
-        ] {
-            assert_eq!(fills(band, edge), 1, "one rule along {edge:?}");
-        }
-        assert_eq!(
-            fills(Rect::new(0.0, 0.0, 0.0, 40.0), RuleEdge::Bottom),
-            0,
-            "an empty rect has no edge to rule"
-        );
-        let raised = theme.tokens.colors.surfaces.raised;
-        assert_eq!(
-            Divider::horizontal().on(raised).rule_color(&theme),
-            crate::surface::edge_on(raised),
-            "a rule on a surface takes that surface's edge, as the widget's does"
-        );
     }
 }

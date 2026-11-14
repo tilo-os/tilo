@@ -1,11 +1,14 @@
-//! Collections read lazily in views, and what a view depends on of one.
+//! Collections read lazily, and what a view depends on of one.
 //!
-//! A view that reads a collection field gets a [`Value::Coll`]: the field, not a list of its
+//! Code that reads a collection field gets a [`Value::Coll`]: the field, not a list of its
 //! items. Its length, an item at an index, its first and its last item are read through the
-//! store's listing ([`crate::store::Store::listing`]), shared, one at a time, and each read is
-//! recorded as what it saw ([`CollSeen`]). A change to the collection re-runs a view only if
+//! store's listing ([`crate::store::Store::listing`]), shared, one at a time. A view records
+//! each read as what it saw ([`CollSeen`]), and a change to the collection re-runs it only if
 //! something it saw is no longer so: `messages.last()` depends on the last message, not on the
-//! 10,000 before it, and builds one reference, not 10,000.
+//! 10,000 before it, and builds one reference, not 10,000. An action reads the listing it
+//! first read ([`crate::value::Pinned`]), so sending a reply reads the last message's page, not
+//! the conversation. A run that journals its reads reads a collection whole: the journal
+//! answers that value again when the run is replayed.
 //!
 //! Wherever the items are needed as values (compared, stored, put into a list or a tuple) the
 //! collection is read whole into a [`Value::List`], and the view then depends on the whole
@@ -278,8 +281,18 @@ impl Core {
         coll.item_ref(id)
     }
 
-    /// The listing of `coll`: the one this view run read already, else the store's.
+    /// The listing of `coll`: the one it was first read as outside a view, the one this view
+    /// run read already, else the store's.
     pub(crate) fn coll_listing(&self, coll: &Rc<CollRef>) -> Result<Rc<Listing>, String> {
+        if let Some(pin) = &coll.pinned.0 {
+            if let Some(listing) = pin.get() {
+                return Ok(Rc::clone(listing));
+            }
+            // An action that writes the collection while it walks it walks what it read.
+            let listing = listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string())?;
+            let _ = pin.set(Rc::clone(&listing));
+            return Ok(listing);
+        }
         if let Some(vs) = self.frames.borrow().view()
             && let Some((_, listing)) = vs
                 .listings
@@ -492,6 +505,7 @@ impl Core {
         };
         let ordered = CollRef {
             order: Some(order),
+            pinned: coll.pinned.derived(),
             ..(*coll).clone()
         };
         Ok(Value::some(Value::Coll(Rc::new(ordered))))
@@ -596,15 +610,6 @@ impl Core {
         let empty = first.is_none();
         self.saw(coll, Read::First(first), listing.len());
         Ok(empty)
-    }
-
-    /// [`Core::coll_len`] or [`Core::coll_count`], as an import asks for one or the other.
-    pub(crate) fn coll_len_or_count(&self, coll: &Rc<CollRef>, count: bool) -> HResult<usize> {
-        if count {
-            self.coll_count(coll)
-        } else {
-            self.coll_len(coll)
-        }
     }
 
     /// Record that a view read the whole of `coll`: it depends on the collection's field, or,
@@ -755,22 +760,12 @@ impl Core {
         Ok(listing.iter().map(|id| self.item_ref(coll, &id)).collect())
     }
 
-    /// `v`, with a collection read whole into a list: what goes into another value.
-    ///
-    /// # Errors
-    ///
-    /// A message when the store cannot list the collection.
-    pub(crate) fn whole(&self, v: Value) -> Result<Value, String> {
-        match v {
-            Value::Coll(coll) => self.coll_items(&coll).map(Value::List),
-            other => Ok(other),
-        }
-    }
-
     /// A copy of the value behind a handle, a collection read whole into a list: for a value
     /// that goes into another one, or out of the view.
     pub(crate) fn val_whole(&self, h: i32) -> HResult<Value> {
-        let v = self.val(h)?;
-        Ok(self.whole(v)?)
+        match self.val(h)? {
+            Value::Coll(coll) => Ok(Value::List(self.coll_items(&coll)?)),
+            other => Ok(other),
+        }
     }
 }

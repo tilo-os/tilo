@@ -4,7 +4,7 @@
 pub use tilo_broker_core::services::*;
 
 mod published;
-pub use published::{Caller, Granted, PublishedResources, Reading, ResourceWatch};
+pub use published::{Caller, PublishedResources, Reading, ResourceWatch};
 
 /// A write on `route` was admitted to this device's channels. Where it is a
 /// workspace's tracker, its readers (the broker's runs, the composer following
@@ -58,44 +58,13 @@ pub trait WorkspaceMemberships: Send + Sync {
         }
     }
 
-    /// Whether an app opening `workspace` as `certificate`'s person first has
-    /// the workspace let `app` author there: the workspace does not let it yet, and
-    /// that person may grant it. Every opening of an app asks this, the
-    /// launch of one and the join of a tab the session restored alike, and
-    /// grants through [`WorkspaceMembershipCommand::GrantAppAuthorship`].
-    ///
-    /// [`WorkspaceMembershipCommand::GrantAppAuthorship`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship
-    fn app_opens_by_granting(
-        &self,
-        _workspace: &str,
-        _app: &str,
-        _certificate: &tilo_user_identity::DeviceCert,
-    ) -> bool {
-        false
-    }
-
-    /// Whether `workspace` is held here but governed by the node that takes part
-    /// in its channels: this device writes the workspace's membership changes
-    /// there itself, decided by the workspace's governance as they are where
-    /// this device governs the workspace itself.
-    fn grants_authorship_at_host(&self, _workspace: &str) -> bool {
-        false
-    }
-
     /// Whether `workspace`'s membership actions are still to come here: this
     /// device holds the workspace, joins it or has it placed on its host, and its
-    /// replica is not projected yet ([`Self::requires_workspace`] or
-    /// [`Self::grants_authorship_at_host`] turns true once it is, which
-    /// announces a policy change). An app opening in such a workspace waits for
-    /// them; one opening in any other workspace unpublished is refused.
+    /// replica is not projected yet ([`Self::requires_workspace`] turns true
+    /// once it is, which announces a policy change). An app opening in such a
+    /// workspace waits for them; one opening in any other workspace
+    /// unpublished is refused.
     fn membership_pending(&self, _workspace: &str) -> bool {
-        false
-    }
-
-    /// Whether `workspace`'s host is this device's own, so the authorship an app
-    /// opening there needs is recorded here rather than asked of another
-    /// device.
-    fn hosted_here(&self, _workspace: &str) -> bool {
         false
     }
 
@@ -118,12 +87,7 @@ pub struct ObservedApplicationLaunch {
     app: String,
     package_root: Option<String>,
     check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
-    grant: Arc<ObservedAuthorshipGrant>,
 }
-
-type ObservedAuthorshipGrant = dyn Fn(&tilo_user_identity::DeviceCert) -> Result<crate::collab_app_broker::InvocationJob, String>
-    + Send
-    + Sync;
 
 impl ObservedApplicationLaunch {
     pub(crate) fn new(
@@ -131,14 +95,12 @@ impl ObservedApplicationLaunch {
         app: String,
         package_root: Option<String>,
         check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
-        grant: Arc<ObservedAuthorshipGrant>,
     ) -> Self {
         Self {
             workspace,
             app,
             package_root,
             check,
-            grant,
         }
     }
 
@@ -151,11 +113,6 @@ impl ObservedApplicationLaunch {
     /// Recheck the actual original caller, pending invocation and policy clock.
     pub fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
         (self.check)()
-    }
-
-    /// Submit this bound app's authorship through the normal published door.
-    pub fn delegate_authorship(&self) -> Result<crate::collab_app_broker::InvocationJob, String> {
-        (self.grant)(&self.certificate()?)
     }
 }
 
@@ -785,22 +742,55 @@ pub trait FileClipboardServices: Send + Sync {
         Err("write attribution is unavailable".into())
     }
 }
-/// A grant being recorded ([`AppActionGrants::record`]): its id once it is
-/// in force, or why it is not.
+/// Where one app's answers for another app's actions are kept: the person's
+/// settings on the device they use (`settings_store::app_consent`).
+pub trait AppConsents: Send + Sync {
+    /// Whether `app` may use `target_app`'s `action` on `resource`.
+    fn allows(&self, consent: &settings_store::app_consent::Consent) -> bool;
+    /// Keep the person's answer for `consent`.
+    ///
+    /// # Errors
+    /// The answer could not be kept.
+    fn allow(&self, consent: &settings_store::app_consent::Consent) -> Result<(), String>;
+}
+
+/// [`AppConsents`] over a settings source: what the person answered, in their
+/// own settings document.
+pub struct PersonalAppConsents {
+    pub source: Arc<dyn settings_store::SettingsSource>,
+}
+
+impl AppConsents for PersonalAppConsents {
+    fn allows(&self, consent: &settings_store::app_consent::Consent) -> bool {
+        settings_store::app_consent::allows(self.source.as_ref(), consent)
+    }
+
+    fn allow(&self, consent: &settings_store::app_consent::Consent) -> Result<(), String> {
+        settings_store::app_consent::allow(self.source.as_ref(), consent)
+            .map_err(|error| format!("the answer could not be saved: {error}"))
+    }
+}
+
+/// A grant being recorded ([`WorkspaceGrants::record`]): its id once it is in
+/// force, or why it is not.
 pub type GrantRecording =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
-/// Where grants a person gives an application for another app's action are
-/// recorded. The broker decides whether to ask and builds the grant; the
-/// host owns the workspace records it lands in.
-pub trait AppActionGrants: Send + Sync {
-    /// Whether this machine governs `workspace` and `person` may grant in it,
-    /// so a grant they give can be recorded here.
-    fn may_grant(&self, workspace: &str, person: &str) -> bool;
+
+/// Where a host records what a workspace's grants say: the answer "allow for
+/// this issue" a person gave on the sheet, and the taking back of a grant given
+/// once, now that its call was decided. The broker builds the grant; the host
+/// owns the workspace records it lands in.
+pub trait WorkspaceGrants: Send + Sync {
+    /// Whether `person` may record an answer in `workspace` here: this machine
+    /// governs it and they may grant there.
+    fn may_record(&self, _workspace: &str, _person: &str) -> bool {
+        false
+    }
     /// Record `grant` in `request.workspace` as given by `request.person`, and
     /// note `answer` in the workspace's history. Resolves to the recorded
-    /// grant's id once the grant is in force here, so the call it was given
-    /// for is admitted with it in place. Otherwise it resolves to why
-    /// nothing was granted, worded for the person.
+    /// grant's id once the grant is in force here, so the call it was given for
+    /// is admitted with it in place. Otherwise it resolves to why nothing was
+    /// granted, worded for the person.
     fn record(
         &self,
         request: &crate::app_actions::AppActionConsentRequest,
@@ -811,6 +801,7 @@ pub trait AppActionGrants: Send + Sync {
     /// its call was decided.
     fn revoke(&self, workspace: &str, grant: &str);
 }
+
 /// The identity of an exact private Settings worker, derived by the broker.
 #[derive(Clone, Debug)]
 pub struct DisplayControlContext {
@@ -906,8 +897,13 @@ pub struct HostServices {
     pub app_action_access: Option<crate::app_actions::AppActionAccessResolver>,
     /// The resource kinds each application declared; without it no app's reach is known.
     pub app_resource_kinds: Option<crate::app_actions::AppResourceKindsResolver>,
+    /// Where this host records the answers a person gave for its workspaces'
+    /// grants.
+    pub workspace_grants: Option<Arc<dyn WorkspaceGrants>>,
+    /// Where the person's answers for one app using another app's action are
+    /// kept: their own settings, on the device they answered on.
+    pub app_consents: Option<Arc<dyn AppConsents>>,
     /// Records grants people give apps for other apps' actions; without it no grant is asked.
-    pub app_action_grants: Option<Arc<dyn AppActionGrants>>,
     /// Where the launchable action catalogue survives a restart; without it it lives as long as
     /// this broker.
     pub launchable_catalogue: Option<std::path::PathBuf>,
@@ -975,7 +971,8 @@ impl HostServices {
         "file_clipboard",
         "app_action_access",
         "app_resource_kinds",
-        "app_action_grants",
+        "workspace_grants",
+        "app_consents",
         "launchable_catalogue",
         "record_content",
         "channel_keys",

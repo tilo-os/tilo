@@ -22,7 +22,7 @@ pub mod lan;
 pub mod own_address;
 pub mod relays;
 pub use directory::{Gate, Watchonly, collaborating};
-pub use lan::lan;
+pub use lan::Nearby;
 pub use own_address::{RELAY_WAIT, await_relay, follow, relay_addr};
 pub use relays::{EndpointRelays, relays};
 
@@ -145,6 +145,18 @@ impl Reachability {
     #[must_use]
     pub fn is_dormant(&self) -> bool {
         with_held(&self.held, |held| !held.awake).unwrap_or(false)
+    }
+
+    /// The relays this device was configured with, whether they run now or
+    /// not. A person's devices name the same ones, so one of theirs is
+    /// reached at the relay their settings share before its key resolves
+    /// anywhere.
+    #[must_use]
+    pub fn relay_urls(&self) -> Vec<iroh::RelayUrl> {
+        with_held(&self.held, |held| {
+            held.relays.iter().map(|relay| relay.url.clone()).collect()
+        })
+        .unwrap_or_default()
     }
 
     /// Whether this handle holds relays back at all, so what needs them is
@@ -431,6 +443,27 @@ mod tests {
                 .relay_addr_within(Duration::from_secs(1))
                 .is_none(),
             "a handle holding nothing back has no relay to wait for"
+        );
+        assert!(
+            Reachability::default().relay_urls().is_empty(),
+            "a handle holding nothing back names no relay"
+        );
+        endpoint.close().await;
+    }
+
+    /// The relays a device was configured with are named whether they run or rest: a device of
+    /// the person's is dialled at the relay both their settings name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_configured_relays_are_named_while_they_rest() {
+        let (endpoint, _) = endpoint_without_relays().await;
+        let reachability = deferred(&endpoint, REST_AFTER);
+        let mut named = reachability.relay_urls();
+        named.sort();
+        let mut configured = unused_relays().urls::<Vec<_>>();
+        configured.sort();
+        assert_eq!(
+            named, configured,
+            "a resting device still knows where its person's devices are"
         );
         endpoint.close().await;
     }

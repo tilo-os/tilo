@@ -172,35 +172,39 @@ pub fn local_build_size_limit(manifest: &Manifest) -> Option<u64> {
 mod size_tests {
     use super::*;
 
-    #[test]
-    fn builds_that_link_the_toolkit_in_get_the_desktop_limit() {
-        for platform in [
-            "linux",
-            "windows",
-            "macos",
-            registry_types::ANDROID_PLATFORM,
-        ] {
-            assert_eq!(
-                platform_size_limit(platform),
-                MAX_DESKTOP_APP_TAPP_BYTES,
-                "{platform}"
-            );
-        }
-        for platform in [registry_types::TILO_OS_PLATFORM, "web", "unknown"] {
-            assert_eq!(
-                platform_size_limit(platform),
-                MAX_APP_TAPP_BYTES,
-                "{platform}"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn package_size_limits_follow_the_platform_and_kind;
 
-    #[test]
-    fn app_limit_is_eight_mib_and_runtime_bundles_are_separate() {
-        assert_eq!(MAX_APP_TAPP_BYTES, 8 * 1024 * 1024);
-        assert_eq!(MAX_APP_UNPACKED_BYTES, MAX_APP_TAPP_BYTES);
-        assert!(tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES));
-        assert!(!tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES + 1));
-        assert!(tapp_size_allowed(Kind::Runtime, u64::MAX));
+        phase builds_that_link_the_toolkit_in_get_the_desktop_limit;
+        {
+            for platform in [
+                "linux",
+                "windows",
+                "macos",
+                registry_types::ANDROID_PLATFORM,
+            ] {
+                assert_eq!(
+                    platform_size_limit(platform),
+                    MAX_DESKTOP_APP_TAPP_BYTES,
+                    "{platform}"
+                );
+            }
+            for platform in [registry_types::TILO_OS_PLATFORM, "web", "unknown"] {
+                assert_eq!(
+                    platform_size_limit(platform),
+                    MAX_APP_TAPP_BYTES,
+                    "{platform}"
+                );
+            }
+        }
+
+        phase app_limit_is_eight_mib_and_runtime_bundles_are_separate;
+        {
+            assert_eq!(MAX_APP_TAPP_BYTES, 8 * 1024 * 1024);
+            assert_eq!(MAX_APP_UNPACKED_BYTES, MAX_APP_TAPP_BYTES);
+            assert!(tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES));
+            assert!(!tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES + 1));
+            assert!(tapp_size_allowed(Kind::Runtime, u64::MAX));
+        }
     }
 }

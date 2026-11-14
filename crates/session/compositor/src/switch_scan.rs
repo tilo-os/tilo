@@ -158,104 +158,109 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    #[test]
-    fn every_pair_steps_on_the_first_key_and_activates_on_the_second() {
-        for pair in SwitchPair::ALL {
-            let (next, activate) = pair.keycodes();
-            assert_eq!(pair.action(next), Some(Scan::Next), "{pair:?}");
-            assert_eq!(pair.action(activate), Some(Scan::Activate), "{pair:?}");
-            assert_eq!(pair.action(30), None);
+    tilo_test_env::scenario! {
+        /// Switch scanning.
+        fn switch_scanning_steps_and_activates_with_its_keys;
+
+        phase every_pair_steps_on_the_first_key_and_activates_on_the_second;
+        {
+            for pair in SwitchPair::ALL {
+                let (next, activate) = pair.keycodes();
+                assert_eq!(pair.action(next), Some(Scan::Next), "{pair:?}");
+                assert_eq!(pair.action(activate), Some(Scan::Activate), "{pair:?}");
+                assert_eq!(pair.action(30), None);
+            }
         }
-    }
 
-    #[test]
-    fn the_steps_type_tab_and_return() {
-        assert_eq!(
-            Scan::edges([Scan::Next]),
-            vec![(15, true), (15, false)],
-            "Tab"
-        );
-        assert_eq!(
-            Scan::edges([Scan::Activate]),
-            vec![(28, true), (28, false)],
-            "Return"
-        );
-    }
+        phase the_steps_type_tab_and_return;
+        {
+            assert_eq!(
+                Scan::edges([Scan::Next]),
+                vec![(15, true), (15, false)],
+                "Tab"
+            );
+            assert_eq!(
+                Scan::edges([Scan::Activate]),
+                vec![(28, true), (28, false)],
+                "Return"
+            );
+        }
 
-    #[test]
-    fn off_scans_nothing() {
-        let t0 = Instant::now();
-        let mut scanner = Scanner::default();
-        assert_eq!(scanner.key(64, true, t0), None);
-        assert_eq!(scanner.tick(t0 + ms(10_000)), None);
-        assert_eq!(scanner.next_deadline(), None);
-    }
+        phase off_scans_nothing;
+        {
+            let t0 = Instant::now();
+            let mut scanner = Scanner::default();
+            assert_eq!(scanner.key(64, true, t0), None);
+            assert_eq!(scanner.tick(t0 + ms(10_000)), None);
+            assert_eq!(scanner.next_deadline(), None);
+        }
 
-    #[test]
-    fn the_switches_step_and_activate_and_their_releases_go_nowhere() {
-        let t0 = Instant::now();
-        let mut scanner = Scanner::default();
-        scanner.configure(
-            Some(SwitchConfig {
-                pair: SwitchPair::F6F7,
-                period: None,
-            }),
-            t0,
-        );
-        assert_eq!(scanner.key(64, true, t0), Some(Some(Scan::Next)));
-        assert_eq!(scanner.key(64, false, t0 + ms(30)), Some(None));
-        assert_eq!(
-            scanner.key(65, true, t0 + ms(400)),
-            Some(Some(Scan::Activate))
-        );
-        assert_eq!(scanner.key(65, false, t0 + ms(430)), Some(None));
-        assert_eq!(scanner.key(30, true, t0), None, "letters are not switches");
-        assert_eq!(scanner.next_deadline(), None, "no automatic walking");
-    }
+        phase the_switches_step_and_activate_and_their_releases_go_nowhere;
+        {
+            let t0 = Instant::now();
+            let mut scanner = Scanner::default();
+            scanner.configure(
+                Some(SwitchConfig {
+                    pair: SwitchPair::F6F7,
+                    period: None,
+                }),
+                t0,
+            );
+            assert_eq!(scanner.key(64, true, t0), Some(Some(Scan::Next)));
+            assert_eq!(scanner.key(64, false, t0 + ms(30)), Some(None));
+            assert_eq!(
+                scanner.key(65, true, t0 + ms(400)),
+                Some(Some(Scan::Activate))
+            );
+            assert_eq!(scanner.key(65, false, t0 + ms(430)), Some(None));
+            assert_eq!(scanner.key(30, true, t0), None, "letters are not switches");
+            assert_eq!(scanner.next_deadline(), None, "no automatic walking");
+        }
 
-    #[test]
-    fn an_automatic_period_walks_the_focus_and_a_press_restarts_it() {
-        let t0 = Instant::now();
-        let mut scanner = Scanner::default();
-        scanner.configure(
-            Some(SwitchConfig {
-                pair: SwitchPair::F9F10,
-                period: Some(ms(1_000)),
-            }),
-            t0,
-        );
-        assert_eq!(scanner.next_deadline(), Some(t0 + ms(1_000)));
-        assert_eq!(scanner.tick(t0 + ms(999)), None);
-        assert_eq!(scanner.tick(t0 + ms(1_000)), Some(Scan::Next));
-        assert_eq!(scanner.next_deadline(), Some(t0 + ms(2_000)));
-        // A press at 1.5 s pushes the next automatic step to 2.5 s.
-        assert_eq!(
-            scanner.key(67, true, t0 + ms(1_500)),
-            Some(Some(Scan::Next))
-        );
-        assert_eq!(scanner.next_deadline(), Some(t0 + ms(2_500)));
-        assert_eq!(scanner.tick(t0 + ms(2_400)), None);
-        assert_eq!(scanner.tick(t0 + ms(2_500)), Some(Scan::Next));
-    }
+        phase an_automatic_period_walks_the_focus_and_a_press_restarts_it;
+        {
+            let t0 = Instant::now();
+            let mut scanner = Scanner::default();
+            scanner.configure(
+                Some(SwitchConfig {
+                    pair: SwitchPair::F9F10,
+                    period: Some(ms(1_000)),
+                }),
+                t0,
+            );
+            assert_eq!(scanner.next_deadline(), Some(t0 + ms(1_000)));
+            assert_eq!(scanner.tick(t0 + ms(999)), None);
+            assert_eq!(scanner.tick(t0 + ms(1_000)), Some(Scan::Next));
+            assert_eq!(scanner.next_deadline(), Some(t0 + ms(2_000)));
+            // A press at 1.5 s pushes the next automatic step to 2.5 s.
+            assert_eq!(
+                scanner.key(67, true, t0 + ms(1_500)),
+                Some(Some(Scan::Next))
+            );
+            assert_eq!(scanner.next_deadline(), Some(t0 + ms(2_500)));
+            assert_eq!(scanner.tick(t0 + ms(2_400)), None);
+            assert_eq!(scanner.tick(t0 + ms(2_500)), Some(Scan::Next));
+        }
 
-    #[test]
-    fn switching_scanning_off_stops_the_walking() {
-        let t0 = Instant::now();
-        let mut scanner = Scanner::default();
-        scanner.configure(
-            Some(SwitchConfig {
-                pair: SwitchPair::Digits12,
-                period: Some(ms(500)),
-            }),
-            t0,
-        );
-        scanner.configure(None, t0 + ms(100));
-        assert_eq!(scanner.tick(t0 + ms(10_000)), None);
-        assert_eq!(scanner.next_deadline(), None);
-        assert_eq!(
-            scanner.key(2, true, t0),
-            None,
-            "switches are ordinary keys again"
-        );
+        phase switching_scanning_off_stops_the_walking;
+        {
+            let t0 = Instant::now();
+            let mut scanner = Scanner::default();
+            scanner.configure(
+                Some(SwitchConfig {
+                    pair: SwitchPair::Digits12,
+                    period: Some(ms(500)),
+                }),
+                t0,
+            );
+            scanner.configure(None, t0 + ms(100));
+            assert_eq!(scanner.tick(t0 + ms(10_000)), None);
+            assert_eq!(scanner.next_deadline(), None);
+            assert_eq!(
+                scanner.key(2, true, t0),
+                None,
+                "switches are ordinary keys again"
+            );
+        }
     }
 }

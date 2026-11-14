@@ -6,7 +6,7 @@
 //! Which display that is depends on the monitors this device happens to
 //! have, so the partition is per-device layout state. It is persisted with
 //! the device's own desktop and is never projected into a workspace document or
-//! the device's whole-desktop document: a collaborator has their own
+//! the device's whole-desktop document: a member has their own
 //! monitors and their own partition of the same strip.
 //!
 //! Groups belong to a physical monitor, not to the port or output number it
@@ -16,11 +16,11 @@
 //! the backend's current output ids, which it maps through the displays
 //! last reconciled.
 //!
-//! Group order stays the strip's, which is shared with every collaborator:
+//! Group order stays the strip's, which is shared with every member:
 //! a display's sub-row is the strip's groups that belong to it, in strip
 //! order. Nothing here ever reorders a strip. Unplugging a monitor or moving
 //! a group to another display changes only where groups are shown, so a
-//! collaborator's strip never reorders because of this device's monitors.
+//! member's strip never reorders because of this device's monitors.
 
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_sort::CompactSort as _;
@@ -471,229 +471,232 @@ mod tests {
         displays
     }
 
-    /// The display the person chose in Settings is the primary one while it
-    /// is connected, else the first one there is.
-    #[test]
-    fn the_chosen_display_is_primary_and_the_first_stands_in_without_one() {
-        let ws = workspace(&[1]);
-        let mut p = OutputPartition::default();
-        p.reconcile(&ws, &docked());
-        assert_eq!(p.primary(), Some(0), "no choice: the first one");
+    tilo_test_env::scenario! {
+        fn a_workspaces_groups_are_partitioned_over_its_displays;
 
-        p.reconcile(&ws, &with_primary(docked(), MONITOR));
-        assert_eq!(p.primary(), Some(1), "the monitor the person chose");
-        assert_eq!(p.focused_display(), Some(1), "focus follows it");
-        assert_eq!(p.display_of(1), Some(1), "so does a window without one");
+        phase the_chosen_display_is_primary_and_the_first_stands_in_without_one;
+        // The display the person chose in Settings is the primary one while it
+        // is connected, else the first one there is.
+        {
+            let ws = workspace(&[1]);
+            let mut p = OutputPartition::default();
+            p.reconcile(&ws, &docked());
+            assert_eq!(p.primary(), Some(0), "no choice: the first one");
 
-        // The chosen monitor is unplugged: the one left stands in, and the
-        // choice returns with the monitor.
-        p.reconcile(&ws, &with_primary(docked()[..1].to_vec(), PANEL));
-        assert_eq!(p.primary(), Some(0));
-        p.reconcile(&ws, &with_primary(docked(), MONITOR));
-        assert_eq!(p.primary(), Some(1));
-    }
+            p.reconcile(&ws, &with_primary(docked(), MONITOR));
+            assert_eq!(p.primary(), Some(1), "the monitor the person chose");
+            assert_eq!(p.focused_display(), Some(1), "focus follows it");
+            assert_eq!(p.display_of(1), Some(1), "so does a window without one");
 
-    /// A monitor that goes away and comes back takes the groups it stranded
-    /// to it, never to the display standing in for the primary.
-    #[test]
-    fn groups_a_gone_monitor_stranded_move_to_the_primary_that_is_there() {
-        let ws = workspace(&[1, 2]);
-        let mut p = OutputPartition::default();
-        p.reconcile(&ws, &with_primary(docked(), PANEL));
-        home(&mut p, &[(1, 0), (2, 1)]);
-        // The monitor holding one of them goes, leaving the panel as primary.
-        p.reconcile(&ws, &with_primary(docked()[..1].to_vec(), PANEL));
-        assert_eq!(p.display_of(2), Some(0));
-        assert_eq!(p.origin.get(&2).map(String::as_str), Some(MONITOR));
-    }
-
-    #[test]
-    fn unplugging_moves_a_displays_groups_in_strip_order_and_replugging_returns_them() {
-        let ws = workspace(&[1, 2, 3, 4, 5]);
-        let mut p = OutputPartition::default();
-        p.reconcile(&ws, &docked());
-        home(&mut p, &[(1, 0), (2, 1), (3, 0), (4, 1), (5, 0)]);
-        p.note_focus(StripId(1), 3);
-
-        p.reconcile(&ws, &docked()[..1]);
-        assert_eq!(p.groups_on(&ws[0].strips[0], 0), vec![1, 2, 3, 4, 5]);
-        assert_eq!(p.origin.get(&4).map(String::as_str), Some(MONITOR));
-
-        p.reconcile(&ws, &docked());
-        assert_eq!(p.display_of(2), Some(1));
-        assert_eq!(p.display_of(4), Some(1));
-        assert!(p.origin.is_empty());
-        assert_eq!(p.groups_on(&ws[0].strips[0], 1), vec![2, 4]);
-    }
-
-    #[test]
-    fn a_row_lays_its_groups_out_display_by_display_in_strip_order() {
-        let ws = workspace(&[1, 2, 3, 4]);
-        let strip = &ws[0].strips[0];
-        let mut p = OutputPartition::default();
-        let ids = |p: &OutputPartition| -> Vec<GroupId> {
-            p.lane_order(strip).into_iter().map(|g| g.id).collect()
-        };
-        assert_eq!(ids(&p), vec![1, 2, 3, 4], "one display: the strip's order");
-        p.reconcile(&ws, &docked());
-        home(&mut p, &[(1, 1), (2, 0), (3, 1), (4, 0)]);
-        assert_eq!(ids(&p), vec![2, 4, 1, 3]);
-    }
-
-    #[test]
-    fn a_group_moved_while_its_display_was_away_stays_where_it_was_moved() {
-        let ws = workspace(&[1, 2]);
-        let mut p = OutputPartition::default();
-        p.reconcile(&ws, &docked());
-        home(&mut p, &[(1, 0), (2, 1)]);
-        p.reconcile(&ws, &docked()[..1]);
-        assert!(p.move_group(&ws, 2, 0));
-        p.reconcile(&ws, &docked());
-        assert_eq!(p.display_of(2), Some(0));
-    }
-
-    #[test]
-    fn new_groups_go_to_the_focused_display_and_moves_follow_its_focus() {
-        let ws = workspace(&[1, 2, 3]);
-        let mut p = OutputPartition::default();
-        p.reconcile(&ws, &docked());
-        p.set_focused(1);
-        assert!(p.place_unhomed(&ws));
-        assert_eq!(p.groups_on(&ws[0].strips[0], 1), vec![1, 2, 3]);
-        p.note_focus(StripId(1), 1);
-        assert!(p.move_group(&ws, 3, 0));
-        assert_eq!(p.display_of(3), Some(0));
-        assert_eq!(p.focused_display(), Some(0));
-        assert_eq!(p.neighbour(0, 1), Some(1));
-        assert_eq!(p.neighbour(0, -1), None);
-    }
-
-    #[test]
-    fn renumbered_outputs_keep_every_group_on_its_monitor() {
-        let ws = workspace(&[1, 2, 3]);
-        let mut p = OutputPartition::default();
-        p.reconcile(&ws, &docked());
-        home(&mut p, &[(1, 0), (2, 1), (3, 1)]);
-        // Unplugged, then back on other ports: the monitor is output 0 now
-        // and the panel output 1.
-        p.reconcile(&ws, &docked()[..1]);
-        let mut swapped = docked();
-        swapped[0].id = 1;
-        swapped[1].id = 0;
-        swapped.reverse();
-        p.reconcile(&ws, &swapped);
-        assert_eq!(p.display_of(1), Some(1), "the panel's group");
-        assert_eq!(p.display_of(2), Some(0), "the monitor's groups");
-        assert_eq!(p.display_of(3), Some(0));
-        assert!(p.origin.is_empty());
-    }
-
-    #[test]
-    fn a_saved_partition_loads_inside_a_flattened_tree() {
-        // The shell's persisted tree flattens the desktop into itself, which
-        // hands the id-keyed maps their keys as strings.
-        #[derive(Serialize, Deserialize)]
-        struct Saved {
-            #[serde(flatten)]
-            partition: OutputPartition,
+            // The chosen monitor is unplugged: the one left stands in, and the
+            // choice returns with the monitor.
+            p.reconcile(&ws, &with_primary(docked()[..1].to_vec(), PANEL));
+            assert_eq!(p.primary(), Some(0));
+            p.reconcile(&ws, &with_primary(docked(), MONITOR));
+            assert_eq!(p.primary(), Some(1));
         }
-        let ws = workspace(&[1, 2]);
-        let mut p = OutputPartition::default();
-        p.reconcile(&ws, &docked());
-        home(&mut p, &[(1, 0), (2, 1)]);
-        p.origin.insert(2, PANEL.into());
-        let json = serde_json::to_string(&Saved {
-            partition: p.clone(),
-        })
-        .expect("saves");
-        let loaded: Saved = serde_json::from_str(&json).expect("loads");
-        assert_eq!(loaded.partition, p);
-    }
 
-    /// Each display shows a strip of its own: going to another strip on
-    /// the focused one leaves the other, and focus moving brings the
-    /// arriving display's strip into use.
-    #[test]
-    fn every_display_keeps_the_strip_it_shows() {
-        let mut ws = workspace(&[1, 2]).remove(0);
-        let mut below = Strip::new(StripId(2), "Below");
-        below.window_groups = vec![group(3), group(4)];
-        ws.strips.push(below);
-        let mut tree = crate::tree::DesktopTree {
-            active: ws.slot,
-            workspaces: vec![ws.clone()],
-            ..Default::default()
-        };
-        tree.active_strip.insert(ws.slot, StripId(1));
-        tree.outputs.reconcile(&tree.workspaces, &docked());
-        home(&mut tree.outputs, &[(1, 0), (2, 1), (3, 0), (4, 1)]);
-        tree.outputs.set_focused(0);
-        assert!(tree.shown_strips_behind());
-        assert!(tree.note_shown_strip());
-        assert!(!tree.shown_strips_behind());
-        // The panel goes to the strip below; the monitor stays.
-        tree.active_strip.insert(ws.slot, StripId(2));
-        assert!(tree.note_shown_strip());
-        assert_eq!(tree.strip_shown_on(0), Some(StripId(2)));
-        assert_eq!(tree.strip_shown_on(1), Some(StripId(1)));
-        // Focus crossing to the monitor brings its strip into use.
-        assert!(tree.focus_display(1));
-        assert_eq!(tree.active_strip_id(), Some(StripId(1)));
-        assert_eq!(tree.strip_shown_on(0), Some(StripId(2)));
-        // A strip shown on a display that is not focused stays there.
-        assert!(tree.show_strip_on(0, StripId(1)));
-        assert_eq!(tree.strip_shown_on(0), Some(StripId(1)));
-        assert_eq!(tree.active_strip_id(), Some(StripId(1)));
-    }
+        phase groups_a_gone_monitor_stranded_move_to_the_primary_that_is_there;
+        // A monitor that goes away and comes back takes the groups it stranded
+        // to it, never to the display standing in for the primary.
+        {
+            let ws = workspace(&[1, 2]);
+            let mut p = OutputPartition::default();
+            p.reconcile(&ws, &with_primary(docked(), PANEL));
+            home(&mut p, &[(1, 0), (2, 1)]);
+            // The monitor holding one of them goes, leaving the panel as primary.
+            p.reconcile(&ws, &with_primary(docked()[..1].to_vec(), PANEL));
+            assert_eq!(p.display_of(2), Some(0));
+            assert_eq!(p.origin.get(&2).map(String::as_str), Some(MONITOR));
+        }
 
-    /// A monitor is unplugged and plugged back in while the desk runs, as a
-    /// docked laptop's is: what it held moves to the display left and
-    /// returns with it, a group opened on it is homed to it, and the strip
-    /// it shows follows the displays it has.
-    #[test]
-    fn a_monitor_plugged_in_while_the_desk_runs_takes_a_group_and_hands_its_groups_on_when_it_goes()
-    {
-        let ws = workspace(&[1, 2]).remove(0);
-        let mut tree = crate::tree::DesktopTree {
-            active: ws.slot,
-            workspaces: vec![ws],
-            ..Default::default()
-        };
-        tree.active_strip.insert(tree.active, StripId(1));
-        assert!(tree.reconcile_displays(&docked()));
-        home(&mut tree.outputs, &[(1, 0), (2, 1)]);
+        phase unplugging_moves_a_displays_groups_in_strip_order_and_replugging_returns_them;
+        {
+            let ws = workspace(&[1, 2, 3, 4, 5]);
+            let mut p = OutputPartition::default();
+            p.reconcile(&ws, &docked());
+            home(&mut p, &[(1, 0), (2, 1), (3, 0), (4, 1), (5, 0)]);
+            p.note_focus(StripId(1), 3);
 
-        // The cable is pulled: its group moves to the panel, and the desk
-        // remembers it came from the monitor.
-        assert!(tree.reconcile_displays(&docked()[..1]));
-        assert!(!tree.is_partitioned(), "one display shows one strip");
-        assert_eq!(tree.outputs.display_of(2), Some(0));
-        assert_eq!(
-            tree.outputs.origin.get(&2).map(String::as_str),
-            Some(MONITOR)
-        );
+            p.reconcile(&ws, &docked()[..1]);
+            assert_eq!(p.groups_on(&ws[0].strips[0], 0), vec![1, 2, 3, 4, 5]);
+            assert_eq!(p.origin.get(&4).map(String::as_str), Some(MONITOR));
 
-        // Plugged back in mid-run, the monitor is a display again and the
-        // group it held is back on it, on the strip the desk shows there.
-        assert!(tree.reconcile_displays(&docked()));
-        assert!(tree.is_partitioned());
-        assert_eq!(tree.strip_shown_on(1), tree.active_strip_id());
-        assert_eq!(
-            tree.outputs.groups_on(&tree.workspaces[0].strips[0], 1),
-            vec![2]
-        );
+            p.reconcile(&ws, &docked());
+            assert_eq!(p.display_of(2), Some(1));
+            assert_eq!(p.display_of(4), Some(1));
+            assert!(p.origin.is_empty());
+            assert_eq!(p.groups_on(&ws[0].strips[0], 1), vec![2, 4]);
+        }
 
-        // A group opened while the monitor has focus is homed to it.
-        tree.outputs.set_focused(1);
-        tree.workspaces[0].strips[0].window_groups.push(group(3));
-        assert!(tree.reconcile_displays(&docked()));
-        assert_eq!(tree.outputs.display_of(3), Some(1));
+        phase a_row_lays_its_groups_out_display_by_display_in_strip_order;
+        {
+            let ws = workspace(&[1, 2, 3, 4]);
+            let strip = &ws[0].strips[0];
+            let mut p = OutputPartition::default();
+            let ids = |p: &OutputPartition| -> Vec<GroupId> {
+                p.lane_order(strip).into_iter().map(|g| g.id).collect()
+            };
+            assert_eq!(ids(&p), vec![1, 2, 3, 4], "one display: the strip's order");
+            p.reconcile(&ws, &docked());
+            home(&mut p, &[(1, 1), (2, 0), (3, 1), (4, 0)]);
+            assert_eq!(ids(&p), vec![2, 4, 1, 3]);
+        }
 
-        // And when it goes again everything it showed moves to the panel.
-        assert!(tree.reconcile_displays(&docked()[..1]));
-        assert_eq!(
-            tree.outputs.groups_on(&tree.workspaces[0].strips[0], 0),
-            vec![1, 2, 3]
-        );
+        phase a_group_moved_while_its_display_was_away_stays_where_it_was_moved;
+        {
+            let ws = workspace(&[1, 2]);
+            let mut p = OutputPartition::default();
+            p.reconcile(&ws, &docked());
+            home(&mut p, &[(1, 0), (2, 1)]);
+            p.reconcile(&ws, &docked()[..1]);
+            assert!(p.move_group(&ws, 2, 0));
+            p.reconcile(&ws, &docked());
+            assert_eq!(p.display_of(2), Some(0));
+        }
+
+        phase new_groups_go_to_the_focused_display_and_moves_follow_its_focus;
+        {
+            let ws = workspace(&[1, 2, 3]);
+            let mut p = OutputPartition::default();
+            p.reconcile(&ws, &docked());
+            p.set_focused(1);
+            assert!(p.place_unhomed(&ws));
+            assert_eq!(p.groups_on(&ws[0].strips[0], 1), vec![1, 2, 3]);
+            p.note_focus(StripId(1), 1);
+            assert!(p.move_group(&ws, 3, 0));
+            assert_eq!(p.display_of(3), Some(0));
+            assert_eq!(p.focused_display(), Some(0));
+            assert_eq!(p.neighbour(0, 1), Some(1));
+            assert_eq!(p.neighbour(0, -1), None);
+        }
+
+        phase renumbered_outputs_keep_every_group_on_its_monitor;
+        {
+            let ws = workspace(&[1, 2, 3]);
+            let mut p = OutputPartition::default();
+            p.reconcile(&ws, &docked());
+            home(&mut p, &[(1, 0), (2, 1), (3, 1)]);
+            // Unplugged, then back on other ports: the monitor is output 0 now
+            // and the panel output 1.
+            p.reconcile(&ws, &docked()[..1]);
+            let mut swapped = docked();
+            swapped[0].id = 1;
+            swapped[1].id = 0;
+            swapped.reverse();
+            p.reconcile(&ws, &swapped);
+            assert_eq!(p.display_of(1), Some(1), "the panel's group");
+            assert_eq!(p.display_of(2), Some(0), "the monitor's groups");
+            assert_eq!(p.display_of(3), Some(0));
+            assert!(p.origin.is_empty());
+        }
+
+        phase a_saved_partition_loads_inside_a_flattened_tree;
+        {
+            // The shell's persisted tree flattens the desktop into itself, which
+            // hands the id-keyed maps their keys as strings.
+            #[derive(Serialize, Deserialize)]
+            struct Saved {
+                #[serde(flatten)]
+                partition: OutputPartition,
+            }
+            let ws = workspace(&[1, 2]);
+            let mut p = OutputPartition::default();
+            p.reconcile(&ws, &docked());
+            home(&mut p, &[(1, 0), (2, 1)]);
+            p.origin.insert(2, PANEL.into());
+            let json = serde_json::to_string(&Saved {
+                partition: p.clone(),
+            })
+            .expect("saves");
+            let loaded: Saved = serde_json::from_str(&json).expect("loads");
+            assert_eq!(loaded.partition, p);
+        }
+
+        phase every_display_keeps_the_strip_it_shows;
+        // Each display shows a strip of its own: going to another strip on
+        // the focused one leaves the other, and focus moving brings the
+        // arriving display's strip into use.
+        {
+            let mut ws = workspace(&[1, 2]).remove(0);
+            let mut below = Strip::new(StripId(2), "Below");
+            below.window_groups = vec![group(3), group(4)];
+            ws.strips.push(below);
+            let mut tree = crate::tree::DesktopTree {
+                active: ws.slot,
+                workspaces: vec![ws.clone()],
+                ..Default::default()
+            };
+            tree.active_strip.insert(ws.slot, StripId(1));
+            tree.outputs.reconcile(&tree.workspaces, &docked());
+            home(&mut tree.outputs, &[(1, 0), (2, 1), (3, 0), (4, 1)]);
+            tree.outputs.set_focused(0);
+            assert!(tree.shown_strips_behind());
+            assert!(tree.note_shown_strip());
+            assert!(!tree.shown_strips_behind());
+            // The panel goes to the strip below; the monitor stays.
+            tree.active_strip.insert(ws.slot, StripId(2));
+            assert!(tree.note_shown_strip());
+            assert_eq!(tree.strip_shown_on(0), Some(StripId(2)));
+            assert_eq!(tree.strip_shown_on(1), Some(StripId(1)));
+            // Focus crossing to the monitor brings its strip into use.
+            assert!(tree.focus_display(1));
+            assert_eq!(tree.active_strip_id(), Some(StripId(1)));
+            assert_eq!(tree.strip_shown_on(0), Some(StripId(2)));
+            // A strip shown on a display that is not focused stays there.
+            assert!(tree.show_strip_on(0, StripId(1)));
+            assert_eq!(tree.strip_shown_on(0), Some(StripId(1)));
+            assert_eq!(tree.active_strip_id(), Some(StripId(1)));
+        }
+
+        phase a_monitor_plugged_in_while_the_desk_runs_takes_a_group_and_hands_its_groups_on_when_it_goes;
+        // A monitor is unplugged and plugged back in while the desk runs, as a
+        // docked laptop's is: what it held moves to the display left and
+        // returns with it, a group opened on it is homed to it, and the strip
+        // it shows follows the displays it has.
+        {
+            let ws = workspace(&[1, 2]).remove(0);
+            let mut tree = crate::tree::DesktopTree {
+                active: ws.slot,
+                workspaces: vec![ws],
+                ..Default::default()
+            };
+            tree.active_strip.insert(tree.active, StripId(1));
+            assert!(tree.reconcile_displays(&docked()));
+            home(&mut tree.outputs, &[(1, 0), (2, 1)]);
+
+            // The cable is pulled: its group moves to the panel, and the desk
+            // remembers it came from the monitor.
+            assert!(tree.reconcile_displays(&docked()[..1]));
+            assert!(!tree.is_partitioned(), "one display shows one strip");
+            assert_eq!(tree.outputs.display_of(2), Some(0));
+            assert_eq!(
+                tree.outputs.origin.get(&2).map(String::as_str),
+                Some(MONITOR)
+            );
+
+            // Plugged back in mid-run, the monitor is a display again and the
+            // group it held is back on it, on the strip the desk shows there.
+            assert!(tree.reconcile_displays(&docked()));
+            assert!(tree.is_partitioned());
+            assert_eq!(tree.strip_shown_on(1), tree.active_strip_id());
+            assert_eq!(
+                tree.outputs.groups_on(&tree.workspaces[0].strips[0], 1),
+                vec![2]
+            );
+
+            // A group opened while the monitor has focus is homed to it.
+            tree.outputs.set_focused(1);
+            tree.workspaces[0].strips[0].window_groups.push(group(3));
+            assert!(tree.reconcile_displays(&docked()));
+            assert_eq!(tree.outputs.display_of(3), Some(1));
+
+            // And when it goes again everything it showed moves to the panel.
+            assert!(tree.reconcile_displays(&docked()[..1]));
+            assert_eq!(
+                tree.outputs.groups_on(&tree.workspaces[0].strips[0], 0),
+                vec![1, 2, 3]
+            );
+        }
     }
 }

@@ -11,6 +11,7 @@ use tilo_user_identity::{
 };
 
 use super::*;
+use tilo_relay::WorkspaceId;
 
 fn revoke(user: &TestUser, device: &TestDevice) -> RevocationEntry {
     let mut entry = RevocationEntry {
@@ -47,7 +48,7 @@ async fn join(
     person: &TestUser,
     device: &TestDevice,
 ) -> StatePeer {
-    let invitation = invite(relay, issuer, room, MemberRole::Editor, person.user_pk).await;
+    let invitation = invite(relay, issuer, room, Role::Editor, person.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -67,7 +68,7 @@ async fn join(
         .unwrap()
         .bootstrap;
     let mut peer = StatePeer::new(
-        &bootstrap.room,
+        &bootstrap.workspace_id.to_string(),
         bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),
@@ -86,7 +87,7 @@ async fn join(
     peer
 }
 
-async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace_id: u64) {
+async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) {
     tilo_test_env::within(what, async {
         while admitted(relay, device, workspace_id).await {
             tokio::task::yield_now().await;
@@ -99,7 +100,7 @@ async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace
 async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_governs() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
     let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());
@@ -146,7 +147,7 @@ async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_
                 &laptop.cert,
                 IssueInvitationRequest {
                     request_id: [3; 32],
-                    role: MemberRole::Editor,
+                    role: Role::Editor,
                     recipient_user_public_key: Some(bob.user_pk),
                     invitee_name: None,
                     expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
@@ -211,7 +212,7 @@ async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_
 async fn a_stand_in_revoked_in_a_room_is_refused_by_what_it_signs_after() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -325,7 +326,7 @@ async fn a_stand_in_revoked_in_a_room_is_refused_by_what_it_signs_after() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_revocation_is_refused_after_a_restart() {
     let alice = TestUser::fresh("Alice");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();

@@ -517,13 +517,10 @@ mod tests {
         .unwrap();
         HistoryHost::new(registration, &AutoCommit::new()).unwrap()
     }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn files_selection_and_queued_confirmation_follow_the_current_target() {
-        // phase: files_range_selection_is_one_immutable_version
+    tilo_test_env::scenario! {
+        fn files_selection_and_queued_confirmation_follow_the_current_target;
+
+        phase files_range_selection_is_one_immutable_version;
         {
             let mut host = test_host();
             host.timeline.set_entries(
@@ -550,7 +547,8 @@ mod tests {
                 "shared range interaction must never advertise a grouped file snapshot"
             );
         }
-        // phase: files_confirmation_queued_after_same_frame_cancel_cannot_submit
+
+        phase files_confirmation_queued_after_same_frame_cancel_cannot_submit;
         {
             use crate::history_mode::checked_files::FileHistoryTarget;
             use fs_protocol::files::*;
@@ -597,7 +595,8 @@ mod tests {
                 "a stale confirmation cannot reopen the cancelled dialog"
             );
         }
-        // phase: round1_root_target_replacement_or_removal_invalidates_queued_confirmation
+
+        phase round1_root_target_replacement_or_removal_invalidates_queued_confirmation;
         {
             use crate::history_mode::checked_files::FileHistoryTarget;
             use fs_protocol::files::*;

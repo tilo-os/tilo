@@ -287,158 +287,162 @@ mod tests {
     const READY: &str = r#"{"schema_version":1,"phase":"ready","license":{"digitally_activated":{"since":1}},"catalog_generation":4,"cached_catalog":{"applications":[{},{}]}}"#;
     const READY_SUMMARY: &str = r#"{"catalog_generation":4,"configured":true,"license":"digitally_activated","phase":"ready","power_state":"unknown","published_applications":2,"recovery_available":true,"schema_version":1,"temporary_egress":null}"#;
 
-    #[test]
-    fn missing_state_is_an_unprovisioned_appliance() {
-        let fixture = Fixture::new();
-        assert_eq!(
-            fixture.summary(),
-            r#"{"catalog_generation":0,"configured":false,"license":"unknown","phase":"not_provisioned","power_state":"unknown","published_applications":0,"recovery_available":false,"schema_version":1,"temporary_egress":null}"#
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_owner_status_summary_reads_state_and_runtime_status_safely;
 
-    #[test]
-    fn missing_runtime_status_keeps_management_state_with_unknown_power() {
-        let fixture = Fixture::new();
-        Fixture::write(&fixture.state(), READY, 0o640);
-        assert_eq!(fixture.summary(), READY_SUMMARY);
-    }
-
-    #[test]
-    fn runtime_status_supplies_power_and_temporary_egress() {
-        let fixture = Fixture::new();
-        Fixture::write(&fixture.state(), r#"{"schema_version":1}"#, 0o600);
-        Fixture::write(
-            &fixture.runtime(),
-            r#"{"schema_version":1,"power_state":"running","temporary_egress":{"purpose":"windows_update","expires_at_unix":1700000000}}"#,
-            0o640,
-        );
-        assert_eq!(
-            fixture.summary(),
-            r#"{"catalog_generation":0,"configured":false,"license":"unknown","phase":"not_provisioned","power_state":"running","published_applications":0,"recovery_available":false,"schema_version":1,"temporary_egress":{"expires_at_unix":1700000000,"purpose":"windows_update"}}"#
-        );
-    }
-
-    #[test]
-    fn unsafe_state_files_are_refused_with_a_typed_detail() {
-        let unavailable = |detail: &str| {
-            format!(
-                r#"{{"catalog_generation":0,"configured":false,"detail":"{detail}","license":"unknown","phase":"unavailable","power_state":"unknown","published_applications":0,"recovery_available":false,"schema_version":1,"temporary_egress":null}}"#
-            )
-        };
-        let fixture = Fixture::new();
-        Fixture::write(&fixture.state(), READY, 0o644);
-        assert_eq!(fixture.summary(), unavailable("state is world-accessible"));
-
-        let fixture = Fixture::new();
-        let target = fixture.dir.path().join("elsewhere.json");
-        Fixture::write(&target, READY, 0o600);
-        std::os::unix::fs::symlink(&target, fixture.state()).expect("symlink");
-        assert_eq!(
-            fixture.summary(),
-            unavailable("state is not a regular file")
-        );
-
-        let fixture = Fixture::new();
-        std::fs::create_dir(fixture.state()).expect("directory");
-        assert_eq!(
-            fixture.summary(),
-            unavailable("state is not a regular file")
-        );
-
-        for (state, detail) in [
-            (r#"{"schema_version":2}"#, "unsupported state schema"),
-            ("[1]", "unsupported state schema"),
-            (
-                r#"{"schema_version":1,"phase":"exploded"}"#,
-                "invalid appliance phase",
-            ),
-            (
-                r#"{"schema_version":1,"phase":{"ready":1,"installing":2}}"#,
-                "invalid appliance phase",
-            ),
-            (
-                r#"{"schema_version":1,"license":null}"#,
-                "invalid licence state",
-            ),
-            (
-                r#"{"schema_version":1,"catalog_generation":-1}"#,
-                "invalid catalogue generation",
-            ),
-            (
-                r#"{"schema_version":1,"cached_catalog":{"applications":{}}}"#,
-                "invalid cached catalogue",
-            ),
-        ] {
+        phase missing_state_is_an_unprovisioned_appliance;
+        {
             let fixture = Fixture::new();
-            Fixture::write(&fixture.state(), state, 0o600);
-            assert_eq!(fixture.summary(), unavailable(detail), "{state}");
+            assert_eq!(
+                fixture.summary(),
+                r#"{"catalog_generation":0,"configured":false,"license":"unknown","phase":"not_provisioned","power_state":"unknown","published_applications":0,"recovery_available":false,"schema_version":1,"temporary_egress":null}"#
+            );
         }
-    }
 
-    #[test]
-    fn unreadable_state_reports_the_operating_system_error() {
-        if rustix::process::geteuid().is_root() {
-            return; // root reads a mode-000 file regardless
+        phase missing_runtime_status_keeps_management_state_with_unknown_power;
+        {
+            let fixture = Fixture::new();
+            Fixture::write(&fixture.state(), READY, 0o640);
+            assert_eq!(fixture.summary(), READY_SUMMARY);
         }
-        let fixture = Fixture::new();
-        Fixture::write(&fixture.state(), READY, 0o000);
-        let summary: Value = serde_json::from_str(&fixture.summary()).expect("JSON");
-        assert_eq!(summary["phase"], "unavailable");
-        assert_eq!(
-            summary["detail"],
-            format!(
-                "[Errno 13] Permission denied: '{}'",
-                fixture.state().display()
-            )
-        );
-    }
 
-    #[test]
-    fn unsafe_runtime_status_marks_the_summary_unavailable_after_the_state() {
-        let fixture = Fixture::new();
-        Fixture::write(&fixture.state(), READY, 0o640);
-        let unavailable = |detail: &str| {
-            READY_SUMMARY
-                .replace(r#""license""#, &format!(r#""detail":"{detail}","license""#))
-                .replace(r#""phase":"ready""#, r#""phase":"unavailable""#)
-        };
-        Fixture::write(
-            &fixture.runtime(),
-            r#"{"schema_version":1,"power_state":"running"}"#,
-            0o640,
-        );
-        let other_owner = rustix::process::geteuid().as_raw().wrapping_add(1);
-        assert_eq!(
-            fixture.summary_owned_by(other_owner),
-            unavailable("Windows runtime status summary is unsafe")
-        );
-        Fixture::write(
-            &fixture.runtime(),
-            r#"{"schema_version":1,"power_state":"running"}"#,
-            0o644,
-        );
-        assert_eq!(
-            fixture.summary(),
-            unavailable("Windows runtime status summary is unsafe")
-        );
-        for runtime in [
-            r#"{"schema_version":1,"power_state":"hibernating"}"#,
-            r#"{"power_state":"running"}"#,
-        ] {
-            Fixture::write(&fixture.runtime(), runtime, 0o640);
-            let expected = unavailable("invalid authoritative Windows runtime status");
-            assert_eq!(fixture.summary(), expected, "{runtime}");
+        phase runtime_status_supplies_power_and_temporary_egress;
+        {
+            let fixture = Fixture::new();
+            Fixture::write(&fixture.state(), r#"{"schema_version":1}"#, 0o600);
+            Fixture::write(
+                &fixture.runtime(),
+                r#"{"schema_version":1,"power_state":"running","temporary_egress":{"purpose":"windows_update","expires_at_unix":1700000000}}"#,
+                0o640,
+            );
+            assert_eq!(
+                fixture.summary(),
+                r#"{"catalog_generation":0,"configured":false,"license":"unknown","phase":"not_provisioned","power_state":"running","published_applications":0,"recovery_available":false,"schema_version":1,"temporary_egress":{"expires_at_unix":1700000000,"purpose":"windows_update"}}"#
+            );
         }
-        // The validated power state is kept when only the lease is invalid.
-        for runtime in [
-            r#"{"schema_version":1,"power_state":"running","temporary_egress":{"purpose":"anything","expires_at_unix":1}}"#,
-            r#"{"schema_version":1,"power_state":"running","temporary_egress":{"purpose":"activation","expires_at_unix":-1}}"#,
-            r#"{"schema_version":1,"power_state":"running","temporary_egress":"activation"}"#,
-        ] {
-            Fixture::write(&fixture.runtime(), runtime, 0o640);
-            let expected = unavailable("invalid temporary Windows egress status")
-                .replace(r#""power_state":"unknown""#, r#""power_state":"running""#);
-            assert_eq!(fixture.summary(), expected, "{runtime}");
+
+        phase unsafe_state_files_are_refused_with_a_typed_detail;
+        {
+            let unavailable = |detail: &str| {
+                format!(
+                    r#"{{"catalog_generation":0,"configured":false,"detail":"{detail}","license":"unknown","phase":"unavailable","power_state":"unknown","published_applications":0,"recovery_available":false,"schema_version":1,"temporary_egress":null}}"#
+                )
+            };
+            let fixture = Fixture::new();
+            Fixture::write(&fixture.state(), READY, 0o644);
+            assert_eq!(fixture.summary(), unavailable("state is world-accessible"));
+
+            let fixture = Fixture::new();
+            let target = fixture.dir.path().join("elsewhere.json");
+            Fixture::write(&target, READY, 0o600);
+            std::os::unix::fs::symlink(&target, fixture.state()).expect("symlink");
+            assert_eq!(
+                fixture.summary(),
+                unavailable("state is not a regular file")
+            );
+
+            let fixture = Fixture::new();
+            std::fs::create_dir(fixture.state()).expect("directory");
+            assert_eq!(
+                fixture.summary(),
+                unavailable("state is not a regular file")
+            );
+
+            for (state, detail) in [
+                (r#"{"schema_version":2}"#, "unsupported state schema"),
+                ("[1]", "unsupported state schema"),
+                (
+                    r#"{"schema_version":1,"phase":"exploded"}"#,
+                    "invalid appliance phase",
+                ),
+                (
+                    r#"{"schema_version":1,"phase":{"ready":1,"installing":2}}"#,
+                    "invalid appliance phase",
+                ),
+                (
+                    r#"{"schema_version":1,"license":null}"#,
+                    "invalid licence state",
+                ),
+                (
+                    r#"{"schema_version":1,"catalog_generation":-1}"#,
+                    "invalid catalogue generation",
+                ),
+                (
+                    r#"{"schema_version":1,"cached_catalog":{"applications":{}}}"#,
+                    "invalid cached catalogue",
+                ),
+            ] {
+                let fixture = Fixture::new();
+                Fixture::write(&fixture.state(), state, 0o600);
+                assert_eq!(fixture.summary(), unavailable(detail), "{state}");
+            }
+        }
+
+        phase unreadable_state_reports_the_operating_system_error;
+        {
+            if rustix::process::geteuid().is_root() {
+                return; // root reads a mode-000 file regardless
+            }
+            let fixture = Fixture::new();
+            Fixture::write(&fixture.state(), READY, 0o000);
+            let summary: Value = serde_json::from_str(&fixture.summary()).expect("JSON");
+            assert_eq!(summary["phase"], "unavailable");
+            assert_eq!(
+                summary["detail"],
+                format!(
+                    "[Errno 13] Permission denied: '{}'",
+                    fixture.state().display()
+                )
+            );
+        }
+
+        phase unsafe_runtime_status_marks_the_summary_unavailable_after_the_state;
+        {
+            let fixture = Fixture::new();
+            Fixture::write(&fixture.state(), READY, 0o640);
+            let unavailable = |detail: &str| {
+                READY_SUMMARY
+                    .replace(r#""license""#, &format!(r#""detail":"{detail}","license""#))
+                    .replace(r#""phase":"ready""#, r#""phase":"unavailable""#)
+            };
+            Fixture::write(
+                &fixture.runtime(),
+                r#"{"schema_version":1,"power_state":"running"}"#,
+                0o640,
+            );
+            let other_owner = rustix::process::geteuid().as_raw().wrapping_add(1);
+            assert_eq!(
+                fixture.summary_owned_by(other_owner),
+                unavailable("Windows runtime status summary is unsafe")
+            );
+            Fixture::write(
+                &fixture.runtime(),
+                r#"{"schema_version":1,"power_state":"running"}"#,
+                0o644,
+            );
+            assert_eq!(
+                fixture.summary(),
+                unavailable("Windows runtime status summary is unsafe")
+            );
+            for runtime in [
+                r#"{"schema_version":1,"power_state":"hibernating"}"#,
+                r#"{"power_state":"running"}"#,
+            ] {
+                Fixture::write(&fixture.runtime(), runtime, 0o640);
+                let expected = unavailable("invalid authoritative Windows runtime status");
+                assert_eq!(fixture.summary(), expected, "{runtime}");
+            }
+            // The validated power state is kept when only the lease is invalid.
+            for runtime in [
+                r#"{"schema_version":1,"power_state":"running","temporary_egress":{"purpose":"anything","expires_at_unix":1}}"#,
+                r#"{"schema_version":1,"power_state":"running","temporary_egress":{"purpose":"activation","expires_at_unix":-1}}"#,
+                r#"{"schema_version":1,"power_state":"running","temporary_egress":"activation"}"#,
+            ] {
+                Fixture::write(&fixture.runtime(), runtime, 0o640);
+                let expected = unavailable("invalid temporary Windows egress status")
+                    .replace(r#""power_state":"unknown""#, r#""power_state":"running""#);
+                assert_eq!(fixture.summary(), expected, "{runtime}");
+            }
         }
     }
 }

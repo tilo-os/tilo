@@ -197,58 +197,62 @@ pub struct OpenedBrowser {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_browser_open_names_the_environments_own_action() {
-        assert_eq!(target().provider, PROVIDER);
-        assert_eq!(target().address.resource, RESOURCE);
-        assert_eq!(target().address.action, OPEN);
-        assert_eq!(stop_target().address.action, STOP);
-    }
+    tilo_test_env::scenario! {
+        fn a_browser_environment_names_its_actions_and_windows;
 
-    #[test]
-    fn an_opened_environment_names_its_window() {
-        // An opening that attached says nothing about time, but always names
-        // the window it attached to.
-        assert_eq!(
-            serde_json::to_string(&OpenedBrowser {
-                opened_ms: None,
-                provider: "42".into()
-            })
-            .unwrap(),
-            r#"{"provider":"42"}"#
-        );
-        assert_eq!(
-            serde_json::to_string(&OpenedBrowser {
-                opened_ms: Some(900),
-                provider: "42".into()
-            })
-            .unwrap(),
-            r#"{"opened_ms":900,"provider":"42"}"#
-        );
-    }
-
-    #[test]
-    fn a_session_reports_its_lines_and_reads_them_back() {
-        for report in [
-            Report::Ready,
-            Report::Up {
-                provider: "42".into(),
-            },
-            Report::Used,
-        ] {
-            assert_eq!(Report::parse(&report.line()), Some(report));
+        phase a_browser_open_names_the_environments_own_action;
+        {
+            assert_eq!(target().provider, PROVIDER);
+            assert_eq!(target().address.resource, RESOURCE);
+            assert_eq!(target().address.action, OPEN);
+            assert_eq!(stop_target().address.action, STOP);
         }
-        assert_eq!(Report::parse(" ready\n"), Some(Report::Ready));
-        assert_eq!(
-            Report::parse("up 42"),
-            Some(Report::Up {
-                provider: "42".into()
-            }),
-            "the window's provider is what the line carries"
-        );
-        // and nothing else is a report
-        for line in ["up", "up ", "uptime", "used it", "ready now", "notup"] {
-            assert_eq!(Report::parse(line), None, "{line:?}");
+
+        phase an_opened_environment_names_its_window;
+        {
+            // An opening that attached says nothing about time, but always names
+            // the window it attached to.
+            assert_eq!(
+                serde_json::to_string(&OpenedBrowser {
+                    opened_ms: None,
+                    provider: "42".into()
+                })
+                .unwrap(),
+                r#"{"provider":"42"}"#
+            );
+            assert_eq!(
+                serde_json::to_string(&OpenedBrowser {
+                    opened_ms: Some(900),
+                    provider: "42".into()
+                })
+                .unwrap(),
+                r#"{"opened_ms":900,"provider":"42"}"#
+            );
+        }
+
+        phase a_session_reports_its_lines_and_reads_them_back;
+        {
+            for report in [
+                Report::Ready,
+                Report::Up {
+                    provider: "42".into(),
+                },
+                Report::Used,
+            ] {
+                assert_eq!(Report::parse(&report.line()), Some(report));
+            }
+            assert_eq!(Report::parse(" ready\n"), Some(Report::Ready));
+            assert_eq!(
+                Report::parse("up 42"),
+                Some(Report::Up {
+                    provider: "42".into()
+                }),
+                "the window's provider is what the line carries"
+            );
+            // and nothing else is a report
+            for line in ["up", "up ", "uptime", "used it", "ready now", "notup"] {
+                assert_eq!(Report::parse(line), None, "{line:?}");
+            }
         }
     }
 }

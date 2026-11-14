@@ -14,8 +14,8 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::CommitNamed as _;
 use collab_types::{
-    ChannelId, ContentRetention, Ed25519PublicKey, MlsAccessRequestV1, OpKind, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id, sign_op,
+    ContentRetention, Ed25519PublicKey, MlsAccessRequestV1, OpKind, SignedOp, document_artifact_id,
+    document_attestation_id, sign_op,
 };
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
@@ -35,8 +35,8 @@ const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
-fn workspace_number() -> u64 {
-    tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
+fn workspace_id() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 /// Write `value` into the workspace's record as `key`'s device, making the record
@@ -131,10 +131,6 @@ fn files(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-fn channel() -> ChannelId {
-    document_channel_id(APP, WORKSPACE, RECORD)
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "one member's sync with the host, then a late joiner catching up from it"
@@ -142,7 +138,7 @@ fn channel() -> ChannelId {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_store() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::host());
+    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::member());
     let (a_key, a_cert) = device(&root, 3);
     let (b_key, b_cert) = device(&root, 4);
     let (c_key, c_cert) = device(&root, 5);
@@ -234,7 +230,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
 
     // A sealed edit reaches the host, which keeps it as the history a member
     // that was away catches up from; the host holds no channel key.
-    let keys = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap())
+    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();
@@ -242,7 +238,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
     a.publish(|_| Ok(kept.clone())).unwrap();
     let retained = || {
         store
-            .replay(workspace_number(), &[], Budget::default())
+            .replay(workspace_id(), &[], Budget::default())
             .unwrap()
     };
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -294,7 +290,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
     .await;
     assert!(
         store
-            .replay(workspace_number(), &b.cursors(), Budget::default())
+            .replay(workspace_id(), &b.cursors(), Budget::default())
             .unwrap()
             .frames
             .is_empty(),
@@ -330,16 +326,15 @@ fn hint(
     certificate: &tilo_user_identity::DeviceCert,
     key: &SigningKey,
 ) -> tilo_peer_state::join::TransportHint {
-    use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-    let room = workspace.to_string();
-    IrohWorkspaceHostHintV1 {
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+    WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        workspace_id: tilo_peer_state::join::room_workspace_id(&room).unwrap(),
-        room,
+        holds_keys: true,
+        runs_work: false,
+        workspace_id: workspace,
         endpoint_addr: addr(endpoint),
-        host_user_public_key: certificate.user_public_key,
-        host_device_certificate: certificate.clone(),
+        user_public_key: certificate.user_public_key,
+        device_certificate: certificate.clone(),
         packet_relay_url: "iroh:direct".into(),
     }
     .transport_hint(key)
@@ -362,7 +357,7 @@ async fn invitation(
             administrator,
             &tilo_peer_state::join::invitations::IssueInvitationRequest {
                 request_id,
-                role: tilo_peer_state::join::MemberRole::Editor,
+                role: tilo_peer_state::join::Role::Editor,
                 recipient_user_public_key: None,
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
@@ -392,7 +387,7 @@ async fn joins(
     use tilo_identity_host::custody::HostIdentity;
     let owner = owner_at(state);
     let identity = HostIdentity::kept(cert.clone(), key.clone());
-    let topic = tilo_peer_state::join::room_workspace_id(WORKSPACE).expect("a workspace topic");
+    let topic = tilo_peer_state::join::WorkspaceId::parse(WORKSPACE).expect("a workspace topic");
     let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(
             service,
@@ -406,8 +401,7 @@ async fn joins(
     )
     .await
     .expect("the workspace's device admits this one");
-    let workspace = tilo_desktop_model::WorkspaceId::parse(&enrollment.bootstrap().room)
-        .expect("a workspace id");
+    let workspace = enrollment.bootstrap().workspace_id;
     owner
         .install(&enrollment, SystemTime::now())
         .expect("the join installs here");
@@ -430,14 +424,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     let root = SigningKey::from_bytes(&[1; 32]);
     // A device that holds the workspaces and admits the devices joining them: an always-on
     // device of a person's fleet.
-    let (host_key, host_cert) = crate::common::device_with(
-        &root,
-        2,
-        DeviceCapabilities {
-            can_act_as_host: true,
-            ..DeviceCapabilities::primary()
-        },
-    );
+    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::primary());
     let (b_key, b_cert) = device(&root, 3);
     let (c_key, c_cert) = device(&root, 4);
     let now = SystemTime::now();
@@ -468,7 +455,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         workspace: WORKSPACE.into(),
         frame: Box::new(
             collab_types::MlsGovernanceFrame::signed(
-                collab_types::ChannelId::new(),
+                workspace_id(),
                 [0; 32],
                 0,
                 collab_types::MlsGovernanceAction::Genesis,
@@ -596,7 +583,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     // What the device writes, or hears of the workspace another way, it sends to its members, and
     // keeps for the ones that link later: a member that linked after the device wrote never heard
     // of the write.
-    let keys = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap())
+    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();
@@ -605,7 +592,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     assert!(
         store
             .replay(
-                tilo_peer_state::join::room_workspace_id(WORKSPACE).unwrap(),
+                tilo_peer_state::join::WorkspaceId::parse(WORKSPACE).unwrap(),
                 &[],
                 Budget::default()
             )
@@ -659,7 +646,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     let (mut b_heard, mut c_heard) = (b.heard(), c.heard());
     let asking = NeighbourMsg::MlsAccessRequest {
         workspace: WORKSPACE.into(),
-        request: Box::new(MlsAccessRequestV1::signed(channel(), vec![1], 1, &b_key).unwrap()),
+        request: Box::new(MlsAccessRequestV1::signed(workspace_id(), vec![1], 1, &b_key).unwrap()),
         delivery: 0,
     };
     b.send(asking.clone()).unwrap();
@@ -670,19 +657,6 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     )
     .await;
     assert_eq!(heard.author, b_key.verifying_key().to_bytes());
-    // The device holding the workspace carries no genesis of the channel: it tells the device that
-    // asked, which creates the group at once rather than waiting to hear of one.
-    let unfounded = NeighbourMsg::MlsChannelUnfounded {
-        workspace: WORKSPACE.into(),
-        channel: channel(),
-        device: collab_types::Ed25519PublicKey::from_bytes(b_key.verifying_key().to_bytes()),
-    };
-    hears(
-        &mut b_heard,
-        &unfounded,
-        "the host says it carries no group",
-    )
-    .await;
     assert!(
         !heard.landed,
         "channel governance is never the workspace's state"
@@ -696,7 +670,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         workspace: WORKSPACE.into(),
         frame: Box::new(
             collab_types::MlsGovernanceFrame::signed(
-                channel(),
+                workspace_id(),
                 [0; 32],
                 0,
                 collab_types::MlsGovernanceAction::Genesis,
@@ -777,7 +751,7 @@ async fn hears(
 #[tokio::test(flavor = "multi_thread")]
 async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
     let root = SigningKey::from_bytes(&[2; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 6, DeviceCapabilities::host());
+    let (host_key, host_cert) = crate::common::device_with(&root, 6, DeviceCapabilities::member());
     let (a_key, a_cert) = device(&root, 7);
     let now = SystemTime::now();
     let devices = vec![host_cert.clone(), a_cert.clone()];
@@ -809,7 +783,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
         )
         .unwrap();
     let host = DirectSync::new(govern, host_key.clone());
-    let keys = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap())
+    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();
@@ -876,7 +850,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::host());
+    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::member());
     let (a_key, a_cert) = device(&root, 3);
     let now = SystemTime::now();
     let devices = vec![host_cert.clone(), a_cert];
@@ -920,7 +894,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
     until(&a, "a has the host's rows", |a| a.rows() == host_rows).await;
 
     // The workspace's owner deletes it: the member's live link ends, saying so.
-    serving.delete(workspace_number());
+    serving.delete(workspace_id());
     let ended = tokio::time::timeout(Duration::from_secs(30), a_link)
         .await
         .expect("the member's link ends")
@@ -940,7 +914,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
         again,
         Err(tilo_relay_protocol::refusal::WORKSPACE_DELETED.to_owned())
     );
-    assert!(serving.link(workspace_number()).is_none());
+    assert!(serving.link(workspace_id()).is_none());
 }
 
 /// What a device commits to a workspace it hosts itself reaches the members linked to it at
@@ -961,14 +935,7 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
     use tilo_peer_state::owner::OwnerJoinWorkspaces;
 
     let root = SigningKey::from_bytes(&[3; 32]);
-    let (host_key, host_cert) = crate::common::device_with(
-        &root,
-        8,
-        DeviceCapabilities {
-            can_act_as_host: true,
-            ..DeviceCapabilities::primary()
-        },
-    );
+    let (host_key, host_cert) = crate::common::device_with(&root, 8, DeviceCapabilities::primary());
     let (b_key, b_cert) = device(&root, 9);
     let (c_key, c_cert) = device(&root, 10);
     let now = SystemTime::now();
@@ -1146,14 +1113,7 @@ fn commit_record(
 #[tokio::test]
 async fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
     let root = SigningKey::from_bytes(&[4; 32]);
-    let (key, cert) = crate::common::device_with(
-        &root,
-        11,
-        DeviceCapabilities {
-            can_act_as_host: true,
-            ..DeviceCapabilities::primary()
-        },
-    );
+    let (key, cert) = crate::common::device_with(&root, 11, DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
     let owner = owner_at(state.path());

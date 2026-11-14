@@ -590,35 +590,154 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn outputs_are_fixed_at_creation_and_need_a_headful_slot() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let two = tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap();
-        let (record, created) = store
-            .create("a", SlotKind::Headful, Owner::default(), &two)
-            .unwrap();
-        assert!(created);
-        assert_eq!(record.connectors(), 2);
-        assert_eq!(store.load("a").unwrap().outputs, two);
-        let (_, created) = store
-            .create("a", SlotKind::Headful, Owner::default(), &two)
-            .unwrap();
-        assert!(!created);
-        let Err(DaemonError::SlotOutputsConflict { outputs, .. }) =
-            store.create("a", SlotKind::Headful, Owner::default(), &[])
-        else {
-            panic!("a different output list must conflict");
-        };
-        assert_eq!(outputs, "2560x1600@2,1920x1080@1");
-        assert!(matches!(
-            store.create("b", SlotKind::Headless, Owner::default(), &two),
-            Err(DaemonError::OutputsNeedHeadful(_))
-        ));
-        let (plain, _) = store
-            .create("c", SlotKind::Headful, Owner::default(), &[])
-            .unwrap();
-        assert_eq!(plain.connectors(), 1);
+    tilo_test_env::scenario! {
+        fn the_slot_store_keeps_outputs_generations_and_the_device_slot;
+
+        phase outputs_are_fixed_at_creation_and_need_a_headful_slot;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let two = tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap();
+            let (record, created) = store
+                .create("a", SlotKind::Headful, Owner::default(), &two)
+                .unwrap();
+            assert!(created);
+            assert_eq!(record.connectors(), 2);
+            assert_eq!(store.load("a").unwrap().outputs, two);
+            let (_, created) = store
+                .create("a", SlotKind::Headful, Owner::default(), &two)
+                .unwrap();
+            assert!(!created);
+            let Err(DaemonError::SlotOutputsConflict { outputs, .. }) =
+                store.create("a", SlotKind::Headful, Owner::default(), &[])
+            else {
+                panic!("a different output list must conflict");
+            };
+            assert_eq!(outputs, "2560x1600@2,1920x1080@1");
+            assert!(matches!(
+                store.create("b", SlotKind::Headless, Owner::default(), &two),
+                Err(DaemonError::OutputsNeedHeadful(_))
+            ));
+            let (plain, _) = store
+                .create("c", SlotKind::Headful, Owner::default(), &[])
+                .unwrap();
+            assert_eq!(plain.connectors(), 1);
+        }
+
+        phase frame_cpu_trace_changes_generation_for_the_same_layer;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let (mut record, _) = store
+                .create("cpu", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
+            let mut info = session();
+            info.frame_cpu_trace = true;
+            let (from, to) = store
+                .prepare_swap(&record, "shell", "h1", info.clone())
+                .unwrap()
+                .unwrap();
+            assert!(!from.components["shell"].info.frame_cpu_trace);
+            assert!(to.components["shell"].info.frame_cpu_trace);
+            assert_eq!(to.number, 2);
+            store.set_current(&mut record, to.number).unwrap();
+            assert!(
+                store
+                    .prepare_swap(&record, "shell", "h1", info)
+                    .unwrap()
+                    .is_none()
+            );
+            let (_, disabled) = store
+                .prepare_swap(&record, "shell", "h1", session())
+                .unwrap()
+                .unwrap();
+            assert!(!disabled.components["shell"].info.frame_cpu_trace);
+        }
+
+        phase a_logins_device_slot_stays_while_the_owner_is_logged_out;
+        // A laptop's device slot outlives the owner's login, so a swap that
+        // broke the desktop is rolled back from the login screen; a board's
+        // slot exists only while its session does.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let login = DeviceSession {
+                unit: "session-3.scope".into(),
+                account: "tester".into(),
+                units: Vec::new(),
+                control_socket: PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
+                login: Some(Login {
+                    session: Some("3".into()),
+                    wrapper: Some(4242),
+                }),
+            };
+            assert!(matches!(
+                store.load_with(DEVICE_SLOT, None),
+                Err(DaemonError::NoDeviceSession)
+            ));
+            let record = store.load_with(DEVICE_SLOT, Some(login.clone())).unwrap();
+            store.save(&record).unwrap();
+            let out = store.load_with(DEVICE_SLOT, None).unwrap();
+            let device = out.device.unwrap();
+            assert_eq!(device.unit, crate::apply::GREETER_UNIT);
+            assert_eq!(device.login, Some(Login::default()));
+            assert_eq!(device.account, "tester");
+
+            let board = DeviceSession {
+                login: None,
+                unit: "tilo-board-headless-session@tester.service".into(),
+                ..login
+            };
+            let record = store.load_with(DEVICE_SLOT, Some(board)).unwrap();
+            store.save(&record).unwrap();
+            assert!(matches!(
+                store.load_with(DEVICE_SLOT, None),
+                Err(DaemonError::NoDeviceSession)
+            ));
+        }
+
+        phase slot_pruning_and_removal_keep_what_is_current;
+        {
+            {
+                let root = tempfile::tempdir().unwrap();
+                let store = SlotStore::new(root.path());
+                let (mut record, _) = store
+                    .create("a", SlotKind::Headless, Owner::default(), &[])
+                    .unwrap();
+                for layer in ["h1", "h2", "h3", "h4"] {
+                    swap(&store, &mut record, "shell", layer);
+                }
+                store.set_current(&mut record, 1).unwrap();
+                let (referenced, removed) = store
+                    .prune(&record, 2, &std::collections::BTreeSet::new(), true)
+                    .unwrap();
+                assert_eq!(removed, [2]);
+                assert_eq!(
+                    store.generations("a"),
+                    [1, 2, 3, 4],
+                    "dry run deletes nothing"
+                );
+                let (_, removed) = store
+                    .prune(&record, 2, &std::collections::BTreeSet::new(), false)
+                    .unwrap();
+                assert_eq!(removed, [2]);
+                assert_eq!(store.generations("a"), [1, 3, 4]);
+                assert!(
+                    referenced.contains(&"h1".to_string()) && !referenced.contains(&"h2".to_string())
+                );
+            }
+            {
+                let root = tempfile::tempdir().unwrap();
+                let store = SlotStore::new(root.path());
+                store
+                    .create("a", SlotKind::Headful, Owner::default(), &[])
+                    .unwrap();
+                assert!(store.remove("a").unwrap());
+                assert!(!store.remove("a").unwrap());
+                assert!(store.list().unwrap().is_empty());
+            }
+        }
     }
 
     fn session() -> ComponentInfo {
@@ -636,37 +755,6 @@ mod tests {
             .unwrap()?;
         store.set_current(record, to.number).unwrap();
         Some(to.number)
-    }
-
-    #[test]
-    fn frame_cpu_trace_changes_generation_for_the_same_layer() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let (mut record, _) = store
-            .create("cpu", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
-        let mut info = session();
-        info.frame_cpu_trace = true;
-        let (from, to) = store
-            .prepare_swap(&record, "shell", "h1", info.clone())
-            .unwrap()
-            .unwrap();
-        assert!(!from.components["shell"].info.frame_cpu_trace);
-        assert!(to.components["shell"].info.frame_cpu_trace);
-        assert_eq!(to.number, 2);
-        store.set_current(&mut record, to.number).unwrap();
-        assert!(
-            store
-                .prepare_swap(&record, "shell", "h1", info)
-                .unwrap()
-                .is_none()
-        );
-        let (_, disabled) = store
-            .prepare_swap(&record, "shell", "h1", session())
-            .unwrap()
-            .unwrap();
-        assert!(!disabled.components["shell"].info.frame_cpu_trace);
     }
 
     #[test]
@@ -780,90 +868,6 @@ mod tests {
             assert_eq!(store.pending("a"), Some(1));
             store.set_current(&mut record, 0).unwrap();
             assert_eq!(store.pending("a"), None);
-        }
-    }
-
-    /// A laptop's device slot outlives the owner's login, so a swap that
-    /// broke the desktop is rolled back from the login screen; a board's
-    /// slot exists only while its session does.
-    #[test]
-    fn a_logins_device_slot_stays_while_the_owner_is_logged_out() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let login = DeviceSession {
-            unit: "session-3.scope".into(),
-            account: "tester".into(),
-            units: Vec::new(),
-            control_socket: PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
-            login: Some(Login {
-                session: Some("3".into()),
-                wrapper: Some(4242),
-            }),
-        };
-        assert!(matches!(
-            store.load_with(DEVICE_SLOT, None),
-            Err(DaemonError::NoDeviceSession)
-        ));
-        let record = store.load_with(DEVICE_SLOT, Some(login.clone())).unwrap();
-        store.save(&record).unwrap();
-        let out = store.load_with(DEVICE_SLOT, None).unwrap();
-        let device = out.device.unwrap();
-        assert_eq!(device.unit, crate::apply::GREETER_UNIT);
-        assert_eq!(device.login, Some(Login::default()));
-        assert_eq!(device.account, "tester");
-
-        let board = DeviceSession {
-            login: None,
-            unit: "tilo-board-headless-session@tester.service".into(),
-            ..login
-        };
-        let record = store.load_with(DEVICE_SLOT, Some(board)).unwrap();
-        store.save(&record).unwrap();
-        assert!(matches!(
-            store.load_with(DEVICE_SLOT, None),
-            Err(DaemonError::NoDeviceSession)
-        ));
-    }
-
-    #[test]
-    fn slot_pruning_and_removal_keep_what_is_current() {
-        {
-            let root = tempfile::tempdir().unwrap();
-            let store = SlotStore::new(root.path());
-            let (mut record, _) = store
-                .create("a", SlotKind::Headless, Owner::default(), &[])
-                .unwrap();
-            for layer in ["h1", "h2", "h3", "h4"] {
-                swap(&store, &mut record, "shell", layer);
-            }
-            store.set_current(&mut record, 1).unwrap();
-            let (referenced, removed) = store
-                .prune(&record, 2, &std::collections::BTreeSet::new(), true)
-                .unwrap();
-            assert_eq!(removed, [2]);
-            assert_eq!(
-                store.generations("a"),
-                [1, 2, 3, 4],
-                "dry run deletes nothing"
-            );
-            let (_, removed) = store
-                .prune(&record, 2, &std::collections::BTreeSet::new(), false)
-                .unwrap();
-            assert_eq!(removed, [2]);
-            assert_eq!(store.generations("a"), [1, 3, 4]);
-            assert!(
-                referenced.contains(&"h1".to_string()) && !referenced.contains(&"h2".to_string())
-            );
-        }
-        {
-            let root = tempfile::tempdir().unwrap();
-            let store = SlotStore::new(root.path());
-            store
-                .create("a", SlotKind::Headful, Owner::default(), &[])
-                .unwrap();
-            assert!(store.remove("a").unwrap());
-            assert!(!store.remove("a").unwrap());
-            assert!(store.list().unwrap().is_empty());
         }
     }
 }

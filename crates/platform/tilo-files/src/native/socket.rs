@@ -97,37 +97,41 @@ mod tests {
         (root, dir)
     }
 
-    #[test]
-    fn a_socket_in_a_deep_directory_binds_and_answers() {
-        let (_root, dir) = deep();
-        let path = dir.join("door.sock");
-        assert!(path.as_os_str().len() > MAX_PATH);
-        let listener = bind(&path).unwrap();
-        assert!(path.exists(), "the socket is named where it was asked for");
-        let mut client = connect(&path).unwrap();
-        client.write_all(b"hi").unwrap();
-        let (mut served, _) = listener.accept().unwrap();
-        let mut got = [0; 2];
-        served.read_exact(&mut got).unwrap();
-        assert_eq!(&got, b"hi");
-    }
+    tilo_test_env::scenario! {
+        fn a_socket_binds_and_connects_however_deep_its_directory;
 
-    #[test]
-    fn nothing_bound_in_a_deep_directory_is_not_found() {
-        let (_root, dir) = deep();
-        let error = connect(&dir.join("door.sock")).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
-    }
+        phase a_socket_in_a_deep_directory_binds_and_answers;
+        {
+            let (_root, dir) = deep();
+            let path = dir.join("door.sock");
+            assert!(path.as_os_str().len() > MAX_PATH);
+            let listener = bind(&path).unwrap();
+            assert!(path.exists(), "the socket is named where it was asked for");
+            let mut client = connect(&path).unwrap();
+            client.write_all(b"hi").unwrap();
+            let (mut served, _) = listener.accept().unwrap();
+            let mut got = [0; 2];
+            served.read_exact(&mut got).unwrap();
+            assert_eq!(&got, b"hi");
+        }
 
-    #[test]
-    fn a_short_path_is_used_as_it_is() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("s");
-        let listener = bind(&path).unwrap();
-        assert_eq!(
-            listener.local_addr().unwrap().as_pathname(),
-            Some(path.as_path())
-        );
-        connect(&path).unwrap();
+        phase nothing_bound_in_a_deep_directory_is_not_found;
+        {
+            let (_root, dir) = deep();
+            let error = connect(&dir.join("door.sock")).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        }
+
+        phase a_short_path_is_used_as_it_is;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("s");
+            let listener = bind(&path).unwrap();
+            assert_eq!(
+                listener.local_addr().unwrap().as_pathname(),
+                Some(path.as_path())
+            );
+            connect(&path).unwrap();
+        }
     }
 }

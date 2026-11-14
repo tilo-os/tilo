@@ -98,34 +98,39 @@ fn private_mount_table(bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn namespace_factory_refuses_unclassified_executable_before_isolation() {
-        let before = File::open("/proc/thread-self/ns/mnt")
-            .unwrap()
-            .metadata()
-            .unwrap();
-        let expected = launcher::retained_view::RootConsumerChannel::verify_current_helper()
-            .expect_err("the test executable is not the canonical consuming helper");
-        let error = ManagedConsumerNamespace::isolate()
-            .err()
-            .expect("isolation must preserve canonical helper refusal");
-        assert_eq!(error.kind(), expected.kind());
-        assert_eq!(error.to_string(), expected.to_string());
-        let after = File::open("/proc/thread-self/ns/mnt")
-            .unwrap()
-            .metadata()
-            .unwrap();
-        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
-    }
 
-    #[test]
-    fn actual_mount_table_parser_preserves_non_utf8_paths_and_refuses_propagation() {
-        let private = b"10 1 0:1 / /raw-\xff rw - tmpfs tmpfs rw\n";
-        private_mount_table(private).unwrap();
-        assert!(private_mount_table(b"10 1 0:1 / /run rw shared:3 - tmpfs tmpfs rw\n").is_err());
-        assert!(private_mount_table(b"10 1 0:1 / /run rw master:3 - tmpfs tmpfs rw\n").is_err());
-        assert!(private_mount_table(b"x 1 0:1 / /run rw - tmpfs tmpfs rw\n").is_err());
-        assert!(private_mount_table(&vec![b'x'; TABLE_LIMIT + 1]).is_err());
-        assert!(private_mount_table(&private[..private.len() - 1]).is_err());
+    tilo_test_env::scenario! {
+        fn managed_namespace_refuses_unclassified_callers_and_shared_mounts;
+
+        phase namespace_factory_refuses_unclassified_executable_before_isolation;
+        {
+            let before = File::open("/proc/thread-self/ns/mnt")
+                .unwrap()
+                .metadata()
+                .unwrap();
+            let expected = launcher::retained_view::RootConsumerChannel::verify_current_helper()
+                .expect_err("the test executable is not the canonical consuming helper");
+            let error = ManagedConsumerNamespace::isolate()
+                .err()
+                .expect("isolation must preserve canonical helper refusal");
+            assert_eq!(error.kind(), expected.kind());
+            assert_eq!(error.to_string(), expected.to_string());
+            let after = File::open("/proc/thread-self/ns/mnt")
+                .unwrap()
+                .metadata()
+                .unwrap();
+            assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        }
+
+        phase actual_mount_table_parser_preserves_non_utf8_paths_and_refuses_propagation;
+        {
+            let private = b"10 1 0:1 / /raw-\xff rw - tmpfs tmpfs rw\n";
+            private_mount_table(private).unwrap();
+            assert!(private_mount_table(b"10 1 0:1 / /run rw shared:3 - tmpfs tmpfs rw\n").is_err());
+            assert!(private_mount_table(b"10 1 0:1 / /run rw master:3 - tmpfs tmpfs rw\n").is_err());
+            assert!(private_mount_table(b"x 1 0:1 / /run rw - tmpfs tmpfs rw\n").is_err());
+            assert!(private_mount_table(&vec![b'x'; TABLE_LIMIT + 1]).is_err());
+            assert!(private_mount_table(&private[..private.len() - 1]).is_err());
+        }
     }
 }

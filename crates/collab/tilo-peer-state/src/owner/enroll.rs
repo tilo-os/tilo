@@ -1,5 +1,6 @@
 //! Redeeming an invitation with the host it names: the typed canonical
 //! exchange. The caller supplies its real endpoint and custody.
+use crate::join::WorkspaceId;
 use crate::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
     TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
@@ -10,11 +11,15 @@ use crate::owner::{
     VerifiedNativeEnrollmentIntent, WorkspaceSlot, enrollment::ns as now_ns,
 };
 use std::time::SystemTime;
-use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-fn current(identity: &HostIdentity, topic: u64, expected: &DeviceCert) -> Result<(), String> {
+fn current(
+    identity: &HostIdentity,
+    topic: WorkspaceId,
+    expected: &DeviceCert,
+) -> Result<(), String> {
     let (certificate, _) = identity.current_material(topic)?;
     if &certificate != expected {
         return Err("native enrollment custody changed during exchange".into());
@@ -51,7 +56,7 @@ fn active(
 pub async fn prepare_and_complete(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
-    identity_topic: u64,
+    identity_topic: WorkspaceId,
     local: Option<WorkspaceSlot>,
     invitation: String,
     owner: NativeWorkspaceOwner,
@@ -113,8 +118,8 @@ pub async fn prepare_and_complete(
         if hints.next().is_some() {
             return Err("invitation has ambiguous native Iroh routes".into());
         }
-        let (host, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint)
-            .map_err(|e| e.to_string())?;
+        let (host, _) =
+            WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
         host.validate_invitation(join.grant())
             .map_err(|e| e.to_string())?;
         match client
@@ -186,7 +191,7 @@ pub async fn prepare_and_complete(
     };
     current(&identity, identity_topic, &device)?;
     active(&owner, &intent, &id)?;
-    let (host, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(intent.transport_hint())
+    let (host, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(intent.transport_hint())
         .map_err(|e| e.to_string())?;
     let complete: JoinTransportRequest =
         postcard::from_bytes(intent.complete_bytes()).map_err(|e| e.to_string())?;
@@ -210,7 +215,7 @@ pub async fn prepare_and_complete(
             let bootstrap = prove_membership(
                 &client,
                 &host.endpoint_addr,
-                (grant.room.clone(), grant.workspace_id),
+                grant.workspace_id,
                 &device,
                 &identity,
             )
@@ -238,7 +243,7 @@ pub async fn prepare_and_complete(
             let bootstrap = prove_membership(
                 &client,
                 &host.endpoint_addr,
-                (grant.room.clone(), grant.workspace_id),
+                grant.workspace_id,
                 &device,
                 &identity,
             )
@@ -319,11 +324,10 @@ fn expired(code: u16, message: &str) -> bool {
 async fn prove_membership(
     client: &WorkspaceJoinClient,
     host: &iroh::EndpointAddr,
-    workspace: (String, u64),
+    workspace_id: WorkspaceId,
     device: &DeviceCert,
     identity: &HostIdentity,
 ) -> Result<join::JoinBootstrap, String> {
-    let (workspace, workspace_id) = workspace;
     let mut request_id = [0; 32];
     rand_core::Rng::fill_bytes(
         &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
@@ -333,7 +337,6 @@ async fn prove_membership(
         .request(
             host.clone(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
-                room: workspace,
                 workspace_id,
                 device_cert: device.clone(),
                 request_id,
@@ -369,18 +372,17 @@ pub async fn admit_as_member(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     owner: NativeWorkspaceOwner,
-    workspace: crate::owner::WorkspaceId,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     hint: join::TransportHint,
     now: SystemTime,
 ) -> Result<(), String> {
     let (host, _) =
-        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
+        WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
     let (device, _) = identity.current_material(workspace_id)?;
     let bootstrap = prove_membership(
         &client,
         &host.endpoint_addr,
-        (workspace.to_string(), workspace_id),
+        workspace_id,
         &device,
         &identity,
     )
@@ -398,7 +400,7 @@ pub async fn renew_membership(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     owner: NativeWorkspaceOwner,
-    workspace: crate::owner::WorkspaceId,
+    workspace: WorkspaceId,
 ) -> Result<bool, String> {
     let (topic, hint, held) = owner.with_current(workspace, |view| {
         Ok((
@@ -412,15 +414,9 @@ pub async fn renew_membership(
         return Ok(false);
     }
     let (host, _) =
-        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
-    let bootstrap = prove_membership(
-        &client,
-        &host.endpoint_addr,
-        (workspace.to_string(), topic),
-        &renewed,
-        &identity,
-    )
-    .await?;
+        WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
+    let bootstrap =
+        prove_membership(&client, &host.endpoint_addr, topic, &renewed, &identity).await?;
     current(&identity, topic, &renewed)?;
     owner.renew_membership(workspace, &renewed, &bootstrap, tilo_clock::wall())?;
     Ok(true)

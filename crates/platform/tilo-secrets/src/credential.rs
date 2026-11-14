@@ -64,38 +64,46 @@ pub(crate) fn join(first: &[u8], rest: &[Vec<u8>]) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_small_secret_is_one_credential() {
-        let parts = split(b"\x00seed\xff").unwrap();
-        assert_eq!(parts.len(), 1);
-        assert!(parts[0].len() <= BLOB_LIMIT);
-        assert_eq!(join(&parts[0], &[]).unwrap(), b"\x00seed\xff");
-        assert_eq!(split(b"").unwrap(), [vec![FORMAT, 0, 0]]);
-        assert_eq!(join(&split(b"").unwrap()[0], &[]).unwrap(), b"");
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn a_secret_splits_into_credentials_that_fit_and_joins_back;
 
-    #[test]
-    fn a_large_secret_spans_credentials_that_each_fit() {
-        for len in [FIRST_ROOM, FIRST_ROOM + 1, BLOB_LIMIT * 3, 40_000] {
-            let value: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
-            let parts = split(&value).unwrap();
-            assert!(parts.iter().all(|part| part.len() <= BLOB_LIMIT), "{len}");
-            assert_eq!(further_parts(&parts[0]).unwrap(), parts.len() - 1);
-            assert_eq!(join(&parts[0], &parts[1..]).unwrap(), value, "{len}");
+        phase a_small_secret_is_one_credential;
+        {
+            let parts = split(b"\x00seed\xff").unwrap();
+            assert_eq!(parts.len(), 1);
+            assert!(parts[0].len() <= BLOB_LIMIT);
+            assert_eq!(join(&parts[0], &[]).unwrap(), b"\x00seed\xff");
+            assert_eq!(split(b"").unwrap(), [vec![FORMAT, 0, 0]]);
+            assert_eq!(join(&split(b"").unwrap()[0], &[]).unwrap(), b"");
         }
-    }
 
-    #[test]
-    fn foreign_or_incomplete_credentials_are_refused() {
-        assert!(join(b"plain password", &[]).is_err());
-        assert!(join(&[], &[]).is_err());
-        let parts = split(&vec![7; BLOB_LIMIT * 2]).unwrap();
-        assert!(join(&parts[0], &parts[1..2]).is_err());
-    }
+        phase a_large_secret_spans_credentials_that_each_fit;
+        {
+            for len in [FIRST_ROOM, FIRST_ROOM + 1, BLOB_LIMIT * 3, 40_000] {
+                let value: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
+                let parts = split(&value).unwrap();
+                assert!(parts.iter().all(|part| part.len() <= BLOB_LIMIT), "{len}");
+                assert_eq!(further_parts(&parts[0]).unwrap(), parts.len() - 1);
+                assert_eq!(join(&parts[0], &parts[1..]).unwrap(), value, "{len}");
+            }
+        }
 
-    #[test]
-    fn parts_are_named_under_the_app_and_key() {
-        assert_eq!(target_name("so.tilo.x", "k", 0), "tilo:so.tilo.x/k");
-        assert_eq!(target_name("so.tilo.x", "k", 2), "tilo:so.tilo.x/k#2");
+        phase foreign_or_incomplete_credentials_are_refused;
+        {
+            assert!(join(b"plain password", &[]).is_err());
+            assert!(join(&[], &[]).is_err());
+            let parts = split(&vec![7; BLOB_LIMIT * 2]).unwrap();
+            assert!(join(&parts[0], &parts[1..2]).is_err());
+        }
+
+        phase parts_are_named_under_the_app_and_key;
+        {
+            assert_eq!(target_name("so.tilo.x", "k", 0), "tilo:so.tilo.x/k");
+            assert_eq!(target_name("so.tilo.x", "k", 2), "tilo:so.tilo.x/k#2");
+        }
     }
 }

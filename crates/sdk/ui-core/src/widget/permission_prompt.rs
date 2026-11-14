@@ -770,177 +770,271 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
 
-    #[test]
-    fn local_input_explanation_grows_with_enlarged_text_and_keeps_choices_addressable() {
-        let explanation = "Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.";
-        let mut prompt = PermissionPrompt::for_local_input(
-            "Diktat".into(),
-            explanation.into(),
-            ["dictation-copy-transcript", "dictation-discard-transcript"],
-            true,
-        );
-        prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 96.0));
-        let mut text = TextRenderer::new();
-        let theme = Theme::default().with_text_scale(1.6);
-        let height = prompt.preferred_height(&mut text, &theme);
-        assert!(height > PROMPT_HEIGHT, "the complete explanation must wrap");
-        prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 16.0 + height));
-        prompt.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        assert!(prompt.get_rect().contains(prompt.allow_rect().center()));
-        assert!(prompt.get_rect().contains(prompt.deny_rect().center()));
-        let node = prompt.accessibility().unwrap();
-        assert!(node.name.unwrap().contains(explanation));
-        assert_eq!(node.children.len(), 2);
-        assert_eq!(prompt.pending_choice, None);
-    }
+    tilo_test_env::scenario! {
+        fn a_permission_prompt_offers_its_own_choices_and_keeps_focus;
 
-    #[test]
-    fn local_input_prompt_has_only_one_shot_choices_and_preserves_field_focus() {
-        let mut prompt = PermissionPrompt::for_local_input(
-            "Dictation".into(),
-            "Microphone".into(),
-            ["dictation-record-once", "dictation-cancel"],
-            true,
-        );
-        prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
-        let node = prompt.accessibility().unwrap();
-        assert_eq!(node.children.len(), 2);
-        assert_eq!(
-            prompt.synthetic_accessibility_rect(&[1]),
-            Some(prompt.deny_rect())
-        );
-        assert_eq!(prompt.session_rect(), Rect::ZERO);
-        assert_eq!(prompt.always_rect(), Rect::ZERO);
-        let mut doc = AutoCommit::new();
-        for key in [SESSION_KEY, ALWAYS_KEY] {
-            assert!(!prompt.perform_action(
-                &crate::a11y::Action::Activate,
-                &[key],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT
-            ));
-            assert!(prompt.pending_choice.is_none());
-        }
-        let mut tree = TaffyTree::<()>::new();
-        let field = tree.leaf_node(Style::default());
-        let overlay = tree.leaf_node(Style::default());
-        let (mut handled, mut focus) = (false, Some(field));
-        for event in [cursor_at(prompt.allow_rect().center()), mouse_press()] {
-            let sent = crate::testing::Dispatch::new()
-                .doc(&mut doc)
-                .handled(handled)
-                .focus_target(focus)
-                .layout(&tree, overlay)
-                .send(&mut prompt, &event);
-            (handled, focus) = (sent.handled, sent.focus_target);
-        }
-        assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
-        assert_eq!(
-            focus,
-            Some(field),
-            "microphone consent must not redirect IME insertion"
-        );
-        let mut single = PermissionPrompt::for_local_input(
-            "Dictation".into(),
-            "Loading".into(),
-            ["dictation-cancel", "dictation-cancel"],
-            false,
-        );
-        single.set_rect(prompt.get_rect());
-        assert_eq!(single.accessibility().unwrap().children.len(), 1);
-        assert!(!single.traps_focus());
-        assert_eq!(single.allow_rect(), Rect::ZERO);
-    }
-
-    #[test]
-    fn permission_dialog_semantics_focus_and_owner_only_always() {
+        phase local_input_explanation_grows_with_enlarged_text_and_keeps_choices_addressable;
         {
-            use crate::a11y::Role;
-            let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
-            let node = Widget::accessibility(&p).expect("prompt is not presentational");
-            assert_eq!(node.role, Role::Dialog);
-            assert!(node.state.modal, "a permission prompt traps focus");
-            assert!(node.state.focusable);
-            assert_eq!(
-                node.name.as_deref(),
-                Some("Camera access requested by org.gnome.gedit")
+            let explanation = "Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.";
+            let mut prompt = PermissionPrompt::for_local_input(
+                "Diktat".into(),
+                explanation.into(),
+                ["dictation-copy-transcript", "dictation-discard-transcript"],
+                true,
             );
-            assert_eq!(node.children.len(), 4, "every decision is exposed");
-            assert_eq!(node.children[0].role, Role::Button);
-            assert_eq!(node.children[0].name.as_deref(), Some("Allow"));
-            assert_eq!(node.children[3].name.as_deref(), Some("Deny"));
+            prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 96.0));
+            let mut text = TextRenderer::new();
+            let theme = Theme::default().with_text_scale(1.6);
+            let height = prompt.preferred_height(&mut text, &theme);
+            assert!(height > PROMPT_HEIGHT, "the complete explanation must wrap");
+            prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 16.0 + height));
+            prompt.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            assert!(prompt.get_rect().contains(prompt.allow_rect().center()));
+            assert!(prompt.get_rect().contains(prompt.deny_rect().center()));
+            let node = prompt.accessibility().unwrap();
+            assert!(node.name.unwrap().contains(explanation));
+            assert_eq!(node.children.len(), 2);
+            assert_eq!(prompt.pending_choice, None);
         }
 
+        phase local_input_prompt_has_only_one_shot_choices_and_preserves_field_focus;
         {
-            let p = prompt_at(false);
-            let node = Widget::accessibility(&p).expect("prompt is semantic");
-            assert!(Widget::traps_focus(&p));
-            assert!(node.children[2].state.disabled);
-            assert!(!node.children[2].state.focusable);
-            assert_eq!(p.synthetic_accessibility_rect(&[0]), Some(p.allow_rect()));
-            assert_eq!(p.synthetic_accessibility_rect(&[3]), Some(p.deny_rect()));
-        }
-
-        {
-            let mut p = prompt_at(false);
-            Widget::set_focus(&mut p, true);
-            let node = Widget::accessibility(&p).expect("prompt is semantic");
-            assert!(node.state.focused);
-            assert!(node.children[3].state.focused, "Deny is the safe default");
-
+            let mut prompt = PermissionPrompt::for_local_input(
+                "Dictation".into(),
+                "Microphone".into(),
+                ["dictation-record-once", "dictation-cancel"],
+                true,
+            );
+            prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+            let node = prompt.accessibility().unwrap();
+            assert_eq!(node.children.len(), 2);
+            assert_eq!(
+                prompt.synthetic_accessibility_rect(&[1]),
+                Some(prompt.deny_rect())
+            );
+            assert_eq!(prompt.session_rect(), Rect::ZERO);
+            assert_eq!(prompt.always_rect(), Rect::ZERO);
             let mut doc = AutoCommit::new();
-            assert!(Widget::perform_action(
-                &mut p,
-                &crate::a11y::Action::Activate,
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
+            for key in [SESSION_KEY, ALWAYS_KEY] {
+                assert!(!prompt.perform_action(
+                    &crate::a11y::Action::Activate,
+                    &[key],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT
+                ));
+                assert!(prompt.pending_choice.is_none());
+            }
+            let mut tree = TaffyTree::<()>::new();
+            let field = tree.leaf_node(Style::default());
+            let overlay = tree.leaf_node(Style::default());
+            let (mut handled, mut focus) = (false, Some(field));
+            for event in [cursor_at(prompt.allow_rect().center()), mouse_press()] {
+                let sent = crate::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .handled(handled)
+                    .focus_target(focus)
+                    .layout(&tree, overlay)
+                    .send(&mut prompt, &event);
+                (handled, focus) = (sent.handled, sent.focus_target);
+            }
+            assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
+            assert_eq!(
+                focus,
+                Some(field),
+                "microphone consent must not redirect IME insertion"
+            );
+            let mut single = PermissionPrompt::for_local_input(
+                "Dictation".into(),
+                "Loading".into(),
+                ["dictation-cancel", "dictation-cancel"],
+                false,
+            );
+            single.set_rect(prompt.get_rect());
+            assert_eq!(single.accessibility().unwrap().children.len(), 1);
+            assert!(!single.traps_focus());
+            assert_eq!(single.allow_rect(), Rect::ZERO);
+        }
 
-            p.pending_choice = None;
-            assert!(Widget::perform_action(
-                &mut p,
-                &crate::a11y::Action::Activate,
-                &[SESSION_KEY],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            assert_eq!(p.pending_choice, Some(PromptChoice::Session));
+        phase permission_dialog_semantics_focus_and_owner_only_always;
+        {
+            {
+                use crate::a11y::Role;
+                let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
+                let node = Widget::accessibility(&p).expect("prompt is not presentational");
+                assert_eq!(node.role, Role::Dialog);
+                assert!(node.state.modal, "a permission prompt traps focus");
+                assert!(node.state.focusable);
+                assert_eq!(
+                    node.name.as_deref(),
+                    Some("Camera access requested by org.gnome.gedit")
+                );
+                assert_eq!(node.children.len(), 4, "every decision is exposed");
+                assert_eq!(node.children[0].role, Role::Button);
+                assert_eq!(node.children[0].name.as_deref(), Some("Allow"));
+                assert_eq!(node.children[3].name.as_deref(), Some("Deny"));
+            }
 
-            p.pending_choice = None;
-            assert!(
-                !Widget::perform_action(
+            {
+                let p = prompt_at(false);
+                let node = Widget::accessibility(&p).expect("prompt is semantic");
+                assert!(Widget::traps_focus(&p));
+                assert!(node.children[2].state.disabled);
+                assert!(!node.children[2].state.focusable);
+                assert_eq!(p.synthetic_accessibility_rect(&[0]), Some(p.allow_rect()));
+                assert_eq!(p.synthetic_accessibility_rect(&[3]), Some(p.deny_rect()));
+            }
+
+            {
+                let mut p = prompt_at(false);
+                Widget::set_focus(&mut p, true);
+                let node = Widget::accessibility(&p).expect("prompt is semantic");
+                assert!(node.state.focused);
+                assert!(node.children[3].state.focused, "Deny is the safe default");
+
+                let mut doc = AutoCommit::new();
+                assert!(Widget::perform_action(
                     &mut p,
                     &crate::a11y::Action::Activate,
-                    &[ALWAYS_KEY],
+                    &[],
                     &mut crate::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
-                ),
-                "a disabled persistent grant cannot be activated through AT"
-            );
-            assert_eq!(p.pending_choice, None);
+                ));
+                assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
+
+                p.pending_choice = None;
+                assert!(Widget::perform_action(
+                    &mut p,
+                    &crate::a11y::Action::Activate,
+                    &[SESSION_KEY],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ));
+                assert_eq!(p.pending_choice, Some(PromptChoice::Session));
+
+                p.pending_choice = None;
+                assert!(
+                    !Widget::perform_action(
+                        &mut p,
+                        &crate::a11y::Action::Activate,
+                        &[ALWAYS_KEY],
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                    ),
+                    "a disabled persistent grant cannot be activated through AT"
+                );
+                assert_eq!(p.pending_choice, None);
+            }
+
+            {
+                let mut p = prompt_at(false);
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let theme = Theme::dark();
+                let node = p.build_layout(&mut taffy, &theme, &mut node_map);
+                let style = taffy.style(node).unwrap();
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "PROMPT_HEIGHT is the compile-time constant 80.0, exact in f32"
+                )]
+                let expected = Dimension::length(PROMPT_HEIGHT as f32);
+                assert_eq!(style.size.height, expected);
+            }
         }
 
+        // A request with its own answers offers exactly those, under its own
+        // words: the missing choice takes no space and no clicks, and the
+        // owner-only choice stays the owner's.
+        phase a_prompt_offers_only_its_own_choices_under_its_own_words;
         {
-            let mut p = prompt_at(false);
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let theme = Theme::dark();
-            let node = p.build_layout(&mut taffy, &theme, &mut node_map);
-            let style = taffy.style(node).unwrap();
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "PROMPT_HEIGHT is the compile-time constant 80.0, exact in f32"
-            )]
-            let expected = Dimension::length(PROMPT_HEIGHT as f32);
-            assert_eq!(style.size.height, expected);
+            let offered = |is_owner| {
+                let mut p =
+                    PermissionPrompt::new("Terminal".into(), "Control the desktop".into(), is_owner)
+                        .with_choices(vec![
+                            (PromptChoice::Session, "This tab".into()),
+                            (PromptChoice::Always, "Always here".into()),
+                            (PromptChoice::Deny, "Don't allow".into()),
+                        ]);
+                p.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+                p
+            };
+            let mut p = offered(true);
+            assert_eq!(p.allow_rect(), Rect::ZERO, "no one-time choice is offered");
+            assert!(p.session_rect().x1 <= p.always_rect().x0);
+            assert!(p.always_rect().x1 <= p.deny_rect().x0);
+            let names: Vec<String> = p
+                .accessibility()
+                .expect("a dialog")
+                .children
+                .iter()
+                .filter_map(|child| child.name.clone())
+                .collect();
+            assert_eq!(names, ["This tab", "Always here", "Don't allow"]);
+            let center = p.session_rect().center();
+            dispatch(&mut p, &cursor_at(center));
+            dispatch(&mut p, &mouse_press());
+            assert_eq!(p.pending_choice, Some(PromptChoice::Session));
+
+            let mut guest = offered(false);
+            let center = guest.always_rect().center();
+            dispatch(&mut guest, &cursor_at(center));
+            dispatch(&mut guest, &mouse_press());
+            assert_eq!(guest.pending_choice, None, "always stays the owner's");
+        }
+
+        phase permission_buttons_set_exactly_their_pending_choice;
+        {
+            {
+                let mut p = prompt_at(false);
+                let center = p.allow_rect().center();
+                dispatch(&mut p, &cursor_at(center));
+                dispatch(&mut p, &mouse_press());
+                assert_eq!(p.pending_choice, Some(PromptChoice::Allow));
+            }
+
+            {
+                let mut p = prompt_at(false);
+                let center = p.session_rect().center();
+                dispatch(&mut p, &cursor_at(center));
+                dispatch(&mut p, &mouse_press());
+                assert_eq!(p.pending_choice, Some(PromptChoice::Session));
+            }
+
+            {
+                let mut p = prompt_at(false);
+                let center = p.always_rect().center();
+                dispatch(&mut p, &cursor_at(center));
+                dispatch(&mut p, &mouse_press());
+                assert_eq!(p.pending_choice, None);
+            }
+
+            {
+                let mut p = prompt_at(true);
+                let center = p.always_rect().center();
+                dispatch(&mut p, &cursor_at(center));
+                dispatch(&mut p, &mouse_press());
+                assert_eq!(p.pending_choice, Some(PromptChoice::Always));
+            }
+
+            {
+                let mut p = prompt_at(false);
+                let center = p.deny_rect().center();
+                dispatch(&mut p, &cursor_at(center));
+                dispatch(&mut p, &mouse_press());
+                assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
+            }
+
+            {
+                let mut p = prompt_at(true);
+                dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
+                dispatch(&mut p, &mouse_press());
+                assert_eq!(p.pending_choice, None);
+            }
         }
     }
 
@@ -959,95 +1053,5 @@ mod tests {
         p.rect = Rect::new(0.0, 0.0, 600.0, 80.0);
         p.apply_layout_helper();
         p
-    }
-
-    /// A request with its own answers offers exactly those, under its own
-    /// words: the missing choice takes no space and no clicks, and the
-    /// owner-only choice stays the owner's.
-    #[test]
-    fn a_prompt_offers_only_its_own_choices_under_its_own_words() {
-        let offered = |is_owner| {
-            let mut p =
-                PermissionPrompt::new("Terminal".into(), "Control the desktop".into(), is_owner)
-                    .with_choices(vec![
-                        (PromptChoice::Session, "This tab".into()),
-                        (PromptChoice::Always, "Always here".into()),
-                        (PromptChoice::Deny, "Don't allow".into()),
-                    ]);
-            p.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
-            p
-        };
-        let mut p = offered(true);
-        assert_eq!(p.allow_rect(), Rect::ZERO, "no one-time choice is offered");
-        assert!(p.session_rect().x1 <= p.always_rect().x0);
-        assert!(p.always_rect().x1 <= p.deny_rect().x0);
-        let names: Vec<String> = p
-            .accessibility()
-            .expect("a dialog")
-            .children
-            .iter()
-            .filter_map(|child| child.name.clone())
-            .collect();
-        assert_eq!(names, ["This tab", "Always here", "Don't allow"]);
-        let center = p.session_rect().center();
-        dispatch(&mut p, &cursor_at(center));
-        dispatch(&mut p, &mouse_press());
-        assert_eq!(p.pending_choice, Some(PromptChoice::Session));
-
-        let mut guest = offered(false);
-        let center = guest.always_rect().center();
-        dispatch(&mut guest, &cursor_at(center));
-        dispatch(&mut guest, &mouse_press());
-        assert_eq!(guest.pending_choice, None, "always stays the owner's");
-    }
-
-    #[test]
-    fn permission_buttons_set_exactly_their_pending_choice() {
-        {
-            let mut p = prompt_at(false);
-            let center = p.allow_rect().center();
-            dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &mouse_press());
-            assert_eq!(p.pending_choice, Some(PromptChoice::Allow));
-        }
-
-        {
-            let mut p = prompt_at(false);
-            let center = p.session_rect().center();
-            dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &mouse_press());
-            assert_eq!(p.pending_choice, Some(PromptChoice::Session));
-        }
-
-        {
-            let mut p = prompt_at(false);
-            let center = p.always_rect().center();
-            dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &mouse_press());
-            assert_eq!(p.pending_choice, None);
-        }
-
-        {
-            let mut p = prompt_at(true);
-            let center = p.always_rect().center();
-            dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &mouse_press());
-            assert_eq!(p.pending_choice, Some(PromptChoice::Always));
-        }
-
-        {
-            let mut p = prompt_at(false);
-            let center = p.deny_rect().center();
-            dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &mouse_press());
-            assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
-        }
-
-        {
-            let mut p = prompt_at(true);
-            dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
-            dispatch(&mut p, &mouse_press());
-            assert_eq!(p.pending_choice, None);
-        }
     }
 }

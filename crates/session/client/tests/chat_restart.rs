@@ -52,6 +52,7 @@ use tilo_user_identity::UserIdentity;
 use crate::support::{
     TestHost, durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed,
 };
+use collab_types::WorkspaceId;
 
 /// The chain the chat keeps its posts in.
 const CHAT_CHAIN: &str = "messages";
@@ -163,7 +164,7 @@ impl Member {
 async fn history(
     host: &TestHost,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     route: &DocumentRoute,
 ) -> String {
     let mut out = String::from("retained:");
@@ -223,7 +224,11 @@ async fn history(
 
 /// The writes of `route` the host retains beside a compaction of it that already covers them: a
 /// fold replaced them, so one kept after it is history no reader takes in.
-async fn covered_twice(host: &TestHost, workspace_id: u64, route: &DocumentRoute) -> Vec<String> {
+async fn covered_twice(
+    host: &TestHost,
+    workspace_id: WorkspaceId,
+    route: &DocumentRoute,
+) -> Vec<String> {
     let mut writes = Vec::new();
     let mut floors = std::collections::HashMap::<[u8; 32], u64>::new();
     for retained in host
@@ -287,7 +292,7 @@ async fn reads_whole(
     route: &DocumentRoute,
     keys: &BTreeSet<String>,
     what: &str,
-    (host, workspace, workspace_id): (&TestHost, &str, u64),
+    (host, workspace, workspace_id): (&TestHost, &str, WorkspaceId),
 ) {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -335,7 +340,7 @@ async fn round(seed: u64) {
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
@@ -347,7 +352,7 @@ async fn round(seed: u64) {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

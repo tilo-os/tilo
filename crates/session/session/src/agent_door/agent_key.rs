@@ -297,7 +297,7 @@ fn certify(grant: [u8; 32], person: &str) -> Result<Standing, String> {
         .identities
         .values()
         // The session names its person by their root key in hex, which is their identity's id.
-        .find(|profile| profile.id == person || profile.principal_id() == person)
+        .find(|profile| profile.id == person || profile.person_id() == person)
         .cloned()
         .ok_or("this device does not hold the person's identity")?;
     let fleets = crate::identity_admin::fleet_store()?;

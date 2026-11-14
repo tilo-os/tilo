@@ -100,160 +100,431 @@ impl Image {
     }
 }
 
-#[test]
-fn an_image_without_a_profile_is_not_a_board() {
-    let image = Image::new();
-    assert_eq!(read_profile(&image.root).unwrap(), None);
-    assert_eq!(installed_profile(&image.root).unwrap(), None);
-    image.json(
-        "usr/lib/tilo/hardware-profile-definition.json",
-        &shipped("lenovo-83ed"),
-    );
-    assert!(
-        read_profile(&image.root).is_err(),
-        "a definition needs its generated profile"
-    );
-}
+tilo_test_env::scenario! {
+    /// `read_profile` and whether the image it describes may take a successor.
+    fn the_installed_profile_is_read_exactly_and_only_an_official_release_applies;
 
-#[test]
-fn an_official_board_release_is_applicable() {
-    for target in [
-        release_tag(),
-        format!("code.tilo.so/tilo/tilo@sha256:{}", "3".repeat(64)),
-    ] {
-        let image = Image::lenovo(&target);
-        let profile = installed_profile(&image.root).unwrap().unwrap();
-        assert_eq!(profile["target_update_ref"], json!(target));
+    phase an_image_without_a_profile_is_not_a_board;
+    {
+        let image = Image::new();
+        assert_eq!(read_profile(&image.root).unwrap(), None);
+        assert_eq!(installed_profile(&image.root).unwrap(), None);
+        image.json(
+            "usr/lib/tilo/hardware-profile-definition.json",
+            &shipped("lenovo-83ed"),
+        );
+        assert!(
+            read_profile(&image.root).is_err(),
+            "a definition needs its generated profile"
+        );
     }
-}
 
-#[test]
-fn a_board_following_anything_but_an_immutable_release_is_refused() {
-    for target in [
-        "registry.tilo.so/tilo/tilo:latest",
-        "code.tilo.so/tilo/tilo:latest",
-    ] {
-        let image = Image::lenovo(target);
-        assert!(read_profile(&image.root).unwrap().is_some(), "{target}");
-        assert!(installed_profile(&image.root).is_err(), "{target}");
+    phase an_official_board_release_is_applicable;
+    {
+        for target in [
+            release_tag(),
+            format!("code.tilo.so/tilo/tilo@sha256:{}", "3".repeat(64)),
+        ] {
+            let image = Image::lenovo(&target);
+            let profile = installed_profile(&image.root).unwrap().unwrap();
+            assert_eq!(profile["target_update_ref"], json!(target));
+        }
     }
-    for target in [
-        "code.tilo.so/tilo/tilo",
-        "example.com/tilo/tilo:latest",
-        "code.tilo.so/tilo/tilo:",
-    ] {
-        let image = Image::lenovo(target);
-        assert!(read_profile(&image.root).is_err(), "{target}");
+
+    phase a_board_following_anything_but_an_immutable_release_is_refused;
+    {
+        for target in [
+            "registry.tilo.so/tilo/tilo:latest",
+            "code.tilo.so/tilo/tilo:latest",
+        ] {
+            let image = Image::lenovo(target);
+            assert!(read_profile(&image.root).unwrap().is_some(), "{target}");
+            assert!(installed_profile(&image.root).is_err(), "{target}");
+        }
+        for target in [
+            "code.tilo.so/tilo/tilo",
+            "example.com/tilo/tilo:latest",
+            "code.tilo.so/tilo/tilo:",
+        ] {
+            let image = Image::lenovo(target);
+            assert!(read_profile(&image.root).is_err(), "{target}");
+        }
     }
-}
 
-#[test]
-fn another_board_is_not_applicable() {
-    let image = Image::new();
-    image.board(
-        &shipped("orangepi-3b-v2-1"),
-        "registry.tilo.so/tilo/tilo:latest",
-    );
-    assert!(read_profile(&image.root).unwrap().is_some());
-    assert_eq!(installed_profile(&image.root).unwrap(), None);
-}
+    phase another_board_is_not_applicable;
+    {
+        let image = Image::new();
+        image.board(
+            &shipped("orangepi-3b-v2-1"),
+            "registry.tilo.so/tilo/tilo:latest",
+        );
+        assert!(read_profile(&image.root).unwrap().is_some());
+        assert_eq!(installed_profile(&image.root).unwrap(), None);
+    }
 
-#[test]
-fn profile_fields_schema_and_definition_binding_are_exact() {
-    let mutations: Vec<(&str, Value)> = vec![
-        ("schema_version", json!(2)),
-        ("schema_version", json!(true)),
-        ("schema_version", json!(1.0)),
-        ("id", json!("orangepi-3b-v2-1")),
-        ("architecture", json!("x86_64")),
-        ("unknown", json!(1)),
-        ("target_update_ref", json!(5)),
-    ];
-    for (key, value) in mutations {
+    phase profile_fields_schema_and_definition_binding_are_exact;
+    {
+        let mutations: Vec<(&str, Value)> = vec![
+            ("schema_version", json!(2)),
+            ("schema_version", json!(true)),
+            ("schema_version", json!(1.0)),
+            ("id", json!("orangepi-3b-v2-1")),
+            ("architecture", json!("x86_64")),
+            ("unknown", json!(1)),
+            ("target_update_ref", json!(5)),
+        ];
+        for (key, value) in mutations {
+            let image = Image::lenovo(&release_tag());
+            image.set_profile(key, value.clone());
+            assert!(read_profile(&image.root).is_err(), "{key} = {value}");
+        }
         let image = Image::lenovo(&release_tag());
-        image.set_profile(key, value.clone());
-        assert!(read_profile(&image.root).is_err(), "{key} = {value}");
+        let mut profile = image.profile();
+        profile.as_object_mut().unwrap().remove("devicetree_sha256");
+        image.json("usr/lib/tilo/hardware-profile.json", &profile);
+        assert!(read_profile(&image.root).is_err(), "a missing field");
+        let image = Image::lenovo(&release_tag());
+        image.write("usr/lib/tilo/hardware-profile.json", &vec![b' '; 16385]);
+        assert!(read_profile(&image.root).is_err(), "an oversized profile");
+        let image = Image::lenovo(&release_tag());
+        image.write("usr/lib/tilo/hardware-profile.json", b"{");
+        assert!(
+            read_profile(&image.root).is_err(),
+            "a profile that is not JSON"
+        );
     }
-    let image = Image::lenovo(&release_tag());
-    let mut profile = image.profile();
-    profile.as_object_mut().unwrap().remove("devicetree_sha256");
-    image.json("usr/lib/tilo/hardware-profile.json", &profile);
-    assert!(read_profile(&image.root).is_err(), "a missing field");
-    let image = Image::lenovo(&release_tag());
-    image.write("usr/lib/tilo/hardware-profile.json", &vec![b' '; 16385]);
-    assert!(read_profile(&image.root).is_err(), "an oversized profile");
-    let image = Image::lenovo(&release_tag());
-    image.write("usr/lib/tilo/hardware-profile.json", b"{");
-    assert!(
-        read_profile(&image.root).is_err(),
-        "a profile that is not JSON"
-    );
+
+    phase profile_inputs_must_be_trusted_paths;
+    {
+        let image = Image::lenovo(&release_tag());
+        fs::set_permissions(
+            image.path("usr/lib/tilo"),
+            fs::Permissions::from_mode(0o775),
+        )
+        .unwrap();
+        assert!(
+            read_profile(&image.root).is_err(),
+            "a group-writable directory"
+        );
+
+        let image = Image::lenovo(&release_tag());
+        fs::set_permissions(
+            image.path("usr/lib/tilo/hardware-profile.json"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        assert!(
+            read_profile(&image.root).is_err(),
+            "a world-writable profile"
+        );
+
+        let image = Image::lenovo(&release_tag());
+        let real = image.path("usr/lib/real-tilo");
+        fs::rename(image.path("usr/lib/tilo"), &real).unwrap();
+        symlink("real-tilo", image.path("usr/lib/tilo")).unwrap();
+        assert!(read_profile(&image.root).is_err(), "a symlinked directory");
+
+        let image = Image::lenovo(&release_tag());
+        let profile = image.path("usr/lib/tilo/hardware-profile.json");
+        fs::rename(&profile, image.path("usr/lib/tilo/elsewhere.json")).unwrap();
+        symlink("elsewhere.json", &profile).unwrap();
+        assert!(read_profile(&image.root).is_err(), "a symlinked profile");
+
+        let image = Image::lenovo(&release_tag());
+        let definition = image.path("usr/lib/tilo/hardware-profile-definition.json");
+        fs::remove_file(&definition).unwrap();
+        fs::create_dir(&definition).unwrap();
+        fs::set_permissions(&definition, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            read_profile(&image.root).is_err(),
+            "a definition that is a directory"
+        );
+
+        let foreign = Root {
+            path: image.root.path.clone(),
+            owner: image.root.owner.wrapping_add(1),
+        };
+        assert!(
+            read_profile(&foreign).is_err(),
+            "inputs owned by someone else"
+        );
+    }
 }
 
-#[test]
-fn profile_inputs_must_be_trusted_paths() {
-    let image = Image::lenovo(&release_tag());
-    fs::set_permissions(
-        image.path("usr/lib/tilo"),
-        fs::Permissions::from_mode(0o775),
-    )
-    .unwrap();
-    assert!(
-        read_profile(&image.root).is_err(),
-        "a group-writable directory"
-    );
+tilo_test_env::scenario! {
+    /// `validate_definition` over the shipped boards.
+    fn hardware_definitions_validate_and_their_mutations_are_refused;
 
-    let image = Image::lenovo(&release_tag());
-    fs::set_permissions(
-        image.path("usr/lib/tilo/hardware-profile.json"),
-        fs::Permissions::from_mode(0o666),
-    )
-    .unwrap();
-    assert!(
-        read_profile(&image.root).is_err(),
-        "a world-writable profile"
-    );
-
-    let image = Image::lenovo(&release_tag());
-    let real = image.path("usr/lib/real-tilo");
-    fs::rename(image.path("usr/lib/tilo"), &real).unwrap();
-    symlink("real-tilo", image.path("usr/lib/tilo")).unwrap();
-    assert!(read_profile(&image.root).is_err(), "a symlinked directory");
-
-    let image = Image::lenovo(&release_tag());
-    let profile = image.path("usr/lib/tilo/hardware-profile.json");
-    fs::rename(&profile, image.path("usr/lib/tilo/elsewhere.json")).unwrap();
-    symlink("elsewhere.json", &profile).unwrap();
-    assert!(read_profile(&image.root).is_err(), "a symlinked profile");
-
-    let image = Image::lenovo(&release_tag());
-    let definition = image.path("usr/lib/tilo/hardware-profile-definition.json");
-    fs::remove_file(&definition).unwrap();
-    fs::create_dir(&definition).unwrap();
-    fs::set_permissions(&definition, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(
-        read_profile(&image.root).is_err(),
-        "a definition that is a directory"
-    );
-
-    let foreign = Root {
-        path: image.root.path.clone(),
-        owner: image.root.owner.wrapping_add(1),
-    };
-    assert!(
-        read_profile(&foreign).is_err(),
-        "inputs owned by someone else"
-    );
-}
-
-#[test]
-fn shipped_definitions_validate() {
-    for name in shipped_names() {
-        assert!(validate_definition(shipped(&name)).is_ok(), "{name}");
+    phase shipped_definitions_validate;
+    {
+        for name in shipped_names() {
+            assert!(validate_definition(shipped(&name)).is_ok(), "{name}");
+        }
+        let minimal = json!({"schema_version": 1, "id": "board", "architecture": "x86_64",
+                             "devicetree": null, "firmware": {}});
+        assert!(validate_definition(minimal).is_ok());
     }
-    let minimal = json!({"schema_version": 1, "id": "board", "architecture": "x86_64",
-                         "devicetree": null, "firmware": {}});
-    assert!(validate_definition(minimal).is_ok());
+
+    phase a_firmware_described_board_is_confined_by_its_dmi_identity;
+    // A firmware-described board watches its own DMI identity: the quirk a
+    // definition writes names a model, and a model without a device tree has no
+    // other name to be confined by.
+    {
+        let keyboard = json!({"name": "AT Translated Set 2 keyboard", "bus": "i2c",
+                              "vendor": "0001", "product": "0001", "devicetree_compatible": null});
+        let board = json!({"schema_version": 2, "id": "handheld-board", "architecture": "x86_64",
+                           "devicetree": null, "system_firmware": [], "firmware": {},
+                           "crash_record": {"storage": "efi-variable", "watchdog": "none",
+                                            "lockup": "none"},
+                           "dmi": {"sys_vendor": "Valve", "product_name": "Jupiter"},
+                           "internal_keyboards": [keyboard]});
+        assert!(validate_definition(board.clone()).is_ok());
+        for (label, mutate) in [
+            ("a compatible on a board without a device tree", 0),
+            ("a DMI identity beside a device tree", 1),
+            ("a DMI identity missing a field", 2),
+            ("a DMI identity with an unknown field", 3),
+            ("a DMI value holding the modalias separator", 4),
+            ("a DMI value that is not text", 5),
+            ("internal keyboards with no identity to confine them", 6),
+        ] {
+            let mut refused = board.clone();
+            match mutate {
+                0 => refused["internal_keyboards"][0]["devicetree_compatible"] = json!("valve,jupiter"),
+                1 => refused["devicetree"] = json!("qcom/board.dtb"),
+                2 => {
+                    refused["dmi"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("product_name");
+                }
+                3 => refused["dmi"]["board_name"] = json!("Jupiter"),
+                4 => refused["dmi"]["product_name"] = json!("Jup:iter"),
+                5 => refused["dmi"]["sys_vendor"] = json!(7),
+                _ => {
+                    refused.as_object_mut().unwrap().remove("dmi");
+                }
+            }
+            assert!(validate_definition(refused).is_err(), "{label}");
+        }
+    }
+
+    phase a_board_defaults_hardening_only_for_what_its_kernel_cannot_deliver;
+    {
+        let board = json!({"schema_version": 2, "id": "handset-board", "architecture": "aarch64",
+                           "devicetree": "rockchip/board.dtb", "system_firmware": [],
+                           "firmware": {},
+                           "crash_record": {"storage": "ramoops", "watchdog": "none",
+                                            "lockup": "none"},
+                           "hardening_defaults": [
+                               {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
+                               {"action": "microphone", "driver": "CONFIG_SND"}]});
+        assert!(validate_definition(board.clone()).is_ok());
+        for (label, defaults) in [
+            (
+                "an action no view offers",
+                json!([{"action": "wifi", "driver": "CONFIG_MEDIA_SUPPORT"}]),
+            ),
+            (
+                "a driver that is not a kernel option",
+                json!([{"action": "camera", "driver": "media"}]),
+            ),
+            // Relaxing the camera's hardening because of a sound card would open
+            // a hole the board's own declaration does not cover.
+            (
+                "a driver the action does not cover",
+                json!([{"action": "camera", "driver": "CONFIG_SND"}]),
+            ),
+            (
+                "the same action twice",
+                json!([{"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
+                                              {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"}]),
+            ),
+            ("an entry missing its driver", json!([{"action": "camera"}])),
+            (
+                "an entry with an unknown field",
+                json!([{"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT", "why": "handset"}]),
+            ),
+            ("a list that is not one", json!("camera")),
+        ] {
+            let mut refused = board.clone();
+            refused["hardening_defaults"] = defaults;
+            assert!(validate_definition(refused).is_err(), "{label}");
+        }
+    }
+
+    phase the_shipped_handset_states_what_its_kernel_cannot_deliver;
+    {
+        // A handset is a personal computer, not an always-on host, and its camera
+        // and headset microphone are options the shared image builds in for other
+        // boards, so its definition is where that is decided.
+        let handset = shipped("pinephone-pro");
+        assert_eq!(handset["architecture"], json!("aarch64"));
+        assert_eq!(handset["always_on"], json!(false));
+        let actions: Vec<&str> = handset["hardening_defaults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(actions, ["camera", "microphone"]);
+        assert_eq!(handset["crash_record"]["storage"], json!("ramoops"));
+    }
+
+    phase definition_mutations_are_refused;
+    {
+        let lenovo = shipped("lenovo-83ed");
+        let mutations: Vec<(&str, Value)> = vec![
+            ("schema_version", json!(3)),
+            ("schema_version", json!(true)),
+            ("id", json!("generic")),
+            ("id", json!("Lenovo")),
+            ("architecture", json!("riscv64")),
+            ("devicetree", json!("qcom/board.dts")),
+            ("devicetree", json!("../board.dtb")),
+            ("devicetree", json!("qcom//board.dtb")),
+            ("firmware", json!({"a/b.mbn": "qcom/x.mbn"})),
+            (
+                "firmware",
+                json!({"a.mbn": "qcom/x.mbn", "b.mbn": "qcom/x.mbn/y"}),
+            ),
+            ("firmware", json!([])),
+            ("system_firmware", json!(["qcom/x1e80100/LENOVO/83ED"])),
+            ("system_firmware", json!(["regulatory.db", "regulatory.db"])),
+            (
+                "firmware_exclude",
+                json!(["nvidia-gpu-firmware", "nvidia-gpu-firmware"]),
+            ),
+            ("firmware_exclude", json!(["linux-firmware"])),
+            ("firmware_exclude", json!([1])),
+            ("boot_modules", json!(["ath12k", "ath12k"])),
+            ("boot_modules", json!(["Ath12k"])),
+            ("always_on", json!(1)),
+            ("wifi_wake_on_wlan", json!(1)),
+            ("wifi_wake_on_wlan", json!(false)),
+            ("kernel_args", json!(["quiet", "quiet"])),
+            ("kernel_args", json!(["a b"])),
+            (
+                "internal_keyboards",
+                json!([{"name": "kb", "bus": "usb", "vendor": "048D",
+                                            "product": "8987", "devicetree_compatible": "lenovo,yoga"}]),
+            ),
+            (
+                "internal_keyboards",
+                json!([{"name": "kb", "bus": "i2c", "vendor": "048d",
+                                            "product": "8987", "devicetree_compatible": "lenovo,yoga"}]),
+            ),
+            (
+                "crash_record",
+                json!({"storage": "ramoops", "watchdog": "hardware"}),
+            ),
+            (
+                "dmi",
+                json!({"sys_vendor": "Valve", "product_name": "Jupiter"}),
+            ),
+            (
+                "crash_record",
+                json!({"storage": "flash", "watchdog": "hardware", "lockup": "buddy"}),
+            ),
+            (
+                "crash_record",
+                json!({"storage": "ramoops", "watchdog": "none", "lockup": "buddy"}),
+            ),
+            (
+                "crash_record",
+                json!({"storage": "ramoops", "watchdog": "hardware", "lockup": "none"}),
+            ),
+            (
+                "crash_record",
+                json!({"storage": "ramoops", "watchdog": "hardware", "lockup": "buddy",
+                       "pstore_path": "/sys/fs/pstore"}),
+            ),
+            ("unknown", json!(1)),
+        ];
+        for (key, value) in mutations {
+            let mut definition = lenovo.clone();
+            definition[key] = value.clone();
+            assert!(validate_definition(definition).is_err(), "{key} = {value}");
+        }
+        let mut excluded = shipped("orangepi-3b-v2-1");
+        excluded["system_firmware"] = json!(["brcm/brcmfmac43456-sdio.bin"]);
+        excluded["firmware_exclude"] = json!(["brcmfmac-firmware"]);
+        assert!(
+            validate_definition(excluded).is_err(),
+            "removing firmware the board names"
+        );
+        let mut wake = shipped("orangepi-3b-v2-1");
+        wake["wifi_wake_on_wlan"] = json!(0);
+        assert!(
+            validate_definition(wake).is_err(),
+            "the wake policy is the Lenovo board's"
+        );
+        let mut schema1 = lenovo;
+        schema1["schema_version"] = json!(1);
+        assert!(
+            validate_definition(schema1).is_err(),
+            "schema 1 has no optional fields"
+        );
+    }
+
+    phase every_board_declares_a_crash_record_its_kernel_arguments_keep;
+    {
+        let lenovo = shipped("lenovo-83ed");
+        let record = &lenovo["crash_record"];
+        assert_eq!(record["storage"], json!("ramoops"));
+        assert_eq!(record["watchdog"], json!("hardware"));
+        assert_eq!(record["lockup"], json!("buddy"));
+        // The Orange Pi 3B's command line reserves no memory for a record, feeds
+        // no watchdog and panics from no detector, and its definition says so
+        // rather than leaving it out.
+        let orangepi = shipped("orangepi-3b-v2-1");
+        assert_eq!(orangepi["crash_record"]["storage"], json!("none"));
+        assert_eq!(orangepi["crash_record"]["watchdog"], json!("none"));
+        assert_eq!(orangepi["crash_record"]["lockup"], json!("none"));
+        // A board without a device tree cannot claim reserved memory.
+        let mut ramoops = json!({"schema_version": 2, "id": "board", "architecture": "x86_64",
+                                "devicetree": null, "firmware": {}, "system_firmware": [],
+                                "kernel_args": ["nowayout=1"],
+                                "crash_record": {"storage": "ramoops", "watchdog": "hardware",
+                                                "lockup": "none"}});
+        assert!(
+            validate_definition(ramoops.clone()).is_err(),
+            "ramoops needs a device tree"
+        );
+        // UEFI machines keep the record in firmware variables instead.
+        ramoops["crash_record"]["storage"] = json!("efi-variable");
+        assert!(validate_definition(ramoops.clone()).is_ok());
+        // A watchdog driver has to reach the initramfs to be fed from boot.
+        ramoops["crash_record"]["watchdog"] = json!("module");
+        assert!(
+            validate_definition(ramoops.clone()).is_err(),
+            "no watchdog module"
+        );
+        ramoops["boot_modules"] = json!(["dw_wdt"]);
+        assert!(validate_definition(ramoops.clone()).is_ok());
+        // Claiming a watchdog requires the argument that feeds it.
+        ramoops["kernel_args"] = json!([]);
+        assert!(
+            validate_definition(ramoops.clone()).is_err(),
+            "unfed watchdog"
+        );
+        ramoops["crash_record"]["watchdog"] = json!("none");
+        assert!(validate_definition(ramoops.clone()).is_ok());
+        // A board whose detector only reports cannot claim it panics.
+        ramoops["crash_record"]["lockup"] = json!("nmi");
+        assert!(
+            validate_definition(ramoops.clone()).is_err(),
+            "no panicking detector"
+        );
+        ramoops["kernel_args"] = json!(["softlockup_panic=1"]);
+        assert!(validate_definition(ramoops.clone()).is_ok());
+        // Nor may it leave out a detector its command line already panics from.
+        ramoops["crash_record"]["lockup"] = json!("none");
+        assert!(
+            validate_definition(ramoops).is_err(),
+            "a panicking command line"
+        );
+    }
 }
 
 /// Every definition the image ships, found rather than listed, so a board
@@ -270,316 +541,147 @@ fn shipped_names() -> Vec<String> {
     names
 }
 
-/// A firmware-described board watches its own DMI identity: the quirk a
-/// definition writes names a model, and a model without a device tree has no
-/// other name to be confined by.
-#[test]
-fn a_firmware_described_board_is_confined_by_its_dmi_identity() {
-    let keyboard = json!({"name": "AT Translated Set 2 keyboard", "bus": "i2c",
-                          "vendor": "0001", "product": "0001", "devicetree_compatible": null});
-    let board = json!({"schema_version": 2, "id": "handheld-board", "architecture": "x86_64",
-                       "devicetree": null, "system_firmware": [], "firmware": {},
-                       "crash_record": {"storage": "efi-variable", "watchdog": "none",
-                                        "lockup": "none"},
-                       "dmi": {"sys_vendor": "Valve", "product_name": "Jupiter"},
-                       "internal_keyboards": [keyboard]});
-    assert!(validate_definition(board.clone()).is_ok());
-    for (label, mutate) in [
-        ("a compatible on a board without a device tree", 0),
-        ("a DMI identity beside a device tree", 1),
-        ("a DMI identity missing a field", 2),
-        ("a DMI identity with an unknown field", 3),
-        ("a DMI value holding the modalias separator", 4),
-        ("a DMI value that is not text", 5),
-        ("internal keyboards with no identity to confine them", 6),
-    ] {
-        let mut refused = board.clone();
-        match mutate {
-            0 => refused["internal_keyboards"][0]["devicetree_compatible"] = json!("valve,jupiter"),
-            1 => refused["devicetree"] = json!("qcom/board.dtb"),
-            2 => {
-                refused["dmi"]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("product_name");
-            }
-            3 => refused["dmi"]["board_name"] = json!("Jupiter"),
-            4 => refused["dmi"]["product_name"] = json!("Jup:iter"),
-            5 => refused["dmi"]["sys_vendor"] = json!(7),
-            _ => {
-                refused.as_object_mut().unwrap().remove("dmi");
-            }
+tilo_test_env::scenario! {
+    /// Development images and the trust inputs that bind them.
+    fn a_development_origin_is_bound_and_never_applicable;
+
+    phase a_tilo_vm_origin_needs_the_dev_flavour_and_its_repository_policy;
+    {
+        let target = "registry.tilo.so/tilo/tilo-vm:latest";
+        let insecure = json!({"transports": {"docker": {"registry.tilo.so/tilo/tilo-vm": [{"type": "insecureAcceptAnything"}]}}});
+        let signed = json!({"transports": {"docker": {"registry.tilo.so/tilo/tilo-vm": [{"type": "sigstoreSigned",
+            "keyPath": "/usr/share/tilo/cosign.pub", "signedIdentity": {"type": "matchRepository"}}]}}});
+        let image = Image::lenovo(target);
+        assert!(read_profile(&image.root).is_err(), "no flavour, no policy");
+        image.write("usr/lib/tilo/image-flavour", b"dev\n");
+        image.json("etc/containers/policy.json", &insecure);
+        assert!(read_profile(&image.root).unwrap().is_some());
+        assert!(
+            installed_profile(&image.root).is_err(),
+            "a tilo-vm origin is not an official release"
+        );
+        image.write("usr/lib/tilo/image-flavour", b"release\n");
+        assert!(read_profile(&image.root).is_err(), "the release flavour");
+        image.write("usr/lib/tilo/image-flavour", b"dev\n");
+        image.json("etc/containers/policy.json", &signed);
+        assert!(
+            read_profile(&image.root).is_err(),
+            "signed admission needs the key"
+        );
+        image.write("usr/share/tilo/cosign.pub", b"key\n");
+        assert!(read_profile(&image.root).unwrap().is_some());
+        // What a dev image carries (os/scripts/finalize-dev-image.py): the dev channel signed
+        // with the development key.
+        let dev_signed = json!({"transports": {"docker": {"registry.tilo.so/tilo/tilo-vm": [{"type": "sigstoreSigned",
+            "keyPath": "/usr/share/tilo/cosign-dev.pub", "signedIdentity": {"type": "matchRepository"}}]}}});
+        image.json("etc/containers/policy.json", &dev_signed);
+        assert!(
+            read_profile(&image.root).is_err(),
+            "dev-signed admission needs the development key"
+        );
+        image.write("usr/share/tilo/cosign-dev.pub", b"dev key\n");
+        assert!(read_profile(&image.root).unwrap().is_some());
+        image.json(
+            "etc/containers/policy.json",
+            &json!({"transports": {"docker": {}}}),
+        );
+        assert!(
+            read_profile(&image.root).is_err(),
+            "no admission for the repository"
+        );
+        image.json("etc/containers/policy.json", &json!([]));
+        assert!(
+            read_profile(&image.root).is_err(),
+            "a policy that is not an object"
+        );
+    }
+
+    phase a_bound_development_image_is_read_but_never_applicable;
+    {
+        let image = development_image();
+        assert_eq!(
+            development_origin(&image.root).unwrap(),
+            Some(json!(DEVELOPMENT_REF))
+        );
+        assert!(read_profile(&image.root).unwrap().is_some());
+        assert_eq!(installed_profile(&image.root).unwrap(), None);
+        image.set_profile("target_update_ref", json!(release_tag()));
+        assert!(
+            read_profile(&image.root).is_err(),
+            "the profile must follow the bound origin"
+        );
+    }
+
+    phase every_development_trust_input_is_bound;
+    {
+        let dev = "usr/share/tilo/development-trust";
+        let tampers: Vec<(&str, Tamper<'_>)> = vec![
+            (
+                "an identity",
+                Box::new(|i: &Image| i.write(&format!("{dev}/efi-signing.crt"), b"other\n")),
+            ),
+            (
+                "the installed key",
+                Box::new(|i: &Image| i.write("usr/share/tilo/cosign.pub", b"other\n")),
+            ),
+            (
+                "the installed owner",
+                Box::new(|i: &Image| {
+                    i.write(
+                        "usr/share/tilo/trust/tilo-main-registry-owner.pub",
+                        &[b'c'; 64],
+                    );
+                }),
+            ),
+            (
+                "the provenance",
+                Box::new(|i: &Image| {
+                    i.json(&format!("{dev}/provenance.json"), &json!({"purpose": "x"}));
+                }),
+            ),
+            (
+                "the policy",
+                Box::new(|i: &Image| {
+                    i.json(
+                        "etc/containers/policy.json",
+                        &json!({"default": [{"type": "reject"}]}),
+                    );
+                }),
+            ),
+            (
+                "the transport",
+                Box::new(|i: &Image| {
+                    i.write(
+                        "etc/containers/registries.conf.d/99-tilo-development.conf",
+                        b"[[registry]]\nlocation = \"registry.tilo.so\"\ninsecure = true\n",
+                    );
+                }),
+            ),
+            (
+                "the origin",
+                Box::new(|i: &Image| {
+                    let path = i.path(&format!("{dev}/origin.json"));
+                    let mut origin: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                    origin["target_update_ref"] = json!("dev.example.com/tilo-development/os:aarch64");
+                    i.json(&format!("{dev}/origin.json"), &origin);
+                }),
+            ),
+            (
+                "a missing identity",
+                Box::new(|i: &Image| fs::remove_file(i.path(&format!("{dev}/cosign.pub"))).unwrap()),
+            ),
+            (
+                "an oversized input",
+                Box::new(|i: &Image| i.write(&format!("{dev}/provenance.json"), &vec![b' '; 65537])),
+            ),
+        ];
+        for (what, tamper) in tampers {
+            let image = development_image();
+            tamper(&image);
+            assert!(development_origin(&image.root).is_err(), "{what}");
+            assert!(installed_profile(&image.root).is_err(), "{what}");
         }
-        assert!(validate_definition(refused).is_err(), "{label}");
     }
-}
-
-#[test]
-fn a_board_defaults_hardening_only_for_what_its_kernel_cannot_deliver() {
-    let board = json!({"schema_version": 2, "id": "handset-board", "architecture": "aarch64",
-                       "devicetree": "rockchip/board.dtb", "system_firmware": [],
-                       "firmware": {},
-                       "crash_record": {"storage": "ramoops", "watchdog": "none",
-                                        "lockup": "none"},
-                       "hardening_defaults": [
-                           {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
-                           {"action": "microphone", "driver": "CONFIG_SND"}]});
-    assert!(validate_definition(board.clone()).is_ok());
-    for (label, defaults) in [
-        (
-            "an action no view offers",
-            json!([{"action": "wifi", "driver": "CONFIG_MEDIA_SUPPORT"}]),
-        ),
-        (
-            "a driver that is not a kernel option",
-            json!([{"action": "camera", "driver": "media"}]),
-        ),
-        // Relaxing the camera's hardening because of a sound card would open
-        // a hole the board's own declaration does not cover.
-        (
-            "a driver the action does not cover",
-            json!([{"action": "camera", "driver": "CONFIG_SND"}]),
-        ),
-        (
-            "the same action twice",
-            json!([{"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
-                                          {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"}]),
-        ),
-        ("an entry missing its driver", json!([{"action": "camera"}])),
-        (
-            "an entry with an unknown field",
-            json!([{"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT", "why": "handset"}]),
-        ),
-        ("a list that is not one", json!("camera")),
-    ] {
-        let mut refused = board.clone();
-        refused["hardening_defaults"] = defaults;
-        assert!(validate_definition(refused).is_err(), "{label}");
-    }
-}
-
-#[test]
-fn the_shipped_handset_states_what_its_kernel_cannot_deliver() {
-    // A handset is a personal computer, not an always-on host, and its camera
-    // and headset microphone are options the shared image builds in for other
-    // boards, so its definition is where that is decided.
-    let handset = shipped("pinephone-pro");
-    assert_eq!(handset["architecture"], json!("aarch64"));
-    assert_eq!(handset["always_on"], json!(false));
-    let actions: Vec<&str> = handset["hardening_defaults"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["action"].as_str().unwrap())
-        .collect();
-    assert_eq!(actions, ["camera", "microphone"]);
-    assert_eq!(handset["crash_record"]["storage"], json!("ramoops"));
-}
-
-#[test]
-fn definition_mutations_are_refused() {
-    let lenovo = shipped("lenovo-83ed");
-    let mutations: Vec<(&str, Value)> = vec![
-        ("schema_version", json!(3)),
-        ("schema_version", json!(true)),
-        ("id", json!("generic")),
-        ("id", json!("Lenovo")),
-        ("architecture", json!("riscv64")),
-        ("devicetree", json!("qcom/board.dts")),
-        ("devicetree", json!("../board.dtb")),
-        ("devicetree", json!("qcom//board.dtb")),
-        ("firmware", json!({"a/b.mbn": "qcom/x.mbn"})),
-        (
-            "firmware",
-            json!({"a.mbn": "qcom/x.mbn", "b.mbn": "qcom/x.mbn/y"}),
-        ),
-        ("firmware", json!([])),
-        ("system_firmware", json!(["qcom/x1e80100/LENOVO/83ED"])),
-        ("system_firmware", json!(["regulatory.db", "regulatory.db"])),
-        (
-            "firmware_exclude",
-            json!(["nvidia-gpu-firmware", "nvidia-gpu-firmware"]),
-        ),
-        ("firmware_exclude", json!(["linux-firmware"])),
-        ("firmware_exclude", json!([1])),
-        ("boot_modules", json!(["ath12k", "ath12k"])),
-        ("boot_modules", json!(["Ath12k"])),
-        ("always_on", json!(1)),
-        ("wifi_wake_on_wlan", json!(1)),
-        ("wifi_wake_on_wlan", json!(false)),
-        ("kernel_args", json!(["quiet", "quiet"])),
-        ("kernel_args", json!(["a b"])),
-        (
-            "internal_keyboards",
-            json!([{"name": "kb", "bus": "usb", "vendor": "048D",
-                                        "product": "8987", "devicetree_compatible": "lenovo,yoga"}]),
-        ),
-        (
-            "internal_keyboards",
-            json!([{"name": "kb", "bus": "i2c", "vendor": "048d",
-                                        "product": "8987", "devicetree_compatible": "lenovo,yoga"}]),
-        ),
-        (
-            "crash_record",
-            json!({"storage": "ramoops", "watchdog": "hardware"}),
-        ),
-        (
-            "dmi",
-            json!({"sys_vendor": "Valve", "product_name": "Jupiter"}),
-        ),
-        (
-            "crash_record",
-            json!({"storage": "flash", "watchdog": "hardware", "lockup": "buddy"}),
-        ),
-        (
-            "crash_record",
-            json!({"storage": "ramoops", "watchdog": "none", "lockup": "buddy"}),
-        ),
-        (
-            "crash_record",
-            json!({"storage": "ramoops", "watchdog": "hardware", "lockup": "none"}),
-        ),
-        (
-            "crash_record",
-            json!({"storage": "ramoops", "watchdog": "hardware", "lockup": "buddy",
-                   "pstore_path": "/sys/fs/pstore"}),
-        ),
-        ("unknown", json!(1)),
-    ];
-    for (key, value) in mutations {
-        let mut definition = lenovo.clone();
-        definition[key] = value.clone();
-        assert!(validate_definition(definition).is_err(), "{key} = {value}");
-    }
-    let mut excluded = shipped("orangepi-3b-v2-1");
-    excluded["system_firmware"] = json!(["brcm/brcmfmac43456-sdio.bin"]);
-    excluded["firmware_exclude"] = json!(["brcmfmac-firmware"]);
-    assert!(
-        validate_definition(excluded).is_err(),
-        "removing firmware the board names"
-    );
-    let mut wake = shipped("orangepi-3b-v2-1");
-    wake["wifi_wake_on_wlan"] = json!(0);
-    assert!(
-        validate_definition(wake).is_err(),
-        "the wake policy is the Lenovo board's"
-    );
-    let mut schema1 = lenovo;
-    schema1["schema_version"] = json!(1);
-    assert!(
-        validate_definition(schema1).is_err(),
-        "schema 1 has no optional fields"
-    );
-}
-
-#[test]
-fn every_board_declares_a_crash_record_its_kernel_arguments_keep() {
-    let lenovo = shipped("lenovo-83ed");
-    let record = &lenovo["crash_record"];
-    assert_eq!(record["storage"], json!("ramoops"));
-    assert_eq!(record["watchdog"], json!("hardware"));
-    assert_eq!(record["lockup"], json!("buddy"));
-    // The Orange Pi 3B's command line reserves no memory for a record, feeds
-    // no watchdog and panics from no detector, and its definition says so
-    // rather than leaving it out.
-    let orangepi = shipped("orangepi-3b-v2-1");
-    assert_eq!(orangepi["crash_record"]["storage"], json!("none"));
-    assert_eq!(orangepi["crash_record"]["watchdog"], json!("none"));
-    assert_eq!(orangepi["crash_record"]["lockup"], json!("none"));
-    // A board without a device tree cannot claim reserved memory.
-    let mut ramoops = json!({"schema_version": 2, "id": "board", "architecture": "x86_64",
-                            "devicetree": null, "firmware": {}, "system_firmware": [],
-                            "kernel_args": ["nowayout=1"],
-                            "crash_record": {"storage": "ramoops", "watchdog": "hardware",
-                                            "lockup": "none"}});
-    assert!(
-        validate_definition(ramoops.clone()).is_err(),
-        "ramoops needs a device tree"
-    );
-    // UEFI machines keep the record in firmware variables instead.
-    ramoops["crash_record"]["storage"] = json!("efi-variable");
-    assert!(validate_definition(ramoops.clone()).is_ok());
-    // A watchdog driver has to reach the initramfs to be fed from boot.
-    ramoops["crash_record"]["watchdog"] = json!("module");
-    assert!(
-        validate_definition(ramoops.clone()).is_err(),
-        "no watchdog module"
-    );
-    ramoops["boot_modules"] = json!(["dw_wdt"]);
-    assert!(validate_definition(ramoops.clone()).is_ok());
-    // Claiming a watchdog requires the argument that feeds it.
-    ramoops["kernel_args"] = json!([]);
-    assert!(
-        validate_definition(ramoops.clone()).is_err(),
-        "unfed watchdog"
-    );
-    ramoops["crash_record"]["watchdog"] = json!("none");
-    assert!(validate_definition(ramoops.clone()).is_ok());
-    // A board whose detector only reports cannot claim it panics.
-    ramoops["crash_record"]["lockup"] = json!("nmi");
-    assert!(
-        validate_definition(ramoops.clone()).is_err(),
-        "no panicking detector"
-    );
-    ramoops["kernel_args"] = json!(["softlockup_panic=1"]);
-    assert!(validate_definition(ramoops.clone()).is_ok());
-    // Nor may it leave out a detector its command line already panics from.
-    ramoops["crash_record"]["lockup"] = json!("none");
-    assert!(
-        validate_definition(ramoops).is_err(),
-        "a panicking command line"
-    );
-}
-
-#[test]
-fn a_tilo_vm_origin_needs_the_dev_flavour_and_its_repository_policy() {
-    let target = "registry.tilo.so/tilo/tilo-vm:latest";
-    let insecure = json!({"transports": {"docker": {"registry.tilo.so/tilo/tilo-vm": [{"type": "insecureAcceptAnything"}]}}});
-    let signed = json!({"transports": {"docker": {"registry.tilo.so/tilo/tilo-vm": [{"type": "sigstoreSigned",
-        "keyPath": "/usr/share/tilo/cosign.pub", "signedIdentity": {"type": "matchRepository"}}]}}});
-    let image = Image::lenovo(target);
-    assert!(read_profile(&image.root).is_err(), "no flavour, no policy");
-    image.write("usr/lib/tilo/image-flavour", b"dev\n");
-    image.json("etc/containers/policy.json", &insecure);
-    assert!(read_profile(&image.root).unwrap().is_some());
-    assert!(
-        installed_profile(&image.root).is_err(),
-        "a tilo-vm origin is not an official release"
-    );
-    image.write("usr/lib/tilo/image-flavour", b"release\n");
-    assert!(read_profile(&image.root).is_err(), "the release flavour");
-    image.write("usr/lib/tilo/image-flavour", b"dev\n");
-    image.json("etc/containers/policy.json", &signed);
-    assert!(
-        read_profile(&image.root).is_err(),
-        "signed admission needs the key"
-    );
-    image.write("usr/share/tilo/cosign.pub", b"key\n");
-    assert!(read_profile(&image.root).unwrap().is_some());
-    // What a dev image carries (os/scripts/finalize-dev-image.py): the dev channel signed
-    // with the development key.
-    let dev_signed = json!({"transports": {"docker": {"registry.tilo.so/tilo/tilo-vm": [{"type": "sigstoreSigned",
-        "keyPath": "/usr/share/tilo/cosign-dev.pub", "signedIdentity": {"type": "matchRepository"}}]}}});
-    image.json("etc/containers/policy.json", &dev_signed);
-    assert!(
-        read_profile(&image.root).is_err(),
-        "dev-signed admission needs the development key"
-    );
-    image.write("usr/share/tilo/cosign-dev.pub", b"dev key\n");
-    assert!(read_profile(&image.root).unwrap().is_some());
-    image.json(
-        "etc/containers/policy.json",
-        &json!({"transports": {"docker": {}}}),
-    );
-    assert!(
-        read_profile(&image.root).is_err(),
-        "no admission for the repository"
-    );
-    image.json("etc/containers/policy.json", &json!([]));
-    assert!(
-        read_profile(&image.root).is_err(),
-        "a policy that is not an object"
-    );
 }
 
 type Tamper<'a> = Box<dyn Fn(&Image) + 'a>;
@@ -640,93 +742,6 @@ fn development_image() -> Image {
         b"[[registry]]\nlocation = \"registry.tilo.so\"\ninsecure = false\n",
     );
     image
-}
-
-#[test]
-fn a_bound_development_image_is_read_but_never_applicable() {
-    let image = development_image();
-    assert_eq!(
-        development_origin(&image.root).unwrap(),
-        Some(json!(DEVELOPMENT_REF))
-    );
-    assert!(read_profile(&image.root).unwrap().is_some());
-    assert_eq!(installed_profile(&image.root).unwrap(), None);
-    image.set_profile("target_update_ref", json!(release_tag()));
-    assert!(
-        read_profile(&image.root).is_err(),
-        "the profile must follow the bound origin"
-    );
-}
-
-#[test]
-fn every_development_trust_input_is_bound() {
-    let dev = "usr/share/tilo/development-trust";
-    let tampers: Vec<(&str, Tamper<'_>)> = vec![
-        (
-            "an identity",
-            Box::new(|i: &Image| i.write(&format!("{dev}/efi-signing.crt"), b"other\n")),
-        ),
-        (
-            "the installed key",
-            Box::new(|i: &Image| i.write("usr/share/tilo/cosign.pub", b"other\n")),
-        ),
-        (
-            "the installed owner",
-            Box::new(|i: &Image| {
-                i.write(
-                    "usr/share/tilo/trust/tilo-main-registry-owner.pub",
-                    &[b'c'; 64],
-                );
-            }),
-        ),
-        (
-            "the provenance",
-            Box::new(|i: &Image| {
-                i.json(&format!("{dev}/provenance.json"), &json!({"purpose": "x"}));
-            }),
-        ),
-        (
-            "the policy",
-            Box::new(|i: &Image| {
-                i.json(
-                    "etc/containers/policy.json",
-                    &json!({"default": [{"type": "reject"}]}),
-                );
-            }),
-        ),
-        (
-            "the transport",
-            Box::new(|i: &Image| {
-                i.write(
-                    "etc/containers/registries.conf.d/99-tilo-development.conf",
-                    b"[[registry]]\nlocation = \"registry.tilo.so\"\ninsecure = true\n",
-                );
-            }),
-        ),
-        (
-            "the origin",
-            Box::new(|i: &Image| {
-                let path = i.path(&format!("{dev}/origin.json"));
-                let mut origin: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-                origin["target_update_ref"] = json!("dev.example.com/tilo-development/os:aarch64");
-                i.json(&format!("{dev}/origin.json"), &origin);
-            }),
-        ),
-        (
-            "a missing identity",
-            Box::new(|i: &Image| fs::remove_file(i.path(&format!("{dev}/cosign.pub"))).unwrap()),
-        ),
-        (
-            "an oversized input",
-            Box::new(|i: &Image| i.write(&format!("{dev}/provenance.json"), &vec![b' '; 65537])),
-        ),
-    ];
-    for (what, tamper) in tampers {
-        let image = development_image();
-        tamper(&image);
-        assert!(development_origin(&image.root).is_err(), "{what}");
-        assert!(installed_profile(&image.root).is_err(), "{what}");
-    }
 }
 
 #[test]
@@ -803,91 +818,96 @@ fn the_profile_resolves_to_its_pinned_kernel_dtb() {
     );
 }
 
-#[test]
-fn an_install_records_the_profile_origin_or_a_validated_override() {
-    let generic = Image::new();
-    assert_eq!(
-        install_update_origin(&generic.root, "").unwrap(),
-        DEFAULT_TARGET_IMGREF
-    );
-    let pinned = "registry.tilo.so/tilo/tilo:gen7";
-    assert_eq!(
-        install_update_origin(&generic.root, pinned).unwrap(),
-        pinned
-    );
-    for refused in [
-        "registry.tilo.so/tilo/tilo",
-        "example.com/tilo/tilo:latest",
-        "registry.tilo.so/tilo/tilo-vm:latest",
-    ] {
+tilo_test_env::scenario! {
+    /// `install_update_origin`, as a function and as the installer's command.
+    fn an_install_records_the_origin_of_the_image_it_runs;
+
+    phase an_install_records_the_profile_origin_or_a_validated_override;
+    {
+        let generic = Image::new();
+        assert_eq!(
+            install_update_origin(&generic.root, "").unwrap(),
+            DEFAULT_TARGET_IMGREF
+        );
+        let pinned = "registry.tilo.so/tilo/tilo:gen7";
+        assert_eq!(
+            install_update_origin(&generic.root, pinned).unwrap(),
+            pinned
+        );
+        for refused in [
+            "registry.tilo.so/tilo/tilo",
+            "example.com/tilo/tilo:latest",
+            "registry.tilo.so/tilo/tilo-vm:latest",
+        ] {
+            assert!(
+                install_update_origin(&generic.root, refused).is_err(),
+                "{refused}"
+            );
+        }
+
+        let board = Image::lenovo(&release_tag());
+        assert_eq!(
+            install_update_origin(&board.root, "").unwrap(),
+            release_tag()
+        );
+        assert_eq!(
+            install_update_origin(&board.root, &release_tag()).unwrap(),
+            release_tag()
+        );
+        assert_eq!(
+            install_update_origin(&board.root, pinned)
+                .unwrap_err()
+                .to_string(),
+            "TILO_TARGET_IMGREF conflicts with the image-owned hardware profile update reference"
+        );
+
+        let development = development_image();
+        assert_eq!(
+            install_update_origin(&development.root, "").unwrap(),
+            DEVELOPMENT_REF
+        );
+        fs::remove_file(development.path("usr/lib/tilo/hardware-profile.json")).unwrap();
+        fs::remove_file(development.path("usr/lib/tilo/hardware-profile-definition.json")).unwrap();
+        assert_eq!(
+            install_update_origin(&development.root, "").unwrap(),
+            DEVELOPMENT_REF,
+            "a development image without a profile follows its bound origin"
+        );
+        assert!(install_update_origin(&development.root, pinned).is_err());
+    }
+
+    phase the_installer_command_prints_the_origin_of_the_running_image;
+    {
+        let run = |override_ref: &str| {
+            std::process::Command::new(tilo_test_env::package_binary!("tilo-board-successor"))
+                .args(["install-update-origin", override_ref])
+                .output_locked()
+                .unwrap()
+        };
+        let output = run("");
+        match install_update_origin(&Root::system(), "") {
+            Ok(origin) => {
+                assert!(output.status.success());
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap(),
+                    format!("{origin}\n")
+                );
+            }
+            Err(error) => {
+                assert_eq!(output.status.code(), Some(1));
+                assert_eq!(
+                    String::from_utf8(output.stderr).unwrap(),
+                    format!("hardware profile rejected: {error}\n")
+                );
+            }
+        }
+        let refused = run("example.com/tilo/tilo:latest");
+        assert_eq!(refused.status.code(), Some(1));
+        assert!(refused.stdout.is_empty());
         assert!(
-            install_update_origin(&generic.root, refused).is_err(),
-            "{refused}"
+            String::from_utf8(refused.stderr)
+                .unwrap()
+                .starts_with("hardware profile rejected: "),
         );
     }
-
-    let board = Image::lenovo(&release_tag());
-    assert_eq!(
-        install_update_origin(&board.root, "").unwrap(),
-        release_tag()
-    );
-    assert_eq!(
-        install_update_origin(&board.root, &release_tag()).unwrap(),
-        release_tag()
-    );
-    assert_eq!(
-        install_update_origin(&board.root, pinned)
-            .unwrap_err()
-            .to_string(),
-        "TILO_TARGET_IMGREF conflicts with the image-owned hardware profile update reference"
-    );
-
-    let development = development_image();
-    assert_eq!(
-        install_update_origin(&development.root, "").unwrap(),
-        DEVELOPMENT_REF
-    );
-    fs::remove_file(development.path("usr/lib/tilo/hardware-profile.json")).unwrap();
-    fs::remove_file(development.path("usr/lib/tilo/hardware-profile-definition.json")).unwrap();
-    assert_eq!(
-        install_update_origin(&development.root, "").unwrap(),
-        DEVELOPMENT_REF,
-        "a development image without a profile follows its bound origin"
-    );
-    assert!(install_update_origin(&development.root, pinned).is_err());
-}
-
-#[test]
-fn the_installer_command_prints_the_origin_of_the_running_image() {
-    let run = |override_ref: &str| {
-        std::process::Command::new(tilo_test_env::package_binary!("tilo-board-successor"))
-            .args(["install-update-origin", override_ref])
-            .output_locked()
-            .unwrap()
-    };
-    let output = run("");
-    match install_update_origin(&Root::system(), "") {
-        Ok(origin) => {
-            assert!(output.status.success());
-            assert_eq!(
-                String::from_utf8(output.stdout).unwrap(),
-                format!("{origin}\n")
-            );
-        }
-        Err(error) => {
-            assert_eq!(output.status.code(), Some(1));
-            assert_eq!(
-                String::from_utf8(output.stderr).unwrap(),
-                format!("hardware profile rejected: {error}\n")
-            );
-        }
-    }
-    let refused = run("example.com/tilo/tilo:latest");
-    assert_eq!(refused.status.code(), Some(1));
-    assert!(refused.stdout.is_empty());
-    assert!(
-        String::from_utf8(refused.stderr)
-            .unwrap()
-            .starts_with("hardware profile rejected: "),
-    );
 }

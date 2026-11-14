@@ -356,86 +356,91 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    /// Every request's bytes are pinned.
-    #[test]
-    fn residency_requests_are_appended_to_the_wire() {
-        let encode = |request: &StorageRequest| {
+    tilo_test_env::scenario! {
+        fn storage_request_bytes_are_pinned;
+
+        phase residency_requests_are_appended_to_the_wire;
+        // Every request's bytes are pinned.
+        {
+            let encode = |request: &StorageRequest| {
+                let mut wire = Vec::new();
+                STORAGE_FRAMING.write_value(&mut wire, request).unwrap();
+                wire
+            };
+            assert_eq!(encode(&StorageRequest::Snapshot), [1, 0, 0, 0, 0]);
+            assert_eq!(encode(&StorageRequest::CachePolicy), [1, 0, 0, 0, 2]);
+            assert_eq!(encode(&StorageRequest::Residency), [1, 0, 0, 0, 4]);
+            assert_eq!(
+                encode(&StorageRequest::FreeCache {
+                    workspace: "w".into()
+                }),
+                [3, 0, 0, 0, 5, 1, b'w']
+            );
+            assert_eq!(
+                encode(&StorageRequest::KeepHere {
+                    workspace: "w".into(),
+                    keep: true
+                }),
+                [4, 0, 0, 0, 6, 1, b'w', 1]
+            );
+
+            let summary = ResidencySummary {
+                workspaces: vec![WorkspaceResidency {
+                    workspace: "w".into(),
+                    kept_here: true,
+                    split: ResidencySplit {
+                        pinned_bytes: 1,
+                        replicated_bytes: 2,
+                        only_here_bytes: 3,
+                        only_here_files: 1,
+                        cache_bytes: 4,
+                    },
+                }],
+            };
+            assert_eq!(summary.workspaces[0].split.total_bytes(), 10);
             let mut wire = Vec::new();
-            STORAGE_FRAMING.write_value(&mut wire, request).unwrap();
-            wire
-        };
-        assert_eq!(encode(&StorageRequest::Snapshot), [1, 0, 0, 0, 0]);
-        assert_eq!(encode(&StorageRequest::CachePolicy), [1, 0, 0, 0, 2]);
-        assert_eq!(encode(&StorageRequest::Residency), [1, 0, 0, 0, 4]);
-        assert_eq!(
-            encode(&StorageRequest::FreeCache {
-                workspace: "w".into()
-            }),
-            [3, 0, 0, 0, 5, 1, b'w']
-        );
-        assert_eq!(
-            encode(&StorageRequest::KeepHere {
-                workspace: "w".into(),
-                keep: true
-            }),
-            [4, 0, 0, 0, 6, 1, b'w', 1]
-        );
+            STORAGE_FRAMING
+                .write_value(&mut wire, &StorageResponse::Residency(summary.clone()))
+                .unwrap();
+            assert_eq!(wire.get(4), Some(&4), "the residency answer goes last");
+            let decoded: StorageResponse = STORAGE_FRAMING
+                .read_value(&mut std::io::Cursor::new(wire))
+                .unwrap()
+                .unwrap();
+            assert!(matches!(decoded, StorageResponse::Residency(back) if back == summary));
+        }
 
-        let summary = ResidencySummary {
-            workspaces: vec![WorkspaceResidency {
-                workspace: "w".into(),
-                kept_here: true,
-                split: ResidencySplit {
-                    pinned_bytes: 1,
-                    replicated_bytes: 2,
-                    only_here_bytes: 3,
-                    only_here_files: 1,
-                    cache_bytes: 4,
-                },
-            }],
-        };
-        assert_eq!(summary.workspaces[0].split.total_bytes(), 10);
-        let mut wire = Vec::new();
-        STORAGE_FRAMING
-            .write_value(&mut wire, &StorageResponse::Residency(summary.clone()))
-            .unwrap();
-        assert_eq!(wire.get(4), Some(&4), "the residency answer goes last");
-        let decoded: StorageResponse = STORAGE_FRAMING
-            .read_value(&mut std::io::Cursor::new(wire))
-            .unwrap()
-            .unwrap();
-        assert!(matches!(decoded, StorageResponse::Residency(back) if back == summary));
+        phase cache_policy_wire_bytes_are_pinned;
+        // The cache-policy requests' bytes, pinned.
+        {
+            const REQUEST: [u8; 9] = [5, 0, 0, 0, 3, 0, 1, 0x80, 0x08];
+            const RESPONSE: [u8; 7] = [3, 0, 0, 0, 3, 1, 0];
+            let (client_end, mut daemon) = UnixStream::pair().unwrap();
+            daemon
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let daemon = std::thread::spawn(move || {
+                let mut request = [0_u8; REQUEST.len()];
+                daemon.read_exact(&mut request).unwrap();
+                daemon.write_all(&RESPONSE).unwrap();
+                request
+            });
+            let mut client = StorageClient { stream: client_end };
+            let applied = client
+                .set_cache_policy(CachePolicy {
+                    prefetch: false,
+                    budget_bytes: Some(1024),
+                })
+                .unwrap();
+            assert_eq!(daemon.join().unwrap(), REQUEST);
+            assert_eq!(applied, CachePolicy::default());
+        }
     }
 
-    /// The cache-policy requests' bytes, pinned.
-    #[test]
-    fn cache_policy_wire_bytes_are_pinned() {
-        const REQUEST: [u8; 9] = [5, 0, 0, 0, 3, 0, 1, 0x80, 0x08];
-        const RESPONSE: [u8; 7] = [3, 0, 0, 0, 3, 1, 0];
-        let (client_end, mut daemon) = UnixStream::pair().unwrap();
-        daemon
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let daemon = std::thread::spawn(move || {
-            let mut request = [0_u8; REQUEST.len()];
-            daemon.read_exact(&mut request).unwrap();
-            daemon.write_all(&RESPONSE).unwrap();
-            request
-        });
-        let mut client = StorageClient { stream: client_end };
-        let applied = client
-            .set_cache_policy(CachePolicy {
-                prefetch: false,
-                budget_bytes: Some(1024),
-            })
-            .unwrap();
-        assert_eq!(daemon.join().unwrap(), REQUEST);
-        assert_eq!(applied, CachePolicy::default());
-    }
+    tilo_test_env::scenario! {
+        fn storage_wire_bytes_and_protocol_carry_revalidation_identity;
 
-    #[test]
-    fn storage_wire_bytes_and_protocol_carry_revalidation_identity() {
-        // phase: storage_wire_bytes_are_pinned
+        phase storage_wire_bytes_are_pinned;
         // The storage socket's bytes: a little-endian `u32` length, then postcard.
         // The filesystem daemon on the other end is built separately, so any
         // change here must fail.
@@ -471,7 +476,8 @@ mod tests {
                 }
             );
         }
-        // phase: selection_carries_all_revalidation_identity
+
+        phase selection_carries_all_revalidation_identity;
         {
             let file = SyncedFileState {
                 workspace: "work".into(),
@@ -498,7 +504,8 @@ mod tests {
                 }
             );
         }
-        // phase: protocol_roundtrips_typed_snapshot
+
+        phase protocol_roundtrips_typed_snapshot;
         {
             let expected = StorageResponse::Snapshot(SyncStorageSnapshot {
                 online: false,

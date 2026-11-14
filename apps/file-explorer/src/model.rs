@@ -1047,74 +1047,384 @@ pub(crate) mod sync_state_tests {
         .unwrap();
     }
 
-    #[test]
-    fn provenance_labels_are_localized() {
-        assert_eq!(
-            crate::i18n::t(provenance_key(&fs_protocol::FileProvenance::Create)),
-            "Created"
-        );
-        let restored = fs_protocol::FileProvenance::Restore {
-            from: fs_protocol::FileVersionId(uuid::Uuid::from_u128(1)),
-        };
-        assert_eq!(provenance_key(&restored), "files-history-action-restored");
+    tilo_test_env::scenario! {
+        fn provenance_labels_and_workspace_roots_are_localised_and_bounded;
+
+        phase provenance_labels_are_localized;
+        {
+            assert_eq!(
+                crate::i18n::t(provenance_key(&fs_protocol::FileProvenance::Create)),
+                "Created"
+            );
+            let restored = fs_protocol::FileProvenance::Restore {
+                from: fs_protocol::FileVersionId(uuid::Uuid::from_u128(1)),
+            };
+            assert_eq!(provenance_key(&restored), "files-history-action-restored");
+        }
+
+        phase workspace_roots_and_pager_are_bounded;
+        {
+            {
+                let a = tempfile::tempdir().unwrap();
+                let b = tempfile::tempdir().unwrap();
+                let missing = a.path().join("missing-root");
+                let spec = std::env::join_paths([a.path(), missing.as_path(), b.path()]).unwrap();
+                let roots = parse_workspace_roots(&spec);
+                assert!(
+                    roots.contains(&a.path().to_path_buf()),
+                    "existing root A kept: {roots:?}"
+                );
+                assert!(
+                    roots.contains(&b.path().to_path_buf()),
+                    "existing root B kept"
+                );
+                assert_eq!(roots.len(), 2, "the non-existent root is filtered out");
+
+                assert!(
+                    path_under_any(a.path(), &roots),
+                    "the root itself is a workspace path"
+                );
+                assert!(
+                    path_under_any(&a.path().join("deep/file.txt"), &roots),
+                    "nested path matches"
+                );
+                assert!(
+                    !path_under_any(Path::new("/etc/passwd"), &roots),
+                    "unrelated path does not match"
+                );
+            }
+
+            {
+                let root = tempfile::tempdir().unwrap();
+                let records = RECORD_INDEX_PAGE_ENTRIES * 64 + 1;
+                let mut pager =
+                    WorkspaceRecordIndexPager::from_generated_v2(root.path().to_path_buf(), records);
+                let first = pager.next_page();
+                assert_eq!(
+                    first.records.len(),
+                    RECORD_INDEX_PAGE_ENTRIES,
+                    "one step cannot materialise the whole index"
+                );
+                assert!(!first.complete);
+                let provider = crate::search_provider::CollaborativeRecordSearch::new(&first.records);
+                let found = |provider: &crate::search_provider::CollaborativeRecordSearch| {
+                    ui::search::SearchProvider::search(
+                        &ui::framework::testing::search_source::<crate::resource::FileExplorer>(
+                            provider.entries(),
+                        ),
+                        "late-target",
+                    )
+                };
+                assert!(found(&provider).is_empty());
+
+                let mut indexed = first.records.len();
+                while pager.has_more() {
+                    let page = pager.next_page();
+                    assert!(
+                        page.records.len() <= RECORD_INDEX_PAGE_ENTRIES,
+                        "an idle tick must not monopolise the frame"
+                    );
+                    indexed += page.records.len();
+                    provider.append_page(0, &page.records);
+                }
+                assert!(
+                    !pager.has_more(),
+                    "idle work stops once the current authority is indexed"
+                );
+                assert_eq!(indexed, records, "every page is indexed exactly once");
+                assert!(
+                    found(&provider)
+                        .iter()
+                        .any(|hit| hit.title == "late-target.txt"),
+                    "later pages enter the search entries without a full refresh"
+                );
+            }
+        }
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn real_xattrs_round_trip_with_exact_widths() {
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn workspace_records_and_xattrs_project_exactly_by_identity;
+
+        phase real_xattrs_round_trip_with_exact_widths;
         {
-            let d = tempfile::tempdir().unwrap();
-            let f = d.path().join("projected.txt");
-            std::fs::write(&f, b"x").unwrap();
-            assert_eq!(read_sync_state(&f), None, "absent attribute reads as None");
-            xattr::set(&f, SYNC_XATTR, b"projected").unwrap();
-            assert_eq!(read_sync_state(&f), Some(SyncState::Projected));
-            xattr::set(&f, SYNC_XATTR, b"local").unwrap();
-            assert_eq!(read_sync_state(&f), Some(SyncState::Local));
+            {
+                let d = tempfile::tempdir().unwrap();
+                let f = d.path().join("projected.txt");
+                std::fs::write(&f, b"x").unwrap();
+                assert_eq!(read_sync_state(&f), None, "absent attribute reads as None");
+                xattr::set(&f, SYNC_XATTR, b"projected").unwrap();
+                assert_eq!(read_sync_state(&f), Some(SyncState::Projected));
+                xattr::set(&f, SYNC_XATTR, b"local").unwrap();
+                assert_eq!(read_sync_state(&f), Some(SyncState::Local));
+            }
+
+            {
+                let d = tempfile::tempdir().unwrap();
+                let f = d.path().join("photo.png");
+                std::fs::write(&f, b"content").unwrap();
+                assert_eq!(read_thumb_xattr(&f), None, "absent preview reads as None");
+                let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+                xattr::set(&f, THUMB_XATTR, &png).unwrap();
+                assert_eq!(
+                    read_thumb_xattr(&f),
+                    Some(png),
+                    "the host preview bytes come back verbatim"
+                );
+            }
+
+            {
+                let d = tempfile::tempdir().unwrap();
+                let f = d.path().join("photo.png");
+                std::fs::write(&f, b"content").unwrap();
+                assert_eq!(read_content_hash(&f), None);
+
+                let hash = [0x5au8; 32];
+                xattr::set(&f, CONTENT_HASH_XATTR, &hash).unwrap();
+                assert_eq!(read_content_hash(&f), Some(hash));
+
+                xattr::set(&f, CONTENT_HASH_XATTR, &[1u8; 31]).unwrap();
+                assert_eq!(
+                    read_content_hash(&f),
+                    None,
+                    "a malformed metadata value cannot become a cache identity"
+                );
+            }
+
+            {
+                let d = tempfile::tempdir().unwrap();
+                let f = d.path().join("shared.txt");
+                std::fs::write(&f, b"content").unwrap();
+                assert_eq!(read_record_id(&f), None);
+                let id = [0x7bu8; 16];
+                xattr::set(&f, RECORD_ID_XATTR, &id).unwrap();
+                assert_eq!(read_record_id(&f), Some(id));
+                xattr::set(&f, RECORD_ID_XATTR, &[0u8; 15]).unwrap();
+                assert_eq!(read_record_id(&f), None);
+            }
         }
 
+        phase workspace_records_project_by_stable_identity;
         {
-            let d = tempfile::tempdir().unwrap();
-            let f = d.path().join("photo.png");
-            std::fs::write(&f, b"content").unwrap();
-            assert_eq!(read_thumb_xattr(&f), None, "absent preview reads as None");
-            let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
-            xattr::set(&f, THUMB_XATTR, &png).unwrap();
-            assert_eq!(
-                read_thumb_xattr(&f),
-                Some(png),
-                "the host preview bytes come back verbatim"
-            );
+            {
+                let ws = tempfile::tempdir().unwrap();
+                let downloading = ws.path().join("a-downloading.bin");
+                let projected = ws.path().join("b-projected.bin");
+                let untagged = ws.path().join("c-plain.bin");
+                std::fs::write(&downloading, b"x").unwrap();
+                std::fs::write(&projected, b"x").unwrap();
+                std::fs::write(&untagged, b"x").unwrap();
+                xattr::set(&downloading, SYNC_XATTR, b"downloading").unwrap();
+                xattr::set(&projected, SYNC_XATTR, b"projected").unwrap();
+                let projected_hash = [0x33u8; 32];
+                xattr::set(&projected, CONTENT_HASH_XATTR, &projected_hash).unwrap();
+                let projected_record = [0x44u8; 16];
+                xattr::set(&projected, RECORD_ID_XATTR, &projected_record).unwrap();
+                let projected_availability =
+                    availability_json(&serde_json::json!({"state": "unknown"}));
+                xattr::set(&projected, AVAILABILITY_XATTR, &projected_availability).unwrap();
+                let outside = read_dir_inner(ws.path(), false).unwrap();
+                assert!(
+                    outside.iter().all(|e| e.sync_state.is_none()),
+                    "outside a workspace root, no entry carries sync state",
+                );
+
+                let entries = read_dir_inner(ws.path(), true).unwrap();
+                let by = |name: &str| entries.iter().find(|e| e.name == name).unwrap().sync_state;
+                assert_eq!(by("a-downloading.bin"), Some(SyncState::Downloading));
+                assert_eq!(by("b-projected.bin"), Some(SyncState::Projected));
+                assert_eq!(
+                    entries
+                        .iter()
+                        .find(|e| e.name == "b-projected.bin")
+                        .unwrap()
+                        .content_hash,
+                    Some(projected_hash),
+                    "content identity projects independently of the bytes"
+                );
+                assert_eq!(
+                    entries
+                        .iter()
+                        .find(|e| e.name == "b-projected.bin")
+                        .unwrap()
+                        .record_id,
+                    Some(projected_record),
+                    "record identity projects independently of path and bytes"
+                );
+                assert_eq!(
+                    entries
+                        .iter()
+                        .find(|e| e.name == "b-projected.bin")
+                        .unwrap()
+                        .availability
+                        .as_ref()
+                        .map(|a| a.replicas),
+                    Some(fs_protocol::ProjectedReplicaEvidence::Unknown)
+                );
+                assert_eq!(
+                    by("c-plain.bin"),
+                    None,
+                    "an untagged workspace file has no state"
+                );
+            }
+
+            {
+                let root = tempfile::tempdir().unwrap();
+                let record_id = uuid::Uuid::from_u128(7);
+                set_record_index(
+                    root.path(),
+                    &[serde_json::json!({
+                        "record_id": record_id,
+                        "path": "/deep/report.pdf",
+                        "is_dir": false
+                    })],
+                );
+
+                let index = read_workspace_record_index(&[root.path().to_path_buf()]);
+                assert!(!index.truncated);
+                assert_eq!(index.records.len(), 1);
+                assert_eq!(index.records[0].record_id, record_id);
+                assert_eq!(index.records[0].path, root.path().join("deep/report.pdf"));
+            }
+
+            {
+                let root = tempfile::tempdir().unwrap();
+                for records in [
+                    serde_json::json!([{
+                        "record_id": uuid::Uuid::from_u128(1),
+                        "path": "/../outside",
+                        "is_dir": false
+                    }]),
+                    serde_json::json!([
+                        {
+                            "record_id": uuid::Uuid::from_u128(2),
+                            "path": "/b",
+                            "is_dir": false
+                        },
+                        {
+                            "record_id": uuid::Uuid::from_u128(1),
+                            "path": "/a",
+                            "is_dir": false
+                        }
+                    ]),
+                ] {
+                    set_record_index(root.path(), records.as_array().unwrap());
+                    assert!(
+                        read_workspace_record_index(&[root.path().to_path_buf()])
+                            .records
+                            .is_empty()
+                    );
+                }
+            }
         }
 
+        phase workspace_pager_withdraws_and_refuses_ambiguous_rows;
         {
-            let d = tempfile::tempdir().unwrap();
-            let f = d.path().join("photo.png");
-            std::fs::write(&f, b"content").unwrap();
-            assert_eq!(read_content_hash(&f), None);
+            {
+                let root = tempfile::tempdir().unwrap();
+                set_record_index(
+                    root.path(),
+                    &[serde_json::json!({
+                        "record_id": uuid::Uuid::from_u128(9),
+                        "path": "/visible.txt",
+                        "is_dir": false,
+                    })],
+                );
+                let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
+                assert_eq!(pager.next_page().records.len(), 1);
+                xattr::remove(root.path(), RECORD_INDEX_V2_XATTR).unwrap();
+                assert!(
+                    pager.poll_generation(),
+                    "lost mount authority withdraws stale rows"
+                );
+                let withdrawn = pager.next_page();
+                assert!(withdrawn.reset);
+                assert!(withdrawn.records.is_empty());
+                assert!(withdrawn.complete);
+            }
 
-            let hash = [0x5au8; 32];
-            xattr::set(&f, CONTENT_HASH_XATTR, &hash).unwrap();
-            assert_eq!(read_content_hash(&f), Some(hash));
+            {
+                let parent = tempfile::tempdir().unwrap();
+                let share = parent.path().join("received-share");
+                std::fs::create_dir(&share).unwrap();
+                set_record_index(
+                    &share,
+                    &[serde_json::json!({
+                        "record_id": uuid::Uuid::from_u128(1),
+                        "path": "/not-an-authority-record",
+                        "is_dir": false,
+                    })],
+                );
+                let mut pager = WorkspaceRecordIndexPager::new(&[parent.path().to_path_buf()]);
+                let page = pager.next_page();
+                assert!(page.records.is_empty());
+                assert!(page.complete);
+                assert!(
+                    resolve_workspace_record(&[parent.path().to_path_buf()], uuid::Uuid::from_u128(1))
+                        .is_none(),
+                    "walking child mounts would make search publish a record that exact opens cannot route"
+                );
+            }
 
-            xattr::set(&f, CONTENT_HASH_XATTR, &[1u8; 31]).unwrap();
-            assert_eq!(
-                read_content_hash(&f),
-                None,
-                "a malformed metadata value cannot become a cache identity"
-            );
-        }
-
-        {
-            let d = tempfile::tempdir().unwrap();
-            let f = d.path().join("shared.txt");
-            std::fs::write(&f, b"content").unwrap();
-            assert_eq!(read_record_id(&f), None);
-            let id = [0x7bu8; 16];
-            xattr::set(&f, RECORD_ID_XATTR, &id).unwrap();
-            assert_eq!(read_record_id(&f), Some(id));
-            xattr::set(&f, RECORD_ID_XATTR, &[0u8; 15]).unwrap();
-            assert_eq!(read_record_id(&f), None);
+            {
+                let root = tempfile::tempdir().unwrap();
+                let revision = "b".repeat(64);
+                xattr::set(
+                    root.path(),
+                    RECORD_INDEX_V2_XATTR,
+                    &serde_json::to_vec(&serde_json::json!({
+                        "schema_version": RECORD_INDEX_V2_VERSION,
+                        "revision": revision,
+                        "records": 129,
+                        "page_entries": RECORD_INDEX_PAGE_ENTRIES,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                let first = (1..=RECORD_INDEX_PAGE_ENTRIES)
+                    .map(|id| {
+                        serde_json::json!({
+                            "record_id": uuid::Uuid::from_u128(id as u128),
+                            "path": format!("/row-{id}"),
+                            "is_dir": false,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                for (offset, next, records) in [
+                    (0, Some(RECORD_INDEX_PAGE_ENTRIES), first),
+                    (
+                        RECORD_INDEX_PAGE_ENTRIES,
+                        None,
+                        vec![serde_json::json!({
+                            "record_id": uuid::Uuid::from_u128(RECORD_INDEX_PAGE_ENTRIES as u128),
+                            "path": "/aliased",
+                            "is_dir": false,
+                        })],
+                    ),
+                ] {
+                    xattr::set(
+                        root.path(),
+                        format!("{RECORD_INDEX_V2_XATTR}.{revision}.{offset}"),
+                        &serde_json::to_vec(&serde_json::json!({
+                            "schema_version": RECORD_INDEX_V2_VERSION,
+                            "revision": revision,
+                            "offset": offset,
+                            "next_offset": next,
+                            "records": records,
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap();
+                }
+                let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
+                assert_eq!(pager.next_page().records.len(), RECORD_INDEX_PAGE_ENTRIES);
+                let rejected = pager.next_page();
+                assert!(rejected.records.is_empty());
+                assert!(
+                    rejected.truncated,
+                    "an id cannot acquire a second path in one revision"
+                );
+            }
         }
     }
 
@@ -1137,318 +1447,6 @@ pub(crate) mod sync_state_tests {
             }
         }))
         .unwrap()
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    #[cfg(unix)]
-    fn workspace_records_project_by_stable_identity() {
-        {
-            let ws = tempfile::tempdir().unwrap();
-            let downloading = ws.path().join("a-downloading.bin");
-            let projected = ws.path().join("b-projected.bin");
-            let untagged = ws.path().join("c-plain.bin");
-            std::fs::write(&downloading, b"x").unwrap();
-            std::fs::write(&projected, b"x").unwrap();
-            std::fs::write(&untagged, b"x").unwrap();
-            xattr::set(&downloading, SYNC_XATTR, b"downloading").unwrap();
-            xattr::set(&projected, SYNC_XATTR, b"projected").unwrap();
-            let projected_hash = [0x33u8; 32];
-            xattr::set(&projected, CONTENT_HASH_XATTR, &projected_hash).unwrap();
-            let projected_record = [0x44u8; 16];
-            xattr::set(&projected, RECORD_ID_XATTR, &projected_record).unwrap();
-            let projected_availability =
-                availability_json(&serde_json::json!({"state": "unknown"}));
-            xattr::set(&projected, AVAILABILITY_XATTR, &projected_availability).unwrap();
-            let outside = read_dir_inner(ws.path(), false).unwrap();
-            assert!(
-                outside.iter().all(|e| e.sync_state.is_none()),
-                "outside a workspace root, no entry carries sync state",
-            );
-
-            let entries = read_dir_inner(ws.path(), true).unwrap();
-            let by = |name: &str| entries.iter().find(|e| e.name == name).unwrap().sync_state;
-            assert_eq!(by("a-downloading.bin"), Some(SyncState::Downloading));
-            assert_eq!(by("b-projected.bin"), Some(SyncState::Projected));
-            assert_eq!(
-                entries
-                    .iter()
-                    .find(|e| e.name == "b-projected.bin")
-                    .unwrap()
-                    .content_hash,
-                Some(projected_hash),
-                "content identity projects independently of the bytes"
-            );
-            assert_eq!(
-                entries
-                    .iter()
-                    .find(|e| e.name == "b-projected.bin")
-                    .unwrap()
-                    .record_id,
-                Some(projected_record),
-                "record identity projects independently of path and bytes"
-            );
-            assert_eq!(
-                entries
-                    .iter()
-                    .find(|e| e.name == "b-projected.bin")
-                    .unwrap()
-                    .availability
-                    .as_ref()
-                    .map(|a| a.replicas),
-                Some(fs_protocol::ProjectedReplicaEvidence::Unknown)
-            );
-            assert_eq!(
-                by("c-plain.bin"),
-                None,
-                "an untagged workspace file has no state"
-            );
-        }
-
-        {
-            let root = tempfile::tempdir().unwrap();
-            let record_id = uuid::Uuid::from_u128(7);
-            set_record_index(
-                root.path(),
-                &[serde_json::json!({
-                    "record_id": record_id,
-                    "path": "/deep/report.pdf",
-                    "is_dir": false
-                })],
-            );
-
-            let index = read_workspace_record_index(&[root.path().to_path_buf()]);
-            assert!(!index.truncated);
-            assert_eq!(index.records.len(), 1);
-            assert_eq!(index.records[0].record_id, record_id);
-            assert_eq!(index.records[0].path, root.path().join("deep/report.pdf"));
-        }
-
-        {
-            let root = tempfile::tempdir().unwrap();
-            for records in [
-                serde_json::json!([{
-                    "record_id": uuid::Uuid::from_u128(1),
-                    "path": "/../outside",
-                    "is_dir": false
-                }]),
-                serde_json::json!([
-                    {
-                        "record_id": uuid::Uuid::from_u128(2),
-                        "path": "/b",
-                        "is_dir": false
-                    },
-                    {
-                        "record_id": uuid::Uuid::from_u128(1),
-                        "path": "/a",
-                        "is_dir": false
-                    }
-                ]),
-            ] {
-                set_record_index(root.path(), records.as_array().unwrap());
-                assert!(
-                    read_workspace_record_index(&[root.path().to_path_buf()])
-                        .records
-                        .is_empty()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn workspace_roots_and_pager_are_bounded() {
-        {
-            let a = tempfile::tempdir().unwrap();
-            let b = tempfile::tempdir().unwrap();
-            let missing = a.path().join("missing-root");
-            let spec = std::env::join_paths([a.path(), missing.as_path(), b.path()]).unwrap();
-            let roots = parse_workspace_roots(&spec);
-            assert!(
-                roots.contains(&a.path().to_path_buf()),
-                "existing root A kept: {roots:?}"
-            );
-            assert!(
-                roots.contains(&b.path().to_path_buf()),
-                "existing root B kept"
-            );
-            assert_eq!(roots.len(), 2, "the non-existent root is filtered out");
-
-            assert!(
-                path_under_any(a.path(), &roots),
-                "the root itself is a workspace path"
-            );
-            assert!(
-                path_under_any(&a.path().join("deep/file.txt"), &roots),
-                "nested path matches"
-            );
-            assert!(
-                !path_under_any(Path::new("/etc/passwd"), &roots),
-                "unrelated path does not match"
-            );
-        }
-
-        {
-            let root = tempfile::tempdir().unwrap();
-            let records = RECORD_INDEX_PAGE_ENTRIES * 64 + 1;
-            let mut pager =
-                WorkspaceRecordIndexPager::from_generated_v2(root.path().to_path_buf(), records);
-            let first = pager.next_page();
-            assert_eq!(
-                first.records.len(),
-                RECORD_INDEX_PAGE_ENTRIES,
-                "one step cannot materialise the whole index"
-            );
-            assert!(!first.complete);
-            let provider = crate::search_provider::CollaborativeRecordSearch::new(&first.records);
-            let found = |provider: &crate::search_provider::CollaborativeRecordSearch| {
-                ui::search::SearchProvider::search(
-                    &ui::framework::testing::search_source::<crate::resource::FileExplorer>(
-                        provider.entries(),
-                    ),
-                    "late-target",
-                )
-            };
-            assert!(found(&provider).is_empty());
-
-            let mut indexed = first.records.len();
-            while pager.has_more() {
-                let page = pager.next_page();
-                assert!(
-                    page.records.len() <= RECORD_INDEX_PAGE_ENTRIES,
-                    "an idle tick must not monopolise the frame"
-                );
-                indexed += page.records.len();
-                provider.append_page(0, &page.records);
-            }
-            assert!(
-                !pager.has_more(),
-                "idle work stops once the current authority is indexed"
-            );
-            assert_eq!(indexed, records, "every page is indexed exactly once");
-            assert!(
-                found(&provider)
-                    .iter()
-                    .any(|hit| hit.title == "late-target.txt"),
-                "later pages enter the search entries without a full refresh"
-            );
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    #[cfg(unix)]
-    fn workspace_pager_withdraws_and_refuses_ambiguous_rows() {
-        {
-            let root = tempfile::tempdir().unwrap();
-            set_record_index(
-                root.path(),
-                &[serde_json::json!({
-                    "record_id": uuid::Uuid::from_u128(9),
-                    "path": "/visible.txt",
-                    "is_dir": false,
-                })],
-            );
-            let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
-            assert_eq!(pager.next_page().records.len(), 1);
-            xattr::remove(root.path(), RECORD_INDEX_V2_XATTR).unwrap();
-            assert!(
-                pager.poll_generation(),
-                "lost mount authority withdraws stale rows"
-            );
-            let withdrawn = pager.next_page();
-            assert!(withdrawn.reset);
-            assert!(withdrawn.records.is_empty());
-            assert!(withdrawn.complete);
-        }
-
-        {
-            let parent = tempfile::tempdir().unwrap();
-            let share = parent.path().join("received-share");
-            std::fs::create_dir(&share).unwrap();
-            set_record_index(
-                &share,
-                &[serde_json::json!({
-                    "record_id": uuid::Uuid::from_u128(1),
-                    "path": "/not-an-authority-record",
-                    "is_dir": false,
-                })],
-            );
-            let mut pager = WorkspaceRecordIndexPager::new(&[parent.path().to_path_buf()]);
-            let page = pager.next_page();
-            assert!(page.records.is_empty());
-            assert!(page.complete);
-            assert!(
-                resolve_workspace_record(&[parent.path().to_path_buf()], uuid::Uuid::from_u128(1))
-                    .is_none(),
-                "walking child mounts would make search publish a record that exact opens cannot route"
-            );
-        }
-
-        {
-            let root = tempfile::tempdir().unwrap();
-            let revision = "b".repeat(64);
-            xattr::set(
-                root.path(),
-                RECORD_INDEX_V2_XATTR,
-                &serde_json::to_vec(&serde_json::json!({
-                    "schema_version": RECORD_INDEX_V2_VERSION,
-                    "revision": revision,
-                    "records": 129,
-                    "page_entries": RECORD_INDEX_PAGE_ENTRIES,
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            let first = (1..=RECORD_INDEX_PAGE_ENTRIES)
-                .map(|id| {
-                    serde_json::json!({
-                        "record_id": uuid::Uuid::from_u128(id as u128),
-                        "path": format!("/row-{id}"),
-                        "is_dir": false,
-                    })
-                })
-                .collect::<Vec<_>>();
-            for (offset, next, records) in [
-                (0, Some(RECORD_INDEX_PAGE_ENTRIES), first),
-                (
-                    RECORD_INDEX_PAGE_ENTRIES,
-                    None,
-                    vec![serde_json::json!({
-                        "record_id": uuid::Uuid::from_u128(RECORD_INDEX_PAGE_ENTRIES as u128),
-                        "path": "/aliased",
-                        "is_dir": false,
-                    })],
-                ),
-            ] {
-                xattr::set(
-                    root.path(),
-                    format!("{RECORD_INDEX_V2_XATTR}.{revision}.{offset}"),
-                    &serde_json::to_vec(&serde_json::json!({
-                        "schema_version": RECORD_INDEX_V2_VERSION,
-                        "revision": revision,
-                        "offset": offset,
-                        "next_offset": next,
-                        "records": records,
-                    }))
-                    .unwrap(),
-                )
-                .unwrap();
-            }
-            let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
-            assert_eq!(pager.next_page().records.len(), RECORD_INDEX_PAGE_ENTRIES);
-            let rejected = pager.next_page();
-            assert!(rejected.records.is_empty());
-            assert!(
-                rejected.truncated,
-                "an id cannot acquire a second path in one revision"
-            );
-        }
     }
 }
 

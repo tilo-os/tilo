@@ -332,97 +332,101 @@ impl DeskWidgetPrefs {
 mod tests {
     use super::*;
 
-    #[test]
-    fn unset_and_partial_choices_read_as_their_defaults() {
-        let document = serde_json::json!({
-            "desk_widgets": {
-                "team": { "show": "ask", "places": [{ "display": "edid:A|B|1", "x": 0.0, "y": 0.5 }] },
-                "music": { "show": "never-heard-of-it" }
-            }
-        });
-        let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
-        assert_eq!(prefs.music, WidgetPrefs::default_for(WidgetId::Music));
-        assert_eq!(prefs.team.show, ShowMode::Ask);
-        assert_eq!(
-            prefs.team.place_on(&["edid:A|B|1"]).map(|p| (p.x, p.y)),
-            Some((0.0, 0.5))
-        );
-        assert!(prefs.team.enabled, "kept unless turned off");
-        assert_eq!(
-            DeskWidgetPrefs::from_document(&serde_json::Map::new()),
-            DeskWidgetPrefs::default()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn desk_widget_preferences_read_default_and_round_trip;
 
-    #[test]
-    fn the_calendar_and_system_monitor_are_desk_widgets_the_person_adds() {
-        let prefs = DeskWidgetPrefs::default();
-        assert!(prefs.music.enabled && prefs.team.enabled);
-        assert!(!prefs.calendar.enabled, "added by the person");
-        assert!(!prefs.system_monitor.enabled, "added by the person");
-        assert_eq!(prefs.system_monitor.show, ShowMode::Ask);
-        let document = serde_json::json!({
-            "desk_widgets": {
-                "calendar": { "enabled": true, "show": "always", "width": 420.0 },
-                "system_monitor": { "enabled": true }
-            }
-        });
-        let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
-        assert!(prefs.calendar.enabled);
-        assert_eq!(prefs.calendar.show, ShowMode::Always);
-        assert_eq!(prefs.calendar.width, Some(420.0));
-        assert!(prefs.system_monitor.enabled);
-        for id in WidgetId::ALL {
-            assert_eq!(prefs_key(id).name(), id.key());
+        phase unset_and_partial_choices_read_as_their_defaults;
+        {
+            let document = serde_json::json!({
+                "desk_widgets": {
+                    "team": { "show": "ask", "places": [{ "display": "edid:A|B|1", "x": 0.0, "y": 0.5 }] },
+                    "music": { "show": "never-heard-of-it" }
+                }
+            });
+            let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
+            assert_eq!(prefs.music, WidgetPrefs::default_for(WidgetId::Music));
+            assert_eq!(prefs.team.show, ShowMode::Ask);
+            assert_eq!(
+                prefs.team.place_on(&["edid:A|B|1"]).map(|p| (p.x, p.y)),
+                Some((0.0, 0.5))
+            );
+            assert!(prefs.team.enabled, "kept unless turned off");
+            assert_eq!(
+                DeskWidgetPrefs::from_document(&serde_json::Map::new()),
+                DeskWidgetPrefs::default()
+            );
         }
-    }
 
-    #[test]
-    fn always_is_scoped_to_the_strips_it_names() {
-        let mut prefs = WidgetPrefs::default_for(WidgetId::Music);
-        assert!(!prefs.always_on(Some(1)));
-        prefs.show = ShowMode::Always;
-        assert!(prefs.always_on(Some(1)), "no strips named: every strip");
-        prefs.always_on_strips = vec![7];
-        assert!(prefs.always_on(Some(7)));
-        assert!(!prefs.always_on(Some(1)));
-        assert!(!prefs.always_on(None));
-    }
+        phase the_calendar_and_system_monitor_are_desk_widgets_the_person_adds;
+        {
+            let prefs = DeskWidgetPrefs::default();
+            assert!(prefs.music.enabled && prefs.team.enabled);
+            assert!(!prefs.calendar.enabled, "added by the person");
+            assert!(!prefs.system_monitor.enabled, "added by the person");
+            assert_eq!(prefs.system_monitor.show, ShowMode::Ask);
+            let document = serde_json::json!({
+                "desk_widgets": {
+                    "calendar": { "enabled": true, "show": "always", "width": 420.0 },
+                    "system_monitor": { "enabled": true }
+                }
+            });
+            let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
+            assert!(prefs.calendar.enabled);
+            assert_eq!(prefs.calendar.show, ShowMode::Always);
+            assert_eq!(prefs.calendar.width, Some(420.0));
+            assert!(prefs.system_monitor.enabled);
+            for id in WidgetId::ALL {
+                assert_eq!(prefs_key(id).name(), id.key());
+            }
+        }
 
-    #[test]
-    fn the_pinned_roster_keeps_its_edge_beside_the_widgets() {
-        assert_eq!(
-            PEOPLE_OVERLAY.from_document(&serde_json::Map::new()),
-            PeopleOverlayPrefs::default()
-        );
-        let document = serde_json::json!({
-            "desk_widgets": { "people_overlay": { "pinned": true, "edge": "bottom_left" } }
-        });
-        let prefs = PEOPLE_OVERLAY.from_document(document.as_object().unwrap());
-        assert!(prefs.pinned);
-        assert_eq!(prefs.edge, DockEdge::BottomLeft);
-    }
+        phase always_is_scoped_to_the_strips_it_names;
+        {
+            let mut prefs = WidgetPrefs::default_for(WidgetId::Music);
+            assert!(!prefs.always_on(Some(1)));
+            prefs.show = ShowMode::Always;
+            assert!(prefs.always_on(Some(1)), "no strips named: every strip");
+            prefs.always_on_strips = vec![7];
+            assert!(prefs.always_on(Some(7)));
+            assert!(!prefs.always_on(Some(1)));
+            assert!(!prefs.always_on(None));
+        }
 
-    #[test]
-    fn the_persisted_shape_round_trips() {
-        let mut prefs = WidgetPrefs {
-            enabled: false,
-            show: ShowMode::Always,
-            always_on_strips: vec![3],
-            places: Vec::new(),
-            width: Some(300.0),
-        };
-        prefs.drop_on("edid:A|B|1", 0.25, 1.5);
-        let value = serde_json::to_value(&prefs).unwrap();
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "enabled": false, "show": "always", "always_on_strips": [3],
-                "places": [{ "display": "edid:A|B|1", "x": 0.25, "y": 1.0 }],
-                "width": 300.0
-            })
-        );
-        assert_eq!(serde_json::from_value::<WidgetPrefs>(value).unwrap(), prefs);
+        phase the_pinned_roster_keeps_its_edge_beside_the_widgets;
+        {
+            assert_eq!(
+                PEOPLE_OVERLAY.from_document(&serde_json::Map::new()),
+                PeopleOverlayPrefs::default()
+            );
+            let document = serde_json::json!({
+                "desk_widgets": { "people_overlay": { "pinned": true, "edge": "bottom_left" } }
+            });
+            let prefs = PEOPLE_OVERLAY.from_document(document.as_object().unwrap());
+            assert!(prefs.pinned);
+            assert_eq!(prefs.edge, DockEdge::BottomLeft);
+        }
+
+        phase the_persisted_shape_round_trips;
+        {
+            let mut prefs = WidgetPrefs {
+                enabled: false,
+                show: ShowMode::Always,
+                always_on_strips: vec![3],
+                places: Vec::new(),
+                width: Some(300.0),
+            };
+            prefs.drop_on("edid:A|B|1", 0.25, 1.5);
+            let value = serde_json::to_value(&prefs).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "enabled": false, "show": "always", "always_on_strips": [3],
+                    "places": [{ "display": "edid:A|B|1", "x": 0.25, "y": 1.0 }],
+                    "width": 300.0
+                })
+            );
+            assert_eq!(serde_json::from_value::<WidgetPrefs>(value).unwrap(), prefs);
+        }
     }
 }
 

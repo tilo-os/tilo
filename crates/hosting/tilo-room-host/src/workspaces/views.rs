@@ -1,20 +1,21 @@
 //! Exact-source discovery using the governor's already-owned channel state.
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
-use tilo_actions::remote::{Caller, CallerPrincipal};
+use tilo_action_policy::Standing;
+use tilo_actions::remote::Caller;
 use tilo_agent_participant::workspace_actions::{ViewDocument, ViewReadPolicy};
-use tilo_peer_state::MemberAuthority;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_protocol::WorkspaceId;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 impl GovernedWorkspace {
-    /// The authority `caller` holds here now: only a person on a device this
+    /// The standing `caller` holds here now: only a person on a device this
     /// workspace certified, whose certificate is current and whose membership
     /// it still records. A revoked device, a removed member and a stranger hold
     /// none. What a member may do with what they find is decided per action, by
-    /// this authority.
-    fn admitted(&self, caller: &Caller) -> Option<MemberAuthority> {
-        if !matches!(caller.principal(), CallerPrincipal::Person(_)) {
+    /// this standing.
+    fn admitted(&self, caller: &Caller) -> Option<Standing> {
+        if !caller.acting().is_person() {
             return None;
         }
         let device = *caller.device_public_key()?;
@@ -38,7 +39,7 @@ impl GovernedWorkspace {
     /// `caller`'s standing across the workspace now and its sandbox: what
     /// every record's policy holds before the record's own read is checked.
     fn workspace_policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
-        let standing = self.admitted(caller)?.standing();
+        let standing = self.admitted(caller)?;
         let sandbox = self.peer().governance().governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             workspace: self.workspace().to_owned(),
@@ -80,7 +81,7 @@ impl Workspaces {
     /// `None` for a workspace not governed here.
     async fn governing<T>(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         answer: impl FnOnce(&GovernedWorkspace) -> T,
     ) -> Option<T> {
         let workspaces = self
@@ -102,7 +103,7 @@ impl Workspaces {
 
     /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
     /// false for a workspace not governed here.
-    pub async fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+    pub async fn bot_personas(&self, workspace: WorkspaceId, installation: &str) -> bool {
         self.governing(workspace, |runtime| {
             bot_shows_personas(&runtime.peer(), installation, tilo_clock::wall())
         })
@@ -113,7 +114,7 @@ impl Workspaces {
     /// Whether the workspace `workspace` governs here admits `caller`: false
     /// for a workspace it does not govern, and for anyone its governance does
     /// not certify a device for.
-    pub async fn admits(&self, workspace: u64, caller: &Caller) -> bool {
+    pub async fn admits(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
         self.governing(workspace, |runtime| runtime.admits(caller))
             .await
             .unwrap_or(false)
@@ -121,7 +122,7 @@ impl Workspaces {
 
     pub async fn resource_view_policy(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         app: &str,
         record: &str,
@@ -138,7 +139,7 @@ impl Workspaces {
     /// records are decided by.
     pub async fn workspace_policy(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
     ) -> Option<ViewReadPolicy> {
         self.governing(workspace, |runtime| runtime.workspace_policy(caller))
@@ -148,7 +149,7 @@ impl Workspaces {
 
     pub async fn resource_view_document(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         source: &DocumentRoute,
     ) -> Result<ViewDocument, String> {
@@ -168,8 +169,7 @@ impl Workspaces {
         runtime
             .view_read_policy(caller, &source.app_id, &source.record)
             .ok_or("resource read not permitted")?;
-        let route = collab_types::ChannelRoute::new(&source.app_id, &source.record);
-        let keys = match runtime.route_keys(&route).await {
+        let keys = match runtime.route_keys().await {
             Some(Ok(keys)) => Some(keys),
             _ => None,
         };
@@ -212,8 +212,6 @@ fn replay_source(
     primary_governor: Option<[u8; 32]>,
     retained: Vec<crate::workspace_records::RetainedBody>,
 ) -> Result<Vec<u8>, String> {
-    let channel =
-        collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
     let mut transfers = tilo_peer_state::document_frame::Transfers::default();
     let mut doc = automerge::AutoCommit::new();
     let mut bytes = 0usize;
@@ -237,7 +235,7 @@ fn replay_source(
             continue;
         }
         match envelope.encryption.as_ref() {
-            Some(metadata) if metadata.channel == channel => {}
+            Some(_) => {}
             None if primary_governor == Some(retained.author) => {}
             _ => return Err("source encrypted channel mismatch".into()),
         }

@@ -22,107 +22,113 @@ fn thread(count: usize) -> Vec<ConversationLine> {
         .collect()
 }
 
-#[test]
-fn a_frame_paints_the_rows_that_meet_its_viewport() {
-    let mut text = crate::font_catalog::fixture_renderer();
-    let theme = Theme::dark();
-    let lines = thread(200);
-    let face = ListFace::new(&lines, ConversationClock::at(0, NOONISH));
-    let mut cache = ListCache::default();
-    let height = face.height_in(&mut cache, &mut text, &theme, WIDTH);
-    let list = Rect::new(0.0, 0.0, WIDTH, height);
-    let rows = cache.layout.rows.len();
-    let mut scene = Scene::new();
+tilo_test_env::scenario! {
+    /// What a frame of the conversation list paints and shapes.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_culled_frame_paints_and_shapes_only_the_rows_in_view;
 
-    let top = Rect::new(0.0, 0.0, WIDTH, 800.0);
+    phase a_frame_paints_the_rows_that_meet_its_viewport;
     {
-        let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        face.paint_in(&mut paint, list, Some(top), &mut cache);
-    }
-    let work = cache.work();
-    assert!(work.painted > 0, "the top of the thread is in view");
-    assert_eq!(
-        work.painted + work.culled,
-        rows,
-        "every row is accounted for"
-    );
-    let in_view = cache
-        .layout
-        .rows
-        .iter()
-        .filter(|row| row.meets(top))
-        .count();
-    assert_eq!(
-        work.painted, in_view,
-        "the painted rows are the ones in view"
-    );
+        let mut text = crate::font_catalog::fixture_renderer();
+        let theme = Theme::dark();
+        let lines = thread(200);
+        let face = ListFace::new(&lines, ConversationClock::at(0, NOONISH));
+        let mut cache = ListCache::default();
+        let height = face.height_in(&mut cache, &mut text, &theme, WIDTH);
+        let list = Rect::new(0.0, 0.0, WIDTH, height);
+        let rows = cache.layout.rows.len();
+        let mut scene = Scene::new();
 
-    let mut longer = ListCache::default();
-    let longer_lines = thread(2_000);
-    let longer_face = ListFace::new(&longer_lines, ConversationClock::at(0, NOONISH));
-    let longer_height = longer_face.height_in(&mut longer, &mut text, &theme, WIDTH);
-    let longer_list = Rect::new(0.0, 0.0, WIDTH, longer_height);
-    let middle = Rect::new(0.0, 4_000.0, WIDTH, 4_800.0);
-    {
-        let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        face.paint_in(&mut paint, list, Some(middle), &mut cache);
-    }
-    let near = cache.work();
-    {
-        let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        longer_face.paint_in(&mut paint, longer_list, Some(middle), &mut longer);
-    }
-    let far = longer.work();
-    assert_eq!(
-        near.painted, far.painted,
-        "the same window paints the same rows of a ten times longer thread"
-    );
-    assert!(
-        far.culled > near.culled,
-        "the longer thread has more rows to leave alone: {near:?} {far:?}"
-    );
-}
-
-#[test]
-fn rows_outside_the_viewport_are_not_shaped() {
-    let mut text = crate::font_catalog::fixture_renderer();
-    let theme = Theme::dark();
-    let lines = thread(200);
-    let face = ListFace::new(&lines, ConversationClock::at(0, NOONISH));
-    let mut cache = ListCache::default();
-    let height = face.height_in(&mut cache, &mut text, &theme, WIDTH);
-    let list = Rect::new(0.0, 0.0, WIDTH, height);
-    let mut scene = Scene::new();
-
-    // Every body is unique, so a paint of the whole conversation shapes every
-    // line of it.
-    {
-        let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        face.paint_in(&mut paint, list, None, &mut cache);
-        let (_, misses, _) = text.take_shape_stats();
-        assert!(
-            misses >= 200,
-            "painting 200 unseen bodies shapes them: {misses} misses"
+        let top = Rect::new(0.0, 0.0, WIDTH, 800.0);
+        {
+            let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            face.paint_in(&mut paint, list, Some(top), &mut cache);
+        }
+        let work = cache.work();
+        assert!(work.painted > 0, "the top of the thread is in view");
+        assert_eq!(
+            work.painted + work.culled,
+            rows,
+            "every row is accounted for"
         );
-        assert_eq!(cache.work().painted, cache.layout.rows.len());
-        assert_eq!(cache.work().culled, 0);
+        let in_view = cache
+            .layout
+            .rows
+            .iter()
+            .filter(|row| row.meets(top))
+            .count();
+        assert_eq!(
+            work.painted, in_view,
+            "the painted rows are the ones in view"
+        );
+
+        let mut longer = ListCache::default();
+        let longer_lines = thread(2_000);
+        let longer_face = ListFace::new(&longer_lines, ConversationClock::at(0, NOONISH));
+        let longer_height = longer_face.height_in(&mut longer, &mut text, &theme, WIDTH);
+        let longer_list = Rect::new(0.0, 0.0, WIDTH, longer_height);
+        let middle = Rect::new(0.0, 4_000.0, WIDTH, 4_800.0);
+        {
+            let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            face.paint_in(&mut paint, list, Some(middle), &mut cache);
+        }
+        let near = cache.work();
+        {
+            let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            longer_face.paint_in(&mut paint, longer_list, Some(middle), &mut longer);
+        }
+        let far = longer.work();
+        assert_eq!(
+            near.painted, far.painted,
+            "the same window paints the same rows of a ten times longer thread"
+        );
+        assert!(
+            far.culled > near.culled,
+            "the longer thread has more rows to leave alone: {near:?} {far:?}"
+        );
     }
 
-    // A window over the middle of the same conversation shapes only what it shows:
-    // a handful of bodies and their captions.
-    scene.reset();
-    let middle = Rect::new(0.0, 4_000.0, WIDTH, 4_800.0);
-    let (hits, misses, _) = {
-        let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        face.paint_in(&mut paint, list, Some(middle), &mut cache);
-        text.take_shape_stats()
-    };
-    let shapes = hits.saturating_add(misses);
-    assert!(
-        shapes <= 40,
-        "a window of eight hundred points shapes the rows it shows, not two hundred: \
+    phase rows_outside_the_viewport_are_not_shaped;
+    {
+        let mut text = crate::font_catalog::fixture_renderer();
+        let theme = Theme::dark();
+        let lines = thread(200);
+        let face = ListFace::new(&lines, ConversationClock::at(0, NOONISH));
+        let mut cache = ListCache::default();
+        let height = face.height_in(&mut cache, &mut text, &theme, WIDTH);
+        let list = Rect::new(0.0, 0.0, WIDTH, height);
+        let mut scene = Scene::new();
+
+        // Every body is unique, so a paint of the whole conversation shapes every
+        // line of it.
+        {
+            let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            face.paint_in(&mut paint, list, None, &mut cache);
+            let (_, misses, _) = text.take_shape_stats();
+            assert!(
+                misses >= 200,
+                "painting 200 unseen bodies shapes them: {misses} misses"
+            );
+            assert_eq!(cache.work().painted, cache.layout.rows.len());
+            assert_eq!(cache.work().culled, 0);
+        }
+
+        // A window over the middle of the same conversation shapes only what it shows:
+        // a handful of bodies and their captions.
+        scene.reset();
+        let middle = Rect::new(0.0, 4_000.0, WIDTH, 4_800.0);
+        let (hits, misses, _) = {
+            let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            face.paint_in(&mut paint, list, Some(middle), &mut cache);
+            text.take_shape_stats()
+        };
+        let shapes = hits.saturating_add(misses);
+        assert!(
+            shapes <= 40,
+            "a window of eight hundred points shapes the rows it shows, not two hundred: \
          {shapes} shapes for {} painted rows",
-        cache.work().painted
-    );
-    assert!(cache.work().painted <= 20, "{:?}", cache.work());
+            cache.work().painted
+        );
+        assert!(cache.work().painted <= 20, "{:?}", cache.work());
+    }
 }

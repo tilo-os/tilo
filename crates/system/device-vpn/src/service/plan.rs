@@ -497,217 +497,225 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn all_traffic_routes_only_the_owner_and_exempts_the_carrier_first() {
-        let commands = open_client(1000, &link(Routes::All, false), None);
-        let lines = lines(&commands);
-        let position = |needle: &str| {
-            lines
-                .iter()
-                .position(|line| line == needle)
-                .unwrap_or_else(|| panic!("missing {needle}\n{lines:#?}"))
-        };
-        let carrier = position(
-            "-4 rule add priority 5260 uidrange 1000-1000 ipproto udp sport 40000 lookup main",
-        );
-        position(
-            "-6 rule add priority 5260 uidrange 1000-1000 ipproto udp sport 40001 lookup main",
-        );
-        position("-4 rule add priority 5261 uidrange 1000-1000 to 203.0.113.7 lookup main");
-        position("-6 rule add priority 5261 uidrange 1000-1000 to 2001:db8::7 lookup main");
-        let local = position(
-            "-4 rule add priority 5262 uidrange 1000-1000 lookup main suppress_prefixlength 0",
-        );
-        let tunnel = position("-4 rule add priority 5263 uidrange 1000-1000 lookup 5270");
-        position("-6 rule add priority 5263 uidrange 1000-1000 lookup 5270");
-        position("-4 route replace default dev tilovpn0 table 5270");
-        position("-6 route replace unreachable default table 5270");
-        position("address add 100.100.64.2/24 dev tilovpn0");
-        position("link set dev tilovpn0 mtu 1280");
-        assert!(carrier < local && local < tunnel);
-        assert!(
-            lines
-                .iter()
-                .filter(|line| line.contains("rule add"))
-                .all(|line| line.contains("uidrange 1000-1000")),
-            "no rule reaches another person's traffic"
-        );
-        assert_eq!(
-            commands.last().unwrap().args,
-            ["delete", "table", "inet", CLIENT_TABLE]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_client_link_plan_routes_guards_and_undoes_exactly_its_own;
 
-    #[test]
-    fn home_networks_route_only_those_networks_and_leave_ipv6_alone() {
-        let networks = vec![
-            "192.168.1.0/24".parse().unwrap(),
-            "10.20.0.0/16".parse().unwrap(),
-        ];
-        let lines = lines(&open_client(
-            1000,
-            &link(Routes::Networks { networks }, false),
-            None,
-        ));
-        assert!(
-            lines.contains(&"-4 route replace 192.168.1.0/24 dev tilovpn0 table 5270".to_owned())
-        );
-        assert!(
-            lines.contains(&"-4 route replace 10.20.0.0/16 dev tilovpn0 table 5270".to_owned())
-        );
-        assert!(!lines.iter().any(|line| line.contains("default")));
-        assert!(
-            !lines
-                .iter()
-                .any(|line| line.contains("suppress_prefixlength"))
-        );
-        assert!(
-            !lines
-                .iter()
-                .any(|line| line.starts_with("-6 rule add priority 5263"))
-        );
-    }
+        phase all_traffic_routes_only_the_owner_and_exempts_the_carrier_first;
+        {
+            let commands = open_client(1000, &link(Routes::All, false), None);
+            let lines = lines(&commands);
+            let position = |needle: &str| {
+                lines
+                    .iter()
+                    .position(|line| line == needle)
+                    .unwrap_or_else(|| panic!("missing {needle}\n{lines:#?}"))
+            };
+            let carrier = position(
+                "-4 rule add priority 5260 uidrange 1000-1000 ipproto udp sport 40000 lookup main",
+            );
+            position(
+                "-6 rule add priority 5260 uidrange 1000-1000 ipproto udp sport 40001 lookup main",
+            );
+            position("-4 rule add priority 5261 uidrange 1000-1000 to 203.0.113.7 lookup main");
+            position("-6 rule add priority 5261 uidrange 1000-1000 to 2001:db8::7 lookup main");
+            let local = position(
+                "-4 rule add priority 5262 uidrange 1000-1000 lookup main suppress_prefixlength 0",
+            );
+            let tunnel = position("-4 rule add priority 5263 uidrange 1000-1000 lookup 5270");
+            position("-6 rule add priority 5263 uidrange 1000-1000 lookup 5270");
+            position("-4 route replace default dev tilovpn0 table 5270");
+            position("-6 route replace unreachable default table 5270");
+            position("address add 100.100.64.2/24 dev tilovpn0");
+            position("link set dev tilovpn0 mtu 1280");
+            assert!(carrier < local && local < tunnel);
+            assert!(
+                lines
+                    .iter()
+                    .filter(|line| line.contains("rule add"))
+                    .all(|line| line.contains("uidrange 1000-1000")),
+                "no rule reaches another person's traffic"
+            );
+            assert_eq!(
+                commands.last().unwrap().args,
+                ["delete", "table", "inet", CLIENT_TABLE]
+            );
+        }
 
-    #[test]
-    fn the_kill_switch_holds_the_owners_traffic_to_the_tunnel_and_the_carrier() {
-        let commands = open_client(
-            1000,
-            &link(
-                Routes::Networks {
-                    networks: vec!["192.168.1.0/24".parse().unwrap()],
-                },
-                true,
-            ),
-            None,
-        );
-        let script = commands
-            .iter()
-            .find_map(|command| command.input.clone())
-            .expect("an nft script");
-        assert!(script.contains("meta skuid 1000 jump owner"));
-        assert!(script.contains("oifname \"tilovpn0\" return"));
-        assert!(script.contains("udp sport { 40000, 40001 } return"));
-        assert!(script.contains("ip daddr { 203.0.113.7 } return"));
-        assert!(script.contains("ip6 daddr { 2001:db8::7 } return"));
-        let home = script
-            .find("ip daddr { 192.168.1.0/24 } reject")
-            .expect("home blocked");
-        let local = script.find("ip daddr { 10.0.0.0/8").expect("local allowed");
-        assert!(
-            home < local,
-            "the home network is never sent to the local one"
-        );
-    }
+        phase home_networks_route_only_those_networks_and_leave_ipv6_alone;
+        {
+            let networks = vec![
+                "192.168.1.0/24".parse().unwrap(),
+                "10.20.0.0/16".parse().unwrap(),
+            ];
+            let lines = lines(&open_client(
+                1000,
+                &link(Routes::Networks { networks }, false),
+                None,
+            ));
+            assert!(
+                lines.contains(&"-4 route replace 192.168.1.0/24 dev tilovpn0 table 5270".to_owned())
+            );
+            assert!(
+                lines.contains(&"-4 route replace 10.20.0.0/16 dev tilovpn0 table 5270".to_owned())
+            );
+            assert!(!lines.iter().any(|line| line.contains("default")));
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.contains("suppress_prefixlength"))
+            );
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.starts_with("-6 rule add priority 5263"))
+            );
+        }
 
-    #[test]
-    fn closing_takes_down_exactly_what_opening_put_up() {
-        let link = link(Routes::All, true);
-        let added: Vec<String> = lines(&open_client(1000, &link, None))
-            .into_iter()
-            .filter(|line| line.contains(" rule add "))
-            .map(|line| line.replace(" rule add ", " rule del "))
-            .collect();
-        let close = close_client(1000, &link);
-        let deleted: Vec<String> = lines(&close)
-            .into_iter()
-            .filter(|line| line.contains(" rule del "))
-            .collect();
-        assert_eq!(added, deleted);
-        assert!(
-            close.iter().all(|command| !command.required),
-            "undoing never fails a stop"
-        );
-    }
-
-    #[test]
-    fn dns_goes_to_the_gateway_and_back() {
-        let on = global_dns(true).args.join(" ");
-        assert!(on.ends_with("GlobalDnsConfiguration a{sv} 2 searches as 0 domains a{sv} 1 * a{sv} 1 servers as 1 100.100.64.1"));
-        let off = global_dns(false).args.join(" ");
-        assert!(off.ends_with("GlobalDnsConfiguration a{sv} 0"));
-    }
-
-    #[test]
-    fn the_exit_forwards_only_the_tunnel_network() {
-        let commands = open_exit(&ExitLink { mtu: 1400 }, true);
-        let script = commands
-            .iter()
-            .find_map(|command| command.input.clone())
-            .unwrap();
-        assert!(script.contains("ip saddr 100.100.64.0/24 oifname != \"tiloexit0\" masquerade"));
-        assert!(script.contains("iifname \"tiloexit0\" ip saddr != 100.100.64.0/24 drop"));
-        assert!(script.contains("oifname \"tiloexit0\" ct state != { established, related } drop"));
-        assert!(script.contains("iifname != \"tiloexit0\" oifname != \"tiloexit0\" drop"));
-        let unguarded = open_exit(&ExitLink { mtu: 1400 }, false);
-        assert!(
-            !unguarded
+        phase the_kill_switch_holds_the_owners_traffic_to_the_tunnel_and_the_carrier;
+        {
+            let commands = open_client(
+                1000,
+                &link(
+                    Routes::Networks {
+                        networks: vec!["192.168.1.0/24".parse().unwrap()],
+                    },
+                    true,
+                ),
+                None,
+            );
+            let script = commands
                 .iter()
                 .find_map(|command| command.input.clone())
-                .unwrap()
-                .contains("iifname != ")
-        );
-        assert!(lines(&commands).contains(&"address add 100.100.64.1/24 dev tiloexit0".to_owned()));
-    }
-
-    #[test]
-    fn a_profile_block_lets_through_only_tunnels_servers_and_address_configuration() {
-        let block = ProfileBlock {
-            servers: vec![
-                "198.51.100.7".parse().unwrap(),
-                "2001:db8::7".parse().unwrap(),
-            ],
-            allow_local: false,
-        };
-        let commands = hold_profile_block(&block);
-        assert_eq!(commands.len(), 1);
-        assert!(commands[0].required);
-        let script = commands[0].input.clone().unwrap();
-        assert!(script.contains("type filter hook output priority filter; policy accept;"));
-        assert!(script.contains("type filter hook forward priority filter; policy accept;"));
-        assert!(!script.contains("skuid"));
-        for allowed in [
-            "oifname \"lo\" return",
-            "meta oifkind { \"tun\", \"wireguard\", \"ppp\" } return",
-            "rt ipsec exists return",
-            "udp sport 68 udp dport 67 return",
-            "udp sport 546 udp dport 547 return",
-            "nd-neighbor-solicit",
-            "ip daddr { 198.51.100.7 } return",
-            "ip6 daddr { 2001:db8::7 } return",
-        ] {
-            assert!(script.contains(allowed), "missing {allowed}\n{script}");
+                .expect("an nft script");
+            assert!(script.contains("meta skuid 1000 jump owner"));
+            assert!(script.contains("oifname \"tilovpn0\" return"));
+            assert!(script.contains("udp sport { 40000, 40001 } return"));
+            assert!(script.contains("ip daddr { 203.0.113.7 } return"));
+            assert!(script.contains("ip6 daddr { 2001:db8::7 } return"));
+            let home = script
+                .find("ip daddr { 192.168.1.0/24 } reject")
+                .expect("home blocked");
+            let local = script.find("ip daddr { 10.0.0.0/8").expect("local allowed");
+            assert!(
+                home < local,
+                "the home network is never sent to the local one"
+            );
         }
-        assert!(
-            !script.contains("192.168.0.0/16"),
-            "the local network is blocked"
-        );
-        assert!(
-            script
-                .trim_end()
-                .ends_with("reject with icmpx admin-prohibited\n  }\n}"),
-            "what nothing let through is refused\n{script}"
-        );
-        // Replacing a block never leaves a moment without one.
-        assert!(script.starts_with(
-            "table inet tilo_device_vpn_profile\ndelete table inet tilo_device_vpn_profile\n"
-        ));
+
+        phase closing_takes_down_exactly_what_opening_put_up;
+        {
+            let link = link(Routes::All, true);
+            let added: Vec<String> = lines(&open_client(1000, &link, None))
+                .into_iter()
+                .filter(|line| line.contains(" rule add "))
+                .map(|line| line.replace(" rule add ", " rule del "))
+                .collect();
+            let close = close_client(1000, &link);
+            let deleted: Vec<String> = lines(&close)
+                .into_iter()
+                .filter(|line| line.contains(" rule del "))
+                .collect();
+            assert_eq!(added, deleted);
+            assert!(
+                close.iter().all(|command| !command.required),
+                "undoing never fails a stop"
+            );
+        }
+
+        phase dns_goes_to_the_gateway_and_back;
+        {
+            let on = global_dns(true).args.join(" ");
+            assert!(on.ends_with("GlobalDnsConfiguration a{sv} 2 searches as 0 domains a{sv} 1 * a{sv} 1 servers as 1 100.100.64.1"));
+            let off = global_dns(false).args.join(" ");
+            assert!(off.ends_with("GlobalDnsConfiguration a{sv} 0"));
+        }
     }
 
-    #[test]
-    fn allowing_the_local_network_lets_it_through_and_nothing_more() {
-        let block = ProfileBlock {
-            servers: vec![],
-            allow_local: true,
-        };
-        let script = hold_profile_block(&block)[0].input.clone().unwrap();
-        assert!(script.contains("ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } return"));
-        assert!(script.contains("ip6 daddr { fe80::/10, fc00::/7, ff02::/16 } return"));
-        // No servers named, no empty set nftables would refuse.
-        assert!(!script.contains("{  }"));
-        assert_eq!(
-            release_profile_block()[0].args,
-            ["delete", "table", "inet", PROFILE_TABLE]
-        );
-        assert!(!release_profile_block()[0].required);
+    tilo_test_env::scenario! {
+        fn exit_and_profile_block_plans_let_through_only_what_they_name;
+
+        phase the_exit_forwards_only_the_tunnel_network;
+        {
+            let commands = open_exit(&ExitLink { mtu: 1400 }, true);
+            let script = commands
+                .iter()
+                .find_map(|command| command.input.clone())
+                .unwrap();
+            assert!(script.contains("ip saddr 100.100.64.0/24 oifname != \"tiloexit0\" masquerade"));
+            assert!(script.contains("iifname \"tiloexit0\" ip saddr != 100.100.64.0/24 drop"));
+            assert!(script.contains("oifname \"tiloexit0\" ct state != { established, related } drop"));
+            assert!(script.contains("iifname != \"tiloexit0\" oifname != \"tiloexit0\" drop"));
+            let unguarded = open_exit(&ExitLink { mtu: 1400 }, false);
+            assert!(
+                !unguarded
+                    .iter()
+                    .find_map(|command| command.input.clone())
+                    .unwrap()
+                    .contains("iifname != ")
+            );
+            assert!(lines(&commands).contains(&"address add 100.100.64.1/24 dev tiloexit0".to_owned()));
+        }
+
+        phase a_profile_block_lets_through_only_tunnels_servers_and_address_configuration;
+        {
+            let block = ProfileBlock {
+                servers: vec![
+                    "198.51.100.7".parse().unwrap(),
+                    "2001:db8::7".parse().unwrap(),
+                ],
+                allow_local: false,
+            };
+            let commands = hold_profile_block(&block);
+            assert_eq!(commands.len(), 1);
+            assert!(commands[0].required);
+            let script = commands[0].input.clone().unwrap();
+            assert!(script.contains("type filter hook output priority filter; policy accept;"));
+            assert!(script.contains("type filter hook forward priority filter; policy accept;"));
+            assert!(!script.contains("skuid"));
+            for allowed in [
+                "oifname \"lo\" return",
+                "meta oifkind { \"tun\", \"wireguard\", \"ppp\" } return",
+                "rt ipsec exists return",
+                "udp sport 68 udp dport 67 return",
+                "udp sport 546 udp dport 547 return",
+                "nd-neighbor-solicit",
+                "ip daddr { 198.51.100.7 } return",
+                "ip6 daddr { 2001:db8::7 } return",
+            ] {
+                assert!(script.contains(allowed), "missing {allowed}\n{script}");
+            }
+            assert!(
+                !script.contains("192.168.0.0/16"),
+                "the local network is blocked"
+            );
+            assert!(
+                script
+                    .trim_end()
+                    .ends_with("reject with icmpx admin-prohibited\n  }\n}"),
+                "what nothing let through is refused\n{script}"
+            );
+            // Replacing a block never leaves a moment without one.
+            assert!(script.starts_with(
+                "table inet tilo_device_vpn_profile\ndelete table inet tilo_device_vpn_profile\n"
+            ));
+        }
+
+        phase allowing_the_local_network_lets_it_through_and_nothing_more;
+        {
+            let block = ProfileBlock {
+                servers: vec![],
+                allow_local: true,
+            };
+            let script = hold_profile_block(&block)[0].input.clone().unwrap();
+            assert!(script.contains("ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } return"));
+            assert!(script.contains("ip6 daddr { fe80::/10, fc00::/7, ff02::/16 } return"));
+            // No servers named, no empty set nftables would refuse.
+            assert!(!script.contains("{  }"));
+            assert_eq!(
+                release_profile_block()[0].args,
+                ["delete", "table", "inet", PROFILE_TABLE]
+            );
+            assert!(!release_profile_block()[0].required);
+        }
     }
 }

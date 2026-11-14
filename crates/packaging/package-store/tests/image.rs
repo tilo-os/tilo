@@ -181,182 +181,281 @@ fn a_fetched_runtime_materialises_its_whole_tree_read_only() {
     assert_eq!(store.images().unwrap().len(), 1);
 }
 
-#[test]
-fn untrusted_revoked_and_substituted_images_are_refused() {
-    let ci = SigningIdentity::generate();
-    let stranger = SigningIdentity::generate();
-    let (_a, trusted) = sealed_runtime(&ci);
-    let (_b, foreign) = seal(
-        Kind::EnvRuntime,
-        "so.example.env",
-        None,
-        &stranger,
-        runtime_tree,
-    );
-    let missing = PackageId::from_bytes([7; 32]);
-    let mut registry = Registry::default();
-    registry.publish(&trusted);
-    registry.publish(&foreign);
-    registry.publish_as(missing, &trusted);
+tilo_test_env::scenario! {
+    fn image_trust;
 
-    let root = scratch();
-    let trust = ImageTrust::new().with_publisher(ci.public_key_bytes());
-    let store = Store::new(PackageStore::at(root.path()))
-        .with_trust(trust.clone())
-        .with_fetcher(registry);
+    phase untrusted_revoked_and_substituted_images_are_refused;
+    {
+        let ci = SigningIdentity::generate();
+        let stranger = SigningIdentity::generate();
+        let (_a, trusted) = sealed_runtime(&ci);
+        let (_b, foreign) = seal(
+            Kind::EnvRuntime,
+            "so.example.env",
+            None,
+            &stranger,
+            runtime_tree,
+        );
+        let missing = PackageId::from_bytes([7; 32]);
+        let mut registry = Registry::default();
+        registry.publish(&trusted);
+        registry.publish(&foreign);
+        registry.publish_as(missing, &trusted);
 
-    let refused = materialized_tree(&store, &foreign.meta.id).unwrap_err();
-    assert!(
-        matches!(refused, MaterializeError::Untrusted { .. }),
-        "{refused}"
-    );
-    assert!(store.user().image(foreign.meta.id).unwrap().is_none());
+        let root = scratch();
+        let trust = ImageTrust::new().with_publisher(ci.public_key_bytes());
+        let store = Store::new(PackageStore::at(root.path()))
+            .with_trust(trust.clone())
+            .with_fetcher(registry);
 
-    let substituted = materialized_tree(&store, &missing).unwrap_err();
-    assert!(
-        matches!(substituted, MaterializeError::Fetch { .. }),
-        "{substituted}"
-    );
+        let refused = materialized_tree(&store, &foreign.meta.id).unwrap_err();
+        assert!(
+            matches!(refused, MaterializeError::Untrusted { .. }),
+            "{refused}"
+        );
+        assert!(store.user().image(foreign.meta.id).unwrap().is_none());
 
-    let offline = Store::new(PackageStore::at(root.path()));
-    assert!(matches!(
-        materialized_tree(&offline, &trusted.meta.id),
-        Err(MaterializeError::NotFound(_))
-    ));
+        let substituted = materialized_tree(&store, &missing).unwrap_err();
+        assert!(
+            matches!(substituted, MaterializeError::Fetch { .. }),
+            "{substituted}"
+        );
 
-    let revoked = RevocationList {
-        revoked: vec![RevokedKey {
-            pubkey_hex: hex::encode(ci.public_key_bytes()),
-            reason: "key leaked".into(),
-        }],
-    };
-    let store = store.with_trust(trust.with_revoked(revoked));
-    assert!(matches!(
-        materialized_tree(&store, &trusted.meta.id),
-        Err(MaterializeError::Revoked { .. })
-    ));
+        let offline = Store::new(PackageStore::at(root.path()));
+        assert!(matches!(
+            materialized_tree(&offline, &trusted.meta.id),
+            Err(MaterializeError::NotFound(_))
+        ));
+
+        let revoked = RevocationList {
+            revoked: vec![RevokedKey {
+                pubkey_hex: hex::encode(ci.public_key_bytes()),
+                reason: "key leaked".into(),
+            }],
+        };
+        let store = store.with_trust(trust.with_revoked(revoked));
+        assert!(matches!(
+            materialized_tree(&store, &trusted.meta.id),
+            Err(MaterializeError::Revoked { .. })
+        ));
+    }
+
+    phase a_device_signed_tool_is_bound_to_its_runtime;
+    {
+        let ci = SigningIdentity::generate();
+        let device = SigningIdentity::generate();
+        let (_a, runtime) = sealed_runtime(&ci);
+        let (_b, tool) = seal(
+            Kind::Tool,
+            "so.tilo.tool.pandoc",
+            Some(runtime.meta.id),
+            &device,
+            |root| {
+                std::fs::create_dir_all(root.join("usr/bin")).unwrap();
+                std::fs::write(root.join("usr/bin/pandoc"), bytes(9, 5_000)).unwrap();
+                std::fs::set_permissions(
+                    root.join("usr/bin/pandoc"),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .unwrap();
+            },
+        );
+        let mut registry = Registry::default();
+        registry.publish(&runtime);
+        registry.publish(&tool);
+
+        let root = scratch();
+        let store = Store::new(PackageStore::at(root.path()))
+            .with_trust(
+                ImageTrust::new()
+                    .with_publisher(ci.public_key_bytes())
+                    .with_publisher(device.public_key_bytes()),
+            )
+            .with_fetcher(registry);
+
+        check_tool_runtime(&store, &tool.meta.id, &runtime.meta.id).unwrap();
+        assert_eq!(
+            tool_runtime(&store, &tool.meta.id).unwrap(),
+            runtime.meta.id
+        );
+        let tree = materialized_tree(&store, &tool.meta.id).unwrap();
+        assert_eq!(mode(&tree.join("usr/bin/pandoc")), 0o555);
+
+        let other = PackageId::from_bytes([1; 32]);
+        assert!(matches!(
+            check_tool_runtime(&store, &tool.meta.id, &other),
+            Err(MaterializeError::ToolRuntimeMismatch { .. })
+        ));
+        assert!(matches!(
+            tool_runtime(&store, &runtime.meta.id),
+            Err(MaterializeError::NotATool(_))
+        ));
+    }
 }
 
-#[test]
-fn a_device_signed_tool_is_bound_to_its_runtime() {
-    let ci = SigningIdentity::generate();
-    let device = SigningIdentity::generate();
-    let (_a, runtime) = sealed_runtime(&ci);
-    let (_b, tool) = seal(
-        Kind::Tool,
-        "so.tilo.tool.pandoc",
-        Some(runtime.meta.id),
-        &device,
-        |root| {
-            std::fs::create_dir_all(root.join("usr/bin")).unwrap();
-            std::fs::write(root.join("usr/bin/pandoc"), bytes(9, 5_000)).unwrap();
-            std::fs::set_permissions(
-                root.join("usr/bin/pandoc"),
-                std::fs::Permissions::from_mode(0o755),
+tilo_test_env::scenario! {
+    fn system_images;
+
+    phase system_images_open_offline_and_images_are_not_applications;
+    {
+        let ci = SigningIdentity::generate();
+        let (_a, runtime) = sealed_runtime(&ci);
+
+        // The OS image installs the runtime into its read-only store.
+        let system = scratch();
+        let shipped = PackageStore::at(system.path())
+            .install_image(
+                full_tapp(&runtime).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
             )
             .unwrap();
-        },
-    );
-    let mut registry = Registry::default();
-    registry.publish(&runtime);
-    registry.publish(&tool);
+        assert_eq!(shipped.id, runtime.meta.id);
 
-    let root = scratch();
-    let store = Store::new(PackageStore::at(root.path()))
-        .with_trust(
-            ImageTrust::new()
-                .with_publisher(ci.public_key_bytes())
-                .with_publisher(device.public_key_bytes()),
-        )
-        .with_fetcher(registry);
+        let user = scratch();
+        let store = Store::new(PackageStore::at(user.path()))
+            .with_system(package_store::Layout::new(system.path()));
+        let tree = materialized_tree(&store, &runtime.meta.id).unwrap();
+        assert!(tree.starts_with(system.path()));
+        assert!(tree.join("usr/bin/sh").is_symlink());
 
-    check_tool_runtime(&store, &tool.meta.id, &runtime.meta.id).unwrap();
-    assert_eq!(
-        tool_runtime(&store, &tool.meta.id).unwrap(),
-        runtime.meta.id
-    );
-    let tree = materialized_tree(&store, &tool.meta.id).unwrap();
-    assert_eq!(mode(&tree.join("usr/bin/pandoc")), 0o555);
+        let apps = PackageStore::at(user.path());
+        let refused = apps
+            .install(
+                full_tapp(&runtime).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(refused, StoreError::Refused(_)), "{refused}");
+        let app_identity = SigningIdentity::generate();
+        let (_c, app) = package(
+            &app_identity,
+            "so.tilo.example",
+            "1.0.0",
+            &BTreeMap::from([("bin/app", bytes(5, 1_000))]),
+        );
+        let refused = apps
+            .install_image(
+                full_tapp(&app).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(refused, StoreError::Refused(_)), "{refused}");
 
-    let other = PackageId::from_bytes([1; 32]);
-    assert!(matches!(
-        check_tool_runtime(&store, &tool.meta.id, &other),
-        Err(MaterializeError::ToolRuntimeMismatch { .. })
-    ));
-    assert!(matches!(
-        tool_runtime(&store, &runtime.meta.id),
-        Err(MaterializeError::NotATool(_))
-    ));
-}
-
-#[test]
-fn system_images_open_offline_and_images_are_not_applications() {
-    let ci = SigningIdentity::generate();
-    let (_a, runtime) = sealed_runtime(&ci);
-
-    // The OS image installs the runtime into its read-only store.
-    let system = scratch();
-    let shipped = PackageStore::at(system.path())
-        .install_image(
+        // An image in the user's store survives an application's removal and
+        // garbage collection, and goes with its own removal.
+        apps.install_image(
             full_tapp(&runtime).as_slice(),
             |_| Ok(Admission::default()),
             None,
         )
         .unwrap();
-    assert_eq!(shipped.id, runtime.meta.id);
-
-    let user = scratch();
-    let store = Store::new(PackageStore::at(user.path()))
-        .with_system(package_store::Layout::new(system.path()));
-    let tree = materialized_tree(&store, &runtime.meta.id).unwrap();
-    assert!(tree.starts_with(system.path()));
-    assert!(tree.join("usr/bin/sh").is_symlink());
-
-    let apps = PackageStore::at(user.path());
-    let refused = apps
-        .install(
-            full_tapp(&runtime).as_slice(),
-            |_| Ok(Admission::default()),
-            None,
-        )
-        .unwrap_err();
-    assert!(matches!(refused, StoreError::Refused(_)), "{refused}");
-    let app_identity = SigningIdentity::generate();
-    let (_c, app) = package(
-        &app_identity,
-        "so.tilo.example",
-        "1.0.0",
-        &BTreeMap::from([("bin/app", bytes(5, 1_000))]),
-    );
-    let refused = apps
-        .install_image(
+        apps.install(
             full_tapp(&app).as_slice(),
             |_| Ok(Admission::default()),
             None,
         )
-        .unwrap_err();
-    assert!(matches!(refused, StoreError::Refused(_)), "{refused}");
+        .unwrap();
+        apps.remove("so.tilo.example", true).unwrap();
+        assert!(apps.image(runtime.meta.id).unwrap().is_some());
+        let removed = apps.remove_image(runtime.meta.id).unwrap();
+        assert!(removed.evicted_blobs >= runtime.meta.payload_hashes().len());
+        assert!(apps.image(runtime.meta.id).unwrap().is_none());
+        assert!(!apps.layout().payload(runtime.meta.id).exists());
+    }
 
-    // An image in the user's store survives an application's removal and
-    // garbage collection, and goes with its own removal.
-    apps.install_image(
-        full_tapp(&runtime).as_slice(),
-        |_| Ok(Admission::default()),
-        None,
-    )
-    .unwrap();
-    apps.install(
-        full_tapp(&app).as_slice(),
-        |_| Ok(Admission::default()),
-        None,
-    )
-    .unwrap();
-    apps.remove("so.tilo.example", true).unwrap();
-    assert!(apps.image(runtime.meta.id).unwrap().is_some());
-    let removed = apps.remove_image(runtime.meta.id).unwrap();
-    assert!(removed.evicted_blobs >= runtime.meta.payload_hashes().len());
-    assert!(apps.image(runtime.meta.id).unwrap().is_none());
-    assert!(!apps.layout().payload(runtime.meta.id).exists());
+    phase system_image_overlay_lowers_are_materialized_locally_with_current_trust_and_integrity;
+    {
+        let ci = SigningIdentity::generate();
+        let (_source, runtime) = sealed_runtime(&ci);
+        let system = scratch();
+        PackageStore::at(system.path())
+            .install_image(
+                full_tapp(&runtime).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let user = scratch();
+        let store = Store::new(PackageStore::at(user.path()))
+            .with_system(package_store::Layout::new(system.path()));
+        let source = materialized_tree(&store, &runtime.meta.id).unwrap();
+        let local = package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap();
+        assert!(local.starts_with(user.path()));
+        assert_ne!(local, source);
+        assert_eq!(
+            std::fs::read(local.join("usr/bin/bash")).unwrap(),
+            std::fs::read(source.join("usr/bin/bash")).unwrap()
+        );
+        assert_eq!(mode(&local.join("usr/bin/bash")), 0o555);
+        assert_eq!(mode(&local.join("etc/os-release")), 0o444);
+        assert_eq!(
+            std::fs::read_link(local.join("usr/bin/sh")).unwrap(),
+            Path::new("bash")
+        );
+        assert!(local.join("usr/share/empty").is_dir());
+        assert_eq!(
+            package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap(),
+            local
+        );
+
+        let revoked = RevocationList {
+            revoked: vec![RevokedKey {
+                pubkey_hex: hex::encode(ci.public_key_bytes()),
+                reason: "withdrawn".into(),
+            }],
+        };
+        let untrusted = store
+            .clone()
+            .with_trust(ImageTrust::new().with_revoked(revoked));
+        assert!(matches!(
+            package_store::local_materialized_tree(&untrusted, &runtime.meta.id),
+            Err(MaterializeError::Revoked { .. })
+        ));
+
+        std::fs::write(local.join("etc/unsigned"), b"injected config").unwrap();
+        assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
+        std::fs::remove_file(local.join("etc/unsigned")).unwrap();
+        std::fs::set_permissions(
+            local.join("etc/os-release"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        std::fs::write(local.join("etc/os-release"), b"corrupted cached bytes").unwrap();
+        assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
+        assert_eq!(
+            std::fs::read(source.join("etc/os-release")).unwrap(),
+            b"NAME=Fedora\n"
+        );
+    }
+
+    phase modified_system_image_is_not_imported_as_a_signed_overlay_lower;
+    {
+        let ci = SigningIdentity::generate();
+        let (_source, runtime) = sealed_runtime(&ci);
+        let system = scratch();
+        PackageStore::at(system.path())
+            .install_image(
+                full_tapp(&runtime).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let user = scratch();
+        let store = Store::new(PackageStore::at(user.path()))
+            .with_system(package_store::Layout::new(system.path()));
+        let source = materialized_tree(&store, &runtime.meta.id).unwrap();
+        std::fs::set_permissions(
+            source.join("usr/bin/bash"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(source.join("usr/bin/bash"), b"unsigned shell").unwrap();
+        assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
+        assert!(!store.user().layout().payload(runtime.meta.id).exists());
+    }
 }
 
 /// A user's fleet as their devices keep it: changed by enrolment and
@@ -447,162 +546,166 @@ fn pandoc(runtime: PackageId, signer: &SigningIdentity, seed: u8) -> (tempfile::
     )
 }
 
-#[test]
-fn images_from_the_users_certified_devices_are_trusted_while_they_are_certified() {
-    let ci = SigningIdentity::generate();
-    let ada = Person::new();
-    let bob = Person::new();
-    let laptop = SigningIdentity::generate();
-    let phone = SigningIdentity::generate();
-    let home_relay = SigningIdentity::generate();
-    let open_relay = SigningIdentity::generate();
-    let bobs_laptop = SigningIdentity::generate();
-    ada.enrol(&laptop, DeviceCapabilities::primary());
-    ada.enrol(&phone, DeviceCapabilities::member());
-    ada.enrol(&home_relay, DeviceCapabilities::host());
-    bob.enrol(&bobs_laptop, DeviceCapabilities::primary());
+tilo_test_env::scenario! {
+    fn images_from_certified_devices;
 
-    let runtime = PackageId::from_bytes([3; 32]);
-    let signers = [&laptop, &phone, &home_relay, &open_relay, &bobs_laptop];
-    let built: Vec<(tempfile::TempDir, Packed)> = (20u8..)
-        .zip(signers)
-        .map(|(seed, signer)| pandoc(runtime, signer, seed))
-        .collect();
-    let id = |index: usize| built[index].1.meta.id;
-    let mut registry = Registry::default();
-    for (_, packed) in &built {
-        registry.publish(packed);
+    phase images_from_the_users_certified_devices_are_trusted_while_they_are_certified;
+    {
+        let ci = SigningIdentity::generate();
+        let ada = Person::new();
+        let bob = Person::new();
+        let laptop = SigningIdentity::generate();
+        let phone = SigningIdentity::generate();
+        let home_relay = SigningIdentity::generate();
+        let open_relay = SigningIdentity::generate();
+        let bobs_laptop = SigningIdentity::generate();
+        ada.enrol(&laptop, DeviceCapabilities::primary());
+        ada.enrol(&phone, DeviceCapabilities::member());
+        ada.enrol(&home_relay, DeviceCapabilities::member());
+        bob.enrol(&bobs_laptop, DeviceCapabilities::primary());
+
+        let runtime = PackageId::from_bytes([3; 32]);
+        let signers = [&laptop, &phone, &home_relay, &open_relay, &bobs_laptop];
+        let built: Vec<(tempfile::TempDir, Packed)> = (20u8..)
+            .zip(signers)
+            .map(|(seed, signer)| pandoc(runtime, signer, seed))
+            .collect();
+        let id = |index: usize| built[index].1.meta.id;
+        let mut registry = Registry::default();
+        for (_, packed) in &built {
+            registry.publish(packed);
+        }
+        let (_c, catalogued) = pandoc(runtime, &ci, 40);
+        registry.publish(&catalogued);
+
+        let root = scratch();
+        let store = Store::new(PackageStore::at(root.path()))
+            .with_trust(
+                ImageTrust::new()
+                    .with_publisher(ci.public_key_bytes())
+                    .with_fleet(ada.fleet.clone()),
+            )
+            .with_fetcher(registry);
+
+        for own in [0, 1, 2] {
+            materialized_tree(&store, &id(own)).unwrap();
+        }
+        // A relay without a certificate is anyone: only CI-signed images open.
+        let refused = materialized_tree(&store, &id(3)).unwrap_err();
+        assert!(
+            matches!(refused, MaterializeError::Untrusted { .. }),
+            "{refused}"
+        );
+        materialized_tree(&store, &catalogued.meta.id).unwrap();
+        // Bob's device is certified, by Bob: never trusted for Ada.
+        let refused = materialized_tree(&store, &id(4)).unwrap_err();
+        assert!(
+            matches!(refused, MaterializeError::Untrusted { .. }),
+            "{refused}"
+        );
+        assert!(store.user().image(id(4)).unwrap().is_none());
+        let theirs = ada.certificate(&laptop, DeviceCapabilities::primary());
+        assert!(bob.fleet.0.lock().unwrap().certify(theirs).is_err());
+
+        // Ada removes her phone: its image, already here, no longer opens, and
+        // neither does a later one from it, wherever it is fetched.
+        ada.remove(&phone);
+        let refused = materialized_tree(&store, &id(1)).unwrap_err();
+        assert!(
+            matches!(refused, MaterializeError::Revoked { .. }),
+            "{refused}"
+        );
+        materialized_tree(&store, &id(0)).unwrap();
+        let (_d, later) = pandoc(runtime, &phone, 50);
+        let mut registry = Registry::default();
+        registry.publish(&later);
+        let fresh = scratch();
+        let elsewhere = Store::new(PackageStore::at(fresh.path()))
+            .with_trust(store.trust().clone())
+            .with_fetcher(registry);
+        let refused = materialized_tree(&elsewhere, &later.meta.id).unwrap_err();
+        assert!(
+            matches!(refused, MaterializeError::Revoked { .. }),
+            "{refused}"
+        );
+        assert!(elsewhere.user().image(later.meta.id).unwrap().is_none());
+
+        // A fleet that cannot be read vouches for nothing.
+        let unreadable = store.with_trust(ImageTrust::new().with_fleet(Unreadable));
+        let refused = materialized_tree(&unreadable, &id(0)).unwrap_err();
+        assert!(
+            matches!(refused, MaterializeError::FleetUnavailable { .. }),
+            "{refused}"
+        );
     }
-    let (_c, catalogued) = pandoc(runtime, &ci, 40);
-    registry.publish(&catalogued);
 
-    let root = scratch();
-    let store = Store::new(PackageStore::at(root.path()))
-        .with_trust(
-            ImageTrust::new()
-                .with_publisher(ci.public_key_bytes())
-                .with_fleet(ada.fleet.clone()),
-        )
-        .with_fetcher(registry);
+    phase an_image_one_device_shelved_is_fetched_by_another_instead_of_rebuilt;
+    {
+        let ada = Person::new();
+        let laptop = SigningIdentity::generate();
+        ada.enrol(&laptop, DeviceCapabilities::primary());
+        let runtime = PackageId::from_bytes([3; 32]);
+        let (_a, tool) = pandoc(runtime, &laptop, 60);
 
-    for own in [0, 1, 2] {
-        materialized_tree(&store, &id(own)).unwrap();
+        let laptop_root = scratch();
+        let laptop_store = PackageStore::at(laptop_root.path());
+        laptop_store
+            .install_image(
+                full_tapp(&tool).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let synced = scratch();
+        let shelf = ImageShelf::at(synced.path().join("images"));
+        let shelved = shelf.put(&laptop_store, tool.meta.id).unwrap();
+        assert_eq!(shelved, shelf.path(&tool.meta.id));
+        shelf.put(&laptop_store, tool.meta.id).unwrap();
+
+        // The relay reads the same shelf; its registry, asked only after the
+        // shelf, is offline and does not matter.
+        let relay_root = scratch();
+        let relay = Store::new(PackageStore::at(relay_root.path()))
+            .with_trust(ImageTrust::new().with_fleet(ada.fleet))
+            .with_shelf(shelf.clone())
+            .with_fetcher(Offline);
+        let tree = materialized_tree(&relay, &tool.meta.id).unwrap();
+        assert_eq!(
+            std::fs::read(tree.join("usr/bin/pandoc")).unwrap(),
+            bytes(60, 5_000)
+        );
+
+        // A shelf is not trusted: a stranger's image on it is refused, and one
+        // filed under another image's name is not that image.
+        let stranger = SigningIdentity::generate();
+        let (_b, planted) = pandoc(runtime, &stranger, 61);
+        std::fs::write(shelf.path(&planted.meta.id), full_tapp(&planted)).unwrap();
+        let refused = materialized_tree(&relay, &planted.meta.id).unwrap_err();
+        assert!(
+            matches!(refused, MaterializeError::Untrusted { .. }),
+            "{refused}"
+        );
+        let misfiled = PackageId::from_bytes([8; 32]);
+        std::fs::write(shelf.path(&misfiled), full_tapp(&tool)).unwrap();
+        let refused = materialized_tree(&relay, &misfiled).unwrap_err();
+        assert!(
+            matches!(refused, MaterializeError::Fetch { .. }),
+            "{refused}"
+        );
+        // Missing everywhere: an unreachable source says so, rather than
+        // passing for "nobody has it".
+        let nowhere = PackageId::from_bytes([9; 32]);
+        let refused = materialized_tree(&relay, &nowhere).unwrap_err();
+        assert!(
+            matches!(&refused, MaterializeError::Fetch { detail, .. } if detail.starts_with("registry")),
+            "{refused}"
+        );
+        let shelf_only = Store::new(PackageStore::at(relay_root.path())).with_shelf(shelf);
+        assert!(matches!(
+            materialized_tree(&shelf_only, &nowhere),
+            Err(MaterializeError::NotFound(_))
+        ));
     }
-    // A relay without a certificate is anyone: only CI-signed images open.
-    let refused = materialized_tree(&store, &id(3)).unwrap_err();
-    assert!(
-        matches!(refused, MaterializeError::Untrusted { .. }),
-        "{refused}"
-    );
-    materialized_tree(&store, &catalogued.meta.id).unwrap();
-    // Bob's device is certified, by Bob: never trusted for Ada.
-    let refused = materialized_tree(&store, &id(4)).unwrap_err();
-    assert!(
-        matches!(refused, MaterializeError::Untrusted { .. }),
-        "{refused}"
-    );
-    assert!(store.user().image(id(4)).unwrap().is_none());
-    let theirs = ada.certificate(&laptop, DeviceCapabilities::primary());
-    assert!(bob.fleet.0.lock().unwrap().certify(theirs).is_err());
-
-    // Ada removes her phone: its image, already here, no longer opens, and
-    // neither does a later one from it, wherever it is fetched.
-    ada.remove(&phone);
-    let refused = materialized_tree(&store, &id(1)).unwrap_err();
-    assert!(
-        matches!(refused, MaterializeError::Revoked { .. }),
-        "{refused}"
-    );
-    materialized_tree(&store, &id(0)).unwrap();
-    let (_d, later) = pandoc(runtime, &phone, 50);
-    let mut registry = Registry::default();
-    registry.publish(&later);
-    let fresh = scratch();
-    let elsewhere = Store::new(PackageStore::at(fresh.path()))
-        .with_trust(store.trust().clone())
-        .with_fetcher(registry);
-    let refused = materialized_tree(&elsewhere, &later.meta.id).unwrap_err();
-    assert!(
-        matches!(refused, MaterializeError::Revoked { .. }),
-        "{refused}"
-    );
-    assert!(elsewhere.user().image(later.meta.id).unwrap().is_none());
-
-    // A fleet that cannot be read vouches for nothing.
-    let unreadable = store.with_trust(ImageTrust::new().with_fleet(Unreadable));
-    let refused = materialized_tree(&unreadable, &id(0)).unwrap_err();
-    assert!(
-        matches!(refused, MaterializeError::FleetUnavailable { .. }),
-        "{refused}"
-    );
-}
-
-#[test]
-fn an_image_one_device_shelved_is_fetched_by_another_instead_of_rebuilt() {
-    let ada = Person::new();
-    let laptop = SigningIdentity::generate();
-    ada.enrol(&laptop, DeviceCapabilities::primary());
-    let runtime = PackageId::from_bytes([3; 32]);
-    let (_a, tool) = pandoc(runtime, &laptop, 60);
-
-    let laptop_root = scratch();
-    let laptop_store = PackageStore::at(laptop_root.path());
-    laptop_store
-        .install_image(
-            full_tapp(&tool).as_slice(),
-            |_| Ok(Admission::default()),
-            None,
-        )
-        .unwrap();
-    let synced = scratch();
-    let shelf = ImageShelf::at(synced.path().join("images"));
-    let shelved = shelf.put(&laptop_store, tool.meta.id).unwrap();
-    assert_eq!(shelved, shelf.path(&tool.meta.id));
-    shelf.put(&laptop_store, tool.meta.id).unwrap();
-
-    // The relay reads the same shelf; its registry, asked only after the
-    // shelf, is offline and does not matter.
-    let relay_root = scratch();
-    let relay = Store::new(PackageStore::at(relay_root.path()))
-        .with_trust(ImageTrust::new().with_fleet(ada.fleet))
-        .with_shelf(shelf.clone())
-        .with_fetcher(Offline);
-    let tree = materialized_tree(&relay, &tool.meta.id).unwrap();
-    assert_eq!(
-        std::fs::read(tree.join("usr/bin/pandoc")).unwrap(),
-        bytes(60, 5_000)
-    );
-
-    // A shelf is not trusted: a stranger's image on it is refused, and one
-    // filed under another image's name is not that image.
-    let stranger = SigningIdentity::generate();
-    let (_b, planted) = pandoc(runtime, &stranger, 61);
-    std::fs::write(shelf.path(&planted.meta.id), full_tapp(&planted)).unwrap();
-    let refused = materialized_tree(&relay, &planted.meta.id).unwrap_err();
-    assert!(
-        matches!(refused, MaterializeError::Untrusted { .. }),
-        "{refused}"
-    );
-    let misfiled = PackageId::from_bytes([8; 32]);
-    std::fs::write(shelf.path(&misfiled), full_tapp(&tool)).unwrap();
-    let refused = materialized_tree(&relay, &misfiled).unwrap_err();
-    assert!(
-        matches!(refused, MaterializeError::Fetch { .. }),
-        "{refused}"
-    );
-    // Missing everywhere: an unreachable source says so, rather than
-    // passing for "nobody has it".
-    let nowhere = PackageId::from_bytes([9; 32]);
-    let refused = materialized_tree(&relay, &nowhere).unwrap_err();
-    assert!(
-        matches!(&refused, MaterializeError::Fetch { detail, .. } if detail.starts_with("registry")),
-        "{refused}"
-    );
-    let shelf_only = Store::new(PackageStore::at(relay_root.path())).with_shelf(shelf);
-    assert!(matches!(
-        materialized_tree(&shelf_only, &nowhere),
-        Err(MaterializeError::NotFound(_))
-    ));
 }
 
 /// A registry that cannot be reached.
@@ -618,71 +721,6 @@ impl PackageFetcher for Offline {
     fn fetch_package(&self, _id: &PackageId) -> std::io::Result<Option<Vec<u8>>> {
         Err(std::io::Error::other("offline"))
     }
-}
-
-#[test]
-fn system_image_overlay_lowers_are_materialized_locally_with_current_trust_and_integrity() {
-    let ci = SigningIdentity::generate();
-    let (_source, runtime) = sealed_runtime(&ci);
-    let system = scratch();
-    PackageStore::at(system.path())
-        .install_image(
-            full_tapp(&runtime).as_slice(),
-            |_| Ok(Admission::default()),
-            None,
-        )
-        .unwrap();
-    let user = scratch();
-    let store = Store::new(PackageStore::at(user.path()))
-        .with_system(package_store::Layout::new(system.path()));
-    let source = materialized_tree(&store, &runtime.meta.id).unwrap();
-    let local = package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap();
-    assert!(local.starts_with(user.path()));
-    assert_ne!(local, source);
-    assert_eq!(
-        std::fs::read(local.join("usr/bin/bash")).unwrap(),
-        std::fs::read(source.join("usr/bin/bash")).unwrap()
-    );
-    assert_eq!(mode(&local.join("usr/bin/bash")), 0o555);
-    assert_eq!(mode(&local.join("etc/os-release")), 0o444);
-    assert_eq!(
-        std::fs::read_link(local.join("usr/bin/sh")).unwrap(),
-        Path::new("bash")
-    );
-    assert!(local.join("usr/share/empty").is_dir());
-    assert_eq!(
-        package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap(),
-        local
-    );
-
-    let revoked = RevocationList {
-        revoked: vec![RevokedKey {
-            pubkey_hex: hex::encode(ci.public_key_bytes()),
-            reason: "withdrawn".into(),
-        }],
-    };
-    let untrusted = store
-        .clone()
-        .with_trust(ImageTrust::new().with_revoked(revoked));
-    assert!(matches!(
-        package_store::local_materialized_tree(&untrusted, &runtime.meta.id),
-        Err(MaterializeError::Revoked { .. })
-    ));
-
-    std::fs::write(local.join("etc/unsigned"), b"injected config").unwrap();
-    assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
-    std::fs::remove_file(local.join("etc/unsigned")).unwrap();
-    std::fs::set_permissions(
-        local.join("etc/os-release"),
-        std::fs::Permissions::from_mode(0o644),
-    )
-    .unwrap();
-    std::fs::write(local.join("etc/os-release"), b"corrupted cached bytes").unwrap();
-    assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
-    assert_eq!(
-        std::fs::read(source.join("etc/os-release")).unwrap(),
-        b"NAME=Fedora\n"
-    );
 }
 
 /// The OS image's sparse system copy of `runtime`: `usr/lib64/libc.so.6`
@@ -721,121 +759,99 @@ fn sparse_system_runtime(
     (system, host)
 }
 
-#[test]
-fn a_sparse_system_image_is_rebuilt_from_its_tree_and_the_host_files_it_names() {
-    let ci = SigningIdentity::generate();
-    let (_source, runtime) = sealed_runtime(&ci);
-    let (system, _host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
-    let user = scratch();
-    let store = Store::new(PackageStore::at(user.path()))
-        .with_system(package_store::Layout::new(system.path()));
+tilo_test_env::scenario! {
+    fn host_files_of_a_sparse_system_image;
 
-    // Never the sparse tree itself: every reader gets the whole, verified one.
-    let tree = materialized_tree(&store, &runtime.meta.id).unwrap();
-    assert!(tree.starts_with(user.path()), "{}", tree.display());
-    assert_eq!(
-        tree,
-        package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap()
-    );
-    assert_eq!(
-        std::fs::read(tree.join("usr/lib64/libc.so.6")).unwrap(),
-        bytes(2, 60_000)
-    );
-    assert_eq!(mode(&tree.join("usr/lib64/libc.so.6")), 0o555);
-    assert_eq!(
-        std::fs::read(tree.join("usr/bin/bash")).unwrap(),
-        bytes(1, 40_000)
-    );
-}
-
-#[test]
-fn a_host_file_that_is_not_the_signed_bytes_is_refused() {
-    let ci = SigningIdentity::generate();
-    let (_source, runtime) = sealed_runtime(&ci);
-    let (system, _host) = sparse_system_runtime(&runtime, b"a different libc");
-    let user = scratch();
-    let store = Store::new(PackageStore::at(user.path()))
-        .with_system(package_store::Layout::new(system.path()));
-    assert!(materialized_tree(&store, &runtime.meta.id).is_err());
-    assert!(!store.user().layout().payload(runtime.meta.id).exists());
-}
-
-#[test]
-fn a_host_sources_file_names_only_signed_files_by_plain_absolute_paths() {
-    let ci = SigningIdentity::generate();
-    let (_source, runtime) = sealed_runtime(&ci);
-    let (system, host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
-    let sources = package_store::Layout::new(system.path())
-        .meta_dir(runtime.meta.id)
-        .join(package_store::HOST_SOURCES_FILE);
-    let libc = host.path().join("usr/lib64/libc.so.6");
-    for (contents, why) in [
-        (
-            format!("usr/lib64/unsigned.so\t{}\n", libc.display()),
-            "names no signed file",
-        ),
-        (
-            "usr/lib64/libc.so.6\tusr/lib64/libc.so.6\n".to_owned(),
-            "not a plain absolute path",
-        ),
-        (
-            format!(
-                "usr/lib64/libc.so.6\t{}/../lib64/libc.so.6\n",
-                host.path().join("usr/lib64").display()
-            ),
-            "not a plain absolute path",
-        ),
-        (
-            "usr/lib64/libc.so.6\n".to_owned(),
-            "expected a tree path and a host path",
-        ),
-        (
-            format!(
-                "usr/lib64/libc.so.6\t{0}\nusr/lib64/libc.so.6\t{0}\n",
-                libc.display()
-            ),
-            "names a tree path twice",
-        ),
-    ] {
-        std::fs::write(&sources, &contents).unwrap();
+    phase a_sparse_system_image_is_rebuilt_from_its_tree_and_the_host_files_it_names;
+    {
+        let ci = SigningIdentity::generate();
+        let (_source, runtime) = sealed_runtime(&ci);
+        let (system, _host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
         let user = scratch();
         let store = Store::new(PackageStore::at(user.path()))
             .with_system(package_store::Layout::new(system.path()));
-        let error = materialized_tree(&store, &runtime.meta.id).unwrap_err();
-        assert!(error.to_string().contains(why), "{contents:?}: {error}");
+
+        // Never the sparse tree itself: every reader gets the whole, verified one.
+        let tree = materialized_tree(&store, &runtime.meta.id).unwrap();
+        assert!(tree.starts_with(user.path()), "{}", tree.display());
+        assert_eq!(
+            tree,
+            package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(tree.join("usr/lib64/libc.so.6")).unwrap(),
+            bytes(2, 60_000)
+        );
+        assert_eq!(mode(&tree.join("usr/lib64/libc.so.6")), 0o555);
+        assert_eq!(
+            std::fs::read(tree.join("usr/bin/bash")).unwrap(),
+            bytes(1, 40_000)
+        );
     }
 
-    std::fs::write(&sources, "").unwrap();
-    let user = scratch();
-    let store = Store::new(PackageStore::at(user.path()))
-        .with_system(package_store::Layout::new(system.path()));
-    assert!(materialized_tree(&store, &runtime.meta.id).is_err());
-}
+    phase a_host_file_that_is_not_the_signed_bytes_is_refused;
+    {
+        let ci = SigningIdentity::generate();
+        let (_source, runtime) = sealed_runtime(&ci);
+        let (system, _host) = sparse_system_runtime(&runtime, b"a different libc");
+        let user = scratch();
+        let store = Store::new(PackageStore::at(user.path()))
+            .with_system(package_store::Layout::new(system.path()));
+        assert!(materialized_tree(&store, &runtime.meta.id).is_err());
+        assert!(!store.user().layout().payload(runtime.meta.id).exists());
+    }
 
-#[test]
-fn modified_system_image_is_not_imported_as_a_signed_overlay_lower() {
-    let ci = SigningIdentity::generate();
-    let (_source, runtime) = sealed_runtime(&ci);
-    let system = scratch();
-    PackageStore::at(system.path())
-        .install_image(
-            full_tapp(&runtime).as_slice(),
-            |_| Ok(Admission::default()),
-            None,
-        )
-        .unwrap();
-    let user = scratch();
-    let store = Store::new(PackageStore::at(user.path()))
-        .with_system(package_store::Layout::new(system.path()));
-    let source = materialized_tree(&store, &runtime.meta.id).unwrap();
-    std::fs::set_permissions(
-        source.join("usr/bin/bash"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
-    std::fs::write(source.join("usr/bin/bash"), b"unsigned shell").unwrap();
-    assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
-    assert!(!store.user().layout().payload(runtime.meta.id).exists());
+    phase a_host_sources_file_names_only_signed_files_by_plain_absolute_paths;
+    {
+        let ci = SigningIdentity::generate();
+        let (_source, runtime) = sealed_runtime(&ci);
+        let (system, host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
+        let sources = package_store::Layout::new(system.path())
+            .meta_dir(runtime.meta.id)
+            .join(package_store::HOST_SOURCES_FILE);
+        let libc = host.path().join("usr/lib64/libc.so.6");
+        for (contents, why) in [
+            (
+                format!("usr/lib64/unsigned.so\t{}\n", libc.display()),
+                "names no signed file",
+            ),
+            (
+                "usr/lib64/libc.so.6\tusr/lib64/libc.so.6\n".to_owned(),
+                "not a plain absolute path",
+            ),
+            (
+                format!(
+                    "usr/lib64/libc.so.6\t{}/../lib64/libc.so.6\n",
+                    host.path().join("usr/lib64").display()
+                ),
+                "not a plain absolute path",
+            ),
+            (
+                "usr/lib64/libc.so.6\n".to_owned(),
+                "expected a tree path and a host path",
+            ),
+            (
+                format!(
+                    "usr/lib64/libc.so.6\t{0}\nusr/lib64/libc.so.6\t{0}\n",
+                    libc.display()
+                ),
+                "names a tree path twice",
+            ),
+        ] {
+            std::fs::write(&sources, &contents).unwrap();
+            let user = scratch();
+            let store = Store::new(PackageStore::at(user.path()))
+                .with_system(package_store::Layout::new(system.path()));
+            let error = materialized_tree(&store, &runtime.meta.id).unwrap_err();
+            assert!(error.to_string().contains(why), "{contents:?}: {error}");
+        }
+
+        std::fs::write(&sources, "").unwrap();
+        let user = scratch();
+        let store = Store::new(PackageStore::at(user.path()))
+            .with_system(package_store::Layout::new(system.path()));
+        assert!(materialized_tree(&store, &runtime.meta.id).is_err());
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -901,133 +917,136 @@ fn forget_materialized_image(store: &PackageStore, id: PackageId) {
     std::fs::remove_dir_all(store.layout().meta_dir(id)).unwrap();
 }
 
-#[test]
-#[cfg(target_os = "linux")]
-fn local_overlay_reuses_complete_content_without_restaging_verified_source() {
-    let identity = SigningIdentity::generate();
-    let (_source, image) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &identity,
-        runtime_with_large_blob,
-    );
-    let system = scratch();
-    PackageStore::at(system.path())
-        .install_image(
-            full_tapp(&image).as_slice(),
-            |_| Ok(Admission::default()),
+tilo_test_env::scenario! {
+    #[cfg(target_os = "linux")]
+    fn local_overlay_reuses_cached_content;
+
+    phase local_overlay_reuses_complete_content_without_restaging_verified_source;
+    {
+        let identity = SigningIdentity::generate();
+        let (_source, image) = seal(
+            Kind::EnvRuntime,
+            "so.tilo.env-runtime",
             None,
-        )
-        .unwrap();
-    let user = scratch();
-    let packages = PackageStore::at(user.path());
-    packages
-        .install_image(
-            full_tapp(&image).as_slice(),
-            |_| Ok(Admission::default()),
-            None,
-        )
-        .unwrap();
-    forget_materialized_image(&packages, image.meta.id);
-    let watch = watch_staging(&packages.layout().tmp());
-    let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
-    let local = package_store::local_materialized_tree(&store, &image.meta.id).unwrap();
-    for (relative, expected) in &image.meta.collection.entries {
+            &identity,
+            runtime_with_large_blob,
+        );
+        let system = scratch();
+        PackageStore::at(system.path())
+            .install_image(
+                full_tapp(&image).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let user = scratch();
+        let packages = PackageStore::at(user.path());
+        packages
+            .install_image(
+                full_tapp(&image).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        forget_materialized_image(&packages, image.meta.id);
+        let watch = watch_staging(&packages.layout().tmp());
+        let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
+        let local = package_store::local_materialized_tree(&store, &image.meta.id).unwrap();
+        for (relative, expected) in &image.meta.collection.entries {
+            assert_eq!(
+                BlobHash::of_reader(&mut std::fs::File::open(local.join(relative)).unwrap())
+                    .unwrap()
+                    .0,
+                *expected
+            );
+        }
+        assert_eq!(mode(&local.join("usr/bin/bash")), 0o555);
         assert_eq!(
-            BlobHash::of_reader(&mut std::fs::File::open(local.join(relative)).unwrap())
-                .unwrap()
-                .0,
-            *expected
+            std::fs::read_link(local.join("usr/bin/sh")).unwrap(),
+            Path::new("bash")
+        );
+        assert!(local.join("usr/share/empty").is_dir());
+        assert_eq!(
+            created_staging_files(watch),
+            Vec::<String>::new(),
+            "complete signed blobs must not be copied into ingestion staging again"
         );
     }
-    assert_eq!(mode(&local.join("usr/bin/bash")), 0o555);
-    assert_eq!(
-        std::fs::read_link(local.join("usr/bin/sh")).unwrap(),
-        Path::new("bash")
-    );
-    assert!(local.join("usr/share/empty").is_dir());
-    assert_eq!(
-        created_staging_files(watch),
-        Vec::<String>::new(),
-        "complete signed blobs must not be copied into ingestion staging again"
-    );
+
+    phase local_overlay_imports_only_missing_content_from_partial_cache;
+    {
+        let identity = SigningIdentity::generate();
+        let (_source, image) = seal(
+            Kind::EnvRuntime,
+            "so.tilo.env-runtime",
+            None,
+            &identity,
+            runtime_with_two_large_blobs,
+        );
+        let system = scratch();
+        PackageStore::at(system.path())
+            .install_image(
+                full_tapp(&image).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let user = scratch();
+        let packages = PackageStore::at(user.path());
+        packages
+            .install_image(
+                full_tapp(&image).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        forget_materialized_image(&packages, image.meta.id);
+        let missing = image.meta.collection.entries["usr/lib64/missing.bin"];
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let content = fs::store::ContentStore::open(&packages.layout().content())
+                .await
+                .unwrap();
+            content
+                .evict_blobs(&std::collections::HashSet::from([
+                    iroh_blobs::Hash::from_bytes(*missing.as_bytes()),
+                ]))
+                .await
+                .unwrap();
+            assert_eq!(
+                content
+                    .complete_len(iroh_blobs::Hash::from_bytes(*missing.as_bytes()))
+                    .await
+                    .unwrap(),
+                None
+            );
+            content.close().await.unwrap();
+        });
+        let watch = watch_staging(&packages.layout().tmp());
+        let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
+        let local = package_store::local_materialized_tree(&store, &image.meta.id).unwrap();
+        assert_eq!(
+            std::fs::read(local.join("usr/lib64/missing.bin")).unwrap(),
+            bytes(10, 310_000)
+        );
+        assert_eq!(
+            std::fs::read(local.join("usr/lib64/cached.bin")).unwrap(),
+            bytes(9, 300_000)
+        );
+        assert_eq!(
+            created_staging_files(watch).len(),
+            1,
+            "only the missing large blob needs ingestion staging"
+        );
+    }
 }
 
 fn runtime_with_two_large_blobs(root: &Path) {
     runtime_with_large_blob(root);
     std::fs::write(root.join("usr/lib64/missing.bin"), bytes(10, 310_000)).unwrap();
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn local_overlay_imports_only_missing_content_from_partial_cache() {
-    let identity = SigningIdentity::generate();
-    let (_source, image) = seal(
-        Kind::EnvRuntime,
-        "so.tilo.env-runtime",
-        None,
-        &identity,
-        runtime_with_two_large_blobs,
-    );
-    let system = scratch();
-    PackageStore::at(system.path())
-        .install_image(
-            full_tapp(&image).as_slice(),
-            |_| Ok(Admission::default()),
-            None,
-        )
-        .unwrap();
-    let user = scratch();
-    let packages = PackageStore::at(user.path());
-    packages
-        .install_image(
-            full_tapp(&image).as_slice(),
-            |_| Ok(Admission::default()),
-            None,
-        )
-        .unwrap();
-    forget_materialized_image(&packages, image.meta.id);
-    let missing = image.meta.collection.entries["usr/lib64/missing.bin"];
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        let content = fs::store::ContentStore::open(&packages.layout().content())
-            .await
-            .unwrap();
-        content
-            .evict_blobs(&std::collections::HashSet::from([
-                iroh_blobs::Hash::from_bytes(*missing.as_bytes()),
-            ]))
-            .await
-            .unwrap();
-        assert_eq!(
-            content
-                .complete_len(iroh_blobs::Hash::from_bytes(*missing.as_bytes()))
-                .await
-                .unwrap(),
-            None
-        );
-        content.close().await.unwrap();
-    });
-    let watch = watch_staging(&packages.layout().tmp());
-    let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
-    let local = package_store::local_materialized_tree(&store, &image.meta.id).unwrap();
-    assert_eq!(
-        std::fs::read(local.join("usr/lib64/missing.bin")).unwrap(),
-        bytes(10, 310_000)
-    );
-    assert_eq!(
-        std::fs::read(local.join("usr/lib64/cached.bin")).unwrap(),
-        bytes(9, 300_000)
-    );
-    assert_eq!(
-        created_staging_files(watch).len(),
-        1,
-        "only the missing large blob needs ingestion staging"
-    );
 }
 
 #[test]

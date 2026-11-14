@@ -22,7 +22,7 @@ mod host;
 mod open_file;
 pub mod registry;
 mod surface;
-pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
+pub use host::{ApplicationHost, NativeProcessHost, NativeProfile, PERSONAL_WORKSPACE};
 #[cfg(test)]
 pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
@@ -950,7 +950,9 @@ impl HostContext {
                     || saved.record_id != self.record.id.as_str()
                     || self.record.kind.as_str() != saved.record_kind
                 {
-                    return Err(LaunchError::BindingMismatch);
+                    return Err(mismatch(
+                        "a saved view of another device, workspace or record",
+                    ));
                 }
                 Ok(())
             }

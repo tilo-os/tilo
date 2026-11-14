@@ -136,109 +136,113 @@ fn snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>, u32)> {
     out.sort_by(|left, right| left.0.cmp(&right.0));
     out
 }
-#[test]
-fn canonical_enrolled_device_roundtrip_preserves_root_and_exact_device_without_source_changes() {
-    let fixture = fixture();
-    let source_before = snapshot(fixture.source.path());
-    let enrolled = fixture.review().unwrap();
-    assert_eq!(enrolled.device_label(), "Future laptop");
-    let sealed = fixture.output.join("identity.sealed");
-    enrolled
-        .export_password_sealed(&sealed, PASSWORD, "prepared-operation")
-        .unwrap();
-    let authenticated = fixture.open(&sealed, "prepared-operation").unwrap();
-    let target = tempfile::tempdir().unwrap();
-    let system = target.path().join("system");
-    let identity = target.path().join("identity");
-    private(&system);
-    private(&identity);
-    let imported = authenticated.import_into(&system, &identity).unwrap();
-    assert_eq!(imported.user_public_key, fixture.root);
-    assert_eq!(imported.device_public_key, fixture.device);
-    let paths = IdentityPaths::under(&system);
-    assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
-    assert!(!paths.user_privkey.exists());
-    assert_eq!(
-        persist::read_device_key(&paths.device_privkey)
-            .unwrap()
-            .verifying_key()
-            .to_bytes(),
-        fixture.device
-    );
-    assert_eq!(
-        runtime_identity::load_metadata_from_path(&imported.identity_record)
-            .unwrap()
-            .group_public_key,
-        fixture.root
-    );
-    let before_retry = snapshot(target.path());
-    assert_eq!(
-        authenticated.import_into(&system, &identity).unwrap(),
-        imported
-    );
-    assert_eq!(snapshot(target.path()), before_retry);
-    let source_after = snapshot(fixture.source.path());
-    assert_eq!(
-        source_after
-            .into_iter()
-            .filter(|(path, _, _)| !path.starts_with("sealed-output"))
-            .collect::<Vec<_>>(),
-        source_before
-    );
-}
-#[test]
-fn enrolled_device_wrong_password_binding_authority_and_target_conflicts_refuse_before_import() {
-    let fixture = fixture();
-    let enrolled = fixture.review().unwrap();
-    let sealed = fixture.output.join("identity.sealed");
-    enrolled
-        .export_password_sealed(&sealed, PASSWORD, "operation")
-        .unwrap();
-    for (password, binding, root, device) in [
-        (
-            b"wrong private device transport password".as_slice(),
-            "operation",
-            fixture.root,
-            fixture.device,
-        ),
-        (PASSWORD, "other-operation", fixture.root, fixture.device),
-        (PASSWORD, "operation", [3; 32], fixture.device),
-        (PASSWORD, "operation", fixture.root, [4; 32]),
-    ] {
-        assert!(
-            AuthenticatedEnrolledDevice::open(
-                &sealed,
-                password,
-                binding,
-                root,
-                device,
-                tilo_clock::unix_now_ns()
-            )
-            .is_err()
+tilo_test_env::scenario! {
+    fn an_enrolled_device_transport;
+
+    phase canonical_enrolled_device_roundtrip_preserves_root_and_exact_device_without_source_changes;
+    {
+        let fixture = fixture();
+        let source_before = snapshot(fixture.source.path());
+        let enrolled = fixture.review().unwrap();
+        assert_eq!(enrolled.device_label(), "Future laptop");
+        let sealed = fixture.output.join("identity.sealed");
+        enrolled
+            .export_password_sealed(&sealed, PASSWORD, "prepared-operation")
+            .unwrap();
+        let authenticated = fixture.open(&sealed, "prepared-operation").unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let system = target.path().join("system");
+        let identity = target.path().join("identity");
+        private(&system);
+        private(&identity);
+        let imported = authenticated.import_into(&system, &identity).unwrap();
+        assert_eq!(imported.user_public_key, fixture.root);
+        assert_eq!(imported.device_public_key, fixture.device);
+        let paths = IdentityPaths::under(&system);
+        assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
+        assert!(!paths.user_privkey.exists());
+        assert_eq!(
+            persist::read_device_key(&paths.device_privkey)
+                .unwrap()
+                .verifying_key()
+                .to_bytes(),
+            fixture.device
+        );
+        assert_eq!(
+            runtime_identity::load_metadata_from_path(&imported.identity_record)
+                .unwrap()
+                .group_public_key,
+            fixture.root
+        );
+        let before_retry = snapshot(target.path());
+        assert_eq!(
+            authenticated.import_into(&system, &identity).unwrap(),
+            imported
+        );
+        assert_eq!(snapshot(target.path()), before_retry);
+        let source_after = snapshot(fixture.source.path());
+        assert_eq!(
+            source_after
+                .into_iter()
+                .filter(|(path, _, _)| !path.starts_with("sealed-output"))
+                .collect::<Vec<_>>(),
+            source_before
         );
     }
-    let authenticated = fixture.open(&sealed, "operation").unwrap();
-    let target = tempfile::tempdir().unwrap();
-    let system = target.path().join("system");
-    let identity = target.path().join("identity");
-    private(&system);
-    private(&identity);
-    private(&identity.join("fleets"));
-    tilo_files::native::atomic::write_with_mode(
-        &identity.join("primary.json"),
-        b"unrelated persona",
-        0o600,
-    )
-    .unwrap();
-    let before = snapshot(target.path());
-    assert!(authenticated.import_into(&system, &identity).is_err());
-    assert_eq!(snapshot(target.path()), before);
-    let source = IdentityPaths::under(&fixture.system);
-    let human_root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
-    persist::write_signing_key(&source.user_privkey, &human_root).unwrap();
-    assert!(fixture.review().is_err());
-}
 
+    phase enrolled_device_wrong_password_binding_authority_and_target_conflicts_refuse_before_import;
+    {
+        let fixture = fixture();
+        let enrolled = fixture.review().unwrap();
+        let sealed = fixture.output.join("identity.sealed");
+        enrolled
+            .export_password_sealed(&sealed, PASSWORD, "operation")
+            .unwrap();
+        for (password, binding, root, device) in [
+            (
+                b"wrong private device transport password".as_slice(),
+                "operation",
+                fixture.root,
+                fixture.device,
+            ),
+            (PASSWORD, "other-operation", fixture.root, fixture.device),
+            (PASSWORD, "operation", [3; 32], fixture.device),
+            (PASSWORD, "operation", fixture.root, [4; 32]),
+        ] {
+            assert!(
+                AuthenticatedEnrolledDevice::open(
+                    &sealed,
+                    password,
+                    binding,
+                    root,
+                    device,
+                    tilo_clock::unix_now_ns()
+                )
+                .is_err()
+            );
+        }
+        let authenticated = fixture.open(&sealed, "operation").unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let system = target.path().join("system");
+        let identity = target.path().join("identity");
+        private(&system);
+        private(&identity);
+        private(&identity.join("fleets"));
+        tilo_files::native::atomic::write_with_mode(
+            &identity.join("primary.json"),
+            b"unrelated persona",
+            0o600,
+        )
+        .unwrap();
+        let before = snapshot(target.path());
+        assert!(authenticated.import_into(&system, &identity).is_err());
+        assert_eq!(snapshot(target.path()), before);
+        let source = IdentityPaths::under(&fixture.system);
+        let human_root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+        persist::write_signing_key(&source.user_privkey, &human_root).unwrap();
+        assert!(fixture.review().is_err());
+    }
+}
 #[test]
 #[cfg(feature = "native-current-device-qualification")]
 fn current_owner_reference_roundtrip_uses_existing_member_without_exporting_private_keys() {

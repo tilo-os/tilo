@@ -127,11 +127,12 @@ fn populated_firewall_passes_native_certification() {
     }
 }
 
-/// Nothing shown is fabricated, an unavailable firewall is one empty state with one action,
-/// and a failed recovery changes nothing and says why.
-#[test]
-fn backend_availability_governs_what_is_shown_and_announced() {
-    // --- phase: nothing_shown_is_fabricated ---
+tilo_test_env::scenario! {
+    /// Nothing shown is fabricated, an unavailable firewall is one empty state with one action,
+    /// and a failed recovery changes nothing and says why.
+    fn backend_availability_governs_what_is_shown_and_announced;
+
+    phase nothing_shown_is_fabricated;
     {
         // Before the document's configuration is shown the window shows none, never the
         // fabricated sample.
@@ -140,7 +141,7 @@ fn backend_availability_governs_what_is_shown_and_announced() {
         assert!(live.config.zones.is_empty());
     }
 
-    // --- phase: failed_recovery_changes_nothing_and_says_why ---
+    phase failed_recovery_changes_nothing_and_says_why;
     {
         let mut app = Store::new();
         let failed = app.finish_retry(Err(
@@ -160,7 +161,7 @@ fn backend_availability_governs_what_is_shown_and_announced() {
         );
     }
 
-    // --- phase: the_unavailable_window_is_one_empty_state_with_one_action ---
+    phase the_unavailable_window_is_one_empty_state_with_one_action;
     {
         let app = framed_app(FirewallWindow::bare(Store::new()), 1280.0, 800.0);
         assert_eq!(app.shell.geometry().sidebar, SidebarPlacement::None);
@@ -168,7 +169,7 @@ fn backend_availability_governs_what_is_shown_and_announced() {
         assert!(retry.width() > 0.0);
     }
 
-    // --- phase: a_capture_shows_the_sample_and_never_the_host ---
+    phase a_capture_shows_the_sample_and_never_the_host;
     {
         let app = TestApp::<FirewallShell>::capture(None).unwrap();
         assert_eq!(
@@ -216,10 +217,11 @@ fn choosing_a_zone_in_the_list_opens_its_page() {
     assert!(opened.contains(&ZoneKind::Trusted), "{opened:?}");
 }
 
-/// Choosing a zone, a tab or a rule changes what the window shows and never the document.
-#[test]
-fn presentation_changes_do_not_create_document_versions() {
-    // --- phase: intents_change_only_the_view ---
+tilo_test_env::scenario! {
+    /// Choosing a zone, a tab or a rule changes what the window shows and never the document.
+    fn presentation_changes_do_not_create_document_versions;
+
+    phase intents_change_only_the_view;
     {
         let mut app = Store::demo();
         for intent in [
@@ -237,7 +239,7 @@ fn presentation_changes_do_not_create_document_versions() {
         assert_eq!(app.draft.proto, Proto::Udp);
     }
 
-    // --- phase: hosted_selection_creates_no_version ---
+    phase hosted_selection_creates_no_version;
     {
         let mut app = hosted();
         let versions = app.versions().len();
@@ -275,10 +277,11 @@ fn the_add_rule_form_validates_each_field() {
     assert!(app.draft.port().is_empty(), "the draft clears once added");
 }
 
-/// Deleting asks first; only the confirmation removes the rule, and undo brings it back.
-#[test]
-fn deleting_a_rule_asks_first() {
-    // --- phase: cancel_keeps_the_rule ---
+tilo_test_env::scenario! {
+    /// Deleting asks first; only the confirmation removes the rule, and undo brings it back.
+    fn deleting_a_rule_asks_first;
+
+    phase cancel_keeps_the_rule;
     {
         let mut app = Store::demo();
         let id = app.config.zone(ZoneKind::Public).unwrap().rules[0].id;
@@ -290,7 +293,7 @@ fn deleting_a_rule_asks_first() {
         assert_eq!(app.pending_delete, None);
     }
 
-    // --- phase: confirmed_delete_reaches_the_document ---
+    phase confirmed_delete_reaches_the_document;
     {
         let mut app = hosted();
         let rule = public_rules(&app)[0].clone();

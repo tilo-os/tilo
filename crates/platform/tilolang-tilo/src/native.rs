@@ -851,91 +851,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_record_an_app_publishes_is_the_root_its_package_names() {
-        let native = Native::of(&[], &[tasks(), chat()]);
-        assert_eq!(native.record("so.tilo.tasks"), Some("tasks.tracker"));
-        assert_eq!(native.record("so.tilo.chat"), Some("chat.workspace"));
-        assert!(native.is("so.tilo.tasks"));
-        assert!(!native.is("so.tilo.notes"));
-        assert_eq!(
-            native.record_type("so.tilo.chat"),
-            Some("so.tilo.chat.Workspace")
-        );
-        assert_eq!(
-            native.record_type("so.tilo.tasks"),
-            Some("so.tilo.tasks.Tracker")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_native_apps_record_is_read_by_its_surface;
 
-    #[test]
-    fn a_resource_key_names_its_type_by_the_collections_it_sits_in() {
-        // The app's schemas register as the session loads its package.
-        let _tasks = tasks();
-        let root = lookup("so.tilo.tasks.Tracker").expect("the tracker's schema");
-        let ty = |key: &str| item_type("tasks.tracker", root, key);
-        assert_eq!(ty("tasks.tracker/issues/abc"), Some("so.tilo.tasks.Issue"));
-        assert_eq!(
-            ty("tasks.tracker/issues/abc/links/one"),
-            Some("so.tilo.tasks.Link")
-        );
-        assert_eq!(
-            ty("tasks.tracker/issues/abc/comments/one"),
-            Some("so.tilo.tasks.Message")
-        );
-        // A field of an item is no resource, and neither is a collection.
-        assert_eq!(ty("tasks.tracker/issues/abc/title"), None);
-        assert_eq!(ty("tasks.tracker/issues"), None);
-        assert_eq!(ty("tasks.tracker/nothing/abc"), None);
-        // A program's id keeps the item's own id, which [`NativeReads::read`] matches against
-        // the rows the app's directory lists.
-        assert_eq!(
-            held_id("tasks.tracker", "tasks.tracker/issues/abc"),
-            "tasks.tracker/abc"
-        );
-    }
+        phase the_record_an_app_publishes_is_the_root_its_package_names;
+        {
+            let native = Native::of(&[], &[tasks(), chat()]);
+            assert_eq!(native.record("so.tilo.tasks"), Some("tasks.tracker"));
+            assert_eq!(native.record("so.tilo.chat"), Some("chat.workspace"));
+            assert!(native.is("so.tilo.tasks"));
+            assert!(!native.is("so.tilo.notes"));
+            assert_eq!(
+                native.record_type("so.tilo.chat"),
+                Some("so.tilo.chat.Workspace")
+            );
+            assert_eq!(
+                native.record_type("so.tilo.tasks"),
+                Some("so.tilo.tasks.Tracker")
+            );
+        }
 
-    #[test]
-    fn a_field_is_read_as_the_apps_surface_typing_says() {
-        let native = Native::of(&[], &[tasks()]);
-        let reads = NativeReads::new(&native, &NoCalls);
-        let schema = lookup("so.tilo.tasks.Issue").expect("the issue's schema");
-        let content = json!({
-            "title": "Review Ada's portfolio",
-            "assignee": "person:ada",
-            "labels": ["urgent", "review"],
-            "body": "Look at her GitHub.",
-        });
-        let fields = reads
-            .fields("so.tilo.tasks.Issue", &content)
-            .expect("the fields read");
-        assert_eq!(
-            fields.get("Issue.title"),
-            Some(&FieldValue::Text("Review Ada's portfolio".into()))
-        );
-        // An option the app wrote as the value it holds is the runtime's option.
-        assert_eq!(
-            fields.get("Issue.assignee"),
-            Some(&FieldValue::Scalar(Scalar::Json(
-                json!({"some": "person:ada"})
-            )))
-        );
-        assert_eq!(
-            fields.get("Issue.labels"),
-            Some(&FieldValue::Keys(vec!["review".into(), "urgent".into()]))
-        );
-        assert_eq!(
-            fields.get("Issue.body"),
-            Some(&FieldValue::Rich(RichValue::from_text(
-                "Look at her GitHub."
-            )))
-        );
-        // A collection is read where the app lists it; a field nobody wrote holds what the
-        // app's package says it holds.
-        assert!(!fields.contains_key("Issue.links"));
-        let due = schema
-            .field("Issue.due_ms")
-            .expect("the due day is a field");
-        assert_eq!(fields.get("Issue.due_ms"), Some(&default_value(due)));
+        phase a_resource_key_names_its_type_by_the_collections_it_sits_in;
+        {
+            // The app's schemas register as the session loads its package.
+            let _tasks = tasks();
+            let root = lookup("so.tilo.tasks.Tracker").expect("the tracker's schema");
+            let ty = |key: &str| item_type("tasks.tracker", root, key);
+            assert_eq!(ty("tasks.tracker/issues/abc"), Some("so.tilo.tasks.Issue"));
+            assert_eq!(
+                ty("tasks.tracker/issues/abc/links/one"),
+                Some("so.tilo.tasks.Link")
+            );
+            assert_eq!(
+                ty("tasks.tracker/issues/abc/comments/one"),
+                Some("so.tilo.tasks.Message")
+            );
+            // A field of an item is no resource, and neither is a collection.
+            assert_eq!(ty("tasks.tracker/issues/abc/title"), None);
+            assert_eq!(ty("tasks.tracker/issues"), None);
+            assert_eq!(ty("tasks.tracker/nothing/abc"), None);
+            // A program's id keeps the item's own id, which [`NativeReads::read`] matches against
+            // the rows the app's directory lists.
+            assert_eq!(
+                held_id("tasks.tracker", "tasks.tracker/issues/abc"),
+                "tasks.tracker/abc"
+            );
+        }
+
+        phase a_field_is_read_as_the_apps_surface_typing_says;
+        {
+            let native = Native::of(&[], &[tasks()]);
+            let reads = NativeReads::new(&native, &NoCalls);
+            let schema = lookup("so.tilo.tasks.Issue").expect("the issue's schema");
+            let content = json!({
+                "title": "Review Ada's portfolio",
+                "assignee": "person:ada",
+                "labels": ["urgent", "review"],
+                "body": "Look at her GitHub.",
+            });
+            let fields = reads
+                .fields("so.tilo.tasks.Issue", &content)
+                .expect("the fields read");
+            assert_eq!(
+                fields.get("Issue.title"),
+                Some(&FieldValue::Text("Review Ada's portfolio".into()))
+            );
+            // An option the app wrote as the value it holds is the runtime's option.
+            assert_eq!(
+                fields.get("Issue.assignee"),
+                Some(&FieldValue::Scalar(Scalar::Json(
+                    json!({"some": "person:ada"})
+                )))
+            );
+            assert_eq!(
+                fields.get("Issue.labels"),
+                Some(&FieldValue::Keys(vec!["review".into(), "urgent".into()]))
+            );
+            assert_eq!(
+                fields.get("Issue.body"),
+                Some(&FieldValue::Rich(RichValue::from_text(
+                    "Look at her GitHub."
+                )))
+            );
+            // A collection is read where the app lists it; a field nobody wrote holds what the
+            // app's package says it holds.
+            assert!(!fields.contains_key("Issue.links"));
+            let due = schema
+                .field("Issue.due_ms")
+                .expect("the due day is a field");
+            assert_eq!(fields.get("Issue.due_ms"), Some(&default_value(due)));
+        }
     }
 }

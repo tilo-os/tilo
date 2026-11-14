@@ -275,66 +275,71 @@ fn sealed_input(bytes: &[u8]) -> io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn output_proof_binds_exact_held_identities_and_rejects_overlap() {
-        use std::os::unix::fs::MetadataExt;
-        let source = tempfile::tempdir().unwrap();
-        let output = tempfile::tempdir().unwrap();
-        let source = File::open(source.path()).unwrap();
-        let output = File::open(output.path()).unwrap();
-        let operation = uuid::Uuid::new_v4();
-        let proof = output_admission(&source, &output, &operation.to_string(), 1000).unwrap();
-        assert_eq!(&proof[..8], b"TILOCAP1");
-        assert_eq!(&proof[12..28], operation.as_bytes());
-        assert_eq!(
-            &proof[28..36],
-            &source.metadata().unwrap().dev().to_be_bytes()
-        );
-        assert_eq!(
-            &proof[36..44],
-            &source.metadata().unwrap().ino().to_be_bytes()
-        );
-        assert_eq!(
-            &proof[44..52],
-            &output.metadata().unwrap().dev().to_be_bytes()
-        );
-        assert_eq!(
-            &proof[52..60],
-            &output.metadata().unwrap().ino().to_be_bytes()
-        );
-        assert_eq!(&proof[60..64], &1000u32.to_be_bytes());
-        assert!(output_admission(&source, &source, &operation.to_string(), 1000).is_err());
-        assert!(
-            output_admission(
-                &source,
-                &output,
-                &operation.to_string().to_uppercase(),
-                1000
-            )
-            .is_err()
-        );
-    }
 
-    #[test]
-    fn host_admission_refuses_root_as_original_user() {
-        let error = HostSession::spawn(Path::new("/not-an-executable"), 0, false)
-            .err()
-            .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-    }
+    tilo_test_env::scenario! {
+        fn host_session_binds_held_identities_and_sealed_requests;
 
-    #[test]
-    fn request_memfd_is_sealed_against_modification() {
-        let mut file = sealed_input(b"bounded command").unwrap();
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"bounded command");
-        assert!(file.write_all(b"changed").is_err());
-        assert!(file.set_len(0).is_err());
-        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
-        assert_eq!(
-            flags,
-            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL
-        );
+        phase output_proof_binds_exact_held_identities_and_rejects_overlap;
+        {
+            use std::os::unix::fs::MetadataExt;
+            let source = tempfile::tempdir().unwrap();
+            let output = tempfile::tempdir().unwrap();
+            let source = File::open(source.path()).unwrap();
+            let output = File::open(output.path()).unwrap();
+            let operation = uuid::Uuid::new_v4();
+            let proof = output_admission(&source, &output, &operation.to_string(), 1000).unwrap();
+            assert_eq!(&proof[..8], b"TILOCAP1");
+            assert_eq!(&proof[12..28], operation.as_bytes());
+            assert_eq!(
+                &proof[28..36],
+                &source.metadata().unwrap().dev().to_be_bytes()
+            );
+            assert_eq!(
+                &proof[36..44],
+                &source.metadata().unwrap().ino().to_be_bytes()
+            );
+            assert_eq!(
+                &proof[44..52],
+                &output.metadata().unwrap().dev().to_be_bytes()
+            );
+            assert_eq!(
+                &proof[52..60],
+                &output.metadata().unwrap().ino().to_be_bytes()
+            );
+            assert_eq!(&proof[60..64], &1000u32.to_be_bytes());
+            assert!(output_admission(&source, &source, &operation.to_string(), 1000).is_err());
+            assert!(
+                output_admission(
+                    &source,
+                    &output,
+                    &operation.to_string().to_uppercase(),
+                    1000
+                )
+                .is_err()
+            );
+        }
+
+        phase host_admission_refuses_root_as_original_user;
+        {
+            let error = HostSession::spawn(Path::new("/not-an-executable"), 0, false)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
+
+        phase request_memfd_is_sealed_against_modification;
+        {
+            let mut file = sealed_input(b"bounded command").unwrap();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"bounded command");
+            assert!(file.write_all(b"changed").is_err());
+            assert!(file.set_len(0).is_err());
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+            assert_eq!(
+                flags,
+                libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL
+            );
+        }
     }
 }

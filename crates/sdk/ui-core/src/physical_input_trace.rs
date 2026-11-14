@@ -167,98 +167,102 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
 mod tests {
     use super::*;
 
-    #[test]
-    fn native_observer_requires_the_explicit_opt_in() {
-        for value in [None, Some(""), Some("0"), Some("true"), Some("2")] {
-            assert!(Trace::when_enabled(value).is_none());
+    tilo_test_env::scenario! {
+        fn the_physical_input_trace_is_opt_in_bounded_and_content_free;
+
+        phase native_observer_requires_the_explicit_opt_in;
+        {
+            for value in [None, Some(""), Some("0"), Some("true"), Some("2")] {
+                assert!(Trace::when_enabled(value).is_none());
+            }
+            assert!(Trace::when_enabled(Some("1")).is_some());
         }
-        assert!(Trace::when_enabled(Some("1")).is_some());
-    }
 
-    #[test]
-    fn key_metadata_is_content_free_and_text_count_has_a_strict_bound() {
-        let key = winit::keyboard::Key::Character("private key text".into());
-        let mut event = crate::synthetic_input::char_key("private key text");
-        let mut trace = Trace::default();
-        let row = trace.begin(&event, None).unwrap();
-        assert_eq!(row["key_category"], "printable");
-        assert_eq!(row["text_present"], true);
-        assert_eq!(row["text_scalar_count"], 16);
-        assert!(!row.to_string().contains("private key text"));
-        let named = crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter);
-        assert_eq!(trace.begin(&named, None).unwrap()["key_category"], "named");
-        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-            event.text = None;
+        phase key_metadata_is_content_free_and_text_count_has_a_strict_bound;
+        {
+            let key = winit::keyboard::Key::Character("private key text".into());
+            let mut event = crate::synthetic_input::char_key("private key text");
+            let mut trace = Trace::default();
+            let row = trace.begin(&event, None).unwrap();
+            assert_eq!(row["key_category"], "printable");
+            assert_eq!(row["text_present"], true);
+            assert_eq!(row["text_scalar_count"], 16);
+            assert!(!row.to_string().contains("private key text"));
+            let named = crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter);
+            assert_eq!(trace.begin(&named, None).unwrap()["key_category"], "named");
+            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                event.text = None;
+            }
+            let row = trace.begin(&event, None).unwrap();
+            assert_eq!(row["text_present"], false);
+            assert!(row["text_scalar_count"].is_null());
+            let row = trace
+                .begin(&WindowEvent::Ime(Ime::Commit("é".repeat(5000))), None)
+                .unwrap();
+            assert_eq!(row["text_scalar_count"], 4096);
+            assert_eq!(row["text_count_truncated"], true);
+            assert!(!row.to_string().contains('é'));
+            let released = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                key,
+                None,
+                ElementState::Released,
+            ));
+            assert!(trace.begin(&released, None).is_none());
         }
-        let row = trace.begin(&event, None).unwrap();
-        assert_eq!(row["text_present"], false);
-        assert!(row["text_scalar_count"].is_null());
-        let row = trace
-            .begin(&WindowEvent::Ime(Ime::Commit("é".repeat(5000))), None)
-            .unwrap();
-        assert_eq!(row["text_scalar_count"], 4096);
-        assert_eq!(row["text_count_truncated"], true);
-        assert!(!row.to_string().contains('é'));
-        let released = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            key,
-            None,
-            ElementState::Released,
-        ));
-        assert!(trace.begin(&released, None).is_none());
-    }
 
-    #[test]
-    fn route_snapshot_flags_are_boolean_only_and_cannot_export_private_values() {
-        let safe = safe_snapshot(Some(serde_json::json!({
-            "app":"so.tilo.notes", "active_line_focused":true,
-            "sidebar_renaming":"private rename value", "editor_composing":false,
-        })));
-        assert_eq!(safe["active_line_focused"], true);
-        assert_eq!(safe["editor_composing"], false);
-        assert!(safe.get("sidebar_renaming").is_none());
-        assert!(!safe.to_string().contains("private rename value"));
-    }
-
-    #[test]
-    fn redraw_witness_is_bounded_and_a_new_input_replaces_it() {
-        let mut trace = Trace {
-            next_id: 1,
-            ..Trace::default()
-        };
-        trace.pending.push(1);
-        let state = serde_json::json!({"app": "so.tilo.notes", "body_chars": 1});
-        for frame in 1..=32 {
-            assert!(trace.drawn(Some(frame), Some(state.clone())).is_some());
+        phase route_snapshot_flags_are_boolean_only_and_cannot_export_private_values;
+        {
+            let safe = safe_snapshot(Some(serde_json::json!({
+                "app":"so.tilo.notes", "active_line_focused":true,
+                "sidebar_renaming":"private rename value", "editor_composing":false,
+            })));
+            assert_eq!(safe["active_line_focused"], true);
+            assert_eq!(safe["editor_composing"], false);
+            assert!(safe.get("sidebar_renaming").is_none());
+            assert!(!safe.to_string().contains("private rename value"));
         }
-        assert!(!trace.has_pending());
-        assert!(trace.drawn(Some(33), Some(state.clone())).is_none());
-        let event = WindowEvent::Ime(Ime::Commit("private input".to_owned()));
-        let input = trace.begin(&event, Some(state.clone())).unwrap();
-        assert_eq!(input["id"], 2);
-        let row = trace.drawn(Some(34), Some(state)).unwrap();
-        assert_eq!(row["input_ids"], serde_json::json!([2]));
-        assert!(!input.to_string().contains("private input"));
-        trace.redraw_until = crate::time::now().checked_sub(Duration::from_secs(1));
-        assert!(trace.drawn(Some(35), None).is_none());
-    }
 
-    #[test]
-    fn discarded_draw_keeps_a_content_free_witness_for_its_redraw() {
-        let mut trace = Trace::default();
-        trace.pending.push(1);
-        let state = serde_json::json!({
-            "app": "so.tilo.notes", "body_hash": "1".repeat(64),
-            "body_chars": 1, "title": "private title", "text": "private text"
-        });
-        let first = trace.drawn(Some(433), Some(state.clone())).unwrap();
-        assert_eq!(first["input_ids"], serde_json::json!([1]));
-        let retry = trace
-            .drawn(Some(435), Some(state))
-            .expect("a discarded first buffer must not erase the input witness for a later draw");
-        assert_eq!(retry["cpu_frame_id"], 435);
-        assert_eq!(retry["input_ids"], first["input_ids"]);
-        assert_eq!(retry["state"], first["state"]);
-        assert!(retry["state"].get("title").is_none());
-        assert!(retry["state"].get("text").is_none());
+        phase redraw_witness_is_bounded_and_a_new_input_replaces_it;
+        {
+            let mut trace = Trace {
+                next_id: 1,
+                ..Trace::default()
+            };
+            trace.pending.push(1);
+            let state = serde_json::json!({"app": "so.tilo.notes", "body_chars": 1});
+            for frame in 1..=32 {
+                assert!(trace.drawn(Some(frame), Some(state.clone())).is_some());
+            }
+            assert!(!trace.has_pending());
+            assert!(trace.drawn(Some(33), Some(state.clone())).is_none());
+            let event = WindowEvent::Ime(Ime::Commit("private input".to_owned()));
+            let input = trace.begin(&event, Some(state.clone())).unwrap();
+            assert_eq!(input["id"], 2);
+            let row = trace.drawn(Some(34), Some(state)).unwrap();
+            assert_eq!(row["input_ids"], serde_json::json!([2]));
+            assert!(!input.to_string().contains("private input"));
+            trace.redraw_until = crate::time::now().checked_sub(Duration::from_secs(1));
+            assert!(trace.drawn(Some(35), None).is_none());
+        }
+
+        phase discarded_draw_keeps_a_content_free_witness_for_its_redraw;
+        {
+            let mut trace = Trace::default();
+            trace.pending.push(1);
+            let state = serde_json::json!({
+                "app": "so.tilo.notes", "body_hash": "1".repeat(64),
+                "body_chars": 1, "title": "private title", "text": "private text"
+            });
+            let first = trace.drawn(Some(433), Some(state.clone())).unwrap();
+            assert_eq!(first["input_ids"], serde_json::json!([1]));
+            let retry = trace
+                .drawn(Some(435), Some(state))
+                .expect("a discarded first buffer must not erase the input witness for a later draw");
+            assert_eq!(retry["cpu_frame_id"], 435);
+            assert_eq!(retry["input_ids"], first["input_ids"]);
+            assert_eq!(retry["state"], first["state"]);
+            assert!(retry["state"].get("title").is_none());
+            assert!(retry["state"].get("text").is_none());
+        }
     }
 }

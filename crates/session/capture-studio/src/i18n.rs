@@ -158,127 +158,131 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn a_send_says_what_became_of_it() {
-        assert_eq!(
-            sent(&Sent::offered("Phone".into())),
-            "Offered to Phone; accept it there to save"
-        );
-        assert_eq!(
-            sent(&Sent::refused("Phone".into(), Refusal::Offline)),
-            "That device is no longer online"
-        );
-        assert_eq!(
-            sent(&Sent::refused(
-                "Phone".into(),
-                Refusal::Gone {
-                    path: "/home/me/Screenshots/one.png".into()
-                }
-            )),
-            "The screenshot /home/me/Screenshots/one.png is gone"
-        );
-        assert_eq!(
-            sent(&Sent::refused(
-                "Phone".into(),
-                Refusal::TooLarge {
-                    bytes: 70 * 1024 * 1024 * 1024,
-                    limit: 64 * 1024 * 1024 * 1024
-                }
-            )),
-            "A Nearby send carries up to 68.7 GB; this screenshot is 75.2 GB"
-        );
-        assert_eq!(
-            sent(&Sent::refused(
-                "Phone".into(),
-                Refusal::Refused("no spool room".into())
-            )),
-            "The screenshot was not offered: no spool room"
-        );
-        assert_eq!(
-            sent(&Sent::saved("Screenshot 1 (2).png".into())),
-            "Saved to this workspace's files as Screenshot 1 (2).png"
-        );
-        assert_eq!(
-            sent(&Sent::not_saved(Refusal::NoWorkspace)),
-            "This session has no workspace open"
-        );
-        assert_eq!(
-            sent(&Sent::not_saved(Refusal::NotSaved(
-                "no space left on device".into()
-            ))),
-            "Cannot save to this workspace's files: no space left on device"
-        );
-        assert_eq!(
-            sent(&Sent::not_saved(Refusal::NoFreeName {
-                folder: "/var/workspace/Screenshots".into()
-            })),
-            "Every name in /var/workspace/Screenshots is taken"
-        );
-        assert_eq!(saving(), "Saving to this workspace's files…");
-    }
+    tilo_test_env::scenario! {
+        fn the_studio_says_in_words_what_became_of_a_capture;
 
-    #[test]
-    fn a_capture_that_did_not_come_out_says_why() {
-        assert_eq!(
-            failed(&Failure::RecordingNotStarted(
-                "no disk space left".to_owned()
-            )),
-            "A recording was not started: no disk space left"
-        );
-        assert_eq!(
-            failed(&Failure::RecordingStopped("the encoder gave up".to_owned())),
-            "The recording stopped: the encoder gave up"
-        );
-        assert_eq!(
-            failed(&Failure::ReplayNotStarted("no sound device".to_owned())),
-            "The last half minute could not be kept: no sound device"
-        );
-        assert_eq!(
-            failed(&Failure::ReplayStopped("the buffer is gone".to_owned())),
-            "The last half minute is not kept any more: the buffer is gone"
-        );
-        assert_eq!(
-            failed(&Failure::SoundLost),
-            "The recording carries no more sound: its source stopped"
-        );
-        assert_eq!(
-            failed(&Failure::NotTaken("no window".to_owned())),
-            "A screenshot was not taken: no window"
-        );
-        // A folder that refused the file is said as what it means for the
-        // person, never as what the system said.
-        assert_eq!(
-            failed(&Failure::NotWritten {
-                folder: PathBuf::from("/pictures"),
-                cause: WriteCause::NoRoom,
-            }),
-            "Couldn't save the screenshot: there's no room left in /pictures"
-        );
-        assert_eq!(
-            failed(&Failure::NotWritten {
-                folder: PathBuf::from("/from-the-system"),
-                cause: WriteCause::ReadOnly,
-            }),
-            "Couldn't save the screenshot: /from-the-system is read-only"
-        );
-        assert_eq!(
-            failed(&Failure::NotCopied("no clipboard".to_owned())),
-            "A screenshot was saved, but not copied: no clipboard"
-        );
-        assert_eq!(
-            failed(&Failure::NotRead("gone".to_owned())),
-            "A screenshot was not copied: gone"
-        );
-        assert_eq!(
-            failed(&Failure::ClipNotSaved("the worker stopped".to_owned())),
-            "A clip of what just happened was not saved: the worker stopped"
-        );
-        assert_eq!(
-            failed(&Failure::NotOpened {
-                path: "/home/me/Screenshot 1.png".into(),
-                error: "no app for it".to_owned()
-            }),
-            "/home/me/Screenshot 1.png could not be opened: no app for it"
-        );
+        phase a_send_says_what_became_of_it;
+        {
+            assert_eq!(
+                sent(&Sent::offered("Phone".into())),
+                "Offered to Phone; accept it there to save"
+            );
+            assert_eq!(
+                sent(&Sent::refused("Phone".into(), Refusal::Offline)),
+                "That device is no longer online"
+            );
+            assert_eq!(
+                sent(&Sent::refused(
+                    "Phone".into(),
+                    Refusal::Gone {
+                        path: "/home/me/Screenshots/one.png".into()
+                    }
+                )),
+                "The screenshot /home/me/Screenshots/one.png is gone"
+            );
+            assert_eq!(
+                sent(&Sent::refused(
+                    "Phone".into(),
+                    Refusal::TooLarge {
+                        bytes: 70 * 1024 * 1024 * 1024,
+                        limit: 64 * 1024 * 1024 * 1024
+                    }
+                )),
+                "A Nearby send carries up to 68.7 GB; this screenshot is 75.2 GB"
+            );
+            assert_eq!(
+                sent(&Sent::refused(
+                    "Phone".into(),
+                    Refusal::Refused("no spool room".into())
+                )),
+                "The screenshot was not offered: no spool room"
+            );
+            assert_eq!(
+                sent(&Sent::saved("Screenshot 1 (2).png".into())),
+                "Saved to this workspace's files as Screenshot 1 (2).png"
+            );
+            assert_eq!(
+                sent(&Sent::not_saved(Refusal::NoWorkspace)),
+                "This session has no workspace open"
+            );
+            assert_eq!(
+                sent(&Sent::not_saved(Refusal::NotSaved(
+                    "no space left on device".into()
+                ))),
+                "Cannot save to this workspace's files: no space left on device"
+            );
+            assert_eq!(
+                sent(&Sent::not_saved(Refusal::NoFreeName {
+                    folder: "/var/workspace/Screenshots".into()
+                })),
+                "Every name in /var/workspace/Screenshots is taken"
+            );
+            assert_eq!(saving(), "Saving to this workspace's files…");
+        }
+
+        phase a_capture_that_did_not_come_out_says_why;
+        {
+            assert_eq!(
+                failed(&Failure::RecordingNotStarted(
+                    "no disk space left".to_owned()
+                )),
+                "A recording was not started: no disk space left"
+            );
+            assert_eq!(
+                failed(&Failure::RecordingStopped("the encoder gave up".to_owned())),
+                "The recording stopped: the encoder gave up"
+            );
+            assert_eq!(
+                failed(&Failure::ReplayNotStarted("no sound device".to_owned())),
+                "The last half minute could not be kept: no sound device"
+            );
+            assert_eq!(
+                failed(&Failure::ReplayStopped("the buffer is gone".to_owned())),
+                "The last half minute is not kept any more: the buffer is gone"
+            );
+            assert_eq!(
+                failed(&Failure::SoundLost),
+                "The recording carries no more sound: its source stopped"
+            );
+            assert_eq!(
+                failed(&Failure::NotTaken("no window".to_owned())),
+                "A screenshot was not taken: no window"
+            );
+            // A folder that refused the file is said as what it means for the
+            // person, never as what the system said.
+            assert_eq!(
+                failed(&Failure::NotWritten {
+                    folder: PathBuf::from("/pictures"),
+                    cause: WriteCause::NoRoom,
+                }),
+                "Couldn't save the screenshot: there's no room left in /pictures"
+            );
+            assert_eq!(
+                failed(&Failure::NotWritten {
+                    folder: PathBuf::from("/from-the-system"),
+                    cause: WriteCause::ReadOnly,
+                }),
+                "Couldn't save the screenshot: /from-the-system is read-only"
+            );
+            assert_eq!(
+                failed(&Failure::NotCopied("no clipboard".to_owned())),
+                "A screenshot was saved, but not copied: no clipboard"
+            );
+            assert_eq!(
+                failed(&Failure::NotRead("gone".to_owned())),
+                "A screenshot was not copied: gone"
+            );
+            assert_eq!(
+                failed(&Failure::ClipNotSaved("the worker stopped".to_owned())),
+                "A clip of what just happened was not saved: the worker stopped"
+            );
+            assert_eq!(
+                failed(&Failure::NotOpened {
+                    path: "/home/me/Screenshot 1.png".into(),
+                    error: "no app for it".to_owned()
+                }),
+                "/home/me/Screenshot 1.png could not be opened: no app for it"
+            );
+        }
     }
 }

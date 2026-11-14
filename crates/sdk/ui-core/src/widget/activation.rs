@@ -911,128 +911,134 @@ mod tests {
         targets
     }
 
-    #[test]
-    fn painted_targets_ignore_held_submit_repeats() {
-        let mut targets = keys();
-        targets.set_host_focus(true);
-        let mut enter =
-            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
-        assert!(send(&mut targets, &enter));
-        assert_eq!(targets.take_activated(), vec!["seven"]);
-        if let WindowEvent::KeyboardInput { event, .. } = &mut enter {
-            event.repeat = true;
+    tilo_test_env::scenario! {
+        /// Painted targets under presses, keys, focus changes and assistive technology.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn painted_targets_activate_by_pointer_and_by_key;
+
+        phase painted_targets_ignore_held_submit_repeats;
+        {
+            let mut targets = keys();
+            targets.set_host_focus(true);
+            let mut enter =
+                crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            assert!(send(&mut targets, &enter));
+            assert_eq!(targets.take_activated(), vec!["seven"]);
+            if let WindowEvent::KeyboardInput { event, .. } = &mut enter {
+                event.repeat = true;
+            }
+            assert!(
+                send(&mut targets, &enter),
+                "owned held submit must be consumed"
+            );
+            assert!(
+                targets.take_activated().is_empty(),
+                "holding Enter must not repeat the action"
+            );
         }
-        assert!(
-            send(&mut targets, &enter),
-            "owned held submit must be consumed"
-        );
-        assert!(
-            targets.take_activated().is_empty(),
-            "holding Enter must not repeat the action"
-        );
-    }
 
-    #[test]
-    fn painted_targets_cancel_a_press_when_its_registered_geometry_moves() {
-        let mut targets = keys();
-        send(&mut targets, &cursor_moved(10.0, 10.0));
-        assert!(send(&mut targets, &button(ElementState::Pressed)));
-        targets.begin_frame();
-        targets.target("seven", Rect::new(100.0, 100.0, 140.0, 140.0), "7");
-        send(&mut targets, &cursor_moved(110.0, 110.0));
-        assert!(
-            send(&mut targets, &button(ElementState::Released)),
-            "the old press owns its cancelled release"
-        );
-        assert!(
-            targets.take_activated().is_empty(),
-            "moving a target must cancel the old-position press"
-        );
-    }
+        phase painted_targets_cancel_a_press_when_its_registered_geometry_moves;
+        {
+            let mut targets = keys();
+            send(&mut targets, &cursor_moved(10.0, 10.0));
+            assert!(send(&mut targets, &button(ElementState::Pressed)));
+            targets.begin_frame();
+            targets.target("seven", Rect::new(100.0, 100.0, 140.0, 140.0), "7");
+            send(&mut targets, &cursor_moved(110.0, 110.0));
+            assert!(
+                send(&mut targets, &button(ElementState::Released)),
+                "the old press owns its cancelled release"
+            );
+            assert!(
+                targets.take_activated().is_empty(),
+                "moving a target must cancel the old-position press"
+            );
+        }
 
-    #[test]
-    fn painted_targets_cancel_pointer_activation_on_focus_loss() {
-        let mut targets = keys();
-        targets.set_host_focus(true);
-        send(&mut targets, &cursor_moved(10.0, 10.0));
-        send(&mut targets, &button(ElementState::Pressed));
-        targets.set_host_focus(false);
-        assert!(send(&mut targets, &button(ElementState::Released)));
-        assert!(
-            targets.take_activated().is_empty(),
-            "an interrupted unfocused press must not activate"
-        );
-    }
+        phase painted_targets_cancel_pointer_activation_on_focus_loss;
+        {
+            let mut targets = keys();
+            targets.set_host_focus(true);
+            send(&mut targets, &cursor_moved(10.0, 10.0));
+            send(&mut targets, &button(ElementState::Pressed));
+            targets.set_host_focus(false);
+            assert!(send(&mut targets, &button(ElementState::Released)));
+            assert!(
+                targets.take_activated().is_empty(),
+                "an interrupted unfocused press must not activate"
+            );
+        }
 
-    #[test]
-    fn painted_targets_escape_cancels_and_consumes_the_pointer_release() {
-        let mut targets = keys();
-        send(&mut targets, &cursor_moved(10.0, 10.0));
-        send(&mut targets, &button(ElementState::Pressed));
-        let escape =
-            crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
-        assert!(send(&mut targets, &escape));
-        assert!(send(&mut targets, &button(ElementState::Released)));
-        assert!(targets.take_activated().is_empty());
-    }
+        phase painted_targets_escape_cancels_and_consumes_the_pointer_release;
+        {
+            let mut targets = keys();
+            send(&mut targets, &cursor_moved(10.0, 10.0));
+            send(&mut targets, &button(ElementState::Pressed));
+            let escape =
+                crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+            assert!(send(&mut targets, &escape));
+            assert!(send(&mut targets, &button(ElementState::Released)));
+            assert!(targets.take_activated().is_empty());
+        }
 
-    #[test]
-    fn a_click_on_a_painted_target_hovers_presses_and_activates_it() {
-        let mut targets = keys();
-        send(&mut targets, &cursor_moved(10.0, 10.0));
-        assert!(targets.interaction("seven").hovered);
-        assert!(send(&mut targets, &button(ElementState::Pressed)));
-        assert!(targets.interaction("seven").pressed);
-        assert!(send(&mut targets, &button(ElementState::Released)));
-        assert_eq!(targets.take_activated(), vec!["seven".to_string()]);
-        assert!(targets.take_activated().is_empty(), "taken once");
+        phase a_click_on_a_painted_target_hovers_presses_and_activates_it;
+        {
+            let mut targets = keys();
+            send(&mut targets, &cursor_moved(10.0, 10.0));
+            assert!(targets.interaction("seven").hovered);
+            assert!(send(&mut targets, &button(ElementState::Pressed)));
+            assert!(targets.interaction("seven").pressed);
+            assert!(send(&mut targets, &button(ElementState::Released)));
+            assert_eq!(targets.take_activated(), vec!["seven".to_string()]);
+            assert!(targets.take_activated().is_empty(), "taken once");
 
-        send(&mut targets, &button(ElementState::Pressed));
-        send(&mut targets, &cursor_moved(60.0, 10.0));
-        send(&mut targets, &button(ElementState::Released));
-        assert!(targets.take_activated().is_empty());
+            send(&mut targets, &button(ElementState::Pressed));
+            send(&mut targets, &cursor_moved(60.0, 10.0));
+            send(&mut targets, &button(ElementState::Released));
+            assert!(targets.take_activated().is_empty());
 
-        send(&mut targets, &cursor_moved(110.0, 10.0));
-        assert!(!send(&mut targets, &button(ElementState::Pressed)));
-        assert!(targets.interaction("nine").disabled);
-    }
+            send(&mut targets, &cursor_moved(110.0, 10.0));
+            assert!(!send(&mut targets, &button(ElementState::Pressed)));
+            assert!(targets.interaction("nine").disabled);
+        }
 
-    #[test]
-    fn keyboard_focus_moves_between_targets_and_activates() {
-        let mut targets = keys();
-        targets.set_host_focus(true);
-        assert_eq!(targets.focused(), Some("seven"));
-        assert!(targets.interaction("seven").focused);
-        assert!(
-            targets.wants_tab_input(),
-            "Tab stays inside before the last target"
-        );
-        let tab =
-            crate::synthetic_input::key_input(&Key::Named(NamedKey::Tab), ElementState::Pressed);
-        assert!(send(&mut targets, &tab));
-        assert_eq!(targets.focused(), Some("eight"));
-        assert!(
-            !targets.wants_tab_input(),
-            "the disabled target is skipped; Tab leaves"
-        );
-        let enter =
-            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
-        assert!(send(&mut targets, &enter));
-        assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
-    }
+        phase keyboard_focus_moves_between_targets_and_activates;
+        {
+            let mut targets = keys();
+            targets.set_host_focus(true);
+            assert_eq!(targets.focused(), Some("seven"));
+            assert!(targets.interaction("seven").focused);
+            assert!(
+                targets.wants_tab_input(),
+                "Tab stays inside before the last target"
+            );
+            let tab =
+                crate::synthetic_input::key_input(&Key::Named(NamedKey::Tab), ElementState::Pressed);
+            assert!(send(&mut targets, &tab));
+            assert_eq!(targets.focused(), Some("eight"));
+            assert!(
+                !targets.wants_tab_input(),
+                "the disabled target is skipped; Tab leaves"
+            );
+            let enter =
+                crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            assert!(send(&mut targets, &enter));
+            assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
+        }
 
-    #[test]
-    fn painted_targets_are_accessible_buttons_routed_back_by_key() {
-        let mut targets = keys();
-        let nodes = targets.accessibility_children();
-        assert_eq!(nodes.len(), 3);
-        assert_eq!(nodes[1].role, crate::a11y::Role::Button);
-        assert_eq!(nodes[1].name.as_deref(), Some("8"));
-        assert!(nodes[2].state.disabled);
-        let key = nodes[1].key.expect("keyed by id");
-        assert!(targets.perform_action(&crate::a11y::Action::Activate, &[key]));
-        assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
-        assert!(!targets.perform_action(&crate::a11y::Action::Activate, &[key ^ 1]));
-        assert!(!targets.perform_semantic_action(&crate::a11y::Action::Activate, "nine"));
+        phase painted_targets_are_accessible_buttons_routed_back_by_key;
+        {
+            let mut targets = keys();
+            let nodes = targets.accessibility_children();
+            assert_eq!(nodes.len(), 3);
+            assert_eq!(nodes[1].role, crate::a11y::Role::Button);
+            assert_eq!(nodes[1].name.as_deref(), Some("8"));
+            assert!(nodes[2].state.disabled);
+            let key = nodes[1].key.expect("keyed by id");
+            assert!(targets.perform_action(&crate::a11y::Action::Activate, &[key]));
+            assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
+            assert!(!targets.perform_action(&crate::a11y::Action::Activate, &[key ^ 1]));
+            assert!(!targets.perform_semantic_action(&crate::a11y::Action::Activate, "nine"));
+        }
     }
 }

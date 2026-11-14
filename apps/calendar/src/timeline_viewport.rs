@@ -326,102 +326,107 @@ pub(crate) fn hour_label(hour: u32) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn changing_scale_and_density_keeps_the_hour_in_view() {
-        let area = Rect::new(0.0, 60.0, 1020.0, 810.0);
-        let mut viewport = TimelineViewport::new();
-        viewport.layout(area, 8.0, (7, 1));
-        for (scale, days) in [(1.5, 7), (2.0, 1), (1.0, 7)] {
-            viewport.set_layout_theme(&Theme::dark().with_ui_scale(scale));
-            viewport.layout(area, 8.0, (days, 1));
-            let geom = viewport.current_geometry(area);
-            assert_eq!(
-                viewport.minute_at(geom, geom.body_top),
-                8 * 60,
-                "{scale} {days}"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        /// The timeline viewport: scale, scroll and the geometry they give.
+        fn the_timeline_viewport_keeps_its_hour_and_legible_geometry;
 
-    #[test]
-    fn geometry_keeps_legible_hours_maps_columns_and_grows_with_the_text() {
+        phase changing_scale_and_density_keeps_the_hour_in_view;
         {
-            let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-            let geom = TimelineViewport::geometry(area);
-            assert_eq!(geom.hour_h, TIMELINE_MIN_HOUR_H);
-            assert_eq!(geom.content_h, 24.0 * TIMELINE_MIN_HOUR_H);
-            let width = TimelineViewport::column_width(area, 7, geom);
-            assert_eq!(
-                TimelineViewport::column_at(area, 7, geom, area.x0 + geom.gutter + width * 3.5),
-                3
-            );
-        }
-        {
-            let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-            let large = Theme::dark().with_text_scale(2.0);
-            let tokens = ui::text_render::with_layout_renderer(&large, |text| {
-                TimelineTokens::of(&large, text)
-            });
-            let one = TimelineViewport::geometry(area);
-            let two = TimelineViewport::geometry_for(area, &tokens, 7);
-            for value in [two.head_h, two.allday_h, two.min_block_h, two.gutter] {
-                assert_eq!(value.fract(), 0.0, "scaled rows land on whole pixels");
+            let area = Rect::new(0.0, 60.0, 1020.0, 810.0);
+            let mut viewport = TimelineViewport::new();
+            viewport.layout(area, 8.0, (7, 1));
+            for (scale, days) in [(1.5, 7), (2.0, 1), (1.0, 7)] {
+                viewport.set_layout_theme(&Theme::dark().with_ui_scale(scale));
+                viewport.layout(area, 8.0, (days, 1));
+                let geom = viewport.current_geometry(area);
+                assert_eq!(
+                    viewport.minute_at(geom, geom.body_top),
+                    8 * 60,
+                    "{scale} {days}"
+                );
             }
-            assert!(two.gutter > one.gutter);
-            assert!(two.head_h > one.head_h && two.allday_h > one.allday_h);
-            assert!(two.min_block_h > one.min_block_h);
         }
-    }
 
-    #[test]
-    fn scroll_seeds_on_whole_hours_and_drives_minute_and_block_geometry() {
+        phase geometry_keeps_legible_hours_maps_columns_and_grows_with_the_text;
         {
-            let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-            let geom = TimelineViewport::geometry(area);
-            let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 7.23, (7, 1));
-            assert!(viewport.vertical_overflows());
-            assert!((f64::from(viewport.offset_y()) - 7.0 * geom.hour_h).abs() < 0.01);
-            let rule_y = geom.body_top + 7.0 * geom.hour_h - f64::from(viewport.offset_y());
-            assert!((rule_y - geom.body_top).abs() < 0.01);
-            assert_eq!(viewport.minute_at(geom, geom.body_top), 7 * 60);
+            {
+                let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
+                let geom = TimelineViewport::geometry(area);
+                assert_eq!(geom.hour_h, TIMELINE_MIN_HOUR_H);
+                assert_eq!(geom.content_h, 24.0 * TIMELINE_MIN_HOUR_H);
+                let width = TimelineViewport::column_width(area, 7, geom);
+                assert_eq!(
+                    TimelineViewport::column_at(area, 7, geom, area.x0 + geom.gutter + width * 3.5),
+                    3
+                );
+            }
+            {
+                let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
+                let large = Theme::dark().with_text_scale(2.0);
+                let tokens = ui::text_render::with_layout_renderer(&large, |text| {
+                    TimelineTokens::of(&large, text)
+                });
+                let one = TimelineViewport::geometry(area);
+                let two = TimelineViewport::geometry_for(area, &tokens, 7);
+                for value in [two.head_h, two.allday_h, two.min_block_h, two.gutter] {
+                    assert_eq!(value.fract(), 0.0, "scaled rows land on whole pixels");
+                }
+                assert!(two.gutter > one.gutter);
+                assert!(two.head_h > one.head_h && two.allday_h > one.allday_h);
+                assert!(two.min_block_h > one.min_block_h);
+            }
         }
+
+        phase scroll_seeds_on_whole_hours_and_drives_minute_and_block_geometry;
         {
-            let probe = TimelineViewport::geometry(Rect::new(0.0, 0.0, 1000.0, 1000.0));
-            let area = Rect::new(
-                0.0,
-                0.0,
-                1000.0,
-                600.0 + probe.head_h + probe.allday_h + 8.0,
-            );
-            let geom = TimelineViewport::geometry(area);
-            let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 22.0, (7, 1));
-            let offset = f64::from(viewport.offset_y());
-            assert!(
-                (offset / geom.hour_h).fract().abs() < 1e-6,
-                "seed is a whole hour"
-            );
-            assert!(offset + (geom.body_bottom - geom.body_top) <= geom.content_h + 1e-6);
-            let rule_y = geom.body_top + (offset / geom.hour_h).round() * geom.hour_h - offset;
-            assert!(
-                (rule_y - geom.body_top).abs() < 1e-6,
-                "an hour rule sits on the body top"
-            );
-        }
-        {
-            let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
-            let geom = TimelineViewport::geometry(area);
-            let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 7.0, (7, 1));
-            viewport.set_offset_y((geom.hour_h * 2.0) as f32);
-            assert_eq!(viewport.minute_at(geom, geom.body_top), 120);
-            let block = viewport.block_rect(area, 7, geom, 2, 120, 180);
-            assert!((block.y0 - geom.body_top).abs() < 0.01);
-            assert_eq!(
-                TimelineViewport::column_at(area, 7, geom, block.center().x),
-                2
-            );
+            {
+                let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
+                let geom = TimelineViewport::geometry(area);
+                let mut viewport = TimelineViewport::new();
+                viewport.layout(area, 7.23, (7, 1));
+                assert!(viewport.vertical_overflows());
+                assert!((f64::from(viewport.offset_y()) - 7.0 * geom.hour_h).abs() < 0.01);
+                let rule_y = geom.body_top + 7.0 * geom.hour_h - f64::from(viewport.offset_y());
+                assert!((rule_y - geom.body_top).abs() < 0.01);
+                assert_eq!(viewport.minute_at(geom, geom.body_top), 7 * 60);
+            }
+            {
+                let probe = TimelineViewport::geometry(Rect::new(0.0, 0.0, 1000.0, 1000.0));
+                let area = Rect::new(
+                    0.0,
+                    0.0,
+                    1000.0,
+                    600.0 + probe.head_h + probe.allday_h + 8.0,
+                );
+                let geom = TimelineViewport::geometry(area);
+                let mut viewport = TimelineViewport::new();
+                viewport.layout(area, 22.0, (7, 1));
+                let offset = f64::from(viewport.offset_y());
+                assert!(
+                    (offset / geom.hour_h).fract().abs() < 1e-6,
+                    "seed is a whole hour"
+                );
+                assert!(offset + (geom.body_bottom - geom.body_top) <= geom.content_h + 1e-6);
+                let rule_y = geom.body_top + (offset / geom.hour_h).round() * geom.hour_h - offset;
+                assert!(
+                    (rule_y - geom.body_top).abs() < 1e-6,
+                    "an hour rule sits on the body top"
+                );
+            }
+            {
+                let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
+                let geom = TimelineViewport::geometry(area);
+                let mut viewport = TimelineViewport::new();
+                viewport.layout(area, 7.0, (7, 1));
+                viewport.set_offset_y((geom.hour_h * 2.0) as f32);
+                assert_eq!(viewport.minute_at(geom, geom.body_top), 120);
+                let block = viewport.block_rect(area, 7, geom, 2, 120, 180);
+                assert!((block.y0 - geom.body_top).abs() < 0.01);
+                assert_eq!(
+                    TimelineViewport::column_at(area, 7, geom, block.center().x),
+                    2
+                );
+            }
         }
     }
 }

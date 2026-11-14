@@ -10,7 +10,7 @@ fields = [
   { path = "issues", type = { collection = { named = "Issue" } }, stored = "collection", unit = true },
   { path = "issues.*.number", type = "int", readonly = true },
   { path = "issues.*.title", type = "text", label = true },
-  { path = "issues.*.body", type = "rich_text", ops = "sha256:aceedec5a9b08d74" },
+  { path = "issues.*.body", type = "rich_text", ops = "sha256:fb8a205aa13d03f2" },
   { path = "issues.*.status", type = { named = "Status" } },
   { path = "issues.*.assignee", type = { option = "text" }, readonly = true },
   { path = "issues.*.labels", type = { set = "text" } },
@@ -40,6 +40,7 @@ fields = [
   { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
   { path = "issues.*.author", type = "text", readonly = true },
   { path = "issues.*.created_ms", type = "int", readonly = true },
+  { path = "issues.*.url", type = { option = "text" } },
   { path = "areas", type = { collection = { named = "TrackerArea" } }, stored = "collection", unit = true },
   { path = "areas.*.id", type = "text", readonly = true },
   { path = "areas.*.name", type = "text", label = true },
@@ -61,6 +62,7 @@ params = [
   { name = "body", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "status", type = { option = { named = "Status" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] } },
   { name = "assignee", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "url", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -269,6 +271,7 @@ fields = [
   { name = "comments", type = { collection = { named = "Message" } } },
   { name = "author", type = "text" },
   { name = "created_ms", type = "int" },
+  { name = "url", type = { option = "text" } },
 ]
 
 [[resources.types]]

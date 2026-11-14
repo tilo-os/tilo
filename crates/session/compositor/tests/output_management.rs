@@ -115,248 +115,269 @@ fn two_outputs() -> Compositor {
     compositor
 }
 
-#[test]
-fn ordinary_clients_cannot_configure_displays() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, false);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.globals.iter().any(|global| global == "wl_compositor")
-    });
-    assert!(
-        !client
-            .tool
-            .globals
-            .iter()
-            .any(|global| global == "zwlr_output_manager_v1")
-    );
-}
+tilo_test_env::scenario! {
+    /// The output management protocol.
+    fn a_display_tool_configures_outputs_and_ordinary_clients_cannot;
 
-#[test]
-fn a_display_tool_sees_the_outputs_and_rescales_and_moves_one() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.serial.is_some() && tool.heads.len() == 2
-    });
-    let second = client
-        .tool
-        .heads
-        .iter()
-        .find(|head| head.name == "HEADLESS-2")
-        .expect("a head per output");
-    assert_eq!(second.position, (640, 0));
-    assert_eq!(second.modes, vec![(800, 600)]);
-    let head = second.object.clone().expect("head object");
+    phase ordinary_clients_are_offered_no_display_tool;
+    // A client the session did not start is offered neither display tool: not the manager that
+    // configures displays, nor the one that switches panels off. A client the session started is
+    // offered both, in the listing the ordinary client was sent without them, and an ordinary client
+    // that connects after it is still offered neither.
+    {
+        const TOOLS: [(&str, &str); 2] = [
+            ("zwlr_output_manager_v1", "configure displays"),
+            ("zwlr_output_power_manager_v1", "switch panels off"),
+        ];
+        let mut compositor = two_outputs();
+        let mut client = Client::connect(&mut compositor, false);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.globals.iter().any(|global| global == "wl_compositor")
+        });
+        for (withheld, what) in TOOLS {
+            assert!(
+                !client.tool.globals.iter().any(|global| global == withheld),
+                "an ordinary client is offered {withheld}, which would let it {what}"
+            );
+        }
 
-    let handle = client.queue.handle();
-    let manager = client.tool.manager.clone().expect("manager");
-    let configuration =
-        manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
-    let changed = configuration.enable_head(&head, &handle, ());
-    changed.set_scale(2.0);
-    changed.set_position(0, 480);
-    configuration.apply();
-    pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
-    assert_eq!(client.tool.outcome, Some("succeeded"));
+        let mut trusted = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut trusted, |tool| {
+            TOOLS
+                .iter()
+                .all(|(offered, _)| tool.globals.iter().any(|global| global == *offered))
+        });
 
-    // The tool hears about the change like any other.
-    pump(&mut compositor, &mut client, |tool| {
-        tool.heads
-            .iter()
-            .any(|head| head.name == "HEADLESS-2" && head.position == (0, 480))
-    });
-    let second = client
-        .tool
-        .heads
-        .iter()
-        .find(|head| head.name == "HEADLESS-2")
-        .expect("head");
-    assert!((second.scale - 2.0).abs() < f64::EPSILON);
-}
-
-#[test]
-fn turning_every_display_off_fails_and_changes_nothing() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.serial.is_some() && tool.heads.len() == 2
-    });
-    let handle = client.queue.handle();
-    let manager = client.tool.manager.clone().expect("manager");
-    let configuration =
-        manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
-    for head in &client.tool.heads {
-        configuration.disable_head(head.object.as_ref().expect("head object"));
+        // Trust is each client's own: an ordinary client that connects after the trusted one is
+        // offered neither tool either.
+        let mut later = Client::connect(&mut compositor, false);
+        pump(&mut compositor, &mut later, |tool| {
+            tool.globals.iter().any(|global| global == "wl_compositor")
+        });
+        for (withheld, what) in TOOLS {
+            assert!(
+                !later.tool.globals.iter().any(|global| global == withheld),
+                "a later ordinary client is offered {withheld}, which would let it {what}"
+            );
+        }
     }
-    configuration.apply();
-    pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
-    assert_eq!(client.tool.outcome, Some("failed"));
-}
 
-#[test]
-fn a_display_tool_turns_an_output_off_and_on_again() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.serial.is_some() && tool.heads.len() == 2
-    });
-    let head = |tool: &Tool| {
-        tool.heads
+    phase a_display_tool_sees_the_outputs_and_rescales_and_moves_one;
+    {
+        let mut compositor = two_outputs();
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.serial.is_some() && tool.heads.len() == 2
+        });
+        let second = client
+            .tool
+            .heads
             .iter()
             .find(|head| head.name == "HEADLESS-2")
-            .and_then(|head| head.object.clone())
-            .expect("head")
-    };
-    let handle = client.queue.handle();
-    let manager = client.tool.manager.clone().expect("manager");
-    let configuration =
-        manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
-    configuration.disable_head(&head(&client.tool));
-    configuration.apply();
-    pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
-    assert_eq!(client.tool.outcome, Some("succeeded"));
-    pump(&mut compositor, &mut client, |tool| {
-        tool.heads
-            .iter()
-            .any(|head| head.name == "HEADLESS-2" && head.enabled == Some(false))
-    });
-    assert!(
-        !compositor.output_lit("HEADLESS-2"),
-        "a turned-off panel is dark"
-    );
-    assert!(compositor.output_lit("HEADLESS-1"));
-    let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
-    assert_eq!(shot.pixel(10, 10), Some([0, 0, 0, 255]));
+            .expect("a head per output");
+        assert_eq!(second.position, (640, 0));
+        assert_eq!(second.modes, vec![(800, 600)]);
+        let head = second.object.clone().expect("head object");
 
-    client.tool.outcome = None;
-    let configuration =
-        manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
-    configuration.enable_head(&head(&client.tool), &handle, ());
-    configuration.apply();
-    pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
-    assert_eq!(client.tool.outcome, Some("succeeded"));
-    pump(&mut compositor, &mut client, |tool| {
-        tool.heads
-            .iter()
-            .any(|head| head.name == "HEADLESS-2" && head.enabled == Some(true))
-    });
-    assert!(compositor.output_lit("HEADLESS-2"));
-    compositor.draw_frame().expect("a frame");
-    let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
-    assert_ne!(
-        shot.pixel(10, 10),
-        Some([0, 0, 0, 255]),
-        "lit again, it draws"
-    );
-}
+        let handle = client.queue.handle();
+        let manager = client.tool.manager.clone().expect("manager");
+        let configuration =
+            manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
+        let changed = configuration.enable_head(&head, &handle, ());
+        changed.set_scale(2.0);
+        changed.set_position(0, 480);
+        configuration.apply();
+        pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
+        assert_eq!(client.tool.outcome, Some("succeeded"));
 
-#[test]
-fn a_power_tool_switches_one_panel_off_and_on() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.power_manager.is_some()
-            && tool.outputs.len() == 2
-            && tool.outputs.iter().all(|(_, name)| !name.is_empty())
-    });
-    let output = client
-        .tool
-        .outputs
-        .iter()
-        .find(|(_, name)| name == "HEADLESS-1")
-        .map(|(output, _)| output.clone())
-        .expect("output");
-    let handle = client.queue.handle();
-    let power = client
-        .tool
-        .power_manager
-        .clone()
-        .expect("power manager")
-        .get_output_power(&output, &handle, ());
-    pump(&mut compositor, &mut client, |tool| {
-        tool.power == Some(zwlr_output_power_v1::Mode::On)
-    });
-    power.set_mode(zwlr_output_power_v1::Mode::Off);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.power == Some(zwlr_output_power_v1::Mode::Off)
-    });
-    assert!(!compositor.output_lit("HEADLESS-1"));
-    assert!(compositor.output_lit("HEADLESS-2"), "only that panel");
-    power.set_mode(zwlr_output_power_v1::Mode::On);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.power == Some(zwlr_output_power_v1::Mode::On)
-    });
-    assert!(compositor.output_lit("HEADLESS-1"));
-}
-
-#[test]
-fn ordinary_clients_cannot_switch_panels_off() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, false);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.globals.iter().any(|global| global == "wl_compositor")
-    });
-    assert!(
-        !client
+        // The tool hears about the change like any other.
+        pump(&mut compositor, &mut client, |tool| {
+            tool.heads
+                .iter()
+                .any(|head| head.name == "HEADLESS-2" && head.position == (0, 480))
+        });
+        let second = client
             .tool
-            .globals
+            .heads
             .iter()
-            .any(|global| global == "zwlr_output_power_manager_v1")
-    );
+            .find(|head| head.name == "HEADLESS-2")
+            .expect("head");
+        assert!((second.scale - 2.0).abs() < f64::EPSILON);
+    }
+
+    phase turning_every_display_off_fails_and_changes_nothing;
+    {
+        let mut compositor = two_outputs();
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.serial.is_some() && tool.heads.len() == 2
+        });
+        let handle = client.queue.handle();
+        let manager = client.tool.manager.clone().expect("manager");
+        let configuration =
+            manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
+        for head in &client.tool.heads {
+            configuration.disable_head(head.object.as_ref().expect("head object"));
+        }
+        configuration.apply();
+        pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
+        assert_eq!(client.tool.outcome, Some("failed"));
+    }
+
+    phase a_display_tool_turns_an_output_off_and_on_again;
+    {
+        let mut compositor = two_outputs();
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.serial.is_some() && tool.heads.len() == 2
+        });
+        let head = |tool: &Tool| {
+            tool.heads
+                .iter()
+                .find(|head| head.name == "HEADLESS-2")
+                .and_then(|head| head.object.clone())
+                .expect("head")
+        };
+        let handle = client.queue.handle();
+        let manager = client.tool.manager.clone().expect("manager");
+        let configuration =
+            manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
+        configuration.disable_head(&head(&client.tool));
+        configuration.apply();
+        pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
+        assert_eq!(client.tool.outcome, Some("succeeded"));
+        pump(&mut compositor, &mut client, |tool| {
+            tool.heads
+                .iter()
+                .any(|head| head.name == "HEADLESS-2" && head.enabled == Some(false))
+        });
+        assert!(
+            !compositor.output_lit("HEADLESS-2"),
+            "a turned-off panel is dark"
+        );
+        assert!(compositor.output_lit("HEADLESS-1"));
+        let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
+        assert_eq!(shot.pixel(10, 10), Some([0, 0, 0, 255]));
+
+        client.tool.outcome = None;
+        let configuration =
+            manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
+        configuration.enable_head(&head(&client.tool), &handle, ());
+        configuration.apply();
+        pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
+        assert_eq!(client.tool.outcome, Some("succeeded"));
+        pump(&mut compositor, &mut client, |tool| {
+            tool.heads
+                .iter()
+                .any(|head| head.name == "HEADLESS-2" && head.enabled == Some(true))
+        });
+        assert!(compositor.output_lit("HEADLESS-2"));
+        compositor.draw_frame().expect("a frame");
+        let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
+        assert_ne!(
+            shot.pixel(10, 10),
+            Some([0, 0, 0, 255]),
+            "lit again, it draws"
+        );
+    }
+
+    phase a_configuration_made_against_an_old_serial_is_cancelled;
+    {
+        let mut compositor = two_outputs();
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| tool.serial.is_some());
+        let handle = client.queue.handle();
+        let manager = client.tool.manager.clone().expect("manager");
+        let stale = client.tool.serial.expect("serial").wrapping_sub(1);
+        let configuration = manager.create_configuration(stale, &handle, ());
+        configuration.apply();
+        pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
+        assert_eq!(client.tool.outcome, Some("cancelled"));
+    }
 }
 
-#[test]
-fn idle_blanking_darkens_every_panel_and_input_lights_them() {
-    let mut compositor = two_outputs();
-    compositor.draw_frame().expect("a frame");
-    compositor.blank_now().expect("blank");
-    assert!(!compositor.output_lit("HEADLESS-1"));
-    assert!(!compositor.output_lit("HEADLESS-2"));
-    let shot = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    assert_eq!(shot.pixel(10, 10), Some([0, 0, 0, 255]));
-    compositor
-        .input(tilo_compositor::InputEvent::PointerMotion { x: 5.0, y: 5.0 })
-        .expect("input");
-    assert!(compositor.output_lit("HEADLESS-1"));
-    assert!(compositor.output_lit("HEADLESS-2"));
-    assert!(
-        compositor.take_session_events().is_empty(),
-        "blanking is not locking"
-    );
-}
+tilo_test_env::scenario! {
+    /// Output power.
+    fn panels_go_dark_by_a_power_tool_or_idleness;
 
-#[test]
-fn idle_locking_is_handed_to_the_session() {
-    let mut compositor = two_outputs();
-    compositor.set_idle_config(tilo_compositor::IdleConfig {
-        blank_timeout: None,
-        lock_timeout: Some(Duration::ZERO),
-        suspend_timeout: None,
-    });
-    compositor.dispatch(Duration::ZERO).expect("dispatch");
-    assert_eq!(
-        compositor.take_session_events(),
-        vec![tilo_compositor::SessionTransition::Locked]
-    );
-    compositor.dispatch(Duration::ZERO).expect("dispatch");
-    assert!(
-        compositor.take_session_events().is_empty(),
-        "once per episode"
-    );
-}
+    phase a_power_tool_switches_one_panel_off_and_on;
+    {
+        let mut compositor = two_outputs();
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.power_manager.is_some()
+                && tool.outputs.len() == 2
+                && tool.outputs.iter().all(|(_, name)| !name.is_empty())
+        });
+        let output = client
+            .tool
+            .outputs
+            .iter()
+            .find(|(_, name)| name == "HEADLESS-1")
+            .map(|(output, _)| output.clone())
+            .expect("output");
+        let handle = client.queue.handle();
+        let power = client
+            .tool
+            .power_manager
+            .clone()
+            .expect("power manager")
+            .get_output_power(&output, &handle, ());
+        pump(&mut compositor, &mut client, |tool| {
+            tool.power == Some(zwlr_output_power_v1::Mode::On)
+        });
+        power.set_mode(zwlr_output_power_v1::Mode::Off);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.power == Some(zwlr_output_power_v1::Mode::Off)
+        });
+        assert!(!compositor.output_lit("HEADLESS-1"));
+        assert!(compositor.output_lit("HEADLESS-2"), "only that panel");
+        power.set_mode(zwlr_output_power_v1::Mode::On);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.power == Some(zwlr_output_power_v1::Mode::On)
+        });
+        assert!(compositor.output_lit("HEADLESS-1"));
+    }
 
-#[test]
-fn a_configuration_made_against_an_old_serial_is_cancelled() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| tool.serial.is_some());
-    let handle = client.queue.handle();
-    let manager = client.tool.manager.clone().expect("manager");
-    let stale = client.tool.serial.expect("serial").wrapping_sub(1);
-    let configuration = manager.create_configuration(stale, &handle, ());
-    configuration.apply();
-    pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
-    assert_eq!(client.tool.outcome, Some("cancelled"));
+    phase idle_blanking_darkens_every_panel_and_input_lights_them;
+    {
+        let mut compositor = two_outputs();
+        compositor.draw_frame().expect("a frame");
+        compositor.blank_now().expect("blank");
+        assert!(!compositor.output_lit("HEADLESS-1"));
+        assert!(!compositor.output_lit("HEADLESS-2"));
+        let shot = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        assert_eq!(shot.pixel(10, 10), Some([0, 0, 0, 255]));
+        compositor
+            .input(tilo_compositor::InputEvent::PointerMotion { x: 5.0, y: 5.0 })
+            .expect("input");
+        assert!(compositor.output_lit("HEADLESS-1"));
+        assert!(compositor.output_lit("HEADLESS-2"));
+        assert!(
+            compositor.take_session_events().is_empty(),
+            "blanking is not locking"
+        );
+    }
+
+    phase idle_locking_is_handed_to_the_session;
+    {
+        let mut compositor = two_outputs();
+        compositor.set_idle_config(tilo_compositor::IdleConfig {
+            blank_timeout: None,
+            lock_timeout: Some(Duration::ZERO),
+            suspend_timeout: None,
+        });
+        compositor.dispatch(Duration::ZERO).expect("dispatch");
+        assert_eq!(
+            compositor.take_session_events(),
+            vec![tilo_compositor::SessionTransition::Locked]
+        );
+        compositor.dispatch(Duration::ZERO).expect("dispatch");
+        assert!(
+            compositor.take_session_events().is_empty(),
+            "once per episode"
+        );
+    }
 }
 
 impl Dispatch<WlRegistry, ()> for Tool {
@@ -523,41 +544,124 @@ impl Dispatch<ZwlrOutputPowerV1, ()> for Tool {
 wayland_client::delegate_noop!(Tool: ignore ZwlrOutputConfigurationHeadV1);
 wayland_client::delegate_noop!(Tool: ignore ZwlrOutputPowerManagerV1);
 
-#[test]
-fn the_sessions_settings_turn_an_output_off_rescale_another_and_set_the_layout() {
-    let mut compositor = two_outputs();
-    let mut settings = tilo_compositor::Settings::default();
-    settings.display.disabled.insert("HEADLESS-2".into());
-    settings.display.scales.insert("HEADLESS-1".into(), 2.0);
-    settings.keyboard.layout = "de".into();
-    compositor.apply_settings(&settings).expect("settings");
-    assert!(!compositor.output_lit("HEADLESS-2"));
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.serial.is_some()
-            && tool.heads.len() == 2
-            && tool.heads.iter().all(|head| head.enabled.is_some())
-    });
-    let first = client
-        .tool
-        .heads
-        .iter()
-        .find(|head| head.name == "HEADLESS-1")
-        .expect("head");
-    assert!((first.scale - 2.0).abs() < f64::EPSILON);
-    let second = client
-        .tool
-        .heads
-        .iter()
-        .find(|head| head.name == "HEADLESS-2")
-        .expect("head");
-    assert_eq!(second.enabled, Some(false));
+tilo_test_env::scenario! {
+    /// Display changes the session and its tools ask for.
+    fn display_changes_from_settings_and_tools_are_kept_or_reverted;
 
-    // Settings without the entry bring the output back.
-    compositor
-        .apply_settings(&tilo_compositor::Settings::default())
-        .expect("settings");
-    assert!(compositor.output_lit("HEADLESS-2"));
+    phase the_sessions_settings_turn_an_output_off_rescale_another_and_set_the_layout;
+    {
+        let mut compositor = two_outputs();
+        let mut settings = tilo_compositor::Settings::default();
+        settings.display.disabled.insert("HEADLESS-2".into());
+        settings.display.scales.insert("HEADLESS-1".into(), 2.0);
+        settings.keyboard.layout = "de".into();
+        compositor.apply_settings(&settings).expect("settings");
+        assert!(!compositor.output_lit("HEADLESS-2"));
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.serial.is_some()
+                && tool.heads.len() == 2
+                && tool.heads.iter().all(|head| head.enabled.is_some())
+        });
+        let first = client
+            .tool
+            .heads
+            .iter()
+            .find(|head| head.name == "HEADLESS-1")
+            .expect("head");
+        assert!((first.scale - 2.0).abs() < f64::EPSILON);
+        let second = client
+            .tool
+            .heads
+            .iter()
+            .find(|head| head.name == "HEADLESS-2")
+            .expect("head");
+        assert_eq!(second.enabled, Some(false));
+
+        // Settings without the entry bring the output back.
+        compositor
+            .apply_settings(&tilo_compositor::Settings::default())
+            .expect("settings");
+        assert!(compositor.output_lit("HEADLESS-2"));
+    }
+
+    phase a_risky_change_asks_to_be_kept_and_a_reverted_one_is_not_put_back;
+    {
+        let mut compositor = two_outputs();
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.serial.is_some() && tool.heads.len() == 2
+        });
+
+        // Nobody looks at the second output: the change is simply kept.
+        assert_eq!(
+            rescale(&mut compositor, &mut client, "HEADLESS-2", 2.0),
+            "succeeded"
+        );
+        let events = compositor.take_display_events();
+        assert!(
+            matches!(events.as_slice(), [DisplayEvent::Kept { changes }] if changes[0].scale == Some(2.0)),
+            "{events:?}"
+        );
+
+        // The pointer is on the first: a scale it never showed is asked about.
+        assert_eq!(
+            rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
+            "succeeded"
+        );
+        let events = compositor.take_display_events();
+        let [DisplayEvent::Confirm { id, within, .. }] = events.as_slice() else {
+            panic!("{events:?}");
+        };
+        assert_eq!(*within, CONFIRM_FOR);
+        pump(&mut compositor, &mut client, |tool| {
+            (scale_of_tool(tool, "HEADLESS-1") - 3.0).abs() < f64::EPSILON
+        });
+        assert!(compositor.revert_display_change(*id).expect("revert"));
+        pump(&mut compositor, &mut client, |tool| {
+            (scale_of_tool(tool, "HEADLESS-1") - 1.0).abs() < f64::EPSILON
+        });
+        assert!(!compositor.keep_display_change(*id), "answered already");
+
+        // Sending it again at once is refused, and the session hears once.
+        assert_eq!(
+            rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
+            "failed"
+        );
+        assert_eq!(
+            rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
+            "failed"
+        );
+        let events = compositor.take_display_events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, DisplayEvent::RefusedReapply { .. }))
+                .count(),
+            1,
+            "{events:?}"
+        );
+        assert!((scale_of(&client, "HEADLESS-1") - 1.0).abs() < f64::EPSILON);
+    }
+
+    phase a_trusted_tool_changes_the_display_in_use_without_asking;
+    {
+        let mut compositor = two_outputs();
+        compositor.set_trusted_display_tools([std::env::current_exe().expect("test binary")]);
+        let mut client = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut client, |tool| {
+            tool.serial.is_some() && tool.heads.len() == 2
+        });
+        assert_eq!(
+            rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
+            "succeeded"
+        );
+        let events = compositor.take_display_events();
+        assert!(
+            matches!(events.as_slice(), [DisplayEvent::Kept { .. }]),
+            "{events:?}"
+        );
+    }
 }
 
 /// Rescale `name` to `scale` from the tool and wait for the answer.
@@ -595,84 +699,6 @@ fn scale_of(client: &Client, name: &str) -> f64 {
         .find(|head| head.name == name)
         .expect("head")
         .scale
-}
-
-#[test]
-fn a_risky_change_asks_to_be_kept_and_a_reverted_one_is_not_put_back() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.serial.is_some() && tool.heads.len() == 2
-    });
-
-    // Nobody looks at the second output: the change is simply kept.
-    assert_eq!(
-        rescale(&mut compositor, &mut client, "HEADLESS-2", 2.0),
-        "succeeded"
-    );
-    let events = compositor.take_display_events();
-    assert!(
-        matches!(events.as_slice(), [DisplayEvent::Kept { changes }] if changes[0].scale == Some(2.0)),
-        "{events:?}"
-    );
-
-    // The pointer is on the first: a scale it never showed is asked about.
-    assert_eq!(
-        rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
-        "succeeded"
-    );
-    let events = compositor.take_display_events();
-    let [DisplayEvent::Confirm { id, within, .. }] = events.as_slice() else {
-        panic!("{events:?}");
-    };
-    assert_eq!(*within, CONFIRM_FOR);
-    pump(&mut compositor, &mut client, |tool| {
-        (scale_of_tool(tool, "HEADLESS-1") - 3.0).abs() < f64::EPSILON
-    });
-    assert!(compositor.revert_display_change(*id).expect("revert"));
-    pump(&mut compositor, &mut client, |tool| {
-        (scale_of_tool(tool, "HEADLESS-1") - 1.0).abs() < f64::EPSILON
-    });
-    assert!(!compositor.keep_display_change(*id), "answered already");
-
-    // Sending it again at once is refused, and the session hears once.
-    assert_eq!(
-        rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
-        "failed"
-    );
-    assert_eq!(
-        rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
-        "failed"
-    );
-    let events = compositor.take_display_events();
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, DisplayEvent::RefusedReapply { .. }))
-            .count(),
-        1,
-        "{events:?}"
-    );
-    assert!((scale_of(&client, "HEADLESS-1") - 1.0).abs() < f64::EPSILON);
-}
-
-#[test]
-fn a_trusted_tool_changes_the_display_in_use_without_asking() {
-    let mut compositor = two_outputs();
-    compositor.set_trusted_display_tools([std::env::current_exe().expect("test binary")]);
-    let mut client = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.serial.is_some() && tool.heads.len() == 2
-    });
-    assert_eq!(
-        rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
-        "succeeded"
-    );
-    let events = compositor.take_display_events();
-    assert!(
-        matches!(events.as_slice(), [DisplayEvent::Kept { .. }]),
-        "{events:?}"
-    );
 }
 
 fn scale_of_tool(tool: &Tool, name: &str) -> f64 {

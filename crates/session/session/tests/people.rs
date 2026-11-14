@@ -26,7 +26,7 @@
 )]
 
 use crate::common::people::{Person, Site};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 #[test]
 fn two_people_on_two_devices_each_meet_in_one_workspace() {
@@ -36,7 +36,7 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
     let site = Site::start(&ada, "Studio");
     // The workspace is public to its door, where anyone the site's own door admits joins as an
     // editor.
-    site.publish(WorkspaceRole::Editor);
+    site.publish(Role::Editor);
     let mut ada_laptop = ada.device("Ada's laptop");
     let mut ada_phone = ada.device("Ada's phone");
     let mut bob_laptop = bob.device("Bob's laptop");
@@ -50,11 +50,11 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
 
     // Her second device joins by the invitation her site issues for her, and so does each of Bob's,
     // by the invitation it issues for him.
-    let her_phone = site.invite(ada.public, WorkspaceRole::Editor);
+    let her_phone = site.invite(ada.public, Role::Editor);
     ada_phone.join(&her_phone);
     ada_phone.wait_holding(&site.workspace);
     for device in [&mut bob_laptop, &mut bob_phone] {
-        let theirs = site.invite(bob.public, WorkspaceRole::Editor);
+        let theirs = site.invite(bob.public, Role::Editor);
         device.join(&theirs);
         device.wait_holding(&site.workspace);
     }
@@ -197,11 +197,11 @@ fn a_person_the_workspace_never_admitted_is_refused_and_keeps_nothing() {
     );
 
     // Ada, whose site the workspace is, invites Carol, and Carol's device joins.
-    site.publish(WorkspaceRole::Editor);
+    site.publish(Role::Editor);
     let ada_joined = site.admit(ada.public);
     ada_laptop.join(&ada_joined);
     ada_laptop.wait_holding(&site.workspace);
-    let carol_joined = site.invite(carol.public, WorkspaceRole::Editor);
+    let carol_joined = site.invite(carol.public, Role::Editor);
 
     // A device that redeems an invitation the workspace issued for someone else is refused, and
     // keeps nothing.

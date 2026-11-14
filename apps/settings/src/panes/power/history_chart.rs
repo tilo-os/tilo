@@ -491,49 +491,53 @@ mod tests {
         BatteryHistoryPoint::sampled(minute, capacity, None, on_ac)
     }
 
-    /// The chart shows only its span, and breaks its line where the machine
-    /// was off.
-    #[test]
-    fn the_line_breaks_where_the_machine_was_off() {
-        let now = 100_000;
-        let points = [
-            point(now - 2000, 90, false),
-            point(now - 60, 80, false),
-            point(now - 45, 79, false),
-            point(now - 30, 78, true),
-            point(now - 200, 85, false),
-        ];
-        let mut sorted = points.to_vec();
-        sorted.sort_by_key(|point| point.unix_minute);
-        let chart = HistoryChart::new(&sorted, Span::Day, now, 0);
-        assert_eq!(
-            chart.points.len(),
-            4,
-            "a point older than a day is left out"
-        );
-        let runs: Vec<usize> = chart.runs().iter().map(|run| run.len()).collect();
-        assert_eq!(runs, [1, 3], "two hours without points break the line");
-        let week = HistoryChart::new(&sorted, Span::Week, now, 0);
-        assert_eq!(week.points.len(), 5);
-    }
+    tilo_test_env::scenario! {
+        fn the_battery_chart_breaks_its_line_and_ticks_on_local_time;
 
-    #[test]
-    fn the_time_axis_ticks_fall_on_local_hours_and_midnights() {
-        let now = 1_774_011_900 / 60;
-        let day = HistoryChart::new(&[], Span::Day, now, 7200);
-        let ticks = day.ticks();
-        assert_eq!(ticks.len(), 4, "{ticks:?}");
-        for (minute, _) in &ticks {
-            assert_eq!((minute + 120) % (6 * 60), 0, "a sixth local hour: {minute}");
-            assert!(*minute <= now && *minute > now - 24 * 60);
+        phase the_line_breaks_where_the_machine_was_off;
+        // The chart shows only its span, and breaks its line where the machine
+        // was off.
+        {
+            let now = 100_000;
+            let points = [
+                point(now - 2000, 90, false),
+                point(now - 60, 80, false),
+                point(now - 45, 79, false),
+                point(now - 30, 78, true),
+                point(now - 200, 85, false),
+            ];
+            let mut sorted = points.to_vec();
+            sorted.sort_by_key(|point| point.unix_minute);
+            let chart = HistoryChart::new(&sorted, Span::Day, now, 0);
+            assert_eq!(
+                chart.points.len(),
+                4,
+                "a point older than a day is left out"
+            );
+            let runs: Vec<usize> = chart.runs().iter().map(|run| run.len()).collect();
+            assert_eq!(runs, [1, 3], "two hours without points break the line");
+            let week = HistoryChart::new(&sorted, Span::Week, now, 0);
+            assert_eq!(week.points.len(), 5);
         }
-        let week = HistoryChart::new(&[], Span::Week, now, 7200);
-        let ticks = week.ticks();
-        assert_eq!(ticks.len(), 7, "{ticks:?}");
-        for (minute, _) in &ticks {
-            assert_eq!((minute + 120) % (24 * 60), 0, "a local midnight: {minute}");
+
+        phase the_time_axis_ticks_fall_on_local_hours_and_midnights;
+        {
+            let now = 1_774_011_900 / 60;
+            let day = HistoryChart::new(&[], Span::Day, now, 7200);
+            let ticks = day.ticks();
+            assert_eq!(ticks.len(), 4, "{ticks:?}");
+            for (minute, _) in &ticks {
+                assert_eq!((minute + 120) % (6 * 60), 0, "a sixth local hour: {minute}");
+                assert!(*minute <= now && *minute > now - 24 * 60);
+            }
+            let week = HistoryChart::new(&[], Span::Week, now, 7200);
+            let ticks = week.ticks();
+            assert_eq!(ticks.len(), 7, "{ticks:?}");
+            for (minute, _) in &ticks {
+                assert_eq!((minute + 120) % (24 * 60), 0, "a local midnight: {minute}");
+            }
+            assert_eq!(weekday_label(0), weekday_label(7));
+            assert_ne!(weekday_label(0), weekday_label(1));
         }
-        assert_eq!(weekday_label(0), weekday_label(7));
-        assert_ne!(weekday_label(0), weekday_label(1));
     }
 }

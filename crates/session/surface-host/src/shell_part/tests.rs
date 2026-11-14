@@ -33,7 +33,7 @@ fn reading() -> DeskReading {
     }
 }
 
-use crate::shell_part::tests_support::{part_on, part_with};
+use crate::shell_part::tests_support::{compiled, part_of, part_with};
 
 fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
@@ -180,10 +180,14 @@ fn no_app_hands_the_session_a_string() {
 
 /// The centre up, with its search field, and nothing changing: the part draws no frame.
 /// The field reports itself dirty every frame, as a leaf does; that is no reason to draw.
+///
+/// The centre's presses call the desk's own actions (`session.dismiss_notice(...)`): Clear all
+/// and a notice's Dismiss each reach the session as that action, at that press rather than at
+/// the next input.
 #[test]
-fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
+fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_desk_its_notice_action() {
     let _settled = ui::motion::testing::settled();
-    let (mut part, _link) = part_with(DeskReading {
+    let (mut part, link) = part_with(DeskReading {
         here: "centre".to_owned(),
         notices: vec![NoticeReading {
             key: "1".to_owned(),
@@ -212,30 +216,8 @@ fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
         (0, 0),
         "idle, the centre runs and draws nothing"
     );
-}
-
-/// The centre's presses call the desk's own actions (`session.dismiss_notice(...)`): Clear all
-/// and a notice's Dismiss each reach the session as that action, at that press rather than at
-/// the next input.
-#[test]
-fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
-    let _settled = ui::motion::testing::settled();
-    let (mut part, link) = part_with(DeskReading {
-        here: "centre".to_owned(),
-        notices: vec![NoticeReading {
-            key: "1".to_owned(),
-            title: "Backup finished".to_owned(),
-            body: "12 GB safe".to_owned(),
-            origin_app: "Settings".to_owned(),
-            kind: "info".to_owned(),
-            seen: true,
-        }],
-        ..reading()
-    });
-    for _ in 0..8 {
-        part.prepare_frame();
-    }
-    // Each press is answered, as the session's turn answers it, before the next.
+    // The idle frames ran and drew nothing, so the centre the presses land on is the one that
+    // settled. Each press is answered, as the session's turn answers it, before the next.
     let mut served = Vec::new();
     for name in ["Dismiss", "Clear all"] {
         click(&mut part, name);
@@ -578,35 +560,78 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
     );
 }
 
+/// A window fullscreen on the display a part stands on owns that display: the part steps aside,
+/// with not a row of it over the window and no pointer taken there, and it is back over the
+/// whole screen when the window leaves fullscreen. A window fullscreen on another display
+/// leaves the part standing, and so does a surface of the desk's that is up: it is the person's
+/// to look at over any window, a fullscreen one too.
 #[test]
-fn a_part_on_a_fullscreen_display_steps_aside_and_comes_back() {
-    let (mut part, _link) = part();
-    assert!(!part.aside(), "no window owns the display: the part stands");
-    assert_eq!(part.widgets.placement().size, (1280, 800), "the screen");
-    // A fullscreen window takes the display the part stands on: it draws nothing there.
-    part.set_fullscreen(vec!["HEADLESS-1".to_owned()]);
-    assert!(part.aside(), "the part stepped aside");
-    assert_eq!(
-        part.widgets.placement().size.1,
-        1,
-        "nothing of the part covers the window"
-    );
-    assert!(
-        !part.accepts_pointer(100.0, 10.0),
-        "the window under it takes the pointer"
-    );
-    assert!(
-        part.layers().is_empty(),
-        "not a row of the part is handed to the compositor over the window"
-    );
-    // The window leaves fullscreen: the part is back, over the whole screen.
-    part.set_fullscreen(Vec::new());
-    assert!(!part.aside());
-    assert_eq!(
-        part.widgets.placement().size,
-        (1280, 800),
-        "back over the screen"
-    );
+fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
+    // The surface that is up (`""`: the desk at rest), the displays fullscreen windows take,
+    // and whether the part, which stands on `HEADLESS-1`, steps aside.
+    let rows: [(&str, &[&str], bool); 4] = [
+        ("", &["HEADLESS-1"], true),
+        ("", &["HEADLESS-2"], false),
+        ("", &["HEADLESS-2", "HEADLESS-1"], true),
+        ("centre", &["HEADLESS-1"], false),
+    ];
+    let packages = compiled();
+    for (here, fullscreen, aside) in rows {
+        let (mut part, _link) = part_of(
+            &packages,
+            DeskReading {
+                here: here.to_owned(),
+                ..reading()
+            },
+            (1280, 800),
+        );
+        assert!(
+            !part.aside(),
+            "no window owns the display: the part stands ({here:?} up)"
+        );
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 800),
+            "the screen ({here:?} up)"
+        );
+        part.set_fullscreen(fullscreen.iter().map(|name| (*name).to_owned()).collect());
+        assert_eq!(
+            part.aside(),
+            aside,
+            "with a window fullscreen on {fullscreen:?} and {here:?} up"
+        );
+        if aside {
+            // The window took the display the part stands on: it draws nothing there.
+            assert_eq!(
+                part.widgets.placement().size.1,
+                1,
+                "nothing of the part covers the window on {fullscreen:?}"
+            );
+            assert!(
+                !part.accepts_pointer(100.0, 10.0),
+                "the window under it takes the pointer on {fullscreen:?}"
+            );
+            assert!(
+                part.layers().is_empty(),
+                "not a row of the part is handed to the compositor over the window on \
+                 {fullscreen:?}"
+            );
+        } else {
+            assert_eq!(
+                part.widgets.placement().size,
+                (1280, 800),
+                "the part stands over its screen with {fullscreen:?} fullscreen and {here:?} up"
+            );
+        }
+        // The window leaves fullscreen: the part is back, over the whole screen.
+        part.set_fullscreen(Vec::new());
+        assert!(!part.aside(), "back after {fullscreen:?}");
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 800),
+            "back over the screen after {fullscreen:?}"
+        );
+    }
 }
 
 #[test]
@@ -688,17 +713,6 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     );
 }
 
-#[test]
-fn a_fullscreen_window_on_another_display_leaves_this_part_standing() {
-    let (mut part, _link) = part();
-    part.set_fullscreen(vec!["HEADLESS-2".to_owned()]);
-    assert!(
-        !part.aside(),
-        "the window owns the other display: this part stands"
-    );
-    assert_eq!(part.widgets.placement().size, (1280, 800));
-}
-
 /// The person's arrangement: one strip on the desk, its one place a foreign window's (no
 /// record), keyed `p1`.
 fn one_window_arrangement() -> ArrangementReading {
@@ -773,8 +787,12 @@ fn showing_one_window() -> (ShellPart, ui::widget::Wells) {
 /// The whole screen shows the person's arrangement between the bar and the dock, under the
 /// preset switch, and a foreign window's place is a well reported to the window policy's
 /// handle, on the output under the bar.
+///
+/// The framed canvas the switch then shows pans under a middle drag, and the window's well goes
+/// with it in the frame the drag is drawn in: the window policy reads the well, so a window
+/// stands in its frame wherever the person carries the canvas.
 #[test]
-fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
+fn the_screen_shows_the_arrangement_and_a_canvas_pan_carries_each_windows_well() {
     let (mut part, wells) = showing_one_window();
     assert!(part.below_windows(), "the windows stand over the screen");
     let labels = crate::Published::accessible_labels(&mut part);
@@ -828,6 +846,31 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     assert!(
         wells.well("p1").is_some_and(|well| well.width() >= 1.0),
         "the place is a well on the canvas"
+    );
+
+    // The canvas the two presses showed is the one the person now carries with a middle drag.
+    for _ in 0..30 {
+        part.prepare_frame();
+    }
+    let before = wells.well("p1").expect("the place is a well on the canvas");
+    // A point on the canvas' ground, clear of the place: below and right of its well.
+    let (x, y) = (before.x1 + 40.0, before.y1 + 40.0);
+    part.pointer_motion(x, y);
+    part.prepare_frame();
+    part.pointer_button(0x112, true);
+    part.prepare_frame();
+    let mut seen = Vec::new();
+    for step in 1..=5 {
+        part.pointer_motion(x - 20.0 * f64::from(step), y - 10.0 * f64::from(step));
+        part.prepare_frame();
+        seen.push(wells.well("p1"));
+    }
+    part.pointer_button(0x112, false);
+    part.prepare_frame();
+    let after = wells.well("p1").expect("the place is still a well");
+    assert!(
+        (after.x0 - (before.x0 - 100.0)).abs() < 1.0 && (after.y0 - (before.y0 - 50.0)).abs() < 1.0,
+        "the well moved with the canvas: {before:?} -> {after:?}, along the way {seen:?}"
     );
 }
 
@@ -898,8 +941,9 @@ fn overview_with(strips: &[&str]) -> DeskReading {
 #[test]
 fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
     let _settled = ui::motion::testing::settled();
+    let packages = compiled();
     for strips in [&["Main"][..], &["Main", "Research"][..]] {
-        let (mut part, link) = part_with(overview_with(strips));
+        let (mut part, link) = part_of(&packages, overview_with(strips), (1280, 800));
         for _ in 0..6 {
             part.prepare_frame();
             part.draw();
@@ -1114,8 +1158,10 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
 /// phone and on a desktop, never right under what the surface holds.
 #[test]
 fn with_a_short_surface_up_the_dock_rides_the_outputs_bottom_edge() {
+    let packages = compiled();
     for (width, height) in [(390, 844), (1280, 800)] {
-        let (mut part, _link) = crate::shell_part::tests_support::part_on(
+        let (mut part, _link) = part_of(
+            &packages,
             DeskReading {
                 here: "centre".to_owned(),
                 ..reading()
@@ -1323,6 +1369,8 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
     link.publish(DeskReading {
         here: "overview".to_owned(),
         windows,
+        // The workspace in front, as the session publishes it: the overview places a window by
+        // the workspace its fields name current.
         rooms: vec![RoomReading {
             key: "1".to_owned(),
             name: "Desk".to_owned(),
@@ -1375,7 +1423,8 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
 /// everything on a `HiDPI` panel grainy).
 #[test]
 fn a_part_on_a_scaled_output_paints_at_that_scale() {
-    let (mut plain, _link) = part_on(reading(), (1280, 800));
+    let packages = compiled();
+    let (mut plain, _link) = part_of(&packages, reading(), (1280, 800));
     plain.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 1.0,
@@ -1384,7 +1433,7 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
     plain.prepare_frame();
     let one = plain.widgets_mut().placement();
 
-    let (mut twice, _link) = part_on(reading(), (1280, 800));
+    let (mut twice, _link) = part_of(&packages, reading(), (1280, 800));
     twice.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 2.0,
@@ -1534,39 +1583,6 @@ fn a_shells_week_starts_on_the_persons_first_day() {
     ui::format::region::install(before);
 }
 
-/// The framed canvas pans under a middle drag, and the window's well goes with it in the frame
-/// the drag is drawn in: the window policy reads the well, so a window stands in its frame
-/// wherever the person carries the canvas.
-#[test]
-fn a_canvas_pan_carries_the_windows_well_with_it() {
-    let (mut part, wells) = showing_one_window();
-    click(&mut part, "Showing Strips");
-    click(&mut part, "Frames");
-    for _ in 0..30 {
-        part.prepare_frame();
-    }
-    let before = wells.well("p1").expect("the place is a well on the canvas");
-    // A point on the canvas' ground, clear of the place: below and right of its well.
-    let (x, y) = (before.x1 + 40.0, before.y1 + 40.0);
-    part.pointer_motion(x, y);
-    part.prepare_frame();
-    part.pointer_button(0x112, true);
-    part.prepare_frame();
-    let mut seen = Vec::new();
-    for step in 1..=5 {
-        part.pointer_motion(x - 20.0 * f64::from(step), y - 10.0 * f64::from(step));
-        part.prepare_frame();
-        seen.push(wells.well("p1"));
-    }
-    part.pointer_button(0x112, false);
-    part.prepare_frame();
-    let after = wells.well("p1").expect("the place is still a well");
-    assert!(
-        (after.x0 - (before.x0 - 100.0)).abs() < 1.0 && (after.y0 - (before.y0 - 50.0)).abs() < 1.0,
-        "the well moved with the canvas: {before:?} -> {after:?}, along the way {seen:?}"
-    );
-}
-
 /// A window that arrives past the canvas' edge is shown: the canvas pans to it, and on every
 /// frame of the way each window's well has moved with the canvas, the one that stood there and
 /// the one arriving alike, so no window trails its frame.
@@ -1590,12 +1606,21 @@ fn the_canvas_pans_to_a_window_arriving_past_its_edge_carrying_every_well() {
     arriving.strip = "s2".to_owned();
     arrangement.places.push(arriving);
     link.publish_arrangement(arrangement);
+    // The frames of the way are drawn 8 ms apart for the two seconds at most the way may take.
+    // The way is over once a frame drew nothing and the part has nothing left to turn for
+    // (`due`: a reading to take in, a turn that ran out of exchanges, space or input the window
+    // owes its views) and names no further frame (`next_deadline`: the camera's glide and every
+    // other motion of the tree ask for theirs there). A frame after that would draw nothing
+    // either, so every frame that draws is among the ones read.
     let started = std::time::Instant::now();
     let mut frames = Vec::new();
     while started.elapsed() < std::time::Duration::from_secs(2) {
-        part.prepare_frame();
+        let drew = part.prepare_frame();
         if let (Some(one), Some(two)) = (wells.well("p1"), wells.well("p2")) {
             frames.push((one, two));
+        }
+        if !drew && !part.due() && SurfaceHost::next_deadline(&part).is_none() {
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
@@ -1611,4 +1636,62 @@ fn the_canvas_pans_to_a_window_arriving_past_its_edge_carrying_every_well() {
             .all(|(one, two)| ((two.x0 - one.x0) - apart).abs() < 1.0),
         "every well moved with the canvas on every frame: {frames:?}"
     );
+}
+
+/// A collection the shell mirrors keeps the session's order: a tab tabbed into another window
+/// goes after that window's own tab, so the mirror's places are taken out from the first one out
+/// of order and inserted again in the session's order, rather than left where they were inserted.
+/// An item is kept once its insert is written, so the next reading inserts it no more.
+#[test]
+fn the_mirror_follows_the_session_s_order_of_its_items() {
+    let root = ResourceRef::root("root-places", "places");
+    let ty = OriginType {
+        app: "so.tilo.session".to_owned(),
+        ty: "place".to_owned(),
+        kind: "session.place".to_owned(),
+        fields: BTreeMap::from([("key".to_owned(), "key".to_owned())]),
+    };
+    let mut mirror = Mirror::default();
+    let mut sync = |now: &[&str]| {
+        let now: Vec<String> = now.iter().map(|key| (*key).to_owned()).collect();
+        let writes = mirror.sync(
+            &now,
+            &root,
+            Some("places"),
+            Some(&ty),
+            Clone::clone,
+            |key| vec![("key", Value::Text(key.clone()))],
+        );
+        let mut made = Vec::new();
+        let changes: Vec<String> = writes
+            .iter()
+            .map(|write| match write {
+                OriginWrite::Insert { fields, .. } => {
+                    let Value::Text(key) = &fields[0].1 else {
+                        panic!("a key")
+                    };
+                    made.push(Some(root.item(key, "place")));
+                    format!("+{key}")
+                }
+                OriginWrite::Remove { item, .. } => {
+                    made.push(None);
+                    format!("-{}", item.item.clone().unwrap_or_default())
+                }
+                OriginWrite::Set { .. } => {
+                    made.push(None);
+                    "set".to_owned()
+                }
+            })
+            .collect();
+        mirror.made(Some(made));
+        changes
+    };
+    assert_eq!(sync(&["a", "b"]), ["+a", "+b"]);
+    assert_eq!(sync(&["a", "b", "c"]), ["+c"], "a new one goes last");
+    assert!(sync(&["a", "b", "c"]).is_empty(), "nothing moved");
+    // `a` moved behind `c`: everything from the first one out of order is inserted again.
+    assert_eq!(sync(&["b", "c", "a"]), ["-a", "-b", "-c", "+b", "+c", "+a"]);
+    assert!(sync(&["b", "c", "a"]).is_empty(), "the mirror is in order");
+    // A new one before the last: it and the one after it go in again.
+    assert_eq!(sync(&["b", "d", "c", "a"]), ["-c", "-a", "+d", "+c", "+a"]);
 }

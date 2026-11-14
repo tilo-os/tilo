@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_broker_core::services::TrackerRun;
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::join::WorkspaceId;
 use tilo_peer_state::join::task_delegation::{MAX_TASK_DELEGATION_NS, TaskDelegation};
 
 /// The address every door connection's run is named under: no record holds it.
@@ -207,7 +208,7 @@ pub(crate) fn mint(
     admitted: &Admitted<'_>,
     now_ns: u64,
 ) -> Result<Minted, String> {
-    let starter = tilo_broker_core::principal_id_for_root(certificate.user_public_key);
+    let starter = tilo_broker_core::person_id_for_root(certificate.user_public_key);
     if starter != admitted.person {
         return Err("this device's identity is not the person's who admitted the agent".into());
     }
@@ -217,7 +218,7 @@ pub(crate) fn mint(
         certificate.user_public_key,
         agent_key.verifying_key().to_bytes(),
         issue.clone(),
-        admitted.workspace.to_owned(),
+        WorkspaceId::parse(admitted.workspace).ok_or("the admission names no workspace")?,
         now_ns,
         now_ns.saturating_add(MAX_TASK_DELEGATION_NS),
     )
@@ -308,7 +309,7 @@ mod tests {
     }
 
     fn person(cert: &tilo_user_identity::DeviceCert) -> String {
-        tilo_broker_core::principal_id_for_root(cert.user_public_key)
+        tilo_broker_core::person_id_for_root(cert.user_public_key)
     }
 
     /// The run a connection is minted is a task agent's of its own, delegated by this device for

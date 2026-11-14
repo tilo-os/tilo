@@ -7290,6 +7290,18 @@
           "name": "enabled",
           "doc": "Whether it can be chosen now.",
           "type": "bool"
+        },
+        {
+          "name": "chosen",
+          "doc": "Whether it is the choice the strip shows as made: what a setting holds, where the strip's choices run their own actions and hold no index of their own.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "It was pressed: what a choice runs when each choice is a setting's own action at its case. A strip whose choices say this one shows what they say and never chooses for them.",
+          "press": true
         }
       ],
       "semantics": {

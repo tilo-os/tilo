@@ -321,7 +321,37 @@ mod tests {
     }
 
     #[test]
+    fn samples_become_sixteen_bit_clipped_to_full_scale() {
+        let rows: [(&str, &[f32], &[i16]); 8] = [
+            ("nothing", &[], &[]),
+            ("silence", &[0.0, -0.0], &[0, 0]),
+            ("full scale", &[1.0, -1.0], &[32767, -32767]),
+            (
+                "beyond full scale clips",
+                &[1.5, -1.5, 1000.0],
+                &[32767, -32767, 32767],
+            ),
+            (
+                "infinity clips",
+                &[f32::INFINITY, f32::NEG_INFINITY],
+                &[32767, -32767],
+            ),
+            (
+                "half a step rounds away from zero",
+                &[0.5, -0.5],
+                &[16384, -16384],
+            ),
+            ("under half a step is silence", &[1e-6, -1e-6], &[0, 0]),
+            ("not a number is silence", &[f32::NAN], &[0]),
+        ];
+        for (row, samples, expected) in rows {
+            assert_eq!(to_s16(samples), expected, "{row}");
+        }
+    }
+
+    #[test]
     fn an_unreadable_source_fails_without_waiting_out_the_budget() {
+        crate::test_gst::shared_registry();
         let dir = tempfile::tempdir().expect("temp dir");
         let junk = dir.path().join("junk.mp4");
         std::fs::write(&junk, b"not a container, not even close").expect("write");

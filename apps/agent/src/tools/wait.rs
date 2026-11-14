@@ -132,101 +132,105 @@ mod tests {
 
     const STEPS: usize = 4;
 
-    /// A plan's `wait_for` is read with its seconds kept within the bound,
-    /// its words trimmed, and absent or null as no wait; a plan of only a
-    /// wait is an answer, and a wait without seconds is refused.
-    #[test]
-    fn a_plan_reads_its_wait_within_the_bound() {
-        let mut revealed = Revealed::new();
-        revealed.reveal("a#b");
-        let only = json!({"steps": [], "why": "", "then": "",
-            "wait_for": {"app": " Chat ", "contains": "  code ", "seconds": 0}});
-        let answer = read_plan(&only, &revealed, STEPS).expect("a wait is something to do");
-        assert!(answer.actions.is_empty());
-        assert_eq!(
-            answer.wait,
-            Some(Wait {
-                app: Some("Chat".into()),
-                contains: Some("code".into()),
-                seconds: 1
-            })
-        );
-        let long = json!({"steps": [{"operation": "a#b", "arguments": {}}], "why": "",
-            "then": "note the code", "wait_for": {"seconds": 600, "contains": ""}});
-        let answer = read_plan(&long, &revealed, STEPS).expect("read");
-        assert_eq!(
-            answer.wait,
-            Some(Wait {
-                app: None,
-                contains: None,
-                seconds: MOST_WAIT_SECONDS
-            })
-        );
-        assert_eq!(answer.then.as_deref(), Some("note the code"));
-        let mut plan = json!({"steps": [{"operation": "a#b", "arguments": {}}], "why": "",
-            "then": ""});
-        assert_eq!(
-            read_plan(&plan, &revealed, STEPS).expect("absent").wait,
-            None
-        );
-        plan[WAIT_FOR] = Value::Null;
-        assert_eq!(read_plan(&plan, &revealed, STEPS).expect("null").wait, None);
-        let untimed = json!({"steps": [], "why": "", "then": "", "wait_for": {}});
-        let refused = read_plan(&untimed, &revealed, STEPS).expect_err("no seconds");
-        assert!(refused.contains("seconds"), "{refused}");
-        let worded = json!({"steps": [], "why": "", "then": "", "wait_for": "a minute"});
-        assert!(read_plan(&worded, &revealed, STEPS).is_err());
-        let numbered = json!({"steps": [], "why": "", "then": "",
-            "wait_for": {"app": 3, "seconds": 5}});
-        assert!(read_plan(&numbered, &revealed, STEPS).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_plan_reads_and_words_its_wait;
 
-    /// Only a waiting planner's `plan` takes `wait_for`; its places are
-    /// named in words, never as an enum, and the set stays the same bytes
-    /// on every call for the prompt cache.
-    #[test]
-    fn the_waiting_plan_names_its_places_in_words_and_stays_byte_stable() {
-        let places = ["mail", "chat", "messages"];
-        let waiting = typed_waiting_definitions(STEPS, &places, 4);
-        assert_eq!(
-            serde_json::to_string(&waiting).unwrap(),
-            serde_json::to_string(&typed_waiting_definitions(STEPS, &places, 4)).unwrap()
-        );
-        let plan = waiting.iter().find(|tool| tool.name == PLAN).unwrap();
-        let wait = &plan.input_schema["properties"][WAIT_FOR];
-        assert_eq!(
-            wait["properties"]["app"]["description"],
-            "Where it arrives: mail, chat, messages; omit for any."
-        );
-        assert_eq!(wait["properties"]["seconds"]["maximum"], MOST_WAIT_SECONDS);
-        assert!(
-            wait["description"]
-                .as_str()
-                .is_some_and(|said| said.contains("may wait 4 times")),
-            "{wait}"
-        );
-        assert!(
-            !plan.input_schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(WAIT_FOR)),
-            "a plan need not wait"
-        );
-        assert!(
-            !serde_json::to_string(&waiting)
-                .unwrap()
-                .contains("\"enum\"")
-        );
-        let unwaiting = typed_definitions(STEPS);
-        assert!(
-            unwaiting[3].input_schema["properties"]
-                .get(WAIT_FOR)
-                .is_none(),
-            "a planner that cannot wait never offers it"
-        );
-        assert_eq!(
-            waiting.iter().map(|tool| &tool.name).collect::<Vec<_>>(),
-            unwaiting.iter().map(|tool| &tool.name).collect::<Vec<_>>()
-        );
+        phase a_plan_reads_its_wait_within_the_bound;
+        // A plan's `wait_for` is read with its seconds kept within the bound,
+        // its words trimmed, and absent or null as no wait; a plan of only a
+        // wait is an answer, and a wait without seconds is refused.
+        {
+            let mut revealed = Revealed::new();
+            revealed.reveal("a#b");
+            let only = json!({"steps": [], "why": "", "then": "",
+                "wait_for": {"app": " Chat ", "contains": "  code ", "seconds": 0}});
+            let answer = read_plan(&only, &revealed, STEPS).expect("a wait is something to do");
+            assert!(answer.actions.is_empty());
+            assert_eq!(
+                answer.wait,
+                Some(Wait {
+                    app: Some("Chat".into()),
+                    contains: Some("code".into()),
+                    seconds: 1
+                })
+            );
+            let long = json!({"steps": [{"operation": "a#b", "arguments": {}}], "why": "",
+                "then": "note the code", "wait_for": {"seconds": 600, "contains": ""}});
+            let answer = read_plan(&long, &revealed, STEPS).expect("read");
+            assert_eq!(
+                answer.wait,
+                Some(Wait {
+                    app: None,
+                    contains: None,
+                    seconds: MOST_WAIT_SECONDS
+                })
+            );
+            assert_eq!(answer.then.as_deref(), Some("note the code"));
+            let mut plan = json!({"steps": [{"operation": "a#b", "arguments": {}}], "why": "",
+                "then": ""});
+            assert_eq!(
+                read_plan(&plan, &revealed, STEPS).expect("absent").wait,
+                None
+            );
+            plan[WAIT_FOR] = Value::Null;
+            assert_eq!(read_plan(&plan, &revealed, STEPS).expect("null").wait, None);
+            let untimed = json!({"steps": [], "why": "", "then": "", "wait_for": {}});
+            let refused = read_plan(&untimed, &revealed, STEPS).expect_err("no seconds");
+            assert!(refused.contains("seconds"), "{refused}");
+            let worded = json!({"steps": [], "why": "", "then": "", "wait_for": "a minute"});
+            assert!(read_plan(&worded, &revealed, STEPS).is_err());
+            let numbered = json!({"steps": [], "why": "", "then": "",
+                "wait_for": {"app": 3, "seconds": 5}});
+            assert!(read_plan(&numbered, &revealed, STEPS).is_err());
+        }
+
+        phase the_waiting_plan_names_its_places_in_words_and_stays_byte_stable;
+        // Only a waiting planner's `plan` takes `wait_for`; its places are
+        // named in words, never as an enum, and the set stays the same bytes
+        // on every call for the prompt cache.
+        {
+            let places = ["mail", "chat", "messages"];
+            let waiting = typed_waiting_definitions(STEPS, &places, 4);
+            assert_eq!(
+                serde_json::to_string(&waiting).unwrap(),
+                serde_json::to_string(&typed_waiting_definitions(STEPS, &places, 4)).unwrap()
+            );
+            let plan = waiting.iter().find(|tool| tool.name == PLAN).unwrap();
+            let wait = &plan.input_schema["properties"][WAIT_FOR];
+            assert_eq!(
+                wait["properties"]["app"]["description"],
+                "Where it arrives: mail, chat, messages; omit for any."
+            );
+            assert_eq!(wait["properties"]["seconds"]["maximum"], MOST_WAIT_SECONDS);
+            assert!(
+                wait["description"]
+                    .as_str()
+                    .is_some_and(|said| said.contains("may wait 4 times")),
+                "{wait}"
+            );
+            assert!(
+                !plan.input_schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(WAIT_FOR)),
+                "a plan need not wait"
+            );
+            assert!(
+                !serde_json::to_string(&waiting)
+                    .unwrap()
+                    .contains("\"enum\"")
+            );
+            let unwaiting = typed_definitions(STEPS);
+            assert!(
+                unwaiting[3].input_schema["properties"]
+                    .get(WAIT_FOR)
+                    .is_none(),
+                "a planner that cannot wait never offers it"
+            );
+            assert_eq!(
+                waiting.iter().map(|tool| &tool.name).collect::<Vec<_>>(),
+                unwaiting.iter().map(|tool| &tool.name).collect::<Vec<_>>()
+            );
+        }
     }
 }

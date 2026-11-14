@@ -331,77 +331,84 @@ mod tests {
         (String::from_utf8(out).unwrap(), stats)
     }
 
-    #[test]
-    fn an_unchanged_tree_patches_nothing() {
-        let old = snapshot(items(0..50), "hello");
-        let mut new = snapshot(items(0..50), "hello");
-        let (text, stats) = patch(&old, &mut new);
-        assert_eq!(text, "[]");
-        assert!(stats.is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// The patch between two inspection snapshots built in memory: nothing, one field, one row,
+        /// or a whole node.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_inspection_patch_sends_only_what_changed;
 
-    #[test]
-    fn a_keystroke_sends_the_field_alone() {
-        let old = snapshot(items(0..50), "hello");
-        let mut new = snapshot(items(0..50), "hello!");
-        let (text, stats) = patch(&old, &mut new);
-        assert_eq!(
-            stats,
-            InspectionPatchStats {
-                changed: 1,
-                added: 0,
-                removed: 0
-            }
-        );
-        assert!(text.starts_with(r#"[{"p":["root",0,"s",0],"own":{"role":"TextInput""#));
-        assert!(text.contains(r#""value":"hello!""#));
-        assert!(
-            text.contains(r#""children":[]"#),
-            "own fields go without children"
-        );
-        assert!(text.len() < 600, "{} bytes: {text}", text.len());
-        assert_eq!(
-            new.root.children[0]
-                .semantics
-                .as_ref()
-                .unwrap()
-                .children
-                .len(),
-            2
-        );
-    }
+        phase an_unchanged_tree_patches_nothing;
+        {
+            let old = snapshot(items(0..50), "hello");
+            let mut new = snapshot(items(0..50), "hello");
+            let (text, stats) = patch(&old, &mut new);
+            assert_eq!(text, "[]");
+            assert!(stats.is_empty());
+        }
 
-    #[test]
-    fn a_message_in_the_middle_costs_that_message() {
-        let old = snapshot(items(0..50), "");
-        let mut new = snapshot(items((0..20).chain([99]).chain(20..50)), "");
-        let (text, stats) = patch(&old, &mut new);
-        assert_eq!(
-            stats,
-            InspectionPatchStats {
-                changed: 0,
-                added: 1,
-                removed: 0
-            }
-        );
-        assert!(text.contains(r#"{"p":["root",0,"s",1],"splice":[20,0,[{"role":"ListItem""#));
-        let mut gone = snapshot(items((0..10).chain(11..50)), "");
-        let (text, stats) = patch(&old, &mut gone);
-        assert_eq!(stats.removed, 1);
-        assert_eq!(stats.added + stats.changed, 0);
-        assert_eq!(text, r#"[{"p":["root",0,"s",1],"splice":[10,1,[]]}]"#);
-    }
+        phase a_keystroke_sends_the_field_alone;
+        {
+            let old = snapshot(items(0..50), "hello");
+            let mut new = snapshot(items(0..50), "hello!");
+            let (text, stats) = patch(&old, &mut new);
+            assert_eq!(
+                stats,
+                InspectionPatchStats {
+                    changed: 1,
+                    added: 0,
+                    removed: 0
+                }
+            );
+            assert!(text.starts_with(r#"[{"p":["root",0,"s",0],"own":{"role":"TextInput""#));
+            assert!(text.contains(r#""value":"hello!""#));
+            assert!(
+                text.contains(r#""children":[]"#),
+                "own fields go without children"
+            );
+            assert!(text.len() < 600, "{} bytes: {text}", text.len());
+            assert_eq!(
+                new.root.children[0]
+                    .semantics
+                    .as_ref()
+                    .unwrap()
+                    .children
+                    .len(),
+                2
+            );
+        }
 
-    #[test]
-    fn semantics_that_appear_go_whole() {
-        let old = snapshot(items(0..3), "");
-        let mut new = snapshot(items(0..3), "");
-        new.root.semantics = Some(AccessNode::new(Role::Window).with_name("Desk"));
-        let (text, stats) = patch(&old, &mut new);
-        assert_eq!(stats.added, 1);
-        assert!(text.starts_with(r#"[{"p":["root","s"],"full":{"role":"Window""#));
-        let (text, stats) = patch(&new, &mut snapshot(items(0..3), ""));
-        assert_eq!(stats.removed, 1);
-        assert!(text.contains(r#"{"p":["root","s"],"full":null}"#));
+        phase a_message_in_the_middle_costs_that_message;
+        {
+            let old = snapshot(items(0..50), "");
+            let mut new = snapshot(items((0..20).chain([99]).chain(20..50)), "");
+            let (text, stats) = patch(&old, &mut new);
+            assert_eq!(
+                stats,
+                InspectionPatchStats {
+                    changed: 0,
+                    added: 1,
+                    removed: 0
+                }
+            );
+            assert!(text.contains(r#"{"p":["root",0,"s",1],"splice":[20,0,[{"role":"ListItem""#));
+            let mut gone = snapshot(items((0..10).chain(11..50)), "");
+            let (text, stats) = patch(&old, &mut gone);
+            assert_eq!(stats.removed, 1);
+            assert_eq!(stats.added + stats.changed, 0);
+            assert_eq!(text, r#"[{"p":["root",0,"s",1],"splice":[10,1,[]]}]"#);
+        }
+
+        phase semantics_that_appear_go_whole;
+        {
+            let old = snapshot(items(0..3), "");
+            let mut new = snapshot(items(0..3), "");
+            new.root.semantics = Some(AccessNode::new(Role::Window).with_name("Desk"));
+            let (text, stats) = patch(&old, &mut new);
+            assert_eq!(stats.added, 1);
+            assert!(text.starts_with(r#"[{"p":["root","s"],"full":{"role":"Window""#));
+            let (text, stats) = patch(&new, &mut snapshot(items(0..3), ""));
+            assert_eq!(stats.removed, 1);
+            assert!(text.contains(r#"{"p":["root","s"],"full":null}"#));
+        }
     }
 }

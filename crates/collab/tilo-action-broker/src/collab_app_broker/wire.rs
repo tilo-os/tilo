@@ -18,10 +18,12 @@ use std::rc::Weak;
 
 use runtime_collab::wire::{
     Answer as Answered, Ask, Call, Changes, CheckProgress, ContextUpdate, Event, FRAMING, Handle,
-    HostFrame, InvocationCall, Join, LiveActivityCall, Operation, Participant, Publication, Read,
-    Reply, Report, Service, SettingsCall, TaskCall, TaskStep, Topic,
+    HostFrame, InvocationCall, Join, LiveActivityCall, Operation, Publication, Read, Reply, Report,
+    Service, SettingsCall, TaskCall, TaskStep, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
+
+use collab_types::MemberId;
 
 use super::*;
 
@@ -35,18 +37,13 @@ use presence::presence_event;
 /// native window's once its workspace or document custody ended, checked on
 /// both sides of every wait.
 pub(super) struct Feed<T> {
-    host_guard: Option<HostWorkerReadGuard>,
     native_guard: Option<NativeContextReadGuard>,
     rx: mpsc::UnboundedReceiver<T>,
 }
 
 impl<T> Feed<T> {
-    pub(super) fn new(
-        host_guard: Option<HostWorkerReadGuard>,
-        rx: mpsc::UnboundedReceiver<T>,
-    ) -> Self {
+    pub(super) fn new(rx: mpsc::UnboundedReceiver<T>) -> Self {
         Self {
-            host_guard,
             native_guard: None,
             rx,
         }
@@ -58,7 +55,6 @@ impl<T> Feed<T> {
     }
 
     fn check(&self) -> Result<(), BrokerError> {
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         NativeContextReadGuard::check(self.native_guard.as_ref())
     }
 
@@ -412,14 +408,9 @@ impl JoinedChannel {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         Ok(Feed::new(
-            self.host_guard(),
             self.state
                 .subscribe_ops(&self.channel_id, self.connection_id),
         ))
-    }
-
-    fn host_guard(&self) -> Option<HostWorkerReadGuard> {
-        HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity)
     }
 
     /// The host's record-content service, for a channel still admitted.
@@ -494,7 +485,7 @@ impl JoinedChannel {
             identity: native.admitted,
             document,
         });
-        Ok(Feed::new(self.host_guard(), rx).with_native_guard(native_guard))
+        Ok(Feed::new(rx).with_native_guard(native_guard))
     }
 
     /// Ask another endpoint holding this channel to publish the document's
@@ -720,13 +711,10 @@ impl JoinedChannel {
                 let keys = services.channel_keys.clone().ok_or_else(|| {
                     BrokerError::unimplemented("this host has no channel service to follow".into())
                 })?;
-                let channel = collab_types::document_channel_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record_id,
-                );
+                let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
+                    .ok_or_else(|| BrokerError::failed("the route names no workspace".into()))?;
                 Ok(Box::pin(async move {
-                    keys.channel_changed(channel, after).await
+                    keys.workspace_changed(workspace, after).await
                 }))
             }
         }
@@ -818,10 +806,9 @@ impl JoinedChannel {
         bytes: &[u8],
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
         let refused = || BrokerError::failed("private service-session request refused".into());
-        // Only the person's own app connection: never an agent's or a
-        // host's. Which app may ask what is decided per request.
-        if self.verified_identity.agent_id.is_some() || self.verified_identity.host_scope.is_some()
-        {
+        // Only the person's own app connection: never an agent's. Which app
+        // may ask what is decided per request.
+        if self.verified_identity.agent_id.is_some() {
             return Err(refused());
         }
         let read = self.document_read_context().map_err(|_| refused())?;
@@ -942,7 +929,7 @@ impl JoinedChannel {
             runs.retain(|_, run| run.peer_id != self.peer_id);
         }
         self.state.local_turn.notify_one();
-        let feed = Feed::new(self.host_guard(), rx);
+        let feed = Feed::new(rx);
         self.state.refresh_native_task_delivery();
         Ok(feed)
     }
@@ -1169,17 +1156,16 @@ impl JoinedChannel {
         }
         // An application reaching for another app's action it holds no
         // grant for: the person using it is asked first, or it is refused.
-        let consent = match (caller.principal(), &request.message) {
-            (
-                tilo_actions::remote::CallerPrincipal::App(app_id),
-                tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
-            ) => match self.state.app_action_consent(&person, app_id, invoke) {
-                app_consent::ConsentStep::Serve => None,
-                app_consent::ConsentStep::Refuse => {
-                    return refusal(&request.message);
+        let consent = match (caller.acting().app(), &request.message) {
+            (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) => {
+                match self.state.app_action_consent(&person, app_id, invoke) {
+                    app_consent::ConsentStep::Serve => None,
+                    app_consent::ConsentStep::Refuse => {
+                        return refusal(&request.message);
+                    }
+                    app_consent::ConsentStep::Ask(consent) => Some(consent),
                 }
-                app_consent::ConsentStep::Ask(consent) => Some(consent),
-            },
+            }
             _ => None,
         };
         // A person's answer to what an issue's run asks them is theirs to
@@ -1300,11 +1286,6 @@ impl JoinedChannel {
             );
         let delivered = invocation_delivery_notice(&self.state.services, app, workspace);
         Ok(InvocationStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
             rx: invocation_queue(self.peer_id, rx),
             delivered,
         })
@@ -1343,7 +1324,6 @@ impl JoinedChannel {
         let peer_id = self.peer_id;
         let route = self.route();
         let identity = self.verified_identity.clone();
-        let host_guard = HostWorkerReadGuard::for_channel(&state, peer_id, &identity);
         Box::pin(async move {
             let _owner_order = if state.durable_owner_required
                 || state.publisher.requires_owner_for(&route.cluster_id)
@@ -1352,7 +1332,6 @@ impl JoinedChannel {
             } else {
                 None
             };
-            HostWorkerReadGuard::check(host_guard.as_ref())?;
             if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
             {
                 state.revalidate_admission(&route, &identity)?;
@@ -1408,7 +1387,6 @@ impl JoinedChannel {
             state
                 .commit_effect_before_terminal(&staged, &update)
                 .await?;
-            HostWorkerReadGuard::check(host_guard.as_ref())?;
             if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
             {
                 state.revalidate_admission(&route, &identity)?;
@@ -1434,13 +1412,6 @@ impl JoinedChannel {
     }
 
     fn invocation_cancellation(&self, id: u64) -> Answer<Reply> {
-        let checked = HostWorkerReadGuard::check(
-            HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity)
-                .as_ref(),
-        );
-        if let Err(error) = checked {
-            return Box::pin(std::future::ready(Err(error)));
-        }
         let owns = self
             .state
             .pending_invocations
@@ -1557,14 +1528,7 @@ impl JoinedChannel {
                 "action catalogue subscriber registry unavailable".into(),
             ));
         }
-        Ok(ActionCatalogueStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            follower,
-        })
+        Ok(ActionCatalogueStreamServer { follower })
     }
 
     /// Open the installed app `app_id` (from `package_root`, if named) for
@@ -1642,7 +1606,7 @@ impl JoinedChannel {
         &self,
     ) -> Result<Feed<crate::record_content::ContentNews>, BrokerError> {
         let (route, content) = self.record_content()?;
-        Ok(Feed::new(self.host_guard(), content.subscribe(&route)))
+        Ok(Feed::new(content.subscribe(&route)))
     }
 }
 
@@ -1683,7 +1647,7 @@ impl JoinedChannel {
                     .verified_identity
                     .certificate
                     .as_ref()
-                    .map(|cert| principal_id_for_root(cert.user_public_key)),
+                    .map(|cert| person_id_for_root(cert.user_public_key)),
                 app_id: app_id.clone(),
                 route: route.clone(),
                 directory,
@@ -1717,7 +1681,7 @@ impl JoinedChannel {
             BrokerError::failed("realtime continuity is unsupported by this host".into())
         })?;
         let rx = service.subscribe(&context).map_err(BrokerError::failed)?;
-        Ok(Feed::new(self.host_guard(), rx))
+        Ok(Feed::new(rx))
     }
 }
 
@@ -1859,12 +1823,10 @@ fn close_control(control: Rc<dyn crate::services::WorkspaceControlSession>) {
 }
 
 /// What a connection reaches of the session's published resources: the
-/// provider, the caller it reads them for, and the broker state a granted
-/// reading is decided from.
+/// provider and the caller it reads them for.
 struct Publishing {
     published: Arc<dyn crate::services::PublishedResources>,
     caller: crate::services::Caller,
-    state: Arc<AppBrokerState>,
 }
 
 impl WireConnection {
@@ -1936,7 +1898,6 @@ impl WireConnection {
                 app_id: launch.app_id.clone(),
                 workspace: launch.workspace_id.clone(),
             },
-            state: Arc::clone(&service.state),
         })
     }
 
@@ -2135,14 +2096,6 @@ impl WireConnection {
                     .and_then(|()| self.publishing());
                 Box::pin(async move {
                     let publishing = asking?;
-                    // A reading the person's own is decided before it is read,
-                    // as an action is before it runs.
-                    super::published::gate(
-                        &publishing.state,
-                        publishing.published.as_ref(),
-                        &publishing.caller,
-                        &resource,
-                    )?;
                     super::published::read(Ok(publishing
                         .published
                         .snapshot(&publishing.caller, &resource)))
@@ -2444,20 +2397,6 @@ impl WireConnection {
                 if self.subscriptions.borrow().contains_key(&id) {
                     return Err(format!("subscription {id} is already live"));
                 }
-                // A watch begins only where the workspace's grants let the caller
-                // read, and each reading is decided again as it is served.
-                super::published::gate(
-                    &publishing.state,
-                    publishing.published.as_ref(),
-                    &publishing.caller,
-                    &resource,
-                )?;
-                let gate = super::published::ReadingGate {
-                    state: Arc::clone(&publishing.state),
-                    published: Arc::clone(&publishing.published),
-                    caller: publishing.caller.clone(),
-                    resource: resource.clone(),
-                };
                 let (readings, deliveries) = mpsc::unbounded_channel();
                 let watch = publishing
                     .published
@@ -2468,7 +2407,6 @@ impl WireConnection {
                     deliveries,
                     self.frames.clone(),
                     id,
-                    gate,
                 );
                 self.subscriptions.borrow_mut().insert(id, (services, task));
                 Ok(Reply::Subscribed)

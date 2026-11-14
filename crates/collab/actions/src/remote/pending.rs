@@ -398,18 +398,6 @@ impl<T> Future for Pending<T> {
 mod tests {
     use super::*;
 
-    /// A pending answer is polled, awaited or continued; dropping a mapped answer abandons the
-    /// original; waiting across threads sees the answer or times out; a ready answer resolves as a
-    /// future without a runtime.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn a_pending_answer_resolves_however_it_is_waited_on() {
-        a_pending_answer_is_polled_awaited_or_continued();
-        dropping_a_mapped_answer_abandons_the_original();
-        waiting_across_threads_sees_the_answer_or_times_out();
-        a_ready_answer_resolves_as_a_future_without_a_runtime();
-    }
-
     /// Counts how often a producer waiting on abandonment is woken.
     struct CountingWaker(std::sync::atomic::AtomicUsize);
 
@@ -425,97 +413,113 @@ mod tests {
         }
     }
 
-    /// The producer of an answer learns that its asker went away the moment
-    /// it does, as a wake-up rather than by checking again later: dropping
-    /// the answer, or the answer mapped from it, wakes
-    /// [`Completer::abandoned`]; an answer a plain continuation took stays
-    /// wanted. No runtime is involved.
-    #[test]
-    fn dropping_the_asker_wakes_a_producer_waiting_on_abandonment() {
-        let counter = Arc::new(CountingWaker(std::sync::atomic::AtomicUsize::new(0)));
-        let waker = Waker::from(Arc::clone(&counter));
-        let mut context = Context::from_waker(&waker);
+    tilo_test_env::scenario! {
+        fn a_pending_answer_wakes_whoever_waits_on_it;
 
-        let (completer, answer) = pending::<u8>();
-        let mut abandoned = std::pin::pin!(completer.abandoned());
-        assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Pending);
-        assert_eq!(counter.woken(), 0, "nothing happened yet");
-        drop(answer);
-        assert_eq!(counter.woken(), 1, "dropping the answer wakes its producer");
-        assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Ready(()));
+        phase a_pending_answer_resolves_however_it_is_waited_on;
+        // A pending answer is polled, awaited or continued; dropping a mapped answer abandons the
+        // original; waiting across threads sees the answer or times out; a ready answer resolves as a
+        // future without a runtime.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            a_pending_answer_is_polled_awaited_or_continued();
+            dropping_a_mapped_answer_abandons_the_original();
+            waiting_across_threads_sees_the_answer_or_times_out();
+            a_ready_answer_resolves_as_a_future_without_a_runtime();
+        }
 
-        let (completer, answer) = pending::<u8>();
-        let mapped = answer.map(|value| value.saturating_add(1));
-        let mut abandoned = std::pin::pin!(completer.abandoned());
-        assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Pending);
-        let before = counter.woken();
-        drop(mapped);
-        assert!(
-            counter.woken() > before,
-            "dropping the mapped answer wakes the original producer"
-        );
-        assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Ready(()));
-
-        let (completer, answer) = pending::<u8>();
-        answer.then(|_| {});
-        let mut abandoned = std::pin::pin!(completer.abandoned());
-        assert_eq!(
-            abandoned.as_mut().poll(&mut context),
-            Poll::Pending,
-            "a plain continuation always wants the answer"
-        );
-
-        let (completer, answer) = pending::<u8>();
-        drop(answer);
-        let mut abandoned = std::pin::pin!(completer.abandoned());
-        assert_eq!(
-            abandoned.as_mut().poll(&mut context),
-            Poll::Ready(()),
-            "an answer dropped before anyone waited is already abandoned"
-        );
-    }
-
-    /// A producer on another thread wakes as soon as the asker drops the
-    /// answer, with nothing polling in between.
-    #[test]
-    fn a_producer_on_another_thread_wakes_when_the_asker_drops_the_answer() {
-        let (completer, answer) = pending::<u8>();
-        let (parked, ready) = std::sync::mpsc::channel();
-        let producer = std::thread::spawn(move || {
-            struct Unpark(std::thread::Thread);
-            impl std::task::Wake for Unpark {
-                fn wake(self: Arc<Self>) {
-                    self.0.unpark();
-                }
-            }
-            let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+        phase dropping_the_asker_wakes_a_producer_waiting_on_abandonment;
+        // The producer of an answer learns that its asker went away the moment
+        // it does, as a wake-up rather than by checking again later: dropping
+        // the answer, or the answer mapped from it, wakes
+        // [`Completer::abandoned`]; an answer a plain continuation took stays
+        // wanted. No runtime is involved.
+        {
+            let counter = Arc::new(CountingWaker(std::sync::atomic::AtomicUsize::new(0)));
+            let waker = Waker::from(Arc::clone(&counter));
             let mut context = Context::from_waker(&waker);
+
+            let (completer, answer) = pending::<u8>();
             let mut abandoned = std::pin::pin!(completer.abandoned());
-            let mut announced = false;
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
-                if abandoned.as_mut().poll(&mut context).is_ready() {
-                    return true;
+            assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Pending);
+            assert_eq!(counter.woken(), 0, "nothing happened yet");
+            drop(answer);
+            assert_eq!(counter.woken(), 1, "dropping the answer wakes its producer");
+            assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Ready(()));
+
+            let (completer, answer) = pending::<u8>();
+            let mapped = answer.map(|value| value.saturating_add(1));
+            let mut abandoned = std::pin::pin!(completer.abandoned());
+            assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Pending);
+            let before = counter.woken();
+            drop(mapped);
+            assert!(
+                counter.woken() > before,
+                "dropping the mapped answer wakes the original producer"
+            );
+            assert_eq!(abandoned.as_mut().poll(&mut context), Poll::Ready(()));
+
+            let (completer, answer) = pending::<u8>();
+            answer.then(|_| {});
+            let mut abandoned = std::pin::pin!(completer.abandoned());
+            assert_eq!(
+                abandoned.as_mut().poll(&mut context),
+                Poll::Pending,
+                "a plain continuation always wants the answer"
+            );
+
+            let (completer, answer) = pending::<u8>();
+            drop(answer);
+            let mut abandoned = std::pin::pin!(completer.abandoned());
+            assert_eq!(
+                abandoned.as_mut().poll(&mut context),
+                Poll::Ready(()),
+                "an answer dropped before anyone waited is already abandoned"
+            );
+        }
+
+        phase a_producer_on_another_thread_wakes_when_the_asker_drops_the_answer;
+        // A producer on another thread wakes as soon as the asker drops the
+        // answer, with nothing polling in between.
+        {
+            let (completer, answer) = pending::<u8>();
+            let (parked, ready) = std::sync::mpsc::channel();
+            let producer = std::thread::spawn(move || {
+                struct Unpark(std::thread::Thread);
+                impl std::task::Wake for Unpark {
+                    fn wake(self: Arc<Self>) {
+                        self.0.unpark();
+                    }
                 }
-                if !announced {
-                    parked.send(()).expect("announce parking");
-                    announced = true;
+                let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+                let mut context = Context::from_waker(&waker);
+                let mut abandoned = std::pin::pin!(completer.abandoned());
+                let mut announced = false;
+                let deadline = tilo_test_env::hang_deadline();
+                loop {
+                    if abandoned.as_mut().poll(&mut context).is_ready() {
+                        return true;
+                    }
+                    if !announced {
+                        parked.send(()).expect("announce parking");
+                        announced = true;
+                    }
+                    let remaining = deadline.saturating_duration_since(tilo_clock::now());
+                    if remaining.is_zero() {
+                        return false;
+                    }
+                    std::thread::park_timeout(remaining);
                 }
-                let remaining = deadline.saturating_duration_since(tilo_clock::now());
-                if remaining.is_zero() {
-                    return false;
-                }
-                std::thread::park_timeout(remaining);
-            }
-        });
-        ready
-            .recv_timeout(tilo_test_env::hang_bound())
-            .expect("the producer waits");
-        drop(answer);
-        assert!(
-            producer.join().expect("producer thread"),
-            "the producer saw its asker go away"
-        );
+            });
+            ready
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect("the producer waits");
+            drop(answer);
+            assert!(
+                producer.join().expect("producer thread"),
+                "the producer saw its asker go away"
+            );
+        }
     }
 
     #[allow(

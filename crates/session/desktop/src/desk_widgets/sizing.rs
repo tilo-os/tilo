@@ -142,48 +142,52 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resizing_through_every_breakpoint_is_continuous() {
-        for id in WidgetId::ALL {
-            let sizing = sizing(id);
-            assert!(sizing.min < sizing.regular_at && sizing.regular_at < sizing.large_at);
-            assert!(sizing.large_at < sizing.max);
-            assert!((sizing.min..=sizing.max).contains(&sizing.default));
-            let mut last = height(id, sizing.min, stepped);
-            let mut seen = std::collections::BTreeSet::new();
-            let widths = std::iter::successors(Some(sizing.min), |width| Some(width + 0.25));
-            for width in widths.take_while(|width| *width <= sizing.max) {
-                let h = height(id, width, stepped);
-                // A quarter-pixel step never moves the height more than a couple of pixels: no jump
-                // anywhere.
-                assert!(
-                    (h - last).abs() < 2.5,
-                    "{id:?} jumps at {width}: {last} -> {h}"
-                );
-                let (lo, hi, t) = stages(id, width);
-                assert!((0.0..=1.0).contains(&t));
-                seen.insert(lo);
-                seen.insert(hi);
-                last = h;
-            }
-            assert_eq!(seen.len(), 3, "{id:?} passes all three stages");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_desk_widget_resizes_through_its_stages;
 
-    #[test]
-    fn outside_the_bands_one_stage_shows_alone() {
-        let sizing = sizing(WidgetId::Music);
-        assert_eq!(
-            stages(WidgetId::Music, sizing.min),
-            (Stage::Compact, Stage::Compact, 0.0)
-        );
-        assert_eq!(stages(WidgetId::Music, sizing.default).0, Stage::Regular);
-        assert_eq!(
-            stages(WidgetId::Music, sizing.max),
-            (Stage::Large, Stage::Large, 0.0)
-        );
-        let (lo, hi, t) = stages(WidgetId::Music, sizing.large_at);
-        assert_eq!((lo, hi), (Stage::Regular, Stage::Large));
-        assert!((t - 0.5).abs() < 1e-9, "half way at the breakpoint");
+        phase resizing_through_every_breakpoint_is_continuous;
+        {
+            for id in WidgetId::ALL {
+                let sizing = sizing(id);
+                assert!(sizing.min < sizing.regular_at && sizing.regular_at < sizing.large_at);
+                assert!(sizing.large_at < sizing.max);
+                assert!((sizing.min..=sizing.max).contains(&sizing.default));
+                let mut last = height(id, sizing.min, stepped);
+                let mut seen = std::collections::BTreeSet::new();
+                let widths = std::iter::successors(Some(sizing.min), |width| Some(width + 0.25));
+                for width in widths.take_while(|width| *width <= sizing.max) {
+                    let h = height(id, width, stepped);
+                    // A quarter-pixel step never moves the height more than a couple of pixels: no jump
+                    // anywhere.
+                    assert!(
+                        (h - last).abs() < 2.5,
+                        "{id:?} jumps at {width}: {last} -> {h}"
+                    );
+                    let (lo, hi, t) = stages(id, width);
+                    assert!((0.0..=1.0).contains(&t));
+                    seen.insert(lo);
+                    seen.insert(hi);
+                    last = h;
+                }
+                assert_eq!(seen.len(), 3, "{id:?} passes all three stages");
+            }
+        }
+
+        phase outside_the_bands_one_stage_shows_alone;
+        {
+            let sizing = sizing(WidgetId::Music);
+            assert_eq!(
+                stages(WidgetId::Music, sizing.min),
+                (Stage::Compact, Stage::Compact, 0.0)
+            );
+            assert_eq!(stages(WidgetId::Music, sizing.default).0, Stage::Regular);
+            assert_eq!(
+                stages(WidgetId::Music, sizing.max),
+                (Stage::Large, Stage::Large, 0.0)
+            );
+            let (lo, hi, t) = stages(WidgetId::Music, sizing.large_at);
+            assert_eq!((lo, hi), (Stage::Regular, Stage::Large));
+            assert!((t - 0.5).abs() < 1e-9, "half way at the breakpoint");
+        }
     }
 }

@@ -70,18 +70,34 @@ fn cancellation_journey(cancel: WindowEvent) {
     assert!(!region.is_dragging());
 }
 
-#[test]
-fn focus_loss_releases_shared_scrollbar_capture() {
-    cancellation_journey(WindowEvent::Focused(false));
-}
+tilo_test_env::scenario! {
+    /// When a region lets go of a captured scrollbar.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn shared_scrollbar_capture_is_released_or_retired;
 
-#[test]
-fn escape_releases_shared_scrollbar_capture() {
-    cancellation_journey(keyboard_input(key_event(
-        Key::Named(NamedKey::Escape),
-        None,
-        ElementState::Pressed,
-    )));
+    phase focus_loss_releases_shared_scrollbar_capture;
+    {
+        cancellation_journey(WindowEvent::Focused(false));
+    }
+
+    phase escape_releases_shared_scrollbar_capture;
+    {
+        cancellation_journey(keyboard_input(key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        )));
+    }
+
+    phase viewport_change_retires_capture_but_stable_layout_preserves_it;
+    {
+        metrics_change_journey(false);
+    }
+
+    phase content_change_retires_capture_but_stable_layout_preserves_it;
+    {
+        metrics_change_journey(true);
+    }
 }
 
 fn metrics_change_journey(change_content: bool) {
@@ -135,14 +151,4 @@ fn metrics_change_journey(change_content: bool) {
     );
     send(&mut region, &button(ElementState::Released));
     assert!(!region.is_dragging());
-}
-
-#[test]
-fn viewport_change_retires_capture_but_stable_layout_preserves_it() {
-    metrics_change_journey(false);
-}
-
-#[test]
-fn content_change_retires_capture_but_stable_layout_preserves_it() {
-    metrics_change_journey(true);
 }

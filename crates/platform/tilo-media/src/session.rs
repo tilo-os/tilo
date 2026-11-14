@@ -350,6 +350,7 @@ mod tests {
             assert_eq!(s.bucket_ms(), bucket_ms_for_fps(60.0));
             std::fs::remove_dir_all(p.parent().unwrap()).ok();
         }
+        crate::test_gst::shared_registry();
         {
             // A clip imported by absolute path and the same clip named through the workspace
             // mount must not stand up two decoders for one file.

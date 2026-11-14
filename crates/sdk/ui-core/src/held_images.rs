@@ -400,139 +400,158 @@ mod tests {
         out.into_inner()
     }
 
-    #[test]
-    fn held_pictures_load_by_address_and_nothing_else_is_fetched() {
-        let held = HeldImages::default();
-        let picture = png(4, 4, [200, 10, 10]);
-        let address = held.hold(&picture);
-        assert_eq!(held.hold(&picture), address, "the same bytes, one address");
-        let fetch = held.fetcher();
-        assert_eq!(fetch(&address), Some(picture.clone()));
-        assert_eq!(fetch("https://example.com/a.png"), None);
-        let text = held.hold_text(&picture_text(&picture));
-        assert_eq!(fetch(&text), Some(picture.clone()));
-        assert_eq!(held.hold_text(""), "");
-        held.retain(&std::collections::HashSet::new());
-        assert!(!held.holds(&address));
-    }
+    tilo_test_env::scenario! {
+        /// Pictures held in memory: loading them by address, and the portraits, mosaics and covers
+        /// cut from them.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn held_pictures_load_by_address_and_are_cut_to_small_squares;
 
-    #[test]
-    fn portraits_are_small_centred_squares_and_mosaics_tile_four_covers() {
-        let wide = png(800, 400, [10, 200, 10]);
-        let face = image::load_from_memory(&portrait(&wide).unwrap()).unwrap();
-        assert_eq!(
-            (face.width(), face.height()),
-            (PORTRAIT_SIDE, PORTRAIT_SIDE)
-        );
-        assert_eq!(portrait(b"not a picture"), None);
-
-        let colours = [[250, 0, 0], [0, 250, 0], [0, 0, 250], [250, 250, 0]];
-        let covers: Vec<Vec<u8>> = colours.iter().map(|&c| png(64, 64, c)).collect();
-        let refs: Vec<&[u8]> = covers.iter().map(Vec::as_slice).collect();
-        let tiled = image::load_from_memory(&mosaic(&refs).unwrap())
-            .unwrap()
-            .to_rgb8();
-        let quarter = PORTRAIT_SIDE / 4;
-        let three_quarters = quarter * 3;
-        for ((x, y), colour) in [
-            (quarter, quarter),
-            (three_quarters, quarter),
-            (quarter, three_quarters),
-            (three_quarters, three_quarters),
-        ]
-        .into_iter()
-        .zip(colours)
+        phase held_pictures_load_by_address_and_nothing_else_is_fetched;
         {
-            let pixel = tiled.get_pixel(x, y).0;
-            for (got, want) in pixel.iter().zip(colour) {
-                assert!(
-                    got.abs_diff(want) < 40,
-                    "{pixel:?} at {x},{y} vs {colour:?}"
-                );
+            let held = HeldImages::default();
+            let picture = png(4, 4, [200, 10, 10]);
+            let address = held.hold(&picture);
+            assert_eq!(held.hold(&picture), address, "the same bytes, one address");
+            let fetch = held.fetcher();
+            assert_eq!(fetch(&address), Some(picture.clone()));
+            assert_eq!(fetch("https://example.com/a.png"), None);
+            let text = held.hold_text(&picture_text(&picture));
+            assert_eq!(fetch(&text), Some(picture.clone()));
+            assert_eq!(held.hold_text(""), "");
+            // Picture text wrapped as a vCard carries it decodes to the same picture; text that is
+            // no picture is held, and loads nothing.
+            let encoded = picture_text(&picture);
+            let wrapped = format!("{}\r\n {}", &encoded[..8], &encoded[8..]);
+            assert_eq!(picture_bytes(&wrapped), Some(picture.clone()));
+            assert_eq!(fetch(&held.hold_text(&wrapped)), Some(picture.clone()));
+            for not_a_picture in ["", " \r\n", "=", "not base64!"] {
+                assert_eq!(picture_bytes(not_a_picture), None, "{not_a_picture:?}");
             }
+            let junk = held.hold_text("not base64!");
+            assert!(held.holds(&junk));
+            assert_eq!(fetch(&junk), None);
+            held.retain(&std::collections::HashSet::new());
+            assert!(!held.holds(&address));
         }
-        assert_eq!(mosaic(&[b"nothing".as_slice()]), None);
 
-        let decoded: Vec<crate::peniko::ImageData> = colours
-            .iter()
-            .map(|&[r, g, b]| crate::peniko::ImageData {
-                data: crate::peniko::Blob::new(Arc::new([r, g, b, 255].repeat(16 * 8))),
-                format: crate::peniko::ImageFormat::Rgba8,
-                alpha_type: crate::peniko::ImageAlphaType::Alpha,
-                width: 16,
-                height: 8,
-            })
-            .collect();
-        let tiled = mosaic_of(&decoded, 64).unwrap();
-        assert_eq!((tiled.width, tiled.height), (64, 64));
-        let pixels = tiled.data.data();
-        for ((x, y), [r, g, b]) in [(8, 8), (40, 8), (8, 40), (40, 40)]
+        phase portraits_are_small_centred_squares_and_mosaics_tile_four_covers;
+        {
+            let wide = png(800, 400, [10, 200, 10]);
+            let face = image::load_from_memory(&portrait(&wide).unwrap()).unwrap();
+            assert_eq!(
+                (face.width(), face.height()),
+                (PORTRAIT_SIDE, PORTRAIT_SIDE)
+            );
+            assert_eq!(portrait(b"not a picture"), None);
+
+            let colours = [[250, 0, 0], [0, 250, 0], [0, 0, 250], [250, 250, 0]];
+            let covers: Vec<Vec<u8>> = colours.iter().map(|&c| png(64, 64, c)).collect();
+            let refs: Vec<&[u8]> = covers.iter().map(Vec::as_slice).collect();
+            let tiled = image::load_from_memory(&mosaic(&refs).unwrap())
+                .unwrap()
+                .to_rgb8();
+            let quarter = PORTRAIT_SIDE / 4;
+            let three_quarters = quarter * 3;
+            for ((x, y), colour) in [
+                (quarter, quarter),
+                (three_quarters, quarter),
+                (quarter, three_quarters),
+                (three_quarters, three_quarters),
+            ]
             .into_iter()
             .zip(colours)
+            {
+                let pixel = tiled.get_pixel(x, y).0;
+                for (got, want) in pixel.iter().zip(colour) {
+                    assert!(
+                        got.abs_diff(want) < 40,
+                        "{pixel:?} at {x},{y} vs {colour:?}"
+                    );
+                }
+            }
+            assert_eq!(mosaic(&[b"nothing".as_slice()]), None);
+
+            let decoded: Vec<crate::peniko::ImageData> = colours
+                .iter()
+                .map(|&[r, g, b]| crate::peniko::ImageData {
+                    data: crate::peniko::Blob::new(Arc::new([r, g, b, 255].repeat(16 * 8))),
+                    format: crate::peniko::ImageFormat::Rgba8,
+                    alpha_type: crate::peniko::ImageAlphaType::Alpha,
+                    width: 16,
+                    height: 8,
+                })
+                .collect();
+            let tiled = mosaic_of(&decoded, 64).unwrap();
+            assert_eq!((tiled.width, tiled.height), (64, 64));
+            let pixels = tiled.data.data();
+            for ((x, y), [r, g, b]) in [(8, 8), (40, 8), (8, 40), (40, 40)]
+                .into_iter()
+                .zip(colours)
+            {
+                let at = (y * 64 + x) * 4;
+                assert_eq!(&pixels[at..at + 4], &[r, g, b, 255], "{x},{y}");
+            }
+            assert!(mosaic_of(&[], 64).is_none());
+        }
+
+        phase a_cover_becomes_a_small_square_picture_a_card_can_draw;
         {
-            let at = (y * 64 + x) * 4;
-            assert_eq!(&pixels[at..at + 4], &[r, g, b, 255], "{x},{y}");
+            let wide = crate::peniko::ImageData {
+                data: crate::peniko::Blob::new(Arc::new([30, 120, 200, 255].repeat(80 * 40))),
+                format: crate::peniko::ImageFormat::Rgba8,
+                alpha_type: crate::peniko::ImageAlphaType::Alpha,
+                width: 80,
+                height: 40,
+            };
+            let picture = cover(&wide, 24);
+            assert!(picture.starts_with("data:image/jpeg;base64,"), "{picture}");
+            let bytes = picture_bytes(picture.strip_prefix("data:image/jpeg;base64,").unwrap())
+                .expect("the encoded picture");
+            let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            assert_eq!((decoded.width(), decoded.height()), (24, 24));
+            let pixel = decoded.get_pixel(12, 12).0;
+            for (got, want) in pixel.iter().zip([30, 120, 200]) {
+                assert!(got.abs_diff(want) < 40, "{pixel:?}");
+            }
+            let grey = crate::peniko::ImageData {
+                format: crate::peniko::ImageFormat::Bgra8,
+                ..wide.clone()
+            };
+            assert_eq!(cover(&grey, 24), "", "a picture it does not read");
+            assert_eq!(cover(&wide, 0), "", "a picture with no pixels");
         }
-        assert!(mosaic_of(&[], 64).is_none());
-    }
 
-    #[test]
-    fn a_cover_becomes_a_small_square_picture_a_card_can_draw() {
-        let wide = crate::peniko::ImageData {
-            data: crate::peniko::Blob::new(Arc::new([30, 120, 200, 255].repeat(80 * 40))),
-            format: crate::peniko::ImageFormat::Rgba8,
-            alpha_type: crate::peniko::ImageAlphaType::Alpha,
-            width: 80,
-            height: 40,
-        };
-        let picture = cover(&wide, 24);
-        assert!(picture.starts_with("data:image/jpeg;base64,"), "{picture}");
-        let bytes = picture_bytes(picture.strip_prefix("data:image/jpeg;base64,").unwrap())
-            .expect("the encoded picture");
-        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
-        assert_eq!((decoded.width(), decoded.height()), (24, 24));
-        let pixel = decoded.get_pixel(12, 12).0;
-        for (got, want) in pixel.iter().zip([30, 120, 200]) {
-            assert!(got.abs_diff(want) < 40, "{pixel:?}");
+        phase a_busy_cover_keeps_inside_the_picture_budget;
+        // Noise is what costs a JPEG bytes: a cover that fills its square with detail is cut down until it
+        // fits the budget the song's message has.
+        {
+            let mut seed = 0x2545_f491_u32;
+            let mut pixels = Vec::with_capacity(512 * 512 * 4);
+            for _ in 0..512 * 512 {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                pixels.extend_from_slice(&[
+                    (seed >> 24) as u8,
+                    (seed >> 16) as u8,
+                    (seed >> 8) as u8,
+                    255,
+                ]);
+            }
+            let busy = crate::peniko::ImageData {
+                data: crate::peniko::Blob::new(Arc::new(pixels.into_boxed_slice())),
+                format: crate::peniko::ImageFormat::Rgba8,
+                alpha_type: crate::peniko::ImageAlphaType::Alpha,
+                width: 512,
+                height: 512,
+            };
+            let picture = cover(&busy, 112);
+            assert!(picture.starts_with("data:image/jpeg;base64,"), "{picture}");
+            let bytes = picture_bytes(picture.strip_prefix("data:image/jpeg;base64,").unwrap())
+                .expect("the encoded picture");
+            assert!(
+                bytes.len() <= PICTURE_BUDGET,
+                "{} bytes is over the budget",
+                bytes.len()
+            );
         }
-        let grey = crate::peniko::ImageData {
-            format: crate::peniko::ImageFormat::Bgra8,
-            ..wide.clone()
-        };
-        assert_eq!(cover(&grey, 24), "", "a picture it does not read");
-        assert_eq!(cover(&wide, 0), "", "a picture with no pixels");
-    }
-
-    /// Noise is what costs a JPEG bytes: a cover that fills its square with detail is cut down until it
-    /// fits the budget the song's message has.
-    #[test]
-    fn a_busy_cover_keeps_inside_the_picture_budget() {
-        let mut seed = 0x2545_f491_u32;
-        let mut pixels = Vec::with_capacity(512 * 512 * 4);
-        for _ in 0..512 * 512 {
-            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            pixels.extend_from_slice(&[
-                (seed >> 24) as u8,
-                (seed >> 16) as u8,
-                (seed >> 8) as u8,
-                255,
-            ]);
-        }
-        let busy = crate::peniko::ImageData {
-            data: crate::peniko::Blob::new(Arc::new(pixels.into_boxed_slice())),
-            format: crate::peniko::ImageFormat::Rgba8,
-            alpha_type: crate::peniko::ImageAlphaType::Alpha,
-            width: 512,
-            height: 512,
-        };
-        let picture = cover(&busy, 112);
-        assert!(picture.starts_with("data:image/jpeg;base64,"), "{picture}");
-        let bytes = picture_bytes(picture.strip_prefix("data:image/jpeg;base64,").unwrap())
-            .expect("the encoded picture");
-        assert!(
-            bytes.len() <= PICTURE_BUDGET,
-            "{} bytes is over the budget",
-            bytes.len()
-        );
     }
 }

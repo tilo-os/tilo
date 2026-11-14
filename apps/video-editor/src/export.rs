@@ -1305,52 +1305,219 @@ mod tests {
         assert!(!out.exists(), "and no file is left behind");
     }
 
+    /// A first clip that decodes cannot hide a later one that does not: the export fails
+    /// naming the later source and removes the part of the file it had written, and the
+    /// same destination then takes an export that does not need that source.
+    ///
+    /// The patience is the test's own: far longer than the clip that decodes needs for a
+    /// picture on a loaded machine, and a sixth of the two minutes an export gives a source
+    /// by default, which is all the test would otherwise spend waiting.
     #[test]
-    fn exporting_over_source_media_is_refused_without_changing_its_bytes() {
+    #[cfg(feature = "gst")]
+    #[serial_test::serial(video_editor_gst)]
+    fn a_good_first_clip_cannot_hide_a_broken_later_clip_in_an_mp4_export() {
+        use crate::model::{MediaItem, MediaKind};
+        assert!(
+            generated_clip::media_stack(),
+            "MP4 regression requires the media stack"
+        );
+        let dir = tempfile::tempdir().expect("export artifacts");
+        let broken = dir.path().join("broken.mp4");
+        std::fs::write(&broken, b"not an MP4 bitstream").unwrap();
+        let mut project = project_over(&demo_clip(), 0.0, 0.4);
+        project.name = "partly broken".into();
+        let media = uuid::Uuid::new_v4();
+        project.media.push(MediaItem {
+            id: media,
+            name: "broken second clip".into(),
+            kind: MediaKind::Video,
+            path: broken.to_string_lossy().into_owned(),
+            duration: 0.2,
+            width: generated_clip::WIDTH,
+            height: generated_clip::HEIGHT,
+            ..Default::default()
+        });
+        let track = project.tracks[0].id;
+        project.add_clip(track, media, 0.4).unwrap();
+        let settings = ExportSettings {
+            resolution: Resolution::P720,
+            ..Default::default()
+        };
+        let output = dir.path().join("incomplete.mp4");
+        let status = start_export_with_patience(
+            &project,
+            settings,
+            output.clone(),
+            std::time::Duration::from_secs(20),
+        )
+        .join();
+        match status {
+            ExportStatus::Failed { reason } => {
+                assert!(reason.contains("broken second clip"), "{reason}");
+                assert!(reason.contains("stand-in"), "{reason}");
+                assert!(
+                    !reason.contains("\"demo\""),
+                    "the clip that decodes is not the one named: {reason}"
+                );
+            }
+            other => panic!("export must refuse a partly synthetic file, got {other:?}"),
+        }
+        assert!(
+            !output.exists(),
+            "failed MP4 export must remove its partial file"
+        );
+
+        // A source outside the marked range is not needed by this export,
+        // even when its bytes are completely unavailable. The destination is
+        // the one the failed export wrote part of and removed, so what it
+        // holds now is counted here; `tests/export_fidelity.rs` decodes the
+        // same export into a destination nothing had written to.
+        project.media[1].path = dir
+            .path()
+            .join("missing.mp4")
+            .to_string_lossy()
+            .into_owned();
+        project.set_mark_out(0.3);
+        let status = start_export(&project, &settings, output.clone()).join();
+        assert!(matches!(status, ExportStatus::Done { .. }), "{status:?}");
+        assert!(output.exists(), "the destination took the later export");
+        assert_eq!(
+            decoded_video_frames(&output),
+            9,
+            "0.3 seconds is nine frames, and nothing of the failed export is among them"
+        );
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn an_export_is_refused_or_planned_before_any_frame_is_encoded;
+
+        phase exporting_over_source_media_is_refused_without_changing_its_bytes;
+        {
+            let dir = tempfile::tempdir().expect("source fixture directory");
+            let source = dir.path().join("source.mp4");
+            let original = b"source bytes must survive even a failed export";
+            std::fs::write(&source, original).expect("write source fixture");
+            let project = one_clip_over(source.to_str().expect("UTF-8 fixture path"));
+            let status = start_export(&project, &ExportSettings::default(), source.clone()).join();
+            assert!(
+                matches!(status, ExportStatus::Failed { reason } if reason.contains("source media"))
+            );
+            assert_eq!(std::fs::read(&source).expect("source survives"), original);
+        }
+
+        phase a_missing_source_is_needed_only_by_a_range_its_clip_reaches_into;
+        // Whether a missing source refuses the export is decided at the marks, to the edge: a
+        // clip that starts where the range ends, or ends where it starts, has no frame in it.
+        {
+            use crate::model::{MediaItem, MediaKind};
+            let mut p = one_clip_over("no/such/directory/definitely-not-here-42.mp4");
+            let late = uuid::Uuid::new_v4();
+            p.media.push(MediaItem {
+                id: late,
+                name: "late".into(),
+                kind: MediaKind::Video,
+                path: "no/such/directory/nor-this-43.mp4".into(),
+                duration: 0.2,
+                ..Default::default()
+            });
+            let track = p.tracks[0].id;
+            let cut = p.clips[0].end();
+            p.add_clip(track, late, cut).expect("media exists");
+            let frame = 1.0 / 30.0;
+            let rows: [(Option<f64>, Option<f64>, &[&str]); 5] = [
+                (None, None, &["clip", "late"]),
+                (None, Some(cut), &["clip"]),
+                (None, Some(cut + frame), &["clip", "late"]),
+                (Some(cut), None, &["late"]),
+                (Some(cut - frame), None, &["clip", "late"]),
+            ];
+            for (mark_in, mark_out, needed) in rows {
+                p.clear_marks();
+                if let Some(t) = mark_in {
+                    p.set_mark_in(t);
+                }
+                if let Some(t) = mark_out {
+                    p.set_mark_out(t);
+                }
+                let named: Vec<String> = unreadable_sources(&p)
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect();
+                assert_eq!(named, needed, "marked {mark_in:?} to {mark_out:?}");
+            }
+        }
+
+        phase cut_render_plans_do_not_pad_short_clips_or_add_roundoff_frames;
+        {
+            let mut project = Project::new("short cut");
+            project.clips.push(crate::model::Clip {
+                in_point: 0.5,
+                out_point: 0.8,
+                ..Default::default()
+            });
+            assert!(
+                (project.duration() - 1.0).abs() < f64::EPSILON,
+                "the ruler keeps its UI minimum"
+            );
+            let plan = RenderPlan::new(&project, 30.0);
+            assert_eq!(plan.total, 9, "a nine-frame cut stays nine frames");
+            assert!(plan.time_of(8) < project.clips[0].end());
+
+            project.clips[0].out_point += 0.001;
+            assert_eq!(RenderPlan::new(&project, 30.0).total, 10);
+            project.set_mark_in(0.1);
+            project.set_mark_out(0.2);
+            let plan = RenderPlan::new(&project, 30.0);
+            assert_eq!(plan.total, 3);
+            assert!((plan.time_of(0) - 0.1).abs() < f64::EPSILON);
+
+            project.clear_marks();
+            project.clips[0].in_point = 3600.1;
+            project.clips[0].out_point = 3600.4;
+            assert_eq!(RenderPlan::new(&project, 30.0).total, 9);
+            project.clips[0].start = 3600.0;
+            project.set_mark_in(3600.1);
+            project.set_mark_out(3600.2);
+            assert_eq!(RenderPlan::new(&project, 30.0).total, 3);
+        }
+    }
+
+    /// The refusal compares files, not spellings: a destination that reaches the source by
+    /// another path or through a symbolic link would be truncated just the same.
+    #[test]
+    #[cfg(unix)]
+    fn exporting_over_source_media_is_refused_however_the_destination_spells_it() {
         let dir = tempfile::tempdir().expect("source fixture directory");
         let source = dir.path().join("source.mp4");
         let original = b"source bytes must survive even a failed export";
         std::fs::write(&source, original).expect("write source fixture");
+        let beside = dir.path().join("beside");
+        std::fs::create_dir(&beside).expect("a directory to walk back out of");
+        let link = dir.path().join("render.mp4");
+        std::os::unix::fs::symlink(&source, &link).expect("link to the source");
         let project = one_clip_over(source.to_str().expect("UTF-8 fixture path"));
-        let status = start_export(&project, &ExportSettings::default(), source.clone()).join();
-        assert!(
-            matches!(status, ExportStatus::Failed { reason } if reason.contains("source media"))
-        );
-        assert_eq!(std::fs::read(&source).expect("source survives"), original);
-    }
-
-    #[test]
-    fn cut_render_plans_do_not_pad_short_clips_or_add_roundoff_frames() {
-        let mut project = Project::new("short cut");
-        project.clips.push(crate::model::Clip {
-            in_point: 0.5,
-            out_point: 0.8,
-            ..Default::default()
-        });
-        assert!(
-            (project.duration() - 1.0).abs() < f64::EPSILON,
-            "the ruler keeps its UI minimum"
-        );
-        let plan = RenderPlan::new(&project, 30.0);
-        assert_eq!(plan.total, 9, "a nine-frame cut stays nine frames");
-        assert!(plan.time_of(8) < project.clips[0].end());
-
-        project.clips[0].out_point += 0.001;
-        assert_eq!(RenderPlan::new(&project, 30.0).total, 10);
-        project.set_mark_in(0.1);
-        project.set_mark_out(0.2);
-        let plan = RenderPlan::new(&project, 30.0);
-        assert_eq!(plan.total, 3);
-        assert!((plan.time_of(0) - 0.1).abs() < f64::EPSILON);
-
-        project.clear_marks();
-        project.clips[0].in_point = 3600.1;
-        project.clips[0].out_point = 3600.4;
-        assert_eq!(RenderPlan::new(&project, 30.0).total, 9);
-        project.clips[0].start = 3600.0;
-        project.set_mark_in(3600.1);
-        project.set_mark_out(3600.2);
-        assert_eq!(RenderPlan::new(&project, 30.0).total, 3);
+        for (spelling, destination) in [
+            (
+                "a path through another directory",
+                beside.join("..").join("source.mp4"),
+            ),
+            ("a symbolic link", link),
+        ] {
+            let status = start_export(&project, &ExportSettings::default(), destination).join();
+            assert!(
+                matches!(&status, ExportStatus::Failed { reason } if reason.contains("source media")),
+                "{spelling}: {status:?}"
+            );
+            assert_eq!(
+                std::fs::read(&source).expect("source survives"),
+                original,
+                "{spelling}"
+            );
+        }
     }
 
     #[test]
@@ -2544,6 +2711,68 @@ mod tests {
             c.out_point = in_point + len;
         }
         p
+    }
+
+    /// How many video frames `path` decodes to, every sample counted to the end of the
+    /// stream: a container's own duration cannot show a duplicated frame or a padded tail.
+    /// The decode graph is the one `tests/export_fidelity.rs` counts with.
+    #[cfg(feature = "gst")]
+    fn decoded_video_frames(path: &std::path::Path) -> usize {
+        use gstreamer::prelude::*;
+
+        struct Stop(gstreamer::Pipeline);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = self.0.set_state(gstreamer::State::Null);
+            }
+        }
+
+        let uri = gstreamer::glib::filename_to_uri(path, None).expect("absolute video URI");
+        let pipeline = gstreamer::parse::launch(&format!(
+            "uridecodebin uri=\"{uri}\" ! videoconvert ! videoscale ! \
+             video/x-raw,format=RGBA,width=160,height=90,pixel-aspect-ratio=1/1 ! \
+             appsink name=frames sync=false max-buffers=2"
+        ))
+        .expect("video decode graph")
+        .downcast::<gstreamer::Pipeline>()
+        .expect("decode pipeline");
+        let _stop = Stop(pipeline.clone());
+        let sink = pipeline
+            .by_name("frames")
+            .expect("the graph's sink")
+            .downcast::<gstreamer_app::AppSink>()
+            .expect("the sink is an appsink");
+        let bus = pipeline.bus().expect("the pipeline's bus");
+        pipeline
+            .set_state(gstreamer::State::Playing)
+            .expect("decode video");
+        let deadline = tilo_test_env::hang_deadline();
+        let mut frames = 0_usize;
+        loop {
+            assert!(
+                ui::time::now() < deadline,
+                "video decode stalled: {}",
+                path.display()
+            );
+            if sink
+                .try_pull_sample(gstreamer::ClockTime::from_mseconds(200))
+                .is_some()
+            {
+                frames += 1;
+            } else if sink.is_eos() {
+                break;
+            }
+            while let Some(message) = bus.pop() {
+                if let gstreamer::MessageView::Error(error) = message.view() {
+                    panic!(
+                        "video decode failed: {} ({:?})",
+                        error.error(),
+                        error.debug()
+                    );
+                }
+            }
+        }
+        frames
     }
 
     /// Decode `path` and return the picture at `at_secs`, downscaled to a

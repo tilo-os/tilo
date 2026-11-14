@@ -1150,159 +1150,164 @@ mod tests {
         )
     }
 
-    #[test]
-    fn drag_gestures_own_threshold_snap_grab_offset_select_and_cancel() {
+    tilo_test_env::scenario! {
+        /// The timeline's gestures and the columns overlapping events take.
+        fn timeline_drags_resize_and_overlaps_share_the_day;
+
+        phase drag_gestures_own_threshold_snap_grab_offset_select_and_cancel;
         {
-            let mut controller = TimelineInteraction::new();
-            controller.test_set_offset_y(0.0);
-            let days = days();
-            let from = point_at(2, 9 * 60 + 7);
-            assert!(controller.begin_drag(area(), &days, &[], from));
-            controller.update_drag(Point::new(from.x + 2.0, from.y + 2.0));
-            assert!(controller.preview(area(), &days).is_none());
-            controller.update_drag(point_at(2, 10 * 60 + 53));
-            assert_eq!(
-                controller.preview(area(), &days),
-                Some(TimelineEffect::Create {
-                    day: days[2],
-                    start_min: 9 * 60,
-                    end_min: 11 * 60,
-                })
-            );
-        }
-        {
-            let mut controller = TimelineInteraction::new();
-            controller.test_set_offset_y(0.0);
-            let days = days();
-            let id = Uuid::new_v4();
-            let span = TimelineSpan {
-                id,
-                original: days[1],
-                day: days[1],
-                start_min: 10 * 60,
-                end_min: 11 * 60,
-                lane: Lane::default(),
-            };
-            let from = point_at(1, 10 * 60 + 15);
-            assert!(controller.begin_drag(area(), &days, &[span], from));
-            controller.update_drag(point_at(4, 14 * 60 + 15));
-            assert_eq!(
-                controller.preview(area(), &days),
-                Some(TimelineEffect::Move {
+            {
+                let mut controller = TimelineInteraction::new();
+                controller.test_set_offset_y(0.0);
+                let days = days();
+                let from = point_at(2, 9 * 60 + 7);
+                assert!(controller.begin_drag(area(), &days, &[], from));
+                controller.update_drag(Point::new(from.x + 2.0, from.y + 2.0));
+                assert!(controller.preview(area(), &days).is_none());
+                controller.update_drag(point_at(2, 10 * 60 + 53));
+                assert_eq!(
+                    controller.preview(area(), &days),
+                    Some(TimelineEffect::Create {
+                        day: days[2],
+                        start_min: 9 * 60,
+                        end_min: 11 * 60,
+                    })
+                );
+            }
+            {
+                let mut controller = TimelineInteraction::new();
+                controller.test_set_offset_y(0.0);
+                let days = days();
+                let id = Uuid::new_v4();
+                let span = TimelineSpan {
                     id,
                     original: days[1],
-                    day: days[4],
-                    start_min: 14 * 60,
-                    dur_min: 60,
-                })
-            );
+                    day: days[1],
+                    start_min: 10 * 60,
+                    end_min: 11 * 60,
+                    lane: Lane::default(),
+                };
+                let from = point_at(1, 10 * 60 + 15);
+                assert!(controller.begin_drag(area(), &days, &[span], from));
+                controller.update_drag(point_at(4, 14 * 60 + 15));
+                assert_eq!(
+                    controller.preview(area(), &days),
+                    Some(TimelineEffect::Move {
+                        id,
+                        original: days[1],
+                        day: days[4],
+                        start_min: 14 * 60,
+                        dur_min: 60,
+                    })
+                );
+            }
+            {
+                let mut controller = TimelineInteraction::new();
+                controller.test_set_offset_y(0.0);
+                let days = days();
+                let id = Uuid::new_v4();
+                let span = TimelineSpan {
+                    id,
+                    original: days[0],
+                    day: days[0],
+                    start_min: 8 * 60,
+                    end_min: 9 * 60,
+                    lane: Lane::default(),
+                };
+                let point = point_at(0, 8 * 60 + 30);
+                controller.pointer = point;
+                assert!(controller.begin_drag(area(), &days, &[span], point));
+                assert_eq!(
+                    controller.finish_drag(area(), &days, &[span]),
+                    Some(TimelineEffect::Select(id))
+                );
+            }
+            {
+                let mut controller = TimelineInteraction::new();
+                let days = days();
+                assert!(controller.begin_drag(area(), &days, &[], point_at(3, 12 * 60)));
+                assert!(controller.cancel_drag());
+                assert!(controller.preview(area(), &days).is_none());
+                assert!(!controller.cancel_drag());
+            }
         }
+
+        phase dragging_an_events_bottom_edge_changes_only_its_end;
         {
             let mut controller = TimelineInteraction::new();
             controller.test_set_offset_y(0.0);
             let days = days();
             let id = Uuid::new_v4();
             let span = TimelineSpan {
-                id,
-                original: days[0],
-                day: days[0],
-                start_min: 8 * 60,
-                end_min: 9 * 60,
-                lane: Lane::default(),
-            };
-            let point = point_at(0, 8 * 60 + 30);
-            controller.pointer = point;
-            assert!(controller.begin_drag(area(), &days, &[span], point));
-            assert_eq!(
-                controller.finish_drag(area(), &days, &[span]),
-                Some(TimelineEffect::Select(id))
-            );
-        }
-        {
-            let mut controller = TimelineInteraction::new();
-            let days = days();
-            assert!(controller.begin_drag(area(), &days, &[], point_at(3, 12 * 60)));
-            assert!(controller.cancel_drag());
-            assert!(controller.preview(area(), &days).is_none());
-            assert!(!controller.cancel_drag());
-        }
-    }
-
-    #[test]
-    fn dragging_an_events_bottom_edge_changes_only_its_end() {
-        let mut controller = TimelineInteraction::new();
-        controller.test_set_offset_y(0.0);
-        let days = days();
-        let id = Uuid::new_v4();
-        let span = TimelineSpan {
-            id,
-            original: days[2],
-            day: days[2],
-            start_min: 9 * 60,
-            end_min: 10 * 60,
-            lane: Lane::default(),
-        };
-        let mut grip = point_at(2, 10 * 60);
-        grip.y -= 2.0;
-        assert!(controller.resize_grip_at(area(), &days, &[span], grip));
-        assert!(!controller.resize_grip_at(area(), &days, &[span], point_at(2, 9 * 60 + 30)));
-        assert!(controller.begin_drag(area(), &days, &[span], grip));
-        controller.update_drag(point_at(5, 11 * 60 + 40));
-        assert_eq!(
-            controller.preview(area(), &days),
-            Some(TimelineEffect::Resize {
                 id,
                 original: days[2],
                 day: days[2],
                 start_min: 9 * 60,
-                end_min: 11 * 60 + 45,
-            }),
-            "the day stays; the end snaps to a quarter hour"
-        );
-        controller.update_drag(point_at(2, 8 * 60));
-        assert!(matches!(
-            controller.preview(area(), &days),
-            Some(TimelineEffect::Resize { end_min, .. }) if end_min == 9 * 60 + 15
-        ));
-    }
+                end_min: 10 * 60,
+                lane: Lane::default(),
+            };
+            let mut grip = point_at(2, 10 * 60);
+            grip.y -= 2.0;
+            assert!(controller.resize_grip_at(area(), &days, &[span], grip));
+            assert!(!controller.resize_grip_at(area(), &days, &[span], point_at(2, 9 * 60 + 30)));
+            assert!(controller.begin_drag(area(), &days, &[span], grip));
+            controller.update_drag(point_at(5, 11 * 60 + 40));
+            assert_eq!(
+                controller.preview(area(), &days),
+                Some(TimelineEffect::Resize {
+                    id,
+                    original: days[2],
+                    day: days[2],
+                    start_min: 9 * 60,
+                    end_min: 11 * 60 + 45,
+                }),
+                "the day stays; the end snaps to a quarter hour"
+            );
+            controller.update_drag(point_at(2, 8 * 60));
+            assert!(matches!(
+                controller.preview(area(), &days),
+                Some(TimelineEffect::Resize { end_min, .. }) if end_min == 9 * 60 + 15
+            ));
+        }
 
-    #[test]
-    fn overlapping_events_share_their_day_side_by_side() {
-        let lane = |index, of| Lane { index, of };
-        assert_eq!(
-            lanes(&[(540, 600), (570, 660), (600, 630), (720, 780)]),
-            vec![lane(0, 2), lane(1, 2), lane(0, 2), lane(0, 1)]
-        );
-        assert_eq!(
-            lanes(&[(540, 600), (540, 600), (540, 600)]),
-            vec![lane(0, 3), lane(1, 3), lane(2, 3)]
-        );
-        assert_eq!(
-            lanes(&[(540, 600), (600, 660)]),
-            vec![lane(0, 1), lane(0, 1)]
-        );
-        let mut controller = TimelineInteraction::new();
-        controller.test_set_offset_y(0.0);
-        let days = days();
-        let (left, right) = (Uuid::new_v4(), Uuid::new_v4());
-        let span = |id, lane| TimelineSpan {
-            id,
-            original: days[0],
-            day: days[0],
-            start_min: 9 * 60,
-            end_min: 10 * 60,
-            lane,
-        };
-        let spans = [span(left, lane(0, 2)), span(right, lane(1, 2))];
-        let mid = point_at(0, 9 * 60 + 30);
-        let geom = TimelineInteraction::test_geometry(area());
-        let quarter = TimelineInteraction::column_width(area(), 7, geom) / 4.0;
-        let hit = |x: f64| {
-            controller
-                .event_at(area(), &days, &spans, Point::new(x, mid.y))
-                .map(|span| span.id)
-        };
-        assert_eq!(hit(mid.x - quarter), Some(left));
-        assert_eq!(hit(mid.x + quarter), Some(right));
+        phase overlapping_events_share_their_day_side_by_side;
+        {
+            let lane = |index, of| Lane { index, of };
+            assert_eq!(
+                lanes(&[(540, 600), (570, 660), (600, 630), (720, 780)]),
+                vec![lane(0, 2), lane(1, 2), lane(0, 2), lane(0, 1)]
+            );
+            assert_eq!(
+                lanes(&[(540, 600), (540, 600), (540, 600)]),
+                vec![lane(0, 3), lane(1, 3), lane(2, 3)]
+            );
+            assert_eq!(
+                lanes(&[(540, 600), (600, 660)]),
+                vec![lane(0, 1), lane(0, 1)]
+            );
+            let mut controller = TimelineInteraction::new();
+            controller.test_set_offset_y(0.0);
+            let days = days();
+            let (left, right) = (Uuid::new_v4(), Uuid::new_v4());
+            let span = |id, lane| TimelineSpan {
+                id,
+                original: days[0],
+                day: days[0],
+                start_min: 9 * 60,
+                end_min: 10 * 60,
+                lane,
+            };
+            let spans = [span(left, lane(0, 2)), span(right, lane(1, 2))];
+            let mid = point_at(0, 9 * 60 + 30);
+            let geom = TimelineInteraction::test_geometry(area());
+            let quarter = TimelineInteraction::column_width(area(), 7, geom) / 4.0;
+            let hit = |x: f64| {
+                controller
+                    .event_at(area(), &days, &spans, Point::new(x, mid.y))
+                    .map(|span| span.id)
+            };
+            assert_eq!(hit(mid.x - quarter), Some(left));
+            assert_eq!(hit(mid.x + quarter), Some(right));
+        }
     }
 }

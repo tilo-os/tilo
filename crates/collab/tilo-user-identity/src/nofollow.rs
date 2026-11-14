@@ -143,68 +143,72 @@ mod tests {
         CString::new(path.as_os_str().as_bytes()).unwrap()
     }
 
-    #[test]
-    fn the_fallback_walk_refuses_what_openat2_refuses() {
-        let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
-        let real = top.join("real");
-        std::fs::create_dir(&real).unwrap();
-        std::fs::write(real.join("key"), b"seed").unwrap();
-        std::os::unix::fs::symlink(&real, top.join("linked-dir")).unwrap();
-        std::os::unix::fs::symlink(real.join("key"), real.join("linked-key")).unwrap();
-        let root = File::open(&top).unwrap();
+    tilo_test_env::scenario! {
+        fn the_fallback_walk_opens_and_creates_as_openat2_would;
 
-        let opened = [
-            (None, c(&real.join("key")), false),
-            (Some(&root), c("real/key".as_ref()), false),
-            (Some(&root), c("./real//key".as_ref()), true),
-        ];
-        for (dir, path, beneath) in &opened {
-            for opener in [openat2, walk] {
-                let mut body = String::new();
-                opener(*dir, path, READ, 0, *beneath)
-                    .unwrap_or_else(|e| panic!("{path:?} beneath={beneath}: {e}"))
-                    .read_to_string(&mut body)
-                    .unwrap();
-                assert_eq!(body, "seed");
+        phase the_fallback_walk_refuses_what_openat2_refuses;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let top = tmp.path().canonicalize().unwrap();
+            let real = top.join("real");
+            std::fs::create_dir(&real).unwrap();
+            std::fs::write(real.join("key"), b"seed").unwrap();
+            std::os::unix::fs::symlink(&real, top.join("linked-dir")).unwrap();
+            std::os::unix::fs::symlink(real.join("key"), real.join("linked-key")).unwrap();
+            let root = File::open(&top).unwrap();
+
+            let opened = [
+                (None, c(&real.join("key")), false),
+                (Some(&root), c("real/key".as_ref()), false),
+                (Some(&root), c("./real//key".as_ref()), true),
+            ];
+            for (dir, path, beneath) in &opened {
+                for opener in [openat2, walk] {
+                    let mut body = String::new();
+                    opener(*dir, path, READ, 0, *beneath)
+                        .unwrap_or_else(|e| panic!("{path:?} beneath={beneath}: {e}"))
+                        .read_to_string(&mut body)
+                        .unwrap();
+                    assert_eq!(body, "seed");
+                }
             }
+
+            let refused = [
+                (None, c(&top.join("linked-dir/key")), false),
+                (None, c(&real.join("linked-key")), false),
+                (None, c("/proc/self/root/etc/hostname".as_ref()), false),
+                (Some(&root), c("linked-dir/key".as_ref()), true),
+                (Some(&root), c("real/linked-key".as_ref()), true),
+                (Some(&root), c(&real.join("key")), true),
+            ];
+            for (dir, path, beneath) in &refused {
+                assert!(
+                    openat2(*dir, path, READ, 0, *beneath).is_err(),
+                    "openat2 accepted {path:?}"
+                );
+                assert!(
+                    walk(*dir, path, READ, 0, *beneath).is_err(),
+                    "the fallback walk accepted {path:?}, which openat2 refuses"
+                );
+            }
+            assert!(
+                walk(Some(&root), c"real/../real/key", READ, 0, true).is_err(),
+                "without openat2 the walk cannot prove `..` stays beneath, so it refuses it"
+            );
         }
 
-        let refused = [
-            (None, c(&top.join("linked-dir/key")), false),
-            (None, c(&real.join("linked-key")), false),
-            (None, c("/proc/self/root/etc/hostname".as_ref()), false),
-            (Some(&root), c("linked-dir/key".as_ref()), true),
-            (Some(&root), c("real/linked-key".as_ref()), true),
-            (Some(&root), c(&real.join("key")), true),
-        ];
-        for (dir, path, beneath) in &refused {
-            assert!(
-                openat2(*dir, path, READ, 0, *beneath).is_err(),
-                "openat2 accepted {path:?}"
-            );
-            assert!(
-                walk(*dir, path, READ, 0, *beneath).is_err(),
-                "the fallback walk accepted {path:?}, which openat2 refuses"
-            );
+        phase the_fallback_walk_creates_the_final_component_with_its_mode;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let tmp = tempfile::tempdir().unwrap();
+            let root = File::open(tmp.path()).unwrap();
+            let flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC;
+            drop(walk(Some(&root), c"lock", flags, 0o600, true).unwrap());
+            let mode = std::fs::metadata(tmp.path().join("lock"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "created with {mode:o}");
         }
-        assert!(
-            walk(Some(&root), c"real/../real/key", READ, 0, true).is_err(),
-            "without openat2 the walk cannot prove `..` stays beneath, so it refuses it"
-        );
-    }
-
-    #[test]
-    fn the_fallback_walk_creates_the_final_component_with_its_mode() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let tmp = tempfile::tempdir().unwrap();
-        let root = File::open(tmp.path()).unwrap();
-        let flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC;
-        drop(walk(Some(&root), c"lock", flags, 0o600, true).unwrap());
-        let mode = std::fs::metadata(tmp.path().join("lock"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o077, 0, "created with {mode:o}");
     }
 }

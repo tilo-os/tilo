@@ -482,13 +482,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn the_client_preserves_routes_and_maps_every_broker_error() {
-        // phase: connected_io_metadata_and_signatures_preserve_all_route_fields
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn the_client_preserves_routes_and_maps_every_broker_error;
+
+        phase connected_io_metadata_and_signatures_preserve_all_route_fields;
         {
             let (stream, output) = channel(&[
                 metadata(),
@@ -566,7 +567,8 @@ mod tests {
             assert_eq!(requests.position(), requests.get_ref().len() as u64);
             assert!(!format!("{identity:?}").contains("opaque fixture certificate"));
         }
-        // phase: metadata_errors_keep_existing_permission_denied_mapping
+
+        phase metadata_errors_keep_existing_permission_denied_mapping;
         {
             for response in [
                 wire::Response::Denied("denied".into()),
@@ -584,7 +586,8 @@ mod tests {
                 io::ErrorKind::InvalidData
             );
         }
-        // phase: signing_errors_remain_distinct_and_never_fall_back_to_local_keys
+
+        phase signing_errors_remain_distinct_and_never_fall_back_to_local_keys;
         {
             for (response, expected) in [
                 (
@@ -610,7 +613,8 @@ mod tests {
                 assert_eq!(error_kind(identity.sign(b"generic")), expected);
             }
         }
-        // phase: peer_close_is_an_error_at_bootstrap_and_after_metadata
+
+        phase peer_close_is_an_error_at_bootstrap_and_after_metadata;
         {
             let (stream, _) = channel(&[]);
             assert_eq!(
@@ -626,9 +630,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_wire_is_pinned_bounded_and_fails_closed() {
-        // phase: wire_bytes_are_pinned
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_wire_is_pinned_bounded_and_fails_closed;
+
+        phase wire_bytes_are_pinned;
         // The identity service's bytes: a little-endian `u32` length, then
         // postcard. The shell's broker and every packaged app must agree.
         {
@@ -648,14 +657,16 @@ mod tests {
                 wire::Response::Denied(reason) if reason == "no"
             ));
         }
-        // phase: join_signing_domain_is_unchanged
+
+        phase join_signing_domain_is_unchanged;
         {
             assert_eq!(
                 crate::collaboration_join_signing_bytes("workspace"),
                 b"tilo-collaboration-join-v1\0workspace"
             );
         }
-        // phase: oversized_frame_is_rejected_before_reading_its_body
+
+        phase oversized_frame_is_rejected_before_reading_its_body;
         {
             let len = u32::try_from(wire::FRAMING.max_len() + 1).expect("length");
             let mut bytes = Cursor::new(len.to_le_bytes().to_vec());
@@ -665,7 +676,8 @@ mod tests {
             );
             assert_eq!(bytes.position(), 4);
         }
-        // phase: malformed_and_truncated_frames_preserve_error_kinds
+
+        phase malformed_and_truncated_frames_preserve_error_kinds;
         {
             let mut malformed = Cursor::new(vec![1, 0, 0, 0, 255]);
             assert_eq!(
@@ -678,7 +690,8 @@ mod tests {
                 io::ErrorKind::UnexpectedEof
             );
         }
-        // phase: outbound_limit_rejects_without_writing_partial_frame
+
+        phase outbound_limit_rejects_without_writing_partial_frame;
         {
             let request = wire::Request::Sign {
                 action: "oversized".into(),
@@ -691,7 +704,8 @@ mod tests {
             );
             assert!(output.into_inner().is_empty());
         }
-        // phase: poisoned_stream_mutex_fails_closed
+
+        phase poisoned_stream_mutex_fails_closed;
         {
             let (stream, _) = channel(&[metadata()]);
             let identity =
@@ -707,7 +721,8 @@ mod tests {
             );
             assert_eq!(error_kind(identity.sign(b"message")), io::ErrorKind::Other);
         }
-        // phase: client_can_cross_the_sdk_worker_boundary
+
+        phase client_can_cross_the_sdk_worker_boundary;
         {
             fn assert_send_sync<T: Send + Sync>() {}
             assert_send_sync::<BrokerSigningIdentity>();

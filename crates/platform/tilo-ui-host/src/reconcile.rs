@@ -690,19 +690,15 @@ impl Reconciler {
         };
         let built = {
             let mut source = NodeSource::new(node, description, self);
+            // The control says what it does, where it is built (`ui::component::build`): the window
+            // may move it between its bar, an empty state and a header row, and the person may read
+            // the window in another language, and what it does stays what it does.
             ui::component::build(&description.name, &mut source)
         };
-        let built = built.unwrap_or_else(|error| {
+        built.unwrap_or_else(|error| {
             self.note_broken(node, &error);
             self.text_of(node, "", TextRole::Caption)
-        });
-        // A control that runs an app action, or edits a record's field, says which one: the window
-        // may move it between its bar, an empty state and a header row, and the person may read the
-        // window in another language, and what it does stays what it does.
-        match self.adapter.identity_of(node) {
-            Some(identity) => Box::new(ui::widget::Identified::new(built, identity)),
-            None => built,
-        }
+        })
     }
 
     /// Bring `widget`, built for the component node `old_node`, to `new_node`: its props in place
@@ -716,9 +712,18 @@ impl Reconciler {
         description: &'static ui::component::Description,
     ) -> Option<Element> {
         // What the control does is not a prop it takes in place: a control the view now binds to
-        // another action says so by being built again.
+        // another action says so by being built again. A field that edits another record does
+        // something else and stays where it stands — the note a person turns to reads in the editor
+        // that is there — so its control says what it does now and its props follow.
         if self.adapter.identity_of(old_node) != self.adapter.identity_of(new_node) {
-            return Some(self.build(new_node));
+            let renamed = new_node.binding.is_some()
+                && self
+                    .adapter
+                    .identity_of(new_node)
+                    .is_some_and(|identity| widget.identify(&identity));
+            if !renamed {
+                return Some(self.build(new_node));
+            }
         }
         if !crate::adapter::same_data(old_node, new_node, description) {
             let taken = {

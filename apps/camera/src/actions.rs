@@ -683,166 +683,170 @@ mod tests {
         }
     }
 
-    #[test]
-    fn disconnected_camera_keeps_stop_recording_available() {
-        let resources = provide_resources(&CameraResourceCtx {
-            mode: CaptureMode::Video,
-            recording: true,
-            feed_available: false,
-            ..CameraResourceCtx::default()
-        });
-        let capture = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "camera.capture")
-            .expect("capture effect root");
-        let record = capture
-            .actions
-            .iter()
-            .find(|action| action.id == "record")
-            .expect("recording action");
-        assert_eq!(record.label, "Stop recording");
-        assert!(record.contract.availability.is_available());
-        let photo = capture
-            .actions
-            .iter()
-            .find(|action| action.id == "capture")
-            .expect("photo action");
-        assert!(!photo.contract.availability.is_available());
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn provided_resources_tell_what_the_camera_can_do_now;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn provided_resources_are_honest_about_devices_and_expose_every_preference() {
-        {
-            let specs = CameraEffect::specs();
-            let scanner = specs
-                .iter()
-                .find(|spec| spec.id == "open-scanner")
-                .expect("scanner reveal effect");
-            assert_eq!(scanner.kind, OperationKind::View);
-            assert!(
-                specs
-                    .iter()
-                    .filter(|spec| spec.kind == OperationKind::View)
-                    .all(|spec| spec.id.starts_with("open-")
-                        || spec.id.starts_with("use-")
-                        || spec.id == "crop-page"),
-                "only the screen, mode and lens reveals and the crop frame are views: {:?}",
-                specs.iter().map(|spec| &spec.id).collect::<Vec<_>>()
-            );
-        }
-        {
-            let ids: Vec<String> = CameraEffect::specs()
-                .into_iter()
-                .map(|spec| spec.id.clone())
-                .collect();
-            for id in [
-                "use-mode",
-                "use-lens",
-                "set-resolution",
-                "set-photo-format",
-                "set-timer",
-                "set-grid",
-                "set-level",
-                "set-mirror-front",
-                "set-geotag",
-                "set-hdr",
-                "set-default-lens",
-            ] {
-                assert!(
-                    ids.iter().any(|known| known == id),
-                    "missing preference {id}: {ids:?}"
-                );
-            }
-        }
+        phase disconnected_camera_keeps_stop_recording_available;
         {
             let resources = provide_resources(&CameraResourceCtx {
-                recent: Some(CaptureItem {
-                    id: "IMG_1.jpg".into(),
-                    label: "Capture".into(),
-                    is_video: false,
-                    media_id: None,
-                }),
-                ..CameraResourceCtx::default()
-            });
-            let capture_root = resources
-                .iter()
-                .find(|resource| resource.id.as_str() == "camera.capture")
-                .expect("capture effect root");
-            let capture = capture_root
-                .actions
-                .iter()
-                .find(|a| a.id == "capture")
-                .unwrap();
-            assert_eq!(capture.kind, OperationKind::Effect);
-            assert!(
-                !capture.contract.availability.is_available(),
-                "a palette must not claim capture works without a feed"
-            );
-            let unverified = resources
-                .iter()
-                .find(|row| row.kind.as_str() == "camera.photo")
-                .expect("recent handoff");
-            assert!(unverified.actions.is_empty());
-
-            let available = provide_resources(&CameraResourceCtx {
-                feed_available: true,
-                ..CameraResourceCtx::default()
-            });
-            let capture = available
-                .iter()
-                .find(|resource| resource.id.as_str() == "camera.capture")
-                .expect("capture effect root")
-                .actions
-                .iter()
-                .find(|action| action.id == "capture")
-                .unwrap();
-            assert!(capture.contract.availability.is_available());
-        }
-        {
-            let resources = provide_resources(&CameraResourceCtx {
-                camera_permission_denied: true,
-                camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
+                mode: CaptureMode::Video,
+                recording: true,
+                feed_available: false,
                 ..CameraResourceCtx::default()
             });
             let capture = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "camera.capture")
                 .expect("capture effect root");
-            let ids: Vec<&str> = capture
+            let record = capture
                 .actions
                 .iter()
-                .map(|action| action.id.as_str())
-                .collect();
-            for id in ["retry-camera", "open-camera-privacy"] {
-                assert!(ids.contains(&id), "missing recovery action {id}: {ids:?}");
-            }
-            for device in ["/dev/video0", "/dev/video2"] {
-                let row = capture
-                    .children
+                .find(|action| action.id == "record")
+                .expect("recording action");
+            assert_eq!(record.label, "Stop recording");
+            assert!(record.contract.availability.is_available());
+            let photo = capture
+                .actions
+                .iter()
+                .find(|action| action.id == "capture")
+                .expect("photo action");
+            assert!(!photo.contract.availability.is_available());
+        }
+
+        phase provided_resources_are_honest_about_devices_and_expose_every_preference;
+        {
+            {
+                let specs = CameraEffect::specs();
+                let scanner = specs
                     .iter()
-                    .find(|row| row.id.as_str() == camera_device_row_id(device))
-                    .unwrap_or_else(|| panic!("{device} is a row"));
-                let choose = row
+                    .find(|spec| spec.id == "open-scanner")
+                    .expect("scanner reveal effect");
+                assert_eq!(scanner.kind, OperationKind::View);
+                assert!(
+                    specs
+                        .iter()
+                        .filter(|spec| spec.kind == OperationKind::View)
+                        .all(|spec| spec.id.starts_with("open-")
+                            || spec.id.starts_with("use-")
+                            || spec.id == "crop-page"),
+                    "only the screen, mode and lens reveals and the crop frame are views: {:?}",
+                    specs.iter().map(|spec| &spec.id).collect::<Vec<_>>()
+                );
+            }
+            {
+                let ids: Vec<String> = CameraEffect::specs()
+                    .into_iter()
+                    .map(|spec| spec.id.clone())
+                    .collect();
+                for id in [
+                    "use-mode",
+                    "use-lens",
+                    "set-resolution",
+                    "set-photo-format",
+                    "set-timer",
+                    "set-grid",
+                    "set-level",
+                    "set-mirror-front",
+                    "set-geotag",
+                    "set-hdr",
+                    "set-default-lens",
+                ] {
+                    assert!(
+                        ids.iter().any(|known| known == id),
+                        "missing preference {id}: {ids:?}"
+                    );
+                }
+            }
+            {
+                let resources = provide_resources(&CameraResourceCtx {
+                    recent: Some(CaptureItem {
+                        id: "IMG_1.jpg".into(),
+                        label: "Capture".into(),
+                        is_video: false,
+                        media_id: None,
+                    }),
+                    ..CameraResourceCtx::default()
+                });
+                let capture_root = resources
+                    .iter()
+                    .find(|resource| resource.id.as_str() == "camera.capture")
+                    .expect("capture effect root");
+                let capture = capture_root
                     .actions
                     .iter()
-                    .find(|action| action.id == "use-camera")
-                    .expect("a camera row offers choosing it");
-                assert_eq!(choose.label, format!("Use {device}"));
-                assert!(choose.contract.availability.is_available());
-            }
-            assert!(
-                capture
+                    .find(|a| a.id == "capture")
+                    .unwrap();
+                assert_eq!(capture.kind, OperationKind::Effect);
+                assert!(
+                    !capture.contract.availability.is_available(),
+                    "a palette must not claim capture works without a feed"
+                );
+                let unverified = resources
+                    .iter()
+                    .find(|row| row.kind.as_str() == "camera.photo")
+                    .expect("recent handoff");
+                assert!(unverified.actions.is_empty());
+
+                let available = provide_resources(&CameraResourceCtx {
+                    feed_available: true,
+                    ..CameraResourceCtx::default()
+                });
+                let capture = available
+                    .iter()
+                    .find(|resource| resource.id.as_str() == "camera.capture")
+                    .expect("capture effect root")
                     .actions
                     .iter()
-                    .chain(capture.children.iter().flat_map(|row| row.actions.iter()))
-                    .filter(|action| action.id != "open-photos")
-                    .all(|action| action.kind == OperationKind::Effect
-                        && action.operation_type.as_deref() == Some(CameraEffect::OPERATION))
-            );
+                    .find(|action| action.id == "capture")
+                    .unwrap();
+                assert!(capture.contract.availability.is_available());
+            }
+            {
+                let resources = provide_resources(&CameraResourceCtx {
+                    camera_permission_denied: true,
+                    camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
+                    ..CameraResourceCtx::default()
+                });
+                let capture = resources
+                    .iter()
+                    .find(|resource| resource.id.as_str() == "camera.capture")
+                    .expect("capture effect root");
+                let ids: Vec<&str> = capture
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect();
+                for id in ["retry-camera", "open-camera-privacy"] {
+                    assert!(ids.contains(&id), "missing recovery action {id}: {ids:?}");
+                }
+                for device in ["/dev/video0", "/dev/video2"] {
+                    let row = capture
+                        .children
+                        .iter()
+                        .find(|row| row.id.as_str() == camera_device_row_id(device))
+                        .unwrap_or_else(|| panic!("{device} is a row"));
+                    let choose = row
+                        .actions
+                        .iter()
+                        .find(|action| action.id == "use-camera")
+                        .expect("a camera row offers choosing it");
+                    assert_eq!(choose.label, format!("Use {device}"));
+                    assert!(choose.contract.availability.is_available());
+                }
+                assert!(
+                    capture
+                        .actions
+                        .iter()
+                        .chain(capture.children.iter().flat_map(|row| row.actions.iter()))
+                        .filter(|action| action.id != "open-photos")
+                        .all(|action| action.kind == OperationKind::Effect
+                            && action.operation_type.as_deref() == Some(CameraEffect::OPERATION))
+                );
+            }
         }
     }
 }

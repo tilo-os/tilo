@@ -465,154 +465,158 @@ mod tests {
             .collect()
     }
 
-    /// Ben has left the workspace: closing his window is no act on anyone's,
-    /// while the strip nobody made stays the workspace's.
-    #[test]
-    fn what_someone_who_left_made_is_released() {
-        let mut after = desktop();
-        strip_mut(&mut after, 10)
-            .window_groups
-            .retain(|g| g.id != 200);
-        let members: BTreeSet<String> = [ADA.to_owned()].into();
-        assert_eq!(acts(&after, ADA), vec![(2, Act::Close)], "Ben still counts");
-        assert!(
-            foreign_acts(&desktop(), &after, ADA, Some(&members)).is_empty(),
-            "Ben left: his window is released"
-        );
-        let mut removed = desktop();
-        removed.tree.workspaces[0]
-            .strips
-            .retain(|s| s.id != StripId(10));
-        assert_eq!(
-            foreign_acts(&desktop(), &removed, ADA, Some(&members))
-                .into_iter()
-                .map(|t| (t.id, t.act))
-                .collect::<Vec<_>>(),
-            vec![(10, Act::Close)],
-            "the workspace's own strip is nobody's to release"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn whose_windows_and_strips_an_edit_acts_on;
 
-    #[test]
-    fn closing_moving_and_reordering_ones_own_windows_touches_nobody_else() {
-        let mut after = desktop();
-        let lounge = strip_mut(&mut after, 10);
-        lounge.window_groups.rotate_left(1);
-        assert!(acts(&after, ADA).is_empty());
-        let mine = strip_mut(&mut after, 10).window_groups.remove(2);
-        strip_mut(&mut after, 20).window_groups.push(mine);
-        assert!(acts(&after, ADA).is_empty());
-        strip_mut(&mut after, 20).window_groups.clear();
-        strip_mut(&mut after, 20)
-            .window_groups
-            .push(group(400, &[4]));
-        after.authors.insert(4, ADA.into());
-        assert!(acts(&after, ADA).is_empty());
-    }
+        phase what_someone_who_left_made_is_released;
+        // Ben has left the workspace: closing his window is no act on anyone's,
+        // while the strip nobody made stays the workspace's.
+        {
+            let mut after = desktop();
+            strip_mut(&mut after, 10)
+                .window_groups
+                .retain(|g| g.id != 200);
+            let members: BTreeSet<String> = [ADA.to_owned()].into();
+            assert_eq!(acts(&after, ADA), vec![(2, Act::Close)], "Ben still counts");
+            assert!(
+                foreign_acts(&desktop(), &after, ADA, Some(&members)).is_empty(),
+                "Ben left: his window is released"
+            );
+            let mut removed = desktop();
+            removed.tree.workspaces[0]
+                .strips
+                .retain(|s| s.id != StripId(10));
+            assert_eq!(
+                foreign_acts(&desktop(), &removed, ADA, Some(&members))
+                    .into_iter()
+                    .map(|t| (t.id, t.act))
+                    .collect::<Vec<_>>(),
+                vec![(10, Act::Close)],
+                "the workspace's own strip is nobody's to release"
+            );
+        }
 
-    #[test]
-    fn closing_someone_elses_window_is_named_with_its_owner() {
-        let mut after = desktop();
-        strip_mut(&mut after, 10).window_groups.remove(1);
-        let touched = foreign_acts(&desktop(), &after, ADA, None);
-        assert_eq!(
-            touched,
-            vec![Touched {
+        phase closing_moving_and_reordering_ones_own_windows_touches_nobody_else;
+        {
+            let mut after = desktop();
+            let lounge = strip_mut(&mut after, 10);
+            lounge.window_groups.rotate_left(1);
+            assert!(acts(&after, ADA).is_empty());
+            let mine = strip_mut(&mut after, 10).window_groups.remove(2);
+            strip_mut(&mut after, 20).window_groups.push(mine);
+            assert!(acts(&after, ADA).is_empty());
+            strip_mut(&mut after, 20).window_groups.clear();
+            strip_mut(&mut after, 20)
+                .window_groups
+                .push(group(400, &[4]));
+            after.authors.insert(4, ADA.into());
+            assert!(acts(&after, ADA).is_empty());
+        }
+
+        phase closing_someone_elses_window_is_named_with_its_owner;
+        {
+            let mut after = desktop();
+            strip_mut(&mut after, 10).window_groups.remove(1);
+            let touched = foreign_acts(&desktop(), &after, ADA, None);
+            assert_eq!(
+                touched,
+                vec![Touched {
+                    id: 2,
+                    act: Act::Close,
+                    owner: Some(BEN.into()),
+                }]
+            );
+            assert!(acts(&after, BEN).is_empty());
+        }
+
+        phase moving_someone_elses_window_to_another_group_or_strip_is_a_move;
+        {
+            let mut into_group = desktop();
+            let lounge = strip_mut(&mut into_group, 10);
+            let bens = lounge.window_groups.remove(1).tabs.remove(0);
+            lounge.window_groups[0].tabs.push(bens);
+            assert_eq!(acts(&into_group, ADA), vec![(2, Act::Move)]);
+
+            let mut into_strip = desktop();
+            let bens = strip_mut(&mut into_strip, 10).window_groups.remove(2);
+            strip_mut(&mut into_strip, 20).window_groups.push(bens);
+            assert_eq!(acts(&into_strip, ADA), vec![(3, Act::Move)]);
+        }
+
+        phase swapping_two_of_someone_elses_windows_is_a_move;
+        {
+            let mut after = desktop();
+            strip_mut(&mut after, 10).window_groups.swap(1, 2);
+            assert_eq!(
+                acts(&after, ADA),
+                vec![(2, Act::Reorder), (3, Act::Reorder)]
+            );
+            assert!(acts(&after, BEN).is_empty());
+        }
+
+        phase a_strip_nobody_made_is_only_moderated;
+        {
+            let mut renamed = desktop();
+            strip_mut(&mut renamed, 10).name = "Mine now".into();
+            assert_eq!(acts(&renamed, ADA), vec![(10, Act::Rename)]);
+            assert_eq!(acts(&renamed, BEN), vec![(10, Act::Rename)]);
+
+            let mut removed = desktop();
+            removed.tree.workspaces[0]
+                .strips
+                .retain(|s| s.id != StripId(10));
+            // Removing it closes every window on it that was not Ada's too.
+            assert_eq!(
+                acts(&removed, ADA),
+                vec![(10, Act::Close), (2, Act::Close), (3, Act::Close)]
+            );
+            let mut hers = desktop();
+            strip_mut(&mut hers, 20).name = "Ada's corner".into();
+            assert!(acts(&hers, ADA).is_empty());
+        }
+
+        phase taking_over_someone_elses_window_is_refused_as_an_attribution;
+        {
+            let mut claimed = desktop();
+            claimed.authors.insert(2, ADA.into());
+            assert_eq!(acts(&claimed, ADA), vec![(2, Act::Attribute)]);
+            let mut unclaimed = desktop();
+            unclaimed.authors.remove(&3);
+            assert_eq!(acts(&unclaimed, ADA), vec![(3, Act::Attribute)]);
+            let mut strip = desktop();
+            strip.authors.insert(10, ADA.into());
+            assert_eq!(acts(&strip, ADA), vec![(10, Act::Attribute)]);
+            // Giving away one's own window is not.
+            let mut given = desktop();
+            given.authors.insert(1, BEN.into());
+            assert!(acts(&given, ADA).is_empty());
+        }
+
+        phase acts_are_decided_on_the_items_moderation_node;
+        {
+            let touched = Touched {
                 id: 2,
                 act: Act::Close,
                 owner: Some(BEN.into()),
-            }]
-        );
-        assert!(acts(&after, BEN).is_empty());
-    }
-
-    #[test]
-    fn moving_someone_elses_window_to_another_group_or_strip_is_a_move() {
-        let mut into_group = desktop();
-        let lounge = strip_mut(&mut into_group, 10);
-        let bens = lounge.window_groups.remove(1).tabs.remove(0);
-        lounge.window_groups[0].tabs.push(bens);
-        assert_eq!(acts(&into_group, ADA), vec![(2, Act::Move)]);
-
-        let mut into_strip = desktop();
-        let bens = strip_mut(&mut into_strip, 10).window_groups.remove(2);
-        strip_mut(&mut into_strip, 20).window_groups.push(bens);
-        assert_eq!(acts(&into_strip, ADA), vec![(3, Act::Move)]);
-    }
-
-    #[test]
-    fn swapping_two_of_someone_elses_windows_is_a_move() {
-        let mut after = desktop();
-        strip_mut(&mut after, 10).window_groups.swap(1, 2);
-        assert_eq!(
-            acts(&after, ADA),
-            vec![(2, Act::Reorder), (3, Act::Reorder)]
-        );
-        assert!(acts(&after, BEN).is_empty());
-    }
-
-    #[test]
-    fn a_strip_nobody_made_is_only_moderated() {
-        let mut renamed = desktop();
-        strip_mut(&mut renamed, 10).name = "Mine now".into();
-        assert_eq!(acts(&renamed, ADA), vec![(10, Act::Rename)]);
-        assert_eq!(acts(&renamed, BEN), vec![(10, Act::Rename)]);
-
-        let mut removed = desktop();
-        removed.tree.workspaces[0]
-            .strips
-            .retain(|s| s.id != StripId(10));
-        // Removing it closes every window on it that was not Ada's too.
-        assert_eq!(
-            acts(&removed, ADA),
-            vec![(10, Act::Close), (2, Act::Close), (3, Act::Close)]
-        );
-        let mut hers = desktop();
-        strip_mut(&mut hers, 20).name = "Ada's corner".into();
-        assert!(acts(&hers, ADA).is_empty());
-    }
-
-    #[test]
-    fn taking_over_someone_elses_window_is_refused_as_an_attribution() {
-        let mut claimed = desktop();
-        claimed.authors.insert(2, ADA.into());
-        assert_eq!(acts(&claimed, ADA), vec![(2, Act::Attribute)]);
-        let mut unclaimed = desktop();
-        unclaimed.authors.remove(&3);
-        assert_eq!(acts(&unclaimed, ADA), vec![(3, Act::Attribute)]);
-        let mut strip = desktop();
-        strip.authors.insert(10, ADA.into());
-        assert_eq!(acts(&strip, ADA), vec![(10, Act::Attribute)]);
-        // Giving away one's own window is not.
-        let mut given = desktop();
-        given.authors.insert(1, BEN.into());
-        assert!(acts(&given, ADA).is_empty());
-    }
-
-    #[test]
-    fn acts_are_decided_on_the_items_moderation_node() {
-        let touched = Touched {
-            id: 2,
-            act: Act::Close,
-            owner: Some(BEN.into()),
-        };
-        let node = act_node("workspace-1", &touched);
-        assert_eq!(
-            node,
-            TreePath::workspace("workspace-1")
-                .app(DESKTOP_APP)
-                .kind(DESKTOP_KIND)
-                .resource(DESKTOP_RECORD)
-                .item("2")
-                .field(MODERATION_FIELD)
-                .action("close")
-        );
-        // The roles' moderation rule covers it: Moderators may, Editors not.
-        let moderation = tilo_action_policy::roles::moderation("workspace-1");
-        assert!(moderation.covers(&node));
-        // And the node a desktop asks about, which no one window's grant
-        // covers.
-        assert!(moderation.covers(&moderation_node("workspace-1")));
-        assert!(!node.covers(&moderation_node("workspace-1")));
+            };
+            let node = act_node("workspace-1", &touched);
+            assert_eq!(
+                node,
+                TreePath::workspace("workspace-1")
+                    .app(DESKTOP_APP)
+                    .kind(DESKTOP_KIND)
+                    .resource(DESKTOP_RECORD)
+                    .item("2")
+                    .field(MODERATION_FIELD)
+                    .action("close")
+            );
+            // The roles' moderation rule covers it: Moderators may, Editors not.
+            let moderation = tilo_action_policy::roles::moderation("workspace-1");
+            assert!(moderation.covers(&node));
+            // And the node a desktop asks about, which no one window's grant
+            // covers.
+            assert!(moderation.covers(&moderation_node("workspace-1")));
+            assert!(!node.covers(&moderation_node("workspace-1")));
+        }
     }
 }

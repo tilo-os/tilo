@@ -1004,161 +1004,169 @@ fn shared(state: media::TransportState) -> crate::shared::SharedTransport {
     }
 }
 
-#[test]
-fn watching_together_follows_moves_and_says_its_own_once() {
-    let start = 1_000_000;
-    // A player that starts playing says so; its own change coming back
-    // is not followed.
-    let mut here = Together::default();
-    assert_eq!(
-        here.step("clip", None, transport(false, 0, start), start, 60_000),
-        TogetherStep::Stay,
-        "a paused player that nobody else watches says nothing"
-    );
-    let playing = transport(true, 0, start + 10);
-    assert_eq!(
-        here.step("clip", None, playing, start + 10, 60_000),
-        TogetherStep::Publish(playing)
-    );
-    assert_eq!(
-        here.step("clip", Some(&shared(playing)), playing, start + 20, 60_000),
-        TogetherStep::Stay,
-        "its own change is not followed back"
-    );
-    // Its engine still starting: the playhead has not moved yet. A
-    // leader never seeks itself toward its own announcement.
-    assert_eq!(
-        here.step(
-            "clip",
-            Some(&shared(playing)),
-            transport(true, 0, start + 900),
-            start + 900,
-            60_000
-        ),
-        TogetherStep::Stay,
-        "a leader does not ride along with itself"
-    );
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the lint exempts a test function's body, not the closure a phase is"
+    )]
+    fn watching_together_steps_follow_publish_or_stay;
 
-    // Another player joins the same video and follows; while its engine
-    // catches up it says nothing of its own.
-    let mut there = Together::default();
-    let local = transport(false, 0, start + 500);
-    assert_eq!(
-        there.step("clip", Some(&shared(playing)), local, start + 500, 60_000),
-        TogetherStep::Follow(playing)
-    );
-    assert_eq!(
-        there.step("clip", Some(&shared(playing)), local, start + 900, 60_000),
-        TogetherStep::Follow(playing),
-        "settling: a lagging engine is not a move"
-    );
-    // Small drift rides; a seek far away is a move everyone follows.
-    let riding = transport(true, 2_100, start + 2_000);
-    assert_eq!(
-        there.step(
-            "clip",
-            Some(&shared(playing)),
-            riding,
-            start + 2_000,
-            60_000
-        ),
-        TogetherStep::Follow(playing)
-    );
-    let sought = transport(true, 30_000, start + 2_100);
-    assert_eq!(
-        there.step(
-            "clip",
-            Some(&shared(playing)),
-            sought,
-            start + 2_100,
-            60_000
-        ),
-        TogetherStep::Publish(sought)
-    );
-    assert_eq!(
-        here.step(
-            "clip",
-            Some(&shared(sought)),
-            playing,
-            start + 2_200,
-            60_000
-        ),
-        TogetherStep::Follow(sought),
-        "the first player follows the seek"
-    );
-}
+    phase watching_together_follows_moves_and_says_its_own_once;
+    {
+        let start = 1_000_000;
+        // A player that starts playing says so; its own change coming back
+        // is not followed.
+        let mut here = Together::default();
+        assert_eq!(
+            here.step("clip", None, transport(false, 0, start), start, 60_000),
+            TogetherStep::Stay,
+            "a paused player that nobody else watches says nothing"
+        );
+        let playing = transport(true, 0, start + 10);
+        assert_eq!(
+            here.step("clip", None, playing, start + 10, 60_000),
+            TogetherStep::Publish(playing)
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), playing, start + 20, 60_000),
+            TogetherStep::Stay,
+            "its own change is not followed back"
+        );
+        // Its engine still starting: the playhead has not moved yet. A
+        // leader never seeks itself toward its own announcement.
+        assert_eq!(
+            here.step(
+                "clip",
+                Some(&shared(playing)),
+                transport(true, 0, start + 900),
+                start + 900,
+                60_000
+            ),
+            TogetherStep::Stay,
+            "a leader does not ride along with itself"
+        );
 
-#[test]
-fn a_video_watched_long_ago_starts_on_its_own() {
-    let now = 50_000_000;
-    let long_ago = shared(transport(false, 12_000, now - TOGETHER_PAUSE_LIVES_MS - 1));
-    let mut here = Together::default();
-    assert_eq!(
-        here.step(
-            "clip",
-            Some(&long_ago),
-            transport(false, 0, now),
-            now,
-            60_000
-        ),
-        TogetherStep::Stay,
-        "an old pause is not joined"
-    );
-    let finished = shared(transport(true, 0, now - 120_000));
-    let mut there = Together::default();
-    assert_eq!(
-        there.step(
-            "clip",
-            Some(&finished),
-            transport(false, 0, now),
-            now,
-            60_000
-        ),
-        TogetherStep::Stay,
-        "a playback that ran past the end is over"
-    );
-}
+        // Another player joins the same video and follows; while its engine
+        // catches up it says nothing of its own.
+        let mut there = Together::default();
+        let local = transport(false, 0, start + 500);
+        assert_eq!(
+            there.step("clip", Some(&shared(playing)), local, start + 500, 60_000),
+            TogetherStep::Follow(playing)
+        );
+        assert_eq!(
+            there.step("clip", Some(&shared(playing)), local, start + 900, 60_000),
+            TogetherStep::Follow(playing),
+            "settling: a lagging engine is not a move"
+        );
+        // Small drift rides; a seek far away is a move everyone follows.
+        let riding = transport(true, 2_100, start + 2_000);
+        assert_eq!(
+            there.step(
+                "clip",
+                Some(&shared(playing)),
+                riding,
+                start + 2_000,
+                60_000
+            ),
+            TogetherStep::Follow(playing)
+        );
+        let sought = transport(true, 30_000, start + 2_100);
+        assert_eq!(
+            there.step(
+                "clip",
+                Some(&shared(playing)),
+                sought,
+                start + 2_100,
+                60_000
+            ),
+            TogetherStep::Publish(sought)
+        );
+        assert_eq!(
+            here.step(
+                "clip",
+                Some(&shared(sought)),
+                playing,
+                start + 2_200,
+                60_000
+            ),
+            TogetherStep::Follow(sought),
+            "the first player follows the seek"
+        );
+    }
 
-#[test]
-fn a_playback_put_back_after_the_end_does_not_swallow_a_replay() {
-    // This player played the clip to its end and said so. The workspace then
-    // put back the older "playing from the start" (it undid the change),
-    // which has long run past the end. Seeking back and replaying must
-    // stay with the person, not snap to the end again.
-    let start = 50_000_000;
-    let playing = transport(true, 0, start);
-    let mut here = Together::default();
-    assert_eq!(
-        here.step("clip", None, playing, start, 6_000),
-        TogetherStep::Publish(playing)
-    );
-    assert_eq!(
-        here.step("clip", Some(&shared(playing)), playing, start + 50, 6_000),
-        TogetherStep::Stay,
-        "its own play came back"
-    );
-    let now = start + 7_000;
-    let ended = transport(false, 6_000, now);
-    assert_eq!(
-        here.step("clip", Some(&shared(playing)), ended, now, 6_000),
-        TogetherStep::Publish(ended)
-    );
-    assert_eq!(
-        here.step("clip", Some(&shared(ended)), ended, now + 50, 6_000),
-        TogetherStep::Stay,
-        "its own pause came back"
-    );
-    assert_eq!(
-        here.step("clip", Some(&shared(playing)), ended, now + 100, 6_000),
-        TogetherStep::Stay,
-        "an old playback past the end is not followed"
-    );
-    let replay = transport(true, 0, now + 200);
-    assert_eq!(
-        here.step("clip", Some(&shared(playing)), replay, now + 200, 6_000),
-        TogetherStep::Publish(replay),
-        "the replay is this player's move"
-    );
+    phase a_video_watched_long_ago_starts_on_its_own;
+    {
+        let now = 50_000_000;
+        let long_ago = shared(transport(false, 12_000, now - TOGETHER_PAUSE_LIVES_MS - 1));
+        let mut here = Together::default();
+        assert_eq!(
+            here.step(
+                "clip",
+                Some(&long_ago),
+                transport(false, 0, now),
+                now,
+                60_000
+            ),
+            TogetherStep::Stay,
+            "an old pause is not joined"
+        );
+        let finished = shared(transport(true, 0, now - 120_000));
+        let mut there = Together::default();
+        assert_eq!(
+            there.step(
+                "clip",
+                Some(&finished),
+                transport(false, 0, now),
+                now,
+                60_000
+            ),
+            TogetherStep::Stay,
+            "a playback that ran past the end is over"
+        );
+    }
+
+    phase a_playback_put_back_after_the_end_does_not_swallow_a_replay;
+    {
+        // This player played the clip to its end and said so. The workspace then
+        // put back the older "playing from the start" (it undid the change),
+        // which has long run past the end. Seeking back and replaying must
+        // stay with the person, not snap to the end again.
+        let start = 50_000_000;
+        let playing = transport(true, 0, start);
+        let mut here = Together::default();
+        assert_eq!(
+            here.step("clip", None, playing, start, 6_000),
+            TogetherStep::Publish(playing)
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), playing, start + 50, 6_000),
+            TogetherStep::Stay,
+            "its own play came back"
+        );
+        let now = start + 7_000;
+        let ended = transport(false, 6_000, now);
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), ended, now, 6_000),
+            TogetherStep::Publish(ended)
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(ended)), ended, now + 50, 6_000),
+            TogetherStep::Stay,
+            "its own pause came back"
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), ended, now + 100, 6_000),
+            TogetherStep::Stay,
+            "an old playback past the end is not followed"
+        );
+        let replay = transport(true, 0, now + 200);
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), replay, now + 200, 6_000),
+            TogetherStep::Publish(replay),
+            "the replay is this player's move"
+        );
+    }
 }
 
 #[test]

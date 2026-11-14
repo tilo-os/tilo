@@ -602,150 +602,499 @@ impl OriginalReadClaim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn apps_only_phase_refuses_old_worker_and_home_commands_before_source_open() {
-        let operation = uuid::Uuid::new_v4().to_string();
-        let identity = [7u8; 32];
-        let applications_operation =
-            OriginalReadClaim::derive_applications_operation(&operation, "bound-setup", &identity);
-        let claim = serde_json::json!({
-            "schema":3,"material":"selected-applications","operation":operation,"setup_binding":"bound-setup",
-            "export_operation":operation,"sealed_reservation":1048576,"omissions":[],
-            "identity_public_key":identity,"source_plan_sha256":(vec![8u8;32]),
-            "declaration_sha256":(vec![9u8;32]),"source":[9,10,1000],
-            "caller":{"schema":1,"uid":1000,"primary_gid":1001,"supplementary_gids":[1002]},
-            "applications_operation":applications_operation,
-            "flatpak":{"schema":1,"operation":operation,"original_uid":1000,
-                "inventory_sha256":(vec![10u8;32]),"inventory_len":100,
-                "projections":[{"index":0,"device":9,"inode":12,"owner":1000}],
-                "selected_data_ids":["so.example.Selected"]}
-        });
-        let wire = serde_json::json!({"schema":6,"operation":operation,"custody":null,
-            "command":{"action":"review-original","authority":claim}});
-        let request: Request = serde_json::from_value(wire.clone()).unwrap();
-        request.validate_protocol().unwrap();
-        let exported = request
-            .into_export(Zeroizing::new(b"synthetic password".to_vec()))
-            .unwrap();
-        assert!(matches!(
-            exported.command,
-            Command::ExportOriginalApplications { .. }
-        ));
-        let mut old = wire.clone();
-        old["schema"] = serde_json::json!(5);
-        let old: Request = serde_json::from_value(old).unwrap();
-        assert_eq!(
-            old.validate_protocol().unwrap_err().kind(),
-            io::ErrorKind::Unsupported
-        );
-        let mut wrong = wire.clone();
-        wrong["command"]["action"] = serde_json::json!("export-original");
-        wrong["command"]["export_operation"] = serde_json::json!(operation);
-        wrong["command"]["setup_binding"] = serde_json::json!("bound-setup");
-        wrong["command"]["password"] = serde_json::json!(b"synthetic password".to_vec());
-        let wrong: Request = serde_json::from_value(wrong).unwrap();
-        assert!(wrong.validate_protocol().is_err());
-        let baseline: OriginalReadClaim =
-            serde_json::from_value(wire["command"]["authority"].clone()).unwrap();
-        // This is the production pre-journal validator, using the same decoded
-        // claim as the signed worker request above; it grants no source authority.
-        let applications = crate::setup::flatpak_transfer::portable::Expectation {
-            operation: baseline.applications_operation().unwrap().into(),
-            filename: format!(
-                "applications-{}.sealed",
-                baseline.applications_operation().unwrap()
-            ),
-            setup_binding: "bound-setup".into(),
-            sealed_bytes: 4096,
-            plaintext_bytes: 1024,
-            entries: 1,
-            ciphertext_sha256: [2; 32],
-            limits: crate::setup::portable_transfer::Limits {
-                plaintext_bytes: 8192,
-                entries: 16,
-                metadata_bytes: 4096,
-            },
-            kind: crate::setup::flatpak_transfer::portable::Applications {
-                consumer_protocol: 2,
-                manifest_sha256: [3; 32],
-            },
-        };
-        baseline
-            .validate_installed_output(None, Some(&applications))
-            .unwrap();
-        assert!(baseline.validate_installed_output(None, None).is_err());
-        for altered in [
-            {
-                let mut value = applications.clone();
-                value.kind.consumer_protocol = 1;
-                value
-            },
-            {
-                let mut value = applications.clone();
-                value.operation = uuid::Uuid::new_v4().to_string();
-                value.filename = format!("applications-{}.sealed", value.operation);
-                value
-            },
-            {
-                let mut value = applications;
-                value.setup_binding = "other-setup".into();
-                value
-            },
-        ] {
+    tilo_test_env::scenario! {
+        /// The original-system worker: its claims on the wire, its request digest and what it validates.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_original_worker_binds_its_claims_requests_and_selected_applications;
+
+        phase apps_only_phase_refuses_old_worker_and_home_commands_before_source_open;
+        {
+            let operation = uuid::Uuid::new_v4().to_string();
+            let identity = [7u8; 32];
+            let applications_operation =
+                OriginalReadClaim::derive_applications_operation(&operation, "bound-setup", &identity);
+            let claim = serde_json::json!({
+                "schema":3,"material":"selected-applications","operation":operation,"setup_binding":"bound-setup",
+                "export_operation":operation,"sealed_reservation":1048576,"omissions":[],
+                "identity_public_key":identity,"source_plan_sha256":(vec![8u8;32]),
+                "declaration_sha256":(vec![9u8;32]),"source":[9,10,1000],
+                "caller":{"schema":1,"uid":1000,"primary_gid":1001,"supplementary_gids":[1002]},
+                "applications_operation":applications_operation,
+                "flatpak":{"schema":1,"operation":operation,"original_uid":1000,
+                    "inventory_sha256":(vec![10u8;32]),"inventory_len":100,
+                    "projections":[{"index":0,"device":9,"inode":12,"owner":1000}],
+                    "selected_data_ids":["so.example.Selected"]}
+            });
+            let wire = serde_json::json!({"schema":6,"operation":operation,"custody":null,
+                "command":{"action":"review-original","authority":claim}});
+            let request: Request = serde_json::from_value(wire.clone()).unwrap();
+            request.validate_protocol().unwrap();
+            let exported = request
+                .into_export(Zeroizing::new(b"synthetic password".to_vec()))
+                .unwrap();
+            assert!(matches!(
+                exported.command,
+                Command::ExportOriginalApplications { .. }
+            ));
+            let mut old = wire.clone();
+            old["schema"] = serde_json::json!(5);
+            let old: Request = serde_json::from_value(old).unwrap();
+            assert_eq!(
+                old.validate_protocol().unwrap_err().kind(),
+                io::ErrorKind::Unsupported
+            );
+            let mut wrong = wire.clone();
+            wrong["command"]["action"] = serde_json::json!("export-original");
+            wrong["command"]["export_operation"] = serde_json::json!(operation);
+            wrong["command"]["setup_binding"] = serde_json::json!("bound-setup");
+            wrong["command"]["password"] = serde_json::json!(b"synthetic password".to_vec());
+            let wrong: Request = serde_json::from_value(wrong).unwrap();
+            assert!(wrong.validate_protocol().is_err());
+            let baseline: OriginalReadClaim =
+                serde_json::from_value(wire["command"]["authority"].clone()).unwrap();
+            // This is the production pre-journal validator, using the same decoded
+            // claim as the signed worker request above; it grants no source authority.
+            let applications = crate::setup::flatpak_transfer::portable::Expectation {
+                operation: baseline.applications_operation().unwrap().into(),
+                filename: format!(
+                    "applications-{}.sealed",
+                    baseline.applications_operation().unwrap()
+                ),
+                setup_binding: "bound-setup".into(),
+                sealed_bytes: 4096,
+                plaintext_bytes: 1024,
+                entries: 1,
+                ciphertext_sha256: [2; 32],
+                limits: crate::setup::portable_transfer::Limits {
+                    plaintext_bytes: 8192,
+                    entries: 16,
+                    metadata_bytes: 4096,
+                },
+                kind: crate::setup::flatpak_transfer::portable::Applications {
+                    consumer_protocol: 2,
+                    manifest_sha256: [3; 32],
+                },
+            };
+            baseline
+                .validate_installed_output(None, Some(&applications))
+                .unwrap();
+            assert!(baseline.validate_installed_output(None, None).is_err());
+            for altered in [
+                {
+                    let mut value = applications.clone();
+                    value.kind.consumer_protocol = 1;
+                    value
+                },
+                {
+                    let mut value = applications.clone();
+                    value.operation = uuid::Uuid::new_v4().to_string();
+                    value.filename = format!("applications-{}.sealed", value.operation);
+                    value
+                },
+                {
+                    let mut value = applications;
+                    value.setup_binding = "other-setup".into();
+                    value
+                },
+            ] {
+                assert!(
+                    baseline
+                        .validate_installed_output(None, Some(&altered))
+                        .is_err()
+                );
+            }
+            let mut changed = wire["command"]["authority"].clone();
+            changed["flatpak"]["selected_data_ids"] = serde_json::json!(["so.example.Excluded"]);
+            let changed: OriginalReadClaim = serde_json::from_value(changed).unwrap();
+            assert_ne!(
+                baseline.binding_sha256().unwrap(),
+                changed.binding_sha256().unwrap()
+            );
+            let mut downgraded = wire["command"]["authority"].clone();
+            downgraded["material"] = serde_json::json!("home");
+            assert!(serde_json::from_value::<OriginalReadClaim>(downgraded).is_err());
+        }
+
+        phase original_request_digest_binds_authenticated_declaration_and_caller;
+        {
+            let mut value = serde_json::json!({
+                "schema":2,"operation":uuid::Uuid::new_v4().to_string(),"setup_binding":"bound-setup",
+                "export_operation":"PLACEHOLDER","sealed_reservation":1048576,"omissions":[],
+                "identity_public_key":(vec![7u8;32]),"source_plan_sha256":(vec![8u8;32]),
+                "declaration_sha256":(vec![9u8;32]),"source":[9,10,1000],
+                "caller":{"schema":1,"uid":1000,"primary_gid":1001,"supplementary_gids":[1002]}
+            });
+            value["export_operation"] = value["operation"].clone();
+            let claim: OriginalReadClaim = serde_json::from_value(value.clone()).unwrap();
+            let digest = claim.binding_sha256().unwrap();
+            // The declaration covers the authenticated SourceWitness, selected
+            // medium and reservation; substitutions cannot reuse the shim proof.
+            for field in [
+                "declaration_sha256",
+                "source_plan_sha256",
+                "identity_public_key",
+            ] {
+                let mut changed = value.clone();
+                changed[field] = serde_json::json!([11; 32].to_vec());
+                let changed: OriginalReadClaim = serde_json::from_value(changed).unwrap();
+                assert_ne!(changed.binding_sha256().unwrap(), digest);
+            }
+            let mut changed = value.clone();
+            changed["caller"]["supplementary_gids"] = serde_json::json!([1003]);
+            let changed: OriginalReadClaim = serde_json::from_value(changed).unwrap();
+            assert_ne!(changed.binding_sha256().unwrap(), digest);
+            let mut missing = value.clone();
+            missing
+                .as_object_mut()
+                .unwrap()
+                .remove("declaration_sha256");
+            assert!(serde_json::from_value::<OriginalReadClaim>(missing).is_err());
+            let mut invalid = value;
+            invalid["declaration_sha256"] = serde_json::json!([0; 32].to_vec());
+            assert!(serde_json::from_value::<OriginalReadClaim>(invalid).is_err());
+        }
+
+        phase original_claim_wire_rejects_invalid_shape_and_preserves_home_defaults;
+        {
+            let request = serde_json::to_value(original_review()).unwrap();
+            let wire = request["command"]["authority"].clone();
+            let claim: OriginalReadClaim = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(claim).unwrap(), wire);
+            for (field, invalid) in [
+                ("schema", serde_json::json!(3)),
+                ("operation", serde_json::json!("not-an-operation")),
+                (
+                    "export_operation",
+                    serde_json::json!(uuid::Uuid::new_v4().to_string()),
+                ),
+                ("setup_binding", serde_json::json!("")),
+                ("setup_binding", serde_json::json!("binding\n")),
+                ("identity_public_key", serde_json::json!(vec![0u8; 32])),
+                ("source_plan_sha256", serde_json::json!(vec![0u8; 32])),
+                ("declaration_sha256", serde_json::json!(vec![0u8; 32])),
+                ("sealed_reservation", serde_json::json!(0)),
+                (
+                    "applications_operation",
+                    serde_json::json!(uuid::Uuid::new_v4().to_string()),
+                ),
+            ] {
+                let mut altered = wire.clone();
+                altered[field] = invalid;
+                assert!(
+                    serde_json::from_value::<OriginalReadClaim>(altered).is_err(),
+                    "{field}"
+                );
+            }
+            let mut wrong_owner = wire;
+            wrong_owner["source"][2] = serde_json::json!(1003);
+            assert!(serde_json::from_value::<OriginalReadClaim>(wrong_owner).is_err());
+        }
+
+        phase mounted_claim_wire_rejects_missing_digest_and_invalid_witness;
+        {
+            let wire = serde_json::json!({
+                "witness": {
+                    "schema": 1,
+                    "primary": {
+                        "schema": 1,
+                        "operation": uuid::Uuid::new_v4().to_string(),
+                        "namespace": crate::setup::migration_store::NativePath::encode(
+                            std::path::Path::new("tilo-imager/home-capture/records")),
+                        "record_sha256": vec![1u8; 32],
+                        "plan_sha256": vec![2u8; 32]
+                    },
+                    "sha256": vec![3u8; 32]
+                },
+                "table_sha256": vec![4u8; 32]
+            });
+            let claim: OriginalMountedClaim = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(claim).unwrap(), wire);
+            let mut missing_table = wire.clone();
+            missing_table["table_sha256"] = serde_json::json!(vec![0u8; 32]);
+            assert!(serde_json::from_value::<OriginalMountedClaim>(missing_table).is_err());
+            let mut missing_witness_digest = wire.clone();
+            missing_witness_digest["witness"]["sha256"] = serde_json::json!(vec![0u8; 32]);
+            assert!(serde_json::from_value::<OriginalMountedClaim>(missing_witness_digest).is_err());
+            let mut wrong_schema = wire.clone();
+            wrong_schema["witness"]["schema"] = serde_json::json!(2);
+            assert!(serde_json::from_value::<OriginalMountedClaim>(wrong_schema).is_err());
+            let mut wrong_operation = wire;
+            wrong_operation["witness"]["primary"]["operation"] = serde_json::json!("invalid");
+            assert!(serde_json::from_value::<OriginalMountedClaim>(wrong_operation).is_err());
+        }
+
+        phase original_export_transform_binds_declared_operation_and_rejects_ordinary_route;
+        {
+            let request = original_review()
+                .into_export(Zeroizing::new(b"synthetic-only".to_vec()))
+                .unwrap();
+            request.validate_protocol().unwrap();
+            assert_eq!(
+                request.require_capture_route().unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            let wire = serde_json::to_value(&request).unwrap();
+            assert_eq!(wire["command"]["action"], "export-original");
+            assert_eq!(wire["command"]["export_operation"], wire["operation"]);
+            assert_eq!(wire["command"]["setup_binding"], "bound-setup");
+            for field in ["setup_binding", "export_operation"] {
+                let mut altered = wire.clone();
+                altered["command"][field] = serde_json::json!(uuid::Uuid::new_v4().to_string());
+                let altered: Request = serde_json::from_value(altered).unwrap();
+                assert!(altered.validate_protocol().is_err());
+            }
+            let mut unknown = wire.clone();
+            unknown["command"]["output_path"] = serde_json::json!("/unapproved");
+            assert!(serde_json::from_value::<Request>(unknown).is_err());
+            let ordinary = Request {
+                schema: WORKER_PROTOCOL,
+                operation: uuid::Uuid::new_v4().to_string(),
+                custody: None,
+                command: Command::Review,
+            };
             assert!(
-                baseline
-                    .validate_installed_output(None, Some(&altered))
+                ordinary
+                    .into_export(Zeroizing::new(b"synthetic-only".to_vec()))
+                    .is_err()
+            );
+            assert!(
+                original_review()
+                    .into_export(Zeroizing::new(Vec::new()))
+                    .is_err()
+            );
+            let mut custody = wire;
+            custody["custody"] = serde_json::json!({"preparation":{"relative":{"platform":"Unix","units":b".local/state/tilo/installer/preparations".as_slice()},"stable":[1,16832,1000,1001]},"settings_lock":null});
+            let custody: Request = serde_json::from_value(custody).unwrap();
+            assert!(custody.validate_protocol().is_err());
+        }
+
+        phase original_validate_refuses_cross_setup_and_package_over_authenticated_budget;
+        {
+            let review_wire = serde_json::to_value(original_review()).unwrap();
+            let review = || serde_json::from_value::<Request>(review_wire.clone()).unwrap();
+            let request = review();
+            let expected = Expectation {
+                operation: request.operation.clone(),
+                filename: format!("home-{}.sealed", request.operation),
+                setup_binding: "bound-setup".into(),
+                sealed_bytes: 4096,
+                plaintext_bytes: 1024,
+                entries: 1,
+                ciphertext_sha256: [1; 32],
+                limits: crate::setup::portable_transfer::Limits {
+                    plaintext_bytes: 8192,
+                    entries: 16,
+                    metadata_bytes: 4096,
+                },
+                kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
+            };
+            let request = request
+                .into_validate(expected.clone(), Zeroizing::new(b"synthetic-only".to_vec()))
+                .unwrap();
+            request.validate_protocol().unwrap();
+            assert!(request.require_capture_route().is_err());
+            let mut cross = expected.clone();
+            cross.setup_binding = "another-setup".into();
+            assert!(
+                review()
+                    .into_validate(cross, Zeroizing::new(b"synthetic-only".to_vec()))
+                    .is_err()
+            );
+            let mut oversized = expected;
+            oversized.limits.plaintext_bytes = 2 * 1024 * 1024;
+            assert!(
+                review()
+                    .into_validate(oversized, Zeroizing::new(b"synthetic-only".to_vec()))
                     .is_err()
             );
         }
-        let mut changed = wire["command"]["authority"].clone();
-        changed["flatpak"]["selected_data_ids"] = serde_json::json!(["so.example.Excluded"]);
-        let changed: OriginalReadClaim = serde_json::from_value(changed).unwrap();
-        assert_ne!(
-            baseline.binding_sha256().unwrap(),
-            changed.binding_sha256().unwrap()
-        );
-        let mut downgraded = wire["command"]["authority"].clone();
-        downgraded["material"] = serde_json::json!("home");
-        assert!(serde_json::from_value::<OriginalReadClaim>(downgraded).is_err());
-    }
-    #[test]
-    fn original_request_digest_binds_authenticated_declaration_and_caller() {
-        let mut value = serde_json::json!({
-            "schema":2,"operation":uuid::Uuid::new_v4().to_string(),"setup_binding":"bound-setup",
-            "export_operation":"PLACEHOLDER","sealed_reservation":1048576,"omissions":[],
-            "identity_public_key":(vec![7u8;32]),"source_plan_sha256":(vec![8u8;32]),
-            "declaration_sha256":(vec![9u8;32]),"source":[9,10,1000],
-            "caller":{"schema":1,"uid":1000,"primary_gid":1001,"supplementary_gids":[1002]}
-        });
-        value["export_operation"] = value["operation"].clone();
-        let claim: OriginalReadClaim = serde_json::from_value(value.clone()).unwrap();
-        let digest = claim.binding_sha256().unwrap();
-        // The declaration covers the authenticated SourceWitness, selected
-        // medium and reservation; substitutions cannot reuse the shim proof.
-        for field in [
-            "declaration_sha256",
-            "source_plan_sha256",
-            "identity_public_key",
-        ] {
-            let mut changed = value.clone();
-            changed[field] = serde_json::json!([11; 32].to_vec());
-            let changed: OriginalReadClaim = serde_json::from_value(changed).unwrap();
-            assert_ne!(changed.binding_sha256().unwrap(), digest);
+
+        phase selected_applications_are_bound_to_original_worker_and_cannot_be_omitted;
+        {
+            let mut wire = serde_json::to_value(original_review()).unwrap();
+            wire["command"]["authority"]["flatpak"] = serde_json::json!({
+                "schema":1,"operation":wire["operation"].clone(),"original_uid":1000,
+                "inventory_sha256":vec![17u8;32],"inventory_len":8*1024*1024,
+                "projections":[{"index":0,"device":21,"inode":22,"owner":0}]
+            });
+            wire["command"]["authority"]["applications_operation"] =
+                serde_json::json!(OriginalReadClaim::derive_applications_operation(
+                    wire["operation"].as_str().unwrap(),
+                    "bound-setup",
+                    &[7u8; 32]
+                ));
+            let review = || serde_json::from_value::<Request>(wire.clone()).unwrap();
+            let request = review();
+            request.validate_protocol().unwrap();
+            let encoded = serde_json::to_vec(&request).unwrap();
+            // A full8MiB inventory is referenced and authenticated, never stuffed
+            // into the64KiB worker frame or truncated to fit that frame.
+            let mut frame = Vec::new();
+            write_frame(&mut frame, &encoded, REQUEST_BOUND).unwrap();
+            let decoded: Request =
+                serde_json::from_slice(&read_frame(&mut frame.as_slice(), REQUEST_BOUND).unwrap())
+                    .unwrap();
+            decoded.validate_protocol().unwrap();
+            assert!(decoded.require_capture_route().is_err());
+            let before = decoded
+                .command
+                .original_authority()
+                .unwrap()
+                .binding_sha256()
+                .unwrap();
+            for field in ["inventory_sha256", "inventory_len", "projections"] {
+                let mut altered = wire.clone();
+                match field {
+                    "inventory_sha256" => {
+                        altered["command"]["authority"]["flatpak"][field] =
+                            serde_json::json!(vec![18u8; 32])
+                    }
+                    "inventory_len" => {
+                        altered["command"]["authority"]["flatpak"][field] = serde_json::json!(1048576)
+                    }
+                    _ => {
+                        altered["command"]["authority"]["flatpak"][field][0]["inode"] =
+                            serde_json::json!(23)
+                    }
+                }
+                let altered: Request = serde_json::from_value(altered).unwrap();
+                assert_ne!(
+                    altered
+                        .command
+                        .original_authority()
+                        .unwrap()
+                        .binding_sha256()
+                        .unwrap(),
+                    before
+                );
+            }
+            let home = Expectation {
+                operation: request.operation.clone(),
+                filename: format!("home-{}.sealed", request.operation),
+                setup_binding: "bound-setup".into(),
+                sealed_bytes: 4096,
+                plaintext_bytes: 1024,
+                entries: 1,
+                ciphertext_sha256: [1; 32],
+                limits: crate::setup::portable_transfer::Limits {
+                    plaintext_bytes: 8192,
+                    entries: 16,
+                    metadata_bytes: 4096,
+                },
+                kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
+            };
+            assert!(
+                review()
+                    .into_validate(home.clone(), Zeroizing::new(b"synthetic-only".to_vec()))
+                    .is_err()
+            );
+            let apps = crate::setup::flatpak_transfer::portable::Expectation {
+                operation: request
+                    .command
+                    .original_authority()
+                    .unwrap()
+                    .applications_operation()
+                    .unwrap()
+                    .into(),
+                filename: format!(
+                    "applications-{}.sealed",
+                    request
+                        .command
+                        .original_authority()
+                        .unwrap()
+                        .applications_operation()
+                        .unwrap()
+                ),
+                setup_binding: "bound-setup".into(),
+                sealed_bytes: 4096,
+                plaintext_bytes: 1024,
+                entries: 1,
+                ciphertext_sha256: [2; 32],
+                limits: home.limits,
+                kind: crate::setup::flatpak_transfer::portable::Applications {
+                    consumer_protocol: 1,
+                    manifest_sha256: [3; 32],
+                },
+            };
+            let selected = review()
+                .into_validate_selected(
+                    home.clone(),
+                    Some(apps.clone()),
+                    Zeroizing::new(b"synthetic-only".to_vec()),
+                )
+                .unwrap();
+            selected.validate_protocol().unwrap();
+            let mut changed = apps.clone();
+            changed.setup_binding = "other".into();
+            assert!(
+                review()
+                    .into_validate_selected(
+                        home.clone(),
+                        Some(changed),
+                        Zeroizing::new(b"synthetic-only".to_vec())
+                    )
+                    .is_err()
+            );
+            let mut absent = wire.clone();
+            absent["command"]["authority"]
+                .as_object_mut()
+                .unwrap()
+                .remove("flatpak");
+            absent["command"]["authority"]
+                .as_object_mut()
+                .unwrap()
+                .remove("applications_operation");
+            let absent: Request = serde_json::from_value(absent).unwrap();
+            assert!(
+                absent
+                    .into_validate_selected(
+                        home.clone(),
+                        Some(apps.clone()),
+                        Zeroizing::new(b"synthetic-only".to_vec())
+                    )
+                    .is_err()
+            );
+            let mut too_small = wire.clone();
+            too_small["command"]["authority"]["sealed_reservation"] = serde_json::json!(4096);
+            let too_small: Request = serde_json::from_value(too_small).unwrap();
+            assert!(
+                too_small
+                    .into_validate_selected(
+                        home,
+                        Some(apps),
+                        Zeroizing::new(b"synthetic-only".to_vec())
+                    )
+                    .is_err()
+            );
         }
-        let mut changed = value.clone();
-        changed["caller"]["supplementary_gids"] = serde_json::json!([1003]);
-        let changed: OriginalReadClaim = serde_json::from_value(changed).unwrap();
-        assert_ne!(changed.binding_sha256().unwrap(), digest);
-        let mut missing = value.clone();
-        missing
-            .as_object_mut()
-            .unwrap()
-            .remove("declaration_sha256");
-        assert!(serde_json::from_value::<OriginalReadClaim>(missing).is_err());
-        let mut invalid = value;
-        invalid["declaration_sha256"] = serde_json::json!([0; 32].to_vec());
-        assert!(serde_json::from_value::<OriginalReadClaim>(invalid).is_err());
+
+        phase original_claim_accepts_only_normalized_home_exclusions;
+        {
+            use crate::setup::migration_store::NativePath;
+            let request = serde_json::to_value(original_review()).unwrap();
+            let mut wire = request["command"]["authority"].clone();
+            wire["exclusions"] =
+                serde_json::json!([NativePath::encode(std::path::Path::new("../escape"))]);
+            assert!(
+                serde_json::from_value::<OriginalReadClaim>(wire.clone()).is_err(),
+                "an exclusion cannot escape the reviewed home"
+            );
+            wire["exclusions"] =
+                serde_json::json!([NativePath::encode(std::path::Path::new("/absolute"))]);
+            assert!(serde_json::from_value::<OriginalReadClaim>(wire.clone()).is_err());
+            wire["exclusions"] = serde_json::json!([NativePath::encode(std::path::Path::new(
+                "Documents/Private"
+            ))]);
+            let claim: OriginalReadClaim = serde_json::from_value(wire).unwrap();
+            assert_eq!(
+                claim.exclusion_paths().unwrap(),
+                vec![std::path::PathBuf::from("Documents/Private")]
+            );
+            let plain: OriginalReadClaim =
+                serde_json::from_value(request["command"]["authority"].clone()).unwrap();
+            assert!(plain.exclusion_paths().unwrap().is_empty());
+            assert!(claim.binding_sha256().is_ok());
+        }
     }
     #[test]
     fn writable_original_projection_refuses_before_inventory_and_preserves_source() {
@@ -802,341 +1151,5 @@ mod tests {
             }}
         }))
         .unwrap()
-    }
-    #[test]
-    fn original_claim_wire_rejects_invalid_shape_and_preserves_home_defaults() {
-        let request = serde_json::to_value(original_review()).unwrap();
-        let wire = request["command"]["authority"].clone();
-        let claim: OriginalReadClaim = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(claim).unwrap(), wire);
-        for (field, invalid) in [
-            ("schema", serde_json::json!(3)),
-            ("operation", serde_json::json!("not-an-operation")),
-            (
-                "export_operation",
-                serde_json::json!(uuid::Uuid::new_v4().to_string()),
-            ),
-            ("setup_binding", serde_json::json!("")),
-            ("setup_binding", serde_json::json!("binding\n")),
-            ("identity_public_key", serde_json::json!(vec![0u8; 32])),
-            ("source_plan_sha256", serde_json::json!(vec![0u8; 32])),
-            ("declaration_sha256", serde_json::json!(vec![0u8; 32])),
-            ("sealed_reservation", serde_json::json!(0)),
-            (
-                "applications_operation",
-                serde_json::json!(uuid::Uuid::new_v4().to_string()),
-            ),
-        ] {
-            let mut altered = wire.clone();
-            altered[field] = invalid;
-            assert!(
-                serde_json::from_value::<OriginalReadClaim>(altered).is_err(),
-                "{field}"
-            );
-        }
-        let mut wrong_owner = wire;
-        wrong_owner["source"][2] = serde_json::json!(1003);
-        assert!(serde_json::from_value::<OriginalReadClaim>(wrong_owner).is_err());
-    }
-    #[test]
-    fn mounted_claim_wire_rejects_missing_digest_and_invalid_witness() {
-        let wire = serde_json::json!({
-            "witness": {
-                "schema": 1,
-                "primary": {
-                    "schema": 1,
-                    "operation": uuid::Uuid::new_v4().to_string(),
-                    "namespace": crate::setup::migration_store::NativePath::encode(
-                        std::path::Path::new("tilo-imager/home-capture/records")),
-                    "record_sha256": vec![1u8; 32],
-                    "plan_sha256": vec![2u8; 32]
-                },
-                "sha256": vec![3u8; 32]
-            },
-            "table_sha256": vec![4u8; 32]
-        });
-        let claim: OriginalMountedClaim = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(claim).unwrap(), wire);
-        let mut missing_table = wire.clone();
-        missing_table["table_sha256"] = serde_json::json!(vec![0u8; 32]);
-        assert!(serde_json::from_value::<OriginalMountedClaim>(missing_table).is_err());
-        let mut missing_witness_digest = wire.clone();
-        missing_witness_digest["witness"]["sha256"] = serde_json::json!(vec![0u8; 32]);
-        assert!(serde_json::from_value::<OriginalMountedClaim>(missing_witness_digest).is_err());
-        let mut wrong_schema = wire.clone();
-        wrong_schema["witness"]["schema"] = serde_json::json!(2);
-        assert!(serde_json::from_value::<OriginalMountedClaim>(wrong_schema).is_err());
-        let mut wrong_operation = wire;
-        wrong_operation["witness"]["primary"]["operation"] = serde_json::json!("invalid");
-        assert!(serde_json::from_value::<OriginalMountedClaim>(wrong_operation).is_err());
-    }
-    #[test]
-    fn original_export_transform_binds_declared_operation_and_rejects_ordinary_route() {
-        let request = original_review()
-            .into_export(Zeroizing::new(b"synthetic-only".to_vec()))
-            .unwrap();
-        request.validate_protocol().unwrap();
-        assert_eq!(
-            request.require_capture_route().unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        let wire = serde_json::to_value(&request).unwrap();
-        assert_eq!(wire["command"]["action"], "export-original");
-        assert_eq!(wire["command"]["export_operation"], wire["operation"]);
-        assert_eq!(wire["command"]["setup_binding"], "bound-setup");
-        for field in ["setup_binding", "export_operation"] {
-            let mut altered = wire.clone();
-            altered["command"][field] = serde_json::json!(uuid::Uuid::new_v4().to_string());
-            let altered: Request = serde_json::from_value(altered).unwrap();
-            assert!(altered.validate_protocol().is_err());
-        }
-        let mut unknown = wire.clone();
-        unknown["command"]["output_path"] = serde_json::json!("/unapproved");
-        assert!(serde_json::from_value::<Request>(unknown).is_err());
-        let ordinary = Request {
-            schema: WORKER_PROTOCOL,
-            operation: uuid::Uuid::new_v4().to_string(),
-            custody: None,
-            command: Command::Review,
-        };
-        assert!(
-            ordinary
-                .into_export(Zeroizing::new(b"synthetic-only".to_vec()))
-                .is_err()
-        );
-        assert!(
-            original_review()
-                .into_export(Zeroizing::new(Vec::new()))
-                .is_err()
-        );
-        let mut custody = wire;
-        custody["custody"] = serde_json::json!({"preparation":{"relative":{"platform":"Unix","units":b".local/state/tilo/installer/preparations".as_slice()},"stable":[1,16832,1000,1001]},"settings_lock":null});
-        let custody: Request = serde_json::from_value(custody).unwrap();
-        assert!(custody.validate_protocol().is_err());
-    }
-    #[test]
-    fn original_validate_refuses_cross_setup_and_package_over_authenticated_budget() {
-        let review_wire = serde_json::to_value(original_review()).unwrap();
-        let review = || serde_json::from_value::<Request>(review_wire.clone()).unwrap();
-        let request = review();
-        let expected = Expectation {
-            operation: request.operation.clone(),
-            filename: format!("home-{}.sealed", request.operation),
-            setup_binding: "bound-setup".into(),
-            sealed_bytes: 4096,
-            plaintext_bytes: 1024,
-            entries: 1,
-            ciphertext_sha256: [1; 32],
-            limits: crate::setup::portable_transfer::Limits {
-                plaintext_bytes: 8192,
-                entries: 16,
-                metadata_bytes: 4096,
-            },
-            kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
-        };
-        let request = request
-            .into_validate(expected.clone(), Zeroizing::new(b"synthetic-only".to_vec()))
-            .unwrap();
-        request.validate_protocol().unwrap();
-        assert!(request.require_capture_route().is_err());
-        let mut cross = expected.clone();
-        cross.setup_binding = "another-setup".into();
-        assert!(
-            review()
-                .into_validate(cross, Zeroizing::new(b"synthetic-only".to_vec()))
-                .is_err()
-        );
-        let mut oversized = expected;
-        oversized.limits.plaintext_bytes = 2 * 1024 * 1024;
-        assert!(
-            review()
-                .into_validate(oversized, Zeroizing::new(b"synthetic-only".to_vec()))
-                .is_err()
-        );
-    }
-    #[test]
-    fn selected_applications_are_bound_to_original_worker_and_cannot_be_omitted() {
-        let mut wire = serde_json::to_value(original_review()).unwrap();
-        wire["command"]["authority"]["flatpak"] = serde_json::json!({
-            "schema":1,"operation":wire["operation"].clone(),"original_uid":1000,
-            "inventory_sha256":vec![17u8;32],"inventory_len":8*1024*1024,
-            "projections":[{"index":0,"device":21,"inode":22,"owner":0}]
-        });
-        wire["command"]["authority"]["applications_operation"] =
-            serde_json::json!(OriginalReadClaim::derive_applications_operation(
-                wire["operation"].as_str().unwrap(),
-                "bound-setup",
-                &[7u8; 32]
-            ));
-        let review = || serde_json::from_value::<Request>(wire.clone()).unwrap();
-        let request = review();
-        request.validate_protocol().unwrap();
-        let encoded = serde_json::to_vec(&request).unwrap();
-        // A full8MiB inventory is referenced and authenticated, never stuffed
-        // into the64KiB worker frame or truncated to fit that frame.
-        let mut frame = Vec::new();
-        write_frame(&mut frame, &encoded, REQUEST_BOUND).unwrap();
-        let decoded: Request =
-            serde_json::from_slice(&read_frame(&mut frame.as_slice(), REQUEST_BOUND).unwrap())
-                .unwrap();
-        decoded.validate_protocol().unwrap();
-        assert!(decoded.require_capture_route().is_err());
-        let before = decoded
-            .command
-            .original_authority()
-            .unwrap()
-            .binding_sha256()
-            .unwrap();
-        for field in ["inventory_sha256", "inventory_len", "projections"] {
-            let mut altered = wire.clone();
-            match field {
-                "inventory_sha256" => {
-                    altered["command"]["authority"]["flatpak"][field] =
-                        serde_json::json!(vec![18u8; 32])
-                }
-                "inventory_len" => {
-                    altered["command"]["authority"]["flatpak"][field] = serde_json::json!(1048576)
-                }
-                _ => {
-                    altered["command"]["authority"]["flatpak"][field][0]["inode"] =
-                        serde_json::json!(23)
-                }
-            }
-            let altered: Request = serde_json::from_value(altered).unwrap();
-            assert_ne!(
-                altered
-                    .command
-                    .original_authority()
-                    .unwrap()
-                    .binding_sha256()
-                    .unwrap(),
-                before
-            );
-        }
-        let home = Expectation {
-            operation: request.operation.clone(),
-            filename: format!("home-{}.sealed", request.operation),
-            setup_binding: "bound-setup".into(),
-            sealed_bytes: 4096,
-            plaintext_bytes: 1024,
-            entries: 1,
-            ciphertext_sha256: [1; 32],
-            limits: crate::setup::portable_transfer::Limits {
-                plaintext_bytes: 8192,
-                entries: 16,
-                metadata_bytes: 4096,
-            },
-            kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
-        };
-        assert!(
-            review()
-                .into_validate(home.clone(), Zeroizing::new(b"synthetic-only".to_vec()))
-                .is_err()
-        );
-        let apps = crate::setup::flatpak_transfer::portable::Expectation {
-            operation: request
-                .command
-                .original_authority()
-                .unwrap()
-                .applications_operation()
-                .unwrap()
-                .into(),
-            filename: format!(
-                "applications-{}.sealed",
-                request
-                    .command
-                    .original_authority()
-                    .unwrap()
-                    .applications_operation()
-                    .unwrap()
-            ),
-            setup_binding: "bound-setup".into(),
-            sealed_bytes: 4096,
-            plaintext_bytes: 1024,
-            entries: 1,
-            ciphertext_sha256: [2; 32],
-            limits: home.limits,
-            kind: crate::setup::flatpak_transfer::portable::Applications {
-                consumer_protocol: 1,
-                manifest_sha256: [3; 32],
-            },
-        };
-        let selected = review()
-            .into_validate_selected(
-                home.clone(),
-                Some(apps.clone()),
-                Zeroizing::new(b"synthetic-only".to_vec()),
-            )
-            .unwrap();
-        selected.validate_protocol().unwrap();
-        let mut changed = apps.clone();
-        changed.setup_binding = "other".into();
-        assert!(
-            review()
-                .into_validate_selected(
-                    home.clone(),
-                    Some(changed),
-                    Zeroizing::new(b"synthetic-only".to_vec())
-                )
-                .is_err()
-        );
-        let mut absent = wire.clone();
-        absent["command"]["authority"]
-            .as_object_mut()
-            .unwrap()
-            .remove("flatpak");
-        absent["command"]["authority"]
-            .as_object_mut()
-            .unwrap()
-            .remove("applications_operation");
-        let absent: Request = serde_json::from_value(absent).unwrap();
-        assert!(
-            absent
-                .into_validate_selected(
-                    home.clone(),
-                    Some(apps.clone()),
-                    Zeroizing::new(b"synthetic-only".to_vec())
-                )
-                .is_err()
-        );
-        let mut too_small = wire.clone();
-        too_small["command"]["authority"]["sealed_reservation"] = serde_json::json!(4096);
-        let too_small: Request = serde_json::from_value(too_small).unwrap();
-        assert!(
-            too_small
-                .into_validate_selected(
-                    home,
-                    Some(apps),
-                    Zeroizing::new(b"synthetic-only".to_vec())
-                )
-                .is_err()
-        );
-    }
-    #[test]
-    fn original_claim_accepts_only_normalized_home_exclusions() {
-        use crate::setup::migration_store::NativePath;
-        let request = serde_json::to_value(original_review()).unwrap();
-        let mut wire = request["command"]["authority"].clone();
-        wire["exclusions"] =
-            serde_json::json!([NativePath::encode(std::path::Path::new("../escape"))]);
-        assert!(
-            serde_json::from_value::<OriginalReadClaim>(wire.clone()).is_err(),
-            "an exclusion cannot escape the reviewed home"
-        );
-        wire["exclusions"] =
-            serde_json::json!([NativePath::encode(std::path::Path::new("/absolute"))]);
-        assert!(serde_json::from_value::<OriginalReadClaim>(wire.clone()).is_err());
-        wire["exclusions"] = serde_json::json!([NativePath::encode(std::path::Path::new(
-            "Documents/Private"
-        ))]);
-        let claim: OriginalReadClaim = serde_json::from_value(wire).unwrap();
-        assert_eq!(
-            claim.exclusion_paths().unwrap(),
-            vec![std::path::PathBuf::from("Documents/Private")]
-        );
-        let plain: OriginalReadClaim =
-            serde_json::from_value(request["command"]["authority"].clone()).unwrap();
-        assert!(plain.exclusion_paths().unwrap().is_empty());
-        assert!(claim.binding_sha256().is_ok());
     }
 }

@@ -3,7 +3,7 @@
 //! blocks as headings, paragraphs and list items with their marks, the
 //! sidebar's notes as list items, and the bar's buttons as buttons.
 
-use crate::framework_support::{add_note, notes, open};
+use crate::framework_support::{add_note, apply, notes, open};
 use ui::composition::{Composed, Own};
 
 fn find<'a>(node: &'a Composed, widget: &str) -> Vec<&'a Composed> {
@@ -16,6 +16,13 @@ fn find<'a>(node: &'a Composed, widget: &str) -> Vec<&'a Composed> {
         found.insert(0, node);
     }
     found
+}
+
+/// Whether `path` is `node` or stands somewhere under it.
+fn holds(node: &Composed, path: &str) -> bool {
+    node.children
+        .iter()
+        .any(|child| child.path == path || holds(child, path))
 }
 
 #[test]
@@ -228,5 +235,110 @@ fn a_wide_windows_notice_is_a_card_and_the_title_stays() {
     assert_eq!(
         notice.first().and_then(|notice| words(notice)).as_deref(),
         Some("Imported Trip to Lisbon")
+    );
+}
+
+/// The page tree's heading takes the room between it and New note, not just the width its
+/// words measure: a box the size of the measure cuts "Notes" to "Not…" as soon as a renderer
+/// shapes the words a hair wider than the measure that sized the box.
+#[test]
+fn the_page_trees_heading_has_room_for_its_words() {
+    let mut app = notes();
+    let page = add_note(&mut app, "Groceries", "");
+    open(&mut app, page);
+    app.harness().resize((1280, 800)).unwrap();
+    let _ = app.harness().poll_frame();
+    let composition = app.harness().composition();
+    let title = find(&composition.root, "NavShellTitle")
+        .into_iter()
+        .next()
+        .expect("the page tree's heading");
+    let Some(Own::Text(look)) = &title.own else {
+        panic!("the heading says its words: {title:?}");
+    };
+    assert_eq!(look.text, "Notes");
+    let theme = ui::Theme::dark();
+    let (needs, _) = ui::TextRenderer::new().measure_style(
+        "Notes",
+        None,
+        &theme.text(ui::tokens::TextRole::Heading),
+    );
+    assert!(
+        title.rect[2] >= f64::from(needs) + 1.0,
+        "the heading's box leaves room beyond its words: {:?} for {needs:.1}",
+        title.rect
+    );
+}
+
+/// The page tree composes as a tree: a note's row stands inside the element of the note it is
+/// under, a note holding others shows the disclosure its chevron stands for, and pressing that
+/// disclosure folds the notes under it away.
+#[test]
+fn the_page_tree_composes_as_a_tree() {
+    let mut app = notes();
+    let parent = add_note(&mut app, "Handbook", "How we work.");
+    let child = notes::PageId::new_v4();
+    apply(
+        &mut app,
+        &notes::actions::create_page_action(child, Some(parent), "Engineering"),
+    );
+    open(&mut app, parent);
+    let _ = app.harness().poll_frame();
+
+    let composition = app.harness().composition();
+    let rows = find(&composition.root, "ListRow");
+    let row = |title: &str| {
+        rows.iter()
+            .find(|row| matches!(&row.own, Some(Own::Text(look)) if look.text == title))
+            .copied()
+            .unwrap_or_else(|| panic!("the row saying {title:?} composes"))
+    };
+    let parent_row = row("Handbook");
+    let child_row = row("Engineering");
+    assert!(
+        holds(parent_row, &child_row.path),
+        "the note inside stands inside the row of the note it is under"
+    );
+    assert!(!holds(child_row, &parent_row.path));
+
+    let disclosure = find(parent_row, "RowDisclosure")
+        .into_iter()
+        .next()
+        .expect("a note holding others shows its disclosure");
+    assert_eq!(disclosure.tag, Some("button"));
+    let node = disclosure
+        .semantics
+        .as_ref()
+        .expect("a reader hears the disclosure");
+    assert_eq!(node.role, ui::a11y::Role::Button);
+    assert_eq!(node.name.as_deref(), Some("Collapse"));
+
+    let target = format!("fold:notes:page:{parent}");
+    app.harness()
+        .perform_semantic_named("VirtualList", Some(&target), &ui::a11y::Action::Activate)
+        .expect("the disclosure folds the notes under it");
+    let _ = app.harness().poll_frame();
+    let composition = app.harness().composition();
+    let rows = find(&composition.root, "ListRow");
+    assert!(
+        !rows
+            .iter()
+            .any(|row| matches!(&row.own, Some(Own::Text(look)) if look.text == "Engineering")),
+        "the folded note leaves the page"
+    );
+    let parent_row = rows
+        .iter()
+        .find(|row| matches!(&row.own, Some(Own::Text(look)) if look.text == "Handbook"))
+        .expect("the note holding others stays");
+    let disclosure = find(parent_row, "RowDisclosure")
+        .into_iter()
+        .next()
+        .expect("a folded note keeps its disclosure");
+    assert_eq!(
+        disclosure
+            .semantics
+            .as_ref()
+            .and_then(|node| node.name.as_deref()),
+        Some("Expand")
     );
 }

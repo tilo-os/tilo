@@ -118,19 +118,25 @@ fn place_title(p: ArrangementPlace) -> Text {
     } else if p.title != "" { p.title } else if p.shows != "" { p.shows } else { "Window" }
 }
 
-/// A frame's controls: the window's own actions, the way to carry the place to another row, and
-/// close. Each is one action of the app's or one arranging action of the session's
-/// (`shell:arrangement`), so a press, a shortcut and an agent change it the same way. Where the
-/// desk's bar already lists the window in front's actions (`lists`), the frame's own bar keeps
-/// the shell's controls alone, so every action stands once.
+/// A frame's controls: its window's one menu, which lists the actions the place's resource
+/// publishes and then the way to carry the place to another row, and close. Each is one action of
+/// the app's or one arranging action of the session's (`shell:arrangement`), so a press, a
+/// shortcut and an agent change it the same way. Where the desk's bar already names the window in
+/// front's resource (`lists`), the frame's menu keeps the shell's controls alone, so every action
+/// stands once.
 view frame_buttons(a: Arrangement, p: ArrangementPlace, lists: Bool) {
     row(gap: .tight, align: .center) {
-        window_actions(p, lists)
-        if a.rows.len() > 1 {
-            ui.MenuButton("Move to row", icon: .navigation, icon_only: true, role: .bar) {
+        ui.MenuButton(
+            "This window",
+            icon: .more_horizontal,
+            icon_only: true,
+            role: .bar,
+            subject: menu_resource(p, lists),
+        ) {
+            if a.rows.len() > 1 {
                 for r in a.rows {
                     if r.key != strip_row(a, p.strip) {
-                        ui.MenuItem(r.name) {
+                        ui.MenuItem(r.name, icon: .navigation) {
                             on choose: session.move(place: the_place(p.key), row: the_row(r.key))
                         }
                     }

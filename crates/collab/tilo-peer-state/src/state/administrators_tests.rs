@@ -41,17 +41,20 @@ fn an_administrator_governs_and_an_editor_does_not() {
 
     assert!(
         peer.governance_mut()
-            .set_member_administrator(user, &host_key, now)
+            .set_member_administrator(user, None, &host_key, now)
             .unwrap()
     );
     assert!(is_administrator(&peer, user, now));
     assert_eq!(governs(&peer, editor.device_public_key, now), EVERY);
     let held = peer.permissions(editor.device_public_key, now).unwrap();
-    assert_eq!(held.policy.role_of(&held.person), Some(Role::Editor));
+    assert_eq!(
+        held.policy.role_of(held.person_id().unwrap()),
+        Some(Role::Editor)
+    );
 
     // Setting a role takes the standing back with the grant.
     peer.governance_mut()
-        .set_member_role(user, crate::join::MemberRole::Editor, &host_key, now)
+        .set_member_role(user, crate::join::Role::Editor, &host_key, now)
         .unwrap();
     assert!(!is_administrator(&peer, user, now));
     assert_eq!(governs(&peer, editor.device_public_key, now), 0);
@@ -150,12 +153,12 @@ fn an_administrator_moderates_and_an_editor_does_not() {
     assert!(!moderates(&peer));
     assert!(
         peer.governance_mut()
-            .set_member_administrator(user, &host_key, now)
+            .set_member_administrator(user, None, &host_key, now)
             .unwrap()
     );
     assert!(moderates(&peer));
     peer.governance_mut()
-        .set_member_role(user, crate::join::MemberRole::Editor, &host_key, now)
+        .set_member_role(user, crate::join::Role::Editor, &host_key, now)
         .unwrap();
     assert!(!moderates(&peer));
 }
@@ -171,21 +174,19 @@ fn an_administrators_own_device_changes_a_role_and_an_editors_cannot() {
     assert!(
         peer.clone()
             .governance_mut()
-            .set_member_role(user, crate::join::MemberRole::Viewer, &editor_key, now)
+            .set_member_role(user, crate::join::Role::Viewer, &editor_key, now)
             .is_err()
     );
     peer.governance_mut()
-        .set_member_administrator(user, &host_key, now)
+        .set_member_administrator(user, None, &host_key, now)
         .unwrap();
     assert!(
         peer.governance_mut()
-            .set_member_role(user, crate::join::MemberRole::Viewer, &editor_key, now)
+            .set_member_role(user, crate::join::Role::Viewer, &editor_key, now)
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(editor.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&editor.device_public_key, now).unwrap(),
         Role::Viewer
     );
     assert!(!is_administrator(&peer, user, now));
@@ -211,7 +212,7 @@ fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_the
         "an editor's grants change no role"
     );
     peer.governance_mut()
-        .set_member_administrator(user, &host_key, now)
+        .set_member_administrator(user, None, &host_key, now)
         .unwrap();
     assert!(
         peer.clone()
@@ -231,9 +232,7 @@ fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_the
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(editor.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&editor.device_public_key, now).unwrap(),
         Role::Viewer
     );
 }
@@ -274,58 +273,6 @@ fn a_members_own_device_leaves_the_workspace() {
     );
 }
 
-#[test]
-fn an_administrators_own_device_lets_an_app_author_and_an_editors_cannot() {
-    use crate::workspace_membership::WorkspaceMembershipCommand;
-    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    let editor_key = SigningKey::from_bytes(&[6; 32]);
-    let notes = WorkspaceMembershipCommand::GrantAppAuthorship {
-        app: "so.tilo.notes".into(),
-    };
-    let authors = |peer: &StatePeer| {
-        peer.permissions(editor.device_public_key, now)
-            .unwrap()
-            .policy
-            .app_authors("so.tilo.notes", &tilo_action_policy::Context::at_time(now))
-    };
-    assert!(
-        peer.clone()
-            .workspace_mut()
-            .apply_workspace_membership_command(&editor, &notes, &editor_key, now)
-            .is_err(),
-        "an editor lets no app author the workspace"
-    );
-    peer.governance_mut()
-        .set_member_administrator(user, &host_key, now)
-        .unwrap();
-    assert!(
-        peer.workspace_mut()
-            .apply_workspace_membership_command(&editor, &notes, &editor_key, now)
-            .unwrap()
-    );
-    assert!(authors(&peer));
-    let grant = peer
-        .permissions(editor.device_public_key, now)
-        .unwrap()
-        .policy
-        .grants
-        .into_iter()
-        .find(|grant| grant.id.as_str() == "app-author:so.tilo.notes")
-        .unwrap();
-    assert_eq!(
-        grant.granted_by,
-        tilo_action_policy::Grantee::person(hex::encode(user))
-    );
-    assert!(
-        !peer
-            .workspace_mut()
-            .apply_workspace_membership_command(&editor, &notes, &editor_key, now)
-            .unwrap(),
-        "an app already authoring is no change"
-    );
-}
-
 /// The workspace's own settings an editor's device writes as `change`.
 fn change_settings(
     peer: &mut StatePeer,
@@ -360,17 +307,19 @@ fn readers() -> tilo_action_policy::Preset {
 #[test]
 fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_cannot() {
     use crate::workspace_membership::SettingsChange;
-    use collab_types::caps::{Access, CapOverride, Principal, Scope, Subject as CapSubject};
+    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_action_policy::Grantee;
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
     let rename = SettingsChange::Rename {
         name: "Plans".into(),
     };
     let capability = CapOverride::grant(
-        CapSubject::app("so.tilo.reader"),
+        Grantee::person(hex::encode(user)),
         Scope::NetHost("example.org".into()),
         Access::Read,
-    );
+    )
+    .through("so.tilo.reader");
     let sandbox = SettingsChange::GrantSandbox { capability };
     let save = SettingsChange::SavePreset { preset: readers() };
     for change in [rename.clone(), sandbox.clone(), save.clone()] {
@@ -381,7 +330,7 @@ fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_c
     }
 
     peer.governance_mut()
-        .set_member_administrator(user, &host_key, now)
+        .set_member_administrator(user, None, &host_key, now)
         .unwrap();
     assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
     assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
@@ -390,7 +339,10 @@ fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_c
     let [held] = granted.as_slice() else {
         panic!("one capability: {granted:?}");
     };
-    assert_eq!(held.granted_by, Some(Principal::Person(hex::encode(user))));
+    assert_eq!(
+        held.granted_by,
+        Some(tilo_action_policy::MemberId::person(hex::encode(user)))
+    );
     assert!(change_settings(&mut peer, &editor, save, now).unwrap());
     assert!(
         change_settings(
@@ -474,77 +426,8 @@ fn a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it() {
     };
     assert!(change_settings(&mut peer.clone(), &editor, rename.clone(), now).is_err());
     peer.governance_mut()
-        .set_member_role(user, crate::join::MemberRole::Moderator, &host_key, now)
+        .set_member_role(user, crate::join::Role::Moderator, &host_key, now)
         .unwrap();
     assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
     assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
-}
-
-/// An administrator lets one app use another app's action: the grant the consent
-/// sheet's "Always allow" writes, named by the person here — recorded once however
-/// often it is given, and taken back by the same four names.
-#[test]
-fn an_administrator_lets_one_app_use_another_apps_action_and_takes_it_back() {
-    use crate::workspace_membership::{AppAction, SettingsChange};
-    use tilo_action_policy::{Answer, Grantee, KindSet, TreePath};
-    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    let named = AppAction::new(
-        "so.tilo.lang.today",
-        "so.tilo.lang.notes",
-        "tl:so.tilo.lang.notes:root",
-        "file-note",
-    )
-    .expect("an app's action, named");
-    let grant = SettingsChange::GrantAppAction(named.clone());
-    assert!(
-        change_settings(&mut peer.clone(), &editor, grant.clone(), now).is_err(),
-        "an editor lets no app act"
-    );
-    peer.governance_mut()
-        .set_member_administrator(user, &host_key, now)
-        .unwrap();
-    let held = |peer: &mut StatePeer| -> Vec<tilo_action_policy::Grant> {
-        peer.permissions(editor.device_public_key, now)
-            .unwrap()
-            .policy
-            .grants
-            .into_iter()
-            .filter(|grant| grant.grantee == Grantee::app("so.tilo.lang.today"))
-            .collect()
-    };
-    assert!(change_settings(&mut peer, &editor, grant.clone(), now).unwrap());
-    let once = held(&mut peer);
-    let [granted] = once.as_slice() else {
-        panic!("one grant: {once:?}");
-    };
-    assert_eq!(granted.id, named.grant_id(), "the action is the grant's id");
-    assert_eq!(
-        granted.node,
-        named.node(&TreePath::workspace(peer.workspace_id().to_string())),
-        "it names the action wherever the resource sits in the app"
-    );
-    assert_eq!(granted.kinds, KindSet::READ_UNDOABLE);
-    assert_eq!(granted.answer, Answer::Allow);
-    assert_eq!(granted.granted_by, Grantee::person(hex::encode(user)));
-    // Given again, it is the grant already there, not a second one.
-    change_settings(&mut peer, &editor, grant, now).unwrap();
-    assert_eq!(
-        held(&mut peer).len(),
-        1,
-        "one standing grant for one action"
-    );
-    assert!(
-        change_settings(
-            &mut peer,
-            &editor,
-            SettingsChange::RevokeAppAction(named),
-            now
-        )
-        .unwrap()
-    );
-    assert!(
-        held(&mut peer).is_empty(),
-        "taken back by the same four names"
-    );
 }

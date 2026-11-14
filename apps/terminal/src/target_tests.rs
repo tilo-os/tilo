@@ -14,25 +14,133 @@ use crate::{OpenError, Requester, TerminalWidget};
 
 type Opened = Rc<RefCell<Vec<(SessionTarget, Requester)>>>;
 
-#[test]
-fn unopened_terminal_never_accepts_reviewed_input_into_sink() {
-    let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
-    assert_eq!(widget.session_state(), &OpenState::Unopened);
-    assert_eq!(widget.inspect_session()["lifecycle"], "unopened");
-    assert_eq!(widget.inspect_session()["input_available"], false);
-    assert!(widget.try_write_input(b"reviewed command\r").is_err());
-    assert!(
-        widget
-            .perform(crate::resource::TerminalEffect::Send {
-                text: "reviewed command".into(),
-            })
-            .is_err(),
-        "an unattached sink must never report Send completion"
-    );
-    assert!(
-        opened.borrow().is_empty(),
-        "inspection/input must not open a session"
-    );
+tilo_test_env::scenario! {
+    fn the_device_shell_opens_only_on_the_persons_allow;
+
+    phase unopened_terminal_never_accepts_reviewed_input_into_sink;
+    {
+        let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
+        assert_eq!(widget.session_state(), &OpenState::Unopened);
+        assert_eq!(widget.inspect_session()["lifecycle"], "unopened");
+        assert_eq!(widget.inspect_session()["input_available"], false);
+        assert!(widget.try_write_input(b"reviewed command\r").is_err());
+        assert!(
+            widget
+                .perform(crate::resource::TerminalEffect::Send {
+                    text: "reviewed command".into(),
+                })
+                .is_err(),
+            "an unattached sink must never report Send completion"
+        );
+        assert!(
+            opened.borrow().is_empty(),
+            "inspection/input must not open a session"
+        );
+    }
+
+    phase the_device_shell_is_asked_for_once_and_opens_when_allowed;
+    {
+        let allowed = Rc::new(RefCell::new(false));
+        let gate = allowed.clone();
+        let (mut widget, opened) = tab(RecentTarget::none(), move |target| {
+            if target.is_host() && !*gate.borrow() {
+                Err(OpenError::NeedsAllow("not allowed yet".into()))
+            } else {
+                Ok(())
+            }
+        });
+        let doc = AutoCommit::new();
+        widget.sync(&doc, &ROOT);
+        let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
+        assert_eq!(widget.session_state(), &OpenState::AwaitingAllow);
+        assert_eq!(widget.inspect_session()["lifecycle"], "awaiting_allow");
+        assert_eq!(widget.inspect_session()["input_available"], false);
+        assert!(
+            widget
+                .try_write_input(b"must not reach previous process")
+                .is_err()
+        );
+
+        let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
+        else {
+            panic!("the tab must ask the shell for the person's allow");
+        };
+        widget.sync(&doc, &ROOT);
+        assert_eq!(
+            widget.session_state(),
+            &OpenState::AwaitingAllow,
+            "nothing opens before the person answers"
+        );
+
+        *allowed.borrow_mut() = true;
+        reply.upgrade().unwrap().borrow_mut().answer = Some(true);
+        widget.sync(&doc, &ROOT);
+        assert_eq!(widget.session_state(), &OpenState::Open);
+        let log = opened.borrow();
+        assert_eq!(log.last(), Some(&(SessionTarget::Host, Requester::Person)));
+    }
+
+    phase a_declined_allow_leaves_the_tab_saying_so;
+    {
+        let (mut widget, _) = tab(RecentTarget::none(), |target| {
+            if target.is_host() {
+                Err(OpenError::NeedsAllow("not allowed yet".into()))
+            } else {
+                Ok(())
+            }
+        });
+        let doc = AutoCommit::new();
+        widget.sync(&doc, &ROOT);
+        let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
+        let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
+        else {
+            panic!("expected an allow request");
+        };
+        reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+        widget.sync(&doc, &ROOT);
+        assert!(matches!(widget.session_state(), OpenState::Failed(_)));
+        assert!(widget.is_disconnected());
+    }
+
+    phase an_agent_is_told_why_and_never_offered_the_device_shell;
+    {
+        let (mut widget, opened) = tab(RecentTarget::none(), |_| {
+            Err(OpenError::NoRuntime(
+                "no env-runtime image is installed".into(),
+            ))
+        });
+        let mut doc = AutoCommit::new();
+        widget.sync(&doc, &ROOT);
+        let err = widget
+            .switch_target(&SessionTarget::default_environment(), Requester::Agent)
+            .unwrap_err();
+        assert!(err.contains("env-runtime"), "{err}");
+        assert!(
+            matches!(widget.session_state(), OpenState::Failed(_)),
+            "an agent's open offers nothing: {:?}",
+            widget.session_state()
+        );
+        press_enter(&mut widget, &mut doc);
+        widget.sync(&doc, &ROOT);
+        assert!(
+            opened.borrow().iter().all(|(target, _)| !target.is_host()),
+            "{:?}",
+            opened.borrow()
+        );
+    }
+
+    phase native_terminal_requests_the_same_person_confirmed_host_shell_allow;
+    {
+        let mut sessions = crate::sessions::Sessions::standalone();
+        assert!(sessions.request_allow());
+        let ui::widget::AppHostIntent::AllowHostShell { reply } = sessions.take_intent().unwrap()
+        else {
+            panic!("expected host shell permission");
+        };
+        reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+        assert_eq!(sessions.take_allow_answer(), Some(false));
+        assert_eq!(sessions.take_allow_answer(), None);
+    }
 }
 
 #[test]
@@ -199,70 +307,6 @@ fn reopening_a_session_goes_back_to_its_recorded_target_and_survives_a_new_proce
 }
 
 #[test]
-fn the_device_shell_is_asked_for_once_and_opens_when_allowed() {
-    let allowed = Rc::new(RefCell::new(false));
-    let gate = allowed.clone();
-    let (mut widget, opened) = tab(RecentTarget::none(), move |target| {
-        if target.is_host() && !*gate.borrow() {
-            Err(OpenError::NeedsAllow("not allowed yet".into()))
-        } else {
-            Ok(())
-        }
-    });
-    let doc = AutoCommit::new();
-    widget.sync(&doc, &ROOT);
-    let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
-    assert_eq!(widget.session_state(), &OpenState::AwaitingAllow);
-    assert_eq!(widget.inspect_session()["lifecycle"], "awaiting_allow");
-    assert_eq!(widget.inspect_session()["input_available"], false);
-    assert!(
-        widget
-            .try_write_input(b"must not reach previous process")
-            .is_err()
-    );
-
-    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
-    else {
-        panic!("the tab must ask the shell for the person's allow");
-    };
-    widget.sync(&doc, &ROOT);
-    assert_eq!(
-        widget.session_state(),
-        &OpenState::AwaitingAllow,
-        "nothing opens before the person answers"
-    );
-
-    *allowed.borrow_mut() = true;
-    reply.upgrade().unwrap().borrow_mut().answer = Some(true);
-    widget.sync(&doc, &ROOT);
-    assert_eq!(widget.session_state(), &OpenState::Open);
-    let log = opened.borrow();
-    assert_eq!(log.last(), Some(&(SessionTarget::Host, Requester::Person)));
-}
-
-#[test]
-fn a_declined_allow_leaves_the_tab_saying_so() {
-    let (mut widget, _) = tab(RecentTarget::none(), |target| {
-        if target.is_host() {
-            Err(OpenError::NeedsAllow("not allowed yet".into()))
-        } else {
-            Ok(())
-        }
-    });
-    let doc = AutoCommit::new();
-    widget.sync(&doc, &ROOT);
-    let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
-    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
-    else {
-        panic!("expected an allow request");
-    };
-    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
-    widget.sync(&doc, &ROOT);
-    assert!(matches!(widget.session_state(), OpenState::Failed(_)));
-    assert!(widget.is_disconnected());
-}
-
-#[test]
 fn agents_and_collaborators_never_open_the_device_shell() {
     let mut app = App::new().unwrap();
     let opened = host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
@@ -304,148 +348,293 @@ fn agents_and_collaborators_never_open_the_device_shell() {
     );
 }
 
-#[test]
-fn the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported() {
-    let (mut widget, _) = tab(RecentTarget::none(), |_| Ok(()));
-    widget.show_target(
-        SessionTarget::environment("work"),
-        vec![
-            EnvironmentSummary {
-                key: "default".into(),
-                name: "Default".into(),
-                tools: vec![],
-                grants: vec![],
-            },
-            EnvironmentSummary {
-                key: "work".into(),
-                name: "Work".into(),
-                tools: vec!["pandoc".into()],
-                grants: vec![("/var/home/you/src".into(), true)],
-            },
-        ],
-    );
-    widget.open_target_menu();
-    let labels = widget.target_menu_labels().unwrap();
-    let host = crate::i18n::t("terminal-target-host");
-    let manage = crate::i18n::t("terminal-target-manage");
-    assert_eq!(labels[0], "Default");
-    assert_eq!(labels[1], "Work");
-    assert_eq!(
-        widget.target_menu_checked(),
-        Some(vec![false, true, false, false]),
-        "the current target is checked"
-    );
-    assert_eq!(labels[2], host);
-    assert_eq!(labels.len(), 4, "{labels:?}");
-    assert_eq!(labels.last(), Some(&manage));
-    assert!(!labels.iter().any(|l| l.contains("linux")));
+tilo_test_env::scenario! {
+    fn a_tab_runs_where_its_target_says;
 
-    widget.set_legacy_vms(vec!["linux".into()]);
-    widget.open_target_menu();
-    let labels = widget.target_menu_labels().unwrap();
-    assert!(labels.iter().any(|l| l.starts_with("linux")), "{labels:?}");
-}
-
-#[test]
-fn supervisor_replies_say_what_to_do_next() {
-    assert_eq!(
-        crate::inner::refusal(br#"{"result":"host-not-allowed","reason":"ask"}"#),
-        OpenError::NeedsAllow("ask".into())
-    );
-    assert_eq!(
-        crate::inner::refusal(br#"{"result":"denied","reason":"no"}"#),
-        OpenError::Refused("no".into())
-    );
-    let list = crate::sessions::parse_directory_reply(
-        r#"{"result":"environments","environments":[
-            {"key":"default","name":"Default","tools":["git"],"grants":[["/src",true]]},
-            {"key":"../x","name":"Bad"}]}"#,
-    )
-    .unwrap();
-    assert_eq!(list.len(), 1, "a key no record may have is dropped");
-    assert_eq!(list[0].tools, vec!["git".to_string()]);
-    assert_eq!(
-        crate::sessions::parse_directory_reply(r#"{"result":"denied","reason":"nope"}"#),
-        Err("nope".into())
-    );
-    #[cfg(unix)]
+    phase the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported;
     {
-        let request = crate::inner::ush_request(
-            &[],
-            &SessionTarget::Host,
-            Requester::Person,
-            None,
-            None,
-            Some("0123456789abcdef"),
-            (80, 24),
-        )
-        .unwrap();
-        let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
-        assert_eq!(request["target"], serde_json::json!({"kind": "host"}));
-        assert_eq!(request["requested_by"], "person");
-        assert_eq!(request["runs"], "0123456789abcdef");
+        let (mut widget, _) = tab(RecentTarget::none(), |_| Ok(()));
+        widget.show_target(
+            SessionTarget::environment("work"),
+            vec![
+                EnvironmentSummary {
+                    key: "default".into(),
+                    name: "Default".into(),
+                    tools: vec![],
+                    grants: vec![],
+                },
+                EnvironmentSummary {
+                    key: "work".into(),
+                    name: "Work".into(),
+                    tools: vec!["pandoc".into()],
+                    grants: vec![("/var/home/you/src".into(), true)],
+                },
+            ],
+        );
+        widget.open_target_menu();
+        let labels = widget.target_menu_labels().unwrap();
+        let host = crate::i18n::t("terminal-target-host");
+        let manage = crate::i18n::t("terminal-target-manage");
+        assert_eq!(labels[0], "Default");
+        assert_eq!(labels[1], "Work");
+        assert_eq!(
+            widget.target_menu_checked(),
+            Some(vec![false, true, false, false]),
+            "the current target is checked"
+        );
+        assert_eq!(labels[2], host);
+        assert_eq!(labels.len(), 4, "{labels:?}");
+        assert_eq!(labels.last(), Some(&manage));
+        assert!(!labels.iter().any(|l| l.contains("linux")));
+
+        widget.set_legacy_vms(vec!["linux".into()]);
+        widget.open_target_menu();
+        let labels = widget.target_menu_labels().unwrap();
+        assert!(labels.iter().any(|l| l.starts_with("linux")), "{labels:?}");
+    }
+
+    phase every_environment_target_runs_where_it_is_asked_for;
+    {
+        let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
+        let doc = AutoCommit::new();
+        widget.sync(&doc, &ROOT);
+        widget.open_target_menu();
+        let labels = widget.target_menu_labels().unwrap();
+        let run_on = crate::i18n::t("terminal-run-on");
         assert!(
-            crate::inner::ush_request(
-                &[],
-                &SessionTarget::Legacy { vm: "linux".into() },
-                Requester::Person,
-                None,
-                None,
-                None,
-                (80, 24)
-            )
-            .is_err(),
-            "a legacy VM is not this device's supervisor's to serve"
+            !labels.iter().any(|l| l.contains(&run_on)),
+            "an environment runs where it is asked for: {labels:?}"
+        );
+
+        let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
+            "agent:helper",
+        ));
+        widget
+            .perform(crate::resource::TerminalEffect::OpenIn {
+                target: "environment:work".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            opened.borrow().last(),
+            Some(&(SessionTarget::environment("work"), Requester::Agent))
+        );
+        assert_eq!(crate::parse_target_argument("host@ab"), None);
+        assert_eq!(
+            crate::parse_target_argument("environment:work@home"),
+            None,
+            "an environment has no place to name"
+        );
+    }
+
+    phase an_embedded_terminal_restarts_its_ended_shell_on_the_same_target;
+    {
+        let opens: Opened = Rc::default();
+        let log = opens.clone();
+        let mut widget = TerminalWidget::spawn_headless().unwrap();
+        widget.set_sessions(Sessions::scripted(
+            RecentTarget::none(),
+            move |target, by, _| {
+                log.borrow_mut().push((target.clone(), by));
+                crate::inner::TerminalBackend::with_command(interactive_bash())
+                    .map_err(|error| OpenError::Failed(error.to_string()))
+            },
+        ));
+        let doc = AutoCommit::new();
+        let settle =
+            |widget: &mut TerminalWidget, what: &str, done: &dyn Fn(&TerminalWidget) -> bool| {
+                tilo_test_env::wait_until(what, || {
+                    widget.sync(&doc, &ROOT);
+                    done(widget)
+                });
+            };
+        widget.sync(&doc, &ROOT);
+        assert_eq!(widget.session_state(), &OpenState::Open);
+        assert!(!widget.can_restart(), "a running shell is not restarted");
+
+        widget.try_write_input(b"exit\r").unwrap();
+        settle(&mut widget, "the shell exits", &|w| w.is_disconnected());
+        assert!(widget.shell_exited());
+        assert!(
+            widget.lifecycle_banner().is_some(),
+            "the ended session stays"
+        );
+        assert!(widget.can_restart());
+
+        widget
+            .perform(crate::resource::TerminalEffect::Restart)
+            .expect("the shell starts again");
+        assert_eq!(widget.session_state(), &OpenState::Open);
+        assert!(!widget.is_disconnected());
+        assert_eq!(widget.lifecycle_banner(), None);
+        let first = opens.borrow()[0].clone();
+        assert_eq!(
+            opens.borrow().as_slice(),
+            &[first.clone(), first],
+            "the new session runs where the ended one did"
+        );
+        widget
+            .try_write_input(b"printf 'TILO_%s\\n' RESTARTED\r")
+            .unwrap();
+        settle(&mut widget, "the new shell runs commands", &|w| {
+            w.grid_text().contains("TILO_RESTARTED")
+        });
+    }
+
+    phase a_session_the_tab_replaced_or_dropped_closes_nothing;
+    {
+        let window = ui::hosted_window::HostedWindow::new();
+        let (mut widget, _) = tab(RecentTarget::none(), |_| Ok(()));
+        widget.show_in_window(Some(window.clone()));
+        let replaced = widget.next_session_exit();
+        let current = widget.next_session_exit();
+        replaced.exited();
+        assert!(
+            !window.take_close(),
+            "the shell of a replaced session ended"
+        );
+        current.exited();
+        assert!(window.take_close(), "the shell the tab shows exited");
+
+        let dropped = widget.next_session_exit();
+        drop(widget);
+        dropped.exited();
+        assert!(
+            !window.take_close(),
+            "a closed tab's shell ending closes nothing"
         );
     }
 }
 
-#[test]
-fn targets_are_spelled_out_for_agents() {
-    assert_eq!(
-        crate::parse_target_argument("environment"),
-        Some(SessionTarget::default_environment())
-    );
-    assert_eq!(
-        crate::parse_target_argument("environment:work"),
-        Some(SessionTarget::environment("work"))
-    );
-    assert_eq!(
-        crate::parse_target_argument("legacy:linux"),
-        Some(SessionTarget::Legacy { vm: "linux".into() })
-    );
-    assert_eq!(
-        crate::parse_target_argument("host"),
-        Some(SessionTarget::Host)
-    );
-    for bad in [
-        "",
-        "environment:../etc",
-        "vm:linux",
-        "legacy:",
-        "linux",
-        "linux:work",
-        "linux:work@0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    ] {
-        assert_eq!(crate::parse_target_argument(bad), None, "{bad}");
-    }
-}
+tilo_test_env::scenario! {
+    fn what_the_supervisor_and_an_agent_say_is_read_strictly;
 
-#[test]
-fn legacy_vms_appear_once_the_legacy_vm_service_has_made_one() {
-    let dir = tempfile::tempdir().unwrap();
-    assert!(crate::sessions::legacy_vms_under(dir.path()).is_empty());
-    let linux = dir.path().join("tilo/legacy/linux");
-    std::fs::create_dir_all(&linux).unwrap();
-    assert!(
-        crate::sessions::legacy_vms_under(dir.path()).is_empty(),
-        "a directory without a disk is not a VM"
-    );
-    std::fs::write(linux.join("disk.qcow2"), b"").unwrap();
-    assert_eq!(
-        crate::sessions::legacy_vms_under(dir.path()),
-        vec!["linux".to_string()]
-    );
+    phase supervisor_replies_say_what_to_do_next;
+    {
+        assert_eq!(
+            crate::inner::refusal(br#"{"result":"host-not-allowed","reason":"ask"}"#),
+            OpenError::NeedsAllow("ask".into())
+        );
+        assert_eq!(
+            crate::inner::refusal(br#"{"result":"denied","reason":"no"}"#),
+            OpenError::Refused("no".into())
+        );
+        let list = crate::sessions::parse_directory_reply(
+            r#"{"result":"environments","environments":[
+            {"key":"default","name":"Default","tools":["git"],"grants":[["/src",true]]},
+            {"key":"../x","name":"Bad"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(list.len(), 1, "a key no record may have is dropped");
+        assert_eq!(list[0].tools, vec!["git".to_string()]);
+        assert_eq!(
+            crate::sessions::parse_directory_reply(r#"{"result":"denied","reason":"nope"}"#),
+            Err("nope".into())
+        );
+        #[cfg(unix)]
+        {
+            let request = crate::inner::ush_request(
+                &[],
+                &SessionTarget::Host,
+                Requester::Person,
+                None,
+                None,
+                Some("0123456789abcdef"),
+                (80, 24),
+            )
+            .unwrap();
+            let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
+            assert_eq!(request["target"], serde_json::json!({"kind": "host"}));
+            assert_eq!(request["requested_by"], "person");
+            assert_eq!(request["runs"], "0123456789abcdef");
+            assert!(
+                crate::inner::ush_request(
+                    &[],
+                    &SessionTarget::Legacy { vm: "linux".into() },
+                    Requester::Person,
+                    None,
+                    None,
+                    None,
+                    (80, 24)
+                )
+                .is_err(),
+                "a legacy VM is not this device's supervisor's to serve"
+            );
+        }
+    }
+
+    phase targets_are_spelled_out_for_agents;
+    {
+        assert_eq!(
+            crate::parse_target_argument("environment"),
+            Some(SessionTarget::default_environment())
+        );
+        assert_eq!(
+            crate::parse_target_argument("environment:work"),
+            Some(SessionTarget::environment("work"))
+        );
+        assert_eq!(
+            crate::parse_target_argument("legacy:linux"),
+            Some(SessionTarget::Legacy { vm: "linux".into() })
+        );
+        assert_eq!(
+            crate::parse_target_argument("host"),
+            Some(SessionTarget::Host)
+        );
+        for bad in [
+            "",
+            "environment:../etc",
+            "vm:linux",
+            "legacy:",
+            "linux",
+            "linux:work",
+            "linux:work@0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ] {
+            assert_eq!(crate::parse_target_argument(bad), None, "{bad}");
+        }
+    }
+
+    phase legacy_vms_appear_once_the_legacy_vm_service_has_made_one;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(crate::sessions::legacy_vms_under(dir.path()).is_empty());
+        let linux = dir.path().join("tilo/legacy/linux");
+        std::fs::create_dir_all(&linux).unwrap();
+        assert!(
+            crate::sessions::legacy_vms_under(dir.path()).is_empty(),
+            "a directory without a disk is not a VM"
+        );
+        std::fs::write(linux.join("disk.qcow2"), b"").unwrap();
+        assert_eq!(
+            crate::sessions::legacy_vms_under(dir.path()),
+            vec!["linux".to_string()]
+        );
+    }
+
+    phase a_supervisors_report_names_how_a_remote_session_ended;
+    {
+        use crate::inner::SessionEnd;
+        assert_eq!(
+            SessionEnd::from_report(br#"{"ended":"exited"}"#),
+            SessionEnd::Exited
+        );
+        assert_eq!(
+            SessionEnd::from_report(br#"{"ended":"lost","reason":"quiet"}"#),
+            SessionEnd::Lost("quiet".into())
+        );
+        assert_eq!(
+            SessionEnd::from_report(br#"{"ended":"superseded"}"#),
+            SessionEnd::Superseded
+        );
+        assert_eq!(
+            SessionEnd::from_report(br#"{"ended":"failed","reason":"no namespace"}"#),
+            SessionEnd::Failed("no namespace".into())
+        );
+        assert_eq!(
+            SessionEnd::from_report(b"not a report"),
+            SessionEnd::Exited,
+            "a lease closing is the shell exiting"
+        );
+    }
 }
 
 fn press_enter(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
@@ -501,33 +690,6 @@ fn without_a_runtime_the_tab_says_why_and_offers_the_device_shell() {
         Some(&(SessionTarget::Host, Requester::Person))
     );
     assert_eq!(recorded(&app), Some(SessionTarget::Host));
-}
-
-#[test]
-fn an_agent_is_told_why_and_never_offered_the_device_shell() {
-    let (mut widget, opened) = tab(RecentTarget::none(), |_| {
-        Err(OpenError::NoRuntime(
-            "no env-runtime image is installed".into(),
-        ))
-    });
-    let mut doc = AutoCommit::new();
-    widget.sync(&doc, &ROOT);
-    let err = widget
-        .switch_target(&SessionTarget::default_environment(), Requester::Agent)
-        .unwrap_err();
-    assert!(err.contains("env-runtime"), "{err}");
-    assert!(
-        matches!(widget.session_state(), OpenState::Failed(_)),
-        "an agent's open offers nothing: {:?}",
-        widget.session_state()
-    );
-    press_enter(&mut widget, &mut doc);
-    widget.sync(&doc, &ROOT);
-    assert!(
-        opened.borrow().iter().all(|(target, _)| !target.is_host()),
-        "{:?}",
-        opened.borrow()
-    );
 }
 
 fn attach_with(
@@ -587,52 +749,6 @@ fn a_carried_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() 
         OpenState::Open
     );
     assert_eq!(app.state().relay(), Some(session));
-}
-
-#[test]
-fn every_environment_target_runs_where_it_is_asked_for() {
-    let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
-    let doc = AutoCommit::new();
-    widget.sync(&doc, &ROOT);
-    widget.open_target_menu();
-    let labels = widget.target_menu_labels().unwrap();
-    let run_on = crate::i18n::t("terminal-run-on");
-    assert!(
-        !labels.iter().any(|l| l.contains(&run_on)),
-        "an environment runs where it is asked for: {labels:?}"
-    );
-
-    let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
-        "agent:helper",
-    ));
-    widget
-        .perform(crate::resource::TerminalEffect::OpenIn {
-            target: "environment:work".into(),
-        })
-        .unwrap();
-    assert_eq!(
-        opened.borrow().last(),
-        Some(&(SessionTarget::environment("work"), Requester::Agent))
-    );
-    assert_eq!(crate::parse_target_argument("host@ab"), None);
-    assert_eq!(
-        crate::parse_target_argument("environment:work@home"),
-        None,
-        "an environment has no place to name"
-    );
-}
-
-#[test]
-fn native_terminal_requests_the_same_person_confirmed_host_shell_allow() {
-    let mut sessions = crate::sessions::Sessions::standalone();
-    assert!(sessions.request_allow());
-    let ui::widget::AppHostIntent::AllowHostShell { reply } = sessions.take_intent().unwrap()
-    else {
-        panic!("expected host shell permission");
-    };
-    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
-    assert_eq!(sessions.take_allow_answer(), Some(false));
-    assert_eq!(sessions.take_allow_answer(), None);
 }
 
 #[test]
@@ -1103,84 +1219,6 @@ fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
 }
 
 #[test]
-fn an_embedded_terminal_restarts_its_ended_shell_on_the_same_target() {
-    let opens: Opened = Rc::default();
-    let log = opens.clone();
-    let mut widget = TerminalWidget::spawn_headless().unwrap();
-    widget.set_sessions(Sessions::scripted(
-        RecentTarget::none(),
-        move |target, by, _| {
-            log.borrow_mut().push((target.clone(), by));
-            crate::inner::TerminalBackend::with_command(interactive_bash())
-                .map_err(|error| OpenError::Failed(error.to_string()))
-        },
-    ));
-    let doc = AutoCommit::new();
-    let settle =
-        |widget: &mut TerminalWidget, what: &str, done: &dyn Fn(&TerminalWidget) -> bool| {
-            tilo_test_env::wait_until(what, || {
-                widget.sync(&doc, &ROOT);
-                done(widget)
-            });
-        };
-    widget.sync(&doc, &ROOT);
-    assert_eq!(widget.session_state(), &OpenState::Open);
-    assert!(!widget.can_restart(), "a running shell is not restarted");
-
-    widget.try_write_input(b"exit\r").unwrap();
-    settle(&mut widget, "the shell exits", &|w| w.is_disconnected());
-    assert!(widget.shell_exited());
-    assert!(
-        widget.lifecycle_banner().is_some(),
-        "the ended session stays"
-    );
-    assert!(widget.can_restart());
-
-    widget
-        .perform(crate::resource::TerminalEffect::Restart)
-        .expect("the shell starts again");
-    assert_eq!(widget.session_state(), &OpenState::Open);
-    assert!(!widget.is_disconnected());
-    assert_eq!(widget.lifecycle_banner(), None);
-    let first = opens.borrow()[0].clone();
-    assert_eq!(
-        opens.borrow().as_slice(),
-        &[first.clone(), first],
-        "the new session runs where the ended one did"
-    );
-    widget
-        .try_write_input(b"printf 'TILO_%s\\n' RESTARTED\r")
-        .unwrap();
-    settle(&mut widget, "the new shell runs commands", &|w| {
-        w.grid_text().contains("TILO_RESTARTED")
-    });
-}
-
-#[test]
-fn a_session_the_tab_replaced_or_dropped_closes_nothing() {
-    let window = ui::hosted_window::HostedWindow::new();
-    let (mut widget, _) = tab(RecentTarget::none(), |_| Ok(()));
-    widget.show_in_window(Some(window.clone()));
-    let replaced = widget.next_session_exit();
-    let current = widget.next_session_exit();
-    replaced.exited();
-    assert!(
-        !window.take_close(),
-        "the shell of a replaced session ended"
-    );
-    current.exited();
-    assert!(window.take_close(), "the shell the tab shows exited");
-
-    let dropped = widget.next_session_exit();
-    drop(widget);
-    dropped.exited();
-    assert!(
-        !window.take_close(),
-        "a closed tab's shell ending closes nothing"
-    );
-}
-
-#[test]
 fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
     let window = ui::hosted_window::HostedWindow::new();
     let mut app = App::new().unwrap();
@@ -1430,32 +1468,6 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     );
 }
 
-#[test]
-fn a_supervisors_report_names_how_a_remote_session_ended() {
-    use crate::inner::SessionEnd;
-    assert_eq!(
-        SessionEnd::from_report(br#"{"ended":"exited"}"#),
-        SessionEnd::Exited
-    );
-    assert_eq!(
-        SessionEnd::from_report(br#"{"ended":"lost","reason":"quiet"}"#),
-        SessionEnd::Lost("quiet".into())
-    );
-    assert_eq!(
-        SessionEnd::from_report(br#"{"ended":"superseded"}"#),
-        SessionEnd::Superseded
-    );
-    assert_eq!(
-        SessionEnd::from_report(br#"{"ended":"failed","reason":"no namespace"}"#),
-        SessionEnd::Failed("no namespace".into())
-    );
-    assert_eq!(
-        SessionEnd::from_report(b"not a report"),
-        SessionEnd::Exited,
-        "a lease closing is the shell exiting"
-    );
-}
-
 #[cfg(unix)]
 #[test]
 fn an_environment_that_could_not_be_set_up_keeps_its_window_and_says_so() {
@@ -1556,116 +1568,119 @@ fn directory_runtime(
     })
 }
 
-#[cfg(unix)]
-#[test]
-fn the_environments_panel_makes_environments_only_where_the_runtime_answers() {
-    use crate::inner::PanelOffer;
-    let runtime = tempfile::tempdir().unwrap();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_RUNTIME_DIR", runtime.path());
-    let mut widget = TerminalWidget::spawn_hosted_deferred();
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn the_environment_directory_is_asked_of_the_runtime_for_its_workspace;
 
-    widget.open_environments_panel();
-    assert_eq!(
-        widget.environments_panel_offer(),
-        PanelOffer::Problem {
-            message: crate::i18n::t("terminal-env-unreachable"),
-            retry: true,
-        },
-        "no runtime answered: no form, and a way to ask again"
-    );
-    widget.set_environment_name_input("Writing");
-    widget.submit_environment_name();
-    assert!(widget.sessions().environments.is_empty(), "nothing is made");
+    phase the_environments_panel_makes_environments_only_where_the_runtime_answers;
+    {
+        use crate::inner::PanelOffer;
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let mut widget = TerminalWidget::spawn_hosted_deferred();
 
-    let runtime_answers = directory_runtime(
-        runtime.path(),
-        vec![("default".to_owned(), "Default".to_owned())],
-    );
-    widget.open_environments_panel();
-    assert_eq!(widget.environments_panel_offer(), PanelOffer::Environments);
-    widget.set_environment_name_input("Writing");
-    widget.submit_environment_name();
-    let names: Vec<&str> = widget
-        .sessions()
-        .environments
-        .iter()
-        .map(|env| env.name.as_str())
-        .collect();
-    assert_eq!(names, ["Default", "Writing"]);
+        widget.open_environments_panel();
+        assert_eq!(
+            widget.environments_panel_offer(),
+            PanelOffer::Problem {
+                message: crate::i18n::t("terminal-env-unreachable"),
+                retry: true,
+            },
+            "no runtime answered: no form, and a way to ask again"
+        );
+        widget.set_environment_name_input("Writing");
+        widget.submit_environment_name();
+        assert!(widget.sessions().environments.is_empty(), "nothing is made");
 
-    let stop = crate::HostedProcessServices::ask(&serde_json::json!({"op": "stop"}), None);
-    drop(stop);
-    let asked = runtime_answers.join().unwrap();
-    assert!(
-        asked
+        let runtime_answers = directory_runtime(
+            runtime.path(),
+            vec![("default".to_owned(), "Default".to_owned())],
+        );
+        widget.open_environments_panel();
+        assert_eq!(widget.environments_panel_offer(), PanelOffer::Environments);
+        widget.set_environment_name_input("Writing");
+        widget.submit_environment_name();
+        let names: Vec<&str> = widget
+            .sessions()
+            .environments
             .iter()
-            .any(|request| request["op"] == "create-environment" && request["name"] == "Writing"),
-        "{asked:?}"
-    );
-}
+            .map(|env| env.name.as_str())
+            .collect();
+        assert_eq!(names, ["Default", "Writing"]);
 
-#[cfg(unix)]
-#[test]
-fn directory_requests_name_the_terminals_workspace() {
-    let runtime = tempfile::tempdir().unwrap();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_RUNTIME_DIR", runtime.path());
-    env.remove("TILO_WORKSPACE_ID");
-    let runtime_answers = directory_runtime(
-        runtime.path(),
-        vec![("default".to_owned(), "Default".to_owned())],
-    );
+        let stop = crate::HostedProcessServices::ask(&serde_json::json!({"op": "stop"}), None);
+        drop(stop);
+        let asked = runtime_answers.join().unwrap();
+        assert!(
+            asked
+                .iter()
+                .any(|request| request["op"] == "create-environment" && request["name"] == "Writing"),
+            "{asked:?}"
+        );
+    }
 
-    let window = ui::hosted_window::HostedWindow::new();
-    window.set_workspace(Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979".into()));
-    let mut widget = TerminalWidget::spawn_hosted_deferred();
-    widget.show_in_window(Some(window.clone()));
-    widget.open_environments_panel();
-    widget.set_environment_name_input("Writing");
-    widget.submit_environment_name();
+    phase directory_requests_name_the_terminals_workspace;
+    {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        env.remove("TILO_WORKSPACE_ID");
+        let runtime_answers = directory_runtime(
+            runtime.path(),
+            vec![("default".to_owned(), "Default".to_owned())],
+        );
 
-    let mut sessions = Sessions::hosted_deferred();
-    sessions.in_window(Some(window.clone()));
-    let waker = std::sync::Arc::new(std::sync::Mutex::new(ui::WakeHandle::new()));
-    sessions.refresh_environments_in_background(waker);
-    tilo_test_env::wait_until("the background listing", || {
-        sessions.poll_environment_refresh()
-    });
+        let window = ui::hosted_window::HostedWindow::new();
+        window.set_workspace(Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979".into()));
+        let mut widget = TerminalWidget::spawn_hosted_deferred();
+        widget.show_in_window(Some(window.clone()));
+        widget.open_environments_panel();
+        widget.set_environment_name_input("Writing");
+        widget.submit_environment_name();
 
-    window.set_workspace(None);
-    widget.open_environments_panel();
-    window.set_workspace(Some(String::new()));
-    widget.open_environments_panel();
+        let mut sessions = Sessions::hosted_deferred();
+        sessions.in_window(Some(window.clone()));
+        let waker = std::sync::Arc::new(std::sync::Mutex::new(ui::WakeHandle::new()));
+        sessions.refresh_environments_in_background(waker);
+        tilo_test_env::wait_until("the background listing", || {
+            sessions.poll_environment_refresh()
+        });
 
-    env.set("TILO_WORKSPACE_ID", "launched-workspace");
-    TerminalWidget::spawn_hosted_deferred().open_environments_panel();
+        window.set_workspace(None);
+        widget.open_environments_panel();
+        window.set_workspace(Some(String::new()));
+        widget.open_environments_panel();
 
-    let stop = crate::HostedProcessServices::ask(&serde_json::json!({"op": "stop"}), None);
-    drop(stop);
-    let asked = runtime_answers.join().unwrap();
-    let named: Vec<(&str, Option<&str>)> = asked
-        .iter()
-        .map(|request| {
-            (
-                request["op"].as_str().unwrap(),
-                request.get("workspace").map(|w| w.as_str().unwrap()),
-            )
-        })
-        .collect();
-    let workspace = Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979");
-    assert_eq!(
-        named,
-        [
-            ("list-environments", workspace),
-            ("create-environment", workspace),
-            ("list-environments", workspace),
-            ("list-environments", None),
-            ("list-environments", None),
-            ("list-environments", Some("launched-workspace")),
-        ],
-        "{asked:?}"
-    );
+        env.set("TILO_WORKSPACE_ID", "launched-workspace");
+        TerminalWidget::spawn_hosted_deferred().open_environments_panel();
+
+        let stop = crate::HostedProcessServices::ask(&serde_json::json!({"op": "stop"}), None);
+        drop(stop);
+        let asked = runtime_answers.join().unwrap();
+        let named: Vec<(&str, Option<&str>)> = asked
+            .iter()
+            .map(|request| {
+                (
+                    request["op"].as_str().unwrap(),
+                    request.get("workspace").map(|w| w.as_str().unwrap()),
+                )
+            })
+            .collect();
+        let workspace = Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979");
+        assert_eq!(
+            named,
+            [
+                ("list-environments", workspace),
+                ("create-environment", workspace),
+                ("list-environments", workspace),
+                ("list-environments", None),
+                ("list-environments", None),
+                ("list-environments", Some("launched-workspace")),
+            ],
+            "{asked:?}"
+        );
+    }
 }
 
 #[cfg(unix)]

@@ -4,6 +4,7 @@
 //! branch in, and stops them again.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -19,6 +20,18 @@ use crate::remote;
 pub(super) const HOST_RESERVE_MB: u64 = 2048;
 
 const POLL: Duration = Duration::from_secs(5);
+
+/// How long a branch waits for its host, its sessions up and naming it, before tilo-vm asks
+/// whether it reaches its source on the host network at all.
+pub(super) const REACH_AFTER: Duration = Duration::from_secs(60);
+
+/// What a branch says of the host network ([`crate::lan`]): its own address on it, and whether
+/// it reached the address asked.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Reach {
+    pub address: Option<String>,
+    pub reached: bool,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Guest {
@@ -45,8 +58,32 @@ pub(super) trait Guests {
         slots: Option<&BTreeSet<String>>,
         wake: bool,
     ) -> Result<Option<Guest>, CliError>;
+    /// What `vm` says of the host network, asked to reach `to` on it; `None` when it does not
+    /// answer.
+    fn reach(&mut self, vm: &str, to: Ipv4Addr) -> Result<Option<Reach>, CliError>;
     fn pause(&mut self);
     fn elapsed(&self) -> Duration;
+}
+
+/// Whether all that keeps `guest` from being taken in is its host: it answers, re-keyed, and
+/// each session holds what `expected` says, some of it not taken in yet.
+fn waits_for_host(guest: Option<&Guest>, expected: &BTreeMap<String, Vec<Held>>) -> bool {
+    let Some(guest) = guest.filter(|g| g.recorded) else {
+        return false;
+    };
+    let mut waits = false;
+    for (slot, rooms) in expected {
+        let Some(Some(held)) = guest.slots.get(slot) else {
+            return false;
+        };
+        for want in rooms {
+            match held.iter().find(|h| h.room == want.room) {
+                None => return false,
+                Some(h) => waits |= h.awaiting,
+            }
+        }
+    }
+    waits
 }
 
 fn pending(guest: Option<&Guest>, expected: &BTreeMap<String, Vec<Held>>) -> Option<String> {
@@ -155,10 +192,12 @@ impl App {
         names: &[String],
         timeout: Duration,
     ) -> Result<Vec<String>, CliError> {
-        let mut registry = self.registry()?;
         let source = self.resolve_vm(Some(src))?;
         let adapter = Self::adapter(&source)?;
         let was_running = adapter.stopped(&source.vm(), runner) == Some(false);
+        self.share_a_network(runner, (src, rerun), names, was_running)?;
+        let source = self.resolve_vm(Some(src))?;
+        let registry = self.registry()?;
         let memory = |name: &str| {
             registry
                 .vms
@@ -202,6 +241,7 @@ impl App {
             .filter(|n| taken.contains(n))
             .cloned()
             .collect();
+        let mut registry = self.registry()?;
         for name in &admitted {
             if let Some(entry) = registry.vms.get_mut(name) {
                 entry.awaits_host = None;
@@ -266,10 +306,22 @@ impl App {
             }
             let deadline = guests.elapsed().saturating_add(timeout);
             let mut waiting: Vec<String> = batch.clone();
+            let mut waits_since: BTreeMap<String, Duration> = BTreeMap::new();
+            let mut probed: BTreeSet<String> = BTreeSet::new();
             loop {
                 let mut still = Vec::new();
                 for name in &waiting {
                     let guest = guests.read(name, Some(&slots), true)?;
+                    if waits_for_host(guest.as_ref(), &expected) {
+                        let since = *waits_since
+                            .entry(name.clone())
+                            .or_insert_with(|| guests.elapsed());
+                        if guests.elapsed().saturating_sub(since) >= REACH_AFTER
+                            && probed.insert(name.clone())
+                        {
+                            self.reaches_source(guests, (src, name), rerun)?;
+                        }
+                    }
                     if let (Some(guest), Some(theirs)) = (&guest, &source.key)
                         && guest.recorded
                         && guest.key.as_ref() == Some(theirs)
@@ -302,6 +354,82 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Put the source and the branches on the network this host's VMs share before any boots,
+    /// and refuse at once when one is not on it: the source's workspaces could take a branch in
+    /// only over an internet relay, which admission must not need.
+    fn share_a_network(
+        &self,
+        runner: &mut dyn Runner,
+        (src, rerun): (&str, &str),
+        names: &[String],
+        source_running: bool,
+    ) -> Result<(), CliError> {
+        for name in std::iter::once(src).chain(names.iter().map(String::as_str)) {
+            let vm = self.resolve_vm(Some(name))?;
+            let adapter = Self::adapter(&vm)?;
+            let before = vm.entry.lan.clone();
+            let (vm, _) = self.join_lan(runner, adapter.as_ref(), vm)?;
+            if let Err(why) = adapter.host_network(&vm.entry) {
+                return Err(refuse_admit(
+                    format!("{name} is on no network with {src} on this host: {why}"),
+                    format!(
+                        "branch it without booting the branches: {rerun} --no-admit (each is taken in at its first boot while {src} runs where it can reach {src})"
+                    ),
+                ));
+            }
+            if name == src && source_running && before != vm.entry.lan {
+                return Err(refuse_admit(
+                    format!(
+                        "{src} runs without its NIC on {}: it was made before that network",
+                        crate::lan::describe()
+                    ),
+                    format!(
+                        "restart it, which adds the NIC: tilo-vm vm restart {src}, then rerun: {rerun}"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask branch `name`, whose sessions wait for their host, whether it reaches `src` on the
+    /// host network at all: one that does not is named now, with the network, not at the end of
+    /// the timeout.
+    fn reaches_source(
+        &self,
+        guests: &mut dyn Guests,
+        (src, name): (&str, &str),
+        rerun: &str,
+    ) -> Result<(), CliError> {
+        let lan_of = |vm: &str| {
+            self.resolve_vm(Some(vm))
+                .ok()
+                .and_then(|vm| crate::lan::mac(&vm.entry).and_then(crate::lan::address))
+        };
+        let (Some(theirs), Some(own)) = (lan_of(src), lan_of(name)) else {
+            return Ok(());
+        };
+        let Some(reach) = guests.reach(name, theirs)? else {
+            return Ok(());
+        };
+        if reach.reached {
+            return Ok(());
+        }
+        let said = reach.address.map_or_else(
+            || format!("{name} has no address on it (it should be {own})"),
+            |address| format!("{name} is {address} on it"),
+        );
+        Err(refuse_admit(
+            format!(
+                "{name} waits for {src} to take it in, and does not reach {src} ({theirs}) on {}: {said}",
+                crate::lan::describe()
+            ),
+            format!(
+                "an image older than that network gives its NIC no address: boot {src} on a current image (tilo-vm vm upgrade {src}) and branch it again   |   or check the NIC in both: tilo-vm vm ssh {name} -- ip -4 addr show dev tilolan0   |   or branch without booting: {rerun} --no-admit"
+            ),
+        ))
     }
 
     fn power_down(&self, runner: &mut dyn Runner, name: &str) {
@@ -362,6 +490,32 @@ fn timed_out(src: &str, still: &[(String, String)], rerun: &str) -> CliError {
             "the branches are made and stopped, {src} is as it was; see what the branch's session says of its workspaces (tilo-vm vm start <branch>, then tilo-vm control --slot <slot> raw '{{\"op\":\"workspace_hosts\"}}'), and rerun to try again: {rerun}   (--admit-timeout gives it longer)"
         ),
     )
+}
+
+/// What a branch is asked of the host network, as root: its own address on `tilolan0`, and
+/// whether `TARGET` answers it.
+pub(super) const REACH: &str = r#"a=$(ip -4 -o addr show dev tilolan0 2>/dev/null | awk '{print $4}' | head -n 1)
+[ -n "$a" ] && echo "SELF=$a"
+if ping -c 3 -W 2 TARGET >/dev/null 2>&1; then echo REACHED=yes; fi
+exit 0"#;
+
+/// [`REACH`] for `to`, as the one shell line SSH hands the guest's login shell.
+pub(super) fn reach_line(to: Ipv4Addr) -> Vec<String> {
+    vec![format!(
+        "sh -c {}",
+        crate::vmbuild::sh_quote(&REACH.replace("TARGET", &to.to_string()))
+    )]
+}
+
+pub(super) fn read_reach(said: &str) -> Reach {
+    let mut reach = Reach::default();
+    for line in said.lines().map(str::trim) {
+        if let Some(address) = line.strip_prefix("SELF=") {
+            reach.address = Some(address.to_owned());
+        }
+        reach.reached |= line == "REACHED=yes";
+    }
+    reach
 }
 
 pub(super) struct LiveGuests {
@@ -434,6 +588,22 @@ impl Guests for LiveGuests {
             guest.slots.insert(slot.name.clone(), held);
         }
         Ok(Some(guest))
+    }
+
+    fn reach(&mut self, vm: &str, to: Ipv4Addr) -> Result<Option<Reach>, CliError> {
+        let resolved = self.app.resolve_vm(Some(vm))?;
+        let Ok(endpoint) = self.app.endpoint(&resolved) else {
+            return Ok(None);
+        };
+        let command = remote::ssh_command(
+            &endpoint,
+            resolved.entry.key.as_deref(),
+            &reach_line(to),
+            false,
+        );
+        let mut runner = SystemRunner { cwd: None };
+        let output = runner.output(&command)?;
+        Ok(output.success.then(|| read_reach(&output.stdout)))
     }
 
     fn pause(&mut self) {

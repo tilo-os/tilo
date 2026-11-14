@@ -158,7 +158,7 @@ mod tests {
             .certify(cert(&root, laptop, DeviceCapabilities::primary(), None))
             .unwrap();
         fleet
-            .certify(cert(&root, host, DeviceCapabilities::host(), None))
+            .certify(cert(&root, host, DeviceCapabilities::member(), None))
             .unwrap();
         fleet
             .certify(cert(

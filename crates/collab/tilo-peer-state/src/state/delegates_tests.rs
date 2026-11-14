@@ -3,6 +3,7 @@
 //! attributed to its own key; and dead the moment its delegation ends or the
 //! governor withdraws it, while its history stays on the roster.
 
+use crate::join::WorkspaceId;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
@@ -62,7 +63,7 @@ fn delegation(
         "Scribe",
         [10, 20, 30],
         DelegateScope {
-            rooms: vec![workspace.into()],
+            workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
             apps: Vec::new(),
         },
         ns(issued),
@@ -212,10 +213,13 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
             .metadata_changed
     );
     let authority_of_agent = member.permissions(device, now).unwrap();
-    assert_eq!(authority_of_agent.role, collab_types::Role::Editor);
     assert_eq!(
-        authority_of_agent.person,
-        hex::encode(person.verifying_key().to_bytes())
+        member.role(&device, now).unwrap(),
+        collab_types::Role::Editor
+    );
+    assert_eq!(
+        authority_of_agent.person_id(),
+        Some(hex::encode(person.verifying_key().to_bytes()).as_str())
     );
     // Its person owns the workspace; the delegation bounds it to an Editor's
     // grants: it changes the workspace's records, and governs nothing.
@@ -301,7 +305,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     )
     .unwrap();
     assert_eq!(
-        restored.permissions(device, now).unwrap().role,
+        restored.role(&device, now).unwrap(),
         collab_types::Role::Editor
     );
     assert!(restored.permissions(device, after).is_err());
@@ -322,7 +326,7 @@ fn admit_agent_refuses_a_bot_delegation() {
         "Bridge",
         [0; 3],
         DelegateScope {
-            rooms: vec![workspace],
+            workspaces: vec![WorkspaceId::parse(&workspace).unwrap()],
             apps: vec![],
         },
         ns(now - Duration::from_secs(1)),
@@ -497,10 +501,7 @@ fn members_and_agents_never_trade_places() {
             .contains("conflict")
     );
     assert_eq!(
-        governor
-            .permissions(member_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        governor.role(&member_cert.device_public_key, now).unwrap(),
         collab_types::Role::Owner,
         "the person's own device keeps its role"
     );

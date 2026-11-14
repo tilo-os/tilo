@@ -4,7 +4,8 @@
 )]
 
 use super::*;
-use crate::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use crate::host::{HostConfig, HostIdentity, WorkspaceHost};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
@@ -15,6 +16,7 @@ pub(crate) use super::fixtures::{
 pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
 pub(crate) mod bots;
+mod host_address;
 pub(crate) mod large_record;
 
 #[tokio::test]
@@ -307,7 +309,7 @@ async fn every_settled_decision_is_announced_with_its_room() {
 #[cfg(feature = "agents")]
 async fn assert_view_reader_refused(
     workspaces: &Workspaces,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &tilo_actions::remote::Caller,
     source: &tilo_peer_state::document_frame::DocumentRoute,
 ) {
@@ -334,7 +336,7 @@ async fn assert_view_reader_refused(
 async fn publish_a_revocation_with_a_reader_waiting(
     workspaces: &Workspaces,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     caller: &tilo_actions::remote::Caller,
     source: &tilo_peer_state::document_frame::DocumentRoute,
     revoked: tilo_user_identity::RevocationEntry,
@@ -418,7 +420,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     );
     assert_eq!(
         workspaces
-            .resource_view_document(0, &caller, &source)
+            .resource_view_document(WorkspaceId::from_u128(0), &caller, &source)
             .await
             .err()
             .unwrap(),
@@ -435,7 +437,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     }
     assert!(
         workspaces
-            .resource_view_policy(0, &caller, "so.tilo.chat", "")
+            .resource_view_policy(WorkspaceId::from_u128(0), &caller, "so.tilo.chat", "")
             .await
             .is_none()
     );
@@ -496,11 +498,11 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
         assert!(
             !workspaces.admits(created.workspace_id, &stranger).await,
             "{:?} is nobody this workspace admits",
-            stranger.principal()
+            stranger.acting()
         );
     }
     assert!(
-        !workspaces.admits(0, &agent).await,
+        !workspaces.admits(WorkspaceId::from_u128(0), &agent).await,
         "a workspace this host does not govern admits nobody"
     );
     // Revoking the device ends it, though the workspace still lists its
@@ -610,18 +612,27 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
         if due().await {
             break;
         }
-        let app = std::collections::BTreeSet::from([format!("so.tilo.rollover-fixture-{index}")]);
-        assert!(
-            workspaces
-                .settle_app_authorship(
-                    &created.workspace,
-                    &cert,
-                    &app,
-                    &std::collections::BTreeSet::new()
-                )
-                .await
-                .unwrap()
+        let grant = tilo_action_policy::Grant::new(
+            format!("rollover-fixture-{index}"),
+            tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+            tilo_action_policy::TreePath::workspace(&created.workspace).app("so.tilo.chat"),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
         );
+        workspaces
+            .put_room_grants(
+                &created.workspace,
+                &cert,
+                {
+                    let mut request = [0; 32];
+                    request[..8].copy_from_slice(&index.to_le_bytes());
+                    request
+                },
+                vec![grant],
+            )
+            .await
+            .unwrap();
     }
     assert!(due().await, "real governance writes reach rollover");
     workspaces
@@ -702,21 +713,39 @@ fn a_workspace_is_restored_by_its_governing_device_and_no_other() {
 
 #[test]
 fn a_workspace_name_must_be_printable_and_short() {
-    let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    for name in ["a\u{7}b", &"x".repeat(81)] {
-        assert!(
-            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now())
-                .is_err()
-        );
-    }
-    // A workspace nobody named is founded with no name: every reader shows it
-    // in their own language.
-    for name in ["", "   "] {
+    let longest = "x".repeat(80);
+    let too_long = "x".repeat(81);
+    let longest_wide = "\u{e9}".repeat(80);
+    let too_long_wide = "\u{e9}".repeat(81);
+    let padded = format!("  {longest}\n");
+    // Each name, whether a workspace is founded with it, and what it is.
+    let names: [(&str, bool, &str); 13] = [
+        // A workspace nobody named is founded with no name: every reader
+        // shows it in their own language.
+        ("", true, "no name"),
+        ("   ", true, "only spaces, which is no name"),
+        ("x", true, "one character"),
+        (&longest, true, "80 characters, the longest"),
+        (&too_long, false, "81 characters"),
+        (&longest_wide, true, "80 characters of two bytes each"),
+        (&too_long_wide, false, "81 characters of two bytes each"),
+        (&padded, true, "80 characters inside space that is trimmed"),
+        ("\tTeam\n", true, "a tab and a newline around a name"),
+        ("a\u{7}b", false, "a bell inside"),
+        ("a\nb", false, "a newline inside"),
+        ("a\u{7f}b", false, "a delete inside"),
+        ("a\u{85}b", false, "a next-line control inside"),
+    ];
+    for (name, founded, what) in names {
         let dir = tempfile::tempdir().unwrap();
-        assert!(
-            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now())
-                .is_ok()
+        let created =
+            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now());
+        assert_eq!(
+            created.is_ok(),
+            founded,
+            "{what} ({name:?}): {:?}",
+            created.err()
         );
     }
 }
@@ -900,18 +929,6 @@ async fn applications_are_prepared_for_the_current_owner_only() {
     let relay = test_host(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
     let created = workspaces.create("Private app authoring").await.unwrap();
-    let chat = std::collections::BTreeSet::from(["so.tilo.chat".to_owned()]);
-    assert!(
-        workspaces
-            .settle_app_authorship(
-                &created.workspace,
-                &cert,
-                &chat,
-                &std::collections::BTreeSet::new()
-            )
-            .await
-            .unwrap()
-    );
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     Box::pin(assert_canonical_chat_preparation(
         workspaces,
@@ -920,26 +937,6 @@ async fn applications_are_prepared_for_the_current_owner_only() {
         &catalogue,
     ))
     .await;
-    let state = workspaces.workspace(&created.workspace).await.unwrap();
-    {
-        let workspace = state.lock().await;
-        let now = std::time::SystemTime::now();
-        let policy = workspace
-            .peer()
-            .permissions(cert.device_public_key, now)
-            .unwrap()
-            .policy;
-        let grant = policy
-            .grants
-            .iter()
-            .find(|grant| grant.id.as_str() == "app-author:so.tilo.chat")
-            .unwrap();
-        assert_eq!(
-            grant.grantee,
-            tilo_action_policy::Grantee::app("so.tilo.chat")
-        );
-        assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));
-    }
     let other_root = SigningKey::from_bytes(&[73; 32]);
     let other_key = SigningKey::from_bytes(&[74; 32]);
     let mut stranger = cert.clone();
@@ -1325,6 +1322,26 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
         "the same name changes nothing"
     );
     assert!(workspaces.rename(&created.workspace, " ").await.is_err());
+    // Each name a workspace cannot take is refused, and changes nothing.
+    let too_long = "x".repeat(81);
+    for (name, what) in [
+        ("", "no name"),
+        (too_long.as_str(), "81 characters"),
+        ("a\u{7}b", "a bell inside"),
+        ("a\nb", "a newline inside"),
+    ] {
+        let refused = workspaces.rename(&created.workspace, name).await;
+        assert!(refused.is_err(), "{what} ({name:?}) renamed the room");
+    }
+    let kept = workspaces
+        .rename(&created.workspace, "Plaza")
+        .await
+        .unwrap();
+    assert_eq!(kept.name, "Plaza");
+    assert_eq!(
+        kept.generation, renamed.generation,
+        "a refused name changes nothing"
+    );
     let path = {
         let state = workspaces.workspace(&created.workspace).await.unwrap();
         let governed = state.lock().await;
@@ -1461,12 +1478,12 @@ struct AskedForAChannel {
     relay: crate::workspaces::fixtures::TestHost,
     workspaces: Workspaces,
     workspace: String,
-    channel: collab_types::ChannelId,
+    channel: collab_types::WorkspaceId,
 }
 
 /// Start a relay certified with `capabilities`, create a workspace on it, admit
 /// a member device of the person, and hand the workspace that device's MLS
-/// access request for a fresh record channel, as its runtime sends one.
+/// access request for the workspace's group, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
     a_member_asks_for_a_channel_through(capabilities, super::Carried::Unkept).await
 }
@@ -1488,10 +1505,7 @@ async fn a_member_asks_for_a_channel_through(
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
-    // The device names the record it asks for: a channel nobody named may
-    // be anyone's own record and admits no one.
-    let route = collab_types::ChannelRoute::new("so.tilo.notes", "tab:0000000000000001");
-    let channel = route.channel(&created.workspace);
+    let channel = collab_types::WorkspaceId::parse(&created.workspace).unwrap();
     let vault = channel_crypto::VaultKey::new([3; 32]);
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
@@ -1505,10 +1519,9 @@ async fn a_member_asks_for_a_channel_through(
     .access_request_now(1, false, &vault)
     .unwrap()
     .expect("a member waiting for the channel asks for it");
-    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-        room: created.workspace.clone(),
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
+        workspace: created.workspace.clone(),
         request: Box::new(request),
-        route: Box::new(route),
         delivery: 1,
     })
     .unwrap();
@@ -1529,7 +1542,7 @@ impl AskedForAChannel {
     /// Whether the workspace kept the member's request among the records it
     /// retains for the devices that take part in its channels.
     async fn retains_the_request(&self) -> bool {
-        let workspace_id = crate::room_workspace_id(&self.workspace).unwrap();
+        let workspace_id = WorkspaceId::parse(&self.workspace).unwrap();
         self.relay
             .workspace_records()
             .retained(workspace_id)
@@ -1540,11 +1553,11 @@ impl AskedForAChannel {
                         |message| {
                             matches!(
                                 message,
-                                neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-                                    room,
+                                neighbour_wire::NeighbourMsg::MlsAccessRequest {
+                                    workspace,
                                     request,
                                     ..
-                                } if room == self.workspace && request.channel == self.channel
+                                } if workspace == self.workspace && request.workspace == self.channel
                             )
                         },
                     )
@@ -1572,7 +1585,7 @@ impl AskedForAChannel {
 /// for whoever takes part.
 #[tokio::test]
 async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
-    let asked = a_member_asks_for_a_channel(DeviceCapabilities::host()).await;
+    let asked = a_member_asks_for_a_channel(DeviceCapabilities::member()).await;
     assert!(
         asked.workspaces.device_keys().is_none(),
         "a host runs no channel service and holds no channel keys"
@@ -1591,7 +1604,8 @@ async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
 #[tokio::test]
 async fn a_request_the_relay_kept_is_not_kept_again_as_the_hosts() {
     let asked =
-        a_member_asks_for_a_channel_through(DeviceCapabilities::host(), super::Carried::Kept).await;
+        a_member_asks_for_a_channel_through(DeviceCapabilities::member(), super::Carried::Kept)
+            .await;
     assert!(
         !asked.retains_the_request().await,
         "the host kept a second copy of a request its relay keeps as the member's"
@@ -1875,11 +1889,11 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
         .map(automerge::Change::hash)
         .collect::<Vec<_>>();
     let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
-        room: created.workspace.clone(),
         changes: changes
             .iter()
             .map(|change| change.raw_bytes().to_vec())
             .collect(),
+        room: created.workspace.clone(),
     })
     .unwrap();
 
@@ -1956,8 +1970,8 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
         let changes = written.workspace_changes_since(&heads);
         drop(governed);
         postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
-            room: workspace.clone(),
             changes,
+            room: workspace.clone(),
         })
         .unwrap()
     };
@@ -2384,7 +2398,7 @@ async fn a_listed_room_keeps_sharing_its_windows_after_a_restart() {
             &cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Come in".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -2467,7 +2481,6 @@ async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_
         .handle(
             endpoint,
             JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
-                room: created.workspace.clone(),
                 workspace_id: created.workspace_id,
                 device_cert: laptop_cert.clone(),
                 request_id: [13; 32],
@@ -2492,7 +2505,6 @@ async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_
     assert_eq!(current.invite_id, delivered.invite_id);
     assert_eq!(current.device_cert, laptop_cert);
     assert_eq!(current.role, delivered.role);
-    assert_eq!(current.room, delivered.room);
     assert_eq!(current.workspace_id, delivered.workspace_id);
     assert_eq!(current.host, delivered.host);
     assert!(current.generation > 0);
@@ -2519,7 +2531,7 @@ async fn a_room_moved_here_keeps_its_identity() {
     assert_eq!(moved.workspace, workspace, "the room keeps its identity");
     assert_eq!(
         moved.workspace_id,
-        crate::room_workspace_id(workspace).unwrap(),
+        WorkspaceId::parse(workspace).unwrap(),
         "and its workspace the id every device derives from it"
     );
     assert!(
@@ -2589,7 +2601,6 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
         service.handle(
             endpoint,
             JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
-                room: created.workspace.clone(),
                 workspace_id: created.workspace_id,
                 device_cert,
                 request_id: [seed; 32],
@@ -2818,7 +2829,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
         user_public_key: other_root.verifying_key().to_bytes(),
         device_public_key: other_key.verifying_key().to_bytes(),
         device_label: "another host".into(),
-        capabilities: DeviceCapabilities::host(),
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -2828,7 +2839,10 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
     let refused = WorkspaceHost::open(
         HostConfig {
             max_workspace_grants: None,
-            ..HostConfig::new(dir.path().to_owned(), HostMode::CertifiedHost)
+            ..HostConfig::new(
+                dir.path().to_owned(),
+                tilo_relay_protocol::WorkSetting::own_person(),
+            )
         },
         HostIdentity {
             user_public_key: other_cert.user_public_key,
@@ -2859,7 +2873,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
 #[tokio::test]
 async fn a_room_names_its_own_host_to_every_member() {
     use std::time::Duration;
-    use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = tokio::time::timeout(Duration::from_secs(120), test_host(dir.path(), &key, &cert))
@@ -2885,7 +2899,7 @@ async fn a_room_names_its_own_host_to_every_member() {
     assert_eq!(hosts.len(), 1, "{hosts:?}");
     assert_eq!(hosts[0].host.device_public_key, cert.device_public_key);
     assert_eq!(
-        IrohWorkspaceHostHintV1::from_transport_hint(&hosts[0])
+        WorkspaceDeviceHintV1::from_transport_hint(&hosts[0])
             .unwrap()
             .endpoint_addr,
         addr

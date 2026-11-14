@@ -285,373 +285,391 @@ fn append(output: &mut String, part: &str) -> Result<(), SpeechError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn acoustic_admission_defers_noise_without_caching_or_losing_original_speech() {
-        let noise = vec![0.0001; 3 * SAMPLE_RATE];
-        let mut recognition = SpeechRecognition::default();
-        for complete in [false, true] {
-            let result = recognition
-                .recognize_with_admission(&noise, complete, false, Admission::Inactive, |_| {
-                    panic!("noise reached decoder")
+    tilo_test_env::scenario! {
+        /// Acoustic admission and the automatic pause, each case on a recogniser of its own.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn pauses_noise_and_silence_never_lose_or_invent_speech;
+
+        phase acoustic_admission_defers_noise_without_caching_or_losing_original_speech;
+        {
+            let noise = vec![0.0001; 3 * SAMPLE_RATE];
+            let mut recognition = SpeechRecognition::default();
+            for complete in [false, true] {
+                let result = recognition
+                    .recognize_with_admission(&noise, complete, false, Admission::Inactive, |_| {
+                        panic!("noise reached decoder")
+                    })
+                    .unwrap();
+                assert_eq!(result, "");
+                assert!(recognition.draft_samples.is_none());
+            }
+            let mut recognition = SpeechRecognition::default();
+            let mut speech = noise.clone();
+            speech.extend(vec![0.01; SAMPLE_RATE / 2]);
+            assert_eq!(
+                recognition
+                    .recognize_with_admission(
+                        &speech,
+                        false,
+                        false,
+                        Admission::Speech(noise.len()),
+                        |_| panic!("preview lacks onset context")
+                    )
+                    .unwrap(),
+                ""
+            );
+            assert!(recognition.draft_samples.is_none());
+            assert_eq!(
+                recognition
+                    .recognize_with_admission(
+                        &speech,
+                        true,
+                        false,
+                        Admission::Speech(noise.len()),
+                        |original| {
+                            assert_eq!(original, speech);
+                            Ok("spoken word".into())
+                        }
+                    )
+                    .unwrap(),
+                "spoken word"
+            );
+        }
+
+        phase automatic_pause_keeps_the_confirmed_phrase_and_all_tail_audio;
+        {
+            let mut audio = vec![0.5; 12 * SAMPLE_RATE];
+            audio[6 * SAMPLE_RATE..7 * SAMPLE_RATE].fill(0.0);
+            let mut recognition = SpeechRecognition::default();
+            let mut lengths = Vec::new();
+            let first = recognition
+                .recognize_with_policy(&audio[..9 * SAMPLE_RATE], false, true, |chunk| {
+                    lengths.push(chunk.len());
+                    Ok(if lengths.len() == 1 {
+                        "English"
+                    } else {
+                        "Deutsch"
+                    }
+                    .into())
                 })
                 .unwrap();
-            assert_eq!(result, "");
-            assert!(recognition.draft_samples.is_none());
+            assert_eq!(first, "English Deutsch");
+            let consumed = recognition.consumed;
+            assert!((6 * SAMPLE_RATE..7 * SAMPLE_RATE).contains(&consumed));
+            assert_eq!(lengths.iter().sum::<usize>(), 9 * SAMPLE_RATE);
+            lengths.clear();
+            let final_text = recognition
+                .recognize_with_policy(&audio, true, true, |chunk| {
+                    lengths.push(chunk.len());
+                    Ok("Deutsch final".into())
+                })
+                .unwrap();
+            assert_eq!(final_text, "English Deutsch final");
+            assert_eq!(lengths, [audio.len() - consumed]);
+            assert!(
+                recognition.retired && recognition.confirmed.is_empty() && recognition.draft.is_empty()
+            );
         }
-        let mut recognition = SpeechRecognition::default();
-        let mut speech = noise.clone();
-        speech.extend(vec![0.01; SAMPLE_RATE / 2]);
-        assert_eq!(
-            recognition
-                .recognize_with_admission(
-                    &speech,
-                    false,
-                    false,
-                    Admission::Speech(noise.len()),
-                    |_| panic!("preview lacks onset context")
-                )
-                .unwrap(),
-            ""
-        );
-        assert!(recognition.draft_samples.is_none());
-        assert_eq!(
-            recognition
-                .recognize_with_admission(
-                    &speech,
-                    true,
-                    false,
-                    Admission::Speech(noise.len()),
-                    |original| {
-                        assert_eq!(original, speech);
-                        Ok("spoken word".into())
-                    }
-                )
-                .unwrap(),
-            "spoken word"
-        );
-    }
 
-    #[test]
-    fn automatic_pause_keeps_the_confirmed_phrase_and_all_tail_audio() {
-        let mut audio = vec![0.5; 12 * SAMPLE_RATE];
-        audio[6 * SAMPLE_RATE..7 * SAMPLE_RATE].fill(0.0);
-        let mut recognition = SpeechRecognition::default();
-        let mut lengths = Vec::new();
-        let first = recognition
-            .recognize_with_policy(&audio[..9 * SAMPLE_RATE], false, true, |chunk| {
-                lengths.push(chunk.len());
-                Ok(if lengths.len() == 1 {
-                    "English"
-                } else {
-                    "Deutsch"
-                }
-                .into())
-            })
-            .unwrap();
-        assert_eq!(first, "English Deutsch");
-        let consumed = recognition.consumed;
-        assert!((6 * SAMPLE_RATE..7 * SAMPLE_RATE).contains(&consumed));
-        assert_eq!(lengths.iter().sum::<usize>(), 9 * SAMPLE_RATE);
-        lengths.clear();
-        let final_text = recognition
-            .recognize_with_policy(&audio, true, true, |chunk| {
-                lengths.push(chunk.len());
-                Ok("Deutsch final".into())
-            })
-            .unwrap();
-        assert_eq!(final_text, "English Deutsch final");
-        assert_eq!(lengths, [audio.len() - consumed]);
-        assert!(
-            recognition.retired && recognition.confirmed.is_empty() && recognition.draft.is_empty()
-        );
-    }
+        phase automatic_pause_does_not_discard_constant_quiet_speech_or_decode_a_zero_tail;
+        {
+            let quiet = vec![f32::MIN_POSITIVE; 9 * SAMPLE_RATE];
+            let mut recognition = SpeechRecognition::default();
+            let mut calls = 0;
+            assert_eq!(
+                recognition
+                    .recognize_with_policy(&quiet, true, true, |chunk| {
+                        assert_eq!(chunk, quiet);
+                        calls += 1;
+                        Ok("quiet speech".into())
+                    })
+                    .unwrap(),
+                "quiet speech"
+            );
+            assert_eq!(calls, 1);
+            let mut audio = vec![0.0; 12 * SAMPLE_RATE];
+            audio[..6 * SAMPLE_RATE].fill(0.5);
+            let mut recognition = SpeechRecognition::default();
+            let mut calls = 0;
+            assert_eq!(
+                recognition
+                    .recognize_with_policy(&audio, true, true, |chunk| {
+                        assert!(
+                            chunk.iter().any(|sample| *sample != 0.0),
+                            "exact silence must never infer"
+                        );
+                        calls += 1;
+                        Ok("phrase".into())
+                    })
+                    .unwrap(),
+                "phrase"
+            );
+            assert_eq!(calls, 1);
+        }
 
-    #[test]
-    fn automatic_pause_does_not_discard_constant_quiet_speech_or_decode_a_zero_tail() {
-        let quiet = vec![f32::MIN_POSITIVE; 9 * SAMPLE_RATE];
-        let mut recognition = SpeechRecognition::default();
-        let mut calls = 0;
-        assert_eq!(
-            recognition
-                .recognize_with_policy(&quiet, true, true, |chunk| {
-                    assert_eq!(chunk, quiet);
+        phase exact_silence_never_decodes_but_appended_quiet_audio_does;
+        {
+            let mut audio = vec![0.0; INITIAL_DRAFT_SAMPLES];
+            audio[0] = -0.0;
+            let mut recognition = SpeechRecognition::default();
+            assert_eq!(
+                recognition.recognize_with(&audio, false, |_| panic!("silence must not infer")),
+                Ok(String::new())
+            );
+            audio.push(f32::MIN_POSITIVE);
+            let mut calls = 0;
+            assert_eq!(
+                recognition.recognize_with(&audio, true, |chunk| {
+                    assert_eq!(chunk, audio);
                     calls += 1;
                     Ok("quiet speech".into())
-                })
-                .unwrap(),
-            "quiet speech"
-        );
-        assert_eq!(calls, 1);
-        let mut audio = vec![0.0; 12 * SAMPLE_RATE];
-        audio[..6 * SAMPLE_RATE].fill(0.5);
-        let mut recognition = SpeechRecognition::default();
-        let mut calls = 0;
-        assert_eq!(
-            recognition
-                .recognize_with_policy(&audio, true, true, |chunk| {
-                    assert!(
-                        chunk.iter().any(|sample| *sample != 0.0),
-                        "exact silence must never infer"
-                    );
-                    calls += 1;
-                    Ok("phrase".into())
-                })
-                .unwrap(),
-            "phrase"
-        );
-        assert_eq!(calls, 1);
-    }
-
-    #[test]
-    fn exact_silence_never_decodes_but_appended_quiet_audio_does() {
-        let mut audio = vec![0.0; INITIAL_DRAFT_SAMPLES];
-        audio[0] = -0.0;
-        let mut recognition = SpeechRecognition::default();
-        assert_eq!(
-            recognition.recognize_with(&audio, false, |_| panic!("silence must not infer")),
-            Ok(String::new())
-        );
-        audio.push(f32::MIN_POSITIVE);
-        let mut calls = 0;
-        assert_eq!(
-            recognition.recognize_with(&audio, true, |chunk| {
-                assert_eq!(chunk, audio);
-                calls += 1;
+                }),
                 Ok("quiet speech".into())
-            }),
-            Ok("quiet speech".into())
-        );
-        assert_eq!(calls, 1);
-        assert!(recognition.retired);
-        let mut silent = SpeechRecognition::default();
-        assert_eq!(
-            silent.recognize_with(&audio[..INITIAL_DRAFT_SAMPLES], true, |_| panic!(
-                "silent final must not infer"
-            )),
-            Ok(String::new())
-        );
-        assert!(silent.retired && silent.draft.is_empty());
+            );
+            assert_eq!(calls, 1);
+            assert!(recognition.retired);
+            let mut silent = SpeechRecognition::default();
+            assert_eq!(
+                silent.recognize_with(&audio[..INITIAL_DRAFT_SAMPLES], true, |_| panic!(
+                    "silent final must not infer"
+                )),
+                Ok(String::new())
+            );
+            assert!(silent.retired && silent.draft.is_empty());
+        }
     }
 
-    #[test]
-    fn worker_boundary_keeps_confirmed_prefix_and_revises_only_the_tail() {
-        let mut audio = vec![1.0; 50 * SAMPLE_RATE];
-        audio[18 * SAMPLE_RATE..19 * SAMPLE_RATE].fill(0.0);
-        let mut recognition = SpeechRecognition::default();
-        let mut lengths = Vec::new();
-        let mut decode = |chunk: &[f32]| {
-            lengths.push(chunk.len());
-            Ok(if chunk.len() > 18 * SAMPLE_RATE {
-                "confirmed"
-            } else {
-                "draft"
-            }
-            .into())
-        };
-        let first = recognition
-            .decode(&audio[..26 * SAMPLE_RATE], false, &mut decode)
-            .unwrap();
-        assert_eq!(first, "confirmed draft");
-        let consumed = recognition.consumed;
-        assert!((18 * SAMPLE_RATE..19 * SAMPLE_RATE).contains(&consumed));
-        lengths.clear();
-        let next = recognition
-            .decode(&audio[..30 * SAMPLE_RATE], false, |chunk| {
-                lengths.push(chunk.len());
-                Ok("revised".into())
-            })
-            .unwrap();
-        assert_eq!(next, "confirmed revised");
-        assert_eq!(lengths, [30 * SAMPLE_RATE - consumed]);
-        lengths.clear();
-        let final_text = recognition
-            .decode(&audio, true, |chunk| {
-                lengths.push(chunk.len());
-                Ok("final".into())
-            })
-            .unwrap();
-        assert_eq!(final_text, "confirmed final final");
-        assert!(
-            lengths
-                .iter()
-                .all(|length| *length <= TARGET + PADDING + QUIET_WINDOW)
-        );
-        assert_eq!(lengths.iter().sum::<usize>() + consumed, audio.len());
-    }
+    tilo_test_env::scenario! {
+        /// What crosses the worker boundary when a draft is deferred, interrupted or finished.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn worker_boundaries_and_interruptions_keep_the_confirmed_prefix_and_all_audio;
 
-    #[test]
-    fn deferred_opening_draft_never_erases_a_short_final_or_accepts_audio_regression() {
-        let audio = vec![0.5; SAMPLE_RATE];
-        let mut recognition = SpeechRecognition::default();
-        assert_eq!(
-            recognition.recognize_with(&audio, false, |_| panic!("opening context must wait")),
-            Ok(String::new())
-        );
-        assert_eq!(recognition.observed, audio.len());
-        assert!(
-            recognition.draft_samples.is_none(),
-            "deferred output is not a decoded cache"
-        );
-        let mut calls = 0;
-        assert_eq!(
-            recognition.recognize_with(&audio, true, |chunk| {
-                assert_eq!(chunk, audio);
-                calls += 1;
+        phase worker_boundary_keeps_confirmed_prefix_and_revises_only_the_tail;
+        {
+            let mut audio = vec![1.0; 50 * SAMPLE_RATE];
+            audio[18 * SAMPLE_RATE..19 * SAMPLE_RATE].fill(0.0);
+            let mut recognition = SpeechRecognition::default();
+            let mut lengths = Vec::new();
+            let mut decode = |chunk: &[f32]| {
+                lengths.push(chunk.len());
+                Ok(if chunk.len() > 18 * SAMPLE_RATE {
+                    "confirmed"
+                } else {
+                    "draft"
+                }
+                .into())
+            };
+            let first = recognition
+                .decode(&audio[..26 * SAMPLE_RATE], false, &mut decode)
+                .unwrap();
+            assert_eq!(first, "confirmed draft");
+            let consumed = recognition.consumed;
+            assert!((18 * SAMPLE_RATE..19 * SAMPLE_RATE).contains(&consumed));
+            lengths.clear();
+            let next = recognition
+                .decode(&audio[..30 * SAMPLE_RATE], false, |chunk| {
+                    lengths.push(chunk.len());
+                    Ok("revised".into())
+                })
+                .unwrap();
+            assert_eq!(next, "confirmed revised");
+            assert_eq!(lengths, [30 * SAMPLE_RATE - consumed]);
+            lengths.clear();
+            let final_text = recognition
+                .decode(&audio, true, |chunk| {
+                    lengths.push(chunk.len());
+                    Ok("final".into())
+                })
+                .unwrap();
+            assert_eq!(final_text, "confirmed final final");
+            assert!(
+                lengths
+                    .iter()
+                    .all(|length| *length <= TARGET + PADDING + QUIET_WINDOW)
+            );
+            assert_eq!(lengths.iter().sum::<usize>() + consumed, audio.len());
+        }
+
+        phase deferred_opening_draft_never_erases_a_short_final_or_accepts_audio_regression;
+        {
+            let audio = vec![0.5; SAMPLE_RATE];
+            let mut recognition = SpeechRecognition::default();
+            assert_eq!(
+                recognition.recognize_with(&audio, false, |_| panic!("opening context must wait")),
+                Ok(String::new())
+            );
+            assert_eq!(recognition.observed, audio.len());
+            assert!(
+                recognition.draft_samples.is_none(),
+                "deferred output is not a decoded cache"
+            );
+            let mut calls = 0;
+            assert_eq!(
+                recognition.recognize_with(&audio, true, |chunk| {
+                    assert_eq!(chunk, audio);
+                    calls += 1;
+                    Ok("short final 👋".into())
+                }),
                 Ok("short final 👋".into())
-            }),
-            Ok("short final 👋".into())
-        );
-        assert_eq!(
-            calls, 1,
-            "stopping before two seconds still decodes all recorded audio"
-        );
-        assert!(recognition.retired);
-        assert!(recognition.draft.is_empty());
-        let mut recognition = SpeechRecognition::default();
-        recognition
-            .recognize_with(&audio, false, |_| panic!("opening context must wait"))
-            .unwrap();
-        assert_eq!(
-            recognition.recognize_with(&audio[..SAMPLE_RATE / 2], false, |_| panic!(
-                "regressed audio cannot decode"
-            )),
-            Err(SpeechError::Protocol)
-        );
-        assert!(recognition.retired);
-    }
-
-    #[test]
-    fn interrupted_tail_keeps_only_completed_canonical_prefix_and_redecodes_remainder() {
-        let mut recognition = SpeechRecognition::default();
-        let opening = vec![0.25; INITIAL_DRAFT_SAMPLES];
-        assert_eq!(
+            );
+            assert_eq!(
+                calls, 1,
+                "stopping before two seconds still decodes all recorded audio"
+            );
+            assert!(recognition.retired);
+            assert!(recognition.draft.is_empty());
+            let mut recognition = SpeechRecognition::default();
             recognition
-                .recognize_with(&opening, false, |_| Ok("earlier preview".into()))
-                .unwrap(),
-            "earlier preview"
-        );
-        let samples = vec![0.25; LOOKAHEAD + SAMPLE_RATE];
-        let mut calls = 0;
-        let mut canonical = Vec::new();
-        let result = recognition.recognize_with(&samples, false, |chunk| {
-            calls += 1;
-            if calls == 1 {
-                canonical.extend_from_slice(chunk);
-                Ok("completed canonical prefix".into())
-            } else {
-                Err(SpeechError::DraftInterrupted)
-            }
-        });
-        assert_eq!(result, Err(SpeechError::DraftInterrupted));
-        assert_eq!(calls, 2);
-        assert_eq!(recognition.consumed, canonical.len());
-        assert_eq!(recognition.observed, samples.len());
-        assert_eq!(recognition.confirmed.as_str(), "completed canonical prefix");
-        assert!(
-            recognition.draft.is_empty()
-                && recognition.draft_samples.is_none()
-                && !recognition.retired
-        );
-        let mut final_pcm = Vec::new();
-        let final_text = recognition
-            .recognize_with(&samples, true, |chunk| {
-                final_pcm.extend_from_slice(chunk);
-                Ok("fresh remaining text".into())
-            })
-            .unwrap();
-        assert_eq!([canonical, final_pcm].concat(), samples);
-        assert_eq!(
-            final_text,
-            "completed canonical prefix fresh remaining text"
-        );
-        assert!(
-            recognition.retired && recognition.confirmed.is_empty() && recognition.draft.is_empty()
-        );
-    }
+                .recognize_with(&audio, false, |_| panic!("opening context must wait"))
+                .unwrap();
+            assert_eq!(
+                recognition.recognize_with(&audio[..SAMPLE_RATE / 2], false, |_| panic!(
+                    "regressed audio cannot decode"
+                )),
+                Err(SpeechError::Protocol)
+            );
+            assert!(recognition.retired);
+        }
 
-    #[test]
-    fn interrupted_opening_has_no_final_cache_and_final_receives_all_pcm() {
-        let mut recognition = SpeechRecognition::default();
-        let samples = vec![0.25; INITIAL_DRAFT_SAMPLES + SAMPLE_RATE];
-        assert_eq!(
-            recognition.recognize_with(&samples, false, |_| Err(SpeechError::DraftInterrupted)),
-            Err(SpeechError::DraftInterrupted)
-        );
-        assert_eq!(recognition.consumed, 0);
-        assert!(
-            recognition.confirmed.is_empty()
-                && recognition.draft_samples.is_none()
-                && !recognition.retired
-        );
-        let mut final_pcm = Vec::new();
-        assert_eq!(
-            recognition
+        phase interrupted_tail_keeps_only_completed_canonical_prefix_and_redecodes_remainder;
+        {
+            let mut recognition = SpeechRecognition::default();
+            let opening = vec![0.25; INITIAL_DRAFT_SAMPLES];
+            assert_eq!(
+                recognition
+                    .recognize_with(&opening, false, |_| Ok("earlier preview".into()))
+                    .unwrap(),
+                "earlier preview"
+            );
+            let samples = vec![0.25; LOOKAHEAD + SAMPLE_RATE];
+            let mut calls = 0;
+            let mut canonical = Vec::new();
+            let result = recognition.recognize_with(&samples, false, |chunk| {
+                calls += 1;
+                if calls == 1 {
+                    canonical.extend_from_slice(chunk);
+                    Ok("completed canonical prefix".into())
+                } else {
+                    Err(SpeechError::DraftInterrupted)
+                }
+            });
+            assert_eq!(result, Err(SpeechError::DraftInterrupted));
+            assert_eq!(calls, 2);
+            assert_eq!(recognition.consumed, canonical.len());
+            assert_eq!(recognition.observed, samples.len());
+            assert_eq!(recognition.confirmed.as_str(), "completed canonical prefix");
+            assert!(
+                recognition.draft.is_empty()
+                    && recognition.draft_samples.is_none()
+                    && !recognition.retired
+            );
+            let mut final_pcm = Vec::new();
+            let final_text = recognition
                 .recognize_with(&samples, true, |chunk| {
                     final_pcm.extend_from_slice(chunk);
-                    Ok("whole final".into())
+                    Ok("fresh remaining text".into())
                 })
-                .unwrap(),
-            "whole final"
-        );
-        assert_eq!(final_pcm, samples);
-    }
+                .unwrap();
+            assert_eq!([canonical, final_pcm].concat(), samples);
+            assert_eq!(
+                final_text,
+                "completed canonical prefix fresh remaining text"
+            );
+            assert!(
+                recognition.retired && recognition.confirmed.is_empty() && recognition.draft.is_empty()
+            );
+        }
 
-    #[test]
-    fn finish_reuses_unchanged_audio_but_never_skips_a_pending_cut() {
-        let audio = vec![0.5; INITIAL_DRAFT_SAMPLES];
-        let mut recognition = SpeechRecognition::default();
-        assert_eq!(
-            recognition
-                .recognize_with(&audio, false, |_| Ok("draft".into()))
-                .unwrap(),
-            "draft"
-        );
-        assert_eq!(
-            recognition
-                .recognize_with(&audio, true, |_| panic!("unchanged final must reuse draft"))
-                .unwrap(),
-            "draft"
-        );
-        assert!(recognition.retired);
-        assert!(recognition.draft.is_empty());
-        assert_eq!(
-            recognition.recognize_with(&audio, true, |_| panic!("retired worker cannot decode")),
-            Err(SpeechError::Protocol)
-        );
-        let audio = vec![0.5; TARGET + PADDING + 1];
-        let mut recognition = SpeechRecognition::default();
-        recognition
-            .recognize_with(&audio, false, |_| Ok("uncut".into()))
-            .unwrap();
-        let mut calls = 0;
-        let text = recognition
-            .recognize_with(&audio, true, |_| {
-                calls += 1;
-                Ok("cut".into())
-            })
-            .unwrap();
-        assert_eq!(calls, 2);
-        assert_eq!(text, "cut cut");
-    }
+        phase interrupted_opening_has_no_final_cache_and_final_receives_all_pcm;
+        {
+            let mut recognition = SpeechRecognition::default();
+            let samples = vec![0.25; INITIAL_DRAFT_SAMPLES + SAMPLE_RATE];
+            assert_eq!(
+                recognition.recognize_with(&samples, false, |_| Err(SpeechError::DraftInterrupted)),
+                Err(SpeechError::DraftInterrupted)
+            );
+            assert_eq!(recognition.consumed, 0);
+            assert!(
+                recognition.confirmed.is_empty()
+                    && recognition.draft_samples.is_none()
+                    && !recognition.retired
+            );
+            let mut final_pcm = Vec::new();
+            assert_eq!(
+                recognition
+                    .recognize_with(&samples, true, |chunk| {
+                        final_pcm.extend_from_slice(chunk);
+                        Ok("whole final".into())
+                    })
+                    .unwrap(),
+                "whole final"
+            );
+            assert_eq!(final_pcm, samples);
+        }
 
-    #[test]
-    fn worker_boundary_preserves_short_input_and_refuses_combined_overflow() {
-        let audio = vec![0.5; 5 * SAMPLE_RATE];
-        let mut recognition = SpeechRecognition::default();
-        assert_eq!(
+        phase finish_reuses_unchanged_audio_but_never_skips_a_pending_cut;
+        {
+            let audio = vec![0.5; INITIAL_DRAFT_SAMPLES];
+            let mut recognition = SpeechRecognition::default();
+            assert_eq!(
+                recognition
+                    .recognize_with(&audio, false, |_| Ok("draft".into()))
+                    .unwrap(),
+                "draft"
+            );
+            assert_eq!(
+                recognition
+                    .recognize_with(&audio, true, |_| panic!("unchanged final must reuse draft"))
+                    .unwrap(),
+                "draft"
+            );
+            assert!(recognition.retired);
+            assert!(recognition.draft.is_empty());
+            assert_eq!(
+                recognition.recognize_with(&audio, true, |_| panic!("retired worker cannot decode")),
+                Err(SpeechError::Protocol)
+            );
+            let audio = vec![0.5; TARGET + PADDING + 1];
+            let mut recognition = SpeechRecognition::default();
             recognition
-                .decode(&audio, true, |chunk| {
-                    assert_eq!(chunk, audio);
-                    Ok("original short output".into())
+                .recognize_with(&audio, false, |_| Ok("uncut".into()))
+                .unwrap();
+            let mut calls = 0;
+            let text = recognition
+                .recognize_with(&audio, true, |_| {
+                    calls += 1;
+                    Ok("cut".into())
                 })
-                .unwrap(),
-            "original short output"
-        );
-        let audio = vec![0.5; 50 * SAMPLE_RATE];
-        let mut recognition = SpeechRecognition::default();
-        let error = recognition
-            .decode(&audio, true, |_| Ok("x".repeat(MAX_TEXT_BYTES)))
-            .unwrap_err();
-        assert_eq!(error, SpeechError::TextTooLong);
+                .unwrap();
+            assert_eq!(calls, 2);
+            assert_eq!(text, "cut cut");
+        }
+
+        phase worker_boundary_preserves_short_input_and_refuses_combined_overflow;
+        {
+            let audio = vec![0.5; 5 * SAMPLE_RATE];
+            let mut recognition = SpeechRecognition::default();
+            assert_eq!(
+                recognition
+                    .decode(&audio, true, |chunk| {
+                        assert_eq!(chunk, audio);
+                        Ok("original short output".into())
+                    })
+                    .unwrap(),
+                "original short output"
+            );
+            let audio = vec![0.5; 50 * SAMPLE_RATE];
+            let mut recognition = SpeechRecognition::default();
+            let error = recognition
+                .decode(&audio, true, |_| Ok("x".repeat(MAX_TEXT_BYTES)))
+                .unwrap_err();
+            assert_eq!(error, SpeechError::TextTooLong);
+        }
     }
 }

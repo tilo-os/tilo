@@ -61,7 +61,7 @@ fn durable_fixture(
             crate::test_support::WorkspaceSlot(71),
             "Durable workspace",
         );
-        workspace.set_owner(principal_id_for_root(root_key.verifying_key().to_bytes()));
+        workspace.set_owner(person_id_for_root(root_key.verifying_key().to_bytes()));
         tree.workspaces.push(workspace);
         tree.set_active(crate::test_support::WorkspaceSlot(71));
         tree.persist_path = Some(root.join("state.json"));
@@ -396,7 +396,6 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                     empty_rx,
                 )));
                 let stream = InvocationStreamServer {
-                    host_guard: None,
                     rx: rx.clone(),
                     delivered: None,
                 };
@@ -535,7 +534,6 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
                 empty_rx,
             )));
             let stream = InvocationStreamServer {
-                host_guard: None,
                 rx: rx.clone(),
                 delivered: None,
             };
@@ -861,7 +859,6 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
             };
             let (tx, rx) = mpsc::unbounded_channel();
             let stream = InvocationStreamServer {
-                host_guard: None,
                 rx: Rc::new(AsyncMutex::new(rx)),
                 delivered: invocation_delivery_notice(
                     &services,

@@ -69,12 +69,6 @@ workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die diese
 ## Der gespeicherte Schreibtisch dieses Geräts ließ sich nicht öffnen: der
 ## eigene Schreibtisch liegt weiterhin auf der Platte, und diese Sitzung startet
 ## leer, damit nichts darüber geschrieben wird.
-desk-not-opened-app-name = Desktop
-desk-not-opened-nothing-written = Er ist unverändert. Diese Sitzung beginnt mit einem leeren Schreibtisch und speichert nicht darüber.
-desk-not-opened-newer-title = Dein Schreibtisch wurde nicht geöffnet
-desk-not-opened-newer-detail = { $path } wurde von einer neueren Tilo-Version gespeichert (Layout { $found }; diese Version versteht { $understood }). Die Datei wurde nicht verändert: diese Sitzung startet mit einem leeren Schreibtisch und speichert nichts, kann sie also nicht überschreiben.
-desk-not-opened-unreadable-title = Dein Schreibtisch konnte nicht gelesen werden
-desk-not-opened-unreadable-detail = { $path } ist vorhanden, konnte aber nicht gelesen werden ({ $error }). Die Datei wurde nicht verändert: diese Sitzung startet mit einem leeren Schreibtisch und speichert nichts, kann sie also nicht überschreiben.
 
 ## Der Schreibtisch, den Tilo vor dieser Version führte, der nicht übernommen
 ## wurde: er liegt unverändert auf der Platte, und diese Sitzung behält ihren
@@ -194,6 +188,7 @@ session-display-builtin = Eingebauter Bildschirm
 session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
 session-quick-settings = Schnelleinstellungen
+session-desk-styles = Schreibtischstile
 session-devices = Geräte
 session-devices-press = Eines deiner Geräte drücken
 session-bluetooth-app = Bluetooth
@@ -429,6 +424,7 @@ so-tilo-session-desk-invitations = Einladungen auflisten
 so-tilo-session-desk-issue-invitation = Einladungslink erstellen
 so-tilo-session-desk-show-invite = Personen einladen
 so-tilo-session-desk-show-connect = Agent oder Computer verbinden
+so-tilo-session-desk-show-pair-device = Gerät hinzufügen
 so-tilo-session-desk-notify = Benachrichtigung senden
 so-tilo-session-desk-cancel-invitation = Einladung zurückziehen
 so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden

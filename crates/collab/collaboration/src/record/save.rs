@@ -116,7 +116,7 @@ pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
         }
     }
     let mut autosave = store.writer();
-    autosave.seed(&mut doc);
+    autosave.seed(&doc);
     (doc, autosave)
 }
 
@@ -141,7 +141,7 @@ pub fn open_stored_adopting(
         doc.set_actor(store.actor());
         let mut writer = store.writer();
         // Nothing of it is on disk under the person's record yet: the first write keeps it.
-        writer.request(&mut doc);
+        writer.request(&doc);
         return (doc, writer);
     }
     open_stored(store)
@@ -168,7 +168,7 @@ pub fn open_with_committed_read(
     // Only the previously stored heads are durable. The captured graph must
     // remain a pending local-cache write even without a subsequent user edit.
     if had_stored {
-        writer.seed(&mut doc);
+        writer.seed(&doc);
     }
     read.with_mutation(|mutation| {
         let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
@@ -178,7 +178,7 @@ pub fn open_with_committed_read(
         doc.merge_incoming(&mut actual).map_err(|e| e.to_string())?;
         Ok::<_, String>(())
     })??;
-    writer.request(&mut doc);
+    writer.request(&doc);
     read.applied();
     Ok((doc, writer))
 }

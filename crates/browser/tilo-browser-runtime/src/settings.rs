@@ -39,6 +39,10 @@ pub fn install(store: &Rc<MemoryStore>) {
     settings_store::install_source(Some(Arc::new(settings_store::HostDocument::new(
         initial, persist,
     ))));
+    // The theme every mount draws and the settings every view shows are read from this
+    // document: a document put in place of another (the page opening another workspace's) is a
+    // new reading of both, and every mount takes the theme again on its next frame.
+    crate::page_theme::changed();
 }
 
 fn persist(doc: &Map<String, Value>) -> std::io::Result<()> {

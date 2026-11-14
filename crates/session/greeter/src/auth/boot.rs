@@ -108,42 +108,46 @@ impl BootLink {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_supervisor_message_crosses_as_an_external_payload() {
-        let message = ToGreeter::Ask {
-            person: 1,
-            note: Note::Wait { seconds: 120 },
-            several: true,
-        };
-        assert_eq!(decode(&encode(&message)), Some(message));
-        assert_eq!(decode("A"), None);
-        assert_eq!(decode("tilo-boot\u{1f}{"), None);
-    }
+    tilo_test_env::scenario! {
+        fn the_boot_link_carries_messages_between_supervisor_and_greeter;
 
-    #[test]
-    fn the_link_reaches_the_supervisor_and_ends_when_it_goes() {
-        let (supervisor, greeter) = Link::pair().unwrap();
-        let link = BootLink::new(greeter);
-        let (sender, received) = std::sync::mpsc::channel();
-        let ended = sender.clone();
-        link.listen(
-            move |payload| sender.send(Some(payload)).unwrap(),
-            move || ended.send(None).unwrap(),
-        );
-        supervisor.send_to_greeter(&ToGreeter::Checking).unwrap();
-        assert_eq!(
-            received.recv().unwrap().as_deref().and_then(decode),
-            Some(ToGreeter::Checking)
-        );
-        link.sign_in(0, Zeroizing::new("2468".into())).unwrap();
-        assert_eq!(
-            supervisor.recv_from_greeter().unwrap(),
-            FromGreeter::Secret {
-                person: 0,
-                secret: Zeroizing::new("2468".into())
-            }
-        );
-        drop(supervisor);
-        assert_eq!(received.recv().unwrap(), None);
+        phase a_supervisor_message_crosses_as_an_external_payload;
+        {
+            let message = ToGreeter::Ask {
+                person: 1,
+                note: Note::Wait { seconds: 120 },
+                several: true,
+            };
+            assert_eq!(decode(&encode(&message)), Some(message));
+            assert_eq!(decode("A"), None);
+            assert_eq!(decode("tilo-boot\u{1f}{"), None);
+        }
+
+        phase the_link_reaches_the_supervisor_and_ends_when_it_goes;
+        {
+            let (supervisor, greeter) = Link::pair().unwrap();
+            let link = BootLink::new(greeter);
+            let (sender, received) = std::sync::mpsc::channel();
+            let ended = sender.clone();
+            link.listen(
+                move |payload| sender.send(Some(payload)).unwrap(),
+                move || ended.send(None).unwrap(),
+            );
+            supervisor.send_to_greeter(&ToGreeter::Checking).unwrap();
+            assert_eq!(
+                received.recv().unwrap().as_deref().and_then(decode),
+                Some(ToGreeter::Checking)
+            );
+            link.sign_in(0, Zeroizing::new("2468".into())).unwrap();
+            assert_eq!(
+                supervisor.recv_from_greeter().unwrap(),
+                FromGreeter::Secret {
+                    person: 0,
+                    secret: Zeroizing::new("2468".into())
+                }
+            );
+            drop(supervisor);
+            assert_eq!(received.recv().unwrap(), None);
+        }
     }
 }

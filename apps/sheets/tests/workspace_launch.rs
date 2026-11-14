@@ -6,12 +6,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 fn launch(host: &Path, env: &[(&str, &str)]) {
     std::fs::create_dir_all(host).unwrap();
     let mut command = Command::new(tilo_test_env::package_binary!("sheets"));
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("TILO_") || key.to_string_lossy().starts_with("QUICK_")
-        {
-            command.env_remove(key);
-        }
-    }
+    tilo_test_env::launch_env(&mut command);
     for key in [
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",

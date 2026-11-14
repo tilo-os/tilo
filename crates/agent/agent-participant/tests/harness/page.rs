@@ -39,6 +39,7 @@ use tilo_session_core::remote::Heard;
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
+use tilo_relay_protocol::WorkspaceId;
 
 /// A record as it stood when a write landed: its author, and the record saved.
 pub type Checkpoint = ([u8; 32], Vec<u8>);
@@ -57,7 +58,7 @@ pub struct Page {
     pub answers: Vec<RemoteActionMessage>,
     /// The correlation the page names its next catalogue request with.
     pub correlation: u64,
-    pub workspace: u64,
+    pub workspace: WorkspaceId,
     pub cluster_id: String,
     /// Who is here, as the page's board heard them: its host pinned as the
     /// workspace's, so the runs the host speaks for are members too.
@@ -84,9 +85,20 @@ impl Page {
         host: &Device,
         cluster_id: &str,
     ) -> Self {
-        let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
+        Self::open_at(&hosted.relay, device, host, cluster_id).await
+    }
+
+    /// [`Self::open_workspace`] on any host `relay` runs, whatever serves
+    /// its records.
+    pub async fn open_at(
+        relay: &tilo_relay::daemon::Relay,
+        device: &Device,
+        host: &Device,
+        cluster_id: &str,
+    ) -> Self {
+        let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let peer = start_peer(
-            Host::at(hosted.relay.node_addr()),
+            Host::at(relay.node_addr()),
             device.cert.clone(),
             host.cert.clone(),
             device.key.clone(),
@@ -127,7 +139,7 @@ impl Page {
         host: &Device,
         cluster_id: &str,
     ) -> Self {
-        let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
+        let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let mut board = tilo_live::presence::Board::new(cluster_id, device.cert.device_public_key);
         board.set_host(Some(host.cert.device_public_key));
         Self {
@@ -202,6 +214,14 @@ impl Page {
             (_, None) => {}
         }
         None
+    }
+
+    /// The records whose writes reached this page before it could open them.
+    pub fn unopened(&self) -> Vec<String> {
+        self.unopened
+            .keys()
+            .map(|route| format!("{}/{}", route.app_id, route.record))
+            .collect()
     }
 
     /// Everyone here now, as a surface draws them.

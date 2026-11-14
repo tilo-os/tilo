@@ -29,7 +29,7 @@ use crate::common::people::{
     Device, Person, Site, joined_within, show, two_devices_of_one_person, wait_shown,
 };
 use serde_json::json;
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 /// The app whose window is opened on the desks here.
 const NOTES: &str = "so.tilo.notes";
@@ -47,9 +47,8 @@ fn laptop_and_its_copy() -> (Site, Person, Device, Device) {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
     // The workspace's host lets its desk author its records.
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
     let mut laptop = ada.device("Ada's laptop");
-    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    let hers = site.invite(ada.public, Role::Editor);
     laptop.join(&hers);
     laptop.wait_holding(&site.workspace);
     show(&laptop, &site);
@@ -228,9 +227,8 @@ fn a_machine_copied_from_a_device_and_its_source_read_each_others_edits() {
 fn a_device_restarted_keeps_writing_the_workspace_desk() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
     let mut laptop = ada.device("Ada's laptop");
-    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    let hers = site.invite(ada.public, Role::Editor);
     laptop.join(&hers);
     laptop.wait_holding(&site.workspace);
     show(&laptop, &site);
@@ -253,10 +251,9 @@ fn a_device_restarted_keeps_writing_the_workspace_desk() {
 fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     let ada = Person::new("Ada");
     let mut site = Site::start(&ada, "Studio");
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP, CHAT]);
     let mut laptop = ada.device("Ada's laptop");
     laptop.install_chat();
-    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    let hers = site.invite(ada.public, Role::Editor);
     laptop.join(&hers);
     laptop.wait_holding(&site.workspace);
     show(&laptop, &site);
@@ -386,15 +383,10 @@ fn logins(device: &Device) -> Vec<String> {
 fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.author_apps(&[
-        tilo_desktop_model::ownership::DESKTOP_APP,
-        PASSWORDS,
-        MODEL_PROVIDERS,
-    ]);
     let mut laptop = ada.device("Ada's laptop");
     laptop.install_passwords();
     laptop.install_model_providers();
-    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    let hers = site.invite(ada.public, Role::Editor);
     laptop.join(&hers);
     laptop.wait_holding(&site.workspace);
     show(&laptop, &site);
@@ -501,10 +493,9 @@ fn wait_admitted(device: &Device, site: &Site) {
 fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP, PASSWORDS]);
     let mut laptop = ada.device("Ada's laptop");
     laptop.install_passwords();
-    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    let hers = site.invite(ada.public, Role::Editor);
     laptop.join(&hers);
     laptop.wait_holding(&site.workspace);
     show(&laptop, &site);

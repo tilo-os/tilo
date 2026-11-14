@@ -358,78 +358,81 @@ mod tests {
       "webViewLink": "https://drive.google.com/file/d/1Z7wD3tS8yQK0qL5nJtYF0rWm2c4vX9pE/view?usp=drivesdk"
     }"#;
 
-    #[test]
-    fn file_resources_parse_with_string_int64_fields() {
-        let file: File = serde_json::from_str(FILE_SAMPLE).unwrap();
-        let item = file.to_item(|p: &str| ItemId::new(p));
-        assert_eq!(item.size, Some(283_745));
-        assert_eq!(item.kind, ItemKind::File);
-        assert_eq!(
-            item.revision.as_ref().map(Revision::as_str),
-            Some("0B6Pq2x5vSfJ9ZWtQbjVYU3NjQkxPS2VUV0FnU2p0OE9HZ1NBPQ")
-        );
-        assert_eq!(
-            item.hash(&HashAlgorithm::Sha1),
-            Some("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
-        );
-        assert_eq!(
-            item.hash(&HashAlgorithm::Md5),
-            Some("5d41402abc4b2a76b9719d911017c592")
-        );
-        assert_eq!(item.parents, [ItemId::new("0AFa1bC2dE3fGUk9PVA")]);
-        let modified = item.modified.unwrap();
-        let since = modified.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        assert_eq!(since.as_secs(), 1_710_754_867);
-        assert_eq!(since.subsec_millis(), 512);
-    }
+    tilo_test_env::scenario! {
+        fn the_drive_wire_format_is_read_and_written_as_documented;
 
-    #[test]
-    fn native_documents_and_folders_are_told_apart() {
-        let doc: File = serde_json::from_str(
-            r#"{"id":"1dOc","name":"Plan","mimeType":"application/vnd.google-apps.document",
+        phase file_resources_parse_with_string_int64_fields;
+        {
+            let file: File = serde_json::from_str(FILE_SAMPLE).unwrap();
+            let item = file.to_item(|p: &str| ItemId::new(p));
+            assert_eq!(item.size, Some(283_745));
+            assert_eq!(item.kind, ItemKind::File);
+            assert_eq!(
+                item.revision.as_ref().map(Revision::as_str),
+                Some("0B6Pq2x5vSfJ9ZWtQbjVYU3NjQkxPS2VUV0FnU2p0OE9HZ1NBPQ")
+            );
+            assert_eq!(
+                item.hash(&HashAlgorithm::Sha1),
+                Some("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
+            );
+            assert_eq!(
+                item.hash(&HashAlgorithm::Md5),
+                Some("5d41402abc4b2a76b9719d911017c592")
+            );
+            assert_eq!(item.parents, [ItemId::new("0AFa1bC2dE3fGUk9PVA")]);
+            let modified = item.modified.unwrap();
+            let since = modified.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+            assert_eq!(since.as_secs(), 1_710_754_867);
+            assert_eq!(since.subsec_millis(), 512);
+        }
+
+        phase native_documents_and_folders_are_told_apart;
+        {
+            let doc: File = serde_json::from_str(
+                r#"{"id":"1dOc","name":"Plan","mimeType":"application/vnd.google-apps.document",
                 "parents":["root"],"version":"4","size":"1024",
                 "webViewLink":"https://docs.google.com/document/d/1dOc/edit?usp=drivesdk"}"#,
-        )
-        .unwrap();
-        let item = doc.to_item(|p: &str| ItemId::new(p));
-        let ItemKind::Native(native) = &item.kind else {
-            panic!("{item:?}")
-        };
-        assert_eq!(native.link_extension, "gdoc");
-        assert_eq!(
-            native.web_url.as_deref(),
-            Some("https://docs.google.com/document/d/1dOc/edit?usp=drivesdk")
-        );
-        let extensions: Vec<&str> = native
-            .exports
-            .iter()
-            .map(|e| e.extension.as_str())
-            .collect();
-        assert_eq!(extensions, ["docx", "odt", "pdf"]);
-        assert_eq!(item.size, None, "a native document has no byte body");
-        assert_eq!(item.revision, Some(Revision::new("v4")));
+            )
+            .unwrap();
+            let item = doc.to_item(|p: &str| ItemId::new(p));
+            let ItemKind::Native(native) = &item.kind else {
+                panic!("{item:?}")
+            };
+            assert_eq!(native.link_extension, "gdoc");
+            assert_eq!(
+                native.web_url.as_deref(),
+                Some("https://docs.google.com/document/d/1dOc/edit?usp=drivesdk")
+            );
+            let extensions: Vec<&str> = native
+                .exports
+                .iter()
+                .map(|e| e.extension.as_str())
+                .collect();
+            assert_eq!(extensions, ["docx", "odt", "pdf"]);
+            assert_eq!(item.size, None, "a native document has no byte body");
+            assert_eq!(item.revision, Some(Revision::new("v4")));
 
-        let folder: File = serde_json::from_str(
-            r#"{"id":"0fOl","name":"Work","mimeType":"application/vnd.google-apps.folder","version":"9"}"#,
-        )
-        .unwrap();
-        assert!(folder.to_item(|p: &str| ItemId::new(p)).is_folder());
-        assert_eq!(folder.revision(), Some(Revision::new("v9")));
-        for (mime, extension) in [
-            ("application/vnd.google-apps.spreadsheet", "gsheet"),
-            ("application/vnd.google-apps.presentation", "gslides"),
-            ("application/vnd.google-apps.drawing", "gdraw"),
-            ("application/vnd.google-apps.form", "gform"),
-            (SHORTCUT_MIME, "glink"),
-        ] {
-            assert_eq!(native_document(mime, None).link_extension, extension);
+            let folder: File = serde_json::from_str(
+                r#"{"id":"0fOl","name":"Work","mimeType":"application/vnd.google-apps.folder","version":"9"}"#,
+            )
+            .unwrap();
+            assert!(folder.to_item(|p: &str| ItemId::new(p)).is_folder());
+            assert_eq!(folder.revision(), Some(Revision::new("v9")));
+            for (mime, extension) in [
+                ("application/vnd.google-apps.spreadsheet", "gsheet"),
+                ("application/vnd.google-apps.presentation", "gslides"),
+                ("application/vnd.google-apps.drawing", "gdraw"),
+                ("application/vnd.google-apps.form", "gform"),
+                (SHORTCUT_MIME, "glink"),
+            ] {
+                assert_eq!(native_document(mime, None).link_extension, extension);
+            }
         }
-    }
 
-    #[test]
-    fn change_pages_parse_removals_and_tokens() {
-        let page: ChangeList = serde_json::from_str(
-            r#"{
+        phase change_pages_parse_removals_and_tokens;
+        {
+            let page: ChangeList = serde_json::from_str(
+                r#"{
               "kind": "drive#changeList",
               "newStartPageToken": "8930",
               "changes": [
@@ -442,104 +445,105 @@ mod tests {
                  "time": "2024-03-18T09:43:00.000Z"}
               ]
             }"#,
-        )
-        .unwrap();
-        assert_eq!(page.new_start_page_token.as_deref(), Some("8930"));
-        assert!(page.next_page_token.is_none());
-        assert_eq!(page.changes.len(), 3);
-        assert_eq!(page.changes[0].file.as_ref().unwrap().size, Some(3));
-        assert!(page.changes[1].removed && page.changes[1].file.is_none());
-        assert_eq!(page.changes[2].change_type.as_deref(), Some("drive"));
-    }
+            )
+            .unwrap();
+            assert_eq!(page.new_start_page_token.as_deref(), Some("8930"));
+            assert!(page.next_page_token.is_none());
+            assert_eq!(page.changes.len(), 3);
+            assert_eq!(page.changes[0].file.as_ref().unwrap().size, Some(3));
+            assert!(page.changes[1].removed && page.changes[1].file.is_none());
+            assert_eq!(page.changes[2].change_type.as_deref(), Some("drive"));
+        }
 
-    #[test]
-    fn revisions_and_quota_parse() {
-        let list: RevisionList = serde_json::from_str(
-            r#"{"kind":"drive#revisionList","revisions":[
+        phase revisions_and_quota_parse;
+        {
+            let list: RevisionList = serde_json::from_str(
+                r#"{"kind":"drive#revisionList","revisions":[
                 {"kind":"drive#revision","id":"0B1","mimeType":"text/plain","modifiedTime":"2024-01-02T03:04:05Z",
                  "keepForever":false,"size":"5","lastModifyingUser":{"kind":"drive#user","displayName":"Ada Lovelace","emailAddress":"ada@example.com"}},
                 {"kind":"drive#revision","id":"0B2","modifiedTime":"2024-01-03T03:04:05+01:00","keepForever":true,"size":"14"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(list.revisions[0].size, Some(5));
-        assert_eq!(
-            list.revisions[0]
-                .last_modifying_user
-                .as_ref()
-                .and_then(|u| u.display_name.as_deref()),
-            Some("Ada Lovelace")
-        );
-        assert!(list.revisions[1].keep_forever);
-        assert_eq!(
-            http::parse_rfc3339("2024-01-03T03:04:05+01:00"),
-            http::parse_rfc3339("2024-01-03T02:04:05Z")
-        );
+            )
+            .unwrap();
+            assert_eq!(list.revisions[0].size, Some(5));
+            assert_eq!(
+                list.revisions[0]
+                    .last_modifying_user
+                    .as_ref()
+                    .and_then(|u| u.display_name.as_deref()),
+                Some("Ada Lovelace")
+            );
+            assert!(list.revisions[1].keep_forever);
+            assert_eq!(
+                http::parse_rfc3339("2024-01-03T03:04:05+01:00"),
+                http::parse_rfc3339("2024-01-03T02:04:05Z")
+            );
 
-        let about: About = serde_json::from_str(
-            r#"{"storageQuota":{"limit":"16106127360","usage":"5368709120","usageInDrive":"4294967296","usageInDriveTrash":"1048576"}}"#,
-        )
-        .unwrap();
-        assert_eq!(about.storage_quota.limit, Some(16_106_127_360));
-        assert_eq!(about.storage_quota.usage, Some(5_368_709_120));
-        let unlimited: About = serde_json::from_str(r#"{"storageQuota":{"usage":"42"}}"#).unwrap();
-        assert_eq!(unlimited.storage_quota.limit, None);
-    }
+            let about: About = serde_json::from_str(
+                r#"{"storageQuota":{"limit":"16106127360","usage":"5368709120","usageInDrive":"4294967296","usageInDriveTrash":"1048576"}}"#,
+            )
+            .unwrap();
+            assert_eq!(about.storage_quota.limit, Some(16_106_127_360));
+            assert_eq!(about.storage_quota.usage, Some(5_368_709_120));
+            let unlimited: About = serde_json::from_str(r#"{"storageQuota":{"usage":"42"}}"#).unwrap();
+            assert_eq!(unlimited.storage_quota.limit, None);
+        }
 
-    #[test]
-    fn documented_error_bodies_classify() {
-        let user_rate = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded","message":"User Rate Limit Exceeded"}],"code":403,"message":"User Rate Limit Exceeded"}}"#;
-        assert!(matches!(
-            classify(403, None, user_rate.as_bytes()),
-            Error::RateLimited { retry_after: None }
-        ));
-        let rate = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"rateLimitExceeded","message":"Rate Limit Exceeded"}],"code":429,"message":"Rate Limit Exceeded"}}"#;
-        assert!(matches!(
-            classify(429, http::parse_retry_after("7", SystemTime::now()), rate.as_bytes()),
-            Error::RateLimited { retry_after: Some(d) } if d == Duration::from_secs(7)
-        ));
-        let auth = r#"{"error":{"errors":[{"domain":"global","reason":"authError","message":"Invalid Credentials","locationType":"header","location":"Authorization"}],"code":401,"message":"Invalid Credentials"}}"#;
-        assert!(matches!(
-            classify(401, None, auth.as_bytes()),
-            Error::Unauthorized
-        ));
-        let not_found = r#"{"error":{"errors":[{"domain":"global","reason":"notFound","message":"File not found: 1x.","locationType":"parameter","location":"fileId"}],"code":404,"message":"File not found: 1x."}}"#;
-        assert!(matches!(
-            classify(404, None, not_found.as_bytes()),
-            Error::NotFound
-        ));
-        let denied = r#"{"error":{"code":403,"message":"The user does not have sufficient permissions for this file.","errors":[{"message":"The user does not have sufficient permissions for this file.","domain":"global","reason":"insufficientFilePermissions"}]}}"#;
-        assert!(matches!(
-            classify(403, None, denied.as_bytes()),
-            Error::Forbidden
-        ));
-        let storage = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"storageQuotaExceeded","message":"The user's Drive storage quota has been exceeded."}],"code":403,"message":"The user's Drive storage quota has been exceeded."}}"#;
-        assert!(matches!(
-            classify(403, None, storage.as_bytes()),
-            Error::InsufficientStorage
-        ));
-        let native = r#"{"error":{"code":403,"message":"Only files with binary content can be downloaded. Use Export with Docs Editors files.","errors":[{"message":"Only files with binary content can be downloaded. Use Export with Docs Editors files.","domain":"global","reason":"fileNotDownloadable","location":"alt","locationType":"parameter"}]}}"#;
-        assert!(matches!(
-            classify(403, None, native.as_bytes()),
-            Error::Unsupported(_)
-        ));
-        let token = r#"{"error":{"code":400,"message":"Invalid Value","errors":[{"message":"Invalid Value","domain":"global","reason":"invalid","location":"pageToken","locationType":"parameter"}]}}"#;
-        assert!(ErrorBody::parse(token.as_bytes()).is_page_token_error());
-        assert!(!ErrorBody::parse(not_found.as_bytes()).is_page_token_error());
-        assert!(matches!(
-            classify(503, None, b"<html>backend</html>"),
-            Error::RateLimited { retry_after: None }
-        ));
-    }
+        phase documented_error_bodies_classify;
+        {
+            let user_rate = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded","message":"User Rate Limit Exceeded"}],"code":403,"message":"User Rate Limit Exceeded"}}"#;
+            assert!(matches!(
+                classify(403, None, user_rate.as_bytes()),
+                Error::RateLimited { retry_after: None }
+            ));
+            let rate = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"rateLimitExceeded","message":"Rate Limit Exceeded"}],"code":429,"message":"Rate Limit Exceeded"}}"#;
+            assert!(matches!(
+                classify(429, http::parse_retry_after("7", SystemTime::now()), rate.as_bytes()),
+                Error::RateLimited { retry_after: Some(d) } if d == Duration::from_secs(7)
+            ));
+            let auth = r#"{"error":{"errors":[{"domain":"global","reason":"authError","message":"Invalid Credentials","locationType":"header","location":"Authorization"}],"code":401,"message":"Invalid Credentials"}}"#;
+            assert!(matches!(
+                classify(401, None, auth.as_bytes()),
+                Error::Unauthorized
+            ));
+            let not_found = r#"{"error":{"errors":[{"domain":"global","reason":"notFound","message":"File not found: 1x.","locationType":"parameter","location":"fileId"}],"code":404,"message":"File not found: 1x."}}"#;
+            assert!(matches!(
+                classify(404, None, not_found.as_bytes()),
+                Error::NotFound
+            ));
+            let denied = r#"{"error":{"code":403,"message":"The user does not have sufficient permissions for this file.","errors":[{"message":"The user does not have sufficient permissions for this file.","domain":"global","reason":"insufficientFilePermissions"}]}}"#;
+            assert!(matches!(
+                classify(403, None, denied.as_bytes()),
+                Error::Forbidden
+            ));
+            let storage = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"storageQuotaExceeded","message":"The user's Drive storage quota has been exceeded."}],"code":403,"message":"The user's Drive storage quota has been exceeded."}}"#;
+            assert!(matches!(
+                classify(403, None, storage.as_bytes()),
+                Error::InsufficientStorage
+            ));
+            let native = r#"{"error":{"code":403,"message":"Only files with binary content can be downloaded. Use Export with Docs Editors files.","errors":[{"message":"Only files with binary content can be downloaded. Use Export with Docs Editors files.","domain":"global","reason":"fileNotDownloadable","location":"alt","locationType":"parameter"}]}}"#;
+            assert!(matches!(
+                classify(403, None, native.as_bytes()),
+                Error::Unsupported(_)
+            ));
+            let token = r#"{"error":{"code":400,"message":"Invalid Value","errors":[{"message":"Invalid Value","domain":"global","reason":"invalid","location":"pageToken","locationType":"parameter"}]}}"#;
+            assert!(ErrorBody::parse(token.as_bytes()).is_page_token_error());
+            assert!(!ErrorBody::parse(not_found.as_bytes()).is_page_token_error());
+            assert!(matches!(
+                classify(503, None, b"<html>backend</html>"),
+                Error::RateLimited { retry_after: None }
+            ));
+        }
 
-    #[test]
-    fn range_headers_parse() {
-        assert_eq!(parse_committed(None), Some(0));
-        assert_eq!(parse_committed(Some("bytes=0-262143")), Some(262_144));
-        assert_eq!(parse_committed(Some("bytes=5-9")), None);
-    }
+        phase range_headers_parse;
+        {
+            assert_eq!(parse_committed(None), Some(0));
+            assert_eq!(parse_committed(Some("bytes=0-262143")), Some(262_144));
+            assert_eq!(parse_committed(Some("bytes=5-9")), None);
+        }
 
-    #[test]
-    fn query_literals_escape_quotes_and_backslashes() {
-        assert_eq!(quote(r"it's a\b"), r"'it\'s a\\b'");
+        phase query_literals_escape_quotes_and_backslashes;
+        {
+            assert_eq!(quote(r"it's a\b"), r"'it\'s a\\b'");
+        }
     }
 }

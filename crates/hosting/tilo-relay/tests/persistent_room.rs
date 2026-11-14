@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
 use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -340,23 +341,15 @@ fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
     room.stop();
 }
 
-/// The room process settles the apps it is told to let members write
-/// through at every start, and remembers which it let, so an app taken out
-/// of its list on a later start is withdrawn (the room's side of it is
-/// `governed_rooms::app_authorship`).
+/// A room started with an app it no longer names keeps the workspace it
+/// served: members write as their roles allow, whatever apps they use.
 #[test]
-fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_restarts() {
+fn a_persistent_room_keeps_its_workspace_across_restarts() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let authored = || -> Vec<String> {
-        serde_json::from_slice(
-            &std::fs::read(state.join("relay").join("authored-apps.json")).unwrap(),
-        )
-        .unwrap()
-    };
     let started = |extra: &[&str]| {
         let room = start_with(&state, &root_file, &secrets, extra).unwrap();
         let OperatorEvent::Started {
@@ -369,25 +362,11 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
         (room, id)
     };
 
-    let (room, id) = started(&["--author-app", "so.tilo.chat"]);
+    let (room, id) = started(&["--seed-app", "so.tilo.chat"]);
     room.stop();
-    assert_eq!(authored(), ["so.tilo.chat"]);
-
-    let (room, again) = started(&["--author-app", "so.tilo.chat"]);
+    let (room, again) = started(&["--seed-app", "so.tilo.chat"]);
     room.stop();
-    assert_eq!(again, id);
-    assert_eq!(
-        authored(),
-        ["so.tilo.chat"],
-        "the same start settles the same"
-    );
-
-    let (room, _) = started(&["--author-app", "none"]);
-    room.stop();
-    assert!(
-        authored().is_empty(),
-        "a start that names no app withdraws the ones it named before"
-    );
+    assert_eq!(again, id, "the volume's workspace is the one it serves");
 }
 
 /// A page reaches its host only through a relay, so `/host` names the host's
@@ -635,7 +614,8 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
 async fn assert_page_reads_the_chat(
     who: &str,
     visiting: &tilo_session_client::Link,
-    workspace_id: u64,
+    heard: &tilo_session_client::Events,
+    workspace_id: WorkspaceId,
     route: &tilo_peer_state::document_frame::DocumentRoute,
     channels: &[&str],
 ) -> automerge::AutoCommit {
@@ -647,7 +627,7 @@ async fn assert_page_reads_the_chat(
     wait_for(
         &format!("{who}'s page to read the chat's channels {channels:?}"),
         || {
-            for event in visiting.drain() {
+            for event in heard.drain() {
                 match &event {
                     Event::HostReady { ws: at, .. } if *at == workspace_id => {
                         ready = true;
@@ -693,8 +673,6 @@ async fn assert_page_reads_the_chat(
 struct Started {
     /// The governed workspace's id.
     workspace: String,
-    /// The workspace id its records are numbered by.
-    id: u64,
     /// The plain loopback listener the room bound.
     plain: std::net::SocketAddr,
 }
@@ -710,7 +688,6 @@ fn announced(room: &Workspace) -> Started {
         panic!("no governed room announced")
     };
     Started {
-        id: tilo_relay::room_workspace_id(&workspace).unwrap(),
         plain: bound_address(&plain_origin),
         workspace,
     }
@@ -790,7 +767,7 @@ async fn directory_page(
 /// and the directory counts both.
 #[test]
 fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
-    use tilo_relay_protocol::workspaces::WorkspaceRole;
+    use tilo_relay_protocol::workspaces::Role;
 
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
@@ -818,7 +795,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
     assert_eq!(before.workspaces[0].description, "Coffee and tea");
     assert_eq!(
         before.workspaces[0].default_role,
-        WorkspaceRole::Editor,
+        Role::Editor,
         "the listing the operator asked for"
     );
 
@@ -833,7 +810,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
                 name,
             ))
             .unwrap_or_else(|refused| panic!("{name} {index} was not admitted: {refused:?}"));
-        assert_eq!(admitted.role, WorkspaceRole::Editor);
+        assert_eq!(admitted.role, Role::Editor);
         people.push(cert.user_public_key);
     }
     assert_ne!(people[0], people[1], "two people, not one");
@@ -926,12 +903,18 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
     )
     .unwrap();
     let started = announced(&room);
+    let workspace_id = tilo_relay::WorkspaceId::parse(&started.workspace).unwrap();
     let (id, plain) = (started.workspace, started.plain);
     let visiting = join_through_door(&runtime, plain, &id, own_device(0x71, "Ana"), "Ana");
     let writer = join_through_door(&runtime, plain, &id, own_device(0x72, "Ben"), "Ben");
     let sibling = unenrolled_owner_device();
     runtime.block_on(persons_read_the_room_and_are_refused(
-        plain, &id, started.id, visiting, writer, sibling,
+        plain,
+        &id,
+        workspace_id,
+        visiting,
+        writer,
+        sibling,
     ));
     room.stop();
 
@@ -962,10 +945,11 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
         own_device(0x73, "Cy"),
         "Cy",
     );
+    let workspace_id = tilo_relay::WorkspaceId::parse(&started.workspace).unwrap();
     runtime.block_on(an_editor_page_writes_and_is_committed(
         started.plain,
         &started.workspace,
-        started.id,
+        workspace_id,
         editor,
     ));
     room.stop();
@@ -977,7 +961,7 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
 async fn persons_read_the_room_and_are_refused(
     plain: std::net::SocketAddr,
     cluster: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     (visiting_key, visiting_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     (writing_key, writing_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     (sibling_key, sibling_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
@@ -987,17 +971,35 @@ async fn persons_read_the_room_and_are_refused(
     let (host, host_cert, route) = chat_route(plain, cluster).await;
 
     let visiting = page(host.clone(), visiting_key, visiting_cert, &host_cert);
+
+    let visiting_heard = visiting.events();
     visiting.send(Cmd::Join(workspace_id)).unwrap();
     visiting.send(Cmd::OpenRoute(route.clone())).unwrap();
-    assert_page_reads_the_chat("Ana", &visiting, workspace_id, &route, &["general"]).await;
+    assert_page_reads_the_chat(
+        "Ana",
+        &visiting,
+        &visiting_heard,
+        workspace_id,
+        &route,
+        &["general"],
+    )
+    .await;
 
     // Another person holds the listing's default role, a viewer's: they read
     // the room and write nothing.
     let writer = page(host.clone(), writing_key, writing_cert, &host_cert);
+    let writer_heard = writer.events();
     writer.send(Cmd::Join(workspace_id)).unwrap();
     writer.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let mut chat =
-        assert_page_reads_the_chat("Ben", &writer, workspace_id, &route, &["general"]).await;
+    let mut chat = assert_page_reads_the_chat(
+        "Ben",
+        &writer,
+        &writer_heard,
+        workspace_id,
+        &route,
+        &["general"],
+    )
+    .await;
     writer
         .write(route.clone(), &edit(&mut chat, "a viewer's edit"))
         .unwrap();
@@ -1020,6 +1022,8 @@ async fn persons_read_the_room_and_are_refused(
     assert!(!committed, "the viewer's write was committed: {refused:?}");
 
     let other = page(host, sibling_key, sibling_cert, &host_cert);
+
+    let other_heard = other.events();
     other.send(Cmd::Join(workspace_id)).unwrap();
     let refused = wait_for(
         "the sibling device to be refused",
@@ -1034,7 +1038,7 @@ async fn persons_read_the_room_and_are_refused(
     )
     .await;
     assert!(
-        !other
+        !other_heard
             .drain()
             .iter()
             .any(|event| matches!(event, Event::HostReady { .. })),
@@ -1051,15 +1055,23 @@ async fn persons_read_the_room_and_are_refused(
 async fn an_editor_page_writes_and_is_committed(
     plain: std::net::SocketAddr,
     cluster: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     (editor_key, editor_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
     let (host, host_cert, route) = chat_route(plain, cluster).await;
     let editor = page(host, editor_key, editor_cert, &host_cert);
+    let editor_heard = editor.events();
     editor.send(Cmd::Join(workspace_id)).unwrap();
     editor.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let mut chat =
-        assert_page_reads_the_chat("editor", &editor, workspace_id, &route, &["general"]).await;
+    let mut chat = assert_page_reads_the_chat(
+        "editor",
+        &editor,
+        &editor_heard,
+        workspace_id,
+        &route,
+        &["general"],
+    )
+    .await;
     editor
         .write(route.clone(), &edit(&mut chat, "an editor's edit"))
         .unwrap();
@@ -1119,7 +1131,7 @@ fn a_persistent_room_reopens_after_hard_stops() {
     let room = start_with(&state, &root_file, &secrets, &extra).unwrap();
     let again = announced(&room);
     assert_eq!(again.workspace, id, "the same room opens");
-    let workspace_id = again.id;
+    let workspace_id = tilo_relay::WorkspaceId::parse(&again.workspace).unwrap();
     let (key, cert) = join_through_door(&runtime, again.plain, &id, own_device(0x75, "Ben"), "Ben");
     runtime.block_on(async {
         let info = tilo_relay_client::https::host_info(&Plain(again.plain))
@@ -1134,9 +1146,18 @@ fn a_persistent_room_reopens_after_hard_stops() {
             record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
         let visiting = page(host, key, cert, &host_cert);
+        let visiting_heard = visiting.events();
         visiting.send(Cmd::Join(workspace_id)).unwrap();
         visiting.send(Cmd::OpenRoute(route.clone())).unwrap();
-        assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;
+        assert_page_reads_the_chat(
+            "visiting",
+            &visiting,
+            &visiting_heard,
+            workspace_id,
+            &route,
+            &["general"],
+        )
+        .await;
         visiting.close();
     });
     room.stop();

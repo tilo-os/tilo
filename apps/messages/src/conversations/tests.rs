@@ -15,40 +15,6 @@ fn deliver(app: &mut TestApp<MessagesShell>, arguments: serde_json::Value) -> se
 }
 
 #[test]
-fn conversation_keys_normalise_numbers_names_and_item_addresses() {
-    assert_eq!(
-        conversation_key("+1 555 0100").as_deref(),
-        Some("+15550100")
-    );
-    assert_eq!(conversation_key("+15550100").as_deref(), Some("+15550100"));
-    assert_eq!(
-        conversation_key("Ada Lovelace").as_deref(),
-        Some("ada-lovelace")
-    );
-    assert_eq!(
-        conversation_key("tilo.messages/conversations/ada-lovelace").as_deref(),
-        Some("ada-lovelace")
-    );
-    assert_eq!(conversation_key("  ").as_deref(), None);
-    assert_eq!(conversation_key("+").as_deref(), None);
-}
-
-#[test]
-fn dates_read_as_rfc_3339_with_or_without_a_zone_and_print_in_utc() {
-    let at = parse_date("2026-10-11T09:30:00Z").expect("a date");
-    assert_eq!(format_date(at), "2026-10-11T09:30:00Z");
-    assert_eq!(parse_date("2026-10-11T09:30"), Some(at));
-    assert_eq!(parse_date("2026-10-11T11:30:00+02:00"), Some(at));
-    assert_eq!(parse_date("2026-10-11T09:30:00.250Z"), Some(at + 250));
-    assert_eq!(
-        parse_date("2026-10-11").map(format_date).as_deref(),
-        Some("2026-10-11T00:00:00Z")
-    );
-    assert_eq!(parse_date("2026-02-30"), None);
-    assert_eq!(parse_date("yesterday"), None);
-}
-
-#[test]
 fn a_delivered_message_lands_in_the_senders_conversation_under_a_derived_id() {
     let mut app = app();
     let answer = deliver(
@@ -301,14 +267,56 @@ fn the_conversations_are_read_only_to_field_edits() {
     );
 }
 
-#[test]
-fn the_agent_operations_are_offered_to_agents_as_reads_and_verbs() {
-    use ui::tilo_actions::ActionKind;
-    let specs = <MessagesEffect as ui::framework::Effect>::specs();
-    for id in ["search-messages", "export-content"] {
-        let spec = specs.iter().find(|spec| spec.id == id).expect(id);
-        assert_eq!(spec.contract.kind, ActionKind::Read, "{id} only reads");
-        assert!(spec.contract.reaches_agents(), "{id} is for agents");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the folded tests were outside this lint as test functions; their sums are test data"
+    )]
+    fn conversations_normalise_keys_and_dates_and_offer_agents_their_operations;
+
+    phase conversation_keys_normalise_numbers_names_and_item_addresses;
+    {
+        assert_eq!(
+            conversation_key("+1 555 0100").as_deref(),
+            Some("+15550100")
+        );
+        assert_eq!(conversation_key("+15550100").as_deref(), Some("+15550100"));
+        assert_eq!(
+            conversation_key("Ada Lovelace").as_deref(),
+            Some("ada-lovelace")
+        );
+        assert_eq!(
+            conversation_key("tilo.messages/conversations/ada-lovelace").as_deref(),
+            Some("ada-lovelace")
+        );
+        assert_eq!(conversation_key("  ").as_deref(), None);
+        assert_eq!(conversation_key("+").as_deref(), None);
+    }
+
+    phase dates_read_as_rfc_3339_with_or_without_a_zone_and_print_in_utc;
+    {
+        let at = parse_date("2026-10-11T09:30:00Z").expect("a date");
+        assert_eq!(format_date(at), "2026-10-11T09:30:00Z");
+        assert_eq!(parse_date("2026-10-11T09:30"), Some(at));
+        assert_eq!(parse_date("2026-10-11T11:30:00+02:00"), Some(at));
+        assert_eq!(parse_date("2026-10-11T09:30:00.250Z"), Some(at + 250));
+        assert_eq!(
+            parse_date("2026-10-11").map(format_date).as_deref(),
+            Some("2026-10-11T00:00:00Z")
+        );
+        assert_eq!(parse_date("2026-02-30"), None);
+        assert_eq!(parse_date("yesterday"), None);
+    }
+
+    phase the_agent_operations_are_offered_to_agents_as_reads_and_verbs;
+    {
+        use ui::tilo_actions::ActionKind;
+        let specs = <MessagesEffect as ui::framework::Effect>::specs();
+        for id in ["search-messages", "export-content"] {
+            let spec = specs.iter().find(|spec| spec.id == id).expect(id);
+            assert_eq!(spec.contract.kind, ActionKind::Read, "{id} only reads");
+            assert!(spec.contract.reaches_agents(), "{id} is for agents");
+        }
     }
 }
 

@@ -490,9 +490,10 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn identity_minting_waits_for_the_acknowledged_consequence() {
-        // Phase `the_key_is_not_minted_until_the_consequence_is_acknowledged`.
+    tilo_test_env::scenario! {
+        fn identity_minting_waits_for_the_acknowledged_consequence;
+
+        phase the_key_is_not_minted_until_the_consequence_is_acknowledged;
         {
             let mut o = Onboarding::new();
             assert!(!o.can_create(), "cannot create from the intro screen");
@@ -505,7 +506,8 @@ mod tests {
             o.set_acknowledged(true);
             assert!(o.can_create());
         }
-        // Phase `withdrawing_the_acknowledgement_closes_the_gate_again`.
+
+        phase withdrawing_the_acknowledgement_closes_the_gate_again;
         // Unticking has to actually revoke — a checkbox that can't be undone is a decoration, not a gate.
         {
             let mut o = Onboarding::new();
@@ -514,7 +516,8 @@ mod tests {
             o.set_acknowledged(false);
             assert!(!o.can_create());
         }
-        // Phase `back_returns_to_the_choice_without_carrying_acknowledgement`.
+
+        phase back_returns_to_the_choice_without_carrying_acknowledgement;
         {
             let mut o = Onboarding::new();
             o.begin();
@@ -548,7 +551,8 @@ mod tests {
                 "the intro has no restore shortcut"
             );
         }
-        // Phase `completing_without_the_gate_changes_nothing`.
+
+        phase completing_without_the_gate_changes_nothing;
         // A UI bug must not be able to mint behind the user's back.
         {
             let mut o = Onboarding::new();
@@ -570,7 +574,8 @@ mod tests {
             assert_eq!(o.screen(), Screen::Done);
             assert!(o.is_done());
         }
-        // Phase `resuming_a_created_identity_never_reopens_the_creation_gate`.
+
+        phase resuming_a_created_identity_never_reopens_the_creation_gate;
         {
             let mut onboarding = Onboarding::new();
             onboarding.resume_created(MintedIdentity {
@@ -583,7 +588,8 @@ mod tests {
             assert!(!onboarding.acknowledged());
             assert!(!onboarding.can_create());
         }
-        // Phase `minting_writes_a_readable_record_and_reports_its_fingerprint`.
+
+        phase minting_writes_a_readable_record_and_reports_its_fingerprint;
         {
             let dir = std::env::temp_dir().join(format!(
                 "tilo-onboarding-{}-{}",
@@ -604,105 +610,109 @@ mod tests {
         }
     }
 
-    /// A device joined from another device holds its person as a public
-    /// record under a fingerprinted id, selected by the account's `active`
-    /// file. Retrying from trusted recovery runs the minter, which provisioning
-    /// answers with `Existing`; reading `primary.json` instead of the selected
-    /// record reported "the identity record is missing" and kept a sound
-    /// device in recovery for good.
-    #[test]
-    fn a_joined_device_takes_up_the_identity_its_account_selects() {
-        use getrandom::{SysRng, rand_core::UnwrapErr};
-        use tilo_user_identity::{DeviceCapabilities, DeviceCert, persist};
+    tilo_test_env::scenario! {
+        fn an_identity_already_on_the_device_is_taken_up_or_its_problem_named;
 
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let person = root.verifying_key().to_bytes();
-        let dir = tempfile::tempdir().unwrap();
-        let identity_dir = dir.path().join("identity");
-        let system = tilo_user_identity::IdentityPaths::under(dir.path().join("system"));
-        let (device, _) = persist::load_or_create_device_key(&system).unwrap();
-        let mut cert = DeviceCert {
-            user_public_key: person,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1_000,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        persist::install_device_cert(&system, &cert, 2_000).unwrap();
-        assert!(
-            tilo_identity_host::provisioning::complete_enrolled_device(
-                &identity_dir,
-                &system,
-                tilo_clock::unix_now_ns(),
-            )
-            .unwrap()
-        );
-        let selected = runtime_identity::resolve_active_identity(&identity_dir).unwrap();
-        assert!(!identity_dir.join("primary.json").exists());
+        phase a_joined_device_takes_up_the_identity_its_account_selects;
+        // A device joined from another device holds its person as a public
+        // record under a fingerprinted id, selected by the account's `active`
+        // file. Retrying from trusted recovery runs the minter, which provisioning
+        // answers with `Existing`; reading `primary.json` instead of the selected
+        // record reported "the identity record is missing" and kept a sound
+        // device in recovery for good.
+        {
+            use getrandom::{SysRng, rand_core::UnwrapErr};
+            use tilo_user_identity::{DeviceCapabilities, DeviceCert, persist};
 
-        let minted = mint_into_with_paths(&identity_dir, &system, false)
-            .expect("the joined identity is taken up, not reported missing");
-        assert_eq!(minted.fingerprint, hex::encode(person));
-        assert_eq!(minted.path, selected);
-        assert!(holds_no_identity_secret(&minted.path));
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let person = root.verifying_key().to_bytes();
+            let dir = tempfile::tempdir().unwrap();
+            let identity_dir = dir.path().join("identity");
+            let system = tilo_user_identity::IdentityPaths::under(dir.path().join("system"));
+            let (device, _) = persist::load_or_create_device_key(&system).unwrap();
+            let mut cert = DeviceCert {
+                user_public_key: person,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "laptop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1_000,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            persist::install_device_cert(&system, &cert, 2_000).unwrap();
+            assert!(
+                tilo_identity_host::provisioning::complete_enrolled_device(
+                    &identity_dir,
+                    &system,
+                    tilo_clock::unix_now_ns(),
+                )
+                .unwrap()
+            );
+            let selected = runtime_identity::resolve_active_identity(&identity_dir).unwrap();
+            assert!(!identity_dir.join("primary.json").exists());
 
-        // The account's config is reset while the device's enrollment
-        // survives: the same person is taken up again.
-        std::fs::remove_dir_all(&identity_dir).unwrap();
-        let again = mint_into_with_paths(&identity_dir, &system, false)
-            .expect("the surviving enrollment brings its person back");
-        assert_eq!(again.fingerprint, hex::encode(person));
-        assert!(again.path.is_file());
-        assert!(!system.user_privkey.exists(), "no root is minted beside it");
-    }
+            let minted = mint_into_with_paths(&identity_dir, &system, false)
+                .expect("the joined identity is taken up, not reported missing");
+            assert_eq!(minted.fingerprint, hex::encode(person));
+            assert_eq!(minted.path, selected);
+            assert!(holds_no_identity_secret(&minted.path));
 
-    #[test]
-    fn identity_problems_name_the_step_that_fixes_them() {
-        use std::io;
-        let of = |error: io::Error| IdentityProblem::of(&error);
-        assert_eq!(
-            of(runtime_identity::secret_service_unavailable_error()),
-            Some(IdentityProblem::KeyringUnavailable)
-        );
-        assert_eq!(
-            of(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "bad certificate"
-            )),
-            Some(IdentityProblem::ChainInvalid)
-        );
-        assert_eq!(
-            of(io::Error::new(io::ErrorKind::NotFound, "no record")),
-            Some(IdentityProblem::RecordMissing)
-        );
-        assert_eq!(
-            of(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "not private"
-            )),
-            None
-        );
-        for problem in [
-            IdentityProblem::KeyringUnavailable,
-            IdentityProblem::RecordMissing,
-            IdentityProblem::ChainInvalid,
-        ] {
-            assert_eq!(IdentityProblem::parse(problem.as_str()), Some(problem));
+            // The account's config is reset while the device's enrollment
+            // survives: the same person is taken up again.
+            std::fs::remove_dir_all(&identity_dir).unwrap();
+            let again = mint_into_with_paths(&identity_dir, &system, false)
+                .expect("the surviving enrollment brings its person back");
+            assert_eq!(again.fingerprint, hex::encode(person));
+            assert!(again.path.is_file());
+            assert!(!system.user_privkey.exists(), "no root is minted beside it");
         }
-        assert_eq!(IdentityProblem::parse("1"), None);
 
-        // A selector naming a record that is gone is reported as missing,
-        // distinct from a locked keyring or a broken chain.
-        let dir = tempfile::tempdir().unwrap();
-        let error = existing_identity_in(dir.path()).unwrap_err();
-        assert_eq!(
-            error.identity_problem(),
-            Some(IdentityProblem::RecordMissing)
-        );
+        phase identity_problems_name_the_step_that_fixes_them;
+        {
+            use std::io;
+            let of = |error: io::Error| IdentityProblem::of(&error);
+            assert_eq!(
+                of(runtime_identity::secret_service_unavailable_error()),
+                Some(IdentityProblem::KeyringUnavailable)
+            );
+            assert_eq!(
+                of(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "bad certificate"
+                )),
+                Some(IdentityProblem::ChainInvalid)
+            );
+            assert_eq!(
+                of(io::Error::new(io::ErrorKind::NotFound, "no record")),
+                Some(IdentityProblem::RecordMissing)
+            );
+            assert_eq!(
+                of(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "not private"
+                )),
+                None
+            );
+            for problem in [
+                IdentityProblem::KeyringUnavailable,
+                IdentityProblem::RecordMissing,
+                IdentityProblem::ChainInvalid,
+            ] {
+                assert_eq!(IdentityProblem::parse(problem.as_str()), Some(problem));
+            }
+            assert_eq!(IdentityProblem::parse("1"), None);
+
+            // A selector naming a record that is gone is reported as missing,
+            // distinct from a locked keyring or a broken chain.
+            let dir = tempfile::tempdir().unwrap();
+            let error = existing_identity_in(dir.path()).unwrap_err();
+            assert_eq!(
+                error.identity_problem(),
+                Some(IdentityProblem::RecordMissing)
+            );
+        }
     }
 
     #[test]
@@ -754,9 +764,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn onboarding_copy_is_honest_about_identity_and_recovery() {
-        // Phase `fingerprints_are_grouped_so_they_can_be_compared_by_eye`.
+    tilo_test_env::scenario! {
+        fn onboarding_copy_is_honest_about_identity_and_recovery;
+
+        phase fingerprints_are_grouped_so_they_can_be_compared_by_eye;
         {
             let m = MintedIdentity {
                 fingerprint: "0123456789abcdef".to_string(),
@@ -764,7 +775,8 @@ mod tests {
             };
             assert_eq!(m.grouped_fingerprint(), "0123 4567 89ab cdef");
         }
-        // Phase `copy_does_not_promise_recovery`.
+
+        phase copy_does_not_promise_recovery;
         // The copy must not imply a safety net that does not exist: there is
         // no escrow, only what the person keeps themselves (a recovery key or
         // an encrypted backup), and the copy names both.
@@ -793,7 +805,8 @@ mod tests {
                 );
             }
         }
-        // Phase `the_acknowledgement_names_the_consequence`.
+
+        phase the_acknowledgement_names_the_consequence;
         // The acknowledgement states the consequence rather than asking for agreement, so ticking it means the user read a fact.
         {
             let acknowledgement = acknowledgement();
@@ -811,7 +824,8 @@ mod tests {
                 "this is a fact to understand, not terms to accept: {acknowledgement}"
             );
         }
-        // Phase `the_intro_says_it_is_not_an_account`.
+
+        phase the_intro_says_it_is_not_an_account;
         // The intro must not describe the identity as an account — the mental model that makes people expect a password reset.
         {
             let joined = intro_points().join(" ").to_lowercase();
@@ -820,7 +834,8 @@ mod tests {
                 "the intro must rule out the account mental model: {joined}"
             );
         }
-        // Phase `identity_copy_does_not_overstate_per_edit_signing`.
+
+        phase identity_copy_does_not_overstate_per_edit_signing;
         {
             let copy = format!("{} {}", intro_body(), intro_points().join(" ")).to_lowercase();
             // It admits that signing does not yet cover every edit.

@@ -564,7 +564,7 @@ impl DirectoryFixture {
         let mut pending = self.state.action_query(&self.caller, query);
         tilo_test_env::within("the app-filtered directory query", async {
             loop {
-                self.state.drain_action_directory_bridge(&self.directories);
+                self.state.take_turn(&self.directories);
                 match pending.poll_ready() {
                     PendingPoll::Ready(page) => break page,
                     PendingPoll::Abandoned => panic!("the directory query was abandoned"),

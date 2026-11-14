@@ -1552,22 +1552,56 @@ ui::reach_tests!(SheetsShell);
 mod agent_disclosure_tests {
     use ui::framework::ResourceApp;
     use ui::framework::testing::TestApp;
+    use ui::serde_json::Value;
     use ui::tilo_actions::ResourceSpec;
 
-    fn read_first(kind: &str) -> ui::serde_json::Value {
+    /// `scenario` as a drive stages it, settled, and what it publishes.
+    fn driven(scenario: &str) -> (TestApp<super::SheetsShell>, Vec<ResourceSpec>) {
+        let mut app = TestApp::<super::SheetsShell>::drive(scenario)
+            .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+        app.settle();
+        let resources = app.harness().resources();
+        (app, resources)
+    }
+
+    /// What the document read of each of `kinds` answers, in the first scenario that publishes
+    /// that kind with one. One walk over the scenarios serves every kind. Each read is asked of
+    /// a window of its own, driven and settled and asked nothing before: a window that answered
+    /// is dropped, and the next kind its scenario publishes gets the scenario driven again.
+    fn read_first_of_each(kinds: &[&str]) -> Vec<Value> {
+        let mut answers: Vec<Option<Value>> = vec![None; kinds.len()];
         for scenario in <super::SheetsShell as ResourceApp>::scenarios() {
-            let mut app = TestApp::<super::SheetsShell>::drive(scenario)
-                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
-            app.settle();
-            let resources = app.harness().resources();
-            if let Some((resource, read)) = document_read(&resources, kind) {
-                return app
-                    .call_on(&resource, &read, ui::serde_json::json!({}))
-                    .unwrap_or_else(|error| panic!("{kind} in {scenario}: {error}"))
-                    .unwrap_or_else(|| panic!("the read of {kind} answers"));
+            if answers.iter().all(Option::is_some) {
+                break;
+            }
+            let mut unasked = Some(driven(scenario));
+            let waiting = kinds
+                .iter()
+                .zip(&mut answers)
+                .filter(|(_, answer)| answer.is_none());
+            for (kind, answer) in waiting {
+                let (mut app, resources) = unasked.take().unwrap_or_else(|| driven(scenario));
+                match document_read(&resources, kind) {
+                    Some((resource, read)) => {
+                        let answered = app
+                            .call_on(&resource, &read, ui::serde_json::json!({}))
+                            .unwrap_or_else(|error| panic!("{kind} in {scenario}: {error}"))
+                            .unwrap_or_else(|| panic!("the read of {kind} answers"));
+                        *answer = Some(answered);
+                    }
+                    None => unasked = Some((app, resources)),
+                }
             }
         }
-        panic!("no scenario publishes a {kind} with a document read");
+        kinds
+            .iter()
+            .zip(answers)
+            .map(|(kind, answer)| {
+                answer.unwrap_or_else(|| {
+                    panic!("no scenario publishes a {kind} with a document read")
+                })
+            })
+            .collect()
     }
 
     fn document_read(resources: &[ResourceSpec], kind: &str) -> Option<(String, String)> {
@@ -1582,21 +1616,25 @@ mod agent_disclosure_tests {
     }
 
     #[test]
-    fn a_chart_and_a_comment_are_read_through_the_workbook_read() {
-        let answer = read_first("sheets.workbook.chart");
-        assert_eq!(answer["kind"], "chart", "{answer}");
-        assert!(answer["range"].is_string(), "{answer}");
-        let answer = read_first("sheets.workbook.comment");
-        assert_eq!(answer["kind"], "comment", "{answer}");
-        assert!(answer["body"].is_string(), "{answer}");
-    }
-
-    #[test]
-    fn a_sheet_and_a_comment_item_are_read_through_the_workbook_read() {
-        let answer = read_first("sheets.workbook.sheets");
-        assert!(answer["sheet"].is_string(), "{answer}");
-        let answer = read_first("sheets.workbook.comments");
-        assert_eq!(answer["kind"], "comment", "{answer}");
+    fn a_chart_a_comment_a_sheet_and_a_comment_item_are_read_through_the_workbook_read() {
+        // The kind published, the kind its read says it answers for, and a field the answer
+        // carries as text.
+        let rows: [(&str, Option<&str>, Option<&str>); 4] = [
+            ("sheets.workbook.chart", Some("chart"), Some("range")),
+            ("sheets.workbook.comment", Some("comment"), Some("body")),
+            ("sheets.workbook.sheets", None, Some("sheet")),
+            ("sheets.workbook.comments", Some("comment"), None),
+        ];
+        let kinds: Vec<&str> = rows.iter().map(|row| row.0).collect();
+        let answers = read_first_of_each(&kinds);
+        for ((kind, says, text), answer) in rows.into_iter().zip(answers) {
+            if let Some(says) = says {
+                assert_eq!(answer["kind"], says, "{kind}: {answer}");
+            }
+            if let Some(text) = text {
+                assert!(answer[text].is_string(), "{kind} `{text}`: {answer}");
+            }
+        }
     }
 
     #[test]

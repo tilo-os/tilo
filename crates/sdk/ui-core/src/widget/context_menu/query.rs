@@ -49,6 +49,16 @@ impl ContextMenu {
         }
     }
 
+    /// The owner delivers what its box sends itself ([`Self::set_owner_sends`]): the menu then
+    /// offers the row that sends what it is about, and opens the box with no app runner behind
+    /// it.
+    pub fn set_owner_sends(&mut self, sends: bool) {
+        if self.owner_sends != sends {
+            self.owner_sends = sends;
+            self.dirty = true;
+        }
+    }
+
     /// The owner takes typing although the gesture that opened the menu
     /// happened in another process: the window menu, whose reading carries a
     /// press's place. Typing then narrows the rows, as it does in a menu the
@@ -135,7 +145,13 @@ impl ContextMenu {
 
     /// Whether a sentence typed into the menu can be sent from it.
     pub(super) fn can_ask(&self) -> bool {
-        self.owner_asks || crate::shared_selection::send_host_available()
+        self.owner_asks || self.sends()
+    }
+
+    /// Whether what the box sends reaches somewhere: an app runner under this same process hands
+    /// it to the desktop, or the owner hands it to the session itself.
+    fn sends(&self) -> bool {
+        self.owner_sends || crate::shared_selection::send_host_available()
     }
 
     /// The row that opens the send-to box, when the menu has one: the last,
@@ -149,7 +165,7 @@ impl ContextMenu {
     /// Whether the send row stands before anything is typed: the box it
     /// opens can send, here or through the owner.
     fn sends_untyped(&self) -> bool {
-        crate::shared_selection::send_host_available()
+        self.sends()
     }
 
     /// The query's text, trimmed; empty without one.

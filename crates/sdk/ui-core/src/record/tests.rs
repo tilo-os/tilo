@@ -811,7 +811,8 @@ fn workspaces_hold_references_and_discover_metadata_only() {
         };
         let (mut workspace_a, mut saver_a) = open_workspace(a);
         assert!(index::reference(&mut workspace_a, &entry.id, &entry.kind));
-        saver_a.request(&mut workspace_a);
+        workspace_a.commit();
+        saver_a.request(&workspace_a);
         saver_a.flush();
 
         let (workspace_b, _) = open_workspace(b);

@@ -181,11 +181,57 @@ mod tests {
         tempfile::tempdir().expect("create tempdir")
     }
 
-    #[test]
-    fn save_and_load_round_trip_bytes_parents_and_utf8() {
-        save_writes_the_bytes_and_load_reads_them_back();
-        save_creates_missing_parent_directories();
-        utf8_survives_a_save_load_round_trip();
+    tilo_test_env::scenario! {
+        fn files_save_load_and_refuse_what_they_must;
+
+        phase save_and_load_round_trip_bytes_parents_and_utf8;
+        {
+            save_writes_the_bytes_and_load_reads_them_back();
+            save_creates_missing_parent_directories();
+            utf8_survives_a_save_load_round_trip();
+        }
+
+        phase stamped_saves_refuse_to_clobber_external_changes;
+        {
+            a_second_save_against_a_current_stamp_succeeds();
+            a_file_changed_underneath_refuses_to_be_clobbered();
+            an_explicit_overwrite_after_a_conflict_wins();
+            a_deleted_file_counts_as_changed();
+        }
+
+        phase load_refuses_binary_and_oversized_files;
+        {
+            binary_files_are_refused_rather_than_opened_as_text();
+            oversized_files_are_refused_before_being_read();
+            too_large_message_uses_si_units();
+        }
+
+        phase actual_read_refuses_a_file_that_grows_after_its_metadata_was_checked;
+        {
+            let directory = tmpdir();
+            let path = directory.path().join("growing.rs");
+            std::fs::write(&path, "small source").unwrap();
+            let reader = std::fs::File::open(&path).unwrap();
+            assert!(reader.metadata().unwrap().len() < MAX_TEXT_BYTES);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(MAX_TEXT_BYTES + 1)
+                .unwrap();
+            assert!(
+                matches!(read_body(reader), Err(LoadError::TooLarge(size)) if size == MAX_TEXT_BYTES + 1)
+            );
+        }
+
+        phase build_output_and_vcs_dirs_are_ignored;
+        {
+            assert!(is_ignored_dir("target"));
+            assert!(is_ignored_dir(".git"));
+            assert!(is_ignored_dir("node_modules"));
+            assert!(!is_ignored_dir("src"));
+            assert!(!is_ignored_dir("targets"));
+        }
     }
 
     fn save_writes_the_bytes_and_load_reads_them_back() {
@@ -207,14 +253,6 @@ mod tests {
         let p = d.path().join("nested/deeper/new.rs");
         save(&p, "x", None).expect("save creates the parent chain");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "x");
-    }
-
-    #[test]
-    fn stamped_saves_refuse_to_clobber_external_changes() {
-        a_second_save_against_a_current_stamp_succeeds();
-        a_file_changed_underneath_refuses_to_be_clobbered();
-        an_explicit_overwrite_after_a_conflict_wins();
-        a_deleted_file_counts_as_changed();
     }
 
     fn a_second_save_against_a_current_stamp_succeeds() {
@@ -305,13 +343,6 @@ mod tests {
         save(&p, "x", Some(&stamp)).expect("recreating a deleted file is not a conflict");
     }
 
-    #[test]
-    fn load_refuses_binary_and_oversized_files() {
-        binary_files_are_refused_rather_than_opened_as_text();
-        oversized_files_are_refused_before_being_read();
-        too_large_message_uses_si_units();
-    }
-
     fn binary_files_are_refused_rather_than_opened_as_text() {
         let d = tmpdir();
         let p = d.path().join("thing.bin");
@@ -330,39 +361,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn actual_read_refuses_a_file_that_grows_after_its_metadata_was_checked() {
-        let directory = tmpdir();
-        let path = directory.path().join("growing.rs");
-        std::fs::write(&path, "small source").unwrap();
-        let reader = std::fs::File::open(&path).unwrap();
-        assert!(reader.metadata().unwrap().len() < MAX_TEXT_BYTES);
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_len(MAX_TEXT_BYTES + 1)
-            .unwrap();
-        assert!(
-            matches!(read_body(reader), Err(LoadError::TooLarge(size)) if size == MAX_TEXT_BYTES + 1)
-        );
-    }
-
     fn utf8_survives_a_save_load_round_trip() {
         let d = tmpdir();
         let p = d.path().join("é.rs");
         let body = "// héllo wörld — 日本語\nfn main() {}\n";
         save(&p, body, None).unwrap();
         assert_eq!(load(&p).unwrap().text, body);
-    }
-
-    #[test]
-    fn build_output_and_vcs_dirs_are_ignored() {
-        assert!(is_ignored_dir("target"));
-        assert!(is_ignored_dir(".git"));
-        assert!(is_ignored_dir("node_modules"));
-        assert!(!is_ignored_dir("src"));
-        assert!(!is_ignored_dir("targets"));
     }
 
     fn too_large_message_uses_si_units() {

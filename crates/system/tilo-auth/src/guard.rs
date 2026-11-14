@@ -76,69 +76,73 @@ impl Guard {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_wrong_entry_is_remembered_per_person_until_success_or_ten_minutes() {
-        let mut guard = Guard::new().unwrap();
-        let start = Instant::now();
-        let typo = Secret::new("12345");
-        assert!(!guard.already_wrong(1000, &typo, start));
-        guard.remember_wrong(1000, &typo, start);
-        assert!(guard.already_wrong(1000, &typo, start + Duration::from_secs(1)));
-        assert!(!guard.already_wrong(1001, &typo, start));
-        assert!(!guard.already_wrong(1000, &Secret::new("123456"), start));
+    tilo_test_env::scenario! {
+        fn the_guard_remembers_wrong_entries_for_a_while_as_digests;
 
-        guard.succeeded(1000);
-        assert!(!guard.already_wrong(1000, &typo, start));
+        phase a_wrong_entry_is_remembered_per_person_until_success_or_ten_minutes;
+        {
+            let mut guard = Guard::new().unwrap();
+            let start = Instant::now();
+            let typo = Secret::new("12345");
+            assert!(!guard.already_wrong(1000, &typo, start));
+            guard.remember_wrong(1000, &typo, start);
+            assert!(guard.already_wrong(1000, &typo, start + Duration::from_secs(1)));
+            assert!(!guard.already_wrong(1001, &typo, start));
+            assert!(!guard.already_wrong(1000, &Secret::new("123456"), start));
 
-        guard.remember_wrong(1000, &typo, start);
-        assert!(
-            guard.already_wrong(
-                1000,
-                &typo,
-                (start + REMEMBERED_FOR)
-                    .checked_sub(Duration::from_secs(1))
-                    .unwrap()
-            )
-        );
-        assert!(!guard.already_wrong(1000, &typo, start + REMEMBERED_FOR));
-    }
+            guard.succeeded(1000);
+            assert!(!guard.already_wrong(1000, &typo, start));
 
-    #[test]
-    fn expired_entries_leave_memory_and_the_next_expiry_follows_the_oldest() {
-        let mut guard = Guard::new().unwrap();
-        let start = Instant::now();
-        assert_eq!(guard.next_expiry(), None);
-        guard.remember_wrong(1000, &Secret::new("1"), start);
-        let later = start + Duration::from_secs(60);
-        guard.remember_wrong(1001, &Secret::new("2"), later);
-        assert_eq!(guard.next_expiry(), Some(start + REMEMBERED_FOR));
-
-        guard.forget_expired(start + REMEMBERED_FOR);
-        assert!(!guard.wrong.contains_key(&1000));
-        assert_eq!(guard.next_expiry(), Some(later + REMEMBERED_FOR));
-        guard.forget_expired(later + REMEMBERED_FOR);
-        assert!(guard.wrong.is_empty());
-        assert_eq!(guard.next_expiry(), None);
-    }
-
-    #[test]
-    fn entries_are_kept_as_keyed_digests_not_text() {
-        let a = Guard::new().unwrap();
-        let b = Guard::new().unwrap();
-        let secret = Secret::new("hunter2");
-        assert_ne!(a.digest(&secret), b.digest(&secret));
-        assert_ne!(&a.digest(&secret)[..7], secret.as_bytes());
-    }
-
-    #[test]
-    fn a_flood_of_wrong_entries_keeps_only_the_newest() {
-        let mut guard = Guard::new().unwrap();
-        let now = Instant::now();
-        for i in 0..=PER_PERSON {
-            guard.remember_wrong(1, &Secret::new(&i.to_string()), now);
+            guard.remember_wrong(1000, &typo, start);
+            assert!(
+                guard.already_wrong(
+                    1000,
+                    &typo,
+                    (start + REMEMBERED_FOR)
+                        .checked_sub(Duration::from_secs(1))
+                        .unwrap()
+                )
+            );
+            assert!(!guard.already_wrong(1000, &typo, start + REMEMBERED_FOR));
         }
-        assert!(!guard.already_wrong(1, &Secret::new("0"), now));
-        assert!(guard.already_wrong(1, &Secret::new(&PER_PERSON.to_string()), now));
-        assert_eq!(guard.wrong[&1].len(), PER_PERSON);
+
+        phase expired_entries_leave_memory_and_the_next_expiry_follows_the_oldest;
+        {
+            let mut guard = Guard::new().unwrap();
+            let start = Instant::now();
+            assert_eq!(guard.next_expiry(), None);
+            guard.remember_wrong(1000, &Secret::new("1"), start);
+            let later = start + Duration::from_secs(60);
+            guard.remember_wrong(1001, &Secret::new("2"), later);
+            assert_eq!(guard.next_expiry(), Some(start + REMEMBERED_FOR));
+
+            guard.forget_expired(start + REMEMBERED_FOR);
+            assert!(!guard.wrong.contains_key(&1000));
+            assert_eq!(guard.next_expiry(), Some(later + REMEMBERED_FOR));
+            guard.forget_expired(later + REMEMBERED_FOR);
+            assert!(guard.wrong.is_empty());
+            assert_eq!(guard.next_expiry(), None);
+        }
+
+        phase entries_are_kept_as_keyed_digests_not_text;
+        {
+            let a = Guard::new().unwrap();
+            let b = Guard::new().unwrap();
+            let secret = Secret::new("hunter2");
+            assert_ne!(a.digest(&secret), b.digest(&secret));
+            assert_ne!(&a.digest(&secret)[..7], secret.as_bytes());
+        }
+
+        phase a_flood_of_wrong_entries_keeps_only_the_newest;
+        {
+            let mut guard = Guard::new().unwrap();
+            let now = Instant::now();
+            for i in 0..=PER_PERSON {
+                guard.remember_wrong(1, &Secret::new(&i.to_string()), now);
+            }
+            assert!(!guard.already_wrong(1, &Secret::new("0"), now));
+            assert!(guard.already_wrong(1, &Secret::new(&PER_PERSON.to_string()), now));
+            assert_eq!(guard.wrong[&1].len(), PER_PERSON);
+        }
     }
 }

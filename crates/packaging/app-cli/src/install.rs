@@ -1130,149 +1130,325 @@ fn installer_complaint(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_download_a_dead_process_left_goes_and_one_in_progress_stays() {
-        let staging = tempfile::tempdir().expect("staging dir");
-        let abandoned = staging.path().join("so.tilo.runtime-0.1.0.4242.0.tapp");
-        std::fs::write(&abandoned, vec![7_u8; 4096]).expect("abandoned download");
-        let current = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
-        std::fs::write(current.path(), b"partial").expect("write");
+    tilo_test_env::scenario! {
+        fn package_downloads_are_staged_bounded_and_verified;
 
-        assert_eq!(sweep_abandoned_downloads(staging.path()), 4096);
-        assert!(!abandoned.exists());
-        assert!(
-            current.path().exists(),
-            "a download in progress was removed"
-        );
+        phase a_download_a_dead_process_left_goes_and_one_in_progress_stays;
+        {
+            let staging = tempfile::tempdir().expect("staging dir");
+            let abandoned = staging.path().join("so.tilo.runtime-0.1.0.4242.0.tapp");
+            std::fs::write(&abandoned, vec![7_u8; 4096]).expect("abandoned download");
+            let current = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
+            std::fs::write(current.path(), b"partial").expect("write");
 
-        let again = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
-        assert_ne!(again.path(), current.path());
+            assert_eq!(sweep_abandoned_downloads(staging.path()), 4096);
+            assert!(!abandoned.exists());
+            assert!(
+                current.path().exists(),
+                "a download in progress was removed"
+            );
 
-        let path = current.path().to_path_buf();
-        drop(current);
-        assert!(!path.exists());
-    }
+            let again = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
+            assert_ne!(again.path(), current.path());
 
-    #[test]
-    fn an_install_that_would_fill_the_disk_is_refused_before_downloading() {
-        let package = 1_000_000_000;
-        assert!(room_for_install(package, 3_000_000_000).is_ok());
-        let refused = room_for_install(package, 1_500_000_000).expect_err("too little room");
-        assert_eq!(
-            refused.user_message(),
-            "not enough space: it needs 2.2 GB, 1.5 GB is free"
-        );
+            let path = current.path().to_path_buf();
+            drop(current);
+            assert!(!path.exists());
+        }
+
+        phase an_install_that_would_fill_the_disk_is_refused_before_downloading;
+        {
+            let package = 1_000_000_000;
+            assert!(room_for_install(package, 3_000_000_000).is_ok());
+            let refused = room_for_install(package, 1_500_000_000).expect_err("too little room");
+            assert_eq!(
+                refused.user_message(),
+                "not enough space: it needs 2.2 GB, 1.5 GB is free"
+            );
+        }
+
+        phase app_host_stages_verified_downloads_in_private_state_without_writable_home;
+        {
+            use std::io::{Read as _, Write as _};
+            use std::net::TcpListener;
+
+            let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
+            let setting = unit
+                .lines()
+                .find_map(|line| line.strip_prefix("Environment=TILO_STORE_CACHE_DIR="))
+                .expect("the hardened host must explicitly locate writable download state");
+            assert_eq!(setting, "%S/tilo-app-host/cache");
+            assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
+            let writes = unit
+                .lines()
+                .find_map(|line| line.strip_prefix("ReadWritePaths="))
+                .expect("scoped broker writes");
+            assert!(
+                writes
+                    .split_whitespace()
+                    .any(|path| path == "%S/tilo-app-host")
+            );
+            assert!(
+                !writes
+                    .split_whitespace()
+                    .any(|path| path == "%h" || path == "%h/.cache/tilo-store")
+            );
+
+            let mut home = tilo_test_env::TestHome::new().expect("isolated home");
+            let state = home.root().join("private-state");
+            let cache = PathBuf::from(setting.replace("%S", &state.to_string_lossy()));
+            home.env().set("TILO_STORE_CACHE_DIR", &cache);
+            let staging = staging_dir().expect("private staging directory");
+            assert_eq!(staging, cache.join("staged-tapp"));
+            assert!(!home.cache().join("tilo-store/staged-tapp").exists());
+
+            let listener = TcpListener::bind("127.0.0.1:0").expect("loopback");
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("download request");
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request);
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntapp")
+                    .expect("package bytes");
+            });
+            let dest = staging.join("package.tapp");
+            let result = download_reporting_limited(
+                &format!("http://{address}/app.tapp"),
+                &dest,
+                4,
+                &mut |_| {},
+            );
+            server.join().expect("server cleanup");
+            assert_eq!(result.expect("actual canonical staging write"), 4);
+            verify_download_metadata(&registry_app_for(b"tapp"), 4).expect("exact registry bytes");
+            assert_eq!(std::fs::read(&dest).unwrap(), b"tapp");
+            assert!(!home.cache().join("tilo-store/staged-tapp").exists());
+            std::fs::remove_file(&dest).expect("disposable staging cleanup");
+        }
+
+        phase compressed_tapps_are_bounded_and_verified_as_the_signed_bytes;
+        {
+            use tilo_app_package::compressed;
+            let package = b"signed package bytes, compressed for the wire ".repeat(256);
+            let twin = compressed::compress(&package).expect("compress");
+            let temp = tempfile::tempdir().expect("temp dir");
+            let dest = temp.path().join("staged.tapp");
+
+            {
+                let (base, asked) = package_host(std::collections::HashMap::from([
+                    ("/app.tapp.zst".to_string(), twin.clone()),
+                    ("/app.tapp".to_string(), b"never fetched".to_vec()),
+                ]));
+                let mut app = registry_app_for(&package);
+                app.download_url = format!("{base}/app.tapp");
+                let mut wire = 0;
+                let len = fetch_verified(&app, &dest, &mut |progress| wire = progress.received)
+                    .expect("the twin decompresses to the signed package");
+                assert_eq!(len, package.len() as u64);
+                assert_eq!(std::fs::read(&dest).expect("staged"), package);
+                assert_eq!(wire, twin.len() as u64, "progress is wire bytes");
+                assert_eq!(*asked.lock().unwrap(), ["/app.tapp.zst"]);
+            }
+            {
+                let mut longer = package.clone();
+                longer.push(b'!');
+                let (base, _) = package_host(std::collections::HashMap::from([(
+                    "/app.tapp.zst".to_string(),
+                    compressed::compress(&longer).expect("compress"),
+                )]));
+                let mut app = registry_app_for(&package);
+                app.download_url = format!("{base}/app.tapp");
+                let error = fetch_verified(&app, &dest, &mut |_| {}).expect_err("refused");
+                assert!(
+                    matches!(&error, InstallError::Download { detail } if detail.contains("bound")),
+                    "{error:?}"
+                );
+                assert!(!dest.exists(), "a refused download leaves nothing staged");
+
+                let (base, _) = package_host(std::collections::HashMap::from([(
+                    "/bomb.tapp.zst".to_string(),
+                    compressed::compress(&vec![0; 64 << 20]).expect("compress"),
+                )]));
+                app.download_url = format!("{base}/bomb.tapp");
+                assert!(fetch_verified(&app, &dest, &mut |_| {}).is_err());
+                assert!(!dest.exists());
+            }
+            {
+                let mut other = package.clone();
+                other[0] ^= 1;
+                let (base, _) = package_host(std::collections::HashMap::from([(
+                    "/app.tapp.zst".to_string(),
+                    compressed::compress(&other).expect("compress"),
+                )]));
+                let mut app = registry_app_for(&package);
+                app.download_url = format!("{base}/app.tapp");
+                let error = fetch_verified(&app, &dest, &mut |_| {}).expect_err("refused");
+                assert!(
+                    matches!(&error, InstallError::Integrity { detail } if detail.contains("hash")),
+                    "{error:?}"
+                );
+                assert!(!dest.exists());
+            }
+            {
+                let (base, asked) = package_host(std::collections::HashMap::from([(
+                    "/app.tapp".to_string(),
+                    package.clone(),
+                )]));
+                let mut app = registry_app_for(&package);
+                app.download_url = format!("{base}/app.tapp");
+                fetch_verified(&app, &dest, &mut |_| {}).expect("raw fallback");
+                assert_eq!(std::fs::read(&dest).expect("staged"), package);
+                assert_eq!(*asked.lock().unwrap(), ["/app.tapp.zst", "/app.tapp"]);
+            }
+            {
+                let parsed = reqwest::Url::parse("https://apps.tilo.so/a/app.tapp?token=1").unwrap();
+                assert_eq!(twin_url(&parsed), None);
+                let parsed = reqwest::Url::parse("https://apps.tilo.so/a/app.tapp").unwrap();
+                assert_eq!(
+                    twin_url(&parsed).map(String::from).as_deref(),
+                    Some("https://apps.tilo.so/a/app.tapp.zst")
+                );
+            }
+        }
     }
 
     use super::*;
 
-    #[test]
-    fn the_installer_invocation_is_fixed_and_never_relaxes_signatures() {
+    tilo_test_env::scenario! {
+        fn the_installer_is_invoked_and_reported_exactly;
+
+        phase the_installer_invocation_is_fixed_and_never_relaxes_signatures;
         {
-            use package_store::dev_env::dev_override_from;
-            let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
-            assert_eq!(tilo_install_bin_from(gated), installed_install_bin());
-            let honoured =
-                dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
-            assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
-        }
-        {
-            let publisher = "ab".repeat(32);
-            let root = "cd".repeat(32);
-            let argv = install_argv(
-                Path::new("/tmp/staged.tapp"),
-                &publisher,
-                &root,
-                Some("https://registry.example"),
-            );
-            assert_eq!(argv[0], "install");
-            assert_eq!(argv[1], "/tmp/staged.tapp");
-            assert!(
-                !argv.iter().any(|a| a == "--allow-self-signed"),
-                "an install started from a search box must not opt out of \
+            {
+                use package_store::dev_env::dev_override_from;
+                let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
+                assert_eq!(tilo_install_bin_from(gated), installed_install_bin());
+                let honoured =
+                    dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
+                assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
+            }
+            {
+                let publisher = "ab".repeat(32);
+                let root = "cd".repeat(32);
+                let argv = install_argv(
+                    Path::new("/tmp/staged.tapp"),
+                    &publisher,
+                    &root,
+                    Some("https://registry.example"),
+                );
+                assert_eq!(argv[0], "install");
+                assert_eq!(argv[1], "/tmp/staged.tapp");
+                assert!(
+                    !argv.iter().any(|a| a == "--allow-self-signed"),
+                    "an install started from a search box must not opt out of \
                  the publisher signature check: {argv:?}"
-            );
-            assert!(
-                argv.windows(2)
-                    .any(|pair| pair[0] == "--require-package-root" && pair[1] == root),
-                "the installer must pin the signed registry package root: {argv:?}"
-            );
-            assert!(
-                argv.windows(2)
-                    .any(|pair| pair[0] == "--require-publisher" && pair[1] == publisher),
-                "the installer must pin the signed registry publisher: {argv:?}"
-            );
-            assert!(
-                !argv.iter().any(|a| a.starts_with("--require-attestor")),
-                "attestor policy is the user's to set, not this path's: {argv:?}"
-            );
-            assert!(
-                argv.windows(2).any(
-                    |pair| pair[0] == "--payload-from" && pair[1] == "https://registry.example"
-                ),
-                "a thin package's payload comes from the offering registry: {argv:?}"
-            );
+                );
+                assert!(
+                    argv.windows(2)
+                        .any(|pair| pair[0] == "--require-package-root" && pair[1] == root),
+                    "the installer must pin the signed registry package root: {argv:?}"
+                );
+                assert!(
+                    argv.windows(2)
+                        .any(|pair| pair[0] == "--require-publisher" && pair[1] == publisher),
+                    "the installer must pin the signed registry publisher: {argv:?}"
+                );
+                assert!(
+                    !argv.iter().any(|a| a.starts_with("--require-attestor")),
+                    "attestor policy is the user's to set, not this path's: {argv:?}"
+                );
+                assert!(
+                    argv.windows(2).any(
+                        |pair| pair[0] == "--payload-from" && pair[1] == "https://registry.example"
+                    ),
+                    "a thin package's payload comes from the offering registry: {argv:?}"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn app_host_stages_verified_downloads_in_private_state_without_writable_home() {
-        use std::io::{Read as _, Write as _};
-        use std::net::TcpListener;
-
-        let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
-        let setting = unit
-            .lines()
-            .find_map(|line| line.strip_prefix("Environment=TILO_STORE_CACHE_DIR="))
-            .expect("the hardened host must explicitly locate writable download state");
-        assert_eq!(setting, "%S/tilo-app-host/cache");
-        assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
-        let writes = unit
-            .lines()
-            .find_map(|line| line.strip_prefix("ReadWritePaths="))
-            .expect("scoped broker writes");
-        assert!(
-            writes
-                .split_whitespace()
-                .any(|path| path == "%S/tilo-app-host")
-        );
-        assert!(
-            !writes
-                .split_whitespace()
-                .any(|path| path == "%h" || path == "%h/.cache/tilo-store")
-        );
-
-        let mut home = tilo_test_env::TestHome::new().expect("isolated home");
-        let state = home.root().join("private-state");
-        let cache = PathBuf::from(setting.replace("%S", &state.to_string_lossy()));
-        home.env().set("TILO_STORE_CACHE_DIR", &cache);
-        let staging = staging_dir().expect("private staging directory");
-        assert_eq!(staging, cache.join("staged-tapp"));
-        assert!(!home.cache().join("tilo-store/staged-tapp").exists());
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback");
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("download request");
-            let mut request = [0; 1024];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntapp")
-                .expect("package bytes");
-        });
-        let dest = staging.join("package.tapp");
-        let result = download_reporting_limited(
-            &format!("http://{address}/app.tapp"),
-            &dest,
-            4,
-            &mut |_| {},
-        );
-        server.join().expect("server cleanup");
-        assert_eq!(result.expect("actual canonical staging write"), 4);
-        verify_download_metadata(&registry_app_for(b"tapp"), 4).expect("exact registry bytes");
-        assert_eq!(std::fs::read(&dest).unwrap(), b"tapp");
-        assert!(!home.cache().join("tilo-store/staged-tapp").exists());
-        std::fs::remove_file(&dest).expect("disposable staging cleanup");
+        phase installer_errors_render_one_actionable_line;
+        {
+            {
+                let cases = [
+                    InstallError::NotOffered {
+                        package_id: "so.tilo.ghost".into(),
+                    },
+                    InstallError::NoStagingDir,
+                    InstallError::Download {
+                        detail: "connection refused".into(),
+                    },
+                    InstallError::InstallerMissing {
+                        detail: "No such file or directory".into(),
+                    },
+                    InstallError::Refused {
+                        code: 2,
+                        detail: "publisher signature did not verify".into(),
+                    },
+                    InstallError::Integrity {
+                        detail: "package root mismatch".into(),
+                    },
+                ];
+                for c in &cases {
+                    let msg = c.user_message();
+                    assert!(!msg.trim().is_empty(), "{c:?} rendered nothing");
+                    assert!(
+                        msg.chars()
+                            .next()
+                            .is_some_and(|ch| ch.is_lowercase() || ch.is_alphanumeric()),
+                        "{c:?} → {msg:?} should read as a sentence fragment"
+                    );
+                }
+                assert!(
+                    InstallError::Refused {
+                        code: 2,
+                        detail: "publisher signature did not verify".into()
+                    }
+                    .user_message()
+                    .contains("publisher signature"),
+                    "the installer's own reason has to survive to the user"
+                );
+            }
+            {
+                let msg = InstallError::Refused {
+                    code: 7,
+                    detail: "   \n  ".into(),
+                }
+                .user_message();
+                assert!(msg.contains('7'), "{msg:?}");
+            }
+            {
+                let text = "reading header\n\nverifying\ntapp parse: unexpected EOF\n";
+                assert_eq!(installer_complaint(text), "tapp parse: unexpected EOF");
+                assert_eq!(installer_complaint(""), "");
+                assert_eq!(installer_complaint("   \n\n  "), "");
+            }
+            {
+                let msg = InstallError::Refused {
+                    code: 1,
+                    detail: installer_complaint("tilo-install: tapp parse: unexpected EOF during skip"),
+                }
+                .user_message();
+                assert_eq!(
+                    msg,
+                    "tilo-install refused it: tapp parse: unexpected EOF during skip"
+                );
+                assert!(
+                    !msg.contains("tilo-install: "),
+                    "the sentence must not name the installer twice: {msg:?}"
+                );
+            }
+            {
+                let long = "x".repeat(400);
+                let out = installer_complaint(&long);
+                assert!(
+                    out.chars().count() <= DETAIL_MAX_CHARS + 1,
+                    "elided to {} chars",
+                    out.chars().count()
+                );
+                assert!(out.ends_with('…'));
+            }
+        }
     }
 
     fn registry_app_for(bytes: &[u8]) -> CatalogueApp {
@@ -1438,173 +1614,5 @@ mod tests {
             }
         });
         (format!("http://{address}"), asked)
-    }
-
-    #[test]
-    fn compressed_tapps_are_bounded_and_verified_as_the_signed_bytes() {
-        use tilo_app_package::compressed;
-        let package = b"signed package bytes, compressed for the wire ".repeat(256);
-        let twin = compressed::compress(&package).expect("compress");
-        let temp = tempfile::tempdir().expect("temp dir");
-        let dest = temp.path().join("staged.tapp");
-
-        {
-            let (base, asked) = package_host(std::collections::HashMap::from([
-                ("/app.tapp.zst".to_string(), twin.clone()),
-                ("/app.tapp".to_string(), b"never fetched".to_vec()),
-            ]));
-            let mut app = registry_app_for(&package);
-            app.download_url = format!("{base}/app.tapp");
-            let mut wire = 0;
-            let len = fetch_verified(&app, &dest, &mut |progress| wire = progress.received)
-                .expect("the twin decompresses to the signed package");
-            assert_eq!(len, package.len() as u64);
-            assert_eq!(std::fs::read(&dest).expect("staged"), package);
-            assert_eq!(wire, twin.len() as u64, "progress is wire bytes");
-            assert_eq!(*asked.lock().unwrap(), ["/app.tapp.zst"]);
-        }
-        {
-            let mut longer = package.clone();
-            longer.push(b'!');
-            let (base, _) = package_host(std::collections::HashMap::from([(
-                "/app.tapp.zst".to_string(),
-                compressed::compress(&longer).expect("compress"),
-            )]));
-            let mut app = registry_app_for(&package);
-            app.download_url = format!("{base}/app.tapp");
-            let error = fetch_verified(&app, &dest, &mut |_| {}).expect_err("refused");
-            assert!(
-                matches!(&error, InstallError::Download { detail } if detail.contains("bound")),
-                "{error:?}"
-            );
-            assert!(!dest.exists(), "a refused download leaves nothing staged");
-
-            let (base, _) = package_host(std::collections::HashMap::from([(
-                "/bomb.tapp.zst".to_string(),
-                compressed::compress(&vec![0; 64 << 20]).expect("compress"),
-            )]));
-            app.download_url = format!("{base}/bomb.tapp");
-            assert!(fetch_verified(&app, &dest, &mut |_| {}).is_err());
-            assert!(!dest.exists());
-        }
-        {
-            let mut other = package.clone();
-            other[0] ^= 1;
-            let (base, _) = package_host(std::collections::HashMap::from([(
-                "/app.tapp.zst".to_string(),
-                compressed::compress(&other).expect("compress"),
-            )]));
-            let mut app = registry_app_for(&package);
-            app.download_url = format!("{base}/app.tapp");
-            let error = fetch_verified(&app, &dest, &mut |_| {}).expect_err("refused");
-            assert!(
-                matches!(&error, InstallError::Integrity { detail } if detail.contains("hash")),
-                "{error:?}"
-            );
-            assert!(!dest.exists());
-        }
-        {
-            let (base, asked) = package_host(std::collections::HashMap::from([(
-                "/app.tapp".to_string(),
-                package.clone(),
-            )]));
-            let mut app = registry_app_for(&package);
-            app.download_url = format!("{base}/app.tapp");
-            fetch_verified(&app, &dest, &mut |_| {}).expect("raw fallback");
-            assert_eq!(std::fs::read(&dest).expect("staged"), package);
-            assert_eq!(*asked.lock().unwrap(), ["/app.tapp.zst", "/app.tapp"]);
-        }
-        {
-            let parsed = reqwest::Url::parse("https://apps.tilo.so/a/app.tapp?token=1").unwrap();
-            assert_eq!(twin_url(&parsed), None);
-            let parsed = reqwest::Url::parse("https://apps.tilo.so/a/app.tapp").unwrap();
-            assert_eq!(
-                twin_url(&parsed).map(String::from).as_deref(),
-                Some("https://apps.tilo.so/a/app.tapp.zst")
-            );
-        }
-    }
-
-    #[test]
-    fn installer_errors_render_one_actionable_line() {
-        {
-            let cases = [
-                InstallError::NotOffered {
-                    package_id: "so.tilo.ghost".into(),
-                },
-                InstallError::NoStagingDir,
-                InstallError::Download {
-                    detail: "connection refused".into(),
-                },
-                InstallError::InstallerMissing {
-                    detail: "No such file or directory".into(),
-                },
-                InstallError::Refused {
-                    code: 2,
-                    detail: "publisher signature did not verify".into(),
-                },
-                InstallError::Integrity {
-                    detail: "package root mismatch".into(),
-                },
-            ];
-            for c in &cases {
-                let msg = c.user_message();
-                assert!(!msg.trim().is_empty(), "{c:?} rendered nothing");
-                assert!(
-                    msg.chars()
-                        .next()
-                        .is_some_and(|ch| ch.is_lowercase() || ch.is_alphanumeric()),
-                    "{c:?} → {msg:?} should read as a sentence fragment"
-                );
-            }
-            assert!(
-                InstallError::Refused {
-                    code: 2,
-                    detail: "publisher signature did not verify".into()
-                }
-                .user_message()
-                .contains("publisher signature"),
-                "the installer's own reason has to survive to the user"
-            );
-        }
-        {
-            let msg = InstallError::Refused {
-                code: 7,
-                detail: "   \n  ".into(),
-            }
-            .user_message();
-            assert!(msg.contains('7'), "{msg:?}");
-        }
-        {
-            let text = "reading header\n\nverifying\ntapp parse: unexpected EOF\n";
-            assert_eq!(installer_complaint(text), "tapp parse: unexpected EOF");
-            assert_eq!(installer_complaint(""), "");
-            assert_eq!(installer_complaint("   \n\n  "), "");
-        }
-        {
-            let msg = InstallError::Refused {
-                code: 1,
-                detail: installer_complaint("tilo-install: tapp parse: unexpected EOF during skip"),
-            }
-            .user_message();
-            assert_eq!(
-                msg,
-                "tilo-install refused it: tapp parse: unexpected EOF during skip"
-            );
-            assert!(
-                !msg.contains("tilo-install: "),
-                "the sentence must not name the installer twice: {msg:?}"
-            );
-        }
-        {
-            let long = "x".repeat(400);
-            let out = installer_complaint(&long);
-            assert!(
-                out.chars().count() <= DETAIL_MAX_CHARS + 1,
-                "elided to {} chars",
-                out.chars().count()
-            );
-            assert!(out.ends_with('…'));
-        }
     }
 }

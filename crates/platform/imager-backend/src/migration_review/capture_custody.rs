@@ -180,126 +180,130 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn captured_exclusion_is_exact_identity_bound_and_ancestors_remain_inventoried() {
-        let temporary = tempfile::tempdir().unwrap();
-        let home = temporary.path().canonicalize().unwrap().join("home");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("HOME", &home);
-        environment.set("XDG_STATE_HOME", home.join(".local/state"));
-        let namespace = crate::session::preparation_namespace().unwrap();
-        std::fs::create_dir_all(&namespace).unwrap();
-        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(
-            namespace.join("prepared-secret"),
-            b"separate installer custody",
-        )
-        .unwrap();
-        std::fs::create_dir_all(home.join(".hidden/app")).unwrap();
-        std::fs::write(home.join(".hidden/app/settings"), b"real user state").unwrap();
-        std::fs::write(home.join("document"), b"real user document").unwrap();
-        let token = CaptureCustody::review(&home).unwrap().unwrap();
-        let namespace_pin = PinnedDirectory::open_absolute(&namespace).unwrap();
-        // Elevation changes the helper's environment. Authority remains the
-        // independently held original namespace, never these ambient values.
-        environment.set("HOME", temporary.path().join("different-helper-home"));
-        environment.set(
-            "XDG_STATE_HOME",
-            temporary.path().join("different-helper-state"),
-        );
-        token
-            .validate_original(&home, Some(&namespace_pin))
+    tilo_test_env::scenario! {
+        fn captured_view_omits_only_exactly_identified_installer_files;
+
+        phase captured_exclusion_is_exact_identity_bound_and_ancestors_remain_inventoried;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let home = temporary.path().canonicalize().unwrap().join("home");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.set("HOME", &home);
+            environment.set("XDG_STATE_HOME", home.join(".local/state"));
+            let namespace = crate::session::preparation_namespace().unwrap();
+            std::fs::create_dir_all(&namespace).unwrap();
+            std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(
+                namespace.join("prepared-secret"),
+                b"separate installer custody",
+            )
             .unwrap();
-        let pin = PinnedDirectory::open_absolute(&home).unwrap();
-        // This tests the actual selected-view verifier on a held source, not a
-        // claimed native snapshot; Btrfs epoch behavior has separate native tests.
-        let inventory = SourceInventory::capture_captured_home(&pin, Some(&token)).unwrap();
-        assert_eq!(inventory.summary().unwrap().files, 2);
-        assert!(
-            inventory
-                .facts
-                .get(Path::new(".hidden/app/settings"))
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            inventory
-                .facts
-                .get(
-                    &namespace
-                        .strip_prefix(&home)
-                        .unwrap()
-                        .join("prepared-secret")
-                )
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            inventory
-                .facts
-                .get(Path::new(".local"))
-                .unwrap()
-                .unwrap()
-                .snapshot
-                .is_some()
-        );
-        std::fs::rename(&namespace, namespace.with_extension("retired")).unwrap();
-        std::fs::create_dir(&namespace).unwrap();
-        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
+            std::fs::create_dir_all(home.join(".hidden/app")).unwrap();
+            std::fs::write(home.join(".hidden/app/settings"), b"real user state").unwrap();
+            std::fs::write(home.join("document"), b"real user document").unwrap();
+            let token = CaptureCustody::review(&home).unwrap().unwrap();
+            let namespace_pin = PinnedDirectory::open_absolute(&namespace).unwrap();
+            // Elevation changes the helper's environment. Authority remains the
+            // independently held original namespace, never these ambient values.
+            environment.set("HOME", temporary.path().join("different-helper-home"));
+            environment.set(
+                "XDG_STATE_HOME",
+                temporary.path().join("different-helper-state"),
+            );
             token
                 .validate_original(&home, Some(&namespace_pin))
-                .is_err()
-        );
-        assert!(SourceInventory::capture_captured_home(&pin, Some(&token)).is_err());
-        assert_eq!(
-            std::fs::read(home.join("document")).unwrap(),
-            b"real user document"
-        );
-        assert_eq!(
-            std::fs::read(home.join(".hidden/app/settings")).unwrap(),
-            b"real user state"
-        );
-    }
-
-    #[test]
-    fn captured_view_leaves_out_the_setups_settings_lock_by_its_registered_identity() {
-        let temporary = tempfile::tempdir().unwrap();
-        let home = temporary.path().canonicalize().unwrap().join("home");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("HOME", &home);
-        environment.set("XDG_STATE_HOME", temporary.path().join("state"));
-        environment.set("XDG_CONFIG_HOME", home.join(".config"));
-        // The setup holds its settings profile in this Home while it runs.
-        let records =
-            tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-        std::fs::create_dir_all(records.dir()).unwrap();
-        let [lock, _] = records.runtime_files();
-        std::fs::write(&lock, b"").unwrap();
-        std::fs::write(home.join("document"), b"real user document").unwrap();
-        let token = CaptureCustody::review(&home).unwrap().unwrap();
-        assert!(!token.has_preparation());
-        // The privileged side checks the claim without any environment.
-        environment.set("XDG_CONFIG_HOME", temporary.path().join("elsewhere"));
-        token.validate_original(&home, None).unwrap();
-        let pin = PinnedDirectory::open_absolute(&home).unwrap();
-        let inventory = SourceInventory::capture_captured_home(&pin, Some(&token)).unwrap();
-        assert_eq!(inventory.summary().unwrap().files, 1);
-        let relative = lock.strip_prefix(&home).unwrap();
-        assert!(inventory.facts.get(relative).unwrap().is_none());
-        // Only the settings lock's own place may be claimed.
-        let mut forged = token.clone();
-        if let Some(held) = &mut forged.settings_lock {
-            held.relative = NativePath::encode(Path::new("document"));
+                .unwrap();
+            let pin = PinnedDirectory::open_absolute(&home).unwrap();
+            // This tests the actual selected-view verifier on a held source, not a
+            // claimed native snapshot; Btrfs epoch behavior has separate native tests.
+            let inventory = SourceInventory::capture_captured_home(&pin, Some(&token)).unwrap();
+            assert_eq!(inventory.summary().unwrap().files, 2);
+            assert!(
+                inventory
+                    .facts
+                    .get(Path::new(".hidden/app/settings"))
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                inventory
+                    .facts
+                    .get(
+                        &namespace
+                            .strip_prefix(&home)
+                            .unwrap()
+                            .join("prepared-secret")
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                inventory
+                    .facts
+                    .get(Path::new(".local"))
+                    .unwrap()
+                    .unwrap()
+                    .snapshot
+                    .is_some()
+            );
+            std::fs::rename(&namespace, namespace.with_extension("retired")).unwrap();
+            std::fs::create_dir(&namespace).unwrap();
+            std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(
+                token
+                    .validate_original(&home, Some(&namespace_pin))
+                    .is_err()
+            );
+            assert!(SourceInventory::capture_captured_home(&pin, Some(&token)).is_err());
+            assert_eq!(
+                std::fs::read(home.join("document")).unwrap(),
+                b"real user document"
+            );
+            assert_eq!(
+                std::fs::read(home.join(".hidden/app/settings")).unwrap(),
+                b"real user state"
+            );
         }
-        assert!(SourceInventory::capture_captured_home(&pin, Some(&forged)).is_err());
-        // A different file in its place is Home data again.
-        std::fs::write(records.dir().join("replacement"), b"").unwrap();
-        std::fs::rename(records.dir().join("replacement"), &lock).unwrap();
-        assert!(SourceInventory::capture_captured_home(&pin, Some(&token)).is_err());
+
+        phase captured_view_leaves_out_the_setups_settings_lock_by_its_registered_identity;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let home = temporary.path().canonicalize().unwrap().join("home");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.set("HOME", &home);
+            environment.set("XDG_STATE_HOME", temporary.path().join("state"));
+            environment.set("XDG_CONFIG_HOME", home.join(".config"));
+            // The setup holds its settings profile in this Home while it runs.
+            let records =
+                tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
+            std::fs::create_dir_all(records.dir()).unwrap();
+            let [lock, _] = records.runtime_files();
+            std::fs::write(&lock, b"").unwrap();
+            std::fs::write(home.join("document"), b"real user document").unwrap();
+            let token = CaptureCustody::review(&home).unwrap().unwrap();
+            assert!(!token.has_preparation());
+            // The privileged side checks the claim without any environment.
+            environment.set("XDG_CONFIG_HOME", temporary.path().join("elsewhere"));
+            token.validate_original(&home, None).unwrap();
+            let pin = PinnedDirectory::open_absolute(&home).unwrap();
+            let inventory = SourceInventory::capture_captured_home(&pin, Some(&token)).unwrap();
+            assert_eq!(inventory.summary().unwrap().files, 1);
+            let relative = lock.strip_prefix(&home).unwrap();
+            assert!(inventory.facts.get(relative).unwrap().is_none());
+            // Only the settings lock's own place may be claimed.
+            let mut forged = token.clone();
+            if let Some(held) = &mut forged.settings_lock {
+                held.relative = NativePath::encode(Path::new("document"));
+            }
+            assert!(SourceInventory::capture_captured_home(&pin, Some(&forged)).is_err());
+            // A different file in its place is Home data again.
+            std::fs::write(records.dir().join("replacement"), b"").unwrap();
+            std::fs::rename(records.dir().join("replacement"), &lock).unwrap();
+            assert!(SourceInventory::capture_captured_home(&pin, Some(&token)).is_err());
+        }
     }
 }

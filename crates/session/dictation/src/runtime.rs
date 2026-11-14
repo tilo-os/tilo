@@ -771,105 +771,143 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn finish_interrupts_stale_worker_draft_without_leaking_preview() {
-        let directory = tempfile::tempdir().unwrap();
-        let pid = directory.path().join("interrupt");
-        let mut runtime = peer("interrupt", &pid);
-        ready(&next(&runtime));
-        assert!(
-            runtime
-                .commands
-                .try_send(Control::FixtureAudio {
-                    bytes: vec![0, 1],
-                    preview: true,
-                })
-                .is_ok()
-        );
-        tilo_test_env::wait_until("the real actor to send the draft", || {
-            pid.with_extension("draft").exists()
-        });
-        assert!(
-            runtime
-                .commands
-                .try_send(Control::FixtureAudio {
-                    bytes: vec![0, 2],
-                    preview: false,
-                })
-                .is_ok()
-        );
-        runtime.finish().unwrap();
-        assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
-        tilo_test_env::wait_until(
-            "Finish to interrupt the owned draft and drain newer PCM",
-            || pid.with_extension("final").exists(),
-        );
-        assert!(
-            runtime.poll().is_none(),
-            "a stale preview escaped while finishing"
-        );
-        std::fs::write(pid.with_extension("release"), b"release final").unwrap();
-        assert!(matches!(next(&runtime), RuntimeEvent::Done(text) if text == "safe final"));
-        reaped(&mut runtime, &pid);
-    }
+    tilo_test_env::scenario! {
+        fn a_finish_interrupts_and_supersedes_only_the_draft_it_owns;
 
-    #[test]
-    fn finish_interrupt_targets_only_the_owned_supported_draft() {
-        use std::io::Read as _;
-        let mut command = Command::new("python3");
-        command.args([
-            "-c",
-            r"import os, signal, time
+        phase finish_interrupts_stale_worker_draft_without_leaking_preview;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let pid = directory.path().join("interrupt");
+            let mut runtime = peer("interrupt", &pid);
+            ready(&next(&runtime));
+            assert!(
+                runtime
+                    .commands
+                    .try_send(Control::FixtureAudio {
+                        bytes: vec![0, 1],
+                        preview: true,
+                    })
+                    .is_ok()
+            );
+            tilo_test_env::wait_until("the real actor to send the draft", || {
+                pid.with_extension("draft").exists()
+            });
+            assert!(
+                runtime
+                    .commands
+                    .try_send(Control::FixtureAudio {
+                        bytes: vec![0, 2],
+                        preview: false,
+                    })
+                    .is_ok()
+            );
+            runtime.finish().unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+            tilo_test_env::wait_until(
+                "Finish to interrupt the owned draft and drain newer PCM",
+                || pid.with_extension("final").exists(),
+            );
+            assert!(
+                runtime.poll().is_none(),
+                "a stale preview escaped while finishing"
+            );
+            std::fs::write(pid.with_extension("release"), b"release final").unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Done(text) if text == "safe final"));
+            reaped(&mut runtime, &pid);
+        }
+
+        phase finish_interrupt_targets_only_the_owned_supported_draft;
+        {
+            use std::io::Read as _;
+            let mut command = Command::new("python3");
+            command.args([
+                "-c",
+                r"import os, signal, time
 signal.signal(signal.SIGUSR1, lambda *_: os.write(1, b'I'))
 os.write(1, b'R')
 while True: time.sleep(1)",
-        ]);
-        command.stdout(Stdio::piped()).stderr(Stdio::null());
-        bounded_command::own_process_tree(&mut command);
-        let mut worker = Process(command.spawn_locked().unwrap());
-        let mut output = worker.0.stdout.take().unwrap();
-        let mut byte = [0];
-        output.read_exact(&mut byte).unwrap();
-        assert_eq!(byte, [b'R']);
-        nonblocking(output.as_raw_fd()).unwrap();
-        let mut pipe = Pipe::new(false);
-        pipe.enqueue(RequestKind::Draft, &[]).unwrap();
-        pipe.enqueue(RequestKind::Audio, &[0, 1]).unwrap();
-        interrupt_draft(&worker.0, false, &pipe).unwrap();
-        assert_eq!(
-            output.read(&mut byte).unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-        pipe.accept(&SpeechReply::Draft {
-            sequence: 1,
-            text: String::new(),
-        })
-        .unwrap();
-        interrupt_draft(&worker.0, true, &pipe).unwrap();
-        assert_eq!(
-            output.read(&mut byte).unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-        pipe.enqueue(RequestKind::Draft, &[]).unwrap();
-        // No newer PCM: the in-flight result can be reused as final, so do
-        // not throw away that work merely because Finish was requested.
-        interrupt_draft(&worker.0, true, &pipe).unwrap();
-        assert_eq!(
-            output.read(&mut byte).unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-        pipe.enqueue(RequestKind::Audio, &[0, 1]).unwrap();
-        interrupt_draft(&worker.0, true, &pipe).unwrap();
-        tilo_test_env::wait_until("the owned handler to observe Finish", || {
-            match output.read(&mut byte) {
-                Ok(1) => true,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
-                result => panic!("owned signal peer failed: {result:?}"),
-            }
-        });
-        assert_eq!(byte, [b'I']);
-        assert!(worker.0.try_wait().unwrap().is_none());
-        // Process owns teardown/reaping even if any assertion above fails.
+            ]);
+            command.stdout(Stdio::piped()).stderr(Stdio::null());
+            bounded_command::own_process_tree(&mut command);
+            let mut worker = Process(command.spawn_locked().unwrap());
+            let mut output = worker.0.stdout.take().unwrap();
+            let mut byte = [0];
+            output.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [b'R']);
+            nonblocking(output.as_raw_fd()).unwrap();
+            let mut pipe = Pipe::new(false);
+            pipe.enqueue(RequestKind::Draft, &[]).unwrap();
+            pipe.enqueue(RequestKind::Audio, &[0, 1]).unwrap();
+            interrupt_draft(&worker.0, false, &pipe).unwrap();
+            assert_eq!(
+                output.read(&mut byte).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            pipe.accept(&SpeechReply::Draft {
+                sequence: 1,
+                text: String::new(),
+            })
+            .unwrap();
+            interrupt_draft(&worker.0, true, &pipe).unwrap();
+            assert_eq!(
+                output.read(&mut byte).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            pipe.enqueue(RequestKind::Draft, &[]).unwrap();
+            // No newer PCM: the in-flight result can be reused as final, so do
+            // not throw away that work merely because Finish was requested.
+            interrupt_draft(&worker.0, true, &pipe).unwrap();
+            assert_eq!(
+                output.read(&mut byte).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            pipe.enqueue(RequestKind::Audio, &[0, 1]).unwrap();
+            interrupt_draft(&worker.0, true, &pipe).unwrap();
+            tilo_test_env::wait_until("the owned handler to observe Finish", || {
+                match output.read(&mut byte) {
+                    Ok(1) => true,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+                    result => panic!("owned signal peer failed: {result:?}"),
+                }
+            });
+            assert_eq!(byte, [b'I']);
+            assert!(worker.0.try_wait().unwrap().is_none());
+            // Process owns teardown/reaping even if any assertion above fails.
+        }
+
+        phase a_finish_supersedes_an_outstanding_draft_and_drops_its_late_reply;
+        // The worker keeps its provisional decode on its own decoder state, so it
+        // may answer it after the finish that replaced it already went out.
+        {
+            let mut pipe = Pipe::new(false);
+            pipe.enqueue(RequestKind::Draft, &[]).unwrap();
+            pipe.enqueue(RequestKind::Finish, &[]).unwrap();
+            pipe.accept(&SpeechReply::Draft {
+                sequence: 1,
+                text: "provisional".to_owned(),
+            })
+            .unwrap();
+            pipe.accept(&SpeechReply::Done {
+                sequence: 2,
+                text: "final".to_owned(),
+            })
+            .unwrap();
+            assert!(pipe.waiting.is_none());
+            // Only that superseded draft is tolerated, and only while finishing.
+            pipe.enqueue(RequestKind::Draft, &[]).unwrap();
+            pipe.enqueue(RequestKind::Finish, &[]).unwrap();
+            assert!(matches!(
+                pipe.accept(&SpeechReply::Draft {
+                    sequence: 4,
+                    text: "newer".to_owned(),
+                }),
+                Err(RuntimeError::Protocol)
+            ));
+            assert!(matches!(
+                pipe.enqueue(RequestKind::Draft, &[]),
+                Err(RuntimeError::Busy)
+            ));
+        }
     }
 
     // A real private-pipe peer exercises the production actor's ownership,
@@ -1024,76 +1062,119 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         );
     }
 
-    #[test]
-    fn actual_pipe_dictionary_removal_revocation_and_service_drop_reap_busy_worker() {
-        use settings_store::personal_dictionary::{Edit, Service, Word};
-        let directory = tempfile::tempdir().unwrap();
-        for mode in ["remove", "rebind", "drop"] {
-            let service = Service::new(directory.path().join(mode)).unwrap();
-            let reader = service.bind(Some([7; 32])).unwrap();
-            let word = Word::new("TiLo", None).unwrap();
-            let snapshot = service.edit(&reader, 0, Edit::Add(word.clone())).unwrap();
-            let pid = directory.path().join(format!("{mode}.pid"));
-            let mut runtime = Runtime::spawn_with_vocabulary(
-                peer_command("dictionary_slow", &pid),
-                "en",
-                Some(Arc::new(reader.clone())),
-            )
-            .unwrap();
+    tilo_test_env::scenario! {
+        fn the_actor_over_a_real_pipe_finishes_cancels_and_reaps_its_worker;
+
+        phase actual_pipe_dictionary_removal_and_revocation_reap_busy_worker;
+        {
+            use settings_store::personal_dictionary::{Edit, Reader, Word, edit_in};
+            let directory = tempfile::tempdir().unwrap();
+            for mode in ["remove", "revoke"] {
+                let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
+                    settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+                );
+                let reader = Reader::bind(Arc::clone(&source));
+                let word = Word::new("TiLo", None).unwrap();
+                let snapshot = edit_in(source.as_ref(), 0, Edit::Add(word.clone())).unwrap();
+                let pid = directory.path().join(format!("{mode}.pid"));
+                let mut runtime = Runtime::spawn_with_vocabulary(
+                    peer_command("dictionary_slow", &pid),
+                    "en",
+                    Some(Arc::new(reader.clone())),
+                )
+                .unwrap();
+                ready(&next(&runtime));
+                runtime.finish().unwrap();
+                assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+                match mode {
+                    "remove" => {
+                        edit_in(source.as_ref(), snapshot.revision, Edit::Remove(word)).unwrap();
+                    }
+                    _ => reader.revoke(),
+                }
+                let expected = if mode == "remove" {
+                    RuntimeError::VocabularyChanged
+                } else {
+                    RuntimeError::VocabularyUnavailable
+                };
+                assert!(matches!(next(&runtime), RuntimeEvent::Stopped(error) if error == expected));
+                reaped(&mut runtime, &pid);
+                assert!(
+                    runtime.poll().is_none(),
+                    "retired vocabulary cannot deliver late words"
+                );
+            }
+        }
+
+        phase actual_pipe_actor_keeps_a_slow_final_without_opening_a_microphone;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let pid = directory.path().join("delayed");
+            let mut runtime = peer("delayed", &pid);
             ready(&next(&runtime));
             runtime.finish().unwrap();
             assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
-            match mode {
-                "remove" => {
-                    service
-                        .edit(&reader, snapshot.revision, Edit::Remove(word))
-                        .unwrap();
-                }
-                "rebind" => {
-                    service.bind(None);
-                    service.bind(Some([7; 32]));
-                }
-                _ => drop(service),
-            }
-            let expected = if mode == "remove" {
-                RuntimeError::VocabularyChanged
-            } else {
-                RuntimeError::VocabularyUnavailable
-            };
-            assert!(matches!(next(&runtime), RuntimeEvent::Stopped(error) if error == expected));
+            // The final arrives well past the start window, but inside the
+            // finish window that Finish opened.
+            let (checked, advanced) = sync_channel(1);
+            runtime
+                .commands
+                .try_send(Control::FixtureAdvance {
+                    by: START_WINDOW.saturating_add(Duration::from_secs(3)),
+                    checked,
+                })
+                .unwrap();
+            tilo_test_env::recv("the actor to check its deadlines later on", &advanced);
+            std::fs::write(pid.with_extension("release"), b"release final").unwrap();
+            assert!(matches!(
+                next(&runtime),
+                RuntimeEvent::Done(text) if text == "Corrected 👋"
+            ));
             reaped(&mut runtime, &pid);
-            assert!(
-                runtime.poll().is_none(),
-                "retired vocabulary cannot deliver late words"
-            );
         }
-    }
 
-    #[test]
-    fn actual_pipe_actor_keeps_a_slow_final_without_opening_a_microphone() {
-        let directory = tempfile::tempdir().unwrap();
-        let pid = directory.path().join("delayed");
-        let mut runtime = peer("delayed", &pid);
-        ready(&next(&runtime));
-        runtime.finish().unwrap();
-        assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
-        // The final arrives well past the start window, but inside the
-        // finish window that Finish opened.
-        let (checked, advanced) = sync_channel(1);
-        runtime
-            .commands
-            .try_send(Control::FixtureAdvance {
-                by: START_WINDOW.saturating_add(Duration::from_secs(3)),
-                checked,
-            })
-            .unwrap();
-        tilo_test_env::recv("the actor to check its deadlines later on", &advanced);
-        std::fs::write(pid.with_extension("release"), b"release final").unwrap();
-        assert!(matches!(
-            next(&runtime),
-            RuntimeEvent::Done(text) if text == "Corrected 👋"
-        ));
-        reaped(&mut runtime, &pid);
+        phase actual_pipe_actor_finishes_cancels_busy_worker_and_restarts_after_reaping;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            for (index, mode) in ["normal", "slow", "normal"].iter().enumerate() {
+                let pid = directory.path().join(index.to_string());
+                let mut runtime = peer(mode, &pid);
+                ready(&next(&runtime));
+                runtime.finish().unwrap();
+                assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+                if *mode == "slow" {
+                    runtime.cancel();
+                    assert!(matches!(
+                        next(&runtime),
+                        RuntimeEvent::Stopped(RuntimeError::Canceled)
+                    ));
+                } else {
+                    assert!(
+                        matches!(next(&runtime), RuntimeEvent::Done(text) if text == "Corrected 👋")
+                    );
+                }
+                reaped(&mut runtime, &pid);
+            }
+        }
+
+        phase actual_pipe_actor_rejects_replayed_ready_and_control_character_results;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            for mode in ["replay", "control"] {
+                let pid = directory.path().join(mode);
+                let mut runtime = peer(mode, &pid);
+                if mode == "control" {
+                    ready(&next(&runtime));
+                    runtime.finish().unwrap();
+                    assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+                }
+                assert!(matches!(
+                    next(&runtime),
+                    RuntimeEvent::Stopped(RuntimeError::Protocol)
+                ));
+                reaped(&mut runtime, &pid);
+            }
+        }
     }
 
     #[test]
@@ -1149,49 +1230,6 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
     }
 
     #[test]
-    fn actual_pipe_actor_finishes_cancels_busy_worker_and_restarts_after_reaping() {
-        let directory = tempfile::tempdir().unwrap();
-        for (index, mode) in ["normal", "slow", "normal"].iter().enumerate() {
-            let pid = directory.path().join(index.to_string());
-            let mut runtime = peer(mode, &pid);
-            ready(&next(&runtime));
-            runtime.finish().unwrap();
-            assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
-            if *mode == "slow" {
-                runtime.cancel();
-                assert!(matches!(
-                    next(&runtime),
-                    RuntimeEvent::Stopped(RuntimeError::Canceled)
-                ));
-            } else {
-                assert!(
-                    matches!(next(&runtime), RuntimeEvent::Done(text) if text == "Corrected 👋")
-                );
-            }
-            reaped(&mut runtime, &pid);
-        }
-    }
-
-    #[test]
-    fn actual_pipe_actor_rejects_replayed_ready_and_control_character_results() {
-        let directory = tempfile::tempdir().unwrap();
-        for mode in ["replay", "control"] {
-            let pid = directory.path().join(mode);
-            let mut runtime = peer(mode, &pid);
-            if mode == "control" {
-                ready(&next(&runtime));
-                runtime.finish().unwrap();
-                assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
-            }
-            assert!(matches!(
-                next(&runtime),
-                RuntimeEvent::Stopped(RuntimeError::Protocol)
-            ));
-            reaped(&mut runtime, &pid);
-        }
-    }
-
-    #[test]
     fn actual_pipe_actor_accepts_only_field_bound_paragraphs_without_opening_a_microphone() {
         let directory = tempfile::tempdir().unwrap();
         for (index, (mode, multiline, accepted)) in [
@@ -1221,39 +1259,5 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
             }
             reaped(&mut runtime, &pid);
         }
-    }
-
-    // The worker keeps its provisional decode on its own decoder state, so it
-    // may answer it after the finish that replaced it already went out.
-    #[test]
-    fn a_finish_supersedes_an_outstanding_draft_and_drops_its_late_reply() {
-        let mut pipe = Pipe::new(false);
-        pipe.enqueue(RequestKind::Draft, &[]).unwrap();
-        pipe.enqueue(RequestKind::Finish, &[]).unwrap();
-        pipe.accept(&SpeechReply::Draft {
-            sequence: 1,
-            text: "provisional".to_owned(),
-        })
-        .unwrap();
-        pipe.accept(&SpeechReply::Done {
-            sequence: 2,
-            text: "final".to_owned(),
-        })
-        .unwrap();
-        assert!(pipe.waiting.is_none());
-        // Only that superseded draft is tolerated, and only while finishing.
-        pipe.enqueue(RequestKind::Draft, &[]).unwrap();
-        pipe.enqueue(RequestKind::Finish, &[]).unwrap();
-        assert!(matches!(
-            pipe.accept(&SpeechReply::Draft {
-                sequence: 4,
-                text: "newer".to_owned(),
-            }),
-            Err(RuntimeError::Protocol)
-        ));
-        assert!(matches!(
-            pipe.enqueue(RequestKind::Draft, &[]),
-            Err(RuntimeError::Busy)
-        ));
     }
 }

@@ -113,339 +113,399 @@ impl Fixture {
     }
 }
 
-#[test]
-fn ls_cat_and_grep_read_the_granted_files_with_no_guest_started() {
-    let mut f = fixture();
-    let (status, out, err) = f.run("ls notes; cat notes/a.md | grep pe; grep -c . notes/*.md");
-    assert_eq!(status, 0, "{err}");
-    assert_eq!(
-        out, "a.md\nb.md\npears\nnotes/a.md:2\nnotes/b.md:1\n",
-        "{err}"
-    );
-    assert_eq!(f.guest.starts(), 0, "Tilo's own commands need no guest");
+tilo_test_env::scenario! {
+    /// Tilo's own commands and redirects in a session: under the grants, as actions, with no guest started.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn the_shell_reads_and_writes_under_its_grants_with_no_guest;
+
+    phase ls_cat_and_grep_read_the_granted_files_with_no_guest_started;
+    {
+        let mut f = fixture();
+        let (status, out, err) = f.run("ls notes; cat notes/a.md | grep pe; grep -c . notes/*.md");
+        assert_eq!(status, 0, "{err}");
+        assert_eq!(
+            out, "a.md\nb.md\npears\nnotes/a.md:2\nnotes/b.md:1\n",
+            "{err}"
+        );
+        assert_eq!(f.guest.starts(), 0, "Tilo's own commands need no guest");
+    }
+
+    phase reading_outside_the_grants_is_refused;
+    {
+        let mut f = fixture();
+        let (status, out, err) = f.run(&format!(
+            "cat {0}/secret.txt; ls {0}; grep -r secret {0}",
+            f.outside.display()
+        ));
+        assert_ne!(status, 0);
+        assert!(!out.contains("secret"), "{out}");
+        assert!(err.contains("not granted"), "{err}");
+        assert_eq!(f.guest.starts(), 0);
+    }
+
+    phase a_redirect_is_an_environment_action_in_history_and_undone_from_there;
+    {
+        let mut f = fixture();
+        let line = Run {
+            id: "ush-1-1".into(),
+            label: "echo hi > a.txt".into(),
+        };
+        f.shell.set_run(Some(line.clone()));
+        let (status, _, err) = f.run(&line.label);
+        f.shell.set_run(None);
+        assert_eq!(status, 0, "{err}");
+        let written = f.allowed.join("a.txt");
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), "hi\n");
+
+        let state = f.state.lock().unwrap();
+        let writes = entries_for(&state, "write");
+        assert_eq!(writes.len(), 1, "one redirect is one History entry");
+        let group = writes[0].group.as_ref().expect("in the command line's run");
+        assert_eq!(
+            (group.id.as_str(), group.label.as_str()),
+            ("ush-1-1", "echo hi > a.txt")
+        );
+        assert_eq!(
+            writes[0].invoker.as_ref().map(|invoker| &invoker.actor),
+            Some(&state.person),
+            "attributed to the person"
+        );
+        undo_from_history(&state, &writes[0]);
+        assert!(!written.exists(), "undo takes the new file back");
+        drop(state);
+        assert_eq!(f.guest.starts(), 0, "writing needs no guest either");
+    }
+
+    phase a_ten_megabyte_redirect_is_one_undoable_history_entry;
+    {
+        let mut f = fixture();
+        let line = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n";
+        let big = line.repeat(10 * 1024 * 1024 / line.len());
+        assert!(big.len() >= 10 * 1000 * 1000);
+        std::fs::write(f.allowed.join("big.log"), &big).unwrap();
+        let copy = f.allowed.join("copy.log");
+        std::fs::write(&copy, "what was there\n").unwrap();
+
+        let run = Run {
+            id: "ush-1-2".into(),
+            label: "cat big.log > copy.log".into(),
+        };
+        f.shell.set_run(Some(run.clone()));
+        let (status, _, err) = f.run(&run.label);
+        f.shell.set_run(None);
+        assert_eq!(status, 0, "{err}");
+        assert!(
+            std::fs::read(&copy).unwrap() == big.as_bytes(),
+            "the whole of it was written"
+        );
+
+        let state = f.state.lock().unwrap();
+        let writes = entries_for(&state, "write");
+        assert_eq!(writes.len(), 1, "one redirect is one History entry");
+        assert_eq!(
+            writes[0].group.as_ref().map(|group| group.id.as_str()),
+            Some("ush-1-2")
+        );
+        let named = crate::content::named(&state.environment.current());
+        assert_eq!(named.len(), 1, "the action names its content by reference");
+        let content = crate::file_actions::content_in(&state.environment);
+        assert!(content.store().has(named.first().unwrap()));
+
+        undo_from_history(&state, &writes[0]);
+        drop(state);
+        assert_eq!(
+            std::fs::read_to_string(&copy).unwrap(),
+            "what was there\n",
+            "undo puts back what the file held"
+        );
+    }
 }
 
-#[test]
-fn reading_outside_the_grants_is_refused() {
-    let mut f = fixture();
-    let (status, out, err) = f.run(&format!(
-        "cat {0}/secret.txt; ls {0}; grep -r secret {0}",
-        f.outside.display()
-    ));
-    assert_ne!(status, 0);
-    assert!(!out.contains("secret"), "{out}");
-    assert!(err.contains("not granted"), "{err}");
-    assert_eq!(f.guest.starts(), 0);
+tilo_test_env::scenario! {
+    /// Every other program: in the session's guest, started once.
+    fn programs_run_in_the_sessions_guest;
+
+    phase a_program_starts_the_guest_once_for_the_session_and_its_output_is_piped_back;
+    {
+        let mut f = fixture();
+        let (status, out, err) = f.run("uname -s | tr a-z A-Z");
+        assert_eq!(status, 0, "{err}");
+        assert_eq!(out, "LINUX\n");
+        assert_eq!(f.guest.starts(), 1);
+
+        let (status, out, err) = f.run("sh -c 'echo $PPID'; sh -c 'echo $PPID; exit 4'");
+        assert_eq!(status, 4, "{err}");
+        let parents: Vec<&str> = out.lines().collect();
+        assert_eq!(parents.len(), 2, "{out}");
+        assert_eq!(parents[0], parents[1], "one guest serves the session");
+        assert_eq!(f.guest.starts(), 1, "started once for the session");
+
+        // A program reads what the shell pipes in, and one the guest does not
+        // have is not found.
+        let (_, out, _) = f.run("printf 'b\\na\\n' | sh -c 'read x; echo got $x'");
+        assert_eq!(out, "got b\n");
+        let (status, _, err) = f.run("no-such-program-here");
+        assert_eq!(status, 127);
+        assert!(err.contains("command not found"), "{err}");
+    }
+
+    phase a_program_on_the_terminal_gets_the_sessions_own_descriptor;
+    {
+        let f = fixture();
+        let shared = f.guest.stream(Some(Std::Out)).unwrap();
+        assert!(shared.1.is_none(), "the terminal itself, no pipe");
+        let piped = f.guest.stream(None).unwrap();
+        assert!(
+            piped.1.is_some(),
+            "anything else is a pipe the shell serves"
+        );
+    }
+
+    phase a_background_program_is_stopped_continued_and_ended_as_its_job;
+    {
+        let mut f = fixture();
+        let (status, out, err) = f.run(concat!(
+            "sh -c 'echo $$ > pid; exec sleep 30' &\n",
+            "until test -s pid; do sleep 0.02; done\n",
+            "kill -STOP %1\n",
+            "sh -c 'cut -d\" \" -f3 /proc/$(cat pid)/stat'\n",
+            "jobs\n",
+            "kill -CONT %1\n",
+            "jobs\n",
+            "kill %1\n",
+            "wait %1\n",
+            "echo ended $?\n",
+        ));
+        assert_eq!(status, 0, "{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.first(), Some(&"T"), "{out}");
+        assert!(out.contains("Stopped"), "{out}");
+        assert!(out.contains("Running"), "{out}");
+        assert!(out.ends_with("ended 143\n"), "{out}");
+    }
+
+    phase the_guests_programs_are_named_from_its_images_along_path;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        let tool = dir.path().join("tool");
+        for (root, name) in [(&runtime, "bash"), (&tool, "rg"), (&runtime, "ls")] {
+            std::fs::create_dir_all(root.join("usr/bin")).unwrap();
+            let file = root.join("usr/bin").join(name);
+            std::fs::write(&file, "").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(runtime.join("usr/bin/README"), "").unwrap();
+        std::os::unix::fs::symlink("bash", runtime.join("usr/bin/sh")).unwrap();
+        let names = programs_in(&[tool, runtime], "/run/ush/bin:/usr/bin:relative");
+        assert_eq!(names, ["bash", "ls", "rg", "sh"]);
+    }
 }
 
-#[test]
-fn a_redirect_is_an_environment_action_in_history_and_undone_from_there() {
-    let mut f = fixture();
-    let line = Run {
-        id: "ush-1-1".into(),
-        label: "echo hi > a.txt".into(),
-    };
-    f.shell.set_run(Some(line.clone()));
-    let (status, _, err) = f.run(&line.label);
-    f.shell.set_run(None);
-    assert_eq!(status, 0, "{err}");
-    let written = f.allowed.join("a.txt");
-    assert_eq!(std::fs::read_to_string(&written).unwrap(), "hi\n");
+tilo_test_env::scenario! {
+    /// Home in a session: the workspace's own files.
+    fn an_environments_home_is_its_workspaces_files;
 
-    let state = f.state.lock().unwrap();
-    let writes = entries_for(&state, "write");
-    assert_eq!(writes.len(), 1, "one redirect is one History entry");
-    let group = writes[0].group.as_ref().expect("in the command line's run");
-    assert_eq!(
-        (group.id.as_str(), group.label.as_str()),
-        ("ush-1-1", "echo hi > a.txt")
-    );
-    assert_eq!(
-        writes[0].invoker.as_ref().map(|invoker| &invoker.actor),
-        Some(&state.person),
-        "attributed to the person"
-    );
-    undo_from_history(&state, &writes[0]);
-    assert!(!written.exists(), "undo takes the new file back");
-    drop(state);
-    assert_eq!(f.guest.starts(), 0, "writing needs no guest either");
-}
-
-#[test]
-fn a_program_starts_the_guest_once_for_the_session_and_its_output_is_piped_back() {
-    let mut f = fixture();
-    let (status, out, err) = f.run("uname -s | tr a-z A-Z");
-    assert_eq!(status, 0, "{err}");
-    assert_eq!(out, "LINUX\n");
-    assert_eq!(f.guest.starts(), 1);
-
-    let (status, out, err) = f.run("sh -c 'echo $PPID'; sh -c 'echo $PPID; exit 4'");
-    assert_eq!(status, 4, "{err}");
-    let parents: Vec<&str> = out.lines().collect();
-    assert_eq!(parents.len(), 2, "{out}");
-    assert_eq!(parents[0], parents[1], "one guest serves the session");
-    assert_eq!(f.guest.starts(), 1, "started once for the session");
-
-    // A program reads what the shell pipes in, and one the guest does not
-    // have is not found.
-    let (_, out, _) = f.run("printf 'b\\na\\n' | sh -c 'read x; echo got $x'");
-    assert_eq!(out, "got b\n");
-    let (status, _, err) = f.run("no-such-program-here");
-    assert_eq!(status, 127);
-    assert!(err.contains("command not found"), "{err}");
-}
-
-#[test]
-fn a_program_on_the_terminal_gets_the_sessions_own_descriptor() {
-    let f = fixture();
-    let shared = f.guest.stream(Some(Std::Out)).unwrap();
-    assert!(shared.1.is_none(), "the terminal itself, no pipe");
-    let piped = f.guest.stream(None).unwrap();
-    assert!(
-        piped.1.is_some(),
-        "anything else is a pipe the shell serves"
-    );
-}
-
-#[test]
-fn a_ten_megabyte_redirect_is_one_undoable_history_entry() {
-    let mut f = fixture();
-    let line = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n";
-    let big = line.repeat(10 * 1024 * 1024 / line.len());
-    assert!(big.len() >= 10 * 1000 * 1000);
-    std::fs::write(f.allowed.join("big.log"), &big).unwrap();
-    let copy = f.allowed.join("copy.log");
-    std::fs::write(&copy, "what was there\n").unwrap();
-
-    let run = Run {
-        id: "ush-1-2".into(),
-        label: "cat big.log > copy.log".into(),
-    };
-    f.shell.set_run(Some(run.clone()));
-    let (status, _, err) = f.run(&run.label);
-    f.shell.set_run(None);
-    assert_eq!(status, 0, "{err}");
-    assert!(
-        std::fs::read(&copy).unwrap() == big.as_bytes(),
-        "the whole of it was written"
-    );
-
-    let state = f.state.lock().unwrap();
-    let writes = entries_for(&state, "write");
-    assert_eq!(writes.len(), 1, "one redirect is one History entry");
-    assert_eq!(
-        writes[0].group.as_ref().map(|group| group.id.as_str()),
-        Some("ush-1-2")
-    );
-    let named = crate::content::named(&state.environment.current());
-    assert_eq!(named.len(), 1, "the action names its content by reference");
-    let content = crate::file_actions::content_in(&state.environment);
-    assert!(content.store().has(named.first().unwrap()));
-
-    undo_from_history(&state, &writes[0]);
-    drop(state);
-    assert_eq!(
-        std::fs::read_to_string(&copy).unwrap(),
-        "what was there\n",
-        "undo puts back what the file held"
-    );
-}
-
-#[test]
-fn cd_home_reaches_the_workspace_folder() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let workspace = root.join("workspace");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let store = crate::store::Store::at(root.join("store")).with_workspace(&workspace);
-    let state = crate::broker::tests::state(&root);
-    let environment = crate::home::with_home(
-        &state.environment.records,
-        &store,
-        &state.environment.key,
-        state.environment.current(),
-    )
-    .unwrap();
-    assert_eq!(Path::new(&environment.home_dir), workspace);
-    let home = crate::home::home_of(&environment, &crate::guest::GuestUser::current());
-    assert_eq!(home, workspace);
-
-    let state = Arc::new(Mutex::new(state));
-    let env = vec![
-        ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
-        ("HOME".to_owned(), home.display().to_string()),
-    ];
-    let (_guest, mut shell, out, err) = session_shell(&state, env, root);
-    let status = shell.run_script("cd ~ && echo x > f && pwd");
-    let err = String::from_utf8_lossy(&err.take()).into_owned();
-    assert_eq!(status, 0, "{err}");
-    assert_eq!(
-        String::from_utf8_lossy(&out.take()),
-        format!("{}\n", workspace.display())
-    );
-    assert_eq!(std::fs::read_to_string(workspace.join("f")).unwrap(), "x\n");
-    let state = state.lock().unwrap();
-    assert_eq!(
-        entries_for(&state, "write").len(),
-        1,
-        "an action, in History"
-    );
-}
-
-#[test]
-fn a_workspace_environment_has_its_own_files_as_home_and_none_of_anothers() {
-    const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
-    const W2: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let files = root.join("files");
-    let w2_tree = files.join(".workspaces").join(W2);
-    std::fs::create_dir_all(&w2_tree).unwrap();
-    std::fs::write(w2_tree.join("secret.txt"), "w2's secret\n").unwrap();
-    std::fs::create_dir_all(files.join("Documents")).unwrap();
-    std::fs::write(files.join("Documents/private.txt"), "the device's\n").unwrap();
-    let store = crate::store::Store::at(root.join("store"))
-        .with_workspace(&files)
-        .for_workspace(&crate::workspace::WorkspaceId::parse(Some(W1)).unwrap());
-
-    let mut state = crate::broker::tests::state(&root);
-    let records = crate::records::Records::of(&store);
-    let made = records
-        .create(&state.environment.key, &state.environment.current())
+    phase cd_home_reaches_the_workspace_folder;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let store = crate::store::Store::at(root.join("store")).with_workspace(&workspace);
+        let state = crate::broker::tests::state(&root);
+        let environment = crate::home::with_home(
+            &state.environment.records,
+            &store,
+            &state.environment.key,
+            state.environment.current(),
+        )
         .unwrap();
-    assert_eq!(made.workspace, W1);
-    state.environment.records = records;
-    let environment = crate::home::with_home(
-        &state.environment.records,
-        &store,
-        &state.environment.key,
-        state.environment.current(),
-    )
-    .unwrap();
-    let w1_tree = files.join(".workspaces").join(W1);
-    assert_eq!(Path::new(&environment.home_dir), w1_tree);
-    assert!(
-        w1_tree.is_dir(),
-        "the workspace's tree is made on first open"
-    );
-    let home = crate::home::home_of(&environment, &crate::guest::GuestUser::current());
-    assert_eq!(home, w1_tree);
+        assert_eq!(Path::new(&environment.home_dir), workspace);
+        let home = crate::home::home_of(&environment, &crate::guest::GuestUser::current());
+        assert_eq!(home, workspace);
 
-    for path in [w2_tree.clone(), files.clone(), files.join("Documents")] {
-        let answer = state.handle(crate::broker::Request::TrustDir { path: path.clone() });
-        assert!(
-            matches!(answer, crate::broker::Response::Denied { .. }),
-            "{path:?}: {answer:?}"
+        let state = Arc::new(Mutex::new(state));
+        let env = vec![
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("HOME".to_owned(), home.display().to_string()),
+        ];
+        let (_guest, mut shell, out, err) = session_shell(&state, env, root);
+        let status = shell.run_script("cd ~ && echo x > f && pwd");
+        let err = String::from_utf8_lossy(&err.take()).into_owned();
+        assert_eq!(status, 0, "{err}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.take()),
+            format!("{}\n", workspace.display())
+        );
+        assert_eq!(std::fs::read_to_string(workspace.join("f")).unwrap(), "x\n");
+        let state = state.lock().unwrap();
+        assert_eq!(
+            entries_for(&state, "write").len(),
+            1,
+            "an action, in History"
         );
     }
 
-    let state = Arc::new(Mutex::new(state));
-    let env = vec![
-        ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
-        ("HOME".to_owned(), home.display().to_string()),
-    ];
-    let (_guest, mut shell, out, err) = session_shell(&state, env, root);
-    let status = shell.run_script("cd ~ && echo x > f && pwd");
-    let shown = String::from_utf8_lossy(&err.take()).into_owned();
-    assert_eq!(status, 0, "{shown}");
-    assert_eq!(
-        String::from_utf8_lossy(&out.take()),
-        format!("{}\n", w1_tree.display())
-    );
-    assert_eq!(std::fs::read_to_string(w1_tree.join("f")).unwrap(), "x\n");
+    phase a_workspace_environment_has_its_own_files_as_home_and_none_of_anothers;
+    {
+        const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        const W2: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let files = root.join("files");
+        let w2_tree = files.join(".workspaces").join(W2);
+        std::fs::create_dir_all(&w2_tree).unwrap();
+        std::fs::write(w2_tree.join("secret.txt"), "w2's secret\n").unwrap();
+        std::fs::create_dir_all(files.join("Documents")).unwrap();
+        std::fs::write(files.join("Documents/private.txt"), "the device's\n").unwrap();
+        let store = crate::store::Store::at(root.join("store"))
+            .with_workspace(&files)
+            .for_workspace(&crate::workspace::WorkspaceId::parse(Some(W1)).unwrap());
 
-    for denied in [
-        w2_tree.join("secret.txt"),
-        files.join("Documents/private.txt"),
-    ] {
-        let status = shell.run_script(&format!("cat {}", denied.display()));
-        let printed = String::from_utf8_lossy(&out.take()).into_owned();
+        let mut state = crate::broker::tests::state(&root);
+        let records = crate::records::Records::of(&store);
+        let made = records
+            .create(&state.environment.key, &state.environment.current())
+            .unwrap();
+        assert_eq!(made.workspace, W1);
+        state.environment.records = records;
+        let environment = crate::home::with_home(
+            &state.environment.records,
+            &store,
+            &state.environment.key,
+            state.environment.current(),
+        )
+        .unwrap();
+        let w1_tree = files.join(".workspaces").join(W1);
+        assert_eq!(Path::new(&environment.home_dir), w1_tree);
+        assert!(
+            w1_tree.is_dir(),
+            "the workspace's tree is made on first open"
+        );
+        let home = crate::home::home_of(&environment, &crate::guest::GuestUser::current());
+        assert_eq!(home, w1_tree);
+
+        for path in [w2_tree.clone(), files.clone(), files.join("Documents")] {
+            let answer = state.handle(crate::broker::Request::TrustDir { path: path.clone() });
+            assert!(
+                matches!(answer, crate::broker::Response::Denied { .. }),
+                "{path:?}: {answer:?}"
+            );
+        }
+
+        let state = Arc::new(Mutex::new(state));
+        let env = vec![
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("HOME".to_owned(), home.display().to_string()),
+        ];
+        let (_guest, mut shell, out, err) = session_shell(&state, env, root);
+        let status = shell.run_script("cd ~ && echo x > f && pwd");
         let shown = String::from_utf8_lossy(&err.take()).into_owned();
-        assert_ne!(status, 0, "{denied:?} was read: {printed}");
-        assert!(
-            !printed.contains("secret") && !printed.contains("device"),
-            "{printed}"
+        assert_eq!(status, 0, "{shown}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.take()),
+            format!("{}\n", w1_tree.display())
         );
-        assert!(shown.contains("not granted"), "{shown}");
+        assert_eq!(std::fs::read_to_string(w1_tree.join("f")).unwrap(), "x\n");
+
+        for denied in [
+            w2_tree.join("secret.txt"),
+            files.join("Documents/private.txt"),
+        ] {
+            let status = shell.run_script(&format!("cat {}", denied.display()));
+            let printed = String::from_utf8_lossy(&out.take()).into_owned();
+            let shown = String::from_utf8_lossy(&err.take()).into_owned();
+            assert_ne!(status, 0, "{denied:?} was read: {printed}");
+            assert!(
+                !printed.contains("secret") && !printed.contains("device"),
+                "{printed}"
+            );
+            assert!(shown.contains("not granted"), "{shown}");
+        }
+        let status = shell.run_script(&format!("ls {}", files.join(".workspaces").display()));
+        assert_ne!(status, 0, "every workspace's tree listed");
+        assert!(!String::from_utf8_lossy(&out.take()).contains(W2));
+        let _ = err.take();
     }
-    let status = shell.run_script(&format!("ls {}", files.join(".workspaces").display()));
-    assert_ne!(status, 0, "every workspace's tree listed");
-    assert!(!String::from_utf8_lossy(&out.take()).contains(W2));
-    let _ = err.take();
-}
 
-#[test]
-fn an_existing_environment_gets_home_without_losing_anything() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let workspace = root.join("workspace");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let store = crate::store::Store::at(root.join("store")).with_workspace(&workspace);
-    let state = brokered_state(&root);
-    let old_home = store.environment_home(&state.environment.key);
-    std::fs::create_dir_all(old_home.join(".config")).unwrap();
-    std::fs::write(old_home.join(".bashrc"), "alias ll='ls -l'\n").unwrap();
-    std::fs::write(old_home.join(".config/tool.toml"), "kept = true\n").unwrap();
-    let before = state.environment.current();
-    assert!(before.home_dir.is_empty(), "made before homes");
+    phase an_existing_environment_gets_home_without_losing_anything;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let store = crate::store::Store::at(root.join("store")).with_workspace(&workspace);
+        let state = brokered_state(&root);
+        let old_home = store.environment_home(&state.environment.key);
+        std::fs::create_dir_all(old_home.join(".config")).unwrap();
+        std::fs::write(old_home.join(".bashrc"), "alias ll='ls -l'\n").unwrap();
+        std::fs::write(old_home.join(".config/tool.toml"), "kept = true\n").unwrap();
+        let before = state.environment.current();
+        assert!(before.home_dir.is_empty(), "made before homes");
 
-    let after = crate::home::with_home(
-        &state.environment.records,
-        &store,
-        &state.environment.key,
-        before.clone(),
-    )
-    .unwrap();
-    assert_eq!(Path::new(&after.home_dir), workspace);
-    assert_eq!(after.tools, before.tools);
-    assert_eq!(after.runtime, before.runtime);
-    assert!(
-        before
-            .grants
-            .iter()
-            .all(|grant| after.grants.contains(grant)),
-        "every grant it held is kept"
-    );
-    assert_eq!(
-        std::fs::read_to_string(old_home.join(".bashrc")).unwrap(),
-        "alias ll='ls -l'\n",
-        "nothing moved"
-    );
-    assert!(old_home.join(".config/tool.toml").is_file());
-    assert!(
-        std::fs::read_dir(&workspace).unwrap().next().is_none(),
-        "nothing copied into the workspace either"
-    );
-    let again = crate::home::with_home(
-        &state.environment.records,
-        &store,
-        &state.environment.key,
-        after.clone(),
-    )
-    .unwrap();
-    assert_eq!(again, after);
+        let after = crate::home::with_home(
+            &state.environment.records,
+            &store,
+            &state.environment.key,
+            before.clone(),
+        )
+        .unwrap();
+        assert_eq!(Path::new(&after.home_dir), workspace);
+        assert_eq!(after.tools, before.tools);
+        assert_eq!(after.runtime, before.runtime);
+        assert!(
+            before
+                .grants
+                .iter()
+                .all(|grant| after.grants.contains(grant)),
+            "every grant it held is kept"
+        );
+        assert_eq!(
+            std::fs::read_to_string(old_home.join(".bashrc")).unwrap(),
+            "alias ll='ls -l'\n",
+            "nothing moved"
+        );
+        assert!(old_home.join(".config/tool.toml").is_file());
+        assert!(
+            std::fs::read_dir(&workspace).unwrap().next().is_none(),
+            "nothing copied into the workspace either"
+        );
+        let again = crate::home::with_home(
+            &state.environment.records,
+            &store,
+            &state.environment.key,
+            after.clone(),
+        )
+        .unwrap();
+        assert_eq!(again, after);
 
-    // The old home reads where it is, and is not written through.
-    let state = Arc::new(Mutex::new(state));
-    let env = vec![("HOME".to_owned(), after.home_dir)];
-    let (_guest, mut shell, out, err) = session_shell(&state, env, workspace);
-    let status = shell.run_script(&format!(
-        "cat {0}/.bashrc {0}/.config/tool.toml",
-        old_home.display()
-    ));
-    assert_eq!(status, 0, "{}", String::from_utf8_lossy(&err.take()));
-    assert_eq!(
-        String::from_utf8_lossy(&out.take()),
-        "alias ll='ls -l'\nkept = true\n"
-    );
-    let status = shell.run_script(&format!("rm {}/.bashrc", old_home.display()));
-    assert_ne!(
-        status,
-        0,
-        "read-only: {}",
-        String::from_utf8_lossy(&err.take())
-    );
-    assert!(old_home.join(".bashrc").is_file());
+        // The old home reads where it is, and is not written through.
+        let state = Arc::new(Mutex::new(state));
+        let env = vec![("HOME".to_owned(), after.home_dir)];
+        let (_guest, mut shell, out, err) = session_shell(&state, env, workspace);
+        let status = shell.run_script(&format!(
+            "cat {0}/.bashrc {0}/.config/tool.toml",
+            old_home.display()
+        ));
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&err.take()));
+        assert_eq!(
+            String::from_utf8_lossy(&out.take()),
+            "alias ll='ls -l'\nkept = true\n"
+        );
+        let status = shell.run_script(&format!("rm {}/.bashrc", old_home.display()));
+        assert_ne!(
+            status,
+            0,
+            "read-only: {}",
+            String::from_utf8_lossy(&err.take())
+        );
+        assert!(old_home.join(".bashrc").is_file());
+    }
 }
 
 const KEY: &str = "0123456789abcdef0123456789abcdef";
@@ -700,55 +760,151 @@ impl Prompt {
     }
 }
 
-#[test]
-fn the_prompt_edits_on_the_sessions_terminal_in_raw_mode() {
-    let p = prompt(&[]);
-    assert!(raw(&p.slave), "the prompt has the terminal raw");
-    assert_eq!(ush_shell::Host::columns(&p.host), 100, "as wide as the pty");
-    p.type_keys("cho hi\x01e\x05 there\r");
-    p.wait_out("hi there");
-    p.type_keys("echo first second\x1bb\x1bb\x1bdthird\r");
-    p.type_keys("echo one two\x17three\r");
-    let (runs, printed) = p.exit();
-    assert_eq!(
-        runs,
-        ["echo hi there", "echo third second", "echo one three"],
-        "{printed}"
-    );
-    assert_eq!(printed, "hi there\nthird second\none three\n");
-}
+tilo_test_env::scenario! {
+    /// The prompt on the session's terminal.
+    fn the_prompt_edits_recalls_and_resumes_on_the_sessions_terminal;
 
-#[test]
-fn up_and_ctrl_r_recall_the_persons_history_and_tab_completes_paths() {
-    let p = prompt(&["echo newest", "echo older", "echo oldest"]);
-    p.type_keys("\x1b[A\x1b[A\r");
-    p.wait_out("older\n");
-    p.type_keys("\x12oldest\r");
-    p.wait_out("oldest\n");
-    p.type_keys("cat notes/pl\t\r");
-    p.wait_out("plan\n");
-    let asked = p.asked.lock().unwrap().clone();
-    assert!(asked.contains(&"0:".to_owned()), "{asked:?}");
-    let (runs, printed) = p.exit();
-    assert_eq!(
-        runs,
-        ["echo older", "echo oldest", "cat notes/plan.md "],
-        "{printed}"
-    );
-}
+    phase the_prompt_edits_on_the_sessions_terminal_in_raw_mode;
+    {
+        let p = prompt(&[]);
+        assert!(raw(&p.slave), "the prompt has the terminal raw");
+        assert_eq!(ush_shell::Host::columns(&p.host), 100, "as wide as the pty");
+        p.type_keys("cho hi\x01e\x05 there\r");
+        p.wait_out("hi there");
+        p.type_keys("echo first second\x1bb\x1bb\x1bdthird\r");
+        p.type_keys("echo one two\x17three\r");
+        let (runs, printed) = p.exit();
+        assert_eq!(
+            runs,
+            ["echo hi there", "echo third second", "echo one three"],
+            "{printed}"
+        );
+        assert_eq!(printed, "hi there\nthird second\none three\n");
+    }
 
-#[test]
-fn a_program_stopped_in_the_guest_gives_the_prompt_back_and_fg_continues_it() {
-    let p = prompt(&[]);
-    p.type_keys("sh -c 'kill -TSTP $$; echo resumed'\r");
-    p.wait_for("Stopped");
-    assert!(raw(&p.slave), "the prompt has the terminal again");
-    p.type_keys("jobs\r");
-    p.type_keys("fg\r");
-    p.wait_out("resumed");
-    let (_, printed) = p.exit();
-    assert!(printed.contains("[1]+  Stopped"), "{printed}");
-    assert!(printed.ends_with("resumed\n"), "{printed}");
+    phase up_and_ctrl_r_recall_the_persons_history_and_tab_completes_paths;
+    {
+        let p = prompt(&["echo newest", "echo older", "echo oldest"]);
+        p.type_keys("\x1b[A\x1b[A\r");
+        p.wait_out("older\n");
+        p.type_keys("\x12oldest\r");
+        p.wait_out("oldest\n");
+        p.type_keys("cat notes/pl\t\r");
+        p.wait_out("plan\n");
+        let asked = p.asked.lock().unwrap().clone();
+        assert!(asked.contains(&"0:".to_owned()), "{asked:?}");
+        let (runs, printed) = p.exit();
+        assert_eq!(
+            runs,
+            ["echo older", "echo oldest", "cat notes/plan.md "],
+            "{printed}"
+        );
+    }
+
+    phase a_program_stopped_in_the_guest_gives_the_prompt_back_and_fg_continues_it;
+    {
+        let p = prompt(&[]);
+        p.type_keys("sh -c 'kill -TSTP $$; echo resumed'\r");
+        p.wait_for("Stopped");
+        assert!(raw(&p.slave), "the prompt has the terminal again");
+        p.type_keys("jobs\r");
+        p.type_keys("fg\r");
+        p.wait_out("resumed");
+        let (_, printed) = p.exit();
+        assert!(printed.contains("[1]+  Stopped"), "{printed}");
+        assert!(printed.ends_with("resumed\n"), "{printed}");
+    }
+
+    phase terminals_editor_client_edits_the_line_at_a_ush_prompt;
+    {
+        use runtime_portal::editor::{Request, Status};
+        use tilo_process::editor::{Client, Failure, Snapshot};
+
+        let (app, producer) = runtime_portal::editor::Socket::pair().unwrap();
+        let field = SessionField::serve(Arc::new(producer)).unwrap();
+        let p = prompt_with(&[], Some(&field));
+        let client = Client::new(app, Arc::new(|| {})).unwrap();
+        let lease_at = |at: u32| -> Snapshot {
+            let asked = std::time::Instant::now();
+            loop {
+                if let Some(snapshot) = client.snapshot()
+                    && snapshot.lease.focus == at
+                {
+                    return snapshot;
+                }
+                assert!(
+                    asked.elapsed() < std::time::Duration::from_secs(20),
+                    "no lease with the cursor at {at}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        let submit = |request: Request, expected: Status| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            client.submit(client.epoch(), request, expected, Box::new(Answered(tx)));
+            rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap()
+        };
+
+        p.type_keys("echo hel");
+        let typed = lease_at(8);
+        assert_eq!(
+            submit(
+                Request::Replace {
+                    lease: typed.lease,
+                    transaction: 1,
+                    text: "lo wörld".into(),
+                },
+                Status::Applied,
+            ),
+            Ok(())
+        );
+        p.wait_for("lo wörld");
+        let applied = lease_at(17);
+        assert!(applied.can_undo, "the edit can be taken back");
+        assert_eq!(
+            submit(
+                Request::Undo {
+                    lease: applied.lease.clone(),
+                    transaction: applied.transaction,
+                },
+                Status::Undone,
+            ),
+            Ok(())
+        );
+        let undone = lease_at(8);
+        assert!(undone.can_redo, "and made again");
+        assert_eq!(
+            submit(
+                Request::Redo {
+                    lease: undone.lease.clone(),
+                    transaction: undone.transaction,
+                },
+                Status::Redone,
+            ),
+            Ok(())
+        );
+        lease_at(17);
+
+        p.type_keys("!");
+        lease_at(18);
+        assert_eq!(
+            submit(
+                Request::Replace {
+                    lease: applied.lease,
+                    transaction: 1,
+                    text: "x".into(),
+                },
+                Status::Applied,
+            ),
+            Err(Failure::Rejected)
+        );
+
+        p.type_keys("\r");
+        p.wait_out("hello wörld!");
+        drop(client);
+        let (runs, printed) = p.exit();
+        assert_eq!(runs, ["echo hello wörld!"], "{printed}");
+    }
 }
 
 #[test]
@@ -767,47 +923,6 @@ fn ctrl_z_that_reaches_the_shell_stops_the_foreground_program() {
     assert!(printed.ends_with("ended 143\n"), "{printed}");
 }
 
-#[test]
-fn a_background_program_is_stopped_continued_and_ended_as_its_job() {
-    let mut f = fixture();
-    let (status, out, err) = f.run(concat!(
-        "sh -c 'echo $$ > pid; exec sleep 30' &\n",
-        "until test -s pid; do sleep 0.02; done\n",
-        "kill -STOP %1\n",
-        "sh -c 'cut -d\" \" -f3 /proc/$(cat pid)/stat'\n",
-        "jobs\n",
-        "kill -CONT %1\n",
-        "jobs\n",
-        "kill %1\n",
-        "wait %1\n",
-        "echo ended $?\n",
-    ));
-    assert_eq!(status, 0, "{err}");
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.first(), Some(&"T"), "{out}");
-    assert!(out.contains("Stopped"), "{out}");
-    assert!(out.contains("Running"), "{out}");
-    assert!(out.ends_with("ended 143\n"), "{out}");
-}
-
-#[test]
-fn the_guests_programs_are_named_from_its_images_along_path() {
-    use std::os::unix::fs::PermissionsExt as _;
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = dir.path().join("runtime");
-    let tool = dir.path().join("tool");
-    for (root, name) in [(&runtime, "bash"), (&tool, "rg"), (&runtime, "ls")] {
-        std::fs::create_dir_all(root.join("usr/bin")).unwrap();
-        let file = root.join("usr/bin").join(name);
-        std::fs::write(&file, "").unwrap();
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    std::fs::write(runtime.join("usr/bin/README"), "").unwrap();
-    std::os::unix::fs::symlink("bash", runtime.join("usr/bin/sh")).unwrap();
-    let names = programs_in(&[tool, runtime], "/run/ush/bin:/usr/bin:relative");
-    assert_eq!(names, ["bash", "ls", "rg", "sh"]);
-}
-
 struct Answered(std::sync::mpsc::Sender<Result<(), tilo_process::editor::Failure>>);
 
 impl tilo_process::editor::Completion for Answered {
@@ -821,97 +936,6 @@ impl tilo_process::editor::Completion for Answered {
     fn finish(self: Box<Self>, result: Result<(), tilo_process::editor::Failure>) {
         let _ = self.0.send(result);
     }
-}
-
-#[test]
-fn terminals_editor_client_edits_the_line_at_a_ush_prompt() {
-    use runtime_portal::editor::{Request, Status};
-    use tilo_process::editor::{Client, Failure, Snapshot};
-
-    let (app, producer) = runtime_portal::editor::Socket::pair().unwrap();
-    let field = SessionField::serve(Arc::new(producer)).unwrap();
-    let p = prompt_with(&[], Some(&field));
-    let client = Client::new(app, Arc::new(|| {})).unwrap();
-    let lease_at = |at: u32| -> Snapshot {
-        let asked = std::time::Instant::now();
-        loop {
-            if let Some(snapshot) = client.snapshot()
-                && snapshot.lease.focus == at
-            {
-                return snapshot;
-            }
-            assert!(
-                asked.elapsed() < std::time::Duration::from_secs(20),
-                "no lease with the cursor at {at}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    };
-    let submit = |request: Request, expected: Status| {
-        let (tx, rx) = std::sync::mpsc::channel();
-        client.submit(client.epoch(), request, expected, Box::new(Answered(tx)));
-        rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap()
-    };
-
-    p.type_keys("echo hel");
-    let typed = lease_at(8);
-    assert_eq!(
-        submit(
-            Request::Replace {
-                lease: typed.lease,
-                transaction: 1,
-                text: "lo wörld".into(),
-            },
-            Status::Applied,
-        ),
-        Ok(())
-    );
-    p.wait_for("lo wörld");
-    let applied = lease_at(17);
-    assert!(applied.can_undo, "the edit can be taken back");
-    assert_eq!(
-        submit(
-            Request::Undo {
-                lease: applied.lease.clone(),
-                transaction: applied.transaction,
-            },
-            Status::Undone,
-        ),
-        Ok(())
-    );
-    let undone = lease_at(8);
-    assert!(undone.can_redo, "and made again");
-    assert_eq!(
-        submit(
-            Request::Redo {
-                lease: undone.lease.clone(),
-                transaction: undone.transaction,
-            },
-            Status::Redone,
-        ),
-        Ok(())
-    );
-    lease_at(17);
-
-    p.type_keys("!");
-    lease_at(18);
-    assert_eq!(
-        submit(
-            Request::Replace {
-                lease: applied.lease,
-                transaction: 1,
-                text: "x".into(),
-            },
-            Status::Applied,
-        ),
-        Err(Failure::Rejected)
-    );
-
-    p.type_keys("\r");
-    p.wait_out("hello wörld!");
-    drop(client);
-    let (runs, printed) = p.exit();
-    assert_eq!(runs, ["echo hello wörld!"], "{printed}");
 }
 
 fn busy_line(n: usize) -> String {

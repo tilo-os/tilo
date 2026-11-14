@@ -537,48 +537,52 @@ mod tests {
         db
     }
 
-    #[test]
-    fn shared_extents_alone_prove_a_write_inside_the_file() {
-        let (old, new) = (file(&[1; 8192]), file(&[2; 8192]));
-        assert!(kept_bytes_in_place(&old, &new, &span(4096, 8192), 8192, 8192).unwrap());
-    }
+    tilo_test_env::scenario! {
+        fn kept_bytes_in_place_tells_a_write_inside_the_file_from_a_rewrite;
 
-    #[test]
-    fn a_small_database_whose_every_page_was_rewritten_kept_its_other_bytes() {
-        let old = file(&database(1, b"\x01\x02\x03"));
-        let new = file(&database(2, b"\x0b\x0c\x0d"));
-        assert!(kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
-    }
+        phase shared_extents_alone_prove_a_write_inside_the_file;
+        {
+            let (old, new) = (file(&[1; 8192]), file(&[2; 8192]));
+            assert!(kept_bytes_in_place(&old, &new, &span(4096, 8192), 8192, 8192).unwrap());
+        }
 
-    #[test]
-    fn different_bytes_everywhere_are_a_rewrite() {
-        let (old, new) = (file(&[1; 8192]), file(&[2; 8192]));
-        assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
-    }
+        phase a_small_database_whose_every_page_was_rewritten_kept_its_other_bytes;
+        {
+            let old = file(&database(1, b"\x01\x02\x03"));
+            let new = file(&database(2, b"\x0b\x0c\x0d"));
+            assert!(kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
+        }
 
-    #[test]
-    fn the_same_bytes_written_again_change_nothing_in_place() {
-        let db = database(1, b"\x01");
-        let (old, new) = (file(&db), file(&db));
-        assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
-    }
+        phase different_bytes_everywhere_are_a_rewrite;
+        {
+            let (old, new) = (file(&[1; 8192]), file(&[2; 8192]));
+            assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
+        }
 
-    #[test]
-    fn zeros_at_the_same_offsets_are_not_kept_bytes() {
-        let mut a = vec![0u8; 8192];
-        let mut b = vec![0u8; 8192];
-        a[0] = 1;
-        b[0] = 2;
-        let (old, new) = (file(&a), file(&b));
-        assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
-    }
+        phase the_same_bytes_written_again_change_nothing_in_place;
+        {
+            let db = database(1, b"\x01");
+            let (old, new) = (file(&db), file(&db));
+            assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
+        }
 
-    #[test]
-    fn bytes_appended_past_the_previous_end_are_not_kept_bytes() {
-        let old = file(&[1; 4096]);
-        let mut grown = vec![2u8; 4096];
-        grown.extend_from_slice(&[1; 4096]);
-        let new = file(&grown);
-        assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 4096, 8192).unwrap());
+        phase zeros_at_the_same_offsets_are_not_kept_bytes;
+        {
+            let mut a = vec![0u8; 8192];
+            let mut b = vec![0u8; 8192];
+            a[0] = 1;
+            b[0] = 2;
+            let (old, new) = (file(&a), file(&b));
+            assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 8192, 8192).unwrap());
+        }
+
+        phase bytes_appended_past_the_previous_end_are_not_kept_bytes;
+        {
+            let old = file(&[1; 4096]);
+            let mut grown = vec![2u8; 4096];
+            grown.extend_from_slice(&[1; 4096]);
+            let new = file(&grown);
+            assert!(!kept_bytes_in_place(&old, &new, &span(0, 8192), 4096, 8192).unwrap());
+        }
     }
 }

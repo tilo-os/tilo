@@ -184,18 +184,20 @@ mod tests {
     }
 
     /// A bare root's read in flight costs the idle harness no frame; its landing wakes exactly one,
-    /// which takes the result in.
+    /// which takes the result in. The same whether the read starts in a sync or in layout.
     #[test]
     fn a_read_in_flight_frames_nothing_until_it_lands_then_once() {
-        read_in_flight(false);
+        for (case, in_layout) in [
+            ("a read started in sync", false),
+            ("a read started in layout", true),
+        ] {
+            read_in_flight(case, in_layout);
+        }
     }
 
-    #[test]
-    fn a_read_started_in_layout_wakes_its_frame() {
-        read_in_flight(true);
-    }
-
-    fn read_in_flight(in_layout: bool) {
+    fn read_in_flight(case: &str, in_layout: bool) {
+        // The expects below name no case: a failure's output ends with this line.
+        eprintln!("case: {case}");
         let reader = Reader {
             in_layout,
             rect: vello::kurbo::Rect::ZERO,
@@ -216,13 +218,16 @@ mod tests {
             }
             eprintln!("framed for {schedule:?}");
         }
-        assert!(settled, "the window comes to rest after mounting");
-        assert!(root.landed.is_some(), "the first sync started the read");
+        assert!(settled, "{case}: the window comes to rest after mounting");
+        assert!(
+            root.landed.is_some(),
+            "{case}: the first sync started the read"
+        );
         let harness = Framed::harness_mut(&mut root);
         for _ in 0..20 {
             assert!(
                 !harness.poll_frame().expect("a frame lays out"),
-                "an idle window with a read in flight frames nothing"
+                "{case}: an idle window with a read in flight frames nothing"
             );
         }
         let syncs = root.syncs;
@@ -236,16 +241,23 @@ mod tests {
         while !harness.frame_schedule().needs_redraw {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the landing wakes the window"
+                "{case}: the landing wakes the window"
             );
             std::thread::yield_now();
         }
-        assert!(harness.poll_frame().expect("a frame lays out"));
+        assert!(
+            harness.poll_frame().expect("a frame lays out"),
+            "{case}: the landing asks for a frame"
+        );
         assert!(
             !harness.poll_frame().expect("a frame lays out"),
-            "one wake, one frame"
+            "{case}: one wake, one frame"
         );
-        assert_eq!(root.value, Some(7), "the woken frame took the result in");
-        assert!(root.syncs > syncs, "it synced to take it in");
+        assert_eq!(
+            root.value,
+            Some(7),
+            "{case}: the woken frame took the result in"
+        );
+        assert!(root.syncs > syncs, "{case}: it synced to take it in");
     }
 }

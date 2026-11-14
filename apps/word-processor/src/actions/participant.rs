@@ -293,73 +293,78 @@ mod tests {
         (doc, out)
     }
 
-    #[test]
-    fn collapsed_view_projects_caret_context() {
-        let (doc, ids) = doc_with(&["hello", "world"]);
-        let view = ParticipantView::at(ViewPoint::new(&ids[1], 2), RegionKind::Body);
-        let ctx = view.ctx(&doc).unwrap();
-        assert_eq!(ctx.caret_block, ids[1]);
-        assert_eq!(ctx.caret_offset, 2);
-        assert_eq!(ctx.target_blocks, vec![ids[1].clone()]);
-        assert!(ctx.selection.is_none());
-        assert!(ctx.format_spans.is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// A participant view as the context the document publishes its actions for.
+        fn a_participant_view_projects_to_the_published_context;
 
-    #[test]
-    fn backwards_selection_is_ordered_with_per_block_spans() {
-        let (doc, ids) = doc_with(&["hello", "big", "world"]);
-        let view = ParticipantView {
-            caret: ViewPoint::new(&ids[0], 3),
-            anchor: Some(ViewPoint::new(&ids[2], 2)),
-            ..ParticipantView::default()
-        };
-        let ctx = view.ctx(&doc).unwrap();
-        assert_eq!(
-            ctx.selection,
-            Some(SelectionTarget {
-                start_block: ids[0].clone(),
-                start: 3,
-                end_block: ids[2].clone(),
-                end: 2,
-            })
-        );
-        let spans: Vec<_> = ctx
-            .format_spans
-            .iter()
-            .map(|s| (s.block.as_str(), s.start, s.end))
-            .collect();
-        assert_eq!(
-            spans,
-            vec![
-                (ids[0].as_str(), 3, 5),
-                (ids[1].as_str(), 0, 3),
-                (ids[2].as_str(), 0, 2)
-            ]
-        );
-        assert_eq!(view.selection(&doc), ctx.selection);
-    }
+        phase collapsed_view_projects_caret_context;
+        {
+            let (doc, ids) = doc_with(&["hello", "world"]);
+            let view = ParticipantView::at(ViewPoint::new(&ids[1], 2), RegionKind::Body);
+            let ctx = view.ctx(&doc).unwrap();
+            assert_eq!(ctx.caret_block, ids[1]);
+            assert_eq!(ctx.caret_offset, 2);
+            assert_eq!(ctx.target_blocks, vec![ids[1].clone()]);
+            assert!(ctx.selection.is_none());
+            assert!(ctx.format_spans.is_empty());
+        }
 
-    #[test]
-    fn unknown_caret_publishes_nothing_and_find_is_bounded() {
-        let (doc, ids) = doc_with(&["abc"]);
-        assert!(ParticipantView::default().ctx(&doc).is_none());
-        let stale = ParticipantView::at(ViewPoint::new("gone", 0), RegionKind::Body);
-        assert!(stale.ctx(&doc).is_none());
-        let hits = (0..200).map(|i| SearchTarget {
-            block: ids[0].clone(),
-            start: i,
-            end: i + 1,
-        });
-        let view = ParticipantView {
-            find: FindState::new("a", hits),
-            ..ParticipantView::at(ViewPoint::new(&ids[0], 0), RegionKind::Body)
-        };
-        assert_eq!(view.find.hits.len(), MAX_RESOURCE_SEARCH_HITS);
-        assert_eq!(
-            view.ctx(&doc).unwrap().search_hits.len(),
-            MAX_RESOURCE_SEARCH_HITS
-        );
-        let end = ParticipantView::at_document_end(&doc).unwrap();
-        assert_eq!(end.caret, ViewPoint::new(&ids[0], 3));
+        phase backwards_selection_is_ordered_with_per_block_spans;
+        {
+            let (doc, ids) = doc_with(&["hello", "big", "world"]);
+            let view = ParticipantView {
+                caret: ViewPoint::new(&ids[0], 3),
+                anchor: Some(ViewPoint::new(&ids[2], 2)),
+                ..ParticipantView::default()
+            };
+            let ctx = view.ctx(&doc).unwrap();
+            assert_eq!(
+                ctx.selection,
+                Some(SelectionTarget {
+                    start_block: ids[0].clone(),
+                    start: 3,
+                    end_block: ids[2].clone(),
+                    end: 2,
+                })
+            );
+            let spans: Vec<_> = ctx
+                .format_spans
+                .iter()
+                .map(|s| (s.block.as_str(), s.start, s.end))
+                .collect();
+            assert_eq!(
+                spans,
+                vec![
+                    (ids[0].as_str(), 3, 5),
+                    (ids[1].as_str(), 0, 3),
+                    (ids[2].as_str(), 0, 2)
+                ]
+            );
+            assert_eq!(view.selection(&doc), ctx.selection);
+        }
+
+        phase unknown_caret_publishes_nothing_and_find_is_bounded;
+        {
+            let (doc, ids) = doc_with(&["abc"]);
+            assert!(ParticipantView::default().ctx(&doc).is_none());
+            let stale = ParticipantView::at(ViewPoint::new("gone", 0), RegionKind::Body);
+            assert!(stale.ctx(&doc).is_none());
+            let hits = (0..200).map(|i| SearchTarget {
+                block: ids[0].clone(),
+                start: i,
+                end: i + 1,
+            });
+            let view = ParticipantView {
+                find: FindState::new("a", hits),
+                ..ParticipantView::at(ViewPoint::new(&ids[0], 0), RegionKind::Body)
+            };
+            assert_eq!(view.find.hits.len(), MAX_RESOURCE_SEARCH_HITS);
+            assert_eq!(
+                view.ctx(&doc).unwrap().search_hits.len(),
+                MAX_RESOURCE_SEARCH_HITS
+            );
+            let end = ParticipantView::at_document_end(&doc).unwrap();
+            assert_eq!(end.caret, ViewPoint::new(&ids[0], 3));
+        }
     }
 }

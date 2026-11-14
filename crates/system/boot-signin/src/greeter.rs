@@ -623,167 +623,172 @@ mod tests {
         (exit, auth, fake.join().unwrap())
     }
 
-    #[test]
-    fn the_person_and_secret_typed_on_the_greeter_open_the_volume() {
-        let (exit, auth, told) = run(2, vec![Act::Secret(1, "2468")], PathBuf::new());
-        assert_eq!(exit, Exit::Unlocked);
-        assert_eq!(auth.tries, [(1001, "2468".to_owned())]);
-        assert_eq!(
-            told,
-            [
-                ToGreeter::People {
-                    people: people(2),
-                    highlighted: 0
-                },
-                ToGreeter::Checking,
-                ToGreeter::Finish { unlocked: true },
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The graphical greeter as the sign-in's screen, and what it is started with.
+        fn the_greeter_shows_people_takes_answers_and_starts_with_the_comforts;
 
-    #[test]
-    fn a_wrong_secret_is_noted_and_someone_else_may_then_sign_in() {
-        let (exit, auth, told) = run(
-            2,
-            vec![Act::Secret(0, "1111"), Act::Secret(1, "2468")],
-            PathBuf::new(),
-        );
-        assert_eq!(exit, Exit::Unlocked);
-        assert_eq!(
-            auth.tries,
-            [(1000, "1111".to_owned()), (1001, "2468".to_owned())]
-        );
-        assert_eq!(
-            told,
-            [
-                ToGreeter::People {
-                    people: people(2),
-                    highlighted: 0
-                },
-                ToGreeter::Checking,
-                ToGreeter::Ask {
-                    person: 0,
-                    note: Note::Wrong {
-                        secret: SecretKind::Pin,
-                        tries_left: Some(4)
+        phase the_person_and_secret_typed_on_the_greeter_open_the_volume;
+        {
+            let (exit, auth, told) = run(2, vec![Act::Secret(1, "2468")], PathBuf::new());
+            assert_eq!(exit, Exit::Unlocked);
+            assert_eq!(auth.tries, [(1001, "2468".to_owned())]);
+            assert_eq!(
+                told,
+                [
+                    ToGreeter::People {
+                        people: people(2),
+                        highlighted: 0
                     },
-                    several: true
+                    ToGreeter::Checking,
+                    ToGreeter::Finish { unlocked: true },
+                ]
+            );
+        }
+
+        phase a_wrong_secret_is_noted_and_someone_else_may_then_sign_in;
+        {
+            let (exit, auth, told) = run(
+                2,
+                vec![Act::Secret(0, "1111"), Act::Secret(1, "2468")],
+                PathBuf::new(),
+            );
+            assert_eq!(exit, Exit::Unlocked);
+            assert_eq!(
+                auth.tries,
+                [(1000, "1111".to_owned()), (1001, "2468".to_owned())]
+            );
+            assert_eq!(
+                told,
+                [
+                    ToGreeter::People {
+                        people: people(2),
+                        highlighted: 0
+                    },
+                    ToGreeter::Checking,
+                    ToGreeter::Ask {
+                        person: 0,
+                        note: Note::Wrong {
+                            secret: SecretKind::Pin,
+                            tries_left: Some(4)
+                        },
+                        several: true
+                    },
+                    ToGreeter::Checking,
+                    ToGreeter::Finish { unlocked: true },
+                ]
+            );
+        }
+
+        phase one_person_is_shown_alone_and_cant_sign_in_is_the_other_ways;
+        {
+            let (exit, auth, told) = run(1, vec![Act::CantSignIn], PathBuf::new());
+            assert_eq!(exit, Exit::OtherWays);
+            assert!(auth.tries.is_empty());
+            assert_eq!(
+                told,
+                [
+                    ToGreeter::People {
+                        people: people(1),
+                        highlighted: 0
+                    },
+                    ToGreeter::Ask {
+                        person: 0,
+                        note: Note::None,
+                        several: false
+                    },
+                    ToGreeter::Finish { unlocked: false },
+                ]
+            );
+            let (exit, _, _) = run(
+                2,
+                vec![Act::Secret(0, "1"), Act::CantSignIn],
+                PathBuf::new(),
+            );
+            assert_eq!(exit, Exit::OtherWays);
+        }
+
+        phase the_power_menu_is_carried_out_here;
+        {
+            let _serial = crate::test_support::serial();
+            let dir = tempfile::tempdir().unwrap();
+            let systemctl = dir.path().join("systemctl");
+            fs::write(
+                &systemctl,
+                format!("#!/bin/sh\necho \"$*\" >>{}/asked\n", dir.path().display()),
+            )
+            .unwrap();
+            fs::set_permissions(
+                &systemctl,
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            let (exit, _, _) = run(
+                2,
+                vec![Act::Power(Power::Reboot), Act::Secret(1, "2468")],
+                systemctl,
+            );
+            assert_eq!(exit, Exit::Unlocked);
+            assert_eq!(
+                fs::read_to_string(dir.path().join("asked")).unwrap(),
+                "reboot\n"
+            );
+        }
+
+        phase a_greeter_that_goes_away_leaves_the_screen_to_the_console;
+        {
+            // The console's agent is missing here, so its ask is unavailable:
+            // the flow ends with the other ways, not with the greeter's answer.
+            let (exit, auth, _) = run(2, vec![Act::Secret(0, "1111")], PathBuf::new());
+            assert_eq!(auth.tries, [(1000, "1111".to_owned())]);
+            assert_eq!(exit, Exit::OtherWays);
+        }
+
+        phase an_answer_for_someone_not_shown_ends_the_greeter;
+        {
+            let (exit, auth, _) = run(1, vec![Act::Secret(3, "2468")], PathBuf::new());
+            assert!(auth.tries.is_empty());
+            assert_eq!(exit, Exit::OtherWays);
+        }
+
+        phase the_greeter_hears_the_comforts_first;
+        {
+            let (ours, theirs) = Link::pair().unwrap();
+            let comforts = serde_json::json!({"screen_reader": true});
+            let running = hello(
+                Running {
+                    link: ours,
+                    child: None,
                 },
-                ToGreeter::Checking,
-                ToGreeter::Finish { unlocked: true },
-            ]
-        );
-    }
+                &comforts,
+            )
+            .unwrap();
+            assert_eq!(
+                theirs.recv_from_supervisor().unwrap(),
+                ToGreeter::Hello { comforts }
+            );
+            running.stop();
+        }
 
-    #[test]
-    fn one_person_is_shown_alone_and_cant_sign_in_is_the_other_ways() {
-        let (exit, auth, told) = run(1, vec![Act::CantSignIn], PathBuf::new());
-        assert_eq!(exit, Exit::OtherWays);
-        assert!(auth.tries.is_empty());
-        assert_eq!(
-            told,
-            [
-                ToGreeter::People {
-                    people: people(1),
-                    highlighted: 0
-                },
-                ToGreeter::Ask {
-                    person: 0,
-                    note: Note::None,
-                    several: false
-                },
-                ToGreeter::Finish { unlocked: false },
-            ]
-        );
-        let (exit, _, _) = run(
-            2,
-            vec![Act::Secret(0, "1"), Act::CantSignIn],
-            PathBuf::new(),
-        );
-        assert_eq!(exit, Exit::OtherWays);
-    }
-
-    #[test]
-    fn the_power_menu_is_carried_out_here() {
-        let _serial = crate::test_support::serial();
-        let dir = tempfile::tempdir().unwrap();
-        let systemctl = dir.path().join("systemctl");
-        fs::write(
-            &systemctl,
-            format!("#!/bin/sh\necho \"$*\" >>{}/asked\n", dir.path().display()),
-        )
-        .unwrap();
-        fs::set_permissions(
-            &systemctl,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
-        let (exit, _, _) = run(
-            2,
-            vec![Act::Power(Power::Reboot), Act::Secret(1, "2468")],
-            systemctl,
-        );
-        assert_eq!(exit, Exit::Unlocked);
-        assert_eq!(
-            fs::read_to_string(dir.path().join("asked")).unwrap(),
-            "reboot\n"
-        );
-    }
-
-    #[test]
-    fn a_greeter_that_goes_away_leaves_the_screen_to_the_console() {
-        // The console's agent is missing here, so its ask is unavailable:
-        // the flow ends with the other ways, not with the greeter's answer.
-        let (exit, auth, _) = run(2, vec![Act::Secret(0, "1111")], PathBuf::new());
-        assert_eq!(auth.tries, [(1000, "1111".to_owned())]);
-        assert_eq!(exit, Exit::OtherWays);
-    }
-
-    #[test]
-    fn an_answer_for_someone_not_shown_ends_the_greeter() {
-        let (exit, auth, _) = run(1, vec![Act::Secret(3, "2468")], PathBuf::new());
-        assert!(auth.tries.is_empty());
-        assert_eq!(exit, Exit::OtherWays);
-    }
-
-    #[test]
-    fn the_greeter_hears_the_comforts_first() {
-        let (ours, theirs) = Link::pair().unwrap();
-        let comforts = serde_json::json!({"screen_reader": true});
-        let running = hello(
-            Running {
-                link: ours,
-                child: None,
-            },
-            &comforts,
-        )
-        .unwrap();
-        assert_eq!(
-            theirs.recv_from_supervisor().unwrap(),
-            ToGreeter::Hello { comforts }
-        );
-        running.stop();
-    }
-
-    #[test]
-    fn the_comforts_token_is_found_in_the_header() {
-        let metadata = r#"{"keyslots":{},"tokens":{
+        phase the_comforts_token_is_found_in_the_header;
+        {
+            let metadata = r#"{"keyslots":{},"tokens":{
             "3":{"type":"tilo-comforts","keyslots":[],"screen_reader":false},
             "1":{"type":"tilo-signin","keyslots":["1"]},
             "2":{"type":"tilo-comforts","keyslots":[],"screen_reader":true}
         }}"#;
-        assert_eq!(comforts(metadata)["screen_reader"], serde_json::json!(true));
-        assert_eq!(comforts("{}"), serde_json::Value::Null);
-        assert_eq!(comforts("not json"), serde_json::Value::Null);
-    }
+            assert_eq!(comforts(metadata)["screen_reader"], serde_json::json!(true));
+            assert_eq!(comforts("{}"), serde_json::Value::Null);
+            assert_eq!(comforts("not json"), serde_json::Value::Null);
+        }
 
-    #[test]
-    fn the_audio_group_is_read_from_the_group_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let group = dir.path().join("group");
-        fs::write(&group, "root:x:0:\nvideo:x:39:\naudio:x:63:\n").unwrap();
-        assert_eq!(audio_group(&group), Some(63));
-        fs::write(&group, "root:x:0:\n").unwrap();
-        assert_eq!(audio_group(&group), None);
+        phase the_audio_group_is_read_from_the_group_file;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let group = dir.path().join("group");
+            fs::write(&group, "root:x:0:\nvideo:x:39:\naudio:x:63:\n").unwrap();
+            assert_eq!(audio_group(&group), Some(63));
+            fs::write(&group, "root:x:0:\n").unwrap();
+            assert_eq!(audio_group(&group), None);
+        }
     }
 }

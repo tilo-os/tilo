@@ -476,6 +476,60 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
     .expect("session")
 }
 
+/// Who made the last step of the workspace's layout, once the workspace has the change that made
+/// it and it is `verb`'s: a layout's change is written off the loop, so the record holds it a look
+/// or more after the action.
+pub fn last_step(session: &mut Session, verb: &str) -> String {
+    wait_for(
+        session,
+        "the layout's change to reach the workspace",
+        |session| {
+            let (who, made) = session.arrangement().borrow_mut().last_step()?;
+            (made == verb).then_some(who)
+        },
+    )
+}
+
+/// The state directory of a device that holds its workspaces: a home of its own, the throwaway
+/// identity `dist/dev/nested-session.sh` mints, and a secret store. Made once for the test's
+/// process, and kept there: the home lives as long as the test does.
+///
+/// # Panics
+/// The home, the identity or their directories cannot be made.
+pub fn seated_state() -> std::path::PathBuf {
+    thread_local! {
+        static STATE: std::path::PathBuf = seat();
+    }
+    STATE.with(Clone::clone)
+}
+
+fn seat() -> std::path::PathBuf {
+    seat_in(Box::leak(Box::new(
+        tilo_test_env::TestHome::new().expect("a home"),
+    )))
+}
+
+/// Seat a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, and a secret
+/// store, so a session there holds its workspaces. Its state directory.
+///
+/// # Panics
+/// The identity or its directories cannot be made.
+pub fn seat_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
+    let identity = home.config().join("tilo/identity");
+    std::fs::create_dir_all(&identity).expect("the identity's directory");
+    let root = home.root().join("system");
+    home.env().set("TILO_IDENTITY_ROOT", &root);
+    let secrets = home.state().join("secrets");
+    home.env().set("TILO_SECRETS_DIR", &secrets);
+    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+        &identity,
+        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .expect("the throwaway identity");
+    home.state().to_path_buf()
+}
+
 /// The headless session with the shell as the whole screen and the seeded apps published (notes,
 /// tasks, chat and mail), its agent door and test-control socket at `root`, admitting this
 /// test's program to act as the person, and the framed canvas in front. The apps are the ones
@@ -651,6 +705,7 @@ pub fn repl_session(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
+            state: Some(seated_state()),
             shell: true,
             collab: false,
             services: vec![Box::new(notes)],

@@ -89,170 +89,174 @@ fn write_resource(catalogue: &mut String, resource: &ResourceSpec, depth: usize)
     }
 }
 
-#[test]
-fn the_catalogue_is_what_the_desktop_publishes() {
-    let expected = include_str!("catalogue.txt");
-    assert_eq!(catalogue(), expected);
-}
+tilo_test_env::scenario! {
+    fn the_desktop_publishes_one_verb_vocabulary_per_resource;
 
-#[test]
-fn no_verb_is_declared_twice() {
-    let mut seen = BTreeSet::new();
-    for decl in DeskEffect::declarations() {
-        assert!(seen.insert(decl.id), "{} is declared twice", decl.id);
+    phase the_catalogue_is_what_the_desktop_publishes;
+    {
+        let expected = include_str!("catalogue.txt");
+        assert_eq!(catalogue(), expected);
     }
-    for decl in ChromeEffect::declarations() {
-        assert!(seen.insert(decl.id), "{} is declared twice", decl.id);
-    }
-}
 
-#[test]
-fn a_resource_offers_each_verb_once() {
-    // A resource names a verb by its id: two rows of one resource offering the same id leaves the
-    // second one unaddressable.
-    for resource in published() {
+    phase no_verb_is_declared_twice;
+    {
         let mut seen = BTreeSet::new();
-        for action in &resource.actions {
-            assert!(
-                seen.insert(action.id.as_str()),
-                "{} offers {} twice",
-                resource.id.as_str(),
-                action.id
-            );
+        for decl in DeskEffect::declarations() {
+            assert!(seen.insert(decl.id), "{} is declared twice", decl.id);
+        }
+        for decl in ChromeEffect::declarations() {
+            assert!(seen.insert(decl.id), "{} is declared twice", decl.id);
         }
     }
-}
 
-#[test]
-fn the_desks_and_the_chromes_verbs_are_told_apart() {
-    assert_eq!(DESK_RESOURCE, "desktop:desk");
-    assert_eq!(CHROME_RESOURCE, "desktop:chrome");
-    let desk: BTreeSet<&str> = DeskEffect::declarations()
-        .iter()
-        .map(|decl| decl.id)
-        .collect();
-    let chrome: BTreeSet<&str> = ChromeEffect::declarations()
-        .iter()
-        .map(|decl| decl.id)
-        .collect();
-    assert!(desk.is_disjoint(&chrome));
-}
-
-#[test]
-fn every_row_offers_a_verb_of_the_desktop() {
-    for resource in published() {
-        for spec in actions(&resource) {
-            let action = spec.id.as_str();
-            let read = matches!(
-                spec.action_type().operation_type.as_deref(),
-                Some(window::LOOK | window::READ)
-            );
-            assert!(
-                read || DeskEffect::declaration(action).is_some()
-                    || ChromeEffect::declaration(action).is_some(),
-                "{} offers {action}, which neither vocabulary declares",
-                resource.id.as_str()
-            );
+    phase a_resource_offers_each_verb_once;
+    {
+        // A resource names a verb by its id: two rows of one resource offering the same id leaves the
+        // second one unaddressable.
+        for resource in published() {
+            let mut seen = BTreeSet::new();
+            for action in &resource.actions {
+                assert!(
+                    seen.insert(action.id.as_str()),
+                    "{} offers {} twice",
+                    resource.id.as_str(),
+                    action.id
+                );
+            }
         }
     }
-}
 
-#[test]
-fn the_launchpad_cards_are_its_controls_for_scripts() {
-    // A card submits the launchpad verb for what the empty desk shows, and a script or an agent
-    // invokes the same verb by the row this resource publishes. People reach the verbs through
-    // their host actions, which is what the palette lists, so this resource is never the palette's
-    // door.
-    let launchpad = launchpad_resource(&tilo_desktop::launchpad::LaunchpadAction::ALL);
-    assert!(
-        !launchpad.children.is_empty(),
-        "the launchpad has its cards"
-    );
-    for card in &launchpad.children {
-        for action in &card.actions {
-            assert!(
-                !action.reaches_people(),
-                "{} ({}) is listed for people",
-                card.id.as_str(),
-                action.id
-            );
-            assert!(
-                action.reaches_agents(),
-                "{} ({}) stays a control scripts can run",
-                card.id.as_str(),
-                action.id
-            );
+    phase the_desks_and_the_chromes_verbs_are_told_apart;
+    {
+        assert_eq!(DESK_RESOURCE, "desktop:desk");
+        assert_eq!(CHROME_RESOURCE, "desktop:chrome");
+        let desk: BTreeSet<&str> = DeskEffect::declarations()
+            .iter()
+            .map(|decl| decl.id)
+            .collect();
+        let chrome: BTreeSet<&str> = ChromeEffect::declarations()
+            .iter()
+            .map(|decl| decl.id)
+            .collect();
+        assert!(desk.is_disjoint(&chrome));
+    }
+
+    phase every_row_offers_a_verb_of_the_desktop;
+    {
+        for resource in published() {
+            for spec in actions(&resource) {
+                let action = spec.id.as_str();
+                let read = matches!(
+                    spec.action_type().operation_type.as_deref(),
+                    Some(window::LOOK | window::READ)
+                );
+                assert!(
+                    read || DeskEffect::declaration(action).is_some()
+                        || ChromeEffect::declaration(action).is_some(),
+                    "{} offers {action}, which neither vocabulary declares",
+                    resource.id.as_str()
+                );
+            }
         }
     }
-}
 
-/// A window this session does not run — another desktop's — is read and pictured through the desk,
-/// and nothing acts on it: the two verbs it adds only read, and reach agents, who have no other way
-/// to see it.
-#[test]
-fn a_foreign_window_offers_the_two_reads_and_nothing_that_acts() {
-    let desk = published()
-        .into_iter()
-        .find(|resource| resource.id.as_str() == DESK_RESOURCE)
-        .expect("the desk");
-    let window = desk
-        .children
-        .iter()
-        .find(|resource| resource.id.as_str() == tab_resource_id(8))
-        .expect("the foreign window's row");
-    let reads: Vec<String> = window
-        .actions
-        .iter()
-        .filter(|spec| {
-            matches!(
-                spec.action_type().operation_type.as_deref(),
-                Some(window::LOOK | window::READ)
-            )
-        })
-        .map(|spec| spec.id.clone())
-        .collect();
-    assert_eq!(
-        reads,
-        ["look", "read"],
-        "the foreign window is read and pictured, and its own verbs are these"
-    );
-    for spec in &window.actions {
-        let ty = spec.action_type();
-        if ty.operation_type.as_deref() != Some(window::LOOK)
-            && ty.operation_type.as_deref() != Some(window::READ)
-        {
-            continue;
-        }
-        assert_eq!(
-            ty.contract.kind,
-            tilo_actions::ActionKind::Read,
-            "{} reads and nothing else",
-            spec.id
+    phase the_launchpad_cards_are_its_controls_for_scripts;
+    {
+        // A card submits the launchpad verb for what the empty desk shows, and a script or an agent
+        // invokes the same verb by the row this resource publishes. People reach the verbs through
+        // their host actions, which is what the palette lists, so this resource is never the palette's
+        // door.
+        let launchpad = launchpad_resource(&tilo_desktop::launchpad::LaunchpadAction::ALL);
+        assert!(
+            !launchpad.children.is_empty(),
+            "the launchpad has its cards"
         );
+        for card in &launchpad.children {
+            for action in &card.actions {
+                assert!(
+                    !action.reaches_people(),
+                    "{} ({}) is listed for people",
+                    card.id.as_str(),
+                    action.id
+                );
+                assert!(
+                    action.reaches_agents(),
+                    "{} ({}) stays a control scripts can run",
+                    card.id.as_str(),
+                    action.id
+                );
+            }
+        }
+    }
+
+    phase a_foreign_window_offers_the_two_reads_and_nothing_that_acts;
+    // A window this session does not run — another desktop's — is read and pictured through the desk,
+    // and nothing acts on it: the two verbs it adds only read, and reach agents, who have no other way
+    // to see it.
+    {
+        let desk = published()
+            .into_iter()
+            .find(|resource| resource.id.as_str() == DESK_RESOURCE)
+            .expect("the desk");
+        let window = desk
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == tab_resource_id(8))
+            .expect("the foreign window's row");
+        let reads: Vec<String> = window
+            .actions
+            .iter()
+            .filter(|spec| {
+                matches!(
+                    spec.action_type().operation_type.as_deref(),
+                    Some(window::LOOK | window::READ)
+                )
+            })
+            .map(|spec| spec.id.clone())
+            .collect();
         assert_eq!(
-            spec.audience(),
-            tilo_actions::Audience::Agents,
-            "{} is offered to whoever cannot see the window otherwise",
-            spec.id
+            reads,
+            ["look", "read"],
+            "the foreign window is read and pictured, and its own verbs are these"
+        );
+        for spec in &window.actions {
+            let ty = spec.action_type();
+            if ty.operation_type.as_deref() != Some(window::LOOK)
+                && ty.operation_type.as_deref() != Some(window::READ)
+            {
+                continue;
+            }
+            assert_eq!(
+                ty.contract.kind,
+                tilo_actions::ActionKind::Read,
+                "{} reads and nothing else",
+                spec.id
+            );
+            assert_eq!(
+                spec.audience(),
+                tilo_actions::Audience::Agents,
+                "{} is offered to whoever cannot see the window otherwise",
+                spec.id
+            );
+        }
+        // The desk's own verbs are the only ones it adds to a window it runs.
+        let window = published()
+            .into_iter()
+            .find(|resource| resource.id.as_str() == DESK_RESOURCE)
+            .and_then(|desk| {
+                desk.children
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == tab_resource_id(7))
+            })
+            .expect("the session's own window");
+        assert!(
+            window.actions.iter().all(|spec| {
+                spec.action_type().operation_type.as_deref() != Some(window::LOOK)
+                    && spec.action_type().operation_type.as_deref() != Some(window::READ)
+            }),
+            "a window the session runs says what it shows itself"
         );
     }
-    // The desk's own verbs are the only ones it adds to a window it runs.
-    let window = published()
-        .into_iter()
-        .find(|resource| resource.id.as_str() == DESK_RESOURCE)
-        .and_then(|desk| {
-            desk.children
-                .into_iter()
-                .find(|resource| resource.id.as_str() == tab_resource_id(7))
-        })
-        .expect("the session's own window");
-    assert!(
-        window.actions.iter().all(|spec| {
-            spec.action_type().operation_type.as_deref() != Some(window::LOOK)
-                && spec.action_type().operation_type.as_deref() != Some(window::READ)
-        }),
-        "a window the session runs says what it shows itself"
-    );
 }
 
 /// Every action `resource` and its children offer.

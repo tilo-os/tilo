@@ -93,81 +93,85 @@ mod tests {
         },
     };
 
-    #[test]
-    fn shared_parent_is_refused_without_upgrading_or_unlocking_it() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("shared.lock");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .unwrap();
-        let parent = advisory_lock::FileLock::shared(file).unwrap();
-        assert!(inherit(parent.file().as_raw_fd(), &path).is_err());
-        let peer =
-            advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Shared).unwrap();
-        assert!(matches!(
-            advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive),
-            Err(advisory_lock::TryLockError::WouldBlock)
-        ));
-        drop(peer);
-        drop(parent);
-        assert!(
-            advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive).is_ok()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_inherited_update_lock_is_exclusive_and_bound_to_its_path;
 
-    #[test]
-    fn public_inheritance_preserves_parent_lock_and_refuses_changed_path_authority() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("transaction.lock");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .unwrap();
-        let parent = advisory_lock::FileLock::exclusive(file).unwrap();
-        let duplicate = inherit(parent.file().as_raw_fd(), &path).unwrap();
-        drop(duplicate);
-        let open = || {
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .unwrap()
-        };
-        assert!(matches!(
-            advisory_lock::FileLock::try_exclusive(open()),
-            Err(advisory_lock::TryLockError::WouldBlock)
-        ));
-        assert!(inherit(-1, &path).is_err());
-        assert!(inherit(open().as_raw_fd(), &path).is_err());
-        let alias = directory.path().join("linked-parent");
-        std::os::unix::fs::symlink(directory.path(), &alias).unwrap();
-        assert!(inherit(parent.file().as_raw_fd(), &alias.join("transaction.lock")).is_err());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(inherit(parent.file().as_raw_fd(), &path).is_err());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let hardlink = directory.path().join("hardlink.lock");
-        std::fs::hard_link(&path, &hardlink).unwrap();
-        assert!(inherit(parent.file().as_raw_fd(), &path).is_err());
-        std::fs::remove_file(&hardlink).unwrap();
-        std::fs::rename(&path, directory.path().join("captured.lock")).unwrap();
-        drop(
-            OpenOptions::new()
+        phase shared_parent_is_refused_without_upgrading_or_unlocking_it;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("shared.lock");
+            let file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
                 .open(&path)
-                .unwrap(),
-        );
-        assert!(inherit(parent.file().as_raw_fd(), &path).is_err());
-        drop(parent);
-        assert!(advisory_lock::FileLock::try_exclusive(open()).is_ok());
+                .unwrap();
+            let parent = advisory_lock::FileLock::shared(file).unwrap();
+            assert!(inherit(parent.file().as_raw_fd(), &path).is_err());
+            let peer =
+                advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Shared).unwrap();
+            assert!(matches!(
+                advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive),
+                Err(advisory_lock::TryLockError::WouldBlock)
+            ));
+            drop(peer);
+            drop(parent);
+            assert!(
+                advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive).is_ok()
+            );
+        }
+
+        phase public_inheritance_preserves_parent_lock_and_refuses_changed_path_authority;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("transaction.lock");
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+                .unwrap();
+            let parent = advisory_lock::FileLock::exclusive(file).unwrap();
+            let duplicate = inherit(parent.file().as_raw_fd(), &path).unwrap();
+            drop(duplicate);
+            let open = || {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+            };
+            assert!(matches!(
+                advisory_lock::FileLock::try_exclusive(open()),
+                Err(advisory_lock::TryLockError::WouldBlock)
+            ));
+            assert!(inherit(-1, &path).is_err());
+            assert!(inherit(open().as_raw_fd(), &path).is_err());
+            let alias = directory.path().join("linked-parent");
+            std::os::unix::fs::symlink(directory.path(), &alias).unwrap();
+            assert!(inherit(parent.file().as_raw_fd(), &alias.join("transaction.lock")).is_err());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(inherit(parent.file().as_raw_fd(), &path).is_err());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let hardlink = directory.path().join("hardlink.lock");
+            std::fs::hard_link(&path, &hardlink).unwrap();
+            assert!(inherit(parent.file().as_raw_fd(), &path).is_err());
+            std::fs::remove_file(&hardlink).unwrap();
+            std::fs::rename(&path, directory.path().join("captured.lock")).unwrap();
+            drop(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&path)
+                    .unwrap(),
+            );
+            assert!(inherit(parent.file().as_raw_fd(), &path).is_err());
+            drop(parent);
+            assert!(advisory_lock::FileLock::try_exclusive(open()).is_ok());
+        }
     }
 }

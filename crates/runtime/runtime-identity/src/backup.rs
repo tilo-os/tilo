@@ -671,9 +671,14 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), original);
     }
 
-    #[test]
-    fn backups_round_trip_and_fail_closed() {
-        // phase: new_backups_are_v2_seal_envelopes_and_reject_tampering
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn backups_round_trip_and_fail_closed;
+
+        phase new_backups_are_v2_seal_envelopes_and_reject_tampering;
         {
             let passphrase = b"a sufficient passphrase";
             let blob = seal_record(b"{\"record\":true}", passphrase).expect("seal");
@@ -695,7 +700,8 @@ mod tests {
             downgraded[MAGIC.len()] = 1;
             assert!(open_record(&downgraded, passphrase).is_err());
         }
-        // phase: encrypted_portable_backup_round_trips_and_imports
+
+        phase encrypted_portable_backup_round_trips_and_imports;
         {
             let source = tempfile::tempdir().expect("source");
             let identity = secured_identity(source.path(), "personal", 71);
@@ -713,7 +719,8 @@ mod tests {
             let identity = super::super::load_from_path(imported).expect("restored identity loads");
             assert_eq!(identity.group_public_key(), info.group_public_key);
         }
-        // phase: backup_is_not_metadata_copy_and_wrong_passphrase_fails_closed
+
+        phase backup_is_not_metadata_copy_and_wrong_passphrase_fails_closed;
         {
             let source = tempfile::tempdir().expect("source");
             let identity = secured_identity(source.path(), "personal", 72);
@@ -732,9 +739,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn imports_refuse_replaced_tampered_linked_or_existing_inputs() {
-        // phase: matching_import_rejects_a_backup_replaced_after_verification
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn imports_refuse_replaced_tampered_linked_or_existing_inputs;
+
+        phase matching_import_rejects_a_backup_replaced_after_verification;
         {
             let source = tempfile::tempdir().expect("source");
             let first = secured_identity(source.path(), "first", 75);
@@ -760,7 +772,8 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
             assert!(!restored.path().join("restored.json").exists());
         }
-        // phase: tampering_and_existing_destinations_are_refused
+
+        phase tampering_and_existing_destinations_are_refused;
         {
             let source = tempfile::tempdir().expect("source");
             let identity = secured_identity(source.path(), "personal", 73);
@@ -784,7 +797,8 @@ mod tests {
             );
             assert_eq!(fs::read(&existing).unwrap(), b"do not replace");
         }
-        // phase: backup_reader_rejects_symlink_and_empty_passphrase
+
+        phase backup_reader_rejects_symlink_and_empty_passphrase;
         {
             let dir = tempfile::tempdir().expect("dir");
             let identity = secured_identity(dir.path(), "personal", 74);
@@ -801,9 +815,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn publication_and_restore_failures_leave_no_partial_state() {
-        // phase: concurrent_publication_preserves_the_winner_and_loser_staging_file
+    tilo_test_env::scenario! {
+        fn publication_and_restore_failures_leave_no_partial_state;
+
+        phase concurrent_publication_preserves_the_winner_and_loser_staging_file;
         {
             let dir = tempfile::tempdir().expect("dir");
             let first_staging = dir.path().join("first.tmp");
@@ -848,7 +863,8 @@ mod tests {
                 assert_eq!(fs::read(&first_staging).unwrap(), b"first complete payload");
             }
         }
-        // phase: failed_readback_removes_only_the_exact_new_envelope
+
+        phase failed_readback_removes_only_the_exact_new_envelope;
         {
             let dir = tempfile::tempdir().expect("dir");
             let destination = dir.path().join("identity.backup");
@@ -870,7 +886,8 @@ mod tests {
                 "a final target that fails read-back must not remain"
             );
         }
-        // phase: provider_failure_during_restore_leaves_no_identity_metadata
+
+        phase provider_failure_during_restore_leaves_no_identity_metadata;
         {
             let source = tempfile::tempdir().expect("source");
             let identity = secured_identity(source.path(), "personal", 75);

@@ -343,64 +343,70 @@ fn receive_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn actual_socket_refuses_replayed_nonce_before_facts() {
-        let (mut root, mut peer) = UnixStream::pair().unwrap();
-        let nonce = [7; 32];
-        let context = [8; 32];
-        let source = [9; 32];
-        peer.write_all(&[6; 32]).unwrap();
-        peer.write_all(&context).unwrap();
-        peer.write_all(&source).unwrap();
-        peer.write_all(&[0; FACT_BYTES]).unwrap();
-        let cancellation = ServiceCancellation::default();
-        let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();
-        assert_eq!(
-            receive_response(&mut io, &nonce, &context, &source)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-    }
-    #[test]
-    fn actual_socket_refuses_other_source_or_launch_context_with_same_nonce() {
-        for (reply_context, reply_source) in [([6; 32], [9; 32]), ([8; 32], [6; 32])] {
+    tilo_test_env::scenario! {
+        fn a_socket_observation_is_fresh_bound_and_bounded;
+
+        phase actual_socket_refuses_replayed_nonce_before_facts;
+        {
             let (mut root, mut peer) = UnixStream::pair().unwrap();
-            peer.write_all(&[7; 32]).unwrap();
-            peer.write_all(&reply_context).unwrap();
-            peer.write_all(&reply_source).unwrap();
+            let nonce = [7; 32];
+            let context = [8; 32];
+            let source = [9; 32];
+            peer.write_all(&[6; 32]).unwrap();
+            peer.write_all(&context).unwrap();
+            peer.write_all(&source).unwrap();
             peer.write_all(&[0; FACT_BYTES]).unwrap();
             let cancellation = ServiceCancellation::default();
             let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();
             assert_eq!(
-                receive_response(&mut io, &[7; 32], &[8; 32], &[9; 32])
+                receive_response(&mut io, &nonce, &context, &source)
                     .unwrap_err()
                     .kind(),
                 io::ErrorKind::PermissionDenied
             );
         }
-    }
-    #[test]
-    fn actual_socket_observation_wait_is_absolute_and_cancelled() {
-        let (mut root, _stalled) = UnixStream::pair().unwrap();
-        let cancellation = ServiceCancellation::default();
+
+        phase actual_socket_refuses_other_source_or_launch_context_with_same_nonce;
         {
-            let mut io = Handoff::new(&mut root, &cancellation, Duration::from_millis(50)).unwrap();
+            for (reply_context, reply_source) in [([6; 32], [9; 32]), ([8; 32], [6; 32])] {
+                let (mut root, mut peer) = UnixStream::pair().unwrap();
+                peer.write_all(&[7; 32]).unwrap();
+                peer.write_all(&reply_context).unwrap();
+                peer.write_all(&reply_source).unwrap();
+                peer.write_all(&[0; FACT_BYTES]).unwrap();
+                let cancellation = ServiceCancellation::default();
+                let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();
+                assert_eq!(
+                    receive_response(&mut io, &[7; 32], &[8; 32], &[9; 32])
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::PermissionDenied
+                );
+            }
+        }
+
+        phase actual_socket_observation_wait_is_absolute_and_cancelled;
+        {
+            let (mut root, _stalled) = UnixStream::pair().unwrap();
+            let cancellation = ServiceCancellation::default();
+            {
+                let mut io = Handoff::new(&mut root, &cancellation, Duration::from_millis(50)).unwrap();
+                assert_eq!(
+                    receive_response(&mut io, &[7; 32], &[8; 32], &[9; 32])
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::TimedOut
+                );
+            }
+            cancellation.cancel();
+            let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();
             assert_eq!(
                 receive_response(&mut io, &[7; 32], &[8; 32], &[9; 32])
                     .unwrap_err()
                     .kind(),
-                io::ErrorKind::TimedOut
+                io::ErrorKind::Interrupted
             );
         }
-        cancellation.cancel();
-        let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();
-        assert_eq!(
-            receive_response(&mut io, &[7; 32], &[8; 32], &[9; 32])
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
     }
 }
 

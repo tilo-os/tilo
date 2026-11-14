@@ -11,7 +11,7 @@ bare name.
     mcp_tools.py --root <repository> --out <page.md>
 
 `--tools FILE` reads a saved `{"tools": [...]}` answer instead of building the
-runtime and asking it.
+runtime and asking it; `--mcp PATH` runs a built one instead of building it.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ CALL = """\
 
 
 def generate(arguments: argparse.Namespace) -> str:
-    tools = tool_list(arguments.root.resolve(), arguments.tools)
+    tools = tool_list(arguments.root.resolve(), arguments.tools, arguments.mcp)
     by_name = {tool["name"]: tool for tool in tools}
     placed = [name for _, names in GROUPS for name in names]
     unknown = sorted(set(placed) - set(by_name))
@@ -82,9 +82,13 @@ def generate(arguments: argparse.Namespace) -> str:
     return page.page("MCP tools", LEAD, sections)
 
 
-def tool_list(root: Path, saved: Path | None) -> list[dict[str, Any]]:
+def tool_list(root: Path, saved: Path | None, mcp: Path | None) -> list[dict[str, Any]]:
     """The tools the server serves, from a saved answer or from the runtime."""
-    written = saved.read_text(encoding="utf-8") if saved is not None else printed_tools(root)
+    written = (
+        saved.read_text(encoding="utf-8")
+        if saved is not None
+        else printed_tools(root, mcp)
+    )
     try:
         answer = json.loads(written)
     except json.JSONDecodeError as error:
@@ -95,13 +99,14 @@ def tool_list(root: Path, saved: Path | None) -> list[dict[str, Any]]:
     return tools
 
 
-def printed_tools(root: Path) -> str:
+def printed_tools(root: Path, mcp: Path | None) -> str:
     """The tools the runtime prints for a workspace, without a session."""
+    command = [str(mcp)] if mcp is not None else [
+        "cargo", "run", "--locked", "-q", "-p", "tilo-runtime",
+        "--bin", "tilo-runtime-mcp", "--",
+    ]
     result = subprocess.run(
-        [
-            "cargo", "run", "--locked", "-q", "-p", "tilo-runtime",
-            "--bin", "tilo-runtime-mcp", "--", "--tools-json",
-        ],
+        [*command, "--tools-json"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -187,5 +192,8 @@ if __name__ == "__main__":
     sys.exit(page.main(
         generate,
         __doc__ or "Write the reference of the tools an agent gets.",
-        (("--tools", "a saved {\"tools\": [...]} answer to render, instead of running the runtime"),),
+        (
+            ("--tools", "a saved {\"tools\": [...]} answer to render, instead of running the runtime"),
+            ("--mcp", "a built `tilo-runtime-mcp` to run, instead of building one with cargo"),
+        ),
     ))

@@ -277,15 +277,20 @@ mod tests {
         sk
     }
 
-    /// Tokens mint and verify, expiry and issuance/maximum lifetime are enforced, tampered
-    /// capabilities fail, and a different issuer fails.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn enrollment_tokens_verify_only_untampered_live_and_from_their_issuer() {
-        // Phase: mint_and_verify_round_trip.
+    tilo_test_env::scenario! {
+        /// Tokens mint and verify, expiry and issuance/maximum lifetime are enforced, tampered
+        /// capabilities fail, and a different issuer fails.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn enrollment_tokens_verify_only_untampered_live_and_from_their_issuer;
+
+        phase mint_and_verify_round_trip;
         {
             let (_root, user) = UserIdentity::generate("Alice", 1);
             let issuer_sk = issuer(user.public_key);
@@ -301,7 +306,7 @@ mod tests {
             verify_enrollment_token(&token, 5_000).unwrap();
         }
 
-        // Phase: expiry_enforced.
+        phase expiry_enforced;
         {
             let (_root, user) = UserIdentity::generate("Alice", 1);
             let issuer_sk = issuer(user.public_key);
@@ -324,7 +329,7 @@ mod tests {
             );
         }
 
-        // Phase: issuance_and_maximum_lifetime_are_enforced.
+        phase issuance_and_maximum_lifetime_are_enforced;
         {
             let (_root, user) = UserIdentity::generate("Alice", 1);
             let issuer_sk = issuer(user.public_key);
@@ -365,7 +370,7 @@ mod tests {
             );
         }
 
-        // Phase: tampered_capabilities_fails.
+        phase tampered_capabilities_fails;
         {
             let (_root, user) = UserIdentity::generate("Alice", 1);
             let issuer_sk = issuer(user.public_key);
@@ -385,7 +390,7 @@ mod tests {
             );
         }
 
-        // Phase: signed_by_different_issuer_verify_fails.
+        phase signed_by_different_issuer_verify_fails;
         {
             let (_root, user) = UserIdentity::generate("Alice", 1);
             let issuer_sk = issuer(user.public_key);
@@ -410,16 +415,17 @@ mod tests {
         }
     }
 
-    /// Base32 round-trips, malformed base32 is rejected, and the Crockford wire form is stable.
-    #[test]
-    fn enrollment_tokens_travel_as_stable_crockford_base32() {
-        // Phase: base32_round_trip.
+    tilo_test_env::scenario! {
+        /// Base32 round-trips, malformed base32 is rejected, and the Crockford wire form is stable.
+        fn enrollment_tokens_travel_as_stable_crockford_base32;
+
+        phase base32_round_trip;
         {
             let (_root, user) = UserIdentity::generate("Alice", 1);
             let issuer_sk = issuer(user.public_key);
             let token = mint_enrollment_token(
                 user.public_key,
-                DeviceCapabilities::host(),
+                DeviceCapabilities::member(),
                 5_000,
                 10_000,
                 [42u8; 16],
@@ -444,7 +450,7 @@ mod tests {
             verify_enrollment_token(&back, 5_000).unwrap();
         }
 
-        // Phase: malformed_base32_rejected.
+        phase malformed_base32_rejected;
         {
             // Contains characters not in the Crockford alphabet (`!`).
             assert_eq!(
@@ -459,7 +465,7 @@ mod tests {
             ));
         }
 
-        // Phase: crockford_wire_form_is_stable.
+        phase crockford_wire_form_is_stable;
         // Crockford vectors: the encoding is fixed on the wire, and decoding
         // keeps accepting the read-aloud spellings and stray symbols it always
         // accepted.

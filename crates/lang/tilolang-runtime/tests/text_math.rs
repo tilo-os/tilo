@@ -99,35 +99,173 @@ action flag(b: Bool) -> Text { return b.to_text() }";
         Value::text(s)
     }
 
-    #[test]
-    fn a_text_is_counted_cut_and_cased_by_what_a_reader_sees() {
-        let s = surface();
-        assert_eq!(s.int("count", vec![t("hello")]), 5);
-        // A family, a flag and a letter with an accent are each one thing to a reader.
-        assert_eq!(s.int("count", vec![t("👩‍👩‍👧‍👦")]), 1);
-        assert_eq!(s.int("count", vec![t("🇺🇸🇫🇷")]), 2);
-        assert_eq!(s.int("count", vec![t("e\u{301}")]), 1);
-        assert_eq!(s.int("count", vec![t("")]), 0);
-        assert!(s.yes("empty", vec![t("")]));
-        assert!(!s.yes("empty", vec![t(" ")]));
+    tilo_test_env::scenario! {
+        fn texts_and_numbers_are_measured_as_a_reader_reads_them;
 
-        assert_eq!(
-            s.text("cut", vec![t("🇺🇸x"), Value::Int(1), Value::Int(2)]),
-            "x"
-        );
-        // A cut past either end stops at it rather than failing.
-        assert_eq!(
-            s.text("cut", vec![t("ab"), Value::Int(-3), Value::Int(9)]),
-            "ab"
-        );
-        assert_eq!(
-            s.text("cut", vec![t("ab"), Value::Int(2), Value::Int(1)]),
-            ""
-        );
+        phase a_text_is_counted_cut_and_cased_by_what_a_reader_sees;
+        {
+            let s = surface();
+            assert_eq!(s.int("count", vec![t("hello")]), 5);
+            // A family, a flag and a letter with an accent are each one thing to a reader.
+            assert_eq!(s.int("count", vec![t("👩‍👩‍👧‍👦")]), 1);
+            assert_eq!(s.int("count", vec![t("🇺🇸🇫🇷")]), 2);
+            assert_eq!(s.int("count", vec![t("e\u{301}")]), 1);
+            assert_eq!(s.int("count", vec![t("")]), 0);
+            assert!(s.yes("empty", vec![t("")]));
+            assert!(!s.yes("empty", vec![t(" ")]));
 
-        assert_eq!(s.text("tidy", vec![t("\u{a0} pad \t")]), "pad");
-        assert_eq!(s.text("shout", vec![t("straße")]), "STRASSE");
-        assert_eq!(s.text("whisper", vec![t("ΟΔΟΣ")]), "οδος");
+            assert_eq!(
+                s.text("cut", vec![t("🇺🇸x"), Value::Int(1), Value::Int(2)]),
+                "x"
+            );
+            // A cut past either end stops at it rather than failing.
+            assert_eq!(
+                s.text("cut", vec![t("ab"), Value::Int(-3), Value::Int(9)]),
+                "ab"
+            );
+            assert_eq!(
+                s.text("cut", vec![t("ab"), Value::Int(2), Value::Int(1)]),
+                ""
+            );
+
+            assert_eq!(s.text("tidy", vec![t("\u{a0} pad \t")]), "pad");
+            assert_eq!(s.text("shout", vec![t("straße")]), "STRASSE");
+            assert_eq!(s.text("whisper", vec![t("ΟΔΟΣ")]), "οδος");
+        }
+
+        phase asking_about_a_text_locates_it_in_graphemes;
+        {
+            let s = surface();
+            assert!(s.yes("starts", vec![t("hello"), t("he")]));
+            assert!(!s.yes("starts", vec![t("hello"), t("el")]));
+            assert!(s.yes("ends", vec![t("hello"), t("lo")]));
+            assert!(!s.yes("ends", vec![t("hello"), t("he")]));
+            assert!(s.yes("holds", vec![t("hello"), t("ell")]));
+            assert!(!s.yes("holds", vec![t("hello"), t("z")]));
+            assert_eq!(s.int("at", vec![t("a👩‍👩‍👧‍👦b"), t("b")]), 2);
+            assert_eq!(s.int("at", vec![t("abc"), t("z")]), -1);
+            assert_eq!(s.int("at", vec![t("abc"), t("")]), 0);
+
+            // The pattern is the one search's identifiers use: `*` stands for any run, and the
+            // match is case-sensitive here.
+            assert!(s.yes("glob", vec![t("abc"), t("a*")]));
+            assert!(s.yes("glob", vec![t("abc"), t("*c")]));
+            assert!(s.yes("glob", vec![t("abc"), t("a*c")]));
+            assert!(s.yes("glob", vec![t("ac"), t("a*c")]));
+            assert!(!s.yes("glob", vec![t("abd"), t("a*c")]));
+            assert!(!s.yes("glob", vec![t("Abc"), t("a*")]));
+
+            assert_eq!(s.text("swap", vec![t("a-b-c"), t("b"), t("x")]), "a-x-c");
+            assert_eq!(s.text("swap", vec![t("aaa"), t("a"), t("aa")]), "aaaaaa");
+            assert_eq!(s.int("number", vec![t("42")]), 42);
+            assert_eq!(s.int("number", vec![t("-7")]), -7);
+            assert_eq!(s.int("number", vec![t("4.2")]), -1);
+        }
+
+        phase a_text_splits_and_a_list_of_text_joins;
+        {
+            let s = surface();
+            assert_eq!(
+                s.ask("pieces", vec![t("a,b,,c"), t(",")]),
+                Value::List(vec![t("a"), t("b"), t(""), t("c")])
+            );
+            // No separator splits into what a reader sees as one thing.
+            assert_eq!(
+                s.ask("pieces", vec![t("🇺🇸x"), t("")]),
+                Value::List(vec![t("🇺🇸"), t("x")])
+            );
+            assert_eq!(
+                s.ask("pieces", vec![t(""), t(",")]),
+                Value::List(vec![t("")])
+            );
+            assert_eq!(s.text("rejoined", vec![t("a,b,c"), t(",")]), "a|b|c");
+            assert_eq!(
+                s.text("tied", vec![Value::List(vec![t("a"), t("b")]), t(", ")]),
+                "a, b"
+            );
+            assert_eq!(s.text("tied", vec![Value::List(Vec::new()), t(", ")]), "");
+        }
+
+        phase numbers_are_bounded_rounded_and_exchanged;
+        {
+            let s = surface();
+            assert_eq!(s.int("lowest", vec![Value::Int(3), Value::Int(8)]), 3);
+            assert_eq!(s.int("highest", vec![Value::Int(3), Value::Int(8)]), 8);
+            assert_eq!(s.int("bounded", vec![Value::Int(-4)]), 0);
+            assert_eq!(s.int("bounded", vec![Value::Int(4)]), 4);
+            assert_eq!(s.int("bounded", vec![Value::Int(14)]), 10);
+            assert_eq!(s.int("size", vec![Value::Int(-4)]), 4);
+            assert_eq!(s.ask("as_float", vec![Value::Int(4)]), Value::Float(4.0));
+            assert_eq!(s.text("int_text", vec![Value::Int(-4)]), "-4");
+
+            assert_eq!(
+                s.ask("least", vec![Value::Float(0.25), Value::Float(0.75)]),
+                Value::Float(0.25)
+            );
+            assert_eq!(
+                s.ask("fhighest", vec![Value::Float(0.25), Value::Float(0.75)]),
+                Value::Float(0.75)
+            );
+            assert_eq!(
+                s.ask("fbounded", vec![Value::Float(-2.0)]),
+                Value::Float(0.0)
+            );
+            assert_eq!(
+                s.ask("fbounded", vec![Value::Float(2.0)]),
+                Value::Float(1.0)
+            );
+            assert_eq!(s.ask("fsize", vec![Value::Float(-2.5)]), Value::Float(2.5));
+
+            assert_eq!(s.int("whole", vec![Value::Float(2.5)]), 3);
+            assert_eq!(s.int("whole", vec![Value::Float(-2.5)]), -3);
+            assert_eq!(s.int("down", vec![Value::Float(2.9)]), 2);
+            assert_eq!(s.int("down", vec![Value::Float(-2.1)]), -3);
+            assert_eq!(s.int("up", vec![Value::Float(2.1)]), 3);
+            let places = |x: f64, n: i64| vec![Value::Float(x), Value::Int(n)];
+            assert_eq!(
+                s.ask("whole_to", places(1234.5678, 1)),
+                Value::Float(1234.6)
+            );
+            assert_eq!(
+                s.ask("down_to", places(1234.5678, 2)),
+                Value::Float(1234.56)
+            );
+            assert_eq!(s.ask("up_to", places(1234.5678, 2)), Value::Float(1234.57));
+            assert_eq!(s.ask("whole_to", places(2.5, 0)), Value::Float(3.0));
+            assert_eq!(s.int("as_int", vec![Value::Float(2.9)]), 2);
+            assert_eq!(s.int("as_int", vec![Value::Float(-2.9)]), -2);
+            assert_eq!(s.text("float_text", vec![Value::Float(1.5)]), "1.5");
+
+            assert_eq!(s.text("flag", vec![Value::Bool(true)]), "true");
+            assert_eq!(s.text("flag", vec![Value::Bool(false)]), "false");
+        }
+
+        phase a_list_of_numbers_sums_and_averages;
+        {
+            let s = surface();
+            let nums = |xs: &[i64]| Value::List(xs.iter().copied().map(Value::Int).collect());
+            let reals = |xs: &[f64]| Value::List(xs.iter().copied().map(Value::Float).collect());
+            assert_eq!(s.int("total", vec![nums(&[1, 2, 3])]), 6);
+            assert_eq!(s.int("total", vec![nums(&[])]), 0);
+            assert_eq!(
+                s.ask("total_f", vec![reals(&[0.5, 0.25])]),
+                Value::Float(0.75)
+            );
+            assert_eq!(s.ask("mean", vec![nums(&[1, 2])]), Value::Float(1.5));
+            // An average of nothing is zero rather than a failure.
+            assert_eq!(s.ask("mean", vec![nums(&[])]), Value::Float(0.0));
+            assert!(s.yes("among", vec![Value::List(vec![t("a"), t("b")]), t("b")]));
+            assert!(!s.yes("among", vec![Value::List(vec![t("a"), t("b")]), t("c")]));
+            // A scalar item goes in boxed, as a set's element does.
+            assert!(s.yes("has_num", vec![nums(&[1, 2, 3]), Value::Int(2)]));
+            assert!(!s.yes("has_num", vec![nums(&[1, 2, 3]), Value::Int(4)]));
+            assert!(s.yes("has_real", vec![reals(&[0.5, 0.25]), Value::Float(0.25)]));
+            assert_eq!(s.int("where_num", vec![nums(&[4, 5, 6]), Value::Int(5)]), 1);
+            assert_eq!(
+                s.int("where_num", vec![nums(&[4, 5, 6]), Value::Int(7)]),
+                -1
+            );
+        }
     }
 
     /// The words of a text are its runs of non-whitespace: what a person counts of what they
@@ -141,139 +279,5 @@ action flag(b: Bool) -> Text { return b.to_text() }";
         assert_eq!(s.int("words", vec![t(" \n\t ")]), 0);
         assert_eq!(s.int("words", vec![t("— …")]), 2, "punctuation counts");
         assert_eq!(s.int("words", vec![t("👩‍👩‍👧‍👦 x")]), 2);
-    }
-
-    #[test]
-    fn asking_about_a_text_locates_it_in_graphemes() {
-        let s = surface();
-        assert!(s.yes("starts", vec![t("hello"), t("he")]));
-        assert!(!s.yes("starts", vec![t("hello"), t("el")]));
-        assert!(s.yes("ends", vec![t("hello"), t("lo")]));
-        assert!(!s.yes("ends", vec![t("hello"), t("he")]));
-        assert!(s.yes("holds", vec![t("hello"), t("ell")]));
-        assert!(!s.yes("holds", vec![t("hello"), t("z")]));
-        assert_eq!(s.int("at", vec![t("a👩‍👩‍👧‍👦b"), t("b")]), 2);
-        assert_eq!(s.int("at", vec![t("abc"), t("z")]), -1);
-        assert_eq!(s.int("at", vec![t("abc"), t("")]), 0);
-
-        // The pattern is the one search's identifiers use: `*` stands for any run, and the
-        // match is case-sensitive here.
-        assert!(s.yes("glob", vec![t("abc"), t("a*")]));
-        assert!(s.yes("glob", vec![t("abc"), t("*c")]));
-        assert!(s.yes("glob", vec![t("abc"), t("a*c")]));
-        assert!(s.yes("glob", vec![t("ac"), t("a*c")]));
-        assert!(!s.yes("glob", vec![t("abd"), t("a*c")]));
-        assert!(!s.yes("glob", vec![t("Abc"), t("a*")]));
-
-        assert_eq!(s.text("swap", vec![t("a-b-c"), t("b"), t("x")]), "a-x-c");
-        assert_eq!(s.text("swap", vec![t("aaa"), t("a"), t("aa")]), "aaaaaa");
-        assert_eq!(s.int("number", vec![t("42")]), 42);
-        assert_eq!(s.int("number", vec![t("-7")]), -7);
-        assert_eq!(s.int("number", vec![t("4.2")]), -1);
-    }
-
-    #[test]
-    fn a_text_splits_and_a_list_of_text_joins() {
-        let s = surface();
-        assert_eq!(
-            s.ask("pieces", vec![t("a,b,,c"), t(",")]),
-            Value::List(vec![t("a"), t("b"), t(""), t("c")])
-        );
-        // No separator splits into what a reader sees as one thing.
-        assert_eq!(
-            s.ask("pieces", vec![t("🇺🇸x"), t("")]),
-            Value::List(vec![t("🇺🇸"), t("x")])
-        );
-        assert_eq!(
-            s.ask("pieces", vec![t(""), t(",")]),
-            Value::List(vec![t("")])
-        );
-        assert_eq!(s.text("rejoined", vec![t("a,b,c"), t(",")]), "a|b|c");
-        assert_eq!(
-            s.text("tied", vec![Value::List(vec![t("a"), t("b")]), t(", ")]),
-            "a, b"
-        );
-        assert_eq!(s.text("tied", vec![Value::List(Vec::new()), t(", ")]), "");
-    }
-
-    #[test]
-    fn numbers_are_bounded_rounded_and_exchanged() {
-        let s = surface();
-        assert_eq!(s.int("lowest", vec![Value::Int(3), Value::Int(8)]), 3);
-        assert_eq!(s.int("highest", vec![Value::Int(3), Value::Int(8)]), 8);
-        assert_eq!(s.int("bounded", vec![Value::Int(-4)]), 0);
-        assert_eq!(s.int("bounded", vec![Value::Int(4)]), 4);
-        assert_eq!(s.int("bounded", vec![Value::Int(14)]), 10);
-        assert_eq!(s.int("size", vec![Value::Int(-4)]), 4);
-        assert_eq!(s.ask("as_float", vec![Value::Int(4)]), Value::Float(4.0));
-        assert_eq!(s.text("int_text", vec![Value::Int(-4)]), "-4");
-
-        assert_eq!(
-            s.ask("least", vec![Value::Float(0.25), Value::Float(0.75)]),
-            Value::Float(0.25)
-        );
-        assert_eq!(
-            s.ask("fhighest", vec![Value::Float(0.25), Value::Float(0.75)]),
-            Value::Float(0.75)
-        );
-        assert_eq!(
-            s.ask("fbounded", vec![Value::Float(-2.0)]),
-            Value::Float(0.0)
-        );
-        assert_eq!(
-            s.ask("fbounded", vec![Value::Float(2.0)]),
-            Value::Float(1.0)
-        );
-        assert_eq!(s.ask("fsize", vec![Value::Float(-2.5)]), Value::Float(2.5));
-
-        assert_eq!(s.int("whole", vec![Value::Float(2.5)]), 3);
-        assert_eq!(s.int("whole", vec![Value::Float(-2.5)]), -3);
-        assert_eq!(s.int("down", vec![Value::Float(2.9)]), 2);
-        assert_eq!(s.int("down", vec![Value::Float(-2.1)]), -3);
-        assert_eq!(s.int("up", vec![Value::Float(2.1)]), 3);
-        let places = |x: f64, n: i64| vec![Value::Float(x), Value::Int(n)];
-        assert_eq!(
-            s.ask("whole_to", places(1234.5678, 1)),
-            Value::Float(1234.6)
-        );
-        assert_eq!(
-            s.ask("down_to", places(1234.5678, 2)),
-            Value::Float(1234.56)
-        );
-        assert_eq!(s.ask("up_to", places(1234.5678, 2)), Value::Float(1234.57));
-        assert_eq!(s.ask("whole_to", places(2.5, 0)), Value::Float(3.0));
-        assert_eq!(s.int("as_int", vec![Value::Float(2.9)]), 2);
-        assert_eq!(s.int("as_int", vec![Value::Float(-2.9)]), -2);
-        assert_eq!(s.text("float_text", vec![Value::Float(1.5)]), "1.5");
-
-        assert_eq!(s.text("flag", vec![Value::Bool(true)]), "true");
-        assert_eq!(s.text("flag", vec![Value::Bool(false)]), "false");
-    }
-
-    #[test]
-    fn a_list_of_numbers_sums_and_averages() {
-        let s = surface();
-        let nums = |xs: &[i64]| Value::List(xs.iter().copied().map(Value::Int).collect());
-        let reals = |xs: &[f64]| Value::List(xs.iter().copied().map(Value::Float).collect());
-        assert_eq!(s.int("total", vec![nums(&[1, 2, 3])]), 6);
-        assert_eq!(s.int("total", vec![nums(&[])]), 0);
-        assert_eq!(
-            s.ask("total_f", vec![reals(&[0.5, 0.25])]),
-            Value::Float(0.75)
-        );
-        assert_eq!(s.ask("mean", vec![nums(&[1, 2])]), Value::Float(1.5));
-        // An average of nothing is zero rather than a failure.
-        assert_eq!(s.ask("mean", vec![nums(&[])]), Value::Float(0.0));
-        assert!(s.yes("among", vec![Value::List(vec![t("a"), t("b")]), t("b")]));
-        assert!(!s.yes("among", vec![Value::List(vec![t("a"), t("b")]), t("c")]));
-        // A scalar item goes in boxed, as a set's element does.
-        assert!(s.yes("has_num", vec![nums(&[1, 2, 3]), Value::Int(2)]));
-        assert!(!s.yes("has_num", vec![nums(&[1, 2, 3]), Value::Int(4)]));
-        assert!(s.yes("has_real", vec![reals(&[0.5, 0.25]), Value::Float(0.25)]));
-        assert_eq!(s.int("where_num", vec![nums(&[4, 5, 6]), Value::Int(5)]), 1);
-        assert_eq!(
-            s.int("where_num", vec![nums(&[4, 5, 6]), Value::Int(7)]),
-            -1
-        );
     }
 }

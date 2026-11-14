@@ -492,296 +492,300 @@ mod tests {
         }
     }
 
-    #[test]
-    fn typing_sends_widgets_away_and_a_pause_brings_their_glance_back() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        assert_eq!(
-            rig.at(t0),
-            (Form::Glance, Form::Glance),
-            "idle desk glances"
-        );
-        // A burst of typing with sub-second gaps: away the whole time.
-        for k in 0..20 {
-            rig.typed(ms(t0, 100 + k * 180));
-            assert_eq!(rig.at(ms(t0, 100 + k * 180)), (Form::Away, Form::Away));
-        }
-        let last = ms(t0, 100 + 19 * 180);
-        // A two-second hesitation is still typing.
-        assert_eq!(
-            rig.at(last + Duration::from_secs(2)),
-            (Form::Away, Form::Away)
-        );
-        assert_eq!(
-            rig.board.deadline(last + Duration::from_secs(2)),
-            Some(last + GLANCE_AFTER_PAUSE),
-            "the loop sleeps until the pause, not frame by frame"
-        );
-        assert_eq!(
-            rig.at(last + GLANCE_AFTER_PAUSE),
-            (Form::Glance, Form::Glance)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn desk_widgets_glance_show_and_leave_by_what_the_person_does;
 
-    #[test]
-    fn passing_over_an_edge_does_not_glance_but_reaching_for_it_does() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        rig.typed(t0);
-        rig.at(t0);
-        // Down the right edge at speed, across Team's zone.
-        for k in 0..30 {
-            let at = ms(t0, 50 + k * 8);
-            rig.pointer(
-                (1590.0, 100.0 + 16.0 * f64::from(u32::try_from(k).unwrap())),
-                at,
-            );
-            assert_eq!(rig.at(at).1, Form::Away, "transit at sample {k}");
-        }
-        // Then a reach into the bottom-right corner, decelerating.
-        let mut rig = Rig::new();
-        rig.typed(t0);
-        rig.at(t0);
-        for (k, p) in [(1000.0, 560.0), (1160.0, 656.0), (1280.0, 728.0)]
-            .into_iter()
-            .enumerate()
+        phase typing_sends_widgets_away_and_a_pause_brings_their_glance_back;
         {
-            rig.pointer(p, ms(t0, 400 + u64::try_from(k).unwrap() * 8));
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            assert_eq!(
+                rig.at(t0),
+                (Form::Glance, Form::Glance),
+                "idle desk glances"
+            );
+            // A burst of typing with sub-second gaps: away the whole time.
+            for k in 0..20 {
+                rig.typed(ms(t0, 100 + k * 180));
+                assert_eq!(rig.at(ms(t0, 100 + k * 180)), (Form::Away, Form::Away));
+            }
+            let last = ms(t0, 100 + 19 * 180);
+            // A two-second hesitation is still typing.
+            assert_eq!(
+                rig.at(last + Duration::from_secs(2)),
+                (Form::Away, Form::Away)
+            );
+            assert_eq!(
+                rig.board.deadline(last + Duration::from_secs(2)),
+                Some(last + GLANCE_AFTER_PAUSE),
+                "the loop sleeps until the pause, not frame by frame"
+            );
+            assert_eq!(
+                rig.at(last + GLANCE_AFTER_PAUSE),
+                (Form::Glance, Form::Glance)
+            );
         }
-        let at = ms(t0, 420);
-        assert!(rig.board.typing(at), "still inside the typing run");
-        assert_eq!(
-            rig.at(at),
-            (Form::Glance, Form::Away),
-            "only the reached widget"
-        );
-        // It holds while the pointer stays in reach, then lets go.
-        rig.pointer((1500.0, 880.0), ms(t0, 500));
-        rig.pointer((800.0, 400.0), ms(t0, 520));
-        assert_eq!(rig.at(ms(t0, 499) + REACH_HOLD).0, Form::Glance);
-        assert_eq!(rig.at(ms(t0, 500) + REACH_HOLD).0, Form::Away);
-    }
 
-    #[test]
-    fn a_reach_holds_while_the_pointer_rests_there_with_no_timer() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        rig.typed(t0);
-        rig.at(t0);
-        // Thrown into the corner and left there: no more motion arrives.
-        for (k, p) in [(1300.0, 700.0), (1450.0, 790.0), (1599.0, 899.0)]
-            .into_iter()
-            .enumerate()
+        phase passing_over_an_edge_does_not_glance_but_reaching_for_it_does;
         {
-            rig.pointer(p, ms(t0, 100 + u64::try_from(k).unwrap() * 8));
-        }
-        let rest = ms(t0, 116);
-        assert_eq!(rig.at(rest + Duration::from_millis(80)).0, Form::Glance);
-        assert_eq!(rig.at(ms(t0, 2500)).0, Form::Glance, "still resting there");
-        assert_eq!(
-            rig.board.deadline(ms(t0, 2500)),
-            Some(t0 + GLANCE_AFTER_PAUSE),
-            "nothing wakes for the reach while the pointer rests in it"
-        );
-    }
-
-    /// Resting on a glance, however long, is not a request; a tap is, and only a tap (or Escape, or
-    /// typing away from it) folds it again.
-    #[test]
-    fn only_a_tap_opens_a_glance_and_nothing_folds_it_on_a_timer() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        assert_eq!(rig.at(t0).0, Form::Glance);
-        rig.pointer((1300.0, 860.0), t0);
-        rig.pointer((1400.0, 868.0), ms(t0, 8));
-        rig.pointer((1401.0, 868.0), ms(t0, 40));
-        assert_eq!(
-            rig.at(ms(t0, 5_000)).0,
-            Form::Glance,
-            "a long rest opens nothing"
-        );
-        rig.board.open(WidgetId::Music);
-        assert_eq!(rig.at(ms(t0, 5_010)).0, Form::Open);
-        rig.pointer((700.0, 300.0), ms(t0, 5_100));
-        assert_eq!(
-            rig.at(ms(t0, 60_000)).0,
-            Form::Open,
-            "leaving the card folds nothing: only a tap away does"
-        );
-        rig.board.close();
-        assert_eq!(rig.at(ms(t0, 60_010)).0, Form::Glance);
-    }
-
-    #[test]
-    fn crossing_a_glance_form_in_transit_does_not_open_it() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        rig.at(t0);
-        for k in 0..20u32 {
-            let at = ms(t0, u64::from(k) * 8);
-            rig.pointer((1580.0 - 30.0 * f64::from(k), 870.0), at);
-            assert_ne!(rig.at(at).0, Form::Open);
-        }
-        assert_ne!(
-            rig.at(ms(t0, 2000)).0,
-            Form::Open,
-            "it left; nothing to open"
-        );
-    }
-
-    #[test]
-    fn each_show_mode_is_honoured() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        rig.prefs.music.show = ShowMode::Ask;
-        rig.prefs.team.show = ShowMode::Always;
-        rig.prefs.team.always_on_strips = vec![1];
-        assert_eq!(
-            rig.at(t0),
-            (Form::Away, Form::Glance),
-            "ask stays away at rest"
-        );
-        rig.typed(ms(t0, 10));
-        assert_eq!(
-            rig.at(ms(t0, 10)),
-            (Form::Away, Form::Glance),
-            "always holds through typing on its strip"
-        );
-        rig.strip = Some(2);
-        assert_eq!(
-            rig.at(ms(t0, 20)).1,
-            Form::Away,
-            "elsewhere it is a pause widget"
-        );
-        assert_eq!(
-            rig.at(ms(t0, 10) + GLANCE_AFTER_PAUSE),
-            (Form::Away, Form::Glance),
-            "a pause never brings an ask-only widget"
-        );
-        rig.super_surface = true;
-        assert_eq!(
-            rig.at(ms(t0, 5000)),
-            (Form::Open, Form::Open),
-            "Super asks for all"
-        );
-        rig.super_surface = false;
-        rig.prefs.music.enabled = false;
-        assert_eq!(
-            rig.at(ms(t0, 6000)).0,
-            Form::Away,
-            "a removed widget never shows"
-        );
-    }
-
-    /// Under the hand a widget never flips: typing while the pointer is on a glance keeps it, and
-    /// it goes once the hand leaves.
-    #[test]
-    fn a_widget_under_the_hand_keeps_its_form() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        assert_eq!(rig.at(t0), (Form::Glance, Form::Glance));
-        rig.engaged = Some(WidgetId::Music);
-        rig.typed(ms(t0, 10));
-        assert_eq!(
-            rig.at(ms(t0, 10)),
-            (Form::Glance, Form::Away),
-            "the one under the hand stays; the rest fade"
-        );
-        rig.board.open(WidgetId::Music);
-        assert_eq!(rig.at(ms(t0, 20)).0, Form::Open, "a tap still opens it");
-        rig.engaged = None;
-        rig.typed(ms(t0, 30));
-        assert_eq!(
-            rig.at(ms(t0, 30)).0,
-            Form::Away,
-            "hand gone: typing hides it"
-        );
-    }
-
-    #[test]
-    fn a_widget_never_appears_under_a_pointer_settled_there() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        rig.typed(t0);
-        rig.at(t0);
-        // The pointer rests where the music pill would be, aiming at the app's control underneath;
-        // it arrived slowly from inside, not by reaching for the corner.
-        rig.pointer((1420.0, 870.0), ms(t0, 100));
-        rig.pointer((1420.0, 870.0), ms(t0, 200));
-        let pause = t0 + GLANCE_AFTER_PAUSE;
-        assert_eq!(
-            rig.at(pause).0,
-            Form::Away,
-            "held while the pointer rests there"
-        );
-        assert_eq!(rig.at(pause).1, Form::Glance);
-        rig.pointer((900.0, 500.0), pause + Duration::from_millis(10));
-        rig.pointer((880.0, 490.0), pause + Duration::from_millis(80));
-        assert_eq!(rig.at(pause + Duration::from_millis(200)).0, Form::Glance);
-    }
-
-    /// Super held, before it grows: the glance forms, even mid-typing and for "only when I ask"
-    /// widgets; nothing opens until the surface grows.
-    #[test]
-    fn the_super_quiet_stage_brings_every_glance_and_opens_none() {
-        let t0 = Instant::now();
-        let mut rig = Rig::new();
-        rig.prefs.music.show = ShowMode::Ask;
-        rig.typed(t0);
-        assert_eq!(rig.at(t0), (Form::Away, Form::Away));
-        rig.super_glance = true;
-        assert_eq!(rig.at(ms(t0, 400)), (Form::Glance, Form::Glance));
-        rig.super_glance = false;
-        rig.super_surface = true;
-        assert_eq!(rig.at(ms(t0, 700)), (Form::Open, Form::Open));
-        rig.super_surface = false;
-        assert_eq!(
-            rig.at(ms(t0, 800)),
-            (Form::Away, Form::Away),
-            "let go mid-typing: back to away"
-        );
-    }
-
-    #[test]
-    fn widgets_leave_at_once_and_arrive_slowly_unless_asked_for() {
-        use ui::motion::{Ambient, Presence};
-        use ui::tokens::{EffectiveMotion, Motion, MotionSource};
-        let d = ui::tokens::Durations::default();
-        let motion = EffectiveMotion::new(Motion::default(), false);
-        let t0 = ui::time::now();
-        let arrive = |asked: bool| {
-            let mut p = Presence::closed();
-            p.show(
-                true,
-                Ambient::spec(asked),
-                motion,
-                MotionSource::Pointer,
-                t0,
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            rig.typed(t0);
+            rig.at(t0);
+            // Down the right edge at speed, across Team's zone.
+            for k in 0..30 {
+                let at = ms(t0, 50 + k * 8);
+                rig.pointer(
+                    (1590.0, 100.0 + 16.0 * f64::from(u32::try_from(k).unwrap())),
+                    at,
+                );
+                assert_eq!(rig.at(at).1, Form::Away, "transit at sample {k}");
+            }
+            // Then a reach into the bottom-right corner, decelerating.
+            let mut rig = Rig::new();
+            rig.typed(t0);
+            rig.at(t0);
+            for (k, p) in [(1000.0, 560.0), (1160.0, 656.0), (1280.0, 728.0)]
+                .into_iter()
+                .enumerate()
+            {
+                rig.pointer(p, ms(t0, 400 + u64::try_from(k).unwrap() * 8));
+            }
+            let at = ms(t0, 420);
+            assert!(rig.board.typing(at), "still inside the typing run");
+            assert_eq!(
+                rig.at(at),
+                (Form::Glance, Form::Away),
+                "only the reached widget"
             );
-            p.settles_at().expect("arriving").duration_since(t0)
-        };
-        let leave = |asked: bool| {
-            let mut p = Presence::opened();
-            p.show(
-                false,
-                Ambient::spec(asked),
-                motion,
-                MotionSource::Pointer,
-                t0,
+            // It holds while the pointer stays in reach, then lets go.
+            rig.pointer((1500.0, 880.0), ms(t0, 500));
+            rig.pointer((800.0, 400.0), ms(t0, 520));
+            assert_eq!(rig.at(ms(t0, 499) + REACH_HOLD).0, Form::Glance);
+            assert_eq!(rig.at(ms(t0, 500) + REACH_HOLD).0, Form::Away);
+        }
+
+        phase a_reach_holds_while_the_pointer_rests_there_with_no_timer;
+        {
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            rig.typed(t0);
+            rig.at(t0);
+            // Thrown into the corner and left there: no more motion arrives.
+            for (k, p) in [(1300.0, 700.0), (1450.0, 790.0), (1599.0, 899.0)]
+                .into_iter()
+                .enumerate()
+            {
+                rig.pointer(p, ms(t0, 100 + u64::try_from(k).unwrap() * 8));
+            }
+            let rest = ms(t0, 116);
+            assert_eq!(rig.at(rest + Duration::from_millis(80)).0, Form::Glance);
+            assert_eq!(rig.at(ms(t0, 2500)).0, Form::Glance, "still resting there");
+            assert_eq!(
+                rig.board.deadline(ms(t0, 2500)),
+                Some(t0 + GLANCE_AFTER_PAUSE),
+                "nothing wakes for the reach while the pointer rests in it"
             );
-            p.is_visible(t0)
-        };
-        assert!(!leave(false), "typing: gone");
-        assert!(!leave(true));
-        let slow = arrive(false);
-        assert!(
-            slow >= d.slow() / 2 && slow <= d.slow() + Duration::from_millis(1),
-            "a pause: slow, {slow:?}"
-        );
-        let quick = arrive(true);
-        assert!(
-            quick <= d.fast() + Duration::from_millis(1),
-            "reached for: quick, {quick:?}"
-        );
+        }
+
+        phase only_a_tap_opens_a_glance_and_nothing_folds_it_on_a_timer;
+        // Resting on a glance, however long, is not a request; a tap is, and only a tap (or Escape, or
+        // typing away from it) folds it again.
+        {
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            assert_eq!(rig.at(t0).0, Form::Glance);
+            rig.pointer((1300.0, 860.0), t0);
+            rig.pointer((1400.0, 868.0), ms(t0, 8));
+            rig.pointer((1401.0, 868.0), ms(t0, 40));
+            assert_eq!(
+                rig.at(ms(t0, 5_000)).0,
+                Form::Glance,
+                "a long rest opens nothing"
+            );
+            rig.board.open(WidgetId::Music);
+            assert_eq!(rig.at(ms(t0, 5_010)).0, Form::Open);
+            rig.pointer((700.0, 300.0), ms(t0, 5_100));
+            assert_eq!(
+                rig.at(ms(t0, 60_000)).0,
+                Form::Open,
+                "leaving the card folds nothing: only a tap away does"
+            );
+            rig.board.close();
+            assert_eq!(rig.at(ms(t0, 60_010)).0, Form::Glance);
+        }
+
+        phase crossing_a_glance_form_in_transit_does_not_open_it;
+        {
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            rig.at(t0);
+            for k in 0..20u32 {
+                let at = ms(t0, u64::from(k) * 8);
+                rig.pointer((1580.0 - 30.0 * f64::from(k), 870.0), at);
+                assert_ne!(rig.at(at).0, Form::Open);
+            }
+            assert_ne!(
+                rig.at(ms(t0, 2000)).0,
+                Form::Open,
+                "it left; nothing to open"
+            );
+        }
+
+        phase each_show_mode_is_honoured;
+        {
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            rig.prefs.music.show = ShowMode::Ask;
+            rig.prefs.team.show = ShowMode::Always;
+            rig.prefs.team.always_on_strips = vec![1];
+            assert_eq!(
+                rig.at(t0),
+                (Form::Away, Form::Glance),
+                "ask stays away at rest"
+            );
+            rig.typed(ms(t0, 10));
+            assert_eq!(
+                rig.at(ms(t0, 10)),
+                (Form::Away, Form::Glance),
+                "always holds through typing on its strip"
+            );
+            rig.strip = Some(2);
+            assert_eq!(
+                rig.at(ms(t0, 20)).1,
+                Form::Away,
+                "elsewhere it is a pause widget"
+            );
+            assert_eq!(
+                rig.at(ms(t0, 10) + GLANCE_AFTER_PAUSE),
+                (Form::Away, Form::Glance),
+                "a pause never brings an ask-only widget"
+            );
+            rig.super_surface = true;
+            assert_eq!(
+                rig.at(ms(t0, 5000)),
+                (Form::Open, Form::Open),
+                "Super asks for all"
+            );
+            rig.super_surface = false;
+            rig.prefs.music.enabled = false;
+            assert_eq!(
+                rig.at(ms(t0, 6000)).0,
+                Form::Away,
+                "a removed widget never shows"
+            );
+        }
+
+        phase a_widget_under_the_hand_keeps_its_form;
+        // Under the hand a widget never flips: typing while the pointer is on a glance keeps it, and
+        // it goes once the hand leaves.
+        {
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            assert_eq!(rig.at(t0), (Form::Glance, Form::Glance));
+            rig.engaged = Some(WidgetId::Music);
+            rig.typed(ms(t0, 10));
+            assert_eq!(
+                rig.at(ms(t0, 10)),
+                (Form::Glance, Form::Away),
+                "the one under the hand stays; the rest fade"
+            );
+            rig.board.open(WidgetId::Music);
+            assert_eq!(rig.at(ms(t0, 20)).0, Form::Open, "a tap still opens it");
+            rig.engaged = None;
+            rig.typed(ms(t0, 30));
+            assert_eq!(
+                rig.at(ms(t0, 30)).0,
+                Form::Away,
+                "hand gone: typing hides it"
+            );
+        }
+
+        phase a_widget_never_appears_under_a_pointer_settled_there;
+        {
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            rig.typed(t0);
+            rig.at(t0);
+            // The pointer rests where the music pill would be, aiming at the app's control underneath;
+            // it arrived slowly from inside, not by reaching for the corner.
+            rig.pointer((1420.0, 870.0), ms(t0, 100));
+            rig.pointer((1420.0, 870.0), ms(t0, 200));
+            let pause = t0 + GLANCE_AFTER_PAUSE;
+            assert_eq!(
+                rig.at(pause).0,
+                Form::Away,
+                "held while the pointer rests there"
+            );
+            assert_eq!(rig.at(pause).1, Form::Glance);
+            rig.pointer((900.0, 500.0), pause + Duration::from_millis(10));
+            rig.pointer((880.0, 490.0), pause + Duration::from_millis(80));
+            assert_eq!(rig.at(pause + Duration::from_millis(200)).0, Form::Glance);
+        }
+
+        phase the_super_quiet_stage_brings_every_glance_and_opens_none;
+        // Super held, before it grows: the glance forms, even mid-typing and for "only when I ask"
+        // widgets; nothing opens until the surface grows.
+        {
+            let t0 = Instant::now();
+            let mut rig = Rig::new();
+            rig.prefs.music.show = ShowMode::Ask;
+            rig.typed(t0);
+            assert_eq!(rig.at(t0), (Form::Away, Form::Away));
+            rig.super_glance = true;
+            assert_eq!(rig.at(ms(t0, 400)), (Form::Glance, Form::Glance));
+            rig.super_glance = false;
+            rig.super_surface = true;
+            assert_eq!(rig.at(ms(t0, 700)), (Form::Open, Form::Open));
+            rig.super_surface = false;
+            assert_eq!(
+                rig.at(ms(t0, 800)),
+                (Form::Away, Form::Away),
+                "let go mid-typing: back to away"
+            );
+        }
+
+        phase widgets_leave_at_once_and_arrive_slowly_unless_asked_for;
+        {
+            use ui::motion::{Ambient, Presence};
+            use ui::tokens::{EffectiveMotion, Motion, MotionSource};
+            let d = ui::tokens::Durations::default();
+            let motion = EffectiveMotion::new(Motion::default(), false);
+            let t0 = ui::time::now();
+            let arrive = |asked: bool| {
+                let mut p = Presence::closed();
+                p.show(
+                    true,
+                    Ambient::spec(asked),
+                    motion,
+                    MotionSource::Pointer,
+                    t0,
+                );
+                p.settles_at().expect("arriving").duration_since(t0)
+            };
+            let leave = |asked: bool| {
+                let mut p = Presence::opened();
+                p.show(
+                    false,
+                    Ambient::spec(asked),
+                    motion,
+                    MotionSource::Pointer,
+                    t0,
+                );
+                p.is_visible(t0)
+            };
+            assert!(!leave(false), "typing: gone");
+            assert!(!leave(true));
+            let slow = arrive(false);
+            assert!(
+                slow >= d.slow() / 2 && slow <= d.slow() + Duration::from_millis(1),
+                "a pause: slow, {slow:?}"
+            );
+            let quick = arrive(true);
+            assert!(
+                quick <= d.fast() + Duration::from_millis(1),
+                "reached for: quick, {quick:?}"
+            );
+        }
     }
 }

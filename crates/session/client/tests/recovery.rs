@@ -17,23 +17,29 @@ use tilo_session_client::{Cmd, Event, FailureSubject, LocalState, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    enrol, holds, ready, restart_host, route, say, start_host, start_peer, wait_for, workspace,
+    HostSettings, enrol, holds, ready, restart_host_relayed, route, say, start_host,
+    start_host_serving, start_peer, wait_for, workspace,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
+    // The restarted host is found at the relay the page knew, whichever port
+    // it came back on.
+    let host = start_host_serving(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            relayed: true,
+            ..HostSettings::default()
+        },
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let peer = start_peer(
         host.iroh(),
         browser.cert.clone(),
@@ -55,7 +61,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
 
     drop(host.web);
     host.relay.shutdown().await;
-    let host = restart_host(&root, &host_device, state.path()).await;
+    let host = restart_host_relayed(&root, &host_device, state.path()).await;
     // A reconnect resumes: the page already holds what it published.
     peer.send(Cmd::Reconnect).unwrap();
     ready(&[&peer]).await;
@@ -88,14 +94,20 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backoff() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
+    // Back online, the page reaches the host through the relay it knew,
+    // whichever port the host came back on.
+    let host = start_host_serving(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            relayed: true,
+            ..HostSettings::default()
+        },
     )
     .await;
     let peer = start_peer(
@@ -104,6 +116,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         host_device.cert.clone(),
         browser.key.clone(),
     );
+    let events = peer.events();
     peer.join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     // Wait for the join's own `Ready` event, not a ready phase: the join
@@ -112,7 +125,8 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     // for, and the session marks the workspace ready before it emits the
     // event. Either way that `Ready` would land after the drain below.
     wait_for("the workspace's Ready", || async {
-        peer.drain()
+        events
+            .drain()
             .iter()
             .any(|event| {
                 matches!(event, Event::HostReady { ws: workspace_id, .. } if *workspace_id == workspace())
@@ -123,11 +137,11 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     ready(&[&peer]).await;
     // Any status change bumps the generation (each envelope's contact
     // time does); a reconnect is what subscribes the workspace anew.
-    let _ = peer.drain();
+    let _ = events.drain();
     peer.send(Cmd::Retry).unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(
-        !peer
+        !events
             .drain()
             .iter()
             .any(|event| matches!(event, Event::HostReady { .. })),
@@ -144,7 +158,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
             .flatten()
     })
     .await;
-    let host = restart_host(&root, &host_device, state.path()).await;
+    let host = restart_host_relayed(&root, &host_device, state.path()).await;
     peer.send(Cmd::Retry).unwrap();
     ready(&[&peer]).await;
     assert!(
@@ -158,7 +172,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(

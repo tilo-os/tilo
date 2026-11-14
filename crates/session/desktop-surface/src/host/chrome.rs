@@ -296,10 +296,13 @@ pub enum ChromeIntent {
     /// Open the notification centre, or close it when it is up: the bell in the status cluster,
     /// which is its own target inside the cluster's quick settings control.
     ToggleNotifications,
-    ToggleCollaborators,
+    TogglePeople,
     /// Invite someone to this workspace, straight from the bar's invite button: the host's own
     /// invite flow, in one step.
     Invite,
+    /// Add a device of this person's: the link a new device becomes one of theirs with, which its
+    /// camera reads.
+    PairDevice,
     /// Open who is here at this person (their roster id): their row, with what they are doing and
     /// the wave.
     ShowPerson(String),
@@ -469,7 +472,7 @@ pub trait ChromeSource {
     fn people_revision(&self) -> u64 {
         0
     }
-    /// Place who is here in `tree`, as the active workspace's collaborators.
+    /// Place who is here in `tree`, as the active workspace's members and their presence.
     fn place_people(&self, _tree: &mut DesktopTree) {}
     /// Ask `answer` what this person may change here, as this host knows their standing.
     fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R;

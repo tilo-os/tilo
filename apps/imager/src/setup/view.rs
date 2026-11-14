@@ -2218,43 +2218,69 @@ mod tests {
     include!("desktop_journey_tests.rs");
     include!("setup_buttons_language_tests.rs");
 
-    #[test]
-    fn migration_intent_cannot_be_attached_outside_full_os_review() {
-        let mut app = SetupApp::new();
-        let before = app.setup_projection().value();
-        assert!(
-            app.answer(SetupEffect::UseMigrationIntent {
-                directory: "/must-not-be-opened".into()
-            })
-            .is_err()
-        );
-        assert_eq!(app.setup_projection().value(), before);
-    }
+    tilo_test_env::scenario! {
+        fn guided_setup_refuses_what_the_review_did_not_admit;
 
-    #[test]
-    fn guided_navigation_follows_actual_download_and_staging_and_refuses_legacy_back() {
-        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
-        let app = &mut fixture.app;
-        open_full_review(app);
-        app.refresh_guided_navigation();
-        let guard = app.guided_navigation_guard();
-        assert!(guard.get());
-        assert!(retained_name(app.build_composition().as_ref(), "setup.back").is_none());
-        invoke_internal(app, "start-internal-download").unwrap();
-        assert!(!guard.get());
-        wait_for_app(app, "download ready", SetupApp::internal_download_ready);
-        assert!(guard.get());
-        invoke_internal(app, "install-internal").unwrap();
-        assert!(!guard.get());
-        wait_for_app(app, "staged", |app| {
-            matches!(
-                app.internal_install.run_state(),
-                RunState::Succeeded {
-                    action: HelperAction::Stage
-                }
-            )
-        });
-        assert!(!guard.get());
+        phase migration_intent_cannot_be_attached_outside_full_os_review;
+        {
+            let mut app = SetupApp::new();
+            let before = app.setup_projection().value();
+            assert!(
+                app.answer(SetupEffect::UseMigrationIntent {
+                    directory: "/must-not-be-opened".into()
+                })
+                .is_err()
+            );
+            assert_eq!(app.setup_projection().value(), before);
+        }
+
+        phase guided_navigation_follows_actual_download_and_staging_and_refuses_legacy_back;
+        {
+            let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+            let app = &mut fixture.app;
+            open_full_review(app);
+            app.refresh_guided_navigation();
+            let guard = app.guided_navigation_guard();
+            assert!(guard.get());
+            assert!(retained_name(app.build_composition().as_ref(), "setup.back").is_none());
+            invoke_internal(app, "start-internal-download").unwrap();
+            assert!(!guard.get());
+            wait_for_app(app, "download ready", SetupApp::internal_download_ready);
+            assert!(guard.get());
+            invoke_internal(app, "install-internal").unwrap();
+            assert!(!guard.get());
+            wait_for_app(app, "staged", |app| {
+                matches!(
+                    app.internal_install.run_state(),
+                    RunState::Succeeded {
+                        action: HelperAction::Stage
+                    }
+                )
+            });
+            assert!(!guard.get());
+        }
+
+        phase unsupported_host_keeps_internal_state_but_refuses_installation_actions;
+        {
+            let mut app = SetupApp::with_capabilities(SetupCapabilities {
+                platform: Capabilities {
+                    host: HostOs::Other,
+                    desktop_session: false,
+                    internal_dual_boot: false,
+                },
+                connected_folders: false,
+            });
+            let projection = app.setup_projection();
+            assert_eq!(projection.internal, app.internal_projection());
+            assert!(!app.internal_install.offers_full_os());
+            assert!(app.answer(SetupEffect::StartInternalDownload).is_err());
+            assert!(
+                app.answer(SetupEffect::InstallInternal {
+                    reviewed: String::new(),
+                })
+                .is_err()
+            );
+        }
     }
 
     fn review(app: &mut SetupApp, experience: Experience) {
@@ -2273,28 +2299,6 @@ mod tests {
             },
             connected_folders: true,
         })
-    }
-
-    #[test]
-    fn unsupported_host_keeps_internal_state_but_refuses_installation_actions() {
-        let mut app = SetupApp::with_capabilities(SetupCapabilities {
-            platform: Capabilities {
-                host: HostOs::Other,
-                desktop_session: false,
-                internal_dual_boot: false,
-            },
-            connected_folders: false,
-        });
-        let projection = app.setup_projection();
-        assert_eq!(projection.internal, app.internal_projection());
-        assert!(!app.internal_install.offers_full_os());
-        assert!(app.answer(SetupEffect::StartInternalDownload).is_err());
-        assert!(
-            app.answer(SetupEffect::InstallInternal {
-                reviewed: String::new(),
-            })
-            .is_err()
-        );
     }
 
     fn retained_widget_disabled(root: &dyn Widget, id: &str) -> bool {
@@ -2906,141 +2910,145 @@ mod tests {
         assert!(!guard.get());
     }
 
-    #[test]
-    fn full_os_check_refuses_mutations_even_with_forged_public_actions() {
-        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
-        let result = LocalState::new(None);
-        let app = &mut fixture.app;
-        app.review_full_os();
-        app.full_os_check = Some(result.clone());
-        app.start_host_probe();
-        app.poll_background();
-        assert!(app.check_ready());
-        for effect in [
-            SetupEffect::StartInternalDownload,
-            SetupEffect::ResumeInternalDownload,
-            SetupEffect::ReleaseInternalDownload,
-            SetupEffect::DiscardInternalDownload,
-            SetupEffect::InstallInternal {
-                reviewed: app.internal_install.reviewed_digest().unwrap().unwrap(),
-            },
-            SetupEffect::RetryInternal {
-                operation_id: "forged-operation".into(),
-            },
-            SetupEffect::RemoveInternal {
-                operation_id: "forged-operation".into(),
-            },
-            SetupEffect::RestartInternal,
-            SetupEffect::SetInternalTargetSize { gib: 120 },
-            SetupEffect::InstallDesktop,
-        ] {
-            assert!(invoke_setup_raw(app, effect).is_err());
-        }
-        for id in [
-            "start-internal-download",
-            "install-internal",
-            "remove-internal",
-        ] {
-            assert!(invoke_internal(app, id).is_err(), "{id}");
-        }
-        assert!(!app.internal_projection().availability.start_download);
-        assert!(!app.internal_projection().availability.install);
-        assert!(!app.internal_projection().availability.remove);
-        assert!(!app.internal_download_ready());
-        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
-        invoke_setup_raw(app, SetupEffect::ContinueSetup).unwrap();
-        assert!(result.get().is_some());
-        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
-        for command in [
-            SetupCommand::StartInternalDownload,
-            SetupCommand::InstallInternal,
-            SetupCommand::RemoveInternal,
-            SetupCommand::RetryInternal,
-        ] {
-            app.apply_command(command);
-            assert!(app.status_is_error);
-        }
-        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+    tilo_test_env::scenario! {
+        fn the_full_os_check_changes_nothing_and_reads_fresh_facts;
 
-        let mut pending = install_flow::tests::Fakes::new(Vec::new());
-        pending
-            .records
-            .push(install_flow::tests::record("actual-operation"));
-        let mut fixture = gated_app(pending, HostOs::Linux);
-        fixture.app.review_full_os();
-        fixture.app.full_os_check = Some(LocalState::new(None));
-        fixture.app.start_host_probe();
-        fixture.app.poll_background();
-        assert!(fixture.app.internal_install.pending().is_some());
-        assert!(
-            fixture
-                .app
-                .answer(SetupEffect::RemoveInternal {
-                    operation_id: "actual-operation".into(),
-                })
-                .is_err()
-        );
-        assert!(
-            fixture
-                .app
-                .answer(SetupEffect::RetryInternal {
-                    operation_id: "actual-operation".into(),
-                })
-                .is_err()
-        );
-        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
-    }
+        phase full_os_check_refuses_mutations_even_with_forged_public_actions;
+        {
+            let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+            let result = LocalState::new(None);
+            let app = &mut fixture.app;
+            app.review_full_os();
+            app.full_os_check = Some(result.clone());
+            app.start_host_probe();
+            app.poll_background();
+            assert!(app.check_ready());
+            for effect in [
+                SetupEffect::StartInternalDownload,
+                SetupEffect::ResumeInternalDownload,
+                SetupEffect::ReleaseInternalDownload,
+                SetupEffect::DiscardInternalDownload,
+                SetupEffect::InstallInternal {
+                    reviewed: app.internal_install.reviewed_digest().unwrap().unwrap(),
+                },
+                SetupEffect::RetryInternal {
+                    operation_id: "forged-operation".into(),
+                },
+                SetupEffect::RemoveInternal {
+                    operation_id: "forged-operation".into(),
+                },
+                SetupEffect::RestartInternal,
+                SetupEffect::SetInternalTargetSize { gib: 120 },
+                SetupEffect::InstallDesktop,
+            ] {
+                assert!(invoke_setup_raw(app, effect).is_err());
+            }
+            for id in [
+                "start-internal-download",
+                "install-internal",
+                "remove-internal",
+            ] {
+                assert!(invoke_internal(app, id).is_err(), "{id}");
+            }
+            assert!(!app.internal_projection().availability.start_download);
+            assert!(!app.internal_projection().availability.install);
+            assert!(!app.internal_projection().availability.remove);
+            assert!(!app.internal_download_ready());
+            assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+            invoke_setup_raw(app, SetupEffect::ContinueSetup).unwrap();
+            assert!(result.get().is_some());
+            assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
+            for command in [
+                SetupCommand::StartInternalDownload,
+                SetupCommand::InstallInternal,
+                SetupCommand::RemoveInternal,
+                SetupCommand::RetryInternal,
+            ] {
+                app.apply_command(command);
+                assert!(app.status_is_error);
+            }
+            assert!(fixture.fakes.launches.lock().unwrap().is_empty());
 
-    #[test]
-    fn full_os_check_rechecks_fresh_facts_and_does_not_reuse_continue_result() {
-        let fakes = install_flow::tests::Fakes::new(Vec::new());
-        let facts = Arc::new(std::sync::Mutex::new(fakes.facts.clone()));
-        let mut fixture = gated_app(fakes, HostOs::Linux);
-        let mut runtime = fixture.fakes.runtime();
-        let current = Arc::clone(&facts);
-        runtime.probe = Arc::new(move || current.lock().unwrap().clone());
-        fixture.app.internal_install = InternalInstall::new(runtime, true, HostOs::Linux);
-        let result = LocalState::new(None);
-        let app = &mut fixture.app;
-        app.review_full_os();
-        app.full_os_check = Some(result.clone());
-        app.start_host_probe();
-        app.poll_background();
-        invoke_setup_raw(app, SetupEffect::ContinueSetup).unwrap();
-        assert!(result.get().is_some());
-        facts
-            .lock()
-            .unwrap()
-            .blockers
-            .push(super::super::staging::probe::Blocker::NotGpt);
-        invoke_setup_raw(app, SetupEffect::RecheckInternal).unwrap();
-        assert!(result.get().is_none());
-        assert!(invoke_setup_raw(app, SetupEffect::ContinueSetup).is_err());
-        app.poll_background();
-        assert!(!app.check_ready());
-        assert!(invoke_setup_raw(app, SetupEffect::ContinueSetup).is_err());
-        assert!(
-            app.internal_readiness_text()
-                .contains(&install_flow::blocker_text(
-                    super::super::staging::probe::Blocker::NotGpt,
-                    HostOs::Linux
-                ))
-        );
-        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
-    }
+            let mut pending = install_flow::tests::Fakes::new(Vec::new());
+            pending
+                .records
+                .push(install_flow::tests::record("actual-operation"));
+            let mut fixture = gated_app(pending, HostOs::Linux);
+            fixture.app.review_full_os();
+            fixture.app.full_os_check = Some(LocalState::new(None));
+            fixture.app.start_host_probe();
+            fixture.app.poll_background();
+            assert!(fixture.app.internal_install.pending().is_some());
+            assert!(
+                fixture
+                    .app
+                    .answer(SetupEffect::RemoveInternal {
+                        operation_id: "actual-operation".into(),
+                    })
+                    .is_err()
+            );
+            assert!(
+                fixture
+                    .app
+                    .answer(SetupEffect::RetryInternal {
+                        operation_id: "actual-operation".into(),
+                    })
+                    .is_err()
+            );
+            assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+        }
 
-    #[test]
-    fn full_os_check_closed_gate_is_build_limitation_and_keeps_back_available() {
-        let result = LocalState::new(None);
-        let mut app = SetupApp::for_full_os_check(result);
-        app.internal_install = InternalInstall::gated(HostOs::Linux);
-        assert!(!app.check_ready());
-        assert!(app.guided_navigation_guard().get());
-        assert_eq!(
-            app.internal_readiness_text(),
-            super::super::strings::t("imager-setup-check-gated")
-        );
-        assert!(!app.internal_projection().availability.install);
+        phase full_os_check_rechecks_fresh_facts_and_does_not_reuse_continue_result;
+        {
+            let fakes = install_flow::tests::Fakes::new(Vec::new());
+            let facts = Arc::new(std::sync::Mutex::new(fakes.facts.clone()));
+            let mut fixture = gated_app(fakes, HostOs::Linux);
+            let mut runtime = fixture.fakes.runtime();
+            let current = Arc::clone(&facts);
+            runtime.probe = Arc::new(move || current.lock().unwrap().clone());
+            fixture.app.internal_install = InternalInstall::new(runtime, true, HostOs::Linux);
+            let result = LocalState::new(None);
+            let app = &mut fixture.app;
+            app.review_full_os();
+            app.full_os_check = Some(result.clone());
+            app.start_host_probe();
+            app.poll_background();
+            invoke_setup_raw(app, SetupEffect::ContinueSetup).unwrap();
+            assert!(result.get().is_some());
+            facts
+                .lock()
+                .unwrap()
+                .blockers
+                .push(super::super::staging::probe::Blocker::NotGpt);
+            invoke_setup_raw(app, SetupEffect::RecheckInternal).unwrap();
+            assert!(result.get().is_none());
+            assert!(invoke_setup_raw(app, SetupEffect::ContinueSetup).is_err());
+            app.poll_background();
+            assert!(!app.check_ready());
+            assert!(invoke_setup_raw(app, SetupEffect::ContinueSetup).is_err());
+            assert!(
+                app.internal_readiness_text()
+                    .contains(&install_flow::blocker_text(
+                        super::super::staging::probe::Blocker::NotGpt,
+                        HostOs::Linux
+                    ))
+            );
+            assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+        }
+
+        phase full_os_check_closed_gate_is_build_limitation_and_keeps_back_available;
+        {
+            let result = LocalState::new(None);
+            let mut app = SetupApp::for_full_os_check(result);
+            app.internal_install = InternalInstall::gated(HostOs::Linux);
+            assert!(!app.check_ready());
+            assert!(app.guided_navigation_guard().get());
+            assert_eq!(
+                app.internal_readiness_text(),
+                super::super::strings::t("imager-setup-check-gated")
+            );
+            assert!(!app.internal_projection().availability.install);
+        }
     }
 
     fn run_inline(_: &str, task: WorkerTask) -> Result<(), String> {

@@ -1640,7 +1640,7 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tilo_desktop_model::{Collaborator, IdMinter, Tab, WindowWidth, Workspace};
+    use tilo_desktop_model::{IdMinter, Member, Tab, WindowWidth, Workspace};
     use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
     use tilo_system_stats::protocol::{CpuStats, MemoryStats, SystemStats, ThermalZone};
     use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
@@ -1688,10 +1688,10 @@ mod tests {
     fn rig_with(people: &[(&str, &str)], prefs: DeskWidgetPrefs, source: Box<dyn Source>) -> Rig {
         let mut minter = IdMinter::new(7);
         let mut tree = seed_tree(&mut minter, "Desk", Vec::new());
-        tree.collaborators = people
-            .iter()
-            .map(|(id, name)| Collaborator::new(*id, *name))
-            .collect();
+        if let Some(workspace) = tree.workspaces.first_mut() {
+            workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
+        }
+
         let handle = DesktopSurface::new(tree, 7, Box::new(Tiles)).1;
         rig_over(handle, prefs, source)
     }
@@ -2448,12 +2448,22 @@ mod tests {
         let from = centre(glance);
         let to = Point::new(500.0, 300.0);
 
-        rig.send(&cursor_moved(from.x, from.y));
-        assert!(rig.send(&mouse_press()));
-        rig.send(&cursor_moved(to.x, to.y));
-        // Let go where the hand stopped: a still hand throws nothing.
-        rig.send(&cursor_moved(to.x, to.y));
-        rig.send(&mouse_release());
+        // The hand's clock is pinned. Its speed at release is read from when each sample came, and
+        // on the machine's own clock a slow run let go while the travel was still within the
+        // window that speed is read over: a throw off the desk, and no place kept.
+        let t0 = Instant::now();
+        ui::time::testing::with_monotonic_time(t0, || {
+            rig.send(&cursor_moved(from.x, from.y));
+            assert!(rig.send(&mouse_press()));
+        });
+        ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(16), || {
+            rig.send(&cursor_moved(to.x, to.y));
+        });
+        // Let go where the hand stopped, a moment after it did: a still hand throws nothing.
+        ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(216), || {
+            rig.send(&cursor_moved(to.x, to.y));
+            rig.send(&mouse_release());
+        });
 
         let places = rig.prefs(WidgetId::Calendar).places;
         assert_eq!(places.len(), 1, "it remembers one place: {places:?}");

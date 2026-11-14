@@ -842,50 +842,54 @@ mod tests {
     use super::*;
     use std::io::Read;
 
-    #[test]
-    fn oversized_archive_receipt_never_writes_transport() {
-        let (mut sender, mut receiver) = UnixStream::pair().expect("pair");
-        receiver.set_nonblocking(true).expect("nonblocking");
-        let cancel = ServiceCancellation::default();
-        let mut io = Handoff::new(&mut sender, &cancel, Duration::from_secs(1)).expect("handoff");
-        assert!(send_json(&mut io, &vec![0u8; LIMIT]).is_err());
-        let mut byte = [0];
-        assert_eq!(
-            receiver.read(&mut byte).expect_err("no frame").kind(),
-            io::ErrorKind::WouldBlock
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_installed_copy_receipt_is_closed_bounded_and_file_only;
 
-    #[test]
-    fn archive_and_secret_admission_refuse_directory_descriptors() {
-        let directory = File::open("/").expect("directory");
-        assert!(ArchiveFacts::measure(&directory).is_err());
-        assert!(check_secret(&directory).is_err());
-    }
+        phase oversized_archive_receipt_never_writes_transport;
+        {
+            let (mut sender, mut receiver) = UnixStream::pair().expect("pair");
+            receiver.set_nonblocking(true).expect("nonblocking");
+            let cancel = ServiceCancellation::default();
+            let mut io = Handoff::new(&mut sender, &cancel, Duration::from_secs(1)).expect("handoff");
+            assert!(send_json(&mut io, &vec![0u8; LIMIT]).is_err());
+            let mut byte = [0];
+            assert_eq!(
+                receiver.read(&mut byte).expect_err("no frame").kind(),
+                io::ErrorKind::WouldBlock
+            );
+        }
 
-    #[test]
-    fn closed_receipt_refuses_extra_fields_and_old_schema() {
-        let declaration = CopyDeclaration {
-            operation: uuid::Uuid::new_v4().to_string(),
-            setup_binding: "ab".repeat(32),
-            person: [1; 32],
-            read_claim: [2; 32],
-            target_uid: 1000,
-            payload: vec![1],
-        };
-        let mut value = serde_json::to_value(&declaration).expect("encode");
-        value
-            .as_object_mut()
-            .expect("object")
-            .insert("source_path".into(), serde_json::json!("/"));
-        assert!(serde_json::from_value::<CopyDeclaration>(value).is_err());
-        let receipt = WireReceipt {
-            schema: 0,
-            declaration,
-            home: None,
-            applications: None,
-        };
-        assert!(receipt.validate().is_err());
+        phase archive_and_secret_admission_refuse_directory_descriptors;
+        {
+            let directory = File::open("/").expect("directory");
+            assert!(ArchiveFacts::measure(&directory).is_err());
+            assert!(check_secret(&directory).is_err());
+        }
+
+        phase closed_receipt_refuses_extra_fields_and_old_schema;
+        {
+            let declaration = CopyDeclaration {
+                operation: uuid::Uuid::new_v4().to_string(),
+                setup_binding: "ab".repeat(32),
+                person: [1; 32],
+                read_claim: [2; 32],
+                target_uid: 1000,
+                payload: vec![1],
+            };
+            let mut value = serde_json::to_value(&declaration).expect("encode");
+            value
+                .as_object_mut()
+                .expect("object")
+                .insert("source_path".into(), serde_json::json!("/"));
+            assert!(serde_json::from_value::<CopyDeclaration>(value).is_err());
+            let receipt = WireReceipt {
+                schema: 0,
+                declaration,
+                home: None,
+                applications: None,
+            };
+            assert!(receipt.validate().is_err());
+        }
     }
 }
 

@@ -1,9 +1,11 @@
-//! Who sends a request: the principal a transport authenticated, and what
+//! Who sends a request: the acting tree a transport authenticated, and what
 //! it admitted them to.
 
-use super::{CallerPrincipal, ExecutionLease, within};
+use tilo_action_policy::Acting;
 
-/// The authenticated principal behind a request.
+use super::{ExecutionLease, within};
+
+/// The authenticated actor behind a request.
 ///
 /// Built only by the transport that authenticated the connection — from the
 /// certificate chain a peer presented, or from the admitted identity of a
@@ -11,22 +13,17 @@ use super::{CallerPrincipal, ExecutionLease, within};
 /// assert who sent it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Caller {
-    pub(super) principal: CallerPrincipal,
+    pub(super) acting: Acting,
     pub(super) user_public_key: Option<[u8; 32]>,
     pub(super) device_public_key: Option<[u8; 32]>,
     pub(super) workspace: Option<String>,
-    pub(super) foreign: bool,
     // Transport-issued execution scope, never accepted from request context.
-    // It narrows invocation ownership without changing the policy principal.
+    // It narrows invocation ownership without changing the acting tree.
     pub(super) execution: Option<ExecutionLease>,
-    // The person a non-person principal acts for, as the host admitted it.
-    pub(super) acting_for: Option<String>,
     // The person's own device handed this connection to the agent
     // (`Self::delegated_to`), rather than the agent being admitted as a member
     // in its own right and acting for them (`Self::acting_for`).
     pub(super) session_delegated: bool,
-    // The Shortcut whose run this person's invocation is a step of.
-    pub(super) shortcut: Option<String>,
     // How far the invocation this caller's requests continue was admitted
     // to reach, set by the host that matched them to it.
     pub(super) within: within::Within,
@@ -46,35 +43,29 @@ impl Caller {
     #[must_use]
     pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
         Self {
-            principal: CallerPrincipal::Person(hex::encode(user_public_key)),
+            acting: Acting::person(hex::encode(user_public_key)),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             workspace: None,
-            foreign: false,
             execution: None,
-            acting_for: None,
             session_delegated: false,
-            shortcut: None,
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
         }
     }
 
-    /// A person on a connection the host admitted itself, by the policy
-    /// principal id that admission established.
+    /// A person on a connection the host admitted itself, by the id that
+    /// admission established.
     #[must_use]
-    pub fn local_person(principal: impl Into<String>) -> Self {
+    pub fn local_person(person: impl Into<String>) -> Self {
         Self {
-            principal: CallerPrincipal::Person(principal.into()),
+            acting: Acting::person(person.into()),
             user_public_key: None,
             device_public_key: None,
             workspace: None,
-            foreign: false,
             execution: None,
-            acting_for: None,
             session_delegated: false,
-            shortcut: None,
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
@@ -85,15 +76,12 @@ impl Caller {
     #[must_use]
     pub fn local_agent(agent_id: impl Into<String>) -> Self {
         Self {
-            principal: CallerPrincipal::Agent(agent_id.into()),
+            acting: Acting::agent(agent_id.into()),
             user_public_key: None,
             device_public_key: None,
             workspace: None,
-            foreign: false,
             execution: None,
-            acting_for: None,
             session_delegated: false,
-            shortcut: None,
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
@@ -107,15 +95,12 @@ impl Caller {
     #[must_use]
     pub fn local_app(app_id: impl Into<String>) -> Self {
         Self {
-            principal: CallerPrincipal::App(app_id.into()),
+            acting: Acting::person("").in_app(app_id.into()),
             user_public_key: None,
             device_public_key: None,
             workspace: None,
-            foreign: false,
             execution: None,
-            acting_for: None,
             session_delegated: false,
-            shortcut: None,
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
@@ -124,7 +109,7 @@ impl Caller {
 
     /// A remote agent device whose certificate the transport verified to
     /// chain to `user_public_key` and whose root-signed delegation names it
-    /// agent `agent_id`. It is its own principal, never the person who
+    /// agent `agent_id`. It is its own member, never the person who
     /// delegated it.
     #[must_use]
     pub fn delegated_agent(
@@ -133,15 +118,13 @@ impl Caller {
         device_public_key: [u8; 32],
     ) -> Self {
         Self {
-            principal: CallerPrincipal::Agent(agent_id.into()),
+            acting: Acting::agent(agent_id.into())
+                .acting_for(Acting::person(hex::encode(user_public_key))),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             workspace: None,
-            foreign: false,
             execution: None,
-            acting_for: None,
             session_delegated: false,
-            shortcut: None,
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
@@ -161,15 +144,12 @@ impl Caller {
         turn: tilo_action_policy::turn::Turn,
     ) -> Self {
         Self {
-            principal: CallerPrincipal::Agent(agent_id.into()),
+            acting: Acting::agent(agent_id.into()).acting_for(Acting::person(person.into())),
             user_public_key: None,
             device_public_key: None,
             workspace: None,
-            foreign: false,
             execution: None,
-            acting_for: Some(person.into()),
             session_delegated: true,
-            shortcut: None,
             within: within::Within::NONE,
             turn: Some(turn),
             agent_name: None,
@@ -186,15 +166,13 @@ impl Caller {
         device_public_key: [u8; 32],
     ) -> Self {
         Self {
-            principal: CallerPrincipal::Bot(installation.into()),
+            acting: Acting::bot(installation.into())
+                .acting_for(Acting::person(hex::encode(user_public_key))),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             workspace: None,
-            foreign: false,
             execution: None,
-            acting_for: Some(hex::encode(user_public_key)),
             session_delegated: false,
-            shortcut: None,
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
@@ -247,34 +225,40 @@ impl Caller {
     /// Workspaces it does not govern cap such a caller's role.
     #[must_use]
     pub fn from_foreign_device(mut self, foreign: bool) -> Self {
-        self.foreign = foreign;
+        self.acting = self.acting.on_foreign_device(foreign);
         self
     }
 
-    /// The caller acts for `person`, by that person's policy principal id:
-    /// an agent, a Shortcut or an app the person started. Set only by the
-    /// host that admitted the delegation, never from a payload. It names who
-    /// the actor works for in presence and history; it widens nothing.
+    /// The caller acts for `person`: an agent or an app the person started.
+    /// Set only by the host that admitted the delegation, never from a
+    /// payload. It names who the actor works for in presence and history; it
+    /// widens nothing.
     #[must_use]
     pub fn acting_for(mut self, person: impl Into<String>) -> Self {
-        self.acting_for = Some(person.into());
+        let person = person.into();
+        self.acting = if let Some(app) = self.acting.app.clone() {
+            Acting::person(person).in_app(app)
+        } else {
+            let mut acting = self.acting;
+            acting.acted_for = vec![Acting::person(person)];
+            acting
+        };
         self
     }
 
     /// This person's own device hands the connection to agent `agent_id`,
     /// acting for them: an MCP client, a local assistant. The agent is the
-    /// principal (its edits, presence and history are the agent's, for the
+    /// actor (its edits, presence and history are the agent's, for the
     /// person) and it may do only what both the person and the delegation a
     /// device gives its agents allow. A caller that is not a person is
     /// returned as it is. Set only by the host that admitted the person.
     #[must_use]
     pub fn delegated_to(mut self, agent_id: impl Into<String>) -> Self {
-        let CallerPrincipal::Person(person) = &self.principal else {
+        let Some(person) = self.acting.person_id().map(str::to_owned) else {
             return self;
         };
-        self.acting_for = Some(person.clone());
         self.session_delegated = true;
-        self.principal = CallerPrincipal::Agent(agent_id.into());
+        self.acting = Acting::agent(agent_id).acting_for(Acting::person(person));
         self
     }
 
@@ -284,7 +268,7 @@ impl Caller {
     #[must_use]
     pub fn named(mut self, name: &str) -> Self {
         let name = name.trim();
-        if matches!(self.principal, CallerPrincipal::Agent(_)) && !name.is_empty() {
+        if self.acting.is_agent() && !name.is_empty() {
             self.agent_name = Some(name.to_owned());
         }
         self
@@ -303,14 +287,17 @@ impl Caller {
     /// read the person's standing, never to act as them.
     #[must_use]
     pub fn delegating_person(&self) -> Option<Self> {
-        let CallerPrincipal::Agent(_) = &self.principal else {
+        if !self.acting.is_agent() {
             return None;
-        };
-        let person = self.acting_for.clone().filter(|_| self.session_delegated)?;
+        }
+        let person = self
+            .acting
+            .acted_for_person()
+            .filter(|_| self.session_delegated)?
+            .to_owned();
         self.device_public_key?;
         Some(Self {
-            principal: CallerPrincipal::Person(person),
-            acting_for: None,
+            acting: Acting::person(person),
             session_delegated: false,
             turn: None,
             agent_name: None,
@@ -338,7 +325,12 @@ impl Caller {
     /// The person this caller acts for, when it is not that person.
     #[must_use]
     pub fn acting_for_person(&self) -> Option<&str> {
-        self.acting_for.as_deref()
+        self.acting.acted_for_person().or_else(|| {
+            self.acting
+                .app()
+                .and_then(|_| self.acting.person_id())
+                .filter(|person| !person.is_empty())
+        })
     }
 
     /// The caller's invocations are the steps of Shortcut `id`'s run: still
@@ -347,114 +339,76 @@ impl Caller {
     /// Set only by the host's Shortcut runner.
     #[must_use]
     pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
-        self.shortcut = Some(id.into());
+        let person = self
+            .acting
+            .person_id()
+            .or_else(|| self.acting.acted_for_person())
+            .unwrap_or_default()
+            .to_owned();
+        let mut acting = Acting::automation(id).acting_for(Acting::person(person));
+        acting.app.clone_from(&self.acting.app);
+        acting.foreign_device = self.acting.foreign_device;
+        self.acting = acting;
         self
     }
 
-    /// The Shortcut whose run this invocation is a step of.
-    #[must_use]
-    pub fn shortcut(&self) -> Option<&str> {
-        self.shortcut.as_deref()
-    }
-
-    /// Who acts, as presence and history name them: the kind of actor, its
-    /// id, and the person it acts for when that is someone else.
+    /// Who acts, as presence and history name them.
     #[must_use]
     pub fn actor(&self) -> crate::InteractionActor {
-        match (&self.principal, &self.shortcut) {
-            (CallerPrincipal::Person(person), Some(shortcut)) => crate::InteractionActor::new(
-                format!("shortcut:{shortcut}"),
+        let acting = &self.acting;
+        if let tilo_action_policy::Actor::Automation(shortcut) = &acting.by {
+            let actor = crate::InteractionActor::new(
+                format!("shortcut:{}", shortcut.as_str()),
                 crate::ActorKind::Shortcut,
+            );
+            return match acting.acted_for_person() {
+                Some(person) => actor.acting_for(person.to_owned()),
+                None => actor,
+            };
+        }
+        if let Some(app) = acting.app() {
+            let actor = crate::InteractionActor::new(format!("app:{app}"), crate::ActorKind::App);
+            return match acting.person_id().filter(|person| !person.is_empty()) {
+                Some(person) => actor.acting_for(person.to_owned()),
+                None => actor,
+            };
+        }
+        let (id, kind) = if let Some(agent) = acting.agent_id() {
+            (format!("agent:{agent}"), crate::ActorKind::Agent)
+        } else if let Some(bot) = acting.bot_id() {
+            (format!("bot:{bot}"), crate::ActorKind::Bot)
+        } else {
+            (
+                acting.person_id().unwrap_or_default().to_owned(),
+                crate::ActorKind::Person,
             )
-            .acting_for(person.clone()),
-            (CallerPrincipal::Person(person), None) => {
-                crate::InteractionActor::new(person.clone(), crate::ActorKind::Person)
-            }
-            (CallerPrincipal::Agent(agent), _) => {
-                let actor =
-                    crate::InteractionActor::new(format!("agent:{agent}"), crate::ActorKind::Agent);
-                // An agent device acts for the person who certified it, as
-                // `Self::invoker` reads it.
-                match self
-                    .acting_for
-                    .clone()
-                    .or_else(|| self.user_public_key.map(hex::encode))
-                {
-                    Some(person) => actor.acting_for(person),
-                    None => actor,
-                }
-            }
-            (CallerPrincipal::App(app), _) => {
-                let actor =
-                    crate::InteractionActor::new(format!("app:{app}"), crate::ActorKind::App);
-                match &self.acting_for {
-                    Some(person) => actor.acting_for(person.clone()),
-                    None => actor,
-                }
-            }
-            (CallerPrincipal::Bot(bot), _) => {
-                let actor =
-                    crate::InteractionActor::new(format!("bot:{bot}"), crate::ActorKind::Bot);
-                match &self.acting_for {
-                    Some(person) => actor.acting_for(person.clone()),
-                    None => actor,
-                }
-            }
+        };
+        let actor = crate::InteractionActor::new(id, kind);
+        match acting.acted_for_person() {
+            Some(person) => actor.acting_for(person.to_owned()),
+            None => actor,
         }
     }
 
-    /// Who an action this caller invokes in `workspace` is decided for: the
-    /// one reading of a caller every route that runs actions takes
-    /// ([`tilo_action_policy::Acting`]).
-    ///
-    /// - A person acts as themselves.
-    /// - An agent a person's own device handed its session to
-    ///   ([`Self::delegated_to`]) acts for them, carrying the delegation a
-    ///   device gives its agents ([`Self::granted`]).
-    /// - An agent admitted as acting for a person ([`Self::acting_for`]),
-    ///   or a delegated agent device acting for the person its certificate
-    ///   chains to, does what both the person and the workspace's grants
-    ///   for it allow.
-    /// - A bot acts for its installer within the workspace's grants for it.
-    /// - An application, or an agent acting for nobody, does only what the
-    ///   workspace grants it.
-    ///
-    /// Whether the person works from a device that is not theirs is the
-    /// host's to say ([`tilo_action_policy::Acting::on_foreign_device`]).
+    /// Who an action this caller invokes is decided for, as the transport
+    /// admitted it ([`tilo_action_policy::Acting`]).
     #[must_use]
-    pub fn acting(&self) -> tilo_action_policy::Acting {
-        use tilo_action_policy::Acting;
-        let root = || self.user_public_key.map(hex::encode);
-        let acting = match &self.principal {
-            CallerPrincipal::Person(person) => Acting::person(person.clone()),
-            CallerPrincipal::Agent(agent) => match self.acting_for.clone().or_else(root) {
-                Some(person) => Acting::agent(agent.clone()).acting_for(Acting::person(person)),
-                None => Acting::agent(agent.clone()),
-            },
-            CallerPrincipal::App(app) => match self.acting_for.clone().or_else(root) {
-                Some(person) => Acting::person(person).in_app(app.clone()),
-                None => Acting::person("").in_app(app.clone()),
-            },
-            // A bot nobody installed has no authority to borrow: acting for
-            // nobody's standing, it gets nothing.
-            CallerPrincipal::Bot(bot) => match self.acting_for.clone().or_else(root) {
-                Some(person) => Acting::bot(bot.clone()).acting_for(Acting::person(person)),
-                None => Acting::bot(bot.clone()),
-            },
-        };
-        acting.on_foreign_device(self.foreign)
+    pub const fn acting(&self) -> &Acting {
+        &self.acting
     }
 
     /// The grants made for this caller's software: the delegation a person's
     /// own device gives the agent it handed its session to.
     #[must_use]
     pub fn granted(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
-        match (&self.principal, self.acting_for.clone()) {
-            (CallerPrincipal::Agent(agent), Some(person)) if self.session_delegated => {
-                tilo_action_policy::roles::agent_grants(workspace, agent, &person, &[])
-            }
-            _ => Vec::new(),
+        let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
+        else {
+            return Vec::new();
+        };
+        if !self.session_delegated {
+            return Vec::new();
         }
+        tilo_action_policy::roles::agent_grants(workspace, agent, person, &[])
     }
 
     /// The run this caller's actions are part of, as the host that admitted it
@@ -465,9 +419,7 @@ impl Caller {
     /// else.
     #[must_use]
     pub fn agent_run(&self) -> Option<crate::WorkGroup> {
-        let CallerPrincipal::Agent(agent) = &self.principal else {
-            return None;
-        };
+        let agent = self.acting.agent_id()?;
         let execution = self.execution_id()?;
         Some(crate::WorkGroup {
             id: format!("{}:{execution}", crate::context::AGENT_RUN_GROUP),
@@ -485,11 +437,6 @@ impl Caller {
         self
     }
 
-    #[must_use]
-    pub const fn principal(&self) -> &CallerPrincipal {
-        &self.principal
-    }
-
     /// The workspace this caller is confined to, if any.
     #[must_use]
     pub fn workspace(&self) -> Option<&str> {
@@ -504,7 +451,7 @@ impl Caller {
 
     #[must_use]
     pub const fn is_foreign_device(&self) -> bool {
-        self.foreign
+        self.acting.foreign_device
     }
 
     /// The remote device that sent the request.

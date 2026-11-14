@@ -33,7 +33,7 @@ impl Person {
         }
     }
     fn id(&self) -> String {
-        principal_id_for_root(self.root.verifying_key().to_bytes())
+        person_id_for_root(self.root.verifying_key().to_bytes())
     }
     fn presentation(&self, workspace: &str) -> Vec<u8> {
         runtime_collab::CertifiedJoinIdentity {
@@ -327,7 +327,7 @@ async fn bridge_query(
     );
     tilo_test_env::within("the directory disclosure", async {
         loop {
-            state.drain_action_directory_bridge(directories);
+            state.take_turn(directories);
             match pending.poll_ready() {
                 PendingPoll::Ready(page) => break page.unwrap(),
                 PendingPoll::Abandoned => panic!("bridge query abandoned"),

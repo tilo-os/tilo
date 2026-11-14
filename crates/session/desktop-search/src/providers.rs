@@ -1501,55 +1501,194 @@ mod tests {
         ])
     }
 
-    #[test]
-    fn an_app_row_says_what_the_app_is_never_its_package_id() {
-        let apps = Applications::new(vec![
-            AppEntry {
-                id: "so.tilo.calendar".into(),
-                title: "Calendar".into(),
-                category: None,
-                description: None,
-            },
-            AppEntry {
-                id: "node-app:3".into(),
-                title: "Terminal".into(),
-                category: None,
-                description: Some("Runs on the node".into()),
-            },
-            AppEntry {
-                id: "com.example.unknown".into(),
-                title: "Unknown".into(),
-                category: None,
-                description: None,
-            },
-        ]);
-        for needle in ["", "calendar", "term", "unknown"] {
-            for hit in apps.query(needle) {
-                let subtitle = hit.subtitle.as_deref().unwrap_or_default();
-                assert!(
-                    !subtitle.contains(&hit.id) && !subtitle.contains("so.tilo"),
-                    "{needle:?}: {subtitle:?}"
-                );
-                assert!(!hit.title.contains(&hit.id), "{needle:?}: {}", hit.title);
+    tilo_test_env::scenario! {
+        fn an_app_is_found_by_its_name_its_words_and_its_keywords;
+
+        phase an_app_row_says_what_the_app_is_never_its_package_id;
+        {
+            let apps = Applications::new(vec![
+                AppEntry {
+                    id: "so.tilo.calendar".into(),
+                    title: "Calendar".into(),
+                    category: None,
+                    description: None,
+                },
+                AppEntry {
+                    id: "node-app:3".into(),
+                    title: "Terminal".into(),
+                    category: None,
+                    description: Some("Runs on the node".into()),
+                },
+                AppEntry {
+                    id: "com.example.unknown".into(),
+                    title: "Unknown".into(),
+                    category: None,
+                    description: None,
+                },
+            ]);
+            for needle in ["", "calendar", "term", "unknown"] {
+                for hit in apps.query(needle) {
+                    let subtitle = hit.subtitle.as_deref().unwrap_or_default();
+                    assert!(
+                        !subtitle.contains(&hit.id) && !subtitle.contains("so.tilo"),
+                        "{needle:?}: {subtitle:?}"
+                    );
+                    assert!(!hit.title.contains(&hit.id), "{needle:?}: {}", hit.title);
+                }
             }
+            let subtitle = |needle: &str, id: &str| {
+                apps.query(needle)
+                    .into_iter()
+                    .find(|hit| hit.id == id)
+                    .and_then(|hit| hit.subtitle)
+            };
+            assert_eq!(subtitle("", "so.tilo.calendar").as_deref(), Some("Office"));
+            assert_eq!(
+                subtitle("cal", "so.tilo.calendar").as_deref(),
+                Some("Office")
+            );
+            assert_eq!(
+                subtitle("", "node-app:3").as_deref(),
+                Some("Runs on the node")
+            );
+            assert_eq!(subtitle("", "com.example.unknown"), None);
+            assert!(!apps.query("so.tilo.calendar").is_empty());
         }
-        let subtitle = |needle: &str, id: &str| {
-            apps.query(needle)
-                .into_iter()
-                .find(|hit| hit.id == id)
-                .and_then(|hit| hit.subtitle)
-        };
-        assert_eq!(subtitle("", "so.tilo.calendar").as_deref(), Some("Office"));
-        assert_eq!(
-            subtitle("cal", "so.tilo.calendar").as_deref(),
-            Some("Office")
-        );
-        assert_eq!(
-            subtitle("", "node-app:3").as_deref(),
-            Some("Runs on the node")
-        );
-        assert_eq!(subtitle("", "com.example.unknown"), None);
-        assert!(!apps.query("so.tilo.calendar").is_empty());
+
+        phase a_name_begun_or_a_word_of_it_leads_a_keyword_or_a_fragment;
+        {
+            let everywhere = apps_on(&["linux", "macos", "web", "tilo-os"], Vec::new());
+            // "term" begins Terminal's name; it only begins Calendar's German
+            // keyword ("Termin").
+            let term = ranked_ids(&everywhere, "term");
+            assert_eq!(term.first().map(String::as_str), Some("so.tilo.terminal"));
+            let calendar = term.iter().position(|id| id == "so.tilo.calendar");
+            assert!(calendar.is_none_or(|at| at > 0), "{term:?}");
+            // A word of the name ("Editor" of "Hex Editor") leads an app whose
+            // name only contains the letters.
+            let editor = ranked_ids(&everywhere, "editor");
+            let first = everywhere
+                .entries
+                .iter()
+                .find(|app| Some(&app.id) == editor.first())
+                .expect("something is an editor");
+            assert!(
+                first
+                    .title
+                    .to_lowercase()
+                    .split_whitespace()
+                    .any(|word| word == "editor"),
+                "{editor:?}"
+            );
+
+            // In a browser beside a node that runs Terminal, the node's
+            // Terminal is what "term" opens.
+            let browser = apps_on(
+                &["web"],
+                vec![AppEntry {
+                    id: "node-app:3".into(),
+                    title: "Terminal".into(),
+                    category: None,
+                    description: Some("Runs on the node".into()),
+                }],
+            );
+            let term = ranked_ids(&browser, "term");
+            assert_eq!(term.first().map(String::as_str), Some("node-app:3"));
+            assert!(!term.iter().any(|id| id == "so.tilo.terminal"));
+        }
+
+        phase typing_an_app_name_puts_its_launch_first;
+        {
+            let windows = Windows(vec![WindowEntry {
+                tab: 7,
+                title: "Budget sheets".into(),
+                app_title: "Notes".into(),
+                app: None,
+                place: vec!["Workspace".into(), "Main".into()],
+            }]);
+            let groups = search("sheets", &[&apps(), &windows], 10, &|_| 0.0);
+            let first = &groups[0].results[0];
+            assert_eq!(first.title, "Sheets");
+            assert_eq!(
+                first.target,
+                Target::Launch {
+                    app: "so.tilo.sheets".into(),
+                    place: LaunchPlace::Focus,
+                }
+            );
+            assert!(groups.iter().any(|g| g.kind.label() == WINDOWS_KIND));
+        }
+
+        phase registry_apps_are_found_by_the_words_people_use;
+        {
+            let apps = registry_apps();
+            // An app is found by a word that names it begun: what it is called,
+            // and what else people call it ("youtube" for Tube, "posteingang" for
+            // Mail), in any language. A near miss does not find it: half the
+            // catalogue's names are one edit apart ("notes", "nodes"), and a
+            // launch row that is not the app is worse than none.
+            for (query, id) in [
+                ("tube", "so.tilo.tube"),
+                ("youtube", "so.tilo.tube"),
+                ("Youtube", "so.tilo.tube"),
+                ("mail", "so.tilo.mail"),
+                ("email", "so.tilo.mail"),
+                ("e-mail", "so.tilo.mail"),
+                ("posteingang", "so.tilo.mail"),
+                ("preferences", "so.tilo.settings"),
+                ("excel", "so.tilo.sheets"),
+                ("taschenrechner", "so.tilo.calculator"),
+                ("wp", "so.tilo.word-processor"),
+            ] {
+                assert_eq!(
+                    first_app(&apps, query).as_deref(),
+                    Some(id),
+                    "{query:?} should lead with {id}"
+                );
+            }
+            assert_eq!(first_app(&apps, "yotube"), None, "a typo names no app");
+        }
+
+        phase an_app_named_by_a_keyword_leads_a_note_that_merely_has_the_word;
+        {
+            struct Notes;
+            impl Source for Notes {
+                fn id(&self) -> &'static str {
+                    "notes"
+                }
+                fn query(&self, needle: &str) -> Vec<Hit> {
+                    vec![Hit {
+                        row: None,
+                        preview: None,
+                        faces: Vec::new(),
+                        outcome: None,
+                        kind: ResourceKind::Note,
+                        provider: "notes".into(),
+                        id: "n".into(),
+                        title: needle.into(),
+                        subtitle: None,
+                        facts: Vec::new(),
+                        score: MAX_PROVIDER_SCORE,
+                        icon: None,
+                        target: Target::Window { tab: 1, app: None },
+                    }]
+                }
+            }
+            let apps = registry_apps();
+            let groups = search("youtube", &[&Notes, &apps], 0, &|_| 0.0);
+            assert_eq!(groups[0].results[0].id, "so.tilo.tube");
+        }
+
+        phase an_empty_query_gives_applications_no_launch_intent;
+        {
+            // Launch intent is a reading of what was typed: with nothing typed,
+            // the recent rows the person chose lead the app list.
+            let apps = apps();
+            let mut recents = Recents::default();
+            recents.record(&apps.query("notes").remove(0));
+            let groups = search("", &[&apps, &recents], 0, &|_| 0.0);
+            assert_eq!(groups[0].kind.label(), RECENT_KIND);
+        }
     }
 
     /// The apps of the registry that run on `host`, as a desktop there
@@ -1578,48 +1717,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_name_begun_or_a_word_of_it_leads_a_keyword_or_a_fragment() {
-        let everywhere = apps_on(&["linux", "macos", "web", "tilo-os"], Vec::new());
-        // "term" begins Terminal's name; it only begins Calendar's German
-        // keyword ("Termin").
-        let term = ranked_ids(&everywhere, "term");
-        assert_eq!(term.first().map(String::as_str), Some("so.tilo.terminal"));
-        let calendar = term.iter().position(|id| id == "so.tilo.calendar");
-        assert!(calendar.is_none_or(|at| at > 0), "{term:?}");
-        // A word of the name ("Editor" of "Hex Editor") leads an app whose
-        // name only contains the letters.
-        let editor = ranked_ids(&everywhere, "editor");
-        let first = everywhere
-            .entries
-            .iter()
-            .find(|app| Some(&app.id) == editor.first())
-            .expect("something is an editor");
-        assert!(
-            first
-                .title
-                .to_lowercase()
-                .split_whitespace()
-                .any(|word| word == "editor"),
-            "{editor:?}"
-        );
-
-        // In a browser beside a node that runs Terminal, the node's
-        // Terminal is what "term" opens.
-        let browser = apps_on(
-            &["web"],
-            vec![AppEntry {
-                id: "node-app:3".into(),
-                title: "Terminal".into(),
-                category: None,
-                description: Some("Runs on the node".into()),
-            }],
-        );
-        let term = ranked_ids(&browser, "term");
-        assert_eq!(term.first().map(String::as_str), Some("node-app:3"));
-        assert!(!term.iter().any(|id| id == "so.tilo.terminal"));
-    }
-
     fn resource_with_action(
         id: &str,
         label: &str,
@@ -1641,28 +1738,6 @@ mod tests {
         resource
     }
 
-    #[test]
-    fn typing_an_app_name_puts_its_launch_first() {
-        let windows = Windows(vec![WindowEntry {
-            tab: 7,
-            title: "Budget sheets".into(),
-            app_title: "Notes".into(),
-            app: None,
-            place: vec!["Workspace".into(), "Main".into()],
-        }]);
-        let groups = search("sheets", &[&apps(), &windows], 10, &|_| 0.0);
-        let first = &groups[0].results[0];
-        assert_eq!(first.title, "Sheets");
-        assert_eq!(
-            first.target,
-            Target::Launch {
-                app: "so.tilo.sheets".into(),
-                place: LaunchPlace::Focus,
-            }
-        );
-        assert!(groups.iter().any(|g| g.kind.label() == WINDOWS_KIND));
-    }
-
     /// The verbs a person may do from an empty card, in the order the desk
     /// offers them: making something and bringing someone in, then locking
     /// the screen. What only takes something away or closes the computer is
@@ -1677,253 +1752,291 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_query_browses_apps_windows_and_the_workspaces_own_verbs() {
-        let actions = Actions(vec![resource_with_action(
-            "p1",
-            "Groceries",
-            "open",
-            "Open page",
-        )]);
-        let windows = Windows(vec![WindowEntry {
-            tab: 1,
-            title: "Notes".into(),
-            app_title: "Notes".into(),
-            app: None,
-            place: vec!["Workspace".into()],
-        }]);
-        let commands = Commands(vec![
-            verb(
-                "session-host-new-workspace",
-                "New workspace",
-                ui::icons::Icon::Plus,
-                true,
-            ),
-            verb(
-                "session-host-join-workspace",
-                "Join a workspace",
-                ui::icons::Icon::Link,
-                true,
-            ),
-            verb(
-                "session-host-leave-workspace",
-                "Leave workspace",
-                ui::icons::Icon::ArrowUpRight,
-                false,
-            ),
-            verb(
+    tilo_test_env::scenario! {
+        fn the_workspaces_verbs_and_recents_are_browsed_and_matched;
+
+        phase empty_query_browses_apps_windows_and_the_workspaces_own_verbs;
+        {
+            let actions = Actions(vec![resource_with_action(
+                "p1",
+                "Groceries",
+                "open",
+                "Open page",
+            )]);
+            let windows = Windows(vec![WindowEntry {
+                tab: 1,
+                title: "Notes".into(),
+                app_title: "Notes".into(),
+                app: None,
+                place: vec!["Workspace".into()],
+            }]);
+            let commands = Commands(vec![
+                verb(
+                    "session-host-new-workspace",
+                    "New workspace",
+                    ui::icons::Icon::Plus,
+                    true,
+                ),
+                verb(
+                    "session-host-join-workspace",
+                    "Join a workspace",
+                    ui::icons::Icon::Link,
+                    true,
+                ),
+                verb(
+                    "session-host-leave-workspace",
+                    "Leave workspace",
+                    ui::icons::Icon::ArrowUpRight,
+                    false,
+                ),
+                verb(
+                    "desktop.close-window",
+                    "Close window",
+                    ui::icons::Icon::X,
+                    false,
+                ),
+                verb("session-host-lock", "Lock", ui::icons::Icon::Lock, true),
+            ]);
+            let groups = search("", &[&apps(), &windows, &actions, &commands], 0, &|_| 0.0);
+            let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
+            assert!(kinds.contains(&"Apps"));
+            assert!(kinds.contains(&WINDOWS_KIND));
+            assert!(kinds.contains(&"Actions"));
+            let listed: Vec<&str> = groups
+                .iter()
+                .flat_map(|group| &group.results)
+                .map(|hit| hit.title.as_str())
+                .collect();
+            assert!(
+                !listed.contains(&"Open page"),
+                "an open app's actions take no room unasked: {listed:?}"
+            );
+            let verbs = groups
+                .iter()
+                .find(|group| group.kind.label() == "Actions")
+                .map(|group| {
+                    group
+                        .results
+                        .iter()
+                        .map(|hit| (hit.title.as_str(), hit.icon))
+                        .collect::<Vec<_>>()
+                });
+            assert_eq!(
+                verbs.as_deref(),
+                Some(
+                    [
+                        ("New workspace", Some(ui::icons::Icon::Plus)),
+                        ("Join a workspace", Some(ui::icons::Icon::Link)),
+                        ("Lock", Some(ui::icons::Icon::Lock)),
+                    ]
+                    .as_slice()
+                ),
+                "the empty card offers making and joining, then locking, each wearing its own glyph"
+            );
+            // Typed, the verbs the empty card keeps back are found like any other.
+            let typed = |needle: &str| -> Vec<String> {
+                commands
+                    .query(needle)
+                    .into_iter()
+                    .map(|hit| hit.title)
+                    .collect()
+            };
+            assert_eq!(typed("leave"), ["Leave workspace"]);
+            assert_eq!(typed("close"), ["Close window"]);
+            assert_eq!(typed("new workspace"), ["New workspace"]);
+        }
+
+        phase the_workspaces_verbs_keep_the_desks_order_under_what_was_chosen;
+        // Nothing typed offers the workspace's own verbs in the order the desk
+        // gives them; one the person chose before rises above the rest.
+        {
+            let commands = Commands(vec![
+                verb(
+                    "session-host-new-workspace",
+                    "New workspace",
+                    ui::icons::Icon::Plus,
+                    true,
+                ),
+                verb(
+                    "session-host-workspace-settings",
+                    "Workspace settings",
+                    ui::icons::Icon::Settings,
+                    true,
+                ),
+            ]);
+            let titles = |commands: &Commands| -> Vec<String> {
+                commands
+                    .query("")
+                    .into_iter()
+                    .map(|hit| hit.title)
+                    .collect()
+            };
+            assert_eq!(titles(&commands), ["New workspace", "Workspace settings"]);
+            let chosen = |hit: &Hit| {
+                if hit.title == "Workspace settings" {
+                    0.5
+                } else {
+                    0.0
+                }
+            };
+            let groups = search("", &[&commands], 0, &chosen);
+            let listed: Vec<&str> = groups
+                .iter()
+                .flat_map(|group| &group.results)
+                .map(|hit| hit.title.as_str())
+                .collect();
+            assert_eq!(listed, ["Workspace settings", "New workspace"]);
+        }
+
+        phase recents_lead_an_empty_query_newest_first;
+        {
+            let mut recents = Recents::default();
+            let launch = apps().query("sheets").remove(0);
+            let notes = apps().query("notes").remove(0);
+            recents.record(&launch);
+            recents.record(&notes);
+            recents.record(&launch);
+            let groups = search("", &[&apps(), &recents], 0, &|_| 0.0);
+            assert_eq!(groups[0].kind.label(), RECENT_KIND);
+            let titles: Vec<&str> = groups[0].results.iter().map(|h| h.title.as_str()).collect();
+            assert_eq!(titles, ["Sheets", "Notes"]);
+            assert!(recents.query("sheets").is_empty());
+        }
+
+        phase commands_match_their_title;
+        {
+            let commands = Commands(vec![verb(
                 "desktop.close-window",
                 "Close window",
                 ui::icons::Icon::X,
                 false,
-            ),
-            verb("session-host-lock", "Lock", ui::icons::Icon::Lock, true),
-        ]);
-        let groups = search("", &[&apps(), &windows, &actions, &commands], 0, &|_| 0.0);
-        let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
-        assert!(kinds.contains(&"Apps"));
-        assert!(kinds.contains(&WINDOWS_KIND));
-        assert!(kinds.contains(&"Actions"));
-        let listed: Vec<&str> = groups
-            .iter()
-            .flat_map(|group| &group.results)
-            .map(|hit| hit.title.as_str())
-            .collect();
-        assert!(
-            !listed.contains(&"Open page"),
-            "an open app's actions take no room unasked: {listed:?}"
-        );
-        let verbs = groups
-            .iter()
-            .find(|group| group.kind.label() == "Actions")
-            .map(|group| {
-                group
-                    .results
-                    .iter()
-                    .map(|hit| (hit.title.as_str(), hit.icon))
-                    .collect::<Vec<_>>()
+            )]);
+            assert_eq!(commands.query("close").len(), 1);
+            assert!(commands.query("launch").is_empty());
+            // Nothing typed leaves it out: closing this window is looked for by
+            // name, it is not offered to someone who typed nothing.
+            assert!(commands.query(" ").is_empty());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_action_is_found_by_what_it_says_only_while_it_can_run;
+
+        phase app_actions_are_found_by_label_and_resource;
+        {
+            let actions = Actions(vec![resource_with_action(
+                "page-1",
+                "Groceries",
+                "archive",
+                "Archive page",
+            )]);
+            let hits = actions.query("archive");
+            assert_eq!(hits.len(), 1);
+            let Target::Action(target) = &hits[0].target else {
+                panic!("an action hit runs an action");
+            };
+            assert_eq!(target.address(), ActionAddress::new("page-1", "archive"));
+            assert_eq!(hits[0].subtitle.as_deref(), Some("Groceries"));
+            assert_eq!(actions.query("groceries").len(), 1);
+            assert!(actions.query("zebra").is_empty());
+        }
+
+        phase an_action_is_found_by_what_its_row_says_and_an_items_by_the_item;
+        // An item's kind is its collection's field and an action's id is a
+        // name for code, so neither finds an action: "messages" must not offer
+        // every action on every message of a chat. An item's actions come with
+        // the item named, never once per item for the action's own label.
+        {
+            let topics = ["Lunch plans", "Quarterly budget", "Holiday photos"];
+            let messages = topics.iter().enumerate().map(|(n, topic)| {
+                let mut message = resource_with_action(
+                    &format!("so.tilo.chat/messages/{n}"),
+                    topic,
+                    "pin-message",
+                    "Pin message",
+                );
+                message.kind = "so.tilo.chat.messages".into();
+                message
             });
-        assert_eq!(
-            verbs.as_deref(),
-            Some(
-                [
-                    ("New workspace", Some(ui::icons::Icon::Plus)),
-                    ("Join a workspace", Some(ui::icons::Icon::Link)),
-                    ("Lock", Some(ui::icons::Icon::Lock)),
-                ]
-                .as_slice()
-            ),
-            "the empty card offers making and joining, then locking, each wearing its own glyph"
-        );
-        // Typed, the verbs the empty card keeps back are found like any other.
-        let typed = |needle: &str| -> Vec<String> {
-            commands
-                .query(needle)
-                .into_iter()
-                .map(|hit| hit.title)
-                .collect()
-        };
-        assert_eq!(typed("leave"), ["Leave workspace"]);
-        assert_eq!(typed("close"), ["Close window"]);
-        assert_eq!(typed("new workspace"), ["New workspace"]);
-    }
-
-    /// Nothing typed offers the workspace's own verbs in the order the desk
-    /// gives them; one the person chose before rises above the rest.
-    #[test]
-    fn the_workspaces_verbs_keep_the_desks_order_under_what_was_chosen() {
-        let commands = Commands(vec![
-            verb(
-                "session-host-new-workspace",
-                "New workspace",
-                ui::icons::Icon::Plus,
-                true,
-            ),
-            verb(
-                "session-host-workspace-settings",
-                "Workspace settings",
-                ui::icons::Icon::Settings,
-                true,
-            ),
-        ]);
-        let titles = |commands: &Commands| -> Vec<String> {
-            commands
-                .query("")
-                .into_iter()
-                .map(|hit| hit.title)
-                .collect()
-        };
-        assert_eq!(titles(&commands), ["New workspace", "Workspace settings"]);
-        let chosen = |hit: &Hit| {
-            if hit.title == "Workspace settings" {
-                0.5
-            } else {
-                0.0
-            }
-        };
-        let groups = search("", &[&commands], 0, &chosen);
-        let listed: Vec<&str> = groups
-            .iter()
-            .flat_map(|group| &group.results)
-            .map(|hit| hit.title.as_str())
-            .collect();
-        assert_eq!(listed, ["Workspace settings", "New workspace"]);
-    }
-
-    #[test]
-    fn app_actions_are_found_by_label_and_resource() {
-        let actions = Actions(vec![resource_with_action(
-            "page-1",
-            "Groceries",
-            "archive",
-            "Archive page",
-        )]);
-        let hits = actions.query("archive");
-        assert_eq!(hits.len(), 1);
-        let Target::Action(target) = &hits[0].target else {
-            panic!("an action hit runs an action");
-        };
-        assert_eq!(target.address(), ActionAddress::new("page-1", "archive"));
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Groceries"));
-        assert_eq!(actions.query("groceries").len(), 1);
-        assert!(actions.query("zebra").is_empty());
-    }
-
-    /// An item's kind is its collection's field and an action's id is a
-    /// name for code, so neither finds an action: "messages" must not offer
-    /// every action on every message of a chat. An item's actions come with
-    /// the item named, never once per item for the action's own label.
-    #[test]
-    fn an_action_is_found_by_what_its_row_says_and_an_items_by_the_item() {
-        let topics = ["Lunch plans", "Quarterly budget", "Holiday photos"];
-        let messages = topics.iter().enumerate().map(|(n, topic)| {
-            let mut message = resource_with_action(
-                &format!("so.tilo.chat/messages/{n}"),
-                topic,
-                "pin-message",
-                "Pin message",
+            let chat = resource_with_action("so.tilo.chat", "Chat", "report", "Report a problem")
+                .with_children(messages);
+            let actions = Actions(vec![chat]);
+            assert!(actions.query("messages").is_empty());
+            assert!(actions.query("pin-message").is_empty());
+            assert!(actions.query("pin").is_empty(), "not once per message");
+            let budget = actions.query("quarterly budget");
+            assert_eq!(budget.len(), 1);
+            assert_eq!(
+                budget.first().map(|hit| hit.title.as_str()),
+                Some("Pin message")
             );
-            message.kind = "so.tilo.chat.messages".into();
-            message
-        });
-        let chat = resource_with_action("so.tilo.chat", "Chat", "report", "Report a problem")
-            .with_children(messages);
-        let actions = Actions(vec![chat]);
-        assert!(actions.query("messages").is_empty());
-        assert!(actions.query("pin-message").is_empty());
-        assert!(actions.query("pin").is_empty(), "not once per message");
-        let budget = actions.query("quarterly budget");
-        assert_eq!(budget.len(), 1);
-        assert_eq!(
-            budget.first().map(|hit| hit.title.as_str()),
-            Some("Pin message")
-        );
-        assert_eq!(actions.query("report").len(), 1, "the record's own action");
-    }
+            assert_eq!(actions.query("report").len(), 1, "the record's own action");
+        }
 
-    #[test]
-    fn an_unavailable_action_is_not_offered_even_by_its_name() {
-        let mut resource = resource_with_action("r", "Doc", "print", "Print");
-        resource.actions[0].type_mut().contract.availability = Availability::Unavailable {
-            code: "offline".into(),
-            reason: "Offline".into(),
-        };
-        let actions = Actions(vec![resource]);
-        assert!(actions.query("prin").is_empty());
-        assert!(actions.query("print").is_empty());
-    }
+        phase an_unavailable_action_is_not_offered_even_by_its_name;
+        {
+            let mut resource = resource_with_action("r", "Doc", "print", "Print");
+            resource.actions[0].type_mut().contract.availability = Availability::Unavailable {
+                code: "offline".into(),
+                reason: "Offline".into(),
+            };
+            let actions = Actions(vec![resource]);
+            assert!(actions.query("prin").is_empty());
+            assert!(actions.query("print").is_empty());
+        }
 
-    /// The same of a row an app publishes through the session's action host: an event's `Invite`
-    /// with no event selected takes no row, so what a person typed that names it finds the
-    /// workspace's own invite instead.
-    #[test]
-    fn an_action_the_host_publishes_is_offered_only_while_it_can_run() {
-        let mut event = typed(
-            "calendar.event:1",
-            "Standup",
-            ("event", "events"),
-            ("Calendar", "events"),
-            false,
-            &[("invite", "Invite")],
-        );
-        let invite = event
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "invite")
-            .expect("the event offers its invite");
-        invite.type_mut().contract.availability = Availability::Unavailable {
-            code: "selection_empty".into(),
-            reason: "Select an event first".into(),
-        };
-        let mut available = event.clone();
-        let invite = available
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "invite")
-            .expect("the event offers its invite");
-        invite.type_mut().contract.availability = Availability::Available;
-        let runs = Published(vec![PublishedActions::of(
-            "so.tilo.calendar",
-            "workspace",
-            &[available],
-        )]);
-        assert_eq!(
-            runs.query("invite")
-                .iter()
-                .map(|hit| hit.title.as_str())
-                .collect::<Vec<_>>(),
-            ["Invite"],
-            "the action that can run is a row"
-        );
-        let published = Published(vec![PublishedActions::of(
-            "so.tilo.calendar",
-            "workspace",
-            &[event],
-        )]);
-        assert!(
-            published.query("invite").is_empty(),
-            "an action with nothing to act on takes no row"
-        );
+        phase an_action_the_host_publishes_is_offered_only_while_it_can_run;
+        // The same of a row an app publishes through the session's action host: an event's `Invite`
+        // with no event selected takes no row, so what a person typed that names it finds the
+        // workspace's own invite instead.
+        {
+            let mut event = typed(
+                "calendar.event:1",
+                "Standup",
+                ("event", "events"),
+                ("Calendar", "events"),
+                false,
+                &[("invite", "Invite")],
+            );
+            let invite = event
+                .actions
+                .iter_mut()
+                .find(|action| action.id == "invite")
+                .expect("the event offers its invite");
+            invite.type_mut().contract.availability = Availability::Unavailable {
+                code: "selection_empty".into(),
+                reason: "Select an event first".into(),
+            };
+            let mut available = event.clone();
+            let invite = available
+                .actions
+                .iter_mut()
+                .find(|action| action.id == "invite")
+                .expect("the event offers its invite");
+            invite.type_mut().contract.availability = Availability::Available;
+            let runs = Published(vec![PublishedActions::of(
+                "so.tilo.calendar",
+                "workspace",
+                &[available],
+            )]);
+            assert_eq!(
+                runs.query("invite")
+                    .iter()
+                    .map(|hit| hit.title.as_str())
+                    .collect::<Vec<_>>(),
+                ["Invite"],
+                "the action that can run is a row"
+            );
+            let published = Published(vec![PublishedActions::of(
+                "so.tilo.calendar",
+                "workspace",
+                &[event],
+            )]);
+            assert!(
+                published.query("invite").is_empty(),
+                "an action with nothing to act on takes no row"
+            );
+        }
     }
 
     struct Pages;
@@ -1947,22 +2060,199 @@ mod tests {
         }
     }
 
-    #[test]
-    fn application_content_is_found_by_title_and_opens_through_its_action() {
-        let resources = vec![
-            resource_with_action("Groceries", "Groceries", "open", "Open"),
-            resource_with_action("Trip plan", "Trip plan", "open", "Open"),
-        ];
-        let content = Content::new(vec![Box::new(Pages)], resources);
-        let hits = content.query("trip");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].kind, ResourceKind::Note);
-        assert_eq!(hits[0].title, "Trip plan");
-        assert!(
-            matches!(&hits[0].target, Target::Action(t) if t.address() == ActionAddress::new("Trip plan", "open"))
-        );
-        // A hit whose address the application no longer exports is dropped.
-        assert!(content.query("hidden").is_empty());
+    tilo_test_env::scenario! {
+        fn an_apps_content_is_found_by_title_and_type_and_opens_through_the_app;
+
+        phase application_content_is_found_by_title_and_opens_through_its_action;
+        {
+            let resources = vec![
+                resource_with_action("Groceries", "Groceries", "open", "Open"),
+                resource_with_action("Trip plan", "Trip plan", "open", "Open"),
+            ];
+            let content = Content::new(vec![Box::new(Pages)], resources);
+            let hits = content.query("trip");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].kind, ResourceKind::Note);
+            assert_eq!(hits[0].title, "Trip plan");
+            assert!(
+                matches!(&hits[0].target, Target::Action(t) if t.address() == ActionAddress::new("Trip plan", "open"))
+            );
+            // A hit whose address the application no longer exports is dropped.
+            assert!(content.query("hidden").is_empty());
+        }
+
+        phase an_apps_answer_that_comes_later_is_shown_once_it_arrives;
+        {
+            let arrived = std::rc::Rc::new(std::cell::Cell::new(false));
+            let asked = std::rc::Rc::default();
+            let service = Service {
+                arrived: std::rc::Rc::clone(&arrived),
+                asked: std::rc::Rc::clone(&asked),
+            };
+            let resources = vec![resource_with_action("videos", "Videos", "search", "Search")];
+            let content =
+                Content::new(vec![Box::new(service)], resources).within(Some("library:videos".into()));
+            assert!(content.query("lofi").is_empty(), "nothing has arrived yet");
+            assert!(content.waiting());
+            assert!(!content.poll(), "still coming");
+            arrived.set(true);
+            assert!(content.poll(), "the answer is in");
+            let hits = content.query("lofi");
+            assert_eq!(
+                hits.first().map(|hit| hit.title.as_str()),
+                Some("Search the service for “lofi”")
+            );
+            assert!(!content.waiting());
+            assert!(
+                asked
+                    .borrow()
+                    .iter()
+                    .all(|(text, scope)| text == "lofi" && scope.as_deref() == Some("library:videos")),
+                "the app is asked within the part of it the search was opened for: {asked:?}"
+            );
+        }
+
+        phase a_hit_naming_no_action_opens_through_the_apps_open_at_its_anchor;
+        {
+            struct Closed;
+            impl ui::search::SearchProvider for Closed {
+                fn name(&self) -> &'static str {
+                    "Closed"
+                }
+                fn search(&self, query: &str) -> Vec<ui::search::SearchResult> {
+                    Library.search(query)
+                }
+            }
+            let mut library = ResourceSpec::new("videos", "videos.library", "Videos");
+            // As the framework publishes it: a view taking the anchor.
+            library.actions = vec![
+                tilo_actions::ActionSpec::typed_operation(
+                    "open",
+                    "Open",
+                    "Item to open",
+                    tilo_actions::OperationKind::View,
+                    "test.open",
+                    vec![tilo_actions::ActionParam::required(
+                        "anchor",
+                        tilo_actions::ParamType::Text,
+                        "Item to open",
+                    )],
+                    |_| tilo_actions::EncodedAction {
+                        type_id: "test.open".into(),
+                        payload: Vec::new(),
+                    },
+                )
+                .of_kind(tilo_actions::ActionKind::Read),
+            ];
+            let content = Content::new(vec![Box::new(Library)], vec![library]);
+            let hits = content.query("lofi");
+            let Some(Target::Action(target)) = hits.first().map(|hit| &hit.target) else {
+                panic!("the hit opens through an action: {hits:?}");
+            };
+            assert_eq!(hits[0].title, "Search the service for “lofi”");
+            assert_eq!(target.address(), ActionAddress::new("videos", "open"));
+            assert_eq!(
+                target.preset,
+                Some(("anchor".to_owned(), "videos.search:lofi".to_owned()))
+            );
+            // Without an `open`, such a hit is not offered: nothing could open it.
+            assert!(
+                Content::new(vec![Box::new(Closed)], Vec::new())
+                    .query("lofi")
+                    .is_empty()
+            );
+        }
+
+        phase my_mails_opens_mails_root;
+        // "my mails" means Mail's root, which Mail draws as its inbox: what an app shows of
+        // itself first is its root's default view, which the app decides.
+        {
+            for asked in ["my mails", "mails", "mail", "Mail"] {
+                let found = opened(asked, &mail());
+                assert_eq!(
+                    found.first().map(String::as_str),
+                    Some("mail"),
+                    "{asked:?} names Mail, its root first: {found:?}"
+                );
+                assert_eq!(
+                    found.len(),
+                    6,
+                    "{asked:?} names every resource of mail: {found:?}"
+                );
+            }
+        }
+
+        phase notes_opens_the_default_notebook;
+        {
+            let found = opened("notes", &[notes(), mail()].concat());
+            assert_eq!(
+                found.first().map(String::as_str),
+                Some("notebook"),
+                "the notes app's root leads its notes: {found:?}"
+            );
+            assert!(
+                found.iter().all(|resource| !resource.starts_with("mail")),
+                "nothing of mail is a note: {found:?}"
+            );
+        }
+
+        phase a_title_beats_a_type_named_like_it;
+        {
+            let shopping = typed(
+                "shop",
+                "Weekly shop",
+                ("grocery", "groceries"),
+                ("Shopping", "shoppings"),
+                true,
+                &[],
+            );
+            let found = opened("Groceries", &[notes(), vec![shopping]].concat());
+            assert_eq!(
+                found.get(..2),
+                Some(&["notebook/groceries".to_owned(), "shop".to_owned()][..]),
+                "the note called Groceries, then the list of groceries: {found:?}"
+            );
+        }
+
+        phase a_query_naming_an_apps_things_finds_the_channel_by_its_name;
+        // "youtube videos of <channel>": "of" is filler, "youtube" names the client and "videos"
+        // a type of it, so the channel's name is what must match. The channel the client
+        // publishes is found by it, and the video that names it; a video that does not is not.
+        {
+            let app = ("YouTube", "youtubes");
+            let resources = [
+                typed("channel", "MKBHD", ("channel", "channels"), app, false, &[]),
+                typed(
+                    "tour",
+                    "Studio tour with MKBHD",
+                    ("video", "videos"),
+                    app,
+                    false,
+                    &[],
+                ),
+                typed(
+                    "other",
+                    "Bread at home",
+                    ("video", "videos"),
+                    app,
+                    false,
+                    &[],
+                ),
+            ];
+            let found = opened("youtube videos of mkbhd", &resources);
+            assert_eq!(found, ["channel", "tour"], "{found:?}");
+            assert_eq!(
+                opened("youtube videos", &resources).len(),
+                2,
+                "the videos, not the channel"
+            );
+        }
+
+        phase a_type_and_a_title_together_find_the_one_they_both_name;
+        {
+            let found = opened("mail archive", &mail());
+            assert_eq!(found.first().map(String::as_str), Some("mail/archive"));
+        }
     }
 
     /// An app whose rows for a query arrive after it is asked, as a
@@ -2013,37 +2303,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_apps_answer_that_comes_later_is_shown_once_it_arrives() {
-        let arrived = std::rc::Rc::new(std::cell::Cell::new(false));
-        let asked = std::rc::Rc::default();
-        let service = Service {
-            arrived: std::rc::Rc::clone(&arrived),
-            asked: std::rc::Rc::clone(&asked),
-        };
-        let resources = vec![resource_with_action("videos", "Videos", "search", "Search")];
-        let content =
-            Content::new(vec![Box::new(service)], resources).within(Some("library:videos".into()));
-        assert!(content.query("lofi").is_empty(), "nothing has arrived yet");
-        assert!(content.waiting());
-        assert!(!content.poll(), "still coming");
-        arrived.set(true);
-        assert!(content.poll(), "the answer is in");
-        let hits = content.query("lofi");
-        assert_eq!(
-            hits.first().map(|hit| hit.title.as_str()),
-            Some("Search the service for “lofi”")
-        );
-        assert!(!content.waiting());
-        assert!(
-            asked
-                .borrow()
-                .iter()
-                .all(|(text, scope)| text == "lofi" && scope.as_deref() == Some("library:videos")),
-            "the app is asked within the part of it the search was opened for: {asked:?}"
-        );
-    }
-
     /// An app whose hits name no action: it opens them at their anchor
     /// through its `open`.
     struct Library;
@@ -2061,87 +2320,6 @@ mod tests {
         fn open_action(&self) -> Option<ActionAddress> {
             Some(ActionAddress::new("videos", "open"))
         }
-    }
-
-    #[test]
-    fn a_hit_naming_no_action_opens_through_the_apps_open_at_its_anchor() {
-        struct Closed;
-        impl ui::search::SearchProvider for Closed {
-            fn name(&self) -> &'static str {
-                "Closed"
-            }
-            fn search(&self, query: &str) -> Vec<ui::search::SearchResult> {
-                Library.search(query)
-            }
-        }
-        let mut library = ResourceSpec::new("videos", "videos.library", "Videos");
-        // As the framework publishes it: a view taking the anchor.
-        library.actions = vec![
-            tilo_actions::ActionSpec::typed_operation(
-                "open",
-                "Open",
-                "Item to open",
-                tilo_actions::OperationKind::View,
-                "test.open",
-                vec![tilo_actions::ActionParam::required(
-                    "anchor",
-                    tilo_actions::ParamType::Text,
-                    "Item to open",
-                )],
-                |_| tilo_actions::EncodedAction {
-                    type_id: "test.open".into(),
-                    payload: Vec::new(),
-                },
-            )
-            .of_kind(tilo_actions::ActionKind::Read),
-        ];
-        let content = Content::new(vec![Box::new(Library)], vec![library]);
-        let hits = content.query("lofi");
-        let Some(Target::Action(target)) = hits.first().map(|hit| &hit.target) else {
-            panic!("the hit opens through an action: {hits:?}");
-        };
-        assert_eq!(hits[0].title, "Search the service for “lofi”");
-        assert_eq!(target.address(), ActionAddress::new("videos", "open"));
-        assert_eq!(
-            target.preset,
-            Some(("anchor".to_owned(), "videos.search:lofi".to_owned()))
-        );
-        // Without an `open`, such a hit is not offered: nothing could open it.
-        assert!(
-            Content::new(vec![Box::new(Closed)], Vec::new())
-                .query("lofi")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn recents_lead_an_empty_query_newest_first() {
-        let mut recents = Recents::default();
-        let launch = apps().query("sheets").remove(0);
-        let notes = apps().query("notes").remove(0);
-        recents.record(&launch);
-        recents.record(&notes);
-        recents.record(&launch);
-        let groups = search("", &[&apps(), &recents], 0, &|_| 0.0);
-        assert_eq!(groups[0].kind.label(), RECENT_KIND);
-        let titles: Vec<&str> = groups[0].results.iter().map(|h| h.title.as_str()).collect();
-        assert_eq!(titles, ["Sheets", "Notes"]);
-        assert!(recents.query("sheets").is_empty());
-    }
-
-    #[test]
-    fn commands_match_their_title() {
-        let commands = Commands(vec![verb(
-            "desktop.close-window",
-            "Close window",
-            ui::icons::Icon::X,
-            false,
-        )]);
-        assert_eq!(commands.query("close").len(), 1);
-        assert!(commands.query("launch").is_empty());
-        // Nothing typed leaves it out: closing this window is looked for by
-        // name, it is not offered to someone who typed nothing.
-        assert!(commands.query(" ").is_empty());
     }
 
     /// Every app of the manifest registry, as the portable desktop lists them.
@@ -2163,77 +2341,6 @@ mod tests {
         let groups = search(query, &[apps], 0, &|_| 0.0);
         let hit = groups.first()?.results.first()?;
         Some(hit.id.clone())
-    }
-
-    #[test]
-    fn registry_apps_are_found_by_the_words_people_use() {
-        let apps = registry_apps();
-        // An app is found by a word that names it begun: what it is called,
-        // and what else people call it ("youtube" for Tube, "posteingang" for
-        // Mail), in any language. A near miss does not find it: half the
-        // catalogue's names are one edit apart ("notes", "nodes"), and a
-        // launch row that is not the app is worse than none.
-        for (query, id) in [
-            ("tube", "so.tilo.tube"),
-            ("youtube", "so.tilo.tube"),
-            ("Youtube", "so.tilo.tube"),
-            ("mail", "so.tilo.mail"),
-            ("email", "so.tilo.mail"),
-            ("e-mail", "so.tilo.mail"),
-            ("posteingang", "so.tilo.mail"),
-            ("preferences", "so.tilo.settings"),
-            ("excel", "so.tilo.sheets"),
-            ("taschenrechner", "so.tilo.calculator"),
-            ("wp", "so.tilo.word-processor"),
-        ] {
-            assert_eq!(
-                first_app(&apps, query).as_deref(),
-                Some(id),
-                "{query:?} should lead with {id}"
-            );
-        }
-        assert_eq!(first_app(&apps, "yotube"), None, "a typo names no app");
-    }
-
-    #[test]
-    fn an_app_named_by_a_keyword_leads_a_note_that_merely_has_the_word() {
-        struct Notes;
-        impl Source for Notes {
-            fn id(&self) -> &'static str {
-                "notes"
-            }
-            fn query(&self, needle: &str) -> Vec<Hit> {
-                vec![Hit {
-                    row: None,
-                    preview: None,
-                    faces: Vec::new(),
-                    outcome: None,
-                    kind: ResourceKind::Note,
-                    provider: "notes".into(),
-                    id: "n".into(),
-                    title: needle.into(),
-                    subtitle: None,
-                    facts: Vec::new(),
-                    score: MAX_PROVIDER_SCORE,
-                    icon: None,
-                    target: Target::Window { tab: 1, app: None },
-                }]
-            }
-        }
-        let apps = registry_apps();
-        let groups = search("youtube", &[&Notes, &apps], 0, &|_| 0.0);
-        assert_eq!(groups[0].results[0].id, "so.tilo.tube");
-    }
-
-    #[test]
-    fn an_empty_query_gives_applications_no_launch_intent() {
-        // Launch intent is a reading of what was typed: with nothing typed,
-        // the recent rows the person chose lead the app list.
-        let apps = apps();
-        let mut recents = Recents::default();
-        recents.record(&apps.query("notes").remove(0));
-        let groups = search("", &[&apps, &recents], 0, &|_| 0.0);
-        assert_eq!(groups[0].kind.label(), RECENT_KIND);
     }
 
     #[test]
@@ -2301,191 +2408,270 @@ mod tests {
         .collect()
     }
 
-    #[test]
-    fn a_sum_and_a_conversion_lead_and_are_copied() {
-        let rows = answered("12*7");
-        assert_eq!(
-            rows.first(),
-            Some(&("84".to_owned(), Target::Copy { text: "84".into() }))
-        );
-        let rows = answered("5 km in miles");
-        assert_eq!(
-            rows.first(),
-            Some(&(
-                "3.1069 mi".to_owned(),
-                Target::Copy {
-                    text: "3.1069 mi".into()
-                }
-            ))
-        );
-        let hit = Answers::default().query("5 km in miles").remove(0);
-        assert_eq!(hit.subtitle.as_deref(), Some("5 km ="));
-        assert_eq!(hit.id, "unit:5 km in miles");
-    }
+    tilo_test_env::scenario! {
+        fn answers_and_web_searches_follow_what_the_query_names;
 
-    #[test]
-    fn every_query_can_be_searched_on_the_web_after_what_it_names() {
-        let rows = answered("sheets");
-        assert_eq!(
-            rows.first().map(|(title, _)| title.as_str()),
-            Some("Sheets")
-        );
-        assert_eq!(
-            rows.last(),
-            Some(&(
-                "Search the web for sheets".to_owned(),
+        phase a_sum_and_a_conversion_lead_and_are_copied;
+        {
+            let rows = answered("12*7");
+            assert_eq!(
+                rows.first(),
+                Some(&("84".to_owned(), Target::Copy { text: "84".into() }))
+            );
+            let rows = answered("5 km in miles");
+            assert_eq!(
+                rows.first(),
+                Some(&(
+                    "3.1069 mi".to_owned(),
+                    Target::Copy {
+                        text: "3.1069 mi".into()
+                    }
+                ))
+            );
+            let hit = Answers::default().query("5 km in miles").remove(0);
+            assert_eq!(hit.subtitle.as_deref(), Some("5 km ="));
+            assert_eq!(hit.id, "unit:5 km in miles");
+        }
+
+        phase every_query_can_be_searched_on_the_web_after_what_it_names;
+        {
+            let rows = answered("sheets");
+            assert_eq!(
+                rows.first().map(|(title, _)| title.as_str()),
+                Some("Sheets")
+            );
+            assert_eq!(
+                rows.last(),
+                Some(&(
+                    "Search the web for sheets".to_owned(),
+                    Target::Open {
+                        uri: "web+search:sheets".into(),
+                        fallback: Some("https://duckduckgo.com/?q=sheets".into()),
+                    }
+                )),
+                "the web comes last"
+            );
+            let rows = answered("youtube cats");
+            assert_eq!(
+                rows.first(),
+                Some(&(
+                    "Search YouTube for cats".to_owned(),
+                    Target::Open {
+                        uri: "https://www.youtube.com/results?search_query=cats".into(),
+                        fallback: None,
+                    }
+                )),
+                "a query naming a service searches it first"
+            );
+            assert!(WebSearch::default().query("   ").is_empty());
+            assert!(Answers::default().query("   ").is_empty());
+        }
+
+        phase a_row_that_says_the_query_back_declares_it;
+        // The rows that say the query back — to the web, to a service — are found by nothing, and
+        // say so, so the palette sets off no span of the person's own words in them. A service
+        // named alone is a result and keeps its match.
+        {
+            let echoes = |hit: &Hit| matches!(&hit.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query);
+            let rows = WebSearch::default().query("youtube cats");
+            assert_eq!(rows.len(), 2, "the service search, then the web: {rows:?}");
+            for hit in &rows {
+                assert!(echoes(hit), "{} restates the query", hit.title);
+            }
+            let service = WebSearch::default().query("youtube");
+            let named = service
+                .iter()
+                .find(|hit| hit.title == "YouTube")
+                .expect("the service named alone");
+            assert!(!echoes(named), "a service found by name is a result");
+        }
+
+        phase an_address_opens_and_answers_are_not_remembered;
+        {
+            let hits = Answers::default().query("example.com");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].title, "Open example.com");
+            assert_eq!(
+                hits[0].target,
                 Target::Open {
-                    uri: "web+search:sheets".into(),
-                    fallback: Some("https://duckduckgo.com/?q=sheets".into()),
-                }
-            )),
-            "the web comes last"
-        );
-        let rows = answered("youtube cats");
-        assert_eq!(
-            rows.first(),
-            Some(&(
-                "Search YouTube for cats".to_owned(),
-                Target::Open {
-                    uri: "https://www.youtube.com/results?search_query=cats".into(),
+                    uri: "https://example.com".into(),
                     fallback: None,
                 }
-            )),
-            "a query naming a service searches it first"
-        );
-        assert!(WebSearch::default().query("   ").is_empty());
-        assert!(Answers::default().query("   ").is_empty());
-    }
-
-    /// The rows that say the query back — to the web, to a service — are found by nothing, and
-    /// say so, so the palette sets off no span of the person's own words in them. A service
-    /// named alone is a result and keeps its match.
-    #[test]
-    fn a_row_that_says_the_query_back_declares_it() {
-        let echoes = |hit: &Hit| matches!(&hit.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query);
-        let rows = WebSearch::default().query("youtube cats");
-        assert_eq!(rows.len(), 2, "the service search, then the web: {rows:?}");
-        for hit in &rows {
-            assert!(echoes(hit), "{} restates the query", hit.title);
+            );
+            let mut recents = Recents::default();
+            recents.record(&hits[0]);
+            recents.record(&Answers::default().query("2+2").remove(0));
+            assert!(
+                recents.0.is_empty(),
+                "what one query came to is not a recent"
+            );
         }
-        let service = WebSearch::default().query("youtube");
-        let named = service
-            .iter()
-            .find(|hit| hit.title == "YouTube")
-            .expect("the service named alone");
-        assert!(!echoes(named), "a service found by name is a result");
-    }
 
-    #[test]
-    fn an_address_opens_and_answers_are_not_remembered() {
-        let hits = Answers::default().query("example.com");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].title, "Open example.com");
-        assert_eq!(
-            hits[0].target,
-            Target::Open {
-                uri: "https://example.com".into(),
-                fallback: None,
-            }
-        );
-        let mut recents = Recents::default();
-        recents.record(&hits[0]);
-        recents.record(&Answers::default().query("2+2").remove(0));
-        assert!(
-            recents.0.is_empty(),
-            "what one query came to is not a recent"
-        );
-    }
-
-    #[test]
-    fn money_answers_from_the_kept_rates_and_says_when_they_are_old() {
-        let rates = crate::answers::currency::Rates {
-            base: "EUR".into(),
-            rates: [("USD".to_owned(), 1.25)].into_iter().collect(),
-            fetched_at: 1_000_000,
-        };
-        let fresh = Answers {
-            rates: Some(rates.clone()),
-            now: 1_000_000,
-        };
-        let row = fresh.query("10 usd in eur").remove(0);
-        assert_eq!(row.title, "8.00 EUR");
-        assert_eq!(
-            row.subtitle.as_deref(),
-            Some("10.00 USD ="),
-            "fresh rates say nothing"
-        );
-        let stale = Answers {
-            rates: Some(rates),
-            now: 1_000_000 + 3 * 24 * 60 * 60,
-        };
-        let row = stale.query("10 usd in eur").remove(0);
-        assert!(
-            row.subtitle
-                .as_deref()
-                .is_some_and(|line| line.contains("3 days ago")),
-            "{:?}",
-            row.subtitle
-        );
-        assert!(
-            Answers::default().query("10 usd in eur").is_empty(),
-            "no rates, no money"
-        );
-    }
-
-    #[test]
-    fn an_installed_app_serves_its_service_and_says_so() {
-        let web = WebSearch {
-            app_for_scheme: |scheme| (scheme == "tube").then(|| "Tube".into()),
-        };
-        let row = web.query("youtube cats").remove(0);
-        assert_eq!(row.subtitle.as_deref(), Some("Tube"));
-        assert_eq!(
-            row.target,
-            Target::Open {
-                uri: "tube:search?q=cats".into(),
-                fallback: Some("https://www.youtube.com/results?search_query=cats".into()),
-            }
-        );
-        let row = WebSearch::default().query("youtube cats").remove(0);
-        assert_eq!(
-            row.subtitle.as_deref(),
-            Some("youtube.com"),
-            "no Tube: the web serves"
-        );
-    }
-
-    #[test]
-    fn a_service_named_alone_yields_to_its_app_and_a_search_leads() {
-        let web = WebSearch::default();
-        let youtube = web.query("youtube").remove(0);
-        assert_eq!(youtube.title, "YouTube");
-        assert!(web.intent(&youtube) < 0.0);
-        let reddit = web.query("reddit").remove(0);
-        assert!(
-            web.intent(&reddit).abs() < f32::EPSILON,
-            "no app serves Reddit"
-        );
-        let search = web.query("youtube cats").remove(0);
-        assert!(web.intent(&search) > 0.0);
-        assert!(WebSearch::is_every_query_row(
-            &web.query("weather").remove(0)
-        ));
-    }
-
-    #[test]
-    fn rows_resolve_from_their_address() {
-        let web = WebSearch::default();
-        for id in ["search:cats", "service:youtube", "query:youtube:cats"] {
-            assert_eq!(web.resolve(id).map(|row| row.id).as_deref(), Some(id));
+        phase money_answers_from_the_kept_rates_and_says_when_they_are_old;
+        {
+            let rates = crate::answers::currency::Rates {
+                base: "EUR".into(),
+                rates: [("USD".to_owned(), 1.25)].into_iter().collect(),
+                fetched_at: 1_000_000,
+            };
+            let fresh = Answers {
+                rates: Some(rates.clone()),
+                now: 1_000_000,
+            };
+            let row = fresh.query("10 usd in eur").remove(0);
+            assert_eq!(row.title, "8.00 EUR");
+            assert_eq!(
+                row.subtitle.as_deref(),
+                Some("10.00 USD ="),
+                "fresh rates say nothing"
+            );
+            let stale = Answers {
+                rates: Some(rates),
+                now: 1_000_000 + 3 * 24 * 60 * 60,
+            };
+            let row = stale.query("10 usd in eur").remove(0);
+            assert!(
+                row.subtitle
+                    .as_deref()
+                    .is_some_and(|line| line.contains("3 days ago")),
+                "{:?}",
+                row.subtitle
+            );
+            assert!(
+                Answers::default().query("10 usd in eur").is_empty(),
+                "no rates, no money"
+            );
         }
-        assert_eq!(
-            Answers::default()
-                .resolve("sum:2+2")
-                .map(|row| row.title)
-                .as_deref(),
-            Some("4")
-        );
+
+        phase an_installed_app_serves_its_service_and_says_so;
+        {
+            let web = WebSearch {
+                app_for_scheme: |scheme| (scheme == "tube").then(|| "Tube".into()),
+            };
+            let row = web.query("youtube cats").remove(0);
+            assert_eq!(row.subtitle.as_deref(), Some("Tube"));
+            assert_eq!(
+                row.target,
+                Target::Open {
+                    uri: "tube:search?q=cats".into(),
+                    fallback: Some("https://www.youtube.com/results?search_query=cats".into()),
+                }
+            );
+            let row = WebSearch::default().query("youtube cats").remove(0);
+            assert_eq!(
+                row.subtitle.as_deref(),
+                Some("youtube.com"),
+                "no Tube: the web serves"
+            );
+        }
+
+        phase a_service_named_alone_yields_to_its_app_and_a_search_leads;
+        {
+            let web = WebSearch::default();
+            let youtube = web.query("youtube").remove(0);
+            assert_eq!(youtube.title, "YouTube");
+            assert!(web.intent(&youtube) < 0.0);
+            let reddit = web.query("reddit").remove(0);
+            assert!(
+                web.intent(&reddit).abs() < f32::EPSILON,
+                "no app serves Reddit"
+            );
+            let search = web.query("youtube cats").remove(0);
+            assert!(web.intent(&search) > 0.0);
+            assert!(WebSearch::is_every_query_row(
+                &web.query("weather").remove(0)
+            ));
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_row_resolves_from_its_address_and_says_each_thing_once;
+
+        phase rows_resolve_from_their_address;
+        {
+            let web = WebSearch::default();
+            for id in ["search:cats", "service:youtube", "query:youtube:cats"] {
+                assert_eq!(web.resolve(id).map(|row| row.id).as_deref(), Some(id));
+            }
+            assert_eq!(
+                Answers::default()
+                    .resolve("sum:2+2")
+                    .map(|row| row.title)
+                    .as_deref(),
+                Some("4")
+            );
+        }
+
+        phase a_row_never_says_the_same_thing_twice;
+        {
+            let resources = [typed(
+                "inbox",
+                "Inbox",
+                ("mailbox", "mailboxes"),
+                ("Mail", "mails"),
+                true,
+                &[],
+            )];
+            let published = Published(vec![PublishedActions::of("session", "", &resources)]);
+            let rows: Vec<Hit> = search("inbox", &[&published], 0, &|_| 0.0)
+                .into_iter()
+                .flat_map(|group| group.results)
+                .collect();
+            let row = rows
+                .iter()
+                .find(|hit| match &hit.target {
+                    Target::Invoke(invoke) => invoke.address.resource.as_str() == "inbox",
+                    _ => false,
+                })
+                .expect("the inbox's row");
+            assert_eq!(
+                row.subtitle, None,
+                "a description that only repeats the name is dropped"
+            );
+        }
+
+        phase a_capture_is_offered_and_answers_what_the_person_typed;
+        // The ways to write something down from here are on the card before anything is typed,
+        // and one answers the sentence a person wrote: the words they typed are its line, not a
+        // step to type them into again.
+        {
+            let empty = captures("");
+            assert!(
+                empty.iter().any(|hit| hit.title == "New task"),
+                "the capture leads the empty card: {:?}",
+                empty.iter().map(|hit| &hit.title).collect::<Vec<_>>()
+            );
+
+            let line = "Call the landlord fri 10am";
+            let rows = captures(line);
+            let capture = rows
+                .iter()
+                .find(|hit| hit.title == "New task")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "a sentence still has somewhere to go: {:?}",
+                        rows.iter().map(|hit| &hit.title).collect::<Vec<_>>()
+                    )
+                });
+            let Target::Invoke(invoke) = &capture.target else {
+                panic!("a capture runs the app's own action: {:?}", capture.target);
+            };
+            assert_eq!(
+                invoke.address.action.as_str(),
+                "new_task",
+                "the action that takes an entry"
+            );
+            assert_eq!(
+                invoke.arguments.get("title"),
+                Some(&serde_json::Value::String(line.to_owned())),
+                "what the person typed is the line it runs with"
+            );
+            assert_eq!(
+                invoke.descriptor.as_ref().and_then(|d| d.entry_param()),
+                Some("title"),
+                "the row says which parameter the line fills"
+            );
+        }
     }
 
     /// A resource of `app`'s type `noun` (plural `nouns`) labelled `label`, opened by its
@@ -2576,125 +2762,6 @@ mod tests {
         ]
     }
 
-    /// "my mails" means Mail's root, which Mail draws as its inbox: what an app shows of
-    /// itself first is its root's default view, which the app decides.
-    #[test]
-    fn my_mails_opens_mails_root() {
-        for asked in ["my mails", "mails", "mail", "Mail"] {
-            let found = opened(asked, &mail());
-            assert_eq!(
-                found.first().map(String::as_str),
-                Some("mail"),
-                "{asked:?} names Mail, its root first: {found:?}"
-            );
-            assert_eq!(
-                found.len(),
-                6,
-                "{asked:?} names every resource of mail: {found:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn notes_opens_the_default_notebook() {
-        let found = opened("notes", &[notes(), mail()].concat());
-        assert_eq!(
-            found.first().map(String::as_str),
-            Some("notebook"),
-            "the notes app's root leads its notes: {found:?}"
-        );
-        assert!(
-            found.iter().all(|resource| !resource.starts_with("mail")),
-            "nothing of mail is a note: {found:?}"
-        );
-    }
-
-    #[test]
-    fn a_title_beats_a_type_named_like_it() {
-        let shopping = typed(
-            "shop",
-            "Weekly shop",
-            ("grocery", "groceries"),
-            ("Shopping", "shoppings"),
-            true,
-            &[],
-        );
-        let found = opened("Groceries", &[notes(), vec![shopping]].concat());
-        assert_eq!(
-            found.get(..2),
-            Some(&["notebook/groceries".to_owned(), "shop".to_owned()][..]),
-            "the note called Groceries, then the list of groceries: {found:?}"
-        );
-    }
-
-    #[test]
-    fn a_row_never_says_the_same_thing_twice() {
-        let resources = [typed(
-            "inbox",
-            "Inbox",
-            ("mailbox", "mailboxes"),
-            ("Mail", "mails"),
-            true,
-            &[],
-        )];
-        let published = Published(vec![PublishedActions::of("session", "", &resources)]);
-        let rows: Vec<Hit> = search("inbox", &[&published], 0, &|_| 0.0)
-            .into_iter()
-            .flat_map(|group| group.results)
-            .collect();
-        let row = rows
-            .iter()
-            .find(|hit| match &hit.target {
-                Target::Invoke(invoke) => invoke.address.resource.as_str() == "inbox",
-                _ => false,
-            })
-            .expect("the inbox's row");
-        assert_eq!(
-            row.subtitle, None,
-            "a description that only repeats the name is dropped"
-        );
-    }
-
-    /// "youtube videos of <channel>": "of" is filler, "youtube" names the client and "videos"
-    /// a type of it, so the channel's name is what must match. The channel the client
-    /// publishes is found by it, and the video that names it; a video that does not is not.
-    #[test]
-    fn a_query_naming_an_apps_things_finds_the_channel_by_its_name() {
-        let app = ("YouTube", "youtubes");
-        let resources = [
-            typed("channel", "MKBHD", ("channel", "channels"), app, false, &[]),
-            typed(
-                "tour",
-                "Studio tour with MKBHD",
-                ("video", "videos"),
-                app,
-                false,
-                &[],
-            ),
-            typed(
-                "other",
-                "Bread at home",
-                ("video", "videos"),
-                app,
-                false,
-                &[],
-            ),
-        ];
-        let found = opened("youtube videos of mkbhd", &resources);
-        assert_eq!(found, ["channel", "tour"], "{found:?}");
-        assert_eq!(
-            opened("youtube videos", &resources).len(),
-            2,
-            "the videos, not the channel"
-        );
-    }
-
-    #[test]
-    fn a_type_and_a_title_together_find_the_one_they_both_name() {
-        let found = opened("mail archive", &mail());
-        assert_eq!(found.first().map(String::as_str), Some("mail/archive"));
-    }
-
     /// Tasks as it publishes its capture: the app's root, with the action that takes the one
     /// line a person types (`title` is the entry parameter).
     fn tasks() -> Vec<ResourceSpec> {
@@ -2733,48 +2800,5 @@ mod tests {
             .into_iter()
             .flat_map(|group| group.results)
             .collect()
-    }
-
-    /// The ways to write something down from here are on the card before anything is typed,
-    /// and one answers the sentence a person wrote: the words they typed are its line, not a
-    /// step to type them into again.
-    #[test]
-    fn a_capture_is_offered_and_answers_what_the_person_typed() {
-        let empty = captures("");
-        assert!(
-            empty.iter().any(|hit| hit.title == "New task"),
-            "the capture leads the empty card: {:?}",
-            empty.iter().map(|hit| &hit.title).collect::<Vec<_>>()
-        );
-
-        let line = "Call the landlord fri 10am";
-        let rows = captures(line);
-        let capture = rows
-            .iter()
-            .find(|hit| hit.title == "New task")
-            .unwrap_or_else(|| {
-                panic!(
-                    "a sentence still has somewhere to go: {:?}",
-                    rows.iter().map(|hit| &hit.title).collect::<Vec<_>>()
-                )
-            });
-        let Target::Invoke(invoke) = &capture.target else {
-            panic!("a capture runs the app's own action: {:?}", capture.target);
-        };
-        assert_eq!(
-            invoke.address.action.as_str(),
-            "new_task",
-            "the action that takes an entry"
-        );
-        assert_eq!(
-            invoke.arguments.get("title"),
-            Some(&serde_json::Value::String(line.to_owned())),
-            "what the person typed is the line it runs with"
-        );
-        assert_eq!(
-            invoke.descriptor.as_ref().and_then(|d| d.entry_param()),
-            Some("title"),
-            "the row says which parameter the line fills"
-        );
     }
 }

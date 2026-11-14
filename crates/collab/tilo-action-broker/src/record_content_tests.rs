@@ -58,8 +58,11 @@ async fn a_host_without_record_content_says_so() {
     use signed_worker::OriginalWorkspace;
     tokio::task::LocalSet::new()
         .run_until(async {
-            let host =
-                OriginalWorkspace::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
+            let host = OriginalWorkspace::new(
+                tilo_user_identity::DeviceCapabilities::member(),
+                None,
+                None,
+            );
             let (app, _) = host.join_worker(901).await;
             assert!(app.handle.want_blob(&"0".repeat(64)).await.is_err());
         })

@@ -708,6 +708,7 @@ impl<M: ListModel> VirtualList<M> {
         };
         self.focused_key = None;
         self.focused_group = Some((heading.to_owned(), index));
+        self.jump_focused = false;
         self.scroll_to_index(index);
         true
     }

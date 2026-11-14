@@ -90,7 +90,6 @@ fn assert_balanced(rtf: &str) {
     assert_eq!(depth, 0, "unbalanced braces (depth {depth} at end):\n{rtf}");
 }
 
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -216,7 +215,6 @@ fn rtf_export_block_structure() {
     }
 }
 
-#[test]
 fn rtf_export_escapes_specials_and_non_ascii() {
     {
         let snap = DocSnapshot {
@@ -254,7 +252,6 @@ fn rtf_export_escapes_specials_and_non_ascii() {
     }
 }
 
-#[test]
 fn rtf_export_marks_map_to_control_words_and_tables() {
     {
         let mut para = block("paragraph", "red text");
@@ -354,5 +351,24 @@ fn rtf_export_marks_map_to_control_words_and_tables() {
             "both indices referenced:\n{rtf}"
         );
         assert_balanced(&rtf);
+    }
+}
+
+#[test]
+fn rtf_export_writes_blocks_escapes_and_marks() {
+    let cases: [(&str, fn()); 3] = [
+        ("rtf export block structure", rtf_export_block_structure),
+        (
+            "rtf export escapes specials and non ascii",
+            rtf_export_escapes_specials_and_non_ascii,
+        ),
+        (
+            "rtf export marks map to control words and tables",
+            rtf_export_marks_map_to_control_words_and_tables,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
     }
 }

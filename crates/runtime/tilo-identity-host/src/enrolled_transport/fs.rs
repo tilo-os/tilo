@@ -619,132 +619,136 @@ mod tests {
         );
     }
 
-    #[test]
-    fn held_enrollment_storage_bounds_reads_preserves_existing_bytes_and_excludes_aliases() {
-        let root = private_root();
-        let directory = Directory::open(&root.path().canonicalize().unwrap()).unwrap();
-        directory.publish("seed", b"original-key").unwrap();
-        assert_eq!(
-            directory.file("seed", true, 32).unwrap().as_slice(),
-            b"original-key"
-        );
-        assert!(directory.file("seed", true, 2).is_err());
-        assert!(directory.publish("seed", b"replacement").is_err());
-        assert_eq!(
-            std::fs::read(root.path().join("seed")).unwrap(),
-            b"original-key"
-        );
-        assert!(directory.optional("absent", true, 32).unwrap().is_none());
-        assert!(directory.file("../seed", true, 32).is_err());
-        symlink("seed", root.path().join("alias")).unwrap();
-        assert!(directory.file("alias", true, 32).is_err());
-        let child = directory.child("device", true).unwrap();
-        assert!(directory.overlaps(&child));
-        assert!(child.overlaps(&directory));
-        let unrelated = private_root();
-        let unrelated = Directory::open(&unrelated.path().canonicalize().unwrap()).unwrap();
-        assert!(!directory.overlaps(&unrelated));
-        let lease = directory.lock("lease").unwrap();
-        assert!(directory.lock("lease").is_err());
-        drop(lease);
-        assert!(directory.lock("lease").is_ok());
-    }
+    tilo_test_env::scenario! {
+        fn enrollment_storage_authority;
 
-    #[test]
-    fn public_root_authority_never_becomes_private_key_or_write_authority() {
-        let root = private_root();
-        let path = root.path().canonicalize().unwrap();
-        let namespace = Directory::open_namespace(&path).unwrap();
-        namespace
-            .publish("certificate", b"public-certificate")
-            .unwrap();
-        namespace.publish("device.key", b"private-key").unwrap();
-        std::fs::set_permissions(
-            path.join("certificate"),
-            std::fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
-        assert!(namespace.normalize_public_file("device.key").is_err());
-        assert!(namespace.normalize_public_directory().is_err());
-        let metadata = std::fs::metadata(&path).unwrap();
-        if metadata.uid() != 0 {
-            assert!(Directory::open_public_root(&path).is_err());
-            assert!(Directory::open_system_namespace(&path).is_err());
-        } else {
-            let publisher = Directory::open_system_namespace(&path).unwrap();
-            publisher
-                .publish("new-publication", b"root-publication")
-                .unwrap();
+        phase held_enrollment_storage_bounds_reads_preserves_existing_bytes_and_excludes_aliases;
+        {
+            let root = private_root();
+            let directory = Directory::open(&root.path().canonicalize().unwrap()).unwrap();
+            directory.publish("seed", b"original-key").unwrap();
             assert_eq!(
-                std::fs::read(path.join("new-publication")).unwrap(),
-                b"root-publication"
+                directory.file("seed", true, 32).unwrap().as_slice(),
+                b"original-key"
             );
-            publisher.normalize_public_file("new-publication").unwrap();
-            publisher.normalize_public_directory().unwrap();
+            assert!(directory.file("seed", true, 2).is_err());
+            assert!(directory.publish("seed", b"replacement").is_err());
             assert_eq!(
-                std::fs::metadata(path.join("new-publication"))
-                    .unwrap()
-                    .mode()
-                    & 0o7777,
-                0o644
+                std::fs::read(root.path().join("seed")).unwrap(),
+                b"original-key"
             );
-            assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o7777, 0o755);
-            assert_eq!(
-                std::fs::metadata(path.join("device.key")).unwrap().mode() & 0o7777,
-                0o600
-            );
-            let public = Directory::open_public_root(&path).unwrap();
-            assert_eq!(
-                public.file("certificate", false, 64).unwrap().as_slice(),
-                b"public-certificate"
-            );
-            assert!(public.file("device.key", true, 64).is_err());
-            assert!(public.file("device.key", false, 64).is_err());
-            assert!(public.publish("new", b"never-written").is_err());
-            assert!(public.normalize_public_file("device.key").is_err());
-            assert!(public.normalize_public_directory().is_err());
-            assert!(public.lock("lock").is_err());
-            assert!(public.child("new", true).is_err());
-            assert!(!path.join("new").exists());
-            assert!(!path.join("lock").exists());
+            assert!(directory.optional("absent", true, 32).unwrap().is_none());
+            assert!(directory.file("../seed", true, 32).is_err());
+            symlink("seed", root.path().join("alias")).unwrap();
+            assert!(directory.file("alias", true, 32).is_err());
+            let child = directory.child("device", true).unwrap();
+            assert!(directory.overlaps(&child));
+            assert!(child.overlaps(&directory));
+            let unrelated = private_root();
+            let unrelated = Directory::open(&unrelated.path().canonicalize().unwrap()).unwrap();
+            assert!(!directory.overlaps(&unrelated));
+            let lease = directory.lock("lease").unwrap();
+            assert!(directory.lock("lease").is_err());
+            drop(lease);
+            assert!(directory.lock("lease").is_ok());
         }
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(Directory::open_public_root(&path).is_err());
-        assert!(namespace.validate().is_err());
-    }
 
-    #[test]
-    fn public_child_namespace_cannot_escape_or_outlive_changed_private_ancestry() {
-        let root = private_root();
-        let path = root.path().canonicalize().unwrap();
-        std::fs::create_dir(path.join("public")).unwrap();
-        std::fs::set_permissions(path.join("public"), std::fs::Permissions::from_mode(0o755))
+        phase public_root_authority_never_becomes_private_key_or_write_authority;
+        {
+            let root = private_root();
+            let path = root.path().canonicalize().unwrap();
+            let namespace = Directory::open_namespace(&path).unwrap();
+            namespace
+                .publish("certificate", b"public-certificate")
+                .unwrap();
+            namespace.publish("device.key", b"private-key").unwrap();
+            std::fs::set_permissions(
+                path.join("certificate"),
+                std::fs::Permissions::from_mode(0o644),
+            )
             .unwrap();
-        let directory = Directory::open(&path).unwrap();
-        let child = directory.child("public", false).unwrap();
-        child.publish("certificate", b"certificate").unwrap();
-        std::fs::set_permissions(
-            path.join("public/certificate"),
-            std::fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
-        assert_eq!(
-            child.file("certificate", false, 64).unwrap().as_slice(),
-            b"certificate"
-        );
-        assert!(child.file("certificate", true, 64).is_err());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(child.validate().is_err());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::rename(path.join("public"), path.join("original-public")).unwrap();
-        std::fs::create_dir(path.join("public")).unwrap();
-        assert!(child.validate().is_err());
-        symlink(path.join("original-public"), path.join("alias")).unwrap();
-        assert!(directory.child("alias", false).is_err());
-        assert!(Directory::open(&path.join("alias")).is_err());
-        assert_eq!(
-            std::fs::read(path.join("original-public/certificate")).unwrap(),
-            b"certificate"
-        );
+            assert!(namespace.normalize_public_file("device.key").is_err());
+            assert!(namespace.normalize_public_directory().is_err());
+            let metadata = std::fs::metadata(&path).unwrap();
+            if metadata.uid() != 0 {
+                assert!(Directory::open_public_root(&path).is_err());
+                assert!(Directory::open_system_namespace(&path).is_err());
+            } else {
+                let publisher = Directory::open_system_namespace(&path).unwrap();
+                publisher
+                    .publish("new-publication", b"root-publication")
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read(path.join("new-publication")).unwrap(),
+                    b"root-publication"
+                );
+                publisher.normalize_public_file("new-publication").unwrap();
+                publisher.normalize_public_directory().unwrap();
+                assert_eq!(
+                    std::fs::metadata(path.join("new-publication"))
+                        .unwrap()
+                        .mode()
+                        & 0o7777,
+                    0o644
+                );
+                assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o7777, 0o755);
+                assert_eq!(
+                    std::fs::metadata(path.join("device.key")).unwrap().mode() & 0o7777,
+                    0o600
+                );
+                let public = Directory::open_public_root(&path).unwrap();
+                assert_eq!(
+                    public.file("certificate", false, 64).unwrap().as_slice(),
+                    b"public-certificate"
+                );
+                assert!(public.file("device.key", true, 64).is_err());
+                assert!(public.file("device.key", false, 64).is_err());
+                assert!(public.publish("new", b"never-written").is_err());
+                assert!(public.normalize_public_file("device.key").is_err());
+                assert!(public.normalize_public_directory().is_err());
+                assert!(public.lock("lock").is_err());
+                assert!(public.child("new", true).is_err());
+                assert!(!path.join("new").exists());
+                assert!(!path.join("lock").exists());
+            }
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(Directory::open_public_root(&path).is_err());
+            assert!(namespace.validate().is_err());
+        }
+
+        phase public_child_namespace_cannot_escape_or_outlive_changed_private_ancestry;
+        {
+            let root = private_root();
+            let path = root.path().canonicalize().unwrap();
+            std::fs::create_dir(path.join("public")).unwrap();
+            std::fs::set_permissions(path.join("public"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            let directory = Directory::open(&path).unwrap();
+            let child = directory.child("public", false).unwrap();
+            child.publish("certificate", b"certificate").unwrap();
+            std::fs::set_permissions(
+                path.join("public/certificate"),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+            assert_eq!(
+                child.file("certificate", false, 64).unwrap().as_slice(),
+                b"certificate"
+            );
+            assert!(child.file("certificate", true, 64).is_err());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(child.validate().is_err());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::rename(path.join("public"), path.join("original-public")).unwrap();
+            std::fs::create_dir(path.join("public")).unwrap();
+            assert!(child.validate().is_err());
+            symlink(path.join("original-public"), path.join("alias")).unwrap();
+            assert!(directory.child("alias", false).is_err());
+            assert!(Directory::open(&path.join("alias")).is_err());
+            assert_eq!(
+                std::fs::read(path.join("original-public/certificate")).unwrap(),
+                b"certificate"
+            );
+        }
     }
 }

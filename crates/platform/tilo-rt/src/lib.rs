@@ -119,6 +119,19 @@ pub fn is_ui_thread() -> bool {
     UI_THREAD.with(Cell::get)
 }
 
+/// Mark a call that waits — on the session, the device, a service — and so
+/// may take seconds. A debug build panics when it runs on a window's thread:
+/// the window would stop drawing and answering for as long as it waits, so
+/// a test or a development build that reaches it there fails instead.
+#[track_caller]
+pub fn off_ui_thread() {
+    debug_assert!(
+        !is_ui_thread(),
+        "a call that waits ran on a window's thread; run it off that thread and take its answer \
+         when it lands"
+    );
+}
+
 /// Whether the calling thread is inside a tokio runtime context: a runtime
 /// worker, the thread in a `block_on`, a blocking-pool thread, or a thread
 /// that entered a handle.
@@ -390,107 +403,111 @@ mod tests {
         assert!(thread_cpu_time().unwrap() > start.saturating_add(slept));
     }
 
-    #[test]
-    fn wait_on_runs_on_the_runtime_and_refuses_its_drivers() {
-        let runtime = daemon("wait-on-test").workers(1).build().unwrap();
-        {
-            let value = wait_on(runtime.handle(), async {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                tokio::spawn(async { 3 }).await.unwrap()
-            })
-            .unwrap();
-            assert_eq!(value, 3);
-        }
-        {
-            let handle = runtime.handle().clone();
-            let nested = wait_on(
-                runtime.handle(),
-                async move { wait_on(&handle, async { 4 }) },
-            )
-            .unwrap();
-            assert!(matches!(nested, Err(Error::InsideRuntime)));
-        }
-        {
-            let other = daemon("wait-on-other").workers(1).build().unwrap();
-            let handle = runtime.handle().clone();
-            let nested =
-                wait_on(other.handle(), async move { wait_on(&handle, async { 5 }) }).unwrap();
-            assert!(matches!(nested, Err(Error::InsideRuntime)));
-        }
-        {
-            // A blocking-pool thread is a thread of its runtime, not a thread
-            // that owns none: it asks that runtime instead of building a
-            // second one, which tokio refuses and this guard names.
-            let handle = runtime.handle().clone();
-            let inner = wait_on(runtime.handle(), async move {
-                tokio::task::spawn_blocking(move || wait_on(&handle, async { 6 }))
-                    .await
-                    .unwrap()
-            })
-            .unwrap();
-            assert!(matches!(inner, Err(Error::InsideRuntime)));
-        }
-        {
-            let handle = runtime.handle().clone();
-            let result = spawn_thread("ui-wait-on-test", move || {
-                mark_ui_thread();
-                wait_on(&handle, async { 1 })
-            })
-            .unwrap()
-            .join()
-            .unwrap();
-            assert!(matches!(result, Err(Error::UiThread)));
-        }
-        {
-            let handle = runtime.handle().clone();
-            runtime.shutdown_background();
-            assert!(matches!(
-                wait_on(&handle, async { 2 }),
-                Err(Error::TaskFailed)
-            ));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn synchronous_waits_run_the_future_and_refuse_runtime_and_ui_threads;
 
-    #[test]
-    fn block_on_drives_timers_but_refuses_runtime_and_ui_threads() {
+        phase wait_on_runs_on_the_runtime_and_refuses_its_drivers;
         {
-            let value = block_on(async {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                7
-            })
-            .unwrap();
-            assert_eq!(value, 7);
-        }
-        {
-            let nested = block_on(async { block_on(async {}) }).unwrap();
-            assert!(matches!(nested, Err(Error::InsideRuntime)));
-        }
-        {
-            let foreign = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
+            let runtime = daemon("wait-on-test").workers(1).build().unwrap();
+            {
+                let value = wait_on(runtime.handle(), async {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    tokio::spawn(async { 3 }).await.unwrap()
+                })
                 .unwrap();
-            let nested = foreign.block_on(async { block_on(async {}) });
-            assert!(matches!(nested, Err(Error::InsideRuntime)));
+                assert_eq!(value, 3);
+            }
+            {
+                let handle = runtime.handle().clone();
+                let nested = wait_on(
+                    runtime.handle(),
+                    async move { wait_on(&handle, async { 4 }) },
+                )
+                .unwrap();
+                assert!(matches!(nested, Err(Error::InsideRuntime)));
+            }
+            {
+                let other = daemon("wait-on-other").workers(1).build().unwrap();
+                let handle = runtime.handle().clone();
+                let nested =
+                    wait_on(other.handle(), async move { wait_on(&handle, async { 5 }) }).unwrap();
+                assert!(matches!(nested, Err(Error::InsideRuntime)));
+            }
+            {
+                // A blocking-pool thread is a thread of its runtime, not a thread
+                // that owns none: it asks that runtime instead of building a
+                // second one, which tokio refuses and this guard names.
+                let handle = runtime.handle().clone();
+                let inner = wait_on(runtime.handle(), async move {
+                    tokio::task::spawn_blocking(move || wait_on(&handle, async { 6 }))
+                        .await
+                        .unwrap()
+                })
+                .unwrap();
+                assert!(matches!(inner, Err(Error::InsideRuntime)));
+            }
+            {
+                let handle = runtime.handle().clone();
+                let result = spawn_thread("ui-wait-on-test", move || {
+                    mark_ui_thread();
+                    wait_on(&handle, async { 1 })
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+                assert!(matches!(result, Err(Error::UiThread)));
+            }
+            {
+                let handle = runtime.handle().clone();
+                runtime.shutdown_background();
+                assert!(matches!(
+                    wait_on(&handle, async { 2 }),
+                    Err(Error::TaskFailed)
+                ));
+            }
         }
+
+        phase block_on_drives_timers_but_refuses_runtime_and_ui_threads;
         {
-            let inner = block_on(async {
-                tokio::task::spawn_blocking(|| app().block_on(async { 9 }))
-                    .await
-                    .unwrap()
-            })
-            .unwrap();
-            assert_eq!(inner.unwrap(), 9);
-        }
-        {
-            let result = spawn_thread("ui-test", || {
-                mark_ui_thread();
-                block_on(async { 1 })
-            })
-            .unwrap()
-            .join()
-            .unwrap();
-            assert!(matches!(result, Err(Error::UiThread)));
+            {
+                let value = block_on(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    7
+                })
+                .unwrap();
+                assert_eq!(value, 7);
+            }
+            {
+                let nested = block_on(async { block_on(async {}) }).unwrap();
+                assert!(matches!(nested, Err(Error::InsideRuntime)));
+            }
+            {
+                let foreign = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let nested = foreign.block_on(async { block_on(async {}) });
+                assert!(matches!(nested, Err(Error::InsideRuntime)));
+            }
+            {
+                let inner = block_on(async {
+                    tokio::task::spawn_blocking(|| app().block_on(async { 9 }))
+                        .await
+                        .unwrap()
+                })
+                .unwrap();
+                assert_eq!(inner.unwrap(), 9);
+            }
+            {
+                let result = spawn_thread("ui-test", || {
+                    mark_ui_thread();
+                    block_on(async { 1 })
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+                assert!(matches!(result, Err(Error::UiThread)));
+            }
         }
     }
 }

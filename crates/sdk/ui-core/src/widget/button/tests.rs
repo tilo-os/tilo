@@ -1,44 +1,6 @@
 use super::*;
 use crate::tokens::TextRole;
 
-/// A button that opens a menu makes room for its chevron after the
-/// label, so the label is never elided to fit it; an icon-only one
-/// stays square.
-#[test]
-fn a_menu_button_makes_room_for_its_chevron() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let metrics = FaceMetrics::of_role(ControlSize::Small, ButtonRole::Secondary, &theme);
-    let width = |label: &str, menu: bool, text: &mut TextRenderer| {
-        FaceContent {
-            icon: None,
-            image: None,
-            faces: &[],
-            avatar: None,
-            placeholder: false,
-            tone: None,
-            badge: None,
-            label,
-            detail: None,
-            hint: None,
-            flush: false,
-            filled_icon: false,
-            menu,
-        }
-        .intrinsic_width(&metrics, text, metrics.height)
-    };
-    let label = "Administrator";
-    let plain = width(label, false, &mut text);
-    let menu = width(label, true, &mut text);
-    assert!(
-        (menu - plain - (metrics.icon_gap + metrics.icon)).abs() <= 1.0,
-        "{plain} then {menu}"
-    );
-    assert!((width("", true, &mut text) - metrics.height).abs() < 1e-9);
-    let button = Button::new("role", label).with_menu(Vec::new());
-    assert!(button.button().opens_menu);
-    assert!(!Button::new("save", "Save").opens_menu);
-}
 use crate::widget::Widget;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -124,59 +86,6 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         "a refused click is said over the window: {:?}",
         harness.control_failures()
     );
-}
-
-/// An app rebuilds its buttons from state, and the host then refocuses
-/// the new one: it never saw the press. The ring still follows the
-/// input that focused it, so a clicked button stays ringless.
-#[test]
-fn a_button_rebuilt_after_a_click_shows_no_focus_ring() {
-    crate::focus_visible::note(&crate::synthetic_input::mouse_press());
-    let mut rebuilt = Button::new("wp.bold", "Bold");
-    rebuilt.set_focus(true);
-    assert!(!rebuilt.focus_visible(), "a click never rings the button");
-    crate::focus_visible::note(&crate::synthetic_input::keyboard_input(
-        crate::synthetic_input::key_event(
-            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-            None,
-            winit::event::ElementState::Pressed,
-        ),
-    ));
-    assert!(rebuilt.focus_visible(), "the keyboard brings the ring back");
-}
-
-#[test]
-fn a_shared_button_answers_through_an_ordinary_container() {
-    let clicks = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&clicks);
-    let mut column = crate::widget::Column::new().push(Box::new(
-        Button::new("files.retry", "Retry").on_view(move || {
-            counted.fetch_add(1, Ordering::SeqCst);
-        }),
-    ));
-    let mut doc = AutoCommit::new();
-    let kind = tilo_actions::OperationKind::View;
-    let payload = br#""files.retry""#;
-
-    let started = crate::widget::ResourceOperation::local(
-        tilo_actions::InvocationId::new(),
-        kind,
-        "tilo.ui.control.invoke",
-        payload,
-    )
-    .start(
-        &mut column,
-        &mut crate::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    )
-    .unwrap();
-    assert!(
-        started
-            .and_then(super::super::ResourceOperationStart::completed)
-            .is_some()
-    );
-
-    assert_eq!(clicks.load(Ordering::SeqCst), 1);
 }
 
 fn layout_fit_host(
@@ -501,340 +410,6 @@ fn measured_button_rect(button: Button, scale: f32) -> Rect {
 }
 
 #[test]
-fn label_face_geometry_follows_the_theme_scale() {
-    fn retained_and_immediate_labels_share_geometry() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(2.0);
-        let label = "Refresh";
-        let rect = Rect::new(10.0, 20.0, 330.0, 84.0);
-        let mut button = Button::new("action", label).with_icon(crate::icons::Icon::Refresh);
-        let mut tree = TaffyTree::new();
-        button.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
-        button.apply_layout_external(rect);
-        let mut retained = Scene::new();
-        button.draw(
-            &mut retained,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &crate::presence::PresenceCtx::default(),
-        );
-        let mut immediate = Scene::new();
-        Button::paint(
-            &mut immediate,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &ButtonFace::new(rect, label).icon(crate::icons::Icon::Refresh),
-        );
-        let a = &retained.encoding().resources.glyph_runs;
-        let b = &immediate.encoding().resources.glyph_runs;
-        assert!(!a.is_empty());
-        assert_eq!(a.len(), b.len());
-        for (a, b) in a.iter().zip(b) {
-            assert_eq!(a.transform, b.transform);
-            assert_eq!(a.font_size, b.font_size);
-        }
-    }
-
-    /// A default `ButtonFace` reads its corner from the theme and sets its
-    /// label in the Regular size's role; Large sets it in Body.
-    fn default_face_reads_its_corner_and_label_role_from_the_theme() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
-        let mut paint = |face: ButtonFace<'_>| {
-            let mut scene = Scene::new();
-            Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
-            scene
-        };
-        let themed = paint(ButtonFace::new(rect, "Save").icon(crate::icons::Icon::Refresh));
-        let explicit = paint(
-            ButtonFace::new(rect, "Save")
-                .icon(crate::icons::Icon::Refresh)
-                .control_size(ControlSize::Regular),
-        );
-        assert_eq!(themed.encoding().path_data, explicit.encoding().path_data);
-        let a = &themed.encoding().resources.glyph_runs;
-        let b = &explicit.encoding().resources.glyph_runs;
-        assert_eq!(a.len(), 1);
-        assert_eq!(a[0].transform, b[0].transform);
-        assert_eq!(a[0].font_size, b[0].font_size);
-        assert!((a[0].font_size - theme.text(TextRole::Label).size).abs() < 1e-6);
-        let large = paint(ButtonFace::new(rect, "Save").control_size(ControlSize::Large));
-        assert!(
-            (large.encoding().resources.glyph_runs[0].font_size - theme.text(TextRole::Body).size)
-                .abs()
-                < 1e-6
-        );
-    }
-
-    /// The retained and immediate labels follow the theme's type scale —
-    /// 2× the Label role under a 2× theme — whether the shared renderer is
-    /// matched (2×, the live App and `FrameHarness`) or left at 1× (the
-    /// apps' raw `--shots` loop), and whether or not a `build_layout` pass
-    /// preceded the draw.
-    fn retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let label = theme.text(TextRole::Label).size;
-        let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
-        let presence = crate::presence::PresenceCtx::default();
-        let font_size = |scene: &Scene| scene.encoding().resources.glyph_runs[0].font_size;
-        for renderer_scale in [1.0_f32, 2.0] {
-            let mut text = TextRenderer::new();
-            text.set_text_scale(renderer_scale);
-
-            let mut laid_out = Button::new("save", "Save");
-            laid_out.build_layout(
-                &mut TaffyTree::new(),
-                &theme,
-                &mut std::collections::HashMap::new(),
-            );
-            laid_out.apply_layout_external(rect);
-            let mut retained = Scene::new();
-            laid_out.draw(
-                &mut retained,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &presence,
-            );
-            assert!(
-                (font_size(&retained) - label).abs() < 1e-3,
-                "retained label at renderer {renderer_scale}×: {}",
-                font_size(&retained)
-            );
-
-            let mut external = Button::new("save", "Save");
-            external.apply_layout_external(rect);
-            let mut external_scene = Scene::new();
-            external.draw(
-                &mut external_scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &presence,
-            );
-            assert!(
-                (font_size(&external_scene) - label).abs() < 1e-3,
-                "externally laid-out label at renderer {renderer_scale}×: {}",
-                font_size(&external_scene)
-            );
-
-            let mut immediate = Scene::new();
-            Button::paint(
-                &mut immediate,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &ButtonFace::new(rect, "Save"),
-            );
-            assert!(
-                (font_size(&immediate) - label).abs() < 1e-3,
-                "ButtonFace default at renderer {renderer_scale}×: {} (expected {label})",
-                font_size(&immediate)
-            );
-        }
-    }
-
-    /// A theme text-scale change between frames re-emits the cached face at
-    /// the new label size instead of replaying the old glyphs.
-    fn theme_text_scale_change_invalidates_the_cached_face() {
-        let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
-        let mut text = TextRenderer::new();
-        let mut button = Button::new("save", "Save");
-        let presence = crate::presence::PresenceCtx::default();
-        let one = Theme::dark();
-        button.build_layout(
-            &mut TaffyTree::new(),
-            &one,
-            &mut std::collections::HashMap::new(),
-        );
-        button.apply_layout_external(rect);
-        let mut first = Scene::new();
-        button.draw(&mut first, Affine::IDENTITY, &mut text, &one, &presence);
-        button.mark_drawn();
-        assert!(!button.needs_redraw(), "settled at 1×");
-
-        let larger = Theme::dark().with_text_scale(1.5);
-        button.build_layout(
-            &mut TaffyTree::new(),
-            &larger,
-            &mut std::collections::HashMap::new(),
-        );
-        assert!(
-            button.needs_redraw(),
-            "a new label size must dirty the cache"
-        );
-        let mut second = Scene::new();
-        button.draw(&mut second, Affine::IDENTITY, &mut text, &larger, &presence);
-        let before = first.encoding().resources.glyph_runs[0].font_size;
-        let after = second.encoding().resources.glyph_runs[0].font_size;
-        assert!((before - 13.0).abs() < 1e-3, "{before}");
-        assert!((after - 19.5).abs() < 1e-3, "{after}");
-    }
-
-    retained_and_immediate_labels_share_geometry();
-    default_face_reads_its_corner_and_label_role_from_the_theme();
-    retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts();
-    theme_text_scale_change_invalidates_the_cached_face();
-}
-
-#[test]
-fn action_mode_and_availability_gate_mutation_and_callbacks() {
-    fn button_test_id_is_stable_constructor_id() {
-        let b = Button::new("id", "Save");
-        assert_eq!(Widget::test_id(&b), Some("id"));
-        assert_eq!(
-            Widget::accessibility(&b).unwrap().name.as_deref(),
-            Some("Save")
-        );
-    }
-
-    fn action_mode_suppresses_raw_mutation_and_callback() {
-        let resource = tilo_actions::ResourceSpec::new("doc:1", "doc", "Document").with_action(
-            tilo_actions::ActionSpec::operation(
-                "save",
-                "Save",
-                tilo_actions::OperationKind::Effect,
-                "test.save",
-                &(),
-            )
-            .unwrap(),
-        );
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let callback_calls = calls.clone();
-        let mut button = Button::new("save", "Save")
-            .on_action(binding)
-            // Builder order cannot accidentally restore an imperative path.
-            .on_click(move || {
-                callback_calls.fetch_add(1, Ordering::SeqCst);
-            });
-        button.activate();
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        let intent =
-            crate::widget::controls::take_control_invocation(&mut button).expect("one intent");
-        assert_eq!(
-            intent.address,
-            tilo_actions::ActionAddress::new("doc:1", "save")
-        );
-        assert!(intent.arguments.is_empty());
-        assert_eq!(
-            crate::widget::controls::control_action_bindings(&button).len(),
-            1
-        );
-    }
-
-    fn action_availability_revokes_and_restores_without_overriding_authored_state() {
-        let resource = tilo_actions::ResourceSpec::new("doc:1", "doc", "Document").with_action(
-            tilo_actions::ActionSpec::operation(
-                "save",
-                "Save",
-                tilo_actions::OperationKind::Effect,
-                "test.save",
-                &(),
-            )
-            .unwrap(),
-        );
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
-        let mut button = Button::new("save", "Save").on_action(binding);
-        button.activate();
-        crate::widget::controls::refresh_control_action_availability(
-            &mut button,
-            &std::collections::HashSet::new(),
-        );
-        assert!(!Widget::is_enabled(&button));
-        assert!(
-            crate::widget::controls::take_control_invocation(&mut button).is_none(),
-            "revocation drops queued authority"
-        );
-        crate::widget::controls::refresh_control_action_availability(
-            &mut button,
-            &std::collections::HashSet::from([tilo_actions::ActionAddress::new("doc:1", "save")]),
-        );
-        assert!(Widget::is_enabled(&button));
-
-        button.set_enabled(false);
-        crate::widget::controls::refresh_control_action_availability(
-            &mut button,
-            &std::collections::HashSet::new(),
-        );
-        crate::widget::controls::refresh_control_action_availability(
-            &mut button,
-            &std::collections::HashSet::from([tilo_actions::ActionAddress::new("doc:1", "save")]),
-        );
-        assert!(
-            !Widget::is_enabled(&button),
-            "permission restore cannot override app-authored disabled state"
-        );
-    }
-
-    button_test_id_is_stable_constructor_id();
-    action_mode_suppresses_raw_mutation_and_callback();
-    action_availability_revokes_and_restores_without_overriding_authored_state();
-}
-
-/// A theme switched under a live tree repaints a plain button's face
-/// in the new theme's roles, rather than keeping the cached dark-theme
-/// ink that all but vanishes on a light ground.
-#[test]
-fn a_cached_face_follows_a_theme_switch() {
-    let mut button = Button::new("plain", "Undo").role(ButtonRole::Plain);
-    button.rect = Rect::new(0.0, 0.0, 80.0, 32.0);
-    let presence = crate::presence::PresenceCtx::default();
-    let mut text = TextRenderer::new();
-    let mut scene = Scene::new();
-    for theme in [Theme::dark(), Theme::light()] {
-        button.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-        assert_eq!(
-            button.last_theme,
-            Some(theme_key(&theme)),
-            "the face is painted in {}",
-            theme.name
-        );
-    }
-}
-
-/// Only a node the layout solver placed can be measured again: a button
-/// its host places never asks for a measure, placed or hidden, while one
-/// in the solver's tree asks when what it shows may change its width.
-#[test]
-fn a_host_placed_button_never_asks_the_solver_for_a_measure() {
-    let mut hosted = Button::new("history", "History");
-    for rect in [Rect::ZERO, Rect::new(0.0, 0.0, 32.0, 32.0), Rect::ZERO] {
-        hosted.apply_layout_external(rect);
-        assert!(!hosted.layout_needs_measure(), "placed at {rect:?}");
-    }
-
-    let mut laid_out = Button::new("save", "Save");
-    let mut tree = TaffyTree::new();
-    let node = laid_out.build_layout(
-        &mut tree,
-        &Theme::dark(),
-        &mut std::collections::HashMap::new(),
-    );
-    tree.compute_layout(
-        node,
-        taffy::Size {
-            width: taffy::AvailableSpace::MaxContent,
-            height: taffy::AvailableSpace::MaxContent,
-        },
-    )
-    .unwrap();
-    laid_out.apply_layout(&tree, node, Point::ZERO);
-    assert!(!laid_out.layout_needs_measure(), "laid out and unchanged");
-    laid_out.set_interaction_environment(
-        crate::interaction::InteractionEnvironment::default().with_touch_modality(),
-    );
-    assert!(
-        laid_out.layout_needs_measure(),
-        "a touch target may be wider"
-    );
-}
-
-#[test]
 fn the_focus_ring_stands_apart_from_every_face() {
     use crate::offscreen::OffscreenRenderer;
     use crate::tokens::PresenceHue;
@@ -876,128 +451,155 @@ fn the_focus_ring_stands_apart_from_every_face() {
     }
 }
 
-#[test]
-fn face_colors_per_role_track_state_and_stay_readable() {
-    use crate::a11y::contrast_ratio;
-    let hover = Interaction {
-        hovered: true,
-        ..Default::default()
-    };
-    let press = Interaction {
-        pressed: true,
-        ..Default::default()
-    };
-    let rest = Interaction::default();
-    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let colors = &theme.tokens.colors;
-        let raised = colors.surfaces.raised;
+tilo_test_env::scenario! {
+    /// Button faces: theme switches, role colours and the destructive confirmation.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn button_faces_follow_role_state_and_theme;
 
-        // Primary is inverted: primary ink as the fill, never a hue.
-        let (fill, edge, ink) = face_colors(&theme, ButtonRole::Primary, rest);
-        assert_eq!(fill, colors.intent.accent, "{}", theme.name);
-        assert_eq!(edge, None);
-        assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
-        let (hover_fill, _, hover_ink) = face_colors(&theme, ButtonRole::Primary, hover);
-        assert_eq!(hover_fill, colors.intent.accent_hover);
-        assert_eq!(
-            hover_ink, ink,
-            "the label does not change under the pointer"
-        );
-        // Pressed reads past hover: rest, hover and press are three
-        // distinct steps, and the label holds across all of them.
-        let (press_fill, _, press_ink) = face_colors(&theme, ButtonRole::Primary, press);
-        assert_eq!(press_fill, colors.intent.accent_pressed, "{}", theme.name);
-        assert_ne!(press_fill, hover_fill, "{}", theme.name);
-        let step = |a, b| crate::chrome::shell::lightness_step(a, b);
-        assert!(
-            step(press_fill, fill) > step(hover_fill, fill),
-            "{}: press must move further from rest than hover",
-            theme.name
-        );
-        assert_eq!(press_ink, ink);
-        assert!(contrast_ratio(press_ink, press_fill) >= ON_FILL_MIN_CONTRAST);
-
-        let (fill, edge, ink) = face_colors(&theme, ButtonRole::Secondary, rest);
-        assert_eq!(fill, raised);
-        assert_eq!(edge, None);
-        assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
-        assert_eq!(
-            face_colors(&theme, ButtonRole::Secondary, hover).0,
-            colors.lift_on(raised, 0.5)
-        );
-        assert_eq!(
-            face_colors(&theme, ButtonRole::Secondary, press).0,
-            colors.lift_on(raised, 1.0)
-        );
-
-        for interact in [rest, hover, press] {
-            let (fill, edge, ink) = face_colors(&theme, ButtonRole::Destructive, interact);
-            assert_eq!(fill, face_colors(&theme, ButtonRole::Secondary, interact).0);
-            assert_eq!(edge, face_colors(&theme, ButtonRole::Secondary, interact).1);
-            assert!(
-                contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
-                "{}: danger ink on the neutral face",
-                theme.name
-            );
-            assert_ne!(
-                ink, colors.text_primary,
-                "{}: reads as destructive",
+    phase a_cached_face_follows_a_theme_switch;
+    // A theme switched under a live tree repaints a plain button's face
+    // in the new theme's roles, rather than keeping the cached dark-theme
+    // ink that all but vanishes on a light ground.
+    {
+        let mut button = Button::new("plain", "Undo").role(ButtonRole::Plain);
+        button.rect = Rect::new(0.0, 0.0, 80.0, 32.0);
+        let presence = crate::presence::PresenceCtx::default();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        for theme in [Theme::dark(), Theme::light()] {
+            button.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            assert_eq!(
+                button.last_theme,
+                Some(theme_key(&theme)),
+                "the face is painted in {}",
                 theme.name
             );
         }
-
-        // Plain paints nothing at rest and lifts its ground under the pointer.
-        let (fill, edge, ink) = face_colors(&theme, ButtonRole::Plain, rest);
-        assert!(fill.components[3] <= 0.0);
-        assert_eq!(edge, None);
-        assert!(contrast_ratio(ink, colors.surfaces.content) >= ON_FILL_MIN_CONTRAST);
-        assert_eq!(
-            face_colors(&theme, ButtonRole::Plain, hover).0,
-            colors.intent.selection_hover
-        );
-        // Press is the neutral lift; only a selection is tinted.
-        assert_eq!(
-            face_colors(&theme, ButtonRole::Plain, press).0,
-            colors.lift_on(colors.surfaces.content, 1.0)
-        );
     }
-}
 
-/// The filled danger face exists only in a confirmation step.
-#[test]
-fn only_the_confirmation_step_fills_a_destructive_button() {
-    use crate::a11y::contrast_ratio;
-    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
-        let plain = ButtonFace::new(rect, "Delete").role(ButtonRole::Destructive);
-        assert_ne!(plain.colors(&theme).0, theme.tokens.colors.semantic.danger);
-        let confirm = ButtonFace::new(rect, "Delete")
-            .role(ButtonRole::Destructive)
-            .confirming();
-        for face in [
-            confirm.hovered(false),
-            ButtonFace::new(rect, "Delete")
-                .role(ButtonRole::Destructive)
-                .confirming()
-                .hovered(true),
-        ] {
-            let (fill, edge, ink) = face.colors(&theme);
+    phase face_colors_per_role_track_state_and_stay_readable;
+    {
+        use crate::a11y::contrast_ratio;
+        let hover = Interaction {
+            hovered: true,
+            ..Default::default()
+        };
+        let press = Interaction {
+            pressed: true,
+            ..Default::default()
+        };
+        let rest = Interaction::default();
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            let raised = colors.surfaces.raised;
+
+            // Primary is inverted: primary ink as the fill, never a hue.
+            let (fill, edge, ink) = face_colors(&theme, ButtonRole::Primary, rest);
+            assert_eq!(fill, colors.intent.accent, "{}", theme.name);
             assert_eq!(edge, None);
+            assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
+            let (hover_fill, _, hover_ink) = face_colors(&theme, ButtonRole::Primary, hover);
+            assert_eq!(hover_fill, colors.intent.accent_hover);
+            assert_eq!(
+                hover_ink, ink,
+                "the label does not change under the pointer"
+            );
+            // Pressed reads past hover: rest, hover and press are three
+            // distinct steps, and the label holds across all of them.
+            let (press_fill, _, press_ink) = face_colors(&theme, ButtonRole::Primary, press);
+            assert_eq!(press_fill, colors.intent.accent_pressed, "{}", theme.name);
+            assert_ne!(press_fill, hover_fill, "{}", theme.name);
+            let step = |a, b| crate::chrome::shell::lightness_step(a, b);
             assert!(
-                contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
-                "{}: confirmation label {:.2}:1",
-                theme.name,
-                contrast_ratio(ink, fill)
+                step(press_fill, fill) > step(hover_fill, fill),
+                "{}: press must move further from rest than hover",
+                theme.name
+            );
+            assert_eq!(press_ink, ink);
+            assert!(contrast_ratio(press_ink, press_fill) >= ON_FILL_MIN_CONTRAST);
+
+            let (fill, edge, ink) = face_colors(&theme, ButtonRole::Secondary, rest);
+            assert_eq!(fill, raised);
+            assert_eq!(edge, None);
+            assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
+            assert_eq!(
+                face_colors(&theme, ButtonRole::Secondary, hover).0,
+                colors.lift_on(raised, 0.5)
+            );
+            assert_eq!(
+                face_colors(&theme, ButtonRole::Secondary, press).0,
+                colors.lift_on(raised, 1.0)
+            );
+
+            for interact in [rest, hover, press] {
+                let (fill, edge, ink) = face_colors(&theme, ButtonRole::Destructive, interact);
+                assert_eq!(fill, face_colors(&theme, ButtonRole::Secondary, interact).0);
+                assert_eq!(edge, face_colors(&theme, ButtonRole::Secondary, interact).1);
+                assert!(
+                    contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
+                    "{}: danger ink on the neutral face",
+                    theme.name
+                );
+                assert_ne!(
+                    ink, colors.text_primary,
+                    "{}: reads as destructive",
+                    theme.name
+                );
+            }
+
+            // Plain paints nothing at rest and lifts its ground under the pointer.
+            let (fill, edge, ink) = face_colors(&theme, ButtonRole::Plain, rest);
+            assert!(fill.components[3] <= 0.0);
+            assert_eq!(edge, None);
+            assert!(contrast_ratio(ink, colors.surfaces.content) >= ON_FILL_MIN_CONTRAST);
+            assert_eq!(
+                face_colors(&theme, ButtonRole::Plain, hover).0,
+                colors.intent.selection_hover
+            );
+            // Press is the neutral lift; only a selection is tinted.
+            assert_eq!(
+                face_colors(&theme, ButtonRole::Plain, press).0,
+                colors.lift_on(colors.surfaces.content, 1.0)
             );
         }
-        assert_eq!(
-            ButtonFace::new(rect, "Delete")
+    }
+
+    phase only_the_confirmation_step_fills_a_destructive_button;
+    // The filled danger face exists only in a confirmation step.
+    {
+        use crate::a11y::contrast_ratio;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
+            let plain = ButtonFace::new(rect, "Delete").role(ButtonRole::Destructive);
+            assert_ne!(plain.colors(&theme).0, theme.tokens.colors.semantic.danger);
+            let confirm = ButtonFace::new(rect, "Delete")
                 .role(ButtonRole::Destructive)
-                .confirming()
-                .colors(&theme)
-                .0,
-            theme.tokens.colors.semantic.danger
-        );
+                .confirming();
+            for face in [
+                confirm.hovered(false),
+                ButtonFace::new(rect, "Delete")
+                    .role(ButtonRole::Destructive)
+                    .confirming()
+                    .hovered(true),
+            ] {
+                let (fill, edge, ink) = face.colors(&theme);
+                assert_eq!(edge, None);
+                assert!(
+                    contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
+                    "{}: confirmation label {:.2}:1",
+                    theme.name,
+                    contrast_ratio(ink, fill)
+                );
+            }
+            assert_eq!(
+                ButtonFace::new(rect, "Delete")
+                    .role(ButtonRole::Destructive)
+                    .confirming()
+                    .colors(&theme)
+                    .0,
+                theme.tokens.colors.semantic.danger
+            );
+        }
     }
 }
 
@@ -1332,580 +934,1041 @@ fn glyph_origins(scene: &Scene) -> Vec<[f32; 2]> {
         .collect()
 }
 
-#[test]
-fn the_intrinsic_footprint_follows_the_label_and_never_moves_it() {
-    fn a_short_label_is_at_the_labelled_minimum() {
-        let rect = measured_button_rect(Button::new("save", "Save"), 1.0);
-        assert_eq!((rect.width(), rect.height()), (64.0, 32.0), "{rect:?}");
+tilo_test_env::scenario! {
+    /// Activation, availability, accessibility and naming.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_button_acts_and_is_announced;
+
+    phase a_button_rebuilt_after_a_click_shows_no_focus_ring;
+    // An app rebuilds its buttons from state, and the host then refocuses
+    // the new one: it never saw the press. The ring still follows the
+    // input that focused it, so a clicked button stays ringless.
+    {
+        crate::focus_visible::note(&crate::synthetic_input::mouse_press());
+        let mut rebuilt = Button::new("wp.bold", "Bold");
+        rebuilt.set_focus(true);
+        assert!(!rebuilt.focus_visible(), "a click never rings the button");
+        crate::focus_visible::note(&crate::synthetic_input::keyboard_input(
+            crate::synthetic_input::key_event(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                None,
+                winit::event::ElementState::Pressed,
+            ),
+        ));
+        assert!(rebuilt.focus_visible(), "the keyboard brings the ring back");
     }
 
-    /// A long label widens the button to hold it, never elided while the
-    /// parent has room.
-    fn a_wide_label_widens_the_button_instead_of_overflowing_it() {
-        let label = "Remove every remote connection";
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let (label_w, _) = text.measure_style(label, None, &theme.text(TextRole::Label));
-        let expected = (f64::from(label_w) + 2.0 * f64::from(theme.tokens.spacing.s3)).ceil();
-        let rect = measured_button_rect(Button::new("remove", label), 1.0);
+    phase a_shared_button_answers_through_an_ordinary_container;
+    {
+        let clicks = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&clicks);
+        let mut column = crate::widget::Column::new().push(Box::new(
+            Button::new("files.retry", "Retry").on_view(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+        let mut doc = AutoCommit::new();
+        let kind = tilo_actions::OperationKind::View;
+        let payload = br#""files.retry""#;
+
+        let started = crate::widget::ResourceOperation::local(
+            tilo_actions::InvocationId::new(),
+            kind,
+            "tilo.ui.control.invoke",
+            payload,
+        )
+        .start(
+            &mut column,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+        .unwrap();
         assert!(
-            (rect.width() - expected).abs() < 1e-6,
-            "{rect:?} vs {expected}"
+            started
+                .and_then(super::super::ResourceOperationStart::completed)
+                .is_some()
         );
-        assert_eq!(rect.height(), 32.0);
+
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
     }
 
-    /// Hover, press, focus and disabled recolour the face; none of them may
-    /// move it. The focus ring is stroked on the outline, not inset, so the
-    /// label origin is identical in every state.
-    fn interaction_states_do_not_move_the_face_or_its_label() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
-        let states = [
-            ("rest", Interaction::default()),
-            (
-                "hovered",
+    phase action_mode_and_availability_gate_mutation_and_callbacks;
+    {
+        fn button_test_id_is_stable_constructor_id() {
+            let b = Button::new("id", "Save");
+            assert_eq!(Widget::test_id(&b), Some("id"));
+            assert_eq!(
+                Widget::accessibility(&b).unwrap().name.as_deref(),
+                Some("Save")
+            );
+        }
+
+        fn action_mode_suppresses_raw_mutation_and_callback() {
+            let resource = tilo_actions::ResourceSpec::new("doc:1", "doc", "Document").with_action(
+                tilo_actions::ActionSpec::operation(
+                    "save",
+                    "Save",
+                    tilo_actions::OperationKind::Effect,
+                    "test.save",
+                    &(),
+                )
+                .unwrap(),
+            );
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let callback_calls = calls.clone();
+            let mut button = Button::new("save", "Save")
+                .on_action(binding)
+                // Builder order cannot accidentally restore an imperative path.
+                .on_click(move || {
+                    callback_calls.fetch_add(1, Ordering::SeqCst);
+                });
+            button.activate();
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            let intent =
+                crate::widget::controls::take_control_invocation(&mut button).expect("one intent");
+            assert_eq!(
+                intent.address,
+                tilo_actions::ActionAddress::new("doc:1", "save")
+            );
+            assert!(intent.arguments.is_empty());
+            assert_eq!(
+                crate::widget::controls::control_action_bindings(&button).len(),
+                1
+            );
+        }
+
+        fn action_availability_revokes_and_restores_without_overriding_authored_state() {
+            let resource = tilo_actions::ResourceSpec::new("doc:1", "doc", "Document").with_action(
+                tilo_actions::ActionSpec::operation(
+                    "save",
+                    "Save",
+                    tilo_actions::OperationKind::Effect,
+                    "test.save",
+                    &(),
+                )
+                .unwrap(),
+            );
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+            let mut button = Button::new("save", "Save").on_action(binding);
+            button.activate();
+            crate::widget::controls::refresh_control_action_availability(
+                &mut button,
+                &std::collections::HashSet::new(),
+            );
+            assert!(!Widget::is_enabled(&button));
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut button).is_none(),
+                "revocation drops queued authority"
+            );
+            crate::widget::controls::refresh_control_action_availability(
+                &mut button,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new("doc:1", "save")]),
+            );
+            assert!(Widget::is_enabled(&button));
+
+            button.set_enabled(false);
+            crate::widget::controls::refresh_control_action_availability(
+                &mut button,
+                &std::collections::HashSet::new(),
+            );
+            crate::widget::controls::refresh_control_action_availability(
+                &mut button,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new("doc:1", "save")]),
+            );
+            assert!(
+                !Widget::is_enabled(&button),
+                "permission restore cannot override app-authored disabled state"
+            );
+        }
+
+        button_test_id_is_stable_constructor_id();
+        action_mode_suppresses_raw_mutation_and_callback();
+        action_availability_revokes_and_restores_without_overriding_authored_state();
+    }
+
+    phase pointer_click_fires_the_callback;
+    {
+        fn cursor_shape_is_pointer_over_button() {
+            let mut b = Button::new("id", "Go");
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let theme = Theme::dark();
+            let node = b.build_layout(&mut tree, &theme, &mut node_map);
+            tree.compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(200.0),
+                    height: taffy::AvailableSpace::Definite(60.0),
+                },
+            )
+            .unwrap();
+            b.apply_layout(&tree, node, Point::ZERO);
+
+            assert_eq!(
+                Widget::cursor_shape(&b, Point::new(10.0, 10.0)),
+                Some(winit::window::CursorIcon::Pointer),
+                "pointer over the button requests the pointing-hand cursor",
+            );
+            assert_eq!(
+                Widget::cursor_shape(&b, Point::new(500.0, 500.0)),
+                None,
+                "pointer well outside the button defers (no cursor claim)",
+            );
+        }
+
+        fn on_click_callback_fires_on_release_over_button() {
+            use std::cell::Cell;
+            use std::rc::Rc;
+            use winit::event::{ElementState, MouseButton};
+
+            let fired = Rc::new(Cell::new(0u32));
+            let mut b = {
+                let fired = fired.clone();
+                Button::new("id", "Go").on_effect(move || fired.set(fired.get() + 1))
+            };
+
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let theme = Theme::dark();
+            let node = b.build_layout(&mut tree, &theme, &mut node_map);
+            tree.compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(200.0),
+                    height: taffy::AvailableSpace::Definite(60.0),
+                },
+            )
+            .unwrap();
+            b.apply_layout(&tree, node, Point::ZERO);
+
+            let device = winit::event::DeviceId::dummy();
+            let mut at_node = crate::testing::Dispatch::new().layout(&tree, node);
+            let mut dispatch = |b: &mut Button, ev: WindowEvent| {
+                at_node.send(b, &ev);
+            };
+
+            dispatch(
+                &mut b,
+                WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (10.0, 10.0).into(),
+                },
+            );
+            dispatch(
+                &mut b,
+                WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            assert_eq!(fired.get(), 0, "not fired until release");
+            dispatch(
+                &mut b,
+                WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+            );
+            assert_eq!(fired.get(), 0, "the press waits to be answered");
+            assert_eq!(
+                crate::testing::answer_controls(&mut b),
+                1,
+                "fired once, when the release's press is answered"
+            );
+            assert_eq!(fired.get(), 1);
+        }
+
+        cursor_shape_is_pointer_over_button();
+        on_click_callback_fires_on_release_over_button();
+    }
+
+    phase accessibility_reports_role_name_state_and_icon_only_naming;
+    {
+        fn accessibility_reports_button_role_name_and_state() {
+            use crate::a11y::Role;
+            let b = Button::new("id", "Save");
+            let node = Widget::accessibility(&b).expect("button is not presentational");
+            assert_eq!(node.role, Role::Button);
+            assert_eq!(node.name.as_deref(), Some("Save"));
+            assert!(node.state.focusable);
+            assert!(!node.state.focused);
+            assert!(!node.state.disabled);
+            assert_eq!(node.state.checked, None, "a button is not checkable");
+        }
+
+        fn accessibility_reflects_disabled_and_focus() {
+            let mut b = Button::new("id", "Save").with_enabled(false);
+            b.set_focus(true);
+            let node = Widget::accessibility(&b).unwrap();
+            assert!(node.state.disabled);
+            assert!(node.state.focused);
+        }
+
+        fn accessibility_icon_only_button_without_name_is_silent() {
+            let b = Button::new("id", "").with_icon(crate::icons::Icon::Check);
+            let node = Widget::accessibility(&b).unwrap();
+            assert_eq!(node.name, None);
+        }
+
+        fn accessibility_icon_only_button_uses_accessible_name() {
+            let b = Button::new("id", "")
+                .with_icon(crate::icons::Icon::Check)
+                .with_accessible_name("Confirm");
+            let node = Widget::accessibility(&b).unwrap();
+            assert_eq!(node.name.as_deref(), Some("Confirm"));
+        }
+
+        fn accessibility_stated_name_wins_over_the_visible_label() {
+            let b = Button::new("id", "Save").with_accessible_name("Persist");
+            let node = Widget::accessibility(&b).unwrap();
+            assert_eq!(node.name.as_deref(), Some("Persist"));
+        }
+
+        accessibility_reports_button_role_name_and_state();
+        accessibility_reflects_disabled_and_focus();
+        accessibility_icon_only_button_without_name_is_silent();
+        accessibility_icon_only_button_uses_accessible_name();
+        accessibility_stated_name_wins_over_the_visible_label();
+    }
+
+    phase tooltip_naming_precedence_and_compact_toolbar_semantics;
+    {
+        fn tooltip_is_exposed_to_the_host() {
+            let b = Button::new("id", "")
+                .with_icon(crate::icons::Icon::Search)
+                .tooltip("Search");
+            assert_eq!(Widget::tooltip(&b).as_deref(), Some("Search"));
+            let plain = Button::new("id", "Save");
+            assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
+        }
+
+        fn compact_toolbar_presentation_round_trips_authored_semantics() {
+            let mut button = Button::new("publish", "Publish")
+                .with_icon(crate::icons::Icon::CloudDownload)
+                .with_accessible_name("Publish document")
+                .tooltip("Publish this document now");
+
+            button.set_compact_toolbar_presentation(true);
+            assert!(button.label.is_empty(), "only the icon should be painted");
+            assert_eq!(
+                Widget::accessibility(&button).unwrap().name.as_deref(),
+                Some("Publish document"),
+                "compaction never makes an icon-only control silent"
+            );
+            assert_eq!(
+                Widget::tooltip(&button).as_deref(),
+                Some("Publish this document now"),
+                "the authored tooltip survives compaction"
+            );
+
+            button.set_compact_toolbar_presentation(false);
+            assert_eq!(button.label, "Publish");
+            assert_eq!(
+                button.accessible_name.as_deref(),
+                Some("Publish document"),
+                "expansion restores the authored accessible name rather than retaining a fallback"
+            );
+            assert_eq!(
+                Widget::accessibility(&button).unwrap().name.as_deref(),
+                Some("Publish document"),
+                "the name the app stated still says it after expansion"
+            );
+            assert_eq!(
+                Widget::tooltip(&button).as_deref(),
+                Some("Publish this document now")
+            );
+        }
+
+        fn icon_only_tooltip_doubles_as_accessible_name() {
+            let b = Button::new("id", "")
+                .with_icon(crate::icons::Icon::Search)
+                .tooltip("Search");
+            let node = Widget::accessibility(&b).unwrap();
+            assert_eq!(node.name.as_deref(), Some("Search"));
+        }
+
+        fn explicit_accessible_name_wins_over_tooltip() {
+            let b = Button::new("id", "")
+                .with_icon(crate::icons::Icon::MoreHorizontal)
+                .with_accessible_name("View options")
+                .tooltip("More");
+            let node = Widget::accessibility(&b).unwrap();
+            assert_eq!(node.name.as_deref(), Some("View options"));
+        }
+
+        fn a_compacted_faced_button_shows_one_face_and_keeps_it_under_new_words() {
+            let mut text = TextRenderer::new();
+            let faces = || {
+                vec![
+                    ("Ada".to_owned(), "ada".to_owned()),
+                    ("Bo".to_owned(), "bo".to_owned()),
+                ]
+            };
+            let mut button = Button::new("mark", "2 changes by Ada and Bo").with_faces_of(faces());
+            let full = button.intrinsic_width(&mut text);
+            button.set_compact_toolbar_presentation(true);
+            let compact = button.intrinsic_width(&mut text);
+            assert!(
+                compact * 2.0 < full,
+                "one face stands where the names stood: {compact} of {full}"
+            );
+            assert!(
+                button.label.is_empty(),
+                "the row gave up the words for the face"
+            );
+            // A change arrives while the row is short: the mark takes the new words for when the row
+            // gives it room again, and stays one face where it stands now.
+            let fresh = Button::new("mark", "3 changes by Ada and Bo").with_faces_of(faces());
+            assert!(
+                button.take_words(&fresh),
+                "the mark keeps its place and its face"
+            );
+            assert!(
+                button.label.is_empty(),
+                "the compact pill shows its face, not the new words"
+            );
+            assert_eq!(
+                button.intrinsic_width(&mut text),
+                compact,
+                "the new words do not widen the pill the row made compact"
+            );
+            button.set_compact_toolbar_presentation(false);
+            assert_eq!(
+                button.label, "3 changes by Ada and Bo",
+                "the room back gives the mark its newest words"
+            );
+        }
+
+        fn icon_only_effect_publishes_its_spoken_name() {
+            let doc = AutoCommit::new();
+            let named = Button::new("private", "")
+                .with_icon(crate::icons::Icon::Shield)
+                .with_accessible_name("New Private Window")
+                .on_effect(|| {});
+            let tooltip_after = Button::new("search", "")
+                .with_icon(crate::icons::Icon::Search)
+                .on_effect(|| {})
+                .tooltip("Search");
+            for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
+                let resources = crate::resources::resources(&button, &doc);
+                assert_eq!(resources.len(), 1);
+                assert_eq!(resources[0].label, name);
+                assert!(
+                    resources[0]
+                        .actions
+                        .iter()
+                        .all(|action| action.label == name)
+                );
+            }
+        }
+
+        tooltip_is_exposed_to_the_host();
+        compact_toolbar_presentation_round_trips_authored_semantics();
+        icon_only_tooltip_doubles_as_accessible_name();
+        explicit_accessible_name_wins_over_tooltip();
+        icon_only_effect_publishes_its_spoken_name();
+        a_compacted_faced_button_shows_one_face_and_keeps_it_under_new_words();
+    }
+
+    phase keys_plain_ink_and_bound_state;
+    {
+        fn a_key_rests_on_a_faint_lift_with_a_title_label() {
+            let theme = Theme::dark();
+            let ground = theme.tokens.colors.surfaces.content;
+            let (rest, edge, _) = face_colors(&theme, ButtonRole::Key, Interaction::default());
+            assert_ne!(rest, ground, "a key is lifted off its ground");
+            assert!(edge.is_none());
+            let (hover, _, _) = face_colors(
+                &theme,
+                ButtonRole::Key,
                 Interaction {
                     hovered: true,
                     ..Interaction::default()
                 },
-            ),
-            (
-                "pressed",
-                Interaction {
-                    pressed: true,
-                    ..Interaction::default()
-                },
-            ),
-            (
-                "focused",
-                Interaction {
-                    focused: true,
-                    ..Interaction::default()
-                },
-            ),
-            (
-                "disabled",
-                Interaction {
-                    disabled: true,
-                    ..Interaction::default()
-                },
-            ),
-        ];
-        for style in [
-            ButtonRole::Secondary,
-            ButtonRole::Primary,
-            ButtonRole::Destructive,
-            ButtonRole::Plain,
-        ] {
-            let mut reference: Option<[f32; 2]> = None;
-            for (name, interact) in states {
+            );
+            assert_ne!(hover, rest);
+            let metrics = FaceMetrics::of_role(ControlSize::Regular, ButtonRole::Key, &theme);
+            assert_eq!(metrics.label_style, theme.text(TextRole::Title));
+        }
+
+        fn a_plain_label_sits_on_its_layout_edge() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let label = f64::from(
+                text.measure_style("Show details", None, &theme.text(TextRole::Label))
+                    .0,
+            );
+            let plain = measured_button_rect(
+                Button::new("details", "Show details").role(ButtonRole::Plain),
+                1.0,
+            );
+            let secondary = measured_button_rect(Button::new("details", "Show details"), 1.0);
+            assert!(
+                (plain.width() - label.ceil()).abs() <= 1.0,
+                "a plain button is as wide as its ink: {plain:?} vs {label}"
+            );
+            assert!(secondary.width() > plain.width());
+            let mut button = Button::new("details", "Show details").role(ButtonRole::Plain);
+            button.metrics = FaceMetrics::of(ControlSize::Regular, &theme);
+            button.apply_layout_external(plain);
+            let hit = button.hit_rect();
+            assert!(
+                hit.x0 < plain.x0 && hit.x1 > plain.x1,
+                "the hit area reaches out"
+            );
+        }
+
+        fn closed_glyphs_fill_when_on() {
+            assert!(fills_when_on(crate::icons::Icon::Star));
+            assert!(fills_when_on(crate::icons::Icon::Pin));
+            assert!(!fills_when_on(crate::icons::Icon::Refresh));
+        }
+
+        fn icons_grow_with_the_text_scale() {
+            let one = FaceMetrics::of(ControlSize::Regular, &Theme::dark());
+            let two = FaceMetrics::of(ControlSize::Regular, &Theme::dark().with_text_scale(2.0));
+            assert!(two.icon > one.icon);
+            assert!(two.icon <= two.height);
+        }
+
+        fn enabled_follows_its_state_and_bounds_are_spoken() {
+            let can_save = crate::LocalState::new(false);
+            let mut button = Button::new("save", "Save").enabled_from(&can_save);
+            assert!(!Widget::is_enabled(&button));
+            can_save.set(true);
+            Widget::sync(&mut button, &AutoCommit::new(), &automerge::ROOT);
+            assert!(Widget::is_enabled(&button));
+            button.apply_layout_external(Rect::new(4.0, 8.0, 84.0, 40.0));
+            let node = Widget::accessibility(&button).expect("semantics");
+            assert!(node.bounds.is_some());
+        }
+
+        a_key_rests_on_a_faint_lift_with_a_title_label();
+        a_plain_label_sits_on_its_layout_edge();
+        closed_glyphs_fill_when_on();
+        icons_grow_with_the_text_scale();
+        enabled_follows_its_state_and_bounds_are_spoken();
+    }
+
+    phase a_button_named_beyond_its_label_is_announced_with_that_name;
+    // A button's visible label may say less than its name: the charge reads "61%" beside the
+    // charging glyph, and assistive technology hears the charging too.
+    {
+        use crate::widget::Widget as _;
+        let named = Button::new("charge", "61%").with_accessible_name("61%, charging");
+        let heard = named.accessibility().expect("a button is announced");
+        assert_eq!(heard.name.as_deref(), Some("61%, charging"));
+        let shown = Button::new("charge", "61%");
+        assert_eq!(shown.accessibility().unwrap().name.as_deref(), Some("61%"));
+        let glyph = Button::icon_only("charge", crate::icons::Icon::Battery, "61%, charging");
+        assert_eq!(
+            glyph.accessibility().unwrap().name.as_deref(),
+            Some("61%, charging"),
+            "an icon-only button keeps the name its label only states"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    /// Button width and height: chevrons, intrinsic size, host placement, faces and counts.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_button_measures_from_its_label_and_control_size;
+
+    phase a_menu_button_makes_room_for_its_chevron;
+    // A button that opens a menu makes room for its chevron after the
+    // label, so the label is never elided to fit it; an icon-only one
+    // stays square.
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let metrics = FaceMetrics::of_role(ControlSize::Small, ButtonRole::Secondary, &theme);
+        let width = |label: &str, menu: bool, text: &mut TextRenderer| {
+            FaceContent {
+                icon: None,
+                image: None,
+                faces: &[],
+                avatar: None,
+                placeholder: false,
+                tone: None,
+                badge: None,
+                label,
+                detail: None,
+                hint: None,
+                flush: false,
+                filled_icon: false,
+                menu,
+            }
+            .intrinsic_width(&metrics, text, metrics.height)
+        };
+        let label = "Administrator";
+        let plain = width(label, false, &mut text);
+        let menu = width(label, true, &mut text);
+        assert!(
+            (menu - plain - (metrics.icon_gap + metrics.icon)).abs() <= 1.0,
+            "{plain} then {menu}"
+        );
+        assert!((width("", true, &mut text) - metrics.height).abs() < 1e-9);
+        let button = Button::new("role", label).with_menu(Vec::new());
+        assert!(button.button().opens_menu);
+        assert!(!Button::new("save", "Save").opens_menu);
+    }
+
+    phase label_face_geometry_follows_the_theme_scale;
+    {
+        fn retained_and_immediate_labels_share_geometry() {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            let label = "Refresh";
+            let rect = Rect::new(10.0, 20.0, 330.0, 84.0);
+            let mut button = Button::new("action", label).with_icon(crate::icons::Icon::Refresh);
+            let mut tree = TaffyTree::new();
+            button.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+            button.apply_layout_external(rect);
+            let mut retained = Scene::new();
+            button.draw(
+                &mut retained,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &crate::presence::PresenceCtx::default(),
+            );
+            let mut immediate = Scene::new();
+            Button::paint(
+                &mut immediate,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ButtonFace::new(rect, label).icon(crate::icons::Icon::Refresh),
+            );
+            let a = &retained.encoding().resources.glyph_runs;
+            let b = &immediate.encoding().resources.glyph_runs;
+            assert!(!a.is_empty());
+            assert_eq!(a.len(), b.len());
+            for (a, b) in a.iter().zip(b) {
+                assert_eq!(a.transform, b.transform);
+                assert_eq!(a.font_size, b.font_size);
+            }
+        }
+
+        /// A default `ButtonFace` reads its corner from the theme and sets its
+        /// label in the Regular size's role; Large sets it in Body.
+        fn default_face_reads_its_corner_and_label_role_from_the_theme() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
+            let mut paint = |face: ButtonFace<'_>| {
                 let mut scene = Scene::new();
-                let face = ButtonFace::new(rect, "Delete")
-                    .role(style)
-                    .hovered(interact.hovered)
-                    .pressed(interact.pressed)
-                    .focused(interact.focused)
-                    .disabled(interact.disabled);
                 Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
-                let origins = glyph_origins(&scene);
-                let origin = *origins.first().expect("label painted");
-                match reference {
-                    None => reference = Some(origin),
-                    Some(expected) => {
-                        assert_eq!(origin, expected, "{style:?}/{name}: the label moved")
+                scene
+            };
+            let themed = paint(ButtonFace::new(rect, "Save").icon(crate::icons::Icon::Refresh));
+            let explicit = paint(
+                ButtonFace::new(rect, "Save")
+                    .icon(crate::icons::Icon::Refresh)
+                    .control_size(ControlSize::Regular),
+            );
+            assert_eq!(themed.encoding().path_data, explicit.encoding().path_data);
+            let a = &themed.encoding().resources.glyph_runs;
+            let b = &explicit.encoding().resources.glyph_runs;
+            assert_eq!(a.len(), 1);
+            assert_eq!(a[0].transform, b[0].transform);
+            assert_eq!(a[0].font_size, b[0].font_size);
+            assert!((a[0].font_size - theme.text(TextRole::Label).size).abs() < 1e-6);
+            let large = paint(ButtonFace::new(rect, "Save").control_size(ControlSize::Large));
+            assert!(
+                (large.encoding().resources.glyph_runs[0].font_size - theme.text(TextRole::Body).size)
+                    .abs()
+                    < 1e-6
+            );
+        }
+
+        /// The retained and immediate labels follow the theme's type scale —
+        /// 2× the Label role under a 2× theme — whether the shared renderer is
+        /// matched (2×, the live App and `FrameHarness`) or left at 1× (the
+        /// apps' raw `--shots` loop), and whether or not a `build_layout` pass
+        /// preceded the draw.
+        fn retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts() {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let label = theme.text(TextRole::Label).size;
+            let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
+            let presence = crate::presence::PresenceCtx::default();
+            let font_size = |scene: &Scene| scene.encoding().resources.glyph_runs[0].font_size;
+            for renderer_scale in [1.0_f32, 2.0] {
+                let mut text = TextRenderer::new();
+                text.set_text_scale(renderer_scale);
+
+                let mut laid_out = Button::new("save", "Save");
+                laid_out.build_layout(
+                    &mut TaffyTree::new(),
+                    &theme,
+                    &mut std::collections::HashMap::new(),
+                );
+                laid_out.apply_layout_external(rect);
+                let mut retained = Scene::new();
+                laid_out.draw(
+                    &mut retained,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &presence,
+                );
+                assert!(
+                    (font_size(&retained) - label).abs() < 1e-3,
+                    "retained label at renderer {renderer_scale}×: {}",
+                    font_size(&retained)
+                );
+
+                let mut external = Button::new("save", "Save");
+                external.apply_layout_external(rect);
+                let mut external_scene = Scene::new();
+                external.draw(
+                    &mut external_scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &presence,
+                );
+                assert!(
+                    (font_size(&external_scene) - label).abs() < 1e-3,
+                    "externally laid-out label at renderer {renderer_scale}×: {}",
+                    font_size(&external_scene)
+                );
+
+                let mut immediate = Scene::new();
+                Button::paint(
+                    &mut immediate,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &ButtonFace::new(rect, "Save"),
+                );
+                assert!(
+                    (font_size(&immediate) - label).abs() < 1e-3,
+                    "ButtonFace default at renderer {renderer_scale}×: {} (expected {label})",
+                    font_size(&immediate)
+                );
+            }
+        }
+
+        /// A theme text-scale change between frames re-emits the cached face at
+        /// the new label size instead of replaying the old glyphs.
+        fn theme_text_scale_change_invalidates_the_cached_face() {
+            let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
+            let mut text = TextRenderer::new();
+            let mut button = Button::new("save", "Save");
+            let presence = crate::presence::PresenceCtx::default();
+            let one = Theme::dark();
+            button.build_layout(
+                &mut TaffyTree::new(),
+                &one,
+                &mut std::collections::HashMap::new(),
+            );
+            button.apply_layout_external(rect);
+            let mut first = Scene::new();
+            button.draw(&mut first, Affine::IDENTITY, &mut text, &one, &presence);
+            button.mark_drawn();
+            assert!(!button.needs_redraw(), "settled at 1×");
+
+            let larger = Theme::dark().with_text_scale(1.5);
+            button.build_layout(
+                &mut TaffyTree::new(),
+                &larger,
+                &mut std::collections::HashMap::new(),
+            );
+            assert!(
+                button.needs_redraw(),
+                "a new label size must dirty the cache"
+            );
+            let mut second = Scene::new();
+            button.draw(&mut second, Affine::IDENTITY, &mut text, &larger, &presence);
+            let before = first.encoding().resources.glyph_runs[0].font_size;
+            let after = second.encoding().resources.glyph_runs[0].font_size;
+            assert!((before - 13.0).abs() < 1e-3, "{before}");
+            assert!((after - 19.5).abs() < 1e-3, "{after}");
+        }
+
+        retained_and_immediate_labels_share_geometry();
+        default_face_reads_its_corner_and_label_role_from_the_theme();
+        retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts();
+        theme_text_scale_change_invalidates_the_cached_face();
+    }
+
+    phase a_host_placed_button_never_asks_the_solver_for_a_measure;
+    // Only a node the layout solver placed can be measured again: a button
+    // its host places never asks for a measure, placed or hidden, while one
+    // in the solver's tree asks when what it shows may change its width.
+    {
+        let mut hosted = Button::new("history", "History");
+        for rect in [Rect::ZERO, Rect::new(0.0, 0.0, 32.0, 32.0), Rect::ZERO] {
+            hosted.apply_layout_external(rect);
+            assert!(!hosted.layout_needs_measure(), "placed at {rect:?}");
+        }
+
+        let mut laid_out = Button::new("save", "Save");
+        let mut tree = TaffyTree::new();
+        let node = laid_out.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        )
+        .unwrap();
+        laid_out.apply_layout(&tree, node, Point::ZERO);
+        assert!(!laid_out.layout_needs_measure(), "laid out and unchanged");
+        laid_out.set_interaction_environment(
+            crate::interaction::InteractionEnvironment::default().with_touch_modality(),
+        );
+        assert!(
+            laid_out.layout_needs_measure(),
+            "a touch target may be wider"
+        );
+    }
+
+    phase the_intrinsic_footprint_follows_the_label_and_never_moves_it;
+    {
+        fn a_short_label_is_at_the_labelled_minimum() {
+            let rect = measured_button_rect(Button::new("save", "Save"), 1.0);
+            assert_eq!((rect.width(), rect.height()), (64.0, 32.0), "{rect:?}");
+        }
+
+        /// A long label widens the button to hold it, never elided while the
+        /// parent has room.
+        fn a_wide_label_widens_the_button_instead_of_overflowing_it() {
+            let label = "Remove every remote connection";
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let (label_w, _) = text.measure_style(label, None, &theme.text(TextRole::Label));
+            let expected = (f64::from(label_w) + 2.0 * f64::from(theme.tokens.spacing.s3)).ceil();
+            let rect = measured_button_rect(Button::new("remove", label), 1.0);
+            assert!(
+                (rect.width() - expected).abs() < 1e-6,
+                "{rect:?} vs {expected}"
+            );
+            assert_eq!(rect.height(), 32.0);
+        }
+
+        /// Hover, press, focus and disabled recolour the face; none of them may
+        /// move it. The focus ring is stroked on the outline, not inset, so the
+        /// label origin is identical in every state.
+        fn interaction_states_do_not_move_the_face_or_its_label() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
+            let states = [
+                ("rest", Interaction::default()),
+                (
+                    "hovered",
+                    Interaction {
+                        hovered: true,
+                        ..Interaction::default()
+                    },
+                ),
+                (
+                    "pressed",
+                    Interaction {
+                        pressed: true,
+                        ..Interaction::default()
+                    },
+                ),
+                (
+                    "focused",
+                    Interaction {
+                        focused: true,
+                        ..Interaction::default()
+                    },
+                ),
+                (
+                    "disabled",
+                    Interaction {
+                        disabled: true,
+                        ..Interaction::default()
+                    },
+                ),
+            ];
+            for style in [
+                ButtonRole::Secondary,
+                ButtonRole::Primary,
+                ButtonRole::Destructive,
+                ButtonRole::Plain,
+            ] {
+                let mut reference: Option<[f32; 2]> = None;
+                for (name, interact) in states {
+                    let mut scene = Scene::new();
+                    let face = ButtonFace::new(rect, "Delete")
+                        .role(style)
+                        .hovered(interact.hovered)
+                        .pressed(interact.pressed)
+                        .focused(interact.focused)
+                        .disabled(interact.disabled);
+                    Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
+                    let origins = glyph_origins(&scene);
+                    let origin = *origins.first().expect("label painted");
+                    match reference {
+                        None => reference = Some(origin),
+                        Some(expected) => {
+                            assert_eq!(origin, expected, "{style:?}/{name}: the label moved")
+                        }
                     }
                 }
             }
         }
+
+        a_short_label_is_at_the_labelled_minimum();
+        a_wide_label_widens_the_button_instead_of_overflowing_it();
+        interaction_states_do_not_move_the_face_or_its_label();
     }
 
-    a_short_label_is_at_the_labelled_minimum();
-    a_wide_label_widens_the_button_instead_of_overflowing_it();
-    interaction_states_do_not_move_the_face_or_its_label();
-}
-
-#[test]
-fn pointer_click_fires_the_callback() {
-    fn cursor_shape_is_pointer_over_button() {
-        let mut b = Button::new("id", "Go");
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let theme = Theme::dark();
-        let node = b.build_layout(&mut tree, &theme, &mut node_map);
-        tree.compute_layout(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(200.0),
-                height: taffy::AvailableSpace::Definite(60.0),
-            },
-        )
-        .unwrap();
-        b.apply_layout(&tree, node, Point::ZERO);
-
-        assert_eq!(
-            Widget::cursor_shape(&b, Point::new(10.0, 10.0)),
-            Some(winit::window::CursorIcon::Pointer),
-            "pointer over the button requests the pointing-hand cursor",
-        );
-        assert_eq!(
-            Widget::cursor_shape(&b, Point::new(500.0, 500.0)),
-            None,
-            "pointer well outside the button defers (no cursor claim)",
-        );
-    }
-
-    fn on_click_callback_fires_on_release_over_button() {
-        use std::cell::Cell;
-        use std::rc::Rc;
-        use winit::event::{ElementState, MouseButton};
-
-        let fired = Rc::new(Cell::new(0u32));
-        let mut b = {
-            let fired = fired.clone();
-            Button::new("id", "Go").on_effect(move || fired.set(fired.get() + 1))
-        };
-
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let theme = Theme::dark();
-        let node = b.build_layout(&mut tree, &theme, &mut node_map);
-        tree.compute_layout(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(200.0),
-                height: taffy::AvailableSpace::Definite(60.0),
-            },
-        )
-        .unwrap();
-        b.apply_layout(&tree, node, Point::ZERO);
-
-        let device = winit::event::DeviceId::dummy();
-        let mut at_node = crate::testing::Dispatch::new().layout(&tree, node);
-        let mut dispatch = |b: &mut Button, ev: WindowEvent| {
-            at_node.send(b, &ev);
-        };
-
-        dispatch(
-            &mut b,
-            WindowEvent::CursorMoved {
-                device_id: device,
-                position: (10.0, 10.0).into(),
-            },
-        );
-        dispatch(
-            &mut b,
-            WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        assert_eq!(fired.get(), 0, "not fired until release");
-        dispatch(
-            &mut b,
-            WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
-        assert_eq!(fired.get(), 0, "the press waits to be answered");
-        assert_eq!(
-            crate::testing::answer_controls(&mut b),
-            1,
-            "fired once, when the release's press is answered"
-        );
-        assert_eq!(fired.get(), 1);
-    }
-
-    cursor_shape_is_pointer_over_button();
-    on_click_callback_fires_on_release_over_button();
-}
-
-#[test]
-fn accessibility_reports_role_name_state_and_icon_only_naming() {
-    fn accessibility_reports_button_role_name_and_state() {
-        use crate::a11y::Role;
-        let b = Button::new("id", "Save");
-        let node = Widget::accessibility(&b).expect("button is not presentational");
-        assert_eq!(node.role, Role::Button);
-        assert_eq!(node.name.as_deref(), Some("Save"));
-        assert!(node.state.focusable);
-        assert!(!node.state.focused);
-        assert!(!node.state.disabled);
-        assert_eq!(node.state.checked, None, "a button is not checkable");
-    }
-
-    fn accessibility_reflects_disabled_and_focus() {
-        let mut b = Button::new("id", "Save").with_enabled(false);
-        b.set_focus(true);
-        let node = Widget::accessibility(&b).unwrap();
-        assert!(node.state.disabled);
-        assert!(node.state.focused);
-    }
-
-    fn accessibility_icon_only_button_without_name_is_silent() {
-        let b = Button::new("id", "").with_icon(crate::icons::Icon::Check);
-        let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name, None);
-    }
-
-    fn accessibility_icon_only_button_uses_accessible_name() {
-        let b = Button::new("id", "")
-            .with_icon(crate::icons::Icon::Check)
-            .with_accessible_name("Confirm");
-        let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Confirm"));
-    }
-
-    fn accessibility_stated_name_wins_over_the_visible_label() {
-        let b = Button::new("id", "Save").with_accessible_name("Persist");
-        let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Persist"));
-    }
-
-    accessibility_reports_button_role_name_and_state();
-    accessibility_reflects_disabled_and_focus();
-    accessibility_icon_only_button_without_name_is_silent();
-    accessibility_icon_only_button_uses_accessible_name();
-    accessibility_stated_name_wins_over_the_visible_label();
-}
-
-#[test]
-fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
-    fn tooltip_is_exposed_to_the_host() {
-        let b = Button::new("id", "")
-            .with_icon(crate::icons::Icon::Search)
-            .tooltip("Search");
-        assert_eq!(Widget::tooltip(&b).as_deref(), Some("Search"));
-        let plain = Button::new("id", "Save");
-        assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
-    }
-
-    fn compact_toolbar_presentation_round_trips_authored_semantics() {
-        let mut button = Button::new("publish", "Publish")
-            .with_icon(crate::icons::Icon::CloudDownload)
-            .with_accessible_name("Publish document")
-            .tooltip("Publish this document now");
-
-        button.set_compact_toolbar_presentation(true);
-        assert!(button.label.is_empty(), "only the icon should be painted");
-        assert_eq!(
-            Widget::accessibility(&button).unwrap().name.as_deref(),
-            Some("Publish document"),
-            "compaction never makes an icon-only control silent"
-        );
-        assert_eq!(
-            Widget::tooltip(&button).as_deref(),
-            Some("Publish this document now"),
-            "the authored tooltip survives compaction"
-        );
-
-        button.set_compact_toolbar_presentation(false);
-        assert_eq!(button.label, "Publish");
-        assert_eq!(
-            button.accessible_name.as_deref(),
-            Some("Publish document"),
-            "expansion restores the authored accessible name rather than retaining a fallback"
-        );
-        assert_eq!(
-            Widget::accessibility(&button).unwrap().name.as_deref(),
-            Some("Publish document"),
-            "the name the app stated still says it after expansion"
-        );
-        assert_eq!(
-            Widget::tooltip(&button).as_deref(),
-            Some("Publish this document now")
-        );
-    }
-
-    fn icon_only_tooltip_doubles_as_accessible_name() {
-        let b = Button::new("id", "")
-            .with_icon(crate::icons::Icon::Search)
-            .tooltip("Search");
-        let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Search"));
-    }
-
-    fn explicit_accessible_name_wins_over_tooltip() {
-        let b = Button::new("id", "")
-            .with_icon(crate::icons::Icon::MoreHorizontal)
-            .with_accessible_name("View options")
-            .tooltip("More");
-        let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name.as_deref(), Some("View options"));
-    }
-
-    fn icon_only_effect_publishes_its_spoken_name() {
-        let doc = AutoCommit::new();
-        let named = Button::new("private", "")
-            .with_icon(crate::icons::Icon::Shield)
-            .with_accessible_name("New Private Window")
-            .on_effect(|| {});
-        let tooltip_after = Button::new("search", "")
-            .with_icon(crate::icons::Icon::Search)
-            .on_effect(|| {})
-            .tooltip("Search");
-        for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
-            let resources = crate::resources::resources(&button, &doc);
-            assert_eq!(resources.len(), 1);
-            assert_eq!(resources[0].label, name);
-            assert!(
-                resources[0]
-                    .actions
-                    .iter()
-                    .all(|action| action.label == name)
-            );
-        }
-    }
-
-    tooltip_is_exposed_to_the_host();
-    compact_toolbar_presentation_round_trips_authored_semantics();
-    icon_only_tooltip_doubles_as_accessible_name();
-    explicit_accessible_name_wins_over_tooltip();
-    icon_only_effect_publishes_its_spoken_name();
-}
-
-#[test]
-fn keys_plain_ink_and_bound_state() {
-    fn a_key_rests_on_a_faint_lift_with_a_title_label() {
-        let theme = Theme::dark();
-        let ground = theme.tokens.colors.surfaces.content;
-        let (rest, edge, _) = face_colors(&theme, ButtonRole::Key, Interaction::default());
-        assert_ne!(rest, ground, "a key is lifted off its ground");
-        assert!(edge.is_none());
-        let (hover, _, _) = face_colors(
-            &theme,
-            ButtonRole::Key,
-            Interaction {
-                hovered: true,
-                ..Interaction::default()
-            },
-        );
-        assert_ne!(hover, rest);
-        let metrics = FaceMetrics::of_role(ControlSize::Regular, ButtonRole::Key, &theme);
-        assert_eq!(metrics.label_style, theme.text(TextRole::Title));
-    }
-
-    fn a_plain_label_sits_on_its_layout_edge() {
+    phase a_faces_button_is_as_wide_as_the_faces_it_shows;
+    // A button of who is here is exactly as wide as the faces it shows: no label behind them at
+    // any width, one face wider than a square for one person, and a fourth person counted in a
+    // face of its own rather than a fifth face. The label names the people, never the glyph.
+    {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let label = f64::from(
-            text.measure_style("Show details", None, &theme.text(TextRole::Label))
-                .0,
+        let button = |people: &[&str]| {
+            let mut button = Button::new("people", "")
+                .with_accessible_name("Mia Clayton and others are here")
+                .with_faces(people.iter().map(|name| (*name).to_owned()))
+                .role(ButtonRole::Bar);
+            button.metrics = FaceMetrics::of_role(ControlSize::Regular, ButtonRole::Bar, &theme);
+            button
+        };
+        let width =
+            |people: &[&str], text: &mut TextRenderer| f64::from(button(people).intrinsic_width(text));
+        let stack = crate::presence::FaceStack::in_face(button(&[]).face_height());
+        let pad = 2.0 * button(&[]).metrics.pad_x;
+        let one = width(&["Mia Clayton"], &mut text);
+        let three = width(&["Mia Clayton", "Sam Okafor", "Ana Ruiz"], &mut text);
+        let four = width(
+            &["Mia Clayton", "Sam Okafor", "Ana Ruiz", "Ben Ito"],
+            &mut text,
         );
-        let plain = measured_button_rect(
-            Button::new("details", "Show details").role(ButtonRole::Plain),
-            1.0,
-        );
-        let secondary = measured_button_rect(Button::new("details", "Show details"), 1.0);
         assert!(
-            (plain.width() - label.ceil()).abs() <= 1.0,
-            "a plain button is as wide as its ink: {plain:?} vs {label}"
+            (one - (stack.group_width(1) + pad)).abs() <= 1.0,
+            "one face and the pad: {one}"
         );
-        assert!(secondary.width() > plain.width());
-        let mut button = Button::new("details", "Show details").role(ButtonRole::Plain);
-        button.metrics = FaceMetrics::of(ControlSize::Regular, &theme);
-        button.apply_layout_external(plain);
-        let hit = button.hit_rect();
+        assert!(three > one, "three faces are wider than one: {three}");
         assert!(
-            hit.x0 < plain.x0 && hit.x1 > plain.x1,
-            "the hit area reaches out"
+            (four - (stack.group_width(4) + pad)).abs() <= 1.0,
+            "the fourth person is a counted face of its own: {four} vs {}",
+            stack.group_width(4) + pad
+        );
+        assert!(four > three, "counting the rest takes a slot: {four}");
+        assert_eq!(stack.group(4), (3, 1), "three faces, then +1");
+        assert!(
+            four < 4.0 * button(&[]).face_height(),
+            "still a bar control"
+        );
+
+        let node = Widget::accessibility(&button(&["Mia Clayton", "Sam Okafor"]))
+            .expect("a group of faces is announced");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("Mia Clayton and others are here"),
+            "the name is the people, in words"
         );
     }
 
-    fn closed_glyphs_fill_when_on() {
-        assert!(fills_when_on(crate::icons::Icon::Star));
-        assert!(fills_when_on(crate::icons::Icon::Pin));
-        assert!(!fills_when_on(crate::icons::Icon::Refresh));
-    }
+    phase a_count_stands_inside_the_face_and_leaves_its_parents_margins_alone;
+    // A node's margins are its parent's (an arrangement puts its gaps there), and a count stands
+    // inside the button's face: a button with a count leaves its parent's margins as they are,
+    // and a second layout pass finds nothing to change, so the layout settles. The count itself
+    // never leaves the face, so the bar's top edge cannot cut it.
+    {
+        let theme = Theme::light();
+        let mut text = TextRenderer::new();
+        let parents = taffy::Rect {
+            left: taffy::LengthPercentageAuto::length(8.0),
+            right: taffy::LengthPercentageAuto::length(8.0),
+            top: taffy::LengthPercentageAuto::length(4.0),
+            bottom: taffy::LengthPercentageAuto::length(4.0),
+        };
+        let laid = |mut button: Button, text: &mut TextRenderer| {
+            let mut tree = TaffyTree::new();
+            let mut map = std::collections::HashMap::new();
+            let node = button.build_layout(&mut tree, &theme, &mut map);
+            let mut style = tree.style(node).unwrap().clone();
+            style.margin = parents;
+            tree.set_style(node, style).unwrap();
+            button.adjust_layout_style(&mut tree, node, text);
+            let first = tree.style(node).unwrap().margin;
+            let changed = button.adjust_layout_style(&mut tree, node, text);
+            (first, changed, tree.style(node).unwrap().margin)
+        };
 
-    fn icons_grow_with_the_text_scale() {
-        let one = FaceMetrics::of(ControlSize::Regular, &Theme::dark());
-        let two = FaceMetrics::of(ControlSize::Regular, &Theme::dark().with_text_scale(2.0));
-        assert!(two.icon > one.icon);
-        assert!(two.icon <= two.height);
-    }
+        let counted = || {
+            Button::icon_only("bell", crate::icons::Icon::Bell, "Notifications, 9 unread")
+                .role(ButtonRole::Bar)
+                .with_count(
+                    crate::widget::BadgeContent::Count(9),
+                    crate::widget::ChipStyle::Live,
+                )
+        };
+        let (first, changed, after) = laid(counted(), &mut text);
+        assert_eq!(first, parents, "a count leaves its parent's margins alone");
+        assert!(
+            !changed && after == parents,
+            "and finds nothing to change again"
+        );
 
-    fn enabled_follows_its_state_and_bounds_are_spoken() {
-        let can_save = crate::LocalState::new(false);
-        let mut button = Button::new("save", "Save").enabled_from(&can_save);
-        assert!(!Widget::is_enabled(&button));
-        can_save.set(true);
-        Widget::sync(&mut button, &AutoCommit::new(), &automerge::ROOT);
-        assert!(Widget::is_enabled(&button));
-        button.apply_layout_external(Rect::new(4.0, 8.0, 84.0, 40.0));
-        let node = Widget::accessibility(&button).expect("semantics");
-        assert!(node.bounds.is_some());
-    }
-
-    a_key_rests_on_a_faint_lift_with_a_title_label();
-    a_plain_label_sits_on_its_layout_edge();
-    closed_glyphs_fill_when_on();
-    icons_grow_with_the_text_scale();
-    enabled_follows_its_state_and_bounds_are_spoken();
-}
-
-/// A button of who is here is exactly as wide as the faces it shows: no label behind them at
-/// any width, one face wider than a square for one person, and a fourth person counted in a
-/// face of its own rather than a fifth face. The label names the people, never the glyph.
-#[test]
-fn a_faces_button_is_as_wide_as_the_faces_it_shows() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let button = |people: &[&str]| {
-        let mut button = Button::new("people", "")
-            .with_accessible_name("Mia Clayton and others are here")
-            .with_faces(people.iter().map(|name| (*name).to_owned()))
-            .role(ButtonRole::Bar);
-        button.metrics = FaceMetrics::of_role(ControlSize::Regular, ButtonRole::Bar, &theme);
-        button
-    };
-    let width =
-        |people: &[&str], text: &mut TextRenderer| f64::from(button(people).intrinsic_width(text));
-    let stack = crate::presence::FaceStack::in_face(button(&[]).face_height());
-    let pad = 2.0 * button(&[]).metrics.pad_x;
-    let one = width(&["Mia Clayton"], &mut text);
-    let three = width(&["Mia Clayton", "Sam Okafor", "Ana Ruiz"], &mut text);
-    let four = width(
-        &["Mia Clayton", "Sam Okafor", "Ana Ruiz", "Ben Ito"],
-        &mut text,
-    );
-    assert!(
-        (one - (stack.group_width(1) + pad)).abs() <= 1.0,
-        "one face and the pad: {one}"
-    );
-    assert!(three > one, "three faces are wider than one: {three}");
-    assert!(
-        (four - (stack.group_width(4) + pad)).abs() <= 1.0,
-        "the fourth person is a counted face of its own: {four} vs {}",
-        stack.group_width(4) + pad
-    );
-    assert!(four > three, "counting the rest takes a slot: {four}");
-    assert_eq!(stack.group(4), (3, 1), "three faces, then +1");
-    assert!(
-        four < 4.0 * button(&[]).face_height(),
-        "still a bar control"
-    );
-
-    let node = Widget::accessibility(&button(&["Mia Clayton", "Sam Okafor"]))
-        .expect("a group of faces is announced");
-    assert_eq!(
-        node.name.as_deref(),
-        Some("Mia Clayton and others are here"),
-        "the name is the people, in words"
-    );
-}
-
-/// A node's margins are its parent's (an arrangement puts its gaps there), and a count stands
-/// inside the button's face: a button with a count leaves its parent's margins as they are,
-/// and a second layout pass finds nothing to change, so the layout settles. The count itself
-/// never leaves the face, so the bar's top edge cannot cut it.
-#[test]
-fn a_count_stands_inside_the_face_and_leaves_its_parents_margins_alone() {
-    let theme = Theme::light();
-    let mut text = TextRenderer::new();
-    let parents = taffy::Rect {
-        left: taffy::LengthPercentageAuto::length(8.0),
-        right: taffy::LengthPercentageAuto::length(8.0),
-        top: taffy::LengthPercentageAuto::length(4.0),
-        bottom: taffy::LengthPercentageAuto::length(4.0),
-    };
-    let laid = |mut button: Button, text: &mut TextRenderer| {
+        let mut button = counted();
         let mut tree = TaffyTree::new();
         let mut map = std::collections::HashMap::new();
         let node = button.build_layout(&mut tree, &theme, &mut map);
-        let mut style = tree.style(node).unwrap().clone();
-        style.margin = parents;
-        tree.set_style(node, style).unwrap();
-        button.adjust_layout_style(&mut tree, node, text);
-        let first = tree.style(node).unwrap().margin;
-        let changed = button.adjust_layout_style(&mut tree, node, text);
-        (first, changed, tree.style(node).unwrap().margin)
-    };
+        button.adjust_layout_style(&mut tree, node, &mut text);
+        button.apply_layout_external(Rect::new(100.0, 0.0, 128.0, 28.0));
+        let badge = button.count_rect().expect("a count where there is unread");
+        assert!(
+            badge.x0 >= button.rect.x0 && badge.x1 <= button.rect.x1,
+            "inside the face across: {badge:?} in {:?}",
+            button.rect
+        );
+        assert!(
+            badge.y0 >= button.rect.y0 && badge.y1 <= button.rect.y1,
+            "inside the face down: {badge:?} in {:?}",
+            button.rect
+        );
+    }
 
-    let counted = || {
-        Button::icon_only("bell", crate::icons::Icon::Bell, "Notifications, 9 unread")
-            .role(ButtonRole::Bar)
-            .with_count(
-                crate::widget::BadgeContent::Count(9),
-                crate::widget::ChipStyle::Live,
-            )
-    };
-    let (first, changed, after) = laid(counted(), &mut text);
-    assert_eq!(first, parents, "a count leaves its parent's margins alone");
-    assert!(
-        !changed && after == parents,
-        "and finds nothing to change again"
-    );
-
-    let mut button = counted();
-    let mut tree = TaffyTree::new();
-    let mut map = std::collections::HashMap::new();
-    let node = button.build_layout(&mut tree, &theme, &mut map);
-    button.adjust_layout_style(&mut tree, node, &mut text);
-    button.apply_layout_external(Rect::new(100.0, 0.0, 128.0, 28.0));
-    let badge = button.count_rect().expect("a count where there is unread");
-    assert!(
-        badge.x0 >= button.rect.x0 && badge.x1 <= button.rect.x1,
-        "inside the face across: {badge:?} in {:?}",
-        button.rect
-    );
-    assert!(
-        badge.y0 >= button.rect.y0 && badge.y1 <= button.rect.y1,
-        "inside the face down: {badge:?} in {:?}",
-        button.rect
-    );
-}
-
-/// A button's visible label may say less than its name: the charge reads "61%" beside the
-/// charging glyph, and assistive technology hears the charging too.
-#[test]
-fn a_button_named_beyond_its_label_is_announced_with_that_name() {
-    use crate::widget::Widget as _;
-    let named = Button::new("charge", "61%").with_accessible_name("61%, charging");
-    let heard = named.accessibility().expect("a button is announced");
-    assert_eq!(heard.name.as_deref(), Some("61%, charging"));
-    let shown = Button::new("charge", "61%");
-    assert_eq!(shown.accessibility().unwrap().name.as_deref(), Some("61%"));
-    let glyph = Button::icon_only("charge", crate::icons::Icon::Battery, "61%, charging");
-    assert_eq!(
-        glyph.accessibility().unwrap().name.as_deref(),
-        Some("61%, charging"),
-        "an icon-only button keeps the name its label only states"
-    );
-}
-
-/// A control the solver has placed answers its measure there, not in a draw: a control that is
-/// laid out and never drawn (a shut overflow door's button among a row's controls) finds no draw
-/// to answer it, so one switch of input would keep it — and its path to the root — asking to be
-/// measured on every frame after.
-#[test]
-fn a_button_the_solver_placed_answers_its_measure() {
-    let mut harness = crate::headless::FrameHarness::new(
-        crate::State::new(),
-        Box::new(crate::widget::Row::new().push(Box::new(Button::icon_only(
-            "pin",
-            crate::icons::Icon::Pin,
-            "Pin",
-        )))),
-        (400, 100),
-    );
-    harness.relayout();
-    let keyboard = harness.interaction_environment().with_keyboard_modality();
-    harness.set_interaction_environment(keyboard);
-    assert!(
-        harness.last_relayout().measured,
-        "the switch lays the window out once: {:?}",
-        harness.last_relayout()
-    );
-    harness.relayout();
-    assert_eq!(
-        harness.last_relayout().marked_leaves,
-        0,
-        "a control the solver placed asks for no second measure: {:?}",
-        harness.last_relayout()
-    );
+    phase a_button_the_solver_placed_answers_its_measure;
+    // A control the solver has placed answers its measure there, not in a draw: a control that is
+    // laid out and never drawn (a shut overflow door's button among a row's controls) finds no draw
+    // to answer it, so one switch of input would keep it — and its path to the root — asking to be
+    // measured on every frame after.
+    {
+        let mut harness = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(crate::widget::Row::new().push(Box::new(Button::icon_only(
+                "pin",
+                crate::icons::Icon::Pin,
+                "Pin",
+            )))),
+            (400, 100),
+        );
+        harness.relayout();
+        let keyboard = harness.interaction_environment().with_keyboard_modality();
+        harness.set_interaction_environment(keyboard);
+        assert!(
+            harness.last_relayout().measured,
+            "the switch lays the window out once: {:?}",
+            harness.last_relayout()
+        );
+        harness.relayout();
+        assert_eq!(
+            harness.last_relayout().marked_leaves,
+            0,
+            "a control the solver placed asks for no second measure: {:?}",
+            harness.last_relayout()
+        );
+    }
 }

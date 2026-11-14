@@ -815,40 +815,44 @@ pub(crate) fn field_label(key: &str) -> String {
 mod tests {
     use super::*;
 
-    /// An entry copied into a bug report says when, where from and what, so two lines of a
-    /// failed unit leave the app with their provenance.
-    #[test]
-    fn a_copied_entry_carries_its_provenance_and_message() {
-        let entry = crate::journal::sample_entries()
-            .into_iter()
-            .next()
-            .expect("the sample has an entry");
-        let copied = entry_copy(&entry);
-        assert!(copied.contains(&entry.message), "{copied}");
-        assert!(copied.contains(&entry.hostname), "{copied}");
-        assert!(copied.contains(&entry.identifier), "{copied}");
-        assert!(copied.starts_with(&entry.timestamp_full()), "{copied}");
-    }
+    tilo_test_env::scenario! {
+        fn the_view_words_entries_fields_and_severities;
 
-    #[test]
-    fn field_labels_read_in_sentence_case() {
-        for (key, label) in [
-            ("SYSLOG_FACILITY", "Syslog facility"),
-            ("_KERNEL_DEVICE", "Kernel device"),
-            ("CODE_FILE", "Code file"),
-            ("PEER", "Peer"),
-            ("BT_ADAPTER", "BT adapter"),
-            ("_SYSTEMD_UNIT_ID", "Systemd unit ID"),
-        ] {
-            assert_eq!(field_label(key), label, "case {key}");
+        phase a_copied_entry_carries_its_provenance_and_message;
+        // An entry copied into a bug report says when, where from and what, so two lines of a
+        // failed unit leave the app with their provenance.
+        {
+            let entry = crate::journal::sample_entries()
+                .into_iter()
+                .next()
+                .expect("the sample has an entry");
+            let copied = entry_copy(&entry);
+            assert!(copied.contains(&entry.message), "{copied}");
+            assert!(copied.contains(&entry.hostname), "{copied}");
+            assert!(copied.contains(&entry.identifier), "{copied}");
+            assert!(copied.starts_with(&entry.timestamp_full()), "{copied}");
         }
-    }
 
-    #[test]
-    fn severity_choices_run_from_all_levels_to_emergencies() {
-        let options = severity_options();
-        assert_eq!(options.len(), 8);
-        assert_eq!(options[0], ("7".to_owned(), "All levels".to_owned()));
-        assert_eq!(options[7], ("0".to_owned(), "Emergency only".to_owned()));
+        phase field_labels_read_in_sentence_case;
+        {
+            for (key, label) in [
+                ("SYSLOG_FACILITY", "Syslog facility"),
+                ("_KERNEL_DEVICE", "Kernel device"),
+                ("CODE_FILE", "Code file"),
+                ("PEER", "Peer"),
+                ("BT_ADAPTER", "BT adapter"),
+                ("_SYSTEMD_UNIT_ID", "Systemd unit ID"),
+            ] {
+                assert_eq!(field_label(key), label, "case {key}");
+            }
+        }
+
+        phase severity_choices_run_from_all_levels_to_emergencies;
+        {
+            let options = severity_options();
+            assert_eq!(options.len(), 8);
+            assert_eq!(options[0], ("7".to_owned(), "All levels".to_owned()));
+            assert_eq!(options[7], ("0".to_owned(), "Emergency only".to_owned()));
+        }
     }
 }

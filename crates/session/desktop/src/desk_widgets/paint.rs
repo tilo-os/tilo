@@ -439,9 +439,10 @@ pub(super) fn paint_team_card(
             // Who wrote the line: a pencil for their own words, sparkles for a line their machine
             // generated.
             let icon = match status.source {
-                crate::collaborators::LineSource::Written => ui::icons::Icon::Pencil,
-                crate::collaborators::LineSource::Generated
-                | crate::collaborators::LineSource::Observed => ui::icons::Icon::Sparkles,
+                crate::people::LineSource::Written => ui::icons::Icon::Pencil,
+                crate::people::LineSource::Generated | crate::people::LineSource::Observed => {
+                    ui::icons::Icon::Sparkles
+                }
             };
             let (_, line_h) = text.measure_style("Ag", None, &caption);
             let mark = Rect::from_origin_size(

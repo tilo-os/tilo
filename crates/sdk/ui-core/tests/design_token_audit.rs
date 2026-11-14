@@ -55,52 +55,207 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
     ]
 }
 
-#[test]
-fn audit_patterns_match_exactly_the_shapes_they_name() {
-    // The forbidden set must still bite: a pattern that no longer matches the
-    // shape it names would let the audit pass empty.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table of must-count and must-not-count lines per key"
+    )]
+    fn design_audit_patterns_match_exactly_the_shapes_they_name;
+
+    phase audit_patterns_match_exactly_the_shapes_they_name;
     {
-        let patterns = forbidden_patterns();
-        assert_eq!(patterns.len(), 3);
-        assert!(
-            patterns[0]
-                .0
-                .is_match("Some(cosmic_text::Color::rgb(100, 110, 120))")
-        );
-        assert!(
-            !patterns[0]
-                .0
-                .is_match("cosmic_text::Color::rgb(cr, cg, cb)"),
-            "real data routed through the constructor is not a literal"
-        );
-        assert!(
-            !patterns[0].0.is_match("Color::from_rgb8(12, 120, 220)"),
-            "peniko literals belong to the ratchet, not the hard-fail set"
-        );
-        assert!(patterns[1].0.is_match("rect.to_rounded_rect(8.0)"));
-        assert!(
-            !patterns[1]
-                .0
-                .is_match("rect.to_rounded_rect(theme.radius_standard)")
-        );
-        assert!(patterns[2].0.is_match("blur: 16.0,"));
-        assert!(
-            !patterns[2]
-                .0
-                .is_match("blur: theme.tokens.elevation.raised.blur,")
-        );
+        // The forbidden set must still bite: a pattern that no longer matches the
+        // shape it names would let the audit pass empty.
+        {
+            let patterns = forbidden_patterns();
+            assert_eq!(patterns.len(), 3);
+            assert!(
+                patterns[0]
+                    .0
+                    .is_match("Some(cosmic_text::Color::rgb(100, 110, 120))")
+            );
+            assert!(
+                !patterns[0]
+                    .0
+                    .is_match("cosmic_text::Color::rgb(cr, cg, cb)"),
+                "real data routed through the constructor is not a literal"
+            );
+            assert!(
+                !patterns[0].0.is_match("Color::from_rgb8(12, 120, 220)"),
+                "peniko literals belong to the ratchet, not the hard-fail set"
+            );
+            assert!(patterns[1].0.is_match("rect.to_rounded_rect(8.0)"));
+            assert!(
+                !patterns[1]
+                    .0
+                    .is_match("rect.to_rounded_rect(theme.radius_standard)")
+            );
+            assert!(patterns[2].0.is_match("blur: 16.0,"));
+            assert!(
+                !patterns[2]
+                    .0
+                    .is_match("blur: theme.tokens.elevation.raised.blur,")
+            );
+        }
+
+        // The `#[cfg(test)]` span finder and the baseline plumbing live in
+        // `support::ratchet`, shared by every ratchet. The finder
+        // covers exactly the item the attribute governs — an earlier copy here
+        // treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
+        // const …;` or `mod tests;` exempted whatever braced production item
+        // followed it.
+        {
+            let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
+            assert_eq!(test_module_spans(source), vec![(0, 3)]);
+            assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
+        }
     }
 
-    // The `#[cfg(test)]` span finder and the baseline plumbing live in
-    // `support::ratchet`, shared by every ratchet. The finder
-    // covers exactly the item the attribute governs — an earlier copy here
-    // treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
-    // const …;` or `mod tests;` exempted whatever braced production item
-    // followed it.
+    phase ratcheted_colour_patterns_match_exactly_the_shapes_they_name;
     {
-        let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
-        assert_eq!(test_module_spans(source), vec![(0, 3)]);
-        assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
+        let cases: [(Ratchet, &str, &[&str], &[&str]); 12] = [
+            (
+                theme_ratchet(),
+                "literal_color",
+                &[
+                    "Color::from_rgb8(12, 120, 220)",
+                    "Color::from_rgba8(0x10, 0, 0, 255)",
+                ],
+                &["Color::from_rgba8(c.r(), c.g(), c.b(), 128)"],
+            ),
+            (
+                theme_ratchet(),
+                "white_or_black",
+                &["fill(Color::WHITE)", "Color::BLACK.with_alpha(0.4)"],
+                &["theme.colors.on_accent"],
+            ),
+            (
+                theme_ratchet(),
+                "theme_blind_white",
+                &["colors.surface_white_8", "c.border_white_12"],
+                &["colors.surface_raised"],
+            ),
+            (
+                app_paint_ratchet(),
+                "literal_color_new",
+                &[
+                    "Color::new([0.2, 0.3, 0.4, 1.0])",
+                    "Color::new([ .5, 0.0, 0.0, 1.0])",
+                ],
+                &["Color::new([r, g, b, a])", "Color::new(rgba)"],
+            ),
+            (
+                app_paint_ratchet(),
+                "ramp_slot",
+                &["colors.neutral[3]", "palette.accent[5]"],
+                &["colors.neutral_text", "accent[i]", "self.accent_fill"],
+            ),
+            (
+                app_paint_ratchet(),
+                "legacy_alias",
+                &[
+                    "theme.bg_app",
+                    "theme.bg_hover.with_alpha(a)",
+                    "t.bg_primary",
+                ],
+                &["theme.bg_application", "surfaces.content"],
+            ),
+            (
+                app_paint_ratchet(),
+                "desktop_ground",
+                &["c.surfaces.base", "theme.surfaces.window_card"],
+                &["surfaces.base_tint", "surfaces.content", "surfaces.raised"],
+            ),
+            (
+                app_paint_ratchet(),
+                "literal_radius",
+                &[
+                    "rect.to_rounded_rect(8.0)",
+                    "RoundedRect::from_rect(r, 6.0)",
+                    "fill_round(scene, rect, 4.0, ink)",
+                    "Button::new(\"x\").radius(12.0)",
+                ],
+                &[
+                    "rect.to_rounded_rect(theme.tokens.radii.md)",
+                    "RoundedRect::from_rect(r, radius)",
+                    "fill_round(scene, rect, radii.sm, ink)",
+                ],
+            ),
+            (
+                app_paint_ratchet(),
+                "literal_alpha",
+                &[
+                    "ink.with_alpha(0.5)",
+                    "ink.with_alpha(.35)",
+                    "ink.with_alpha_factor(x * 0.4)",
+                    "ink.multiply_alpha(0.6)",
+                ],
+                &[
+                    "ink.with_alpha(theme.alpha.hover)",
+                    "ink.with_alpha(1.0)",
+                    "ink.with_alpha(12.5 * a)",
+                ],
+            ),
+            (
+                app_paint_ratchet(),
+                "raw_paint",
+                &[
+                    "scene.fill(Fill::NonZero, t, ink, None, &rect)",
+                    "ctx.scene.stroke(&s, t, ink, None, &line)",
+                ],
+                &[
+                    "fill_rect(scene, rect, ink)",
+                    "scene.push_layer(blend, 1.0, t, &clip)",
+                ],
+            ),
+            (
+                app_paint_ratchet(),
+                "glyph_icon",
+                &[
+                    "Button::new(\"✕\")",
+                    "label: \"⟳ Sync\"",
+                    "'▾'",
+                    "\"🔍 Search\"",
+                ],
+                &["Icon::Close", "\"Close\"", "'a'"],
+            ),
+            (
+                app_paint_ratchet(),
+                "transparent_shot",
+                &["render_png(&mut app, w, h, Color::TRANSPARENT)"],
+                &["render_png(&mut app, w, h, theme.surfaces.content)"],
+            ),
+        ];
+        for (ratchet, key, hits, misses) in cases {
+            let pattern = ratchet.pattern(key);
+            for line in hits {
+                assert!(pattern.hits(line) > 0, "{key} must count {line:?}");
+            }
+            for line in misses {
+                assert_eq!(pattern.hits(line), 0, "{key} must not count {line:?}");
+            }
+        }
+        // The chrome-edge pattern: declared edges hit, derived ones do not.
+        let border = chrome_border_ratchet();
+        let declared = border.pattern("declared_border");
+        for hit in [
+            "theme.tokens.colors.border_standard,",
+            "let bc = theme.border_standard;",
+            "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
+            "c.overlay_border_strong",
+            "colors.neutral[3]",
+        ] {
+            assert!(declared.hits(hit) > 0, "{hit:?} is a declared edge");
+        }
+        for miss in [
+            "theme.border_focus",
+            "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
+            "border_standard: p.border,",
+            "tilo_ui::surface::edge_on(fill)",
+            "let neutral = colors.text_dim;",
+        ] {
+            assert_eq!(declared.hits(miss), 0, "{miss:?} is not a declared edge");
+        }
     }
 }
 
@@ -284,157 +439,6 @@ pub fn chrome_border_ratchet() -> Ratchet {
         )],
         exempt: no_exemptions,
         advice: "Derive chrome edges from the ground they sit on.",
-    }
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one table of must-count and must-not-count lines per key"
-)]
-#[test]
-fn ratcheted_colour_patterns_match_exactly_the_shapes_they_name() {
-    let cases: [(Ratchet, &str, &[&str], &[&str]); 12] = [
-        (
-            theme_ratchet(),
-            "literal_color",
-            &[
-                "Color::from_rgb8(12, 120, 220)",
-                "Color::from_rgba8(0x10, 0, 0, 255)",
-            ],
-            &["Color::from_rgba8(c.r(), c.g(), c.b(), 128)"],
-        ),
-        (
-            theme_ratchet(),
-            "white_or_black",
-            &["fill(Color::WHITE)", "Color::BLACK.with_alpha(0.4)"],
-            &["theme.colors.on_accent"],
-        ),
-        (
-            theme_ratchet(),
-            "theme_blind_white",
-            &["colors.surface_white_8", "c.border_white_12"],
-            &["colors.surface_raised"],
-        ),
-        (
-            app_paint_ratchet(),
-            "literal_color_new",
-            &[
-                "Color::new([0.2, 0.3, 0.4, 1.0])",
-                "Color::new([ .5, 0.0, 0.0, 1.0])",
-            ],
-            &["Color::new([r, g, b, a])", "Color::new(rgba)"],
-        ),
-        (
-            app_paint_ratchet(),
-            "ramp_slot",
-            &["colors.neutral[3]", "palette.accent[5]"],
-            &["colors.neutral_text", "accent[i]", "self.accent_fill"],
-        ),
-        (
-            app_paint_ratchet(),
-            "legacy_alias",
-            &[
-                "theme.bg_app",
-                "theme.bg_hover.with_alpha(a)",
-                "t.bg_primary",
-            ],
-            &["theme.bg_application", "surfaces.content"],
-        ),
-        (
-            app_paint_ratchet(),
-            "desktop_ground",
-            &["c.surfaces.base", "theme.surfaces.window_card"],
-            &["surfaces.base_tint", "surfaces.content", "surfaces.raised"],
-        ),
-        (
-            app_paint_ratchet(),
-            "literal_radius",
-            &[
-                "rect.to_rounded_rect(8.0)",
-                "RoundedRect::from_rect(r, 6.0)",
-                "fill_round(scene, rect, 4.0, ink)",
-                "Button::new(\"x\").radius(12.0)",
-            ],
-            &[
-                "rect.to_rounded_rect(theme.tokens.radii.md)",
-                "RoundedRect::from_rect(r, radius)",
-                "fill_round(scene, rect, radii.sm, ink)",
-            ],
-        ),
-        (
-            app_paint_ratchet(),
-            "literal_alpha",
-            &[
-                "ink.with_alpha(0.5)",
-                "ink.with_alpha(.35)",
-                "ink.with_alpha_factor(x * 0.4)",
-                "ink.multiply_alpha(0.6)",
-            ],
-            &[
-                "ink.with_alpha(theme.alpha.hover)",
-                "ink.with_alpha(1.0)",
-                "ink.with_alpha(12.5 * a)",
-            ],
-        ),
-        (
-            app_paint_ratchet(),
-            "raw_paint",
-            &[
-                "scene.fill(Fill::NonZero, t, ink, None, &rect)",
-                "ctx.scene.stroke(&s, t, ink, None, &line)",
-            ],
-            &[
-                "fill_rect(scene, rect, ink)",
-                "scene.push_layer(blend, 1.0, t, &clip)",
-            ],
-        ),
-        (
-            app_paint_ratchet(),
-            "glyph_icon",
-            &[
-                "Button::new(\"✕\")",
-                "label: \"⟳ Sync\"",
-                "'▾'",
-                "\"🔍 Search\"",
-            ],
-            &["Icon::Close", "\"Close\"", "'a'"],
-        ),
-        (
-            app_paint_ratchet(),
-            "transparent_shot",
-            &["render_png(&mut app, w, h, Color::TRANSPARENT)"],
-            &["render_png(&mut app, w, h, theme.surfaces.content)"],
-        ),
-    ];
-    for (ratchet, key, hits, misses) in cases {
-        let pattern = ratchet.pattern(key);
-        for line in hits {
-            assert!(pattern.hits(line) > 0, "{key} must count {line:?}");
-        }
-        for line in misses {
-            assert_eq!(pattern.hits(line), 0, "{key} must not count {line:?}");
-        }
-    }
-    // The chrome-edge pattern: declared edges hit, derived ones do not.
-    let border = chrome_border_ratchet();
-    let declared = border.pattern("declared_border");
-    for hit in [
-        "theme.tokens.colors.border_standard,",
-        "let bc = theme.border_standard;",
-        "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
-        "c.overlay_border_strong",
-        "colors.neutral[3]",
-    ] {
-        assert!(declared.hits(hit) > 0, "{hit:?} is a declared edge");
-    }
-    for miss in [
-        "theme.border_focus",
-        "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
-        "border_standard: p.border,",
-        "tilo_ui::surface::edge_on(fill)",
-        "let neutral = colors.text_dim;",
-    ] {
-        assert_eq!(declared.hits(miss), 0, "{miss:?} is not a declared edge");
     }
 }
 

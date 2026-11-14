@@ -939,7 +939,7 @@ impl RecordSet {
                 let mut outgoing = outgoing;
                 if let Some(saver) = slot.autosave.as_mut() {
                     slot.action_state.commit_for_save(&mut outgoing);
-                    saver.request(&mut outgoing);
+                    saver.request(&outgoing);
                 }
                 slot.doc = Some(outgoing);
             }
@@ -1184,11 +1184,11 @@ impl RecordSet {
         merged.set_actor(store.actor());
         *doc = merged;
         let mut autosave = store.writer();
-        if let Some(mut stored) = stored {
+        if let Some(stored) = stored {
             // Seed only heads already in this scoped store: an adopted document's heads are absent
             // from the new file, and seeding them would strand their dependencies after a crash.
             if !adopted_elsewhere {
-                autosave.seed(&mut stored);
+                autosave.seed(&stored);
             }
         }
         Ok(Some(autosave))
@@ -1411,7 +1411,7 @@ impl RecordSet {
             validate_identity(&doc, want, &self.home)?;
             commit_genesis(&mut doc);
             let owner = Rc::new(owner);
-            let autosave = app_state::DocWriter::start_new(&owner, &mut doc)?;
+            let autosave = app_state::DocWriter::start_new(&owner, &doc)?;
             (doc, autosave)
         };
         let history = crate::state::UndoLog::new(&mut doc);
@@ -2197,7 +2197,7 @@ impl RecordReservation {
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         start: impl FnOnce(
             &Rc<app_state::DocOwner>,
-            &mut AutoCommit,
+            &AutoCommit,
         ) -> Result<app_state::DocWriter, app_state::StoreError>,
     ) -> Result<(), RecordOpenError> {
         let (owner, workspace) = {
@@ -2230,7 +2230,7 @@ impl RecordReservation {
         {
             return Err(RecordOpenError::Busy);
         }
-        let autosave = start(&owner, &mut doc)?;
+        let autosave = start(&owner, &doc)?;
         let history = crate::state::UndoLog::new(&mut doc);
         set.pending.remove(&self.checkout.id);
         set.open.insert(
@@ -2316,6 +2316,19 @@ fn read_record(
 }
 
 impl RecordStore {
+    /// The route record `id` travels on: its workspace, the app and its wire name, unchecked
+    /// against the record's document. What names a record across workspaces in one process (its
+    /// content lane) keys by it.
+    pub fn wire_route(
+        &self,
+        id: &RecordId,
+    ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
+        self.0
+            .try_borrow()
+            .map_err(|_| RecordOpenError::Busy)?
+            .wire_route(id)
+    }
+
     /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
     pub fn route(
         &self,
@@ -3134,7 +3147,7 @@ impl RecordStore {
         }
         let history = crate::state::UndoLog::new(&mut doc);
         if let Some(saver) = &mut autosave {
-            saver.request(&mut doc);
+            saver.request(&doc);
         }
         set.open.insert(
             want.id.clone(),
@@ -3164,7 +3177,7 @@ impl RecordStore {
             let (mut doc, mut autosave) = set.load(want)?;
             validate_identity(&doc, want, &set.home)?;
             if let Some(saver) = autosave.as_mut() {
-                saver.request(&mut doc);
+                saver.request(&doc);
             }
             let history = crate::state::UndoLog::new(&mut doc);
             set.open.insert(
@@ -3213,11 +3226,11 @@ impl RecordStore {
                 return Err(RecordOpenError::Initialization(error));
             }
             if !adopted {
-                autosave.seed(&mut doc);
+                autosave.seed(&doc);
             }
             let history = crate::state::UndoLog::new(&mut doc);
             if adopted {
-                autosave.request(&mut doc);
+                autosave.request(&doc);
             }
             set.open.insert(
                 want.id.clone(),

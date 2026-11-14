@@ -174,26 +174,31 @@ pub fn resolve_state_root(path: &Path) -> io::Result<PathBuf> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    #[test]
-    fn backend_owner_rejects_permission_widening() {
-        use std::os::unix::fs::PermissionsExt;
-        let owner = BackendSession::create(SessionIntent::PrepareMedia).unwrap();
-        std::fs::set_permissions(owner.path(), std::fs::Permissions::from_mode(0o750)).unwrap();
-        assert!(owner.validate().is_err());
-        std::fs::set_permissions(owner.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        owner.validate().unwrap();
-    }
 
-    #[test]
-    fn backend_owner_detects_namespace_replacement() {
-        let owner = BackendSession::create(SessionIntent::PrepareMedia).unwrap();
-        owner.validate().unwrap();
-        let displaced = owner.path().with_extension("displaced");
-        std::fs::rename(owner.path(), &displaced).unwrap();
-        std::fs::create_dir(owner.path()).unwrap();
-        assert!(owner.validate().is_err());
-        std::fs::remove_dir(owner.path()).unwrap();
-        std::fs::rename(displaced, owner.path()).unwrap();
-        owner.validate().unwrap();
+    tilo_test_env::scenario! {
+        fn backend_session_owner_detects_widening_and_replacement;
+
+        phase backend_owner_rejects_permission_widening;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let owner = BackendSession::create(SessionIntent::PrepareMedia).unwrap();
+            std::fs::set_permissions(owner.path(), std::fs::Permissions::from_mode(0o750)).unwrap();
+            assert!(owner.validate().is_err());
+            std::fs::set_permissions(owner.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            owner.validate().unwrap();
+        }
+
+        phase backend_owner_detects_namespace_replacement;
+        {
+            let owner = BackendSession::create(SessionIntent::PrepareMedia).unwrap();
+            owner.validate().unwrap();
+            let displaced = owner.path().with_extension("displaced");
+            std::fs::rename(owner.path(), &displaced).unwrap();
+            std::fs::create_dir(owner.path()).unwrap();
+            assert!(owner.validate().is_err());
+            std::fs::remove_dir(owner.path()).unwrap();
+            std::fs::rename(displaced, owner.path()).unwrap();
+            owner.validate().unwrap();
+        }
     }
 }

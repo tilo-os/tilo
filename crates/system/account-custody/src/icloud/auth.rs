@@ -795,44 +795,49 @@ impl AuthState {
 mod tests {
     use super::*;
 
-    #[test]
-    fn endpoint_paths_join_under_their_base() {
-        let auth = Url::parse("https://idmsa.apple.com/appleauth/auth").unwrap();
-        assert_eq!(
-            join(&auth, "/signin/init").as_str(),
-            "https://idmsa.apple.com/appleauth/auth/signin/init"
-        );
-        assert_eq!(
-            join(&auth, "../authorize/signin").as_str(),
-            "https://idmsa.apple.com/appleauth/authorize/signin"
-        );
-        assert_eq!(
-            join(&auth, "/federate?isRememberMeEnabled=true").as_str(),
-            "https://idmsa.apple.com/appleauth/auth/federate?isRememberMeEnabled=true"
-        );
-        assert_eq!(
-            join(&auth, "").as_str(),
-            "https://idmsa.apple.com/appleauth/auth"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The wire shapes the iCloud authenticator reads.
+        fn icloud_endpoints_and_auth_state_are_read_as_apple_sends_them;
 
-    #[test]
-    fn nested_auth_state_is_unwrapped() {
-        let state: AuthState = serde_json::from_value(json!({
-            "phoneNumberVerification": {
-                "trustedPhoneNumber": {"id": 2, "obfuscatedNumber": "•••• 12", "pushMode": "sms"},
-                "noTrustedDevices": true
-            }
-        }))
-        .unwrap();
-        assert!(state.no_trusted_devices());
-        assert_eq!(
-            state.phones(),
-            vec![TrustedPhone {
-                id: 2,
-                number: "•••• 12".into(),
-                mode: "sms".into()
-            }]
-        );
+        phase endpoint_paths_join_under_their_base;
+        {
+            let auth = Url::parse("https://idmsa.apple.com/appleauth/auth").unwrap();
+            assert_eq!(
+                join(&auth, "/signin/init").as_str(),
+                "https://idmsa.apple.com/appleauth/auth/signin/init"
+            );
+            assert_eq!(
+                join(&auth, "../authorize/signin").as_str(),
+                "https://idmsa.apple.com/appleauth/authorize/signin"
+            );
+            assert_eq!(
+                join(&auth, "/federate?isRememberMeEnabled=true").as_str(),
+                "https://idmsa.apple.com/appleauth/auth/federate?isRememberMeEnabled=true"
+            );
+            assert_eq!(
+                join(&auth, "").as_str(),
+                "https://idmsa.apple.com/appleauth/auth"
+            );
+        }
+
+        phase nested_auth_state_is_unwrapped;
+        {
+            let state: AuthState = serde_json::from_value(json!({
+                "phoneNumberVerification": {
+                    "trustedPhoneNumber": {"id": 2, "obfuscatedNumber": "•••• 12", "pushMode": "sms"},
+                    "noTrustedDevices": true
+                }
+            }))
+            .unwrap();
+            assert!(state.no_trusted_devices());
+            assert_eq!(
+                state.phones(),
+                vec![TrustedPhone {
+                    id: 2,
+                    number: "•••• 12".into(),
+                    mode: "sms".into()
+                }]
+            );
+        }
     }
 }

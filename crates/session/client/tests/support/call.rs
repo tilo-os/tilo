@@ -14,8 +14,8 @@ use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
-use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
@@ -28,6 +28,7 @@ use tilo_relay_protocol::voice::{CallOperation, CallState, Directions, VoiceGran
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying, wait_for};
+use collab_types::WorkspaceId;
 
 pub const CHAT: &str = "so.tilo.chat";
 pub const BOTH: Directions = Directions {
@@ -112,7 +113,7 @@ pub async fn issue(
             issuer,
             IssueInvitationRequest {
                 request_id: person,
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: Some(person),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns()
@@ -144,7 +145,7 @@ pub async fn invite(
     .unwrap();
     let hint = verified.grant().transport.first().unwrap();
     // What the invitation tells whoever holds it to dial.
-    let named = IrohWorkspaceHostHintV1::from_transport_hint(hint)
+    let named = WorkspaceDeviceHintV1::from_transport_hint(hint)
         .unwrap()
         .endpoint_addr;
     let mut request = [0; 32];
@@ -168,7 +169,7 @@ pub struct GovernedCall {
     pub relay: Relay,
     pub web: WebHandle,
     pub cluster_id: String,
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// Alice's laptop's session with the workspace.
     pub owner: RelayClient,
     /// The chat's voice channel the call is on.
@@ -192,7 +193,7 @@ pub async fn native<T>(client: &RelayClient, mut pick: impl FnMut(Envelope) -> O
 /// Ask the host to change a call as the native device `client`.
 pub async fn operate(
     client: &RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     request: u8,
     operation: CallOperation,
 ) -> Result<CallState, String> {
@@ -219,7 +220,7 @@ pub async fn operate(
 /// publication never creates a record.
 pub async fn create_voice_channel(
     address: iroh::EndpointAddr,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     host: &DeviceCert,
     device: &Device,
@@ -303,7 +304,7 @@ impl GovernedCall {
     /// `packet_relay` says so, as a host serving pages does.
     pub async fn start_relaying(packet_relay: bool) -> Self {
         let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
+        let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
         let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
         let state = tempfile::tempdir().unwrap();
         let TestHost { relay, web } =

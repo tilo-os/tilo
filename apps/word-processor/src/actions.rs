@@ -465,241 +465,298 @@ mod tests {
         .unwrap_or_else(|error| panic!("{resource}#{action}: {error:?}"));
     }
 
-    #[test]
-    fn review_is_a_child_of_the_document_resource() {
-        let (mut state, ids) = seeded("Hello\n");
-        dispatch(
-            &mut state.doc,
-            &RichTextAction::TrackInsert {
-                block: ids[0].clone(),
-                at: 5,
-                text: " there".into(),
-                author: "Ada".into(),
-                date: "2026-01-01".into(),
-            },
-        );
-        let resources = published_for(&caret_at(&ids[0]), &state.doc);
-        let change = derived(&resources[0], "change").expect("the change is published");
-        assert!(
-            change
-                .actions
-                .iter()
-                .any(|action| action.id == "reject-change")
-        );
-        assert_eq!(
-            resources[0]
-                .children
-                .iter()
-                .filter(|child| child.id == change.id)
-                .count(),
-            1,
-            "the open tree publishes the change once"
-        );
-        let change = change.id.0.clone();
-        invoke(
-            &mut state.doc,
-            &resources,
-            &change,
-            "accept-change",
-            &serde_json::Map::new(),
-        );
-        let snap =
-            tilo_doc::model::materialize(&state.doc, &crate::model::open(&state.doc).unwrap());
-        assert!(snap.changes.is_empty(), "the accepted change left review");
-        assert_eq!(snap.blocks[0].text, "Hello there");
-    }
+    tilo_test_env::scenario! {
+        /// What the document resource publishes of itself: review, styles, the header, images, the contents and the edits at the selection.
+        fn the_document_publishes_its_parts_and_their_actions;
 
-    #[test]
-    fn a_named_style_is_edited_through_the_body() {
-        let (mut state, ids) = seeded("Styled paragraph\n");
-        dispatch(
-            &mut state.doc,
-            &set_style_property_action(
+        phase review_is_a_child_of_the_document_resource;
+        {
+            let (mut state, ids) = seeded("Hello\n");
+            dispatch(
+                &mut state.doc,
+                &RichTextAction::TrackInsert {
+                    block: ids[0].clone(),
+                    at: 5,
+                    text: " there".into(),
+                    author: "Ada".into(),
+                    date: "2026-01-01".into(),
+                },
+            );
+            let resources = published_for(&caret_at(&ids[0]), &state.doc);
+            let change = derived(&resources[0], "change").expect("the change is published");
+            assert!(
+                change
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "reject-change")
+            );
+            assert_eq!(
+                resources[0]
+                    .children
+                    .iter()
+                    .filter(|child| child.id == change.id)
+                    .count(),
+                1,
+                "the open tree publishes the change once"
+            );
+            let change = change.id.0.clone();
+            invoke(
+                &mut state.doc,
+                &resources,
+                &change,
+                "accept-change",
+                &serde_json::Map::new(),
+            );
+            let snap =
+                tilo_doc::model::materialize(&state.doc, &crate::model::open(&state.doc).unwrap());
+            assert!(snap.changes.is_empty(), "the accepted change left review");
+            assert_eq!(snap.blocks[0].text, "Hello there");
+        }
+
+        phase a_named_style_is_edited_through_the_body;
+        {
+            let (mut state, ids) = seeded("Styled paragraph\n");
+            dispatch(
+                &mut state.doc,
+                &set_style_property_action(
+                    "custom1",
+                    tilo_doc::schema::STYLE_NAME,
+                    AttrVal::Str("Callout".into()),
+                ),
+            );
+            dispatch(
+                &mut state.doc,
+                &set_block_attr_action(
+                    RegionKind::Body,
+                    vec![ids[0].clone()],
+                    "style",
+                    AttrVal::Str("custom1".into()),
+                ),
+            );
+            let resources = published_for(&caret_at(&ids[0]), &state.doc);
+            let edit = crate::model::edit(&set_style_property_action(
                 "custom1",
-                tilo_doc::schema::STYLE_NAME,
-                AttrVal::Str("Callout".into()),
-            ),
-        );
-        dispatch(
-            &mut state.doc,
-            &set_block_attr_action(
-                RegionKind::Body,
-                vec![ids[0].clone()],
-                "style",
-                AttrVal::Str("custom1".into()),
-            ),
-        );
-        let resources = published_for(&caret_at(&ids[0]), &state.doc);
-        let edit = crate::model::edit(&set_style_property_action(
-            "custom1",
-            tilo_doc::schema::STYLE_BOLD,
-            AttrVal::Bool(true),
-        ));
-        let mut arguments = serde_json::Map::new();
-        arguments.insert(
-            ui::tilo_resource::EDIT_PARAM.to_owned(),
-            serde_json::to_value(&edit).unwrap(),
-        );
-        invoke(
-            &mut state.doc,
-            &resources,
-            DOCUMENT,
-            ui::tilo_resource::FIELD_EDIT,
-            &arguments,
-        );
-        let c = crate::model::open(&state.doc).unwrap();
-        assert_eq!(
-            tilo_doc::model::style_props(&state.doc, &c, "custom1")
-                .get(tilo_doc::schema::STYLE_BOLD),
-            Some(&tilo_doc::AttrVal::Bool(true))
-        );
-    }
+                tilo_doc::schema::STYLE_BOLD,
+                AttrVal::Bool(true),
+            ));
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                ui::tilo_resource::EDIT_PARAM.to_owned(),
+                serde_json::to_value(&edit).unwrap(),
+            );
+            invoke(
+                &mut state.doc,
+                &resources,
+                DOCUMENT,
+                ui::tilo_resource::FIELD_EDIT,
+                &arguments,
+            );
+            let c = crate::model::open(&state.doc).unwrap();
+            assert_eq!(
+                tilo_doc::model::style_props(&state.doc, &c, "custom1")
+                    .get(tilo_doc::schema::STYLE_BOLD),
+                Some(&tilo_doc::AttrVal::Bool(true))
+            );
+        }
 
-    #[test]
-    fn a_header_is_part_of_the_document() {
-        let (mut state, _) = seeded("Body\n");
-        dispatch(
-            &mut state.doc,
-            &RichTextAction::EnsureRegionBlock {
-                region: RegionKind::Header,
-            },
-        );
-        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the document with a header reads");
-        let block = read
-            .text()
-            .unwrap()
-            .header()
-            .first()
-            .expect("the header has a paragraph")
-            .id
-            .clone();
-        dispatch(
-            &mut state.doc,
-            &set_block_attr_action(
-                RegionKind::Header,
-                vec![block],
-                "align",
-                AttrVal::Str("center".into()),
-            ),
-        );
-        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the headed document reads");
-        let header = read.text().unwrap().header();
-        assert_eq!(
-            header[0].attrs.get("align"),
-            Some(&tilo_doc::AttrVal::Str("center".into()))
-        );
-    }
+        phase a_header_is_part_of_the_document;
+        {
+            let (mut state, _) = seeded("Body\n");
+            dispatch(
+                &mut state.doc,
+                &RichTextAction::EnsureRegionBlock {
+                    region: RegionKind::Header,
+                },
+            );
+            let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+                .expect("the document with a header reads");
+            let block = read
+                .text()
+                .unwrap()
+                .header()
+                .first()
+                .expect("the header has a paragraph")
+                .id
+                .clone();
+            dispatch(
+                &mut state.doc,
+                &set_block_attr_action(
+                    RegionKind::Header,
+                    vec![block],
+                    "align",
+                    AttrVal::Str("center".into()),
+                ),
+            );
+            let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+                .expect("the headed document reads");
+            let header = read.text().unwrap().header();
+            assert_eq!(
+                header[0].attrs.get("align"),
+                Some(&tilo_doc::AttrVal::Str("center".into()))
+            );
+        }
 
-    #[test]
-    fn image_size_is_a_published_document_action() {
-        let (mut state, ids) = seeded("Body\n");
-        dispatch(
-            &mut state.doc,
-            &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
-        );
-        let image = body_blocks(&state.doc)
-            .into_iter()
-            .find(|block| block.kind == "image")
-            .expect("the image is in the body")
-            .id;
-        let resources = published_for(&caret_at(&ids[0]), &state.doc);
-        let mut arguments = serde_json::Map::new();
-        arguments.insert(
-            ui::tilo_resource::EDIT_PARAM.to_owned(),
-            serde_json::to_value(crate::model::edit(&set_image_size_action(&image, 300, 180)))
-                .unwrap(),
-        );
-        invoke(
-            &mut state.doc,
-            &resources,
-            DOCUMENT,
-            ui::tilo_resource::FIELD_EDIT,
-            &arguments,
-        );
-        let blocks = body_blocks(&state.doc);
-        let image = blocks
-            .iter()
-            .find(|block| block.kind == "image")
-            .expect("image remains");
-        assert_eq!(image.attrs.get("width"), Some(&tilo_doc::AttrVal::Int(300)));
-        assert_eq!(
-            image.attrs.get("height"),
-            Some(&tilo_doc::AttrVal::Int(180))
-        );
-    }
-
-    #[test]
-    fn image_flip_is_a_published_document_action() {
-        let (mut state, ids) = seeded("Body\n");
-        dispatch(
-            &mut state.doc,
-            &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
-        );
-        let id = body_blocks(&state.doc)
-            .into_iter()
-            .find(|block| block.kind == "image")
-            .unwrap()
-            .id;
-        dispatch(
-            &mut state.doc,
-            &set_block_attr_action(RegionKind::Body, vec![id], "flip_h", AttrVal::Bool(true)),
-        );
-        let blocks = body_blocks(&state.doc);
-        let image = blocks
-            .iter()
-            .find(|block| block.kind == "image")
-            .expect("image remains");
-        assert_eq!(
-            image.attrs.get("flip_h"),
-            Some(&tilo_doc::AttrVal::Bool(true))
-        );
-        let resources = published_for(&caret_at(&ids[0]), &state.doc);
-        let image = derived(&resources[0], "image")
-            .expect("the image is published")
-            .id
-            .0
-            .clone();
-        invoke(
-            &mut state.doc,
-            &resources,
-            &image,
-            "delete-image",
-            &serde_json::Map::new(),
-        );
-        assert!(
-            body_blocks(&state.doc)
+        phase image_size_is_a_published_document_action;
+        {
+            let (mut state, ids) = seeded("Body\n");
+            dispatch(
+                &mut state.doc,
+                &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
+            );
+            let image = body_blocks(&state.doc)
+                .into_iter()
+                .find(|block| block.kind == "image")
+                .expect("the image is in the body")
+                .id;
+            let resources = published_for(&caret_at(&ids[0]), &state.doc);
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                ui::tilo_resource::EDIT_PARAM.to_owned(),
+                serde_json::to_value(crate::model::edit(&set_image_size_action(&image, 300, 180)))
+                    .unwrap(),
+            );
+            invoke(
+                &mut state.doc,
+                &resources,
+                DOCUMENT,
+                ui::tilo_resource::FIELD_EDIT,
+                &arguments,
+            );
+            let blocks = body_blocks(&state.doc);
+            let image = blocks
                 .iter()
-                .all(|block| block.kind != "image")
-        );
-    }
+                .find(|block| block.kind == "image")
+                .expect("image remains");
+            assert_eq!(image.attrs.get("width"), Some(&tilo_doc::AttrVal::Int(300)));
+            assert_eq!(
+                image.attrs.get("height"),
+                Some(&tilo_doc::AttrVal::Int(180))
+            );
+        }
 
-    #[test]
-    fn a_table_of_contents_is_a_published_document_action() {
-        let (mut state, ids) = seeded("# Section\n\nBody\n");
-        let resources = published_for(&caret_at(&ids[1]), &state.doc);
-        assert!(
-            resources[0]
-                .actions
+        phase image_flip_is_a_published_document_action;
+        {
+            let (mut state, ids) = seeded("Body\n");
+            dispatch(
+                &mut state.doc,
+                &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
+            );
+            let id = body_blocks(&state.doc)
+                .into_iter()
+                .find(|block| block.kind == "image")
+                .unwrap()
+                .id;
+            dispatch(
+                &mut state.doc,
+                &set_block_attr_action(RegionKind::Body, vec![id], "flip_h", AttrVal::Bool(true)),
+            );
+            let blocks = body_blocks(&state.doc);
+            let image = blocks
                 .iter()
-                .any(|action| action.id == "generate-toc"),
-            "generate table of contents is published"
-        );
-        invoke(
-            &mut state.doc,
-            &resources,
-            DOCUMENT,
-            "generate-toc",
-            &serde_json::Map::new(),
-        );
-        let blocks = body_blocks(&state.doc);
-        assert!(
-            blocks
-                .iter()
-                .any(|block| { block.flag("toc") && block.text.contains("Section") }),
-            "the published action inserts a contents line for the heading"
-        );
+                .find(|block| block.kind == "image")
+                .expect("image remains");
+            assert_eq!(
+                image.attrs.get("flip_h"),
+                Some(&tilo_doc::AttrVal::Bool(true))
+            );
+            let resources = published_for(&caret_at(&ids[0]), &state.doc);
+            let image = derived(&resources[0], "image")
+                .expect("the image is published")
+                .id
+                .0
+                .clone();
+            invoke(
+                &mut state.doc,
+                &resources,
+                &image,
+                "delete-image",
+                &serde_json::Map::new(),
+            );
+            assert!(
+                body_blocks(&state.doc)
+                    .iter()
+                    .all(|block| block.kind != "image")
+            );
+        }
+
+        phase a_table_of_contents_is_a_published_document_action;
+        {
+            let (mut state, ids) = seeded("# Section\n\nBody\n");
+            let resources = published_for(&caret_at(&ids[1]), &state.doc);
+            assert!(
+                resources[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "generate-toc"),
+                "generate table of contents is published"
+            );
+            invoke(
+                &mut state.doc,
+                &resources,
+                DOCUMENT,
+                "generate-toc",
+                &serde_json::Map::new(),
+            );
+            let blocks = body_blocks(&state.doc);
+            assert!(
+                blocks
+                    .iter()
+                    .any(|block| { block.flag("toc") && block.text.contains("Section") }),
+                "the published action inserts a contents line for the heading"
+            );
+        }
+
+        phase edits_at_the_selection_are_published_on_the_document;
+        {
+            let doc = wp_seed();
+            let resources = published_for(&wp_ctx(&doc), &doc);
+            assert!(
+                resources
+                    .iter()
+                    .filter(|resource| resource.id.as_str() == DOCUMENT)
+                    .count()
+                    == 1,
+                "the document is published once"
+            );
+            for id in [
+                "type-text",
+                "replace-selection",
+                "set-hyperlink",
+                "comment-selection",
+                "toggle-mark",
+                "insert-table-here",
+            ] {
+                assert!(
+                    resources[0].actions.iter().any(|action| action.id == id),
+                    "{id} is on the document"
+                );
+            }
+        }
+
+        phase a_fresh_document_publishes_few_grantable_document_operations;
+        {
+            fn document_ops(resource: &tilo_actions::ResourceSpec, out: &mut Vec<String>) {
+                for action in &resource.actions {
+                    if action.kind == tilo_actions::OperationKind::Document {
+                        out.push(format!("{}#{}", resource.id.0, action.id));
+                    }
+                }
+                for child in &resource.children {
+                    document_ops(child, out);
+                }
+            }
+            let (state, ids) = seeded("");
+            let block = ids.first().cloned().unwrap_or_default();
+            let mut ops = Vec::new();
+            document_ops(&root_for(&state, &block), &mut ops);
+            assert!(ops.contains(&format!("{DOCUMENT}#append-paragraph")));
+            assert!(ops.contains(&format!("{DOCUMENT}#field-edit")));
+            assert!(
+                ops.len() <= 32,
+                "{} document operations: {ops:?}",
+                ops.len()
+            );
+        }
     }
 
     fn seeded(markdown: &str) -> (ui::State, Vec<String>) {
@@ -846,9 +903,10 @@ mod tests {
                     }
                 }
             }
+            // A text is held to its bytes: every character two bytes here, so half as many fit.
             for (count, expected) in [
-                (MAX_ACTION_TEXT_CHARS, true),
-                (MAX_ACTION_TEXT_CHARS + 1, false),
+                (MAX_ACTION_TEXT_BYTES / 2, true),
+                (MAX_ACTION_TEXT_BYTES / 2 + 1, false),
             ] {
                 let action = RichTextAction::SpliceText {
                     region: RegionKind::Body,
@@ -943,33 +1001,6 @@ mod tests {
             .into_iter()
             .nth(n)
             .expect("seeded block")
-    }
-
-    #[test]
-    fn edits_at_the_selection_are_published_on_the_document() {
-        let doc = wp_seed();
-        let resources = published_for(&wp_ctx(&doc), &doc);
-        assert!(
-            resources
-                .iter()
-                .filter(|resource| resource.id.as_str() == DOCUMENT)
-                .count()
-                == 1,
-            "the document is published once"
-        );
-        for id in [
-            "type-text",
-            "replace-selection",
-            "set-hyperlink",
-            "comment-selection",
-            "toggle-mark",
-            "insert-table-here",
-        ] {
-            assert!(
-                resources[0].actions.iter().any(|action| action.id == id),
-                "{id} is on the document"
-            );
-        }
     }
 
     fn wp_ctx(doc: &AutoCommit) -> WpResourceCtx {
@@ -1657,120 +1688,100 @@ mod tests {
         published_for(&caret_at(block), &state.doc).remove(0)
     }
 
-    #[test]
-    fn appending_a_paragraph_is_a_root_level_document_verb() {
-        let (mut state, ids) = seeded("Intro\n");
-        let root = root_for(&state, &ids[0]);
-        assert_eq!(root.id.0, DOCUMENT);
-        let spec = root
-            .actions
-            .iter()
-            .find(|action| action.id == "append-paragraph")
-            .expect("append-paragraph is on the root resource");
-        assert_eq!(spec.params().len(), 1);
-        assert_eq!(spec.params()[0].name, "text");
-        assert!(spec.params()[0].required);
-        assert_eq!(spec.kind, tilo_actions::OperationKind::Document);
-        assert_eq!(spec.locus, tilo_actions::ExecutionLocus::ClientLocal);
-        assert!(matches!(
-            spec.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::None
-        ));
-        assert!(
-            spec.contract.validate_declaration().is_empty(),
-            "{:?}",
-            spec.contract.validate_declaration()
-        );
-        let before = state.doc.save();
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("text".into(), "".into());
-        assert!(
-            tilo_actions::door::invoke_json(
-                &mut state.doc,
-                std::slice::from_ref(&root),
-                &crate::model::Document::APPEND_PARAGRAPH.on(DOCUMENT),
-                &arguments,
-                tilo_actions::door::InvocationProvenance::caller(b"agent"),
-                &registry(),
-                &mut LocalTransport::new(),
-            )
-            .is_err()
-        );
-        assert_eq!(state.doc.save(), before);
-    }
+    tilo_test_env::scenario! {
+        /// The two verbs an agent streams a paragraph with.
+        fn append_and_continue_write_the_last_paragraph;
 
-    #[test]
-    fn a_fresh_document_publishes_few_grantable_document_operations() {
-        fn document_ops(resource: &tilo_actions::ResourceSpec, out: &mut Vec<String>) {
-            for action in &resource.actions {
-                if action.kind == tilo_actions::OperationKind::Document {
-                    out.push(format!("{}#{}", resource.id.0, action.id));
-                }
-            }
-            for child in &resource.children {
-                document_ops(child, out);
-            }
-        }
-        let (state, ids) = seeded("");
-        let block = ids.first().cloned().unwrap_or_default();
-        let mut ops = Vec::new();
-        document_ops(&root_for(&state, &block), &mut ops);
-        assert!(ops.contains(&format!("{DOCUMENT}#append-paragraph")));
-        assert!(ops.contains(&format!("{DOCUMENT}#field-edit")));
-        assert!(
-            ops.len() <= 32,
-            "{} document operations: {ops:?}",
-            ops.len()
-        );
-    }
-
-    #[test]
-    fn append_then_repeated_continue_builds_one_paragraph_in_order() {
-        let (mut state, ids) = seeded("Intro\n");
-        // The catalogue is captured once, before any write; every invocation
-        // resolves the end of the body when it is applied.
-        let resources = vec![root_for(&state, &ids[0])];
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("text".into(), "The ocean ".into());
-        invoke(
-            &mut state.doc,
-            &resources,
-            DOCUMENT,
-            "append-paragraph",
-            &arguments,
-        );
-        for text in ["covers most ", "of the ", "planet."] {
-            dispatch(&mut state.doc, &continue_paragraph_action(text));
-        }
-        let blocks = body_blocks(&state.doc);
-        assert_eq!(blocks.len(), 2, "one new paragraph after the intro");
-        assert_eq!(blocks[0].text, "Intro");
-        assert_eq!(blocks[1].text, "The ocean covers most of the planet.");
-        assert_eq!(blocks[1].kind, "paragraph");
-    }
-
-    #[test]
-    fn append_fills_an_empty_trailing_paragraph_and_empty_text_is_refused() {
-        let (mut state, _) = seeded("");
-        let before = body_blocks(&state.doc);
-        dispatch(&mut state.doc, &append_paragraph_action("Hello"));
-        dispatch(&mut state.doc, &continue_paragraph_action(", world"));
-        let blocks = body_blocks(&state.doc);
-        assert!(blocks.len() <= before.len().max(1));
-        assert_eq!(blocks.last().unwrap().text, "Hello, world");
-        for action in [append_paragraph_action(""), continue_paragraph_action("")] {
+        phase appending_a_paragraph_is_a_root_level_document_verb;
+        {
+            let (mut state, ids) = seeded("Intro\n");
+            let root = root_for(&state, &ids[0]);
+            assert_eq!(root.id.0, DOCUMENT);
+            let spec = root
+                .actions
+                .iter()
+                .find(|action| action.id == "append-paragraph")
+                .expect("append-paragraph is on the root resource");
+            assert_eq!(spec.params().len(), 1);
+            assert_eq!(spec.params()[0].name, "text");
+            assert!(spec.params()[0].required);
+            assert_eq!(spec.kind, tilo_actions::OperationKind::Document);
+            assert_eq!(spec.locus, tilo_actions::ExecutionLocus::ClientLocal);
+            assert!(matches!(
+                spec.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            ));
             assert!(
-                matches!(action.apply(&mut state.doc), Err(ActionError::Refused(_))),
-                "{action:?}"
+                spec.contract.validate_declaration().is_empty(),
+                "{:?}",
+                spec.contract.validate_declaration()
             );
+            let before = state.doc.save();
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("text".into(), "".into());
+            assert!(
+                tilo_actions::door::invoke_json(
+                    &mut state.doc,
+                    std::slice::from_ref(&root),
+                    &crate::model::Document::APPEND_PARAGRAPH.on(DOCUMENT),
+                    &arguments,
+                    tilo_actions::door::InvocationProvenance::caller(b"agent"),
+                    &registry(),
+                    &mut LocalTransport::new(),
+                )
+                .is_err()
+            );
+            assert_eq!(state.doc.save(), before);
         }
-        assert_eq!(body_blocks(&state.doc).last().unwrap().text, "Hello, world");
-    }
 
-    #[test]
-    fn continue_counts_characters_like_splice_text() {
-        let (mut state, _) = seeded("Aé🦀\n");
-        dispatch(&mut state.doc, &continue_paragraph_action("z"));
-        assert_eq!(body_blocks(&state.doc)[0].text, "Aé🦀z");
+        phase append_then_repeated_continue_builds_one_paragraph_in_order;
+        {
+            let (mut state, ids) = seeded("Intro\n");
+            // The catalogue is captured once, before any write; every invocation
+            // resolves the end of the body when it is applied.
+            let resources = vec![root_for(&state, &ids[0])];
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("text".into(), "The ocean ".into());
+            invoke(
+                &mut state.doc,
+                &resources,
+                DOCUMENT,
+                "append-paragraph",
+                &arguments,
+            );
+            for text in ["covers most ", "of the ", "planet."] {
+                dispatch(&mut state.doc, &continue_paragraph_action(text));
+            }
+            let blocks = body_blocks(&state.doc);
+            assert_eq!(blocks.len(), 2, "one new paragraph after the intro");
+            assert_eq!(blocks[0].text, "Intro");
+            assert_eq!(blocks[1].text, "The ocean covers most of the planet.");
+            assert_eq!(blocks[1].kind, "paragraph");
+        }
+
+        phase append_fills_an_empty_trailing_paragraph_and_empty_text_is_refused;
+        {
+            let (mut state, _) = seeded("");
+            let before = body_blocks(&state.doc);
+            dispatch(&mut state.doc, &append_paragraph_action("Hello"));
+            dispatch(&mut state.doc, &continue_paragraph_action(", world"));
+            let blocks = body_blocks(&state.doc);
+            assert!(blocks.len() <= before.len().max(1));
+            assert_eq!(blocks.last().unwrap().text, "Hello, world");
+            for action in [append_paragraph_action(""), continue_paragraph_action("")] {
+                assert!(
+                    matches!(action.apply(&mut state.doc), Err(ActionError::Refused(_))),
+                    "{action:?}"
+                );
+            }
+            assert_eq!(body_blocks(&state.doc).last().unwrap().text, "Hello, world");
+        }
+
+        phase continue_counts_characters_like_splice_text;
+        {
+            let (mut state, _) = seeded("Aé🦀\n");
+            dispatch(&mut state.doc, &continue_paragraph_action("z"));
+            assert_eq!(body_blocks(&state.doc)[0].text, "Aé🦀z");
+        }
     }
 }

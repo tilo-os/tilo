@@ -4,10 +4,11 @@
 use super::Connect;
 use crate::direct::{Dialed, DirectSync};
 use crate::join::TransportHint;
+use crate::join::WorkspaceId;
 use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
 use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
-use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity_host::custody::HostIdentity;
 
 /// This device's own workspace host, running in this process: a workspace placed on
@@ -18,7 +19,7 @@ pub trait OwnHost: Send + Sync {
     fn join_service(&self) -> Arc<dyn LocalJoinService>;
     /// The host's end of `workspace`'s link, syncing the replica the host
     /// decides the workspace on. `None` for a workspace it does not hold.
-    fn direct(&self, workspace: u64) -> Option<DirectSync>;
+    fn direct(&self, workspace: WorkspaceId) -> Option<DirectSync>;
 }
 
 /// How this device reaches a workspace's host.
@@ -76,12 +77,9 @@ impl Reach {
         signer: Arc<dyn DeviceSigner>,
     ) -> Result<Linked, String> {
         let (payload, _) =
-            IrohWorkspaceHostHintV1::authenticate_transport_hint(via).map_err(|e| e.to_string())?;
+            WorkspaceDeviceHintV1::authenticate_transport_hint(via).map_err(|e| e.to_string())?;
         let workspace = connect.workspace();
-        if payload.workspace_id
-            != tilo_relay_protocol::room_workspace_id(&workspace.to_string())
-                .map_err(|e| e.to_string())?
-        {
+        if payload.workspace_id != workspace {
             return Err("native link workspace pin mismatch".into());
         }
         let link = connect.link(signer)?;
@@ -100,7 +98,7 @@ impl Reach {
         }
         // The relay answers on a service key of its own, which the hint's signature binds to the
         // host device: the link's history is that device's.
-        let host = payload.host_device_certificate.device_public_key;
+        let host = payload.device_certificate.device_public_key;
         let dialed = tokio::time::timeout(
             Duration::from_secs(10),
             link.dial(&self.endpoint, payload.endpoint_addr, host),

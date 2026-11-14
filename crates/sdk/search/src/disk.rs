@@ -261,24 +261,100 @@ impl DiskWriter {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_incompatible_index_is_refused_without_changing_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut builder = Schema::builder();
-        builder.add_text_field("body", STRING | STORED);
-        let schema = builder.build();
-        Index::create_in_dir(dir.path(), schema.clone()).unwrap();
-        let metadata = std::fs::read(dir.path().join("meta.json")).unwrap();
+    tilo_test_env::scenario! {
+        fn a_disk_index_opens_only_what_it_can_read_and_shows_each_commit;
 
-        assert!(matches!(
-            DiskIndex::open_or_create(dir.path()),
-            Err(tantivy::TantivyError::SchemaError(_))
-        ));
-        assert_eq!(Index::open_in_dir(dir.path()).unwrap().schema(), schema);
-        assert_eq!(
-            std::fs::read(dir.path().join("meta.json")).unwrap(),
-            metadata
-        );
+        phase an_incompatible_index_is_refused_without_changing_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut builder = Schema::builder();
+            builder.add_text_field("body", STRING | STORED);
+            let schema = builder.build();
+            Index::create_in_dir(dir.path(), schema.clone()).unwrap();
+            let metadata = std::fs::read(dir.path().join("meta.json")).unwrap();
+
+            assert!(matches!(
+                DiskIndex::open_or_create(dir.path()),
+                Err(tantivy::TantivyError::SchemaError(_))
+            ));
+            assert_eq!(Index::open_in_dir(dir.path()).unwrap().schema(), schema);
+            assert_eq!(
+                std::fs::read(dir.path().join("meta.json")).unwrap(),
+                metadata
+            );
+        }
+
+        phase an_index_tantivy_0_22_wrote_opens_and_keeps_its_documents;
+        // Files' body index on a user's disk may have been written by tantivy
+        // 0.22 (index format 6). It opens as it is, keeps every document, and
+        // takes new writes and merges in the current format.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let fixture = include_str!("../tests/fixtures/tantivy-0.22-disk-index.hex");
+            for line in fixture.lines().filter(|line| !line.starts_with('#')) {
+                let (name, hex) = line.split_once(' ').unwrap();
+                let bytes: Vec<u8> = hex
+                    .as_bytes()
+                    .chunks(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect();
+                std::fs::write(dir.path().join(name), bytes).unwrap();
+            }
+            let postings =
+                std::fs::read(dir.path().join("e43ba5cdcfcb434b81109ed4f5c24b98.idx")).unwrap();
+            let footer = String::from_utf8_lossy(&postings);
+            assert!(
+                footer.contains(r#""minor":22,"patch":1,"index_format_version":6"#),
+                "a segment tantivy 0.22.1 wrote"
+            );
+
+            let index = DiskIndex::open_or_create(dir.path()).unwrap();
+            let versions = index.versions().unwrap();
+            assert_eq!(versions.len(), 3);
+            assert_eq!(versions.get("/home/a/notes.txt"), Some(&1_700_000_000));
+            assert_eq!(versions.get("/home/a/travel.md"), Some(&1_700_000_200));
+            let budget: Vec<String> = index
+                .search("budget", 5)
+                .into_iter()
+                .map(|hit| hit.key)
+                .collect();
+            assert_eq!(budget.len(), 2);
+            assert!(budget.contains(&"/home/a/notes.txt".to_owned()));
+            assert!(budget.contains(&"/home/a/recipe.md".to_owned()));
+
+            // A merge over every segment rewrites the old ones in the current format.
+            let mut writer = index.writer(15_000_000, 2_000).unwrap();
+            writer
+                .upsert("/home/a/recipe.md", 1_700_000_300, "recipe", "soup")
+                .unwrap();
+            writer.commit().unwrap();
+            let segments = index.index.searchable_segment_ids().unwrap();
+            writer.writer.merge(&segments).wait().unwrap();
+            writer.close().unwrap();
+
+            let index = DiskIndex::open_or_create(dir.path()).unwrap();
+            let versions = index.versions().unwrap();
+            assert_eq!(versions.len(), 3);
+            assert_eq!(versions.get("/home/a/recipe.md"), Some(&1_700_000_300));
+            assert_eq!(index.search("lisbon", 5).len(), 1);
+            assert_eq!(index.search("soup", 5).len(), 1);
+            assert_eq!(index.search("budget", 5).len(), 1);
+        }
+
+        phase a_commit_is_searchable_without_a_reload;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let index = DiskIndex::open_or_create(dir.path()).unwrap();
+            let mut writer = index.writer(15_000_000, 2_000).unwrap();
+            writer.upsert("/a/one.md", 1, "one", "first").unwrap();
+            writer.commit().unwrap();
+            assert_eq!(index.search("first", 5).len(), 1, "the first commit");
+            let seen = index.generation();
+            writer.upsert("/a/two.md", 1, "two", "second").unwrap();
+            writer.commit().unwrap();
+            assert_ne!(index.generation(), seen, "a commit moves the generation");
+            assert_eq!(index.search("second", 5).len(), 1, "a later commit");
+        }
     }
 
     #[test]
@@ -310,78 +386,6 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].key, "/a/shopping.md", "a title word counts more");
         assert!(index.search("retired", 5).is_empty());
-    }
-
-    /// Files' body index on a user's disk may have been written by tantivy
-    /// 0.22 (index format 6). It opens as it is, keeps every document, and
-    /// takes new writes and merges in the current format.
-    #[test]
-    fn an_index_tantivy_0_22_wrote_opens_and_keeps_its_documents() {
-        let dir = tempfile::tempdir().unwrap();
-        let fixture = include_str!("../tests/fixtures/tantivy-0.22-disk-index.hex");
-        for line in fixture.lines().filter(|line| !line.starts_with('#')) {
-            let (name, hex) = line.split_once(' ').unwrap();
-            let bytes: Vec<u8> = hex
-                .as_bytes()
-                .chunks(2)
-                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-                .collect();
-            std::fs::write(dir.path().join(name), bytes).unwrap();
-        }
-        let postings =
-            std::fs::read(dir.path().join("e43ba5cdcfcb434b81109ed4f5c24b98.idx")).unwrap();
-        let footer = String::from_utf8_lossy(&postings);
-        assert!(
-            footer.contains(r#""minor":22,"patch":1,"index_format_version":6"#),
-            "a segment tantivy 0.22.1 wrote"
-        );
-
-        let index = DiskIndex::open_or_create(dir.path()).unwrap();
-        let versions = index.versions().unwrap();
-        assert_eq!(versions.len(), 3);
-        assert_eq!(versions.get("/home/a/notes.txt"), Some(&1_700_000_000));
-        assert_eq!(versions.get("/home/a/travel.md"), Some(&1_700_000_200));
-        let budget: Vec<String> = index
-            .search("budget", 5)
-            .into_iter()
-            .map(|hit| hit.key)
-            .collect();
-        assert_eq!(budget.len(), 2);
-        assert!(budget.contains(&"/home/a/notes.txt".to_owned()));
-        assert!(budget.contains(&"/home/a/recipe.md".to_owned()));
-
-        // A merge over every segment rewrites the old ones in the current format.
-        let mut writer = index.writer(15_000_000, 2_000).unwrap();
-        writer
-            .upsert("/home/a/recipe.md", 1_700_000_300, "recipe", "soup")
-            .unwrap();
-        writer.commit().unwrap();
-        let segments = index.index.searchable_segment_ids().unwrap();
-        writer.writer.merge(&segments).wait().unwrap();
-        writer.close().unwrap();
-
-        let index = DiskIndex::open_or_create(dir.path()).unwrap();
-        let versions = index.versions().unwrap();
-        assert_eq!(versions.len(), 3);
-        assert_eq!(versions.get("/home/a/recipe.md"), Some(&1_700_000_300));
-        assert_eq!(index.search("lisbon", 5).len(), 1);
-        assert_eq!(index.search("soup", 5).len(), 1);
-        assert_eq!(index.search("budget", 5).len(), 1);
-    }
-
-    #[test]
-    fn a_commit_is_searchable_without_a_reload() {
-        let dir = tempfile::tempdir().unwrap();
-        let index = DiskIndex::open_or_create(dir.path()).unwrap();
-        let mut writer = index.writer(15_000_000, 2_000).unwrap();
-        writer.upsert("/a/one.md", 1, "one", "first").unwrap();
-        writer.commit().unwrap();
-        assert_eq!(index.search("first", 5).len(), 1, "the first commit");
-        let seen = index.generation();
-        writer.upsert("/a/two.md", 1, "two", "second").unwrap();
-        writer.commit().unwrap();
-        assert_ne!(index.generation(), seen, "a commit moves the generation");
-        assert_eq!(index.search("second", 5).len(), 1, "a later commit");
     }
 
     #[test]

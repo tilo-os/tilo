@@ -155,7 +155,7 @@ fn directory_permission_clock_failure_refuses_cached_resolution() {
 #[test]
 fn directory_permission_actor_and_capability_semantics_invalidate_revision() {
     use crate::permissions::{
-        Access, Actor, CapOverride, PermissionContext, Scope, Standing, Subject,
+        Access, Acting, CapOverride, Grantee, PermissionContext, Scope, Standing,
     };
     for actor_change in [false, true] {
         let mut fixture = ActionFixture::broker();
@@ -163,14 +163,14 @@ fn directory_permission_actor_and_capability_semantics_invalidate_revision() {
         let old = fixture.permissions.borrow().clone();
         fixture.permissions.set(if actor_change {
             PermissionContext::new(
-                Actor::person("other-user"),
+                Acting::person("other-user"),
                 old.capabilities().to_vec(),
                 Standing::person(old.standing().policy.clone(), "other-user"),
             )
             .at_unix_time(100)
         } else {
             old.granting(CapOverride::grant(
-                Subject::person("fixture-user"),
+                Grantee::person("fixture-user"),
                 Scope::FsPath("/new".into()),
                 Access::Read,
             ))

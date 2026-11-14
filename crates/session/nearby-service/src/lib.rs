@@ -1837,134 +1837,138 @@ mod tests {
         }
     }
 
-    #[test]
-    fn media_handoff_object_lands_in_private_cache_with_lease() {
-        let tmp = TempDir::new().unwrap();
-        let source_file = tmp.path().join("concert.webm");
-        let bytes = vec![0x5a; 4096];
-        fs::write(&source_file, &bytes).unwrap();
-        let mut sender = NearbyTransferStore::open(tmp.path().join("sender"), 10).unwrap();
-        let staged = sender
-            .stage_media_with_id(
-                &source_file,
-                "concert.webm".into(),
-                "receiver".into(),
-                10,
-                [0x41; 16],
-            )
-            .unwrap();
-        assert_eq!(staged.kind, TransferKind::MediaHandoff);
+    tilo_test_env::scenario! {
+        fn a_media_handoff_is_staged_private_resumed_and_session_local;
 
-        let downloads = tmp.path().join("Downloads");
-        let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
-        let manifest = IncomingManifest {
-            id: staged.id,
-            source: "sender".into(),
-            request_id: [0x42; 16],
-            name: staged.name,
-            kind: staged.kind,
-            total_bytes: staged.total_bytes,
-            content_hash: staged.content_hash,
-        };
-        receiver.begin_incoming(manifest, 10).unwrap();
-        receiver.append(staged.id, 0, &bytes).unwrap();
-        assert!(
-            receiver.finish(staged.id, &downloads).is_err(),
-            "a media handoff never installs into Downloads"
-        );
-        let path = receiver.finish_to_cache(staged.id).unwrap();
-        assert!(path.starts_with(receiver.media_root()));
-        assert!(!downloads.exists());
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert!(receiver.inbox().is_empty());
-        assert!(!receiver.media.leased_until.contains_key(&path));
-        let resolved = std::time::Instant::now();
-        assert_eq!(
-            receiver.cached_media("sender", staged.id),
-            Some(path.clone())
-        );
-        assert!(
-            receiver
-                .media
-                .leased_until
-                .get(&path)
-                .is_some_and(|until| until.saturating_duration_since(resolved) >= MEDIA_LEASE),
-            "resolving the object leases it to the player"
-        );
-        assert_eq!(receiver.cached_media("other-sender", staged.id), None);
-    }
+        phase media_handoff_object_lands_in_private_cache_with_lease;
+        {
+            let tmp = TempDir::new().unwrap();
+            let source_file = tmp.path().join("concert.webm");
+            let bytes = vec![0x5a; 4096];
+            fs::write(&source_file, &bytes).unwrap();
+            let mut sender = NearbyTransferStore::open(tmp.path().join("sender"), 10).unwrap();
+            let staged = sender
+                .stage_media_with_id(
+                    &source_file,
+                    "concert.webm".into(),
+                    "receiver".into(),
+                    10,
+                    [0x41; 16],
+                )
+                .unwrap();
+            assert_eq!(staged.kind, TransferKind::MediaHandoff);
 
-    #[test]
-    fn media_handoff_resumes_from_committed_offset() {
-        let tmp = TempDir::new().unwrap();
-        let half = usize::try_from(CHECKPOINT_BYTES).unwrap();
-        let mut bytes = vec![0x11; half];
-        bytes.extend(vec![0x22; half]);
-        let manifest = media_manifest([0x43; 16], "sender", &bytes);
-        let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
-        assert_eq!(
-            store.begin_incoming(manifest.clone(), 10).unwrap(),
-            (0, *blake3::hash(&[]).as_bytes())
-        );
-        store.append(manifest.id, 0, &bytes[..half]).unwrap();
-        // The link drops; the sender re-offers the same object.
-        let (offset, prefix) = store.begin_incoming(manifest.clone(), 11).unwrap();
-        assert_eq!(offset, CHECKPOINT_BYTES);
-        assert_eq!(prefix, *blake3::hash(&bytes[..half]).as_bytes());
-        let mut retry = manifest.clone();
-        retry.request_id = [0x44; 16];
-        assert_eq!(
-            store.accept_incoming_offer(retry, 12).unwrap(),
-            (offset, prefix),
-            "a re-offer resumes from the verified prefix, not byte zero"
-        );
-        store.append(manifest.id, offset, &bytes[half..]).unwrap();
-        let path = store.finish_to_cache(manifest.id).unwrap();
-        assert_eq!(fs::read(path).unwrap(), bytes);
-    }
+            let downloads = tmp.path().join("Downloads");
+            let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
+            let manifest = IncomingManifest {
+                id: staged.id,
+                source: "sender".into(),
+                request_id: [0x42; 16],
+                name: staged.name,
+                kind: staged.kind,
+                total_bytes: staged.total_bytes,
+                content_hash: staged.content_hash,
+            };
+            receiver.begin_incoming(manifest, 10).unwrap();
+            receiver.append(staged.id, 0, &bytes).unwrap();
+            assert!(
+                receiver.finish(staged.id, &downloads).is_err(),
+                "a media handoff never installs into Downloads"
+            );
+            let path = receiver.finish_to_cache(staged.id).unwrap();
+            assert!(path.starts_with(receiver.media_root()));
+            assert!(!downloads.exists());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(receiver.inbox().is_empty());
+            assert!(!receiver.media.leased_until.contains_key(&path));
+            let resolved = std::time::Instant::now();
+            assert_eq!(
+                receiver.cached_media("sender", staged.id),
+                Some(path.clone())
+            );
+            assert!(
+                receiver
+                    .media
+                    .leased_until
+                    .get(&path)
+                    .is_some_and(|until| until.saturating_duration_since(resolved) >= MEDIA_LEASE),
+                "resolving the object leases it to the player"
+            );
+            assert_eq!(receiver.cached_media("other-sender", staged.id), None);
+        }
 
-    #[test]
-    fn media_handoff_is_session_local_and_dropped_on_reopen() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("spool");
-        let source_file = tmp.path().join("film.mkv");
-        fs::write(&source_file, b"film").unwrap();
-        let mut store = NearbyTransferStore::open(root.clone(), 10).unwrap();
-        let staged = store
-            .stage_media_with_id(
-                &source_file,
-                "film.mkv".into(),
-                "peer".into(),
-                10,
-                [0x45; 16],
-            )
-            .unwrap();
-        let manifest = media_manifest([0x46; 16], "peer", b"partial bytes");
-        store.begin_incoming(manifest.clone(), 10).unwrap();
-        store.append(manifest.id, 0, b"partial").unwrap();
-        let object = store.object_path(staged.id);
-        let part = store.partial_path(manifest.id);
-        drop(store);
-        let reopened = NearbyTransferStore::open(root, 11).unwrap();
-        assert!(reopened.outbox().is_empty());
-        assert!(reopened.inbox().is_empty());
-        assert!(!object.exists());
-        assert!(!part.exists());
-    }
+        phase media_handoff_resumes_from_committed_offset;
+        {
+            let tmp = TempDir::new().unwrap();
+            let half = usize::try_from(CHECKPOINT_BYTES).unwrap();
+            let mut bytes = vec![0x11; half];
+            bytes.extend(vec![0x22; half]);
+            let manifest = media_manifest([0x43; 16], "sender", &bytes);
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            assert_eq!(
+                store.begin_incoming(manifest.clone(), 10).unwrap(),
+                (0, *blake3::hash(&[]).as_bytes())
+            );
+            store.append(manifest.id, 0, &bytes[..half]).unwrap();
+            // The link drops; the sender re-offers the same object.
+            let (offset, prefix) = store.begin_incoming(manifest.clone(), 11).unwrap();
+            assert_eq!(offset, CHECKPOINT_BYTES);
+            assert_eq!(prefix, *blake3::hash(&bytes[..half]).as_bytes());
+            let mut retry = manifest.clone();
+            retry.request_id = [0x44; 16];
+            assert_eq!(
+                store.accept_incoming_offer(retry, 12).unwrap(),
+                (offset, prefix),
+                "a re-offer resumes from the verified prefix, not byte zero"
+            );
+            store.append(manifest.id, offset, &bytes[half..]).unwrap();
+            let path = store.finish_to_cache(manifest.id).unwrap();
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
 
-    #[test]
-    fn media_handoff_source_must_be_one_regular_file() {
-        let tmp = TempDir::new().unwrap();
-        let folder = tmp.path().join("album");
-        fs::create_dir(&folder).unwrap();
-        fs::write(folder.join("track.flac"), b"audio").unwrap();
-        let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
-        assert!(
-            store
-                .stage_media_with_id(&folder, "album".into(), "peer".into(), 10, [0x47; 16])
-                .is_err()
-        );
-        assert!(store.outbox().is_empty());
+        phase media_handoff_is_session_local_and_dropped_on_reopen;
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().join("spool");
+            let source_file = tmp.path().join("film.mkv");
+            fs::write(&source_file, b"film").unwrap();
+            let mut store = NearbyTransferStore::open(root.clone(), 10).unwrap();
+            let staged = store
+                .stage_media_with_id(
+                    &source_file,
+                    "film.mkv".into(),
+                    "peer".into(),
+                    10,
+                    [0x45; 16],
+                )
+                .unwrap();
+            let manifest = media_manifest([0x46; 16], "peer", b"partial bytes");
+            store.begin_incoming(manifest.clone(), 10).unwrap();
+            store.append(manifest.id, 0, b"partial").unwrap();
+            let object = store.object_path(staged.id);
+            let part = store.partial_path(manifest.id);
+            drop(store);
+            let reopened = NearbyTransferStore::open(root, 11).unwrap();
+            assert!(reopened.outbox().is_empty());
+            assert!(reopened.inbox().is_empty());
+            assert!(!object.exists());
+            assert!(!part.exists());
+        }
+
+        phase media_handoff_source_must_be_one_regular_file;
+        {
+            let tmp = TempDir::new().unwrap();
+            let folder = tmp.path().join("album");
+            fs::create_dir(&folder).unwrap();
+            fs::write(folder.join("track.flac"), b"audio").unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            assert!(
+                store
+                    .stage_media_with_id(&folder, "album".into(), "peer".into(), 10, [0x47; 16])
+                    .is_err()
+            );
+            assert!(store.outbox().is_empty());
+        }
     }
 
     #[test]
@@ -2167,130 +2171,138 @@ mod tests {
         non_media_transfer_never_enters_the_media_cache();
     }
 
-    #[test]
-    fn nearby_fresh_consent_rebinds_retry_and_truncates_only_uncommitted_tail() {
-        let root = TempDir::new().unwrap();
-        let spool = root.path().join("spool");
-        let checkpoint = vec![3; usize::try_from(CHECKPOINT_BYTES).unwrap()];
-        let manifest = IncomingManifest {
-            id: [61; 16],
-            source: "certified-peer".into(),
-            request_id: [62; 16],
-            name: "report.bin".into(),
-            kind: TransferKind::File,
-            total_bytes: CHECKPOINT_BYTES + 20,
-            content_hash: [4; 32],
-        };
-        let mut store = NearbyTransferStore::open(spool.clone(), 10).unwrap();
-        store.begin_incoming(manifest.clone(), 10).unwrap();
-        store.append(manifest.id, 0, &checkpoint).unwrap();
-        store
-            .append(manifest.id, CHECKPOINT_BYTES, b"crash-tail")
-            .unwrap();
-        let before = store.inbox()[0].clone();
-        let mut retry = manifest.clone();
-        retry.request_id = [63; 16];
-        assert!(
-            store.begin_incoming(retry.clone(), 11).is_err(),
-            "ordinary resume cannot rotate consent"
-        );
-        let (offset, hash) = store.accept_incoming_offer(retry.clone(), 11).unwrap();
-        assert_eq!(offset, CHECKPOINT_BYTES);
-        assert_eq!(hash, *blake3::hash(&checkpoint).as_bytes());
-        assert_eq!(
-            fs::read(store.partial_path(manifest.id)).unwrap(),
-            checkpoint
-        );
-        assert_eq!(store.inbox()[0].request_id, retry.request_id);
-        assert_eq!(store.inbox()[0].expires_unix_ms, before.expires_unix_ms);
-        assert!(
-            store.begin_incoming(manifest, 11).is_err(),
-            "old request is now stale"
-        );
-        drop(store);
-        let mut reopened = NearbyTransferStore::open(spool, 12).unwrap();
-        assert_eq!(reopened.begin_incoming(retry, 12).unwrap(), (offset, hash));
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_nearby_offer_is_bound_to_its_peer_manifest_and_consent;
 
-    #[test]
-    fn nearby_reoffer_cannot_change_peer_or_immutable_manifest() {
-        let root = TempDir::new().unwrap();
-        let mut store = NearbyTransferStore::open(root.path().join("spool"), 10).unwrap();
-        let manifest = IncomingManifest {
-            id: [71; 16],
-            source: "certified-peer".into(),
-            request_id: [72; 16],
-            name: "report.bin".into(),
-            kind: TransferKind::File,
-            total_bytes: 20,
-            content_hash: [4; 32],
-        };
-        store.begin_incoming(manifest.clone(), 10).unwrap();
-        store.append(manifest.id, 0, b"uncommitted").unwrap();
-        let before = store.inbox()[0].clone();
-        let mut retry = manifest;
-        retry.request_id = [73; 16];
-        let mut wrong_peer = retry.clone();
-        wrong_peer.source = "other-peer".into();
-        let mut wrong_name = retry.clone();
-        wrong_name.name = "other.bin".into();
-        let mut wrong_kind = retry.clone();
-        wrong_kind.kind = TransferKind::FolderArchive;
-        let mut wrong_size = retry.clone();
-        wrong_size.total_bytes += 1;
-        let mut wrong_hash = retry.clone();
-        wrong_hash.content_hash = [5; 32];
-        let mut zero_request = retry;
-        zero_request.request_id = [0; 16];
-        for changed in [
-            wrong_peer,
-            wrong_name,
-            wrong_kind,
-            wrong_size,
-            wrong_hash,
-            zero_request,
-        ] {
-            assert!(store.accept_incoming_offer(changed, 11).is_err());
-            assert_eq!(store.inbox(), std::slice::from_ref(&before));
+        phase nearby_fresh_consent_rebinds_retry_and_truncates_only_uncommitted_tail;
+        {
+            let root = TempDir::new().unwrap();
+            let spool = root.path().join("spool");
+            let checkpoint = vec![3; usize::try_from(CHECKPOINT_BYTES).unwrap()];
+            let manifest = IncomingManifest {
+                id: [61; 16],
+                source: "certified-peer".into(),
+                request_id: [62; 16],
+                name: "report.bin".into(),
+                kind: TransferKind::File,
+                total_bytes: CHECKPOINT_BYTES + 20,
+                content_hash: [4; 32],
+            };
+            let mut store = NearbyTransferStore::open(spool.clone(), 10).unwrap();
+            store.begin_incoming(manifest.clone(), 10).unwrap();
+            store.append(manifest.id, 0, &checkpoint).unwrap();
+            store
+                .append(manifest.id, CHECKPOINT_BYTES, b"crash-tail")
+                .unwrap();
+            let before = store.inbox()[0].clone();
+            let mut retry = manifest.clone();
+            retry.request_id = [63; 16];
+            assert!(
+                store.begin_incoming(retry.clone(), 11).is_err(),
+                "ordinary resume cannot rotate consent"
+            );
+            let (offset, hash) = store.accept_incoming_offer(retry.clone(), 11).unwrap();
+            assert_eq!(offset, CHECKPOINT_BYTES);
+            assert_eq!(hash, *blake3::hash(&checkpoint).as_bytes());
             assert_eq!(
-                fs::read(store.partial_path(before.id)).unwrap(),
-                b"uncommitted"
+                fs::read(store.partial_path(manifest.id)).unwrap(),
+                checkpoint
+            );
+            assert_eq!(store.inbox()[0].request_id, retry.request_id);
+            assert_eq!(store.inbox()[0].expires_unix_ms, before.expires_unix_ms);
+            assert!(
+                store.begin_incoming(manifest, 11).is_err(),
+                "old request is now stale"
+            );
+            drop(store);
+            let mut reopened = NearbyTransferStore::open(spool, 12).unwrap();
+            assert_eq!(reopened.begin_incoming(retry, 12).unwrap(), (offset, hash));
+        }
+
+        phase nearby_reoffer_cannot_change_peer_or_immutable_manifest;
+        {
+            let root = TempDir::new().unwrap();
+            let mut store = NearbyTransferStore::open(root.path().join("spool"), 10).unwrap();
+            let manifest = IncomingManifest {
+                id: [71; 16],
+                source: "certified-peer".into(),
+                request_id: [72; 16],
+                name: "report.bin".into(),
+                kind: TransferKind::File,
+                total_bytes: 20,
+                content_hash: [4; 32],
+            };
+            store.begin_incoming(manifest.clone(), 10).unwrap();
+            store.append(manifest.id, 0, b"uncommitted").unwrap();
+            let before = store.inbox()[0].clone();
+            let mut retry = manifest;
+            retry.request_id = [73; 16];
+            let mut wrong_peer = retry.clone();
+            wrong_peer.source = "other-peer".into();
+            let mut wrong_name = retry.clone();
+            wrong_name.name = "other.bin".into();
+            let mut wrong_kind = retry.clone();
+            wrong_kind.kind = TransferKind::FolderArchive;
+            let mut wrong_size = retry.clone();
+            wrong_size.total_bytes += 1;
+            let mut wrong_hash = retry.clone();
+            wrong_hash.content_hash = [5; 32];
+            let mut zero_request = retry;
+            zero_request.request_id = [0; 16];
+            for changed in [
+                wrong_peer,
+                wrong_name,
+                wrong_kind,
+                wrong_size,
+                wrong_hash,
+                zero_request,
+            ] {
+                assert!(store.accept_incoming_offer(changed, 11).is_err());
+                assert_eq!(store.inbox(), std::slice::from_ref(&before));
+                assert_eq!(
+                    fs::read(store.partial_path(before.id)).unwrap(),
+                    b"uncommitted"
+                );
+            }
+        }
+
+        phase nearby_declining_a_fresh_offer_discards_only_its_matching_checkpoint;
+        {
+            let root = TempDir::new().unwrap();
+            let spool = root.path().join("spool");
+            let mut store = NearbyTransferStore::open(spool.clone(), 10).unwrap();
+            let mut offer = IncomingManifest {
+                id: [81; 16],
+                source: "certified-peer".into(),
+                request_id: [82; 16],
+                name: "report.bin".into(),
+                kind: TransferKind::File,
+                total_bytes: 20,
+                content_hash: [4; 32],
+            };
+            store.begin_incoming(offer.clone(), 10).unwrap();
+            store.append(offer.id, 0, b"partial").unwrap();
+            offer.request_id = [83; 16];
+            let mut other_peer = offer.clone();
+            other_peer.source = "other-peer".into();
+            assert!(store.decline_incoming_offer(&other_peer).is_err());
+            assert_eq!(store.inbox().len(), 1);
+            assert_eq!(fs::read(store.partial_path(offer.id)).unwrap(), b"partial");
+            assert!(store.decline_incoming_offer(&offer).unwrap());
+            assert!(store.inbox().is_empty());
+            assert!(!store.partial_path(offer.id).exists());
+            drop(store);
+            assert!(
+                NearbyTransferStore::open(spool, 11)
+                    .unwrap()
+                    .inbox()
+                    .is_empty()
             );
         }
-    }
-
-    #[test]
-    fn nearby_declining_a_fresh_offer_discards_only_its_matching_checkpoint() {
-        let root = TempDir::new().unwrap();
-        let spool = root.path().join("spool");
-        let mut store = NearbyTransferStore::open(spool.clone(), 10).unwrap();
-        let mut offer = IncomingManifest {
-            id: [81; 16],
-            source: "certified-peer".into(),
-            request_id: [82; 16],
-            name: "report.bin".into(),
-            kind: TransferKind::File,
-            total_bytes: 20,
-            content_hash: [4; 32],
-        };
-        store.begin_incoming(offer.clone(), 10).unwrap();
-        store.append(offer.id, 0, b"partial").unwrap();
-        offer.request_id = [83; 16];
-        let mut other_peer = offer.clone();
-        other_peer.source = "other-peer".into();
-        assert!(store.decline_incoming_offer(&other_peer).is_err());
-        assert_eq!(store.inbox().len(), 1);
-        assert_eq!(fs::read(store.partial_path(offer.id)).unwrap(), b"partial");
-        assert!(store.decline_incoming_offer(&offer).unwrap());
-        assert!(store.inbox().is_empty());
-        assert!(!store.partial_path(offer.id).exists());
-        drop(store);
-        assert!(
-            NearbyTransferStore::open(spool, 11)
-                .unwrap()
-                .inbox()
-                .is_empty()
-        );
     }
 
     #[test]

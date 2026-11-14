@@ -120,99 +120,103 @@ pub fn dbus_property_args(property: &Property) -> [String; 3] {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_opening_app_outranks_the_session_and_every_app() {
-        let startup = tier_properties(Tier::Startup, Some(32 * GIB));
-        assert_eq!(
-            startup,
-            [
-                ("CPUWeight", 10_000),
-                ("IOWeight", 10_000),
-                ("MemoryLow", 4 * GIB),
-            ],
-            "a launching app takes the most a cgroup may carry, and its floor"
-        );
-        let session = tier_properties(Tier::Session, Some(32 * GIB));
-        assert_eq!(
-            session,
-            [("CPUWeight", 1_000), ("IOWeight", 1_000)],
-            "the desk outranks every app, and its floor is the image's"
-        );
-        let foreground = tier_properties(Tier::Foreground, Some(32 * GIB));
-        // The order a person's work is served in: what they just asked for, then the desk showing it,
-        // then what they can see, then the rest.
-        let cpu_weight = |tier| {
-            tier_properties(tier, Some(32 * GIB))
-                .into_iter()
-                .find_map(|(name, value)| (name == "CPUWeight").then_some(value))
-        };
-        let order = [
-            Tier::Startup,
-            Tier::Session,
-            Tier::Foreground,
-            Tier::Background,
-        ];
-        for pair in order.windows(2) {
-            let (above, below) = (cpu_weight(pair[0]), cpu_weight(pair[1]));
-            assert!(
-                above > below,
-                "{:?} does not outrank {:?}: {above:?} against {below:?}",
-                pair[0],
-                pair[1]
+    tilo_test_env::scenario! {
+        fn priority_tiers_rank_apps_and_become_cgroup_files;
+
+        phase an_opening_app_outranks_the_session_and_every_app;
+        {
+            let startup = tier_properties(Tier::Startup, Some(32 * GIB));
+            assert_eq!(
+                startup,
+                [
+                    ("CPUWeight", 10_000),
+                    ("IOWeight", 10_000),
+                    ("MemoryLow", 4 * GIB),
+                ],
+                "a launching app takes the most a cgroup may carry, and its floor"
             );
+            let session = tier_properties(Tier::Session, Some(32 * GIB));
+            assert_eq!(
+                session,
+                [("CPUWeight", 1_000), ("IOWeight", 1_000)],
+                "the desk outranks every app, and its floor is the image's"
+            );
+            let foreground = tier_properties(Tier::Foreground, Some(32 * GIB));
+            // The order a person's work is served in: what they just asked for, then the desk showing it,
+            // then what they can see, then the rest.
+            let cpu_weight = |tier| {
+                tier_properties(tier, Some(32 * GIB))
+                    .into_iter()
+                    .find_map(|(name, value)| (name == "CPUWeight").then_some(value))
+            };
+            let order = [
+                Tier::Startup,
+                Tier::Session,
+                Tier::Foreground,
+                Tier::Background,
+            ];
+            for pair in order.windows(2) {
+                let (above, below) = (cpu_weight(pair[0]), cpu_weight(pair[1]));
+                assert!(
+                    above > below,
+                    "{:?} does not outrank {:?}: {above:?} against {below:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            assert!(session.len() < foreground.len());
+            for props in [&startup, &session, &foreground] {
+                assert!(!props.iter().any(|(name, _)| name.contains("Max")));
+            }
+            assert_eq!(STARTUP_WINDOW, Duration::from_secs(2));
         }
-        assert!(session.len() < foreground.len());
-        for props in [&startup, &session, &foreground] {
-            assert!(!props.iter().any(|(name, _)| name.contains("Max")));
-        }
-        assert_eq!(STARTUP_WINDOW, Duration::from_secs(2));
-    }
 
-    #[test]
-    fn the_foreground_tier_boosts_without_capping() {
-        let fg = tier_properties(Tier::Foreground, Some(32 * GIB));
-        assert_eq!(
-            fg,
-            [
-                ("CPUWeight", 800),
-                ("IOWeight", 800),
-                ("MemoryLow", 4 * GIB),
-            ]
-        );
-        // An eighth of a small machine, not the cap.
-        assert!(tier_properties(Tier::Foreground, Some(4 * GIB)).contains(&("MemoryLow", GIB / 2)));
-        let bg = tier_properties(Tier::Background, Some(32 * GIB));
-        assert!(bg.contains(&("MemoryLow", 0)));
-        // Never a hard limit, in either direction.
-        for (name, _) in fg.iter().chain(&bg) {
-            assert!(!name.contains("Max") && !name.contains("High") && *name != "CPUQuota");
+        phase the_foreground_tier_boosts_without_capping;
+        {
+            let fg = tier_properties(Tier::Foreground, Some(32 * GIB));
+            assert_eq!(
+                fg,
+                [
+                    ("CPUWeight", 800),
+                    ("IOWeight", 800),
+                    ("MemoryLow", 4 * GIB),
+                ]
+            );
+            // An eighth of a small machine, not the cap.
+            assert!(tier_properties(Tier::Foreground, Some(4 * GIB)).contains(&("MemoryLow", GIB / 2)));
+            let bg = tier_properties(Tier::Background, Some(32 * GIB));
+            assert!(bg.contains(&("MemoryLow", 0)));
+            // Never a hard limit, in either direction.
+            for (name, _) in fg.iter().chain(&bg) {
+                assert!(!name.contains("Max") && !name.contains("High") && *name != "CPUQuota");
+            }
         }
-    }
 
-    #[test]
-    fn an_app_cgroups_tier_is_the_cgroup_files_systemd_would_write() {
-        let dir = tempfile::tempdir().unwrap();
-        for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
-            std::fs::write(dir.path().join(file), "").unwrap();
+        phase an_app_cgroups_tier_is_the_cgroup_files_systemd_would_write;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
+                std::fs::write(dir.path().join(file), "").unwrap();
+            }
+            crate::app_cgroup::apply(
+                dir.path(),
+                &tier_properties(Tier::Background, Some(32 * GIB)),
+            )
+            .unwrap();
+            let read = |file: &str| std::fs::read_to_string(dir.path().join(file)).unwrap();
+            assert_eq!(read("cpu.weight"), "50");
+            assert_eq!(read("io.weight"), "default 50");
+            assert_eq!(read("io.bfq.weight"), "50");
+            assert_eq!(read("memory.low"), "0");
         }
-        crate::app_cgroup::apply(
-            dir.path(),
-            &tier_properties(Tier::Background, Some(32 * GIB)),
-        )
-        .unwrap();
-        let read = |file: &str| std::fs::read_to_string(dir.path().join(file)).unwrap();
-        assert_eq!(read("cpu.weight"), "50");
-        assert_eq!(read("io.weight"), "default 50");
-        assert_eq!(read("io.bfq.weight"), "50");
-        assert_eq!(read("memory.low"), "0");
-    }
 
-    #[test]
-    fn physical_memory_comes_from_proc_meminfo() {
-        assert_eq!(
-            parse_mem_total("MemTotal:       32213144 kB\n"),
-            Some(32_213_144 * 1024)
-        );
-        assert_eq!(parse_mem_total("MemFree: 1 kB\n"), None);
+        phase physical_memory_comes_from_proc_meminfo;
+        {
+            assert_eq!(
+                parse_mem_total("MemTotal:       32213144 kB\n"),
+                Some(32_213_144 * 1024)
+            );
+            assert_eq!(parse_mem_total("MemFree: 1 kB\n"), None);
+        }
     }
 }

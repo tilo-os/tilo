@@ -750,563 +750,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn install_command_binds_every_storage_identity_without_credentials() {
-        {
-            let opts = InstallOptions {
-                disk_size_bytes: 500_000_000_000,
-                disk_major_minor: "259:0".into(),
-                disk_wwn: "eui.0011223344556677".into(),
-                disk_serial: "TILO-NVME".into(),
-                alongside_root: "/dev/nvme0n1p3".into(),
-                alongside_root_partuuid: "00000000-0000-0000-0000-000000000003".into(),
-                alongside_root_size_bytes: 64_000_000_000,
-                alongside_boot: "/dev/nvme0n1p5".into(),
-                alongside_boot_partuuid: "00000000-0000-0000-0000-000000000005".into(),
-                alongside_boot_size_bytes: 1_073_741_824,
-                alongside_efi: "/dev/nvme0n1p4".into(),
-                alongside_efi_partuuid: "00000000-0000-0000-0000-000000000004".into(),
-                alongside_efi_size_bytes: 2_147_483_648,
-                ..InstallOptions::default()
-            };
-            let command = alongside_preflight_command("/dev/nvme0n1", &opts);
-            let args = command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>();
-            for expected in [
-                "--preflight-alongside",
-                "/dev/nvme0n1",
-                "259:0",
-                "eui.0011223344556677",
-                "TILO-NVME",
-                "/dev/nvme0n1p3",
-                "00000000-0000-0000-0000-000000000003",
-                "/dev/nvme0n1p5",
-                "00000000-0000-0000-0000-000000000005",
-                "/dev/nvme0n1p4",
-                "00000000-0000-0000-0000-000000000004",
-            ] {
-                assert!(args.iter().any(|arg| arg == expected), "missing {expected}");
-            }
-            assert!(
-                !args.iter().any(|arg| arg == "--guided-alongside"),
-                "prepared preflight must never enter partition creation"
-            );
-        }
-        {
-            let opts = InstallOptions {
-                disk_size_bytes: 1_000_000_000_000,
-                disk_major_minor: "259:0".into(),
-                disk_wwn: "eui.0011223344556677".into(),
-                disk_serial: "TILO-NVME".into(),
-                alongside_root: "/dev/nvme0n1p4".into(),
-                alongside_root_partuuid: "00000000-0000-0000-0000-000000000004".into(),
-                alongside_root_size_bytes: 68_719_476_736,
-                alongside_boot: "/dev/nvme0n1p5".into(),
-                alongside_boot_partuuid: "00000000-0000-0000-0000-000000000005".into(),
-                alongside_boot_size_bytes: 1_073_741_824,
-                alongside_efi: "/dev/nvme0n1p1".into(),
-                alongside_efi_partuuid: "00000000-0000-0000-0000-000000000001".into(),
-                alongside_efi_size_bytes: 2_147_483_648,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/nvme0n1", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert!(
-                args.windows(2)
-                    .any(|pair| pair == ["--root-partition", "/dev/nvme0n1p4"])
-            );
-            assert!(
-                args.windows(2)
-                    .any(|pair| pair == ["--efi-partition", "/dev/nvme0n1p1"])
-            );
-            assert!(
-                args.windows(2)
-                    .any(|pair| pair == ["--boot-partition", "/dev/nvme0n1p5"])
-            );
-            assert!(args.contains(&"--alongside"));
-            for expected in [
-                ["--expect-disk-size-bytes", "1000000000000"],
-                ["--expect-disk-devnum", "259:0"],
-                ["--expect-disk-wwn", "eui.0011223344556677"],
-                ["--expect-disk-serial", "TILO-NVME"],
-                [
-                    "--expect-root-partuuid",
-                    "00000000-0000-0000-0000-000000000004",
-                ],
-                ["--expect-root-size-bytes", "68719476736"],
-                [
-                    "--expect-efi-partuuid",
-                    "00000000-0000-0000-0000-000000000001",
-                ],
-                ["--expect-efi-size-bytes", "2147483648"],
-            ] {
-                assert!(
-                    args.windows(2).any(|pair| pair == expected),
-                    "missing identity binding {expected:?} in {args:?}"
-                );
-            }
-            assert!(
-                args.windows(2)
-                    .any(|pair| pair == ["--confirm-root", "/dev/nvme0n1p4"])
-            );
-            assert!(!args.contains(&"--confirm-erase"));
-        }
-        {
-            let opts = InstallOptions {
-                disk_size_bytes: 200 * 1024 * 1024 * 1024,
-                disk_major_minor: "259:0".into(),
-                disk_serial: "TILO-NVME".into(),
-                guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
-                guided_free_size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
-                guided_efi_start_bytes: 100 * 1024 * 1024 * 1024,
-                guided_efi_size_bytes: 2 * 1024 * 1024 * 1024,
-                guided_boot_start_bytes: 102 * 1024 * 1024 * 1024,
-                guided_boot_size_bytes: 1024 * 1024 * 1024,
-                guided_root_start_bytes: 103 * 1024 * 1024 * 1024,
-                guided_root_size_bytes: 97 * 1024 * 1024 * 1024 - 1024 * 1024,
-                disk_partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
-                disk_logical_sector_size: 512,
-                guided_efi_partuuid: "10000000-0000-4000-8000-000000000001".into(),
-                guided_boot_partuuid: "30000000-0000-4000-8000-000000000003".into(),
-                guided_root_partuuid: "20000000-0000-4000-8000-000000000002".into(),
-                expected_partitions: vec![PartitionExtent {
-                    part_uuid: "00000000-0000-0000-0000-000000000001".into(),
-                    start_bytes: 1024 * 1024,
-                    size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
-                }],
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/nvme0n1", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
-            assert!(args.contains(&"--guided-alongside"));
-            assert!(!args.contains(&"--confirm-erase"));
-            for expected in [
-                [
-                    "--expect-disk-ptuuid",
-                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                ],
-                ["--expect-logical-sector-size", "512"],
-                ["--confirm-free-space", "/dev/nvme0n1"],
-                [
-                    "--expect-partition",
-                    "00000000-0000-0000-0000-000000000001:1048576:107373133824",
-                ],
-            ] {
-                assert!(
-                    args.windows(2).any(|pair| pair == expected),
-                    "missing guided binding {expected:?}: {args:?}"
-                );
-            }
-        }
-        {
-            let guided = InstallOptions {
-                guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
-                guided_free_size_bytes: 64 * 1024 * 1024 * 1024,
-                internal_handoff: crate::destination::internal_handoff::HANDOFF_PATH.into(),
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/nvme0n1", "qq", &guided);
-            let args: Vec<&str> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
-            assert!(args.windows(2).any(|pair| pair
-                == [
-                    "--internal-handoff",
-                    crate::destination::internal_handoff::HANDOFF_PATH
-                ]));
-            assert!(args.contains(&"--guided-alongside"));
-
-            // A whole-disk command carries no handoff, so the live-disk refusal stays in force.
-            let erase = InstallOptions {
-                internal_handoff: crate::destination::internal_handoff::HANDOFF_PATH.into(),
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/nvme0n1", "qq", &erase);
-            assert!(!cmd.get_args().any(|arg| arg == "--internal-handoff"));
-        }
-        {
-            let opts = InstallOptions {
-                disk_size_bytes: 64 * 1024 * 1024 * 1024,
-                disk_major_minor: "252:0".into(),
-                disk_wwn: "0x5000c500aabbccdd".into(),
-                disk_serial: "VM-DISK-01".into(),
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            for expected in [
-                ["--expect-disk-size-bytes", "68719476736"],
-                ["--expect-disk-devnum", "252:0"],
-                ["--expect-disk-wwn", "0x5000c500aabbccdd"],
-                ["--expect-disk-serial", "VM-DISK-01"],
-            ] {
-                assert!(args.windows(2).any(|pair| pair == expected));
-            }
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn install_and_power_commands_build_argv_from_options() {
-        {
-            let opts = InstallOptions {
-                filesystem: "ext4".to_string(),
-                hostname: "lab-1".to_string(),
-                full_name: "Ada Example".to_string(),
-                locale: "nl_NL.UTF-8".to_string(),
-                timezone: "Europe/Amsterdam".to_string(),
-                keymap: "de".to_string(),
-                keyvariant: String::new(),
-                pin: String::new().into(),
-                fido2: false,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/sda", "ada", &opts);
-            assert_eq!(cmd.get_program(), INSTALL_BIN);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert_eq!(
-                args,
-                vec![
-                    "--disk",
-                    "/dev/sda",
-                    "--user",
-                    "ada",
-                    "--filesystem",
-                    "ext4",
-                    "--hostname",
-                    "lab-1",
-                    "--full-name",
-                    "Ada Example",
-                    "--locale",
-                    "nl_NL.UTF-8",
-                    "--confirm-erase",
-                    "/dev/sda",
-                    "--timezone",
-                    "Europe/Amsterdam",
-                    "--keymap",
-                    "de",
-                    "--encrypt",
-                    "--yes",
-                ]
-            );
-        }
-        {
-            let opts = InstallOptions {
-                filesystem: "btrfs".to_string(),
-                hostname: "tilo".to_string(),
-                timezone: String::new(),
-                keymap: "us".to_string(),
-                keyvariant: "dvorak".to_string(),
-                pin: String::new().into(),
-                fido2: false,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert_eq!(
-                args,
-                vec![
-                    "--disk",
-                    "/dev/vda",
-                    "--user",
-                    "qq",
-                    "--filesystem",
-                    "btrfs",
-                    "--hostname",
-                    "tilo",
-                    "--confirm-erase",
-                    "/dev/vda",
-                    "--keymap",
-                    "us",
-                    "--keyvariant",
-                    "dvorak",
-                    "--encrypt",
-                    "--yes",
-                ]
-            );
-        }
-        {
-            let opts = InstallOptions {
-                filesystem: "btrfs".to_string(),
-                hostname: "tilo".to_string(),
-                timezone: String::new(),
-                keymap: String::new(),
-                keyvariant: String::new(),
-                pin: String::new().into(),
-                fido2: false,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert_eq!(
-                args,
-                vec![
-                    "--disk",
-                    "/dev/vda",
-                    "--user",
-                    "qq",
-                    "--filesystem",
-                    "btrfs",
-                    "--hostname",
-                    "tilo",
-                    "--confirm-erase",
-                    "/dev/vda",
-                    "--encrypt",
-                    "--yes",
-                ]
-            );
-            assert!(!args.contains(&"--timezone"));
-            assert!(!args.contains(&"--keymap"));
-            assert!(!args.contains(&"--keyvariant"));
-        }
-        {
-            let opts = InstallOptions {
-                filesystem: "btrfs".to_string(),
-                hostname: "tilo".to_string(),
-                timezone: String::new(),
-                keymap: String::new(),
-                keyvariant: "dvorak".to_string(),
-                pin: String::new().into(),
-                fido2: false,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert!(!args.contains(&"--keyvariant"));
-            assert!(!args.contains(&"--keymap"));
-        }
-        {
-            let o = InstallOptions::default();
-            assert_eq!(o.filesystem, "btrfs");
-            assert_eq!(o.hostname, "tilo");
-            assert!(o.timezone.is_empty());
-            assert_eq!(o.keymap, "us");
-            assert!(o.keyvariant.is_empty());
-            assert!(o.pin.is_empty(), "no TPM2 PIN by default");
-            assert!(!o.fido2, "FIDO2 enrolment is opt-in (default off)");
-            assert!(!o.codecs, "media codecs are opt-in (default off)");
-        }
-        {
-            let reboot = power_command(PowerAction::Reboot);
-            assert_eq!(reboot.get_program(), POWER_BIN);
-            let args: Vec<&str> = reboot.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert_eq!(args, vec!["--reboot"]);
-
-            let off = power_command(PowerAction::PowerOff);
-            let args: Vec<&str> = off.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert_eq!(args, vec!["--poweroff"]);
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn install_command_always_encrypts_with_optional_factors() {
-        {
-            let opts = InstallOptions {
-                filesystem: "btrfs".to_string(),
-                hostname: "tilo".to_string(),
-                timezone: String::new(),
-                keymap: "us".to_string(),
-                keyvariant: String::new(),
-                pin: String::new().into(),
-                fido2: false,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert_eq!(
-                args,
-                vec![
-                    "--disk",
-                    "/dev/vda",
-                    "--user",
-                    "qq",
-                    "--filesystem",
-                    "btrfs",
-                    "--hostname",
-                    "tilo",
-                    "--confirm-erase",
-                    "/dev/vda",
-                    "--keymap",
-                    "us",
-                    "--encrypt",
-                    "--yes",
-                ]
-            );
-            let enc = args.iter().position(|a| *a == "--encrypt").unwrap();
-            let yes = args.iter().position(|a| *a == "--yes").unwrap();
-            assert!(enc < yes, "--encrypt must precede --yes");
-            assert!(!args.contains(&"--pin"));
-            assert!(!args.contains(&"--fido2"));
-        }
-        {
-            let opts = InstallOptions {
-                filesystem: "btrfs".to_string(),
-                hostname: "tilo".to_string(),
-                timezone: String::new(),
-                keymap: "us".to_string(),
-                keyvariant: String::new(),
-                pin: "1234".to_string().into(),
-                fido2: true,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert_eq!(
-                args,
-                vec![
-                    "--disk",
-                    "/dev/vda",
-                    "--user",
-                    "qq",
-                    "--filesystem",
-                    "btrfs",
-                    "--hostname",
-                    "tilo",
-                    "--confirm-erase",
-                    "/dev/vda",
-                    "--keymap",
-                    "us",
-                    "--encrypt",
-                    "--pin",
-                    "--fido2",
-                    "--yes",
-                ]
-            );
-            assert!(
-                !args.contains(&"1234"),
-                "the PIN value must not leak onto the command line"
-            );
-        }
-        {
-            let opts = InstallOptions {
-                filesystem: "btrfs".to_string(),
-                hostname: "tilo".to_string(),
-                timezone: String::new(),
-                keymap: "us".to_string(),
-                keyvariant: String::new(),
-                pin: "1234".to_string().into(),
-                fido2: true,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert!(args.contains(&"--encrypt"));
-            assert!(args.contains(&"--pin"));
-            assert!(args.contains(&"--fido2"));
-        }
-        {
-            let opts = InstallOptions {
-                filesystem: "btrfs".to_string(),
-                hostname: "tilo".to_string(),
-                timezone: String::new(),
-                keymap: "us".to_string(),
-                keyvariant: String::new(),
-                pin: String::new().into(),
-                fido2: true,
-                ..InstallOptions::default()
-            };
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-            assert!(args.contains(&"--encrypt"));
-            assert!(args.contains(&"--fido2"));
-            assert!(!args.contains(&"--pin"));
-        }
-        {
-            let opts = InstallOptions::default();
-            let cmd = install_command("/dev/vda", "qq", &opts);
-            let mut args = cmd.get_args().map(|a| a.to_str().unwrap());
-            assert!(args.any(|a| a == "--encrypt"));
-        }
-    }
-
-    #[test]
-    fn install_command_preserves_the_reviewed_ciphertext_binding_and_label() {
-        let expected = install_profile_model::PreparedSetupExpectation {
-            schema: 1,
-            sealed_bytes: 4096,
-            ciphertext_sha256: "a".repeat(64),
-        };
-        let command = install_command(
-            "/dev/test",
-            "owner",
-            &InstallOptions {
-                purpose: "server".into(),
-                device_label: "Travel computer".into(),
-                prepared_setup: Some(expected.clone()),
-                ..Default::default()
-            },
-        );
-        let args: Vec<_> = command.get_args().collect();
-        let receipt = args
-            .windows(2)
-            .find(|pair| pair[0] == "--prepared-setup-receipt")
-            .unwrap();
-        let decoded: install_profile_model::PreparedSetupExpectation =
-            serde_json::from_str(receipt[1].to_str().unwrap()).unwrap();
-        assert_eq!(decoded, expected);
-        let label = args
-            .windows(2)
-            .find(|pair| pair[0] == "--device-label")
-            .unwrap();
-        assert_eq!(label[1], "Travel computer");
-    }
-
-    #[test]
-    fn install_command_carries_purpose_without_selecting_another_image() {
-        let computer = install_command("/dev/test", "ada", &InstallOptions::default());
-        let server = install_command(
-            "/dev/test",
-            "ada",
-            &InstallOptions {
-                purpose: "server".into(),
-                ..Default::default()
-            },
-        );
-        let server_args: Vec<_> = server.get_args().collect();
-        assert!(!computer.get_args().any(|arg| arg == "--purpose"));
-        let purpose = server_args
-            .windows(2)
-            .find(|pair| pair[0] == "--purpose")
-            .unwrap();
-        assert_eq!(purpose[1], "server");
-        assert_eq!(server.get_program(), computer.get_program());
-    }
-
-    #[test]
-    fn install_command_passes_the_codecs_opt_in_only_when_chosen() {
-        let chosen = InstallOptions {
-            codecs: true,
-            ..InstallOptions::default()
-        };
-        let args: Vec<String> = install_command("/dev/vda", "qq", &chosen)
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        let codecs = args
-            .iter()
-            .position(|a| a == "--extension")
-            .expect("--extension");
-        assert_eq!(args[codecs + 1], "media-codecs");
-        let yes = args.iter().position(|a| a == "--yes").expect("--yes");
-        assert!(codecs < yes, "flags come before --yes");
-        let default: Vec<String> = install_command("/dev/vda", "qq", &InstallOptions::default())
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert!(!default.iter().any(|a| a == "--extension"));
-    }
-
-    #[test]
     fn stream_command_feeds_secrets_on_stdin_and_bounds_output() {
         {
             // Stub backend: echoes the password it read.
@@ -1415,38 +858,591 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unattended_credentials_are_transported_without_argv_or_policy_downgrade() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn install_commands_bind_identities_options_and_factors_in_argv;
+
+        phase install_command_binds_every_storage_identity_without_credentials;
         {
-            let opts = InstallOptions {
-                password_is_hash: true,
-                force_startup_passphrase: true,
-                ..InstallOptions::default()
-            };
-            let command = install_command("/dev/vdb", "ada", &opts);
-            let args: Vec<&str> = command
-                .get_args()
-                .map(|arg| arg.to_str().unwrap())
-                .collect();
-            assert!(args.contains(&"--password-hash"));
-            assert!(args.contains(&"--startup-passphrase-only"));
-            assert!(
-                !args.iter().any(|arg| arg.starts_with("$6$")),
-                "a credential hash must not travel on argv"
-            );
+            {
+                let opts = InstallOptions {
+                    disk_size_bytes: 500_000_000_000,
+                    disk_major_minor: "259:0".into(),
+                    disk_wwn: "eui.0011223344556677".into(),
+                    disk_serial: "TILO-NVME".into(),
+                    alongside_root: "/dev/nvme0n1p3".into(),
+                    alongside_root_partuuid: "00000000-0000-0000-0000-000000000003".into(),
+                    alongside_root_size_bytes: 64_000_000_000,
+                    alongside_boot: "/dev/nvme0n1p5".into(),
+                    alongside_boot_partuuid: "00000000-0000-0000-0000-000000000005".into(),
+                    alongside_boot_size_bytes: 1_073_741_824,
+                    alongside_efi: "/dev/nvme0n1p4".into(),
+                    alongside_efi_partuuid: "00000000-0000-0000-0000-000000000004".into(),
+                    alongside_efi_size_bytes: 2_147_483_648,
+                    ..InstallOptions::default()
+                };
+                let command = alongside_preflight_command("/dev/nvme0n1", &opts);
+                let args = command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                for expected in [
+                    "--preflight-alongside",
+                    "/dev/nvme0n1",
+                    "259:0",
+                    "eui.0011223344556677",
+                    "TILO-NVME",
+                    "/dev/nvme0n1p3",
+                    "00000000-0000-0000-0000-000000000003",
+                    "/dev/nvme0n1p5",
+                    "00000000-0000-0000-0000-000000000005",
+                    "/dev/nvme0n1p4",
+                    "00000000-0000-0000-0000-000000000004",
+                ] {
+                    assert!(args.iter().any(|arg| arg == expected), "missing {expected}");
+                }
+                assert!(
+                    !args.iter().any(|arg| arg == "--guided-alongside"),
+                    "prepared preflight must never enter partition creation"
+                );
+            }
+            {
+                let opts = InstallOptions {
+                    disk_size_bytes: 1_000_000_000_000,
+                    disk_major_minor: "259:0".into(),
+                    disk_wwn: "eui.0011223344556677".into(),
+                    disk_serial: "TILO-NVME".into(),
+                    alongside_root: "/dev/nvme0n1p4".into(),
+                    alongside_root_partuuid: "00000000-0000-0000-0000-000000000004".into(),
+                    alongside_root_size_bytes: 68_719_476_736,
+                    alongside_boot: "/dev/nvme0n1p5".into(),
+                    alongside_boot_partuuid: "00000000-0000-0000-0000-000000000005".into(),
+                    alongside_boot_size_bytes: 1_073_741_824,
+                    alongside_efi: "/dev/nvme0n1p1".into(),
+                    alongside_efi_partuuid: "00000000-0000-0000-0000-000000000001".into(),
+                    alongside_efi_size_bytes: 2_147_483_648,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/nvme0n1", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair == ["--root-partition", "/dev/nvme0n1p4"])
+                );
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair == ["--efi-partition", "/dev/nvme0n1p1"])
+                );
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair == ["--boot-partition", "/dev/nvme0n1p5"])
+                );
+                assert!(args.contains(&"--alongside"));
+                for expected in [
+                    ["--expect-disk-size-bytes", "1000000000000"],
+                    ["--expect-disk-devnum", "259:0"],
+                    ["--expect-disk-wwn", "eui.0011223344556677"],
+                    ["--expect-disk-serial", "TILO-NVME"],
+                    [
+                        "--expect-root-partuuid",
+                        "00000000-0000-0000-0000-000000000004",
+                    ],
+                    ["--expect-root-size-bytes", "68719476736"],
+                    [
+                        "--expect-efi-partuuid",
+                        "00000000-0000-0000-0000-000000000001",
+                    ],
+                    ["--expect-efi-size-bytes", "2147483648"],
+                ] {
+                    assert!(
+                        args.windows(2).any(|pair| pair == expected),
+                        "missing identity binding {expected:?} in {args:?}"
+                    );
+                }
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair == ["--confirm-root", "/dev/nvme0n1p4"])
+                );
+                assert!(!args.contains(&"--confirm-erase"));
+            }
+            {
+                let opts = InstallOptions {
+                    disk_size_bytes: 200 * 1024 * 1024 * 1024,
+                    disk_major_minor: "259:0".into(),
+                    disk_serial: "TILO-NVME".into(),
+                    guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
+                    guided_free_size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
+                    guided_efi_start_bytes: 100 * 1024 * 1024 * 1024,
+                    guided_efi_size_bytes: 2 * 1024 * 1024 * 1024,
+                    guided_boot_start_bytes: 102 * 1024 * 1024 * 1024,
+                    guided_boot_size_bytes: 1024 * 1024 * 1024,
+                    guided_root_start_bytes: 103 * 1024 * 1024 * 1024,
+                    guided_root_size_bytes: 97 * 1024 * 1024 * 1024 - 1024 * 1024,
+                    disk_partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+                    disk_logical_sector_size: 512,
+                    guided_efi_partuuid: "10000000-0000-4000-8000-000000000001".into(),
+                    guided_boot_partuuid: "30000000-0000-4000-8000-000000000003".into(),
+                    guided_root_partuuid: "20000000-0000-4000-8000-000000000002".into(),
+                    expected_partitions: vec![PartitionExtent {
+                        part_uuid: "00000000-0000-0000-0000-000000000001".into(),
+                        start_bytes: 1024 * 1024,
+                        size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
+                    }],
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/nvme0n1", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+                assert!(args.contains(&"--guided-alongside"));
+                assert!(!args.contains(&"--confirm-erase"));
+                for expected in [
+                    [
+                        "--expect-disk-ptuuid",
+                        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    ],
+                    ["--expect-logical-sector-size", "512"],
+                    ["--confirm-free-space", "/dev/nvme0n1"],
+                    [
+                        "--expect-partition",
+                        "00000000-0000-0000-0000-000000000001:1048576:107373133824",
+                    ],
+                ] {
+                    assert!(
+                        args.windows(2).any(|pair| pair == expected),
+                        "missing guided binding {expected:?}: {args:?}"
+                    );
+                }
+            }
+            {
+                let guided = InstallOptions {
+                    guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
+                    guided_free_size_bytes: 64 * 1024 * 1024 * 1024,
+                    internal_handoff: crate::destination::internal_handoff::HANDOFF_PATH.into(),
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/nvme0n1", "qq", &guided);
+                let args: Vec<&str> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+                assert!(args.windows(2).any(|pair| pair
+                    == [
+                        "--internal-handoff",
+                        crate::destination::internal_handoff::HANDOFF_PATH
+                    ]));
+                assert!(args.contains(&"--guided-alongside"));
+
+                // A whole-disk command carries no handoff, so the live-disk refusal stays in force.
+                let erase = InstallOptions {
+                    internal_handoff: crate::destination::internal_handoff::HANDOFF_PATH.into(),
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/nvme0n1", "qq", &erase);
+                assert!(!cmd.get_args().any(|arg| arg == "--internal-handoff"));
+            }
+            {
+                let opts = InstallOptions {
+                    disk_size_bytes: 64 * 1024 * 1024 * 1024,
+                    disk_major_minor: "252:0".into(),
+                    disk_wwn: "0x5000c500aabbccdd".into(),
+                    disk_serial: "VM-DISK-01".into(),
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                for expected in [
+                    ["--expect-disk-size-bytes", "68719476736"],
+                    ["--expect-disk-devnum", "252:0"],
+                    ["--expect-disk-wwn", "0x5000c500aabbccdd"],
+                    ["--expect-disk-serial", "VM-DISK-01"],
+                ] {
+                    assert!(args.windows(2).any(|pair| pair == expected));
+                }
+            }
         }
+
+        phase install_and_power_commands_build_argv_from_options;
         {
-            let opts = InstallOptions {
-                password_is_hash: true,
-                prepared_setup: Some(install_profile_model::PreparedSetupExpectation {
-                    schema: 1,
-                    sealed_bytes: 48,
-                    ciphertext_sha256: "0".repeat(64),
-                }),
+            {
+                let opts = InstallOptions {
+                    filesystem: "ext4".to_string(),
+                    hostname: "lab-1".to_string(),
+                    full_name: "Ada Example".to_string(),
+                    locale: "nl_NL.UTF-8".to_string(),
+                    timezone: "Europe/Amsterdam".to_string(),
+                    keymap: "de".to_string(),
+                    keyvariant: String::new(),
+                    pin: String::new().into(),
+                    fido2: false,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/sda", "ada", &opts);
+                assert_eq!(cmd.get_program(), INSTALL_BIN);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert_eq!(
+                    args,
+                    vec![
+                        "--disk",
+                        "/dev/sda",
+                        "--user",
+                        "ada",
+                        "--filesystem",
+                        "ext4",
+                        "--hostname",
+                        "lab-1",
+                        "--full-name",
+                        "Ada Example",
+                        "--locale",
+                        "nl_NL.UTF-8",
+                        "--confirm-erase",
+                        "/dev/sda",
+                        "--timezone",
+                        "Europe/Amsterdam",
+                        "--keymap",
+                        "de",
+                        "--encrypt",
+                        "--yes",
+                    ]
+                );
+            }
+            {
+                let opts = InstallOptions {
+                    filesystem: "btrfs".to_string(),
+                    hostname: "tilo".to_string(),
+                    timezone: String::new(),
+                    keymap: "us".to_string(),
+                    keyvariant: "dvorak".to_string(),
+                    pin: String::new().into(),
+                    fido2: false,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert_eq!(
+                    args,
+                    vec![
+                        "--disk",
+                        "/dev/vda",
+                        "--user",
+                        "qq",
+                        "--filesystem",
+                        "btrfs",
+                        "--hostname",
+                        "tilo",
+                        "--confirm-erase",
+                        "/dev/vda",
+                        "--keymap",
+                        "us",
+                        "--keyvariant",
+                        "dvorak",
+                        "--encrypt",
+                        "--yes",
+                    ]
+                );
+            }
+            {
+                let opts = InstallOptions {
+                    filesystem: "btrfs".to_string(),
+                    hostname: "tilo".to_string(),
+                    timezone: String::new(),
+                    keymap: String::new(),
+                    keyvariant: String::new(),
+                    pin: String::new().into(),
+                    fido2: false,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert_eq!(
+                    args,
+                    vec![
+                        "--disk",
+                        "/dev/vda",
+                        "--user",
+                        "qq",
+                        "--filesystem",
+                        "btrfs",
+                        "--hostname",
+                        "tilo",
+                        "--confirm-erase",
+                        "/dev/vda",
+                        "--encrypt",
+                        "--yes",
+                    ]
+                );
+                assert!(!args.contains(&"--timezone"));
+                assert!(!args.contains(&"--keymap"));
+                assert!(!args.contains(&"--keyvariant"));
+            }
+            {
+                let opts = InstallOptions {
+                    filesystem: "btrfs".to_string(),
+                    hostname: "tilo".to_string(),
+                    timezone: String::new(),
+                    keymap: String::new(),
+                    keyvariant: "dvorak".to_string(),
+                    pin: String::new().into(),
+                    fido2: false,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert!(!args.contains(&"--keyvariant"));
+                assert!(!args.contains(&"--keymap"));
+            }
+            {
+                let o = InstallOptions::default();
+                assert_eq!(o.filesystem, "btrfs");
+                assert_eq!(o.hostname, "tilo");
+                assert!(o.timezone.is_empty());
+                assert_eq!(o.keymap, "us");
+                assert!(o.keyvariant.is_empty());
+                assert!(o.pin.is_empty(), "no TPM2 PIN by default");
+                assert!(!o.fido2, "FIDO2 enrolment is opt-in (default off)");
+                assert!(!o.codecs, "media codecs are opt-in (default off)");
+            }
+            {
+                let reboot = power_command(PowerAction::Reboot);
+                assert_eq!(reboot.get_program(), POWER_BIN);
+                let args: Vec<&str> = reboot.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert_eq!(args, vec!["--reboot"]);
+
+                let off = power_command(PowerAction::PowerOff);
+                let args: Vec<&str> = off.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert_eq!(args, vec!["--poweroff"]);
+            }
+        }
+
+        phase install_command_always_encrypts_with_optional_factors;
+        {
+            {
+                let opts = InstallOptions {
+                    filesystem: "btrfs".to_string(),
+                    hostname: "tilo".to_string(),
+                    timezone: String::new(),
+                    keymap: "us".to_string(),
+                    keyvariant: String::new(),
+                    pin: String::new().into(),
+                    fido2: false,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert_eq!(
+                    args,
+                    vec![
+                        "--disk",
+                        "/dev/vda",
+                        "--user",
+                        "qq",
+                        "--filesystem",
+                        "btrfs",
+                        "--hostname",
+                        "tilo",
+                        "--confirm-erase",
+                        "/dev/vda",
+                        "--keymap",
+                        "us",
+                        "--encrypt",
+                        "--yes",
+                    ]
+                );
+                let enc = args.iter().position(|a| *a == "--encrypt").unwrap();
+                let yes = args.iter().position(|a| *a == "--yes").unwrap();
+                assert!(enc < yes, "--encrypt must precede --yes");
+                assert!(!args.contains(&"--pin"));
+                assert!(!args.contains(&"--fido2"));
+            }
+            {
+                let opts = InstallOptions {
+                    filesystem: "btrfs".to_string(),
+                    hostname: "tilo".to_string(),
+                    timezone: String::new(),
+                    keymap: "us".to_string(),
+                    keyvariant: String::new(),
+                    pin: "1234".to_string().into(),
+                    fido2: true,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert_eq!(
+                    args,
+                    vec![
+                        "--disk",
+                        "/dev/vda",
+                        "--user",
+                        "qq",
+                        "--filesystem",
+                        "btrfs",
+                        "--hostname",
+                        "tilo",
+                        "--confirm-erase",
+                        "/dev/vda",
+                        "--keymap",
+                        "us",
+                        "--encrypt",
+                        "--pin",
+                        "--fido2",
+                        "--yes",
+                    ]
+                );
+                assert!(
+                    !args.contains(&"1234"),
+                    "the PIN value must not leak onto the command line"
+                );
+            }
+            {
+                let opts = InstallOptions {
+                    filesystem: "btrfs".to_string(),
+                    hostname: "tilo".to_string(),
+                    timezone: String::new(),
+                    keymap: "us".to_string(),
+                    keyvariant: String::new(),
+                    pin: "1234".to_string().into(),
+                    fido2: true,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert!(args.contains(&"--encrypt"));
+                assert!(args.contains(&"--pin"));
+                assert!(args.contains(&"--fido2"));
+            }
+            {
+                let opts = InstallOptions {
+                    filesystem: "btrfs".to_string(),
+                    hostname: "tilo".to_string(),
+                    timezone: String::new(),
+                    keymap: "us".to_string(),
+                    keyvariant: String::new(),
+                    pin: String::new().into(),
+                    fido2: true,
+                    ..InstallOptions::default()
+                };
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+                assert!(args.contains(&"--encrypt"));
+                assert!(args.contains(&"--fido2"));
+                assert!(!args.contains(&"--pin"));
+            }
+            {
+                let opts = InstallOptions::default();
+                let cmd = install_command("/dev/vda", "qq", &opts);
+                let mut args = cmd.get_args().map(|a| a.to_str().unwrap());
+                assert!(args.any(|a| a == "--encrypt"));
+            }
+        }
+
+        phase install_command_preserves_the_reviewed_ciphertext_binding_and_label;
+        {
+            let expected = install_profile_model::PreparedSetupExpectation {
+                schema: 1,
+                sealed_bytes: 4096,
+                ciphertext_sha256: "a".repeat(64),
+            };
+            let command = install_command(
+                "/dev/test",
+                "owner",
+                &InstallOptions {
+                    purpose: "server".into(),
+                    device_label: "Travel computer".into(),
+                    prepared_setup: Some(expected.clone()),
+                    ..Default::default()
+                },
+            );
+            let args: Vec<_> = command.get_args().collect();
+            let receipt = args
+                .windows(2)
+                .find(|pair| pair[0] == "--prepared-setup-receipt")
+                .unwrap();
+            let decoded: install_profile_model::PreparedSetupExpectation =
+                serde_json::from_str(receipt[1].to_str().unwrap()).unwrap();
+            assert_eq!(decoded, expected);
+            let label = args
+                .windows(2)
+                .find(|pair| pair[0] == "--device-label")
+                .unwrap();
+            assert_eq!(label[1], "Travel computer");
+        }
+
+        phase install_command_carries_purpose_without_selecting_another_image;
+        {
+            let computer = install_command("/dev/test", "ada", &InstallOptions::default());
+            let server = install_command(
+                "/dev/test",
+                "ada",
+                &InstallOptions {
+                    purpose: "server".into(),
+                    ..Default::default()
+                },
+            );
+            let server_args: Vec<_> = server.get_args().collect();
+            assert!(!computer.get_args().any(|arg| arg == "--purpose"));
+            let purpose = server_args
+                .windows(2)
+                .find(|pair| pair[0] == "--purpose")
+                .unwrap();
+            assert_eq!(purpose[1], "server");
+            assert_eq!(server.get_program(), computer.get_program());
+        }
+
+        phase install_command_passes_the_codecs_opt_in_only_when_chosen;
+        {
+            let chosen = InstallOptions {
+                codecs: true,
                 ..InstallOptions::default()
             };
-            let error = run_install("/dev/vdb", "ada", "$6$salt$AAAA", &opts, |_| {}).unwrap_err();
-            assert!(error.to_string().contains("password hash"), "{error}");
+            let args: Vec<String> = install_command("/dev/vda", "qq", &chosen)
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let codecs = args
+                .iter()
+                .position(|a| a == "--extension")
+                .expect("--extension");
+            assert_eq!(args[codecs + 1], "media-codecs");
+            let yes = args.iter().position(|a| a == "--yes").expect("--yes");
+            assert!(codecs < yes, "flags come before --yes");
+            let default: Vec<String> = install_command("/dev/vda", "qq", &InstallOptions::default())
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(!default.iter().any(|a| a == "--extension"));
+        }
+
+        phase unattended_credentials_are_transported_without_argv_or_policy_downgrade;
+        {
+            {
+                let opts = InstallOptions {
+                    password_is_hash: true,
+                    force_startup_passphrase: true,
+                    ..InstallOptions::default()
+                };
+                let command = install_command("/dev/vdb", "ada", &opts);
+                let args: Vec<&str> = command
+                    .get_args()
+                    .map(|arg| arg.to_str().unwrap())
+                    .collect();
+                assert!(args.contains(&"--password-hash"));
+                assert!(args.contains(&"--startup-passphrase-only"));
+                assert!(
+                    !args.iter().any(|arg| arg.starts_with("$6$")),
+                    "a credential hash must not travel on argv"
+                );
+            }
+            {
+                let opts = InstallOptions {
+                    password_is_hash: true,
+                    prepared_setup: Some(install_profile_model::PreparedSetupExpectation {
+                        schema: 1,
+                        sealed_bytes: 48,
+                        ciphertext_sha256: "0".repeat(64),
+                    }),
+                    ..InstallOptions::default()
+                };
+                let error = run_install("/dev/vdb", "ada", "$6$salt$AAAA", &opts, |_| {}).unwrap_err();
+                assert!(error.to_string().contains("password hash"), "{error}");
+            }
         }
     }
 }

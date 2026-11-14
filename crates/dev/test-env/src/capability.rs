@@ -388,6 +388,7 @@ macro_rules! require_capability {
 mod tests {
     use super::Capability;
     use crate::ScopedEnv;
+    use crate::scenario;
     use std::cell::Cell;
 
     fn probe_gpu(available: Option<u32>) -> Option<u32> {
@@ -400,21 +401,40 @@ mod tests {
         seen.get()
     }
 
-    #[test]
-    fn an_available_capability_yields_the_probed_value() {
-        let mut env = ScopedEnv::new();
-        env.set("TILO_REQUIRE_GPU", "1");
-        assert_eq!(probe_gpu(Some(7)), Some(7));
-    }
+    scenario! {
+        fn a_capability_gates_a_test_on_what_the_machine_has;
 
-    #[test]
-    fn an_unavailable_capability_skips_unless_required() {
-        let mut env = ScopedEnv::new();
-        env.remove("TILO_REQUIRE_GPU");
-        assert!(!Capability::Gpu.required());
-        assert_eq!(probe_gpu(None), None);
-        env.set("TILO_REQUIRE_GPU", "0");
-        assert_eq!(probe_gpu(None), None);
+        phase an_available_capability_yields_the_probed_value;
+        {
+            let mut env = ScopedEnv::new();
+            env.set("TILO_REQUIRE_GPU", "1");
+            assert_eq!(probe_gpu(Some(7)), Some(7));
+        }
+
+        phase an_unavailable_capability_skips_unless_required;
+        {
+            let mut env = ScopedEnv::new();
+            env.remove("TILO_REQUIRE_GPU");
+            assert!(!Capability::Gpu.required());
+            assert_eq!(probe_gpu(None), None);
+            env.set("TILO_REQUIRE_GPU", "0");
+            assert_eq!(probe_gpu(None), None);
+        }
+
+        phase a_boolean_probe_gates_without_a_value;
+        {
+            let mut env = ScopedEnv::new();
+            env.remove("TILO_REQUIRE_AUDIO");
+            let reached = Cell::new(false);
+            let run = |available: bool| {
+                require_capability!(Audio, available, "no sink");
+                reached.set(true);
+            };
+            run(false);
+            assert!(!reached.get());
+            run(true);
+            assert!(reached.get());
+        }
     }
 
     #[test]
@@ -442,20 +462,5 @@ mod tests {
              leaves this test out through its entry in \
              .config/nextest-capabilities.toml"
         );
-    }
-
-    #[test]
-    fn a_boolean_probe_gates_without_a_value() {
-        let mut env = ScopedEnv::new();
-        env.remove("TILO_REQUIRE_AUDIO");
-        let reached = Cell::new(false);
-        let run = |available: bool| {
-            require_capability!(Audio, available, "no sink");
-            reached.set(true);
-        };
-        run(false);
-        assert!(!reached.get());
-        run(true);
-        assert!(reached.get());
     }
 }

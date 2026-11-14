@@ -307,99 +307,130 @@ impl CredentialSource for PipeCredential {
 mod tests {
     use super::*;
 
-    #[test]
-    fn wire_credentials_round_trip_and_never_debug_print() {
-        let credential = Credential::Basic {
-            username: "ada".into(),
-            password: Zeroizing::new("hunter2".into()),
-        };
-        let wire = WireCredential::from(&credential);
-        assert!(!format!("{wire:?}").contains("hunter2"));
-        let text = line(&ToMount::Credential(wire));
-        let parsed: ToMount = serde_json::from_slice(&text).unwrap();
-        assert!(!format!("{parsed:?}").contains("hunter2"));
-        let ToMount::Credential(wire) = parsed else {
-            panic!("credential");
-        };
-        let Credential::Basic { password, .. } = Credential::from(wire) else {
-            panic!("basic");
-        };
-        assert_eq!(password.as_str(), "hunter2");
-    }
+    tilo_test_env::scenario! {
+        fn the_mounts_credential_pipe_hands_control_on_and_asks_for_fresh_credentials;
 
-    #[test]
-    fn the_pump_hands_control_on_and_keeps_credentials() {
-        let pipe = PipeCredential::new(None, Box::new(Vec::new()));
-        let mut input = Vec::new();
-        for message in [
-            ToMount::SyncNow,
-            ToMount::Credential(WireCredential::Bearer {
-                token: "fresh".into(),
-                expires_unix: None,
-            }),
-            ToMount::Pause,
-            ToMount::Request {
-                id: 7,
-                request: FileRequest::Revisions {
-                    path: "a/b.txt".into(),
-                },
-            },
-        ] {
-            input.extend_from_slice(&line(&message));
+        phase wire_credentials_round_trip_and_never_debug_print;
+        {
+            let credential = Credential::Basic {
+                username: "ada".into(),
+                password: Zeroizing::new("hunter2".into()),
+            };
+            let wire = WireCredential::from(&credential);
+            assert!(!format!("{wire:?}").contains("hunter2"));
+            let text = line(&ToMount::Credential(wire));
+            let parsed: ToMount = serde_json::from_slice(&text).unwrap();
+            assert!(!format!("{parsed:?}").contains("hunter2"));
+            let ToMount::Credential(wire) = parsed else {
+                panic!("credential");
+            };
+            let Credential::Basic { password, .. } = Credential::from(wire) else {
+                panic!("basic");
+            };
+            assert_eq!(password.as_str(), "hunter2");
         }
-        let mut seen = Vec::new();
-        let mut closed = false;
-        pipe.pump(
-            input.as_slice(),
-            |control| seen.push(format!("{control:?}")),
-            || closed = true,
-        );
-        assert!(closed);
-        assert_eq!(
-            seen,
-            [
-                "SyncNow",
-                "Pause",
-                "Request { id: 7, request: Revisions { path: \"a/b.txt\" } }"
-            ]
-        );
-        assert!(seen.iter().all(|control| !control.contains("fresh")));
-        let Credential::Bearer { token, .. } = pipe.credential().unwrap() else {
-            panic!("bearer");
-        };
-        assert_eq!(token.as_str(), "fresh");
 
-        let reply = MountReply {
-            id: 7,
-            result: Ok(FileReply::Link("https://example.test/s/1".into())),
-        };
-        let text = reply_line(&reply);
-        let parsed: MountReply =
-            serde_json::from_str(text.strip_prefix(REPLY_PREFIX).unwrap()).unwrap();
-        assert_eq!(parsed, reply);
-    }
+        phase the_pump_hands_control_on_and_keeps_credentials;
+        {
+            let pipe = PipeCredential::new(None, Box::new(Vec::new()));
+            let mut input = Vec::new();
+            for message in [
+                ToMount::SyncNow,
+                ToMount::Credential(WireCredential::Bearer {
+                    token: "fresh".into(),
+                    expires_unix: None,
+                }),
+                ToMount::Pause,
+                ToMount::Request {
+                    id: 7,
+                    request: FileRequest::Revisions {
+                        path: "a/b.txt".into(),
+                    },
+                },
+            ] {
+                input.extend_from_slice(&line(&message));
+            }
+            let mut seen = Vec::new();
+            let mut closed = false;
+            pipe.pump(
+                input.as_slice(),
+                |control| seen.push(format!("{control:?}")),
+                || closed = true,
+            );
+            assert!(closed);
+            assert_eq!(
+                seen,
+                [
+                    "SyncNow",
+                    "Pause",
+                    "Request { id: 7, request: Revisions { path: \"a/b.txt\" } }"
+                ]
+            );
+            assert!(seen.iter().all(|control| !control.contains("fresh")));
+            let Credential::Bearer { token, .. } = pipe.credential().unwrap() else {
+                panic!("bearer");
+            };
+            assert_eq!(token.as_str(), "fresh");
 
-    #[test]
-    fn a_rejection_asks_once_and_a_fresh_credential_answers() {
-        let out: Box<dyn Write + Send> = Box::new(Vec::new());
-        let pipe = PipeCredential::new(
-            Some(Credential::Bearer {
-                token: Zeroizing::new("old".into()),
+            let reply = MountReply {
+                id: 7,
+                result: Ok(FileReply::Link("https://example.test/s/1".into())),
+            };
+            let text = reply_line(&reply);
+            let parsed: MountReply =
+                serde_json::from_str(text.strip_prefix(REPLY_PREFIX).unwrap()).unwrap();
+            assert_eq!(parsed, reply);
+        }
+
+        phase a_rejection_asks_once_and_a_fresh_credential_answers;
+        {
+            let out: Box<dyn Write + Send> = Box::new(Vec::new());
+            let pipe = PipeCredential::new(
+                Some(Credential::Bearer {
+                    token: Zeroizing::new("old".into()),
+                    expires: None,
+                }),
+                out,
+            );
+            assert!(pipe.credential().is_ok());
+            pipe.rejected();
+            pipe.rejected();
+            pipe.update(Credential::Bearer {
+                token: Zeroizing::new("new".into()),
                 expires: None,
-            }),
-            out,
-        );
-        assert!(pipe.credential().is_ok());
-        pipe.rejected();
-        pipe.rejected();
-        pipe.update(Credential::Bearer {
-            token: Zeroizing::new("new".into()),
-            expires: None,
-        });
-        let Credential::Bearer { token, .. } = pipe.credential().unwrap() else {
-            panic!("bearer");
-        };
-        assert_eq!(token.as_str(), "new");
+            });
+            let Credential::Bearer { token, .. } = pipe.credential().unwrap() else {
+                panic!("bearer");
+            };
+            assert_eq!(token.as_str(), "new");
+        }
+
+        phase an_expired_credential_is_asked_for_again_before_it_is_used;
+        {
+            let (lines, received) = std::sync::mpsc::channel();
+            let pipe = std::sync::Arc::new(PipeCredential::new(
+                Some(Credential::Bearer {
+                    token: Zeroizing::new("expired".into()),
+                    expires: Some(SystemTime::now()),
+                }),
+                Box::new(Lines(lines)),
+            ));
+            let service = {
+                let pipe = std::sync::Arc::clone(&pipe);
+                std::thread::spawn(move || {
+                    assert_eq!(received.recv().unwrap(), EXPIRED_LINE);
+                    pipe.update(Credential::Bearer {
+                        token: Zeroizing::new("fresh".into()),
+                        expires: None,
+                    });
+                })
+            };
+            let Credential::Bearer { token, .. } = pipe.credential().unwrap() else {
+                panic!("bearer");
+            };
+            service.join().unwrap();
+            assert_eq!(token.as_str(), "fresh");
+        }
     }
 
     /// The mount's stdout as the service reads it: one message per line.
@@ -417,32 +448,5 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
-    }
-
-    #[test]
-    fn an_expired_credential_is_asked_for_again_before_it_is_used() {
-        let (lines, received) = std::sync::mpsc::channel();
-        let pipe = std::sync::Arc::new(PipeCredential::new(
-            Some(Credential::Bearer {
-                token: Zeroizing::new("expired".into()),
-                expires: Some(SystemTime::now()),
-            }),
-            Box::new(Lines(lines)),
-        ));
-        let service = {
-            let pipe = std::sync::Arc::clone(&pipe);
-            std::thread::spawn(move || {
-                assert_eq!(received.recv().unwrap(), EXPIRED_LINE);
-                pipe.update(Credential::Bearer {
-                    token: Zeroizing::new("fresh".into()),
-                    expires: None,
-                });
-            })
-        };
-        let Credential::Bearer { token, .. } = pipe.credential().unwrap() else {
-            panic!("bearer");
-        };
-        service.join().unwrap();
-        assert_eq!(token.as_str(), "fresh");
     }
 }

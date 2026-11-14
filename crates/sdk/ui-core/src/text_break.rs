@@ -490,176 +490,188 @@ pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usi
 mod tests {
     use super::*;
 
-    #[test]
-    fn huge_paragraphs_get_stable_content_defined_chunks() {
-        let words: Vec<String> = (0..9000)
-            .map(|i| format!("w{:x}{}", i * 7919 % 4093, "ab".repeat(i % 5)))
-            .collect();
-        let text = words.join(" ");
-        assert!(text.len() > 3 * HUGE_PARAGRAPH_BYTES);
-        assert!(paragraph_chunk_boundaries("short paragraph").is_empty());
-        assert!(paragraph_chunk_boundaries(&"x ".repeat(HUGE_PARAGRAPH_BYTES / 2)).is_empty());
-        let boundaries = paragraph_chunk_boundaries(&text);
-        assert!(boundaries.len() >= text.len() / CHUNK_MAX_BYTES - 1);
-        let mut last = 0;
-        for &b in &boundaries {
-            assert!(text.is_char_boundary(b));
-            assert_eq!(text.as_bytes()[b - 1], b' ', "boundaries follow a space");
-            assert!(b - last >= CHUNK_MIN_BYTES && b - last <= CHUNK_MAX_BYTES + 64);
-            last = b;
+    tilo_test_env::scenario! {
+        /// Paragraph chunking and the offsets it keeps.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn paragraph_chunks_are_content_defined_and_map_back_to_source;
+
+        phase huge_paragraphs_get_stable_content_defined_chunks;
+        {
+            let words: Vec<String> = (0..9000)
+                .map(|i| format!("w{:x}{}", i * 7919 % 4093, "ab".repeat(i % 5)))
+                .collect();
+            let text = words.join(" ");
+            assert!(text.len() > 3 * HUGE_PARAGRAPH_BYTES);
+            assert!(paragraph_chunk_boundaries("short paragraph").is_empty());
+            assert!(paragraph_chunk_boundaries(&"x ".repeat(HUGE_PARAGRAPH_BYTES / 2)).is_empty());
+            let boundaries = paragraph_chunk_boundaries(&text);
+            assert!(boundaries.len() >= text.len() / CHUNK_MAX_BYTES - 1);
+            let mut last = 0;
+            for &b in &boundaries {
+                assert!(text.is_char_boundary(b));
+                assert_eq!(text.as_bytes()[b - 1], b' ', "boundaries follow a space");
+                assert!(b - last >= CHUNK_MIN_BYTES && b - last <= CHUNK_MAX_BYTES + 64);
+                last = b;
+            }
+            // An edit near the start moves only nearby boundaries.
+            let edited = format!("{}inserted {}", &text[..100], &text[100..]);
+            let shift = "inserted ".len();
+            let moved: Vec<usize> = paragraph_chunk_boundaries(&edited)
+                .into_iter()
+                .map(|b| b - shift)
+                .collect();
+            let unchanged = boundaries.iter().filter(|b| moved.contains(b)).count();
+            assert!(
+                unchanged + 2 >= boundaries.len(),
+                "{unchanged} of {}",
+                boundaries.len()
+            );
+            let solid = "x".repeat(5 * CHUNK_MAX_BYTES + HUGE_PARAGRAPH_BYTES);
+            assert!(!paragraph_chunk_boundaries(&solid).is_empty());
+            let two = format!(
+                "{}\n{}",
+                &text[..HUGE_PARAGRAPH_BYTES - 10],
+                &text[..HUGE_PARAGRAPH_BYTES - 10]
+            );
+            assert!(paragraph_chunk_boundaries(&two).is_empty());
         }
-        // An edit near the start moves only nearby boundaries.
-        let edited = format!("{}inserted {}", &text[..100], &text[100..]);
-        let shift = "inserted ".len();
-        let moved: Vec<usize> = paragraph_chunk_boundaries(&edited)
-            .into_iter()
-            .map(|b| b - shift)
-            .collect();
-        let unchanged = boundaries.iter().filter(|b| moved.contains(b)).count();
-        assert!(
-            unchanged + 2 >= boundaries.len(),
-            "{unchanged} of {}",
-            boundaries.len()
-        );
-        let solid = "x".repeat(5 * CHUNK_MAX_BYTES + HUGE_PARAGRAPH_BYTES);
-        assert!(!paragraph_chunk_boundaries(&solid).is_empty());
-        let two = format!(
-            "{}\n{}",
-            &text[..HUGE_PARAGRAPH_BYTES - 10],
-            &text[..HUGE_PARAGRAPH_BYTES - 10]
-        );
-        assert!(paragraph_chunk_boundaries(&two).is_empty());
+
+        phase paragraph_chunks_map_offsets_back_to_source;
+        {
+            let text = (0..6000)
+                .map(|i| format!("word{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut map = OffsetMap::default();
+            map.add_paragraph_chunks(&text);
+            assert!(!map.is_identity());
+            let shaped = map.shape_text(&text);
+            assert_eq!(shaped.replace('\n', ""), text);
+            for byte in (0..=text.len())
+                .step_by(97)
+                .filter(|b| text.is_char_boundary(*b))
+            {
+                assert_eq!(map.shaped_to_source(map.source_to_shaped(byte)), byte);
+            }
+        }
     }
 
-    #[test]
-    fn paragraph_chunks_map_offsets_back_to_source() {
-        let text = (0..6000)
-            .map(|i| format!("word{i}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let mut map = OffsetMap::default();
-        map.add_paragraph_chunks(&text);
-        assert!(!map.is_identity());
-        let shaped = map.shape_text(&text);
-        assert_eq!(shaped.replace('\n', ""), text);
-        for byte in (0..=text.len())
-            .step_by(97)
-            .filter(|b| text.is_char_boundary(*b))
-        {
-            assert_eq!(map.shaped_to_source(map.source_to_shaped(byte)), byte);
-        }
-    }
+    tilo_test_env::scenario! {
+        /// Words, graphemes, line breaks and discretionary hyphens.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn segmentation_follows_unicode_and_script_rules;
 
-    #[test]
-    fn word_and_grapheme_segmentation_keeps_clusters_whole() {
+        phase word_and_grapheme_segmentation_keeps_clusters_whole;
         {
-            for (text, expected) in [
-                ("test\u{301}", vec!["test\u{301}"]),
-                ("test\u{301} ", vec!["test\u{301}"]),
-                (
-                    "e\u{301}test test\u{301} 123\u{301}",
-                    vec!["e\u{301}test", "test\u{301}", "123\u{301}"],
-                ),
-            ] {
-                let words: Vec<_> = unicode_word_ranges(text)
-                    .map(|range| text.get(range).expect("UTF-8 word range"))
-                    .collect();
+            {
+                for (text, expected) in [
+                    ("test\u{301}", vec!["test\u{301}"]),
+                    ("test\u{301} ", vec!["test\u{301}"]),
+                    (
+                        "e\u{301}test test\u{301} 123\u{301}",
+                        vec!["e\u{301}test", "test\u{301}", "123\u{301}"],
+                    ),
+                ] {
+                    let words: Vec<_> = unicode_word_ranges(text)
+                        .map(|range| text.get(range).expect("UTF-8 word range"))
+                        .collect();
+                    assert_eq!(
+                        words, expected,
+                        "the complete source word remains word-like"
+                    );
+                }
+                assert!(unicode_word_ranges("\u{301} , .").next().is_none());
+            }
+
+            {
+                let text = "e\u{301}👨‍👩‍👧🇳🇱a";
+                let clusters: Vec<_> = grapheme_indices(text).collect();
                 assert_eq!(
-                    words, expected,
-                    "the complete source word remains word-like"
+                    clusters,
+                    vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
+                );
+                assert_eq!(graphemes("").count(), 0);
+            }
+        }
+
+        phase line_break_opportunities_follow_script_rules;
+        {
+            {
+                let text = "東京京都";
+                let breaks: Vec<_> = line_break_opportunities(text).collect();
+                assert_eq!(breaks.last(), Some(&(text.len(), LineBreakKind::Mandatory)));
+                assert!(breaks.iter().any(|(byte, _)| *byte < text.len()));
+            }
+
+            {
+                let text = "10\u{a0}km away";
+                let protected_end = "10\u{a0}".len();
+                assert!(
+                    line_break_opportunities(text).all(|(byte, _)| byte != protected_end),
+                    "NBSP keeps its adjacent words together"
                 );
             }
-            assert!(unicode_word_ranges("\u{301} , .").next().is_none());
-        }
 
-        {
-            let text = "e\u{301}👨‍👩‍👧🇳🇱a";
-            let clusters: Vec<_> = grapheme_indices(text).collect();
-            assert_eq!(
-                clusters,
-                vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
-            );
-            assert_eq!(graphemes("").count(), 0);
-        }
-    }
+            {
+                let family = "👨‍👩‍👧‍👦";
+                assert_eq!(
+                    line_break_opportunities(family).collect::<Vec<_>>(),
+                    vec![(family.len(), LineBreakKind::Mandatory)]
+                );
+            }
 
-    #[test]
-    fn line_break_opportunities_follow_script_rules() {
-        {
-            let text = "東京京都";
-            let breaks: Vec<_> = line_break_opportunities(text).collect();
-            assert_eq!(breaks.last(), Some(&(text.len(), LineBreakKind::Mandatory)));
-            assert!(breaks.iter().any(|(byte, _)| *byte < text.len()));
-        }
-
-        {
-            let text = "10\u{a0}km away";
-            let protected_end = "10\u{a0}".len();
-            assert!(
-                line_break_opportunities(text).all(|(byte, _)| byte != protected_end),
-                "NBSP keeps its adjacent words together"
-            );
-        }
-
-        {
-            let family = "👨‍👩‍👧‍👦";
-            assert_eq!(
-                line_break_opportunities(family).collect::<Vec<_>>(),
-                vec![(family.len(), LineBreakKind::Mandatory)]
-            );
-        }
-
-        {
-            let text = "ทุกสองสัปดาห์";
-            let breaks: Vec<_> = line_break_opportunities(text)
-                .map(|(byte, _)| byte)
-                .collect();
-            assert_eq!(breaks, vec![9, 18, text.len()]);
-        }
-    }
-
-    #[test]
-    fn discretionary_hyphens_map_to_word_like_source_offsets() {
-        {
-            let text = "extensive";
-            let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
-            let insertions: Vec<_> = map
-                .insertions
-                .iter()
-                .map(|insertion| (insertion.source, insertion.ch))
-                .collect();
-            assert_eq!(insertions, vec![(2, '\u{ad}'), (5, '\u{ad}')]);
-            assert_eq!(map.shape_text(text), "ex\u{ad}ten\u{ad}sive");
-            for source in 0..=text.len() {
-                assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+            {
+                let text = "ทุกสองสัปดาห์";
+                let breaks: Vec<_> = line_break_opportunities(text)
+                    .map(|(byte, _)| byte)
+                    .collect();
+                assert_eq!(breaks, vec![9, 18, text.len()]);
             }
         }
 
+        phase discretionary_hyphens_map_to_word_like_source_offsets;
         {
-            let text = "extensive, 123";
-            let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
-            assert!(map.insertions.iter().all(|insertion| insertion.source < 9));
-            assert_eq!(
-                map.shaped_to_source(map.source_to_shaped(text.len())),
-                text.len()
-            );
-        }
+            {
+                let text = "extensive";
+                let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
+                let insertions: Vec<_> = map
+                    .insertions
+                    .iter()
+                    .map(|insertion| (insertion.source, insertion.ch))
+                    .collect();
+                assert_eq!(insertions, vec![(2, '\u{ad}'), (5, '\u{ad}')]);
+                assert_eq!(map.shape_text(text), "ex\u{ad}ten\u{ad}sive");
+                for source in 0..=text.len() {
+                    assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+                }
+            }
 
-        {
-            let text = "éclair";
-            let map =
-                OffsetMap::for_text_with_breaks(text, None, &[0, 1, 2, text.len(), usize::MAX]);
-            assert_eq!(map.shape_text(text), "é\u{ad}clair");
-            assert_eq!(map.insertions.len(), 1);
-            assert_eq!(map.insertions[0].source, 2);
-        }
+            {
+                let text = "extensive, 123";
+                let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
+                assert!(map.insertions.iter().all(|insertion| insertion.source < 9));
+                assert_eq!(
+                    map.shaped_to_source(map.source_to_shaped(text.len())),
+                    text.len()
+                );
+            }
 
-        {
-            let text = "typography";
-            let breaks = discretionary_hyphen_breaks(text, "en-US");
-            assert!(!breaks.is_empty());
-            assert!(breaks.iter().all(|&byte| text.is_char_boundary(byte)));
-            assert!(discretionary_hyphen_breaks(text, "und").is_empty());
+            {
+                let text = "éclair";
+                let map =
+                    OffsetMap::for_text_with_breaks(text, None, &[0, 1, 2, text.len(), usize::MAX]);
+                assert_eq!(map.shape_text(text), "é\u{ad}clair");
+                assert_eq!(map.insertions.len(), 1);
+                assert_eq!(map.insertions[0].source, 2);
+            }
+
+            {
+                let text = "typography";
+                let breaks = discretionary_hyphen_breaks(text, "en-US");
+                assert!(!breaks.is_empty());
+                assert!(breaks.iter().all(|&byte| text.is_char_boundary(byte)));
+                assert!(discretionary_hyphen_breaks(text, "und").is_empty());
+            }
         }
     }
 }

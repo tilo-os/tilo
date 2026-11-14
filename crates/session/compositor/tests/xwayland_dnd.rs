@@ -495,141 +495,146 @@ const WINDOW_POINTER: (f64, f64) = (320.0, 240.0);
 /// The middle of the surface app.
 const HOST_POINTER: (f64, f64) = (550.0, 70.0);
 
-#[test]
-fn files_dragged_out_of_a_surface_app_drop_on_an_x11_window() {
-    let mut session = Session::start();
-    let _window = session.x11_window();
+tilo_test_env::scenario! {
+    /// Drags between X11 windows and surface apps.
+    fn files_drag_between_x11_windows_and_surface_apps;
 
-    input(
-        &mut session.compositor,
-        InputEvent::PointerMotion {
-            x: HOST_POINTER.0,
-            y: HOST_POINTER.1,
-        },
-    );
-    input(
-        &mut session.compositor,
-        InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: true,
-        },
-    );
-    assert!(
+    phase files_dragged_out_of_a_surface_app_drop_on_an_x11_window;
+    {
+        let mut session = Session::start();
+        let _window = session.x11_window();
+
+        input(
+            &mut session.compositor,
+            InputEvent::PointerMotion {
+                x: HOST_POINTER.0,
+                y: HOST_POINTER.1,
+            },
+        );
+        input(
+            &mut session.compositor,
+            InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true,
+            },
+        );
+        assert!(
+            session
+                .compositor
+                .start_drag(vec![(URI_LIST.to_owned(), FILES.to_vec())])
+                .expect("drag")
+        );
+
+        input(
+            &mut session.compositor,
+            InputEvent::PointerMotion {
+                x: WINDOW_POINTER.0,
+                y: WINDOW_POINTER.1,
+            },
+        );
+        // The X11 window answers the position, so the drop is offered to it.
+        session.pump(|session| {
+            session.events.iter().any(|event| {
+                matches!(event, Event::ClientMessage(message) if message.type_ == session.atom("XdndPosition"))
+            })
+        });
+        // The window's answer reaches the session on its own turn of the loop,
+        // as it would while a person keeps the button down.
+        session.settle();
+        input(
+            &mut session.compositor,
+            InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
+            },
+        );
+        session.pump(|session| session.dropped.is_some());
+        assert_eq!(session.dropped.as_deref(), Some(FILES));
+        session.pump(|session| {
+            session.events.iter().any(|event| {
+                matches!(event, Event::ClientMessage(message) if message.type_ == session.atom("XdndFinished"))
+            })
+        });
+        assert_eq!(session.log.borrow().drag_ended, Some(true));
+        assert!(
+            session
+                .compositor
+                .windows()
+                .iter()
+                .any(|(_, rect)| *rect == (220, 165, 200, 150))
+        );
+    }
+
+    phase files_dragged_out_of_an_x11_window_drop_on_a_surface_app;
+    {
+        let mut session = Session::start();
+        let window = session.x11_window();
+        // The X11 client owns the drag's data before its window is pressed.
         session
-            .compositor
-            .start_drag(vec![(URI_LIST.to_owned(), FILES.to_vec())])
-            .expect("drag")
-    );
+            .x11
+            .set_selection_owner(window, session.atom("XdndSelection"), x11rb::CURRENT_TIME)
+            .expect("owner");
+        session.x11.flush().expect("flush");
+        // The session sees the new drag source on its own round of the loop before the pointer leaves
+        // the window.
+        session.settle();
 
-    input(
-        &mut session.compositor,
-        InputEvent::PointerMotion {
-            x: WINDOW_POINTER.0,
-            y: WINDOW_POINTER.1,
-        },
-    );
-    // The X11 window answers the position, so the drop is offered to it.
-    session.pump(|session| {
-        session.events.iter().any(|event| {
-            matches!(event, Event::ClientMessage(message) if message.type_ == session.atom("XdndPosition"))
-        })
-    });
-    // The window's answer reaches the session on its own turn of the loop,
-    // as it would while a person keeps the button down.
-    session.settle();
-    input(
-        &mut session.compositor,
-        InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: false,
-        },
-    );
-    session.pump(|session| session.dropped.is_some());
-    assert_eq!(session.dropped.as_deref(), Some(FILES));
-    session.pump(|session| {
-        session.events.iter().any(|event| {
-            matches!(event, Event::ClientMessage(message) if message.type_ == session.atom("XdndFinished"))
-        })
-    });
-    assert_eq!(session.log.borrow().drag_ended, Some(true));
-    assert!(
-        session
-            .compositor
-            .windows()
-            .iter()
-            .any(|(_, rect)| *rect == (220, 165, 200, 150))
-    );
-}
+        input(
+            &mut session.compositor,
+            InputEvent::PointerMotion {
+                x: WINDOW_POINTER.0,
+                y: WINDOW_POINTER.1,
+            },
+        );
+        input(
+            &mut session.compositor,
+            InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true,
+            },
+        );
+        // The compositor raises its proxy over everything else while the X11 client may be dragging.
+        input(
+            &mut session.compositor,
+            InputEvent::PointerMotion {
+                x: HOST_POINTER.0,
+                y: HOST_POINTER.1,
+            },
+        );
+        session.pump(|session| session.target_under_pointer().is_some());
+        let (proxy, version) = session.target_under_pointer().expect("the drag proxy");
+        assert_ne!(
+            proxy, window,
+            "the pointer is over the session, not the window"
+        );
 
-#[test]
-fn files_dragged_out_of_an_x11_window_drop_on_a_surface_app() {
-    let mut session = Session::start();
-    let window = session.x11_window();
-    // The X11 client owns the drag's data before its window is pressed.
-    session
-        .x11
-        .set_selection_owner(window, session.atom("XdndSelection"), x11rb::CURRENT_TIME)
-        .expect("owner");
-    session.x11.flush().expect("flush");
-    // The session sees the new drag source on its own round of the loop before the pointer leaves
-    // the window.
-    session.settle();
+        session.enter(proxy, version, window);
+        session.position(proxy, window, HOST_POINTER.0, HOST_POINTER.1);
+        session.pump(|session| !session.log.borrow().offered.is_empty());
+        let offered = session
+            .log
+            .borrow()
+            .offered
+            .last()
+            .cloned()
+            .expect("offered");
+        assert!(offered.contains(&URI_LIST.to_owned()), "{offered:?}");
 
-    input(
-        &mut session.compositor,
-        InputEvent::PointerMotion {
-            x: WINDOW_POINTER.0,
-            y: WINDOW_POINTER.1,
-        },
-    );
-    input(
-        &mut session.compositor,
-        InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: true,
-        },
-    );
-    // The compositor raises its proxy over everything else while the X11 client may be dragging.
-    input(
-        &mut session.compositor,
-        InputEvent::PointerMotion {
-            x: HOST_POINTER.0,
-            y: HOST_POINTER.1,
-        },
-    );
-    session.pump(|session| session.target_under_pointer().is_some());
-    let (proxy, version) = session.target_under_pointer().expect("the drag proxy");
-    assert_ne!(
-        proxy, window,
-        "the pointer is over the session, not the window"
-    );
-
-    session.enter(proxy, version, window);
-    session.position(proxy, window, HOST_POINTER.0, HOST_POINTER.1);
-    session.pump(|session| !session.log.borrow().offered.is_empty());
-    let offered = session
-        .log
-        .borrow()
-        .offered
-        .last()
-        .cloned()
-        .expect("offered");
-    assert!(offered.contains(&URI_LIST.to_owned()), "{offered:?}");
-
-    input(
-        &mut session.compositor,
-        InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: false,
-        },
-    );
-    session.drop(proxy, window);
-    session.pump(|session| !session.log.borrow().dropped.is_empty());
-    let dropped = session.log.borrow().dropped.clone();
-    assert_eq!(dropped, vec![(URI_LIST.to_owned(), FILES.to_vec())]);
-    session.pump(|session| {
-        session.events.iter().any(|event| {
-            matches!(event, Event::ClientMessage(message) if message.type_ == session.atom("XdndFinished"))
-        })
-    });
+        input(
+            &mut session.compositor,
+            InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
+            },
+        );
+        session.drop(proxy, window);
+        session.pump(|session| !session.log.borrow().dropped.is_empty());
+        let dropped = session.log.borrow().dropped.clone();
+        assert_eq!(dropped, vec![(URI_LIST.to_owned(), FILES.to_vec())]);
+        session.pump(|session| {
+            session.events.iter().any(|event| {
+                matches!(event, Event::ClientMessage(message) if message.type_ == session.atom("XdndFinished"))
+            })
+        });
+    }
 }

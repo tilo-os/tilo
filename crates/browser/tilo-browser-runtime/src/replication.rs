@@ -52,6 +52,7 @@ use ui::record::{RecordId, RecordSync};
 use ui::state::DocumentReplica;
 
 use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_RECORD};
+use tilo_relay_protocol::WorkspaceId;
 
 /// How often a page asks again what the workspace lets its person do: a role the
 /// workspace grants or withdraws while they are in it reaches their page within
@@ -111,7 +112,9 @@ pub(crate) struct Joined {
     device: String,
     events: Events,
     uuid: String,
-    workspace: u64,
+    /// `uuid`, as the routes of the workspace's records name it.
+    cluster: uuid::Uuid,
+    workspace: WorkspaceId,
     store: Rc<MemoryStore>,
     /// Where `store` lives.
     kept: Kept,
@@ -171,6 +174,9 @@ pub(crate) struct Joined {
     /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made on the desktop is released.
     members: Option<std::collections::BTreeSet<String>>,
+    /// When the workspace admitted each of its people, once heard, by their person (root key,
+    /// hex): who shares a name is numbered in this order.
+    admitted_at: std::collections::BTreeMap<String, u64>,
     /// Record routes whose commits this page published the workspace answered all of, since
     /// the last frame: what the record's windows said they did is said
     /// (`RecordStore::workspace_settled`).
@@ -202,8 +208,8 @@ pub(crate) fn open(
     workspace: &str,
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
-    let workspace_id = tilo_relay_protocol::room_workspace_id(workspace)
-        .map_err(|_| "a workspace must be a uuid")?;
+    let workspace_id =
+        tilo_relay_protocol::WorkspaceId::parse(workspace).ok_or("a workspace must be a uuid")?;
     peer.send(Cmd::KeepContent(
         workspace_id,
         Arc::new(kept_content(id, workspace.to_owned())),
@@ -213,6 +219,7 @@ pub(crate) fn open(
         device,
         events,
         uuid: workspace.to_owned(),
+        cluster: uuid::Uuid::parse_str(workspace).map_err(|_| "a workspace must be a uuid")?,
         workspace: workspace_id,
         store,
         kept,
@@ -235,6 +242,7 @@ pub(crate) fn open(
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
         members: None,
+        admitted_at: BTreeMap::new(),
         settled: Arc::default(),
         content: ContentWants::default(),
         changes: changes(),
@@ -874,6 +882,12 @@ impl Joined {
     }
 
     /// Every record a mount has open in this workspace, as wire `(app, record)`.
+    /// The route record `record` (its wire name) of app `app` travels on in
+    /// this workspace: its content lanes are this workspace's alone.
+    fn content_route(&self, app: &str, record: &str) -> ui::collaboration::RouteSpec {
+        ui::collaboration::RouteSpec::record(app, self.cluster, record)
+    }
+
     fn open_records(&self) -> impl Iterator<Item = (String, String)> + '_ {
         self.mounts.values().flat_map(|mounted| {
             let stores = mounted.attachment.stores.borrow();
@@ -1038,7 +1052,7 @@ impl Joined {
         let records: BTreeSet<(String, String)> = self.open_records().collect();
         for (app, record) in records {
             // The record's windows each queue on a lane of their own.
-            for lane in ContentLane::on_route(&app, &record) {
+            for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
                 for hash in lane.take_requests().wants {
                     let Some(request) = self.content.ask(
                         &device,
@@ -1072,7 +1086,7 @@ impl Joined {
             return false;
         };
         let (app, record) = arrived.tag;
-        for lane in ContentLane::on_route(&app, &record) {
+        for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
             lane.arrive(arrived.hash.clone(), arrived.bytes.clone());
         }
         true
@@ -1563,17 +1577,26 @@ impl Joined {
         wanted
     }
 
-    /// The workspace's members as the peer last heard its governance list them:
-    /// the attached desktops release what someone who left made.
+    /// The workspace's members and when it admitted each of them, as the peer last heard its
+    /// governance say: the attached desktops release what someone who left made, and number
+    /// people who share a name in the workspace's own order.
     fn follow_members(&mut self, woken: &mut HashSet<u64>) {
-        let members = self.peer.status().room_members.get(&self.uuid).cloned();
-        if members == self.members {
+        let status = self.peer.status();
+        let members = status.room_members.get(&self.uuid).cloned();
+        let joined = status
+            .room_joined
+            .get(&self.uuid)
+            .cloned()
+            .unwrap_or_default();
+        if members == self.members && joined == self.admitted_at {
             return;
         }
         self.members = members;
+        self.admitted_at = joined;
         for (&id, mounted) in &self.mounts {
             if let Some((_, shared)) = &mounted.attachment.desktop {
                 shared.members.replace(self.members.clone());
+                shared.joined.replace(self.admitted_at.clone());
                 woken.insert(id);
             }
         }
@@ -1671,4 +1694,17 @@ type Pending = (
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
     tilo_desktop_model::shared_record::read(doc, None)
         .and_then(|desktop| serde_json::to_value(desktop).ok())
+}
+
+/// The events replication reads: what lands in, is refused from, opens or arrives for a
+/// workspace's records.
+pub(crate) fn takes(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::HostReady { .. }
+            | Event::Landed { .. }
+            | Event::RecordContent { .. }
+            | Event::Refused { .. }
+            | Event::RecordOpened { .. }
+    )
 }

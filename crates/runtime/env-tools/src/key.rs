@@ -122,85 +122,89 @@ mod tests {
         PackageId::from_bytes([byte; 32])
     }
 
-    #[test]
-    fn order_duplicates_and_zero_epochs_do_not_change_the_key() {
-        let a = CacheKey::new(
-            runtime(1),
-            [
-                "pandoc-cli-0:3.7.0.2-40.fc44.x86_64",
-                "jq-1.8.1-3.fc44.x86_64",
-                "oniguruma-6.9.10-4.fc44.x86_64",
-            ],
-        );
-        let b = CacheKey::new(
-            runtime(1),
-            [
-                "oniguruma-0:6.9.10-4.fc44.x86_64",
-                "jq-0:1.8.1-3.fc44.x86_64",
-                "pandoc-cli-3.7.0.2-40.fc44.x86_64",
-                "jq-1.8.1-3.fc44.x86_64",
-            ],
-        );
-        assert_eq!(a, b);
-        assert_eq!(a.digest(), b.digest());
-        assert_eq!(
-            a.nevras,
-            [
-                "jq-1.8.1-3.fc44.x86_64",
-                "oniguruma-6.9.10-4.fc44.x86_64",
-                "pandoc-cli-3.7.0.2-40.fc44.x86_64",
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn cache_keys;
 
-    #[test]
-    fn runtime_versions_and_epochs_are_part_of_the_key() {
-        let base = CacheKey::new(runtime(1), ["jq-1.8.1-3.fc44.x86_64"]);
-        let other_runtime = CacheKey::new(runtime(2), ["jq-1.8.1-3.fc44.x86_64"]);
-        let other_release = CacheKey::new(runtime(1), ["jq-1.8.1-4.fc44.x86_64"]);
-        let epoch = CacheKey::new(runtime(1), ["jq-1:1.8.1-3.fc44.x86_64"]);
-        for other in [&other_runtime, &other_release, &epoch] {
-            assert_ne!(base.digest(), other.digest(), "{other:?}");
+        phase order_duplicates_and_zero_epochs_do_not_change_the_key;
+        {
+            let a = CacheKey::new(
+                runtime(1),
+                [
+                    "pandoc-cli-0:3.7.0.2-40.fc44.x86_64",
+                    "jq-1.8.1-3.fc44.x86_64",
+                    "oniguruma-6.9.10-4.fc44.x86_64",
+                ],
+            );
+            let b = CacheKey::new(
+                runtime(1),
+                [
+                    "oniguruma-0:6.9.10-4.fc44.x86_64",
+                    "jq-0:1.8.1-3.fc44.x86_64",
+                    "pandoc-cli-3.7.0.2-40.fc44.x86_64",
+                    "jq-1.8.1-3.fc44.x86_64",
+                ],
+            );
+            assert_eq!(a, b);
+            assert_eq!(a.digest(), b.digest());
+            assert_eq!(
+                a.nevras,
+                [
+                    "jq-1.8.1-3.fc44.x86_64",
+                    "oniguruma-6.9.10-4.fc44.x86_64",
+                    "pandoc-cli-3.7.0.2-40.fc44.x86_64",
+                ]
+            );
         }
-    }
 
-    #[test]
-    fn field_boundaries_cannot_be_shifted() {
-        let joined = CacheKey::new(runtime(1), ["ab-1-1.noarch"]);
-        let split = CacheKey {
-            runtime: runtime(1),
-            nevras: vec!["a".into(), "b-1-1.noarch".into()],
-        };
-        assert_ne!(joined.digest(), split.digest());
-    }
+        phase runtime_versions_and_epochs_are_part_of_the_key;
+        {
+            let base = CacheKey::new(runtime(1), ["jq-1.8.1-3.fc44.x86_64"]);
+            let other_runtime = CacheKey::new(runtime(2), ["jq-1.8.1-3.fc44.x86_64"]);
+            let other_release = CacheKey::new(runtime(1), ["jq-1.8.1-4.fc44.x86_64"]);
+            let epoch = CacheKey::new(runtime(1), ["jq-1:1.8.1-3.fc44.x86_64"]);
+            for other in [&other_runtime, &other_release, &epoch] {
+                assert_ne!(base.digest(), other.digest(), "{other:?}");
+            }
+        }
 
-    #[test]
-    fn the_digest_is_stable_across_releases() {
-        // Changing this value orphans every published tool image: bump
-        // `RECIPE` instead when the image contents change.
-        let key = CacheKey::new(runtime(7), ["tree-2.2.1-4.fc44.x86_64"]);
-        assert_eq!(
-            key.digest().to_hex(),
-            KeyDigest::from_hex(&key.digest().to_hex())
-                .map(|d| d.to_hex())
-                .unwrap_or_default()
-        );
-        assert_eq!(
-            key.digest(),
-            CacheKey::new(runtime(7), ["tree-0:2.2.1-4.fc44.x86_64"]).digest()
-        );
-    }
+        phase field_boundaries_cannot_be_shifted;
+        {
+            let joined = CacheKey::new(runtime(1), ["ab-1-1.noarch"]);
+            let split = CacheKey {
+                runtime: runtime(1),
+                nevras: vec!["a".into(), "b-1-1.noarch".into()],
+            };
+            assert_ne!(joined.digest(), split.digest());
+        }
 
-    #[test]
-    fn names_keep_their_dashes() {
-        assert_eq!(
-            nevra_name("pandoc-cli-3.7.0.2-40.fc44.x86_64"),
-            "pandoc-cli"
-        );
-        assert_eq!(nevra_name("ffmpeg-free-0:7.1-1.fc44.x86_64"), "ffmpeg-free");
-        assert_eq!(
-            normalize_nevra("vim-enhanced-2:9.1-1.fc44.x86_64"),
-            "vim-enhanced-2:9.1-1.fc44.x86_64"
-        );
+        phase the_digest_is_stable_across_releases;
+        {
+            // Changing this value orphans every published tool image: bump
+            // `RECIPE` instead when the image contents change.
+            let key = CacheKey::new(runtime(7), ["tree-2.2.1-4.fc44.x86_64"]);
+            assert_eq!(
+                key.digest().to_hex(),
+                KeyDigest::from_hex(&key.digest().to_hex())
+                    .map(|d| d.to_hex())
+                    .unwrap_or_default()
+            );
+            assert_eq!(
+                key.digest(),
+                CacheKey::new(runtime(7), ["tree-0:2.2.1-4.fc44.x86_64"]).digest()
+            );
+        }
+
+        phase names_keep_their_dashes;
+        {
+            assert_eq!(
+                nevra_name("pandoc-cli-3.7.0.2-40.fc44.x86_64"),
+                "pandoc-cli"
+            );
+            assert_eq!(nevra_name("ffmpeg-free-0:7.1-1.fc44.x86_64"), "ffmpeg-free");
+            assert_eq!(
+                normalize_nevra("vim-enhanced-2:9.1-1.fc44.x86_64"),
+                "vim-enhanced-2:9.1-1.fc44.x86_64"
+            );
+        }
     }
 }

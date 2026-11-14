@@ -42,9 +42,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider a host answers its accounts under, the one it answers its
-/// other hosting steps under.
-pub const PROVIDER: &str = super::home_relay_hosting::PROVIDER;
+/// The provider a host answers its accounts under.
+pub const PROVIDER: &str = "tilo.hosting";
 /// The resource the account's actions are actions of.
 pub const RESOURCE: &str = "host.account";
 /// Live: the calling person's account with this host, as a [`HostAccount`].
@@ -396,149 +395,153 @@ impl std::fmt::Display for Refusal {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_host_that_sells_nothing_answers_no_plans_and_no_standing() {
-        let host = HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted);
-        assert!(!host.sells());
-        assert!(host.plan().is_none());
-        let json = serde_json::to_value(&host).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "host": "Ada's server",
-                "kind": "self-hosted",
-                "plans": [],
-                "standing": null,
-                "manage_billing": null
-            })
-        );
-        assert_eq!(serde_json::from_value::<HostAccount>(json).unwrap(), host);
-    }
+    tilo_test_env::scenario! {
+        fn a_host_account_answers_plans_and_typed_refusals;
 
-    #[test]
-    fn a_refusal_names_its_reason_and_next_steps_on_the_wire() {
-        let refusal = Refusal {
-            reason: Reason::NoPaymentMethod,
-            message: "This needs a Linux machine.".into(),
-            next: vec![NextStep {
-                kind: NextStepKind::AddPaymentMethod,
-                url: Some("https://billing.example/card".into()),
-            }],
-        };
-        let json = serde_json::to_value(&refusal).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "reason": "no_payment_method",
-                "message": "This needs a Linux machine.",
-                "next": [{"kind": "add_payment_method", "url": "https://billing.example/card"}]
-            })
-        );
-        assert!(refusal.awaits_the_account());
-        let bytes = postcard::to_allocvec(&refusal).unwrap();
-        assert_eq!(postcard::from_bytes::<Refusal>(&bytes).unwrap(), refusal);
-        assert_eq!(
-            refusal
-                .step(NextStepKind::AddPaymentMethod)
-                .and_then(|step| step.url.as_deref()),
-            Some("https://billing.example/card")
-        );
-        let limit = Refusal {
-            reason: Reason::TooManyRunning {
+        phase a_host_that_sells_nothing_answers_no_plans_and_no_standing;
+        {
+            let host = HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted);
+            assert!(!host.sells());
+            assert!(host.plan().is_none());
+            let json = serde_json::to_value(&host).unwrap();
+            assert_eq!(
+                json,
+                serde_json::json!({
+                    "host": "Ada's server",
+                    "kind": "self-hosted",
+                    "plans": [],
+                    "standing": null,
+                    "manage_billing": null
+                })
+            );
+            assert_eq!(serde_json::from_value::<HostAccount>(json).unwrap(), host);
+        }
+
+        phase a_refusal_names_its_reason_and_next_steps_on_the_wire;
+        {
+            let refusal = Refusal {
+                reason: Reason::NoPaymentMethod,
+                message: "This needs a Linux machine.".into(),
+                next: vec![NextStep {
+                    kind: NextStepKind::AddPaymentMethod,
+                    url: Some("https://billing.example/card".into()),
+                }],
+            };
+            let json = serde_json::to_value(&refusal).unwrap();
+            assert_eq!(
+                json,
+                serde_json::json!({
+                    "reason": "no_payment_method",
+                    "message": "This needs a Linux machine.",
+                    "next": [{"kind": "add_payment_method", "url": "https://billing.example/card"}]
+                })
+            );
+            assert!(refusal.awaits_the_account());
+            let bytes = postcard::to_allocvec(&refusal).unwrap();
+            assert_eq!(postcard::from_bytes::<Refusal>(&bytes).unwrap(), refusal);
+            assert_eq!(
+                refusal
+                    .step(NextStepKind::AddPaymentMethod)
+                    .and_then(|step| step.url.as_deref()),
+                Some("https://billing.example/card")
+            );
+            let limit = Refusal {
+                reason: Reason::TooManyRunning {
+                    limit: 1,
+                    running: vec!["ws1".into()],
+                },
+                message: String::new(),
+                next: Vec::new(),
+            };
+            assert!(!limit.awaits_the_account());
+            assert_eq!(
+                serde_json::to_value(&limit.reason).unwrap(),
+                serde_json::json!({"too_many_running": {"limit": 1, "running": ["ws1"]}})
+            );
+        }
+
+        phase storage_refusals_cross_an_actions_reason_typed;
+        {
+            let full = Refusal {
+                reason: Reason::StorageFull {
+                    limit_bytes: 10,
+                    used_bytes: 12,
+                },
+                message: "Your workspace is full.".into(),
+                next: vec![NextStep {
+                    kind: NextStepKind::RaiseLimit,
+                    url: None,
+                }],
+            };
+            assert_eq!(
+                serde_json::to_value(&full.reason).unwrap(),
+                serde_json::json!({"storage_full": {"limit_bytes": 10, "used_bytes": 12}})
+            );
+            assert_eq!(Refusal::from_reason(&full.to_reason()), Some(full.clone()));
+            assert!(!full.awaits_the_account());
+            assert_eq!(Refusal::from_reason("the host refused"), None);
+            let second = Reason::TooManyWorkspaces {
                 limit: 1,
-                running: vec!["ws1".into()],
-            },
-            message: String::new(),
-            next: Vec::new(),
-        };
-        assert!(!limit.awaits_the_account());
-        assert_eq!(
-            serde_json::to_value(&limit.reason).unwrap(),
-            serde_json::json!({"too_many_running": {"limit": 1, "running": ["ws1"]}})
-        );
-    }
+                existing: vec!["w".into()],
+            };
+            let bytes = postcard::to_allocvec(&second).unwrap();
+            assert_eq!(postcard::from_bytes::<Reason>(&bytes).unwrap(), second);
+            let usage = Usage {
+                workspaces: vec![
+                    WorkspaceUsage {
+                        workspace: "a".into(),
+                        stored_bytes: 7,
+                        ..WorkspaceUsage::default()
+                    },
+                    WorkspaceUsage {
+                        workspace: "b".into(),
+                        stored_bytes: 5,
+                        ..WorkspaceUsage::default()
+                    },
+                ],
+                ..Usage::default()
+            };
+            assert_eq!(usage.stored_bytes(), 12);
+        }
 
-    #[test]
-    fn storage_refusals_cross_an_actions_reason_typed() {
-        let full = Refusal {
-            reason: Reason::StorageFull {
-                limit_bytes: 10,
-                used_bytes: 12,
-            },
-            message: "Your workspace is full.".into(),
-            next: vec![NextStep {
-                kind: NextStepKind::RaiseLimit,
-                url: None,
-            }],
-        };
-        assert_eq!(
-            serde_json::to_value(&full.reason).unwrap(),
-            serde_json::json!({"storage_full": {"limit_bytes": 10, "used_bytes": 12}})
-        );
-        assert_eq!(Refusal::from_reason(&full.to_reason()), Some(full.clone()));
-        assert!(!full.awaits_the_account());
-        assert_eq!(Refusal::from_reason("the host refused"), None);
-        let second = Reason::TooManyWorkspaces {
-            limit: 1,
-            existing: vec!["w".into()],
-        };
-        let bytes = postcard::to_allocvec(&second).unwrap();
-        assert_eq!(postcard::from_bytes::<Reason>(&bytes).unwrap(), second);
-        let usage = Usage {
-            workspaces: vec![
-                WorkspaceUsage {
-                    workspace: "a".into(),
-                    stored_bytes: 7,
-                    ..WorkspaceUsage::default()
-                },
-                WorkspaceUsage {
-                    workspace: "b".into(),
-                    stored_bytes: 5,
-                    ..WorkspaceUsage::default()
-                },
-            ],
-            ..Usage::default()
-        };
-        assert_eq!(usage.stored_bytes(), 12);
-    }
-
-    #[test]
-    fn the_plan_an_account_is_on_is_one_of_the_offers() {
-        let host = HostAccount {
-            host: "Tilo Cloud".into(),
-            kind: HostKind::Provider,
-            plans: vec![PlanOffer {
-                id: "pro".into(),
-                name: "Pro".into(),
-                ..PlanOffer::default()
-            }],
-            standing: Some(Standing {
-                plan: Some("pro".into()),
-                usage: Usage {
-                    workspaces: vec![
-                        WorkspaceUsage {
-                            workspace: "a".into(),
-                            vm_seconds: 60,
-                            ..WorkspaceUsage::default()
-                        },
-                        WorkspaceUsage {
-                            workspace: "b".into(),
-                            vm_seconds: 30,
-                            ..WorkspaceUsage::default()
-                        },
-                    ],
-                    ..Usage::default()
-                },
-                ..Standing::default()
-            }),
-            manage_billing: Some("https://billing.example".into()),
-        };
-        assert!(host.sells());
-        let bytes = postcard::to_allocvec(&host).unwrap();
-        assert_eq!(postcard::from_bytes::<HostAccount>(&bytes).unwrap(), host);
-        assert_eq!(host.plan().map(|plan| plan.name.as_str()), Some("Pro"));
-        let usage = &host.standing.as_ref().unwrap().usage;
-        assert_eq!(usage.vm_seconds(), 90);
-        assert_eq!(usage.of("b").map(|usage| usage.vm_seconds), Some(30));
+        phase the_plan_an_account_is_on_is_one_of_the_offers;
+        {
+            let host = HostAccount {
+                host: "Tilo Cloud".into(),
+                kind: HostKind::Provider,
+                plans: vec![PlanOffer {
+                    id: "pro".into(),
+                    name: "Pro".into(),
+                    ..PlanOffer::default()
+                }],
+                standing: Some(Standing {
+                    plan: Some("pro".into()),
+                    usage: Usage {
+                        workspaces: vec![
+                            WorkspaceUsage {
+                                workspace: "a".into(),
+                                vm_seconds: 60,
+                                ..WorkspaceUsage::default()
+                            },
+                            WorkspaceUsage {
+                                workspace: "b".into(),
+                                vm_seconds: 30,
+                                ..WorkspaceUsage::default()
+                            },
+                        ],
+                        ..Usage::default()
+                    },
+                    ..Standing::default()
+                }),
+                manage_billing: Some("https://billing.example".into()),
+            };
+            assert!(host.sells());
+            let bytes = postcard::to_allocvec(&host).unwrap();
+            assert_eq!(postcard::from_bytes::<HostAccount>(&bytes).unwrap(), host);
+            assert_eq!(host.plan().map(|plan| plan.name.as_str()), Some("Pro"));
+            let usage = &host.standing.as_ref().unwrap().usage;
+            assert_eq!(usage.vm_seconds(), 90);
+            assert_eq!(usage.of("b").map(|usage| usage.vm_seconds), Some(30));
+        }
     }
 }

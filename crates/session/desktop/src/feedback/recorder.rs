@@ -175,64 +175,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_window_records_the_last_minutes_of_its_record_and_keeps_them_once_sent() {
-        let kept = Rc::new(RefCell::new(Vec::new()));
-        let mut recorder = recorder(kept.clone());
-        let subject = showing("so.tilo.notes", "note-1");
-        let scope = recorder.recording_scope(&subject).unwrap();
-        assert_eq!(
-            scope,
-            RecordingScope {
-                app_name: "Notes".into(),
-                from_ms: 400_000,
-                to_ms: 900_000,
-                steps: 3,
-            }
-        );
-        assert!(kept.borrow().is_empty(), "offering keeps nothing");
-        let made = recorder.record(&subject).unwrap();
-        assert_eq!(made.scope(), scope);
-        assert_eq!(made.reference().kind, "notes.note");
-        recorder.persist_recording(&made).unwrap();
-        assert_eq!(*kept.borrow(), vec![made.bytes().to_vec()]);
-    }
+    tilo_test_env::scenario! {
+        fn the_feedback_recorder_keeps_its_own_windows_last_minutes;
 
-    #[test]
-    fn no_record_another_record_or_a_protected_app_is_never_recorded() {
-        let mut recorder = recorder(Rc::default());
-        assert!(
-            recorder
-                .recording_scope(&Subject::of_app("so.tilo.notes", "Notes"))
-                .is_none()
-        );
-        assert!(
-            recorder
-                .recording_scope(&showing("so.tilo.notes", "note-2"))
-                .is_none()
-        );
-        assert!(
-            recorder
-                .recording_scope(&showing("so.tilo.passwords", "note-1"))
-                .is_none()
-        );
-        assert!(
-            recorder
-                .record(&showing("so.tilo.passwords", "note-1"))
-                .is_err()
-        );
-    }
+        phase the_window_records_the_last_minutes_of_its_record_and_keeps_them_once_sent;
+        {
+            let kept = Rc::new(RefCell::new(Vec::new()));
+            let mut recorder = recorder(kept.clone());
+            let subject = showing("so.tilo.notes", "note-1");
+            let scope = recorder.recording_scope(&subject).unwrap();
+            assert_eq!(
+                scope,
+                RecordingScope {
+                    app_name: "Notes".into(),
+                    from_ms: 400_000,
+                    to_ms: 900_000,
+                    steps: 3,
+                }
+            );
+            assert!(kept.borrow().is_empty(), "offering keeps nothing");
+            let made = recorder.record(&subject).unwrap();
+            assert_eq!(made.scope(), scope);
+            assert_eq!(made.reference().kind, "notes.note");
+            recorder.persist_recording(&made).unwrap();
+            assert_eq!(*kept.borrow(), vec![made.bytes().to_vec()]);
+        }
 
-    #[test]
-    fn bytes_kept_under_another_address_are_not_kept() {
-        let mut recorder = recorder(Rc::default());
-        recorder.keep = Box::new(|_| Ok("00".repeat(32)));
-        let made = recorder
-            .record(&showing("so.tilo.notes", "note-1"))
-            .unwrap();
-        assert!(matches!(
-            recorder.persist_recording(&made),
-            Err(Error::NotDurable)
-        ));
+        phase no_record_another_record_or_a_protected_app_is_never_recorded;
+        {
+            let mut recorder = recorder(Rc::default());
+            assert!(
+                recorder
+                    .recording_scope(&Subject::of_app("so.tilo.notes", "Notes"))
+                    .is_none()
+            );
+            assert!(
+                recorder
+                    .recording_scope(&showing("so.tilo.notes", "note-2"))
+                    .is_none()
+            );
+            assert!(
+                recorder
+                    .recording_scope(&showing("so.tilo.passwords", "note-1"))
+                    .is_none()
+            );
+            assert!(
+                recorder
+                    .record(&showing("so.tilo.passwords", "note-1"))
+                    .is_err()
+            );
+        }
+
+        phase bytes_kept_under_another_address_are_not_kept;
+        {
+            let mut recorder = recorder(Rc::default());
+            recorder.keep = Box::new(|_| Ok("00".repeat(32)));
+            let made = recorder
+                .record(&showing("so.tilo.notes", "note-1"))
+                .unwrap();
+            assert!(matches!(
+                recorder.persist_recording(&made),
+                Err(Error::NotDurable)
+            ));
+        }
     }
 }

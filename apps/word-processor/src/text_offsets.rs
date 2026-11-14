@@ -18,22 +18,27 @@ pub(crate) fn byte_to_char(text: &str, byte_off: usize) -> usize {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ascii_round_trip() {
-        let text = "hello";
-        assert_eq!(char_to_byte(text, 0), 0);
-        assert_eq!(char_to_byte(text, 5), 5);
-        assert_eq!(byte_to_char(text, 0), 0);
-        assert_eq!(byte_to_char(text, 5), 5);
-    }
+    tilo_test_env::scenario! {
+        /// `char_to_byte` and `byte_to_char`.
+        fn character_and_byte_offsets_convert_both_ways;
 
-    #[test]
-    fn multibyte_char_and_mid_code_unit() {
-        let text = "a😀b";
-        assert_eq!(char_to_byte(text, 1), 1);
-        assert_eq!(char_to_byte(text, 2), 5);
-        assert_eq!(byte_to_char(text, 1), 1);
-        assert_eq!(byte_to_char(text, 5), 2);
-        assert_eq!(byte_to_char(text, 3), 2);
+        phase ascii_round_trip;
+        {
+            let text = "hello";
+            assert_eq!(char_to_byte(text, 0), 0);
+            assert_eq!(char_to_byte(text, 5), 5);
+            assert_eq!(byte_to_char(text, 0), 0);
+            assert_eq!(byte_to_char(text, 5), 5);
+        }
+
+        phase multibyte_char_and_mid_code_unit;
+        {
+            let text = "a😀b";
+            assert_eq!(char_to_byte(text, 1), 1);
+            assert_eq!(char_to_byte(text, 2), 5);
+            assert_eq!(byte_to_char(text, 1), 1);
+            assert_eq!(byte_to_char(text, 5), 2);
+            assert_eq!(byte_to_char(text, 3), 2);
+        }
     }
 }

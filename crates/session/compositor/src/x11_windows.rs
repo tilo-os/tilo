@@ -457,85 +457,156 @@ fn rules_names(layout: &KeyboardLayout) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_largest_square_icon_is_kept_as_premultiplied_rgba() {
-        let data = [
-            2,
-            2,
-            0x80FF_0000,
-            0x0000_FF00,
-            0x0000_00FF,
-            0xFFFF_FFFF, // 2x2
-            1,
-            1,
-            0xFFFF_FFFF, // 1x1
-        ];
-        let icon = icon(&data).expect("an icon");
-        assert_eq!((icon.width, icon.height), (2, 2));
-        assert_eq!(
-            icon.pixels,
-            vec![
+    /// A `_NET_WM_ICON` value holding one square icon of `edge` pixels, each `pixel`, and then
+    /// `rest`.
+    fn square(edge: u32, pixel: u32, rest: &[u32]) -> Vec<u32> {
+        let side = usize::try_from(edge).expect("an edge fits");
+        let mut data = vec![edge, edge];
+        data.extend(std::iter::repeat_n(pixel, side.saturating_mul(side)));
+        data.extend_from_slice(rest);
+        data
+    }
+
+    tilo_test_env::scenario! {
+        /// What the desktop reads from and writes to an X11 display.
+        fn x11_icons_and_resources_are_read_and_written_as_x_tools_do;
+
+        phase the_largest_square_icon_a_tab_can_use_is_kept_as_premultiplied_rgba;
+        // A `_NET_WM_ICON` value, the edge of the icon kept from it (`None` when none is kept), and
+        // that icon's pixels where a row pins them.
+        {
+            let two_squares = vec![
+                2,
+                2,
+                0x80FF_0000,
+                0x0000_FF00,
+                0x0000_00FF,
+                0xFFFF_FFFF, // 2x2
+                1,
+                1,
+                0xFFFF_FFFF, // 1x1
+            ];
+            let larger_square = vec![
                 128, 0, 0, 128, // half-transparent red, premultiplied
                 0, 0, 0, 0, // transparent green
                 0, 0, 0, 0, // transparent blue
                 255, 255, 255, 255, // opaque white
-            ]
-        );
-    }
+            ];
+            let white: Vec<u8> = vec![255, 255, 255, 255];
+            let red: Vec<u8> = vec![255, 0, 0, 255];
+            let not_square = vec![3, 2, 1, 2, 3, 4, 5, 6, 1, 1, 0xFF00_0000];
+            let rows = [
+                (
+                    "the larger of two squares",
+                    two_squares,
+                    Some(2),
+                    Some(larger_square),
+                ),
+                (
+                    "an icon that is not square is skipped",
+                    not_square,
+                    Some(1),
+                    None,
+                ),
+                (
+                    "a cut-off icon yields nothing after it",
+                    vec![8, 8, 1, 2, 3],
+                    None,
+                    None,
+                ),
+                (
+                    "a header larger than a tab needs, cut off",
+                    vec![MAX_EDGE + 1, MAX_EDGE + 1],
+                    None,
+                    None,
+                ),
+                ("no value at all", Vec::new(), None, None),
+                ("a header cut off after its width", vec![2], None, None),
+                (
+                    "an icon of no size is skipped",
+                    vec![0, 0, 1, 1, 0xFFFF_FFFF],
+                    Some(1),
+                    Some(white.clone()),
+                ),
+                (
+                    "the first of two icons the same size is kept",
+                    vec![1, 1, 0xFFFF_0000, 1, 1, 0xFF00_00FF],
+                    Some(1),
+                    Some(red),
+                ),
+                (
+                    "an icon before a cut-off one is kept",
+                    vec![1, 1, 0xFFFF_FFFF, 8, 8, 1, 2, 3],
+                    Some(1),
+                    Some(white.clone()),
+                ),
+                (
+                    "a header whose size overflows yields nothing",
+                    vec![u32::MAX, u32::MAX],
+                    None,
+                    None,
+                ),
+                (
+                    "an icon one pixel past the largest edge is skipped",
+                    square(MAX_EDGE + 1, 0xFF00_0000, &[1, 1, 0xFFFF_FFFF]),
+                    Some(1),
+                    Some(white),
+                ),
+                (
+                    "an icon at the largest edge is kept",
+                    square(MAX_EDGE, 0xFF00_0000, &[]),
+                    Some(MAX_EDGE),
+                    None,
+                ),
+            ];
+            for (name, data, edge, pixels) in rows {
+                let kept = icon(&data);
+                assert_eq!(
+                    kept.as_ref().map(|icon| (icon.width, icon.height)),
+                    edge.map(|edge| (edge, edge)),
+                    "{name}"
+                );
+                if let Some(pixels) = pixels {
+                    assert_eq!(kept.expect("an icon").pixels, pixels, "{name}");
+                }
+            }
+        }
 
-    #[test]
-    fn icons_that_are_not_square_are_skipped() {
-        let data = [3, 2, 1, 2, 3, 4, 5, 6, 1, 1, 0xFF00_0000];
-        let icon = icon(&data).expect("an icon");
-        assert_eq!((icon.width, icon.height), (1, 1));
-    }
+        phase the_layout_is_written_as_the_tools_read_it;
+        {
+            assert_eq!(
+                rules_names(&KeyboardLayout::default()),
+                b"evdev\0pc105\0\0\0\0",
+                "no layout yet is the default model on no layouts"
+            );
+            assert_eq!(
+                rules_names(&KeyboardLayout {
+                    layout: "de,us".into(),
+                    variant: "nodeadkeys,".into(),
+                    model: "pc104".into(),
+                    options: "compose:ralt,grp:alt_shift_toggle".into(),
+                }),
+                b"evdev\0pc104\0de,us\0nodeadkeys,\0compose:ralt,grp:alt_shift_toggle\0",
+                "the active layout first, its variant beside it, and the options"
+            );
+        }
 
-    #[test]
-    fn a_cut_off_icon_value_yields_nothing_after_it() {
-        let data = [8, 8, 1, 2, 3];
-        assert_eq!(icon(&data), None);
-    }
-
-    #[test]
-    fn icons_larger_than_a_tab_needs_are_skipped() {
-        let data = [MAX_EDGE + 1, MAX_EDGE + 1];
-        assert_eq!(icon(&data), None);
-    }
-
-    #[test]
-    fn the_layout_is_written_as_the_tools_read_it() {
-        assert_eq!(
-            rules_names(&KeyboardLayout::default()),
-            b"evdev\0pc105\0\0\0\0",
-            "no layout yet is the default model on no layouts"
-        );
-        assert_eq!(
-            rules_names(&KeyboardLayout {
-                layout: "de,us".into(),
-                variant: "nodeadkeys,".into(),
-                model: "pc104".into(),
-                options: "compose:ralt,grp:alt_shift_toggle".into(),
-            }),
-            b"evdev\0pc104\0de,us\0nodeadkeys,\0compose:ralt,grp:alt_shift_toggle\0",
-            "the active layout first, its variant beside it, and the options"
-        );
-    }
-
-    #[test]
-    fn a_resource_replaces_only_its_own_line() {
-        assert_eq!(
-            with_resource("Xcursor.theme:\tAdwaita\nXft.dpi:\t96", "Xft.dpi", "192"),
-            "Xcursor.theme:\tAdwaita\nXft.dpi:\t192\n"
-        );
-        assert_eq!(
-            with_resource(
-                "Xcursor.theme:\tAdwaita\nXft.dpi:\t96",
-                "Xcursor.theme",
-                "Bibata-Modern-Ice"
-            ),
-            "Xft.dpi:\t96\nXcursor.theme:\tBibata-Modern-Ice\n",
-            "the pointer theme X clients draw replaces the one they drew"
-        );
-        assert_eq!(with_resource("", "Xft.dpi", "192"), "Xft.dpi:\t192\n");
+        phase a_resource_replaces_only_its_own_line;
+        {
+            assert_eq!(
+                with_resource("Xcursor.theme:\tAdwaita\nXft.dpi:\t96", "Xft.dpi", "192"),
+                "Xcursor.theme:\tAdwaita\nXft.dpi:\t192\n"
+            );
+            assert_eq!(
+                with_resource(
+                    "Xcursor.theme:\tAdwaita\nXft.dpi:\t96",
+                    "Xcursor.theme",
+                    "Bibata-Modern-Ice"
+                ),
+                "Xft.dpi:\t96\nXcursor.theme:\tBibata-Modern-Ice\n",
+                "the pointer theme X clients draw replaces the one they drew"
+            );
+            assert_eq!(with_resource("", "Xft.dpi", "192"), "Xft.dpi:\t192\n");
+        }
     }
 }

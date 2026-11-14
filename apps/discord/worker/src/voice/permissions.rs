@@ -163,4 +163,95 @@ mod tests {
             "View Channel, Connect and Speak"
         );
     }
+
+    /// An overwrite counts only for whom it names (`@everyone`, a role the
+    /// bot has, the bot itself), in that order, and a channel the guild does
+    /// not list has the server's permissions.
+    #[test]
+    fn an_overwrite_applies_only_to_whom_it_names() {
+        // Whom the overwrites name, the overwrites, the bot's roles, and what
+        // the bot then lacks.
+        type Row = (
+            &'static str,
+            serde_json::Value,
+            &'static [&'static str],
+            &'static [&'static str],
+        );
+        let speak = |id: &str, kind: u8, allowed: bool| {
+            let (allow, deny) = if allowed {
+                (perm::SPEAK, 0)
+            } else {
+                (0, perm::SPEAK)
+            };
+            json!({"id": id, "type": kind, "allow": perm::bits(allow), "deny": perm::bits(deny)})
+        };
+        let everything = perm::VIEW_CHANNEL | perm::CONNECT | perm::SPEAK;
+        let rows: [Row; 6] = [
+            (
+                "a role the bot does not have",
+                json!([speak("1300", 0, false)]),
+                &[],
+                &[],
+            ),
+            ("another member", json!([speak("3001", 1, false)]), &[], &[]),
+            (
+                "a role overwrite that carries the bot's own id",
+                json!([speak("2000", 0, false)]),
+                &[],
+                &[],
+            ),
+            (
+                "the bot's role gives back what @everyone lost",
+                json!([speak("1000", 0, false), speak("1300", 0, true)]),
+                &["1300"],
+                &[],
+            ),
+            (
+                "the bot's own overwrite has the last word",
+                json!([
+                    speak("1000", 0, false),
+                    speak("1300", 0, true),
+                    speak("2000", 1, false)
+                ]),
+                &["1300"],
+                &["Speak"],
+            ),
+            (
+                "everything denied to @everyone",
+                json!([{"id": "1000", "type": 0, "allow": "0", "deny": perm::bits(everything)}]),
+                &[],
+                &["View Channel", "Connect", "Speak"],
+            ),
+        ];
+        for (what, overwrites, bot_roles, missing) in rows {
+            assert_eq!(
+                missing_to_speak(&guild(&overwrites, bot_roles), "1102"),
+                missing,
+                "{what}"
+            );
+        }
+        let denied = guild(&json!([speak("1000", 0, false)]), &[]);
+        assert_eq!(missing_to_speak(&denied, "1102"), vec!["Speak"]);
+        assert!(
+            missing_to_speak(&denied, "9999").is_empty(),
+            "no channel, no overwrites"
+        );
+    }
+
+    #[test]
+    fn names_are_listed_as_a_sentence_would() {
+        type Row = (&'static [&'static str], &'static str);
+        let rows: [Row; 4] = [
+            (&[], ""),
+            (&["Speak"], "Speak"),
+            (&["Connect", "Speak"], "Connect and Speak"),
+            (
+                &["View Channel", "Connect", "Speak"],
+                "View Channel, Connect and Speak",
+            ),
+        ];
+        for (names, said) in rows {
+            assert_eq!(and_list(names), said, "{names:?}");
+        }
+    }
 }

@@ -427,101 +427,213 @@ fn filter_columns_answer_what_reading_every_item_finds_and_follow_every_change()
     }
 }
 
-/// A filtered listing keeps what it checked across a change: an item put in, one made to be of
-/// the listing, one made not to be, and one taken out each list as the record read anew lists
-/// them.
-#[test]
-fn a_listing_kept_across_a_change_lists_as_one_read_anew() {
-    let mut workspace = Workspace::new();
-    let q = "is:open sort:-effort";
-    assert_eq!(workspace.listed(q), workspace.anew(q), "`{q}`");
-    let board = workspace.board.clone();
-    let steps: Vec<(&str, &str, Step)> = vec![
-        (
-            "put in",
-            "add",
-            Box::new(move |_: &Workspace| {
-                vec![Value::resource(&board), Value::text("e"), Value::Int(4)]
-            }),
-        ),
-        (
-            "made to be of it",
-            "check",
-            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[2])]),
-        ),
-        (
-            "made not to be of it",
-            "check",
-            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[0])]),
-        ),
-        (
-            "taken out",
-            "remove",
-            Box::new(|r: &Workspace| {
-                vec![Value::resource(&r.board), Value::resource(&r.tasks()[1])]
-            }),
-        ),
-    ];
-    for (case, action, args) in steps {
-        workspace.call(action, args(&workspace));
+tilo_test_env::scenario! {
+    fn listings_and_counts_read_the_columns;
+
+    phase a_listing_kept_across_a_change_lists_as_one_read_anew;
+    // A filtered listing keeps what it checked across a change: an item put in, one made to be of
+    // the listing, one made not to be, and one taken out each list as the record read anew lists
+    // them.
+    {
+        let mut workspace = Workspace::new();
+        let q = "is:open sort:-effort";
+        assert_eq!(workspace.listed(q), workspace.anew(q), "`{q}`");
+        let board = workspace.board.clone();
+        let steps: Vec<(&str, &str, Step)> = vec![
+            (
+                "put in",
+                "add",
+                Box::new(move |_: &Workspace| {
+                    vec![Value::resource(&board), Value::text("e"), Value::Int(4)]
+                }),
+            ),
+            (
+                "made to be of it",
+                "check",
+                Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[2])]),
+            ),
+            (
+                "made not to be of it",
+                "check",
+                Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[0])]),
+            ),
+            (
+                "taken out",
+                "remove",
+                Box::new(|r: &Workspace| {
+                    vec![Value::resource(&r.board), Value::resource(&r.tasks()[1])]
+                }),
+            ),
+        ];
+        for (case, action, args) in steps {
+            workspace.call(action, args(&workspace));
+            assert_eq!(
+                workspace.listed(q),
+                workspace.anew(q),
+                "`{q}` after an item was {case}"
+            );
+        }
+    }
+
+    phase a_listing_ordered_by_when_a_field_changed_reads_the_indexs_stamps;
+    // A listing ordered by when a field of an item changed stands what changed last first, read
+    // from the index's stamps of those changes and no item of the workspace.
+    {
+        // The tasks are seeded at 09:00, so their `done` was last changed by the version that made
+        // them; the two people's checks come after, one at 10:00 and one at 10:05.
+        let mut workspace = Workspace::at("2026-10-27T09:00:00Z");
+        workspace
+            .ada
+            .host
+            .set_clock(|| "2026-10-27T10:00:00Z".to_owned());
+        workspace.call("check", vec![Value::resource(&workspace.tasks()[0])]);
+        workspace
+            .ada
+            .host
+            .set_clock(|| "2026-10-27T10:05:00Z".to_owned());
+        workspace.call("check", vec![Value::resource(&workspace.tasks()[2])]);
+        let task = workspace.ty("Task");
+        let resolved = resolve(
+            &find("is:done").unwrap(),
+            task,
+            &workspace.meta.enums,
+            &Clock::at(NOW).unwrap(),
+            None,
+        )
+        .unwrap();
+        let pred = store_pred(&resolved.pred, task, APP).unwrap();
+        let order = tilolang_runtime::query::Order {
+            field: format!("$changed.{}", field_id(&workspace.meta, "Task", "done")),
+            kind: FieldKind::Register,
+            descending: true,
+            absent_last: false,
+            then: None,
+        };
+        let before = workspace.ada.host.store().read_stats();
+        let ids = workspace.query(Some(&pred), Some(&order)).ids();
+        let after = workspace.ada.host.store().read_stats();
         assert_eq!(
-            workspace.listed(q),
-            workspace.anew(q),
-            "`{q}` after an item was {case}"
+            after.doc.fields, before.doc.fields,
+            "the order reads the index's stamps, not the items"
+        );
+        let titles: Vec<String> = ids
+            .into_iter()
+            .map(|id| workspace.title(&workspace.board.item(&id, task.id.clone())))
+            .collect();
+        assert_eq!(
+            titles,
+            ["c", "a", "d"],
+            "the task checked last stands first"
         );
     }
-}
 
-/// A listing ordered by when a field of an item changed stands what changed last first, read
-/// from the index's stamps of those changes and no item of the workspace.
-#[test]
-fn a_listing_ordered_by_when_a_field_changed_reads_the_indexs_stamps() {
-    // The tasks are seeded at 09:00, so their `done` was last changed by the version that made
-    // them; the two people's checks come after, one at 10:00 and one at 10:05.
-    let mut workspace = Workspace::at("2026-10-27T09:00:00Z");
-    workspace
-        .ada
-        .host
-        .set_clock(|| "2026-10-27T10:00:00Z".to_owned());
-    workspace.call("check", vec![Value::resource(&workspace.tasks()[0])]);
-    workspace
-        .ada
-        .host
-        .set_clock(|| "2026-10-27T10:05:00Z".to_owned());
-    workspace.call("check", vec![Value::resource(&workspace.tasks()[2])]);
-    let task = workspace.ty("Task");
-    let resolved = resolve(
-        &find("is:done").unwrap(),
-        task,
-        &workspace.meta.enums,
-        &Clock::at(NOW).unwrap(),
-        None,
-    )
-    .unwrap();
-    let pred = store_pred(&resolved.pred, task, APP).unwrap();
-    let order = tilolang_runtime::query::Order {
-        field: format!("$changed.{}", field_id(&workspace.meta, "Task", "done")),
-        kind: FieldKind::Register,
-        descending: true,
-        absent_last: false,
-        then: None,
-    };
-    let before = workspace.ada.host.store().read_stats();
-    let ids = workspace.query(Some(&pred), Some(&order)).ids();
-    let after = workspace.ada.host.store().read_stats();
-    assert_eq!(
-        after.doc.fields, before.doc.fields,
-        "the order reads the index's stamps, not the items"
-    );
-    let titles: Vec<String> = ids
-        .into_iter()
-        .map(|id| workspace.title(&workspace.board.item(&id, task.id.clone())))
-        .collect();
-    assert_eq!(
-        titles,
-        ["c", "a", "d"],
-        "the task checked last stands first"
-    );
+    phase a_query_of_every_resource_of_a_type_reads_its_columns_across_the_workspace;
+    {
+        let workspace = Workspace::new();
+        let store = workspace.ada.host.store();
+        let clock = Clock::at(NOW).unwrap();
+        let select = |ty: &str, q: &str| -> Vec<String> {
+            let meta = workspace.ty(ty);
+            let resolved =
+                resolve(&find(q).unwrap(), meta, &workspace.meta.enums, &clock, None).unwrap();
+            let pred = store_pred(&resolved.pred, meta, APP).unwrap();
+            let title = field_id(
+                &workspace.meta,
+                ty,
+                if ty == "Task" { "title" } else { "subject" },
+            );
+            store
+                .select(&meta.id, &pred, resolved.order.as_ref())
+                .unwrap()
+                .iter()
+                .map(|r| match workspace.ada.host.runtime().read(r, &title) {
+                    Ok(Value::Text(t)) => t,
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(select("Task", "is:open sort:effort"), ["a", "c", "b"]);
+        assert_eq!(select("Task", "status:waiting sort:-effort"), ["a", "d"]);
+        // An identifier alone matches every identifier field of every type: a suffix is a run of
+        // the column written backwards.
+        let mut yc = select("Task", "*@yc.com");
+        yc.extend(select("Message", "*@yc.com"));
+        yc.sort();
+        assert_eq!(yc, ["a", "d", "hello", "invoice"]);
+        assert_eq!(select("Message", "from:*@yc.com"), ["invoice"]);
+        assert_eq!(select("Message", "to:jane@yc.com"), ["hello"]);
+        assert_eq!(select("Task", "tel:+49*"), ["b"]);
+    }
+
+    phase facet_counts_are_read_from_the_columns;
+    {
+        let workspace = Workspace::new();
+        let store = workspace.ada.host.store();
+        let task = workspace.ty("Task");
+        let field = |name: &str| field_id(&workspace.meta, "Task", name);
+        let case = |name: &str| {
+            workspace
+                .meta
+                .enums
+                .iter()
+                .flat_map(|e| e.variants.iter())
+                .find(|v| v.name == name)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let _ = task;
+        let status = store
+            .facets(
+                &workspace.board,
+                &field_id(&workspace.meta, "Board", "tasks"),
+                &field("status"),
+            )
+            .unwrap();
+        assert_eq!(
+            status,
+            [
+                (case("waiting"), 2),
+                (case("started"), 1),
+                (case("blocked"), 1)
+            ]
+        );
+        let open = store
+            .facets(
+                &workspace.board,
+                &field_id(&workspace.meta, "Board", "tasks"),
+                "=open",
+            )
+            .unwrap();
+        assert_eq!(open, [("1".to_owned(), 3), ("0".to_owned(), 1)]);
+    }
+
+    phase a_filtered_list_shows_what_was_just_written_before_and_after_it_is_indexed;
+    // The conversations a person's device has just written are in the list a filter of a set's
+    // member and another conjunct shows, before the index holds them as well as after: the run
+    // of the member is as long as the writes leave it, not as the index counted it, which left
+    // a just-seeded inbox empty.
+    {
+        let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(JUST_WRITTEN, "")]);
+        let scenario = packages[0].meta.scenarios[0].action.clone();
+        ada.host.root_of(INBOX_APP).unwrap();
+        ada.commit();
+        ada.host
+            .runtime()
+            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .unwrap();
+        assert_eq!(
+            texts(ada.view(INBOX_APP).tree()),
+            ["Launch plan"],
+            "written and not yet indexed"
+        );
+        ada.commit();
+        assert_eq!(
+            texts(ada.view(INBOX_APP).tree()),
+            ["Launch plan"],
+            "indexed"
+        );
+    }
 }
 
 /// A field naming a person is a column like any other: a filter on it, or the one a named
@@ -566,87 +678,6 @@ fn a_person_a_filter_names_is_a_run_of_its_column() {
     assert_eq!(workspace.listed("assignee:ada"), ["a", "b"]);
     let (kept, anew) = workspace.kept_and_anew();
     assert_eq!(kept, anew, "the columns after assigning");
-}
-
-#[test]
-fn a_query_of_every_resource_of_a_type_reads_its_columns_across_the_workspace() {
-    let workspace = Workspace::new();
-    let store = workspace.ada.host.store();
-    let clock = Clock::at(NOW).unwrap();
-    let select = |ty: &str, q: &str| -> Vec<String> {
-        let meta = workspace.ty(ty);
-        let resolved =
-            resolve(&find(q).unwrap(), meta, &workspace.meta.enums, &clock, None).unwrap();
-        let pred = store_pred(&resolved.pred, meta, APP).unwrap();
-        let title = field_id(
-            &workspace.meta,
-            ty,
-            if ty == "Task" { "title" } else { "subject" },
-        );
-        store
-            .select(&meta.id, &pred, resolved.order.as_ref())
-            .unwrap()
-            .iter()
-            .map(|r| match workspace.ada.host.runtime().read(r, &title) {
-                Ok(Value::Text(t)) => t,
-                other => panic!("{other:?}"),
-            })
-            .collect()
-    };
-    assert_eq!(select("Task", "is:open sort:effort"), ["a", "c", "b"]);
-    assert_eq!(select("Task", "status:waiting sort:-effort"), ["a", "d"]);
-    // An identifier alone matches every identifier field of every type: a suffix is a run of
-    // the column written backwards.
-    let mut yc = select("Task", "*@yc.com");
-    yc.extend(select("Message", "*@yc.com"));
-    yc.sort();
-    assert_eq!(yc, ["a", "d", "hello", "invoice"]);
-    assert_eq!(select("Message", "from:*@yc.com"), ["invoice"]);
-    assert_eq!(select("Message", "to:jane@yc.com"), ["hello"]);
-    assert_eq!(select("Task", "tel:+49*"), ["b"]);
-}
-
-#[test]
-fn facet_counts_are_read_from_the_columns() {
-    let workspace = Workspace::new();
-    let store = workspace.ada.host.store();
-    let task = workspace.ty("Task");
-    let field = |name: &str| field_id(&workspace.meta, "Task", name);
-    let case = |name: &str| {
-        workspace
-            .meta
-            .enums
-            .iter()
-            .flat_map(|e| e.variants.iter())
-            .find(|v| v.name == name)
-            .unwrap()
-            .id
-            .clone()
-    };
-    let _ = task;
-    let status = store
-        .facets(
-            &workspace.board,
-            &field_id(&workspace.meta, "Board", "tasks"),
-            &field("status"),
-        )
-        .unwrap();
-    assert_eq!(
-        status,
-        [
-            (case("waiting"), 2),
-            (case("started"), 1),
-            (case("blocked"), 1)
-        ]
-    );
-    let open = store
-        .facets(
-            &workspace.board,
-            &field_id(&workspace.meta, "Board", "tasks"),
-            "=open",
-        )
-        .unwrap();
-    assert_eq!(open, [("1".to_owned(), 3), ("0".to_owned(), 1)]);
 }
 
 /// A type whose inbox filter is one membership run and two other conjuncts, one of them the
@@ -959,159 +990,163 @@ fn snoozing() -> String {
     )
 }
 
-// USER REQUIREMENT: a conversation snoozed just now comes back at its moment, with no window
-// open: the window waits for that moment, and the store's own write holds it before the record
-// brings it back.
-#[test]
-fn a_snooze_an_action_just_set_is_the_moment_the_view_waits_for() {
-    let (mut ada, meta, mail) = inbox_workspace_of(&snoozing(), 3, |_, _, _| {});
-    let thread = meta.types.iter().find(|t| t.name == "Thread").unwrap();
-    assert_eq!(
-        texts(ada.view(INBOX_APP).tree()).len(),
-        3,
-        "three conversations are in the inbox"
-    );
-    let first = inbox_listing(&ada, &meta, &mail)
-        .ids()
-        .into_iter()
-        .next()
-        .map(|id| mail.item(&id, thread.id.clone()))
-        .expect("the inbox lists a conversation");
-    let moment = "2027-01-01T00:00:00Z";
-    let action = meta.actions.iter().find(|a| a.name == "snooze").unwrap();
-    ada.host
-        .runtime()
-        .invoke_action(
-            &Principal::new("ada"),
-            (
-                action.id.as_str(),
-                vec![Value::resource(&first), Value::text(moment)],
-            ),
-        )
-        .unwrap();
-    // The write is the store's: the record has not brought it back yet, and the view that reads
-    // the inbox waits for the moment the conversation comes back.
-    let view = ada.view(INBOX_APP);
-    assert_eq!(
-        texts(view.tree()).len(),
-        2,
-        "the snoozed conversation is out of the inbox"
-    );
-    assert_eq!(
-        view.wakes_at(),
-        tilolang::calendar::instant(moment),
-        "the snooze the action set is the moment the view waits for"
-    );
-    ada.commit();
-    assert_eq!(
-        view.wakes_at(),
-        tilolang::calendar::instant(moment),
-        "and it is once the record holds it"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_clock_filter_waits_for_and_answers_at_its_instant;
 
-/// The inbox filter's answers for a clock that runs behind the process's own, as a test's pinned
-/// clock and a device whose clock was corrected backwards do.
-#[test]
-fn a_read_at_an_instant_behind_the_one_the_index_wrote_at_answers_for_that_instant() {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    let clock = Rc::new(RefCell::new(NOW.to_owned()));
-    let read = Rc::clone(&clock);
-    // One of the two conversations is snoozed until a moment the fake instant is before and the
-    // process's own clock is after: out of the inbox at the fake one, in it at the later one.
-    let snoozed = "2026-11-01T00:00:00Z";
-    let (mut ada, meta, mail) = inbox_workspace_of(SNOOZED, 2, |i, item, meta| {
-        use serde_json::json;
-        use tilolang_tilo::record::DynValue;
-        if i == 0
-            && let Some(DynValue::Register(until)) =
-                item.get_mut(&field_id(meta, "Thread", "snoozed_until"))
-        {
-            until.clone_from(&json!(snoozed));
-        }
-    });
-    ada.host.set_clock(move || read.borrow().clone());
-    assert_eq!(
-        inbox_listing(&ada, &meta, &mail).count(),
-        1,
-        "at the fake instant the snoozed conversation is out of the inbox"
-    );
-
-    // Read at the process's own clock, which is past the snooze's moment: the conversation is in
-    // the inbox, and the index records the instant it wrote the columns at.
-    let own = tilolang_tilo::host::system_time();
-    assert!(
-        tilolang::calendar::instant(&own) > tilolang::calendar::instant(snoozed),
-        "the process's clock runs past the moment the fake instant snoozes until: {own}"
-    );
-    *clock.borrow_mut() = own;
-    assert_eq!(
-        inbox_listing(&ada, &meta, &mail).count(),
-        2,
-        "at the process's clock the snooze's moment has passed"
-    );
-
-    // Read again at an instant behind the one the index wrote at: what the filter holds is what
-    // that instant asks for, not what the later one did.
-    *clock.borrow_mut() = NOW.to_owned();
-    assert_eq!(
-        inbox_listing(&ada, &meta, &mail).count(),
-        1,
-        "a read behind the instant the index wrote at answers for its own"
-    );
-
-    // A conversation written at the fake instant, after the index wrote at the later one, is
-    // written at the instant the write read: the read between the two answers for its own.
-    let thread_id = meta
-        .types
-        .iter()
-        .find(|t| t.name == "Thread")
-        .unwrap()
-        .id
-        .clone();
-    let mut late =
-        tilolang_tilo::DynRecord::empty(tilolang_tilo::schema::lookup(&thread_id).unwrap())
+    phase a_snooze_an_action_just_set_is_the_moment_the_view_waits_for;
+    // USER REQUIREMENT: a conversation snoozed just now comes back at its moment, with no window
+    // open: the window waits for that moment, and the store's own write holds it before the record
+    // brings it back.
+    {
+        let (mut ada, meta, mail) = inbox_workspace_of(&snoozing(), 3, |_, _, _| {});
+        let thread = meta.types.iter().find(|t| t.name == "Thread").unwrap();
+        assert_eq!(
+            texts(ada.view(INBOX_APP).tree()).len(),
+            3,
+            "three conversations are in the inbox"
+        );
+        let first = inbox_listing(&ada, &meta, &mail)
+            .ids()
+            .into_iter()
+            .next()
+            .map(|id| mail.item(&id, thread.id.clone()))
+            .expect("the inbox lists a conversation");
+        let moment = "2027-01-01T00:00:00Z";
+        let action = meta.actions.iter().find(|a| a.name == "snooze").unwrap();
+        ada.host
+            .runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    action.id.as_str(),
+                    vec![Value::resource(&first), Value::text(moment)],
+                ),
+            )
             .unwrap();
-    if let Some(tilolang_tilo::record::DynValue::Register(until)) =
-        late.get_mut(&field_id(&meta, "Thread", "snoozed_until"))
-    {
-        until.clone_from(&serde_json::json!("2026-11-05T00:00:00Z"));
+        // The write is the store's: the record has not brought it back yet, and the view that reads
+        // the inbox waits for the moment the conversation comes back.
+        let view = ada.view(INBOX_APP);
+        assert_eq!(
+            texts(view.tree()).len(),
+            2,
+            "the snoozed conversation is out of the inbox"
+        );
+        assert_eq!(
+            view.wakes_at(),
+            tilolang::calendar::instant(moment),
+            "the snooze the action set is the moment the view waits for"
+        );
+        ada.commit();
+        assert_eq!(
+            view.wakes_at(),
+            tilolang::calendar::instant(moment),
+            "and it is once the record holds it"
+        );
     }
-    if let Some(tilolang_tilo::record::DynValue::Set(boxes)) =
-        late.get_mut(&field_id(&meta, "Thread", "boxes"))
+
+    phase a_read_at_an_instant_behind_the_one_the_index_wrote_at_answers_for_that_instant;
+    // The inbox filter's answers for a clock that runs behind the process's own, as a test's pinned
+    // clock and a device whose clock was corrected backwards do.
     {
-        boxes.insert(serde_json::json!("inbox"));
-    }
-    ada.apply(&tilolang_tilo::action::DynAction {
-        app: INBOX_APP.to_owned(),
-        kind: "tl.so.tilo.inbox.thread".to_owned(),
-        action_id: "$add".to_owned(),
-        args: serde_json::Value::Null,
-        authorship: tilolang_tilo::Authorship::default(),
-        edits: vec![tilolang_tilo::action::DynEdit::Insert {
-            id: mail.id_string(),
-            item: "thread-late".to_owned(),
-            record: tilo_resource::Model::to_json(&late),
-            at: tilolang_tilo::runtime::place::Placement::At {
-                place: tilolang_tilo::runtime::place::Place {
-                    parent: None,
-                    field: field_id(&meta, "Mail", "threads"),
-                    key: "0000000002".to_owned(),
-                },
-                was: None,
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let clock = Rc::new(RefCell::new(NOW.to_owned()));
+        let read = Rc::clone(&clock);
+        // One of the two conversations is snoozed until a moment the fake instant is before and the
+        // process's own clock is after: out of the inbox at the fake one, in it at the later one.
+        let snoozed = "2026-11-01T00:00:00Z";
+        let (mut ada, meta, mail) = inbox_workspace_of(SNOOZED, 2, |i, item, meta| {
+            use serde_json::json;
+            use tilolang_tilo::record::DynValue;
+            if i == 0
+                && let Some(DynValue::Register(until)) =
+                    item.get_mut(&field_id(meta, "Thread", "snoozed_until"))
+            {
+                until.clone_from(&json!(snoozed));
             }
-            .encode(),
-        }],
-    });
-    ada.commit();
-    *clock.borrow_mut() = "2026-11-06T00:00:00Z".to_owned();
-    assert_eq!(
-        inbox_listing(&ada, &meta, &mail).count(),
-        3,
-        "a write at the fake instant holds of its filter from there, not from the later one"
-    );
+        });
+        ada.host.set_clock(move || read.borrow().clone());
+        assert_eq!(
+            inbox_listing(&ada, &meta, &mail).count(),
+            1,
+            "at the fake instant the snoozed conversation is out of the inbox"
+        );
+
+        // Read at the process's own clock, which is past the snooze's moment: the conversation is in
+        // the inbox, and the index records the instant it wrote the columns at.
+        let own = tilolang_tilo::host::system_time();
+        assert!(
+            tilolang::calendar::instant(&own) > tilolang::calendar::instant(snoozed),
+            "the process's clock runs past the moment the fake instant snoozes until: {own}"
+        );
+        *clock.borrow_mut() = own;
+        assert_eq!(
+            inbox_listing(&ada, &meta, &mail).count(),
+            2,
+            "at the process's clock the snooze's moment has passed"
+        );
+
+        // Read again at an instant behind the one the index wrote at: what the filter holds is what
+        // that instant asks for, not what the later one did.
+        *clock.borrow_mut() = NOW.to_owned();
+        assert_eq!(
+            inbox_listing(&ada, &meta, &mail).count(),
+            1,
+            "a read behind the instant the index wrote at answers for its own"
+        );
+
+        // A conversation written at the fake instant, after the index wrote at the later one, is
+        // written at the instant the write read: the read between the two answers for its own.
+        let thread_id = meta
+            .types
+            .iter()
+            .find(|t| t.name == "Thread")
+            .unwrap()
+            .id
+            .clone();
+        let mut late =
+            tilolang_tilo::DynRecord::empty(tilolang_tilo::schema::lookup(&thread_id).unwrap())
+                .unwrap();
+        if let Some(tilolang_tilo::record::DynValue::Register(until)) =
+            late.get_mut(&field_id(&meta, "Thread", "snoozed_until"))
+        {
+            until.clone_from(&serde_json::json!("2026-11-05T00:00:00Z"));
+        }
+        if let Some(tilolang_tilo::record::DynValue::Set(boxes)) =
+            late.get_mut(&field_id(&meta, "Thread", "boxes"))
+        {
+            boxes.insert(serde_json::json!("inbox"));
+        }
+        ada.apply(&tilolang_tilo::action::DynAction {
+            app: INBOX_APP.to_owned(),
+            kind: "tl.so.tilo.inbox.thread".to_owned(),
+            action_id: "$add".to_owned(),
+            args: serde_json::Value::Null,
+            authorship: tilolang_tilo::Authorship::default(),
+            edits: vec![tilolang_tilo::action::DynEdit::Insert {
+                id: mail.id_string(),
+                item: "thread-late".to_owned(),
+                record: tilo_resource::Model::to_json(&late),
+                at: tilolang_tilo::runtime::place::Placement::At {
+                    place: tilolang_tilo::runtime::place::Place {
+                        parent: None,
+                        field: field_id(&meta, "Mail", "threads"),
+                        key: "0000000002".to_owned(),
+                    },
+                    was: None,
+                }
+                .encode(),
+            }],
+        });
+        ada.commit();
+        *clock.borrow_mut() = "2026-11-06T00:00:00Z".to_owned();
+        assert_eq!(
+            inbox_listing(&ada, &meta, &mail).count(),
+            3,
+            "a write at the fake instant holds of its filter from there, not from the later one"
+        );
+    }
 }
 
 /// A list filtered by a set's member and more, of conversations the person's device has just
@@ -1154,30 +1189,3 @@ scenario "a morning's mail" {
     invoice.boxes.add("archive")
 }
 "#;
-
-/// The conversations a person's device has just written are in the list a filter of a set's
-/// member and another conjunct shows, before the index holds them as well as after: the run
-/// of the member is as long as the writes leave it, not as the index counted it, which left
-/// a just-seeded inbox empty.
-#[test]
-fn a_filtered_list_shows_what_was_just_written_before_and_after_it_is_indexed() {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(JUST_WRITTEN, "")]);
-    let scenario = packages[0].meta.scenarios[0].action.clone();
-    ada.host.root_of(INBOX_APP).unwrap();
-    ada.commit();
-    ada.host
-        .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
-        .unwrap();
-    assert_eq!(
-        texts(ada.view(INBOX_APP).tree()),
-        ["Launch plan"],
-        "written and not yet indexed"
-    );
-    ada.commit();
-    assert_eq!(
-        texts(ada.view(INBOX_APP).tree()),
-        ["Launch plan"],
-        "indexed"
-    );
-}

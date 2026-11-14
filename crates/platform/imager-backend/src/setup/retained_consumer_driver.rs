@@ -501,79 +501,87 @@ mod tests {
         });
     }
 
-    #[test]
-    fn bootstrap_absolute_deadline_interrupts_real_blocked_socket() {
-        let (mut receiver, mut peer) = UnixStream::pair().unwrap();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let control = ServiceCancellation::default();
-        let fence = BootstrapFence::start_with_budget(
-            &receiver,
-            cancel.clone(),
-            control.clone(),
-            Duration::from_millis(80),
-        )
-        .unwrap();
-        // The peer never writes: only the fence's deadline ends the read.
-        receiver
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let mut byte = [0];
-        assert_eq!(receiver.read(&mut byte).unwrap(), 0);
-        assert!(cancel.load(Ordering::Acquire));
-        assert!(control.is_cancelled());
-        assert_eq!(peer.read(&mut byte).unwrap(), 0);
-        drop(fence);
-    }
-    #[test]
-    fn admitted_bootstrap_data_and_clean_eof_belong_to_mux() {
-        let (mut receiver, mut peer) = UnixStream::pair().unwrap();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let control = ServiceCancellation::default();
-        let (fence, tid) = fence_thread(|| {
-            BootstrapFence::start_with_budget(
+    tilo_test_env::scenario! {
+        /// The fence around a retained consumer's bootstrap socket.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_bootstrap_fence_ends_on_its_deadline_or_cancel_and_leaves_admitted_data_to_the_mux;
+
+        phase bootstrap_absolute_deadline_interrupts_real_blocked_socket;
+        {
+            let (mut receiver, mut peer) = UnixStream::pair().unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let control = ServiceCancellation::default();
+            let fence = BootstrapFence::start_with_budget(
                 &receiver,
-                Arc::clone(&cancel),
+                cancel.clone(),
+                control.clone(),
+                Duration::from_millis(80),
+            )
+            .unwrap();
+            // The peer never writes: only the fence's deadline ends the read.
+            receiver
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let mut byte = [0];
+            assert_eq!(receiver.read(&mut byte).unwrap(), 0);
+            assert!(cancel.load(Ordering::Acquire));
+            assert!(control.is_cancelled());
+            assert_eq!(peer.read(&mut byte).unwrap(), 0);
+            drop(fence);
+        }
+
+        phase admitted_bootstrap_data_and_clean_eof_belong_to_mux;
+        {
+            let (mut receiver, mut peer) = UnixStream::pair().unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let control = ServiceCancellation::default();
+            let (fence, tid) = fence_thread(|| {
+                BootstrapFence::start_with_budget(
+                    &receiver,
+                    Arc::clone(&cancel),
+                    control.clone(),
+                    tilo_test_env::hang_bound(),
+                )
+                .unwrap()
+            });
+            fence.observed_consumer().unwrap();
+            peer.write_all(b"request").unwrap();
+            // Let the fence look at the transport with unread data still queued; POLLIN is not a
+            // disconnection.
+            fence_turns(&tid, 3);
+            assert!(!cancel.load(Ordering::Acquire));
+            assert!(!control.is_cancelled());
+            let mut bytes = [0u8; 7];
+            receiver.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"request");
+            drop(peer);
+            fence_turns(&tid, 3);
+            assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
+            assert!(!cancel.load(Ordering::Acquire));
+            assert!(!control.is_cancelled());
+            drop(fence);
+        }
+
+        phase explicit_global_cancel_revokes_admitted_bootstrap_owner;
+        {
+            let (mut receiver, _peer) = UnixStream::pair().unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let control = ServiceCancellation::default();
+            let fence = BootstrapFence::start_with_budget(
+                &receiver,
+                cancel.clone(),
                 control.clone(),
                 tilo_test_env::hang_bound(),
             )
-            .unwrap()
-        });
-        fence.observed_consumer().unwrap();
-        peer.write_all(b"request").unwrap();
-        // Let the fence look at the transport with unread data still queued; POLLIN is not a
-        // disconnection.
-        fence_turns(&tid, 3);
-        assert!(!cancel.load(Ordering::Acquire));
-        assert!(!control.is_cancelled());
-        let mut bytes = [0u8; 7];
-        receiver.read_exact(&mut bytes).unwrap();
-        assert_eq!(&bytes, b"request");
-        drop(peer);
-        fence_turns(&tid, 3);
-        assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
-        assert!(!cancel.load(Ordering::Acquire));
-        assert!(!control.is_cancelled());
-        drop(fence);
-    }
-    #[test]
-    fn explicit_global_cancel_revokes_admitted_bootstrap_owner() {
-        let (mut receiver, _peer) = UnixStream::pair().unwrap();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let control = ServiceCancellation::default();
-        let fence = BootstrapFence::start_with_budget(
-            &receiver,
-            cancel.clone(),
-            control.clone(),
-            tilo_test_env::hang_bound(),
-        )
-        .unwrap();
-        fence.observed_consumer().unwrap();
-        cancel.store(true, Ordering::Release);
-        tilo_test_env::wait_until("the fence to revoke the cancelled owner", || {
-            control.is_cancelled()
-        });
-        assert!(cancel.load(Ordering::Acquire));
-        assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
-        drop(fence);
+            .unwrap();
+            fence.observed_consumer().unwrap();
+            cancel.store(true, Ordering::Release);
+            tilo_test_env::wait_until("the fence to revoke the cancelled owner", || {
+                control.is_cancelled()
+            });
+            assert!(cancel.load(Ordering::Acquire));
+            assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
+            drop(fence);
+        }
     }
 }

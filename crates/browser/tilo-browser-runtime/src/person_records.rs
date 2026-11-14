@@ -200,68 +200,72 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn a_window_the_page_mounts_holds_the_persons_records() {
-        let store = page();
-        let mut first = window(&store, 1);
-        provide(&mut first, &store).unwrap();
-        write(
-            first.person_records().expect("the person's records"),
-            "half a thought",
-        );
-        // Another window of the page reads what this one wrote.
-        let mut second = window(&store, 2);
-        provide(&mut second, &store).unwrap();
-        assert_eq!(
-            read(second.person_records().unwrap()).as_deref(),
-            Some("half a thought")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_pages_windows_share_the_persons_records;
 
-    #[test]
-    fn a_private_window_keeps_nothing_of_the_persons() {
-        let store = page();
-        let mut private = window(&store, 1);
-        private.provide_private();
-        provide(&mut private, &store).unwrap();
-        assert!(private.person_records().is_none());
-    }
+        phase a_window_the_page_mounts_holds_the_persons_records;
+        {
+            let store = page();
+            let mut first = window(&store, 1);
+            provide(&mut first, &store).unwrap();
+            write(
+                first.person_records().expect("the person's records"),
+                "half a thought",
+            );
+            // Another window of the page reads what this one wrote.
+            let mut second = window(&store, 2);
+            provide(&mut second, &store).unwrap();
+            assert_eq!(
+                read(second.person_records().unwrap()).as_deref(),
+                Some("half a thought")
+            );
+        }
 
-    #[test]
-    fn every_mount_of_the_page_shares_one_writer() {
-        let store = page();
-        write(&of(&store, APP, PERSON).unwrap(), "see you at six");
-        // A second desktop of the page opens the same records, not a
-        // replica that stores nothing.
-        assert_eq!(
-            read(&of(&store, APP, PERSON).unwrap()).as_deref(),
-            Some("see you at six")
-        );
-    }
+        phase a_private_window_keeps_nothing_of_the_persons;
+        {
+            let store = page();
+            let mut private = window(&store, 1);
+            private.provide_private();
+            provide(&mut private, &store).unwrap();
+            assert!(private.person_records().is_none());
+        }
 
-    /// The page's store commits through its host later: a write it
-    /// accepted and has not committed yet is stored as far as the page goes.
-    #[test]
-    fn writes_the_host_has_yet_to_commit_are_no_failure() {
-        let memory = Rc::new(durable_store::MemoryStore::queued());
-        let store: Rc<dyn DurableStore> = memory.clone();
-        write(&of(&store, APP, PERSON).unwrap(), "back in five");
-        assert_eq!(store_all(&store), Vec::<String>::new());
-        assert!(
-            !memory.drain().is_empty(),
-            "the writes wait for the host to commit them"
-        );
-    }
+        phase every_mount_of_the_page_shares_one_writer;
+        {
+            let store = page();
+            write(&of(&store, APP, PERSON).unwrap(), "see you at six");
+            // A second desktop of the page opens the same records, not a
+            // replica that stores nothing.
+            assert_eq!(
+                read(&of(&store, APP, PERSON).unwrap()).as_deref(),
+                Some("see you at six")
+            );
+        }
 
-    #[test]
-    fn what_the_person_wrote_outlives_the_page() {
-        let store = page();
-        write(&of(&store, APP, PERSON).unwrap(), "on my way");
-        flush(&store);
-        // The page closes; the next one reads what its profile stored.
-        KEPT.with_borrow_mut(HashMap::clear);
-        let mut owners = RecordOwners::with_store(Rc::clone(&store));
-        let reloaded = PersonRecords::open(&mut owners, APP, UserId(PERSON.into())).unwrap();
-        assert_eq!(read(&reloaded).as_deref(), Some("on my way"));
+        phase writes_the_host_has_yet_to_commit_are_no_failure;
+        // The page's store commits through its host later: a write it
+        // accepted and has not committed yet is stored as far as the page goes.
+        {
+            let memory = Rc::new(durable_store::MemoryStore::queued());
+            let store: Rc<dyn DurableStore> = memory.clone();
+            write(&of(&store, APP, PERSON).unwrap(), "back in five");
+            assert_eq!(store_all(&store), Vec::<String>::new());
+            assert!(
+                !memory.drain().is_empty(),
+                "the writes wait for the host to commit them"
+            );
+        }
+
+        phase what_the_person_wrote_outlives_the_page;
+        {
+            let store = page();
+            write(&of(&store, APP, PERSON).unwrap(), "on my way");
+            flush(&store);
+            // The page closes; the next one reads what its profile stored.
+            KEPT.with_borrow_mut(HashMap::clear);
+            let mut owners = RecordOwners::with_store(Rc::clone(&store));
+            let reloaded = PersonRecords::open(&mut owners, APP, UserId(PERSON.into())).unwrap();
+            assert_eq!(read(&reloaded).as_deref(), Some("on my way"));
+        }
     }
 }

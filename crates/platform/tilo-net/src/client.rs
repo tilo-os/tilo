@@ -518,45 +518,49 @@ pub(crate) struct RawResponse {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_http_urls_are_requests() {
-        let client = Client::new();
-        assert!(matches!(
-            client.get("ftp://example.com/").build(),
-            Err(NetError::InvalidUrl(_))
-        ));
-        assert!(matches!(
-            client.get("not a url").build(),
-            Err(NetError::InvalidUrl(_))
-        ));
-        assert!(client.get("https://example.com/").build().is_ok());
-    }
+    tilo_test_env::scenario! {
+        fn a_request_builder_checks_and_assembles_its_request;
 
-    #[test]
-    fn a_bad_header_surfaces_at_build() {
-        let client = Client::new();
-        let built = client
-            .get("https://example.com/")
-            .header("bad header", "x")
-            .build();
-        assert!(matches!(built, Err(NetError::InvalidRequest(_))));
-    }
+        phase only_http_urls_are_requests;
+        {
+            let client = Client::new();
+            assert!(matches!(
+                client.get("ftp://example.com/").build(),
+                Err(NetError::InvalidUrl(_))
+            ));
+            assert!(matches!(
+                client.get("not a url").build(),
+                Err(NetError::InvalidUrl(_))
+            ));
+            assert!(client.get("https://example.com/").build().is_ok());
+        }
 
-    #[test]
-    fn builders_assemble_the_request() {
-        let client = Client::new();
-        let request = client
-            .post("https://example.com/search")
-            .query(&[("q", "a b")])
-            .basic_auth("user", Some("pw"))
-            .form(&[("k", "v&w")])
-            .timeout(Duration::from_secs(3))
-            .build()
-            .unwrap();
-        assert_eq!(request.url.as_str(), "https://example.com/search?q=a+b");
-        assert_eq!(request.headers[AUTHORIZATION], "Basic dXNlcjpwdw==");
-        assert!(request.headers[AUTHORIZATION].is_sensitive());
-        assert_eq!(request.body.as_deref(), Some(&b"k=v%26w"[..]));
-        assert_eq!(request.timeout, Some(Duration::from_secs(3)));
+        phase a_bad_header_surfaces_at_build;
+        {
+            let client = Client::new();
+            let built = client
+                .get("https://example.com/")
+                .header("bad header", "x")
+                .build();
+            assert!(matches!(built, Err(NetError::InvalidRequest(_))));
+        }
+
+        phase builders_assemble_the_request;
+        {
+            let client = Client::new();
+            let request = client
+                .post("https://example.com/search")
+                .query(&[("q", "a b")])
+                .basic_auth("user", Some("pw"))
+                .form(&[("k", "v&w")])
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap();
+            assert_eq!(request.url.as_str(), "https://example.com/search?q=a+b");
+            assert_eq!(request.headers[AUTHORIZATION], "Basic dXNlcjpwdw==");
+            assert!(request.headers[AUTHORIZATION].is_sensitive());
+            assert_eq!(request.body.as_deref(), Some(&b"k=v%26w"[..]));
+            assert_eq!(request.timeout, Some(Duration::from_secs(3)));
+        }
     }
 }

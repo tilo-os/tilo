@@ -67,7 +67,7 @@
 //! And one plane admits a device to a workspace's governance itself:
 //! [`WorkspaceOperation::DelegateMembership`], a delegated agent of this relay's own
 //! user joining, as a governed member, a workspace this relay governs. Agents are
-//! collaborators: each has its own device key, a certificate and a
+//! members: each has its own device key, a certificate and a
 //! delegation its person's root signed, and the governor records it on the
 //! workspace's roster bound to that delegation, so every member admits its
 //! changes as its own, at its person's role and never above Editor, only
@@ -93,6 +93,7 @@ use crate::peer::AgentRegistry;
 use crate::policy::TrustPolicy;
 use crate::workspace::WorkspaceRuntime;
 use tilo_lock::RwLockRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// How a workspace admits devices beyond its exact membership.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -262,7 +263,7 @@ impl DenyReason {
         match self {
             Self::CertExpired => "device certificate expired",
             Self::Revoked => "authenticated device was revoked",
-            Self::NotTrusted => "collaborator was removed from signed workspace authority",
+            Self::NotTrusted => "the member was removed from the workspace's signed authority",
             Self::AgentWithdrawn => "the agent was withdrawn",
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",
@@ -354,7 +355,7 @@ impl RelayTrust<'_> {
     pub(crate) fn agent(
         &self,
         device: &[u8; 32],
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         now_ns: u64,
     ) -> Result<(), DenyReason> {
         let agents = self.agents.read_recover();
@@ -376,7 +377,7 @@ impl RelayTrust<'_> {
     pub(crate) fn delegation(
         &self,
         device: &[u8; 32],
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         now_ns: u64,
     ) -> Option<tilo_relay_protocol::delegation::Delegation> {
         self.agents
@@ -398,7 +399,7 @@ impl RelayTrust<'_> {
     pub(crate) fn principal(
         &self,
         peer: &AuthenticatedPeer,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         now_ns: u64,
     ) -> Result<(), DenyReason> {
         self.cert(peer, now_ns)?;
@@ -607,7 +608,7 @@ fn grant_decision(
     let reaches = match scope {
         tilo_user_identity::AgentScope::AllWorkspaces => true,
         tilo_user_identity::AgentScope::Workspace(_) => {
-            crate::room_workspace_id(&scope.name()).is_ok_and(|id| id == here)
+            WorkspaceId::parse(&scope.name()) == Some(here)
         }
     };
     let agents_plane = matches!(

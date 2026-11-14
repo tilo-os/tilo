@@ -280,123 +280,131 @@ mod tests {
         root
     }
 
-    #[test]
-    fn each_way_up_is_recognised_from_the_upright_default() {
-        for orientation in [
-            DeviceOrientation::BottomUp,
-            DeviceOrientation::LeftUp,
-            DeviceOrientation::RightUp,
-        ] {
+    tilo_test_env::scenario! {
+        fn the_panel_turns_with_the_device_once_the_readings_agree;
+
+        phase each_way_up_is_recognised_from_the_upright_default;
+        {
+            for orientation in [
+                DeviceOrientation::BottomUp,
+                DeviceOrientation::LeftUp,
+                DeviceOrientation::RightUp,
+            ] {
+                assert_eq!(
+                    classify(held(orientation), DeviceOrientation::Normal),
+                    Some(orientation)
+                );
+            }
             assert_eq!(
-                classify(held(orientation), DeviceOrientation::Normal),
-                Some(orientation)
+                classify(held(DeviceOrientation::Normal), DeviceOrientation::Normal),
+                None
             );
         }
-        assert_eq!(
-            classify(held(DeviceOrientation::Normal), DeviceOrientation::Normal),
-            None
-        );
-    }
 
-    #[test]
-    fn a_device_lying_flat_keeps_its_orientation() {
-        let flat = AccelSample {
-            x: 1.0,
-            y: 1.5,
-            z: -G,
-        };
-        assert_eq!(classify(flat, DeviceOrientation::LeftUp), None);
-    }
-
-    #[test]
-    fn hysteresis_holds_the_orientation_near_forty_five_degrees() {
-        // Just past the diagonal: tilted more left than up, but not by the hysteresis margin — the
-        // screen must not turn.
-        assert_eq!(classify(tilted_left(50.0), DeviceOrientation::Normal), None);
-        assert_eq!(classify(tilted_left(40.0), DeviceOrientation::LeftUp), None);
-        // Clearly turned: rotate.
-        assert_eq!(
-            classify(tilted_left(60.0), DeviceOrientation::Normal),
-            Some(DeviceOrientation::LeftUp)
-        );
-    }
-
-    #[test]
-    fn a_turn_needs_consecutive_agreeing_samples() {
-        let mut tracker = OrientationTracker::default();
-        let left = held(DeviceOrientation::LeftUp);
-        assert_eq!(tracker.update(left), None);
-        assert_eq!(tracker.update(left), None);
-        assert_eq!(tracker.update(held(DeviceOrientation::Normal)), None);
-        assert_eq!(tracker.update(left), None);
-        assert_eq!(tracker.update(left), None);
-        assert_eq!(tracker.update(left), Some(DeviceOrientation::LeftUp));
-        assert_eq!(tracker.update(left), None, "no repeat once turned");
-    }
-
-    #[test]
-    fn the_lock_holds_the_panel_and_unlocking_catches_up() {
-        let mut control = RotationControl::new(true);
-        let right = held(DeviceOrientation::RightUp);
-        for _ in 0..DEBOUNCE_SAMPLES {
-            assert_eq!(control.sample(right), None, "locked panels never turn");
+        phase a_device_lying_flat_keeps_its_orientation;
+        {
+            let flat = AccelSample {
+                x: 1.0,
+                y: 1.5,
+                z: -G,
+            };
+            assert_eq!(classify(flat, DeviceOrientation::LeftUp), None);
         }
-        assert_eq!(control.shown(), DeviceOrientation::Normal);
-        assert_eq!(control.set_locked(false), Some(DeviceOrientation::RightUp));
-        assert_eq!(control.shown(), DeviceOrientation::RightUp);
-        // Locking again pins the current orientation.
-        assert_eq!(control.set_locked(true), None);
-        for _ in 0..DEBOUNCE_SAMPLES {
-            assert_eq!(control.sample(held(DeviceOrientation::Normal)), None);
+
+        phase hysteresis_holds_the_orientation_near_forty_five_degrees;
+        {
+            // Just past the diagonal: tilted more left than up, but not by the hysteresis margin — the
+            // screen must not turn.
+            assert_eq!(classify(tilted_left(50.0), DeviceOrientation::Normal), None);
+            assert_eq!(classify(tilted_left(40.0), DeviceOrientation::LeftUp), None);
+            // Clearly turned: rotate.
+            assert_eq!(
+                classify(tilted_left(60.0), DeviceOrientation::Normal),
+                Some(DeviceOrientation::LeftUp)
+            );
         }
-        assert_eq!(control.shown(), DeviceOrientation::RightUp);
+
+        phase a_turn_needs_consecutive_agreeing_samples;
+        {
+            let mut tracker = OrientationTracker::default();
+            let left = held(DeviceOrientation::LeftUp);
+            assert_eq!(tracker.update(left), None);
+            assert_eq!(tracker.update(left), None);
+            assert_eq!(tracker.update(held(DeviceOrientation::Normal)), None);
+            assert_eq!(tracker.update(left), None);
+            assert_eq!(tracker.update(left), None);
+            assert_eq!(tracker.update(left), Some(DeviceOrientation::LeftUp));
+            assert_eq!(tracker.update(left), None, "no repeat once turned");
+        }
+
+        phase the_lock_holds_the_panel_and_unlocking_catches_up;
+        {
+            let mut control = RotationControl::new(true);
+            let right = held(DeviceOrientation::RightUp);
+            for _ in 0..DEBOUNCE_SAMPLES {
+                assert_eq!(control.sample(right), None, "locked panels never turn");
+            }
+            assert_eq!(control.shown(), DeviceOrientation::Normal);
+            assert_eq!(control.set_locked(false), Some(DeviceOrientation::RightUp));
+            assert_eq!(control.shown(), DeviceOrientation::RightUp);
+            // Locking again pins the current orientation.
+            assert_eq!(control.set_locked(true), None);
+            for _ in 0..DEBOUNCE_SAMPLES {
+                assert_eq!(control.sample(held(DeviceOrientation::Normal)), None);
+            }
+            assert_eq!(control.shown(), DeviceOrientation::RightUp);
+        }
+
+        phase an_unlocked_panel_follows_the_device;
+        {
+            let mut control = RotationControl::new(false);
+            let bottom = held(DeviceOrientation::BottomUp);
+            let turns: Vec<_> = (0..DEBOUNCE_SAMPLES)
+                .filter_map(|_| control.sample(bottom))
+                .collect();
+            assert_eq!(turns, vec![DeviceOrientation::BottomUp]);
+        }
     }
 
-    #[test]
-    fn an_unlocked_panel_follows_the_device() {
-        let mut control = RotationControl::new(false);
-        let bottom = held(DeviceOrientation::BottomUp);
-        let turns: Vec<_> = (0..DEBOUNCE_SAMPLES)
-            .filter_map(|_| control.sample(bottom))
-            .collect();
-        assert_eq!(turns, vec![DeviceOrientation::BottomUp]);
-    }
+    tilo_test_env::scenario! {
+        fn the_accelerometer_is_found_and_read_with_its_scale_and_mount_matrix;
 
-    #[test]
-    fn the_reader_finds_the_accelerometer_and_applies_scale_and_mount_matrix() {
-        let root = fake_iio(&[
-            ("in_accel_x_raw", "0\n"),
-            ("in_accel_y_raw", "-1000\n"),
-            ("in_accel_z_raw", "12\n"),
-            ("in_accel_scale", "0.00981\n"),
-            // Mounted rotated a quarter turn: sensor y is panel x.
-            ("in_accel_mount_matrix", "0, 1, 0; -1, 0, 0; 0, 0, 1\n"),
-        ]);
-        let device = accelerometer_in(root.path()).expect("accelerometer found");
-        assert!(device.ends_with("iio:device1"), "light sensor skipped");
-        let sample = read_accel(&device).expect("sample");
-        assert!((sample.x - -9.81).abs() < 1e-9);
-        assert!(sample.y.abs() < 1e-9);
-        assert_eq!(
-            classify(sample, DeviceOrientation::Normal),
-            Some(DeviceOrientation::RightUp)
-        );
-    }
+        phase the_reader_finds_the_accelerometer_and_applies_scale_and_mount_matrix;
+        {
+            let root = fake_iio(&[
+                ("in_accel_x_raw", "0\n"),
+                ("in_accel_y_raw", "-1000\n"),
+                ("in_accel_z_raw", "12\n"),
+                ("in_accel_scale", "0.00981\n"),
+                // Mounted rotated a quarter turn: sensor y is panel x.
+                ("in_accel_mount_matrix", "0, 1, 0; -1, 0, 0; 0, 0, 1\n"),
+            ]);
+            let device = accelerometer_in(root.path()).expect("accelerometer found");
+            assert!(device.ends_with("iio:device1"), "light sensor skipped");
+            let sample = read_accel(&device).expect("sample");
+            assert!((sample.x - -9.81).abs() < 1e-9);
+            assert!(sample.y.abs() < 1e-9);
+            assert_eq!(
+                classify(sample, DeviceOrientation::Normal),
+                Some(DeviceOrientation::RightUp)
+            );
+        }
 
-    #[test]
-    fn no_accelerometer_means_none() {
-        let root = tempfile::tempdir().expect("tempdir");
-        assert_eq!(accelerometer_in(root.path()), None);
-        assert_eq!(accelerometer_in(&root.path().join("missing")), None);
-    }
+        phase no_accelerometer_means_none;
+        {
+            let root = tempfile::tempdir().expect("tempdir");
+            assert_eq!(accelerometer_in(root.path()), None);
+            assert_eq!(accelerometer_in(&root.path().join("missing")), None);
+        }
 
-    #[test]
-    fn malformed_mount_matrices_are_ignored() {
-        assert_eq!(parse_mount_matrix("1, 0; 0, 1"), None);
-        assert_eq!(
-            parse_mount_matrix("1, 0, 0; 0, 1, 0; 0, 0, 1; 1, 1, 1"),
-            None
-        );
-        assert!(parse_mount_matrix("1, 0, 0; 0, 1, 0; 0, 0, 1").is_some());
+        phase malformed_mount_matrices_are_ignored;
+        {
+            assert_eq!(parse_mount_matrix("1, 0; 0, 1"), None);
+            assert_eq!(
+                parse_mount_matrix("1, 0, 0; 0, 1, 0; 0, 0, 1; 1, 1, 1"),
+                None
+            );
+            assert!(parse_mount_matrix("1, 0, 0; 0, 1, 0; 0, 0, 1").is_some());
+        }
     }
 }

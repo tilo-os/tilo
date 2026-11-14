@@ -230,94 +230,97 @@ music_streaming = ["streaming", "user-read-private"]
         result
     }
 
-    #[test]
-    fn spotify_preparation_refuses_cross_account_in_both_consent_orders_without_altering_first_grant()
-     {
-        for first_playback in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().join("accounts");
-            let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-            let original = serde_json::json!({"id":"ada","account_id":"stable-ada"});
-            let other = serde_json::json!({"id":"other","account_id":"stable-other"});
-            let (endpoint, api) = profile_server(vec![original.clone(), other, original]);
-            let connector = connector(&root, endpoint, &issuer);
-            let first = finish(&connector, first_playback).unwrap();
-            let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
-            let secret = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).unwrap();
-            assert_eq!(
-                finish(&connector, !first_playback),
-                Err(ConnectionError::SignInFailed)
-            );
-            api.join().unwrap();
-            assert_eq!(
-                std::fs::read(accounts::store_path_in(&root)).unwrap(),
-                metadata
-            );
-            assert_eq!(
-                std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).unwrap(),
-                secret
-            );
-            assert_eq!(
-                load_store(&root).unwrap().get(&first).unwrap().config["spotify_user_id"],
-                "ada"
-            );
-            assert_eq!(load_store(&root).unwrap().len(), 1);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn spotify_preparation_binds_one_stable_account;
 
-    #[test]
-    fn spotify_preparation_accepts_same_stable_account_with_changed_user_ids_in_both_orders() {
-        for first_playback in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().join("accounts");
-            let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-            let (endpoint, api) = profile_server(vec![
-                serde_json::json!({"id":"original-name","account_id":"immutable-account"}),
-                serde_json::json!({"id":"second-name","account_id":"immutable-account"}),
-                serde_json::json!({"id":"renamed-original","account_id":"immutable-account"}),
-            ]);
-            let connector = connector(&root, endpoint, &issuer);
-            let first = finish(&connector, first_playback).unwrap();
-            let second = finish(&connector, !first_playback).unwrap();
-            api.join().unwrap();
-            let store = load_store(&root).unwrap();
-            assert_eq!(store.len(), 2);
-            assert_eq!(
-                store.get(&first).unwrap().config["spotify_user_id"],
-                "original-name"
-            );
-            assert_eq!(
-                store.get(&second).unwrap().config["spotify_user_id"],
-                "second-name"
-            );
-            for id in [first, second] {
+        phase spotify_preparation_refuses_cross_account_in_both_consent_orders_without_altering_first_grant;
+        {
+            for first_playback in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("accounts");
+                let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
+                let original = serde_json::json!({"id":"ada","account_id":"stable-ada"});
+                let other = serde_json::json!({"id":"other","account_id":"stable-other"});
+                let (endpoint, api) = profile_server(vec![original.clone(), other, original]);
+                let connector = connector(&root, endpoint, &issuer);
+                let first = finish(&connector, first_playback).unwrap();
+                let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
+                let secret = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).unwrap();
                 assert_eq!(
-                    store.get(&id).unwrap().config["spotify_account_id"],
-                    "immutable-account"
+                    finish(&connector, !first_playback),
+                    Err(ConnectionError::SignInFailed)
                 );
+                api.join().unwrap();
+                assert_eq!(
+                    std::fs::read(accounts::store_path_in(&root)).unwrap(),
+                    metadata
+                );
+                assert_eq!(
+                    std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).unwrap(),
+                    secret
+                );
+                assert_eq!(
+                    load_store(&root).unwrap().get(&first).unwrap().config["spotify_user_id"],
+                    "ada"
+                );
+                assert_eq!(load_store(&root).unwrap().len(), 1);
             }
         }
-    }
 
-    #[test]
-    fn spotify_preparation_refuses_invalid_provider_identity_before_any_custody_write() {
-        for profile in [
-            serde_json::json!({"id":""}),
-            serde_json::json!({"id":"ada","account_id":"bad\nidentity"}),
-            serde_json::json!({"id":"ada","account_id":null}),
-            serde_json::json!({"error":"denied"}),
-        ] {
-            let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().join("accounts");
-            let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-            let (endpoint, api) = profile_server(vec![profile]);
-            let connector = connector(&root, endpoint, &issuer);
-            assert_eq!(
-                finish(&connector, false),
-                Err(ConnectionError::SignInFailed)
-            );
-            api.join().unwrap();
-            assert!(!root.exists());
+        phase spotify_preparation_accepts_same_stable_account_with_changed_user_ids_in_both_orders;
+        {
+            for first_playback in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("accounts");
+                let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
+                let (endpoint, api) = profile_server(vec![
+                    serde_json::json!({"id":"original-name","account_id":"immutable-account"}),
+                    serde_json::json!({"id":"second-name","account_id":"immutable-account"}),
+                    serde_json::json!({"id":"renamed-original","account_id":"immutable-account"}),
+                ]);
+                let connector = connector(&root, endpoint, &issuer);
+                let first = finish(&connector, first_playback).unwrap();
+                let second = finish(&connector, !first_playback).unwrap();
+                api.join().unwrap();
+                let store = load_store(&root).unwrap();
+                assert_eq!(store.len(), 2);
+                assert_eq!(
+                    store.get(&first).unwrap().config["spotify_user_id"],
+                    "original-name"
+                );
+                assert_eq!(
+                    store.get(&second).unwrap().config["spotify_user_id"],
+                    "second-name"
+                );
+                for id in [first, second] {
+                    assert_eq!(
+                        store.get(&id).unwrap().config["spotify_account_id"],
+                        "immutable-account"
+                    );
+                }
+            }
+        }
+
+        phase spotify_preparation_refuses_invalid_provider_identity_before_any_custody_write;
+        {
+            for profile in [
+                serde_json::json!({"id":""}),
+                serde_json::json!({"id":"ada","account_id":"bad\nidentity"}),
+                serde_json::json!({"id":"ada","account_id":null}),
+                serde_json::json!({"error":"denied"}),
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("accounts");
+                let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
+                let (endpoint, api) = profile_server(vec![profile]);
+                let connector = connector(&root, endpoint, &issuer);
+                assert_eq!(
+                    finish(&connector, false),
+                    Err(ConnectionError::SignInFailed)
+                );
+                api.join().unwrap();
+                assert!(!root.exists());
+            }
         }
     }
 }

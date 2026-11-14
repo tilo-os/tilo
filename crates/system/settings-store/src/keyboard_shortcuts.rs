@@ -449,353 +449,369 @@ mod tests {
         KeyChord::parse(text).expect("a well-formed chord")
     }
 
-    #[test]
-    fn ids_are_unique_and_round_trip() {
-        let mut seen = BTreeSet::new();
-        for action in ShortcutAction::ALL {
-            assert_eq!(ShortcutAction::from_id(action.id()), Some(action));
-            assert!(seen.insert(action.id()), "{} listed twice", action.id());
-        }
-        for fixed in RESERVED_SHORTCUTS {
-            assert!(fixed.id.starts_with("reserved-"), "{}", fixed.id);
-            assert!(seen.insert(fixed.id), "{} listed twice", fixed.id);
-        }
-        for fixed in FIXED_SHORTCUTS {
-            assert!(fixed.id.starts_with("fixed-"), "{}", fixed.id);
-            assert!(seen.insert(fixed.id), "{} listed twice", fixed.id);
-            assert!(!fixed.keys.is_empty(), "{} has no chord", fixed.id);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_rebind_onto_a_taken_fixed_or_reserved_chord_is_refused;
 
-    #[test]
-    fn every_action_with_a_default_is_listed() {
-        let listed: BTreeSet<_> = ShortcutAction::ALL.into_iter().collect();
-        let defaulted: BTreeSet<_> = ShortcutConfig::default().bindings.into_keys().collect();
-        assert_eq!(listed, defaulted);
-        assert_eq!(
-            catalogue(&ShortcutConfig::default()).len(),
-            listed.len() + FIXED_SHORTCUTS.len()
-        );
-    }
-
-    /// Super+Up/Down maximize and restore, Ctrl+Super+Up/Down switch strips,
-    /// Shift+Ctrl+Super+Up/Down carry the focused group there, Super+1…9 go
-    /// to a strip and Ctrl+Super+1…9 to a window of it. None of these is a
-    /// fixed or reserved desktop chord, and each is one catalogue row.
-    #[test]
-    fn maximize_and_strip_chords_are_free_and_listed_once() {
-        let config = ShortcutConfig::default();
-        let rows = catalogue(&config);
-        let mut expected = vec![
-            ("maximize-window", "Super+Up".to_string()),
-            ("restore-window", "Super+Down".to_string()),
-            ("previous-strip", "Super+Ctrl+Up".to_string()),
-            ("next-strip", "Super+Ctrl+Down".to_string()),
-            (
-                "move-group-to-previous-strip",
-                "Super+Ctrl+Shift+Up".to_string(),
-            ),
-            (
-                "move-group-to-next-strip",
-                "Super+Ctrl+Shift+Down".to_string(),
-            ),
-        ];
-        let strips = [
-            "focus-strip-1",
-            "focus-strip-2",
-            "focus-strip-3",
-            "focus-strip-4",
-            "focus-strip-5",
-            "focus-strip-6",
-            "focus-strip-7",
-            "focus-strip-8",
-            "focus-strip-9",
-        ];
-        let groups = [
-            "focus-group-1",
-            "focus-group-2",
-            "focus-group-3",
-            "focus-group-4",
-            "focus-group-5",
-            "focus-group-6",
-            "focus-group-7",
-            "focus-group-8",
-            "focus-group-9",
-        ];
-        for (n, (strip, group)) in strips.into_iter().zip(groups).enumerate() {
-            expected.push((strip, format!("Super+{}", n + 1)));
-            expected.push((group, format!("Super+Ctrl+{}", n + 1)));
-        }
-        for (id, shown) in expected {
-            let chord = chord(&shown);
-            assert!(
-                desktop_owner(&chord).is_none(),
-                "{shown} is a fixed or reserved chord"
-            );
-            let holders: Vec<_> = rows
-                .iter()
-                .filter(|entry| entry.chords.contains(&chord))
-                .map(|entry| entry.id)
-                .collect();
-            assert_eq!(holders, vec![id], "{shown} belongs to {id} alone");
-        }
-        let maximize = entry(&config, "maximize-window").expect("listed");
-        assert_eq!(maximize.category, ShortcutCategory::Windows);
-        assert_eq!(maximize.label_key, "shortcut-name-maximize-window");
-        let strip = entry(&config, "focus-strip-1").expect("listed");
-        assert_eq!(strip.category, ShortcutCategory::Navigation);
-        assert_eq!(
-            ShortcutAction::from_id("focus-strip-1").and_then(ShortcutAction::focus_strip_index),
-            Some(0)
-        );
-    }
-
-    #[test]
-    fn a_rebind_onto_another_actions_chord_names_it_and_changes_nothing() {
-        let mut config = ShortcutConfig::default();
-        let before = config.clone();
-        assert_eq!(
-            config.set(ShortcutAction::QuickSettings, chord("Super+Space")),
-            Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
-        );
-        assert_eq!(config, before, "the chord was not taken from search");
-    }
-
-    #[test]
-    fn a_rebind_onto_a_fixed_chord_names_the_fixed_shortcut() {
-        let mut config = ShortcutConfig::default();
-        let before = config.clone();
-        assert_eq!(
-            config.set(ShortcutAction::Search, chord("Alt+Tab")),
-            Err(ShortcutConfigError::Fixed("fixed-switch-windows"))
-        );
-        assert_eq!(
-            config.set(ShortcutAction::NextTab, chord("Super+W")),
-            Err(ShortcutConfigError::Fixed("fixed-close-tab"))
-        );
-        assert_eq!(config, before);
-    }
-
-    #[test]
-    fn the_screen_reader_chord_is_fixed_and_wins_over_a_stored_binding() {
-        let chord = chord("Ctrl+Super+Enter");
-        assert_eq!(
-            desktop_owner(&chord).map(|fixed| fixed.id),
-            Some("fixed-toggle-screen-reader")
-        );
-        let mut config = ShortcutConfig::default();
-        assert_eq!(
-            config.set(ShortcutAction::OpenFiles, chord.clone()),
-            Err(ShortcutConfigError::Fixed("fixed-toggle-screen-reader"))
-        );
-        // One saved before the desktop fixed it never runs; the action
-        // keeps its default instead of a dead chord.
-        let mut stored = ShortcutConfig::default();
-        stored.bindings.insert(ShortcutAction::OpenFiles, chord);
-        assert_eq!(
-            ShortcutConfig::normalise(stored)
-                .bindings
-                .get(&ShortcutAction::OpenFiles),
-            ShortcutConfig::default()
-                .bindings
-                .get(&ShortcutAction::OpenFiles)
-        );
-    }
-
-    #[test]
-    fn an_action_may_keep_a_default_the_desktop_also_answers() {
-        // Super+Page Up is both the fixed workspace change and the default
-        // of Previous workspace: moving it away and back is not a conflict.
-        let mut config = ShortcutConfig::default();
-        config
-            .set(ShortcutAction::PreviousWorkspace, chord("Super+Alt+Up"))
-            .expect("a free chord");
-        config
-            .reset(ShortcutAction::PreviousWorkspace)
-            .expect("its own default");
-        assert_eq!(config, ShortcutConfig::default());
-        assert_eq!(
-            config.set(ShortcutAction::NextTab, chord("Super+PageUp")),
-            Err(ShortcutConfigError::Conflict(
-                ShortcutAction::PreviousWorkspace
-            ))
-        );
-    }
-
-    #[test]
-    fn reserved_chords_are_refused_to_actions_and_published_actions() {
-        let mut config = ShortcutConfig::default();
-        assert_eq!(
-            config.set(ShortcutAction::Search, chord("Super+Ctrl+H")),
-            Err(ShortcutConfigError::Fixed("reserved-vim-navigation"))
-        );
-        assert_eq!(
-            config.check_action_chord(&chord("Escape"), None),
-            Err(ShortcutConfigError::Fixed("reserved-dismiss"))
-        );
-        assert!(
-            catalogue(&config)
-                .iter()
-                .all(|entry| !entry.id.starts_with("reserved-")),
-            "reserved chords are not listed as shortcuts"
-        );
-    }
-
-    #[test]
-    fn a_rebind_onto_a_published_actions_chord_is_refused() {
-        let mut config = ShortcutConfig::default();
-        config
-            .set_action(
-                chord("Super+Shift+Y"),
-                crate::hardware::ActionChordTarget {
-                    provider: "workspace:room".into(),
-                    resource: "drafts".into(),
-                    action: "publish".into(),
-                },
-                "Run Publish",
-            )
-            .expect("a free chord");
-        let before = config.clone();
-        assert_eq!(
-            config.set(ShortcutAction::Search, chord("Super+Shift+Y")),
-            Err(ShortcutConfigError::TakenByAction)
-        );
-        assert_eq!(config, before);
-    }
-
-    #[test]
-    fn reset_refuses_while_another_action_holds_the_default() {
-        let mut config = ShortcutConfig::default();
-        config
-            .set(ShortcutAction::Search, chord("Super+J"))
-            .expect("a free chord");
-        config
-            .set(ShortcutAction::QuickSettings, chord("Super+Space"))
-            .expect("search gave it up");
-        assert_eq!(
-            config.reset(ShortcutAction::Search),
-            Err(ShortcutConfigError::Conflict(ShortcutAction::QuickSettings))
-        );
-        config
-            .reset_all()
-            .expect("every default is free of action chords");
-        assert_eq!(config, ShortcutConfig::default());
-    }
-
-    #[test]
-    fn reset_all_keeps_a_default_a_published_action_took() {
-        let mut config = ShortcutConfig::default();
-        config
-            .set(ShortcutAction::Search, chord("Super+J"))
-            .expect("a free chord");
-        config
-            .set_action(
-                chord("Super+Space"),
-                crate::hardware::ActionChordTarget {
-                    provider: "workspace:room".into(),
-                    resource: "drafts".into(),
-                    action: "publish".into(),
-                },
-                "Run Publish",
-            )
-            .expect("search gave the chord up");
-        let before = config.clone();
-        assert_eq!(config.reset_all(), Err(ShortcutConfigError::TakenByAction));
-        assert_eq!(config, before);
-    }
-
-    #[test]
-    fn search_and_lock_are_one_row_each_whose_rebind_replaces_the_system_chord() {
-        let mut config = ShortcutConfig::default();
-        let rows = catalogue(&config);
-        for (id, default) in [("search", "Super+Space"), ("lock", "Super+L")] {
-            let matching: Vec<_> = rows
-                .iter()
-                .filter(|entry| entry.chords.contains(&chord(default)))
-                .collect();
-            assert_eq!(matching.len(), 1, "{default} is listed once");
-            assert_eq!(matching[0].id, id);
-            assert!(matching[0].rebindable);
-        }
-        config
-            .set(ShortcutAction::Lock, chord("Ctrl+Alt+L"))
-            .expect("a free chord");
-        config
-            .set(ShortcutAction::Search, chord("Super+K"))
-            .expect("a free chord");
-        assert!(desktop_owner(&chord("Super+L")).is_none());
-        assert!(desktop_owner(&chord("Super+Space")).is_none());
-        assert!(
-            config
-                .bindings
-                .values()
-                .all(|bound| *bound != chord("Super+L") && *bound != chord("Super+Space")),
-            "the old chords are free once rebound"
-        );
-    }
-
-    #[test]
-    fn the_catalogue_reports_current_and_default_chords() {
-        let mut config = ShortcutConfig::default();
-        config
-            .set(ShortcutAction::QuickSettings, chord("Super+J"))
-            .expect("a free chord");
-        let quick = entry(&config, "quick-settings").expect("listed");
-        assert_eq!(quick.chords, vec![chord("Super+J")]);
-        assert_eq!(quick.defaults, vec![chord("Super+Q")]);
-        assert!(quick.rebindable && quick.is_changed());
-        assert_eq!(quick.category, ShortcutCategory::System);
-        assert_eq!(quick.label_key, "shortcut-name-quick-settings");
-        let close = entry(&config, "fixed-close-tab").expect("listed");
-        assert!(!close.rebindable);
-        assert_eq!(close.chords, vec![chord("Alt+F4"), chord("Super+W")]);
-    }
-
-    #[test]
-    fn every_dispatched_fixed_action_is_one_catalogue_entry_with_its_chords() {
-        let actions = [
-            FixedAction::CloseTab,
-            FixedAction::NewWindow,
-            FixedAction::DuplicateTab,
-            FixedAction::OpenTerminal,
-            FixedAction::StripSwitcher,
-            FixedAction::CaptureScreenshot,
-            FixedAction::PictureInPicture,
-            FixedAction::SaveRecentReplay,
-            FixedAction::WorkspaceHistory,
-            FixedAction::ExploreWorkspaceHistory,
-            FixedAction::ShortcutGuide,
-            FixedAction::StopRemoteInput,
-        ];
-        for action in actions {
-            let listed = fixed_shortcut(action.id()).expect("the action is a fixed shortcut");
+        phase a_rebind_onto_another_actions_chord_names_it_and_changes_nothing;
+        {
+            let mut config = ShortcutConfig::default();
+            let before = config.clone();
             assert_eq!(
-                FIXED_SHORTCUTS
-                    .iter()
-                    .filter(|fixed| FixedAction::from_id(fixed.id) == Some(action))
-                    .count(),
-                1,
-                "{} names one action",
-                action.id()
+                config.set(ShortcutAction::QuickSettings, chord("Super+Space")),
+                Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
             );
-            for chord in listed.chords() {
-                assert_eq!(fixed_action(&chord), Some(action), "{chord:?}");
+            assert_eq!(config, before, "the chord was not taken from search");
+        }
+
+        phase a_rebind_onto_a_fixed_chord_names_the_fixed_shortcut;
+        {
+            let mut config = ShortcutConfig::default();
+            let before = config.clone();
+            assert_eq!(
+                config.set(ShortcutAction::Search, chord("Alt+Tab")),
+                Err(ShortcutConfigError::Fixed("fixed-switch-windows"))
+            );
+            assert_eq!(
+                config.set(ShortcutAction::NextTab, chord("Super+W")),
+                Err(ShortcutConfigError::Fixed("fixed-close-tab"))
+            );
+            assert_eq!(config, before);
+        }
+
+        phase the_screen_reader_chord_is_fixed_and_wins_over_a_stored_binding;
+        {
+            let chord = chord("Ctrl+Super+Enter");
+            assert_eq!(
+                desktop_owner(&chord).map(|fixed| fixed.id),
+                Some("fixed-toggle-screen-reader")
+            );
+            let mut config = ShortcutConfig::default();
+            assert_eq!(
+                config.set(ShortcutAction::OpenFiles, chord.clone()),
+                Err(ShortcutConfigError::Fixed("fixed-toggle-screen-reader"))
+            );
+            // One saved before the desktop fixed it never runs; the action
+            // keeps its default instead of a dead chord.
+            let mut stored = ShortcutConfig::default();
+            stored.bindings.insert(ShortcutAction::OpenFiles, chord);
+            assert_eq!(
+                ShortcutConfig::normalise(stored)
+                    .bindings
+                    .get(&ShortcutAction::OpenFiles),
+                ShortcutConfig::default()
+                    .bindings
+                    .get(&ShortcutAction::OpenFiles)
+            );
+        }
+
+        phase an_action_may_keep_a_default_the_desktop_also_answers;
+        {
+            // Super+Page Up is both the fixed workspace change and the default
+            // of Previous workspace: moving it away and back is not a conflict.
+            let mut config = ShortcutConfig::default();
+            config
+                .set(ShortcutAction::PreviousWorkspace, chord("Super+Alt+Up"))
+                .expect("a free chord");
+            config
+                .reset(ShortcutAction::PreviousWorkspace)
+                .expect("its own default");
+            assert_eq!(config, ShortcutConfig::default());
+            assert_eq!(
+                config.set(ShortcutAction::NextTab, chord("Super+PageUp")),
+                Err(ShortcutConfigError::Conflict(
+                    ShortcutAction::PreviousWorkspace
+                ))
+            );
+        }
+
+        phase reserved_chords_are_refused_to_actions_and_published_actions;
+        {
+            let mut config = ShortcutConfig::default();
+            assert_eq!(
+                config.set(ShortcutAction::Search, chord("Super+Ctrl+H")),
+                Err(ShortcutConfigError::Fixed("reserved-vim-navigation"))
+            );
+            assert_eq!(
+                config.check_action_chord(&chord("Escape"), None),
+                Err(ShortcutConfigError::Fixed("reserved-dismiss"))
+            );
+            assert!(
+                catalogue(&config)
+                    .iter()
+                    .all(|entry| !entry.id.starts_with("reserved-")),
+                "reserved chords are not listed as shortcuts"
+            );
+        }
+
+        phase a_rebind_onto_a_published_actions_chord_is_refused;
+        {
+            let mut config = ShortcutConfig::default();
+            config
+                .set_action(
+                    chord("Super+Shift+Y"),
+                    crate::hardware::ActionChordTarget {
+                        provider: "workspace:room".into(),
+                        resource: "drafts".into(),
+                        action: "publish".into(),
+                    },
+                    "Run Publish",
+                )
+                .expect("a free chord");
+            let before = config.clone();
+            assert_eq!(
+                config.set(ShortcutAction::Search, chord("Super+Shift+Y")),
+                Err(ShortcutConfigError::TakenByAction)
+            );
+            assert_eq!(config, before);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_reset_never_takes_a_chord_another_binding_holds;
+
+        phase reset_refuses_while_another_action_holds_the_default;
+        {
+            let mut config = ShortcutConfig::default();
+            config
+                .set(ShortcutAction::Search, chord("Super+J"))
+                .expect("a free chord");
+            config
+                .set(ShortcutAction::QuickSettings, chord("Super+Space"))
+                .expect("search gave it up");
+            assert_eq!(
+                config.reset(ShortcutAction::Search),
+                Err(ShortcutConfigError::Conflict(ShortcutAction::QuickSettings))
+            );
+            config
+                .reset_all()
+                .expect("every default is free of action chords");
+            assert_eq!(config, ShortcutConfig::default());
+        }
+
+        phase reset_all_keeps_a_default_a_published_action_took;
+        {
+            let mut config = ShortcutConfig::default();
+            config
+                .set(ShortcutAction::Search, chord("Super+J"))
+                .expect("a free chord");
+            config
+                .set_action(
+                    chord("Super+Space"),
+                    crate::hardware::ActionChordTarget {
+                        provider: "workspace:room".into(),
+                        resource: "drafts".into(),
+                        action: "publish".into(),
+                    },
+                    "Run Publish",
+                )
+                .expect("search gave the chord up");
+            let before = config.clone();
+            assert_eq!(config.reset_all(), Err(ShortcutConfigError::TakenByAction));
+            assert_eq!(config, before);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_shortcut_catalogue_lists_every_action_once_with_its_chords;
+
+        phase ids_are_unique_and_round_trip;
+        {
+            let mut seen = BTreeSet::new();
+            for action in ShortcutAction::ALL {
+                assert_eq!(ShortcutAction::from_id(action.id()), Some(action));
+                assert!(seen.insert(action.id()), "{} listed twice", action.id());
+            }
+            for fixed in RESERVED_SHORTCUTS {
+                assert!(fixed.id.starts_with("reserved-"), "{}", fixed.id);
+                assert!(seen.insert(fixed.id), "{} listed twice", fixed.id);
+            }
+            for fixed in FIXED_SHORTCUTS {
+                assert!(fixed.id.starts_with("fixed-"), "{}", fixed.id);
+                assert!(seen.insert(fixed.id), "{} listed twice", fixed.id);
+                assert!(!fixed.keys.is_empty(), "{} has no chord", fixed.id);
             }
         }
-        for (text, id) in [
-            ("Alt+Tab", "fixed-switch-windows"),
-            ("Super+PageUp", "fixed-change-workspace"),
-            ("Super+P", "fixed-display-layout"),
-            ("PrintScreen", "fixed-screenshot"),
-            ("Ctrl+Super+Enter", "fixed-toggle-screen-reader"),
-            ("Alt+Shift+NumLock", "fixed-toggle-mouse-keys"),
-        ] {
+
+        phase every_action_with_a_default_is_listed;
+        {
+            let listed: BTreeSet<_> = ShortcutAction::ALL.into_iter().collect();
+            let defaulted: BTreeSet<_> = ShortcutConfig::default().bindings.into_keys().collect();
+            assert_eq!(listed, defaulted);
             assert_eq!(
-                desktop_owner(&chord(text)).map(|fixed| fixed.id),
-                Some(id),
-                "{text} is fixed"
+                catalogue(&ShortcutConfig::default()).len(),
+                listed.len() + FIXED_SHORTCUTS.len()
             );
-            assert_eq!(fixed_action(&chord(text)), None, "{text} needs no action");
+        }
+
+        phase maximize_and_strip_chords_are_free_and_listed_once;
+        // Super+Up/Down maximize and restore, Ctrl+Super+Up/Down switch strips,
+        // Shift+Ctrl+Super+Up/Down carry the focused group there, Super+1…9 go
+        // to a strip and Ctrl+Super+1…9 to a window of it. None of these is a
+        // fixed or reserved desktop chord, and each is one catalogue row.
+        {
+            let config = ShortcutConfig::default();
+            let rows = catalogue(&config);
+            let mut expected = vec![
+                ("maximize-window", "Super+Up".to_string()),
+                ("restore-window", "Super+Down".to_string()),
+                ("previous-strip", "Super+Ctrl+Up".to_string()),
+                ("next-strip", "Super+Ctrl+Down".to_string()),
+                (
+                    "move-group-to-previous-strip",
+                    "Super+Ctrl+Shift+Up".to_string(),
+                ),
+                (
+                    "move-group-to-next-strip",
+                    "Super+Ctrl+Shift+Down".to_string(),
+                ),
+            ];
+            let strips = [
+                "focus-strip-1",
+                "focus-strip-2",
+                "focus-strip-3",
+                "focus-strip-4",
+                "focus-strip-5",
+                "focus-strip-6",
+                "focus-strip-7",
+                "focus-strip-8",
+                "focus-strip-9",
+            ];
+            let groups = [
+                "focus-group-1",
+                "focus-group-2",
+                "focus-group-3",
+                "focus-group-4",
+                "focus-group-5",
+                "focus-group-6",
+                "focus-group-7",
+                "focus-group-8",
+                "focus-group-9",
+            ];
+            for (n, (strip, group)) in strips.into_iter().zip(groups).enumerate() {
+                expected.push((strip, format!("Super+{}", n + 1)));
+                expected.push((group, format!("Super+Ctrl+{}", n + 1)));
+            }
+            for (id, shown) in expected {
+                let chord = chord(&shown);
+                assert!(
+                    desktop_owner(&chord).is_none(),
+                    "{shown} is a fixed or reserved chord"
+                );
+                let holders: Vec<_> = rows
+                    .iter()
+                    .filter(|entry| entry.chords.contains(&chord))
+                    .map(|entry| entry.id)
+                    .collect();
+                assert_eq!(holders, vec![id], "{shown} belongs to {id} alone");
+            }
+            let maximize = entry(&config, "maximize-window").expect("listed");
+            assert_eq!(maximize.category, ShortcutCategory::Windows);
+            assert_eq!(maximize.label_key, "shortcut-name-maximize-window");
+            let strip = entry(&config, "focus-strip-1").expect("listed");
+            assert_eq!(strip.category, ShortcutCategory::Navigation);
+            assert_eq!(
+                ShortcutAction::from_id("focus-strip-1").and_then(ShortcutAction::focus_strip_index),
+                Some(0)
+            );
+        }
+
+        phase search_and_lock_are_one_row_each_whose_rebind_replaces_the_system_chord;
+        {
+            let mut config = ShortcutConfig::default();
+            let rows = catalogue(&config);
+            for (id, default) in [("search", "Super+Space"), ("lock", "Super+L")] {
+                let matching: Vec<_> = rows
+                    .iter()
+                    .filter(|entry| entry.chords.contains(&chord(default)))
+                    .collect();
+                assert_eq!(matching.len(), 1, "{default} is listed once");
+                assert_eq!(matching[0].id, id);
+                assert!(matching[0].rebindable);
+            }
+            config
+                .set(ShortcutAction::Lock, chord("Ctrl+Alt+L"))
+                .expect("a free chord");
+            config
+                .set(ShortcutAction::Search, chord("Super+K"))
+                .expect("a free chord");
+            assert!(desktop_owner(&chord("Super+L")).is_none());
+            assert!(desktop_owner(&chord("Super+Space")).is_none());
+            assert!(
+                config
+                    .bindings
+                    .values()
+                    .all(|bound| *bound != chord("Super+L") && *bound != chord("Super+Space")),
+                "the old chords are free once rebound"
+            );
+        }
+
+        phase the_catalogue_reports_current_and_default_chords;
+        {
+            let mut config = ShortcutConfig::default();
+            config
+                .set(ShortcutAction::QuickSettings, chord("Super+J"))
+                .expect("a free chord");
+            let quick = entry(&config, "quick-settings").expect("listed");
+            assert_eq!(quick.chords, vec![chord("Super+J")]);
+            assert_eq!(quick.defaults, vec![chord("Super+Q")]);
+            assert!(quick.rebindable && quick.is_changed());
+            assert_eq!(quick.category, ShortcutCategory::System);
+            assert_eq!(quick.label_key, "shortcut-name-quick-settings");
+            let close = entry(&config, "fixed-close-tab").expect("listed");
+            assert!(!close.rebindable);
+            assert_eq!(close.chords, vec![chord("Alt+F4"), chord("Super+W")]);
+        }
+
+        phase every_dispatched_fixed_action_is_one_catalogue_entry_with_its_chords;
+        {
+            let actions = [
+                FixedAction::CloseTab,
+                FixedAction::NewWindow,
+                FixedAction::DuplicateTab,
+                FixedAction::OpenTerminal,
+                FixedAction::StripSwitcher,
+                FixedAction::CaptureScreenshot,
+                FixedAction::PictureInPicture,
+                FixedAction::SaveRecentReplay,
+                FixedAction::WorkspaceHistory,
+                FixedAction::ExploreWorkspaceHistory,
+                FixedAction::ShortcutGuide,
+                FixedAction::StopRemoteInput,
+            ];
+            for action in actions {
+                let listed = fixed_shortcut(action.id()).expect("the action is a fixed shortcut");
+                assert_eq!(
+                    FIXED_SHORTCUTS
+                        .iter()
+                        .filter(|fixed| FixedAction::from_id(fixed.id) == Some(action))
+                        .count(),
+                    1,
+                    "{} names one action",
+                    action.id()
+                );
+                for chord in listed.chords() {
+                    assert_eq!(fixed_action(&chord), Some(action), "{chord:?}");
+                }
+            }
+            for (text, id) in [
+                ("Alt+Tab", "fixed-switch-windows"),
+                ("Super+PageUp", "fixed-change-workspace"),
+                ("Super+P", "fixed-display-layout"),
+                ("PrintScreen", "fixed-screenshot"),
+                ("Ctrl+Super+Enter", "fixed-toggle-screen-reader"),
+                ("Alt+Shift+NumLock", "fixed-toggle-mouse-keys"),
+            ] {
+                assert_eq!(
+                    desktop_owner(&chord(text)).map(|fixed| fixed.id),
+                    Some(id),
+                    "{text} is fixed"
+                );
+                assert_eq!(fixed_action(&chord(text)), None, "{text} needs no action");
+            }
         }
     }
 }

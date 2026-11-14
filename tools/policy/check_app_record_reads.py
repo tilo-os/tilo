@@ -39,9 +39,14 @@ import rust_source  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 
 # `apps/<app>/src/<file>.rs::<kind>` -> why this record answers no read.
-# Keep this empty: a record without a read cannot be read by path, and no
-# present record is better off unreadable.
-EXCEPTIONS: dict[str, str] = {}
+# A record belongs here only where what it holds must not be read by
+# anyone holding its path; every other record answers a read.
+EXCEPTIONS: dict[str, str] = {
+    "apps/osk/src/learned.rs::osk.learned": (
+        "what it holds is what the person typed; the record publishes that it "
+        "changed, so they can take a change back, and never a read of the words"
+    ),
+}
 
 # Where the records this tree publishes are declared.
 SCOPES = ("apps", "crates")

@@ -166,76 +166,80 @@ pub(crate) fn checkpoint(event: &CheckpointEvent) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_append_is_known_unwritten_only_before_it_writes() {
-        use crate::native::atomic::{Privacy, PublicationState, append, replace};
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("journal");
-        replace(&path, b"a", Privacy::OwnerOnly).unwrap();
-        append(&path, b"b").unwrap();
-        let error = with_failure(Checkpoint::BeforePublish, || append(&path, b"c")).unwrap_err();
-        assert_eq!(error.state(), PublicationState::NotPublished);
-        assert_eq!(std::fs::read(&path).unwrap(), b"ab");
-        let error = with_failure(Checkpoint::AfterPublish, || append(&path, b"d")).unwrap_err();
-        assert_eq!(error.state(), PublicationState::PublicationUnknown);
-        assert_eq!(std::fs::read(&path).unwrap(), b"abd");
-        let missing = append(&root.path().join("missing"), b"e").unwrap_err();
-        assert_eq!(missing.state(), PublicationState::NotPublished);
-    }
+    tilo_test_env::scenario! {
+        fn scoped_failures_fire_where_asked_and_restore_the_outer_scope;
 
-    #[test]
-    fn nth_failure_selects_one_real_publication() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("record");
-        with_failure_on_nth(Checkpoint::BeforeCommit, 2, || {
-            crate::native::atomic::replace(
-                &path,
-                b"first",
-                crate::native::atomic::Privacy::OwnerOnly,
-            )
-            .unwrap();
-            let error = crate::native::atomic::replace(
-                &path,
-                b"second",
-                crate::native::atomic::Privacy::OwnerOnly,
-            )
-            .unwrap_err();
-            assert_eq!(
-                error.state(),
-                crate::native::atomic::PublicationState::PublishedDurabilityUnknown
-            );
-            assert_eq!(std::fs::read(&path).unwrap(), b"second");
-            crate::native::atomic::replace(
-                &path,
-                b"third",
-                crate::native::atomic::Privacy::OwnerOnly,
-            )
-            .unwrap();
-        });
-    }
+        phase an_append_is_known_unwritten_only_before_it_writes;
+        {
+            use crate::native::atomic::{Privacy, PublicationState, append, replace};
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("journal");
+            replace(&path, b"a", Privacy::OwnerOnly).unwrap();
+            append(&path, b"b").unwrap();
+            let error = with_failure(Checkpoint::BeforePublish, || append(&path, b"c")).unwrap_err();
+            assert_eq!(error.state(), PublicationState::NotPublished);
+            assert_eq!(std::fs::read(&path).unwrap(), b"ab");
+            let error = with_failure(Checkpoint::AfterPublish, || append(&path, b"d")).unwrap_err();
+            assert_eq!(error.state(), PublicationState::PublicationUnknown);
+            assert_eq!(std::fs::read(&path).unwrap(), b"abd");
+            let missing = append(&root.path().join("missing"), b"e").unwrap_err();
+            assert_eq!(missing.state(), PublicationState::NotPublished);
+        }
 
-    #[test]
-    fn nth_failure_restores_outer_count_after_return_and_unwind() {
-        let event = || CheckpointEvent {
-            checkpoint: Checkpoint::BeforePublish,
-            stage: None,
-        };
-        with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-            checkpoint(&event()).unwrap();
-            with_failure_on_nth(Checkpoint::BeforePublish, 1, || {
-                assert!(checkpoint(&event()).is_err());
+        phase nth_failure_selects_one_real_publication;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("record");
+            with_failure_on_nth(Checkpoint::BeforeCommit, 2, || {
+                crate::native::atomic::replace(
+                    &path,
+                    b"first",
+                    crate::native::atomic::Privacy::OwnerOnly,
+                )
+                .unwrap();
+                let error = crate::native::atomic::replace(
+                    &path,
+                    b"second",
+                    crate::native::atomic::Privacy::OwnerOnly,
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error.state(),
+                    crate::native::atomic::PublicationState::PublishedDurabilityUnknown
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), b"second");
+                crate::native::atomic::replace(
+                    &path,
+                    b"third",
+                    crate::native::atomic::Privacy::OwnerOnly,
+                )
+                .unwrap();
             });
-            let panic = std::panic::catch_unwind(|| {
-                with_failure_on_nth(Checkpoint::BeforePublish, 3, || {
-                    checkpoint(&event()).unwrap();
-                    panic!("restore outer occurrence count");
+        }
+
+        phase nth_failure_restores_outer_count_after_return_and_unwind;
+        {
+            let event = || CheckpointEvent {
+                checkpoint: Checkpoint::BeforePublish,
+                stage: None,
+            };
+            with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
+                checkpoint(&event()).unwrap();
+                with_failure_on_nth(Checkpoint::BeforePublish, 1, || {
+                    assert!(checkpoint(&event()).is_err());
                 });
+                let panic = std::panic::catch_unwind(|| {
+                    with_failure_on_nth(Checkpoint::BeforePublish, 3, || {
+                        checkpoint(&event()).unwrap();
+                        panic!("restore outer occurrence count");
+                    });
+                });
+                assert!(panic.is_err());
+                assert!(checkpoint(&event()).is_err());
+                checkpoint(&event()).unwrap();
             });
-            assert!(panic.is_err());
-            assert!(checkpoint(&event()).is_err());
             checkpoint(&event()).unwrap();
-        });
-        checkpoint(&event()).unwrap();
+        }
     }
 }
 

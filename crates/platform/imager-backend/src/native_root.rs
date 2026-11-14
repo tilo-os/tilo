@@ -116,23 +116,28 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn replaced_ancestor_does_not_reauthorize_the_held_directory() {
-        let temporary = tempfile::tempdir().unwrap();
-        let selected = temporary.path().join("selected");
-        std::fs::create_dir(&selected).unwrap();
-        let root = NativeRoot::open(&selected).unwrap();
-        let held = root.file().metadata().unwrap();
-        std::fs::rename(&selected, temporary.path().join("old")).unwrap();
-        std::fs::create_dir(&selected).unwrap();
-        assert!(root.validate().is_err());
-        assert_eq!(root.file().metadata().unwrap().ino(), held.ino());
-    }
-    #[test]
-    fn symlinked_roots_are_not_native_authority() {
-        let temporary = tempfile::tempdir().unwrap();
-        let link = temporary.path().join("link");
-        std::os::unix::fs::symlink(temporary.path(), &link).unwrap();
-        assert!(NativeRoot::open(&link).is_err());
+    tilo_test_env::scenario! {
+        fn native_root_authority_is_the_held_directory_only;
+
+        phase replaced_ancestor_does_not_reauthorize_the_held_directory;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let selected = temporary.path().join("selected");
+            std::fs::create_dir(&selected).unwrap();
+            let root = NativeRoot::open(&selected).unwrap();
+            let held = root.file().metadata().unwrap();
+            std::fs::rename(&selected, temporary.path().join("old")).unwrap();
+            std::fs::create_dir(&selected).unwrap();
+            assert!(root.validate().is_err());
+            assert_eq!(root.file().metadata().unwrap().ino(), held.ino());
+        }
+
+        phase symlinked_roots_are_not_native_authority;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let link = temporary.path().join("link");
+            std::os::unix::fs::symlink(temporary.path(), &link).unwrap();
+            assert!(NativeRoot::open(&link).is_err());
+        }
     }
 }

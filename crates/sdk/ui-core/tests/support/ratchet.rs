@@ -739,14 +739,15 @@ pub fn note_stale(audit: &str, progress: &Progress) {
     }
 }
 
-/// The span finder is what every ratchet's coverage rests on, so its shapes
-/// are pinned here once: exactly the item the attribute governs, whether a
-/// braced module, a bodyless item, a multi-line signature, a same-line
-/// module or a whole test-gated file.
+// The span finder is what every ratchet's coverage rests on, so its shapes
+// are pinned here once: exactly the item the attribute governs, whether a
+// braced module, a bodyless item, a multi-line signature, a same-line
+// module or a whole test-gated file.
 
-#[test]
-fn test_module_spans_cover_exactly_the_test_code() {
-    // Phase `test_module_spans_cover_only_the_test_module`.
+tilo_test_env::scenario! {
+    fn test_module_spans_cover_exactly_the_test_code;
+
+    phase test_module_spans_cover_only_the_test_module;
     {
         let source = "const REAL: f64 = 12.0;\n#[cfg(test)]\nmod tests {\n    const FIXTURE: f64 = 99.0;\n}\nconst AFTER: f64 = 8.0;\n";
         let spans = test_module_spans(source);
@@ -756,7 +757,8 @@ fn test_module_spans_cover_exactly_the_test_code() {
         assert!(in_span(3), "the fixture inside the module is skipped");
         assert!(!in_span(5), "the constant after the module is audited");
     }
-    // Phase `test_module_spans_do_not_exempt_the_item_after_a_bodyless_test_item`.
+
+    phase test_module_spans_do_not_exempt_the_item_after_a_bodyless_test_item;
     {
         let source = "#[cfg(test)]\nconst MAX_HISTORY: usize = 120;\nimpl Widget for Terminal {\n    const PAD: f64 = 12.0;\n}\n#[cfg(test)]\nmod tests;\nconst AFTER: f64 = 8.0;\n";
         let spans = test_module_spans(source);
@@ -770,7 +772,8 @@ fn test_module_spans_cover_exactly_the_test_code() {
         assert!(in_span(6), "`mod tests;` is exempt");
         assert!(!in_span(7), "the constant after `mod tests;` is audited");
     }
-    // Phase `test_module_spans_follow_attributes_signatures_and_same_line_modules`.
+
+    phase test_module_spans_follow_attributes_signatures_and_same_line_modules;
     {
         let source = "#[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n    const F: f64 = 1.0;\n}\nconst A: f64 = 8.0;\n#[cfg(test)]\npub(crate) fn helper(\n    px: f32,\n) -> f32 {\n    px\n}\nconst B: f64 = 9.0;\n#[cfg(test)] mod inline { const G: f64 = 2.0; }\nconst C: f64 = 10.0;\n";
         let spans = test_module_spans(source);
@@ -780,12 +783,14 @@ fn test_module_spans_cover_exactly_the_test_code() {
         assert!(in_span(10) && !in_span(12));
         assert!(in_span(13) && !in_span(14));
     }
-    // Phase `a_narrowed_test_cfg_is_test_code_and_a_widened_one_is_not`.
+
+    phase a_narrowed_test_cfg_is_test_code_and_a_widened_one_is_not;
     {
         let source = "#[cfg(all(test, not(target_arch = \"wasm32\")))]\nmod cpu {\n    const F: f64 = 1.0;\n}\n#[cfg(any(test, feature = \"x\"))]\nconst A: f64 = 8.0;\n#[cfg(all(testing))]\nconst B: f64 = 9.0;\n";
         assert_eq!(test_module_spans(source), vec![(0, 4)]);
     }
-    // Phase `a_file_gated_to_tests_has_no_production_lines`.
+
+    phase a_file_gated_to_tests_has_no_production_lines;
     {
         let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
         assert_eq!(test_module_spans(source), vec![(0, 3)]);
@@ -793,244 +798,248 @@ fn test_module_spans_cover_exactly_the_test_code() {
     }
 }
 
-/// An allow marker names one pattern and a reason, and covers only the line
-/// right below it.
-#[test]
-fn test_modules_split_into_files_or_directories_are_test_files() {
-    for test in [
-        "crates/sdk/ui-core/tests/it.rs",
-        "apps/chat/src/tests.rs",
-        "apps/chat/src/room_tests.rs",
-        "crates/session/desktop/src/bar/network_tests/member_controls.rs",
-    ] {
-        assert!(is_test_file(Path::new(test)), "{test}");
+tilo_test_env::scenario! {
+    fn the_ratchet_engine_reads_markers_shards_and_reports_growth;
+
+    // An allow marker names one pattern and a reason, and covers only the line
+    // right below it.
+    phase test_modules_split_into_files_or_directories_are_test_files;
+    {
+        for test in [
+            "crates/sdk/ui-core/tests/it.rs",
+            "apps/chat/src/tests.rs",
+            "apps/chat/src/room_tests.rs",
+            "crates/session/desktop/src/bar/network_tests/member_controls.rs",
+        ] {
+            assert!(is_test_file(Path::new(test)), "{test}");
+        }
+        for production in ["apps/chat/src/room.rs", "apps/latest_tests/src/main.rs"] {
+            assert!(!is_test_file(Path::new(production)), "{production}");
+        }
     }
-    for production in ["apps/chat/src/room.rs", "apps/latest_tests/src/main.rs"] {
-        assert!(!is_test_file(Path::new(production)), "{production}");
+
+    phase an_allow_marker_covers_one_pattern_on_the_next_line_with_a_reason;
+    {
+        assert_eq!(
+            allow_marker("    // ratchet-allow(raw_paint): the globe is content drawing"),
+            Some(vec!["raw_paint".to_owned()])
+        );
+        assert_eq!(
+            allow_marker(
+                "// ratchet-allow(literal_alpha, desktop_ground): the night side of the globe"
+            ),
+            Some(vec![
+                "literal_alpha".to_owned(),
+                "desktop_ground".to_owned()
+            ])
+        );
+        assert_eq!(
+            allow_marker("// ratchet-allow(raw_paint): ok"),
+            None,
+            "no reason"
+        );
+        assert_eq!(
+            allow_marker("// ratchet-allow(): a reason long enough"),
+            None
+        );
+        assert_eq!(allow_marker("// a plain comment"), None);
+        let folder = std::env::temp_dir().join(format!("ratchet-allow-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("draw.rs");
+        fs::write(
+            &file,
+            "fn draw() {\n    // ratchet-allow(raw_paint): the picture of a window is content\n    scene.fill(a);\n    scene.fill(b);\n}\n",
+        )
+        .unwrap();
+        let ratchet = Ratchet {
+            name: "allow",
+            roots: &[],
+            patterns: vec![Pattern::new("raw_paint", r"scene\.fill\(", "raw paint")],
+            exempt: no_exemptions,
+            advice: "",
+        };
+        let counts = ratchet.count(&folder, &[file]);
+        assert_eq!(
+            counts.values().copied().sum::<usize>(),
+            1,
+            "the marked line is allowed, the next one is counted: {counts:?}"
+        );
+        let _ = fs::remove_dir_all(&folder);
     }
-}
 
-#[test]
-fn an_allow_marker_covers_one_pattern_on_the_next_line_with_a_reason() {
-    assert_eq!(
-        allow_marker("    // ratchet-allow(raw_paint): the globe is content drawing"),
-        Some(vec!["raw_paint".to_owned()])
-    );
-    assert_eq!(
-        allow_marker(
-            "// ratchet-allow(literal_alpha, desktop_ground): the night side of the globe"
-        ),
-        Some(vec![
-            "literal_alpha".to_owned(),
-            "desktop_ground".to_owned()
-        ])
-    );
-    assert_eq!(
-        allow_marker("// ratchet-allow(raw_paint): ok"),
-        None,
-        "no reason"
-    );
-    assert_eq!(
-        allow_marker("// ratchet-allow(): a reason long enough"),
-        None
-    );
-    assert_eq!(allow_marker("// a plain comment"), None);
-    let folder = std::env::temp_dir().join(format!("ratchet-allow-{}", std::process::id()));
-    fs::create_dir_all(&folder).unwrap();
-    let file = folder.join("draw.rs");
-    fs::write(
-        &file,
-        "fn draw() {\n    // ratchet-allow(raw_paint): the picture of a window is content\n    scene.fill(a);\n    scene.fill(b);\n}\n",
-    )
-    .unwrap();
-    let ratchet = Ratchet {
-        name: "allow",
-        roots: &[],
-        patterns: vec![Pattern::new("raw_paint", r"scene\.fill\(", "raw paint")],
-        exempt: no_exemptions,
-        advice: "",
-    };
-    let counts = ratchet.count(&folder, &[file]);
-    assert_eq!(
-        counts.values().copied().sum::<usize>(),
-        1,
-        "the marked line is allowed, the next one is counted: {counts:?}"
-    );
-    let _ = fs::remove_dir_all(&folder);
-}
+    phase ratchet_reports_growth_and_stale_entries_separately;
+    {
+        let key = |p: &str, k: &str| (p.to_string(), k.to_string());
+        let found: Counts = [(key("a.rs", "x"), 3), (key("b.rs", "x"), 1)]
+            .into_iter()
+            .collect();
+        let baseline: Counts = [(key("a.rs", "x"), 2), (key("c.rs", "x"), 1)]
+            .into_iter()
+            .collect();
+        let (grew, stale) = ratchet_failures(&found, &baseline, &|k| format!("fix {k}"));
+        assert_eq!(grew.len(), 2, "a.rs grew and b.rs is new");
+        assert!(grew[0].starts_with("a.rs [x]: 3 occurrence(s), baseline 2 — fix x"));
+        assert!(grew[1].starts_with("b.rs [x]: 1 occurrence(s), baseline 0"));
+        assert_eq!(
+            stale,
+            vec!["c.rs [x]: now 0, baseline still 1 — lower it to 0"]
+        );
+    }
 
-#[test]
-fn ratchet_reports_growth_and_stale_entries_separately() {
-    let key = |p: &str, k: &str| (p.to_string(), k.to_string());
-    let found: Counts = [(key("a.rs", "x"), 3), (key("b.rs", "x"), 1)]
-        .into_iter()
-        .collect();
-    let baseline: Counts = [(key("a.rs", "x"), 2), (key("c.rs", "x"), 1)]
-        .into_iter()
-        .collect();
-    let (grew, stale) = ratchet_failures(&found, &baseline, &|k| format!("fix {k}"));
-    assert_eq!(grew.len(), 2, "a.rs grew and b.rs is new");
-    assert!(grew[0].starts_with("a.rs [x]: 3 occurrence(s), baseline 2 — fix x"));
-    assert!(grew[1].starts_with("b.rs [x]: 1 occurrence(s), baseline 0"));
-    assert_eq!(
-        stale,
-        vec!["c.rs [x]: now 0, baseline still 1 — lower it to 0"]
-    );
-}
+    phase shards_are_one_file_per_app_and_toolkit;
+    {
+        assert_eq!(shard_of("apps/mail/src/app.rs"), "apps-mail");
+        assert_eq!(shard_of("apps/git-client/src/a/b.rs"), "apps-git-client");
+        assert_eq!(shard_of("crates/sdk/ui-core/src/widget/x.rs"), "ui-core");
+        assert_eq!(shard_of("crates/session/desktop/src/main.rs"), "desktop");
+        assert_eq!(scope_unit("apps/mail"), "apps-mail");
+        assert_eq!(scope_unit("apps/mail/"), "apps-mail");
+        assert_eq!(scope_unit("crates/session/desktop"), "desktop");
+        assert_eq!(scope_unit("crates/sdk/ui-core"), "ui-core");
+        assert_eq!(scope_unit("apps-mail"), "apps-mail");
+    }
 
-#[test]
-fn shards_are_one_file_per_app_and_toolkit() {
-    assert_eq!(shard_of("apps/mail/src/app.rs"), "apps-mail");
-    assert_eq!(shard_of("apps/git-client/src/a/b.rs"), "apps-git-client");
-    assert_eq!(shard_of("crates/sdk/ui-core/src/widget/x.rs"), "ui-core");
-    assert_eq!(shard_of("crates/session/desktop/src/main.rs"), "desktop");
-    assert_eq!(scope_unit("apps/mail"), "apps-mail");
-    assert_eq!(scope_unit("apps/mail/"), "apps-mail");
-    assert_eq!(scope_unit("crates/session/desktop"), "desktop");
-    assert_eq!(scope_unit("crates/sdk/ui-core"), "ui-core");
-    assert_eq!(scope_unit("apps-mail"), "apps-mail");
-}
+    // A synthetic two-app tree run through the real engine: a shard that grows
+    // fails, one that shrinks passes with a note, a missing shard allows zero,
+    // and a scoped update rewrites only its own shard, refuses growth unless it
+    // is allowed, and deletes a shard that reaches zero.
+    phase a_synthetic_shard_fails_when_it_grows_and_passes_when_it_shrinks;
+    {
+        let tree = tempfile::tempdir().expect("temporary tree");
+        let repo = tree.path().join("repo");
+        let baselines = tree.path().join("baselines");
+        let source = |app: &str, body: &str| {
+            let dir = repo.join("apps").join(app).join("src");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("lib.rs"), body).unwrap();
+        };
+        let shard = |unit: &str, body: &str| {
+            let dir = baselines.join("demo");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(format!("{unit}.txt")), body).unwrap();
+        };
+        let ratchet = Ratchet {
+            name: "demo",
+            roots: &["apps/*/src"],
+            patterns: vec![Pattern::new("white", r"Color::WHITE", "use a token")],
+            exempt: no_exemptions,
+            advice: "read it from the theme",
+        };
+        let check = || ratchet.run(&repo, &baselines, &Mode::default());
+        let stale = || check().map(|progress| progress.stale);
 
-/// A synthetic two-app tree run through the real engine: a shard that grows
-/// fails, one that shrinks passes with a note, a missing shard allows zero,
-/// and a scoped update rewrites only its own shard, refuses growth unless it
-/// is allowed, and deletes a shard that reaches zero.
-#[test]
-fn a_synthetic_shard_fails_when_it_grows_and_passes_when_it_shrinks() {
-    let tree = tempfile::tempdir().expect("temporary tree");
-    let repo = tree.path().join("repo");
-    let baselines = tree.path().join("baselines");
-    let source = |app: &str, body: &str| {
-        let dir = repo.join("apps").join(app).join("src");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("lib.rs"), body).unwrap();
-    };
-    let shard = |unit: &str, body: &str| {
-        let dir = baselines.join("demo");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(format!("{unit}.txt")), body).unwrap();
-    };
-    let ratchet = Ratchet {
-        name: "demo",
-        roots: &["apps/*/src"],
-        patterns: vec![Pattern::new("white", r"Color::WHITE", "use a token")],
-        exempt: no_exemptions,
-        advice: "read it from the theme",
-    };
-    let check = || ratchet.run(&repo, &baselines, &Mode::default());
-    let stale = || check().map(|progress| progress.stale);
+        source(
+            "mail",
+            "fn a() { Color::WHITE; Color::WHITE; }\n// Color::WHITE\n#[cfg(test)]\nmod tests { fn f() { Color::WHITE; } }\n",
+        );
+        source("chat", "fn b() { Color::WHITE; }\n");
+        shard("apps-mail", "# header\napps/mail/src/lib.rs white 2\n");
+        shard("apps-chat", "apps/chat/src/lib.rs white 1\n");
+        assert_eq!(
+            stale(),
+            Ok(Vec::new()),
+            "comments and test items are not counted"
+        );
 
-    source(
-        "mail",
-        "fn a() { Color::WHITE; Color::WHITE; }\n// Color::WHITE\n#[cfg(test)]\nmod tests { fn f() { Color::WHITE; } }\n",
-    );
-    source("chat", "fn b() { Color::WHITE; }\n");
-    shard("apps-mail", "# header\napps/mail/src/lib.rs white 2\n");
-    shard("apps-chat", "apps/chat/src/lib.rs white 1\n");
-    assert_eq!(
-        stale(),
-        Ok(Vec::new()),
-        "comments and test items are not counted"
-    );
+        // Grows: one more hit than the shard allows.
+        source(
+            "mail",
+            "fn a() { Color::WHITE; Color::WHITE; Color::WHITE; }\n",
+        );
+        let failure = check().expect_err("growth fails");
+        assert!(
+            failure.contains("apps/mail/src/lib.rs [white]: 3 occurrence(s), baseline 2 — use a token"),
+            "{failure}"
+        );
+        assert!(failure.contains("read it from the theme"), "{failure}");
 
-    // Grows: one more hit than the shard allows.
-    source(
-        "mail",
-        "fn a() { Color::WHITE; Color::WHITE; Color::WHITE; }\n",
-    );
-    let failure = check().expect_err("growth fails");
-    assert!(
-        failure.contains("apps/mail/src/lib.rs [white]: 3 occurrence(s), baseline 2 — use a token"),
-        "{failure}"
-    );
-    assert!(failure.contains("read it from the theme"), "{failure}");
+        // Shrinks: passes, and the drop is reported as progress with the text
+        // the shard should now hold.
+        source("mail", "fn a() { Color::WHITE; }\n");
+        let progress = check().expect("a drop passes");
+        assert_eq!(
+            progress.stale,
+            vec!["apps/mail/src/lib.rs [white]: now 1, baseline still 2 — lower it to 1".to_string()]
+        );
+        assert_eq!(progress.rewrites.len(), 1);
+        assert_eq!(progress.rewrites[0].0, "apps-mail");
+        assert!(
+            progress.rewrites[0]
+                .1
+                .ends_with("\napps/mail/src/lib.rs white 1\n"),
+            "{}",
+            progress.rewrites[0].1
+        );
 
-    // Shrinks: passes, and the drop is reported as progress with the text
-    // the shard should now hold.
-    source("mail", "fn a() { Color::WHITE; }\n");
-    let progress = check().expect("a drop passes");
-    assert_eq!(
-        progress.stale,
-        vec!["apps/mail/src/lib.rs [white]: now 1, baseline still 2 — lower it to 1".to_string()]
-    );
-    assert_eq!(progress.rewrites.len(), 1);
-    assert_eq!(progress.rewrites[0].0, "apps-mail");
-    assert!(
-        progress.rewrites[0]
-            .1
-            .ends_with("\napps/mail/src/lib.rs white 1\n"),
-        "{}",
-        progress.rewrites[0].1
-    );
+        // A missing shard allows zero.
+        fs::remove_file(baselines.join("demo/apps-chat.txt")).unwrap();
+        assert!(
+            check().is_err(),
+            "chat has no shard, so its one hit is growth"
+        );
 
-    // A missing shard allows zero.
-    fs::remove_file(baselines.join("demo/apps-chat.txt")).unwrap();
-    assert!(
-        check().is_err(),
-        "chat has no shard, so its one hit is growth"
-    );
+        // A scoped update rewrites only its own shard and refuses growth.
+        source(
+            "mail",
+            "fn a() { Color::WHITE; Color::WHITE; Color::WHITE; }\n",
+        );
+        let scoped = |unit: &str, allow_growth| Mode {
+            update: true,
+            scope: Some(unit.to_string()),
+            allow_growth,
+        };
+        let refused = ratchet
+            .run(&repo, &baselines, &scoped("apps/mail", false))
+            .expect_err("an update may not raise a count");
+        assert!(
+            refused.contains("apps/mail/src/lib.rs [white]: 2 → 3"),
+            "{refused}"
+        );
+        ratchet
+            .run(&repo, &baselines, &scoped("apps/mail", true))
+            .expect("growth is allowed when asked for");
+        let mail = read_shards(&baselines.join("demo")).unwrap();
+        assert_eq!(
+            mail.get(&("apps/mail/src/lib.rs".to_string(), "white".to_string())),
+            Some(&3)
+        );
+        assert!(
+            !baselines.join("demo/apps-chat.txt").exists(),
+            "a scoped update leaves other shards alone"
+        );
 
-    // A scoped update rewrites only its own shard and refuses growth.
-    source(
-        "mail",
-        "fn a() { Color::WHITE; Color::WHITE; Color::WHITE; }\n",
-    );
-    let scoped = |unit: &str, allow_growth| Mode {
-        update: true,
-        scope: Some(unit.to_string()),
-        allow_growth,
-    };
-    let refused = ratchet
-        .run(&repo, &baselines, &scoped("apps/mail", false))
-        .expect_err("an update may not raise a count");
-    assert!(
-        refused.contains("apps/mail/src/lib.rs [white]: 2 → 3"),
-        "{refused}"
-    );
-    ratchet
-        .run(&repo, &baselines, &scoped("apps/mail", true))
-        .expect("growth is allowed when asked for");
-    let mail = read_shards(&baselines.join("demo")).unwrap();
-    assert_eq!(
-        mail.get(&("apps/mail/src/lib.rs".to_string(), "white".to_string())),
-        Some(&3)
-    );
-    assert!(
-        !baselines.join("demo/apps-chat.txt").exists(),
-        "a scoped update leaves other shards alone"
-    );
+        // Reaching zero deletes the shard, which then locks the unit at zero.
+        source("mail", "fn a() {}\n");
+        ratchet
+            .run(&repo, &baselines, &scoped("apps-mail", false))
+            .expect("lowering needs no permission");
+        assert!(!baselines.join("demo/apps-mail.txt").exists());
 
-    // Reaching zero deletes the shard, which then locks the unit at zero.
-    source("mail", "fn a() {}\n");
-    ratchet
-        .run(&repo, &baselines, &scoped("apps-mail", false))
-        .expect("lowering needs no permission");
-    assert!(!baselines.join("demo/apps-mail.txt").exists());
+        // An entry filed in the wrong shard is rejected.
+        shard("apps-mail", "apps/chat/src/lib.rs white 1\n");
+        let misfiled = check().expect_err("a misfiled entry is an error");
+        assert!(
+            misfiled.contains("belongs in the apps-chat shard"),
+            "{misfiled}"
+        );
+    }
 
-    // An entry filed in the wrong shard is rejected.
-    shard("apps-mail", "apps/chat/src/lib.rs white 1\n");
-    let misfiled = check().expect_err("a misfiled entry is an error");
-    assert!(
-        misfiled.contains("belongs in the apps-chat shard"),
-        "{misfiled}"
-    );
-}
-
-#[test]
-fn a_root_that_yields_no_file_fails_the_ratchet() {
-    let tree = tempfile::tempdir().expect("temporary tree");
-    let ratchet = Ratchet {
-        name: "demo",
-        roots: &["apps/*/src", "crates/sdk/ui-core/src"],
-        patterns: vec![Pattern::new("x", "x", "")],
-        exempt: no_exemptions,
-        advice: "",
-    };
-    let failure = ratchet
-        .run(tree.path(), &tree.path().join("b"), &Mode::default())
-        .expect_err("an empty scan is not a pass");
-    assert!(
-        failure.contains("did not reach apps/*/src, crates/sdk/ui-core/src"),
-        "{failure}"
-    );
+    phase a_root_that_yields_no_file_fails_the_ratchet;
+    {
+        let tree = tempfile::tempdir().expect("temporary tree");
+        let ratchet = Ratchet {
+            name: "demo",
+            roots: &["apps/*/src", "crates/sdk/ui-core/src"],
+            patterns: vec![Pattern::new("x", "x", "")],
+            exempt: no_exemptions,
+            advice: "",
+        };
+        let failure = ratchet
+            .run(tree.path(), &tree.path().join("b"), &Mode::default())
+            .expect_err("an empty scan is not a pass");
+        assert!(
+            failure.contains("did not reach apps/*/src, crates/sdk/ui-core/src"),
+            "{failure}"
+        );
+    }
 }

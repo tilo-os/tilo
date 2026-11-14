@@ -21,7 +21,12 @@ from comparison_range import comparison_range
 from check_commit_message import EXAMPLES, validate
 from check_public_references import internal_reference
 from check_source_content import content_issues
-from check_allowance_markers import declared_keys, diff_problems as marker_problems, in_scope as marker_scope
+from check_allowance_markers import (
+    declared_keys,
+    diff_problems as marker_problems,
+    in_scope as marker_scope,
+    read_families,
+)
 from check_wire_enums import allowed_breaks, diff_problems, in_scope, wire_enums
 from added_line_policy import GUIDANCE, added_line_issues, added_lines
 
@@ -133,8 +138,8 @@ def wire_failures(root, commit, touched, parents_changes, wire_now, read_blob):
     return problems
 
 
-def marker_failures(commit, touched, parents_changes, tree, declared, read_blob):
-    """What `commit`'s ratchet markers lose of every parent's version of the files it touches."""
+def marker_failures(commit, touched, parents_changes, tree, declared, families, read_blob):
+    """What `commit`'s allowance markers lose of every parent's version of the files it touches."""
     problems = []
     for path in sorted(touched):
         name = path.decode(errors="replace")
@@ -148,7 +153,7 @@ def marker_failures(commit, touched, parents_changes, tree, declared, read_blob)
                 continue
             before = read_blob(change[2]).decode(errors="replace")
             problems.extend(commit[:12] + ": " + problem
-                            for problem in marker_problems(name, before, after, declared))
+                            for problem in marker_problems(name, before, after, declared, families))
     return problems
 
 
@@ -167,8 +172,10 @@ def inspect(root, base, head="HEAD"):
     failures = []
     added_line_hit = False
     # Which patterns the audits declare now: a marker naming none is dead, and
-    # removing a dead marker takes no allowance away.
+    # removing a dead marker takes no allowance away. A marker family no scan of
+    # the tree reads any more is dead for the same reason.
     declared = declared_keys(root)
+    families = read_families(root)
     with blob_reader(root) as read_blob:
         for commit in commits:
             raw = git(root, "cat-file", "commit", commit)
@@ -198,7 +205,7 @@ def inspect(root, base, head="HEAD"):
                     if in_scope(name) and path in tree:
                         wire_now[name] = wire_enums(read_blob(tree[path]).decode(errors="replace"))
                 failures.extend(wire_failures(root, commit, touched, parents_changes, wire_now, read_blob))
-                failures.extend(marker_failures(commit, touched, parents_changes, tree, declared, read_blob))
+                failures.extend(marker_failures(commit, touched, parents_changes, tree, declared, families, read_blob))
             for path, change in changes.items():
                 mode, oid = change[1], change[3]
                 if mode == b"000000":

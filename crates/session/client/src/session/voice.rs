@@ -3,9 +3,14 @@
 //! tracks of the page's own plane ([`super::plane`]).
 
 use super::{Envelope, RelayClient, Task};
+use tilo_relay_protocol::WorkspaceId;
 
 impl Task {
-    pub(super) fn voice_calls(&self, workspace_id: u64, client: Option<&RelayClient>) -> bool {
+    pub(super) fn voice_calls(
+        &self,
+        workspace_id: WorkspaceId,
+        client: Option<&RelayClient>,
+    ) -> bool {
         if let Some(client) = client {
             client.send(Envelope::VoiceCalls { workspace_id }).is_ok()
         } else {
@@ -20,7 +25,7 @@ impl Task {
 
     pub(super) fn voice_call(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         request: [u8; 16],
         operation: tilo_relay_protocol::voice::CallOperation,
         client: Option<&RelayClient>,
@@ -47,7 +52,7 @@ impl Task {
     /// Offline, the next connection sends the join.
     pub(super) fn voice_join(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         call: [u8; 32],
         client: Option<&RelayClient>,
     ) -> bool {
@@ -61,7 +66,7 @@ impl Task {
     /// Offline, the next connection's heartbeat says it.
     pub(super) fn voice_show(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         showing: tilo_relay_protocol::voice::Showing,
         client: Option<&RelayClient>,
     ) -> bool {
@@ -71,7 +76,11 @@ impl Task {
         }
     }
 
-    pub(super) fn voice_leave(&mut self, workspace_id: u64, client: Option<&RelayClient>) -> bool {
+    pub(super) fn voice_leave(
+        &mut self,
+        workspace_id: WorkspaceId,
+        client: Option<&RelayClient>,
+    ) -> bool {
         let out = self.voice.leave(workspace_id);
         match (client, out) {
             (Some(client), Some(leave)) => client.send(leave).is_ok(),

@@ -39,8 +39,10 @@ pub fn guest_from_environ(environ: &[u8]) -> Option<GuestOs> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn legacy_windows_carry_their_guest_in_the_app_id() {
+    tilo_test_env::scenario! {
+        fn legacy_windows_carry_their_guest_in_the_app_id;
+
+        phase an_app_id_round_trips_through_the_host_name;
         // phase: an app id round-trips through the host name
         {
             let id = host_app_id(GuestOs::Linux, Some("org.gnome.Calculator"));
@@ -55,12 +57,16 @@ mod tests {
                 "legacy.linux.window"
             );
         }
+
+        phase native_ids_are_never_mistaken_for_legacy_ones;
         // phase: native ids are never mistaken for legacy ones
         {
             assert_eq!(split_host_app_id("org.gnome.Calculator"), None);
             assert_eq!(split_host_app_id("legacy.beos.app"), None);
             assert_eq!(split_host_app_id("legacy.linux."), None);
         }
+
+        phase the_forwarder_is_recognised_from_its_environment_block;
         // phase: the forwarder is recognised from its environment block
         {
             assert_eq!(

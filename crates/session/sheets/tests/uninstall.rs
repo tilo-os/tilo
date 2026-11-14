@@ -76,155 +76,175 @@ fn press(app: &mut HeadlessApp<UninstallApp>, id: &str) {
     app.settle();
 }
 
-#[test]
-fn uninstalling_lists_every_copy_that_goes_to_the_trash() {
-    let mut app = staged("copies");
-    for text in [
-        "Uninstall Tilo Imager?",
-        "All 2 copies go to the Trash, where you can restore them.",
-        "Applications",
-        "Downloads",
-        "Uninstall",
-        "Cancel",
-    ] {
-        assert!(says(&mut app, text), "{text:?} is shown");
+tilo_test_env::scenario! {
+    /// "Uninstall?": what the question says goes with the app, and each answer it gives the shell.
+    fn the_uninstall_question_says_what_goes_and_answers_the_shell;
+
+    phase uninstalling_lists_every_copy_that_goes_to_the_trash;
+    {
+        let mut app = staged("copies");
+        for text in [
+            "Uninstall Tilo Imager?",
+            "All 2 copies go to the Trash, where you can restore them.",
+            "Applications",
+            "Downloads",
+            "Uninstall",
+            "Cancel",
+        ] {
+            assert!(says(&mut app, text), "{text:?} is shown");
+        }
+        assert!(
+            !says(&mut app, "Its file goes to the Trash"),
+            "two copies are not one file"
+        );
+        let rows = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.contains("tilo-imager.AppImage"))
+            })
+            .count();
+        assert_eq!(rows, 2, "each copy is a row of its own");
     }
-    assert!(
-        !says(&mut app, "Its file goes to the Trash"),
-        "two copies are not one file"
-    );
-    let rows = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .filter(|(_, node)| {
-            node.label()
-                .is_some_and(|label| label.contains("tilo-imager.AppImage"))
-        })
-        .count();
-    assert_eq!(rows, 2, "each copy is a row of its own");
-}
 
-#[test]
-fn one_copy_reads_as_one_file_in_the_folder_it_is_in() {
-    let mut app = staged("one-copy");
-    assert!(says(
-        &mut app,
-        "Its file goes to the Trash, where you can restore it."
-    ));
-    assert!(!says(&mut app, "copies go to the Trash"));
-    assert!(says(&mut app, "tilo-imager-linux"));
-    assert!(says(&mut app, "Downloads"));
-}
-
-#[test]
-fn a_copy_in_the_home_folder_says_so() {
-    let (mut app, _seat) = seated(downloaded(&["/home/ute/tilo-imager.AppImage"]));
-    assert!(says(&mut app, "Home"), "the home folder is named as such");
-    assert!(!says(&mut app, "/home/ute"), "not by its path");
-}
-
-#[test]
-fn an_installed_app_asks_whether_its_data_goes_too() {
-    let (mut app, seat) = seated(installed(false));
-    for text in [
-        "Uninstall Transmission?",
-        "Remove its data",
-        "Your settings and saved files go to the Trash, where you can restore them.",
-        "Uninstall",
-        "Cancel",
-    ] {
-        assert!(says(&mut app, text), "{text:?} is shown");
+    phase one_copy_reads_as_one_file_in_the_folder_it_is_in;
+    {
+        let mut app = staged("one-copy");
+        assert!(says(
+            &mut app,
+            "Its file goes to the Trash, where you can restore it."
+        ));
+        assert!(!says(&mut app, "copies go to the Trash"));
+        assert!(says(&mut app, "tilo-imager-linux"));
+        assert!(says(&mut app, "Downloads"));
     }
-    assert!(
-        seat.offers_data_switch(),
-        "an installed app may have saved something"
-    );
-    press(&mut app, "uninstall.primary");
-    assert_eq!(
-        seat.take_asked(),
-        [UninstallEffect::Confirm {
-            remove_data: Some(true)
-        }],
-        "its data goes unless the person says otherwise"
-    );
-}
 
-#[test]
-fn keeping_the_data_is_the_persons_choice() {
-    let (mut app, seat) = seated(installed(false));
-    press(&mut app, REMOVE_DATA_SWITCH);
-    press(&mut app, "uninstall.primary");
-    assert_eq!(
-        seat.take_asked(),
-        [UninstallEffect::Confirm {
-            remove_data: Some(false)
-        }]
-    );
-}
+    phase a_copy_in_the_home_folder_says_so;
+    {
+        let (mut app, _seat) = seated(downloaded(&["/home/ute/tilo-imager.AppImage"]));
+        assert!(says(&mut app, "Home"), "the home folder is named as such");
+        assert!(!says(&mut app, "/home/ute"), "not by its path");
+    }
 
-#[test]
-fn an_app_installed_for_everyone_says_so() {
-    let mut app = staged("installed");
-    assert!(says(&mut app, "Remove its data"));
-    let (mut device_wide, _seat) = seated(installed(true));
-    assert!(
-        says(
-            &mut device_wide,
-            "It's removed for everyone on this computer."
-        ),
-        "the person is told the app is not only theirs"
-    );
-}
+    phase an_installed_app_asks_whether_its_data_goes_too;
+    {
+        let (mut app, seat) = seated(installed(false));
+        for text in [
+            "Uninstall Transmission?",
+            "Remove its data",
+            "Your settings and saved files go to the Trash, where you can restore them.",
+            "Uninstall",
+            "Cancel",
+        ] {
+            assert!(says(&mut app, text), "{text:?} is shown");
+        }
+        assert!(
+            seat.offers_data_switch(),
+            "an installed app may have saved something"
+        );
+        press(&mut app, "uninstall.primary");
+        assert_eq!(
+            seat.take_asked(),
+            [UninstallEffect::Confirm {
+                remove_data: Some(true)
+            }],
+            "its data goes unless the person says otherwise"
+        );
+    }
 
-#[test]
-fn a_part_of_the_system_only_leaves_the_persons_apps() {
-    let mut app = staged("from-apps");
-    for text in [
-        "Remove Transmission from apps?",
-        "It's part of the system, so it stays on this computer and no longer shows in your apps.",
-        "Remove from apps",
-        "Cancel",
-    ] {
-        assert!(says(&mut app, text), "{text:?} is shown");
+    phase keeping_the_data_is_the_persons_choice;
+    {
+        let (mut app, seat) = seated(installed(false));
+        press(&mut app, REMOVE_DATA_SWITCH);
+        press(&mut app, "uninstall.primary");
+        assert_eq!(
+            seat.take_asked(),
+            [UninstallEffect::Confirm {
+                remove_data: Some(false)
+            }]
+        );
+    }
+
+    phase an_app_installed_for_everyone_says_so;
+    {
+        let mut app = staged("installed");
+        assert!(says(&mut app, "Remove its data"));
+        let (mut device_wide, _seat) = seated(installed(true));
+        assert!(
+            says(
+                &mut device_wide,
+                "It's removed for everyone on this computer."
+            ),
+            "the person is told the app is not only theirs"
+        );
+    }
+
+    phase a_part_of_the_system_only_leaves_the_persons_apps;
+    {
+        let mut app = staged("from-apps");
+        for text in [
+            "Remove Transmission from apps?",
+            "It's part of the system, so it stays on this computer and no longer shows in your apps.",
+            "Remove from apps",
+            "Cancel",
+        ] {
+            assert!(says(&mut app, text), "{text:?} is shown");
+        }
+    }
+
+    phase cancel_closing_and_enter_leave_the_app_where_it_is;
+    // Each way out, on a question of its own: Cancel and closing leave the app
+    // where it is, and the keyboard starts on the safe answer of a deletion, so
+    // Enter does too.
+    {
+        let ways = [
+            WayOut::Press("uninstall.secondary"),
+            WayOut::Key("Escape"),
+            WayOut::Key("Enter"),
+            WayOut::PressBeside,
+        ];
+        for way in ways {
+            let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
+            match way {
+                WayOut::Key(key) => {
+                    app.harness().key(key);
+                    app.settle();
+                }
+                WayOut::Press(id) => press(&mut app, id),
+                WayOut::PressBeside => {
+                    app.harness().click_at(10.0, 10.0);
+                    app.settle();
+                }
+            }
+            assert_eq!(seat.take_asked(), [UninstallEffect::Cancel], "{way:?}");
+        }
+    }
+
+    phase a_part_of_the_system_is_removed_by_its_own_button;
+    {
+        let (mut app, seat) = seated(App {
+            removal: Removal::FromApps,
+            going: Going::Entry,
+            ..installed(false)
+        });
+        press(&mut app, "uninstall.primary");
+        assert_eq!(
+            seat.take_asked(),
+            [UninstallEffect::Confirm { remove_data: None }],
+            "taking it off the apps loses nothing on the computer, so nothing is asked about data"
+        );
     }
 }
 
-#[test]
-fn cancel_and_closing_leave_the_app_where_it_is() {
-    let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
-    press(&mut app, "uninstall.secondary");
-    assert_eq!(seat.take_asked(), [UninstallEffect::Cancel]);
-
-    let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
-    app.harness().key("Escape");
-    app.settle();
-    assert_eq!(seat.take_asked(), [UninstallEffect::Cancel]);
-}
-
-#[test]
-fn enter_keeps_an_uninstall() {
-    let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(
-        seat.take_asked(),
-        [UninstallEffect::Cancel],
-        "the keyboard starts on the safe answer of a deletion"
-    );
-}
-
-#[test]
-fn a_part_of_the_system_is_removed_by_its_own_button() {
-    let (mut app, seat) = seated(App {
-        removal: Removal::FromApps,
-        going: Going::Entry,
-        ..installed(false)
-    });
-    press(&mut app, "uninstall.primary");
-    assert_eq!(
-        seat.take_asked(),
-        [UninstallEffect::Confirm { remove_data: None }],
-        "taking it off the apps loses nothing on the computer, so nothing is asked about data"
-    );
+/// One way out of the question that is not its uninstall button.
+#[derive(Clone, Copy, Debug)]
+enum WayOut {
+    /// A key, pressed as the sheet comes up.
+    Key(&'static str),
+    /// A press on the button with this id.
+    Press(&'static str),
+    /// A press beside the dialog, on the dimmed desktop.
+    PressBeside,
 }

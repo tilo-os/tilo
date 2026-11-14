@@ -241,60 +241,66 @@ pub(crate) fn format_compact(value: f64) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn radial_labels_stay_off_their_ring() {
-        let center = Point::new(200.0, 200.0);
-        let radius = 100.0;
-        for step in 0..16 {
-            let angle = f64::from(step) * std::f64::consts::TAU / 16.0;
-            let rect = radial_label_rect(center, radius, angle, (60.0, 16.0));
-            let nearest = Point::new(
-                center.x.clamp(rect.x0, rect.x1),
-                center.y.clamp(rect.y0, rect.y1),
-            );
-            assert!(
-                nearest.distance(center) >= radius * 0.98,
-                "{angle}: {rect:?} reaches into the ring"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        /// Where a chart's labels are placed.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn chart_labels_keep_clear_of_marks_and_each_other;
 
-    #[test]
-    fn the_centre_copy_fits_its_hole_or_is_left_out() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let center = Point::new(0.0, 0.0);
-        for radius in [12.0, 24.0, 36.0, 60.0, 120.0] {
-            if let Some(((_, title), subtitle)) =
-                centre_label_layout(&mut tr, &theme, center, radius, "126", "projects")
-            {
-                for rect in std::iter::once(title).chain(subtitle) {
-                    for corner in [
-                        Point::new(rect.x0, rect.y0),
-                        Point::new(rect.x1, rect.y0),
-                        Point::new(rect.x0, rect.y1),
-                        Point::new(rect.x1, rect.y1),
-                    ] {
-                        assert!(
-                            corner.distance(center) <= radius + 0.5,
-                            "{radius}: {rect:?} spills out of the hole"
-                        );
-                    }
-                }
-            } else {
-                assert!(radius < 36.0, "{radius}: a roomy hole shows its copy");
+        phase radial_labels_stay_off_their_ring;
+        {
+            let center = Point::new(200.0, 200.0);
+            let radius = 100.0;
+            for step in 0..16 {
+                let angle = f64::from(step) * std::f64::consts::TAU / 16.0;
+                let rect = radial_label_rect(center, radius, angle, (60.0, 16.0));
+                let nearest = Point::new(
+                    center.x.clamp(rect.x0, rect.x1),
+                    center.y.clamp(rect.y0, rect.y1),
+                );
+                assert!(
+                    nearest.distance(center) >= radius * 0.98,
+                    "{angle}: {rect:?} reaches into the ring"
+                );
             }
         }
-    }
 
-    #[test]
-    fn placed_labels_never_overlap() {
-        let theme = Theme::dark();
-        let mut placer = LabelPlacer::new(Rect::new(0.0, 0.0, 100.0, 100.0), &theme);
-        assert!(placer.place(Rect::new(10.0, 10.0, 40.0, 20.0)));
-        assert!(!placer.place(Rect::new(30.0, 15.0, 60.0, 25.0)), "overlap");
-        assert!(!placer.place(Rect::new(90.0, 10.0, 120.0, 20.0)), "outside");
-        assert!(placer.place(Rect::new(10.0, 30.0, 40.0, 40.0)));
+        phase the_centre_copy_fits_its_hole_or_is_left_out;
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let center = Point::new(0.0, 0.0);
+            for radius in [12.0, 24.0, 36.0, 60.0, 120.0] {
+                if let Some(((_, title), subtitle)) =
+                    centre_label_layout(&mut tr, &theme, center, radius, "126", "projects")
+                {
+                    for rect in std::iter::once(title).chain(subtitle) {
+                        for corner in [
+                            Point::new(rect.x0, rect.y0),
+                            Point::new(rect.x1, rect.y0),
+                            Point::new(rect.x0, rect.y1),
+                            Point::new(rect.x1, rect.y1),
+                        ] {
+                            assert!(
+                                corner.distance(center) <= radius + 0.5,
+                                "{radius}: {rect:?} spills out of the hole"
+                            );
+                        }
+                    }
+                } else {
+                    assert!(radius < 36.0, "{radius}: a roomy hole shows its copy");
+                }
+            }
+        }
+
+        phase placed_labels_never_overlap;
+        {
+            let theme = Theme::dark();
+            let mut placer = LabelPlacer::new(Rect::new(0.0, 0.0, 100.0, 100.0), &theme);
+            assert!(placer.place(Rect::new(10.0, 10.0, 40.0, 20.0)));
+            assert!(!placer.place(Rect::new(30.0, 15.0, 60.0, 25.0)), "overlap");
+            assert!(!placer.place(Rect::new(90.0, 10.0, 120.0, 20.0)), "outside");
+            assert!(placer.place(Rect::new(10.0, 30.0, 40.0, 40.0)));
+        }
     }
 }
 

@@ -241,45 +241,49 @@ mod tests {
         ENABLED.with(|enabled| enabled.set(Some(true)));
     }
 
-    #[test]
-    fn nothing_is_recorded_with_no_key_waiting() {
-        on();
-        PENDING.with(|pending| *pending.borrow_mut() = None);
-        frame_started();
-        event_handled();
-        assert!(submitted(Repaint::Damage(&[])).is_none());
-    }
+    tilo_test_env::scenario! {
+        fn an_input_frame_is_recorded_only_from_a_key_to_its_first_frame;
 
-    #[test]
-    fn the_first_frame_after_a_key_ends_its_record_with_the_scopes_it_ran() {
-        on();
-        PENDING.with(|pending| {
-            *pending.borrow_mut() = Some(Pending {
-                dispatched: crate::time::now(),
-                handled: None,
-                keys: 1,
-                frame_started: None,
-                before_frame: Vec::new(),
+        phase nothing_is_recorded_with_no_key_waiting;
+        {
+            on();
+            PENDING.with(|pending| *pending.borrow_mut() = None);
+            frame_started();
+            event_handled();
+            assert!(submitted(Repaint::Damage(&[])).is_none());
+        }
+
+        phase the_first_frame_after_a_key_ends_its_record_with_the_scopes_it_ran;
+        {
+            on();
+            PENDING.with(|pending| {
+                *pending.borrow_mut() = Some(Pending {
+                    dispatched: crate::time::now(),
+                    handled: None,
+                    keys: 1,
+                    frame_started: None,
+                    before_frame: Vec::new(),
+                });
             });
-        });
-        tilo_resource::profiling::begin_live();
-        event_handled();
-        assert!(
-            submitted(Repaint::Damage(&[])).is_none(),
-            "no frame started yet"
-        );
-        frame_started();
-        drop(tilo_resource::profiling::Phase::start("ui.frame_sync"));
-        drop(tilo_resource::profiling::Phase::start("ui.frame_sync"));
-        let scopes = tilo_resource::profiling::take_live();
-        let line = PENDING.with(|pending| {
-            let pending = pending.borrow();
-            line_until_submit(pending.as_ref().unwrap(), crate::time::now(), &scopes)
-        });
-        assert!(line.starts_with("keys=1 handle_us="), "{line}");
-        assert!(line.contains(" ui.frame_sync="), "{line}");
-        assert!(line.ends_with("/2"), "{line}");
-        assert!(submitted(Repaint::Full(RepaintWhy::default())).is_some());
-        assert!(PENDING.with(|pending| pending.borrow().is_none()));
+            tilo_resource::profiling::begin_live();
+            event_handled();
+            assert!(
+                submitted(Repaint::Damage(&[])).is_none(),
+                "no frame started yet"
+            );
+            frame_started();
+            drop(tilo_resource::profiling::Phase::start("ui.frame_sync"));
+            drop(tilo_resource::profiling::Phase::start("ui.frame_sync"));
+            let scopes = tilo_resource::profiling::take_live();
+            let line = PENDING.with(|pending| {
+                let pending = pending.borrow();
+                line_until_submit(pending.as_ref().unwrap(), crate::time::now(), &scopes)
+            });
+            assert!(line.starts_with("keys=1 handle_us="), "{line}");
+            assert!(line.contains(" ui.frame_sync="), "{line}");
+            assert!(line.ends_with("/2"), "{line}");
+            assert!(submitted(Repaint::Full(RepaintWhy::default())).is_some());
+            assert!(PENDING.with(|pending| pending.borrow().is_none()));
+        }
     }
 }

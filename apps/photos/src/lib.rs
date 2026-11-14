@@ -83,9 +83,10 @@ mod camera_import_tests {
     use super::{camera_import_photo, pixels};
     use crate::model::PhotoLibrary;
 
-    #[test]
-    fn camera_import_verifies_real_content_before_naming_one_photograph() {
-        eprintln!("phase camera_import_verifies_bytes_and_imports_one_content_addressed_photo");
+    tilo_test_env::scenario! {
+        fn camera_import_verifies_real_content_before_naming_one_photograph;
+
+        phase camera_import_verifies_bytes_and_imports_one_content_addressed_photo;
         {
             let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
             let bytes = pixels::encode_png(&rgba).expect("fixture png");
@@ -109,7 +110,7 @@ mod camera_import_tests {
             assert_eq!(library.all_photos().next().unwrap().image.hash(), hash);
         }
 
-        eprintln!("phase camera_import_refuses_missing_or_invalid_portable_bytes");
+        phase camera_import_refuses_missing_or_invalid_portable_bytes;
         {
             let store = ContentStore::memory();
             assert!(camera_import_photo("media:blake3:not-a-hash", "x.png", &store).is_err());

@@ -135,62 +135,66 @@ pub fn export_project_request(suggested_name: &str) -> PickRequest {
 mod tests {
     use super::*;
 
-    #[test]
-    fn project_file_dialogs_offer_the_project_format() {
-        let open = open_project_request();
-        assert_eq!(open.title(), "Open project file");
-        assert!(!open.is_multiple(), "one project is opened at a time");
-        assert_eq!(open.suggested_name(), None);
-        assert_eq!(open.filter_names(), vec!["Video project", "All files"]);
+    tilo_test_env::scenario! {
+        fn the_file_dialogs_offer_their_formats;
 
-        let export = export_project_request("Coastline_Doc_v3.qvp");
-        assert_eq!(export.suggested_name(), Some("Coastline_Doc_v3.qvp"));
-        assert_eq!(export.filter_names(), vec!["Video project"]);
-    }
+        phase project_file_dialogs_offer_the_project_format;
+        {
+            let open = open_project_request();
+            assert_eq!(open.title(), "Open project file");
+            assert!(!open.is_multiple(), "one project is opened at a time");
+            assert_eq!(open.suggested_name(), None);
+            assert_eq!(open.filter_names(), vec!["Video project", "All files"]);
 
-    #[test]
-    fn export_and_import_dialogs_offer_formats_and_drain_cancellation() {
-        {
-            let r = PickRequest::save("Export video", "Export", "Coastline_Doc_v3.mp4")
-                .filter(container_filter("mp4"))
-                .all_files();
-            assert_eq!(r.title(), "Export video");
-            assert!(!r.is_multiple(), "an export writes exactly one file");
-            assert_eq!(
-                r.suggested_name(),
-                Some("Coastline_Doc_v3.mp4"),
-                "the filename field is seeded so the user is not made to invent a name",
-            );
-            assert_eq!(r.filter_names(), vec!["MP4 video", "All files"]);
+            let export = export_project_request("Coastline_Doc_v3.qvp");
+            assert_eq!(export.suggested_name(), Some("Coastline_Doc_v3.qvp"));
+            assert_eq!(export.filter_names(), vec!["Video project"]);
         }
+
+        phase export_and_import_dialogs_offer_formats_and_drain_cancellation;
         {
-            // The filter follows the container the encode chain will mux.
-            assert_eq!(container_filter("mp4").name(), "MP4 video");
-            assert_eq!(container_filter("mov").name(), "QuickTime video");
-            assert_eq!(container_filter("webm").name(), "WebM video");
-        }
-        {
-            let (services, recorder) = ui::host::HostServices::recording();
-            let rx = ui::host::scoped(&services, || {
-                request_export_destination("Coastline_Doc_v3.mp4", "mp4")
-            });
-            assert_eq!(rx.try_recv(), Ok(ExportDestOutcome::Cancelled));
-            assert_eq!(recorder.pick_requests()[0].title(), "Export video");
-        }
-        {
-            let r = PickRequest::open_multiple("Import media", "Import")
-                .filter(media_filter())
-                .all_files();
-            assert_eq!(r.title(), "Import media");
-            assert!(r.is_multiple(), "a user may import many clips at once");
-            assert_eq!(r.filter_names(), vec!["Media", "All files"]);
-        }
-        {
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick_multiple(ImportOutcome::Cancelled);
-            let rx = ui::host::scoped(&services, request_import);
-            assert_eq!(rx.try_recv(), Ok(ImportOutcome::Cancelled));
-            assert!(recorder.pick_requests()[0].is_multiple());
+            {
+                let r = PickRequest::save("Export video", "Export", "Coastline_Doc_v3.mp4")
+                    .filter(container_filter("mp4"))
+                    .all_files();
+                assert_eq!(r.title(), "Export video");
+                assert!(!r.is_multiple(), "an export writes exactly one file");
+                assert_eq!(
+                    r.suggested_name(),
+                    Some("Coastline_Doc_v3.mp4"),
+                    "the filename field is seeded so the user is not made to invent a name",
+                );
+                assert_eq!(r.filter_names(), vec!["MP4 video", "All files"]);
+            }
+            {
+                // The filter follows the container the encode chain will mux.
+                assert_eq!(container_filter("mp4").name(), "MP4 video");
+                assert_eq!(container_filter("mov").name(), "QuickTime video");
+                assert_eq!(container_filter("webm").name(), "WebM video");
+            }
+            {
+                let (services, recorder) = ui::host::HostServices::recording();
+                let rx = ui::host::scoped(&services, || {
+                    request_export_destination("Coastline_Doc_v3.mp4", "mp4")
+                });
+                assert_eq!(rx.try_recv(), Ok(ExportDestOutcome::Cancelled));
+                assert_eq!(recorder.pick_requests()[0].title(), "Export video");
+            }
+            {
+                let r = PickRequest::open_multiple("Import media", "Import")
+                    .filter(media_filter())
+                    .all_files();
+                assert_eq!(r.title(), "Import media");
+                assert!(r.is_multiple(), "a user may import many clips at once");
+                assert_eq!(r.filter_names(), vec!["Media", "All files"]);
+            }
+            {
+                let (services, recorder) = ui::host::HostServices::recording();
+                recorder.respond_to_pick_multiple(ImportOutcome::Cancelled);
+                let rx = ui::host::scoped(&services, request_import);
+                assert_eq!(rx.try_recv(), Ok(ImportOutcome::Cancelled));
+                assert!(recorder.pick_requests()[0].is_multiple());
+            }
         }
     }
 }

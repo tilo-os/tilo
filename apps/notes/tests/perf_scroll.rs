@@ -233,11 +233,22 @@ fn long_text_body(sections: usize) -> String {
     body
 }
 
+/// One note of pictures, scrolled twice. The first pass down it and back, as
+/// pictures come into view for the first time, and the frames while they
+/// decode: neither may stall. That pass drew every picture, so the second
+/// measures the scroll frame of a note whose pictures are all drawn.
 #[test]
 fn scroll_frame_with_large_pictures() {
     let (mut app, _) = picture_note(PICTURES_TO_SCROLL);
-    // Once down and back, so every picture has been drawn before measuring.
-    scroll_through(&mut app, 40);
+    app.harness().begin_profiling();
+    let wall = scroll_through(&mut app, 40);
+    print_passes(
+        "notes first scroll (picture note)",
+        &app.harness().take_profile_samples(),
+    );
+    let first = spread("notes first scroll step (picture note)", &wall);
+    // That pass went down and back, so every picture has been drawn before
+    // the pass measured next.
     let view_only = wheel_keeps_projections(&mut app, "picture note");
     app.harness().begin_profiling();
     let wall = scroll_through(&mut app, 40);
@@ -252,6 +263,11 @@ fn scroll_frame_with_large_pictures() {
         view_only,
         "a wheel over a note of pictures only moves the view"
     );
+    // The first pass is judged last, so a slow first pass hides neither the
+    // later pass's budgets nor whether a wheel only moves the view; its
+    // numbers are printed above either way.
+    budget("first picture scroll step p50", first.p50, 4_000);
+    budget("first picture scroll step p99", first.p99, 8_000);
 }
 
 #[test]
@@ -308,20 +324,4 @@ fn scroll_frame_on_a_long_text_note() {
         view_only,
         "a wheel over a note of lists, checklists and code only moves the view"
     );
-}
-
-/// The first pass down a picture note, as pictures come into view for the
-/// first time, and the frames while they decode: neither may stall.
-#[test]
-fn first_scroll_through_pictures() {
-    let (mut app, _) = picture_note(PICTURES_TO_SCROLL);
-    app.harness().begin_profiling();
-    let wall = scroll_through(&mut app, 40);
-    print_passes(
-        "notes first scroll (picture note)",
-        &app.harness().take_profile_samples(),
-    );
-    let spread = spread("notes first scroll step (picture note)", &wall);
-    budget("first picture scroll step p50", spread.p50, 4_000);
-    budget("first picture scroll step p99", spread.p99, 8_000);
 }

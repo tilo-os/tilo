@@ -69,220 +69,236 @@ fn names(reactor: &Reactor) -> String {
     }
 }
 
-#[test]
-fn pills_wrap_within_the_width_and_the_add_button_follows_them() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let metrics = StripMetrics::of(&theme);
-    let groups: Vec<ReactionGroup> = ["👍", "🎉", "❤️", "😂", "🔥", "👀"]
-        .iter()
-        .map(|emoji| group(emoji, &["ada"]))
-        .collect();
-    let wide = layout(
-        &groups,
-        "me",
-        true,
-        (Point::new(10.0, 20.0), 2000.0),
-        &mut text,
-        &metrics,
-    );
-    assert_eq!(wide.pills().len(), 6);
-    assert!(
-        wide.pills().iter().all(|pill| pill.rect.y0 == 20.0),
-        "a wide strip is one row"
-    );
-    assert_eq!(wide.height(), metrics.height());
-    let add = wide.add_rect().expect("the person may react");
-    assert!(add.x0 > wide.pills()[5].rect.x1, "add comes last");
+tilo_test_env::scenario! {
+    fn a_reaction_strip_wraps_toggles_and_names_its_pills;
 
-    let narrow_width = wide.pills()[2].rect.x1 - 10.0;
-    let narrow = layout(
-        &groups,
-        "me",
-        true,
-        (Point::new(10.0, 20.0), narrow_width),
-        &mut text,
-        &metrics,
-    );
-    assert!(narrow.height() > metrics.height() * 2.0, "it wrapped");
-    for pill in narrow.pills() {
-        assert!(pill.rect.x1 <= 10.0 + narrow_width + 0.01, "{pill:?} fits");
-        assert!(pill.rect.x0 >= 10.0);
+    phase pills_wrap_within_the_width_and_the_add_button_follows_them;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let metrics = StripMetrics::of(&theme);
+        let groups: Vec<ReactionGroup> = ["👍", "🎉", "❤️", "😂", "🔥", "👀"]
+            .iter()
+            .map(|emoji| group(emoji, &["ada"]))
+            .collect();
+        let wide = layout(
+            &groups,
+            "me",
+            true,
+            (Point::new(10.0, 20.0), 2000.0),
+            &mut text,
+            &metrics,
+        );
+        assert_eq!(wide.pills().len(), 6);
+        assert!(
+            wide.pills().iter().all(|pill| pill.rect.y0 == 20.0),
+            "a wide strip is one row"
+        );
+        assert_eq!(wide.height(), metrics.height());
+        let add = wide.add_rect().expect("the person may react");
+        assert!(add.x0 > wide.pills()[5].rect.x1, "add comes last");
+
+        let narrow_width = wide.pills()[2].rect.x1 - 10.0;
+        let narrow = layout(
+            &groups,
+            "me",
+            true,
+            (Point::new(10.0, 20.0), narrow_width),
+            &mut text,
+            &metrics,
+        );
+        assert!(narrow.height() > metrics.height() * 2.0, "it wrapped");
+        for pill in narrow.pills() {
+            assert!(pill.rect.x1 <= 10.0 + narrow_width + 0.01, "{pill:?} fits");
+            assert!(pill.rect.x0 >= 10.0);
+        }
+        assert_eq!(
+            narrow.pills()[3].rect.x0,
+            10.0,
+            "a new row starts at the edge"
+        );
+        assert_eq!(
+            measure_height(&groups, true, narrow_width, &mut text, &theme),
+            narrow.height()
+        );
+        assert_eq!(measure_height(&[], false, 300.0, &mut text, &theme), 0.0);
     }
-    assert_eq!(
-        narrow.pills()[3].rect.x0,
-        10.0,
-        "a new row starts at the edge"
-    );
-    assert_eq!(
-        measure_height(&groups, true, narrow_width, &mut text, &theme),
-        narrow.height()
-    );
-    assert_eq!(measure_height(&[], false, 300.0, &mut text, &theme), 0.0);
-}
 
-#[test]
-fn a_pill_toggles_its_emoji_and_the_add_button_anchors_the_picker() {
-    let theme = Theme::light();
-    let mut text = TextRenderer::new();
-    let groups = vec![group("👍", &["ada", "me"]), group(":tilo:", &["bo"])];
-    let laid = layout(
-        &groups,
-        "me",
-        true,
-        (Point::ZERO, 400.0),
-        &mut text,
-        &StripMetrics::of(&theme),
-    );
-    let [thumbs, tilo] = laid.pills() else {
-        panic!("two pills");
-    };
-    assert!(thumbs.mine && !tilo.mine, "your own reaction is yours");
-    assert_eq!(thumbs.count, 2);
-    assert_eq!(
-        laid.hit(thumbs.rect.center()),
-        Some(StripHit::Toggle("👍".into()))
-    );
-    assert_eq!(
-        laid.hit(tilo.rect.center()),
-        Some(StripHit::Toggle(":tilo:".into()))
-    );
-    let add = laid.add_rect().expect("add");
-    assert_eq!(laid.hit(add.center()), Some(StripHit::Add { anchor: add }));
-    assert_eq!(laid.targets().len(), 3);
-    assert!(
-        tilo.rect.width() > thumbs.rect.width(),
-        "a workspace emoji without a picture shows its :name:"
-    );
+    phase a_pill_toggles_its_emoji_and_the_add_button_anchors_the_picker;
+    {
+        let theme = Theme::light();
+        let mut text = TextRenderer::new();
+        let groups = vec![group("👍", &["ada", "me"]), group(":tilo:", &["bo"])];
+        let laid = layout(
+            &groups,
+            "me",
+            true,
+            (Point::ZERO, 400.0),
+            &mut text,
+            &StripMetrics::of(&theme),
+        );
+        let [thumbs, tilo] = laid.pills() else {
+            panic!("two pills");
+        };
+        assert!(thumbs.mine && !tilo.mine, "your own reaction is yours");
+        assert_eq!(thumbs.count, 2);
+        assert_eq!(
+            laid.hit(thumbs.rect.center()),
+            Some(StripHit::Toggle("👍".into()))
+        );
+        assert_eq!(
+            laid.hit(tilo.rect.center()),
+            Some(StripHit::Toggle(":tilo:".into()))
+        );
+        let add = laid.add_rect().expect("add");
+        assert_eq!(laid.hit(add.center()), Some(StripHit::Add { anchor: add }));
+        assert_eq!(laid.targets().len(), 3);
+        assert!(
+            tilo.rect.width() > thumbs.rect.width(),
+            "a workspace emoji without a picture shows its :name:"
+        );
 
-    let read_only = layout(
-        &groups,
-        "me",
-        false,
-        (Point::ZERO, 400.0),
-        &mut text,
-        &StripMetrics::of(&theme),
-    );
-    assert!(read_only.add_rect().is_none());
-    assert!(read_only.hit(read_only.pills()[0].rect.center()).is_none());
-    assert!(read_only.targets().is_empty());
-}
+        let read_only = layout(
+            &groups,
+            "me",
+            false,
+            (Point::ZERO, 400.0),
+            &mut text,
+            &StripMetrics::of(&theme),
+        );
+        assert!(read_only.add_rect().is_none());
+        assert!(read_only.hit(read_only.pills()[0].rect.center()).is_none());
+        assert!(read_only.targets().is_empty());
+    }
 
-#[test]
-fn the_tooltip_names_who_reacted_you_first() {
-    let mut text = TextRenderer::new();
-    let mut bridged = group("🙌", &["ada", "bo", "cy", "me", "dee"]);
-    bridged.reactors.push(Reactor {
-        by: "bridge".into(),
-        persona: Some("discord/1".into()),
-        name: Some("Eve".into()),
-    });
-    let groups = vec![group("🎉", &["ada", "bo"]), bridged, group("🔥", &["me"])];
-    let laid = layout(
-        &groups,
-        "me",
-        true,
-        (Point::ZERO, 600.0),
-        &mut text,
-        &StripMetrics::of(&Theme::dark()),
-    );
-    let tip = |index: usize| {
-        laid.tooltip_at(laid.pills()[index].rect.center(), &names)
-            .expect("a pill names who reacted")
-            .1
-    };
-    assert_eq!(tip(0), "Ada and Bo reacted with party popper");
-    assert_eq!(tip(1), "You, Ada and 4 others reacted with raising hands");
-    assert_eq!(tip(2), "You reacted with fire");
-    let add = laid.add_rect().expect("add");
-    assert_eq!(
-        laid.tooltip_at(add.center(), &names).map(|(_, tip)| tip),
-        Some("Add reaction".into())
-    );
-}
+    phase the_tooltip_names_who_reacted_you_first;
+    {
+        let mut text = TextRenderer::new();
+        let mut bridged = group("🙌", &["ada", "bo", "cy", "me", "dee"]);
+        bridged.reactors.push(Reactor {
+            by: "bridge".into(),
+            persona: Some("discord/1".into()),
+            name: Some("Eve".into()),
+        });
+        let groups = vec![group("🎉", &["ada", "bo"]), bridged, group("🔥", &["me"])];
+        let laid = layout(
+            &groups,
+            "me",
+            true,
+            (Point::ZERO, 600.0),
+            &mut text,
+            &StripMetrics::of(&Theme::dark()),
+        );
+        let tip = |index: usize| {
+            laid.tooltip_at(laid.pills()[index].rect.center(), &names)
+                .expect("a pill names who reacted")
+                .1
+        };
+        assert_eq!(tip(0), "Ada and Bo reacted with party popper");
+        assert_eq!(tip(1), "You, Ada and 4 others reacted with raising hands");
+        assert_eq!(tip(2), "You reacted with fire");
+        let add = laid.add_rect().expect("add");
+        assert_eq!(
+            laid.tooltip_at(add.center(), &names).map(|(_, tip)| tip),
+            Some("Add reaction".into())
+        );
+    }
 
-#[test]
-fn every_pill_is_a_toggle_named_by_what_it_does() {
-    let mut text = TextRenderer::new();
-    let groups = vec![group("👍", &["ada", "me"]), group("🎉", &["bo"])];
-    let laid = layout(
-        &groups,
-        "me",
-        true,
-        (Point::ZERO, 600.0),
-        &mut text,
-        &StripMetrics::of(&Theme::dark()),
-    );
-    let nodes = laid.accessibility();
-    assert_eq!(nodes.len(), 3);
-    assert_eq!(nodes[0].role, Role::ToggleButton);
-    assert_eq!(nodes[0].name.as_deref(), Some("Remove 👍 reaction"));
-    assert_eq!(nodes[0].value.as_deref(), Some("2 reactions"));
-    assert_eq!(nodes[0].state.checked, Some(true));
-    assert_eq!(nodes[1].name.as_deref(), Some("Add 🎉 reaction"));
-    assert_eq!(nodes[1].value.as_deref(), Some("One reaction"));
-    assert_eq!(nodes[1].state.checked, Some(false));
-    assert_eq!(nodes[2].role, Role::Button);
-    assert_eq!(nodes[2].name.as_deref(), Some("Add reaction"));
-}
+    phase every_pill_is_a_toggle_named_by_what_it_does;
+    {
+        let mut text = TextRenderer::new();
+        let groups = vec![group("👍", &["ada", "me"]), group("🎉", &["bo"])];
+        let laid = layout(
+            &groups,
+            "me",
+            true,
+            (Point::ZERO, 600.0),
+            &mut text,
+            &StripMetrics::of(&Theme::dark()),
+        );
+        let nodes = laid.accessibility();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].role, Role::ToggleButton);
+        assert_eq!(nodes[0].name.as_deref(), Some("Remove 👍 reaction"));
+        assert_eq!(nodes[0].value.as_deref(), Some("2 reactions"));
+        assert_eq!(nodes[0].state.checked, Some(true));
+        assert_eq!(nodes[1].name.as_deref(), Some("Add 🎉 reaction"));
+        assert_eq!(nodes[1].value.as_deref(), Some("One reaction"));
+        assert_eq!(nodes[1].state.checked, Some(false));
+        assert_eq!(nodes[2].role, Role::Button);
+        assert_eq!(nodes[2].name.as_deref(), Some("Add reaction"));
+    }
 
-#[test]
-fn a_pill_arriving_after_the_first_layout_appears_and_a_count_cross_fades() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let mut strip = ReactionStrip::new();
-    strip.layout(
-        &[group("👍", &["ada"])],
-        "me",
-        true,
-        (Point::ZERO, 400.0),
-        &mut text,
-        &theme,
-    );
-    assert!(!strip.is_moving(), "what is there at first rests");
-    strip.layout(
-        &[group("👍", &["ada", "bo"]), group("🎉", &["bo"])],
-        "me",
-        true,
-        (Point::ZERO, 400.0),
-        &mut text,
-        &theme,
-    );
-    let now = crate::motion::frame_now();
-    let arriving = strip.motion.get("🎉").expect("the new pill moves");
-    assert!(arriving.presence.is_moving(now), "the new pill appears");
-    assert!(
-        strip
-            .motion
-            .get("👍")
-            .is_some_and(|pill| pill.count.is_moving(now)),
-        "the changed count cross-fades"
-    );
-    let reduced = theme.clone().with_reduce_motion(true);
-    let mut calm = ReactionStrip::new();
-    calm.layout(&[], "me", true, (Point::ZERO, 400.0), &mut text, &reduced);
-    calm.layout(
-        &[group("🎉", &["bo"])],
-        "me",
-        true,
-        (Point::ZERO, 400.0),
-        &mut text,
-        &reduced,
-    );
-    let pose = crate::motion::Appear::pose(
-        0.5,
-        crate::motion::Direction::Enter,
-        Rect::new(0.0, 0.0, 40.0, 20.0),
-        Point::ZERO,
-        reduced.motion(),
-    );
-    assert_eq!(
-        pose.transform,
-        Affine::IDENTITY,
-        "reduced motion fades a pill in without scaling it"
-    );
-    let _settled = crate::motion::testing::settled();
-    assert!(!strip.is_moving(), "and it all comes to rest");
+    phase a_read_only_strip_shows_the_pills_and_takes_no_reaction;
+    {
+        let theme = Theme::dark();
+        let mut widget = ReactionStripWidget::new(vec![group("👍", &["ada"])], "me").can_react(false);
+        lay_out_and_draw(&mut widget, 600.0, &theme);
+        let laid = widget.strip().laid_out().clone();
+        assert!(laid.add_rect().is_none());
+        click(&mut widget, laid.pills()[0].rect.center());
+        assert!(widget.take_toggles().is_empty());
+        assert!(!widget.is_focusable());
+    }
+
+    phase a_pill_arriving_after_the_first_layout_appears_and_a_count_cross_fades;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut strip = ReactionStrip::new();
+        strip.layout(
+            &[group("👍", &["ada"])],
+            "me",
+            true,
+            (Point::ZERO, 400.0),
+            &mut text,
+            &theme,
+        );
+        assert!(!strip.is_moving(), "what is there at first rests");
+        strip.layout(
+            &[group("👍", &["ada", "bo"]), group("🎉", &["bo"])],
+            "me",
+            true,
+            (Point::ZERO, 400.0),
+            &mut text,
+            &theme,
+        );
+        let now = crate::motion::frame_now();
+        let arriving = strip.motion.get("🎉").expect("the new pill moves");
+        assert!(arriving.presence.is_moving(now), "the new pill appears");
+        assert!(
+            strip
+                .motion
+                .get("👍")
+                .is_some_and(|pill| pill.count.is_moving(now)),
+            "the changed count cross-fades"
+        );
+        let reduced = theme.clone().with_reduce_motion(true);
+        let mut calm = ReactionStrip::new();
+        calm.layout(&[], "me", true, (Point::ZERO, 400.0), &mut text, &reduced);
+        calm.layout(
+            &[group("🎉", &["bo"])],
+            "me",
+            true,
+            (Point::ZERO, 400.0),
+            &mut text,
+            &reduced,
+        );
+        let pose = crate::motion::Appear::pose(
+            0.5,
+            crate::motion::Direction::Enter,
+            Rect::new(0.0, 0.0, 40.0, 20.0),
+            Point::ZERO,
+            reduced.motion(),
+        );
+        assert_eq!(
+            pose.transform,
+            Affine::IDENTITY,
+            "reduced motion fades a pill in without scaling it"
+        );
+        let _settled = crate::motion::testing::settled();
+        assert!(!strip.is_moving(), "and it all comes to rest");
+    }
 }
 
 #[test]
@@ -352,18 +368,6 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     );
     let tip = widget.tooltip_target_at(second).map(|(_, tip)| tip);
     assert_eq!(tip.as_deref(), Some("Bo reacted with party popper"));
-}
-
-#[test]
-fn a_read_only_strip_shows_the_pills_and_takes_no_reaction() {
-    let theme = Theme::dark();
-    let mut widget = ReactionStripWidget::new(vec![group("👍", &["ada"])], "me").can_react(false);
-    lay_out_and_draw(&mut widget, 600.0, &theme);
-    let laid = widget.strip().laid_out().clone();
-    assert!(laid.add_rect().is_none());
-    click(&mut widget, laid.pills()[0].rect.center());
-    assert!(widget.take_toggles().is_empty());
-    assert!(!widget.is_focusable());
 }
 
 #[test]

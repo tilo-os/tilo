@@ -706,8 +706,12 @@ fn row_once_loaded(
 /// A chat window with no tasks window open waits for the tasks package its message's row needs:
 /// a view that reads a resource of a type no loaded package declares asks for that app's package,
 /// and the place shows its waiting state rather than nothing until it comes.
+///
+/// The row it then draws for the task made from its message ticks to done when the task is
+/// finished in Tasks, with no Tasks window open: it is the task's own row view, drawn over the
+/// reading the session publishes.
 #[test]
-fn a_chat_place_waits_for_the_tasks_package_the_row_it_draws_reads() {
+fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_message_done() {
     let _settled = ui::motion::testing::settled();
     let room = room();
     // What the message's reading says was made from it: the task, as its own app keeps it.
@@ -751,17 +755,10 @@ fn a_chat_place_waits_for_the_tasks_package_the_row_it_draws_reads() {
         Some(&Value::text(SAID)),
         "the row draws the task through its row view: {row:#?}"
     );
-}
+    // The canvas read while the place waited is put away: from here the place is read as a
+    // canvas opened once the row was drawn.
+    drop(view);
 
-/// The row a chat place draws for a task made from its message ticks to done when the task is
-/// finished in Tasks, with no Tasks window open: it is the task's own row view, drawn over the
-/// reading the session publishes.
-#[test]
-fn a_chat_place_ticks_the_task_made_from_its_message_done() {
-    let _settled = ui::motion::testing::settled();
-    let room = room();
-    let (mut part, link, mut room, arrangement) = chat_place(room);
-    row_once_loaded(&mut part, &link, &arrangement, &mut room);
     let mut view = canvas(&part);
     let row = task_rows(&mut view, &room.task)
         .pop()

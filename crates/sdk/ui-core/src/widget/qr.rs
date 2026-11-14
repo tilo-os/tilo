@@ -153,6 +153,15 @@ impl QrWidget {
         self
     }
 
+    /// Draw the code, quiet zone and all, about `px` pixels across at most: each module as wide as
+    /// that allows, but no narrower than 2 pixels, where squares turn to speckle, and no wider than
+    /// 5, where a link of a few dozen modules turns conspicuous rather than a stamp.
+    #[must_use]
+    pub fn with_width_at_most(self, px: usize) -> Self {
+        let module = px.checked_div(self.total_modules()).unwrap_or(px);
+        self.with_module_px(u32::try_from(module).unwrap_or(5).clamp(2, 5))
+    }
+
     /// The width each module is drawn at, when the caller asked for one.
     #[must_use]
     pub fn module_px(&self) -> Option<u32> {
@@ -220,6 +229,14 @@ impl QrWidget {
 
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// Whether the code carries exactly `payload`: how a test proves a sheet
+    /// draws the link it was handed, without taking the secret out of the
+    /// widget.
+    #[must_use]
+    pub fn carries(&self, payload: &[u8]) -> bool {
+        self.payload.as_slice() == payload
     }
 
     /// `(x, y)` within the matrix, no quiet-zone offset. Used by tests to
@@ -384,198 +401,202 @@ impl Widget for QrWidget {
 mod tests {
     use super::*;
 
-    /// A page shows a pairing link as this markup: the code's own modules
-    /// with the quiet zone around them, and nothing else to draw.
-    #[test]
-    fn a_page_shows_a_link_as_one_svg_path() {
-        let markup = svg("HELLO").unwrap();
-        assert!(
-            markup.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 29 29\""),
-            "{markup}"
-        );
-        assert_eq!(markup.matches("<path ").count(), 1);
-        assert_eq!(markup.matches("<rect ").count(), 1);
+    tilo_test_env::scenario! {
+        fn a_qr_code_encodes_paints_and_describes_itself;
 
-        // 159 bytes is version 9 at level M (version 8 holds 150): 53 modules
-        // a side, and the quiet zone around them.
-        let link = format!(
-            "https://tilo.sh/#/@eu1.tilo.sh/w/0123456789abcdef?pair={}",
-            "ab".repeat(52)
-        );
-        let code = QrWidget::new(link.as_bytes().to_vec());
-        assert!(code.error().is_none(), "{:?}", code.error());
-        assert_eq!(code.matrix_size, 53);
-        assert!(svg(&link).unwrap().contains("viewBox=\"0 0 61 61\""));
-        let finder = [
-            "1111111", "1000001", "1011101", "1011101", "1011101", "1000001", "1111111",
-        ];
-        for (left, top) in [(0, 0), (46, 0), (0, 46)] {
-            for (row, expected) in finder.iter().enumerate() {
-                let drawn: String = (0..7)
-                    .map(|x| {
-                        if code.module(left + x, top + row) {
-                            '1'
-                        } else {
-                            '0'
-                        }
-                    })
-                    .collect();
-                assert_eq!(drawn, *expected, "finder at {left},{top}");
+        // A page shows a pairing link as this markup: the code's own modules
+        // with the quiet zone around them, and nothing else to draw.
+        phase a_page_shows_a_link_as_one_svg_path;
+        {
+            let markup = svg("HELLO").unwrap();
+            assert!(
+                markup.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 29 29\""),
+                "{markup}"
+            );
+            assert_eq!(markup.matches("<path ").count(), 1);
+            assert_eq!(markup.matches("<rect ").count(), 1);
+
+            // 159 bytes is version 9 at level M (version 8 holds 150): 53 modules
+            // a side, and the quiet zone around them.
+            let link = format!(
+                "https://tilo.sh/#/@eu1.tilo.sh/w/0123456789abcdef?pair={}",
+                "ab".repeat(52)
+            );
+            let code = QrWidget::new(link.as_bytes().to_vec());
+            assert!(code.error().is_none(), "{:?}", code.error());
+            assert_eq!(code.matrix_size, 53);
+            assert!(svg(&link).unwrap().contains("viewBox=\"0 0 61 61\""));
+            let finder = [
+                "1111111", "1000001", "1011101", "1011101", "1011101", "1000001", "1111111",
+            ];
+            for (left, top) in [(0, 0), (46, 0), (0, 46)] {
+                for (row, expected) in finder.iter().enumerate() {
+                    let drawn: String = (0..7)
+                        .map(|x| {
+                            if code.module(left + x, top + row) {
+                                '1'
+                            } else {
+                                '0'
+                            }
+                        })
+                        .collect();
+                    assert_eq!(drawn, *expected, "finder at {left},{top}");
+                }
+            }
+            assert!(svg("x".repeat(3000).as_str()).is_err());
+        }
+
+        phase private_pairing_qr_marks_real_paint_and_clears_when_cancelled;
+        {
+            use crate::secret_paint::SecretPaint;
+            let mut code =
+                QrWidget::new(b"sgnl://linkdevice?uuid=synthetic&pub_key=synthetic".to_vec())
+                    .with_secret()
+                    .with_alt("Link this device to Signal");
+            let presence = PresenceCtx::empty();
+            let mut renderer = TextRenderer::new();
+            let painted = SecretPaint::begin();
+            code.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut renderer,
+                &Theme::dark(),
+                &presence,
+            );
+            assert!(painted.finish());
+            let semantics = code.accessibility().unwrap();
+            assert_eq!(
+                semantics.name.as_deref(),
+                Some("Link this device to Signal")
+            );
+            assert!(semantics.description.is_none());
+            assert!(semantics.value.is_none());
+            assert!(semantics.state.protected);
+            code.set_payload(Vec::new());
+            assert_eq!(code.matrix_size, 0);
+            assert!(code.matrix.is_empty());
+            let painted = SecretPaint::begin();
+            code.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut renderer,
+                &Theme::light(),
+                &presence,
+            );
+            assert!(!painted.finish());
+        }
+
+        phase public_qr_paint_keeps_capture_available;
+        {
+            use crate::secret_paint::SecretPaint;
+            let mut code = QrWidget::new(b"https://example.test/public".to_vec());
+            let painted = SecretPaint::begin();
+            code.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            assert!(!painted.finish());
+        }
+
+        phase qr_matrix_encodes_payloads_with_a_quiet_zone;
+        {
+            {
+                let w = QrWidget::new(b"hello".to_vec());
+                assert!(w.error().is_none());
+                assert!(w.matrix_size >= 21, "version-1 matrix is 21 modules");
+            }
+
+            {
+                // The pairing-channel payload is JSON ~500-700 bytes.
+                let blob = vec![b'A'; 600];
+                let w = QrWidget::new(blob);
+                assert!(
+                    w.error().is_none(),
+                    "600-byte payload must fit at default EC level: {:?}",
+                    w.error()
+                );
+            }
+
+            {
+                let mut w = QrWidget::new(b"first".to_vec());
+                let first_size = w.matrix_size;
+                w.set_payload(vec![b'X'; 200]);
+                assert!(
+                    w.matrix_size >= first_size,
+                    "longer payload should not shrink the QR"
+                );
+            }
+
+            {
+                let w = QrWidget::new(b"x".to_vec());
+                assert_eq!(w.total_modules(), w.matrix_size + 2 * DEFAULT_QUIET_MODULES);
+            }
+
+            {
+                let w = QrWidget::new(b"x".to_vec());
+                assert!(!w.module(usize::MAX, 0));
+                assert!(!w.module(0, usize::MAX));
             }
         }
-        assert!(svg("x".repeat(3000).as_str()).is_err());
-    }
 
-    #[test]
-    fn private_pairing_qr_marks_real_paint_and_clears_when_cancelled() {
-        use crate::secret_paint::SecretPaint;
-        let mut code =
-            QrWidget::new(b"sgnl://linkdevice?uuid=synthetic&pub_key=synthetic".to_vec())
-                .with_secret()
-                .with_alt("Link this device to Signal");
-        let presence = PresenceCtx::empty();
-        let mut renderer = TextRenderer::new();
-        let painted = SecretPaint::begin();
-        code.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut renderer,
-            &Theme::dark(),
-            &presence,
-        );
-        assert!(painted.finish());
-        let semantics = code.accessibility().unwrap();
-        assert_eq!(
-            semantics.name.as_deref(),
-            Some("Link this device to Signal")
-        );
-        assert!(semantics.description.is_none());
-        assert!(semantics.value.is_none());
-        assert!(semantics.state.protected);
-        code.set_payload(Vec::new());
-        assert_eq!(code.matrix_size, 0);
-        assert!(code.matrix.is_empty());
-        let painted = SecretPaint::begin();
-        code.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut renderer,
-            &Theme::light(),
-            &presence,
-        );
-        assert!(!painted.finish());
-    }
-
-    #[test]
-    fn public_qr_paint_keeps_capture_available() {
-        use crate::secret_paint::SecretPaint;
-        let mut code = QrWidget::new(b"https://example.test/public".to_vec());
-        let painted = SecretPaint::begin();
-        code.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        assert!(!painted.finish());
-    }
-
-    #[test]
-    fn qr_matrix_encodes_payloads_with_a_quiet_zone() {
+        phase a_dense_code_takes_the_room_its_modules_need;
         {
-            let w = QrWidget::new(b"hello".to_vec());
-            assert!(w.error().is_none());
-            assert!(w.matrix_size >= 21, "version-1 matrix is 21 modules");
+            let px = 4u32;
+            let mut code = QrWidget::new(vec![b'i'; 1000]).with_module_px(px);
+            assert!(code.error().is_none(), "an invitation-sized payload fits");
+            assert_eq!(code.module_px(), Some(px));
+            let want = u16::try_from(code.total_modules())
+                .expect("the code's modules fit")
+                .saturating_mul(u16::try_from(px).expect("the module width fits"));
+            let mut taffy = TaffyTree::new();
+            let node = code.build_layout(&mut taffy, &Theme::dark(), &mut HashMap::new());
+            let laid = taffy.style(node).expect("the code is laid out").size;
+            let want = taffy::Dimension::length(f32::from(want));
+            assert_eq!(laid.width, want);
+            assert_eq!(laid.height, want);
+
+            let mut small = QrWidget::new(b"hello".to_vec());
+            let node = small.build_layout(&mut taffy, &Theme::dark(), &mut HashMap::new());
+            let laid = taffy.style(node).expect("the code is laid out").size;
+            assert_eq!(laid.width, taffy::Dimension::length(240.0));
         }
 
+        phase qr_image_semantics_stay_stable_through_encoding_failure;
         {
-            // The pairing-channel payload is JSON ~500-700 bytes.
-            let blob = vec![b'A'; 600];
-            let w = QrWidget::new(blob);
-            assert!(
-                w.error().is_none(),
-                "600-byte payload must fit at default EC level: {:?}",
-                w.error()
-            );
-        }
+            {
+                use crate::a11y::Role;
 
-        {
-            let mut w = QrWidget::new(b"first".to_vec());
-            let first_size = w.matrix_size;
-            w.set_payload(vec![b'X'; 200]);
-            assert!(
-                w.matrix_size >= first_size,
-                "longer payload should not shrink the QR"
-            );
-        }
+                let w = QrWidget::new(b"https://example.com".to_vec())
+                    .with_id("share-code")
+                    .with_alt("Share link for Project Atlas");
+                assert_eq!(Widget::test_id(&w), Some("share-code"));
+                assert_eq!(w.alt(), "Share link for Project Atlas");
+                let node = Widget::accessibility(&w).expect("QR code is semantic content");
+                assert_eq!(node.role, Role::Image);
+                assert_eq!(node.name.as_deref(), Some("Share link for Project Atlas"));
+            }
 
-        {
-            let w = QrWidget::new(b"x".to_vec());
-            assert_eq!(w.total_modules(), w.matrix_size + 2 * DEFAULT_QUIET_MODULES);
-        }
+            {
+                use crate::a11y::Role;
 
-        {
-            let w = QrWidget::new(b"x".to_vec());
-            assert!(!w.module(usize::MAX, 0));
-            assert!(!w.module(0, usize::MAX));
-        }
-    }
-
-    #[test]
-    fn a_dense_code_takes_the_room_its_modules_need() {
-        let px = 4u32;
-        let mut code = QrWidget::new(vec![b'i'; 1000]).with_module_px(px);
-        assert!(code.error().is_none(), "an invitation-sized payload fits");
-        assert_eq!(code.module_px(), Some(px));
-        let want = u16::try_from(code.total_modules())
-            .expect("the code's modules fit")
-            .saturating_mul(u16::try_from(px).expect("the module width fits"));
-        let mut taffy = TaffyTree::new();
-        let node = code.build_layout(&mut taffy, &Theme::dark(), &mut HashMap::new());
-        let laid = taffy.style(node).expect("the code is laid out").size;
-        let want = taffy::Dimension::length(f32::from(want));
-        assert_eq!(laid.width, want);
-        assert_eq!(laid.height, want);
-
-        let mut small = QrWidget::new(b"hello".to_vec());
-        let node = small.build_layout(&mut taffy, &Theme::dark(), &mut HashMap::new());
-        let laid = taffy.style(node).expect("the code is laid out").size;
-        assert_eq!(laid.width, taffy::Dimension::length(240.0));
-    }
-
-    #[test]
-    fn qr_image_semantics_stay_stable_through_encoding_failure() {
-        {
-            use crate::a11y::Role;
-
-            let w = QrWidget::new(b"https://example.com".to_vec())
-                .with_id("share-code")
-                .with_alt("Share link for Project Atlas");
-            assert_eq!(Widget::test_id(&w), Some("share-code"));
-            assert_eq!(w.alt(), "Share link for Project Atlas");
-            let node = Widget::accessibility(&w).expect("QR code is semantic content");
-            assert_eq!(node.role, Role::Image);
-            assert_eq!(node.name.as_deref(), Some("Share link for Project Atlas"));
-        }
-
-        {
-            use crate::a11y::Role;
-
-            let w = QrWidget::new(vec![b'x'; 10_000]).with_id("oversized-code");
-            assert!(w.error().is_some());
-            let node = Widget::accessibility(&w).expect("failed output remains inspectable");
-            assert_eq!(node.role, Role::Image);
-            assert_eq!(node.name.as_deref(), Some("QR code"));
-            let why = w.error().expect("the widget recorded why").to_owned();
-            assert_eq!(
-                node.description.as_deref(),
-                Some(
-                    crate::i18n::widget_format("widget-qr-failed", &[("error", why.into())])
-                        .as_str()
-                ),
-                "the description names the failure that kept the code from being drawn"
-            );
+                let w = QrWidget::new(vec![b'x'; 10_000]).with_id("oversized-code");
+                assert!(w.error().is_some());
+                let node = Widget::accessibility(&w).expect("failed output remains inspectable");
+                assert_eq!(node.role, Role::Image);
+                assert_eq!(node.name.as_deref(), Some("QR code"));
+                let why = w.error().expect("the widget recorded why").to_owned();
+                assert_eq!(
+                    node.description.as_deref(),
+                    Some(
+                        crate::i18n::widget_format("widget-qr-failed", &[("error", why.into())])
+                            .as_str()
+                    ),
+                    "the description names the failure that kept the code from being drawn"
+                );
+            }
         }
     }
 }

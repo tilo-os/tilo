@@ -94,41 +94,45 @@ mod tests {
     use super::*;
     use crate::model::{MonitorModel, ProcessDataStatus};
 
-    #[test]
-    fn the_sessions_readings_fill_the_metrics_and_the_process_list() {
-        install_test_session();
-        let mut sampler = Sampler::new();
-        let mut model = MonitorModel::empty();
-        assert!(sampler.refresh_now(&mut model));
-        let m = &model.metrics;
-        assert!(!m.cores.is_empty(), "this machine's cores");
-        assert!(m.mem_total > 0, "this machine's memory");
-        assert_eq!(model.process_status, ProcessDataStatus::Ready);
-        let own = std::process::id();
-        let me = model
-            .processes
-            .iter()
-            .find(|p| p.pid == own)
-            .expect("the test process itself is listed");
-        assert!(me.cmd.is_empty(), "no command line without its grant");
-        assert!(m.net_rx >= 0.0 && m.net_rx.is_finite());
-        assert_eq!(m.net_rx_hist.last(), m.net_rx);
-        assert_eq!(m.disk_read_hist.last(), m.disk_read);
-        assert!(sampler.refresh_now(&mut model));
-        assert!(model.metrics.disk_write.is_finite());
-    }
+    tilo_test_env::scenario! {
+        fn the_sampler_reads_the_session_and_ends_only_current_processes;
 
-    #[test]
-    fn ending_an_unknown_or_stale_process_reaches_nothing() {
-        install_test_session();
-        let mut sampler = Sampler::new();
-        assert!(!sampler.signal_if_current(u32::MAX, 0, StopKind::Term));
-        assert!(!sampler.signal_if_current(u32::MAX, 0, StopKind::Kill));
-        let own = std::process::id();
-        assert!(
-            !sampler.signal_if_current(own, 0, StopKind::Term),
-            "a lifetime that is not this one"
-        );
-        assert!(sampler.end_app("so.tilo.nothing-runs-this").is_err());
+        phase the_sessions_readings_fill_the_metrics_and_the_process_list;
+        {
+            install_test_session();
+            let mut sampler = Sampler::new();
+            let mut model = MonitorModel::empty();
+            assert!(sampler.refresh_now(&mut model));
+            let m = &model.metrics;
+            assert!(!m.cores.is_empty(), "this machine's cores");
+            assert!(m.mem_total > 0, "this machine's memory");
+            assert_eq!(model.process_status, ProcessDataStatus::Ready);
+            let own = std::process::id();
+            let me = model
+                .processes
+                .iter()
+                .find(|p| p.pid == own)
+                .expect("the test process itself is listed");
+            assert!(me.cmd.is_empty(), "no command line without its grant");
+            assert!(m.net_rx >= 0.0 && m.net_rx.is_finite());
+            assert_eq!(m.net_rx_hist.last(), m.net_rx);
+            assert_eq!(m.disk_read_hist.last(), m.disk_read);
+            assert!(sampler.refresh_now(&mut model));
+            assert!(model.metrics.disk_write.is_finite());
+        }
+
+        phase ending_an_unknown_or_stale_process_reaches_nothing;
+        {
+            install_test_session();
+            let mut sampler = Sampler::new();
+            assert!(!sampler.signal_if_current(u32::MAX, 0, StopKind::Term));
+            assert!(!sampler.signal_if_current(u32::MAX, 0, StopKind::Kill));
+            let own = std::process::id();
+            assert!(
+                !sampler.signal_if_current(own, 0, StopKind::Term),
+                "a lifetime that is not this one"
+            );
+            assert!(sampler.end_app("so.tilo.nothing-runs-this").is_err());
+        }
     }
 }

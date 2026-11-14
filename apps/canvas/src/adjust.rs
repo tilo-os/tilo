@@ -638,110 +638,122 @@ mod tests {
         adjust
     }
 
-    #[test]
-    fn nothing_given_is_no_grade() {
-        assert!(Adjust::default().grade().is_none());
-        assert!(adjust(|a| a.exposure = Some(0.0)).is_identity());
-        assert!(adjust(|a| a.blur = Some(3.0)).grade().is_none());
-    }
+    tilo_test_env::scenario! {
+        /// The `Adjust` record itself: when it is no grade, how two merge, what it refuses.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn an_adjustment_is_nothing_merges_and_names_its_mistakes;
 
-    #[test]
-    fn exposure_brightens_and_invert_flips() {
-        let grade = adjust(|a| a.exposure = Some(1.0)).grade().unwrap();
-        let [r, g, b] = grade.rgb([0.2, 0.2, 0.2]);
-        assert!(r > 0.25 && (r - g).abs() < 1e-6 && (g - b).abs() < 1e-6);
-        let invert = adjust(|a| a.invert = Some(true)).grade().unwrap();
-        assert_eq!(invert.colour([255, 0, 10, 128]), [0, 255, 245, 128]);
-    }
+        phase nothing_given_is_no_grade;
+        {
+            assert!(Adjust::default().grade().is_none());
+            assert!(adjust(|a| a.exposure = Some(0.0)).is_identity());
+            assert!(adjust(|a| a.blur = Some(3.0)).grade().is_none());
+        }
 
-    #[test]
-    fn grayscale_has_no_colour_and_saturation_more() {
-        let grey = adjust(|a| a.grayscale = Some(true)).grade().unwrap();
-        let [r, g, b] = grey.rgb([0.9, 0.2, 0.1]);
-        assert!((r - g).abs() < 1e-3 && (g - b).abs() < 1e-3);
-        let vivid = adjust(|a| a.saturation = Some(0.5)).grade().unwrap();
-        let [r, _, b] = vivid.rgb([0.6, 0.5, 0.4]);
-        assert!(r - b > 0.2);
-    }
+        phase merged_edits_keep_what_they_do_not_name;
+        {
+            let base = adjust(|a| {
+                a.exposure = Some(0.5);
+                a.contrast = Some(0.2);
+            });
+            let merged = base.merged(&adjust(|a| a.contrast = Some(0.0))).unwrap();
+            assert_eq!(merged.exposure, Some(0.5));
+            assert_eq!(merged.contrast, None);
+            assert!(base.merged(&Adjust::default()).is_none());
+        }
 
-    #[test]
-    fn warmth_lifts_red_over_blue() {
-        let warm = adjust(|a| a.temperature = Some(0.5)).grade().unwrap();
-        let [r, _, b] = warm.rgb([0.5, 0.5, 0.5]);
-        assert!(r > 0.5 && b < 0.5);
-    }
-
-    #[test]
-    fn a_curve_passes_through_its_points_and_stays_monotone() {
-        let curve = Curve::new(&[[0.0, 0.0], [0.25, 0.4], [1.0, 1.0]]);
-        assert!((curve.at(0.25) - 0.4).abs() < 1e-4);
-        let mut last = 0.0;
-        for step in 0..=100 {
-            let value = curve.at(step as f32 / 100.0);
-            assert!(value + 1e-6 >= last);
-            last = value;
+        phase out_of_range_steps_are_named;
+        {
+            let problem = adjust(|a| a.exposure = Some(9.0)).problem().unwrap();
+            assert!(problem.contains("exposure"));
+            assert!(
+                adjust(|a| a.curve = Some(vec![[0.5, 2.0]]))
+                    .problem()
+                    .is_some()
+            );
         }
     }
 
-    #[test]
-    fn merged_edits_keep_what_they_do_not_name() {
-        let base = adjust(|a| {
-            a.exposure = Some(0.5);
-            a.contrast = Some(0.2);
-        });
-        let merged = base.merged(&adjust(|a| a.contrast = Some(0.0))).unwrap();
-        assert_eq!(merged.exposure, Some(0.5));
-        assert_eq!(merged.contrast, None);
-        assert!(base.merged(&Adjust::default()).is_none());
-    }
+    tilo_test_env::scenario! {
+        /// What a grade does to a colour and to a picture's pixels.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_grade_changes_colour_and_pixels_as_its_steps_say;
 
-    #[test]
-    fn out_of_range_steps_are_named() {
-        let problem = adjust(|a| a.exposure = Some(9.0)).problem().unwrap();
-        assert!(problem.contains("exposure"));
-        assert!(
-            adjust(|a| a.curve = Some(vec![[0.5, 2.0]]))
-                .problem()
-                .is_some()
-        );
-    }
+        phase exposure_brightens_and_invert_flips;
+        {
+            let grade = adjust(|a| a.exposure = Some(1.0)).grade().unwrap();
+            let [r, g, b] = grade.rgb([0.2, 0.2, 0.2]);
+            assert!(r > 0.25 && (r - g).abs() < 1e-6 && (g - b).abs() < 1e-6);
+            let invert = adjust(|a| a.invert = Some(true)).grade().unwrap();
+            assert_eq!(invert.colour([255, 0, 10, 128]), [0, 255, 245, 128]);
+        }
 
-    #[test]
-    fn blur_keeps_a_flat_picture_and_softens_an_edge() {
-        let (width, height) = (32, 8);
-        let mut flat = vec![100_u8; width * height * 4];
-        blur(&mut flat, width, height, 4.0);
-        assert!(flat.iter().all(|value| *value == 100));
-        let mut edge: Vec<u8> = (0..width * height)
-            .flat_map(|index| {
-                let value = if index % width < width / 2 { 0 } else { 255 };
-                [value, value, value, 255]
+        phase grayscale_has_no_colour_and_saturation_more;
+        {
+            let grey = adjust(|a| a.grayscale = Some(true)).grade().unwrap();
+            let [r, g, b] = grey.rgb([0.9, 0.2, 0.1]);
+            assert!((r - g).abs() < 1e-3 && (g - b).abs() < 1e-3);
+            let vivid = adjust(|a| a.saturation = Some(0.5)).grade().unwrap();
+            let [r, _, b] = vivid.rgb([0.6, 0.5, 0.4]);
+            assert!(r - b > 0.2);
+        }
+
+        phase warmth_lifts_red_over_blue;
+        {
+            let warm = adjust(|a| a.temperature = Some(0.5)).grade().unwrap();
+            let [r, _, b] = warm.rgb([0.5, 0.5, 0.5]);
+            assert!(r > 0.5 && b < 0.5);
+        }
+
+        phase a_curve_passes_through_its_points_and_stays_monotone;
+        {
+            let curve = Curve::new(&[[0.0, 0.0], [0.25, 0.4], [1.0, 1.0]]);
+            assert!((curve.at(0.25) - 0.4).abs() < 1e-4);
+            let mut last = 0.0;
+            for step in 0..=100 {
+                let value = curve.at(step as f32 / 100.0);
+                assert!(value + 1e-6 >= last);
+                last = value;
+            }
+        }
+
+        phase blur_keeps_a_flat_picture_and_softens_an_edge;
+        {
+            let (width, height) = (32, 8);
+            let mut flat = vec![100_u8; width * height * 4];
+            blur(&mut flat, width, height, 4.0);
+            assert!(flat.iter().all(|value| *value == 100));
+            let mut edge: Vec<u8> = (0..width * height)
+                .flat_map(|index| {
+                    let value = if index % width < width / 2 { 0 } else { 255 };
+                    [value, value, value, 255]
+                })
+                .collect();
+            blur(&mut edge, width, height, 4.0);
+            let middle = edge[(width / 2) * 4];
+            assert!(middle > 40 && middle < 215, "{middle}");
+        }
+
+        phase grading_is_the_same_on_one_thread_or_many;
+        {
+            let pixels: Vec<u8> = (0..300_000_u32).map(|value| (value % 251) as u8).collect();
+            let grade = adjust(|a| {
+                a.exposure = Some(0.3);
+                a.hue = Some(40.0);
+                a.vibrance = Some(0.4);
             })
-            .collect();
-        blur(&mut edge, width, height, 4.0);
-        let middle = edge[(width / 2) * 4];
-        assert!(middle > 40 && middle < 215, "{middle}");
-    }
-
-    #[test]
-    fn grading_is_the_same_on_one_thread_or_many() {
-        let pixels: Vec<u8> = (0..300_000_u32).map(|value| (value % 251) as u8).collect();
-        let grade = adjust(|a| {
-            a.exposure = Some(0.3);
-            a.hue = Some(40.0);
-            a.vibrance = Some(0.4);
-        })
-        .grade()
-        .unwrap();
-        let mut many = pixels.clone();
-        grade_pixels(&mut many, std::slice::from_ref(&grade));
-        let mut one = pixels;
-        for pixel in one.chunks_exact_mut(4) {
-            let [r, g, b] = grade.rgb([pixel[0], pixel[1], pixel[2]].map(|c| f32::from(c) / 255.0));
-            pixel[0] = byte(r);
-            pixel[1] = byte(g);
-            pixel[2] = byte(b);
+            .grade()
+            .unwrap();
+            let mut many = pixels.clone();
+            grade_pixels(&mut many, std::slice::from_ref(&grade));
+            let mut one = pixels;
+            for pixel in one.chunks_exact_mut(4) {
+                let [r, g, b] = grade.rgb([pixel[0], pixel[1], pixel[2]].map(|c| f32::from(c) / 255.0));
+                pixel[0] = byte(r);
+                pixel[1] = byte(g);
+                pixel[2] = byte(b);
+            }
+            assert_eq!(many, one);
         }
-        assert_eq!(many, one);
     }
 }

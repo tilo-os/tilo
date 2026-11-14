@@ -624,12 +624,34 @@ pub(crate) fn rich_edit(
     })
 }
 
+/// The most characters one keystroke writes: a word an input method or autocorrect hands over.
+/// More at once is a paste or a dictation, a step of the person's on its own.
+const MOST_TYPED_AT_ONCE: usize = 64;
+
+/// How many characters `now` holds that `was` did not, between what both start and end with.
+fn typed(was: &str, now: &str) -> usize {
+    let start = was
+        .chars()
+        .zip(now.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let end = was
+        .chars()
+        .rev()
+        .zip(now.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (was, now) = (was.chars().count(), now.chars().count());
+    now.saturating_sub(start.saturating_add(end).min(was).min(now))
+}
+
 impl Inner {
     /// The edit that brings the rich text `field` of `at` from what it holds to read as `value`:
     /// the paragraphs that differ, in their place among those it keeps. A keystroke records the
     /// paragraph it typed into, however long the text. Also whether the edit gives the text a
     /// structure rather than words — a paragraph more or fewer, or one whose kind or attributes
-    /// changed (`# ` making a line a heading), a step of the person's on its own ([`super::burst`]).
+    /// changed (`# ` making a line a heading) — or more words than a keystroke types, a step of
+    /// the person's on its own ([`super::burst`]).
     fn rich_edit_of(
         &self,
         at: &ResourceRef,
@@ -660,10 +682,11 @@ impl Inner {
             .get(start..want.len().saturating_sub(end))
             .unwrap_or_default();
         let reshapes = was.len() != now.len()
-            || was
-                .iter()
-                .zip(now)
-                .any(|(was, now)| was.kind != now.kind || was.attrs != now.attrs);
+            || was.iter().zip(now).any(|(was, now)| {
+                was.kind != now.kind
+                    || was.attrs != now.attrs
+                    || typed(&was.text, &now.text) > MOST_TYPED_AT_ONCE
+            });
         // A text not written yet holds what a new one starts with, which the value replaces.
         let replace =
             (!held.is_empty()).then(|| was.iter().map(|block| block.id.clone()).collect());

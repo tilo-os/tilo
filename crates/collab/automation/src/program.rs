@@ -142,73 +142,77 @@ mod tests {
         }
     }
 
-    #[test]
-    fn canonical_bytes_sort_keys_at_every_depth_and_round_trip() {
-        let bytes = canonical_bytes(&echo()).unwrap();
-        let text = std::str::from_utf8(&bytes).unwrap();
-        assert!(text.contains(r#"{"a":[2,{"c":4,"d":3}],"b":1}"#), "{text}");
-        assert!(
-            !text.contains(": ") && !text.contains(", ") && !text.contains('\n'),
-            "no insignificant whitespace"
-        );
-        assert_eq!(parse_program(&bytes).unwrap(), echo());
-        assert_eq!(
-            program_hash(&bytes),
-            blake3::hash(&bytes).to_hex().to_string()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_stored_program_is_canonical_and_structurally_checked;
 
-    #[test]
-    fn parse_program_refuses_every_non_canonical_spelling() {
-        let canonical = canonical_bytes(&echo()).unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
-        let pretty = serde_json::to_vec_pretty(&value).unwrap();
-        assert_eq!(parse_program(&pretty), Err(ProgramError::NotCanonical));
-        let mut with_default = value.clone();
-        with_default["inputs"] = serde_json::json!([]);
-        let with_default = canonical_json(&with_default);
-        assert_eq!(
-            parse_program(&with_default),
-            Err(ProgramError::NotCanonical)
-        );
-        let mut unknown = value;
-        unknown["zzz"] = serde_json::json!(1);
-        assert_eq!(
-            parse_program(&canonical_json(&unknown)),
-            Err(ProgramError::NotCanonical)
-        );
-        let mut saved = echo();
-        saved.saved_by = Some("ada".into());
-        assert_eq!(
-            parse_program(&canonical_bytes(&saved).unwrap()),
-            Err(ProgramError::SavedBy)
-        );
-        assert!(matches!(
-            parse_program(b"{"),
-            Err(ProgramError::Malformed(_))
-        ));
-        let big = vec![b' '; MAX_PROGRAM_BYTES + 1];
-        assert_eq!(
-            parse_program(&big),
-            Err(ProgramError::TooLarge(MAX_PROGRAM_BYTES + 1))
-        );
-    }
+        phase canonical_bytes_sort_keys_at_every_depth_and_round_trip;
+        {
+            let bytes = canonical_bytes(&echo()).unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            assert!(text.contains(r#"{"a":[2,{"c":4,"d":3}],"b":1}"#), "{text}");
+            assert!(
+                !text.contains(": ") && !text.contains(", ") && !text.contains('\n'),
+                "no insignificant whitespace"
+            );
+            assert_eq!(parse_program(&bytes).unwrap(), echo());
+            assert_eq!(
+                program_hash(&bytes),
+                blake3::hash(&bytes).to_hex().to_string()
+            );
+        }
 
-    #[test]
-    fn structure_is_checked_without_descriptors() {
-        assert_eq!(check_structure(&echo()), Ok(()));
-        let mut broken = echo();
-        broken.steps.push(broken.steps[0].clone()); // duplicate step id
-        let errors = check_structure(&broken).unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| matches!(e.kind, CheckErrorKind::DuplicateStep(_)))
-        );
-        assert!(
-            errors
-                .iter()
-                .all(|e| !matches!(e.kind, CheckErrorKind::UnknownAction { .. }))
-        );
+        phase parse_program_refuses_every_non_canonical_spelling;
+        {
+            let canonical = canonical_bytes(&echo()).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+            let pretty = serde_json::to_vec_pretty(&value).unwrap();
+            assert_eq!(parse_program(&pretty), Err(ProgramError::NotCanonical));
+            let mut with_default = value.clone();
+            with_default["inputs"] = serde_json::json!([]);
+            let with_default = canonical_json(&with_default);
+            assert_eq!(
+                parse_program(&with_default),
+                Err(ProgramError::NotCanonical)
+            );
+            let mut unknown = value;
+            unknown["zzz"] = serde_json::json!(1);
+            assert_eq!(
+                parse_program(&canonical_json(&unknown)),
+                Err(ProgramError::NotCanonical)
+            );
+            let mut saved = echo();
+            saved.saved_by = Some("ada".into());
+            assert_eq!(
+                parse_program(&canonical_bytes(&saved).unwrap()),
+                Err(ProgramError::SavedBy)
+            );
+            assert!(matches!(
+                parse_program(b"{"),
+                Err(ProgramError::Malformed(_))
+            ));
+            let big = vec![b' '; MAX_PROGRAM_BYTES + 1];
+            assert_eq!(
+                parse_program(&big),
+                Err(ProgramError::TooLarge(MAX_PROGRAM_BYTES + 1))
+            );
+        }
+
+        phase structure_is_checked_without_descriptors;
+        {
+            assert_eq!(check_structure(&echo()), Ok(()));
+            let mut broken = echo();
+            broken.steps.push(broken.steps[0].clone()); // duplicate step id
+            let errors = check_structure(&broken).unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.kind, CheckErrorKind::DuplicateStep(_)))
+            );
+            assert!(
+                errors
+                    .iter()
+                    .all(|e| !matches!(e.kind, CheckErrorKind::UnknownAction { .. }))
+            );
+        }
     }
 }

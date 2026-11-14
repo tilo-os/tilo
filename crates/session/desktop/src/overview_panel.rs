@@ -1072,62 +1072,270 @@ mod tests {
         panel.measure_tilo_actions(&mut ui::text_render::TextRenderer::new(), &Theme::dark());
     }
 
-    /// Revoking ends an agent's access and its runs: the control asks at the row, naming what the
-    /// agent loses, and nothing is taken back until the person answers there.
-    #[test]
-    fn revoking_an_agents_access_asks_at_the_control_first() {
-        let mut panel = drawn(TALL, desk_with_an_agent());
-        let control = panel
-            .test_rects()
-            .into_iter()
-            .find(|(key, _)| key == "overview-agent:g1:action")
-            .expect("the row offers Revoke")
-            .1;
-        panel.click_at(control.center());
-        assert_eq!(panel.take_pick(), None, "the press that asks takes nothing");
-        settle(&mut panel);
-        let rows: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
-        let question = rows["overview-agent:g1:question"];
-        assert!(
-            question.y0 >= rows["overview-agent:g1"].y0,
-            "the question stands on the row it asked on"
-        );
-        // The question is the row's own: what the agent loses, said under its name.
-        let a11y = panel.tilo_accessibility();
-        let row = a11y
-            .iter()
-            .flat_map(|node| node.children.iter())
-            .find(|node| node.action_target.as_deref() == Some("overview-agent:g1"))
-            .expect("the agent's row reads out");
-        assert_eq!(
-            row.description.as_deref(),
-            Some("Claude Code loses access to all your workspaces and stops now")
-        );
-        let answers: Vec<(&str, &str)> = row
-            .children
-            .iter()
-            .map(|child| {
-                (
-                    child.action_target.as_deref().unwrap_or_default(),
-                    child.name.as_deref().unwrap_or_default(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            answers,
-            [
-                ("overview-agent:g1:keep", "Keep"),
-                ("overview-agent:g1:action", "Revoke access: Claude Code"),
-            ],
-            "the two answers stand in reading order"
-        );
-        // The answer at the control is the one that goes ahead.
-        let going = rows["overview-agent:g1:action"];
-        panel.click_at(going.center());
-        assert_eq!(
-            panel.take_pick(),
-            Some(OverviewPick::RevokeGrant("g1".into()))
-        );
+    tilo_test_env::scenario! {
+        fn the_overview_panels_agent_and_host_rows;
+
+        phase revoking_an_agents_access_asks_at_the_control_first;
+        // Revoking ends an agent's access and its runs: the control asks at the row, naming what the
+        // agent loses, and nothing is taken back until the person answers there.
+        {
+            let mut panel = drawn(TALL, desk_with_an_agent());
+            let control = panel
+                .test_rects()
+                .into_iter()
+                .find(|(key, _)| key == "overview-agent:g1:action")
+                .expect("the row offers Revoke")
+                .1;
+            panel.click_at(control.center());
+            assert_eq!(panel.take_pick(), None, "the press that asks takes nothing");
+            settle(&mut panel);
+            let rows: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+            let question = rows["overview-agent:g1:question"];
+            assert!(
+                question.y0 >= rows["overview-agent:g1"].y0,
+                "the question stands on the row it asked on"
+            );
+            // The question is the row's own: what the agent loses, said under its name.
+            let a11y = panel.tilo_accessibility();
+            let row = a11y
+                .iter()
+                .flat_map(|node| node.children.iter())
+                .find(|node| node.action_target.as_deref() == Some("overview-agent:g1"))
+                .expect("the agent's row reads out");
+            assert_eq!(
+                row.description.as_deref(),
+                Some("Claude Code loses access to all your workspaces and stops now")
+            );
+            let answers: Vec<(&str, &str)> = row
+                .children
+                .iter()
+                .map(|child| {
+                    (
+                        child.action_target.as_deref().unwrap_or_default(),
+                        child.name.as_deref().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                answers,
+                [
+                    ("overview-agent:g1:keep", "Keep"),
+                    ("overview-agent:g1:action", "Revoke access: Claude Code"),
+                ],
+                "the two answers stand in reading order"
+            );
+            // The answer at the control is the one that goes ahead.
+            let going = rows["overview-agent:g1:action"];
+            panel.click_at(going.center());
+            assert_eq!(
+                panel.take_pick(),
+                Some(OverviewPick::RevokeGrant("g1".into()))
+            );
+        }
+
+        phase a_press_away_from_the_answers_keeps_the_grant;
+        // Anywhere but an answer keeps things as they are: the question is put away, the grant
+        // stands, and the press does not also go where it landed.
+        {
+            let mut panel = drawn(TALL, desk_with_an_agent());
+            let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+            panel.click_at(rects["overview-agent:g1:action"].center());
+            assert_eq!(panel.take_pick(), None);
+            settle(&mut panel);
+            // The row's own face, away from the answers, and then Escape: both keep.
+            panel.click_at(rects["overview-agent:g1"].center());
+            assert_eq!(panel.take_pick(), None, "a press on the row keeps");
+            assert!(
+                !panel
+                    .test_rects()
+                    .iter()
+                    .any(|(key, _)| key == "overview-agent:g1:question"),
+                "the question is put away"
+            );
+            panel.activate("overview-agent:g1:action");
+            settle(&mut panel);
+            assert!(press(&mut panel, NamedKey::Escape));
+            assert_eq!(panel.take_pick(), None, "Escape keeps too");
+            assert!(panel.is_open(), "and leaves the overview where it was");
+        }
+
+        phase an_agents_row_opens_its_card;
+        // The agent's row is the agent: pressing it opens the card its face opens everywhere else.
+        {
+            let mut panel = drawn(TALL, desk_with_an_agent());
+            let row = panel
+                .test_rects()
+                .into_iter()
+                .find(|(key, _)| key == "overview-agent:g1")
+                .expect("the agent's own row")
+                .1;
+            // Below its name, away from the control at its trailing edge.
+            panel.click_at(Point::new(row.x0 + 8.0, row.center().y));
+            assert_eq!(
+                panel.take_pick(),
+                Some(OverviewPick::OpenAgent("Claude Code".into()))
+            );
+        }
+
+        phase a_face_leads_its_row_in_the_column_every_other_row_keeps;
+        // The faces and glyphs that lead these rows stand in one slot, so the rows below the
+        // workspaces keep one text column: the agent's name starts where the account's does, on a
+        // desk and on a phone, and where the list row itself puts it.
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let theme = Theme::dark();
+            for area in [TALL, PHONE] {
+                let panel = drawn(area, desk_with_an_agent());
+                let index = |key: &str| {
+                    (0..panel.tilo_rows.len())
+                        .find(|&index| panel.tilo_item(index).is_some_and(|item| item.key == key))
+                        .expect("the row is on the desk")
+                };
+                let agent = index("overview-agent:g1");
+                let account = index("overview-account");
+                let mut text = ui::text_render::TextRenderer::new();
+                let mut drawn_x = |index: usize| {
+                    let item = panel.tilo_item(index).expect("a row of the list");
+                    let mut face = ui::widget::ListRowFace::new(&item.title);
+                    if let Some(leading) = super::tilo::tilo_leading(item) {
+                        face = face.leading(leading);
+                    }
+                    face.text_column(panel.tilo_rect(index), &mut text, &theme)
+                };
+                let agent_x = drawn_x(agent);
+                let account_x = drawn_x(account);
+                assert!(
+                    (agent_x - account_x).abs() < 0.01,
+                    "the agent's face leads in the glyph's slot on {area:?}: {agent_x} and {account_x}"
+                );
+                assert!(
+                    (panel.tilo_text_x(agent) - agent_x).abs() < 0.01,
+                    "what the row says under its name starts where the row's own text does"
+                );
+            }
+        }
+
+        phase a_questions_words_stand_in_the_rows_text_column;
+        // A question about something that cannot be undone stands under the row's name, its words
+        // in the rows' text column rather than at the row's own left edge.
+        {
+            ui::i18n::I18nManager::init("en-US");
+            for area in [TALL, PHONE] {
+                let mut panel = drawn(area, desk_with_an_agent());
+                assert!(panel.activate("overview-agent:g1:action"));
+                settle(&mut panel);
+                let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+                let question = rects["overview-agent:g1:question"];
+                let agent = (0..panel.tilo_rows.len())
+                    .find(|&index| {
+                        panel
+                            .tilo_item(index)
+                            .is_some_and(|item| item.key == "overview-agent:g1")
+                    })
+                    .expect("the agent's row");
+                let agent_x = panel.tilo_text_x(agent);
+                assert!(
+                    (question.x0 - agent_x).abs() < 0.01,
+                    "the question starts in the text column on {area:?}: {} and {agent_x}",
+                    question.x0
+                );
+                assert!(
+                    question.x0 > rects["overview-agent:g1"].x0 + panel.metrics.row_pad,
+                    "the question's words are not at the row's own edge"
+                );
+            }
+        }
+
+        phase a_narrow_row_keeps_what_the_agent_is_doing;
+        // A row too narrow for both facts keeps the live one: what an agent is doing now is what the
+        // person acts on, and what it may reach is its card's to say.
+        {
+            use tilo_actions::remote::agent_door::{Grant, Reach, Run};
+            ui::i18n::I18nManager::init("en-US");
+            let row = crate::overview_tilo::rows(&TiloDesk {
+                door: Some(tilo_actions::remote::agent_door::Door {
+                    grants: vec![Grant {
+                        id: "g1".into(),
+                        agent: "Claude Code".into(),
+                        reach: Reach::Account,
+                        runs: vec![Run {
+                            name: "Claude Code #2".into(),
+                            started_ms: 1,
+                        }],
+                        ..Grant::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..TiloDesk::default()
+            });
+            let agent = row
+                .iter()
+                .find_map(|row| match row {
+                    crate::overview_tilo::TiloRow::Item(item) => Some(item),
+                    crate::overview_tilo::TiloRow::Caption(_) => None,
+                })
+                .expect("the agent's own row");
+            let mut text = ui::text_render::TextRenderer::new();
+            let theme = Theme::dark();
+            let facts = ui::widget::FactsFace::new(&agent.facts);
+            assert_eq!(
+                facts.shown_in(facts.natural_width(&mut text, &theme), &mut text, &theme),
+                [0, 1],
+                "a wide row says both"
+            );
+            assert_eq!(
+                facts.shown_in(60.0, &mut text, &theme),
+                [1],
+                "a narrow one keeps what it is doing"
+            );
+            assert_eq!(agent.facts[1].text, "Working now");
+        }
+
+        phase hosts_stand_below_the_workspaces_and_manage_billing_opens_the_providers_page;
+        // Below the workspaces, the person's Tilo Cloud account: its row says the plan and what it
+        // used, its Manage billing opens the provider's page and leaves the overview up, and the
+        // account's About zooms back in.
+        {
+            use tilo_actions::remote::host_account::{
+                HostAccount, HostKind, PaymentMethod, PlanOffer, Standing,
+            };
+            ui::i18n::I18nManager::init("en-US");
+            let mut with_host = desk();
+            with_host.tilo.hosts = vec![HostAccount {
+                host: "Tilo Cloud".into(),
+                kind: HostKind::Provider,
+                plans: vec![PlanOffer {
+                    id: "pro".into(),
+                    name: "Pro".into(),
+                    ..PlanOffer::default()
+                }],
+                standing: Some(Standing {
+                    plan: Some("pro".into()),
+                    payment_method: Some(PaymentMethod::default()),
+                    ..Standing::default()
+                }),
+                manage_billing: Some("https://tilo.sh/billing".into()),
+            }];
+            let mut panel = opened_in(WIDE, with_host);
+            let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+            let join = panel.join_hit_rect().unwrap();
+            let host = rects["overview-host:0"];
+            assert!(join.y1 <= host.y0, "the hosts follow the workspaces");
+            panel.click_at(rects["overview-host:0:action"].center());
+            assert_eq!(
+                panel.take_pick(),
+                Some(OverviewPick::OpenPage("https://tilo.sh/billing".into()))
+            );
+            assert!(
+                panel.is_open(),
+                "the overview stays up behind the provider's page"
+            );
+            panel.scroll_y = panel.max_scroll_y();
+            let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+            panel.click_at(rects["overview-about"].center());
+            assert_eq!(panel.take_pick(), Some(OverviewPick::AboutTilo));
+            assert!(OverviewPick::AboutTilo.closes());
+        }
     }
 
     /// Shift is how a person skips a question about something Undo takes back; a revocation is
@@ -1143,228 +1351,99 @@ mod tests {
         ui::widget::note_shift(false);
     }
 
-    /// Anywhere but an answer keeps things as they are: the question is put away, the grant
-    /// stands, and the press does not also go where it landed.
-    #[test]
-    fn a_press_away_from_the_answers_keeps_the_grant() {
-        let mut panel = drawn(TALL, desk_with_an_agent());
-        let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
-        panel.click_at(rects["overview-agent:g1:action"].center());
-        assert_eq!(panel.take_pick(), None);
-        settle(&mut panel);
-        // The row's own face, away from the answers, and then Escape: both keep.
-        panel.click_at(rects["overview-agent:g1"].center());
-        assert_eq!(panel.take_pick(), None, "a press on the row keeps");
-        assert!(
-            !panel
-                .test_rects()
-                .iter()
-                .any(|(key, _)| key == "overview-agent:g1:question"),
-            "the question is put away"
-        );
-        panel.activate("overview-agent:g1:action");
-        settle(&mut panel);
-        assert!(press(&mut panel, NamedKey::Escape));
-        assert_eq!(panel.take_pick(), None, "Escape keeps too");
-        assert!(panel.is_open(), "and leaves the overview where it was");
-    }
+    tilo_test_env::scenario! {
+        fn the_overview_panel_lists_workspaces_and_walks_them_by_keyboard;
 
-    /// The agent's row is the agent: pressing it opens the card its face opens everywhere else.
-    #[test]
-    fn an_agents_row_opens_its_card() {
-        let mut panel = drawn(TALL, desk_with_an_agent());
-        let row = panel
-            .test_rects()
-            .into_iter()
-            .find(|(key, _)| key == "overview-agent:g1")
-            .expect("the agent's own row")
-            .1;
-        // Below its name, away from the control at its trailing edge.
-        panel.click_at(Point::new(row.x0 + 8.0, row.center().y));
-        assert_eq!(
-            panel.take_pick(),
-            Some(OverviewPick::OpenAgent("Claude Code".into()))
-        );
-    }
-
-    /// The faces and glyphs that lead these rows stand in one slot, so the rows below the
-    /// workspaces keep one text column: the agent's name starts where the account's does, on a
-    /// desk and on a phone, and where the list row itself puts it.
-    #[test]
-    fn a_face_leads_its_row_in_the_column_every_other_row_keeps() {
-        ui::i18n::I18nManager::init("en-US");
-        let theme = Theme::dark();
-        for area in [TALL, PHONE] {
-            let panel = drawn(area, desk_with_an_agent());
-            let index = |key: &str| {
-                (0..panel.tilo_rows.len())
-                    .find(|&index| panel.tilo_item(index).is_some_and(|item| item.key == key))
-                    .expect("the row is on the desk")
-            };
-            let agent = index("overview-agent:g1");
-            let account = index("overview-account");
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut drawn_x = |index: usize| {
-                let item = panel.tilo_item(index).expect("a row of the list");
-                let mut face = ui::widget::ListRowFace::new(&item.title);
-                if let Some(leading) = super::tilo::tilo_leading(item) {
-                    face = face.leading(leading);
-                }
-                face.text_column(panel.tilo_rect(index), &mut text, &theme)
-            };
-            let agent_x = drawn_x(agent);
-            let account_x = drawn_x(account);
-            assert!(
-                (agent_x - account_x).abs() < 0.01,
-                "the agent's face leads in the glyph's slot on {area:?}: {agent_x} and {account_x}"
-            );
-            assert!(
-                (panel.tilo_text_x(agent) - agent_x).abs() < 0.01,
-                "what the row says under its name starts where the row's own text does"
+        phase the_workspace_you_are_in_heads_the_panel_and_the_others_follow_in_order;
+        {
+            let panel = opened_in(NARROW, desk());
+            let here = panel.row_rect(0);
+            let research = panel.row_rect(1);
+            let design = panel.row_rect(2);
+            assert!(here.y1 <= research.y0, "{here:?} {research:?}");
+            assert!(research.y1 <= design.y0, "rows advance downward");
+            let add = panel.add_hit_rect().unwrap();
+            let join = panel.join_hit_rect().unwrap();
+            assert!(design.y1 <= add.y0 && add.y1 <= join.y0);
+            assert!(panel.panel_rect().contains(add.center()));
+            assert_eq!(panel.hit_workspace(research.center()), Some(1));
+            assert_eq!(
+                panel.hit_workspace(Point::new(1.0, 1.0)),
+                None,
+                "outside the panel"
             );
         }
-    }
 
-    /// A question about something that cannot be undone stands under the row's name, its words
-    /// in the rows' text column rather than at the row's own left edge.
-    #[test]
-    fn a_questions_words_stand_in_the_rows_text_column() {
-        ui::i18n::I18nManager::init("en-US");
-        for area in [TALL, PHONE] {
-            let mut panel = drawn(area, desk_with_an_agent());
-            assert!(panel.activate("overview-agent:g1:action"));
-            settle(&mut panel);
-            let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
-            let question = rects["overview-agent:g1:question"];
-            let agent = (0..panel.tilo_rows.len())
-                .find(|&index| {
-                    panel
-                        .tilo_item(index)
-                        .is_some_and(|item| item.key == "overview-agent:g1")
-                })
-                .expect("the agent's row");
-            let agent_x = panel.tilo_text_x(agent);
-            assert!(
-                (question.x0 - agent_x).abs() < 0.01,
-                "the question starts in the text column on {area:?}: {} and {agent_x}",
-                question.x0
+        phase a_small_display_shows_the_overview_as_a_page;
+        {
+            let panel = opened_in(Rect::new(0.0, 0.0, 480.0, 400.0), desk());
+            assert_eq!(panel.panel_rect(), panel.rect);
+            assert!(panel.scrolls_whole_panel());
+            assert!(panel.add_hit_rect().is_some() || panel.max_scroll_y() > 0.0);
+        }
+
+        phase a_long_list_is_capped_and_scrolls_to_the_keyboard;
+        {
+            let mut cards = vec![card(1, "Acme", true, &["Notes"])];
+            cards.extend((2..30).map(|i| card(i, &format!("Design {i}"), false, &[])));
+            let mut panel = opened_in(NARROW, OverviewDesk::of(cards));
+            assert!(panel.panel_rect().height() <= NARROW.height());
+            assert!(panel.max_scroll_y() > 0.0);
+            assert!(press(&mut panel, NamedKey::End));
+            assert!(panel.scroll_y > 0.0, "the last row was scrolled to");
+            assert!(panel.add_hit_rect().is_some(), "and can be pressed");
+        }
+
+        phase keys_walk_the_workspaces_and_enter_goes_to_one;
+        {
+            let mut panel = opened_in(NARROW, desk());
+            assert_eq!(panel.selection(), Some(0), "the keyboard starts here");
+            assert!(press(&mut panel, NamedKey::ArrowDown));
+            assert!(press(&mut panel, NamedKey::ArrowDown));
+            assert!(press(&mut panel, NamedKey::Enter));
+            assert_eq!(
+                panel.take_pick(),
+                Some(OverviewPick::Workspace(WorkspaceSlot(3)))
             );
-            assert!(
-                question.x0 > rects["overview-agent:g1"].x0 + panel.metrics.row_pad,
-                "the question's words are not at the row's own edge"
+            assert!(press(&mut panel, NamedKey::Tab));
+            assert!(press(&mut panel, NamedKey::Enter));
+            assert_eq!(panel.take_pick(), Some(OverviewPick::NewWorkspace));
+            assert!(press(&mut panel, NamedKey::Tab));
+            assert!(press(&mut panel, NamedKey::Enter));
+            assert_eq!(panel.take_pick(), Some(OverviewPick::JoinWorkspace));
+            assert!(press(&mut panel, NamedKey::Escape));
+            assert_eq!(panel.take_pick(), Some(OverviewPick::Dismiss));
+            assert_eq!(panel.take_pick(), None);
+        }
+
+        phase arrows_walk_the_pictured_windows_and_enter_goes_to_one;
+        {
+            let mut panel = opened_in(WIDE, desk());
+            assert!(press(&mut panel, NamedKey::ArrowRight));
+            assert_eq!(panel.window_selection(), Some(1000));
+            assert!(press(&mut panel, NamedKey::ArrowRight));
+            assert_eq!(panel.window_selection(), Some(1001));
+            assert!(press(&mut panel, NamedKey::ArrowRight));
+            assert_eq!(panel.window_selection(), Some(1000), "a ring");
+            assert!(press(&mut panel, NamedKey::Enter));
+            assert_eq!(panel.take_pick(), Some(OverviewPick::Window(1000)));
+        }
+
+        phase a_window_selected_then_closed_elsewhere_does_not_take_the_next_enter;
+        {
+            let mut panel = opened_in(WIDE, desk());
+            assert!(press(&mut panel, NamedKey::ArrowRight));
+            let mut gone = desk();
+            gone.cards[0].strips[0].groups.remove(0);
+            panel.set_desk(gone);
+            assert_eq!(panel.window_selection(), None);
+            assert!(press(&mut panel, NamedKey::Enter));
+            assert_eq!(
+                panel.take_pick(),
+                None,
+                "the Enter meant for it does nothing"
             );
         }
-    }
-
-    /// A row too narrow for both facts keeps the live one: what an agent is doing now is what the
-    /// person acts on, and what it may reach is its card's to say.
-    #[test]
-    fn a_narrow_row_keeps_what_the_agent_is_doing() {
-        use tilo_actions::remote::agent_door::{Grant, Reach, Run};
-        ui::i18n::I18nManager::init("en-US");
-        let row = crate::overview_tilo::rows(&TiloDesk {
-            door: Some(tilo_actions::remote::agent_door::Door {
-                grants: vec![Grant {
-                    id: "g1".into(),
-                    agent: "Claude Code".into(),
-                    reach: Reach::Account,
-                    runs: vec![Run {
-                        name: "Claude Code #2".into(),
-                        started_ms: 1,
-                    }],
-                    ..Grant::default()
-                }],
-                ..Default::default()
-            }),
-            ..TiloDesk::default()
-        });
-        let agent = row
-            .iter()
-            .find_map(|row| match row {
-                crate::overview_tilo::TiloRow::Item(item) => Some(item),
-                crate::overview_tilo::TiloRow::Caption(_) => None,
-            })
-            .expect("the agent's own row");
-        let mut text = ui::text_render::TextRenderer::new();
-        let theme = Theme::dark();
-        let facts = ui::widget::FactsFace::new(&agent.facts);
-        assert_eq!(
-            facts.shown_in(facts.natural_width(&mut text, &theme), &mut text, &theme),
-            [0, 1],
-            "a wide row says both"
-        );
-        assert_eq!(
-            facts.shown_in(60.0, &mut text, &theme),
-            [1],
-            "a narrow one keeps what it is doing"
-        );
-        assert_eq!(agent.facts[1].text, "Working now");
-    }
-
-    #[test]
-    fn the_workspace_you_are_in_heads_the_panel_and_the_others_follow_in_order() {
-        let panel = opened_in(NARROW, desk());
-        let here = panel.row_rect(0);
-        let research = panel.row_rect(1);
-        let design = panel.row_rect(2);
-        assert!(here.y1 <= research.y0, "{here:?} {research:?}");
-        assert!(research.y1 <= design.y0, "rows advance downward");
-        let add = panel.add_hit_rect().unwrap();
-        let join = panel.join_hit_rect().unwrap();
-        assert!(design.y1 <= add.y0 && add.y1 <= join.y0);
-        assert!(panel.panel_rect().contains(add.center()));
-        assert_eq!(panel.hit_workspace(research.center()), Some(1));
-        assert_eq!(
-            panel.hit_workspace(Point::new(1.0, 1.0)),
-            None,
-            "outside the panel"
-        );
-    }
-
-    /// Below the workspaces, the person's Tilo Cloud account: its row says the plan and what it
-    /// used, its Manage billing opens the provider's page and leaves the overview up, and the
-    /// account's About zooms back in.
-    #[test]
-    fn hosts_stand_below_the_workspaces_and_manage_billing_opens_the_providers_page() {
-        use tilo_actions::remote::host_account::{
-            HostAccount, HostKind, PaymentMethod, PlanOffer, Standing,
-        };
-        ui::i18n::I18nManager::init("en-US");
-        let mut with_host = desk();
-        with_host.tilo.hosts = vec![HostAccount {
-            host: "Tilo Cloud".into(),
-            kind: HostKind::Provider,
-            plans: vec![PlanOffer {
-                id: "pro".into(),
-                name: "Pro".into(),
-                ..PlanOffer::default()
-            }],
-            standing: Some(Standing {
-                plan: Some("pro".into()),
-                payment_method: Some(PaymentMethod::default()),
-                ..Standing::default()
-            }),
-            manage_billing: Some("https://tilo.sh/billing".into()),
-        }];
-        let mut panel = opened_in(WIDE, with_host);
-        let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
-        let join = panel.join_hit_rect().unwrap();
-        let host = rects["overview-host:0"];
-        assert!(join.y1 <= host.y0, "the hosts follow the workspaces");
-        panel.click_at(rects["overview-host:0:action"].center());
-        assert_eq!(
-            panel.take_pick(),
-            Some(OverviewPick::OpenPage("https://tilo.sh/billing".into()))
-        );
-        assert!(
-            panel.is_open(),
-            "the overview stays up behind the provider's page"
-        );
-        panel.scroll_y = panel.max_scroll_y();
-        let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
-        panel.click_at(rects["overview-about"].center());
-        assert_eq!(panel.take_pick(), Some(OverviewPick::AboutTilo));
-        assert!(OverviewPick::AboutTilo.closes());
     }
 
     #[test]
@@ -1386,122 +1465,195 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_small_display_shows_the_overview_as_a_page() {
-        let panel = opened_in(Rect::new(0.0, 0.0, 480.0, 400.0), desk());
-        assert_eq!(panel.panel_rect(), panel.rect);
-        assert!(panel.scrolls_whole_panel());
-        assert!(panel.add_hit_rect().is_some() || panel.max_scroll_y() > 0.0);
-    }
+    tilo_test_env::scenario! {
+        fn the_overview_panel_renames_draws_and_carries_its_windows;
 
-    #[test]
-    fn a_long_list_is_capped_and_scrolls_to_the_keyboard() {
-        let mut cards = vec![card(1, "Acme", true, &["Notes"])];
-        cards.extend((2..30).map(|i| card(i, &format!("Design {i}"), false, &[])));
-        let mut panel = opened_in(NARROW, OverviewDesk::of(cards));
-        assert!(panel.panel_rect().height() <= NARROW.height());
-        assert!(panel.max_scroll_y() > 0.0);
-        assert!(press(&mut panel, NamedKey::End));
-        assert!(panel.scroll_y > 0.0, "the last row was scrolled to");
-        assert!(panel.add_hit_rect().is_some(), "and can be pressed");
-    }
-
-    #[test]
-    fn keys_walk_the_workspaces_and_enter_goes_to_one() {
-        let mut panel = opened_in(NARROW, desk());
-        assert_eq!(panel.selection(), Some(0), "the keyboard starts here");
-        assert!(press(&mut panel, NamedKey::ArrowDown));
-        assert!(press(&mut panel, NamedKey::ArrowDown));
-        assert!(press(&mut panel, NamedKey::Enter));
-        assert_eq!(
-            panel.take_pick(),
-            Some(OverviewPick::Workspace(WorkspaceSlot(3)))
-        );
-        assert!(press(&mut panel, NamedKey::Tab));
-        assert!(press(&mut panel, NamedKey::Enter));
-        assert_eq!(panel.take_pick(), Some(OverviewPick::NewWorkspace));
-        assert!(press(&mut panel, NamedKey::Tab));
-        assert!(press(&mut panel, NamedKey::Enter));
-        assert_eq!(panel.take_pick(), Some(OverviewPick::JoinWorkspace));
-        assert!(press(&mut panel, NamedKey::Escape));
-        assert_eq!(panel.take_pick(), Some(OverviewPick::Dismiss));
-        assert_eq!(panel.take_pick(), None);
-    }
-
-    #[test]
-    fn arrows_walk_the_pictured_windows_and_enter_goes_to_one() {
-        let mut panel = opened_in(WIDE, desk());
-        assert!(press(&mut panel, NamedKey::ArrowRight));
-        assert_eq!(panel.window_selection(), Some(1000));
-        assert!(press(&mut panel, NamedKey::ArrowRight));
-        assert_eq!(panel.window_selection(), Some(1001));
-        assert!(press(&mut panel, NamedKey::ArrowRight));
-        assert_eq!(panel.window_selection(), Some(1000), "a ring");
-        assert!(press(&mut panel, NamedKey::Enter));
-        assert_eq!(panel.take_pick(), Some(OverviewPick::Window(1000)));
-    }
-
-    #[test]
-    fn a_window_selected_then_closed_elsewhere_does_not_take_the_next_enter() {
-        let mut panel = opened_in(WIDE, desk());
-        assert!(press(&mut panel, NamedKey::ArrowRight));
-        let mut gone = desk();
-        gone.cards[0].strips[0].groups.remove(0);
-        panel.set_desk(gone);
-        assert_eq!(panel.window_selection(), None);
-        assert!(press(&mut panel, NamedKey::Enter));
-        assert_eq!(
-            panel.take_pick(),
-            None,
-            "the Enter meant for it does nothing"
-        );
-    }
-
-    #[test]
-    fn a_strip_this_machine_names_is_renamed_and_moved_in_place() {
-        let mut here = card(1, "Acme", true, &["Notes"]);
-        let mut second = card(4, "x", false, &["Chat"]).strips.remove(0);
-        second.name = "Games".into();
-        here.strips.push(second);
-        let mut desk = OverviewDesk::of(vec![here]);
-        desk.renamable = [StripId(10), StripId(40)].into_iter().collect();
-        let mut panel = opened_in(WIDE, desk);
-        assert!(press(&mut panel, NamedKey::ArrowRight));
-        assert!(press(&mut panel, NamedKey::F2));
-        assert!(panel.is_naming());
-        for c in ["W", "o", "r", "k"] {
-            panel.key(&Key::Character(c.into()), ModifiersState::empty());
+        phase a_strip_this_machine_names_is_renamed_and_moved_in_place;
+        {
+            let mut here = card(1, "Acme", true, &["Notes"]);
+            let mut second = card(4, "x", false, &["Chat"]).strips.remove(0);
+            second.name = "Games".into();
+            here.strips.push(second);
+            let mut desk = OverviewDesk::of(vec![here]);
+            desk.renamable = [StripId(10), StripId(40)].into_iter().collect();
+            let mut panel = opened_in(WIDE, desk);
+            assert!(press(&mut panel, NamedKey::ArrowRight));
+            assert!(press(&mut panel, NamedKey::F2));
+            assert!(panel.is_naming());
+            for c in ["W", "o", "r", "k"] {
+                panel.key(&Key::Character(c.into()), ModifiersState::empty());
+            }
+            assert!(press(&mut panel, NamedKey::Enter));
+            assert_eq!(
+                panel.take_pick(),
+                Some(OverviewPick::RenameStrip {
+                    strip: StripId(10),
+                    name: "Work".into()
+                })
+            );
+            panel.key(&Key::Named(NamedKey::ArrowDown), ModifiersState::ALT);
+            assert_eq!(
+                panel.take_pick(),
+                Some(OverviewPick::MoveStrip {
+                    strip: StripId(10),
+                    before: None
+                })
+            );
+            let names: Vec<String> = panel
+                .test_rects()
+                .into_iter()
+                .map(|(name, _)| name)
+                .filter(|name| name.starts_with("overview-strip-"))
+                .collect();
+            assert!(
+                names.contains(&"overview-strip-rename:10".to_owned()),
+                "{names:?}"
+            );
+            assert!(
+                names.contains(&"overview-strip-move-up:40".to_owned()),
+                "{names:?}"
+            );
         }
-        assert!(press(&mut panel, NamedKey::Enter));
-        assert_eq!(
-            panel.take_pick(),
-            Some(OverviewPick::RenameStrip {
-                strip: StripId(10),
-                name: "Work".into()
-            })
-        );
-        panel.key(&Key::Named(NamedKey::ArrowDown), ModifiersState::ALT);
-        assert_eq!(
-            panel.take_pick(),
-            Some(OverviewPick::MoveStrip {
-                strip: StripId(10),
-                before: None
-            })
-        );
-        let names: Vec<String> = panel
-            .test_rects()
-            .into_iter()
-            .map(|(name, _)| name)
-            .filter(|name| name.starts_with("overview-strip-"))
-            .collect();
-        assert!(
-            names.contains(&"overview-strip-rename:10".to_owned()),
-            "{names:?}"
-        );
-        assert!(
-            names.contains(&"overview-strip-move-up:40".to_owned()),
-            "{names:?}"
-        );
+
+        phase the_host_draws_the_pictures_it_holds_and_flies_them_on_its_clock;
+        {
+            let flight = WindowFlight::new();
+            let mut desk = desk();
+            desk.pictured = [1000, 1001].into_iter().collect();
+            let mut panel = opened_in(WIDE, desk);
+            panel.set_flight(flight.clone());
+            flight.set_clock(1.0, HashMap::new());
+            let mut scene = Scene::new();
+            panel.draw_child(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            let pictures = flight.pictures();
+            assert_eq!(
+                pictures.iter().map(|p| p.tab).collect::<Vec<_>>(),
+                [1000, 1001],
+                "every pictured window is named"
+            );
+            let picture = panel.picture();
+            assert_eq!(pictures[0].rect, picture.places[0].wells[0]);
+            // A title flies with its picture from where the window stands.
+            let source = Rect::new(0.0, 0.0, 800.0, 900.0);
+            flight.set_clock(0.25, HashMap::from([(1000, source)]));
+            let (rect, alpha) = panel.flown(&pictures[0], 0.25);
+            assert_eq!(
+                rect,
+                ui::motion::Zoom::rect_at(source, pictures[0].rect, 0.25)
+            );
+            assert!((alpha - 1.0).abs() < f32::EPSILON);
+            // One with nowhere to fly from fades in where it rests.
+            let (rect, alpha) = panel.flown(&pictures[1], 0.25);
+            assert_eq!(rect, pictures[1].rect);
+            assert!(alpha < 1.0);
+            // Closed and settled back, nothing is pictured.
+            panel.open_on(false, OverviewDesk::default());
+            flight.set_clock(0.0, HashMap::new());
+            panel.draw_child(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(flight.pictures().is_empty());
+        }
+
+        phase the_panel_is_recorded_once_while_it_shows_the_same_thing;
+        {
+            let flight = WindowFlight::new();
+            let mut panel = opened_in(WIDE, desk());
+            panel.set_flight(flight.clone());
+            let mut text = TextRenderer::new();
+            for step in 1..=4 {
+                flight.set_clock(f64::from(step) / 4.0, HashMap::new());
+                panel.draw_child(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut text,
+                    &Theme::dark(),
+                    &PresenceCtx::default(),
+                );
+            }
+            assert_eq!(
+                panel.panel_recordings(),
+                1,
+                "the flight replays the recording"
+            );
+        }
+
+        phase the_share_list_collapses_rather_than_growing;
+        {
+            let mut desk = desk();
+            desk.cards[0].shares = (0..9)
+                .map(|i| WorkspaceShare {
+                    what: format!("Folder {i}"),
+                    with: vec!["Ada".into()],
+                    writable: false,
+                })
+                .collect();
+            let panel = opened_in(NARROW, desk);
+            assert_eq!(
+                OverviewPanel::share_rows(&panel.desk.cards[0]),
+                layout::SHARES_MAX_ROWS + 1
+            );
+            let none = opened_in(NARROW, super::tests::desk());
+            assert_eq!(none.shares_height(), 0.0, "nothing shared, no section");
+        }
+
+        phase a_carried_window_moves_to_the_workspace_it_is_let_go_on;
+        {
+            let mut panel = opened_in(NARROW, desk());
+            let tile = panel.window_tile_rect(0);
+            let research = panel.row_rect(1);
+            panel.cursor = Some(tile.center());
+            panel.pointer(&ui::synthetic_input::mouse_press(), 1.0);
+            panel.press.as_mut().unwrap().moved(research.center());
+            panel.cursor = Some(research.center());
+            assert_eq!(panel.drop_target(), Some(1));
+            panel.pointer(&ui::synthetic_input::mouse_release(), 1.0);
+            assert_eq!(
+                panel.take_pick(),
+                Some(OverviewPick::MoveWindow {
+                    tab: 1000,
+                    to: WorkspaceSlot(2)
+                })
+            );
+        }
+
+        phase semantic_actions_reach_what_the_rows_do;
+        {
+            let mut panel = opened_in(WIDE, desk());
+            assert!(panel.activate("overview-workspace:2"));
+            assert_eq!(
+                panel.take_pick(),
+                Some(OverviewPick::Workspace(WorkspaceSlot(2)))
+            );
+            assert!(panel.focus("overview-window:1001"));
+            assert_eq!(panel.window_selection(), Some(1001));
+            assert!(!panel.activate("overview-workspace:x"));
+            let node = panel.accessibility().unwrap();
+            assert_eq!(node.name.as_deref(), Some(t("overview-title").as_str()));
+            assert!(node.children.iter().any(|child| child.role == Role::List));
+        }
+
+        phase the_panel_curve_is_settled_at_both_ends_and_never_reverses;
+        {
+            assert_eq!(panel_curve(0.0), (0.0, PANEL_RISE_PX, PANEL_START_SCALE));
+            assert_eq!(panel_curve(1.0), (1.0, 0.0, 1.0));
+            let mut last = panel_curve(0.0);
+            for step in 1..=20_u8 {
+                let now = panel_curve(f32::from(step) / 20.0);
+                assert!(now.0 >= last.0 && now.1 <= last.1 && now.2 >= last.2);
+                last = now;
+            }
+        }
     }
 
     #[test]
@@ -1511,134 +1663,6 @@ mod tests {
         assert!(press(&mut panel, NamedKey::F2));
         assert!(!panel.is_naming());
         assert!(panel.strip_controls(&panel.picture(), 0).is_empty());
-    }
-
-    #[test]
-    fn the_host_draws_the_pictures_it_holds_and_flies_them_on_its_clock() {
-        let flight = WindowFlight::new();
-        let mut desk = desk();
-        desk.pictured = [1000, 1001].into_iter().collect();
-        let mut panel = opened_in(WIDE, desk);
-        panel.set_flight(flight.clone());
-        flight.set_clock(1.0, HashMap::new());
-        let mut scene = Scene::new();
-        panel.draw_child(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        let pictures = flight.pictures();
-        assert_eq!(
-            pictures.iter().map(|p| p.tab).collect::<Vec<_>>(),
-            [1000, 1001],
-            "every pictured window is named"
-        );
-        let picture = panel.picture();
-        assert_eq!(pictures[0].rect, picture.places[0].wells[0]);
-        // A title flies with its picture from where the window stands.
-        let source = Rect::new(0.0, 0.0, 800.0, 900.0);
-        flight.set_clock(0.25, HashMap::from([(1000, source)]));
-        let (rect, alpha) = panel.flown(&pictures[0], 0.25);
-        assert_eq!(
-            rect,
-            ui::motion::Zoom::rect_at(source, pictures[0].rect, 0.25)
-        );
-        assert!((alpha - 1.0).abs() < f32::EPSILON);
-        // One with nowhere to fly from fades in where it rests.
-        let (rect, alpha) = panel.flown(&pictures[1], 0.25);
-        assert_eq!(rect, pictures[1].rect);
-        assert!(alpha < 1.0);
-        // Closed and settled back, nothing is pictured.
-        panel.open_on(false, OverviewDesk::default());
-        flight.set_clock(0.0, HashMap::new());
-        panel.draw_child(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert!(flight.pictures().is_empty());
-    }
-
-    #[test]
-    fn the_panel_is_recorded_once_while_it_shows_the_same_thing() {
-        let flight = WindowFlight::new();
-        let mut panel = opened_in(WIDE, desk());
-        panel.set_flight(flight.clone());
-        let mut text = TextRenderer::new();
-        for step in 1..=4 {
-            flight.set_clock(f64::from(step) / 4.0, HashMap::new());
-            panel.draw_child(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
-        }
-        assert_eq!(
-            panel.panel_recordings(),
-            1,
-            "the flight replays the recording"
-        );
-    }
-
-    #[test]
-    fn the_share_list_collapses_rather_than_growing() {
-        let mut desk = desk();
-        desk.cards[0].shares = (0..9)
-            .map(|i| WorkspaceShare {
-                what: format!("Folder {i}"),
-                with: vec!["Ada".into()],
-                writable: false,
-            })
-            .collect();
-        let panel = opened_in(NARROW, desk);
-        assert_eq!(
-            OverviewPanel::share_rows(&panel.desk.cards[0]),
-            layout::SHARES_MAX_ROWS + 1
-        );
-        let none = opened_in(NARROW, super::tests::desk());
-        assert_eq!(none.shares_height(), 0.0, "nothing shared, no section");
-    }
-
-    #[test]
-    fn a_carried_window_moves_to_the_workspace_it_is_let_go_on() {
-        let mut panel = opened_in(NARROW, desk());
-        let tile = panel.window_tile_rect(0);
-        let research = panel.row_rect(1);
-        panel.cursor = Some(tile.center());
-        panel.pointer(&ui::synthetic_input::mouse_press(), 1.0);
-        panel.press.as_mut().unwrap().moved(research.center());
-        panel.cursor = Some(research.center());
-        assert_eq!(panel.drop_target(), Some(1));
-        panel.pointer(&ui::synthetic_input::mouse_release(), 1.0);
-        assert_eq!(
-            panel.take_pick(),
-            Some(OverviewPick::MoveWindow {
-                tab: 1000,
-                to: WorkspaceSlot(2)
-            })
-        );
-    }
-
-    #[test]
-    fn semantic_actions_reach_what_the_rows_do() {
-        let mut panel = opened_in(WIDE, desk());
-        assert!(panel.activate("overview-workspace:2"));
-        assert_eq!(
-            panel.take_pick(),
-            Some(OverviewPick::Workspace(WorkspaceSlot(2)))
-        );
-        assert!(panel.focus("overview-window:1001"));
-        assert_eq!(panel.window_selection(), Some(1001));
-        assert!(!panel.activate("overview-workspace:x"));
-        let node = panel.accessibility().unwrap();
-        assert_eq!(node.name.as_deref(), Some(t("overview-title").as_str()));
-        assert!(node.children.iter().any(|child| child.role == Role::List));
     }
 
     #[test]
@@ -1655,17 +1679,5 @@ mod tests {
             &PresenceCtx::default(),
         );
         assert!(scene.encoding().is_empty());
-    }
-
-    #[test]
-    fn the_panel_curve_is_settled_at_both_ends_and_never_reverses() {
-        assert_eq!(panel_curve(0.0), (0.0, PANEL_RISE_PX, PANEL_START_SCALE));
-        assert_eq!(panel_curve(1.0), (1.0, 0.0, 1.0));
-        let mut last = panel_curve(0.0);
-        for step in 1..=20_u8 {
-            let now = panel_curve(f32::from(step) / 20.0);
-            assert!(now.0 >= last.0 && now.1 <= last.1 && now.2 >= last.2);
-            last = now;
-        }
     }
 }

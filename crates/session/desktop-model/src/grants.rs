@@ -139,82 +139,121 @@ mod tests {
         )
     }
 
-    /// A grant on one set's assign node lets its holder assign that set and
-    /// no other.
-    #[test]
-    fn a_grant_to_assign_one_role_assigns_that_role_only() {
-        let (mut tree, _) = tree();
-        let workspace = &mut tree.workspaces[0];
-        let workspace_id = workspace.policy.workspace.clone();
-        for name in ["Reviewer", "Admin helper"] {
-            let owner = workspace.person_authority("owner");
-            let preset = Preset::new(
-                name,
-                "",
-                vec![Rule::new(
-                    TreePath::workspace(&workspace_id).app("so.tilo.notes"),
-                    KindSet::READ,
-                    Answer::Allow,
-                )],
-            );
-            let mut next = workspace.clone();
-            next.save_preset_with_at(&owner, preset, 0).unwrap();
-            *workspace = next;
-        }
-        workspace.grant(Grant::new(
-            "scribe-assigns-reviewer",
-            Grantee::agent("scribe"),
-            preset_assign_node(&workspace_id, "Reviewer"),
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            Grantee::person("owner"),
-        ));
-        // A delegation hands out no more than it holds itself.
-        workspace.grant(Grant::new(
-            "scribe-reads-notes",
-            Grantee::agent("scribe"),
-            TreePath::workspace(&workspace_id).app("so.tilo.notes"),
-            KindSet::READ,
-            Answer::Allow,
-            Grantee::person("owner"),
-        ));
-        let ada = Grantee::person("ada");
-        let assign = |workspace: &mut Workspace, name: &str| {
-            let snapshot = workspace.clone();
-            let scribe = Authority::person(snapshot.policy.party("owner")).bounded_by(Party::new(
-                vec![Grantee::agent("scribe")],
-                &snapshot.policy.grants,
+    tilo_test_env::scenario! {
+        fn a_grant_is_given_only_by_who_may_and_for_what_it_names;
+
+        phase a_grant_to_assign_one_role_assigns_that_role_only;
+        // A grant on one set's assign node lets its holder assign that set and
+        // no other.
+        {
+            let (mut tree, _) = tree();
+            let workspace = &mut tree.workspaces[0];
+            let workspace_id = workspace.policy.workspace.clone();
+            for name in ["Reviewer", "Admin helper"] {
+                let owner = workspace.person_authority("owner");
+                let preset = Preset::new(
+                    name,
+                    "",
+                    vec![Rule::new(
+                        TreePath::workspace(&workspace_id).app("so.tilo.notes"),
+                        KindSet::READ,
+                        Answer::Allow,
+                    )],
+                );
+                let mut next = workspace.clone();
+                next.save_preset_with_at(&owner, preset, 0).unwrap();
+                *workspace = next;
+            }
+            workspace.grant(Grant::new(
+                "scribe-assigns-reviewer",
+                Grantee::agent("scribe"),
+                preset_assign_node(&workspace_id, "Reviewer"),
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Grantee::person("owner"),
             ));
-            workspace.assign_preset_with_at(
-                "owner",
-                &scribe,
-                name,
-                &ada,
-                &Lifetime::UntilRevoked,
-                0,
-            )
-        };
-        assert!(
-            assign(workspace, "Reviewer").is_ok(),
-            "the granted set is assigned"
-        );
-        assert!(
-            assign(workspace, "Admin helper").is_err(),
-            "another set is not"
-        );
-        let reading = TreePath::root()
-            .push(Level::Workspace, workspace_id.as_str())
-            .app("so.tilo.notes");
-        assert_eq!(
-            workspace.answer_at("ada", &reading, tilo_action_policy::ActionKind::Read, 0),
-            Answer::Allow
-        );
+            // A delegation hands out no more than it holds itself.
+            workspace.grant(Grant::new(
+                "scribe-reads-notes",
+                Grantee::agent("scribe"),
+                TreePath::workspace(&workspace_id).app("so.tilo.notes"),
+                KindSet::READ,
+                Answer::Allow,
+                Grantee::person("owner"),
+            ));
+            let ada = Grantee::person("ada");
+            let assign = |workspace: &mut Workspace, name: &str| {
+                let snapshot = workspace.clone();
+                let scribe = Authority::person(snapshot.policy.party("owner")).bounded_by(Party::new(
+                    vec![Grantee::agent("scribe")],
+                    &snapshot.policy.grants,
+                ));
+                workspace.assign_preset_with_at(
+                    "owner",
+                    &scribe,
+                    name,
+                    &ada,
+                    &Lifetime::UntilRevoked,
+                    0,
+                )
+            };
+            assert!(
+                assign(workspace, "Reviewer").is_ok(),
+                "the granted set is assigned"
+            );
+            assert!(
+                assign(workspace, "Admin helper").is_err(),
+                "another set is not"
+            );
+            let reading = TreePath::root()
+                .push(Level::Workspace, workspace_id.as_str())
+                .app("so.tilo.notes");
+            assert_eq!(
+                workspace.answer_at("ada", &reading, tilo_action_policy::ActionKind::Read, 0),
+                Answer::Allow
+            );
+        }
+
+        phase only_a_governor_grants_and_the_stored_grant_keeps_the_grantor_it_names;
+        // Only a host that may govern records a grant, and the grant keeps the
+        // grantor its change names: one member's share stays theirs even when a
+        // host records it, and every device reads the same name.
+        {
+            let (mut tree, id) = tree();
+            let workspace_id = tree.workspaces[0].policy.workspace.clone();
+            assert!(
+                tree.grant_in_workspace_at(id, &"stranger".to_string(), app_grant(&workspace_id), 10)
+                    .is_err()
+            );
+            tree.grant_in_workspace_at(id, &"owner".to_string(), app_grant(&workspace_id), 10)
+                .unwrap();
+            let stored = tree.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .find(|grant| grant.id.as_str() == "app-open")
+                .unwrap();
+            assert_eq!(
+                stored.granted_by,
+                Grantee::person("someone else"),
+                "the governor does not rewrite the grantor the change names"
+            );
+            assert!(
+                tree.grant_in_workspace_at(
+                    WorkspaceSlot(2),
+                    &"owner".to_string(),
+                    app_grant(&workspace_id),
+                    10
+                )
+                .is_err()
+            );
+        }
     }
 
     fn app_grant(workspace: &str) -> Grant {
         Grant::new(
             "app-open",
-            Grantee::app("so.tilo.caller"),
+            Grantee::person("someone else"),
             TreePath::workspace(workspace)
                 .app("so.tilo.target")
                 .resource("target.document")
@@ -223,41 +262,6 @@ mod tests {
             Answer::Allow,
             Grantee::person("someone else"),
         )
-    }
-
-    /// Only a host that may govern records a grant, and the grant keeps the
-    /// grantor its change names: one member's share stays theirs even when a
-    /// host records it, and every device reads the same name.
-    #[test]
-    fn only_a_governor_grants_and_the_stored_grant_keeps_the_grantor_it_names() {
-        let (mut tree, id) = tree();
-        let workspace_id = tree.workspaces[0].policy.workspace.clone();
-        assert!(
-            tree.grant_in_workspace_at(id, &"stranger".to_string(), app_grant(&workspace_id), 10)
-                .is_err()
-        );
-        tree.grant_in_workspace_at(id, &"owner".to_string(), app_grant(&workspace_id), 10)
-            .unwrap();
-        let stored = tree.workspaces[0]
-            .policy
-            .grants
-            .iter()
-            .find(|grant| grant.id.as_str() == "app-open")
-            .unwrap();
-        assert_eq!(
-            stored.granted_by,
-            Grantee::person("someone else"),
-            "the governor does not rewrite the grantor the change names"
-        );
-        assert!(
-            tree.grant_in_workspace_at(
-                WorkspaceSlot(2),
-                &"owner".to_string(),
-                app_grant(&workspace_id),
-                10
-            )
-            .is_err()
-        );
     }
 
     #[test]
@@ -390,7 +394,7 @@ impl crate::Workspace {
     ) -> Result<PolicyEdit, Refusal> {
         self.require_governance(actor, tilo_action_policy::roles::governance::GRANT, now)?;
         let id = self
-            .grant_sandbox(cap.granted_by(collab_types::caps::Principal::Person(actor.to_owned())));
+            .grant_sandbox(cap.granted_by(tilo_action_policy::MemberId::person(actor.to_owned())));
         Ok(PolicyEdit {
             sandbox_granted: vec![id],
             ..PolicyEdit::default()

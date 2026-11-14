@@ -34,7 +34,7 @@ impl DeviceSigner for Key {
 
 /// `message`, as the host relays a retained write of `author` to `workspace_id`.
 fn relayed(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     message: &neighbour_wire::NeighbourMsg,
 ) -> Envelope {
@@ -53,9 +53,9 @@ fn relayed(
     }
 }
 
-/// Whether `link` heard that `app`'s record `""` landed.
-fn heard_landed(link: &Link) -> bool {
-    link.drain().into_iter().any(|event| {
+/// Whether `events` heard that `app`'s record `""` landed.
+fn heard_landed(events: &crate::Events) -> bool {
+    events.drain().into_iter().any(|event| {
         matches!(event, crate::Event::Landed { route, .. } if route.app_id == APP && route.record.is_empty())
     })
 }
@@ -71,7 +71,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
         governor,
     } = late_admission_at(web_time::SystemTime::now());
     let workspace_id = bootstrap.workspace_id;
-    let workspace = bootstrap.room.clone();
+    let workspace = bootstrap.workspace_id.to_string();
     let host = bootstrap.host.clone();
     let config = PeerConfig {
         host: tilo_relay_client::Host::through(
@@ -90,6 +90,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
         Arc::new(Key(device_key)),
         Arc::new(crate::MemoryPeerStore::default()),
     );
+    let events = link.events();
     let answer = postcard::to_stdvec(
         &tilo_peer_state::join::JoinTransportResponse::MembershipComplete(bootstrap),
     )
@@ -108,7 +109,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
     );
     let read = || link.engine().record(&workspace, APP, "");
     assert!(
-        !heard_landed(&link),
+        !heard_landed(&events),
         "a record is not taken to its readers before the page is admitted: they would read it as \
          a stranger's ({:?})",
         read()
@@ -117,7 +118,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
     task.admit_governance();
     assert!(task.replicas.admits_this_device(workspace_id));
     assert!(
-        heard_landed(&link),
+        heard_landed(&events),
         "the record lands once the page is admitted"
     );
     assert!(

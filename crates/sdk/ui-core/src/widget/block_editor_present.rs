@@ -463,52 +463,6 @@ mod tests {
         editor
     }
 
-    #[test]
-    fn a_collaborators_insert_before_the_caret_carries_it() {
-        let mut editor = editor_with(vec![BlockContent::paragraph("a", "hello world")]);
-        editor.focus_block(0, super::super::CursorPlacement::Byte(6));
-        assert!(editor.present_blocks(&[BlockContent::paragraph("a", "oh, hello world")]));
-        assert_eq!(editor.blocks()[0].line.cursor_pos(), 10);
-        assert_eq!(editor.focused_index(), Some(0));
-    }
-
-    #[test]
-    fn focus_follows_its_block_when_another_is_inserted_before_it() {
-        let mut editor = editor_with(vec![
-            BlockContent::paragraph("a", "first"),
-            BlockContent::paragraph("b", "second"),
-        ]);
-        editor.focus_block(1, super::super::CursorPlacement::Byte(3));
-        editor.present_blocks(&[
-            BlockContent::paragraph("z", "new"),
-            BlockContent::paragraph("a", "first"),
-            BlockContent::paragraph("b", "second"),
-        ]);
-        assert_eq!(editor.focused_index(), Some(2));
-        assert_eq!(editor.blocks()[2].line.cursor_pos(), 3);
-    }
-
-    #[test]
-    fn presenting_the_same_blocks_changes_nothing() {
-        let blocks = vec![BlockContent::paragraph("a", "same")];
-        let mut editor = editor_with(blocks.clone());
-        assert!(!editor.present_blocks(&blocks));
-    }
-
-    #[test]
-    fn who_wrote_a_run_is_shown_and_read_back() {
-        let mut editor = editor_with(vec![BlockContent::paragraph("a", "hello world")]);
-        let mut authored = BlockContent::paragraph("a", "hello world");
-        authored.authors = vec![(0..5, "ada".into()), (6..11, "grace".into())];
-        assert!(editor.present_blocks(std::slice::from_ref(&authored)));
-        assert_eq!(
-            editor.blocks()[0].line.author_runs(),
-            [(0, 5, "ada".to_owned()), (6, 11, "grace".to_owned())]
-        );
-        assert_eq!(editor.blocks()[0].content(), authored);
-        assert!(!editor.present_blocks(&[authored]));
-    }
-
     fn painted_rows(content: BlockContent) -> Vec<Vec<u8>> {
         let theme = crate::theme::Theme::dark();
         let mut editor = BlockEditor::new().with_wrap_lines(true);
@@ -531,57 +485,109 @@ mod tests {
         pixels.chunks(220 * 4).map(<[u8]>::to_vec).collect()
     }
 
-    #[test]
-    fn another_authors_wrapped_run_is_tinted_on_each_line() {
-        let text = "The agent added this line for Friday, and it wraps here";
-        let by = |author: &str| BlockContent {
-            authors: vec![(0..text.len(), author.into())],
-            ..BlockContent::paragraph("a", text)
-        };
-        let plain = painted_rows(BlockContent::paragraph("a", text));
-        let tinted = painted_rows(by("agent:helper"));
-        let changed: Vec<usize> = (0..plain.len())
-            .filter(|&row| plain[row] != tinted[row])
-            .collect();
-        assert!(
-            changed
-                .last()
-                .zip(changed.first())
-                .is_some_and(|(last, first)| last - first > 24),
-            "the run is tinted over more than one line: rows {changed:?}"
-        );
-        assert_eq!(
-            painted_rows(by("ada")),
-            plain,
-            "one's own words are not tinted"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// What presenting new blocks keeps: caret, focus, authorship, kind and widget.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn presenting_blocks_carries_caret_focus_and_authors;
 
-    #[test]
-    fn a_new_kind_keeps_the_text_and_caret() {
-        let mut editor = editor_with(vec![BlockContent::paragraph("a", "Title")]);
-        editor.focus_block(0, super::super::CursorPlacement::Byte(2));
-        let mut heading = BlockContent::paragraph("a", "Title");
-        heading.kind = BlockKind::Heading(1);
-        editor.present_blocks(&[heading]);
-        assert_eq!(editor.blocks()[0].kind, BlockKind::Heading(1));
-        assert_eq!(editor.blocks()[0].line.cursor_pos(), 2);
-    }
+        phase a_collaborators_insert_before_the_caret_carries_it;
+        {
+            let mut editor = editor_with(vec![BlockContent::paragraph("a", "hello world")]);
+            editor.focus_block(0, super::super::CursorPlacement::Byte(6));
+            assert!(editor.present_blocks(&[BlockContent::paragraph("a", "oh, hello world")]));
+            assert_eq!(editor.blocks()[0].line.cursor_pos(), 10);
+            assert_eq!(editor.focused_index(), Some(0));
+        }
 
-    #[test]
-    fn renaming_keeps_the_widget() {
-        let mut editor = editor_with(vec![BlockContent::paragraph("local", "x")]);
-        assert!(editor.rename_block("local", "minted"));
-        assert_eq!(editor.blocks()[0].id, "minted");
-        assert!(!editor.rename_block("missing", "other"));
-    }
+        phase focus_follows_its_block_when_another_is_inserted_before_it;
+        {
+            let mut editor = editor_with(vec![
+                BlockContent::paragraph("a", "first"),
+                BlockContent::paragraph("b", "second"),
+            ]);
+            editor.focus_block(1, super::super::CursorPlacement::Byte(3));
+            editor.present_blocks(&[
+                BlockContent::paragraph("z", "new"),
+                BlockContent::paragraph("a", "first"),
+                BlockContent::paragraph("b", "second"),
+            ]);
+            assert_eq!(editor.focused_index(), Some(2));
+            assert_eq!(editor.blocks()[2].line.cursor_pos(), 3);
+        }
 
-    #[test]
-    fn carry_moves_with_the_text_after_the_edit() {
-        assert_eq!(carry_byte("abcdef", "abXcdef", 4), 5);
-        assert_eq!(carry_byte("abcdef", "abcdef!", 6), 6);
-        assert_eq!(carry_byte("abcdef", "adef", 3), 1);
-        assert_eq!(carry_byte("abcdef", "abcdef", 2), 2);
+        phase presenting_the_same_blocks_changes_nothing;
+        {
+            let blocks = vec![BlockContent::paragraph("a", "same")];
+            let mut editor = editor_with(blocks.clone());
+            assert!(!editor.present_blocks(&blocks));
+        }
+
+        phase who_wrote_a_run_is_shown_and_read_back;
+        {
+            let mut editor = editor_with(vec![BlockContent::paragraph("a", "hello world")]);
+            let mut authored = BlockContent::paragraph("a", "hello world");
+            authored.authors = vec![(0..5, "ada".into()), (6..11, "grace".into())];
+            assert!(editor.present_blocks(std::slice::from_ref(&authored)));
+            assert_eq!(
+                editor.blocks()[0].line.author_runs(),
+                [(0, 5, "ada".to_owned()), (6, 11, "grace".to_owned())]
+            );
+            assert_eq!(editor.blocks()[0].content(), authored);
+            assert!(!editor.present_blocks(&[authored]));
+        }
+
+        phase another_authors_wrapped_run_is_tinted_on_each_line;
+        {
+            let text = "The agent added this line for Friday, and it wraps here";
+            let by = |author: &str| BlockContent {
+                authors: vec![(0..text.len(), author.into())],
+                ..BlockContent::paragraph("a", text)
+            };
+            let plain = painted_rows(BlockContent::paragraph("a", text));
+            let tinted = painted_rows(by("agent:helper"));
+            let changed: Vec<usize> = (0..plain.len())
+                .filter(|&row| plain[row] != tinted[row])
+                .collect();
+            assert!(
+                changed
+                    .last()
+                    .zip(changed.first())
+                    .is_some_and(|(last, first)| last - first > 24),
+                "the run is tinted over more than one line: rows {changed:?}"
+            );
+            assert_eq!(
+                painted_rows(by("ada")),
+                plain,
+                "one's own words are not tinted"
+            );
+        }
+
+        phase a_new_kind_keeps_the_text_and_caret;
+        {
+            let mut editor = editor_with(vec![BlockContent::paragraph("a", "Title")]);
+            editor.focus_block(0, super::super::CursorPlacement::Byte(2));
+            let mut heading = BlockContent::paragraph("a", "Title");
+            heading.kind = BlockKind::Heading(1);
+            editor.present_blocks(&[heading]);
+            assert_eq!(editor.blocks()[0].kind, BlockKind::Heading(1));
+            assert_eq!(editor.blocks()[0].line.cursor_pos(), 2);
+        }
+
+        phase renaming_keeps_the_widget;
+        {
+            let mut editor = editor_with(vec![BlockContent::paragraph("local", "x")]);
+            assert!(editor.rename_block("local", "minted"));
+            assert_eq!(editor.blocks()[0].id, "minted");
+            assert!(!editor.rename_block("missing", "other"));
+        }
+
+        phase carry_moves_with_the_text_after_the_edit;
+        {
+            assert_eq!(carry_byte("abcdef", "abXcdef", 4), 5);
+            assert_eq!(carry_byte("abcdef", "abcdef!", 6), 6);
+            assert_eq!(carry_byte("abcdef", "adef", 3), 1);
+            assert_eq!(carry_byte("abcdef", "abcdef", 2), 2);
+        }
     }
 
     /// A collaborator's caret on the first line labels itself below the

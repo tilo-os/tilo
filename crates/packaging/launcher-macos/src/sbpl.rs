@@ -320,204 +320,208 @@ mod tests {
         &profile.params.iter().find(|(k, _)| k == name).unwrap().1
     }
 
-    #[test]
-    fn the_offline_profile_is_pinned() {
-        let profile = render(&policy(SeatbeltNetwork::Denied));
-        let expected = include_str!("../tests/fixtures/offline.sb");
-        assert_eq!(
-            profile.text, expected,
-            "the rendered profile changed; review the diff and update tests/fixtures/offline.sb"
-        );
-        let names: Vec<&str> = profile.params.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "PAYLOAD_DIR",
-                "RUNTIME_DIR",
-                "CONTAINER_DIR",
-                "DARWIN_CACHE_DIR",
-                "READ_0",
-                "WRITE_0",
-                "HIDDEN_0",
-                "PINNED_0",
-                "PINNED_1",
-                "PINNED_2"
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_rendered_profile;
 
-    #[test]
-    fn it_denies_by_default_and_carries_paths_only_as_parameters() {
-        for network in [
-            SeatbeltNetwork::Denied,
-            SeatbeltNetwork::Gate(9050),
-            SeatbeltNetwork::Unrestricted,
-        ] {
-            let p = policy(network);
-            let profile = render(&p);
-            let lines: Vec<&str> = profile.text.lines().collect();
-            assert_eq!(lines[0], "(version 1)");
-            assert_eq!(lines[1], "(deny default)");
-            assert!(!profile.text.contains("(allow default)"));
-            assert!(!profile.text.contains("(allow file-read*)\n"));
-            assert!(!profile.text.contains("(allow file-write*)\n"));
-            for path in [
-                &p.payload,
-                &p.container,
-                p.darwin_cache.as_ref().unwrap(),
-                &p.read_only[0],
-                &p.read_write[0],
+        phase the_offline_profile_is_pinned;
+        {
+            let profile = render(&policy(SeatbeltNetwork::Denied));
+            let expected = include_str!("../tests/fixtures/offline.sb");
+            assert_eq!(
+                profile.text, expected,
+                "the rendered profile changed; review the diff and update tests/fixtures/offline.sb"
+            );
+            let names: Vec<&str> = profile.params.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "PAYLOAD_DIR",
+                    "RUNTIME_DIR",
+                    "CONTAINER_DIR",
+                    "DARWIN_CACHE_DIR",
+                    "READ_0",
+                    "WRITE_0",
+                    "HIDDEN_0",
+                    "PINNED_0",
+                    "PINNED_1",
+                    "PINNED_2"
+                ]
+            );
+        }
+
+        phase it_denies_by_default_and_carries_paths_only_as_parameters;
+        {
+            for network in [
+                SeatbeltNetwork::Denied,
+                SeatbeltNetwork::Gate(9050),
+                SeatbeltNetwork::Unrestricted,
             ] {
-                assert!(
-                    !profile.text.contains(&*path.to_string_lossy()),
-                    "{} was spliced into the text",
-                    path.display()
+                let p = policy(network);
+                let profile = render(&p);
+                let lines: Vec<&str> = profile.text.lines().collect();
+                assert_eq!(lines[0], "(version 1)");
+                assert_eq!(lines[1], "(deny default)");
+                assert!(!profile.text.contains("(allow default)"));
+                assert!(!profile.text.contains("(allow file-read*)\n"));
+                assert!(!profile.text.contains("(allow file-write*)\n"));
+                for path in [
+                    &p.payload,
+                    &p.container,
+                    p.darwin_cache.as_ref().unwrap(),
+                    &p.read_only[0],
+                    &p.read_write[0],
+                ] {
+                    assert!(
+                        !profile.text.contains(&*path.to_string_lossy()),
+                        "{} was spliced into the text",
+                        path.display()
+                    );
+                }
+                assert_eq!(
+                    param(&profile, "WRITE_0"),
+                    p.read_write[0].to_str().unwrap()
+                );
+                assert_eq!(
+                    param(&profile, CONTAINER_PARAM),
+                    p.container.to_str().unwrap()
                 );
             }
-            assert_eq!(
-                param(&profile, "WRITE_0"),
-                p.read_write[0].to_str().unwrap()
-            );
-            assert_eq!(
-                param(&profile, CONTAINER_PARAM),
-                p.container.to_str().unwrap()
-            );
-        }
-    }
-
-    #[test]
-    fn code_runs_only_from_the_payload_and_runtime_and_neither_is_writable() {
-        let profile = render(&policy(SeatbeltNetwork::Denied));
-        let exec: Vec<&str> = profile
-            .text
-            .lines()
-            .filter(|l| l.contains("process-exec") || l.contains("file-map-executable"))
-            .collect();
-        assert_eq!(exec.len(), 2, "{exec:?}");
-        assert!(exec[0].contains("(param \"PAYLOAD_DIR\")"));
-        assert!(exec[0].contains("process-exec"));
-        assert!(exec[1].contains("(param \"RUNTIME_DIR\")"));
-        assert!(!exec[1].contains("process-exec"));
-        // The container is writable and never executable.
-        let container_line = profile
-            .text
-            .lines()
-            .find(|l| l.contains("(param \"CONTAINER_DIR\")") && l.contains("file-write*"))
-            .unwrap();
-        assert!(!container_line.contains("exec"));
-        let tail = profile.text.rsplit("(deny file-write*").next().unwrap();
-        assert!(tail.contains("(param \"PAYLOAD_DIR\")"));
-        assert!(tail.contains("(param \"RUNTIME_DIR\")"));
-        assert!(
-            !tail.contains("(allow"),
-            "the write denial must be the last rule"
-        );
-    }
-
-    #[test]
-    fn private_stores_are_denied_after_every_grant() {
-        for network in [
-            SeatbeltNetwork::Denied,
-            SeatbeltNetwork::Gate(9050),
-            SeatbeltNetwork::Unrestricted,
-        ] {
-            let p = policy(network);
-            let profile = render(&p);
-            let hidden = profile
-                .text
-                .find("(deny file-read* file-write*\n  (subpath (param \"HIDDEN_0\")))")
-                .expect("the store is denied outright");
-            let pinned = profile
-                .text
-                .find(
-                    "(deny file-write*\n  (literal (param \"PINNED_0\"))\n  \
-                     (literal (param \"PINNED_1\"))\n  (literal (param \"PINNED_2\")))",
-                )
-                .expect("every directory on the way is pinned");
-            // In SBPL the last matching rule wins: no allow may follow.
-            assert!(
-                !profile
-                    .text
-                    .get(hidden.min(pinned)..)
-                    .unwrap()
-                    .contains("(allow"),
-                "a grant follows the private store denial:\n{}",
-                profile.text
-            );
-            assert_eq!(param(&profile, "HIDDEN_0"), "/Users/u/.config/tilo");
-            assert_eq!(param(&profile, "PINNED_2"), "/Users/u/.config");
-            // Path ancestors of a store are not made stat-able for it.
-            assert!(
-                !profile
-                    .text
-                    .contains("(path-ancestors (param \"HIDDEN_0\"))")
-            );
         }
 
-        let mut none = policy(SeatbeltNetwork::Denied);
-        none.hidden.clear();
-        none.pinned.clear();
-        let profile = render(&none);
-        assert!(!profile.text.contains("HIDDEN_") && !profile.text.contains("PINNED_"));
-    }
-
-    #[test]
-    fn network_rules_follow_the_egress_decision() {
-        let offline = render(&policy(SeatbeltNetwork::Denied));
-        assert!(!offline.text.contains("network-outbound"));
-        assert!(!offline.text.contains("network-bind"));
-        assert!(!offline.text.contains("AF_INET"));
-        assert!(!offline.text.contains("(system-network)"));
-
-        let gated = render(&policy(SeatbeltNetwork::Gate(9050)));
-        let outbound: Vec<&str> = gated
-            .text
-            .lines()
-            .filter(|l| l.contains("network"))
-            .collect();
-        // One loopback port, no filesystem socket, no other address.
-        assert_eq!(
-            outbound,
-            [
-                "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"NET_GATE_PORT\"))))"
-            ]
-        );
-        assert_eq!(param(&gated, GATE_PORT_PARAM), "9050");
-        assert!(!gated.text.contains("(system-network)"));
-        assert!(!gated.text.contains("network-bind"));
-
-        let open = render(&policy(SeatbeltNetwork::Unrestricted));
-        assert!(open.text.contains("(system-network)"));
-        assert!(open.text.contains("(remote ip \"*:*\")"));
-        // IP only: filesystem sockets other than the resolver stay closed.
-        assert!(!open.text.contains("(allow network-outbound)"));
-        assert!(!open.text.contains("(allow network*)"));
-        assert!(open.text.contains(RESOLVER_SOCKET));
-    }
-
-    #[test]
-    fn the_fixed_grants_name_no_user_content() {
-        for path in GUI_READ_SUBPATHS
-            .iter()
-            .chain(GUI_READ_LITERALS)
-            .chain(NETWORK_READ_LITERALS)
+        phase code_runs_only_from_the_payload_and_runtime_and_neither_is_writable;
         {
-            assert!(path.starts_with('/'), "{path}");
-            assert!(!path.starts_with("/Users"), "{path} is user content");
-            assert!(!path.contains('~') && !path.contains(".."), "{path}");
+            let profile = render(&policy(SeatbeltNetwork::Denied));
+            let exec: Vec<&str> = profile
+                .text
+                .lines()
+                .filter(|l| l.contains("process-exec") || l.contains("file-map-executable"))
+                .collect();
+            assert_eq!(exec.len(), 2, "{exec:?}");
+            assert!(exec[0].contains("(param \"PAYLOAD_DIR\")"));
+            assert!(exec[0].contains("process-exec"));
+            assert!(exec[1].contains("(param \"RUNTIME_DIR\")"));
+            assert!(!exec[1].contains("process-exec"));
+            // The container is writable and never executable.
+            let container_line = profile
+                .text
+                .lines()
+                .find(|l| l.contains("(param \"CONTAINER_DIR\")") && l.contains("file-write*"))
+                .unwrap();
+            assert!(!container_line.contains("exec"));
+            let tail = profile.text.rsplit("(deny file-write*").next().unwrap();
+            assert!(tail.contains("(param \"PAYLOAD_DIR\")"));
+            assert!(tail.contains("(param \"RUNTIME_DIR\")"));
             assert!(
-                Path::new(path).components().count() >= 3,
-                "{path} is too broad"
+                !tail.contains("(allow"),
+                "the write denial must be the last rule"
             );
         }
-        for service in GUI_MACH_SERVICES.iter().chain(NETWORK_MACH_SERVICES) {
-            assert!(service.starts_with("com.apple."), "{service}");
+
+        phase private_stores_are_denied_after_every_grant;
+        {
+            for network in [
+                SeatbeltNetwork::Denied,
+                SeatbeltNetwork::Gate(9050),
+                SeatbeltNetwork::Unrestricted,
+            ] {
+                let p = policy(network);
+                let profile = render(&p);
+                let hidden = profile
+                    .text
+                    .find("(deny file-read* file-write*\n  (subpath (param \"HIDDEN_0\")))")
+                    .expect("the store is denied outright");
+                let pinned = profile
+                    .text
+                    .find(
+                        "(deny file-write*\n  (literal (param \"PINNED_0\"))\n  \
+                     (literal (param \"PINNED_1\"))\n  (literal (param \"PINNED_2\")))",
+                    )
+                    .expect("every directory on the way is pinned");
+                // In SBPL the last matching rule wins: no allow may follow.
+                assert!(
+                    !profile
+                        .text
+                        .get(hidden.min(pinned)..)
+                        .unwrap()
+                        .contains("(allow"),
+                    "a grant follows the private store denial:\n{}",
+                    profile.text
+                );
+                assert_eq!(param(&profile, "HIDDEN_0"), "/Users/u/.config/tilo");
+                assert_eq!(param(&profile, "PINNED_2"), "/Users/u/.config");
+                // Path ancestors of a store are not made stat-able for it.
+                assert!(
+                    !profile
+                        .text
+                        .contains("(path-ancestors (param \"HIDDEN_0\"))")
+                );
+            }
+
+            let mut none = policy(SeatbeltNetwork::Denied);
+            none.hidden.clear();
+            none.pinned.clear();
+            let profile = render(&none);
+            assert!(!profile.text.contains("HIDDEN_") && !profile.text.contains("PINNED_"));
         }
-        // Services that would bypass the capability model: TCC (camera,
-        // microphone, screen recording prompts), and the Tilo runtime's own
-        // sockets, which reach an app only as inherited descriptors.
-        let profile = render(&policy(SeatbeltNetwork::Unrestricted));
-        assert!(!profile.text.contains("tccd"));
-        assert!(!profile.text.contains("Tilo/runtime"));
+
+        phase network_rules_follow_the_egress_decision;
+        {
+            let offline = render(&policy(SeatbeltNetwork::Denied));
+            assert!(!offline.text.contains("network-outbound"));
+            assert!(!offline.text.contains("network-bind"));
+            assert!(!offline.text.contains("AF_INET"));
+            assert!(!offline.text.contains("(system-network)"));
+
+            let gated = render(&policy(SeatbeltNetwork::Gate(9050)));
+            let outbound: Vec<&str> = gated
+                .text
+                .lines()
+                .filter(|l| l.contains("network"))
+                .collect();
+            // One loopback port, no filesystem socket, no other address.
+            assert_eq!(
+                outbound,
+                [
+                    "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"NET_GATE_PORT\"))))"
+                ]
+            );
+            assert_eq!(param(&gated, GATE_PORT_PARAM), "9050");
+            assert!(!gated.text.contains("(system-network)"));
+            assert!(!gated.text.contains("network-bind"));
+
+            let open = render(&policy(SeatbeltNetwork::Unrestricted));
+            assert!(open.text.contains("(system-network)"));
+            assert!(open.text.contains("(remote ip \"*:*\")"));
+            // IP only: filesystem sockets other than the resolver stay closed.
+            assert!(!open.text.contains("(allow network-outbound)"));
+            assert!(!open.text.contains("(allow network*)"));
+            assert!(open.text.contains(RESOLVER_SOCKET));
+        }
+
+        phase the_fixed_grants_name_no_user_content;
+        {
+            for path in GUI_READ_SUBPATHS
+                .iter()
+                .chain(GUI_READ_LITERALS)
+                .chain(NETWORK_READ_LITERALS)
+            {
+                assert!(path.starts_with('/'), "{path}");
+                assert!(!path.starts_with("/Users"), "{path} is user content");
+                assert!(!path.contains('~') && !path.contains(".."), "{path}");
+                assert!(
+                    Path::new(path).components().count() >= 3,
+                    "{path} is too broad"
+                );
+            }
+            for service in GUI_MACH_SERVICES.iter().chain(NETWORK_MACH_SERVICES) {
+                assert!(service.starts_with("com.apple."), "{service}");
+            }
+            // Services that would bypass the capability model: TCC (camera,
+            // microphone, screen recording prompts), and the Tilo runtime's own
+            // sockets, which reach an app only as inherited descriptors.
+            let profile = render(&policy(SeatbeltNetwork::Unrestricted));
+            assert!(!profile.text.contains("tccd"));
+            assert!(!profile.text.contains("Tilo/runtime"));
+        }
     }
 }

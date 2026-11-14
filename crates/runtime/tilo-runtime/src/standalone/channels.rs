@@ -90,33 +90,16 @@ struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    /// The member devices the workspace's governance lets read the channel's
-    /// record.
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        self.joined.channel_readers(workspace, channel, route, now)
+        self.joined.key_holders(workspace, now)
     }
 
-    /// The scope the record on `route` seals under, as its governance decides
-    /// it: the workspace's, or the record's own when its readers are narrowed.
-    fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &collab_types::ChannelRoute,
-        now: u64,
-    ) -> Option<collab_types::ChannelId> {
-        self.joined.unit_scope(workspace, route, now)
-    }
-
-    /// A workspace joined through another device's host is that host's to
-    /// answer for.
-    fn hosts(&self, workspace: WorkspaceId) -> bool {
-        !self.joined.hosted_elsewhere(workspace)
+    fn founds(&self, workspace: WorkspaceId) -> bool {
+        self.joined.founded_here(workspace)
     }
 }
 
@@ -166,7 +149,6 @@ impl tilo_room_host::workspaces::ChannelKeys for DeviceChannelKeys {
     fn channel_keys<'a>(
         &'a self,
         workspace: &'a str,
-        route: &'a collab_types::ChannelRoute,
         create: bool,
     ) -> std::pin::Pin<
         Box<
@@ -177,13 +159,11 @@ impl tilo_room_host::workspaces::ChannelKeys for DeviceChannelKeys {
         >,
     > {
         let keys = self.keys.clone();
-        let (workspace, route) = (workspace.to_owned(), route.clone());
         Box::pin(async move {
             if keys.get().is_none() {
                 return Some(Err("this device's channel service is not running".into()));
             }
-            keys.channel_keys(&workspace, &route, create, OPEN_WAIT)
-                .await
+            keys.channel_keys(workspace, create, OPEN_WAIT).await
         })
     }
 }

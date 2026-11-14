@@ -379,246 +379,303 @@ mod tests {
         section.items.iter().map(|item| item.id.clone()).collect()
     }
 
-    #[test]
-    fn favourites_and_locations_are_sections_with_the_current_folder_chosen() {
-        let places = sample();
-        let sections = places.sections();
-        assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].title, t("files-place-favorites"));
-        assert_eq!(
-            ids(&sections[0]),
-            [
-                "fav:/home/u",
-                "fav:/home/u/Documents",
-                "fav:/home/u/Pictures",
-                "fav:/home/u/Projects"
-            ]
-        );
-        assert_eq!(
-            places.selected_id().as_deref(),
-            Some("fav:/home/u/Pictures")
-        );
-        assert!(
-            sections[1]
-                .items
-                .iter()
-                .any(|item| item.id == format!("loc:{}", crate::recent::location().display()))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_places_sidebar_groups_selects_and_reorders_its_rows;
 
-    #[test]
-    fn no_favourites_means_no_favourites_section() {
-        let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"));
-        let sections = places.sections();
-        assert_eq!(sections.len(), 1);
-        assert_eq!(sections[0].id, LOCATIONS_SECTION);
-    }
-
-    #[test]
-    fn unmounted_import_account_has_an_account_navigation_row() {
-        let places =
-            Places::new(&new_store(Vec::new()), PathBuf::from("/")).with_remote_accounts(vec![
-                AccountPlace {
-                    id: "import-cloud".into(),
-                    label: "Import cloud".into(),
-                    mount: None,
-                    status: None,
-                },
-            ]);
-        let sections = places.sections();
-        let row = sections
-            .iter()
-            .flat_map(|section| &section.items)
-            .find(|item| item.id == "account:import-cloud")
-            .expect("imports remain navigable without a mount");
-        assert!(row.status.is_none());
-        assert!(path_of_id(&row.id).is_none());
-    }
-
-    #[test]
-    fn import_browser_selects_account_instead_of_home() {
-        let store = new_store(vec![favorite("Home", "/home/u", FavKind::Home)]);
-        let places = Places::new(&store, PathBuf::from("/home/u")).with_remote_accounts(vec![
-            AccountPlace {
-                id: "drive".into(),
-                label: "Google Drive".into(),
-                mount: None,
-                status: None,
-            },
-        ]);
-        assert_eq!(places.selected_id().as_deref(), Some("fav:/home/u"));
-        let places = places.with_active_account(Some("drive".into()));
-        assert_eq!(places.selected_id().as_deref(), Some("account:drive"));
-        assert_eq!(
-            places.with_active_account(None).selected_id().as_deref(),
-            Some("fav:/home/u")
-        );
-    }
-
-    #[test]
-    fn synced_account_keeps_its_folder_selection() {
-        let places = Places::new(&new_store(Vec::new()), PathBuf::from("/home/u/Drive"))
-            .with_remote_accounts(vec![AccountPlace {
-                id: "drive".into(),
-                label: "Google Drive".into(),
-                mount: Some(PathBuf::from("/home/u/Drive")),
-                status: None,
-            }]);
-        assert_eq!(places.selected_id().as_deref(), Some("loc:/home/u/Drive"));
-    }
-
-    #[test]
-    fn workspaces_and_cloud_accounts_are_locations_with_a_status_icon() {
-        let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"))
-            .with_workspaces(vec![PathBuf::from("/var/workspace")])
-            .with_remote_accounts(vec![
-                AccountPlace {
-                    id: "cloud".into(),
-                    label: "Cloud".into(),
-                    mount: Some(PathBuf::from("/home/a/Remote/Cloud")),
-                    status: None,
-                },
-                AccountPlace {
-                    id: "work".into(),
-                    label: "Work".into(),
-                    mount: Some(PathBuf::from("/home/a/Remote/Work")),
-                    status: Some("Offline".into()),
-                },
-                AccountPlace {
-                    id: "mail".into(),
-                    label: "Mail".into(),
-                    mount: Some(PathBuf::from("/home/a/Remote/Mail")),
-                    status: Some("Sign in".into()),
-                },
-                AccountPlace {
-                    id: "archive".into(),
-                    label: "Archive".into(),
-                    mount: None,
-                    status: Some("Sign in".into()),
-                },
-            ]);
-        let locations = places
-            .sections()
-            .pop()
-            .expect("the locations section is always present");
-        let order = ids(&locations);
-        assert_eq!(order[0], "loc:/var/workspace");
-        assert_eq!(order[1], "loc:/home/a/Remote/Cloud");
-        assert_eq!(order[2], "loc:/home/a/Remote/Work");
-        assert_eq!(order[3], "loc:/home/a/Remote/Mail");
-        let item = |id: &str| {
-            locations
-                .items
-                .iter()
-                .find(|i| i.id == id)
-                .expect("the account is listed")
-        };
-        for id in [
-            "loc:/home/a/Remote/Cloud",
-            "loc:/home/a/Remote/Work",
-            "loc:/home/a/Remote/Mail",
-        ] {
-            assert_eq!(item(id).icon, Some(Icon::Cloud), "{id}");
+        phase favourites_and_locations_are_sections_with_the_current_folder_chosen;
+        {
+            let places = sample();
+            let sections = places.sections();
+            assert_eq!(sections.len(), 2);
+            assert_eq!(sections[0].title, t("files-place-favorites"));
+            assert_eq!(
+                ids(&sections[0]),
+                [
+                    "fav:/home/u",
+                    "fav:/home/u/Documents",
+                    "fav:/home/u/Pictures",
+                    "fav:/home/u/Projects"
+                ]
+            );
+            assert_eq!(
+                places.selected_id().as_deref(),
+                Some("fav:/home/u/Pictures")
+            );
+            assert!(
+                sections[1]
+                    .items
+                    .iter()
+                    .any(|item| item.id == format!("loc:{}", crate::recent::location().display()))
+            );
         }
-        assert!(item("loc:/home/a/Remote/Cloud").status.is_none());
-        assert_eq!(
-            item("loc:/home/a/Remote/Work").secondary.as_deref(),
-            Some("Offline")
-        );
-        assert_eq!(
-            item("loc:/home/a/Remote/Work")
-                .status
-                .as_ref()
-                .map(|s| s.row_status()),
-            Some(RowStatus::Idle)
-        );
-        assert_eq!(
-            item("loc:/home/a/Remote/Mail")
-                .status
-                .as_ref()
-                .map(|s| s.row_status()),
-            Some(RowStatus::Warning)
-        );
-        assert_eq!(order[4], "account:archive");
-        assert_eq!(
-            item("account:archive").secondary.as_deref(),
-            Some("Sign in")
-        );
-    }
 
-    #[test]
-    fn only_removable_favourites_offer_the_unpin_action() {
-        let sections = sample().sections();
-        assert!(!sections[0].items[0].actions, "Home stays");
-        assert!(sections[0].items[1].actions);
-        assert!(sections[1].items.iter().all(|item| !item.actions));
-    }
+        phase no_favourites_means_no_favourites_section;
+        {
+            let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"));
+            let sections = places.sections();
+            assert_eq!(sections.len(), 1);
+            assert_eq!(sections[0].id, LOCATIONS_SECTION);
+        }
 
-    #[test]
-    fn drops_map_to_favourite_reorders() {
-        let places = sample();
-        let fav = |name: &str| format!("fav:/home/u/{name}");
-        assert_eq!(
-            places.reorder_for(&fav("Pictures"), &NavDrop::Before(fav("Documents"))),
-            Some((2, 1))
-        );
-        assert_eq!(
-            places.reorder_for(&fav("Documents"), &NavDrop::After(fav("Projects"))),
-            Some((1, 3))
-        );
-        assert_eq!(
-            places.reorder_for(&fav("Documents"), &NavDrop::Before(fav("Pictures"))),
-            None
-        );
-        assert_eq!(
-            places.reorder_for("loc:/", &NavDrop::Before(fav("Documents"))),
-            None
-        );
-        assert_eq!(
-            places.reorder_for(&fav("Documents"), &NavDrop::Before("loc:/".into())),
-            None
-        );
-        assert_eq!(
-            places.reorder_for(&fav("Documents"), &NavDrop::Into(fav("Projects"))),
-            None
-        );
-    }
+        phase unmounted_import_account_has_an_account_navigation_row;
+        {
+            let places =
+                Places::new(&new_store(Vec::new()), PathBuf::from("/")).with_remote_accounts(vec![
+                    AccountPlace {
+                        id: "import-cloud".into(),
+                        label: "Import cloud".into(),
+                        mount: None,
+                        status: None,
+                    },
+                ]);
+            let sections = places.sections();
+            let row = sections
+                .iter()
+                .flat_map(|section| &section.items)
+                .find(|item| item.id == "account:import-cloud")
+                .expect("imports remain navigable without a mount");
+            assert!(row.status.is_none());
+            assert!(path_of_id(&row.id).is_none());
+        }
 
-    #[test]
-    fn a_reported_move_reorders_the_stored_favourites() {
-        let store = new_store(vec![
-            favorite("Home", "/home/u", FavKind::Home),
-            favorite("Documents", "/home/u/Documents", FavKind::Documents),
-            favorite("Pictures", "/home/u/Pictures", FavKind::Pictures),
-        ]);
-        let places = Places::new(&store, PathBuf::from("/home/u"));
-        let (from, to) = places
-            .reorder_for(
-                "fav:/home/u/Documents",
-                &NavDrop::After("fav:/home/u/Pictures".into()),
-            )
-            .expect("moving down is a reorder");
-        crate::favorites::reorder(&mut store.borrow_mut().favorites, from, to);
-        let order: Vec<_> = store
-            .borrow()
-            .favorites
-            .iter()
-            .map(|favorite| favorite.label.clone())
-            .collect();
-        assert_eq!(order, ["Home", "Pictures", "Documents"]);
-    }
+        phase import_browser_selects_account_instead_of_home;
+        {
+            let store = new_store(vec![favorite("Home", "/home/u", FavKind::Home)]);
+            let places = Places::new(&store, PathBuf::from("/home/u")).with_remote_accounts(vec![
+                AccountPlace {
+                    id: "drive".into(),
+                    label: "Google Drive".into(),
+                    mount: None,
+                    status: None,
+                },
+            ]);
+            assert_eq!(places.selected_id().as_deref(), Some("fav:/home/u"));
+            let places = places.with_active_account(Some("drive".into()));
+            assert_eq!(places.selected_id().as_deref(), Some("account:drive"));
+            assert_eq!(
+                places.with_active_account(None).selected_id().as_deref(),
+                Some("fav:/home/u")
+            );
+        }
 
-    #[test]
-    fn ids_name_their_folder() {
-        assert_eq!(
-            path_of_id(&favorite_id(Path::new("/a/b"))),
-            Some(PathBuf::from("/a/b"))
-        );
-        assert_eq!(
-            path_of_id(&location_id(Path::new("/"))),
-            Some(PathBuf::from("/"))
-        );
-        assert_eq!(path_of_id("other:/a"), None);
+        phase synced_account_keeps_its_folder_selection;
+        {
+            let places = Places::new(&new_store(Vec::new()), PathBuf::from("/home/u/Drive"))
+                .with_remote_accounts(vec![AccountPlace {
+                    id: "drive".into(),
+                    label: "Google Drive".into(),
+                    mount: Some(PathBuf::from("/home/u/Drive")),
+                    status: None,
+                }]);
+            assert_eq!(places.selected_id().as_deref(), Some("loc:/home/u/Drive"));
+        }
+
+        phase workspaces_and_cloud_accounts_are_locations_with_a_status_icon;
+        {
+            let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"))
+                .with_workspaces(vec![PathBuf::from("/var/workspace")])
+                .with_remote_accounts(vec![
+                    AccountPlace {
+                        id: "cloud".into(),
+                        label: "Cloud".into(),
+                        mount: Some(PathBuf::from("/home/a/Remote/Cloud")),
+                        status: None,
+                    },
+                    AccountPlace {
+                        id: "work".into(),
+                        label: "Work".into(),
+                        mount: Some(PathBuf::from("/home/a/Remote/Work")),
+                        status: Some("Offline".into()),
+                    },
+                    AccountPlace {
+                        id: "mail".into(),
+                        label: "Mail".into(),
+                        mount: Some(PathBuf::from("/home/a/Remote/Mail")),
+                        status: Some("Sign in".into()),
+                    },
+                    AccountPlace {
+                        id: "archive".into(),
+                        label: "Archive".into(),
+                        mount: None,
+                        status: Some("Sign in".into()),
+                    },
+                ]);
+            let locations = places
+                .sections()
+                .pop()
+                .expect("the locations section is always present");
+            let order = ids(&locations);
+            assert_eq!(order[0], "loc:/var/workspace");
+            assert_eq!(order[1], "loc:/home/a/Remote/Cloud");
+            assert_eq!(order[2], "loc:/home/a/Remote/Work");
+            assert_eq!(order[3], "loc:/home/a/Remote/Mail");
+            let item = |id: &str| {
+                locations
+                    .items
+                    .iter()
+                    .find(|i| i.id == id)
+                    .expect("the account is listed")
+            };
+            for id in [
+                "loc:/home/a/Remote/Cloud",
+                "loc:/home/a/Remote/Work",
+                "loc:/home/a/Remote/Mail",
+            ] {
+                assert_eq!(item(id).icon, Some(Icon::Cloud), "{id}");
+            }
+            assert!(item("loc:/home/a/Remote/Cloud").status.is_none());
+            assert_eq!(
+                item("loc:/home/a/Remote/Work").secondary.as_deref(),
+                Some("Offline")
+            );
+            assert_eq!(
+                item("loc:/home/a/Remote/Work")
+                    .status
+                    .as_ref()
+                    .map(|s| s.row_status()),
+                Some(RowStatus::Idle)
+            );
+            assert_eq!(
+                item("loc:/home/a/Remote/Mail")
+                    .status
+                    .as_ref()
+                    .map(|s| s.row_status()),
+                Some(RowStatus::Warning)
+            );
+            assert_eq!(order[4], "account:archive");
+            assert_eq!(
+                item("account:archive").secondary.as_deref(),
+                Some("Sign in")
+            );
+        }
+
+        phase only_removable_favourites_offer_the_unpin_action;
+        {
+            let sections = sample().sections();
+            assert!(!sections[0].items[0].actions, "Home stays");
+            assert!(sections[0].items[1].actions);
+            assert!(sections[1].items.iter().all(|item| !item.actions));
+        }
+
+        phase drops_map_to_favourite_reorders;
+        {
+            let places = sample();
+            let fav = |name: &str| format!("fav:/home/u/{name}");
+            assert_eq!(
+                places.reorder_for(&fav("Pictures"), &NavDrop::Before(fav("Documents"))),
+                Some((2, 1))
+            );
+            assert_eq!(
+                places.reorder_for(&fav("Documents"), &NavDrop::After(fav("Projects"))),
+                Some((1, 3))
+            );
+            assert_eq!(
+                places.reorder_for(&fav("Documents"), &NavDrop::Before(fav("Pictures"))),
+                None
+            );
+            assert_eq!(
+                places.reorder_for("loc:/", &NavDrop::Before(fav("Documents"))),
+                None
+            );
+            assert_eq!(
+                places.reorder_for(&fav("Documents"), &NavDrop::Before("loc:/".into())),
+                None
+            );
+            assert_eq!(
+                places.reorder_for(&fav("Documents"), &NavDrop::Into(fav("Projects"))),
+                None
+            );
+        }
+
+        phase a_reported_move_reorders_the_stored_favourites;
+        {
+            let store = new_store(vec![
+                favorite("Home", "/home/u", FavKind::Home),
+                favorite("Documents", "/home/u/Documents", FavKind::Documents),
+                favorite("Pictures", "/home/u/Pictures", FavKind::Pictures),
+            ]);
+            let places = Places::new(&store, PathBuf::from("/home/u"));
+            let (from, to) = places
+                .reorder_for(
+                    "fav:/home/u/Documents",
+                    &NavDrop::After("fav:/home/u/Pictures".into()),
+                )
+                .expect("moving down is a reorder");
+            crate::favorites::reorder(&mut store.borrow_mut().favorites, from, to);
+            let order: Vec<_> = store
+                .borrow()
+                .favorites
+                .iter()
+                .map(|favorite| favorite.label.clone())
+                .collect();
+            assert_eq!(order, ["Home", "Pictures", "Documents"]);
+        }
+
+        phase ids_name_their_folder;
+        {
+            assert_eq!(
+                path_of_id(&favorite_id(Path::new("/a/b"))),
+                Some(PathBuf::from("/a/b"))
+            );
+            assert_eq!(
+                path_of_id(&location_id(Path::new("/"))),
+                Some(PathBuf::from("/"))
+            );
+            assert_eq!(path_of_id("other:/a"), None);
+        }
+
+        phase drives_are_a_section_and_an_open_one_is_chosen_while_shown;
+        {
+            let none = Places::new(&new_store(Vec::new()), PathBuf::from("/"));
+            assert!(
+                none.sections()
+                    .iter()
+                    .all(|section| section.id != DRIVES_SECTION)
+            );
+
+            let places = Places::new(&new_store(Vec::new()), PathBuf::from("/run/media/u/Stick"))
+                .with_drives(vec![
+                    drive("nvme0n1p3:1", true, None),
+                    drive("sdb1:7", false, Some("/run/media/u/Stick")),
+                ]);
+            let sections = places.sections();
+            let drives = sections.last().unwrap();
+            assert_eq!(drives.id, DRIVES_SECTION);
+            assert_eq!(ids(drives), ["drive:nvme0n1p3:1", "drive:sdb1:7"]);
+            assert_eq!(drives.items[0].icon, Some(Icon::HardDrive));
+            assert_eq!(drives.items[1].icon, Some(Icon::Usb));
+            assert!(drives.items[0].status.is_none());
+            assert_eq!(
+                drives.items[1].status.as_ref().map(|s| s.row_status()),
+                Some(RowStatus::Active)
+            );
+            assert_eq!(places.selected_id().as_deref(), Some("drive:sdb1:7"));
+            assert!(
+                path_of_id("drive:sdb1:7").is_none(),
+                "a drive is not a folder row"
+            );
+        }
+
+        phase choosing_a_drive_asks_to_open_it;
+        {
+            let sink = new_sink();
+            let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"))
+                .with_drives(vec![drive("nvme0n1p3:1", true, None)]);
+            let id = ids(places.sections().last().unwrap())[0].clone();
+            choose(&sink, &id);
+            let commands = sink.borrow();
+            assert!(
+                matches!(commands.as_slice(), [FileCommand::OpenDrive(id)] if id == "nvme0n1p3:1"),
+                "{commands:?}"
+            );
+        }
+
+        phase the_list_shows_the_chosen_place;
+        {
+            let sink = new_sink();
+            let list = sample().nav_list(&sink, &Rc::new(RefCell::new(None)));
+            assert_eq!(list.selected_id().as_deref(), Some("fav:/home/u/Pictures"));
+        }
     }
 
     fn drive(id: &str, internal: bool, open_at: Option<&str>) -> DrivePlace {
@@ -629,58 +686,5 @@ mod tests {
             open_at: open_at.map(PathBuf::from),
             detail: "64 GB".into(),
         }
-    }
-
-    #[test]
-    fn drives_are_a_section_and_an_open_one_is_chosen_while_shown() {
-        let none = Places::new(&new_store(Vec::new()), PathBuf::from("/"));
-        assert!(
-            none.sections()
-                .iter()
-                .all(|section| section.id != DRIVES_SECTION)
-        );
-
-        let places = Places::new(&new_store(Vec::new()), PathBuf::from("/run/media/u/Stick"))
-            .with_drives(vec![
-                drive("nvme0n1p3:1", true, None),
-                drive("sdb1:7", false, Some("/run/media/u/Stick")),
-            ]);
-        let sections = places.sections();
-        let drives = sections.last().unwrap();
-        assert_eq!(drives.id, DRIVES_SECTION);
-        assert_eq!(ids(drives), ["drive:nvme0n1p3:1", "drive:sdb1:7"]);
-        assert_eq!(drives.items[0].icon, Some(Icon::HardDrive));
-        assert_eq!(drives.items[1].icon, Some(Icon::Usb));
-        assert!(drives.items[0].status.is_none());
-        assert_eq!(
-            drives.items[1].status.as_ref().map(|s| s.row_status()),
-            Some(RowStatus::Active)
-        );
-        assert_eq!(places.selected_id().as_deref(), Some("drive:sdb1:7"));
-        assert!(
-            path_of_id("drive:sdb1:7").is_none(),
-            "a drive is not a folder row"
-        );
-    }
-
-    #[test]
-    fn choosing_a_drive_asks_to_open_it() {
-        let sink = new_sink();
-        let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"))
-            .with_drives(vec![drive("nvme0n1p3:1", true, None)]);
-        let id = ids(places.sections().last().unwrap())[0].clone();
-        choose(&sink, &id);
-        let commands = sink.borrow();
-        assert!(
-            matches!(commands.as_slice(), [FileCommand::OpenDrive(id)] if id == "nvme0n1p3:1"),
-            "{commands:?}"
-        );
-    }
-
-    #[test]
-    fn the_list_shows_the_chosen_place() {
-        let sink = new_sink();
-        let list = sample().nav_list(&sink, &Rc::new(RefCell::new(None)));
-        assert_eq!(list.selected_id().as_deref(), Some("fav:/home/u/Pictures"));
     }
 }

@@ -230,74 +230,78 @@ mod tests {
         assert!(error.to_string().contains(message), "{error}");
     }
 
-    #[test]
-    fn ancestor_trust_requires_trusted_owner_directory_and_sticky_protection() {
-        {
-            check_ownership(dir(ME, 0o755), None, false, ME).unwrap();
-            check_ownership(dir(0, 0o755), Some(ME), false, ME).unwrap();
-            check_ownership(dir(0, 0o755), Some(0), false, 0).unwrap();
-        }
+    tilo_test_env::scenario! {
+        fn private_paths_require_trusted_owners_and_no_shared_access;
 
+        phase ancestor_trust_requires_trusted_owner_directory_and_sticky_protection;
         {
-            for owner in [OTHER, OVERFLOW] {
+            {
+                check_ownership(dir(ME, 0o755), None, false, ME).unwrap();
+                check_ownership(dir(0, 0o755), Some(ME), false, ME).unwrap();
+                check_ownership(dir(0, 0o755), Some(0), false, 0).unwrap();
+            }
+
+            {
+                for owner in [OTHER, OVERFLOW] {
+                    refused(
+                        check_ownership(dir(owner, 0o755), None, false, ME),
+                        "untrusted owner",
+                    );
+                }
                 refused(
-                    check_ownership(dir(owner, 0o755), None, false, ME),
+                    check_ownership(dir(ME, 0o700), None, false, 0),
                     "untrusted owner",
                 );
             }
-            refused(
-                check_ownership(dir(ME, 0o700), None, false, 0),
-                "untrusted owner",
-            );
-        }
 
-        {
-            let file = Observed {
-                is_dir: false,
-                uid: ME,
-                mode: 0o100_700,
-            };
-            refused(check_ownership(file, None, false, ME), "untrusted owner");
-        }
-
-        {
-            refused(
-                check_ownership(dir(0, 0o777), Some(ME), false, ME),
-                "without sticky protection",
-            );
-            refused(
-                check_ownership(dir(ME, 0o775), None, false, ME),
-                "without sticky protection",
-            );
-            check_ownership(dir(0, 0o1777), Some(ME), false, ME).unwrap();
-            check_ownership(dir(0, 0o1777), None, false, ME).unwrap();
-        }
-
-        {
-            for child in [OTHER, OVERFLOW] {
-                refused(
-                    check_ownership(dir(0, 0o1777), Some(child), false, ME),
-                    "does not protect the selected child",
-                );
+            {
+                let file = Observed {
+                    is_dir: false,
+                    uid: ME,
+                    mode: 0o100_700,
+                };
+                refused(check_ownership(file, None, false, ME), "untrusted owner");
             }
-            check_ownership(dir(0, 0o1777), Some(0), false, ME).unwrap();
-        }
-    }
 
-    #[test]
-    fn private_directory_belongs_to_self_with_no_group_or_other_access() {
-        check_ownership(dir(ME, 0o700), None, true, ME).unwrap();
-        refused(
-            check_ownership(dir(ME, 0o750), None, true, ME),
-            "not private",
-        );
-        refused(
-            check_ownership(dir(0, 0o700), None, true, ME),
-            "not private",
-        );
-        refused(
-            check_private_ownership(dir(OTHER, 0o700), ME),
-            "not private",
-        );
+            {
+                refused(
+                    check_ownership(dir(0, 0o777), Some(ME), false, ME),
+                    "without sticky protection",
+                );
+                refused(
+                    check_ownership(dir(ME, 0o775), None, false, ME),
+                    "without sticky protection",
+                );
+                check_ownership(dir(0, 0o1777), Some(ME), false, ME).unwrap();
+                check_ownership(dir(0, 0o1777), None, false, ME).unwrap();
+            }
+
+            {
+                for child in [OTHER, OVERFLOW] {
+                    refused(
+                        check_ownership(dir(0, 0o1777), Some(child), false, ME),
+                        "does not protect the selected child",
+                    );
+                }
+                check_ownership(dir(0, 0o1777), Some(0), false, ME).unwrap();
+            }
+        }
+
+        phase private_directory_belongs_to_self_with_no_group_or_other_access;
+        {
+            check_ownership(dir(ME, 0o700), None, true, ME).unwrap();
+            refused(
+                check_ownership(dir(ME, 0o750), None, true, ME),
+                "not private",
+            );
+            refused(
+                check_ownership(dir(0, 0o700), None, true, ME),
+                "not private",
+            );
+            refused(
+                check_private_ownership(dir(OTHER, 0o700), ME),
+                "not private",
+            );
+        }
     }
 }

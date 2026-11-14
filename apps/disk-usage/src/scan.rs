@@ -290,56 +290,60 @@ mod tests {
         super::scan(path.to_owned(), &ScanCancellation::default(), &|_, _| {})
     }
 
-    /// A sparse disk image reads as the blocks it holds, not the length it claims: an empty
-    /// 1 GiB image takes next to nothing on the disk.
-    #[test]
-    fn a_sparse_file_counts_the_blocks_it_takes_not_its_length() {
-        let folder = scratch("sparse");
-        fs::create_dir_all(folder.join("vm")).unwrap();
-        let image = fs::File::create(folder.join("vm").join("disk.img")).unwrap();
-        image.set_len(GIB).unwrap();
-        drop(image);
-        let held = fs::metadata(folder.join("vm").join("disk.img"))
-            .unwrap()
-            .blocks()
-            .saturating_mul(512);
+    tilo_test_env::scenario! {
+        fn a_scan_counts_what_files_take_on_the_disk;
 
-        let result = scan(&folder);
-        let _ = fs::remove_dir_all(&folder);
-        assert_eq!(result.total, held, "the image's allocated blocks");
-        assert!(
-            result.total < MIB,
-            "an empty 1 GiB image is not a GiB on the disk: {}",
-            result.total
-        );
-        assert_eq!(result.files, 1);
-    }
+        phase a_sparse_file_counts_the_blocks_it_takes_not_its_length;
+        // A sparse disk image reads as the blocks it holds, not the length it claims: an empty
+        // 1 GiB image takes next to nothing on the disk.
+        {
+            let folder = scratch("sparse");
+            fs::create_dir_all(folder.join("vm")).unwrap();
+            let image = fs::File::create(folder.join("vm").join("disk.img")).unwrap();
+            image.set_len(GIB).unwrap();
+            drop(image);
+            let held = fs::metadata(folder.join("vm").join("disk.img"))
+                .unwrap()
+                .blocks()
+                .saturating_mul(512);
 
-    /// A file hard-linked into two folders is on the disk once, so the folder holding both
-    /// counts it once.
-    #[test]
-    fn a_hard_linked_file_counts_once() {
-        let folder = scratch("linked");
-        fs::create_dir_all(folder.join("a")).unwrap();
-        fs::create_dir_all(folder.join("b")).unwrap();
-        let data: Vec<u8> = (0..262_144_u32)
-            .map(|i| i.wrapping_mul(2_654_435_761).to_le_bytes()[3])
-            .collect();
-        fs::write(folder.join("a").join("photo.raw"), &data).unwrap();
-        fs::hard_link(
-            folder.join("a").join("photo.raw"),
-            folder.join("b").join("photo.raw"),
-        )
-        .unwrap();
-        let once = fs::metadata(folder.join("a").join("photo.raw"))
-            .unwrap()
-            .blocks()
-            .saturating_mul(512);
-        assert!(once > 0, "the file holds blocks");
+            let result = scan(&folder);
+            let _ = fs::remove_dir_all(&folder);
+            assert_eq!(result.total, held, "the image's allocated blocks");
+            assert!(
+                result.total < MIB,
+                "an empty 1 GiB image is not a GiB on the disk: {}",
+                result.total
+            );
+            assert_eq!(result.files, 1);
+        }
 
-        let result = scan(&folder);
-        let _ = fs::remove_dir_all(&folder);
-        assert_eq!(result.total, once, "the shared file, counted once");
-        assert_eq!(result.files, 1, "one file, two names");
+        phase a_hard_linked_file_counts_once;
+        // A file hard-linked into two folders is on the disk once, so the folder holding both
+        // counts it once.
+        {
+            let folder = scratch("linked");
+            fs::create_dir_all(folder.join("a")).unwrap();
+            fs::create_dir_all(folder.join("b")).unwrap();
+            let data: Vec<u8> = (0..262_144_u32)
+                .map(|i| i.wrapping_mul(2_654_435_761).to_le_bytes()[3])
+                .collect();
+            fs::write(folder.join("a").join("photo.raw"), &data).unwrap();
+            fs::hard_link(
+                folder.join("a").join("photo.raw"),
+                folder.join("b").join("photo.raw"),
+            )
+            .unwrap();
+            let once = fs::metadata(folder.join("a").join("photo.raw"))
+                .unwrap()
+                .blocks()
+                .saturating_mul(512);
+            assert!(once > 0, "the file holds blocks");
+
+            let result = scan(&folder);
+            let _ = fs::remove_dir_all(&folder);
+            assert_eq!(result.total, once, "the shared file, counted once");
+            assert_eq!(result.files, 1, "one file, two names");
+        }
     }
 }

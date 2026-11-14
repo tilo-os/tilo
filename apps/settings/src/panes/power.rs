@@ -1164,22 +1164,91 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
-    #[test]
-    fn the_sample_week_ends_at_the_batterys_reading() {
-        let power = SamplePower::default();
-        let now = power.now_minute();
-        let history = sample_history(now);
-        let last = history.points.last().expect("readings");
-        assert_eq!(last.capacity, power.battery().capacity);
-        assert!(last.unix_minute <= now && now - last.unix_minute < 15);
-        assert!(history.points.iter().all(|point| point.capacity <= 80));
-        assert!(
-            history
-                .points
-                .windows(2)
-                .any(|pair| pair[1].unix_minute - pair[0].unix_minute > 60),
-            "asleep overnight"
-        );
+    tilo_test_env::scenario! {
+        fn the_power_page_words_its_battery_profiles_and_timeouts;
+
+        phase the_sample_week_ends_at_the_batterys_reading;
+        {
+            let power = SamplePower::default();
+            let now = power.now_minute();
+            let history = sample_history(now);
+            let last = history.points.last().expect("readings");
+            assert_eq!(last.capacity, power.battery().capacity);
+            assert!(last.unix_minute <= now && now - last.unix_minute < 15);
+            assert!(history.points.iter().all(|point| point.capacity <= 80));
+            assert!(
+                history
+                    .points
+                    .windows(2)
+                    .any(|pair| pair[1].unix_minute - pair[0].unix_minute > 60),
+                "asleep overnight"
+            );
+        }
+
+        phase the_pane_offers_the_timeouts_the_system_actions_validate;
+        {
+            let minutes = |options: &[(&str, u32)]| options.iter().map(|(_, m)| *m).collect::<Vec<_>>();
+            let sorted = |values: &[u32]| {
+                let mut values = values.to_vec();
+                values.sort_unstable();
+                values
+            };
+            let mut blank = minutes(BLANK_OPTIONS);
+            let mut lock = minutes(LOCK_OPTIONS);
+            let mut suspend = minutes(SUSPEND_OPTIONS);
+            blank.sort_unstable();
+            lock.sort_unstable();
+            suspend.sort_unstable();
+            assert_eq!(blank, sorted(settings_store::power::BLANK_CHOICES));
+            assert_eq!(lock, sorted(settings_store::power::LOCK_CHOICES));
+            assert_eq!(suspend, sorted(settings_store::power::SUSPEND_CHOICES));
+            let defaults = PowerPrefs::default();
+            assert_eq!(
+                defaults.lock_minutes,
+                settings_store::power::DEFAULT_LOCK_MINUTES
+            );
+            assert_eq!(
+                defaults.blank_minutes,
+                settings_store::power::DEFAULT_BLANK_MINUTES
+            );
+            assert_eq!(
+                defaults.suspend_minutes,
+                settings_store::power::DEFAULT_SUSPEND_MINUTES
+            );
+        }
+
+        phase a_worn_battery_says_what_it_holds_against_new;
+        {
+            let worn = BatteryInfo {
+                full_capacity: Some(44_600_000),
+                design_capacity: Some(70_000_000),
+                ..sample_battery()
+            };
+            assert_eq!(worn.health_percent(), Some(64));
+            assert_eq!(capacity_shown(&worn).as_deref(), Some("44.6 Wh of 70 Wh"));
+            assert_eq!(
+                health_explanation_shown(&worn),
+                "Capacity is noticeably reduced; shorter runtime is expected."
+            );
+            let unknown = BatteryInfo {
+                design_capacity: None,
+                ..sample_battery()
+            };
+            assert_eq!(capacity_shown(&unknown), None);
+        }
+
+        phase profile_and_blank_labels_round_trip;
+        {
+            assert_eq!(profile_label(PowerProfile::Saver), "Power Saver");
+            assert_eq!(
+                profile_from_label("Performance"),
+                Some(PowerProfile::Performance)
+            );
+            assert_eq!(profile_from_label("Nonsense"), None);
+            for (minutes, label) in [(0, "Never"), (10, "10 minutes")] {
+                assert_eq!(blank_label(minutes), label);
+            }
+        }
     }
 
     #[derive(Default)]
@@ -1300,38 +1369,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_pane_offers_the_timeouts_the_system_actions_validate() {
-        let minutes = |options: &[(&str, u32)]| options.iter().map(|(_, m)| *m).collect::<Vec<_>>();
-        let sorted = |values: &[u32]| {
-            let mut values = values.to_vec();
-            values.sort_unstable();
-            values
-        };
-        let mut blank = minutes(BLANK_OPTIONS);
-        let mut lock = minutes(LOCK_OPTIONS);
-        let mut suspend = minutes(SUSPEND_OPTIONS);
-        blank.sort_unstable();
-        lock.sort_unstable();
-        suspend.sort_unstable();
-        assert_eq!(blank, sorted(settings_store::power::BLANK_CHOICES));
-        assert_eq!(lock, sorted(settings_store::power::LOCK_CHOICES));
-        assert_eq!(suspend, sorted(settings_store::power::SUSPEND_CHOICES));
-        let defaults = PowerPrefs::default();
-        assert_eq!(
-            defaults.lock_minutes,
-            settings_store::power::DEFAULT_LOCK_MINUTES
-        );
-        assert_eq!(
-            defaults.blank_minutes,
-            settings_store::power::DEFAULT_BLANK_MINUTES
-        );
-        assert_eq!(
-            defaults.suspend_minutes,
-            settings_store::power::DEFAULT_SUSPEND_MINUTES
-        );
-    }
-
     fn sample_battery() -> BatteryInfo {
         BatteryInfo {
             present: true,
@@ -1345,39 +1382,6 @@ mod tests {
             charge_limit: Some(80),
             remaining: Some(28_800_000),
             rate: Some(8_640_000),
-        }
-    }
-
-    #[test]
-    fn a_worn_battery_says_what_it_holds_against_new() {
-        let worn = BatteryInfo {
-            full_capacity: Some(44_600_000),
-            design_capacity: Some(70_000_000),
-            ..sample_battery()
-        };
-        assert_eq!(worn.health_percent(), Some(64));
-        assert_eq!(capacity_shown(&worn).as_deref(), Some("44.6 Wh of 70 Wh"));
-        assert_eq!(
-            health_explanation_shown(&worn),
-            "Capacity is noticeably reduced; shorter runtime is expected."
-        );
-        let unknown = BatteryInfo {
-            design_capacity: None,
-            ..sample_battery()
-        };
-        assert_eq!(capacity_shown(&unknown), None);
-    }
-
-    #[test]
-    fn profile_and_blank_labels_round_trip() {
-        assert_eq!(profile_label(PowerProfile::Saver), "Power Saver");
-        assert_eq!(
-            profile_from_label("Performance"),
-            Some(PowerProfile::Performance)
-        );
-        assert_eq!(profile_from_label("Nonsense"), None);
-        for (minutes, label) in [(0, "Never"), (10, "10 minutes")] {
-            assert_eq!(blank_label(minutes), label);
         }
     }
 

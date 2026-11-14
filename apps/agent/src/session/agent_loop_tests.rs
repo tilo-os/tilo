@@ -22,197 +22,6 @@ pub(super) fn catalogue_of(surfaces: &[BrokerActionSurface]) -> ActionCatalogue 
 }
 use uuid::Uuid;
 
-#[test]
-fn neutral_truncation_retains_output_without_dispatching_calls() {
-    use agent_provider_config::protocol::{
-        Content, Message, ModelResponse, Role, StopReason, StreamEvent, Usage,
-    };
-    let response = ModelResponse {
-        message: Message {
-            role: Role::Assistant,
-            content: vec![Content::ToolCall(crate::model::ToolCall {
-                id: "a".into(),
-                name: tools::INVOKE.into(),
-                input: invoke("type-text", &serde_json::json!({"text": "Do not write"})).1,
-                extra_content: None,
-            })],
-        },
-        stop_reason: StopReason::OutputLimit,
-        usage: Usage::default(),
-        cost_micros: 0,
-    };
-    let mut f = fixture(
-        "write hello",
-        World::default(),
-        // The model keeps running into its output limit: each turn is
-        // continued from where it stopped, a bounded number of times, and
-        // then the run fails with the clean sentence.
-        (0..=MOST_CONTINUATIONS)
-            .map(|_| {
-                vec![
-                    TurnEvent::Neutral(StreamEvent::TextDelta {
-                        text: "Partial answer".into(),
-                    }),
-                    TurnEvent::Neutral(StreamEvent::ReasoningDelta {
-                        text: "Provider summary".into(),
-                    }),
-                    TurnEvent::Neutral(StreamEvent::Finished {
-                        response: response.clone(),
-                    }),
-                    TurnEvent::Finished(Ok(serde_json::to_string(&response).unwrap())),
-                ]
-            })
-            .collect(),
-    );
-    f.session.chooser = Chooser::scripted(
-        Duration::from_secs(5),
-        agent_provider_config::ProviderProtocol::OpenAiCompatible,
-        Arc::new(Scripted(f.script.clone())),
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert!(f.world.borrow().steps.is_empty());
-    // What the host hears is the sentence a person reads, and nothing of the
-    // turn's record: no partial answer, no provider-exposed reasoning.
-    assert!(matches!(terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message }
-            if !message.contains("Partial answer") && !message.contains("Provider summary")));
-    let sent = f.sent.borrow();
-    let snapshots = sent
-        .iter()
-        .filter_map(|request| match request {
-            CollabRequest::ReportTaskRun {
-                run_id,
-                lease,
-                update:
-                    runtime_collab::TaskRunUpdate::Progress {
-                        presentation: Some(p),
-                        ..
-                    },
-                ..
-            } => {
-                assert_eq!(*run_id, f.run.run_id);
-                assert_eq!(lease, &f.run.lease);
-                Some(p)
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let final_snapshot = snapshots
-        .last()
-        .expect("production report carries typed output");
-    // Every turn of the model was cut off, so each one published its partial
-    // text as truncated; the person reads the same sentence as any failure.
-    assert!(final_snapshot.text.starts_with("Partial answer"));
-    assert_eq!(final_snapshot.reasoning, "Provider summary");
-    assert_eq!(
-        final_snapshot.finish,
-        Some(runtime_collab::TaskPresentationFinish::Truncated)
-    );
-    assert!(
-        !serde_json::to_string(final_snapshot)
-            .unwrap()
-            .contains("Do not write")
-    );
-    // Each turn is its own run of presentation, its sequence starting over;
-    // within one run the sequence only ever goes forward.
-    let mut last: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
-    for snapshot in &snapshots {
-        let previous = last.insert(snapshot.run.as_str(), snapshot.sequence);
-        assert!(
-            previous.is_none_or(|previous| previous < snapshot.sequence),
-            "a run's presentation sequence only goes forward: {}",
-            snapshot.run
-        );
-    }
-}
-
-#[test]
-fn presentation_reports_coalesce_bound_output_and_fall_back_for_old_hosts() {
-    let mut f = fixture("say hello", World::default(), Vec::new());
-    let (_tx, rx) = std::sync::mpsc::channel();
-    let mut active = ActiveTurn::new(rx);
-    active.presentation_run = "7:0".into();
-    active.presentation.text = "hello".into();
-    f.session.turn = Some(active);
-    // A hundred rapid tokens do not make a hundred host round trips.
-    for _ in 0..100 {
-        f.session.publish_turn_presentation(&f.run).unwrap();
-    }
-    assert!(f.sent.borrow().is_empty());
-    let active = f.session.turn.as_mut().unwrap();
-    active.presentation.text = "é".repeat(40 * 1024);
-    active.finished = Some(Err(Failure::said("stream lost")));
-    f.session.publish_turn_presentation(&f.run).unwrap();
-    f.session.publish_turn_presentation(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    assert_eq!(sent.len(), 1);
-    let CollabRequest::ReportTaskRun {
-        update:
-            runtime_collab::TaskRunUpdate::Progress {
-                presentation: Some(p),
-                ..
-            },
-        ..
-    } = &sent[0]
-    else {
-        panic!("typed output report")
-    };
-    assert_eq!(
-        p.text.len(),
-        runtime_collab::TaskPresentation::MAX_TEXT_BYTES
-    );
-    assert_eq!(
-        p.finish,
-        Some(runtime_collab::TaskPresentationFinish::Truncated)
-    );
-    drop(sent);
-    f.run.presentation_version = None;
-    let (_tx, rx) = std::sync::mpsc::channel();
-    let mut active = ActiveTurn::new(rx);
-    active.presentation_run = "7:1".into();
-    active.presentation.text = "Readable answer".into();
-    active.finished = Some(Ok(String::new()));
-    f.session.turn = Some(active);
-    f.session.publish_turn_presentation(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    let CollabRequest::ReportTaskRun { update, .. } = sent.last().unwrap() else {
-        panic!("a progress report")
-    };
-    let json = serde_json::to_value(update).unwrap();
-    assert_eq!(json["message"], "Readable answer");
-    assert!(
-        json.get("presentation").is_none(),
-        "strict old host can decode this report"
-    );
-}
-
-#[test]
-fn completed_stream_frames_cannot_dispatch_before_a_failed_final_response() {
-    let mut events = turn(
-        &[invoke(
-            "type-text",
-            &serde_json::json!({"text": "Do not write"}),
-        )],
-        6,
-    );
-    events.pop();
-    events.push(TurnEvent::Finished(Err("provider stream reset".into())));
-    let mut f = fixture("write hello", World::default(), vec![events]);
-    f.session.run_task(&f.run).unwrap();
-    assert!(f.world.borrow().steps.is_empty());
-    assert!(
-        !f.sent
-            .borrow()
-            .iter()
-            .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
-    );
-    // The transport's own words are the record, kept for debugging; the
-    // sentence a person reads is what happened, in their terms.
-    assert!(matches!(terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message }
-            if !message.contains("provider stream reset") && message.contains("The model")));
-}
-
 /// Answers each turn with the next scripted event list and records the
 /// request bodies, like the gateway but without a network.
 #[derive(Default)]
@@ -1732,127 +1541,131 @@ fn native_fixture(latest: u64) -> Fixture {
     )
 }
 
-#[test]
-fn native_directions_enter_the_actual_model_request_before_actions() {
-    let mut fixture = native_fixture(1);
-    fixture.session.run_task(&fixture.run).unwrap();
-    let bodies = fixture.script.bodies.lock().unwrap();
-    assert_eq!(bodies.len(), 1);
-    let request = bodies[0].to_string();
-    drop(bodies);
-    assert!(request.contains("Keep compatibility examples"));
-    assert!(request.contains("person:reviewer"));
-    assert!(request.contains("issued_at"));
-    assert_eq!(fixture.world.borrow().native_applied_revision, 1);
-    assert!(fixture.sent.borrow().iter().any(|request| matches!(
-        request,
-        CollabRequest::ReportTaskRun {
-            update: runtime_collab::TaskRunUpdate::Succeeded { .. },
-            ..
-        }
-    )));
-}
+tilo_test_env::scenario! {
+    fn a_native_task_reads_its_instruction_and_directions_before_acting;
 
-#[test]
-fn native_model_receives_the_full_private_instruction_not_a_truncated_title() {
-    let mut fixture = native_fixture(0);
-    let instruction =
-        "Inspect every release-note section and preserve the complete compatibility matrix. "
-            .repeat(6);
-    assert!(instruction.chars().count() > 240);
-    fixture.run.instruction = Some(instruction.clone());
-    fixture.session.run_task(&fixture.run).unwrap();
-    let bodies = fixture.script.bodies.lock().unwrap().clone();
-    assert_eq!(bodies.len(), 1);
-    assert!(bodies[0].to_string().contains(instruction.trim()));
-}
+    phase native_directions_enter_the_actual_model_request_before_actions;
+    {
+        let mut fixture = native_fixture(1);
+        fixture.session.run_task(&fixture.run).unwrap();
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        let request = bodies[0].to_string();
+        drop(bodies);
+        assert!(request.contains("Keep compatibility examples"));
+        assert!(request.contains("person:reviewer"));
+        assert!(request.contains("issued_at"));
+        assert_eq!(fixture.world.borrow().native_applied_revision, 1);
+        assert!(fixture.sent.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportTaskRun {
+                update: runtime_collab::TaskRunUpdate::Succeeded { .. },
+                ..
+            }
+        )));
+    }
 
-#[test]
-fn one_issues_run_reaches_the_model_without_another_issues() {
-    let mut fixture = native_fixture(0);
-    let first_instruction = "first-native-private-instruction-secret";
-    fixture.run.instruction = Some(first_instruction.into());
-    *fixture.script.turns.lock().unwrap() = vec![turn(
-        &[finish("first-native-private-result-secret", true)],
-        24,
-    )]
-    .into();
-    fixture.session.run_task(&fixture.run).unwrap();
+    phase native_model_receives_the_full_private_instruction_not_a_truncated_title;
+    {
+        let mut fixture = native_fixture(0);
+        let instruction =
+            "Inspect every release-note section and preserve the complete compatibility matrix. "
+                .repeat(6);
+        assert!(instruction.chars().count() > 240);
+        fixture.run.instruction = Some(instruction.clone());
+        fixture.session.run_task(&fixture.run).unwrap();
+        let bodies = fixture.script.bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].to_string().contains(instruction.trim()));
+    }
 
-    fixture.run.task_id = "chat.workspace/channels/second/messages/asked".into();
-    fixture.run.run_id += 1;
-    fixture.run.action_context = serde_json::to_value(
-        tilo_actions::ActionContext::default()
-            .with_purpose(fixture.run.title.as_str())
-            .with_group(fixture.run.group(), fixture.run.title.as_str(), "task"),
-    )
-    .unwrap();
-    fixture
-        .world
-        .borrow_mut()
-        .native_control
-        .as_mut()
-        .unwrap()
-        .task_id = fixture.run.task_id.clone();
-    let second_instruction = "second-native-private-instruction-secret";
-    fixture.run.instruction = Some(second_instruction.into());
-    *fixture.script.turns.lock().unwrap() = vec![turn(
-        &[finish("second-native-private-result-secret", true)],
-        24,
-    )]
-    .into();
-    fixture.session.run_task(&fixture.run).unwrap();
+    phase one_issues_run_reaches_the_model_without_another_issues;
+    {
+        let mut fixture = native_fixture(0);
+        let first_instruction = "first-native-private-instruction-secret";
+        fixture.run.instruction = Some(first_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("first-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
 
-    let bodies = fixture.script.bodies.lock().unwrap();
-    assert_eq!(bodies.len(), 2, "both tasks must reach the model");
-    let first = bodies[0].to_string();
-    let second = bodies[1].to_string();
-    drop(bodies);
-    assert!(first.contains(first_instruction));
-    assert!(second.contains(second_instruction));
-    assert!(!second.contains(first_instruction));
-    assert!(!second.contains("first-native-private-result-secret"));
-}
-
-#[test]
-fn native_overflow_requires_review_without_acknowledging_any_direction() {
-    let mut fixture = native_fixture(9);
-    assert!(fixture.session.run_task(&fixture.run).is_err());
-    assert_eq!(fixture.world.borrow().native_applied_revision, 0);
-    assert!(fixture.script.bodies.lock().unwrap().is_empty());
-    assert!(!fixture.sent.borrow().iter().any(|request| matches!(
-        request,
-        CollabRequest::ReportTaskRun {
-            update: runtime_collab::TaskRunUpdate::DirectionsApplied { .. },
-            ..
-        }
-    )));
-}
-
-#[test]
-fn native_unfinished_answer_requests_review_instead_of_claiming_completion() {
-    let mut fixture = native_fixture(0);
-    *fixture.script.turns.lock().unwrap() =
-        vec![turn(&[finish("I need the owner's decision", false)], 24)].into();
-    fixture.session.run_task(&fixture.run).unwrap();
-    assert_eq!(
-        fixture.script.bodies.lock().unwrap().len(),
-        1,
-        "must exercise the actual model request"
-    );
-    let sent = fixture.sent.borrow();
-    let last = sent
-        .iter()
-        .rev()
-        .find_map(|request| match request {
-            CollabRequest::ReportTaskRun { update, .. } => Some(update),
-            _ => None,
-        })
+        fixture.run.task_id = "chat.workspace/channels/second/messages/asked".into();
+        fixture.run.run_id += 1;
+        fixture.run.action_context = serde_json::to_value(
+            tilo_actions::ActionContext::default()
+                .with_purpose(fixture.run.title.as_str())
+                .with_group(fixture.run.group(), fixture.run.title.as_str(), "task"),
+        )
         .unwrap();
-    assert!(
-        matches!(last, runtime_collab::TaskRunUpdate::Failed { message } if message == "I need the owner's decision"),
-        "unfinished native work reported {last:?}"
-    );
+        fixture
+            .world
+            .borrow_mut()
+            .native_control
+            .as_mut()
+            .unwrap()
+            .task_id = fixture.run.task_id.clone();
+        let second_instruction = "second-native-private-instruction-secret";
+        fixture.run.instruction = Some(second_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("second-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "both tasks must reach the model");
+        let first = bodies[0].to_string();
+        let second = bodies[1].to_string();
+        drop(bodies);
+        assert!(first.contains(first_instruction));
+        assert!(second.contains(second_instruction));
+        assert!(!second.contains(first_instruction));
+        assert!(!second.contains("first-native-private-result-secret"));
+    }
+
+    phase native_overflow_requires_review_without_acknowledging_any_direction;
+    {
+        let mut fixture = native_fixture(9);
+        assert!(fixture.session.run_task(&fixture.run).is_err());
+        assert_eq!(fixture.world.borrow().native_applied_revision, 0);
+        assert!(fixture.script.bodies.lock().unwrap().is_empty());
+        assert!(!fixture.sent.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportTaskRun {
+                update: runtime_collab::TaskRunUpdate::DirectionsApplied { .. },
+                ..
+            }
+        )));
+    }
+
+    phase native_unfinished_answer_requests_review_instead_of_claiming_completion;
+    {
+        let mut fixture = native_fixture(0);
+        *fixture.script.turns.lock().unwrap() =
+            vec![turn(&[finish("I need the owner's decision", false)], 24)].into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(
+            fixture.script.bodies.lock().unwrap().len(),
+            1,
+            "must exercise the actual model request"
+        );
+        let sent = fixture.sent.borrow();
+        let last = sent
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                CollabRequest::ReportTaskRun { update, .. } => Some(update),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            matches!(last, runtime_collab::TaskRunUpdate::Failed { message } if message == "I need the owner's decision"),
+            "unfinished native work reported {last:?}"
+        );
+    }
 }
 
 /// Every public note the run reported, in order.
@@ -1979,114 +1792,6 @@ fn tool_names(body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Review test 7: "make the second paragraph bold" is carried out by
-/// discovering, invoking and observing published operations — read the
-/// document, select the paragraph (which makes toggle-mark available),
-/// toggle the mark — with no application-specific tool anywhere.
-#[test]
-fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
-    let world = World {
-        blocks: vec![
-            ("p1".into(), "Intro".into()),
-            ("p2".into(), "Details".into()),
-        ],
-        ..World::default()
-    };
-    let mut f = fixture(
-        "make the second paragraph bold",
-        world,
-        vec![
-            turn(&[invoke("read-text", &serde_json::json!({}))], 16),
-            turn(
-                &[invoke("select-block", &serde_json::json!({"block": "p2"}))],
-                16,
-            ),
-            turn(
-                &[
-                    invoke("toggle-mark", &serde_json::json!({"mark": "strong"})),
-                    finish("Done: the second paragraph is bold now.", true),
-                ],
-                16,
-            ),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-
-    let world = f.world.borrow();
-    assert_eq!(world.bold, vec!["p2".to_string()]);
-    assert_eq!(
-        world
-            .steps
-            .iter()
-            .map(|(action, _)| action.as_str())
-            .collect::<Vec<_>>(),
-        ["read-text", "select-block", "toggle-mark"]
-    );
-    let sent = f.sent.borrow();
-    let invocations = sent
-        .iter()
-        .filter(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
-        .count();
-    assert_eq!(invocations, 3, "one invocation each");
-    assert_eq!(
-        terminal(&sent),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Done: the second paragraph is bold now.".into()
-        }
-    );
-
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    assert_eq!(
-        bodies.len(),
-        3,
-        "three turns: read, select, toggle + finish"
-    );
-    for body in &bodies {
-        assert_eq!(
-            tool_names(body),
-            [
-                "list_applications",
-                "list_operations",
-                "describe_operation",
-                "invoke",
-                "read_result",
-                "search_web",
-                "read_page",
-                "tilo",
-                "plan"
-            ],
-            "only generic tools, never an application-specific one"
-        );
-    }
-    let first: String = bodies[0]["messages"][1]["content"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|block| block["text"].as_str().unwrap())
-        .collect();
-    assert!(first.contains("make the second paragraph bold"), "{first}");
-    assert!(first.contains(&op("toggle-mark")), "{first}");
-    assert!(
-        first.contains("currently unavailable: select something first"),
-        "{first}"
-    );
-    // The read-back reaches the next turn, and the selection's effect —
-    // toggle-mark becoming available — is observed, not assumed.
-    let second = bodies[1]["messages"].to_string();
-    assert!(second.contains("Details"), "{second}");
-    let observation = last_observation(&bodies[2]);
-    assert_eq!(observation["result"], "succeeded");
-    assert_eq!(observation["changed_view"]["selection"]["block"], "p2");
-    assert!(
-        observation["newly_available"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|line| line.as_str().unwrap().starts_with(&op("toggle-mark"))),
-        "{observation}"
-    );
-}
-
 /// The last tool result the model was shown in `body`.
 fn last_observation(body: &Value) -> Value {
     let content = body["messages"].as_array().unwrap().last().unwrap()["content"][0]["content"]
@@ -2158,58 +1863,6 @@ fn a_view_step_stops_listening_when_the_model_moves_on() {
         SETTLES_RAN_OUT.get(),
         0,
         "the read may not hold the turn for a republication"
-    );
-}
-
-/// A republication that reaches the agent after the view step's reply is
-/// still taken up when the model has no next call for the loop to run,
-/// so what the view unlocked is reported with the step. The step waits
-/// for full-turn validation, not merely its streamed call preview.
-#[test]
-fn a_late_republication_is_taken_while_the_model_is_still_busy() {
-    let world = World {
-        blocks: vec![
-            ("p1".into(), "Intro".into()),
-            ("p2".into(), "Details".into()),
-        ],
-        republish_after_polls: 10,
-        ..World::default()
-    };
-    let selection_turn = turn(
-        &[invoke("select-block", &serde_json::json!({"block": "p2"}))],
-        128,
-    );
-    let selection_finished_at = selection_turn.len() - 1;
-    let mut f = paced_fixture(
-        "make the second paragraph bold",
-        world,
-        vec![
-            selection_turn,
-            turn(
-                &[
-                    invoke("toggle-mark", &serde_json::json!({"mark": "strong"})),
-                    finish("Done.", true),
-                ],
-                128,
-            ),
-        ],
-        Some(Duration::from_millis(100)),
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(f.world.borrow().bold, ["p2"]);
-    assert!(
-        f.world.borrow().steps_at[0] >= selection_finished_at,
-        "the selection must not execute from a partial model turn"
-    );
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    let observation = last_observation(&bodies[1]);
-    assert!(
-        observation["newly_available"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|line| line.as_str().unwrap().starts_with(&op("toggle-mark"))),
-        "{observation}"
     );
 }
 
@@ -2326,413 +1979,465 @@ fn a_fresh_open_ends_on_the_window_its_receipt_names() {
     assert_eq!(f.world.borrow().blocks[0].1, "Rain falls.");
 }
 
-#[test]
-fn opened_records_reads_the_desktop_receipt() {
-    let receipt = serde_json::json!({
-        "kind": "desktop.command",
-        "command": "1:1",
-        "generation": 3,
-        "opened": [
-            {"app_id": "so.tilo.notes", "record_id": "n-1"},
-            {"app_id": "so.tilo.word-processor", "record_id": "doc-9"},
-            {"app_id": "so.tilo.word-processor", "record_id": ""}
-        ]
-    });
-    assert_eq!(
-        opened_records(Some(&receipt), "so.tilo.word-processor"),
-        ["doc-9"]
-    );
-    assert!(opened_records(Some(&serde_json::json!({})), "so.tilo.notes").is_empty());
-    assert!(opened_records(None, "so.tilo.notes").is_empty());
-}
+tilo_test_env::scenario! {
+    fn a_task_stops_at_its_cancellation_deadline_and_budget;
 
-#[test]
-fn stop_during_the_first_silent_model_turn_does_not_wait_for_provider_output() {
-    let mut f = paced_fixture(
-        "write a paragraph",
-        World {
-            cancel_after_checks: 2,
-            ..World::default()
-        },
-        vec![turn(
-            &[
-                invoke("append-paragraph", &serde_json::json!({"text": "late"})),
-                finish("Done", true),
-            ],
-            24,
-        )],
-        // The provider stays silent for as long as the test may run, so
-        // a run that ends ended without its first event.
-        Some(tilo_test_env::hang_bound()),
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(f.script.bodies.lock().unwrap().len(), 1);
-    assert_eq!(
-        f.script.emitted.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "Stop must not wait for the provider's first event"
-    );
-    assert!(f.world.borrow().steps.is_empty());
-    assert!(f.session.turn.is_none());
-    assert!(matches!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Cancelled { .. }
-    ));
-}
-
-/// Not waiting for answers does not weaken cancellation: a poll already
-/// out is answered ahead of the next step, so the step waits for it and
-/// never reaches the host once the task is cancelled.
-#[test]
-fn a_cancelled_task_still_stops_before_its_next_step() {
-    let mut f = fixture(
-        "write two paragraphs",
-        World {
-            cancel_after_steps: Some(1),
-            cancel_delay: Duration::from_millis(100),
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[invoke(
-                    "append-paragraph",
-                    &serde_json::json!({"text": "One"}),
-                )],
-                16,
-            ),
-            turn(
+    phase stop_during_the_first_silent_model_turn_does_not_wait_for_provider_output;
+    {
+        let mut f = paced_fixture(
+            "write a paragraph",
+            World {
+                cancel_after_checks: 2,
+                ..World::default()
+            },
+            vec![turn(
                 &[
-                    invoke("append-paragraph", &serde_json::json!({"text": "Two"})),
+                    invoke("append-paragraph", &serde_json::json!({"text": "late"})),
                     finish("Done", true),
                 ],
-                16,
-            ),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
+                24,
+            )],
+            // The provider stays silent for as long as the test may run, so
+            // a run that ends ended without its first event.
+            Some(tilo_test_env::hang_bound()),
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(f.script.bodies.lock().unwrap().len(), 1);
+        assert_eq!(
+            f.script.emitted.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Stop must not wait for the provider's first event"
+        );
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(f.session.turn.is_none());
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Cancelled { .. }
+        ));
+    }
 
-    let world = f.world.borrow();
-    assert_eq!(
-        world
-            .steps
-            .iter()
-            .map(|(action, arguments)| (action.as_str(), arguments["text"].as_str()))
-            .collect::<Vec<_>>(),
-        [("append-paragraph", Some("One"))],
-        "the step after the cancellation must not run"
-    );
-    assert!(matches!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Cancelled { .. }
-    ));
-}
-
-/// One turn does the whole job: the paragraph is written in one step
-/// and the reply finishes the task — no second turn.
-#[test]
-fn a_single_turn_writes_and_finishes() {
-    let text = "The ocean covers more than seventy percent of our planet, holding \
-                ninety-seven percent of its water and most of its life, from reefs \
-                to trenches.";
-    let mut f = fixture(
-        "write a paragraph about the ocean",
-        World::default(),
-        vec![turn(
-            &[
-                invoke("append-paragraph", &serde_json::json!({"text": text})),
-                finish("Here you go: a paragraph about the ocean.", true),
+    phase a_cancelled_task_still_stops_before_its_next_step;
+    // Not waiting for answers does not weaken cancellation: a poll already
+    // out is answered ahead of the next step, so the step waits for it and
+    // never reaches the host once the task is cancelled.
+    {
+        let mut f = fixture(
+            "write two paragraphs",
+            World {
+                cancel_after_steps: Some(1),
+                cancel_delay: Duration::from_millis(100),
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[invoke(
+                        "append-paragraph",
+                        &serde_json::json!({"text": "One"}),
+                    )],
+                    16,
+                ),
+                turn(
+                    &[
+                        invoke("append-paragraph", &serde_json::json!({"text": "Two"})),
+                        finish("Done", true),
+                    ],
+                    16,
+                ),
             ],
-            24,
-        )],
-    );
-    f.session.run_task(&f.run).unwrap();
+        );
+        f.session.run_task(&f.run).unwrap();
 
-    assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model turn");
-    let world = f.world.borrow();
-    assert_eq!(world.blocks.len(), 1);
-    assert_eq!(world.blocks[0].1, text, "the paragraph lands exactly");
-    let actions: Vec<&str> = world
-        .steps
-        .iter()
-        .map(|(action, _)| action.as_str())
-        .collect();
-    assert_eq!(
-        actions,
-        ["append-paragraph"],
-        "a complete paragraph is one step"
-    );
-    let sent = f.sent.borrow();
-    assert_eq!(
-        terminal(&sent),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Here you go: a paragraph about the ocean.".into()
-        }
-    );
-}
+        let world = f.world.borrow();
+        assert_eq!(
+            world
+                .steps
+                .iter()
+                .map(|(action, arguments)| (action.as_str(), arguments["text"].as_str()))
+                .collect::<Vec<_>>(),
+            [("append-paragraph", Some("One"))],
+            "the step after the cancellation must not run"
+        );
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Cancelled { .. }
+        ));
+    }
 
-/// A failed step stops the rest of its turn and keeps the turn's `plan`
-/// from finishing; the model reads why and decides again.
-#[test]
-fn a_failed_step_skips_the_rest_of_its_turn_and_is_observed() {
-    let world = World {
-        refuse: vec!["append-paragraph".into()],
-        ..World::default()
-    };
-    let mut f = fixture(
-        "write hi",
-        world,
-        vec![
-            turn(
+    phase explicit_owner_task_budget_reaches_transport_and_keeps_the_default;
+    {
+        let turns = vec![turn(&[finish("Done", true)], 64)];
+        let mut unbounded = fixture("finish", World::default(), turns.clone());
+        unbounded.session.run_task(&unbounded.run).unwrap();
+        assert_eq!(
+            unbounded.script.timeouts.lock().unwrap()[0],
+            Duration::from_secs(5)
+        );
+        let mut bounded = execution_fixture(
+            "finish",
+            World::default(),
+            turns,
+            None,
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 20_000,
+                total_ms: 60_000,
+                max_turns: None,
+            }),
+        );
+        bounded.session.run_task(&bounded.run).unwrap();
+        assert_eq!(
+            bounded.script.timeouts.lock().unwrap()[0],
+            Duration::from_secs(20)
+        );
+        assert!(bounded.session.task_deadline.is_none());
+    }
+
+    phase explicit_total_task_deadline_stops_silent_transport_before_any_step;
+    {
+        let mut f = execution_fixture(
+            "write",
+            World::default(),
+            vec![turn(
                 &[
-                    invoke("append-paragraph", &serde_json::json!({"text": "hi"})),
-                    invoke("read-text", &serde_json::json!({})),
-                    finish("Written.", true),
+                    invoke("append-paragraph", &serde_json::json!({"text":"late"})),
+                    finish("Done", true),
                 ],
                 64,
-            ),
-            turn(&[finish("I could not write into the document.", false)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(
-        f.world
-            .borrow()
+            )],
+            // A provider silent for as long as the test may run: only the
+            // task's own deadline ends the run.
+            Some(tilo_test_env::hang_bound()),
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 100,
+                total_ms: 100,
+                max_turns: None,
+            }),
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(
+            f.script.emitted.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(f.session.turn.is_none());
+        assert!(f.session.task_deadline.is_none());
+        assert!(
+            matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
+            if message == crate::i18n::t("agent-fail-time")),
+            "the person reads that the task ran out of time: {:?}",
+            terminal(&f.sent.borrow())
+        );
+    }
+
+    phase a_run_without_a_budget_goes_past_thirty_turns_until_it_is_done;
+    // A run has no turn cap of its own: one whose issue sets no budget goes on
+    // past the 30 turns the runner used to allow until it is done.
+    {
+        let mut turns: Vec<Vec<TurnEvent>> = (0..45)
+            .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
+            .collect();
+        turns.push(turn(&[finish("Looked everywhere.", true)], 8));
+        let mut f = fixture("look around", World::default(), turns);
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(f.script.bodies.lock().unwrap().len(), 46);
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded { message } if message == "Looked everywhere."
+        ));
+        assert!(f.session.task_deadline.is_none(), "no time cap either");
+    }
+
+    phase a_loop_that_never_finishes_stops_at_its_budgets_turns;
+    // A model that never finishes is stopped at the turns its issue's budget
+    // sets: the limit is the person's.
+    {
+        let wander = |count: usize| -> Vec<Vec<TurnEvent>> {
+            (0..count)
+                .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
+                .collect()
+        };
+        let turns = 65;
+        let mut f = execution_fixture(
+            "wander",
+            World::default(),
+            wander(turns + 2),
+            None,
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 20_000,
+                total_ms: 600_000,
+                max_turns: Some(u32::try_from(turns).unwrap()),
+            }),
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(f.script.bodies.lock().unwrap().len(), turns);
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed { message } if message.contains(&format!("all {turns} model turns"))
+        ));
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_streaming_turn_reports_output_and_dispatches_only_validated_calls;
+
+    phase neutral_truncation_retains_output_without_dispatching_calls;
+    {
+        use agent_provider_config::protocol::{
+            Content, Message, ModelResponse, Role, StopReason, StreamEvent, Usage,
+        };
+        let response = ModelResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![Content::ToolCall(crate::model::ToolCall {
+                    id: "a".into(),
+                    name: tools::INVOKE.into(),
+                    input: invoke("type-text", &serde_json::json!({"text": "Do not write"})).1,
+                    extra_content: None,
+                })],
+            },
+            stop_reason: StopReason::OutputLimit,
+            usage: Usage::default(),
+            cost_micros: 0,
+        };
+        let mut f = fixture(
+            "write hello",
+            World::default(),
+            // The model keeps running into its output limit: each turn is
+            // continued from where it stopped, a bounded number of times, and
+            // then the run fails with the clean sentence.
+            (0..=MOST_CONTINUATIONS)
+                .map(|_| {
+                    vec![
+                        TurnEvent::Neutral(StreamEvent::TextDelta {
+                            text: "Partial answer".into(),
+                        }),
+                        TurnEvent::Neutral(StreamEvent::ReasoningDelta {
+                            text: "Provider summary".into(),
+                        }),
+                        TurnEvent::Neutral(StreamEvent::Finished {
+                            response: response.clone(),
+                        }),
+                        TurnEvent::Finished(Ok(serde_json::to_string(&response).unwrap())),
+                    ]
+                })
+                .collect(),
+        );
+        f.session.chooser = Chooser::scripted(
+            Duration::from_secs(5),
+            agent_provider_config::ProviderProtocol::OpenAiCompatible,
+            Arc::new(Scripted(f.script.clone())),
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert!(f.world.borrow().steps.is_empty());
+        // What the host hears is the sentence a person reads, and nothing of the
+        // turn's record: no partial answer, no provider-exposed reasoning.
+        assert!(matches!(terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed { message }
+                if !message.contains("Partial answer") && !message.contains("Provider summary")));
+        let sent = f.sent.borrow();
+        let snapshots = sent
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportTaskRun {
+                    run_id,
+                    lease,
+                    update:
+                        runtime_collab::TaskRunUpdate::Progress {
+                            presentation: Some(p),
+                            ..
+                        },
+                    ..
+                } => {
+                    assert_eq!(*run_id, f.run.run_id);
+                    assert_eq!(lease, &f.run.lease);
+                    Some(p)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let final_snapshot = snapshots
+            .last()
+            .expect("production report carries typed output");
+        // Every turn of the model was cut off, so each one published its partial
+        // text as truncated; the person reads the same sentence as any failure.
+        assert!(final_snapshot.text.starts_with("Partial answer"));
+        assert_eq!(final_snapshot.reasoning, "Provider summary");
+        assert_eq!(
+            final_snapshot.finish,
+            Some(runtime_collab::TaskPresentationFinish::Truncated)
+        );
+        assert!(
+            !serde_json::to_string(final_snapshot)
+                .unwrap()
+                .contains("Do not write")
+        );
+        // Each turn is its own run of presentation, its sequence starting over;
+        // within one run the sequence only ever goes forward.
+        let mut last: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+        for snapshot in &snapshots {
+            let previous = last.insert(snapshot.run.as_str(), snapshot.sequence);
+            assert!(
+                previous.is_none_or(|previous| previous < snapshot.sequence),
+                "a run's presentation sequence only goes forward: {}",
+                snapshot.run
+            );
+        }
+    }
+
+    phase presentation_reports_coalesce_bound_output_and_fall_back_for_old_hosts;
+    {
+        let mut f = fixture("say hello", World::default(), Vec::new());
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut active = ActiveTurn::new(rx);
+        active.presentation_run = "7:0".into();
+        active.presentation.text = "hello".into();
+        f.session.turn = Some(active);
+        // A hundred rapid tokens do not make a hundred host round trips.
+        for _ in 0..100 {
+            f.session.publish_turn_presentation(&f.run).unwrap();
+        }
+        assert!(f.sent.borrow().is_empty());
+        let active = f.session.turn.as_mut().unwrap();
+        active.presentation.text = "é".repeat(40 * 1024);
+        active.finished = Some(Err(Failure::said("stream lost")));
+        f.session.publish_turn_presentation(&f.run).unwrap();
+        f.session.publish_turn_presentation(&f.run).unwrap();
+        let sent = f.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        let CollabRequest::ReportTaskRun {
+            update:
+                runtime_collab::TaskRunUpdate::Progress {
+                    presentation: Some(p),
+                    ..
+                },
+            ..
+        } = &sent[0]
+        else {
+            panic!("typed output report")
+        };
+        assert_eq!(
+            p.text.len(),
+            runtime_collab::TaskPresentation::MAX_TEXT_BYTES
+        );
+        assert_eq!(
+            p.finish,
+            Some(runtime_collab::TaskPresentationFinish::Truncated)
+        );
+        drop(sent);
+        f.run.presentation_version = None;
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut active = ActiveTurn::new(rx);
+        active.presentation_run = "7:1".into();
+        active.presentation.text = "Readable answer".into();
+        active.finished = Some(Ok(String::new()));
+        f.session.turn = Some(active);
+        f.session.publish_turn_presentation(&f.run).unwrap();
+        let sent = f.sent.borrow();
+        let CollabRequest::ReportTaskRun { update, .. } = sent.last().unwrap() else {
+            panic!("a progress report")
+        };
+        let json = serde_json::to_value(update).unwrap();
+        assert_eq!(json["message"], "Readable answer");
+        assert!(
+            json.get("presentation").is_none(),
+            "strict old host can decode this report"
+        );
+    }
+
+    phase completed_stream_frames_cannot_dispatch_before_a_failed_final_response;
+    {
+        let mut events = turn(
+            &[invoke(
+                "type-text",
+                &serde_json::json!({"text": "Do not write"}),
+            )],
+            6,
+        );
+        events.pop();
+        events.push(TurnEvent::Finished(Err("provider stream reset".into())));
+        let mut f = fixture("write hello", World::default(), vec![events]);
+        f.session.run_task(&f.run).unwrap();
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(
+            !f.sent
+                .borrow()
+                .iter()
+                .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
+        );
+        // The transport's own words are the record, kept for debugging; the
+        // sentence a person reads is what happened, in their terms.
+        assert!(matches!(terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed { message }
+                if !message.contains("provider stream reset") && message.contains("The model")));
+    }
+
+    phase calls_wait_for_the_complete_turn_and_run_only_once;
+    // The loop waits for the validated final batch, executes each call
+    // exactly once and returns each result under the original call id.
+    {
+        let first = turn(
+            &[
+                invoke("append-paragraph", &serde_json::json!({"text": "Hello"})),
+                invoke("read-text", &serde_json::json!({})),
+            ],
+            8,
+        );
+        let turn_complete = first
+            .iter()
+            .position(|event| matches!(event, TurnEvent::Finished(_)))
+            .unwrap();
+        let mut f = paced_fixture(
+            "write hello",
+            World::default(),
+            vec![first, turn(&[finish("Wrote it.", true)], 8)],
+            Some(Duration::from_millis(4)),
+        );
+        f.session.run_task(&f.run).unwrap();
+
+        let world = f.world.borrow();
+        assert_eq!(world.blocks[0].1, "Hello");
+        let actions = world
             .steps
             .iter()
             .map(|(action, _)| action.as_str())
-            .collect::<Vec<_>>(),
-        ["append-paragraph"],
-        "the step after the failure did not run"
-    );
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    assert_eq!(bodies.len(), 2);
-    let second = bodies[1]["messages"].to_string();
-    assert!(second.contains("append-paragraph was refused"), "{second}");
-    assert!(second.contains("not run"), "{second}");
-    assert!(second.contains("Not finished"), "{second}");
-    // Not finishing hands the issue back to its person, with the
-    // model's words.
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed {
-            message: "I could not write into the document.".into()
-        }
-    );
-}
-
-/// An id no listing showed is answered as an error and never reaches the
-/// broker, whatever it names.
-#[test]
-fn an_unshown_operation_is_refused_without_a_step() {
-    let mut f = fixture(
-        "do something",
-        World::default(),
-        vec![
-            turn(
-                &[(
-                    tools::INVOKE,
-                    serde_json::json!({"operation": "broker:9:ghost#wipe", "parameters": {}}),
-                )],
-                64,
-            ),
-            turn(&[finish("Nothing to do.", true)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert!(f.world.borrow().steps.is_empty());
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    assert!(
-        bodies[1]["messages"]
-            .to_string()
-            .contains("is not an operation any listing"),
-    );
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Nothing to do.".into()
-        }
-    );
-}
-
-#[test]
-fn explicit_owner_task_budget_reaches_transport_and_keeps_the_default() {
-    let turns = vec![turn(&[finish("Done", true)], 64)];
-    let mut unbounded = fixture("finish", World::default(), turns.clone());
-    unbounded.session.run_task(&unbounded.run).unwrap();
-    assert_eq!(
-        unbounded.script.timeouts.lock().unwrap()[0],
-        Duration::from_secs(5)
-    );
-    let mut bounded = execution_fixture(
-        "finish",
-        World::default(),
-        turns,
-        None,
-        Some(collab_types::task_budget::TaskExecutionBudget {
-            turn_ms: 20_000,
-            total_ms: 60_000,
-            max_turns: None,
-        }),
-    );
-    bounded.session.run_task(&bounded.run).unwrap();
-    assert_eq!(
-        bounded.script.timeouts.lock().unwrap()[0],
-        Duration::from_secs(20)
-    );
-    assert!(bounded.session.task_deadline.is_none());
-}
-
-#[test]
-fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
-    let mut f = execution_fixture(
-        "write",
-        World::default(),
-        vec![turn(
-            &[
-                invoke("append-paragraph", &serde_json::json!({"text":"late"})),
-                finish("Done", true),
-            ],
-            64,
-        )],
-        // A provider silent for as long as the test may run: only the
-        // task's own deadline ends the run.
-        Some(tilo_test_env::hang_bound()),
-        Some(collab_types::task_budget::TaskExecutionBudget {
-            turn_ms: 100,
-            total_ms: 100,
-            max_turns: None,
-        }),
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(
-        f.script.emitted.load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-    assert!(f.world.borrow().steps.is_empty());
-    assert!(f.session.turn.is_none());
-    assert!(f.session.task_deadline.is_none());
-    assert!(
-        matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
-        if message == crate::i18n::t("agent-fail-time")),
-        "the person reads that the task ran out of time: {:?}",
-        terminal(&f.sent.borrow())
-    );
-}
-
-/// A run has no turn cap of its own: one whose issue sets no budget goes on
-/// past the 30 turns the runner used to allow until it is done.
-#[test]
-fn a_run_without_a_budget_goes_past_thirty_turns_until_it_is_done() {
-    let mut turns: Vec<Vec<TurnEvent>> = (0..45)
-        .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
-        .collect();
-    turns.push(turn(&[finish("Looked everywhere.", true)], 8));
-    let mut f = fixture("look around", World::default(), turns);
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(f.script.bodies.lock().unwrap().len(), 46);
-    assert!(matches!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded { message } if message == "Looked everywhere."
-    ));
-    assert!(f.session.task_deadline.is_none(), "no time cap either");
-}
-
-/// A model that never finishes is stopped at the turns its issue's budget
-/// sets: the limit is the person's.
-#[test]
-fn a_loop_that_never_finishes_stops_at_its_budgets_turns() {
-    let wander = |count: usize| -> Vec<Vec<TurnEvent>> {
-        (0..count)
-            .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
-            .collect()
-    };
-    let turns = 65;
-    let mut f = execution_fixture(
-        "wander",
-        World::default(),
-        wander(turns + 2),
-        None,
-        Some(collab_types::task_budget::TaskExecutionBudget {
-            turn_ms: 20_000,
-            total_ms: 600_000,
-            max_turns: Some(u32::try_from(turns).unwrap()),
-        }),
-    );
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(f.script.bodies.lock().unwrap().len(), turns);
-    assert!(matches!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message } if message.contains(&format!("all {turns} model turns"))
-    ));
-}
-
-/// The loop waits for the validated final batch, executes each call
-/// exactly once and returns each result under the original call id.
-#[test]
-fn calls_wait_for_the_complete_turn_and_run_only_once() {
-    let first = turn(
-        &[
-            invoke("append-paragraph", &serde_json::json!({"text": "Hello"})),
-            invoke("read-text", &serde_json::json!({})),
-        ],
-        8,
-    );
-    let turn_complete = first
-        .iter()
-        .position(|event| matches!(event, TurnEvent::Finished(_)))
-        .unwrap();
-    let mut f = paced_fixture(
-        "write hello",
-        World::default(),
-        vec![first, turn(&[finish("Wrote it.", true)], 8)],
-        Some(Duration::from_millis(4)),
-    );
-    f.session.run_task(&f.run).unwrap();
-
-    let world = f.world.borrow();
-    assert_eq!(world.blocks[0].1, "Hello");
-    let actions = world
-        .steps
-        .iter()
-        .map(|(action, _)| action.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        actions,
-        ["append-paragraph", "read-text"],
-        "each call ran once"
-    );
-    assert!(
-        world.steps_at[0] >= turn_complete,
-        "the first call ran at event {} before the final response ({turn_complete})",
-        world.steps_at[0]
-    );
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    assert_eq!(bodies.len(), 2);
-    assert!(bodies[0]["tools"][0].get("input_schema").is_some());
-    let results = bodies[1]["messages"]
-        .as_array()
-        .unwrap()
-        .last()
-        .unwrap()
-        .clone();
-    assert_eq!(results["role"], "tool");
-    let ids = results["content"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|block| {
-            assert_eq!(block["type"], "tool_result");
-            assert_ne!(block["content"], "Not handled.");
-            block["call_id"].as_str().unwrap().to_owned()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(ids, asked_ids(&bodies[1]), "each result under its call id");
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Wrote it.".into()
-        }
-    );
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            ["append-paragraph", "read-text"],
+            "each call ran once"
+        );
+        assert!(
+            world.steps_at[0] >= turn_complete,
+            "the first call ran at event {} before the final response ({turn_complete})",
+            world.steps_at[0]
+        );
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0]["tools"][0].get("input_schema").is_some());
+        let results = bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(results["role"], "tool");
+        let ids = results["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| {
+                assert_eq!(block["type"], "tool_result");
+                assert_ne!(block["content"], "Not handled.");
+                block["call_id"].as_str().unwrap().to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, asked_ids(&bodies[1]), "each result under its call id");
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Wrote it.".into()
+            }
+        );
+    }
 }
 
 fn invoke_replying(action: &str, arguments: &Value, reply: &str) -> (&'static str, Value) {
@@ -2752,138 +2457,449 @@ fn post(message: &str) -> (&'static str, Value) {
     )
 }
 
-/// Lab regression (fresh workspace, Writer closed): the summary shows
-/// the desktop's open for Writer; the model opens it (with a premature
-/// reply, as gpt-oss does), the result lists Writer's operations with
-/// their ids, and the model writes with an id copied without its
-/// routing prefix and posts in Chat — all within three turns.
-#[test]
-fn a_fresh_workspace_opens_writer_then_writes_and_posts() {
-    let open_writer = format!("broker:{DESKTOP_PEER}:desktop:app:so.tilo.word-processor#open");
-    let paragraph = "Thunderstorms form when warm, moist air rises quickly.";
-    let mut f = fixture(
-        "Add a paragraph about thunderstorms to Writer, then post 'hello' in Chat.",
-        World {
-            fresh: true,
+tilo_test_env::scenario! {
+    fn a_task_is_carried_out_step_by_step_through_published_operations;
+
+    phase making_the_second_paragraph_bold_selects_it_then_toggles_the_mark;
+    // Review test 7: "make the second paragraph bold" is carried out by
+    // discovering, invoking and observing published operations — read the
+    // document, select the paragraph (which makes toggle-mark available),
+    // toggle the mark — with no application-specific tool anywhere.
+    {
+        let world = World {
+            blocks: vec![
+                ("p1".into(), "Intro".into()),
+                ("p2".into(), "Details".into()),
+            ],
             ..World::default()
-        },
-        vec![
-            turn(
-                &[(
-                    tools::INVOKE,
-                    serde_json::json!({
-                        "operation": open_writer,
-                        "parameters": {},
-                        "parts": [
-                            {"part": "add a paragraph about thunderstorms",
-                             "app": "so.tilo.word-processor"},
-                            {"part": "post hello", "app": "so.tilo.chat"}
-                        ],
-                        "reply": "Writer opened."
-                    }),
-                )],
-                64,
-            ),
-            turn(
+        };
+        let mut f = fixture(
+            "make the second paragraph bold",
+            world,
+            vec![
+                turn(&[invoke("read-text", &serde_json::json!({}))], 16),
+                turn(
+                    &[invoke("select-block", &serde_json::json!({"block": "p2"}))],
+                    16,
+                ),
+                turn(
+                    &[
+                        invoke("toggle-mark", &serde_json::json!({"mark": "strong"})),
+                        finish("Done: the second paragraph is bold now.", true),
+                    ],
+                    16,
+                ),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+
+        let world = f.world.borrow();
+        assert_eq!(world.bold, vec!["p2".to_string()]);
+        assert_eq!(
+            world
+                .steps
+                .iter()
+                .map(|(action, _)| action.as_str())
+                .collect::<Vec<_>>(),
+            ["read-text", "select-block", "toggle-mark"]
+        );
+        let sent = f.sent.borrow();
+        let invocations = sent
+            .iter()
+            .filter(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
+            .count();
+        assert_eq!(invocations, 3, "one invocation each");
+        assert_eq!(
+            terminal(&sent),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Done: the second paragraph is bold now.".into()
+            }
+        );
+
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        assert_eq!(
+            bodies.len(),
+            3,
+            "three turns: read, select, toggle + finish"
+        );
+        for body in &bodies {
+            assert_eq!(
+                tool_names(body),
+                [
+                    "list_applications",
+                    "list_operations",
+                    "describe_operation",
+                    "invoke",
+                    "read_result",
+                    "search_web",
+                    "read_page",
+                    "tilo",
+                    "plan"
+                ],
+                "only generic tools, never an application-specific one"
+            );
+        }
+        let first: String = bodies[0]["messages"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["text"].as_str().unwrap())
+            .collect();
+        assert!(first.contains("make the second paragraph bold"), "{first}");
+        assert!(first.contains(&op("toggle-mark")), "{first}");
+        assert!(
+            first.contains("currently unavailable: select something first"),
+            "{first}"
+        );
+        // The read-back reaches the next turn, and the selection's effect —
+        // toggle-mark becoming available — is observed, not assumed.
+        let second = bodies[1]["messages"].to_string();
+        assert!(second.contains("Details"), "{second}");
+        let observation = last_observation(&bodies[2]);
+        assert_eq!(observation["result"], "succeeded");
+        assert_eq!(observation["changed_view"]["selection"]["block"], "p2");
+        assert!(
+            observation["newly_available"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().starts_with(&op("toggle-mark"))),
+            "{observation}"
+        );
+    }
+
+    phase a_late_republication_is_taken_while_the_model_is_still_busy;
+    // A republication that reaches the agent after the view step's reply is
+    // still taken up when the model has no next call for the loop to run,
+    // so what the view unlocked is reported with the step. The step waits
+    // for full-turn validation, not merely its streamed call preview.
+    {
+        let world = World {
+            blocks: vec![
+                ("p1".into(), "Intro".into()),
+                ("p2".into(), "Details".into()),
+            ],
+            republish_after_polls: 10,
+            ..World::default()
+        };
+        let selection_turn = turn(
+            &[invoke("select-block", &serde_json::json!({"block": "p2"}))],
+            128,
+        );
+        let selection_finished_at = selection_turn.len() - 1;
+        let mut f = paced_fixture(
+            "make the second paragraph bold",
+            world,
+            vec![
+                selection_turn,
+                turn(
+                    &[
+                        invoke("toggle-mark", &serde_json::json!({"mark": "strong"})),
+                        finish("Done.", true),
+                    ],
+                    128,
+                ),
+            ],
+            Some(Duration::from_millis(100)),
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(f.world.borrow().bold, ["p2"]);
+        assert!(
+            f.world.borrow().steps_at[0] >= selection_finished_at,
+            "the selection must not execute from a partial model turn"
+        );
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let observation = last_observation(&bodies[1]);
+        assert!(
+            observation["newly_available"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().starts_with(&op("toggle-mark"))),
+            "{observation}"
+        );
+    }
+
+    phase opened_records_reads_the_desktop_receipt;
+    {
+        let receipt = serde_json::json!({
+            "kind": "desktop.command",
+            "command": "1:1",
+            "generation": 3,
+            "opened": [
+                {"app_id": "so.tilo.notes", "record_id": "n-1"},
+                {"app_id": "so.tilo.word-processor", "record_id": "doc-9"},
+                {"app_id": "so.tilo.word-processor", "record_id": ""}
+            ]
+        });
+        assert_eq!(
+            opened_records(Some(&receipt), "so.tilo.word-processor"),
+            ["doc-9"]
+        );
+        assert!(opened_records(Some(&serde_json::json!({})), "so.tilo.notes").is_empty());
+        assert!(opened_records(None, "so.tilo.notes").is_empty());
+    }
+
+    phase a_single_turn_writes_and_finishes;
+    // One turn does the whole job: the paragraph is written in one step
+    // and the reply finishes the task — no second turn.
+    {
+        let text = "The ocean covers more than seventy percent of our planet, holding \
+                ninety-seven percent of its water and most of its life, from reefs \
+                to trenches.";
+        let mut f = fixture(
+            "write a paragraph about the ocean",
+            World::default(),
+            vec![turn(
                 &[
-                    (
+                    invoke("append-paragraph", &serde_json::json!({"text": text})),
+                    finish("Here you go: a paragraph about the ocean.", true),
+                ],
+                24,
+            )],
+        );
+        f.session.run_task(&f.run).unwrap();
+
+        assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model turn");
+        let world = f.world.borrow();
+        assert_eq!(world.blocks.len(), 1);
+        assert_eq!(world.blocks[0].1, text, "the paragraph lands exactly");
+        let actions: Vec<&str> = world
+            .steps
+            .iter()
+            .map(|(action, _)| action.as_str())
+            .collect();
+        assert_eq!(
+            actions,
+            ["append-paragraph"],
+            "a complete paragraph is one step"
+        );
+        let sent = f.sent.borrow();
+        assert_eq!(
+            terminal(&sent),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Here you go: a paragraph about the ocean.".into()
+            }
+        );
+    }
+
+    phase a_failed_step_skips_the_rest_of_its_turn_and_is_observed;
+    // A failed step stops the rest of its turn and keeps the turn's `plan`
+    // from finishing; the model reads why and decides again.
+    {
+        let world = World {
+            refuse: vec!["append-paragraph".into()],
+            ..World::default()
+        };
+        let mut f = fixture(
+            "write hi",
+            world,
+            vec![
+                turn(
+                    &[
+                        invoke("append-paragraph", &serde_json::json!({"text": "hi"})),
+                        invoke("read-text", &serde_json::json!({})),
+                        finish("Written.", true),
+                    ],
+                    64,
+                ),
+                turn(&[finish("I could not write into the document.", false)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(
+            f.world
+                .borrow()
+                .steps
+                .iter()
+                .map(|(action, _)| action.as_str())
+                .collect::<Vec<_>>(),
+            ["append-paragraph"],
+            "the step after the failure did not run"
+        );
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        let second = bodies[1]["messages"].to_string();
+        assert!(second.contains("append-paragraph was refused"), "{second}");
+        assert!(second.contains("not run"), "{second}");
+        assert!(second.contains("Not finished"), "{second}");
+        // Not finishing hands the issue back to its person, with the
+        // model's words.
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed {
+                message: "I could not write into the document.".into()
+            }
+        );
+    }
+
+    phase an_unshown_operation_is_refused_without_a_step;
+    // An id no listing showed is answered as an error and never reaches the
+    // broker, whatever it names.
+    {
+        let mut f = fixture(
+            "do something",
+            World::default(),
+            vec![
+                turn(
+                    &[(
+                        tools::INVOKE,
+                        serde_json::json!({"operation": "broker:9:ghost#wipe", "parameters": {}}),
+                    )],
+                    64,
+                ),
+                turn(&[finish("Nothing to do.", true)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert!(f.world.borrow().steps.is_empty());
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        assert!(
+            bodies[1]["messages"]
+                .to_string()
+                .contains("is not an operation any listing"),
+        );
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Nothing to do.".into()
+            }
+        );
+    }
+
+    phase a_fresh_workspace_opens_writer_then_writes_and_posts;
+    // Lab regression (fresh workspace, Writer closed): the summary shows
+    // the desktop's open for Writer; the model opens it (with a premature
+    // reply, as gpt-oss does), the result lists Writer's operations with
+    // their ids, and the model writes with an id copied without its
+    // routing prefix and posts in Chat — all within three turns.
+    {
+        let open_writer = format!("broker:{DESKTOP_PEER}:desktop:app:so.tilo.word-processor#open");
+        let paragraph = "Thunderstorms form when warm, moist air rises quickly.";
+        let mut f = fixture(
+            "Add a paragraph about thunderstorms to Writer, then post 'hello' in Chat.",
+            World {
+                fresh: true,
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[(
                         tools::INVOKE,
                         serde_json::json!({
-                            "operation": format!("{DOC}#append-paragraph"),
-                            "parameters": {"text": paragraph}
+                            "operation": open_writer,
+                            "parameters": {},
+                            "parts": [
+                                {"part": "add a paragraph about thunderstorms",
+                                 "app": "so.tilo.word-processor"},
+                                {"part": "post hello", "app": "so.tilo.chat"}
+                            ],
+                            "reply": "Writer opened."
                         }),
-                    ),
-                    post("hello"),
-                    finish("Added the paragraph and posted hello.", true),
-                ],
-                64,
-            ),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    let first = bodies[0]["messages"].to_string();
-    assert!(first.contains(&open_writer), "the open is in the summary");
-    assert!(!first.contains("#append-paragraph"), "Writer is closed");
-    let second = bodies[1]["messages"].to_string();
-    assert!(
-        second.contains(&op("append-paragraph")),
-        "the open's result lists Writer's ids: {second}"
-    );
-    assert!(second.contains("is open in a new window"), "{second}");
-    assert!(
-        second.contains("Not finished"),
-        "the premature reply is refused"
-    );
-    assert_eq!(bodies.len(), 2);
-    drop(bodies);
-    let world = f.world.borrow();
-    assert_eq!(world.blocks.len(), 1);
-    assert_eq!(world.blocks[0].1, paragraph);
-    assert_eq!(world.posts, ["hello"]);
-    drop(world);
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Added the paragraph and posted hello.".into()
-        }
-    );
-}
+                    )],
+                    64,
+                ),
+                turn(
+                    &[
+                        (
+                            tools::INVOKE,
+                            serde_json::json!({
+                                "operation": format!("{DOC}#append-paragraph"),
+                                "parameters": {"text": paragraph}
+                            }),
+                        ),
+                        post("hello"),
+                        finish("Added the paragraph and posted hello.", true),
+                    ],
+                    64,
+                ),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let first = bodies[0]["messages"].to_string();
+        assert!(first.contains(&open_writer), "the open is in the summary");
+        assert!(!first.contains("#append-paragraph"), "Writer is closed");
+        let second = bodies[1]["messages"].to_string();
+        assert!(
+            second.contains(&op("append-paragraph")),
+            "the open's result lists Writer's ids: {second}"
+        );
+        assert!(second.contains("is open in a new window"), "{second}");
+        assert!(
+            second.contains("Not finished"),
+            "the premature reply is refused"
+        );
+        assert_eq!(bodies.len(), 2);
+        drop(bodies);
+        let world = f.world.borrow();
+        assert_eq!(world.blocks.len(), 1);
+        assert_eq!(world.blocks[0].1, paragraph);
+        assert_eq!(world.posts, ["hello"]);
+        drop(world);
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Added the paragraph and posted hello.".into()
+            }
+        );
+    }
 
-/// Live regression (9997): the first turn opens Writer with a reply and
-/// lists only "Open Writer" as a part. The reply on an open does not
-/// finish; a following bare finish is refused, because the open part
-/// and the request's own mention of Writer both need a Writer
-/// operation; only after writing does the task finish.
-#[test]
-fn an_open_with_a_reply_does_not_finish_the_task() {
-    let open_writer = format!("broker:{DESKTOP_PEER}:desktop:app:so.tilo.word-processor#open");
-    let mut f = fixture(
-        "Write a short essay about rain in Writer.",
-        World {
-            fresh: true,
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[(
-                    tools::INVOKE,
-                    serde_json::json!({
-                        "operation": open_writer,
-                        "parameters": {},
-                        "parts": [{"part": "Open Writer", "app": "so.tilo.desktop: Writer"}],
-                        "reply": "Opening Writer to write the essay."
-                    }),
-                )],
-                64,
-            ),
-            turn(&[finish("Opened Writer.", true)], 64),
-            turn(
-                &[invoke_replying(
-                    "type-text",
-                    &serde_json::json!({"text": "Rain falls."}),
-                    "Wrote the essay.",
-                )],
-                64,
-            ),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    assert_eq!(bodies.len(), 3);
-    let second = bodies[1]["messages"].to_string();
-    assert!(second.contains("does not finish a task"), "{second}");
-    let third = bodies[2]["messages"].to_string();
-    assert!(third.contains("Not finished: these parts"), "{third}");
-    assert!(third.contains("so.tilo.word-processor"), "{third}");
-    drop(bodies);
-    assert_eq!(f.world.borrow().blocks[0].1, "Rain falls.");
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Wrote the essay.".into()
-        }
-    );
+    phase an_open_with_a_reply_does_not_finish_the_task;
+    // Live regression (9997): the first turn opens Writer with a reply and
+    // lists only "Open Writer" as a part. The reply on an open does not
+    // finish; a following bare finish is refused, because the open part
+    // and the request's own mention of Writer both need a Writer
+    // operation; only after writing does the task finish.
+    {
+        let open_writer = format!("broker:{DESKTOP_PEER}:desktop:app:so.tilo.word-processor#open");
+        let mut f = fixture(
+            "Write a short essay about rain in Writer.",
+            World {
+                fresh: true,
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[(
+                        tools::INVOKE,
+                        serde_json::json!({
+                            "operation": open_writer,
+                            "parameters": {},
+                            "parts": [{"part": "Open Writer", "app": "so.tilo.desktop: Writer"}],
+                            "reply": "Opening Writer to write the essay."
+                        }),
+                    )],
+                    64,
+                ),
+                turn(&[finish("Opened Writer.", true)], 64),
+                turn(
+                    &[invoke_replying(
+                        "type-text",
+                        &serde_json::json!({"text": "Rain falls."}),
+                        "Wrote the essay.",
+                    )],
+                    64,
+                ),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 3);
+        let second = bodies[1]["messages"].to_string();
+        assert!(second.contains("does not finish a task"), "{second}");
+        let third = bodies[2]["messages"].to_string();
+        assert!(third.contains("Not finished: these parts"), "{third}");
+        assert!(third.contains("so.tilo.word-processor"), "{third}");
+        drop(bodies);
+        assert_eq!(f.world.borrow().blocks[0].1, "Rain falls.");
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Wrote the essay.".into()
+            }
+        );
+    }
 }
 
 /// An `invoke` of `action` on `resource` in `peer`'s record; marked

@@ -632,35 +632,243 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn offline_developer_catalog_has_a_separate_trust_domain() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut input = source(dir.path());
-        let digest = hex::encode(Sha256::digest(b"deterministic runtime fixture\n"));
-        input.runtimes[0].artifact.url = format!("offline:sha256:{digest}");
-        let key = SigningKey::from_bytes(&[11; 32]);
-        assert!(compile(input.clone(), dir.path(), &key).is_err());
-        let mut production = input.clone();
-        production.production = true;
-        assert!(compile_mode(production, dir.path(), &key, true).is_err());
-        let (mut signed, trust) = compile_mode(input.clone(), dir.path(), &key, true).unwrap();
-        let cat = dir.path().join("catalog.json");
-        let keys = dir.path().join("keys.json");
-        fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
-        fs::write(&keys, serde_json::to_vec(&trust).unwrap()).unwrap();
-        assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_err());
-        assert!(
-            local_model_service::catalog::VerifiedCatalog::load_developer_offline(&cat, &keys)
-                .is_ok()
-        );
-        signed.payload.runtimes[0].release.artifact.sha256 = "d".repeat(64);
-        fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
-        assert!(
-            local_model_service::catalog::VerifiedCatalog::load_developer_offline(&cat, &keys)
-                .is_err()
-        );
-        input.runtimes[0].artifact.url = format!("offline:sha256:{}", "d".repeat(64));
-        assert!(compile_mode(input, dir.path(), &key, true).is_err());
+    tilo_test_env::scenario! {
+        /// What catalog compilation signs for each kind of source: the developer trust domain, execution
+        /// engines and limits, parallel slots, speech formats and models that run in process.
+        fn the_compiled_catalog_signs_every_declared_shape_under_its_own_trust_domain;
+
+        phase offline_developer_catalog_has_a_separate_trust_domain;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut input = source(dir.path());
+            let digest = hex::encode(Sha256::digest(b"deterministic runtime fixture\n"));
+            input.runtimes[0].artifact.url = format!("offline:sha256:{digest}");
+            let key = SigningKey::from_bytes(&[11; 32]);
+            assert!(compile(input.clone(), dir.path(), &key).is_err());
+            let mut production = input.clone();
+            production.production = true;
+            assert!(compile_mode(production, dir.path(), &key, true).is_err());
+            let (mut signed, trust) = compile_mode(input.clone(), dir.path(), &key, true).unwrap();
+            let cat = dir.path().join("catalog.json");
+            let keys = dir.path().join("keys.json");
+            fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
+            fs::write(&keys, serde_json::to_vec(&trust).unwrap()).unwrap();
+            assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_err());
+            assert!(
+                local_model_service::catalog::VerifiedCatalog::load_developer_offline(&cat, &keys)
+                    .is_ok()
+            );
+            signed.payload.runtimes[0].release.artifact.sha256 = "d".repeat(64);
+            fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
+            assert!(
+                local_model_service::catalog::VerifiedCatalog::load_developer_offline(&cat, &keys)
+                    .is_err()
+            );
+            input.runtimes[0].artifact.url = format!("offline:sha256:{}", "d".repeat(64));
+            assert!(compile_mode(input, dir.path(), &key, true).is_err());
+        }
+
+        phase execution_engine_and_limits_are_signed_and_incompatible_layouts_refused;
+        {
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let temp = tempfile::tempdir().unwrap();
+            let mut catalog = source(temp.path());
+            catalog.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 4096,
+                gpu_layers: 0,
+                parallel_slots: None,
+            });
+            assert!(compile(catalog.clone(), temp.path(), &key).is_err());
+            catalog.models[0].artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            catalog.models[0].vision = false;
+            let (signed, _) = compile(catalog.clone(), temp.path(), &key).unwrap();
+            let signature = Signature::from_slice(&signed.signature).unwrap();
+            key.verifying_key()
+                .verify(&catalog_signing_bytes(&signed.payload).unwrap(), &signature)
+                .unwrap();
+            let mut forged = signed.payload;
+            forged.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 8192,
+                gpu_layers: 0,
+                parallel_slots: None,
+            });
+            assert!(
+                key.verifying_key()
+                    .verify(&catalog_signing_bytes(&forged).unwrap(), &signature)
+                    .is_err()
+            );
+            catalog.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 0,
+                gpu_layers: 0,
+                parallel_slots: None,
+            });
+            assert!(compile(catalog, temp.path(), &key).is_err());
+        }
+
+        phase parallel_slots_are_verified_by_the_catalog_consumer;
+        {
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let temp = tempfile::tempdir().unwrap();
+            let mut input = source(temp.path());
+            input.models[0].artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            input.models[0].vision = false;
+            input.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 4096,
+                gpu_layers: 0,
+                parallel_slots: std::num::NonZeroU16::new(1),
+            });
+            let (mut signed, trust) = compile(input.clone(), temp.path(), &key).unwrap();
+            let cat = temp.path().join("catalog.json");
+            let keys = temp.path().join("keys.json");
+            fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
+            fs::write(&keys, serde_json::to_vec(&trust).unwrap()).unwrap();
+            assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_ok());
+            signed.payload.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 4096,
+                gpu_layers: 0,
+                parallel_slots: std::num::NonZeroU16::new(2),
+            });
+            fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
+            assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_err());
+            input.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 4096,
+                gpu_layers: 0,
+                parallel_slots: std::num::NonZeroU16::new(65),
+            });
+            assert!(compile(input, temp.path(), &key).is_err());
+        }
+
+        phase speech_format_is_signed_without_becoming_a_chat_recommendation;
+        {
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let temp = tempfile::tempdir().unwrap();
+            let mut catalog = source(temp.path());
+            let mut speech = in_process_source(temp.path());
+            speech.artifact_format = ModelArtifactFormat::WhisperGgml;
+            speech.segmentation = false;
+            catalog.models = vec![speech];
+            catalog.runtimes.clear();
+            catalog.recommendation.clear();
+            let (signed, _) = compile(catalog, temp.path(), &key).unwrap();
+            assert_eq!(
+                signed.payload.models[0].in_process_capabilities(),
+                [agent_provider_config::local::InProcessCapability::SpeechRecognition]
+            );
+            assert!(signed.payload.recommendation.is_empty());
+            let signature = Signature::from_slice(&signed.signature).unwrap();
+            key.verifying_key()
+                .verify(&catalog_signing_bytes(&signed.payload).unwrap(), &signature)
+                .unwrap();
+            let mut forged = signed.payload;
+            forged.models[0].artifact_format = ModelArtifactFormat::OnnxFile;
+            assert!(
+                key.verifying_key()
+                    .verify(&catalog_signing_bytes(&forged).unwrap(), &signature)
+                    .is_err()
+            );
+        }
+
+        phase in_process_only_catalog_compiles_without_chat_recommendation;
+        {
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let temp = tempfile::tempdir().unwrap();
+            let mut catalog = source(temp.path());
+            catalog.models = vec![in_process_source(temp.path())];
+            catalog.runtimes.clear();
+            catalog.recommendation.clear();
+            let (signed, trust) = compile(catalog.clone(), temp.path(), &key).unwrap();
+            assert_eq!(signed.payload.models.len(), 1);
+            assert!(signed.payload.runtimes.is_empty());
+            assert!(signed.payload.recommendation.is_empty());
+            let public = hex::decode(&trust.keys["test-release-1"]).unwrap();
+            let verifying =
+                ed25519_dalek::VerifyingKey::from_bytes(&public.try_into().unwrap()).unwrap();
+            verifying
+                .verify(
+                    &catalog_signing_bytes(&signed.payload).unwrap(),
+                    &Signature::from_slice(&signed.signature).unwrap(),
+                )
+                .unwrap();
+
+            catalog.recommendation = "example-subject".into();
+            assert!(
+                compile(catalog, temp.path(), &key)
+                    .unwrap_err()
+                    .contains("runtime-served")
+            );
+            let mut served = source(temp.path());
+            served.runtimes.clear();
+            assert!(compile(served, temp.path(), &key).is_err());
+        }
+
+        phase in_process_models_compile_without_a_runtime_and_keep_their_shape;
+        // An ONNX model compiles with no runtime and no context window, but
+        // still cannot name a runtime, claim chat or vision, or become the chat
+        // recommendation; and a served model still needs both.
+        {
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let temp = tempfile::tempdir().unwrap();
+            let mut catalog = source(temp.path());
+            catalog.models.push(in_process_source(temp.path()));
+            let (signed, _) = compile(catalog, temp.path(), &key).unwrap();
+            let subject = signed
+                .payload
+                .models
+                .iter()
+                .find(|model| model.id == "example-subject")
+                .unwrap();
+            assert!(subject.runs_in_process());
+            assert!(subject.segmentation);
+            assert!(subject.allowed_runtimes.is_empty());
+
+            let refused = |edit: fn(&mut ModelSource)| {
+                let temp = tempfile::tempdir().unwrap();
+                let mut catalog = source(temp.path());
+                let mut model = in_process_source(temp.path());
+                edit(&mut model);
+                catalog.models.push(model);
+                compile(catalog, temp.path(), &SigningKey::from_bytes(&[5; 32])).unwrap_err()
+            };
+            assert!(
+                refused(|model| model.allowed_runtimes = BTreeSet::from([RuntimeKind::Cpu]))
+                    .contains("must not name a vLLM runtime")
+            );
+            assert!(refused(|model| model.context_window = 4096).contains("cannot claim chat"));
+            assert!(refused(|model| model.vision = true).contains("cannot claim chat"));
+            assert!(refused(|model| model.segmentation = false).contains("no capability"));
+            assert!(
+                refused(|model| model.artifact.url =
+                    "https://release.example.invalid/subject/u2net.onnx".into())
+                .contains("immutable revision")
+            );
+
+            let temp = tempfile::tempdir().unwrap();
+            let mut catalog = source(temp.path());
+            catalog.models.push(in_process_source(temp.path()));
+            catalog.recommendation = "example-subject".into();
+            assert!(
+                compile(catalog, temp.path(), &key)
+                    .unwrap_err()
+                    .contains("runtime-served")
+            );
+
+            let temp = tempfile::tempdir().unwrap();
+            let mut served = source(temp.path());
+            served.models[0].context_window = 0;
+            assert!(
+                compile(served, temp.path(), &key)
+                    .unwrap_err()
+                    .contains("context window")
+            );
+            let temp = tempfile::tempdir().unwrap();
+            let mut served = source(temp.path());
+            served.models[0].allowed_runtimes.clear();
+            assert!(
+                compile(served, temp.path(), &key)
+                    .unwrap_err()
+                    .contains("no runtime")
+            );
+        }
     }
 
     fn artifact(dir: &Path, name: &str, bytes: &[u8]) -> ArtifactSource {
@@ -749,214 +957,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn execution_engine_and_limits_are_signed_and_incompatible_layouts_refused() {
-        let key = SigningKey::from_bytes(&[5; 32]);
-        let temp = tempfile::tempdir().unwrap();
-        let mut catalog = source(temp.path());
-        catalog.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
-            max_context_tokens: 4096,
-            gpu_layers: 0,
-            parallel_slots: None,
-        });
-        assert!(compile(catalog.clone(), temp.path(), &key).is_err());
-        catalog.models[0].artifact_format = ModelArtifactFormat::LlamaCppGguf;
-        catalog.models[0].vision = false;
-        let (signed, _) = compile(catalog.clone(), temp.path(), &key).unwrap();
-        let signature = Signature::from_slice(&signed.signature).unwrap();
-        key.verifying_key()
-            .verify(&catalog_signing_bytes(&signed.payload).unwrap(), &signature)
-            .unwrap();
-        let mut forged = signed.payload;
-        forged.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
-            max_context_tokens: 8192,
-            gpu_layers: 0,
-            parallel_slots: None,
-        });
-        assert!(
-            key.verifying_key()
-                .verify(&catalog_signing_bytes(&forged).unwrap(), &signature)
-                .is_err()
-        );
-        catalog.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
-            max_context_tokens: 0,
-            gpu_layers: 0,
-            parallel_slots: None,
-        });
-        assert!(compile(catalog, temp.path(), &key).is_err());
-    }
+    tilo_test_env::scenario! {
+        /// Checked-in non-production source compiles without network resolution, output is deterministic
+        /// and verifies with public trust only, and an artifact receipt is resolved with a declared mismatch
+        /// failing.
+        fn catalog_compilation_is_offline_deterministic_and_receipt_checked;
 
-    #[test]
-    fn parallel_slots_are_verified_by_the_catalog_consumer() {
-        let key = SigningKey::from_bytes(&[5; 32]);
-        let temp = tempfile::tempdir().unwrap();
-        let mut input = source(temp.path());
-        input.models[0].artifact_format = ModelArtifactFormat::LlamaCppGguf;
-        input.models[0].vision = false;
-        input.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
-            max_context_tokens: 4096,
-            gpu_layers: 0,
-            parallel_slots: std::num::NonZeroU16::new(1),
-        });
-        let (mut signed, trust) = compile(input.clone(), temp.path(), &key).unwrap();
-        let cat = temp.path().join("catalog.json");
-        let keys = temp.path().join("keys.json");
-        fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
-        fs::write(&keys, serde_json::to_vec(&trust).unwrap()).unwrap();
-        assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_ok());
-        signed.payload.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
-            max_context_tokens: 4096,
-            gpu_layers: 0,
-            parallel_slots: std::num::NonZeroU16::new(2),
-        });
-        fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
-        assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_err());
-        input.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
-            max_context_tokens: 4096,
-            gpu_layers: 0,
-            parallel_slots: std::num::NonZeroU16::new(65),
-        });
-        assert!(compile(input, temp.path(), &key).is_err());
-    }
-
-    #[test]
-    fn speech_format_is_signed_without_becoming_a_chat_recommendation() {
-        let key = SigningKey::from_bytes(&[5; 32]);
-        let temp = tempfile::tempdir().unwrap();
-        let mut catalog = source(temp.path());
-        let mut speech = in_process_source(temp.path());
-        speech.artifact_format = ModelArtifactFormat::WhisperGgml;
-        speech.segmentation = false;
-        catalog.models = vec![speech];
-        catalog.runtimes.clear();
-        catalog.recommendation.clear();
-        let (signed, _) = compile(catalog, temp.path(), &key).unwrap();
-        assert_eq!(
-            signed.payload.models[0].in_process_capabilities(),
-            [agent_provider_config::local::InProcessCapability::SpeechRecognition]
-        );
-        assert!(signed.payload.recommendation.is_empty());
-        let signature = Signature::from_slice(&signed.signature).unwrap();
-        key.verifying_key()
-            .verify(&catalog_signing_bytes(&signed.payload).unwrap(), &signature)
-            .unwrap();
-        let mut forged = signed.payload;
-        forged.models[0].artifact_format = ModelArtifactFormat::OnnxFile;
-        assert!(
-            key.verifying_key()
-                .verify(&catalog_signing_bytes(&forged).unwrap(), &signature)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn in_process_only_catalog_compiles_without_chat_recommendation() {
-        let key = SigningKey::from_bytes(&[5; 32]);
-        let temp = tempfile::tempdir().unwrap();
-        let mut catalog = source(temp.path());
-        catalog.models = vec![in_process_source(temp.path())];
-        catalog.runtimes.clear();
-        catalog.recommendation.clear();
-        let (signed, trust) = compile(catalog.clone(), temp.path(), &key).unwrap();
-        assert_eq!(signed.payload.models.len(), 1);
-        assert!(signed.payload.runtimes.is_empty());
-        assert!(signed.payload.recommendation.is_empty());
-        let public = hex::decode(&trust.keys["test-release-1"]).unwrap();
-        let verifying =
-            ed25519_dalek::VerifyingKey::from_bytes(&public.try_into().unwrap()).unwrap();
-        verifying
-            .verify(
-                &catalog_signing_bytes(&signed.payload).unwrap(),
-                &Signature::from_slice(&signed.signature).unwrap(),
-            )
-            .unwrap();
-
-        catalog.recommendation = "example-subject".into();
-        assert!(
-            compile(catalog, temp.path(), &key)
-                .unwrap_err()
-                .contains("runtime-served")
-        );
-        let mut served = source(temp.path());
-        served.runtimes.clear();
-        assert!(compile(served, temp.path(), &key).is_err());
-    }
-
-    /// An ONNX model compiles with no runtime and no context window, but
-    /// still cannot name a runtime, claim chat or vision, or become the chat
-    /// recommendation; and a served model still needs both.
-    #[test]
-    fn in_process_models_compile_without_a_runtime_and_keep_their_shape() {
-        let key = SigningKey::from_bytes(&[5; 32]);
-        let temp = tempfile::tempdir().unwrap();
-        let mut catalog = source(temp.path());
-        catalog.models.push(in_process_source(temp.path()));
-        let (signed, _) = compile(catalog, temp.path(), &key).unwrap();
-        let subject = signed
-            .payload
-            .models
-            .iter()
-            .find(|model| model.id == "example-subject")
-            .unwrap();
-        assert!(subject.runs_in_process());
-        assert!(subject.segmentation);
-        assert!(subject.allowed_runtimes.is_empty());
-
-        let refused = |edit: fn(&mut ModelSource)| {
-            let temp = tempfile::tempdir().unwrap();
-            let mut catalog = source(temp.path());
-            let mut model = in_process_source(temp.path());
-            edit(&mut model);
-            catalog.models.push(model);
-            compile(catalog, temp.path(), &SigningKey::from_bytes(&[5; 32])).unwrap_err()
-        };
-        assert!(
-            refused(|model| model.allowed_runtimes = BTreeSet::from([RuntimeKind::Cpu]))
-                .contains("must not name a vLLM runtime")
-        );
-        assert!(refused(|model| model.context_window = 4096).contains("cannot claim chat"));
-        assert!(refused(|model| model.vision = true).contains("cannot claim chat"));
-        assert!(refused(|model| model.segmentation = false).contains("no capability"));
-        assert!(
-            refused(|model| model.artifact.url =
-                "https://release.example.invalid/subject/u2net.onnx".into())
-            .contains("immutable revision")
-        );
-
-        let temp = tempfile::tempdir().unwrap();
-        let mut catalog = source(temp.path());
-        catalog.models.push(in_process_source(temp.path()));
-        catalog.recommendation = "example-subject".into();
-        assert!(
-            compile(catalog, temp.path(), &key)
-                .unwrap_err()
-                .contains("runtime-served")
-        );
-
-        let temp = tempfile::tempdir().unwrap();
-        let mut served = source(temp.path());
-        served.models[0].context_window = 0;
-        assert!(
-            compile(served, temp.path(), &key)
-                .unwrap_err()
-                .contains("context window")
-        );
-        let temp = tempfile::tempdir().unwrap();
-        let mut served = source(temp.path());
-        served.models[0].allowed_runtimes.clear();
-        assert!(
-            compile(served, temp.path(), &key)
-                .unwrap_err()
-                .contains("no runtime")
-        );
-    }
-
-    /// Checked-in non-production source compiles without network resolution, output is deterministic
-    /// and verifies with public trust only, and an artifact receipt is resolved with a declared mismatch
-    /// failing.
-    #[test]
-    fn catalog_compilation_is_offline_deterministic_and_receipt_checked() {
-        // Phase: checked_in_nonproduction_source_compiles_without_network_resolution.
+        phase checked_in_nonproduction_source_compiles_without_network_resolution;
         {
             let source: CatalogSource = serde_json::from_str(include_str!(
                 "../../tests/fixtures/catalog-source.example.json"
@@ -974,7 +981,7 @@ mod tests {
             assert_eq!(trust.keys.len(), 1);
         }
 
-        // Phase: output_is_deterministic_and_verifies_with_public_trust_only.
+        phase output_is_deterministic_and_verifies_with_public_trust_only;
         {
             let temp = tempfile::tempdir().unwrap();
             let key = SigningKey::from_bytes(&[7; 32]);
@@ -990,7 +997,7 @@ mod tests {
             assert!(!trust_json.contains(&hex::encode(key.to_bytes())));
         }
 
-        // Phase: artifact_receipt_is_resolved_and_declared_mismatch_fails.
+        phase artifact_receipt_is_resolved_and_declared_mismatch_fails;
         {
             let temp = tempfile::tempdir().unwrap();
             let mut source = source(temp.path());
@@ -1001,11 +1008,12 @@ mod tests {
         }
     }
 
-    /// Artifact digests never follow a symlink, mutable revisions and URLs are rejected, and a
-    /// production source rejects non-production hosts.
-    #[test]
-    fn catalog_sources_must_be_immutable_and_production_hosted() {
-        // Phase: mutable_revision_and_url_are_rejected.
+    tilo_test_env::scenario! {
+        /// Artifact digests never follow a symlink, mutable revisions and URLs are rejected, and a
+        /// production source rejects non-production hosts.
+        fn catalog_sources_must_be_immutable_and_production_hosted;
+
+        phase mutable_revision_and_url_are_rejected;
         {
             let temp = tempfile::tempdir().unwrap();
             let mut floating = source(temp.path());
@@ -1026,7 +1034,7 @@ mod tests {
             );
         }
 
-        // Phase: production_source_rejects_nonproduction_hosts.
+        phase production_source_rejects_nonproduction_hosts;
         {
             let temp = tempfile::tempdir().unwrap();
             let mut source = source(temp.path());
@@ -1038,55 +1046,60 @@ mod tests {
             );
         }
 
-        // Phase: artifact_digest_never_follows_a_symlink.
-        #[cfg(unix)]
+        phase artifact_digest_never_follows_a_symlink;
         {
-            use std::os::unix::fs::symlink;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
 
-            let temp = tempfile::tempdir().unwrap();
-            let catalog = source(temp.path());
-            let runtime = temp.path().join("runtime.bin");
-            let replacement = temp.path().join("replacement.bin");
-            fs::write(&replacement, b"substituted release payload").unwrap();
-            fs::remove_file(&runtime).unwrap();
-            symlink(&replacement, &runtime).unwrap();
+                let temp = tempfile::tempdir().unwrap();
+                let catalog = source(temp.path());
+                let runtime = temp.path().join("runtime.bin");
+                let replacement = temp.path().join("replacement.bin");
+                fs::write(&replacement, b"substituted release payload").unwrap();
+                fs::remove_file(&runtime).unwrap();
+                symlink(&replacement, &runtime).unwrap();
 
-            let error =
-                compile(catalog, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
-            assert!(error.contains("could not securely open"));
+                let error =
+                    compile(catalog, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+                assert!(error.contains("could not securely open"));
 
-            fs::remove_file(&runtime).unwrap();
-            fs::write(&runtime, b"restored runtime payload").unwrap();
-            let linked_parent = temp.path().join("linked-parent");
-            symlink(temp.path(), &linked_parent).unwrap();
-            let source = source(temp.path());
-            let error =
-                compile(source, &linked_parent, &SigningKey::from_bytes(&[3; 32])).unwrap_err();
-            assert!(error.contains("could not securely open"));
+                fs::remove_file(&runtime).unwrap();
+                fs::write(&runtime, b"restored runtime payload").unwrap();
+                let linked_parent = temp.path().join("linked-parent");
+                symlink(temp.path(), &linked_parent).unwrap();
+                let source = source(temp.path());
+                let error =
+                    compile(source, &linked_parent, &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+                assert!(error.contains("could not securely open"));
+            }
         }
     }
 
-    /// The signing key must be private on disk, rejects symlinks and aliased inodes, and its input
-    /// is bounded.
-    #[test]
-    fn the_catalog_signing_key_must_be_a_private_bounded_single_file() {
-        // Phase: signing_key_must_be_private_on_disk.
-        #[cfg(unix)]
+    tilo_test_env::scenario! {
+        /// The signing key must be private on disk, rejects symlinks and aliased inodes, and its input
+        /// is bounded.
+        fn the_catalog_signing_key_must_be_a_private_bounded_single_file;
+
+        phase signing_key_must_be_private_on_disk;
         {
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("key");
-            fs::write(&path, hex::encode([9_u8; 32])).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-            assert!(
-                read_signing_key(&path)
-                    .unwrap_err()
-                    .contains("group/others")
-            );
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-            assert_eq!(read_signing_key(&path).unwrap().to_bytes(), [9; 32]);
+            #[cfg(unix)]
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("key");
+                fs::write(&path, hex::encode([9_u8; 32])).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+                assert!(
+                    read_signing_key(&path)
+                        .unwrap_err()
+                        .contains("group/others")
+                );
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+                assert_eq!(read_signing_key(&path).unwrap().to_bytes(), [9; 32]);
+            }
         }
 
-        // Phase: signing_key_input_is_bounded.
+        phase signing_key_input_is_bounded;
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("key");
@@ -1096,40 +1109,42 @@ mod tests {
             assert!(read_signing_key(&path).unwrap_err().contains("too large"));
         }
 
-        // Phase: signing_key_rejects_symlinks_and_aliased_inodes.
-        #[cfg(unix)]
+        phase signing_key_rejects_symlinks_and_aliased_inodes;
         {
-            use std::os::unix::fs::symlink;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
 
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("key");
-            let alias = temp.path().join("alias");
-            let link = temp.path().join("link");
-            fs::write(&path, hex::encode([7_u8; 32])).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("key");
+                let alias = temp.path().join("alias");
+                let link = temp.path().join("link");
+                fs::write(&path, hex::encode([7_u8; 32])).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
-            symlink(&path, &link).unwrap();
-            assert!(
-                read_signing_key(&link)
-                    .unwrap_err()
-                    .contains("securely open")
-            );
+                symlink(&path, &link).unwrap();
+                assert!(
+                    read_signing_key(&link)
+                        .unwrap_err()
+                        .contains("securely open")
+                );
 
-            fs::hard_link(&path, &alias).unwrap();
-            assert!(
-                read_signing_key(&path)
-                    .unwrap_err()
-                    .contains("exactly one directory entry")
-            );
+                fs::hard_link(&path, &alias).unwrap();
+                assert!(
+                    read_signing_key(&path)
+                        .unwrap_err()
+                        .contains("exactly one directory entry")
+                );
 
-            fs::remove_file(&alias).unwrap();
-            let linked_parent = temp.path().join("linked-parent");
-            symlink(temp.path(), &linked_parent).unwrap();
-            assert!(
-                read_signing_key(&linked_parent.join("key"))
-                    .unwrap_err()
-                    .contains("securely open")
-            );
+                fs::remove_file(&alias).unwrap();
+                let linked_parent = temp.path().join("linked-parent");
+                symlink(temp.path(), &linked_parent).unwrap();
+                assert!(
+                    read_signing_key(&linked_parent.join("key"))
+                        .unwrap_err()
+                        .contains("securely open")
+                );
+            }
         }
     }
 }

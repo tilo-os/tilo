@@ -146,48 +146,52 @@ mod tests {
     use super::*;
     use ui::tilo_resource::Replica;
 
-    #[test]
-    fn the_signature_keeps_its_signer_and_strokes_and_refuses_garbage() {
-        let mut replica = Replica::<SignatureProfile>::new();
-        replica
-            .apply(SignatureProfile::SET_SIGNER.with(" Ada Lovelace ".to_owned()))
-            .unwrap();
-        let strokes = vec![vec![(0.1, 0.5), (0.9, 0.4)]];
-        replica
-            .apply(SignatureProfile::SET_STROKES.with(strokes.clone()))
-            .unwrap();
-        let state = replica.state().unwrap();
-        assert_eq!(state.signer, "Ada Lovelace");
-        assert_eq!(point_lists(&state), strokes);
-        let too_long = vec![vec![(0.5, 0.5); MAX_POINTS + 1]];
-        assert!(
-            replica
-                .apply(SignatureProfile::SET_STROKES.with(too_long))
-                .is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_signature_profile_keeps_and_migrates_its_strokes;
 
-    #[test]
-    fn a_signature_kept_as_a_json_string_migrates_to_its_strokes() {
-        use ui::tilo_resource::evolution;
-        let strokes = vec![vec![(0.1, 0.5), (0.9, 0.4)], vec![(0.2, 0.2)]];
-        let mut doc = ui::tilo_resource::Doc::new();
-        evolution::fixture(
-            &mut doc,
-            &ui::automerge::ROOT,
-            &ui::serde_json::json!({
-                "signer": "Ada Lovelace",
-                "strokes": ui::serde_json::to_string(&strokes).unwrap(),
-            }),
-        )
-        .unwrap();
-        assert!(
-            evolution::read_checked::<SignatureProfile>(&doc).is_err(),
-            "unmigrated"
-        );
-        assert!(evolution::migrate::<SignatureProfile>(&mut doc).unwrap());
-        let profile = evolution::read_checked::<SignatureProfile>(&doc).unwrap();
-        assert_eq!(profile.signer, "Ada Lovelace");
-        assert_eq!(point_lists(&profile), strokes);
+        phase the_signature_keeps_its_signer_and_strokes_and_refuses_garbage;
+        {
+            let mut replica = Replica::<SignatureProfile>::new();
+            replica
+                .apply(SignatureProfile::SET_SIGNER.with(" Ada Lovelace ".to_owned()))
+                .unwrap();
+            let strokes = vec![vec![(0.1, 0.5), (0.9, 0.4)]];
+            replica
+                .apply(SignatureProfile::SET_STROKES.with(strokes.clone()))
+                .unwrap();
+            let state = replica.state().unwrap();
+            assert_eq!(state.signer, "Ada Lovelace");
+            assert_eq!(point_lists(&state), strokes);
+            let too_long = vec![vec![(0.5, 0.5); MAX_POINTS + 1]];
+            assert!(
+                replica
+                    .apply(SignatureProfile::SET_STROKES.with(too_long))
+                    .is_err()
+            );
+        }
+
+        phase a_signature_kept_as_a_json_string_migrates_to_its_strokes;
+        {
+            use ui::tilo_resource::evolution;
+            let strokes = vec![vec![(0.1, 0.5), (0.9, 0.4)], vec![(0.2, 0.2)]];
+            let mut doc = ui::tilo_resource::Doc::new();
+            evolution::fixture(
+                &mut doc,
+                &ui::automerge::ROOT,
+                &ui::serde_json::json!({
+                    "signer": "Ada Lovelace",
+                    "strokes": ui::serde_json::to_string(&strokes).unwrap(),
+                }),
+            )
+            .unwrap();
+            assert!(
+                evolution::read_checked::<SignatureProfile>(&doc).is_err(),
+                "unmigrated"
+            );
+            assert!(evolution::migrate::<SignatureProfile>(&mut doc).unwrap());
+            let profile = evolution::read_checked::<SignatureProfile>(&doc).unwrap();
+            assert_eq!(profile.signer, "Ada Lovelace");
+            assert_eq!(point_lists(&profile), strokes);
+        }
     }
 }

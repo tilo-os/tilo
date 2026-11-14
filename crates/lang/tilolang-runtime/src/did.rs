@@ -196,109 +196,113 @@ mod tests {
         (said.key, said.shows.word(), said.field.is_some())
     }
 
-    #[test]
-    fn a_day_moved_to_reads_as_moved_and_a_new_one_as_set_and_a_cleared_one_as_cleared() {
-        let due = field("due", Ty::Option(Box::new(Ty::Date)));
-        let none = shown("none", Value::Unit);
-        let later = shown("date", Value::text("2026-11-02"));
-        assert_eq!(
-            reads(&due, &shown("date", Value::text("2026-11-01")), &later),
-            ("tilolang-did-moved", "after", false)
-        );
-        assert_eq!(
-            reads(&due, &none, &later),
-            ("tilolang-did-set-date", "after", true)
-        );
-        assert_eq!(
-            reads(&due, &later, &none),
-            ("tilolang-did-cleared-date", "", true)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_change_reads_as_what_was_done_to_its_field;
 
-    #[test]
-    fn a_person_reads_as_assigned_to_and_unassigned() {
-        let assignee = field("assignee", Ty::Option(Box::new(Ty::Principal)));
-        let nobody = shown("none", Value::Unit);
-        let ben = shown(
-            "principal",
-            Value::Principal(crate::ids::Principal::new("ben")),
-        );
-        assert_eq!(
-            reads(&assignee, &nobody, &ben),
-            ("tilolang-did-assigned", "after", false)
-        );
-        assert_eq!(
-            reads(&assignee, &ben, &nobody),
-            ("tilolang-did-unassigned", "", false)
-        );
-    }
+        phase a_day_moved_to_reads_as_moved_and_a_new_one_as_set_and_a_cleared_one_as_cleared;
+        {
+            let due = field("due", Ty::Option(Box::new(Ty::Date)));
+            let none = shown("none", Value::Unit);
+            let later = shown("date", Value::text("2026-11-02"));
+            assert_eq!(
+                reads(&due, &shown("date", Value::text("2026-11-01")), &later),
+                ("tilolang-did-moved", "after", false)
+            );
+            assert_eq!(
+                reads(&due, &none, &later),
+                ("tilolang-did-set-date", "after", true)
+            );
+            assert_eq!(
+                reads(&due, &later, &none),
+                ("tilolang-did-cleared-date", "", true)
+            );
+        }
 
-    #[test]
-    fn a_resource_reads_as_moved_to_and_out_of_the_one_it_left() {
-        let project = field("project", Ty::Option(Box::new(Ty::Record(kind("Project")))));
-        let inbox = shown("none", Value::Unit);
-        let flat = shown("resource", Value::text("Move flat"));
-        assert_eq!(
-            reads(&project, &inbox, &flat),
-            ("tilolang-did-moved", "after", false)
-        );
-        assert_eq!(
-            reads(&project, &flat, &inbox),
-            ("tilolang-did-taken-out", "before", false)
-        );
-    }
+        phase a_person_reads_as_assigned_to_and_unassigned;
+        {
+            let assignee = field("assignee", Ty::Option(Box::new(Ty::Principal)));
+            let nobody = shown("none", Value::Unit);
+            let ben = shown(
+                "principal",
+                Value::Principal(crate::ids::Principal::new("ben")),
+            );
+            assert_eq!(
+                reads(&assignee, &nobody, &ben),
+                ("tilolang-did-assigned", "after", false)
+            );
+            assert_eq!(
+                reads(&assignee, &ben, &nobody),
+                ("tilolang-did-unassigned", "", false)
+            );
+        }
 
-    #[test]
-    fn an_enum_reads_as_set_to_or_cleared_and_so_does_another_flag() {
-        let priority = field("priority", Ty::Option(Box::new(Ty::Enum(kind("Priority")))));
-        let none = shown("none", Value::Unit);
-        let high = shown("case", Value::text("High"));
-        assert_eq!(
-            reads(&priority, &none, &high),
-            ("tilolang-did-set", "after", true)
-        );
-        assert_eq!(
-            reads(&priority, &high, &none),
-            ("tilolang-did-cleared", "", true)
-        );
-        // A flag has no value to go on with: it reads as set or cleared, by the field it is
-        // of, and never as "set done to" with nothing after it.
-        let pinned = field("pinned", Ty::Bool);
-        assert_eq!(
-            reads(
-                &pinned,
-                &shown("bool", Value::Bool(false)),
-                &shown("bool", Value::Bool(true))
-            ),
-            ("tilolang-did-marked", "", true)
-        );
-        assert_eq!(
-            reads(
-                &pinned,
-                &shown("bool", Value::Bool(true)),
-                &shown("bool", Value::Bool(false))
-            ),
-            ("tilolang-did-unmarked", "", true)
-        );
-    }
+        phase a_resource_reads_as_moved_to_and_out_of_the_one_it_left;
+        {
+            let project = field("project", Ty::Option(Box::new(Ty::Record(kind("Project")))));
+            let inbox = shown("none", Value::Unit);
+            let flat = shown("resource", Value::text("Move flat"));
+            assert_eq!(
+                reads(&project, &inbox, &flat),
+                ("tilolang-did-moved", "after", false)
+            );
+            assert_eq!(
+                reads(&project, &flat, &inbox),
+                ("tilolang-did-taken-out", "before", false)
+            );
+        }
 
-    #[test]
-    fn a_field_of_no_shape_of_its_own_reads_as_a_change_of_it() {
-        let tags = field("tags", Ty::Set(Box::new(Ty::Text)));
-        assert_eq!(
-            reads(&tags, &Value::List(Vec::new()), &Value::List(Vec::new())),
-            ("tilolang-did-changed", "", true)
-        );
-    }
+        phase an_enum_reads_as_set_to_or_cleared_and_so_does_another_flag;
+        {
+            let priority = field("priority", Ty::Option(Box::new(Ty::Enum(kind("Priority")))));
+            let none = shown("none", Value::Unit);
+            let high = shown("case", Value::text("High"));
+            assert_eq!(
+                reads(&priority, &none, &high),
+                ("tilolang-did-set", "after", true)
+            );
+            assert_eq!(
+                reads(&priority, &high, &none),
+                ("tilolang-did-cleared", "", true)
+            );
+            // A flag has no value to go on with: it reads as set or cleared, by the field it is
+            // of, and never as "set done to" with nothing after it.
+            let pinned = field("pinned", Ty::Bool);
+            assert_eq!(
+                reads(
+                    &pinned,
+                    &shown("bool", Value::Bool(false)),
+                    &shown("bool", Value::Bool(true))
+                ),
+                ("tilolang-did-marked", "", true)
+            );
+            assert_eq!(
+                reads(
+                    &pinned,
+                    &shown("bool", Value::Bool(true)),
+                    &shown("bool", Value::Bool(false))
+                ),
+                ("tilolang-did-unmarked", "", true)
+            );
+        }
 
-    #[test]
-    fn words_that_speak_of_a_value_that_stood_not_read_of_nothing() {
-        // A resource that stood nowhere before cannot be a value "moved this out of".
-        let project = field("project", Ty::Option(Box::new(Ty::Record(kind("Project")))));
-        let none = shown("none", Value::Unit);
-        assert_eq!(
-            reads(&project, &none, &none),
-            ("tilolang-did-taken-out", "", false)
-        );
+        phase a_field_of_no_shape_of_its_own_reads_as_a_change_of_it;
+        {
+            let tags = field("tags", Ty::Set(Box::new(Ty::Text)));
+            assert_eq!(
+                reads(&tags, &Value::List(Vec::new()), &Value::List(Vec::new())),
+                ("tilolang-did-changed", "", true)
+            );
+        }
+
+        phase words_that_speak_of_a_value_that_stood_not_read_of_nothing;
+        {
+            // A resource that stood nowhere before cannot be a value "moved this out of".
+            let project = field("project", Ty::Option(Box::new(Ty::Record(kind("Project")))));
+            let none = shown("none", Value::Unit);
+            assert_eq!(
+                reads(&project, &none, &none),
+                ("tilolang-did-taken-out", "", false)
+            );
+        }
     }
 }

@@ -1286,9 +1286,27 @@ fn label_patch(now: &Set<String>, patch: &MetadataLabelsPatch) -> Vec<String> {
 mod tests {
     #[test]
     fn capture_times_read_with_a_space_not_the_iso_separator() {
-        assert_eq!(capture_label("2026-07-12T18:16"), "2026-07-12 18:16");
-        assert_eq!(capture_label("2026-07-12"), "2026-07-12");
-        assert_eq!(capture_label("June 2026"), "June 2026");
+        for (stored, shown) in [
+            ("2026-07-12T18:16", "2026-07-12 18:16"),
+            ("2026-07-12", "2026-07-12"),
+            ("June 2026", "June 2026"),
+            // Seconds and an offset follow the time as they are stored.
+            ("2026-07-12T18:16:05+02:00", "2026-07-12 18:16:05+02:00"),
+            ("2024-02-29T23:59", "2024-02-29 23:59"),
+            // Nothing, no time after the separator, and no separator to replace.
+            ("", ""),
+            ("2026-07-12T", "2026-07-12T"),
+            ("2026-07-12 18:16", "2026-07-12 18:16"),
+            ("2026-07-12t18:16", "2026-07-12t18:16"),
+            // A day the calendar does not have is not a capture time.
+            ("2026-02-30T08:00", "2026-02-30T08:00"),
+            ("2026-13-01T08:00", "2026-13-01T08:00"),
+            // A character that straddles the day's end or the separator.
+            ("2026-07-1éT18:16", "2026-07-1éT18:16"),
+            ("2026-07-12é18:16", "2026-07-12é18:16"),
+        ] {
+            assert_eq!(capture_label(stored), shown, "stored as {stored:?}");
+        }
     }
 
     use super::*;
@@ -1344,60 +1362,64 @@ mod tests {
         }
     }
 
-    #[test]
-    fn edits_compose_rotate_crop_and_clamp_into_the_unit_square() {
-        assert!(Edits::default().is_identity());
-        let mut e = Edits::default();
-        for _ in 0..4 {
-            e = e.rotated_right();
+    tilo_test_env::scenario! {
+        fn edits_compose_and_size_the_image_they_are_applied_to;
+
+        phase edits_compose_rotate_crop_and_clamp_into_the_unit_square;
+        {
+            assert!(Edits::default().is_identity());
+            let mut e = Edits::default();
+            for _ in 0..4 {
+                e = e.rotated_right();
+            }
+            assert!(e.is_identity(), "four right turns");
+            assert!(
+                Edits::default()
+                    .rotated_right()
+                    .rotated_left()
+                    .is_identity(),
+                "left and right cancel"
+            );
+
+            let half = rect(0.0, 0.0, 0.5, 0.5);
+            let out = half.compose(half);
+            assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
+            assert!((out.h - 0.25).abs() < 1e-9, "{out:?}");
+            let right_half = rect(0.5, 0.0, 0.5, 1.0);
+            let out = right_half.compose(right_half);
+            assert!((out.x - 0.75).abs() < 1e-9, "{out:?}");
+            assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
+
+            let r = rect(-0.5, 0.9, 4.0, 4.0).clamped();
+            assert!(r.x >= 0.0 && r.y >= 0.0);
+            assert!(r.x + r.w <= 1.0 + 1e-9, "{r:?}");
+            assert!(r.y + r.h <= 1.0 + 1e-9, "{r:?}");
         }
-        assert!(e.is_identity(), "four right turns");
-        assert!(
-            Edits::default()
-                .rotated_right()
-                .rotated_left()
-                .is_identity(),
-            "left and right cancel"
-        );
 
-        let half = rect(0.0, 0.0, 0.5, 0.5);
-        let out = half.compose(half);
-        assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
-        assert!((out.h - 0.25).abs() < 1e-9, "{out:?}");
-        let right_half = rect(0.5, 0.0, 0.5, 1.0);
-        let out = right_half.compose(right_half);
-        assert!((out.x - 0.75).abs() < 1e-9, "{out:?}");
-        assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
+        phase open_images_name_themselves_and_size_by_their_edits;
+        {
+            let img = OpenImage::fixture("/var/tmp/tilo/home/user/harbour.png", 1, 1);
+            assert_eq!(img.name, "harbour.png");
 
-        let r = rect(-0.5, 0.9, 4.0, 4.0).clamped();
-        assert!(r.x >= 0.0 && r.y >= 0.0);
-        assert!(r.x + r.w <= 1.0 + 1e-9, "{r:?}");
-        assert!(r.y + r.h <= 1.0 + 1e-9, "{r:?}");
-    }
-
-    #[test]
-    fn open_images_name_themselves_and_size_by_their_edits() {
-        let img = OpenImage::fixture("/var/tmp/tilo/home/user/harbour.png", 1, 1);
-        assert_eq!(img.name, "harbour.png");
-
-        let img = OpenImage::fixture("/x/harbour.png", 800, 400);
-        for (case, edits, size) in [
-            ("identity", Edits::default(), (800, 400)),
-            (
-                "odd turn swaps the axes",
-                Edits::default().rotated_right(),
-                (400, 800),
-            ),
-            (
-                "crop shrinks",
-                Edits {
-                    crop: rect(0.0, 0.0, 0.5, 0.5),
-                    rotate_quarters: 0,
-                },
-                (400, 200),
-            ),
-        ] {
-            assert_eq!(img.edited_size(&edits), size, "case {case}");
+            let img = OpenImage::fixture("/x/harbour.png", 800, 400);
+            for (case, edits, size) in [
+                ("identity", Edits::default(), (800, 400)),
+                (
+                    "odd turn swaps the axes",
+                    Edits::default().rotated_right(),
+                    (400, 800),
+                ),
+                (
+                    "crop shrinks",
+                    Edits {
+                        crop: rect(0.0, 0.0, 0.5, 0.5),
+                        rotate_quarters: 0,
+                    },
+                    (400, 200),
+                ),
+            ] {
+                assert_eq!(img.edited_size(&edits), size, "case {case}");
+            }
         }
     }
 }

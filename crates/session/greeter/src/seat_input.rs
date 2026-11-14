@@ -166,54 +166,58 @@ mod tests {
     use super::*;
     use wl_seat::Capability;
 
-    #[test]
-    fn a_keyboard_or_touch_screen_is_input_a_person_can_sign_in_with() {
-        assert_eq!(kind(Capability::Keyboard), Some("keyboard"));
-        assert_eq!(
-            kind(Capability::Pointer | Capability::Keyboard),
-            Some("keyboard")
-        );
-        assert_eq!(kind(Capability::Touch), Some("touch"));
-        assert_eq!(kind(Capability::Pointer | Capability::Touch), Some("touch"));
-    }
+    tilo_test_env::scenario! {
+        fn a_seat_records_the_first_input_a_person_can_sign_in_with;
 
-    #[test]
-    fn a_mouse_alone_is_not() {
-        assert_eq!(kind(Capability::Pointer), None);
-        assert_eq!(kind(Capability::empty()), None);
-    }
+        phase a_keyboard_or_touch_screen_is_input_a_person_can_sign_in_with;
+        {
+            assert_eq!(kind(Capability::Keyboard), Some("keyboard"));
+            assert_eq!(
+                kind(Capability::Pointer | Capability::Keyboard),
+                Some("keyboard")
+            );
+            assert_eq!(kind(Capability::Touch), Some("touch"));
+            assert_eq!(kind(Capability::Pointer | Capability::Touch), Some("touch"));
+        }
 
-    #[test]
-    fn a_mouse_only_seat_writes_no_record() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let record = dir.path().join("input");
-        let mut seats = Seats::new(record.clone());
-        seats.capabilities(Capability::Pointer);
-        seats.capabilities(Capability::empty());
-        assert_eq!(seats.recorded(), None);
-        assert!(!record.exists());
-    }
+        phase a_mouse_alone_is_not;
+        {
+            assert_eq!(kind(Capability::Pointer), None);
+            assert_eq!(kind(Capability::empty()), None);
+        }
 
-    #[test]
-    fn the_first_keyboard_or_touch_screen_is_recorded_once() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let record = dir.path().join("input");
-        let mut seats = Seats::new(record.clone());
-        seats.capabilities(Capability::Pointer);
-        seats.capabilities(Capability::Pointer | Capability::Touch);
-        assert_eq!(seats.recorded(), Some("touch"));
-        assert_eq!(std::fs::read_to_string(&record).expect("record"), "touch\n");
-        seats.capabilities(Capability::Keyboard);
-        assert_eq!(std::fs::read_to_string(&record).expect("record"), "touch\n");
-        assert!(!dir.path().join("input.new").exists());
-    }
+        phase a_mouse_only_seat_writes_no_record;
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let record = dir.path().join("input");
+            let mut seats = Seats::new(record.clone());
+            seats.capabilities(Capability::Pointer);
+            seats.capabilities(Capability::empty());
+            assert_eq!(seats.recorded(), None);
+            assert!(!record.exists());
+        }
 
-    #[test]
-    fn the_record_names_what_the_health_check_reads() {
-        let script = include_str!("../../../../os/usr/libexec/tilo-boot-health");
-        assert!(script.contains("\"keyboard\""));
-        assert!(script.contains("\"touch\""));
-        let session = include_str!("../../../../os/usr/libexec/tilo-cage-session");
-        assert!(session.contains(RECORD_ENV));
+        phase the_first_keyboard_or_touch_screen_is_recorded_once;
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let record = dir.path().join("input");
+            let mut seats = Seats::new(record.clone());
+            seats.capabilities(Capability::Pointer);
+            seats.capabilities(Capability::Pointer | Capability::Touch);
+            assert_eq!(seats.recorded(), Some("touch"));
+            assert_eq!(std::fs::read_to_string(&record).expect("record"), "touch\n");
+            seats.capabilities(Capability::Keyboard);
+            assert_eq!(std::fs::read_to_string(&record).expect("record"), "touch\n");
+            assert!(!dir.path().join("input.new").exists());
+        }
+
+        phase the_record_names_what_the_health_check_reads;
+        {
+            let script = include_str!("../../../../os/usr/libexec/tilo-boot-health");
+            assert!(script.contains("\"keyboard\""));
+            assert!(script.contains("\"touch\""));
+            let session = include_str!("../../../../os/usr/libexec/tilo-cage-session");
+            assert!(session.contains(RECORD_ENV));
+        }
     }
 }

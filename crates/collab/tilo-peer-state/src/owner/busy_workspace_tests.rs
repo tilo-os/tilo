@@ -12,7 +12,7 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::time::SystemTime;
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// People who write in the workspace before the joining device arrives.
@@ -37,10 +37,9 @@ fn redemption(
 ) {
     let signed = join::issue_invitation(
         join::InviteGrant {
-            workspace_id: tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap(),
-            room: WORKSPACE.into(),
+            workspace_id: tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
             issuer: governor.clone(),
-            role: join::MemberRole::Editor,
+            role: join::Role::Editor,
             nonce: [nonce; 16],
             recipient_user_public_key: Some(device.user_public_key),
             invitee_name: None,
@@ -138,17 +137,17 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     let governor = certificate(&root, &governor_key, "Lounge host");
     let device_key = SigningKey::from_bytes(&[123; 32]);
     let device = certificate(&SigningKey::from_bytes(&[124; 32]), &device_key, "Joining");
-    let workspace_id = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
+    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
+    let hint = WorkspaceDeviceHintV1 {
         version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: WORKSPACE.into(),
+        holds_keys: true,
+        runs_work: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
-        host_user_public_key: governor.user_public_key,
-        host_device_certificate: governor.clone(),
+        user_public_key: governor.user_public_key,
+        device_certificate: governor.clone(),
         packet_relay_url: "https://relay.invalid".into(),
     }
     .transport_hint(&governor_key)
@@ -250,8 +249,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         version: 1,
         invite_id: verified.invite_id(),
         device_cert: device.clone(),
-        role: join::MemberRole::Editor,
-        room: WORKSPACE.into(),
+        role: join::Role::Editor,
         workspace_id,
         host: governor.clone(),
         // The authors' certificates reach the device only through the

@@ -582,156 +582,160 @@ mod tests {
         HashMap::from([("org.example.App".to_owned(), vec!["yes".to_owned()])])
     }
 
-    #[test]
-    fn kept_entries_survive_a_restart_and_deletes_and_list_agree() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("permissions.json");
-        let store = PermissionStore::load(Some(path.clone()));
-        // An arbitrary bounded variant, as an app's restore data is.
-        let restore = OwnedValue::try_from(zbus::zvariant::Value::new((
-            7_u32,
-            vec!["monitor-1".to_owned(), "window-2".to_owned()],
-        )))
-        .unwrap();
-        store
-            .set("documents", true, "one", documents(), restore)
+    tilo_test_env::scenario! {
+        fn the_permission_store_keeps_bounded_entries_and_only_in_a_private_directory;
+
+        phase kept_entries_survive_a_restart_and_deletes_and_list_agree;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("permissions.json");
+            let store = PermissionStore::load(Some(path.clone()));
+            // An arbitrary bounded variant, as an app's restore data is.
+            let restore = OwnedValue::try_from(zbus::zvariant::Value::new((
+                7_u32,
+                vec!["monitor-1".to_owned(), "window-2".to_owned()],
+            )))
             .unwrap();
-        store
-            .set_permission(
-                "documents",
-                true,
-                "two",
-                "org.example.Other",
-                vec!["no".to_owned()],
-            )
-            .unwrap();
-        assert_eq!(store.list("documents").unwrap(), ["one", "two"]);
-        assert!(store.list("elsewhere").unwrap().is_empty(), "no such table");
-        drop(store);
-
-        let restarted = PermissionStore::load(Some(path.clone()));
-        let (permissions, data) = restarted.lookup("documents", "one").unwrap();
-        assert_eq!(permissions, documents());
-        let restored: (u32, Vec<String>) = data.try_into().unwrap();
-        assert_eq!(
-            restored,
-            (7, vec!["monitor-1".to_owned(), "window-2".to_owned()])
-        );
-        assert_eq!(
-            restarted
-                .get_permission("documents", "two", "org.example.Other")
-                .unwrap(),
-            ["no"]
-        );
-        assert_eq!(restarted.list("documents").unwrap(), ["one", "two"]);
-
-        let (forgotten, _) = restarted.delete("documents", "one").unwrap();
-        assert_eq!(forgotten, documents());
-        assert!(restarted.lookup("documents", "one").is_err());
-        assert_eq!(restarted.list("documents").unwrap(), ["two"]);
-        let after: PermissionStore = PermissionStore::load(Some(path.clone()));
-        assert_eq!(
-            after.list("documents").unwrap(),
-            ["two"],
-            "the delete was kept"
-        );
-        assert!(after.lookup("documents", "one").is_err());
-        // The last entry takes its table with it.
-        after.delete("documents", "two").unwrap();
-        assert!(after.list("documents").unwrap().is_empty());
-        assert_eq!(
-            PermissionStore::load(Some(path)).list("documents").unwrap(),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn out_of_range_keys_and_values_are_refused_and_change_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("permissions.json");
-        let store = PermissionStore::load(Some(path.clone()));
-        store
-            .set("documents", true, "one", documents(), value())
-            .unwrap();
-
-        let empty = HashMap::new();
-        // A key that looks like a path.
-        assert!(
             store
-                .set("documents", true, "../escape", empty.clone(), value())
-                .is_err()
-        );
-        assert!(
-            store
-                .set("../documents", true, "two", empty.clone(), value())
-                .is_err()
-        );
-        // A table name over the limit.
-        assert!(
-            store
-                .set(
-                    &"t".repeat(MAX_TABLE + 1),
-                    true,
-                    "two",
-                    empty.clone(),
-                    value()
-                )
-                .is_err()
-        );
-        // A value over the limit.
-        assert!(
-            store
-                .set(
-                    "documents",
-                    true,
-                    "two",
-                    empty.clone(),
-                    OwnedValue::from(Str::from("x".repeat(MAX_VALUE + 1))),
-                )
-                .is_err()
-        );
-        // A value that would carry a file descriptor.
-        let (read, _write) = std::io::pipe().unwrap();
-        let descriptor = OwnedValue::try_from(zbus::zvariant::Value::from(
-            zbus::zvariant::Fd::from(std::os::fd::OwnedFd::from(read)),
-        ))
-        .unwrap();
-        assert!(
-            store
-                .set("documents", true, "two", empty, descriptor)
-                .is_err()
-        );
-        // An application id over the limit, on an entry it would otherwise
-        // have created.
-        assert!(
+                .set("documents", true, "one", documents(), restore)
+                .unwrap();
             store
                 .set_permission(
                     "documents",
                     true,
                     "two",
-                    &"a".repeat(MAX_APP + 1),
-                    Vec::new(),
+                    "org.example.Other",
+                    vec!["no".to_owned()],
                 )
-                .is_err()
-        );
+                .unwrap();
+            assert_eq!(store.list("documents").unwrap(), ["one", "two"]);
+            assert!(store.list("elsewhere").unwrap().is_empty(), "no such table");
+            drop(store);
 
-        assert!(store.lookup("documents", "two").is_err());
-        assert_eq!(store.list("documents").unwrap(), ["one"]);
-        assert_eq!(
-            PermissionStore::load(Some(path)).list("documents").unwrap(),
-            ["one"],
-            "a refused call wrote nothing"
-        );
-    }
+            let restarted = PermissionStore::load(Some(path.clone()));
+            let (permissions, data) = restarted.lookup("documents", "one").unwrap();
+            assert_eq!(permissions, documents());
+            let restored: (u32, Vec<String>) = data.try_into().unwrap();
+            assert_eq!(
+                restored,
+                (7, vec!["monitor-1".to_owned(), "window-2".to_owned()])
+            );
+            assert_eq!(
+                restarted
+                    .get_permission("documents", "two", "org.example.Other")
+                    .unwrap(),
+                ["no"]
+            );
+            assert_eq!(restarted.list("documents").unwrap(), ["one", "two"]);
 
-    #[test]
-    fn a_store_without_a_private_directory_keeps_nothing() {
-        let store = PermissionStore::load(None);
-        assert!(
+            let (forgotten, _) = restarted.delete("documents", "one").unwrap();
+            assert_eq!(forgotten, documents());
+            assert!(restarted.lookup("documents", "one").is_err());
+            assert_eq!(restarted.list("documents").unwrap(), ["two"]);
+            let after: PermissionStore = PermissionStore::load(Some(path.clone()));
+            assert_eq!(
+                after.list("documents").unwrap(),
+                ["two"],
+                "the delete was kept"
+            );
+            assert!(after.lookup("documents", "one").is_err());
+            // The last entry takes its table with it.
+            after.delete("documents", "two").unwrap();
+            assert!(after.list("documents").unwrap().is_empty());
+            assert_eq!(
+                PermissionStore::load(Some(path)).list("documents").unwrap(),
+                Vec::<String>::new()
+            );
+        }
+
+        phase out_of_range_keys_and_values_are_refused_and_change_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("permissions.json");
+            let store = PermissionStore::load(Some(path.clone()));
             store
                 .set("documents", true, "one", documents(), value())
-                .is_err()
-        );
-        assert!(store.list("documents").unwrap().is_empty());
+                .unwrap();
+
+            let empty = HashMap::new();
+            // A key that looks like a path.
+            assert!(
+                store
+                    .set("documents", true, "../escape", empty.clone(), value())
+                    .is_err()
+            );
+            assert!(
+                store
+                    .set("../documents", true, "two", empty.clone(), value())
+                    .is_err()
+            );
+            // A table name over the limit.
+            assert!(
+                store
+                    .set(
+                        &"t".repeat(MAX_TABLE + 1),
+                        true,
+                        "two",
+                        empty.clone(),
+                        value()
+                    )
+                    .is_err()
+            );
+            // A value over the limit.
+            assert!(
+                store
+                    .set(
+                        "documents",
+                        true,
+                        "two",
+                        empty.clone(),
+                        OwnedValue::from(Str::from("x".repeat(MAX_VALUE + 1))),
+                    )
+                    .is_err()
+            );
+            // A value that would carry a file descriptor.
+            let (read, _write) = std::io::pipe().unwrap();
+            let descriptor = OwnedValue::try_from(zbus::zvariant::Value::from(
+                zbus::zvariant::Fd::from(std::os::fd::OwnedFd::from(read)),
+            ))
+            .unwrap();
+            assert!(
+                store
+                    .set("documents", true, "two", empty, descriptor)
+                    .is_err()
+            );
+            // An application id over the limit, on an entry it would otherwise
+            // have created.
+            assert!(
+                store
+                    .set_permission(
+                        "documents",
+                        true,
+                        "two",
+                        &"a".repeat(MAX_APP + 1),
+                        Vec::new(),
+                    )
+                    .is_err()
+            );
+
+            assert!(store.lookup("documents", "two").is_err());
+            assert_eq!(store.list("documents").unwrap(), ["one"]);
+            assert_eq!(
+                PermissionStore::load(Some(path)).list("documents").unwrap(),
+                ["one"],
+                "a refused call wrote nothing"
+            );
+        }
+
+        phase a_store_without_a_private_directory_keeps_nothing;
+        {
+            let store = PermissionStore::load(None);
+            assert!(
+                store
+                    .set("documents", true, "one", documents(), value())
+                    .is_err()
+            );
+            assert!(store.list("documents").unwrap().is_empty());
+        }
     }
 }

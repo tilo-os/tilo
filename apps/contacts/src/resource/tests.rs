@@ -38,36 +38,293 @@ fn name(text: &str) -> ui::tilo_resource::NonBlank {
     text.parse().unwrap()
 }
 
-#[test]
-fn contacts_are_added_once_and_a_deleted_id_stays_deleted() {
-    let mut book = Replica::<Contacts>::new();
-    book.apply(Contacts::NEW_CONTACT.with(name("Dana Scott")))
-        .unwrap();
-    let state = book.state().unwrap();
-    let dana = state.contacts.first().unwrap();
-    assert_eq!((dana.first.as_str(), dana.last.as_str()), ("Dana", "Scott"));
-    assert!(
-        serde_json::from_value::<contacts::NewContact>(serde_json::json!({"name": "  "})).is_err(),
-        "a new contact has a name, refused where the arguments are read"
-    );
+tilo_test_env::scenario! {
+    fn the_address_book_record_adds_saves_merges_and_publishes_its_contacts;
 
-    let ada = person("Ada", "Lovelace");
-    book.apply(Contacts::add(&ada)).unwrap();
-    assert!(
-        book.apply(Contacts::add(&ada)).is_err(),
-        "an id names one contact"
-    );
-    book.apply_confirmed(Contacts::delete(ada.id)).unwrap();
-    assert!(contact(&book, ada.id).is_none());
-    assert!(book.state().unwrap().removed.contains(&ada.id));
-    assert!(
-        book.apply(Contacts::add(&ada)).is_err(),
-        "a late copy of a deleted card does not bring it back"
-    );
-    assert!(
-        book.apply_confirmed(Contacts::delete(ada.id)).is_err(),
-        "a deleted contact is not deleted twice"
-    );
+    phase contacts_are_added_once_and_a_deleted_id_stays_deleted;
+    {
+        let mut book = Replica::<Contacts>::new();
+        book.apply(Contacts::NEW_CONTACT.with(name("Dana Scott")))
+            .unwrap();
+        let state = book.state().unwrap();
+        let dana = state.contacts.first().unwrap();
+        assert_eq!((dana.first.as_str(), dana.last.as_str()), ("Dana", "Scott"));
+        assert!(
+            serde_json::from_value::<contacts::NewContact>(serde_json::json!({"name": "  "})).is_err(),
+            "a new contact has a name, refused where the arguments are read"
+        );
+
+        let ada = person("Ada", "Lovelace");
+        book.apply(Contacts::add(&ada)).unwrap();
+        assert!(
+            book.apply(Contacts::add(&ada)).is_err(),
+            "an id names one contact"
+        );
+        book.apply_confirmed(Contacts::delete(ada.id)).unwrap();
+        assert!(contact(&book, ada.id).is_none());
+        assert!(book.state().unwrap().removed.contains(&ada.id));
+        assert!(
+            book.apply(Contacts::add(&ada)).is_err(),
+            "a late copy of a deleted card does not bring it back"
+        );
+        assert!(
+            book.apply_confirmed(Contacts::delete(ada.id)).is_err(),
+            "a deleted contact is not deleted twice"
+        );
+    }
+
+    phase saved_forms_merge_field_by_field_and_row_by_row;
+    {
+        let mut ada = person("Ada", "Lovelace");
+        let first = Labeled::new("mobile", "+1 555 0100");
+        let second = Labeled::new("work", "+1 555 0100");
+        ada.phones = vec![first.clone(), second].into();
+        let mut a = book_of(std::slice::from_ref(&ada));
+        let mut b = a.fork();
+
+        let mut titled = ada.clone();
+        titled.title = "Compiler pioneer".into();
+        titled.phones[0].value = "+1 555 0199".into();
+        save(&mut a, &ada, &titled).unwrap();
+        let mut grouped = ada.clone();
+        grouped.groups.push(GroupEntry::new("Research"));
+        grouped.phones.remove(1);
+        save(&mut b, &ada, &grouped).unwrap();
+
+        a.sync_with(&mut b).unwrap();
+        let merged = contact(&a, ada.id).unwrap();
+        assert_eq!(merged, contact(&b, ada.id).unwrap(), "both replicas agree");
+        assert_eq!(merged.title, "Compiler pioneer");
+        assert!(merged.groups.iter().any(|group| group.value == "Research"));
+        assert_eq!(merged.phones.len(), 1);
+        assert_eq!(merged.phones[0].id, first.id);
+        assert_eq!(merged.phones[0].value, "+1 555 0199");
+        assert!(
+            Contacts::save(&merged, &merged).is_none(),
+            "a form that changed nothing saves nothing"
+        );
+    }
+
+    phase a_save_over_a_removed_row_is_refused_whole;
+    {
+        let ada = person("Ada", "Lovelace");
+        let mut book = book_of(std::slice::from_ref(&ada));
+        let mut stale = ada.clone();
+        stale.addresses.push(Address {
+            street: "Gone".into(),
+            ..Address::default()
+        });
+        let mut edited = stale.clone();
+        edited.first = "Augusta".into();
+        edited.addresses[0].street = "12 St James's Square".into();
+        assert!(save(&mut book, &stale, &edited).is_err());
+        assert_eq!(contact(&book, ada.id).unwrap(), ada, "nothing is written");
+    }
+
+    phase a_deletion_wins_over_a_concurrent_save;
+    {
+        let ada = person("Ada", "Lovelace");
+        let mut a = book_of(std::slice::from_ref(&ada));
+        let mut b = a.fork();
+        a.apply_confirmed(Contacts::delete(ada.id)).unwrap();
+        let mut noted = ada.clone();
+        noted.notes = "late note".into();
+        save(&mut b, &ada, &noted).unwrap();
+        a.sync_with(&mut b).unwrap();
+        assert!(contact(&a, ada.id).is_none());
+        assert!(contact(&b, ada.id).is_none());
+    }
+
+    phase merging_unions_rows_and_takes_the_chosen_fields;
+    {
+        let mut survivor = person("Ada", "Lovelace");
+        survivor.id = Uuid::from_u128(1);
+        survivor.emails = vec![Labeled::new("home", "ada@example.test")].into();
+        survivor.title = "Mathematician".into();
+        let mut source = person("Ada", "Lovelace");
+        source.id = Uuid::from_u128(2);
+        source.emails = vec![
+            Labeled::new("home", "ADA@EXAMPLE.TEST"),
+            Labeled::new("work", "unique@example.test"),
+        ]
+        .into();
+        source.org = "Analytical Engines".into();
+        source.title = "Countess".into();
+        source.notes = "Kept".into();
+        let mut book = book_of(&[survivor.clone(), source.clone()]);
+        let mut peer = book.fork();
+        assert!(book.state().unwrap().duplicate(survivor.id, source.id));
+
+        assert!(
+            book.apply_confirmed(Contacts::merge(survivor.id, survivor.id, []))
+                .is_err(),
+            "a contact is not merged into itself"
+        );
+        book.apply_confirmed(Contacts::merge(
+            survivor.id,
+            source.id,
+            [MergeField::Organization, MergeField::Title],
+        ))
+        .unwrap();
+        let state = book.state().unwrap();
+        assert!(state.contact(source.id).is_none());
+        assert!(state.removed.contains(&source.id));
+        let merged = state.contact(survivor.id).unwrap();
+        assert_eq!(merged.org, "Analytical Engines");
+        assert_eq!(merged.title, "Countess", "a field named is taken");
+        assert_eq!(merged.notes, "Kept", "an empty field fills");
+        assert_eq!(
+            merged
+                .emails
+                .iter()
+                .map(|email| email.value.as_str())
+                .collect::<Vec<_>>(),
+            ["ada@example.test", "unique@example.test"],
+            "the same address once, every other one kept"
+        );
+
+        peer.sync_with(&mut book).unwrap();
+        assert_eq!(peer.state().unwrap(), book.state().unwrap());
+    }
+
+    phase regression_merge_preserves_distinct_dial_strings;
+    {
+        let mut survivor = person("Ada", "Lovelace");
+        survivor.id = Uuid::from_u128(1);
+        survivor.phones = vec![
+            Labeled::new("work", "123"),
+            Labeled::new("work", "1-800-FLOWERS"),
+            Labeled::new("home", "+1 (555) 0100"),
+        ]
+        .into();
+        let mut source = person("Ada", "Lovelace");
+        source.id = Uuid::from_u128(2);
+        source.phones = vec![
+            Labeled::new("work", "*123#"),
+            Labeled::new("work", "1-800-PIZZA"),
+            Labeled::new("home", "15550100"),
+        ]
+        .into();
+        let mut book = book_of(&[survivor.clone(), source.clone()]);
+        book.apply_confirmed(Contacts::merge(survivor.id, source.id, []))
+            .unwrap();
+        let merged = contact(&book, survivor.id).unwrap();
+        assert_eq!(
+            merged
+                .phones
+                .iter()
+                .map(|row| row.value.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "123",
+                "1-800-FLOWERS",
+                "+1 (555) 0100",
+                "*123#",
+                "1-800-PIZZA"
+            ],
+            "only formatting-equivalent numbers are deduplicated"
+        );
+    }
+
+    phase the_book_publishes_places_items_and_search;
+    {
+        let mut contacts = sample_book();
+        let mut copy = contacts[0].clone();
+        copy.id = Uuid::from_u128(u128::MAX);
+        contacts.push(copy.clone());
+        let mut late = person("Late", "");
+        late.groups = vec![GroupEntry::new("Late group")].into();
+        contacts.push(late);
+        let book = book_of(&contacts);
+        let published = book.published().unwrap();
+        let child = |id: &str| {
+            published
+                .children
+                .iter()
+                .find(|child| child.id.as_str() == id)
+                .unwrap_or_else(|| panic!("{id} is published"))
+        };
+
+        assert!(
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == "new-contact")
+        );
+        let favorites = child(&place_resource_id(FAVORITES_PLACE));
+        assert!(
+            favorites
+                .actions
+                .iter()
+                .any(|action| action.id == "open-favorites")
+        );
+        let group = child(&place_resource_id(&group_place("LATE GROUP")));
+        assert_eq!(group.label, "Group: Late group");
+        let ada = child(&contact_resource_id(contacts[0].id));
+        for id in ["delete-contact", "merge-contacts"] {
+            assert!(ada.actions.iter().any(|action| action.id == id), "{id}");
+        }
+        let duplicate = child(&place_resource_id(&duplicate_place(
+            contacts[0].id,
+            copy.id,
+        )));
+        assert!(
+            duplicate
+                .actions
+                .iter()
+                .any(|action| action.id == "open-review")
+        );
+        let merge = duplicate
+            .actions
+            .iter()
+            .find(|action| action.id == "merge-contacts")
+            .expect("the duplicate offers its merge");
+        assert_eq!(
+            merge.contract.risk,
+            ui::tilo_actions::RiskLevel::Destructive
+        );
+        assert_eq!(
+            merge
+                .params()
+                .iter()
+                .map(|param| param.name.clone())
+                .collect::<Vec<_>>(),
+            ["take_from_source"],
+            "the pair is bound; only the fields to take are asked"
+        );
+
+        let state = book.state().unwrap();
+        let entries = Contacts::search(&state);
+        let grace = entries
+            .iter()
+            .find(|entry| entry.title == "Grace Hopper")
+            .expect("search finds a contact");
+        assert!(grace.text.contains("US Navy"), "{:?}", grace.text);
+        let grace_id = contacts
+            .iter()
+            .find(|contact| contact.display_name() == "Grace Hopper")
+            .unwrap()
+            .id;
+        assert_eq!(
+            grace.anchor.as_deref(),
+            Some(contact_resource_id(grace_id).as_str())
+        );
+        let work = entries
+            .iter()
+            .find(|entry| entry.title == "Group: Work")
+            .expect("groups are found too");
+        let place = place_resource_id(&group_place("Work"));
+        assert_eq!(work.anchor.as_deref(), Some(place.as_str()));
+        let opens = work.action.as_ref().expect("a group hit opens its place");
+        assert_eq!(opens.resource, place);
+        assert_eq!(
+            opens.action,
+            ContactsEffect::OpenGroup {
+                name: "Work".into()
+            }
+            .id()
+        );
+    }
 }
 
 #[test]
@@ -100,259 +357,6 @@ fn malformed_and_oversized_contacts_are_refused() {
     edited.notes = "x".repeat(MAX_CONTACT_FIELD_BYTES + 1);
     assert!(save(&mut book, &ada, &edited).is_err());
     assert_eq!(contact(&book, ada.id).unwrap(), ada);
-}
-
-#[test]
-fn saved_forms_merge_field_by_field_and_row_by_row() {
-    let mut ada = person("Ada", "Lovelace");
-    let first = Labeled::new("mobile", "+1 555 0100");
-    let second = Labeled::new("work", "+1 555 0100");
-    ada.phones = vec![first.clone(), second].into();
-    let mut a = book_of(std::slice::from_ref(&ada));
-    let mut b = a.fork();
-
-    let mut titled = ada.clone();
-    titled.title = "Compiler pioneer".into();
-    titled.phones[0].value = "+1 555 0199".into();
-    save(&mut a, &ada, &titled).unwrap();
-    let mut grouped = ada.clone();
-    grouped.groups.push(GroupEntry::new("Research"));
-    grouped.phones.remove(1);
-    save(&mut b, &ada, &grouped).unwrap();
-
-    a.sync_with(&mut b).unwrap();
-    let merged = contact(&a, ada.id).unwrap();
-    assert_eq!(merged, contact(&b, ada.id).unwrap(), "both replicas agree");
-    assert_eq!(merged.title, "Compiler pioneer");
-    assert!(merged.groups.iter().any(|group| group.value == "Research"));
-    assert_eq!(merged.phones.len(), 1);
-    assert_eq!(merged.phones[0].id, first.id);
-    assert_eq!(merged.phones[0].value, "+1 555 0199");
-    assert!(
-        Contacts::save(&merged, &merged).is_none(),
-        "a form that changed nothing saves nothing"
-    );
-}
-
-#[test]
-fn a_save_over_a_removed_row_is_refused_whole() {
-    let ada = person("Ada", "Lovelace");
-    let mut book = book_of(std::slice::from_ref(&ada));
-    let mut stale = ada.clone();
-    stale.addresses.push(Address {
-        street: "Gone".into(),
-        ..Address::default()
-    });
-    let mut edited = stale.clone();
-    edited.first = "Augusta".into();
-    edited.addresses[0].street = "12 St James's Square".into();
-    assert!(save(&mut book, &stale, &edited).is_err());
-    assert_eq!(contact(&book, ada.id).unwrap(), ada, "nothing is written");
-}
-
-#[test]
-fn a_deletion_wins_over_a_concurrent_save() {
-    let ada = person("Ada", "Lovelace");
-    let mut a = book_of(std::slice::from_ref(&ada));
-    let mut b = a.fork();
-    a.apply_confirmed(Contacts::delete(ada.id)).unwrap();
-    let mut noted = ada.clone();
-    noted.notes = "late note".into();
-    save(&mut b, &ada, &noted).unwrap();
-    a.sync_with(&mut b).unwrap();
-    assert!(contact(&a, ada.id).is_none());
-    assert!(contact(&b, ada.id).is_none());
-}
-
-#[test]
-fn merging_unions_rows_and_takes_the_chosen_fields() {
-    let mut survivor = person("Ada", "Lovelace");
-    survivor.id = Uuid::from_u128(1);
-    survivor.emails = vec![Labeled::new("home", "ada@example.test")].into();
-    survivor.title = "Mathematician".into();
-    let mut source = person("Ada", "Lovelace");
-    source.id = Uuid::from_u128(2);
-    source.emails = vec![
-        Labeled::new("home", "ADA@EXAMPLE.TEST"),
-        Labeled::new("work", "unique@example.test"),
-    ]
-    .into();
-    source.org = "Analytical Engines".into();
-    source.title = "Countess".into();
-    source.notes = "Kept".into();
-    let mut book = book_of(&[survivor.clone(), source.clone()]);
-    let mut peer = book.fork();
-    assert!(book.state().unwrap().duplicate(survivor.id, source.id));
-
-    assert!(
-        book.apply_confirmed(Contacts::merge(survivor.id, survivor.id, []))
-            .is_err(),
-        "a contact is not merged into itself"
-    );
-    book.apply_confirmed(Contacts::merge(
-        survivor.id,
-        source.id,
-        [MergeField::Organization, MergeField::Title],
-    ))
-    .unwrap();
-    let state = book.state().unwrap();
-    assert!(state.contact(source.id).is_none());
-    assert!(state.removed.contains(&source.id));
-    let merged = state.contact(survivor.id).unwrap();
-    assert_eq!(merged.org, "Analytical Engines");
-    assert_eq!(merged.title, "Countess", "a field named is taken");
-    assert_eq!(merged.notes, "Kept", "an empty field fills");
-    assert_eq!(
-        merged
-            .emails
-            .iter()
-            .map(|email| email.value.as_str())
-            .collect::<Vec<_>>(),
-        ["ada@example.test", "unique@example.test"],
-        "the same address once, every other one kept"
-    );
-
-    peer.sync_with(&mut book).unwrap();
-    assert_eq!(peer.state().unwrap(), book.state().unwrap());
-}
-
-#[test]
-fn regression_merge_preserves_distinct_dial_strings() {
-    let mut survivor = person("Ada", "Lovelace");
-    survivor.id = Uuid::from_u128(1);
-    survivor.phones = vec![
-        Labeled::new("work", "123"),
-        Labeled::new("work", "1-800-FLOWERS"),
-        Labeled::new("home", "+1 (555) 0100"),
-    ]
-    .into();
-    let mut source = person("Ada", "Lovelace");
-    source.id = Uuid::from_u128(2);
-    source.phones = vec![
-        Labeled::new("work", "*123#"),
-        Labeled::new("work", "1-800-PIZZA"),
-        Labeled::new("home", "15550100"),
-    ]
-    .into();
-    let mut book = book_of(&[survivor.clone(), source.clone()]);
-    book.apply_confirmed(Contacts::merge(survivor.id, source.id, []))
-        .unwrap();
-    let merged = contact(&book, survivor.id).unwrap();
-    assert_eq!(
-        merged
-            .phones
-            .iter()
-            .map(|row| row.value.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "123",
-            "1-800-FLOWERS",
-            "+1 (555) 0100",
-            "*123#",
-            "1-800-PIZZA"
-        ],
-        "only formatting-equivalent numbers are deduplicated"
-    );
-}
-
-#[test]
-fn the_book_publishes_places_items_and_search() {
-    let mut contacts = sample_book();
-    let mut copy = contacts[0].clone();
-    copy.id = Uuid::from_u128(u128::MAX);
-    contacts.push(copy.clone());
-    let mut late = person("Late", "");
-    late.groups = vec![GroupEntry::new("Late group")].into();
-    contacts.push(late);
-    let book = book_of(&contacts);
-    let published = book.published().unwrap();
-    let child = |id: &str| {
-        published
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == id)
-            .unwrap_or_else(|| panic!("{id} is published"))
-    };
-
-    assert!(
-        published
-            .actions
-            .iter()
-            .any(|action| action.id == "new-contact")
-    );
-    let favorites = child(&place_resource_id(FAVORITES_PLACE));
-    assert!(
-        favorites
-            .actions
-            .iter()
-            .any(|action| action.id == "open-favorites")
-    );
-    let group = child(&place_resource_id(&group_place("LATE GROUP")));
-    assert_eq!(group.label, "Group: Late group");
-    let ada = child(&contact_resource_id(contacts[0].id));
-    for id in ["delete-contact", "merge-contacts"] {
-        assert!(ada.actions.iter().any(|action| action.id == id), "{id}");
-    }
-    let duplicate = child(&place_resource_id(&duplicate_place(
-        contacts[0].id,
-        copy.id,
-    )));
-    assert!(
-        duplicate
-            .actions
-            .iter()
-            .any(|action| action.id == "open-review")
-    );
-    let merge = duplicate
-        .actions
-        .iter()
-        .find(|action| action.id == "merge-contacts")
-        .expect("the duplicate offers its merge");
-    assert_eq!(
-        merge.contract.risk,
-        ui::tilo_actions::RiskLevel::Destructive
-    );
-    assert_eq!(
-        merge
-            .params()
-            .iter()
-            .map(|param| param.name.clone())
-            .collect::<Vec<_>>(),
-        ["take_from_source"],
-        "the pair is bound; only the fields to take are asked"
-    );
-
-    let state = book.state().unwrap();
-    let entries = Contacts::search(&state);
-    let grace = entries
-        .iter()
-        .find(|entry| entry.title == "Grace Hopper")
-        .expect("search finds a contact");
-    assert!(grace.text.contains("US Navy"), "{:?}", grace.text);
-    let grace_id = contacts
-        .iter()
-        .find(|contact| contact.display_name() == "Grace Hopper")
-        .unwrap()
-        .id;
-    assert_eq!(
-        grace.anchor.as_deref(),
-        Some(contact_resource_id(grace_id).as_str())
-    );
-    let work = entries
-        .iter()
-        .find(|entry| entry.title == "Group: Work")
-        .expect("groups are found too");
-    let place = place_resource_id(&group_place("Work"));
-    assert_eq!(work.anchor.as_deref(), Some(place.as_str()));
-    let opens = work.action.as_ref().expect("a group hit opens its place");
-    assert_eq!(opens.resource, place);
-    assert_eq!(
-        opens.action,
-        ContactsEffect::OpenGroup {
-            name: "Work".into()
-        }
-        .id()
-    );
 }
 
 #[test]

@@ -284,139 +284,143 @@ mod tests {
         infer_entry(s, Currency::USD)
     }
 
-    #[test]
-    fn percent_and_currency_inputs_infer_their_format() {
+    tilo_test_env::scenario! {
+        fn entries_infer_their_kind_and_format;
+
+        phase percent_and_currency_inputs_infer_their_format;
         {
-            let r = infer("90%");
-            assert_eq!(r.raw, "0.9");
-            assert_eq!(r.format, CellFormat::Percent);
-            assert_eq!(
-                crate::model::format_value(&crate::model::CellValue::Number(0.9), r.format),
-                "90.00%"
-            );
+            {
+                let r = infer("90%");
+                assert_eq!(r.raw, "0.9");
+                assert_eq!(r.format, CellFormat::Percent);
+                assert_eq!(
+                    crate::model::format_value(&crate::model::CellValue::Number(0.9), r.format),
+                    "90.00%"
+                );
+            }
+
+            {
+                let r = infer("12.5%");
+                assert_eq!(r.raw, "0.125");
+                assert_eq!(r.format, CellFormat::Percent);
+            }
+
+            {
+                let r = infer("$1,200");
+                assert_eq!(r.raw, "1200");
+                assert_eq!(r.format, CellFormat::Currency(Currency::USD));
+            }
+
+            {
+                let r = infer_entry("1.200,50\u{20AC}", Currency::EUR);
+                let r2 = infer("1200.50\u{20AC}");
+                assert_eq!(r2.format, CellFormat::Currency(Currency::EUR));
+                assert_eq!(r2.raw, "1200.5");
+                let _ = r;
+            }
+
+            {
+                let r = infer("CHF 50");
+                assert_eq!(r.raw, "50");
+                assert_eq!(r.format, CellFormat::Currency(Currency::CHF));
+            }
+
+            {
+                let r = infer_entry("$5", Currency::CAD);
+                assert_eq!(r.format, CellFormat::Currency(Currency::CAD));
+            }
         }
 
+        phase date_and_time_inputs_infer_their_format;
         {
-            let r = infer("12.5%");
-            assert_eq!(r.raw, "0.125");
-            assert_eq!(r.format, CellFormat::Percent);
+            {
+                let r = infer("2023-03-15");
+                assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
+                let n: f64 = r.raw.parse().unwrap();
+                assert_eq!(
+                    crate::model::serial_to_date(n, DateStyle::Iso),
+                    "2023-03-15"
+                );
+            }
+
+            {
+                let r = infer("03/15/2023");
+                assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
+                let n: f64 = r.raw.parse().unwrap();
+                assert_eq!(
+                    crate::model::serial_to_date(n, DateStyle::Iso),
+                    "2023-03-15"
+                );
+            }
+
+            {
+                let r = infer("25/03/2023");
+                assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
+                let n: f64 = r.raw.parse().unwrap();
+                assert_eq!(
+                    crate::model::serial_to_date(n, DateStyle::Iso),
+                    "2023-03-25"
+                );
+            }
+
+            {
+                let r = infer("14:05");
+                assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
+                let n: f64 = r.raw.parse().unwrap();
+                assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
+            }
+
+            {
+                let r = infer("2:05 PM");
+                assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
+                let n: f64 = r.raw.parse().unwrap();
+                assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
+            }
         }
 
+        phase numbers_booleans_text_and_formulas_infer_their_kind;
         {
-            let r = infer("$1,200");
-            assert_eq!(r.raw, "1200");
-            assert_eq!(r.format, CellFormat::Currency(Currency::USD));
-        }
+            {
+                let r = infer("1,234.5");
+                assert_eq!(r.raw, "1234.5");
+                assert_eq!(r.format, CellFormat::Number);
+            }
 
-        {
-            let r = infer_entry("1.200,50\u{20AC}", Currency::EUR);
-            let r2 = infer("1200.50\u{20AC}");
-            assert_eq!(r2.format, CellFormat::Currency(Currency::EUR));
-            assert_eq!(r2.raw, "1200.5");
-            let _ = r;
-        }
+            {
+                let r = infer("42");
+                assert_eq!(r.raw, "42");
+                assert_eq!(r.format, CellFormat::General);
+            }
 
-        {
-            let r = infer("CHF 50");
-            assert_eq!(r.raw, "50");
-            assert_eq!(r.format, CellFormat::Currency(Currency::CHF));
-        }
+            {
+                let r = infer("(1,200)");
+                assert_eq!(r.raw, "-1200");
+                assert_eq!(r.format, CellFormat::Number);
+            }
 
-        {
-            let r = infer_entry("$5", Currency::CAD);
-            assert_eq!(r.format, CellFormat::Currency(Currency::CAD));
-        }
-    }
+            {
+                assert_eq!(infer("true").format, CellFormat::Boolean);
+                assert_eq!(infer("FALSE").format, CellFormat::Boolean);
+                assert_eq!(infer("true").raw, "TRUE");
+            }
 
-    #[test]
-    fn date_and_time_inputs_infer_their_format() {
-        {
-            let r = infer("2023-03-15");
-            assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
-            let n: f64 = r.raw.parse().unwrap();
-            assert_eq!(
-                crate::model::serial_to_date(n, DateStyle::Iso),
-                "2023-03-15"
-            );
-        }
+            {
+                let r = infer("Hello");
+                assert_eq!(r.raw, "Hello");
+                assert_eq!(r.format, CellFormat::Text);
+            }
 
-        {
-            let r = infer("03/15/2023");
-            assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
-            let n: f64 = r.raw.parse().unwrap();
-            assert_eq!(
-                crate::model::serial_to_date(n, DateStyle::Iso),
-                "2023-03-15"
-            );
-        }
+            {
+                let r = infer("'0123");
+                assert_eq!(r.raw, "0123");
+                assert_eq!(r.format, CellFormat::Text);
+            }
 
-        {
-            let r = infer("25/03/2023");
-            assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
-            let n: f64 = r.raw.parse().unwrap();
-            assert_eq!(
-                crate::model::serial_to_date(n, DateStyle::Iso),
-                "2023-03-25"
-            );
-        }
-
-        {
-            let r = infer("14:05");
-            assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
-            let n: f64 = r.raw.parse().unwrap();
-            assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
-        }
-
-        {
-            let r = infer("2:05 PM");
-            assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
-            let n: f64 = r.raw.parse().unwrap();
-            assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
-        }
-    }
-
-    #[test]
-    fn numbers_booleans_text_and_formulas_infer_their_kind() {
-        {
-            let r = infer("1,234.5");
-            assert_eq!(r.raw, "1234.5");
-            assert_eq!(r.format, CellFormat::Number);
-        }
-
-        {
-            let r = infer("42");
-            assert_eq!(r.raw, "42");
-            assert_eq!(r.format, CellFormat::General);
-        }
-
-        {
-            let r = infer("(1,200)");
-            assert_eq!(r.raw, "-1200");
-            assert_eq!(r.format, CellFormat::Number);
-        }
-
-        {
-            assert_eq!(infer("true").format, CellFormat::Boolean);
-            assert_eq!(infer("FALSE").format, CellFormat::Boolean);
-            assert_eq!(infer("true").raw, "TRUE");
-        }
-
-        {
-            let r = infer("Hello");
-            assert_eq!(r.raw, "Hello");
-            assert_eq!(r.format, CellFormat::Text);
-        }
-
-        {
-            let r = infer("'0123");
-            assert_eq!(r.raw, "0123");
-            assert_eq!(r.format, CellFormat::Text);
-        }
-
-        {
-            let r = infer("=SUM(A1:A3)");
-            assert_eq!(r.raw, "=SUM(A1:A3)");
-            assert_eq!(r.format, CellFormat::General);
+            {
+                let r = infer("=SUM(A1:A3)");
+                assert_eq!(r.raw, "=SUM(A1:A3)");
+                assert_eq!(r.format, CellFormat::General);
+            }
         }
     }
 }

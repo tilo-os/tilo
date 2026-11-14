@@ -377,40 +377,44 @@ mod tests {
         assert!(!valid_rgba_frame(u32::MAX, u32::MAX, 0));
     }
 
-    #[test]
-    fn availability_follows_the_table_where_built() {
-        for feature in [
-            Feature::Camera,
-            Feature::Microphone,
-            Feature::Screen,
-            Feature::Scanner,
-        ] {
-            let got = availability(feature);
-            assert!(
-                got == feature.targets()[tilo_platform_caps::COLUMN]
-                    || matches!(got, Availability::Unsupported(_)),
-                "{feature:?}: {got:?}"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_build_says_which_devices_it_can_capture;
 
-    #[test]
-    fn a_build_without_a_backend_says_so_instead_of_failing_later() {
-        if !cfg!(native_camera) {
-            assert!(matches!(
-                VideoCapture::open_camera(&CameraRequest {
-                    device: None,
-                    width: 640,
-                    height: 480,
-                }),
-                Err(CaptureError::Unsupported(_))
-            ));
+        phase availability_follows_the_table_where_built;
+        {
+            for feature in [
+                Feature::Camera,
+                Feature::Microphone,
+                Feature::Screen,
+                Feature::Scanner,
+            ] {
+                let got = availability(feature);
+                assert!(
+                    got == feature.targets()[tilo_platform_caps::COLUMN]
+                        || matches!(got, Availability::Unsupported(_)),
+                    "{feature:?}: {got:?}"
+                );
+            }
         }
-        if !cfg!(native_microphone) {
-            assert!(matches!(
-                AudioCapture::open_microphone(&MicrophoneRequest::default()),
-                Err(CaptureError::Unsupported(_))
-            ));
+
+        phase a_build_without_a_backend_says_so_instead_of_failing_later;
+        {
+            if !cfg!(native_camera) {
+                assert!(matches!(
+                    VideoCapture::open_camera(&CameraRequest {
+                        device: None,
+                        width: 640,
+                        height: 480,
+                    }),
+                    Err(CaptureError::Unsupported(_))
+                ));
+            }
+            if !cfg!(native_microphone) {
+                assert!(matches!(
+                    AudioCapture::open_microphone(&MicrophoneRequest::default()),
+                    Err(CaptureError::Unsupported(_))
+                ));
+            }
         }
     }
 }

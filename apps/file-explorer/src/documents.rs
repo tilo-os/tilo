@@ -186,59 +186,63 @@ mod tests {
         assert!(!failure.contains("os error"), "{failure}");
     }
 
-    #[test]
-    fn text_is_written_as_given_and_reads_back() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("Summary.md");
-        std::fs::write(
-            &path,
-            bytes_for("Summary.md", "# Findings\n\nAll good.").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            read_text(&path).unwrap(),
-            FileText {
-                format: "markdown",
-                text: "# Findings\n\nAll good.".into()
-            }
-        );
+    tilo_test_env::scenario! {
+        fn text_is_read_and_written_and_other_files_are_refused_with_a_reason;
 
-        let notes = root.path().join("notes.txt");
-        std::fs::write(&notes, "plain *text*\nsecond line\n").unwrap();
-        assert_eq!(
-            read_text(&notes).unwrap(),
-            FileText {
-                format: "text",
-                text: "plain *text*\nsecond line\n".into()
-            }
-        );
-        assert_eq!(bytes_for("data.csv", "a,b\n1,2\n").unwrap(), b"a,b\n1,2\n");
-    }
+        phase text_is_written_as_given_and_reads_back;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("Summary.md");
+            std::fs::write(
+                &path,
+                bytes_for("Summary.md", "# Findings\n\nAll good.").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                read_text(&path).unwrap(),
+                FileText {
+                    format: "markdown",
+                    text: "# Findings\n\nAll good.".into()
+                }
+            );
 
-    #[test]
-    fn documents_are_left_to_writer_with_a_reason() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(
-            bytes_for("Letter.docx", "# Dear reader")
-                .unwrap_err()
-                .contains("convert-file")
-        );
-        assert!(bytes_for("Letter.pdf", "# Dear reader").is_err());
-        let document = root.path().join("Letter.odt");
-        std::fs::write(&document, b"PK").unwrap();
-        assert!(read_text(&document).unwrap_err().contains("read-file"));
-    }
+            let notes = root.path().join("notes.txt");
+            std::fs::write(&notes, "plain *text*\nsecond line\n").unwrap();
+            assert_eq!(
+                read_text(&notes).unwrap(),
+                FileText {
+                    format: "text",
+                    text: "plain *text*\nsecond line\n".into()
+                }
+            );
+            assert_eq!(bytes_for("data.csv", "a,b\n1,2\n").unwrap(), b"a,b\n1,2\n");
+        }
 
-    #[test]
-    fn binary_files_and_folders_are_refused_with_a_reason() {
-        let root = tempfile::tempdir().unwrap();
-        let binary = root.path().join("image.bin");
-        std::fs::write(&binary, [0xff_u8, 0x00, 0xfe]).unwrap();
-        assert!(
-            read_text(&binary)
-                .unwrap_err()
-                .contains("cannot be read as text")
-        );
-        assert!(read_text(root.path()).unwrap_err().contains("is a folder"));
+        phase documents_are_left_to_writer_with_a_reason;
+        {
+            let root = tempfile::tempdir().unwrap();
+            assert!(
+                bytes_for("Letter.docx", "# Dear reader")
+                    .unwrap_err()
+                    .contains("convert-file")
+            );
+            assert!(bytes_for("Letter.pdf", "# Dear reader").is_err());
+            let document = root.path().join("Letter.odt");
+            std::fs::write(&document, b"PK").unwrap();
+            assert!(read_text(&document).unwrap_err().contains("read-file"));
+        }
+
+        phase binary_files_and_folders_are_refused_with_a_reason;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let binary = root.path().join("image.bin");
+            std::fs::write(&binary, [0xff_u8, 0x00, 0xfe]).unwrap();
+            assert!(
+                read_text(&binary)
+                    .unwrap_err()
+                    .contains("cannot be read as text")
+            );
+            assert!(read_text(root.path()).unwrap_err().contains("is a folder"));
+        }
     }
 }

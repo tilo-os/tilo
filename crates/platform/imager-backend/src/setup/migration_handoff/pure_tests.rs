@@ -33,23 +33,29 @@ fn sample() -> Plan {
     }
 }
 
-#[test]
-fn source_metadata_round_trips_without_a_native_permission() {
-    let plan = sample();
-    assert_eq!(Plan::parse(&plan.bytes().unwrap()).unwrap(), plan);
-    assert_eq!(plan.home_inode(), 1234);
-    assert_eq!(plan.home_uid(), 1000);
-}
+tilo_test_env::scenario! {
+    /// A handoff plan's source metadata.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn source_metadata_round_trips_and_still_validates_geometry_and_consent;
 
-#[test]
-fn source_metadata_still_validates_geometry_and_consent() {
-    let mut plan = sample();
-    plan.home.volume.last_lba = u64::MAX;
-    assert!(plan.bytes().is_err());
-    let mut plan = sample();
-    plan.categories.home = false;
-    plan.home_policy = HomePolicy::AccessReadWrite;
-    assert!(plan.bytes().is_err());
+    phase source_metadata_round_trips_without_a_native_permission;
+    {
+        let plan = sample();
+        assert_eq!(Plan::parse(&plan.bytes().unwrap()).unwrap(), plan);
+        assert_eq!(plan.home_inode(), 1234);
+        assert_eq!(plan.home_uid(), 1000);
+    }
+
+    phase source_metadata_still_validates_geometry_and_consent;
+    {
+        let mut plan = sample();
+        plan.home.volume.last_lba = u64::MAX;
+        assert!(plan.bytes().is_err());
+        let mut plan = sample();
+        plan.categories.home = false;
+        plan.home_policy = HomePolicy::AccessReadWrite;
+        assert!(plan.bytes().is_err());
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

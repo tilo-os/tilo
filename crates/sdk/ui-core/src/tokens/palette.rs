@@ -476,107 +476,113 @@ impl Tone {
 mod tests {
     use super::*;
 
-    #[test]
-    fn shipped_palettes_are_structurally_sound_and_follow_the_design_language() {
-        for palette in [
-            Palette::dark(),
-            Palette::dark_cool(),
-            Palette::dark_graphite(),
-            Palette::dark_soft(),
-            Palette::light(),
-            Palette::high_contrast_dark(),
-            Palette::high_contrast_light(),
-        ] {
-            assert_eq!(palette.validate(), Ok(()), "{palette:?}");
-            assert_eq!(palette.stock_presence().validate_presence(), Ok(()));
-        }
-        // The stock temperature: cool, a whisper of chroma, on both polarities; a
-        // workspace moves its hue, never its chroma.
-        for stock in [Palette::dark(), Palette::light()] {
-            assert_eq!(stock.hue, Some(260.0));
-            assert!((stock.chroma - 0.006).abs() < f32::EPSILON);
-            assert_eq!(stock.temperature(), (260.0, 0.006));
-        }
-        let grey = Palette {
-            hue: None,
-            ..Palette::light()
-        };
-        assert_eq!(
-            grey.temperature(),
-            (0.0, 0.0),
-            "without a hue the ladder is pure grey"
-        );
-        let warm = Palette {
-            hue: Some(400.0),
-            chroma: 0.010,
-            ..Palette::light()
-        };
-        assert_eq!(warm.temperature(), (40.0, 0.010));
-        let dark = Palette::dark().surfaces;
-        assert_eq!(
-            [
-                dark.base,
-                dark.content,
-                dark.sidebar,
-                dark.inspector,
-                dark.raised,
-                dark.overlay
-            ],
-            [0.14, 0.19, 0.165, 0.165, 0.235, 0.225]
-        );
-        let light = Palette::light().surfaces;
-        assert_eq!(
-            [
-                light.base,
-                light.content,
-                light.sidebar,
-                light.inspector,
-                light.raised,
-                light.overlay
-            ],
-            [0.90, 0.995, 0.965, 0.965, 0.95, 1.0]
-        );
-        let soft = Palette::dark_soft().surfaces;
-        assert_eq!(
-            [
-                soft.base,
-                soft.content,
-                soft.sidebar,
-                soft.raised,
-                soft.overlay
-            ],
-            [0.19, 0.25, 0.228, 0.30, 0.32]
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `Palette` and `Emphasis`.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn palettes_are_sound_or_refused_and_emphasis_round_trips;
 
-    #[test]
-    fn a_palette_out_of_band_or_with_crossed_ink_is_refused() {
-        let mut loud = Palette::dark();
-        loud.chroma = 0.05;
-        assert!(loud.validate().is_err());
-        let mut crossed = Palette::dark();
-        crossed.ink.tertiary = 0.2;
-        assert!(crossed.validate().is_err());
-        let mut status = Palette::light();
-        status.status.danger.chroma = 0.3;
-        assert!(status.validate().is_err());
-        assert!(Emphasis::Tinted { hue: f32::NAN }.validate().is_err());
-        assert!(Tone::new(0.95, 0.14).validate_presence().is_err());
-    }
+        phase shipped_palettes_are_structurally_sound_and_follow_the_design_language;
+        {
+            for palette in [
+                Palette::dark(),
+                Palette::dark_cool(),
+                Palette::dark_graphite(),
+                Palette::dark_soft(),
+                Palette::light(),
+                Palette::high_contrast_dark(),
+                Palette::high_contrast_light(),
+            ] {
+                assert_eq!(palette.validate(), Ok(()), "{palette:?}");
+                assert_eq!(palette.stock_presence().validate_presence(), Ok(()));
+            }
+            // The stock temperature: cool, a whisper of chroma, on both polarities; a
+            // workspace moves its hue, never its chroma.
+            for stock in [Palette::dark(), Palette::light()] {
+                assert_eq!(stock.hue, Some(260.0));
+                assert!((stock.chroma - 0.006).abs() < f32::EPSILON);
+                assert_eq!(stock.temperature(), (260.0, 0.006));
+            }
+            let grey = Palette {
+                hue: None,
+                ..Palette::light()
+            };
+            assert_eq!(
+                grey.temperature(),
+                (0.0, 0.0),
+                "without a hue the ladder is pure grey"
+            );
+            let warm = Palette {
+                hue: Some(400.0),
+                chroma: 0.010,
+                ..Palette::light()
+            };
+            assert_eq!(warm.temperature(), (40.0, 0.010));
+            let dark = Palette::dark().surfaces;
+            assert_eq!(
+                [
+                    dark.base,
+                    dark.content,
+                    dark.sidebar,
+                    dark.inspector,
+                    dark.raised,
+                    dark.overlay
+                ],
+                [0.14, 0.19, 0.165, 0.165, 0.235, 0.225]
+            );
+            let light = Palette::light().surfaces;
+            assert_eq!(
+                [
+                    light.base,
+                    light.content,
+                    light.sidebar,
+                    light.inspector,
+                    light.raised,
+                    light.overlay
+                ],
+                [0.90, 0.995, 0.965, 0.965, 0.95, 1.0]
+            );
+            let soft = Palette::dark_soft().surfaces;
+            assert_eq!(
+                [
+                    soft.base,
+                    soft.content,
+                    soft.sidebar,
+                    soft.raised,
+                    soft.overlay
+                ],
+                [0.19, 0.25, 0.228, 0.30, 0.32]
+            );
+        }
 
-    #[test]
-    fn emphasis_round_trips_as_tagged_json() {
-        let tinted = serde_json::to_value(Emphasis::Tinted { hue: 150.0 }).unwrap();
-        assert_eq!(tinted, serde_json::json!({"kind": "tinted", "hue": 150.0}));
-        let back: Emphasis =
-            serde_json::from_value(serde_json::json!({"kind": "inverted"})).unwrap();
-        assert_eq!(back, Emphasis::Inverted);
-        let you: Emphasis = serde_json::from_value(serde_json::json!({"kind": "you"})).unwrap();
-        assert_eq!(you, Emphasis::You);
-        assert_eq!(
-            Emphasis::default(),
-            Emphasis::You,
-            "the accent is your colour"
-        );
+        phase a_palette_out_of_band_or_with_crossed_ink_is_refused;
+        {
+            let mut loud = Palette::dark();
+            loud.chroma = 0.05;
+            assert!(loud.validate().is_err());
+            let mut crossed = Palette::dark();
+            crossed.ink.tertiary = 0.2;
+            assert!(crossed.validate().is_err());
+            let mut status = Palette::light();
+            status.status.danger.chroma = 0.3;
+            assert!(status.validate().is_err());
+            assert!(Emphasis::Tinted { hue: f32::NAN }.validate().is_err());
+            assert!(Tone::new(0.95, 0.14).validate_presence().is_err());
+        }
+
+        phase emphasis_round_trips_as_tagged_json;
+        {
+            let tinted = serde_json::to_value(Emphasis::Tinted { hue: 150.0 }).unwrap();
+            assert_eq!(tinted, serde_json::json!({"kind": "tinted", "hue": 150.0}));
+            let back: Emphasis =
+                serde_json::from_value(serde_json::json!({"kind": "inverted"})).unwrap();
+            assert_eq!(back, Emphasis::Inverted);
+            let you: Emphasis = serde_json::from_value(serde_json::json!({"kind": "you"})).unwrap();
+            assert_eq!(you, Emphasis::You);
+            assert_eq!(
+                Emphasis::default(),
+                Emphasis::You,
+                "the accent is your colour"
+            );
+        }
     }
 }

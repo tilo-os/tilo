@@ -73,43 +73,47 @@ mod tests {
 
     use super::{RELAY, Relays};
 
-    #[test]
-    fn a_device_relays_through_number_0_until_the_person_says_otherwise() {
-        assert_eq!(Relays::parse(""), Relays::N0);
-        assert_eq!(Relays::parse("default"), Relays::N0);
-        assert_eq!(Relays::parse(" None "), Relays::None);
-        assert_eq!(
-            Relays::parse("https://relay.example.com."),
-            Relays::Own("https://relay.example.com.".into())
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_relay_choice_parses_and_reads_through_the_document;
 
-    #[test]
-    fn the_setting_reads_through_the_document_and_stores_what_each_choice_means() {
-        assert_eq!(RELAY.from_document(&Map::new()), Relays::N0);
-        let mut document = Map::new();
-        document.insert("network".into(), json!({ "relay": "none" }));
-        assert_eq!(RELAY.from_document(&document), Relays::None);
-        document.insert(
-            "network".into(),
-            json!({ "relay": "https://relay.example.com." }),
-        );
-        assert_eq!(
-            RELAY.from_document(&document),
-            Relays::Own("https://relay.example.com.".into())
-        );
-        document.insert("network".into(), json!({ "relay": true }));
-        assert_eq!(
-            RELAY.from_document(&document),
-            Relays::N0,
-            "a truth value is not a relay"
-        );
-        for choice in [
-            Relays::N0,
-            Relays::None,
-            Relays::Own("https://relay.example.com.".into()),
-        ] {
-            assert_eq!(Relays::parse(choice.stored()), choice);
+        phase a_device_relays_through_number_0_until_the_person_says_otherwise;
+        {
+            assert_eq!(Relays::parse(""), Relays::N0);
+            assert_eq!(Relays::parse("default"), Relays::N0);
+            assert_eq!(Relays::parse(" None "), Relays::None);
+            assert_eq!(
+                Relays::parse("https://relay.example.com."),
+                Relays::Own("https://relay.example.com.".into())
+            );
+        }
+
+        phase the_setting_reads_through_the_document_and_stores_what_each_choice_means;
+        {
+            assert_eq!(RELAY.from_document(&Map::new()), Relays::N0);
+            let mut document = Map::new();
+            document.insert("network".into(), json!({ "relay": "none" }));
+            assert_eq!(RELAY.from_document(&document), Relays::None);
+            document.insert(
+                "network".into(),
+                json!({ "relay": "https://relay.example.com." }),
+            );
+            assert_eq!(
+                RELAY.from_document(&document),
+                Relays::Own("https://relay.example.com.".into())
+            );
+            document.insert("network".into(), json!({ "relay": true }));
+            assert_eq!(
+                RELAY.from_document(&document),
+                Relays::N0,
+                "a truth value is not a relay"
+            );
+            for choice in [
+                Relays::N0,
+                Relays::None,
+                Relays::Own("https://relay.example.com.".into()),
+            ] {
+                assert_eq!(Relays::parse(choice.stored()), choice);
+            }
         }
     }
 }

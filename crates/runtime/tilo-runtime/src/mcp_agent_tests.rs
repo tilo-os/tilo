@@ -2958,5 +2958,7 @@ fn an_action_the_person_must_allow_answers_pending_with_the_ask() {
 mod flux;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
+#[path = "mcp_status_tests.rs"]
+mod status;
 #[path = "mcp_agent_watch_tests.rs"]
 mod watch_tests;

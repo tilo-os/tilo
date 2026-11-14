@@ -258,81 +258,150 @@ mod tests {
         p
     }
 
-    #[test]
-    fn editor_search_finds_media_clips_captions_and_late_tracks() {
+    tilo_test_env::scenario! {
+        fn editor_search_finds_and_opens_what_the_project_holds;
+
+        phase editor_search_finds_media_clips_captions_and_late_tracks;
         {
-            let p = project_with_things();
-            let hits = source(&p).search("coastline");
-            assert!(hits.iter().any(|hit| {
-                hit.kind == MEDIA_KIND && hit.action_id == anchor("media", p.media[0].id)
-            }));
-            assert!(hits.iter().any(|hit| {
-                hit.kind == CLIP_KIND
-                    && hit.action_id == anchor("clips", p.clips[0].id)
-                    && hit
-                        .subtitle
-                        .as_deref()
-                        .is_some_and(|text| text.contains(&timecode::clock(12.0)))
-            }));
-        }
-        {
-            let mut project = project_with_things();
-            project.markers.push(crate::model::Marker {
-                id: uuid::Uuid::new_v4(),
-                t: 21.5,
-                name: "m2".into(),
-                palette: 0,
-                note: format!("{} Über den Fluss", "ordinary ".repeat(10_000)),
-            });
-            let title_id = uuid::Uuid::new_v4();
-            project.media.push(MediaItem {
-                id: title_id,
-                name: "Title 1".into(),
-                kind: MediaKind::Text,
-                duration: 4.0,
-                text: Some(TextSource {
-                    content: format!("{} 東京の夜", "caption ".repeat(10_000)),
+            {
+                let p = project_with_things();
+                let hits = source(&p).search("coastline");
+                assert!(hits.iter().any(|hit| {
+                    hit.kind == MEDIA_KIND && hit.action_id == anchor("media", p.media[0].id)
+                }));
+                assert!(hits.iter().any(|hit| {
+                    hit.kind == CLIP_KIND
+                        && hit.action_id == anchor("clips", p.clips[0].id)
+                        && hit
+                            .subtitle
+                            .as_deref()
+                            .is_some_and(|text| text.contains(&timecode::clock(12.0)))
+                }));
+            }
+            {
+                let mut project = project_with_things();
+                project.markers.push(crate::model::Marker {
+                    id: uuid::Uuid::new_v4(),
+                    t: 21.5,
+                    name: "m2".into(),
+                    palette: 0,
+                    note: format!("{} Über den Fluss", "ordinary ".repeat(10_000)),
+                });
+                let title_id = uuid::Uuid::new_v4();
+                project.media.push(MediaItem {
+                    id: title_id,
+                    name: "Title 1".into(),
+                    kind: MediaKind::Text,
+                    duration: 4.0,
+                    text: Some(TextSource {
+                        content: format!("{} 東京の夜", "caption ".repeat(10_000)),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            });
-            let provider = source(&project);
-            assert!(
-                provider
-                    .search_page(&ui::search::SearchQuery::parse("DEN FL", &[]), None, 8, 8)
-                    .results
-                    .iter()
-                    .any(|hit| hit.action_id == anchor("markers", project.markers[0].id))
-            );
-            assert!(
-                provider
-                    .search_page(&ui::search::SearchQuery::parse("東京の夜", &[]), None, 8, 8)
-                    .results
-                    .iter()
-                    .any(|hit| hit.action_id == anchor("media", title_id))
-            );
+                });
+                let provider = source(&project);
+                assert!(
+                    provider
+                        .search_page(&ui::search::SearchQuery::parse("DEN FL", &[]), None, 8, 8)
+                        .results
+                        .iter()
+                        .any(|hit| hit.action_id == anchor("markers", project.markers[0].id))
+                );
+                assert!(
+                    provider
+                        .search_page(&ui::search::SearchQuery::parse("東京の夜", &[]), None, 8, 8)
+                        .results
+                        .iter()
+                        .any(|hit| hit.action_id == anchor("media", title_id))
+                );
+            }
+            {
+                let (provider, hit) = assert_late_hit_reachable(
+                    |corpus| {
+                        let mut project = Project::new("large");
+                        for row in corpus {
+                            add_track(&mut project, TrackKind::Video, row.text);
+                        }
+                        source(&project)
+                    },
+                    3_000,
+                );
+                assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::parse(LATE_HIT_NEEDLE, &[]),
+                    None,
+                    4,
+                    4,
+                );
+                assert_eq!(page.results.len(), 1, "the one track that matches");
+            }
+            assert_search_pagination();
         }
+
+        phase editor_search_hits_open_current_items_and_stale_ones_are_refused;
         {
-            let (provider, hit) = assert_late_hit_reachable(
-                |corpus| {
-                    let mut project = Project::new("large");
-                    for row in corpus {
-                        add_track(&mut project, TrackKind::Video, row.text);
-                    }
-                    source(&project)
-                },
-                3_000,
-            );
-            assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let page = provider.search_page(
-                &ui::search::SearchQuery::parse(LATE_HIT_NEEDLE, &[]),
-                None,
-                4,
-                4,
-            );
-            assert_eq!(page.results.len(), 1, "the one track that matches");
+            {
+                let mut project = project_with_things();
+                let clip = project.clips[0].id;
+                let provider = source(&project);
+                let hit = provider
+                    .search("")
+                    .into_iter()
+                    .find(|hit| hit.action_id == anchor("clips", clip))
+                    .expect("clip is searchable before deletion");
+                for hit in provider.search("") {
+                    assert!(
+                        reveal(&project, &hit.action_id).is_ok(),
+                        "{} opens an item of the current project",
+                        hit.title
+                    );
+                }
+
+                // The provider may outlive the edit while a palette is open: the current project is
+                // the authority and refuses the stale anchor.
+                project.clips.clear();
+                project.media.clear();
+                assert!(
+                    reveal(&project, &hit.action_id).is_err(),
+                    "deleted target is refused"
+                );
+            }
+            {
+                let mut project = project_with_things();
+                let clip_id = project.clips[0].id;
+                let clip = project.clip_mut(clip_id).expect("fixture clip");
+                clip.add_effect(crate::model::EffectKind::Sepia);
+                clip.add_effect(crate::model::EffectKind::Sepia);
+                let first = clip.effects[0].id;
+                let second = clip.effects[1].id;
+                assert_ne!(first, second, "two Sepias are distinct durable instances");
+
+                let provider = source(&project);
+                let address = format!("{}/effects/{second}", anchor("clips", clip_id));
+                let _hit = provider
+                    .search("sepia effect")
+                    .into_iter()
+                    .find(|hit| hit.action_id == address)
+                    .expect("the exact second Sepia is searchable");
+                assert_eq!(
+                    reveal(&project, &address),
+                    Ok(crate::actions::VideoEditorEffect::RevealEffect {
+                        clip: clip_id.to_string(),
+                        effect: second.to_string(),
+                    }),
+                    "the hit reveals that very instance",
+                );
+
+                project
+                    .clip_mut(clip_id)
+                    .expect("fixture clip")
+                    .remove_effect_id(second);
+                assert!(
+                    reveal(&project, &address).is_err(),
+                    "the stale duplicate's anchor cannot reveal its neighbour",
+                );
+            }
         }
-        assert_search_pagination();
     }
 
     fn assert_search_pagination() {
@@ -373,70 +442,5 @@ mod tests {
         let (_, item) = ui::tilo_resource::items::item_of_resource::<Project>(anchor)
             .expect("every hit names an item of the project");
         crate::resource::reveal_effect(project, &item)
-    }
-
-    #[test]
-    fn editor_search_hits_open_current_items_and_stale_ones_are_refused() {
-        {
-            let mut project = project_with_things();
-            let clip = project.clips[0].id;
-            let provider = source(&project);
-            let hit = provider
-                .search("")
-                .into_iter()
-                .find(|hit| hit.action_id == anchor("clips", clip))
-                .expect("clip is searchable before deletion");
-            for hit in provider.search("") {
-                assert!(
-                    reveal(&project, &hit.action_id).is_ok(),
-                    "{} opens an item of the current project",
-                    hit.title
-                );
-            }
-
-            // The provider may outlive the edit while a palette is open: the current project is
-            // the authority and refuses the stale anchor.
-            project.clips.clear();
-            project.media.clear();
-            assert!(
-                reveal(&project, &hit.action_id).is_err(),
-                "deleted target is refused"
-            );
-        }
-        {
-            let mut project = project_with_things();
-            let clip_id = project.clips[0].id;
-            let clip = project.clip_mut(clip_id).expect("fixture clip");
-            clip.add_effect(crate::model::EffectKind::Sepia);
-            clip.add_effect(crate::model::EffectKind::Sepia);
-            let first = clip.effects[0].id;
-            let second = clip.effects[1].id;
-            assert_ne!(first, second, "two Sepias are distinct durable instances");
-
-            let provider = source(&project);
-            let address = format!("{}/effects/{second}", anchor("clips", clip_id));
-            let _hit = provider
-                .search("sepia effect")
-                .into_iter()
-                .find(|hit| hit.action_id == address)
-                .expect("the exact second Sepia is searchable");
-            assert_eq!(
-                reveal(&project, &address),
-                Ok(crate::actions::VideoEditorEffect::RevealEffect {
-                    clip: clip_id.to_string(),
-                    effect: second.to_string(),
-                }),
-                "the hit reveals that very instance",
-            );
-
-            project
-                .clip_mut(clip_id)
-                .expect("fixture clip")
-                .remove_effect_id(second);
-            assert!(
-                reveal(&project, &address).is_err(),
-                "the stale duplicate's anchor cannot reveal its neighbour",
-            );
-        }
     }
 }

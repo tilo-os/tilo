@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 9 is the operator declaring a workspace's owner
-/// ([`OperatorCommand::DeclareOwner`]): 8 was read by builds that know no such
-/// command, so a reader of that one decodes no line of it.
-pub const VERSION: u16 = 9;
+/// 10 is the operator's declaration of a workspace's owner carrying the name
+/// that person goes by ([`OperatorCommand::DeclareOwner`]); 9 declared an
+/// owner with no name, so a reader of that one decodes no line of this.
+pub const VERSION: u16 = 10;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -118,11 +118,18 @@ pub enum OperatorCommand {
     /// Declare the person with user root `user_public_key` an owner of the
     /// workspace: its door lets them in, and its governance makes them an
     /// administrator, now if they are a member and as soon as they join if they
-    /// are not. The child answers [`OperatorEvent::OwnerDeclared`] or
-    /// [`OperatorEvent::OwnerRefused`] for the same key.
+    /// are not. `name`, when the operator knows it, is how the workspace names
+    /// them from then on: its member list and the invitations they make say it
+    /// before any device of theirs has said one. The child answers
+    /// [`OperatorEvent::OwnerDeclared`] or [`OperatorEvent::OwnerRefused`] for
+    /// the same key.
     DeclareOwner {
         /// The person's user root key (hex), not a device.
         user_public_key: String,
+        /// The name the person goes by, when the operator's declaration
+        /// carries one ([`tilo_user_identity::display_name`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
 }
 
@@ -530,239 +537,256 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn protocol_nine_round_trips_and_pins_its_wire_form() {
-        assert_eq!(VERSION, 9);
-        let wait = OperatorCommand::WaitList {
-            request: "12".repeat(32),
-            contact: "Ada@example.org".into(),
-            removal_sha256: "ab".repeat(32),
-            confirm_sha256: Some("cd".repeat(32)),
-            language: "de".into(),
-        };
-        assert_eq!(
-            wait.to_line(),
-            format!(
-                "{{\"op\":\"wait_list\",\"request\":\"{}\",\"contact\":\"Ada@example.org\",\"removal_sha256\":\"{}\",\"confirm_sha256\":\"{}\",\"language\":\"de\"}}\n",
-                "12".repeat(32),
-                "ab".repeat(32),
-                "cd".repeat(32)
-            )
-        );
-        assert_eq!(OperatorCommand::from_line(&wait.to_line()).unwrap(), wait);
-        let unlist = OperatorCommand::Unlist {
-            request: "12".repeat(32),
-            removal_sha256: "ab".repeat(32),
-        };
-        assert_eq!(
-            unlist.to_line(),
-            format!(
-                "{{\"op\":\"unlist\",\"request\":\"{}\",\"removal_sha256\":\"{}\"}}\n",
-                "12".repeat(32),
-                "ab".repeat(32)
-            )
-        );
-        assert_eq!(
-            OperatorCommand::from_line(&unlist.to_line()).unwrap(),
-            unlist
-        );
-        for event in current_events() {
-            assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
-        }
-        assert_eq!(
-            OperatorEvent::Online {
-                people: 7,
-                here: Vec::new(),
-                members: 0,
-                online: Vec::new(),
-            }
-            .to_line(),
-            "tilo-room-operator {\"event\":\"online\",\"people\":7}"
-        );
-        let declare = OperatorCommand::DeclareOwner {
-            user_public_key: "ef".repeat(32),
-        };
-        assert_eq!(
-            declare.to_line(),
-            format!(
-                "{{\"op\":\"declare_owner\",\"user_public_key\":\"{}\"}}\n",
-                "ef".repeat(32)
-            )
-        );
-        assert_eq!(
-            OperatorCommand::from_line(&declare.to_line()).unwrap(),
-            declare
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_operator_protocol_round_trips_pins_and_refuses_its_lines;
 
-    #[test]
-    fn wait_list_confirmations_and_standings_round_trip_and_name_no_address_in_a_log() {
-        for command in [
-            OperatorCommand::InviteMailQueued {
+        phase protocol_ten_round_trips_and_pins_its_wire_form;
+        {
+            assert_eq!(VERSION, 10);
+            let wait = OperatorCommand::WaitList {
                 request: "12".repeat(32),
-                queued: false,
-            },
-            OperatorCommand::InviteMailQueued {
-                request: "12".repeat(32),
-                queued: true,
-            },
-            OperatorCommand::Confirm {
-                request: "12".repeat(32),
-                confirm_sha256: "cd".repeat(32),
-            },
-            OperatorCommand::Standing {
+                contact: "Ada@example.org".into(),
+                removal_sha256: "ab".repeat(32),
+                confirm_sha256: Some("cd".repeat(32)),
+                language: "de".into(),
+            };
+            assert_eq!(
+                wait.to_line(),
+                format!(
+                    "{{\"op\":\"wait_list\",\"request\":\"{}\",\"contact\":\"Ada@example.org\",\"removal_sha256\":\"{}\",\"confirm_sha256\":\"{}\",\"language\":\"de\"}}\n",
+                    "12".repeat(32),
+                    "ab".repeat(32),
+                    "cd".repeat(32)
+                )
+            );
+            assert_eq!(OperatorCommand::from_line(&wait.to_line()).unwrap(), wait);
+            let unlist = OperatorCommand::Unlist {
                 request: "12".repeat(32),
                 removal_sha256: "ab".repeat(32),
-            },
-        ] {
+            };
             assert_eq!(
-                OperatorCommand::from_line(&command.to_line()).unwrap(),
-                command
+                unlist.to_line(),
+                format!(
+                    "{{\"op\":\"unlist\",\"request\":\"{}\",\"removal_sha256\":\"{}\"}}\n",
+                    "12".repeat(32),
+                    "ab".repeat(32)
+                )
+            );
+            assert_eq!(
+                OperatorCommand::from_line(&unlist.to_line()).unwrap(),
+                unlist
+            );
+            for event in current_events() {
+                assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
+            }
+            assert_eq!(
+                OperatorEvent::Online {
+                    people: 7,
+                    here: Vec::new(),
+                    members: 0,
+                    online: Vec::new(),
+                }
+                .to_line(),
+                "tilo-room-operator {\"event\":\"online\",\"people\":7}"
+            );
+            let declare = OperatorCommand::DeclareOwner {
+                user_public_key: "ef".repeat(32),
+                name: None,
+            };
+            assert_eq!(
+                declare.to_line(),
+                format!(
+                    "{{\"op\":\"declare_owner\",\"user_public_key\":\"{}\"}}\n",
+                    "ef".repeat(32)
+                )
+            );
+            assert_eq!(
+                OperatorCommand::from_line(&declare.to_line()).unwrap(),
+                declare
+            );
+            let named = OperatorCommand::DeclareOwner {
+                user_public_key: "ef".repeat(32),
+                name: Some("Ada".into()),
+            };
+            assert_eq!(
+                named.to_line(),
+                format!(
+                    "{{\"op\":\"declare_owner\",\"user_public_key\":\"{}\",\"name\":\"Ada\"}}\n",
+                    "ef".repeat(32)
+                )
+            );
+            assert_eq!(OperatorCommand::from_line(&named.to_line()).unwrap(), named);
+        }
+
+        phase wait_list_confirmations_and_standings_round_trip_and_name_no_address_in_a_log;
+        {
+            for command in [
+                OperatorCommand::InviteMailQueued {
+                    request: "12".repeat(32),
+                    queued: false,
+                },
+                OperatorCommand::InviteMailQueued {
+                    request: "12".repeat(32),
+                    queued: true,
+                },
+                OperatorCommand::Confirm {
+                    request: "12".repeat(32),
+                    confirm_sha256: "cd".repeat(32),
+                },
+                OperatorCommand::Standing {
+                    request: "12".repeat(32),
+                    removal_sha256: "ab".repeat(32),
+                },
+            ] {
+                assert_eq!(
+                    OperatorCommand::from_line(&command.to_line()).unwrap(),
+                    command
+                );
+            }
+            assert_eq!(
+                OperatorEvent::Standing {
+                    request: "12".repeat(32),
+                    standing: WaitListStanding::Pending,
+                }
+                .to_line(),
+                format!(
+                    "tilo-room-operator {{\"event\":\"standing\",\"request\":\"{}\",\"standing\":\"pending\"}}",
+                    "12".repeat(32)
+                )
+            );
+            let mailbox = WaitListMailbox {
+                contact: "Ada@example.org".into(),
+                language: "en".into(),
+            };
+            assert!(
+                !format!("{mailbox:?}").contains("Ada"),
+                "a mailbox is never logged with its address"
             );
         }
-        assert_eq!(
-            OperatorEvent::Standing {
-                request: "12".repeat(32),
-                standing: WaitListStanding::Pending,
-            }
-            .to_line(),
-            format!(
-                "tilo-room-operator {{\"event\":\"standing\",\"request\":\"{}\",\"standing\":\"pending\"}}",
-                "12".repeat(32)
-            )
-        );
-        let mailbox = WaitListMailbox {
-            contact: "Ada@example.org".into(),
-            language: "en".into(),
-        };
-        assert!(
-            !format!("{mailbox:?}").contains("Ada"),
-            "a mailbox is never logged with its address"
-        );
-    }
 
-    #[test]
-    fn pending_removal_contact_digest_round_trips_only_on_the_private_operator_wire() {
-        let event = OperatorEvent::Unlisted {
-            request: "12".repeat(32),
-            told: None,
-            contact_sha256: Some("ab".repeat(32)),
-        };
-        assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
-        let old = format!(
-            "tilo-room-operator {{\"event\":\"unlisted\",\"request\":\"{}\"}}",
-            "12".repeat(32)
-        );
-        assert_eq!(
-            OperatorEvent::from_line(&old).unwrap(),
-            OperatorEvent::Unlisted {
+        phase pending_removal_contact_digest_round_trips_only_on_the_private_operator_wire;
+        {
+            let event = OperatorEvent::Unlisted {
                 request: "12".repeat(32),
                 told: None,
-                contact_sha256: None,
-            }
-        );
-    }
-
-    #[test]
-    fn hex32_accepts_exactly_sixty_four_lowercase_hex_characters() {
-        assert_eq!(hex32(&"ab".repeat(32)), Some([0xab; 32]));
-        assert_eq!(hex32(&"AB".repeat(32)), None);
-        assert_eq!(hex32(&"ab".repeat(31)), None);
-        assert_eq!(hex32(&format!("{} ", "ab".repeat(32))), None);
-    }
-
-    #[test]
-    fn operator_round_trip() {
-        for command in [
-            OperatorCommand::Admit {
-                pairing_code: "012345".into(),
-            },
-            OperatorCommand::Shutdown {},
-        ] {
-            let line = command.to_line();
-            assert!(line.ends_with('\n') && !line.trim_end().contains('\n'));
-            assert_eq!(OperatorCommand::from_line(&line).unwrap(), command);
-        }
-        for event in events() {
-            let line = event.to_line();
-            assert!(line.starts_with(LINE_PREFIX) && !line.contains('\n'));
-            assert_eq!(OperatorEvent::from_line(&line).unwrap(), event);
-        }
-    }
-
-    #[test]
-    fn operator_wire_form_is_pinned() {
-        assert_eq!(
-            OperatorCommand::Admit {
-                pairing_code: "012345".into()
-            }
-            .to_line(),
-            "{\"op\":\"admit\",\"pairing_code\":\"012345\"}\n"
-        );
-        assert_eq!(
-            OperatorCommand::Shutdown {}.to_line(),
-            "{\"op\":\"shutdown\"}\n"
-        );
-        assert_eq!(
-            OperatorEvent::AdmitRefused {
-                pairing_code: "012345".into(),
-                reason: RefusalReason::AmbiguousCode,
-            }
-            .to_line(),
-            "tilo-room-operator {\"event\":\"admit_refused\",\"pairing_code\":\"012345\",\"reason\":\"ambiguous_code\"}"
-        );
-    }
-
-    #[test]
-    fn operator_rejects_unknown_tags_fields_and_the_old_text_form() {
-        for line in [
-            "admit 012345",
-            "shutdown",
-            "{\"op\":\"admit\",\"pairingCode\":\"012345\"}",
-            "{\"op\":\"admit\",\"pairing_code\":\"012345\",\"extra\":1}",
-            "{\"op\":\"kick\",\"pairing_code\":\"012345\"}",
-            "{\"op\":\"shutdown\",\"now\":true}",
-            "{\"op\":\"pre_admit\",\"user_public_key\":\"aa\",\"token_sha256\":\"bb\",\"label\":\"x\",\"role\":\"Owner\"}",
-            "{\"op\":\"pre_admit\",\"token_sha256\":\"bb\",\"label\":\"x\",\"role\":\"Editor\"}",
-            "{\"op\":\"spectate\"}",
-            "",
-        ] {
-            assert!(
-                matches!(
-                    OperatorCommand::from_line(line),
-                    Err(LineError::Malformed(_))
-                ),
-                "{line:?} decoded"
+                contact_sha256: Some("ab".repeat(32)),
+            };
+            assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
+            let old = format!(
+                "tilo-room-operator {{\"event\":\"unlisted\",\"request\":\"{}\"}}",
+                "12".repeat(32)
+            );
+            assert_eq!(
+                OperatorEvent::from_line(&old).unwrap(),
+                OperatorEvent::Unlisted {
+                    request: "12".repeat(32),
+                    told: None,
+                    contact_sha256: None,
+                }
             );
         }
-        for json in [
-            "{\"event\":\"member_certified\",\"device\":\"cd\",\"label\":\"x\",\"pairingCode\":\"012345\"}",
-            "{\"event\":\"member_certified\",\"device\":\"cd\",\"label\":\"x\",\"pairing_code\":\"1\",\"at\":1}",
-            "{\"event\":\"member_left\",\"device\":\"cd\"}",
-            "{\"event\":\"admit_refused\",\"pairing_code\":\"1\",\"reason\":\"tired\"}",
-            "{\"userPublicKey\":\"ab\"}",
-        ] {
-            assert!(
-                matches!(
-                    OperatorEvent::from_line(&format!("{LINE_PREFIX}{json}")),
-                    Err(LineError::Malformed(_))
-                ),
-                "{json:?} decoded"
+
+        phase hex32_accepts_exactly_sixty_four_lowercase_hex_characters;
+        {
+            assert_eq!(hex32(&"ab".repeat(32)), Some([0xab; 32]));
+            assert_eq!(hex32(&"AB".repeat(32)), None);
+            assert_eq!(hex32(&"ab".repeat(31)), None);
+            assert_eq!(hex32(&format!("{} ", "ab".repeat(32))), None);
+        }
+
+        phase operator_round_trip;
+        {
+            for command in [
+                OperatorCommand::Admit {
+                    pairing_code: "012345".into(),
+                },
+                OperatorCommand::Shutdown {},
+            ] {
+                let line = command.to_line();
+                assert!(line.ends_with('\n') && !line.trim_end().contains('\n'));
+                assert_eq!(OperatorCommand::from_line(&line).unwrap(), command);
+            }
+            for event in events() {
+                let line = event.to_line();
+                assert!(line.starts_with(LINE_PREFIX) && !line.contains('\n'));
+                assert_eq!(OperatorEvent::from_line(&line).unwrap(), event);
+            }
+        }
+
+        phase operator_wire_form_is_pinned;
+        {
+            assert_eq!(
+                OperatorCommand::Admit {
+                    pairing_code: "012345".into()
+                }
+                .to_line(),
+                "{\"op\":\"admit\",\"pairing_code\":\"012345\"}\n"
+            );
+            assert_eq!(
+                OperatorCommand::Shutdown {}.to_line(),
+                "{\"op\":\"shutdown\"}\n"
+            );
+            assert_eq!(
+                OperatorEvent::AdmitRefused {
+                    pairing_code: "012345".into(),
+                    reason: RefusalReason::AmbiguousCode,
+                }
+                .to_line(),
+                "tilo-room-operator {\"event\":\"admit_refused\",\"pairing_code\":\"012345\",\"reason\":\"ambiguous_code\"}"
             );
         }
-    }
 
-    #[test]
-    fn a_line_without_the_prefix_is_not_a_protocol_line() {
-        let started = events().remove(0);
-        let bare = started.to_line().replacen(LINE_PREFIX, "", 1);
-        assert!(matches!(
-            OperatorEvent::from_line(&bare),
-            Err(LineError::NotProtocol)
-        ));
-        assert!(matches!(
-            OperatorEvent::from_line("2026-10-08T00:00:00Z WARN relay: {\"userPublicKey\":\"ab\"}"),
-            Err(LineError::NotProtocol)
-        ));
+        phase operator_rejects_unknown_tags_fields_and_the_old_text_form;
+        {
+            for line in [
+                "admit 012345",
+                "shutdown",
+                "{\"op\":\"admit\",\"pairingCode\":\"012345\"}",
+                "{\"op\":\"admit\",\"pairing_code\":\"012345\",\"extra\":1}",
+                "{\"op\":\"kick\",\"pairing_code\":\"012345\"}",
+                "{\"op\":\"shutdown\",\"now\":true}",
+                "{\"op\":\"pre_admit\",\"user_public_key\":\"aa\",\"token_sha256\":\"bb\",\"label\":\"x\",\"role\":\"Owner\"}",
+                "{\"op\":\"pre_admit\",\"token_sha256\":\"bb\",\"label\":\"x\",\"role\":\"Editor\"}",
+                "{\"op\":\"spectate\"}",
+                "",
+            ] {
+                assert!(
+                    matches!(
+                        OperatorCommand::from_line(line),
+                        Err(LineError::Malformed(_))
+                    ),
+                    "{line:?} decoded"
+                );
+            }
+            for json in [
+                "{\"event\":\"member_certified\",\"device\":\"cd\",\"label\":\"x\",\"pairingCode\":\"012345\"}",
+                "{\"event\":\"member_certified\",\"device\":\"cd\",\"label\":\"x\",\"pairing_code\":\"1\",\"at\":1}",
+                "{\"event\":\"member_left\",\"device\":\"cd\"}",
+                "{\"event\":\"admit_refused\",\"pairing_code\":\"1\",\"reason\":\"tired\"}",
+                "{\"userPublicKey\":\"ab\"}",
+            ] {
+                assert!(
+                    matches!(
+                        OperatorEvent::from_line(&format!("{LINE_PREFIX}{json}")),
+                        Err(LineError::Malformed(_))
+                    ),
+                    "{json:?} decoded"
+                );
+            }
+        }
+
+        phase a_line_without_the_prefix_is_not_a_protocol_line;
+        {
+            let started = events().remove(0);
+            let bare = started.to_line().replacen(LINE_PREFIX, "", 1);
+            assert!(matches!(
+                OperatorEvent::from_line(&bare),
+                Err(LineError::NotProtocol)
+            ));
+            assert!(matches!(
+                OperatorEvent::from_line("2026-10-08T00:00:00Z WARN relay: {\"userPublicKey\":\"ab\"}"),
+                Err(LineError::NotProtocol)
+            ));
+        }
     }
 }

@@ -307,91 +307,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn coming_back_to_a_place_moves_it_to_the_front_and_only_the_newest_stay() {
-        let mut recent = RecentPlaces::default();
-        recent.record(place("Groceries", Some("n1"), 1));
-        recent.record(place("Ideas", Some("n2"), 2));
-        recent.record(place("Groceries", Some("n1"), 3));
-        let labels: Vec<_> = recent.places().iter().map(|p| p.label.as_str()).collect();
-        assert_eq!(labels, ["Groceries", "Ideas"]);
-        for at in 0..100 {
-            recent.record(place(&format!("p{at}"), None, at));
-        }
-        assert_eq!(recent.places().len(), KEPT);
-    }
+    tilo_test_env::scenario! {
+        fn places_to_continue_are_the_newest_and_reopen_where_they_were;
 
-    /// Continue lists the documents and places the person was in, not the
-    /// app they were in: an app that declares no location puts its own name
-    /// in the window bar, and a row saying "Notes" is not where anybody was.
-    #[test]
-    fn a_window_that_only_names_its_app_is_no_place_to_continue() {
-        let mut recent = RecentPlaces::default();
-        recent.record(place("Notes", None, 3));
-        // An app run without its list says its id's words in its empty
-        // window: "File Explorer" is the app the lists call "Files".
-        let mut files = place("File Explorer", None, 4);
-        files.app = "so.tilo.file-explorer".into();
-        recent.record(files);
-        recent.record(place("Groceries", Some("n1"), 2));
-        let shown = Continue::new(&recent, "workspace", vec![4], 10, |_| "Notes".into());
-        let listed = shown.query("");
-        let titles: Vec<&str> = listed.iter().map(|hit| hit.title.as_str()).collect();
-        assert_eq!(titles, ["Groceries"]);
-        assert!(
-            shown.query("notes").iter().all(|hit| hit.title != "Notes"),
-            "and typing the app's name does not bring it back"
-        );
-        assert!(
-            shown
-                .query("file")
-                .iter()
-                .all(|hit| hit.title != "File Explorer"),
-            "nor does the app's empty window"
-        );
-    }
-
-    #[test]
-    fn a_place_reopens_at_its_anchor_else_its_window_else_its_app() {
-        let mut recent = RecentPlaces::default();
-        recent.record(place("Groceries", Some("n1"), 1));
-        recent.record(place("Inbox", None, 2));
-        let mut away = place("Draft", None, 3);
-        away.device = Some("Laptop".into());
-        away.tab = 9;
-        recent.record(away);
-        let shown = Continue::new(&recent, "workspace", vec![4], 4, |_| "Notes".into());
-        let hits = shown.query("");
-        assert_eq!(hits.len(), 3);
-        assert_eq!(
-            hits[0].target,
-            Target::Launch {
-                app: "so.tilo.notes".into(),
-                place: LaunchPlace::Focus,
-            },
-            "another device's window is not here"
-        );
-        assert_eq!(
-            hits[0].facts,
-            ["just now", "Notes", "On Laptop"],
-            "when, what showed it, and where it was"
-        );
-        assert_eq!(
-            hits[1].target,
-            Target::Window {
-                tab: 4,
-                app: Some("so.tilo.notes".into())
+        phase coming_back_to_a_place_moves_it_to_the_front_and_only_the_newest_stay;
+        {
+            let mut recent = RecentPlaces::default();
+            recent.record(place("Groceries", Some("n1"), 1));
+            recent.record(place("Ideas", Some("n2"), 2));
+            recent.record(place("Groceries", Some("n1"), 3));
+            let labels: Vec<_> = recent.places().iter().map(|p| p.label.as_str()).collect();
+            assert_eq!(labels, ["Groceries", "Ideas"]);
+            for at in 0..100 {
+                recent.record(place(&format!("p{at}"), None, at));
             }
-        );
-        let Target::Invoke(open) = &hits[2].target else {
-            panic!("an anchored place opens by address");
-        };
-        assert_eq!(open.address.resource, "n1");
-        assert_eq!(shown.query("grocer").len(), 1);
-        assert!(
-            Continue::new(&recent, "other", Vec::new(), 4, |_| String::new())
-                .query("")
-                .is_empty()
-        );
+            assert_eq!(recent.places().len(), KEPT);
+        }
+
+        phase a_window_that_only_names_its_app_is_no_place_to_continue;
+        // Continue lists the documents and places the person was in, not the
+        // app they were in: an app that declares no location puts its own name
+        // in the window bar, and a row saying "Notes" is not where anybody was.
+        {
+            let mut recent = RecentPlaces::default();
+            recent.record(place("Notes", None, 3));
+            // An app run without its list says its id's words in its empty
+            // window: "File Explorer" is the app the lists call "Files".
+            let mut files = place("File Explorer", None, 4);
+            files.app = "so.tilo.file-explorer".into();
+            recent.record(files);
+            recent.record(place("Groceries", Some("n1"), 2));
+            let shown = Continue::new(&recent, "workspace", vec![4], 10, |_| "Notes".into());
+            let listed = shown.query("");
+            let titles: Vec<&str> = listed.iter().map(|hit| hit.title.as_str()).collect();
+            assert_eq!(titles, ["Groceries"]);
+            assert!(
+                shown.query("notes").iter().all(|hit| hit.title != "Notes"),
+                "and typing the app's name does not bring it back"
+            );
+            assert!(
+                shown
+                    .query("file")
+                    .iter()
+                    .all(|hit| hit.title != "File Explorer"),
+                "nor does the app's empty window"
+            );
+        }
+
+        phase a_place_reopens_at_its_anchor_else_its_window_else_its_app;
+        {
+            let mut recent = RecentPlaces::default();
+            recent.record(place("Groceries", Some("n1"), 1));
+            recent.record(place("Inbox", None, 2));
+            let mut away = place("Draft", None, 3);
+            away.device = Some("Laptop".into());
+            away.tab = 9;
+            recent.record(away);
+            let shown = Continue::new(&recent, "workspace", vec![4], 4, |_| "Notes".into());
+            let hits = shown.query("");
+            assert_eq!(hits.len(), 3);
+            assert_eq!(
+                hits[0].target,
+                Target::Launch {
+                    app: "so.tilo.notes".into(),
+                    place: LaunchPlace::Focus,
+                },
+                "another device's window is not here"
+            );
+            assert_eq!(
+                hits[0].facts,
+                ["just now", "Notes", "On Laptop"],
+                "when, what showed it, and where it was"
+            );
+            assert_eq!(
+                hits[1].target,
+                Target::Window {
+                    tab: 4,
+                    app: Some("so.tilo.notes".into())
+                }
+            );
+            let Target::Invoke(open) = &hits[2].target else {
+                panic!("an anchored place opens by address");
+            };
+            assert_eq!(open.address.resource, "n1");
+            assert_eq!(shown.query("grocer").len(), 1);
+            assert!(
+                Continue::new(&recent, "other", Vec::new(), 4, |_| String::new())
+                    .query("")
+                    .is_empty()
+            );
+        }
     }
 }

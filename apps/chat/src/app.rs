@@ -347,7 +347,7 @@ pub struct ChatApp {
     /// The chrome metrics of the last painted theme.
     pub(crate) chrome: Chrome,
     /// Local text preference also changes usable layout width; it is never
-    /// shared with collaborators.
+    /// shared with members.
     pub(crate) layout_text_scale: f32,
 
     // The local peer's identity: how this peer authors messages, reactions,
@@ -1353,7 +1353,7 @@ impl ChatApp {
             self.active_channel.clone(),
         ))?
         .into_iter()
-        .find(|participant| !participant.is_agent() && participant.id() != self.me.id)
+        .find(|participant| participant.is_person() && participant.id() != self.me.id)
         .map(|participant| participant.id().to_owned())
     }
 

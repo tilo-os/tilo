@@ -278,7 +278,7 @@ fn signing_message(issued_at_ns: u64, encoded: &[u8]) -> Vec<u8> {
 ///
 /// Each is answered in its own shape on the same stream: the action with
 /// the [`RemoteActionFrame`] bytes its dispatcher produced, the offer with
-/// the answering device's [`State`](crate::offer::State).
+/// the answering device's [`Answer`](crate::offer::Answer).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PlaneFrame {
     /// An action this device asks the addressed one to run.

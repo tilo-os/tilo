@@ -289,63 +289,29 @@ fn crowded_workspace(
 }
 
 /// A page in a workspace of hundreds of people, whose grants name many
-/// records, asks who reads a channel for every frame the channel takes in
-/// (thousands while it arrives). Each answer builds the workspace's policy a
-/// fixed number of times and verifies no certificate again: before, it built
-/// the policy once per member device per named record and verified every
-/// member's certificate, which held a page's only thread for minutes before it
-/// was admitted to such a workspace.
+/// records, asks who holds the workspace's keys for every frame its group
+/// takes in (thousands while it arrives). Each answer builds the workspace's
+/// policy a fixed number of times and verifies no certificate again.
 #[test]
-fn a_channels_readers_cost_no_more_with_the_workspaces_people_and_named_records() {
+fn key_holders_cost_no_more_with_the_workspaces_people_and_named_records() {
     const PEOPLE: usize = 300;
     const FRAMES: usize = 10;
     let now = SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(2000))
         .unwrap();
-    // The first person may not read any of the 20 records the grants name.
-    let (peer, people) = crowded_workspace(WORKSPACE, PEOPLE, 20, now);
-
-    let named = collab_types::document_channel_id("so.tilo.chat", WORKSPACE, "tab:0");
-    let scope = collab_types::workspace_scope(WORKSPACE);
-    let readers = |channel| {
-        peer.governance()
-            .channel_readers(now, channel, None)
-            .unwrap()
-            .unwrap()
-    };
-    let everyone = readers(scope);
+    let (peer, _) = crowded_workspace(WORKSPACE, PEOPLE, 20, now);
+    let holders = || peer.governance().key_holders(now).unwrap();
+    let everyone = holders();
     assert_eq!(
         everyone.len(),
         PEOPLE + 1,
-        "every member device reads the workspace"
+        "every member device holds the workspace's keys, a Read Deny notwithstanding"
     );
-    let record = readers(named);
-    assert_eq!(
-        record.len(),
-        PEOPLE,
-        "a Read Deny keeps one person's device out"
-    );
-    assert!(!record.contains(&people[0].device_public_key));
-    // A person's own record is read by that person's device alone.
-    let drafts = collab_types::ChannelRoute::new(
-        "so.tilo.chat",
-        collab_types::member_record_id(&hex::encode(people[1].user_public_key), "chat.drafts")
-            .as_str(),
-    );
-    let own = || {
-        peer.governance()
-            .channel_readers(now, drafts.channel(WORKSPACE), Some(&drafts))
-            .unwrap()
-            .unwrap()
-    };
-    assert_eq!(own(), BTreeSet::from([people[1].device_public_key]));
 
     crate::cached_document::WORKSPACE_POLICIES.with(|count| count.set(0));
     crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
     for _ in 0..FRAMES {
-        assert_eq!(readers(named), record);
-        assert_eq!(readers(scope), everyone);
-        assert_eq!(own().len(), 1);
+        assert_eq!(holders(), everyone);
     }
     assert!(
         crate::cached_document::WORKSPACE_POLICIES.with(std::cell::Cell::get) <= 5 * FRAMES,
@@ -407,9 +373,7 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
             people + 1,
             "every member's device"
         );
-        page.governance()
-            .channel_readers(now, collab_types::workspace_scope(CROWDED), None)
-            .unwrap();
+        page.governance().key_holders(now).unwrap();
         page.security_basis().unwrap().unwrap();
         page.durable().unwrap();
         crate::governance_work::take()

@@ -359,200 +359,204 @@ mod tests {
         })
     }
 
-    #[test]
-    fn numeric_columns_are_the_ones_holding_only_numbers() {
-        let result = result();
-        assert!(is_numeric_column(&result, 0), "nulls do not make it text");
-        assert!(!is_numeric_column(&result, 1));
-        assert!(!is_numeric_column(&result, 2), "one text value does");
-        assert!(!is_numeric_column(&result, 9), "no such column");
-    }
+    tilo_test_env::scenario! {
+        fn result_cells_compare_by_value_and_the_table_sorts_by_them;
 
-    #[test]
-    fn a_header_click_sorts_and_the_next_one_flips() {
-        let mut table = ResultsTable::new("results");
-        table.bind(Some(result()));
-        assert_eq!(table.sorted(), None);
-        assert_eq!(table.display_order(), [0, 1, 2], "rows start as returned");
+        phase numeric_columns_are_the_ones_holding_only_numbers;
+        {
+            let result = result();
+            assert!(is_numeric_column(&result, 0), "nulls do not make it text");
+            assert!(!is_numeric_column(&result, 1));
+            assert!(!is_numeric_column(&result, 2), "one text value does");
+            assert!(!is_numeric_column(&result, 9), "no such column");
+        }
 
-        table.sort_by(0);
-        assert_eq!(table.sorted(), Some((0, true)));
-        assert_eq!(table.display_order(), [2, 1, 0], "null, 1, 3");
+        phase a_header_click_sorts_and_the_next_one_flips;
+        {
+            let mut table = ResultsTable::new("results");
+            table.bind(Some(result()));
+            assert_eq!(table.sorted(), None);
+            assert_eq!(table.display_order(), [0, 1, 2], "rows start as returned");
 
-        table.sort_by(0);
-        assert_eq!(table.sorted(), Some((0, false)));
-        assert_eq!(table.display_order(), [0, 1, 2], "3, 1, null");
+            table.sort_by(0);
+            assert_eq!(table.sorted(), Some((0, true)));
+            assert_eq!(table.display_order(), [2, 1, 0], "null, 1, 3");
 
-        table.sort_by(1);
-        assert_eq!(table.sorted(), Some((1, true)));
-        assert_eq!(
-            table.display_order(),
-            [1, 2, 0],
-            "text compares without regard to case: a, B, c"
-        );
+            table.sort_by(0);
+            assert_eq!(table.sorted(), Some((0, false)));
+            assert_eq!(table.display_order(), [0, 1, 2], "3, 1, null");
 
-        table.bind(Some(result()));
-        assert_eq!(table.sorted(), None);
-    }
+            table.sort_by(1);
+            assert_eq!(table.sorted(), Some((1, true)));
+            assert_eq!(
+                table.display_order(),
+                [1, 2, 0],
+                "text compares without regard to case: a, B, c"
+            );
 
-    #[test]
-    fn sorting_integer_ids_preserves_all_64_bits() {
-        let values = [
-            i64::MAX,
-            9_007_199_254_740_993,
-            9_007_199_254_740_992,
-            i64::MIN + 1,
-            i64::MIN,
-            i64::MAX - 1,
-        ];
-        let mut table = ResultsTable::new("results");
-        table.bind(Some(Arc::new(QueryResult {
-            columns: vec!["id".into()],
-            rows: values
-                .iter()
-                .map(|value| vec![Cell::Integer(*value)])
-                .collect(),
-            is_select: true,
-            ..Default::default()
-        })));
-        table.sort_by(0);
-        assert_eq!(table.display_order(), [4, 3, 2, 1, 5, 0]);
-        table.sort_by(0);
-        assert_eq!(table.display_order(), [0, 5, 1, 2, 3, 4]);
-    }
+            table.bind(Some(result()));
+            assert_eq!(table.sorted(), None);
+        }
 
-    #[test]
-    fn mixed_types_sort_consistently_in_every_input_order() {
-        let cells = [Cell::Integer(2), Cell::Real(10.0), Cell::Text("11".into())];
-        for order in [
-            [0, 1, 2],
-            [0, 2, 1],
-            [1, 0, 2],
-            [1, 2, 0],
-            [2, 0, 1],
-            [2, 1, 0],
-        ] {
+        phase sorting_integer_ids_preserves_all_64_bits;
+        {
+            let values = [
+                i64::MAX,
+                9_007_199_254_740_993,
+                9_007_199_254_740_992,
+                i64::MIN + 1,
+                i64::MIN,
+                i64::MAX - 1,
+            ];
             let mut table = ResultsTable::new("results");
             table.bind(Some(Arc::new(QueryResult {
-                columns: vec!["mixed".into()],
-                rows: order.iter().map(|&i| vec![cells[i].clone()]).collect(),
+                columns: vec!["id".into()],
+                rows: values
+                    .iter()
+                    .map(|value| vec![Cell::Integer(*value)])
+                    .collect(),
                 is_select: true,
                 ..Default::default()
             })));
             table.sort_by(0);
-            let ascending: Vec<_> = table.display_order().iter().map(|&i| order[i]).collect();
-            assert_eq!(ascending, [0, 1, 2], "input: {order:?}");
+            assert_eq!(table.display_order(), [4, 3, 2, 1, 5, 0]);
             table.sort_by(0);
-            let descending: Vec<_> = table.display_order().iter().map(|&i| order[i]).collect();
-            assert_eq!(descending, [2, 1, 0], "input: {order:?}");
+            assert_eq!(table.display_order(), [0, 5, 1, 2, 3, 4]);
         }
-    }
 
-    #[test]
-    fn mixed_numbers_compare_exactly_and_sort_consistently() {
-        // Ascending equivalence classes, including nulls, nonnumbers, both sides
-        // of f64's exact integer range and i64's bounds. Every triple must be transitive.
-        let groups = [
-            vec![Cell::Null],
-            vec![Cell::Real(f64::NEG_INFINITY)],
-            vec![Cell::Real(-18_446_744_073_709_551_616.0)],
-            vec![Cell::Integer(i64::MIN), Cell::Real(i64::MIN as f64)],
-            vec![Cell::Integer(i64::MIN + 1)],
-            vec![Cell::Integer(-9_007_199_254_740_993)],
-            vec![
-                Cell::Integer(-9_007_199_254_740_992),
-                Cell::Real(-9_007_199_254_740_992.0),
-            ],
-            vec![Cell::Real(-1.5)],
-            vec![Cell::Integer(-1)],
-            vec![Cell::Real(-0.5)],
-            vec![Cell::Integer(0), Cell::Real(-0.0), Cell::Real(0.0)],
-            vec![Cell::Real(0.5)],
-            vec![Cell::Integer(1)],
-            vec![Cell::Real(1.5)],
-            vec![Cell::Integer(2)],
-            vec![Cell::Real(10.0)],
-            vec![
-                Cell::Integer(9_007_199_254_740_992),
-                Cell::Real(9_007_199_254_740_992.0),
-            ],
-            vec![Cell::Integer(9_007_199_254_740_993)],
-            vec![Cell::Integer(i64::MAX - 1)],
-            vec![Cell::Integer(i64::MAX)],
-            vec![Cell::Real(9_223_372_036_854_775_808.0)],
-            vec![Cell::Real(f64::INFINITY)],
-            vec![Cell::Real(f64::NAN)],
-            vec![Cell::Text(String::new())],
-            vec![Cell::Text("11".into())],
-            vec![Cell::Text("A".into()), Cell::Text("a".into())],
-            vec![Cell::Blob(10), Cell::Text("BINARY, 10 BYTES".into())],
-            vec![Cell::Blob(2)],
-            vec![Cell::Text("z".into())],
-            vec![Cell::Text("Ä".into()), Cell::Text("ä".into())],
-        ];
-        let values: Vec<_> = groups
-            .iter()
-            .enumerate()
-            .flat_map(|(rank, group)| group.iter().map(move |cell| (rank, cell)))
-            .collect();
-        for &(rank_a, a) in &values {
-            for &(rank_b, b) in &values {
-                assert_eq!(
-                    compare_cells(Some(a), Some(b)),
-                    rank_a.cmp(&rank_b),
-                    "{a:?} vs {b:?}"
-                );
-                for &(_, c) in &values {
-                    if compare_cells(Some(a), Some(b)).is_le()
-                        && compare_cells(Some(b), Some(c)).is_le()
-                    {
-                        assert!(compare_cells(Some(a), Some(c)).is_le());
+        phase mixed_types_sort_consistently_in_every_input_order;
+        {
+            let cells = [Cell::Integer(2), Cell::Real(10.0), Cell::Text("11".into())];
+            for order in [
+                [0, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0],
+            ] {
+                let mut table = ResultsTable::new("results");
+                table.bind(Some(Arc::new(QueryResult {
+                    columns: vec!["mixed".into()],
+                    rows: order.iter().map(|&i| vec![cells[i].clone()]).collect(),
+                    is_select: true,
+                    ..Default::default()
+                })));
+                table.sort_by(0);
+                let ascending: Vec<_> = table.display_order().iter().map(|&i| order[i]).collect();
+                assert_eq!(ascending, [0, 1, 2], "input: {order:?}");
+                table.sort_by(0);
+                let descending: Vec<_> = table.display_order().iter().map(|&i| order[i]).collect();
+                assert_eq!(descending, [2, 1, 0], "input: {order:?}");
+            }
+        }
+
+        phase mixed_numbers_compare_exactly_and_sort_consistently;
+        {
+            // Ascending equivalence classes, including nulls, nonnumbers, both sides
+            // of f64's exact integer range and i64's bounds. Every triple must be transitive.
+            let groups = [
+                vec![Cell::Null],
+                vec![Cell::Real(f64::NEG_INFINITY)],
+                vec![Cell::Real(-18_446_744_073_709_551_616.0)],
+                vec![Cell::Integer(i64::MIN), Cell::Real(i64::MIN as f64)],
+                vec![Cell::Integer(i64::MIN + 1)],
+                vec![Cell::Integer(-9_007_199_254_740_993)],
+                vec![
+                    Cell::Integer(-9_007_199_254_740_992),
+                    Cell::Real(-9_007_199_254_740_992.0),
+                ],
+                vec![Cell::Real(-1.5)],
+                vec![Cell::Integer(-1)],
+                vec![Cell::Real(-0.5)],
+                vec![Cell::Integer(0), Cell::Real(-0.0), Cell::Real(0.0)],
+                vec![Cell::Real(0.5)],
+                vec![Cell::Integer(1)],
+                vec![Cell::Real(1.5)],
+                vec![Cell::Integer(2)],
+                vec![Cell::Real(10.0)],
+                vec![
+                    Cell::Integer(9_007_199_254_740_992),
+                    Cell::Real(9_007_199_254_740_992.0),
+                ],
+                vec![Cell::Integer(9_007_199_254_740_993)],
+                vec![Cell::Integer(i64::MAX - 1)],
+                vec![Cell::Integer(i64::MAX)],
+                vec![Cell::Real(9_223_372_036_854_775_808.0)],
+                vec![Cell::Real(f64::INFINITY)],
+                vec![Cell::Real(f64::NAN)],
+                vec![Cell::Text(String::new())],
+                vec![Cell::Text("11".into())],
+                vec![Cell::Text("A".into()), Cell::Text("a".into())],
+                vec![Cell::Blob(10), Cell::Text("BINARY, 10 BYTES".into())],
+                vec![Cell::Blob(2)],
+                vec![Cell::Text("z".into())],
+                vec![Cell::Text("Ä".into()), Cell::Text("ä".into())],
+            ];
+            let values: Vec<_> = groups
+                .iter()
+                .enumerate()
+                .flat_map(|(rank, group)| group.iter().map(move |cell| (rank, cell)))
+                .collect();
+            for &(rank_a, a) in &values {
+                for &(rank_b, b) in &values {
+                    assert_eq!(
+                        compare_cells(Some(a), Some(b)),
+                        rank_a.cmp(&rank_b),
+                        "{a:?} vs {b:?}"
+                    );
+                    for &(_, c) in &values {
+                        if compare_cells(Some(a), Some(b)).is_le()
+                            && compare_cells(Some(b), Some(c)).is_le()
+                        {
+                            assert!(compare_cells(Some(a), Some(c)).is_le());
+                        }
                     }
                 }
             }
-        }
-        let mut table = ResultsTable::new("results");
-        table.bind(Some(Arc::new(QueryResult {
-            columns: vec!["number".into()],
-            rows: values
+            let mut table = ResultsTable::new("results");
+            table.bind(Some(Arc::new(QueryResult {
+                columns: vec!["number".into()],
+                rows: values
+                    .iter()
+                    .rev()
+                    .map(|(_, cell)| vec![(*cell).clone()])
+                    .collect(),
+                is_select: true,
+                ..Default::default()
+            })));
+            let ranks: Vec<_> = values.iter().rev().map(|(rank, _)| *rank).collect();
+            table.sort_by(0);
+            let ascending: Vec<_> = table
+                .display_order()
                 .iter()
-                .rev()
-                .map(|(_, cell)| vec![(*cell).clone()])
-                .collect(),
-            is_select: true,
-            ..Default::default()
-        })));
-        let ranks: Vec<_> = values.iter().rev().map(|(rank, _)| *rank).collect();
-        table.sort_by(0);
-        let ascending: Vec<_> = table
-            .display_order()
-            .iter()
-            .map(|&row| ranks[row])
-            .collect();
-        assert_eq!(
-            ascending,
-            values.iter().map(|(rank, _)| *rank).collect::<Vec<_>>()
-        );
-        table.sort_by(0);
-        let descending: Vec<_> = table
-            .display_order()
-            .iter()
-            .map(|&row| ranks[row])
-            .collect();
-        assert_eq!(descending, ranks);
-    }
+                .map(|&row| ranks[row])
+                .collect();
+            assert_eq!(
+                ascending,
+                values.iter().map(|(rank, _)| *rank).collect::<Vec<_>>()
+            );
+            table.sort_by(0);
+            let descending: Vec<_> = table
+                .display_order()
+                .iter()
+                .map(|&row| ranks[row])
+                .collect();
+            assert_eq!(descending, ranks);
+        }
 
-    #[test]
-    fn cells_compare_by_value() {
-        let ten = Cell::Integer(10);
-        let two = Cell::Integer(2);
-        assert_eq!(compare_cells(Some(&two), Some(&ten)), Ordering::Less);
-        assert_eq!(
-            compare_cells(Some(&Cell::Text("b".into())), Some(&Cell::Text("A".into()))),
-            Ordering::Greater
-        );
-        assert_eq!(compare_cells(None, Some(&Cell::Null)), Ordering::Equal);
-        assert_eq!(compare_cells(Some(&Cell::Null), Some(&two)), Ordering::Less);
+        phase cells_compare_by_value;
+        {
+            let ten = Cell::Integer(10);
+            let two = Cell::Integer(2);
+            assert_eq!(compare_cells(Some(&two), Some(&ten)), Ordering::Less);
+            assert_eq!(
+                compare_cells(Some(&Cell::Text("b".into())), Some(&Cell::Text("A".into()))),
+                Ordering::Greater
+            );
+            assert_eq!(compare_cells(None, Some(&Cell::Null)), Ordering::Equal);
+            assert_eq!(compare_cells(Some(&Cell::Null), Some(&two)), Ordering::Less);
+        }
     }
 
     /// The table is as wide as its pane, only as tall as its rows, and takes the room it has left when there are more rows than room.

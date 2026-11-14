@@ -7,21 +7,16 @@
 //! Linux broker over its app sockets and the page over the apps it runs.
 
 use tilo_action_policy::{Acting, ActionKind, Answer, Authority, MemberId, Standing, TreePath};
-use tilo_actions::remote::{Caller, CallerPrincipal};
+use tilo_actions::remote::Caller;
 use tilo_app_id::AppId;
 use tilo_desktop_model::Workspace;
 
 use crate::published::{PublishedAction, PublishedSurface, canonical_record, published_node};
 
-/// The policy principal a user root is: the person its devices chain to.
+/// The person a user root is, as the workspace's governance names them: the key in lowercase hex.
 #[must_use]
-pub fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
-    match collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
-        user_public_key,
-    )) {
-        collab_types::Principal::Person(id) => id,
-        _ => hex::encode(user_public_key),
-    }
+pub fn person_id_for_root(user_public_key: [u8; 32]) -> String {
+    hex::encode(user_public_key)
 }
 
 /// The task run an invocation is one of, as admission names it: the run's
@@ -114,46 +109,51 @@ impl BrokerActor {
         }
     }
 
-    /// The actor `caller`'s principal is: the one admission every door of a
-    /// host starts from.
+    /// The actor `caller` is, as its transport admitted it: the one admission
+    /// every host starts from.
     #[must_use]
     pub fn for_caller(caller: &Caller) -> Self {
-        Self::principal_of(caller)
+        Self::actor_of(caller)
             .on_turn(caller.turn().cloned())
             .within(caller.ceiling())
     }
 
-    /// The actor `caller`'s principal is, before any ceiling.
-    fn principal_of(caller: &Caller) -> Self {
-        match caller.principal() {
-            CallerPrincipal::Person(id) => Self::person(id.clone()),
-            CallerPrincipal::Agent(id) => {
-                let agent = Self::agent(format!("agent:{id}"));
-                // A person's own device handed this connection to the agent
-                // (`Caller::delegated_to`); an agent member the host admitted
-                // acts for the person who admitted it, with no more than the
-                // workspace grants it (`Caller::acting_for`); a delegated agent
-                // device acts for the person its certificate chains to.
-                match (caller.acting_for_person(), caller.user_public_key()) {
-                    (Some(person), _) if caller.is_session_delegated() => {
-                        agent.for_person(person).session_delegated()
-                    }
-                    (Some(person), _) => agent.for_person(person),
-                    (None, Some(root)) => agent.for_person(principal_id_for_root(*root)),
-                    (None, None) => agent,
+    /// The actor `caller` is, before any ceiling.
+    fn actor_of(caller: &Caller) -> Self {
+        let acting = caller.acting();
+        if let Some(agent) = acting.agent_id() {
+            let agent = Self::agent(format!("agent:{agent}"));
+            // A person's own device handed this connection to the agent
+            // (`Caller::delegated_to`); an agent member the host admitted
+            // acts for the person who admitted it, with no more than the
+            // workspace grants it (`Caller::acting_for`); a delegated agent
+            // device acts for the person its certificate chains to.
+            return match acting.acted_for_person() {
+                Some(person) if caller.is_session_delegated() => {
+                    agent.for_person(person).session_delegated()
                 }
-            }
-            CallerPrincipal::App(id) => {
-                let person = caller.acting_for_person().unwrap_or_default().to_owned();
-                Self::person(person).through_app(id.clone())
-            }
-            CallerPrincipal::Bot(id) => match caller.user_public_key() {
-                Some(root) => Self::bot(id, principal_id_for_root(*root)),
+                Some(person) => agent.for_person(person),
+                None => agent,
+            };
+        }
+        if let Some(app) = acting.app() {
+            let person = acting.person_id().unwrap_or_default().to_owned();
+            return Self::person(person).through_app(app.clone());
+        }
+        if let Some(bot) = acting.bot_id() {
+            return match acting.acted_for_person() {
+                Some(installer) => Self::bot(bot, installer),
                 // A bot nobody installed has no authority to borrow: acting
                 // for nobody, it gets nothing.
-                None => Self::bot(id, String::new()),
-            },
+                None => Self::bot(bot, String::new()),
+            };
         }
+        Self::person(
+            acting
+                .person_id()
+                .or_else(|| acting.acted_for_person())
+                .unwrap_or_default(),
+        )
     }
 
     /// How this actor shows where it acts when no caller says more: its kind, and for an agent

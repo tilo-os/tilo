@@ -59,47 +59,51 @@ fn plain(text: &str, query: &str, match_case: bool) -> Vec<FindMatch> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn finding_reads_the_source_as_written() {
-        let source = "= Title\n\nBody text here.\nText again.";
-        let all = in_text(source, "text", FindOptions::default());
-        assert_eq!(all.len(), 2, "both spellings under the first are found");
-        let cased = in_text(
-            source,
-            "Text",
-            FindOptions {
-                match_case: true,
-                ..FindOptions::default()
-            },
-        );
-        assert_eq!(cased.len(), 1, "match case finds the capitalised one");
-        assert_eq!(
-            source.get(cased[0].start..cased[0].end).unwrap_or_default(),
-            "Text"
-        );
-        assert!(in_text(source, "", FindOptions::default()).is_empty());
-        let words = in_text(
-            source,
-            "here",
-            FindOptions {
-                whole_word: true,
-                ..FindOptions::default()
-            },
-        );
-        assert_eq!(words.len(), 1, "a whole word matches where it stands alone");
-    }
+    tilo_test_env::scenario! {
+        fn finding_matches_the_source_as_written;
 
-    #[test]
-    fn a_layout_whose_case_folding_changes_its_length_is_matched_as_written() {
-        // Turkish dotless shapes and the German sharp s lower-case into a
-        // different number of bytes; the offsets then come from the source
-        // itself, so no match points at the wrong text.
-        let source = "Straße IST gross";
-        let found = in_text(source, "ist", FindOptions::default());
-        assert_eq!(found.len(), 1);
-        assert_eq!(
-            source.get(found[0].start..found[0].end).unwrap_or_default(),
-            "IST"
-        );
+        phase finding_reads_the_source_as_written;
+        {
+            let source = "= Title\n\nBody text here.\nText again.";
+            let all = in_text(source, "text", FindOptions::default());
+            assert_eq!(all.len(), 2, "both spellings under the first are found");
+            let cased = in_text(
+                source,
+                "Text",
+                FindOptions {
+                    match_case: true,
+                    ..FindOptions::default()
+                },
+            );
+            assert_eq!(cased.len(), 1, "match case finds the capitalised one");
+            assert_eq!(
+                source.get(cased[0].start..cased[0].end).unwrap_or_default(),
+                "Text"
+            );
+            assert!(in_text(source, "", FindOptions::default()).is_empty());
+            let words = in_text(
+                source,
+                "here",
+                FindOptions {
+                    whole_word: true,
+                    ..FindOptions::default()
+                },
+            );
+            assert_eq!(words.len(), 1, "a whole word matches where it stands alone");
+        }
+
+        phase a_layout_whose_case_folding_changes_its_length_is_matched_as_written;
+        {
+            // Turkish dotless shapes and the German sharp s lower-case into a
+            // different number of bytes; the offsets then come from the source
+            // itself, so no match points at the wrong text.
+            let source = "Straße IST gross";
+            let found = in_text(source, "ist", FindOptions::default());
+            assert_eq!(found.len(), 1);
+            assert_eq!(
+                source.get(found[0].start..found[0].end).unwrap_or_default(),
+                "IST"
+            );
+        }
     }
 }

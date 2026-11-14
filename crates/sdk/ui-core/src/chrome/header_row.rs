@@ -392,6 +392,23 @@ fn count_pill_size(text: &mut TextRenderer, theme: &Theme, count: usize) -> (f64
     (f64::from(w) + 2.0 * pad, f64::from(h) + pad / 2.0)
 }
 
+/// The least room a title needs to read as words rather than as an ellipsis alone: its first
+/// letter and the ellipsis that says the rest is cut. The count beside it gives way first, so it
+/// never takes that room from the words.
+pub(crate) fn least_title_room(text: &mut TextRenderer, theme: &Theme, title: &str) -> f64 {
+    let first = match crate::text_break::grapheme_indices(title).nth(1) {
+        Some((end, _)) => title.get(..end).unwrap_or(title),
+        None => title,
+    };
+    if first.is_empty() {
+        return 0.0;
+    }
+    let mut kept = String::from(first);
+    kept.push(crate::text_render::ELLIPSIS);
+    let (w, _) = text.measure_style(&kept, None, &title_style(theme));
+    f64::from(w)
+}
+
 /// Paint a header title in `band`: `Heading`, primary ink, vertically centred and elided to the band;
 /// the count follows as a quiet pill in `Caption` tabular figures (the `SectionHeader::count` look).
 pub(crate) fn paint_title_in(
@@ -407,9 +424,14 @@ pub(crate) fn paint_title_in(
         return;
     }
     let related = f64::from(theme.tokens.spacing.rhythm.related);
-    let pill = count.map(|count| (count, count_pill_size(text, theme, count)));
-    let pill_room = pill.map_or(0.0, |(_, (w, _))| w + related);
     let style = title_style(theme);
+    // The count is quiet and the title is the name: the pill stands only where the words keep
+    // room to read as words, and gives way to them otherwise.
+    let least = least_title_room(text, theme, title);
+    let pill = count
+        .map(|count| (count, count_pill_size(text, theme, count)))
+        .filter(|(_, (w, _))| band.width() >= least + related + w);
+    let pill_room = pill.map_or(0.0, |(_, (w, _))| w + related);
     let room = (band.width() - pill_room).max(0.0);
     let shown = text.elide_to_width_style(title, f32_of_f64(room), &style);
     let (w, line_h) = text.measure_style(&shown, None, &style);

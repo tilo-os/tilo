@@ -20,9 +20,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::{KeywordModel, catalogue};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig,
@@ -32,6 +31,7 @@ use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, start_host, wait_for};
+use tilo_relay_protocol::WorkspaceId;
 
 const EBOOK: &str = "so.tilo.ebook";
 
@@ -141,7 +141,7 @@ fn until_done(agent: &mut AgentParticipant, control: &AgentControl) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let host = start_host(
         &root,
@@ -150,7 +150,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
+    crate::support::place(&host.relay, &host_device.cert).await;
     let agent_device = enrol(
         &root,
         "Agent: Careful",
@@ -166,7 +166,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "Careful agent",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: vec![EBOOK.into()],
         },
         now,
@@ -227,8 +227,8 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         let asked = person.asked.lock().unwrap();
         let (caller, request) = &asked[0];
         assert_eq!(
-            caller.principal(),
-            &CallerPrincipal::Agent("careful".into()),
+            caller.acting().member_id(),
+            Some(&tilo_action_policy::MemberId::agent("careful")),
             "the agent asks as itself"
         );
         assert_eq!(

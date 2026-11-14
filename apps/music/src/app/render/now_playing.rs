@@ -401,75 +401,81 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_wide_page_sets_the_lines_beside_the_cover_and_a_narrow_one_under_it() {
-        let theme = Theme::dark();
-        let look = Look::of(&theme);
-        let wide = Layout::of(body(1200.0, 700.0), &look, &theme);
-        assert!(wide.beside);
-        assert!(
-            wide.text.x0 > wide.art.x1,
-            "the lines stand beside the cover"
-        );
-        assert!((wide.art.width() - wide.art.height()).abs() < 1e-9);
-        let narrow = Layout::of(body(390.0, 700.0), &look, &theme);
-        assert!(!narrow.beside);
-        assert!(narrow.text.y0 > narrow.art.y1, "the lines stand under it");
-        assert!(
-            (narrow.art.center().x - 195.0).abs() < 1e-9,
-            "the cover is centred"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The Now Playing page as values: its layout at a width, and the cover's flight into it by
+        /// what opened it.
+        fn the_now_playing_page_lays_out_by_width_and_takes_the_cover_in_flight;
 
-    #[test]
-    fn the_cover_flies_into_the_page_and_back() {
-        let theme = Theme::dark();
-        let now = ui::time::now();
-        let band = Rect::new(10.0, 600.0, 50.0, 640.0);
-        let page = Rect::new(100.0, 100.0, 400.0, 400.0);
-        let mut np = NowPlaying::default();
-        ui::motion::note_source(MotionSource::Pointer);
-        np.follow(true, Some(band), page, theme.motion(), now);
-        let (start, _) = np.flight(now).expect("the cover is in flight");
-        assert!(
-            (start.width() - band.width()).abs() < 1.0,
-            "it starts as the band's cover"
-        );
-        let settled = np.zoom.settles_at().expect("it lands");
-        assert!(np.flight(settled).is_none(), "and lands on the page");
-        np.follow(false, Some(band), page, theme.motion(), settled);
-        assert!(np.in_flight(settled), "closing flies it back");
-    }
+        phase a_wide_page_sets_the_lines_beside_the_cover_and_a_narrow_one_under_it;
+        {
+            let theme = Theme::dark();
+            let look = Look::of(&theme);
+            let wide = Layout::of(body(1200.0, 700.0), &look, &theme);
+            assert!(wide.beside);
+            assert!(
+                wide.text.x0 > wide.art.x1,
+                "the lines stand beside the cover"
+            );
+            assert!((wide.art.width() - wide.art.height()).abs() < 1e-9);
+            let narrow = Layout::of(body(390.0, 700.0), &look, &theme);
+            assert!(!narrow.beside);
+            assert!(narrow.text.y0 > narrow.art.y1, "the lines stand under it");
+            assert!(
+                (narrow.art.center().x - 195.0).abs() < 1e-9,
+                "the cover is centred"
+            );
+        }
 
-    #[test]
-    fn a_key_opens_the_page_at_once() {
-        let theme = Theme::dark();
-        let now = ui::time::now();
-        let mut np = NowPlaying::default();
-        ui::motion::note_source(MotionSource::Keyboard);
-        np.follow(
-            true,
-            Some(Rect::new(0.0, 0.0, 40.0, 40.0)),
-            Rect::new(100.0, 100.0, 400.0, 400.0),
-            theme.motion(),
-            now,
-        );
-        assert!(!np.in_flight(now));
-    }
+        phase the_cover_flies_into_the_page_and_back;
+        {
+            let theme = Theme::dark();
+            let now = ui::time::now();
+            let band = Rect::new(10.0, 600.0, 50.0, 640.0);
+            let page = Rect::new(100.0, 100.0, 400.0, 400.0);
+            let mut np = NowPlaying::default();
+            ui::motion::note_source(MotionSource::Pointer);
+            np.follow(true, Some(band), page, theme.motion(), now);
+            let (start, _) = np.flight(now).expect("the cover is in flight");
+            assert!(
+                (start.width() - band.width()).abs() < 1.0,
+                "it starts as the band's cover"
+            );
+            let settled = np.zoom.settles_at().expect("it lands");
+            assert!(np.flight(settled).is_none(), "and lands on the page");
+            np.follow(false, Some(band), page, theme.motion(), settled);
+            assert!(np.in_flight(settled), "closing flies it back");
+        }
 
-    #[test]
-    fn without_the_band_cover_the_page_simply_opens() {
-        let theme = Theme::dark();
-        let now = ui::time::now();
-        let mut np = NowPlaying::default();
-        ui::motion::note_source(MotionSource::Pointer);
-        np.follow(
-            true,
-            None,
-            Rect::new(0.0, 0.0, 100.0, 100.0),
-            theme.motion(),
-            now,
-        );
-        assert!(!np.in_flight(now));
+        phase a_key_opens_the_page_at_once;
+        {
+            let theme = Theme::dark();
+            let now = ui::time::now();
+            let mut np = NowPlaying::default();
+            ui::motion::note_source(MotionSource::Keyboard);
+            np.follow(
+                true,
+                Some(Rect::new(0.0, 0.0, 40.0, 40.0)),
+                Rect::new(100.0, 100.0, 400.0, 400.0),
+                theme.motion(),
+                now,
+            );
+            assert!(!np.in_flight(now));
+        }
+
+        phase without_the_band_cover_the_page_simply_opens;
+        {
+            let theme = Theme::dark();
+            let now = ui::time::now();
+            let mut np = NowPlaying::default();
+            ui::motion::note_source(MotionSource::Pointer);
+            np.follow(
+                true,
+                None,
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                theme.motion(),
+                now,
+            );
+            assert!(!np.in_flight(now));
+        }
     }
 }

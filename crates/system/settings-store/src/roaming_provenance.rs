@@ -271,51 +271,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn load_preserves_json_syntax_and_field_errors() {
-        use std::error::Error as _;
-
-        let dir = crate::test_dir();
-        let path = dir.path().join(FILE_NAME);
-        for (bytes, category, detail) in [
-            (
-                b"{\n  \"schema_version\": ".as_slice(),
-                serde_json::error::Category::Eof,
-                "line 2",
-            ),
-            (
-                br#"{"schema_version":2,"generated_unix_ms":"yesterday","settings":[],"wifi":[]}"#
-                    .as_slice(),
-                serde_json::error::Category::Data,
-                "expected u64",
-            ),
-        ] {
-            std::fs::write(&path, bytes).unwrap();
-            let error = RoamingProvenance::load_at(&path).unwrap_err();
-            let cause = error
-                .source()
-                .unwrap()
-                .downcast_ref::<serde_json::Error>()
-                .unwrap();
-            assert_eq!(cause.classify(), category);
-            assert!(error.to_string().contains(detail), "{error}");
-        }
-    }
-
-    #[test]
-    fn load_preserves_io_error_kind() {
-        use std::error::Error as _;
-
-        let dir = crate::test_dir();
-        let error = RoamingProvenance::load_at(&dir.path().join(FILE_NAME)).unwrap_err();
-        let cause = error
-            .source()
-            .unwrap()
-            .downcast_ref::<std::io::Error>()
-            .unwrap();
-        assert_eq!(cause.kind(), std::io::ErrorKind::NotFound);
-    }
-
     #[cfg(unix)]
     #[test]
     fn save_preserves_atomic_publication_state() {
@@ -347,67 +302,116 @@ mod tests {
         }
     }
 
-    #[test]
-    fn roaming_provenance_migrates_round_trips_and_fails_closed() {
+    tilo_test_env::scenario! {
+        fn provenance_loads_migrates_and_fails_closed_with_its_cause;
+
+        phase load_preserves_json_syntax_and_field_errors;
         {
-            let decoded = RoamingProvenance::from_slice(
-                br#"{"schema_version":1,"generated_unix_ms":7,"settings":[{"key":"tilo.appearance.mode","device_id":"laptop","counter":4}]}"#,
-            )
-            .unwrap();
-            assert_eq!(decoded.schema_version, SCHEMA_VERSION);
-            assert_eq!(decoded.generated_unix_ms, 7);
-            assert_eq!(decoded.settings[0].winner.device_label, "laptop");
-            assert!(decoded.settings[0].alternatives.is_empty());
-            assert!(decoded.wifi.is_empty());
-        }
-        {
-            assert!(matches!(
-                RoamingProvenance::from_slice(br#"{"schema_version":99}"#),
-                Err(ProvenanceError::UnsupportedSchema(99))
-            ));
-        }
-        {
+            use std::error::Error as _;
+
             let dir = crate::test_dir();
             let path = dir.path().join(FILE_NAME);
-            let mut projection = RoamingProvenance {
-                schema_version: SCHEMA_VERSION,
-                generated_unix_ms: 9,
-                settings: vec![SettingResolution {
-                    key: "tilo.appearance.mode".into(),
-                    winner: origin("b", 3),
-                    alternatives: vec![origin("c", 1), origin("a", 2)],
-                }],
-                wifi: vec![WifiResolution {
-                    network_id: "ab".repeat(32),
-                    ssid: "Cafe".into(),
-                    security: "wpa2".into(),
-                    winner: origin("b", 3),
-                    alternatives: vec![origin("a", 2)],
-                }],
-            };
-            projection.save_at(&path).unwrap();
-            let bytes = std::fs::read(&path).unwrap();
-            let text = String::from_utf8(bytes).unwrap();
-            assert!(!text.contains("password"));
-            assert!(!text.contains("sealed_secret"));
-            let loaded = RoamingProvenance::load_at(&path).unwrap();
-            assert_eq!(loaded.settings[0].alternatives[0].device_id, "a");
-            assert_eq!(loaded, projection);
+            for (bytes, category, detail) in [
+                (
+                    b"{\n  \"schema_version\": ".as_slice(),
+                    serde_json::error::Category::Eof,
+                    "line 2",
+                ),
+                (
+                    br#"{"schema_version":2,"generated_unix_ms":"yesterday","settings":[],"wifi":[]}"#
+                        .as_slice(),
+                    serde_json::error::Category::Data,
+                    "expected u64",
+                ),
+            ] {
+                std::fs::write(&path, bytes).unwrap();
+                let error = RoamingProvenance::load_at(&path).unwrap_err();
+                let cause = error
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<serde_json::Error>()
+                    .unwrap();
+                assert_eq!(cause.classify(), category);
+                assert!(error.to_string().contains(detail), "{error}");
+            }
         }
+
+        phase load_preserves_io_error_kind;
         {
-            let mut projection = RoamingProvenance {
-                settings: vec![SettingResolution {
-                    key: "tilo.future.secretish".into(),
-                    winner: origin("a", 1),
-                    alternatives: Vec::new(),
-                }],
-                ..RoamingProvenance::default()
-            };
-            let path = crate::test_dir().path().join(FILE_NAME);
-            assert!(matches!(
-                projection.save_at(&path),
-                Err(ProvenanceError::Invalid)
-            ));
+            use std::error::Error as _;
+
+            let dir = crate::test_dir();
+            let error = RoamingProvenance::load_at(&dir.path().join(FILE_NAME)).unwrap_err();
+            let cause = error
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap();
+            assert_eq!(cause.kind(), std::io::ErrorKind::NotFound);
+        }
+
+        phase roaming_provenance_migrates_round_trips_and_fails_closed;
+        {
+            {
+                let decoded = RoamingProvenance::from_slice(
+                    br#"{"schema_version":1,"generated_unix_ms":7,"settings":[{"key":"tilo.appearance.mode","device_id":"laptop","counter":4}]}"#,
+                )
+                .unwrap();
+                assert_eq!(decoded.schema_version, SCHEMA_VERSION);
+                assert_eq!(decoded.generated_unix_ms, 7);
+                assert_eq!(decoded.settings[0].winner.device_label, "laptop");
+                assert!(decoded.settings[0].alternatives.is_empty());
+                assert!(decoded.wifi.is_empty());
+            }
+            {
+                assert!(matches!(
+                    RoamingProvenance::from_slice(br#"{"schema_version":99}"#),
+                    Err(ProvenanceError::UnsupportedSchema(99))
+                ));
+            }
+            {
+                let dir = crate::test_dir();
+                let path = dir.path().join(FILE_NAME);
+                let mut projection = RoamingProvenance {
+                    schema_version: SCHEMA_VERSION,
+                    generated_unix_ms: 9,
+                    settings: vec![SettingResolution {
+                        key: "tilo.appearance.mode".into(),
+                        winner: origin("b", 3),
+                        alternatives: vec![origin("c", 1), origin("a", 2)],
+                    }],
+                    wifi: vec![WifiResolution {
+                        network_id: "ab".repeat(32),
+                        ssid: "Cafe".into(),
+                        security: "wpa2".into(),
+                        winner: origin("b", 3),
+                        alternatives: vec![origin("a", 2)],
+                    }],
+                };
+                projection.save_at(&path).unwrap();
+                let bytes = std::fs::read(&path).unwrap();
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(!text.contains("password"));
+                assert!(!text.contains("sealed_secret"));
+                let loaded = RoamingProvenance::load_at(&path).unwrap();
+                assert_eq!(loaded.settings[0].alternatives[0].device_id, "a");
+                assert_eq!(loaded, projection);
+            }
+            {
+                let mut projection = RoamingProvenance {
+                    settings: vec![SettingResolution {
+                        key: "tilo.future.secretish".into(),
+                        winner: origin("a", 1),
+                        alternatives: Vec::new(),
+                    }],
+                    ..RoamingProvenance::default()
+                };
+                let path = crate::test_dir().path().join(FILE_NAME);
+                assert!(matches!(
+                    projection.save_at(&path),
+                    Err(ProvenanceError::Invalid)
+                ));
+            }
         }
     }
 }

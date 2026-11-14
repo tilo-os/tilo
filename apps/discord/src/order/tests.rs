@@ -142,276 +142,280 @@ fn echoes(guild: &Guild, op: &ArrangeOp) -> Vec<Guild> {
     out
 }
 
-#[test]
-fn both_sides_in_one_order_ask_for_nothing() {
-    let guild = guild();
-    assert_eq!(to_chat(&guild, &guild, &workspace()), None);
-    assert_eq!(to_discord(&guild, &workspace()), None);
-    assert!(!moved_in_discord(&guild, &guild, &workspace()));
-}
+tilo_test_env::scenario! {
+    fn channel_order_is_reconciled_between_chat_and_discord;
 
-#[test]
-fn a_voice_channel_among_text_channels_in_tilo_is_discords_order() {
-    // Discord lists voice channels after text channels; Tilo may list the
-    // voice channel first and still show the same order of each kind.
-    let mut workspace = workspace();
-    workspace.channels.swap(1, 3);
-    assert_eq!(to_discord(&guild(), &workspace), None);
-    assert_eq!(to_chat(&guild(), &guild(), &workspace), None);
-}
-
-#[test]
-fn a_channel_moved_in_discord_moves_in_chat() {
-    let before = guild();
-    // #ideas dragged above #general.
-    let after = moved(&before, "23", Some("20"), 0);
-    let after = moved(&after, "21", Some("20"), 1);
-    assert!(moved_in_discord(&before, &after, &workspace()));
-    let arranged = to_chat(&after, &before, &workspace()).unwrap();
-    assert_eq!(arranged.categories, ["k_chat", "k_dev"]);
-    assert_eq!(
-        arranged.channels,
-        [
-            place("c_goal", None),
-            place("c_ideas", Some("k_chat")),
-            place("c_general", Some("k_chat")),
-            place("c_voice", Some("k_chat")),
-            place("c_plans", Some("k_dev")),
-        ],
-        "Tilo's own #help is not named and keeps its place"
-    );
-}
-
-#[test]
-fn a_channel_moved_to_another_category_in_discord_follows_in_chat() {
-    let before = guild();
-    let after = moved(&before, "23", Some("30"), 1);
-    assert!(moved_in_discord(&before, &after, &workspace()));
-    let arranged = to_chat(&after, &before, &workspace()).unwrap();
-    assert!(arranged.channels.contains(&place("c_ideas", Some("k_dev"))));
-    let at = |id: &str| arranged.channels.iter().position(|p| p.channel == id);
-    assert!(at("c_plans") < at("c_ideas"));
-}
-
-#[test]
-fn a_category_moved_in_discord_moves_in_chat() {
-    let before = guild();
-    let after = moved(&before, "30", None, 0);
-    assert!(moved_in_discord(&before, &after, &workspace()));
-    let arranged = to_chat(&after, &before, &workspace()).unwrap();
-    assert_eq!(arranged.categories, ["k_dev", "k_chat"]);
-}
-
-#[test]
-fn changes_in_discord_that_move_nothing_are_no_move() {
-    let before = guild();
-    // Renumbered, same order; and a channel the bridge does not carry moved.
-    let after = moved(&before, "31", Some("30"), 9);
-    let after = moved(&after, "22", Some("20"), 0);
-    assert!(!moved_in_discord(&before, &after, &workspace()));
-}
-
-#[test]
-fn a_channel_moved_in_chat_moves_in_discord_around_the_servers_own() {
-    let mut workspace = workspace();
-    // #ideas moved above #general in Tilo.
-    workspace.channels.swap(1, 4);
-    let op = to_discord(&guild(), &workspace).unwrap();
-    assert!(op.categories.is_empty(), "{op:?}");
-    // "chat"'s text channels, as Discord sorts them: #general, #mods and
-    // #ideas (a repeated position, by id); numbered anew with #ideas and
-    // #general swapped, #mods keeping its place between them.
-    assert_eq!(
-        op.channels,
-        [
-            ChannelPlace {
-                channel: "23".into(),
-                parent: Some("20".into()),
-                position: 0
-            },
-            ChannelPlace {
-                channel: "22".into(),
-                parent: Some("20".into()),
-                position: 1
-            },
-            ChannelPlace {
-                channel: "21".into(),
-                parent: Some("20".into()),
-                position: 2
-            },
-        ]
-    );
-}
-
-#[test]
-fn a_category_moved_in_chat_moves_in_discord() {
-    let mut workspace = workspace();
-    workspace.categories.reverse();
-    let op = to_discord(&guild(), &workspace).unwrap();
-    assert_eq!(
-        op.categories,
-        [
-            CategoryPlace {
-                category: "30".into(),
-                position: 0
-            },
-            CategoryPlace {
-                category: "20".into(),
-                position: 1
-            },
-        ]
-    );
-    assert!(op.channels.is_empty());
-}
-
-#[test]
-fn a_channel_filed_elsewhere_in_chat_moves_to_that_category_in_discord() {
-    let mut workspace = workspace();
-    // #ideas filed under "dev", where Tilo lists it before #plans.
-    workspace.channels[4].category = Some("k_dev".into());
-    let op = to_discord(&guild(), &workspace).unwrap();
-    let dev = |channel: &str, position| ChannelPlace {
-        channel: channel.into(),
-        parent: Some("30".into()),
-        position,
-    };
-    assert!(op.channels.contains(&dev("23", 0)), "{op:?}");
-    assert!(op.channels.contains(&dev("31", 1)), "{op:?}");
-}
-
-#[test]
-fn only_a_mirroring_bridge_moves_channels_in_discord() {
-    let mut guild = guild();
-    guild.mirror_channels = false;
-    let mut workspace = workspace();
-    workspace.categories.reverse();
-    assert_eq!(to_discord(&guild, &workspace), None);
-    // Discord's order still shows in Chat.
-    assert!(to_chat(&guild, &guild, &workspace).is_some());
-}
-
-#[test]
-fn a_bridge_of_one_channel_keeps_out_of_the_order() {
-    let mut guild = guild();
-    guild.only_channel = Some("21".into());
-    let mut workspace = workspace();
-    workspace.categories.reverse();
-    assert_eq!(to_discord(&guild, &workspace), None);
-    assert_eq!(to_chat(&guild, &guild, &workspace), None);
-}
-
-#[test]
-fn channels_kept_on_one_side_or_archived_keep_their_places() {
-    let mut workspace = workspace();
-    // Tilo's #help and an archived #ideas move; neither is shared.
-    workspace.channels[2].category = None;
-    workspace.channels[4].archived = true;
-    workspace.channels.swap(2, 4);
-    assert_eq!(to_discord(&guild(), &workspace), None);
-}
-
-#[test]
-fn the_echo_of_the_bridges_arrangement_is_no_move_and_not_asked_again() {
-    let mut workspace = workspace();
-    workspace.channels.swap(1, 4);
-    workspace.categories.reverse();
-    let op = to_discord(&guild(), &workspace).unwrap();
-    let waiting = asked(&guild(), op.clone(), None);
-    // Asked, not answered: not asked again.
-    assert_eq!(to_discord(&waiting, &workspace), None);
-    // Discord's updates arrive one by one, before and after its answer.
-    let mut before = waiting.clone();
-    for (n, after) in echoes(&waiting, &op).into_iter().enumerate() {
-        assert!(!moved_in_discord(&before, &after, &workspace), "update {n}");
-        assert_eq!(to_chat(&after, &before, &workspace), None, "update {n}");
-        assert_eq!(to_discord(&after, &workspace), None, "update {n}");
-        before = after;
+    phase both_sides_in_one_order_ask_for_nothing;
+    {
+        let guild = guild();
+        assert_eq!(to_chat(&guild, &guild, &workspace()), None);
+        assert_eq!(to_discord(&guild, &workspace()), None);
+        assert!(!moved_in_discord(&guild, &guild, &workspace()));
     }
-    // Answered and shown whole, it is done with.
-    let done = asked(
-        &guild(),
-        op.clone(),
-        Some(Settled::Done(DiscordResult::Done)),
-    );
-    let shown = echoes(&done, &op).pop().unwrap();
-    assert_eq!(finished(&done, &shown.channels), [Id::from_raw("arrange1")]);
-    let half = echoes(&done, &op).remove(0);
-    assert!(finished(&done, &half.channels).is_empty());
-    // A channel of it deleted in Discord meanwhile is waited for no longer.
-    // (#mods, the second channel placed, is the one deleted.)
-    let mut deleted = shown;
-    deleted.channels.take(&Id::from_raw("22"));
-    assert_eq!(finished(&done, &deleted.channels).len(), 1);
-    let mut before_mods = echoes(&done, &op)
-        .into_iter()
-        .nth(op.categories.len())
-        .unwrap();
-    before_mods.channels.take(&Id::from_raw("22"));
-    assert!(
-        finished(&done, &before_mods.channels).is_empty(),
-        "#general is still to come"
-    );
-}
 
-#[test]
-fn a_move_in_discord_while_an_arrangement_is_on_its_way_keeps_the_arrangement() {
-    let mut workspace = workspace();
-    workspace.categories.reverse();
-    let op = to_discord(&guild(), &workspace).unwrap();
-    let waiting = asked(&guild(), op, None);
-    // Someone moves #plans to the top before Discord shows the categories
-    // moved: Chat follows that move and keeps its own.
-    let after = moved(&waiting, "31", None, 1);
-    assert!(moved_in_discord(&waiting, &after, &workspace));
-    let arranged = to_chat(&after, &waiting, &workspace).unwrap();
-    assert_eq!(arranged.categories, ["k_dev", "k_chat"]);
-    assert_eq!(arranged.channels[1], place("c_plans", None));
-}
+    phase a_voice_channel_among_text_channels_in_tilo_is_discords_order;
+    {
+        // Discord lists voice channels after text channels; Tilo may list the
+        // voice channel first and still show the same order of each kind.
+        let mut workspace = workspace();
+        workspace.channels.swap(1, 3);
+        assert_eq!(to_discord(&guild(), &workspace), None);
+        assert_eq!(to_chat(&guild(), &guild(), &workspace), None);
+    }
 
-#[test]
-fn a_failed_arrangement_is_done_with_and_laid_over_nothing() {
-    let mut workspace = workspace();
-    workspace.categories.reverse();
-    let op = to_discord(&guild(), &workspace).unwrap();
-    let failed = asked(
-        &guild(),
-        op.clone(),
-        Some(Settled::Failed {
-            reason: "Missing Permissions".into(),
-            partial: DiscordResult::Done,
-        }),
-    );
-    assert_eq!(
-        finished(&failed, &failed.channels),
-        [Id::from_raw("arrange1")]
-    );
-    assert_eq!(to_discord(&failed, &workspace), Some(op));
-}
+    phase a_channel_moved_in_discord_moves_in_chat;
+    {
+        let before = guild();
+        // #ideas dragged above #general.
+        let after = moved(&before, "23", Some("20"), 0);
+        let after = moved(&after, "21", Some("20"), 1);
+        assert!(moved_in_discord(&before, &after, &workspace()));
+        let arranged = to_chat(&after, &before, &workspace()).unwrap();
+        assert_eq!(arranged.categories, ["k_chat", "k_dev"]);
+        assert_eq!(
+            arranged.channels,
+            [
+                place("c_goal", None),
+                place("c_ideas", Some("k_chat")),
+                place("c_general", Some("k_chat")),
+                place("c_voice", Some("k_chat")),
+                place("c_plans", Some("k_dev")),
+            ],
+            "Tilo's own #help is not named and keeps its place"
+        );
+    }
 
-#[test]
-fn a_channel_being_made_is_put_where_tilo_has_it() {
-    let mut guild = guild();
-    guild.map.push(mapping(MappedKind::Channel, "c_new", "40"));
-    let mut workspace = workspace();
-    // Made at the top of "chat" in Tilo; Discord has not shown it yet.
-    workspace
-        .channels
-        .insert(1, channel("c_new", Some("k_chat")));
-    let op = to_discord(&guild, &workspace).unwrap();
-    assert_eq!(
-        op.channels.first(),
-        Some(&ChannelPlace {
-            channel: "40".into(),
-            parent: Some("20".into()),
-            position: 0
-        }),
-        "{op:?}"
-    );
-    // Discord showing it last before the arrangement lands is no move.
-    let waiting = asked(&guild, op, None);
-    let mut shown = waiting.clone();
-    shown
-        .channels
-        .push(dchan("40", ChannelKind::Text, "new", Some("20"), 3));
-    assert!(!moved_in_discord(&waiting, &shown, &workspace));
+    phase a_channel_moved_to_another_category_in_discord_follows_in_chat;
+    {
+        let before = guild();
+        let after = moved(&before, "23", Some("30"), 1);
+        assert!(moved_in_discord(&before, &after, &workspace()));
+        let arranged = to_chat(&after, &before, &workspace()).unwrap();
+        assert!(arranged.channels.contains(&place("c_ideas", Some("k_dev"))));
+        let at = |id: &str| arranged.channels.iter().position(|p| p.channel == id);
+        assert!(at("c_plans") < at("c_ideas"));
+    }
+
+    phase a_category_moved_in_discord_moves_in_chat;
+    {
+        let before = guild();
+        let after = moved(&before, "30", None, 0);
+        assert!(moved_in_discord(&before, &after, &workspace()));
+        let arranged = to_chat(&after, &before, &workspace()).unwrap();
+        assert_eq!(arranged.categories, ["k_dev", "k_chat"]);
+    }
+
+    phase changes_in_discord_that_move_nothing_are_no_move;
+    {
+        let before = guild();
+        // Renumbered, same order; and a channel the bridge does not carry moved.
+        let after = moved(&before, "31", Some("30"), 9);
+        let after = moved(&after, "22", Some("20"), 0);
+        assert!(!moved_in_discord(&before, &after, &workspace()));
+    }
+
+    phase a_channel_moved_in_chat_moves_in_discord_around_the_servers_own;
+    {
+        let mut workspace = workspace();
+        // #ideas moved above #general in Tilo.
+        workspace.channels.swap(1, 4);
+        let op = to_discord(&guild(), &workspace).unwrap();
+        assert!(op.categories.is_empty(), "{op:?}");
+        // "chat"'s text channels, as Discord sorts them: #general, #mods and
+        // #ideas (a repeated position, by id); numbered anew with #ideas and
+        // #general swapped, #mods keeping its place between them.
+        assert_eq!(
+            op.channels,
+            [
+                ChannelPlace {
+                    channel: "23".into(),
+                    parent: Some("20".into()),
+                    position: 0
+                },
+                ChannelPlace {
+                    channel: "22".into(),
+                    parent: Some("20".into()),
+                    position: 1
+                },
+                ChannelPlace {
+                    channel: "21".into(),
+                    parent: Some("20".into()),
+                    position: 2
+                },
+            ]
+        );
+    }
+
+    phase a_category_moved_in_chat_moves_in_discord;
+    {
+        let mut workspace = workspace();
+        workspace.categories.reverse();
+        let op = to_discord(&guild(), &workspace).unwrap();
+        assert_eq!(
+            op.categories,
+            [
+                CategoryPlace {
+                    category: "30".into(),
+                    position: 0
+                },
+                CategoryPlace {
+                    category: "20".into(),
+                    position: 1
+                },
+            ]
+        );
+        assert!(op.channels.is_empty());
+    }
+
+    phase a_channel_filed_elsewhere_in_chat_moves_to_that_category_in_discord;
+    {
+        let mut workspace = workspace();
+        // #ideas filed under "dev", where Tilo lists it before #plans.
+        workspace.channels[4].category = Some("k_dev".into());
+        let op = to_discord(&guild(), &workspace).unwrap();
+        let dev = |channel: &str, position| ChannelPlace {
+            channel: channel.into(),
+            parent: Some("30".into()),
+            position,
+        };
+        assert!(op.channels.contains(&dev("23", 0)), "{op:?}");
+        assert!(op.channels.contains(&dev("31", 1)), "{op:?}");
+    }
+
+    phase only_a_mirroring_bridge_moves_channels_in_discord;
+    {
+        let mut guild = guild();
+        guild.mirror_channels = false;
+        let mut workspace = workspace();
+        workspace.categories.reverse();
+        assert_eq!(to_discord(&guild, &workspace), None);
+        // Discord's order still shows in Chat.
+        assert!(to_chat(&guild, &guild, &workspace).is_some());
+    }
+
+    phase a_bridge_of_one_channel_keeps_out_of_the_order;
+    {
+        let mut guild = guild();
+        guild.only_channel = Some("21".into());
+        let mut workspace = workspace();
+        workspace.categories.reverse();
+        assert_eq!(to_discord(&guild, &workspace), None);
+        assert_eq!(to_chat(&guild, &guild, &workspace), None);
+    }
+
+    phase channels_kept_on_one_side_or_archived_keep_their_places;
+    {
+        let mut workspace = workspace();
+        // Tilo's #help and an archived #ideas move; neither is shared.
+        workspace.channels[2].category = None;
+        workspace.channels[4].archived = true;
+        workspace.channels.swap(2, 4);
+        assert_eq!(to_discord(&guild(), &workspace), None);
+    }
+
+    phase the_echo_of_the_bridges_arrangement_is_no_move_and_not_asked_again;
+    {
+        let mut workspace = workspace();
+        workspace.channels.swap(1, 4);
+        workspace.categories.reverse();
+        let op = to_discord(&guild(), &workspace).unwrap();
+        let waiting = asked(&guild(), op.clone(), None);
+        // Asked, not answered: not asked again.
+        assert_eq!(to_discord(&waiting, &workspace), None);
+        // Discord's updates arrive one by one, before and after its answer.
+        let mut before = waiting.clone();
+        for (n, after) in echoes(&waiting, &op).into_iter().enumerate() {
+            assert!(!moved_in_discord(&before, &after, &workspace), "update {n}");
+            assert_eq!(to_chat(&after, &before, &workspace), None, "update {n}");
+            assert_eq!(to_discord(&after, &workspace), None, "update {n}");
+            before = after;
+        }
+        // Answered and shown whole, it is done with.
+        let done = asked(
+            &guild(),
+            op.clone(),
+            Some(Settled::Done(DiscordResult::Done)),
+        );
+        let shown = echoes(&done, &op).pop().unwrap();
+        assert_eq!(finished(&done, &shown.channels), [Id::from_raw("arrange1")]);
+        let half = echoes(&done, &op).remove(0);
+        assert!(finished(&done, &half.channels).is_empty());
+        // A channel of it deleted in Discord meanwhile is waited for no longer.
+        // (#mods, the second channel placed, is the one deleted.)
+        let mut deleted = shown;
+        deleted.channels.take(&Id::from_raw("22"));
+        assert_eq!(finished(&done, &deleted.channels).len(), 1);
+        let mut before_mods = echoes(&done, &op)
+            .into_iter()
+            .nth(op.categories.len())
+            .unwrap();
+        before_mods.channels.take(&Id::from_raw("22"));
+        assert!(
+            finished(&done, &before_mods.channels).is_empty(),
+            "#general is still to come"
+        );
+    }
+
+    phase a_move_in_discord_while_an_arrangement_is_on_its_way_keeps_the_arrangement;
+    {
+        let mut workspace = workspace();
+        workspace.categories.reverse();
+        let op = to_discord(&guild(), &workspace).unwrap();
+        let waiting = asked(&guild(), op, None);
+        // Someone moves #plans to the top before Discord shows the categories
+        // moved: Chat follows that move and keeps its own.
+        let after = moved(&waiting, "31", None, 1);
+        assert!(moved_in_discord(&waiting, &after, &workspace));
+        let arranged = to_chat(&after, &waiting, &workspace).unwrap();
+        assert_eq!(arranged.categories, ["k_dev", "k_chat"]);
+        assert_eq!(arranged.channels[1], place("c_plans", None));
+    }
+
+    phase a_failed_arrangement_is_done_with_and_laid_over_nothing;
+    {
+        let mut workspace = workspace();
+        workspace.categories.reverse();
+        let op = to_discord(&guild(), &workspace).unwrap();
+        let failed = asked(
+            &guild(),
+            op.clone(),
+            Some(Settled::Failed {
+                reason: "Missing Permissions".into(),
+                partial: DiscordResult::Done,
+            }),
+        );
+        assert_eq!(
+            finished(&failed, &failed.channels),
+            [Id::from_raw("arrange1")]
+        );
+        assert_eq!(to_discord(&failed, &workspace), Some(op));
+    }
+
+    phase a_channel_being_made_is_put_where_tilo_has_it;
+    {
+        let mut guild = guild();
+        guild.map.push(mapping(MappedKind::Channel, "c_new", "40"));
+        let mut workspace = workspace();
+        // Made at the top of "chat" in Tilo; Discord has not shown it yet.
+        workspace
+            .channels
+            .insert(1, channel("c_new", Some("k_chat")));
+        let op = to_discord(&guild, &workspace).unwrap();
+        assert_eq!(
+            op.channels.first(),
+            Some(&ChannelPlace {
+                channel: "40".into(),
+                parent: Some("20".into()),
+                position: 0
+            }),
+            "{op:?}"
+        );
+        // Discord showing it last before the arrangement lands is no move.
+        let waiting = asked(&guild, op, None);
+        let mut shown = waiting.clone();
+        shown
+            .channels
+            .push(dchan("40", ChannelKind::Text, "new", Some("20"), 3));
+        assert!(!moved_in_discord(&waiting, &shown, &workspace));
+    }
 }

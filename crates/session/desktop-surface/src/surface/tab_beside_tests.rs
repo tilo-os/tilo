@@ -192,6 +192,8 @@ fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle)
         .unwrap();
     frame.relayout();
     frame.relayout();
+    handle.arrange_asked_floats();
+    frame.relayout();
     let area = frame
         .widget_mut::<ui::widget::GroupRow>()
         .map(|row| floats::area_of(row.get_rect()))

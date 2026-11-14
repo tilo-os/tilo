@@ -150,36 +150,6 @@ mod tests {
         }
     }
 
-    /// `io_uring` reaches an app only when its manifest declares it and the image ships the app or the
-    /// workspace granted it.
-    #[test]
-    fn io_uring_needs_the_declaration_and_a_grant() {
-        use crate::capabilities::CapabilityPlan;
-        let mut manifest = crate::manifest::test_manifest(
-            "id = \"com.example.storage\"\nversion = \"1.0.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/app\"\n",
-        );
-        let granted = CapabilityPlan {
-            devices: vec![IO_URING.to_string()],
-            ..CapabilityPlan::empty()
-        };
-        let none = CapabilityPlan::empty();
-
-        // Undeclared: never, whatever the workspace or the image says.
-        assert!(!syscall_grants(&manifest, &granted, true).io_uring);
-
-        manifest.capabilities = vec![IO_URING.to_string()];
-        assert!(
-            !syscall_grants(&manifest, &none, false).io_uring,
-            "a user-installed app without the workspace's grant is refused"
-        );
-        assert!(syscall_grants(&manifest, &granted, false).io_uring);
-        assert!(
-            syscall_grants(&manifest, &none, true).io_uring,
-            "an app the image ships gets what it declares"
-        );
-    }
-
     /// Points the entitlement lookup at a fixture for the duration of a test.
     struct JitPolicy {
         _env: tilo_test_env::ScopedEnv,
@@ -229,89 +199,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn seccomp_profile_needs_both_request_and_entitlement() {
-        {
-            let _policy = JitPolicy::listing("so.tilo.browser\n");
-
-            let decision = resolve_profile("tilo-jit", "com.example.evil");
-
-            assert_eq!(
-                decision.applied,
-                SeccompProfile::TiloDefault,
-                "a manifest asking for tilo-jit without entitlement must be confined \
-                 by the strict profile"
-            );
-            assert!(
-                decision.refused,
-                "the launcher has to be able to say a request was refused, or the \
-                 log cannot tell a typo from an app trying to weaken itself"
-            );
-            assert_eq!(decision.requested, "tilo-jit");
-        }
-        {
-            let _policy = JitPolicy::listing("so.tilo.browser\n");
-
-            let decision = resolve_profile("tilo-jit", "so.tilo.browser");
-
-            assert_eq!(decision.applied, SeccompProfile::TiloJit);
-            assert!(!decision.refused);
-        }
-        {
-            let _policy = JitPolicy::listing("so.tilo.browser\n");
-
-            let decision = resolve_profile("tilo-default", "so.tilo.browser");
-
-            assert_eq!(
-                decision.applied,
-                SeccompProfile::TiloDefault,
-                "being on the list must not weaken a package that did not ask"
-            );
-            assert!(!decision.refused);
-        }
-        {
-            let _policy = JitPolicy::listing("so.tilo.browser\n");
-
-            for id in ["so.tilo.browser", "com.example.evil"] {
-                for name in ["tilo-jitt", "TILO-JIT", "", "anything"] {
-                    let decision = resolve_profile(name, id);
-                    assert_eq!(
-                        decision.applied,
-                        SeccompProfile::TiloDefault,
-                        "{id} asking for {name:?} must not reach a weaker profile"
-                    );
-                    assert!(
-                        !decision.refused,
-                        "{name:?} is an unrecognised name, not a refused \
-                         entitlement; the two read differently in the log"
-                    );
-                }
-            }
-        }
-        {
-            let _policy = JitPolicy::listing("so.tilo.browser\n");
-            let sandbox = crate::manifest::Sandbox {
-                seccomp: "tilo-jit".to_string(),
-                ..crate::manifest::Sandbox::default()
-            };
-
-            assert_eq!(
-                manifest_profile(&sandbox, "com.example.evil"),
-                SeccompProfile::TiloDefault,
-                "the manifest accessor must not hand out what the image refused"
-            );
-            assert_eq!(
-                manifest_profile(&sandbox, "so.tilo.browser"),
-                SeccompProfile::TiloJit
-            );
-            assert_eq!(
-                crate::manifest::Sandbox::default().seccomp,
-                SeccompProfile::TiloDefault.as_str(),
-                "the view's default profile is the launcher's strict one"
-            );
-        }
-    }
-
     /// The refusal reaches the kernel, not just the enum: a test comparing two enum values would pass
     /// on a launcher that resolved strictly and compiled the other one.
     #[test]
@@ -333,128 +220,245 @@ mod tests {
         );
     }
 
-    /// A nested sandbox is its own entitlement: the browser's Chromium engine gets it, a package that
-    /// names it for itself does not, and an image that entitles only the JIT keeps a web engine
-    /// rendering without it.
-    #[test]
-    fn web_engine_profile_needs_its_own_entitlement() {
-        {
-            let _policy = JitPolicy::listing("so.tilo.browser\n");
-            let decision = resolve_profile("tilo-web-engine", "so.tilo.browser");
-            assert_eq!(decision.applied, SeccompProfile::TiloWebEngine);
-            assert!(!decision.refused);
-        }
-        {
-            let _policy = JitPolicy::listing("so.tilo.browser\n");
-            let decision = resolve_profile("tilo-web-engine", "com.example.evil");
-            assert_eq!(decision.applied, SeccompProfile::TiloDefault);
-            assert!(decision.refused);
-        }
-        {
-            let _policy = JitPolicy::lists("so.tilo.browser\n", "# nobody\n");
-            let decision = resolve_profile("tilo-web-engine", "so.tilo.browser");
-            assert_eq!(
-                decision.applied,
-                SeccompProfile::TiloJit,
-                "refusing the nested sandbox must not also take the JIT away"
-            );
-            assert!(decision.refused);
-        }
-        {
-            let _policy = JitPolicy::lists("# nobody\n", "so.tilo.browser\n");
-            assert_eq!(
-                resolve_profile("tilo-web-engine", "so.tilo.browser").applied,
-                SeccompProfile::TiloDefault
-            );
-        }
-        {
-            let _policy = JitPolicy::missing();
-            assert_eq!(
-                resolve_profile("tilo-web-engine", "so.tilo.browser").applied,
-                SeccompProfile::TiloWebEngine
-            );
-            assert_eq!(
-                resolve_profile("tilo-web-engine", "com.example.evil").applied,
-                SeccompProfile::TiloDefault
-            );
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _policy = JitPolicy::listing("so.tilo.browser\n");
-            for id in ["so.tilo.browser", "com.example.evil"] {
-                let applied = resolve_profile("tilo-web-engine", id).applied;
-                assert_eq!(
-                    sandbox_core::seccomp::testing::probe_namespaces_under(applied),
-                    0,
-                    "{id}: 20 = a sandbox namespace got the wrong answer, 21 = another \
-                     namespace kind was allowed, 22 = chroot got the wrong answer"
-                );
-            }
-        }
-        {
-            let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../os/usr/lib/tilo/web-engine-entitled.conf");
-            let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
-                panic!(
-                    "the image's list must be in the tree at {}: {e}",
-                    repo.display()
-                )
-            });
-            for id in BUILTIN_WEB_ENGINE_ENTITLED {
-                assert!(crate::hardening::policy_matches(&shipped, id), "{id}");
-            }
-            assert!(!crate::hardening::policy_matches(
-                &shipped,
-                "com.example.evil"
-            ));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_seccomp_profile_needs_its_request_and_its_entitlement;
 
-    #[test]
-    fn seccomp_entitlement_policy_file_replaces_the_builtin_list() {
+        phase io_uring_needs_the_declaration_and_a_grant;
+        // `io_uring` reaches an app only when its manifest declares it and the image ships the app or the
+        // workspace granted it.
         {
-            let _policy = JitPolicy::listing("# nobody\n");
+            use crate::capabilities::CapabilityPlan;
+            let mut manifest = crate::manifest::test_manifest(
+                "id = \"com.example.storage\"\nversion = \"1.0.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/app\"\n",
+            );
+            let granted = CapabilityPlan {
+                devices: vec![IO_URING.to_string()],
+                ..CapabilityPlan::empty()
+            };
+            let none = CapabilityPlan::empty();
 
-            assert_eq!(
-                resolve_profile("tilo-jit", "so.tilo.browser").applied,
-                SeccompProfile::TiloDefault,
-                "the image's own file decides; the fallback must not add to it"
-            );
-        }
-        {
-            let _policy = JitPolicy::missing();
+            // Undeclared: never, whatever the workspace or the image says.
+            assert!(!syscall_grants(&manifest, &granted, true).io_uring);
 
-            assert_eq!(
-                resolve_profile("tilo-jit", "so.tilo.browser").applied,
-                SeccompProfile::TiloJit,
-                "fallback list lost the browser"
-            );
-            assert_eq!(
-                resolve_profile("tilo-jit", "com.example.evil").applied,
-                SeccompProfile::TiloDefault,
-                "the fallback must entitle the browser and nobody else"
-            );
-        }
-        {
-            let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../os/usr/lib/tilo/jit-entitled.conf");
-            let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
-                panic!(
-                    "the image's entitlement list must be in the tree at {}: {e}",
-                    repo.display()
-                )
-            });
-            for id in BUILTIN_JIT_ENTITLED {
-                assert!(
-                    crate::hardening::policy_matches(&shipped, id),
-                    "{id} is in the compiled-in fallback but not in the file the \
-                     image ships"
-                );
-            }
+            manifest.capabilities = vec![IO_URING.to_string()];
             assert!(
-                !crate::hardening::policy_matches(&shipped, "com.example.evil"),
-                "the shipped list must not entitle an arbitrary package"
+                !syscall_grants(&manifest, &none, false).io_uring,
+                "a user-installed app without the workspace's grant is refused"
             );
+            assert!(syscall_grants(&manifest, &granted, false).io_uring);
+            assert!(
+                syscall_grants(&manifest, &none, true).io_uring,
+                "an app the image ships gets what it declares"
+            );
+        }
+
+        phase seccomp_profile_needs_both_request_and_entitlement;
+        {
+            {
+                let _policy = JitPolicy::listing("so.tilo.browser\n");
+
+                let decision = resolve_profile("tilo-jit", "com.example.evil");
+
+                assert_eq!(
+                    decision.applied,
+                    SeccompProfile::TiloDefault,
+                    "a manifest asking for tilo-jit without entitlement must be confined \
+                 by the strict profile"
+                );
+                assert!(
+                    decision.refused,
+                    "the launcher has to be able to say a request was refused, or the \
+                 log cannot tell a typo from an app trying to weaken itself"
+                );
+                assert_eq!(decision.requested, "tilo-jit");
+            }
+            {
+                let _policy = JitPolicy::listing("so.tilo.browser\n");
+
+                let decision = resolve_profile("tilo-jit", "so.tilo.browser");
+
+                assert_eq!(decision.applied, SeccompProfile::TiloJit);
+                assert!(!decision.refused);
+            }
+            {
+                let _policy = JitPolicy::listing("so.tilo.browser\n");
+
+                let decision = resolve_profile("tilo-default", "so.tilo.browser");
+
+                assert_eq!(
+                    decision.applied,
+                    SeccompProfile::TiloDefault,
+                    "being on the list must not weaken a package that did not ask"
+                );
+                assert!(!decision.refused);
+            }
+            {
+                let _policy = JitPolicy::listing("so.tilo.browser\n");
+
+                for id in ["so.tilo.browser", "com.example.evil"] {
+                    for name in ["tilo-jitt", "TILO-JIT", "", "anything"] {
+                        let decision = resolve_profile(name, id);
+                        assert_eq!(
+                            decision.applied,
+                            SeccompProfile::TiloDefault,
+                            "{id} asking for {name:?} must not reach a weaker profile"
+                        );
+                        assert!(
+                            !decision.refused,
+                            "{name:?} is an unrecognised name, not a refused \
+                         entitlement; the two read differently in the log"
+                        );
+                    }
+                }
+            }
+            {
+                let _policy = JitPolicy::listing("so.tilo.browser\n");
+                let sandbox = crate::manifest::Sandbox {
+                    seccomp: "tilo-jit".to_string(),
+                    ..crate::manifest::Sandbox::default()
+                };
+
+                assert_eq!(
+                    manifest_profile(&sandbox, "com.example.evil"),
+                    SeccompProfile::TiloDefault,
+                    "the manifest accessor must not hand out what the image refused"
+                );
+                assert_eq!(
+                    manifest_profile(&sandbox, "so.tilo.browser"),
+                    SeccompProfile::TiloJit
+                );
+                assert_eq!(
+                    crate::manifest::Sandbox::default().seccomp,
+                    SeccompProfile::TiloDefault.as_str(),
+                    "the view's default profile is the launcher's strict one"
+                );
+            }
+        }
+
+        phase web_engine_profile_needs_its_own_entitlement;
+        // A nested sandbox is its own entitlement: the browser's Chromium engine gets it, a package that
+        // names it for itself does not, and an image that entitles only the JIT keeps a web engine
+        // rendering without it.
+        {
+            {
+                let _policy = JitPolicy::listing("so.tilo.browser\n");
+                let decision = resolve_profile("tilo-web-engine", "so.tilo.browser");
+                assert_eq!(decision.applied, SeccompProfile::TiloWebEngine);
+                assert!(!decision.refused);
+            }
+            {
+                let _policy = JitPolicy::listing("so.tilo.browser\n");
+                let decision = resolve_profile("tilo-web-engine", "com.example.evil");
+                assert_eq!(decision.applied, SeccompProfile::TiloDefault);
+                assert!(decision.refused);
+            }
+            {
+                let _policy = JitPolicy::lists("so.tilo.browser\n", "# nobody\n");
+                let decision = resolve_profile("tilo-web-engine", "so.tilo.browser");
+                assert_eq!(
+                    decision.applied,
+                    SeccompProfile::TiloJit,
+                    "refusing the nested sandbox must not also take the JIT away"
+                );
+                assert!(decision.refused);
+            }
+            {
+                let _policy = JitPolicy::lists("# nobody\n", "so.tilo.browser\n");
+                assert_eq!(
+                    resolve_profile("tilo-web-engine", "so.tilo.browser").applied,
+                    SeccompProfile::TiloDefault
+                );
+            }
+            {
+                let _policy = JitPolicy::missing();
+                assert_eq!(
+                    resolve_profile("tilo-web-engine", "so.tilo.browser").applied,
+                    SeccompProfile::TiloWebEngine
+                );
+                assert_eq!(
+                    resolve_profile("tilo-web-engine", "com.example.evil").applied,
+                    SeccompProfile::TiloDefault
+                );
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let _policy = JitPolicy::listing("so.tilo.browser\n");
+                for id in ["so.tilo.browser", "com.example.evil"] {
+                    let applied = resolve_profile("tilo-web-engine", id).applied;
+                    assert_eq!(
+                        sandbox_core::seccomp::testing::probe_namespaces_under(applied),
+                        0,
+                        "{id}: 20 = a sandbox namespace got the wrong answer, 21 = another \
+                     namespace kind was allowed, 22 = chroot got the wrong answer"
+                    );
+                }
+            }
+            {
+                let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../os/usr/lib/tilo/web-engine-entitled.conf");
+                let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
+                    panic!(
+                        "the image's list must be in the tree at {}: {e}",
+                        repo.display()
+                    )
+                });
+                for id in BUILTIN_WEB_ENGINE_ENTITLED {
+                    assert!(crate::hardening::policy_matches(&shipped, id), "{id}");
+                }
+                assert!(!crate::hardening::policy_matches(
+                    &shipped,
+                    "com.example.evil"
+                ));
+            }
+        }
+
+        phase seccomp_entitlement_policy_file_replaces_the_builtin_list;
+        {
+            {
+                let _policy = JitPolicy::listing("# nobody\n");
+
+                assert_eq!(
+                    resolve_profile("tilo-jit", "so.tilo.browser").applied,
+                    SeccompProfile::TiloDefault,
+                    "the image's own file decides; the fallback must not add to it"
+                );
+            }
+            {
+                let _policy = JitPolicy::missing();
+
+                assert_eq!(
+                    resolve_profile("tilo-jit", "so.tilo.browser").applied,
+                    SeccompProfile::TiloJit,
+                    "fallback list lost the browser"
+                );
+                assert_eq!(
+                    resolve_profile("tilo-jit", "com.example.evil").applied,
+                    SeccompProfile::TiloDefault,
+                    "the fallback must entitle the browser and nobody else"
+                );
+            }
+            {
+                let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../os/usr/lib/tilo/jit-entitled.conf");
+                let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
+                    panic!(
+                        "the image's entitlement list must be in the tree at {}: {e}",
+                        repo.display()
+                    )
+                });
+                for id in BUILTIN_JIT_ENTITLED {
+                    assert!(
+                        crate::hardening::policy_matches(&shipped, id),
+                        "{id} is in the compiled-in fallback but not in the file the \
+                     image ships"
+                    );
+                }
+                assert!(
+                    !crate::hardening::policy_matches(&shipped, "com.example.evil"),
+                    "the shipped list must not entitle an arbitrary package"
+                );
+            }
         }
     }
 }

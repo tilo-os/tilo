@@ -8,7 +8,7 @@
 //! signed revocation says who may not.
 //!
 //! The documents are the engine's own — [`CachedDocument`] and
-//! [`ChannelState`] — admitted through the same payload validation, op
+//! [`InboundState`] — admitted through the same payload validation, op
 //! validation, appearance check and merge a document received for a
 //! workspace goes through. An encrypted write has no place here: the key of
 //! the store is the identity itself, and its documents travel only between
@@ -38,7 +38,7 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use collab_types::signer::DeviceSigner;
 use collab_types::{
-    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, SignedOp,
+    ArtifactKind, DocumentMutation, Ed25519PublicKey, InboundState, OpKind, SignedOp,
     WholeDocumentPayload,
 };
 use neighbour_wire::{RefusalReason, WriteRefusal};
@@ -976,7 +976,7 @@ impl PersonalStore {
             .cloned()
             .unwrap_or_else(|| PeerDocument {
                 doc: AutoCommit::new().into(),
-                channel: ChannelState::default(),
+                channel: InboundState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
@@ -994,7 +994,7 @@ impl PersonalStore {
             .channel
             .artifact_records
             .insert(envelope.artifact, record.into());
-        candidate.channel.room.clone_from(&store_key);
+        candidate.channel.workspace.clone_from(&store_key);
         let mut validated = candidate.channel.clone();
         validated.surfaces = default_surfaces();
         // The person owns every node of their own store: each write is
@@ -1197,11 +1197,11 @@ impl PersonalStore {
             let doc = AutoCommit::load(&document.bytes).map_err(err)?;
             let artifact =
                 collab_types::document_artifact_id(&document.app, &store_key, &document.record);
-            let mut channel = ChannelState::default();
+            let mut channel = InboundState::default();
             channel.artifacts.insert(artifact, ArtifactKind::Note);
             channel.artifact_apps.insert(artifact, document.app);
             channel.artifact_records.insert(artifact, document.record);
-            channel.room.clone_from(&store_key);
+            channel.workspace.clone_from(&store_key);
             channel.surfaces = default_surfaces();
             channel.last_seq_per_author = document
                 .watermarks
@@ -1261,8 +1261,7 @@ pub(super) fn change_hashes(payload: &[u8]) -> Vec<[u8; 32]> {
 }
 
 /// A device's certificate as the store admits it: one this store's root
-/// signed, current, and not a store node's. A device that keeps other
-/// people's data holds none of anyone's own documents.
+/// signed, and current.
 fn admitted(
     root: [u8; 32],
     certificate: &DeviceCert,
@@ -1271,11 +1270,7 @@ fn admitted(
     if certificate.user_public_key != root {
         return Err("the certificate is not this identity's".into());
     }
-    let verified = VerifiedCertificate::new(certificate.clone(), now_ns(now))?;
-    if verified.capabilities.can_act_as_host {
-        return Err("a store node holds no personal documents".into());
-    }
-    Ok(verified)
+    VerifiedCertificate::new(certificate.clone(), now_ns(now))
 }
 
 fn sorted(mut entries: Vec<RevocationEntry>) -> Vec<RevocationEntry> {
@@ -1589,34 +1584,6 @@ mod tests {
                 .devices()
                 .iter()
                 .any(|cert| cert.device_public_key == a_key.verifying_key().to_bytes())
-        );
-    }
-
-    #[test]
-    fn a_store_node_is_admitted_to_none_of_the_persons_documents() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let root_key = root.verifying_key().to_bytes();
-        let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
-        let (node_key, node_cert) = device(&root, 4, DeviceCapabilities::host());
-        let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
-        a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
-            .unwrap();
-        // It cannot open a store at all: a store node keeps no personal data.
-        assert!(PersonalStore::open(root_key, node_cert.clone(), now()).is_err());
-        // And it writes nothing to another device's store.
-        assert!(
-            a.receive(
-                &a_key,
-                node_key.verifying_key().to_bytes(),
-                hello(&node_cert, Vec::new()),
-                now(),
-            )
-            .is_err()
-        );
-        assert!(
-            !a.devices()
-                .iter()
-                .any(|cert| cert.device_public_key == node_key.verifying_key().to_bytes())
         );
     }
 
@@ -1956,8 +1923,8 @@ mod tests {
 
     /// A certificate one of the person's devices passes on is admitted as
     /// the one a device shows for itself is, and only then: another root's,
-    /// one that root never signed, an expired one, a revoked device's and a
-    /// store node's all stay out, and the device they name is unknown here.
+    /// one that root never signed, an expired one and a revoked device's all
+    /// stay out, and the device they name is unknown here.
     #[test]
     fn a_passed_on_certificate_is_admitted_only_as_a_shown_one_would_be() {
         let root = SigningKey::from_bytes(&[1; 32]);
@@ -1986,7 +1953,6 @@ mod tests {
         forged.user_public_key = root_key;
         let (_, expired) = certificate(&root, root_key, [8; 32], "expired", 1, Some(2));
         let (gone_key, gone) = certificate(&root, root_key, [10; 32], "revoked", 1, None);
-        let (_, node) = device(&root, 11, DeviceCapabilities::host());
         // A already holds the revocation its identity signed.
         assert!(a.revoke(revocation(&root, &gone_key)).unwrap());
 
@@ -2001,7 +1967,6 @@ mod tests {
                 forged.clone(),
                 expired.clone(),
                 gone.clone(),
-                node.clone(),
             ]),
         )
         .unwrap();
@@ -2012,7 +1977,6 @@ mod tests {
             (&forged, "not the root's signature"),
             (&expired, "expired"),
             (&gone, "revoked"),
-            (&node, "a store node's"),
         ] {
             assert!(!holds(&a, refused), "{why} certificate is not admitted");
             assert!(!a.holds_device(&refused.device_public_key, now()), "{why}");

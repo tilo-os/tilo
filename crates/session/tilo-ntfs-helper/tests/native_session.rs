@@ -84,13 +84,18 @@ fn bytes(r: &Value) -> TestResult<Vec<u8>> {
     }
     Ok(result)
 }
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-)]
-fn native_manifest_scopes_metadata_and_completions_over_the_real_image() {
-    // Phase `metadata_manifest_and_twelve_native_chunks_preserve_real_image`.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn native_manifest_scopes_metadata_and_completions_over_the_real_image;
+
+    phase metadata_manifest_and_twelve_native_chunks_preserve_real_image;
     {
         let m = manifest("large").unwrap();
         assert_eq!(m["status"], 0);
@@ -140,7 +145,8 @@ fn native_manifest_scopes_metadata_and_completions_over_the_real_image() {
         );
         assert_eq!(request(&m, "empty.bin").unwrap()["size"], 0);
     }
-    // Phase `positive_attribute_and_directory_completion_is_emitted`.
+
+    phase positive_attribute_and_directory_completion_is_emitted;
     {
         let m = manifest("clean").unwrap();
         assert_eq!(m["status"], 0);
@@ -156,7 +162,8 @@ fn native_manifest_scopes_metadata_and_completions_over_the_real_image() {
             }
         }
     }
-    // Phase `typed_manifest_requires_positive_completions_and_scopes_native_metadata`.
+
+    phase typed_manifest_requires_positive_completions_and_scopes_native_metadata;
     {
         let raw = manifest("metadata").unwrap();
         let report: tilo_ntfs_helper::protocol::Report = serde_json::from_value(raw).unwrap();
@@ -168,14 +175,16 @@ fn native_manifest_scopes_metadata_and_completions_over_the_real_image() {
         missing.facts.retain(|f| f["kind"] != "attributes_end");
         assert!(tilo_ntfs_helper::manifest::verify(&missing, 5).is_err());
     }
-    // Phase `manifest_missing_directory_completion_is_not_positive_enumeration`.
+
+    phase manifest_missing_directory_completion_is_not_positive_enumeration;
     {
         let raw = manifest("clean").unwrap();
         let mut report: tilo_ntfs_helper::protocol::Report = serde_json::from_value(raw).unwrap();
         report.facts.retain(|f| f["kind"] != "directory_end");
         assert!(tilo_ntfs_helper::manifest::verify(&report, 5).is_err());
     }
-    // Phase `manifest_oversize_metadata_is_scoped_and_content_remains_readable`.
+
+    phase manifest_oversize_metadata_is_scoped_and_content_remains_readable;
     {
         let raw = manifest("large-metadata").unwrap();
         assert_eq!(raw["status"], 0);
@@ -197,7 +206,8 @@ fn native_manifest_scopes_metadata_and_completions_over_the_real_image() {
         assert_eq!(read["status"], 0);
         assert_eq!(bytes(&read).unwrap(), b"Connected NTFS fixture\n");
     }
-    // Phase `copy_manifest_diagnostic_exposes_verified_portable_entries`.
+
+    phase copy_manifest_diagnostic_exposes_verified_portable_entries;
     {
         let report = operation("large", &["--copy-manifest".into()]).unwrap();
         let entries = report.get("entries").and_then(Value::as_array).unwrap();
@@ -209,7 +219,8 @@ fn native_manifest_scopes_metadata_and_completions_over_the_real_image() {
         assert_eq!(large["content_readable"], true);
         assert_eq!(report["diagnostic_only"], true);
     }
-    // Phase `native_manifest_resource_failure_preserves_image`.
+
+    phase native_manifest_resource_failure_preserves_image;
     {
         let r = operation(
             "large",
@@ -220,9 +231,10 @@ fn native_manifest_scopes_metadata_and_completions_over_the_real_image() {
         assert!(r["native_identity"].is_null());
     }
 }
-#[test]
-fn native_ranges_agree_with_metadata_and_refuse_stale_or_unverified_reads() {
-    // Phase `native_ranges_and_changed_generation_refuse`.
+tilo_test_env::scenario! {
+    fn native_ranges_agree_with_metadata_and_refuse_stale_or_unverified_reads;
+
+    phase native_ranges_and_changed_generation_refuse;
     {
         let m = manifest("large").unwrap();
         let base = request(&m, "large.bin").unwrap();
@@ -250,7 +262,8 @@ fn native_ranges_agree_with_metadata_and_refuse_stale_or_unverified_reads() {
             0
         );
     }
-    // Phase `native_range_metadata_agrees_before_after_and_with_manifest`.
+
+    phase native_range_metadata_agrees_before_after_and_with_manifest;
     {
         for image in ["clean", "hardlink"] {
             let raw = manifest(image).unwrap();
@@ -280,7 +293,8 @@ fn native_ranges_agree_with_metadata_and_refuse_stale_or_unverified_reads() {
             );
         }
     }
-    // Phase `native_chunk_missing_postmetadata_cannot_publish_successful_bytes`.
+
+    phase native_chunk_missing_postmetadata_cannot_publish_successful_bytes;
     {
         let m = manifest("clean").unwrap();
         let mut req = request(&m, "hello.txt").unwrap();
@@ -295,7 +309,8 @@ fn native_ranges_agree_with_metadata_and_refuse_stale_or_unverified_reads() {
         report.facts.remove(last);
         assert!(tilo_ntfs_helper::limits::decode_chunk(&report, 23).is_err());
     }
-    // Phase `cancellation_fixture_has_no_entry_after_its_last_read`.
+
+    phase cancellation_fixture_has_no_entry_after_its_last_read;
     {
         let m = manifest("large").unwrap();
         let facts = m["facts"].as_array().unwrap();
@@ -320,13 +335,14 @@ fn native_ranges_agree_with_metadata_and_refuse_stale_or_unverified_reads() {
         assert_eq!(bytes(&r).unwrap(), b"final chunk");
     }
 }
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-)]
-fn standard_information_times_are_exact_or_typed_unavailable() {
-    // Phase `native_standard_information_times_preserve_exact_signed_100ns_values`.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn standard_information_times_are_exact_or_typed_unavailable;
+
+    phase native_standard_information_times_preserve_exact_signed_100ns_values;
     {
         for image in ["times", "times-v1"] {
             let raw = manifest(image).unwrap();
@@ -365,7 +381,8 @@ fn standard_information_times_are_exact_or_typed_unavailable() {
             assert_eq!(hello.copy_times_unavailable_reason, None, "{image}");
         }
     }
-    // Phase `native_negative_standard_information_images_cross_parser_boundary`.
+
+    phase native_negative_standard_information_images_cross_parser_boundary;
     {
         use tilo_ntfs_protocol::CopyTimesUnavailableReason as Reason;
 
@@ -429,7 +446,8 @@ fn standard_information_times_are_exact_or_typed_unavailable() {
             assert_eq!(entry.copy_times_unavailable_reason, Some(reason), "{image}");
         }
     }
-    // Phase `copy_times_unavailability_is_typed_and_does_not_hide_readable_content`.
+
+    phase copy_times_unavailability_is_typed_and_does_not_hide_readable_content;
     {
         use tilo_ntfs_protocol::CopyTimesUnavailableReason as Reason;
 
@@ -523,9 +541,10 @@ fn standard_information_times_are_exact_or_typed_unavailable() {
     }
 }
 
-#[test]
-fn native_decoders_reject_malformed_payloads_and_keep_aliases_explicit() {
-    // Phase `native_metadata_and_read_payload_decoders_reject_duplicate_gap_overlap_and_trailer`.
+tilo_test_env::scenario! {
+    fn native_decoders_reject_malformed_payloads_and_keep_aliases_explicit;
+
+    phase native_metadata_and_read_payload_decoders_reject_duplicate_gap_overlap_and_trailer;
     {
         let raw = manifest("clean").unwrap();
         for kind in ["attributes_end", "directory_end"] {
@@ -559,7 +578,8 @@ fn native_decoders_reject_malformed_payloads_and_keep_aliases_explicit() {
         report.facts.push(duplicate);
         assert!(tilo_ntfs_helper::limits::decode_chunk(&report, 22).is_err());
     }
-    // Phase `typed_native_security_aliases_reparse_and_upcase_remain_explicit`.
+
+    phase typed_native_security_aliases_reparse_and_upcase_remain_explicit;
     {
         for image in ["metadata", "acl", "hardlink", "upcase"] {
             let r = manifest(image).unwrap();
@@ -589,7 +609,8 @@ fn native_decoders_reject_malformed_payloads_and_keep_aliases_explicit() {
             }
         }
     }
-    // Phase `native_dos_aliases_are_pending_aliases_not_independent_files`.
+
+    phase native_dos_aliases_are_pending_aliases_not_independent_files;
     {
         let raw = manifest("dos-alias").unwrap();
         assert_eq!(raw["status"], 0);

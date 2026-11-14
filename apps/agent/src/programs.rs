@@ -615,64 +615,68 @@ mod tests {
         .collect()
     }
 
-    #[test]
-    fn a_list_answers_one_line_per_record_led_by_its_reference() {
-        let mounted = board();
-        let types = BTreeMap::from([("Card".to_owned(), "so.tilo.lang.board".to_owned())]);
-        let naming = Naming {
-            host: &mounted[0],
-            mounted: &mounted,
-            types: &types,
-        };
-        let answered = json!({"kind": "data", "value": {"count": 2, "items": [
-            {"type": "Card", "id": "root/cards:c1", "label": "Write the release notes",
-             "fields": {"title": "Write the release notes",
-                        "column": {"type": "Column", "id": "root/columns:k1", "label": "To do"}}},
-            {"type": "Card", "id": "root/cards:c2", "label": "Screenshots for the docs",
-             "fields": {"title": "Screenshots for the docs"}}
-        ]}});
-        let step = step_of("board.cards", &naming, Ok(&answered));
-        assert_eq!(step.outcome, StepOutcome::Done);
-        assert_eq!(step.answer[0], "// 2 items");
-        assert_eq!(
-            step.answer[1],
-            "@board.Card:root/cards:c1 \"Write the release notes\" title: \"Write the release \
-             notes\" column: @board.Column:root/columns:k1 \"To do\""
-        );
-        assert_eq!(step.refs.len(), 2);
-        assert_eq!(
-            step.refs[0].reference.id,
-            "tl:so.tilo.lang.board:root/cards:c1"
-        );
-        assert_eq!(step.refs[0].reference.kind, "tl.so.tilo.lang.board.Card");
-    }
+    tilo_test_env::scenario! {
+        fn a_program_block_answers_records_diagnostics_and_previews;
 
-    #[test]
-    fn a_block_that_does_not_compile_answers_its_diagnostics_and_an_ask_previews() {
-        let mounted = board();
-        let types = BTreeMap::new();
-        let naming = Naming {
-            host: &mounted[1],
-            mounted: &mounted,
-            types: &types,
-        };
-        let step = step_of(
-            "todo.nope",
-            &naming,
-            Err(
-                "the block does not compile:\n1:6: E0101 `todo` has no `nope`; did you mean `todos`?",
-            ),
-        );
-        assert_eq!(step.outcome, StepOutcome::Rejected);
-        assert!(observation(&step).contains("did you mean `todos`"));
-        let asked = json!({"kind": "invocation", "state": "suggested", "action": "Remove",
-            "app": "so.tilo.lang.todo", "result": null, "invocation": "root/invocations:i1"});
-        let step = step_of("todo.remove(...)", &naming, Ok(&asked));
-        assert_eq!(step.outcome, StepOutcome::Asked);
-        assert_eq!(
-            step.previews[0].invocation.reference.id,
-            "root/invocations:i1"
-        );
-        assert_eq!(step.previews[0].action, "Remove");
+        phase a_list_answers_one_line_per_record_led_by_its_reference;
+        {
+            let mounted = board();
+            let types = BTreeMap::from([("Card".to_owned(), "so.tilo.lang.board".to_owned())]);
+            let naming = Naming {
+                host: &mounted[0],
+                mounted: &mounted,
+                types: &types,
+            };
+            let answered = json!({"kind": "data", "value": {"count": 2, "items": [
+                {"type": "Card", "id": "root/cards:c1", "label": "Write the release notes",
+                 "fields": {"title": "Write the release notes",
+                            "column": {"type": "Column", "id": "root/columns:k1", "label": "To do"}}},
+                {"type": "Card", "id": "root/cards:c2", "label": "Screenshots for the docs",
+                 "fields": {"title": "Screenshots for the docs"}}
+            ]}});
+            let step = step_of("board.cards", &naming, Ok(&answered));
+            assert_eq!(step.outcome, StepOutcome::Done);
+            assert_eq!(step.answer[0], "// 2 items");
+            assert_eq!(
+                step.answer[1],
+                "@board.Card:root/cards:c1 \"Write the release notes\" title: \"Write the release \
+             notes\" column: @board.Column:root/columns:k1 \"To do\""
+            );
+            assert_eq!(step.refs.len(), 2);
+            assert_eq!(
+                step.refs[0].reference.id,
+                "tl:so.tilo.lang.board:root/cards:c1"
+            );
+            assert_eq!(step.refs[0].reference.kind, "tl.so.tilo.lang.board.Card");
+        }
+
+        phase a_block_that_does_not_compile_answers_its_diagnostics_and_an_ask_previews;
+        {
+            let mounted = board();
+            let types = BTreeMap::new();
+            let naming = Naming {
+                host: &mounted[1],
+                mounted: &mounted,
+                types: &types,
+            };
+            let step = step_of(
+                "todo.nope",
+                &naming,
+                Err(
+                    "the block does not compile:\n1:6: E0101 `todo` has no `nope`; did you mean `todos`?",
+                ),
+            );
+            assert_eq!(step.outcome, StepOutcome::Rejected);
+            assert!(observation(&step).contains("did you mean `todos`"));
+            let asked = json!({"kind": "invocation", "state": "suggested", "action": "Remove",
+                "app": "so.tilo.lang.todo", "result": null, "invocation": "root/invocations:i1"});
+            let step = step_of("todo.remove(...)", &naming, Ok(&asked));
+            assert_eq!(step.outcome, StepOutcome::Asked);
+            assert_eq!(
+                step.previews[0].invocation.reference.id,
+                "root/invocations:i1"
+            );
+            assert_eq!(step.previews[0].action, "Remove");
+        }
     }
 }

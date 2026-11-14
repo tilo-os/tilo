@@ -122,13 +122,17 @@ fn named_text(harness: &FrameHarness, name: &str) -> Option<String> {
 }
 
 /// The test id of the first control that does `identity`: what the window says it does, wherever
-/// the window's composition draws it and whatever the person's language calls it.
+/// the window's composition draws it and whatever the person's language calls it. The control names
+/// the one record it acts on, which here is whichever the window shows.
 fn doing_control(harness: &FrameHarness, identity: &str) -> Option<String> {
+    let wanted = ui::tilo_actions::ActionAddress::parse(identity)
+        .unwrap_or_else(|| panic!("{identity} is not an address"));
     let does = |node: &&ui::headless::InspectionNode| {
         node.semantics
             .as_ref()
             .and_then(|access| access.action.as_deref())
-            == Some(identity)
+            .and_then(ui::tilo_actions::ActionAddress::parse)
+            .is_some_and(|does| does.resource == wanted.resource && does.action == wanted.action)
     };
     (harness.inspection().root.nodes().into_iter())
         .filter(does)
@@ -141,7 +145,8 @@ fn answer() -> String {
 }
 
 /// What the app `app`'s action `action` on its records of `ty` is known by: the record kind the
-/// app publishes and the id its ids lock gives the declaration (`answer = a4rv5wm6`).
+/// app publishes and the id its ids lock gives the declaration (`answer = a4rv5wm6`), without the
+/// record its control stands for.
 fn doing(app: &str, ty: &str, action: &str) -> String {
     let lock = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../tl")

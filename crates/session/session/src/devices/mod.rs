@@ -146,6 +146,7 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
         .local_device_fabric_identity()
         .map(|(device, _)| device);
     let converged = fabric.device_fabric();
+    let nearby = fabric.nearby_device_ids();
     let mut devices: Vec<PersonalDevice> = converged
         .snapshots()
         .values()
@@ -153,6 +154,7 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
             id: snapshot.owner.as_str().to_owned(),
             label: snapshot.presence.label.clone(),
             online: snapshot.presence.online,
+            nearby: nearby.contains(&snapshot.owner),
             local: local.as_ref() == Some(&snapshot.owner),
             display: snapshot.presence.capabilities.display,
             wakeable: snapshot

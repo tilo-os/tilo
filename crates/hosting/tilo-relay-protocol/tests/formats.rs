@@ -10,16 +10,16 @@
     reason = "in a test an unwrap is the assertion, not a hazard"
 )]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use collab_types::WorkspaceId;
 use tilo_relay_protocol::metrics::WorkspaceEgress;
 use tilo_relay_protocol::sealed_invitations as SealedInvitations;
 use tilo_relay_protocol::{
-    ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
-    PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent, ReplicationResource,
-    ServiceCapabilities, TrustPolicy, personal_continuity_workspace_id, room_workspace_id,
+    ComputeAccelerator, DeviceMeshProfile, HomePeerRegistration, MetricsSnapshot,
+    PowerAvailability, ProcessLease, RelayConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
 };
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
@@ -28,13 +28,6 @@ fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
 
 fn from_postcard_hex<T: serde::de::DeserializeOwned>(encoded: &str) -> T {
     postcard::from_bytes(&hex::decode(encoded).unwrap()).unwrap()
-}
-
-fn selected_resources() -> ReplicationIntent {
-    ReplicationIntent::Resources(BTreeSet::from([
-        ReplicationResource::MediaLibrary,
-        ReplicationResource::AppRecords("so.tilo.notes".to_string()),
-    ]))
 }
 
 /// Pins `encoded` as the exact JSON of `value`, and decodes it back.
@@ -61,23 +54,15 @@ fn json_encodings_are_pinned() {
     // Device mesh profile.
     let profile = DeviceMeshProfile {
         device: [1; 32],
-        role: DeviceRole::Hybrid,
         services: ServiceCapabilities::home_peer(),
-        replication: BTreeMap::from([
-            (7, ReplicationIntent::FullWorkspace),
-            (9, selected_resources()),
-        ]),
         filesystem_endpoints: Vec::new(),
     };
     assert_json(
         &profile,
         concat!(
             r#"{"device":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"#,
-            r#""role":"hybrid","#,
             r#""services":{"workspace_replication":true,"full_content_replication":true,"#,
             r#""inbound_relay":true,"remote_control_relay":true,"app_serving":false,"compute":false},"#,
-            r#""replication":{"7":"full_workspace","#,
-            r#""9":{"resources":[{"kind":"media_library"},{"kind":"app_records","id":"so.tilo.notes"}]}},"#,
             r#""filesystem_endpoints":[]}"#,
         ),
     );
@@ -88,17 +73,13 @@ fn json_encodings_are_pinned() {
         r#"["gpu",{"battery":15}]"#
     );
 
-    // Replication intents.
+    // The work a device takes.
     assert_json(
-        &vec![
-            ReplicationIntent::WorkspaceOnly,
-            ReplicationIntent::OnDemand,
-            ReplicationIntent::FullWorkspace,
-            selected_resources(),
-        ],
+        &WorkSetting::own_person(),
         concat!(
-            r#"["workspace_only","on_demand","full_workspace","#,
-            r#"{"resources":[{"kind":"media_library"},{"kind":"app_records","id":"so.tilo.notes"}]}]"#,
+            r#"{"kinds":{"actions":true,"indexing":true,"model_calls":true,"builds":true},"#,
+            r#""from":"own_devices","#,
+            r#""when":{"charging_only":false,"free_cpu_percent":0,"free_memory_percent":0}}"#,
         ),
     );
 
@@ -112,7 +93,7 @@ fn json_encodings_are_pinned() {
             label: "Attic server".to_string(),
             user_public_key: "33".repeat(32),
             device_cert: None,
-            relay_workspace_ids: vec![7, u64::MAX],
+            relay_workspace_ids: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
         },
         concat!(
             r#"{"schema_version":3,"#,
@@ -120,7 +101,7 @@ fn json_encodings_are_pinned() {
             r#""relay_service_node_id":"2222222222222222222222222222222222222222222222222222222222222222","#,
             r#""relay_endpoint":null,"label":"Attic server","#,
             r#""user_public_key":"3333333333333333333333333333333333333333333333333333333333333333","#,
-            r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615]}"#,
+            r#""device_cert":null,"relay_workspace_ids":["00000000-0000-0000-0000-000000000007","00000000-0000-0000-0000-000000000008"]}"#,
         ),
     );
     // Metrics snapshot, written pretty-printed.
@@ -140,7 +121,7 @@ fn json_encodings_are_pinned() {
         bytes_sent_live: 13,
         sessions_open: 0,
         workspaces: BTreeMap::from([(
-            14,
+            WorkspaceId::from_u128(14),
             WorkspaceEgress {
                 bytes_sent: 15,
                 bytes_sent_live: 16,
@@ -162,7 +143,7 @@ fn json_encodings_are_pinned() {
   "bytes_sent": 12,
   "bytes_sent_live": 13,
   "rooms": {
-    "14": {
+    "00000000-0000-0000-0000-00000000000e": {
       "bytes_sent": 15,
       "bytes_sent_live": 16
     }
@@ -249,135 +230,82 @@ fn json_encodings_are_pinned() {
     assert!(serde_json::from_str::<SealedInvitations::Stored>(r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl","extra":1}"#).is_err());
 }
 
-// Same variants, in the same order, as `ReplicationResource`.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
-#[allow(dead_code, reason = "only some variants are built")]
-enum TaggedAll {
-    Workspace,
-    FileTree,
-    FileThumbnails,
-    FileBlobs,
-    EbookLibrary,
-    MediaLibrary,
-    AppRecords(String),
-}
+tilo_test_env::scenario! {
+    fn postcard_toml_and_certification_encodings_are_pinned;
 
-#[test]
-fn postcard_wire_encodings_and_shard_ids_are_pinned() {
-    // Management responses and compute worker adverts carry these fields in
-    // postcard frames.
-    assert_postcard(
-        &(
-            DeviceRole::AlwaysOnServer,
-            ServiceCapabilities::personal_server(),
-        ),
-        "01010101010101",
-    );
+    phase postcard_wire_encodings_and_shard_ids_are_pinned;
+    {
+        // Management responses and compute worker adverts carry these fields in
+        // postcard frames.
+        assert_postcard(&ServiceCapabilities::personal_server(), "010101010101");
 
-    // Mesh enums.
-    assert_postcard(
-        &[
-            PowerAvailability::Unknown,
-            PowerAvailability::External,
-            PowerAvailability::Charging(80),
-            PowerAvailability::Battery(15),
-        ],
-        "00010250030f",
-    );
-    assert_eq!(postcard_hex(&ComputeAccelerator::Gpu), "00");
+        // Mesh enums.
+        assert_postcard(
+            &[
+                PowerAvailability::Unknown,
+                PowerAvailability::External,
+                PowerAvailability::Charging(80),
+                PowerAvailability::Battery(15),
+            ],
+            "00010250030f",
+        );
+        assert_eq!(postcard_hex(&ComputeAccelerator::Gpu), "00");
 
-    // Mesh profiles may travel in postcard frames as well as JSON. Postcard is
-    // not self-describing, so the adjacently tagged JSON shape of
-    // `ReplicationResource` could be encoded but never decoded there.
-    assert_postcard(
-        &vec![
-            ReplicationIntent::WorkspaceOnly,
-            ReplicationIntent::OnDemand,
-            ReplicationIntent::FullWorkspace,
-            selected_resources(),
-        ],
-        "04000102030205060d736f2e74696c6f2e6e6f746573",
-    );
-    let profile = DeviceMeshProfile {
-        device: [1; 32],
-        role: DeviceRole::Hybrid,
-        services: ServiceCapabilities::home_peer(),
-        replication: BTreeMap::from([(9, selected_resources())]),
-        filesystem_endpoints: Vec::new(),
-    };
-    let bytes = postcard::to_stdvec(&profile).unwrap();
-    assert_eq!(
-        postcard::from_bytes::<DeviceMeshProfile>(&bytes).unwrap(),
-        profile
-    );
-
-    // Before binary formats got their own representation, the adjacently
-    // tagged derive was used for every format. Anything it encoded into
-    // postcard must still decode.
-    for (tagged, resource) in [
-        (TaggedAll::Workspace, ReplicationResource::Workspace),
-        (TaggedAll::FileBlobs, ReplicationResource::FileBlobs),
-        (TaggedAll::MediaLibrary, ReplicationResource::MediaLibrary),
-        (
-            TaggedAll::AppRecords("so.tilo.notes".to_string()),
-            ReplicationResource::AppRecords("so.tilo.notes".to_string()),
-        ),
-    ] {
-        let legacy = postcard::to_stdvec(&tagged).unwrap();
-        assert_eq!(postcard::to_stdvec(&resource).unwrap(), legacy);
+        // Mesh profiles may travel in postcard frames as well as JSON.
+        let profile = DeviceMeshProfile {
+            device: [1; 32],
+            services: ServiceCapabilities::home_peer(),
+            filesystem_endpoints: Vec::new(),
+        };
+        let bytes = postcard::to_stdvec(&profile).unwrap();
         assert_eq!(
-            postcard::from_bytes::<ReplicationResource>(&legacy).unwrap(),
-            resource
+            postcard::from_bytes::<DeviceMeshProfile>(&bytes).unwrap(),
+            profile
         );
     }
 
-    // Relay shard ids are stable.
-    assert_eq!(
-        room_workspace_id("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap(),
-        3_029_697_355_180_468_570
-    );
-    // Parsing normalises the textual form before hashing.
-    assert_eq!(
-        room_workspace_id("0B7E7DFA-3AD5-4B43-9D6C-5F0D7C1F6A11").unwrap(),
-        3_029_697_355_180_468_570
-    );
-    assert!(room_workspace_id("not a room").is_err());
-    assert_eq!(
-        personal_continuity_workspace_id(&[5; 32]),
-        431_687_783_281_078_992
-    );
-}
-
-#[test]
-fn toml_encodings_are_pinned() {
-    let config = RelayConfig {
-        identity_root: PathBuf::from("/var/lib/tilo"),
-        state_root: PathBuf::from("/var/lib/tilo-relay"),
-        full_replica_status: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
-        home_peer_bundle: PathBuf::from("/etc/tilo/home-peer.toml"),
-        iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
-        packet_relay: None,
-        packet_relay_url: None,
-        trust_policy: TrustPolicy::AllowList {
-            users: vec!["ab".repeat(32)],
-        },
-        device_role: DeviceRole::AlwaysOnServer,
-        services: ServiceCapabilities::home_peer(),
-        web_entry: None,
-        member_limits: None,
-        max_workspace_grants: None,
-    };
-    let encoded = r#"identity_root = "/var/lib/tilo"
+    phase toml_encodings_are_pinned;
+    {
+        let config = RelayConfig {
+            identity_root: PathBuf::from("/var/lib/tilo"),
+            state_root: PathBuf::from("/var/lib/tilo-relay"),
+            full_replica_status: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
+            home_peer_bundle: PathBuf::from("/etc/tilo/home-peer.toml"),
+            iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
+            packet_relay: None,
+            packet_relay_url: None,
+            trust_policy: TrustPolicy::AllowList {
+                users: vec!["ab".repeat(32)],
+            },
+            work: WorkSetting::own_person(),
+            services: ServiceCapabilities::home_peer(),
+            web_entry: None,
+            member_limits: None,
+            max_workspace_grants: None,
+        };
+        let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-relay"
 full_replica_status = "/var/lib/tilo/full-replica/status.json"
 home_peer_bundle = "/etc/tilo/home-peer.toml"
 iroh_listen = "0.0.0.0:4919"
-device_role = "always_on_server"
 
 [trust_policy]
 kind = "allow_list"
 users = ["abababababababababababababababababababababababababababababababab"]
+
+[work]
+from = "own_devices"
+
+[work.kinds]
+actions = true
+indexing = true
+model_calls = true
+builds = true
+
+[work.when]
+charging_only = false
+free_cpu_percent = 0
+free_memory_percent = 0
 
 [services]
 workspace_replication = true
@@ -387,72 +315,73 @@ remote_control_relay = true
 app_serving = false
 compute = false
 "#;
-    assert_eq!(toml::to_string_pretty(&config).unwrap(), encoded);
-    assert_eq!(toml::from_str::<RelayConfig>(encoded).unwrap(), config);
+        assert_eq!(toml::to_string_pretty(&config).unwrap(), encoded);
+        assert_eq!(toml::from_str::<RelayConfig>(encoded).unwrap(), config);
 
-    // Trust policies.
-    for (policy, encoded) in [
-        (
-            TrustPolicy::AllowMatchingUser,
-            "kind = \"allow_matching_user\"\n",
-        ),
-        (TrustPolicy::AllowAny, "kind = \"allow_any\"\n"),
-    ] {
-        assert_eq!(toml::to_string(&policy).unwrap(), encoded);
-        assert_eq!(toml::from_str::<TrustPolicy>(encoded).unwrap(), policy);
+        // Trust policies.
+        for (policy, encoded) in [
+            (
+                TrustPolicy::AllowMatchingUser,
+                "kind = \"allow_matching_user\"\n",
+            ),
+            (TrustPolicy::AllowAny, "kind = \"allow_any\"\n"),
+        ] {
+            assert_eq!(toml::to_string(&policy).unwrap(), encoded);
+            assert_eq!(toml::from_str::<TrustPolicy>(encoded).unwrap(), policy);
+        }
     }
-}
 
-#[test]
-fn certification_openers_keep_their_tags() {
-    use tilo_relay_protocol::auth::Hello;
-    use tilo_relay_protocol::certify::{ApproverRequest, CertifyOpen, MemberApproval};
-    use tilo_user_identity::{
-        CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
-    };
+    phase certification_openers_keep_their_tags;
+    {
+        use tilo_relay_protocol::auth::Hello;
+        use tilo_relay_protocol::certify::{ApproverRequest, CertifyOpen, MemberApproval};
+        use tilo_user_identity::{
+            CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
+        };
 
-    // The certification protocol tells its connections apart by the first
-    // frame's variant: a device asking to be certified (0), a certified
-    // approver (1), a member's root asking one command (2). Openers are only
-    // ever added after these, so a host reads each one's tag as it always
-    // has, and a host that predates an opener refuses it.
-    let request = CertificationRequest {
-        version: CERTIFICATION_SCHEMA_VERSION,
-        user_public_key: [1; 32],
-        device_public_key: [2; 32],
-        device_label: "Phone".into(),
-        requested: DeviceCapabilities::member(),
-        nonce: [3; 16],
-        invite: [0; 16],
-        issued_at_ns: 4,
-        expires_at_ns: 5,
-        signature: [6; 64],
-    };
-    assert!(postcard_hex(&CertifyOpen::Request(request)).starts_with("00"));
-    let cert = DeviceCert {
-        user_public_key: [1; 32],
-        device_public_key: [2; 32],
-        device_label: "Laptop".into(),
-        capabilities: DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    assert!(postcard_hex(&CertifyOpen::Approver(Hello::new(cert, [7; 32]))).starts_with("01"));
+        // The certification protocol tells its connections apart by the first
+        // frame's variant: a device asking to be certified (0), a certified
+        // approver (1), a member's root asking one command (2). Openers are only
+        // ever added after these, so a host reads each one's tag as it always
+        // has, and a host that predates an opener refuses it.
+        let request = CertificationRequest {
+            version: CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            device_label: "Phone".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: [3; 16],
+            invite: [0; 16],
+            issued_at_ns: 4,
+            expires_at_ns: 5,
+            signature: [6; 64],
+        };
+        assert!(postcard_hex(&CertifyOpen::Request(request)).starts_with("00"));
+        let cert = DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            device_label: "Laptop".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        assert!(postcard_hex(&CertifyOpen::Approver(Hello::new(cert, [7; 32]))).starts_with("01"));
 
-    // A member's approval, whole: the tag, the root, the time, the command
-    // and the root's signature as 64 bytes.
-    let member = MemberApproval {
-        user_public_key: [1; 32],
-        issued_at_ns: 2,
-        request: ApproverRequest::ListPending,
-        signature: [3; 64],
-    };
-    let encoded = format!("02{}0200{}{}", "01".repeat(32), "40", "03".repeat(64));
-    assert_eq!(postcard_hex(&CertifyOpen::Member(member.clone())), encoded);
-    let CertifyOpen::Member(decoded) = from_postcard_hex::<CertifyOpen>(&encoded) else {
-        panic!("a member's opener decodes as one");
-    };
-    assert_eq!(decoded, member);
+        // A member's approval, whole: the tag, the root, the time, the command
+        // and the root's signature as 64 bytes.
+        let member = MemberApproval {
+            user_public_key: [1; 32],
+            issued_at_ns: 2,
+            request: ApproverRequest::ListPending,
+            signature: [3; 64],
+        };
+        let encoded = format!("02{}0200{}{}", "01".repeat(32), "40", "03".repeat(64));
+        assert_eq!(postcard_hex(&CertifyOpen::Member(member.clone())), encoded);
+        let CertifyOpen::Member(decoded) = from_postcard_hex::<CertifyOpen>(&encoded) else {
+            panic!("a member's opener decodes as one");
+        };
+        assert_eq!(decoded, member);
+    }
 }

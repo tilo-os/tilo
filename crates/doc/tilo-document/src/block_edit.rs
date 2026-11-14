@@ -20,7 +20,7 @@ use tilo_doc::model::{Containers, Region};
 use tilo_doc::snapshot::{AttrVal, BlockView};
 use tilo_resource::JsonSchema;
 
-use crate::action::{MAX_ACTION_TEXT_CHARS, RichTextAction, Written};
+use crate::action::{MAX_ACTION_TEXT_BYTES, RichTextAction, Written};
 use crate::block_markdown::{
     Ids, Item, MAX_HEADING, MAX_INDENT, Parsed, Shape, Want, parse, parse_inline, resolve,
 };
@@ -174,10 +174,8 @@ fn block_id(order: &[String], token: &str) -> Result<String, String> {
 }
 
 fn text_in_limits(text: &str) -> Result<(), String> {
-    if text.chars().count() > MAX_ACTION_TEXT_CHARS {
-        return Err(format!(
-            "text is longer than {MAX_ACTION_TEXT_CHARS} characters"
-        ));
+    if text.len() > MAX_ACTION_TEXT_BYTES {
+        return Err(format!("text is longer than {MAX_ACTION_TEXT_BYTES} bytes"));
     }
     Ok(())
 }

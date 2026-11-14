@@ -416,7 +416,7 @@ impl StatePeer {
         // the device this replica was joined through supplies the first
         // governance before any roster exists.
         if person != self.core.owner {
-            self.role(&source, now)?;
+            self.role(&source, now).map_err(|error| error.to_string())?;
         }
         let owner = self.core.owner;
         let from = hex::encode(source);

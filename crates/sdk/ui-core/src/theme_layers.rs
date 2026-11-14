@@ -715,625 +715,625 @@ mod tests {
         doc
     }
 
-    #[test]
-    fn distribution_defaults_replace_the_builtin_theme_and_the_user_wins_unpinned() {
-        let theme = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                theme: Some("light".into()),
-                ..DistributionDefaults::default()
-            }),
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(theme.name, Theme::light().name);
-        assert_eq!(
-            theme.tokens.colors.surfaces.content,
-            Theme::light().tokens.colors.surfaces.content
-        );
+    tilo_test_env::scenario! {
+        /// The accessibility layer of the theme stack.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn accessibility_is_applied_over_every_other_layer;
 
-        let user_wins = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                document: Some(house()),
-                ..DistributionDefaults::default()
-            }),
-            ..light_stack()
-        });
-        assert_eq!(user_wins.name, Theme::light().name);
-        assert!((user_wins.tokens.radii.tile - 14.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn a_pin_keeps_the_distribution_role_and_only_that_role() {
-        let pinned = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                document: Some(house()),
-                policy: DistributionPolicy {
-                    pins: vec![PIN_SHAPE.into(), PIN_MOTION.into(), "high_contrast".into()],
+        phase accessibility_wins_over_pins_and_the_user_theme;
+        {
+            let theme = resolve_theme_layers(&ThemeLayerStack {
+                distribution_defaults: Some(DistributionDefaults {
+                    theme: Some("light".into()),
+                    policy: DistributionPolicy {
+                        pins: vec![
+                            PIN_PALETTE.into(),
+                            "text_scale".into(),
+                            "high_contrast".into(),
+                        ],
+                    },
+                    ..DistributionDefaults::default()
+                }),
+                accessibility: AccessibilityLayer {
+                    high_contrast: true,
+                    text_scale: 1.5,
+                    ui_scale: 1.25,
+                    reduce_motion: true,
+                    reduce_transparency: true,
+                    thick_caret: true,
+                    ..AccessibilityLayer::default()
                 },
-                ..DistributionDefaults::default()
-            }),
-            ..light_stack()
-        });
-        assert_eq!(
-            pinned.tokens.colors.surfaces.content,
-            Theme::light().tokens.colors.surfaces.content,
-            "colour stays the user's"
-        );
-        assert!((pinned.tokens.radii.tile - 4.0).abs() < 1e-4);
-        assert!(pinned.tokens.motion_character.abs() < f32::EPSILON);
-        assert!(
-            (pinned.tokens.spacing.s3 - 12.0).abs() < 1e-4,
-            "density unpinned"
-        );
-        assert!(!pinned.colors_are_forced(), "accessibility is not pinnable");
+                ..light_stack()
+            });
+            assert_eq!(theme.name, "High contrast light");
+            assert!(theme.colors_are_forced());
+            assert_eq!(theme.text_scale, 1.5);
+            assert_eq!(theme.ui_scale, 1.25);
+            assert!(theme.reduce_motion);
+            assert!(theme.reduce_transparency);
+            assert_eq!(theme.caret_width, 4.0);
+            let surface = theme.content_surface();
+            assert!(surface.forced);
+            assert_eq!(surface.page, theme.tokens.colors.surfaces.content);
+            assert_eq!(surface.ink, theme.text_primary);
+            assert!(audit(&theme.tokens.colors).is_empty());
+        }
 
-        let palette = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                document: Some(house()),
-                policy: DistributionPolicy {
-                    pins: vec![PIN_PALETTE.into()],
-                },
-                ..DistributionDefaults::default()
-            }),
-            ..light_stack()
-        });
-        assert_eq!(palette.name, "House");
-        assert!(palette.document.palette.dark);
+        phase hyperlegible_accessibility_sets_the_ui_face_over_any_theme;
+        {
+            let mut stack = light_stack();
+            if let Some(user) = stack.user_theme.as_mut() {
+                user.type_.face = "Inter".into();
+            }
+            stack.accessibility.hyperlegible = true;
+            let theme = resolve_theme_layers(&stack);
+            assert_eq!(
+                theme.tokens.typography.sans_family,
+                crate::text_render::UI_HYPERLEGIBLE_FAMILY
+            );
+            assert_eq!(theme.tokens.typography.face_name(), "Hyperlegible");
+            assert_eq!(theme.document.type_.face, "Hyperlegible");
+            let flat = accessibility_layer(None, Some(&serde_json::json!({ "hyperlegible": true })));
+            assert!(flat.hyperlegible);
+        }
 
-        let from_json = Theme::resolved_from_settings(
-            r#"{"appearance":{"mode":"dark"},"appearance_device":{"distribution":{"schema_version":2,"theme":"light","policy":{"pins":["palette"]}}}}"#,
-        );
-        assert_eq!(from_json.name, Theme::light().name);
-    }
+        phase distinct_letters_follow_the_face_unless_chosen;
+        {
+            let distinct = |stack: &ThemeLayerStack| {
+                let theme = resolve_theme_layers(stack);
+                assert_eq!(
+                    theme.tokens.typography.distinct_letters,
+                    theme.document.type_.distinguishes_letters()
+                );
+                theme.tokens.typography.distinct_letters
+            };
+            let mut stack = light_stack();
+            assert!(!distinct(&stack));
+            if let Some(user) = stack.user_theme.as_mut() {
+                user.type_.face = "Hyperlegible".into();
+            }
+            assert!(distinct(&stack));
+            if let Some(user) = stack.user_theme.as_mut() {
+                user.type_.distinct_letters = Some(false);
+            }
+            assert!(!distinct(&stack));
+            let mut stack = light_stack();
+            if let Some(user) = stack.user_theme.as_mut() {
+                user.type_.distinct_letters = Some(true);
+            }
+            assert!(distinct(&stack));
+            let mut stack = light_stack();
+            stack.accessibility.hyperlegible = true;
+            assert!(distinct(&stack));
+            stack.accessibility.distinct_letters = Some(false);
+            assert!(!distinct(&stack));
+            stack.accessibility.hyperlegible = false;
+            stack.accessibility.distinct_letters = Some(true);
+            assert!(distinct(&stack));
+            let on = accessibility_layer(None, Some(&serde_json::json!({ "distinct_letters": true })));
+            assert_eq!(on.distinct_letters, Some(true));
+            let off = accessibility_layer(
+                None,
+                Some(&serde_json::json!({ "distinct_letters": false })),
+            );
+            assert_eq!(off.distinct_letters, Some(false));
+            assert_eq!(accessibility_layer(None, None).distinct_letters, None);
+        }
 
-    #[test]
-    fn the_workspace_temperature_tints_a_chromatic_palette_until_accessibility() {
-        let warm_window = WindowAppearance {
-            workspace_hue: Some(40.0),
-            your_colour: None,
-            corner_radius: None,
-        };
-        let warm = resolve_theme_layers(&ThemeLayerStack {
-            window: warm_window,
-            ..light_stack()
-        });
-        assert_eq!(warm.name, Theme::light().name);
-        assert_eq!(warm.document.palette.hue, Some(40.0));
-        assert_ne!(
-            warm.tokens.colors.surfaces.content,
-            Theme::light().tokens.colors.surfaces.content
-        );
-        assert!(audit(&warm.tokens.colors).is_empty());
-
-        let neutral = resolve_theme_layers(&ThemeLayerStack {
-            window: warm_window,
-            ..ThemeLayerStack::default()
-        });
-        let (tinted, stock) = (
-            crate::color::Oklch::from_color(neutral.tokens.colors.surfaces.content),
-            crate::color::Oklch::from_color(Theme::dark().tokens.colors.surfaces.content),
-        );
-        assert!(
-            (tinted.l - stock.l).abs() <= 0.005,
-            "the temperature moves no lightness"
-        );
-        assert!(tinted.c <= 0.014, "nor adds chroma: {}", tinted.c);
-
-        let forced = resolve_theme_layers(&ThemeLayerStack {
-            window: warm_window,
-            accessibility: AccessibilityLayer {
+        phase a_rejected_accessibility_payload_does_not_apply;
+        {
+            let rejected = AccessibilityLayer {
+                schema_version: 99,
                 high_contrast: true,
-                ..AccessibilityLayer::default()
-            },
-            ..light_stack()
-        });
-        assert_eq!(forced.name, "High contrast light");
-        assert_eq!(
-            forced.tokens.colors.surfaces.content,
-            Theme::preset(Preset::HighContrastLight)
-                .tokens
-                .colors
-                .surfaces
-                .content
-        );
-    }
-
-    #[test]
-    fn the_person_s_colour_rides_every_layer_and_is_not_read_from_settings() {
-        let mine = resolve_theme_layers(&ThemeLayerStack {
-            window: WindowAppearance {
-                workspace_hue: None,
-                your_colour: Some(PresenceHue::Violet),
-                corner_radius: None,
-            },
-            accessibility: AccessibilityLayer {
-                high_contrast: true,
-                ..AccessibilityLayer::default()
-            },
-            ..light_stack()
-        });
-        assert_eq!(mine.tokens.colors.you, PresenceHue::Violet);
-        assert_eq!(mine.border_focus, mine.tokens.colors.intent.accent_ink);
-        let ring = crate::color::Oklch::from_color(mine.border_focus).h;
-        let violet =
-            crate::color::Oklch::from_color(mine.tokens.colors.presence.hue(PresenceHue::Violet)).h;
-        let d = (ring - violet).rem_euclid(360.0);
-        assert!(d.min(360.0 - d) <= 15.0, "the ring is the person's colour");
-        // The identity's colour reaches a window through its host, never through the
-        // settings document's theme.
-        let json = Theme::resolved_from_settings(r#"{"identity":{"colour":"amber"}}"#);
-        assert_eq!(json.tokens.colors.you, Theme::light().tokens.colors.you);
-    }
-
-    #[test]
-    fn accessibility_wins_over_pins_and_the_user_theme() {
-        let theme = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                theme: Some("light".into()),
-                policy: DistributionPolicy {
-                    pins: vec![
-                        PIN_PALETTE.into(),
-                        "text_scale".into(),
-                        "high_contrast".into(),
-                    ],
-                },
-                ..DistributionDefaults::default()
-            }),
-            accessibility: AccessibilityLayer {
-                high_contrast: true,
-                text_scale: 1.5,
-                ui_scale: 1.25,
+                forced_colors: true,
+                text_scale: 2.0,
+                ui_scale: 1.5,
                 reduce_motion: true,
                 reduce_transparency: true,
                 thick_caret: true,
-                ..AccessibilityLayer::default()
-            },
-            ..light_stack()
-        });
-        assert_eq!(theme.name, "High contrast light");
-        assert!(theme.colors_are_forced());
-        assert_eq!(theme.text_scale, 1.5);
-        assert_eq!(theme.ui_scale, 1.25);
-        assert!(theme.reduce_motion);
-        assert!(theme.reduce_transparency);
-        assert_eq!(theme.caret_width, 4.0);
-        let surface = theme.content_surface();
-        assert!(surface.forced);
-        assert_eq!(surface.page, theme.tokens.colors.surfaces.content);
-        assert_eq!(surface.ink, theme.text_primary);
-        assert!(audit(&theme.tokens.colors).is_empty());
-    }
-
-    #[test]
-    fn hyperlegible_accessibility_sets_the_ui_face_over_any_theme() {
-        let mut stack = light_stack();
-        if let Some(user) = stack.user_theme.as_mut() {
-            user.type_.face = "Inter".into();
-        }
-        stack.accessibility.hyperlegible = true;
-        let theme = resolve_theme_layers(&stack);
-        assert_eq!(
-            theme.tokens.typography.sans_family,
-            crate::text_render::UI_HYPERLEGIBLE_FAMILY
-        );
-        assert_eq!(theme.tokens.typography.face_name(), "Hyperlegible");
-        assert_eq!(theme.document.type_.face, "Hyperlegible");
-        let flat = accessibility_layer(None, Some(&serde_json::json!({ "hyperlegible": true })));
-        assert!(flat.hyperlegible);
-    }
-
-    #[test]
-    fn distinct_letters_follow_the_face_unless_chosen() {
-        let distinct = |stack: &ThemeLayerStack| {
-            let theme = resolve_theme_layers(stack);
-            assert_eq!(
-                theme.tokens.typography.distinct_letters,
-                theme.document.type_.distinguishes_letters()
-            );
-            theme.tokens.typography.distinct_letters
-        };
-        let mut stack = light_stack();
-        assert!(!distinct(&stack));
-        if let Some(user) = stack.user_theme.as_mut() {
-            user.type_.face = "Hyperlegible".into();
-        }
-        assert!(distinct(&stack));
-        if let Some(user) = stack.user_theme.as_mut() {
-            user.type_.distinct_letters = Some(false);
-        }
-        assert!(!distinct(&stack));
-        let mut stack = light_stack();
-        if let Some(user) = stack.user_theme.as_mut() {
-            user.type_.distinct_letters = Some(true);
-        }
-        assert!(distinct(&stack));
-        let mut stack = light_stack();
-        stack.accessibility.hyperlegible = true;
-        assert!(distinct(&stack));
-        stack.accessibility.distinct_letters = Some(false);
-        assert!(!distinct(&stack));
-        stack.accessibility.hyperlegible = false;
-        stack.accessibility.distinct_letters = Some(true);
-        assert!(distinct(&stack));
-        let on = accessibility_layer(None, Some(&serde_json::json!({ "distinct_letters": true })));
-        assert_eq!(on.distinct_letters, Some(true));
-        let off = accessibility_layer(
-            None,
-            Some(&serde_json::json!({ "distinct_letters": false })),
-        );
-        assert_eq!(off.distinct_letters, Some(false));
-        assert_eq!(accessibility_layer(None, None).distinct_letters, None);
-    }
-
-    #[test]
-    fn a_rejected_accessibility_payload_does_not_apply() {
-        let rejected = AccessibilityLayer {
-            schema_version: 99,
-            high_contrast: true,
-            forced_colors: true,
-            text_scale: 2.0,
-            ui_scale: 1.5,
-            reduce_motion: true,
-            reduce_transparency: true,
-            thick_caret: true,
-            hyperlegible: true,
-            distinct_letters: Some(true),
-        };
-        assert!(rejected.validate().is_err());
-        assert!(rejected.materialize().is_err());
-        let theme = resolve_theme_layers(&ThemeLayerStack {
-            accessibility: rejected,
-            ..light_stack()
-        });
-        assert_eq!(theme.name, Theme::light().name);
-        assert_eq!(
-            theme.tokens.typography.sans_family,
-            crate::text_render::UI_SANS_FAMILY
-        );
-        assert!(!theme.colors_are_forced());
-        assert_eq!(theme.text_scale, 1.0);
-        assert_eq!(theme.caret_width, 2.0);
-
-        let from_json = Theme::resolved_from_settings(
-            r#"{"appearance":{"mode":"light","high_contrast":true,"text_scale":2.0,"accessibility":{"schema_version":99,"high_contrast":true,"forced_colors":true,"text_scale":2.0,"ui_scale":1.5,"reduce_motion":true,"thick_caret":true}}}"#,
-        );
-        assert_eq!(from_json.name, Theme::light().name);
-        assert!(!from_json.colors_are_forced());
-
-        let non_finite = AccessibilityLayer {
-            text_scale: f32::NAN,
-            high_contrast: true,
-            ..AccessibilityLayer::default()
-        };
-        assert!(non_finite.validate().is_err());
-        let untouched = resolve_theme_layers(&ThemeLayerStack {
-            accessibility: non_finite,
-            ..light_stack()
-        });
-        assert!(!untouched.colors_are_forced());
-    }
-
-    #[test]
-    fn out_of_range_accessibility_scales_are_clamped_before_apply() {
-        let raw = AccessibilityLayer {
-            text_scale: 100.0,
-            ui_scale: 0.1,
-            ..AccessibilityLayer::default()
-        };
-        let ready = raw.materialize().expect("schema 1 is admitted");
-        assert_eq!(ready.text_scale, AccessibilityLayer::TEXT_SCALE_MAX);
-        assert_eq!(ready.ui_scale, AccessibilityLayer::UI_SCALE_MIN);
-        let theme = resolve_theme_layers(&ThemeLayerStack {
-            accessibility: raw,
-            ..light_stack()
-        });
-        assert_eq!(theme.text_scale, AccessibilityLayer::TEXT_SCALE_MAX);
-        assert_eq!(theme.ui_scale, AccessibilityLayer::UI_SCALE_MIN);
-    }
-
-    #[test]
-    fn rejected_distribution_documents_apply_nothing() {
-        for rejected in [
-            DistributionDefaults {
-                schema_version: 1,
-                theme: Some("light".into()),
-                ..DistributionDefaults::default()
-            },
-            DistributionDefaults {
-                theme: Some("nord".into()),
-                ..DistributionDefaults::default()
-            },
-            DistributionDefaults {
-                theme: Some("light".into()),
-                policy: DistributionPolicy {
-                    pins: vec!["accent".into()],
-                },
-                ..DistributionDefaults::default()
-            },
-        ] {
-            assert!(rejected.validate().is_err(), "{rejected:?}");
+                hyperlegible: true,
+                distinct_letters: Some(true),
+            };
+            assert!(rejected.validate().is_err());
+            assert!(rejected.materialize().is_err());
             let theme = resolve_theme_layers(&ThemeLayerStack {
-                distribution_defaults: Some(rejected),
-                ..ThemeLayerStack::default()
+                accessibility: rejected,
+                ..light_stack()
             });
-            assert_eq!(theme.name, Theme::dark().name);
-        }
-    }
+            assert_eq!(theme.name, Theme::light().name);
+            assert_eq!(
+                theme.tokens.typography.sans_family,
+                crate::text_render::UI_SANS_FAMILY
+            );
+            assert!(!theme.colors_are_forced());
+            assert_eq!(theme.text_scale, 1.0);
+            assert_eq!(theme.caret_width, 2.0);
 
-    #[test]
-    fn the_user_layer_reads_mode_theme_density_and_overrides() {
-        use settings_store::day_schedule::LocalMoment;
-        let noon = LocalMoment {
-            day_of_year: 100,
-            minute_of_day: 12 * 60,
-            utc_offset_minutes: 0,
-        };
-        let read = |json: serde_json::Value| user_document(&json, noon);
-        assert_eq!(read(serde_json::json!({"appearance": {}})), None);
-        assert_eq!(
-            read(serde_json::json!({"appearance": {"mode": "dark"}})).map(|d| d.id),
-            Some("dark".into())
-        );
-        assert_eq!(
-            read(serde_json::json!({"appearance": {"mode": "light", "dark_theme": "dark-soft"}}))
-                .map(|d| d.id),
-            Some("light".into())
-        );
-        assert_eq!(
-            read(serde_json::json!({"appearance": {"mode": "dark", "dark_theme": "nord"}})),
-            None
-        );
-        let dense =
-            read(serde_json::json!({"appearance": {"dark_theme": "dark-cool", "density": 0.85}}))
-                .expect("a dark theme alone means dark mode");
-        assert_eq!(dense.id, "dark-cool");
-        assert!((dense.density.spacing - 0.85).abs() < 1e-6);
-        let ignored = read(serde_json::json!({"appearance": {"mode": "dark", "density": 9.0}}))
-            .expect("dark");
-        assert!((ignored.density.spacing - 1.0).abs() < f32::EPSILON);
+            let from_json = Theme::resolved_from_settings(
+                r#"{"appearance":{"mode":"light","high_contrast":true,"text_scale":2.0,"accessibility":{"schema_version":99,"high_contrast":true,"forced_colors":true,"text_scale":2.0,"ui_scale":1.5,"reduce_motion":true,"thick_caret":true}}}"#,
+            );
+            assert_eq!(from_json.name, Theme::light().name);
+            assert!(!from_json.colors_are_forced());
 
-        let settings = serde_json::json!({"appearance": {"workspace_temperatures": {"w1": 400.0}}});
-        assert_eq!(workspace_temperature_override(&settings, "w1"), Some(40.0));
-        assert_eq!(workspace_temperature_override(&settings, "w2"), None);
-    }
-
-    #[test]
-    fn forced_colours_paint_content_surfaces_from_the_theme() {
-        let dark = Theme::dark();
-        let open = dark.content_surface();
-        assert!(!open.forced);
-        assert_eq!(open.page, dark.tokens.colors.surfaces.content);
-        assert_eq!(open.ink, dark.text_primary);
-
-        let forced =
-            Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark","forced_colors":true}}"#);
-        assert!(forced.colors_are_forced());
-        assert_eq!(forced.name, Theme::high_contrast().name);
-        let surface = forced.content_surface();
-        assert_eq!(surface.page, Color::BLACK);
-        assert_eq!(surface.ink, Color::WHITE);
-    }
-
-    #[test]
-    fn configured_startup_reads_distribution_defaults() {
-        let settings = settings_store::parse(
-            r#"{"appearance_device":{"distribution_defaults":{"theme":"light"}}}"#,
-        );
-        assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
-    }
-
-    #[test]
-    fn the_persons_face_accent_and_translucency_are_read_from_settings_over_the_theme() {
-        let theme = Theme::resolved_from_settings(
-            r#"{"appearance":{"mode":"dark","ui_face":"Hyperlegible","accent":"violet","translucency":0.0}}"#,
-        );
-        assert_eq!(theme.document.type_.face, "Hyperlegible");
-        assert_eq!(
-            theme.tokens.typography.sans_family,
-            crate::text_render::UI_HYPERLEGIBLE_FAMILY
-        );
-        assert_eq!(
-            theme.document.emphasis,
-            Emphasis::Tinted {
-                hue: PresenceHue::Violet.degrees()
-            }
-        );
-        assert!(
-            theme.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON,
-            "no translucency, no blur"
-        );
-        assert!(
-            (theme.tokens.colors.surfaces.material_opacity - 1.0).abs() < 1e-6,
-            "and opaque chrome"
-        );
-
-        let full =
-            Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark","translucency":1.0}}"#);
-        assert!(
-            (full.tokens.colors.surfaces.material_blur_px
-                - theme.tokens.colors.surfaces.material_blur_px)
-                .abs()
-                > 1.0
-        );
-        let stock = resolve_theme_layers(&ThemeLayerStack {
-            user_theme: Some(Preset::Dark.document()),
-            ..ThemeLayerStack::default()
-        });
-        assert!(
-            (full.tokens.colors.surfaces.material_blur_px
-                - stock.tokens.colors.surfaces.material_blur_px)
-                .abs()
-                < 1e-4
-        );
-        assert_eq!(full.document.type_.face, stock.document.type_.face);
-
-        let unknown = Theme::resolved_from_settings(
-            r#"{"appearance":{"mode":"dark","accent":"chartreuse"}}"#,
-        );
-        assert_eq!(unknown.document.emphasis, Emphasis::You);
-        assert_eq!(
-            unknown.tokens.colors.intent.accent,
-            stock.tokens.colors.intent.accent
-        );
-    }
-
-    #[test]
-    fn a_pinned_type_or_material_keeps_the_distributions_and_accessibility_still_wins() {
-        let mut pinned_document = house();
-        pinned_document.type_.face = "Noto Sans".into();
-        pinned_document.material.floating = crate::tokens::finish::Finish::frosted(24.0, 0.72, 1.0);
-        let pinned = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                document: Some(pinned_document),
-                policy: DistributionPolicy {
-                    pins: vec![PIN_TYPE.into(), PIN_MATERIAL.into()],
-                },
-                ..DistributionDefaults::default()
-            }),
-            finish: FinishLayer {
-                ui_face: Some("Hyperlegible".into()),
-                accent: None,
-                translucency: Some(0.0),
-            },
-            ..light_stack()
-        });
-        assert_eq!(pinned.document.type_.face, "Noto Sans");
-        assert!((pinned.tokens.colors.surfaces.material_blur_px - 24.0).abs() < 1e-4);
-
-        let opaque = resolve_theme_layers(&ThemeLayerStack {
-            finish: FinishLayer {
-                ui_face: None,
-                accent: None,
-                translucency: Some(1.0),
-            },
-            accessibility: AccessibilityLayer {
-                reduce_transparency: true,
-                ..AccessibilityLayer::default()
-            },
-            ..light_stack()
-        });
-        assert!(opaque.reduce_transparency);
-        let contrast = resolve_theme_layers(&ThemeLayerStack {
-            finish: FinishLayer {
-                ui_face: None,
-                accent: None,
-                translucency: Some(1.0),
-            },
-            accessibility: AccessibilityLayer {
+            let non_finite = AccessibilityLayer {
+                text_scale: f32::NAN,
                 high_contrast: true,
                 ..AccessibilityLayer::default()
-            },
-            ..light_stack()
-        });
-        assert!(contrast.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON);
+            };
+            assert!(non_finite.validate().is_err());
+            let untouched = resolve_theme_layers(&ThemeLayerStack {
+                accessibility: non_finite,
+                ..light_stack()
+            });
+            assert!(!untouched.colors_are_forced());
+        }
+
+        phase out_of_range_accessibility_scales_are_clamped_before_apply;
+        {
+            let raw = AccessibilityLayer {
+                text_scale: 100.0,
+                ui_scale: 0.1,
+                ..AccessibilityLayer::default()
+            };
+            let ready = raw.materialize().expect("schema 1 is admitted");
+            assert_eq!(ready.text_scale, AccessibilityLayer::TEXT_SCALE_MAX);
+            assert_eq!(ready.ui_scale, AccessibilityLayer::UI_SCALE_MIN);
+            let theme = resolve_theme_layers(&ThemeLayerStack {
+                accessibility: raw,
+                ..light_stack()
+            });
+            assert_eq!(theme.text_scale, AccessibilityLayer::TEXT_SCALE_MAX);
+            assert_eq!(theme.ui_scale, AccessibilityLayer::UI_SCALE_MIN);
+        }
+
+        phase forced_colours_paint_content_surfaces_from_the_theme;
+        {
+            let dark = Theme::dark();
+            let open = dark.content_surface();
+            assert!(!open.forced);
+            assert_eq!(open.page, dark.tokens.colors.surfaces.content);
+            assert_eq!(open.ink, dark.text_primary);
+
+            let forced =
+                Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark","forced_colors":true}}"#);
+            assert!(forced.colors_are_forced());
+            assert_eq!(forced.name, Theme::high_contrast().name);
+            let surface = forced.content_surface();
+            assert_eq!(surface.page, Color::BLACK);
+            assert_eq!(surface.ink, Color::WHITE);
+        }
     }
 
-    #[test]
-    fn a_chosen_accent_recolours_the_theme_at_its_hue_and_keeps_every_floor() {
-        use crate::a11y::contrast_ratio;
-        use crate::color::Oklch;
-        for preset in [Preset::Dark, Preset::Light] {
-            for accent in PresenceHue::ALL {
-                let theme = resolve_theme_layers(&ThemeLayerStack {
-                    user_theme: Some(preset.document()),
-                    finish: FinishLayer {
-                        accent: Some(accent),
-                        ..FinishLayer::default()
-                    },
-                    ..ThemeLayerStack::default()
-                });
-                let c = &theme.tokens.colors;
-                assert_eq!(
-                    theme.document.emphasis,
-                    Emphasis::Tinted {
-                        hue: accent.degrees()
-                    }
-                );
-                let (fill, ink) = (
-                    Oklch::from_color(c.intent.accent),
-                    Oklch::from_color(c.intent.accent_ink),
-                );
-                let off = |hue: f32| {
-                    let d = (hue - accent.degrees()).rem_euclid(360.0);
-                    d.min(360.0 - d)
-                };
-                assert!(off(fill.h) <= 12.0, "{accent:?}: fill at {}°", fill.h);
-                assert!(off(ink.h) <= 12.0, "{accent:?}: ink at {}°", ink.h);
-                assert_eq!(theme.border_focus, c.intent.accent_ink);
-                assert_ne!(c.intent.accent, c.intent.accent_hover);
-                assert_ne!(c.intent.accent_hover, c.intent.accent_pressed);
-                assert!(
-                    contrast_ratio(c.intent.on_accent, c.intent.accent) >= 4.5,
-                    "{accent:?}: the label on the primary fill",
-                );
-                assert!(
-                    contrast_ratio(c.intent.accent, c.surfaces.content) >= 3.0,
-                    "{accent:?}: the primary fill stands off the window",
-                );
-                assert!(
-                    audit(c).is_empty(),
-                    "{accent:?}: {}",
-                    audit(c)
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+    tilo_test_env::scenario! {
+        /// The distribution layer of the theme stack and what it pins.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn distribution_defaults_and_pins_hold_under_the_user;
 
-                let as_you = resolve_theme_layers(&ThemeLayerStack {
-                    user_theme: Some(preset.document()),
-                    window: WindowAppearance {
-                        workspace_hue: None,
-                        your_colour: Some(accent),
-                        corner_radius: None,
+        phase distribution_defaults_replace_the_builtin_theme_and_the_user_wins_unpinned;
+        {
+            let theme = resolve_theme_layers(&ThemeLayerStack {
+                distribution_defaults: Some(DistributionDefaults {
+                    theme: Some("light".into()),
+                    ..DistributionDefaults::default()
+                }),
+                ..ThemeLayerStack::default()
+            });
+            assert_eq!(theme.name, Theme::light().name);
+            assert_eq!(
+                theme.tokens.colors.surfaces.content,
+                Theme::light().tokens.colors.surfaces.content
+            );
+
+            let user_wins = resolve_theme_layers(&ThemeLayerStack {
+                distribution_defaults: Some(DistributionDefaults {
+                    document: Some(house()),
+                    ..DistributionDefaults::default()
+                }),
+                ..light_stack()
+            });
+            assert_eq!(user_wins.name, Theme::light().name);
+            assert!((user_wins.tokens.radii.tile - 14.0).abs() < 1e-4);
+        }
+
+        phase a_pin_keeps_the_distribution_role_and_only_that_role;
+        {
+            let pinned = resolve_theme_layers(&ThemeLayerStack {
+                distribution_defaults: Some(DistributionDefaults {
+                    document: Some(house()),
+                    policy: DistributionPolicy {
+                        pins: vec![PIN_SHAPE.into(), PIN_MOTION.into(), "high_contrast".into()],
                     },
+                    ..DistributionDefaults::default()
+                }),
+                ..light_stack()
+            });
+            assert_eq!(
+                pinned.tokens.colors.surfaces.content,
+                Theme::light().tokens.colors.surfaces.content,
+                "colour stays the user's"
+            );
+            assert!((pinned.tokens.radii.tile - 4.0).abs() < 1e-4);
+            assert!(pinned.tokens.motion_character.abs() < f32::EPSILON);
+            assert!(
+                (pinned.tokens.spacing.s3 - 12.0).abs() < 1e-4,
+                "density unpinned"
+            );
+            assert!(!pinned.colors_are_forced(), "accessibility is not pinnable");
+
+            let palette = resolve_theme_layers(&ThemeLayerStack {
+                distribution_defaults: Some(DistributionDefaults {
+                    document: Some(house()),
+                    policy: DistributionPolicy {
+                        pins: vec![PIN_PALETTE.into()],
+                    },
+                    ..DistributionDefaults::default()
+                }),
+                ..light_stack()
+            });
+            assert_eq!(palette.name, "House");
+            assert!(palette.document.palette.dark);
+
+            let from_json = Theme::resolved_from_settings(
+                r#"{"appearance":{"mode":"dark"},"appearance_device":{"distribution":{"schema_version":2,"theme":"light","policy":{"pins":["palette"]}}}}"#,
+            );
+            assert_eq!(from_json.name, Theme::light().name);
+        }
+
+        phase rejected_distribution_documents_apply_nothing;
+        {
+            for rejected in [
+                DistributionDefaults {
+                    schema_version: 1,
+                    theme: Some("light".into()),
+                    ..DistributionDefaults::default()
+                },
+                DistributionDefaults {
+                    theme: Some("nord".into()),
+                    ..DistributionDefaults::default()
+                },
+                DistributionDefaults {
+                    theme: Some("light".into()),
+                    policy: DistributionPolicy {
+                        pins: vec!["accent".into()],
+                    },
+                    ..DistributionDefaults::default()
+                },
+            ] {
+                assert!(rejected.validate().is_err(), "{rejected:?}");
+                let theme = resolve_theme_layers(&ThemeLayerStack {
+                    distribution_defaults: Some(rejected),
                     ..ThemeLayerStack::default()
                 });
-                assert_eq!(c.intent.accent, as_you.tokens.colors.intent.accent);
+                assert_eq!(theme.name, Theme::dark().name);
             }
         }
 
-        let stock = resolve_theme_layers(&light_stack());
-        let violet = resolve_theme_layers(&ThemeLayerStack {
-            finish: FinishLayer {
-                accent: Some(PresenceHue::Violet),
-                ..FinishLayer::default()
-            },
-            ..light_stack()
-        });
-        assert_ne!(
-            violet.tokens.colors.intent.accent,
-            stock.tokens.colors.intent.accent
-        );
-        assert_eq!(
-            resolve_theme_layers(&light_stack())
-                .tokens
-                .colors
-                .intent
-                .accent,
-            stock.tokens.colors.intent.accent
-        );
+        phase configured_startup_reads_distribution_defaults;
+        {
+            let settings = settings_store::parse(
+                r#"{"appearance_device":{"distribution_defaults":{"theme":"light"}}}"#,
+            );
+            assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
+        }
+
+        phase a_pinned_type_or_material_keeps_the_distributions_and_accessibility_still_wins;
+        {
+            let mut pinned_document = house();
+            pinned_document.type_.face = "Noto Sans".into();
+            pinned_document.material.floating = crate::tokens::finish::Finish::frosted(24.0, 0.72, 1.0);
+            let pinned = resolve_theme_layers(&ThemeLayerStack {
+                distribution_defaults: Some(DistributionDefaults {
+                    document: Some(pinned_document),
+                    policy: DistributionPolicy {
+                        pins: vec![PIN_TYPE.into(), PIN_MATERIAL.into()],
+                    },
+                    ..DistributionDefaults::default()
+                }),
+                finish: FinishLayer {
+                    ui_face: Some("Hyperlegible".into()),
+                    accent: None,
+                    translucency: Some(0.0),
+                },
+                ..light_stack()
+            });
+            assert_eq!(pinned.document.type_.face, "Noto Sans");
+            assert!((pinned.tokens.colors.surfaces.material_blur_px - 24.0).abs() < 1e-4);
+
+            let opaque = resolve_theme_layers(&ThemeLayerStack {
+                finish: FinishLayer {
+                    ui_face: None,
+                    accent: None,
+                    translucency: Some(1.0),
+                },
+                accessibility: AccessibilityLayer {
+                    reduce_transparency: true,
+                    ..AccessibilityLayer::default()
+                },
+                ..light_stack()
+            });
+            assert!(opaque.reduce_transparency);
+            let contrast = resolve_theme_layers(&ThemeLayerStack {
+                finish: FinishLayer {
+                    ui_face: None,
+                    accent: None,
+                    translucency: Some(1.0),
+                },
+                accessibility: AccessibilityLayer {
+                    high_contrast: true,
+                    ..AccessibilityLayer::default()
+                },
+                ..light_stack()
+            });
+            assert!(contrast.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON);
+        }
     }
 
-    #[test]
-    fn a_chosen_accent_gives_way_to_a_pinned_emphasis_and_to_high_contrast() {
-        let pinned = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                document: Some(house()),
-                policy: DistributionPolicy {
-                    pins: vec![PIN_EMPHASIS.into()],
+    tilo_test_env::scenario! {
+        /// The person's layer of the theme stack: settings, colour, accent and finish.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_persons_settings_colour_accent_and_finish_ride_the_theme;
+
+        phase the_workspace_temperature_tints_a_chromatic_palette_until_accessibility;
+        {
+            let warm_window = WindowAppearance {
+                workspace_hue: Some(40.0),
+                your_colour: None,
+                corner_radius: None,
+            };
+            let warm = resolve_theme_layers(&ThemeLayerStack {
+                window: warm_window,
+                ..light_stack()
+            });
+            assert_eq!(warm.name, Theme::light().name);
+            assert_eq!(warm.document.palette.hue, Some(40.0));
+            assert_ne!(
+                warm.tokens.colors.surfaces.content,
+                Theme::light().tokens.colors.surfaces.content
+            );
+            assert!(audit(&warm.tokens.colors).is_empty());
+
+            let neutral = resolve_theme_layers(&ThemeLayerStack {
+                window: warm_window,
+                ..ThemeLayerStack::default()
+            });
+            let (tinted, stock) = (
+                crate::color::Oklch::from_color(neutral.tokens.colors.surfaces.content),
+                crate::color::Oklch::from_color(Theme::dark().tokens.colors.surfaces.content),
+            );
+            assert!(
+                (tinted.l - stock.l).abs() <= 0.005,
+                "the temperature moves no lightness"
+            );
+            assert!(tinted.c <= 0.014, "nor adds chroma: {}", tinted.c);
+
+            let forced = resolve_theme_layers(&ThemeLayerStack {
+                window: warm_window,
+                accessibility: AccessibilityLayer {
+                    high_contrast: true,
+                    ..AccessibilityLayer::default()
                 },
-                ..DistributionDefaults::default()
-            }),
-            finish: FinishLayer {
-                accent: Some(PresenceHue::Teal),
-                ..FinishLayer::default()
-            },
-            ..light_stack()
-        });
-        assert_eq!(pinned.document.emphasis, house().emphasis);
-        assert_eq!(
-            pinned.tokens.colors.intent.accent,
-            resolve_theme_layers(&ThemeLayerStack {
+                ..light_stack()
+            });
+            assert_eq!(forced.name, "High contrast light");
+            assert_eq!(
+                forced.tokens.colors.surfaces.content,
+                Theme::preset(Preset::HighContrastLight)
+                    .tokens
+                    .colors
+                    .surfaces
+                    .content
+            );
+        }
+
+        phase the_person_s_colour_rides_every_layer_and_is_not_read_from_settings;
+        {
+            let mine = resolve_theme_layers(&ThemeLayerStack {
+                window: WindowAppearance {
+                    workspace_hue: None,
+                    your_colour: Some(PresenceHue::Violet),
+                    corner_radius: None,
+                },
+                accessibility: AccessibilityLayer {
+                    high_contrast: true,
+                    ..AccessibilityLayer::default()
+                },
+                ..light_stack()
+            });
+            assert_eq!(mine.tokens.colors.you, PresenceHue::Violet);
+            assert_eq!(mine.border_focus, mine.tokens.colors.intent.accent_ink);
+            let ring = crate::color::Oklch::from_color(mine.border_focus).h;
+            let violet =
+                crate::color::Oklch::from_color(mine.tokens.colors.presence.hue(PresenceHue::Violet)).h;
+            let d = (ring - violet).rem_euclid(360.0);
+            assert!(d.min(360.0 - d) <= 15.0, "the ring is the person's colour");
+            // The identity's colour reaches a window through its host, never through the
+            // settings document's theme.
+            let json = Theme::resolved_from_settings(r#"{"identity":{"colour":"amber"}}"#);
+            assert_eq!(json.tokens.colors.you, Theme::light().tokens.colors.you);
+        }
+
+        phase the_user_layer_reads_mode_theme_density_and_overrides;
+        {
+            use settings_store::day_schedule::LocalMoment;
+            let noon = LocalMoment {
+                day_of_year: 100,
+                minute_of_day: 12 * 60,
+                utc_offset_minutes: 0,
+            };
+            let read = |json: serde_json::Value| user_document(&json, noon);
+            assert_eq!(read(serde_json::json!({"appearance": {}})), None);
+            assert_eq!(
+                read(serde_json::json!({"appearance": {"mode": "dark"}})).map(|d| d.id),
+                Some("dark".into())
+            );
+            assert_eq!(
+                read(serde_json::json!({"appearance": {"mode": "light", "dark_theme": "dark-soft"}}))
+                    .map(|d| d.id),
+                Some("light".into())
+            );
+            assert_eq!(
+                read(serde_json::json!({"appearance": {"mode": "dark", "dark_theme": "nord"}})),
+                None
+            );
+            let dense =
+                read(serde_json::json!({"appearance": {"dark_theme": "dark-cool", "density": 0.85}}))
+                    .expect("a dark theme alone means dark mode");
+            assert_eq!(dense.id, "dark-cool");
+            assert!((dense.density.spacing - 0.85).abs() < 1e-6);
+            let ignored = read(serde_json::json!({"appearance": {"mode": "dark", "density": 9.0}}))
+                .expect("dark");
+            assert!((ignored.density.spacing - 1.0).abs() < f32::EPSILON);
+
+            let settings = serde_json::json!({"appearance": {"workspace_temperatures": {"w1": 400.0}}});
+            assert_eq!(workspace_temperature_override(&settings, "w1"), Some(40.0));
+            assert_eq!(workspace_temperature_override(&settings, "w2"), None);
+        }
+
+        phase the_persons_face_accent_and_translucency_are_read_from_settings_over_the_theme;
+        {
+            let theme = Theme::resolved_from_settings(
+                r#"{"appearance":{"mode":"dark","ui_face":"Hyperlegible","accent":"violet","translucency":0.0}}"#,
+            );
+            assert_eq!(theme.document.type_.face, "Hyperlegible");
+            assert_eq!(
+                theme.tokens.typography.sans_family,
+                crate::text_render::UI_HYPERLEGIBLE_FAMILY
+            );
+            assert_eq!(
+                theme.document.emphasis,
+                Emphasis::Tinted {
+                    hue: PresenceHue::Violet.degrees()
+                }
+            );
+            assert!(
+                theme.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON,
+                "no translucency, no blur"
+            );
+            assert!(
+                (theme.tokens.colors.surfaces.material_opacity - 1.0).abs() < 1e-6,
+                "and opaque chrome"
+            );
+
+            let full =
+                Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark","translucency":1.0}}"#);
+            assert!(
+                (full.tokens.colors.surfaces.material_blur_px
+                    - theme.tokens.colors.surfaces.material_blur_px)
+                    .abs()
+                    > 1.0
+            );
+            let stock = resolve_theme_layers(&ThemeLayerStack {
+                user_theme: Some(Preset::Dark.document()),
+                ..ThemeLayerStack::default()
+            });
+            assert!(
+                (full.tokens.colors.surfaces.material_blur_px
+                    - stock.tokens.colors.surfaces.material_blur_px)
+                    .abs()
+                    < 1e-4
+            );
+            assert_eq!(full.document.type_.face, stock.document.type_.face);
+
+            let unknown = Theme::resolved_from_settings(
+                r#"{"appearance":{"mode":"dark","accent":"chartreuse"}}"#,
+            );
+            assert_eq!(unknown.document.emphasis, Emphasis::You);
+            assert_eq!(
+                unknown.tokens.colors.intent.accent,
+                stock.tokens.colors.intent.accent
+            );
+        }
+
+        phase a_chosen_accent_recolours_the_theme_at_its_hue_and_keeps_every_floor;
+        {
+            use crate::a11y::contrast_ratio;
+            use crate::color::Oklch;
+            for preset in [Preset::Dark, Preset::Light] {
+                for accent in PresenceHue::ALL {
+                    let theme = resolve_theme_layers(&ThemeLayerStack {
+                        user_theme: Some(preset.document()),
+                        finish: FinishLayer {
+                            accent: Some(accent),
+                            ..FinishLayer::default()
+                        },
+                        ..ThemeLayerStack::default()
+                    });
+                    let c = &theme.tokens.colors;
+                    assert_eq!(
+                        theme.document.emphasis,
+                        Emphasis::Tinted {
+                            hue: accent.degrees()
+                        }
+                    );
+                    let (fill, ink) = (
+                        Oklch::from_color(c.intent.accent),
+                        Oklch::from_color(c.intent.accent_ink),
+                    );
+                    let off = |hue: f32| {
+                        let d = (hue - accent.degrees()).rem_euclid(360.0);
+                        d.min(360.0 - d)
+                    };
+                    assert!(off(fill.h) <= 12.0, "{accent:?}: fill at {}°", fill.h);
+                    assert!(off(ink.h) <= 12.0, "{accent:?}: ink at {}°", ink.h);
+                    assert_eq!(theme.border_focus, c.intent.accent_ink);
+                    assert_ne!(c.intent.accent, c.intent.accent_hover);
+                    assert_ne!(c.intent.accent_hover, c.intent.accent_pressed);
+                    assert!(
+                        contrast_ratio(c.intent.on_accent, c.intent.accent) >= 4.5,
+                        "{accent:?}: the label on the primary fill",
+                    );
+                    assert!(
+                        contrast_ratio(c.intent.accent, c.surfaces.content) >= 3.0,
+                        "{accent:?}: the primary fill stands off the window",
+                    );
+                    assert!(
+                        audit(c).is_empty(),
+                        "{accent:?}: {}",
+                        audit(c)
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+
+                    let as_you = resolve_theme_layers(&ThemeLayerStack {
+                        user_theme: Some(preset.document()),
+                        window: WindowAppearance {
+                            workspace_hue: None,
+                            your_colour: Some(accent),
+                            corner_radius: None,
+                        },
+                        ..ThemeLayerStack::default()
+                    });
+                    assert_eq!(c.intent.accent, as_you.tokens.colors.intent.accent);
+                }
+            }
+
+            let stock = resolve_theme_layers(&light_stack());
+            let violet = resolve_theme_layers(&ThemeLayerStack {
+                finish: FinishLayer {
+                    accent: Some(PresenceHue::Violet),
+                    ..FinishLayer::default()
+                },
+                ..light_stack()
+            });
+            assert_ne!(
+                violet.tokens.colors.intent.accent,
+                stock.tokens.colors.intent.accent
+            );
+            assert_eq!(
+                resolve_theme_layers(&light_stack())
+                    .tokens
+                    .colors
+                    .intent
+                    .accent,
+                stock.tokens.colors.intent.accent
+            );
+        }
+
+        phase a_chosen_accent_gives_way_to_a_pinned_emphasis_and_to_high_contrast;
+        {
+            let pinned = resolve_theme_layers(&ThemeLayerStack {
                 distribution_defaults: Some(DistributionDefaults {
                     document: Some(house()),
                     policy: DistributionPolicy {
@@ -1341,98 +1341,116 @@ mod tests {
                     },
                     ..DistributionDefaults::default()
                 }),
-                ..light_stack()
-            })
-            .tokens
-            .colors
-            .intent
-            .accent
-        );
-
-        for theme in [
-            resolve_theme_layers(&ThemeLayerStack {
-                user_theme: Some(Preset::HighContrast.document()),
                 finish: FinishLayer {
                     accent: Some(PresenceHue::Teal),
                     ..FinishLayer::default()
                 },
-                ..ThemeLayerStack::default()
-            }),
-            resolve_theme_layers(&ThemeLayerStack {
-                finish: FinishLayer {
-                    accent: Some(PresenceHue::Teal),
-                    ..FinishLayer::default()
-                },
-                accessibility: AccessibilityLayer {
-                    high_contrast: true,
-                    ..AccessibilityLayer::default()
-                },
-                ..light_stack()
-            }),
-        ] {
-            assert_eq!(theme.document.emphasis, Emphasis::Inverted);
-            assert!(theme.colors_are_forced());
-        }
-    }
-
-    #[test]
-    fn an_unusable_finish_is_not_applied_and_out_of_band_is_clamped() {
-        let stock = resolve_theme_layers(&ThemeLayerStack {
-            user_theme: Some(Preset::Dark.document()),
-            ..ThemeLayerStack::default()
-        });
-        for finish in [
-            FinishLayer {
-                ui_face: Some("   ".into()),
-                accent: None,
-                translucency: None,
-            },
-            FinishLayer {
-                ui_face: None,
-                accent: None,
-                translucency: Some(f32::NAN),
-            },
-        ] {
-            let theme = resolve_theme_layers(&ThemeLayerStack {
-                finish,
                 ..light_stack()
             });
+            assert_eq!(pinned.document.emphasis, house().emphasis);
             assert_eq!(
-                theme.document.type_.face,
-                Theme::light().document.type_.face
+                pinned.tokens.colors.intent.accent,
+                resolve_theme_layers(&ThemeLayerStack {
+                    distribution_defaults: Some(DistributionDefaults {
+                        document: Some(house()),
+                        policy: DistributionPolicy {
+                            pins: vec![PIN_EMPHASIS.into()],
+                        },
+                        ..DistributionDefaults::default()
+                    }),
+                    ..light_stack()
+                })
+                .tokens
+                .colors
+                .intent
+                .accent
+            );
+
+            for theme in [
+                resolve_theme_layers(&ThemeLayerStack {
+                    user_theme: Some(Preset::HighContrast.document()),
+                    finish: FinishLayer {
+                        accent: Some(PresenceHue::Teal),
+                        ..FinishLayer::default()
+                    },
+                    ..ThemeLayerStack::default()
+                }),
+                resolve_theme_layers(&ThemeLayerStack {
+                    finish: FinishLayer {
+                        accent: Some(PresenceHue::Teal),
+                        ..FinishLayer::default()
+                    },
+                    accessibility: AccessibilityLayer {
+                        high_contrast: true,
+                        ..AccessibilityLayer::default()
+                    },
+                    ..light_stack()
+                }),
+            ] {
+                assert_eq!(theme.document.emphasis, Emphasis::Inverted);
+                assert!(theme.colors_are_forced());
+            }
+        }
+
+        phase an_unusable_finish_is_not_applied_and_out_of_band_is_clamped;
+        {
+            let stock = resolve_theme_layers(&ThemeLayerStack {
+                user_theme: Some(Preset::Dark.document()),
+                ..ThemeLayerStack::default()
+            });
+            for finish in [
+                FinishLayer {
+                    ui_face: Some("   ".into()),
+                    accent: None,
+                    translucency: None,
+                },
+                FinishLayer {
+                    ui_face: None,
+                    accent: None,
+                    translucency: Some(f32::NAN),
+                },
+            ] {
+                let theme = resolve_theme_layers(&ThemeLayerStack {
+                    finish,
+                    ..light_stack()
+                });
+                assert_eq!(
+                    theme.document.type_.face,
+                    Theme::light().document.type_.face
+                );
+            }
+
+            let clamped = resolve_theme_layers(&ThemeLayerStack {
+                finish: FinishLayer {
+                    ui_face: Some(" Default ".into()),
+                    accent: None,
+                    translucency: Some(-3.0),
+                },
+                ..ThemeLayerStack::default()
+            });
+            assert_eq!(clamped.document.type_.face, "Default");
+            assert!(clamped.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON);
+            assert_eq!(
+                stock.tokens.colors.surfaces.material_opacity,
+                Theme::dark().tokens.colors.surfaces.material_opacity
             );
         }
 
-        let clamped = resolve_theme_layers(&ThemeLayerStack {
-            finish: FinishLayer {
-                ui_face: Some(" Default ".into()),
-                accent: None,
-                translucency: Some(-3.0),
-            },
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(clamped.document.type_.face, "Default");
-        assert!(clamped.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON);
-        assert_eq!(
-            stock.tokens.colors.surfaces.material_opacity,
-            Theme::dark().tokens.colors.surfaces.material_opacity
-        );
-    }
-
-    #[test]
-    fn a_finish_naming_nothing_leaves_the_theme_alone() {
-        assert!(FinishLayer::default().is_empty());
-        let theme = Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark"}}"#);
-        let plain = resolve_theme_layers(&ThemeLayerStack {
-            user_theme: Some(Preset::Dark.document()),
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(theme.document.type_.face, plain.document.type_.face);
-        assert!(
-            (theme.tokens.colors.surfaces.material_blur_px
-                - plain.tokens.colors.surfaces.material_blur_px)
-                .abs()
-                < 1e-4
-        );
+        phase a_finish_naming_nothing_leaves_the_theme_alone;
+        {
+            assert!(FinishLayer::default().is_empty());
+            let theme = Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark"}}"#);
+            let plain = resolve_theme_layers(&ThemeLayerStack {
+                user_theme: Some(Preset::Dark.document()),
+                ..ThemeLayerStack::default()
+            });
+            assert_eq!(theme.document.type_.face, plain.document.type_.face);
+            assert!(
+                (theme.tokens.colors.surfaces.material_blur_px
+                    - plain.tokens.colors.surfaces.material_blur_px)
+                    .abs()
+                    < 1e-4
+            );
+        }
     }
 }

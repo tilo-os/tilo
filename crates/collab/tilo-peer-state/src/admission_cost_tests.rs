@@ -1,8 +1,9 @@
 //! What one more admission costs a workspace's governor as the workspace grows.
 
 use crate::StatePeer;
+use crate::join::WorkspaceId;
 use crate::join::{
-    InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, issue_invitation, sign_join_proof,
+    InviteGrant, JoinChallenge, Role, VerifiedRedemption, issue_invitation, sign_join_proof,
     verify_join_proof,
 };
 use ed25519_dalek::SigningKey;
@@ -45,10 +46,9 @@ pub(crate) fn redemption(
     nonce[..4].copy_from_slice(&n.to_le_bytes());
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce,
             recipient_user_public_key: Some(cert.user_public_key),
             invitee_name: None,
@@ -153,7 +153,7 @@ fn every_change_reads_the_same_narrowed_as_whole() {
             "role",
             Box::new(|peer| {
                 peer.governance_mut()
-                    .set_member_role(person(2), MemberRole::Viewer, &authority, now)
+                    .set_member_role(person(2), Role::Viewer, &authority, now)
                     .unwrap();
             }),
         ),
@@ -161,7 +161,7 @@ fn every_change_reads_the_same_narrowed_as_whole() {
             "administrator",
             Box::new(|peer| {
                 peer.governance_mut()
-                    .set_member_administrator(person(3), &authority, now)
+                    .set_member_administrator(person(3), None, &authority, now)
                     .unwrap();
             }),
         ),
@@ -335,8 +335,20 @@ fn newcomer_work(members: u32) -> crate::governance_work::GovernanceWork {
 /// receipt of the invitation they redeemed) and one receipt read per
 /// member, a bound the protocol makes inherent. Every reading over all the
 /// rows is made a fixed number of times, however many members there are.
+///
+/// The process remembers, on purpose, what it has already checked, admitted
+/// and replayed ([`newcomer_work`]), so these counts are a newcomer's only
+/// where no other test reads the same rows: a process of its own.
 #[test]
 fn a_newcomer_works_through_each_member_once() {
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_newcomer_works_through_each_member_once",
+        newcomer_of_30_against_300,
+    );
+}
+
+fn newcomer_of_30_against_300() {
     let small = newcomer_work(30);
     let large = newcomer_work(300);
     let more = |large: u64, small: u64| large.saturating_sub(small);

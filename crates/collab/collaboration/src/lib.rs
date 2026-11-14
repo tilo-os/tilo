@@ -280,8 +280,9 @@ pub use runtime_collab::{
 };
 pub use runtime_collab::{file_clipboard, write_attribution};
 
+pub use collab_types::MemberId;
 use collab_types::presence::PresenceKey;
-pub use collab_types::presence::{Collaborator, PresencePayload};
+pub use collab_types::presence::{Member, Person, PersonId, PresencePayload};
 
 use std::sync::mpsc;
 
@@ -1472,8 +1473,8 @@ impl CollaborationManager {
     ///
     /// From this point the route is fail-closed: locally generated document
     /// mutations are encrypted and encrypted inbound envelopes are decrypted
-    /// before becoming [`CollabEvent::Document`].  The channel id must be the
-    /// deterministic id for the exact app/workspace/record route.  Group
+    /// before becoming [`CollabEvent::Document`].  The group must be the
+    /// route's workspace's.  Group
     /// provisioning and durable secret storage intentionally remain outside
     /// the UI process; callers should obtain the group from the workspace
     /// identity service and must reinstall it after a process restart.
@@ -1482,10 +1483,7 @@ impl CollaborationManager {
         route: RouteSpec,
         group: channel_crypto::ChannelGroup,
     ) -> Result<(), String> {
-        let record = route.record.as_deref().unwrap_or("");
-        let expected =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id.to_string(), record);
-        if group.channel_id() != expected {
+        if group.workspace().to_string() != route.cluster_id.to_string() {
             return Err("MLS group does not belong to the requested document route".into());
         }
         if self.awaiting_primary {
@@ -1940,18 +1938,7 @@ fn resolve_local_user_id() -> String {
 /// A public key rendered as a person, in the one canonical form — so this
 /// string and the compositor's string for the same key are the same string.
 fn person_id_from_key(key: [u8; 32]) -> String {
-    // `person_from_key` constructs `Person` unconditionally, so the else
-    // branch cannot run. It recomputes the same canonical lowercase-hex form
-    // directly rather than panic on a branch that should never be reached.
-    if let collab_types::caps::Principal::Person(id) =
-        collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(key),
-        )
-    {
-        id
-    } else {
-        hex::encode(key)
-    }
+    hex::encode(key)
 }
 
 /// The application's authenticated durable route (falling back to its signed
@@ -2105,70 +2092,75 @@ mod local_document_report_tests {
         capture
     }
 
-    #[test]
-    fn exact_capture_reports_on_primary_shared_and_local_routes_without_mutations() {
-        let reports = Reports::default();
-        let mut manager =
-            CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
-        let captured = capture();
-        manager
-            .report_local_document_action(10, captured.clone())
-            .unwrap();
-        let shared = RouteSpec::record("app", uuid::Uuid::from_bytes([3; 16]), "shared");
-        let local = RouteSpec::record("app", uuid::Uuid::from_bytes([4; 16]), "local");
-        for (request_id, route) in [(11, shared.clone()), (12, local.clone())] {
-            manager
-                .report_local_document_action_to_route(route, request_id, captured.clone())
-                .unwrap();
-        }
-        let reports = reports.lock_recover();
-        assert_eq!(reports.len(), 3);
-        for ((route, request_id, bytes), (expected_route, expected_id)) in
-            reports
-                .iter()
-                .zip([(None, 10), (Some(shared), 11), (Some(local), 12)])
+    tilo_test_env::scenario! {
+        /// Reporting a captured local document action, each case on a manager of its own.
+        fn a_local_document_action_is_reported_exactly_or_refused;
+
+        phase exact_capture_reports_on_primary_shared_and_local_routes_without_mutations;
         {
-            assert_eq!(route, &expected_route);
-            assert_eq!(*request_id, expected_id);
-            assert_eq!(bytes, &reports[0].2);
-            let report: runtime_collab::LocalDocumentActionReport =
-                serde_json::from_slice(bytes).unwrap();
-            assert_eq!(report.invocation, captured.invocation);
-            assert_eq!(report.capture_id, captured.capture_id);
-            assert_eq!(report.bound_invocation().unwrap(), captured.invocation);
-            assert_eq!(report.revision, captured.revision);
-            assert_eq!(report.encoded, captured.encoded);
-            assert_eq!(report.context, captured.context);
-            assert_eq!(report.group, captured.context.as_ref().unwrap().group);
-            assert_eq!(report.resource, "document/child");
-            assert!(report.original_heads.is_empty());
-            assert!(report.mutation_hashes.is_empty());
-            let expected_argument = format!(
-                "{}{{\"text\":\"private argument\"}}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX
-            );
-            assert_eq!(report.argument.as_deref(), Some(expected_argument.as_str()));
-            let debug = format!("{report:?}");
-            for private in ["private", "encoded", "context", "argument"] {
-                assert!(!debug.contains(private));
+            let reports = Reports::default();
+            let mut manager =
+                CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
+            let captured = capture();
+            manager
+                .report_local_document_action(10, captured.clone())
+                .unwrap();
+            let shared = RouteSpec::record("app", uuid::Uuid::from_bytes([3; 16]), "shared");
+            let local = RouteSpec::record("app", uuid::Uuid::from_bytes([4; 16]), "local");
+            for (request_id, route) in [(11, shared.clone()), (12, local.clone())] {
+                manager
+                    .report_local_document_action_to_route(route, request_id, captured.clone())
+                    .unwrap();
+            }
+            let reports = reports.lock_recover();
+            assert_eq!(reports.len(), 3);
+            for ((route, request_id, bytes), (expected_route, expected_id)) in
+                reports
+                    .iter()
+                    .zip([(None, 10), (Some(shared), 11), (Some(local), 12)])
+            {
+                assert_eq!(route, &expected_route);
+                assert_eq!(*request_id, expected_id);
+                assert_eq!(bytes, &reports[0].2);
+                let report: runtime_collab::LocalDocumentActionReport =
+                    serde_json::from_slice(bytes).unwrap();
+                assert_eq!(report.invocation, captured.invocation);
+                assert_eq!(report.capture_id, captured.capture_id);
+                assert_eq!(report.bound_invocation().unwrap(), captured.invocation);
+                assert_eq!(report.revision, captured.revision);
+                assert_eq!(report.encoded, captured.encoded);
+                assert_eq!(report.context, captured.context);
+                assert_eq!(report.group, captured.context.as_ref().unwrap().group);
+                assert_eq!(report.resource, "document/child");
+                assert!(report.original_heads.is_empty());
+                assert!(report.mutation_hashes.is_empty());
+                let expected_argument = format!(
+                    "{}{{\"text\":\"private argument\"}}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX
+                );
+                assert_eq!(report.argument.as_deref(), Some(expected_argument.as_str()));
+                let debug = format!("{report:?}");
+                for private in ["private", "encoded", "context", "argument"] {
+                    assert!(!debug.contains(private));
+                }
             }
         }
-    }
 
-    #[test]
-    fn unavailable_transport_and_missing_published_invocation_refuse() {
-        assert!(
-            CollaborationManager::disabled()
-                .report_local_document_action(1, capture())
-                .is_err()
-        );
-        let mut missing = capture();
-        missing.published = None;
-        let reports = Reports::default();
-        let mut manager =
-            CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
-        assert!(manager.report_local_document_action(2, missing).is_err());
-        assert!(reports.lock_recover().is_empty());
+        phase unavailable_transport_and_missing_published_invocation_refuse;
+        {
+            assert!(
+                CollaborationManager::disabled()
+                    .report_local_document_action(1, capture())
+                    .is_err()
+            );
+            let mut missing = capture();
+            missing.published = None;
+            let reports = Reports::default();
+            let mut manager =
+                CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
+            assert!(manager.report_local_document_action(2, missing).is_err());
+            assert!(reports.lock_recover().is_empty());
+        }
     }
 }
 
@@ -2187,31 +2179,36 @@ mod portable_transport_tests {
             vec![]
         }
     }
-    #[test]
-    fn peer_enqueue_failure_disconnects_the_real_manager() {
-        let mut manager = CollaborationManager::with_peer_transport(ClosedPeer);
-        assert!(manager.is_connected());
-        manager.send(CollabRequest::Document {
-            mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
+    tilo_test_env::scenario! {
+        /// A manager over a peer that drops every change, each case on a manager of its own.
+        fn a_peer_that_fails_to_take_a_change_disconnects_the_manager;
 
-            authorization: None,
-            commit: None,
-        });
-        assert!(!manager.is_connected());
-        assert!(manager.poll().is_empty());
-    }
+        phase peer_enqueue_failure_disconnects_the_real_manager;
+        {
+            let mut manager = CollaborationManager::with_peer_transport(ClosedPeer);
+            assert!(manager.is_connected());
+            manager.send(CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
 
-    #[test]
-    fn only_a_document_that_had_a_service_reports_sync_lost() {
-        assert!(!CollaborationManager::disabled().sync_lost());
-        let mut manager = CollaborationManager::with_peer_transport(ClosedPeer);
-        assert!(!manager.sync_lost());
-        manager.send(CollabRequest::Document {
-            mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
-            authorization: None,
-            commit: None,
-        });
-        assert!(manager.sync_lost());
+                authorization: None,
+                commit: None,
+            });
+            assert!(!manager.is_connected());
+            assert!(manager.poll().is_empty());
+        }
+
+        phase only_a_document_that_had_a_service_reports_sync_lost;
+        {
+            assert!(!CollaborationManager::disabled().sync_lost());
+            let mut manager = CollaborationManager::with_peer_transport(ClosedPeer);
+            assert!(!manager.sync_lost());
+            manager.send(CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
+                authorization: None,
+                commit: None,
+            });
+            assert!(manager.sync_lost());
+        }
     }
 }
 
@@ -2327,80 +2324,85 @@ mod late_primary_route_tests {
         manager
     }
 
-    #[test]
-    fn a_late_primary_route_leaves_the_app_up_and_joins_when_it_answers() {
-        let transport = Late::default();
-        let mut manager = joining(&transport);
-        assert_eq!(manager.state(), CollaborationState::Connecting);
-        assert!(manager.is_joining());
-        assert!(!manager.sync_lost());
-        assert_eq!(manager.join_hold(), None, "a join under way says nothing");
+    tilo_test_env::scenario! {
+        /// A manager joining in the background, each case on a manager and a transport of its own.
+        fn a_late_primary_route_is_joined_held_up_or_refused_as_the_broker_says;
 
-        // The broker has not answered: nothing happens, and nothing is
-        // announced again.
-        manager.poll();
-        assert_eq!(manager.state(), CollaborationState::Connecting);
-        assert_eq!(*transport.hellos.lock_recover(), 1);
+        phase a_late_primary_route_leaves_the_app_up_and_joins_when_it_answers;
+        {
+            let transport = Late::default();
+            let mut manager = joining(&transport);
+            assert_eq!(manager.state(), CollaborationState::Connecting);
+            assert!(manager.is_joining());
+            assert!(!manager.sync_lost());
+            assert_eq!(manager.join_hold(), None, "a join under way says nothing");
 
-        // The route answers: the app joins it, with nothing to do on its part.
-        *transport.answer.lock_recover() = Some(Ok(route()));
-        manager.poll();
-        assert_eq!(manager.state(), CollaborationState::Ready);
-        assert!(!manager.is_joining());
-        assert_eq!(
-            manager
-                .primary_route()
-                .map(|witness| witness.route().clone()),
-            Some(route())
-        );
-        assert_eq!(
-            manager.take_state_change(),
-            Some(CollaborationState::Ready),
-            "the owner does its connect-time work once joined"
-        );
-        assert_eq!(
-            *transport.hellos.lock_recover(),
-            1,
-            "a joined route is not announced again"
-        );
-    }
+            // The broker has not answered: nothing happens, and nothing is
+            // announced again.
+            manager.poll();
+            assert_eq!(manager.state(), CollaborationState::Connecting);
+            assert_eq!(*transport.hellos.lock_recover(), 1);
 
-    #[test]
-    fn the_join_says_what_the_broker_says_holds_it_up() {
-        let transport = Late::default();
-        let mut manager = joining(&transport);
-        let waiting = JoinHold::WorkspaceWaiting {
-            reason: "Placing the workspace on its host".into(),
-            detail: Some("the host is offline".into()),
-        };
-        *transport.hold.lock_recover() = Some(waiting.clone());
-        assert_eq!(manager.join_hold(), Some(waiting));
-        let unreachable = JoinHold::Unreachable("the broker went away".into());
-        *transport.hold.lock_recover() = Some(unreachable.clone());
-        assert_eq!(manager.join_hold(), Some(unreachable));
-        *transport.hold.lock_recover() = None;
-        assert_eq!(manager.join_hold(), None);
+            // The route answers: the app joins it, with nothing to do on its part.
+            *transport.answer.lock_recover() = Some(Ok(route()));
+            manager.poll();
+            assert_eq!(manager.state(), CollaborationState::Ready);
+            assert!(!manager.is_joining());
+            assert_eq!(
+                manager
+                    .primary_route()
+                    .map(|witness| witness.route().clone()),
+                Some(route())
+            );
+            assert_eq!(
+                manager.take_state_change(),
+                Some(CollaborationState::Ready),
+                "the owner does its connect-time work once joined"
+            );
+            assert_eq!(
+                *transport.hellos.lock_recover(),
+                1,
+                "a joined route is not announced again"
+            );
+        }
 
-        // Joined: nothing holds it up any more, whatever was said last.
-        *transport.hold.lock_recover() = Some(JoinHold::Unreachable("stale".into()));
-        *transport.answer.lock_recover() = Some(Ok(route()));
-        manager.poll();
-        assert_eq!(manager.join_hold(), None);
-    }
+        phase the_join_says_what_the_broker_says_holds_it_up;
+        {
+            let transport = Late::default();
+            let mut manager = joining(&transport);
+            let waiting = JoinHold::WorkspaceWaiting {
+                reason: "Placing the workspace on its host".into(),
+                detail: Some("the host is offline".into()),
+            };
+            *transport.hold.lock_recover() = Some(waiting.clone());
+            assert_eq!(manager.join_hold(), Some(waiting));
+            let unreachable = JoinHold::Unreachable("the broker went away".into());
+            *transport.hold.lock_recover() = Some(unreachable.clone());
+            assert_eq!(manager.join_hold(), Some(unreachable));
+            *transport.hold.lock_recover() = None;
+            assert_eq!(manager.join_hold(), None);
 
-    #[test]
-    fn a_refused_route_still_takes_the_app_offline() {
-        let transport = Late::default();
-        let mut manager = joining(&transport);
-        *transport.answer.lock_recover() = Some(Err("not a member of this workspace".into()));
-        manager.poll();
-        assert!(matches!(manager.state(), CollaborationState::Offline(_)));
-        assert_eq!(
-            manager.join_refusal(),
-            Some("not a member of this workspace"),
-            "the app says why, with the broker's reason"
-        );
-        assert!(manager.sync_lost());
-        assert!(!manager.is_joining());
+            // Joined: nothing holds it up any more, whatever was said last.
+            *transport.hold.lock_recover() = Some(JoinHold::Unreachable("stale".into()));
+            *transport.answer.lock_recover() = Some(Ok(route()));
+            manager.poll();
+            assert_eq!(manager.join_hold(), None);
+        }
+
+        phase a_refused_route_still_takes_the_app_offline;
+        {
+            let transport = Late::default();
+            let mut manager = joining(&transport);
+            *transport.answer.lock_recover() = Some(Err("not a member of this workspace".into()));
+            manager.poll();
+            assert!(matches!(manager.state(), CollaborationState::Offline(_)));
+            assert_eq!(
+                manager.join_refusal(),
+                Some("not a member of this workspace"),
+                "the app says why, with the broker's reason"
+            );
+            assert!(manager.sync_lost());
+            assert!(!manager.is_joining());
+        }
     }
 }

@@ -1,10 +1,10 @@
-//! `channel-crypto` — per-channel MLS group encryption for Tilo.
+//! `workspace-crypto` — per-workspace MLS group encryption for Tilo.
 //!
-//! Each Tilo channel becomes one MLS group, used for group key agreement:
+//! Each Tilo workspace becomes one MLS group, used for group key agreement:
 //! the group's epoch secrets rotate on every membership change. Ops are not
 //! encrypted with MLS application messages but under per-epoch *content
 //! keys* derived from the MLS exporter ([`content`]), so every member —
-//! including one added later — can read the channel's whole history. The
+//! including one added later — can read the workspace's whole history. The
 //! envelope's metadata (author, artifact, `kind`, timestamp, seq) stays
 //! cleartext so the broker routes by artifact and filters by op class
 //! without decrypting.
@@ -13,8 +13,8 @@
 //!
 //! [`MemberKey::generate`] mints a fresh per-member signer + provider;
 //! [`MemberKey::fresh_key_package`] mints a key package to ship to a
-//! channel owner; [`ChannelGroup::create`] bootstraps a one-member
-//! channel; [`ChannelGroup::admit`] / [`ChannelGroup::add_member_transactional`]
+//! workspace owner; [`ChannelGroup::create`] bootstraps a one-member
+//! workspace; [`ChannelGroup::admit`] / [`ChannelGroup::add_member_transactional`]
 //! admit a candidate and return its Welcome, sealed key history and the
 //! commit for existing members; [`ChannelGroup::process_welcome_with_history`]
 //! joins with the full key history; [`ChannelGroup::seal_content`] /
@@ -26,7 +26,7 @@
 //! application messages.
 //!
 //! This crate does not support external commits or joins, epoch rotation
-//! outside membership changes, or direct-share/cross-channel envelopes.
+//! outside membership changes, or direct-share/cross-workspace envelopes.
 //! Sealed persistence exists, but vault-key custody belongs to the
 //! production identity service.
 //!
@@ -42,7 +42,7 @@
 //!
 //! [`collab_types::SignedOp`] carries `encryption:
 //! Option<EncryptionMetadata>` — `None` is plaintext, `Some` names the
-//! channel, epoch and versioned [`collab_types::EncryptionScheme`]: version 1
+//! workspace, epoch and versioned [`collab_types::EncryptionScheme`]: version 1
 //! MLS application messages (still readable by members at that epoch) or
 //! version 2 content-key envelopes. [`collab_types::MlsGovernanceFrame`]
 //! carries versioned, signed clear routing metadata around opaque
@@ -50,7 +50,7 @@
 //!
 //! ## Keys follow membership
 //!
-//! A channel's group holds exactly the participant devices its membership
+//! A workspace's group holds exactly the participant devices its membership
 //! lets read it, and every participant keeps a [`ChannelPeer`]: any of them
 //! writes the commit that brings the group in line, and every one refuses a
 //! commit the membership does not back ([`peer`]).
@@ -78,7 +78,7 @@ pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
 pub use endpoint::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN, SenderMediaKeys};
 pub use errors::{Error, Result, WelcomeRefusal};
-pub use gate::{ChannelGate, admission};
+pub use gate::ChannelGate;
 pub use group::{ChannelGroup, MemberAddition};
 #[cfg(not(target_arch = "wasm32"))]
 pub use peer::Files;

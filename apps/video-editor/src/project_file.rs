@@ -369,179 +369,187 @@ mod tests {
         }
     }
 
-    #[test]
-    fn project_header_refuses_foreign_truncated_newer_or_damaged_files() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn project_files_refuse_bad_headers_and_track_names_and_sources;
+
+        phase project_header_refuses_foreign_truncated_newer_or_damaged_files;
         {
-            let bytes = encode(&Project::new("x")).expect("the project encodes");
-            assert_eq!(&bytes[..MAGIC.len()], b"TiloVEPRJ");
-            assert_eq!(u16::from_le_bytes([bytes[9], bytes[10]]), FORMAT_VERSION);
-            assert_eq!(
-                u16::from_le_bytes([bytes[11], bytes[12]]),
-                MIN_READER_VERSION
-            );
-            let declared =
-                u32::from_le_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]) as usize;
-            assert_eq!(
-                declared,
-                bytes.len() - HEADER_LEN,
-                "the declared payload length is the actual payload length",
-            );
-        }
-        {
-            // The overwhelmingly likely cause is picking the wrong file, so the
-            // error has to say that and not "parse error at byte 0".
-            assert_eq!(
-                decode(b"not a project at all").unwrap_err(),
-                ProjectFileError::NotAProject
-            );
-            assert_eq!(decode(b"").unwrap_err(), ProjectFileError::NotAProject);
-            // A file shorter than the header is not a readable project either.
-            assert_eq!(
-                header_fields(&[0u8; 4]).unwrap_err(),
-                ProjectFileError::NotAProject
-            );
-        }
-        {
-            let bytes = encode(&Project::new("t")).expect("the project encodes");
-            for n in 0..HEADER_LEN {
+            {
+                let bytes = encode(&Project::new("x")).expect("the project encodes");
+                assert_eq!(&bytes[..MAGIC.len()], b"TiloVEPRJ");
+                assert_eq!(u16::from_le_bytes([bytes[9], bytes[10]]), FORMAT_VERSION);
                 assert_eq!(
-                    header_fields(&bytes[..n]).unwrap_err(),
-                    ProjectFileError::NotAProject,
-                    "{n} bytes"
+                    u16::from_le_bytes([bytes[11], bytes[12]]),
+                    MIN_READER_VERSION
+                );
+                let declared =
+                    u32::from_le_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]) as usize;
+                assert_eq!(
+                    declared,
+                    bytes.len() - HEADER_LEN,
+                    "the declared payload length is the actual payload length",
                 );
             }
-            assert_eq!(
-                header_fields(&bytes[..HEADER_LEN]).map(|(v, m, _)| (v, m)),
-                Ok((FORMAT_VERSION, MIN_READER_VERSION))
-            );
-        }
-        {
-            // This is the case the length field exists for. Automerge can often
-            // load a prefix of a document and hand back *some* of the clips —
-            // exactly the plausible-but-wrong result that must never reach a user
-            // who believes they opened their project.
-            let full = encode(&rich_project()).expect("the project encodes");
-            let cut = &full[..full.len() - 8];
-            match decode(cut) {
-                Err(ProjectFileError::Truncated { declared, present }) => {
-                    assert_eq!(declared, full.len() - HEADER_LEN);
-                    assert_eq!(present, declared - 8);
+            {
+                // The overwhelmingly likely cause is picking the wrong file, so the
+                // error has to say that and not "parse error at byte 0".
+                assert_eq!(
+                    decode(b"not a project at all").unwrap_err(),
+                    ProjectFileError::NotAProject
+                );
+                assert_eq!(decode(b"").unwrap_err(), ProjectFileError::NotAProject);
+                // A file shorter than the header is not a readable project either.
+                assert_eq!(
+                    header_fields(&[0u8; 4]).unwrap_err(),
+                    ProjectFileError::NotAProject
+                );
+            }
+            {
+                let bytes = encode(&Project::new("t")).expect("the project encodes");
+                for n in 0..HEADER_LEN {
+                    assert_eq!(
+                        header_fields(&bytes[..n]).unwrap_err(),
+                        ProjectFileError::NotAProject,
+                        "{n} bytes"
+                    );
                 }
-                other => panic!("a short file must be refused, got {other:?}"),
+                assert_eq!(
+                    header_fields(&bytes[..HEADER_LEN]).map(|(v, m, _)| (v, m)),
+                    Ok((FORMAT_VERSION, MIN_READER_VERSION))
+                );
             }
-        }
-        {
-            // Refuse, never guess: an unknown layout read with today's rules
-            // produces a project that looks fine and is wrong.
-            let mut bytes = encode(&rich_project()).expect("the project encodes");
-            bytes[11..13].copy_from_slice(&(MIN_READER_VERSION + 1).to_le_bytes());
-            match decode(&bytes) {
-                Err(ProjectFileError::TooNew {
-                    file_min_reader,
-                    this_reader,
-                }) => {
-                    assert_eq!(file_min_reader, MIN_READER_VERSION + 1);
-                    assert_eq!(this_reader, MIN_READER_VERSION);
+            {
+                // This is the case the length field exists for. Automerge can often
+                // load a prefix of a document and hand back *some* of the clips —
+                // exactly the plausible-but-wrong result that must never reach a user
+                // who believes they opened their project.
+                let full = encode(&rich_project()).expect("the project encodes");
+                let cut = &full[..full.len() - 8];
+                match decode(cut) {
+                    Err(ProjectFileError::Truncated { declared, present }) => {
+                        assert_eq!(declared, full.len() - HEADER_LEN);
+                        assert_eq!(present, declared - 8);
+                    }
+                    other => panic!("a short file must be refused, got {other:?}"),
                 }
-                other => panic!("a newer file must be refused, got {other:?}"),
+            }
+            {
+                // Refuse, never guess: an unknown layout read with today's rules
+                // produces a project that looks fine and is wrong.
+                let mut bytes = encode(&rich_project()).expect("the project encodes");
+                bytes[11..13].copy_from_slice(&(MIN_READER_VERSION + 1).to_le_bytes());
+                match decode(&bytes) {
+                    Err(ProjectFileError::TooNew {
+                        file_min_reader,
+                        this_reader,
+                    }) => {
+                        assert_eq!(file_min_reader, MIN_READER_VERSION + 1);
+                        assert_eq!(this_reader, MIN_READER_VERSION);
+                    }
+                    other => panic!("a newer file must be refused, got {other:?}"),
+                }
+            }
+            {
+                let mut bytes = encode(&rich_project()).expect("the project encodes");
+                // Scribble over the middle of the Automerge document, leaving the
+                // header (and so the length) intact.
+                let mid = HEADER_LEN + (bytes.len() - HEADER_LEN) / 2;
+                for b in &mut bytes[mid..mid + 8] {
+                    *b ^= 0xff;
+                }
+                match decode(&bytes) {
+                    Err(ProjectFileError::Corrupt(_)) => {}
+                    other => panic!("a scribbled payload must not load, got {other:?}"),
+                }
+            }
+            {
+                let missing = Path::new("/definitely/not/here-xyz.qvp");
+                match load(missing) {
+                    Err(ProjectFileError::Io(msg)) => assert!(msg.contains("Could not open"), "{msg}"),
+                    other => panic!("a missing file is an IO error, got {other:?}"),
+                }
             }
         }
-        {
-            let mut bytes = encode(&rich_project()).expect("the project encodes");
-            // Scribble over the middle of the Automerge document, leaving the
-            // header (and so the length) intact.
-            let mid = HEADER_LEN + (bytes.len() - HEADER_LEN) / 2;
-            for b in &mut bytes[mid..mid + 8] {
-                *b ^= 0xff;
-            }
-            match decode(&bytes) {
-                Err(ProjectFileError::Corrupt(_)) => {}
-                other => panic!("a scribbled payload must not load, got {other:?}"),
-            }
-        }
-        {
-            let missing = Path::new("/definitely/not/here-xyz.qvp");
-            match load(missing) {
-                Err(ProjectFileError::Io(msg)) => assert!(msg.contains("Could not open"), "{msg}"),
-                other => panic!("a missing file is an IO error, got {other:?}"),
-            }
-        }
-    }
 
-    #[test]
-    fn project_names_and_missing_sources_are_tracked() {
+        phase project_names_and_missing_sources_are_tracked;
         {
-            assert_eq!(with_extension("Holiday"), "Holiday.qvp");
-            assert_eq!(with_extension("Holiday.qvp"), "Holiday.qvp");
-            assert_eq!(with_extension("Holiday.QVP"), "Holiday.QVP");
-            // A name that merely contains a dot is not already extended.
-            assert_eq!(with_extension("v1.2 cut"), "v1.2 cut.qvp");
-            assert_eq!(with_extension("   "), "Untitled.qvp");
-        }
-        {
-            assert_eq!(
-                name_from_path(Path::new("/home/a/Holiday.qvp")).as_deref(),
-                Some("Holiday"),
-            );
-            assert_eq!(name_from_path(Path::new("/")), None);
-        }
-        {
-            let mut p = Project::new("moved");
-            p.media.push(MediaItem {
-                id: Uuid::new_v4(),
-                name: "Gone.mov".into(),
-                kind: MediaKind::Video,
-                path: "/definitely/not/here-xyz.mov".into(),
-                ..Default::default()
-            });
-            // A title has no bytes at all, so it is not "missing".
-            p.media.push(MediaItem {
-                id: Uuid::new_v4(),
-                name: "Card".into(),
-                kind: MediaKind::Text,
-                path: String::new(),
-                text: Some(crate::model::TextSource::new("Card")),
-                ..Default::default()
-            });
-            let here =
-                std::env::temp_dir().join(format!("tilo-ve-here-{}.mp4", std::process::id()));
-            std::fs::write(&here, b"bytes").unwrap();
-            p.media.push(MediaItem {
-                id: Uuid::new_v4(),
-                name: "Here.mp4".into(),
-                kind: MediaKind::Video,
-                path: here.to_string_lossy().into_owned(),
-                ..Default::default()
-            });
-
-            let missing = missing_sources(&p);
-            assert_eq!(
-                missing,
-                vec![("Gone.mov".to_string(), crate::media::Hydration::Projected)],
-                "only the source whose bytes are absent is reported",
-            );
-            std::fs::remove_file(&here).ok();
-        }
-        {
-            let dir = std::env::temp_dir().join(format!("tilo-ve-beside-{}", std::process::id()));
-            std::fs::create_dir_all(dir.join("footage")).unwrap();
-            std::fs::write(dir.join("footage/take.mp4"), b"bytes").unwrap();
-            let mut p = Project::new("beside");
-            for path in ["footage/take.mp4", "footage/elsewhere.mp4"] {
+            {
+                assert_eq!(with_extension("Holiday"), "Holiday.qvp");
+                assert_eq!(with_extension("Holiday.qvp"), "Holiday.qvp");
+                assert_eq!(with_extension("Holiday.QVP"), "Holiday.QVP");
+                // A name that merely contains a dot is not already extended.
+                assert_eq!(with_extension("v1.2 cut"), "v1.2 cut.qvp");
+                assert_eq!(with_extension("   "), "Untitled.qvp");
+            }
+            {
+                assert_eq!(
+                    name_from_path(Path::new("/home/a/Holiday.qvp")).as_deref(),
+                    Some("Holiday"),
+                );
+                assert_eq!(name_from_path(Path::new("/")), None);
+            }
+            {
+                let mut p = Project::new("moved");
                 p.media.push(MediaItem {
                     id: Uuid::new_v4(),
+                    name: "Gone.mov".into(),
                     kind: MediaKind::Video,
-                    path: path.into(),
+                    path: "/definitely/not/here-xyz.mov".into(),
                     ..Default::default()
                 });
+                // A title has no bytes at all, so it is not "missing".
+                p.media.push(MediaItem {
+                    id: Uuid::new_v4(),
+                    name: "Card".into(),
+                    kind: MediaKind::Text,
+                    path: String::new(),
+                    text: Some(crate::model::TextSource::new("Card")),
+                    ..Default::default()
+                });
+                let here =
+                    std::env::temp_dir().join(format!("tilo-ve-here-{}.mp4", std::process::id()));
+                std::fs::write(&here, b"bytes").unwrap();
+                p.media.push(MediaItem {
+                    id: Uuid::new_v4(),
+                    name: "Here.mp4".into(),
+                    kind: MediaKind::Video,
+                    path: here.to_string_lossy().into_owned(),
+                    ..Default::default()
+                });
+
+                let missing = missing_sources(&p);
+                assert_eq!(
+                    missing,
+                    vec![("Gone.mov".to_string(), crate::media::Hydration::Projected)],
+                    "only the source whose bytes are absent is reported",
+                );
+                std::fs::remove_file(&here).ok();
             }
-            anchor_media(&mut p, &dir);
-            assert_eq!(
-                Path::new(&p.media[0].path),
-                dir.join("footage/take.mp4").as_path()
-            );
-            assert_eq!(p.media[1].path, "footage/elsewhere.mp4");
-            std::fs::remove_dir_all(&dir).ok();
+            {
+                let dir = std::env::temp_dir().join(format!("tilo-ve-beside-{}", std::process::id()));
+                std::fs::create_dir_all(dir.join("footage")).unwrap();
+                std::fs::write(dir.join("footage/take.mp4"), b"bytes").unwrap();
+                let mut p = Project::new("beside");
+                for path in ["footage/take.mp4", "footage/elsewhere.mp4"] {
+                    p.media.push(MediaItem {
+                        id: Uuid::new_v4(),
+                        kind: MediaKind::Video,
+                        path: path.into(),
+                        ..Default::default()
+                    });
+                }
+                anchor_media(&mut p, &dir);
+                assert_eq!(
+                    Path::new(&p.media[0].path),
+                    dir.join("footage/take.mp4").as_path()
+                );
+                assert_eq!(p.media[1].path, "footage/elsewhere.mp4");
+                std::fs::remove_dir_all(&dir).ok();
+            }
         }
     }
 }

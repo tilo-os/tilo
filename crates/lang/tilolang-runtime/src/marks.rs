@@ -69,14 +69,15 @@ pub(crate) const WINDOW_PAGE: usize = 128;
 pub(crate) const CATCH_UP_PAGE: usize = 16;
 
 /// What someone else changed of one record of a window's document since the person last looked:
-/// the newest changes of it read, and how many it holds, which the row says it folds.
+/// the newest changes of it read, and how many it holds of those the person has not seen, which
+/// the row says it folds.
 struct Changed {
     at: ResourceRef,
     /// The newest changes of it since the person's seen mark, oldest first
     /// ([`CATCH_UP_PAGE`] of them at most): the row says the newest.
     versions: Vec<Version>,
-    /// How many changes the record holds since that mark.
-    total: usize,
+    /// How many changes of it the person has not seen: what the row says it folds.
+    changes: usize,
 }
 
 /// The pseudo-field a mark reads versions through: of a resource, every version of it, and of
@@ -629,14 +630,23 @@ impl Core {
             else {
                 continue;
             };
-            let unseen = crate::seen::unseen_after(&since.versions, &viewer.0, &runs);
-            if !unseen.is_empty() {
-                changed.push(Changed {
-                    at: rid,
-                    versions: unseen,
-                    total: since.total,
-                });
+            let fresh = crate::seen::unseen_after(&since.versions, &viewer.0, &runs);
+            if fresh.is_empty() {
+                continue;
             }
+            // What the person catches up on: every change of it since their mark, when the page
+            // holds them all; else how many the record holds since then, which a page of them
+            // leaves the rest of out.
+            let holds = if since.total <= since.versions.len() {
+                fresh.len()
+            } else {
+                since.total
+            };
+            changed.push(Changed {
+                at: rid,
+                versions: fresh,
+                changes: holds,
+            });
         }
         // A change a record made from `resource` stands under both, as that record's own
         // change and as a change to what it was made from: each counts once, where the record
@@ -782,9 +792,9 @@ impl Core {
         stack
     }
 
-    /// One row of a catch-up: what a record someone changed is called, what was done to it in
-    /// one line, how many changes it holds since the person looked, and the run that made the
-    /// newest of them.
+    /// One row of a catch-up: what a record someone changed is called, everyone who changed it
+    /// and what the newest of them did in one line, how many changes it holds since the person
+    /// looked, and the run that made the newest of them.
     fn catch_up_row(
         &self,
         row_key: &str,
@@ -795,7 +805,7 @@ impl Core {
         let Changed {
             at: rid,
             versions,
-            total,
+            changes,
         } = changed;
         let mut held = UiNode::empty("stack", row_key);
         held.props.insert("gap".to_owned(), Value::text("tight"));
@@ -817,23 +827,31 @@ impl Core {
             ),
         );
         held.children.push(item);
-        // What was done to it, one line: its newest change, as history says a step of a record:
-        // who, what they did, and when.
+        // Who changed it, and what the newest of them did, one line: as history says a step of a
+        // record — who, what they did, and when.
         let Some(newest) = versions.last() else {
             return held;
         };
-        held.children
-            .push(self.step_line(&format!("{row_key}~step"), rid, newest, viewer));
+        // What the step did, where its changes are one action's and its words say how many: the
+        // count stands in the sentence ("wrote 7 messages"), as history says it.
+        let counted = self.counted_said(versions, *changes);
+        held.children.push(self.step_line(
+            &format!("{row_key}~step"),
+            rid,
+            versions,
+            viewer,
+            counted.as_deref(),
+        ));
         // Changed more than once since the person looked: the row says how many, as history
-        // says the changes a step folds.
-        if *total > 1 {
+        // says the changes a step folds, where its sentence does not.
+        if *changes > 1 && counted.is_none() {
             let mut many = UiNode::empty("ui.Text", &format!("{row_key}~changes"));
             many.props.insert(
                 "value".to_owned(),
                 Value::Text(self.word_args(
                     "tilolang-history-changes",
-                    &[("count".to_owned(), total.to_string())],
-                    &format!("{total} changes"),
+                    &[("count".to_owned(), changes.to_string())],
+                    &format!("{changes} changes"),
                 )),
             );
             many.props.insert("role".to_owned(), Value::text("caption"));
@@ -862,47 +880,71 @@ impl Core {
         held
     }
 
-    /// One step of a catch-up: the face of who made it, what they did in the words history
-    /// says it in, and when.
+    /// One step of a catch-up: the faces of everyone who made one of `versions`, their names, and
+    /// what they did in the words history says it in — `said` where the step's own sentence names
+    /// how many changes it folds, else the newest change's — and when.
     fn step_line(
         &self,
         key: &str,
         of: &ResourceRef,
-        version: &Version,
+        versions: &[Version],
         viewer: &Principal,
+        said: Option<&str>,
     ) -> UiNode {
         let mut line = UiNode::empty("row", key);
         line.props.insert("gap".to_owned(), Value::text("tight"));
         line.props.insert("align".to_owned(), Value::text("center"));
-        let mut face = UiNode::empty("ui.Avatar", &format!("{key}~face"));
-        face.props.insert(
-            "who".to_owned(),
-            Value::Principal(Principal::new(version.who.clone())),
-        );
-        line.children.push(face);
-        // The line leads with the name, as history writes a sentence: name, then what they did
+        // What changed it, beside the time: it wraps rather than squeezing its faces or its names,
+        // so the time keeps its place at the line's end in a narrow window with large text.
+        let mut told = UiNode::empty("row", &format!("{key}~told"));
+        told.props.insert("gap".to_owned(), Value::text("tight"));
+        told.props.insert("align".to_owned(), Value::text("center"));
+        told.props.insert("wrap".to_owned(), Value::Bool(true));
+        told.props.insert("fill".to_owned(), Value::Float(1.0));
+        // Everyone who changed it since the person looked, oldest first, each once: a record two
+        // people changed shows both their faces and names them both, as the window's chip does.
+        let mut changers: Vec<&str> = Vec::new();
+        for version in versions {
+            if !changers.contains(&version.who.as_str()) {
+                changers.push(version.who.as_str());
+            }
+        }
+        for (index, who) in changers.iter().enumerate() {
+            let mut face = UiNode::empty("ui.Avatar", &format!("{key}~face-{index}"));
+            face.props.insert(
+                "who".to_owned(),
+                Value::Principal(Principal::new((*who).to_owned())),
+            );
+            told.children.push(face);
+        }
+        // The line leads with the names, as history writes a sentence: name, then what they did
         // ("Scout marked it done"). A face alone does not say who.
-        let mine = version.run.is_none() && viewer.0 == version.who;
+        let names: Vec<String> = changers
+            .iter()
+            .map(|who| self.actor(who, viewer.0 == *who))
+            .collect();
         let mut who = UiNode::empty("ui.Text", &format!("{key}~who"));
-        who.props.insert(
-            "value".to_owned(),
-            Value::Text(self.actor(&version.who, mine)),
-        );
+        who.props
+            .insert("value".to_owned(), Value::Text(self.names(&names)));
         who.props.insert("role".to_owned(), Value::text("label"));
-        line.children.push(who);
-        let mut said = UiNode::empty("ui.Text", &format!("{key}~said"));
-        said.props.insert(
+        told.children.push(who);
+        let Some(newest) = versions.last() else {
+            return line;
+        };
+        let mut what = UiNode::empty("ui.Text", &format!("{key}~said"));
+        what.props.insert(
             "value".to_owned(),
-            Value::Text(self.version_line(version, of, &viewer.0)),
+            Value::Text(
+                said.map_or_else(|| self.version_line(newest, of, &viewer.0), str::to_owned),
+            ),
         );
-        said.props.insert("truncate".to_owned(), Value::Bool(true));
-        line.children.push(said);
+        what.props.insert("truncate".to_owned(), Value::Bool(true));
+        told.children.push(what);
+        line.children.push(told);
         // The time stands at the line's end, out of the sentence's way: what they did reads
         // first, and when it happened lines up down the panel's edge.
-        line.children
-            .push(UiNode::empty("spacer", &format!("{key}~gap")));
         let mut at = UiNode::empty("ui.Time", &format!("{key}~at"));
-        at.props.insert("at".to_owned(), Value::text(&version.at));
+        at.props.insert("at".to_owned(), Value::text(&newest.at));
         at.props.insert("role".to_owned(), Value::text("caption"));
         at.props.insert("secondary".to_owned(), Value::Bool(true));
         line.children.push(at);

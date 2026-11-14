@@ -354,6 +354,16 @@ impl ManualContext<'_> {
         *placement = Some(rect);
         Ok(())
     }
+    /// The retained widget of child `index`, for a policy that asks it something only the
+    /// widget itself knows (a title, the least room its words read in).
+    pub fn widget(&self, index: usize) -> Option<&dyn Widget> {
+        let node = self.children.get(index)?.0;
+        let pointer = *self.nodes.get(&node)?;
+        // SAFETY: the map holds a pointer to a widget this context's tree borrowed for the
+        // same layout, and `measure_child` reads it the same way; nothing here retains it.
+        Some(unsafe { &*pointer })
+    }
+
     /// Measure current retained topology without applying hypothetical geometry.
     pub fn measure(
         &mut self,

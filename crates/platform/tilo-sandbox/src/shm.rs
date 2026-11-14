@@ -342,22 +342,6 @@ mod sys {
 mod tests {
     use super::*;
 
-    #[test]
-    fn memory_file_round_trips_with_its_length() {
-        let fd = from_bytes("t", b"hello").unwrap();
-        let bytes = map_sealed(&fd, 5).unwrap();
-        assert_eq!(&bytes[..], b"hello");
-        let file = File::from(fd.try_clone().unwrap());
-        assert_eq!(&map_document(&file, Some(5)).unwrap()[..], b"hello");
-    }
-
-    #[test]
-    fn empty_and_short_buffers_are_refused() {
-        let fd = from_bytes("t", b"hello").unwrap();
-        assert!(map_sealed(&fd, 0).is_err());
-        assert!(map_sealed(&fd, 1 << 30).is_err());
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn unsealed_memfd_is_refused() {
@@ -365,30 +349,50 @@ mod tests {
         assert!(map_sealed(&unsealed, 4).is_err());
     }
 
-    #[test]
-    fn shared_mapping_sees_the_writers_bytes() {
-        let file = create("pixels", 4096).unwrap();
-        let reader = map_shared(&file).unwrap();
-        let writer_file = File::from(file.as_fd().try_clone_to_owned().unwrap());
-        let mut writer = map_writable(&writer_file).unwrap();
-        writer[..4].copy_from_slice(b"rgba");
-        assert_eq!(&reader[..4], b"rgba");
-    }
+    tilo_test_env::scenario! {
+        fn memory_files_map_at_their_length_share_writes_and_reopen_read_only;
 
-    #[test]
-    fn a_regular_file_reopens_read_only() {
-        let dir = std::env::temp_dir().join(format!("tilo-sandbox-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("doc.pdf");
-        std::fs::write(&path, b"%PDF").unwrap();
-        let rw = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        let ro = reopen_read_only(&rw).expect("regular files reopen");
-        let mut probe = &ro;
-        assert!(std::io::Write::write(&mut probe, b"x").is_err());
-        let _ = std::fs::remove_dir_all(&dir);
+        phase memory_file_round_trips_with_its_length;
+        {
+            let fd = from_bytes("t", b"hello").unwrap();
+            let bytes = map_sealed(&fd, 5).unwrap();
+            assert_eq!(&bytes[..], b"hello");
+            let file = File::from(fd.try_clone().unwrap());
+            assert_eq!(&map_document(&file, Some(5)).unwrap()[..], b"hello");
+        }
+
+        phase empty_and_short_buffers_are_refused;
+        {
+            let fd = from_bytes("t", b"hello").unwrap();
+            assert!(map_sealed(&fd, 0).is_err());
+            assert!(map_sealed(&fd, 1 << 30).is_err());
+        }
+
+        phase shared_mapping_sees_the_writers_bytes;
+        {
+            let file = create("pixels", 4096).unwrap();
+            let reader = map_shared(&file).unwrap();
+            let writer_file = File::from(file.as_fd().try_clone_to_owned().unwrap());
+            let mut writer = map_writable(&writer_file).unwrap();
+            writer[..4].copy_from_slice(b"rgba");
+            assert_eq!(&reader[..4], b"rgba");
+        }
+
+        phase a_regular_file_reopens_read_only;
+        {
+            let dir = std::env::temp_dir().join(format!("tilo-sandbox-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("doc.pdf");
+            std::fs::write(&path, b"%PDF").unwrap();
+            let rw = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let ro = reopen_read_only(&rw).expect("regular files reopen");
+            let mut probe = &ro;
+            assert!(std::io::Write::write(&mut probe, b"x").is_err());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

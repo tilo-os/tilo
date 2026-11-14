@@ -6,7 +6,7 @@ use vello::kurbo::{Point, Rect, Vec2};
 
 use super::emoji_row::{EmojiRow, ROW_SHARE};
 use super::{CAPTION_ROW_SHARE, MenuItem, SEPARATOR_HEIGHT, label_inset};
-use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
+use crate::icons::{AppImage, Icon, LUCIDE_DEFAULT_STROKE_PX, draw_app_image, draw_icon};
 use crate::paint::PaintCtx;
 use crate::tokens::TextRole;
 use crate::widget::floating_list::{FloatingMetrics, FloatingRow, RowState};
@@ -76,6 +76,7 @@ impl FloatingRow for MenuRow {
                         checked: Some(_),
                         ..
                     } | MenuItem::Action { icon: Some(_), .. }
+                        | MenuItem::Action { image: Some(_), .. }
                 )
             }),
         }
@@ -93,6 +94,7 @@ impl FloatingRow for MenuRow {
             MenuItem::Action {
                 label,
                 icon,
+                image,
                 checked,
                 destructive,
                 enabled,
@@ -106,6 +108,7 @@ impl FloatingRow for MenuRow {
                     &state,
                     Action {
                         icon: *icon,
+                        image: image.as_ref(),
                         checked: *checked,
                         destructive: *destructive,
                         enabled: *enabled,
@@ -137,8 +140,9 @@ impl FloatingRow for MenuRow {
 }
 
 /// What a command row says about itself.
-pub(super) struct Action {
+pub(super) struct Action<'a> {
     icon: Option<Icon>,
+    image: Option<&'a AppImage>,
     checked: Option<bool>,
     destructive: bool,
     enabled: bool,
@@ -151,13 +155,14 @@ fn paint_action(
     ctx: &mut PaintCtx<'_>,
     row: Rect,
     state: &RowState<'_, MenuColumns>,
-    action: Action,
+    action: Action<'_>,
     label: &str,
     (trailing, trailing_width): (Option<&str>, f64),
     (content_x0, content_x1): (f64, f64),
 ) {
     let Action {
         icon,
+        image,
         checked,
         destructive,
         enabled,
@@ -206,14 +211,18 @@ fn paint_action(
             Some(on) => on.then_some(Icon::Check),
             None => icon,
         };
-        if let Some(icon) = glyph {
+        let slot = Rect::from_origin_size(
+            (label_x, row.y0 + (row.height() - icon_size) / 2.0),
+            (icon_size, icon_size),
+        );
+        // An app's own artwork stands in its glyph's place once it has pixels.
+        let drawn = checked.is_none()
+            && image.is_some_and(|image| draw_app_image(ctx.scene, ctx.transform, slot, image));
+        if !drawn && let Some(icon) = glyph {
             draw_icon(
                 ctx.scene,
                 ctx.transform,
-                Rect::from_origin_size(
-                    (label_x, row.y0 + (row.height() - icon_size) / 2.0),
-                    (icon_size, icon_size),
-                ),
+                slot,
                 icon,
                 ink,
                 LUCIDE_DEFAULT_STROKE_PX,

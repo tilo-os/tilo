@@ -147,158 +147,162 @@ fn type_of(host: &Host, name: &str) -> String {
         .clone()
 }
 
-#[test]
-fn a_record_a_write_made_answers_a_field_the_write_did_not_write() {
-    let (host, mut doc) = host();
-    let desk = host.root_of("so.tilo.test.shell").unwrap();
-    commit(&host, &mut doc);
-    // The session's sync makes a workspace in the desk's collection, naming its key alone.
-    let made = host
-        .runtime()
-        .apply_origin(
-            "session",
-            vec![OriginWrite::Insert {
-                owner: desk,
-                field: desk_field(&host, "workspaces"),
-                ty: type_of(&host, "Workspace"),
-                fields: vec![("key".to_owned(), Value::Text("one".to_owned()))],
-            }],
-            None,
-        )
-        .unwrap();
-    let workspace = made
-        .into_iter()
-        .flatten()
-        .next()
-        .expect("the sync made the workspace");
-    // A field the write did not write is the record's own: the index names the record at its
-    // next derivation, and until then the record answers.
-    assert_eq!(
-        host.runtime().read(&workspace, "name").unwrap(),
-        Value::Text(String::new()),
-        "a field the write did not write reads as the record holds it"
-    );
-    assert_eq!(
-        host.runtime().read(&workspace, "key").unwrap(),
-        Value::Text("one".to_owned()),
-        "and a field it did write reads as it wrote it"
-    );
-}
+tilo_test_env::scenario! {
+    fn what_a_write_made_reads_before_the_record_or_the_index_holds_it;
 
-#[test]
-fn a_record_a_write_made_has_its_type_before_the_index_names_it() {
-    let (host, mut doc) = host();
-    let desk = host.root_of("so.tilo.test.shell").unwrap();
-    commit(&host, &mut doc);
-    let made = host
-        .runtime()
-        .apply_origin(
-            "session",
-            vec![OriginWrite::Insert {
-                owner: desk.clone(),
-                field: desk_field(&host, "workspaces"),
-                ty: type_of(&host, "Workspace"),
-                fields: vec![("key".to_owned(), Value::Text("one".to_owned()))],
-            }],
-            None,
-        )
-        .unwrap();
-    let workspace = made
-        .into_iter()
-        .flatten()
-        .next()
-        .expect("the sync made the workspace");
-    // A window opens over the record the write made, before the index names it: the writes name
-    // its type, and the record answers.
-    assert_eq!(
-        host.store().type_of(&workspace).unwrap(),
-        type_of(&host, "Workspace"),
-        "a record a write just made opens at once"
-    );
-    // ... and once the writes take it away, neither the record nor its window has a type for it.
-    host.runtime()
-        .apply_origin(
-            "session",
-            vec![OriginWrite::Remove {
-                owner: desk,
-                field: desk_field(&host, "workspaces"),
-                item: workspace.clone(),
-            }],
-            None,
-        )
-        .unwrap();
-    assert!(
-        host.store().type_of(&workspace).is_err(),
-        "the workspace is gone from the sync: its window says so"
-    );
-}
+    phase a_record_a_write_made_answers_a_field_the_write_did_not_write;
+    {
+        let (host, mut doc) = host();
+        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        commit(&host, &mut doc);
+        // The session's sync makes a workspace in the desk's collection, naming its key alone.
+        let made = host
+            .runtime()
+            .apply_origin(
+                "session",
+                vec![OriginWrite::Insert {
+                    owner: desk,
+                    field: desk_field(&host, "workspaces"),
+                    ty: type_of(&host, "Workspace"),
+                    fields: vec![("key".to_owned(), Value::Text("one".to_owned()))],
+                }],
+                None,
+            )
+            .unwrap();
+        let workspace = made
+            .into_iter()
+            .flatten()
+            .next()
+            .expect("the sync made the workspace");
+        // A field the write did not write is the record's own: the index names the record at its
+        // next derivation, and until then the record answers.
+        assert_eq!(
+            host.runtime().read(&workspace, "name").unwrap(),
+            Value::Text(String::new()),
+            "a field the write did not write reads as the record holds it"
+        );
+        assert_eq!(
+            host.runtime().read(&workspace, "key").unwrap(),
+            Value::Text("one".to_owned()),
+            "and a field it did write reads as it wrote it"
+        );
+    }
 
-#[test]
-fn a_root_a_write_just_made_has_its_type_before_the_index_names_it() {
-    let (host, _doc) = host();
-    // The session derives the shell's desk: a root made in the unsaved layer, before the index
-    // names it, and the window over it opens at once.
-    let desk = host.root_of("so.tilo.test.shell").unwrap();
-    let at = ResourceRef::root(desk.doc, String::new());
-    assert_eq!(
-        host.store().type_of(&at).unwrap(),
-        type_of(&host, "Desk"),
-        "a window opens over the root a write just made"
-    );
-}
+    phase a_record_a_write_made_has_its_type_before_the_index_names_it;
+    {
+        let (host, mut doc) = host();
+        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        commit(&host, &mut doc);
+        let made = host
+            .runtime()
+            .apply_origin(
+                "session",
+                vec![OriginWrite::Insert {
+                    owner: desk.clone(),
+                    field: desk_field(&host, "workspaces"),
+                    ty: type_of(&host, "Workspace"),
+                    fields: vec![("key".to_owned(), Value::Text("one".to_owned()))],
+                }],
+                None,
+            )
+            .unwrap();
+        let workspace = made
+            .into_iter()
+            .flatten()
+            .next()
+            .expect("the sync made the workspace");
+        // A window opens over the record the write made, before the index names it: the writes name
+        // its type, and the record answers.
+        assert_eq!(
+            host.store().type_of(&workspace).unwrap(),
+            type_of(&host, "Workspace"),
+            "a record a write just made opens at once"
+        );
+        // ... and once the writes take it away, neither the record nor its window has a type for it.
+        host.runtime()
+            .apply_origin(
+                "session",
+                vec![OriginWrite::Remove {
+                    owner: desk,
+                    field: desk_field(&host, "workspaces"),
+                    item: workspace.clone(),
+                }],
+                None,
+            )
+            .unwrap();
+        assert!(
+            host.store().type_of(&workspace).is_err(),
+            "the workspace is gone from the sync: its window says so"
+        );
+    }
 
-#[test]
-fn a_session_origin_update_writes_nothing_to_the_record() {
-    let (host, mut doc) = host();
-    // The desk is a root of a derived kind: made in the unsaved layer, so making it writes
-    // nothing to the record either.
-    let before_root = heads(&mut doc);
-    let desk = host.root_of("so.tilo.test.shell").unwrap();
-    commit(&host, &mut doc);
-    assert_eq!(
-        heads(&mut doc),
-        before_root,
-        "the derived root is made in the unsaved layer: the record is untouched"
-    );
+    phase a_root_a_write_just_made_has_its_type_before_the_index_names_it;
+    {
+        let (host, _doc) = host();
+        // The session derives the shell's desk: a root made in the unsaved layer, before the index
+        // names it, and the window over it opens at once.
+        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        let at = ResourceRef::root(desk.doc, String::new());
+        assert_eq!(
+            host.store().type_of(&at).unwrap(),
+            type_of(&host, "Desk"),
+            "a window opens over the root a write just made"
+        );
+    }
 
-    // A minute turns: the origin writes the clock.
-    let before = heads(&mut doc);
-    write_clock(&host, &desk, "12:01");
-    commit(&host, &mut doc);
-    assert_eq!(
-        heads(&mut doc),
-        before,
-        "a derived update is not committed: the record's heads do not move"
-    );
-    // ... and the shell reads what the origin wrote, at once.
-    assert_eq!(
-        clock_of(&host, &desk),
-        Some(DynValue::Register(serde_json::json!("12:01"))),
-        "the view reads the update from the unsaved layer"
-    );
-}
+    phase a_session_origin_update_writes_nothing_to_the_record;
+    {
+        let (host, mut doc) = host();
+        // The desk is a root of a derived kind: made in the unsaved layer, so making it writes
+        // nothing to the record either.
+        let before_root = heads(&mut doc);
+        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        commit(&host, &mut doc);
+        assert_eq!(
+            heads(&mut doc),
+            before_root,
+            "the derived root is made in the unsaved layer: the record is untouched"
+        );
 
-#[test]
-fn a_derived_update_survives_the_record_moving_on() {
-    let (host, mut doc) = host();
-    let desk = host.root_of("so.tilo.test.shell").unwrap();
-    commit(&host, &mut doc);
-    write_clock(&host, &desk, "12:01");
-    commit(&host, &mut doc);
-    assert_eq!(
-        clock_of(&host, &desk),
-        Some(DynValue::Register(serde_json::json!("12:01")))
-    );
-    // The record moves on (a pass, another device): the derived write stays in the unsaved
-    // layer, where it was, and is not re-derived or re-applied through the record.
-    let mut record = doc.fork();
-    automerge::transaction::Transactable::put(&mut record, automerge::ROOT, "a-pass", "kept")
-        .unwrap();
-    record.commit();
-    host.sync_from(&record);
-    assert_eq!(
-        clock_of(&host, &desk),
-        Some(DynValue::Register(serde_json::json!("12:01"))),
-        "the record moving on leaves the derived write where it was"
-    );
+        // A minute turns: the origin writes the clock.
+        let before = heads(&mut doc);
+        write_clock(&host, &desk, "12:01");
+        commit(&host, &mut doc);
+        assert_eq!(
+            heads(&mut doc),
+            before,
+            "a derived update is not committed: the record's heads do not move"
+        );
+        // ... and the shell reads what the origin wrote, at once.
+        assert_eq!(
+            clock_of(&host, &desk),
+            Some(DynValue::Register(serde_json::json!("12:01"))),
+            "the view reads the update from the unsaved layer"
+        );
+    }
+
+    phase a_derived_update_survives_the_record_moving_on;
+    {
+        let (host, mut doc) = host();
+        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        commit(&host, &mut doc);
+        write_clock(&host, &desk, "12:01");
+        commit(&host, &mut doc);
+        assert_eq!(
+            clock_of(&host, &desk),
+            Some(DynValue::Register(serde_json::json!("12:01")))
+        );
+        // The record moves on (a pass, another device): the derived write stays in the unsaved
+        // layer, where it was, and is not re-derived or re-applied through the record.
+        let mut record = doc.fork();
+        automerge::transaction::Transactable::put(&mut record, automerge::ROOT, "a-pass", "kept")
+            .unwrap();
+        record.commit();
+        host.sync_from(&record);
+        assert_eq!(
+            clock_of(&host, &desk),
+            Some(DynValue::Register(serde_json::json!("12:01"))),
+            "the record moving on leaves the derived write where it was"
+        );
+    }
 }

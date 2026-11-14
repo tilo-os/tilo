@@ -1078,7 +1078,6 @@ mod tests {
     use tilo_doc::Document;
     use tilo_doc::snapshot::{AttrVal, DocSnapshot};
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1331,7 +1330,6 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
     fn a_code_block_showing_a_fence_exports_as_one_block() {
         let src = "````md\n```rust\nlet a = 1;\n```\n````\n\nafter\n";
         let shape = |snapshot: &DocSnapshot| {
@@ -1354,7 +1352,6 @@ mod tests {
         assert_eq!(shape(&import(&out)), shape(&imported), "exported {out:?}");
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1538,7 +1535,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn markdown_front_matter_maps_to_document_properties() {
         {
             let src = "---\ntitle: My Doc\nauthor: Ada Lovelace\ndate: 2026-06-30\nlang: en-GB\n---\n\nBody text.\n";
@@ -1629,7 +1625,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1786,6 +1781,36 @@ mod tests {
             assert!(out.contains("[^1]: alpha"), "first def: {out:?}");
             assert!(out.contains("[^2]: beta"), "second def: {out:?}");
             assert_eq!(export(&out), out, "two-footnote export idempotent");
+        }
+    }
+
+    #[test]
+    fn markdown_roundtrips_blocks_marks_front_matter_and_footnotes() {
+        let cases: [(&str, fn()); 5] = [
+            (
+                "markdown block structure roundtrips",
+                markdown_block_structure_roundtrips,
+            ),
+            (
+                "a code block showing a fence exports as one block",
+                a_code_block_showing_a_fence_exports_as_one_block,
+            ),
+            (
+                "markdown inline marks roundtrip",
+                markdown_inline_marks_roundtrip,
+            ),
+            (
+                "markdown front matter maps to document properties",
+                markdown_front_matter_maps_to_document_properties,
+            ),
+            (
+                "markdown footnotes roundtrip in reference order",
+                markdown_footnotes_roundtrip_in_reference_order,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
         }
     }
 

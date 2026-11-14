@@ -860,226 +860,231 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
             NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
         }
 
-        #[test]
-        fn fake_server_listing_reports_are_incremental_canonical_and_bounded() {
-            {
-                let server =
-                    Responder::start(vec![Reply::status(207).body(multistatus("token-2"))]);
-                let config = config(server.url());
-                let result =
-                    pull_calendar_live(&client(), &config, &calendar(), today(), Some("token-1"))
-                        .expect("incremental sync");
-                let request = server.next_request();
-                assert_eq!(request.method, "REPORT");
-                assert_eq!(request.target, "/cal/");
-                assert_eq!(request.header("depth"), Some("1"));
-                assert!(request.header("authorization").is_some());
-                assert!(
-                    request
-                        .body_text()
-                        .contains("<D:sync-token>token-1</D:sync-token>")
-                );
-                assert_eq!(
-                    result.resources[0].href,
-                    format!("{}/cal/a.ics", server.url())
-                );
-                assert_eq!(result.checkpoints[0].token, "token-2");
-                assert!(!result.checkpoints[0].full);
-            }
-            {
-                let server = Responder::start(vec![
-                    Reply::status(403),
-                    Reply::status(207).body(multistatus("replacement")),
-                ]);
-                let result = pull_calendar_live(
-                    &client(),
-                    &config(server.url()),
-                    &calendar(),
-                    today(),
-                    Some("expired"),
-                )
-                .expect("full fallback");
-                let incremental = server.next_request();
-                let fallback = server.next_request();
-                assert!(incremental.body_text().contains("<D:sync-collection"));
-                assert!(fallback.body_text().contains("<C:calendar-query"));
-                assert!(result.checkpoints[0].full);
-                assert_eq!(result.checkpoints[0].token, "replacement");
-            }
-            {
-                let listing = multistatus("").replace("<D:sync-token></D:sync-token>", "");
-                let discovery = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/cal/</d:href><d:propstat><d:prop><d:sync-token>http://sabre.io/ns/sync/7</d:sync-token></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
-                let server = Responder::start(vec![
-                    Reply::status(207).body(listing),
-                    Reply::status(207).body(discovery),
-                ]);
-                let result = pull_calendar_live(
-                    &client(),
-                    &config(server.url()),
-                    &calendar(),
-                    today(),
-                    None,
-                )
-                .expect("initial sync");
-                let _report = server.next_request();
-                let propfind = server.next_request();
-                assert_eq!(propfind.method, "PROPFIND");
-                assert_eq!(propfind.header("depth"), Some("0"));
-                assert!(propfind.body_text().contains("<D:sync-token/>"));
-                assert_eq!(result.checkpoints[0].token, "http://sabre.io/ns/sync/7");
-                assert!(result.checkpoints[0].full);
-            }
-            {
-                let server = Responder::start(vec![Reply::status(200).body("<html>portal</html>")]);
-                let error = pull_calendar_live(
-                    &client(),
-                    &config(server.url()),
-                    &calendar(),
-                    today(),
-                    None,
-                )
-                .expect_err("an HTML page must not read as an empty calendar");
-                assert_eq!(error, "calendar server returned malformed XML");
-            }
-            {
-                let server = Responder::start(vec![
-                    Reply::status(207)
-                        .body(vec![b' '; super::super::MAX_XML_BYTES + 1])
-                        .without_content_length(),
-                ]);
-                let error = pull_calendar_live(
-                    &client(),
-                    &config(server.url()),
-                    &calendar(),
-                    today(),
-                    Some("token"),
-                )
-                .expect_err("oversized body");
-                assert_eq!(error, "calendar response exceeds the 8 MiB safety limit");
-            }
-        }
+        tilo_test_env::scenario! {
+            /// The live CalDAV client against a scripted server.
+            fn the_live_client_reports_incrementally_and_guards_its_writes;
 
-        #[test]
-        fn read_only_collections_never_send_mutations() {
-            let server = Responder::silent();
-            let config = config(server.url());
-            let mut calendar = calendar();
-            calendar.read_only = true;
-            let event = super::super::pull_calendar(&config, &calendar, today())
-                .events
-                .remove(0);
-            let upload = push_jobs_live(&[super::super::UploadJob {
-                config: config.clone(),
-                calendar: calendar.clone(),
-                event: event.clone(),
-                href: None,
-                etag: None,
-            }]);
-            assert!(upload.confirmed.is_empty());
-            assert_eq!(
-                upload.failures,
-                vec![(event.id, "Calendar is read-only".into())]
-            );
-            let removed = remove_jobs_live(&[super::super::RemoveJob {
-                config,
-                calendar,
-                id: event.id,
-                href: None,
-                etag: None,
-            }]);
-            assert!(removed.confirmed.is_empty());
-            assert_eq!(
-                removed.failures,
-                vec![(event.id, "Calendar is read-only".into())]
-            );
-            server.assert_untouched();
-        }
-
-        #[test]
-        fn fake_server_writes_are_conditional_and_precondition_failures_conflict() {
+            phase fake_server_listing_reports_are_incremental_canonical_and_bounded;
             {
-                let server = Responder::start(vec![
-                    Reply::status(200).header("ETag", "\"v2\""),
-                    Reply::status(200),
-                    Reply::status(204),
-                ]);
-                let config = config(server.url());
-                let calendar = calendar();
-                let mut event = super::super::pull_calendar(&config, &calendar, today())
-                    .events
-                    .remove(0);
-                event.calendar_id = Some(calendar.id.clone());
-                let href = format!("{}/cal/a.ics", server.url());
-                let mut legacy_event = event.clone();
-                legacy_event.id = crate::model::Id::new_v4();
-                let upload = push_jobs_live(&[
-                    super::super::UploadJob {
-                        config: config.clone(),
-                        calendar: calendar.clone(),
-                        event: event.clone(),
-                        href: Some(href.clone()),
-                        etag: Some("\"v1\"".into()),
-                    },
-                    super::super::UploadJob {
-                        config: config.clone(),
-                        calendar: calendar.clone(),
-                        event: legacy_event.clone(),
-                        href: Some(format!("{}/cal/legacy.ics", server.url())),
-                        etag: None,
-                    },
-                ]);
-                assert_eq!(upload.confirmed, vec![event.id, legacy_event.id]);
-                assert_eq!(upload.revisions[0].etag.as_deref(), Some("\"v2\""));
-                let removed = remove_jobs_live(&[super::super::RemoveJob {
-                    config,
-                    calendar,
-                    id: event.id,
-                    href: Some(href),
-                    etag: Some("\"v2\"".into()),
-                }]);
-                assert_eq!(removed.confirmed, vec![event.id]);
-                let put = server.next_request();
-                let legacy_put = server.next_request();
-                let delete = server.next_request();
-                assert_eq!(
-                    (put.method.as_str(), put.target.as_str()),
-                    ("PUT", "/cal/a.ics")
-                );
-                assert_eq!(put.header("if-match"), Some("\"v1\""));
-                assert_eq!(put.header("content-type"), Some(CALENDAR_CONTENT_TYPE));
-                assert_eq!(legacy_put.target, "/cal/legacy.ics");
-                assert_eq!(legacy_put.header("if-match"), Some("*"));
-                assert_eq!(
-                    (delete.method.as_str(), delete.target.as_str()),
-                    ("DELETE", "/cal/a.ics")
-                );
-                assert_eq!(delete.header("if-match"), Some("\"v2\""));
+                {
+                    let server =
+                        Responder::start(vec![Reply::status(207).body(multistatus("token-2"))]);
+                    let config = config(server.url());
+                    let result =
+                        pull_calendar_live(&client(), &config, &calendar(), today(), Some("token-1"))
+                            .expect("incremental sync");
+                    let request = server.next_request();
+                    assert_eq!(request.method, "REPORT");
+                    assert_eq!(request.target, "/cal/");
+                    assert_eq!(request.header("depth"), Some("1"));
+                    assert!(request.header("authorization").is_some());
+                    assert!(
+                        request
+                            .body_text()
+                            .contains("<D:sync-token>token-1</D:sync-token>")
+                    );
+                    assert_eq!(
+                        result.resources[0].href,
+                        format!("{}/cal/a.ics", server.url())
+                    );
+                    assert_eq!(result.checkpoints[0].token, "token-2");
+                    assert!(!result.checkpoints[0].full);
+                }
+                {
+                    let server = Responder::start(vec![
+                        Reply::status(403),
+                        Reply::status(207).body(multistatus("replacement")),
+                    ]);
+                    let result = pull_calendar_live(
+                        &client(),
+                        &config(server.url()),
+                        &calendar(),
+                        today(),
+                        Some("expired"),
+                    )
+                    .expect("full fallback");
+                    let incremental = server.next_request();
+                    let fallback = server.next_request();
+                    assert!(incremental.body_text().contains("<D:sync-collection"));
+                    assert!(fallback.body_text().contains("<C:calendar-query"));
+                    assert!(result.checkpoints[0].full);
+                    assert_eq!(result.checkpoints[0].token, "replacement");
+                }
+                {
+                    let listing = multistatus("").replace("<D:sync-token></D:sync-token>", "");
+                    let discovery = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/cal/</d:href><d:propstat><d:prop><d:sync-token>http://sabre.io/ns/sync/7</d:sync-token></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+                    let server = Responder::start(vec![
+                        Reply::status(207).body(listing),
+                        Reply::status(207).body(discovery),
+                    ]);
+                    let result = pull_calendar_live(
+                        &client(),
+                        &config(server.url()),
+                        &calendar(),
+                        today(),
+                        None,
+                    )
+                    .expect("initial sync");
+                    let _report = server.next_request();
+                    let propfind = server.next_request();
+                    assert_eq!(propfind.method, "PROPFIND");
+                    assert_eq!(propfind.header("depth"), Some("0"));
+                    assert!(propfind.body_text().contains("<D:sync-token/>"));
+                    assert_eq!(result.checkpoints[0].token, "http://sabre.io/ns/sync/7");
+                    assert!(result.checkpoints[0].full);
+                }
+                {
+                    let server = Responder::start(vec![Reply::status(200).body("<html>portal</html>")]);
+                    let error = pull_calendar_live(
+                        &client(),
+                        &config(server.url()),
+                        &calendar(),
+                        today(),
+                        None,
+                    )
+                    .expect_err("an HTML page must not read as an empty calendar");
+                    assert_eq!(error, "calendar server returned malformed XML");
+                }
+                {
+                    let server = Responder::start(vec![
+                        Reply::status(207)
+                            .body(vec![b' '; super::super::MAX_XML_BYTES + 1])
+                            .without_content_length(),
+                    ]);
+                    let error = pull_calendar_live(
+                        &client(),
+                        &config(server.url()),
+                        &calendar(),
+                        today(),
+                        Some("token"),
+                    )
+                    .expect_err("oversized body");
+                    assert_eq!(error, "calendar response exceeds the 8 MiB safety limit");
+                }
             }
+
+            phase read_only_collections_never_send_mutations;
             {
-                let server = Responder::start(vec![Reply::status(412), Reply::status(412)]);
+                let server = Responder::silent();
                 let config = config(server.url());
-                let calendar = calendar();
+                let mut calendar = calendar();
+                calendar.read_only = true;
                 let event = super::super::pull_calendar(&config, &calendar, today())
                     .events
                     .remove(0);
-                let href = format!("{}/cal/a.ics", server.url());
                 let upload = push_jobs_live(&[super::super::UploadJob {
                     config: config.clone(),
                     calendar: calendar.clone(),
                     event: event.clone(),
-                    href: Some(href.clone()),
-                    etag: Some("\"stale\"".into()),
+                    href: None,
+                    etag: None,
                 }]);
                 assert!(upload.confirmed.is_empty());
-                assert_eq!(upload.conflicts, vec![(event.id, href.clone())]);
+                assert_eq!(
+                    upload.failures,
+                    vec![(event.id, "Calendar is read-only".into())]
+                );
                 let removed = remove_jobs_live(&[super::super::RemoveJob {
                     config,
                     calendar,
                     id: event.id,
-                    href: Some(href.clone()),
-                    etag: Some("\"stale\"".into()),
+                    href: None,
+                    etag: None,
                 }]);
-                assert_eq!(removed.conflicts, vec![(event.id, href)]);
+                assert!(removed.confirmed.is_empty());
+                assert_eq!(
+                    removed.failures,
+                    vec![(event.id, "Calendar is read-only".into())]
+                );
+                server.assert_untouched();
+            }
+
+            phase fake_server_writes_are_conditional_and_precondition_failures_conflict;
+            {
+                {
+                    let server = Responder::start(vec![
+                        Reply::status(200).header("ETag", "\"v2\""),
+                        Reply::status(200),
+                        Reply::status(204),
+                    ]);
+                    let config = config(server.url());
+                    let calendar = calendar();
+                    let mut event = super::super::pull_calendar(&config, &calendar, today())
+                        .events
+                        .remove(0);
+                    event.calendar_id = Some(calendar.id.clone());
+                    let href = format!("{}/cal/a.ics", server.url());
+                    let mut legacy_event = event.clone();
+                    legacy_event.id = crate::model::Id::new_v4();
+                    let upload = push_jobs_live(&[
+                        super::super::UploadJob {
+                            config: config.clone(),
+                            calendar: calendar.clone(),
+                            event: event.clone(),
+                            href: Some(href.clone()),
+                            etag: Some("\"v1\"".into()),
+                        },
+                        super::super::UploadJob {
+                            config: config.clone(),
+                            calendar: calendar.clone(),
+                            event: legacy_event.clone(),
+                            href: Some(format!("{}/cal/legacy.ics", server.url())),
+                            etag: None,
+                        },
+                    ]);
+                    assert_eq!(upload.confirmed, vec![event.id, legacy_event.id]);
+                    assert_eq!(upload.revisions[0].etag.as_deref(), Some("\"v2\""));
+                    let removed = remove_jobs_live(&[super::super::RemoveJob {
+                        config,
+                        calendar,
+                        id: event.id,
+                        href: Some(href),
+                        etag: Some("\"v2\"".into()),
+                    }]);
+                    assert_eq!(removed.confirmed, vec![event.id]);
+                    let put = server.next_request();
+                    let legacy_put = server.next_request();
+                    let delete = server.next_request();
+                    assert_eq!(
+                        (put.method.as_str(), put.target.as_str()),
+                        ("PUT", "/cal/a.ics")
+                    );
+                    assert_eq!(put.header("if-match"), Some("\"v1\""));
+                    assert_eq!(put.header("content-type"), Some(CALENDAR_CONTENT_TYPE));
+                    assert_eq!(legacy_put.target, "/cal/legacy.ics");
+                    assert_eq!(legacy_put.header("if-match"), Some("*"));
+                    assert_eq!(
+                        (delete.method.as_str(), delete.target.as_str()),
+                        ("DELETE", "/cal/a.ics")
+                    );
+                    assert_eq!(delete.header("if-match"), Some("\"v2\""));
+                }
+                {
+                    let server = Responder::start(vec![Reply::status(412), Reply::status(412)]);
+                    let config = config(server.url());
+                    let calendar = calendar();
+                    let event = super::super::pull_calendar(&config, &calendar, today())
+                        .events
+                        .remove(0);
+                    let href = format!("{}/cal/a.ics", server.url());
+                    let upload = push_jobs_live(&[super::super::UploadJob {
+                        config: config.clone(),
+                        calendar: calendar.clone(),
+                        event: event.clone(),
+                        href: Some(href.clone()),
+                        etag: Some("\"stale\"".into()),
+                    }]);
+                    assert!(upload.confirmed.is_empty());
+                    assert_eq!(upload.conflicts, vec![(event.id, href.clone())]);
+                    let removed = remove_jobs_live(&[super::super::RemoveJob {
+                        config,
+                        calendar,
+                        id: event.id,
+                        href: Some(href.clone()),
+                        etag: Some("\"stale\"".into()),
+                    }]);
+                    assert_eq!(removed.conflicts, vec![(event.id, href)]);
+                }
             }
         }
     }
@@ -1105,175 +1110,180 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
     }
 
-    #[test]
-    fn pull_and_sync_tag_events_skip_hidden_and_report_offline() {
+    tilo_test_env::scenario! {
+        /// The CalDAV layer without a server: what it pulls, what it would write and what it
+        /// parses.
+        fn caldav_pulls_writes_and_parses_by_resource;
+
+        phase pull_and_sync_tag_events_skip_hidden_and_report_offline;
         {
-            let store = AccountStore::sample();
-            let (account, cal) = store
-                .all_calendars()
-                .find(|(_, c)| c.id == "work/oncall")
-                .unwrap();
-            let res = pull_calendar(&account.config, cal, today());
-            assert!(!res.events.is_empty());
-            assert!(res.events.iter().all(|e| e.color == cal.palette()));
-        }
-        {
-            let store = AccountStore::sample();
-            let (account, cal) = store
-                .all_calendars()
-                .find(|(_, c)| c.id == "work/default")
-                .unwrap();
-            let res = pull_calendar(&account.config, cal, today());
-            assert!(!res.events.is_empty());
-            assert!(
-                res.events
+            {
+                let store = AccountStore::sample();
+                let (account, cal) = store
+                    .all_calendars()
+                    .find(|(_, c)| c.id == "work/oncall")
+                    .unwrap();
+                let res = pull_calendar(&account.config, cal, today());
+                assert!(!res.events.is_empty());
+                assert!(res.events.iter().all(|e| e.color == cal.palette()));
+            }
+            {
+                let store = AccountStore::sample();
+                let (account, cal) = store
+                    .all_calendars()
+                    .find(|(_, c)| c.id == "work/default")
+                    .unwrap();
+                let res = pull_calendar(&account.config, cal, today());
+                assert!(!res.events.is_empty());
+                assert!(
+                    res.events
+                        .iter()
+                        .all(|e| e.calendar_id.as_deref() == Some("work/default")),
+                    "every synced event is tagged with its source calendar id"
+                );
+            }
+            {
+                let store = AccountStore::sample();
+                let accounts: Vec<_> = store
+                    .accounts
                     .iter()
-                    .all(|e| e.calendar_id.as_deref() == Some("work/default")),
-                "every synced event is tagged with its source calendar id"
-            );
+                    .map(|a| (a.config.clone(), a.calendars.clone()))
+                    .collect();
+                let (res, outcome) = sample_pull_all(&accounts, today());
+                assert!(matches!(outcome, SyncOutcome::Synced { calendars: 3, .. }));
+                assert!(!res.is_empty());
+                assert!(!res.events.iter().any(|e| e.title == "Public holiday"));
+            }
+            {
+                let (res, outcome) = sample_pull_all(&[], today());
+                assert!(res.is_empty());
+                assert_eq!(outcome, SyncOutcome::Offline);
+            }
+            {
+                let (res, outcome) = sync_all(&[], today());
+                assert!(res.is_empty());
+                assert_eq!(outcome, SyncOutcome::Offline);
+            }
+            {
+                let store = AccountStore::sample();
+                let (account, cal) = store
+                    .all_calendars()
+                    .find(|(_, c)| c.id == "icloud/personal")
+                    .unwrap();
+                let res = pull_calendar(&account.config, cal, today());
+                let dinner = res
+                    .events
+                    .iter()
+                    .find(|e| e.title == "Family dinner")
+                    .unwrap();
+                assert_eq!(dinner.recurrence, crate::model::Recurrence::Weekly);
+            }
         }
-        {
-            let store = AccountStore::sample();
-            let accounts: Vec<_> = store
-                .accounts
-                .iter()
-                .map(|a| (a.config.clone(), a.calendars.clone()))
-                .collect();
-            let (res, outcome) = sample_pull_all(&accounts, today());
-            assert!(matches!(outcome, SyncOutcome::Synced { calendars: 3, .. }));
-            assert!(!res.is_empty());
-            assert!(!res.events.iter().any(|e| e.title == "Public holiday"));
-        }
-        {
-            let (res, outcome) = sample_pull_all(&[], today());
-            assert!(res.is_empty());
-            assert_eq!(outcome, SyncOutcome::Offline);
-        }
-        {
-            let (res, outcome) = sync_all(&[], today());
-            assert!(res.is_empty());
-            assert_eq!(outcome, SyncOutcome::Offline);
-        }
-        {
-            let store = AccountStore::sample();
-            let (account, cal) = store
-                .all_calendars()
-                .find(|(_, c)| c.id == "icloud/personal")
-                .unwrap();
-            let res = pull_calendar(&account.config, cal, today());
-            let dinner = res
-                .events
-                .iter()
-                .find(|e| e.title == "Family dinner")
-                .unwrap();
-            assert_eq!(dinner.recurrence, crate::model::Recurrence::Weekly);
-        }
-    }
 
-    #[test]
-    fn write_requests_target_one_resource_and_stay_inert_without_live() {
+        phase write_requests_target_one_resource_and_stay_inert_without_live;
         {
-            use crate::model::Event;
-            use chrono::NaiveDate;
-            let store = AccountStore::sample();
-            let (account, cal) = store
-                .all_calendars()
-                .find(|(_, c)| c.id == "work/default")
-                .unwrap();
-            let start = NaiveDate::from_ymd_opt(2026, 6, 15)
-                .unwrap()
-                .and_hms_opt(9, 0, 0)
-                .unwrap();
-            let ev = Event {
-                id: uuid::Uuid::new_v4(),
-                title: "Kickoff".into(),
-                start,
-                end: start + chrono::Duration::hours(1),
-                location: "Room 1".into(),
-                calendar_id: Some(cal.id.clone()),
-                ..Event::default()
-            };
-            let req = build_put_request(&account.config, cal, &ev);
-            assert!(
-                req.url.starts_with(&account.config.server_url),
-                "url = {}",
-                req.url
-            );
-            assert!(req.url.ends_with(&format!("{}.ics", ev.id)));
-            assert!(req.body.contains("BEGIN:VEVENT"));
-            assert!(req.body.contains("Kickoff"));
+            {
+                use crate::model::Event;
+                use chrono::NaiveDate;
+                let store = AccountStore::sample();
+                let (account, cal) = store
+                    .all_calendars()
+                    .find(|(_, c)| c.id == "work/default")
+                    .unwrap();
+                let start = NaiveDate::from_ymd_opt(2026, 6, 15)
+                    .unwrap()
+                    .and_hms_opt(9, 0, 0)
+                    .unwrap();
+                let ev = Event {
+                    id: uuid::Uuid::new_v4(),
+                    title: "Kickoff".into(),
+                    start,
+                    end: start + chrono::Duration::hours(1),
+                    location: "Room 1".into(),
+                    calendar_id: Some(cal.id.clone()),
+                    ..Event::default()
+                };
+                let req = build_put_request(&account.config, cal, &ev);
+                assert!(
+                    req.url.starts_with(&account.config.server_url),
+                    "url = {}",
+                    req.url
+                );
+                assert!(req.url.ends_with(&format!("{}.ics", ev.id)));
+                assert!(req.body.contains("BEGIN:VEVENT"));
+                assert!(req.body.contains("Kickoff"));
+            }
+            {
+                let store = AccountStore::sample();
+                let (account, cal) = store
+                    .all_calendars()
+                    .find(|(_, c)| c.id == "work/default")
+                    .unwrap();
+                let uid = uuid::Uuid::new_v4();
+                let del = build_delete_request(&account.config, cal, uid);
+                assert!(
+                    del.url.starts_with(&account.config.server_url),
+                    "url = {}",
+                    del.url
+                );
+                assert!(del.url.ends_with(&format!("{uid}.ics")));
+            }
+            {
+                let store = AccountStore::sample();
+                let (account, cal) = store.all_calendars().next().unwrap();
+                let jobs = vec![RemoveJob {
+                    config: account.config.clone(),
+                    calendar: cal.clone(),
+                    id: uuid::Uuid::new_v4(),
+                    href: None,
+                    etag: None,
+                }];
+                #[cfg(not(feature = "live"))]
+                assert!(run(remove_jobs(&jobs)).confirmed.is_empty());
+                let _ = jobs;
+            }
+            {
+                let store = AccountStore::sample();
+                let (account, cal) = store.all_calendars().next().unwrap();
+                let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
+                    .unwrap()
+                    .and_hms_opt(9, 0, 0)
+                    .unwrap();
+                let ev = crate::model::Event {
+                    id: uuid::Uuid::new_v4(),
+                    title: "x".into(),
+                    start,
+                    end: start,
+                    calendar_id: Some(cal.id.clone()),
+                    ..Event::default()
+                };
+                let jobs = vec![UploadJob {
+                    config: account.config.clone(),
+                    calendar: cal.clone(),
+                    event: ev,
+                    href: None,
+                    etag: None,
+                }];
+                #[cfg(not(feature = "live"))]
+                assert!(run(push_jobs(&jobs)).confirmed.is_empty());
+                let _ = jobs;
+            }
+            {
+                let store = AccountStore::sample();
+                let (account, cal) = store.all_calendars().next().unwrap();
+                let event = pull_calendar(&account.config, cal, today())
+                    .events
+                    .remove(0);
+                let request = build_put_request(&account.config, cal, &event);
+                assert!(request.if_none_match);
+                assert!(request.if_match.is_none());
+            }
         }
-        {
-            let store = AccountStore::sample();
-            let (account, cal) = store
-                .all_calendars()
-                .find(|(_, c)| c.id == "work/default")
-                .unwrap();
-            let uid = uuid::Uuid::new_v4();
-            let del = build_delete_request(&account.config, cal, uid);
-            assert!(
-                del.url.starts_with(&account.config.server_url),
-                "url = {}",
-                del.url
-            );
-            assert!(del.url.ends_with(&format!("{uid}.ics")));
-        }
-        {
-            let store = AccountStore::sample();
-            let (account, cal) = store.all_calendars().next().unwrap();
-            let jobs = vec![RemoveJob {
-                config: account.config.clone(),
-                calendar: cal.clone(),
-                id: uuid::Uuid::new_v4(),
-                href: None,
-                etag: None,
-            }];
-            #[cfg(not(feature = "live"))]
-            assert!(run(remove_jobs(&jobs)).confirmed.is_empty());
-            let _ = jobs;
-        }
-        {
-            let store = AccountStore::sample();
-            let (account, cal) = store.all_calendars().next().unwrap();
-            let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
-                .unwrap()
-                .and_hms_opt(9, 0, 0)
-                .unwrap();
-            let ev = crate::model::Event {
-                id: uuid::Uuid::new_v4(),
-                title: "x".into(),
-                start,
-                end: start,
-                calendar_id: Some(cal.id.clone()),
-                ..Event::default()
-            };
-            let jobs = vec![UploadJob {
-                config: account.config.clone(),
-                calendar: cal.clone(),
-                event: ev,
-                href: None,
-                etag: None,
-            }];
-            #[cfg(not(feature = "live"))]
-            assert!(run(push_jobs(&jobs)).confirmed.is_empty());
-            let _ = jobs;
-        }
-        {
-            let store = AccountStore::sample();
-            let (account, cal) = store.all_calendars().next().unwrap();
-            let event = pull_calendar(&account.config, cal, today())
-                .events
-                .remove(0);
-            let request = build_put_request(&account.config, cal, &event);
-            assert!(request.if_none_match);
-            assert!(request.if_match.is_none());
-        }
-    }
 
-    #[test]
-    fn multistatus_parses_identity_and_rejects_malformed_input() {
+        phase multistatus_parses_identity_and_rejects_malformed_input;
         {
-            let xml = r#"<?xml version="1.0"?>
+            {
+                let xml = r#"<?xml version="1.0"?>
 <D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
  <D:sync-token>token-2</D:sync-token>
  <D:response><D:href>/cal/a.ics</D:href><D:propstat><D:prop>
@@ -1286,36 +1296,37 @@ END:VEVENT
 END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
  <D:response><D:href>/cal/gone.ics</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response>
 </D:multistatus>"#;
-            let parsed = parse_multistatus(xml).unwrap();
-            assert_eq!(parsed.token.as_deref(), Some("token-2"));
-            assert_eq!(parsed.changed[0].0, "/cal/a.ics");
-            assert_eq!(parsed.changed[0].1.as_deref(), Some("\"v2\""));
-            assert_eq!(parsed.deleted, vec!["/cal/gone.ics"]);
-            assert!(parsed.changed[0].2.contains("SUMMARY:Review"));
-        }
-        {
-            assert!(parse_multistatus("<D:multistatus>").is_err());
-            let oversized = "x".repeat(MAX_XML_BYTES + 1);
-            assert!(parse_multistatus(&oversized).is_err());
-        }
-        {
-            let body = sync_collection_body("a<&\"'>");
-            assert!(body.contains("a&lt;&amp;&quot;&apos;&gt;"));
-            assert!(!body.contains("a<&"));
-        }
-        {
-            assert!(hrefs_equal(
-                "https://calendar.example/dav/work/a.ics",
-                "/dav/work/a.ics"
-            ));
-            assert!(!hrefs_equal(
-                "https://calendar.example/dav/work/a.ics",
-                "/dav/work/b.ics"
-            ));
-            assert!(!hrefs_equal(
-                "https://calendar.example/dav/work/a.ics",
-                "https://attacker.example/dav/work/a.ics"
-            ));
+                let parsed = parse_multistatus(xml).unwrap();
+                assert_eq!(parsed.token.as_deref(), Some("token-2"));
+                assert_eq!(parsed.changed[0].0, "/cal/a.ics");
+                assert_eq!(parsed.changed[0].1.as_deref(), Some("\"v2\""));
+                assert_eq!(parsed.deleted, vec!["/cal/gone.ics"]);
+                assert!(parsed.changed[0].2.contains("SUMMARY:Review"));
+            }
+            {
+                assert!(parse_multistatus("<D:multistatus>").is_err());
+                let oversized = "x".repeat(MAX_XML_BYTES + 1);
+                assert!(parse_multistatus(&oversized).is_err());
+            }
+            {
+                let body = sync_collection_body("a<&\"'>");
+                assert!(body.contains("a&lt;&amp;&quot;&apos;&gt;"));
+                assert!(!body.contains("a<&"));
+            }
+            {
+                assert!(hrefs_equal(
+                    "https://calendar.example/dav/work/a.ics",
+                    "/dav/work/a.ics"
+                ));
+                assert!(!hrefs_equal(
+                    "https://calendar.example/dav/work/a.ics",
+                    "/dav/work/b.ics"
+                ));
+                assert!(!hrefs_equal(
+                    "https://calendar.example/dav/work/a.ics",
+                    "https://attacker.example/dav/work/a.ics"
+                ));
+            }
         }
     }
 }

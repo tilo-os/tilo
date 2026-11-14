@@ -42,18 +42,55 @@ const ARTWORK: &[(&str, &[u8])] = artwork![
     "VLC-preview-3.png" => "vlc-preview-3.png",
 ];
 
+/// A bundled image as the image store's decoder gave it, by its URL.
+type DecodedArtwork = (String, ui::image_store::DecodedImage);
+
+/// The bundled artwork, decoded: kept once every image has decoded, for the
+/// stores this process makes afterwards.
+static DECODED_ARTWORK: std::sync::OnceLock<Vec<DecodedArtwork>> = std::sync::OnceLock::new();
+
 /// The image store of a capture: every bundled icon and preview is decoded
 /// before the first frame. Preview widgets may request their image only
 /// while drawing, too late for a one-frame capture to wait for that load.
 /// The toolkit's host loader completes these local bytes without a network
 /// fetcher or a background race.
+///
+/// The first store of a process decodes the bundled bytes. Each later one is
+/// a cache of its own filled with a copy of those pixels: decoding the
+/// previews (800 by 500 at sixteen bits a channel, scaled to a thumbnail) is
+/// most of what a capture costs in an unoptimised build, and a process that
+/// stages many scenarios would decode the same bytes for each.
 pub fn artwork_store() -> ui::ImageStore {
     let (store, mut loader) = ui::ImageStore::host_driven();
+    if let Some(decoded) = DECODED_ARTWORK.get() {
+        for (url, image) in decoded {
+            store.get(url);
+            loader.take_requests();
+            if let Some(ticket) = loader.reserve(url) {
+                loader.complete_decoded(&ticket, Some(image.clone()));
+            }
+        }
+        return store;
+    }
+    let mut decoded = Vec::with_capacity(ARTWORK.len());
     for (name, bytes) in ARTWORK {
         let url = format!("{ARTWORK_HOST}{name}");
         store.get(&url);
         loader.take_requests();
         loader.complete(&url, Some(bytes));
+        if let Some(image) = store.get(&url) {
+            let pixels = ui::image_store::DecodedImage {
+                rgba: image.data.data().to_vec(),
+                width: image.width,
+                height: image.height,
+            };
+            decoded.push((url, pixels));
+        }
+    }
+    // An image that did not decode is not remembered as missing: the next
+    // store decodes the bytes again, as this one did.
+    if decoded.len() == ARTWORK.len() {
+        DECODED_ARTWORK.get_or_init(|| decoded);
     }
     store
 }
@@ -343,61 +380,140 @@ mod tests {
         assert!(store.is_idle(), "no fixture work remains in flight");
     }
 
+    /// The first store of a process decodes the bundled bytes; a later one
+    /// is filled from those pixels, exactly, in a cache of its own.
     #[test]
-    fn fixture_catalogue_covers_every_action_and_is_complete() {
-        use crate::model::ActionKind;
-        let catalogue = fixture_catalog();
-        let mut saw_open = false;
-        let mut saw_update = false;
-        let mut saw_flatpak_install = false;
-        let mut saw_flatpak_open = false;
-        let mut saw_flatpak_remove = false;
-        let mut saw_pin_toggle = false;
-        for item in &catalogue {
-            match item.action_kind(true) {
-                ActionKind::Open => saw_open = true,
-                ActionKind::Update => saw_update = true,
-                ActionKind::FlatpakInstall => saw_flatpak_install = true,
-                ActionKind::FlatpakOpen => saw_flatpak_open = true,
-                _ => {}
+    fn a_later_artwork_store_holds_the_decoded_pixels_in_a_cache_of_its_own() {
+        let first = artwork_store();
+        let later = artwork_store();
+        for (name, _) in ARTWORK {
+            let url = format!("{ARTWORK_HOST}{name}");
+            let decoded = first
+                .get(&url)
+                .unwrap_or_else(|| panic!("{name} is decoded in the first store"));
+            let copied = later
+                .get(&url)
+                .unwrap_or_else(|| panic!("{name} is ready in a later store"));
+            assert_eq!(
+                (copied.width, copied.height),
+                (decoded.width, decoded.height),
+                "{name} keeps its size"
+            );
+            assert_eq!(copied.format, decoded.format, "{name} keeps its format");
+            assert_eq!(
+                copied.alpha_type, decoded.alpha_type,
+                "{name} keeps its alpha"
+            );
+            assert!(
+                copied.data.data() == decoded.data.data(),
+                "{name} keeps every pixel the decoder gave it"
+            );
+        }
+        assert!(later.is_idle(), "a later store has no work in flight");
+
+        // Whichever store of this process decoded first, the pixels are the
+        // decoder's for the bundled bytes: an icon, kept at its size, and a
+        // preview, scaled to a thumbnail, each decoded here by a loader that
+        // shares nothing with the fixture.
+        let (reference, mut loader) = ui::ImageStore::host_driven();
+        let mut compared = Vec::new();
+        for (name, bytes) in ARTWORK {
+            if !matches!(*name, "Notes.png" | "Notes-preview-1.png") {
+                continue;
             }
-            saw_pin_toggle |= item.pin_action().is_some();
-            saw_flatpak_remove |= item.remove_action() == Some(ActionKind::FlatpakRemove);
-            if let Some(key) = item.publisher_pubkey_hex.as_deref() {
-                assert_eq!(key.len(), 64, "{} has a full ed25519 key", item.name);
+            let url = format!("{ARTWORK_HOST}{name}");
+            reference.get(&url);
+            loader.take_requests();
+            assert!(loader.complete(&url, Some(bytes)), "{name} decodes");
+            let decoded = reference
+                .get(&url)
+                .unwrap_or_else(|| panic!("{name} is decoded by its own loader"));
+            let copied = later
+                .get(&url)
+                .unwrap_or_else(|| panic!("{name} is ready in a later store"));
+            assert_eq!(
+                (copied.width, copied.height),
+                (decoded.width, decoded.height),
+                "{name} has the size the decoder gives it"
+            );
+            assert!(
+                copied.data.data() == decoded.data.data(),
+                "{name} has the pixels the decoder gives its bundled bytes"
+            );
+            compared.push(*name);
+        }
+        assert_eq!(compared, ["Notes.png", "Notes-preview-1.png"]);
+
+        // An image the fixture does not bundle is never loaded, and asking
+        // one store for it leaves the other as it was.
+        let absent = format!("{ARTWORK_HOST}Absent.png");
+        assert!(first.get(&absent).is_none());
+        assert!(first.failed(&absent), "nothing loads an unbundled image");
+        assert!(first.is_idle(), "the refused load is not left in flight");
+        assert!(!later.is_known(&absent), "each store is a cache of its own");
+        assert!(later.get(&absent).is_none());
+        assert!(later.failed(&absent));
+    }
+
+    tilo_test_env::scenario! {
+        fn the_fixture_catalogue_is_complete_and_its_artwork_bundled;
+
+        phase fixture_catalogue_covers_every_action_and_is_complete;
+        {
+            use crate::model::ActionKind;
+            let catalogue = fixture_catalog();
+            let mut saw_open = false;
+            let mut saw_update = false;
+            let mut saw_flatpak_install = false;
+            let mut saw_flatpak_open = false;
+            let mut saw_flatpak_remove = false;
+            let mut saw_pin_toggle = false;
+            for item in &catalogue {
+                match item.action_kind(true) {
+                    ActionKind::Open => saw_open = true,
+                    ActionKind::Update => saw_update = true,
+                    ActionKind::FlatpakInstall => saw_flatpak_install = true,
+                    ActionKind::FlatpakOpen => saw_flatpak_open = true,
+                    _ => {}
+                }
+                saw_pin_toggle |= item.pin_action().is_some();
+                saw_flatpak_remove |= item.remove_action() == Some(ActionKind::FlatpakRemove);
+                if let Some(key) = item.publisher_pubkey_hex.as_deref() {
+                    assert_eq!(key.len(), 64, "{} has a full ed25519 key", item.name);
+                }
+                for version in &item.versions {
+                    if let Some(hash) = version.root_hash_hex.as_deref() {
+                        assert_eq!(hash.len(), 64, "{} has a full digest", item.name);
+                    }
+                }
             }
-            for version in &item.versions {
-                if let Some(hash) = version.root_hash_hex.as_deref() {
-                    assert_eq!(hash.len(), 64, "{} has a full digest", item.name);
+            assert!(
+                saw_open
+                    && saw_update
+                    && saw_flatpak_install
+                    && saw_flatpak_open
+                    && saw_flatpak_remove
+                    && saw_pin_toggle,
+                "fixture must exercise Open, Update, Flatpak install/open/remove, and the pin toggle"
+            );
+        }
+
+        phase artwork_covers_the_fixture_and_nothing_else;
+        {
+            for item in fixture_catalog() {
+                for url in item.icon_url.iter().chain(&item.screenshot_urls) {
+                    let name = url.strip_prefix(ARTWORK_HOST).expect("fixture artwork URL");
+                    assert!(
+                        ARTWORK.iter().any(|(file, _)| *file == name),
+                        "{name} is bundled"
+                    );
                 }
             }
         }
-        assert!(
-            saw_open
-                && saw_update
-                && saw_flatpak_install
-                && saw_flatpak_open
-                && saw_flatpak_remove
-                && saw_pin_toggle,
-            "fixture must exercise Open, Update, Flatpak install/open/remove, and the pin toggle"
-        );
     }
 
     #[test]
     fn seeded_app_lists_the_fixture_catalogue() {
         assert_eq!(seeded_app().state().items().len(), fixture_catalog().len());
-    }
-
-    #[test]
-    fn artwork_covers_the_fixture_and_nothing_else() {
-        for item in fixture_catalog() {
-            for url in item.icon_url.iter().chain(&item.screenshot_urls) {
-                let name = url.strip_prefix(ARTWORK_HOST).expect("fixture artwork URL");
-                assert!(
-                    ARTWORK.iter().any(|(file, _)| *file == name),
-                    "{name} is bundled"
-                );
-            }
-        }
     }
 }

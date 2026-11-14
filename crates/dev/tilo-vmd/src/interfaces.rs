@@ -287,158 +287,162 @@ mod tests {
         Declaration::parse("[interfaces]\nsystem = [1]\napp-host = [1]\nshell-ui = [1]\n")
     }
 
-    #[test]
-    fn a_session_swap_over_an_image_whose_app_host_reads_another_declaration_is_refused() {
-        let image = list_format_image();
-        assert!(matches!(image, Declaration::Unreadable { .. }));
-        let stack = [
-            member("tilo-session", &current(), true),
-            member("launcher", &current(), false),
-            member("install", &current(), false),
-        ];
-        let refused = conflict(Some(&image), &stack, &[]).expect("the swap is refused");
-        assert!(refused.contains("the tilo-session layer's"), "{refused}");
-        assert!(refused.contains("shell-ui 11"), "{refused}");
-        for from_image in ["app-host", "ush"] {
+    tilo_test_env::scenario! {
+        fn interface_conflicts_are_judged_by_what_each_layer_and_image_declares;
+
+        phase a_session_swap_over_an_image_whose_app_host_reads_another_declaration_is_refused;
+        {
+            let image = list_format_image();
+            assert!(matches!(image, Declaration::Unreadable { .. }));
+            let stack = [
+                member("tilo-session", &current(), true),
+                member("launcher", &current(), false),
+                member("install", &current(), false),
+            ];
+            let refused = conflict(Some(&image), &stack, &[]).expect("the swap is refused");
+            assert!(refused.contains("the tilo-session layer's"), "{refused}");
+            assert!(refused.contains("shell-ui 11"), "{refused}");
+            for from_image in ["app-host", "ush"] {
+                assert!(
+                    refused.contains(from_image),
+                    "names {from_image} to swap together: {refused}"
+                );
+            }
+            assert!(refused.contains("tilo-vm swap userspace"), "{refused}");
+        }
+
+        phase the_whole_session_set_swapped_together_reads_its_own_declaration;
+        {
+            let image = list_format_image();
+            let stack: Vec<Member> = USERSPACE_COMPONENTS
+                .iter()
+                .map(|component| member(component, &current(), *component == "tilo-session"))
+                .collect();
+            let fs = [member("fs", &current(), false)];
+            assert_eq!(conflict(Some(&image), &stack, &fs), None);
+        }
+
+        phase a_layer_built_for_the_image_s_declaration_swaps_and_one_built_for_another_does_not;
+        {
+            let image = declared(&current());
+            assert_eq!(
+                conflict(Some(&image), &[member("app-host", &current(), false)], &[]),
+                None
+            );
+            let older = versions(&[("runtime", 2), ("shell-ui", 10), ("system", 1)]);
+            let refused = conflict(Some(&image), &[member("app-host", &older, false)], &[])
+                .expect("an app host built for shell-ui 10 is refused on a shell-ui 11 image");
+            assert!(refused.contains("the app-host layer"), "{refused}");
+            assert!(refused.contains("shell-ui 10"), "{refused}");
+        }
+
+        phase a_layer_that_records_no_interface_versions_cannot_be_vouched_for;
+        {
+            let image = declared(&current());
+            let refused = conflict(Some(&image), &[member("ush", &BTreeMap::new(), false)], &[])
+                .expect("unknown is refused");
             assert!(
-                refused.contains(from_image),
-                "names {from_image} to swap together: {refused}"
+                refused.contains("records no interface versions"),
+                "{refused}"
             );
         }
-        assert!(refused.contains("tilo-vm swap userspace"), "{refused}");
-    }
 
-    #[test]
-    fn the_whole_session_set_swapped_together_reads_its_own_declaration() {
-        let image = list_format_image();
-        let stack: Vec<Member> = USERSPACE_COMPONENTS
-            .iter()
-            .map(|component| member(component, &current(), *component == "tilo-session"))
-            .collect();
-        let fs = [member("fs", &current(), false)];
-        assert_eq!(conflict(Some(&image), &stack, &fs), None);
-    }
+        phase an_unrecorded_image_under_a_layer_s_declaration_cannot_be_vouched_for;
+        {
+            let refused = conflict(None, &[member("tilo-session", &current(), true)], &[])
+                .expect("the image's own readers are unknown");
+            assert!(refused.contains("no boot has recorded"), "{refused}");
+        }
 
-    #[test]
-    fn a_layer_built_for_the_image_s_declaration_swaps_and_one_built_for_another_does_not() {
-        let image = declared(&current());
-        assert_eq!(
-            conflict(Some(&image), &[member("app-host", &current(), false)], &[]),
-            None
-        );
-        let older = versions(&[("runtime", 2), ("shell-ui", 10), ("system", 1)]);
-        let refused = conflict(Some(&image), &[member("app-host", &older, false)], &[])
-            .expect("an app host built for shell-ui 10 is refused on a shell-ui 11 image");
-        assert!(refused.contains("the app-host layer"), "{refused}");
-        assert!(refused.contains("shell-ui 10"), "{refused}");
-    }
-
-    #[test]
-    fn a_layer_that_records_no_interface_versions_cannot_be_vouched_for() {
-        let image = declared(&current());
-        let refused = conflict(Some(&image), &[member("ush", &BTreeMap::new(), false)], &[])
-            .expect("unknown is refused");
-        assert!(
-            refused.contains("records no interface versions"),
-            "{refused}"
-        );
-    }
-
-    #[test]
-    fn an_unrecorded_image_under_a_layer_s_declaration_cannot_be_vouched_for() {
-        let refused = conflict(None, &[member("tilo-session", &current(), true)], &[])
-            .expect("the image's own readers are unknown");
-        assert!(refused.contains("no boot has recorded"), "{refused}");
-    }
-
-    #[test]
-    fn two_layers_shipping_the_declaration_are_refused() {
-        let image = declared(&current());
-        let refused = conflict(
-            Some(&image),
-            &[
-                member("tilo-session", &current(), true),
-                member("app-host", &current(), true),
-            ],
-            &[],
-        )
-        .expect("one owner");
-        assert!(refused.contains("one component owns it"), "{refused}");
-    }
-
-    #[test]
-    fn components_outside_the_session_set_and_undeclared_systems_are_not_judged() {
-        let older = versions(&[("shell-ui", 1)]);
-        assert_eq!(
-            conflict(
-                Some(&declared(&current())),
-                &[member("vmd", &older, false)],
-                &[]
-            ),
-            None
-        );
-        assert_eq!(
-            conflict(
-                Some(&Declaration::Absent),
-                &[member("app-host", &older, false)],
-                &[],
-            ),
-            None
-        );
-        assert_eq!(
-            conflict(None, &[member("app-host", &older, false)], &[]),
-            None
-        );
-    }
-
-    /// tilo-fs is a runtime service apps talk to, though it runs VM-wide.
-    /// A slot whose declaration serves another runtime version than the fs
-    /// layer is refused, and so is an fs swap that would leave a slot behind.
-    #[test]
-    fn the_filesystem_service_serves_the_runtime_version_every_slot_reads() {
-        let image = declared(&current());
-        let next_runtime = versions(&[("runtime", 3), ("shell-ui", 11), ("system", 1)]);
-        // Same runtime, other shell-ui: fs speaks only the runtime interface.
-        let other_shell_ui = versions(&[("runtime", 2), ("shell-ui", 12), ("system", 1)]);
-        assert_eq!(
-            conflict(Some(&image), &[], &[member("fs", &other_shell_ui, false)]),
-            None
-        );
-        let refused = conflict(Some(&image), &[], &[member("fs", &next_runtime, false)])
-            .expect("an fs serving runtime 3 to a slot reading runtime 2 is refused");
-        assert!(refused.contains("the fs layer"), "{refused}");
-        assert!(refused.contains("runtime 3"), "{refused}");
-        assert!(refused.contains("tilo-vm swap fs"), "{refused}");
-
-        // A slot's whole session set moved to runtime 3 while fs stays the
-        // image's: fs is named among what to swap together.
-        let stack: Vec<Member> = USERSPACE_COMPONENTS
-            .iter()
-            .map(|component| member(component, &next_runtime, *component == "tilo-session"))
-            .collect();
-        let refused = conflict(Some(&image), &stack, &[]).expect("the image's fs serves runtime 2");
-        assert!(refused.contains("the image's own fs"), "{refused}");
-        assert_eq!(
-            conflict(Some(&image), &stack, &[member("fs", &next_runtime, false)]),
-            None,
-            "with fs from the same tree the slot is whole"
-        );
-
-        let slots = vec![
-            ("device".to_owned(), Vec::new()),
-            ("review-a".to_owned(), stack),
-        ];
-        let refused = vm_conflict(Some(&image), &slots, &[member("fs", &next_runtime, false)])
-            .expect("the device slot still reads runtime 2");
-        assert!(refused.contains("slot 'device'"), "{refused}");
-        assert!(!refused.contains("slot 'review-a'"), "{refused}");
-        assert_eq!(
-            vm_conflict(
+        phase two_layers_shipping_the_declaration_are_refused;
+        {
+            let image = declared(&current());
+            let refused = conflict(
                 Some(&image),
-                &slots[..1],
-                &[member("fs", &current(), false)]
-            ),
-            None
-        );
+                &[
+                    member("tilo-session", &current(), true),
+                    member("app-host", &current(), true),
+                ],
+                &[],
+            )
+            .expect("one owner");
+            assert!(refused.contains("one component owns it"), "{refused}");
+        }
+
+        phase components_outside_the_session_set_and_undeclared_systems_are_not_judged;
+        {
+            let older = versions(&[("shell-ui", 1)]);
+            assert_eq!(
+                conflict(
+                    Some(&declared(&current())),
+                    &[member("vmd", &older, false)],
+                    &[]
+                ),
+                None
+            );
+            assert_eq!(
+                conflict(
+                    Some(&Declaration::Absent),
+                    &[member("app-host", &older, false)],
+                    &[],
+                ),
+                None
+            );
+            assert_eq!(
+                conflict(None, &[member("app-host", &older, false)], &[]),
+                None
+            );
+        }
+
+        phase the_filesystem_service_serves_the_runtime_version_every_slot_reads;
+        // tilo-fs is a runtime service apps talk to, though it runs VM-wide.
+        // A slot whose declaration serves another runtime version than the fs
+        // layer is refused, and so is an fs swap that would leave a slot behind.
+        {
+            let image = declared(&current());
+            let next_runtime = versions(&[("runtime", 3), ("shell-ui", 11), ("system", 1)]);
+            // Same runtime, other shell-ui: fs speaks only the runtime interface.
+            let other_shell_ui = versions(&[("runtime", 2), ("shell-ui", 12), ("system", 1)]);
+            assert_eq!(
+                conflict(Some(&image), &[], &[member("fs", &other_shell_ui, false)]),
+                None
+            );
+            let refused = conflict(Some(&image), &[], &[member("fs", &next_runtime, false)])
+                .expect("an fs serving runtime 3 to a slot reading runtime 2 is refused");
+            assert!(refused.contains("the fs layer"), "{refused}");
+            assert!(refused.contains("runtime 3"), "{refused}");
+            assert!(refused.contains("tilo-vm swap fs"), "{refused}");
+
+            // A slot's whole session set moved to runtime 3 while fs stays the
+            // image's: fs is named among what to swap together.
+            let stack: Vec<Member> = USERSPACE_COMPONENTS
+                .iter()
+                .map(|component| member(component, &next_runtime, *component == "tilo-session"))
+                .collect();
+            let refused = conflict(Some(&image), &stack, &[]).expect("the image's fs serves runtime 2");
+            assert!(refused.contains("the image's own fs"), "{refused}");
+            assert_eq!(
+                conflict(Some(&image), &stack, &[member("fs", &next_runtime, false)]),
+                None,
+                "with fs from the same tree the slot is whole"
+            );
+
+            let slots = vec![
+                ("device".to_owned(), Vec::new()),
+                ("review-a".to_owned(), stack),
+            ];
+            let refused = vm_conflict(Some(&image), &slots, &[member("fs", &next_runtime, false)])
+                .expect("the device slot still reads runtime 2");
+            assert!(refused.contains("slot 'device'"), "{refused}");
+            assert!(!refused.contains("slot 'review-a'"), "{refused}");
+            assert_eq!(
+                vm_conflict(
+                    Some(&image),
+                    &slots[..1],
+                    &[member("fs", &current(), false)]
+                ),
+                None
+            );
+        }
     }
 }

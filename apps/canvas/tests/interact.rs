@@ -1311,77 +1311,75 @@ fn opening_a_differently_sized_artwork_fits_after_manual_pixel_zoom() {
     );
 }
 
+/// Twenty small pinch or trackpad-wheel inputs each zoom the pixel sheet a
+/// little about the pointer, rather than jumping a whole zoom level each.
+/// Every input has a window of its own.
 #[test]
-fn pixel_pinch_follows_small_deltas_instead_of_jumping_whole_zoom_levels() {
-    small_pixel_zoom_deltas(false);
-}
-
-#[test]
-fn pixel_trackpad_wheel_follows_small_deltas_instead_of_jumping_whole_zoom_levels() {
-    small_pixel_zoom_deltas(true);
-}
-
-fn small_pixel_zoom_deltas(wheel: bool) {
-    let mut desk = Desk::open();
-    desk.app
-        .harness()
-        .perform_semantic_named(
-            "canvas-workspace",
-            Some("canvas-workspace:segment:3"),
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
-    desk.key("Ctrl+1");
-    desk.key("=");
-    let canvas = *desk
-        .app
-        .harness()
-        .targets()
-        .get("canvas")
-        .expect("the canvas is visible");
-    let focal = canvas.center();
-    desk.app.harness().click_at(focal.x, focal.y);
-    let anchor = desk.art().marks.last().unwrap().shape.clone();
-    if wheel {
-        desk.hold(&["ctrl"]);
-    }
-    for _ in 0..20 {
-        let event = if wheel {
-            WindowEvent::MouseWheel {
-                device_id: ui::winit::event::DeviceId::dummy(),
-                delta: ui::winit::event::MouseScrollDelta::PixelDelta(
-                    ui::winit::dpi::PhysicalPosition::new(0.0, 2.4),
-                ),
-                phase: ui::winit::event::TouchPhase::Moved,
-            }
-        } else {
-            WindowEvent::PinchGesture {
-                device_id: ui::winit::event::DeviceId::dummy(),
-                delta: 0.01,
-                phase: ui::winit::event::TouchPhase::Moved,
-            }
-        };
-        desk.app.harness().send(&event);
-    }
-    desk.hold(&[]);
-    desk.app.harness().click_at(focal.x, focal.y);
-    assert_eq!(
-        desk.art().marks.last().unwrap().shape,
-        anchor,
-        "small deltas preserve the focal cell"
-    );
-    desk.app.harness().click_at(focal.x + 100.0, focal.y);
-    let art = desk.art();
-    let x = |shape: &Shape| match shape {
-        Shape::Stroke { points, .. } => points.first().and_then(|point| point.first()).copied(),
-        _ => None,
+fn pixel_pinch_and_trackpad_wheel_follow_small_deltas_instead_of_jumping_whole_zoom_levels() {
+    let pinch = WindowEvent::PinchGesture {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: 0.01,
+        phase: ui::winit::event::TouchPhase::Moved,
     };
-    let span = x(&art.marks.last().unwrap().shape).expect("a pixel stroke")
-        - x(&anchor).expect("a pixel anchor stroke");
-    assert!(
-        (40.0..=43.0).contains(&span),
-        "twenty 1% inputs should enlarge 2x to about 2.44x, not jump through twenty integer scales: {span}"
-    );
+    let wheel = WindowEvent::MouseWheel {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+            ui::winit::dpi::PhysicalPosition::new(0.0, 2.4),
+        ),
+        phase: ui::winit::event::TouchPhase::Moved,
+    };
+    // The input, its event, and the keys held while it is sent.
+    let inputs: [(&str, WindowEvent, &[&str]); 2] =
+        [("pinch", pinch, &[]), ("trackpad wheel", wheel, &["ctrl"])];
+    for (input, event, held) in inputs {
+        let mut desk = Desk::open();
+        desk.app
+            .harness()
+            .perform_semantic_named(
+                "canvas-workspace",
+                Some("canvas-workspace:segment:3"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap_or_else(|error| panic!("{input}: the pixel workspace: {error}"));
+        desk.key("Ctrl+1");
+        desk.key("=");
+        let canvas = *desk
+            .app
+            .harness()
+            .targets()
+            .get("canvas")
+            .unwrap_or_else(|| panic!("{input}: the canvas is visible"));
+        let focal = canvas.center();
+        desk.app.harness().click_at(focal.x, focal.y);
+        let anchor = desk.art().marks.last().unwrap().shape.clone();
+        // With no key to hold, nothing is sent before the inputs themselves.
+        if !held.is_empty() {
+            desk.hold(held);
+        }
+        for _ in 0..20 {
+            desk.app.harness().send(&event);
+        }
+        desk.hold(&[]);
+        desk.app.harness().click_at(focal.x, focal.y);
+        assert_eq!(
+            desk.art().marks.last().unwrap().shape,
+            anchor,
+            "{input}: small deltas preserve the focal cell"
+        );
+        desk.app.harness().click_at(focal.x + 100.0, focal.y);
+        let art = desk.art();
+        let x = |shape: &Shape| match shape {
+            Shape::Stroke { points, .. } => points.first().and_then(|point| point.first()).copied(),
+            _ => None,
+        };
+        let span = x(&art.marks.last().unwrap().shape)
+            .unwrap_or_else(|| panic!("{input}: a pixel stroke"))
+            - x(&anchor).unwrap_or_else(|| panic!("{input}: a pixel anchor stroke"));
+        assert!(
+            (40.0..=43.0).contains(&span),
+            "{input}: twenty 1% inputs should enlarge 2x to about 2.44x, not jump through twenty integer scales: {span}"
+        );
+    }
 }
 
 #[test]

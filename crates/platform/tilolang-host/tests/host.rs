@@ -155,6 +155,8 @@ struct Window {
     took: u64,
     /// The patches taken in.
     patched: usize,
+    /// What the instance told the person, in its words.
+    notices: Vec<patch::Words>,
 }
 
 impl Window {
@@ -170,6 +172,7 @@ impl Window {
             form: None,
             took: 0,
             patched: 0,
+            notices: Vec::new(),
         }
     }
 
@@ -219,6 +222,7 @@ impl Window {
                     }
                     ToUi::Form(form) => self.form = form,
                     ToUi::Took { fired } => self.took = fired,
+                    ToUi::Notice { words, .. } => self.notices.push(words),
                     _ => {}
                 }
             }
@@ -515,150 +519,401 @@ fn workspace_copy(sent: &Sent) -> automerge::AutoCommit {
     workspace
 }
 
-#[test]
-fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_workspace_holds() {
-    // A record the workspace did not hold opens from the host's own copy, whose making (its schema
-    // stamp) is a change of this replica's. A press is the instance's first change to the workspace.
-    let documents: Rc<dyn durable_store::DurableStore> =
-        Rc::new(durable_store::MemoryStore::default());
-    let (mut host, mut window, sent, _route) = opened_from_own_copy("ada", &documents);
-    settle(&mut host, &mut window);
-    let (key, event) = window.increment();
-    window.send(&[ToApp::Fire {
-        lane: Lane::Root,
-        key,
-        event,
-        value: None,
-    }]);
-    settle(&mut host, &mut window);
-    assert_eq!(value_of(host.instances().next().unwrap()), 1);
+tilo_test_env::scenario! {
+    fn a_record_the_host_made_or_found_stamped_reaches_its_workspace_whole;
 
-    // The workspace's copy alone is the whole record: nothing it holds builds on a change that never
-    // reached it, so a reader that has only the workspace's writes can read it back.
-    let workspace = workspace_copy(&sent);
-    assert_eq!(
-        automerge::ReadDoc::get_missing_deps(&workspace, &[]),
-        Vec::new(),
-        "every change the workspace's writes build on reached the workspace"
-    );
+    phase a_record_made_from_the_hosts_own_copy_reopens_from_what_its_workspace_holds;
+    {
+        // A record the workspace did not hold opens from the host's own copy, whose making (its schema
+        // stamp) is a change of this replica's. A press is the instance's first change to the workspace.
+        let documents: Rc<dyn durable_store::DurableStore> =
+            Rc::new(durable_store::MemoryStore::default());
+        let (mut host, mut window, sent, _route) = opened_from_own_copy("ada", &documents);
+        settle(&mut host, &mut window);
+        let (key, event) = window.increment();
+        window.send(&[ToApp::Fire {
+            lane: Lane::Root,
+            key,
+            event,
+            value: None,
+        }]);
+        settle(&mut host, &mut window);
+        assert_eq!(value_of(host.instances().next().unwrap()), 1);
 
-    // A fresh host, opened on the workspace's copy as a reopen reads it, shows the press.
-    let (mut reopened, mut window, _sent, _inbox, _route) =
-        running_on("ada", APP, counter(), Rc::default(), workspace);
-    settle(&mut reopened, &mut window);
-    assert_eq!(
-        value_of(reopened.instances().next().unwrap()),
-        1,
-        "the reopened instance shows the record as it was"
-    );
+        // The workspace's copy alone is the whole record: nothing it holds builds on a change that never
+        // reached it, so a reader that has only the workspace's writes can read it back.
+        let workspace = workspace_copy(&sent);
+        assert_eq!(
+            automerge::ReadDoc::get_missing_deps(&workspace, &[]),
+            Vec::new(),
+            "every change the workspace's writes build on reached the workspace"
+        );
+
+        // A fresh host, opened on the workspace's copy as a reopen reads it, shows the press.
+        let (mut reopened, mut window, _sent, _inbox, _route) =
+            running_on("ada", APP, counter(), Rc::default(), workspace);
+        settle(&mut reopened, &mut window);
+        assert_eq!(
+            value_of(reopened.instances().next().unwrap()),
+            1,
+            "the reopened instance shows the record as it was"
+        );
+    }
+
+    phase a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_whole;
+    // A record an older store wrote, whose first change is its schema stamp committed with no
+    // message, is handed to its workspace whole on the next send, every change of it claimed: the
+    // stamp, a root change with no deps that only sets the schema version, as the record's
+    // genesis. No change is rewritten and no id changes.
+    {
+        let documents: Rc<dyn durable_store::DurableStore> =
+            Rc::new(durable_store::MemoryStore::default());
+        let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+        // The record as the store wrote it before a record's first change named itself: its layout
+        // version, put on the root by the store that created it, and nothing else.
+        let stamp = {
+            use automerge::transaction::Transactable as _;
+            let mut store = collaboration::record::save::workspace_document(
+                &documents,
+                APP,
+                &route.cluster_id.to_string(),
+            )
+            .unwrap();
+            let mut doc = store.new_document();
+            doc.put(automerge::ROOT, "tilo:schema_version", 1_u64)
+                .unwrap();
+            let stamp = doc.commit().unwrap();
+            store.save(&mut doc).unwrap();
+            stamp
+        };
+        let (mut host, mut window, sent, _route) = opened_from_own_copy_in("ada", &documents, route);
+        settle(&mut host, &mut window);
+        let (key, event) = window.increment();
+        window.send(&[ToApp::Fire {
+            lane: Lane::Root,
+            key,
+            event,
+            value: None,
+        }]);
+        settle(&mut host, &mut window);
+        assert_eq!(value_of(host.instances().next().unwrap()), 1);
+        let workspace = workspace_copy(&sent);
+        assert!(
+            automerge::ReadDoc::get_change_by_hash(&workspace, &stamp).is_some(),
+            "the stamp, unchanged, reached the workspace"
+        );
+        assert_eq!(
+            automerge::ReadDoc::get_missing_deps(&workspace, &[]),
+            Vec::new(),
+            "the workspace holds the whole record"
+        );
+        for request in sent.borrow().iter() {
+            if let CollabRequest::Document { mutation, .. } = request {
+                let claims =
+                    collaboration::app_surface::claims_of(APP, mutation).unwrap_or_else(|error| {
+                        panic!("every change the workspace is handed is claimed: {error}")
+                    });
+                if let Some(claim) = claims.iter().find(|claim| claim.change == stamp.0) {
+                    assert_eq!(
+                        claim.action,
+                        collab_types::ClaimedAction::Framework(collab_types::FrameworkChange::Genesis)
+                    );
+                }
+            }
+        }
+    }
 }
 
-#[test]
-fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it_back() {
-    let (mut host, mut window, sent, _inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    assert!(window.root.is_some(), "the window shows the counter");
-    let hosted = host.instances().next().unwrap();
-    assert_eq!(value_of(hosted), 0);
-    assert!(
-        hosted
+tilo_test_env::scenario! {
+    fn what_a_window_or_the_broker_asks_runs_as_a_step_that_undo_takes_back;
+
+    phase a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it_back;
+    {
+        let (mut host, mut window, sent, _inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        assert!(window.root.is_some(), "the window shows the counter");
+        let hosted = host.instances().next().unwrap();
+        assert_eq!(value_of(hosted), 0);
+        assert!(
+            hosted
+                .published()
+                .iter()
+                .any(|action| action.address.resource.starts_with("tl:")
+                    && action.action_label == "Increment"),
+            "the instance publishes the counter's actions: {:?}",
+            hosted
+                .published()
+                .iter()
+                .map(|a| (&a.address, &a.action_label))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            sent.borrow()
+                .iter()
+                .any(|request| matches!(request, CollabRequest::PublishActionSurface { .. })),
+            "published on its own connection"
+        );
+
+        // The person presses + in the window: its control is bound to the instance's own action, so
+        // the window sends the invocation, and the instance runs it and commits it as their step.
+        let before = documents_sent(&sent);
+        press_increment(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        assert_eq!(value_of(hosted), 1, "the press reached the runtime");
+        assert!(
+            documents_sent(&sent) > before,
+            "the change went out on the connection"
+        );
+        assert_eq!(
+            hosted.record().can_undo(),
+            (true, false),
+            "it is ada's step"
+        );
+
+        // Undo from the window takes it back, as a change of its own sent on the connection.
+        let before = documents_sent(&sent);
+        window.send(&[ToApp::Undo]);
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        assert_eq!(value_of(hosted), 0, "undo took the press back");
+        assert!(
+            documents_sent(&sent) > before,
+            "the undo went out on the connection"
+        );
+        assert!(
+            hosted.record().can_undo().1,
+            "the window's Undo is ada's history undo: she can redo it"
+        );
+
+        // Redo from the window brings it back, the same way.
+        let before = documents_sent(&sent);
+        window.send(&[ToApp::Redo]);
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        assert_eq!(value_of(hosted), 1, "redo brought the press back");
+        assert!(
+            documents_sent(&sent) > before,
+            "the redo went out on the connection"
+        );
+        assert_eq!(
+            hosted.record().can_undo(),
+            (true, false),
+            "and it is ada's to undo again"
+        );
+    }
+
+    phase a_chosen_press_shows_and_is_told_in_the_frame_that_ran_it;
+    // A press of an action the window chose (its bar, its palette) shows in the frame that ran it:
+    // what it changed and that it ran reach the window together, so the window takes them in with
+    // one frame rather than one for what it made and another for its having run.
+    {
+        let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        let address = host
+            .instances()
+            .next()
+            .unwrap()
             .published()
             .iter()
-            .any(|action| action.address.resource.starts_with("tl:")
-                && action.action_label == "Increment"),
-        "the instance publishes the counter's actions: {:?}",
-        hosted
+            .find(|action| action.action_label == "Increment")
+            .expect("the instance publishes the action the button runs")
+            .address
+            .clone();
+        window.send(&[ToApp::Invoke {
+            address,
+            argument: None,
+        }]);
+        let patched = window.patched;
+        host.turn();
+        window.take();
+        assert_eq!(
+            value_of(host.instances().next().unwrap()),
+            1,
+            "the press ran"
+        );
+        assert!(window.patched > patched, "what it changed was sent");
+        assert_eq!(window.took, 1, "and that it ran, in the same frame");
+    }
+
+    phase another_devices_edit_shows_in_a_hosted_window_beside_its_own;
+    // What grace did in her window on another device reaches ada's hosted window as the workspace's
+    // committed read of the record: ada sees it, beside the press she made meanwhile, and the read
+    // is acknowledged, so her connection's reader confirms it and the record takes her next change.
+    {
+        let (mut host, mut window, _sent, inbox, route) = running("ada");
+        settle(&mut host, &mut window);
+        let held = host.instances().next().unwrap().record().doc();
+        let (mut elsewhere, mut graces, _, _, _) =
+            running_on("grace", APP, counter(), Rc::default(), held);
+        settle(&mut elsewhere, &mut graces);
+        press_increment(&mut elsewhere, &mut graces);
+        let theirs = elsewhere.instances().next().unwrap().record().doc().save();
+
+        press_increment(&mut host, &mut window);
+        let mine = host.instances().next().unwrap().record().doc().get_heads();
+        let read = collaboration::CommittedDocument::for_test(theirs, None);
+        inbox
+            .borrow_mut()
+            .push_back(CollabEvent::CommittedDocument {
+                route,
+                read: read.clone(),
+            });
+        settle(&mut host, &mut window);
+
+        let hosted = host.instances().next().unwrap();
+        assert_eq!(value_of(hosted), 2, "grace's press shows beside ada's");
+        let mut record = hosted.record().doc();
+        assert!(
+            mine.iter()
+                .all(|head| record.get_change_by_hash(head).is_some()),
+            "ada's own press is kept"
+        );
+        assert!(read.was_applied(), "the read is acknowledged once merged");
+    }
+
+    phase one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_action;
+    {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        let cluster = uuid::Uuid::new_v4();
+        let mut host = TilolangHost::new(None, wake());
+        let actions: Actions = Rc::default();
+        // The person's one action wrote both units, as a run does: each record holds the change
+        // the action's invocation names. The endpoint restarted since, so no log remembers it.
+        let invocation = tilo_actions::InvocationId::new();
+        let first_route = RouteSpec::record(APP, cluster, "a");
+        let (mut first, first_sent, _) = instance_on(
+            &mut host,
+            spec(1, "ada", &first_route),
+            counter(),
+            &first_route,
+            Rc::default(),
+            Rc::clone(&actions),
+            seeded("ada", invocation),
+        );
+        let second_route = RouteSpec::record(APP, cluster, "b");
+        let (mut second, second_sent, _) = instance_on(
+            &mut host,
+            spec(2, "ada", &second_route),
+            counter(),
+            &second_route,
+            Rc::default(),
+            Rc::default(),
+            seeded("ada", invocation),
+        );
+        settle(&mut host, &mut first);
+        second.take();
+        assert_eq!(
+            values(&host),
+            vec![1, 1],
+            "both units hold the action's change"
+        );
+
+        // One undo, asked at one window: every unit the action wrote takes its step back, and the
+        // reverts go out as one action of their own.
+        first.send(&[ToApp::Undo]);
+        settle(&mut host, &mut first);
+        second.take();
+        assert_eq!(
+            values(&host),
+            vec![0, 0],
+            "one undo took the action back in both units"
+        );
+        let (undo_a, undo_b) = (
+            sent_under(&first_sent).expect("the first unit's revert is part of an action"),
+            sent_under(&second_sent).expect("the second unit's revert is part of an action"),
+        );
+        assert_eq!(
+            undo_a.id(),
+            undo_b.id(),
+            "both units reverted as one action"
+        );
+        assert_eq!(
+            undo_a.parts.len(),
+            2,
+            "the undo names both units it reverted"
+        );
+        assert_eq!(undo_a.parts, undo_b.parts);
+        assert_ne!(
+            undo_a.invocation,
+            Some(invocation.0),
+            "the undo ran under an invocation of its own"
+        );
+        // The two units reverted through their own live instances: each record holds the undo as its
+        // own step, which the person can redo.
+        let redoable: Vec<bool> = host
+            .instances()
+            .map(|hosted| hosted.record().can_undo().1)
+            .collect();
+        assert_eq!(redoable, vec![true, true], "each unit can redo its revert");
+
+        // The workspace was handed the undo as one action naming both units it reverted.
+        let history = actions.borrow();
+        assert!(!history.is_empty(), "the undo reached the workspace");
+        for action in history.iter() {
+            assert_eq!(action.workspace, cluster.to_string());
+            assert_eq!(action.commit, undo_a.id());
+            assert_eq!(action.parts.len(), 2, "the undo names both units");
+        }
+    }
+
+    phase what_the_broker_delivers_runs_as_its_invokers_step;
+    {
+        let (mut host, mut window, sent, inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        let increment = hosted
             .published()
             .iter()
-            .map(|a| (&a.address, &a.action_label))
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        sent.borrow()
-            .iter()
-            .any(|request| matches!(request, CollabRequest::PublishActionSurface { .. })),
-        "published on its own connection"
-    );
-
-    // The person presses + in the window: its control is bound to the instance's own action, so
-    // the window sends the invocation, and the instance runs it and commits it as their step.
-    let before = documents_sent(&sent);
-    press_increment(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    assert_eq!(value_of(hosted), 1, "the press reached the runtime");
-    assert!(
-        documents_sent(&sent) > before,
-        "the change went out on the connection"
-    );
-    assert_eq!(
-        hosted.record().can_undo(),
-        (true, false),
-        "it is ada's step"
-    );
-
-    // Undo from the window takes it back, as a change of its own sent on the connection.
-    let before = documents_sent(&sent);
-    window.send(&[ToApp::Undo]);
-    settle(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    assert_eq!(value_of(hosted), 0, "undo took the press back");
-    assert!(
-        documents_sent(&sent) > before,
-        "the undo went out on the connection"
-    );
-    assert!(
-        hosted.record().can_undo().1,
-        "the window's Undo is ada's history undo: she can redo it"
-    );
-
-    // Redo from the window brings it back, the same way.
-    let before = documents_sent(&sent);
-    window.send(&[ToApp::Redo]);
-    settle(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    assert_eq!(value_of(hosted), 1, "redo brought the press back");
-    assert!(
-        documents_sent(&sent) > before,
-        "the redo went out on the connection"
-    );
-    assert_eq!(
-        hosted.record().can_undo(),
-        (true, false),
-        "and it is ada's to undo again"
-    );
-}
-
-/// A press of an action the window chose (its bar, its palette) shows in the frame that ran it:
-/// what it changed and that it ran reach the window together, so the window takes them in with
-/// one frame rather than one for what it made and another for its having run.
-#[test]
-fn a_chosen_press_shows_and_is_told_in_the_frame_that_ran_it() {
-    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    let address = host
-        .instances()
-        .next()
-        .unwrap()
-        .published()
-        .iter()
-        .find(|action| action.action_label == "Increment")
-        .expect("the instance publishes the action the button runs")
-        .address
-        .clone();
-    window.send(&[ToApp::Invoke {
-        address,
-        argument: None,
-    }]);
-    let patched = window.patched;
-    host.turn();
-    window.take();
-    assert_eq!(
-        value_of(host.instances().next().unwrap()),
-        1,
-        "the press ran"
-    );
-    assert!(window.patched > patched, "what it changed was sent");
-    assert_eq!(window.took, 1, "and that it ran, in the same frame");
+            .find(|action| {
+                action.address.resource.starts_with("tl:") && action.action_label == "Increment"
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "increment is published: {:?}",
+                    hosted
+                        .published()
+                        .iter()
+                        .map(|a| (&a.address, &a.action_label))
+                        .collect::<Vec<_>>()
+                )
+            })
+            .address
+            .clone();
+        let ada_could = hosted.record().can_undo();
+        let invocation = tilo_actions::InvocationId::new();
+        inbox.borrow_mut().push_back(CollabEvent::Invocation {
+            id: 7,
+            invocation,
+            resource: increment.resource.clone(),
+            action: increment.action,
+            argument: None,
+            actor: "grace".to_owned(),
+            context: None,
+        });
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        assert_eq!(value_of(hosted), 1, "the delivered action ran");
+        assert!(
+            sent.borrow().iter().any(|request| matches!(
+                request,
+                CollabRequest::UpdateInvocation {
+                    id: 7,
+                    update: tilo_actions::InvocationUpdate::Succeeded { .. }
+                }
+            )),
+            "the broker is told it succeeded"
+        );
+        assert_eq!(
+            hosted.record().can_undo_as("grace"),
+            (true, false),
+            "the step is grace's, who invoked it"
+        );
+        assert_eq!(
+            hosted.record().can_undo(),
+            ada_could,
+            "it gives ada nothing more to undo"
+        );
+    }
 }
 
 /// The person at `window` presses the counter's +: the instance runs the action it publishes.
@@ -678,56 +933,6 @@ fn press_increment(host: &mut TilolangHost, window: &mut Window) {
         argument: None,
     }]);
     settle(host, window);
-}
-
-/// What grace did in her window on another device reaches ada's hosted window as the workspace's
-/// committed read of the record: ada sees it, beside the press she made meanwhile, and the read
-/// is acknowledged, so her connection's reader confirms it and the record takes her next change.
-#[test]
-fn another_devices_edit_shows_in_a_hosted_window_beside_its_own() {
-    let (mut host, mut window, _sent, inbox, route) = running("ada");
-    settle(&mut host, &mut window);
-    let held = host.instances().next().unwrap().record().doc().clone();
-    let (mut elsewhere, mut graces, _, _, _) =
-        running_on("grace", APP, counter(), Rc::default(), held);
-    settle(&mut elsewhere, &mut graces);
-    press_increment(&mut elsewhere, &mut graces);
-    let theirs = elsewhere
-        .instances()
-        .next()
-        .unwrap()
-        .record()
-        .doc()
-        .clone()
-        .save();
-
-    press_increment(&mut host, &mut window);
-    let mine = host
-        .instances()
-        .next()
-        .unwrap()
-        .record()
-        .doc()
-        .clone()
-        .get_heads();
-    let read = collaboration::CommittedDocument::for_test(theirs, None);
-    inbox
-        .borrow_mut()
-        .push_back(CollabEvent::CommittedDocument {
-            route,
-            read: read.clone(),
-        });
-    settle(&mut host, &mut window);
-
-    let hosted = host.instances().next().unwrap();
-    assert_eq!(value_of(hosted), 2, "grace's press shows beside ada's");
-    let mut record = hosted.record().doc().clone();
-    assert!(
-        mine.iter()
-            .all(|head| record.get_change_by_hash(head).is_some()),
-        "ada's own press is kept"
-    );
-    assert!(read.was_applied(), "the read is acknowledged once merged");
 }
 
 /// The last change a window's press sent the workspace.
@@ -811,150 +1016,6 @@ fn values(host: &TilolangHost) -> Vec<i64> {
     host.instances().map(value_of).collect()
 }
 
-#[test]
-fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_action() {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let cluster = uuid::Uuid::new_v4();
-    let mut host = TilolangHost::new(None, wake());
-    let actions: Actions = Rc::default();
-    // The person's one action wrote both units, as a run does: each record holds the change
-    // the action's invocation names. The endpoint restarted since, so no log remembers it.
-    let invocation = tilo_actions::InvocationId::new();
-    let first_route = RouteSpec::record(APP, cluster, "a");
-    let (mut first, first_sent, _) = instance_on(
-        &mut host,
-        spec(1, "ada", &first_route),
-        counter(),
-        &first_route,
-        Rc::default(),
-        Rc::clone(&actions),
-        seeded("ada", invocation),
-    );
-    let second_route = RouteSpec::record(APP, cluster, "b");
-    let (mut second, second_sent, _) = instance_on(
-        &mut host,
-        spec(2, "ada", &second_route),
-        counter(),
-        &second_route,
-        Rc::default(),
-        Rc::default(),
-        seeded("ada", invocation),
-    );
-    settle(&mut host, &mut first);
-    second.take();
-    assert_eq!(
-        values(&host),
-        vec![1, 1],
-        "both units hold the action's change"
-    );
-
-    // One undo, asked at one window: every unit the action wrote takes its step back, and the
-    // reverts go out as one action of their own.
-    first.send(&[ToApp::Undo]);
-    settle(&mut host, &mut first);
-    second.take();
-    assert_eq!(
-        values(&host),
-        vec![0, 0],
-        "one undo took the action back in both units"
-    );
-    let (undo_a, undo_b) = (
-        sent_under(&first_sent).expect("the first unit's revert is part of an action"),
-        sent_under(&second_sent).expect("the second unit's revert is part of an action"),
-    );
-    assert_eq!(
-        undo_a.id(),
-        undo_b.id(),
-        "both units reverted as one action"
-    );
-    assert_eq!(
-        undo_a.parts.len(),
-        2,
-        "the undo names both units it reverted"
-    );
-    assert_eq!(undo_a.parts, undo_b.parts);
-    assert_ne!(
-        undo_a.invocation,
-        Some(invocation.0),
-        "the undo ran under an invocation of its own"
-    );
-    // The two units reverted through their own live instances: each record holds the undo as its
-    // own step, which the person can redo.
-    let redoable: Vec<bool> = host
-        .instances()
-        .map(|hosted| hosted.record().can_undo().1)
-        .collect();
-    assert_eq!(redoable, vec![true, true], "each unit can redo its revert");
-
-    // The workspace was handed the undo as one action naming both units it reverted.
-    let history = actions.borrow();
-    assert!(!history.is_empty(), "the undo reached the workspace");
-    for action in history.iter() {
-        assert_eq!(action.workspace, cluster.to_string());
-        assert_eq!(action.commit, undo_a.id());
-        assert_eq!(action.parts.len(), 2, "the undo names both units");
-    }
-}
-
-#[test]
-fn what_the_broker_delivers_runs_as_its_invokers_step() {
-    let (mut host, mut window, sent, inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    let increment = hosted
-        .published()
-        .iter()
-        .find(|action| {
-            action.address.resource.starts_with("tl:") && action.action_label == "Increment"
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "increment is published: {:?}",
-                hosted
-                    .published()
-                    .iter()
-                    .map(|a| (&a.address, &a.action_label))
-                    .collect::<Vec<_>>()
-            )
-        })
-        .address
-        .clone();
-    let ada_could = hosted.record().can_undo();
-    let invocation = tilo_actions::InvocationId::new();
-    inbox.borrow_mut().push_back(CollabEvent::Invocation {
-        id: 7,
-        invocation,
-        resource: increment.resource.clone(),
-        action: increment.action,
-        argument: None,
-        actor: "grace".to_owned(),
-        context: None,
-    });
-    settle(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    assert_eq!(value_of(hosted), 1, "the delivered action ran");
-    assert!(
-        sent.borrow().iter().any(|request| matches!(
-            request,
-            CollabRequest::UpdateInvocation {
-                id: 7,
-                update: tilo_actions::InvocationUpdate::Succeeded { .. }
-            }
-        )),
-        "the broker is told it succeeded"
-    );
-    assert_eq!(
-        hosted.record().can_undo_as("grace"),
-        (true, false),
-        "the step is grace's, who invoked it"
-    );
-    assert_eq!(
-        hosted.record().can_undo(),
-        ada_could,
-        "it gives ada nothing more to undo"
-    );
-}
-
 /// The answer the broker was told for invocation `id`.
 fn answered(sent: &Sent, id: u64) -> Option<tilo_actions::InvocationUpdate> {
     sent.borrow()
@@ -981,155 +1042,351 @@ fn deliver(inbox: &Inbox, id: u64, address: &tilo_actions::ActionAddress, actor:
     });
 }
 
-#[test]
-fn the_instance_publishes_and_answers_the_history_verbs_every_app_does() {
-    let (mut host, mut window, sent, inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    let find = |label: &str| {
-        hosted
-            .published()
-            .iter()
-            .find(|action| {
-                action.address.resource == format!("tl:{APP}") && action.action_label == label
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "{label} is published on the app's resource: {:?}",
-                    hosted
-                        .published()
-                        .iter()
-                        .map(|a| (&a.address, &a.action_label))
-                        .collect::<Vec<_>>()
-                )
-            })
-            .address
-            .clone()
-    };
-    let (undo, redo, history) = (find("Undo"), find("Redo"), find("History"));
-    let increment = hosted
-        .published()
-        .iter()
-        .find(|action| action.action_label == "Increment")
-        .unwrap()
-        .address
-        .clone();
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn the_instance_answers_what_every_app_is_asked_on_its_connection;
 
-    // Grace increments through the broker, then undoes through the broker: her own step.
-    deliver(&inbox, 1, &increment, "grace");
-    settle(&mut host, &mut window);
-    assert_eq!(value_of(host.instances().next().unwrap()), 1);
-    deliver(&inbox, 2, &undo, "grace");
-    settle(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    assert_eq!(value_of(hosted), 0, "grace's undo took her step back");
-    match answered(&sent, 2) {
-        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-            let value = output.value.expect("undo says what it took back");
-            assert_eq!(value["undone"].as_array().map(Vec::len), Some(1), "{value}");
-        }
-        other => panic!("undo was answered {other:?}"),
-    }
-    assert_eq!(hosted.record().can_undo_as("grace"), (false, true));
-
-    // Ada's one step is the counter she created, which Grace has since counted in: her Undo
-    // takes that step back without taking Grace's work with it, so the counter stays.
-    deliver(&inbox, 3, &undo, "ada");
-    settle(&mut host, &mut window);
-    match answered(&sent, 3) {
-        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-            let value = output.value.expect("undo says what it took back");
-            assert_eq!(value["undone"][0]["sentence"], "Created Counter", "{value}");
-        }
-        other => panic!("ada's undo is never refused: {other:?}"),
-    }
-    assert_eq!(value_of(host.instances().next().unwrap()), 0);
-    assert!(
-        !host
-            .instances()
-            .next()
-            .unwrap()
-            .record()
-            .can_undo_as("ada")
-            .0
-    );
-
-    // Grace's redo brings it back, and History lists all three steps as hers.
-    deliver(&inbox, 4, &redo, "grace");
-    settle(&mut host, &mut window);
-    assert_eq!(
-        value_of(host.instances().next().unwrap()),
-        1,
-        "redo brought it back"
-    );
-    deliver(&inbox, 5, &history, "grace");
-    settle(&mut host, &mut window);
-    match answered(&sent, 5) {
-        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-            let value = output.value.expect("history lists the versions");
-            let hers = value["versions"]
-                .as_array()
-                .unwrap()
+    phase the_instance_publishes_and_answers_the_history_verbs_every_app_does;
+    {
+        let (mut host, mut window, sent, inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        let find = |label: &str| {
+            hosted
+                .published()
                 .iter()
-                .filter(|version| version["actor"]["id"] == "grace")
-                .count();
-            assert_eq!(hers, 3, "{value}");
-        }
-        other => panic!("history was answered {other:?}"),
-    }
-}
-
-#[test]
-fn the_instance_answers_read_and_show_this_window_as_every_app_does() {
-    let (mut host, mut window, sent, inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    let find = |id: &str| {
-        hosted
+                .find(|action| {
+                    action.address.resource == format!("tl:{APP}") && action.action_label == label
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{label} is published on the app's resource: {:?}",
+                        hosted
+                            .published()
+                            .iter()
+                            .map(|a| (&a.address, &a.action_label))
+                            .collect::<Vec<_>>()
+                    )
+                })
+                .address
+                .clone()
+        };
+        let (undo, redo, history) = (find("Undo"), find("Redo"), find("History"));
+        let increment = hosted
             .published()
             .iter()
-            .find(|action| {
-                action.address.resource == format!("tl:{APP}") && action.address.action == id
-            })
-            .unwrap_or_else(|| panic!("{id} is published on the app's resource"))
+            .find(|action| action.action_label == "Increment")
+            .unwrap()
             .address
-            .clone()
-    };
-    let (read, activate) = (
-        find("read"),
-        find(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION),
-    );
+            .clone();
 
-    deliver(&inbox, 1, &read, "grace");
-    settle(&mut host, &mut window);
-    match answered(&sent, 1) {
-        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-            let value = output.value.expect("read answers what the record holds");
-            assert!(value.get("records").is_some(), "{value}");
+        // Grace increments through the broker, then undoes through the broker: her own step.
+        deliver(&inbox, 1, &increment, "grace");
+        settle(&mut host, &mut window);
+        assert_eq!(value_of(host.instances().next().unwrap()), 1);
+        deliver(&inbox, 2, &undo, "grace");
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        assert_eq!(value_of(hosted), 0, "grace's undo took her step back");
+        match answered(&sent, 2) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                let value = output.value.expect("undo says what it took back");
+                assert_eq!(value["undone"].as_array().map(Vec::len), Some(1), "{value}");
+            }
+            other => panic!("undo was answered {other:?}"),
         }
-        other => panic!("read was answered {other:?}"),
+        assert_eq!(hosted.record().can_undo_as("grace"), (false, true));
+
+        // Ada's one step is the counter she created, which Grace has since counted in: her Undo
+        // takes that step back without taking Grace's work with it, so the counter stays.
+        deliver(&inbox, 3, &undo, "ada");
+        settle(&mut host, &mut window);
+        match answered(&sent, 3) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                let value = output.value.expect("undo says what it took back");
+                assert_eq!(value["undone"][0]["sentence"], "Created Counter", "{value}");
+            }
+            other => panic!("ada's undo is never refused: {other:?}"),
+        }
+        assert_eq!(value_of(host.instances().next().unwrap()), 0);
+        assert!(
+            !host
+                .instances()
+                .next()
+                .unwrap()
+                .record()
+                .can_undo_as("ada")
+                .0
+        );
+
+        // Grace's redo brings it back, and History lists all three steps as hers.
+        deliver(&inbox, 4, &redo, "grace");
+        settle(&mut host, &mut window);
+        assert_eq!(
+            value_of(host.instances().next().unwrap()),
+            1,
+            "redo brought it back"
+        );
+        deliver(&inbox, 5, &history, "grace");
+        settle(&mut host, &mut window);
+        match answered(&sent, 5) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                let value = output.value.expect("history lists the versions");
+                let hers = value["versions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|version| version["actor"]["id"] == "grace")
+                    .count();
+                assert_eq!(hers, 3, "{value}");
+            }
+            other => panic!("history was answered {other:?}"),
+        }
     }
 
-    deliver(&inbox, 2, &activate, "grace");
-    settle(&mut host, &mut window);
-    assert!(
-        matches!(
-            answered(&sent, 2),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ),
-        "Show this window is answered"
-    );
-    assert!(window.activated, "the window was asked to come forward");
+    phase the_instance_answers_read_and_show_this_window_as_every_app_does;
+    {
+        let (mut host, mut window, sent, inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        let find = |id: &str| {
+            hosted
+                .published()
+                .iter()
+                .find(|action| {
+                    action.address.resource == format!("tl:{APP}") && action.address.action == id
+                })
+                .unwrap_or_else(|| panic!("{id} is published on the app's resource"))
+                .address
+                .clone()
+        };
+        let (read, activate) = (
+            find("read"),
+            find(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION),
+        );
+
+        deliver(&inbox, 1, &read, "grace");
+        settle(&mut host, &mut window);
+        match answered(&sent, 1) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                let value = output.value.expect("read answers what the record holds");
+                assert!(value.get("records").is_some(), "{value}");
+            }
+            other => panic!("read was answered {other:?}"),
+        }
+
+        deliver(&inbox, 2, &activate, "grace");
+        settle(&mut host, &mut window);
+        assert!(
+            matches!(
+                answered(&sent, 2),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ),
+            "Show this window is answered"
+        );
+        assert!(window.activated, "the window was asked to come forward");
+    }
+
+    phase a_published_view_opens_through_its_own_action;
+    // A view other than its type's default is opened by the action published with it: the
+    // counter's `controls`, invoked as the broker delivers it, shows the counter through that
+    // view, its two buttons without the count.
+    {
+        let (mut host, mut window, sent, inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().unwrap();
+        let opens = |label: &str| {
+            hosted
+                .published()
+                .iter()
+                .find(|action| action.view.as_ref().is_some_and(|view| view.label == label))
+                .unwrap_or_else(|| panic!("the view `{label}` is published with its open action"))
+                .clone()
+        };
+        let (counter, controls) = (opens("counter"), opens("controls"));
+        assert!(counter.view.as_ref().unwrap().primary);
+        assert_eq!(counter.address.action, "open");
+        assert_ne!(
+            controls.address.action, counter.address.action,
+            "each view opens through an action of its own"
+        );
+        assert!(window.detail.is_none(), "the window shows its root alone");
+        deliver(&inbox, 41, &controls.address, "ada");
+        settle(&mut host, &mut window);
+        assert!(
+            matches!(
+                answered(&sent, 41),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ),
+            "{:?}",
+            answered(&sent, 41)
+        );
+        let shown = format!("{:?}", window.detail.as_ref().expect("the view opened"));
+        assert!(
+            shown.contains("plus") && shown.contains("minus") && !shown.contains("Count"),
+            "the counter, through its controls: {shown}"
+        );
+    }
+
+    phase the_instance_answers_a_late_joiners_snapshot_request_with_its_record;
+    {
+        let (mut host, mut window, sent, inbox, route) = running("ada");
+        settle(&mut host, &mut window);
+        let snapshots = |sent: &Sent| {
+            sent.borrow()
+                .iter()
+                .filter(|request| {
+                    matches!(
+                        request,
+                        CollabRequest::Document {
+                            mutation: collaboration::DocumentMutation::Snapshot(_),
+                            ..
+                        }
+                    )
+                })
+                .count()
+        };
+        let before = snapshots(&sent);
+        inbox
+            .borrow_mut()
+            .push_back(CollabEvent::DocumentSnapshotRequested { route });
+        settle(&mut host, &mut window);
+        assert_eq!(
+            snapshots(&sent),
+            before + 1,
+            "the record went to the late joiner"
+        );
+    }
+
+    phase the_instance_answers_every_handoff_step_the_shell_asks;
+    {
+        use collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
+        let (mut host, mut window, sent, inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        let reports = |sent: &Sent| -> Vec<HandoffReport> {
+            sent.borrow()
+                .iter()
+                .filter_map(|request| match request {
+                    CollabRequest::ReportHandoff { message, .. } => HandoffReport::decode(message),
+                    _ => None,
+                })
+                .collect()
+        };
+        inbox.borrow_mut().push_back(CollabEvent::Handoff {
+            request: HandoffRequest::Checkpoint { token: 7 },
+        });
+        inbox.borrow_mut().push_back(CollabEvent::Handoff {
+            request: HandoffRequest::Retire {
+                token: 8,
+                successor: Successor {
+                    room: uuid::Uuid::new_v4().to_string(),
+                    record: "elsewhere".to_owned(),
+                    by: "ada".to_owned(),
+                },
+            },
+        });
+        settle(&mut host, &mut window);
+        let reports = reports(&sent);
+        assert!(
+            reports
+                .iter()
+                .any(|report| matches!(report, HandoffReport::Done { token: 7, .. })),
+            "a checkpoint is done: {reports:?}"
+        );
+        assert!(
+            reports.iter().any(|report| matches!(
+                report,
+                HandoffReport::Failed { token: 8, reason } if !reason.is_empty()
+            )),
+            "a retirement is refused with why: {reports:?}"
+        );
+    }
 }
 
-#[test]
-fn an_instance_ends_when_its_window_closes() {
-    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    assert!(!host.is_empty());
-    drop(window);
-    host.turn();
-    assert!(host.is_empty(), "the instance ended with its window");
+tilo_test_env::scenario! {
+    fn an_instance_opens_without_holding_up_others_and_ends_with_its_window;
+
+    phase an_instance_ends_when_its_window_closes;
+    {
+        let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        assert!(!host.is_empty());
+        drop(window);
+        host.turn();
+        assert!(host.is_empty(), "the instance ended with its window");
+    }
+
+    phase a_slow_open_does_not_hold_up_another_instances_frame;
+    {
+        let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+        settle(&mut host, &mut window);
+        let before = shown(&window);
+
+        // A second instance whose workspace has not answered its join yet.
+        let answer = Rc::new(std::cell::Cell::new(false));
+        let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+        let mut manager = CollaborationManager::with_peer_transport(SlowBroker {
+            route: route.clone(),
+            answer: Rc::clone(&answer),
+            asked: false,
+        });
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id,
+            record: None,
+            record_kind: None,
+            handle: Some("grace".to_owned()),
+        }));
+        let (ours, theirs) = Channel::pair().unwrap();
+        host.open(
+            Spec::new(APP, route.cluster_id.to_string(), 2, "grace"),
+            Arc::new(counter()),
+            manager,
+            ours,
+        );
+        let mut second = Window::over(ChannelTransport::new(theirs).unwrap());
+
+        // The first instance's window presses +: its next frame comes at once, while the second
+        // instance still waits for its workspace.
+        let (key, event) = window.increment();
+        window.send(&[ToApp::Fire {
+            lane: Lane::Root,
+            key,
+            event,
+            value: None,
+        }]);
+        let started = std::time::Instant::now();
+        while shown(&window) == before {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "the first instance's frame waited for the second's open"
+            );
+            host.turn();
+            window.take();
+        }
+        assert_eq!(host.opening(), 1, "the second instance is still opening");
+        assert_eq!(host.instances().count(), 1);
+        assert!(second.root.is_none());
+
+        // Its workspace answers: it opens and shows its window.
+        answer.set(true);
+        let started = std::time::Instant::now();
+        while second.root.is_none() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "the second instance never opened"
+            );
+            host.turn();
+            window.take();
+            second.take();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(host.opening(), 0);
+        assert_eq!(host.instances().count(), 2);
+    }
 }
 
 /// A broker that answers the join only once the test lets it: an instance whose workspace is slow
@@ -1179,75 +1436,6 @@ fn shown(window: &Window) -> String {
     out.join(" ")
 }
 
-#[test]
-fn a_slow_open_does_not_hold_up_another_instances_frame() {
-    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    let before = shown(&window);
-
-    // A second instance whose workspace has not answered its join yet.
-    let answer = Rc::new(std::cell::Cell::new(false));
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    let mut manager = CollaborationManager::with_peer_transport(SlowBroker {
-        route: route.clone(),
-        answer: Rc::clone(&answer),
-        asked: false,
-    });
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: route.app_id.clone(),
-        cluster_id: route.cluster_id,
-        record: None,
-        record_kind: None,
-        handle: Some("grace".to_owned()),
-    }));
-    let (ours, theirs) = Channel::pair().unwrap();
-    host.open(
-        Spec::new(APP, route.cluster_id.to_string(), 2, "grace"),
-        Arc::new(counter()),
-        manager,
-        ours,
-    );
-    let mut second = Window::over(ChannelTransport::new(theirs).unwrap());
-
-    // The first instance's window presses +: its next frame comes at once, while the second
-    // instance still waits for its workspace.
-    let (key, event) = window.increment();
-    window.send(&[ToApp::Fire {
-        lane: Lane::Root,
-        key,
-        event,
-        value: None,
-    }]);
-    let started = std::time::Instant::now();
-    while shown(&window) == before {
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "the first instance's frame waited for the second's open"
-        );
-        host.turn();
-        window.take();
-    }
-    assert_eq!(host.opening(), 1, "the second instance is still opening");
-    assert_eq!(host.instances().count(), 1);
-    assert!(second.root.is_none());
-
-    // Its workspace answers: it opens and shows its window.
-    answer.set(true);
-    let started = std::time::Instant::now();
-    while second.root.is_none() {
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "the second instance never opened"
-        );
-        host.turn();
-        window.take();
-        second.take();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert_eq!(host.opening(), 0);
-    assert_eq!(host.instances().count(), 2);
-}
-
 /// Ask the instance's directory `query`, as the broker does, and take its answer.
 fn page(
     host: &mut TilolangHost,
@@ -1280,162 +1468,166 @@ fn query() -> ActionDirectoryQuery {
     }
 }
 
-#[test]
-fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
-    let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, _sent, _inbox, _route) =
-        running_with("ada", APP, counter(), Rc::clone(&directory));
-    settle(&mut host, &mut window);
-    assert_eq!(
-        directory.borrow().offered,
-        [APP],
-        "the instance offers its directory on its connection, under its app, once"
-    );
-    let published = host.instances().next().unwrap().published().to_vec();
+tilo_test_env::scenario! {
+    fn the_instances_action_directory_is_browsed_by_the_door_and_agents;
 
-    // The top level names the app's resources: what makes the instance browsable.
-    let top = page(&mut host, &mut window, &directory, query());
-    assert!(top.exhausted && !top.revision.is_empty(), "{top:?}");
-    let app = format!("tl:{APP}");
-    let root = top
-        .rows
-        .iter()
-        .find(|row| row.resource == app)
-        .unwrap_or_else(|| panic!("the app's resource is at the top: {:?}", top.rows))
-        .clone();
-    assert!(root.action.is_none() && root.has_children);
+    phase the_instance_offers_an_action_directory_the_door_and_agents_browse;
+    {
+        let directory = Rc::new(RefCell::new(Directory::default()));
+        let (mut host, mut window, _sent, _inbox, _route) =
+            running_with("ada", APP, counter(), Rc::clone(&directory));
+        settle(&mut host, &mut window);
+        assert_eq!(
+            directory.borrow().offered,
+            [APP],
+            "the instance offers its directory on its connection, under its app, once"
+        );
+        let published = host.instances().next().unwrap().published().to_vec();
 
-    // Its level lists its actions, each as published.
-    let level = page(
-        &mut host,
-        &mut window,
-        &directory,
-        ActionDirectoryQuery {
-            parent_resource: app.clone(),
-            ..query()
-        },
-    );
-    let read = level
-        .rows
-        .iter()
-        .find(|row| row.resource == app && row.action.as_deref() == Some("read"))
-        .unwrap_or_else(|| panic!("read is on the app's level: {:?}", level.rows));
-    assert!(read.descriptor.is_some());
+        // The top level names the app's resources: what makes the instance browsable.
+        let top = page(&mut host, &mut window, &directory, query());
+        assert!(top.exhausted && !top.revision.is_empty(), "{top:?}");
+        let app = format!("tl:{APP}");
+        let root = top
+            .rows
+            .iter()
+            .find(|row| row.resource == app)
+            .unwrap_or_else(|| panic!("the app's resource is at the top: {:?}", top.rows))
+            .clone();
+        assert!(root.action.is_none() && root.has_children);
 
-    // A name finds the app's resource by its kind.
-    let named = page(
-        &mut host,
-        &mut window,
-        &directory,
-        ActionDirectoryQuery {
-            resource_name: root.resource_kind,
-            ..query()
-        },
-    );
-    assert!(
-        named.rows.iter().any(|row| row.resource == app),
-        "{named:?}"
-    );
+        // Its level lists its actions, each as published.
+        let level = page(
+            &mut host,
+            &mut window,
+            &directory,
+            ActionDirectoryQuery {
+                parent_resource: app.clone(),
+                ..query()
+            },
+        );
+        let read = level
+            .rows
+            .iter()
+            .find(|row| row.resource == app && row.action.as_deref() == Some("read"))
+            .unwrap_or_else(|| panic!("read is on the app's level: {:?}", level.rows));
+        assert!(read.descriptor.is_some());
 
-    // A search finds the counter's Increment, and it resolves at the page's revision.
-    let found = page(
-        &mut host,
-        &mut window,
-        &directory,
-        ActionDirectoryQuery {
-            needle: "increment".into(),
-            ..query()
-        },
-    );
-    let increment = found
-        .rows
-        .iter()
-        .find(|row| {
-            row.descriptor
-                .as_ref()
-                .is_some_and(|action| action.action_label == "Increment")
-        })
-        .unwrap_or_else(|| panic!("the search finds Increment: {:?}", found.rows));
-    assert!(published.iter().any(|action| {
-        action.address.resource == increment.resource
-            && Some(action.address.action.as_str()) == increment.action.as_deref()
-    }));
-    let (reply, mut answer) = tokio::sync::oneshot::channel();
-    directory
-        .borrow_mut()
-        .asked
-        .push(ActionDirectoryRequest::Resolve {
-            revision: found.revision.clone(),
-            resource: increment.resource.clone(),
-            action: increment.action.clone().unwrap(),
-            reply,
-        });
-    host.turn();
-    match answer.try_recv().expect("the instance resolved it") {
-        ActionDirectoryResolution::Found { row, revision } => {
-            assert_eq!(row.action, increment.action);
-            assert_eq!(revision.as_deref(), Some(found.revision.as_str()));
+        // A name finds the app's resource by its kind.
+        let named = page(
+            &mut host,
+            &mut window,
+            &directory,
+            ActionDirectoryQuery {
+                resource_name: root.resource_kind,
+                ..query()
+            },
+        );
+        assert!(
+            named.rows.iter().any(|row| row.resource == app),
+            "{named:?}"
+        );
+
+        // A search finds the counter's Increment, and it resolves at the page's revision.
+        let found = page(
+            &mut host,
+            &mut window,
+            &directory,
+            ActionDirectoryQuery {
+                needle: "increment".into(),
+                ..query()
+            },
+        );
+        let increment = found
+            .rows
+            .iter()
+            .find(|row| {
+                row.descriptor
+                    .as_ref()
+                    .is_some_and(|action| action.action_label == "Increment")
+            })
+            .unwrap_or_else(|| panic!("the search finds Increment: {:?}", found.rows));
+        assert!(published.iter().any(|action| {
+            action.address.resource == increment.resource
+                && Some(action.address.action.as_str()) == increment.action.as_deref()
+        }));
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        directory
+            .borrow_mut()
+            .asked
+            .push(ActionDirectoryRequest::Resolve {
+                revision: found.revision.clone(),
+                resource: increment.resource.clone(),
+                action: increment.action.clone().unwrap(),
+                reply,
+            });
+        host.turn();
+        match answer.try_recv().expect("the instance resolved it") {
+            ActionDirectoryResolution::Found { row, revision } => {
+                assert_eq!(row.action, increment.action);
+                assert_eq!(revision.as_deref(), Some(found.revision.as_str()));
+            }
+            other => panic!("Increment resolves: {other:?}"),
         }
-        other => panic!("Increment resolves: {other:?}"),
     }
-}
 
-/// The app's root record is listed at the directory's top level to an agent as to a person: its
-/// `open` changes only the caller's own window, so it discloses the record under the caller's
-/// policy rather than keeping it, and every action on it, the publisher's alone. Its level lists
-/// the actions an agent takes there.
-#[test]
-fn an_agent_lists_the_apps_root_record_and_its_actions() {
-    let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, _sent, _inbox, _route) =
-        running_with("ada", APP, counter(), Rc::clone(&directory));
-    settle(&mut host, &mut window);
-    let top = page(&mut host, &mut window, &directory, query());
-    let prefix = format!("tl:{APP}:root-");
-    let root = top
-        .rows
-        .iter()
-        .find(|row| row.resource.starts_with(&prefix) && row.action.is_none())
-        .unwrap_or_else(|| panic!("the root record is at the top: {:?}", top.rows))
-        .clone();
-    let visibility = root
-        .visibility
-        .as_ref()
-        .expect("a listed resource names its visibility");
-    assert!(
-        visibility.contract.discloses_resource(),
-        "the root record is disclosed only to its publisher through `{}`",
-        visibility.action
-    );
-    let level = page(
-        &mut host,
-        &mut window,
-        &directory,
-        ActionDirectoryQuery {
-            parent_resource: root.resource.clone(),
-            ..query()
-        },
-    );
-    // The broker refuses a page whose action row names another contract than its descriptor's.
-    for row in level.rows.iter().filter(|row| row.action.is_some()) {
-        let descriptor = row
-            .descriptor
-            .as_ref()
-            .expect("an action row carries its action");
-        let visibility = row
+    phase an_agent_lists_the_apps_root_record_and_its_actions;
+    // The app's root record is listed at the directory's top level to an agent as to a person: its
+    // `open` changes only the caller's own window, so it discloses the record under the caller's
+    // policy rather than keeping it, and every action on it, the publisher's alone. Its level lists
+    // the actions an agent takes there.
+    {
+        let directory = Rc::new(RefCell::new(Directory::default()));
+        let (mut host, mut window, _sent, _inbox, _route) =
+            running_with("ada", APP, counter(), Rc::clone(&directory));
+        settle(&mut host, &mut window);
+        let top = page(&mut host, &mut window, &directory, query());
+        let prefix = format!("tl:{APP}:root-");
+        let root = top
+            .rows
+            .iter()
+            .find(|row| row.resource.starts_with(&prefix) && row.action.is_none())
+            .unwrap_or_else(|| panic!("the root record is at the top: {:?}", top.rows))
+            .clone();
+        let visibility = root
             .visibility
             .as_ref()
-            .expect("an action row names its visibility");
-        assert_eq!(visibility.contract, descriptor.contract, "{row:?}");
-    }
-    for action in ["open", "increment", "decrement"] {
+            .expect("a listed resource names its visibility");
         assert!(
-            level.rows.iter().any(|row| {
-                row.resource == root.resource && row.action.as_deref() == Some(action)
-            }),
-            "{action} is on the root's level: {:?}",
-            level.rows
+            visibility.contract.discloses_resource(),
+            "the root record is disclosed only to its publisher through `{}`",
+            visibility.action
         );
+        let level = page(
+            &mut host,
+            &mut window,
+            &directory,
+            ActionDirectoryQuery {
+                parent_resource: root.resource.clone(),
+                ..query()
+            },
+        );
+        // The broker refuses a page whose action row names another contract than its descriptor's.
+        for row in level.rows.iter().filter(|row| row.action.is_some()) {
+            let descriptor = row
+                .descriptor
+                .as_ref()
+                .expect("an action row carries its action");
+            let visibility = row
+                .visibility
+                .as_ref()
+                .expect("an action row names its visibility");
+            assert_eq!(visibility.contract, descriptor.contract, "{row:?}");
+        }
+        for action in ["open", "increment", "decrement"] {
+            assert!(
+                level.rows.iter().any(|row| {
+                    row.resource == root.resource && row.action.as_deref() == Some(action)
+                }),
+                "{action} is on the root's level: {:?}",
+                level.rows
+            );
+        }
     }
 }
 
@@ -1499,47 +1691,6 @@ fn every_shipped_package_publishes_a_surface_the_host_does_not_refuse() {
             "{app}: the broker holds nothing it offers"
         );
     }
-}
-
-/// A view other than its type's default is opened by the action published with it: the
-/// counter's `controls`, invoked as the broker delivers it, shows the counter through that
-/// view, its two buttons without the count.
-#[test]
-fn a_published_view_opens_through_its_own_action() {
-    let (mut host, mut window, sent, inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    let hosted = host.instances().next().unwrap();
-    let opens = |label: &str| {
-        hosted
-            .published()
-            .iter()
-            .find(|action| action.view.as_ref().is_some_and(|view| view.label == label))
-            .unwrap_or_else(|| panic!("the view `{label}` is published with its open action"))
-            .clone()
-    };
-    let (counter, controls) = (opens("counter"), opens("controls"));
-    assert!(counter.view.as_ref().unwrap().primary);
-    assert_eq!(counter.address.action, "open");
-    assert_ne!(
-        controls.address.action, counter.address.action,
-        "each view opens through an action of its own"
-    );
-    assert!(window.detail.is_none(), "the window shows its root alone");
-    deliver(&inbox, 41, &controls.address, "ada");
-    settle(&mut host, &mut window);
-    assert!(
-        matches!(
-            answered(&sent, 41),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ),
-        "{:?}",
-        answered(&sent, 41)
-    );
-    let shown = format!("{:?}", window.detail.as_ref().expect("the view opened"));
-    assert!(
-        shown.contains("plus") && shown.contains("minus") && !shown.contains("Count"),
-        "the counter, through its controls: {shown}"
-    );
 }
 
 /// The node of `tree` whose prop `name` reads `value`.
@@ -1684,14 +1835,14 @@ fn press_new_note(window: &mut Window) {
     }]);
 }
 
-/// A notebook of `held` notes, the first of them open in the window as the person made it; what
-/// the instance did while the person typed `typed` into the open note's field whose placeholder
-/// is `field`, a key at a time, each followed by the host's frames until it owes none, as its
-/// loop runs them.
-fn typing(held: usize, field: &str, typed: &str) -> Typed {
+/// A notebook of `held` notes, an instance of `notes`, the first of them open in the window as
+/// the person made it; what the instance did while the person typed `typed` into the open note's
+/// field whose placeholder is `field`, a key at a time, each followed by the host's frames until
+/// it owes none, as its loop runs them.
+fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
     let directory = Rc::new(RefCell::new(Directory::default()));
     let (mut host, mut window, sent, inbox, _route) =
-        running_with("ada", NOTES, notes(), Rc::clone(&directory));
+        running_with("ada", NOTES, notes.clone(), Rc::clone(&directory));
     settle(&mut host, &mut window);
     // The person starts a note from the empty notebook: it opens beside the list.
     press_new_note(&mut window);
@@ -1788,12 +1939,14 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
 
 #[test]
 fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook() {
+    // One build of the package, for the four notebooks typed in here.
+    let notes = notes();
     // A new note's title is empty, so its body's first text is its label until it has a
     // title: each key of the body publishes that label alone, with one note or with two
     // hundred, never the whole notebook's surface.
     let mut held_by = Vec::new();
     for held in [1, 200] {
-        let body = typing(held, "Write something", "draft");
+        let body = typing(&notes, held, "Write something", "draft");
         assert_eq!(
             (body.built, body.relabeled),
             (0, 5),
@@ -1822,7 +1975,7 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
     // note as with two hundred, and never the whole surface.
     let mut held_by = Vec::new();
     for held in [1, 200] {
-        let title = typing(held, "Untitled", "abc");
+        let title = typing(&notes, held, "Untitled", "abc");
         held_by.push((held, title.visited));
         assert_eq!(
             title.swept, 0,
@@ -1932,80 +2085,6 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
     );
 }
 
-#[test]
-fn the_instance_answers_a_late_joiners_snapshot_request_with_its_record() {
-    let (mut host, mut window, sent, inbox, route) = running("ada");
-    settle(&mut host, &mut window);
-    let snapshots = |sent: &Sent| {
-        sent.borrow()
-            .iter()
-            .filter(|request| {
-                matches!(
-                    request,
-                    CollabRequest::Document {
-                        mutation: collaboration::DocumentMutation::Snapshot(_),
-                        ..
-                    }
-                )
-            })
-            .count()
-    };
-    let before = snapshots(&sent);
-    inbox
-        .borrow_mut()
-        .push_back(CollabEvent::DocumentSnapshotRequested { route });
-    settle(&mut host, &mut window);
-    assert_eq!(
-        snapshots(&sent),
-        before + 1,
-        "the record went to the late joiner"
-    );
-}
-
-#[test]
-fn the_instance_answers_every_handoff_step_the_shell_asks() {
-    use collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
-    let (mut host, mut window, sent, inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    let reports = |sent: &Sent| -> Vec<HandoffReport> {
-        sent.borrow()
-            .iter()
-            .filter_map(|request| match request {
-                CollabRequest::ReportHandoff { message, .. } => HandoffReport::decode(message),
-                _ => None,
-            })
-            .collect()
-    };
-    inbox.borrow_mut().push_back(CollabEvent::Handoff {
-        request: HandoffRequest::Checkpoint { token: 7 },
-    });
-    inbox.borrow_mut().push_back(CollabEvent::Handoff {
-        request: HandoffRequest::Retire {
-            token: 8,
-            successor: Successor {
-                room: uuid::Uuid::new_v4().to_string(),
-                record: "elsewhere".to_owned(),
-                by: "ada".to_owned(),
-            },
-        },
-    });
-    settle(&mut host, &mut window);
-    let reports = reports(&sent);
-    assert!(
-        reports
-            .iter()
-            .any(|report| matches!(report, HandoffReport::Done { token: 7, .. })),
-        "a checkpoint is done: {reports:?}"
-    );
-    assert!(
-        reports.iter().any(|report| matches!(
-            report,
-            HandoffReport::Failed { token: 8, reason } if !reason.is_empty()
-        )),
-        "a retirement is refused with why: {reports:?}"
-    );
-}
-
 /// The origin of a counter's record for `person`, on a broker the test plays, taking its
 /// change on the far end of the returned connection.
 fn applier(
@@ -2080,7 +2159,7 @@ fn increment() -> (tilo_actions::ActionAddress, automerge::AutoCommit) {
         .unwrap()
         .address
         .clone();
-    (address, hosted.record().doc().clone())
+    (address, hosted.record().doc())
 }
 
 /// Hand `applier` `change` and run it until it answers: the answer.
@@ -2123,74 +2202,78 @@ fn task_invoker() -> serde_json::Value {
     .unwrap()
 }
 
-#[test]
-fn a_tasks_change_runs_at_the_records_origin_as_its_step_with_no_instance() {
-    let (address, doc) = increment();
-    let (mut applier, connection, sent) = applier("ada", doc);
-    let answer = apply(
-        &mut applier,
-        &connection,
-        &runtime_portal::tilolang_host::Change {
-            resource: address.resource,
-            action: address.action,
-            arguments: serde_json::Map::new(),
-            invoker: task_invoker(),
-            context: None,
-            preview: None,
-        },
-    );
-    assert!(answer.get("ok").is_some(), "{answer}");
-    assert_eq!(answer["differs"], false, "{answer}");
-    assert!(
-        answer["change"]
-            .as_str()
-            .is_some_and(|change| !change.is_empty()),
-        "it says what it wrote, for the task to read back: {answer}"
-    );
-    assert!(
-        documents_sent(&sent) > 0,
-        "what it wrote was handed to the workspace"
-    );
-    // A preview made from an earlier read that no longer holds is applied as the record is
-    // now, and the answer says it differed.
-    let (address, doc) = increment();
-    let (mut applier, connection, _sent) = self::applier("ada", doc);
-    let answer = apply(
-        &mut applier,
-        &connection,
-        &runtime_portal::tilolang_host::Change {
-            resource: address.resource,
-            action: address.action,
-            arguments: serde_json::Map::new(),
-            invoker: task_invoker(),
-            context: None,
-            preview: Some(serde_json::json!({"planned": "from an earlier read"})),
-        },
-    );
-    assert!(answer.get("ok").is_some(), "{answer}");
-    assert_eq!(answer["differs"], true, "{answer}");
-}
+tilo_test_env::scenario! {
+    fn a_change_with_no_instance_runs_at_the_records_origin_or_is_refused_with_why;
 
-#[test]
-fn a_change_the_record_cannot_take_is_refused_with_why() {
-    let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
-    let answer = apply(
-        &mut applier,
-        &connection,
-        &runtime_portal::tilolang_host::Change {
-            resource: "tl:so.tilo.lang.counter".to_owned(),
-            action: "no-such-action".to_owned(),
-            arguments: serde_json::Map::new(),
-            invoker: task_invoker(),
-            context: None,
-            preview: None,
-        },
-    );
-    let why = answer["failed"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{answer}"));
-    assert!(!why.is_empty());
-    assert_eq!(documents_sent(&sent), 0, "nothing was written");
+    phase a_tasks_change_runs_at_the_records_origin_as_its_step_with_no_instance;
+    {
+        let (address, doc) = increment();
+        let (mut applier, connection, sent) = applier("ada", doc);
+        let answer = apply(
+            &mut applier,
+            &connection,
+            &runtime_portal::tilolang_host::Change {
+                resource: address.resource,
+                action: address.action,
+                arguments: serde_json::Map::new(),
+                invoker: task_invoker(),
+                context: None,
+                preview: None,
+            },
+        );
+        assert!(answer.get("ok").is_some(), "{answer}");
+        assert_eq!(answer["differs"], false, "{answer}");
+        assert!(
+            answer["change"]
+                .as_str()
+                .is_some_and(|change| !change.is_empty()),
+            "it says what it wrote, for the task to read back: {answer}"
+        );
+        assert!(
+            documents_sent(&sent) > 0,
+            "what it wrote was handed to the workspace"
+        );
+        // A preview made from an earlier read that no longer holds is applied as the record is
+        // now, and the answer says it differed.
+        let (address, doc) = increment();
+        let (mut applier, connection, _sent) = self::applier("ada", doc);
+        let answer = apply(
+            &mut applier,
+            &connection,
+            &runtime_portal::tilolang_host::Change {
+                resource: address.resource,
+                action: address.action,
+                arguments: serde_json::Map::new(),
+                invoker: task_invoker(),
+                context: None,
+                preview: Some(serde_json::json!({"planned": "from an earlier read"})),
+            },
+        );
+        assert!(answer.get("ok").is_some(), "{answer}");
+        assert_eq!(answer["differs"], true, "{answer}");
+    }
+
+    phase a_change_the_record_cannot_take_is_refused_with_why;
+    {
+        let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
+        let answer = apply(
+            &mut applier,
+            &connection,
+            &runtime_portal::tilolang_host::Change {
+                resource: "tl:so.tilo.lang.counter".to_owned(),
+                action: "no-such-action".to_owned(),
+                arguments: serde_json::Map::new(),
+                invoker: task_invoker(),
+                context: None,
+                preview: None,
+            },
+        );
+        let why = answer["failed"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{answer}"));
+        assert!(!why.is_empty());
+        assert_eq!(documents_sent(&sent), 0, "nothing was written");
+    }
 }
 
 #[test]
@@ -2312,7 +2395,7 @@ fn a_change_the_workspace_refuses_is_never_kept() {
                 .unwrap_or_else(|| panic!("refused, with why: {answer}"));
             assert!(why.contains("publishes no"), "{why}");
             assert_eq!(
-                applier.record().doc().clone().get_heads(),
+                applier.record().doc().get_heads(),
                 before,
                 "the record holds nothing of the refused change"
             );
@@ -2323,69 +2406,6 @@ fn a_change_the_workspace_refuses_is_never_kept() {
             );
         },
     );
-}
-
-/// A record an older store wrote, whose first change is its schema stamp committed with no
-/// message, is handed to its workspace whole on the next send, every change of it claimed: the
-/// stamp, a root change with no deps that only sets the schema version, as the record's
-/// genesis. No change is rewritten and no id changes.
-#[test]
-fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_whole() {
-    let documents: Rc<dyn durable_store::DurableStore> =
-        Rc::new(durable_store::MemoryStore::default());
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    // The record as the store wrote it before a record's first change named itself: its layout
-    // version, put on the root by the store that created it, and nothing else.
-    let stamp = {
-        use automerge::transaction::Transactable as _;
-        let mut store = collaboration::record::save::workspace_document(
-            &documents,
-            APP,
-            &route.cluster_id.to_string(),
-        )
-        .unwrap();
-        let mut doc = store.new_document();
-        doc.put(automerge::ROOT, "tilo:schema_version", 1_u64)
-            .unwrap();
-        let stamp = doc.commit().unwrap();
-        store.save(&mut doc).unwrap();
-        stamp
-    };
-    let (mut host, mut window, sent, _route) = opened_from_own_copy_in("ada", &documents, route);
-    settle(&mut host, &mut window);
-    let (key, event) = window.increment();
-    window.send(&[ToApp::Fire {
-        lane: Lane::Root,
-        key,
-        event,
-        value: None,
-    }]);
-    settle(&mut host, &mut window);
-    assert_eq!(value_of(host.instances().next().unwrap()), 1);
-    let workspace = workspace_copy(&sent);
-    assert!(
-        automerge::ReadDoc::get_change_by_hash(&workspace, &stamp).is_some(),
-        "the stamp, unchanged, reached the workspace"
-    );
-    assert_eq!(
-        automerge::ReadDoc::get_missing_deps(&workspace, &[]),
-        Vec::new(),
-        "the workspace holds the whole record"
-    );
-    for request in sent.borrow().iter() {
-        if let CollabRequest::Document { mutation, .. } = request {
-            let claims =
-                collaboration::app_surface::claims_of(APP, mutation).unwrap_or_else(|error| {
-                    panic!("every change the workspace is handed is claimed: {error}")
-                });
-            if let Some(claim) = claims.iter().find(|claim| claim.change == stamp.0) {
-                assert_eq!(
-                    claim.action,
-                    collab_types::ClaimedAction::Framework(collab_types::FrameworkChange::Genesis)
-                );
-            }
-        }
-    }
 }
 
 /// A package whose window writes when something was fetched, as Mail's does: the clock the
@@ -2531,62 +2551,108 @@ fn with_clock(time: tilo_formats::TimeStyle) -> tilo_formats::RegionFormats {
     }
 }
 
-#[test]
-fn a_hosted_window_writes_the_clock_the_person_reads() {
-    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
-    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H12)));
-    host.instances_mut()
-        .next()
-        .expect("the instance runs")
-        .stage("fetched");
-    settle(&mut host, &mut window);
-    let written = shown(&window);
-    assert!(
-        written.contains("10:41 AM"),
-        "a 12-hour clock reads the moment the app wrote: {written}"
-    );
+tilo_test_env::scenario! {
+    fn a_hosted_window_writes_dates_and_times_as_the_person_set_them;
 
-    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
-    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H24)));
-    host.instances_mut()
-        .next()
-        .expect("the instance runs")
-        .stage("fetched");
-    settle(&mut host, &mut window);
-    let written = shown(&window);
-    assert!(
-        written.contains("10:41") && !written.contains("10:41 AM"),
-        "a 24-hour clock reads it without the half of the day: {written}"
-    );
-}
+    phase a_hosted_window_writes_the_clock_the_person_reads;
+    {
+        let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+        assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H12)));
+        host.instances_mut()
+            .next()
+            .expect("the instance runs")
+            .stage("fetched");
+        settle(&mut host, &mut window);
+        let written = shown(&window);
+        assert!(
+            written.contains("10:41 AM"),
+            "a 12-hour clock reads the moment the app wrote: {written}"
+        );
 
-#[test]
-fn a_clock_the_person_changes_is_written_again_in_the_window() {
-    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
-    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H24)));
-    host.instances_mut()
-        .next()
-        .expect("the instance runs")
-        .stage("fetched");
-    settle(&mut host, &mut window);
-    let before = shown(&window);
-    assert!(
-        before.contains("10:41"),
-        "the 24-hour clock first: {before}"
-    );
+        let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+        assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H24)));
+        host.instances_mut()
+            .next()
+            .expect("the instance runs")
+            .stage("fetched");
+        settle(&mut host, &mut window);
+        let written = shown(&window);
+        assert!(
+            written.contains("10:41") && !written.contains("10:41 AM"),
+            "a 24-hour clock reads it without the half of the day: {written}"
+        );
+    }
 
-    // The person picks the 12-hour clock in Settings: the host hears it on its door, and what
-    // the instance already wrote reads in it.
-    assert!(
-        host.set_formats(with_clock(tilo_formats::TimeStyle::H12)),
-        "another clock is a change"
-    );
-    settle(&mut host, &mut window);
-    let after = shown(&window);
-    assert!(
-        after.contains("10:41 AM"),
-        "the notice is written again in the clock the person chose: {after}"
-    );
+    phase a_clock_the_person_changes_is_written_again_in_the_window;
+    {
+        let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+        assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H24)));
+        host.instances_mut()
+            .next()
+            .expect("the instance runs")
+            .stage("fetched");
+        settle(&mut host, &mut window);
+        let before = shown(&window);
+        assert!(
+            before.contains("10:41"),
+            "the 24-hour clock first: {before}"
+        );
+
+        // The person picks the 12-hour clock in Settings: the host hears it on its door, and what
+        // the instance already wrote reads in it.
+        assert!(
+            host.set_formats(with_clock(tilo_formats::TimeStyle::H12)),
+            "another clock is a change"
+        );
+        settle(&mut host, &mut window);
+        let after = shown(&window);
+        assert!(
+            after.contains("10:41 AM"),
+            "the notice is written again in the clock the person chose: {after}"
+        );
+    }
+
+    phase a_week_start_the_person_changes_is_written_again_in_the_window;
+    // A person who starts their week on Sunday in Settings sees the week their window shows move
+    // with them: the session says so on the host's door, and the instance writes the day again.
+    {
+        let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", WEEKS, weeks());
+        host.instances_mut()
+            .next()
+            .expect("the instance runs")
+            .stage("this week");
+        settle(&mut host, &mut window);
+        let monday = shown(&window);
+        assert!(
+            monday.contains("2026-10-26"),
+            "until the person says otherwise, Thursday the 29th stands in the week that began on \
+         Monday: {monday}"
+        );
+
+        // Sunday in Settings, said on the host's door as the session says it: the same day stands in
+        // the week that began the Sunday before it, and the window shows that week.
+        let (session, door) = runtime_portal::tilolang_host::pair().expect("a door");
+        runtime_portal::tilolang_host::send_locale(
+            &session,
+            &runtime_portal::tilolang_host::Locale {
+                formats: with_first_day(tilo_formats::FirstDayOfWeek::Sunday),
+                language: String::new(),
+            },
+        )
+        .expect("the formats cross the door");
+        let Some(runtime_portal::tilolang_host::Handed::Locale(locale)) =
+            runtime_portal::tilolang_host::receive(&door).expect("the door carries them")
+        else {
+            panic!("the door carries the person's formats as formats");
+        };
+        assert!(host.set_locale(&locale), "another first day is a change");
+        settle(&mut host, &mut window);
+        let sunday = shown(&window);
+        assert!(
+            sunday.contains("2026-10-25"),
+            "the week the person starts on Sunday is the one their window shows: {sunday}"
+        );
+    }
 }
 
 /// A package whose window writes the day the week it shows began on, as the person's region
@@ -2636,48 +2702,6 @@ fn with_first_day(first_day: tilo_formats::FirstDayOfWeek) -> tilo_formats::Regi
         first_day,
         ..tilo_formats::RegionFormats::default()
     }
-}
-
-/// A person who starts their week on Sunday in Settings sees the week their window shows move
-/// with them: the session says so on the host's door, and the instance writes the day again.
-#[test]
-fn a_week_start_the_person_changes_is_written_again_in_the_window() {
-    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", WEEKS, weeks());
-    host.instances_mut()
-        .next()
-        .expect("the instance runs")
-        .stage("this week");
-    settle(&mut host, &mut window);
-    let monday = shown(&window);
-    assert!(
-        monday.contains("2026-10-26"),
-        "until the person says otherwise, Thursday the 29th stands in the week that began on \
-         Monday: {monday}"
-    );
-
-    // Sunday in Settings, said on the host's door as the session says it: the same day stands in
-    // the week that began the Sunday before it, and the window shows that week.
-    let (session, door) = runtime_portal::tilolang_host::pair().expect("a door");
-    runtime_portal::tilolang_host::send_locale(
-        &session,
-        &runtime_portal::tilolang_host::Locale {
-            formats: with_first_day(tilo_formats::FirstDayOfWeek::Sunday),
-            language: String::new(),
-        },
-    )
-    .expect("the formats cross the door");
-    let Some(runtime_portal::tilolang_host::Handed::Locale(locale)) =
-        runtime_portal::tilolang_host::receive(&door).expect("the door carries them")
-    else {
-        panic!("the door carries the person's formats as formats");
-    };
-    assert!(host.set_locale(&locale), "another first day is a change");
-    settle(&mut host, &mut window);
-    let sunday = shown(&window);
-    assert!(
-        sunday.contains("2026-10-25"),
-        "the week the person starts on Sunday is the one their window shows: {sunday}"
-    );
 }
 
 /// The text the form the window shows holds for the field `key`, or none while no form is open
@@ -2766,7 +2790,7 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
             );
             collaboration::history_source::authors::set_names_language("de-DE");
             inbox.borrow_mut().push_back(CollabEvent::Context {
-                collaborators: Vec::new(),
+                members: Vec::new(),
                 permissions: Vec::new(),
                 apps: vec![collab_types::history::NamedApp {
                     id: "so.tilo.lang.today".to_owned(),

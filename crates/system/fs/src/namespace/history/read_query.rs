@@ -150,42 +150,76 @@ mod tests {
         }
     }
 
-    #[test]
-    fn metadata_history_uses_exact_bounded_shared_query() {
-        let record = FileRecordId::new();
-        let snapshot = metadata_snapshot(record, 25);
-        let latest = snapshot.heads[0];
-        let scope = Scope {
-            workspace_id: Uuid::new_v4(),
-            mount_lifetime: Uuid::new_v4(),
-            record_id: record,
-            frontier: [7; 32],
-        };
-        let Value::Page(first) = snapshot
-            .clone()
-            .read_query(scope, None, Query::Page { cursor: None }, &[])
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(first.versions.len(), MAX_HISTORY_PAGE_VERSIONS);
-        assert_eq!(first.total_versions, 25);
-        assert!(
-            first
-                .versions
-                .iter()
-                .all(|version| version.content_hash.is_none())
-        );
-        let mut found = first.versions;
-        let mut cursor = first.next_after;
-        while let Some(version) = cursor {
-            let Value::Page(page) = snapshot
+    tilo_test_env::scenario! {
+        fn history_reads_are_bounded_and_carry_their_agents;
+
+        phase metadata_history_uses_exact_bounded_shared_query;
+        {
+            let record = FileRecordId::new();
+            let snapshot = metadata_snapshot(record, 25);
+            let latest = snapshot.heads[0];
+            let scope = Scope {
+                workspace_id: Uuid::new_v4(),
+                mount_lifetime: Uuid::new_v4(),
+                record_id: record,
+                frontier: [7; 32],
+            };
+            let Value::Page(first) = snapshot
+                .clone()
+                .read_query(scope, None, Query::Page { cursor: None }, &[])
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(first.versions.len(), MAX_HISTORY_PAGE_VERSIONS);
+            assert_eq!(first.total_versions, 25);
+            assert!(
+                first
+                    .versions
+                    .iter()
+                    .all(|version| version.content_hash.is_none())
+            );
+            let mut found = first.versions;
+            let mut cursor = first.next_after;
+            while let Some(version) = cursor {
+                let Value::Page(page) = snapshot
+                    .clone()
+                    .read_query(
+                        scope,
+                        None,
+                        Query::Page {
+                            cursor: Some((scope.frontier, version)),
+                        },
+                        &[],
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(page.scope, scope);
+                found.extend(page.versions);
+                cursor = page.next_after;
+            }
+            assert_eq!(found, snapshot.versions);
+            assert_eq!(
+                snapshot.clone().read_query(
+                    scope,
+                    None,
+                    Query::Page {
+                        cursor: Some(([8; 32], latest))
+                    },
+                    &[],
+                ),
+                Err(Error::Stale)
+            );
+            let Value::Version { version, .. } = snapshot
                 .clone()
                 .read_query(
                     scope,
                     None,
-                    Query::Page {
-                        cursor: Some((scope.frontier, version)),
+                    Query::Version {
+                        frontier: scope.frontier,
+                        version_id: latest,
                     },
                     &[],
                 )
@@ -193,119 +227,89 @@ mod tests {
             else {
                 panic!()
             };
-            assert_eq!(page.scope, scope);
-            found.extend(page.versions);
-            cursor = page.next_after;
+            assert_eq!(version.content_hash, None);
+            assert_eq!(
+                snapshot.read_query(
+                    scope,
+                    None,
+                    Query::Preview {
+                        frontier: scope.frontier,
+                        version_id: latest
+                    },
+                    &[],
+                ),
+                Err(Error::InvalidRequest)
+            );
+            let _ = ConflictStatus::Open;
         }
-        assert_eq!(found, snapshot.versions);
-        assert_eq!(
-            snapshot.clone().read_query(
-                scope,
-                None,
-                Query::Page {
-                    cursor: Some(([8; 32], latest))
-                },
-                &[],
-            ),
-            Err(Error::Stale)
-        );
-        let Value::Version { version, .. } = snapshot
-            .clone()
-            .read_query(
-                scope,
-                None,
-                Query::Version {
-                    frontier: scope.frontier,
-                    version_id: latest,
-                },
-                &[],
-            )
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(version.content_hash, None);
-        assert_eq!(
-            snapshot.read_query(
-                scope,
-                None,
-                Query::Preview {
-                    frontier: scope.frontier,
-                    version_id: latest
-                },
-                &[],
-            ),
-            Err(Error::InvalidRequest)
-        );
-        let _ = ConflictStatus::Open;
-    }
 
-    /// A page carries the agent behind each of its own versions an agent
-    /// caused, and nothing about versions on other pages; a single-version
-    /// read carries that version's.
-    #[test]
-    fn reads_carry_the_agent_behind_each_version_they_return() {
-        let record = FileRecordId::new();
-        let snapshot = metadata_snapshot(record, 25);
-        let latest = snapshot.heads[0];
-        let oldest = snapshot.versions.first().unwrap().id;
-        let scope = Scope {
-            workspace_id: Uuid::new_v4(),
-            mount_lifetime: Uuid::new_v4(),
-            record_id: record,
-            frontier: [7; 32],
-        };
-        let scribe = fs_protocol::FileAttributionV1 {
-            actor: "agent:scribe".into(),
-            label: "Scribe".into(),
-            color: [10, 20, 30],
-        };
-        let attributions = [latest, oldest].map(|version_id| FileVersionAttributionV1 {
-            version_id,
-            attribution: scribe.clone(),
-        });
-        let Value::Page(first) = snapshot
-            .clone()
-            .read_query(scope, None, Query::Page { cursor: None }, &attributions)
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert!(first.versions.iter().any(|version| version.id == oldest));
-        assert!(first.versions.iter().all(|version| version.id != latest));
-        assert_eq!(first.attributions, vec![attributions[1].clone()]);
+        phase reads_carry_the_agent_behind_each_version_they_return;
+        // A page carries the agent behind each of its own versions an agent
+        // caused, and nothing about versions on other pages; a single-version
+        // read carries that version's.
+        {
+            let record = FileRecordId::new();
+            let snapshot = metadata_snapshot(record, 25);
+            let latest = snapshot.heads[0];
+            let oldest = snapshot.versions.first().unwrap().id;
+            let scope = Scope {
+                workspace_id: Uuid::new_v4(),
+                mount_lifetime: Uuid::new_v4(),
+                record_id: record,
+                frontier: [7; 32],
+            };
+            let scribe = fs_protocol::FileAttributionV1 {
+                actor: "agent:scribe".into(),
+                label: "Scribe".into(),
+                color: [10, 20, 30],
+            };
+            let attributions = [latest, oldest].map(|version_id| FileVersionAttributionV1 {
+                version_id,
+                attribution: scribe.clone(),
+            });
+            let Value::Page(first) = snapshot
+                .clone()
+                .read_query(scope, None, Query::Page { cursor: None }, &attributions)
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert!(first.versions.iter().any(|version| version.id == oldest));
+            assert!(first.versions.iter().all(|version| version.id != latest));
+            assert_eq!(first.attributions, vec![attributions[1].clone()]);
 
-        let Value::Version { attribution, .. } = snapshot
-            .clone()
-            .read_query(
-                scope,
-                None,
-                Query::Version {
-                    frontier: scope.frontier,
-                    version_id: latest,
-                },
-                &attributions,
-            )
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(attribution, Some(scribe));
-        let second = snapshot.versions[1].id;
-        let Value::Version { attribution, .. } = snapshot
-            .read_query(
-                scope,
-                None,
-                Query::Version {
-                    frontier: scope.frontier,
-                    version_id: second,
-                },
-                &attributions,
-            )
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(attribution, None, "the person's own version");
+            let Value::Version { attribution, .. } = snapshot
+                .clone()
+                .read_query(
+                    scope,
+                    None,
+                    Query::Version {
+                        frontier: scope.frontier,
+                        version_id: latest,
+                    },
+                    &attributions,
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(attribution, Some(scribe));
+            let second = snapshot.versions[1].id;
+            let Value::Version { attribution, .. } = snapshot
+                .read_query(
+                    scope,
+                    None,
+                    Query::Version {
+                        frontier: scope.frontier,
+                        version_id: second,
+                    },
+                    &attributions,
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(attribution, None, "the person's own version");
+        }
     }
 }

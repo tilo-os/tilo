@@ -438,82 +438,86 @@ impl Widget for Surface {
 mod tests {
     use super::*;
 
-    #[test]
-    fn levels_have_their_colours_radii_and_concentric_children() {
-        for theme in [Theme::dark(), Theme::light()] {
-            let s = &theme.tokens.colors.surfaces;
-            assert_eq!(SurfaceLevel::Ground.color(&theme), s.base);
-            assert_eq!(SurfaceLevel::Window.color(&theme), s.content);
-            assert_eq!(SurfaceLevel::Region.color(&theme), s.sidebar);
-            assert_eq!(SurfaceLevel::Raised.color(&theme), s.raised);
-            assert_eq!(SurfaceLevel::Floating.color(&theme), s.overlay);
-            assert!((SurfaceLevel::Floating.radius(&theme) - 18.0).abs() < 1e-6);
-            assert!((SurfaceLevel::Window.radius(&theme) - 14.0).abs() < 1e-6);
-            assert!((SurfaceLevel::Raised.radius(&theme) - 8.0).abs() < 1e-6);
-            // A row inset 8 inside a floating panel: 18 - 8 = 10.
-            assert!((SurfaceLevel::Floating.inner_radius(&theme, 8.0) - 10.0).abs() < 1e-6);
-            // Never below the detail radius.
-            assert!((SurfaceLevel::Raised.inner_radius(&theme, 12.0) - 4.0).abs() < 1e-6);
+    tilo_test_env::scenario! {
+        fn surfaces_paint_their_level_shadow_and_edge;
+
+        phase levels_have_their_colours_radii_and_concentric_children;
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                let s = &theme.tokens.colors.surfaces;
+                assert_eq!(SurfaceLevel::Ground.color(&theme), s.base);
+                assert_eq!(SurfaceLevel::Window.color(&theme), s.content);
+                assert_eq!(SurfaceLevel::Region.color(&theme), s.sidebar);
+                assert_eq!(SurfaceLevel::Raised.color(&theme), s.raised);
+                assert_eq!(SurfaceLevel::Floating.color(&theme), s.overlay);
+                assert!((SurfaceLevel::Floating.radius(&theme) - 18.0).abs() < 1e-6);
+                assert!((SurfaceLevel::Window.radius(&theme) - 14.0).abs() < 1e-6);
+                assert!((SurfaceLevel::Raised.radius(&theme) - 8.0).abs() < 1e-6);
+                // A row inset 8 inside a floating panel: 18 - 8 = 10.
+                assert!((SurfaceLevel::Floating.inner_radius(&theme, 8.0) - 10.0).abs() < 1e-6);
+                // Never below the detail radius.
+                assert!((SurfaceLevel::Raised.inner_radius(&theme, 12.0) - 4.0).abs() < 1e-6);
+            }
         }
-    }
 
-    #[test]
-    fn a_raised_surface_inside_a_raised_surface_paints_no_ground() {
-        let inner = Surface::new(
-            SurfaceLevel::Raised,
-            Box::new(crate::widget::Spacer::fixed(10.0)),
-        );
-        assert!(!inner.paints_ground(&[SurfaceLevel::Window, SurfaceLevel::Raised]));
-        assert!(inner.paints_ground(&[SurfaceLevel::Window]));
-        assert!(inner.paints_ground(&[SurfaceLevel::Raised, SurfaceLevel::Floating]));
-    }
+        phase a_raised_surface_inside_a_raised_surface_paints_no_ground;
+        {
+            let inner = Surface::new(
+                SurfaceLevel::Raised,
+                Box::new(crate::widget::Spacer::fixed(10.0)),
+            );
+            assert!(!inner.paints_ground(&[SurfaceLevel::Window, SurfaceLevel::Raised]));
+            assert!(inner.paints_ground(&[SurfaceLevel::Window]));
+            assert!(inner.paints_ground(&[SurfaceLevel::Raised, SurfaceLevel::Floating]));
+        }
 
-    #[test]
-    fn a_document_sheet_draws_its_content_inside_its_edge() {
-        for theme in [Theme::dark(), Theme::light()] {
-            let page = Color::from_rgba8(250, 250, 250, 255);
-            let rect = Rect::new(10.0, 10.0, 310.0, 410.0);
+        phase a_document_sheet_draws_its_content_inside_its_edge;
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                let page = Color::from_rgba8(250, 250, 250, 255);
+                let rect = Rect::new(10.0, 10.0, 310.0, 410.0);
+                let mut scene = Scene::new();
+                let mut drawn = false;
+                paint_document_sheet(&mut scene, Affine::IDENTITY, rect, &theme, |scene| {
+                    drawn = true;
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, page, None, &rect);
+                });
+                assert!(drawn, "the page is drawn on its sheet");
+                let colours = &scene.encoding().draw_data;
+                let packed = |c: Color| c.premultiply().to_rgba8().to_u32();
+                assert!(colours.contains(&packed(page)));
+                assert!(colours.contains(&packed(sheet_edge(&theme))), "its edge");
+            }
             let mut scene = Scene::new();
-            let mut drawn = false;
-            paint_document_sheet(&mut scene, Affine::IDENTITY, rect, &theme, |scene| {
-                drawn = true;
-                scene.fill(Fill::NonZero, Affine::IDENTITY, page, None, &rect);
-            });
-            assert!(drawn, "the page is drawn on its sheet");
+            paint_document_sheet(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::ZERO,
+                &Theme::dark(),
+                |_| panic!("an empty sheet draws nothing"),
+            );
+        }
+
+        phase a_floating_surface_paints_its_shadow_fill_and_hairline;
+        {
+            let theme = Theme::dark();
+            let mut scene = Scene::new();
+            let child = paint_surface(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 200.0, 120.0),
+                SurfaceLevel::Floating,
+                &theme,
+            );
             let colours = &scene.encoding().draw_data;
             let packed = |c: Color| c.premultiply().to_rgba8().to_u32();
-            assert!(colours.contains(&packed(page)));
-            assert!(colours.contains(&packed(sheet_edge(&theme))), "its edge");
+            assert!(colours.contains(&packed(theme.tokens.colors.surfaces.overlay)));
+            assert!(colours.contains(&packed(theme.tokens.elevation.floating_edge)));
+            assert_eq!(
+                child.tokens.colors.surfaces.content, theme.tokens.colors.surfaces.overlay,
+                "children stand on the floating level"
+            );
         }
-        let mut scene = Scene::new();
-        paint_document_sheet(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::ZERO,
-            &Theme::dark(),
-            |_| panic!("an empty sheet draws nothing"),
-        );
-    }
-
-    #[test]
-    fn a_floating_surface_paints_its_shadow_fill_and_hairline() {
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        let child = paint_surface(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 200.0, 120.0),
-            SurfaceLevel::Floating,
-            &theme,
-        );
-        let colours = &scene.encoding().draw_data;
-        let packed = |c: Color| c.premultiply().to_rgba8().to_u32();
-        assert!(colours.contains(&packed(theme.tokens.colors.surfaces.overlay)));
-        assert!(colours.contains(&packed(theme.tokens.elevation.floating_edge)));
-        assert_eq!(
-            child.tokens.colors.surfaces.content, theme.tokens.colors.surfaces.overlay,
-            "children stand on the floating level"
-        );
     }
 }
 

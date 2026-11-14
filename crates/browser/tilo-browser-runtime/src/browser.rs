@@ -645,6 +645,7 @@ impl Desktop {
         self.revoke_agent_grants();
         self.ask_host_of_nodes();
         self.ask_app_actions();
+        self.arrangement.take_asked_floats();
         let permissions = self.permissions.borrow();
         self.openings.open(&self.handle, |app, existing| {
             crate::desktop::may_open(&permissions, app, existing)
@@ -2437,7 +2438,7 @@ impl Mount {
         {
             shared
                 .cx
-                .resize_surface(&mut gpu.surface, viewport.width, viewport.height);
+                .resize_surface(&mut gpu.surface, viewport.width, viewport.height, false);
             // A new target texture holds nothing of the last frame.
             gpu.retained.forget();
         }
@@ -3055,6 +3056,34 @@ impl Mount {
         }
     }
 
+    /// Where each semantic target the host asked about is drawn: the place of its action in the
+    /// record this page shows alone, or none on a desk.
+    fn semantic_loci(&self) -> Vec<serde_json::Value> {
+        self.semantic_targets
+            .iter()
+            .map(|target| {
+                let rect = if self.desktop.is_none()
+                    && self
+                        .checkout
+                        .as_ref()
+                        .is_some_and(|c| c.id.as_str() == target.record)
+                {
+                    self.frame
+                        .published_action_locus(
+                            target.instance,
+                            &target.app,
+                            &target.record,
+                            &tilo_actions::ActionAddress::new(&target.resource, &target.action),
+                        )
+                        .map(|r| [r.x0, r.y0, r.width(), r.height()])
+                } else {
+                    None
+                };
+                serde_json::json!({"target": target, "rect": rect})
+            })
+            .collect()
+    }
+
     /// Publish the status of a frame. `change` says what the frame changed
     /// ([`Self::draw`]); `presented`, that it is the frame just drawn, whose
     /// tree is built in a task after it
@@ -3143,16 +3172,7 @@ impl Mount {
             "captureProtected": self.presented_capture_protected,
             "presentation": self.presentation.get(),
             "componentInstance": self.frame.component_instance_id(),
-            "semanticLoci": self.presentation.get().then(|| self.semantic_targets.iter().map(|target| {
-                let rect = if self.desktop.is_none()
-                    && self.checkout.as_ref().is_some_and(|c| c.id.as_str() == target.record)
-                {
-                    self.frame.published_action_locus(target.instance, &target.app, &target.record,
-                        &tilo_actions::ActionAddress::new(&target.resource, &target.action))
-                        .map(|r| [r.x0, r.y0, r.width(), r.height()])
-                } else { None };
-                serde_json::json!({"target": target, "rect": rect})
-            }).collect::<Vec<_>>()),
+            "semanticLoci": self.presentation.get().then(|| self.semantic_loci()),
             "gpuGeneration": self.generation,
             "layoutGeneration": self.frame.relayout_frames(),
             "logicalSize": applied.logical_size(),

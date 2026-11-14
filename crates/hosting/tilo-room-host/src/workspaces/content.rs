@@ -32,6 +32,7 @@ use tilo_peer_state::peer_handle;
 
 use super::{CollaborationError, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_relay_protocol::WorkspaceId;
 
 /// The bytes of one piece, as members answer.
 const PIECE_BYTES: usize = 192 * 1024;
@@ -136,7 +137,7 @@ impl Workspaces {
 
     /// The uuid of the workspace governed here whose channels are
     /// `workspace`; `None` for one not governed here.
-    pub async fn workspace_identity(&self, workspace: u64) -> Option<String> {
+    pub async fn workspace_identity(&self, workspace: WorkspaceId) -> Option<String> {
         let workspaces = self
             .inner
             .workspaces
@@ -146,7 +147,7 @@ impl Workspaces {
             .map(|(identity, governed)| (identity.clone(), governed.clone()))
             .collect::<Vec<_>>();
         for (identity, governed) in workspaces {
-            if governed.lock().await.workspace_id() == workspace {
+            if workspace == governed.lock().await.workspace_id() {
                 return Some(identity);
             }
         }
@@ -155,7 +156,7 @@ impl Workspaces {
 
     /// The name of the workspace governed here whose channels are
     /// `workspace`; `None` for one not governed here.
-    pub async fn workspace_name(&self, workspace: u64) -> Option<String> {
+    pub async fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
         let identity = self.workspace_identity(workspace).await?;
         let governed = self.inner.workspaces.lock().await.get(&identity)?.clone();
         let name = governed.lock().await.record.name.clone();
@@ -166,7 +167,7 @@ impl Workspaces {
     /// governed here, checked against the hash: what its bots fetched and
     /// the files it keeps for members. `None` for a workspace not governed here
     /// or content it does not keep.
-    pub async fn kept_content(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
+    pub async fn kept_content(&self, workspace: WorkspaceId, hash: &str) -> Option<Vec<u8>> {
         let sources = self.inner.content.get();
         let workspaces = self
             .inner
@@ -177,7 +178,7 @@ impl Workspaces {
             .map(|(identity, governed)| (identity.clone(), governed.clone()))
             .collect::<Vec<_>>();
         for (identity, governed) in workspaces {
-            if governed.lock().await.workspace_id() == workspace {
+            if workspace == governed.lock().await.workspace_id() {
                 return sources.iter().find_map(|source| {
                     source
                         .read(&identity, "", hash)

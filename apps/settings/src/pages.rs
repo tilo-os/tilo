@@ -133,43 +133,47 @@ impl PanePages {
 mod tests {
     use super::*;
 
-    #[test]
-    fn pages_open_on_top_and_back_leaves_them_one_at_a_time() {
-        let pages = PanePages::new();
-        let start = pages.revision();
-        assert!(!pages.can_go_back());
-        pages.open(Category::Network, "all", "All networks");
-        pages.open(Category::Network, "wifi:Home", "Home");
-        assert_eq!(pages.top(Category::Network).unwrap().key, "wifi:Home");
-        assert!(pages.top(Category::Bluetooth).is_none());
-        assert!(pages.revision() > start);
-        let before = pages.revision();
-        pages.open(Category::Network, "wifi:Home", "Home");
-        assert_eq!(
-            pages.revision(),
-            before,
-            "opening the page on top again is nothing"
-        );
-        assert!(pages.back());
-        assert_eq!(pages.top(Category::Network).unwrap().key, "all");
-        assert!(pages.back());
-        assert!(!pages.back(), "nothing left to leave");
-        assert!(pages.top(Category::Network).is_none());
-    }
+    tilo_test_env::scenario! {
+        fn a_panes_pages_stack_and_close_in_order;
 
-    #[test]
-    fn a_closed_page_takes_the_pages_above_it_and_another_pane_starts_afresh() {
-        let pages = PanePages::new();
-        pages.open(Category::Network, "known", "Known networks");
-        pages.open(Category::Network, "wifi:Cafe", "Cafe");
-        pages.close(Category::Network, "known");
-        assert!(pages.trail(Category::Network).is_empty());
-        pages.open(Category::Network, "vpn", "VPN");
-        pages.open(Category::Bluetooth, "device", "Headphones");
-        assert_eq!(pages.trail(Category::Network), Vec::new());
-        assert_eq!(pages.trail(Category::Bluetooth).len(), 1);
-        pages.replace(Category::Bluetooth, "other", "Speaker");
-        assert_eq!(pages.top(Category::Bluetooth).unwrap().title, "Speaker");
-        assert_eq!(pages.trail(Category::Bluetooth).len(), 1);
+        phase pages_open_on_top_and_back_leaves_them_one_at_a_time;
+        {
+            let pages = PanePages::new();
+            let start = pages.revision();
+            assert!(!pages.can_go_back());
+            pages.open(Category::Network, "all", "All networks");
+            pages.open(Category::Network, "wifi:Home", "Home");
+            assert_eq!(pages.top(Category::Network).unwrap().key, "wifi:Home");
+            assert!(pages.top(Category::Bluetooth).is_none());
+            assert!(pages.revision() > start);
+            let before = pages.revision();
+            pages.open(Category::Network, "wifi:Home", "Home");
+            assert_eq!(
+                pages.revision(),
+                before,
+                "opening the page on top again is nothing"
+            );
+            assert!(pages.back());
+            assert_eq!(pages.top(Category::Network).unwrap().key, "all");
+            assert!(pages.back());
+            assert!(!pages.back(), "nothing left to leave");
+            assert!(pages.top(Category::Network).is_none());
+        }
+
+        phase a_closed_page_takes_the_pages_above_it_and_another_pane_starts_afresh;
+        {
+            let pages = PanePages::new();
+            pages.open(Category::Network, "known", "Known networks");
+            pages.open(Category::Network, "wifi:Cafe", "Cafe");
+            pages.close(Category::Network, "known");
+            assert!(pages.trail(Category::Network).is_empty());
+            pages.open(Category::Network, "vpn", "VPN");
+            pages.open(Category::Bluetooth, "device", "Headphones");
+            assert_eq!(pages.trail(Category::Network), Vec::new());
+            assert_eq!(pages.trail(Category::Bluetooth).len(), 1);
+            pages.replace(Category::Bluetooth, "other", "Speaker");
+            assert_eq!(pages.top(Category::Bluetooth).unwrap().title, "Speaker");
+            assert_eq!(pages.trail(Category::Bluetooth).len(), 1);
+        }
     }
 }

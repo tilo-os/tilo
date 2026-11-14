@@ -197,72 +197,75 @@ mod tests {
         assert!(budget.source_must_remain);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn interrupted_copy_resumes_through_verified_receipts_and_retains_originals() {
-        super::super::test_support::isolated("recovery-resume", || {
-            use std::os::unix::fs::PermissionsExt;
-            use std::sync::atomic::Ordering;
-            let temp = tempfile::tempdir().unwrap();
-            let source = temp.path().join("source");
-            let backup = temp.path().join("backup");
-            let records = temp.path().join("records");
-            for path in [&source, &backup, &records] {
-                std::fs::create_dir(path).unwrap();
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
-            }
-            std::fs::write(source.join("save"), b"unique save").unwrap();
-            std::fs::write(source.join("archive"), b"unique archive").unwrap();
-            let output = backup.join("recovered");
-            let copy = RecoveryCopy::review(&source, &output, &records.join("journal")).unwrap();
-            let cancelled = AtomicBool::new(false);
-            let report = copy
-                .copy(false, &cancelled, |progress| {
-                    if progress.verified_files > 0 {
-                        cancelled.store(true, Ordering::Relaxed);
-                    }
-                })
-                .unwrap();
-            assert!(!report.complete());
-            assert!(!report.verified_files.is_empty());
-            cancelled.store(false, Ordering::Relaxed);
-            let report = copy.copy(true, &cancelled, |_| {}).unwrap();
-            assert!(report.complete(), "{report:?}");
-            for name in ["save", "archive"] {
-                assert_eq!(
-                    std::fs::read(source.join(name)).unwrap(),
-                    std::fs::read(output.join(name)).unwrap()
-                );
-            }
-            std::fs::write(output.join("save"), b"corrupt").unwrap();
-            let report = copy.copy(true, &cancelled, |_| {}).unwrap();
-            assert!(!report.complete());
-            assert_eq!(std::fs::read(source.join("save")).unwrap(), b"unique save");
-        });
-    }
+    tilo_test_env::scenario! {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        fn a_recovery_copy_resumes_verified_and_notices_a_changed_source;
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn reviewed_copy_detects_source_changes_without_removing_anything() {
-        super::super::test_support::isolated("recovery-source-change", || {
-            let temp = tempfile::tempdir().unwrap();
-            let source = temp.path().join("source");
-            let parent = temp.path().join("backup");
-            std::fs::create_dir(&source).unwrap();
-            std::fs::create_dir(&parent).unwrap();
-            let file = source.join("save");
-            std::fs::write(&file, b"first").unwrap();
-            let records = temp.path().join("records");
-            std::fs::create_dir(&records).unwrap();
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let copy =
-                RecoveryCopy::review(&source, &parent.join("copy"), &records.join("journal"))
+        phase interrupted_copy_resumes_through_verified_receipts_and_retains_originals;
+        {
+            super::super::test_support::isolated("recovery-resume", || {
+                use std::os::unix::fs::PermissionsExt;
+                use std::sync::atomic::Ordering;
+                let temp = tempfile::tempdir().unwrap();
+                let source = temp.path().join("source");
+                let backup = temp.path().join("backup");
+                let records = temp.path().join("records");
+                for path in [&source, &backup, &records] {
+                    std::fs::create_dir(path).unwrap();
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+                }
+                std::fs::write(source.join("save"), b"unique save").unwrap();
+                std::fs::write(source.join("archive"), b"unique archive").unwrap();
+                let output = backup.join("recovered");
+                let copy = RecoveryCopy::review(&source, &output, &records.join("journal")).unwrap();
+                let cancelled = AtomicBool::new(false);
+                let report = copy
+                    .copy(false, &cancelled, |progress| {
+                        if progress.verified_files > 0 {
+                            cancelled.store(true, Ordering::Relaxed);
+                        }
+                    })
                     .unwrap();
-            std::fs::write(&file, b"new unique save").unwrap();
-            assert!(copy.copy(false, &AtomicBool::new(false), |_| {}).is_err());
-            assert_eq!(std::fs::read(file).unwrap(), b"new unique save");
-            assert!(!parent.join("copy").exists());
-        });
+                assert!(!report.complete());
+                assert!(!report.verified_files.is_empty());
+                cancelled.store(false, Ordering::Relaxed);
+                let report = copy.copy(true, &cancelled, |_| {}).unwrap();
+                assert!(report.complete(), "{report:?}");
+                for name in ["save", "archive"] {
+                    assert_eq!(
+                        std::fs::read(source.join(name)).unwrap(),
+                        std::fs::read(output.join(name)).unwrap()
+                    );
+                }
+                std::fs::write(output.join("save"), b"corrupt").unwrap();
+                let report = copy.copy(true, &cancelled, |_| {}).unwrap();
+                assert!(!report.complete());
+                assert_eq!(std::fs::read(source.join("save")).unwrap(), b"unique save");
+            });
+        }
+
+        phase reviewed_copy_detects_source_changes_without_removing_anything;
+        {
+            super::super::test_support::isolated("recovery-source-change", || {
+                let temp = tempfile::tempdir().unwrap();
+                let source = temp.path().join("source");
+                let parent = temp.path().join("backup");
+                std::fs::create_dir(&source).unwrap();
+                std::fs::create_dir(&parent).unwrap();
+                let file = source.join("save");
+                std::fs::write(&file, b"first").unwrap();
+                let records = temp.path().join("records");
+                std::fs::create_dir(&records).unwrap();
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o700)).unwrap();
+                let copy =
+                    RecoveryCopy::review(&source, &parent.join("copy"), &records.join("journal"))
+                        .unwrap();
+                std::fs::write(&file, b"new unique save").unwrap();
+                assert!(copy.copy(false, &AtomicBool::new(false), |_| {}).is_err());
+                assert_eq!(std::fs::read(file).unwrap(), b"new unique save");
+                assert!(!parent.join("copy").exists());
+            });
+        }
     }
 }

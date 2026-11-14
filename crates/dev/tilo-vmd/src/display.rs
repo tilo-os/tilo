@@ -235,48 +235,52 @@ mod tests {
         }
     }
 
-    #[test]
-    fn outputs_line_up_left_to_right_in_logical_pixels() {
-        // Published out of order: connectors still map to specs by number.
-        let outputs = [vkms_output("Virtual-2"), vkms_output("Virtual-1")];
-        let specs = parse_outputs("2560x1600@2,1920x1080").unwrap();
-        let config = plan(&outputs, &specs).unwrap();
-        let first = &config.outputs["Virtual-1"];
-        let second = &config.outputs["Virtual-2"];
-        assert_eq!(first.mode, Some(mode(2560, 1600, 59_987)));
-        assert!((first.scale - 2.0).abs() < f64::EPSILON);
-        assert!(first.primary && !second.primary);
-        assert_eq!((first.x, second.x), (0, 1280));
-        assert_eq!(second.mode, Some(mode(1920, 1080, 60_000)));
-        assert_eq!(desktop_extent(&specs), (1280 + 1920, 1080));
-    }
+    tilo_test_env::scenario! {
+        fn outputs_are_planned_onto_the_connectors_there_are;
 
-    #[test]
-    fn a_missing_mode_lists_the_ones_there_are() {
-        let error = plan(
-            &[vkms_output("Virtual-1")],
-            &parse_outputs("1366x768").unwrap(),
-        )
-        .unwrap_err();
-        assert!(error.contains("Virtual-1 offers no 1366x768"), "{error}");
-        assert!(error.contains("2560x1600, 1920x1080"), "{error}");
-    }
+        phase outputs_line_up_left_to_right_in_logical_pixels;
+        {
+            // Published out of order: connectors still map to specs by number.
+            let outputs = [vkms_output("Virtual-2"), vkms_output("Virtual-1")];
+            let specs = parse_outputs("2560x1600@2,1920x1080").unwrap();
+            let config = plan(&outputs, &specs).unwrap();
+            let first = &config.outputs["Virtual-1"];
+            let second = &config.outputs["Virtual-2"];
+            assert_eq!(first.mode, Some(mode(2560, 1600, 59_987)));
+            assert!((first.scale - 2.0).abs() < f64::EPSILON);
+            assert!(first.primary && !second.primary);
+            assert_eq!((first.x, second.x), (0, 1280));
+            assert_eq!(second.mode, Some(mode(1920, 1080, 60_000)));
+            assert_eq!(desktop_extent(&specs), (1280 + 1920, 1080));
+        }
 
-    #[test]
-    fn a_count_mismatch_is_refused() {
-        let error = plan(
-            &[vkms_output("Virtual-1")],
-            &parse_outputs("800x600,800x600").unwrap(),
-        )
-        .unwrap_err();
-        assert!(error.contains("shows 1 output"), "{error}");
-    }
+        phase a_missing_mode_lists_the_ones_there_are;
+        {
+            let error = plan(
+                &[vkms_output("Virtual-1")],
+                &parse_outputs("1366x768").unwrap(),
+            )
+            .unwrap_err();
+            assert!(error.contains("Virtual-1 offers no 1366x768"), "{error}");
+            assert!(error.contains("2560x1600, 1920x1080"), "{error}");
+        }
 
-    #[test]
-    fn connectors_sort_by_number() {
-        let mut labels = ["Virtual-10", "Virtual-2", "Virtual-1"];
-        labels.sort_by_key(|l| connector_order(l));
-        assert_eq!(labels, ["Virtual-1", "Virtual-2", "Virtual-10"]);
+        phase a_count_mismatch_is_refused;
+        {
+            let error = plan(
+                &[vkms_output("Virtual-1")],
+                &parse_outputs("800x600,800x600").unwrap(),
+            )
+            .unwrap_err();
+            assert!(error.contains("shows 1 output"), "{error}");
+        }
+
+        phase connectors_sort_by_number;
+        {
+            let mut labels = ["Virtual-10", "Virtual-2", "Virtual-1"];
+            labels.sort_by_key(|l| connector_order(l));
+            assert_eq!(labels, ["Virtual-1", "Virtual-2", "Virtual-10"]);
+        }
     }
 
     #[test]

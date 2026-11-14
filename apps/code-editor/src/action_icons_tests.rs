@@ -17,79 +17,83 @@ fn actions() -> Vec<ui::tilo_actions::ActionSpec> {
     actions
 }
 
-#[test]
-fn actions_wear_icons_the_toolkit_draws() {
-    let actions = actions();
-    for action in &actions {
-        if let Some(icon) = &action.icon {
+tilo_test_env::scenario! {
+    fn the_editors_actions_wear_icons_and_say_who_they_are_for;
+
+    phase actions_wear_icons_the_toolkit_draws;
+    {
+        let actions = actions();
+        for action in &actions {
+            if let Some(icon) = &action.icon {
+                assert!(
+                    ui::icons::Icon::from_name(icon).is_some(),
+                    "{}: the toolkit draws no icon named {icon}",
+                    action.id
+                );
+            }
+        }
+        for id in [
+            "new-file",
+            "new-folder",
+            "rename",
+            "delete",
+            "new-buffer",
+            "save",
+            "save-as",
+            "find",
+            "replace",
+            "search-project",
+            "go-to-line",
+            "toggle-comment",
+            "format-file",
+            "toggle-sidebar",
+            "run",
+        ] {
             assert!(
-                ui::icons::Icon::from_name(icon).is_some(),
-                "{}: the toolkit draws no icon named {icon}",
-                action.id
+                actions
+                    .iter()
+                    .any(|action| action.id == id && action.icon.is_some()),
+                "{id} declares its icon"
             );
         }
     }
-    for id in [
-        "new-file",
-        "new-folder",
-        "rename",
-        "delete",
-        "new-buffer",
-        "save",
-        "save-as",
-        "find",
-        "replace",
-        "search-project",
-        "go-to-line",
-        "toggle-comment",
-        "format-file",
-        "toggle-sidebar",
-        "run",
-    ] {
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.id == id && action.icon.is_some()),
-            "{id} declares its icon"
-        );
-    }
-}
 
-#[test]
-fn toggling_a_comment_asks_for_a_caret_not_a_selection() {
-    let actions = actions();
-    let action = actions
-        .iter()
-        .find(|action| action.id == "toggle-comment")
-        .expect("Toggle line comment is declared");
-    let requirements = action.contract.requirements();
-    assert!(
-        requirements.contains(&ui::tilo_actions::ContextRequirement::Caret),
-        "Toggle line comment acts at the caret: {requirements:?}"
-    );
-    assert!(
-        !requirements.contains(&ui::tilo_actions::ContextRequirement::Selection),
-        "Toggle line comment runs without a selection: {requirements:?}"
-    );
-}
-
-#[test]
-fn editing_primitives_are_for_agents() {
-    let actions = actions();
-    for id in ["replace-range", "replace-text", "rerun", "rerun-test"] {
+    phase toggling_a_comment_asks_for_a_caret_not_a_selection;
+    {
+        let actions = actions();
         let action = actions
             .iter()
-            .find(|action| action.id == id)
-            .unwrap_or_else(|| panic!("{id} is declared"));
-        assert_eq!(
-            action.audience(),
-            ui::tilo_actions::Audience::Agents,
-            "{id} is offered to agents only"
+            .find(|action| action.id == "toggle-comment")
+            .expect("Toggle line comment is declared");
+        let requirements = action.contract.requirements();
+        assert!(
+            requirements.contains(&ui::tilo_actions::ContextRequirement::Caret),
+            "Toggle line comment acts at the caret: {requirements:?}"
+        );
+        assert!(
+            !requirements.contains(&ui::tilo_actions::ContextRequirement::Selection),
+            "Toggle line comment runs without a selection: {requirements:?}"
         );
     }
-    let run = actions
-        .iter()
-        .find(|action| action.id == "run")
-        .expect("Run in terminal is declared");
-    assert!(run.reaches_people(), "a person runs a command line too");
+
+    phase editing_primitives_are_for_agents;
+    {
+        let actions = actions();
+        for id in ["replace-range", "replace-text", "rerun", "rerun-test"] {
+            let action = actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("{id} is declared"));
+            assert_eq!(
+                action.audience(),
+                ui::tilo_actions::Audience::Agents,
+                "{id} is offered to agents only"
+            );
+        }
+        let run = actions
+            .iter()
+            .find(|action| action.id == "run")
+            .expect("Run in terminal is declared");
+        assert!(run.reaches_people(), "a person runs a command line too");
+    }
 }

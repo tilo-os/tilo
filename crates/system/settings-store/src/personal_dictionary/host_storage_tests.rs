@@ -23,36 +23,40 @@ fn update(source: &dyn SettingsSource) -> DisplayUpdate {
     )
 }
 
-#[test]
-fn dictionary_host_atomic_display_update_persists_both_sections() {
-    let (directory, session, host) = fixture();
-    assert!(matches!(
-        host.compare_display_update(update(&host)).unwrap(),
-        ConditionalUpdate::Stored
-    ));
-    session.flush_pending();
-    drop((host, session));
-    let reopened = Store::open(directory.path()).unwrap();
-    let durable = reopened.load();
-    assert_eq!(durable["display_transaction"]["id"], 7);
-    assert_eq!(
-        durable["display_profiles"]["profiles"]["panel"]["outputs"],
-        json!({})
-    );
-}
+tilo_test_env::scenario! {
+    fn an_atomic_display_update_through_the_dictionary_host_stores_or_yields;
 
-#[test]
-fn dictionary_host_atomic_display_update_preserves_newer_profiles() {
-    let (_directory, session, host) = fixture();
-    let intent = update(&host);
-    session
-        .update_section("display_profiles", object(json!({"external_revision": 8})))
-        .unwrap();
-    assert!(matches!(
-        host.compare_display_update(intent).unwrap(),
-        ConditionalUpdate::Superseded
-    ));
-    let durable = session.load();
-    assert!(!durable.contains_key("display_transaction"));
-    assert_eq!(durable["display_profiles"]["external_revision"], 8);
+    phase dictionary_host_atomic_display_update_persists_both_sections;
+    {
+        let (directory, session, host) = fixture();
+        assert!(matches!(
+            host.compare_display_update(update(&host)).unwrap(),
+            ConditionalUpdate::Stored
+        ));
+        session.flush_pending();
+        drop((host, session));
+        let reopened = Store::open(directory.path()).unwrap();
+        let durable = reopened.load();
+        assert_eq!(durable["display_transaction"]["id"], 7);
+        assert_eq!(
+            durable["display_profiles"]["profiles"]["panel"]["outputs"],
+            json!({})
+        );
+    }
+
+    phase dictionary_host_atomic_display_update_preserves_newer_profiles;
+    {
+        let (_directory, session, host) = fixture();
+        let intent = update(&host);
+        session
+            .update_section("display_profiles", object(json!({"external_revision": 8})))
+            .unwrap();
+        assert!(matches!(
+            host.compare_display_update(intent).unwrap(),
+            ConditionalUpdate::Superseded
+        ));
+        let durable = session.load();
+        assert!(!durable.contains_key("display_transaction"));
+        assert_eq!(durable["display_profiles"]["external_revision"], 8);
+    }
 }

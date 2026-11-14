@@ -157,155 +157,163 @@ view when(m: Meeting) {
         (rt, app, view, names)
     }
 
-    #[test]
-    fn a_name_from_the_window_runs_again_only_the_boundary_that_shows_it() {
-        let (_rt, _app, mut v, names) = setup("a list of what to bring");
-        assert_eq!(
-            texts(&v),
-            ["a list of what to bring", "ada"],
-            "until the window names her, the person looking is her id"
-        );
-        let before = v.stats();
-        assert!(!v.is_stale(), "nothing the view read has changed");
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_name_word_or_clock_runs_again_only_the_boundary_that_shows_it;
 
-        // The window says what it calls her.
-        names
-            .borrow_mut()
-            .insert("ada".to_owned(), "Ada Lovelace".to_owned());
-        v.person_moved();
-        assert!(v.is_stale(), "the boundary that shows a name runs again");
-        assert!(!v.poll_patches().unwrap().is_empty());
-        assert_eq!(
-            texts(&v),
-            ["a list of what to bring", "Ada Lovelace"],
-            "the name the window gave her is the name the window shows"
-        );
-        let after = v.stats();
-        assert_eq!(
-            after.root_runs, before.root_runs,
-            "the whole view does not run again for a name: before {before:?}, after {after:?}"
-        );
-        assert_eq!(
-            after.renders,
-            before.renders + 1,
-            "the boundary that shows a name, and no other: before {before:?}, after {after:?}, \
+        phase a_name_from_the_window_runs_again_only_the_boundary_that_shows_it;
+        {
+            let (_rt, _app, mut v, names) = setup("a list of what to bring");
+            assert_eq!(
+                texts(&v),
+                ["a list of what to bring", "ada"],
+                "until the window names her, the person looking is her id"
+            );
+            let before = v.stats();
+            assert!(!v.is_stale(), "nothing the view read has changed");
+
+            // The window says what it calls her.
+            names
+                .borrow_mut()
+                .insert("ada".to_owned(), "Ada Lovelace".to_owned());
+            v.person_moved();
+            assert!(v.is_stale(), "the boundary that shows a name runs again");
+            assert!(!v.poll_patches().unwrap().is_empty());
+            assert_eq!(
+                texts(&v),
+                ["a list of what to bring", "Ada Lovelace"],
+                "the name the window gave her is the name the window shows"
+            );
+            let after = v.stats();
+            assert_eq!(
+                after.root_runs, before.root_runs,
+                "the whole view does not run again for a name: before {before:?}, after {after:?}"
+            );
+            assert_eq!(
+                after.renders,
+                before.renders + 1,
+                "the boundary that shows a name, and no other: before {before:?}, after {after:?}, \
              texts {:?}, tree {}",
-            texts(&v),
-            dump(v.tree())
-        );
+                texts(&v),
+                dump(v.tree())
+            );
 
-        // What the sibling showed is the record's, not a name: it is still the same fragment.
-        assert!(dump(v.tree()).contains("a list of what to bring"));
-    }
+            // What the sibling showed is the record's, not a name: it is still the same fragment.
+            assert!(dump(v.tree()).contains("a list of what to bring"));
+        }
 
-    #[test]
-    fn a_view_that_shows_no_name_does_not_run_for_one() {
-        let (rt, app, _, names) = setup("a list of what to bring");
-        let note = rt.create("Note").unwrap();
-        let mut v = rt
-            .open_view(
+        phase a_view_that_shows_no_name_does_not_run_for_one;
+        {
+            let (rt, app, _, names) = setup("a list of what to bring");
+            let note = rt.create("Note").unwrap();
+            let mut v = rt
+                .open_view(
+                    &ada(),
+                    &app.view("just_title"),
+                    vec![Value::resource(&note)],
+                )
+                .unwrap();
+            let before = v.stats();
+            names
+                .borrow_mut()
+                .insert("ada".to_owned(), "Ada Lovelace".to_owned());
+            v.person_moved();
+            assert!(!v.is_stale(), "a view that shows no name reads none");
+            assert!(v.poll_patches().unwrap().is_empty());
+            assert_eq!(v.stats().renders, before.renders);
+        }
+
+        phase another_way_of_writing_a_clock_runs_again_only_the_boundary_that_writes_one;
+        {
+            let app = App::compile(SOURCE, &[]);
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            let twelve = Rc::new(RefCell::new(false));
+            rt.set_shown_host(Style(Rc::clone(&twelve)));
+            let meeting = rt.create("Meeting").unwrap();
+            let mut v = rt
+                .open_view(&ada(), &app.view("when"), vec![Value::resource(&meeting)])
+                .unwrap();
+            assert_eq!(texts(&v), ["14:05"]);
+            let before = v.stats();
+
+            // The person chose the other clock in Settings.
+            *twelve.borrow_mut() = true;
+            v.person_moved();
+            assert!(
+                v.is_stale(),
+                "the boundary that writes a time of day runs again"
+            );
+            assert!(!v.poll_patches().unwrap().is_empty());
+            assert_eq!(texts(&v), ["2:05 PM"]);
+            assert_eq!(v.stats().renders, before.renders + 1);
+            assert_eq!(v.stats().root_runs, before.root_runs + 1);
+        }
+
+        phase another_language_runs_again_only_the_boundary_that_shows_a_word;
+        {
+            let app = App::compile(SOURCE, &[]);
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            let language = Rc::new(RefCell::new("Hello"));
+            rt.set_words(Speech(Rc::clone(&language)));
+            let note = rt.create("Note").unwrap();
+            let retitle = app.action("retitle");
+            rt.invoke_action(
                 &ada(),
-                &app.view("just_title"),
-                vec![Value::resource(&note)],
+                (
+                    retitle.as_str(),
+                    vec![
+                        Value::resource(&note),
+                        Value::text("a list of what to bring"),
+                    ],
+                ),
             )
             .unwrap();
-        let before = v.stats();
-        names
-            .borrow_mut()
-            .insert("ada".to_owned(), "Ada Lovelace".to_owned());
-        v.person_moved();
-        assert!(!v.is_stale(), "a view that shows no name reads none");
-        assert!(v.poll_patches().unwrap().is_empty());
-        assert_eq!(v.stats().renders, before.renders);
-    }
+            let mut v = rt
+                .open_view(
+                    &ada(),
+                    &app.view("titled_and_greeted"),
+                    vec![Value::resource(&note)],
+                )
+                .unwrap();
+            assert_eq!(texts(&v), ["a list of what to bring", "Hello"]);
+            let before = v.stats();
 
-    #[test]
-    fn another_way_of_writing_a_clock_runs_again_only_the_boundary_that_writes_one() {
-        let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        app.load(&rt);
-        let twelve = Rc::new(RefCell::new(false));
-        rt.set_shown_host(Style(Rc::clone(&twelve)));
-        let meeting = rt.create("Meeting").unwrap();
-        let mut v = rt
-            .open_view(&ada(), &app.view("when"), vec![Value::resource(&meeting)])
-            .unwrap();
-        assert_eq!(texts(&v), ["14:05"]);
-        let before = v.stats();
+            // The person reads another language, and the window says its words in it.
+            *language.borrow_mut() = "Hallo";
+            v.person_moved();
+            assert!(v.is_stale(), "the boundary that shows a word runs again");
+            assert!(!v.poll_patches().unwrap().is_empty());
+            assert_eq!(
+                texts(&v),
+                ["a list of what to bring", "Hallo"],
+                "what the word boundary shows reads in the language the window speaks"
+            );
+            assert_eq!(
+                v.stats().renders,
+                before.renders + 1,
+                "the boundary that shows a word, and no other: before {before:?}, after {:?}",
+                v.stats()
+            );
 
-        // The person chose the other clock in Settings.
-        *twelve.borrow_mut() = true;
-        v.person_moved();
-        assert!(
-            v.is_stale(),
-            "the boundary that writes a time of day runs again"
-        );
-        assert!(!v.poll_patches().unwrap().is_empty());
-        assert_eq!(texts(&v), ["2:05 PM"]);
-        assert_eq!(v.stats().renders, before.renders + 1);
-        assert_eq!(v.stats().root_runs, before.root_runs + 1);
-    }
-
-    #[test]
-    fn another_language_runs_again_only_the_boundary_that_shows_a_word() {
-        let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        app.load(&rt);
-        let language = Rc::new(RefCell::new("Hello"));
-        rt.set_words(Speech(Rc::clone(&language)));
-        let note = rt.create("Note").unwrap();
-        let retitle = app.action("retitle");
-        rt.invoke_action(
-            &ada(),
-            (
-                retitle.as_str(),
-                vec![
-                    Value::resource(&note),
-                    Value::text("a list of what to bring"),
-                ],
-            ),
-        )
-        .unwrap();
-        let mut v = rt
-            .open_view(
-                &ada(),
-                &app.view("titled_and_greeted"),
-                vec![Value::resource(&note)],
-            )
-            .unwrap();
-        assert_eq!(texts(&v), ["a list of what to bring", "Hello"]);
-        let before = v.stats();
-
-        // The person reads another language, and the window says its words in it.
-        *language.borrow_mut() = "Hallo";
-        v.person_moved();
-        assert!(v.is_stale(), "the boundary that shows a word runs again");
-        assert!(!v.poll_patches().unwrap().is_empty());
-        assert_eq!(
-            texts(&v),
-            ["a list of what to bring", "Hallo"],
-            "what the word boundary shows reads in the language the window speaks"
-        );
-        assert_eq!(
-            v.stats().renders,
-            before.renders + 1,
-            "the boundary that shows a word, and no other: before {before:?}, after {:?}",
-            v.stats()
-        );
-
-        // A view that shows no word is not run for a language.
-        let mut titled = rt
-            .open_view(
-                &ada(),
-                &app.view("just_title"),
-                vec![Value::resource(&note)],
-            )
-            .unwrap();
-        titled.poll_patches().unwrap();
-        let before = titled.stats();
-        *language.borrow_mut() = "Bonjour";
-        titled.person_moved();
-        assert!(!titled.is_stale(), "a view that shows no word reads none");
-        assert_eq!(titled.stats().renders, before.renders);
+            // A view that shows no word is not run for a language.
+            let mut titled = rt
+                .open_view(
+                    &ada(),
+                    &app.view("just_title"),
+                    vec![Value::resource(&note)],
+                )
+                .unwrap();
+            titled.poll_patches().unwrap();
+            let before = titled.stats();
+            *language.borrow_mut() = "Bonjour";
+            titled.person_moved();
+            assert!(!titled.is_stale(), "a view that shows no word reads none");
+            assert_eq!(titled.stats().renders, before.renders);
+        }
     }
 }

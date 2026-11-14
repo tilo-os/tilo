@@ -87,40 +87,45 @@ mod tests {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
     }
 
-    #[test]
-    fn month_grid_is_42_days_monday_first_with_spill_in() {
-        let g = month_grid(d(2026, 6, 15));
-        assert_eq!(g.len(), 42);
-        assert_eq!(g[0], d(2026, 6, 1));
-        assert_eq!(g[0].weekday(), chrono::Weekday::Mon);
+    tilo_test_env::scenario! {
+        /// Month grids and month and week arithmetic.
+        fn month_grids_and_calendar_arithmetic_start_on_monday;
 
-        let g = month_grid(d(2026, 7, 10));
-        assert_eq!(g[0], d(2026, 6, 29));
-        assert_eq!(g[2], d(2026, 7, 1));
-    }
+        phase month_grid_is_42_days_monday_first_with_spill_in;
+        {
+            let g = month_grid(d(2026, 6, 15));
+            assert_eq!(g.len(), 42);
+            assert_eq!(g[0], d(2026, 6, 1));
+            assert_eq!(g[0].weekday(), chrono::Weekday::Mon);
 
-    #[test]
-    fn month_and_week_arithmetic_clamps_days_and_starts_on_monday() {
-        assert_eq!(add_months(d(2026, 1, 31), 1), d(2026, 2, 28));
-        assert_eq!(add_months(d(2026, 12, 15), 1), d(2027, 1, 15));
-        assert_eq!(add_months(d(2026, 3, 31), -1), d(2026, 2, 28));
+            let g = month_grid(d(2026, 7, 10));
+            assert_eq!(g[0], d(2026, 6, 29));
+            assert_eq!(g[2], d(2026, 7, 1));
+        }
 
-        assert_eq!(week_start(d(2026, 6, 17)), d(2026, 6, 15));
-        let w = week_days(d(2026, 6, 17));
-        assert_eq!(w[0], d(2026, 6, 15));
-        assert_eq!(w[6], d(2026, 6, 21));
+        phase month_and_week_arithmetic_clamps_days_and_starts_on_monday;
+        {
+            assert_eq!(add_months(d(2026, 1, 31), 1), d(2026, 2, 28));
+            assert_eq!(add_months(d(2026, 12, 15), 1), d(2027, 1, 15));
+            assert_eq!(add_months(d(2026, 3, 31), -1), d(2026, 2, 28));
 
-        assert_eq!(
-            week_start_from(d(2026, 6, 17), chrono::Weekday::Sun),
-            d(2026, 6, 14)
-        );
-        assert_eq!(
-            week_start_from(d(2026, 6, 14), chrono::Weekday::Sun),
-            d(2026, 6, 14)
-        );
+            assert_eq!(week_start(d(2026, 6, 17)), d(2026, 6, 15));
+            let w = week_days(d(2026, 6, 17));
+            assert_eq!(w[0], d(2026, 6, 15));
+            assert_eq!(w[6], d(2026, 6, 21));
 
-        assert_eq!(days_in_month(2024, 2), 29);
-        assert_eq!(days_in_month(2026, 2), 28);
-        assert_eq!(days_in_month(2026, 4), 30);
+            assert_eq!(
+                week_start_from(d(2026, 6, 17), chrono::Weekday::Sun),
+                d(2026, 6, 14)
+            );
+            assert_eq!(
+                week_start_from(d(2026, 6, 14), chrono::Weekday::Sun),
+                d(2026, 6, 14)
+            );
+
+            assert_eq!(days_in_month(2024, 2), 29);
+            assert_eq!(days_in_month(2026, 2), 28);
+            assert_eq!(days_in_month(2026, 4), 30);
+        }
     }
 }

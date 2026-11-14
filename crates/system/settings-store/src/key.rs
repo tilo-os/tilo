@@ -225,116 +225,120 @@ mod tests {
         }
     }
 
-    #[test]
-    fn get_returns_default_for_absent_and_mistyped() {
-        let doc = crate::HostDocument::new(Map::new(), |_| Ok(()));
-        assert!(
-            TOUCHPAD_ENABLED.get_in(&doc),
-            "nothing stored reads as the default"
-        );
-        doc.update_section("input_device", object(json!({"touchpad_enabled": "false"})))
-            .unwrap();
-        assert!(
-            TOUCHPAD_ENABLED.get_in(&doc),
-            "a string where a bool belongs reads as the default, not as false"
-        );
-        doc.update_section("input_device", object(json!({"touchpad_enabled": false})))
-            .unwrap();
-        assert!(!TOUCHPAD_ENABLED.get_in(&doc), "a stored value wins");
-    }
+    tilo_test_env::scenario! {
+        fn a_typed_key_reads_and_writes_its_one_leaf;
 
-    #[test]
-    fn set_writes_one_leaf_in_the_shape_untyped_readers_expect() {
-        let dir = crate::test_dir();
-        let store = crate::profile(dir.path());
-        store
-            .update_section("input_device", object(json!({"tablets": {}})))
-            .unwrap();
-        store
-            .update_section("display", object(json!({"night_light": true})))
-            .unwrap();
-        TOUCHPAD_ENABLED.set_in(&*store, false).unwrap();
-        assert_eq!(
-            Value::Object(store.load()),
-            json!({
-                "input_device": {"tablets": {}, "touchpad_enabled": false},
-                "display": {"night_light": true},
-            })
-        );
-        assert_eq!(
-            crate::bool_at(&store.load(), "input_device", "touchpad_enabled"),
-            Some(false),
-            "the untyped reader the compositor uses sees the typed write"
-        );
-    }
-
-    #[test]
-    fn update_is_atomic_under_concurrency() {
-        let dir = crate::test_dir();
-        let store = crate::profile(&dir.path().join("fresh/tilo"));
-        let threads: Vec<_> = (0..2)
-            .map(|_| {
-                let store = Arc::clone(&store);
-                std::thread::spawn(move || {
-                    for _ in 0..100 {
-                        TOUCHPAD_ENABLED.update_in(&*store, |on| !on).unwrap();
-                    }
-                })
-            })
-            .collect();
-        for thread in threads {
-            thread.join().unwrap();
+        phase get_returns_default_for_absent_and_mistyped;
+        {
+            let doc = crate::HostDocument::new(Map::new(), |_| Ok(()));
+            assert!(
+                TOUCHPAD_ENABLED.get_in(&doc),
+                "nothing stored reads as the default"
+            );
+            doc.update_section("input_device", object(json!({"touchpad_enabled": "false"})))
+                .unwrap();
+            assert!(
+                TOUCHPAD_ENABLED.get_in(&doc),
+                "a string where a bool belongs reads as the default, not as false"
+            );
+            doc.update_section("input_device", object(json!({"touchpad_enabled": false})))
+                .unwrap();
+            assert!(!TOUCHPAD_ENABLED.get_in(&doc), "a stored value wins");
         }
-        // 200 flips from the default (on) land back on on only if no flip
-        // was built on a value another flip was replacing.
-        assert!(TOUCHPAD_ENABLED.get_in(&*store));
-        assert_eq!(
-            store.load()["input_device"]["touchpad_enabled"],
-            json!(true),
-            "the leaf is stored, not merely defaulted"
-        );
-    }
 
-    #[test]
-    fn update_through_a_source_holds_its_lock_and_returns_the_stored_value() {
-        let doc = Arc::new(crate::HostDocument::new(Map::new(), |_| Ok(())));
-        let threads: Vec<_> = (0..4)
-            .map(|_| {
-                let doc = Arc::clone(&doc);
-                std::thread::spawn(move || {
-                    for _ in 0..50 {
-                        let mut step = |section: &Map<String, Value>| {
-                            let count = section.get("count").and_then(Value::as_u64).unwrap_or(0);
-                            object(json!({"count": count.saturating_add(1)}))
-                        };
-                        crate::SettingsSource::update_section_with(
-                            doc.as_ref(),
-                            "counter",
-                            &ChangeOrigin::default(),
-                            &mut step,
-                        )
-                        .unwrap();
-                    }
+        phase set_writes_one_leaf_in_the_shape_untyped_readers_expect;
+        {
+            let dir = crate::test_dir();
+            let store = crate::profile(dir.path());
+            store
+                .update_section("input_device", object(json!({"tablets": {}})))
+                .unwrap();
+            store
+                .update_section("display", object(json!({"night_light": true})))
+                .unwrap();
+            TOUCHPAD_ENABLED.set_in(&*store, false).unwrap();
+            assert_eq!(
+                Value::Object(store.load()),
+                json!({
+                    "input_device": {"tablets": {}, "touchpad_enabled": false},
+                    "display": {"night_light": true},
                 })
-            })
-            .collect();
-        for thread in threads {
-            thread.join().unwrap();
+            );
+            assert_eq!(
+                crate::bool_at(&store.load(), "input_device", "touchpad_enabled"),
+                Some(false),
+                "the untyped reader the compositor uses sees the typed write"
+            );
         }
-        assert_eq!(
-            crate::SettingsSource::load(doc.as_ref())["counter"]["count"],
-            json!(200)
-        );
-    }
 
-    #[test]
-    fn a_section_write_refuses_a_key_from_another_section_and_writes_nothing() {
-        let error = SectionWrite::new()
-            .set(&crate::appearance::HIGH_CONTRAST, &true)
-            .set(&TOUCHPAD_ENABLED, &false)
-            .commit()
-            .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(SectionWrite::new().commit().is_ok(), "nothing to write");
+        phase update_is_atomic_under_concurrency;
+        {
+            let dir = crate::test_dir();
+            let store = crate::profile(&dir.path().join("fresh/tilo"));
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    let store = Arc::clone(&store);
+                    std::thread::spawn(move || {
+                        for _ in 0..100 {
+                            TOUCHPAD_ENABLED.update_in(&*store, |on| !on).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            // 200 flips from the default (on) land back on on only if no flip
+            // was built on a value another flip was replacing.
+            assert!(TOUCHPAD_ENABLED.get_in(&*store));
+            assert_eq!(
+                store.load()["input_device"]["touchpad_enabled"],
+                json!(true),
+                "the leaf is stored, not merely defaulted"
+            );
+        }
+
+        phase update_through_a_source_holds_its_lock_and_returns_the_stored_value;
+        {
+            let doc = Arc::new(crate::HostDocument::new(Map::new(), |_| Ok(())));
+            let threads: Vec<_> = (0..4)
+                .map(|_| {
+                    let doc = Arc::clone(&doc);
+                    std::thread::spawn(move || {
+                        for _ in 0..50 {
+                            let mut step = |section: &Map<String, Value>| {
+                                let count = section.get("count").and_then(Value::as_u64).unwrap_or(0);
+                                object(json!({"count": count.saturating_add(1)}))
+                            };
+                            crate::SettingsSource::update_section_with(
+                                doc.as_ref(),
+                                "counter",
+                                &ChangeOrigin::default(),
+                                &mut step,
+                            )
+                            .unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            assert_eq!(
+                crate::SettingsSource::load(doc.as_ref())["counter"]["count"],
+                json!(200)
+            );
+        }
+
+        phase a_section_write_refuses_a_key_from_another_section_and_writes_nothing;
+        {
+            let error = SectionWrite::new()
+                .set(&crate::appearance::HIGH_CONTRAST, &true)
+                .set(&TOUCHPAD_ENABLED, &false)
+                .commit()
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(SectionWrite::new().commit().is_ok(), "nothing to write");
+        }
     }
 }

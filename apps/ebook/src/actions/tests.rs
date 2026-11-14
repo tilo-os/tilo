@@ -164,110 +164,114 @@ ui::action_contract_tests! {
     ],
 }
 
-/// The reader's verbs bound to where it is build the library's verbs with
-/// the page or the selection filled in.
-#[test]
-fn reading_declarations_build_the_librarys_verbs_for_the_place() {
-    let mut library = seeded();
-    let ctx = BookResourceCtx {
-        book_id: BOOK.into(),
-        chapter: 0,
-        bookmark: books::ToggleBookmark {
-            book: BOOK.into(),
+tilo_test_env::scenario! {
+    fn the_reader_and_an_annotation_offer_the_librarys_verbs_at_their_place;
+
+    phase reading_declarations_build_the_librarys_verbs_for_the_place;
+    // The reader's verbs bound to where it is build the library's verbs with
+    // the page or the selection filled in.
+    {
+        let mut library = seeded();
+        let ctx = BookResourceCtx {
+            book_id: BOOK.into(),
             chapter: 0,
-            block: 4,
-            excerpt: "page four".into(),
-        },
-        page_note: books::AddNote {
-            passage: Passage {
+            bookmark: books::ToggleBookmark {
                 book: BOOK.into(),
                 chapter: 0,
                 block: 4,
-                start: 0,
-                end: 0,
-                excerpt: String::new(),
+                excerpt: "page four".into(),
             },
-            color: HighlightColor::Yellow,
-            text: String::new(),
-        },
-        selection_highlight: Some(highlight_params(
-            BOOK,
-            0,
-            HighlightColor::Pink,
-            Vec::new(),
-            vec![HiPiece {
-                block: 6,
-                start: 2,
-                end: 9,
-                excerpt: "selected".into(),
-            }],
-        )),
-        selection_note: None,
-    };
-    let declarations = reading_declarations(&ctx);
-    let ids: Vec<&str> = declarations.iter().map(|decl| decl.id).collect();
-    assert_eq!(ids, ["bookmark-page", "note-page", "highlight-selection"]);
-    for (id, args) in [
-        ("bookmark-page", serde_json::json!({})),
-        ("note-page", serde_json::json!({ "text": "on this page" })),
-        ("highlight-selection", serde_json::json!({})),
-    ] {
-        let decl = declarations.iter().find(|decl| decl.id == id).unwrap();
-        let serde_json::Value::Object(args) = args else {
-            unreachable!()
+            page_note: books::AddNote {
+                passage: Passage {
+                    book: BOOK.into(),
+                    chapter: 0,
+                    block: 4,
+                    start: 0,
+                    end: 0,
+                    excerpt: String::new(),
+                },
+                color: HighlightColor::Yellow,
+                text: String::new(),
+            },
+            selection_highlight: Some(highlight_params(
+                BOOK,
+                0,
+                HighlightColor::Pink,
+                Vec::new(),
+                vec![HiPiece {
+                    block: 6,
+                    start: 2,
+                    end: 9,
+                    excerpt: "selected".into(),
+                }],
+            )),
+            selection_note: None,
         };
-        let args = tilo_actions::ActionArgs::bind_json(&decl.params, &args).unwrap();
-        let action = decl.build_action(&args, 1).unwrap();
-        library.apply_action(&action).unwrap();
+        let declarations = reading_declarations(&ctx);
+        let ids: Vec<&str> = declarations.iter().map(|decl| decl.id).collect();
+        assert_eq!(ids, ["bookmark-page", "note-page", "highlight-selection"]);
+        for (id, args) in [
+            ("bookmark-page", serde_json::json!({})),
+            ("note-page", serde_json::json!({ "text": "on this page" })),
+            ("highlight-selection", serde_json::json!({})),
+        ] {
+            let decl = declarations.iter().find(|decl| decl.id == id).unwrap();
+            let serde_json::Value::Object(args) = args else {
+                unreachable!()
+            };
+            let args = tilo_actions::ActionArgs::bind_json(&decl.params, &args).unwrap();
+            let action = decl.build_action(&args, 1).unwrap();
+            library.apply_action(&action).unwrap();
+        }
+        let marks = library.state().unwrap().annotations_for(BOOK);
+        assert!(
+            marks
+                .iter()
+                .any(|mark| mark.kind == AnnoKind::Bookmark && mark.block == 4)
+        );
+        assert!(marks.iter().any(|mark| mark.note == "on this page"));
+        assert!(marks.iter().any(|mark| mark.kind == AnnoKind::Highlight
+            && mark.color == HighlightColor::Pink
+            && (mark.block, mark.start, mark.end) == (6, 2, 9)));
     }
-    let marks = library.state().unwrap().annotations_for(BOOK);
-    assert!(
-        marks
-            .iter()
-            .any(|mark| mark.kind == AnnoKind::Bookmark && mark.block == 4)
-    );
-    assert!(marks.iter().any(|mark| mark.note == "on this page"));
-    assert!(marks.iter().any(|mark| mark.kind == AnnoKind::Highlight
-        && mark.color == HighlightColor::Pink
-        && (mark.block, mark.start, mark.end) == (6, 2, 9)));
-}
 
-/// A search hit on an annotation names its place, which offers what acts
-/// on it and opens its passage.
-#[test]
-fn an_annotation_of_any_book_offers_its_verbs_at_its_place() {
-    let library = seeded();
-    let state = library.state().unwrap();
-    let piece = highlight(&library);
-    let place = Ebook::child(&state, &mark_place_resource(&piece, false))
-        .expect("the highlight resolves by id");
-    let actions: Vec<&str> = place
-        .actions
-        .iter()
-        .map(|action| action.id.as_str())
-        .collect();
-    for expected in ["open", "change-color", "delete-highlight", "add-comment"] {
-        assert!(actions.contains(&expected), "{expected} in {actions:?}");
-    }
-    let note = state
-        .annotations_for(BOOK)
-        .into_iter()
-        .find(|mark| mark.kind == AnnoKind::Note && !mark.is_comment())
-        .unwrap();
-    let place = Ebook::child(&state, &mark_place_resource(&note, false)).unwrap();
-    assert!(
-        place
+    phase an_annotation_of_any_book_offers_its_verbs_at_its_place;
+    // A search hit on an annotation names its place, which offers what acts
+    // on it and opens its passage.
+    {
+        let library = seeded();
+        let state = library.state().unwrap();
+        let piece = highlight(&library);
+        let place = Ebook::child(&state, &mark_place_resource(&piece, false))
+            .expect("the highlight resolves by id");
+        let actions: Vec<&str> = place
             .actions
             .iter()
-            .any(|action| action.id == "delete-annotation")
-    );
-    let gone = crate::model::Annotation {
-        id: Uuid::nil(),
-        group: Uuid::nil(),
-        ..note
-    };
-    assert!(
-        Ebook::child(&state, &mark_place_resource(&gone, false)).is_none(),
-        "an annotation that is gone resolves to nothing"
-    );
+            .map(|action| action.id.as_str())
+            .collect();
+        for expected in ["open", "change-color", "delete-highlight", "add-comment"] {
+            assert!(actions.contains(&expected), "{expected} in {actions:?}");
+        }
+        let note = state
+            .annotations_for(BOOK)
+            .into_iter()
+            .find(|mark| mark.kind == AnnoKind::Note && !mark.is_comment())
+            .unwrap();
+        let place = Ebook::child(&state, &mark_place_resource(&note, false)).unwrap();
+        assert!(
+            place
+                .actions
+                .iter()
+                .any(|action| action.id == "delete-annotation")
+        );
+        let gone = crate::model::Annotation {
+            id: Uuid::nil(),
+            group: Uuid::nil(),
+            ..note
+        };
+        assert!(
+            Ebook::child(&state, &mark_place_resource(&gone, false)).is_none(),
+            "an annotation that is gone resolves to nothing"
+        );
+    }
 }

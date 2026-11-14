@@ -217,45 +217,51 @@ pub(super) fn x_height_em(
 mod tests {
     use super::*;
 
-    #[test]
-    fn ordinals_follow_tex_enumerate_by_depth() {
-        assert_eq!(ordinal_label(1, 0), "1.");
-        assert_eq!(ordinal_label(12, 0), "12.");
-        assert_eq!(ordinal_label(1, 1), "(a)");
-        assert_eq!(ordinal_label(2, 1), "(b)");
-        assert_eq!(ordinal_label(26, 1), "(z)");
-        assert_eq!(ordinal_label(27, 1), "(aa)");
-        assert_eq!(ordinal_label(1, 2), "i.");
-        assert_eq!(ordinal_label(4, 2), "iv.");
-        assert_eq!(ordinal_label(9, 2), "ix.");
-        assert_eq!(ordinal_label(1994, 2), "mcmxciv.");
-        assert_eq!(ordinal_label(1, 3), "A.");
-        assert_eq!(ordinal_label(3, 3), "C.");
-        assert_eq!(ordinal_label(2, 4), "2.");
-        assert_eq!(ordinal_label(0, 0), "1.");
-    }
+    tilo_test_env::scenario! {
+        /// Ordinal labels and the room a long list makes for them.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn list_ordinals_follow_tex_enumerate_and_make_room;
 
-    #[test]
-    fn a_list_of_ten_moves_in_so_its_two_digit_ordinals_fit_and_short_lists_stay() {
-        use super::super::Block;
-        let short: Vec<Block> = (0..9).map(|i| Block::numbered(0, &i.to_string())).collect();
-        assert!(marker_room(&short).iter().all(|room| *room == 0.0));
-        let mut long: Vec<Block> = (0..12)
-            .map(|i| Block::numbered(0, &i.to_string()))
-            .collect();
-        long.insert(3, {
-            let mut line = Block::paragraph("more about item three");
-            line.set_indent(1);
-            line
-        });
-        long.push(Block::paragraph("after the list"));
-        let room = marker_room(&long);
-        let list = room.get(..13).unwrap();
-        assert!(list.iter().all(|r| *r > 0.0), "{room:?}");
-        assert!(
-            list.windows(2).all(|pair| pair[0] == pair[1]),
-            "the whole list moves together, its continuation line too"
-        );
-        assert_eq!(room.last(), Some(&0.0), "the paragraph after it does not");
+        phase ordinals_follow_tex_enumerate_by_depth;
+        {
+            assert_eq!(ordinal_label(1, 0), "1.");
+            assert_eq!(ordinal_label(12, 0), "12.");
+            assert_eq!(ordinal_label(1, 1), "(a)");
+            assert_eq!(ordinal_label(2, 1), "(b)");
+            assert_eq!(ordinal_label(26, 1), "(z)");
+            assert_eq!(ordinal_label(27, 1), "(aa)");
+            assert_eq!(ordinal_label(1, 2), "i.");
+            assert_eq!(ordinal_label(4, 2), "iv.");
+            assert_eq!(ordinal_label(9, 2), "ix.");
+            assert_eq!(ordinal_label(1994, 2), "mcmxciv.");
+            assert_eq!(ordinal_label(1, 3), "A.");
+            assert_eq!(ordinal_label(3, 3), "C.");
+            assert_eq!(ordinal_label(2, 4), "2.");
+            assert_eq!(ordinal_label(0, 0), "1.");
+        }
+
+        phase a_list_of_ten_moves_in_so_its_two_digit_ordinals_fit_and_short_lists_stay;
+        {
+            use super::super::Block;
+            let short: Vec<Block> = (0..9).map(|i| Block::numbered(0, &i.to_string())).collect();
+            assert!(marker_room(&short).iter().all(|room| *room == 0.0));
+            let mut long: Vec<Block> = (0..12)
+                .map(|i| Block::numbered(0, &i.to_string()))
+                .collect();
+            long.insert(3, {
+                let mut line = Block::paragraph("more about item three");
+                line.set_indent(1);
+                line
+            });
+            long.push(Block::paragraph("after the list"));
+            let room = marker_room(&long);
+            let list = room.get(..13).unwrap();
+            assert!(list.iter().all(|r| *r > 0.0), "{room:?}");
+            assert!(
+                list.windows(2).all(|pair| pair[0] == pair[1]),
+                "the whole list moves together, its continuation line too"
+            );
+            assert_eq!(room.last(), Some(&0.0), "the paragraph after it does not");
+        }
     }
 }

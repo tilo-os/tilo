@@ -80,26 +80,30 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    #[test]
-    fn denied_ends_session() {
-        assert_eq!(
-            AuthorityDriver::apply(AuthorizationStatus::Denied),
-            Verdict::Revoked
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_observed_status_decides_whether_the_session_goes_on;
 
-    #[test]
-    fn current_keeps_session() {
-        assert_eq!(
-            AuthorityDriver::apply(AuthorizationStatus::Current),
-            Verdict::Continue
-        );
-    }
+        phase denied_ends_session;
+        {
+            assert_eq!(
+                AuthorityDriver::apply(AuthorizationStatus::Denied),
+                Verdict::Revoked
+            );
+        }
 
-    #[test]
-    fn only_a_current_first_observation_admits() {
-        assert!(AuthorityDriver::admit(AuthorizationStatus::Denied, None).is_none());
-        assert!(AuthorityDriver::admit(AuthorizationStatus::Current, None).is_some());
+        phase current_keeps_session;
+        {
+            assert_eq!(
+                AuthorityDriver::apply(AuthorizationStatus::Current),
+                Verdict::Continue
+            );
+        }
+
+        phase only_a_current_first_observation_admits;
+        {
+            assert!(AuthorityDriver::admit(AuthorizationStatus::Denied, None).is_none());
+            assert!(AuthorityDriver::admit(AuthorizationStatus::Current, None).is_some());
+        }
     }
 
     #[tokio::test]

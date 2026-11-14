@@ -3,6 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::WorkspaceId;
 use serde::{Deserialize, Serialize};
 
 pub use tilo_user_identity::home_peer_registry_path;
@@ -112,7 +113,7 @@ pub struct HomePeerRegistration {
     #[serde(default)]
     pub device_cert: Option<tilo_user_identity::DeviceCert>,
     /// Relay workspace shards this peer was last configured to retain.
-    pub relay_workspace_ids: Vec<u64>,
+    pub relay_workspace_ids: Vec<WorkspaceId>,
 }
 
 impl HomePeerRegistration {

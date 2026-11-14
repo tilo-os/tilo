@@ -40,33 +40,37 @@ pub(super) fn step_failure(error: String) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_decline_reaches_the_model_in_the_persons_words() {
-        let error = "Failed: action_declined: the person declined Send message: Not to Bob";
-        let said = step_failure(error.into());
-        assert!(said.starts_with("the person declined Send message: Not to Bob."));
-        assert!(said.contains("do not retry it"));
-        assert!(is_awaiting(
-            "Failed: action_awaiting_confirmation: Send message waits for the person"
-        ));
-        assert!(!is_awaiting(error));
-        assert_eq!(step_failure("timeout".into()), "timeout");
-    }
+    tilo_test_env::scenario! {
+        fn a_confirmation_waits_only_for_a_held_question_and_carries_the_answer;
 
-    /// Only a question actually standing on the person's sheet is waited on:
-    /// a refusal a host gives a step that asks (no sheet to ask it on, an
-    /// issue's run, a step it cannot route) is not a held child, and is
-    /// settled at once rather than waited on with no deadline
-    /// (`Session::start_task_invocation`).
-    #[test]
-    fn a_refusal_that_is_not_a_held_question_does_not_wait_for_the_person() {
-        for refused in [
-            "refused: a session step has no sheet to ask them on",
-            "refused: the turn this step answers is no longer going (scribe)",
-            "no such action is offered",
-            "the task action is no longer published in this workspace",
-        ] {
-            assert!(!is_awaiting(refused), "{refused}");
+        phase a_decline_reaches_the_model_in_the_persons_words;
+        {
+            let error = "Failed: action_declined: the person declined Send message: Not to Bob";
+            let said = step_failure(error.into());
+            assert!(said.starts_with("the person declined Send message: Not to Bob."));
+            assert!(said.contains("do not retry it"));
+            assert!(is_awaiting(
+                "Failed: action_awaiting_confirmation: Send message waits for the person"
+            ));
+            assert!(!is_awaiting(error));
+            assert_eq!(step_failure("timeout".into()), "timeout");
+        }
+
+        phase a_refusal_that_is_not_a_held_question_does_not_wait_for_the_person;
+        // Only a question actually standing on the person's sheet is waited on:
+        // a refusal a host gives a step that asks (no sheet to ask it on, an
+        // issue's run, a step it cannot route) is not a held child, and is
+        // settled at once rather than waited on with no deadline
+        // (`Session::start_task_invocation`).
+        {
+            for refused in [
+                "refused: a session step has no sheet to ask them on",
+                "refused: the turn this step answers is no longer going (scribe)",
+                "no such action is offered",
+                "the task action is no longer published in this workspace",
+            ] {
+                assert!(!is_awaiting(refused), "{refused}");
+            }
         }
     }
 }

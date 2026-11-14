@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
 
 use provider_settings_ui::bound::SettingRows as _;
-use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
+use tilo_relay_protocol::{RelayConfig, WorkFrom, WorkSetting, WorkWhen};
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
@@ -24,14 +24,11 @@ use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    SettingsSection, StatusTone, error_caption, note, page_of, row, rows, section, value_row,
+    SettingsSection, StatusTone, note, page_of, rows, section, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 mod devices;
-mod home_relay;
-#[cfg(test)]
-mod home_relay_tests;
 
 crate::effects::effect_family!(DeviceMeshEffect => answer);
 
@@ -69,63 +66,63 @@ const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
 const APPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(60);
-const ROLE_PERSONAL: &str = "Personal device";
-const ROLE_ACTIVE: &str = "Available while active";
-const ROLE_SERVER: &str = "Always-on server";
-const REPLICATION_ON_DEMAND: &str = "On demand";
-const REPLICATION_WORKSPACE: &str = "Workspace state";
-const REPLICATION_FULL: &str = "Full workspace copy";
+/// The work this device can take, named by its message: the chooser's values
+/// are these, so its labels and the setting a choice writes share one table.
+const WORK_FROM: [&str; 3] = ["mesh-work-nothing", "mesh-work-own", "mesh-work-anyone"];
 
-fn role_shown(role: DeviceRole) -> String {
-    t(match role {
-        DeviceRole::Interactive => "mesh-role-personal",
-        DeviceRole::Hybrid => "mesh-role-active",
-        DeviceRole::AlwaysOnServer => "mesh-role-server",
-    })
-}
-
-fn role_from_label(label: &str) -> Option<DeviceRole> {
-    if label == ROLE_PERSONAL || label == role_shown(DeviceRole::Interactive) {
-        Some(DeviceRole::Interactive)
-    } else if label == ROLE_ACTIVE || label == role_shown(DeviceRole::Hybrid) {
-        Some(DeviceRole::Hybrid)
-    } else if label == ROLE_SERVER || label == role_shown(DeviceRole::AlwaysOnServer) {
-        Some(DeviceRole::AlwaysOnServer)
-    } else {
-        None
+/// The message naming the work a setting takes.
+fn work_key(from: &WorkFrom) -> &'static str {
+    match from {
+        WorkFrom::Nobody => "mesh-work-nothing",
+        WorkFrom::OwnDevices => "mesh-work-own",
+        WorkFrom::Anyone => "mesh-work-anyone",
+        WorkFrom::Workspaces(_) => "mesh-work-some",
     }
 }
 
-fn replication_shown(intent: &ReplicationIntent) -> String {
-    t(match intent {
-        ReplicationIntent::WorkspaceOnly => "mesh-repl-workspace",
-        ReplicationIntent::FullWorkspace => "mesh-repl-full",
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "mesh-repl-demand",
-    })
+/// The work a chosen value names, when it is one of the choices.
+fn work_from_key(key: &str) -> Option<WorkFrom> {
+    [WorkFrom::Nobody, WorkFrom::OwnDevices, WorkFrom::Anyone]
+        .into_iter()
+        .find(|from| work_key(from) == key)
 }
 
-fn replication_from_label(label: &str) -> Option<ReplicationIntent> {
-    if label == REPLICATION_ON_DEMAND || label == t("mesh-repl-demand") {
-        Some(ReplicationIntent::OnDemand)
-    } else if label == REPLICATION_WORKSPACE || label == t("mesh-repl-workspace") {
-        Some(ReplicationIntent::WorkspaceOnly)
-    } else if label == REPLICATION_FULL || label == t("mesh-repl-full") {
-        Some(ReplicationIntent::FullWorkspace)
-    } else {
-        None
+/// The work setting a person picked: every kind of work when it takes any, and none when it takes
+/// nobody's, in the states `when` the device took work in before.
+fn work_from(from: WorkFrom, when: WorkWhen) -> WorkSetting {
+    WorkSetting {
+        kinds: if from == WorkFrom::Nobody {
+            tilo_relay_protocol::WorkKinds::NONE
+        } else {
+            tilo_relay_protocol::WorkKinds::ALL
+        },
+        from,
+        when,
     }
 }
 
-fn replication_description(intent: &ReplicationIntent) -> String {
-    t(match intent {
-        ReplicationIntent::WorkspaceOnly => "mesh-repl-workspace-desc",
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "mesh-repl-demand-desc",
-        ReplicationIntent::FullWorkspace => "mesh-repl-full-desc",
-    })
+/// The shares of the processors or memory a person may keep free from work.
+const ROOM: [u8; 3] = [0, 20, 50];
+
+/// How a share of the machine kept free is shown.
+fn room_shown(percent: u8) -> String {
+    if percent == 0 {
+        t("mesh-work-room-none")
+    } else {
+        t_args(
+            "mesh-work-room-percent",
+            &[("percent", ui::i18n::ArgValue::Number(f64::from(percent)))],
+        )
+    }
 }
 
-fn shows_advanced_services(role: DeviceRole) -> bool {
-    role.can_serve()
+fn room_from_label(label: &str) -> Option<u8> {
+    ROOM.into_iter()
+        .find(|percent| room_shown(*percent) == label)
+}
+
+fn takes_work(work: &WorkSetting) -> bool {
+    !work.takes_nothing()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -164,10 +161,7 @@ impl RelayRuntimeStatus {
             return Self::Offline;
         }
         match tilo_relay_protocol::metrics::load_metrics(&config.state_root) {
-            Ok(Some(_))
-                if config.device_role == DeviceRole::AlwaysOnServer
-                    && config.services.full_content_replication =>
-            {
+            Ok(Some(_)) if config.services.full_content_replication => {
                 let ready = std::fs::read(&config.full_replica_status)
                     .ok()
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -344,23 +338,30 @@ fn runtime_status_tone(status: RelayRuntimeStatus) -> StatusTone {
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DeviceMeshEffect {
-    /// How available this device is to the person's other devices. A
-    /// serving device takes on system services, so this asks first.
+    /// The work this device takes from the person's other devices. A device
+    /// that takes work runs services, so this asks first.
     #[effect(destructive, idempotent)]
-    SetDeviceRole {
-        #[param("Personal device, Available while active, or Always-on server", choices = DEVICE_ROLES)]
-        role: String,
+    SetWork {
+        #[param("Nothing, My own devices' work, or Anyone's work in my workspaces", choices = WORK_FROM)]
+        work: String,
     },
-    /// How much of each synced workspace this device keeps.
+    /// Take work only while charging.
     #[effect(idempotent)]
-    SetReplication {
-        #[param("On demand, Workspace state, or Full workspace copy", choices = REPLICATIONS)]
-        replication: String,
+    SetWorkWhileCharging {
+        on: bool,
     },
-    /// Offer or stop one service of a serving device.
+    /// Keep processors or memory free.
+    #[effect(idempotent)]
+    SetWorkRoom {
+        #[param("processors or memory", choices = ROOM_PARTS)]
+        part: String,
+        #[param("No minimum, 20 % or 50 %")]
+        percent: String,
+    },
+    /// Offer or stop one service of a device that takes work.
     #[effect(idempotent)]
     SetDeviceService {
-        #[param("inbound_relay, remote_control_relay, app_serving or compute", choices = SERVICES)]
+        #[param("full_content_replication, inbound_relay, remote_control_relay, app_serving or compute", choices = SERVICES)]
         service: String,
         on: bool,
     },
@@ -382,15 +383,6 @@ pub enum DeviceMeshEffect {
         #[param("The home server's node id")]
         device: String,
     },
-    /// Have the person's home relay host a workspace this device hosts as
-    /// well, or no longer.
-    #[effect(row, idempotent)]
-    SetHomeRelayHosting {
-        // The workspace travels under the key the host's step already reads.
-        #[param("The workspace's id", name = "room")]
-        workspace: String,
-        on: bool,
-    },
     /// Ask, under a device's row, whether to remove it.
     #[effect(view, row)]
     ReviewRemoval {
@@ -402,13 +394,9 @@ pub enum DeviceMeshEffect {
     CancelRemoval,
 }
 
-const DEVICE_ROLES: [&str; 3] = [ROLE_PERSONAL, ROLE_ACTIVE, ROLE_SERVER];
-const REPLICATIONS: [&str; 3] = [
-    REPLICATION_ON_DEMAND,
-    REPLICATION_WORKSPACE,
-    REPLICATION_FULL,
-];
-const SERVICES: [&str; 4] = [
+const ROOM_PARTS: [&str; 2] = ["processors", "memory"];
+const SERVICES: [&str; 5] = [
+    "full_content_replication",
     "inbound_relay",
     "remote_control_relay",
     "app_serving",
@@ -422,17 +410,12 @@ const SERVICES: [&str; 4] = [
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DeviceMeshEffect,
-    cx: &mut EffectCx<Settings>,
+    _cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::device_mesh::area(app)
         .ok_or_else(crate::area::missing)?
         .model();
     let mut model = model.borrow_mut();
-    if let DeviceMeshEffect::SetHomeRelayHosting { workspace, on } = &effect {
-        model.choose_home_relay(workspace, *on, Some(cx.reply()))?;
-        model.changed = true;
-        return Ok(Effected::Pending);
-    }
     model.apply(&effect).map(|()| Effected::done())
 }
 
@@ -485,21 +468,11 @@ impl DeviceMeshArea {
             let mut model = DeviceMeshModel::from_read(self.devices, read);
             model.remote = self.remote.clone();
             if self.devices {
-                model.refresh_personal_devices();
-                model.refresh_home_relay();
+                model.follow_personal_devices();
             } else if let Some(scene) = self.scene.as_deref() {
-                model.home_relay.hosting.clone_from(&scene.home_relay);
-                match crate::device_fleet::views(scene.fleet_devices.clone()) {
-                    Ok(devices) => model.personal_devices = devices,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "tilo::settings",
-                            %error,
-                            "the capture's device list is not readable"
-                        );
-                        model.personal_devices_unavailable = true;
-                    }
-                }
+                model.personal_devices = Some(scene.personal_devices.clone());
+            } else {
+                model.personal_devices = Some(Vec::new());
             }
             Rc::new(RefCell::new(model))
         })
@@ -548,12 +521,7 @@ impl DeviceMeshArea {
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
-        model
-            .home_peers
-            .iter()
-            .map(home_server_row)
-            .chain(model.home_relay_rows())
-            .collect()
+        model.home_peers.iter().map(home_server_row).collect()
     }
 }
 
@@ -675,8 +643,12 @@ pub struct DeviceMeshModel {
     home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
     home_peer_health: HashMap<String, HomePeerHealth>,
     home_peer_last_seen: HashMap<String, u64>,
-    personal_devices: Vec<crate::device_fleet::DeviceView>,
+    /// The person's devices as the session last read them; `None` until its first reading lands.
+    personal_devices: Option<Vec<PersonalDevice>>,
     personal_devices_unavailable: bool,
+    /// The session's reading of the person's devices, followed without waiting for it: each
+    /// reading wakes the window.
+    session_devices: Option<ui::collaboration::SessionResource>,
     device_rows: DisclosureGroup,
     removing: Option<String>,
     roaming_provenance_path: Option<PathBuf>,
@@ -686,7 +658,6 @@ pub struct DeviceMeshModel {
     management_child: Option<bounded_command::AsyncCommand>,
     management_device: Option<String>,
     management_call: Option<(ui::InvocationCall, Option<String>)>,
-    devices_call: Option<ui::InvocationCall>,
     next_peer_health: usize,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
@@ -699,7 +670,6 @@ pub struct DeviceMeshModel {
     following: std::rc::Weak<MeshFollow>,
     pages: std::rc::Weak<()>,
     health_round: usize,
-    home_relay: home_relay::HomeRelay,
     removals_pending: bool,
 }
 
@@ -740,37 +710,31 @@ fn continuity_key(capability: Capability) -> String {
     format!("device_mesh.continuity.{}", capability.key())
 }
 
-fn origin_summary(origin: &Origin) -> String {
-    format!("{} at revision {}", origin.device_label, origin.counter)
-}
-
 fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
     if alternatives.is_empty() {
-        return t_args("mesh-from", &[("origin", origin_summary(winner).into())]);
+        return t_args(
+            "mesh-from",
+            &[("origin", winner.device_label.as_str().into())],
+        );
     }
-    let others = alternatives
+    let names: Vec<&str> = alternatives
         .iter()
-        .take(3)
         .map(|origin| origin.device_label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let remainder = alternatives.len().saturating_sub(3);
-    let suffix = if remainder == 0 {
-        String::new()
-    } else {
-        t_args(
-            "mesh-and-more",
-            &[("n", i64::try_from(remainder).unwrap_or(0).into())],
-        )
-    };
-    t_args(
-        "mesh-resolved",
-        &[
-            ("winner", origin_summary(winner).into()),
-            ("others", others.into()),
-            ("suffix", suffix.into()),
-        ],
-    )
+        .collect();
+    let mut args = vec![("winner", winner.device_label.as_str().into())];
+    args.extend(name_args(&names));
+    t_args("mesh-resolved", &args)
+}
+
+/// The arguments a message that counts devices names them with.
+fn name_args(names: &[&str]) -> Vec<(&'static str, ui::i18n::ArgValue)> {
+    let count = i64::try_from(names.len()).unwrap_or(i64::MAX);
+    vec![
+        ("count", count.into()),
+        ("first", names.first().copied().unwrap_or_default().into()),
+        ("second", names.get(1).copied().unwrap_or_default().into()),
+        ("more", count.saturating_sub(2).into()),
+    ]
 }
 
 fn provenance_summaries(provenance: &RoamingProvenance) -> Vec<(String, String)> {
@@ -924,31 +888,74 @@ pub(crate) struct MeshRead {
     roaming_provenance: ProvenanceRead,
 }
 
+/// The session's reading of the person's devices: the one list Quick Settings shows too.
+const SESSION_DEVICES: &str = "session:devices";
+
+#[derive(serde::Deserialize)]
+struct SessionDevices {
+    #[serde(default)]
+    devices: Vec<PersonalDevice>,
+}
+
+/// One of the person's devices, as the session reads it off the device fabric.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct PersonalDevice {
+    /// Its key in hex, which names it in the fabric and on its row.
+    pub id: String,
+    pub label: String,
+    /// It has a live session with this device now.
+    #[serde(default)]
+    pub online: bool,
+    /// It is heard on this device's local network.
+    #[serde(default)]
+    pub nearby: bool,
+    /// This machine.
+    #[serde(default)]
+    pub local: bool,
+}
+
+/// Follow the session's reading of the person's devices. Nothing waits for it: the window is
+/// woken at each reading.
+pub(crate) fn follow_devices() -> Result<ui::collaboration::SessionResource, String> {
+    ui::collaboration::SessionResource::follow(SESSION_DEVICES, ui::WakeHandle::new())
+}
+
+/// The newest reading `followed` brought since it was last asked; `None` when none came.
+pub(crate) fn newest_devices(
+    followed: &ui::collaboration::SessionResource,
+) -> Option<Result<Vec<PersonalDevice>, String>> {
+    let reading = followed.latest()?;
+    Some(reading.and_then(|reading| {
+        devices_in(&reading).ok_or_else(|| "the reading does not read".to_owned())
+    }))
+}
+
+/// The person's devices `reading` lists; `None` when it does not read.
+fn devices_in(reading: &str) -> Option<Vec<PersonalDevice>> {
+    let reading: SessionDevices = serde_json::from_str(reading).ok()?;
+    Some(
+        reading
+            .devices
+            .into_iter()
+            .map(|device| PersonalDevice {
+                id: device.id.to_ascii_lowercase(),
+                ..device
+            })
+            .collect(),
+    )
+}
+
 impl MeshRead {
     fn of(config_path: PathBuf, devices: bool, now: SystemTime) -> Self {
         let (config, status) = match RelayConfig::load(&config_path) {
             Ok(config) => (config, MeshStatus::Ready),
-            Err(tilo_relay_protocol::config::ConfigError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && config_path.parent().is_some_and(|dir| !dir.is_dir()) =>
-            {
-                tracing::warn!(
-                    target: "tilo::settings",
-                    config = %config_path.display(),
-                    "this device's sync settings are not visible from here"
-                );
-                let config = RelayConfig {
-                    device_role: DeviceRole::Interactive,
-                    services: tilo_relay_protocol::ServiceCapabilities::default(),
-                    ..RelayConfig::default()
-                };
-                (config, MeshStatus::ConfigUnreadable)
-            }
+            // No sync settings file: this device was never set up to sync, whether or not the
+            // directory that would hold it exists.
             Err(tilo_relay_protocol::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
                 let config = RelayConfig {
-                    device_role: DeviceRole::Interactive,
+                    work: WorkSetting::none(),
                     services: tilo_relay_protocol::ServiceCapabilities::default(),
                     ..RelayConfig::default()
                 };
@@ -1013,8 +1020,9 @@ impl DeviceMeshModel {
             home_peers: read.home_peers,
             home_peer_health: HashMap::new(),
             home_peer_last_seen: read.home_peer_last_seen,
-            personal_devices: Vec::new(),
+            personal_devices: None,
             personal_devices_unavailable: false,
+            session_devices: None,
             device_rows: DisclosureGroup::new(),
             removing: None,
             roaming_provenance_path: read.roaming_provenance_path,
@@ -1024,8 +1032,6 @@ impl DeviceMeshModel {
             management_child: None,
             management_device: None,
             management_call: None,
-            devices_call: None,
-            home_relay: home_relay::HomeRelay::default(),
             next_peer_health: 0,
             apply_child: None,
             apply_queued: false,
@@ -1053,32 +1059,36 @@ impl DeviceMeshModel {
         pane
     }
 
-    fn common_replication(&self) -> ReplicationIntent {
-        if self.config.services.full_content_replication {
-            ReplicationIntent::FullWorkspace
-        } else {
-            ReplicationIntent::OnDemand
-        }
-    }
-
     fn apply(&mut self, effect: &DeviceMeshEffect) -> Result<(), String> {
         self.follow_removal(effect);
         let configured = match effect {
-            DeviceMeshEffect::SetDeviceRole { role } => {
-                let role =
-                    role_from_label(role).ok_or_else(|| "unsupported device role".to_string())?;
-                self.apply_role_change(role);
+            DeviceMeshEffect::SetWork { work } => {
+                let from =
+                    work_from_key(work).ok_or_else(|| "unsupported work setting".to_string())?;
+                self.apply_work(work_from(from, self.config.work.when));
                 true
             }
-            DeviceMeshEffect::SetReplication { replication } => {
-                let intent = replication_from_label(replication)
-                    .ok_or_else(|| "unsupported replication policy".to_string())?;
-                self.config.services.full_content_replication =
-                    intent == ReplicationIntent::FullWorkspace;
+            DeviceMeshEffect::SetWorkWhileCharging { on } => {
+                self.config.work.when.charging_only = *on;
+                true
+            }
+            DeviceMeshEffect::SetWorkRoom { part, percent } => {
+                let percent = room_from_label(percent)
+                    .or_else(|| percent.trim_end_matches('%').trim().parse().ok())
+                    .filter(|percent| ROOM.contains(percent))
+                    .ok_or_else(|| "unsupported share to keep free".to_string())?;
+                match part.as_str() {
+                    "processors" => self.config.work.when.free_cpu_percent = percent,
+                    "memory" => self.config.work.when.free_memory_percent = percent,
+                    _ => return Err("unsupported part of the machine".into()),
+                }
                 true
             }
             DeviceMeshEffect::SetDeviceService { service, on } => {
                 match service.as_str() {
+                    "full_content_replication" => {
+                        self.config.services.full_content_replication = *on;
+                    }
                     "inbound_relay" => self.config.services.inbound_relay = *on,
                     "remote_control_relay" => self.config.services.remote_control_relay = *on,
                     "app_serving" => self.config.services.app_serving = *on,
@@ -1108,10 +1118,6 @@ impl DeviceMeshModel {
                 self.start_home_peer_removal(&peer);
                 false
             }
-            DeviceMeshEffect::SetHomeRelayHosting { workspace, on } => {
-                self.choose_home_relay(workspace, *on, None)?;
-                false
-            }
             DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
         };
         if configured {
@@ -1134,41 +1140,48 @@ impl DeviceMeshModel {
         }
     }
 
-    fn refresh_personal_devices(&mut self) {
-        if self.devices_call.is_none() {
-            self.devices_call = Some(crate::device_fleet::list(&self.remote));
+    /// Follow the session's reading of the person's devices. Nothing waits for it here: the
+    /// window is woken at each reading, and the list shows that it is being read until the first
+    /// one lands.
+    fn follow_personal_devices(&mut self) {
+        match follow_devices() {
+            Ok(followed) => self.session_devices = Some(followed),
+            Err(error) => {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "the session's devices are not followed"
+                );
+                self.personal_devices_unavailable = true;
+            }
+        }
+    }
+
+    /// Take in the session's newest reading of the person's devices.
+    fn take_personal_devices(&mut self) {
+        let Some(reading) = self.session_devices.as_ref().and_then(newest_devices) else {
+            return;
+        };
+        if let Ok(devices) = reading {
+            self.changed |= self.personal_devices_unavailable;
+            self.personal_devices_unavailable = false;
+            if self.personal_devices.as_ref() != Some(&devices) {
+                self.personal_devices = Some(devices);
+                self.changed = true;
+            }
+        } else {
+            tracing::warn!(
+                target: "tilo::settings",
+                "the session's reading of the devices does not read"
+            );
+            self.changed |= !self.personal_devices_unavailable;
+            self.personal_devices_unavailable = true;
         }
     }
 
     fn poll_host_calls(&mut self) {
-        if self.devices_call.is_some()
-            || self.management_call.is_some()
-            || self.home_relay.waiting()
-        {
+        if self.management_call.is_some() {
             self.remote.poll();
-        }
-        self.poll_home_relay();
-        if let Some(answer) = self
-            .devices_call
-            .as_ref()
-            .and_then(crate::device_fleet::settled)
-        {
-            self.devices_call = None;
-            match answer.and_then(|output| crate::device_fleet::devices(output.value)) {
-                Ok(devices) => {
-                    self.personal_devices = devices;
-                    self.personal_devices_unavailable = false;
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        target: "tilo::settings",
-                        %error,
-                        "the host's device list could not be read"
-                    );
-                    self.personal_devices_unavailable = true;
-                }
-            }
-            self.changed = true;
         }
         if let Some(answer) = self
             .management_call
@@ -1281,17 +1294,19 @@ impl DeviceMeshModel {
         self.changed = true;
     }
 
-    fn apply_role_change(&mut self, role: DeviceRole) -> bool {
-        if role == self.config.device_role {
+    fn apply_work(&mut self, work: WorkSetting) -> bool {
+        if work == self.config.work {
             return false;
         }
-        if shows_advanced_services(role) != shows_advanced_services(self.config.device_role) {
+        let takes = takes_work(&work);
+        if takes != takes_work(&self.config.work) {
             self.changed = true;
         }
-        self.config.device_role = role;
-        self.config.services.workspace_replication = role.can_serve();
-        self.config.services.inbound_relay = role.can_serve();
-        self.config.services.full_content_replication = role == DeviceRole::AlwaysOnServer;
+        self.config.work = work;
+        // A device that takes no work runs no service for others.
+        self.config.services.workspace_replication = takes;
+        self.config.services.inbound_relay = takes;
+        self.config.services.full_content_replication &= takes;
         self.next_status_refresh = ui::time::now();
         true
     }
@@ -1347,26 +1362,6 @@ impl Page<'_> {
         crate::on_row::bind_invocation(&self.dispatcher, row, control, effect)
     }
 
-    pub(super) fn switch_on_row(
-        &self,
-        label: String,
-        description: String,
-        id: &str,
-        on: bool,
-        row: &ui::tilo_actions::ResourceSpec,
-        set: impl tilo_resource::Binds<SettingsEffect, bool>,
-    ) -> provider_settings_ui::widgets::Item {
-        let toggle = self.bind_on_row(
-            row,
-            ui::widget::Toggle::from_state(&LocalState::new(on)).with_id(id),
-            set,
-        );
-        self.cx
-            .setting(label)
-            .described(description)
-            .control(Box::new(toggle))
-    }
-
     pub(super) fn switch(
         &self,
         label: String,
@@ -1383,52 +1378,36 @@ impl Page<'_> {
     }
 
     fn page(&self) -> Element {
-        let activity = t("mesh-activity");
-        let sync_auto = t("mesh-sync-auto");
-        let mut continuation_rows = vec![
-            value_row(&activity, &sync_auto),
-            note(&t("mesh-activity-caption")),
-        ];
-        if let Some(trouble) = self.status.settings_trouble_shown() {
-            continuation_rows.push(row(error_caption(&trouble)));
-        }
-
-        let target_name = self
+        let others: Vec<&str> = self
             .personal_devices
             .iter()
-            .find(|device| !device.current && !device.revoked)
-            .map_or_else(|| t("mesh-no-target"), |device| device.label.clone());
-
-        let mut roaming_rows = if self.roaming_provenance_unreadable {
-            vec![note(&t("mesh-roaming-unreadable"))]
-        } else {
-            self.roaming_provenance.as_ref().map_or_else(
-                || vec![note(&t("mesh-roaming-empty"))],
-                |provenance| {
-                    let summaries = provenance_summaries(provenance);
-                    if summaries.is_empty() {
-                        vec![note(&t("mesh-roaming-none"))]
-                    } else {
-                        summaries
-                            .into_iter()
-                            .map(|(name, detail)| value_row(&name, &detail))
-                            .collect()
-                    }
-                },
-            )
-        };
-        roaming_rows.push(note(&t("mesh-roaming-caption")));
+            .flatten()
+            .filter(|device| !device.local)
+            .map(|device| device.label.as_str())
+            .collect();
 
         let mut groups = vec![self.devices_section().into_element()];
-        groups.extend(self.home_relay_section().map(SettingsSection::into_element));
-        groups.push(section(&t("mesh-continue-title"), rows(continuation_rows)).into_element());
-        groups.extend(
-            self.continuity_group(move |cx, continuity| {
-                privacy_section(cx, continuity, &target_name)
-            }),
-        );
-        groups.push(section(&t("mesh-roaming-title"), rows(roaming_rows)).into_element());
-        groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
+        if others.is_empty() {
+            let waiting = rows(vec![note(&t("mesh-share-once-added"))]);
+            groups.push(section(&t("mesh-privacy-title"), waiting).into_element());
+        } else {
+            let shared_with = t_args("mesh-shared-with", &name_args(&others));
+            groups.extend(self.continuity_group(move |cx, continuity| {
+                privacy_section(cx, continuity, &shared_with)
+            }));
+            // Roaming settings and sharing history both come from other devices.
+            let summaries = self.roaming_provenance.as_ref().map(provenance_summaries);
+            let roaming_rows = if self.roaming_provenance_unreadable {
+                vec![note(&t("mesh-roaming-unreadable"))]
+            } else if let Some(summaries) = summaries.filter(|summaries| !summaries.is_empty()) {
+                let row = |(name, detail): (String, String)| value_row(&name, &detail);
+                summaries.into_iter().map(row).collect()
+            } else {
+                vec![note(&t("mesh-roaming-none"))]
+            };
+            groups.push(section(&t("mesh-roaming-title"), rows(roaming_rows)).into_element());
+            groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
+        }
         groups.extend(self.agents_group());
         page_of(groups)
     }
@@ -1489,42 +1468,31 @@ impl Page<'_> {
 fn privacy_section(
     cx: &ViewCx<ContinuityPrivacy>,
     continuity: &ContinuityPrivacy,
-    target: &str,
+    shared_with: &str,
 ) -> SettingsSection {
-    let mut privacy_rows = vec![
-        cx.setting(t("mesh-allow-continuity"))
-            .described(t("mesh-allow-continuity-desc"))
-            .id(CONTINUITY_ENABLED_KEY)
-            .toggle_verb(
-                |continuity: &ContinuityPrivacy| continuity.enabled,
-                ContinuityPrivacy::ALLOW_CONTINUITY,
-            ),
-    ];
-    for capability in Capability::ALL {
-        let key = continuity_key(capability);
-        let desc = continuity::description(capability);
-        let status = if continuity.effective(capability) {
-            t_args(
-                "mesh-facet-active",
-                &[("desc", desc.as_str().into()), ("target", target.into())],
-            )
-        } else if continuity.allowed(capability) {
-            t_args("mesh-facet-prepared", &[("desc", desc.into())])
-        } else {
-            t_args("mesh-facet-off", &[("desc", desc.into())])
-        };
+    let mut all = cx
+        .setting(t("mesh-allow-continuity"))
+        .id(CONTINUITY_ENABLED_KEY);
+    if continuity.enabled {
+        all = all.described(shared_with);
+    }
+    let mut privacy_rows = vec![all.toggle_verb(
+        |continuity: &ContinuityPrivacy| continuity.enabled,
+        ContinuityPrivacy::ALLOW_CONTINUITY,
+    )];
+    // Each kind of sharing refines the switch above, so it shows only while that is on.
+    for capability in Capability::ALL.into_iter().filter(|_| continuity.enabled) {
         let facet = capability.key().to_owned();
         privacy_rows.push(
             cx.setting(continuity::label(capability))
-                .described(status)
-                .id(key)
+                .described(continuity::description(capability))
+                .id(continuity_key(capability))
                 .toggle_verb(
                     move |continuity: &ContinuityPrivacy| continuity.allowed(capability),
                     ContinuityPrivacy::ALLOW_CAPABILITY.map(move |on: bool| (facet.clone(), on)),
                 ),
         );
     }
-    privacy_rows.push(note(&t("mesh-privacy-stay")));
     section(&t("mesh-privacy-title"), rows(privacy_rows))
 }
 
@@ -1574,17 +1542,9 @@ impl DeviceMeshModel {
     fn spawn_apply(&self) -> Result<bounded_command::AsyncCommand, bounded_command::Error> {
         let request = serde_json::json!({
             "identity_root": identity_root(),
-            "role": match self.config.device_role {
-                DeviceRole::Interactive => "interactive",
-                DeviceRole::Hybrid => "hybrid",
-                DeviceRole::AlwaysOnServer => "always-on",
-            },
+            "work": self.config.work,
             "workspace_ids": Vec::<u64>::new(),
-            "replication": match self.common_replication() {
-                ReplicationIntent::WorkspaceOnly => "workspace-only",
-                ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "on-demand",
-                ReplicationIntent::FullWorkspace => "full",
-            },
+            "full_content_replication": self.config.services.full_content_replication,
             "inbound_relay": self.config.services.inbound_relay,
             "remote_control_relay": self.config.services.remote_control_relay,
             "app_serving": self.config.services.app_serving,
@@ -1739,10 +1699,7 @@ impl DeviceMeshModel {
         self.refresh_runtime_status();
         self.status = match self.pairing_target {
             PairingTarget::HomePeer => MeshStatus::HomeServerPaired,
-            PairingTarget::PersonalDevice => {
-                self.refresh_personal_devices();
-                MeshStatus::DeviceAdded
-            }
+            PairingTarget::PersonalDevice => MeshStatus::DeviceAdded,
         };
         self.pairing_candidate = None;
     }
@@ -1917,6 +1874,7 @@ impl DeviceMeshModel {
 
     fn poll(&mut self) -> bool {
         self.poll_background_tasks();
+        self.take_personal_devices();
         if let Some(follow) = self.following.upgrade() {
             self.take_followed(&follow);
         } else if ui::time::now() >= self.next_status_refresh {
@@ -1931,7 +1889,7 @@ impl DeviceMeshModel {
     }
 
     fn next_wake(&self) -> Option<Instant> {
-        if !shows_advanced_services(self.config.device_role) {
+        if !takes_work(&self.config.work) {
             return None;
         }
         match self.following.upgrade() {
@@ -1944,7 +1902,7 @@ impl DeviceMeshModel {
     }
 
     fn follow(&mut self) -> Option<Rc<MeshFollow>> {
-        if !self.devices || !shows_advanced_services(self.config.device_role) {
+        if !self.devices || !takes_work(&self.config.work) {
             return None;
         }
         if let Some(follow) = self.following.upgrade() {
@@ -2059,28 +2017,386 @@ mod tests {
         ids
     }
 
-    #[test]
-    fn invisible_relay_state_is_unreadable_not_unconfigured() {
-        let dir = tempfile::tempdir().unwrap();
-        let hidden = dir.path().join("etc-tilo").join("relay.toml");
-        let pane = DeviceMeshModel::with_path(&hidden);
-        assert_eq!(pane.status, MeshStatus::ConfigUnreadable);
-        let config = RelayConfig {
-            state_root: dir.path().join("missing").join("tilo-relay"),
-            ..RelayConfig::default()
-        };
-        assert_eq!(
-            RelayRuntimeStatus::read(&config, ui::time::wall()),
-            RelayRuntimeStatus::Unreadable
-        );
-        let config = RelayConfig {
-            state_root: dir.path().join("tilo-relay"),
-            ..RelayConfig::default()
-        };
-        assert_eq!(
-            RelayRuntimeStatus::read(&config, ui::time::wall()),
-            RelayRuntimeStatus::Offline
-        );
+    tilo_test_env::scenario! {
+        fn the_device_mesh_model_reads_and_edits_the_relay_configuration;
+
+        phase a_device_without_sync_settings_is_unconfigured_not_unreadable;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let absent = dir.path().join("etc-tilo").join("relay.toml");
+            let pane = DeviceMeshModel::with_path(&absent);
+            assert_eq!(pane.status, MeshStatus::NotConfigured);
+            assert!(pane.status.settings_trouble_shown().is_none());
+            let config = RelayConfig {
+                state_root: dir.path().join("missing").join("tilo-relay"),
+                ..RelayConfig::default()
+            };
+            assert_eq!(
+                RelayRuntimeStatus::read(&config, ui::time::wall()),
+                RelayRuntimeStatus::Unreadable
+            );
+            let config = RelayConfig {
+                state_root: dir.path().join("tilo-relay"),
+                ..RelayConfig::default()
+            };
+            assert_eq!(
+                RelayRuntimeStatus::read(&config, ui::time::wall()),
+                RelayRuntimeStatus::Offline
+            );
+        }
+
+        phase a_followed_pane_reads_on_a_change_and_sets_no_deadline;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_IDENTITY_ROOT", dir.path());
+            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+            pane.config.work = WorkSetting::own_person();
+            let follow = Rc::new(MeshFollow::by_hand());
+            pane.following = Rc::downgrade(&follow);
+            let _ = pane.poll();
+            assert_eq!(pane.next_wake(), None, "an idle pane sets no deadline");
+
+            *follow.status.lock().unwrap() = Some(RelayRuntimeStatus::Online);
+            assert!(pane.poll(), "the thread's status is shown");
+            assert_eq!(pane.runtime_status, RelayRuntimeStatus::Online);
+            assert!(!pane.poll(), "once");
+
+            let provenance = pane.roaming_provenance_path.clone().unwrap();
+            std::fs::write(&provenance, "{}").unwrap();
+            assert!(!pane.poll(), "nothing is read without the watch's word");
+            follow.files.touch();
+            assert!(pane.poll(), "the changed provenance is read");
+
+            pane.removals_pending = true;
+            assert!(
+                pane.next_wake()
+                    .is_some_and(|at| at >= ui::time::now() + Duration::from_secs(30)),
+                "a pending removal is retried once a minute, not every two seconds"
+            );
+        }
+
+        phase relay_config_edits_are_real_honest_and_coalesced;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("relay.toml");
+                RelayConfig::default().save(&path).unwrap();
+
+                let mut pane = DeviceMeshModel::with_path(&path);
+                let _ = pane.poll();
+                pane.apply(&DeviceMeshEffect::SetWork {
+                    work: "mesh-work-anyone".into(),
+                })
+                .unwrap();
+                pane.apply(&DeviceMeshEffect::SetDeviceService {
+                    service: "full_content_replication".into(),
+                    on: true,
+                })
+                .unwrap();
+                pane.apply(&DeviceMeshEffect::SetDeviceService {
+                    service: "remote_control_relay".into(),
+                    on: false,
+                })
+                .unwrap();
+
+                let saved = RelayConfig::load(&path).unwrap();
+                assert_eq!(saved.work.from, WorkFrom::Anyone);
+                assert!(saved.services.full_content_replication);
+                assert!(!saved.services.remote_control_relay);
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("relay.toml");
+                let mut pane = DeviceMeshModel::with_path(&path);
+                assert_eq!(pane.status, MeshStatus::NotConfigured);
+                assert!(pane.config.work.takes_nothing());
+                assert_eq!(
+                    pane.config.services,
+                    tilo_relay_protocol::ServiceCapabilities::default()
+                );
+                let _ = pane.poll();
+                assert!(!path.exists());
+                pane.apply(&DeviceMeshEffect::SetWork {
+                    work: "mesh-work-own".into(),
+                })
+                .unwrap();
+                assert!(path.exists());
+            }
+
+            {
+                // A choice is a message key, so a language's label is never one.
+                assert_eq!(work_from_key("mesh-work-nothing"), Some(WorkFrom::Nobody));
+                assert_eq!(work_from_key("mesh-work-own"), Some(WorkFrom::OwnDevices));
+                assert_eq!(work_from_key("mesh-work-anyone"), Some(WorkFrom::Anyone));
+                assert_eq!(work_from_key(&t("mesh-work-some")), None);
+                assert!(work_from(WorkFrom::Nobody, WorkWhen::always()).takes_nothing());
+                assert!(!work_from(WorkFrom::OwnDevices, WorkWhen::always()).takes_nothing());
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+                pane.config_path = PathBuf::from(DEFAULT_CONFIG);
+                let mut command = Command::new("sleep");
+                command.arg("infinity");
+                pane.apply_child = Some(
+                    bounded_command::spawn_prepared(command, None, 64, tilo_test_env::hang_bound())
+                        .unwrap(),
+                );
+
+                pane.persist();
+                pane.poll_background_tasks();
+
+                assert!(pane.apply_child.is_some(), "the running apply is kept");
+                assert!(pane.apply_queued);
+                pane.apply_child = None;
+            }
+        }
+
+        phase the_states_a_device_takes_work_in_are_kept;
+        // The states a device takes work in are saved as the page sets them, and picking whose work
+        // it takes keeps them.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            RelayConfig::default().save(&path).unwrap();
+            let mut pane = DeviceMeshModel::with_path(&path);
+            let _ = pane.poll();
+
+            pane.apply(&DeviceMeshEffect::SetWorkWhileCharging { on: true })
+                .unwrap();
+            pane.apply(&DeviceMeshEffect::SetWorkRoom {
+                part: "processors".into(),
+                percent: room_shown(20),
+            })
+            .unwrap();
+            pane.apply(&DeviceMeshEffect::SetWorkRoom {
+                part: "memory".into(),
+                percent: "50".into(),
+            })
+            .unwrap();
+            assert!(
+                pane.apply(&DeviceMeshEffect::SetWorkRoom {
+                    part: "memory".into(),
+                    percent: "35".into(),
+                })
+                .is_err(),
+                "only the shares the page offers are kept"
+            );
+            pane.apply(&DeviceMeshEffect::SetWork {
+                work: "mesh-work-own".into(),
+            })
+            .unwrap();
+            let saved = RelayConfig::load(&path).unwrap();
+            assert_eq!(
+                saved.work.when,
+                WorkWhen {
+                    charging_only: true,
+                    free_cpu_percent: 20,
+                    free_memory_percent: 50,
+                },
+                "whose work a device takes leaves the states it takes it in"
+            );
+        }
+
+        phase the_work_a_device_takes_and_its_services_stay_local;
+        {
+            {
+                assert!(!takes_work(&WorkSetting::none()));
+                assert!(takes_work(&WorkSetting::own_person()));
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("relay.toml");
+                let config = RelayConfig {
+                    work: WorkSetting::none(),
+                    ..RelayConfig::default()
+                };
+                config.save(&path).unwrap();
+                let mut pane = DeviceMeshModel::with_path(&path);
+                let _ = pane.poll();
+                assert!(!pane.poll());
+
+                pane.apply(&DeviceMeshEffect::SetWork {
+                    work: "mesh-work-own".into(),
+                })
+                .unwrap();
+
+                assert!(pane.poll());
+                assert_eq!(pane.config.work.from, WorkFrom::OwnDevices);
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("relay.toml");
+                let config = RelayConfig {
+                    work: WorkSetting::none(),
+                    services: tilo_relay_protocol::ServiceCapabilities::default(),
+                    ..RelayConfig::default()
+                };
+                config.save(&path).unwrap();
+
+                let mut pane = DeviceMeshModel::with_path(&path);
+                let _ = pane.poll();
+                pane.apply(&DeviceMeshEffect::SetWork {
+                    work: "mesh-work-anyone".into(),
+                })
+                .unwrap();
+                pane.apply(&DeviceMeshEffect::SetDeviceService {
+                    service: "full_content_replication".into(),
+                    on: true,
+                })
+                .unwrap();
+
+                let saved = RelayConfig::load(&path).unwrap();
+                assert_eq!(saved.work.from, WorkFrom::Anyone);
+                assert!(saved.services.workspace_replication);
+                assert!(saved.services.full_content_replication);
+                assert!(saved.services.inbound_relay);
+            }
+        }
+
+        phase device_health_and_workspace_status_reflect_fresh_facts;
+        {
+            {
+                assert_eq!(
+                    peer_health_badge(HomePeerHealth::Online { files_ready: true }),
+                    "Online"
+                );
+                assert_eq!(
+                    peer_health_badge(HomePeerHealth::Online { files_ready: false }),
+                    "Syncing"
+                );
+                assert_eq!(peer_health_badge(HomePeerHealth::Unreachable), "Offline");
+                assert_eq!(peer_health_badge(HomePeerHealth::Connecting), "Checking");
+                assert_eq!(
+                    peer_health_detail(HomePeerHealth::Unreachable),
+                    "Offline. Check that it is on and connected"
+                );
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let config = RelayConfig {
+                    state_root: dir.path().to_path_buf(),
+                    work: WorkSetting::own_person(),
+                    ..RelayConfig::default()
+                };
+                let metrics = tilo_relay_protocol::metrics::MetricsSnapshot {
+                    deltas_received: 42,
+                    ..Default::default()
+                };
+                tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
+                let modified = std::fs::metadata(
+                    config
+                        .state_root
+                        .join(tilo_relay_protocol::metrics::METRICS_FILE),
+                )
+                .unwrap()
+                .modified()
+                .unwrap();
+
+                assert_eq!(
+                    RelayRuntimeStatus::read(&config, modified + Duration::from_secs(1)),
+                    RelayRuntimeStatus::Online
+                );
+                assert_eq!(
+                    RelayRuntimeStatus::read(
+                        &config,
+                        modified + STATUS_FRESHNESS + Duration::from_secs(1)
+                    ),
+                    RelayRuntimeStatus::Offline
+                );
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let proof = dir.path().join("full-replica.json");
+                let config = RelayConfig {
+                    state_root: dir.path().to_path_buf(),
+                    full_replica_status: proof.clone(),
+                    work: WorkSetting::own_person(),
+                    services: tilo_relay_protocol::ServiceCapabilities::personal_server(),
+                    ..RelayConfig::default()
+                };
+                tilo_relay_protocol::metrics::save_metrics(
+                    &config.state_root,
+                    &tilo_relay_protocol::metrics::MetricsSnapshot::default(),
+                )
+                .unwrap();
+                let now = std::fs::metadata(
+                    config
+                        .state_root
+                        .join(tilo_relay_protocol::metrics::METRICS_FILE),
+                )
+                .unwrap()
+                .modified()
+                .unwrap();
+                let now_ms = now
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
+                std::fs::write(
+                    &proof,
+                    format!(
+                        r#"{{"state":"ready","full_content_replication":true,"updated_at_ms":{now_ms}}}"#
+                    ),
+                )
+                .unwrap();
+                assert_eq!(
+                    RelayRuntimeStatus::read(&config, now),
+                    RelayRuntimeStatus::Ready
+                );
+                std::fs::write(
+                    &proof,
+                    r#"{"state":"syncing","full_content_replication":false,"updated_at_ms":0}"#,
+                )
+                .unwrap();
+                assert_eq!(
+                    RelayRuntimeStatus::read(&config, now),
+                    RelayRuntimeStatus::Syncing
+                );
+            }
+        }
+
+        phase the_area_builds_its_model_from_the_read_it_started;
+        {
+            let profile = tempfile::tempdir().unwrap();
+            let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
+            let area = DeviceMeshArea::new(&cx);
+            assert!(area.start_read(), "the first read starts");
+            assert!(!area.start_read(), "one read at a time");
+            assert!(!area.is_open(), "a running read publishes nothing yet");
+            until_finished(|| area.read.is_finished());
+            let model = area.model().borrow();
+            assert!(area.is_open());
+            assert_eq!(
+                model.config_path,
+                PathBuf::from("/nonexistent/tilo/relay.toml"),
+                "a test reads the stand-in configuration"
+            );
+            assert_eq!(model.personal_devices, Some(Vec::new()));
+            assert!(model.home_peers.is_empty());
+            drop(model);
+            assert!(!area.start_read(), "a built model is not read again");
+        }
+
+        phase a_read_builds_the_model_reading_in_place_builds;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            std::fs::write(&path, "iroh_listen = \"0.0.0.0:1234\"\n").unwrap();
+            let here = DeviceMeshModel::from_path(path.clone(), false);
+            let read = MeshRead::of(path, false, ui::time::wall());
+            let there = DeviceMeshModel::from_read(false, read);
+            assert_eq!(here.config_path, there.config_path);
+            assert_eq!(here.status, there.status);
+            assert_eq!(here.config.work, there.config.work);
+            assert_eq!(here.runtime_status, there.runtime_status);
+        }
     }
 
     #[test]
@@ -2099,7 +2415,7 @@ mod tests {
         let config = RelayConfig {
             full_replica_status: state_root.join("full-replica.json"),
             state_root,
-            device_role: DeviceRole::Hybrid,
+            work: WorkSetting::own_person(),
             ..RelayConfig::default()
         };
         let follow = MeshFollow::start_at(&config, &[], clock).expect("the status thread starts");
@@ -2131,46 +2447,50 @@ mod tests {
         });
     }
 
-    #[test]
-    fn a_followed_pane_reads_on_a_change_and_sets_no_deadline() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_IDENTITY_ROOT", dir.path());
-        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        pane.config.device_role = DeviceRole::Hybrid;
-        let follow = Rc::new(MeshFollow::by_hand());
-        pane.following = Rc::downgrade(&follow);
-        let _ = pane.poll();
-        assert_eq!(pane.next_wake(), None, "an idle pane sets no deadline");
-
-        *follow.status.lock().unwrap() = Some(RelayRuntimeStatus::Online);
-        assert!(pane.poll(), "the thread's status is shown");
-        assert_eq!(pane.runtime_status, RelayRuntimeStatus::Online);
-        assert!(!pane.poll(), "once");
-
-        let provenance = pane.roaming_provenance_path.clone().unwrap();
-        std::fs::write(&provenance, "{}").unwrap();
-        assert!(!pane.poll(), "nothing is read without the watch's word");
-        follow.files.touch();
-        assert!(pane.poll(), "the changed provenance is read");
-
-        pane.removals_pending = true;
-        assert!(
-            pane.next_wake()
-                .is_some_and(|at| at >= ui::time::now() + Duration::from_secs(30)),
-            "a pending removal is retried once a minute, not every two seconds"
-        );
+    /// A device's roaming reading: one setting from one other device, one
+    /// Wi-Fi network from four.
+    fn roaming_projection() -> RoamingProvenance {
+        let origin = |id: &str, label: &str, counter| Origin {
+            device_id: id.into(),
+            device_label: label.into(),
+            counter,
+        };
+        RoamingProvenance {
+            schema_version: SCHEMA_VERSION,
+            generated_unix_ms: 1,
+            settings: vec![SettingResolution {
+                key: "tilo.appearance.mode".into(),
+                winner: origin("b", "Laptop", 8),
+                alternatives: vec![origin("a", "Desktop", 7)],
+            }],
+            wifi: vec![WifiResolution {
+                network_id: "ab".repeat(32),
+                ssid: "Home".into(),
+                security: "WPA2".into(),
+                winner: origin("b", "Laptop", 9),
+                alternatives: vec![
+                    origin("a", "Desktop", 7),
+                    origin("c", "Phone", 6),
+                    origin("d", "Tablet", 5),
+                    origin("e", "NAS", 4),
+                ],
+            }],
+        }
     }
 
     #[test]
     fn continuity_controls_are_typed_audited_and_refuse_future_provenance() {
         {
             let dir = tempfile::tempdir().unwrap();
-            let pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            let mut app = window_on(pane);
+            let mut app = window_on(devices_and_a_home_server(dir.path()));
             let ids = test_ids(app.harness().root_widget());
 
             assert!(ids.iter().any(|id| id == CONTINUITY_ENABLED_KEY));
+            let described = descriptions(app.harness().root_widget());
+            assert!(
+                described.contains("On for Ada's Phone and Kitchen NAS\n"),
+                "{described}"
+            );
             for capability in Capability::ALL {
                 let key = continuity_key(capability);
                 assert!(ids.iter().any(|id| id == &key), "missing {key}");
@@ -2178,38 +2498,17 @@ mod tests {
         }
 
         {
-            let origin = |id: &str, label: &str, counter| Origin {
-                device_id: id.into(),
-                device_label: label.into(),
-                counter,
-            };
-            let projection = RoamingProvenance {
-                schema_version: SCHEMA_VERSION,
-                generated_unix_ms: 1,
-                settings: vec![SettingResolution {
-                    key: "tilo.appearance.mode".into(),
-                    winner: origin("b", "Laptop", 8),
-                    alternatives: vec![origin("a", "Desktop", 7)],
-                }],
-                wifi: vec![WifiResolution {
-                    network_id: "ab".repeat(32),
-                    ssid: "Home".into(),
-                    security: "WPA2".into(),
-                    winner: origin("b", "Laptop", 9),
-                    alternatives: Vec::new(),
-                }],
-            };
-            let summaries = provenance_summaries(&projection);
+            let summaries = provenance_summaries(&roaming_projection());
             assert_eq!(
                 summaries,
                 vec![
                     (
                         "tilo.appearance.mode".into(),
-                        "Resolved to Laptop at revision 8; differs from Desktop".into()
+                        "Resolved to Laptop; differs from Desktop".into()
                     ),
                     (
                         "Wi-Fi: Home".into(),
-                        "Sealed WPA2 profile. From Laptop at revision 9".into()
+                        "Sealed WPA2 profile. Resolved to Laptop; differs from Desktop, Phone and 2 more".into()
                     )
                 ]
             );
@@ -2268,151 +2567,6 @@ mod tests {
     }
 
     #[test]
-    fn relay_config_edits_are_real_honest_and_coalesced() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
-            RelayConfig::default().save(&path).unwrap();
-
-            let mut pane = DeviceMeshModel::with_path(&path);
-            let _ = pane.poll();
-            pane.apply(&DeviceMeshEffect::SetDeviceRole {
-                role: ROLE_ACTIVE.into(),
-            })
-            .unwrap();
-            pane.apply(&DeviceMeshEffect::SetReplication {
-                replication: REPLICATION_FULL.into(),
-            })
-            .unwrap();
-            pane.apply(&DeviceMeshEffect::SetDeviceService {
-                service: "remote_control_relay".into(),
-                on: false,
-            })
-            .unwrap();
-
-            let saved = RelayConfig::load(&path).unwrap();
-            assert_eq!(saved.device_role, DeviceRole::Hybrid);
-            assert!(saved.services.full_content_replication);
-            assert!(!saved.services.remote_control_relay);
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
-            let mut pane = DeviceMeshModel::with_path(&path);
-            assert_eq!(pane.status, MeshStatus::NotConfigured);
-            assert_eq!(pane.config.device_role, DeviceRole::Interactive);
-            assert_eq!(
-                pane.config.services,
-                tilo_relay_protocol::ServiceCapabilities::default()
-            );
-            let _ = pane.poll();
-            assert!(!path.exists());
-            pane.apply(&DeviceMeshEffect::SetDeviceRole {
-                role: ROLE_ACTIVE.into(),
-            })
-            .unwrap();
-            assert!(path.exists());
-        }
-
-        {
-            assert_eq!(
-                replication_from_label(REPLICATION_WORKSPACE),
-                Some(ReplicationIntent::WorkspaceOnly)
-            );
-            assert_eq!(
-                replication_from_label(REPLICATION_ON_DEMAND),
-                Some(ReplicationIntent::OnDemand)
-            );
-            assert_eq!(
-                replication_from_label(REPLICATION_FULL),
-                Some(ReplicationIntent::FullWorkspace)
-            );
-            assert!(
-                replication_description(&ReplicationIntent::OnDemand)
-                    .contains("preview thumbnails")
-            );
-            assert!(
-                replication_description(&ReplicationIntent::FullWorkspace)
-                    .contains("full file copies")
-            );
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            pane.config_path = PathBuf::from(DEFAULT_CONFIG);
-            let mut command = Command::new("sleep");
-            command.arg("infinity");
-            pane.apply_child = Some(
-                bounded_command::spawn_prepared(command, None, 64, tilo_test_env::hang_bound())
-                    .unwrap(),
-            );
-
-            pane.persist();
-            pane.poll_background_tasks();
-
-            assert!(pane.apply_child.is_some(), "the running apply is kept");
-            assert!(pane.apply_queued);
-            pane.apply_child = None;
-        }
-    }
-
-    #[test]
-    fn device_roles_and_availability_stay_local() {
-        {
-            assert!(!shows_advanced_services(DeviceRole::Interactive));
-            assert!(shows_advanced_services(DeviceRole::Hybrid));
-            assert!(shows_advanced_services(DeviceRole::AlwaysOnServer));
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
-            let config = RelayConfig {
-                device_role: DeviceRole::Interactive,
-                ..RelayConfig::default()
-            };
-            config.save(&path).unwrap();
-            let mut pane = DeviceMeshModel::with_path(&path);
-            let _ = pane.poll();
-            assert!(!pane.poll());
-
-            pane.apply(&DeviceMeshEffect::SetDeviceRole {
-                role: ROLE_ACTIVE.into(),
-            })
-            .unwrap();
-
-            assert!(pane.poll());
-            assert_eq!(pane.config.device_role, DeviceRole::Hybrid);
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
-            let config = RelayConfig {
-                device_role: DeviceRole::Interactive,
-                services: tilo_relay_protocol::ServiceCapabilities::default(),
-                ..RelayConfig::default()
-            };
-            config.save(&path).unwrap();
-
-            let mut pane = DeviceMeshModel::with_path(&path);
-            let _ = pane.poll();
-            pane.apply(&DeviceMeshEffect::SetDeviceRole {
-                role: ROLE_SERVER.into(),
-            })
-            .unwrap();
-
-            let saved = RelayConfig::load(&path).unwrap();
-            assert_eq!(saved.device_role, DeviceRole::AlwaysOnServer);
-            assert!(saved.services.workspace_replication);
-            assert!(saved.services.full_content_replication);
-            assert!(saved.services.inbound_relay);
-        }
-    }
-
-    #[test]
     fn a_pairing_that_did_not_finish_says_what_to_do_not_the_hosts_words() {
         const HOST_WORDS: &str = "the code the second screen showed did not match";
         let dir = tempfile::tempdir().unwrap();
@@ -2450,7 +2604,7 @@ mod tests {
     #[test]
     fn the_panes_troubles_read_in_the_persons_language() {
         let dir = tempfile::tempdir().unwrap();
-        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        let mut model = devices_and_a_home_server(dir.path());
         model.status = MeshStatus::NotSaved;
         model.personal_devices_unavailable = true;
         model.roaming_provenance_unreadable = true;
@@ -2477,107 +2631,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn device_health_and_workspace_status_reflect_fresh_facts() {
-        {
-            assert_eq!(
-                peer_health_badge(HomePeerHealth::Online { files_ready: true }),
-                "Online"
-            );
-            assert_eq!(
-                peer_health_badge(HomePeerHealth::Online { files_ready: false }),
-                "Syncing"
-            );
-            assert_eq!(peer_health_badge(HomePeerHealth::Unreachable), "Offline");
-            assert_eq!(peer_health_badge(HomePeerHealth::Connecting), "Checking");
-            assert_eq!(
-                peer_health_detail(HomePeerHealth::Unreachable),
-                "Offline. Check that it is on and connected"
-            );
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let config = RelayConfig {
-                state_root: dir.path().to_path_buf(),
-                device_role: DeviceRole::Hybrid,
-                ..RelayConfig::default()
-            };
-            let metrics = tilo_relay_protocol::metrics::MetricsSnapshot {
-                deltas_received: 42,
-                ..Default::default()
-            };
-            tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
-            let modified = std::fs::metadata(
-                config
-                    .state_root
-                    .join(tilo_relay_protocol::metrics::METRICS_FILE),
-            )
-            .unwrap()
-            .modified()
-            .unwrap();
-
-            assert_eq!(
-                RelayRuntimeStatus::read(&config, modified + Duration::from_secs(1)),
-                RelayRuntimeStatus::Online
-            );
-            assert_eq!(
-                RelayRuntimeStatus::read(
-                    &config,
-                    modified + STATUS_FRESHNESS + Duration::from_secs(1)
-                ),
-                RelayRuntimeStatus::Offline
-            );
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let proof = dir.path().join("full-replica.json");
-            let config = RelayConfig {
-                state_root: dir.path().to_path_buf(),
-                full_replica_status: proof.clone(),
-                device_role: DeviceRole::AlwaysOnServer,
-                services: tilo_relay_protocol::ServiceCapabilities::personal_server(),
-                ..RelayConfig::default()
-            };
-            tilo_relay_protocol::metrics::save_metrics(
-                &config.state_root,
-                &tilo_relay_protocol::metrics::MetricsSnapshot::default(),
-            )
-            .unwrap();
-            let now = std::fs::metadata(
-                config
-                    .state_root
-                    .join(tilo_relay_protocol::metrics::METRICS_FILE),
-            )
-            .unwrap()
-            .modified()
-            .unwrap();
-            let now_ms = now
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
-            std::fs::write(
-                &proof,
-                format!(
-                    r#"{{"state":"ready","full_content_replication":true,"updated_at_ms":{now_ms}}}"#
-                ),
-            )
-            .unwrap();
-            assert_eq!(
-                RelayRuntimeStatus::read(&config, now),
-                RelayRuntimeStatus::Ready
-            );
-            std::fs::write(
-                &proof,
-                r#"{"state":"syncing","full_content_replication":false,"updated_at_ms":0}"#,
-            )
-            .unwrap();
-            assert_eq!(
-                RelayRuntimeStatus::read(&config, now),
-                RelayRuntimeStatus::Syncing
-            );
-        }
+    /// What a reader hears after each name, one line each.
+    fn descriptions(widget: &dyn Widget) -> String {
+        let own = widget.accessibility().and_then(|node| node.description);
+        let below = widget.children().into_iter().map(descriptions);
+        own.map(|text| text + "\n")
+            .into_iter()
+            .chain(below)
+            .collect()
     }
 
     fn row_holding(widget: &dyn Widget, id: &str) -> Option<String> {
@@ -2599,21 +2660,14 @@ mod tests {
 
     fn devices_and_a_home_server(dir: &std::path::Path) -> DeviceMeshModel {
         let mut pane = DeviceMeshModel::with_path(&dir.join("relay.toml"));
-        let device = |key: &str, label: &str, current, can_host| crate::device_fleet::DeviceView {
-            label: label.into(),
-            key: hex::decode(key).unwrap().try_into().unwrap(),
-            fingerprint: format!("fp {label}"),
-            current,
-            revoked: false,
-            can_host,
-            kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
-            ..crate::device_fleet::DeviceView::default()
-        };
-        pane.personal_devices = vec![
-            device(THIS_DEVICE, "Ada's Laptop", true, false),
-            device(PHONE, "Ada's Phone", false, false),
-            device(NEARBY_DEVICE, "Kitchen NAS", false, true),
-        ];
+        pane.personal_devices = devices_in(
+            &serde_json::json!({"devices": [
+                {"id": THIS_DEVICE, "label": "Ada's Laptop", "local": true, "online": true},
+                {"id": PHONE, "label": "Ada's Phone"},
+                {"id": NEARBY_DEVICE, "label": "Kitchen NAS", "online": true},
+            ]})
+            .to_string(),
+        );
         pane.home_peers = vec![
             serde_json::from_value(serde_json::json!({
                 "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
@@ -2626,6 +2680,36 @@ mod tests {
             .unwrap(),
         ];
         pane
+    }
+
+    /// A device the session hears on this device's network says so on its row; the others keep
+    /// what they are.
+    #[test]
+    fn a_device_the_session_hears_nearby_says_so() {
+        let _settled = ui::motion::testing::settled();
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = devices_and_a_home_server(dir.path());
+        pane.personal_devices = devices_in(
+            &serde_json::json!({"devices": [
+                {"id": THIS_DEVICE, "label": "Ada's Laptop", "local": true, "nearby": false},
+                {"id": PHONE.to_ascii_uppercase(), "label": "Ada's Phone", "nearby": true},
+            ]})
+            .to_string(),
+        );
+        let mut app = window_on(pane);
+        let shown = provider_settings_ui::widgets::announced_text(app.harness().root_widget());
+        assert!(
+            shown
+                .iter()
+                .any(|line| line.starts_with("Ada's Phone, Nearby")),
+            "{shown:#?}"
+        );
+        assert!(
+            !shown
+                .iter()
+                .any(|line| line.starts_with("Ada's Laptop, Nearby")),
+            "{shown:#?}"
+        );
     }
 
     #[test]
@@ -2660,7 +2744,7 @@ mod tests {
         {
             let composed = app.harness().root_widget();
             let holder = |id: &str| row_holding(composed, id);
-            assert_eq!(holder("device_mesh.role").as_deref(), Some("Ada's Laptop"));
+            assert_eq!(holder("device_mesh.work").as_deref(), Some("Ada's Laptop"));
 
             let rename = peer_key("name", NEARBY_DEVICE);
             assert_eq!(holder(&rename).as_deref(), Some("Kitchen NAS"));
@@ -2686,34 +2770,134 @@ mod tests {
             "{ids:?}"
         );
         assert_eq!(
-            change_model(&mut app, |pane| pane.personal_devices.len()),
+            change_model(&mut app, |pane| pane
+                .personal_devices
+                .iter()
+                .flatten()
+                .count()),
             3
         );
     }
 
-    #[test]
-    fn device_removal_asks_first_and_pairing_is_single_flight() {
+    tilo_test_env::scenario! {
+        fn pairing_and_removal_run_through_the_host;
+
+        phase device_removal_asks_first_and_pairing_is_single_flight;
         {
-            let effect = DeviceMeshEffect::RemoveHomeServer {
-                device: "11".repeat(32),
-            };
-            let declaration = DeviceMeshEffect::declarations()
-                .into_iter()
-                .find(|declaration| declaration.id == effect.id())
-                .unwrap();
-            assert_eq!(
-                declaration.risk,
-                ui::tilo_actions::RiskLevel::Destructive,
-                "{} asks first",
-                effect.id()
-            );
-            let dir = tempfile::tempdir().unwrap();
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            assert!(pane.apply(&effect).is_err(), "nothing unpaired is touched");
-            assert!(pane.management_child.is_none());
+            {
+                let effect = DeviceMeshEffect::RemoveHomeServer {
+                    device: "11".repeat(32),
+                };
+                let declaration = DeviceMeshEffect::declarations()
+                    .into_iter()
+                    .find(|declaration| declaration.id == effect.id())
+                    .unwrap();
+                assert_eq!(
+                    declaration.risk,
+                    ui::tilo_actions::RiskLevel::Destructive,
+                    "{} asks first",
+                    effect.id()
+                );
+                let dir = tempfile::tempdir().unwrap();
+                let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+                assert!(pane.apply(&effect).is_err(), "nothing unpaired is touched");
+                assert!(pane.management_child.is_none());
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+                let host = Arc::new(PairingHost::default());
+                pane.remote = ui::RemoteActions::with_host(
+                    host.clone(),
+                    ui::tilo_actions::remote::Caller::local_person("owner"),
+                );
+                pane.approve_enrollment(PairingTarget::HomePeer);
+                pane.approve_enrollment(PairingTarget::HomePeer);
+                assert_eq!(host.asked().len(), 1, "one pairing step at a time");
+            }
         }
 
+        phase home_server_removal_runs_on_the_host;
         {
+            use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+            let dir = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_IDENTITY_ROOT", dir.path());
+            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+            let host = Arc::new(PairingHost::default());
+            pane.remote = ui::RemoteActions::with_host(
+                host.clone(),
+                ui::tilo_actions::remote::Caller::local_person("owner"),
+            );
+            let server: tilo_relay_protocol::HomePeerRegistration =
+                serde_json::from_value(serde_json::json!({
+                    "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                    "device_node_id": NEARBY_DEVICE,
+                    "relay_service_node_id": NEARBY_SERVICE,
+                    "label": "Kitchen NAS",
+                    "user_public_key": "33".repeat(32),
+                    "relay_workspace_ids": [],
+                }))
+                .unwrap();
+            pane.home_peers = vec![server];
+            pane.apply(&DeviceMeshEffect::RemoveHomeServer {
+                device: NEARBY_DEVICE.into(),
+            })
+            .unwrap();
+            assert!(
+                pane.management_child.is_none(),
+                "no relay process runs here"
+            );
+            pane.poll_background_tasks();
+            let asked = host.asked();
+            let removal = asked.last().unwrap();
+            assert_eq!(
+                removal.target,
+                identity_admin::target(identity_admin::HOME_PEER_REMOVE)
+            );
+            assert_eq!(removal.confirmation, Some(Confirmation::Confirmed));
+            assert_eq!(
+                removal.argument,
+                InvokeArgument::Json(
+                    serde_json::json!({
+                        "device": NEARBY_DEVICE,
+                        "service": NEARBY_SERVICE,
+                        "confirm": true,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone()
+                )
+            );
+            assert_eq!(
+                pane.home_peer_health.get(NEARBY_DEVICE),
+                Some(&HomePeerHealth::Removed)
+            );
+            assert!(pane.management_call.is_none(), "the removal has answered");
+        }
+
+        phase a_home_server_that_does_not_answer_is_offline_not_the_hosts_words;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+            pane.take_management_answer(
+                Some(NEARBY_DEVICE.into()),
+                Err("the home server was not reachable".into()),
+            );
+            assert_eq!(
+                pane.home_peer_health.get(NEARBY_DEVICE),
+                Some(&HomePeerHealth::Unreachable)
+            );
+            assert_eq!(
+                peer_health_detail(HomePeerHealth::Unreachable),
+                "Offline. Check that it is on and connected"
+            );
+        }
+
+        phase pairing_invokes_the_host_actions_and_spawns_nothing;
+        {
+            use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing};
             let dir = tempfile::tempdir().unwrap();
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
             let host = Arc::new(PairingHost::default());
@@ -2721,9 +2905,66 @@ mod tests {
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
-            pane.approve_enrollment(PairingTarget::HomePeer);
-            pane.approve_enrollment(PairingTarget::HomePeer);
-            assert_eq!(host.asked().len(), 1, "one pairing step at a time");
+
+            pane.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
+            pane.poll_background_tasks();
+            let asked = host.asked();
+            assert_eq!(asked.len(), 1);
+            assert_eq!(
+                asked[0].target,
+                device_pairing::target(device_pairing::DISCOVER)
+            );
+            assert_eq!(
+                asked[0].argument,
+                InvokeArgument::Json(
+                    serde_json::json!({"role": "home-peer"})
+                        .as_object()
+                        .unwrap()
+                        .clone()
+                )
+            );
+            assert_eq!(
+                pane.status,
+                MeshStatus::Found {
+                    label: "Kitchen NAS".into(),
+                    code: "123-456".into(),
+                }
+            );
+            assert!(pane.pairing_call.is_none(), "discovery has answered");
+
+            pane.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
+            pane.poll_background_tasks();
+            let asked = host.asked();
+            assert_eq!(asked.len(), 2);
+            assert_eq!(
+                asked[1].target,
+                device_pairing::target(device_pairing::APPROVE)
+            );
+            assert_eq!(
+                asked[1].argument,
+                InvokeArgument::Json(
+                    serde_json::json!({
+                        "role": "home-peer",
+                        "device": NEARBY_DEVICE,
+                        "service": NEARBY_SERVICE,
+                        "workspace_ids": [],
+                        "confirm": true,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone()
+                )
+            );
+            assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
+            assert_eq!(pane.status, MeshStatus::HomeServerPaired);
+            assert!(
+                pane.pairing_candidate.is_none(),
+                "the paired device is done"
+            );
+            assert!(
+                pane.apply_child.is_none() && pane.management_child.is_none(),
+                "pairing started no process in the app"
+            );
         }
     }
 
@@ -2770,36 +3011,10 @@ mod tests {
                 ui::tilo_actions::remote::ActionHostError,
             >,
         > {
-            use ui::tilo_actions::remote::{device_pairing, home_relay_hosting, identity_admin};
+            use ui::tilo_actions::remote::{device_pairing, identity_admin};
             let invocation = request.invocation;
-            let value = if request.target.provider == home_relay_hosting::PROVIDER {
-                let studio_on = self
-                    .asked
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|asked| asked.target.address.action == home_relay_hosting::SET);
-                serde_json::json!({
-                    "relay": "Home server",
-                    "workspaces": [
-                        { "workspace": super::home_relay_tests::PERSONAL_WORKSPACE, "name": "Personal", "on_relay": true },
-                        { "workspace": super::home_relay_tests::STUDIO_WORKSPACE, "name": "Studio", "on_relay": studio_on },
-                    ],
-                })
-            } else if request.target.provider == identity_admin::PROVIDER {
+            let value = if request.target.provider == identity_admin::PROVIDER {
                 match request.target.address.action.as_str() {
-                    identity_admin::DEVICES => serde_json::json!([
-                        {
-                            "label": "This laptop", "key_hex": THIS_DEVICE,
-                            "fingerprint": "11 11 11 11 11 11", "current": true,
-                            "revoked": false, "can_host": true,
-                        },
-                        {
-                            "label": "Phone", "key_hex": PHONE,
-                            "fingerprint": "22 22 22 22 22 22", "current": false,
-                            "revoked": false, "can_host": false,
-                        },
-                    ]),
                     identity_admin::HOME_PEER_REMOVE => {
                         serde_json::json!({"decommissioned": true, "files_ready": false})
                     }
@@ -2860,173 +3075,57 @@ mod tests {
         }
     }
 
+    /// The list is the session's reading of the person's devices: until it lands the list says it
+    /// is being read, and a reading that arrives later is drawn without anyone asking again.
     #[test]
-    fn the_device_list_is_the_hosts() {
+    fn the_device_list_is_the_sessions_reading() {
+        let _settled = ui::motion::testing::settled();
         let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        pane.remote = ui::RemoteActions::with_host(
-            Arc::new(PairingHost::default()),
-            ui::tilo_actions::remote::Caller::local_person("owner"),
-        );
-
-        pane.refresh_personal_devices();
-        pane.poll_background_tasks();
-        assert_eq!(
-            pane.personal_devices
-                .iter()
-                .map(|device| (device.label.as_str(), device.current))
-                .collect::<Vec<_>>(),
-            [("This laptop", true), ("Phone", false)]
-        );
-    }
-
-    #[test]
-    fn home_server_removal_runs_on_the_host() {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
-        let dir = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_IDENTITY_ROOT", dir.path());
-        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        let host = Arc::new(PairingHost::default());
-        pane.remote = ui::RemoteActions::with_host(
-            host.clone(),
-            ui::tilo_actions::remote::Caller::local_person("owner"),
-        );
-        let server: tilo_relay_protocol::HomePeerRegistration =
-            serde_json::from_value(serde_json::json!({
-                "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-                "device_node_id": NEARBY_DEVICE,
-                "relay_service_node_id": NEARBY_SERVICE,
-                "label": "Kitchen NAS",
-                "user_public_key": "33".repeat(32),
-                "relay_workspace_ids": [],
-            }))
-            .unwrap();
-        pane.home_peers = vec![server];
-        pane.apply(&DeviceMeshEffect::RemoveHomeServer {
-            device: NEARBY_DEVICE.into(),
-        })
-        .unwrap();
+        let pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        assert_eq!(pane.personal_devices, None, "nothing is read in place");
+        let mut app = window_on(pane);
+        let text = |app: &mut TestApp<SettingsShell>| {
+            provider_settings_ui::widgets::announced_text(app.harness().root_widget()).join("\n")
+        };
+        let alone = text(&mut app);
+        assert!(alone.contains(&t("mesh-status-devices-reading")), "{alone}");
+        // With no other device nothing is shared, so no sharing switch shows.
         assert!(
-            pane.management_child.is_none(),
-            "no relay process runs here"
+            alone.contains("Add a device to choose what it shares."),
+            "{alone}"
         );
-        pane.poll_background_tasks();
-        let asked = host.asked();
-        let removal = asked.last().unwrap();
-        assert_eq!(
-            removal.target,
-            identity_admin::target(identity_admin::HOME_PEER_REMOVE)
-        );
-        assert_eq!(removal.confirmation, Some(Confirmation::Confirmed));
-        assert_eq!(
-            removal.argument,
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "device": NEARBY_DEVICE,
-                    "service": NEARBY_SERVICE,
-                    "confirm": true,
-                })
-                .as_object()
-                .unwrap()
-                .clone()
-            )
-        );
-        assert_eq!(
-            pane.home_peer_health.get(NEARBY_DEVICE),
-            Some(&HomePeerHealth::Removed)
-        );
-        assert!(pane.management_call.is_none(), "the removal has answered");
-    }
+        assert!(!alone.contains("Clipboard"), "{alone}");
+        // Roaming settings and sharing history come from other devices too.
+        assert!(!alone.contains(&t("mesh-roaming-title")), "{alone}");
+        assert!(!alone.contains(&t("mesh-activity-title")), "{alone}");
+        assert!(!alone.contains(&t("mesh-roaming-none")), "{alone}");
+        assert!(!alone.contains(&t("mesh-audit-empty")), "{alone}");
 
-    #[test]
-    fn a_home_server_that_does_not_answer_is_offline_not_the_hosts_words() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        pane.take_management_answer(
-            Some(NEARBY_DEVICE.into()),
-            Err("the home server was not reachable".into()),
+        let devices = devices_in(
+            &serde_json::json!({"devices": [
+                {"id": THIS_DEVICE, "label": "This laptop", "local": true, "online": true},
+                {"id": PHONE, "label": "Phone", "online": true, "nearby": true},
+            ]})
+            .to_string(),
         );
-        assert_eq!(
-            pane.home_peer_health.get(NEARBY_DEVICE),
-            Some(&HomePeerHealth::Unreachable)
-        );
-        assert_eq!(
-            peer_health_detail(HomePeerHealth::Unreachable),
-            "Offline. Check that it is on and connected"
-        );
-    }
-
-    #[test]
-    fn pairing_invokes_the_host_actions_and_spawns_nothing() {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing};
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        let host = Arc::new(PairingHost::default());
-        pane.remote = ui::RemoteActions::with_host(
-            host.clone(),
-            ui::tilo_actions::remote::Caller::local_person("owner"),
-        );
-
-        pane.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
-        pane.poll_background_tasks();
-        let asked = host.asked();
-        assert_eq!(asked.len(), 1);
-        assert_eq!(
-            asked[0].target,
-            device_pairing::target(device_pairing::DISCOVER)
-        );
-        assert_eq!(
-            asked[0].argument,
-            InvokeArgument::Json(
-                serde_json::json!({"role": "home-peer"})
-                    .as_object()
-                    .unwrap()
-                    .clone()
-            )
-        );
-        assert_eq!(
-            pane.status,
-            MeshStatus::Found {
-                label: "Kitchen NAS".into(),
-                code: "123-456".into(),
-            }
-        );
-        assert!(pane.pairing_call.is_none(), "discovery has answered");
-
-        pane.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
-        pane.poll_background_tasks();
-        let asked = host.asked();
-        assert_eq!(asked.len(), 2);
-        assert_eq!(
-            asked[1].target,
-            device_pairing::target(device_pairing::APPROVE)
-        );
-        assert_eq!(
-            asked[1].argument,
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "role": "home-peer",
-                    "device": NEARBY_DEVICE,
-                    "service": NEARBY_SERVICE,
-                    "workspace_ids": [],
-                    "confirm": true,
-                })
-                .as_object()
-                .unwrap()
-                .clone()
-            )
-        );
-        assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
-        assert_eq!(pane.status, MeshStatus::HomeServerPaired);
+        change_model(&mut app, move |pane| {
+            pane.personal_devices = devices;
+            pane.changed = true;
+        });
+        let shown = text(&mut app);
         assert!(
-            pane.pairing_candidate.is_none(),
-            "the paired device is done"
+            !shown.contains(&t("mesh-status-devices-reading")),
+            "{shown}"
         );
-        assert!(
-            pane.apply_child.is_none() && pane.management_child.is_none(),
-            "pairing started no process in the app"
-        );
+        assert!(shown.contains("This laptop, This device"), "{shown}");
+        assert!(shown.contains("Phone, Nearby"), "{shown}");
+        let described = descriptions(app.harness().root_widget());
+        assert!(described.contains("On for Phone\n"), "{described}");
+        assert!(!shown.contains("Add a device to choose"), "{shown}");
+        for present in [t("mesh-roaming-title"), t("mesh-activity-title")] {
+            assert!(shown.contains(&present), "{present}: {shown}");
+        }
+        assert_eq!(devices_in("not a reading"), None);
     }
 
     fn until_finished(finished: impl Fn() -> bool) {
@@ -3035,63 +3134,5 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the read ends");
             std::thread::yield_now();
         }
-    }
-
-    #[test]
-    fn the_area_builds_its_model_from_the_read_it_started() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
-        let area = DeviceMeshArea::new(&cx);
-        assert!(area.start_read(), "the first read starts");
-        assert!(!area.start_read(), "one read at a time");
-        assert!(!area.is_open(), "a running read publishes nothing yet");
-        until_finished(|| area.read.is_finished());
-        let model = area.model().borrow();
-        assert!(area.is_open());
-        assert_eq!(
-            model.config_path,
-            PathBuf::from("/nonexistent/tilo/relay.toml"),
-            "a test reads the stand-in configuration"
-        );
-        assert!(model.personal_devices.is_empty() && model.home_peers.is_empty());
-        drop(model);
-        assert!(!area.start_read(), "a built model is not read again");
-    }
-
-    #[test]
-    fn a_read_builds_the_model_reading_in_place_builds() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        std::fs::write(&path, "device_role = \"interactive\"\n").unwrap();
-        let here = DeviceMeshModel::from_path(path.clone(), false);
-        let read = MeshRead::of(path, false, ui::time::wall());
-        let there = DeviceMeshModel::from_read(false, read);
-        assert_eq!(here.config_path, there.config_path);
-        assert_eq!(here.status, there.status);
-        assert_eq!(here.config.device_role, there.config.device_role);
-        assert_eq!(here.runtime_status, there.runtime_status);
-    }
-
-    #[test]
-    fn a_home_relay_switch_is_named_by_its_workspace_row() {
-        use ui::tilo_actions::remote::Caller;
-
-        let dir = tempfile::tempdir().unwrap();
-        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        model.remote = ui::RemoteActions::with_host(
-            Arc::new(PairingHost::default()),
-            Caller::local_person("owner"),
-        );
-        let mut app = window_on(model);
-        change_model(&mut app, |model| {
-            model.refresh_home_relay();
-            model.poll_background_tasks();
-        });
-        let switch = crate::testing::switch_named(&mut app, "Personal");
-        assert_eq!(
-            switch.toggled(),
-            Some(ui::accesskit::Toggled::True),
-            "the workspace is hosted on the relay"
-        );
     }
 }

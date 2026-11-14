@@ -16,6 +16,7 @@ use super::{
     ActionHostError, Caller, CatalogueQuery, DocumentRoute, Needs, Worker, record_provider,
 };
 use crate::workspace_records::Reading;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The most records one search answers with.
 const MOST_FOUND: usize = 20;
@@ -25,7 +26,7 @@ impl Worker {
     /// them.
     pub(super) fn search(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         needle: &str,
     ) -> Result<Vec<Found>, ActionHostError> {
@@ -54,7 +55,7 @@ impl Worker {
     /// The records of `routes` the replica holds, with their text, for a search.
     fn searchable(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         routes: &[DocumentRoute],
     ) -> Vec<crate::search::SearchDoc> {
         let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
@@ -92,7 +93,7 @@ impl Worker {
     /// answers it: `None` for a record the caller lists nothing of.
     fn leading_resource(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
     ) -> Option<Found> {
@@ -116,7 +117,7 @@ impl Worker {
     /// The changes to the records of `workspace_id` after `after`, for `caller`.
     pub(super) fn changes(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         after: Option<&str>,
     ) -> Result<ChangePage, ActionHostError> {

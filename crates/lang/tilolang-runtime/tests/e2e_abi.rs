@@ -72,75 +72,79 @@ view nums(b: Bag) {\n    stack {\n        for x in b.nums {\n            text(\"
         }
     }
 
-    #[test]
-    fn sets_of_ints_take_boxed_elements() {
-        let g = gaps();
-        for x in [3, 1, 2, 3] {
-            g.call("add_num", vec![Value::Int(x)]);
+    tilo_test_env::scenario! {
+        fn collections_and_try_cross_the_abi;
+
+        phase sets_of_ints_take_boxed_elements;
+        {
+            let g = gaps();
+            for x in [3, 1, 2, 3] {
+                g.call("add_num", vec![Value::Int(x)]);
+            }
+            assert_eq!(
+                g.texts("nums"),
+                [Value::text("1"), Value::text("2"), Value::text("3")]
+            );
+            g.call("drop_num", vec![Value::Int(2)]);
+            assert_eq!(g.texts("nums"), [Value::text("1"), Value::text("3")]);
         }
-        assert_eq!(
-            g.texts("nums"),
-            [Value::text("1"), Value::text("2"), Value::text("3")]
-        );
-        g.call("drop_num", vec![Value::Int(2)]);
-        assert_eq!(g.texts("nums"), [Value::text("1"), Value::text("3")]);
-    }
 
-    #[test]
-    fn maps_of_floats_and_ints_are_written_boxed_and_read_with_get_and_keys() {
-        let g = gaps();
-        assert_eq!(
-            g.texts("scores"),
-            [Value::text("0.5"), Value::text("-1")],
-            "an absent key reads as none"
-        );
-        g.call("put_score", vec![Value::text("x"), Value::Float(2.5)]);
-        g.call("put_score", vec![Value::text("a"), Value::Float(1.0)]);
-        g.call("put_count", vec![Value::text("y"), Value::Int(7)]);
-        assert_eq!(
-            g.texts("scores"),
-            [
-                Value::text("a"),
-                Value::text("x"),
-                Value::text("2.5"),
-                Value::text("7")
-            ]
-        );
-        g.call("drop_count", vec![Value::text("y")]);
-        assert_eq!(g.texts("scores").last(), Some(&Value::text("-1")));
-    }
-
-    #[test]
-    fn sort_by_orders_by_text_and_by_int_keys() {
-        let g = gaps();
-        for (t, r) in [("pear", 2), ("apple", 3), ("fig", 1)] {
-            g.call("add_item", vec![Value::text(t), Value::Int(r)]);
+        phase maps_of_floats_and_ints_are_written_boxed_and_read_with_get_and_keys;
+        {
+            let g = gaps();
+            assert_eq!(
+                g.texts("scores"),
+                [Value::text("0.5"), Value::text("-1")],
+                "an absent key reads as none"
+            );
+            g.call("put_score", vec![Value::text("x"), Value::Float(2.5)]);
+            g.call("put_score", vec![Value::text("a"), Value::Float(1.0)]);
+            g.call("put_count", vec![Value::text("y"), Value::Int(7)]);
+            assert_eq!(
+                g.texts("scores"),
+                [
+                    Value::text("a"),
+                    Value::text("x"),
+                    Value::text("2.5"),
+                    Value::text("7")
+                ]
+            );
+            g.call("drop_count", vec![Value::text("y")]);
+            assert_eq!(g.texts("scores").last(), Some(&Value::text("-1")));
         }
-        let titles = |v: Vec<Value>| -> Vec<String> {
-            v.iter().map(|t| t.as_text().unwrap().to_owned()).collect()
-        };
-        assert_eq!(titles(g.texts("by_title")), ["apple", "fig", "pear"]);
-        assert_eq!(titles(g.texts("by_rank")), ["fig", "pear", "apple"]);
-    }
 
-    // USER REQUIREMENT (2026-10-20): "`try act(args)` returns `Result<T, Text>` (unit actions:
-    // `Result<(), Text>`)." An action calls another the same way.
-    #[test]
-    fn try_gives_an_action_the_result_or_the_reason_it_failed() {
-        let g = gaps();
-        assert_eq!(g.run("bump_flag"), InvokeOutcome::Done(Value::Int(1)));
-        assert_eq!(g.run("size_or"), InvokeOutcome::Done(Value::Int(1)));
-        assert_eq!(g.run("why"), InvokeOutcome::Done(Value::text("fine")));
+        phase sort_by_orders_by_text_and_by_int_keys;
+        {
+            let g = gaps();
+            for (t, r) in [("pear", 2), ("apple", 3), ("fig", 1)] {
+                g.call("add_item", vec![Value::text(t), Value::Int(r)]);
+            }
+            let titles = |v: Vec<Value>| -> Vec<String> {
+                v.iter().map(|t| t.as_text().unwrap().to_owned()).collect()
+            };
+            assert_eq!(titles(g.texts("by_title")), ["apple", "fig", "pear"]);
+            assert_eq!(titles(g.texts("by_rank")), ["fig", "pear", "apple"]);
+        }
 
-        g.auth.deny_action(&g.app.action("bump"));
-        g.auth.deny_action(&g.app.action("size"));
-        assert_eq!(g.run("bump_flag"), InvokeOutcome::Done(Value::Int(0)));
-        assert_eq!(g.run("size_or"), InvokeOutcome::Done(Value::Int(-1)));
-        assert_eq!(
-            g.run("why"),
-            InvokeOutcome::Done(Value::text("denied by authority"))
-        );
-        let c = g.rt.read(&g.bag, "n").unwrap();
-        assert_eq!(c, Value::Int(2), "the denied bumps never ran");
+        phase try_gives_an_action_the_result_or_the_reason_it_failed;
+        // USER REQUIREMENT (2026-10-20): "`try act(args)` returns `Result<T, Text>` (unit actions:
+        // `Result<(), Text>`)." An action calls another the same way.
+        {
+            let g = gaps();
+            assert_eq!(g.run("bump_flag"), InvokeOutcome::Done(Value::Int(1)));
+            assert_eq!(g.run("size_or"), InvokeOutcome::Done(Value::Int(1)));
+            assert_eq!(g.run("why"), InvokeOutcome::Done(Value::text("fine")));
+
+            g.auth.deny_action(&g.app.action("bump"));
+            g.auth.deny_action(&g.app.action("size"));
+            assert_eq!(g.run("bump_flag"), InvokeOutcome::Done(Value::Int(0)));
+            assert_eq!(g.run("size_or"), InvokeOutcome::Done(Value::Int(-1)));
+            assert_eq!(
+                g.run("why"),
+                InvokeOutcome::Done(Value::text("denied by authority"))
+            );
+            let c = g.rt.read(&g.bag, "n").unwrap();
+            assert_eq!(c, Value::Int(2), "the denied bumps never ran");
+        }
     }
 }

@@ -121,49 +121,53 @@ mod tests {
         (dir, served)
     }
 
-    #[test]
-    fn the_screen_starts_with_the_comforts_the_daemon_keeps_clamped() {
-        let (dir, served) = daemon(&[
-            "{\"screen_reader\":true,\"screen_reader_rate\":900,\"text_scale\":1.5}\n",
-            "null\n",
-        ]);
-        let socket = dir.path().join("socket");
-        assert_eq!(
-            load(&socket),
-            Some(SignInComforts {
-                screen_reader: true,
-                screen_reader_rate: 200,
-                text_scale: 1.5,
-                ..SignInComforts::default()
-            })
-        );
-        assert_eq!(load(&socket), None);
-        assert_eq!(
-            served.join().unwrap(),
-            ["{\"op\":\"sign-in-comforts\"}\n"; 2]
-        );
-        let empty = tempfile::tempdir().unwrap();
-        assert_eq!(load(&empty.path().join("socket")), None);
-    }
+    tilo_test_env::scenario! {
+        fn sign_in_comforts_are_read_from_and_kept_by_the_daemon;
 
-    #[test]
-    fn a_toggle_here_is_kept_for_the_login_screens() {
-        let (dir, served) = daemon(&["{\"ok\":true}\n", "{\"ok\":true}\n"]);
-        let changes = Changes::to(dir.path().join("socket"));
-        changes.set("screen_reader", true);
-        changes.set("text_scale", 1.5);
-        let requests: Vec<Value> = served
-            .join()
-            .unwrap()
-            .iter()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(
-            requests,
-            [
-                serde_json::json!({"op": "set-sign-in-comforts", "comforts": {"screen_reader": true}}),
-                serde_json::json!({"op": "set-sign-in-comforts", "comforts": {"text_scale": 1.5}}),
-            ]
-        );
+        phase the_screen_starts_with_the_comforts_the_daemon_keeps_clamped;
+        {
+            let (dir, served) = daemon(&[
+                "{\"screen_reader\":true,\"screen_reader_rate\":900,\"text_scale\":1.5}\n",
+                "null\n",
+            ]);
+            let socket = dir.path().join("socket");
+            assert_eq!(
+                load(&socket),
+                Some(SignInComforts {
+                    screen_reader: true,
+                    screen_reader_rate: 200,
+                    text_scale: 1.5,
+                    ..SignInComforts::default()
+                })
+            );
+            assert_eq!(load(&socket), None);
+            assert_eq!(
+                served.join().unwrap(),
+                ["{\"op\":\"sign-in-comforts\"}\n"; 2]
+            );
+            let empty = tempfile::tempdir().unwrap();
+            assert_eq!(load(&empty.path().join("socket")), None);
+        }
+
+        phase a_toggle_here_is_kept_for_the_login_screens;
+        {
+            let (dir, served) = daemon(&["{\"ok\":true}\n", "{\"ok\":true}\n"]);
+            let changes = Changes::to(dir.path().join("socket"));
+            changes.set("screen_reader", true);
+            changes.set("text_scale", 1.5);
+            let requests: Vec<Value> = served
+                .join()
+                .unwrap()
+                .iter()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                requests,
+                [
+                    serde_json::json!({"op": "set-sign-in-comforts", "comforts": {"screen_reader": true}}),
+                    serde_json::json!({"op": "set-sign-in-comforts", "comforts": {"text_scale": 1.5}}),
+                ]
+            );
+        }
     }
 }

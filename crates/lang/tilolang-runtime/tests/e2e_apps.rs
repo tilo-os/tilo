@@ -630,24 +630,128 @@ mod cases {
         );
     }
 
-    #[test]
-    fn a_block_that_does_not_compile_renders_its_diagnostics_and_the_chat_goes_on() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        post(&w, &apps, &conv, "agent:helper", "see", "tasks.nothing(1)");
-        post(&w, &apps, &conv, "person:ada", "still here", "");
-        let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let found = embeds(view.tree());
-        assert_eq!(state(found[0]), "error", "{}", dump(view.tree()));
-        let error = of_kind(found[0], "error")[0];
-        assert!(!error.children.is_empty());
-        let first = text_prop(&error.children[0], "value");
-        assert!(
-            first.contains("E0"),
-            "the diagnostic keeps its code: {first}"
-        );
-        assert_eq!(authors_of(view.tree()), ["agent:helper", "person:ada"]);
+    tilo_test_env::scenario! {
+        fn a_chat_block_that_fails_or_asks_is_shown_in_the_thread;
+
+        phase a_block_that_does_not_compile_renders_its_diagnostics_and_the_chat_goes_on;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            post(&w, &apps, &conv, "agent:helper", "see", "tasks.nothing(1)");
+            post(&w, &apps, &conv, "person:ada", "still here", "");
+            let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let found = embeds(view.tree());
+            assert_eq!(state(found[0]), "error", "{}", dump(view.tree()));
+            let error = of_kind(found[0], "error")[0];
+            assert!(!error.children.is_empty());
+            let first = text_prop(&error.children[0], "value");
+            assert!(
+                first.contains("E0"),
+                "the diagnostic keeps its code: {first}"
+            );
+            assert_eq!(authors_of(view.tree()), ["agent:helper", "person:ada"]);
+        }
+
+        phase a_block_applying_letters_send_is_suggested_and_confirming_it_delivers_the_letter;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let desk = w.create("Desk");
+            let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
+            let mut editor = w.view(&apps.letters, "editor", vec![res(&draft)]);
+            let inputs = letter_fields(&editor);
+            for (key, text) in inputs
+                .iter()
+                .zip(["bo@example.org", "Plans", "See you at nine."])
+            {
+                assert_eq!(
+                    editor.edit(key, &Value::text(text)).unwrap(),
+                    EditOutcome::Applied
+                );
+            }
+            editor.poll_patches().unwrap();
+
+            // The letter's own Send, behind the "…" beside its title, also asks: an outside effect
+            // always does.
+            let own = node_with(editor.tree(), "ui.MenuItem", "label", "Send")
+                .key
+                .clone();
+            let own = suggested(editor.fire(&own, "choose").unwrap());
+            assert_eq!(own.chain.len(), 1);
+
+            let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
+            post(&w, &apps, &conv, "agent:helper", "Shall I send it?", &src);
+            let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let found = embeds(view.tree());
+            assert_eq!(state(found[0]), "invocation", "{}", dump(view.tree()));
+            let inv = of_kind(found[0], "invocation")[0];
+            let Some(Value::Ref(card)) = inv.props.get("invocation") else {
+                panic!("the card names its invocation resource: {}", dump(inv));
+            };
+            let record = card.target.clone();
+            assert_eq!(text_prop(inv, "state"), "suggested");
+            assert_eq!(inv.props.get("can_resolve"), Some(&Value::Bool(true)));
+            assert_eq!(text_prop(inv, "action"), "send");
+            assert_eq!(text_prop(inv, "app"), "test.letters");
+            let run = text_prop(inv, "run");
+            assert_eq!(
+                title_texts(inv),
+                ["Send to bo@example.org"],
+                "the proposal view shows the letter: {}",
+                dump(inv)
+            );
+            assert!(w.rt.pending_outbox().is_empty(), "asking sends nothing");
+
+            // A re-render shows the same suggestion rather than making another.
+            post(&w, &apps, &conv, "person:ada", "Looks right", "");
+            assert!(view.is_stale(), "a new message re-renders the thread");
+            view.poll_patches().unwrap();
+            let again = of_kind(view.tree(), "invocation")[0];
+            assert_eq!(text_prop(again, "run"), run);
+
+            let state =
+                w.rt.resolve_invocation(&record, &me(), Resolution::Approve)
+                    .unwrap();
+            assert_eq!(state, "done");
+            assert!(
+                view.is_stale(),
+                "the invocation resource changed, so the message refreshes"
+            );
+            view.poll_patches().unwrap();
+            assert_eq!(
+                text_prop(of_kind(view.tree(), "invocation")[0], "state"),
+                "done"
+            );
+            assert!(
+                title_texts(view.tree())
+                    .iter()
+                    .all(|h| h != "Send to bo@example.org"),
+                "a decided suggestion no longer shows its proposal"
+            );
+
+            let pending = w.rt.pending_outbox();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].capability, "post");
+            assert_eq!(
+                pending[0].payload,
+                json!(["bo@example.org", "Plans", "See you at nine."])
+            );
+            assert_eq!(w.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+            // Marked as being handed over, then handed over.
+            assert_eq!(w.rt.settle().unwrap().marked, 1);
+            assert_eq!(w.rt.settle().unwrap().delivered, 1);
+            assert_eq!(
+                w.sink.delivered(),
+                vec![(
+                    "post".to_owned(),
+                    json!(["bo@example.org", "Plans", "See you at nine."])
+                )]
+            );
+            view.poll_patches().unwrap();
+            assert!(w.rt.pending_outbox().is_empty());
+        }
     }
 
     #[test]
@@ -673,106 +777,6 @@ mod cases {
             before + 1,
             "and re-rendering adds none"
         );
-    }
-
-    #[test]
-    fn a_block_applying_letters_send_is_suggested_and_confirming_it_delivers_the_letter() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let desk = w.create("Desk");
-        let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
-        let mut editor = w.view(&apps.letters, "editor", vec![res(&draft)]);
-        let inputs = letter_fields(&editor);
-        for (key, text) in inputs
-            .iter()
-            .zip(["bo@example.org", "Plans", "See you at nine."])
-        {
-            assert_eq!(
-                editor.edit(key, &Value::text(text)).unwrap(),
-                EditOutcome::Applied
-            );
-        }
-        editor.poll_patches().unwrap();
-
-        // The letter's own Send, behind the "…" beside its title, also asks: an outside effect
-        // always does.
-        let own = node_with(editor.tree(), "ui.MenuItem", "label", "Send")
-            .key
-            .clone();
-        let own = suggested(editor.fire(&own, "choose").unwrap());
-        assert_eq!(own.chain.len(), 1);
-
-        let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
-        post(&w, &apps, &conv, "agent:helper", "Shall I send it?", &src);
-        let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let found = embeds(view.tree());
-        assert_eq!(state(found[0]), "invocation", "{}", dump(view.tree()));
-        let inv = of_kind(found[0], "invocation")[0];
-        let Some(Value::Ref(card)) = inv.props.get("invocation") else {
-            panic!("the card names its invocation resource: {}", dump(inv));
-        };
-        let record = card.target.clone();
-        assert_eq!(text_prop(inv, "state"), "suggested");
-        assert_eq!(inv.props.get("can_resolve"), Some(&Value::Bool(true)));
-        assert_eq!(text_prop(inv, "action"), "send");
-        assert_eq!(text_prop(inv, "app"), "test.letters");
-        let run = text_prop(inv, "run");
-        assert_eq!(
-            title_texts(inv),
-            ["Send to bo@example.org"],
-            "the proposal view shows the letter: {}",
-            dump(inv)
-        );
-        assert!(w.rt.pending_outbox().is_empty(), "asking sends nothing");
-
-        // A re-render shows the same suggestion rather than making another.
-        post(&w, &apps, &conv, "person:ada", "Looks right", "");
-        assert!(view.is_stale(), "a new message re-renders the thread");
-        view.poll_patches().unwrap();
-        let again = of_kind(view.tree(), "invocation")[0];
-        assert_eq!(text_prop(again, "run"), run);
-
-        let state =
-            w.rt.resolve_invocation(&record, &me(), Resolution::Approve)
-                .unwrap();
-        assert_eq!(state, "done");
-        assert!(
-            view.is_stale(),
-            "the invocation resource changed, so the message refreshes"
-        );
-        view.poll_patches().unwrap();
-        assert_eq!(
-            text_prop(of_kind(view.tree(), "invocation")[0], "state"),
-            "done"
-        );
-        assert!(
-            title_texts(view.tree())
-                .iter()
-                .all(|h| h != "Send to bo@example.org"),
-            "a decided suggestion no longer shows its proposal"
-        );
-
-        let pending = w.rt.pending_outbox();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].capability, "post");
-        assert_eq!(
-            pending[0].payload,
-            json!(["bo@example.org", "Plans", "See you at nine."])
-        );
-        assert_eq!(w.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
-        // Marked as being handed over, then handed over.
-        assert_eq!(w.rt.settle().unwrap().marked, 1);
-        assert_eq!(w.rt.settle().unwrap().delivered, 1);
-        assert_eq!(
-            w.sink.delivered(),
-            vec![(
-                "post".to_owned(),
-                json!(["bo@example.org", "Plans", "See you at nine."])
-            )]
-        );
-        view.poll_patches().unwrap();
-        assert!(w.rt.pending_outbox().is_empty());
     }
 
     #[test]
@@ -1254,89 +1258,93 @@ mod cases {
         assert_eq!(opened_note(&elsewhere), b);
     }
 
-    #[test]
-    fn a_lists_filter_is_view_state_and_changes_nothing_in_the_list() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let list = w.create("Tasks");
-        for (t, done) in [("milk", true), ("eggs", false)] {
-            let item = returned_ref(w.call(
-                &apps.todo,
-                "new_task",
-                vec![
-                    res(&list),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::text(t),
-                ],
-            ));
-            if done {
-                w.call(&apps.todo, "check", vec![res(&item)]);
+    tilo_test_env::scenario! {
+        fn a_window_opens_on_the_view_state_its_app_chose;
+
+        phase a_lists_filter_is_view_state_and_changes_nothing_in_the_list;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let list = w.create("Tasks");
+            for (t, done) in [("milk", true), ("eggs", false)] {
+                let item = returned_ref(w.call(
+                    &apps.todo,
+                    "new_task",
+                    vec![
+                        res(&list),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::text(t),
+                    ],
+                ));
+                if done {
+                    w.call(&apps.todo, "check", vec![res(&item)]);
+                }
             }
+            let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+            // The window opens on today, and neither task has a day: the person picks the inbox,
+            // where what is unsorted and open stands, and the task done with is in Done alone.
+            assert!(row_titles(v.tree()).is_empty(), "nothing is due today");
+            choose(&v, "is:inbox");
+            v.poll_patches().unwrap();
+            assert_eq!(row_titles(v.tree()), ["eggs"]);
+            let before = w.rt.history(&list.doc).unwrap().len();
+            choose(&v, "is:done");
+            v.poll_patches().unwrap();
+            assert_eq!(row_titles(v.tree()), ["milk"]);
+            let tree = v.tree();
+            assert_eq!(
+                text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
+                "is:done"
+            );
+            let count = |key: &str| {
+                node_with(tree, "ui.NavItem", "key", key)
+                    .props
+                    .get("count")
+                    .cloned()
+            };
+            // What each counted place holds: the task done with is open in neither of them, and
+            // Done says nothing about a count.
+            assert_eq!(count("is:inbox"), Some(Value::Int(1)), "the unsorted task");
+            assert_eq!(
+                count("is:today"),
+                None,
+                "nothing is due today, so its badge says nothing"
+            );
+            assert_eq!(count("is:done"), None, "Done shows no count");
+
+            assert_eq!(
+                w.rt.history(&list.doc).unwrap().len(),
+                before,
+                "view state is no change to the list"
+            );
         }
-        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // The window opens on today, and neither task has a day: the person picks the inbox,
-        // where what is unsorted and open stands, and the task done with is in Done alone.
-        assert!(row_titles(v.tree()).is_empty(), "nothing is due today");
-        choose(&v, "is:inbox");
-        v.poll_patches().unwrap();
-        assert_eq!(row_titles(v.tree()), ["eggs"]);
-        let before = w.rt.history(&list.doc).unwrap().len();
-        choose(&v, "is:done");
-        v.poll_patches().unwrap();
-        assert_eq!(row_titles(v.tree()), ["milk"]);
-        let tree = v.tree();
-        assert_eq!(
-            text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
-            "is:done"
-        );
-        let count = |key: &str| {
-            node_with(tree, "ui.NavItem", "key", key)
-                .props
-                .get("count")
-                .cloned()
-        };
-        // What each counted place holds: the task done with is open in neither of them, and
-        // Done says nothing about a count.
-        assert_eq!(count("is:inbox"), Some(Value::Int(1)), "the unsorted task");
-        assert_eq!(
-            count("is:today"),
-            None,
-            "nothing is due today, so its badge says nothing"
-        );
-        assert_eq!(count("is:done"), None, "Done shows no count");
 
-        assert_eq!(
-            w.rt.history(&list.doc).unwrap().len(),
-            before,
-            "view state is no change to the list"
-        );
-    }
-
-    #[test]
-    fn a_desk_opens_on_its_drafts_as_the_app_chose() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let desk = w.create("Desk");
-        let v = w.view(&apps.letters, "desk", vec![res(&desk)]);
-        let tree = v.tree();
-        assert_eq!(
-            text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
-            "is:drafts"
-        );
-        let keys: Vec<String> = of_kind(tree, "ui.NavItem")
-            .iter()
-            .map(|item| text_prop(item, "key"))
-            .collect();
-        assert_eq!(keys, ["all", "is:drafts", "is:sent"]);
-        assert_eq!(
-            text_prop(node_with(tree, "ui.NavItem", "key", "all"), "label"),
-            "All letters",
-            "the app names the place of every letter"
-        );
+        phase a_desk_opens_on_its_drafts_as_the_app_chose;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let desk = w.create("Desk");
+            let v = w.view(&apps.letters, "desk", vec![res(&desk)]);
+            let tree = v.tree();
+            assert_eq!(
+                text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
+                "is:drafts"
+            );
+            let keys: Vec<String> = of_kind(tree, "ui.NavItem")
+                .iter()
+                .map(|item| text_prop(item, "key"))
+                .collect();
+            assert_eq!(keys, ["all", "is:drafts", "is:sent"]);
+            assert_eq!(
+                text_prop(node_with(tree, "ui.NavItem", "key", "all"), "label"),
+                "All letters",
+                "the app names the place of every letter"
+            );
+        }
     }
 
     // ----- views ------------------------------------------------------------------------------
@@ -1625,47 +1633,66 @@ mod cases {
         );
     }
 
-    /// Chat's Unread place on Today's page: the conversations with something the person looking
-    /// has not read, and no others. A category and a channel with nothing new never need her.
-    #[test]
-    fn a_card_finds_the_conversations_with_something_unread() {
-        let apps = apps();
-        let m = morning(&apps);
-        // bo writes in `design`; `general` stays caught up and a category never needs her, so
-        // the card shows the one conversation with something to read.
-        let design = returned_ref(m.w.call(
-            &apps.channels,
-            "new_channel",
-            vec![res(&m.chat), Value::text("design")],
-        ));
-        m.w.call(
-            &apps.channels,
-            "new_channel",
-            vec![res(&m.chat), Value::text("general")],
-        );
-        m.w.call(
-            &apps.channels,
-            "new_category",
-            vec![res(&m.chat), Value::text("Team")],
-        );
-        say(&m.w, &apps, &design, "bo", "the plan is up");
-        let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
-        let tree = view.tree();
-        let cards = of_kind(tree, "ui.Card");
-        assert_eq!(
-            count_of(cards[2]),
-            Some(1),
-            "the chat card counts the conversations with something to read: {}",
-            dump(tree)
-        );
-        let rows = of_kind(cards[2], "ui.ListRow");
-        assert_eq!(rows.len(), 1, "{}", dump(tree));
-        assert_eq!(
-            text_prop(rows[0], "title"),
-            "design",
-            "the row names the channel once, the icon says it is one: {}",
-            dump(tree)
-        );
+    tilo_test_env::scenario! {
+        fn the_morning_board_finds_the_unread_and_cleans_up_when_trusted;
+
+        phase a_card_finds_the_conversations_with_something_unread;
+        // Chat's Unread place on Today's page: the conversations with something the person looking
+        // has not read, and no others. A category and a channel with nothing new never need her.
+        {
+            let apps = apps();
+            let m = morning(&apps);
+            // bo writes in `design`; `general` stays caught up and a category never needs her, so
+            // the card shows the one conversation with something to read.
+            let design = returned_ref(m.w.call(
+                &apps.channels,
+                "new_channel",
+                vec![res(&m.chat), Value::text("design")],
+            ));
+            m.w.call(
+                &apps.channels,
+                "new_channel",
+                vec![res(&m.chat), Value::text("general")],
+            );
+            m.w.call(
+                &apps.channels,
+                "new_category",
+                vec![res(&m.chat), Value::text("Team")],
+            );
+            say(&m.w, &apps, &design, "bo", "the plan is up");
+            let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
+            let tree = view.tree();
+            let cards = of_kind(tree, "ui.Card");
+            assert_eq!(
+                count_of(cards[2]),
+                Some(1),
+                "the chat card counts the conversations with something to read: {}",
+                dump(tree)
+            );
+            let rows = of_kind(cards[2], "ui.ListRow");
+            assert_eq!(rows.len(), 1, "{}", dump(tree));
+            assert_eq!(
+                text_prop(rows[0], "title"),
+                "design",
+                "the row names the channel once, the icon says it is one: {}",
+                dump(tree)
+            );
+        }
+
+        phase a_trusted_board_runs_the_cleanup_without_asking;
+        {
+            let apps = apps();
+            let m = morning(&apps);
+            add_todo(&m, &apps, "a", true);
+            m.w.auth.trust(m.w.id_of(&apps.today));
+            let cleanup = apps.today.action("morning_cleanup");
+            let out =
+                m.w.rt
+                    .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
+                    .unwrap();
+            assert_eq!(out, InvokeOutcome::Done(Value::Int(1)));
+            assert!(items(&m.w, &m.list, "items").is_empty());
+        }
     }
 
     #[test]
@@ -1837,21 +1864,6 @@ mod cases {
         let notes = items(&m.w, &m.notebook, "notes");
         assert_eq!(notes.len(), 1, "the note still says how the morning went");
         assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 0 done");
-    }
-
-    #[test]
-    fn a_trusted_board_runs_the_cleanup_without_asking() {
-        let apps = apps();
-        let m = morning(&apps);
-        add_todo(&m, &apps, "a", true);
-        m.w.auth.trust(m.w.id_of(&apps.today));
-        let cleanup = apps.today.action("morning_cleanup");
-        let out =
-            m.w.rt
-                .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
-                .unwrap();
-        assert_eq!(out, InvokeOutcome::Done(Value::Int(1)));
-        assert!(items(&m.w, &m.list, "items").is_empty());
     }
 
     // ----- every app at every width -------------------------------------------------------------

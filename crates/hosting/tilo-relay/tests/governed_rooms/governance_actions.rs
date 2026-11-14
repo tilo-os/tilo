@@ -14,6 +14,7 @@ use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspaces::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_ROOMS};
 
 use super::*;
+use tilo_relay::WorkspaceId;
 
 /// A session of `device` with the relay, subscribed to nothing.
 pub(super) async fn connected(relay: &Relay, device: &TestDevice) -> RelayClient {
@@ -32,7 +33,7 @@ pub(super) async fn connected(relay: &Relay, device: &TestDevice) -> RelayClient
 pub(super) async fn subscribed(
     relay: &Relay,
     device: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> RelayClient {
     let client = connected(relay, device).await;
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
@@ -48,7 +49,11 @@ pub(super) async fn subscribed(
 
 /// Whether `device` is admitted to `workspace_id`: it connects and its
 /// subscription is ready.
-pub(super) async fn admitted(relay: &Relay, device: &TestDevice, workspace_id: u64) -> bool {
+pub(super) async fn admitted(
+    relay: &Relay,
+    device: &TestDevice,
+    workspace_id: WorkspaceId,
+) -> bool {
     let Ok(client) = RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
@@ -80,7 +85,7 @@ pub(super) async fn admitted(relay: &Relay, device: &TestDevice, workspace_id: u
 pub(super) async fn try_ask(
     client: &RelayClient,
     host: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     message: RemoteActionMessage,
 ) -> Result<RemoteActionMessage, String> {
     client
@@ -136,7 +141,7 @@ pub(super) async fn ask_host_of(
 pub(super) async fn ask(
     client: &RelayClient,
     host: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
     try_ask(client, host, workspace_id, message)
@@ -225,7 +230,7 @@ fn invite(room: &str) -> RemoteActionMessage {
 async fn the_owner_invites_through_the_rooms_action_and_an_editor_cannot() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -305,7 +310,7 @@ async fn the_owner_invites_through_the_rooms_action_and_an_editor_cannot() {
 async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -408,7 +413,7 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
 async fn the_owner_removes_a_member_whose_next_session_is_refused() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

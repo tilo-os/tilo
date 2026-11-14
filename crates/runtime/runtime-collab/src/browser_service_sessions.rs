@@ -265,131 +265,142 @@ impl crate::ChannelHandle {
 }
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn forget_wire_requires_exact_selection_and_reply_binding() {
-        let command = super::BrowserServiceSessionCommand::Forget {
-            id: "selected-slack".into(),
-            setup_binding: "operation".into(),
-        };
-        assert_eq!(
-            super::BrowserServiceSessionCommand::decode(&command.encode().unwrap()).unwrap(),
-            command
-        );
-        let reply = super::BrowserServiceSessionReply::Forgotten {
-            id: "selected-slack".into(),
-            setup_binding: "operation".into(),
-        };
-        assert!(
-            super::BrowserServiceSessionReply::decode(&reply.encode().unwrap())
-                .unwrap()
-                .matches(&command)
-        );
-        assert!(
-            !reply.matches(&super::BrowserServiceSessionCommand::Resolve {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn browser_service_session_wire;
+
+        phase forget_wire_requires_exact_selection_and_reply_binding;
+        {
+            let command = super::BrowserServiceSessionCommand::Forget {
                 id: "selected-slack".into(),
                 setup_binding: "operation".into(),
-            })
-        );
-        assert!(
-            !reply.matches(&super::BrowserServiceSessionCommand::Forget {
+            };
+            assert_eq!(
+                super::BrowserServiceSessionCommand::decode(&command.encode().unwrap()).unwrap(),
+                command
+            );
+            let reply = super::BrowserServiceSessionReply::Forgotten {
                 id: "selected-slack".into(),
-                setup_binding: "foreign".into(),
-            })
-        );
-        for bytes in [
-            br#"{"kind":"forget","id":"selected-slack","setup_binding":"operation","person":"foreign"}"#.as_slice(),
-            br#"{"kind":"forget","id":"selected-slack","setup_binding":""}"#.as_slice(),
-            br#"{"kind":"forget","id":"../foreign","setup_binding":"operation"}"#.as_slice(),
-        ] {
-            assert!(super::BrowserServiceSessionCommand::decode(bytes).is_err());
+                setup_binding: "operation".into(),
+            };
+            assert!(
+                super::BrowserServiceSessionReply::decode(&reply.encode().unwrap())
+                    .unwrap()
+                    .matches(&command)
+            );
+            assert!(
+                !reply.matches(&super::BrowserServiceSessionCommand::Resolve {
+                    id: "selected-slack".into(),
+                    setup_binding: "operation".into(),
+                })
+            );
+            assert!(
+                !reply.matches(&super::BrowserServiceSessionCommand::Forget {
+                    id: "selected-slack".into(),
+                    setup_binding: "foreign".into(),
+                })
+            );
+            for bytes in [
+                br#"{"kind":"forget","id":"selected-slack","setup_binding":"operation","person":"foreign"}"#.as_slice(),
+                br#"{"kind":"forget","id":"selected-slack","setup_binding":""}"#.as_slice(),
+                br#"{"kind":"forget","id":"../foreign","setup_binding":"operation"}"#.as_slice(),
+            ] {
+                assert!(super::BrowserServiceSessionCommand::decode(bytes).is_err());
+            }
+        }
+
+        phase rejects_identity_injection_and_redacts_malformed_credentials;
+        {
+            assert!(
+                BrowserServiceSessionCommand::decode(br#"{"kind":"list","person":"someone"}"#).is_err()
+            );
+            let error = BrowserServiceSessionReply::decode(
+                br#"{"kind":"resolved","session":"private-synthetic-value"}"#,
+            )
+            .unwrap_err();
+            assert!(!error.contains("private-synthetic-value"));
+            assert!(
+                BrowserServiceSessionReply::decode(&vec![
+                    0;
+                    MAX_BROWSER_SERVICE_SESSION_REPLY_BYTES + 1
+                ])
+                .is_err()
+            );
+        }
+
+        phase selected_private_reply_roundtrips_and_binds_exact_request;
+        {
+            use browser_continuity_core::sessions::{Cookie, SameSite};
+            let session = SessionCookies {
+                schema: 1,
+                session_id: "selected-session".into(),
+                service: Service::Slack,
+                identity_public_key: [21; 32],
+                setup_binding: "prepared-binding".into(),
+                source_snapshot_digest: [22; 32],
+                origin_storage: Vec::new(),
+                cookies: vec![Cookie {
+                    host: "app.slack.com".into(),
+                    domain: "app.slack.com".into(),
+                    host_only: true,
+                    name: "synthetic-session".into(),
+                    value: "synthetic-private-value".into(),
+                    path: "/".into(),
+                    expires_unix_seconds: None,
+                    secure: true,
+                    http_only: true,
+                    same_site: SameSite::Lax,
+                }],
+            };
+            let reply = BrowserServiceSessionReply::Resolved { session };
+            let encoded = reply.encode().unwrap();
+            let decoded = BrowserServiceSessionReply::decode(&encoded).unwrap();
+            assert!(decoded.matches(&BrowserServiceSessionCommand::Resolve {
+                id: "selected-session".into(),
+                setup_binding: "prepared-binding".into()
+            }));
+            assert!(!decoded.matches(&BrowserServiceSessionCommand::Resolve {
+                id: "other-session".into(),
+                setup_binding: "prepared-binding".into()
+            }));
+            assert!(!decoded.matches(&BrowserServiceSessionCommand::Resolve {
+                id: "selected-session".into(),
+                setup_binding: "other-binding".into()
+            }));
+            assert!(!format!("{decoded:?}").contains("synthetic-private-value"));
+            assert!(!decoded.matches(&BrowserServiceSessionCommand::List {}));
+        }
+
+        phase bounds_and_deduplicates_public_descriptors;
+        {
+            let descriptor = BrowserServiceSessionDescriptor {
+                id: "opaque-session".into(),
+                service: Service::Slack,
+                setup_binding: "prepared-binding".into(),
+            };
+            assert!(
+                BrowserServiceSessionReply::List {
+                    sessions: vec![descriptor.clone()]
+                }
+                .valid()
+            );
+            assert!(
+                !BrowserServiceSessionReply::List {
+                    sessions: vec![descriptor.clone(), descriptor]
+                }
+                .valid()
+            );
+            assert!(
+                !BrowserServiceSessionCommand::Resolve {
+                    id: "../escape".into(),
+                    setup_binding: "binding".into()
+                }
+                .valid()
+            );
         }
     }
     use super::*;
-    #[test]
-    fn rejects_identity_injection_and_redacts_malformed_credentials() {
-        assert!(
-            BrowserServiceSessionCommand::decode(br#"{"kind":"list","person":"someone"}"#).is_err()
-        );
-        let error = BrowserServiceSessionReply::decode(
-            br#"{"kind":"resolved","session":"private-synthetic-value"}"#,
-        )
-        .unwrap_err();
-        assert!(!error.contains("private-synthetic-value"));
-        assert!(
-            BrowserServiceSessionReply::decode(&vec![
-                0;
-                MAX_BROWSER_SERVICE_SESSION_REPLY_BYTES + 1
-            ])
-            .is_err()
-        );
-    }
-    #[test]
-    fn selected_private_reply_roundtrips_and_binds_exact_request() {
-        use browser_continuity_core::sessions::{Cookie, SameSite};
-        let session = SessionCookies {
-            schema: 1,
-            session_id: "selected-session".into(),
-            service: Service::Slack,
-            identity_public_key: [21; 32],
-            setup_binding: "prepared-binding".into(),
-            source_snapshot_digest: [22; 32],
-            origin_storage: Vec::new(),
-            cookies: vec![Cookie {
-                host: "app.slack.com".into(),
-                domain: "app.slack.com".into(),
-                host_only: true,
-                name: "synthetic-session".into(),
-                value: "synthetic-private-value".into(),
-                path: "/".into(),
-                expires_unix_seconds: None,
-                secure: true,
-                http_only: true,
-                same_site: SameSite::Lax,
-            }],
-        };
-        let reply = BrowserServiceSessionReply::Resolved { session };
-        let encoded = reply.encode().unwrap();
-        let decoded = BrowserServiceSessionReply::decode(&encoded).unwrap();
-        assert!(decoded.matches(&BrowserServiceSessionCommand::Resolve {
-            id: "selected-session".into(),
-            setup_binding: "prepared-binding".into()
-        }));
-        assert!(!decoded.matches(&BrowserServiceSessionCommand::Resolve {
-            id: "other-session".into(),
-            setup_binding: "prepared-binding".into()
-        }));
-        assert!(!decoded.matches(&BrowserServiceSessionCommand::Resolve {
-            id: "selected-session".into(),
-            setup_binding: "other-binding".into()
-        }));
-        assert!(!format!("{decoded:?}").contains("synthetic-private-value"));
-        assert!(!decoded.matches(&BrowserServiceSessionCommand::List {}));
-    }
-    #[test]
-    fn bounds_and_deduplicates_public_descriptors() {
-        let descriptor = BrowserServiceSessionDescriptor {
-            id: "opaque-session".into(),
-            service: Service::Slack,
-            setup_binding: "prepared-binding".into(),
-        };
-        assert!(
-            BrowserServiceSessionReply::List {
-                sessions: vec![descriptor.clone()]
-            }
-            .valid()
-        );
-        assert!(
-            !BrowserServiceSessionReply::List {
-                sessions: vec![descriptor.clone(), descriptor]
-            }
-            .valid()
-        );
-        assert!(
-            !BrowserServiceSessionCommand::Resolve {
-                id: "../escape".into(),
-                setup_binding: "binding".into()
-            }
-            .valid()
-        );
-    }
 }

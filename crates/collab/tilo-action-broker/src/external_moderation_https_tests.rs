@@ -519,7 +519,7 @@ mod https_completion {
                 let server = HttpsRegistry::new(&device).await;
                 let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
                 owner.commit("The description is misleading");
-                let workspace = Workspace::with_original(true, Some(owner), original);
+                let workspace = Workspace::with_original(Some(owner), original);
                 let target = bounded("durable Store worker", workspace.worker(988)).await;
                 let state = Arc::downgrade(&workspace.state);
                 let directories = workspace.directories.clone();
@@ -528,7 +528,7 @@ mod https_completion {
                     loop {
                         turn.notified().await;
                         let Some(state) = state.upgrade() else { break };
-                        state.drain_action_directory_bridge(&directories);
+                        state.take_turn(&directories);
                     }
                 }));
                 target
@@ -664,7 +664,7 @@ mod https_completion {
                 )
                 .unwrap();
                 let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
-                let workspace = Workspace::with_original(true, Some(owner.clone()), original);
+                let workspace = Workspace::with_original(Some(owner.clone()), original);
                 let target = bounded("native Store launch", native_app(&workspace, 987)).await;
                 let state = Arc::downgrade(&workspace.state);
                 let directories = workspace.directories.clone();
@@ -673,7 +673,7 @@ mod https_completion {
                     loop {
                         turn.notified().await;
                         let Some(state) = state.upgrade() else { break };
-                        state.drain_action_directory_bridge(&directories);
+                        state.take_turn(&directories);
                     }
                 }));
                 let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();

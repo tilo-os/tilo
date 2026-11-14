@@ -133,40 +133,44 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
 
-    #[test]
-    fn headless_namespace_is_private_fresh_and_reaped_after_exit() {
-        let app = tempfile::tempdir().unwrap();
-        let mut namespace = Namespace::prepare(app.path(), 42).unwrap();
-        let path = app.path().join(".headless-42");
-        assert_eq!(path.metadata().unwrap().mode() & 0o777, 0o700);
-        assert!(Namespace::prepare(app.path(), 42).is_err());
-        let socket = UnixListener::bind(path.join("control.sock")).unwrap();
-        namespace.before_spawn();
-        drop(socket);
-        namespace.after_exit().unwrap();
-        assert!(!path.exists());
-    }
+    tilo_test_env::scenario! {
+        fn a_headless_namespace_is_private_and_removes_only_what_it_made;
 
-    #[test]
-    fn headless_namespace_refuses_replacement_symlinks_and_unknown_files() {
-        let app = tempfile::tempdir().unwrap();
-        let mut namespace = Namespace::prepare(app.path(), 43).unwrap();
-        let path = app.path().join(".headless-43");
-        namespace.before_spawn();
-        std::fs::rename(&path, app.path().join("held")).unwrap();
-        std::os::unix::fs::symlink(app.path().join("held"), &path).unwrap();
-        assert!(namespace.after_exit().is_err());
-        assert!(
-            std::fs::symlink_metadata(&path)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        let mut other = Namespace::prepare(app.path(), 44).unwrap();
-        let unknown = app.path().join(".headless-44/control.sock");
-        std::fs::write(&unknown, b"keep").unwrap();
-        other.before_spawn();
-        assert!(other.after_exit().is_err());
-        assert_eq!(std::fs::read(unknown).unwrap(), b"keep");
+        phase headless_namespace_is_private_fresh_and_reaped_after_exit;
+        {
+            let app = tempfile::tempdir().unwrap();
+            let mut namespace = Namespace::prepare(app.path(), 42).unwrap();
+            let path = app.path().join(".headless-42");
+            assert_eq!(path.metadata().unwrap().mode() & 0o777, 0o700);
+            assert!(Namespace::prepare(app.path(), 42).is_err());
+            let socket = UnixListener::bind(path.join("control.sock")).unwrap();
+            namespace.before_spawn();
+            drop(socket);
+            namespace.after_exit().unwrap();
+            assert!(!path.exists());
+        }
+
+        phase headless_namespace_refuses_replacement_symlinks_and_unknown_files;
+        {
+            let app = tempfile::tempdir().unwrap();
+            let mut namespace = Namespace::prepare(app.path(), 43).unwrap();
+            let path = app.path().join(".headless-43");
+            namespace.before_spawn();
+            std::fs::rename(&path, app.path().join("held")).unwrap();
+            std::os::unix::fs::symlink(app.path().join("held"), &path).unwrap();
+            assert!(namespace.after_exit().is_err());
+            assert!(
+                std::fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            let mut other = Namespace::prepare(app.path(), 44).unwrap();
+            let unknown = app.path().join(".headless-44/control.sock");
+            std::fs::write(&unknown, b"keep").unwrap();
+            other.before_spawn();
+            assert!(other.after_exit().is_err());
+            assert_eq!(std::fs::read(unknown).unwrap(), b"keep");
+        }
     }
 }

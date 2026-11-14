@@ -4,7 +4,7 @@ use crate::component::{Component, Described, Event, Value};
 use crate::icons::Icon;
 use crate::widget::ControlSize;
 
-use super::{Segment, ToggleGroup};
+use super::{Press, Segment, ToggleGroup};
 use crate::widget::ViewTabs;
 
 crate::component::part_slot!(SegmentProps);
@@ -66,6 +66,13 @@ pub struct SegmentProps {
     pub hint: Option<String>,
     /// Whether it can be chosen now.
     pub enabled: bool,
+    /// Whether it is the choice the strip shows as made: what a setting holds, where the strip's
+    /// choices run their own actions and hold no index of their own.
+    pub chosen: bool,
+    /// It was pressed: what a choice runs when each choice is a setting's own action at its case.
+    /// A strip whose choices say this one shows what they say and never chooses for them.
+    #[component(event(press))]
+    pub press: Event,
 }
 
 impl Default for SegmentProps {
@@ -76,6 +83,8 @@ impl Default for SegmentProps {
             icon: None,
             hint: None,
             enabled: true,
+            chosen: false,
+            press: Event::default(),
         }
     }
 }
@@ -94,6 +103,24 @@ impl From<SegmentProps> for Segment {
         }
         segment.with_enabled(props.enabled)
     }
+}
+
+/// What a press on each choice runs, in order: a choice of its own where it has one, and nothing
+/// where the strip answers with its index.
+fn presses(options: &mut [SegmentProps]) -> Vec<Press> {
+    options
+        .iter_mut()
+        .map(|option| Press::of(std::mem::take(&mut option.press)))
+        .collect()
+}
+
+/// The choice a strip shows as made: the one it was given, or the one a choice says is the
+/// setting's.
+fn chosen_at(selected: Option<i64>, options: &[SegmentProps]) -> usize {
+    selected
+        .map(|index| place(index, options.len()))
+        .or_else(|| options.iter().position(|option| option.chosen))
+        .unwrap_or(crate::widget::toggle_group::NONE_CHOSEN)
 }
 
 /// Tabs that switch what a window's content shows: a request's Params, Headers and Body, a
@@ -152,7 +179,7 @@ impl Described for ToggleGroup {
 
     fn from_props(key: &str, props: ToggleGroupProps) -> Self {
         let ToggleGroupProps {
-            options,
+            mut options,
             selected,
             caption,
             label,
@@ -161,12 +188,11 @@ impl Described for ToggleGroup {
             enabled,
             change,
         } = props;
+        let chosen = chosen_at(selected, &options);
+        let presses = presses(&mut options);
         let segments: Vec<Segment> = options.into_iter().map(Segment::from).collect();
-        let chosen = selected.map(|index| place(index, segments.len()));
-        let mut group = match chosen {
-            Some(index) => Self::new(segments, index),
-            None => Self::unchosen(segments),
-        };
+        let mut group = Self::new(segments, chosen);
+        group.set_presses(presses);
         if let Some(caption) = caption {
             group = group.caption(caption);
         }
@@ -191,11 +217,15 @@ impl Described for ToggleGroup {
         if props.options.len() != self.count() {
             return false;
         }
-        self.set_enabled(props.enabled);
-        match props.selected {
-            Some(index) => self.set_selected(place(index, self.count())),
-            None => self.set_selected(crate::widget::toggle_group::NONE_CHOSEN),
-        }
+        let ToggleGroupProps {
+            mut options,
+            selected,
+            enabled,
+            ..
+        } = props;
+        self.set_enabled(enabled);
+        self.set_selected(chosen_at(selected, &options));
+        self.set_presses(presses(&mut options));
         true
     }
 }

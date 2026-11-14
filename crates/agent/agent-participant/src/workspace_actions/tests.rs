@@ -99,7 +99,7 @@ fn a_full_ledger_forgets_only_settled_invocations() {
 
 #[test]
 fn a_request_waits_only_for_the_keys_of_what_it_reads() {
-    let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
+    let workspace = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
     let b = route(WORKSPACE, "so.tilo.sheets", "b");
     let elsewhere = route(OTHER_WORKSPACE, "so.tilo.sheets", "a");
     // `a` opened; `b` here and the record elsewhere wait for their keys.

@@ -731,13 +731,18 @@ fn people(
         return (String::new(), Vec::new());
     };
     let people = workspace
-        .collaborators
+        .members
         .iter()
+        .filter(|member| !member.name.trim().is_empty())
         .map(
-            |person| tilo_desktop_search::providers::people::PersonEntry {
-                id: person.id.clone(),
-                name: person.name.clone(),
-                activity: person.in_app.clone(),
+            |member| tilo_desktop_search::providers::people::PersonEntry {
+                id: member.id.key(),
+                name: member.name.clone(),
+                activity: workspace
+                    .present
+                    .iter()
+                    .find(|here| here.member == member.id)
+                    .and_then(|here| here.app.clone()),
             },
         )
         .collect();

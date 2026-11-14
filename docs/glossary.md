@@ -6,6 +6,8 @@ used in code.
 ## People and devices
 
 - **Person**: a human. Identified by their root key.
+- **Personal dictionary**: the words a person added. Their setting, so it follows them to their
+  devices; every input surface treats the words as spelled right and dictation prefers them.
 - **Device**: a machine or browser belonging to one person, with its own key that the person
   certified. Per workspace a device either holds the keys (reads and runs work) or only stores
   ciphertext. A device setting says which work it takes, from whom, and when (charging, energy

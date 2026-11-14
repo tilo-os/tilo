@@ -381,107 +381,112 @@ fn rss_anon_kib() -> Option<u64> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_pressure_watch_reads_its_own_cgroup() {
-        assert_eq!(
-            own_cgroup("0::/user.slice/user-1001.slice/session-9.scope\n"),
-            Some("/user.slice/user-1001.slice/session-9.scope")
-        );
-        assert_eq!(own_cgroup("1:name=systemd:/x\n"), None);
-        assert_eq!(own_cgroup(""), None);
+    tilo_test_env::scenario! {
+        /// When freed heap goes back to the kernel.
+        fn heap_trims_are_scheduled_apart_and_watch_their_own_cgroup;
+
+        phase the_pressure_watch_reads_its_own_cgroup;
+        {
+            assert_eq!(
+                own_cgroup("0::/user.slice/user-1001.slice/session-9.scope\n"),
+                Some("/user.slice/user-1001.slice/session-9.scope")
+            );
+            assert_eq!(own_cgroup("1:name=systemd:/x\n"), None);
+            assert_eq!(own_cgroup(""), None);
+        }
+
+        phase a_burst_of_closes_is_served_by_one_trim_once_it_settles;
+        {
+            let start = Instant::now();
+            let mut schedule = Schedule::default();
+            assert_eq!(schedule.due(), None);
+            assert!(!schedule.take(start), "nothing was asked for");
+            for millis in [0, 200, 400] {
+                schedule.request(at(start, millis));
+            }
+            assert_eq!(schedule.due(), Some(at(start, 1_400)));
+            assert!(!schedule.take(at(start, 1_399)));
+            assert!(schedule.take(at(start, 1_400)));
+            assert!(schedule.trimming);
+            assert_eq!(schedule.due(), None, "the burst was served");
+            assert!(!schedule.take(at(start, 9_000)));
+        }
+
+        phase requests_that_never_stop_still_trim_within_the_longest_delay;
+        {
+            let start = Instant::now();
+            let mut schedule = Schedule::default();
+            for millis in (0..=6_000).step_by(500) {
+                schedule.request(at(start, millis));
+            }
+            assert_eq!(schedule.due(), Some(at(start, 5_000)));
+        }
+
+        phase trims_are_at_least_the_shortest_interval_apart;
+        {
+            let start = Instant::now();
+            let mut schedule = Schedule::default();
+            schedule.request(start);
+            assert!(schedule.take(at(start, 1_000)));
+            schedule.request(at(start, 2_000));
+            assert_eq!(schedule.due(), Some(at(start, 11_000)));
+            assert!(!schedule.take(at(start, 3_000)));
+            assert!(schedule.take(at(start, 11_000)));
+        }
+
+        phase a_trim_asked_for_later_survives_the_trims_before_it;
+        {
+            let start = Instant::now();
+            let mut schedule = Schedule::default();
+            // The first frame asks for one now and one when startup is over.
+            schedule.request(start);
+            schedule.request_at(at(start, 30_000));
+            assert_eq!(schedule.due(), Some(at(start, 1_000)));
+            assert!(schedule.take(at(start, 1_000)));
+            assert_eq!(
+                schedule.due(),
+                Some(at(start, 30_000)),
+                "the later trim is still owed"
+            );
+            assert!(!schedule.take(at(start, 29_999)));
+            assert!(schedule.take(at(start, 30_000)));
+            assert_eq!(schedule.due(), None, "both were served");
+        }
+
+        phase a_quiet_trim_waits_for_the_last_quiet_moment_and_leaves_a_later_one_owed;
+        {
+            let start = Instant::now();
+            let mut schedule = Schedule::default();
+            schedule.request_at(at(start, 30_000));
+            schedule.request_quiet(at(start, 4_000));
+            schedule.request_quiet(at(start, 5_000));
+            assert_eq!(
+                schedule.due(),
+                Some(at(start, 7_000)),
+                "the last quiet moment counts"
+            );
+            assert!(schedule.take(at(start, 7_000)));
+            assert_eq!(
+                schedule.due(),
+                Some(at(start, 30_000)),
+                "startup's trim is still owed"
+            );
+            assert!(schedule.take(at(start, 30_000)));
+            assert_eq!(schedule.due(), None);
+        }
+
+        phase a_trim_asked_for_later_keeps_the_shortest_interval;
+        {
+            let start = Instant::now();
+            let mut schedule = Schedule::default();
+            schedule.request(start);
+            assert!(schedule.take(at(start, 1_000)));
+            schedule.request_at(at(start, 2_000));
+            assert_eq!(schedule.due(), Some(at(start, 11_000)));
+        }
     }
 
     fn at(start: Instant, millis: u64) -> Instant {
         after(start, Duration::from_millis(millis))
-    }
-
-    #[test]
-    fn a_burst_of_closes_is_served_by_one_trim_once_it_settles() {
-        let start = Instant::now();
-        let mut schedule = Schedule::default();
-        assert_eq!(schedule.due(), None);
-        assert!(!schedule.take(start), "nothing was asked for");
-        for millis in [0, 200, 400] {
-            schedule.request(at(start, millis));
-        }
-        assert_eq!(schedule.due(), Some(at(start, 1_400)));
-        assert!(!schedule.take(at(start, 1_399)));
-        assert!(schedule.take(at(start, 1_400)));
-        assert!(schedule.trimming);
-        assert_eq!(schedule.due(), None, "the burst was served");
-        assert!(!schedule.take(at(start, 9_000)));
-    }
-
-    #[test]
-    fn requests_that_never_stop_still_trim_within_the_longest_delay() {
-        let start = Instant::now();
-        let mut schedule = Schedule::default();
-        for millis in (0..=6_000).step_by(500) {
-            schedule.request(at(start, millis));
-        }
-        assert_eq!(schedule.due(), Some(at(start, 5_000)));
-    }
-
-    #[test]
-    fn trims_are_at_least_the_shortest_interval_apart() {
-        let start = Instant::now();
-        let mut schedule = Schedule::default();
-        schedule.request(start);
-        assert!(schedule.take(at(start, 1_000)));
-        schedule.request(at(start, 2_000));
-        assert_eq!(schedule.due(), Some(at(start, 11_000)));
-        assert!(!schedule.take(at(start, 3_000)));
-        assert!(schedule.take(at(start, 11_000)));
-    }
-
-    #[test]
-    fn a_trim_asked_for_later_survives_the_trims_before_it() {
-        let start = Instant::now();
-        let mut schedule = Schedule::default();
-        // The first frame asks for one now and one when startup is over.
-        schedule.request(start);
-        schedule.request_at(at(start, 30_000));
-        assert_eq!(schedule.due(), Some(at(start, 1_000)));
-        assert!(schedule.take(at(start, 1_000)));
-        assert_eq!(
-            schedule.due(),
-            Some(at(start, 30_000)),
-            "the later trim is still owed"
-        );
-        assert!(!schedule.take(at(start, 29_999)));
-        assert!(schedule.take(at(start, 30_000)));
-        assert_eq!(schedule.due(), None, "both were served");
-    }
-
-    #[test]
-    fn a_quiet_trim_waits_for_the_last_quiet_moment_and_leaves_a_later_one_owed() {
-        let start = Instant::now();
-        let mut schedule = Schedule::default();
-        schedule.request_at(at(start, 30_000));
-        schedule.request_quiet(at(start, 4_000));
-        schedule.request_quiet(at(start, 5_000));
-        assert_eq!(
-            schedule.due(),
-            Some(at(start, 7_000)),
-            "the last quiet moment counts"
-        );
-        assert!(schedule.take(at(start, 7_000)));
-        assert_eq!(
-            schedule.due(),
-            Some(at(start, 30_000)),
-            "startup's trim is still owed"
-        );
-        assert!(schedule.take(at(start, 30_000)));
-        assert_eq!(schedule.due(), None);
-    }
-
-    #[test]
-    fn a_trim_asked_for_later_keeps_the_shortest_interval() {
-        let start = Instant::now();
-        let mut schedule = Schedule::default();
-        schedule.request(start);
-        assert!(schedule.take(at(start, 1_000)));
-        schedule.request_at(at(start, 2_000));
-        assert_eq!(schedule.due(), Some(at(start, 11_000)));
     }
 }

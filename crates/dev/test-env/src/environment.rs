@@ -252,71 +252,79 @@ mod tests {
     use crate::scenario;
     use chrono::{Datelike as _, Timelike as _};
 
-    #[test]
-    fn a_clock_starts_at_the_capture_moment_and_moves_only_when_the_test_moves_it() {
-        {
-            let clock = Clock::default();
-            let at = clock.local();
-            let (year, month, day, hour, minute) = CAPTURE_LOCAL_TIME;
-            assert_eq!(
-                (at.year(), at.month(), at.day(), at.hour(), at.minute()),
-                (year, month, day, hour, minute,),
-                "the clock reads the moment a capture shows",
-            );
-            assert_eq!(clock.local(), at, "reading it does not move it");
-        }
+    scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn the_clock_and_the_fixture_tree_are_the_environments_own;
 
+        phase a_clock_starts_at_the_capture_moment_and_moves_only_when_the_test_moves_it;
         {
-            let clock = Clock::default();
-            let start = clock.millis();
-            clock.advance(Duration::from_secs(90));
-            assert_eq!(clock.millis(), start + 90_000);
-            assert_eq!(
-                clock.now(),
-                chrono::DateTime::<chrono::Utc>::from_timestamp_millis(start + 90_000).unwrap(),
-            );
-            clock.set_millis(0);
-            assert_eq!(clock.millis(), 0, "an instant can be set outright");
-        }
-    }
-
-    #[test]
-    fn a_fixture_tree_is_written_into_the_environment_and_read_back() {
-        {
-            let env = TestEnv::new()
-                .unwrap()
-                .with_files(&[
-                    ("notes/Todo.md", b"buy milk".as_slice()),
-                    (".config/example.toml", b"theme = light".as_slice()),
-                ])
-                .unwrap();
-            assert_eq!(
-                std::fs::read_to_string(env.join("notes/Todo.md")).unwrap(),
-                "buy milk",
-            );
-            assert_eq!(
-                std::fs::read_to_string(env.config().join("example.toml")).unwrap(),
-                "theme = light",
-                "a configuration file lands where the process reads it",
-            );
-            assert!(env.path().is_dir(), "the home exists");
-        }
-
-        {
-            let root;
             {
-                let env = TestEnv::new().unwrap();
-                root = env.root().to_path_buf();
-                assert!(root.is_dir());
+                let clock = Clock::default();
+                let at = clock.local();
+                let (year, month, day, hour, minute) = CAPTURE_LOCAL_TIME;
+                assert_eq!(
+                    (at.year(), at.month(), at.day(), at.hour(), at.minute()),
+                    (year, month, day, hour, minute,),
+                    "the clock reads the moment a capture shows",
+                );
+                assert_eq!(clock.local(), at, "reading it does not move it");
             }
-            assert!(!root.exists(), "the fixture tree is removed on drop");
+
+            {
+                let clock = Clock::default();
+                let start = clock.millis();
+                clock.advance(Duration::from_secs(90));
+                assert_eq!(clock.millis(), start + 90_000);
+                assert_eq!(
+                    clock.now(),
+                    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(start + 90_000).unwrap(),
+                );
+                clock.set_millis(0);
+                assert_eq!(clock.millis(), 0, "an instant can be set outright");
+            }
         }
 
+        phase a_fixture_tree_is_written_into_the_environment_and_read_back;
         {
-            let mut env = TestEnv::new().unwrap();
-            assert!(!env.network().external_allowed(), "nothing leaves at first");
-            env.allow_external();
-            assert!(env.network().external_allowed());
+            {
+                let env = TestEnv::new()
+                    .unwrap()
+                    .with_files(&[
+                        ("notes/Todo.md", b"buy milk".as_slice()),
+                        (".config/example.toml", b"theme = light".as_slice()),
+                    ])
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(env.join("notes/Todo.md")).unwrap(),
+                    "buy milk",
+                );
+                assert_eq!(
+                    std::fs::read_to_string(env.config().join("example.toml")).unwrap(),
+                    "theme = light",
+                    "a configuration file lands where the process reads it",
+                );
+                assert!(env.path().is_dir(), "the home exists");
+            }
+
+            {
+                let root;
+                {
+                    let env = TestEnv::new().unwrap();
+                    root = env.root().to_path_buf();
+                    assert!(root.is_dir());
+                }
+                assert!(!root.exists(), "the fixture tree is removed on drop");
+            }
+
+            {
+                let mut env = TestEnv::new().unwrap();
+                assert!(!env.network().external_allowed(), "nothing leaves at first");
+                env.allow_external();
+                assert!(env.network().external_allowed());
+            }
         }
     }
 

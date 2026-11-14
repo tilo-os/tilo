@@ -1114,30 +1114,162 @@ where
 mod tests {
     use super::*;
 
-    /// A frame drawn for a stream fits the size asked for, keeps the desktop's shape and has the
-    /// even sides an encoder takes.
-    #[test]
-    fn a_streamed_frame_fits_what_was_asked_for() {
-        let (frame, factor) = scaled_size(Size::from((1920, 1080)), (1280, 720)).expect("a frame");
-        assert_eq!((frame.w, frame.h), (1280, 720));
-        assert!(
-            (factor - 2.0 / 3.0).abs() < 1e-9,
-            "the scene is scaled by one factor"
-        );
+    tilo_test_env::scenario! {
+        /// The geometry and buffers of a screen capture.
+        fn a_capture_copies_into_a_buffer_that_fits_its_frame;
 
-        // The shorter side decides, so nothing is cut off.
-        let (frame, _) = scaled_size(Size::from((1920, 1080)), (1280, 500)).expect("a frame");
-        assert_eq!((frame.w, frame.h), (888, 500));
+        phase a_streamed_frame_fits_what_was_asked_for;
+        // A frame drawn for a stream fits the size asked for, keeps the desktop's shape and has the
+        // even sides an encoder takes.
+        {
+            let (frame, factor) = scaled_size(Size::from((1920, 1080)), (1280, 720)).expect("a frame");
+            assert_eq!((frame.w, frame.h), (1280, 720));
+            assert!(
+                (factor - 2.0 / 3.0).abs() < 1e-9,
+                "the scene is scaled by one factor"
+            );
 
-        let (frame, _) = scaled_size(Size::from((1365, 768)), (1280, 720)).expect("a frame");
-        assert_eq!((frame.w % 2, frame.h % 2), (0, 0));
-        assert!(frame.w <= 1280 && frame.h <= 720);
+            // The shorter side decides, so nothing is cut off.
+            let (frame, _) = scaled_size(Size::from((1920, 1080)), (1280, 500)).expect("a frame");
+            assert_eq!((frame.w, frame.h), (888, 500));
 
-        // A screen smaller than the stream is sent as it is, not stretched.
-        let (frame, factor) = scaled_size(Size::from((1920, 1080)), (3840, 2160)).expect("a frame");
-        assert_eq!((frame.w, frame.h, factor), (1920, 1080, 1.0));
+            let (frame, _) = scaled_size(Size::from((1365, 768)), (1280, 720)).expect("a frame");
+            assert_eq!((frame.w % 2, frame.h % 2), (0, 0));
+            assert!(frame.w <= 1280 && frame.h <= 720);
 
-        assert!(scaled_size(Size::from((0, 1080)), (1280, 720)).is_none());
+            // A screen smaller than the stream is sent as it is, not stretched.
+            let (frame, factor) = scaled_size(Size::from((1920, 1080)), (3840, 2160)).expect("a frame");
+            assert_eq!((frame.w, frame.h, factor), (1920, 1080, 1.0));
+
+            assert!(scaled_size(Size::from((0, 1080)), (1280, 720)).is_none());
+        }
+
+        phase a_whole_output_is_its_shown_size_and_regions_are_scaled_and_clipped;
+        {
+            let shown = Size::from((1920, 1080));
+            assert_eq!(
+                region_on_output(None, 1.0, shown),
+                Some(Rectangle::from_size(shown))
+            );
+            let region = Rectangle::new((100, 50).into(), (200, 100).into());
+            assert_eq!(
+                region_on_output(Some(region), 2.0, shown),
+                Some(Rectangle::new((200, 100).into(), (400, 200).into()))
+            );
+            let hanging = Rectangle::new((900, 500).into(), (200, 100).into());
+            assert_eq!(
+                region_on_output(Some(hanging), 2.0, shown),
+                Some(Rectangle::new((1800, 1000).into(), (120, 80).into()))
+            );
+            let outside = Rectangle::new((2000, 0).into(), (10, 10).into());
+            assert_eq!(region_on_output(Some(outside), 1.0, shown), None);
+            let empty = Rectangle::new((0, 0).into(), (0, 10).into());
+            assert_eq!(region_on_output(Some(empty), 1.0, shown), None);
+        }
+
+        phase rotated_outputs_copy_into_buffers_of_their_panel_orientation;
+        {
+            let region = Size::from((1080, 1920));
+            assert_eq!(buffer_size(region, Transform::Normal), region);
+            assert_eq!(
+                buffer_size(region, Transform::_90),
+                Size::from((1920, 1080))
+            );
+            let damage = [Rectangle::new((0, 0).into(), (10, 20).into())];
+            let normal = damage_in_buffer(&damage, region, Transform::Normal);
+            assert_eq!(normal, vec![Rectangle::new((0, 0).into(), (10, 20).into())]);
+            let turned = damage_in_buffer(&damage, region, Transform::_90);
+            assert_eq!(
+                turned.first().map(|rect| rect.size),
+                Some(Size::from((20, 10)))
+            );
+        }
+
+        phase shm_buffers_must_fit_the_frame;
+        {
+            let size = Size::from((4, 2));
+            assert_eq!(check_shm(layout(4, 2, 16), 32, size), Ok(()));
+            // Padded rows, the last one need not be padded.
+            assert_eq!(check_shm(layout(4, 2, 20), 36, size), Ok(()));
+            assert!(
+                check_shm(layout(4, 2, 12), 64, size).is_err(),
+                "rows too narrow"
+            );
+            assert!(check_shm(layout(5, 2, 20), 64, size).is_err(), "wrong size");
+            assert!(
+                check_shm(layout(4, 2, 16), 31, size).is_err(),
+                "past the pool"
+            );
+            let mut odd = layout(4, 2, 16);
+            odd.format = wl_shm::Format::Rgb565;
+            assert!(check_shm(odd, 64, size).is_err(), "format not offered");
+            let mut shifted = layout(4, 2, 16);
+            shifted.offset = 8;
+            assert!(
+                check_shm(shifted, 32, size).is_err(),
+                "offset past the pool"
+            );
+            assert_eq!(check_shm(shifted, 40, size), Ok(()));
+        }
+
+        phase dmabufs_must_be_offered_and_fit_the_frame;
+        {
+            let format = Format {
+                code: Fourcc::Xrgb8888,
+                modifier: smithay::backend::allocator::Modifier::Linear,
+            };
+            let targets = DmabufTargets {
+                device: 1,
+                formats: vec![format],
+            };
+            let size = Size::from((8, 8));
+            assert_eq!(check_dmabuf((8, 8), format, size, Some(&targets)), Ok(()));
+            assert!(check_dmabuf((8, 8), format, size, None).is_err());
+            assert!(check_dmabuf((8, 9), format, size, Some(&targets)).is_err());
+            let other = Format {
+                code: Fourcc::Abgr8888,
+                ..format
+            };
+            assert!(check_dmabuf((8, 8), other, size, Some(&targets)).is_err());
+        }
+
+        phase pixels_land_as_bgra_rows_at_the_buffers_stride;
+        {
+            let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
+            let mut pool = [0_u8; 2 + 6 + 4];
+            let shm = ShmLayout {
+                offset: 2,
+                width: 1,
+                height: 2,
+                stride: 6,
+                format: wl_shm::Format::Argb8888,
+            };
+            assert_eq!(write_pixels(&rgba, shm, &mut pool), Some(()));
+            assert_eq!(pool, [0, 0, 3, 2, 1, 4, 0, 0, 7, 6, 5, 8]);
+            assert_eq!(write_pixels(&rgba, shm, &mut [0_u8; 8]), None);
+        }
+
+        phase only_drawable_formats_are_offered_as_dmabuf_targets;
+        {
+            let linear = smithay::backend::allocator::Modifier::Linear;
+            let targets = dmabuf_targets(
+                7,
+                [
+                    Format {
+                        code: Fourcc::Nv12,
+                        modifier: linear,
+                    },
+                    Format {
+                        code: Fourcc::Xrgb8888,
+                        modifier: linear,
+                    },
+                ],
+            );
+            let targets = targets.expect("a drawable format");
+            assert_eq!(targets.device, 7);
+            assert_eq!(targets.formats.len(), 1);
+            assert!(dmabuf_targets(7, []).is_none());
+        }
     }
 
     fn layout(width: i32, height: i32, stride: i32) -> ShmLayout {
@@ -1148,132 +1280,5 @@ mod tests {
             stride,
             format: wl_shm::Format::Xrgb8888,
         }
-    }
-
-    #[test]
-    fn a_whole_output_is_its_shown_size_and_regions_are_scaled_and_clipped() {
-        let shown = Size::from((1920, 1080));
-        assert_eq!(
-            region_on_output(None, 1.0, shown),
-            Some(Rectangle::from_size(shown))
-        );
-        let region = Rectangle::new((100, 50).into(), (200, 100).into());
-        assert_eq!(
-            region_on_output(Some(region), 2.0, shown),
-            Some(Rectangle::new((200, 100).into(), (400, 200).into()))
-        );
-        let hanging = Rectangle::new((900, 500).into(), (200, 100).into());
-        assert_eq!(
-            region_on_output(Some(hanging), 2.0, shown),
-            Some(Rectangle::new((1800, 1000).into(), (120, 80).into()))
-        );
-        let outside = Rectangle::new((2000, 0).into(), (10, 10).into());
-        assert_eq!(region_on_output(Some(outside), 1.0, shown), None);
-        let empty = Rectangle::new((0, 0).into(), (0, 10).into());
-        assert_eq!(region_on_output(Some(empty), 1.0, shown), None);
-    }
-
-    #[test]
-    fn rotated_outputs_copy_into_buffers_of_their_panel_orientation() {
-        let region = Size::from((1080, 1920));
-        assert_eq!(buffer_size(region, Transform::Normal), region);
-        assert_eq!(
-            buffer_size(region, Transform::_90),
-            Size::from((1920, 1080))
-        );
-        let damage = [Rectangle::new((0, 0).into(), (10, 20).into())];
-        let normal = damage_in_buffer(&damage, region, Transform::Normal);
-        assert_eq!(normal, vec![Rectangle::new((0, 0).into(), (10, 20).into())]);
-        let turned = damage_in_buffer(&damage, region, Transform::_90);
-        assert_eq!(
-            turned.first().map(|rect| rect.size),
-            Some(Size::from((20, 10)))
-        );
-    }
-
-    #[test]
-    fn shm_buffers_must_fit_the_frame() {
-        let size = Size::from((4, 2));
-        assert_eq!(check_shm(layout(4, 2, 16), 32, size), Ok(()));
-        // Padded rows, the last one need not be padded.
-        assert_eq!(check_shm(layout(4, 2, 20), 36, size), Ok(()));
-        assert!(
-            check_shm(layout(4, 2, 12), 64, size).is_err(),
-            "rows too narrow"
-        );
-        assert!(check_shm(layout(5, 2, 20), 64, size).is_err(), "wrong size");
-        assert!(
-            check_shm(layout(4, 2, 16), 31, size).is_err(),
-            "past the pool"
-        );
-        let mut odd = layout(4, 2, 16);
-        odd.format = wl_shm::Format::Rgb565;
-        assert!(check_shm(odd, 64, size).is_err(), "format not offered");
-        let mut shifted = layout(4, 2, 16);
-        shifted.offset = 8;
-        assert!(
-            check_shm(shifted, 32, size).is_err(),
-            "offset past the pool"
-        );
-        assert_eq!(check_shm(shifted, 40, size), Ok(()));
-    }
-
-    #[test]
-    fn dmabufs_must_be_offered_and_fit_the_frame() {
-        let format = Format {
-            code: Fourcc::Xrgb8888,
-            modifier: smithay::backend::allocator::Modifier::Linear,
-        };
-        let targets = DmabufTargets {
-            device: 1,
-            formats: vec![format],
-        };
-        let size = Size::from((8, 8));
-        assert_eq!(check_dmabuf((8, 8), format, size, Some(&targets)), Ok(()));
-        assert!(check_dmabuf((8, 8), format, size, None).is_err());
-        assert!(check_dmabuf((8, 9), format, size, Some(&targets)).is_err());
-        let other = Format {
-            code: Fourcc::Abgr8888,
-            ..format
-        };
-        assert!(check_dmabuf((8, 8), other, size, Some(&targets)).is_err());
-    }
-
-    #[test]
-    fn pixels_land_as_bgra_rows_at_the_buffers_stride() {
-        let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
-        let mut pool = [0_u8; 2 + 6 + 4];
-        let shm = ShmLayout {
-            offset: 2,
-            width: 1,
-            height: 2,
-            stride: 6,
-            format: wl_shm::Format::Argb8888,
-        };
-        assert_eq!(write_pixels(&rgba, shm, &mut pool), Some(()));
-        assert_eq!(pool, [0, 0, 3, 2, 1, 4, 0, 0, 7, 6, 5, 8]);
-        assert_eq!(write_pixels(&rgba, shm, &mut [0_u8; 8]), None);
-    }
-
-    #[test]
-    fn only_drawable_formats_are_offered_as_dmabuf_targets() {
-        let linear = smithay::backend::allocator::Modifier::Linear;
-        let targets = dmabuf_targets(
-            7,
-            [
-                Format {
-                    code: Fourcc::Nv12,
-                    modifier: linear,
-                },
-                Format {
-                    code: Fourcc::Xrgb8888,
-                    modifier: linear,
-                },
-            ],
-        );
-        let targets = targets.expect("a drawable format");
-        assert_eq!(targets.device, 7);
-        assert_eq!(targets.formats.len(), 1);
-        assert!(dmabuf_targets(7, []).is_none());
     }
 }

@@ -218,84 +218,89 @@ mod tests {
         message
     }
 
-    #[test]
-    fn folders_are_found_by_their_use_then_by_their_usual_names() {
-        let list = |entries: &[(&str, &[&str])]| -> Vec<(String, Vec<String>)> {
-            entries
-                .iter()
-                .map(|(name, uses)| {
-                    (
-                        (*name).to_owned(),
-                        uses.iter().map(|used| (*used).to_owned()).collect(),
-                    )
-                })
-                .collect()
-        };
-        let gmail = Places::from_list(&list(&[
-            ("INBOX", &[]),
-            ("[Gmail]/All Mail", &["All"]),
-            ("[Gmail]/Sent Mail", &["Sent"]),
-            ("[Gmail]/Spam", &["Junk"]),
-            ("[Gmail]/Trash", &["Trash"]),
-            ("[Gmail]/Drafts", &["Drafts"]),
-        ]));
-        assert_eq!(gmail.name(Folder::Sent), "[Gmail]/Sent Mail");
-        assert_eq!(gmail.name(Folder::Archive), "[Gmail]/All Mail");
-        assert_eq!(gmail.name(Folder::Junk), "[Gmail]/Spam");
-        assert_eq!(gmail.name(Folder::Starred), "INBOX");
-        let outlook = Places::from_list(&list(&[
-            ("INBOX", &[]),
-            ("Sent Items", &[]),
-            ("Deleted Items", &[]),
-            ("Junk Email", &[]),
-            ("Archive", &[]),
-        ]));
-        assert_eq!(outlook.name(Folder::Sent), "Sent Items");
-        assert_eq!(outlook.name(Folder::Trash), "Deleted Items");
-        assert_eq!(outlook.name(Folder::Junk), "Junk Email");
-        assert_eq!(outlook.name(Folder::Archive), "Archive");
-        let dovecot = Places::from_list(&list(&[("INBOX", &[]), ("INBOX.Sent", &[])]));
-        assert_eq!(dovecot.name(Folder::Sent), "INBOX.Sent");
-        assert_eq!(
-            dovecot.name(Folder::Drafts),
-            "Drafts",
-            "a folder the server does not list keeps its usual name"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// What a sync asks an IMAP server for.
+        fn a_sync_names_its_folders_search_text_and_uid_window;
 
-    #[test]
-    fn search_text_is_quoted_for_imap_or_left_to_the_local_search() {
-        assert_eq!(imap_quoted(" invoice ").as_deref(), Some("\"invoice\""));
-        assert_eq!(
-            imap_quoted(r#"say "hi" \ bye"#).as_deref(),
-            Some(r#""say \"hi\" \\ bye""#)
-        );
-        assert_eq!(imap_quoted("Grüße"), None);
-        assert_eq!(imap_quoted("line\nbreak"), None);
-        assert_eq!(imap_quoted("  "), None);
-    }
-
-    #[test]
-    fn a_window_spans_the_uids_of_one_account_and_folder() {
-        let mut mailbox = Mailbox::default();
-        assert_eq!(Window::of(&mailbox, "me@x", Folder::Inbox), None);
-        for uid in [7, 3, 12] {
-            mailbox.insert(message("me@x", uid, 9));
+        phase folders_are_found_by_their_use_then_by_their_usual_names;
+        {
+            let list = |entries: &[(&str, &[&str])]| -> Vec<(String, Vec<String>)> {
+                entries
+                    .iter()
+                    .map(|(name, uses)| {
+                        (
+                            (*name).to_owned(),
+                            uses.iter().map(|used| (*used).to_owned()).collect(),
+                        )
+                    })
+                    .collect()
+            };
+            let gmail = Places::from_list(&list(&[
+                ("INBOX", &[]),
+                ("[Gmail]/All Mail", &["All"]),
+                ("[Gmail]/Sent Mail", &["Sent"]),
+                ("[Gmail]/Spam", &["Junk"]),
+                ("[Gmail]/Trash", &["Trash"]),
+                ("[Gmail]/Drafts", &["Drafts"]),
+            ]));
+            assert_eq!(gmail.name(Folder::Sent), "[Gmail]/Sent Mail");
+            assert_eq!(gmail.name(Folder::Archive), "[Gmail]/All Mail");
+            assert_eq!(gmail.name(Folder::Junk), "[Gmail]/Spam");
+            assert_eq!(gmail.name(Folder::Starred), "INBOX");
+            let outlook = Places::from_list(&list(&[
+                ("INBOX", &[]),
+                ("Sent Items", &[]),
+                ("Deleted Items", &[]),
+                ("Junk Email", &[]),
+                ("Archive", &[]),
+            ]));
+            assert_eq!(outlook.name(Folder::Sent), "Sent Items");
+            assert_eq!(outlook.name(Folder::Trash), "Deleted Items");
+            assert_eq!(outlook.name(Folder::Junk), "Junk Email");
+            assert_eq!(outlook.name(Folder::Archive), "Archive");
+            let dovecot = Places::from_list(&list(&[("INBOX", &[]), ("INBOX.Sent", &[])]));
+            assert_eq!(dovecot.name(Folder::Sent), "INBOX.Sent");
+            assert_eq!(
+                dovecot.name(Folder::Drafts),
+                "Drafts",
+                "a folder the server does not list keeps its usual name"
+            );
         }
-        mailbox.insert(message("other@x", 40, 9));
-        assert_eq!(
-            Window::of(&mailbox, "me@x", Folder::Inbox),
-            Some(Window {
-                uid_validity: 9,
-                newest: 12,
-                oldest: 3
-            })
-        );
-        mailbox.insert(message("me@x", 13, 10));
-        assert_eq!(
-            Window::of(&mailbox, "me@x", Folder::Inbox),
-            None,
-            "a renumbered folder starts over"
-        );
+
+        phase search_text_is_quoted_for_imap_or_left_to_the_local_search;
+        {
+            assert_eq!(imap_quoted(" invoice ").as_deref(), Some("\"invoice\""));
+            assert_eq!(
+                imap_quoted(r#"say "hi" \ bye"#).as_deref(),
+                Some(r#""say \"hi\" \\ bye""#)
+            );
+            assert_eq!(imap_quoted("Grüße"), None);
+            assert_eq!(imap_quoted("line\nbreak"), None);
+            assert_eq!(imap_quoted("  "), None);
+        }
+
+        phase a_window_spans_the_uids_of_one_account_and_folder;
+        {
+            let mut mailbox = Mailbox::default();
+            assert_eq!(Window::of(&mailbox, "me@x", Folder::Inbox), None);
+            for uid in [7, 3, 12] {
+                mailbox.insert(message("me@x", uid, 9));
+            }
+            mailbox.insert(message("other@x", 40, 9));
+            assert_eq!(
+                Window::of(&mailbox, "me@x", Folder::Inbox),
+                Some(Window {
+                    uid_validity: 9,
+                    newest: 12,
+                    oldest: 3
+                })
+            );
+            mailbox.insert(message("me@x", 13, 10));
+            assert_eq!(
+                Window::of(&mailbox, "me@x", Folder::Inbox),
+                None,
+                "a renumbered folder starts over"
+            );
+        }
     }
 }

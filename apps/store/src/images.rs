@@ -194,59 +194,63 @@ pub fn image_store() -> ImageStore {
 mod tests {
     use super::*;
 
-    #[test]
-    fn artwork_is_fetched_once_and_then_read_from_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = Arc::clone(&calls);
-        let network: Fetcher = Arc::new(move |_url: &str| {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Some(vec![1, 2, 3])
-        });
-        let fetch = cached_fetcher(network, Some(dir.path().to_path_buf()));
-        assert_eq!(fetch("https://cdn.example/icon.png"), Some(vec![1, 2, 3]));
-        assert_eq!(fetch("https://cdn.example/icon.png"), Some(vec![1, 2, 3]));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        std::fs::write(dir.path().join("old"), vec![0u8; 64]).unwrap();
-        evict_oldest(dir.path(), 4);
-        assert!(std::fs::read_dir(dir.path()).unwrap().count() <= 1);
-    }
+    tilo_test_env::scenario! {
+        fn artwork_is_fetched_once_and_only_from_public_hosts;
 
-    #[test]
-    fn artwork_urls_refuse_non_public_hosts_and_credentials() {
+        phase artwork_is_fetched_once_and_then_read_from_disk;
         {
-            for url in [
-                "http://cdn.example/icon.png",
-                "https://user:secret@example.com/icon.png",
-                "https://localhost/icon.png",
-                "https://127.0.0.1/icon.png",
-                "https://[::1]/icon.png",
-                "https://printer.local/icon.png",
-            ] {
-                assert!(safe_artwork_url(url).is_none(), "accepted {url}");
-            }
-            assert!(safe_artwork_url("https://cdn.example/icon.png").is_some());
+            let dir = tempfile::tempdir().unwrap();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = Arc::clone(&calls);
+            let network: Fetcher = Arc::new(move |_url: &str| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some(vec![1, 2, 3])
+            });
+            let fetch = cached_fetcher(network, Some(dir.path().to_path_buf()));
+            assert_eq!(fetch("https://cdn.example/icon.png"), Some(vec![1, 2, 3]));
+            assert_eq!(fetch("https://cdn.example/icon.png"), Some(vec![1, 2, 3]));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            std::fs::write(dir.path().join("old"), vec![0u8; 64]).unwrap();
+            evict_oldest(dir.path(), 4);
+            assert!(std::fs::read_dir(dir.path()).unwrap().count() <= 1);
         }
 
+        phase artwork_urls_refuse_non_public_hosts_and_credentials;
         {
-            for ip in [
-                "127.0.0.1",
-                "10.0.0.1",
-                "172.16.0.1",
-                "192.168.1.1",
-                "169.254.1.1",
-                "100.64.0.1",
-                "192.0.2.1",
-                "198.51.100.1",
-                "203.0.113.1",
-                "::1",
-                "fe80::1",
-                "fd00::1",
-            ] {
-                assert!(!public_ip(ip.parse().unwrap()), "accepted {ip}");
+            {
+                for url in [
+                    "http://cdn.example/icon.png",
+                    "https://user:secret@example.com/icon.png",
+                    "https://localhost/icon.png",
+                    "https://127.0.0.1/icon.png",
+                    "https://[::1]/icon.png",
+                    "https://printer.local/icon.png",
+                ] {
+                    assert!(safe_artwork_url(url).is_none(), "accepted {url}");
+                }
+                assert!(safe_artwork_url("https://cdn.example/icon.png").is_some());
             }
-            assert!(public_ip("1.1.1.1".parse().unwrap()));
-            assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
+
+            {
+                for ip in [
+                    "127.0.0.1",
+                    "10.0.0.1",
+                    "172.16.0.1",
+                    "192.168.1.1",
+                    "169.254.1.1",
+                    "100.64.0.1",
+                    "192.0.2.1",
+                    "198.51.100.1",
+                    "203.0.113.1",
+                    "::1",
+                    "fe80::1",
+                    "fd00::1",
+                ] {
+                    assert!(!public_ip(ip.parse().unwrap()), "accepted {ip}");
+                }
+                assert!(public_ip("1.1.1.1".parse().unwrap()));
+                assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
+            }
         }
     }
 }

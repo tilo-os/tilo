@@ -90,6 +90,56 @@ impl Pane for PagePane {
     }
 }
 
+/// The desk's own history as the page keeps it: the one desk document the page keeps for the
+/// workspace it shows, which is that workspace's layout.
+pub(super) struct PageDesk(pub(super) Rc<tilo_session_core::desk::Desk>);
+
+impl tilo_session::activity::DeskHistory for PageDesk {
+    fn history(
+        &self,
+        tree: &tilo_desktop_model::DesktopTree,
+        slot: tilo_desktop_model::WorkspaceSlot,
+    ) -> Option<tilo_desktop_surface::activity::ActivitySnapshot> {
+        Some(tilo_desktop_surface::activity::ActivitySnapshot::of_layout(
+            tree.clone(),
+            slot,
+            self.0.document(),
+        ))
+    }
+
+    fn documents(
+        &self,
+        tree: &tilo_desktop_model::DesktopTree,
+    ) -> Vec<(tilo_desktop_model::WorkspaceSlot, ui::automerge::AutoCommit)> {
+        tree.active_workspace()
+            .map(|workspace| vec![(workspace.slot, self.0.document())])
+            .unwrap_or_default()
+    }
+
+    fn describe(
+        &self,
+        tree: &tilo_desktop_model::DesktopTree,
+        slot: tilo_desktop_model::WorkspaceSlot,
+        write: &mut dyn FnMut(&mut ui::automerge::AutoCommit) -> bool,
+    ) -> bool {
+        if tree.active_workspace().map(|workspace| workspace.slot) != Some(slot) {
+            return false;
+        }
+        let changed = write(&mut self.0.document_mut());
+        if changed {
+            self.0.keep_now();
+        }
+        changed
+    }
+
+    fn moved(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.0.document_mut().get_heads().hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 /// The name and colour presence shows for a person, by the principal they write as.
 pub(super) fn person_of(
     here: &tilo_desktop::here::Here,
@@ -139,7 +189,7 @@ impl crate::browser::Desktop {
                 });
         }
         self.activity.serve_following();
-        let described = self.activity.describe();
+        let described = self.handle.read(|tree| self.activity.describe(tree));
         if self.activity.take_woken() || described {
             crate::browser::wake_desktops();
         }

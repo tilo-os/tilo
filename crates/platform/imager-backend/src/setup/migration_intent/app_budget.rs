@@ -312,37 +312,214 @@ impl Budget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn actual_app_inventory_excludes_shared_documents_and_refuses_changed_data() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join(".var/app/org.example.Chat/data")).unwrap();
-        let state = root.path().join(".var/app/org.example.Chat/data/database");
-        std::fs::write(&state, b"app data").unwrap();
-        let initial = Budget::capture(root.path(), &[]).unwrap();
-        let document = std::fs::File::create(root.path().join("large original document")).unwrap();
-        document.set_len(100 << 30).unwrap();
-        assert_eq!(Budget::capture(root.path(), &[]).unwrap(), initial);
-        initial.renew(root.path(), &[]).unwrap();
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&state)
-            .unwrap()
-            .set_len(20 << 30)
+    tilo_test_env::scenario! {
+        /// The capacity budget of the selected applications.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_app_budget_counts_only_selected_app_data_and_its_export_closure;
+
+        phase actual_app_inventory_excludes_shared_documents_and_refuses_changed_data;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(root.path().join(".var/app/org.example.Chat/data")).unwrap();
+            let state = root.path().join(".var/app/org.example.Chat/data/database");
+            std::fs::write(&state, b"app data").unwrap();
+            let initial = Budget::capture(root.path(), &[]).unwrap();
+            let document = std::fs::File::create(root.path().join("large original document")).unwrap();
+            document.set_len(100 << 30).unwrap();
+            assert_eq!(Budget::capture(root.path(), &[]).unwrap(), initial);
+            initial.renew(root.path(), &[]).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&state)
+                .unwrap()
+                .set_len(20 << 30)
+                .unwrap();
+            let larger = Budget::capture(root.path(), &[]).unwrap();
+            assert!(larger.minimum() > initial.minimum() + (20 << 30));
+            assert!(initial.renew(root.path(), &[]).is_err());
+            assert_eq!(document.metadata().unwrap().len(), 100 << 30);
+        }
+
+        phase absent_app_data_retains_only_os_minimum_and_explicit_growth_headroom;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let budget = Budget::capture(root.path(), &[]).unwrap();
+            assert_eq!(
+                budget.minimum(),
+                staging::MIN_TARGET_BYTES + ((2_u64 << 30) * 100).div_ceil(94)
+            );
+            budget.renew(root.path(), &[]).unwrap();
+        }
+
+        phase selected_budget_uses_export_closure_without_unrelated_runtime_capacity;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("home");
+            let installation = root.path().join("installation");
+            std::fs::create_dir(&home).unwrap();
+            for (reference, bytes) in [
+                ("app/org.example.Chat/x86_64/stable", 1024_u64),
+                ("runtime/org.example.Runtime/x86_64/stable", 1 << 30),
+                ("runtime/org.example.Chat.Locale/x86_64/stable", 64 << 20),
+                ("runtime/org.example.Unrelated/x86_64/stable", 16 << 30),
+            ] {
+                let path = installation.join(reference).join("a".repeat(64));
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::File::create(path.join("payload"))
+                    .unwrap()
+                    .set_len(bytes)
+                    .unwrap();
+            }
+            let runner = SelectedClosure(SystemApps { root: installation });
+            let selected = InstalledRef {
+                reference: "app/org.example.Chat/x86_64/stable".into(),
+                origin: "flathub".into(),
+                installation: flatpak_transfer::Installation::System("work".into()),
+                name: "Chat".into(),
+            };
+            let budget = Budget::capture_scoped(&home, &[selected.clone()], &runner, true).unwrap();
+            let deployments: Vec<_> = budget.trees.iter().filter(|tree| tree.deployment).collect();
+            assert_eq!(deployments.len(), 3);
+            assert!(deployments.iter().any(|tree| tree.bytes == 1 << 30));
+            assert!(deployments.iter().any(|tree| tree.bytes == 64 << 20));
+            assert!(!deployments.iter().any(|tree| tree.bytes == 16 << 30));
+            assert!(budget.minimum() < staging::MIN_TARGET_BYTES + (5 << 30));
+            let mut current = flatpak_transfer::discover(&runner, &home).unwrap();
+            current
+                .refs
+                .retain(|item| !item.reference.contains("Chat.Locale"));
+            assert!(
+                flatpak_transfer::portable::review_selected_dependencies(
+                    &runner,
+                    &home,
+                    &current,
+                    &[selected.clone()]
+                )
+                .is_err()
+            );
+            let mut wrong_scope = selected;
+            wrong_scope.installation = flatpak_transfer::Installation::User;
+            assert!(
+                flatpak_transfer::portable::review_selected_dependencies(
+                    &runner,
+                    &home,
+                    &current,
+                    &[wrong_scope]
+                )
+                .is_err()
+            );
+        }
+
+        phase selected_small_app_budget_includes_large_original_system_runtime;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("home");
+            let installation = root.path().join("installation");
+            std::fs::create_dir(&home).unwrap();
+            for (reference, bytes) in [
+                ("app/org.example.Chat/x86_64/stable", 1024_u64),
+                ("runtime/org.example.Runtime/x86_64/stable", 1_u64 << 30),
+            ] {
+                let path = installation.join(reference).join("a".repeat(64));
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::File::create(path.join("payload"))
+                    .unwrap()
+                    .set_len(bytes)
+                    .unwrap();
+            }
+            let selected = InstalledRef {
+                reference: "app/org.example.Chat/x86_64/stable".into(),
+                origin: "flathub".into(),
+                installation: flatpak_transfer::Installation::System("work".into()),
+                name: "Chat".into(),
+            };
+            let budget =
+                Budget::capture_with(&home, &[selected], &SystemApps { root: installation }).unwrap();
+            assert!(
+                budget
+                    .trees
+                    .iter()
+                    .any(|tree| tree.deployment && tree.bytes == 1_u64 << 30)
+            );
+            assert!(budget.minimum() > staging::MIN_TARGET_BYTES + (4 << 30));
+        }
+
+        phase selected_copy_budget_excludes_unselected_state_and_shared_documents;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("home");
+            let installation = root.path().join("installation");
+            std::fs::create_dir_all(home.join(".var/app/org.example.Chat/data")).unwrap();
+            std::fs::create_dir_all(home.join(".var/app/org.example.Unselected/data")).unwrap();
+            std::fs::write(
+                home.join(".var/app/org.example.Chat/data/state"),
+                b"selected state",
+            )
             .unwrap();
-        let larger = Budget::capture(root.path(), &[]).unwrap();
-        assert!(larger.minimum() > initial.minimum() + (20 << 30));
-        assert!(initial.renew(root.path(), &[]).is_err());
-        assert_eq!(document.metadata().unwrap().len(), 100 << 30);
-    }
-    #[test]
-    fn absent_app_data_retains_only_os_minimum_and_explicit_growth_headroom() {
-        let root = tempfile::tempdir().unwrap();
-        let budget = Budget::capture(root.path(), &[]).unwrap();
-        assert_eq!(
-            budget.minimum(),
-            staging::MIN_TARGET_BYTES + ((2_u64 << 30) * 100).div_ceil(94)
-        );
-        budget.renew(root.path(), &[]).unwrap();
+            let unselected = home.join(".var/app/org.example.Unselected/data/state");
+            std::fs::File::create(&unselected)
+                .unwrap()
+                .set_len(1 << 30)
+                .unwrap();
+            for reference in [
+                "app/org.example.Chat/x86_64/stable",
+                "runtime/org.example.Runtime/x86_64/stable",
+            ] {
+                let path = installation.join(reference).join("a".repeat(64));
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::write(path.join("payload"), b"selected installation").unwrap();
+            }
+            let selected = InstalledRef {
+                reference: "app/org.example.Chat/x86_64/stable".into(),
+                origin: "flathub".into(),
+                installation: flatpak_transfer::Installation::System("work".into()),
+                name: "Chat".into(),
+            };
+            let runner = SystemApps { root: installation };
+            let first = Budget::capture_scoped(&home, &[selected.clone()], &runner, true).unwrap();
+            assert!(first.selected_only);
+            assert!(
+                first.trees.iter().any(
+                    |tree| tree.path == NativePath::encode(&home.join(".var/app/org.example.Chat"))
+                )
+            );
+            assert!(
+                !first.trees.iter().any(|tree| tree.path
+                    == NativePath::encode(&home.join(".var/app/org.example.Unselected")))
+            );
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&unselected)
+                .unwrap()
+                .set_len(100 << 30)
+                .unwrap();
+            std::fs::File::create(home.join("shared document"))
+                .unwrap()
+                .set_len(100 << 30)
+                .unwrap();
+            assert_eq!(
+                Budget::capture_scoped(&home, &[selected.clone()], &runner, true).unwrap(),
+                first
+            );
+            let removed = Budget::capture_scoped(&home, &[], &runner, true).unwrap();
+            assert!(removed.minimum() < first.minimum());
+            std::fs::write(
+                home.join(".var/app/org.example.Chat/data/state"),
+                b"changed selected state",
+            )
+            .unwrap();
+            assert_ne!(
+                Budget::capture_scoped(&home, &[selected], &runner, true).unwrap(),
+                first
+            );
+            assert_eq!(std::fs::metadata(unselected).unwrap().len(), 100 << 30);
+            assert_eq!(
+                std::fs::metadata(home.join("shared document"))
+                    .unwrap()
+                    .len(),
+                100 << 30
+            );
+        }
     }
     #[cfg(unix)]
     #[test]
@@ -408,172 +585,5 @@ mod tests {
             }
             self.0.run(home, args)
         }
-    }
-    #[test]
-    fn selected_budget_uses_export_closure_without_unrelated_runtime_capacity() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
-        let installation = root.path().join("installation");
-        std::fs::create_dir(&home).unwrap();
-        for (reference, bytes) in [
-            ("app/org.example.Chat/x86_64/stable", 1024_u64),
-            ("runtime/org.example.Runtime/x86_64/stable", 1 << 30),
-            ("runtime/org.example.Chat.Locale/x86_64/stable", 64 << 20),
-            ("runtime/org.example.Unrelated/x86_64/stable", 16 << 30),
-        ] {
-            let path = installation.join(reference).join("a".repeat(64));
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::File::create(path.join("payload"))
-                .unwrap()
-                .set_len(bytes)
-                .unwrap();
-        }
-        let runner = SelectedClosure(SystemApps { root: installation });
-        let selected = InstalledRef {
-            reference: "app/org.example.Chat/x86_64/stable".into(),
-            origin: "flathub".into(),
-            installation: flatpak_transfer::Installation::System("work".into()),
-            name: "Chat".into(),
-        };
-        let budget = Budget::capture_scoped(&home, &[selected.clone()], &runner, true).unwrap();
-        let deployments: Vec<_> = budget.trees.iter().filter(|tree| tree.deployment).collect();
-        assert_eq!(deployments.len(), 3);
-        assert!(deployments.iter().any(|tree| tree.bytes == 1 << 30));
-        assert!(deployments.iter().any(|tree| tree.bytes == 64 << 20));
-        assert!(!deployments.iter().any(|tree| tree.bytes == 16 << 30));
-        assert!(budget.minimum() < staging::MIN_TARGET_BYTES + (5 << 30));
-        let mut current = flatpak_transfer::discover(&runner, &home).unwrap();
-        current
-            .refs
-            .retain(|item| !item.reference.contains("Chat.Locale"));
-        assert!(
-            flatpak_transfer::portable::review_selected_dependencies(
-                &runner,
-                &home,
-                &current,
-                &[selected.clone()]
-            )
-            .is_err()
-        );
-        let mut wrong_scope = selected;
-        wrong_scope.installation = flatpak_transfer::Installation::User;
-        assert!(
-            flatpak_transfer::portable::review_selected_dependencies(
-                &runner,
-                &home,
-                &current,
-                &[wrong_scope]
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn selected_small_app_budget_includes_large_original_system_runtime() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
-        let installation = root.path().join("installation");
-        std::fs::create_dir(&home).unwrap();
-        for (reference, bytes) in [
-            ("app/org.example.Chat/x86_64/stable", 1024_u64),
-            ("runtime/org.example.Runtime/x86_64/stable", 1_u64 << 30),
-        ] {
-            let path = installation.join(reference).join("a".repeat(64));
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::File::create(path.join("payload"))
-                .unwrap()
-                .set_len(bytes)
-                .unwrap();
-        }
-        let selected = InstalledRef {
-            reference: "app/org.example.Chat/x86_64/stable".into(),
-            origin: "flathub".into(),
-            installation: flatpak_transfer::Installation::System("work".into()),
-            name: "Chat".into(),
-        };
-        let budget =
-            Budget::capture_with(&home, &[selected], &SystemApps { root: installation }).unwrap();
-        assert!(
-            budget
-                .trees
-                .iter()
-                .any(|tree| tree.deployment && tree.bytes == 1_u64 << 30)
-        );
-        assert!(budget.minimum() > staging::MIN_TARGET_BYTES + (4 << 30));
-    }
-    #[test]
-    fn selected_copy_budget_excludes_unselected_state_and_shared_documents() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
-        let installation = root.path().join("installation");
-        std::fs::create_dir_all(home.join(".var/app/org.example.Chat/data")).unwrap();
-        std::fs::create_dir_all(home.join(".var/app/org.example.Unselected/data")).unwrap();
-        std::fs::write(
-            home.join(".var/app/org.example.Chat/data/state"),
-            b"selected state",
-        )
-        .unwrap();
-        let unselected = home.join(".var/app/org.example.Unselected/data/state");
-        std::fs::File::create(&unselected)
-            .unwrap()
-            .set_len(1 << 30)
-            .unwrap();
-        for reference in [
-            "app/org.example.Chat/x86_64/stable",
-            "runtime/org.example.Runtime/x86_64/stable",
-        ] {
-            let path = installation.join(reference).join("a".repeat(64));
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("payload"), b"selected installation").unwrap();
-        }
-        let selected = InstalledRef {
-            reference: "app/org.example.Chat/x86_64/stable".into(),
-            origin: "flathub".into(),
-            installation: flatpak_transfer::Installation::System("work".into()),
-            name: "Chat".into(),
-        };
-        let runner = SystemApps { root: installation };
-        let first = Budget::capture_scoped(&home, &[selected.clone()], &runner, true).unwrap();
-        assert!(first.selected_only);
-        assert!(
-            first.trees.iter().any(
-                |tree| tree.path == NativePath::encode(&home.join(".var/app/org.example.Chat"))
-            )
-        );
-        assert!(
-            !first.trees.iter().any(|tree| tree.path
-                == NativePath::encode(&home.join(".var/app/org.example.Unselected")))
-        );
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&unselected)
-            .unwrap()
-            .set_len(100 << 30)
-            .unwrap();
-        std::fs::File::create(home.join("shared document"))
-            .unwrap()
-            .set_len(100 << 30)
-            .unwrap();
-        assert_eq!(
-            Budget::capture_scoped(&home, &[selected.clone()], &runner, true).unwrap(),
-            first
-        );
-        let removed = Budget::capture_scoped(&home, &[], &runner, true).unwrap();
-        assert!(removed.minimum() < first.minimum());
-        std::fs::write(
-            home.join(".var/app/org.example.Chat/data/state"),
-            b"changed selected state",
-        )
-        .unwrap();
-        assert_ne!(
-            Budget::capture_scoped(&home, &[selected], &runner, true).unwrap(),
-            first
-        );
-        assert_eq!(std::fs::metadata(unselected).unwrap().len(), 100 << 30);
-        assert_eq!(
-            std::fs::metadata(home.join("shared document"))
-                .unwrap()
-                .len(),
-            100 << 30
-        );
     }
 }

@@ -290,6 +290,7 @@ impl Converged {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenario;
 
     fn two_devices() -> (FakeNet, Peer, Peer) {
         let mut net = FakeNet::new();
@@ -298,106 +299,110 @@ mod tests {
         (net, alice, bob)
     }
 
-    #[test]
-    fn a_published_message_reaches_every_connected_device_once_the_net_delivers() {
-        let (mut net, alice, bob) = two_devices();
-        net.publish(&alice, b"first".to_vec());
-        assert_eq!(net.deliveries(), 0, "nothing arrives before delivery");
-        let mut seen: Vec<(String, Vec<u8>)> = Vec::new();
-        net.deliver(|author, bytes| seen.push((author.to_owned(), bytes.to_vec())));
-        assert_eq!(seen, vec![("alice".to_owned(), b"first".to_vec())]);
-        assert_eq!(net.deliveries(), 1);
-        assert_eq!(net.log(), &[("alice".to_owned(), b"first".to_vec())]);
-        assert_eq!(net.names(), vec!["alice", "bob"]);
-        assert!(net.is_connected(bob.name()));
-    }
+    scenario! {
+        fn the_fake_net_delivers_holds_and_forgets_traffic;
 
-    #[test]
-    fn nothing_is_offered_when_there_is_nothing_to_offer() {
-        let (mut net, alice, _bob) = two_devices();
-        net.publish(&alice, Vec::new());
-        assert!(net.log().is_empty());
-        assert_eq!(net.deliveries(), 0);
-    }
-
-    #[test]
-    fn a_partition_holds_the_traffic_and_a_heal_delivers_it() {
-        let (mut net, alice, bob) = two_devices();
-        net.partition(&[bob.name()]);
-        assert!(!net.is_connected(bob.name()));
-        net.publish(&alice, b"while bob was away".to_vec());
-        let mut seen: Vec<Vec<u8>> = Vec::new();
-        net.deliver(|_, bytes| seen.push(bytes.to_vec()));
-        assert!(seen.is_empty(), "a cut device receives nothing");
-        assert_eq!(net.held(), 1, "what was published for bob is held");
-
-        net.heal(&[bob.name()]);
-        assert!(net.is_connected(bob.name()));
-        net.deliver(|_, bytes| seen.push(bytes.to_vec()));
-        assert_eq!(seen, vec![b"while bob was away".to_vec()]);
-    }
-
-    #[test]
-    fn a_cut_device_sends_nothing_until_it_heals() {
-        let (mut net, alice, bob) = two_devices();
-        net.partition(&[bob.name()]);
-        assert!(!net.is_connected(bob.name()));
-        net.publish(&bob, b"written on the train".to_vec());
-        assert!(net.log().is_empty(), "nothing leaves a device off the net");
-        let mut seen: Vec<Vec<u8>> = Vec::new();
-        net.deliver(|_, bytes| seen.push(bytes.to_vec()));
-        assert!(seen.is_empty());
-
-        net.heal(&["bob"]);
-        net.publish(&bob, b"written on the train".to_vec());
-        assert_eq!(net.log().len(), 1);
-        net.deliver(|_, bytes| seen.push(bytes.to_vec()));
-        assert_eq!(seen, vec![b"written on the train".to_vec()]);
-        assert_eq!(net.published_by(alice.name()), Vec::<Vec<u8>>::new());
-    }
-
-    #[test]
-    fn traffic_held_for_a_cut_device_can_be_forgotten() {
-        let (mut net, alice, _bob) = two_devices();
-        net.partition(&["bob"]);
-        net.publish(&alice, b"lost".to_vec());
-        net.forget_held();
-        net.heal(&["bob"]);
-        let mut seen: Vec<Vec<u8>> = Vec::new();
-        net.deliver(|_, bytes| seen.push(bytes.to_vec()));
-        assert!(seen.is_empty(), "the frames were lost");
-    }
-
-    #[test]
-    fn the_same_steps_deliver_the_same_messages_in_the_same_order() {
-        let run = || {
+        phase a_published_message_reaches_every_connected_device_once_the_net_delivers;
+        {
             let (mut net, alice, bob) = two_devices();
-            let carol = net.peer("carol");
-            net.publish(&alice, b"one".to_vec());
-            net.partition(&["bob"]);
-            net.publish(&bob, b"two".to_vec());
-            net.publish(&carol, b"three".to_vec());
-            let mut seen: Vec<(String, String)> = Vec::new();
-            net.deliver(|author, bytes| {
-                seen.push((
-                    author.to_owned(),
-                    String::from_utf8_lossy(bytes).into_owned(),
-                ));
-            });
+            net.publish(&alice, b"first".to_vec());
+            assert_eq!(net.deliveries(), 0, "nothing arrives before delivery");
+            let mut seen: Vec<(String, Vec<u8>)> = Vec::new();
+            net.deliver(|author, bytes| seen.push((author.to_owned(), bytes.to_vec())));
+            assert_eq!(seen, vec![("alice".to_owned(), b"first".to_vec())]);
+            assert_eq!(net.deliveries(), 1);
+            assert_eq!(net.log(), &[("alice".to_owned(), b"first".to_vec())]);
+            assert_eq!(net.names(), vec!["alice", "bob"]);
+            assert!(net.is_connected(bob.name()));
+        }
+
+        phase nothing_is_offered_when_there_is_nothing_to_offer;
+        {
+            let (mut net, alice, _bob) = two_devices();
+            net.publish(&alice, Vec::new());
+            assert!(net.log().is_empty());
+            assert_eq!(net.deliveries(), 0);
+        }
+
+        phase a_partition_holds_the_traffic_and_a_heal_delivers_it;
+        {
+            let (mut net, alice, bob) = two_devices();
+            net.partition(&[bob.name()]);
+            assert!(!net.is_connected(bob.name()));
+            net.publish(&alice, b"while bob was away".to_vec());
+            let mut seen: Vec<Vec<u8>> = Vec::new();
+            net.deliver(|_, bytes| seen.push(bytes.to_vec()));
+            assert!(seen.is_empty(), "a cut device receives nothing");
+            assert_eq!(net.held(), 1, "what was published for bob is held");
+
+            net.heal(&[bob.name()]);
+            assert!(net.is_connected(bob.name()));
+            net.deliver(|_, bytes| seen.push(bytes.to_vec()));
+            assert_eq!(seen, vec![b"while bob was away".to_vec()]);
+        }
+
+        phase a_cut_device_sends_nothing_until_it_heals;
+        {
+            let (mut net, alice, bob) = two_devices();
+            net.partition(&[bob.name()]);
+            assert!(!net.is_connected(bob.name()));
+            net.publish(&bob, b"written on the train".to_vec());
+            assert!(net.log().is_empty(), "nothing leaves a device off the net");
+            let mut seen: Vec<Vec<u8>> = Vec::new();
+            net.deliver(|_, bytes| seen.push(bytes.to_vec()));
+            assert!(seen.is_empty());
+
             net.heal(&["bob"]);
-            net.publish(&alice, b"four".to_vec());
-            net.deliver(|author, bytes| {
-                seen.push((
-                    author.to_owned(),
-                    String::from_utf8_lossy(bytes).into_owned(),
-                ));
-            });
-            let names: Vec<String> = net.names().into_iter().map(str::to_owned).collect();
-            (seen, net.deliveries(), names)
-        };
-        let first = run();
-        for _ in 0..100 {
-            assert_eq!(run(), first, "the same steps deliver the same traffic");
+            net.publish(&bob, b"written on the train".to_vec());
+            assert_eq!(net.log().len(), 1);
+            net.deliver(|_, bytes| seen.push(bytes.to_vec()));
+            assert_eq!(seen, vec![b"written on the train".to_vec()]);
+            assert_eq!(net.published_by(alice.name()), Vec::<Vec<u8>>::new());
+        }
+
+        phase traffic_held_for_a_cut_device_can_be_forgotten;
+        {
+            let (mut net, alice, _bob) = two_devices();
+            net.partition(&["bob"]);
+            net.publish(&alice, b"lost".to_vec());
+            net.forget_held();
+            net.heal(&["bob"]);
+            let mut seen: Vec<Vec<u8>> = Vec::new();
+            net.deliver(|_, bytes| seen.push(bytes.to_vec()));
+            assert!(seen.is_empty(), "the frames were lost");
+        }
+
+        phase the_same_steps_deliver_the_same_messages_in_the_same_order;
+        {
+            let run = || {
+                let (mut net, alice, bob) = two_devices();
+                let carol = net.peer("carol");
+                net.publish(&alice, b"one".to_vec());
+                net.partition(&["bob"]);
+                net.publish(&bob, b"two".to_vec());
+                net.publish(&carol, b"three".to_vec());
+                let mut seen: Vec<(String, String)> = Vec::new();
+                net.deliver(|author, bytes| {
+                    seen.push((
+                        author.to_owned(),
+                        String::from_utf8_lossy(bytes).into_owned(),
+                    ));
+                });
+                net.heal(&["bob"]);
+                net.publish(&alice, b"four".to_vec());
+                net.deliver(|author, bytes| {
+                    seen.push((
+                        author.to_owned(),
+                        String::from_utf8_lossy(bytes).into_owned(),
+                    ));
+                });
+                let names: Vec<String> = net.names().into_iter().map(str::to_owned).collect();
+                (seen, net.deliveries(), names)
+            };
+            let first = run();
+            for _ in 0..100 {
+                assert_eq!(run(), first, "the same steps deliver the same traffic");
+            }
         }
     }
 }

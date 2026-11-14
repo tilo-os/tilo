@@ -79,7 +79,7 @@ fn owner_key() -> ed25519_dalek::SigningKey {
 fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, String) {
     let mut workspace = Workspace::new(WorkspaceSlot(71), "Expiring");
     let workspace_id = workspace.id().to_string();
-    let owner = principal_id_for_root(owner_key().verifying_key().to_bytes());
+    let owner = person_id_for_root(owner_key().verifying_key().to_bytes());
     workspace.set_owner(owner.clone());
     let reads = |id: &str, subject: Grantee, until: u64| {
         Grant::new(

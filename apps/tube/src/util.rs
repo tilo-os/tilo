@@ -37,27 +37,31 @@ pub fn clock(secs: f64) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_quality_label_is_the_height_a_source_must_not_exceed() {
-        assert_eq!(quality_height("720p"), Some(720));
-        assert_eq!(quality_height("1080p"), Some(1080));
-        assert_eq!(quality_height("480p"), Some(480));
-        assert_eq!(quality_height("auto"), None);
-        assert_eq!(quality_height(""), None);
-    }
+    tilo_test_env::scenario! {
+        fn quality_labels_counts_and_clocks_format;
 
-    #[test]
-    fn human_count_thresholds() {
-        assert_eq!(human_count(342), "342");
-        assert_eq!(human_count(1_500), "1.5K");
-        assert_eq!(human_count(12_000), "12K");
-        assert_eq!(human_count(999_999), "1M");
-        assert_eq!(human_count(1_200_000), "1.2M");
-        assert_eq!(human_count(2_400_000_000), "2.4B");
-    }
+        phase a_quality_label_is_the_height_a_source_must_not_exceed;
+        {
+            assert_eq!(quality_height("720p"), Some(720));
+            assert_eq!(quality_height("1080p"), Some(1080));
+            assert_eq!(quality_height("480p"), Some(480));
+            assert_eq!(quality_height("auto"), None);
+            assert_eq!(quality_height(""), None);
+        }
 
-    #[test]
-    fn duration_formats() {
-        assert_eq!(clock(3_661.9), "1:01:01");
+        phase human_count_thresholds;
+        {
+            assert_eq!(human_count(342), "342");
+            assert_eq!(human_count(1_500), "1.5K");
+            assert_eq!(human_count(12_000), "12K");
+            assert_eq!(human_count(999_999), "1M");
+            assert_eq!(human_count(1_200_000), "1.2M");
+            assert_eq!(human_count(2_400_000_000), "2.4B");
+        }
+
+        phase duration_formats;
+        {
+            assert_eq!(clock(3_661.9), "1:01:01");
+        }
     }
 }

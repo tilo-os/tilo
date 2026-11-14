@@ -1394,7 +1394,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1683,7 +1682,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1854,7 +1852,6 @@ mod tests {
         0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2012,7 +2009,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2133,7 +2129,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2399,7 +2394,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn headers_and_footers_roundtrip_through_odt() {
         {
             use tilo_doc::document::MarkValue;
@@ -2506,7 +2500,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -2904,7 +2897,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn section_columns_roundtrip_through_odt() {
         {
             // A freshly-authored 2-column document (no styles.xml) must synthesise one carrying the page-layout `style:columns`, and re-import the count + gap.
@@ -3033,7 +3025,6 @@ mod tests {
             .unwrap_or_else(|| panic!("no preserved styles.xml atom contains {needle:?}"))
     }
 
-    #[test]
     fn unedited_page_regions_keep_their_original_elements() {
         let styles = concat!(
             r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">"#,
@@ -3082,7 +3073,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn keeps_paragraph_span_and_table_styles_while_they_agree() {
         let styles = concat!(
             r#"<style:style style:name="P1" style:family="paragraph"><style:paragraph-properties fo:break-before="page" fo:text-align="center"/></style:style>"#,
@@ -3150,7 +3140,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn deleted_text_moves_between_body_and_changed_region() {
         let body = concat!(
             r#"<text:tracked-changes><text:changed-region xml:id="ct2" text:id="ct2"><text:deletion>"#,
@@ -3202,7 +3191,6 @@ mod tests {
         assert_eq!(norm(&d2.materialize()), norm(&snap));
     }
 
-    #[test]
     fn merged_cells_roundtrip_through_odt() {
         let body = concat!(
             r#"<table:table table:name="T"><table:table-column table:number-columns-repeated="3"/>"#,
@@ -3247,7 +3235,6 @@ mod tests {
         assert_eq!(norm(&d2.materialize()), norm(&snap));
     }
 
-    #[test]
     fn numbered_then_bulleted_lists_stay_apart_and_numbered() {
         let mut d = Document::new();
         let one = d.insert_block(None, "list_item");
@@ -3281,5 +3268,61 @@ mod tests {
             snap.blocks[1].attrs.get("ordered"),
             Some(&AttrVal::Bool(false))
         );
+    }
+
+    #[test]
+    fn documents_roundtrip_through_odt() {
+        let cases: [(&str, fn()); 13] = [
+            (
+                "text and paragraph formatting roundtrips through odt",
+                text_and_paragraph_formatting_roundtrips_through_odt,
+            ),
+            (
+                "hyperlinks and cross references roundtrip through odt",
+                hyperlinks_and_cross_references_roundtrip_through_odt,
+            ),
+            ("images roundtrip through odt", images_roundtrip_through_odt),
+            ("lists roundtrip through odt", lists_roundtrip_through_odt),
+            (
+                "document properties and preserved parts roundtrip through odt",
+                document_properties_and_preserved_parts_roundtrip_through_odt,
+            ),
+            (
+                "headers and footers roundtrip through odt",
+                headers_and_footers_roundtrip_through_odt,
+            ),
+            (
+                "notes comments and tracked changes roundtrip through odt",
+                notes_comments_and_tracked_changes_roundtrip_through_odt,
+            ),
+            (
+                "section columns roundtrip through odt",
+                section_columns_roundtrip_through_odt,
+            ),
+            (
+                "unedited page regions keep their original elements",
+                unedited_page_regions_keep_their_original_elements,
+            ),
+            (
+                "keeps paragraph span and table styles while they agree",
+                keeps_paragraph_span_and_table_styles_while_they_agree,
+            ),
+            (
+                "deleted text moves between body and changed region",
+                deleted_text_moves_between_body_and_changed_region,
+            ),
+            (
+                "merged cells roundtrip through odt",
+                merged_cells_roundtrip_through_odt,
+            ),
+            (
+                "numbered then bulleted lists stay apart and numbered",
+                numbered_then_bulleted_lists_stay_apart_and_numbered,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

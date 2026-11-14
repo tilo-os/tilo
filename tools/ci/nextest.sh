@@ -171,8 +171,25 @@ fi
 if (( nextest )) && [[ ${3:-} == run && -f $root/.config/nextest-capabilities.toml ]]; then
     runtime_packages=$tested
     [[ $runtime_packages != " " ]] || runtime_packages=${T_NEXTEST_PACKAGES:-}
-    # shellcheck disable=SC2086 # one package per word, as the runners name them
-    left_out=$(python3 "$root/tools/ci/capability_filter.py" --packages $runtime_packages)
+    # The tool's first answer, to a run of none of the manifest's packages, is that there is
+    # nothing to probe. The manifest's own text says as much to this shell (a group names its
+    # packages as `package(NAME)`), so the ordinary job starts no Python to hear it: a third of a
+    # second of its one core, in each of a suite's thousand jobs. A run that names no package
+    # tests them all, and asks.
+    probes=1
+    if [[ -n ${runtime_packages// /} ]]; then
+        probes=0
+        named=$(<"$root/.config/nextest-capabilities.toml")
+        named=${named//[[:space:]]/}
+        for name in $runtime_packages; do
+            [[ $named != *"package($name)"* ]] || probes=1
+        done
+    fi
+    left_out=
+    if (( probes )); then
+        # shellcheck disable=SC2086 # one package per word, as the runners name them
+        left_out=$(python3 "$root/tools/ci/capability_filter.py" --packages $runtime_packages)
+    fi
     if [[ -n $left_out ]]; then
         merged=0
         for (( index = 0; index < ${#arguments[@]}; index++ )); do

@@ -107,117 +107,123 @@ fn actual_carrier_authenticates_selected_domains_without_home_or_credentials() {
     drop(tree);
     assert_eq!(fs::read_dir(private.path()).unwrap().count(), 1);
 }
-#[test]
-fn cancellation_and_replaced_grants_leave_no_plaintext_or_ready_package() {
-    let home = fixture();
-    let private = private_directory();
-    let selected = selected(home.path(), true);
-    let plan = selected.plan("setup-binding".into(), [7; 32]).unwrap();
-    let operation = uuid::Uuid::new_v4().to_string();
-    let package = private.path().join(format!("browser-{operation}.sealed"));
-    let cancel = AtomicBool::new(true);
-    assert!(
-        export(
-            &selected,
-            &plan,
-            ExportRequest {
-                staging_parent: private.path(),
-                package: &package,
-                operation: &operation,
-                password: Zeroizing::new(b"sample password".to_vec())
-            },
-            &cancel
-        )
-        .is_err()
-    );
-    assert_eq!(fs::read_dir(private.path()).unwrap().count(), 0);
-    let profile = home.path().join(".config/chromium/Default");
-    fs::rename(&profile, home.path().join("original")).unwrap();
-    fs::create_dir(&profile).unwrap();
-    assert!(
-        export(
-            &selected,
-            &plan,
-            ExportRequest {
-                staging_parent: private.path(),
-                package: &package,
-                operation: &operation,
-                password: Zeroizing::new(b"sample password".to_vec())
-            },
-            &AtomicBool::new(false)
-        )
-        .is_err()
-    );
-    assert_eq!(fs::read_dir(private.path()).unwrap().count(), 0);
-    assert_eq!(
-        fs::read(home.path().join("original/History")).unwrap(),
-        b"actual history snapshot"
-    );
-}
+tilo_test_env::scenario! {
+    /// The browser transfer package: what it carries, and what a cancel or a changed ciphertext leaves.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_browser_transfer_leaves_no_package_after_a_cancel_or_a_changed_ciphertext;
 
-#[test]
-fn history_and_wal_are_carried_together_and_ciphertext_changes_are_refused() {
-    let home = fixture();
-    let private = private_directory();
-    let selected = selected(home.path(), true);
-    let plan = selected.plan("setup-binding".into(), [7; 32]).unwrap();
-    let operation = uuid::Uuid::new_v4().to_string();
-    let package = private.path().join(format!("browser-{operation}.sealed"));
-    let cancel = AtomicBool::new(false);
-    let expected = export(
-        &selected,
-        &plan,
-        ExportRequest {
-            staging_parent: private.path(),
-            package: &package,
-            operation: &operation,
-            password: Zeroizing::new(b"sample password".to_vec()),
-        },
-        &cancel,
-    )
-    .unwrap();
-    let projection = extract(
-        &expected,
-        &plan,
-        &package,
-        Zeroizing::new(b"sample password".to_vec()),
-        private.path(),
-        &cancel,
-    )
-    .unwrap();
-    let profile = projection
-        .tree
-        .root
-        .join(PROFILES_DIRECTORY)
-        .join(&plan.profiles[0].id);
-    assert_eq!(
-        fs::read(profile.join("History")).unwrap(),
-        b"actual history snapshot"
-    );
-    assert_eq!(
-        fs::read(profile.join("History-wal")).unwrap(),
-        b"stable WAL"
-    );
-    assert_eq!(fs::read_dir(profile).unwrap().count(), 3);
-    drop(projection);
-    let mut cipher = fs::read(&package).unwrap();
-    let index = cipher.len() / 2;
-    cipher[index] ^= 1;
-    fs::write(&package, cipher).unwrap();
-    assert!(
-        extract(
+    phase cancellation_and_replaced_grants_leave_no_plaintext_or_ready_package;
+    {
+        let home = fixture();
+        let private = private_directory();
+        let selected = selected(home.path(), true);
+        let plan = selected.plan("setup-binding".into(), [7; 32]).unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let package = private.path().join(format!("browser-{operation}.sealed"));
+        let cancel = AtomicBool::new(true);
+        assert!(
+            export(
+                &selected,
+                &plan,
+                ExportRequest {
+                    staging_parent: private.path(),
+                    package: &package,
+                    operation: &operation,
+                    password: Zeroizing::new(b"sample password".to_vec())
+                },
+                &cancel
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(private.path()).unwrap().count(), 0);
+        let profile = home.path().join(".config/chromium/Default");
+        fs::rename(&profile, home.path().join("original")).unwrap();
+        fs::create_dir(&profile).unwrap();
+        assert!(
+            export(
+                &selected,
+                &plan,
+                ExportRequest {
+                    staging_parent: private.path(),
+                    package: &package,
+                    operation: &operation,
+                    password: Zeroizing::new(b"sample password".to_vec())
+                },
+                &AtomicBool::new(false)
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(private.path()).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(home.path().join("original/History")).unwrap(),
+            b"actual history snapshot"
+        );
+    }
+
+    phase history_and_wal_are_carried_together_and_ciphertext_changes_are_refused;
+    {
+        let home = fixture();
+        let private = private_directory();
+        let selected = selected(home.path(), true);
+        let plan = selected.plan("setup-binding".into(), [7; 32]).unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let package = private.path().join(format!("browser-{operation}.sealed"));
+        let cancel = AtomicBool::new(false);
+        let expected = export(
+            &selected,
+            &plan,
+            ExportRequest {
+                staging_parent: private.path(),
+                package: &package,
+                operation: &operation,
+                password: Zeroizing::new(b"sample password".to_vec()),
+            },
+            &cancel,
+        )
+        .unwrap();
+        let projection = extract(
             &expected,
             &plan,
             &package,
             Zeroizing::new(b"sample password".to_vec()),
             private.path(),
-            &cancel
+            &cancel,
         )
-        .is_err()
-    );
-    assert_eq!(fs::read_dir(private.path()).unwrap().count(), 1);
-    assert_eq!(
-        fs::read(home.path().join(".config/chromium/Default/History-wal")).unwrap(),
-        b"stable WAL"
-    );
+        .unwrap();
+        let profile = projection
+            .tree
+            .root
+            .join(PROFILES_DIRECTORY)
+            .join(&plan.profiles[0].id);
+        assert_eq!(
+            fs::read(profile.join("History")).unwrap(),
+            b"actual history snapshot"
+        );
+        assert_eq!(
+            fs::read(profile.join("History-wal")).unwrap(),
+            b"stable WAL"
+        );
+        assert_eq!(fs::read_dir(profile).unwrap().count(), 3);
+        drop(projection);
+        let mut cipher = fs::read(&package).unwrap();
+        let index = cipher.len() / 2;
+        cipher[index] ^= 1;
+        fs::write(&package, cipher).unwrap();
+        assert!(
+            extract(
+                &expected,
+                &plan,
+                &package,
+                Zeroizing::new(b"sample password".to_vec()),
+                private.path(),
+                &cancel
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(private.path()).unwrap().count(), 1);
+        assert_eq!(
+            fs::read(home.path().join(".config/chromium/Default/History-wal")).unwrap(),
+            b"stable WAL"
+        );
+    }
 }

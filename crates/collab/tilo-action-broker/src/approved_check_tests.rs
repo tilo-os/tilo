@@ -146,7 +146,7 @@ async fn on_broker_turn<T>(
 ) -> T {
     tilo_test_env::within("the broker answers the person", async {
         loop {
-            state.drain_action_directory_bridge(directories);
+            state.take_turn(directories);
             match pending.poll_ready() {
                 tilo_actions::remote::PendingPoll::Ready(answer) => return answer,
                 tilo_actions::remote::PendingPoll::Waiting => tokio::task::yield_now().await,

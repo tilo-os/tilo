@@ -240,33 +240,37 @@ fn rounded_triangle(points: [Point; 3], radius: f64) -> BezPath {
 mod tests {
     use super::*;
 
-    #[test]
-    fn play_is_the_prominent_control() {
-        let theme = Theme::dark();
-        let play = TransportFace::side(TransportControl::PlayPause { playing: false }, &theme);
-        let skip = TransportFace::side(TransportControl::Next, &theme);
-        assert!(play > skip, "play {play} stands a size up from skip {skip}");
-    }
+    tilo_test_env::scenario! {
+        fn a_transport_control_is_sized_named_and_reachable;
 
-    #[test]
-    fn the_control_names_what_it_does_now() {
-        assert_eq!(
-            TransportControl::PlayPause { playing: true }.name(),
-            "Pause",
-            "the control names itself in the desktop's language"
-        );
-        assert_eq!(
-            TransportControl::PlayPause { playing: false }.icon(),
-            Icon::Play
-        );
-        assert_eq!(TransportControl::Previous.icon(), Icon::SkipBack);
-    }
+        phase play_is_the_prominent_control;
+        {
+            let theme = Theme::dark();
+            let play = TransportFace::side(TransportControl::PlayPause { playing: false }, &theme);
+            let skip = TransportFace::side(TransportControl::Next, &theme);
+            assert!(play > skip, "play {play} stands a size up from skip {skip}");
+        }
 
-    #[test]
-    fn a_small_face_still_meets_the_pointer_target() {
-        let theme = Theme::dark();
-        let face = TransportFace::new(Rect::new(0.0, 0.0, 20.0, 20.0), TransportControl::Next);
-        let hit = face.hit_rect(&theme);
-        assert!(hit.width() >= f64::from(theme.tokens.metrics.min_pointer_target) - 0.01);
+        phase the_control_names_what_it_does_now;
+        {
+            assert_eq!(
+                TransportControl::PlayPause { playing: true }.name(),
+                "Pause",
+                "the control names itself in the desktop's language"
+            );
+            assert_eq!(
+                TransportControl::PlayPause { playing: false }.icon(),
+                Icon::Play
+            );
+            assert_eq!(TransportControl::Previous.icon(), Icon::SkipBack);
+        }
+
+        phase a_small_face_still_meets_the_pointer_target;
+        {
+            let theme = Theme::dark();
+            let face = TransportFace::new(Rect::new(0.0, 0.0, 20.0, 20.0), TransportControl::Next);
+            let hit = face.hit_rect(&theme);
+            assert!(hit.width() >= f64::from(theme.tokens.metrics.min_pointer_target) - 0.01);
+        }
     }
 }

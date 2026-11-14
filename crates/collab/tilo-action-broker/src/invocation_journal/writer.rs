@@ -180,6 +180,10 @@ impl Durable {
     pub(super) const fn ticket(&self) -> Option<&Arc<Ticket>> {
         self.0.as_ref()
     }
+    /// Whether nothing is in flight: the transition was already durable.
+    pub(crate) const fn is_settled(&self) -> bool {
+        self.0.is_none()
+    }
     /// Wait for the write without holding the thread: the broker's loop
     /// goes on answering meanwhile.
     pub(crate) async fn wait(self) -> Result<(), String> {
@@ -438,14 +442,17 @@ impl Drop for Writer {
     /// the journal is gone: a writer opened after it finds the store whole.
     fn drop(&mut self) {
         drop(self.jobs.take());
-        if let Some(thread) = self.thread.take() {
-            // Dropped by a ticket's callback on the writer itself (it held
-            // the journal's last owner): that thread cannot wait for itself.
-            // It still makes the writes queued behind this one, then ends
-            // and lets the lock go.
-            if thread.thread().id() != std::thread::current().id() {
-                let _ = thread.join();
-            }
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        // A writer cannot wait for itself: whoever answers a transition hands
+        // work that needs its owner to that owner's own turn, so the journal
+        // is never dropped on its writer. Were it, the store's lock would
+        // outlive the journal, and the next opener be told it has a writer.
+        let own = thread.thread().id() == std::thread::current().id();
+        debug_assert!(!own, "the invocation journal was dropped on its writer");
+        if !own {
+            let _ = thread.join();
         }
     }
 }

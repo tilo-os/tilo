@@ -156,47 +156,51 @@ pub struct OpenApp {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_app_open_names_the_environments_own_action() {
-        assert_eq!(target().provider, PROVIDER);
-        assert_eq!(target().address.resource, RESOURCE);
-        assert_eq!(target().address.action, OPEN);
-        assert_eq!(stop_target().address.action, STOP);
-        assert_ne!(OPEN, super::super::browser::OPEN);
-    }
+    tilo_test_env::scenario! {
+        fn a_linux_app_is_named_and_launched_by_its_desktop_file;
 
-    #[test]
-    fn an_app_is_named_by_its_desktop_file_and_nothing_else() {
-        assert_eq!(
-            AppLaunch::new(" org.gnome.TextEditor.desktop ").unwrap(),
-            AppLaunch {
-                desktop_id: "org.gnome.TextEditor".into()
-            }
-        );
-        assert_eq!(AppLaunch::new("xterm").unwrap().desktop_id, "xterm");
-        for refused in [
-            "",
-            "  ",
-            "xterm -e sh",
-            "../xterm",
-            "-x",
-            "a;b",
-            "a/b",
-            "émacs",
-        ] {
-            assert!(AppLaunch::new(refused).is_err(), "{refused:?}");
+        phase an_app_open_names_the_environments_own_action;
+        {
+            assert_eq!(target().provider, PROVIDER);
+            assert_eq!(target().address.resource, RESOURCE);
+            assert_eq!(target().address.action, OPEN);
+            assert_eq!(stop_target().address.action, STOP);
+            assert_ne!(OPEN, super::super::browser::OPEN);
         }
-    }
 
-    #[test]
-    fn a_launch_travels_as_one_line_and_reads_back() {
-        let launch = AppLaunch::new("org.gnome.TextEditor").unwrap();
-        let line = launch.line();
-        assert!(!line.contains('\n'));
-        assert_eq!(AppLaunch::parse(&line), Some(launch));
-        // A line that names something other than a desktop file starts
-        // nothing.
-        assert_eq!(AppLaunch::parse(r#"{"desktop_id":"sh -c id"}"#), None);
-        assert_eq!(AppLaunch::parse("xterm"), None);
+        phase an_app_is_named_by_its_desktop_file_and_nothing_else;
+        {
+            assert_eq!(
+                AppLaunch::new(" org.gnome.TextEditor.desktop ").unwrap(),
+                AppLaunch {
+                    desktop_id: "org.gnome.TextEditor".into()
+                }
+            );
+            assert_eq!(AppLaunch::new("xterm").unwrap().desktop_id, "xterm");
+            for refused in [
+                "",
+                "  ",
+                "xterm -e sh",
+                "../xterm",
+                "-x",
+                "a;b",
+                "a/b",
+                "émacs",
+            ] {
+                assert!(AppLaunch::new(refused).is_err(), "{refused:?}");
+            }
+        }
+
+        phase a_launch_travels_as_one_line_and_reads_back;
+        {
+            let launch = AppLaunch::new("org.gnome.TextEditor").unwrap();
+            let line = launch.line();
+            assert!(!line.contains('\n'));
+            assert_eq!(AppLaunch::parse(&line), Some(launch));
+            // A line that names something other than a desktop file starts
+            // nothing.
+            assert_eq!(AppLaunch::parse(r#"{"desktop_id":"sh -c id"}"#), None);
+            assert_eq!(AppLaunch::parse("xterm"), None);
+        }
     }
 }

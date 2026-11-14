@@ -300,63 +300,69 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_view_starts_once_is_retried_while_it_cannot_show_and_ends_when_unwanted() {
-        let mut views: Views<Fake> = Views::default();
-        let start = crate::time::now();
-        let mut started = 0;
-        let followed = views.follow([&view("plan")], start, |_| {
-            started += 1;
-            Ok(Fake(EmbedState::Loading))
-        });
-        assert!(followed.changed && followed.dropped.is_empty());
-        assert_eq!(views.state(&view("plan")), Some(EmbedState::Loading));
-        let soon = start.checked_add(Duration::from_millis(500)).expect("time");
-        assert!(
-            !views
-                .follow([&view("plan")], soon, |_| unreachable!())
-                .changed
-        );
-        assert_eq!(views.retry_deadline(), start.checked_add(RETRY));
+    tilo_test_env::scenario! {
+        /// `Views`: the embeds a host follows.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_view_is_started_retried_ended_or_says_why_it_cannot_show;
 
-        let later = start.checked_add(RETRY).expect("time");
-        let followed = views.follow([&view("plan")], later, |_| {
-            started += 1;
-            Ok(Fake(EmbedState::Showing))
-        });
-        assert_eq!(followed.dropped.len(), 1, "the earlier try ends");
-        assert_eq!(started, 2);
-        assert_eq!(
-            views.retry_deadline(),
-            None,
-            "a showing view waits for nothing"
-        );
-        let much_later = later.checked_add(RETRY * 3).expect("time");
-        assert!(
-            !views
-                .follow([&view("plan")], much_later, |_| unreachable!())
-                .changed
-        );
+        phase a_view_starts_once_is_retried_while_it_cannot_show_and_ends_when_unwanted;
+        {
+            let mut views: Views<Fake> = Views::default();
+            let start = crate::time::now();
+            let mut started = 0;
+            let followed = views.follow([&view("plan")], start, |_| {
+                started += 1;
+                Ok(Fake(EmbedState::Loading))
+            });
+            assert!(followed.changed && followed.dropped.is_empty());
+            assert_eq!(views.state(&view("plan")), Some(EmbedState::Loading));
+            let soon = start.checked_add(Duration::from_millis(500)).expect("time");
+            assert!(
+                !views
+                    .follow([&view("plan")], soon, |_| unreachable!())
+                    .changed
+            );
+            assert_eq!(views.retry_deadline(), start.checked_add(RETRY));
 
-        let followed = views.follow([], much_later, |_| unreachable!());
-        assert!(followed.changed);
-        assert_eq!(followed.dropped.len(), 1);
-        assert!(views.is_empty());
-    }
+            let later = start.checked_add(RETRY).expect("time");
+            let followed = views.follow([&view("plan")], later, |_| {
+                started += 1;
+                Ok(Fake(EmbedState::Showing))
+            });
+            assert_eq!(followed.dropped.len(), 1, "the earlier try ends");
+            assert_eq!(started, 2);
+            assert_eq!(
+                views.retry_deadline(),
+                None,
+                "a showing view waits for nothing"
+            );
+            let much_later = later.checked_add(RETRY * 3).expect("time");
+            assert!(
+                !views
+                    .follow([&view("plan")], much_later, |_| unreachable!())
+                    .changed
+            );
 
-    #[test]
-    fn a_view_that_cannot_start_says_why() {
-        let mut views: Views<Fake> = Views::default();
-        let _ = views.follow([&view("gone")], crate::time::now(), |_| {
-            Err("It shows once it reaches you".into())
-        });
-        assert_eq!(
-            views.state(&view("gone")),
-            Some(EmbedState::Unavailable(
-                "It shows once it reaches you".into()
-            ))
-        );
-        assert_eq!(views.running().count(), 0);
+            let followed = views.follow([], much_later, |_| unreachable!());
+            assert!(followed.changed);
+            assert_eq!(followed.dropped.len(), 1);
+            assert!(views.is_empty());
+        }
+
+        phase a_view_that_cannot_start_says_why;
+        {
+            let mut views: Views<Fake> = Views::default();
+            let _ = views.follow([&view("gone")], crate::time::now(), |_| {
+                Err("It shows once it reaches you".into())
+            });
+            assert_eq!(
+                views.state(&view("gone")),
+                Some(EmbedState::Unavailable(
+                    "It shows once it reaches you".into()
+                ))
+            );
+            assert_eq!(views.running().count(), 0);
+        }
     }
 
     #[test]

@@ -46,9 +46,21 @@ mod tests {
             crate::synthetic_input::key_event(
                 winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
                 None,
+                ElementState::Released,
+            ),
+        ));
+        assert!(!shown(), "a key coming up is not a key press");
+        note(&crate::synthetic_input::keyboard_input(
+            crate::synthetic_input::key_event(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                None,
                 ElementState::Pressed,
             ),
         ));
         assert!(shown(), "the keyboard brings the ring back");
+        note(&crate::synthetic_input::mouse_release());
+        assert!(shown(), "a button coming up is not a click");
+        note(&crate::synthetic_input::mouse_press());
+        assert!(!shown(), "the next click hides it again");
     }
 }

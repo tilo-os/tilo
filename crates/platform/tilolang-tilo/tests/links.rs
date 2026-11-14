@@ -122,79 +122,83 @@ fn add_note(replica: &mut Replica, title: &str, from: Option<&ResourceRef>) -> R
     notes(replica).pop().unwrap()
 }
 
-#[test]
-fn a_note_made_from_another_says_so() {
-    let (mut ada, loaded) = board();
-    let source = add_note(&mut ada, "A", None);
-    let made = add_note(&mut ada, "B", Some(&source));
-    assert_eq!(
-        text(call(&ada, "made_from", vec![Value::resource(&made)])),
-        "A"
-    );
-    assert_eq!(
-        text(call(&ada, "made_from", vec![Value::resource(&source)])),
-        ""
-    );
-    // It is a fact of the change, so another replica reads it from the record.
-    let ben = ada.fork("ben", &[(LINKS, &loaded[0].ids)]);
-    ben.host.sync_from(&ben.doc);
-    assert_eq!(
-        text(call(&ben, "made_from", vec![Value::resource(&made)])),
-        "A"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_note_says_what_it_was_made_from_and_what_links_to_it;
 
-#[test]
-fn what_links_to_a_note_is_read_from_the_index() {
-    let (mut ada, _) = board();
-    let source = add_note(&mut ada, "A", None);
-    let made = add_note(&mut ada, "B", Some(&source));
-    // An item whose field names the note, and a note whose text mentions it.
-    let action = planned(
-        &ada,
-        "item_about",
-        json!({"n": source.id_string(), "title": "I"}),
-        None,
-    );
-    ada.apply(&action);
-    ada.commit();
-    let action = planned(
-        &ada,
-        "note_about",
-        json!({"n": source.id_string(), "title": "M"}),
-        None,
-    );
-    ada.apply(&action);
-    ada.commit();
-    assert_eq!(
-        lines(call(&ada, "links_of", vec![Value::resource(&source)])),
-        [
-            "created_from B".to_owned(),
-            "field I".to_owned(),
-            "mention M".to_owned(),
-        ]
-    );
-    // What links to it links to nothing itself.
-    assert!(lines(call(&ada, "links_of", vec![Value::resource(&made)])).is_empty());
-    // A view of what links to it shows the same, and runs again when one more is made from it.
-    let view = ada
-        .host
-        .runtime()
-        .open_view(
-            &Principal::new("ada"),
-            &ada.host.package(APP).unwrap().view_id("links").unwrap(),
-            vec![Value::resource(&source)],
-        )
-        .unwrap();
-    let shown = |view: &ViewInstance| format!("{:?}", view.tree());
-    assert!(shown(&view).contains("created_from B"), "{}", shown(&view));
-    let mut view = view;
-    add_note(&mut ada, "C", Some(&source));
-    assert!(
-        !view.poll_patches().unwrap().is_empty(),
-        "the view runs again when what links to the note changes"
-    );
-    assert!(shown(&view).contains("created_from C"), "{}", shown(&view));
+    phase a_note_made_from_another_says_so;
+    {
+        let (mut ada, loaded) = board();
+        let source = add_note(&mut ada, "A", None);
+        let made = add_note(&mut ada, "B", Some(&source));
+        assert_eq!(
+            text(call(&ada, "made_from", vec![Value::resource(&made)])),
+            "A"
+        );
+        assert_eq!(
+            text(call(&ada, "made_from", vec![Value::resource(&source)])),
+            ""
+        );
+        // It is a fact of the change, so another replica reads it from the record.
+        let ben = ada.fork("ben", &[(LINKS, &loaded[0].ids)]);
+        ben.host.sync_from(&ben.doc);
+        assert_eq!(
+            text(call(&ben, "made_from", vec![Value::resource(&made)])),
+            "A"
+        );
+    }
+
+    phase what_links_to_a_note_is_read_from_the_index;
+    {
+        let (mut ada, _) = board();
+        let source = add_note(&mut ada, "A", None);
+        let made = add_note(&mut ada, "B", Some(&source));
+        // An item whose field names the note, and a note whose text mentions it.
+        let action = planned(
+            &ada,
+            "item_about",
+            json!({"n": source.id_string(), "title": "I"}),
+            None,
+        );
+        ada.apply(&action);
+        ada.commit();
+        let action = planned(
+            &ada,
+            "note_about",
+            json!({"n": source.id_string(), "title": "M"}),
+            None,
+        );
+        ada.apply(&action);
+        ada.commit();
+        assert_eq!(
+            lines(call(&ada, "links_of", vec![Value::resource(&source)])),
+            [
+                "created_from B".to_owned(),
+                "field I".to_owned(),
+                "mention M".to_owned(),
+            ]
+        );
+        // What links to it links to nothing itself.
+        assert!(lines(call(&ada, "links_of", vec![Value::resource(&made)])).is_empty());
+        // A view of what links to it shows the same, and runs again when one more is made from it.
+        let view = ada
+            .host
+            .runtime()
+            .open_view(
+                &Principal::new("ada"),
+                &ada.host.package(APP).unwrap().view_id("links").unwrap(),
+                vec![Value::resource(&source)],
+            )
+            .unwrap();
+        let shown = |view: &ViewInstance| format!("{:?}", view.tree());
+        assert!(shown(&view).contains("created_from B"), "{}", shown(&view));
+        let mut view = view;
+        add_note(&mut ada, "C", Some(&source));
+        assert!(
+            !view.poll_patches().unwrap().is_empty(),
+            "the view runs again when what links to the note changes"
+        );
+        assert!(shown(&view).contains("created_from C"), "{}", shown(&view));
+    }
 }
 
 /// A board of `n` notes, made whole in one change as a workspace is seeded.

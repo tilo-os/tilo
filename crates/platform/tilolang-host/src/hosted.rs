@@ -59,14 +59,6 @@ thread_local! {
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
 }
 
-/// Bring `host` up to date with the record and the chunks of it this replica holds: the store reads
-/// and writes the resources each chunk holds where the record's manifest places them, and reads
-/// the chunks it was not sent if something reads or writes in them.
-fn sync_record(host: &Host, record: &InstanceRecord) {
-    host.sync_chunks(record.chunks());
-    host.sync_from(record.doc());
-}
-
 /// The person's date and time now: the device's clock, which is the one their window reads, so a
 /// day an instance writes and a day their window heads a row by are the same day.
 fn local_now() -> chrono::DateTime<chrono::Local> {
@@ -299,11 +291,40 @@ impl Surface {
             return (resources, named);
         }
         let every = self.resources(None);
-        match named(&every) {
-            Some(named) => (every, named),
-            None => (resources, address.clone()),
+        if let Some(named) = named(&every) {
+            return (every, named);
+        }
+        // A control of another app's record that runs an action of this one (Today's cleanup over
+        // the Tasks list it shows): the address names a record this app holds no resource for, and
+        // the operation by the id this app declares it by — the resource that publishes it runs it.
+        let other_app =
+            tilolang_tilo::publish::app_of(&address.resource).is_some_and(|app| app != self.app);
+        if other_app && let Some(named) = declared_in(&every, &address.action) {
+            return (every, named);
+        }
+        (resources, address.clone())
+    }
+}
+
+/// The action this app publishes by `declared` — the id its declaration keeps — on the first
+/// resource that offers it, in reading order.
+fn declared_in(resources: &[ResourceSpec], declared: &str) -> Option<ActionAddress> {
+    if declared.is_empty() {
+        return None;
+    }
+    for resource in resources {
+        if let Some(action) = resource
+            .actions
+            .iter()
+            .find(|action| action.declared == declared)
+        {
+            return Some(ActionAddress::new(resource.id.as_str(), action.id.clone()));
+        }
+        if let Some(named) = declared_in(&resource.children, declared) {
+            return Some(named);
         }
     }
+    None
 }
 
 /// `spec` without its children: the resource itself, its actions and its views.
@@ -318,7 +339,6 @@ fn shallow(spec: &ResourceSpec) -> ResourceSpec {
         children: Vec::new(),
         actions: spec.actions.clone(),
         views: spec.views.clone(),
-        readers: spec.readers,
         resource_type: spec.resource_type.clone(),
     }
 }
@@ -339,12 +359,18 @@ fn holds(spec: &ResourceSpec, address: &str) -> bool {
 
 /// What `spec` publishes of `address`: the action under the name it is published by, on the
 /// resource that carries it. `address` names that resource by its published id, or — as a
-/// window's control says what it does — by the kind of resource it acts on; and the action by
+/// window's control says what it does — by the kind of resource it acts on, with the one
+/// item of that kind it stands for when it stands for one row among many; and the action by
 /// the name it is published under or the id its declaration keeps
 /// ([`tilo_actions::ActionType::declared`]), which no rename of a view and no other language
 /// changes. `None` when `spec` and what it holds offer nothing of it.
 fn carried(spec: &ResourceSpec, address: &ActionAddress) -> Option<ActionAddress> {
-    if spec.id.as_str() == address.resource || spec.kind == address.resource {
+    let names_the_resource = match &address.item {
+        // The item pins the one resource: the kind it is and the id the app publishes it under.
+        Some(item) => spec.kind == address.resource && spec.id.as_str() == item,
+        None => spec.id.as_str() == address.resource || spec.kind == address.resource,
+    };
+    if names_the_resource {
         for action in &spec.actions {
             if action.id == address.action || action.declared == address.action {
                 return Some(ActionAddress::new(spec.id.as_str(), action.id.clone()));
@@ -1044,7 +1070,7 @@ impl Hosted {
             .receive_and(&mut self.instance, |event| events.push(event));
         // The chunks the replica holds with the record's own frame: the store reads them as what
         // the window shows reaches into them, and the indexes are built over them.
-        self.instance.sync_chunks(self.record.chunks());
+        self.record.sync_instance(&mut self.instance);
         changed |= self.instance.update();
         let chose = self.chosen();
         changed |= chose;
@@ -1190,7 +1216,7 @@ impl Hosted {
         if let Some(why) = unshared {
             self.instance.unshared(why);
         }
-        self.instance.sync_chunks(self.record.chunks());
+        self.record.sync_instance(&mut self.instance);
     }
 
     /// Publish the app's resources to the session's persistent search index, over the
@@ -1212,7 +1238,6 @@ impl Hosted {
         let Some(host) = self.instance.host() else {
             return;
         };
-        sync_record(&host, &self.record);
         // An index still being built off the frame holds nothing yet: the frame that takes it
         // in publishes what it holds, which is why nothing is marked as sent here.
         if !host.index_ready() {
@@ -1293,33 +1318,14 @@ impl Hosted {
     }
 
     /// Take in the whole index read off the frame and send it: whether it ended this turn, which
-    /// leaves the frame with nothing else to publish. The thread that read it ended without an
-    /// answer only by panicking, and then the frame reads it.
+    /// leaves the frame with nothing else to publish.
     fn index_read_off_frame(&mut self) -> bool {
-        let Some((moved, read)) = self.search_index_whole.take() else {
+        let Some((moved, mut read)) = self.search_index_whole.take() else {
             return false;
         };
-        let published = match read.poll() {
-            tilolang_tilo::background::Poll::Running => {
-                self.search_index_whole = Some((moved, read));
-                return true;
-            }
-            tilolang_tilo::background::Poll::Ready(published) => published,
-            tilolang_tilo::background::Poll::Lost => {
-                let Some(host) = self.instance.host() else {
-                    return true;
-                };
-                sync_record(&host, &self.record);
-                tilolang_tilo::search::read(
-                    &host.store().snapshot(),
-                    &tilolang_tilo::search::catalogue(&host),
-                    std::mem::take(&mut self.search_index),
-                    tilo_resource::search_index::IndexState {
-                        generation: self.search_index_build,
-                        secrets_unlocked: None,
-                    },
-                )
-            }
+        let Some(published) = read.poll() else {
+            self.search_index_whole = Some((moved, read));
+            return true;
         };
         self.search_entries = published.entries;
         self.search_index = published.publisher;
@@ -1745,20 +1751,24 @@ impl Hosted {
         let shown = self.shown();
         // What `address` names as this app publishes it, whichever way a caller named it: the
         // resource and the name a press runs, or — what a window's control says it does — the kind
-        // of resource and the id the app declares the action by.
-        let resources = surface.addressed(&shown, &address.resource);
+        // of resource and the id the app declares the action by, with the one item of that kind it
+        // stands for.
+        let named = address.item.as_deref().unwrap_or(&address.resource);
+        let resources = surface.addressed(&shown, named);
         let (resources, address) = surface.naming(resources, address);
         let by_person = invoker.kind == ActorKind::Person;
         let caller = caller_of(&invoker);
-        CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
-        let encoded = encode(&resources, &address, argument);
-        CALLER.with(|slot| *slot.borrow_mut() = None);
-        let encoded =
-            encoded.map_err(|error| Refused::new(door_code(&error), error.to_string()))?;
         let host = self
             .instance
             .host()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
+        // The action is applied as soon as it is built: the run that builds it is the one whose
+        // writes the record commits.
+        CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
+        let encoded = host.carrying_out(|| encode(&resources, &address, argument));
+        CALLER.with(|slot| *slot.borrow_mut() = None);
+        let encoded =
+            encoded.map_err(|error| Refused::new(door_code(&error), error.to_string()))?;
         if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
             return Err(Refused::new(
                 "action_invalid_arguments",
@@ -1852,7 +1862,7 @@ impl Hosted {
         };
         let item = args.get("item").and_then(serde_json::Value::as_str);
         let value = if let Some(version) = args.get("version").and_then(serde_json::Value::as_str) {
-            let doc = self.record.doc();
+            let doc = &self.record.doc();
             let heads = collaboration::history_source::steps::resolve(doc, version)?;
             let frozen = doc
                 .clone()
@@ -1878,7 +1888,6 @@ impl Hosted {
                 .instance
                 .host()
                 .ok_or_else(|| "the app has not started yet".to_owned())?;
-            sync_record(&host, &self.record);
             host.read_content(item)?
         };
         Ok(tilo_actions::ActionOutput {
@@ -2442,14 +2451,24 @@ impl Applier {
         wake: Waker,
         connection: std::os::fd::OwnedFd,
     ) -> Result<Self, String> {
+        let mut record = record;
         let scope = RecordScope::of(&record, &wake);
         let _code = scope.enter();
-        let host = Host::new(
-            record.doc(),
+        // The host opens without the record, which its store holds from here on: what the
+        // origin applies is written there, and read there at once.
+        let host = Host::open(
+            tilolang_tilo::host::Opening {
+                record: None,
+                chunks: None,
+                index_dir: None,
+                device: None,
+                wake: None,
+            },
             tilolang_tilo::runtime::Principal::new(spec.person.clone()),
             || None,
         )
         .map_err(|error| error.to_string())?;
+        record.hold_in(&host);
         host.set_clock(tilolang_tilo::host::system_time);
         host.load_bundle(bundle)
             .map_err(|error| error.to_string())?;
@@ -2517,9 +2536,6 @@ impl Applier {
     pub fn turn(&mut self) -> bool {
         let _code = self.scope.enter();
         let mut changed = self.record.take_in_record();
-        if changed {
-            sync_record(&self.host, &self.record);
-        }
         self.surface.update();
         let state = std::mem::replace(&mut self.applying, Applying::Answered);
         self.applying = match state {
@@ -2642,7 +2658,6 @@ impl Applier {
                 .apply_change(&committed.action, &invoker, ambient.as_ref())
                 .map_err(|error| error.to_string())?;
         }
-        sync_record(&self.host, &self.record);
         self.surface.update();
         Ok(true)
     }
@@ -2666,14 +2681,14 @@ impl Applier {
                 return serde_json::json!({"failed": format!("the change's context does not decode: {error}")});
             }
         };
-        // The record as the workspace holds it now: requirements are decided on what others wrote.
-        sync_record(&self.host, &self.record);
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
         // An agent asks of the resource it names, whatever a window shows: the workspace is not
         // published for one change, and an applier shows nothing. What it names by what a control
         // does — a kind of resource and the id the app declares the action by — is found the same
         // way the window finds it.
-        let resources = self.surface.addressed(&[], &change.resource);
+        let resources = self
+            .surface
+            .addressed(&[], address.item.as_deref().unwrap_or(&address.resource));
         let (resources, address) = self.surface.naming(resources, &address);
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
@@ -2711,7 +2726,6 @@ impl Applier {
                 ambient.as_ref(),
             ) {
                 Ok(value) => {
-                    sync_record(&self.host, &self.record);
                     // What it wrote, for the task to read back at once, as a change's answer.
                     let wrote = self.wrote_since(&before);
                     serde_json::json!({"ok": {"value": value, "resources": []}, "change": wrote})
@@ -2741,7 +2755,6 @@ impl Applier {
         {
             return serde_json::json!({"failed": error.to_string()});
         }
-        sync_record(&self.host, &self.record);
         let output = returned(&self.host, &action);
         let differs = change.preview.as_ref().is_some_and(|preview| {
             serde_json::to_value(&action).is_ok_and(|applied| applied != *preview)

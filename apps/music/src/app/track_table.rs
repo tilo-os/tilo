@@ -72,8 +72,11 @@ impl Actions {
 }
 
 /// The table's columns and their measured widths; a change rebuilds the table.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Shape {
+    /// The table's own name, and the stem of its controls': a page with two lists addresses each
+    /// by its own.
+    pub id: String,
     pub numbers: bool,
     pub second: Option<Second>,
     /// The title column's width beside a second one; alone, the title takes the room.
@@ -116,7 +119,7 @@ impl TrackTableHost {
     pub(super) fn new(shape: Shape, theme: &Theme) -> Self {
         let events: Events = Rc::default();
         Self {
-            host: Placed::new(build_table(shape, theme, &events)),
+            host: Placed::new(build_table(&shape, theme, &events)),
             shape,
             rows: Vec::new(),
             selected: None,
@@ -134,7 +137,7 @@ impl TrackTableHost {
         theme: &Theme,
     ) {
         if shape != self.shape {
-            self.host.replace(build_table(shape, theme, &self.events));
+            self.host.replace(build_table(&shape, theme, &self.events));
             self.shape = shape;
             self.rows.clear();
             self.host.widget_mut().set_rows(rows.clone());
@@ -254,7 +257,7 @@ impl TrackTableHost {
     /// Where the named control of row `index` stands, while the row shows its actions.
     #[cfg(test)]
     pub(super) fn control_rect(&self, index: usize, name: &str) -> Option<Rect> {
-        let id = format!("music.track.{index}.{name}");
+        let id = format!("{}.{index}.{name}", self.shape.id);
         self.host
             .widget()
             .children()
@@ -268,7 +271,7 @@ fn cell_pad(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
 
-fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackCell> {
+fn build_table(shape: &Shape, theme: &Theme, events: &Events) -> DataTable<TrackCell> {
     let pad = cell_pad(theme) as f32;
     let mut columns = Vec::new();
     if shape.numbers {
@@ -307,6 +310,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
     }
     let actions = shape.actions;
     let sink = Rc::clone(events);
+    let scoped = shape.id.clone();
     let action_column = ColumnDef::new(
         "actions",
         "",
@@ -319,7 +323,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
             }
         },
     ))
-    .with_widget(move |row: &TrackCell, index| action_buttons(row, index, actions, &sink));
+    .with_widget(move |row: &TrackCell, index| action_buttons(&scoped, row, index, actions, &sink));
     // A download's one action stays in view; a song's show under the pointer.
     columns.push(if actions == Actions::Download {
         action_column
@@ -340,12 +344,12 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
     let drag = Rc::clone(events);
     let menu = Rc::clone(events);
     let mut table = DataTable::new(columns)
-        .with_id("music.tracks")
+        .with_id(shape.id.clone())
         .with_accessible_name(crate::i18n::t("music-a11y-songs"))
         .selectable(true)
         .host_scrolled()
         .with_row_height(shape.row_height)
-        .on_row_click_view("music.tracks", move |row, ctrl, shift| {
+        .on_row_click_view(shape.id.clone(), move |row, ctrl, shift| {
             // A press plays the song; Ctrl or Shift selects instead, for dragging several at once.
             play.borrow_mut().push(if ctrl || shift {
                 RowEvent::Select(row)
@@ -518,6 +522,7 @@ fn offline_button(row: &TrackCell) -> (Icon, &'static str) {
 }
 
 fn action_buttons(
+    table: &str,
     row: &TrackCell,
     index: usize,
     actions: Actions,
@@ -525,7 +530,7 @@ fn action_buttons(
 ) -> Box<dyn Widget> {
     let button = |name: &str, icon: Icon, label: &str, event: RowEvent| {
         let sink = Rc::clone(events);
-        Button::icon_only(&format!("music.track.{index}.{name}"), icon, label)
+        Button::icon_only(&format!("{table}.{index}.{name}"), icon, label)
             .control_size(ControlSize::Small)
             .on_effect(move || sink.borrow_mut().push(event))
     };

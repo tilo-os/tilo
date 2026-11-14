@@ -124,61 +124,66 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn a_process_in_a_session_finds_it_and_loses_it_when_it_ends() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let records = dir.path().join("terminal-sessions");
-        // This test process stands for the Terminal that asked; a child of
-        // it for the session's shell, and the shell's own child for a
-        // program typed in it. The program lives until the test closes its
-        // input (or the test process ends), never on a timer, so a slow
-        // machine can't end it before the test looks at it.
-        let mut shell = std::process::Command::new("sh")
-            .args(["-c", "exec 3<&0; cat <&3 >/dev/null & echo $!; wait"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn_locked()
-            .expect("shell");
-        let leader = shell.id();
-        mark(&records, leader, std::process::id(), "s1").expect("mark");
-        let mut line = String::new();
-        std::io::BufRead::read_line(
-            &mut std::io::BufReader::new(shell.stdout.take().expect("stdout")),
-            &mut line,
-        )
-        .expect("the shell names its child");
-        let typed: u32 = line.trim().parse().expect("a pid");
-        let found = session_of(&records, typed).expect("in the session");
-        assert_eq!(found.leader_pid, leader);
-        assert_eq!(found.requester_pid, std::process::id());
-        assert_eq!(found.session, "s1");
-        assert!(is_live(&found));
-        assert_eq!(session_of(&records, std::process::id()), None);
-        drop(shell.stdin.take());
-        let _ = shell.wait();
-        assert!(!is_live(&found));
-        assert_eq!(session_of(&records, leader), None);
-        mark(&records, std::process::id(), std::process::id(), "s2").expect("mark");
-        assert!(!records.join(leader.to_string()).exists());
-    }
+    tilo_test_env::scenario! {
+        /// The records that say which terminal session a process belongs to.
+        fn a_terminal_session_record_counts_only_for_its_own_processes;
 
-    #[test]
-    fn a_record_naming_another_process_counts_for_nothing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let me = std::process::id();
-        let (_, start) = proc_stat(me).expect("own stat");
-        let forged = Session {
-            leader_pid: me,
-            leader_start: start.wrapping_add(1),
-            requester_pid: me,
-            requester_start: start,
-            session: "s1".into(),
-        };
-        std::fs::write(
-            dir.path().join(me.to_string()),
-            serde_json::to_vec(&forged).expect("json"),
-        )
-        .expect("write");
-        assert_eq!(session_of(dir.path(), me), None);
+        phase a_process_in_a_session_finds_it_and_loses_it_when_it_ends;
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let records = dir.path().join("terminal-sessions");
+            // This test process stands for the Terminal that asked; a child of
+            // it for the session's shell, and the shell's own child for a
+            // program typed in it. The program lives until the test closes its
+            // input (or the test process ends), never on a timer, so a slow
+            // machine can't end it before the test looks at it.
+            let mut shell = std::process::Command::new("sh")
+                .args(["-c", "exec 3<&0; cat <&3 >/dev/null & echo $!; wait"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn_locked()
+                .expect("shell");
+            let leader = shell.id();
+            mark(&records, leader, std::process::id(), "s1").expect("mark");
+            let mut line = String::new();
+            std::io::BufRead::read_line(
+                &mut std::io::BufReader::new(shell.stdout.take().expect("stdout")),
+                &mut line,
+            )
+            .expect("the shell names its child");
+            let typed: u32 = line.trim().parse().expect("a pid");
+            let found = session_of(&records, typed).expect("in the session");
+            assert_eq!(found.leader_pid, leader);
+            assert_eq!(found.requester_pid, std::process::id());
+            assert_eq!(found.session, "s1");
+            assert!(is_live(&found));
+            assert_eq!(session_of(&records, std::process::id()), None);
+            drop(shell.stdin.take());
+            let _ = shell.wait();
+            assert!(!is_live(&found));
+            assert_eq!(session_of(&records, leader), None);
+            mark(&records, std::process::id(), std::process::id(), "s2").expect("mark");
+            assert!(!records.join(leader.to_string()).exists());
+        }
+
+        phase a_record_naming_another_process_counts_for_nothing;
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let me = std::process::id();
+            let (_, start) = proc_stat(me).expect("own stat");
+            let forged = Session {
+                leader_pid: me,
+                leader_start: start.wrapping_add(1),
+                requester_pid: me,
+                requester_start: start,
+                session: "s1".into(),
+            };
+            std::fs::write(
+                dir.path().join(me.to_string()),
+                serde_json::to_vec(&forged).expect("json"),
+            )
+            .expect("write");
+            assert_eq!(session_of(dir.path(), me), None);
+        }
     }
 }

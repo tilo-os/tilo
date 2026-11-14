@@ -1083,18 +1083,9 @@ fn still_kept(
     if kept.is_empty() {
         return Vec::new();
     }
-    // The collection's own listing, whatever the query holds of it.
-    let plain = Rc::new(CollRef {
-        filter: None,
-        order: None,
-        ..coll.clone()
-    });
-    let Ok(all) = core.coll_listing(&plain) else {
-        return Vec::new();
-    };
     kept.iter()
         .filter(|(_, item)| listing.holds(item) == Some(false))
-        .filter(|(_, item)| all.holds(item) == Some(true))
+        .filter(|(_, item)| keeps(core, coll, item) == Some(true))
         .map(|(place, item)| (*place, Rc::clone(item)))
         .collect()
 }

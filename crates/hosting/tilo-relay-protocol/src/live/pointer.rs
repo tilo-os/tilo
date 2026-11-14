@@ -255,139 +255,143 @@ mod tests {
         }
     }
 
-    /// A pointer over a window lands on the same spot of that window on a
-    /// screen of another size, and one over the empty desktop as far beside
-    /// the nearest window, though the two members' strips have nothing in
-    /// common.
-    #[test]
-    fn a_pointer_lands_on_the_same_spot_in_layouts_of_other_sizes() {
-        let over_window = wide().anchor([350.0, 200.0]).expect("over the window");
-        assert_eq!(
-            over_window,
-            LivePointer::Window {
+    tilo_test_env::scenario! {
+        fn a_pointer_is_anchored_to_what_it_is_over;
+
+        phase a_pointer_lands_on_the_same_spot_in_layouts_of_other_sizes;
+        // A pointer over a window lands on the same spot of that window on a
+        // screen of another size, and one over the empty desktop as far beside
+        // the nearest window, though the two members' strips have nothing in
+        // common.
+        {
+            let over_window = wide().anchor([350.0, 200.0]).expect("over the window");
+            assert_eq!(
+                over_window,
+                LivePointer::Window {
+                    record: notes(),
+                    at: [250.0, 120.0]
+                }
+            );
+            assert_eq!(narrow().place(&over_window), Some([270.0, 180.0]));
+            assert_eq!(
+                narrow().anchor([270.0, 180.0]),
+                Some(over_window),
+                "and back"
+            );
+
+            // 44 px right of the chat window, halfway down it.
+            let over_desktop = wide().anchor([1352.0, 340.0]).expect("beside a window");
+            assert_eq!(
+                over_desktop,
+                LivePointer::Beside {
+                    record: chat(),
+                    edge: [1.0, 0.5],
+                    at: [44.0, 0.0]
+                }
+            );
+            let placed = narrow()
+                .place(&over_desktop)
+                .expect("the narrow screen shows the chat");
+            assert_eq!(
+                placed,
+                [872.0, 320.0],
+                "44 px right of its chat, halfway down"
+            );
+            assert_eq!(narrow().anchor(placed), Some(over_desktop), "and back");
+
+            // Above and left of the first window: from its corner.
+            let corner = wide().anchor([60.0, 50.0]).expect("beside a window");
+            assert_eq!(
+                corner,
+                LivePointer::Beside {
+                    record: notes(),
+                    edge: [0.0, 0.0],
+                    at: [-40.0, -30.0]
+                }
+            );
+            assert_eq!(
+                narrow().place(&corner),
+                Some([-20.0, 30.0]),
+                "off the narrow screen"
+            );
+        }
+
+        phase what_a_viewer_does_not_show_is_not_placed;
+        {
+            let sheets = LiveRecord {
+                app: "so.tilo.sheets".into(),
+                record: String::new(),
+            };
+            let elsewhere = LivePointer::Window {
+                record: sheets.clone(),
+                at: [10.0, 10.0],
+            };
+            assert_eq!(wide().place(&elsewhere), None, "a window not open here");
+            let beside_elsewhere = LivePointer::Beside {
+                record: sheets,
+                edge: [1.0, 0.0],
+                at: [10.0, 0.0],
+            };
+            assert_eq!(wide().place(&beside_elsewhere), None);
+            assert_eq!(PointerLayout::default().anchor([1.0, 1.0]), None);
+        }
+
+        phase an_empty_desk_points_in_its_strip;
+        // A desk showing no window has only its strip to say where a pointer
+        // is: a member showing that strip places it, however scrolled; one
+        // whose strips are their own does not.
+        {
+            let empty = |id, scroll_x| PointerLayout {
+                windows: Vec::new(),
+                strip: Some(ShownStrip {
+                    id,
+                    area: [0.0, 40.0, 1000.0, 800.0],
+                    scroll_x,
+                }),
+            };
+            let pointer = empty(7, 0.0).anchor([600.0, 300.0]).expect("on the strip");
+            assert_eq!(
+                pointer,
+                LivePointer::Strip {
+                    strip: 7,
+                    at: [600.0, 260.0]
+                }
+            );
+            assert_eq!(empty(7, 200.0).place(&pointer), Some([400.0, 300.0]));
+            assert_eq!(
+                empty(7, 700.0).place(&pointer),
+                None,
+                "scrolled out of view"
+            );
+            assert_eq!(
+                empty(9, 0.0).place(&pointer),
+                None,
+                "another member's own strip"
+            );
+        }
+
+        phase a_point_past_a_narrower_window_stays_on_its_edge;
+        {
+            let far_right = LivePointer::Window {
                 record: notes(),
-                at: [250.0, 120.0]
-            }
-        );
-        assert_eq!(narrow().place(&over_window), Some([270.0, 180.0]));
-        assert_eq!(
-            narrow().anchor([270.0, 180.0]),
-            Some(over_window),
-            "and back"
-        );
+                at: [950.0, 10.0],
+            };
+            assert_eq!(narrow().place(&far_right), Some([419.0, 70.0]));
+        }
 
-        // 44 px right of the chat window, halfway down it.
-        let over_desktop = wide().anchor([1352.0, 340.0]).expect("beside a window");
-        assert_eq!(
-            over_desktop,
-            LivePointer::Beside {
-                record: chat(),
-                edge: [1.0, 0.5],
-                at: [44.0, 0.0]
-            }
-        );
-        let placed = narrow()
-            .place(&over_desktop)
-            .expect("the narrow screen shows the chat");
-        assert_eq!(
-            placed,
-            [872.0, 320.0],
-            "44 px right of its chat, halfway down"
-        );
-        assert_eq!(narrow().anchor(placed), Some(over_desktop), "and back");
-
-        // Above and left of the first window: from its corner.
-        let corner = wide().anchor([60.0, 50.0]).expect("beside a window");
-        assert_eq!(
-            corner,
-            LivePointer::Beside {
+        phase anchors_are_compared_by_what_they_are_over;
+        {
+            let a = LivePointer::Beside {
                 record: notes(),
-                edge: [0.0, 0.0],
-                at: [-40.0, -30.0]
-            }
-        );
-        assert_eq!(
-            narrow().place(&corner),
-            Some([-20.0, 30.0]),
-            "off the narrow screen"
-        );
-    }
-
-    #[test]
-    fn what_a_viewer_does_not_show_is_not_placed() {
-        let sheets = LiveRecord {
-            app: "so.tilo.sheets".into(),
-            record: String::new(),
-        };
-        let elsewhere = LivePointer::Window {
-            record: sheets.clone(),
-            at: [10.0, 10.0],
-        };
-        assert_eq!(wide().place(&elsewhere), None, "a window not open here");
-        let beside_elsewhere = LivePointer::Beside {
-            record: sheets,
-            edge: [1.0, 0.0],
-            at: [10.0, 0.0],
-        };
-        assert_eq!(wide().place(&beside_elsewhere), None);
-        assert_eq!(PointerLayout::default().anchor([1.0, 1.0]), None);
-    }
-
-    /// A desk showing no window has only its strip to say where a pointer
-    /// is: a member showing that strip places it, however scrolled; one
-    /// whose strips are their own does not.
-    #[test]
-    fn an_empty_desk_points_in_its_strip() {
-        let empty = |id, scroll_x| PointerLayout {
-            windows: Vec::new(),
-            strip: Some(ShownStrip {
-                id,
-                area: [0.0, 40.0, 1000.0, 800.0],
-                scroll_x,
-            }),
-        };
-        let pointer = empty(7, 0.0).anchor([600.0, 300.0]).expect("on the strip");
-        assert_eq!(
-            pointer,
-            LivePointer::Strip {
-                strip: 7,
-                at: [600.0, 260.0]
-            }
-        );
-        assert_eq!(empty(7, 200.0).place(&pointer), Some([400.0, 300.0]));
-        assert_eq!(
-            empty(7, 700.0).place(&pointer),
-            None,
-            "scrolled out of view"
-        );
-        assert_eq!(
-            empty(9, 0.0).place(&pointer),
-            None,
-            "another member's own strip"
-        );
-    }
-
-    #[test]
-    fn a_point_past_a_narrower_window_stays_on_its_edge() {
-        let far_right = LivePointer::Window {
-            record: notes(),
-            at: [950.0, 10.0],
-        };
-        assert_eq!(narrow().place(&far_right), Some([419.0, 70.0]));
-    }
-
-    #[test]
-    fn anchors_are_compared_by_what_they_are_over() {
-        let a = LivePointer::Beside {
-            record: notes(),
-            edge: [1.0, 0.25],
-            at: [1.0, 2.0],
-        };
-        assert!(a.same_anchor(&a.with_at([5.0, 6.0])));
-        assert_eq!(a.with_at([5.0, 6.0]).at(), [5.0, 6.0]);
-        assert!(!a.same_anchor(&LivePointer::Window {
-            record: notes(),
-            at: [1.0, 2.0]
-        }));
+                edge: [1.0, 0.25],
+                at: [1.0, 2.0],
+            };
+            assert!(a.same_anchor(&a.with_at([5.0, 6.0])));
+            assert_eq!(a.with_at([5.0, 6.0]).at(), [5.0, 6.0]);
+            assert!(!a.same_anchor(&LivePointer::Window {
+                record: notes(),
+                at: [1.0, 2.0]
+            }));
+        }
     }
 }

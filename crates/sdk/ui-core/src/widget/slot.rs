@@ -226,50 +226,56 @@ mod tests {
     use super::*;
     use crate::widget::{Text, TextInput};
 
-    #[test]
-    fn a_slot_adopts_new_content_at_its_next_sync() {
-        let (mut slot, handle) = Slot::new(Box::new(Text::new("Loading")));
-        handle.set(Box::new(Text::new("Ready")));
-        assert_eq!(
-            Widget::accessibility(&slot).and_then(|n| n.name).as_deref(),
-            Some("Loading"),
-            "not before the sync"
-        );
-        let doc = automerge::AutoCommit::new();
-        Widget::sync(&mut slot, &doc, &automerge::ROOT);
-        assert_eq!(
-            Widget::accessibility(&slot).and_then(|n| n.name).as_deref(),
-            Some("Ready")
-        );
-        assert!(Widget::take_structure_dirty(&mut slot));
-        let (empty, _) = Slot::empty();
-        assert!(Widget::children(&empty).is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// A slot and a switch.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_slot_adopts_content_and_keeps_its_parts;
 
-    #[test]
-    fn a_switch_keeps_each_part_it_built_alive() {
-        let tab = crate::LocalState::new(0_u8);
-        let builds = Rc::new(Cell::new(0));
-        let counted = Rc::clone(&builds);
-        let mut switch = Switch::from_state(
-            &tab,
-            |tab| *tab,
-            move |tab| {
-                counted.set(counted.get() + 1);
-                Box::new(TextInput::local().with_id(&format!("tab-{tab}"))) as Element
-            },
-        );
-        let doc = automerge::AutoCommit::new();
-        assert_eq!(builds.get(), 1);
-        tab.set(1);
-        Widget::sync(&mut switch, &doc, &automerge::ROOT);
-        assert_eq!(builds.get(), 2);
-        assert!(Widget::take_structure_dirty(&mut switch));
-        assert_eq!(switch.current().test_id(), Some("tab-1"));
-        tab.set(0);
-        Widget::sync(&mut switch, &doc, &automerge::ROOT);
-        assert_eq!(builds.get(), 2, "the first part was kept, not rebuilt");
-        assert_eq!(switch.current().test_id(), Some("tab-0"));
-        assert!(switch.part(&1).is_some());
+        phase a_slot_adopts_new_content_at_its_next_sync;
+        {
+            let (mut slot, handle) = Slot::new(Box::new(Text::new("Loading")));
+            handle.set(Box::new(Text::new("Ready")));
+            assert_eq!(
+                Widget::accessibility(&slot).and_then(|n| n.name).as_deref(),
+                Some("Loading"),
+                "not before the sync"
+            );
+            let doc = automerge::AutoCommit::new();
+            Widget::sync(&mut slot, &doc, &automerge::ROOT);
+            assert_eq!(
+                Widget::accessibility(&slot).and_then(|n| n.name).as_deref(),
+                Some("Ready")
+            );
+            assert!(Widget::take_structure_dirty(&mut slot));
+            let (empty, _) = Slot::empty();
+            assert!(Widget::children(&empty).is_empty());
+        }
+
+        phase a_switch_keeps_each_part_it_built_alive;
+        {
+            let tab = crate::LocalState::new(0_u8);
+            let builds = Rc::new(Cell::new(0));
+            let counted = Rc::clone(&builds);
+            let mut switch = Switch::from_state(
+                &tab,
+                |tab| *tab,
+                move |tab| {
+                    counted.set(counted.get() + 1);
+                    Box::new(TextInput::local().with_id(&format!("tab-{tab}"))) as Element
+                },
+            );
+            let doc = automerge::AutoCommit::new();
+            assert_eq!(builds.get(), 1);
+            tab.set(1);
+            Widget::sync(&mut switch, &doc, &automerge::ROOT);
+            assert_eq!(builds.get(), 2);
+            assert!(Widget::take_structure_dirty(&mut switch));
+            assert_eq!(switch.current().test_id(), Some("tab-1"));
+            tab.set(0);
+            Widget::sync(&mut switch, &doc, &automerge::ROOT);
+            assert_eq!(builds.get(), 2, "the first part was kept, not rebuilt");
+            assert_eq!(switch.current().test_id(), Some("tab-0"));
+            assert!(switch.part(&1).is_some());
+        }
     }
 }

@@ -27,7 +27,7 @@ pub use day::{ConversationClock, ConversationDay, DayBreaks, day_break_indices};
 pub use delivery::{DeliveryFace, DeliveryState, DeliveryStep};
 pub use draft::{DRAFT_PREVIEW_CHARS, DraftBook, line as draft_line, preview as draft_preview};
 pub use earlier::EarlierUnavailableFace;
-pub use jump::{Jump, JumpFace, pill_reserve};
+pub use jump::{JUMPS, Jump, JumpFace, pill_rect};
 pub use list::{
     ConversationLine, ConversationList, ConversationRole, ListCache, ListFace, ListWork,
     bubble_colors, run_breaks,

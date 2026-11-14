@@ -18,6 +18,7 @@
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
 
+use collab_types::WorkspaceId;
 pub mod govern;
 
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget,
 };
-use tilo_workspace_join::{GovernedMember, MemberRole};
+use tilo_workspace_join::{GovernedMember, Role};
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
@@ -128,8 +129,9 @@ pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
 pub const CREATE_ROOM: &str = "room.create";
 /// Make the one workspace of the caller's own person on a host that keeps
 /// workspaces of people's own, or answer theirs again: any person's device
-/// may ask. Arguments: `name` (the new workspace's; "My workspace" when
-/// omitted, unused once they have one), `room` (the identity of a workspace
+/// may ask. Arguments: `name` (the new workspace's; unused once they have
+/// one), `language` (the language one they do not name is named in, a tag such
+/// as `de-DE`; English when omitted), `room` (the identity of a workspace
 /// that moves here as theirs; a different one than theirs is refused with a
 /// `tilo_actions::remote::host_account::Refusal`), and `expires_in_seconds`
 /// (how long the invitation stays redeemable; 600 when omitted). Answers a
@@ -317,12 +319,12 @@ impl WorkspaceHostAddress {
     pub fn of_hint(hint: &[u8]) -> Option<Self> {
         let decoded: tilo_workspace_join::TransportHint = postcard::from_bytes(hint).ok()?;
         let (host, _) =
-            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
                 &decoded,
             )
             .ok()?;
         Some(Self {
-            name: host.host_device_certificate.device_label,
+            name: host.device_certificate.device_label,
             hint: Some(hex::encode(hint)),
         })
     }
@@ -333,7 +335,7 @@ impl WorkspaceHostAddress {
     /// It is no signed workspace address.
     pub fn address(
         &self,
-    ) -> Result<tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1, String> {
+    ) -> Result<tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1, String> {
         let hint = self
             .hint
             .as_deref()
@@ -341,7 +343,7 @@ impl WorkspaceHostAddress {
         let bytes = hex::decode(hint).map_err(|error| error.to_string())?;
         let decoded: tilo_workspace_join::TransportHint =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
             &decoded,
         )
         .map(|(host, _)| host)
@@ -403,7 +405,7 @@ pub struct WorkspaceListing {
     /// The workspace's UUID.
     pub workspace: String,
     /// The relay workspace carrying the workspace.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The workspace's name.
     pub name: String,
     /// The workspace's committed governance generation.
@@ -478,7 +480,7 @@ pub struct SetMemberRoleRequest {
     /// The member's person.
     pub user_public_key: [u8; 32],
     /// Their new role.
-    pub role: MemberRole,
+    pub role: Role,
 }
 
 /// Remove a member and every device of theirs.
@@ -496,7 +498,7 @@ pub struct WorkspaceSummary {
     /// The workspace's UUID.
     pub workspace: String,
     /// The relay workspace carrying the workspace.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The workspace's name.
     pub name: String,
     pub generation: u64,

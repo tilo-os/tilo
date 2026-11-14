@@ -21,7 +21,8 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use crate::support::{
-    admitted, enrol, holds, ready, restart_host, route, say, start_host, start_peer, wait_for,
+    HostSettings, admitted, enrol, holds, ready, restart_host_relayed, route, say, start_host,
+    start_host_serving, start_peer, wait_for,
 };
 
 /// How many of `peer`'s writes to the workspace its replica's custody still holds.
@@ -39,7 +40,7 @@ fn unadmitted(peer: &Link) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -49,7 +50,6 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let peer = start_peer(
         host.iroh(),
         browser.cert.clone(),
@@ -89,20 +89,23 @@ const OFFLINE: usize = 150;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn outbox_survives_a_host_restart_and_is_replayed() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     // The restarted host comes up at the ports the kernel picks, its
-    // identity the one its pages hold.
-    let host = start_host(
+    // identity the one its pages hold, through the relay they reach it at.
+    let host = start_host_serving(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            relayed: true,
+            ..HostSettings::default()
+        },
     )
     .await;
-    let mut laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     let store = Arc::new(MemoryPeerStore::default());
     let peer = tilo_session_client::start_session(
@@ -144,8 +147,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     assert_ne!(peer.status().phase, TransportPhase::Connected);
     assert_eq!(peer.snapshot().synchronization, "pending");
 
-    let host = restart_host(&root, &host_device, state.path()).await;
-    laptop.reconnect(&host.relay, &root).await;
+    let host = restart_host_relayed(&root, &host_device, state.path()).await;
     peer.send(Cmd::Reconnect).unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the replayed commits to be durable", || async {

@@ -257,6 +257,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("NewInvitation"))
         .json(201, "Invitation"),
         op(
+            "namePerson",
+            Method::POST,
+            "/v1/workspaces/{workspace}/members/name",
+            "The name the key's own person goes by in the workspace",
+        )
+        .body(Body::Json("NewName"))
+        .json(200, "Members"),
+        op(
             "runProgram",
             Method::POST,
             "/v1/workspaces/{workspace}/programs",
@@ -272,6 +280,36 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .body(Body::Bytes)
         .json(201, "Uploaded"),
+        op(
+            "openUpload",
+            Method::POST,
+            "/v1/workspaces/{workspace}/uploads/{upload}",
+            "Open an upload of a size under an id of the caller's choosing, for a file too large for one request",
+        )
+        .body(Body::Json("NewUpload"))
+        .json(201, "Upload"),
+        op(
+            "uploadPiece",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/uploads/{upload}",
+            "Send the next bytes of an open upload, at the offset it stands at",
+        )
+        .body(Body::Bytes)
+        .json(200, "Upload"),
+        op(
+            "uploadStatus",
+            Method::GET,
+            "/v1/workspaces/{workspace}/uploads/{upload}",
+            "Where an open upload stands, to continue it",
+        )
+        .json(200, "Upload"),
+        op(
+            "abandonUpload",
+            Method::DELETE,
+            "/v1/workspaces/{workspace}/uploads/{upload}",
+            "Drop an open upload; nothing of it is stored",
+        )
+        .json(200, "DeletedUpload"),
         op(
             "getContent",
             Method::GET,

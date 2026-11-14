@@ -261,48 +261,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_decision_answers_one_exact_signed_proposal() {
-        let (member_key, _) = generate_keypair();
-        let (owner_key, _) = generate_keypair();
-        let proposal = DocumentImportProposalV1::new(&terms(b"doc"), &member_key).unwrap();
-        proposal.verify(50).unwrap();
-        assert!(proposal.carries(b"doc"));
-        assert!(!proposal.carries(b"dog"));
-        let accepted = DocumentImportDecisionV1::new(&proposal, true, 20, &owner_key).unwrap();
-        accepted.verify(&proposal, 30).unwrap();
-        let declined = DocumentImportDecisionV1::new(&proposal, false, 200, &owner_key).unwrap();
-        declined.verify(&proposal, 300).unwrap();
+    tilo_test_env::scenario! {
+        /// A document import: the proposal's bounds and the decision that answers one signed proposal.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_document_import_proposal_is_bounded_and_decided_exactly;
 
-        // An acceptance after expiry, for another proposal, or tampered fails.
-        assert_eq!(
-            accepted.verify(&proposal, 100),
-            Err(DocumentImportError::Expired)
-        );
-        let late = DocumentImportDecisionV1::new(&proposal, true, 100, &owner_key).unwrap();
-        assert!(late.verify(&proposal, 99).is_err());
-        let mut other = proposal.clone();
-        other.record = "uuid:0f2b1c00-0000-4000-8000-000000000002".into();
-        assert!(accepted.verify(&other, 30).is_err());
-        let mut forged = accepted;
-        forged.accepted = false;
-        assert!(forged.verify(&proposal, 30).is_err());
-        let mut tampered = proposal;
-        tampered.title = "Something else".into();
-        assert!(tampered.verify(50).is_err());
-    }
+        phase a_decision_answers_one_exact_signed_proposal;
+        {
+            let (member_key, _) = generate_keypair();
+            let (owner_key, _) = generate_keypair();
+            let proposal = DocumentImportProposalV1::new(&terms(b"doc"), &member_key).unwrap();
+            proposal.verify(50).unwrap();
+            assert!(proposal.carries(b"doc"));
+            assert!(!proposal.carries(b"dog"));
+            let accepted = DocumentImportDecisionV1::new(&proposal, true, 20, &owner_key).unwrap();
+            accepted.verify(&proposal, 30).unwrap();
+            let declined = DocumentImportDecisionV1::new(&proposal, false, 200, &owner_key).unwrap();
+            declined.verify(&proposal, 300).unwrap();
 
-    #[test]
-    fn a_proposal_stays_within_its_bounds() {
-        let (key, _) = generate_keypair();
-        let too_large = vec![0; usize::try_from(MAX_IMPORT_DOCUMENT_BYTES).unwrap() + 1];
-        assert_eq!(
-            DocumentImportProposalV1::new(&terms(&too_large), &key),
-            Err(DocumentImportError::OutOfBounds)
-        );
-        assert!(DocumentImportProposalV1::new(&terms(b""), &key).is_err());
-        let mut forever = terms(b"doc");
-        forever.expires_unix = forever.issued_unix + MAX_IMPORT_LIFETIME_SECS + 1;
-        assert!(DocumentImportProposalV1::new(&forever, &key).is_err());
+            // An acceptance after expiry, for another proposal, or tampered fails.
+            assert_eq!(
+                accepted.verify(&proposal, 100),
+                Err(DocumentImportError::Expired)
+            );
+            let late = DocumentImportDecisionV1::new(&proposal, true, 100, &owner_key).unwrap();
+            assert!(late.verify(&proposal, 99).is_err());
+            let mut other = proposal.clone();
+            other.record = "uuid:0f2b1c00-0000-4000-8000-000000000002".into();
+            assert!(accepted.verify(&other, 30).is_err());
+            let mut forged = accepted;
+            forged.accepted = false;
+            assert!(forged.verify(&proposal, 30).is_err());
+            let mut tampered = proposal;
+            tampered.title = "Something else".into();
+            assert!(tampered.verify(50).is_err());
+        }
+
+        phase a_proposal_stays_within_its_bounds;
+        {
+            let (key, _) = generate_keypair();
+            let too_large = vec![0; usize::try_from(MAX_IMPORT_DOCUMENT_BYTES).unwrap() + 1];
+            assert_eq!(
+                DocumentImportProposalV1::new(&terms(&too_large), &key),
+                Err(DocumentImportError::OutOfBounds)
+            );
+            assert!(DocumentImportProposalV1::new(&terms(b""), &key).is_err());
+            let mut forever = terms(b"doc");
+            forever.expires_unix = forever.issued_unix + MAX_IMPORT_LIFETIME_SECS + 1;
+            assert!(DocumentImportProposalV1::new(&forever, &key).is_err());
+        }
     }
 }

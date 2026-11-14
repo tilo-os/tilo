@@ -84,7 +84,7 @@ fn person() -> Person {
     let token = store
         .mint_enrollment(
             &profile.id,
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
             now,
             now.saturating_add(3_600_000_000_000),
         )
@@ -93,7 +93,6 @@ fn person() -> Person {
         .complete_enrollment(
             &profile.id,
             &token,
-            tilo_identity_host::enrollment::DeviceRole::Host,
             host_key.verifying_key().to_bytes(),
             "The home server",
             now,

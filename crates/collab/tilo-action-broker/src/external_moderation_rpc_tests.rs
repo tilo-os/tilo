@@ -38,25 +38,20 @@ mod external_moderation_rpc_tests {
     }
 
     impl Workspace {
-        fn new(native: bool) -> Self {
-            Self::with_document(native, None)
+        fn new() -> Self {
+            Self::with_document(None)
         }
 
-        fn with_document(native: bool, document: Option<Arc<dyn NativeDocumentReads>>) -> Self {
+        fn with_document(document: Option<Arc<dyn NativeDocumentReads>>) -> Self {
             let original = signed_worker::OriginalWorkspace::new(
-                if native {
-                    tilo_user_identity::DeviceCapabilities::primary()
-                } else {
-                    tilo_user_identity::DeviceCapabilities::host()
-                },
+                tilo_user_identity::DeviceCapabilities::primary(),
                 None,
                 None,
             );
-            Self::with_original(native, document, original)
+            Self::with_original(document, original)
         }
 
         fn with_original(
-            native: bool,
             document: Option<Arc<dyn NativeDocumentReads>>,
             original: signed_worker::OriginalWorkspace,
         ) -> Self {
@@ -76,12 +71,10 @@ mod external_moderation_rpc_tests {
             let fanout = Arc::new(FanoutState::new());
             let mut services = original.membership.services();
             services.committed_documents = document;
-            if native {
-                services.launcher = Some(Arc::new(ExactLaunch {
-                    app: route.app_id.clone(),
-                    workspace: route.cluster_id.clone(),
-                }));
-            }
+            services.launcher = Some(Arc::new(ExactLaunch {
+                app: route.app_id.clone(),
+                workspace: route.cluster_id.clone(),
+            }));
             let (owner_handle, owner_mailbox) =
                 crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
             let publisher =
@@ -111,16 +104,7 @@ mod external_moderation_rpc_tests {
         }
 
         fn caller(&self) -> (BrokerActor, InvocationCaller) {
-            let scope =
-                self.original
-                    .cert
-                    .capabilities
-                    .can_act_as_host
-                    .then(|| LocalHostWorkerScope {
-                        route: self.route.clone(),
-                        certificate: self.original.cert.clone(),
-                    });
-            let admitted = verify_join_identity_with_host_scope(
+            let admitted = verify_join_identity(
                 &self.route,
                 &signed_worker::presentation(
                     &self.route.cluster_id,
@@ -130,7 +114,6 @@ mod external_moderation_rpc_tests {
                 self.state.membership.as_ref(),
                 None,
                 self.state.certificate_authority.get().map(AsRef::as_ref),
-                scope.as_ref(),
             )
             .unwrap();
             (
@@ -199,6 +182,8 @@ mod external_moderation_rpc_tests {
             job.id
         }
 
+        /// A connection the shell launched for the Store app, joined to the
+        /// Store's record the way a packaged app joins its own route.
         async fn worker(&self, peer: u64) -> signed_worker::Connection {
             signed_worker::join_worker(
                 &self.state,
@@ -212,8 +197,6 @@ mod external_moderation_rpc_tests {
             .0
         }
 
-        /// A connection the shell launched for the Store app, joined to the
-        /// Store's record the way a packaged app joins its own route.
         async fn launched(
             &self,
             peer: u64,
@@ -346,8 +329,8 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
-                    let workspace = Workspace::new(false);
-                    let target = workspace.worker(980).await;
+                    let workspace = Workspace::new();
+                    let (_target_rpc, _, target) = workspace.launched(980).await;
                     let descriptor = descriptor(action);
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -458,8 +441,8 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
-                    let workspace = Workspace::new(false);
-                    let target = workspace.worker(980).await;
+                    let workspace = Workspace::new();
+                    let (_target_rpc, _, target) = workspace.launched(980).await;
                     let mut descriptor = descriptor(action);
                     descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
@@ -587,9 +570,8 @@ mod external_moderation_rpc_tests {
             .run_until(async {
                 for altered in ["digest", "summary", "package", "category", "none"] {
                     let note = "The package description is misleading";
-                    let workspace =
-                        Workspace::with_document(false, Some(committed_report(note, None)));
-                    let target = workspace.worker(977).await;
+                    let workspace = Workspace::with_document(Some(committed_report(note, None)));
+                    let (_target_rpc, _, target) = workspace.launched(977).await;
                     let descriptor = descriptor("submit-report");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -668,11 +650,9 @@ mod external_moderation_rpc_tests {
             .run_until(async {
                 for altered in ["case", "reason", "digest", "none"] {
                     let note = "The reported problem has been addressed";
-                    let workspace = Workspace::with_document(
-                        false,
-                        Some(committed_report(note, Some("case-one"))),
-                    );
-                    let target = workspace.worker(978).await;
+                    let workspace =
+                        Workspace::with_document(Some(committed_report(note, Some("case-one"))));
+                    let (_target_rpc, _, target) = workspace.launched(978).await;
                     let descriptor = descriptor("appeal");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -733,8 +713,8 @@ mod external_moderation_rpc_tests {
                         temp.path().join("registries.toml"),
                         format!("[[registry]]\nname = 'Custom'\nbase_url = '{base}'\nowner_pubkey_hex = '{owner}'\nenabled = {enabled}\n"),
                     ).unwrap();
-                    let workspace = Workspace::new(false);
-                    let target = workspace.worker(976).await;
+                    let workspace = Workspace::new();
+                    let (_target_rpc, _, target) = workspace.launched(976).await;
                     let descriptor = descriptor("submit-report");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -758,8 +738,8 @@ mod external_moderation_rpc_tests {
     async fn external_moderation_rpc_refuses_expired_exact_operation_before_signing() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let workspace = Workspace::new(false);
-                let target = workspace.worker(975).await;
+                let workspace = Workspace::new();
+                let (_target_rpc, _, target) = workspace.launched(975).await;
                 let descriptor = descriptor("submit-report");
                 target.handle.publish_actions(&[descriptor]).await.unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -788,7 +768,7 @@ mod external_moderation_rpc_tests {
     async fn external_moderation_rpc_native_target_requires_original_channel_and_publication() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let workspace = Workspace::new(true);
+                let workspace = Workspace::new();
                 let (rpc, presentation, target) = workspace.launched(973).await;
                 let descriptor = descriptor("submit-report");
                 target
@@ -844,8 +824,8 @@ mod external_moderation_rpc_tests {
     async fn external_moderation_rpc_rechecks_expired_original_policy() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let workspace = Workspace::new(false);
-                let target = workspace.worker(974).await;
+                let workspace = Workspace::new();
+                let (_target_rpc, _, target) = workspace.launched(974).await;
                 let descriptor = descriptor("submit-report");
                 target
                     .handle
@@ -918,9 +898,9 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
-                    let workspace = Workspace::new(false);
-                    let target = workspace.worker(971).await;
-                    let other = workspace.worker(972).await;
+                    let workspace = Workspace::new();
+                    let (_target_rpc, _, target) = workspace.launched(971).await;
+                    let (_other_rpc, _, other) = workspace.launched(972).await;
                     let descriptor = descriptor(action);
                     target
                         .handle
@@ -1009,8 +989,8 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
-                    let workspace = Workspace::new(false);
-                    let target = workspace.worker(979).await;
+                    let workspace = Workspace::new();
+                    let (_target_rpc, _, target) = workspace.launched(979).await;
                     let mut descriptor = descriptor(action);
                     descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
                     let resource = descriptor.resource.clone();
@@ -1040,9 +1020,7 @@ mod external_moderation_rpc_tests {
                     });
                     // The app's own directory answers on the broker's turn.
                     let answer = loop {
-                        workspace
-                            .state
-                            .drain_action_directory_bridge(&workspace.directories);
+                        workspace.state.take_turn(&workspace.directories);
                         if asked.is_finished() {
                             break (&mut asked).await.unwrap().unwrap();
                         }
@@ -1062,7 +1040,7 @@ mod external_moderation_rpc_tests {
     async fn external_moderation_rpc_holds_a_launched_app_to_the_same_execution_frontier() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let workspace = Workspace::new(true);
+                let workspace = Workspace::new();
                 let (_rpc, _presentation, target) = workspace.launched(974).await;
                 assert!(
                     workspace

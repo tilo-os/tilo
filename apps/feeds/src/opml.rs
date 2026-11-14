@@ -224,6 +224,111 @@ mod tests {
   </body>
 </opml>"#;
 
+    /// A parsed line: its title, address, site and folder.
+    type Line<'a> = (&'a str, &'a str, &'a str, Option<&'a str>);
+
+    fn lines(feeds: &[OpmlFeed]) -> Vec<Line<'_>> {
+        feeds
+            .iter()
+            .map(|feed| {
+                (
+                    feed.title.as_str(),
+                    feed.xml_url.as_str(),
+                    feed.html_url.as_str(),
+                    feed.folder.as_deref(),
+                )
+            })
+            .collect()
+    }
+
+    /// A file at each edge of what people export, and every line it holds.
+    const EDGES: &[(&str, &str, &[Line<'static>])] = &[
+        ("an empty file", "", &[]),
+        (
+            "a file without outlines",
+            r#"<opml version="2.0"><head/><body></body></opml>"#,
+            &[],
+        ),
+        ("not XML", "a < b and outlines > none", &[]),
+        (
+            "an outline cut short",
+            r#"<outline text="Cut" xmlUrl="https://cut.test/feed""#,
+            &[],
+        ),
+        (
+            "single quotes",
+            "<outline text='One' xmlUrl='https://one.test/feed' htmlUrl='https://one.test'/>",
+            &[("One", "https://one.test/feed", "https://one.test", None)],
+        ),
+        (
+            "no title: the address names it",
+            r#"<outline xmlUrl="https://bare.test/feed"/>"#,
+            &[("https://bare.test/feed", "https://bare.test/feed", "", None)],
+        ),
+        (
+            "a title wins over the text",
+            r#"<outline text="Text" title="Title" xmlUrl="https://t.test/feed"/>"#,
+            &[("Title", "https://t.test/feed", "", None)],
+        ),
+        (
+            "an attribute that only ends in the name",
+            r#"<outline text="X" myxmlUrl="https://wrong.test" xmlUrl="https://right.test/feed"/>"#,
+            &[("X", "https://right.test/feed", "", None)],
+        ),
+        (
+            "an ampersand written bare is kept",
+            r#"<outline text="Q" xmlUrl="https://q.test/feed?a=1&b=2"/>"#,
+            &[("Q", "https://q.test/feed?a=1&b=2", "", None)],
+        ),
+        (
+            "a folder without a name",
+            r#"<outline><outline text="In" xmlUrl="https://in.test/feed"/></outline>"#,
+            &[("In", "https://in.test/feed", "", Some("Folder"))],
+        ),
+        (
+            "an empty folder",
+            r#"<outline text="Empty"/><outline text="Feed" xmlUrl="https://feed.test/feed"/>"#,
+            &[("Feed", "https://feed.test/feed", "", None)],
+        ),
+        (
+            "a closing tag with nothing open",
+            r#"</outline><outline text="Feed" xmlUrl="https://feed.test/feed"/>"#,
+            &[("Feed", "https://feed.test/feed", "", None)],
+        ),
+        (
+            "folders in folders: a feed is in the innermost",
+            r#"<outline text="Outer"><outline text="Inner">
+                 <outline text="Deep" xmlUrl="https://deep.test/feed"/></outline>
+                 <outline text="Shallow" xmlUrl="https://shallow.test/feed"/></outline>
+               <outline text="Top" xmlUrl="https://top.test/feed"/>"#,
+            &[
+                ("Deep", "https://deep.test/feed", "", Some("Inner")),
+                ("Shallow", "https://shallow.test/feed", "", Some("Outer")),
+                ("Top", "https://top.test/feed", "", None),
+            ],
+        ),
+        (
+            "a feed written with a closing tag ends there",
+            r#"<outline text="F"><outline text="Leaf" xmlUrl="https://leaf.test/feed"></outline>
+                 <outline text="Next" xmlUrl="https://next.test/feed"/></outline>
+               <outline text="Top" xmlUrl="https://top.test/feed"/>"#,
+            &[
+                ("Leaf", "https://leaf.test/feed", "", Some("F")),
+                ("Next", "https://next.test/feed", "", Some("F")),
+                ("Top", "https://top.test/feed", "", None),
+            ],
+        ),
+        (
+            "a feed inside a feed has no folder to name",
+            r#"<outline text="Outer" xmlUrl="https://outer.test/feed">
+                 <outline text="Inner" xmlUrl="https://inner.test/feed"/></outline>"#,
+            &[
+                ("Outer", "https://outer.test/feed", "", None),
+                ("Inner", "https://inner.test/feed", "", Some("")),
+            ],
+        ),
+    ];
+
     #[test]
     fn opml_parses_imports_and_round_trips() {
         {
@@ -265,6 +370,21 @@ mod tests {
             assert_eq!(feeds.len(), 1);
             assert_eq!(feeds[0].title, "A & B");
             assert_eq!(feeds[0].xml_url, "https://x.com/feed?a=1&b=2");
+        }
+
+        for (edge, text, expected) in EDGES {
+            let parsed = parse(text);
+            assert_eq!(lines(&parsed), *expected, "{edge}: {text:?}");
+            // A folder with no name is no folder to subscribe into.
+            let folders: Vec<_> = outlines(&parsed)
+                .into_iter()
+                .map(|outline| outline.folder)
+                .collect();
+            let named: Vec<_> = expected
+                .iter()
+                .map(|line| line.3.filter(|name| !name.is_empty()).map(str::to_owned))
+                .collect();
+            assert_eq!(folders, named, "{edge}: the folders subscribed into");
         }
     }
 }

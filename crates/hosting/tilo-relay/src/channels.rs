@@ -26,7 +26,7 @@ use std::{
 };
 
 use channel_crypto::VaultKey;
-use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
+use collab_types::Ed25519PublicKey;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::channel_encryption::{
@@ -84,6 +84,7 @@ impl Channels {
         adopt_earlier_state(&state_root.join(ROOMS), &root)?;
         let directory = Directory {
             states: Arc::new(Mutex::new(HashMap::new())),
+            device: device.verifying_key().to_bytes(),
         };
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
@@ -190,20 +191,13 @@ impl Drop for Channels {
 struct Keys(ChannelKeyProvider);
 
 impl ChannelKeys for Keys {
-    fn channel_keys<'a>(
-        &'a self,
-        workspace: &'a str,
-        route: &'a ChannelRoute,
-        create: bool,
-    ) -> ChannelKeysAnswerFuture<'a> {
+    fn channel_keys<'a>(&'a self, workspace: &'a str, create: bool) -> ChannelKeysAnswerFuture<'a> {
         let keys = self.0.clone();
-        let (workspace, route) = (workspace.to_owned(), route.clone());
         Box::pin(async move {
             if keys.get().is_none() {
                 return Some(Err("this device's channel service is not running".into()));
             }
-            keys.channel_keys(&workspace, &route, create, OPEN_WAIT)
-                .await
+            keys.channel_keys(workspace, create, OPEN_WAIT).await
         })
     }
 }
@@ -272,6 +266,8 @@ struct Directory {
     /// to the same document the workspace holds. Shared, so the pump reads it
     /// on its own thread without reaching for the workspace.
     states: Arc<Mutex<HashMap<String, StatePeer>>>,
+    /// The relay's own device key.
+    device: [u8; 32],
 }
 
 impl Directory {
@@ -285,19 +281,13 @@ impl ChannelDirectory for Directory {
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let at =
             UNIX_EPOCH.checked_add(tilo_action_broker::channel_encryption::policy_instant(now))?;
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         // Governance that cannot be read says nothing of who reads it.
-        let readers = state
-            .governance()
-            .channel_readers(at, channel, route)
-            .ok()
-            .flatten()?;
+        let readers = state.governance().key_holders(at).ok()?;
         Some(
             readers
                 .into_iter()
@@ -305,16 +295,10 @@ impl ChannelDirectory for Directory {
                 .collect(),
         )
     }
-    fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &ChannelRoute,
-        now: u64,
-    ) -> Option<ChannelId> {
-        let at =
-            UNIX_EPOCH.checked_add(tilo_action_broker::channel_encryption::policy_instant(now))?;
-        let state = lock(&self.states).get(&workspace.to_string())?.clone();
-        state.governance().unit_scope(at, route).ok()
+    fn founds(&self, workspace: WorkspaceId) -> bool {
+        lock(&self.states)
+            .get(&workspace.to_string())
+            .is_some_and(|state| state.governance().founder() == Some(self.device))
     }
 }
 
@@ -413,12 +397,7 @@ mod tests {
             channels
                 .link
                 .directory
-                .allowed_devices(
-                    tilo_desktop_model::WorkspaceId::new(),
-                    collab_types::ChannelId(uuid::Uuid::new_v4()),
-                    None,
-                    0,
-                )
+                .allowed_devices(tilo_desktop_model::WorkspaceId::new(), 0)
                 .is_none()
         );
     }

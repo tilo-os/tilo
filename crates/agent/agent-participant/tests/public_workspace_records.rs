@@ -33,10 +33,11 @@ use tilo_agent_participant::{
     Replica, ReplicaActor, Seed, Step, StepAction,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::directory::Listing;
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{door, enrol, enter, start_workspace_host, wait_for, written};
@@ -115,7 +116,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host(&owner, &host_device, state.path(), false).await;
@@ -127,7 +128,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
             &host_device.cert,
             Listing {
                 description: "Everyone".into(),
-                default_role: WorkspaceRole::Editor,
+                default_role: Role::Editor,
             },
         )
         .await
@@ -245,7 +246,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![workspace.clone()],
+            workspaces: vec![WorkspaceId::parse(&workspace).unwrap()],
             apps: vec![WRITER.into(), CHAT.into()],
         },
         now,
@@ -256,7 +257,6 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
-    let _laptop = crate::participant::Participant::start(&host.relay, &owner).await;
     let planned = std::sync::Arc::new(Mutex::new(Vec::new()));
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(
@@ -324,7 +324,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     // the workspace's own chat rather than founding a second one. What the
     // member holds is read by the member's own page, so a document the agent
     // wrote there is seen as it lands.
-    let _ = member.drain();
+    let member_heard = member.events();
     control.message("Open the workspace's chat").unwrap();
     run_task(&mut agent, &control);
     let task = control.info().tasks.last().cloned().unwrap();
@@ -337,7 +337,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "the agent holds the chat the member made, with their channel: {}",
         held.body()
     );
-    let founded = member
+    let founded = member_heard
         .drain()
         .into_iter()
         .filter(|event| {
@@ -363,7 +363,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "channel": channel_id, "text": "the agent's message"
     });
     let arguments = arguments.as_object().unwrap().clone();
-    let _ = member.drain();
+    let _ = member_heard.drain();
     wait_for("the agent's message posted", || {
         let posted = agent.invoke(&chat_route, &post, &arguments);
         agent.pump();
@@ -394,7 +394,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "the agent's message to reach the member in the newest part",
         || {
             agent.pump();
-            written_parts.extend(parts_written(member.drain()));
+            written_parts.extend(parts_written(member_heard.drain()));
             let done = !written_parts.is_empty();
             async move { done.then_some(()) }
         },

@@ -21,9 +21,14 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
 use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
+use collab_types::WorkspaceId;
 
 /// `device`'s own session with the workspace, subscribed.
-async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {
+async fn session(
+    address: iroh::EndpointAddr,
+    workspace_id: WorkspaceId,
+    device: &Device,
+) -> RelayClient {
     let client = RelayCoeditSession::join(
         RelayClient::connect_to_pinned_host(
             endpoint(&device.key).await,
@@ -51,7 +56,7 @@ async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let TestHost { relay, web, .. } =

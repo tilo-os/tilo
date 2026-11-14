@@ -776,98 +776,102 @@ mod tests {
         }
     }
 
-    #[test]
-    fn svg_loads_and_paints_vector_paths_with_image_accessibility() {
-        let mut image = Image::from_svg(
-            br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 12"><path fill="#126abc" d="M0 0H24V12H0Z"/></svg>"##,
-            64,
-            64,
-        )
-        .unwrap()
-        .with_alt("Source application");
-        assert!(matches!(image.source, Source::Vector(_)));
-        assert!(image.cached.is_none());
-        assert_eq!(image.alt(), Some("Source application"));
-        for fit in [ImageFit::Contain, ImageFit::Cover, ImageFit::Fill] {
-            image.fit = fit;
-            let mut scene = Scene::new();
-            image.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 64.0, 64.0));
-            assert!(!scene.encoding().is_empty());
-            assert!(!scene.encoding().path_tags.is_empty());
-            assert!(image.cached.is_none(), "SVG never becomes a raster image");
+    tilo_test_env::scenario! {
+        fn an_image_loads_paints_and_is_named;
+
+        phase svg_loads_and_paints_vector_paths_with_image_accessibility;
+        {
+            let mut image = Image::from_svg(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 12"><path fill="#126abc" d="M0 0H24V12H0Z"/></svg>"##,
+                64,
+                64,
+            )
+            .unwrap()
+            .with_alt("Source application");
+            assert!(matches!(image.source, Source::Vector(_)));
+            assert!(image.cached.is_none());
+            assert_eq!(image.alt(), Some("Source application"));
+            for fit in [ImageFit::Contain, ImageFit::Cover, ImageFit::Fill] {
+                image.fit = fit;
+                let mut scene = Scene::new();
+                image.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 64.0, 64.0));
+                assert!(!scene.encoding().is_empty());
+                assert!(!scene.encoding().path_tags.is_empty());
+                assert!(image.cached.is_none(), "SVG never becomes a raster image");
+            }
+            assert!(Image::from_svg(b"not SVG", 64, 64).is_err());
         }
-        assert!(Image::from_svg(b"not SVG", 64, 64).is_err());
+
+        phase image_loads_fits_and_survives_missing_sources;
+        {
+            fn image_loads_from_encoded_bytes_and_reports_size() {
+                let bytes = std::fs::read(FIXTURE_PATH).unwrap();
+                let img = Image::from_encoded(&bytes).unwrap();
+                assert_eq!(img.intrinsic_size(), (16, 16));
+            }
+
+            fn image_with_fill_fit_fills_entire_rect() {
+                let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
+                    .with_fit(ImageFit::Fill);
+                let mut scene = Scene::new();
+                let mut img = img;
+                img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 50.0));
+                assert_eq!(img.get_rect(), Rect::new(0.0, 0.0, 100.0, 50.0));
+            }
+
+            fn contain_fit_preserves_aspect_ratio_in_wide_rect() {
+                let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
+                    .with_fit(ImageFit::Contain);
+                let mut scene = Scene::new();
+                let mut img = img;
+                img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 200.0, 50.0));
+                // No assertion on scene encoding here; the paint path simply
+                // must not panic and must respect the chosen fit.
+                assert_eq!(img.intrinsic_size(), (16, 16));
+            }
+
+            fn missing_path_renders_error_state_without_panic() {
+                let mut img = Image::from_path("nonexistent/file.png");
+                let mut scene = Scene::new();
+                img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 100.0));
+                // Source must have flipped to `Failed` so subsequent draws
+                // also paint the error state instead of retrying disk I/O.
+                assert!(matches!(img.source, Source::Failed));
+            }
+
+            image_loads_from_encoded_bytes_and_reports_size();
+            image_with_fill_fit_fills_entire_rect();
+            contain_fit_preserves_aspect_ratio_in_wide_rect();
+            missing_path_renders_error_state_without_panic();
+        }
+
+        phase image_accessible_name_comes_from_alt_text;
+        {
+            fn accessibility_alt_text_surfaces_as_accessible_name() {
+                use crate::a11y::Role;
+                let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
+                    .with_alt("A red square");
+                assert_eq!(img.alt(), Some("A red square"));
+                let node = Widget::accessibility(&img).expect("image is not presentational");
+                assert_eq!(node.role, Role::Image);
+                assert_eq!(node.name.as_deref(), Some("A red square"));
+            }
+
+            fn accessibility_without_alt_has_no_name() {
+                use crate::a11y::Role;
+                let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16);
+                assert_eq!(img.alt(), None, "an image defaults to no alt text");
+                let node = Widget::accessibility(&img).unwrap();
+                assert_eq!(node.role, Role::Image);
+                assert_eq!(node.name, None, "a decorative image has no accessible name");
+            }
+
+            accessibility_alt_text_surfaces_as_accessible_name();
+            accessibility_without_alt_has_no_name();
+        }
     }
 
     const FIXTURE_PATH: &str = concat!(env!("OUT_DIR"), "/test_image.png");
-
-    #[test]
-    fn image_loads_fits_and_survives_missing_sources() {
-        fn image_loads_from_encoded_bytes_and_reports_size() {
-            let bytes = std::fs::read(FIXTURE_PATH).unwrap();
-            let img = Image::from_encoded(&bytes).unwrap();
-            assert_eq!(img.intrinsic_size(), (16, 16));
-        }
-
-        fn image_with_fill_fit_fills_entire_rect() {
-            let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
-                .with_fit(ImageFit::Fill);
-            let mut scene = Scene::new();
-            let mut img = img;
-            img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 50.0));
-            assert_eq!(img.get_rect(), Rect::new(0.0, 0.0, 100.0, 50.0));
-        }
-
-        fn contain_fit_preserves_aspect_ratio_in_wide_rect() {
-            let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
-                .with_fit(ImageFit::Contain);
-            let mut scene = Scene::new();
-            let mut img = img;
-            img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 200.0, 50.0));
-            // No assertion on scene encoding here; the paint path simply
-            // must not panic and must respect the chosen fit.
-            assert_eq!(img.intrinsic_size(), (16, 16));
-        }
-
-        fn missing_path_renders_error_state_without_panic() {
-            let mut img = Image::from_path("nonexistent/file.png");
-            let mut scene = Scene::new();
-            img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 100.0));
-            // Source must have flipped to `Failed` so subsequent draws
-            // also paint the error state instead of retrying disk I/O.
-            assert!(matches!(img.source, Source::Failed));
-        }
-
-        image_loads_from_encoded_bytes_and_reports_size();
-        image_with_fill_fit_fills_entire_rect();
-        contain_fit_preserves_aspect_ratio_in_wide_rect();
-        missing_path_renders_error_state_without_panic();
-    }
-
-    #[test]
-    fn image_accessible_name_comes_from_alt_text() {
-        fn accessibility_alt_text_surfaces_as_accessible_name() {
-            use crate::a11y::Role;
-            let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
-                .with_alt("A red square");
-            assert_eq!(img.alt(), Some("A red square"));
-            let node = Widget::accessibility(&img).expect("image is not presentational");
-            assert_eq!(node.role, Role::Image);
-            assert_eq!(node.name.as_deref(), Some("A red square"));
-        }
-
-        fn accessibility_without_alt_has_no_name() {
-            use crate::a11y::Role;
-            let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16);
-            assert_eq!(img.alt(), None, "an image defaults to no alt text");
-            let node = Widget::accessibility(&img).unwrap();
-            assert_eq!(node.role, Role::Image);
-            assert_eq!(node.name, None, "a decorative image has no accessible name");
-        }
-
-        accessibility_alt_text_surfaces_as_accessible_name();
-        accessibility_without_alt_has_no_name();
-    }
 }
 
 #[path = "image_component.rs"]

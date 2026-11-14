@@ -1186,163 +1186,6 @@ impl ActionContract {
 mod tests {
     use super::*;
 
-    /// An outside effect the person attends (their chooser, a sign-in) or
-    /// one on their own device needs only what reading needs, so a workspace's
-    /// guest starts it with no workspace consent; it runs on the device of
-    /// whoever starts it. Any other outside effect still reaches outside.
-    #[test]
-    fn an_attended_or_own_device_effect_needs_no_workspace_consent() {
-        let outside = ActionContract::for_operation(OperationKind::Effect);
-        assert_eq!(outside.need().kind, ActionKind::Outside);
-        assert!(!outside.runs_on_invokers_device());
-        for tag in [ATTENDED_TAG, OWN_DEVICE_SCOPE] {
-            let mut contract = outside.clone();
-            contract.tags.push(tag.to_owned());
-            assert_eq!(contract.need().kind, ActionKind::Read, "{tag}");
-            assert!(contract.runs_on_invokers_device(), "{tag}");
-        }
-    }
-
-    /// Undoable actions run at once and offer Undo, with no confirmation.
-    /// A typed confirmation is for irreversible, high-risk actions only, and
-    /// its word names what is lost (the item's name), never a generic word.
-    #[test]
-    fn undoable_deletes_ask_nothing_and_typed_phrases_name_what_is_lost() {
-        // A deletion Undo takes back asks nothing, whichever order the
-        // contract learned it was a deletion and that Undo takes it back.
-        let mut contract = ActionContract {
-            risk: RiskLevel::Destructive,
-            ..ActionContract::default()
-        };
-        contract.settle_confirmation();
-        assert_eq!(contract.confirmation, ConfirmationPolicy::None);
-        assert!(!contract.requires_confirmation());
-        assert!(contract.validate_declaration().is_empty());
-        let mut compensated = ActionContract {
-            risk: RiskLevel::Destructive,
-            confirmation: ConfirmationPolicy::Confirm,
-            tags: vec![COMPENSATED_UNDO_TAG.to_owned()],
-            ..ActionContract::default()
-        };
-        compensated.settle_confirmation();
-        assert_eq!(compensated.confirmation, ConfirmationPolicy::None);
-
-        // One Undo cannot take back still asks, with a click: an effect
-        // reaches outside the state its resource owns, so nothing brings
-        // back what it did, and the declaration says as much by naming it.
-        let mut irreversible = ActionContract {
-            kind: ActionKind::Outside,
-            risk: RiskLevel::Destructive,
-            ..ActionContract::default()
-        };
-        irreversible.settle_confirmation();
-        assert_eq!(irreversible.confirmation, ConfirmationPolicy::Confirm);
-        assert!(irreversible.requires_confirmation());
-        // Nor can it take back what the document change lost outside it (a
-        // secret every device forgot), however the change itself reverts.
-        let mut forgets = ActionContract {
-            kind: ActionKind::Outside,
-            risk: RiskLevel::Destructive,
-            tags: vec![IRREVERSIBLE_TAG.to_owned()],
-            ..ActionContract::default()
-        };
-        forgets.settle_confirmation();
-        assert_eq!(forgets.confirmation, ConfirmationPolicy::Confirm);
-        // Crossing a security boundary or exporting private data asks even
-        // when Undo would take the change back.
-        assert!(RiskLevel::Privileged.requires_confirmation_when(true));
-        assert!(RiskLevel::Sensitive.requires_confirmation_when(true));
-
-        // A generic edit of an undoable record asks nothing for any value.
-        let edit = ActionContract {
-            tags: vec![
-                ARGUMENT_RISK_TAG.to_owned(),
-                tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned(),
-            ],
-            ..ActionContract::default()
-        };
-        assert_eq!(edit.advertised_confirmation(), ConfirmationPolicy::None);
-        assert_eq!(
-            edit.confirmation_for_argument(None),
-            ConfirmationPolicy::None
-        );
-
-        // A typed phrase is refused on an undoable action, and when it names
-        // nothing.
-        let phrase = |phrase: &str, kind: ActionKind| ActionContract {
-            risk: RiskLevel::Destructive,
-            kind,
-            confirmation: ConfirmationPolicy::Phrase {
-                phrase: phrase.into(),
-            },
-            ..ActionContract::default()
-        };
-        assert!(
-            phrase("Hacker News", ActionKind::Undoable)
-                .validate_declaration()
-                .iter()
-                .any(|error| error.contains("Undo takes back"))
-        );
-        for generic in ["CONFIRM", "yes", "Delete"] {
-            assert!(
-                phrase(generic, ActionKind::Outside)
-                    .validate_declaration()
-                    .iter()
-                    .any(|error| error.contains("says nothing")),
-                "{generic}"
-            );
-        }
-        assert!(
-            phrase("nvme0n1", ActionKind::Outside)
-                .validate_declaration()
-                .is_empty()
-        );
-        assert!(phrase_is_meaningful("Windows 11"));
-        assert!(!phrase_is_meaningful(" confirm "));
-    }
-
-    /// An action is for everyone unless the app says otherwise, and the
-    /// audience it says replaces the one before: people's listings leave out
-    /// what is for agents, agents' leave out what is for people.
-    #[test]
-    fn an_actions_audience_decides_whose_listings_offer_it() {
-        let mut contract = ActionContract::default();
-        assert_eq!(contract.audience(), Audience::Everyone);
-        assert!(contract.reaches_people() && contract.reaches_agents());
-        contract.set_audience(Audience::Agents);
-        assert_eq!(contract.audience(), Audience::Agents);
-        assert!(!contract.reaches_people() && contract.reaches_agents());
-        contract.set_audience(Audience::People);
-        assert_eq!(contract.audience(), Audience::People);
-        assert!(contract.reaches_people() && !contract.reaches_agents());
-        assert_eq!(
-            contract
-                .tags
-                .iter()
-                .filter(|tag| tag.starts_with("audience:"))
-                .count(),
-            1,
-            "one audience at a time: {:?}",
-            contract.tags
-        );
-        contract.set_audience(Audience::Everyone);
-        assert!(
-            contract
-                .tags
-                .iter()
-                .all(|tag| !tag.starts_with("audience:"))
-        );
-    }
-
-    /// Risk levels keep their compact wire discriminants and a broker-owned job identity is not a
-    /// second application result.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn the_contract_keeps_wire_discriminants_and_one_job_identity() {
-        risk_level_keeps_existing_compact_wire_discriminants();
-        broker_owned_job_identity_is_not_a_second_application_result();
-    }
-
     fn risk_level_keeps_existing_compact_wire_discriminants() {
         // `RiskLevel` appears in recorded action contracts. Postcard encodes
         // enum variants by ordinal, so the old values are a compatibility
@@ -1383,70 +1226,231 @@ mod tests {
         );
     }
 
-    #[test]
-    fn only_a_nullable_json_result_may_be_left_out() {
-        let nullable = ResultSpec::Json {
-            schema: serde_json::json!({"type": ["string", "null"]}),
-        };
-        let required = ResultSpec::Json {
-            schema: serde_json::json!({"type": "string"}),
-        };
-        let none = crate::ActionOutput::default();
-        assert!(nullable.validate(&none).is_ok());
-        assert!(required.validate(&none).is_err());
-        let text = crate::ActionOutput {
-            value: Some(serde_json::json!("changed")),
-            resources: Vec::new(),
-        };
-        assert!(nullable.validate(&text).is_ok());
-        assert!(required.validate(&text).is_ok());
-    }
+    tilo_test_env::scenario! {
+        fn a_contract_declares_consent_audience_and_wire_shape;
 
-    /// An offload declaration is additive on the wire, bounded like a
-    /// compute job, and only declarable on a read that may leave the device.
-    #[test]
-    fn offload_is_an_additive_bounded_declaration_on_reads() {
-        let local = ActionContract::view();
-        let json = serde_json::to_value(&local).unwrap();
-        assert!(json.get("offload").is_none(), "absent stays off the wire");
-        let old: ActionContract = serde_json::from_value(json).unwrap();
-        assert_eq!(old.offload, None);
+        phase an_attended_or_own_device_effect_needs_no_workspace_consent;
+        // An outside effect the person attends (their chooser, a sign-in) or
+        // one on their own device needs only what reading needs, so a workspace's
+        // guest starts it with no workspace consent; it runs on the device of
+        // whoever starts it. Any other outside effect still reaches outside.
+        {
+            let outside = ActionContract::for_operation(OperationKind::Effect);
+            assert_eq!(outside.need().kind, ActionKind::Outside);
+            assert!(!outside.runs_on_invokers_device());
+            for tag in [ATTENDED_TAG, OWN_DEVICE_SCOPE] {
+                let mut contract = outside.clone();
+                contract.tags.push(tag.to_owned());
+                assert_eq!(contract.need().kind, ActionKind::Read, "{tag}");
+                assert!(contract.runs_on_invokers_device(), "{tag}");
+            }
+        }
 
-        let offload = Offload {
-            app: "so.tilo.thumbnails".into(),
-            entrypoint: "thumbnail-batch".into(),
-            gpu: false,
-            cpu_time_ms: 60_000,
-            memory_bytes: 512 * 1024 * 1024,
-            output_bytes: 8 * 1024 * 1024,
-        };
-        let heavy = ActionContract {
-            offload: Some(offload.clone()),
-            ..ActionContract::view()
-        };
-        assert!(heavy.validate_declaration().is_empty());
-        let round: ActionContract =
-            serde_json::from_value(serde_json::to_value(&heavy).unwrap()).unwrap();
-        assert_eq!(round, heavy);
+        phase undoable_deletes_ask_nothing_and_typed_phrases_name_what_is_lost;
+        // Undoable actions run at once and offer Undo, with no confirmation.
+        // A typed confirmation is for irreversible, high-risk actions only, and
+        // its word names what is lost (the item's name), never a generic word.
+        {
+            // A deletion Undo takes back asks nothing, whichever order the
+            // contract learned it was a deletion and that Undo takes it back.
+            let mut contract = ActionContract {
+                risk: RiskLevel::Destructive,
+                ..ActionContract::default()
+            };
+            contract.settle_confirmation();
+            assert_eq!(contract.confirmation, ConfirmationPolicy::None);
+            assert!(!contract.requires_confirmation());
+            assert!(contract.validate_declaration().is_empty());
+            let mut compensated = ActionContract {
+                risk: RiskLevel::Destructive,
+                confirmation: ConfirmationPolicy::Confirm,
+                tags: vec![COMPENSATED_UNDO_TAG.to_owned()],
+                ..ActionContract::default()
+            };
+            compensated.settle_confirmation();
+            assert_eq!(compensated.confirmation, ConfirmationPolicy::None);
 
-        let unbounded = ActionContract {
-            offload: Some(Offload {
-                cpu_time_ms: 0,
-                memory_bytes: MAX_OFFLOAD_MEMORY_BYTES + 1,
-                output_bytes: MAX_OFFLOAD_OUTPUT_BYTES + 1,
-                entrypoint: "rm -rf /".into(),
-                ..offload.clone()
-            }),
-            ..ActionContract::view()
-        };
-        assert_eq!(unbounded.validate_declaration().len(), 4);
-        let writes = ActionContract {
-            offload: Some(offload),
-            ..ActionContract::default()
-        };
-        assert_eq!(
-            writes.validate_declaration(),
-            vec!["an offloadable action must be a read".to_string()]
-        );
+            // One Undo cannot take back still asks, with a click: an effect
+            // reaches outside the state its resource owns, so nothing brings
+            // back what it did, and the declaration says as much by naming it.
+            let mut irreversible = ActionContract {
+                kind: ActionKind::Outside,
+                risk: RiskLevel::Destructive,
+                ..ActionContract::default()
+            };
+            irreversible.settle_confirmation();
+            assert_eq!(irreversible.confirmation, ConfirmationPolicy::Confirm);
+            assert!(irreversible.requires_confirmation());
+            // Nor can it take back what the document change lost outside it (a
+            // secret every device forgot), however the change itself reverts.
+            let mut forgets = ActionContract {
+                kind: ActionKind::Outside,
+                risk: RiskLevel::Destructive,
+                tags: vec![IRREVERSIBLE_TAG.to_owned()],
+                ..ActionContract::default()
+            };
+            forgets.settle_confirmation();
+            assert_eq!(forgets.confirmation, ConfirmationPolicy::Confirm);
+            // Crossing a security boundary or exporting private data asks even
+            // when Undo would take the change back.
+            assert!(RiskLevel::Privileged.requires_confirmation_when(true));
+            assert!(RiskLevel::Sensitive.requires_confirmation_when(true));
+
+            // A generic edit of an undoable record asks nothing for any value.
+            let edit = ActionContract {
+                tags: vec![
+                    ARGUMENT_RISK_TAG.to_owned(),
+                    tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned(),
+                ],
+                ..ActionContract::default()
+            };
+            assert_eq!(edit.advertised_confirmation(), ConfirmationPolicy::None);
+            assert_eq!(
+                edit.confirmation_for_argument(None),
+                ConfirmationPolicy::None
+            );
+
+            // A typed phrase is refused on an undoable action, and when it names
+            // nothing.
+            let phrase = |phrase: &str, kind: ActionKind| ActionContract {
+                risk: RiskLevel::Destructive,
+                kind,
+                confirmation: ConfirmationPolicy::Phrase {
+                    phrase: phrase.into(),
+                },
+                ..ActionContract::default()
+            };
+            assert!(
+                phrase("Hacker News", ActionKind::Undoable)
+                    .validate_declaration()
+                    .iter()
+                    .any(|error| error.contains("Undo takes back"))
+            );
+            for generic in ["CONFIRM", "yes", "Delete"] {
+                assert!(
+                    phrase(generic, ActionKind::Outside)
+                        .validate_declaration()
+                        .iter()
+                        .any(|error| error.contains("says nothing")),
+                    "{generic}"
+                );
+            }
+            assert!(
+                phrase("nvme0n1", ActionKind::Outside)
+                    .validate_declaration()
+                    .is_empty()
+            );
+            assert!(phrase_is_meaningful("Windows 11"));
+            assert!(!phrase_is_meaningful(" confirm "));
+        }
+
+        phase an_actions_audience_decides_whose_listings_offer_it;
+        // An action is for everyone unless the app says otherwise, and the
+        // audience it says replaces the one before: people's listings leave out
+        // what is for agents, agents' leave out what is for people.
+        {
+            let mut contract = ActionContract::default();
+            assert_eq!(contract.audience(), Audience::Everyone);
+            assert!(contract.reaches_people() && contract.reaches_agents());
+            contract.set_audience(Audience::Agents);
+            assert_eq!(contract.audience(), Audience::Agents);
+            assert!(!contract.reaches_people() && contract.reaches_agents());
+            contract.set_audience(Audience::People);
+            assert_eq!(contract.audience(), Audience::People);
+            assert!(contract.reaches_people() && !contract.reaches_agents());
+            assert_eq!(
+                contract
+                    .tags
+                    .iter()
+                    .filter(|tag| tag.starts_with("audience:"))
+                    .count(),
+                1,
+                "one audience at a time: {:?}",
+                contract.tags
+            );
+            contract.set_audience(Audience::Everyone);
+            assert!(
+                contract
+                    .tags
+                    .iter()
+                    .all(|tag| !tag.starts_with("audience:"))
+            );
+        }
+
+        phase the_contract_keeps_wire_discriminants_and_one_job_identity;
+        // Risk levels keep their compact wire discriminants and a broker-owned job identity is not a
+        // second application result.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            risk_level_keeps_existing_compact_wire_discriminants();
+            broker_owned_job_identity_is_not_a_second_application_result();
+        }
+
+        phase only_a_nullable_json_result_may_be_left_out;
+        {
+            let nullable = ResultSpec::Json {
+                schema: serde_json::json!({"type": ["string", "null"]}),
+            };
+            let required = ResultSpec::Json {
+                schema: serde_json::json!({"type": "string"}),
+            };
+            let none = crate::ActionOutput::default();
+            assert!(nullable.validate(&none).is_ok());
+            assert!(required.validate(&none).is_err());
+            let text = crate::ActionOutput {
+                value: Some(serde_json::json!("changed")),
+                resources: Vec::new(),
+            };
+            assert!(nullable.validate(&text).is_ok());
+            assert!(required.validate(&text).is_ok());
+        }
+
+        phase offload_is_an_additive_bounded_declaration_on_reads;
+        // An offload declaration is additive on the wire, bounded like a
+        // compute job, and only declarable on a read that may leave the device.
+        {
+            let local = ActionContract::view();
+            let json = serde_json::to_value(&local).unwrap();
+            assert!(json.get("offload").is_none(), "absent stays off the wire");
+            let old: ActionContract = serde_json::from_value(json).unwrap();
+            assert_eq!(old.offload, None);
+
+            let offload = Offload {
+                app: "so.tilo.thumbnails".into(),
+                entrypoint: "thumbnail-batch".into(),
+                gpu: false,
+                cpu_time_ms: 60_000,
+                memory_bytes: 512 * 1024 * 1024,
+                output_bytes: 8 * 1024 * 1024,
+            };
+            let heavy = ActionContract {
+                offload: Some(offload.clone()),
+                ..ActionContract::view()
+            };
+            assert!(heavy.validate_declaration().is_empty());
+            let round: ActionContract =
+                serde_json::from_value(serde_json::to_value(&heavy).unwrap()).unwrap();
+            assert_eq!(round, heavy);
+
+            let unbounded = ActionContract {
+                offload: Some(Offload {
+                    cpu_time_ms: 0,
+                    memory_bytes: MAX_OFFLOAD_MEMORY_BYTES + 1,
+                    output_bytes: MAX_OFFLOAD_OUTPUT_BYTES + 1,
+                    entrypoint: "rm -rf /".into(),
+                    ..offload.clone()
+                }),
+                ..ActionContract::view()
+            };
+            assert_eq!(unbounded.validate_declaration().len(), 4);
+            let writes = ActionContract {
+                offload: Some(offload),
+                ..ActionContract::default()
+            };
+            assert_eq!(
+                writes.validate_declaration(),
+                vec!["an offloadable action must be a read".to_string()]
+            );
+        }
     }
 }

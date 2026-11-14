@@ -461,77 +461,81 @@ fn answers_are_checked_against_each_fields_rule() {
     );
 }
 
-#[test]
-fn a_sim_pin_without_a_modem_answer_is_still_asked_as_a_sim_pin() {
-    let request = request_for(gsm_connection(), "gsm", &["pin"]);
-    let shown = details(&request, None, None);
-    assert_eq!(shown.remember, None);
-    assert_eq!(
-        shown.sim,
-        Some(SimDetails {
-            step: SimUnlockStep::Pin,
-            attempts_left: None,
-        })
-    );
-    assert_eq!(
-        shown.fields.first().map(|field| field.label.clone()),
-        Some(key("portal-network-sim-pin"))
-    );
-}
+tilo_test_env::scenario! {
+    fn a_question_shows_what_its_request_asks_for;
 
-#[test]
-fn a_mobile_password_is_no_sim_pin() {
-    let request = request_for(gsm_connection(), "gsm", &["password"]);
-    let shown = details(&request, None, None);
-    assert_eq!(shown.sim, None);
-    assert!(shown.remember.is_some());
-}
+    phase a_sim_pin_without_a_modem_answer_is_still_asked_as_a_sim_pin;
+    {
+        let request = request_for(gsm_connection(), "gsm", &["pin"]);
+        let shown = details(&request, None, None);
+        assert_eq!(shown.remember, None);
+        assert_eq!(
+            shown.sim,
+            Some(SimDetails {
+                step: SimUnlockStep::Pin,
+                attempts_left: None,
+            })
+        );
+        assert_eq!(
+            shown.fields.first().map(|field| field.label.clone()),
+            Some(key("portal-network-sim-pin"))
+        );
+    }
 
-#[test]
-fn a_vpn_question_carries_the_plugin_message_as_it_came() {
-    let request = request_for(
-        vpn_connection(),
-        "vpn",
-        &["cert-pass", "x-vpn-message:Use your one-time code"],
-    );
-    let shown = details(&request, None, None);
-    assert_eq!(shown.title, key("portal-network-vpn-title"));
-    assert!(
-        shown
-            .detail
-            .contains(&Text::Verbatim("Use your one-time code".into())),
-        "{:?}",
-        shown.detail
-    );
-    assert_eq!(shown.remember, Some(false));
-}
+    phase a_mobile_password_is_no_sim_pin;
+    {
+        let request = request_for(gsm_connection(), "gsm", &["password"]);
+        let shown = details(&request, None, None);
+        assert_eq!(shown.sim, None);
+        assert!(shown.remember.is_some());
+    }
 
-#[test]
-fn an_unnamed_sim_its_puk_locks_is_this_network() {
-    let mut connection = gsm_connection();
-    connection
-        .get_mut("connection")
-        .expect("connection")
-        .remove("id");
-    let request = request_for(connection, "gsm", &["pin"]);
-    let sim = SimUnlock::of(
-        os_actions::SimLock::Puk,
-        os_actions::UnlockRetries {
-            pin: Some(0),
-            puk: Some(10),
-        },
-        Some(SIM_PATH.into()),
-    );
-    let shown = details(&request, Some(&sim), None);
-    assert_eq!(
-        shown.detail,
-        [key("portal-sim-puk-lead").with("network", key("portal-network-this-network"))]
-    );
-    assert_eq!(
-        shown.sim.and_then(|sim| sim.attempts_left),
-        Some(10),
-        "the PUK's attempts, not the PIN's"
-    );
+    phase a_vpn_question_carries_the_plugin_message_as_it_came;
+    {
+        let request = request_for(
+            vpn_connection(),
+            "vpn",
+            &["cert-pass", "x-vpn-message:Use your one-time code"],
+        );
+        let shown = details(&request, None, None);
+        assert_eq!(shown.title, key("portal-network-vpn-title"));
+        assert!(
+            shown
+                .detail
+                .contains(&Text::Verbatim("Use your one-time code".into())),
+            "{:?}",
+            shown.detail
+        );
+        assert_eq!(shown.remember, Some(false));
+    }
+
+    phase an_unnamed_sim_its_puk_locks_is_this_network;
+    {
+        let mut connection = gsm_connection();
+        connection
+            .get_mut("connection")
+            .expect("connection")
+            .remove("id");
+        let request = request_for(connection, "gsm", &["pin"]);
+        let sim = SimUnlock::of(
+            os_actions::SimLock::Puk,
+            os_actions::UnlockRetries {
+                pin: Some(0),
+                puk: Some(10),
+            },
+            Some(SIM_PATH.into()),
+        );
+        let shown = details(&request, Some(&sim), None);
+        assert_eq!(
+            shown.detail,
+            [key("portal-sim-puk-lead").with("network", key("portal-network-this-network"))]
+        );
+        assert_eq!(
+            shown.sim.and_then(|sim| sim.attempts_left),
+            Some(10),
+            "the PUK's attempts, not the PIN's"
+        );
+    }
 }
 
 #[test]

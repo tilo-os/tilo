@@ -11,7 +11,6 @@ use super::status_action::place_status_action;
 use super::{Column, Inputs, NavGeometry, Part, at_mut};
 use crate::num::{f32_of_f64, f64_of_usize};
 use crate::widget::WidgetLayoutError;
-use crate::widget::layout_info::HeaderRowLayout;
 use crate::widget::manual::{ManualContext, MeasureConstraint};
 
 /// The layout policy the host runs: place every built part at the rect the
@@ -139,9 +138,9 @@ pub(super) fn measure(
     Ok((f64::from(measured.width), f64::from(measured.height)))
 }
 
-/// What a column's header row settled on, published for an audit, or cleared where the window
-/// folds the row away.
-fn publish(inputs: &Inputs, column: Column, row: Option<HeaderRowLayout>) {
+/// What a column's header row settled on, published for the shell to name for an audit, or
+/// cleared where the window folds the row away.
+fn publish(inputs: &Inputs, column: Column, row: Option<super::HeaderRowFacts>) {
     let mut fits = inputs.fit.borrow_mut();
     at_mut(&mut fits, column).header = row;
 }
@@ -197,7 +196,7 @@ fn place_header(
     }
     let mut full = Vec::with_capacity(items.len());
     let mut compact = Vec::with_capacity(items.len());
-    for (i, (_, w, h)) in items.iter().enumerate() {
+    for (i, (_, w, _)) in items.iter().enumerate() {
         let capable = fit.capable.get(i).copied().unwrap_or(false);
         let now = fit.compact_now.get(i).copied().unwrap_or(false);
         if capable && now {
@@ -208,7 +207,7 @@ fn place_header(
                 *slot = Some(*w);
             }
             full.push(*w);
-            compact.push(if capable { w.min(*h) } else { *w });
+            compact.push(if capable { m.chip } else { *w });
         }
     }
     let run = |widths: &[f64]| -> f64 {
@@ -254,18 +253,37 @@ fn place_header(
             .map_or(items.len(), |from| from.min(items.len()))
     };
 
-    // The title: what it says, and what its actions must leave it.
+    // The title: what it says, and what its actions must leave it. A title the row can give
+    // only an ellipsis is given no room at all rather than a name that reads as nothing: the
+    // column goes unnamed there, as it does where the page shows its own title.
     let mut start = lead;
     let mut title: Option<(usize, f64, f64, f64)> = None;
-    if let Some(index) = index_of(Part::Title(column)) {
-        let (tw, th) = measure(ctx, index, None)?;
+    // What the title says, measured (which also finds the least room its words read in).
+    let measured_title = match index_of(Part::Title(column)) {
+        Some(index) => {
+            let (tw, th) = measure(ctx, index, None)?;
+            Some((index, tw, th))
+        }
+        None => None,
+    };
+    let least = measured_title.map_or(0.0, |(index, _, _)| {
+        ctx.widget(index)
+            .and_then(|widget| widget.as_any())
+            .and_then(|any| any.downcast_ref::<super::header_parts::HeaderTitle>())
+            .map_or(0.0, super::header_parts::HeaderTitle::least_room)
+    });
+    if let Some((index, tw, th)) = measured_title {
         let floor = trailing(&compact, must);
         let room = if floor > 0.0 {
             (avail - floor - gap).max(0.0)
         } else {
             avail
         };
-        let width = tw.min(room).clamp(0.0, avail);
+        let width = if room + 0.5 >= least {
+            tw.min(room).clamp(0.0, avail)
+        } else {
+            0.0
+        };
         title = Some((index, width, tw, th));
         if let Some(slot) = placed.get_mut(index) {
             *slot = Some(centred(lead, width, th));
@@ -304,18 +322,25 @@ fn place_header(
     let mut x = (trail - total).max(start.min(trail));
     let actions_x0 = if total > 0.0 { x } else { trail };
     // The title was given what the actions must leave it, and the row often keeps fewer of them
-    // than that: the room between the title and the first control is the title's, up to what it
-    // says, where no leading fill stands there to take it.
-    if let Some((index, width, tw, th)) = title {
+    // than that: the room between the title and the first control is the title's where no
+    // leading fill stands there to take it. It takes all of that room, not just the width its
+    // words measure: a box sized to the measure itself cuts the last glyph as soon as the
+    // renderer that paints the words shapes them a hair wider than the measure that sized the
+    // box. The column a status message stands beside is the exception: the message starts where
+    // the title ends, so that title keeps to what it says and leaves the row's room to the message.
+    if let Some((index, width, tw, th)) = title
+        && width > 0.0
+        && index_of(Part::Leading(column)).is_none()
+        && column != g.status_column()
+    {
         let end = if total > 0.0 { actions_x0 - gap } else { trail };
-        let room = (end - lead).max(0.0);
-        let wanted = tw.min(room).clamp(0.0, avail);
-        if index_of(Part::Leading(column)).is_none() && wanted > width {
+        let room = (end - lead).clamp(0.0, avail);
+        if room > width + 0.5 {
             if let Some(slot) = placed.get_mut(index) {
-                *slot = Some(centred(lead, wanted, th));
+                *slot = Some(centred(lead, room, th));
             }
-            start = lead + wanted + gap;
-            title = Some((index, wanted, tw, th));
+            start = lead + room + gap;
+            title = Some((index, room, tw, th));
         }
     }
     for (k, (index, _, h)) in items.iter().enumerate() {
@@ -363,18 +388,19 @@ fn place_header(
                     .map(|part| part.x0)
                     .filter(|x0| *x0 >= rect.x1 - 0.5)
                     .fold(trail, f64::min);
-                (tw, width, (next - rect.x1).max(0.0))
+                // The room beside the title it could take: what stands before its neighbour's
+                // gap, never the gap the row keeps between two neighbours.
+                (tw, width, (next - rect.x1 - gap).max(0.0))
             }
             None => (0.0, 0.0, 0.0),
         };
         publish(
             inputs,
             column,
-            Some(HeaderRowLayout {
-                column: column.key(),
-                title_needs: f32_of_f64(needs),
-                title_has: f32_of_f64(has),
-                free_beside_title: f32_of_f64(free),
+            Some(super::HeaderRowFacts {
+                title_needs: needs,
+                title_has: has,
+                free_beside_title: free,
                 labelled_action: !use_compact && keeps,
                 primary_shown: must == 0 || primary.is_none_or(|primary| primary < shown),
             }),

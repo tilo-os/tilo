@@ -134,90 +134,98 @@ mod tests {
         node(0x04, 0x04, &utf16z(path))
     }
 
-    #[test]
-    fn firmware_boot_entries_identify_windows_by_its_loader_path() {
-        let windows = load_option(
-            "Windows Boot Manager",
-            &[hd(), file("\\EFI\\Microsoft\\Boot\\bootmgfw.efi"), end()],
-            b"WINDOWS\0",
-        );
-        let path = load_option_file_path(&windows).unwrap();
-        assert_eq!(path, "\\EFI\\Microsoft\\Boot\\bootmgfw.efi");
-        assert!(is_windows_boot_manager(&path));
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn windows_is_found_only_in_firmware_boot_option_variables;
 
-        let tilo = load_option(
-            "Tilo",
-            &[hd(), file("\\EFI\\systemd\\systemd-bootaa64.efi"), end()],
-            &[],
-        );
-        assert!(!is_windows_boot_manager(
-            &load_option_file_path(&tilo).unwrap()
-        ));
+        phase firmware_boot_entries_identify_windows_by_its_loader_path;
+        {
+            let windows = load_option(
+                "Windows Boot Manager",
+                &[hd(), file("\\EFI\\Microsoft\\Boot\\bootmgfw.efi"), end()],
+                b"WINDOWS\0",
+            );
+            let path = load_option_file_path(&windows).unwrap();
+            assert_eq!(path, "\\EFI\\Microsoft\\Boot\\bootmgfw.efi");
+            assert!(is_windows_boot_manager(&path));
 
-        let disk = load_option("EFI Hard Drive", &[hd(), end()], b"RC");
-        assert_eq!(load_option_file_path(&disk), None);
+            let tilo = load_option(
+                "Tilo",
+                &[hd(), file("\\EFI\\systemd\\systemd-bootaa64.efi"), end()],
+                &[],
+            );
+            assert!(!is_windows_boot_manager(
+                &load_option_file_path(&tilo).unwrap()
+            ));
 
-        let mention = load_option(
-            "\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
-            &[hd(), end()],
-            &utf16z("\\EFI\\Microsoft\\Boot\\bootmgfw.efi"),
-        );
-        assert_eq!(load_option_file_path(&mention), None);
+            let disk = load_option("EFI Hard Drive", &[hd(), end()], b"RC");
+            assert_eq!(load_option_file_path(&disk), None);
 
-        let split = load_option(
-            "split",
-            &[
-                hd(),
-                file("\\EFI\\Microsoft"),
-                file("\\Boot\\bootmgfw.efi"),
-                node(0x7f, 0x01, &[]),
-                file("\\EFI\\other.efi"),
-                end(),
-            ],
-            &[],
-        );
-        assert!(is_windows_boot_manager(
-            &load_option_file_path(&split).unwrap()
-        ));
+            let mention = load_option(
+                "\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
+                &[hd(), end()],
+                &utf16z("\\EFI\\Microsoft\\Boot\\bootmgfw.efi"),
+            );
+            assert_eq!(load_option_file_path(&mention), None);
 
-        assert_eq!(load_option_file_path(windows.get(..40).unwrap()), None);
-        let mut bad = windows;
-        let list_start = 6 + utf16z("Windows Boot Manager").len();
-        bad[list_start + 2] = 2; // a node shorter than its own header
-        bad[list_start + 3] = 0;
-        assert_eq!(load_option_file_path(&bad), None);
-    }
+            let split = load_option(
+                "split",
+                &[
+                    hd(),
+                    file("\\EFI\\Microsoft"),
+                    file("\\Boot\\bootmgfw.efi"),
+                    node(0x7f, 0x01, &[]),
+                    file("\\EFI\\other.efi"),
+                    end(),
+                ],
+                &[],
+            );
+            assert!(is_windows_boot_manager(
+                &load_option_file_path(&split).unwrap()
+            ));
 
-    #[test]
-    fn only_boot_option_variables_are_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let windows = load_option(
-            "Windows Boot Manager",
-            &[hd(), file("\\EFI\\Microsoft\\Boot\\bootmgfw.efi"), end()],
-            &[],
-        );
-        let with_attributes = [7u32.to_le_bytes().to_vec(), windows].concat();
+            assert_eq!(load_option_file_path(windows.get(..40).unwrap()), None);
+            let mut bad = windows;
+            let list_start = 6 + utf16z("Windows Boot Manager").len();
+            bad[list_start + 2] = 2; // a node shorter than its own header
+            bad[list_start + 3] = 0;
+            assert_eq!(load_option_file_path(&bad), None);
+        }
 
-        std::fs::write(
-            dir.path().join(format!("BootOrder-{GLOBAL_VARIABLE_GUID}")),
-            &with_attributes,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path()
-                .join("Boot0003-00000000-0000-0000-0000-000000000000"),
-            &with_attributes,
-        )
-        .unwrap();
-        assert!(!windows_is_installed(dir.path()));
+        phase only_boot_option_variables_are_read;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let windows = load_option(
+                "Windows Boot Manager",
+                &[hd(), file("\\EFI\\Microsoft\\Boot\\bootmgfw.efi"), end()],
+                &[],
+            );
+            let with_attributes = [7u32.to_le_bytes().to_vec(), windows].concat();
 
-        std::fs::write(
-            dir.path().join(format!("Boot0003-{GLOBAL_VARIABLE_GUID}")),
-            &with_attributes,
-        )
-        .unwrap();
-        assert!(windows_is_installed(dir.path()));
+            std::fs::write(
+                dir.path().join(format!("BootOrder-{GLOBAL_VARIABLE_GUID}")),
+                &with_attributes,
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path()
+                    .join("Boot0003-00000000-0000-0000-0000-000000000000"),
+                &with_attributes,
+            )
+            .unwrap();
+            assert!(!windows_is_installed(dir.path()));
 
-        assert!(!windows_is_installed(&dir.path().join("absent")));
+            std::fs::write(
+                dir.path().join(format!("Boot0003-{GLOBAL_VARIABLE_GUID}")),
+                &with_attributes,
+            )
+            .unwrap();
+            assert!(windows_is_installed(dir.path()));
+
+            assert!(!windows_is_installed(&dir.path().join("absent")));
+        }
     }
 }

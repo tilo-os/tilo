@@ -200,96 +200,100 @@ pub fn metalink_mirror_hosts(document: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn enabled_repositories_contribute_their_hosts_and_mirror_lists() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("etc/yum.repos.d")).unwrap();
-        std::fs::create_dir_all(root.join("etc/dnf/vars")).unwrap();
-        std::fs::write(root.join("etc/os-release"), "NAME=Fedora\nVERSION_ID=44\n").unwrap();
-        std::fs::write(root.join("etc/dnf/vars/contentdir"), "fedora\n").unwrap();
-        std::fs::write(
-            root.join("etc/yum.repos.d/fedora.repo"),
-            "[fedora]\nname=Fedora $releasever\n\
+    tilo_test_env::scenario! {
+        fn repository_hosts;
+
+        phase enabled_repositories_contribute_their_hosts_and_mirror_lists;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir_all(root.join("etc/yum.repos.d")).unwrap();
+            std::fs::create_dir_all(root.join("etc/dnf/vars")).unwrap();
+            std::fs::write(root.join("etc/os-release"), "NAME=Fedora\nVERSION_ID=44\n").unwrap();
+            std::fs::write(root.join("etc/dnf/vars/contentdir"), "fedora\n").unwrap();
+            std::fs::write(
+                root.join("etc/yum.repos.d/fedora.repo"),
+                "[fedora]\nname=Fedora $releasever\n\
              metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch\n\
              #baseurl=http://download.example/pub/fedora/linux/releases/$releasever/\n\
              enabled=1\n\
              [fedora-source]\nbaseurl=https://source.example.org/x\nenabled=0\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("etc/yum.repos.d/pinned.repo"),
-            "[pinned]\nbaseurl=https://ftp.fau.de/${contentdir}/linux/\n\
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("etc/yum.repos.d/pinned.repo"),
+                "[pinned]\nbaseurl=https://ftp.fau.de/${contentdir}/linux/\n\
              \thttps://user@Mirror.Example.net:8443/fedora/\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("etc/yum.repos.d/notes.txt"),
-            "[x]\nbaseurl=https://no.example\n",
-        )
-        .unwrap();
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("etc/yum.repos.d/notes.txt"),
+                "[x]\nbaseurl=https://no.example\n",
+            )
+            .unwrap();
 
-        let repos = RepoHosts::read(root, "x86_64").unwrap();
-        let hosts: Vec<String> = repos.hosts.iter().map(ToString::to_string).collect();
-        assert_eq!(
-            hosts,
-            [
-                "ftp.fau.de",
-                "mirror.example.net",
-                "mirrors.fedoraproject.org"
-            ]
-        );
-        assert_eq!(
-            repos.mirror_lists,
-            ["https://mirrors.fedoraproject.org/metalink?repo=fedora-44&arch=x86_64"]
-        );
-        let policy = repos.policy();
-        assert!(policy.allows("ftp.fau.de").is_some());
-        assert!(
-            policy.allows("source.example.org").is_none(),
-            "a disabled repo"
-        );
-        assert!(
-            policy.allows("download.example").is_none(),
-            "a commented-out url"
-        );
-    }
+            let repos = RepoHosts::read(root, "x86_64").unwrap();
+            let hosts: Vec<String> = repos.hosts.iter().map(ToString::to_string).collect();
+            assert_eq!(
+                hosts,
+                [
+                    "ftp.fau.de",
+                    "mirror.example.net",
+                    "mirrors.fedoraproject.org"
+                ]
+            );
+            assert_eq!(
+                repos.mirror_lists,
+                ["https://mirrors.fedoraproject.org/metalink?repo=fedora-44&arch=x86_64"]
+            );
+            let policy = repos.policy();
+            assert!(policy.allows("ftp.fau.de").is_some());
+            assert!(
+                policy.allows("source.example.org").is_none(),
+                "a disabled repo"
+            );
+            assert!(
+                policy.allows("download.example").is_none(),
+                "a commented-out url"
+            );
+        }
 
-    #[test]
-    fn a_metalink_names_its_mirrors() {
-        let metalink = r#"<?xml version="1.0"?>
+        phase a_metalink_names_its_mirrors;
+        {
+            let metalink = r#"<?xml version="1.0"?>
 <metalink><files><file name="repomd.xml"><resources>
   <url protocol="https" type="https" location="DE" preference="100">https://ftp.fau.de/fedora/linux/releases/44/repodata/repomd.xml</url>
   <url protocol="http" type="http" location="US">http://mirror.example.edu/fedora/repomd.xml</url>
   <url protocol="rsync" type="rsync">rsync://rsync.example.org/fedora/</url>
 </resources></file></files></metalink>"#;
-        assert_eq!(
-            metalink_mirror_hosts(metalink),
-            ["ftp.fau.de", "mirror.example.edu"]
-        );
-        let mirrorlist = "# mirrors\nhttps://a.example/fedora/\nhttps://b.example/fedora/\n";
-        assert_eq!(
-            metalink_mirror_hosts(mirrorlist),
-            ["a.example", "b.example"]
-        );
+            assert_eq!(
+                metalink_mirror_hosts(metalink),
+                ["ftp.fau.de", "mirror.example.edu"]
+            );
+            let mirrorlist = "# mirrors\nhttps://a.example/fedora/\nhttps://b.example/fedora/\n";
+            assert_eq!(
+                metalink_mirror_hosts(mirrorlist),
+                ["a.example", "b.example"]
+            );
 
-        let mut repos = RepoHosts::default();
-        repos.add_mirrors(metalink);
-        assert!(repos.policy().allows("mirror.example.edu").is_some());
-    }
+            let mut repos = RepoHosts::default();
+            repos.add_mirrors(metalink);
+            assert!(repos.policy().allows("mirror.example.edu").is_some());
+        }
 
-    #[test]
-    fn hosts_are_read_out_of_urls() {
-        assert_eq!(url_host("https://a.b/c").as_deref(), Some("a.b"));
-        assert_eq!(
-            url_host("http://u:p@H.example:80/x?y").as_deref(),
-            Some("h.example")
-        );
-        assert_eq!(
-            url_host("https://[2001:db8::1]:443/").as_deref(),
-            Some("2001:db8::1")
-        );
-        assert_eq!(url_host("file:///srv/repo"), None);
-        assert_eq!(url_host("no-scheme"), None);
+        phase hosts_are_read_out_of_urls;
+        {
+            assert_eq!(url_host("https://a.b/c").as_deref(), Some("a.b"));
+            assert_eq!(
+                url_host("http://u:p@H.example:80/x?y").as_deref(),
+                Some("h.example")
+            );
+            assert_eq!(
+                url_host("https://[2001:db8::1]:443/").as_deref(),
+                Some("2001:db8::1")
+            );
+            assert_eq!(url_host("file:///srv/repo"), None);
+            assert_eq!(url_host("no-scheme"), None);
+        }
     }
 }

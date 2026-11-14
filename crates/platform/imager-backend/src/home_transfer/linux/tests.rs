@@ -17,104 +17,6 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
 }
 
 #[test]
-fn whole_home_worker_transfers_hidden_data_links_modes_and_preserves_originals() {
-    let (_temp, home, target, journal) = fixture();
-    fs::create_dir(home.join(".config")).unwrap();
-    fs::create_dir(home.join(".ssh")).unwrap();
-    fs::set_permissions(home.join(".ssh"), fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(home.join(".config/preferences"), b"all my preferences").unwrap();
-    fs::write(home.join(".ssh/id_ed25519"), b"private fixture credential").unwrap();
-    fs::set_permissions(
-        home.join(".ssh/id_ed25519"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-    fs::write(home.join("run-me"), b"#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(home.join("run-me"), fs::Permissions::from_mode(0o755)).unwrap();
-    fs::hard_link(home.join("run-me"), home.join("second-name")).unwrap();
-    symlink(".config/preferences", home.join("relative-link")).unwrap();
-    symlink("/outside/does-not-exist", home.join("absolute-link")).unwrap();
-    let native_name = std::ffi::OsString::from_vec(vec![b'a', 0xff]);
-    fs::write(home.join(&native_name), b"non UTF-8 names survive").unwrap();
-    let source_inode = fs::metadata(home.join("run-me")).unwrap().ino();
-    let plan = review(&home, &target, &journal).unwrap();
-    assert_eq!(plan.summary.links, 2);
-    assert_eq!(plan.summary.files, 5);
-    let mut worker = plan.start().unwrap();
-    let outcome = worker.finish();
-    let WorkerOutcome::Complete(report) = outcome else {
-        panic!("Whole-home import failed: {outcome:?}");
-    };
-    assert!(report.complete(), "{report:?}");
-    assert_eq!(
-        fs::read(target.join(".config/preferences")).unwrap(),
-        b"all my preferences"
-    );
-    assert_eq!(
-        fs::read(target.join(".ssh/id_ed25519")).unwrap(),
-        b"private fixture credential"
-    );
-    assert_eq!(
-        fs::metadata(target.join("run-me"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o755
-    );
-    assert_eq!(
-        fs::metadata(target.join(".ssh/id_ed25519"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
-    assert_eq!(
-        fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-    assert_eq!(
-        fs::metadata(target.join("run-me")).unwrap().ino(),
-        fs::metadata(target.join("second-name")).unwrap().ino()
-    );
-    assert_eq!(
-        fs::read_link(target.join("relative-link")).unwrap(),
-        Path::new(".config/preferences")
-    );
-    assert_eq!(
-        fs::read_link(target.join("absolute-link")).unwrap(),
-        Path::new("/outside/does-not-exist")
-    );
-    assert_eq!(
-        fs::read(target.join(&native_name)).unwrap(),
-        b"non UTF-8 names survive"
-    );
-    assert_eq!(
-        fs::metadata(home.join("run-me")).unwrap().ino(),
-        source_inode
-    );
-    assert_eq!(
-        fs::read(home.join(".ssh/id_ed25519")).unwrap(),
-        b"private fixture credential"
-    );
-    // The home-specific retry uses its finalized receipts, not generic 0600
-    // receipts. It verifies an unchanged completed import and every hardlink.
-    let WorkerOutcome::Complete(_) = plan.retry().unwrap().finish() else {
-        panic!("Finalized home retry must revalidate");
-    };
-    fs::write(target.join("run-me"), b"user modified imported output").unwrap();
-    let WorkerOutcome::Incomplete(report) = plan.retry().unwrap().finish() else {
-        panic!("Changed retained output must be incomplete");
-    };
-    assert!(!report.failed.is_empty());
-    assert_eq!(
-        fs::read(target.join("run-me")).unwrap(),
-        b"user modified imported output"
-    );
-}
-
-#[test]
 fn home_finalization_recovers_after_a_durable_interruption() {
     let (_temp, home, target, journal) = fixture();
     fs::write(home.join("executable"), b"fixture bytes").unwrap();
@@ -144,74 +46,6 @@ fn home_finalization_recovers_after_a_durable_interruption() {
         Path::new("executable")
     );
     assert_eq!(fs::read(home.join("executable")).unwrap(), b"fixture bytes");
-}
-
-#[test]
-fn home_preserves_user_attributes_and_refuses_changed_retained_metadata() {
-    use std::{ffi::CString, os::fd::AsRawFd};
-    let (_temp, home, target, journal) = fixture();
-    fs::write(home.join("document"), b"bytes").unwrap();
-    let name = CString::new("user.fixture").unwrap();
-    let value = b"custom home metadata";
-    let file = File::open(home.join("document")).unwrap();
-    // SAFETY: fixture descriptor and bounded live name/value buffers.
-    assert_eq!(
-        unsafe {
-            libc::fsetxattr(
-                file.as_raw_fd(),
-                name.as_ptr(),
-                value.as_ptr().cast(),
-                value.len(),
-                0,
-            )
-        },
-        0
-    );
-    let plan = review(&home, &target, &journal).unwrap();
-    assert!(matches!(
-        plan.start().unwrap().finish(),
-        WorkerOutcome::Complete(_)
-    ));
-    let file = File::open(target.join("document")).unwrap();
-    let mut actual = vec![0_u8; value.len()];
-    // SAFETY: fixture descriptor and bounded live writable output buffer.
-    assert_eq!(
-        unsafe {
-            libc::fgetxattr(
-                file.as_raw_fd(),
-                name.as_ptr(),
-                actual.as_mut_ptr().cast(),
-                actual.len(),
-            )
-        },
-        value.len() as isize
-    );
-    assert_eq!(actual, value);
-    let replacement = b"changed";
-    // SAFETY: fixture descriptor and bounded live name/value buffers.
-    assert_eq!(
-        unsafe {
-            libc::fsetxattr(
-                file.as_raw_fd(),
-                name.as_ptr(),
-                replacement.as_ptr().cast(),
-                replacement.len(),
-                0,
-            )
-        },
-        0
-    );
-    let WorkerOutcome::Incomplete(report) = plan.retry().unwrap().finish() else {
-        panic!("Changed metadata must require review");
-    };
-    assert!(
-        report
-            .failed
-            .iter()
-            .any(|(_, error)| error.contains("extended attribute changed"))
-    );
-    // A saved review is not authority for another supplied destination.
-    assert!(HomeReview::recover(&home, &target.with_extension("different"), &journal).is_err());
 }
 
 #[test]
@@ -290,32 +124,6 @@ fn replaced_directory_or_link_is_never_followed_during_recovery() {
 }
 
 #[test]
-fn sparse_home_files_keep_their_bytes_without_allocating_all_zero_extents() {
-    use std::io::{Seek, SeekFrom, Write};
-    let (_temp, home, target, journal) = fixture();
-    let mut source = File::create(home.join("sparse-image")).unwrap();
-    source.write_all(b"image header").unwrap();
-    source.set_len(4 * 1024 * 1024).unwrap();
-    source.seek(SeekFrom::End(-4)).unwrap();
-    source.write_all(b"tail").unwrap();
-    source.sync_all().unwrap();
-    let plan = review(&home, &target, &journal).unwrap();
-    assert!(matches!(
-        plan.start().unwrap().finish(),
-        WorkerOutcome::Complete(_)
-    ));
-    assert_eq!(
-        fs::read(target.join("sparse-image")).unwrap(),
-        fs::read(home.join("sparse-image")).unwrap()
-    );
-    let metadata = fs::metadata(target.join("sparse-image")).unwrap();
-    assert!(
-        metadata.blocks() * 512 < metadata.len() / 2,
-        "Sparse copy allocated its full logical size"
-    );
-}
-
-#[test]
 fn home_review_refuses_overlap_and_source_changes_before_creating_output() {
     let (_temp, home, target, journal) = fixture();
     fs::write(home.join("document"), b"original").unwrap();
@@ -334,128 +142,324 @@ fn home_review_refuses_overlap_and_source_changes_before_creating_output() {
     assert!(review(&link, &target, &journal).is_err());
 }
 
-#[test]
-fn home_special_entries_are_reported_without_following_or_blocking() {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let (_temp, home, target, journal) = fixture();
-    fs::write(home.join("document"), b"ordinary bytes").unwrap();
-    let pipe = CString::new(home.join("pipe").as_os_str().as_bytes()).unwrap();
-    // SAFETY: valid NUL-terminated temporary fixture path, no live user path.
-    assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
-    let plan = review(&home, &target, &journal).unwrap();
-    assert_eq!(plan.summary.special_files, 1);
-    let WorkerOutcome::Incomplete(report) = plan.start().unwrap().finish() else {
-        panic!("Special entries require a truthful incomplete report");
-    };
-    assert_eq!(report.skipped.len(), 1);
-    assert!(!target.join("pipe").exists());
-    assert_eq!(
-        fs::read(target.join("document")).unwrap(),
-        b"ordinary bytes"
-    );
-    assert!(fs::symlink_metadata(home.join("pipe")).is_ok());
-}
+tilo_test_env::scenario! {
+    fn home_transfer_keeps_native_fidelity;
 
-#[test]
-fn runtime_sockets_have_durable_omission_receipts_without_losing_adjacent_keys() {
-    use std::os::unix::net::UnixListener;
-    let (_temp, home, target, journal) = fixture();
-    fs::create_dir(home.join(".gnupg")).unwrap();
-    fs::set_permissions(home.join(".gnupg"), fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(home.join(".gnupg/private-key"), b"private key fixture").unwrap();
-    fs::set_permissions(
-        home.join(".gnupg/private-key"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-    let socket = home.join(".gnupg/S.gpg-agent");
-    let _listener = UnixListener::bind(&socket).unwrap();
-    let source_inode = fs::symlink_metadata(&socket).unwrap().ino();
-    let plan = review(&home, &target, &journal).unwrap();
-    assert_eq!(plan.summary.runtime_sockets, 1);
-    assert_eq!(plan.summary.special_files, 0);
-    let WorkerOutcome::Complete(report) = plan.start().unwrap().finish() else {
-        panic!("Runtime socket endpoints are disclosed omissions, not missing persistent data");
-    };
-    assert!(report.complete());
-    assert!(report.skipped.is_empty());
-    assert!(report.metadata_limitations.iter().any(
-        |message| message.contains(".gnupg/S.gpg-agent") && message.contains("runtime socket")
-    ));
-    assert_eq!(
-        fs::read(target.join(".gnupg/private-key")).unwrap(),
-        b"private key fixture"
-    );
-    assert!(!target.join(".gnupg/S.gpg-agent").exists());
-    assert_eq!(fs::symlink_metadata(&socket).unwrap().ino(), source_inode);
-    assert_eq!(
-        fs::read(home.join(".gnupg/private-key")).unwrap(),
-        b"private key fixture"
-    );
-    assert!(fidelity::runtime_socket_omission_is_receipted(
-        &journal.with_extension("home-finalization")
-    ));
-    let WorkerOutcome::Complete(resumed) = plan.retry().unwrap().finish() else {
-        panic!("A durable socket omission must revalidate during retry");
-    };
-    assert!(
-        resumed
-            .metadata_limitations
-            .iter()
-            .any(|message| message.contains(".gnupg/S.gpg-agent"))
-    );
-    fs::write(
-        target.join(".gnupg/S.gpg-agent"),
-        b"do not overwrite this target",
-    )
-    .unwrap();
-    let WorkerOutcome::Incomplete(conflict) = plan.retry().unwrap().finish() else {
-        panic!("An omission receipt must not waive a new target conflict");
-    };
-    assert!(
-        conflict
-            .failed
-            .iter()
-            .any(|(_, error)| error.contains("runtime socket omission conflicts"))
-    );
-    assert_eq!(
-        fs::read(target.join(".gnupg/S.gpg-agent")).unwrap(),
-        b"do not overwrite this target"
-    );
-}
+    phase whole_home_worker_transfers_hidden_data_links_modes_and_preserves_originals;
+    {
+        let (_temp, home, target, journal) = fixture();
+        fs::create_dir(home.join(".config")).unwrap();
+        fs::create_dir(home.join(".ssh")).unwrap();
+        fs::set_permissions(home.join(".ssh"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(home.join(".config/preferences"), b"all my preferences").unwrap();
+        fs::write(home.join(".ssh/id_ed25519"), b"private fixture credential").unwrap();
+        fs::set_permissions(
+            home.join(".ssh/id_ed25519"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        fs::write(home.join("run-me"), b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(home.join("run-me"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::hard_link(home.join("run-me"), home.join("second-name")).unwrap();
+        symlink(".config/preferences", home.join("relative-link")).unwrap();
+        symlink("/outside/does-not-exist", home.join("absolute-link")).unwrap();
+        let native_name = std::ffi::OsString::from_vec(vec![b'a', 0xff]);
+        fs::write(home.join(&native_name), b"non UTF-8 names survive").unwrap();
+        let source_inode = fs::metadata(home.join("run-me")).unwrap().ino();
+        let plan = review(&home, &target, &journal).unwrap();
+        assert_eq!(plan.summary.links, 2);
+        assert_eq!(plan.summary.files, 5);
+        let mut worker = plan.start().unwrap();
+        let outcome = worker.finish();
+        let WorkerOutcome::Complete(report) = outcome else {
+            panic!("Whole-home import failed: {outcome:?}");
+        };
+        assert!(report.complete(), "{report:?}");
+        assert_eq!(
+            fs::read(target.join(".config/preferences")).unwrap(),
+            b"all my preferences"
+        );
+        assert_eq!(
+            fs::read(target.join(".ssh/id_ed25519")).unwrap(),
+            b"private fixture credential"
+        );
+        assert_eq!(
+            fs::metadata(target.join("run-me"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            fs::metadata(target.join(".ssh/id_ed25519"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(target.join("run-me")).unwrap().ino(),
+            fs::metadata(target.join("second-name")).unwrap().ino()
+        );
+        assert_eq!(
+            fs::read_link(target.join("relative-link")).unwrap(),
+            Path::new(".config/preferences")
+        );
+        assert_eq!(
+            fs::read_link(target.join("absolute-link")).unwrap(),
+            Path::new("/outside/does-not-exist")
+        );
+        assert_eq!(
+            fs::read(target.join(&native_name)).unwrap(),
+            b"non UTF-8 names survive"
+        );
+        assert_eq!(
+            fs::metadata(home.join("run-me")).unwrap().ino(),
+            source_inode
+        );
+        assert_eq!(
+            fs::read(home.join(".ssh/id_ed25519")).unwrap(),
+            b"private fixture credential"
+        );
+        // The home-specific retry uses its finalized receipts, not generic 0600
+        // receipts. It verifies an unchanged completed import and every hardlink.
+        let WorkerOutcome::Complete(_) = plan.retry().unwrap().finish() else {
+            panic!("Finalized home retry must revalidate");
+        };
+        fs::write(target.join("run-me"), b"user modified imported output").unwrap();
+        let WorkerOutcome::Incomplete(report) = plan.retry().unwrap().finish() else {
+            panic!("Changed retained output must be incomplete");
+        };
+        assert!(!report.failed.is_empty());
+        assert_eq!(
+            fs::read(target.join("run-me")).unwrap(),
+            b"user modified imported output"
+        );
+    }
 
-#[test]
-fn home_preserves_posix_acl_defaults_and_refuses_changed_permissions() {
-    let (_temp, home, target, journal) = fixture();
-    let source = home.join("shared");
-    fs::create_dir(&source).unwrap();
-    use crate::portable_transfer::acl::{policy, set_test_acl};
-    let permissions = b"user::rwx\ngroup::r-x\nmask::r-x\nother::---";
-    set_test_acl(&source, false, permissions).unwrap();
-    set_test_acl(&source, true, permissions).unwrap();
-    fs::write(source.join("document"), b"ACL fixture").unwrap();
-    let plan = review(&home, &target, &journal).unwrap();
-    assert!(matches!(
-        plan.start().unwrap().finish(),
-        WorkerOutcome::Complete(_)
-    ));
-    let acl = |path: &Path| policy(&fs::File::open(path).unwrap()).unwrap();
-    assert!(acl(&source).iter().all(Option::is_some));
-    assert!(acl(&source.join("document"))[0].is_some());
-    assert_eq!(acl(&source), acl(&target.join("shared")));
-    assert_eq!(
-        acl(&source.join("document")),
-        acl(&target.join("shared/document"))
-    );
-    set_test_acl(
-        &target.join("shared/document"),
-        false,
-        b"user::rw-\ngroup::r-x\nmask::---\nother::---",
-    )
-    .unwrap();
-    assert!(matches!(
-        plan.retry().unwrap().finish(),
-        WorkerOutcome::Incomplete(_)
-    ));
-    assert_eq!(fs::read(source.join("document")).unwrap(), b"ACL fixture");
+    phase home_preserves_user_attributes_and_refuses_changed_retained_metadata;
+    {
+        use std::{ffi::CString, os::fd::AsRawFd};
+        let (_temp, home, target, journal) = fixture();
+        fs::write(home.join("document"), b"bytes").unwrap();
+        let name = CString::new("user.fixture").unwrap();
+        let value = b"custom home metadata";
+        let file = File::open(home.join("document")).unwrap();
+        // SAFETY: fixture descriptor and bounded live name/value buffers.
+        assert_eq!(
+            unsafe {
+                libc::fsetxattr(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            },
+            0
+        );
+        let plan = review(&home, &target, &journal).unwrap();
+        assert!(matches!(
+            plan.start().unwrap().finish(),
+            WorkerOutcome::Complete(_)
+        ));
+        let file = File::open(target.join("document")).unwrap();
+        let mut actual = vec![0_u8; value.len()];
+        // SAFETY: fixture descriptor and bounded live writable output buffer.
+        assert_eq!(
+            unsafe {
+                libc::fgetxattr(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    actual.as_mut_ptr().cast(),
+                    actual.len(),
+                )
+            },
+            value.len() as isize
+        );
+        assert_eq!(actual, value);
+        let replacement = b"changed";
+        // SAFETY: fixture descriptor and bounded live name/value buffers.
+        assert_eq!(
+            unsafe {
+                libc::fsetxattr(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    replacement.as_ptr().cast(),
+                    replacement.len(),
+                    0,
+                )
+            },
+            0
+        );
+        let WorkerOutcome::Incomplete(report) = plan.retry().unwrap().finish() else {
+            panic!("Changed metadata must require review");
+        };
+        assert!(
+            report
+                .failed
+                .iter()
+                .any(|(_, error)| error.contains("extended attribute changed"))
+        );
+        // A saved review is not authority for another supplied destination.
+        assert!(HomeReview::recover(&home, &target.with_extension("different"), &journal).is_err());
+    }
+
+    phase sparse_home_files_keep_their_bytes_without_allocating_all_zero_extents;
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let (_temp, home, target, journal) = fixture();
+        let mut source = File::create(home.join("sparse-image")).unwrap();
+        source.write_all(b"image header").unwrap();
+        source.set_len(4 * 1024 * 1024).unwrap();
+        source.seek(SeekFrom::End(-4)).unwrap();
+        source.write_all(b"tail").unwrap();
+        source.sync_all().unwrap();
+        let plan = review(&home, &target, &journal).unwrap();
+        assert!(matches!(
+            plan.start().unwrap().finish(),
+            WorkerOutcome::Complete(_)
+        ));
+        assert_eq!(
+            fs::read(target.join("sparse-image")).unwrap(),
+            fs::read(home.join("sparse-image")).unwrap()
+        );
+        let metadata = fs::metadata(target.join("sparse-image")).unwrap();
+        assert!(
+            metadata.blocks() * 512 < metadata.len() / 2,
+            "Sparse copy allocated its full logical size"
+        );
+    }
+
+    phase home_special_entries_are_reported_without_following_or_blocking;
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let (_temp, home, target, journal) = fixture();
+        fs::write(home.join("document"), b"ordinary bytes").unwrap();
+        let pipe = CString::new(home.join("pipe").as_os_str().as_bytes()).unwrap();
+        // SAFETY: valid NUL-terminated temporary fixture path, no live user path.
+        assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
+        let plan = review(&home, &target, &journal).unwrap();
+        assert_eq!(plan.summary.special_files, 1);
+        let WorkerOutcome::Incomplete(report) = plan.start().unwrap().finish() else {
+            panic!("Special entries require a truthful incomplete report");
+        };
+        assert_eq!(report.skipped.len(), 1);
+        assert!(!target.join("pipe").exists());
+        assert_eq!(
+            fs::read(target.join("document")).unwrap(),
+            b"ordinary bytes"
+        );
+        assert!(fs::symlink_metadata(home.join("pipe")).is_ok());
+    }
+
+    phase runtime_sockets_have_durable_omission_receipts_without_losing_adjacent_keys;
+    {
+        use std::os::unix::net::UnixListener;
+        let (_temp, home, target, journal) = fixture();
+        fs::create_dir(home.join(".gnupg")).unwrap();
+        fs::set_permissions(home.join(".gnupg"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(home.join(".gnupg/private-key"), b"private key fixture").unwrap();
+        fs::set_permissions(
+            home.join(".gnupg/private-key"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let socket = home.join(".gnupg/S.gpg-agent");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let source_inode = fs::symlink_metadata(&socket).unwrap().ino();
+        let plan = review(&home, &target, &journal).unwrap();
+        assert_eq!(plan.summary.runtime_sockets, 1);
+        assert_eq!(plan.summary.special_files, 0);
+        let WorkerOutcome::Complete(report) = plan.start().unwrap().finish() else {
+            panic!("Runtime socket endpoints are disclosed omissions, not missing persistent data");
+        };
+        assert!(report.complete());
+        assert!(report.skipped.is_empty());
+        assert!(report.metadata_limitations.iter().any(
+            |message| message.contains(".gnupg/S.gpg-agent") && message.contains("runtime socket")
+        ));
+        assert_eq!(
+            fs::read(target.join(".gnupg/private-key")).unwrap(),
+            b"private key fixture"
+        );
+        assert!(!target.join(".gnupg/S.gpg-agent").exists());
+        assert_eq!(fs::symlink_metadata(&socket).unwrap().ino(), source_inode);
+        assert_eq!(
+            fs::read(home.join(".gnupg/private-key")).unwrap(),
+            b"private key fixture"
+        );
+        assert!(fidelity::runtime_socket_omission_is_receipted(
+            &journal.with_extension("home-finalization")
+        ));
+        let WorkerOutcome::Complete(resumed) = plan.retry().unwrap().finish() else {
+            panic!("A durable socket omission must revalidate during retry");
+        };
+        assert!(
+            resumed
+                .metadata_limitations
+                .iter()
+                .any(|message| message.contains(".gnupg/S.gpg-agent"))
+        );
+        fs::write(
+            target.join(".gnupg/S.gpg-agent"),
+            b"do not overwrite this target",
+        )
+        .unwrap();
+        let WorkerOutcome::Incomplete(conflict) = plan.retry().unwrap().finish() else {
+            panic!("An omission receipt must not waive a new target conflict");
+        };
+        assert!(
+            conflict
+                .failed
+                .iter()
+                .any(|(_, error)| error.contains("runtime socket omission conflicts"))
+        );
+        assert_eq!(
+            fs::read(target.join(".gnupg/S.gpg-agent")).unwrap(),
+            b"do not overwrite this target"
+        );
+    }
+
+    phase home_preserves_posix_acl_defaults_and_refuses_changed_permissions;
+    {
+        let (_temp, home, target, journal) = fixture();
+        let source = home.join("shared");
+        fs::create_dir(&source).unwrap();
+        use crate::portable_transfer::acl::{policy, set_test_acl};
+        let permissions = b"user::rwx\ngroup::r-x\nmask::r-x\nother::---";
+        set_test_acl(&source, false, permissions).unwrap();
+        set_test_acl(&source, true, permissions).unwrap();
+        fs::write(source.join("document"), b"ACL fixture").unwrap();
+        let plan = review(&home, &target, &journal).unwrap();
+        assert!(matches!(
+            plan.start().unwrap().finish(),
+            WorkerOutcome::Complete(_)
+        ));
+        let acl = |path: &Path| policy(&fs::File::open(path).unwrap()).unwrap();
+        assert!(acl(&source).iter().all(Option::is_some));
+        assert!(acl(&source.join("document"))[0].is_some());
+        assert_eq!(acl(&source), acl(&target.join("shared")));
+        assert_eq!(
+            acl(&source.join("document")),
+            acl(&target.join("shared/document"))
+        );
+        set_test_acl(
+            &target.join("shared/document"),
+            false,
+            b"user::rw-\ngroup::r-x\nmask::---\nother::---",
+        )
+        .unwrap();
+        assert!(matches!(
+            plan.retry().unwrap().finish(),
+            WorkerOutcome::Incomplete(_)
+        ));
+        assert_eq!(fs::read(source.join("document")).unwrap(), b"ACL fixture");
+    }
 }

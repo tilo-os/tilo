@@ -357,84 +357,88 @@ mod tests {
         keys
     }
 
-    #[test]
-    fn a_row_inserted_or_moved_before_the_keys_were_read_says_where_it_goes() {
-        let parent = vec!["list".to_owned()];
-        let changes = where_the_rows_go(&[
-            Patch::Insert {
-                parent: parent.clone(),
-                index: 0,
-                node: UiNode::empty("fragment", "n"),
-            },
-            Patch::Move {
-                parent: parent.clone(),
-                key: "c".to_owned(),
-                from: 2,
-                to: 1,
-            },
-        ]);
-        assert_eq!(
-            changes,
-            Some(vec![
-                RowChange::Inserted {
-                    index: 0,
-                    key: "n".to_owned(),
-                },
-                RowChange::Moved { from: 2, to: 1 },
-            ])
-        );
-        // A removed row whose place the view does not say stood there only in the order it
-        // left: the window reads it. One whose place it does say needs no read.
-        assert_eq!(
-            where_the_rows_go(&[Patch::Remove {
-                parent: parent.clone(),
-                key: "b".to_owned(),
-                at: None,
-            }]),
-            None
-        );
-        assert_eq!(
-            where_the_rows_go(&[Patch::Remove {
-                parent,
-                key: "b".to_owned(),
-                at: Some(1),
-            }]),
-            Some(vec![RowChange::Removed { index: 1 }])
-        );
-    }
+    tilo_test_env::scenario! {
+        fn row_patches_say_where_each_row_goes;
 
-    #[test]
-    fn the_views_patches_of_a_list_are_the_changes_of_its_rows() {
-        let keys =
-            |list: &[&str]| -> Vec<String> { list.iter().map(|k| (*k).to_owned()).collect() };
-        let old = keys(&["a", "b", "c", "d"]);
-        let mut rows = keys_of(&["a", "b", "c", "d"]);
-        // Where each row is was looked up before the change: it is kept up to date.
-        assert_eq!(rows.index_of("d"), Some(3));
-        let parent = vec!["list".to_owned()];
-        let changes = rows.apply(&[
-            Patch::Remove {
-                parent: parent.clone(),
-                key: "b".to_owned(),
-                at: Some(1),
-            },
-            Patch::Insert {
-                parent: parent.clone(),
-                index: 0,
-                node: UiNode::empty("fragment", "n"),
-            },
-            Patch::Move {
-                parent,
-                key: "c".to_owned(),
-                from: 2,
-                to: 1,
-            },
-        ]);
-        let new = keys(&["n", "c", "a", "d"]);
-        assert_eq!(replay(old, &changes), new, "{changes:?}");
-        for (at, key) in new.iter().enumerate() {
-            assert_eq!(rows.index_of(key), Some(at), "{key}");
+        phase a_row_inserted_or_moved_before_the_keys_were_read_says_where_it_goes;
+        {
+            let parent = vec!["list".to_owned()];
+            let changes = where_the_rows_go(&[
+                Patch::Insert {
+                    parent: parent.clone(),
+                    index: 0,
+                    node: UiNode::empty("fragment", "n"),
+                },
+                Patch::Move {
+                    parent: parent.clone(),
+                    key: "c".to_owned(),
+                    from: 2,
+                    to: 1,
+                },
+            ]);
+            assert_eq!(
+                changes,
+                Some(vec![
+                    RowChange::Inserted {
+                        index: 0,
+                        key: "n".to_owned(),
+                    },
+                    RowChange::Moved { from: 2, to: 1 },
+                ])
+            );
+            // A removed row whose place the view does not say stood there only in the order it
+            // left: the window reads it. One whose place it does say needs no read.
+            assert_eq!(
+                where_the_rows_go(&[Patch::Remove {
+                    parent: parent.clone(),
+                    key: "b".to_owned(),
+                    at: None,
+                }]),
+                None
+            );
+            assert_eq!(
+                where_the_rows_go(&[Patch::Remove {
+                    parent,
+                    key: "b".to_owned(),
+                    at: Some(1),
+                }]),
+                Some(vec![RowChange::Removed { index: 1 }])
+            );
         }
-        assert_eq!(rows.index_of("b"), None);
+
+        phase the_views_patches_of_a_list_are_the_changes_of_its_rows;
+        {
+            let keys =
+                |list: &[&str]| -> Vec<String> { list.iter().map(|k| (*k).to_owned()).collect() };
+            let old = keys(&["a", "b", "c", "d"]);
+            let mut rows = keys_of(&["a", "b", "c", "d"]);
+            // Where each row is was looked up before the change: it is kept up to date.
+            assert_eq!(rows.index_of("d"), Some(3));
+            let parent = vec!["list".to_owned()];
+            let changes = rows.apply(&[
+                Patch::Remove {
+                    parent: parent.clone(),
+                    key: "b".to_owned(),
+                    at: Some(1),
+                },
+                Patch::Insert {
+                    parent: parent.clone(),
+                    index: 0,
+                    node: UiNode::empty("fragment", "n"),
+                },
+                Patch::Move {
+                    parent,
+                    key: "c".to_owned(),
+                    from: 2,
+                    to: 1,
+                },
+            ]);
+            let new = keys(&["n", "c", "a", "d"]);
+            assert_eq!(replay(old, &changes), new, "{changes:?}");
+            for (at, key) in new.iter().enumerate() {
+                assert_eq!(rows.index_of(key), Some(at), "{key}");
+            }
+            assert_eq!(rows.index_of("b"), None);
+        }
     }
 }

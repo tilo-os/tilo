@@ -252,70 +252,75 @@ mod legacy_tests;
 mod presentation_wire_tests {
     use super::wire::*;
 
-    #[test]
-    fn presentation_negotiation_preserves_legacy_handshake_and_old_host_decode() {
-        let legacy = Handshake {
-            workspace_id: "room".into(),
-            app_id: "app".into(),
-            surface: None,
-        };
-        let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
-        let compatibility = PresentationHandshake {
-            handshake: legacy,
-            presentation_version: 0,
-        };
-        assert_eq!(serde_json::to_vec(&compatibility).unwrap(), legacy_bytes);
-        let enabled = PresentationHandshake {
-            handshake: compatibility.handshake,
-            presentation_version: PRESENTATION_VERSION,
-        };
-        let old_host: Handshake =
-            serde_json::from_slice(&serde_json::to_vec(&enabled).unwrap()).unwrap();
-        assert_eq!(old_host.workspace_id, "room");
-        assert_eq!(old_host.app_id, "app");
-        let new_host: PresentationHandshake = serde_json::from_slice(&legacy_bytes).unwrap();
-        assert_eq!(new_host.presentation_version, 0);
-        assert_eq!(postcard::to_allocvec(&Request::Metadata).unwrap(), [0]);
-        assert_eq!(
-            postcard::to_allocvec(&Response::Signature(vec![1, 2])).unwrap(),
-            [1, 2, 1, 2]
-        );
-    }
-    #[test]
-    fn negotiated_response_keeps_legacy_metadata_tuple_encoding() {
-        let fields = (
-            "Ada",
-            [1_u8, 2, 3],
-            [4_u8; 32],
-            [5_u8; 32],
-            Some(vec![6_u8; 4]),
-            1_u16,
-            1_u16,
-            0_u16,
-        );
-        let expected = [vec![0], postcard::to_allocvec(&fields).unwrap()].concat();
-        let legacy = Response::Metadata {
-            display_name: fields.0.into(),
-            avatar_color: fields.1,
-            group_public_key: fields.2,
-            signing_public_key: fields.3,
-            device_certificate: fields.4.clone(),
-            threshold: fields.5,
-            total_shares: fields.6,
-            share_index: fields.7,
-        };
-        assert_eq!(postcard::to_allocvec(&legacy).unwrap(), expected);
-        let extended = Response::MetadataWithPresentation {
-            display_name: fields.0.into(),
-            avatar_color: fields.1,
-            group_public_key: fields.2,
-            signing_public_key: fields.3,
-            device_certificate: fields.4,
-            threshold: fields.5,
-            total_shares: fields.6,
-            share_index: fields.7,
-            photo: None,
-        };
-        assert_eq!(postcard::to_allocvec(&extended).unwrap().first(), Some(&5));
+    tilo_test_env::scenario! {
+        fn the_presentation_wire;
+
+        phase presentation_negotiation_preserves_legacy_handshake_and_old_host_decode;
+        {
+            let legacy = Handshake {
+                workspace_id: "room".into(),
+                app_id: "app".into(),
+                surface: None,
+            };
+            let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
+            let compatibility = PresentationHandshake {
+                handshake: legacy,
+                presentation_version: 0,
+            };
+            assert_eq!(serde_json::to_vec(&compatibility).unwrap(), legacy_bytes);
+            let enabled = PresentationHandshake {
+                handshake: compatibility.handshake,
+                presentation_version: PRESENTATION_VERSION,
+            };
+            let old_host: Handshake =
+                serde_json::from_slice(&serde_json::to_vec(&enabled).unwrap()).unwrap();
+            assert_eq!(old_host.workspace_id, "room");
+            assert_eq!(old_host.app_id, "app");
+            let new_host: PresentationHandshake = serde_json::from_slice(&legacy_bytes).unwrap();
+            assert_eq!(new_host.presentation_version, 0);
+            assert_eq!(postcard::to_allocvec(&Request::Metadata).unwrap(), [0]);
+            assert_eq!(
+                postcard::to_allocvec(&Response::Signature(vec![1, 2])).unwrap(),
+                [1, 2, 1, 2]
+            );
+        }
+
+        phase negotiated_response_keeps_legacy_metadata_tuple_encoding;
+        {
+            let fields = (
+                "Ada",
+                [1_u8, 2, 3],
+                [4_u8; 32],
+                [5_u8; 32],
+                Some(vec![6_u8; 4]),
+                1_u16,
+                1_u16,
+                0_u16,
+            );
+            let expected = [vec![0], postcard::to_allocvec(&fields).unwrap()].concat();
+            let legacy = Response::Metadata {
+                display_name: fields.0.into(),
+                avatar_color: fields.1,
+                group_public_key: fields.2,
+                signing_public_key: fields.3,
+                device_certificate: fields.4.clone(),
+                threshold: fields.5,
+                total_shares: fields.6,
+                share_index: fields.7,
+            };
+            assert_eq!(postcard::to_allocvec(&legacy).unwrap(), expected);
+            let extended = Response::MetadataWithPresentation {
+                display_name: fields.0.into(),
+                avatar_color: fields.1,
+                group_public_key: fields.2,
+                signing_public_key: fields.3,
+                device_certificate: fields.4,
+                threshold: fields.5,
+                total_shares: fields.6,
+                share_index: fields.7,
+                photo: None,
+            };
+            assert_eq!(postcard::to_allocvec(&extended).unwrap().first(), Some(&5));
+        }
     }
 }

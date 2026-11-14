@@ -246,67 +246,120 @@ mod tests {
         UNIX_EPOCH + Duration::from_secs(seconds)
     }
 
-    #[test]
-    fn a_measurement_keeps_its_measure_source_and_age() {
-        let fact = Measured::known(
-            Measure::new("Memory in use").unit("GiB"),
-            "8.6",
-            "this device",
-            at(100),
-            Some(Duration::from_secs(5)),
-        );
-        assert_eq!(fact.measure().label(), "Memory in use");
-        assert_eq!(fact.measure().unit_suffix(), Some("GiB"));
-        assert_eq!(fact.value(), Some("8.6"));
-        assert_eq!(fact.value_or_dash(), "8.6");
-        assert_eq!(fact.caption(at(102)), "measured 2 s ago \u{b7} this device");
-        assert!(!fact.is_stale(at(102)));
-        assert!(fact.is_stale(at(106)));
-        assert_eq!(
-            fact.caption(at(106)),
-            "measured 6 s ago \u{b7} this device \u{b7} stale"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A measured fact: its measure, source and age, and what it reads when nothing was
+        /// measured.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_measured_fact_says_its_measure_its_age_and_when_it_is_unknown;
 
-    #[test]
-    fn an_unknown_fact_is_an_em_dash_with_a_reason_never_a_zero() {
-        let fact = Measured::unknown(
-            Measure::new("Memory (RSS)"),
-            "the process list is unavailable",
-        );
-        assert_eq!(fact.value(), None);
-        assert_eq!(fact.value_or_dash(), "\u{2014}");
-        assert!(fact.is_stale(at(1)));
-        assert_eq!(
-            fact.caption(at(1)),
-            "not measured \u{b7} the process list is unavailable"
-        );
-    }
+        phase a_measurement_keeps_its_measure_source_and_age;
+        {
+            let fact = Measured::known(
+                Measure::new("Memory in use").unit("GiB"),
+                "8.6",
+                "this device",
+                at(100),
+                Some(Duration::from_secs(5)),
+            );
+            assert_eq!(fact.measure().label(), "Memory in use");
+            assert_eq!(fact.measure().unit_suffix(), Some("GiB"));
+            assert_eq!(fact.value(), Some("8.6"));
+            assert_eq!(fact.value_or_dash(), "8.6");
+            assert_eq!(fact.caption(at(102)), "measured 2 s ago \u{b7} this device");
+            assert!(!fact.is_stale(at(102)));
+            assert!(fact.is_stale(at(106)));
+            assert_eq!(
+                fact.caption(at(106)),
+                "measured 6 s ago \u{b7} this device \u{b7} stale"
+            );
+            assert_eq!(fact.source(), Some("this device"));
+            assert_eq!(fact.as_of(), Some(at(100)));
+            assert_eq!(fact.unknown_reason(), None);
+            assert_eq!(fact.age(at(102)), Some(Duration::from_secs(2)));
+            // Exactly its interval old is not yet older than it.
+            assert!(
+                !fact.is_stale(at(105)),
+                "an age equal to the interval is not stale"
+            );
+            assert_eq!(fact.caption(at(105)), "measured 5 s ago \u{b7} this device");
+            // A clock that stepped back behind the reading: an age of zero, never a negative one, and
+            // not stale.
+            assert_eq!(fact.age(at(99)), Some(Duration::ZERO));
+            assert!(!fact.is_stale(at(99)), "a reading from the future");
+            assert_eq!(fact.caption(at(99)), "measured 0 s ago \u{b7} this device");
+            // No expected interval is never judged stale, and no source leaves no separator behind.
+            let unjudged = Measured::known(Measure::new("Uptime"), "3", "", at(100), None);
+            assert!(!unjudged.is_stale(at(100 + 365 * 24 * 60 * 60)));
+            assert_eq!(unjudged.caption(at(102)), "measured 2 s ago");
+        }
 
-    #[test]
-    fn two_measures_with_the_same_word_are_still_different_claims() {
-        let card = Measured::known(
-            Measure::new("Memory in use").unit("GiB"),
-            "8.6",
-            "system information service",
-            at(100),
-            None,
-        );
-        let row = Measured::known(
-            Measure::new("Memory (with children)").unit("GiB"),
-            "10.4",
-            "process table",
-            at(100),
-            None,
-        );
-        assert_ne!(card.measure(), row.measure());
-    }
+        phase an_unknown_fact_is_an_em_dash_with_a_reason_never_a_zero;
+        {
+            let fact = Measured::unknown(
+                Measure::new("Memory (RSS)"),
+                "the process list is unavailable",
+            );
+            assert_eq!(fact.value(), None);
+            assert_eq!(fact.value_or_dash(), "\u{2014}");
+            assert!(fact.is_stale(at(1)));
+            assert_eq!(
+                fact.caption(at(1)),
+                "not measured \u{b7} the process list is unavailable"
+            );
+            assert_eq!(
+                fact.unknown_reason(),
+                Some("the process list is unavailable")
+            );
+            assert_eq!(fact.source(), None);
+            assert_eq!(fact.as_of(), None);
+            assert_eq!(fact.age(at(1)), None);
+        }
 
-    #[test]
-    fn an_age_reads_in_the_largest_whole_unit() {
-        assert_eq!(age_label(Duration::from_secs(2)), "2 s");
-        assert_eq!(age_label(Duration::from_secs(125)), "2 min");
-        assert_eq!(age_label(Duration::from_secs(3 * 60 * 60)), "3 h");
-        assert_eq!(age_label(Duration::from_secs(2 * 24 * 60 * 60)), "2 d");
+        phase two_measures_with_the_same_word_are_still_different_claims;
+        {
+            let card = Measured::known(
+                Measure::new("Memory in use").unit("GiB"),
+                "8.6",
+                "system information service",
+                at(100),
+                None,
+            );
+            let row = Measured::known(
+                Measure::new("Memory (with children)").unit("GiB"),
+                "10.4",
+                "process table",
+                at(100),
+                None,
+            );
+            assert_ne!(card.measure(), row.measure());
+        }
+
+        phase an_age_reads_in_the_largest_whole_unit;
+        {
+            for (seconds, want) in [
+                (0, "0 s"),
+                (2, "2 s"),
+                (59, "59 s"),
+                (60, "1 min"),
+                (125, "2 min"),
+                (60 * 60 - 1, "59 min"),
+                (60 * 60, "1 h"),
+                (3 * 60 * 60, "3 h"),
+                (24 * 60 * 60 - 1, "23 h"),
+                (24 * 60 * 60, "1 d"),
+                (2 * 24 * 60 * 60, "2 d"),
+            ] {
+                assert_eq!(
+                    age_label(Duration::from_secs(seconds)),
+                    want,
+                    "{seconds} seconds"
+                );
+            }
+            assert_eq!(
+                age_label(Duration::from_millis(999)),
+                "0 s",
+                "a part of a second is no second yet"
+            );
+        }
     }
 }

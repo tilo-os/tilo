@@ -461,150 +461,155 @@ mod tests {
             .unwrap_or_default()
     }
 
-    #[test]
-    fn service_connect_reports_progress_then_connected() {
-        let fixture = Fixture::new("progress", "0.2");
-        let (device, options) = airplay("AirPlay:a");
-        let (mut client, served) = fixture.client();
-        connect(&mut client, &device, &options);
-        let events = events_until(&mut client, |event| {
-            is_connected(event) || matches!(event, ProjectorEvent::Ended { .. })
-        });
-        assert_eq!(
-            events,
-            [
-                ProjectorEvent::Connecting {
-                    device_id: device.id.clone(),
-                    stage: ConnectStage::Starting
-                },
-                ProjectorEvent::Connecting {
-                    device_id: device.id.clone(),
-                    stage: ConnectStage::Handshake
-                },
-                ProjectorEvent::Connected {
-                    device_id: device.id.clone()
-                },
-            ]
-        );
-        drop(client);
-        served.join().expect("client thread");
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
+        fn the_service_runs_one_session_and_ends_it_for_every_reason;
 
-    #[test]
-    fn stop_is_observed_without_polling_files() {
-        let fixture = Fixture::new("stop", "0");
-        let (device, options) = airplay("AirPlay:stop");
-        let (mut client, served) = fixture.client();
-        connect(&mut client, &device, &options);
-        events_until(&mut client, is_connected);
-        let during = runtime_files(&fixture.root);
-        send(&mut client, &ProjectorRequest::Disconnect);
-        let events = events_until(&mut client, |event| event == &ProjectorEvent::Idle);
-        assert_eq!(
-            events,
-            [
-                ProjectorEvent::Ended {
-                    device_id: device.id.clone(),
-                    error: None
-                },
-                ProjectorEvent::Idle
-            ]
-        );
-        let after = runtime_files(&fixture.root);
-        for marker in [
-            "stop",
-            "ready",
-            "error",
-            "session.pid",
-            "capture-profile.json",
-        ] {
+        phase service_connect_reports_progress_then_connected;
+        {
+            let fixture = Fixture::new("progress", "0.2");
+            let (device, options) = airplay("AirPlay:a");
+            let (mut client, served) = fixture.client();
+            connect(&mut client, &device, &options);
+            let events = events_until(&mut client, |event| {
+                is_connected(event) || matches!(event, ProjectorEvent::Ended { .. })
+            });
+            assert_eq!(
+                events,
+                [
+                    ProjectorEvent::Connecting {
+                        device_id: device.id.clone(),
+                        stage: ConnectStage::Starting
+                    },
+                    ProjectorEvent::Connecting {
+                        device_id: device.id.clone(),
+                        stage: ConnectStage::Handshake
+                    },
+                    ProjectorEvent::Connected {
+                        device_id: device.id.clone()
+                    },
+                ]
+            );
+            drop(client);
+            served.join().expect("client thread");
+        }
+
+        phase stop_is_observed_without_polling_files;
+        {
+            let fixture = Fixture::new("stop", "0");
+            let (device, options) = airplay("AirPlay:stop");
+            let (mut client, served) = fixture.client();
+            connect(&mut client, &device, &options);
+            events_until(&mut client, is_connected);
+            let during = runtime_files(&fixture.root);
+            send(&mut client, &ProjectorRequest::Disconnect);
+            let events = events_until(&mut client, |event| event == &ProjectorEvent::Idle);
+            assert_eq!(
+                events,
+                [
+                    ProjectorEvent::Ended {
+                        device_id: device.id.clone(),
+                        error: None
+                    },
+                    ProjectorEvent::Idle
+                ]
+            );
+            let after = runtime_files(&fixture.root);
+            for marker in [
+                "stop",
+                "ready",
+                "error",
+                "session.pid",
+                "capture-profile.json",
+            ] {
+                assert!(
+                    !during.iter().chain(&after).any(|file| file == marker),
+                    "a session wrote the {marker} marker: {during:?} {after:?}"
+                );
+            }
+            assert_eq!(fixture.service.session_count(), 0);
+            drop(client);
+            served.join().expect("client thread");
+        }
+
+        phase second_connect_stops_the_first_session;
+        {
+            let fixture = Fixture::new("second", "0");
+            let (first, options) = airplay("AirPlay:first");
+            let (second, _) = airplay("AirPlay:second");
+            let (mut client, served) = fixture.client();
+            connect(&mut client, &first, &options);
+            events_until(&mut client, is_connected);
+            connect(&mut client, &second, &options);
+            let events = events_until(
+                &mut client,
+                |event| matches!(event, ProjectorEvent::Connected { device_id } if *device_id == second.id),
+            );
+            let first_ended = events.iter().position(|event| {
+                event
+                    == &ProjectorEvent::Ended {
+                        device_id: first.id.clone(),
+                        error: None,
+                    }
+            });
             assert!(
-                !during.iter().chain(&after).any(|file| file == marker),
-                "a session wrote the {marker} marker: {during:?} {after:?}"
+                first_ended.is_some_and(|index| index + 1 < events.len()),
+                "the first session ends before the second connects: {events:?}"
+            );
+            assert_eq!(fixture.service.session_count(), 1);
+            drop(client);
+            served.join().expect("client thread");
+        }
+
+        phase subscriber_drop_stops_session;
+        {
+            let fixture = Fixture::new("drop", "0");
+            let (device, options) = airplay("AirPlay:dropped");
+            let (mut owner, owner_served) = fixture.client();
+            let (mut observer, observer_served) = fixture.client();
+            connect(&mut owner, &device, &options);
+            events_until(&mut observer, is_connected);
+            drop(owner);
+            owner_served.join().expect("owner thread");
+            assert_eq!(
+                fixture.service.session_count(),
+                1,
+                "another client still watches the session"
+            );
+            drop(observer);
+            observer_served.join().expect("observer thread");
+            assert_eq!(
+                fixture.service.session_count(),
+                0,
+                "the last client leaving stops the session"
             );
         }
-        assert_eq!(fixture.service.session_count(), 0);
-        drop(client);
-        served.join().expect("client thread");
-    }
 
-    #[test]
-    fn second_connect_stops_the_first_session() {
-        let fixture = Fixture::new("second", "0");
-        let (first, options) = airplay("AirPlay:first");
-        let (second, _) = airplay("AirPlay:second");
-        let (mut client, served) = fixture.client();
-        connect(&mut client, &first, &options);
-        events_until(&mut client, is_connected);
-        connect(&mut client, &second, &options);
-        let events = events_until(
-            &mut client,
-            |event| matches!(event, ProjectorEvent::Connected { device_id } if *device_id == second.id),
-        );
-        let first_ended = events.iter().position(|event| {
-            event
-                == &ProjectorEvent::Ended {
-                    device_id: first.id.clone(),
-                    error: None,
-                }
-        });
-        assert!(
-            first_ended.is_some_and(|index| index + 1 < events.len()),
-            "the first session ends before the second connects: {events:?}"
-        );
-        assert_eq!(fixture.service.session_count(), 1);
-        drop(client);
-        served.join().expect("client thread");
-    }
-
-    #[test]
-    fn subscriber_drop_stops_session() {
-        let fixture = Fixture::new("drop", "0");
-        let (device, options) = airplay("AirPlay:dropped");
-        let (mut owner, owner_served) = fixture.client();
-        let (mut observer, observer_served) = fixture.client();
-        connect(&mut owner, &device, &options);
-        events_until(&mut observer, is_connected);
-        drop(owner);
-        owner_served.join().expect("owner thread");
-        assert_eq!(
-            fixture.service.session_count(),
-            1,
-            "another client still watches the session"
-        );
-        drop(observer);
-        observer_served.join().expect("observer thread");
-        assert_eq!(
-            fixture.service.session_count(),
-            0,
-            "the last client leaving stops the session"
-        );
-    }
-
-    #[test]
-    fn a_failed_sender_ends_the_session_with_its_diagnostics() {
-        let fixture = Fixture::new("failing", "0");
-        fs::write(
-            fixture.root.join("airplay-sender"),
-            b"#!/bin/sh\necho 'peer refused AirPlay session' >&2\nexit 3\n",
-        )
-        .expect("write failing sender");
-        let (device, options) = airplay("AirPlay:failing");
-        let (mut client, served) = fixture.client();
-        connect(&mut client, &device, &options);
-        let events = events_until(&mut client, |event| {
-            matches!(event, ProjectorEvent::Ended { .. })
-        });
-        assert!(
-            matches!(
-                events.last(),
-                Some(ProjectorEvent::Ended { error: Some(error), .. })
-                    if error.contains("peer refused AirPlay session")
-            ),
-            "{events:?}"
-        );
-        drop(client);
-        served.join().expect("client thread");
-        assert_eq!(fixture.service.session_count(), 0);
+        phase a_failed_sender_ends_the_session_with_its_diagnostics;
+        {
+            let fixture = Fixture::new("failing", "0");
+            fs::write(
+                fixture.root.join("airplay-sender"),
+                b"#!/bin/sh\necho 'peer refused AirPlay session' >&2\nexit 3\n",
+            )
+            .expect("write failing sender");
+            let (device, options) = airplay("AirPlay:failing");
+            let (mut client, served) = fixture.client();
+            connect(&mut client, &device, &options);
+            let events = events_until(&mut client, |event| {
+                matches!(event, ProjectorEvent::Ended { .. })
+            });
+            assert!(
+                matches!(
+                    events.last(),
+                    Some(ProjectorEvent::Ended { error: Some(error), .. })
+                        if error.contains("peer refused AirPlay session")
+                ),
+                "{events:?}"
+            );
+            drop(client);
+            served.join().expect("client thread");
+            assert_eq!(fixture.service.session_count(), 0);
+        }
     }
 }

@@ -358,7 +358,7 @@ impl Core {
             }
             Imp::OfType => {
                 let ty = self.text(a.h(1)?)?;
-                let Value::List(items) = self.val(a.h(0)?)? else {
+                let Value::List(items) = self.val_whole(a.h(0)?)? else {
                     return trap("of takes a list");
                 };
                 let kept = items

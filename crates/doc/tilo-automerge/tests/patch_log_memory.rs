@@ -64,9 +64,18 @@ fn take_in(rounds: &[Vec<u8>], mut apply: impl FnMut(&mut AutoCommit, &[u8])) ->
     (grown, loaded)
 }
 
+/// A replica fed through `load_incoming` holds what its saved document holds. Fed through the raw
+/// call it keeps a patch event per applied op: that half pins the automerge behaviour
+/// `ApplyIncoming` exists for. Should automerge stop logging into an inactive patch log, it
+/// fails, and the wrapper and its clippy ban can go.
 #[test]
-fn a_replica_holds_what_its_saved_document_holds() {
+#[expect(
+    clippy::disallowed_methods,
+    reason = "demonstrates the raw call's growth"
+)]
+fn a_replica_holds_what_its_saved_document_holds_where_raw_automerge_keeps_a_patch_event_per_op() {
     let rounds = remote_rounds();
+
     let (grown, loaded) = take_in(&rounds, |doc, bytes| {
         doc.load_incoming(bytes).unwrap();
     });
@@ -76,17 +85,7 @@ fn a_replica_holds_what_its_saved_document_holds() {
         "a replica fed {} remote ops holds {grown} bytes against {loaded} for the same document loaded",
         ROUNDS * OPS_PER_ROUND
     );
-}
 
-/// Pins the automerge behaviour `ApplyIncoming` exists for. Should automerge stop logging into
-/// an inactive patch log, this fails, and the wrapper and its clippy ban can go.
-#[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "demonstrates the raw call's growth"
-)]
-fn automerge_keeps_a_patch_event_per_applied_op() {
-    let rounds = remote_rounds();
     let (grown, loaded) = take_in(&rounds, |doc, bytes| {
         doc.load_incremental(bytes).unwrap();
     });

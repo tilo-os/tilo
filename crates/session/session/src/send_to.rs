@@ -22,7 +22,8 @@ use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use ui::floating_surface::{Recipient, RecipientKind};
 
-use crate::Shared;
+use crate::i18n::t;
+use crate::{BoxAsk, Shared};
 
 /// The resource a send is published under: one action every sender runs — a person's box, an
 /// agent, a script.
@@ -377,32 +378,66 @@ impl Shared {
         Ok(resolved)
     }
 
-    /// The one place a report goes, as the chip its box opens with: nothing when this computer is
-    /// told nowhere.
-    pub(crate) fn feedback_recipient(&self) -> Option<Recipient> {
-        self.feedback
-            .as_ref()
-            .map(crate::feedback::Destination::recipient)
+    /// Reporting a problem, as a row of every box's list of whom a message goes to and as the chip
+    /// a report's box opens with: the one place this computer sends reports, else the row that
+    /// says it is told nowhere — which still leaves an agent or a person to send to.
+    pub(crate) fn feedback_row(&self) -> Recipient {
+        self.feedback.as_ref().map_or_else(
+            || {
+                Recipient::found(
+                    RecipientKind::Feedback,
+                    String::new(),
+                    t("session-feedback-nowhere"),
+                )
+                .with_detail(t("session-feedback-nowhere-body"))
+            },
+            crate::feedback::Destination::recipient,
+        )
     }
 
-    /// Whether the shell asked to report a problem since the last pass, to be asked of the window
-    /// in front then, to open its box to the one place reports go.
-    pub(crate) fn take_report_from(&self) -> bool {
-        self.report_from.replace(false)
+    /// Whether the shell asked for a box since the last pass, and what it asked for: the window in
+    /// front then opens its box
+    /// ([`ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection`]).
+    pub(crate) fn take_box_ask(&self) -> Option<BoxAsk> {
+        self.box_ask.take()
+    }
+
+    /// The people in the workspace here, as the chips of a box that says something to them: the
+    /// one search's own reading of who is about, never a second list.
+    pub(crate) fn people_recipients(&self) -> Vec<Recipient> {
+        people_of(self.recipients(""))
     }
 
     /// The agents, people and conversations `query` names, as a window's box lists them: found by
-    /// the one search every part of the desk shares.
+    /// the one search every part of the desk shares, with reporting a problem among them.
     pub(crate) fn recipients(&self, query: &str) -> Vec<Recipient> {
-        self.search.recipients(query)
+        let mut found = self.search.recipients(query);
+        let report = self.feedback_row();
+        if wanted(query, &report) {
+            found.push(report);
+        }
+        found
     }
+}
 
-    /// Whether the shell's send key was pressed since the last pass, to be asked of the window in
-    /// front then, with no menu around its box
-    /// ([`ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection`]).
-    pub(crate) fn take_send_from(&self) -> bool {
-        self.send_from.replace(false)
-    }
+/// The most people a box starts addressed to: more chips than a line of them holds, and a person
+/// saying something to everyone here names the rest themselves.
+const MAX_PEOPLE_CHIPS: usize = 4;
+
+/// The rows among `rows` a box that says something to the people here opens to: the people, never
+/// the agents and conversations the same search finds.
+fn people_of(rows: Vec<Recipient>) -> Vec<Recipient> {
+    rows.into_iter()
+        .filter(|recipient| recipient.kind == RecipientKind::Person)
+        .take(MAX_PEOPLE_CHIPS)
+        .collect()
+}
+
+/// Whether `row` belongs in the list a box's `query` answered: a report is what the person asks for
+/// by name, so it stands at the end of an empty list and is found by what it is called.
+fn wanted(query: &str, row: &Recipient) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty() || row.name.to_lowercase().contains(&query)
 }
 
 /// The most characters a new agent's name takes from what it is sent.
@@ -538,6 +573,40 @@ fn send_target(
 mod tests {
     use super::*;
     use tilo_reference::Attached;
+
+    /// Saying something to the people here addresses the people the search names about, never the
+    /// agents and conversations it finds beside them.
+    #[test]
+    fn a_box_to_the_people_here_holds_the_people_only() {
+        let rows = vec![
+            Recipient::found(RecipientKind::Agent, "a_notes", "Notes agent"),
+            Recipient::found(RecipientKind::Conversation, "c_1", "Ada and Bo"),
+            Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada"),
+            Recipient::found(RecipientKind::Person, "bo".repeat(32), "Bo"),
+        ];
+        assert_eq!(
+            people_of(rows),
+            vec![
+                Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada"),
+                Recipient::found(RecipientKind::Person, "bo".repeat(32), "Bo"),
+            ]
+        );
+    }
+
+    /// Reporting a problem is a row of every box's list: at the end of an empty one, and found by
+    /// what it is called.
+    #[test]
+    fn the_report_row_is_offered_and_found_by_name() {
+        let report = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
+        assert!(wanted("", &report), "every empty list ends with it");
+        assert!(wanted("  ", &report));
+        assert!(wanted("feed", &report), "found by what it is called");
+        assert!(wanted("TILO", &report), "whatever the case typed");
+        assert!(
+            !wanted("ada", &report),
+            "and absent from a search for someone"
+        );
+    }
 
     /// What a box holds reaches Chat as one action naming the recipients, what the message carries
     /// and its words: the app opens the conversation and posts there from that one action, nothing

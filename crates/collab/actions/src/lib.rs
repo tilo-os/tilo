@@ -157,8 +157,8 @@ pub mod task_step;
 pub mod terminal_text;
 
 pub use action::{
-    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
-    undo_takes_back,
+    Action, ActionError, ActionId, Declined, Doc, EncodedAction, ExecutionLocus, MAX_TEXT_BYTES,
+    OperationKind, asks_first, undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
 pub use appearance::{Appearance, AppearanceError, Persona};
@@ -191,7 +191,7 @@ pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, CompensatingScope, Dispatched, EntryReader, HostDecision, LocalTransport,
     UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,
-    await_compensation, await_settlement, current_step, dispatch, dispatch_by,
+    await_compensation, await_settlement, commit_written, current_step, dispatch, dispatch_by,
     dispatch_by_with_context, dispatch_with_context, entry_message, entry_of, invoking_context,
     open_step, replay, settle_compensation, verify_change,
 };
@@ -223,10 +223,10 @@ pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionState, ActionType,
     ArgsBuilder, Collects, ContinuationArguments, ContinuationEvidence, ContinuationKey,
     ContinuationQuery, ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET,
-    Noun, PROMPTED_PARAM, Readers, ResourceId, ResourcePresentation, ResourceSemanticIdentity,
-    ResourceSpec, ResourceType, ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec,
-    RunBy, Target, flatten, in_words, kind_mirrors_a_control, listed_for_people, listed_row,
-    listed_row_problems, plural, singular, sole_text_argument,
+    Noun, PROMPTED_PARAM, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
+    ResourceType, ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target,
+    flatten, in_words, kind_mirrors_a_control, listed_for_people, listed_row, listed_row_problems,
+    plural, singular, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
@@ -317,34 +317,6 @@ mod tests {
         serde_json::from_slice::<Seen>(payload).map(|seen| Box::new(seen) as Box<dyn Action>)
     }
 
-    /// A type registered with a decoder of its own decodes, and applies, as
-    /// one registered by type; a payload it cannot decode is a decode error
-    /// naming the type.
-    #[test]
-    fn a_registered_decoder_decodes_its_type_and_names_it_when_it_cannot() {
-        let mut registry = ActionRegistry::new();
-        registry.register_decoder(SEEN_TYPE, decode_seen);
-        let action = registry
-            .decode(&EncodedAction::encode(SEEN_TYPE, &Seen(7)).unwrap())
-            .unwrap();
-        let mut doc = AutoCommit::new();
-        action.apply(&mut doc).unwrap();
-        assert_eq!(
-            doc.get(&ROOT, "seen")
-                .unwrap()
-                .map(|(value, _)| value.as_i64()),
-            Some(Some(7))
-        );
-        let refused = registry.decode(&EncodedAction {
-            type_id: SEEN_TYPE.to_owned(),
-            payload: b"not a number".to_vec(),
-        });
-        assert!(
-            matches!(&refused, Err(ActionError::Decode { type_id, .. }) if type_id == SEEN_TYPE),
-            "{refused:?}"
-        );
-    }
-
     fn last_message(doc: &mut AutoCommit) -> Option<String> {
         let heads = doc.get_heads();
         doc.get_change_by_hash(heads.first()?)?
@@ -356,97 +328,6 @@ mod tests {
         ActionContext::from_change_message(&last_message(doc)?)
     }
 
-    /// The executor writes an action's declared kind into its change, with or
-    /// without a caller's context, and replay reproduces the same change.
-    #[test]
-    fn declared_kinds_travel_in_the_change_and_every_change_names_what_it_did() {
-        let (mut a, mut b) = two_replicas();
-        let env = apply_local(
-            &mut a,
-            &Seen(3),
-            EncodedAction::encode(SEEN_TYPE, &Seen(3)).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            env.context
-                .as_ref()
-                .is_some_and(ActionContext::is_housekeeping)
-        );
-        assert!(last_context(&mut a).is_some_and(|context| context.is_housekeeping()));
-        replay(&mut b, &env, &registry()).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same change");
-
-        let labelled = ActionContext::for_resource("c:1", "chat.channel", "general");
-        apply_local_with_context(
-            &mut a,
-            &Seen(4),
-            EncodedAction::encode(SEEN_TYPE, &Seen(4)).unwrap(),
-            None,
-            labelled,
-        )
-        .unwrap();
-        let context = last_context(&mut a).unwrap();
-        assert!(context.is_housekeeping());
-        assert_eq!(
-            context.resource.as_ref().map(|r| r.label.as_str()),
-            Some("general"),
-            "the caller's context is kept"
-        );
-
-        let put = Counter::Put {
-            key: "score".into(),
-            value: 1,
-        };
-        let env = apply_local(
-            &mut a,
-            &put,
-            EncodedAction::encode(COUNTER_TYPE, &put).unwrap(),
-        )
-        .unwrap();
-        let entry = env
-            .context
-            .expect("every committed action records an entry");
-        assert!(entry.change.is_step());
-        assert_eq!(
-            entry.what,
-            Some(Did::verb(
-                ActionKey::new("test", COUNTER_TYPE, "put"),
-                [
-                    ("key".to_string(), Scalar::from("score")),
-                    ("value".to_string(), Scalar::from(1)),
-                ],
-            )),
-            "an action that describes nothing is named by its encoded verb"
-        );
-        assert_eq!(last_context(&mut a), Some(entry));
-
-        // A context may say a content action is nobody's step this time; an
-        // action's own declaration is never overridden by a context.
-        let seeded = Counter::Put {
-            key: "score".into(),
-            value: 2,
-        };
-        let env = apply_local_with_context(
-            &mut a,
-            &seeded,
-            EncodedAction::encode(COUNTER_TYPE, &seeded).unwrap(),
-            None,
-            ActionContext::default().with_change(ChangeKind::External),
-        )
-        .unwrap();
-        assert_eq!(last_context(&mut a).unwrap().change, ChangeKind::External);
-        assert!(!env.context.unwrap().change.is_step());
-        apply_local_with_context(
-            &mut a,
-            &Seen(5),
-            EncodedAction::encode(SEEN_TYPE, &Seen(5)).unwrap(),
-            None,
-            ActionContext::default().with_change(ChangeKind::External),
-        )
-        .unwrap();
-        assert!(last_context(&mut a).unwrap().is_housekeeping());
-    }
-
     /// Seed two independent replicas that share history (so a replayed
     /// change has identical deps), each with its OWN actor for normal edits.
     fn two_replicas() -> (AutoCommit, AutoCommit) {
@@ -456,84 +337,6 @@ mod tests {
         let bytes = a.save();
         let b = AutoCommit::load(&bytes).unwrap();
         (a, b)
-    }
-
-    #[test]
-    fn the_executor_keeps_the_admitted_invocation_and_replays_the_identical_change() {
-        let (mut origin, mut peer) = two_replicas();
-        let action = Counter::Put {
-            key: "score".into(),
-            value: 42,
-        };
-        let invocation = InvocationId::new();
-        let context = ActionContext {
-            source_invocation: Some(invocation),
-            ..Default::default()
-        };
-        let envelope = apply_local_with_context(
-            &mut origin,
-            &action,
-            EncodedAction::encode(COUNTER_TYPE, &action).unwrap(),
-            Some(b"actual-person-device-writer"),
-            context,
-        )
-        .unwrap();
-        let committed = last_context(&mut origin).unwrap();
-        assert_eq!(committed.source_invocation, Some(invocation));
-        assert_eq!(envelope.context, Some(committed));
-        replay(&mut peer, &envelope, &registry()).unwrap();
-        assert_eq!(origin.get_heads(), peer.get_heads());
-        assert_eq!(
-            origin.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
-            peer.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
-        );
-    }
-
-    #[test]
-    fn a_callers_entry_replays_to_the_identical_change() {
-        let (mut origin, mut peer) = two_replicas();
-        let action = Counter::Put {
-            key: "score".into(),
-            value: 42,
-        };
-        let context = ActionContext::for_resource("score", "counter", "Score");
-        let envelope = ActionEnvelope {
-            id: ActionId::new(),
-            action: EncodedAction::encode(COUNTER_TYPE, &action).unwrap(),
-            base_heads: origin.get_heads().iter().map(|hash| hash.0).collect(),
-            timestamp: 17,
-            locus: ExecutionLocus::ClientLocal,
-            actor: Some(b"legacy-person-device-writer".to_vec()),
-            context: Some(context.clone()),
-        };
-        let old_message = context.change_message().unwrap();
-        let wire = serde_json::to_vec(&envelope).unwrap();
-        let decoded: ActionEnvelope = serde_json::from_slice(&wire).unwrap();
-        assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
-        origin.set_actor(envelope.actor());
-        action.apply(&mut origin).unwrap();
-        origin.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_time(envelope.timestamp)
-                .with_message(old_message.clone()),
-        );
-        replay(&mut peer, &decoded, &registry()).unwrap();
-        assert_eq!(last_message(&mut peer), Some(old_message));
-        assert_eq!(origin.get_heads(), peer.get_heads());
-        assert_eq!(
-            origin.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
-            peer.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
-        );
-    }
-
-    /// An action replays to an identical doc on a peer, concurrent envelopes replay from their
-    /// recorded base, and a replayed change dedupes against a native Automerge merge.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn envelopes_replay_deterministically_on_peers() {
-        action_replays_to_identical_doc_on_peer();
-        concurrent_envelopes_replay_from_their_recorded_base();
-        replayed_change_dedupes_against_native_automerge_merge();
     }
 
     /// THE HEADLINE TEST. An action applied on replica A, replicated, and
@@ -646,17 +449,218 @@ mod tests {
         assert_eq!(b.length(&list), 1, "no double-apply");
     }
 
-    /// Client-local dispatch applies and replicates; server-preferred routes to the host without a
-    /// local apply and refuses without a host; the registry rejects unknown types and flattens nested
-    /// resources.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn dispatch_routes_by_placement_and_the_registry_knows_its_types() {
-        client_local_dispatch_applies_and_replicates();
-        server_preferred_routes_to_host_without_local_apply();
-        server_preferred_refuses_without_host();
-        registry_rejects_unknown_type();
-        flatten_walks_nested_resources();
+    tilo_test_env::scenario! {
+        fn dispatch_records_and_replay_reproduces_a_change;
+
+        phase a_registered_decoder_decodes_its_type_and_names_it_when_it_cannot;
+        // A type registered with a decoder of its own decodes, and applies, as
+        // one registered by type; a payload it cannot decode is a decode error
+        // naming the type.
+        {
+            let mut registry = ActionRegistry::new();
+            registry.register_decoder(SEEN_TYPE, decode_seen);
+            let action = registry
+                .decode(&EncodedAction::encode(SEEN_TYPE, &Seen(7)).unwrap())
+                .unwrap();
+            let mut doc = AutoCommit::new();
+            action.apply(&mut doc).unwrap();
+            assert_eq!(
+                doc.get(&ROOT, "seen")
+                    .unwrap()
+                    .map(|(value, _)| value.as_i64()),
+                Some(Some(7))
+            );
+            let refused = registry.decode(&EncodedAction {
+                type_id: SEEN_TYPE.to_owned(),
+                payload: b"not a number".to_vec(),
+            });
+            assert!(
+                matches!(&refused, Err(ActionError::Decode { type_id, .. }) if type_id == SEEN_TYPE),
+                "{refused:?}"
+            );
+        }
+
+        phase declared_kinds_travel_in_the_change_and_every_change_names_what_it_did;
+        // The executor writes an action's declared kind into its change, with or
+        // without a caller's context, and replay reproduces the same change.
+        {
+            let (mut a, mut b) = two_replicas();
+            let env = apply_local(
+                &mut a,
+                &Seen(3),
+                EncodedAction::encode(SEEN_TYPE, &Seen(3)).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                env.context
+                    .as_ref()
+                    .is_some_and(ActionContext::is_housekeeping)
+            );
+            assert!(last_context(&mut a).is_some_and(|context| context.is_housekeeping()));
+            replay(&mut b, &env, &registry()).unwrap();
+            assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same change");
+
+            let labelled = ActionContext::for_resource("c:1", "chat.channel", "general");
+            apply_local_with_context(
+                &mut a,
+                &Seen(4),
+                EncodedAction::encode(SEEN_TYPE, &Seen(4)).unwrap(),
+                None,
+                labelled,
+            )
+            .unwrap();
+            let context = last_context(&mut a).unwrap();
+            assert!(context.is_housekeeping());
+            assert_eq!(
+                context.resource.as_ref().map(|r| r.label.as_str()),
+                Some("general"),
+                "the caller's context is kept"
+            );
+
+            let put = Counter::Put {
+                key: "score".into(),
+                value: 1,
+            };
+            let env = apply_local(
+                &mut a,
+                &put,
+                EncodedAction::encode(COUNTER_TYPE, &put).unwrap(),
+            )
+            .unwrap();
+            let entry = env
+                .context
+                .expect("every committed action records an entry");
+            assert!(entry.change.is_step());
+            assert_eq!(
+                entry.what,
+                Some(Did::verb(
+                    ActionKey::new("test", COUNTER_TYPE, "put"),
+                    [
+                        ("key".to_string(), Scalar::from("score")),
+                        ("value".to_string(), Scalar::from(1)),
+                    ],
+                )),
+                "an action that describes nothing is named by its encoded verb"
+            );
+            assert_eq!(last_context(&mut a), Some(entry));
+
+            // A context may say a content action is nobody's step this time; an
+            // action's own declaration is never overridden by a context.
+            let seeded = Counter::Put {
+                key: "score".into(),
+                value: 2,
+            };
+            let env = apply_local_with_context(
+                &mut a,
+                &seeded,
+                EncodedAction::encode(COUNTER_TYPE, &seeded).unwrap(),
+                None,
+                ActionContext::default().with_change(ChangeKind::External),
+            )
+            .unwrap();
+            assert_eq!(last_context(&mut a).unwrap().change, ChangeKind::External);
+            assert!(!env.context.unwrap().change.is_step());
+            apply_local_with_context(
+                &mut a,
+                &Seen(5),
+                EncodedAction::encode(SEEN_TYPE, &Seen(5)).unwrap(),
+                None,
+                ActionContext::default().with_change(ChangeKind::External),
+            )
+            .unwrap();
+            assert!(last_context(&mut a).unwrap().is_housekeeping());
+        }
+
+        phase the_executor_keeps_the_admitted_invocation_and_replays_the_identical_change;
+        {
+            let (mut origin, mut peer) = two_replicas();
+            let action = Counter::Put {
+                key: "score".into(),
+                value: 42,
+            };
+            let invocation = InvocationId::new();
+            let context = ActionContext {
+                source_invocation: Some(invocation),
+                ..Default::default()
+            };
+            let envelope = apply_local_with_context(
+                &mut origin,
+                &action,
+                EncodedAction::encode(COUNTER_TYPE, &action).unwrap(),
+                Some(b"actual-person-device-writer"),
+                context,
+            )
+            .unwrap();
+            let committed = last_context(&mut origin).unwrap();
+            assert_eq!(committed.source_invocation, Some(invocation));
+            assert_eq!(envelope.context, Some(committed));
+            replay(&mut peer, &envelope, &registry()).unwrap();
+            assert_eq!(origin.get_heads(), peer.get_heads());
+            assert_eq!(
+                origin.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
+                peer.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
+            );
+        }
+
+        phase a_callers_entry_replays_to_the_identical_change;
+        {
+            let (mut origin, mut peer) = two_replicas();
+            let action = Counter::Put {
+                key: "score".into(),
+                value: 42,
+            };
+            let context = ActionContext::for_resource("score", "counter", "Score");
+            let envelope = ActionEnvelope {
+                id: ActionId::new(),
+                action: EncodedAction::encode(COUNTER_TYPE, &action).unwrap(),
+                base_heads: origin.get_heads().iter().map(|hash| hash.0).collect(),
+                timestamp: 17,
+                locus: ExecutionLocus::ClientLocal,
+                actor: Some(b"legacy-person-device-writer".to_vec()),
+                context: Some(context.clone()),
+            };
+            let old_message = context.change_message().unwrap();
+            let wire = serde_json::to_vec(&envelope).unwrap();
+            let decoded: ActionEnvelope = serde_json::from_slice(&wire).unwrap();
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
+            origin.set_actor(envelope.actor());
+            action.apply(&mut origin).unwrap();
+            origin.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_time(envelope.timestamp)
+                    .with_message(old_message.clone()),
+            );
+            replay(&mut peer, &decoded, &registry()).unwrap();
+            assert_eq!(last_message(&mut peer), Some(old_message));
+            assert_eq!(origin.get_heads(), peer.get_heads());
+            assert_eq!(
+                origin.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
+                peer.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),
+            );
+        }
+
+        phase envelopes_replay_deterministically_on_peers;
+        // An action replays to an identical doc on a peer, concurrent envelopes replay from their
+        // recorded base, and a replayed change dedupes against a native Automerge merge.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            action_replays_to_identical_doc_on_peer();
+            concurrent_envelopes_replay_from_their_recorded_base();
+            replayed_change_dedupes_against_native_automerge_merge();
+        }
+
+        phase dispatch_routes_by_placement_and_the_registry_knows_its_types;
+        // Client-local dispatch applies and replicates; server-preferred routes to the host without a
+        // local apply and refuses without a host; the registry rejects unknown types and flattens nested
+        // resources.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            client_local_dispatch_applies_and_replicates();
+            server_preferred_routes_to_host_without_local_apply();
+            server_preferred_refuses_without_host();
+            registry_rejects_unknown_type();
+            flatten_walks_nested_resources();
+        }
     }
 
     /// `ClientLocal` dispatch applies locally and replicates exactly one

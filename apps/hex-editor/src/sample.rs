@@ -73,22 +73,26 @@ pub fn png_image() -> Vec<u8> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn png_image_is_a_complete_png_with_real_checksums() {
-        let b = png_image();
-        assert_eq!(&b[..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-        assert_eq!(&b[12..16], b"IHDR");
-        assert_eq!(&b[16..20], &16u32.to_be_bytes());
-        assert_eq!(&b[20..24], &16u32.to_be_bytes());
-        let len = b.len();
-        assert_eq!(&b[len - 8..len - 4], b"IEND");
-        assert_eq!(&b[len - 4..], &[0xAE, 0x42, 0x60, 0x82]);
-        assert_eq!(&b[29..33], &crc32(&b[12..29]).to_be_bytes());
-    }
+    tilo_test_env::scenario! {
+        fn the_sample_png_is_complete_and_its_checksums_are_real;
 
-    #[test]
-    fn checksums_match_their_reference_values() {
-        assert_eq!(crc32(b"IEND"), 0xAE42_6082);
-        assert_eq!(adler32(b"Wikipedia"), 0x11E6_0398);
+        phase png_image_is_a_complete_png_with_real_checksums;
+        {
+            let b = png_image();
+            assert_eq!(&b[..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+            assert_eq!(&b[12..16], b"IHDR");
+            assert_eq!(&b[16..20], &16u32.to_be_bytes());
+            assert_eq!(&b[20..24], &16u32.to_be_bytes());
+            let len = b.len();
+            assert_eq!(&b[len - 8..len - 4], b"IEND");
+            assert_eq!(&b[len - 4..], &[0xAE, 0x42, 0x60, 0x82]);
+            assert_eq!(&b[29..33], &crc32(&b[12..29]).to_be_bytes());
+        }
+
+        phase checksums_match_their_reference_values;
+        {
+            assert_eq!(crc32(b"IEND"), 0xAE42_6082);
+            assert_eq!(adler32(b"Wikipedia"), 0x11E6_0398);
+        }
     }
 }

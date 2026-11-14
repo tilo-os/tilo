@@ -929,31 +929,35 @@ pub fn projectable_name(name: &[u8]) -> bool {
 mod projectable_name_tests {
     use super::{Listed, listed, projectable_name};
 
-    #[test]
-    fn a_directorys_own_links_are_not_entries_nor_unprojectable_names() {
-        assert_eq!(listed(b"."), Listed::Link);
-        assert_eq!(listed(b".."), Listed::Link);
-        assert_eq!(listed(b"notes.md"), Listed::Entry(b"notes.md"));
-        assert_eq!(listed(b"a/b"), Listed::Unprojectable);
-        assert_eq!(listed(b""), Listed::Unprojectable);
-    }
+    tilo_test_env::scenario! {
+        fn only_plain_single_components_are_projectable_names;
 
-    #[test]
-    fn only_single_components_are_projected() {
-        for name in [&b"notes.md"[..], b"..hidden", b"a b", "é.txt".as_bytes()] {
-            assert!(projectable_name(name), "{name:?} is one component");
+        phase a_directorys_own_links_are_not_entries_nor_unprojectable_names;
+        {
+            assert_eq!(listed(b"."), Listed::Link);
+            assert_eq!(listed(b".."), Listed::Link);
+            assert_eq!(listed(b"notes.md"), Listed::Entry(b"notes.md"));
+            assert_eq!(listed(b"a/b"), Listed::Unprojectable);
+            assert_eq!(listed(b""), Listed::Unprojectable);
         }
-        for name in [
-            &b""[..],
-            b".",
-            b"..",
-            b"../etc",
-            b"../../../../etc/cron.d/x",
-            b"/etc/cron.d/x",
-            b"a/b",
-            b"a\0b",
-        ] {
-            assert!(!projectable_name(name), "{name:?} must not be projected");
+
+        phase only_single_components_are_projected;
+        {
+            for name in [&b"notes.md"[..], b"..hidden", b"a b", "é.txt".as_bytes()] {
+                assert!(projectable_name(name), "{name:?} is one component");
+            }
+            for name in [
+                &b""[..],
+                b".",
+                b"..",
+                b"../etc",
+                b"../../../../etc/cron.d/x",
+                b"/etc/cron.d/x",
+                b"a/b",
+                b"a\0b",
+            ] {
+                assert!(!projectable_name(name), "{name:?} must not be projected");
+            }
         }
     }
 }

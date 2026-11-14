@@ -100,79 +100,83 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     assert_eq!(state(block), "denied");
 }
 
-#[test]
-fn untrusted_code_asks_and_the_persons_agents_code_runs() {
-    let (mut ada, _) = Replica::standing(
-        "ada",
-        AutoCommit::new(),
-        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
-        Some(standing(Vec::new())),
-    );
-    ada.host.root_of(APP).unwrap();
-    ada.commit();
-    // Code Grace wrote, which nobody here trusts, asks; she may edit the workspace herself.
-    let untrusted = ada
-        .host
-        .runtime()
-        .run_agent_block(&Principal::new("grace"), &add_block(&ada, "milk"))
-        .unwrap();
-    assert_eq!(state(untrusted), "suggested");
-    // Someone the workspace does not know is refused outright.
-    let stranger = ada
-        .host
-        .runtime()
-        .run_agent_block(&Principal::new("stranger"), &add_block(&ada, "milk"))
-        .unwrap();
-    assert_eq!(state(stranger), "denied");
-    ada.host.admit_agent(&agent());
-    let admitted = ada
-        .host
-        .runtime()
-        .run_agent_block(&Principal::new("task-1"), &add_block(&ada, "eggs"))
-        .unwrap();
-    assert_eq!(state(admitted), "done");
-}
+tilo_test_env::scenario! {
+    fn untrusted_and_agents_code_asks;
 
-#[test]
-fn reaching_outside_from_untrusted_or_an_agents_code_asks() {
-    let (mut ada, packages) = Replica::standing(
-        "ada",
-        AutoCommit::new(),
-        &[(LETTERS, LETTERS_IDS)],
-        Some(standing(Vec::new())),
-    );
-    let meta = &packages.last().unwrap().meta;
-    let desk = ada.host.root_of("test.letters").unwrap();
-    ada.commit();
-    let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();
-    ada.host
-        .runtime()
-        .invoke_action(
-            &Principal::new("ada"),
-            (
-                new_draft.id.as_str(),
-                vec![tilolang_runtime::Value::resource(&desk)],
-            ),
-        )
-        .unwrap();
-    ada.commit();
-    let tilolang_runtime::Value::List(drafts) = ada.host.runtime().read(&desk, "drafts").unwrap()
-    else {
-        panic!("the desk lists its drafts");
-    };
-    let tilolang_runtime::Value::Ref(draft) = &drafts[0] else {
-        panic!("a draft is a reference");
-    };
-    let send = format!("letters.send(@letters.Draft:{})", draft.target.id_string());
-    for who in ["grace", "task-1"] {
-        if who == "task-1" {
-            ada.host.admit_agent(&agent());
-        }
-        let block = ada
+    phase untrusted_code_asks_and_the_persons_agents_code_runs;
+    {
+        let (mut ada, _) = Replica::standing(
+            "ada",
+            AutoCommit::new(),
+            &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
+            Some(standing(Vec::new())),
+        );
+        ada.host.root_of(APP).unwrap();
+        ada.commit();
+        // Code Grace wrote, which nobody here trusts, asks; she may edit the workspace herself.
+        let untrusted = ada
             .host
             .runtime()
-            .run_agent_block(&Principal::new(who), &send)
+            .run_agent_block(&Principal::new("grace"), &add_block(&ada, "milk"))
             .unwrap();
-        assert_eq!(state(block), "suggested", "{who}");
+        assert_eq!(state(untrusted), "suggested");
+        // Someone the workspace does not know is refused outright.
+        let stranger = ada
+            .host
+            .runtime()
+            .run_agent_block(&Principal::new("stranger"), &add_block(&ada, "milk"))
+            .unwrap();
+        assert_eq!(state(stranger), "denied");
+        ada.host.admit_agent(&agent());
+        let admitted = ada
+            .host
+            .runtime()
+            .run_agent_block(&Principal::new("task-1"), &add_block(&ada, "eggs"))
+            .unwrap();
+        assert_eq!(state(admitted), "done");
+    }
+
+    phase reaching_outside_from_untrusted_or_an_agents_code_asks;
+    {
+        let (mut ada, packages) = Replica::standing(
+            "ada",
+            AutoCommit::new(),
+            &[(LETTERS, LETTERS_IDS)],
+            Some(standing(Vec::new())),
+        );
+        let meta = &packages.last().unwrap().meta;
+        let desk = ada.host.root_of("test.letters").unwrap();
+        ada.commit();
+        let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();
+        ada.host
+            .runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    new_draft.id.as_str(),
+                    vec![tilolang_runtime::Value::resource(&desk)],
+                ),
+            )
+            .unwrap();
+        ada.commit();
+        let tilolang_runtime::Value::List(drafts) = ada.host.runtime().read(&desk, "drafts").unwrap()
+        else {
+            panic!("the desk lists its drafts");
+        };
+        let tilolang_runtime::Value::Ref(draft) = &drafts[0] else {
+            panic!("a draft is a reference");
+        };
+        let send = format!("letters.send(@letters.Draft:{})", draft.target.id_string());
+        for who in ["grace", "task-1"] {
+            if who == "task-1" {
+                ada.host.admit_agent(&agent());
+            }
+            let block = ada
+                .host
+                .runtime()
+                .run_agent_block(&Principal::new(who), &send)
+                .unwrap();
+            assert_eq!(state(block), "suggested", "{who}");
+        }
     }
 }

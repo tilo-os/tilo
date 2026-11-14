@@ -146,17 +146,47 @@ async fn request_bytes_and_concurrency_are_bounded() {
     task.abort();
 }
 
-#[test]
-fn oversized_response_frame_is_refused() {
-    let response = Response {
-        ok: true,
-        output: Some("x".repeat(MAX_EVENT_BYTES)),
-        configured: None,
-        error: None,
-        model_error: None,
-        event: None,
-    };
-    assert!(encode(&response).is_none());
+tilo_test_env::scenario! {
+    /// The size bounds of what the HTTP gateway encodes and buffers, without a server.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn response_frames_and_synchronous_bursts_are_bounded;
+
+    phase oversized_response_frame_is_refused;
+    {
+        let response = Response {
+            ok: true,
+            output: Some("x".repeat(MAX_EVENT_BYTES)),
+            configured: None,
+            error: None,
+            model_error: None,
+            event: None,
+        };
+        assert!(encode(&response).is_none());
+    }
+
+    phase synchronous_burst_has_byte_and_request_event_bounds;
+    {
+        let events = EventBuffer::default();
+        let mut large = stream_response(0);
+        large.output = Some("x".repeat(MAX_EVENT_BYTES / 2));
+        let encoded = encode(&large).unwrap().len();
+        for _ in 0..MAX_BATCH_BYTES / encoded {
+            assert!(events.emit(&large));
+        }
+        assert!(!events.emit(&large));
+        assert!(events.state.lock().unwrap().1.len() <= MAX_BATCH_BYTES);
+
+        let events = EventBuffer::default();
+        for index in 0..crate::MAX_STREAM_EVENTS + crate::MAX_DELTA_EVENTS {
+            assert!(events.emit(&stream_response(index)));
+            // Flushing a batch must not reset the per-request event bound.
+            events.state.lock().unwrap().1.clear();
+        }
+        assert!(!events.emit(&stream_response(0)));
+    }
 }
 
 fn stream_response(index: usize) -> Response {
@@ -309,27 +339,6 @@ async fn slow_consumer_can_resume_and_receive_final_response() {
         .collect();
     expected.extend_from_slice(&encode(&final_response()).unwrap());
     assert_eq!(collected, expected);
-}
-
-#[test]
-fn synchronous_burst_has_byte_and_request_event_bounds() {
-    let events = EventBuffer::default();
-    let mut large = stream_response(0);
-    large.output = Some("x".repeat(MAX_EVENT_BYTES / 2));
-    let encoded = encode(&large).unwrap().len();
-    for _ in 0..MAX_BATCH_BYTES / encoded {
-        assert!(events.emit(&large));
-    }
-    assert!(!events.emit(&large));
-    assert!(events.state.lock().unwrap().1.len() <= MAX_BATCH_BYTES);
-
-    let events = EventBuffer::default();
-    for index in 0..crate::MAX_STREAM_EVENTS + crate::MAX_DELTA_EVENTS {
-        assert!(events.emit(&stream_response(index)));
-        // Flushing a batch must not reset the per-request event bound.
-        events.state.lock().unwrap().1.clear();
-    }
-    assert!(!events.emit(&stream_response(0)));
 }
 
 #[tokio::test]

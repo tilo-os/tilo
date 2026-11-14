@@ -434,113 +434,118 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_kept_message_reads_back_filed_where_its_server_holds_it() {
-        let bytes = raw("q3", "They are up.");
-        let id = crate::transport::stable_message_id("q3@x.example");
-        let kept = KeptCopy {
-            account: "me@x.example".into(),
-            content: tilo_content::hash_bytes(&bytes),
-            minutes: 500,
-            folder: Folder::Archive,
-            uid: 9,
-            uid_validity: 3,
-        };
-        let message = kept.message(id, &bytes).expect("the message");
-        assert_eq!(message.id, id);
-        assert_eq!(message.account, "me@x.example");
-        assert_eq!(message.folder, Folder::Archive);
-        assert_eq!(message.timestamp_min, 500);
-        assert!(message.body.contains("They are up."));
-        assert_eq!(
-            message.server,
-            Some(ServerPlace {
+    tilo_test_env::scenario! {
+        /// The copies of mail a device keeps.
+        fn kept_copies_name_file_record_and_bound_their_mail;
+
+        phase a_kept_message_reads_back_filed_where_its_server_holds_it;
+        {
+            let bytes = raw("q3", "They are up.");
+            let id = crate::transport::stable_message_id("q3@x.example");
+            let kept = KeptCopy {
+                account: "me@x.example".into(),
+                content: tilo_content::hash_bytes(&bytes),
+                minutes: 500,
                 folder: Folder::Archive,
                 uid: 9,
                 uid_validity: 3,
-            })
-        );
-        // Bytes of another message are not this one, whatever the record
-        // files them under.
-        assert!(kept.message(id, &raw("other", "Not it.")).is_none());
-        assert!(kept.message(id, b"not mail at all").is_none());
-    }
-
-    #[test]
-    fn kept_mail_is_recorded_and_forgotten_by_id() {
-        let mut replica = Replica::<MailCopies>::new().as_author("u_ada");
-        let first = uuid::Uuid::from_u128(1);
-        let second = uuid::Uuid::from_u128(2);
-        replica
-            .apply(MailCopies::KEEP_COPIES.with(kept::KeepCopies {
-                copies: vec![
-                    copy(first, "me@x.example", 10, b"one"),
-                    copy(second, "me@x.example", 20, b"two"),
-                ],
-            }))
-            .unwrap();
-        let state = replica.state().unwrap();
-        assert_eq!(state.copies.len(), 2);
-        let recorded = state.copies.get(&Id::from_raw(first.to_string())).unwrap();
-        assert_eq!(recorded.content, tilo_content::hash_bytes(b"one"));
-        assert_eq!(
-            (recorded.folder, recorded.uid, recorded.uid_validity),
-            (Folder::Archive, 9, 3)
-        );
-
-        replica
-            .apply(MailCopies::FORGET_COPIES.with(kept::ForgetCopies {
-                messages: vec![first.to_string()],
-            }))
-            .unwrap();
-        let state = replica.state().unwrap();
-        assert_eq!(state.copies.len(), 1);
-        assert!(state.copies.contains(&Id::from_raw(second.to_string())));
-    }
-
-    #[test]
-    fn a_copy_names_its_message_its_content_and_a_folder_its_server_has() {
-        let mut replica = Replica::<MailCopies>::new().as_author("u_ada");
-        let id = uuid::Uuid::from_u128(1);
-        let mut not_an_id = copy(id, "me@x.example", 10, b"one");
-        not_an_id.id = "first".into();
-        let mut no_address = copy(id, "me@x.example", 10, b"one");
-        no_address.content = "not-a-hash".into();
-        let mut starred = copy(id, "me@x.example", 10, b"one");
-        starred.folder = Folder::Starred;
-        let no_account = copy(id, " ", 10, b"one");
-        for refused in [not_an_id, no_address, starred, no_account] {
-            assert!(
-                replica
-                    .apply(MailCopies::KEEP_COPIES.with(kept::KeepCopies {
-                        copies: vec![refused.clone()],
-                    }))
-                    .is_err(),
-                "{refused:?}"
+            };
+            let message = kept.message(id, &bytes).expect("the message");
+            assert_eq!(message.id, id);
+            assert_eq!(message.account, "me@x.example");
+            assert_eq!(message.folder, Folder::Archive);
+            assert_eq!(message.timestamp_min, 500);
+            assert!(message.body.contains("They are up."));
+            assert_eq!(
+                message.server,
+                Some(ServerPlace {
+                    folder: Folder::Archive,
+                    uid: 9,
+                    uid_validity: 3,
+                })
             );
+            // Bytes of another message are not this one, whatever the record
+            // files them under.
+            assert!(kept.message(id, &raw("other", "Not it.")).is_none());
+            assert!(kept.message(id, b"not mail at all").is_none());
         }
-        assert!(replica.state().unwrap().copies.is_empty());
-    }
 
-    #[test]
-    fn each_account_keeps_its_newest_messages() {
-        let mut copies = MailCopies::default();
-        for (n, account) in [(1, "a"), (2, "a"), (3, "a"), (4, "b")] {
-            copies.copies.push(
-                Id::from_raw(uuid::Uuid::from_u128(n).to_string()),
-                KeptCopy {
-                    account: account.into(),
-                    content: tilo_content::hash_bytes(&[n as u8]),
-                    minutes: i64::try_from(n).unwrap(),
-                    folder: Folder::Inbox,
-                    uid: 1,
-                    uid_validity: 1,
-                },
+        phase kept_mail_is_recorded_and_forgotten_by_id;
+        {
+            let mut replica = Replica::<MailCopies>::new().as_author("u_ada");
+            let first = uuid::Uuid::from_u128(1);
+            let second = uuid::Uuid::from_u128(2);
+            replica
+                .apply(MailCopies::KEEP_COPIES.with(kept::KeepCopies {
+                    copies: vec![
+                        copy(first, "me@x.example", 10, b"one"),
+                        copy(second, "me@x.example", 20, b"two"),
+                    ],
+                }))
+                .unwrap();
+            let state = replica.state().unwrap();
+            assert_eq!(state.copies.len(), 2);
+            let recorded = state.copies.get(&Id::from_raw(first.to_string())).unwrap();
+            assert_eq!(recorded.content, tilo_content::hash_bytes(b"one"));
+            assert_eq!(
+                (recorded.folder, recorded.uid, recorded.uid_validity),
+                (Folder::Archive, 9, 3)
             );
+
+            replica
+                .apply(MailCopies::FORGET_COPIES.with(kept::ForgetCopies {
+                    messages: vec![first.to_string()],
+                }))
+                .unwrap();
+            let state = replica.state().unwrap();
+            assert_eq!(state.copies.len(), 1);
+            assert!(state.copies.contains(&Id::from_raw(second.to_string())));
         }
-        copies.keep_newest("a", 2);
-        let mut left: Vec<i64> = copies.copies.values().map(|copy| copy.minutes).collect();
-        left.sort_unstable();
-        assert_eq!(left, [2, 3, 4], "the oldest of a goes; b is untouched");
+
+        phase a_copy_names_its_message_its_content_and_a_folder_its_server_has;
+        {
+            let mut replica = Replica::<MailCopies>::new().as_author("u_ada");
+            let id = uuid::Uuid::from_u128(1);
+            let mut not_an_id = copy(id, "me@x.example", 10, b"one");
+            not_an_id.id = "first".into();
+            let mut no_address = copy(id, "me@x.example", 10, b"one");
+            no_address.content = "not-a-hash".into();
+            let mut starred = copy(id, "me@x.example", 10, b"one");
+            starred.folder = Folder::Starred;
+            let no_account = copy(id, " ", 10, b"one");
+            for refused in [not_an_id, no_address, starred, no_account] {
+                assert!(
+                    replica
+                        .apply(MailCopies::KEEP_COPIES.with(kept::KeepCopies {
+                            copies: vec![refused.clone()],
+                        }))
+                        .is_err(),
+                    "{refused:?}"
+                );
+            }
+            assert!(replica.state().unwrap().copies.is_empty());
+        }
+
+        phase each_account_keeps_its_newest_messages;
+        {
+            let mut copies = MailCopies::default();
+            for (n, account) in [(1, "a"), (2, "a"), (3, "a"), (4, "b")] {
+                copies.copies.push(
+                    Id::from_raw(uuid::Uuid::from_u128(n).to_string()),
+                    KeptCopy {
+                        account: account.into(),
+                        content: tilo_content::hash_bytes(&[n as u8]),
+                        minutes: i64::try_from(n).unwrap(),
+                        folder: Folder::Inbox,
+                        uid: 1,
+                        uid_validity: 1,
+                    },
+                );
+            }
+            copies.keep_newest("a", 2);
+            let mut left: Vec<i64> = copies.copies.values().map(|copy| copy.minutes).collect();
+            left.sort_unstable();
+            assert_eq!(left, [2, 3, 4], "the oldest of a goes; b is untouched");
+        }
     }
 }

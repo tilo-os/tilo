@@ -710,60 +710,89 @@ mod tests {
         )
     }
 
-    #[test]
-    fn an_anthropic_endpoint_is_asked_on_its_messages_api_without_openai_hints() {
-        let (origin, peer) = answer_once(serde_json::json!({
-            "id": "msg", "type": "message", "role": "assistant", "model": "model",
-            "content": [{"type": "text", "text": "done"}],
-            "stop_reason": "end_turn", "stop_sequence": null,
-            "usage": {"input_tokens": 40, "output_tokens": 9,
-                      "cache_read_input_tokens": 900, "cache_creation_input_tokens": 60}
-        }));
-        let client = CompletionClient::new()
-            .unwrap()
-            .with_request_hints(
-                &serde_json::json!({"service_tier": "flex", "reasoning_effort": "low"}),
-            )
-            .with_protocol(ProviderProtocol::Anthropic);
-        let response = one_turn(client, &origin).unwrap();
-        let (head, body) = peer.join().unwrap();
-        assert!(head.starts_with("post /v1/messages "), "{head}");
-        assert!(head.contains("x-api-key: fabricated-key\r\n"), "{head}");
-        assert!(!head.contains("authorization:"), "{head}");
-        assert_eq!(body["max_tokens"], 512);
-        assert!(
-            body.get("service_tier").is_none() && body.get("reasoning_effort").is_none(),
-            "{body}"
-        );
-        assert_eq!(response.stop_reason, neutral::StopReason::EndTurn);
-        // Every input token, those read from and written to the cache too.
-        assert_eq!(response.usage.input_tokens, 1000);
-        assert_eq!(response.usage.cached_input_tokens, 900);
-        assert_eq!(response.usage.cache_write_tokens, 60);
-        assert_eq!(response.usage.output_tokens, 9);
-    }
+    tilo_test_env::scenario! {
+        /// One turn against a local peer that answers once, per dialect of endpoint.
+        fn an_endpoint_is_asked_in_its_own_dialect_with_its_own_fields;
 
-    #[test]
-    fn an_endpoint_told_its_output_limit_field_gets_that_field() {
-        let (origin, peer) = answer_once(serde_json::json!({
-            "id": "reply", "object": "chat.completion", "created": 1, "model": "model",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1000, "completion_tokens": 30, "total_tokens": 1030,
-                      "prompt_tokens_details": {"cached_tokens": 768},
-                      "completion_tokens_details": {"reasoning_tokens": 20}}
-        }));
-        let client = CompletionClient::new()
-            .unwrap()
-            .with_token_limit_param(TokenLimitParam::MaxCompletionTokens);
-        let response = one_turn(client, &format!("{origin}/v1")).unwrap();
-        let (head, body) = peer.join().unwrap();
-        assert!(head.starts_with("post /v1/chat/completions "), "{head}");
-        assert_eq!(body["max_completion_tokens"], 512);
-        assert!(body.get("max_tokens").is_none(), "{body}");
-        assert_eq!(response.usage.input_tokens, 1000);
-        assert_eq!(response.usage.cached_input_tokens, 768);
-        assert_eq!(response.usage.reasoning_tokens, 20);
+        phase an_anthropic_endpoint_is_asked_on_its_messages_api_without_openai_hints;
+        {
+            let (origin, peer) = answer_once(serde_json::json!({
+                "id": "msg", "type": "message", "role": "assistant", "model": "model",
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn", "stop_sequence": null,
+                "usage": {"input_tokens": 40, "output_tokens": 9,
+                          "cache_read_input_tokens": 900, "cache_creation_input_tokens": 60}
+            }));
+            let client = CompletionClient::new()
+                .unwrap()
+                .with_request_hints(
+                    &serde_json::json!({"service_tier": "flex", "reasoning_effort": "low"}),
+                )
+                .with_protocol(ProviderProtocol::Anthropic);
+            let response = one_turn(client, &origin).unwrap();
+            let (head, body) = peer.join().unwrap();
+            assert!(head.starts_with("post /v1/messages "), "{head}");
+            assert!(head.contains("x-api-key: fabricated-key\r\n"), "{head}");
+            assert!(!head.contains("authorization:"), "{head}");
+            assert_eq!(body["max_tokens"], 512);
+            assert!(
+                body.get("service_tier").is_none() && body.get("reasoning_effort").is_none(),
+                "{body}"
+            );
+            assert_eq!(response.stop_reason, neutral::StopReason::EndTurn);
+            // Every input token, those read from and written to the cache too.
+            assert_eq!(response.usage.input_tokens, 1000);
+            assert_eq!(response.usage.cached_input_tokens, 900);
+            assert_eq!(response.usage.cache_write_tokens, 60);
+            assert_eq!(response.usage.output_tokens, 9);
+        }
+
+        phase an_endpoint_told_its_output_limit_field_gets_that_field;
+        {
+            let (origin, peer) = answer_once(serde_json::json!({
+                "id": "reply", "object": "chat.completion", "created": 1, "model": "model",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 30, "total_tokens": 1030,
+                          "prompt_tokens_details": {"cached_tokens": 768},
+                          "completion_tokens_details": {"reasoning_tokens": 20}}
+            }));
+            let client = CompletionClient::new()
+                .unwrap()
+                .with_token_limit_param(TokenLimitParam::MaxCompletionTokens);
+            let response = one_turn(client, &format!("{origin}/v1")).unwrap();
+            let (head, body) = peer.join().unwrap();
+            assert!(head.starts_with("post /v1/chat/completions "), "{head}");
+            assert_eq!(body["max_completion_tokens"], 512);
+            assert!(body.get("max_tokens").is_none(), "{body}");
+            assert_eq!(response.usage.input_tokens, 1000);
+            assert_eq!(response.usage.cached_input_tokens, 768);
+            assert_eq!(response.usage.reasoning_tokens, 20);
+        }
+
+        phase a_compatible_server_still_takes_chat_completions_with_its_hints;
+        {
+            let (origin, peer) = answer_once(serde_json::json!({
+                "id": "reply", "object": "chat.completion", "created": 1, "model": "model",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+            }));
+            let client = CompletionClient::new().unwrap().with_request_hints(
+                &serde_json::json!({"service_tier": "priority", "reasoning_effort": "low"}),
+            );
+            one_turn(client, &format!("{origin}/v1")).unwrap();
+            let (head, body) = peer.join().unwrap();
+            assert!(head.starts_with("post /v1/chat/completions "), "{head}");
+            assert_eq!(body["reasoning_effort"], "low");
+            assert_eq!(body["service_tier"], "priority");
+            for responses_only in ["store", "include", "reasoning", "input"] {
+                assert!(
+                    body.get(responses_only).is_none(),
+                    "{responses_only}: {body}"
+                );
+            }
+        }
     }
 
     /// A Responses reply: `output` items, its `status` and, when it is
@@ -824,146 +853,177 @@ mod tests {
         )
     }
 
-    #[test]
-    fn openai_reasons_and_calls_tools_through_responses_and_carries_its_reasoning() {
-        let reasoning = serde_json::json!({
-            "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "Y2lwaGVy+/="
-        });
-        let call = serde_json::json!({
-            "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "plan",
-            "arguments": "{\"steps\":[]}", "status": "completed"
-        });
-        let (origin, peer) = answer_once(responses_reply(
-            &serde_json::json!([reasoning, call]),
-            "completed",
-            None,
-        ));
-        let mut asked =
-            neutral::Conversation::new("system", "hello").request(vec![plan_tool()], 512);
-        asked.tool_choice = neutral::ToolChoice::Required;
-        asked.messages.push(neutral::Message {
-            role: neutral::Role::User,
-            content: vec![neutral::Content::Image {
-                media_type: "image/png".into(),
-                base64: "iVBORw0K".into(),
-            }],
-        });
-        // The endpoint as a host planner names it, chat completions' route.
-        let endpoint = format!("{origin}/v1/chat/completions");
-        let response = turn(responses_client(), &endpoint, &asked).unwrap();
-        let (head, body) = peer.join().unwrap();
-        assert!(head.starts_with("post /v1/responses "), "{head}");
-        assert!(
-            head.contains("authorization: bearer fabricated-key\r\n"),
-            "{head}"
-        );
-        assert_eq!(body["model"], "gpt-6-luna");
-        assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
-        assert_eq!(body["service_tier"], "priority");
-        assert_eq!(body["store"], false);
-        assert_eq!(
-            body["include"],
-            serde_json::json!(["reasoning.encrypted_content"])
-        );
-        assert_eq!(body["max_output_tokens"], 512);
-        for chat_only in [
-            "reasoning_effort",
-            "max_completion_tokens",
-            "max_tokens",
-            "messages",
-        ] {
-            assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
+    tilo_test_env::scenario! {
+        /// The Responses API as the host backend speaks it, each case against a peer of its own.
+        fn openai_is_asked_through_responses_and_its_answers_are_read_strictly;
+
+        phase openai_reasons_and_calls_tools_through_responses_and_carries_its_reasoning;
+        {
+            let reasoning = serde_json::json!({
+                "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "Y2lwaGVy+/="
+            });
+            let call = serde_json::json!({
+                "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "plan",
+                "arguments": "{\"steps\":[]}", "status": "completed"
+            });
+            let (origin, peer) = answer_once(responses_reply(
+                &serde_json::json!([reasoning, call]),
+                "completed",
+                None,
+            ));
+            let mut asked =
+                neutral::Conversation::new("system", "hello").request(vec![plan_tool()], 512);
+            asked.tool_choice = neutral::ToolChoice::Required;
+            asked.messages.push(neutral::Message {
+                role: neutral::Role::User,
+                content: vec![neutral::Content::Image {
+                    media_type: "image/png".into(),
+                    base64: "iVBORw0K".into(),
+                }],
+            });
+            // The endpoint as a host planner names it, chat completions' route.
+            let endpoint = format!("{origin}/v1/chat/completions");
+            let response = turn(responses_client(), &endpoint, &asked).unwrap();
+            let (head, body) = peer.join().unwrap();
+            assert!(head.starts_with("post /v1/responses "), "{head}");
+            assert!(
+                head.contains("authorization: bearer fabricated-key\r\n"),
+                "{head}"
+            );
+            assert_eq!(body["model"], "gpt-6-luna");
+            assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
+            assert_eq!(body["service_tier"], "priority");
+            assert_eq!(body["store"], false);
+            assert_eq!(
+                body["include"],
+                serde_json::json!(["reasoning.encrypted_content"])
+            );
+            assert_eq!(body["max_output_tokens"], 512);
+            for chat_only in [
+                "reasoning_effort",
+                "max_completion_tokens",
+                "max_tokens",
+                "messages",
+            ] {
+                assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
+            }
+            assert_eq!(body["tool_choice"], "required");
+            assert_eq!(body["tools"][0]["type"], "function");
+            assert_eq!(body["tools"][0]["name"], "plan");
+            assert_eq!(body["instructions"], "system");
+            let image = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+                .find(|part| part["type"] == "input_image")
+                .unwrap_or_else(|| panic!("no picture in {body}"));
+            assert_eq!(image["image_url"], "data:image/png;base64,iVBORw0K");
+
+            assert_eq!(response.stop_reason, neutral::StopReason::ToolCalls);
+            assert_eq!(response.usage.input_tokens, 1000);
+            assert_eq!(response.usage.cached_input_tokens, 768);
+            assert_eq!(response.usage.output_tokens, 30);
+            assert_eq!(response.usage.reasoning_tokens, 20);
+            let calls = response.tool_calls().unwrap();
+            assert_eq!(
+                (calls[0].id.as_str(), calls[0].name.as_str()),
+                ("call_1", "plan")
+            );
+            assert_eq!(calls[0].input, serde_json::json!({"steps": []}));
+            assert!(matches!(
+                &response.message.content[0],
+                neutral::Content::Reasoning { text, extra_content: Some(_) } if text.is_empty()
+            ));
+
+            // The next turn carries the reasoning back as the provider issued
+            // it, ahead of the call it led to and that call's result.
+            carries_reasoning_into(asked, response.message);
         }
-        assert_eq!(body["tool_choice"], "required");
-        assert_eq!(body["tools"][0]["type"], "function");
-        assert_eq!(body["tools"][0]["name"], "plan");
-        assert_eq!(body["instructions"], "system");
-        let image = body["input"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
-            .find(|part| part["type"] == "input_image")
-            .unwrap_or_else(|| panic!("no picture in {body}"));
-        assert_eq!(image["image_url"], "data:image/png;base64,iVBORw0K");
 
-        assert_eq!(response.stop_reason, neutral::StopReason::ToolCalls);
-        assert_eq!(response.usage.input_tokens, 1000);
-        assert_eq!(response.usage.cached_input_tokens, 768);
-        assert_eq!(response.usage.output_tokens, 30);
-        assert_eq!(response.usage.reasoning_tokens, 20);
-        let calls = response.tool_calls().unwrap();
-        assert_eq!(
-            (calls[0].id.as_str(), calls[0].name.as_str()),
-            ("call_1", "plan")
-        );
-        assert_eq!(calls[0].input, serde_json::json!({"steps": []}));
-        assert!(matches!(
-            &response.message.content[0],
-            neutral::Content::Reasoning { text, extra_content: Some(_) } if text.is_empty()
-        ));
+        phase stable_instructions_stay_apart_from_the_system_message_after_them;
+        // A planner's stable instructions and the system message after them
+        // (its apps) stay apart: through Responses the instructions alone are
+        // `instructions` and the apps a system item before the request; to
+        // Anthropic each is a system block under a cache breakpoint of its
+        // own. Either provider keeps the instructions and tools cached when the
+        // apps change.
+        {
+            let mut asked =
+                neutral::Conversation::new("instructions", "hello").request(vec![plan_tool()], 512);
+            asked
+                .messages
+                .insert(1, neutral::Message::text(neutral::Role::System, "the apps"));
+            let message = serde_json::json!({"type": "message", "id": "msg_1", "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "done", "annotations": []}]});
+            let (origin, peer) = answer_once(responses_reply(
+                &serde_json::json!([message]),
+                "completed",
+                None,
+            ));
+            turn(responses_client(), &format!("{origin}/v1"), &asked).unwrap();
+            let (_, body) = peer.join().unwrap();
+            assert_eq!(body["instructions"], "instructions");
+            let input = body["input"].as_array().unwrap();
+            assert_eq!(input[0]["role"], "system");
+            assert!(input[0].to_string().contains("the apps"), "{body}");
+            assert_eq!(input[1]["role"], "user");
 
-        // The next turn carries the reasoning back as the provider issued
-        // it, ahead of the call it led to and that call's result.
-        carries_reasoning_into(asked, response.message);
-    }
+            let (origin, peer) = answer_once(serde_json::json!({
+                "id": "msg", "type": "message", "role": "assistant", "model": "model",
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn", "stop_sequence": null,
+                "usage": {"input_tokens": 40, "output_tokens": 9}
+            }));
+            let vault = tempfile::tempdir().unwrap();
+            CompletionClient::new()
+                .unwrap()
+                .with_protocol(ProviderProtocol::Anthropic)
+                .with_credentials_in(vault.path())
+                .complete(
+                    &origin,
+                    &ApiKey::Value("fabricated-key".into()),
+                    Target::Standard,
+                    "model",
+                    &asked,
+                    "unused-key",
+                    tilo_test_env::hang_deadline(),
+                )
+                .unwrap();
+            let (_, body) = peer.join().unwrap();
+            let system = body["system"].as_array().unwrap();
+            assert_eq!(system.len(), 2, "{body}");
+            for (block, text) in system.iter().zip(["instructions", "the apps"]) {
+                assert_eq!(block["text"], text);
+                assert_eq!(block["cache_control"]["type"], "ephemeral", "{body}");
+            }
+        }
 
-    /// A planner's stable instructions and the system message after them
-    /// (its apps) stay apart: through Responses the instructions alone are
-    /// `instructions` and the apps a system item before the request; to
-    /// Anthropic each is a system block under a cache breakpoint of its
-    /// own. Either provider keeps the instructions and tools cached when the
-    /// apps change.
-    #[test]
-    fn stable_instructions_stay_apart_from_the_system_message_after_them() {
-        let mut asked =
-            neutral::Conversation::new("instructions", "hello").request(vec![plan_tool()], 512);
-        asked
-            .messages
-            .insert(1, neutral::Message::text(neutral::Role::System, "the apps"));
-        let message = serde_json::json!({"type": "message", "id": "msg_1", "role": "assistant",
-            "status": "completed",
-            "content": [{"type": "output_text", "text": "done", "annotations": []}]});
-        let (origin, peer) = answer_once(responses_reply(
-            &serde_json::json!([message]),
-            "completed",
-            None,
-        ));
-        turn(responses_client(), &format!("{origin}/v1"), &asked).unwrap();
-        let (_, body) = peer.join().unwrap();
-        assert_eq!(body["instructions"], "instructions");
-        let input = body["input"].as_array().unwrap();
-        assert_eq!(input[0]["role"], "system");
-        assert!(input[0].to_string().contains("the apps"), "{body}");
-        assert_eq!(input[1]["role"], "user");
-
-        let (origin, peer) = answer_once(serde_json::json!({
-            "id": "msg", "type": "message", "role": "assistant", "model": "model",
-            "content": [{"type": "text", "text": "done"}],
-            "stop_reason": "end_turn", "stop_sequence": null,
-            "usage": {"input_tokens": 40, "output_tokens": 9}
-        }));
-        let vault = tempfile::tempdir().unwrap();
-        CompletionClient::new()
-            .unwrap()
-            .with_protocol(ProviderProtocol::Anthropic)
-            .with_credentials_in(vault.path())
-            .complete(
-                &origin,
-                &ApiKey::Value("fabricated-key".into()),
-                Target::Standard,
-                "model",
-                &asked,
-                "unused-key",
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        let (_, body) = peer.join().unwrap();
-        let system = body["system"].as_array().unwrap();
-        assert_eq!(system.len(), 2, "{body}");
-        for (block, text) in system.iter().zip(["instructions", "the apps"]) {
-            assert_eq!(block["text"], text);
-            assert_eq!(block["cache_control"]["type"], "ephemeral", "{body}");
+        phase a_responses_refusal_and_a_cut_off_answer_are_never_ordinary_answers;
+        {
+            let refusal = serde_json::json!([{"type": "message", "id": "msg_1", "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "refusal", "refusal": "I can't help with that."}]}]);
+            let cut = serde_json::json!([{"type": "message", "id": "msg_1", "role": "assistant",
+                "status": "incomplete",
+                "content": [{"type": "output_text", "text": "The pla", "annotations": []}]}]);
+            for (output, status, reason, stop) in [
+                (refusal, "completed", None, neutral::StopReason::Refusal),
+                (
+                    cut,
+                    "incomplete",
+                    Some("max_output_tokens"),
+                    neutral::StopReason::OutputLimit,
+                ),
+            ] {
+                let (origin, peer) = answer_once(responses_reply(&output, status, reason));
+                let request = neutral::Conversation::new("system", "hello").request(Vec::new(), 64);
+                let response = turn(responses_client(), &format!("{origin}/v1"), &request).unwrap();
+                peer.join().unwrap();
+                assert_eq!(response.stop_reason, stop);
+                assert!(response.tool_calls().is_err());
+            }
         }
     }
 
@@ -1009,56 +1069,6 @@ mod tests {
         assert_eq!(input[called]["call_id"], "call_1");
         assert_eq!(input[result]["call_id"], "call_1");
         assert_eq!(input[result]["output"], "planned");
-    }
-
-    #[test]
-    fn a_responses_refusal_and_a_cut_off_answer_are_never_ordinary_answers() {
-        let refusal = serde_json::json!([{"type": "message", "id": "msg_1", "role": "assistant",
-            "status": "completed",
-            "content": [{"type": "refusal", "refusal": "I can't help with that."}]}]);
-        let cut = serde_json::json!([{"type": "message", "id": "msg_1", "role": "assistant",
-            "status": "incomplete",
-            "content": [{"type": "output_text", "text": "The pla", "annotations": []}]}]);
-        for (output, status, reason, stop) in [
-            (refusal, "completed", None, neutral::StopReason::Refusal),
-            (
-                cut,
-                "incomplete",
-                Some("max_output_tokens"),
-                neutral::StopReason::OutputLimit,
-            ),
-        ] {
-            let (origin, peer) = answer_once(responses_reply(&output, status, reason));
-            let request = neutral::Conversation::new("system", "hello").request(Vec::new(), 64);
-            let response = turn(responses_client(), &format!("{origin}/v1"), &request).unwrap();
-            peer.join().unwrap();
-            assert_eq!(response.stop_reason, stop);
-            assert!(response.tool_calls().is_err());
-        }
-    }
-
-    #[test]
-    fn a_compatible_server_still_takes_chat_completions_with_its_hints() {
-        let (origin, peer) = answer_once(serde_json::json!({
-            "id": "reply", "object": "chat.completion", "created": 1, "model": "model",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
-        }));
-        let client = CompletionClient::new().unwrap().with_request_hints(
-            &serde_json::json!({"service_tier": "priority", "reasoning_effort": "low"}),
-        );
-        one_turn(client, &format!("{origin}/v1")).unwrap();
-        let (head, body) = peer.join().unwrap();
-        assert!(head.starts_with("post /v1/chat/completions "), "{head}");
-        assert_eq!(body["reasoning_effort"], "low");
-        assert_eq!(body["service_tier"], "priority");
-        for responses_only in ["store", "include", "reasoning", "input"] {
-            assert!(
-                body.get(responses_only).is_none(),
-                "{responses_only}: {body}"
-            );
-        }
     }
 
     #[test]

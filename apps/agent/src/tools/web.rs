@@ -519,200 +519,6 @@ mod tests {
         web
     }
 
-    /// A search asks the engines at once with the query and the filter the
-    /// model chose, and answers their merged results a page at a time.
-    #[test]
-    fn a_search_asks_the_engines_and_answers_their_merged_results() {
-        let server = FixtureServer::serve(vec![
-            Route::new("/brave", "text/html", BRAVE),
-            Route::new("/bing", "text/html", BING),
-        ]);
-        let mut web = tools(ui::content::ContentStore::memory(), &server);
-        let call = Call::read(
-            SEARCH_WEB,
-            &json!({"query": "rust borrow checker", "safe_search": "strict", "count": 2}),
-        )
-        .unwrap();
-        let report = web.run(&call);
-        assert!(report.succeeded, "{report:?}");
-        let value = report.value.expect("a search answers its results");
-        assert_eq!(value["safe_search"], "strict");
-        assert!(
-            value["total_results"].as_u64().unwrap_or_default() >= 3,
-            "{value}"
-        );
-        assert_eq!(value["results"].as_array().map(Vec::len), Some(2));
-        assert_eq!(value["next_offset"], json!(2), "there is more to read");
-        let urls: Vec<&str> = value["results"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|result| result["url"].as_str())
-            .collect();
-        assert!(
-            urls.iter().any(|url| url.contains("rust-lang.org")),
-            "the engines' rankings are merged: {urls:?}"
-        );
-        assert_eq!(
-            value["engines"].as_array().map(|reports| reports
-                .iter()
-                .map(|report| report["status"].clone())
-                .collect::<Vec<_>>()),
-            Some(vec![json!("ok"), json!("ok")])
-        );
-        // Each engine was asked the query, and the filter it offers.
-        let asked = server.requests();
-        assert_eq!(asked.len(), 2, "{asked:?}");
-        for request in asked {
-            assert_eq!(
-                request.parameter("q").as_deref(),
-                Some("rust borrow checker"),
-                "{request:?}"
-            );
-            let filter = request
-                .parameter("safesearch")
-                .or_else(|| request.parameter("adlt"));
-            assert_eq!(filter.as_deref(), Some("strict"), "{request:?}");
-        }
-    }
-
-    /// A read answers a page's text, and keeps a body that is not text in the
-    /// workspace's content store under an address the person's own apps read.
-    #[test]
-    fn a_read_answers_text_and_keeps_a_body_that_is_not_text() {
-        let server = FixtureServer::serve(vec![
-            Route::new("/ada", "text/html", PAGE),
-            Route::new("/repos", "application/json", REPOS),
-            Route::new("/cv.pdf", "application/pdf", PDF),
-        ]);
-        let content = ui::content::ContentStore::memory();
-        let mut web = tools(content.clone(), &server);
-
-        let page = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/ada")})).unwrap());
-        assert!(page.succeeded, "{page:?}");
-        let value = page.value.expect("a read answers the page");
-        assert_eq!(value["title"], json!("Ada Lovelace"));
-        assert!(
-            value["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("the first published algorithm")),
-            "{value}"
-        );
-
-        let repos = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/repos")})).unwrap());
-        let value = repos.value.expect("a read answers the listing");
-        assert_eq!(value["content_type"], json!("application/json"));
-        assert!(
-            value["text"]
-                .as_str()
-                .is_some_and(|text| text.starts_with("[\n  {\n    \"name\": \"engine\"")),
-            "JSON is indented so its structure reads: {value}"
-        );
-
-        let pdf = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/cv.pdf")})).unwrap());
-        let value = pdf.value.expect("a read answers the file");
-        assert_eq!(value["content_type"], json!("application/pdf"));
-        assert_eq!(value["bytes"], json!(PDF.len()));
-        let address = value["content"].as_str().expect("the file is kept");
-        let hash = address
-            .strip_prefix("tilo.content:")
-            .expect("a content address");
-        assert_eq!(content.read(hash).as_deref(), Some(PDF), "kept whole");
-
-        // An address the server has nothing at is the call's own failure.
-        let missing =
-            web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/nothing")})).unwrap());
-        assert!(!missing.succeeded, "{missing:?}");
-        assert!(
-            missing
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("404")),
-            "{missing:?}"
-        );
-    }
-
-    #[test]
-    fn a_search_binds_with_defaults_and_bounds() {
-        let call = Call::read(SEARCH_WEB, &json!({"query": "rust borrow checker"})).unwrap();
-        assert_eq!(
-            call,
-            Call::Search {
-                query: "rust borrow checker".into(),
-                count: DEFAULT_COUNT,
-                offset: 0,
-                engines: Engine::DEFAULT.to_vec(),
-                safe: SafeMode::Off,
-            }
-        );
-        let call = Call::read(
-            SEARCH_WEB,
-            &json!({
-                "query": "x",
-                "count": 3,
-                "offset": 10,
-                "engines": ["google", "bing"],
-                "safe_search": "strict",
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            call,
-            Call::Search {
-                query: "x".into(),
-                count: 3,
-                offset: 10,
-                engines: vec![Engine::Google, Engine::Bing],
-                safe: SafeMode::Strict,
-            }
-        );
-        for refused in [
-            json!({}),
-            json!({"query": ""}),
-            json!({"query": "x", "engines": ["altavista"]}),
-            json!({"query": "x", "safe_search": "moderate"}),
-        ] {
-            assert!(Call::read(SEARCH_WEB, &refused).is_err(), "{refused}");
-        }
-    }
-
-    #[test]
-    fn a_page_read_binds_with_defaults_and_bounds() {
-        let call = Call::read(READ_PAGE, &json!({"url": " https://example.org/ "})).unwrap();
-        assert_eq!(
-            call,
-            Call::Page {
-                url: "https://example.org/".into(),
-                offset: 0,
-                max_chars: DEFAULT_PAGE_CHARS,
-            }
-        );
-        assert!(Call::read(READ_PAGE, &json!({})).is_err());
-        assert!(Call::read("navigate", &json!({"url": "https://example.org/"})).is_err());
-    }
-
-    /// A page is read in parts that end at a break, and every character is
-    /// reachable exactly once.
-    #[test]
-    fn a_page_is_read_in_parts_that_end_at_a_break() {
-        let text = "alpha beta gamma delta epsilon";
-        let first = window(text, 0, 12);
-        assert_eq!(first.text, "alpha beta ");
-        assert_eq!(first.next_offset, Some(11));
-        assert_eq!(first.total_chars, 30);
-        // No break in the part's last fifth: it is cut where it ends.
-        assert_eq!(window(text, 0, 13).text, "alpha beta ga");
-        let second = window(text, 11, 100);
-        assert_eq!(second.text, "gamma delta epsilon");
-        assert_eq!(second.next_offset, None);
-        let past = window(text, 500, 10);
-        assert_eq!(past.offset, 30);
-        assert_eq!(past.text, "");
-        let unbroken = window("ééééééééé", 2, 3);
-        assert_eq!(unbroken.text, "ééé");
-        assert_eq!(unbroken.next_offset, Some(5));
-    }
-
     fn response(n: usize) -> SearchResponse {
         let results = (0..n)
             .map(|i| SearchResult {
@@ -734,58 +540,256 @@ mod tests {
         }
     }
 
-    /// A search is answered a page at a time, and the last page says there is
-    /// nothing after it.
-    #[test]
-    fn a_search_is_answered_a_page_at_a_time() {
-        let first = search_answer(&response(12), 0, 5, SafeMode::Off);
-        assert_eq!(first["offset"], json!(0));
-        assert_eq!(first["next_offset"], json!(5));
-        assert_eq!(first["total_results"], json!(12));
-        assert_eq!(first["results"][0]["title"], json!("Result 0"));
-        assert_eq!(first["engines"][0]["status"], json!("blocked"));
-        let last = search_answer(&response(12), 10, 5, SafeMode::Off);
-        assert_eq!(last["offset"], json!(10));
-        assert!(
-            last.get("next_offset").is_none(),
-            "the last page says there is no more"
-        );
-        // Past the end is an empty page, not an error.
-        let past = search_answer(&response(12), 40, 5, SafeMode::Off);
-        assert_eq!(past["offset"], json!(12));
-        assert_eq!(past["results"], json!([]));
-        let keys: Vec<&String> = first.as_object().unwrap().keys().collect();
-        assert_eq!(
-            keys.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
-            vec![
-                "results",
-                "engines",
-                "offset",
-                "next_offset",
-                "total_results",
-                "safe_search"
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_web_tools_search_and_read_within_their_bounds;
 
-    /// Both tools declare the schemas the loop hands the model, and every
-    /// declared argument is one the binding reads.
-    #[test]
-    fn both_tools_declare_their_arguments() {
-        let definitions = [search_definition(), read_page_definition()];
-        for definition in &definitions {
+        phase a_search_asks_the_engines_and_answers_their_merged_results;
+        // A search asks the engines at once with the query and the filter the
+        // model chose, and answers their merged results a page at a time.
+        {
+            let server = FixtureServer::serve(vec![
+                Route::new("/brave", "text/html", BRAVE),
+                Route::new("/bing", "text/html", BING),
+            ]);
+            let mut web = tools(ui::content::ContentStore::memory(), &server);
+            let call = Call::read(
+                SEARCH_WEB,
+                &json!({"query": "rust borrow checker", "safe_search": "strict", "count": 2}),
+            )
+            .unwrap();
+            let report = web.run(&call);
+            assert!(report.succeeded, "{report:?}");
+            let value = report.value.expect("a search answers its results");
+            assert_eq!(value["safe_search"], "strict");
             assert!(
-                definition.input_schema.get("properties").is_some(),
-                "{definition:?}"
+                value["total_results"].as_u64().unwrap_or_default() >= 3,
+                "{value}"
             );
+            assert_eq!(value["results"].as_array().map(Vec::len), Some(2));
+            assert_eq!(value["next_offset"], json!(2), "there is more to read");
+            let urls: Vec<&str> = value["results"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|result| result["url"].as_str())
+                .collect();
             assert!(
-                definition
-                    .input_schema
-                    .get("required")
-                    .and_then(Value::as_array)
-                    .is_some_and(|required| !required.is_empty()),
-                "{definition:?}"
+                urls.iter().any(|url| url.contains("rust-lang.org")),
+                "the engines' rankings are merged: {urls:?}"
             );
+            assert_eq!(
+                value["engines"].as_array().map(|reports| reports
+                    .iter()
+                    .map(|report| report["status"].clone())
+                    .collect::<Vec<_>>()),
+                Some(vec![json!("ok"), json!("ok")])
+            );
+            // Each engine was asked the query, and the filter it offers.
+            let asked = server.requests();
+            assert_eq!(asked.len(), 2, "{asked:?}");
+            for request in asked {
+                assert_eq!(
+                    request.parameter("q").as_deref(),
+                    Some("rust borrow checker"),
+                    "{request:?}"
+                );
+                let filter = request
+                    .parameter("safesearch")
+                    .or_else(|| request.parameter("adlt"));
+                assert_eq!(filter.as_deref(), Some("strict"), "{request:?}");
+            }
+        }
+
+        phase a_read_answers_text_and_keeps_a_body_that_is_not_text;
+        // A read answers a page's text, and keeps a body that is not text in the
+        // workspace's content store under an address the person's own apps read.
+        {
+            let server = FixtureServer::serve(vec![
+                Route::new("/ada", "text/html", PAGE),
+                Route::new("/repos", "application/json", REPOS),
+                Route::new("/cv.pdf", "application/pdf", PDF),
+            ]);
+            let content = ui::content::ContentStore::memory();
+            let mut web = tools(content.clone(), &server);
+
+            let page = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/ada")})).unwrap());
+            assert!(page.succeeded, "{page:?}");
+            let value = page.value.expect("a read answers the page");
+            assert_eq!(value["title"], json!("Ada Lovelace"));
+            assert!(
+                value["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("the first published algorithm")),
+                "{value}"
+            );
+
+            let repos = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/repos")})).unwrap());
+            let value = repos.value.expect("a read answers the listing");
+            assert_eq!(value["content_type"], json!("application/json"));
+            assert!(
+                value["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("[\n  {\n    \"name\": \"engine\"")),
+                "JSON is indented so its structure reads: {value}"
+            );
+
+            let pdf = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/cv.pdf")})).unwrap());
+            let value = pdf.value.expect("a read answers the file");
+            assert_eq!(value["content_type"], json!("application/pdf"));
+            assert_eq!(value["bytes"], json!(PDF.len()));
+            let address = value["content"].as_str().expect("the file is kept");
+            let hash = address
+                .strip_prefix("tilo.content:")
+                .expect("a content address");
+            assert_eq!(content.read(hash).as_deref(), Some(PDF), "kept whole");
+
+            // An address the server has nothing at is the call's own failure.
+            let missing =
+                web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/nothing")})).unwrap());
+            assert!(!missing.succeeded, "{missing:?}");
+            assert!(
+                missing
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("404")),
+                "{missing:?}"
+            );
+        }
+
+        phase a_search_binds_with_defaults_and_bounds;
+        {
+            let call = Call::read(SEARCH_WEB, &json!({"query": "rust borrow checker"})).unwrap();
+            assert_eq!(
+                call,
+                Call::Search {
+                    query: "rust borrow checker".into(),
+                    count: DEFAULT_COUNT,
+                    offset: 0,
+                    engines: Engine::DEFAULT.to_vec(),
+                    safe: SafeMode::Off,
+                }
+            );
+            let call = Call::read(
+                SEARCH_WEB,
+                &json!({
+                    "query": "x",
+                    "count": 3,
+                    "offset": 10,
+                    "engines": ["google", "bing"],
+                    "safe_search": "strict",
+                }),
+            )
+            .unwrap();
+            assert_eq!(
+                call,
+                Call::Search {
+                    query: "x".into(),
+                    count: 3,
+                    offset: 10,
+                    engines: vec![Engine::Google, Engine::Bing],
+                    safe: SafeMode::Strict,
+                }
+            );
+            for refused in [
+                json!({}),
+                json!({"query": ""}),
+                json!({"query": "x", "engines": ["altavista"]}),
+                json!({"query": "x", "safe_search": "moderate"}),
+            ] {
+                assert!(Call::read(SEARCH_WEB, &refused).is_err(), "{refused}");
+            }
+        }
+
+        phase a_page_read_binds_with_defaults_and_bounds;
+        {
+            let call = Call::read(READ_PAGE, &json!({"url": " https://example.org/ "})).unwrap();
+            assert_eq!(
+                call,
+                Call::Page {
+                    url: "https://example.org/".into(),
+                    offset: 0,
+                    max_chars: DEFAULT_PAGE_CHARS,
+                }
+            );
+            assert!(Call::read(READ_PAGE, &json!({})).is_err());
+            assert!(Call::read("navigate", &json!({"url": "https://example.org/"})).is_err());
+        }
+
+        phase a_page_is_read_in_parts_that_end_at_a_break;
+        // A page is read in parts that end at a break, and every character is
+        // reachable exactly once.
+        {
+            let text = "alpha beta gamma delta epsilon";
+            let first = window(text, 0, 12);
+            assert_eq!(first.text, "alpha beta ");
+            assert_eq!(first.next_offset, Some(11));
+            assert_eq!(first.total_chars, 30);
+            // No break in the part's last fifth: it is cut where it ends.
+            assert_eq!(window(text, 0, 13).text, "alpha beta ga");
+            let second = window(text, 11, 100);
+            assert_eq!(second.text, "gamma delta epsilon");
+            assert_eq!(second.next_offset, None);
+            let past = window(text, 500, 10);
+            assert_eq!(past.offset, 30);
+            assert_eq!(past.text, "");
+            let unbroken = window("ééééééééé", 2, 3);
+            assert_eq!(unbroken.text, "ééé");
+            assert_eq!(unbroken.next_offset, Some(5));
+        }
+
+        phase a_search_is_answered_a_page_at_a_time;
+        // A search is answered a page at a time, and the last page says there is
+        // nothing after it.
+        {
+            let first = search_answer(&response(12), 0, 5, SafeMode::Off);
+            assert_eq!(first["offset"], json!(0));
+            assert_eq!(first["next_offset"], json!(5));
+            assert_eq!(first["total_results"], json!(12));
+            assert_eq!(first["results"][0]["title"], json!("Result 0"));
+            assert_eq!(first["engines"][0]["status"], json!("blocked"));
+            let last = search_answer(&response(12), 10, 5, SafeMode::Off);
+            assert_eq!(last["offset"], json!(10));
+            assert!(
+                last.get("next_offset").is_none(),
+                "the last page says there is no more"
+            );
+            // Past the end is an empty page, not an error.
+            let past = search_answer(&response(12), 40, 5, SafeMode::Off);
+            assert_eq!(past["offset"], json!(12));
+            assert_eq!(past["results"], json!([]));
+            let keys: Vec<&String> = first.as_object().unwrap().keys().collect();
+            assert_eq!(
+                keys.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
+                vec![
+                    "results",
+                    "engines",
+                    "offset",
+                    "next_offset",
+                    "total_results",
+                    "safe_search"
+                ]
+            );
+        }
+
+        phase both_tools_declare_their_arguments;
+        // Both tools declare the schemas the loop hands the model, and every
+        // declared argument is one the binding reads.
+        {
+            let definitions = [search_definition(), read_page_definition()];
+            for definition in &definitions {
+                assert!(
+                    definition.input_schema.get("properties").is_some(),
+                    "{definition:?}"
+                );
+                assert!(
+                    definition
+                        .input_schema
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .is_some_and(|required| !required.is_empty()),
+                    "{definition:?}"
+                );
+            }
         }
     }
 }

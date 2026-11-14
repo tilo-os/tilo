@@ -1173,99 +1173,103 @@ fn record_missing_runtime(path: Option<&Path>, error: &anyhow::Error) -> Result<
 mod runtime_readiness_tests {
     use super::{record_missing_runtime, require_runtime_offers};
 
-    #[test]
-    fn publication_waits_for_the_exact_engine_and_native_architecture() {
-        use registry_types::{
-            RegistryEntry, RegistryTarget, RegistryVersion, TappArtifact, VersionArtifact,
-        };
+    tilo_test_env::scenario! {
+        fn publication_names_the_exact_runtime_it_waits_for;
 
-        let manifest: super::Manifest =
-            super::Manifest::from_toml_str(include_str!("../../../../apps/browser/tilo-app.toml"))
-                .unwrap();
-        let runtime = &manifest.package.required_runtimes[0];
-        let signer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let url = "https://apps.tilo.so/artifacts/browser.tapp";
-        let mut app = RegistryEntry {
-            package_id: manifest.package.id.clone(),
-            kind: registry_types::EntryKind::App,
-            name: "Browser".into(),
-            description: "Browse the web".into(),
-            tagline: "Web browser".into(),
-            images: registry_types::LocalizedImages::default(),
-            supported_languages: vec!["en".into()],
-            categories: vec!["Network".into()],
-            source_url: None,
-            homepage: None,
-            publisher_pubkey_hex: hex::encode(signer.verifying_key().to_bytes()),
-            versions: vec![RegistryVersion {
-                version: "1.0.0".into(),
-                released_at_unix: 1_790_000_000,
-                artifact: VersionArtifact::Tapp(TappArtifact {
-                    tapp_url: url.into(),
-                    tapp_root_hash_hex: "aa".repeat(32),
-                    tapp_size_bytes: 12_288,
-                    tapp_blake3_hex: "bb".repeat(32),
-                    target: RegistryTarget {
-                        platform: registry_types::TILO_OS_PLATFORM.into(),
-                        architecture: "x86_64".into(),
-                        isa: "x86_64-v3".into(),
-                        runtime: manifest.package.runtime.clone(),
-                        interfaces: vec![],
-                    },
-                }),
-            }],
-            updated_at_unix: 1_790_000_001,
-            signature_hex: String::new(),
-        };
-        registry_types::sign_entry(&mut app, &signer);
-        let missing = require_runtime_offers(&app, url, &manifest, &[]).unwrap_err();
-        assert_eq!(
-            missing
-                .downcast_ref::<app_registry::publisher::runtime_history::MissingRuntime>()
-                .unwrap()
-                .runtime,
-            *runtime
-        );
-        let mut provider = app.clone();
-        provider.package_id = "so.tilo.runtime.chromium".into();
-        for (provided_runtime, architecture, accepted) in [
-            ("tilo-runtime/older-engine", "x86_64", false),
-            (runtime.as_str(), "aarch64", false),
-            (runtime.as_str(), "x86_64", true),
-        ] {
-            let VersionArtifact::Tapp(artifact) = &mut provider.versions[0].artifact else {
-                panic!("native package")
+        phase publication_waits_for_the_exact_engine_and_native_architecture;
+        {
+            use registry_types::{
+                RegistryEntry, RegistryTarget, RegistryVersion, TappArtifact, VersionArtifact,
             };
-            artifact.target.runtime = Some(provided_runtime.into());
-            artifact.target.architecture = architecture.into();
-            registry_types::sign_entry(&mut provider, &signer);
+
+            let manifest: super::Manifest =
+                super::Manifest::from_toml_str(include_str!("../../../../apps/browser/tilo-app.toml"))
+                    .unwrap();
+            let runtime = &manifest.package.required_runtimes[0];
+            let signer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let url = "https://apps.tilo.so/artifacts/browser.tapp";
+            let mut app = RegistryEntry {
+                package_id: manifest.package.id.clone(),
+                kind: registry_types::EntryKind::App,
+                name: "Browser".into(),
+                description: "Browse the web".into(),
+                tagline: "Web browser".into(),
+                images: registry_types::LocalizedImages::default(),
+                supported_languages: vec!["en".into()],
+                categories: vec!["Network".into()],
+                source_url: None,
+                homepage: None,
+                publisher_pubkey_hex: hex::encode(signer.verifying_key().to_bytes()),
+                versions: vec![RegistryVersion {
+                    version: "1.0.0".into(),
+                    released_at_unix: 1_790_000_000,
+                    artifact: VersionArtifact::Tapp(TappArtifact {
+                        tapp_url: url.into(),
+                        tapp_root_hash_hex: "aa".repeat(32),
+                        tapp_size_bytes: 12_288,
+                        tapp_blake3_hex: "bb".repeat(32),
+                        target: RegistryTarget {
+                            platform: registry_types::TILO_OS_PLATFORM.into(),
+                            architecture: "x86_64".into(),
+                            isa: "x86_64-v3".into(),
+                            runtime: manifest.package.runtime.clone(),
+                            interfaces: vec![],
+                        },
+                    }),
+                }],
+                updated_at_unix: 1_790_000_001,
+                signature_hex: String::new(),
+            };
+            registry_types::sign_entry(&mut app, &signer);
+            let missing = require_runtime_offers(&app, url, &manifest, &[]).unwrap_err();
             assert_eq!(
-                require_runtime_offers(&app, url, &manifest, &[provider.clone()]).is_ok(),
-                accepted
+                missing
+                    .downcast_ref::<app_registry::publisher::runtime_history::MissingRuntime>()
+                    .unwrap()
+                    .runtime,
+                *runtime
             );
+            let mut provider = app.clone();
+            provider.package_id = "so.tilo.runtime.chromium".into();
+            for (provided_runtime, architecture, accepted) in [
+                ("tilo-runtime/older-engine", "x86_64", false),
+                (runtime.as_str(), "aarch64", false),
+                (runtime.as_str(), "x86_64", true),
+            ] {
+                let VersionArtifact::Tapp(artifact) = &mut provider.versions[0].artifact else {
+                    panic!("native package")
+                };
+                artifact.target.runtime = Some(provided_runtime.into());
+                artifact.target.architecture = architecture.into();
+                registry_types::sign_entry(&mut provider, &signer);
+                assert_eq!(
+                    require_runtime_offers(&app, url, &manifest, &[provider.clone()]).is_ok(),
+                    accepted
+                );
+            }
+            assert!(registry_types::verify_entry_signature(&app));
         }
-        assert!(registry_types::verify_entry_signature(&app));
-    }
 
-    #[test]
-    fn writes_only_typed_exact_runtime_refusals() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("missing.json");
-        let missing = app_registry::publisher::runtime_history::MissingRuntime {
-            package_id: "so.tilo.agent".into(),
-            version: "1.0.8".into(),
-            architecture: "aarch64".into(),
-            runtime: "tilo-runtime/exact".into(),
-        };
-        record_missing_runtime(Some(&path), &missing.into()).unwrap();
-        let record: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(record["runtime"], "tilo-runtime/exact");
-        assert_eq!(record["architecture"], "aarch64");
+        phase writes_only_typed_exact_runtime_refusals;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("missing.json");
+            let missing = app_registry::publisher::runtime_history::MissingRuntime {
+                package_id: "so.tilo.agent".into(),
+                version: "1.0.8".into(),
+                architecture: "aarch64".into(),
+                runtime: "tilo-runtime/exact".into(),
+            };
+            record_missing_runtime(Some(&path), &missing.into()).unwrap();
+            let record: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(record["runtime"], "tilo-runtime/exact");
+            assert_eq!(record["architecture"], "aarch64");
 
-        std::fs::remove_file(&path).unwrap();
-        record_missing_runtime(Some(&path), &anyhow::anyhow!("invalid signature")).unwrap();
-        assert!(!path.exists());
+            std::fs::remove_file(&path).unwrap();
+            record_missing_runtime(Some(&path), &anyhow::anyhow!("invalid signature")).unwrap();
+            assert!(!path.exists());
+        }
     }
 }
 
@@ -1441,38 +1445,41 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
 mod desktop_plan_tests {
     use super::*;
 
-    #[test]
-    fn desktop_dry_run_refuses_identity_selection() {
-        assert!(
-            Cli::try_parse_from([
-                "tilo-app-package",
-                "pack-desktop",
-                "--manifest",
-                "app.toml",
-                "--executable",
-                "app",
-                "--platform",
-                "linux",
-                "--arch",
-                "x86_64",
-                "--output",
-                "app.tapp",
-                "--dry-run",
-                "--identity",
-                "private.json",
-            ])
-            .is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_desktop_dry_run_validates_and_touches_nothing;
 
-    #[test]
-    fn desktop_dry_run_validates_without_writing_or_signing() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest = dir.path().join("app.toml");
-        std::fs::write(
-            &manifest,
-            format!(
-                r#"
+        phase desktop_dry_run_refuses_identity_selection;
+        {
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app-package",
+                    "pack-desktop",
+                    "--manifest",
+                    "app.toml",
+                    "--executable",
+                    "app",
+                    "--platform",
+                    "linux",
+                    "--arch",
+                    "x86_64",
+                    "--output",
+                    "app.tapp",
+                    "--dry-run",
+                    "--identity",
+                    "private.json",
+                ])
+                .is_err()
+            );
+        }
+
+        phase desktop_dry_run_validates_without_writing_or_signing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = dir.path().join("app.toml");
+            std::fs::write(
+                &manifest,
+                format!(
+                    r#"
 [package]
 id = "so.tilo.plan"
 version = "0.1.0"
@@ -1490,27 +1497,28 @@ mode = "off"
 [entrypoint]
 bin = "bin/app"
 "#,
-                "00".repeat(32)
-            ),
-        )
-        .unwrap();
-        let executable = dir.path().join("app");
-        std::fs::write(&executable, b"not executed").unwrap();
-        let output = dir.path().join("missing/app.tapp");
-        let mut args = PackDesktopArgs {
-            manifest: &manifest,
-            executable: &executable,
-            platform: DesktopPlatform::Linux,
-            arch: "x86_64",
-            isa: "x86-64-v3",
-            output: &output,
-            identity: None,
-            dry_run: true,
-        };
-        cmd_pack_desktop(&args).unwrap();
-        assert!(!output.parent().unwrap().exists());
-        args.arch = "wasm32";
-        assert!(cmd_pack_desktop(&args).is_err());
-        assert!(!output.exists());
+                    "00".repeat(32)
+                ),
+            )
+            .unwrap();
+            let executable = dir.path().join("app");
+            std::fs::write(&executable, b"not executed").unwrap();
+            let output = dir.path().join("missing/app.tapp");
+            let mut args = PackDesktopArgs {
+                manifest: &manifest,
+                executable: &executable,
+                platform: DesktopPlatform::Linux,
+                arch: "x86_64",
+                isa: "x86-64-v3",
+                output: &output,
+                identity: None,
+                dry_run: true,
+            };
+            cmd_pack_desktop(&args).unwrap();
+            assert!(!output.parent().unwrap().exists());
+            args.arch = "wasm32";
+            assert!(cmd_pack_desktop(&args).is_err());
+            assert!(!output.exists());
+        }
     }
 }

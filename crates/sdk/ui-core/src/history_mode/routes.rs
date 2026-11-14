@@ -572,39 +572,43 @@ mod committed_changes_tests {
         String::from_utf8(sink.0.lock().unwrap().clone()).unwrap()
     }
 
-    #[test]
-    fn committed_changes_that_build_on_held_history_apply_and_log_nothing() {
-        let (mut workspace, mut held, delta) = held_and_delta();
-        let mutation = DocumentMutation::Incremental(delta);
-        let mut changed = None;
-        let errors = errors_during(|| {
-            changed = Some(merge_committed_into_copy(&mut held, &mutation).unwrap());
-        });
-        assert_eq!(errors, "", "a valid delta logged an error");
-        assert_eq!(changed, Some(true));
-        assert!(held.get_missing_deps(&[]).is_empty());
-        assert_eq!(
-            super::super::sorted_heads(held.get_heads()),
-            super::super::sorted_heads(workspace.get_heads())
-        );
-    }
+    tilo_test_env::scenario! {
+        fn committed_changes_apply_whole_or_not_at_all;
 
-    #[test]
-    fn a_truncated_delta_is_refused_whole() {
-        let (_, mut held, delta) = held_and_delta();
-        let before = held.get_heads();
-        for end in 1..delta.len() {
-            let mutation = DocumentMutation::Incremental(delta[..end].to_vec());
-            let refused = merge_committed_into_copy(&mut held, &mutation);
-            assert!(
-                matches!(refused, Err(RemoteApplyError::InvalidMutation(_))),
-                "truncated at {end}"
-            );
+        phase committed_changes_that_build_on_held_history_apply_and_log_nothing;
+        {
+            let (mut workspace, mut held, delta) = held_and_delta();
+            let mutation = DocumentMutation::Incremental(delta);
+            let mut changed = None;
+            let errors = errors_during(|| {
+                changed = Some(merge_committed_into_copy(&mut held, &mutation).unwrap());
+            });
+            assert_eq!(errors, "", "a valid delta logged an error");
+            assert_eq!(changed, Some(true));
+            assert!(held.get_missing_deps(&[]).is_empty());
             assert_eq!(
-                held.get_heads(),
-                before,
-                "truncated at {end}: nothing applied"
+                super::super::sorted_heads(held.get_heads()),
+                super::super::sorted_heads(workspace.get_heads())
             );
+        }
+
+        phase a_truncated_delta_is_refused_whole;
+        {
+            let (_, mut held, delta) = held_and_delta();
+            let before = held.get_heads();
+            for end in 1..delta.len() {
+                let mutation = DocumentMutation::Incremental(delta[..end].to_vec());
+                let refused = merge_committed_into_copy(&mut held, &mutation);
+                assert!(
+                    matches!(refused, Err(RemoteApplyError::InvalidMutation(_))),
+                    "truncated at {end}"
+                );
+                assert_eq!(
+                    held.get_heads(),
+                    before,
+                    "truncated at {end}: nothing applied"
+                );
+            }
         }
     }
 }

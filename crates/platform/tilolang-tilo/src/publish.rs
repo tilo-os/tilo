@@ -17,7 +17,7 @@ use tilo_actions::{
 };
 
 use crate::action::{DIRECT_EDITS, DirectEdit, DynAction};
-use crate::background::{Pending, Poll, Waker};
+use crate::background::{Pending, Waker};
 use tilolang_runtime::meta::{ActionMeta, Meta, TypeMeta};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
@@ -688,7 +688,7 @@ fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &st
 /// it); items added to, removed from or moved in a collection are added, removed or moved among
 /// the children of the resource holding it; an item replaced as a whole is built anew.
 /// Only a record that appeared, or one that changed as a whole, is read and built in full, and
-/// that happens on a thread of its own, from a snapshot of the store, as search's first index
+/// that happens on a worker thread, from a snapshot of the store, as search's first index
 /// does ([`crate::search::SearchIndex`]): until it ends, updates change nothing.
 /// A field of a published resource: the resource's id, and the field the change named.
 type Field = (String, String);
@@ -812,7 +812,7 @@ pub struct Publications {
     /// Per record, the resource whose text names it now.
     named_by: std::collections::BTreeMap<String, Option<String>>,
     /// Records being built whole off the frame.
-    building: Option<(Vec<String>, Pending<Vec<Built>>)>,
+    building: Option<Pending<Vec<Built>>>,
     wake: Option<Waker>,
     /// Per app, the action types its records offer.
     types: std::collections::BTreeMap<String, Arc<ActionTypes>>,
@@ -1140,18 +1140,6 @@ impl Publications {
         })
     }
 
-    /// The records among `docs` to build whole, as the host has them now.
-    fn wholes(
-        &mut self,
-        host: &crate::host::Host,
-        planner: &Arc<dyn Planner>,
-        docs: &[String],
-    ) -> Vec<Whole> {
-        docs.iter()
-            .filter_map(|doc| self.whole_of(host, planner, doc))
-            .collect()
-    }
-
     /// Have `wake` called (from another thread) when records built off the frame are ready
     /// for the next [`Self::update`] to take in.
     pub fn set_waker(&mut self, wake: Waker) {
@@ -1168,8 +1156,8 @@ impl Publications {
     /// without frames.
     pub fn settle(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>) -> Vec<String> {
         let mut touched = self.update(host, planner);
-        while let Some((docs, building)) = self.building.take() {
-            self.take_in(host, planner, &docs, building.wait(), &mut touched);
+        while let Some(mut building) = self.building.take() {
+            self.take_in(building.wait(), &mut touched);
             touched.extend(self.update(host, planner));
         }
         touched.sort();
@@ -1269,26 +1257,8 @@ impl Publications {
         Some(Rc::new(whole.build(&snapshot, Some(&reached)).tree))
     }
 
-    /// Take in records built off the frame; all of them are built here if the building was
-    /// lost.
-    fn take_in(
-        &mut self,
-        host: &crate::host::Host,
-        planner: &Arc<dyn Planner>,
-        docs: &[String],
-        built: Poll<Vec<Built>>,
-        touched: &mut Vec<String>,
-    ) {
-        let built = match built {
-            Poll::Ready(built) => built,
-            Poll::Running | Poll::Lost => {
-                let snapshot = host.store().snapshot();
-                self.wholes(host, planner, docs)
-                    .iter()
-                    .map(|whole| whole.build(&snapshot, None))
-                    .collect()
-            }
-        };
+    /// Take in records built off the frame.
+    fn take_in(&mut self, built: Vec<Built>, touched: &mut Vec<String>) {
         for Built {
             doc,
             tree,
@@ -1504,17 +1474,13 @@ impl Publications {
         relabels: &mut Option<Vec<(String, String)>>,
     ) -> Vec<String> {
         let mut touched = Vec::new();
-        if let Some((docs, building)) = self.building.take() {
-            match building.poll() {
-                Poll::Running => {
-                    self.building = Some((docs, building));
-                    return touched;
-                }
-                built => {
-                    self.take_in(host, planner, &docs, built, &mut touched);
-                    *relabels = None;
-                }
-            }
+        if let Some(mut building) = self.building.take() {
+            let Some(built) = building.poll() else {
+                self.building = Some(building);
+                return touched;
+            };
+            self.take_in(built, &mut touched);
+            *relabels = None;
         }
         let changes = self.watch.take();
         // The words a package is published in read in another language now (the person chose
@@ -1775,18 +1741,14 @@ impl Publications {
     /// taken in.
     fn build_off_frame(&mut self, host: &crate::host::Host, whole_docs: Vec<Whole>) {
         let snapshot = host.store().snapshot();
-        let docs = whole_docs.iter().map(|whole| whole.doc.clone()).collect();
-        self.building = Some((
-            docs,
-            Pending::start(
-                move || {
-                    whole_docs
-                        .iter()
-                        .map(|whole| whole.build(&snapshot, None))
-                        .collect()
-                },
-                self.wake.clone(),
-            ),
+        self.building = Some(Pending::start(
+            move || {
+                whole_docs
+                    .iter()
+                    .map(|whole| whole.build(&snapshot, None))
+                    .collect()
+            },
+            self.wake.clone(),
         ));
     }
 }

@@ -93,7 +93,7 @@ impl PreparedEffect {
             InvocationOwner::Certified { root, .. }
             | InvocationOwner::AuthenticatedLocal {
                 root, agent: None, ..
-            } => Some(super::super::principal_id_for_root(*root)),
+            } => Some(super::super::person_id_for_root(*root)),
             InvocationOwner::NativeTask { agent, .. }
             | InvocationOwner::AuthenticatedLocal {
                 agent: Some(agent), ..
